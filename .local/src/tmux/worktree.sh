@@ -1985,15 +1985,17 @@ wt_live_panes() {
 }
 
 # wt_closed_pane_scopes -- "<unit> <cgroup>" for each pane scope whose pane is gone. tmux puts each
-# pane in a scope described "tmux child pane <pid> launched by process <server pid>", and what the
-# pane started stays in it after the pane closes, whatever it is: a test run, a build, a browser.
+# pane in a scope described "tmux child pane <pid> launched by process <server pid>", and so does
+# `claude-acct scope` for an agent session it moves out of one ("tmux child pane <pid> runs ...
+# launched by process <server pid>"); what the pane started stays in it after the pane closes,
+# whatever it is: a test run, a build, a browser.
 # A scope is closed when its server answered without that pane, or its server has exited; one whose
 # server is alive but did not answer is skipped, and so is the scope this process runs in. Scopes are
 # listed before panes, so a pane opened in between is live, not closed. No systemctl (macOS): none.
 wt_closed_pane_scopes() {
   local proc="${WT_PROC_ROOT:-/proc}" scopes live own unit pane spid cg
   command -v "$WT_SYSTEMCTL" >/dev/null 2>&1 || return 0
-  scopes=$("$WT_SYSTEMCTL" --user show --property=Id,Description,ControlGroup "tmux-spawn-*.scope" 2>/dev/null |
+  scopes=$("$WT_SYSTEMCTL" --user show --property=Id,Description,ControlGroup "tmux-spawn-*.scope" "agent-*.scope" 2>/dev/null |
     awk -F= '$1 == "Id" { id = $2 } $1 == "ControlGroup" { cg = $2 }
       $1 == "Description" { n = split($2, w, " "); if (w[1] == "tmux" && w[3] == "pane") { pane = w[4]; spid = w[n] } }
       /^$/ { if (pane != "") print id, pane, spid, cg; id = cg = pane = spid = "" }

@@ -274,9 +274,10 @@ cmd_grant() {
   echo "granted: $resource for $granted"
 }
 
-# unit_of <pid|self> -> the user unit a process runs in: the tmux pane scope or agentctl unit
-# on its cgroup path when there is one (a run started with `systemd-run --scope` from a
-# pane sits in a scope nested inside the pane's), else the innermost .scope or .service.
+# unit_of <pid|self> -> the user unit a process runs in: the tmux pane scope, agent session scope
+# (claude-acct scope) or agentctl unit on its cgroup path when there is one (a run started with
+# `systemd-run --scope` from a pane sits in a scope nested inside the pane's), else the innermost
+# .scope or .service.
 # Exit 1 when the process is gone, 2 when it is not under this user's manager.
 unit_of() {
   local path part unit="" batch=""
@@ -287,7 +288,7 @@ unit_of() {
   local IFS=/
   for part in $path; do
     case "$part" in
-      tmux-spawn-*.scope|agentctl@*.service) batch="${batch:-$part}" ;;
+      tmux-spawn-*.scope|agent-*.scope|agentctl@*.service) batch="${batch:-$part}" ;;
       *.scope|*.service) unit="$part" ;;
     esac
   done
@@ -318,8 +319,8 @@ cmd_lower() {
     # Only units that are batch work: a desktop terminal's or app's scope is the human's,
     # and the caller's own pane would slow the pass that has to lift the hold.
     case "$unit" in
-      tmux-spawn-*.scope|agentctl@*.service) ;;
-      *) echo "agent-hold lower: pid $pid runs in $unit, not a tmux pane or agentctl unit; left alone" >&2; [ "$rc" -gt 1 ] || rc=1; continue ;;
+      tmux-spawn-*.scope|agent-*.scope|agentctl@*.service) ;;
+      *) echo "agent-hold lower: pid $pid runs in $unit, not a tmux pane, agent session or agentctl unit; left alone" >&2; [ "$rc" -gt 1 ] || rc=1; continue ;;
     esac
     [ "$unit" = "$self" ] && { echo "agent-hold lower: pid $pid is in this pane ($unit); left alone" >&2; [ "$rc" -gt 1 ] || rc=1; continue; }
     if in_list "$unit" "$lowered"; then echo "lowered: $unit (pid $pid, already)"; continue; fi
