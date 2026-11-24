@@ -552,8 +552,8 @@ LI='#beta: A license, check: `[ -f LICENSE ]`'
   assert_line --regexp '^filed +beta +A license$'
   assert_line 'file: shooter #beta: 2 failing, 2 listed on sh-7 (2 new), 0 held by their own row, 0 closed or dropped, 0 met and closed'
   run ptask_calls
-  assert_output "notes ptask shooter --agent add chore(stage): meet the beta stage standard #of/sh-1 #size/m #low --detail $HEAD_BETA --detail $CL --detail $LI --origin project-stage-check"
-  # From the Enforced from date the gate blocks on its gaps, so the rollup is #high.
+  assert_output "notes ptask shooter --agent add chore(stage): meet the beta stage standard #of/sh-1 #size/m --detail $HEAD_BETA --detail $CL --detail $LI --origin project-stage-check"
+  # Untagged, the triager judges it; from the Enforced from date the gate blocks on its gaps, so the rollup is #high.
   : > "$NOTES_FIXTURE/calls.log"
   STAGE_GATE_TODAY=2026-11-19 run "$CHECK" shooter --file
   assert_called 'meet the beta stage standard #of/sh-1 #size/m #high --detail'
@@ -772,7 +772,7 @@ $LI"
   assert_output --partial 'epic    beta        beta to standard (sh-9)'
   assert_line 'file: shooter #beta: 1 failing, 1 listed on sh-7 (1 new), 0 held by their own row, 0 closed or dropped, 0 met and closed, 1 epic opened'
   assert_called 'notes ptask shooter add epic(stage): beta to standard'
-  assert_called 'notes ptask shooter --agent add chore(stage): meet the beta stage standard #of/sh-9 #size/m #low'
+  assert_called 'notes ptask shooter --agent add chore(stage): meet the beta stage standard #of/sh-9 #size/m --detail'
   # An epic for another stage is not this target's epic: beta's is still opened.
   : > "$NOTES_FIXTURE/calls.log"
   epics '[{"id":"sh-1","system":"stage","title":"prod for shooter"}]'
@@ -830,6 +830,31 @@ notes ptask shooter --agent drop sh-8 --dup sh-7"
   assert_success
   assert_line --regexp '^open +sh-8 +another stage rollup, in progress, left as it is$'
   assert_not_called 'ptask'
+}
+
+@test "file: a gate that does not block leaves the rollup's priority to the triager, save the #high a retitle clears" {
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
+  # A blocking gate raises a #normal the triager judged, as it does a #low.
+  board "$(rollup sh-7 beta normal "$CL")"
+  STAGE_GATE_TODAY=2026-11-19 run "$CHECK" shooter --file
+  assert_success
+  assert_called 'notes ptask shooter --agent tag sh-7 --add high --remove normal'
+  # Before the Enforced from date a retitle clears the #high the lower stage's gate set.
+  board "$(rollup sh-7 alpha high "$CL")"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^row +sh-7 +meet the beta stage standard, retitled from #alpha$'
+  assert_called 'notes ptask shooter --agent tag sh-7 --remove high'
+  assert_not_called 'tag sh-7 --add'
+  # NEGATIVE CONTROL: with no retitle, a tag the triager set stays, #high and #low alike.
+  for p in high low; do
+    board "$(rollup sh-7 beta "$p" "$CL")"
+    : > "$NOTES_FIXTURE/calls.log"
+    run "$CHECK" shooter --file
+    assert_success
+    assert_not_called 'ptask shooter --agent tag'
+  done
 }
 
 @test "file: an open agent row whose check now passes is closed by its id with the check as proof" {
@@ -965,15 +990,15 @@ wrap_notes() {
   assert_success
   assert_line --regexp '^filed +docs +An architecture doc$'
   assert_line 'file: shooter systems: 2 failing, 2 filed, 0 already open, 0 closed or dropped, 0 met and closed'
-  assert_called 'notes ptask shooter --agent add chore(docs): An architecture doc #of/sh-5 #size/s #low'
-  assert_called 'add chore(docs): A contributor guide that says how to build, run and test every part of the #of/sh-5 #size/s #low --detail A contributor guide that says how to build, run and test every part of the project from a fresh clone --detail'
+  assert_called 'notes ptask shooter --agent add chore(docs): An architecture doc #of/sh-5 #size/s --detail'
+  assert_called 'add chore(docs): A contributor guide that says how to build, run and test every part of the #of/sh-5 #size/s --detail A contributor guide that says how to build, run and test every part of the project from a fresh clone --detail'
 }
 
 @test "file: a systems row with no open epic is filed bare, for notes ptask add to link its standing epic" {
   write_systems_doc
   run "$CHECK" shooter --systems --file
   assert_success
-  assert_called 'notes ptask shooter --agent add chore(docs): An architecture doc #size/s #low'
+  assert_called 'notes ptask shooter --agent add chore(docs): An architecture doc #size/s --detail'
   # NEGATIVE CONTROL: systems mode never opens a stage epic on the human sheet.
   assert_not_called 'add epic(stage)'
   refute_output --partial 'epic opened'
@@ -993,11 +1018,11 @@ wrap_notes() {
   run "$CHECK" tool-canon --systems --file
   assert_success
   assert_line --regexp '^filed +docs +tool-canon: An architecture doc$'
-  assert_called 'notes ptask shooter --agent add chore(docs): tool-canon: An architecture doc #of/sh-5 #size/s #low'
+  assert_called 'notes ptask shooter --agent add chore(docs): tool-canon: An architecture doc #of/sh-5 #size/s --detail'
   assert_called 'from project-stage-check tool-canon --file, tool-canon: systems.md docs'
   assert_not_called 'ptask tool-canon'
   # A second run finds its row open, and files nothing.
-  row='- [ ] chore(docs): tool-canon: An architecture doc #of/sh-5 #size/s #low <!-- id:sh-9 -->'
+  row='- [ ] chore(docs): tool-canon: An architecture doc #of/sh-5 #size/s <!-- id:sh-9 -->'
   board "$(printf -- '%s\n  from project-stage-check tool-canon --file, tool-canon: systems.md docs, check: `[ -f docs/architecture.md ]`' "$row")"
   parses "$row" 'tool-canon: An architecture doc' docs
   : > "$NOTES_FIXTURE/calls.log"
