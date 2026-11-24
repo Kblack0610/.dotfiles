@@ -478,6 +478,59 @@ past_scores() {
   assert_output "$(printf '10\t10\t20')"
 }
 
+# four sessions stalled for 40, 30, 20 and 10 minutes and a fifth the human holds open (manual) stalled
+# throughout, sampled every 10 minutes: 1.7 stalled session-hours, the held one in none of them
+stalled_fixture() {
+  local i b n
+  for i in 0 1 2 3 4; do
+    {
+      for b in a b c d; do
+        case "$b" in a) n=4 ;; b) n=3 ;; c) n=2 ;; d) n=1 ;; esac
+        rowj "session_id: \"$b\", target: \"t/$b\", bucket: \"$([ "$i" -lt "$n" ] && echo STALLED || echo WORKING)\""
+      done
+      rowj "session_id: \"e\", target: \"t/e\", labels: [\"manual\"], bucket: \"$([ "$i" -lt 4 ] && echo STALLED || echo WORKING)\""
+    } > "$SNAP"
+    sample_at $((i * 600))
+  done
+}
+
+@test "bottleneck --check stalled: past stalled_session_hours_max it names the top three sessions and exits 1; a held session is in none of them (ar-5152)" {
+  stalled_fixture
+  printf '%s\n' stalled_session_hours_max=1 > "$KPI_THRESHOLDS"
+  BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck --check stalled
+  assert_failure 1
+  assert_output '1.67 session-hours stalled over the last 24h, past 1: t/a 0.7h, t/b 0.5h, t/c 0.3h'
+  # NEGATIVE CONTROL: the same samples inside the bound pass quietly
+  printf '%s\n' stalled_session_hours_max=2 > "$KPI_THRESHOLDS"
+  BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck --check stalled
+  assert_success
+  assert_output ''
+}
+
+@test "bottleneck --check stalled: a stale sampler, no bound or an unknown check exits 2, never a quiet pass (ar-5152)" {
+  stalled_fixture
+  printf '%s\n' stalled_session_hours_max=2 > "$KPI_THRESHOLDS"
+  BENCH_NOW=$((T0 + 2400 + 1500)) run "$SUBJECT" bottleneck --check stalled
+  assert_failure 2
+  assert_output --partial 'older than 20 minutes'
+  : > "$KPI_THRESHOLDS"
+  BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck --check stalled
+  assert_failure 2
+  assert_output --partial 'no stalled_session_hours_max'
+  BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck --check pools
+  assert_failure 2
+}
+
+@test "bottleneck: the check and the scorecard section read one set of rows (ar-5152)" {
+  stalled_fixture
+  BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck --json
+  assert_success
+  run jq -r '.rows[] | select(.key == "stalled") | [(.h * 10 | round), (.top | length), .detail] | @tsv' <<<"$output"
+  assert_output "$(printf '17\t3\tt/a 0.7h, t/b 0.5h, t/c 0.3h')"
+  BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck
+  assert_line '| Sessions stalled | 1.7 | session-hours | t/a 0.7h, t/b 0.5h, t/c 0.3h |'
+}
+
 @test "negative control: without the cap the outage would count as 180 stalled minutes" {
   rowj 'bucket: "STALLED"' > "$SNAP"; sample_at 0
   rowj 'bucket: "WORKING"' > "$SNAP"; sample_at 10800

@@ -24,6 +24,7 @@ Every number comes from a deterministic source, never a model's score of a trans
 | ETA accuracy | `fleet-bench accuracy --json` and `fleet-bench report` |
 | output and pace: phases in vs out, items started and landed | `fleet-bench pipeline`, `fleet-bench throughput`, `fleet-bench flow --since D` |
 | WIP cap, queued age, class of service: runnable against the cap, each class started against its share, the starved ones | `fleet-bench pipeline` (last lines), `agent-queue mix`; `fleet-bench pipeline --check cap`, `age` or `mix` is one Sentinel watch each |
+| sessions stalled: the hours, the top three, past the bound | `fleet-bench bottleneck`; `bottleneck --check stalled` is the `fleet-bottleneck` watch, whose trip routes here (`fleet-sessions explain <who>` for each named session) |
 | which dispatch limit binds now (pace target, load, run units, holds) | `fleet-dispatch headroom --json`, `fleet-dispatch run --dry-run` |
 | who holds the live slots: open job and time split per project | `fleet-sessions --json` (`open_job`; `queue` is a session waiting its landing turn) |
 | merge line: batches cut vs merged, waiters per project | the project's merge-train PRs (`gh pr list --state all --search 'chore train in:title created:>=D'`; the `chore(train)` form matches none), then each closed one's first comment: `Void:` is a deliberate close (unity-core-playground `scripts/test/train.py` posts it), a close inside a minute with no comment is the train's open step failing; and `open_job == "queue"` counts |
