@@ -386,11 +386,14 @@ test("a project's Sprint tab has its open window, the queued one, and the scored
 test("a sprint page's deep link splits off its version, and its By area rows narrow the rows below", () => {
   const sp = JSON.parse(vm.runInContext(`JSON.stringify(pSplit("bnb/demo/sprint/v0.3.0"))`, ctx));
   assert.deepEqual(sp, { key: "bnb/demo", inner: "sprint", dept: "", sprint: "v0.3.0" });
-  const d = { page: { version: "v0.3.0", prev: "#projects/bnb%2Fdemo/sprint/v0.2.0", next: null, head: ["11-19 to 11-20", "delivered 2 of 3"], errors: [], by_area: [{ group: "Engine", rows: 2 }, { group: "Look and UI", rows: 1 }] }, area_heads: { group: "AREA", rows: "ROWS" }, table: { total: 3 }, rows: [] };
+  const d = { page: { version: "v0.3.0", prev: "#projects/bnb%2Fdemo/sprint/v0.2.0", next: null, head: ["11-19 to 11-20", "delivered 2 of 3"], errors: [], by_area: [{ group: "Engine", rows: 2 }, { group: "Look and UI", rows: 1 }] }, area_heads: { group: "AREA", rows: "ROWS", delivered: "DELIVERED", pending: "OPEN", dropped: "DROPPED", pts: "PTS" }, table: { total: 3 }, rows: [] };
   const html = vm.runInContext(`spgHead(${JSON.stringify(d)})`, ctx);
   assert.match(html, /<a class="tl" href="#projects\/bnb%2Fdemo\/sprint\/v0\.2\.0">previous<\/a> <span class="muted">next<\/span>/, "prev and next are links where there is a neighbour");
   assert.match(html, /<tr class="jr" data-tqc="group:Engine"/);
   assert.match(html, /data-tqc="group:&quot;Look and UI&quot;"/, "a group with spaces is quoted into the query");
+  const head = html.match(/<tr><th.*?<\/tr>/)[0];
+  assert.equal((head.match(/data-role="lead"/g) || []).length, 1, "the By area header leads with the area");
+  assert.ok((head.match(/data-role="glance"/g) || []).length <= 3, "and glances at no more than 3");
   assert.match(html, /<div class="panel scroll" data-tbl="sp">/, "the rollup sits inside the table's own block, so the table's click handler hears it");
 });
 

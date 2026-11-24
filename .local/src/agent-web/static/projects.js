@@ -249,7 +249,7 @@ function pOverview(c, pg) {
   if (pg) html += secHead("p-systems", "Systems", pg.systems.length) + pSysTable(pg.systems);
   return html;
 }
-const P_SYS_HEAD = ["system", "done", "features", "standard", "open rows", "behind", "criteria", "current wave"];
+const P_SYS_HEAD = `<tr><th data-role="lead">system</th><th class="n" data-role="glance" data-named>done</th><th class="n">features</th><th class="n">standard</th><th class="n">open rows</th><th class="n" data-role="glance" data-named>behind</th><th class="n">criteria</th><th data-role="glance">current wave</th></tr>`;
 // One row per system: its percent, features done of counted, open standard epics, open rows,
 // epics behind, criteria met and its current wave.
 function pSysTable(systems) {
@@ -259,7 +259,7 @@ function pSysTable(systems) {
     `<td class="n">${s.standing || "-"}</td><td class="n">${s.open_rows || "-"}</td><td class="n${s.behind ? " warn" : ""}">${s.behind || "-"}</td>` +
     `<td class="n">${s.criteria_total == null ? "-" : `${s.criteria_met} of ${s.criteria_total}`}</td>` +
     `<td class="wrap">${s.wave ? esc(s.wave.title) + (s.wave.percent == null ? "" : ` ${s.wave.percent}%`) + (s.wave.more ? ` <span class="muted">+${s.wave.more}</span>` : "") : "-"}</td></tr>`;
-  return `<div class="panel scroll"><table class="tbl"><tr>${P_SYS_HEAD.map((h, i) => `<th${i && i < 7 ? ` class="n"` : ""}>${h}</th>`).join("")}</tr>${systems.map(row).join("")}</table></div>`;
+  return `<div class="panel scroll"><table class="tbl">${P_SYS_HEAD}${systems.map(row).join("")}</table></div>`;
 }
 
 // Stage: the next stage's requirements not met, failing first, then a human's, then the rest. The

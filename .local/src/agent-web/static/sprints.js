@@ -28,6 +28,9 @@ const spg = tblTab({
   head: (t) => spgHead(t.data), body: (t) => spgRows(t.data),
 });
 
+// The By area columns the phone row shows: the area leads, three counts glance, the rest wait in the row.
+const AREA_ROLE = { group: "lead", rows: "glance", delivered: "glance", pts: "glance" };
+
 // The version page's top: the way back and to the neighbours, its dates and score, then the By area
 // rollup; a row of it narrows the rows below to that group (a click on the bar's clear gives them back).
 function spgHead(d) {
@@ -42,7 +45,7 @@ function spgHead(d) {
     (g.errors || []).map((e) => `<div class="panel down">${esc(e)}</div>`).join("") +
     secHead("p-sprint-areas", "By area", g.by_area.length) +
     (g.by_area.length
-      ? `<div class="panel scroll" data-tbl="sp"><table class="tbl"><tr>${keys.map((k) => `<th${k === "group" ? "" : ` class="n"`}>${esc(heads[k])}</th>`).join("")}</tr>${g.by_area.map(area).join("")}</table></div>`
+      ? `<div class="panel scroll" data-tbl="sp"><table class="tbl"><tr>${keys.map((k) => `<th${k === "group" ? "" : ` class="n"`}${AREA_ROLE[k] ? ` data-role="${AREA_ROLE[k]}" data-named` : ""}>${esc(heads[k])}</th>`).join("")}</tr>${g.by_area.map(area).join("")}</table></div>`
       : `<div class="card muted">No row in this window.</div>`) +
     secHead("p-sprint-rows", "Rows", d.table.total);
 }
