@@ -82,7 +82,7 @@ Picking the probe (deterministic-first):
 Always stamp `created:` (current ISO-8601) and `source: user`. Set `severity` (low/normal/high/urgent, meanings in `~/.local/src/docs/priority.md`) and
 `expiry`: a duration like `60m` from `created` or an ISO timestamp for a temporary ask, `null` for a standing watch (`--strict` refuses a missing, bare or `~` expiry).
 
-A standing watch's owner is its line in `~/.config/agentctl/triage-routes` (route, skill, fix), not a manifest field: add that line in the same change, and `fleet-bench triage --coverage` prints `watch <name>` for each standing watch that has none.
+A standing watch's owner is its line in `~/.config/agentctl/triage-routes` (route, skill, fix), not a manifest field: add that line in the same change, and `fleet-bench triage --coverage` prints `watch <name>` for each standing watch that has none, and `watch <name> owned:<row> ...` when an `owned:<row>` route names a row that is not open.
 
 A standing watch also needs a Command Center domain, as its own home-config PR (`~/dev/home/home-config`, Forgejo) opened beside this one: in `apps/monitoring/prometheus-rules-command-center.yaml`, add its name (dashes as underscores) to both the `mqtt_tripped` and the `mqtt_stale` selector of the domain row whose weight fits (1 warns, 2 is down), and add a case to `apps/monitoring/tests/command-center.test.yaml`. That rules file is the only home for a watch's domain and weight. A watch no regex claims lands in `other` at weight 2 and turns the health heart red on its first trip, however minor.
 

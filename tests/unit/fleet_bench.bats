@@ -2605,6 +2605,49 @@ fix_item() {
   assert_output --partial 'skill the SKILL check failed'
 }
 
+@test "triage --coverage: an owned:<row> route whose row is not open fails and names it (ar-2572)" {
+  coverage_setup
+  FEED="$SANDBOX/feed.json" NLOG="$SANDBOX/feed.log"
+  printf '#!/usr/bin/env bash\necho "$*" >> %q\ncat %q\n' "$NLOG" "$FEED" > "$SANDBOX/bin/feed-stub"
+  chmod +x "$SANDBOX/bin/feed-stub"
+  export BENCH_NOTES_CMD=feed-stub
+  # negative control: no owned route reads no feed
+  run "$SUBJECT" triage --coverage
+  assert_success
+  assert_output ''
+  [ ! -e "$NLOG" ]
+  sed -i 's/\talert\t/\towned:ar-1\t/' "$TRIAGE_ROUTES"
+  feed() { jq -cn --argjson r "$1" '{today: "2026-11-24", rows: $r}' > "$FEED"; }
+  feed '[{"id": "ar-1", "state": "open", "dup": null}]'
+  run "$SUBJECT" triage --coverage
+  assert_success
+  assert_output ''
+  assert_equal "$(cat "$NLOG")" 'board --json --id ar-1'
+  feed '[{"id": "ar-1", "state": "done", "dup": null}]'
+  run "$SUBJECT" triage --coverage
+  assert_failure
+  assert_output 'watch standing owned:ar-1 is closed'
+  feed '[{"id": "ar-1", "state": "done", "dup": "ar-2"}]'
+  run "$SUBJECT" triage --coverage
+  assert_failure
+  assert_output 'watch standing owned:ar-1 is closed, folded into ar-2'
+  # a reopened row keeps its old close in a version note: the open copy wins
+  feed '[{"id": "ar-1", "state": "done", "dup": null}, {"id": "ar-1", "state": "doing", "dup": null}]'
+  run "$SUBJECT" triage --coverage
+  assert_success
+  feed '[{"id": "ar-9", "state": "open", "dup": null}]'
+  run "$SUBJECT" triage --coverage
+  assert_failure
+  assert_output 'watch standing owned:ar-1 is on no board here'
+  # the routes_unresolved KPI counts it
+  run bash -c 'source "$1"; chain_routes' _ "$SUBJECT"
+  assert_output 'routes_unresolved=1'
+  # a feed that cannot be read is not a clean one
+  BENCH_NOTES_CMD=false run "$SUBJECT" triage --coverage
+  assert_failure
+  assert_output 'watch standing owned:ar-1 unchecked: notes board --json --id cannot be read'
+}
+
 @test "triage --route: each key gets the first line its row matches, and no line is a dash" {
   coverage_setup
   run "$SUBJECT" triage --route 'watch standing' 'runner alpha' 'watch gone' 'nonsense x'
