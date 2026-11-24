@@ -265,7 +265,7 @@ test("an inner tab is in the URL, a deep link opens on it, and a system opens De
     assert.equal(vm.runInContext(`pst.open + "|" + pst.inner`, ctx), "bnb/demo|rows", arg);
   }
   // NEGATIVE CONTROL: an unknown tail is no inner tab, and no project matches it.
-  assert.deepEqual(JSON.parse(vm.runInContext(`JSON.stringify(pSplit("bnb/demo/nope"))`, ctx)), { key: "bnb/demo/nope", inner: "overview", dept: "" });
+  assert.deepEqual(JSON.parse(vm.runInContext(`JSON.stringify(pSplit("bnb/demo/nope"))`, ctx)), { key: "bnb/demo/nope", inner: "overview", dept: "", sprint: "" });
   vm.runInContext(`pInner("overview"); st.views.projects = "";`, ctx);
   ctx.sent = [];
   ctx.answers["/api/deliverables?dq=sys%3Aui&scope=bnb%2Fdemo"] = deliv();
@@ -330,10 +330,9 @@ test("a row action after the server filtered names the row on screen, not its pl
 // hub_core::tasks::SprintRow as /api/sprints sends it: the columns and heads of one table, a row per window.
 const SPR_COLS = ["project", "version", "started", "cut", "left", "done", "finish", "build"].map((key) => ({ key, role: key === "project" ? "lead" : "" }));
 const SPR_HEADS = { project: "PROJECT", version: "VERSION", started: "STARTED", cut: "CUT", left: "LEFT", done: "DONE", finish: "FINISH (7d rate)", build: "BUILD" };
-const sprRow = (o) => ({ profile: "bnb", project: "demo", version: "v0.3.0", queued: false, started: "11-19 14:25", cut: "11-19 15:59", left: "49m", done: "0/2", finish: "~15:40", late: false, build: "none", tasks: [{ id: "de-1", text: "feat(ui): demo-plan P2: <b>fix</b> it, then ship #size/s", title: "<b>fix</b> it", summary: "Demo plan P2", state: "open", queue: "running", interrupt: false, priority: "urgent", href: "#projects/all?q=id:=de-1" }, { id: null, text: "ship it", title: "ship", summary: "", state: "done", queue: null, interrupt: true, priority: "low", href: null }], ...o });
-const sprQueued = () => sprRow({ version: "v0.3.1", queued: true, started: "11-19 15:59", cut: "11-20 15:59", left: "queued", done: "0/1", tasks: [{ id: "de-9", text: "later", title: "later", summary: "", state: "open", queue: null, interrupt: false, priority: "high" }] });
-const sprAnswer = (rows, o = {}) => ({ rows, table: { columns: SPR_COLS }, heads: SPR_HEADS, ...o });
-const sprClick = (sel, dataset) => { for (const f of box("projects").on.click) f({ type: "click", target: { id: "", dataset: {}, closest: (q) => (q === sel ? { dataset } : null) } }); };
+const sprRow = (o) => ({ profile: "bnb", project: "demo", version: "v0.3.0", queued: false, started: "11-19 14:25", cut: "11-19 15:59", left: "49m", done: "0/2", finish: "~15:40", late: false, build: "none", ...o });
+const sprQueued = () => sprRow({ version: "v0.3.1", queued: true, started: "11-19 15:59", cut: "11-20 15:59", left: "queued", done: "0/1" });
+const sprAnswer = (rows, o = {}) => ({ rows, table: { columns: SPR_COLS, links: rows.map((r) => ({ version: `#projects/bnb%2F${r.project}/sprint/${r.version}` })) }, heads: SPR_HEADS, ...o });
 
 test("Board shows rows only: the windows are the Sprints tab's", async () => {
   await onBoard("q=water");
@@ -341,36 +340,19 @@ test("Board shows rows only: the windows are the Sprints tab's", async () => {
   assert.doesNotMatch(read().rows, /Sprints|v0\.3\.0|de-1/, "a window is not a row");
 });
 
-test("Projects > Sprints is one row per window, opens to its tasks, then each project's last score", async () => {
+test("Projects > Sprints is one row per window, its version a link to its page, then each project's last score", async () => {
   ctx.answers = { "/api/projects": list(), "/api/sprints": sprAnswer([sprRow({}), sprRow({ project: "late", left: "over", finish: "~11-20 09:00", late: true }), sprQueued()], { last: [{ profile: "bnb", project: "demo", version: "v0.2.0", line: "delivered 3 of 4" }] }) };
   vm.runInContext(`sprst.data = null; st.tab = "projects"; st.arg = "sprints"; st.views.projects = ""; pst.open = null; TABS.projects.show();`, ctx);
   await settle(); await settle();
   const html = box("p-sprints").innerHTML;
   assert.match(html, /<h2 class="sec" id="sec-sprints">Sprints <span class="n">3<\/span><\/h2>/);
-  assert.match(html, /<td>v0\.3\.1<\/td><td>11-19 15:59<\/td><td>11-20 15:59<\/td><td class="muted">queued<\/td>/, "a queued sprint starts at the open one's cut");
+  assert.match(html, /<td><a class="tl" href="#projects\/bnb%2Fdemo\/sprint\/v0\.3\.1">v0\.3\.1<\/a><\/td><td>11-19 15:59<\/td><td>11-20 15:59<\/td><td class="muted">queued<\/td>/, "a queued sprint starts at the open one's cut");
   assert.match(html, />FINISH \(7d rate\)</);
   assert.match(html, /<td>11-19 14:25<\/td><td>11-19 15:59<\/td><td>49m<\/td><td>0\/2<\/td><td>~15:40<\/td><td>-<\/td>/);
   assert.match(html, /<td class="warn">over<\/td>.*<td class="warn">~11-20 09:00 late<\/td>/s, "a finish after the cut is marked late");
   assert.match(html, /Last score <span class="n">1<\/span>.*<td>demo<\/td><td>v0\.2\.0<\/td><td class="wrap muted">delivered 3 of 4<\/td>/s);
-  assert.doesNotMatch(html, /de-1/, "every project's windows start shut");
-  sprClick("tr[data-spr]", { spr: "bnb/demo/v0.3.0" });
-  const open = box("p-sprints").innerHTML;
-  assert.match(open, /data-spr="bnb\/demo\/v0\.3\.0">.*<tr class="bopen">.*<tr class="jr" data-stask="bnb\/demo\/v0\.3\.0\/de-1"><td><code>de-1<\/code><\/td><td class="btitle"><div class="bt">&lt;b&gt;fix&lt;\/b&gt; it<\/div><div class="bsum muted">Demo plan P2<\/div><\/td><td><span class="qprio urgent">urgent<\/span><\/td><td><b>running<\/b><\/td>/s, "the queue's word wins, escaped; a task leads with its title over its plan and phase, as its Board row does");
-  assert.match(open, /<td class="btitle"><div class="bt">ship <span class="qtag">interrupt<\/span><\/div><\/td><td><span class="qprio low">low<\/span><\/td><td>done<\/td>/, "a task with no id; no summary, no second line");
-  assert.doesNotMatch(open, /de-9/, "the same project's queued sprint stays shut: each row opens on its own");
-  assert.doesNotMatch(open, /class="q"|Open its Board row/, "a task starts shut: its whole line is the opened task's");
-  // A click opens the task in place, with and without a Board row to link to, and never navigates away.
-  ctx.location = { hash: "" };
-  sprClick("tr[data-stask]", { stask: "bnb/demo/v0.3.0/de-1" });
-  const task = box("p-sprints").innerHTML;
-  assert.match(task, /data-stask="bnb\/demo\/v0\.3\.0\/de-1">.*?<\/tr><tr class="bopen"><td colspan="4"><div class="card qitem brow"><div class="q">feat\(ui\): demo-plan P2: &lt;b&gt;fix&lt;\/b&gt; it, then ship #size\/s<\/div><div class="opts"><a class="btn sm" href="#projects\/all\?q=id:=de-1">Open its Board row<\/a><\/div><\/div>/s, "the opened task has its whole line and the link to its Board row");
-  assert.equal(ctx.location.hash, "", "a click on a task opens it in place");
-  sprClick("tr[data-stask]", { stask: "bnb/demo/v0.3.0/ship it" });
-  const bare = box("p-sprints").innerHTML;
-  assert.match(bare, /<div class="q">ship it<\/div><\/div>/, "a task with no Board row opens to its line alone");
-  assert.doesNotMatch(bare, /Open its Board row|then ship/, "one task opens at a time; no link where there is no row");
-  sprClick("tr[data-spr]", { spr: "bnb/demo/v0.3.0" });
-  assert.doesNotMatch(box("p-sprints").innerHTML, /de-1/, "a second click shuts the window");
+  assert.match(html, /<a class="tl" href="#projects\/bnb%2Fdemo\/sprint\/v0\.3\.0">v0\.3\.0<\/a>/, "a version links to its sprint page");
+  assert.doesNotMatch(html, /data-spr|data-stask|de-1/, "no window folds open to its tasks");
   // The control: no window at all is a line, never an empty table.
   ctx.answers["/api/sprints"] = sprAnswer([], { last: [] });
   vm.runInContext(`sprst.data = null; refreshSprints();`, ctx);
@@ -378,8 +360,8 @@ test("Projects > Sprints is one row per window, opens to its tasks, then each pr
   assert.match(box("p-sprints").innerHTML, /No window is open or queued\..*No project has a scored window\./s);
 });
 
-test("a project's Sprint tab has its open window with its tasks, the queued one, and the scored past newest first", async () => {
-  const past = [{ version: "v0.2.0", opened: "11-10", cut: "11-17", committed: 5, delivered: 4, carried: 1, dropped: 0, interrupted: 2, timing: "1d late", line: "delivered 4 of 5" }, { version: "v0.1.0", opened: null, cut: null, committed: 3, delivered: 3, carried: 0, dropped: 0, interrupted: 0, timing: null, line: "delivered 3 of 3" }];
+test("a project's Sprint tab has its open window, the queued one, and the scored past newest first, each version a link", async () => {
+  const past = [{ version: "v0.2.0", link: "#projects/bnb%2Fdemo/sprint/v0.2.0", opened: "11-10", cut: "11-17", committed: 5, delivered: 4, carried: 1, dropped: 0, interrupted: 2, timing: "1d late", line: "delivered 4 of 5" }, { version: "v0.1.0", link: "#projects/bnb%2Fdemo/sprint/v0.1.0", opened: null, cut: null, committed: 3, delivered: 3, carried: 0, dropped: 0, interrupted: 0, timing: null, line: "delivered 3 of 3" }];
   ctx.answers = { "/api/projects/demo/page": { ...page, sprint_past: past }, "/api/sprints?scope=bnb%2Fdemo": sprAnswer([sprRow({}), sprQueued()]) };
   vm.runInContext("sprst.data = null", ctx);
   draw(list([card({})]), "bnb/demo");
@@ -390,19 +372,26 @@ test("a project's Sprint tab has its open window with its tasks, the queued one,
   const at = (re) => sprint.search(re);
   const [open, queued, pastAt] = [at(/id="sec-p-sprint">Sprint <span class="n">1</), at(/id="sec-p-sprint-queued">Queued <span class="n">1</), at(/id="sec-p-sprint-past">Past <span class="n">2</)];
   assert.ok(open >= 0 && open < queued && queued < pastAt, sprint);
-  assert.match(sprint.slice(open, queued), /v0\.3\.0.*de-1.*ship/s, "the open window opens to its tasks");
+  assert.match(sprint.slice(open, queued), /<a class="tl" href="#projects\/bnb%2Fdemo\/sprint\/v0\.3\.0">v0\.3\.0<\/a>/, "the open window's version links to its page");
   assert.doesNotMatch(sprint.slice(open, queued), /v0\.3\.1/, "the queued window is not the open one");
-  assert.match(sprint.slice(queued, pastAt), /v0\.3\.1.*queued.*de-9/s);
+  assert.match(sprint.slice(queued, pastAt), /v0\.3\.1.*queued/s);
   const pastHtml = sprint.slice(pastAt);
   assert.ok(pastHtml.indexOf("v0.2.0") >= 0 && pastHtml.indexOf("v0.2.0") < pastHtml.indexOf("v0.1.0"), "newest first");
   assert.match(pastHtml, /<td class="warn">1d late<\/td>/, "a late cut is marked");
-  assert.doesNotMatch(pastHtml, /delivered 4 of 5/, "a past row starts shut");
-  sprClick("tr[data-past]", { past: "v0.2.0" });
-  const opened = pinOf(read().pane, "sprint");
-  assert.match(opened, /<div class="q">delivered 4 of 5<\/div>.*<code>sprints\/v0\.2\.0\.md<\/code>/s, "a past row opens to its score and its file");
-  sprClick("tr[data-past]", { past: "v0.2.0" });
-  assert.doesNotMatch(pinOf(read().pane, "sprint"), /delivered 4 of 5/, "a second click shuts it");
+  assert.match(pastHtml, /<a class="tl" href="#projects\/bnb%2Fdemo\/sprint\/v0\.2\.0">v0\.2\.0<\/a>/, "a scored version links to its page");
+  assert.doesNotMatch(pastHtml, /delivered 4 of 5|data-past/, "no past row folds open");
   assert.ok(ctx.sent.some((x) => x.u === "/api/sprints?scope=bnb%2Fdemo"), "the project's windows are read under its scope");
+});
+
+test("a sprint page's deep link splits off its version, and its By area rows narrow the rows below", () => {
+  const sp = JSON.parse(vm.runInContext(`JSON.stringify(pSplit("bnb/demo/sprint/v0.3.0"))`, ctx));
+  assert.deepEqual(sp, { key: "bnb/demo", inner: "sprint", dept: "", sprint: "v0.3.0" });
+  const d = { page: { version: "v0.3.0", prev: "#projects/bnb%2Fdemo/sprint/v0.2.0", next: null, head: ["11-19 to 11-20", "delivered 2 of 3"], errors: [], by_area: [{ group: "Engine", rows: 2 }, { group: "Look and UI", rows: 1 }] }, area_heads: { group: "AREA", rows: "ROWS" }, table: { total: 3 }, rows: [] };
+  const html = vm.runInContext(`spgHead(${JSON.stringify(d)})`, ctx);
+  assert.match(html, /<a class="tl" href="#projects\/bnb%2Fdemo\/sprint\/v0\.2\.0">previous<\/a> <span class="muted">next<\/span>/, "prev and next are links where there is a neighbour");
+  assert.match(html, /<tr class="jr" data-tqc="group:Engine"/);
+  assert.match(html, /data-tqc="group:&quot;Look and UI&quot;"/, "a group with spaces is quoted into the query");
+  assert.match(html, /<div class="panel scroll" data-tbl="sp">/, "the rollup sits inside the table's own block, so the table's click handler hears it");
 });
 
 test("Enter on a row opens its project, and Back shows no list read under the old view", async () => {
@@ -792,7 +781,7 @@ test("a project's page has the work tabs, then one Departments tab with a chip p
   // The retired inner id lands on Deliverables, in the URL too.
   vm.runInContext(`pInner("build")`, ctx);
   assert.equal(vm.runInContext(`pst.inner + "|" + st.arg`, ctx), "deliverables|bnb/demo/deliverables");
-  assert.deepEqual(JSON.parse(vm.runInContext(`JSON.stringify(pSplit("bnb/demo/build"))`, ctx)), { key: "bnb/demo", inner: "deliverables", dept: "" });
+  assert.deepEqual(JSON.parse(vm.runInContext(`JSON.stringify(pSplit("bnb/demo/build"))`, ctx)), { key: "bnb/demo", inner: "deliverables", dept: "", sprint: "" });
   // A chip is in the URL; an old department id lands on Departments under that chip, a chip the card lacks on its first.
   vm.runInContext(`pInner("departments/legal")`, ctx);
   assert.equal(vm.runInContext(`pst.inner + "|" + pst.dept + "|" + st.arg`, ctx), "departments|legal|bnb/demo/departments/legal");
@@ -800,7 +789,7 @@ test("a project's page has the work tabs, then one Departments tab with a chip p
   assert.equal(vm.runInContext(`pst.inner + "|" + pst.dept`, ctx), "departments|marketing");
   vm.runInContext(`pInner("departments/design")`, ctx);
   assert.equal(vm.runInContext(`pst.dept`, ctx), "analytics", "design is not this card's: its first chip");
-  for (const [arg, want] of [["bnb/demo/departments/legal", { key: "bnb/demo", inner: "departments", dept: "legal" }], ["bnb/demo/legal", { key: "bnb/demo", inner: "departments", dept: "legal" }], ["bnb/demo/departments", { key: "bnb/demo", inner: "departments", dept: "" }]]) {
+  for (const [arg, want] of [["bnb/demo/departments/legal", { key: "bnb/demo", inner: "departments", dept: "legal", sprint: "" }], ["bnb/demo/legal", { key: "bnb/demo", inner: "departments", dept: "legal", sprint: "" }], ["bnb/demo/departments", { key: "bnb/demo", inner: "departments", dept: "", sprint: "" }]]) {
     assert.deepEqual(JSON.parse(vm.runInContext(`JSON.stringify(pSplit(${JSON.stringify(arg)}))`, ctx)), want, arg);
   }
   vm.runInContext(`pGo(null);`, ctx);

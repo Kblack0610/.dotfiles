@@ -29,7 +29,7 @@ const ALLOW = {
   "fleet.js": { n: 7, by: "P7" },
   "flow.js": { n: 1, by: "P7" },
   "focus.js": { n: 2, by: "P7" },
-  "home.js": { n: 3, by: "P7" },
+  "home.js": { n: 1, by: "P7" },
   "infra.js": { n: 6, by: "P7" },
   "jobs.js": { n: 2, by: "P7" },
   "log.js": { n: 1, by: "P7" },
