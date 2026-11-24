@@ -922,7 +922,7 @@ test("Allowance draws what is in force, what it lets through, the schedule with 
   assert.match(h, /Times are on this browser's clock/);
   assert.match(h, /<td class="n">400%<\/td><td>Mon 14:02<\/td><td>Tue 22:00<\/td><td>agent-web<\/td><td class="ok">In force<\/td><td><button class="btn" data-pace-end="BURN_OVER_PCT" data-from="1793990000">End<\/button>/, "a window ends by its start");
   assert.match(h, /<td class="n">300%<\/td>.*?<button class="btn" data-pace-end="BURN_OVER_PCT">End<\/button>/, "the standing override ends with no start");
-  assert.match(h, /<td>pace\.conf<\/td><td class="muted">Default<\/td><td><\/td>/, "the default has no End");
+  assert.match(h, /<td>config file<\/td><td class="muted">Default<\/td><td><\/td>/, "the default has no End");
   assert.match(h, /id="pace-value" type="number" min="0" max="1000"/);
   assert.match(h, /A window is at most 7 days\./);
 });
