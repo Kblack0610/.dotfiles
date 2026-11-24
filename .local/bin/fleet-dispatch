@@ -5022,7 +5022,9 @@ restart_human_item() {
 # doc, a stack-review report) is done ok: that was the deliverable. A waiting or review item with
 # neither stays parked on its blocker, any other item with neither is failed, the reason in note.
 # Every move is a compare-and-set on the state read here (`--if`), and a note is written only after
-# it: an item its session closed or a human requeued meanwhile is left as it is. merged: goes first,
+# it: an item its session closed or a human requeued meanwhile is left as it is. So is one already queued
+# when read here: item_sessions lists none, so its session (on an ask) or a human requeued it after that
+# list, and it waits for its next start, PR or not (consoles-p3 failed so, 2026-11-13, ar-2267). merged: goes first,
 # since agent-queue closes an item with a PR ok only once it has one; it is the PR's fact either way.
 # A Codex or opencode run that ends without closing also records why (item_end, --end): this is the only live writer of
 # end_reason, and the reason is named in the note. A run that was blocked, not wrong, goes back to queued/
@@ -5042,7 +5044,7 @@ settle_item() {
     logline "reaped $2: session gone, queue item $1 requeued: $3"
     echo "requeued queue item $1 ($2 ended: $3)"; restart_human_item "$1" "$it" "$why"
   }
-  case "$st" in running | waiting | review | queued) ;; *) logline "reaped $2: queue item $1 ${st:-gone}"; return 0 ;; esac
+  case "$st" in running | waiting | review) ;; *) logline "reaped $2: queue item $1 ${st:-gone}"; return 0 ;; esac
   it=$(item_with_branch_pr "$1" "$2")
   # A partial merge proves only one repo landed, and with its session gone nobody makes the final
   # landing (ucp-162 sat in review from 2026-11-08): the next start finishes it (pr_line), once. A second
