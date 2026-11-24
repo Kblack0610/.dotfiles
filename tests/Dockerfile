@@ -187,13 +187,11 @@ RUN mkdir -p /tmp/testhome && chmod 1777 /tmp/testhome
 
 # The entrypoint gives that UID a passwd and group entry named $USER (tests/docker.sh passes
 # the host's), so `id -un` and `whoami` answer as on a runner instead of erroring on stderr. The
-# files are writable only because the container is thrown away after the run. It also makes
-# $HOME again, since tests/docker.sh mounts a fresh tmpfs over /tmp.
+# files are writable only because the container is thrown away after the run.
 RUN chmod a+w /etc/passwd /etc/group \
     && printf '%s\n' '#!/bin/sh' \
       'id -un >/dev/null 2>&1 || echo "${USER:-tester}:x:$(id -u):$(id -g)::$HOME:/bin/bash" >>/etc/passwd' \
       'id -gn >/dev/null 2>&1 || echo "${USER:-tester}:x:$(id -g):" >>/etc/group' \
-      'mkdir -p "$HOME"' \
       'exec "$@"' >/usr/local/bin/test-entry \
     && chmod 755 /usr/local/bin/test-entry
 ENTRYPOINT ["/usr/local/bin/test-entry"]
