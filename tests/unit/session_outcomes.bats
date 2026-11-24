@@ -2085,3 +2085,79 @@ link_fixture() {
   assert_output --partial 'rc=1 no token: FORGEJO_TOKEN unset'
   assert_output --partial 'rbw forgejo_repo_admin unread, git.example.test/o/r unread'
 }
+
+@test "pruned transcript writes prs null and prs_merged null, not [] and 0; queue landed PR still counts" {
+  jq -cn --arg t "$TR/missing.jsonl" --argjson u "$STOP" \
+    '{session_id: "sess-p1", project: "proj", transcript: $t, title: "pruned 1", updated: $u, edits: 1, cost_usd: 1, tokens: {total: 100}}' \
+    >> "$SO_SESSIONS/proj/sessions.jsonl"
+  jq -cn --arg t "$TR/missing2.jsonl" --argjson u "$STOP" \
+    '{session_id: "sess-p2", project: "proj", transcript: $t, title: "pruned 2", updated: $u, edits: 1, cost_usd: 1, tokens: {total: 100}}' \
+    >> "$SO_SESSIONS/proj/sessions.jsonl"
+  cat > "$SANDBOX/bin/queue-stub" <<'STUB'
+#!/usr/bin/env bash
+[ "$1" = list ] || exit 2
+echo '{"slug":"q-p2","project":"proj","agent":"claude","pr":"o/r#10","sessions":"sess-p2","landed_by":"sess-p2=o/r#10"}'
+STUB
+  chmod +x "$SANDBOX/bin/queue-stub"
+  export SO_QUEUE=queue-stub
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(field p1 '[.transcript, .prs, .prs_merged, .prs_open, .prs_closed_unmerged, .reverted_7d] | tojson')" '[false,null,null,null,null,null]'
+  assert_equal "$(field p2 '[.transcript, (.prs | length), .prs_merged] | tojson')" '[false,1,1]'
+  run "$SUBJECT" card sess-p1
+  assert_success
+  assert_output --partial 'PRs unknown'
+  assert_output --partial 'unknown (no transcript)'
+}
+
+@test "langfuse: pruned transcript skips null PR scores and deletes stale score ids; 404 is absent, 500 holds the mark" {
+  lf_setup
+  cat > "$SANDBOX/bin/curl-lf-del" <<'STUB'
+#!/usr/bin/env bash
+cat > /dev/null
+out="" body="" method="POST" url=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift ;;
+    -X) method="$2"; shift ;;
+    --data-binary) body="${2#@}"; shift ;;
+    http://*) url="$1" ;;
+  esac
+  shift
+done
+if [ "$method" = DELETE ]; then
+  printf '%s\n' "$url" >> "$BATS_TEST_TMPDIR/lf.deleted"
+  printf '' > "$out"
+  printf '%s' "${LF_DEL_CODE:-204}"
+  exit 0
+fi
+cat "$body" >> "$BATS_TEST_TMPDIR/lf.posted"; echo >> "$BATS_TEST_TMPDIR/lf.posted"
+printf '{"successes":[],"errors":[]}' > "$out"
+printf '%s' "${LF_CODE:-207}"
+STUB
+  chmod +x "$SANDBOX/bin/curl-lf-del"
+  export SO_CURL=curl-lf-del
+  jq -cn --arg t "$TR/missing.jsonl" --argjson u "$STOP" \
+    '{session_id: "sess-p1", project: "proj", transcript: $t, title: "pruned", updated: $u, edits: 1, cost_usd: 1, tokens: {total: 100}}' \
+    >> "$SO_SESSIONS/proj/sessions.jsonl"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(posted | jq -r 'select(.body.sessionId == "sess-p1") | .body.name' | grep -c -E '^(prs_merged|prs_closed_unmerged|reverted_7d)$')" 0
+  assert_equal "$(sort "$BATS_TEST_TMPDIR/lf.deleted")" "$(printf '%s\n' \
+    'http://langfuse.test/api/public/scores/so:sess-p1:prs_closed_unmerged' \
+    'http://langfuse.test/api/public/scores/so:sess-p1:prs_merged' \
+    'http://langfuse.test/api/public/scores/so:sess-p1:reverted_7d')"
+  report | grep -q '3 deleted'
+  [ -n "$(mark)" ]
+  # 404 is treated as already absent
+  : > "$BATS_TEST_TMPDIR/lf.deleted"
+  LF_DEL_CODE=404 run "$SUBJECT" langfuse --all
+  assert_success
+  refute_output --partial 'deleted'
+  # 500 on delete fails and does not advance the mark
+  rm -f "$AGENTCTL_STATE_DIR/session-outcomes/langfuse-mark"
+  LF_DEL_CODE=500 run "$SUBJECT" langfuse
+  assert_success
+  assert_output --partial 'langfuse: FAILED (HTTP 500)'
+  [ -z "$(mark)" ]
+}
