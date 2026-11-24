@@ -439,12 +439,12 @@ enum Cmd {
         /// project's own profile (bnb, personal); `tooling` is the tooling lane.
         #[arg(long, value_name = "NAME")]
         group: Option<String>,
-        /// Print a project's priority; with --set, declare it. One of: focus, high, low,
-        /// normal (clears it). fleet-dispatch and agent-queue rank the project's work by it,
-        /// focus first; a lower tier starts only when no higher one can, and nothing is held back
+        /// Print `focus` while a project is on focus; with --set focus, put it on focus (its
+        /// release windows run as sprints), --set normal takes it off. It ranks nothing: a row's
+        /// own priority orders work. The retired high and low are refused
         #[arg(long, value_name = "NAME")]
         prio: Option<String>,
-        /// Every profile's projects that declare a priority, as `name<TAB>prio`
+        /// Every profile's projects on a live focus, as `name<TAB>focus`
         #[arg(long)]
         prios: bool,
         /// Print the version a project promises and its day (`vX.Y.Z YYYY-MM-DD`, the sheet's
@@ -462,7 +462,7 @@ enum Cmd {
         /// earlier snapshot with the rows that fit that many hours of the agent lane's shipped
         /// weight, #urgent and in-progress rows first, and records the cut (`cut=` in the head).
         /// With --prio --set focus: how long the focus lasts (default 4, at most 24); past its
-        /// end the project reads as high
+        /// end the project is off focus
         #[arg(long, value_name = "H", requires = "hours_with")]
         hours: Option<f64>,
         /// With --commit --hours: queue a sprint behind the open one while it runs: the patch after
