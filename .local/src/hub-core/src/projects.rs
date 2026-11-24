@@ -1296,8 +1296,8 @@ mod tests {
         assert_eq!(names("-stage:alpha normal", "", "", ""), ["normal"]);
         assert_eq!(
             names("", "", "prio", ""),
-            ["focus", "normal", "low", "bare"],
-            "focus outranks normal; a retired ladder word (low) ranks as none does, last"
+            ["focus", "normal", "bare", "low"],
+            "focus outranks no focus; a retired ladder word (low) has no rank and sorts last"
         );
         assert_eq!(
             names("stage:alpha", "", "version", ""),
