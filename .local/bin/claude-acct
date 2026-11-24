@@ -882,14 +882,16 @@ token_expiry() {
 
 # check_tokens: one line; exit 1 when a token is missing, expired or inside TOKEN_WARN_DAYS, 2 when rbw cannot
 # be read. An account with no token trips it too: the token is its only sign-in, so a session on it
-# stops on "Not logged in". The claude-acct-tokens Sentinel watch runs this hourly.
+# stops on "Not logged in". The claude-acct-tokens Sentinel watch runs this hourly. A locked rbw says
+# `unreadable:`, which the watch reads as UNKNOWN (ERROR past its hold), not a token trip: the
+# 2026-11-24 reboot locked it and the watch paged a token fault with every token good (ar-3611).
 check_tokens() {
     local warn now="${CLAUDE_ACCT_NOW:-$(date +%s)}" name dir exp end days ok=0 out=''
     local -a none=() soon=()
     warn=$(pace_get TOKEN_WARN_DAYS)
-    [[ -n "$warn" ]] || return 2
+    [[ -n "$warn" ]] || { echo "unreadable: TOKEN_WARN_DAYS is not set"; return 2; }
     if ! command -v rbw >/dev/null 2>&1 || ! rbw unlocked >/dev/null 2>&1; then
-        echo "cannot read tokens: rbw is missing or locked"; return 2
+        echo "unreadable: rbw is missing or locked, so no token was checked (rbw unlock)"; return 2
     fi
     while IFS=$'\037' read -r name dir; do
         if ! exp=$(token_expiry "$name"); then none+=("$name"); continue; fi
@@ -899,6 +901,10 @@ check_tokens() {
         elif (( days <= ${warn%.*} )); then soon+=("$name expires $exp, in ${days}d")
         else ok=$((ok + 1)); fi
     done < <(accounts)
+    # A read that failed because rbw locked mid-loop is no missing token.
+    if (( ${#none[@]} )) && ! rbw unlocked >/dev/null 2>&1; then
+        echo "unreadable: rbw locked while tokens were read (rbw unlock)"; return 2
+    fi
     if (( ${#soon[@]} )); then out="token: $(printf '%s; ' "${soon[@]}")"; out="${out%; }"; fi
     if (( ${#none[@]} )); then out+="${out:+; }no token: ${none[*]} (claude-acct setup-token <name>)"; fi
     echo "${out:-$ok tokens good}"
