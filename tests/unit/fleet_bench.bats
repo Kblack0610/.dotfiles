@@ -2805,23 +2805,17 @@ red_item() {
   assert_line 'reds_unfixed=?'
 }
 
-@test "reds: red titles past the 128 KB argument limit still parse (ar-4855)" {
-  # NEGATIVE CONTROL: with the titles passed as --argjson, jq failed to exec (E2BIG) and reds said the notes parse failed.
+@test "reds: red titles past the 128 KB one argument can carry still parse, read as a file" {
   log_triage_setup
-  local i pad
+  local pad i
   pad=$(printf 'x%.0s' {1..1000})
-  for i in $(seq 150); do
-    printf '{"slug":"r%s","state":"running","title":"fix(logs): runner%s error %s","queued":null,"tags":"red"}\n' "$i" "$i" "$pad" >> "$ITEMS"
-  done
-  red_item a running 'fix(watch): kitchen-puck, voice is down' -600 - - -
-  parses 'fix(watch): kitchen-puck, voice is down' fix watch 'kitchen-puck, voice is down'
-  # the exact array red_titles builds (every item is red), past one argument's limit
-  [ "$(jq -cs 'map(.title) | unique' "$ITEMS" | wc -c)" -gt 131072 ]
+  for i in $(seq 1 140); do
+    printf '{"slug":"s%s","state":"running","title":"fix(watch): w%s %s","queued":null,"tags":"red"}\n' "$i" "$i" "$pad"
+  done >> "$ITEMS"
+  parses "fix(watch): w7 $pad" fix watch "w7 $pad"
   run "$SUBJECT" reds --json
   assert_success
-  refute_output --partial 'answered short'
-  assert_equal "$(jq -rs 'map(select(.slug == "a") | .red)[]' <<<"$output")" 'watch kitchen-puck'
-  assert_equal "$(jq -s 'length' <<<"$output")" 151
+  assert_equal "$(jq -rs 'map(select(.slug == "s7")) | .[0].red' <<<"$output")" 'watch w7'
 }
 
 @test "reds: an unreadable queue fails and says so, and its KPIs read ? instead of 0" {

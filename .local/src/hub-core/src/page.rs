@@ -725,7 +725,11 @@ pub fn named_with(
     chain: impl FnOnce() -> Result<Chain, String>,
 ) -> Result<Page, String> {
     let s = stats_of(runner, name)?;
-    Ok(read_with(runner, name, &s.stage, now, chain))
+    let mut p = read_with(runner, name, &s.stage, now, chain);
+    for w in &mut p.sprint_past {
+        w.link = Some(crate::sprint_page::link(&s.profile, name, &w.version));
+    }
+    Ok(p)
 }
 
 /// The `notes projects --stats --json` row of `name`; a name no lab project has is an error.

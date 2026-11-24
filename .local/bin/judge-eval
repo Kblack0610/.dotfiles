@@ -621,7 +621,8 @@ LANE_GATE_VARS='DELAY_RULES AUDIT_RATES PROMOTE_BARS PRECEDENTS'
 BIN_DIR="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 : "${JUDGE_EVAL_CALL_DIRS:=$BIN_DIR:$BIN_DIR/../lib}"
 
-# prompt_lanes: every runner conf that names a SCORE or a PROMPT, one per line.
+# prompt_lanes: every runner conf that names a SCORE or a PROMPT, one per line: a lane as judges.md
+# defines it, the rule hub-core's Conf::instructed also reads.
 prompt_lanes() {
   local c a
   for c in "$CONF_DIR"/*.conf; do

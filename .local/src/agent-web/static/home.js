@@ -40,13 +40,12 @@ const refreshNight = async () => {
 
 // Every Home read takes a number when it starts. The Proposals fields of an answer apply only
 // if no read started after it, so a slow full read cannot put an older search over a newer one.
-const PROP_KEYS = ["proposals", "proposals_head", "proposals_table"];
+const PROP_KEYS = ["proposals", "proposals_head", "proposals_table", "streams"];
 let homeSeq = 0;
 
-// Three tables share Home, so Needs you's view keys carry this prefix (nq, ns, nsort, ndir) in the
-// URL and in /api/home, and Running's `r` (rq, rs, rsort, rdir); Proposals came first and keeps the
-// plain ones, so links to it stay valid.
-const NEED_PRE = "n", RUN_PRE = "r";
+// Two tables share Home, so Needs you's view keys carry this prefix (nq, ns, nsort, ndir) in the
+// URL and in /api/home; Proposals came first and keeps the plain ones, so links to it stay valid.
+const NEED_PRE = "n";
 
 // The tables are drawn by drawHome from the one Home read; these keep their views and their
 // repaints around a search or dropdown in use. A search in Proposals reads only that section.
@@ -54,19 +53,15 @@ const needT = tblTab({
   tab: "home", id: "home-need", el: "home", pre: NEED_PRE, refresh: () => refreshHome(), table: () => hst.data?.table,
   head: () => needsHead(hst.data.table), body: () => needsBody(hst.data), render: () => renderHome(),
 });
-const runT = tblTab({
-  tab: "home", id: "home-run", el: "home", pre: RUN_PRE, refresh: () => refreshHome(), table: () => hst.data?.running_table,
-  head: () => runHead(hst.data), body: () => runBody(hst.data), render: () => renderHome(),
-});
 const propT = tblTab({
   tab: "home", id: "home-prop", el: "home", refresh: () => refreshProposals(), table: () => hst.data?.proposals_table,
   head: () => propHead(hst.data), body: () => propBody(hst.data), render: () => renderHome(),
 });
 
-// /api/home as the URL's three table views ask for it, with the open Needs you rows and the ask a
+// /api/home as the URL's two table views ask for it, with the open Needs you rows and the ask a
 // link wants opened (`nopen`), which the server keeps on whatever page it sends.
 const homePath = () => {
-  const p = new URLSearchParams([NEED_PRE, RUN_PRE, ""].flatMap((pre) => [...tblParams(st.views.home, pre)]));
+  const p = new URLSearchParams([NEED_PRE, ""].flatMap((pre) => [...tblParams(st.views.home, pre)]));
   const open = [...hst.open, ...(hst.want ? [`ask:${hst.want}`] : [])];
   if (open.length) p.set("nopen", open.join(","));
   const view = p.toString();
@@ -160,12 +155,21 @@ function propBody(h) {
 // A failed read hues the title, so the reason at the top of the page is not the only sign.
 const propHead = (h) => secHead("proposals", "Proposals", h.proposals_table.total ? tblCount(h.proposals_table) : null, h.proposals_failed ? "warn" : null);
 
+// One row per stream (hub_core::proposals::by_stream), so a wall of one stream is one line. A row
+// opens that stream's proposals under it as the table's own whole-value `stream:=` search, and a second click
+// clears it; any other search in force opens the same table.
+const openStream = (h) => /^stream:=(\S+)$/.exec(h.proposals_table.q)?.[1] || "";
+const streamRow = (r, open) => `<tr class="jr pstream${r.stream === open ? " sel" : ""}" data-stream="${esc(r.stream)}"><td>${esc(r.stream)}</td><td>${esc(r.project)}</td>` +
+  `<td class="n">${r.newest == null ? "-" : esc(ago(r.newest))}</td><td class="n">${r.oldest == null ? "-" : esc(ago(r.oldest))}</td><td class="n">${r.count}</td></tr>`;
+
 function propSection(h) {
   const t = h.proposals_table;
   if (!t.total) return propHead(h) + `<div class="empty">${h.proposals_failed ? `${NOT_READ}: proposals, the reason is at the top of this page.` : "Nothing proposed."}</div>`;
-  const body = tblPaged(t, () => propBody(h));
-  return `<div id="home-prop-head">${propHead(h)}</div>` +
-    tblBar("home-prop", t, "search, or stream:dream project:dotfiles") + `<div id="home-prop-body">${body}</div>`;
+  const open = openStream(h);
+  const streams = `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">stream</th><th data-role="glance">project</th><th class="n">newest</th><th class="n">oldest</th><th class="n">count</th></tr>${(h.streams || []).map((r) => streamRow(r, open)).join("")}</table></div>`;
+  const records = t.q || t.state
+    ? tblBar("home-prop", t, "search, or stream:dream project:dotfiles") + `<div id="home-prop-body">${tblPaged(t, () => propBody(h))}</div>` : "";
+  return `<div id="home-prop-head">${propHead(h)}</div>` + streams + records;
 }
 
 // Accept or reject through agent-propose. What it says on failure stays on the page.
@@ -261,20 +265,6 @@ function needsBody(h) {
   return `<div class="panel scroll"><table class="tbl">${tblHead(t, needCols(t))}${rows.map(needRow).join("")}</table></div>`;
 }
 
-// The first `SHOWN` rows the server sent; past them a line links all of them on Queue, whose
-// running state lists the same items. The last line links the Sessions tab filtered to the
-// running sessions, after the fleet's session counts.
-function runBody(h) {
-  const t = h.running_table, rows = h.running;
-  const foot = `<div class="cline muted">${h.sessions ? `<b>Sessions</b> ${esc(h.sessions)} ` : ""}<a href="#sessions?s=running">all running in Sessions</a></div>`;
-  if (!rows.length) return `<div class="empty">${t.total ? "No running item matches." : "Nothing running from the queue."}</div>${foot}`;
-  const all = t.shown > rows.length ? `<div class="cline muted"><a href="#queue?s=running">all ${t.total} on Queue</a></div>` : "";
-  return `<div class="panel scroll">${runTable(t, rows)}` + all + foot + `</div>`;
-}
-
-// A table's head count: its rows, or "N of M" while a search or state narrows them.
-const runHead = (h) => secHead("running", "Running", tblCount(h.running_table));
-
 // A refresh that failed while cards are held says so, so the last grid never reads as current.
 const staleSaid = () => `cards not refreshed: ${hst.cardsErr}`;
 const cardsHtml = (cards) => (hst.cardsErr ? `<div class="cline warn">${esc(staleSaid())}</div>` : "") + `<div class="kgrid">${cards.map(cardHtml).join("")}</div>`;
@@ -323,9 +313,6 @@ function drawHome() {
   if (!h) { paint(el, hst.err ? errPanel(hst.err) : '<div class="empty">Reading...</div>', askst.open); return; }
   const errs = (hst.kept ? `<div class="cline muted">Showing Home as read ${keptAge(hst.kept.at)}${hst.err ? "" : ", reading it now"}.</div>` : "") +
     [hst.err, ...h.errors].filter(Boolean).map((e) => `<div class="cline warn">${esc(e)}</div>`).join("");
-  const rt = h.running_table;
-  const rbar = rt.total || rt.q || rt.state ? tblBar("home-run", rt, "search, or project:dotfiles ci:fail epic:ar-1292") : "";
-  const running = `<div data-tbl="${RUN_PRE}"><div id="home-run-head">${runHead(h)}</div>${rbar}<div id="home-run-body">${tblBodyFirst(rt, () => runBody(h))}</div></div>`;
   // Vitals: its tally (warn while any is off or unread) and the Grafana trend, then a row per
   // question unless all are on target (dashboards rule 4).
   const v = h.vitals;
@@ -341,13 +328,13 @@ function drawHome() {
   // across and compact (app.css), and folds Vitals to its head line, its rows a tap away.
   const grid = hst.cards ? cardsHtml(hst.cards) : `<div class="empty">${esc(hst.cardsErr || "Reading the tabs.")}</div>`;
   const vfold = v ? pfold("home-vitals", `<span class="${v.all_ok ? "muted" : "warn"}">Vitals: ${esc(v.head)}</span>`, vitals) : "";
-  paint(el, errs + grid + vfold + needs + parkedSection() + nightSection() + propSection(h) + running, askst.open);
+  paint(el, errs + grid + vfold + needs + parkedSection() + nightSection() + propSection(h), askst.open);
   packCards(el);
 }
 // Session events re-render this often; keep a reply that is being typed, and a table's search
 // or dropdown in use, around which only that table's rows and chips repaint.
 // The table without focus repaints whole, so a search in one never leaves the other stale.
-const HOME_TABLES = { "home-prop": propT, "home-need": needT, "home-run": runT };
+const HOME_TABLES = { "home-prop": propT, "home-need": needT };
 const renderHome = () => {
   const busy = Object.values(HOME_TABLES).find((t) => t.repaint());
   if (busy) { for (const [id, t] of Object.entries(HOME_TABLES)) if (t !== busy && $(id + "-body")) t.redraw(); return; }
@@ -361,6 +348,8 @@ $("home").addEventListener("click", (e) => {
   if (t.dataset.unpark) { parkAsk(t.dataset.unpark, true); return; }
   if (t.dataset.accept) { propDecide("accept", t.dataset.accept); return; }
   if (t.dataset.reject) { propDecide("reject", t.dataset.reject); return; }
+  const srow = t.closest("tr.pstream");
+  if (srow) { propT.view({ q: openStream(hst.data) === srow.dataset.stream ? "" : `stream:=${srow.dataset.stream}`, s: "" }); return; }
   const prow = t.closest("tr.prop");
   if (prow && !t.closest("a")) {
     hst.prop.open = hst.prop.open === prow.dataset.prop ? null : prow.dataset.prop;
@@ -387,10 +376,6 @@ $("home").addEventListener("click", (e) => {
     renderHome();
     return;
   }
-  // A Running row opens its session page, or its queue item when no session runs it.
-  const run = e.target.closest("tr.jr[data-slug]");
-  if (!run || t.closest("a")) return;
-  if (run.dataset.target) openSessionId(run.dataset.target); else setTab("queue", run.dataset.slug);
 });
 $("home").addEventListener("keydown", (e) => {
   const closing = e.target.closest && e.target.closest(".card[data-close]");

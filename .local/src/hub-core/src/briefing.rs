@@ -63,7 +63,7 @@ pub const LANDED_SHOWN: usize = 8;
 pub const OVERNIGHT_EACH: usize = 3;
 /// Builds and releases names at most this many changes, then one line for the rest.
 pub const BUILDS_SHOWN: usize = 12;
-/// The day-log area (`.config/day-log/groups`, `@<repo> <area>`) that is the fleet's own tooling.
+/// The day-log area (`.config/areas/groups`, `@<repo> <area>`) that is the fleet's own tooling.
 const FLEET_AREA: &str = "Fleet tooling";
 /// The queue projects that are the fleet's own, so a failed item there is the agent briefing's.
 const FLEET_PROJECTS: [&str; 3] = ["agent-runtime", "notes-cockpit", "dotfiles"];
