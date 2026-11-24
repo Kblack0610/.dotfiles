@@ -387,3 +387,6 @@ __pycache__/
 # Per-machine world opt-out read by servers.sh/sessionizer.sh (world_hidden). Machine-local
 # by definition, and the folded ~/.config link above would otherwise land it in this repo.
 .config/tmux-servers/hidden
+
+# tests/docker.sh points CARGO_HOME here, so the crate registry outlives the container and CI caches it.
+/.cargo-ci/

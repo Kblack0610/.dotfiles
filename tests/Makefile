@@ -148,11 +148,12 @@ test-ui-inner: $(BATS)
 	  exit 1; \
 	fi
 	@mkdir -p $(ARTIFACTS)
+	@# The image keeps tmux and fzf in /opt/ui/bin, off the fast tiers' PATH (tests/Dockerfile).
 	@# Hard wall-clock cap. bats has no per-test timeout, and a ui test that reaches an
 	@# attaching code path (`tmux attach` with no terminal) blocks FOREVER rather than
 	@# failing - one such test wedged a run for 10 minutes before it was caught. Without
 	@# this a hung test burns the whole CI job and reports nothing useful.
-	@$(call junit_mk,ui) timeout --foreground $(UI_TIMEOUT) $(BATS) $(BATS_FLAGS) $(call junit,ui) $(HERE)ui \
+	@$(call junit_mk,ui) PATH=/opt/ui/bin:$$PATH timeout --foreground $(UI_TIMEOUT) $(BATS) $(BATS_FLAGS) $(call junit,ui) $(HERE)ui \
 	  || { rc=$$?; [ $$rc -eq 124 ] && { echo "ui tier TIMED OUT after $(UI_TIMEOUT)s (a test is probably blocked on an attach)" >&2; \
 	       $(if $(junit_on),printf '<?xml version="1.0" encoding="UTF-8"?>\n<testsuites><testsuite name="timeout" tests="1" failures="1" errors="0" skipped="0"><testcase classname="ui" name="ui tier timed out after $(UI_TIMEOUT)s"><failure message="timed out; a test is probably blocked on an attach"/></testcase></testsuite></testsuites>\n' >$(call junit_dir,ui)/report.xml;) }; exit $$rc; }
 
@@ -167,10 +168,9 @@ lint:
 # The Rust crates (notes-cli, agent-panel, agent-web, timebox). Same shape as `lint`: one
 # implementation in rust.sh, shared with CI; its header says which gates block where.
 #
-# Deliberately NOT part of test-fast. test-fast is the Stop-hook gate and is measured in
-# seconds; a cold cargo build is ~20s and would tax every single turn. It is also
-# deliberately not part of test-container -- the test image has no Rust toolchain, and
-# rust.sh skips cleanly when cargo is absent rather than going red on that.
+# Deliberately NOT part of test-fast or test-container: a cold cargo build is minutes, and the
+# rust job runs it beside the bats tiers, in the same image (`tests/docker.sh test-rust`, with
+# DOCKER_NETWORK=bridge for the crates). rust.sh skips cleanly where cargo is absent.
 test-rust:
 	@$(HERE)rust.sh $(CRATES)
 
