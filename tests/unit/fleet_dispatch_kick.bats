@@ -138,16 +138,21 @@ bats_require_minimum_version 1.5.0
   stub agent-hold "case \"\$*\" in 'check dispatch'*) echo x >> '$SANDBOX/hold.calls'; [ -e '$SANDBOX/hold.done' ] || { : > '$SANDBOX/hold.done'; echo mid-run > '$FLEET_DISPATCH_DIR/.wake'; };; esac; exit 0"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" kick
   assert_success
-  assert_equal "$(wc -l < "$SANDBOX/hold.calls")" 2
+  # Round one starts the item (its start reads the hold again), round two finds the queue empty.
+  assert_output --partial 'kick: started 1'
+  assert_output --partial 'kick: nothing queued to start'
+  assert_equal "$(grep -c 'check dispatch' "$SANDBOX/hold.calls")" 3
   [ -n "$(qitem running mine)" ] || fail "the item did not start"
 }
 
 @test "a kick whose wake file did not move reads the queue once, so its own starts never loop it" {
   game_ready
   agent-queue add --project game --slug mine "mine"
-  stub agent-hold "echo x >> '$SANDBOX/hold.calls'; exit 0"
+  stub agent-hold "echo x >> '$SANDBOX/hold.calls'; exit 0"   # two reads: the gate, then the start's own
   run "$REPO_ROOT/.local/bin/fleet-dispatch" kick
   assert_success
-  assert_equal "$(wc -l < "$SANDBOX/hold.calls")" 1
+  assert_output --partial 'kick: started 1'
+  refute_output --partial 'nothing queued'
+  assert_equal "$(wc -l < "$SANDBOX/hold.calls")" 2
   [ ! -e "$FLEET_DISPATCH_DIR/.wake" ] || fail "the kick's own start wrote a wake"
 }
