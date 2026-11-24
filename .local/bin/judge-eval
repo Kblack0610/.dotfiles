@@ -242,7 +242,9 @@ JQ_EVAL="$JQ_EPOCH"'
    # Priority: each priority the priority pass set (`by` inbox-priority, or inbox-triage on a
    # priority-only re-tag from before the pass named itself), right when nobody else changes the
    # priority of the row for the settle window. A later pass on the row inside the window supersedes
-   # it, unless someone changed the priority before that pass ran.
+   # it, unless someone changed the priority before that pass ran. Pending for the whole window from
+   # the tag, even once superseded: a superseded miss resolved at the next pass filled a young window
+   # with misses alone (runner_score_inbox_priority 0 on an 81% lane, 2026-11-24).
    | def prio_pass: .action == "tagged" and ((.by // "") == "inbox-priority" or ((.by // "") == "inbox-triage" and prio_only));
    ($ev | map(select(.action == "tagged" and (prios | length > 0))) | bykey(.id)) as $prioev
    | [$ev[] | select(prio_pass) | . as $s
@@ -258,7 +260,7 @@ JQ_EVAL="$JQ_EPOCH"'
          question: ($s.text // ""), rule: $set, kind: "answer", want: $set,
          human: (if $t == null then "" else ($t.why // "") + (if ($t.by // "") == "" then "" else " by \($t.by)" end) end),
          reason: "", at: $s.ts, answered_at: (if $t == null then null else $t.ts end), judge_call: "",
-         outcome: (if $now < $end then "pending" elif $t != null then "fp" else "tp" end)}] as $priorows
+         outcome: (if ($now - $s.e) < $settle then "pending" elif $t != null then "fp" else "tp" end)}] as $priorows
    # A row a runner wrote is right when nothing edits, drops, moves or re-tags it for the settle
    # window, writes by the planner aside; untouched($src) makes the verdict for the lane scored by $src.
    # Each settle-window verdict here (and the priority and defer ones) stays pending until its window
