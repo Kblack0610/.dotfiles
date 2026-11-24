@@ -46,7 +46,7 @@
 #   fleet-dispatch run-result SLUG      one line on what a headless run left (patch files and lines, else PR, note or state), for its replay's agent-panel row
 #   fleet-dispatch item-end H SID...   why the H run that claimed those ids ended, from this machine's record (a dispatcher asks the worker it ran on)
 #   (run, kick, reap, start, fill, promote, pull-after and exits do nothing on a machine that does not hold the fleet lease: lease_guard)
-#   fleet-dispatch record [--here]   keep each world's pane record, then (on the lease holder) each fleet worker's; page when a world's server died
+#   fleet-dispatch record [--here]   keep each world's pane record, then (on the lease holder) each fleet worker's, and take their queue-item events into this chain record (worker_records); page when a world's server died
 #   fleet-dispatch restore [--server S] [--dry-run] [--here]  reopen a lost server's conversations as windows, here and (on the lease holder) on each fleet worker; one a queue item prompts wakes in a batch of the wake budget (wake-pace.sh), the rest under the `restore` hold
 #
 # A pass walks the workers in workers.json in file order, and a row goes to the first that may
@@ -4040,13 +4040,36 @@ on_workers() {
   return "$rc"
 }
 
+# worker_records -- take each fleet worker's queue-item events into this machine's chain record. A
+# worker keeps its own ingest.jsonl and no worker can reach this machine over ssh, so what its
+# sessions did to an item (the move to done, the merge) never reached the record `notes log --steps`
+# and `fleet-bench pipeline` read: 156 of the 184 items the pipeline's drift counted on 2026-11-23
+# ran on razer-laptop. Each worker's lines newer than its cursor ($WORKER_RECORD_DIR/<worker>, the
+# newest instant the last read carried) come over its ssh, and `notes ingest import` appends the ones
+# of a queue item this record lacks, word for word once. A worker that does not answer keeps its
+# lines for the next read. Always rc 0: the record is best effort, as every chain_event is.
+: "${WORKER_RECORD_SECS:=20}"   # one worker's read; ssh answers or the next minute asks again
+worker_records() {
+  local name cur at lines dir="${WORKER_RECORD_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/worker-record}"
+  fleet_hosts >/dev/null
+  mkdir -p "$dir" || return 0
+  while read -r name; do
+    cur=$(cat "$dir/$name" 2>/dev/null)
+    lines=$(fleet_host_run "$name" timeout "$WORKER_RECORD_SECS" sh -c \
+      'f="$HOME/.local/state/notes/ingest.jsonl"; [ -r "$f" ] && awk -v c="$1" '\''substr($0, 8, length(c)) >= c'\'' "$f"' _ "$cur" 2>/dev/null) || continue
+    at=$(notes ingest import <<<"$lines" 2>/dev/null) || continue
+    [ -z "$at" ] || printf '%s\n' "$at" > "$dir/$name"
+  done < <(fleet_peers)
+  return 0
+}
+
 # fans_out -> rc 0 when this machine holds the fleet lease (`fleet-lease held`), so it asks every
 # other worker: the holder runs fleet-state.service, the one minute record, and no other machine
 # fans out, or each would ask every one.
 fans_out() { fleet-lease held >/dev/null 2>&1; }
 
 # cmd_record [--here] -- every world a manifest declares, then, on the lease holder (fans_out), each
-# fleet worker's (on_workers), unless --here. fleet-state.service runs it each minute, so a record is at
+# fleet worker's (worker_records takes their queue-item events in, on_workers has each its own pane record), unless --here. fleet-state.service runs it each minute, so a record is at
 # most that old; a world's sockets give no event to await for a pane's cwd or id. That tick is also
 # what wakes a paced restore's next batch here (restore_tick) and takes the CPU sample the load pace
 # reads (cpu_sample).
@@ -4056,7 +4079,7 @@ cmd_record() {
   [ -n "$here" ] || cpu_sample   # the lease holder's tick, on the machine whose pass reads it; a worker's pace reads load average
   record_here || return 1
   restore_tick
-  [ -n "$here" ] || ! fans_out || on_workers --quiet record
+  [ -n "$here" ] || ! fans_out || { worker_records; on_workers --quiet record; }
 }
 
 # record_here -- the pane record of every world a manifest declares on this machine, under record's lock.

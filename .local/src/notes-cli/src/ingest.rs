@@ -229,6 +229,57 @@ pub fn record(p: &Profile, ev: &Event) {
     }
 }
 
+/// The lines of a fleet worker's record (`input`) this record should take: those of a queue item
+/// that `have` does not hold word for word, and the newest instant any line of `input` carries.
+/// A line that does not read as an event is skipped; one with no item is the worker's own
+/// intake or board write, which its own notes sync carries.
+fn lines_to_import<'a>(
+    have: &std::collections::HashSet<&str>,
+    input: &'a str,
+) -> (Vec<&'a str>, Option<String>) {
+    let mut newest: Option<(chrono::DateTime<chrono::FixedOffset>, String)> = None;
+    let mut take = vec![];
+    for l in input.lines() {
+        let Ok(e) = serde_json::from_str::<Event>(l) else {
+            continue;
+        };
+        if let Ok(at) = chrono::DateTime::parse_from_rfc3339(&e.ts) {
+            if newest.as_ref().is_none_or(|(n, _)| at > *n) {
+                newest = Some((at, e.ts.clone()));
+            }
+        }
+        if e.item.as_deref().is_some_and(|i| !i.is_empty()) && !have.contains(l) {
+            take.push(l);
+        }
+    }
+    (take, newest.map(|(_, ts)| ts))
+}
+
+/// Append the queue-item events of a fleet worker's record that this one lacks: a worker keeps
+/// its own `ingest.jsonl`, so what its sessions did to an item (moved it to done, merged it)
+/// never reached the record the pipeline reads. Returns how many lines it took and the newest
+/// instant it read, which the caller hands back as the next read's start.
+pub fn import(p: &Profile, input: &str) -> std::io::Result<(usize, Option<String>)> {
+    let path = path(p);
+    let have_text = fs::read_to_string(&path).unwrap_or_default();
+    let have: std::collections::HashSet<&str> = have_text.lines().collect();
+    let (take, newest) = lines_to_import(&have, input);
+    if take.is_empty() {
+        return Ok((0, newest));
+    }
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let block: String = take.iter().map(|l| format!("{l}\n")).collect();
+    // One write, as `record` does, so a session appending at once cannot interleave within a line.
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?
+        .write_all(block.as_bytes())?;
+    Ok((take.len(), newest))
+}
+
 /// Keep the events of the last [`KEEP_DAYS`], then only the newest lines that fit in `keep_bytes`.
 /// RFC 3339 stamps of one zone sort as text.
 fn prune(path: &std::path::Path, keep_bytes: usize) -> std::io::Result<()> {
@@ -262,9 +313,12 @@ fn read_day(p: &Profile, day: &str) -> (Vec<Event>, Vec<Reject>) {
     read(p, |l| l.starts_with(&head))
 }
 
-/// Every event the record holds, oldest first.
+/// Every event the record holds, oldest first by instant: an imported worker event lands at the
+/// end of the file, after newer local ones, so the file order alone is not the time order.
 pub fn all(p: &Profile) -> Vec<Event> {
-    read(p, |_| true).0
+    let mut events = read(p, |_| true).0;
+    events.sort_by_key(|e| chrono::DateTime::parse_from_rfc3339(&e.ts).ok());
+    events
 }
 
 fn read_since(p: &Profile, days: i64) -> (Vec<Event>, Vec<Reject>) {
@@ -488,6 +542,31 @@ pub fn row_words(line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_import_takes_only_the_item_lines_it_lacks_and_reports_the_newest_instant() {
+        let line = |ts: &str, item: Option<&str>| {
+            serde_json::to_string(&Event {
+                ts: ts.to_string(),
+                item: item.map(str::to_string),
+                ..Event::new("item-moved", "ar", "done", "t")
+            })
+            .unwrap()
+        };
+        let held = line("2026-11-23T12:00:00-08:00", Some("a"));
+        let new = line("2026-11-23T12:05:00-08:00", Some("a"));
+        let itemless = line("2026-11-23T12:09:00-08:00", None);
+        let input = format!("{held}\n{new}\n{itemless}\nnot json\n");
+        let have = std::collections::HashSet::from([held.as_str()]);
+        let (take, newest) = lines_to_import(&have, &input);
+        assert_eq!(take, vec![new.as_str()]);
+        assert_eq!(newest.as_deref(), Some("2026-11-23T12:09:00-08:00"));
+        let (again, _) = lines_to_import(
+            &std::collections::HashSet::from([held.as_str(), new.as_str()]),
+            &input,
+        );
+        assert!(again.is_empty());
+    }
 
     #[test]
     fn a_trace_follows_a_line_to_its_row_and_the_item_it_became() {

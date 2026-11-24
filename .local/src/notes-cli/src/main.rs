@@ -1001,6 +1001,10 @@ enum IngestCmd {
     /// made (agent-queue's `item-*`, fleet-dispatch's `started`, `reaped`, `settled`,
     /// agent-land's `merged`, claude-acct's `parked` and `unparked`). An empty flag value is no value.
     Record(Box<RecordArgs>),
+    /// Append the queue-item events of a fleet worker's record (JSONL on stdin) this record lacks,
+    /// word for word once, then print the newest instant the input carried (fleet-dispatch's
+    /// next read of that worker starts there)
+    Import,
     /// Publish the inbox status page from the record and the outbox (the sweep runs it)
     Page,
 }
@@ -1860,6 +1864,14 @@ fn main() -> Result<()> {
                 ev.sha = set(sha);
                 ev.near = set(near);
                 ingest::record(&prof, &ev);
+                0
+            }
+            IngestCmd::Import => {
+                let mut input = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
+                let (n, newest) = ingest::import(&prof, &input)?;
+                eprintln!("ingest import: {n} line(s) taken");
+                println!("{}", newest.unwrap_or_default());
                 0
             }
             IngestCmd::Page => daily::publish_inbox_page(&prof, &log)?,
