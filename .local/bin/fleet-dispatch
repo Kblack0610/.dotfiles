@@ -3778,7 +3778,7 @@ start_host_checks() {
   [ -z "$(resume_thread "$it" "$harness")" ] ||
     { say "start: $item resumes its last $harness thread, which is on this machine; start it here, without --host"; return 2; }
   jq -e --arg d "$cwd" '.repos | index($d)' <<<"$hjson" >/dev/null ||
-    { say "start: $host has no clone of $cwd (fleet_repos); $item stays queued"; return 2; }
+    { say "start: $host has no clone of $cwd (fleet_repos or fleet_repos_extra); $item stays queued"; return 2; }
 }
 
 # dispatch_tag <host> <server> <session> <window> <pane> <label> -- tag what an agent started with @dispatch.
@@ -3803,7 +3803,7 @@ dispatch_tag() {
 #                           repo) with `wt new`, claude on the item's brief there.
 #   --host NAME             with --item: open it on that fleet worker (fleet-hosts.sh) over ssh, not here.
 #                           On a harness whose launcher the worker's kit has (claude, codex, opencode, agy; past claude also listed in
-#                           fleet_harnesses and read ready), in a repo it lists (fleet_repos); under DISPATCH_SANDBOX_PROFILE only where its kit has srt; its
+#                           fleet_harnesses and read ready), in a repo it lists (fleet_repos, fleet_repos_extra); under DISPATCH_SANDBOX_PROFILE only where its kit has srt; its
 #                           queue and ask writes go to the worker's own store clone, which store-sync pushes.
 #   --harness NAME          with --item: run it on claude or a gateway harness in harnesses.json, not
 #                           the item's `agent:`: claude-lazer and opencode on the eval key, codex on the ChatGPT plan, agy on the AI Pro login, lazer-reserve
@@ -6295,7 +6295,7 @@ host_agent() {
 }
 
 # host_takers <item json> -> the roster's workers provisioned for this item, one name a line: a
-# light item with no plan and no cloud route, in a repo the worker has cloned (fleet_repos), on a
+# light item with no plan and no cloud route, in a repo the worker has cloned (fleet_repos, fleet_repos_extra), on a
 # harness the worker runs (host_runs: its kit, and past claude fleet_harnesses, probed ready). Heavy work (Unity), plans,
 # a codex item that resumes its thread (the rollout is in this machine's ~/.codex, item_rollout),
 # a trainee batch review (it reads the diffs in this machine's TRAINEE_DIR), a red (its watch state,
@@ -6420,7 +6420,7 @@ cmd_hosts() {
 
 # unplaced -> one line per project and reason for the queued light items no worker could take on
 # any pass (host_takers names none), so a gap in the workers' standard repo list (home-config
-# fleet_workers fleet_repos) or a harness no worker runs shows here. A worker that is merely busy
+# fleet_workers fleet_repos, fleet_repos_extra) or a harness no worker runs shows here. A worker that is merely busy
 # still takes the item later, so capacity is not a reason. stdin: the active queue as
 # `agent-queue list --json`. After probe_hosts, which host_takers reads.
 unplaced() {
