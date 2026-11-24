@@ -395,12 +395,14 @@ pub fn phone_tables() -> Vec<PhoneTable> {
     rows.into_iter().chain(cuts).collect()
 }
 
-/// One dropdown value: how many rows it adds, whether it is ticked, and the whole query a
-/// tick on it gives (it joins the column's picks, or leaves them).
+/// One dropdown value: how many rows it adds, its share of the rows the other filters leave
+/// (a whole percent; a row holding two values counts under both), whether it is ticked, and the
+/// whole query a tick on it gives (it joins the column's picks, or leaves them).
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct FacetValue {
     pub value: String,
     pub n: usize,
+    pub pct: u32,
     pub on: bool,
     pub q: String,
 }
@@ -654,9 +656,10 @@ impl View {
                     ..self.clone()
                 };
                 let mut counts = std::collections::BTreeMap::<String, usize>::new();
+                let pool = base.apply(rows);
                 // Each value a row holds counts once, as the filter matches it (`vals`), so a
                 // row in two pools counts under both.
-                for r in base.apply(rows) {
+                for r in &pool {
                     let mut seen = std::collections::BTreeSet::new();
                     for v in r.vals(key).iter().filter_map(Val::text) {
                         if !v.is_empty() && seen.insert(v.clone()) {
@@ -688,6 +691,7 @@ impl View {
                             q: picks.iter().fold(clear.clone(), |q, v| joined(&q, key, v)),
                             on: picked,
                             value,
+                            pct: crate::projects::share(n as u32, pool.len() as u32).unwrap_or(0),
                             n,
                         }
                     })
@@ -1076,6 +1080,33 @@ mod tests {
         assert!(project.on.is_empty());
         assert_eq!(project.values[0].q, "kind:fix nightly project:playground");
         assert_eq!(joined("", "name", "hub sort"), "name:\"hub sort\"");
+    }
+
+    #[test]
+    fn a_facet_value_says_its_share_of_the_rows_the_other_filters_leave() {
+        let shares = |v: &View| -> Vec<(String, usize, u32)> {
+            let fs = v.facets(&rows());
+            let f = fs.iter().find(|f| f.key == "kind").unwrap();
+            f.values
+                .iter()
+                .map(|x| (x.value.clone(), x.n, x.pct))
+                .collect()
+        };
+        let s = |v: &str, n, p| (v.to_string(), n, p);
+        assert_eq!(
+            shares(&q("")),
+            [s("chore", 1, 25), s("feat", 1, 25), s("fix", 2, 50)]
+        );
+        assert_eq!(
+            shares(&q("project:dotfiles")),
+            [s("feat", 1, 50), s("fix", 1, 50)],
+            "a project picked: that project's mix"
+        );
+        assert_eq!(
+            shares(&q("kind:fix")),
+            [s("chore", 1, 25), s("feat", 1, 25), s("fix", 2, 50)],
+            "its own pick does not move the shares"
+        );
     }
 
     #[test]
