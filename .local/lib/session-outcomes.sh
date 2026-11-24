@@ -346,7 +346,7 @@ so_codex_rows() {
           .metrics.activity[$k] = nadd(.metrics.activity[$k]; $c.metrics.activity[$k]));
     (map(select(.parent == null) | {key: .session_id, value: .}) | from_entries) as $roots
     | reduce (.[] | select(.parent != null and $roots[.parent] != null)) as $c ($roots;
-        .[$c.parent] |= (.edits += $c.edits | .tokens = add_tok(.tokens; $c.tokens)
+        .[$c.parent] |= (.edits = nadd(.edits; $c.edits) | .tokens = add_tok(.tokens; $c.tokens)
                          | .cost_by_model = add_tok(.cost_by_model; $c.cost_by_model) | .unpriced = (.unpriced or $c.unpriced)
                          | .models = (.models + $c.models | unique) | .prs = (.prs + $c.prs | unique)
                          | sum_into($c)

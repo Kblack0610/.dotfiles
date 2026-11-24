@@ -1197,6 +1197,14 @@ EOF
   assert_equal "$(r '.models | join(" ")')" claude-sonnet-5
 }
 
+@test "an opencode session with no file summary carries null edits, not 0" {
+  oc_db
+  sqlite3 "$SO_OPENCODE_DB" "UPDATE session_v2 SET summary_files = NULL WHERE id = 'ses_root'"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs 'map(select(.session_id == "ses_root")) | last | .edits | tostring')" null
+}
+
 @test "an opencode session in a directory the registry does not know files under _unscoped; a known one keeps its project" {
   oc_db
   echo 'project_known() { [ "$1" = proj ]; }' >> "$SO_PROJECT_LIB"
