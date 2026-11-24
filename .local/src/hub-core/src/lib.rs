@@ -48,6 +48,7 @@ pub mod money;
 pub mod outbound;
 pub mod outbox;
 pub mod outcomes;
+pub mod pace_conf;
 pub mod page;
 pub mod pager;
 pub mod phone;

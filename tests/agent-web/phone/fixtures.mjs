@@ -449,6 +449,15 @@ const costs = {
     fleet: { live: 39, burn: 4.52, sustain: 1.37, over: 3.3, rate: 0.116, carries: 11 }, drip: { hour: 15, day: 349, held: "fleet-assess says HOLD" },
     pace: { on_pace: false, at_burn: [["main", NOW + 600]], idle_all_by: NOW + 3600, idle_rest_after_reset: false },
   },
+  pace: {
+    error: null,
+    allowance: {
+      key: "BURN_OVER_PCT", in_force: "400", source: "window to Tue 22:00", default: "200", max: 1000, allowed: 5.5, sustain: 1.37, burn: 4.52, spare: 3, as_of: NOW - 600, window_max_days: 7,
+      note: "Loosens only committed: pace, reserve, 5-hour and capped still refuse on their own.",
+      rows: [{ value: "400", from: "Mon 14:02", until: "Tue 22:00", by: "agent-web", state: "In force", start: NOW - 3600, can_end: true }, { value: "200", from: "-", until: "-", by: "pace.conf", state: "Default", start: null, can_end: false }],
+    },
+    keys: [{ key: "BURN_OVER_PCT", value: "400", source: "window to Tue 22:00", default: "200", editable: true }, { key: "RESERVE_PCT", value: "10", source: "default", default: "10", editable: false }],
+  },
 };
 
 // Releases: agent-web's releases::Shown, one row per hub_core::releases::App whose cells are

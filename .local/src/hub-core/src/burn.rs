@@ -258,6 +258,13 @@ pub struct Fleet {
     /// When the accounts, pooled with each reset's refill, run into the reserve at this burn
     /// (claude-acct's `run_out`); None is that they last to the resets.
     pub run_out: Option<i64>,
+    /// Points an hour the pool may burn before dispatch holds: the sustainable rate times the
+    /// allowance in force (claude-acct's `allowed`, one formula); None on an older textfile.
+    pub allowed: Option<f64>,
+    /// Working sessions dispatch's pace target still has room to start (claude-acct's `spare`).
+    pub spare: Option<u32>,
+    /// When the textfile was written, from its age; the figures above are as of then.
+    pub as_of: Option<i64>,
 }
 
 /// The Burn table's total row: claude-acct's fleet sum (the headline's figures) and the rows'
@@ -318,8 +325,18 @@ pub struct Burn {
     pub total: Option<Total>,
     pub drip: Drip,
     pub pace: Pace,
+    /// The burn allowance in force (`pace_conf`), named in the headline; None until a surface
+    /// has read it, or when `pace-conf` could not be run.
+    pub allowance: Option<Allowance>,
     /// What each term on the section means, in the order the surfaces print it.
     pub legend: &'static [(&'static str, &'static str)],
+}
+
+/// The allowance in force on the headline: `400` and `default`, or `300` and `to Tue 22:00`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Allowance {
+    pub pct: f64,
+    pub source: String,
 }
 
 /// The Burn section's terms, defined once for both surfaces.
@@ -506,6 +523,11 @@ pub fn build(series: &[Series], drip: Drip, at: i64) -> Burn {
         run_out: sum("run_out_timestamp_seconds")
             .filter(|_| summed.is_some())
             .map(|t| t as i64),
+        allowed: sum("allowed_points_per_hour").filter(|_| summed.is_some()),
+        spare: sum("spare_sessions")
+            .filter(|_| summed.is_some())
+            .map(|n| n.max(0.0) as u32),
+        as_of: read.age.filter(|_| summed.is_some()).map(|a| at - a as i64),
     };
     let top = || accounts.iter().filter(|a| !a.nested);
     let total = (!stale && top().count() > 1).then(|| Total {
@@ -527,6 +549,10 @@ pub fn build(series: &[Series], drip: Drip, at: i64) -> Burn {
     } else if fleet.run_out.is_some() {
         // The pool runs into the human's reserve before the resets refill it. Burning above the
         // long-run rate while the pool lasts to the resets is the amber below, not red.
+        "bad"
+    } else if fleet.allowed.is_some_and(|a| burn > a) {
+        // Over what the allowance lets through: dispatch holds on it (`committed`), so this is
+        // not the amber of burning over the sustainable rate while the allowance still starts.
         "bad"
     } else if burn > sustain
         || accounts.iter().any(Account::is_over)
@@ -591,10 +617,21 @@ impl Burn {
             (n, of) if n == of => ", no room on any".into(),
             (n, of) => format!(", no room on {n} of {of}"),
         };
+        let allowed = match (&self.allowance, f.allowed) {
+            (Some(a), Some(n)) => format!(", {n:.1} allowed ({}% {})", a.pct, a.source),
+            _ => String::new(),
+        };
         format!(
-            "{:.1} pts/h vs {:.1} sustainable{ratio}{out}{room}, {} live{carries}",
+            "{:.1} pts/h vs {:.1} sustainable{allowed}{ratio}{out}{room}, {} live{carries}",
             f.burn, f.sustain, f.live
         )
+    }
+
+    /// Name the allowance in force on the headline. The figures come from claude-acct's
+    /// textfile and the value from `pace-conf`, so nothing is computed here.
+    pub fn set_allowance(&mut self, allowance: Allowance) {
+        self.allowance = Some(allowance);
+        self.head = self.head_text();
     }
 
     fn pace_of(&self) -> Pace {
@@ -753,6 +790,64 @@ mod tests {
             "4.5 pts/h vs 1.4 sustainable, 3.3x, 39 live, carries ~11"
         );
         assert_eq!(b.drip_line, "15 started in 1h, 349 in 24h");
+    }
+
+    /// The fixture with claude-acct's allowance series: `allowed` points an hour and `spare` sessions.
+    fn allowing(allowed: f64, spare: f64) -> Vec<Series> {
+        let mut s = fixture();
+        s.push(fleet("allowed_points_per_hour", allowed));
+        s.push(fleet("spare_sessions", spare));
+        s
+    }
+
+    #[test]
+    fn the_allowance_figures_are_claude_accts_and_its_age_dates_them() {
+        let b = build(&allowing(9.0, 3.0), quiet(), NOW);
+        assert_eq!((b.fleet.allowed, b.fleet.spare), (Some(9.0), Some(3)));
+        assert_eq!(b.fleet.as_of, Some(NOW - 120));
+        // an older textfile has neither, and says nothing about an allowance
+        let old = build(&fixture(), quiet(), NOW);
+        assert_eq!((old.fleet.allowed, old.fleet.spare), (None, None));
+        // a negative spare is none, not a wrapped count
+        assert_eq!(
+            build(&allowing(9.0, -2.0), quiet(), NOW).fleet.spare,
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn over_the_allowance_is_red_and_within_it_over_sustainable_stays_amber() {
+        assert_eq!(build(&allowing(9.0, 3.0), quiet(), NOW).level, "warn");
+        assert_eq!(build(&allowing(4.0, 0.0), quiet(), NOW).level, "bad");
+        // the control: no allowed series, the same burn is amber as before
+        assert_eq!(build(&fixture(), quiet(), NOW).level, "warn");
+    }
+
+    #[test]
+    fn the_head_names_the_allowance_in_force_once_a_surface_has_read_it() {
+        let mut b = build(&allowing(9.0, 3.0), quiet(), NOW);
+        assert_eq!(
+            b.head,
+            "4.5 pts/h vs 1.4 sustainable, 3.3x, 39 live, carries ~11"
+        );
+        b.set_allowance(Allowance {
+            pct: 400.0,
+            source: "window to Tue 22:00".into(),
+        });
+        assert_eq!(
+            b.head,
+            "4.5 pts/h vs 1.4 sustainable, 9.0 allowed (400% window to Tue 22:00), 3.3x, 39 live, carries ~11"
+        );
+        // no clause without the figure, whatever the config says
+        let mut old = build(&fixture(), quiet(), NOW);
+        old.set_allowance(Allowance {
+            pct: 400.0,
+            source: "default".into(),
+        });
+        assert_eq!(
+            old.head,
+            "4.5 pts/h vs 1.4 sustainable, 3.3x, 39 live, carries ~11"
+        );
     }
 
     #[test]

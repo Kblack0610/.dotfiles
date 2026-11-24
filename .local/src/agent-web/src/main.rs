@@ -32,6 +32,7 @@ mod jobs;
 mod live;
 mod outbox;
 mod outcomes;
+mod pace;
 mod pipelines;
 mod projects;
 mod proposals;
@@ -281,6 +282,8 @@ fn router(state: Shared) -> Router {
         .route("/api/queue", get(queue::list).post(queue::add))
         .route("/api/queue/cancel", post(queue::cancel))
         .route("/api/queue/bump", post(queue::bump))
+        .route("/api/pace/set", post(pace::set))
+        .route("/api/pace/end", post(pace::end))
         .route("/api/queue/projects", get(queue::projects))
         .route("/api/queue/stats", get(queue::stats))
         .route("/api/queue/candidates", get(queue::candidates))
@@ -562,6 +565,11 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
         std::fs::create_dir_all(dir)?;
         targets.push((dir.to_path_buf(), flat));
     }
+    // pace-conf's overrides file, replaced by a rename: Costs' Limits.
+    if let Some(dir) = pace_overrides().parent() {
+        std::fs::create_dir_all(dir)?;
+        targets.push((dir.to_path_buf(), flat));
+    }
     // schedules-sync's state.json, replaced by a rename: Infra's Pipelines.
     if let Some(dir) = schedules_state().parent() {
         std::fs::create_dir_all(dir)?;
@@ -680,6 +688,14 @@ const PIPELINES_EVENT: &str = r#"{"kind":"pipelines"}"#;
 fn schedules_state() -> PathBuf {
     hub_core::schedules::state_path(&session::home().to_string_lossy())
 }
+/// `pace-conf` wrote the overrides file, so Costs' Limits reads afresh. It replaces the file by a
+/// rename in `~/.agent`, which is watched for this one path.
+fn pace_overrides() -> PathBuf {
+    std::env::var_os("PACE_OVERRIDES").map_or_else(
+        || session::home().join(".agent").join("pace-overrides"),
+        PathBuf::from,
+    )
+}
 /// The nightly stage pass wrote stages.json: Projects' Ladder reads afresh.
 const STAGES_EVENT: &str = r#"{"kind":"stages"}"#;
 static STAGES_FILE: std::sync::LazyLock<PathBuf> =
@@ -708,6 +724,9 @@ fn classify(p: &Path) -> Option<String> {
     }
     if p == schedules_state() {
         return Some(PIPELINES_EVENT.to_string());
+    }
+    if p == pace_overrides() {
+        return Some(COSTS_EVENT.to_string());
     }
     if p == *STAGES_FILE {
         return Some(STAGES_EVENT.to_string());
@@ -2670,6 +2689,9 @@ mod tests {
             None
         );
         assert_eq!(classify(Path::new("/h/.agent/daylog/.lock")), None);
+        // pace-conf's overrides file is Costs' Limits; its temp file and the dir's other files are not.
+        assert_eq!(classify(&pace_overrides()).as_deref(), Some(COSTS_EVENT));
+        assert_eq!(classify(&pace_overrides().with_extension("tmp")), None);
         // A token snapshot is named by day, but it is Costs', never a Log or Runners refresh.
         assert_eq!(
             classify(&boards::token_usage_dir().join("2026-11-05.json")).as_deref(),

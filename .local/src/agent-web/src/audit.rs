@@ -183,6 +183,20 @@ pub const ROUTES: &[Route] = &[
         &["slug"],
         &["priority"],
     ),
+    route(
+        "POST",
+        "/api/pace/set",
+        |_| "pace.set".into(),
+        &["key"],
+        &["value", "from", "until"],
+    ),
+    route(
+        "POST",
+        "/api/pace/end",
+        |_| "pace.ended".into(),
+        &["key"],
+        &["from"],
+    ),
     route("POST", SIGNIN_KEY, |_| "signin.started".into(), &[], &[]),
     route("POST", "/logout", |_| "signin.ended".into(), &[], &[]),
     // The widget key's push routes open with no session, so `layer` never records them; the
