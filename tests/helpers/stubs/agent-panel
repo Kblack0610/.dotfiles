@@ -17,6 +17,8 @@
 #   agent-panel.busy    present: `agent-panel send` exits 75 (another send held the pane; nothing typed)
 #   agent-panel.said    the JSON `agent-panel said <transcript> --around <id>` prints; absent:
 #                       exit 1, as the real one does when no turn printed the id
+#   agent-panel.human   the JSON lines `agent-panel human <transcript> --since <iso>` prints; absent:
+#                       exit 1 (the real one exits 2 on a bad --since)
 #   agent-panel.dialog  the card `agent-panel dialog <target>` prints; absent: exit 1 (no dialog)
 #   agent-panel.options the "<key>\t<free>\t<text>" lines of `agent-panel dialog <target> --options`
 #   agent-panel.answer  `agent-panel answer` exits with its first line and prints the rest to
@@ -35,6 +37,7 @@ case "${1:-}" in
     [ -f "$FIX/agent-panel.fail" ] && exit 3 ;;
   asks-human) [ -f "$FIX/agent-panel.asks" ] && exit 0; exit 1 ;;
   said) [ -f "$FIX/agent-panel.said" ] || exit 1; cat "$FIX/agent-panel.said" ;;
+  human) [ -f "$FIX/agent-panel.human" ] || exit 1; cat "$FIX/agent-panel.human" ;;
   send) [ -f "$FIX/agent-panel.busy" ] && { echo "agent-panel send: another send holds the pane" >&2; exit 75; }
         [ -f "$FIX/agent-panel.unsent" ] && { echo "agent-panel send: did not take the Enter" >&2; exit 3; } ;;
   dialog)
