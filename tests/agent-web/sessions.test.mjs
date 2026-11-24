@@ -400,7 +400,7 @@ test("an open session's facts are its fleet-state card, open until folded to one
   run(`st.view = "transcript"`);
   ctx.renderFacts();
   assert.equal(boxes.facts.hidden, false);
-  assert.match(boxes.facts.innerHTML, /<details data-k="facts" open><summary>.*WORKING.*PR #12/);
+  assert.match(boxes.facts.innerHTML, /<details data-k="facts" open><summary>.*Working.*PR #12/);
   run("st.sel = st.agents[3]");
   ctx.renderFacts();
   assert.equal(boxes.facts.hidden, true);
