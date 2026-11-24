@@ -564,6 +564,19 @@ pub(crate) fn add_via(
     Ok(0)
 }
 
+/// The id of the open row on `content` that `text` twins (the same words, a near twin, or the
+/// row that already lands the PR it names): what [`refuse_twin`] refuses, as the row to join.
+/// None for an epic (`epic_new` has its own twin check) and for a twin with no id yet.
+fn twin_id(content: &str, text: &str) -> Option<String> {
+    if text.trim_start().starts_with("epic(") {
+        return None;
+    }
+    open_twin(content, text)
+        .or_else(|| near_twin(content, text))
+        .or_else(|| pr_twin(content, text).map(|(l, _)| l))
+        .and_then(md::row_id)
+}
+
 /// Does `text` twin an open row of `content` (the sheet at `path`): the same words, a near twin, or a
 /// row that already lands the PR it names. Each says which row on stderr; the add exits 3.
 fn refuse_twin(path: &Path, content: &str, text: &str) -> bool {
@@ -1459,12 +1472,30 @@ fn file_via(
     } else {
         fs::read_to_string(&dest)?
     };
+    // A model-written row that twins an open row of the board joins that row (as `--dup` does) and
+    // files nothing: the check `ptask add` runs on every row, which this path never ran.
+    let twins: Vec<Option<String>> = match &how.how {
+        How::Rows { texts, .. } if !as_is && linked.is_none() => texts
+            .iter()
+            .map(|t| twin_id(&base, &md::without_agent_tag(t)))
+            .collect(),
+        _ => Vec::new(),
+    };
+    let joined: Option<String> = twins
+        .iter()
+        .all(Option::is_some)
+        .then(|| twins.first().cloned().flatten())
+        .flatten();
+    let dup_id: Option<&str> = match &how.how {
+        How::Dup(id) => Some(id.as_str()),
+        _ => joined.as_deref(),
+    };
     let (new_dest, written) = match &how.how {
         How::Rows {
             texts,
             to,
             details: extra,
-        } => {
+        } if dup_id.is_none() => {
             let texts: Vec<String> = if let Some(l) = &linked {
                 l.clone()
             } else if as_is {
@@ -1473,7 +1504,12 @@ fn file_via(
                 }
                 vec![line.text.clone()]
             } else {
-                texts.clone()
+                texts
+                    .iter()
+                    .zip(twins.iter().chain(std::iter::repeat(&None)))
+                    .filter(|(_, twin)| twin.is_none())
+                    .map(|(t, _)| t.clone())
+                    .collect()
             };
             let texts: Vec<String> = texts.iter().map(|t| md::without_agent_tag(t)).collect();
             if let Some(bad) = texts.iter().find(|t| !projects::is_typed(t)) {
@@ -1519,11 +1555,15 @@ fn file_via(
             let block = crate::window::admit(&dest_proj, cur, block, interrupt);
             (md::insert_under_heading(&base, sheet::TASKS, &block), block)
         }
-        How::Dup(id) => {
+        How::Rows { .. } | How::Dup(_) => {
+            let id = dup_id.expect("a row arm without a dup id was taken above");
             if !md::is_row_id(id) {
                 bail!("--dup takes the id of an open row (like ar-142), not '{id}'");
             }
-            let hit = Pick::Id(id.clone());
+            if joined.is_some() {
+                eprintln!("twin of open row {id}: the line joins it, nothing new is filed");
+            }
+            let hit = Pick::Id(id.to_string());
             let Some(new) = md::append_details(&base, sheet::TASKS, |l| hit.hits(l), &details)
             else {
                 bail!(
@@ -1555,11 +1595,7 @@ fn file_via(
         ),
     );
     let mut ev = crate::ingest::Event::new(
-        if matches!(how.how, How::Dup(_)) {
-            "dup"
-        } else {
-            "filed"
-        },
+        if dup_id.is_some() { "dup" } else { "filed" },
         name,
         dest_name,
         &line.text,
@@ -1568,14 +1604,14 @@ fn file_via(
     ev.want = how.want.map(str::to_string);
     ev.why = crate::ingest::set(how.why.as_deref());
     ev.id = match &how.how {
-        How::Dup(id) => Some(id.clone()),
+        _ if dup_id.is_some() => dup_id.map(str::to_string),
         How::Skip => None,
-        How::Rows { .. } => written
+        How::Rows { .. } | How::Dup(_) => written
             .iter()
             .find_map(|l| md::marker_token(l, "id:"))
             .map(str::to_string),
     };
-    if matches!(how.how, How::Rows { .. }) {
+    if matches!(how.how, How::Rows { .. }) && dup_id.is_none() {
         ev.row = written
             .iter()
             .find(|l| md::row_id(l).is_some())
@@ -6114,6 +6150,56 @@ mod inbox_tests {
             "{s}"
         );
         assert!(!s.split("## Tasks").next().unwrap().contains("gun"), "{s}");
+    }
+
+    #[test]
+    fn a_filed_row_that_twins_an_open_row_joins_it_and_files_nothing() {
+        let v = vault(
+            "twinfile",
+            "- the gun sound plays late #from/s1\n- a pause menu is wanted\n",
+            "- [ ] fix(audio): the gun sound plays late on the second shot <!-- id:sc-4 -->\n",
+        );
+        let pick = Pick::new("gun sound", false).unwrap();
+        // The model's reworded row: same type, nearly the same title words.
+        let rc = file(
+            &v.p,
+            &v.log,
+            "scratch",
+            &pick,
+            &rows(&["fix(audio): gun sound plays late on the second shot #low"]),
+            Lane::Human,
+        )
+        .unwrap();
+        assert_eq!(rc, 0);
+        let s = v.read();
+        assert_eq!(s.matches("- [ ] ").count(), 1, "no second row:\n{s}");
+        assert!(
+            s.contains("<!-- id:sc-4 -->\n  was: the gun sound plays late #from/s1\n"),
+            "the words joined the open row:\n{s}"
+        );
+        assert!(!s.split("## Tasks").next().unwrap().contains("gun"), "{s}");
+        let today = chrono::Local::now()
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string();
+        let ev = crate::ingest::on_day(&v.p, &today);
+        assert_eq!(
+            (ev[0].action.as_str(), ev[0].id.as_deref()),
+            ("dup", Some("sc-4"))
+        );
+
+        // A row that twins nothing is still filed, next to the twin that was not.
+        let pick = Pick::new("pause menu", false).unwrap();
+        file(
+            &v.p,
+            &v.log,
+            "scratch",
+            &pick,
+            &rows(&["feat(ui): a pause menu with resume and quit #low"]),
+            Lane::Human,
+        )
+        .unwrap();
+        assert_eq!(v.read().matches("- [ ] ").count(), 2, "{}", v.read());
     }
 
     #[test]
