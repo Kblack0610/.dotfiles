@@ -11,8 +11,8 @@ setup() {
     printf '#!/usr/bin/env bash\necho "%s $*" >> "$CALLS"\n[ -z "${STUB_FAIL:-}" ] || { echo boom; exit 1; }\necho done\n' "$c" > "$BATS_TEST_TMPDIR/bin/$c"
     chmod +x "$BATS_TEST_TMPDIR/bin/$c"
   done
-  # agent-ask: post logs its argv and prints an id (or fails on STUB_ASK_FAIL); answer-names prints STUB_ANSWER
-  printf '#!/usr/bin/env bash\necho "agent-ask $*" >> "$CALLS"\ncase "$1" in post) [ -z "${STUB_ASK_FAIL:-}" ] || exit 2; echo ASK1 ;; answer-names) printf "%%s\\n" "${STUB_ANSWER:-}" ;; esac\n' > "$BATS_TEST_TMPDIR/bin/agent-ask"
+  # agent-ask: post logs its argv and prints an id (or fails on STUB_ASK_FAIL); answer-names prints STUB_ANSWER, show STUB_BY as answered_by
+  printf '#!/usr/bin/env bash\necho "agent-ask $*" >> "$CALLS"\ncase "$1" in post) [ -z "${STUB_ASK_FAIL:-}" ] || exit 2; echo ASK1 ;; answer-names) printf "%%s\\n" "${STUB_ANSWER:-}" ;; show) printf "answered_by: %%s\\n" "${STUB_BY:-human}" ;; esac\n' > "$BATS_TEST_TMPDIR/bin/agent-ask"
   chmod +x "$BATS_TEST_TMPDIR/bin/agent-ask"
   PATH="$BATS_TEST_TMPDIR/bin:$PATH"
   AP="$BATS_TEST_DIRNAME/../../.local/bin/agent-propose"
@@ -70,7 +70,7 @@ past_due() { jq -c '.expires = "2020-01-01T00:00:00Z"' "$AGENT_PROPOSE_DIR/$1.js
   run add_queue other
   assert_success
   assert_equal "$(jq -r '.status + " " + .ask' "$AGENT_PROPOSE_DIR/$id.json")" "asked ASK1"
-  run grep -c '^agent-ask post --kind approval --project dotfiles --options accept=agent-queue add --project dotfiles --priority high -- fix it|reject=' "$CALLS"
+  run grep -c '^agent-ask post --kind gate --project dotfiles --options accept=agent-queue add --project dotfiles --priority high -- fix it|reject=' "$CALLS"
   assert_output 1
   run grep -c -- "--resume run: agent-propose answered -- An unread proposal expires today: Cap gh polling?" "$CALLS"
   assert_output 1
@@ -114,8 +114,15 @@ past_due() { jq -c '.expires = "2020-01-01T00:00:00Z"' "$AGENT_PROPOSE_DIR/$1.js
   other="$(add_queue other)"
   past_due "$other"
   "$AP" expire
-  STUB_ANSWER=reject run "$AP" answered ASK1
+  # NEGATIVE CONTROL: a session's own answer is no ruling, so the proposal stays asked
+  STUB_ANSWER=reject STUB_BY=agent run "$AP" answered ASK1
+  assert_failure
+  assert_output --partial "ask ASK1 was answered by agent; $other stays asked"
+  assert_equal "$(jq -r .status "$AGENT_PROPOSE_DIR/$other.json")" asked
+  STUB_ANSWER=reject STUB_BY=judge run "$AP" answered ASK1
   assert_output "$other rejected"
+  # the judge decides a gate as the human would, and the record names it (ar-4765)
+  assert_equal "$(jq -r .decided_by "$AGENT_PROPOSE_DIR/$other.json")" judge
   run grep -c '^agent-queue' "$CALLS"
   assert_output 1
 }
