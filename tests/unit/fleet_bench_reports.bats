@@ -219,7 +219,7 @@ lead_fixture() {
   run "$SUBJECT" pipeline --json
   assert_success
   run jq -c '[.drift, .since, (.steps[] | [.wip, .in_1h])]' <<<"$output"
-  assert_output '[null,null,[3,null],[1,null],[1,null],[1,null],[1,null],[1,null],[1,null]]'
+  assert_output '[null,null,[3,null],[1,null],[null,null],[1,null],[null,null],[1,null],[1,null],[1,null],[1,null]]'
   run "$SUBJECT" chain --check
   assert_success
   # the line-per-step shape notes printed before items_since is not a record either
@@ -616,6 +616,7 @@ STUB
   why="no account has room; bnb is the closest, 98% of its week used, inside the last 15% kept for the human, and $(printf 'a great many more words %.0s' 1 2 3 4 5)"
   why=${why% }
   stop_stub "$((T0 - 600))" "$why" 'Clears when an account is back under its pace' 'Dispatch stopped 10m: no account has room'
+  : > "$BENCH_DISPATCH_LOG"   # a record that was read and holds no floor start
   run "$SUBJECT" pipeline --json
   assert_success
   json=$output
