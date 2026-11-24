@@ -373,10 +373,11 @@ BENCH_RECORD_TAIL=5000   # lines of the dispatch record pipeline_json reads: mor
 : "${PIPELINE_SNAPSHOT:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/pipeline/pipeline.json}"   # what the Queue tab's pipeline line reads
 : "${CHAIN_DAYS:=7}"                 # the merged PRs ledger_coverage counts
 # A Sentinel probe's fix watermark (SENTINEL_SINCE, set by watch-companion-loop resolve), an epoch, 0 for
-# none. ledger_coverage, untracked_merged_prs, wants_unstamped and reds_unfixed count from the later of
-# their window start and this, so a watch's fixed red stops counting the events before its fix; a row
-# with no readable time still counts, so a watermark never hides it. The step ages and the other
-# chain KPIs read the state now, which a watermark would only hide.
+# none. ledger_coverage, untracked_merged_prs, wants_unstamped, reds_unfixed and bottleneck --check
+# stalled count from the later of their window start and this, so a watch's fixed red stops counting the
+# events before its fix; a row with no readable time still counts, so a watermark never hides it. The step
+# ages and the other chain KPIs read the state now, which a watermark would only hide. bottleneck --check
+# pools keeps its whole window: it shares a watch with the stall check, and a sessions fix must not clear it.
 FIX_SINCE=0; if [[ "${SENTINEL_SINCE:-}" =~ ^[0-9]+$ ]]; then FIX_SINCE=$SENTINEL_SINCE; fi
 : "${BENCH_LEAD_DAYS:=28}"            # request_to_live_h: days of done items read back, so a merge released this week counts
 : "${BENCH_FLEET_COST_CMD:=agent-usage fleet-cost --json}"
@@ -1421,16 +1422,17 @@ epics_section() {
       end' <<<"$ej"
 }
 
-# bottleneck_data <now> [sessions]: the Bottlenecks rows as one JSON object, {rows, branches}, the one
+# bottleneck_data <now> [scope] [since]: the Bottlenecks rows as one JSON object, {rows, branches}, the one
 # computation the report (bottleneck_section) and `bottleneck --check` both read. A row is {key, what,
 # h, unit, detail} (a session row also carries `top`: its three biggest sessions as {target, h}); h is
 # null when its source is unreadable. Waited hours come from the queue length sampled every 10
 # minutes, and low-water hours from fleet-dispatch stats' under_low_water gauge, sampled the same way.
 # `sessions` skips the Prometheus and run-ledger reads and returns only the two session rows; `pools`
 # reads only the pool rows (no series is as unreadable as no answer: cc:pool_waiting has a row for every
-# pool, so an empty read means the rule or Prometheus is gone, not that nothing waited).
+# pool, so an empty read means the rule or Prometheus is gone, not that nothing waited). <since>, an epoch,
+# starts the session rows there instead of at the window start (window_stats).
 bottleneck_data() {
-  local t="$1" scope="${2:-all}" win="${BENCH_WINDOW_H}h" pool=null queued=null low=null
+  local t="$1" scope="${2:-all}" since="${3:-}" win="${BENCH_WINDOW_H}h" pool=null queued=null low=null
   if [ "$scope" = all ] || [ "$scope" = pools ]; then
     pool=$(prom_map pool "sum_over_time(cc:pool_waiting[$win:10m]) / 6" "$t") || pool=null
     [ "$pool" != '{}' ] || pool=null
@@ -1439,7 +1441,7 @@ bottleneck_data() {
     queued=$(prom_map kind "sum_over_time(ci_governor_backlog_units{kind=\"local\"}[$win:10m]) / 6" "$t") || queued=null
     low=$(prom_map topic "sum_over_time(max by (topic) (mqtt_under_low_water{topic=~\"agents_.+_summary_dispatch\"})[$win:10m]) / 6" "$t") || low=null
   fi
-  jq -n --arg scope "$scope" --argjson pool "$pool" --argjson queued "$queued" --argjson low "$low" --slurpfile w <([ "$scope" = pools ] && echo "{}" || window_stats "$t") \
+  jq -n --arg scope "$scope" --argjson pool "$pool" --argjson queued "$queued" --argjson low "$low" --slurpfile w <([ "$scope" = pools ] && echo "{}" || window_stats "$t" $since) \
       --rawfile r <([ "$scope" != all ] || runs_between $((t - BENCH_WINDOW_H * 3600)) "$t") "$JQ_LIB"'
     def hours($k): map(.[$k]) | add // 0 | . / 60;
     def top($k): map(select(.[$k] > 0)) | sort_by(-.[$k]) | .[:3] | map({target, h: (.[$k] / 60)});
@@ -1490,15 +1492,19 @@ bottleneck_bound() {
 
 # bottleneck_check_stalled <now>: the Sessions stalled row against stalled_session_hours_max. One line
 # naming the top three sessions and exit 1 past the bound; exit 2 when the sampler is stale (its newest
-# sample older than two cadences, so a dead sampler cannot read as no stall) or the bound is unset.
+# sample older than two cadences, so a dead sampler cannot read as no stall) or the bound is unset. It
+# counts from the later of the window start and the watch's fix watermark (FIX_SINCE): a stall a merged
+# fix ended is counted up to the fix, never for the next 24h, and a stall after it still trips.
 bottleneck_check_stalled() {
-  local t="$1" max last out
+  local t="$1" max last out since span
   max=$(bottleneck_bound stalled_session_hours_max) || { say "bottleneck --check stalled: no stalled_session_hours_max in $KPI_THRESHOLDS"; return 2; }
   last=$(jq -s 'map(.epoch) | max // 0' "$PROGRESS" 2>/dev/null) || last=0
   [ $((t - ${last:-0})) -le $((BENCH_GAP_CAP_MIN * 60)) ] || { say "bottleneck --check stalled: the newest session sample in $PROGRESS is older than $BENCH_GAP_CAP_MIN minutes"; return 2; }
-  out=$(bottleneck_data "$t" sessions | jq -r --argjson max "$max" "$JQ_LIB"'
+  since=$((t - BENCH_WINDOW_H * 3600)); span="over the last ${BENCH_WINDOW_H}h"
+  if [ "$FIX_SINCE" -gt "$since" ]; then since=$FIX_SINCE; span="since the fix at $(date -d "@$since" '+%F %H:%M')"; fi
+  out=$(bottleneck_data "$t" sessions "$since" | jq -r --argjson max "$max" --arg span "$span" "$JQ_LIB"'
     .rows[] | select(.key == "stalled") | select(.h > $max)
-    | "\(.h * 100 | round / 100) session-hours stalled over the last '"$BENCH_WINDOW_H"'h, past \($max): \(.detail)"') || { say "bottleneck --check stalled: its source cannot be read"; return 2; }
+    | "\(.h * 100 | round / 100) session-hours stalled \($span), past \($max): \(.detail)"') || { say "bottleneck --check stalled: its source cannot be read"; return 2; }
   [ -z "$out" ] || { printf '%s\n' "$out"; return 1; }
 }
 
