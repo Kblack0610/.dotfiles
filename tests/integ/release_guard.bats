@@ -98,6 +98,22 @@ allowed() { assert_success; assert_output ''; }
   assert_output --partial 'origin did not answer'
 }
 
+@test "a phone or iOS release dispatch must run on the tag it names, which its game job requires" {
+  # ar-2536: --ref main (or no --ref) passed the tag check, and release-game.yml refused the run
+  local c
+  for c in 'gh workflow run phone-release.yml --ref main -f tag=v0.5.2 -f game=dodginballs' \
+           'gh workflow run phone-release.yml -f tag=v0.5.2 -f game=dodginballs' \
+           'gh workflow run ios-release.yml -f tag=v0.5.2' 'gh workflow run ios-release.yml --ref=main -f tag=v0.5.2'; do
+    run at "$T/game" "$c"
+    denied
+    assert_output --partial 'refuses'
+  done
+  run at "$T/game" 'gh workflow run phone-release.yml --ref v0.5.2 -f tag=v0.5.2 -f game=dodginballs -f track=none'
+  allowed
+  run at "$T/game" 'gh workflow run ios-release.yml --ref refs/tags/v0.5.2 -f tag=v0.5.2'
+  allowed
+}
+
 @test "writes to rulesets, environments and keys are denied; reads pass" {
   local c
   for c in 'gh api -X PUT repos/o/r/rulesets/27685858 --input r.json' 'gh api -X PUT repos/o/unity-core-playground/rulesets/27685858 --input key.json' 'gh api repos/o/r/rulesets -f name=x' \
