@@ -170,6 +170,20 @@ setup() {
   ! grep -q 'StartLimit' "$TIMERS/agentctl@eps.service.d/agentctl-oneshot.conf"
 }
 
+@test "a oneshot gets a hard RuntimeMaxSec, 4h unless its conf sets MAX_RUNTIME; a persistent runner gets none; a bad value is an invalid conf (ar-2022)" {
+  echo 'MAX_RUNTIME=15min' >> "$AGENTCTL_CONF_DIR/alpha.conf"
+  echo 'MAX_RUNTIME=infinity' >> "$AGENTCTL_CONF_DIR/beta.conf"
+  printf 'NAME=gamma\nKIND=persistent\nLANE=observe\nDESCRIPTION=\047test daemon\047\nEFFECT=none\nCOMMAND=/bin/true\nMAX_RUNTIME=1h\n' > "$AGENTCTL_CONF_DIR/gamma.conf"
+  printf 'NAME=bad\nKIND=oneshot\nSCOPE=singleton\nLANE=maintain\nDESCRIPTION=x\nEFFECT=none\nCOMMAND=/bin/true\nMAX_RUNTIME=soon\n' > "$AGENTCTL_CONF_DIR/bad.conf"
+  printf 'NAME=dflt\nKIND=oneshot\nSCOPE=singleton\nLANE=maintain\nDESCRIPTION=x\nEFFECT=none\nCOMMAND=/bin/true\n' > "$AGENTCTL_CONF_DIR/dflt.conf"
+  run "$AGENTCTL_BIN" reload
+  assert_output --partial 'skipping invalid config bad: invalid MAX_RUNTIME=soon'
+  grep -qx 'RuntimeMaxSec=15min' "$TIMERS/agentctl@alpha.service.d/agentctl-oneshot.conf"
+  grep -qx 'RuntimeMaxSec=infinity' "$TIMERS/agentctl@beta.service.d/agentctl-oneshot.conf"
+  grep -qx 'RuntimeMaxSec=4h' "$TIMERS/agentctl@dflt.service.d/agentctl-oneshot.conf"
+  [ ! -e "$TIMERS/agentctl@gamma.service.d/agentctl-oneshot.conf" ]
+}
+
 @test "reload removes the generated drop-in of a runner whose conf is gone, and keeps a hand-written one" {
   "$AGENTCTL_BIN" reload
   [ -f "$TIMERS/agentctl@beta.service.d/agentctl-oneshot.conf" ]
