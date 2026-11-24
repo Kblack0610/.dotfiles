@@ -600,7 +600,7 @@ board_only_say() {
 # admission [--json] -> admission_now, the items the cap held and the adds sent to the board (the
 # board-only rule) in the last AQ_HELD_DAYS, each counted once however often its filer retried, and
 # the items an urgent or red add returned to the board (make_room), so urgent inflation shows.
-# --json adds `day`, the last 24h: `held` as held_7d counts it, and `why`, the distinct items per
+# --json adds `day`, the last 24h: `held` as held_7d counts it, and `why`, those same items per
 # reason (a line from before the log kept its reason is a cap hold); the pipeline's admission step.
 cmd_admission() {
   local json='' now r l since held=0 boarded=0 returned=0 day=''
@@ -616,7 +616,7 @@ cmd_admission() {
       | ($w | held | items)
       , ([$w[] | select(.why | IN("board-only", "gated")) | [.project, .slug, .title]] | unique | length)
       , ([$w[] | select(.why == "returned")] | length)
-      , ({held: ($x | held | items), why: ($x | group_by(.why // "cap") | map({key: (.[0].why // "cap"), value: items}) | from_entries)} | tojson)' \
+      , ({held: ($x | held | items), why: ($x | held | group_by(.why // "cap") | map({key: (.[0].why // "cap"), value: items}) | from_entries)} | tojson)' \
       "$AQ_ADMISSION_LOG" 2>/dev/null | paste -sd' ')
   fi
   if [ -n "$json" ]; then

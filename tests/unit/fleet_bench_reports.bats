@@ -579,7 +579,7 @@ STUB
   pipeline_fixture
   lt() { date -u -d "@$((T0 - $1))" +%Y-%m-%dT%H:%M:%S%:z; }
   stop_stub "$((T0 - 3840))" 'pace target: 41 live sessions, the present target is 40' 'Clears when a live session ends'
-  jq -cn --argjson s "$((T0 - 3840))" '{runnable: 50, held: "pace target: 41 live sessions, the present target is 40", held_kind: "slots", held_since: $s, starved_min: 60}' > "$BENCH_HEADROOM"
+  jq -cn '{runnable: 50, held: "pace target: 41 live sessions, the present target is 40", held_kind: "slots", starved_min: 60}' > "$BENCH_HEADROOM"
   {
     echo "[$(lt 5000)] outcome=WORKED started queue item f0 on the run floor"
     for a in 3000 2400 1800; do echo "[$(lt $a)] outcome=BLOCKED why: tagged 3 for a plan; pace target: 41 live sessions"; done
@@ -599,6 +599,16 @@ STUB
   run jq -r '(.steps[] | select(.step == "dispatch") | .verdict), .headline.text' <<<"$output"
   assert_line 'stopped'
   assert_line 'dispatch, stopped 1h04m (107% of 1h00m): pace target: 41 live sessions, the present target is 40. Clears when a live session ends.'
+  # An unreadable dispatch record cannot say no floor started: over, never stopped
+  rm "$BENCH_DISPATCH_LOG"
+  run "$SUBJECT" pipeline --json
+  run jq -c '.steps[] | select(.step == "dispatch") | [.verdict, .floor_starts]' <<<"$output"
+  assert_output '["over",null]'
+  # A hold the pass cleared: `stopped` prints nothing, and the headroom the pass wrote first is no hold
+  export BENCH_STOPPED_CMD=true
+  run "$SUBJECT" pipeline --json
+  run jq -c '.steps[] | select(.step == "dispatch") | [.measure, .verdict]' <<<"$output"
+  assert_output '[0,"ok"]'
 }
 
 @test "pipeline: the dispatch stop reason reaches the snapshot whole, past the 160 the stop line keeps (ar-4985)" {
@@ -621,14 +631,14 @@ STUB
 
 @test "pipeline: admission scores the items the queue cap held in 24h, and a step with no bound reads -, never ok (ar-4985)" {
   pipeline_fixture
-  export BENCH_ADMISSION_CMD="echo {\"held_7d\":5,\"day\":{\"held\":2,\"why\":{\"cap\":2,\"gated\":1,\"returned\":1}}}"
+  export BENCH_ADMISSION_CMD="echo {\"held_7d\":5,\"day\":{\"held\":2,\"why\":{\"cap\":2}}}"
   run "$SUBJECT" pipeline --json
   assert_success
   json=$output
   run jq -c '.steps[] | select(.step == "admission" or .step == "done" or .step == "inbox") | [.step, .measure, .measure_bound, .score, .verdict]' <<<"$json"
   assert_output "$(printf '%s\n' '["inbox",null,null,null,"-"]' '["admission",2,null,null,"-"]' '["done",null,null,null,"-"]')"
   run jq -c '.steps[] | select(.step == "admission") | .why' <<<"$json"
-  assert_output '[{"reason":"cap","n":2},{"reason":"gated","n":1},{"reason":"returned","n":1}]'
+  assert_output '[{"reason":"cap","n":2}]'
   # NEGATIVE CONTROL: with a bound, the same count scores against it and reads ok
   echo admission_held_24h_max=4 >> "$KPI_THRESHOLDS"
   run "$SUBJECT" pipeline --json

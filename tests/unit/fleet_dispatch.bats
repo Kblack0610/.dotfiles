@@ -1996,10 +1996,12 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
 
 @test "headroom counts what could start now against each limit" {
   two_items
-  export DISPATCH_PER_PASS=1 DISPATCH_TARGET_AWAY=6
+  export DISPATCH_PER_PASS=1 DISPATCH_TARGET_AWAY=6 DISPATCH_STARVED_MIN=45
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_success
   assert_equal "$(jq -r '[.could_start, .per_pass_limited, .runnable, .slots_free, .held] | @tsv' <<<"$output")" $'2\ttrue\t2\t6\t'
+  # The dispatch step's bound in the pipeline snapshot; the hold's start is read live from `stopped`, never here
+  assert_equal "$(jq -c '[.starved_min, has("held_since")]' <<<"$output")" '[45,false]'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
   assert_output --partial 'could start now: 2 of 2 runnable (a pass starts up to 1, level mid)'
   assert_not_called 'wt new'

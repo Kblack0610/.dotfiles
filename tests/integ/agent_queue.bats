@@ -4520,7 +4520,7 @@ second line of the brief
   assert_output "h,head,r1,req,tail,u1"
   run "$AQ" admission --json
   assert_equal "$(jq -c '[.held_7d, .returned_7d]' <<<"$output")" '[1,2]'
-  assert_equal "$(jq -c '[.day.held, .day.why.cap, .day.why.returned]' <<<"$output")" '[1,1,2]'
+  assert_equal "$(jq -c '[.day.held, .day.why.cap, .day.why.returned]' <<<"$output")" '[1,1,null]'
   run jq -r 'select(.why == "returned") | .slug' "$AGENT_QUEUE_DIR/admission.jsonl"
   assert_output "b
 a"
