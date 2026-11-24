@@ -52,8 +52,6 @@ struct Shown<'a> {
     buckets: &'a [String],
     errors: &'a [String],
     table: Summary,
-    /// What the view's rows cost over every page (`session_table::spend`), for the overview row.
-    spend_usd: f64,
 }
 
 pub struct Cache {
@@ -73,11 +71,10 @@ impl Default for Cache {
     }
 }
 
-/// One page of the rows the view keeps (`layout`'s `sessions` size); the spend is the whole view's.
+/// One page of the rows the view keeps (`layout`'s `sessions` size).
 fn render(r: &Read, q: &TableQuery) -> String {
     let view = View::new::<SessionRow>(&q.q, &q.s, &q.sort, &q.dir);
     let (mut rows, mut table) = view.summary(&r.rows);
-    let spend_usd = session_table::spend(rows.iter().copied());
     let per = layout::page_rows("sessions/sessions");
     let page = q.pg.parse().unwrap_or_else(|_| {
         let at = rows.iter().position(|r| {
@@ -87,7 +84,6 @@ fn render(r: &Read, q: &TableQuery) -> String {
     });
     table::page(&mut rows, &mut table, page, per);
     let out = Shown {
-        spend_usd,
         rows,
         buckets: &r.buckets,
         errors: &r.errors,
@@ -231,7 +227,6 @@ mod tests {
         assert_eq!(v["rows"][0]["key"], format!("k{per}"));
         assert_eq!(v["table"]["pager"]["page"], 2);
         assert_eq!(v["table"]["shown"], per + 3);
-        assert_eq!(v["spend_usd"], (per + 3) as f64);
         let sel = |sel: &str, pg: &str| TableQuery {
             sel: sel.into(),
             pg: pg.into(),
