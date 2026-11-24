@@ -37,7 +37,7 @@
 #       (--item SLUG | --brief FILE --row KEY [--mode plan] [--now] [--cwd REPO]
 #        | --resume ID --session NAME --cwd DIR [--server S] [--window NAME] [--item SLUG] [--prompt TEXT])
 #       [--host W]                   start ONE session the way every agent must: see cmd_start
-#   fleet-dispatch hosts [--json]    who holds the fleet lease; each fleet worker: placed or not, run units, load, and why it takes no session; then (text only) each project with queued light items no worker can take, and why
+#   fleet-dispatch hosts [--json]    who holds the fleet lease; each fleet worker: placed or not, run units, load, and why it takes no session; then (text only) each project with queued items no worker can take, and why
 #   fleet-dispatch harness-ready H...  each headless harness this machine runs as a fleet worker, else "H: why" (probe_hosts asks it on each worker)
 #   fleet-dispatch kit                 the launchers this machine runs a fleet session on (claude, codex, opencode, agy) and srt when it can hold a run (probe_hosts and start --host ask it on each worker)
 #   fleet-dispatch lane-sandbox CWD    a claude session's lane sandbox env, then its --settings flags, built here under DISPATCH_SANDBOX_PROFILE (start --host asks it on the worker)
@@ -5920,7 +5920,7 @@ start_items() {
       local plan; plan=$(jq -r '.plan // ""' <<<"$PICKED")
       [ -z "$plan" ] || PLANS_STARTED="${PLANS_STARTED:+$PLANS_STARTED$'\n'}$plan"
     fi
-    if [ "$rc" -eq 0 ] && [ -n "$PLACE_HOST" ]; then HOST_FREE[$PLACE_HOST]=$(( HOST_FREE[$PLACE_HOST] - 1 ))
+    if [ "$rc" -eq 0 ] && [ -n "$PLACE_HOST" ]; then HOST_FREE[$PLACE_HOST]=$(( HOST_FREE[$PLACE_HOST] - $(weight_units "$(jq -r '.weight // "light"' <<<"$PICKED")") ))
     elif [ "$rc" -eq 0 ]; then UNITS_FREE=$(( UNITS_FREE - $(weight_units "$(jq -r '.weight // "light"' <<<"$PICKED")") ))
     fi
     [ "$rc" -eq 4 ] && taken=$((taken + 1)) || n=$((n + 1))
@@ -6250,16 +6250,18 @@ host_runs() {
   [ "$2" = claude ] || host_has "${HOST_HARN[$1]:-}" "$2"
 }
 
-# host_why <name> -> why that worker takes no session now, or nothing. Its pace is this runner's
-# (MAX_LOAD) over its own load and cores; its units are its own fleet_max_live.
+# host_why <name> [units] -> why that worker takes no session of <units> run units (default 1) now, or
+# nothing. Its pace is this runner's (MAX_LOAD) over its own load and cores; its units are its own
+# fleet_max_live, a heavy item holding 2 and a light one 1 (weight_units), as they do here.
 host_why() {
-  local p="${HOST_PROBE[$1]:-}" load cores ready mem conflict notes
+  local p="${HOST_PROBE[$1]:-}" need="${2:-1}" load cores ready mem conflict notes
   [ -n "$p" ] || { echo "$1 is not placed (fleet_place false, or not in $FLEET_HOSTS_GROUP)"; return; }
   if [ "$p" = unreachable ]; then
     echo "$1 did not answer over ssh"
     return
   fi
   [ "${HOST_FREE[$1]:-0}" -gt 0 ] || { echo "$1 is at its fleet_max_live"; return; }
+  [ "${HOST_FREE[$1]}" -ge "$need" ] || { echo "$1 has ${HOST_FREE[$1]} of its fleet_max_live run units free, and a heavy item needs $need"; return; }
   read -r load cores ready mem conflict notes <<<"$p"
   [ "$ready" = 1 ] || { echo "$1 has no wt, or a store that is not a peer clone (store-sync join)"; return; }
   [ "${conflict:-0}" = 0 ] || { echo "$1: its store is in a merge conflict with origin (~/.agent/.sync/conflict), so a session's queue writes cannot reach origin: resolve it there (QUEUE.md, Troubleshooting)"; return; }
@@ -6280,13 +6282,14 @@ remote_open() {
 }
 
 # host_agent <item json> -> the harness a worker would run the item on, or nothing when the item
-# stays on this machine by design: heavy, a plan, a red, a cloud-ok or trainee-batch tag, or a thread
-# it resumes here. host_takers and unplaced both read it, so the gap report never drifts from placement.
+# stays on this machine by design: a red, a cloud-ok or trainee-batch tag, or a thread it resumes here.
+# A heavy item and a plan item go too: a worker runs no Unity editor (tests run on the runner pool),
+# and it reads the plan file from its store peer clone, which carries ~/.agent/plans (ar-2891).
+# host_takers and unplaced both read it, so the gap report never drifts from placement.
 host_agent() {
   local agent
   ! is_red "$1" || return 0
-  agent=$(jq -r 'select((.weight // "light") == "light" and (.plan // "") == ""
-    and ((" " + (.tags // "") + " ") | (contains(" cloud-ok ") or contains(" trainee-batch ")) | not)) | .agent // "claude"' <<<"$1")
+  agent=$(jq -r 'select((" " + (.tags // "") + " ") | (contains(" cloud-ok ") or contains(" trainee-batch ")) | not) | .agent // "claude"' <<<"$1")
   [ -n "$agent" ] || return 0
   # A trainee floor start runs on the harness the floor chose for it, so the worker must run that one.
   [ "${TRAINEE_PASS:-0}" != 1 ] || [ -z "${TRAINEE_HARNESS:-}" ] || agent=$TRAINEE_HARNESS
@@ -6294,10 +6297,10 @@ host_agent() {
   echo "$agent"
 }
 
-# host_takers <item json> -> the roster's workers provisioned for this item, one name a line: a
-# light item with no plan and no cloud route, in a repo the worker has cloned (fleet_repos, fleet_repos_extra), on a
-# harness the worker runs (host_runs: its kit, and past claude fleet_harnesses, probed ready). Heavy work (Unity), plans,
-# a codex item that resumes its thread (the rollout is in this machine's ~/.codex, item_rollout),
+# host_takers <item json> -> the roster's workers provisioned for this item, one name a line: an
+# item with no cloud route, heavy or light, plan or none (host_agent), in a repo the worker has cloned (fleet_repos,
+# fleet_repos_extra), on a harness the worker runs (host_runs: its kit, and past claude fleet_harnesses, probed ready).
+# A codex item that resumes its thread (the rollout is in this machine's ~/.codex, item_rollout),
 # a trainee batch review (it reads the diffs in this machine's TRAINEE_DIR), a red (its watch state,
 # runner logs and units are this lease holder's, and its probe needs this machine's mounts and
 # kubeconfig: ar-3613 reached razer-laptop, which has neither; a red canary too, and a red no floor
@@ -6320,12 +6323,14 @@ host_takers() {
     | select($c == null or any(.first[]?; . as $x | $c | index($x)))) | .[].name')
 }
 
-# place_host <item json> [first] -> the first worker host_takers names that takes a session now.
+# place_host <item json> [first] -> the first worker host_takers names that takes a session of the
+# item's run units (weight_units) now.
 place_host() {
-  local name
+  local name need
   [ ${#HOST_PROBE[@]} -gt 0 ] || return 1
+  need=$(weight_units "$(jq -r '.weight // "light"' <<<"$1")")
   while IFS= read -r name; do
-    [ -n "${HOST_PROBE[$name]:-}" ] && [ -z "$(host_why "$name")" ] && { echo "$name"; return 0; }
+    [ -n "${HOST_PROBE[$name]:-}" ] && [ -z "$(host_why "$name" "$need")" ] && { echo "$name"; return 0; }
   done < <(host_takers "$1" "${2:-}")
   return 1
 }
@@ -6418,7 +6423,7 @@ cmd_hosts() {
     unplaced <<<"$queue"; fi
 }
 
-# unplaced -> one line per project and reason for the queued light items no worker could take on
+# unplaced -> one line per project and reason for the queued items no worker could take on
 # any pass (host_takers names none), so a gap in the workers' standard repo list (home-config
 # fleet_workers fleet_repos, fleet_repos_extra) or a harness no worker runs shows here. A worker that is merely busy
 # still takes the item later, so capacity is not a reason. stdin: the active queue as
@@ -6438,7 +6443,7 @@ unplaced() {
     printf '%s\t%s\n' "$(jq -r .project <<<"$it")" "$why"
   done < <(jq -c 'select(.state == "queued")' 2>/dev/null) |
     sort | uniq -c | while read -r n rest; do
-      printf 'unplaceable: %s, %s queued light item%s: %s\n' "${rest%%$'\t'*}" "$n" "$([ "$n" = 1 ] || echo s)" "${rest#*$'\t'}"
+      printf 'unplaceable: %s, %s queued item%s: %s\n' "${rest%%$'\t'*}" "$n" "$([ "$n" = 1 ] || echo s)" "${rest#*$'\t'}"
     done
 }
 

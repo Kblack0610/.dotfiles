@@ -918,7 +918,7 @@ all:
           ansible_user: kb
     fleet_workers:
       vars:
-        fleet_max_live: 1
+        fleet_max_live: ${WORKER_MAX_LIVE:-1}
         fleet_place: ${2:-true}
       hosts:
         razer-laptop:
