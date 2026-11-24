@@ -984,7 +984,9 @@ wt_next_slot() {
       #
       # With no session, a hold that outlived its directory is dropped here: `rm -rf` or a husk
       # reap leaves the entry, and `prune` skips a locked one, so it would pin the slot for good.
-      { git -C "$main" worktree unlock "$path" && git -C "$main" worktree remove "$path"; } 2>/dev/null || :
+      # An unlocked entry (a reap killed after its unlock) is dropped too: unlock fails on it, so
+      # it must not gate the remove, or `git worktree add` refuses the path (ar-5133).
+      { git -C "$main" worktree unlock "$path"; git -C "$main" worktree remove "$path"; } 2>/dev/null || :
       fresh="$n"
     fi
     n=$((n + 1))
@@ -2036,15 +2038,29 @@ wt_closed_pane_scopes() {
 }
 
 # wt_scope_leftovers <cgroup> -- the live pids in a closed pane's scope, but for WT_ORPHAN_KEEP. A
-# zombie is already dead, waiting on its parent, so it is not one.
+# zombie is already dead, waiting on its parent, so it is not one. Nor is a descendant of a tmux
+# server in the scope: a server started from a pane lives in that pane's scope, and so does every
+# `run-shell` job it runs, which belongs to the live server, not the closed pane. Why: wind-down's
+# `run-shell -b` reap ran in the lab server's scope, and orphan-gc killed it inside `git worktree
+# remove`, leaving a registered worktree with no directory that held dispatch FAILED (ar-5133).
 wt_scope_leftovers() {
-  local proc="${WT_PROC_ROOT:-/proc}" pid comm stat
+  local proc="${WT_PROC_ROOT:-/proc}" procs="${WT_CGROUP_ROOT:-/sys/fs/cgroup}$1/cgroup.procs" pid comm stat p d servers=' '
+  while read -r pid; do
+    [ "$(cat "$proc/$pid/comm" 2>/dev/null)" = 'tmux: server' ] && servers+="$pid "
+  done 2>/dev/null < "$procs"
   while read -r pid; do
     comm=$(cat "$proc/$pid/comm" 2>/dev/null) stat=$(cat "$proc/$pid/stat" 2>/dev/null)
     [[ "$comm" =~ ^($WT_ORPHAN_KEEP)$ ]] && continue
     [[ "${stat##*) }" == Z* ]] && continue
+    if [ "$servers" != ' ' ]; then
+      p=$pid d=0
+      while [ "${p:-0}" -gt 1 ] && [ "$d" -lt 64 ]; do
+        p=$(awk '$1 == "PPid:" { print $2; exit }' "$proc/$p/status" 2>/dev/null) d=$((d + 1))
+        [[ "$servers" == *" $p "* ]] && continue 2
+      done
+    fi
     printf '%s\n' "$pid"
-  done 2>/dev/null < "${WT_CGROUP_ROOT:-/sys/fs/cgroup}$1/cgroup.procs"
+  done 2>/dev/null < "$procs"
 }
 
 # wt_scope_keeps <cgroup> -- true when the scope holds a process WT_ORPHAN_KEEP spares, so
