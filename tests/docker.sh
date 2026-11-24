@@ -14,6 +14,8 @@
 #   TMUX_STOCK=1 ./docker.sh ...    # 3.8 without .local/src/tmux/patched: a negative control
 #   ./docker.sh --image             # print the image tag and exit (CI keys its image cache on it)
 #   ./docker.sh --build             # build the image if it is missing, and exit
+#   ./docker.sh --run <cmd> [args]  # one command in the image, from the repo root (CI's cargo builds)
+#   DOCKER_NETWORK=bridge ./docker.sh test-rust   # a run that needs the network (crates, npm)
 #
 # The argument is a make target run INSIDE the container, so it must be an -inner
 # target. `./docker.sh test-ui` looks right and is not: the Makefile's test-ui is the
@@ -27,8 +29,13 @@ REPO="$(cd "$HERE/.." && pwd)"
 TMUX_REF="${TMUX_REF:-3.8}"
 TMUX_STOCK="${TMUX_STOCK:-}"
 FZF_REF="${FZF_REF:-0.74.1}"
+RUST_TOOLCHAIN="$(<"$HERE/rust-toolchain")"
+# The phone render harness's playwright-core (tests/agent-web/phone/render.mjs). Bump it here.
+PLAYWRIGHT_CORE=1.62.1
 CONTEXT="$REPO/.local/src/tmux/patched"
 DOCKER="${DOCKER:-docker}"
+# The suite needs no network; a run that fetches crates or npm packages asks for it by name.
+DOCKER_NETWORK="${DOCKER_NETWORK:-none}"
 
 # One build identity: the default tag ends in a hash of everything the image is built from
 # (the Dockerfile, the context and the build args), so an image already present under that
@@ -39,7 +46,7 @@ build_hash() {
   {
     cat "$HERE/Dockerfile"
     (cd "$CONTEXT" && find -L . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum)
-    printf '%s\n' "$TMUX_REF" "$TMUX_STOCK" "$FZF_REF"
+    printf '%s\n' "$TMUX_REF" "$TMUX_STOCK" "$FZF_REF" "$RUST_TOOLCHAIN" "$PLAYWRIGHT_CORE"
   } | sha256sum | cut -c1-12
 }
 if [ -n "${COCKPIT_TEST_IMAGE:-}" ]; then
@@ -71,10 +78,14 @@ if [ -z "${COCKPIT_TEST_IMAGE:-}" ] && "$DOCKER" image inspect "$IMAGE" >/dev/nu
 else
   echo "==> image $IMAGE (tmux $TMUX_REF, fzf $FZF_REF)"
   # The context is the patch directory: the one thing the image copies.
-  "$DOCKER" build \
+  # --pull: a newer debian base under the same tag rebuilds every layer, apt included, so a
+  # host's layer cache cannot carry last week's packages into this week's image.
+  "$DOCKER" build --pull \
     --build-arg "TMUX_REF=$TMUX_REF" \
     --build-arg "TMUX_STOCK=$TMUX_STOCK" \
     --build-arg "FZF_REF=$FZF_REF" \
+    --build-arg "RUST_TOOLCHAIN=$RUST_TOOLCHAIN" \
+    --build-arg "PLAYWRIGHT_CORE=$PLAYWRIGHT_CORE" \
     -t "$IMAGE" -f "$HERE/Dockerfile" "$CONTEXT" >/dev/null
   # A new hash leaves the old image tagged, and prune skips tagged images, so drop this
   # tmux/fzf pair's older builds here. One another run is still using stays.
@@ -85,18 +96,26 @@ else
 fi
 [ "${1:-}" = "--build" ] && exit 0
 
-# --network none      the suite needs no network; nothing can phone home
+# --network none      the default (DOCKER_NETWORK above): nothing can phone home
 # --init              reap orphans. A crashed test can leave fzf/tmux children behind, and
 #                     without an init as PID 1 they survive as zombies inside the run.
-# --user host:uid     artifacts land owned by the developer instead of root
+# --user host:uid     artifacts land owned by the developer instead of root. That UID has no
+#                     passwd entry in the image, so USER is passed and the image's entrypoint
+#                     adds one under that name (tests/Dockerfile).
 # --rm                nothing persists but what is written into the bind mount
+# --shm-size          chromium (the phone render harness) runs out of docker's 64 MB /dev/shm
 run_args=(
   --rm --init
-  --network none
+  --network "$DOCKER_NETWORK"
   --user "$(id -u):$(id -g)"
+  --env "USER=$(id -un)"
+  --shm-size 1g
   --volume "$REPO:/work"
   --workdir /work
 )
+# In CI the cargo registry goes in the checkout, so it outlives the container and actions/cache
+# keeps it. A local run leaves it in the container, so no worktree grows a registry of its own.
+[ -n "${CI:-}" ] && run_args+=(--env CARGO_HOME=/work/.cargo-ci)
 
 # Git WORKTREE support. In a worktree, `.git` is a FILE containing
 # `gitdir: /path/to/main/.git/worktrees/<name>`, which lives OUTSIDE this bind mount - so
@@ -110,19 +129,29 @@ if [ -f "$REPO/.git" ]; then
     echo "==> worktree detected; also mounting $main_gitdir (ro) so git resolves"
   fi
 fi
-# Only forward BATS_FLAGS when the caller actually set it. Passing it through empty would
+# The host's settings a run reads, each only when set. Passed through empty, BATS_FLAGS would
 # override the Makefile's `BATS_FLAGS ?=` default -- make treats a set-but-empty environment
 # variable as a definition -- silently dropping --print-output-on-failure.
-[ -n "${BATS_FLAGS:-}" ] && run_args+=(--env "BATS_FLAGS=$BATS_FLAGS")
 # CI turns a missing prerequisite (the agent-panel build session_send.bats drives) from a skip
-# into a failure, so a red cannot hide as a skip there.
-[ -n "${CI:-}" ] && run_args+=(--env "CI=$CI")
-# JUNIT=1 writes the JUnit reports CI uploads (tests/Makefile).
-[ -n "${JUNIT:-}" ] && run_args+=(--env "JUNIT=$JUNIT")
+# into a failure, so a red cannot hide as a skip there. JUNIT=1 writes the JUnit reports CI
+# uploads (tests/Makefile). RUST_JOBS and CARGO_INCREMENTAL are the rust job's (tests/rust.sh),
+# TILECAST_READ_TOKEN the Tilecast schema check's (tests/agent-web/tilecast-schema.sh).
+# No path goes through: the checkout is /work in here, so a path is passed as /work/...
+# Each goes by name alone, so docker reads the value from this environment and a token never
+# sits in the docker command line.
+for v in BATS_FLAGS CI JUNIT RUST_JOBS CARGO_INCREMENTAL TILECAST_READ_TOKEN; do
+  [ -n "${!v:-}" ] && export "${v?}" && run_args+=(--env "$v")
+done
 
 if [ "${1:-}" = "--shell" ]; then
   shift
   exec "$DOCKER" run -it "${run_args[@]}" "$IMAGE" bash "$@"
+fi
+if [ "${1:-}" = "--run" ]; then
+  shift
+  # With no command, docker would run the image's CMD: the whole container suite.
+  [ $# -gt 0 ] || { echo "docker.sh: --run needs a command" >&2; exit 2; }
+  exec "$DOCKER" run "${run_args[@]}" "$IMAGE" "$@"
 fi
 
 targets=("${@:-test-container}")

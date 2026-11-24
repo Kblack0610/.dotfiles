@@ -2483,7 +2483,9 @@ ingest_flow() {
 # not in the age: agent-queue's one rule), and the items finished in the last 24h. In, out and dwell
 # come from the record (`notes log --steps`), which cannot see work older than its start (since).
 # drift counts the queue items the record and the queue folders place apart: at another step, held
-# by the record but gone from the queue, or queued after the record began with no event of it.
+# by the record but gone from the queue, or queued after the record began with no event of it. A fleet
+# worker's closes reach the record through fleet-dispatch's worker_records, so a gap that stays is an
+# event no writer sent.
 #
 # Each step also carries score (its measure over its bound), verdict (stopped, over at 1 or more,
 # near at 0.8 or more, ok; "-" with no bound or no measure, never ok), why (the top 3 reasons as
