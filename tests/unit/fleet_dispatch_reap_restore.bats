@@ -1554,7 +1554,7 @@ esac'
   assert_failure
 }
 
-@test "reap moves an #after/ gate on a row sent to the human sheet to the sheet row, in either lane and across projects, and leaves every other gate (ar-3172, ar-4768)" {
+@test "reap moves an #after/ gate on a row sent to the human sheet to the sheet row, in either lane and across projects and profiles, and leaves every other gate (ar-3172, ar-4768)" {
   project game beta "$SANDBOX/repos/game"
   row game agent gm-1 "- [ ] feat(game): the base $T <!-- id:gm-1 -->"
   row game human hm-1 "- [ ] feat(game): a copy of an open row (agent row gm-1) <!-- id:hm-1 -->"
@@ -1568,6 +1568,10 @@ esac'
   # a gate on another project's row follows it to that project's sheet (apo-181 on ucp-2631, ar-4768)
   row app human ap-9 "- [ ] feat(app): store upload (agent row ap-8) <!-- id:ap-9 -->"
   row game agent gm-10 "- [ ] feat(game): waits on app's ap-8 $T #after/ap-8 <!-- id:gm-10 -->"
+  # and across profiles: the copy sits on the dropped row's profile, the gated row keeps its own (ar-1298 on ucp-1443, ar-3172)
+  echo personal > "$NOTES_FIXTURE/profile.tools"
+  row game human hm-14 "- [ ] feat(game): per-game tags (agent row gm-13) <!-- id:hm-14 -->"
+  row tools agent tl-1 "- [ ] feat(tools): backfill versions $T #after/gm-13 <!-- id:tl-1 -->"
   # a copy the human already closed is not where the work went
   row game human hm-11 "- [x] feat(game): closed copy (agent row gm-11) <!-- id:hm-11 -->"
   row game agent gm-12 "- [ ] feat(game): waits on gm-11 $T #after/gm-11 <!-- id:gm-12 -->"
@@ -1585,10 +1589,14 @@ esac'
   grep -q '^- \[ \] feat(game): waits on app.s ap-8 .*#after/ap-9 <!-- id:gm-10 -->' <<<"$agent"
   [[ $agent != *'#after/ap-8'* ]]
   grep -q '^- \[ \] feat(game): waits on gm-11 .*#after/gm-11 <!-- id:gm-12 -->' <<<"$agent"
+  # NEGATIVE CONTROL: before this the copy had to sit on the gated row's own profile, so tl-1 stayed #after/gm-13
+  grep -q '^- \[ \] feat(tools): backfill versions .*#after/hm-14 <!-- id:tl-1 -->' <<<"$(cut -f2 "$NOTES_FIXTURE/rows.tools.agent")"
+  grep -qxF 'notes --profile personal ptask tools --agent tag --remove after/gm-13 --add after/hm-14 tl-1' "$NOTES_FIXTURE/calls.log"
   run cmd_starved
   assert_output --partial 'gm-3 (game, #after/gm-404: '
   refute_output --partial 'gm-4 ('
   refute_output --partial 'hm-8 ('
+  refute_output --partial 'tl-1 ('
 }
 
 @test "reap settle: a cancelled ask on a row whose done item's PR merged closes the row on merge proof, with no hold and no new ask" {

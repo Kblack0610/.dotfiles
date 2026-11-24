@@ -211,8 +211,9 @@ case "${args[0]}" in
       for f in "$F"/rows.*.*; do
         [ -f "$f" ] || continue
         p=${f#"$F/rows."}; lane=${p##*.}; p=${p%.*}
-        jq -Rn --arg p "$p" --arg l "$lane" '
-          inputs | split("\t") | {profile: "bnb", project: $p, lane: $l, id: ((.[1] | capture("<!-- id:(?<i>[^ ]+)") | .i) // .[0]), raw: .[1],
+        # profile.<project> names the project's profile (bnb when there is none)
+        jq -Rn --arg p "$p" --arg l "$lane" --arg pf "$(cat "$F/profile.$p" 2>/dev/null || echo bnb)" '
+          inputs | split("\t") | {profile: $pf, project: $p, lane: $l, id: ((.[1] | capture("<!-- id:(?<i>[^ ]+)") | .i) // .[0]), raw: .[1],
             # As notes gives them: tags lower-cased for grouping, tags_cased as written (a gate value is data).
             tags_cased: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0]],
             tags: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0] | ascii_downcase],
