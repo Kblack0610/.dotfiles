@@ -912,8 +912,27 @@ pub fn schedules(s: &crate::schedules::Schedules) -> Card {
     c.big = s.rows.len().to_string();
     c.unit = "scheduled things".into();
     c.counted = s.summary.clone();
-    if !s.errors.is_empty() {
-        c.error = Some(s.errors.join("; "));
+    // The fleet-bench red is Alerts' fact (dashboards rule 2): here it is a count that opens
+    // Alerts, never the card's error line.
+    let (reds, own): (Vec<&String>, Vec<&String>) = s
+        .errors
+        .iter()
+        .partition(|e| e.starts_with(crate::reds::SOURCE));
+    if !reds.is_empty() {
+        c = c.part_to(
+            "Reds not read",
+            reds.len(),
+            Level::Warn,
+            Some(Link::tab("alerts")),
+        );
+    }
+    if !own.is_empty() {
+        c.error = Some(
+            own.iter()
+                .map(|e| e.as_str())
+                .collect::<Vec<_>>()
+                .join("; "),
+        );
     }
     // The rows come ranked failing, stale, never, then no purpose (schedules::rank); the last are
     // not listed.
@@ -1974,6 +1993,32 @@ mod tests {
     }
 
     #[test]
+    fn schedules_say_an_unread_fleet_bench_red_as_a_count_that_opens_alerts() {
+        let sch = crate::schedules::Schedules {
+            errors: vec![
+                "fleet-bench reds: exit status: 1".into(),
+                "k8s: prometheus down".into(),
+            ],
+            ..Default::default()
+        };
+        let c = schedules(&sch);
+        let p = c
+            .parts
+            .iter()
+            .find(|p| p.label == "Reds not read")
+            .expect("the reds part");
+        assert_eq!(
+            (p.value.as_str(), p.link.clone()),
+            ("1", Some(Link::tab("alerts")))
+        );
+        // Negative control: the card's own source stays its error line; Alerts' red is not copied.
+        assert_eq!(c.error.as_deref(), Some("k8s: prometheus down"));
+        let c = schedules(&crate::schedules::Schedules::default());
+        assert!(c.parts.iter().all(|p| p.label != "Reds not read"));
+        assert_eq!(c.error, None);
+    }
+
+    #[test]
     fn projects_list_who_has_work_in_flight_and_count_nobody_waiting_or_hot() {
         let p = |name: &str, waiting: usize, hot: usize, running: usize| crate::projects::Card {
             name: name.into(),
@@ -2044,7 +2089,7 @@ mod tests {
     }
 
     #[test]
-    fn ci_stuck_is_alerts_stuck_runs_one_per_branch() {
+    fn ci_stuck_is_alerts_stuck_runs_one_per_repo() {
         use crate::prom::Series;
         let run = |branch: &str, wf: &str| Series {
             labels: [
@@ -2063,7 +2108,7 @@ mod tests {
             ok: true,
             ..Default::default()
         };
-        // Three runs on two branches: Alerts has two rows, so CI says two, never three or 0.
+        // Three runs on two branches of one repo: Alerts has one row, so CI says one, never 2, 3 or 0.
         i.instant.insert(
             "waiting",
             vec![run("main", "CI"), run("main", "Checks"), run("feat", "CI")],
@@ -2074,7 +2119,7 @@ mod tests {
             .iter()
             .filter(|l| l.starts_with("stuck run"))
             .count();
-        assert_eq!((pill.value.as_str(), rows), ("2", 2));
+        assert_eq!((pill.value.as_str(), rows), ("1", 1));
         assert_eq!(c.level, Level::Red);
         // The stuck runs are CI's, not Health's: Health stays machines, domains and vitals.
         let h = health(&i);
