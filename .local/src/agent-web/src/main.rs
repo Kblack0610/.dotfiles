@@ -565,10 +565,10 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
         std::fs::create_dir_all(dir)?;
         targets.push((dir.to_path_buf(), flat));
     }
-    // schedules-sync's state.json, replaced by a rename: Infra's Pipelines.
-    if let Some(dir) = schedules_state().parent() {
-        std::fs::create_dir_all(dir)?;
-        targets.push((dir.to_path_buf(), flat));
+    // schedules-sync's state.json (Infra's Pipelines) and pace-conf's overrides (Costs' Limits), each a rename.
+    for dir in renamed_state_dirs() {
+        std::fs::create_dir_all(&dir)?;
+        targets.push((dir, flat));
     }
     // The boards' files: watch a directory, not the file, since each is replaced by a rename.
     for dir in [
@@ -578,8 +578,6 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
         // Sessions' Runners run ledger, and fleet-dispatch's verdicts and log.
         Some(hub_core::jobs::Paths::from_env().agentctl),
         Some(boards::dispatch_dir()),
-        // pace-conf's overrides file, replaced by a rename: Costs' Limits.
-        pace_overrides().parent().map(Path::to_path_buf),
         // agent-notify's ledger, for Log's Actions section.
         hub_core::actions::Paths::from_env()
             .notify_log
@@ -692,6 +690,14 @@ fn pace_overrides() -> PathBuf {
         || session::home().join(".agent").join("pace-overrides"),
         PathBuf::from,
     )
+}
+/// The directories of the state files that are replaced by a rename, so the watcher follows the
+/// directory and not the file.
+fn renamed_state_dirs() -> Vec<PathBuf> {
+    [schedules_state(), pace_overrides()]
+        .iter()
+        .filter_map(|p| p.parent().map(Path::to_path_buf))
+        .collect()
 }
 /// The nightly stage pass wrote stages.json: Projects' Ladder reads afresh.
 const STAGES_EVENT: &str = r#"{"kind":"stages"}"#;
