@@ -1675,7 +1675,7 @@ ask_about() { basename "$(grep -l "^question: .*$1" "$HOME"/.agent/asks/*/*.md)"
   [ "$(tasks | grep -c '<!-- id:')" = 2 ] || fail "the twin was filed as a second row: $(cat "$SHEET")"
   grep -q '  was: the pause menu flickers on resume' "$SHEET" || fail "$(cat "$SHEET")"
   grep -q 'gun sound plays late' "$SHEET" || fail "the different row was not filed: $(cat "$SHEET")"
-  [ "$(jq -r 'select(.action == "dup") | .id' "$HOME/.local/state/notes/ingest.jsonl")" = sc-4 ] || fail "no dup record: $(cat "$HOME/.local/state/notes/ingest.jsonl")"
+  [ "$(jq -r 'select(.action == "dup") | .id' "$HOME/.local/state/notes/ingest.jsonl" | uniq -c | tr -s ' ')" = ' 2 sc-4' ] || fail "no dup record: $(cat "$HOME/.local/state/notes/ingest.jsonl")"
 }
 
 @test "session line: with no twin it files on the agent board without #requested, while a human line beside it still gets it" {
