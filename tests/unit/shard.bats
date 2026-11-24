@@ -23,10 +23,9 @@ fixture() {
 }
 
 # fast_shards <tests.yml>: each fast tier's most shards, "<tier> <max>", one tier a line, from
-# the weights job's FAST_SHARDS (the larger of its pool and hosted counts)
+# the weights job's FAST_SHARDS
 fast_shards() {
-  sed -nE 's/^ *FAST_SHARDS: *(.*)$/\1/p' "$1" | grep -oE '[a-z]+=[0-9]+' | tr '=' ' ' |
-    awk '$2 > max[$1] { max[$1] = $2 } END { for (t in max) print t, max[t] }'
+  sed -nE 's/^ *FAST_SHARDS: *(.*)$/\1/p' "$1" | tr ' ' '\n' | grep . | tr '=' ' '
 }
 
 @test "every real file of each tier is in exactly one shard, for 1 to the CI's most shards" {

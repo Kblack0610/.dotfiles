@@ -84,6 +84,7 @@ jobs:
       contents: read
       actions: read
     env:
+      FAST_SHARDS: unit=12 integ=4
       SHARD_SECONDS: 180
     outputs:
       table: ${{ steps.junit.outputs.table }}
@@ -118,9 +119,6 @@ jobs:
       - name: Pick the files and size the matrix
         id: plan
         env:
-          # The most shards a tier gets: twelve 4-vCPU hosted machines, or two 24-32 core pool
-          # hosts, whose shards run bats --jobs at the host's nproc (tests/Makefile UNIT_JOBS).
-          FAST_SHARDS: ${{ runner.environment == 'self-hosted' && 'unit=2 integ=1' || 'unit=12 integ=4' }}
           BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
         run: |
           [ ! -s "$RUNNER_TEMP/weights.tsv" ] || export SHARD_WEIGHTS=$RUNNER_TEMP/weights.tsv
