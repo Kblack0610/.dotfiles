@@ -5042,7 +5042,9 @@ settle_item() {
     logline "reaped $2: session gone, queue item $1 requeued: $3"
     echo "requeued queue item $1 ($2 ended: $3)"; restart_human_item "$1" "$it" "$why"
   }
-  case "$st" in running | waiting | review | queued) ;; *) logline "reaped $2: queue item $1 ${st:-gone}"; return 0 ;; esac
+  # item_sessions lists no queued item, so queued here was requeued after that read, by its session on an
+  # ask or by a human: it is left as it is, never failed (consoles-p3, 2026-11-13, ar-2267).
+  case "$st" in running | waiting | review) ;; *) logline "reaped $2: queue item $1 ${st:-gone}"; return 0 ;; esac
   it=$(item_with_branch_pr "$1" "$2")
   # A partial merge proves only one repo landed, and with its session gone nobody makes the final
   # landing (ucp-162 sat in review from 2026-11-08): the next start finishes it (pr_line), once. A second
