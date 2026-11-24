@@ -1190,8 +1190,9 @@ pub fn main_red(home: &crate::home::Home) -> Card {
     )
 }
 
-/// Home's card order on every surface. Needs you and Main red lead the widgets; on the web and the TUI
-/// Home they are the Needs you list under the grid, so those draw `grid`, the rest of this list.
+/// Home's card order on every surface. Needs you and Main red lead the widgets, and Needs you the
+/// web Home (agent-web `cards::page`, where Main red is Needs you's red rows); the TUI Home has
+/// both as its Needs you list, so it draws `grid`, the rest of this list.
 pub const ORDER: &[&str] = &[
     "needs",
     "red",
@@ -1235,7 +1236,7 @@ pub fn pick(cards: Vec<Card>, names: &[&str]) -> Vec<Card> {
         .collect()
 }
 
-/// The grid, `ORDER` after Needs you and Main red, on both surfaces: a card per tab, `reading` until its read
+/// The grid, `ORDER` after Needs you and Main red: a card per tab, `reading` until its read
 /// answers and `failed` when it could not.
 pub fn grid(r: &Reads) -> Vec<Card> {
     fn one<T: ?Sized>(

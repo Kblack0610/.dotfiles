@@ -233,7 +233,7 @@ const machinePage = (o = {}) => ({
   live: null, tables: { slots: tbl([], ["slot"]), down: tbl([], ["from"]), recent: tbl([], ["job"]), alerts: tbl([], ["what"]), ...liveTables() }, ...o,
 });
 // The tables a machine page's live part rides in (hub_core::host_now), empty unless given.
-const liveTables = (o = {}) => ({ devices: tbl([], ["device"]), pods: tbl([], ["pod"]), containers: tbl([], ["name"]), processes: tbl([], ["name"]), ...o });
+const liveTables = (o = {}) => ({ devices: tbl([], ["device"]), pods: tbl([], ["pod"]), containers: tbl([], ["name"]), processes: tbl([], ["name"]), sessions: tbl([], ["project"]), ...o });
 // The page `page` opens (INFRA_PAGES), drawn from the read `d` and the error `err`.
 const drawPage = (page, d, err) => {
   run(`st.tab = "infra"; st.page = ${JSON.stringify(page)}`);
@@ -290,16 +290,17 @@ test("a machine page draws its slots, its 7 days and its recent jobs with their 
   assert.match(h, /<td class="bad">failure<\/td>/);
 });
 
-test("a machine page draws its sensors hot in amber, its pods, containers, processes, services and hourly temperature", () => {
+test("a machine page draws its sensors hot in amber, its pods, containers, processes, agent sessions, services and hourly temperature", () => {
   const devices = tbl([{ device: "cpu", chip: "k10temp", hottest: 96, temps: [["Tctl", 96], ["Tccd1", 91]], fans: [] },
     { device: "gpu", chip: "amdgpu", hottest: 52, temps: [["edge", 52]], fans: [["fan1", 616]] }], ["device", "hottest", "readings", "chip"]);
   const pods = tbl([{ namespace: "frigate", pod: "frigate-0", cpu: 0.7, mem: 2.5 * 2 ** 30 }], ["pod", "namespace", "cpu", "mem"]);
   const containers = tbl([{ name: "mailpit", image: "axllent/mailpit", cpu: 0.01, mem: 3e7, count: null }], ["name", "image", "cpu", "mem"]);
   const processes = tbl([{ name: "Unity", image: "", cpu: 3.5, mem: 8e9, count: 2 }], ["name", "cpu", "mem", "count"]);
+  const sessions = tbl([{ project: "dotfiles", item: "ar-4859", cpu: 1.5, mem: 2e9, tests: "bats 1.20" }], ["project", "item", "cpu", "mem", "tests"]);
   const hours = [{ at: 1700000000, cpu: 0.5, pools: {}, seen: 1, temp: 97 }, { at: 1700003600, cpu: null, pools: {}, seen: 0, temp: null }];
   const d = machinePage({ machine: {}, history: { step: 120, readings: 1, hours, down: [], power: null },
     live: { services: ["nfs-server", "tailscaled"], processes_total: 612, inventory: true, unread: {} },
-    tables: { slots: tbl([], ["slot"]), down: tbl([], ["from"]), recent: tbl([], ["job"]), alerts: tbl([], ["what"]), ...liveTables({ devices, pods, containers, processes }) } });
+    tables: { slots: tbl([], ["slot"]), down: tbl([], ["from"]), recent: tbl([], ["job"]), alerts: tbl([], ["what"]), ...liveTables({ devices, pods, containers, processes, sessions }) } });
   const h = drawPage("machines/workstation", d);
   assert.match(h, /No downtime record in the window\. One is written once a downtime ends\./);
   // The negative control: a records read that failed says not read and why, never the empty text.
@@ -314,6 +315,8 @@ test("a machine page draws its sensors hot in amber, its pods, containers, proce
   assert.match(h, /axllent\/mailpit/);
   assert.match(h, /Processes <span class="n">busiest 1 of 612<\/span>/);
   assert.match(h, /<td class="n">7\.5G<\/td><td class="n">2<\/td>/);
+  assert.match(h, /Agent sessions <span class="n">1<\/span>/);
+  assert.match(h, /ar-4859[\s\S]*bats 1\.20/);
   assert.match(h, /nfs-server   tailscaled/);
   assert.match(h, /data-tip="[^"]*hottest 97C"/);
   const off = drawPage("machines/workstation", { ...d, live: { ...d.live, inventory: false } });

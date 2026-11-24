@@ -124,6 +124,10 @@ esac
 # nudged each one.
 : "${RESTORE_PROMPT:=fleet-dispatch restore reopened this session after its tmux server was lost (a crash or reboot). Carry on with queue item %s from where you stopped; first check what changed while you were down (git status, your PR, agent-queue show %s).}"
 : "${DISPATCH_JUDGE_CMD:=agentctl-run --agent dispatch-judge}"
+# Projects whose work runs on the home cluster: only their items wait while the k3s domain is red or
+# unreadable (cluster_item, pick_item). On 2026-11-23 a failing cluster-janitor watch turned it red twice for 15
+# minutes and the machine-wide gate held every start, Unity included.
+: "${DISPATCH_CLUSTER_PROJECTS:=home-config}"
 : "${DISPATCH_PLAN_RULES:=unclear bundle too-big multi-area stage-scope question tier-above unknown}"   # policy rules whose skip sends an agent row to inbox-plan (skip_exits)
 : "${DISPATCH_HUMAN_RULES:=needs-person release prod-write compliance personal design}"   # policy rules whose skip moves an agent row to the human sheet or improvements.md (skip_exits)
 # The judge's policy is its agent conf's PROMPT (agentctl-run puts it ahead of the rows); read
@@ -177,6 +181,7 @@ DISPATCH_PROC="${DISPATCH_PROC:-/proc}"                                         
 CODEX_ROLLOUT_JQ="${DISPATCH_CODEX_ROLLOUT_JQ:-$HOME/.local/lib/codex-rollout.jq}"
 OC_SESSION_JQ="${DISPATCH_OPENCODE_SESSION_JQ:-$HOME/.local/lib/opencode-session.jq}"
 OC_DB="${DISPATCH_OPENCODE_DB:-$HOME/.local/share/opencode/opencode.db}"   # the shared opencode.db, where item_end reads why a go or nim run ended
+NOTES_INGEST="${DISPATCH_NOTES_INGEST:-$HOME/.local/state/notes/ingest.jsonl}"   # notes' record of every row write, who and by which channel: where asker_map reads whose words a #requested row is
 LANE_RUNS="${DISPATCH_LANE_RUNS:-$HOME/.agent/model-lane/runs.jsonl}"   # model-lane's run log: trainee_load reads which slugs a ladder run took, trainee-rollup its trainee reject reasons
 AGY_RUNS="${DISPATCH_AGY_RUNS:-$HOME/.agent/agy/runs}"   # each agy run's log (agent-agy), srt settings and tmp: where item_end reads why it ended
 AGY_RESULT_JQ="${DISPATCH_AGY_RESULT_JQ:-$HOME/.local/lib/agy-result.jq}"
@@ -195,7 +200,6 @@ PROVIDER_ENDS="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/pro
 # (t3_picks, in day_picks) merge behind the red-fix gate, which agent-land enforces.
 UNATTENDED_TIER_CEILING=2
 LANE_CACHE="$DIR/lane-cache"   # <day> TAB <slug> TAB <verdict json>: the verdict of an item no source could take, for the rest of the day
-unset GATEWAY_FLOOR   # set only by floor_gate and the floors (gate), never inherited
 unset TRAINEE_GATE    # set only by trainee_floor_why, never inherited
 NO_ROUTE=()   # this pass's "<slug> (<why>)" for items no source with room could take; NO_ROOM, the account reason
 
@@ -245,10 +249,17 @@ prio_rank_set() {
 }
 prio_rank() { prio_rank_set "$1"; echo "$PRIO"; }
 
-# prio_of <listed path> -> focus|high|low from the `#prio/<word>` the human set in the front page's
-# head (`notes projects --prio`), nothing for a normal project. The head is above the first `## `.
-prio_of() {
-  sed -n '/^## /q; p' "$(lab_front_page "$(dirname "$1")")" 2>/dev/null | grep -oE '(^|[[:space:]])#prio/(focus|high|low)\b' | awk 'NR==1' | sed 's|.*#prio/||'
+# load_prios -- PRIO_BY[<project>]: focus|high|low, as `notes projects --prios` reads the `#prio/<word>` the
+# human set (`notes projects --prio`), read once per process; a normal project has no key. notes is the one
+# reader of the tag: a focus past its `Focus until:` reads as high there, so no focus outlives its hours.
+# A failed read leaves every project normal, the safe default: it ranks them all the same.
+load_prios() {
+  declare -p PRIO_BY >/dev/null 2>&1 && return 0
+  declare -gA PRIO_BY=()
+  local n p
+  while IFS=$'\t' read -r n p _; do
+    [ -z "$n" ] || PRIO_BY[$n]=$p
+  done < <(notes projects --prios 2>/dev/null)
 }
 
 # The one rank every caller sorts by (the judge's cap, picks, fill --dry-run): a row an open sprint holds
@@ -1191,8 +1202,46 @@ pace_target() {
   if [ "${DISPATCH_RUN_FLOOR:-0}" -gt 0 ] && [ "$TARGET" -le "$DISPATCH_RUN_FLOOR" ]; then TARGET=$DISPATCH_RUN_FLOOR TARGET_BY=floor; fi
 }
 
+# HUMAN_ASK_JQ: `human_ask` is an item from a #requested row whose words are the human's: dispatch
+# copies the tag onto it, and stamps `asker:` at promote from notes' ingest record (asker_map). An
+# `asker: agent` item's #requested came from an agent: a session's `--want human` follow-up, the outbox,
+# an ask sweep. notes puts #requested on every `--want`, so on 2026-11-23 the 75% fleet share passed its
+# 30% cap on a session's leftovers (plan fleet-product-work-first P3). No asker (a row the record does
+# not reach, or an item from before it) keeps the tag's word.
+# shellcheck disable=SC2016
+HUMAN_ASK_JQ='def human_ask: ((" " + (.tags // "") + " ") | test(" #?requested ")) and (.asker // "") != "agent";'
+
+# asker_map -- ASKER_MAP, read once a process: {<row id>: "human" | "agent"} for each row notes' ingest
+# record ($NOTES_INGEST) holds. human: an event in the human's words, a `want` of focus, voice, request or
+# meeting (their own surfaces, whoever relays them), `--want human` added outside any agent session by
+# no named tool (a terminal, the human's Start; fleet-dispatch writes sessionless rows too), or
+# #requested written by the human's own hand. agent: the row was added or
+# filed and none of those: a session's or queue item's `--want human` (its follow-up: wind-down files
+# leftovers that way), one filed from the outbox, or the machine channels notes names (outbox, ask). A row
+# the record does not reach is in neither, so its #requested keeps its word. Unreadable, the map is empty.
+# Call it in the pass's own shell, as share_state.
+asker_map() {
+  [ -z "${ASKER_MAP:-}" ] || return 0
+  ASKER_MAP='{}'
+  [ -r "$NOTES_INGEST" ] || return 0
+  # shellcheck disable=SC2016
+  ASKER_MAP=$({ grep -E '"action":"(added|filed)"|"want":"|"by":"human"' "$NOTES_INGEST" || true; } | jq -sc '
+    def human_words: (.want // "") as $w | ((.session_id // "") == "" and ((.by // "") | IN("", "human"))) as $hand
+      | ($w | IN("focus", "voice", "request", "meeting")) or ($w == "human" and .action == "added" and $hand)
+        or ((.by // "") == "human" and $hand and ((.text // .row // .why // "") | test("#requested")));
+    [.[] | select((.id // "") != "")] | group_by(.id)
+    | map({key: .[0].id, value: (if any(.[]; human_words) then "human"
+        elif any(.[]; .action | IN("added", "filed")) then "agent" else empty end)}) | from_entries' 2>/dev/null) ||
+    ASKER_MAP='{}'
+  [ -n "$ASKER_MAP" ] || ASKER_MAP='{}'
+}
+
+# row_asker <row id> -> human or agent, whose words the row's #requested is (asker_map), or nothing
+# when the record does not reach the row.
+row_asker() { asker_map; jq -r --arg k "$1" '.[$k] // empty' <<<"$ASKER_MAP"; }
+
 # SHARE_JQ: `share_held($s)` is an item the fleet share cap holds, $s being SHARE_STATE: the share is
-# full and the item is on a fleet project, no red, no #requested (the human's ask, ask XI2fDO) and no
+# full and the item is on a fleet project, no red, no human_ask (the human's ask, ask XI2fDO) and no
 # urgent `from: human` (human_urgent's urgent test; its fresh asks and plan phases pass on the human
 # floor, HUMAN_PASS). A Claude canary or any other urgent waits like the rest, a board row's #urgent
 # included (`from: board:`): 180 of the 1132 starts in the 3 days to 2026-11-21 passed the cap that
@@ -1205,10 +1254,10 @@ pace_target() {
 # its row and left home-config#1406 green and unmerged (2026-11-23). The one test share_why and
 # queue_depth apply.
 # shellcheck disable=SC2016
-SHARE_JQ='def share_held($s): (.project // "") as $p | (.agent // "claude") as $a | $s.full and any($s.projects[]; . == $p)
+SHARE_JQ="$HUMAN_ASK_JQ"'def share_held($s): (.project // "") as $p | (.agent // "claude") as $a | $s.full and any($s.projects[]; . == $p)
   and (((.pr // "") != "" and (.pr_owner // "") != "" and (.[.pr_owner + "_tries"] // "") != "") | not)
   and ((.priority == "urgent" and (.from // "human") == "human") | not)
-  and ((" " + (.tags // "") + " ") | test(" #?(red|requested) ") | not)
+  and ((" " + (.tags // "") + " ") | test(" #?red ") | not) and (human_ask | not)
   and (((" " + (.tags // "") + " ") | contains(" canary ")) and any(($s.sourced // [])[]; . == $a) | not);'
 
 # share_state -- SHARE_STATE, read once a process: {full, fleet, total, projects}, the queue items
@@ -1334,7 +1383,7 @@ watch_reds() {
 # red_floor_open -- a red start is due past the machine gates: RED_PASS says the start is a red item,
 # and the live red sessions plus the reds this pass started are under DISPATCH_RED_FLOOR plus one for
 # each tripped watch's red item. The pace target, load, fleet-assess and the weekly pace do not hold it;
-# agent-hold, the reserve, the cluster and the github budget still do. RED_LIVE and RED_WATCH are
+# agent-hold, the reserve and the github budget still do, and a red cluster still holds cluster work. RED_LIVE and RED_WATCH are
 # cmd_run's counts before its first start, as FLOOR_LIVE.
 red_floor_open() {
   [ "${RED_PASS:-0}" = 1 ] || return 1
@@ -1369,13 +1418,13 @@ plan_load_floor_open() {
 # date (the board feed's `since`), stamped at promote, so its asked day ends inside the window. Not
 # `queued`: the requested floor promotes week-old rows, which would read as asked today. Not
 # `from: human`: that is agent-queue's default for an add with no --from, so a session's own
-# follow-ups carry it too (all 21 fresh ones, 2026-11-18). An item with no `asked:` is no fresh ask.
+# follow-ups carry it too (all 21 fresh ones, 2026-11-18). Not a bare #requested either: an agent's
+# `--want` stamps it too, so the ask is human_ask (HUMAN_ASK_JQ). An item with no `asked:` is no fresh ask.
 # `runs_now` is what preempts and reserves run units: urgent, or a fresh ask.
 # shellcheck disable=SC2016
-ASK_JQ='
+ASK_JQ="$HUMAN_ASK_JQ"'
 def fresh_ask($now; $h): ((.asked // "") | try ("\(.)T00:00:00Z" | fromdateiso8601) catch null) as $t
-  | $h > 0 and $t != null and ($t + 86400) > ($now - $h * 3600)
-    and ((" " + (.tags // "") + " ") | test(" #?requested "));
+  | $h > 0 and $t != null and ($t + 86400) > ($now - $h * 3600) and human_ask;
 def runs_now($now; $h): .priority == "urgent" or fresh_ask($now; $h);'
 
 # runs_now <item json> -- the item is urgent or a fresh ask (ASK_JQ).
@@ -1785,7 +1834,7 @@ judged_keys() {
 # an agent-lane row whose gates all cleared is `gated`: committed work, which picks takes with no verdict
 # (a human-lane row is still judged, since only the verdict says the human's row is agent work). When the
 # gates could not be read (GATES_FAILED) it lists no row but under suggest. CLEANUP_ONLY,
-# REQUESTED_ONLY, GATED_ONLY and SPRINT_ONLY (fill_day's floors) read only their rows (floor_row), in the projects
+# REQUESTED_ONLY, GATED_ONLY, SPRINT_ONLY and FLOOR_PROJECTS (fill_day's floors) read only their rows (floor_row), in the projects
 # that can hold one (floor_project); ONLY_PROJECT reads that one project alone (trainee_rows' split). A project off_project names is no candidate: it says why under OFF_SAY (the `candidates`
 # command, and a pass's one judge read, so not once per read), and suggest lists its agent rows with that reason.
 cmd_candidates() {
@@ -1803,6 +1852,7 @@ cmd_candidates() {
   fi
   [ -z "${GATES_FAILED:-}" ] || [ "${SUGGEST:-0}" = 1 ] || return 0
   load_kinds
+  load_prios
   for prof in $DISPATCH_PROFILES; do
     while IFS=$'\t' read -r name sheet _v _; do
       [ -n "$name" ] || continue
@@ -1812,7 +1862,7 @@ cmd_candidates() {
       dispatchable "$stage" || continue
       poff=$(off_project "$name")
       [ -z "$poff" ] || [ "${SUGGEST:-0}" = 1 ] || { [ "${OFF_SAY:-0}" != 1 ] || say "$poff"; continue; }
-      pprio=$(prio_of "$sheet")
+      pprio=${PRIO_BY[$name]:-}
       repo=$(repo_dir "$name")
       [ -n "$repo" ] && [ -d "$repo" ] || continue
       pidle=$(pool_idle_of "$name")
@@ -5183,10 +5233,10 @@ other_source_start() {
 # in queue order like any item, the class mix (classes.json `cleanup`, tag `canary`) keeping their class
 # from falling behind. While the fleet share is full only the lanes on their own source queue (--off-claude:
 # a Claude lane's canary would wait at the cap). Skipped in a dry run, at 0, and while floor_gate is shut
-# (a red cluster with the gateway up still queues them), dispatch's hold included;
+# (a red cluster with the gateway down), dispatch's hold included;
 # a failure is said once, never the end of the pass.
 canary_top_up() {
-  local live have want out rc=0 note='' FLOOR_WHY GATEWAY_ONLY
+  local live have want out rc=0 note='' FLOOR_WHY
   [ "$DRY" = 0 ] && [ "${DISPATCH_CANARY_KEEP:-0}" -gt 0 ] 2>/dev/null || return 0
   # A canary the fleet share holds is not counted: it cannot start, so it keeps no lane busy.
   share_state
@@ -5195,7 +5245,7 @@ canary_top_up() {
   live=$(live_tagged canary | grep -c . || true)
   want=$(( DISPATCH_CANARY_KEEP - have - live ))
   [ "$want" -gt 0 ] || return 0
-  floor_gate; [ -z "$FLOOR_WHY" ] || return 0   # only when canaries are missing: it reads gate and the cluster
+  floor_gate; [ -z "$FLOOR_WHY" ] || return 0   # only when canaries are missing: it reads gate and the gateway
   # While the share is full a Claude lane's canary would wait in queued/, so only the lanes on their own source queue (SHARE_JQ).
   local off=(); if share_full; then off=(--off-claude); note=", the fleet share full: no Claude lane"; fi
   out=$(AGENT_QUEUE_PULL=dispatch fleet-bench canary queue --max "$want" "${off[@]}" 2>&1) || rc=$?
@@ -5205,13 +5255,13 @@ canary_top_up() {
 }
 
 # trainee_floor_why -> FLOOR_WHY, why the trainee floor is shut now (no trainee: lane, else floor_gate's
-# answer on the trainee's own resources, TRAINEE_GATE=1: the agent-hold, the cluster or gateway and the
+# answer on the trainee's own resources, TRAINEE_GATE=1: the agent-hold, the gateway and the
 # GitHub budget; no Claude account, no load here), empty when it may start; trainee-pool reads it too,
 # so the readout and the pass say one thing.
 trainee_floor_why() {
   trainee_load
   jq -e '[.candidates[]?.harness] | length > 0' <<<"$TRAINEE_CONF" >/dev/null 2>&1 ||
-    { FLOOR_WHY="lanes.yaml has no trainee: lane (model-lane trainee)"; GATEWAY_ONLY=0; return 0; }
+    { FLOOR_WHY="lanes.yaml has no trainee: lane (model-lane trainee)"; return 0; }
   TRAINEE_GATE=1 floor_gate
 }
 
@@ -5231,18 +5281,14 @@ trainee_floor_start() {
   trainee_floor_why; why=$FLOOR_WHY
   # A shut floor is no dry pool: its hold or gate is what starved and the Stopped line name.
   [ -z "$why" ] || { rm -f "$TRAINEE_DRY"; say "trainee floor: shut, $why"; return "$FLOOR_SHUT"; }
-  # The batch review and a trainee PR's owner run on claude, which the cluster gate still holds, and so
-  # do this machine's load (machine_here_why) and unreadable account usage, which the trainee's own gate
-  # skips: start_item would settle the whole pass BLOCKED on it. With no account room the owner waits in route
-  # and the batch review goes to reviewer_fallback (trainee_reviewer_pin).
-  local cwhy=''
-  if [ "$GATEWAY_ONLY" = 0 ]; then
-    cwhy=$(machine_here_why)
-    [ -n "$cwhy" ] || cwhy=$(acct_room; [ $? = 2 ] && printf 'account usage unreadable (%s)' "$ACCT_WHY")
-  fi
-  if [ "$GATEWAY_ONLY" = 1 ]; then rc=$FLOOR_SHUT
-    [ -z "$(trainee_waiting)" ] || say "trainee floor: the cluster is red and the gateway answers, so gateway trainees start and the batch review (claude) waits"
-  elif [ -n "$cwhy" ]; then rc=$FLOOR_SHUT
+  # The batch review and a trainee PR's owner run on claude, which this machine's load (machine_here_why)
+  # and unreadable account usage hold, and the trainee's own gate skips: start_item would settle the
+  # whole pass BLOCKED on it. With no account room the owner waits in route and the batch review goes
+  # to reviewer_fallback (trainee_reviewer_pin).
+  local cwhy
+  cwhy=$(machine_here_why)
+  [ -n "$cwhy" ] || cwhy=$(acct_room; [ $? = 2 ] && printf 'account usage unreadable (%s)' "$ACCT_WHY")
+  if [ -n "$cwhy" ]; then rc=$FLOOR_SHUT
     [ -z "$(trainee_waiting)$(trainee_land_items)" ] || say "trainee floor: the batch review and a trainee PR's owner (claude) wait: $cwhy; the trainee slots still fill"
   else
     trainee_land_start; rc=$?
@@ -5254,7 +5300,6 @@ trainee_floor_start() {
   queued=${NEXT_QUEUED-$(next_items --points)}
   for h in "${hs[@]}"; do
     [ -n "$(harness_sandbox "$h")" ] || { shut+=("$h runs in no lane sandbox"); continue; }
-    [ "$GATEWAY_ONLY" = 0 ] || harness_spends_gateway "$h" || { shut+=("$h does not spend the gateway, and the cluster is red"); continue; }
     why=$(ladder_open_why "$h") || { shut+=("$why"); continue; }
     it=$(trainee_queued_pick "$h" "$queued")
     if [ -z "$it" ]; then
@@ -5270,7 +5315,7 @@ trainee_floor_start() {
       it=$(agent-queue show "$PROMOTED" --json --points)
       say "trainee floor: promoted row $key to queue item $PROMOTED for $h"
     fi
-    GATEWAY_FLOOR=$GATEWAY_ONLY TRAINEE_PASS=1 TRAINEE_HARNESS=$h FLOOR_QUIET=1 UNITS_FREE=2 start_items "$it" 1; rc=$?
+    TRAINEE_PASS=1 TRAINEE_HARNESS=$h FLOOR_QUIET=1 UNITS_FREE=2 start_items "$it" 1; rc=$?
     [ "$rc" = 0 ] || return "$rc"
     queued=$(jq -c --arg s "$(jq -r .slug <<<"$it")" 'select(.slug != $s)' <<<"$queued")
   done
@@ -5456,7 +5501,7 @@ cmd_trainee_pool() {
       eligible=$(jq -c --arg k "$(jq -r .key <<<"$it")" --arg p "$(jq -r .project <<<"$it")" 'select(.key != $k or .project != $p)' <<<"$eligible")
     else nexts+=("$(jq -nc --arg h "$h" '{harness: $h, from: null}')"); fi
   done
-  # The floor's own gate, read now: shut with its reason, or open (gateway-only when k3s is red). Its
+  # The floor's own gate, read now: shut with its reason, or open. Its
   # room read (ACCT_ROWS), when it made one, gives the sources their slots; room --json exits 1 with no
   # account to pick, its answer still whole, so only an unreadable answer leaves the slots unknown.
   rooms=${ACCT_ROWS:-$(claude-acct room --json 2>/dev/null)}
@@ -5464,8 +5509,7 @@ cmd_trainee_pool() {
     { echo "trainee pool: claude-acct room --json gave no answer, so no source shows its slots" >&2; rooms=null; }
   trainee_floor_why
   local floor=open floor_why=$FLOOR_WHY
-  if [ -n "$floor_why" ]; then floor=shut
-  elif [ "$GATEWAY_ONLY" = 1 ]; then floor_why="the cluster is red and the gateway answers, so only gateway trainees start"; fi
+  [ -z "$floor_why" ] || floor=shut
   srcs=$(printf '%s\n' "${nexts[@]}" | jq -sc --slurpfile H "$HARNESSES" --argjson rooms "$rooms" '
     group_by($H[0].harnesses[.harness].source // "")
     | map((.[0].harness | $H[0].harnesses[.].source // "") as $s | ($rooms.sources // [] | map(select(.name == $s)) | first) as $r
@@ -5745,7 +5789,7 @@ load_findings() {
 # project while the other 40 waited on account pace, which the message never named.
 pick_item() {
   local items="$1" it why need free host mwhy='' mread=0 fhit=0 uwait=0 held=() waits="every queue item waits" reserved='' kept=''
-  local shold=0 sfirst='' shost='' swhy='' mhit=0 ppass='' uheld='' uneed=0
+  local shold=0 sfirst='' shost='' swhy='' mhit=0 ppass='' uheld='' uneed=0 chit=0 cread=0 cwords=''
   share_state   # in this shell, so every share_why reads one count
   if [ "${RED_PASS:-0}" = 1 ]; then waits="every red item waits; the rest wait on ${FLOOR_GATE:-the gate}"
   elif [ "${TRAINEE_PASS:-0}${BATCH_PASS:-0}" != 00 ]; then waits="the trainee floor's item waits"; fi
@@ -5765,6 +5809,11 @@ pick_item() {
     else why="$mwhy, and no fleet worker takes it"; PICK_FULL=0 mhit=1
     fi
     ppass=''
+    # Cluster work waits while the k3s domain is red or unreadable, read once a pick; nothing else does.
+    if [ -z "$why" ] && cluster_item "$it"; then
+      [ "$cread" = 1 ] || { cwords=$(fleet-shepherd infra 2>/dev/null); cread=1; }
+      [ -z "$cwords" ] || { why="$cwords, and this is cluster work (DISPATCH_CLUSTER_PROJECTS)"; PICK_FULL=0 chit=1; }
+    fi
     if [ -z "$why" ]; then
       why=$(held_by "$it" "$FIRING")
       if pool_pass "$it" "$why"; then ppass=$why why=''; fi
@@ -5819,6 +5868,7 @@ pick_item() {
   fi
   if [ "$PICK_FULL" = 1 ]; then PICK_WHY="run units: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
   elif [ "$fhit" = 1 ]; then PICK_WHY="finding firing: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
+  elif [ "$chit" = 1 ] && [ "$shold$mhit" = 00 ]; then PICK_WHY="cluster: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
   # The share names the pass only when load held none of the rest: a pass read "fleet share full" and
   # settled NOOP while load held 22 other items (2026-11-21, ar-4450).
   elif [ "$shold" -gt 0 ] && [ "$mhit" = 0 ]; then PICK_WHY="fleet share full: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
@@ -6352,6 +6402,7 @@ route() {
     [ "$hl" = 0 ] || [ -n "$erc" ] || { excl=$(excluded_kind "$it"); erc=$?; }   # once, and only for a headless one
     overflow=0; [ "$pinned" = 0 ] && harness_flag "$h" metered && overflow=1
     if [ -z "$src" ]; then why+=("$h: no source in $HARNESSES")
+    elif harness_spends_gateway "$h" && { load_gateway_down; [ -n "$GATEWAY_DOWN" ]; }; then why+=("$h: $GATEWAY_DOWN")
     elif ! pwhy=$(harness_project_why "$HARNESSES" "$h" "$project"); then why+=("$h: $pwhy")
     elif ! pwhy=$(harness_tier_why "$h" "$it"); then why+=("$h: $pwhy")
     elif [ -n "$(harness_sandbox "$h")" ] && ! pwhy=$(sandbox_item_why "$it" "$h" "$m" "$verdict"); then why+=("$h: $pwhy")
@@ -7570,19 +7621,29 @@ gateway_why() {
   echo "the gateway is not ready ($url/health/readiness: ${said:-no answer})"
 }
 
-# floor_gate -- the gate for a floor whose gateway harnesses depend on the LiteLLM gateway, not the whole
-# cluster domain: FLOOR_WHY is gate's answer with a red `fleet-shepherd infra` traded for gateway_why
-# (account, hold, machine and GitHub checks stay; GATEWAY_FLOOR=1 gate), and GATEWAY_ONLY=1 when the
-# cluster is red and the gateway answers, so only a harness that spends the gateway
-# (harness_spends_gateway) may start; a claude, codex or cloud start still waits on the cluster. The
-# floor passes GATEWAY_FLOOR=$GATEWAY_ONLY to start_items, so each later start reads the cluster and
-# the gateway again. The trainee's real dependency is the gateway, and a red k3s domain shut every
-# trainee start on 11-19 while the gateway answered (ar-3699).
+# floor_gate -- FLOOR_WHY, why a floor of gateway harnesses (trainees, canaries) is shut: gate's
+# answer, else the gateway when the cluster is red or unreadable (load_gateway_down). The gateway is the
+# floor's one cluster dependency: a red k3s domain shut every trainee start on 11-19 while it answered (ar-3699).
 floor_gate() {
-  GATEWAY_ONLY=0
-  FLOOR_WHY=$(GATEWAY_FLOOR=1 gate)
-  [ -n "$FLOOR_WHY" ] || [ -z "$(fleet-shepherd infra 2>/dev/null)" ] || GATEWAY_ONLY=1
+  FLOOR_WHY=$(gate)
+  [ -n "$FLOOR_WHY" ] || { load_gateway_down; FLOOR_WHY=$GATEWAY_DOWN; }
   return 0
+}
+
+# cluster_item <item json> -- rc 0 for cluster work: an item of a project DISPATCH_CLUSTER_PROJECTS
+# names, which waits while the k3s domain is red or unreadable (pick_item). Every other item starts
+# whatever the cluster says.
+cluster_item() { [[ " $DISPATCH_CLUSTER_PROJECTS " == *" $(jq -r '.project // ""' <<<"$1") "* ]]; }
+
+# load_gateway_down -- GATEWAY_DOWN, read once a pass (cmd_run clears GATEWAY_READ): "<infra words>,
+# and <gateway_why>" when the cluster is red or unreadable and the LiteLLM gateway does not answer
+# ready, else nothing. A start that spends the gateway waits on it (floor_gate, route).
+load_gateway_down() {
+  local infra
+  [ "${GATEWAY_READ:-0}" = 1 ] && return 0
+  GATEWAY_READ=1 GATEWAY_DOWN=''
+  infra=$(fleet-shepherd infra 2>/dev/null); [ -n "$infra" ] || return 0
+  GATEWAY_DOWN=$(gateway_why); [ -z "$GATEWAY_DOWN" ] || GATEWAY_DOWN="$infra, and $GATEWAY_DOWN"
 }
 
 # gate -> why this pass must not start anything, or nothing when it may. Anything it cannot read
@@ -7597,7 +7658,7 @@ floor_gate() {
 # host it places on. The dispatcher's own load and an unreadable Claude usage shut it on 11-18 while
 # every trainee run went to razer-laptop at load 4 (ar-3507).
 gate() {
-  local load infra github rc out hold why=()
+  local load github rc out hold why=()
   # A hold names who set it and why ("by <who>: <reason>"), which the Stopped line shows.
   hold=$(agent-hold check dispatch 2>/dev/null) ||
     { hold=$(sed -nE '1s/^held: [^ ]+ since [^ ]+ //p' <<<"$hold"); echo "held (agent-hold dispatch)${hold:+ $hold}"; return; }
@@ -7615,12 +7676,8 @@ gate() {
     mach=$(machine_here_why)
     [ -z "$mach" ] || why+=("$mach")
   fi
-  # Cluster only, not every urgent trip: a red nightly is urgent, and new sessions do not worsen it.
-  # A floor whose starts spend only the gateway (GATEWAY_FLOOR=1, floor_gate) reads the gateway instead.
-  infra=$(fleet-shepherd infra 2>/dev/null)
-  if [ -n "$infra" ] && [ "${GATEWAY_FLOOR:-0}" = 1 ]; then
-    out=$(gateway_why); [ -z "$out" ] || why+=("$infra, and $out")
-  elif [ -n "$infra" ]; then why+=("$infra"); fi
+  # The cluster is no gate here: a red k3s domain holds only cluster work (cluster_item, in pick_item)
+  # and starts that spend the gateway (load_gateway_down, in route and floor_gate).
   github=$(fleet-assess --github 2>/dev/null)
   case "$github" in
     '' | *unreadable*) why+=("github budget unreadable") ;;
@@ -7697,7 +7754,7 @@ cmd_run() {
   # write gates onto the rows they un-start (agent-queue return_gates).
   GATES_LOADED=''; load_gates; pass_mark gates
   HUMAN_PASS=0 SPRINT_PASS=0 PLAN_PASS=0 PLAN_STARTED=0 PLANS_STARTED=''
-  QUEUE_HELD='' SHARE_HELD='' SHARE_STATE='' PREEMPTED=0 STARTED=0 RED_STARTED=0 RED_PASS=0 RUN_GATED=0 FLOOR_HELD=0 FLOOR_GATE='' JUDGE_RC= JUDGE_WHY= PLAN_TAGGED=0 TRIAGE_FAILED= NO_ROOM=
+  QUEUE_HELD='' SHARE_HELD='' SHARE_STATE='' PREEMPTED=0 STARTED=0 RED_STARTED=0 RED_PASS=0 RUN_GATED=0 FLOOR_HELD=0 FLOOR_GATE='' GATEWAY_READ=0 JUDGE_RC= JUDGE_WHY= PLAN_TAGGED=0 TRIAGE_FAILED= NO_ROOM=
   NO_ROUTE=(); unset NEXT_QUEUED   # set once a pass has read the queue (trainee or sprint floor), even to nothing
   [ "$DRY" = 1 ] || { triage_pass; pass_mark triage; }
   # Each skip takes the exit its rule names (plan, the human, a gate); a dry run only reads.
@@ -7778,7 +7835,7 @@ cmd_run() {
   # unity items kept every pass off the board for 7h: the rows filed to fix the hold never started,
   # and 220 rows sat unjudged. Above the low water, a floor still reads the board for its own rows
   # only (low_water_floors).
-  local items rc depth want cgap rgap only=''; items=${NEXT_QUEUED-$(next_items --points)}
+  local items rc depth want cgap rgap pgaps only=''; items=${NEXT_QUEUED-$(next_items --points)}
   if [ -n "$items" ]; then
     HELD_FALLS_THROUGH=1; run_queue "$items" "$room"; rc=$?; HELD_FALLS_THROUGH=0
     if [ -z "$QUEUE_HELD$SHARE_HELD" ]; then
@@ -7787,8 +7844,8 @@ cmd_run() {
       if [ "$depth" -lt "$DISPATCH_LOW_WATER" ]; then
         say "runnable $depth is under the low water $DISPATCH_LOW_WATER, topping the queue up from the board"
       else
-        rgap=$(class_gap requested requested); cgap=$(class_gap cleanup cleanup)
-        only=$(low_water_floors "$rgap" "$cgap"); [ -n "$only" ] || return 0
+        rgap=$(class_gap requested requested); cgap=$(class_gap cleanup cleanup); pgaps=$(project_gaps)
+        only=$(low_water_floors "$rgap" "$cgap" "$pgaps"); [ -n "$only" ] || return 0
       fi
     fi
   fi
@@ -7805,6 +7862,7 @@ cmd_run() {
     want=0
     [[ " $only " != *" requested "* ]] || want=$rgap
     [[ " $only " != *" cleanup "* ]] || want=$(( want + cgap ))
+    want=$(( want + $(awk '{ n += $1 } END { print n + 0 }' <<<"$pgaps") ))
   fi
   # The floors and the low water top up under the cap, never past it; committed rows take what it leaves.
   local qroom; qroom=$(queue_headroom); [ "$want" -le "$qroom" ] || want=$qroom
@@ -7821,9 +7879,10 @@ cmd_run() {
   SHARE_LET_GO=$let_go start_items "$(pass_order "$items")" "$room"   # the one unfiltered start the fleet share cap may let go in
 }
 
-# low_water_floors <requested gap> <cleanup gap> -> the classes a run pass over the low water still
+# low_water_floors <requested gap> <cleanup gap> [project gaps] -> the classes a run pass over the low water still
 # reads the board for, space-separated: `requested` and `cleanup` while their class is under its classes.json
-# min_live (class_gap), and `gated` on every pass, for committed rows (an agent row whose #at/, #after/
+# min_live (class_gap), `project:<name>` for each project of a project class under its min_live
+# (project_gaps' lines), and `gated` on every pass, for committed rows (an agent row whose #at/, #after/
 # or other gates all cleared), which wait on no depth: on 2026-11-19, with 38 items runnable, ar-2894
 # sat 10h past its #at/ and seven #after/ rows past the rows they waited on.
 low_water_floors() {
@@ -7836,6 +7895,12 @@ low_water_floors() {
     only="${only:+$only }cleanup"
     say "cleanup is $2 under its min_live, topping cleanup up from the board"
   fi
+  local gap ps p
+  while read -r gap ps; do
+    [ -n "$ps" ] || continue
+    say "$ps is $gap under its min_live, topping $ps rows up from the board"
+    for p in $ps; do only="${only:+$only }project:$p"; done
+  done <<<"${3:-}"
   only="${only:+$only }gated"
   printf %s "$only"
 }
@@ -7843,9 +7908,12 @@ low_water_floors() {
 # share_let_go <floors> <promoted> -> 1 when the fleet share cap may let go for the pass's start, 0 when
 # it may not, and fails when the pass has nothing new to start. Committed rows alone brought a pass over
 # the low water here: run_queue already ran the queue, so with nothing promoted there is nothing new to
-# start, and the share cap does not let go for them.
+# start, and the share cap does not let go for them. A project floor (`project:<name>`) counts as
+# gated here: its rows are product rows like any committed one, so it lets go of nothing either.
 share_let_go() {
-  [ "$1" = gated ] || { echo 1; return 0; }
+  local f rest=''
+  for f in $1; do [[ "$f" == project:* ]] || rest="${rest:+$rest }$f"; done
+  [ "$rest" = gated ] || { echo 1; return 0; }
   [ "$2" -gt 0 ] || return 1
   echo 0
 }
@@ -7887,29 +7955,33 @@ row_task() { jq -r .text <<<"$1" | sed 's/^- \[.\] //'; }
 # with <cap room> (a run pass's queue headroom) every committed (`gated`) pick goes too, ahead of the
 # <room> others and up to <cap room> in all, since its gates clearing is its start. A cleanup
 # row's item is tagged `cleanup` (the floor counts them), and every item `tier<N>` (item_tier). With
-# `cleanup`, `requested`, `gated` or `sprint` (the floors: over the low water, and sprint_top_up's on every
+# `cleanup`, `requested`, `gated`, `sprint` or `project:<name>` (the floors: over the low water, and sprint_top_up's on every
 # pass) every scan under it, the judge's included when this pass has not judged yet, reads only those rows
 # (floor_row). A full fleet share (share_full) leaves the fleet's rows out, the tier-3 gate's too.
 fill_day() {
   local picked c tags pl CLEANUP_ONLY=${CLEANUP_ONLY:-} REQUESTED_ONLY=${REQUESTED_ONLY:-}
   [[ " ${2:-} " != *" cleanup "* ]] || CLEANUP_ONLY=1
   [[ " ${2:-} " != *" requested "* ]] || REQUESTED_ONLY=1
-  local GATED_ONLY=${GATED_ONLY:-} SPRINT_ONLY=${SPRINT_ONLY:-}
+  local GATED_ONLY=${GATED_ONLY:-} SPRINT_ONLY=${SPRINT_ONLY:-} FLOOR_PROJECTS=${FLOOR_PROJECTS:-} f
   [[ " ${2:-} " != *" gated "* ]] || GATED_ONLY=1
+  for f in ${2:-}; do [[ "$f" != project:* ]] || FLOOR_PROJECTS="${FLOOR_PROJECTS:+$FLOOR_PROJECTS }${f#project:}"; done
   [[ " ${2:-} " != *" sprint "* ]] || SPRINT_ONLY=1
   FILLED=0
   # Committed rows alone want no judge: a gated row is never judged (unjudged_rows).
   load_pool_idle   # once, before the judge's and the picks' subshells
   [ "${2:-}" = gated ] || judge_once || return 1
   picked=$(day_picks 999)
-  # While the fleet share is full, the fill passes over fleet rows but #requested and #red ones, the
-  # cleanup floor's included: a row's item comes from the board, so share_held would hold any other. It
-  # lets go when nothing else can start: a low-water fill with no other row and nothing runnable in the
-  # queue takes the fleet rows too.
+  # While the fleet share is full, the fill passes over fleet rows but #red ones and #requested ones in
+  # the human's words (no `agent` in asker_map), the cleanup floor's included: a row's item comes from
+  # the board, so share_held would hold any other. It lets go when nothing else can start: a low-water
+  # fill with no other row and nothing runnable in the queue takes the fleet rows too.
   if share_full; then
     local kept
-    kept=$(jq -c --argjson s "$SHARE_STATE" '(.project // "") as $p
-      | select((any($s.projects[]; . == $p) | not) or ((.text // "") | test("(^|\\s)#(requested|red)(\\s|$)")))' <<<"$picked")
+    asker_map
+    kept=$(jq -c --argjson s "$SHARE_STATE" --argjson askers "$ASKER_MAP" '(.project // "") as $p
+      | (.key // "") as $id
+      | select((any($s.projects[]; . == $p) | not) or ((.text // "") | test("(^|\\s)#red(\\s|$)"))
+          or (((.text // "") | test("(^|\\s)#requested(\\s|$)")) and $askers[$id] != "agent"))' <<<"$picked")
     if [ -n "$kept" ] || [ -n "${2:-}" ] || [ -n "$(runnable 2>/dev/null)" ]; then
       [ "$kept" = "$picked" ] || say "the fleet share is full ($(jq -r '"\(.fleet) of \(.total)"' <<<"$SHARE_STATE") starts in ${DISPATCH_FLEET_SHARE_H}h, DISPATCH_FLEET_SHARE=$DISPATCH_FLEET_SHARE%), so the board fills from other projects"
       picked=$kept
@@ -7941,6 +8013,24 @@ fill_day() {
 # item_tag_depth <tag> -> the runnable items carrying <tag>: what a class top-up (cleanup, requested) measures.
 item_tag_depth() { runnable 2>/dev/null | jq -c --arg t " $1 " 'select((" " + (.tags // "") + " ") | contains($t))' | grep -c . || true; }
 
+# project_gaps -> one `<gap> <project>...` line per classes.json class that names `projects` and sets a
+# min_live (unity, trader), while its projects' live items (running or waiting) and runnable ones
+# (queued, no hold) together are fewer than that min_live: the project floor's top-up above the low
+# water, so a project the human did not put on focus still has sessions while a focus project fills the
+# queue (plan fleet-product-work-first P4: at 14:03 on 2026-11-23, 34 Unity items queued and no trader
+# one). It counts a project's items whatever class they rank in, as the floor is that project's
+# sessions: a #requested trader item ranks in `requested` and is still a trader session. Nothing when
+# the mix is off or either read fails.
+project_gaps() {
+  local mix active
+  mix=$(agent-queue mix --json 2>/dev/null) && active=$(agent-queue list --json --state active 2>/dev/null) || return 0
+  jq -rs --argjson m "$mix" 'if $m.on != true then empty else . as $it
+    | $m.classes[] | select(.min_live > 0 and ((.projects // []) | length) > 0) | .projects as $ps
+    | ([$it[] | select((.project // "") as $p | any($ps[]; . == $p))
+        | select(.state == "running" or .state == "waiting" or (.state == "queued" and .hold == null))] | length) as $n
+    | select(.min_live > $n) | "\(.min_live - $n) \($ps | join(" "))" end' <<<"$active" 2>/dev/null || true
+}
+
 # class_gap <class> <tag> -> how many runnable items carrying <tag> the class lacks under its classes.json
 # min_live (the number the mix and this top-up share), 0 when the mix is off, the class has none, or
 # `agent-queue mix` cannot be read. The tag, not the class, counts the items: a cleanup row of kind fix
@@ -7954,26 +8044,28 @@ class_gap() {
 }
 
 # floor_pass -> 0 when fill_day reads the board for its floors' rows alone (CLEANUP_ONLY, REQUESTED_ONLY,
-# GATED_ONLY, SPRINT_ONLY), which every scan under it then filters by floor_project and floor_row.
-floor_pass() { [ -n "${CLEANUP_ONLY:-}${REQUESTED_ONLY:-}${GATED_ONLY:-}${SPRINT_ONLY:-}" ]; }
+# GATED_ONLY, SPRINT_ONLY, FLOOR_PROJECTS), which every scan under it then filters by floor_project and floor_row.
+floor_pass() { [ -n "${CLEANUP_ONLY:-}${REQUESTED_ONLY:-}${GATED_ONLY:-}${SPRINT_ONLY:-}${FLOOR_PROJECTS:-}" ]; }
 
 # floor_project <project> -> 0 for a project a floor pass may find a row in: any under the requested or
-# gated floor, one of DISPATCH_CLEANUP_PROJECTS under the cleanup floor, one with an unstarted open sprint
-# row (SPRINT_PROJECT) under the sprint floor.
+# gated floor, one of DISPATCH_CLEANUP_PROJECTS under the cleanup floor, one of FLOOR_PROJECTS under its
+# project floor, one with an unstarted open sprint row (SPRINT_PROJECT) under the sprint floor.
 floor_project() {
   [ -n "${REQUESTED_ONLY:-}${GATED_ONLY:-}" ] && return 0
   [ -n "${CLEANUP_ONLY:-}" ] && [[ " $DISPATCH_CLEANUP_PROJECTS " == *" $1 "* ]] && return 0
+  [ -n "${FLOOR_PROJECTS:-}" ] && [[ " $FLOOR_PROJECTS " == *" $1 "* ]] && return 0
   [ -n "${SPRINT_ONLY:-}" ] && [ -n "${SPRINT_PROJECT[$1]:-}" ]
 }
 
 # floor_row <project> <row> [gates] [id] -> 0 for a row a floor pass may read: a `#requested` row when the
 # requested floor is under, a cleanup row of DISPATCH_CLEANUP_PROJECTS when the cleanup floor is, an
-# agent row whose gates all cleared (<gates>, cmd_candidates' `gated`) under GATED_ONLY, and a row an
-# open sprint holds (row_sprint on <id>) under SPRINT_ONLY. It sets SPRINT, CLEANUP and KIND (row_sprint_set,
+# agent row whose gates all cleared (<gates>, cmd_candidates' `gated`) under GATED_ONLY, any row of a
+# FLOOR_PROJECTS project under its project floor, and a row an open sprint holds (row_sprint on <id>) under SPRINT_ONLY. It sets SPRINT, CLEANUP and KIND (row_sprint_set,
 # cleanup_row_set), so a walk copies its own before it calls this.
 floor_row() {
   [ -n "${GATED_ONLY:-}" ] && [ -n "${3:-}" ] && return 0
   [ -n "${REQUESTED_ONLY:-}" ] && [[ "${2%%<!--*}" =~ (^|[[:space:]])#requested([[:space:]]|$) ]] && return 0
+  [ -n "${FLOOR_PROJECTS:-}" ] && [[ " $FLOOR_PROJECTS " == *" $1 "* ]] && return 0
   [ -n "${SPRINT_ONLY:-}" ] && [ -n "${4:-}" ] && row_sprint_set "$1" "$4" && [ "$SPRINT" = 0 ] && return 0
   [ -n "${CLEANUP_ONLY:-}" ] && [[ " $DISPATCH_CLEANUP_PROJECTS " == *" $1 "* ]] && cleanup_row_set "$1" "$2" && [ "$CLEANUP" = 0 ]
 }
@@ -8132,9 +8224,13 @@ promote() {
   brief=$(jq -r --arg p "$project" --arg k "$id" \
     'first(.rows[]? | select(.project == $p and .id == $k) | .details // [] | join("\n")) // empty' <<<"$board" 2>/dev/null)
   # A #requested row's created date rides as `asked:`, what a fresh ask is measured from (ASK_JQ).
-  local asked=''
-  [[ " $tags " != *" requested "* ]] || asked=$(jq -r --arg p "$project" --arg k "$id" \
-    'first(.rows[]? | select(.project == $p and .id == $k) | .since // empty) // empty' <<<"$board" 2>/dev/null)
+  # And whose words its #requested is rides as `asker:` (asker_map), which human_ask reads.
+  local asked='' asker=''
+  if [[ " $tags " == *" requested "* ]]; then
+    asked=$(jq -r --arg p "$project" --arg k "$id" \
+      'first(.rows[]? | select(.project == $p and .id == $k) | .since // empty) // empty' <<<"$board" 2>/dev/null)
+    asker_map; asker=$(row_asker "$id")   # the map read here, so the subshell inherits it
+  fi
   if [ -n "$brief" ] && [[ "$task" != *"$brief"* ]]; then
     [[ "$task" != *$'\n'* ]] || rest=$'\n'"${task#*$'\n'}"
     task="${task%%$'\n'*}"$'\n'"$brief$rest"
@@ -8184,7 +8280,12 @@ promote() {
   # queued phase is what was promoted, and it works its own story row, not this one.
   slug=$(awk '$1 == "queued" && $3 == "->" { print $2; exit }' <<<"$out"); PROMOTED=$slug
   candidates_drop "$project" "$lane" "$key"
-  [ -n "$plan" ] || agent-queue set "$slug" "lane=$lane" ${prof:+"profile=$prof"} ${area:+"area=$area"} ${asked:+"asked=$asked"} ${PROMOTE_MODEL:+"model=$PROMOTE_MODEL"} >/dev/null
+  [ -n "$plan" ] || agent-queue set "$slug" "lane=$lane" ${prof:+"profile=$prof"} ${area:+"area=$area"} ${asked:+"asked=$asked"} ${asker:+"asker=$asker"} ${PROMOTE_MODEL:+"model=$PROMOTE_MODEL"} >/dev/null
+  # A chain's phases each carry the row's tags, #requested included, so each carries its asker too.
+  if [ -n "$plan" ] && [ -n "$asker" ]; then
+    local s
+    for s in $(awk '$1 == "queued" && $3 == "->" { print $2 }' <<<"$out"); do agent-queue set "$s" "asker=$asker" >/dev/null; done
+  fi
   [ "${#rm[@]}" = 0 ] || np "$prof" ptask "$project" "${flag[@]}" tag "${rm[@]}" "$id" >/dev/null 2>&1 ||
     say "promote $id: queued, but its cleared gates (${gates[*]}) are still on its row"
   if [ -n "$plan" ]; then logline "filed the chain of $(basename "$plan") from $project $lane row${tags:+ ($tags)}: $id${slug:+, first item $slug}"
@@ -8319,6 +8420,7 @@ t3_rows() {
   fi
   [ -z "${GATES_FAILED:-}" ] || return 0
   load_kinds
+  load_prios
   for prof in $DISPATCH_PROFILES; do
     while IFS=$'\t' read -r name sheet _v _; do
       [ -n "$name" ] || continue
@@ -8330,7 +8432,7 @@ t3_rows() {
       repo=$(repo_dir "$name")
       [ -n "$repo" ] && [ -d "$repo" ] || continue
       pidle=$(pool_idle_of "$name")
-      pprio=$(prio_of "$sheet")
+      pprio=${PRIO_BY[$name]:-}
       n=0
       board=$(rows "$prof" "$name" agent)
       row_kinds_load <<<"$board"

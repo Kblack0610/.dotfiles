@@ -5,12 +5,22 @@
 
 load 'fleet_dispatch/common'
 
-@test "run starts nothing while the cluster is red or unreadable, and says why" {
-  game_ready
+# 2026-11-23: a failing cluster-janitor watch turned the k3s domain red and the machine-wide gate held every
+# start, Unity included (ar-4889). Only a DISPATCH_CLUSTER_PROJECTS item waits on it now.
+@test "a red or unreadable k3s domain holds only cluster work: a home-config item waits and says why, a game item starts" {
+  project game beta "$SANDBOX/repos/game"
+  project home-config beta "$SANDBOX/repos/home-config"
   stub fleet-shepherd 'echo "infra: k3s domain red"'
+  agent-queue add --project home-config --slug fix-hc --priority high "fix the cluster janitor" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'infra: k3s domain red'
+  assert_output --partial 'cluster: fix-hc (infra: k3s domain red, and this is cluster work (DISPATCH_CLUSTER_PROJECTS))'
   assert_not_called 'wt new'
+  agent-queue add --project game --slug fix-game --priority low "fix the game" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item fix-game'
+  refute_output --partial 'started queue item fix-hc'
+  [ -n "$(qitem queued fix-hc)" ] || fail "the home-config item left the queue on a red cluster"
 }
 
 @test "under DISPATCH_RUN_FLOOR a run start goes past the weekly pace, and says so" {
@@ -828,6 +838,59 @@ share_history() {
   [ -z "$(agent-queue list --json --state active 2>/dev/null | jq -r 'select(.project == "game") | .slug')" ] || fail "the #urgent fleet row was promoted past the cap"
 }
 
+# ar-4912: every `--want` stamps #requested, a session's wind-down leftovers included, so an item an
+# agent filed (asker=agent) counts under the cap; the human's own (asker=human) still passes it.
+@test "fleet share: a #requested item an agent filed (asker=agent) waits at the cap; the human's starts" {
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  share_history 1 1
+  agent-queue add --project game --slug follow-up --priority high --tags requested "an agent's follow-up" >/dev/null
+  agent-queue set follow-up asker=agent >/dev/null
+  agent-queue add --project app --slug fix-app --priority low "fix the app" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: app: fix-app'
+  assert_output --partial 'held by fleet share'
+  [ -n "$(qitem queued follow-up)" ] || fail "the agent's #requested item started past the cap"
+  # The control: the same item in the human's words passes the cap, with other work still queued.
+  agent-queue move fix-app done --status cancelled >/dev/null
+  agent-queue add --project app --slug fix-app-2 --priority low "fix the app" >/dev/null
+  agent-queue set follow-up asker=human >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: game: follow-up'
+  refute_output --partial 'held by fleet share'
+}
+
+@test "fleet share: a full share's fill passes over a #requested fleet row an agent filed, by notes' ingest record" {
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  export DISPATCH_NOTES_INGEST="$SANDBOX/ingest.jsonl" DISPATCH_LOW_WATER=4
+  # A session's `--want human` (wind-down) is the agent's; a voice note is the human's. Each row carries
+  # its id, which the pick's key and promote's stamp both are, as on the agent board.
+  jq -cn '{id: "ga-1", action: "added", want: "human", by: "agent", session_id: "s-1"}' > "$DISPATCH_NOTES_INGEST"
+  jq -cn '{id: "ga-2", action: "added", want: "voice"}' >> "$DISPATCH_NOTES_INGEST"
+  # A script logs no session either, so a sessionless `--want human` is the human's only with no named tool.
+  jq -cn '{id: "ga-3", action: "added", want: "human", by: "fleet-dispatch"}' >> "$DISPATCH_NOTES_INGEST"
+  row game human ga-3 "- [ ] retry the probe #high #requested $T <!-- id:ga-3 -->"
+  verdict game human ga-3 dispatch
+  row game human ga-1 "- [ ] tidy the hook #high #requested $T <!-- id:ga-1 -->"
+  verdict game human ga-1 dispatch
+  row game human ga-2 "- [ ] fix crash on load #high #requested $T <!-- id:ga-2 -->"
+  verdict game human ga-2 dispatch
+  row app human 'fix app crash' "- [ ] fix app crash #low $T"
+  verdict app human 'fix app crash' dispatch
+  share_history 1 0
+  DISPATCH_PER_PASS=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" fill
+  assert_success
+  assert_output --partial "so the board fills from other projects"
+  [ -z "$(grep -rl 'tidy the hook' "$AGENT_QUEUE_DIR" 2>/dev/null)" ] || fail "the agent's #requested fleet row was promoted past the cap"
+  [ -z "$(grep -rl 'retry the probe' "$AGENT_QUEUE_DIR" 2>/dev/null)" ] || fail "a script's sessionless #requested row was read as the human's"
+  local f; f=$(grep -rl 'fix crash on load' "$AGENT_QUEUE_DIR" 2>/dev/null | head -n1)
+  [ -n "$f" ] || fail "the human's #requested fleet row was left out of the fill: $output"
+  grep -q '^asker: human$' "$f" || fail "promote did not stamp the row's asker: $(cat "$f")"
+}
+
 # 2026-11-21 (ar-4554): five fleet rows a let-go fill promoted waited 9h in queued/ behind every other
 # project's fresh row, and the queued age p90 read 494m against its 420m bound (watch queue-age).
 @test "fleet share: a board item the cap has held DISPATCH_STARVED_MIN goes back to its row; a fresh one stays" {
@@ -949,12 +1012,12 @@ min_live_classes() {
 
 # 2026-11-23: the judge ran only inside the board fill, so a pass a gate held judged nothing and
 # 1,855 rows waited unjudged behind a flapping k3s red and the load gate.
-@test "a pass the cluster gate holds still judges the new rows, and starts nothing" {
+@test "a pass a gate holds still judges the new rows, and starts nothing" {
   game_ready
   row game human 'add a new map' "- [ ] add a new map $T"
-  stub fleet-shepherd 'echo "infra: k3s domain red"'
+  stub fleet-assess '[ "$1" = --github ] && echo "github: 10/5000 REST calls left, resets 13:00, LOW"; exit 0'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'infra: k3s domain red'
+  assert_output --partial 'LOW'
   assert_called 'judge called'
   assert_not_called 'wt new'
 }

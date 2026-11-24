@@ -13,8 +13,8 @@
 # number beside it: runner updated_epoch, duration_s (the main process of the last run, null
 # while one runs) and outcome_code (0 ok: WORKED, NOOP; 1 warn: BLOCKED, PENDING; 2 fail:
 # FAILED, STALLED; null when none is recorded), and watch since_epoch.
-# Triggers: agentctl after every status write, sentinel on a watch state change,
-# agent-mqtt-sessions.service after each fleet state pass, and agent-mqtt-publish.timer (--full).
+# Triggers: agentctl after every status write, sentinel on a watch state change, and
+# agent-mqtt-publish.timer (--full, every 5 minutes).
 # Broker comes from ~/.config/agent-mqtt.env (private overlay); with none set this is a no-op.
 set -uo pipefail
 

@@ -154,6 +154,13 @@ pub const ROUTES: &[Route] = &[
         &[],
     ),
     route("PUT", "/api/focus", |_| "note.saved".into(), &["t"], &[]),
+    route(
+        "POST",
+        "/api/projects/prio",
+        |_| "project.prio-set".into(),
+        &["name"],
+        &["profile", "prio", "hours"],
+    ),
     route("PUT", "/api/outbox", |_| "outbox.saved".into(), &[], &[]),
     route(
         "POST",
