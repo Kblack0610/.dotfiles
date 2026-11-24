@@ -814,7 +814,8 @@ add_sessions() {
   assert_failure
   assert_output --partial 'notes did not answer'
   assert_equal "$(cat "$snap")" "$before"
-  [ -z "$(ls "${snap%/*}" | grep -v '^candidates.jsonl$')" ] || fail "a temp file was left behind"
+  # The pass writes hosts.json beside it (hosts_write), so only a candidates temp file counts.
+  [ -z "$(ls "${snap%/*}" | grep '^candidates\.jsonl\.')" ] || fail "a temp file was left behind: $(ls "${snap%/*}")"
   unset -f notes
   run candidates_write
   assert_success
