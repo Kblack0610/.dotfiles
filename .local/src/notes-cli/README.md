@@ -25,9 +25,7 @@ It runs `cargo build --release`, copies the binary to `~/.local/lib/notes/notes`
 
 ## Configuration
 
-`~/.config/notes/config.toml`, machine-local and git-ignored (`~/.dotfiles/.config/notes/config.toml.example` is the tracked template). The
-binary also falls back to `$NOTES_CONFIG` and `~/.dotfiles/.config/notes/config.toml`,
-and to a built-in `personal` default if none exist.
+`~/.config/notes/config.toml`, machine-local and git-ignored (`~/.dotfiles/.config/notes/config.toml.example` is the tracked template). The binary also tries `$NOTES_CONFIG` and a hand-placed `~/.dotfiles/.config/notes/config.toml`, and uses a built-in `personal` default if none exist.
 
 Active profile resolves: `--profile`, then `$NOTES_PROFILE`, then `[hostname_map]` (by
 `hostname -s`), then `default_profile`. This is what lets a corporate machine root its

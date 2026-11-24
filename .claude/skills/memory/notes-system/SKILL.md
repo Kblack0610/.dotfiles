@@ -69,7 +69,7 @@ Sync is event-driven by a Forgejo push webhook -> in-cluster `notes-sync-bridge`
 
 ## Profiles
 
-`~/.config/notes/config.toml` is the single source of truth for paths. Profile resolution:
+`~/.config/notes/config.toml` is the machine's source of truth for paths (copy `config.toml.example` to start one). Profile resolution:
 `--profile` flag -> `$NOTES_PROFILE` -> `[hostname_map]` (by `hostname -s`) -> `default_profile`.
 
 - `personal` (default): journal under `~/.notes/journal/`
