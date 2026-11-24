@@ -4145,25 +4145,32 @@ worker_record_one() {
     'f="$HOME/.local/state/notes/ingest.jsonl"; [ -r "$f" ] && awk -v c="$1" '\''substr($0, 8, length(c)) >= c'\'' "$f"' _ "$cur" 2>/dev/null) || return 0
   at=$(notes ingest import <<<"$lines" 2>/dev/null) || { say "record: $name: notes ingest import failed"; return 0; }
   [ -z "$at" ] || printf '%s\n' "$at" > "$dir/$name"
-  worker_pull_live "$lines" "$cur"
+  worker_pull_live "$name" "$lines" "$dir/$name.pulled"
 }
 
-# worker_pull_live <lines> <cursor> -- a worker's agent-land runs dotfiles-autopull on the worker, so
-# a dotfiles PR it merged went live there and never here, where stow serves the checkouts:
-# ~/.dotfiles-private sat four merges behind on 2026-11-23, each landed on razer-laptop, and
-# deploy-drift tripped (ar-2453). Each stowed checkout a `done` line newer than the cursor names a
-# PR of gets one `dotfiles-autopull --now <checkout> --bg` here. A oneshot unit's cgroup is killed
-# when it stops, so under systemd the pass starts in a scope of its own (agent-ask's detach).
+# worker_pull_live <worker> <lines> <pulled file> -- a worker's agent-land runs dotfiles-autopull on
+# the worker, so a dotfiles PR it merged went live there and never here, where stow serves the
+# checkouts: ~/.dotfiles-private sat four merges behind on 2026-11-23, each landed on razer-laptop,
+# and deploy-drift tripped (ar-2453). Each stowed checkout a `done` line names a PR of gets one
+# `dotfiles-autopull --now <checkout> --bg` here. The import cursor sits two hours behind the newest
+# line, so a read sees a line again for two hours: <pulled file> keeps the PR refs already pulled,
+# written once every launch started, so a failed one is said and tried on the next read. A oneshot
+# unit's cgroup is killed when it stops, so under systemd the pass starts in a scope of its own
+# (agent-ask's detach).
 worker_pull_live() {
-  local repos dir want autopull=${DOTFILES_AUTOPULL:-$HERE/dotfiles-autopull} wrap=()
-  repos=$(jq -r --arg c "${2:-}" 'select(.action == "done" and .ts > $c) | .pr // empty
-    | split(" ")[] | split("#")[0] | ascii_downcase' <<<"$1" 2>/dev/null | sort -u)
-  [ -n "$repos" ] || return 0
+  local name=$1 seen=$3 refs dir want ok=1 autopull=${DOTFILES_AUTOPULL:-$HERE/dotfiles-autopull} wrap=()
+  refs=$(jq -r 'select(.action == "done") | .pr // empty | split(" ")[] | select(contains("#"))
+    | ascii_downcase' <<<"$2" 2>/dev/null | sort -u)
+  [ -z "$refs" ] || [ ! -f "$seen" ] || refs=$(grep -vxF -f "$seen" <<<"$refs")
+  [ -n "$refs" ] || return 0
   [ -z "${INVOCATION_ID:-}" ] || wrap=(systemd-run --user --scope --quiet)
   for dir in "${DOTFILES_DIR:-$HOME/.dotfiles}" "${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}"; do
-    want=$(origin_repo "$dir") && grep -qxF "${want,,}" <<<"$repos" || continue
-    "${wrap[@]}" "$autopull" --now "$dir" --bg </dev/null >/dev/null 2>&1 || :
+    want=$(origin_repo "$dir") && cut -d'#' -f1 <<<"$refs" | grep -qxF "${want,,}" || continue
+    "${wrap[@]}" "$autopull" --now "$dir" --bg </dev/null >/dev/null 2>&1 ||
+      { ok=''; say "record: $name: dotfiles-autopull --now $dir failed to start; the next read tries again"; }
   done
+  [ -z "$ok" ] || { printf '%s\n' "$refs" >> "$seen" && tail -n 500 "$seen" > "$seen.tmp" && mv "$seen.tmp" "$seen"; }
+  return 0
 }
 
 # fans_out -> rc 0 when this machine holds the fleet lease (`fleet-lease held`), so it asks every
