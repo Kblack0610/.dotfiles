@@ -540,11 +540,12 @@ spend_curl() {
   assert_output 1
 }
 
-@test "spend check: Prometheus unreadable exits 2, so the watch trips instead of going blind" {
+@test "spend check: Prometheus unreadable exits 2 with an unreadable line, so the watch reads UNKNOWN, never over budget" {
   printf '#!/usr/bin/env bash\nexit 7\n' > "$SANDBOX/bin/curl"
   chmod +x "$SANDBOX/bin/curl"
   run "$AU" spend check 1h 150
   assert_failure 2
+  assert_line --regexp '^unreadable: Prometheus'
 }
 
 @test "spend check: a bad window or ceiling is a usage error, not a silent pass" {
@@ -559,12 +560,14 @@ spend_curl() {
     spend_curl "$body"
     run "$AU" spend check 1h 150
     assert_failure 2
+    assert_line 'unreadable: Prometheus spend (no answer, or not a number)'
   done
 }
 
-@test "spend check: no CC_PROM_URL exits 2" {
+@test "spend check: no CC_PROM_URL exits 2 with an unreadable line" {
   CC_PROM_URL='' run "$AU" spend check 1h 150
   assert_failure 2
+  assert_line --regexp '^unreadable: no CC_PROM_URL'
 }
 
 @test "spend check: the endpoint is CC_PROM_URL from the command-center env file, a stray PROM_URL is ignored" {
@@ -586,7 +589,7 @@ spend_curl() {
   assert_output 'last 1h: $448.8 (alert at $250)'
   run "$AU" spend check 24h 900
   assert_failure 2
-  assert_output --partial 'Prometheus history starts 2h00m ago, too short for a 24h window'
+  assert_output --partial 'unreadable: Prometheus history starts 2h00m ago, too short for a 24h window'
   spend_curl '{"status":"success","data":{"result":[{"metric":{},"value":[0,"448.8"]}]}}' 3700
   run "$AU" spend check 1h 250
   assert_failure 2
@@ -603,7 +606,7 @@ spend_curl() {
   spend_curl '{"status":"success","data":{"result":[{"metric":{},"value":[0,"88.4"]}]}}' NaN
   run "$AU" spend check 1h 150
   assert_failure 2
-  assert_output --partial 'history age unreadable'
+  assert_line 'unreadable: Prometheus history age'
 }
 
 @test "spend check: just over the ceiling prints a figure that shows it" {
@@ -724,16 +727,19 @@ turn() {
   assert_output '1 queue sessions past 15m, each exporting (1 with cost, 0 not spent yet); the by_runner rule has a fleet-dispatch series'
 }
 
-@test "export check: Prometheus unreadable or not a vector exits 2, so the watch trips instead of going blind" {
+@test "export check: Prometheus unreadable or not a vector exits 2 with an unreadable line, so the watch reads UNKNOWN" {
   qproc 101 aaa-1 7200 ar-1
   printf '#!/usr/bin/env bash\nexit 7\n' > "$SANDBOX/bin/curl"; chmod +x "$SANDBOX/bin/curl"
   AGENT_USAGE_PROC="$SANDBOX/proc" run "$AU" export check
   assert_failure 2
+  assert_line 'unreadable: Prometheus session series (no answer, or not a vector)'
   spend_curl '{"status":"success","data":{"result":"x"}}'
   AGENT_USAGE_PROC="$SANDBOX/proc" run "$AU" export check
   assert_failure 2
+  assert_line 'unreadable: Prometheus session series (no answer, or not a vector)'
   CC_PROM_URL='' AGENT_USAGE_PROC="$SANDBOX/proc" run "$AU" export check
   assert_failure 2
+  assert_line --regexp '^unreadable: no CC_PROM_URL'
 }
 
 @test "export check: a bad verb or age is a usage error" {

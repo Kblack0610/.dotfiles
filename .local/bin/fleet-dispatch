@@ -190,6 +190,7 @@ HARNESSES="${DISPATCH_HARNESSES:-$HOME/.config/agentctl/harnesses.json}"   # the
 MATRIX="${BENCH_MATRIX:-$HOME/.config/fleet-bench/matrix.json}"   # fleet-bench's canary matrix: its `excluded` kinds with a match are the work route() keeps off a headless harness
 HEADROOM="$DIR/headroom.json"   # the last real pass's `headroom --json`, which stats publishes
 CANDIDATES="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/candidates.jsonl"   # the last real pass's `suggest --json`, which the hub Candidates fold reads (hub_core::queue::candidates); derived, so out of the autocommitted ~/.agent
+HOSTS_SNAP="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/hosts.json"   # the last real pass's `hosts --json` as one array (hosts_write), which the hub bar's Machines roll-up reads (hub_core::bar)
 TRAINEE_DIR="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/trainee"   # <slug>.patch and <slug>.base: the diff a trainee run left and its base, which a batch review applies (cmd_trainee_review, trainee_batch_start)
 TRAINEE_DRY="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/trainee-dry"   # <harness> TAB <epoch> a line: since when each trainee harness with a slot has found no queued or board row it takes (trainee_floor_start), which starved reads
 PROVIDER_ENDS="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/provider-ends.tsv"   # <slug>@<last session id> TAB <source> TAB <hold until epoch, 0 for a run that did not end on the provider>: each recent ended run provider_hold_scan classified, so a run's end is read once
@@ -6371,26 +6372,47 @@ stuck_on() {
   echo "$n"
 }
 
+# host_rows [active queue JSON] -- one `hosts --json` line per worker in the roster, from the probe this
+# process holds (probe_hosts, and each start's HOST_FREE since): cmd_hosts prints them, hosts_write stores them.
+# With no queue (none given, or agent-queue did not answer), stuck is null, never a guessed 0: stuck_on is one
+# ssh per worker, and no reader of the snapshot wants it. A row that does not build stops it, status 1.
+host_rows() {
+  local h name
+  while IFS= read -r h; do
+    [ -n "$h" ] || continue
+    name=$(jq -r .name <<<"$h")
+    jq -c --arg p "${HOST_PROBE[$name]:-}" --arg f "${HOST_FREE[$name]:-}" --arg w "$(host_why "$name")" --arg s "$([ -z "${1:-}" ] || stuck_on "$name" <<<"$1")" \
+      --arg hr "${HOST_HARN[$name]:-}" --arg hw "${HOST_HARN_WHY[$name]:-}" --arg k "${HOST_KIT[$name]:-}" \
+      '{name, dest, place, max_live, free: ($f | tonumber? // null), stuck: ($s | tonumber? // null), probe: $p, kit: ($k | split(" ") | map(select(. != ""))), why: $w, repos,
+        harnesses: (.harnesses // []), harness_ready: ($hr | split(" ") | map(select(. != ""))), harness_why: $hw}' <<<"$h" || return 1
+  done < <(fleet_hosts)
+}
+
+# hosts_write -- the workers as `hosts --json` reads them, one JSON array in HOSTS_SNAP, beside the candidates
+# snapshot: hub-core's bar reads each worker's max_live and free slots from it (hub_core::bar, its `hosts`), so no
+# view runs ssh. After the pass, from the probe it and headroom hold: a worker neither probed has a null free.
+# Written whole or not at all: rows that do not build leave the last one, whose age the bar names.
+hosts_write() {
+  local rows
+  fleet_hosts >/dev/null
+  mkdir -p "${HOSTS_SNAP%/*}"
+  if rows=$(host_rows) && jq -cs . <<<"$rows" > "$HOSTS_SNAP.$$" 2>/dev/null; then mv -f "$HOSTS_SNAP.$$" "$HOSTS_SNAP"; return 0; fi
+  rm -f "$HOSTS_SNAP.$$"; say "hosts snapshot: the rows did not build, the last one is left as it was"; return 1
+}
+
 # cmd_hosts [--json] -- who holds the fleet lease (fleet-lease status), then each worker in the
 # roster, as a pass would read it now.
 cmd_hosts() {
-  local h name rows=() queue
+  local rows queue
   fleet_roster_fetch
   fleet_hosts >/dev/null
   [ "${1:-}" = --json ] || fleet-lease status 2>&1
   probe_hosts "$(live_runs)"
   queue=$(agent-queue list --json --state active 2>/dev/null)
-  while IFS= read -r h; do
-    [ -n "$h" ] || continue
-    name=$(jq -r .name <<<"$h")
-    rows+=("$(jq -c --arg p "${HOST_PROBE[$name]:-}" --arg f "${HOST_FREE[$name]:-}" --arg w "$(host_why "$name")" --arg s "$(stuck_on "$name" <<<"$queue")" \
-      --arg hr "${HOST_HARN[$name]:-}" --arg hw "${HOST_HARN_WHY[$name]:-}" --arg k "${HOST_KIT[$name]:-}" \
-      '{name, dest, place, max_live, free: ($f | tonumber? // null), stuck: ($s | tonumber? // null), probe: $p, kit: ($k | split(" ") | map(select(. != ""))), why: $w, repos,
-        harnesses: (.harnesses // []), harness_ready: ($hr | split(" ") | map(select(. != ""))), harness_why: $hw}' <<<"$h")")
-  done < <(fleet_hosts)
-  [ ${#rows[@]} -gt 0 ] || { [ "${1:-}" = --json ] || say "no fleet workers in $(fleet_inventory || echo the inventory)"; return 0; }
-  if [ "${1:-}" = --json ]; then printf '%s\n' "${rows[@]}"
-  else printf '%s\n' "${rows[@]}" | jq -r '"\(.name)\t\(.dest)\t\(if .place then "placed" else "not placed" end)\t\(.free // "-")/\(.max_live) free\t\(if .why == "" then "open" else .why end)\(if (.stuck // 0) > 0 then "; \(.stuck) stuck at start (no transcript past the reap grace)" else "" end)\(if .kit != [] then "; has \(.kit | join(", "))" else "" end)\(if .harness_ready != [] then "; runs \(.harness_ready | join(", "))" else "" end)\(if .harness_why != "" then "; cannot run \(.harness_why)" else "" end)"'
+  rows=$(host_rows "$queue")
+  [ -n "$rows" ] || { [ "${1:-}" = --json ] || say "no fleet workers in $(fleet_inventory || echo the inventory)"; return 0; }
+  if [ "${1:-}" = --json ]; then printf '%s\n' "$rows"
+  else printf '%s\n' "$rows" | jq -r '"\(.name)\t\(.dest)\t\(if .place then "placed" else "not placed" end)\t\(.free // "-")/\(.max_live) free\t\(if .why == "" then "open" else .why end)\(if (.stuck // 0) > 0 then "; \(.stuck) stuck at start (no transcript past the reap grace)" else "" end)\(if .kit != [] then "; has \(.kit | join(", "))" else "" end)\(if .harness_ready != [] then "; runs \(.harness_ready | join(", "))" else "" end)\(if .harness_why != "" then "; cannot run \(.harness_why)" else "" end)"'
     unplaced <<<"$queue"; fi
 }
 
@@ -8852,10 +8874,10 @@ main() {
       pass_mark judge
       # After the pass, so it counts what the pass left: stats reads this, never the gates itself.
       [ "$DRY" = 1 ] || { cmd_headroom --json > "$HEADROOM.$$" 2>/dev/null && mv -f "$HEADROOM.$$" "$HEADROOM" || rm -f "$HEADROOM.$$"; }
-      # The candidates snapshot too, but only from the pass that holds the lock: a skipped pass would
+      # The candidates and hosts snapshots too, but only from the pass that holds the lock: a skipped pass would
       # read every board a second time beside the one running.
-      [ "$DRY" = 1 ] || ! flock -n 9 2>/dev/null || candidates_write || true
-      pass_mark "headroom and candidates"
+      if [ "$DRY" != 1 ] && flock -n 9 2>/dev/null; then candidates_write || true; hosts_write || true; fi
+      pass_mark "headroom, candidates and hosts"
       [ -z "$ran" ] || say "pass steps: $PASS_TIMES; ${SECONDS}s in all"
       return "$rc" ;;
     kick) cmd_kick ;;
