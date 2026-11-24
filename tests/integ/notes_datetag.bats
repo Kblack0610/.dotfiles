@@ -6,7 +6,7 @@
 # until the next carry, which then dated it the previous day. These run the real module
 # in a headless nvim; the save hook in markdown.lua is a thin caller of stamp_focus.
 #
-# Skips where nvim is absent (the CI fast tier installs none by design); run it locally.
+# Skips where nvim is absent; the test image pins it (tests/Dockerfile, NVIM_VERSION).
 
 setup() {
   load '../vendor/bats-support/load'

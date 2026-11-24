@@ -4,7 +4,7 @@
 # itself is tested in notes-cli (`cargo test find::`); these check that each surface keeps the
 # CLI's order, parses its rows and opens at the hit's line.
 #
-# The nvim cases skip where nvim is absent (the CI fast tier installs none by design).
+# The nvim cases skip where nvim is absent; the test image pins it (tests/Dockerfile, NVIM_VERSION).
 
 setup() {
   load '../vendor/bats-support/load'

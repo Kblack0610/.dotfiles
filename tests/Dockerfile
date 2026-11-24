@@ -59,7 +59,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 # nodejs runs tab_keeper.bats (`node --test`); openssl and xxd sign release-state's store JWTs.
 # lua5.4 loads the Hyprland Lua config for helpers/hypr-lua-dump.lua.
 # inotify-tools: agent-ask wait-delivered, the questions panel's wait for an answer to go out.
-# neovim: notes_mobile.bats, where the phone launcher switches its running editor to today.
 # parallel lets the unit and integ tiers run with bats --jobs (tests/Makefile FAST_PAR).
 # sqlite3: session_outcomes.bats builds a fixture opencode DB. stow: dotfiles_deploy.bats checks
 # its links against stow itself. npm installs the phone harness's playwright-core and the
@@ -68,13 +67,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       bash ca-certificates coreutils curl gawk git jq less procps sed tar xz-utils unzip \
       ncurses-base ncurses-bin ncurses-term bsdextrautils \
       libevent-dev libncurses-dev bison pkg-config make gcc \
-      python3 python3-yaml sqlite3 nodejs npm openssl xxd lua5.4 inotify-tools neovim parallel stow \
+      python3 python3-yaml sqlite3 nodejs npm openssl xxd lua5.4 inotify-tools parallel stow \
       zip psmisc uuid-runtime \
     && rm -rf /var/lib/apt/lists/*
 
-# The downloads below (bun, tmux, fzf) go to GitHub's release CDN, which answers a 504 now and then,
-# and a cold build (any change to what tests/docker.sh hashes) downloads them again. curl reads
-# this file, so the retry lives in one place and each download keeps its plain `curl -fsSL`.
+# The downloads below (bun, tmux, fzf, neovim) go to GitHub's release CDN, which answers a 504
+# now and then, and a cold build (any change to what tests/docker.sh hashes) downloads them
+# again. curl reads this file, so the retry lives in one place and each download keeps its plain
+# `curl -fsSL`.
 RUN printf 'retry = 8\nretry-delay = 15\nretry-all-errors\n' > /root/.curlrc
 
 # python3 + PyYAML are RUNTIME dependencies of a subject, not build tools:
@@ -162,6 +162,25 @@ RUN arch="$(dpkg --print-architecture)" \
     && tar xf /tmp/fzf.tar.gz -C /opt/ui/bin fzf \
     && rm -f /tmp/fzf.tar.gz \
     && /opt/ui/bin/fzf --version
+
+# neovim runs the notes.nvim tests (integ/notes_tag_source.bats) and notes_mobile.bats, where the
+# phone launcher switches its running editor to today. The release tarball, not trixie's 0.10.4:
+# 0.10's vim.system closes stdout at process exit before reading it (neovim #30846, fixed in 0.11),
+# so one of three concurrent `notes` calls came back empty now and then (ar-5107). Pinned to the
+# version the workstation runs, by version and each tarball's sha256 (bump all three, here: like
+# BUN_VERSION it is not a tests/docker.sh build arg, since a bump needs new sha256s anyway).
+ARG NVIM_VERSION=0.12.6
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) t=nvim-linux-x86_64 sha=474430d53e6264f6d6dd18db42d6dc9df3a1b56ca9e88a325bbf860e1a811d87 ;; \
+      arm64) t=nvim-linux-arm64 sha=8f1f64a0bdb97247034038c3823c6cbad5bdf9ecd5751b85494b71c3ee04c815 ;; \
+      *) echo "unsupported arch" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL -o /tmp/nvim.tar.gz "https://github.com/neovim/neovim/releases/download/v${NVIM_VERSION}/${t}.tar.gz" \
+    && echo "$sha  /tmp/nvim.tar.gz" | sha256sum -c - \
+    && tar xf /tmp/nvim.tar.gz -C /opt && mv "/opt/${t}" /opt/nvim \
+    && ln -s /opt/nvim/bin/nvim /usr/local/bin/nvim \
+    && rm -f /tmp/nvim.tar.gz \
+    && nvim --version | head -1
 
 # shellcheck, so `tests/docker.sh lint` runs the exact gate CI runs without anyone
 # having to install a linter.

@@ -6,7 +6,7 @@
 # These load the real plugin config in a headless nvim (render-markdown stubbed), open a
 # daily note so the Filetype hook installs the buffer autocmds, and `:write` it.
 #
-# Skips where nvim is absent (the CI fast tier installs none by design); run it locally.
+# Skips where nvim is absent; the test image pins it (tests/Dockerfile, NVIM_VERSION).
 
 setup() {
   load '../vendor/bats-support/load'
