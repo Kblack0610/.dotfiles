@@ -113,7 +113,7 @@ pub fn decide(needs: &[Need], paged: &HashSet<String>, buzzed: usize, cfg: &Conf
         .iter()
         .copied()
         .filter(|n| n.score.as_ref().is_some_and(|s| s.value >= cfg.min_score))
-        // The judge's audit sample is a review, not a blocking decision: it waits on Home.
+        // An audit (posted before ar-4765) is a review, not a blocking decision: it waits on Home.
         .filter(|n| n.ask.as_ref().is_none_or(|a| a.audit_of.is_empty()))
         .filter(|n| {
             !paged.contains(&n.id)

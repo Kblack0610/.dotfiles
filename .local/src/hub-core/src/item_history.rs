@@ -116,7 +116,7 @@ fn text(e: &Event) -> Option<String> {
     })
 }
 
-/// An `item-set` worth a line: a note, a fix-ci try, a red PR handed to the human, a PR, a rewrite.
+/// An `item-set` worth a line: a note, a fix-ci try, a PR whose tries were escalated, a PR, a rewrite.
 /// Its `why` is every `key=value` the one `agent-queue set` call took, so each key is read, and
 /// a key set to nothing (cleared) says nothing.
 fn set_text(why: &str, pr: &str) -> Option<String> {
@@ -130,7 +130,7 @@ fn set_text(why: &str, pr: &str) -> Option<String> {
         }
         match k {
             "fix_tries" => said.push(format!("fix-ci try {}", v.split(' ').next().unwrap_or(v))),
-            "fix_human" => said.push("PR still red after fix-ci, yours".into()),
+            "fix_human" => said.push("PR tries spent, escalated".into()),
             "pr" => said.push(format!("PR {}", if pr.is_empty() { v } else { pr })),
             "note" => said.push(format!("note: {v}")),
             _ => {}
@@ -232,7 +232,7 @@ mod tests {
                 "started on lab:ucp-agent-10, sol on codex",
                 "PR o/r#2134",
                 "fix-ci try 2; note: red at 9419",
-                "PR still red after fix-ci, yours",
+                "PR tries spent, escalated",
                 "note: held for the night",
                 "task rewritten",
                 "reaped, item was running",
