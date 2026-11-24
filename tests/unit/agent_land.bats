@@ -95,6 +95,8 @@ case "$1 $2" in
   *'"fail" or'*) cat "$NOTES_FIXTURE/checks.failed" ;;
   # checks.stale: the failed checks as JSON after a failed watch ([] when absent)
   *'"fail"))'*) cat "$NOTES_FIXTURE/checks.stale" 2>/dev/null || echo '[]' ;;
+  # checks.skipping: whether all checks on the PR are in the skipping bucket (false when absent)
+  *'"skipping"'*) cat "$NOTES_FIXTURE/checks.skipping" 2>/dev/null || echo false ;;
   # checks.cancelled: the cancelled checks as JSON after a green watch, one answer per read,
   # popped as read; [] once empty. A line "ERR <text>": that read fails with <text>
   *--json*) q="$NOTES_FIXTURE/checks.cancelled" r='[]'
@@ -3309,6 +3311,23 @@ EOF
   assert_output --partial 'checks failed: the watch ended with no failed check to name: gh: API rate limit exceeded (HTTP 403)'
   run grep -c 'pr merge' "$LOG"
   assert_output 0
+}
+
+@test "a PR whose only checks read skipping at that moment keeps waiting while a run is queued, then lands on green (ar-2485)" {
+  printf '%s\n' $'Run Checks\tthe slot refused\tskipping' green >"$NOTES_FIXTURE/checks.seq"
+  : >"$NOTES_FIXTURE/checks.failed"
+  printf '%s\n' true >"$NOTES_FIXTURE/checks.skipping"
+  printf '%s\n' 1 >"$NOTES_FIXTURE/runs.queued"
+  fake_sleep
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: only skipping reported; waiting'
+  assert_line 'checks: green'
+  assert_line 'landed #42'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 2
+  run grep '^sleep' "$LOG"
+  assert_output 'sleep 60'
 }
 
 @test "a queued-runs answer that is not a count is a failed read, never 0 queued (ar-2235)" {
