@@ -740,7 +740,7 @@ tag --add plan gs-6'
   # the exit is on record, so a second pass over the same board (the tag not yet seen) plans nothing twice
   jq -c 'if .id == "gs-6" then .details = [] else . end' "$NOTES_FIXTURE/board.rows" > "$SANDBOX/b" && mv "$SANDBOX/b" "$NOTES_FIXTURE/board.rows"
   run skip_exits --dry-run
-  assert_output 'exits:'
+  assert_output --regexp '^exits: *$'
   # inbox-plan planned gs-1 and left it L: the recorded plan exit now sends it to the human, once
   : > "$NOTES_FIXTURE/board.rows"
   board_row game agent gs-1 '[]' '["goal: split it"]'
@@ -750,7 +750,7 @@ tag --add plan gs-6'
 exits: sheet 1'
   skip_exits
   run skip_exits --dry-run
-  assert_output 'exits:'
+  assert_output --regexp '^exits: *$'
 }
 
 @test "skip_exits: plan tags stop at DISPATCH_PLAN_BACKLOG open #plan rows, and the other exits go on" {
