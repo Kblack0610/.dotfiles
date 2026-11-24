@@ -3355,7 +3355,7 @@ q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
   } > "$ITEMS"
   run "$SUBJECT" kpi --json
   assert_equal "$(jq -c '.points_per_pr["7d"]' <<<"$output")" 4.67
-  stub_prom 'exit 7'
+  stub_vm 'exit 7'
   run "$SUBJECT" kpi --json
   assert_equal "$(jq -c '.points_per_pr["7d"]' <<<"$output")" null
 }

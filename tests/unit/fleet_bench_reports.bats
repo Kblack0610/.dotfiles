@@ -1587,14 +1587,20 @@ SH
   assert_equal "$(jq -c '.sources[] | select(.name == "agy") | .usd' <<<"$output")" '1.25'
 }
 
-@test "sources: a dead Prometheus says its points are unread and keeps the rows; an unreadable claude-acct status is exit 1" {
+@test "sources: a dead VictoriaMetrics says its points are unread and keeps the rows; an unreadable claude-acct status is exit 1" {
   sources_fixture
   : > "$ITEMS"
-  stub_prom 'exit 7'
+  stub_vm 'exit 7'
   run "$SUBJECT" sources
   assert_success
-  assert_line '- points: ? (Prometheus unreadable)'
+  assert_line '- points: ? (VictoriaMetrics unreadable)'
   assert_line --partial '| main | claude | 40% | - |'
+  # a host with no VM service set (no kubeconfig there) reads the same and asks no cluster
+  stub_vm 'exit 0'
+  : > "$SANDBOX/kubectl.log"
+  CC_VM_SERVICE= run "$SUBJECT" sources
+  assert_line '- points: ? (VictoriaMetrics unreadable)'
+  assert_equal "$(wc -l < "$SANDBOX/kubectl.log")" 0
   BENCH_SOURCES_CMD=false run "$SUBJECT" sources
   assert_failure 1
 }
