@@ -317,12 +317,12 @@ function removeRow(n) {
   return rowEdit((l) => (l.splice(n, end - n), l), `"${what}"`);
 }
 
-// `+` adds `- [ ] <text>` at the end of the lane, tagged #urgent, #high or #low as the lane is
+// `+` adds `- [ ] <text>` at the end of the lane, tagged #urgent, #high, #normal or #low as the lane is
 // (the tag is what the Focus sweep files a task by) unless the text names one itself.
 function addTask(lane, text) {
   const l = fcs.data.focus && fcs.data.focus.lanes.find((x) => x.name === lane);
   if (!l || !text.trim()) return Promise.resolve(false);
-  const tag = /^(urgent|high|low)$/i.test(lane) && !/(^|\s)#(urgent|high|low)\b/i.test(text) ? " #" + lane.toLowerCase() : "";
+  const tag = /^(urgent|high|normal|low)$/i.test(lane) && !/(^|\s)#(urgent|high|normal|low)\b/i.test(text) ? " #" + lane.toLowerCase() : "";
   const row = `- [ ] ${text.trim()}${tag}`;
   // Below the lane's last line, or its heading when it has none; a heading that is not one
   // means the page's lines are not this note's.

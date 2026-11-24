@@ -425,8 +425,8 @@ esac'
   [ ! -s "$FLEET_SHEPHERD_DIR/.shared" ]
 }
 
-@test "a manual row is never due, and an all-quiet document exits 1" {
-  doc "[$(row a STALLED false false '["manual"]'), $(row b WORKING false false)]"
+@test "a manual or stay row is never due, and an all-quiet document exits 1" {
+  doc "[$(row a STALLED false false '["manual"]'), $(row c STALLED false false '["stay"]'), $(row b WORKING false false)]"
   run "$SH" due
   assert_failure
   assert_output ''
@@ -638,8 +638,9 @@ typed() { cat "$HOME/panel.calls" 2>/dev/null; }
         $(crow 4 CHAT after), $(crow 5 LANDED after), $(crow 6 NEEDS after '{"own_asks":1}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   [ -z "$(typed)" ]
-  # A manual row the close flow reads now (quiet FLEET_CHAT_CLOSE_H, ar-4041) is typed its close like any row.
-  doc "[$(crow 8 DONE now '{"labels":["manual"]}')]"
+  # A stay row the close flow reads now (quiet FLEET_CHAT_CLOSE_H, ar-4041) is typed its close like any row;
+  # a manual row never reads now (ar-4124, fleet_sessions.bats close verdict).
+  doc "[$(crow 8 DONE now '{"labels":["stay"]}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   run typed
   assert_line 'send --wait 0 --pane lab/%8 /wind-down auto'
@@ -757,10 +758,10 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
   # Unshown and between turns, it is closed whatever its prompt holds.
   STUB_PANE="${IDLE/$'\xc2\xa0'/$'\xc2\xa0'half a thought}" "$SH" check >/dev/null || true
   [ -n "$(closes)" ]
-  # A manual row quiet past FLEET_CHAT_CLOSE_H reads now and is closed like any other (ar-4041).
+  # A stay row quiet past FLEET_CHAT_CLOSE_H reads now and is closed like any other (ar-4041).
   : > "$HOME/wind-down.calls"
   nudged_ago 30 11
-  doc "[$(crow 11 DONE now '{"nudged":true,"close_sent":true,"idle_min":2000,"labels":["manual"]}')]"
+  doc "[$(crow 11 DONE now '{"nudged":true,"close_sent":true,"idle_min":2000,"labels":["stay"]}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   [ -n "$(closes)" ]
 }
@@ -2647,6 +2648,119 @@ STUB
   run "$SH" sweep-cancel 'host-overload host:a @1700000000'
   assert_failure 2
   [ ! -e "$HOME/gh.calls" ]
+}
+
+# ghost_setup: the exporter lists runs 1 (a ghost: queued 48h, no job), 2 (queued 1h by GitHub's clock)
+# and 3 (queued 48h, one job) as stuck, run 1 under two job names. gh answers a run and its jobs from
+# those facts and records every call. STUB_CANCEL_REFUSED refuses /cancel with HTTP 409 (not
+# cancellable), STUB_CANCEL_DENIED with 403 and refuses force-cancel too, and STUB_GH_DOWN fails every
+# run read.
+ghost_setup() {
+  cat > "$PROM_LIB" <<'STUB'
+prom_q() {
+  [ -z "${STUB_PROM_FAIL:-}" ] || return 1
+  echo "$1" >> "$HOME/prom.calls"
+  local u='https://github.com/o/r/actions/runs/'
+  printf '{"status":"success","data":{"result":[%s]}}' \
+    "{\"metric\":{\"url\":\"${u}1\",\"job_name\":\"a\"}},{\"metric\":{\"url\":\"${u}1\",\"job_name\":\"b\"}},{\"metric\":{\"url\":\"${u}2\"}},{\"metric\":{\"url\":\"${u}3\"}}"
+}
+STUB
+  gh_script 'echo "$*" >> "$HOME/gh.calls"
+old="$(date -u -d "48 hours ago" +%FT%TZ)" new="$(date -u -d "1 hour ago" +%FT%TZ)"
+[ -z "${STUB_GH_DOWN:-}" ] || { echo "gh: HTTP 502" >&2; exit 1; }
+case "$*" in
+  "api repos/o/r/actions/runs/1 "*|"api repos/o/r/actions/runs/3 "*) printf "queued\t%s\n" "$old" ;;
+  "api repos/o/r/actions/runs/2 "*) printf "queued\t%s\n" "$new" ;;
+  "api repos/o/r/actions/runs/1/jobs "*|"api repos/o/r/actions/runs/2/jobs "*) echo 0 ;;
+  "api repos/o/r/actions/runs/3/jobs "*) echo 1 ;;
+  *"/cancel") [ -z "${STUB_CANCEL_DENIED:-}" ] || { echo "gh: Forbidden (HTTP 403)" >&2; exit 1; }
+              [ -z "${STUB_CANCEL_REFUSED:-}" ] || { echo "gh: Cannot cancel a workflow run that is completed. (HTTP 409)" >&2; exit 1; } ;;
+  *"/force-cancel") [ -z "${STUB_CANCEL_DENIED:-}" ] ;;
+esac'
+}
+
+@test "ghost-runs: a dry run logs the ghost it would cancel, keeps a young run and one with a job, and asks once" {
+  ghost_setup
+  run "$SH" ghost-runs
+  assert_success
+  assert_line 'ghost-runs: would-cancel https://github.com/o/r/actions/runs/1 (48h)'
+  # Negative controls: queued an hour, and queued two days with a job, are no ghosts.
+  assert_line 'ghost-runs: kept https://github.com/o/r/actions/runs/2 (queued 1h)'
+  assert_line 'ghost-runs: kept https://github.com/o/r/actions/runs/3 (1 jobs)'
+  assert_equal "$(grep -c . <<<"$output")" 3
+  run grep -c 'stuck="true",forge="github"} >= 86400' "$HOME/prom.calls"
+  assert_output 1
+  run grep -c 'cancel' "$HOME/gh.calls"
+  assert_output 0
+  # A verdict is no act: the rundown gets nothing from a dry run.
+  [ ! -e "$FLEET_SHEPHERD_DIR/log.md" ] || ! grep -q 'ghost run' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_equal "$(cut -f2,3 "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" | sort | tr '\t\n' ' |')" \
+    'kept https://github.com/o/r/actions/runs/2|kept https://github.com/o/r/actions/runs/3|would-cancel https://github.com/o/r/actions/runs/1|'
+  # Judged runs are not asked about again inside the age.
+  rm -f "$HOME/gh.calls"
+  run "$SH" ghost-runs
+  assert_success
+  assert_output ''
+  [ ! -e "$HOME/gh.calls" ]
+}
+
+@test "ghost-runs: with cancels on, the dry run's ghost is cancelled, force-cancelled when cancel is refused, and kept runs stay" {
+  ghost_setup
+  run "$SH" ghost-runs
+  export FLEET_SHEPHERD_GHOST_CANCEL=1
+  rm -f "$HOME/gh.calls"
+  run "$SH" ghost-runs
+  assert_success
+  assert_output 'ghost-runs: cancelled https://github.com/o/r/actions/runs/1 (48h)'
+  run grep -x 'api -X POST repos/o/r/actions/runs/1/cancel' "$HOME/gh.calls"
+  assert_success
+  run grep -c 'ghost run https://github.com/o/r/actions/runs/1: cancelled, queued 48h with no jobs' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_output 1
+  run grep -c 'runs/[23]' "$HOME/gh.calls"
+  assert_output 0
+  # A run cancel refuses gets force-cancel.
+  rm -f "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" "$HOME/gh.calls"
+  STUB_CANCEL_REFUSED=1 run "$SH" ghost-runs
+  assert_line 'ghost-runs: force-cancelled https://github.com/o/r/actions/runs/1 (48h)'
+  run grep -x 'api -X POST repos/o/r/actions/runs/1/force-cancel' "$HOME/gh.calls"
+  assert_success
+  run grep -c 'runs/[23]/.*cancel' "$HOME/gh.calls"
+  assert_output 0
+}
+
+@test "ghost-runs: a cancel refused for another reason is cancel-failed, logged once and tried again; GitHub down judges nothing" {
+  ghost_setup
+  export FLEET_SHEPHERD_GHOST_CANCEL=1 STUB_CANCEL_DENIED=1
+  run "$SH" ghost-runs
+  assert_line 'ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h)'
+  # A 403 is no "not cancellable": force-cancel is for a run that ignores cancel.
+  run grep -c 'force-cancel' "$HOME/gh.calls"
+  assert_output 0
+  run "$SH" ghost-runs
+  assert_line 'ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h)'
+  run grep -c 'ghost run https://github.com/o/r/actions/runs/1: cancel-failed' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_output 1
+  # GitHub not answering writes no verdict, and one line names every run asked again.
+  rm -f "$FLEET_SHEPHERD_DIR/ghost-runs.tsv"
+  STUB_GH_DOWN=1 run "$SH" ghost-runs
+  assert_success
+  assert_output 'ghost-runs: GitHub did not answer, asked again next run: https://github.com/o/r/actions/runs/1 (run unreadable) https://github.com/o/r/actions/runs/2 (run unreadable) https://github.com/o/r/actions/runs/3 (run unreadable)'
+  [ ! -s "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" ]
+  # A value that is not 0 or 1 says so and runs dry.
+  FLEET_SHEPHERD_GHOST_CANCEL=yes run "$SH" ghost-runs
+  assert_line "ghost-runs: FLEET_SHEPHERD_GHOST_CANCEL is 'yes', not 0 or 1, so this is a dry run"
+  assert_line 'ghost-runs: would-cancel https://github.com/o/r/actions/runs/1 (48h)'
+}
+
+@test "ghost-runs: an unreadable exporter judges nothing, and every shepherd run calls it" {
+  ghost_setup
+  STUB_PROM_FAIL=1 run "$SH" ghost-runs
+  assert_failure 1
+  assert_output 'ghost-runs: the runner exporter is unreadable, so no run was judged'
+  [ ! -e "$HOME/gh.calls" ]
+  doc '[]'
+  run "$SH" run
+  assert_line 'ghost-runs: would-cancel https://github.com/o/r/actions/runs/1 (48h)'
 }
 
 # --- session budgets: checkpoints, not walls ---------------------------------------------------

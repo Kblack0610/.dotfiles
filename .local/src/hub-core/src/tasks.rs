@@ -6,9 +6,15 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::queue::PRIORITIES;
 use crate::session_actions::Runner;
 use crate::table::Val;
+
+/// A board row's priorities, most urgent first: notes-cli `md::PRIORITIES`, whose default is
+/// `normal`, so an untagged row reads normal in the feed. A queue item's are `queue::PRIORITIES`.
+pub const PRIORITIES: [&str; 4] = ["urgent", "high", "normal", "low"];
+
+/// The priority an untagged row reads as (notes-cli `md::DEFAULT_PRIORITY`).
+pub const DEFAULT_PRIORITY: &str = "normal";
 
 /// The lanes a board can write. The feed's `focus` rows are counted into `Feed::focus` and
 /// left out of `rows`: a profile's Focus is the Daily tab's (`crate::focus`), and a board shows
@@ -334,7 +340,11 @@ impl crate::table::Row for Row {
                 .as_deref()
                 .or(self.closed.as_deref())
                 .map_or(Val::None, |d| Val::Text(d.to_string())),
-            "priority" => at(&["low", "high", "urgent"], &self.priority),
+            // Ascending sorts low first: the reverse of `PRIORITIES`, most urgent first.
+            "priority" => PRIORITIES
+                .iter()
+                .position(|p| *p == self.priority)
+                .map_or(Val::None, |i| Val::Num((PRIORITIES.len() - 1 - i) as f64)),
             "size" => self
                 .size
                 .as_deref()
@@ -995,12 +1005,12 @@ fn is_version(s: &str) -> bool {
             .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
 }
 
-/// Something a row's own text would not say: a non-high priority is the row's `#urgent` or
-/// `#low` tag, and high is no tag at all, as `ptask add` reads it.
+/// Something a row's own text would not say: a priority other than the default is the row's
+/// `#urgent`, `#high` or `#low` tag, and normal is no tag at all, as `ptask add` reads it.
 fn with_priority(text: &str, priority: &str) -> String {
     let text = text.trim();
     let tag = format!("#{priority}");
-    if priority == "high" || text.split_whitespace().any(|w| w == tag) {
+    if priority == DEFAULT_PRIORITY || text.split_whitespace().any(|w| w == tag) {
         text.to_string()
     } else {
         format!("{text} {tag}")
@@ -1041,7 +1051,7 @@ pub fn argv(w: &Write) -> Result<Vec<String>, String> {
                 return Err("type the task, on one line".into());
             }
             if !PRIORITIES.contains(&priority.as_str()) {
-                return Err("priority is urgent, high or low".into());
+                return Err("priority is urgent, high, normal or low".into());
             }
             a.push("add".into());
             if let Some(v) = to.as_deref().filter(|v| !v.is_empty()) {
@@ -1937,9 +1947,14 @@ mod tests {
             ]
         );
         assert_eq!(
-            argv(&w("agent", add("-lead dash", "high", None, None))).unwrap()[5..],
+            argv(&w("agent", add("-lead dash", "normal", None, None))).unwrap()[5..],
             ["--agent", "add", "--", "-lead dash"],
-            "high is no tag"
+            "normal is no tag"
+        );
+        assert_eq!(
+            argv(&w("agent", add("ship it", "high", None, None))).unwrap()[5..],
+            ["--agent", "add", "--", "ship it #high"],
+            "high is a tag now that an untagged row is normal"
         );
         assert_eq!(
             argv(&w(
@@ -2106,7 +2121,7 @@ mod tests {
                     raw: "not a row".into(),
                 },
             ),
-            w("human", add("x", "normal", None, None)),
+            w("human", add("x", "medium", None, None)),
             w("human", add("  ", "high", None, None)),
             w("human", add("x", "high", Some("next"), None)),
             w("playtest", add("x", "high", Some("v1.0.0"), None)),
