@@ -344,8 +344,10 @@ item_tags() { sed -n 's/^tags: //p' "$AGENT_QUEUE_DIR"/*/*-"$1".md; }
 @test "row gates: a #hold/ row whose id or epic the hold grants is a candidate and promotes; an ungranted one waits (ar-5237)" {
   project game beta "$SANDBOX/repos/game"
   export AGENT_HOLD_DIR="$HOME/.agent/holds"
-  "$REPO_ROOT/.local/bin/agent-hold" set critical --kind resource --by human "lockdown" >/dev/null
-  "$REPO_ROOT/.local/bin/agent-hold" grant critical ga-1 ga-50 >/dev/null
+  # The real agent-hold over setup's always-clear stub: the copied agent-queue calls the one beside it.
+  cp "$REPO_ROOT/.local/bin/agent-hold" "$SANDBOX/bin/agent-hold"
+  agent-hold set critical --kind resource --by human "lockdown" >/dev/null
+  agent-hold grant critical ga-1 ga-50 >/dev/null
   row game agent ga-1 "- [ ] fix(game): granted by its id $T #hold/critical <!-- id:ga-1 -->"
   row game agent ga-2 "- [ ] fix(game): granted by its epic $T #hold/critical #of/ga-50 <!-- id:ga-2 -->"
   row game agent ga-3 "- [ ] fix(game): granted nothing $T #hold/critical <!-- id:ga-3 -->"
