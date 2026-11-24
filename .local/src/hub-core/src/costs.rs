@@ -248,6 +248,9 @@ pub struct Costs {
     pub live: Option<crate::spend_history::Day>,
     /// The Burn section: claude-acct's pace figures summed, and the dispatch drip.
     pub burn: Burn,
+    /// The Allowance and Pace config sections: `pace-conf`'s keys, the burn allowance in force and
+    /// its schedule (`pace_conf`).
+    pub pace: crate::pace_conf::View,
     /// The Consumers section's inputs: the gateway snapshot and the runners' confs.
     pub consumers: crate::gateway::Read,
     /// `fleet-bench sections --json`; empty when it failed (named in `errors`).
@@ -323,6 +326,15 @@ pub fn read(runner: &dyn Runner, paths: &Paths, now: i64) -> Costs {
         c.errors.push(format!("Prometheus: {e}"));
     }
     c.burn = read_burn(base.as_deref().ok(), paths, now, &mut c.errors);
+    // The allowance in force is named on the Burn headline, and the same read is the Limits
+    // sections', so one `pace-conf` run feeds both.
+    // A failed read is the view's own `error`, which the two sections show: it is not a read error
+    // of the page, so it neither joins `errors` nor keeps the kept read from being kept.
+    let conf = crate::pace_conf::read(runner);
+    if let Some(a) = conf.as_ref().ok().and_then(|c| c.named()) {
+        c.burn.set_allowance(a);
+    }
+    c.pace = crate::pace_conf::view(conf, &c.burn);
     c.consumers = crate::gateway::read(runner, &paths.gateway);
     c
 }
@@ -1031,6 +1043,7 @@ pub struct Board {
     pub totals_note: &'static str,
     pub direct: Direct,
     pub burn: Burn,
+    pub pace: crate::pace_conf::View,
     /// The Consumers section in its own order; a surface re-sorts it with `gateway::build`.
     pub consumers: crate::gateway::Consumers,
     /// The sections that need a look (layout section ids), which an inner tab's label counts so
@@ -1223,6 +1236,7 @@ pub fn board(
         totals_note: TOTALS_NOTE,
         direct: direct(&c.spend_days, c.at),
         burn: c.burn.clone(),
+        pace: c.pace.clone(),
         amber: amber(c, &consumers),
         consumers,
         tokens: c.tokens.clone(),

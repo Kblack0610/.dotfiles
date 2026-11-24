@@ -32,6 +32,7 @@ mod jobs;
 mod live;
 mod outbox;
 mod outcomes;
+mod pace;
 mod pipelines;
 mod projects;
 mod proposals;
@@ -281,6 +282,8 @@ fn router(state: Shared) -> Router {
         .route("/api/queue", get(queue::list).post(queue::add))
         .route("/api/queue/cancel", post(queue::cancel))
         .route("/api/queue/bump", post(queue::bump))
+        .route("/api/pace/set", post(pace::set))
+        .route("/api/pace/end", post(pace::end))
         .route("/api/queue/projects", get(queue::projects))
         .route("/api/queue/stats", get(queue::stats))
         .route("/api/queue/candidates", get(queue::candidates))
@@ -562,10 +565,10 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
         std::fs::create_dir_all(dir)?;
         targets.push((dir.to_path_buf(), flat));
     }
-    // schedules-sync's state.json, replaced by a rename: Infra's Pipelines.
-    if let Some(dir) = schedules_state().parent() {
-        std::fs::create_dir_all(dir)?;
-        targets.push((dir.to_path_buf(), flat));
+    // schedules-sync's state.json (Infra's Pipelines) and pace-conf's overrides (Costs' Limits), each a rename.
+    for dir in renamed_state_dirs() {
+        std::fs::create_dir_all(&dir)?;
+        targets.push((dir, flat));
     }
     // The boards' files: watch a directory, not the file, since each is replaced by a rename.
     for dir in [
@@ -680,6 +683,22 @@ const PIPELINES_EVENT: &str = r#"{"kind":"pipelines"}"#;
 fn schedules_state() -> PathBuf {
     hub_core::schedules::state_path(&session::home().to_string_lossy())
 }
+/// `pace-conf` wrote the overrides file, so Costs' Limits reads afresh. It replaces the file by a
+/// rename in `~/.agent`, which is watched for this one path.
+fn pace_overrides() -> PathBuf {
+    std::env::var_os("PACE_OVERRIDES").map_or_else(
+        || session::home().join(".agent").join("pace-overrides"),
+        PathBuf::from,
+    )
+}
+/// The directories of the state files that are replaced by a rename, so the watcher follows the
+/// directory and not the file.
+fn renamed_state_dirs() -> Vec<PathBuf> {
+    [schedules_state(), pace_overrides()]
+        .iter()
+        .filter_map(|p| p.parent().map(Path::to_path_buf))
+        .collect()
+}
 /// The nightly stage pass wrote stages.json: Projects' Ladder reads afresh.
 const STAGES_EVENT: &str = r#"{"kind":"stages"}"#;
 static STAGES_FILE: std::sync::LazyLock<PathBuf> =
@@ -708,6 +727,9 @@ fn classify(p: &Path) -> Option<String> {
     }
     if p == schedules_state() {
         return Some(PIPELINES_EVENT.to_string());
+    }
+    if p == pace_overrides() {
+        return Some(COSTS_EVENT.to_string());
     }
     if p == *STAGES_FILE {
         return Some(STAGES_EVENT.to_string());
@@ -2611,6 +2633,12 @@ mod tests {
                 t("/h/.claude/projects/-new")
             ]
         );
+    }
+
+    #[test]
+    fn pace_overrides_is_costs_and_its_temp_file_is_nothing() {
+        assert_eq!(classify(&pace_overrides()).as_deref(), Some(COSTS_EVENT));
+        assert_eq!(classify(&pace_overrides().with_extension("tmp")), None);
     }
 
     #[test]

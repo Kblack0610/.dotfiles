@@ -332,6 +332,8 @@ pub const TABS: [Tab; 12] = [
             "spend",
             "table",
             "burn",
+            "allowance",
+            "pace",
             "consumers",
             "tokens",
             "langfuse",
@@ -351,7 +353,7 @@ pub const TABS: [Tab; 12] = [
             Inner {
                 id: "limits",
                 title: "Limits",
-                sections: &["burn", "consumers"],
+                sections: &["burn", "allowance", "pace", "consumers"],
             },
             Inner {
                 id: "models",
