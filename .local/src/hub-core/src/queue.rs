@@ -72,6 +72,95 @@ pub fn section_chip(section: &str) -> Option<&'static str> {
         .map(|(_, chip)| *chip)
 }
 
+/// The Queue tab's sections on agent-web, worst first (`hub_core::layout`'s `queue/<id>` page
+/// sizes): what waits on the human, what is stuck, then the states as the work moves. Finished
+/// work is not one: Log owns it, and the tab shows only its count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Section {
+    Needs,
+    Stuck,
+    Running,
+    Pr,
+    Next,
+}
+
+impl Section {
+    pub const ALL: [Section; 5] = [
+        Section::Needs,
+        Section::Stuck,
+        Section::Running,
+        Section::Pr,
+        Section::Next,
+    ];
+
+    /// The section id: the `#queue/<id>` word and the `layout` section.
+    pub fn id(self) -> &'static str {
+        match self {
+            Section::Needs => "needs",
+            Section::Stuck => "stuck",
+            Section::Running => "running",
+            Section::Pr => "pr",
+            Section::Next => "next",
+        }
+    }
+
+    /// The prefix of the section's view keys (`nxsort`, `nxdir`, `nxpg`) in the page URL and the
+    /// API: the shared `q` and `s` stay bare, each section sorts and pages on its own.
+    pub fn pre(self) -> &'static str {
+        match self {
+            Section::Needs => "nd",
+            Section::Stuck => "sk",
+            Section::Running => "rn",
+            Section::Pr => "pr",
+            Section::Next => "nx",
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Section::Needs => "Needs you",
+            Section::Stuck => "Stuck",
+            Section::Running => "Running",
+            Section::Pr => "On a PR",
+            Section::Next => "Up next",
+        }
+    }
+
+    /// The state chip the hub TUI's one table opens on for this section; Stuck has none (it is a
+    /// state word within running and on a PR), so it opens the page as it is.
+    pub fn chip(self) -> Option<&'static str> {
+        match self {
+            Section::Needs => Some("needs you"),
+            Section::Stuck => None,
+            Section::Running => Some("running"),
+            Section::Pr => Some("on a PR"),
+            Section::Next => Some("ready"),
+        }
+    }
+
+    /// The section a table state chip (`QueueRow::STATES`, a flow chip's target) lands on.
+    pub fn of_chip(chip: &str) -> Option<Section> {
+        match chip.trim().to_ascii_lowercase().as_str() {
+            "needs you" => Some(Section::Needs),
+            "running" => Some(Section::Running),
+            "on a pr" => Some(Section::Pr),
+            "ready" => Some(Section::Next),
+            _ => None,
+        }
+    }
+
+    /// The section a word names: its id, an old section id (`waiting`, `review`, `queued`) or a
+    /// state chip.
+    pub fn of_word(word: &str) -> Option<Section> {
+        let w = word.trim().to_ascii_lowercase();
+        Section::ALL
+            .into_iter()
+            .find(|s| s.id() == w)
+            .or_else(|| section_chip(&w).and_then(Section::of_chip))
+            .or_else(|| Section::of_chip(&w))
+    }
+}
+
 /// One item: its header keys as agent-queue prints them, plus `state` and `task`. A key this
 /// does not name is kept in `extra` (an old item's `hold` line too), so a caller that hands the
 /// item on as JSON loses nothing agent-queue said.
@@ -721,42 +810,16 @@ pub struct Recent {
 }
 
 impl Stats {
-    /// The window's line: what finished, with a PR, and how long items waited to start.
-    pub fn week(&self) -> String {
-        let n = |k: &str| self.done.get(k).copied().unwrap_or(0);
+    /// The window as one line, what the Pipeline head carries: how many finished since it began
+    /// and the typical wait and time to a PR.
+    pub fn line(&self) -> String {
         let done: u64 = self.done.values().sum();
-        let prs: u64 = self.by_project.values().map(|o| o.prs).sum();
         format!(
-            "since {}: {done} done ({} ok, {} failed, {} cancelled), {prs} with a PR, wait median {} p90 {} ({} started at once), to PR median {}",
+            "{done} done since {}, wait median {}, to PR median {}",
             self.since,
-            n("ok"),
-            n("failed"),
-            n("cancelled"),
             dur_min(self.wait_minutes_median),
-            dur_min(self.wait_minutes_p90),
-            self.started_at_once,
             dur_min(self.to_pr_minutes_median)
         )
-    }
-
-    /// What sits in the queue now, in plain words: how many could start and the oldest of them.
-    /// The item slug comes after the point.
-    pub fn sitting_line(&self) -> Option<String> {
-        let s = self.sitting.as_ref()?;
-        if s.queued == 0 {
-            return Some("Queue: nothing waiting.".into());
-        }
-        let out = match (s.runnable, s.oldest_runnable.first()) {
-            (0, _) => "Queue: nothing can start now.".to_string(),
-            (n, Some(o)) => format!(
-                "Queue: {n} can start now, the oldest waiting {} ({}), median {}.",
-                dur_min(Some(o.minutes)),
-                o.slug,
-                dur_min(s.runnable_age_minutes_median)
-            ),
-            (n, None) => format!("Queue: {n} can start now."),
-        };
-        Some(out)
     }
 }
 
@@ -1326,6 +1389,19 @@ impl QueueRow<'_> {
             (Some(Stuck::PrRed | Stuck::PrGreen), _) => self.item.note.clone(),
             _ if self.item.cancelled() => Some(self.item.cancel_words()),
             _ => None,
+        }
+    }
+
+    /// The section the row sits in on agent-web, None for a finished item. A running or review
+    /// row that is stuck leaves its state for Stuck, so the exceptions read together.
+    pub fn section(&self) -> Option<Section> {
+        match self.item.state {
+            State::Waiting => Some(Section::Needs),
+            State::Running | State::Review if self.stuck() => Some(Section::Stuck),
+            State::Running => Some(Section::Running),
+            State::Review => Some(Section::Pr),
+            State::Queued => Some(Section::Next),
+            State::Done => None,
         }
     }
 
@@ -2247,26 +2323,8 @@ mod tests {
         assert_eq!(s.run_minutes_median, None);
         assert_eq!(s.by_project["game"].prs, 2);
         assert_eq!(
-            s.week(),
-            "since 2026-10-27: 3 done (3 ok, 0 failed, 0 cancelled), 2 with a PR, wait median 12m p90 2h10m (4 started at once), to PR median 1h35m"
-        );
-        assert_eq!(
-            s.sitting_line().as_deref(),
-            Some("Queue: 1 can start now, the oldest waiting 3h20m (q1), median 3h20m.")
-        );
-        assert_eq!(
-            Stats::default().sitting_line(),
-            None,
-            "an older agent-queue without `sitting` says nothing, never that the queue is empty"
-        );
-        let old: Stats = serde_json::from_str(
-            r#"{"sitting":{"queued":13,"runnable":0,"held":13,"held_by":{"after":12,"vacation":1},"runnable_age_minutes_median":null,"oldest_runnable":[]}}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            old.sitting_line().as_deref(),
-            Some("Queue: nothing can start now."),
-            "nothing runnable says so plainly, and an older agent-queue's held counts say nothing"
+            s.line(),
+            "3 done since 2026-10-27, wait median 12m, to PR median 1h35m"
         );
 
         let q = Queue::read(&Fake::default());
@@ -2922,6 +2980,65 @@ mod tests {
             ])),
             ..Queue::default()
         }
+    }
+
+    #[test]
+    fn a_stuck_run_or_pr_leaves_its_state_for_stuck_and_a_finished_item_has_no_section() {
+        let q = stuck_queue();
+        let rows = q.rows(at("2026-11-06T12:00:00Z"));
+        let sec = |slug: &str| {
+            rows.iter()
+                .find(|r| r.item.slug == slug)
+                .unwrap()
+                .section()
+                .map(Section::id)
+        };
+        assert_eq!(sec("stuck"), Some("stuck"));
+        assert_eq!(sec("gone"), Some("stuck"));
+        assert_eq!(sec("red"), Some("stuck"));
+        // NEGATIVE CONTROLS: a working run, a plain PR and a run inside the grace stay put.
+        assert_eq!(sec("ok"), Some("running"));
+        assert_eq!(sec("fresh"), Some("running"));
+        assert_eq!(sec("plain"), Some("pr"));
+        let done = parse(r#"{"slug":"d","state":"done","task":"t"}"#);
+        let q = Queue {
+            items: done,
+            ..Queue::default()
+        };
+        assert_eq!(q.rows(chrono::Utc::now())[0].section(), None);
+    }
+
+    #[test]
+    fn a_section_word_is_its_id_an_old_section_id_or_a_state_chip() {
+        for (word, want) in [
+            ("needs", Some("needs")),
+            ("waiting", Some("needs")),
+            ("needs you", Some("needs")),
+            ("running", Some("running")),
+            ("review", Some("pr")),
+            ("On a PR", Some("pr")),
+            ("queued", Some("next")),
+            ("ready", Some("next")),
+            ("stuck", Some("stuck")),
+            ("done", None),
+            ("table", None),
+        ] {
+            assert_eq!(Section::of_word(word).map(Section::id), want, "{word}");
+        }
+    }
+
+    #[test]
+    fn the_stats_line_is_one_line_with_the_window_and_the_typical_times() {
+        let s = Stats {
+            since: "11-16".into(),
+            done: BTreeMap::from([("ok".to_string(), 3u64), ("failed".to_string(), 1)]),
+            wait_minutes_median: Some(5),
+            to_pr_minutes_median: Some(71),
+            ..Stats::default()
+        };
+        let l = s.line();
+        assert!(l.starts_with("4 done since 11-16"), "{l}");
+        assert!(!l.contains('\n'));
     }
 
     #[test]

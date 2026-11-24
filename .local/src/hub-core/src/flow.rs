@@ -4,8 +4,8 @@
 //! this one builder, so the hub TUI and agent-web cannot word or count it differently.
 //!
 //! Where each number comes from: the queue's own chips (up next, running, on a PR, needs you) are the live
-//! queue, the same count the table under a chip shows (done 24h is agent-queue's rolling count,
-//! and its chip opens the Queue's done chip, which lists today's finished items); inbox and agent backlog are fleet-bench's
+//! queue, the count of the state (the Home and waybar number), so the section under running or on a PR can hold fewer: its stuck rows sit under Stuck (done 24h is agent-queue's rolling count,
+//! and its chip opens Log, which owns finished work); inbox and agent backlog are fleet-bench's
 //! snapshot (`pipeline`), the only owner of those two; done 24h and the drain are
 //! agent-queue's `stats.recent`. A number its source did not give reads `-`, never 0. A step
 //! past its age bound is the one amber chip (`hot`).
@@ -16,14 +16,16 @@
 use serde::Serialize;
 
 use crate::pipeline::{Pipeline, Problem, Step};
-use crate::queue::{Queue, Recent, State};
+use crate::queue::{Queue, Recent, Section, State};
 
-/// The tab a chip opens, as a tab or `tab/inner` (`projects/all`, the agent backlog chip's Board), and,
-/// for the Queue, the state chip it filters to (`""` for none).
+/// The tab a chip opens, as a tab or `tab/inner` (`projects/all`, the agent backlog chip's Board),
+/// and, for the Queue, the state chip it filters to on the hub TUI (`""` for none) and the section
+/// agent-web opens it at (`queue::Section::id`, `""` for none).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct Target {
     pub tab: &'static str,
     pub state: &'static str,
+    pub section: &'static str,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -70,7 +72,11 @@ fn chip(key: &'static str, label: &'static str, value: Option<String>, to: Optio
 }
 
 fn queue_to(state: &'static str) -> Option<Target> {
-    Some(Target { tab: QUEUE, state })
+    Some(Target {
+        tab: QUEUE,
+        state,
+        section: Section::of_chip(state).map_or("", Section::id),
+    })
 }
 
 /// Added against finished over the last 6 hours, and whether the queue shrinks or grows. This is
@@ -103,6 +109,7 @@ impl Strip {
                     Some(Target {
                         tab: "projects/all",
                         state: "",
+                        section: "",
                     }),
                 ),
                 // Every queued item can start: work with a gate is a board row.
@@ -134,7 +141,12 @@ impl Strip {
                     "done",
                     "done 24h",
                     recent.map(|r| r.done_24h.to_string()),
-                    queue_to("done"),
+                    // Finished work is Log's, not a section of the Queue tab.
+                    Some(Target {
+                        tab: "log",
+                        state: "",
+                        section: "",
+                    }),
                 ),
                 chip("drain", "drain", recent.map(drain), queue_to("")),
             ],
@@ -479,10 +491,16 @@ pub(crate) mod tests {
                 Some(("queue", "running")),
                 Some(("queue", "on a PR")),
                 Some(("queue", "needs you")),
-                Some(("queue", "done")),
+                Some(("log", "")),
                 Some(("queue", "")),
             ]
         );
+        let at: Vec<_> = st
+            .chips
+            .iter()
+            .filter_map(|c| c.to.map(|t| t.section))
+            .collect();
+        assert_eq!(at, ["", "next", "running", "pr", "needs", "", ""]);
         assert!(st.chips.iter().all(|c| !c.hot) && st.bottleneck.is_none());
     }
 
