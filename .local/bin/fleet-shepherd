@@ -146,7 +146,7 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 # ucp-2712 waited 5h on P1 #2935 in the slot); revisit when SLOT_MINUTES moves or critical lines are mostly skipped.
 : "${FLEET_SHEPHERD_CRITICAL_MIN:=60}"
 # A NEEDS row on its own pending ask, its session idle this long, gets one nudge (needs_nudge): the
-# escalation pages the human and tells the session nothing, so a session whose ask had an agent route sat on it
+# ask sits on the human's asks board and the session is told nothing, so a session whose ask had an agent route sat on it
 # (bd-35, 2026-11-19: personal-sites-agent-1 waited 18h on ask 62HFZu, "fix GitHub billing or merge without CI";
 # the route was the repo's home runners, ar-3971, taken only after the human asked why it was never nudged).
 # Provisional, 2026-11-24: two hours is past a judge's answer and the human's first page; revisit when most
@@ -287,7 +287,9 @@ tag_pane() {
 # does a DONE or LANDED row the close flow keeps for work left here (`close.left`: its own item still
 # running or never closed); any other LANDED one closes on the quiet timer, and fleet-dispatch reap
 # files its open phases; a
-# NEEDS row is escalated once; a STALLED row whose nudge survived is taken over (takeover_sample), a DONE, LANDED or CHAT one closes (close_sample). A test red on several
+# NEEDS row on a dialog or plan approval is escalated once, and one on its own pending ask is not: the ask is the
+# human's on the asks board, and a line the shepherd cannot clear came back every check and counted as due (ar-2763);
+# a STALLED row whose nudge survived is taken over (takeover_sample), a DONE, LANDED or CHAT one closes (close_sample). A test red on several
 # branches (shared) is owned by the queue item or quarantine row shared_sample found or filed,
 # and its sessions are told once; only one with no owner escalates.
 # PARKED is fleet-pace's, below.
@@ -333,11 +335,16 @@ TAKEOVER_JQ="$KEPT_JQ"'def takeover_row:
 # named hub/dotfiles:6/7/9 while the pass before had handled :5/6/8; the pane id stays. due_key keys
 # the line by it, and the target stays for a reader to act on. A row with no pane gets no tag.
 PANE_TAG_JQ='def ptag: if (.pane // "") != "" then " [\(.pane)]" else "" end;'
-# NEEDS_NUDGE_JQ (after KEPT_JQ and CLOSE_NUDGE_JQ): needs_nudge -> true for a NEEDS row already escalated, not
+# ASK_WAIT_JQ: ask_wait -> true for a NEEDS row waiting on its own pending ask (fleet-sessions' reason `N pending
+# ask(s)`, carrying on or not). Keyed on the reason, as CLOSE_JQ's dialog step is, not on own_asks: a session
+# held in a dialog or plan approval can hold an ask too, and the dialog is still the human's to hear about. The
+# ask is the human's on the asks board, so the shepherd escalates no such row and probes none for a limit (ar-2763).
+ASK_WAIT_JQ='def ask_wait: .bucket == "NEEDS" and ((.reason // "") | test("pending ask"));'
+# NEEDS_NUDGE_JQ (after KEPT_JQ and CLOSE_NUDGE_JQ): needs_nudge -> true for a NEEDS row not
 # yet nudged for its fact, not the human's and not the close flow's, holding an ask its session filed, the session
 # idle FLEET_SHEPHERD_NEEDS_NUDGE_MIN or more (needs $needs_min; idle time, not the ask's age). A dialog or plan
 # approval holds no ask of its own; one carrying on past its ask is overdue_due's, which keys the same fact slot.
-NEEDS_NUDGE_JQ='def needs_nudge: .bucket == "NEEDS" and .escalated and (.nudged | not) and (.close_sent | not)
+NEEDS_NUDGE_JQ='def needs_nudge: .bucket == "NEEDS" and (.nudged | not) and (.close_sent | not)
   and (kept | not) and (close_nudge | not) and ((.reason // "") | endswith("carrying on") | not)
   and (.own_asks // 0) > 0 and (.activity // "") == "idle" and (.idle_min // 0) >= $needs_min;'
 # HELD_JQ: held -> true for a DONE or LANDED row the close flow keeps for work left here
@@ -350,7 +357,7 @@ cmd_due() {
   [ -r "$STATE_FILE" ] || die "no state document at $STATE_FILE"
   local out
   out="$(jq -r --argjson items "$(shared_items)" --argjson off "$(nudge_held_off)" --argjson needs_min "$FLEET_SHEPHERD_NEEDS_NUDGE_MIN" \
-    "$KEPT_JQ$CLOSE_NUDGE_JQ$PANE_TAG_JQ$HELD_JQ$NEEDS_NUDGE_JQ"'
+    "$KEPT_JQ$CLOSE_NUDGE_JQ$PANE_TAG_JQ$ASK_WAIT_JQ$HELD_JQ$NEEDS_NUDGE_JQ"'
     ( (.main // [])[] | select((.escalated | not) and (.owners // []) == [])
       | "nightly red: \(.repo) (\(.reason // "-"))" )
   , ( (.shared // [])[] | select(.escalated | not) | . as $r
@@ -372,7 +379,7 @@ cmd_due() {
         elif (.bucket | IN("DONE","LANDED","STALLED","CHAT")) and (.nudged | not) then
           if ($ask | not) and (.bucket == "STALLED" or held) and (.session_id as $sid | $off | index($sid) | not)
           then "nudge \(.bucket): \(.target)\(ptag) \(.fact // "")" else empty end
-        elif .bucket == "NEEDS" and (.escalated | not) then
+        elif .bucket == "NEEDS" and (.escalated | not) and (ask_wait | not) then
           "escalate \(.bucket): \(.target)\(ptag) \(.reason // ""); then: fleet-sessions escalate \(.session_id) \"\(.fact)\""
         elif needs_nudge and (.session_id as $sid | $off | index($sid) | not) then
           "nudge NEEDS: \(.target)\(ptag) \(.fact // "")"
@@ -565,7 +572,7 @@ critical_due() {
 # one line per capped account, for the human. A session the account read does not cover (its
 # account unread, or not in the row) still gets the pane line: only the pane says it stopped. An
 # escalated row is left out of the pane line, since that is where a pass puts one no account has
-# room for, and only the human can add room.
+# room for, and only the human can add room; so is a row waiting on its own ask (ask_wait), which the human answers.
 limit_due() {
   local rows capped room_name target pane server account re
   # One ask: room --json exits 1 or 2 when no account has room, and still prints every verdict.
@@ -599,10 +606,10 @@ limit_due() {
     else
       echo "limit: $target [$pane] stopped on the usage limit"
     fi
-  done < <(jq -r --argjson idle "$FLEET_SHEPHERD_LIMIT_IDLE" --argjson capped "${capped:-[]}" "$KEPT_JQ"'(.sessions // [])[]
+  done < <(jq -r --argjson idle "$FLEET_SHEPHERD_LIMIT_IDLE" --argjson capped "${capped:-[]}" "$KEPT_JQ$ASK_WAIT_JQ"'(.sessions // [])[]
     | select(kept | not)
     | select((.account // "") as $a | ($capped | index($a)) == null)
-    | select(((.idle_min // 0) | tonumber? // 0) >= $idle and (.escalated | not) and (.pane // "") != "")
+    | select(((.idle_min // 0) | tonumber? // 0) >= $idle and (.escalated | not) and (ask_wait | not) and (.pane // "") != "")
     | [.target, .pane, (.account // "")] | @tsv' "$STATE_FILE" 2>/dev/null)
 }
 
