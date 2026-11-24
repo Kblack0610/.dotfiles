@@ -142,7 +142,11 @@ pub struct EpicRollup {
 
 /// The value a key writes for a project at `cur`: focus toggles, on and off (`normal`).
 pub fn next_prio(cur: &str) -> &'static str {
-    if cur == "focus" { "normal" } else { "focus" }
+    if cur == "focus" {
+        "normal"
+    } else {
+        "focus"
+    }
 }
 
 /// A project or profile name safe to pass as one argument: not empty, not flag-like, and only

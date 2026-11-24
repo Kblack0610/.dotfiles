@@ -282,6 +282,11 @@ pub fn stages() {
 /// `DISPATCH_FLEET_PROJECTS`. The `prio/` prefix keeps it apart from a row's priority words.
 pub(crate) const PRIOS: [&str; 1] = ["prio/focus"];
 
+/// What a `--prio` write strips from the head: the focus, and the retired ladder's words, so a
+/// page still carrying `#prio/high` or `#prio/low` loses it on its next set, and `--set normal`
+/// clears one. Nothing reads them.
+const PRIO_STRIP: [&str; 4] = ["prio/focus", "prio/high", "prio/normal", "prio/low"];
+
 // -- stage and group: hashtags on the project's front page --------------------
 //
 // A project's maturity is a HASHTAG on its sheet (`#prod`, `#alpha`), in the head above
@@ -630,7 +635,7 @@ pub fn prio(
         }
         None
     };
-    let tagged = replace_head_tag(&content, &PRIOS, tag.as_deref())?;
+    let tagged = replace_head_tag(&content, &PRIO_STRIP, tag.as_deref())?;
     let updated = set_head_line(&tagged, FOCUS_UNTIL, until.clone())?;
     if updated != content {
         md::write_atomic(&page, &updated)?;
@@ -5256,17 +5261,17 @@ mod stage_tag_tests {
             "{one}"
         );
         assert_eq!(head_tag(&one, &PRIOS).as_deref(), Some("prio/focus"));
-        assert_eq!(
-            prio_of_str(&one),
-            "",
-            "a focus with no end reads as none"
-        );
+        assert_eq!(prio_of_str(&one), "", "a focus with no end reads as none");
         let two = replace_head_tag(&one, &PRIOS, Some("prio/focus")).unwrap();
         assert_eq!(two.matches("#prio/").count(), 1, "{two}");
         // a retired ladder word is not the project's focus
         let retired = s.replace("#tooling", "#tooling #prio/high");
         assert_eq!(head_tag(&retired, &PRIOS), None);
         assert_eq!(prio_of_str(&retired), "");
+        // a write strips it: a set leaves the focus alone, a clear leaves the sheet as it was
+        let refocus = replace_head_tag(&retired, &PRIO_STRIP, Some("prio/focus")).unwrap();
+        assert_eq!(refocus, one, "{refocus}");
+        assert_eq!(replace_head_tag(&retired, &PRIO_STRIP, None).unwrap(), s);
         let cleared = replace_head_tag(&two, &PRIOS, None).unwrap();
         assert_eq!(cleared, s, "clearing must restore the sheet byte for byte");
         assert_eq!(prio_of_str(&cleared), "");
