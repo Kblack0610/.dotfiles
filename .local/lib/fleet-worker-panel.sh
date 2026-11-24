@@ -143,7 +143,8 @@ empty_submodule() {
   [ -z "$files" ]
 }
 
-# wp_git <dir> <edited files> -> the row's `git` object.
+# wp_git <dir> <edited files> -> the row's `git` object. `based` says HEAD shares history with the base,
+# so an `ahead` of 0 was measured, not a count ahead_files could not make (no merge base reads 0).
 wp_git() {
   local d="$1" edited="$2" common main base up origin
   [ -n "$d" ] && [ -d "$d" ] || { echo '{"in":"gone"}'; return; }
@@ -163,8 +164,9 @@ wp_git() {
     --arg up "${up#*/}" \
     --arg unpushed "$(git -C "$d" rev-list --count HEAD --not --remotes 2>/dev/null)" \
     --arg ahead "$(unlanded_files "$d" "$base")" \
+    --arg based "$(git -C "$d" merge-base HEAD "$base" >/dev/null 2>&1 && echo 1)" \
     '{in: 1, $main, $origin, $branch, $head, upstream: $up, unpushed: ($unpushed | tonumber? // 0),
-      ahead: ($ahead | tonumber? // 0), dirty: (split("\n") | map(select(. != "")))}'
+      ahead: ($ahead | tonumber? // 0), based: ($based == "1"), dirty: (split("\n") | map(select(. != "")))}'
 }
 
 # wp_main -> this machine's agent-panel rows, each with its `git` (wp_git); agent-panel's exit.

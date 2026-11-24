@@ -2383,6 +2383,14 @@ handoff_of() {
   return 0
 }
 
+# ahead_measured <host|-> <cwd> <panel row> -> exit 0 when the row's ahead count was made against a base
+# HEAD shares history with: here a merge base of HEAD and default_base, on a worker the row's git.based
+# (wp_git). ahead_files reads 0 for a HEAD with no merge base, which is no proof that nothing is left.
+ahead_measured() {
+  if [ "$1" = - ]; then git -C "$2" merge-base HEAD "$(default_base "$2")" >/dev/null 2>&1
+  else jq -e '.git.based == true' <<<"$3" >/dev/null 2>&1; fi
+}
+
 # remote_panel_lines -> each fleet worker's agent-panel lines (fleet-hosts.sh, the home-config
 # roster), each with the worker in `host` and its target as <host>@<server>/<session>:<window>. That
 # names no tmux server here, so a nudge or a set-option aimed at the row can never land on a local
@@ -2604,8 +2612,9 @@ collect() {
     # Commits past a merged PR that hold no file the base lacks (ahead 0: a merge of the default branch,
     # or the squashed commits a deleted PR branch no longer holds) leave nothing to land. ar-5151:
     # dotfiles-agent-4 on razer-laptop merged origin/main after #2798 and read STALLED "commits after
-    # merged PR" for four days, so its wind-down never closed the window.
-    [ "$state" = MERGED ] && [ "$ahead" = 0 ] && inpr=1
+    # merged PR" for four days, so its wind-down never closed the window. Only a measured 0 counts:
+    # ahead_files reads 0 when HEAD has no merge base with the base (ahead_measured).
+    [ "$state" = MERGED ] && [ "$inpr" = 0 ] && [ "$ahead" = 0 ] && ahead_measured "$host" "$cwd" "$line" && inpr=1
     # What a deployed checkout off its default branch holds is one fault, its CHECKOUT row, and no
     # session's work: 2026-11-06 it read 9 files ahead on all 16 sessions there, each one STALLED.
     if [ "$host" = - ] && [ "$g" = 1 ] && in_checkout "$cwd" "$off"; then ahead=0 pr=- state=- ci=- oid=- inpr=1; fi

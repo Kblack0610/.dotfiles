@@ -5811,6 +5811,39 @@ main_change() {
   [ "$(jq -c .blockers <<<"$output")" = '["commits after merged PR #875"]' ]
 }
 
+@test "end to end: a fleet worker's merge of the default branch after its merged PR reads DONE, not STALLED (ar-5151)" {
+  landed_fixture
+  worker_ssh
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t)
+  git clone -q -b main "$SANDBOX/origin.git" "$SANDBOX/other" 2>/dev/null
+  main_change one
+  "${g[@]}" merge -q --no-edit origin/main
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  local w; w="$(jq -c 'select(.host == "razer-laptop")' <<<"$output")"
+  assert_equal "$(jq -r '[.bucket, .pr, .pr_state] | join(" ")' <<<"$w")" 'DONE 875 MERGED'
+  refute_output --partial 'commits after merged PR'
+}
+
+@test "ahead_measured: a 0 ahead is proof only against a base HEAD shares history with (ar-5151)" {
+  landed_fixture
+  default_base() { echo origin/main; }
+  run ahead_measured - "$SANDBOX/wt" '{}'
+  assert_success
+  # Negative control: an orphan HEAD has no merge base, so ahead_files' 0 measured nothing.
+  git -C "$SANDBOX/wt" checkout -q --orphan lone
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m lone
+  run ahead_measured - "$SANDBOX/wt" '{}'
+  assert_failure
+  # A worker's row says it in git.based (wp_git); a row without it is unmeasured.
+  run ahead_measured razer-laptop - '{"git":{"ahead":0,"based":true}}'
+  assert_success
+  run ahead_measured razer-laptop - '{"git":{"ahead":0,"based":false}}'
+  assert_failure
+  run ahead_measured razer-laptop - '{"git":{"ahead":0}}'
+  assert_failure
+}
+
 @test "end to end: a conflicting PR with red checks is not a conflict nudge; with green checks it is, once" {
   conflict_fixture
   local oid; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
