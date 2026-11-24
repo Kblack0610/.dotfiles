@@ -4345,6 +4345,11 @@ impl Progress {
     fn note(&mut self, content: &str, ix: &crate::epics::Index, today: chrono::NaiveDate) {
         let done = project_tasks::note_done_rows(content);
         self.closed(done.iter().map(String::as_str), ix, today);
+        self.proof(content, ix, today);
+    }
+
+    /// Date the closes of a note's frozen `## Proof` table, which predate the `done:` stamp.
+    fn proof(&mut self, content: &str, ix: &crate::epics::Index, today: chrono::NaiveDate) {
         let lines: Vec<&str> = content.lines().collect();
         let Some(span) = md::section_span(&lines, "Proof") else {
             return;
@@ -4404,7 +4409,8 @@ pub(crate) fn progress_of(
     pr
 }
 
-/// The closed rows of a shipped version, from its frozen notes. A row in both counts once.
+/// The closed rows of a shipped version, from its frozen notes, with their `## Proof` dates.
+/// A row in both counts once.
 fn shipped_progress(
     notes: &[String],
     ix: &crate::epics::Index,
@@ -4421,6 +4427,9 @@ fn shipped_progress(
         ix,
         today,
     );
+    for n in notes {
+        pr.proof(n, ix, today);
+    }
     pr
 }
 
@@ -8115,13 +8124,16 @@ mod shape_tests {
             ),
         )
         .unwrap();
-        // A cut moved this close into v0.1.0's frozen note: still a close of the last 28 days.
+        // A cut moved these closes into v0.1.0's frozen note, one dated by its Proof table:
+        // still closes of the last 28 days.
         let old = today - chrono::Duration::days(40);
         fs::create_dir_all(dir.join("agent/versions")).unwrap();
         fs::write(
             dir.join("agent/versions/v0.1.0.md"),
             format!(
-                "# v0.1.0\n\n## Done rows\n\n\
+                "# v0.1.0\n\n## Proof\n| task | proof | when |\n|---|---|---|\n\
+                 | fix(f): closed before done stamps #size/m | pr:2 | {today} |\n\n\
+                 ## Done rows\n\n\
                  - [x] fix(d): closed before the cut #size/m <!-- filed:{old} done:{today} -->\n\
                  - [x] fix(e): closed long ago #size/xl <!-- filed:{old} done:{old} -->\n"
             ),
@@ -8132,7 +8144,7 @@ mod shape_tests {
         // sum, and fix(e) closed 40 days ago adds nothing to the 28-day rates.
         assert_eq!(
             json["target_work"],
-            serde_json::json!({"open_weight": 6, "closed_weight_28d": 11, "filed_weight_28d": 6})
+            serde_json::json!({"open_weight": 6, "closed_weight_28d": 14, "filed_weight_28d": 6})
         );
         assert_eq!(json["progress"]["open_weight"], 3, "the open version alone");
         assert_eq!(
