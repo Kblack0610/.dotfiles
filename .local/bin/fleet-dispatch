@@ -2165,6 +2165,12 @@ verdict_errors() {
 #    row with no verdict. Any other waits skip takes the plan exit.
 #  - kind: a row of a kind kinds.json turns off (epic aside, and not a parent) never reaches the judge,
 #    so with no verdict it takes the human exit, as rule `kind`: no worker or judge reads it on the lane.
+#  - size: a row sized L or XL (`#size/`) takes the plan exit as rule `too-big` whatever the judge has
+#    said or not yet said (it judges only the rows a pass reaches, and one no worker takes never gets there):
+#    a skip that names a human rule or a gate keeps its own exit. Not an epic, a parent, a row gated
+#    #after/ or #pr/, one whose session failed, one in a project the judge does not cover, or one whose
+#    verdict already carries another exit. A sized
+#    row inbox-plan planned that is still L takes the human exit, as a planned too-big skip does.
 # Each exit taken appends the verdict again with `exit` (and `exit_at`) to verdicts.jsonl, so counting
 # exits is a jq query, and that latest verdict, carrying its exit, is not taken again. At most
 # DISPATCH_EXIT_MAX exits a pass (0 is no cap), so a backlog of skips drains over passes, not in one. A
@@ -2196,29 +2202,52 @@ skip_exits() {
   local kinds
   kinds=$(jq -ce 'objects' "$DISPATCH_KINDS" 2>/dev/null) ||
     { say "skip_exits: no kind registry at $DISPATCH_KINDS: no kind exit this pass"; kinds='{}'; }
+  # The size exit reads no verdict, so it keeps to the projects the judge covers (cmd_candidates: a stage
+  # from dev on, not on DISPATCH_OFF_PROJECTS), and reads each row's exit and failure from the raw verdicts:
+  # latest_verdicts drops a failed row's earlier lines, its recorded exit among them.
+  local elig='' ss='{}' ep es ec
+  for ec in $DISPATCH_PROFILES; do
+    while IFS=$'\t' read -r ep es _; do
+      [ -n "$ep" ] || continue
+      dispatchable "$(stage_of "$es")" && [ -z "$(off_project "$ep")" ] && elig+="$ep"$'\n'
+    done < <(notes --profile "$ec" projects 2>/dev/null)
+  done
+  elig=$(jq -Rsc 'split("\n") | map(select(length > 0))' <<<"$elig")
+  if [ -f "$VERDICTS" ]; then
+    ss=$(jq -cRn '[inputs | fromjson? | objects | select(.lane == "agent")] | group_by([.project, .key])
+      | map({key: "\(.[0].project)\t\(.[0].key)", value: {failed: ((last | .verdict) == "failed"),
+          exit: ((map(select(.verdict != "failed" and .verdict != "cleared")) | last // {}) | .exit)}}) | from_entries' "$VERDICTS" 2>/dev/null) || ss='{}'
+  fi
   rows=$(jq -r --argjson prules "$(policy_rules)" --argjson n "$DISPATCH_DETAIL_CHARS" \
-      --argjson kinds "$kinds" \
+      --argjson kinds "$kinds" --argjson elig "$elig" --slurpfile ssf <(printf '%s\n' "$ss") \
       --arg at "$(date -Iseconds)" --arg sig "$(policy_sig)" \
       --slurpfile v <(latest_verdicts) "$ROW_JQ"'
     ($v | map(select(.lane == "agent" and .verdict == "skip" and .exit == null and usable($prules)))
        | map({key: "\(.project)\t\(.key)", value: .}) | from_entries) as $by
     | ($v | map(select(.lane == "agent" and .exit != null))
        | map({key: "\(.project)\t\(.key)", value: true}) | from_entries) as $gone
+    | $ssf[0] as $ss
     | ($kinds | to_entries | map(select(.value.enabled == false and .key != "epic") | {key, value: true}) | from_entries) as $off
-    | ([.rows[]? | select(.state == "open") | .tags[]? | select(startswith("of/")) | {key: .[3:], value: true}] | from_entries) as $parents
+    | ([.rows[]? | select(.state == "open" or .state == "doing") | .tags[]? | select(startswith("of/")) | {key: .[3:], value: true}] | from_entries) as $parents
     | .rows[]? | select(.lane == "agent" and .state == "open" and .id != null and (plan_tagged | not))
     | $by["\(.project)\t\(.id)"] as $d
     | if $d != null then
         "\(.profile)\t\(.project)\t\(.id)\t\($d.line)\t\($d.dsig // "-")\t\(details_json($n))\t\($d.rule)\t\(.requested == true)\t\(planned)\t\($d | tojson)\t\(.raw)"
       elif $off[.type // ""] and ($parents[.id] | not) and ($gone["\(.project)\t\(.id)"] | not) then
         "\(.profile)\t\(.project)\t\(.id)\t-\t-\t\(details_json($n))\tkind\t\(.requested == true)\tfalse\t\({project, lane: "agent", key: .id, verdict: "skip", rule: "kind", reason: "kind \(.type) is off", at: $at, policy: $sig} | tojson)\t\(.raw)"
+      elif ((.size // "") | ascii_downcase | IN("l", "xl")) and (.type // "") != "epic" and ($parents[.id] | not)
+          and (.project as $pj | $elig | index($pj)) != null
+          and (($ss["\(.project)\t\(.id)"].failed // false) | not)
+          and (any((.tags_cased // .tags // [])[]?; startswith("after/") or startswith("pr/")) | not)
+          and (($ss["\(.project)\t\(.id)"].exit == null) or ($ss["\(.project)\t\(.id)"].exit == "plan" and planned)) then
+        "\(.profile)\t\(.project)\t\(.id)\t-\t-\t\(details_json($n))\ttoo-big\t\(.requested == true)\t\(planned and ($ss["\(.project)\t\(.id)"].exit == "plan"))\t\({project, lane: "agent", key: .id, verdict: "skip", size: (.size | ascii_upcase), rule: "too-big", reason: "row is size \(.size | ascii_upcase)", at: $at, policy: $sig} | tojson)\t\(.raw)"
       else empty end' <<<"$board")
   # raw last: read hands it the rest of the line; details_json and the verdict are JSON, with no bare
   # tab. No field is empty: a tab is IFS whitespace, so read would fold an empty one into its neighbour
   while IFS=$'\t' read -r prof p id line dsig dj rule req planned d raw; do
     [ -n "$id" ] || continue
     # the verdict must still hold for the row as it reads now (ROW_JQ holds)
-    [ "$rule" = kind ] || [ "$(row_sig "$raw")" = "$line" ] || continue
+    [ "$line" = - ] || [ "$(row_sig "$raw")" = "$line" ] || continue
     [ "$dsig" = - ] || [ "$(detail_sig "$dj")" = "$dsig" ] || continue
     body=${raw#- \[?\] }; body=${body%%<!--*}; body=${body%"${body##*[![:space:]]}"}
     e='' gate=''
@@ -2232,8 +2261,9 @@ skip_exits() {
     fi
     [ -n "$e" ] || continue
     if [ "$e" = plan ] && [ "$planned" = true ]; then
-      # a plan made before the verdict that dsig cannot date: the judge may not have read it yet
-      [ "$dsig" != - ] || continue
+      # a plan made before the verdict that dsig cannot date: the judge may not have read it yet (a
+      # sized row has no verdict to read it: its plan is made and the row is still L)
+      [ "$dsig" != - ] || [ "$line" = - ] || continue
       e=human
     fi
     if [ "$e" = human ]; then
@@ -2279,6 +2309,8 @@ skip_exits() {
     esac
     EXITS_TAKEN=$(( EXITS_TAKEN + 1 ))
     mkdir -p "$DIR"   # a kind exit can be the first verdict on record
+    # a sized row's verdict holds for the row as it reads now, as a judge's does
+    [ "$rule" != too-big ] || [ "$line" != - ] || d=$(jq -c --arg l "$(row_sig "$raw")" '. + {line: $l}' <<<"$d")
     jq -c --arg e "$e" --arg at "$(date -Iseconds)" '. + {exit: $e, exit_at: $at}' <<<"$d" >> "$VERDICTS"
   done <<<"$rows"
   if [ -n "$dry" ]; then
