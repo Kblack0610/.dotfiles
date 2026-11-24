@@ -203,7 +203,24 @@ relay_fixture() { # <kind> <text> <shown>
   assert_failure 2
   run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human "$id" park
   assert_failure 2; assert_output --partial 'relays their words with --by human --quote'
-  run "$AGENT_ASK" show "$id"; assert_line 'status: pending'
+  run "$AGENT_ASK" show "$id"; assert_line 'status: pending'; refute_output --partial 'relayed'
+  # The words must come with an answer, be 3+ characters (or the whole message), and, on an ask
+  # with options, the answer must be one of them.
+  relay_fixture answer 'Park them' "Ask $id: park?"
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'park them' "$id"
+  assert_failure 1; assert_output --partial 'no answer given'
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'pa' "$id" park
+  assert_failure 1
+  id="$("$AGENT_ASK" post --project demo --options 'park=park them|wait=wait for CI' 'park or wait?')"
+  relay_fixture answer 'Park them' "Ask $id: park or wait?"
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'park them' "$id" 'merge past red'
+  assert_failure 1; assert_output --partial "names none (or more than one) of ask $id's options"
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'park them' "$id" park
+  assert_success
+  # An ask the human already answered takes no relay: it would rewrite their answer's provenance.
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'park them' "$id" wait
+  assert_failure 1; assert_output --partial 'not waiting on the human'
+  run "$AGENT_ASK" show "$id"; assert_line 'answer: park'
 }
 
 # An agent answers what does not need the human, and its answer releases what the ask holds

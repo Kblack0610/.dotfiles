@@ -136,11 +136,25 @@ fn dialog_answers(line: &str) -> Vec<(String, String)> {
         .and_then(Value::as_object)
         .map(|m| {
             m.iter()
-                .filter_map(|(q, a)| Some((q.clone(), a.as_str()?.trim().to_string())))
+                .filter_map(|(q, a)| Some((q.clone(), answer_text(a)?)))
                 .filter(|(_, a)| !a.is_empty())
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// One answer: a string, or the choices of a multi-select joined by ", ".
+fn answer_text(a: &Value) -> Option<String> {
+    match a {
+        Value::String(s) => Some(s.trim().to_string()),
+        Value::Array(v) => Some(
+            v.iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+        _ => None,
+    }
 }
 
 /// `s` without each `<name ...>...</name>` block; an unclosed one is cut to the end.
@@ -231,6 +245,21 @@ mod tests {
             iso_epoch("2026-10-30T13:00:00Z").unwrap()
         )
         .is_empty());
+    }
+
+    #[test]
+    fn a_multi_select_answer_is_its_choices_joined() {
+        let line = at(
+            2,
+            r#""type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"q","content":"x"}]},"toolUseResult":{"answers":{"Which?":["Park","Hold"],"Also?":"Yes","Bad":3}}"#,
+        );
+        assert_eq!(
+            dialog_answers(&line),
+            [
+                ("Which?".to_string(), "Park, Hold".to_string()),
+                ("Also?".to_string(), "Yes".to_string())
+            ]
+        );
     }
 
     #[test]

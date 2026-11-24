@@ -955,29 +955,42 @@ answer_row() {
   file_board_row "$1" "$(field "$1" question) -> answered: $2$how${4:+; $4}"
 }
 
-# relay_proof <id> <quote>: why an attended session may record the human's answer to <id>, or
+# relay_proof <id> <quote> <answer>: why an attended session may record the human's answer to <id>, or
 # what is missing (stderr, rc 1). The quote must be in one entry of the session's own transcript
 # newer than the ask (`agent-panel human`: a typed prompt or a dialog answer, never a paste or
 # what the fleet typed), and the ask's id in that entry's words or in what they were shown. The
-# transcript is the harness's record, so an agent's own "the human said yes" proves nothing.
+# transcript is the harness's record, so an agent's own "the human said yes" proves nothing. The
+# quote is 3+ characters unless it is the whole entry, so a stray "a" cannot stand for a message,
+# and the answer is one of the ask's options when it has any, so the words cannot be attached to
+# an answer they do not pick. Only a pending ask, or one the judge or a hold answered, takes it.
 relay_proof() {
-  local id="$1" quote="$2" f sid t made said
+  local id="$1" quote="$2" answer="$3" f sid t made said opts
   [ -z "${AGENT_QUEUE_ITEM:-}" ] || { echo "a dispatched session (AGENT_QUEUE_ITEM set) has no human at it" >&2; return 1; }
   sid="${CLAUDE_CODE_SESSION_ID:-}"
   [ -n "$sid" ] || { echo "no CLAUDE_CODE_SESSION_ID to find the transcript by" >&2; return 1; }
   f="$(find_ask "$id")"; [ -n "$f" ] || { echo "no ask '$id'" >&2; return 1; }
-  id="$(field "$f" id)"; made="$(field "$f" created)"
+  id="$(field "$f" id)"; made="$(date -u -d "$(field "$f" created)" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
+  [ -n "$made" ] || { echo "ask $id has no created time to look after" >&2; return 1; }
+  [ -n "$answer" ] || { echo "no answer given, only the words" >&2; return 1; }
+  case "$(field "$f" status):$(field "$f" answered_by)" in
+    pending:*|answered:judge|answered:hold) ;;
+    *) echo "ask $id is $(field "$f" status), not waiting on the human" >&2; return 1 ;;
+  esac
+  opts="$(field "$f" options)"
+  if [ -n "$opts" ] && [ -z "$(named_option "$opts" "$answer")" ]; then
+    echo "the answer '$answer' names none (or more than one) of ask $id's options: $opts" >&2; return 1
+  fi
   t="$(session_transcript "$sid")"
   [ -n "$t" ] || { echo "no transcript for session $sid" >&2; return 1; }
   command -v agent-panel >/dev/null 2>&1 || { echo "agent-panel is not installed" >&2; return 1; }
   said="$(agent-panel human "$t" --since "$made")" || { echo "agent-panel human failed on $t" >&2; return 1; }
   jq -e -s --arg q "$quote" '
     def n: ascii_downcase | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "");
-    any(.[]; (.text | n) | contains($q | n))' <<<"$said" >/dev/null 2>&1 ||
+    any(.[]; ((.text | n) | contains($q | n)) and (($q | n | length) >= 3 or (.text | n) == ($q | n)))' <<<"$said" >/dev/null 2>&1 ||
     { echo "no words of the human's in this session since the ask was posted contain: $quote" >&2; return 1; }
   jq -e -s --arg q "$quote" --arg id "$id" '
     def n: ascii_downcase | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "");
-    any(.[]; ((.text | n) | contains($q | n)) and
+    any(.[]; ((.text | n) | contains($q | n)) and (($q | n | length) >= 3 or (.text | n) == ($q | n)) and
              (((.shown | n) | contains($id | n)) or ((.text | n) | contains($id | n))))' <<<"$said" >/dev/null 2>&1 ||
     { echo "the quote is in the transcript, but ask $id is in neither what the human was shown nor their words there" >&2; return 1; }
 }
@@ -1004,10 +1017,14 @@ cmd_answer_cli() {
   fi
   if [ -n "$in_agent" ] && [ "$by" != agent ]; then
     if [ "$by" = human ] && [ -n "$quote" ]; then
-      local why f
-      why="$(relay_proof "${1:-}" "$quote" 2>&1)" || { echo "agent-ask: cannot record this as the human's answer: $why" >&2; return 1; }
-      f="$(find_ask "${1:-}")"
+      # The proof first, the fields only once the answer is recorded: a refused answer leaves
+      # no "relayed" note on a pending ask.
+      local why f id="${1:-}"; shift 2>/dev/null || true
+      why="$(relay_proof "$id" "$quote" "$(oneline "$*")" 2>&1)" || { echo "agent-ask: cannot record this as the human's answer: $why" >&2; return 1; }
+      f="$(find_ask "$id")"
+      cmd_answer --by human "$id" "$@" || return $?
       set_field "$f" relayed_by "$CLAUDE_CODE_SESSION_ID" answer_note "relayed in session $CLAUDE_CODE_SESSION_ID: $(cut -c1-300 <<<"$quote")"
+      return 0
     else
       echo "agent-ask: an agent session answers as agent, not $by; the human answers from a board or in the session, and an attended session relays their words with --by human --quote '<their words>'" >&2; return 2
     fi
