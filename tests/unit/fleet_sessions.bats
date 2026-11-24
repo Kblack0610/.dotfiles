@@ -5447,7 +5447,7 @@ chained_item() {
   # to 04:47Z, and every member's gate-and-land had exited ("run this again").
   landed_fixture
   export FLEET_TRAIN_DRIVERS="$SANDBOX/gate-line"
-  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t) oid tip driver gate
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t) oid tip driver gate lander ci d
   oid="$("${g[@]}" rev-parse HEAD)"
   "${g[@]}" checkout -q -b train/20261124T022100Z-c3d4 origin/main
   "${g[@]}" merge -q --no-ff -m '#3214' feat/x
@@ -5465,26 +5465,38 @@ chained_item() {
   [ "$(jq -r .reason <<<"$output")" = 'PR #3214 rides train #3222 with nobody landing it: run its gate again' ]
   jq -e '.blockers | index("PR #3214 open, train #3222 has nobody landing it")' <<<"$output" >/dev/null
 
-  # the train's gate runs: its own CI is pending
-  store PENDING
+  # the train's gate is not finished: its own CI pending, never started (billing) or not reported yet
+  for ci in PENDING NOSTART -; do
+    store "$ci"
+    run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+    [ "$(jq -r .reason <<<"$output")" = 'PR #3214 waiting on train #3222' ]
+  done
+  # a red train nobody lands is the member's too: train.py ejects it, and it rides alone
+  store FAIL
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #3214 waiting on train #3222' ]
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
 
-  # train.py land's recorded lander is alive; a dead or unreadable one lands nothing
+  # started <pid> <text>: the background process <pid> runs <text>, a bounded spin (no event says exec is done)
+  started() { local i; for ((i = 0; i < 200000; i++)); do grep -qaF "$2" "/proc/$1/cmdline" 2>/dev/null && return 0; done; return 1; }
+  # train.py land's recorded lander is alive; a dead, unreadable or recycled (not a train.py) one lands nothing
   store PASS
-  mkdir -p "$FLEET_TRAIN_DRIVERS"
+  mkdir -p "$FLEET_TRAIN_DRIVERS" "$SANDBOX/lander"
+  printf 'sleep 60\n' > "$SANDBOX/lander/train.py"
+  (cd "$SANDBOX/lander" && exec -a x bash train.py land 3222) >/dev/null 2>&1 3>&- &
+  lander=$!; LIVE_PIDS="$lander"   # teardown kills it, pass or fail
+  started "$lander" train.py
   driver="$FLEET_TRAIN_DRIVERS/driver-$(printf %s "$SANDBOX/origin.git" | sha1sum | cut -c1-10)-3222"
   [ "$(git -C "$SANDBOX/wt" config remote.origin.url)" = "$SANDBOX/origin.git" ]
-  echo "$$" > "$driver"
+  echo "$lander" > "$driver"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #3214 waiting on train #3222' ]
-  for d in 999999999 junk; do
+  for d in 999999999 junk "$$"; do
     echo "$d" > "$driver"
     run "$REPO_ROOT/.local/bin/fleet-sessions" --json
     [ "$(jq -r .bucket <<<"$output")" = STALLED ]
   done
   # another repo's driver for the same train number is not this train's lander
-  rm "$driver"; echo "$$" > "$FLEET_TRAIN_DRIVERS/driver-0000000000-3222"
+  rm "$driver"; echo "$lander" > "$FLEET_TRAIN_DRIVERS/driver-0000000000-3222"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = STALLED ]
 
@@ -5492,8 +5504,8 @@ chained_item() {
   mkdir -p "$SANDBOX/wt/scripts/test"
   printf 'sleep 60\n' > "$SANDBOX/wt/scripts/test/gate-and-land.sh"
   (cd "$SANDBOX/wt" && exec -a x bash scripts/test/gate-and-land.sh) >/dev/null 2>&1 3>&- &
-  gate=$!; LIVE_PIDS="$gate"   # teardown kills it, pass or fail
-  until grep -q gate-and-land.sh "/proc/$gate/cmdline" 2>/dev/null; do :; done
+  gate=$!; LIVE_PIDS="$lander $gate"
+  started "$gate" gate-and-land.sh
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = WORKING ]
   [ "$(jq -r .reason <<<"$output")" = 'PR #3214 waiting on train #3222' ]

@@ -1477,17 +1477,19 @@ train_of() {
   done < "$key.trains"
 }
 
-# train_landing <dir> <train number>: true when something lands open train #<n> of <dir>'s repo: its own CI is
-# running in the PR store (its gate), or the pid train.py land recorded for it (FLEET_TRAIN_DRIVERS) is alive. A
-# member's gate-and-land exits 7 by design while another process gates or lands its train, so that wait is no stall;
-# a green train nobody lands is (ar-5089), and the member's gate-and-land lands it (train.py adopt).
+# train_landing <dir> <train number>: true when something lands open train #<n> of <dir>'s repo: its own CI is not
+# finished in the PR store (PENDING is its gate, NOSTART a billing wait, unknown a train its gate has not reported on
+# yet), or the pid train.py land recorded for it (FLEET_TRAIN_DRIVERS, train.py driver_file: gate-line's CACHE_DIR,
+# sha1 of `git config remote.origin.url`) is alive and still a train.py (a recycled pid is not). A member's
+# gate-and-land exits 7 by design while another process gates or lands its train, so that wait is no stall; a
+# finished train nobody lands is (ar-5089), and the member's gate-and-land lands or leaves it (train.py adopt).
 train_landing() {
   local key url pid
   key="$(prs_key "$1")" || return 1
-  [ "$(awk -F'\t' -v n="$2" '$2 == n { print $4; exit }' "$key" 2>/dev/null)" != PENDING ] || return 0
+  case "$(awk -F'\t' -v n="$2" '$2 == n { print $4; exit }' "$key" 2>/dev/null)" in PASS | FAIL) ;; *) return 0 ;; esac
   url="$(git -C "$1" config remote.origin.url 2>/dev/null)" && [ -n "$url" ] || return 1
   pid="$(cat "$FLEET_TRAIN_DRIVERS/driver-$(printf %s "$url" | sha1sum | cut -c1-10)-$2" 2>/dev/null)" || return 1
-  [[ "$pid" =~ ^[0-9]+$ ]] && [ -d "/proc/$pid" ]
+  [[ "$pid" =~ ^[0-9]+$ ]] && grep -qaF train.py "/proc/$pid/cmdline" 2>/dev/null
 }
 
 # queued_in <dir> <pr> -> true when PR #<pr> of <dir>'s repo carries FLEET_QUEUE_LABEL in the PR store.
@@ -2808,9 +2810,12 @@ collect() {
       qdepth="$(queue_depth "$gd")"; qdepth="${qdepth:--}"
     fi
     # A train wait with no gate of the session's own and nobody landing the train is the session's to restart:
-    # its gate-and-land exited and the train sits (ar-5089). A host row's processes are not readable here.
-    if [[ "$wait_on" == "train #"* ]] && [ "$wait_on" = "$land_wait" ] && [ "$host" = - ] && [ "$ojob" != queue ] \
-       && [ "$qwait" = - ] && ! train_landing "$gd" "${wait_on#train #}"; then wait_on="lapsed $wait_on"; fi
+    # its gate-and-land exited and the train sits (ar-5089). Any live gate, test or build of its own keeps the wait.
+    # A host row's processes and train.py's lander are not readable here, so it keeps the wait too.
+    if [[ "$wait_on" == "train #"* ]] && [ "$wait_on" = "$land_wait" ] && [ "$host" = - ] && [ "$qwait" = - ] \
+       && ! [[ "$ojob" =~ ^(queue|gate|test|build)$ ]] && ! train_landing "$gd" "${wait_on#train #}"; then
+      wait_on="lapsed $wait_on"
+    fi
     # The transcript can be 40 MB, so it is read only for an idle session, or the one asking about itself (wake_facts).
     local cron=- wake=-
     if [ "$host" = - ] && { [ "$idle" -ge "$FLEET_IDLE_MIN" ] || [ "$sid" = "${CLOSE_SELF:-}" ]; }; then
