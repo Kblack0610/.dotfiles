@@ -333,7 +333,7 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   # 2026-11-23 and 11-24: one plan's unreadable phase marker held the runner FAILED and fleet-liveness red (ar-5133).
   plan bad '1 day ago 1 hour ago' "$OPEN"; plan good '1 day ago 1 hour ago' "$OPEN"
   stub agent-queue 'printf "agent-queue %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"
-    case "$*" in *bad.md*) echo "agent-queue: --plan $ASK_SWEEP_PLANS/bad.md: phase 2: (after 1b) does not parse" >&2; exit 1 ;; esac; exit 5'
+    case "$*" in *bad.md*) echo "agent-queue: --plan $ASK_SWEEP_PLANS/bad.md: could not read its Phases checklist: phase 2: (after 1b) does not parse" >&2; exit 1 ;; esac; exit 5'
   run "$SWEEP" run
   assert_success
   assert_output --partial "agent-queue refused the plan $ASK_SWEEP_PLANS/bad.md: phase 2: (after 1b) does not parse"
@@ -350,7 +350,7 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
 
 @test "a refused plan whose fix row cannot be filed is a fault" {
   plan bad '1 day ago 1 hour ago' "$OPEN"
-  stub agent-queue 'echo "agent-queue: a phase marker names no result" >&2; exit 1'
+  stub agent-queue 'echo "agent-queue: --plan x.md: could not read its Phases checklist: two phases carry the same number" >&2; exit 1'
   stub notes 'printf "notes %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; [ "$4" = add ] && exit 1; exit 0'
   run "$SWEEP" run
   assert_failure
@@ -358,6 +358,18 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_equal "$(cat "$AGENTCTL_STATE_DIR/ask-sweep/last-outcome")" FAILED
   run tail -1 "$AGENTCTL_STATE_DIR/ask-sweep/activity.log"
   assert_output --partial 'why: plan bad refused by agent-queue, and its fix row could not be filed'
+}
+
+@test "an agent-queue failure that is not a checklist refusal is still a fault, and files no fix row" {
+  plan bad '1 day ago 1 hour ago' "$OPEN"
+  stub agent-queue 'echo "agent-queue: could not take the queue lock" >&2; exit 1'
+  run "$SWEEP" run
+  assert_failure
+  assert_output --partial "could not file the plan $ASK_SWEEP_PLANS/bad.md: agent-queue: could not take the queue lock"
+  [ ! -s "$NOTES_FIXTURE/rows.board" ]
+  assert_equal "$(cat "$AGENTCTL_STATE_DIR/ask-sweep/last-outcome")" FAILED
+  run tail -1 "$AGENTCTL_STATE_DIR/ask-sweep/activity.log"
+  assert_output --partial 'why: plan bad: agent-queue add failed (exit 1)'
 }
 
 @test "a notes with no row types asks no model and records why" {

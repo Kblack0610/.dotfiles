@@ -2046,7 +2046,7 @@ wt_closed_pane_scopes() {
 wt_scope_leftovers() {
   local proc="${WT_PROC_ROOT:-/proc}" procs="${WT_CGROUP_ROOT:-/sys/fs/cgroup}$1/cgroup.procs" pid comm stat p d servers=' '
   while read -r pid; do
-    [ "$(cat "$proc/$pid/comm" 2>/dev/null)" = 'tmux: server' ] && servers+="$pid "
+    [ "$(cat "$proc/$pid/comm" 2>/dev/null)" != 'tmux: server' ] || servers+="$pid "
   done 2>/dev/null < "$procs"
   while read -r pid; do
     comm=$(cat "$proc/$pid/comm" 2>/dev/null) stat=$(cat "$proc/$pid/stat" 2>/dev/null)
