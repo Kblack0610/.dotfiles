@@ -251,31 +251,6 @@ fn sev_rank(sev: &str) -> usize {
     }
 }
 
-/// One `cc:component_status` series that is not green.
-#[derive(Serialize, Debug, Default, Clone, PartialEq)]
-pub struct Component {
-    pub domain: String,
-    pub name: String,
-    pub level: Level,
-}
-
-/// The components that are not green, in domain then name order.
-pub fn components(infra: &Infra) -> Vec<Component> {
-    let mut out: Vec<Component> = infra
-        .get("cc")
-        .iter()
-        .filter(|s| s.label("__name__") == "cc:component_status")
-        .filter(|s| s.value.is_some_and(|v| v > 0.0))
-        .map(|s| Component {
-            domain: s.label("domain").to_string(),
-            name: s.label("component").to_string(),
-            level: Level::of(s.value),
-        })
-        .collect();
-    out.sort_by(|a, b| (&a.domain, &a.name).cmp(&(&b.domain, &b.name)));
-    out
-}
-
 /// Every number the tab shows, each counted from the rows it heads.
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
 pub struct Counts {
@@ -314,8 +289,6 @@ pub struct Alerts {
     pub level: Level,
     /// `cc:domain_status`, in Home's strip order.
     pub health: Vec<Chip>,
-    /// The components (`cc:component_status`) that are not green: why a domain chip is.
-    pub components: Vec<Component>,
     /// Tripped and error watches first, then `cc:red_now`, the machinery and Alertmanager;
     /// see `order`.
     pub firing: Vec<Alert>,
@@ -367,14 +340,17 @@ pub fn machinery(infra: &Infra) -> Vec<String> {
     items
 }
 
-/// One branch with runs waiting and stuck (`waiting{stuck="true"}`): its oldest age and its runs'
-/// workflows. The exporter has a series per workflow run, and a push starts several, so one row
-/// each read as one run listed 2-4 times (ar-4358). Alerts' rows and Health's Stuck count both
-/// read this one list.
+/// One repo with runs waiting and stuck (`waiting{stuck="true"}`): its branches, its oldest age and
+/// its runs' workflows. The exporter has a series per workflow run and a push starts several, so one
+/// row each read as one run listed 2-4 times (ar-4358); one row per branch still listed a repo's
+/// ghost runs as 11 high rows of one fault. Alerts' rows
+/// and the CI card's Stuck count both read this one list.
 #[derive(Debug, PartialEq)]
 pub struct StuckRun<'a> {
     pub repo: &'a str,
-    pub branch: &'a str,
+    /// The branches, first seen first, each once.
+    pub branches: Vec<&'a str>,
+    /// One per run (series).
     pub workflows: Vec<&'a str>,
     pub age: Option<f64>,
 }
@@ -386,21 +362,34 @@ impl StuckRun<'_> {
             .map_or("-".into(), |v| crate::display::fmt::age(v as i64))
     }
 
-    /// `app main`, as a row names the branch.
+    /// `app main` for one branch, `app, 3 branches` for several.
     pub fn name(&self) -> String {
-        format!("{} {}", label(self.repo), label(self.branch))
+        match self.branches.as_slice() {
+            [b] => format!("{} {}", label(self.repo), label(b)),
+            bs => format!("{}, {} branches", label(self.repo), bs.len()),
+        }
     }
 
-    /// The Alerts row: the branch, its oldest age and, with several runs, their workflows.
+    /// The Alerts row: the repo (and its branch when one), its oldest age and, with several runs,
+    /// their workflows on one branch or how many runs on how many branches.
     pub fn line(&self) -> String {
-        let runs = if self.workflows.len() > 1 {
+        let n = self.workflows.len();
+        if self.branches.len() > 1 {
+            return format!(
+                "stuck runs: {}, {}, no jobs ({n} runs on {} branches)",
+                label(self.repo),
+                self.age_text(),
+                self.branches.len()
+            );
+        }
+        let runs = if n > 1 {
             let mut names: Vec<&str> = vec![];
             for w in self.workflows.iter().copied().map(label) {
                 if !names.contains(&w) {
                     names.push(w);
                 }
             }
-            format!(" ({} runs: {})", self.workflows.len(), names.join(", "))
+            format!(" ({n} runs: {})", names.join(", "))
         } else {
             String::new()
         };
@@ -412,7 +401,7 @@ impl StuckRun<'_> {
     }
 }
 
-/// The stuck runs, one per repo and branch, in the exporter's order.
+/// The stuck runs, one per repo, in the exporter's order.
 pub fn stuck_runs(infra: &Infra) -> Vec<StuckRun<'_>> {
     let mut stuck: Vec<StuckRun> = vec![];
     for s in infra.get("waiting") {
@@ -421,11 +410,11 @@ pub fn stuck_runs(infra: &Infra) -> Vec<StuckRun<'_>> {
         }
         let (repo, branch) = (s.label("repo"), s.label("branch"));
         let age = s.value.filter(|v| v.is_finite());
-        match stuck
-            .iter_mut()
-            .find(|e| (e.repo, e.branch) == (repo, branch))
-        {
+        match stuck.iter_mut().find(|e| e.repo == repo) {
             Some(e) => {
+                if !e.branches.contains(&branch) {
+                    e.branches.push(branch);
+                }
                 e.workflows.push(s.label("workflow"));
                 e.age = match (e.age, age) {
                     (Some(a), Some(b)) => Some(a.max(b)),
@@ -434,7 +423,7 @@ pub fn stuck_runs(infra: &Infra) -> Vec<StuckRun<'_>> {
             }
             None => stuck.push(StuckRun {
                 repo,
-                branch,
+                branches: vec![branch],
                 workflows: vec![s.label("workflow")],
                 age,
             }),
@@ -740,9 +729,7 @@ pub fn join(
     let watches = watches
         .map_err(|e| errors.push(format!("watches: {e}")))
         .ok();
-    let fixes = fixes
-        .map_err(|e| errors.push(format!("fleet-bench reds: {e}")))
-        .ok();
+    let fixes = fixes.map_err(|e| errors.push(e)).ok();
     let open = fixes.as_ref().map(|r| r.open.as_slice());
 
     let mut firing: Vec<Alert> = vec![];
@@ -857,7 +844,6 @@ pub fn join(
         at: now,
         level,
         health: if infra_ok { infra.health() } else { vec![] },
-        components: if infra_ok { components(infra) } else { vec![] },
         firing,
         fixes: fixes.unwrap_or_default(),
         history,
@@ -1079,36 +1065,6 @@ mod tests {
         );
         assert!(a.errors.is_empty(), "{:?}", a.errors);
         assert_eq!(a.health.len(), infra(&[]).health().len());
-        assert!(a.components.is_empty(), "{:?}", a.components);
-    }
-
-    #[test]
-    fn a_component_that_is_not_green_says_why_its_domain_chip_is() {
-        let mut i = infra(&[]);
-        i.instant.get_mut("cc").unwrap().push(series(
-            &[
-                ("__name__", "cc:component_status"),
-                ("domain", "k3s"),
-                ("component", "nodes"),
-            ],
-            2.0,
-        ));
-        let a = join(
-            &i,
-            Ok(ok_watches()),
-            Ok(Reds::default()),
-            Ok(String::new()),
-            Ok(vec![]),
-            NOW,
-        );
-        assert_eq!(
-            a.components,
-            [Component {
-                domain: "k3s".into(),
-                name: "nodes".into(),
-                level: Level::Red,
-            }]
-        );
     }
 
     #[test]
@@ -1363,12 +1319,12 @@ mod tests {
     }
 
     #[test]
-    fn a_branch_with_several_stuck_runs_is_one_row_with_its_oldest_age_and_run_count() {
+    fn a_repo_with_several_stuck_runs_is_one_row_with_its_oldest_age_and_run_count() {
         let mut i = infra(&[]);
-        let run = |branch, wf, age| {
+        let run = |repo, branch, wf, age| {
             series(
                 &[
-                    ("repo", "app"),
+                    ("repo", repo),
                     ("branch", branch),
                     ("workflow", wf),
                     ("stuck", "true"),
@@ -1379,10 +1335,12 @@ mod tests {
         i.instant.insert(
             "waiting",
             vec![
-                run("main", "CI", 3600.0),
-                run("feat", "CI", 600.0),
-                run("main", "Checks", 7200.0),
-                run("main", "E2E", 1800.0),
+                run("app", "main", "CI", 3600.0),
+                run("app", "feat", "CI", 600.0),
+                run("app", "main", "Checks", 7200.0),
+                run("web", "main", "CI", 1800.0),
+                run("web", "main", "Checks", 600.0),
+                run("api", "dev", "E2E", 60.0),
             ],
         );
         let stuck: Vec<String> = machinery(&i)
@@ -1392,8 +1350,9 @@ mod tests {
         assert_eq!(
             stuck,
             [
-                "stuck run: app main, 2h, no jobs (3 runs: CI, Checks, E2E)",
-                "stuck run: app feat, 10m, no jobs",
+                "stuck runs: app, 2h, no jobs (3 runs on 2 branches)",
+                "stuck run: web main, 30m, no jobs (2 runs: CI, Checks)",
+                "stuck run: api dev, 1m, no jobs",
             ]
         );
     }
@@ -1408,7 +1367,7 @@ mod tests {
         let a = join(
             &down,
             Err("no such dir".into()),
-            Err("exit 1".into()),
+            Err("fleet-bench reds: exit 1".into()),
             Err("permission denied".into()),
             Ok(vec![]),
             NOW,

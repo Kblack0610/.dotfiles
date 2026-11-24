@@ -646,7 +646,8 @@ const PAGE_KEYS: &str = "[ ] runner  Esc all runners";
 
 /// One runner's page (`hub tab 'sessions runners <runner>'`, Enter on a Runners row): summary first, then 14
 /// days of runs, its status and activity, 24h and 7d calls, the registry, the lane's extras block
-/// (`DETAIL=` in its conf) and the conf, as agent-web's `#sessions/runners/<runner>`.
+/// (`DETAIL=` in its conf), the conf and, for a lane, its instructions (`judge-eval prompts`), as
+/// agent-web's `#sessions/runners/<runner>`. The instructions come last: they run to hundreds of lines.
 pub fn runner_page(
     name: &str,
     r: Option<&Result<Runner, String>>,
@@ -861,7 +862,14 @@ pub fn runner_page(
     out.extend(registry(&r.registry, p, now, w));
     out.extend(extras(&r.extras, p, now, w));
 
-    out.push(Line::raw(""));
+    out.extend(conf(r, p, w));
+    out.extend(instructions(r, p, w));
+    out
+}
+
+/// The runner's conf as agentctl sources it, one `KEY=value` a line.
+fn conf(r: &Runner, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let mut out = vec![Line::raw("")];
     out.push(clip_line(
         heading(
             "CONF",
@@ -876,6 +884,35 @@ pub fn runner_page(
                 Span::raw(format!("  {}=", c.key)),
                 Span::styled(c.value.clone(), p.dim()),
             ]),
+            w,
+        ));
+    }
+    out
+}
+
+/// A lane's instructions (`judge-eval prompts`) under their heading, each line wrapped to the pane;
+/// nothing for any other runner.
+fn instructions(r: &Runner, p: Palette, w: usize) -> Vec<Line<'static>> {
+    if r.instructions.is_empty() {
+        return vec![];
+    }
+    let mut out = vec![
+        Line::raw(""),
+        clip_line(
+            heading(
+                "INSTRUCTIONS",
+                format!("  judge-eval prompts {}", r.name),
+                p,
+            ),
+            w,
+        ),
+    ];
+    for l in r.instructions.lines() {
+        out.extend(crate::projtab::wrapped(
+            "  ",
+            l,
+            ratatui::style::Style::default(),
+            p,
             w,
         ));
     }
@@ -1508,6 +1545,28 @@ pub mod tests {
             .iter()
             .map(plain)
             .collect()
+    }
+
+    #[test]
+    fn a_lanes_instructions_come_last_wrapped_to_the_pane_and_another_runner_has_none() {
+        let s = page_text(Some(&Ok(runner_fixture())), 60).join("\n");
+        assert!(!s.contains("INSTRUCTIONS"), "{s}");
+        let long = "word ".repeat(30);
+        let r = Runner {
+            instructions: format!("=== dream ===\nmodel: sonnet\n\n{long}\n"),
+            ..runner_fixture()
+        };
+        let lines = page_text(Some(&Ok(r)), 60);
+        let at = lines
+            .iter()
+            .position(|l| l.starts_with("INSTRUCTIONS  judge-eval prompts dream"))
+            .unwrap_or_else(|| panic!("{}", lines.join("\n")));
+        assert!(at > lines.iter().position(|l| l.starts_with("CONF")).unwrap());
+        let body = &lines[at + 1..];
+        assert_eq!(body[..3], ["  === dream ===", "  model: sonnet", "  "]);
+        assert!(body.iter().all(|l| l.chars().count() <= 60), "{body:?}");
+        let words: usize = body[3..].iter().map(|l| l.matches("word").count()).sum();
+        assert_eq!(words, 30, "a long line wraps, never clips: {body:?}");
     }
 
     #[test]

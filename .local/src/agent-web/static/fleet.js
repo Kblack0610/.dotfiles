@@ -28,9 +28,9 @@ const fst = tblTab({
 // Judges section (vst) and the ask-judge runner page, which keeps them in the Sessions URL.
 const VERDICTS_PRE = "v";
 
-// The open runner page: whose, what it read, the run whose log is shown, and the lists whose
-// "+N more" was pressed.
-const rst = { name: "", data: null, err: null, log: null, sel: "", open: new Set() };
+// The open runner page: whose, what it read, the run whose log is shown, the lists whose
+// "+N more" was pressed, and which folds are open (by data-k, kept on toggle).
+const rst = { name: "", data: null, err: null, log: null, sel: "", open: new Set(), folds: {} };
 
 // Each list on the runner page is a glance at the runner's record: the server's `shown` rows
 // (agent-web RUNNER_ROWS). A list that lists nowhere else draws the rest the reader kept in place
@@ -285,6 +285,12 @@ function renderRunner(el) {
   h += runnerExtras(r.extras);
   const conf = pageRows(r.conf, "conf").map((c) => `<tr><td>${esc(c.key)}</td><td class="wrap muted">${esc(c.value)}</td></tr>`).join("");
   h += secHead("", "Conf") + `<div class="panel scroll">${conf ? `<table class="tbl">${conf}</table>` : `<div class="empty">Empty.</div>`}</div>` + pageMore(r.conf, "conf");
+  // A lane's full instruction set, last and folded: `judge-eval prompts <name>` as it prints, the
+  // CLI's and the hub's text, so banners, conf lines and grep lines stay as they are.
+  if (r.instructions) {
+    h += fold("sec-d", secHead("", "Instructions"), `<div class="panel"><div class="muted">judge-eval prompts ${esc(r.name)}: its prompt files, schema and the gates it is held to</div>` +
+      `<pre class="instr">${esc(r.instructions)}</pre></div>`, { k: "instructions", open: !!rst.folds.instructions });
+  }
   paint(el, h);
 }
 
@@ -308,8 +314,14 @@ $("log-verdicts").addEventListener("click", (e) => {
   if (v) { setQuery(tblSet(st.views.log, v, DISPATCH_PRE)); vst.refresh(); }
 });
 
+// Every lane whose runner page carries its instructions (hub-core Conf::instructed), one link each.
+function instructedLine(d) {
+  const ws = (d.workers || []).filter((w) => w.instructed);
+  return ws.length ? `<div class="cline">Each one's instructions, on its runner page: ${ws.map((w) => pageLink(w.name, esc(w.name))).join(", ")}</div>` : "";
+}
+
 function verdictsHead(d) {
-  return `<h3 class="sub">${pageLink(pageFor(d, "dispatch-verdicts"), "Dispatch judge")} <span class="muted">newest ${d.dispatch_table.shown}</span></h3>` +
+  return instructedLine(d) + `<h3 class="sub">${pageLink(pageFor(d, "dispatch-verdicts"), "Dispatch judge")} <span class="muted">newest ${d.dispatch_table.shown}</span></h3>` +
     `<div data-tbl="${DISPATCH_PRE}">${dispatchList(d.dispatch)}${tblPager(d.dispatch_table)}</div>` +
     `<h3 class="sub">${pageLink(pageFor(d, "ask-judge"), "Answer judge")} <span class="n">${tblCount(d.judge.table)}</span></h3>${judgeWeek(d.judge)}`;
 }
@@ -332,12 +344,16 @@ $("scroll").addEventListener("click", (e) => {
   if (row) location.hash = row.dataset.href;
 });
 
+$("scroll").addEventListener("toggle", (e) => {
+  if (e.target.closest?.("#ov-runners") && e.target.dataset?.k) rst.folds[e.target.dataset.k] = e.target.open;
+}, true);
+
 const logFleetFeed = pushed("log", ["fleet", "asks", "sessions"], vst.refresh, () => logShows("verdicts"));
 LOG_PARTS.push({ sec: "verdicts", show() { vst.render(); logFleetFeed.show(!vst.data || vst.moved()); }, onEvent: logFleetFeed.onEvent });
 // TABS.sessions (sessions.js) calls these for the Runners inner tab.
 function runnersShow() {
   const name = runnerName();
-  if (rst.name !== name) Object.assign(rst, { name, data: null, err: null, log: null, sel: "", open: new Set() });
+  if (rst.name !== name) Object.assign(rst, { name, data: null, err: null, log: null, sel: "", open: new Set(), folds: {} });
   renderRunners();
   pollFleet();
 }
