@@ -26,7 +26,7 @@
 # boards as the inbox-backlog agent: its own budget, outcome and batch size, so a cleanup never
 # stops the intake sweep. --backlog --priority gives each open row with no priority tag one, #urgent, #high,
 # #normal or #low, from one Sonnet call per batch (the inbox-priority agent); --retag <word> also re-judges
-# the rows tagged #<word>. --backlog --link puts each open typed row with no #of/ under an epic, one Sonnet
+# the open rows tagged #<word>. A started row is never asked. --backlog --link puts each open typed row with no #of/ under an epic, one Sonnet
 # call per batch on the same lane: the model names the row's system and, when one fits, an open
 # feature epic or a new #new one; a row with neither goes under its system's standing epic
 # (`notes ptask edit --link`). --backlog --size gives each open row with no `#pts/<n>` its
@@ -1052,14 +1052,16 @@ priority_batch() {
 }
 
 # The --priority pass: every managed board's open rows with no priority tag (and with
-# --retag <word> its rows tagged #<word>), in batches, the boards with the most such rows first.
+# --retag <word> its open rows tagged #<word>), in batches, the boards with the most such rows first.
+# A started row is never asked: agent-queue ranks its live item by the row's priority, and a
+# re-judge that turned a high plan phase #low queued the next phase behind every other item (ar-4436).
 priority_pass() {
   local board rows p lane total off size r rc=0
   read_board || return 1
   board="$(managed_board <<<"$BOARD")"
   # shellcheck disable=SC2016 # jq source, not shell
   rows="$(jq -c --arg retag "$RETAG" --arg only "$ONLY" '[.rows[]
-    | select((.lane == "human" or .lane == "agent") and .id != null and (.state == "open" or .state == "doing")
+    | select((.lane == "human" or .lane == "agent") and .id != null and .state == "open"
              and ($only == "" or .project == $only) and (.untriaged or ($retag != "" and .priority == $retag)))]' <<<"$board")"
   while IFS=$'\t' read -r p lane; do
     [ -n "$p" ] || continue
