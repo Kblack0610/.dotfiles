@@ -8,7 +8,8 @@
 # first if it has any. A fact a format lacks is null, never 0: tool_errors 0 would claim every command passed.
 # metrics has the shape so_transcript_metrics gives a Claude transcript, so one row builder reads both.
 # edits are git's own count (the files each `git commit` printed); a run that never committed falls
-# back to its patched files.
+# back to its patched files (apply_patch calls and FileChange items); a run with neither is null, not 0,
+# since Codex also edits through shell (python heredocs in exec_command), which no count here sees.
 def ts: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
 def shell_cmd: if type == "array" then (if length >= 3 and (.[1] | test("^-[a-z]*c$")) then .[2] else join(" ") end) else tostring end;
 def commit_cmd: test("(^|[\\n;&|(])\\s*(\\w+=\\S*\\s+)*git\\s+(-C\\s+\\S+\\s+)?commit\\b");
@@ -63,7 +64,7 @@ def title_of:
     title: (([$items[] | select(.type == "UserMessage") | first_text] + [$ev[] | select(.type == "user_message") | .message // empty])
             | first // "" | title_of),
     updated: ($t | max | floor), duration_s: ((($t | max) - ($t | min)) | floor),
-    edits: (if ($commits | length) > 0 then ($commits | add) else $filechanges + $patches end),
+    edits: (if ($commits | length) > 0 then ($commits | add) elif $filechanges + $patches > 0 then $filechanges + $patches else null end),
     effort: $effort,
     error: ($errs | last | .error.codex_error_info | if type == "object" then keys[0] else . end),
     rollout: $file,
