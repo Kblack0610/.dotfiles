@@ -361,7 +361,8 @@ file_systems() {
       open) had=$((had + 1)); printf 'open    %-10s  %s\n' "$area" "$title"; continue ;;
     esac
     epic="$(jq -r --arg s "$target" '[.[] | select(.system == $s) | .id][0] // empty' <<<"$epics")"
-    row="chore($area): $title${epic:+ #of/$epic} #size/s #low"
+    # No priority tag: `agentctl-inbox-triage --backlog --priority` judges the row by its cost.
+    row="chore($area): $title${epic:+ #of/$epic} #size/s"
     text="from project-stage-check $NAME --file, $key"
     # A cut title keeps the whole requirement on a detail line.
     if [ "$title" = "$full" ]; then
@@ -393,14 +394,20 @@ target_epic() {
 # gap_title <line>: the title of a rollup's `#<stage>: <text>, check: <check>` line.
 gap_title() { local r="${1#\#*: }"; title_of "${r%%, check: *}"; }
 
-# retag_rollup <rid> <its priority, - for none> <the gate's>: the priority follows the gate, as a new
-# rollup's does. One set by hand (#urgent) stays, and so does one on a row the open sprint holds
-# (stages.md, Frozen rows): the cut carries it. Returns 1 only when the tag failed otherwise.
+# retag_rollup <rid> <its priority, - for none> <the gate's: high, or empty> <1 when retitled>: a gate
+# that blocks makes the rollup #high over #low, #normal or none; one that does not leaves its priority
+# to the triager's rubric, save the #high a lower stage's gate set, which a retitle clears for the
+# triager to judge again. #urgent stays, and so does a tag on a row the open sprint holds (stages.md,
+# Frozen rows): the cut carries it. Returns 1 only when the tag failed otherwise.
 retag_rollup() {
-  local rid="$1" rprio="$2" prio="$3" terr args
-  case "$rprio" in low|high|-) ;; *) return 0 ;; esac
-  [ "$rprio" != "$prio" ] || return 0
-  args=(--add "$prio"); [ "$rprio" = - ] || args+=(--remove "$rprio")
+  local rid="$1" rprio="$2" prio="$3" retitled="$4" terr args
+  if [ -n "$prio" ]; then
+    case "$rprio" in low|normal|-) ;; *) return 0 ;; esac
+    args=(--add "$prio"); [ "$rprio" = - ] || args+=(--remove "$rprio")
+  else
+    [ -n "$retitled" ] && [ "$rprio" = high ] || return 0
+    args=(--remove high)
+  fi
   terr="$(notes ptask "$BOARD" --agent tag "$rid" "${args[@]}" 2>&1 >/dev/null)" && return 0
   if grep -q 'sprint: the cut carries open rows' <<<"$terr"; then
     printf 'held    %-10s  meet the %s stage standard, #%s kept: the open sprint holds it\n' "$rid" "$TARGET" "$rprio"
@@ -418,8 +425,8 @@ retag_rollup() {
 # check cannot fold (in progress, with children, on the human sheet, or with no from line), stays
 # off the list. A rollup closed by hand is not filed again for its stage. Uses file_gaps' locals.
 file_rollup() {
-  local target area full chk key t ao ac lines="" pass_lines="" folds="" f l id s mark prio=low
-  local rid="" rstage="" rmark="" rprio="" rprio_ others="" by_hand old="" brief args=() out epic ok=1 news=0
+  local target area full chk key t ao ac lines="" pass_lines="" folds="" f l id s mark prio=""
+  local rid="" rstage="" rmark="" rprio="" rprio_ others="" by_hand old="" brief args=() out epic ok=1 news=0 retitled=""
   local head="the stages.md rows this project fails for #$TARGET, one a line; a met row leaves the list and the row closes when none is left"
   [ "$(jq -r .blocks <<<"$check")" = true ] && prio=high
   while IFS=$'\037' read -r _ area full chk _; do
@@ -488,7 +495,7 @@ file_rollup() {
       fi
       target_epic || { listed_says="0 listed"; return 0; }
       while IFS= read -r l; do args+=(--detail "$l"); done <<<"$brief"
-      out="$(notes ptask "$BOARD" --agent add "chore(stage): meet the $TARGET stage standard #of/$epic #size/m #$prio" "${args[@]}" --origin project-stage-check)"; rc=$?
+      out="$(notes ptask "$BOARD" --agent add "chore(stage): meet the $TARGET stage standard #of/$epic #size/m${prio:+ #$prio}" "${args[@]}" --origin project-stage-check)"; rc=$?
       # Exit 3 is add's twin check: a concurrent run filed the rollup first, and its list stands.
       if [ "$rc" -eq 3 ]; then
         printf 'open    %-10s  meet the %s stage standard, filed by another run\n' rollup "$TARGET"
@@ -507,7 +514,7 @@ file_rollup() {
         if ! target_epic; then
           ok=0
         elif notes ptask "$BOARD" --agent edit "$rid" --text "chore(stage): meet the $TARGET stage standard #of/$epic" >/dev/null; then
-          printf 'row     %-10s  meet the %s stage standard, retitled from #%s\n' "$rid" "$TARGET" "$rstage"
+          retitled=1; printf 'row     %-10s  meet the %s stage standard, retitled from #%s\n' "$rid" "$TARGET" "$rstage"
         else
           ok=0 failed=$((failed + 1)); printf 'error   %-10s  meet the %s stage standard (ptask edit --text failed)\n' "$rid" "$TARGET"
         fi
@@ -517,7 +524,7 @@ file_rollup() {
         failed=$((failed + 1)) ok=0; printf 'error   %-10s  meet the %s stage standard (ptask edit --brief failed)\n' "$rid" "$TARGET"
       fi
       old="$(grep '^#' <<<"$old")"
-      retag_rollup "$rid" "$rprio" "$prio" || failed=$((failed + 1))
+      retag_rollup "$rid" "$rprio" "$prio" "$retitled" || failed=$((failed + 1))
     fi
     # Nothing folds into a list that was not written: its gaps would be on neither.
     [ "$ok" = 1 ] || { listed_says="the list on $rid not written"; return 0; }
