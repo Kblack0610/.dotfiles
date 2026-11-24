@@ -2248,7 +2248,7 @@ SH
   [ "$(jq -r .fact <<<"$main")" = "NIGHTLY origin red: Tests @${red:0:8} (#875)" ]
   [ "$(jq -r .nudged <<<"$main")" = false ]
   # the table a person reads names the bucket NIGHTLY, never MAIN
-  run "$REPO_ROOT/.local/bin/fleet-sessions"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --fresh
   assert_success
   assert_line NIGHTLY
   assert_output --partial 'nightly red after PR #875'
@@ -2261,7 +2261,7 @@ SH
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r 'select(.bucket == "NIGHTLY") | .nudged' <<<"$output")" = true ]
   [ "$(jq -r 'select(.bucket == "NIGHTLY") | .escalated' <<<"$output")" = false ]
-  run "$REPO_ROOT/.local/bin/fleet-sessions"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --fresh
   assert_line --partial 'origin red: Tests'
   assert_output --partial '(nudged)'
   FLEET_STATE_FILE="$SANDBOX/state.json" "$REPO_ROOT/.local/bin/fleet-sessions" --write
@@ -2401,7 +2401,7 @@ nightly_item() {
   [[ "$(jq -r .reason <<<"$session")" != *"not on the default branch"* ]]
 
   # the table and the state document carry it once, outside sessions
-  run "$REPO_ROOT/.local/bin/fleet-sessions"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --fresh
   assert_success
   assert_line CHECKOUT
   export FLEET_STATE_FILE="$SANDBOX/state.json"
@@ -2444,7 +2444,7 @@ nightly_item() {
   [ "$(jq -r .escalated <<<"$shared")" = false ]
   # the session keeps its own bucket: the red is not its work
   [ "$(jq -r 'select(.bucket != "SHARED") | .bucket' <<<"$output")" = LANDED ]
-  run "$REPO_ROOT/.local/bin/fleet-sessions"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --fresh
   assert_line SHARED
   assert_output --partial 'T.Shared red on 3 branches in 2h'
 
@@ -2600,7 +2600,7 @@ queue_item() {
   queue_item running lab:s1
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .dispatch <<<"$output")" = 'apociseum: fix-wave-save' ]
-  run "$REPO_ROOT/.local/bin/fleet-sessions"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --fresh
   assert_line --index 1 --partial '[dispatch: apociseum: fix-wave-save]'
 
   # A value with no server names no session, and the same name on another server is not this one.
@@ -2616,14 +2616,14 @@ queue_item() {
   sed -i '/^---$/i sessions: sid-1' "$HOME/.agent/queue/running/20261103-100000-fix-wave-save.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .dispatch <<<"$output")" = null ]
-  run "$REPO_ROOT/.local/bin/fleet-sessions"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --fresh
   refute_output --partial '[dispatch:'
 
   # When the item's sessions: includes this Claude's id, it carries the dispatch tag again.
   sed -i 's/^sessions: sid-1$/sessions: sid-1 sid-9/' "$HOME/.agent/queue/running/20261103-100000-fix-wave-save.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .dispatch <<<"$output")" = 'apociseum: fix-wave-save' ]
-  run "$REPO_ROOT/.local/bin/fleet-sessions"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --fresh
   assert_line --index 1 --partial '[dispatch: apociseum: fix-wave-save]'
 
   # An item waiting here (item_of's here:) carries its tag too.
@@ -3221,7 +3221,7 @@ phase_item() {
   [ "$(jq -r .idle_min <<<"$output")" = 30 ]
   [ "$(jq -r .pr <<<"$output")" = 875 ]
   [ "$(jq -r .nudged <<<"$output")" = false ]
-  run "$REPO_ROOT/.local/bin/fleet-sessions"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --fresh
   assert_line --index 0 PARKED
   assert_line --index 1 --partial 'claude exited to save usage'
 
@@ -3335,7 +3335,7 @@ phase_item() {
   [ "$(jq -r .bucket <<<"$output")" = DONE ]
   [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, all 2 phases done' ]
   [ "$(jq -c '[.phases_done, .phases_total, .next_phase]' <<<"$output")" = '[2,2,null]' ]
-  run "$REPO_ROOT/.local/bin/fleet-sessions"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --fresh
   assert_line --index 0 DONE
 
   printf '# Plan\n\nNo checklist.\n' > "$SANDBOX/plan.md"
