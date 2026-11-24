@@ -1363,21 +1363,20 @@ ask_stub() {
   refute_output --partial 'flickers #high'
 }
 
-@test "--retag high leaves a started #high row alone; an untagged started row is still ranked (ar-4436)" {
+@test "--retag high leaves a started row alone, tagged or not (ar-4436)" {
   export INBOX_PRIORITY_CMD=model-stub
   sheet '' '- [ ] the save is slow #high <!-- id:sc-4 -->\n- [/] the plan phase in flight #high <!-- id:sc-5 -->\n- [/] the jump is floaty <!-- id:sc-6 -->\n'
-  answer '{"n": 1, "priority": "low"}' '{"n": 2, "priority": "normal"}'
+  answer '{"n": 1, "priority": "low"}'
   run "$TRIAGE" --backlog --priority --retag high --project scratch
   assert_success
-  assert_output --partial 'priority: tagged 2, left 0'
+  assert_output --partial 'priority: tagged 1, left 0'
   grep -qF '1. [sc-4] the save is slow' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
-  grep -qF '2. [sc-6] the jump is floaty' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
-  # NEGATIVE CONTROL: the started #high row is not asked, so its live item keeps its rank.
-  refute grep -q 'plan phase in flight' "$NOTES_FIXTURE/prompt.txt"
+  # NEGATIVE CONTROL: neither started row is asked, so the live items working them keep their rank.
+  refute grep -q 'plan phase in flight\|jump is floaty' "$NOTES_FIXTURE/prompt.txt"
   run tasks
   assert_output --regexp 'the save is slow #low <!-- id:sc-4 -->'
   assert_output --regexp '\[/\] the plan phase in flight #high <!-- id:sc-5 -->'
-  assert_output --regexp 'the jump is floaty #normal <!-- id:sc-6 -->'
+  assert_output --regexp '\[/\] the jump is floaty <!-- id:sc-6 -->'
 }
 
 @test "--retag low asks only the #low rows and lifts one the rubric puts higher; the old --retag-high and an unknown word are refused" {
