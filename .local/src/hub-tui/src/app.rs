@@ -6428,7 +6428,7 @@ mod tests {
             title: "fix the gate".into(),
             friction: 11,
             why: "9 nudges".into(),
-            prs_merged: 1,
+            prs_merged: Some(1),
             ..Ranked::default()
         }])));
         let s = screen(&mut a, 200, 80);
