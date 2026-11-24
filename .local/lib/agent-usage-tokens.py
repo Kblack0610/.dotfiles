@@ -4,7 +4,8 @@
   agent-usage tokens snapshot [--date D]                 write $TOKENS_DIR/<D>.json (default yesterday)
   agent-usage tokens line [--date D]                     the day's one-line row (default newest)
   agent-usage tokens json --date D                       the day's snapshot, for day-log
-  agent-usage tokens check                               the newest day against the 7 before it
+  agent-usage tokens check                               all three checks below, the gateway-errors watch
+  agent-usage tokens check --drift                       the newest day against the 7 before it
   agent-usage tokens check --langfuse                    Langfuse unreadable for the last two nights
   agent-usage tokens check --gateway-errors              a gateway error class that means a bad request
 
@@ -23,7 +24,12 @@ joins them. Who owns which number:
                              (first-turn median), compactions, tokens by model
 A day is the local calendar day, the window both tools are given exactly.
 
-check exits 0 unless a watched number moved the worse way by more than TOKENS_DRIFT_PCT of the
+check with no flag runs --drift, --langfuse and --gateway-errors in that order, each printing its
+line, and exits with the highest of their codes; one or more flags run only those. With more than
+one check, a last line `reason: ` names each failing check's line and its code, which is the page
+detail the watch shows. The gateway-errors watch runs the no-flag form.
+
+check --drift exits 0 unless a watched number moved the worse way by more than TOKENS_DRIFT_PCT of the
 median of the TOKENS_BASELINE_DAYS days before it, or the better way by more than TOKENS_SUSPECT_PCT
 (a broken counter looks like a cliff); 1 on either, 2 when there is no fresh snapshot. It only
 reports: nothing here stops, limits or slows a session (dotfiles CLAUDE.md "Hard limits on budgets").
@@ -44,7 +50,9 @@ rule runs on a live Langfuse read from that moment to now instead, so a resolved
 once and trips again only on errors after the fix; 2 when that read fails.
 """
 import argparse
+import contextlib
 import datetime as dt
+import io
 import json
 import math
 import os
@@ -370,7 +378,7 @@ def gateway_verdict(label, gw):
     return 1
 
 
-def gateway_errors_check(newest):
+def gateway_errors_check(_files, newest):
     raw = (ENV.get("SENTINEL_SINCE") or "0").strip()
     since = int(raw) if raw.isdigit() else 0   # watch-companion-loop passes an epoch or 0
     if since > day_window(dt.date.fromisoformat(newest["date"]))[0].timestamp():
@@ -394,12 +402,12 @@ def gateway_errors_check(newest):
         return gateway_verdict(label, gw)
     gw = (newest.get("langfuse") or {}).get("gateway")
     if not gw:
-        print(f"{newest['date']}: no gateway figures in the snapshot (langfuse unread; check --langfuse watches that)")
+        print(f"{newest['date']}: no gateway figures in the snapshot (langfuse unread; the langfuse check names why)")
         return 0
     return gateway_verdict(newest["date"], gw)
 
 
-def check(langfuse=False, gateway_errors=False):
+def check(drift=False, langfuse=False, gateway_errors=False):
     files = snapshots()
     if not files:
         print(f"no token-usage snapshot in {DIR} (agent-usage tokens snapshot)")
@@ -412,10 +420,27 @@ def check(langfuse=False, gateway_errors=False):
     if age > STALE_DAYS:
         print(f"newest token-usage snapshot is {newest['date']}, {age} days old: the token-usage step of the nightly-measure runner stopped")
         return 2
-    if langfuse:
-        return langfuse_check(files, newest)
-    if gateway_errors:
-        return gateway_errors_check(newest)
+    checks = [(drift_check, drift), (langfuse_check, langfuse), (gateway_errors_check, gateway_errors)]
+    picked = [f for f, on in checks if on] or [f for f, _ in checks]
+    if len(picked) == 1:
+        return picked[0](files, newest)
+    worst, failed = 0, []
+    for f in picked:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = f(files, newest)
+        print(buf.getvalue(), end="")
+        worst = max(worst, rc)
+        if rc:
+            failed.append(f"{buf.getvalue().strip()} (exit {rc})")
+    if failed:
+        # the watch's page detail: watch-companion-loop reads a reason: line, so every failing check is named
+        print("reason: " + "; ".join(failed))
+    return worst
+
+
+def drift_check(files, newest):
+    """check --drift: the newest day's watched ratios against the median of the days before."""
     base = [x for x in (load(p) for p in files[-1 - BASELINE_DAYS:-1]) if x]
     drift, suspect, said = [], [], []
     for key, label, worse in WATCHED:
@@ -452,9 +477,9 @@ def main():
     jp = sub.add_parser("json")
     jp.add_argument("--date", type=dt.date.fromisoformat, required=True)
     cp = sub.add_parser("check")
-    mode = cp.add_mutually_exclusive_group()
-    mode.add_argument("--langfuse", action="store_true", help="the read-health watch")
-    mode.add_argument("--gateway-errors", action="store_true", help="a bad-request class in the gateway errors")
+    cp.add_argument("--drift", action="store_true", help="a watched ratio past its band against the days before")
+    cp.add_argument("--langfuse", action="store_true", help="the Langfuse reader failed two nights running")
+    cp.add_argument("--gateway-errors", action="store_true", help="a bad-request class in the gateway errors")
     a = ap.parse_args()
     if a.verb == "snapshot":
         day = a.date or today() - dt.timedelta(days=1)
@@ -479,7 +504,7 @@ def main():
             return 1
         print(s["line"])
         return 0
-    return check(a.langfuse, a.gateway_errors)
+    return check(a.drift, a.langfuse, a.gateway_errors)
 
 
 if __name__ == "__main__":
