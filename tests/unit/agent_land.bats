@@ -73,6 +73,9 @@ case "$1 $2" in
   [ ! -f "$NOTES_FIXTURE/files.toobig" ] || { echo '{"message":"Server Error: Sorry, this diff is taking too long to generate.","errors":[{"resource":"PullRequest","field":"diff","code":"not_available"}],"status":"422"}'; echo 'gh: Server Error (HTTP 422)' >&2; exit 1; }
   cat "$NOTES_FIXTURE/files" 2>/dev/null || true ;;
 'pr merge') cp "$NOTES_FIXTURE/merged.state" "$NOTES_FIXTURE/state" ;;
+# search.json: the open PRs a body search finds, as gh search prs --json prints them ([] when absent); search.fail: the call fails
+'search prs') [ ! -f "$NOTES_FIXTURE/search.fail" ] || { echo 'gh: API rate limit exceeded (HTTP 403)' >&2; exit 1; }
+  cat "$NOTES_FIXTURE/search.json" 2>/dev/null || echo '[]' ;;
 # pr edit --body-file -: the new body becomes the body
 'pr edit') cat >"$NOTES_FIXTURE/body" ;;
 'run list')
@@ -633,6 +636,7 @@ git rev-parse --show-toplevel
 git -C . rev-parse --show-toplevel
 gh pr view 42 --json state,baseRefName,url,headRefOid,isCrossRepository,headRefName -q .state + " " + .baseRefName + " " + .url + " " + .headRefOid + " " + (.isCrossRepository | tostring) + " " + .headRefName
 git -C . remote get-url origin
+gh search prs --owner o --state open --match body --limit 100 --json number,repository,body -- Item: ship
 git rev-parse HEAD
 gh pr view 42 --json body -q .body
 gh pr edit 42 --body-file -
@@ -1532,9 +1536,10 @@ EOF2
   assert_line --index 9 --partial 'proof: gh pr view 42 --json mergeCommit'
   assert_line --index 10 --partial 'live: dotfiles-autopull --now .'
   assert_line --index 11 --partial 'prs: schedules-sync sync-prs <owner>/<repo>'
-  assert_line --index 12 'item: agent-queue set ship pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute ship && agent-queue move ship done --status ok'
-  assert_line --index 13 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
-  assert_line --index 14 --partial 'plan: tick'
+  assert_line --index 12 --partial 'split: gh search prs --owner <owner> --state open --match body -- "Item: ship"'
+  assert_line --index 13 'item: agent-queue set ship pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute ship && agent-queue move ship done --status ok'
+  assert_line --index 14 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
+  assert_line --index 15 --partial 'plan: tick'
   run ran
   assert_output ''
   run grep -c '^- \[x\] 6' "$PLAN"
@@ -1870,8 +1875,8 @@ untouched() {
   item tidy 'board:dotfiles:tidy it' agent
   run "$LAND" 42 --item tidy --dry-run
   assert_success
-  assert_line --index 12 'item: agent-queue set tidy pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute tidy && agent-queue move tidy done --status ok'
-  assert_line --index 13 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
+  assert_line --index 13 'item: agent-queue set tidy pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute tidy && agent-queue move tidy done --status ok'
+  assert_line --index 14 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
   run agent-queue show tidy --json
   assert_equal "$(jq -r .state <<<"$output")" running
 }
@@ -2435,6 +2440,45 @@ real_notes_board() {
   assert_equal "$(jq -r '[.state, .pr, (.merged // ""), (.partial // "")] | join("|")' <<<"$output")" 'running|o/p#1794||'
 }
 
+@test "an open PR in another repo whose body names the item refuses a full landing before the merge; --partial lands" {
+  # NEGATIVE CONTROL: before ar-2665 this merged #42 and closed ship while o/p#43, naming it, was still open,
+  # so every item held after: ship started early (ar-2653: .dotfiles#2278 and .dotfiles-private#949, 2026-11-17).
+  legacy next "after: ship" --project dotfiles 'next phase'
+  printf '%s' '[{"number":43,"repository":{"nameWithOwner":"o/p"},"body":"Work.\r\nItem: ship\r\n"},{"number":42,"repository":{"nameWithOwner":"o/r"},"body":"Item: ship"}]' >"$NOTES_FIXTURE/search.json"
+  run "$LAND" 42 --item ship
+  assert_failure 2
+  assert_output --partial 'o/p#43 is open and names ship, which a full landing would close: land #42 --partial (agent-land 42 --item ship --partial), then o/p#43 with the full flags (agent-land 43 --repo o/p --item ship)'
+  run grep -e '^gh pr merge' -e '^gh pr edit' "$LOG"
+  assert_failure
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '[.state, (.pr // ""), (.partial // "")] | join("|")' <<<"$output")" 'running||'
+  # --partial is the split's first landing: it does not search, and leaves ship open, holding next.
+  run "$LAND" 42 --item ship --partial
+  assert_success
+  assert_line 'item: ship partial with pr:o/r#42, left open for the final landing'
+  run grep -c '^gh search prs' "$LOG"
+  assert_output 1
+  run agent-queue show next --json
+  assert_equal "$(jq -r .hold <<<"$output")" 'after ship'
+}
+
+@test "the split search counts only an open PR whose first Item: line is this item, never this PR itself" {
+  # A slug that only starts with ship, an Item: line after another, a body with none, and #42 itself.
+  printf '%s' '[{"number":7,"repository":{"nameWithOwner":"o/p"},"body":"Item: ship-two"},{"number":8,"repository":{"nameWithOwner":"o/p"},"body":"Item: other\nItem: ship"},{"number":9,"repository":{"nameWithOwner":"o/p"},"body":null},{"number":42,"repository":{"nameWithOwner":"O/R"},"body":"Item: ship"}]' >"$NOTES_FIXTURE/search.json"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'item: ship done with pr:o/r#42'
+}
+
+@test "a failed split search refuses the full landing with nothing touched" {
+  touch "$NOTES_FIXTURE/search.fail"
+  run "$LAND" 42 --item ship
+  assert_failure 2
+  assert_output --partial 'split: gh search prs for open PRs naming ship failed, nothing touched: gh: API rate limit exceeded (HTTP 403); re-run'
+  run grep -e '^gh pr merge' -e '^gh pr edit' "$LOG"
+  assert_failure
+}
+
 @test "an item whose pr: lists two open PRs lands one --partial, then the other closes it with both merges" {
   # NEGATIVE CONTROL: before ar-1267 the --partial landing refused "o/p#43, which is OPEN: land it first
   # (... --partial)", and so did the other, so neither could land (ar-314, 2026-11-09).
@@ -2504,6 +2548,7 @@ real_notes_board() {
   assert_output --partial 'board: left open until the final landing'
   refute_output --partial 'move ship done'
   refute_output --partial 'board: notes'
+  refute_output --partial 'split:'
 }
 
 @test "the final second PR retries a failed board step after a partial first landing" {
