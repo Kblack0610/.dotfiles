@@ -19,7 +19,8 @@ workflow's `untested-reason` input). Wrappers (`timeout`, `nice`, `setsid`, `std
 walked through.
 Allowed: a re-send, `gh workflow run <release workflow> -f tag=<t>` (or `--ref <t>`) when every
 release tag it names is already on origin, `steam.yml -f run-id=<release run>` (an upload of a built tag), and
-`gh run rerun`. A release workflow dispatch that
+`gh run rerun`. `phone-release.yml` and `ios-release.yml` also need `--ref <t>` naming that same tag,
+since their game job refuses any other ref. A release workflow dispatch that
 names no release tag is denied, since it could only cut.
 
 The command walker is forge-guard's (cd, bash -c, eval, subshells). Codex runs this hook from
@@ -37,6 +38,10 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 RELEASE_TAG = re.compile(r"(?:^|-)v\d+\.\d+")
 RELEASE_WORKFLOWS = {"release.yml", "phone-release.yml", "ios-release.yml", "steam.yml"}
+# Built through unity-core-playground's .github/workflows/release-game.yml, whose first step refuses any
+# GITHUB_REF but refs/tags/<tag> input (line 60): a dispatch off the tag only leaves a failed run, which
+# holds playground-release-runs red for 72 h (ar-2536).
+TAG_REF_WORKFLOWS = {"phone-release.yml", "ios-release.yml"}
 CUT_WORKFLOWS = {"cut.yml"}
 CUT_SCRIPTS = {("release", "ship.sh"), ("release", "release.sh"), ("release", "publish.sh"), ("scripts", "release.sh"), ("scripts", "publish.sh")}
 GUARDED_API = re.compile(r"/(rulesets|environments|keys)(?:/|$)")
@@ -219,6 +224,12 @@ def check_workflow_run(argv, env, cwd):
     tags += [r for r in refs if release_tag(r)]
     if not tags:
         return deny("gh workflow run %s" % name, "start a release that names no existing tag")
+    if name in TAG_REF_WORKFLOWS:
+        # gh takes the last --ref and the last tag= field
+        field = [f.split("=", 1)[1] for f in fields if f.split("=", 1)[0] == "tag" and "=" in f]
+        if not (refs and field and refs[-1].removeprefix("refs/tags/") == field[-1]):
+            return deny("gh workflow run %s" % name, "start a run whose --ref is not the tag it builds, which "
+                        "its game job refuses (release-game.yml): give `--ref <tag> -f tag=<tag>`, the same tag")
     miss = missing_tags(cwd, gh_repo(argv, env), [t.removeprefix("refs/tags/") for t in tags])
     return deny("gh workflow run %s" % name, miss[1]) if miss else None
 

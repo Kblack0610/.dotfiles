@@ -131,6 +131,20 @@ record() { cat "$HOME/.local/state/notes/ingest.jsonl" 2>/dev/null; }
   refute_output --partial '#plan'
 }
 
+@test "a row already under an epic keeps it when the plan names another" {
+  # 2026-11-23: edit began refusing a --text naming another parent (nc-108), and every such row
+  # failed the pass; the board's text carries no #of/, so the old guard never saw the parent.
+  sheet '- [ ] epic(audio): the sound pass #size/l <!-- id:sc-9 -->\n- [ ] epic(ui): the menus #size/l <!-- id:sc-8 -->\n- [ ] fix(audio): the gun sound #size/s #of/sc-9 #plan <!-- id:sc-1 -->\n'
+  answer '{"goal": "the gun plays on time", "approach": ["trace it"], "checks": ["it plays"], "size": "s", "split": [], "epic": "sc-8"}'
+  run "$PLAN"
+  assert_success
+  assert_output --partial 'planned 1, split into 0 rows, refused 0'
+  run cat "$SHEET"
+  assert_output --regexp 'fix\(audio\): the gun sound .*#of/sc-9 .*id:sc-1'
+  refute_output --partial '#of/sc-8'
+  assert_output --partial '  goal: the gun plays on time'
+}
+
 @test "a notes with no row types asks no model and leaves the row as it was" {
   sheet '- [ ] feat(brand): a brand kit #size/s #plan #high <!-- id:sc-1 -->\n'
   answer '{"goal": "one kit", "approach": ["collect"], "checks": ["renders"], "size": "s", "split": []}'
