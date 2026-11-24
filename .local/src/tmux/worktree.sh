@@ -38,7 +38,7 @@
 #                     otherwise. There is no --force.
 #   revive <path> [--branch <b>]
 #                     put a reaped worktree back at <path> (directly under $WT_ROOT), on <b>
-#                     when it is still here or on origin, else on a new branch off the trunk,
+#                     when it is still here, on its trunk remote or on origin, else on a new branch off the trunk,
 #                     so a conversation that ran there can `claude --resume` (agent-ask reopen).
 #                     Refuses a path or session name another tree holds now.
 #   revive <file.bundle>
@@ -160,9 +160,25 @@ wt_main_repo() {
 # why each half matters.
 wt_repo_name() { panel_session_name "$1"; }
 
+# wt_trunk_remote <repo> -- the remote this repo lands on: its Forgejo remote when it is
+# Forgejo-canonical (so_forge_remote, the rule agent-land and fleet-sessions' forge_of use), else
+# origin. home-config's origin is the GitHub mirror, which lags the forge, and razer-laptop's clone
+# has no origin at all: `fetch origin` failed every dispatch start there and cut each session off
+# a local master 414 commits behind forgejo/master (ar-3218, 2026-11-24).
+wt_trunk_remote() {
+  local r rc=0
+  r=$(so_forge_remote "$1" 2>/dev/null) || rc=$?
+  case "$rc" in
+  0) ;;
+  2) panel_warn "$1 is Forgejo-canonical but no remote is on SO_FORGEJO_HOSTS; using origin"; r=origin ;;
+  *) r=origin ;;
+  esac
+  printf '%s\n' "${r%% *}"
+}
+
 # wt_default_branch <main-repo> -- what this repo calls its trunk.
 #
-# `git config wt.trunk <branch>` wins over origin's default (merge_proof_branch), for a repo whose GitHub default is
+# `git config wt.trunk <branch>` wins over the trunk remote's default (merge_proof_branch), for a repo whose GitHub default is
 # not where work lands. bnb/platform defaults to `main` (production manifests) but merges
 # into `develop`: cutting from main put every agent on a stale base, and judging reap against
 # main kept any worktree whose work had landed on develop but not been released yet.
@@ -172,7 +188,7 @@ wt_default_branch() {
     printf '%s\n' "$ref"
     return 0
   fi
-  if ref=$(MERGE_PROOF_REMOTE=origin merge_proof_branch "$1"); then
+  if ref=$(MERGE_PROOF_REMOTE=$(wt_trunk_remote "$1") merge_proof_branch "$1"); then
     printf '%s\n' "$ref"
     return 0
   fi
@@ -185,11 +201,13 @@ wt_default_branch() {
   return 1
 }
 
-# wt_base_ref <main-repo> <branch> -- prefer origin/<branch>; fall back to the local branch
+# wt_base_ref <main-repo> <branch> -- prefer <trunk remote>/<branch>; fall back to the local branch
 # so this still works offline, or in a fixture repo with no remote.
 wt_base_ref() {
-  if git -C "$1" rev-parse --verify --quiet "origin/$2" >/dev/null 2>&1; then
-    printf 'origin/%s\n' "$2"
+  local remote
+  remote=$(wt_trunk_remote "$1")
+  if git -C "$1" rev-parse --verify --quiet "$remote/$2" >/dev/null 2>&1; then
+    printf '%s/%s\n' "$remote" "$2"
   elif git -C "$1" rev-parse --verify --quiet "$2" >/dev/null 2>&1; then
     printf '%s\n' "$2"
   else
@@ -232,17 +250,18 @@ wt_is_husk() {
 wt_branch_of() { git -C "$1" branch --show-current 2>/dev/null; }
 
 # wt_branch_name <main-repo> <n> -- the branch a cut of slot <n> starts on:
-# `agent-<n>-<UTC yymmdd-HHMMSS>`, a name no earlier cut used, local or on origin (a counter
+# `agent-<n>-<UTC yymmdd-HHMMSS>`, a name no earlier cut used, local or on a remote (a counter
 # follows when one did, as two cuts of a slot in one second do). The slot number is reused; a
 # branch name never is. GitHub keeps a PR's head after the PR merges or closes, so a reused
 # `agent-N` met an old origin/agent-N: the push was rejected non-fast-forward and
 # `gh pr create` opened a PR on the stale head (dotfiles #1546, #1579, #1650, #1661, #1666;
 # ar-1121).
 wt_branch_name() {
-  local stem b i=1
+  local stem b i=1 remote
+  remote=$(wt_trunk_remote "$1")
   stem="agent-$2-$(date -u +%y%m%d-%H%M%S)"
   b="$stem"
-  while git -C "$1" show-ref --quiet "refs/heads/$b" "refs/remotes/origin/$b"; do
+  while git -C "$1" show-ref --quiet "refs/heads/$b" "refs/remotes/origin/$b" "refs/remotes/$remote/$b"; do
     i=$((i + 1))
     b="$stem-$i"
   done
@@ -1248,7 +1267,7 @@ wt_hold() {
 wt_prepare() {
   local main="$1" path="$2" n="$3" kind="$4" pin="${5:-}" def base
   # Best-effort: an offline machine still gets a worktree, just off the last-known trunk.
-  git -C "$main" fetch origin --quiet || panel_warn "fetch failed; cutting off the local trunk"
+  git -C "$main" fetch "$(wt_trunk_remote "$main")" --quiet || panel_warn "fetch failed; cutting off the local trunk"
   if [ -n "$pin" ]; then
     base=$(git -C "$main" rev-parse --verify --quiet "$pin^{commit}") ||
       panel_fail "--base $pin is no commit in $main after the fetch" || return 1
@@ -1421,12 +1440,12 @@ wt_repo_of_name() {
 # cmd_revive <path> [--branch <b>] -- put a reaped worktree back at <path>, for a conversation
 # that has to resume there: `claude --resume` finds a session by the directory it ran in, and a
 # session that closed over its own ask had its clean tree reaped by wind-down (agent-ask reopen).
-# On <b> when that branch is still here or on origin, else on a new branch off the trunk, as
+# On <b> when that branch is still here, on its trunk remote or on origin, else on a new branch off the trunk, as
 # `new` cuts one; held like any tree `new` makes. Under `new`'s lock, so a cut cannot take the
 # slot mid-add. A tree already at <path> on <b> is left as it is; anything else there, or a
 # live session under the name, is another session's slot now, and is refused.
 cmd_revive() {
-  local path='' branch='' name main repo n def base lock
+  local path='' branch='' name main repo n def base lock remote
   while [ $# -gt 0 ]; do
     case "$1" in
     --branch) branch="${2:-}"; shift 2 || panel_die "--branch needs a value" ;;
@@ -1461,7 +1480,8 @@ cmd_revive() {
   wt_lock "$lock" || panel_die "already preparing a worktree for $repo"
   # shellcheck disable=SC2064 # expand $lock now: it is local, and gone by the time EXIT fires
   trap "rm -f $(printf '%q' "$lock")" EXIT
-  git -C "$main" fetch origin --quiet || panel_warn "fetch failed; reviving off the local refs"
+  remote=$(wt_trunk_remote "$main")
+  git -C "$main" fetch "$remote" --quiet || panel_warn "fetch failed; reviving off the local refs"
   # A registration that outlived its directory (`rm -rf` past wt_hold) would make git refuse the
   # add: wt's own hold comes off and prune drops it. Another tool's lock stays, and the add fails.
   local held
@@ -1474,6 +1494,8 @@ cmd_revive() {
   mkdir -p "$WT_ROOT" || panel_die "cannot create $WT_ROOT"
   if [ -n "$branch" ] && git -C "$main" show-ref --verify --quiet "refs/heads/$branch"; then
     git -C "$main" worktree add --quiet "$path" "$branch" >&2 || panel_die "git worktree add failed: $path"
+  elif [ -n "$branch" ] && git -C "$main" show-ref --verify --quiet "refs/remotes/$remote/$branch"; then
+    git -C "$main" worktree add --quiet "$path" -b "$branch" "$remote/$branch" >&2 || panel_die "git worktree add failed: $path"
   elif [ -n "$branch" ] && git -C "$main" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
     git -C "$main" worktree add --quiet "$path" -b "$branch" "origin/$branch" >&2 || panel_die "git worktree add failed: $path"
   else
