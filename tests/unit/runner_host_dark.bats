@@ -3,7 +3,7 @@
 # running trips only when every registered runner has been offline for the whole window.
 # curl is a stub that answers each query from $FIX: online.tsv holds each host's online count as
 # "<host> <from-epoch> <count>" steps, read at every 60s step of the asked range; gaps lists the
-# epochs the exporter gave no reading; reg, gov and stop are "<host> <value>" lines.
+# epochs the exporter gave no reading; reg, gov, stop and pin are "<host> <value>" lines.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -29,13 +29,16 @@ case $q in
       | jq -Rn '{status:"success",data:{resultType:"matrix",result:([inputs | split(" ")] | group_by(.[0])
           | map({metric:{host:.[0][0]},values:(map([(.[1] | tonumber), .[2]]) | sort_by(.[0]))}))}}' ;;
   *github_runner_state*) inst reg ;;
+  # Only the slots pin, lowest across the window, ever skips a host; any other selector reads none.
+  *'min_over_time(ci_governor_effective_slots{source="slots"}['*) inst pin ;;
+  *effective_slots*) inst none ;;
   *'state!="running"'*) inst stop ;;
   *rate_usd_per_hour*) inst gov ;;
 esac
 EOF
   chmod +x "$BIN/curl"
   export FIX PATH="$BIN:$PATH" HOME="$BATS_TEST_TMPDIR"
-  : > "$FIX/gaps"; : > "$FIX/stop"
+  : > "$FIX/gaps"; : > "$FIX/stop"; : > "$FIX/pin"; : > "$FIX/none"
   printf 'mac-mini 0\nms-a2 0\n' > "$FIX/gov"
   printf 'mac-mini 2\nms-a2 3\n' > "$FIX/reg"
   # Now, for every case: the window is END-600 .. END.
@@ -86,6 +89,28 @@ online() {
   assert_success
   assert_line 'skip: mac-mini is powered off by the governor'
   assert_line 'skip: ms-a2 is powered off by the governor'
+}
+
+@test "a host its slots key pins to 0 (machine-mode) is skipped, however dark" {
+  # 2026-11-24: machine-mode's clock pinned the workstation to 0 and stopped both its runners,
+  # as the human chose on 2026-11-23 (#3309), and the watch paged it as dark.
+  online mac-mini -3600 0
+  online ms-a2 -3600 3
+  echo 'mac-mini 0' > "$FIX/pin"
+  run "$RHD" --for 10m --at "$END"
+  assert_success
+  assert_line 'skip: mac-mini is pinned to 0 slots by its mac-mini.slots key (machine-mode)'
+  refute_output --partial 'reason:'
+}
+
+@test "a host with no slots pin still trips (negative control for the skip above)" {
+  online mac-mini -3600 0
+  online ms-a2 -3600 3
+  echo 'ms-a2 0' > "$FIX/pin"
+  run "$RHD" --for 10m --at "$END"
+  assert_failure 1
+  assert_line 'dark: mac-mini all 2 runners offline for 10m or more'
+  assert_line 'skip: ms-a2 is pinned to 0 slots by its ms-a2.slots key (machine-mode)'
 }
 
 @test "a host the governor does not keep running is never named, however dark" {
