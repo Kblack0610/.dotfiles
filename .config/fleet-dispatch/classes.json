@@ -8,6 +8,7 @@
     {"name": "requested", "share": 60, "tags": ["requested"], "from": ["human"], "min_live": 4},
     {"name": "cleanup", "share": 10, "tags": ["canary"], "kinds": ["chore", "refactor", "check"], "min_live": 2},
     {"name": "unity", "share": 20, "projects": ["unity-core-playground"], "min_live": 6},
+    {"name": "trader", "share": 10, "projects": ["trader"], "min_live": 2},
     {"name": "research", "share": 5, "kinds": ["research", "design", "legal", "market", "decide"]},
     {"name": "feature", "share": 10, "default": true}
   ],
