@@ -192,6 +192,21 @@ load 'fleet_dispatch/common'
   assert_equal "$(outcome)" WORKED
 }
 
+# ar-1041: a start the sprint floor made earlier in the pass takes room off the queue's, so the queue's own room was under DISPATCH_PER_PASS and the message named the pace target.
+@test "a pass whose sprint floor took part of DISPATCH_PER_PASS still names DISPATCH_PER_PASS as the limit" {
+  two_items
+  agent-queue add --project app --slug fix-app-2 "fix the app again"
+  jq -nc '[{project: "game", queued: false, tasks: [{id: "sp-urg", state: "open"}]}]' > "$NOTES_FIXTURE/board.sprints"
+  agent-queue add --project game --slug sp-urg --priority urgent --tags sprint --from board:game:sp-urg "sprint, urgent" >/dev/null
+  export DISPATCH_PER_PASS=2
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item sp-urg on the sprint floor'
+  assert_output --partial 'under-used: started 1, DISPATCH_PER_PASS is the limit while 2 runnable wait'
+  refute_output --partial 'under-used: started 1, the '
+  grep -q 'under-used: started 1, DISPATCH_PER_PASS is the limit, 2 runnable left' "$FLEET_DISPATCH_DIR/log.md" || fail "the log records it"
+}
+
 @test "a pass's own earlier start counts against the load room too" {
   two_items
   export DISPATCH_START_LOAD="$(nproc)" DISPATCH_PER_PASS=2
