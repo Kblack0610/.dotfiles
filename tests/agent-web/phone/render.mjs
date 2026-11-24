@@ -99,9 +99,12 @@ const out = outAt >= 0 ? args[outAt + 1] : join(SCRATCH, (control ? "control" : 
 
 // The versions npx pins do not match the cached browser, so both are named outright.
 function playwright() {
+  // PLAYWRIGHT_CORE_DIR is the pinned one tests/Dockerfile installs, which CI runs this in; set,
+  // it is the only root, so a newer copy elsewhere cannot outrank the pin.
+  const pinned = process.env.PLAYWRIGHT_CORE_DIR;
+  if (pinned) return createRequire(join(pinned, "package.json"))("playwright-core");
   const npx = join(homedir(), ".npm/_npx");
-  // PLAYWRIGHT_CORE_DIR: the one tests/Dockerfile installs, which CI runs this in.
-  const roots = [process.env.PLAYWRIGHT_CORE_DIR, join(SCRATCH, "node/node_modules/playwright-core"), ...(existsSync(npx) ? readdirSync(npx).map((d) => join(npx, d, "node_modules/playwright-core")) : [])].filter((p) => p && existsSync(p));
+  const roots = [join(SCRATCH, "node/node_modules/playwright-core"), ...(existsSync(npx) ? readdirSync(npx).map((d) => join(npx, d, "node_modules/playwright-core")) : [])].filter(existsSync);
   const version = (p) => JSON.parse(readFileSync(join(p, "package.json"), "utf8")).version;
   const root = roots.sort((a, b) => version(b).localeCompare(version(a), undefined, { numeric: true }))[0];
   if (!root) throw new Error(`no playwright-core under ${npx} or ${SCRATCH}/node`);

@@ -166,8 +166,7 @@ jobs:
             { cat "$RUNNER_TEMP/split"; exit 2; }
           cat "$RUNNER_TEMP/split"
           [ ! -s "$RUNNER_TEMP/files" ] || echo run=true >>"$GITHUB_OUTPUT"
-      # The image (tests/Dockerfile: parallel, stow, sqlite3, inotify-tools, bun, no tmux or fzf on
-      # PATH), only for a shard with files to run.
+      # The image (tests/Dockerfile), only for a shard with files to run.
       - if: steps.pick.outputs.run == 'true'
         uses: ./.github/actions/test-image
       - name: Fast tier shard
@@ -312,14 +311,28 @@ jobs:
     env:
       CARGO_INCREMENTAL: 0   # incremental state only helps a rebuild in place, and it bloats the cache
       RUST_JOBS: 4           # crates rust.sh gates at once, the runner's vCPU count (tests/rust.sh)
+      DOCKER_NETWORK: bridge # every step here fetches: crates, the Tilecast checker (tests/docker.sh)
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
+      # The pick comes first, so a run that picked no crate loads neither the image nor the cache.
+      # Its line ("picked N of M crates" or "full: <why>") goes on the Summary page.
+      - name: Pick the crates
+        id: pick
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
+        run: |
+          crates=$(tests/pick.sh rust $BASE 2>"$RUNNER_TEMP/why") || { cat "$RUNNER_TEMP/why"; exit 1; }
+          tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/why"
+          printf '%s\n' "$crates" >"$RUNNER_TEMP/crates"
+          [ -z "$crates" ] || echo run=true >>"$GITHUB_OUTPUT"
       # The toolchain is the image's (tests/rust-toolchain), so a runner image bump cannot change
       # which clippy lints a run checks.
-      - uses: ./.github/actions/test-image
-      - uses: ./.github/actions/bats-vendor
+      - if: steps.pick.outputs.run == 'true'
+        uses: ./.github/actions/test-image
+      - if: steps.pick.outputs.run == 'true'
+        uses: ./.github/actions/bats-vendor
       # The registry (tests/docker.sh's CARGO_HOME, .cargo-ci in the checkout) and every crate's
       # target/ in one cache. Cold, the Rust gate compiled six crates and their dependencies from
       # scratch: 248 s of a 292 s job (43014231625). Keyed on the toolchain and the lockfiles
@@ -328,6 +341,7 @@ jobs:
       # main's. The notes job restores the same key (tests/unit/ci_gate.bats).
       - name: Restore cargo
         id: cargo
+        if: steps.pick.outputs.run == 'true'
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -336,18 +350,11 @@ jobs:
             .local/src/*/target
           key: cargo-target-${{ runner.os }}-${{ hashFiles('tests/rust-toolchain') }}-${{ hashFiles('.local/src/*/Cargo.lock') }}
           restore-keys: cargo-target-${{ runner.os }}-${{ hashFiles('tests/rust-toolchain') }}-
-      # The pick line ("picked N of M crates" or "full: <why>") goes on the Summary page.
       # Clippy runs on every run, pull requests included: a lint that only main checked reached main
       # red first (2026-11-13 #2086, 2026-11-20 sort_by_key and WAITING_JS).
       - name: Rust gate
-        env:
-          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
-        run: |
-          crates=$(tests/pick.sh rust $BASE 2>"$RUNNER_TEMP/why") || { cat "$RUNNER_TEMP/why"; exit 1; }
-          tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/why"
-          printf '%s\n' "$crates" >"$RUNNER_TEMP/crates"
-          [ -n "$crates" ] || { echo "no crate picked"; exit 0; }
-          DOCKER_NETWORK=bridge tests/docker.sh test-rust CRATES="$(tr '\n' ' ' <<<"$crates")"
+        if: steps.pick.outputs.run == 'true'
+        run: tests/docker.sh test-rust CRATES="$(tr '\n' ' ' <"$RUNNER_TEMP/crates")"
       # agent-web's tabs drawn at phone width from fixtures (tests/agent-web/phone/render.mjs): a lead
       # cell off screen, a pageerror, an "undefined" cell, a fixture table that no longer matches
       # hub-core's columns, or a tab, inner tab or project inner tab taller than three screens at
@@ -357,7 +364,7 @@ jobs:
       - name: Phone render harness
         run: |
           grep -qx '.local/src/agent-web' "$RUNNER_TEMP/crates" || { echo "phone render harness: skipped, agent-web not picked" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; }
-          DOCKER_NETWORK=bridge tests/docker.sh --run env CARGO_TARGET_DIR=/work/.local/src/agent-web/target \
+          tests/docker.sh --run env CARGO_TARGET_DIR=/work/.local/src/agent-web/target \
             node tests/agent-web/phone/render.mjs --out tests/artifacts/phone
       # /widget.json's document (hub_core::widget_doc) checked against the Tilecast format's schema
       # at the commit the script pins, with that repo's own checker. Runs when hub-core is picked
@@ -365,7 +372,7 @@ jobs:
       - name: Tilecast schema
         run: |
           grep -qx '.local/src/hub-core' "$RUNNER_TEMP/crates" || { echo "tilecast schema: skipped, hub-core not picked" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; }
-          DOCKER_NETWORK=bridge tests/docker.sh --run tests/agent-web/tilecast-schema.sh
+          tests/docker.sh --run tests/agent-web/tilecast-schema.sh
       - name: Phone screenshots
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4
@@ -378,7 +385,7 @@ jobs:
       # Only main pushes, the schedule and a manual run save; a pull request never queues its own
       # copy of a GB-sized cache.
       - name: Save cargo
-        if: ${{ !cancelled() && github.event_name != 'pull_request' && steps.cargo.outputs.cache-hit != 'true' }}
+        if: ${{ !cancelled() && github.event_name != 'pull_request' && steps.cargo.outcome == 'success' && steps.cargo.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: |
