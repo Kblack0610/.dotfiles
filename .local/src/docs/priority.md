@@ -70,7 +70,7 @@ Fleet planes, by the same four words:
 | --- | --- | --- | --- |
 | queue | the human asked for it today, or a red on main | blocks a focus-project epic or another agent | upkeep; a plan phase an agent wrote is high at most |
 | sessions and shepherd | a session holding a prod fix is stuck | a session another is waiting on is stuck | a session closing its own housekeeping |
-| pages | prod down, overnight tests red | only the human can unblock it and waiting costs within the hour | recoveries and all-clears |
+| pages | prod down, overnight tests red, the workstation at 3x its cores over 5 minutes (`fleet-thermal`) | only the human can unblock it and waiting costs within the hour | recoveries and all-clears |
 | asks | a human-stop ask on prod, money, data or secrets | a fleet-level rule change | a self-level choice the judge answers |
 
 ## Where the scales fall short today
