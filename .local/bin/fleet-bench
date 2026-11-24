@@ -5185,14 +5185,15 @@ red_titles() {
   local titles parsed
   titles=$(jq -c "$JQ_LIB"'[.[] | select(tagged("red")) | .title // .task // "" | gsub("\n"; " ")] | unique' <<<"$1") || return 1
   [ "$titles" != '[]' ] || { echo '{}'; return 0; }
-  parsed=$(jq -r '.[]' <<<"$titles" | notes row parse) &&
-    # titles grows with the queue, past the 128 KB one argument can carry (reds_json): it comes in as a file
-    jq -cRn --slurpfile t <(printf '%s\n' "$titles") '$t[0] as $t | [inputs | split("\t")] as $p
+  parsed=$(jq -r '.[]' <<<"$titles" | notes row parse) ||
+    { say "reds: notes row parse failed (an old notes? notes-bootstrap --build-only)"; return 1; }
+  # titles grows with the queue, past the 128 KB one argument can carry (reds_json): it comes in as a file
+  jq -cRn --slurpfile t <(printf '%s\n' "$titles") '$t[0] as $t | [inputs | split("\t")] as $p
       | if ($p | length) != ($t | length) then error("short") else . end
       | [range($t | length) as $i | select($p[$i][3] == "1")
          | {key: $t[$i], value: {area: $p[$i][1], name: ([$p[$i][2] | capture("^(?<n>[^ ,;]+)").n][0])}}
          | select(.value.name != null)] | from_entries' <<<"$parsed" ||
-    { say "reds: notes row parse failed or answered short (an old notes? notes-bootstrap --build-only)"; return 1; }
+    { say "reds: notes row parse answered short, or jq failed (its error is above)"; return 1; }
 }
 
 # alert_titles <items> -> the titles of the red items whose row TRIAGE_ROUTES sends to alert, as a
@@ -5224,11 +5225,12 @@ reds_json() {
     n=${f##*/} n=${n%.since}
     watches=$(jq -c --arg n "$n" --arg s "$(cat "$f")" '. + {($n): ($s | tonumber? // 0)}' <<<"$watches")
   done
-  jq -c --argjson live "$live" --argjson w "$watches" --argjson holds "$holds" --argjson clock "$t" \
+  jq -c --slurpfile live <(printf '%s\n' "$live") --slurpfile w <(printf '%s\n' "$watches") \
+    --slurpfile holds <(printf '%s\n' "$holds") --argjson clock "$t" \
     --slurpfile parsed <(printf '%s\n' "$parsed") --slurpfile alerted <(printf '%s\n' "$alerted") \
     --argjson h "$((HOLD_HOURS * 3600))" --argjson n "$REDS_ETA_SAMPLES" "$JQ_LIB"'
-    # parsed and alerted grow with the queue, past the 128 KB one argument can carry: they come in as files
-    $parsed[0] as $parsed | $alerted[0] as $alerted
+    # each grows with the queue or the watches, past the 128 KB one argument can carry: they come in as files
+    $live[0] as $live | $w[0] as $w | $holds[0] as $holds | $parsed[0] as $parsed | $alerted[0] as $alerted
     | def title: .title // .task // "";
     ([$holds[].merges[].slug]) as $went
     | ([.[] | select(tagged("red")) | title | select(startswith("fix(hold): "))]) as $held
