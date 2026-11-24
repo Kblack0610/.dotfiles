@@ -1020,8 +1020,14 @@ MODEL_WEIGHT_SONNET="$(pace_get MODEL_WEIGHT_SONNET)"
 MODEL_WEIGHT_HAIKU="$(pace_get MODEL_WEIGHT_HAIKU)"
 CLAUDE_SESSION_RATE="${CLAUDE_ACCT_SESSION_RATE:-$(pace_get CLAUDE_SESSION_RATE)}"
 ACTIVE_MIN="$(pace_get ACTIVE_MIN)"
-# exported: room and FLEET_JQ read it as $ENV.CLAUDE_ACCT_BURN_OVER_PCT (def over)
-export CLAUDE_ACCT_BURN_OVER_PCT="${CLAUDE_ACCT_BURN_OVER_PCT:-$(pace_get BURN_OVER_PCT)}"
+# The allowance in force: a window or standing override set by pace-conf, else the line in pace.conf
+# (pace_get reads all three). Exported for jq: room and FLEET_JQ read it in OVER_JQ.
+export CLAUDE_ACCT_BURN_OVER_PCT="$(pace_get BURN_OVER_PCT)"
+BURN_OVER_SRC="$(pace_source BURN_OVER_PCT)"
+# BURN_OVER_PCT as a factor: how far past what the week sustains the working sessions may burn
+# before room calls an account committed, and the allowance dispatch's spare reads. The one jq
+# prefix room and FLEET_JQ share.
+OVER_JQ='def over: 1 + ($ENV.CLAUDE_ACCT_BURN_OVER_PCT // "0" | tonumber) / 100;'
 [[ -n "$PACE_SLACK_PCT" && -n "$RESERVE_PCT" && -n "$SESSION_RATE" && -n "$CLAUDE_SESSION_RATE" && -n "$MODEL_WEIGHT_SONNET" && -n "$MODEL_WEIGHT_HAIKU" && -n "$ACTIVE_MIN" && -n "$CLAUDE_ACCT_BURN_OVER_PCT" ]] || exit 1
 RATE_TTL="${CLAUDE_ACCT_RATE_TTL:-3600}"
 # The one bash Prometheus reader (prom_q, PROM_URL from the hub's own env file). A dead endpoint
@@ -1185,7 +1191,7 @@ usage_json() {
             --argjson usage "$json" --arg used "$used" --arg gone "$gone" \
             --arg resets "$resets" --arg read_at "$read_at" --argjson live "${live:-0}" --argjson working "${working:-0}" --argjson cost "${cost:-0}" --argjson spend "$spend" \
             --argjson now "$now" --argjson reserve "${own_reserve:-$RESERVE_PCT}" --argjson rate "$rate" \
-            --argjson room_slack "$slack" --argjson room_reserve "$row_reserve" '
+            --argjson room_slack "$slack" --argjson room_reserve "$row_reserve" "$OVER_JQ"'
             def num: if . == "" then null else tonumber end;
             # What is left of the week, as points an hour to the reset, less what the live sessions
             # there already burn: lower is better. One hour per spare point, so the account whose
@@ -1193,8 +1199,6 @@ usage_json() {
             # already empty before the reset ranks behind every one with room, and among those the
             # one its sessions empty last goes first. A 5h window near full goes last.
             # Points an hour the rest of the week can carry to the reset, landing at 100% on it.
-            # BURN_OVER_PCT: how far past what the week sustains the working sessions may burn before committed refuses
-            def over: 1 + ($ENV.CLAUDE_ACCT_BURN_OVER_PCT | tonumber) / 100;
             def sustain: (100 - (.week_used // 0)) / (if .resets == null then $window / 3600 else ([(.resets - $now) / 3600, 0.1] | max) end);
             # When used falls back to the week gone plus the slack, the moment room drops `pace`:
             # with no spend the clock catches up at 100 points a week; at this burn, only when burn
@@ -1432,9 +1436,6 @@ on_pace_word() {
 # readable paced rows; null when there is none, so an unread fleet publishes no figure rather than a
 # quiet one. `rows` is those rows, for the back-on-pace times; `rate` is the points one working Opus
 # session burns an hour, and `working_cost` the working sessions in Opus-equivalents (weight_of).
-# `spare` is how many more working Opus sessions the pool keeps at pace on top of this burn
-# ((keeps - burn) / rate, below 0 when the burn is past keeps): fleet-dispatch's pace target, so a
-# Sonnet or Haiku session, burning less, leaves room for more (ar-3230).
 # `unread` is each Claude account that could not be read, with its live sessions and when it was last
 # read: those sessions are in no burn figure, so the fleet line names it instead of reading low (bnb
 # was unread five hours on 2026-11-18, and the sum counted 3 of 4 weeks without a word).
@@ -1445,9 +1446,12 @@ on_pace_word() {
 # burn the pool carries without going into the reserve: the lowest of each step's points over its
 # hours from now, and of what the weeks give an hour for good, the reserve kept. `runs_out` is when this burn empties the pool into the reserve, null when it
 # lasts to the last account's reset (the horizon: past it every week is fresh, and keeps says whether
-# the burn fits). `spare` is the sessions more that keeps times BURN_OVER_PCT's allowance carries. 2026-11-10: keeps was each account's points left over its own reset, which read
-# 1.9/h with no reset counted, while the four weeks carried 2.1/h (ar-1529).
-FLEET_JQ='def over: 1 + ($ENV.CLAUDE_ACCT_BURN_OVER_PCT | tonumber) / 100;
+# the burn fits). `spare` is how many more working Opus sessions the pool carries on top of this
+# burn at the allowance ((keeps x over - burn) / rate, below 0 when the burn is past it):
+# fleet-dispatch's pace target, so a Sonnet or Haiku session, burning less, leaves room for more
+# (ar-3230). 2026-11-10: keeps was each account's points left over its own reset, which read 1.9/h
+# with no reset counted, while the four weeks carried 2.1/h (ar-1529).
+FLEET_JQ="$OVER_JQ"'
 def fleet($now): [.[] | select(.kind == "claude")] as $c
     | [$c[] | select(.state == "ok" and .week_used != null and .paced)] as $a
     | ([$a[] | select(.resets != null)
@@ -1464,26 +1468,37 @@ def fleet($now): [.[] | select(.kind == "claude")] as $c
     | {live: ([$c[].live] | add // 0), working: ([$c[].working] | add // 0), working_cost: ([$c[].working_cost] | add // 0),
        rows: $a, rate: $rate, burn: $burn, keeps: $keeps,
        unread: [$c[] | select(.state == "unread") | {name, working, since: .read_at}],
+       allowed: (if $keeps == null then null else $keeps * over end),
        spare: (if $keeps == null or $burn == null or ($rate // 0) <= 0 then null else ($keeps * over - $burn) / $rate | floor end),
        runs_out: (if $p == [] or $burn == null or $burn <= 0 then null
                   else first($steps[] | select(.has / $burn < .at) | $now + .has / $burn * 3600 | floor) // null end)};'
 
+# allowance_text -> the allowance in force and where it comes from, for the fleet line: "400%
+# (default)", "300% (override)", or "300% to Tue 22:00" for a window
+allowance_text() {
+    case "$BURN_OVER_SRC" in
+        window\ *) printf '%s%% to %s' "$CLAUDE_ACCT_BURN_OVER_PCT" "$(date -d "@${BURN_OVER_SRC#window }" '+%a %H:%M')" ;;
+        *) printf '%s%% (%s)' "$CLAUDE_ACCT_BURN_OVER_PCT" "$BURN_OVER_SRC" ;;
+    esac
+}
+
 # fleet_line <usage rows> -> the Claude accounts in one line (FLEET_JQ): live sessions, burn against
-# what the windows can carry, how many sessions that is, and when the first one is back on pace, at
-# this burn and with every session stopped.
+# what the windows can carry, how many sessions that is at the allowance in force, and when the
+# first one is back on pace, at this burn and with every session stopped.
 fleet_line() {
     local j now="${CLAUDE_ACCT_NOW:-$(date +%s)}"
     j=$(jq -sc --argjson now "$now" "$FLEET_JQ"' fleet($now)
         | {live, working, working_cost, rate, burn: (.burn // 0), keeps: (.keeps // 0), spare, runs_out, unread,
            burn_at: ([.rows[] | select(.on_pace_burn != null) | {name, t: .on_pace_burn}] | min_by(.t)),
            idle_at: ([.rows[] | select(.on_pace_idle != null) | {name, t: .on_pace_idle}] | min_by(.t))}' <<< "$1") || return 0
-    jq -r --argjson now "$now" '
+    jq -r --argjson now "$now" --arg allow "$(allowance_text)" '
         def at: if .t <= $now then "\(.name) now" else "\(.name) \(.t | strflocaltime("%a %H:%M"))" end;
         "fleet: \(.live) live (\(.working) working"
         + (if (.working_cost * 10 | round) != .working * 10 then ", \(.working_cost * 10 | round / 10) at Opus cost" else "" end)
         + "), burn \(.burn * 10 | round / 10)/h vs \(.keeps * 10 | round / 10)/h sustainable"
         + (if .keeps > 0 then " (\(.burn / .keeps * 10 | round / 10)x" else " (" end)
         + (if .rate != null and .rate > 0 then ", carries ~\(.keeps / .rate | floor) Opus" else "" end)
+        + ", allowance \($allow)"
         + (if .spare == null then ")" elif .spare > 0 then ", room for ~\(.spare) more)" else ", no room)" end)
         + (if .runs_out != null then ", into the reserve \(.runs_out | strflocaltime("%a %H:%M")) before the resets"
            else ", lasts to the resets" end)
@@ -1546,6 +1561,10 @@ cmd_textfile() {
             "claude_fleet_live_sessions \(.live)",
             (.burn // empty | "claude_fleet_burn_points_per_hour \(.)"),
             (.keeps // empty | "claude_fleet_sustain_points_per_hour \(.)"),
+            # the allowance in force times what the pool sustains, and the sessions more it carries
+            # (spare, the pace target of dispatch), so a surface shows them without a second formula
+            (.allowed // empty | "claude_fleet_allowed_points_per_hour \(.)"),
+            (.spare // empty | "claude_fleet_spare_sessions \(.)"),
             (.runs_out // empty | "claude_fleet_run_out_timestamp_seconds \(.)")),
         (rows("claude_account_cost_24h_usd"; .usd_24h)),
         (rows("claude_account_usd_used"; .usd_used)),
