@@ -41,12 +41,10 @@ concurrency:
   group: shell-tests-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
-# Where every job runs (fleet-agent.yml stays hosted: it frees disk with sudo): the repo variable LINUX_RUNNER_LIGHT, the switch
-# the org repos use. Set to ["self-hosted","light"], jobs run on the home pool, whose runners and
-# packages home-config's ansible provisions; deleted (gh variable delete LINUX_RUNNER_LIGHT
-# -R Kblack0610/.dotfiles), they run on GitHub-hosted ubuntu-24.04, free on this public repo.
-# A fork's pull request always runs hosted: the repo is public, and a pool runner would run a
-# stranger's code on the home LAN. unit/ci_runner_toggle.bats keeps every runs-on this one line.
+# Where every job runs: `&pool` on the first job, `*pool` on the rest. The repo variable
+# LINUX_RUNNER_LIGHT is the switch (set: the home pool; deleted: GitHub-hosted, free on this public
+# repo; the shell-test-harness skill, section 5). A fork's pull request always runs hosted, so a stranger's code
+# never runs on the home LAN. fleet-agent.yml stays hosted: its 5 GB image build frees disk with sudo.
 jobs:
   # The PR budget is a p90 of 5 minutes (~/.local/src/docs/ci.md); each job's timeout-minutes is
   # its hang guard (fast's is 2x the budget), never a lever. tests/pick.sh lists the files, and
@@ -80,13 +78,12 @@ jobs:
   # A pick that fails fails this job, and fast, which needs it, skips, so the gate reads red.
   weights:
     name: shard weights
-    runs-on: ${{ fromJSON((github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.LINUX_RUNNER_LIGHT || '"ubuntu-24.04"') }}
+    runs-on: &pool ${{ fromJSON((github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.LINUX_RUNNER_LIGHT || '"ubuntu-24.04"') }}
     timeout-minutes: 3
     permissions:
       contents: read
       actions: read
     env:
-      FAST_SHARDS: unit=12 integ=4
       SHARD_SECONDS: 180
     outputs:
       table: ${{ steps.junit.outputs.table }}
@@ -121,6 +118,9 @@ jobs:
       - name: Pick the files and size the matrix
         id: plan
         env:
+          # The most shards a tier gets: twelve 4-vCPU hosted machines, or two 24-32 core pool
+          # hosts, whose shards run bats --jobs at the host's nproc (tests/Makefile UNIT_JOBS).
+          FAST_SHARDS: ${{ runner.environment == 'self-hosted' && 'unit=2 integ=1' || 'unit=12 integ=4' }}
           BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
         run: |
           [ ! -s "$RUNNER_TEMP/weights.tsv" ] || export SHARD_WEIGHTS=$RUNNER_TEMP/weights.tsv
@@ -134,7 +134,7 @@ jobs:
   fast:
     name: fast tier (${{ matrix.tier }} ${{ matrix.shard }})
     needs: weights
-    runs-on: ${{ fromJSON((github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.LINUX_RUNNER_LIGHT || '"ubuntu-24.04"') }}
+    runs-on: *pool
     timeout-minutes: 10
     env:
       APT_PKGS: lua5.4 parallel inotify-tools sqlite3 stow   # the one list: install, check, cache key
@@ -225,7 +225,7 @@ jobs:
 
   ui:
     name: ui tier (tmux ${{ matrix.tmux }}, container)
-    runs-on: ${{ fromJSON((github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.LINUX_RUNNER_LIGHT || '"ubuntu-24.04"') }}
+    runs-on: *pool
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -292,7 +292,7 @@ jobs:
     name: gate
     needs: [fast, ui, rust, notes, skills, lint]
     if: ${{ always() }}
-    runs-on: ${{ fromJSON((github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.LINUX_RUNNER_LIGHT || '"ubuntu-24.04"') }}
+    runs-on: *pool
     timeout-minutes: 2
     steps:
       - name: Every gating job passed
@@ -309,7 +309,7 @@ jobs:
     name: test report
     needs: [fast, ui]
     if: ${{ !cancelled() }}
-    runs-on: ${{ fromJSON((github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.LINUX_RUNNER_LIGHT || '"ubuntu-24.04"') }}
+    runs-on: *pool
     timeout-minutes: 5
     permissions:
       contents: read
@@ -339,7 +339,7 @@ jobs:
 
   rust:
     name: rust crates (test + fmt + clippy)
-    runs-on: ${{ fromJSON((github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.LINUX_RUNNER_LIGHT || '"ubuntu-24.04"') }}
+    runs-on: *pool
     timeout-minutes: 20
     env:
       CARGO_INCREMENTAL: 0   # incremental state only helps a rebuild in place, and it bloats the cache
@@ -418,7 +418,7 @@ jobs:
   # (274-296 s of a 5.0-6.0 min run, 2026-11-19), and here they run beside it.
   notes:
     name: notes bats (real notes binary)
-    runs-on: ${{ fromJSON((github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.LINUX_RUNNER_LIGHT || '"ubuntu-24.04"') }}
+    runs-on: *pool
     timeout-minutes: 10
     env:
       CARGO_INCREMENTAL: 0
@@ -445,7 +445,7 @@ jobs:
 
   lint:
     name: shellcheck + house rules
-    runs-on: ${{ fromJSON((github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.LINUX_RUNNER_LIGHT || '"ubuntu-24.04"') }}
+    runs-on: *pool
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
