@@ -29,8 +29,12 @@ SO_LIB="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 # a different repo. Forgejo is told by its URL shape, `/pulls/N` on a host that is not github.com:
 # its hostnames are not named here, since this repo is public. A Forgejo merge prints no URL, so
 # its PR is found from the create call's `html_url`.
+# An assignment's value is a run of segments (a $(...), a quoted string, any other non-space
+# character) told apart by their first character, so one value matches one way: as alternatives that
+# `\S*` also matched, each quoted value doubled the paths and 20 of them before a `gh pr` hit jq's
+# retry-limit-in-match (ar-920).
 SO_PR_JQ='
-  def pr_cmd: test("(^|[\\n;&|({`!]|\\b(ba|z)?sh\\s+-[a-z]*c\\s+[\"\u0027]?|\\bssh\\s+(-\\S+\\s+)*\\S+\\s+[\"\u0027]?)\\s*((\\w+=(\\$\\([^)]*\\)|\"[^\"]*\"|\u0027[^\u0027]*\u0027|\\S*)|env|command|exec|time|then|do|else|sudo|nohup|timeout\\s+\\S+|xargs(\\s+-\\S+)*)\\s+)*gh\\s+pr\\s+(create|merge)\\b")
+  def pr_cmd: test("(^|[\\n;&|({`!]|\\b(ba|z)?sh\\s+-[a-z]*c\\s+[\"\u0027]?|\\bssh\\s+(-\\S+\\s+)*\\S+\\s+[\"\u0027]?)\\s*((\\w+=(\\$\\([^)]*\\)|\"[^\"]*\"|\u0027[^\u0027]*\u0027|(?!\\$\\()[^\\s\"\u0027])*|env|command|exec|time|then|do|else|sudo|nohup|timeout\\s+\\S+|xargs(\\s+-\\S+)*)\\s+)*gh\\s+pr\\s+(create|merge)\\b")
     or (test("\\bcurl\\b") and test("/pulls(/[0-9]+/merge)?([\"\u0027?\\s]|$)")
         and test("(-X\\s*|--request[=\\s]+)POST\\b|\\s(-d|--data[a-z-]*)([=\\s@\u0027\"]|$)"));
   def pr_refs: [ (scan("https://github\\.com/([^/\\s]+)/([^/\\s]+)/pull/([0-9]+)")
