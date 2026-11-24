@@ -693,6 +693,15 @@ share_history() {
   [ -z "$(qitem queued pa-p1)" ] || fail "the approved plan phase waited at the fleet share cap"
   # The negative control: the high fleet item with no plan, ahead of it in queue order, waits.
   [ -n "$(qitem queued fix-game)" ] || fail "a fleet item with no plan passed the cap"
+  # A plan a session queued (not `from: human`) waits at the cap like any fleet item.
+  agent-queue move fix-game done --status cancelled >/dev/null
+  printf '# pb\n\n## Phases\n\n- [ ] one\n' > "$SANDBOX/pb.md"
+  agent-queue add --plan "$SANDBOX/pb.md" --project game --priority high --from session >/dev/null
+  agent-queue add --project app --slug fix-app --priority low "fix the app" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: app: fix-app'
+  [ -n "$(qitem queued pb-p1)" ] || fail "a session's plan phase passed the fleet share cap"
 }
 
 @test "fleet share: a canary or an agent's urgent on a fleet project waits at the cap, as the human's urgent does not" {
