@@ -2809,18 +2809,19 @@ red_item() {
   # NEGATIVE CONTROL: with the titles passed as --argjson, jq failed to exec (E2BIG) and reds said the notes parse failed.
   log_triage_setup
   local i pad
-  pad=$(printf 'x%.0s' {1..300})
-  for i in $(seq 500); do
+  pad=$(printf 'x%.0s' {1..1000})
+  for i in $(seq 150); do
     printf '{"slug":"r%s","state":"running","title":"fix(logs): runner%s error %s","queued":null,"tags":"red"}\n' "$i" "$i" "$pad" >> "$ITEMS"
   done
   red_item a running 'fix(watch): kitchen-puck, voice is down' -600 - - -
   parses 'fix(watch): kitchen-puck, voice is down' fix watch 'kitchen-puck, voice is down'
+  # the exact array red_titles builds (every item is red), past one argument's limit
   [ "$(jq -cs 'map(.title) | unique' "$ITEMS" | wc -c)" -gt 131072 ]
   run "$SUBJECT" reds --json
   assert_success
   refute_output --partial 'answered short'
   assert_equal "$(jq -rs 'map(select(.slug == "a") | .red)[]' <<<"$output")" 'watch kitchen-puck'
-  assert_equal "$(jq -s 'length' <<<"$output")" 501
+  assert_equal "$(jq -s 'length' <<<"$output")" 151
 }
 
 @test "reds: an unreadable queue fails and says so, and its KPIs read ? instead of 0" {
