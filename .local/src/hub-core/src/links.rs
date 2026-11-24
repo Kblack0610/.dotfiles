@@ -47,6 +47,10 @@ pub enum Kind {
     Needs,
     /// One pending ask on Home, opened on its answer card (`#home/ask/<id>`, home.js `takeAskArg`).
     Ask,
+    /// One sprint's page (`hub_core::sprint_page`), by `<profile>/<project>/<version>`: the
+    /// project's Sprint inner tab opened on that window. Not in `PAGES`: its word sits after the
+    /// project, not after the tab.
+    Sprint,
 }
 
 /// An entity page that sits inside a tab's inner tab: its kind, the tab, the `#tab/<word>/<id>`
@@ -198,6 +202,10 @@ impl Link {
             // home.js keys Needs you's view with `n`: `ns` is the state its tiles set.
             Kind::Needs => format!("#home?ns={seg}"),
             Kind::Ask => format!("#home/ask/{seg}"),
+            Kind::Sprint => {
+                let (key, version) = id.rsplit_once('/').unwrap_or((id, ""));
+                format!("#projects/{}/sprint/{}", component(key), component(version))
+            }
             Kind::Machine
             | Kind::Pool
             | Kind::CiRun
@@ -236,6 +244,11 @@ impl Link {
             Kind::Skill => ("stack", format!("skills skill:={id}")),
             // The hub's Home takes no filter word, so it opens the whole list.
             Kind::Needs | Kind::Ask => ("home", String::new()),
+            // The project's key, then `sprint/<version>`, as the web's hash after the project.
+            Kind::Sprint => {
+                let (key, version) = id.rsplit_once('/').unwrap_or((id, ""));
+                ("projects", format!("{key}/sprint/{version}"))
+            }
             Kind::Machine
             | Kind::Pool
             | Kind::CiRun
@@ -402,6 +415,13 @@ mod tests {
         assert_eq!(
             both(Kind::Ask, "KKuNfh"),
             ("#home/ask/KKuNfh".into(), a("home", ""))
+        );
+        assert_eq!(
+            both(Kind::Sprint, "bnb/unity/v0.5.5"),
+            (
+                "#projects/bnb%2Funity/sprint/v0.5.5".into(),
+                a("projects", "bnb/unity/sprint/v0.5.5")
+            )
         );
         assert_eq!(
             both(Kind::Schedule, "playground-night"),

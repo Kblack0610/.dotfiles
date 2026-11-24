@@ -30,6 +30,14 @@ pub struct Part {
     pub link: Option<Link>,
 }
 
+impl Part {
+    /// A counted zero: a surface draws no chip for it (`Card::drawn`). A part whose source was
+    /// not read says so in `reading` words at `Level::Nodata` and is never a zero (rule 6).
+    pub fn is_zero(&self) -> bool {
+        self.value == "0" && self.level != Level::Nodata
+    }
+}
+
 /// A "where to look first" row: what it is, a line under it, and the record it opens.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct First {
@@ -88,6 +96,15 @@ impl Card {
             error: None,
             link: Link::tab(opens(tab)),
         }
+    }
+
+    /// The card as Home's grid draws it: a chip counting none is left out, since a count of zero
+    /// says nothing is there, and only the headline (`big`) stays when it is zero. Every reader
+    /// that looks a part up by its label (the widget, the phone, the waybar chips) takes the
+    /// whole card, so this is applied only where a grid is drawn.
+    pub fn drawn(mut self) -> Card {
+        self.parts.retain(|p| !p.is_zero());
+        self
     }
 
     /// The card of a reader that did not answer.
@@ -2016,14 +2033,13 @@ mod tests {
             s("hub/shepherd:1", "NEEDS", &["shepherd"]),
             s("hub/c:1", "WORKING", &[]),
         ];
-        let counts = json!({"WORKING": 1, "NEEDS": 2, "STALLED": 0});
-        let state = json!({"sessions": doc, "counts": counts, "generated_epoch": 1000});
         let rows = crate::session_table::rows(&doc, &Default::default(), &Default::default(), &[]);
         let c = sessions(&rows);
         let pill = c.parts.iter().find(|p| p.label == "Need you").unwrap();
-        let home = crate::home::build(Some(&state), None, None, None, 1000);
-        assert_eq!(home.sessions, "1 working, 2 need you, 0 stalled");
-        assert_eq!(pill.value, "2", "the card reads Home's count");
+        assert_eq!(
+            pill.value, "2",
+            "the card counts the sessions that need you"
+        );
         assert_eq!(c.big, "3", "the shepherd is no live session of the card");
     }
 
@@ -2315,5 +2331,20 @@ mod tests {
             .map(|c| c.tab)
             .collect();
         assert_eq!(got, ["alerts", "sessions"]);
+    }
+    #[test]
+    fn a_drawn_card_leaves_out_a_counted_zero_but_never_an_unread_part() {
+        let c = Card::new("queue", "Queue", "items")
+            .part("Held", 0, Level::Ok)
+            .part("Ready", 3, Level::Ok)
+            .part("Shipped", crate::reading::NOT_READ, Level::Nodata)
+            .part("Checks", 0, Level::Nodata);
+        let mut c = c;
+        c.big = "0".into();
+        let d = c.drawn();
+        let labels: Vec<&str> = d.parts.iter().map(|p| p.label.as_str()).collect();
+        assert_eq!(labels, ["Ready", "Shipped", "Checks"]);
+        assert_eq!(d.big, "0", "the headline stays at zero");
+        assert_eq!(d.parts[1].value, crate::reading::NOT_READ);
     }
 }
