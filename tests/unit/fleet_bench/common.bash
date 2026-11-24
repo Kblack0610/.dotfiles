@@ -369,7 +369,19 @@ EOF
   chmod +x "$SANDBOX/bin/curl"
 }
 
-# sources_fixture: two Claude accounts, Codex and a gateway key; Prometheus has points for all but
+# stub_vm <body>: VictoriaMetrics (vm_q) answers through a kubectl that runs <body>, logging its args
+stub_vm() {
+  unset BENCH_PROM_TSV
+  export CC_KUBE_CONTEXT=test CC_VM_SERVICE=monitoring/victoria-metrics:8428
+  cat > "$SANDBOX/bin/kubectl" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$SANDBOX/kubectl.log"
+$1
+EOF
+  chmod +x "$SANDBOX/bin/kubectl"
+}
+
+# sources_fixture: two Claude accounts, Codex and a gateway key; VictoriaMetrics has points for all but
 # Codex and list dollars by email. Items land on an account, an `account:`, a session's account, a
 # harness source, or nowhere. main's sessions s2 and s3 used 300 and 100 tokens, bnb's s1 100.
 sources_fixture() {
@@ -397,7 +409,7 @@ STUB
   out_row game '{session_id: "s4", harness: "codex", updated_epoch: ($t - 3600), tokens_total: 50, cost_usd: 3.5, cost_src: "price"}'
   out_row game '{session_id: "s5", harness: "codex", updated_epoch: ($t - 3600), tokens_total: 50, cost_usd: null}'
   out_row game '{session_id: "s6", updated_epoch: ($t - 3600), tokens_total: 10}'
-  stub_prom 'case "$*" in
+  stub_vm 'case "$*" in
   *week_used_percent*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"account\":\"main\"},\"value\":[1,\"10\"]},{\"metric\":{\"account\":\"bnb\"},\"value\":[1,\"4\"]},{\"metric\":{\"account\":\"reserve\"},\"value\":[1,\"5\"]},{\"metric\":{\"account\":\"lazer\"},\"value\":[1,\"2\"]}]}}" ;;
   *cost_usage*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"user_email\":\"m@x\"},\"value\":[1,\"50\"]},{\"metric\":{\"user_email\":\"b@x\"},\"value\":[1,\"30\"]}]}}" ;;
   *) exit 7 ;;
