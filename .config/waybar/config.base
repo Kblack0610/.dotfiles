@@ -302,7 +302,7 @@
         "tooltip": true
     },
     // Projects: how many have work in flight and the running sprint (`S:v0.5.4 10/15`, +N past one); the hover leads with
-    // the running sprints, then each project's release window and sessions, in flight first (projects.sh, from `hub projects --json`). Click opens the hub
+    // the running sprints, then each project in flight with its running work by epic system (projects.sh, from `hub projects --json`). Click opens the hub
     // board on Projects.
     "custom/projects": {
         "format": "{}",

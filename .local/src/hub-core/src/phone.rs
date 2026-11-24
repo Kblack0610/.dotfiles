@@ -364,7 +364,7 @@ fn queue(i: &Inputs) -> Vec<Row> {
 }
 
 /// One card as the widget says it: "agent-runtime at risk, 21/84 due 11-22, 4 running", its
-/// state first (`projects::state`), the window after it unless it repeats `no window`. Past
+/// state first (`projects::state`), the window after it when there is one. Past
 /// `LINE_MAX` the counts shorten to "11 run, 1 wait", and then only the name is capped, so the
 /// state, window and counts always show.
 fn project(c: &Card) -> String {
