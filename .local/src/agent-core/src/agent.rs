@@ -649,10 +649,27 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_harness_row_is_read_from_its_process_item_and_session() {
-        let root = std::env::temp_dir().join(format!("agent-core-codex-{}", std::process::id()));
+    /// A scratch /proc root and a pane in a hub session, for the harness rows below.
+    fn harness_fixture(tag: &str) -> (PathBuf, tmux::Pane) {
+        let root = std::env::temp_dir().join(format!("agent-core-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let pane = tmux::Pane {
+            server: "hub".into(),
+            session: "dotfiles-agent-37".into(),
+            window_index: "1".into(),
+            current_path: "/home/u/.worktrees/dotfiles-agent-37".into(),
+            pid: 200,
+            pane_id: "%7".into(),
+            ..tmux::Pane::default()
+        };
+        (root, pane)
+    }
+
+    #[test]
+    fn a_codex_row_is_read_from_its_process_item_and_session() {
+        let (root, mut pane) = harness_fixture("codex");
+        let now = crate::now_secs();
         let fd = root.join("300").join("fd");
         fs::create_dir_all(&fd).unwrap();
         fs::write(
@@ -665,16 +682,6 @@ mod tests {
         fs::write(&rollout, "").unwrap();
         std::os::unix::fs::symlink("/dev/null", fd.join("0")).unwrap();
         std::os::unix::fs::symlink(&rollout, fd.join("5")).unwrap();
-        let now = crate::now_secs();
-        let mut pane = tmux::Pane {
-            server: "hub".into(),
-            session: "dotfiles-agent-37".into(),
-            window_index: "1".into(),
-            current_path: "/home/u/.worktrees/dotfiles-agent-37".into(),
-            pid: 200,
-            pane_id: "%7".into(),
-            ..tmux::Pane::default()
-        };
         let a = harness_agent(
             &pane,
             "hub/dotfiles-agent-37:1".into(),
@@ -723,7 +730,13 @@ mod tests {
             (quiet.status.as_str(), quiet.glyph),
             ("idle", session::glyph("idle"))
         );
-        // From here the pane drew just now, so every run in it reads busy by the same reading.
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_opencode_row_is_read_from_its_process_item_and_session() {
+        let (root, mut pane) = harness_fixture("opencode");
+        let now = crate::now_secs();
         pane.activity = now;
         // An opencode harness: its session id is its --session argument, and it has no rollout.
         let oc = root.join("400");
@@ -821,6 +834,14 @@ mod tests {
         fs::create_dir_all(root.join("401")).unwrap();
         fs::write(root.join("401").join("environ"), b"TERM=x\0").unwrap();
         assert!(harness_agent(&pane, "lab/x:1".into(), 401, "opencode", &root, now).is_none());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_agy_row_is_read_from_its_conversation_argument() {
+        let (root, mut pane) = harness_fixture("agy");
+        let now = crate::now_secs();
+        pane.activity = now;
         // An agy, the human's own included: a row, its session id the --conversation argument.
         let ag = root.join("500");
         fs::create_dir_all(&ag).unwrap();
@@ -832,6 +853,10 @@ mod tests {
             ("agy", "conv-42", "agy")
         );
         assert_eq!(g.status, "busy");
+        // The same agy with its pane quiet past the idle window reads idle, as every harness does.
+        pane.activity = now - HARNESS_IDLE_SECS;
+        let quiet = harness_agent(&pane, "lab/x:1".into(), 500, "agy", &root, now).unwrap();
+        assert_eq!(quiet.status, "idle");
         let _ = fs::remove_dir_all(&root);
     }
 
