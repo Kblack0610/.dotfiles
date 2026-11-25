@@ -2944,6 +2944,77 @@ red_item() {
   assert_failure 2
 }
 
+@test "landed: each landed item is scored by kind, its row's source and its target, with dollars, held, KPI verdicts and reds behind each" {
+  log_triage_setup
+  : > "$AGENTCTL_STATE_DIR/runs.jsonl"
+  export BENCH_DONE_ITEMS_CMD=items-stub
+  watch fine OK -100 normal
+  red_item a done 'check(watch): fine tripped since 2026-11-01, expected: fine' -7200 -3600 o/r#1 sha1
+  parses 'check(watch): fine tripped since 2026-11-01, expected: fine' check watch 'fine tripped since 2026-11-01, expected: fine'
+  red_item b done 'feat: a KPI claim' -7200 -3600 o/r#2 sha2 ok night
+  red_item c done 'fix: a reverted fix' -7200 -3600 o/r#3 sha3 ok night
+  red_item d done 'a phase' -7200 -3600 o/r#4 sha4 ok night
+  red_item e done 'no row' -7200 -3600 o/r#5 sha5 ok night
+  red_item f done 'an old row' -7200 -3600 o/r#6 sha6 ok night
+  red_item g done 'failed' -7200 -3600 - - failed night
+  red_item h done 'ok, no PR' -7200 -3600 - - ok night
+  red_item i done 'another project' -7200 -3600 o/r#9 sha9 ok night
+  red_item j done 'a bare word' -7200 -3600 o/r#10 sha10 ok night
+  jq -c '. + {project: "agent-runtime"} + ({
+      a: {type: "fix", row: "agent-runtime:ar-10", cost_usd: "3"},
+      b: {type: "feat", row: "agent-runtime:ar-11", cost_usd: "2"},
+      c: {type: "fix", from: "board:agent-runtime:ar-12", cost_usd: "1.5", gateway_cost_usd: "0.5", sessions: "s3"},
+      d: {task: "Phase 2 of the plan /p.md: P2 a phase", plan: "/p.md", row: "agent-runtime:ar-13", cost_usd: "1"},
+      e: {type: "chore", task: "chore(x): no row"},
+      f: {type: "run", task: "run(notes): an old row", row: "agent-runtime:ar-2", cost_usd: "1"},
+      i: {project: "home-config", row: "home-config:hc-1"},
+      j: {task: "waybar: a word before a colon is no type"}}[.slug] // {})' "$ITEMS" > "$ITEMS.new"
+  mv "$ITEMS.new" "$ITEMS"
+  # a from the dream by triage, b from a plan, c by a hand session whose reason is retagged, d by the human
+  # with #requested; nothing logged ar-2, below the first id the record minted
+  local n=10
+  ev() { n=$((n + 1)); jq -cn --arg ts "2026-11-20T10:$n:00-08:00" --arg a "$1" --arg id "$2" --arg by "$3" --arg w "$4" --arg x "$5" --arg o "${6:-}" \
+    '{ts: $ts, action: $a, from: "agent-runtime", lane: "agent", id: $id, by: $by, why: $w, text: $x} + (if $o == "" then {} else {origin: $o} end)' >> "$BENCH_INGEST"; }
+  ev filed ar-10 inbox-triage 'model: a red' '#agent #from/dream fix(x): a red'
+  ev added ar-11 c7e6e068 '' 'feat(x): a KPI claim' plan
+  ev added ar-12 ab12cd34 self-check 'fix(x): a reverted fix'
+  ev tagged ar-12 inbox-priority '+#why/fault +#high' 'fix(x): a reverted fix'
+  ev tagged ar-12 inbox-priority '-#why/fault +#why/upkeep' 'fix(x): a reverted fix'
+  ev added ar-13 human '' 'a phase #requested'
+  claim ar-11 board_open 600 max 60 1
+  mkdir -p "$BENCH_OUTCOMES_DIR/game"
+  out_row game '{session_id: "s3", updated_epoch: ($t - 3600), prs: [{repo: "o/r", number: 3, reverted: true}]}'
+  run "$SUBJECT" landed --json
+  assert_success
+  assert_equal "$(jq -c '[.landed, .cost_usd, .priced, .reds_read]' <<<"$output")" '[7,7.5,5,true]'
+  run jq -c '.rows[] | [.slug, .kind, .source, .target, .cost_usd, .reverted, .red]' <<<"$output"
+  assert_output "$(printf '%s\n' '["a","fix","from: dream","red",3,false,"fixed"]' '["b","feat","plan","kpi",2,false,null]' \
+    '["c","fix","self-check","why/upkeep",0.5,true,null]' '["d","plan phase","human","requested",1,false,null]' \
+    '["e","chore","no row","none",null,false,null]' '["f","run","pre-log","none",1,false,null]' \
+    '["j","untyped","no row","none",null,false,null]')"
+  run "$SUBJECT" landed --json
+  assert_equal "$(jq -c '.by_kind[] | [.kind, .landed, .share, .cost_usd, .cost_share, .held]' <<<"$output" | head -1)" '["fix",2,0.286,3.5,0.467,1]'
+  assert_equal "$(jq -c '.by_target[] | select(.target == "kpi") | [.kpi_claims, .kpi_pending]' <<<"$output")" '[1,1]'
+  assert_equal "$(jq -c '.by_target[] | select(.target == "red") | [.reds, .reds_fixed, .reds_back]' <<<"$output")" '[1,1,0]'
+  run "$SUBJECT" landed
+  assert_success
+  assert_line '| fix | 2 | 0.286 | $3.5 | 0.467 | 1/2 | - | 1 (1 fixed, 0 red again) |'
+  assert_line '| plan | 1 | 0.143 | $2 | 0.267 | 1/1 | 1 (0 improved, 0 regressed, 1 pending) | - |'
+  # another project is its own: home-config holds only i
+  run "$SUBJECT" landed --project home-config --json
+  assert_equal "$(jq -c '[.landed, .rows[0].slug]' <<<"$output")" '[1,"i"]'
+  # an unreadable reds read leaves the reds null, never 0, and the rest still scores
+  printf '#!/usr/bin/env bash\nexit 3\n' > "$SANDBOX/bin/notes"
+  run "$SUBJECT" landed --json
+  assert_success
+  assert_equal "$(jq -c '[.reds_read, (.by_target[] | select(.target == "red") | .reds_fixed)]' <<<"$output")" '[false,null]'
+  run "$SUBJECT" landed --days 0
+  assert_failure 2
+  rm "$BENCH_INGEST"
+  run "$SUBJECT" landed
+  assert_failure 1
+}
+
 @test "reds: each row carries the project of its queue item, so the Alerts tab can file a fix under it" {
   log_triage_setup
   : > "$AGENTCTL_STATE_DIR/runs.jsonl"

@@ -190,6 +190,11 @@
 #                                whose sessions ran it, and how they turned out: landed rate, held
 #                                (landed, its PR not reverted), CI red per PR and first pass, landed
 #                                after a fix-ci try, and reds held (fleet-bench reds), counts behind each
+#   fleet-bench landed [--project P] [--days N] [--json]
+#                                the items of a project (default agent-runtime) that landed in the last N days
+#                                (LANDED_DAYS, 14) by kind, by the source of their row and by target (a KPI claim,
+#                                a red, the human's request, the row's #why/, none): share, dollars, held, KPI
+#                                verdicts and reds fixed behind each
 #   fleet-bench sources [--json] every claude-acct source over BENCH_QUEUE_DAYS: window points used,
 #                                dollars, landed PRs, dollars and PRs per point (exit 1 unreadable)
 #   fleet-bench sizes [--json|--check]
@@ -359,6 +364,7 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${BENCH_LANE_LOG:=$HOME/.agent/model-lane/runs.jsonl}"   # model-lane log: one row per dispatched run, its outcome
 : "${BENCH_LANE_VOIDS:=${BENCH_LANE_LOG%/*}/voids.jsonl}"   # model-lane's voids beside it: runs to rate no more (`model-lane void`)
 : "${BENCH_SKILLS_DIR:=$HOME/.claude/skills}"   # skills: a slash command is a skill when <dir>/<name>/SKILL.md exists
+: "${LANDED_DAYS:=14}"   # the window landed scores over: two weeks, the span effect and retro judge a change by
 : "${PRIO_SAMPLE:=3}"   # row ids shown per origin in prio_default
 : "${BENCH_INGEST:=$HOME/.local/state/notes/ingest.jsonl}"   # the notes CLI's record of every row it wrote: who, from where
 : "${BENCH_PROFILE:=}"                             # the profile board_open and board_days read; empty asks `notes config`
@@ -557,6 +563,21 @@ def on_board($p): agent_row($p) and (.state == "open" or .state == "doing") and 
 # a runner by its conf name ($runners: {<name>: true}), else a session (its item, slug or session id)
 def human_writer: (.by // "") | IN("", "human");
 def door($runners): if human_writer then "human" elif (.by | type) == "string" and $runners[.by] then .by else "session" end;
+# the source of a board row, the one rule inflow and landed count by: given its first added or filed
+# ingest event ($first, null when the record never saw the row), the ingest origin; else the #from/ its
+# triage carried in (from its text, else $text, the text of the row); else the self-check of a hand session; else
+# the human, a session (an 8-hex session id) or the writer. A row the record never saw is pre-log when
+# its id is below $logged, the first id the record minted for its project, else unrecorded.
+def row_source($first; $text; $logged; $id):
+  def from_class: if . == "" then "triage: no #from" elif . == "dream" or . == "ladder-scout" then "from: \(.)" else "from: item or session" end;
+  (($id // "") | capture("-(?<n>[0-9]+)$") | .n | tonumber) as $num
+  | if $first == null then (if $num != null and $num < $logged then "pre-log" else "unrecorded" end)
+    elif ($first.origin // "") != "" then $first.origin
+    else (($first.text // $text // "") | capture("#from/(?<f>[^ ]*)") | .f | from_class) // (
+      if $first.why == "self-check" then "self-check"
+      elif ($first | human_writer) then "human"
+      elif ($first.by | test("^[0-9a-f]{8}$")) then "session"
+      else $first.by end) end;
 # how an ingest.jsonl event takes work off the chain, else empty: merged, done, or a drop split into
 # dup (dup:<id>), moved (sent to its home: `moved:`, improvements.md, a sheet, another board) and
 # dropped. An `improvement` event is the write at the home, paired with its drop, so it is no exit.
@@ -3936,6 +3957,118 @@ cmd_skills() {
   echo "|---|---|---|---|---|---|---|---|---|---|"
   jq -r 'def c($r; $a; $b): if $b == 0 then "-" else "\($r) (\($a)/\($b))" end;
     .skills[] | "| \(.skill) | \(.items) | \(.cancelled) | \(c(.landed_rate; .landed; .rated)) | \(.failed) | \(c(.held_rate; .held; .landed)) | \(if .ci_prs == 0 then "-" else "\(.ci_red_per_pr) (\(.ci_prs) PRs)" end) | \(c(.first_pass_share; .first_pass; .gated)) | \(c(.fixed_rate; .fixed; .fix_tried)) | \(if .reds == null then "?" else c(.reds_held_rate; .reds_held; .reds) end) |"' <<<"$j"
+}
+
+# landed_events -> the ingest record's events that say where a row came from or what it is for
+# (added, filed, tagged), one {action, from, id, ts, by, origin, why, text} a line; rc 1 unreadable
+landed_events() {
+  [ -r "$BENCH_INGEST" ] || return 1
+  { grep -hE '"action":"(added|filed|tagged)"' "$BENCH_INGEST" || :; } \
+    | jq -Rc 'fromjson? | select((.id // "") != "" and (.from // "") != "") | {action, from, id, ts, by, origin, why, text}'
+}
+
+# landed_json <now> <project>: every queue item of the project finished ok with a PR in the last
+# LANDED_DAYS, each tagged with what it is, where its row came from and what it was for, then scored
+# by those three. kind is the item's type (the row grammar's, which agent-queue add records), else plan
+# phase for an item of a plan chain, else untyped. source is its board row's (row_source, the rule inflow counts by; no row). target
+# is the first that holds: kpi (a claim in effect.jsonl names its row or item:<slug>, or the row carried
+# #kpi/), red (a red item: its red tag, a red( task, or a reds row), requested (#requested or
+# #why/requested), why/<reason> (the last #why/ the row carried), none. The row's tags are folded from
+# its ingest events in order: the text an add or file wrote, then each tagged event's +# and -#.
+# Per group: landed, share, dollars (gateway beats list, as in models_json) and their share, held (no
+# outcome row says its PR was reverted), the KPI claims and their verdicts, and the reds and how they
+# ended (`reds`; null when reds cannot be read). Counted, never judged.
+landed_json() {
+  local t="$1" p="$2" since reds read=true REDS_DAYS=$LANDED_DAYS
+  since=$(( t - LANDED_DAYS * 86400 ))
+  reds=$(reds_json "$t") || read=false   # reds_json said why; the reds columns read null, the rest stands
+  [ -r "$BENCH_INGEST" ] || { say "landed: the ingest record cannot be read ($BENCH_INGEST)"; return 1; }
+  jq -cn --arg p "$p" --argjson days "$LANDED_DAYS" --argjson read "$read" \
+     --slurpfile items <(bench_read $BENCH_DONE_ITEMS_CMD --since "$(date -d "@$since" +%F)" 2>/dev/null) \
+     --slurpfile ev <(landed_events) \
+     --slurpfile o <(outcomes_newest | jq -cs 'map({key: .session_id, value: (.prs // [])}) | from_entries') \
+     --slurpfile eff <(effect_lines | jq -c 'select(.subject and .kpi)') \
+     --slurpfile reds <(printf '%s\n' "$reds" | jq -c 'select(.slug and (.cleanup | not)) | {slug, outcome}') "$JQ_LIB"'
+    def sids: (.sessions // "") | split(" ") | map(select(. != ""));
+    def num: (capture("-(?<n>[0-9]+)$") | .n | tonumber) // null;
+    def usd: [.gateway_cost_usd, .cost_usd] | map(select(. != null and . != "") | tonumber? ) | first;
+    def tagset: [scan("#(why/[a-z-]+|kpi/[a-z0-9_]+|requested)\\b") | .[0]];
+    def fold: reduce (sort_by(.ts)[]) as $e ([];
+      if $e.action == "tagged" then (. + ($e.why // "" | [scan("\\+#(why/[a-z-]+|kpi/[a-z0-9_]+|requested)\\b") | .[0]]))
+        - ($e.why // "" | [scan("-#(why/[a-z-]+|kpi/[a-z0-9_]+|requested)\\b") | .[0]])
+      else . + ($e.text // "" | tagset) end | unique);
+    ($o[0] // {}) as $o
+    | ($reds | map({key: .slug, value: .outcome}) | from_entries) as $red
+    | ($ev | group_by("\(.from):\(.id)") | map({key: "\(.[0].from):\(.[0].id)", value: .}) | from_entries) as $by
+    | ($ev | map(select(.action == "added")) | group_by(.from)
+        | map({key: .[0].from, value: (map(.id | num | numbers) | min)}) | from_entries) as $logged
+    | ([$ev[] | .ts[0:10]] | min) as $began
+    | ($eff | map(select(.type == "claim"))) as $claims
+    | ($eff | map(select(.type == "verdict")) | group_by([.subject, .kpi]) | map({key: "\(.[0].subject) \(.[0].kpi)", value: (sort_by(.at) | last | .verdict)}) | from_entries) as $verdict
+    | [$items[] | select(.project == $p and .status == "ok" and (.pr // "") != "")
+       | . as $it | (rowkey // "") as $rk | ($rk | split(":")) as [$rp, $rid]
+       | ($by[$rk] // []) as $evs
+       | ($evs | map(select(.action == "added" or .action == "filed")) | sort_by(.ts) | first) as $first
+       | ($evs | fold) as $tags
+       | ([$claims[] | select(.subject == $rid or .subject == "item:\($it.slug)")] | unique_by(.kpi)
+          | map({kpi, verdict: ($verdict["\(.subject) \(.kpi)"] // "pending")})) as $kc
+       | ((.tags // "" | split(" ") | index("red")) != null or (.task // "" | test("^red\\(")) or $red[.slug] != null) as $isred
+       | ([$tags[] | select(startswith("why/"))] | last) as $why
+       | prkeys as $pk
+       | {slug, row: (if $rk == "" then null else $rk end), pr, finished,
+          kind: (if (.type // "") != "" then .type elif (.plan // "") != "" then "plan phase" else "untyped" end),
+          source: (if $rk == "" then "no row" else row_source($first; null; $logged[$rp] // 0; $rid) end),
+          target: (if ($kc | length) > 0 or any($tags[]; startswith("kpi/")) then "kpi"
+                   elif $isred then "red"
+                   elif ($tags | index("requested")) or $why == "why/requested" then "requested"
+                   elif $why != null then $why else "none" end),
+          cost_usd: usd, work_min: (.work_min // "" | tonumber? // null),
+          reverted: any(sids[] | $o[.] // [] | .[]; .reverted == true and (itemkey | IN($pk[]))),
+          kpis: $kc, red: (if $isred then $red[.slug] // "unread" else null end)}] as $rows
+    | ($rows | length) as $n | ($rows | map(.cost_usd // 0) | add // 0) as $usd
+    | def score($k): group_by(.[$k]) | map(. as $g | ($g | map(.cost_usd // 0) | add) as $c
+        | {($k): $g[0][$k], landed: length, share: ratio(length; $n), cost_usd: ($c | round2), cost_share: ratio($c; $usd),
+           priced: ($g | map(select(.cost_usd != null)) | length),
+           held: ($g | map(select(.reverted | not)) | length), reverted: ($g | map(select(.reverted)) | length),
+           kpi_claims: ($g | map(.kpis[]) | length),
+           kpi_improved: ($g | map(.kpis[] | select(.verdict == "improved")) | length),
+           kpi_regressed: ($g | map(.kpis[] | select(.verdict == "regressed")) | length),
+           kpi_pending: ($g | map(.kpis[] | select(.verdict == "pending")) | length),
+           reds: ($g | map(select(.red != null)) | length),
+           reds_fixed: (if $read then $g | map(select(.red == "fixed")) | length else null end),
+           reds_back: (if $read then $g | map(select(.red | IN("still red", "came back"))) | length else null end)})
+        | sort_by(-.landed, .[$k]);
+      {project: $p, days: $days, ingest_since: $began, landed: $n, cost_usd: ($usd | round2),
+       priced: ($rows | map(select(.cost_usd != null)) | length), reds_read: $read,
+       by_kind: ($rows | score("kind")), by_source: ($rows | score("source")), by_target: ($rows | score("target")),
+       rows: $rows}'
+}
+
+# landed [--project P] [--days N] [--json]: what the work that landed was, where it came from, what it
+# was for, what it cost and what of it held (landed_json), one table per split
+cmd_landed() {
+  local j json=0 p=agent-runtime
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      --project) p=${2:-}; [ -n "$p" ] || { say "landed: --project needs a name"; return 2; }; shift 2 ;;
+      --days) [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || { say "landed: --days takes a day count"; return 2; }
+              LANDED_DAYS=$2; shift 2 ;;
+      *) say "usage: fleet-bench landed [--project P] [--days N] [--json]"; return 2 ;;
+    esac
+  done
+  j=$(landed_json "$(now)" "$p") || return 1
+  if [ "$json" = 1 ]; then printf '%s\n' "$j"; return 0; fi
+  jq -r 'def c($a; $b): if $b == 0 then "-" else "\($a)/\($b)" end;
+    def kpi: if .kpi_claims == 0 then "-" else "\(.kpi_claims) (\(.kpi_improved) improved, \(.kpi_regressed) regressed, \(.kpi_pending) pending)" end;
+    def reds: if .reds == 0 then "-" elif .reds_fixed == null then "\(.reds) (?)" else "\(.reds) (\(.reds_fixed) fixed, \(.reds_back) red again)" end;
+    def table($k; $name; $rows):
+      "", "By \($name):", "",
+      "| \($name | ascii_downcase) | Landed | Share | Cost | Cost share | Held | KPI claims | Reds |",
+      "|---|---|---|---|---|---|---|---|",
+      ($rows[] | "| \(.[$k]) | \(.landed) | \(.share // "-") | $\(.cost_usd) | \(.cost_share // "-") | \(c(.held; .landed)) | \(kpi) | \(reds) |");
+    "landed \(.project): \(.landed) items finished ok with a PR in the last \(.days) days, $\(.cost_usd) (\(.priced) priced). Source reads the ingest record, which starts \(.ingest_since // "nowhere"): a row filed before it is pre-log.",
+    table("kind"; "Kind"; .by_kind), table("source"; "Source"; .by_source), table("target"; "Target"; .by_target)' <<<"$j"
 }
 
 # source_attr <now> -> every claude-acct source over the last BENCH_QUEUE_DAYS, and which source each
@@ -7558,6 +7691,7 @@ main() {
     requests) shift; cmd_requests "$@" ;;
     models) shift; cmd_models "$@" ;;
     skills) shift; cmd_skills "$@" ;;
+    landed) shift; cmd_landed "$@" ;;
     sources) shift; cmd_sources "$@" ;;
     sizes) shift; cmd_sizes "$@" ;;
     -h | --help) usage ;;
