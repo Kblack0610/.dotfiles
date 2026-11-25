@@ -974,7 +974,8 @@ human_words() {
   said="$(agent-panel human "$t" --since "$since")" || { echo "agent-panel human failed on $t" >&2; return 1; }
   hits="$(jq -c -s --arg q "$quote" '
     def n: ascii_downcase | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "");
-    .[] | select(((.text | n) | contains($q | n)) and (($q | n | length) >= 3 or (.text | n) == ($q | n)))' <<<"$said" 2>/dev/null)"
+    ($q | n) as $qn | ($qn | length) as $ql
+    | .[] | select(((.text | n) | contains($qn)) and ($ql >= 3 or (.text | n) == $qn))' <<<"$said" 2>/dev/null)"
   [ -n "$hits" ] || { echo "no words of the human's in this session since $since contain: $quote" >&2; return 1; }
   printf '%s\n' "$hits"
 }
