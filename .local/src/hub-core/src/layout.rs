@@ -27,7 +27,7 @@ pub struct Tab {
     pub inner: &'static [Inner],
 }
 
-pub const TABS: [Tab; 12] = [
+pub const TABS: [Tab; 13] = [
     // The landing page: every action that waits on the human, then the summary lines.
     Tab {
         id: "home",
@@ -47,6 +47,29 @@ pub const TABS: [Tab; 12] = [
         question: "What is my day?",
         sections: &["nav", "lanes", "briefing", "rollup", "sections", "outbox"],
         inner: &[],
+    },
+    // Every report an agent filed for the human (`hub_core::reports`, from `notes report list`):
+    // Today is what needs the human, then today's and the week's unread, then the day's digests and
+    // the human's own captures; Archive is every other report by day. The TUI tab is ar-5259, so
+    // until then it is in OFF_BAR.
+    Tab {
+        id: "reports",
+        group: "Today",
+        title: "Reports",
+        question: "What did agents report to me?",
+        sections: &["needs", "stream", "digests", "captures", "archive"],
+        inner: &[
+            Inner {
+                id: "today",
+                title: "Today",
+                sections: &["needs", "stream", "digests", "captures"],
+            },
+            Inner {
+                id: "archive",
+                title: "Archive",
+                sections: &["archive"],
+            },
+        ],
     },
     Tab {
         id: "log",
@@ -760,8 +783,9 @@ pub fn project_target(word: &str) -> Option<(&'static Inner, Option<&'static str
         })
 }
 
-/// The layout's tabs the TUI's number row leaves off: Daily, which only agent-web lists.
-pub const OFF_BAR: [&str; 1] = ["daily"];
+/// The layout's tabs the TUI's number row leaves off: Daily, which only agent-web lists, and
+/// Reports, which the TUI draws once ar-5259 lands.
+pub const OFF_BAR: [&str; 2] = ["daily", "reports"];
 
 /// A tab's key on the TUI's number row: 1 for the first, 0 for the tenth; a tab past the tenth
 /// has none (Tab and Shift-Tab still reach it).
@@ -1075,7 +1099,7 @@ mod tests {
         assert_eq!(
             groups,
             [
-                ("Today", vec!["home", "daily", "log"]),
+                ("Today", vec!["home", "daily", "reports", "log"]),
                 ("Agents", vec!["queue", "sessions"]),
                 ("Projects", vec!["projects", "releases"]),
                 (

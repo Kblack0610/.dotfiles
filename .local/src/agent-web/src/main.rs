@@ -40,6 +40,7 @@ mod push;
 mod queue;
 mod releases;
 mod remote;
+mod reports;
 mod reqlog;
 mod schedules;
 mod sessions;
@@ -278,6 +279,8 @@ fn router(state: Shared) -> Router {
         .route("/api/coverage", get(departments::get))
         .route("/api/focus", get(focus::get).put(focus::save))
         .route("/api/inbox/ack", post(focus::ack))
+        .route("/api/reports", get(reports::get))
+        .route("/api/reports/read", post(reports::read))
         .route("/api/outbox", get(outbox::get).put(outbox::save))
         .route("/api/queue", get(queue::list).post(queue::add))
         .route("/api/queue/cancel", post(queue::cancel))
@@ -2222,7 +2225,11 @@ mod tests {
     /// The caches read on their first open, and why that is fine. Times are each tab's first open
     /// after a start, `agent-web-shot --time --every-tab`, load avg 117, 2026-11-18. Over about 1 s
     /// cold belongs in `warm`. Revisit when a tab's first open passes 1.5 s.
-    const ON_OPEN: [(&str, &str); 9] = [
+    const ON_OPEN: [(&str, &str); 10] = [
+        (
+            "reports",
+            "Reports, a `notes report list` of local files; the nav badge reads it on page load",
+        ),
         ("departments", "Projects Coverage, 1492 ms cold"),
         ("stages", "Projects Ladder, 678 ms cold"),
         (
