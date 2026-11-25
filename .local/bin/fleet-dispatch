@@ -1281,11 +1281,18 @@ row_asker() { asker_map; jq -r --arg k "$1" '.[$k] // empty' <<<"$ASKER_MAP"; }
 # GDUmQQ, ar-4554). A land or fix-ci requeue of an item's own PR (`pr`, `pr_owner` and its
 # `<owner>_tries` stamp, the test item_brief reads) passes too: it starts a Claude session, but a stranded
 # PR costs more than one, and DISPATCH_FIX_TRIES bounds the tries; held, share_return sent hc-857 back to
-# its row and left home-config#1406 green and unmerged (2026-11-23). The one test share_why and
-# queue_depth apply.
+# its row and left home-config#1406 green and unmerged (2026-11-23). An urgent or high chain successor
+# passes as well: an item with an `after:` key that is a plan phase or a validate item, agent-queue's
+# stack_dependent test (a `plan:` line or a phase brief, PHASE_BRIEF_RE; the `validate` tag). The cap
+# already let its chain start, and chain-lag bounds its handoff (chain_handoff_p90_max); held,
+# validate-ar-5194 waited 113m and tripped it (ar-4436, 2026-11-24). A plan's first phase, and any other
+# `--after` follow-up (high by default), still wait. The one test share_why and queue_depth apply.
 # shellcheck disable=SC2016
 SHARE_JQ="$HUMAN_ASK_JQ"'def share_held($s): (.project // "") as $p | (.agent // "claude") as $a | ($s.projects[$p].full // false)
   and (((.pr // "") != "" and (.pr_owner // "") != "" and (.[.pr_owner + "_tries"] // "") != "") | not)
+  and (((.after // "") != "" and ((.priority // "") | test("^(urgent|high)$"))
+    and ((.plan // "") != "" or ((" " + (.tags // "") + " ") | contains(" validate "))
+      or ((.task // "") | test("(^|\\s)Phases? [0-9]+( and [0-9]+)* of the plan /[^:]+\\.md:")))) | not)
   and ((.priority == "urgent" and (.from // "human") == "human") | not)
   and (((.plan // "") != "" and (.from // "human") == "human") | not)
   and ((" " + (.tags // "") + " ") | test(" #?red ") | not) and (human_ask | not)
