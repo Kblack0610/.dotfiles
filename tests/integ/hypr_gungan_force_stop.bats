@@ -17,6 +17,8 @@ setup() {
   export XDG_RUNTIME_DIR="$T/run" GUNGAN_REC="$T/gungan_recording"
   mkdir -p "$XDG_RUNTIME_DIR" "$T/fake" "$HOME/.local/bin"
   ln -s "$REPO_ROOT/.local/bin/desk" "$HOME/.local/bin/desk"
+  # The default bar is noctalia; the signal this pins is waybar's, so record waybar.
+  mkdir -p "$HOME/.local/state/desk" && echo "bar=waybar-classic" > "$HOME/.local/state/desk/parts"
   for n in gungan pw-record whisper-cpp; do ln -s "$(command -v bash)" "$T/fake/$n"; done
   mkfifo "$T/hold" "$T/ready"
   REAL_PKILL="$(command -v pkill)"
