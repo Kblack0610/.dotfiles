@@ -4643,6 +4643,34 @@ a"
   assert_output "gm-7,gm-9"
 }
 
+@test "at the cap a low pull or an urgent add never returns a phase of a plan chain; the plain item goes" {
+  # 2026-11-23 (ar-5357): P2 and P3 of a plan went back to their rows for low ar-4852 and urgent
+  # bar-139, and the chain stopped there.
+  printf '# P\n\n## Phases\n\n- [ ] one\n- [ ] two\n' > "$SANDBOX/plan.md"
+  # b goes in first, so it ranks before the phases and the last-ranked item is a phase.
+  "$AQ" add --project game --from shepherd --priority low --slug b "b" >/dev/null
+  "$AQ" add --project game --from shepherd --priority low --slug p2 "feat(game): P2
+Phase 2 of the plan $SANDBOX/plan.md: the doors." >/dev/null
+  legacy p3 "plan: $SANDBOX/plan.md" --project game --from shepherd --priority low "feat(game): P3"
+  for s in p2 p3 b; do "$AQ" set "$s" row="game:gm-$s" >/dev/null; done
+  export AGENT_QUEUE_CAP=3
+  AGENT_QUEUE_PULL=after run "$AQ" add --project game --priority low --from board:game:gm-9 --slug gm-9 "feat(game): the hinges"
+  assert_success
+  assert_output --partial "returned b to its board row to make room for low gm-9 under the cap of 3"
+  # What is left is the two phases and gm-9, a sibling of this pull-after (AQ_ROOM_KEEP): all held.
+  AQ_ROOM_KEEP=" gm-9" AGENT_QUEUE_PULL=after run "$AQ" add --project game --priority low --from board:game:gm-8 --slug gm-8 "feat(game): the locks"
+  assert_failure 5
+  refute_output --partial "returned p"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority urgent --slug u1 "urgent one"
+  assert_success
+  assert_output --partial "returned gm-9 to its board row"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority urgent --slug u2 "urgent two"
+  assert_failure 5
+  refute_output --partial "returned p"
+  run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
+  assert_output "p2,p3,u1"
+}
+
 @test "make_room returns an item held to a clock time, moves nothing for an add the lock refuses, and never returns an item that started" {
   "$AQ" add --project game --priority low --slug h "the human's" >/dev/null
   legacy n "tags: at:23:59" --project game --from shepherd --priority low "tonight"
