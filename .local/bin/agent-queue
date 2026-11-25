@@ -1826,16 +1826,6 @@ row_brief() {
   if [ "$(bare_words <<<"$first")" = "$(bare_words <<<"$1")" ]; then printf '%s' "$rest"; else printf '%s' "$body"; fi
 }
 
-# held_row_line <row> <from> -> the line an over-cap add prints when its board row already exists: --row,
-# or a board pull (`--from board:<project>:<id>`, promote's add), which names its row as surely; rc 1 when
-# it names none, so the caller files an overflow row. A board pull once got one too, a twin each triage
-# pass that inbox-triage then dropped as a dup of the open row (ar-6187).
-held_row_line() {
-  if [ -n "$1" ]; then echo "agent-queue: row $1 is left un-started where it is: dispatch promotes it as the queue drains"
-  elif [[ "$2" == board:* ]]; then echo "agent-queue: its board row ${2##*:} on $(cut -d: -f2 <<<"$2") is left un-started where it is: dispatch promotes it as the queue drains"
-  else return 1; fi
-}
-
 # overflow_row <project> <title> <priority> <epic> <want> <task> <gates> <name> [<tags>] -- an add the queue does
 # not take leaves its board row un-started, ranked as filed (`#requested` first) with the whole task under
 # it as its brief, carrying <gates> (board gate tags, no #) when it waits on any, and says so on stderr, and
@@ -2084,6 +2074,9 @@ work_machine_guard() {
   die "this is a work machine ($PROJECT_MACHINE_PROFILE): no dispatcher runs here and home runners never take work. Put the follow-up in the project's tracker (ticket), or work it in this session"
 }
 
+# cmd_add: an add over the admission cap that already has its row (--row, or a board pull from
+# promote) leaves that row where it is. Only one with no row gets an overflow row: a board pull's
+# overflow row was a twin that dispatch skipped to the human sheet beside the first (2026-11-25).
 cmd_add() {
   local project="" mode=oneshot priority=high tags="" after="" from=human agent=claude slug=""
   local running="" session="" task=() tag planf="" dry="" check="" weight="" title="" epic="" repeat="" from_given="" want="" row="" priority_given=""
@@ -2235,7 +2228,8 @@ cmd_add() {
   fi
   if [ -n "$capped" ] && ! admit "$from" "$priority" "$tags" "$project" "$slug" "$hold_title"; then
     unlock # the board write is notes' and can be slow: the lock covers only the count
-    held_row_line "$row" "$from" >&2 || overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "" "$slug" "$tags"
+    if [ -n "$row" ] || [[ "$from" == board:* ]]; then echo "agent-queue: row ${row:-${from##*:}} is left un-started where it is: dispatch promotes it as the queue drains" >&2
+    else overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "" "$slug" "$tags"; fi
     exit "$AQ_EX_HELD"
   fi
   check_after "$after" "$slug"

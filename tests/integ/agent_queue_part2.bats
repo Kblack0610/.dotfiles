@@ -1607,7 +1607,7 @@ second line of the brief
 }
 
 @test "an over-cap board pull (promote's --from board:) files no second row: the five check rows triage re-added each pass" {
-  # ar-6187, 2026-11-25: fleet-bench triage promoted each open check row at the cap; the held add filed an
+  # ar-6187 and ar-6102, 2026-11-25: fleet-bench triage promoted each open check row at the cap; the held add filed an
   # overflow twin with the cut title on every pass, which inbox-triage then dropped as a dup of the open row.
   story_notes
   export AGENT_QUEUE_CAP=1 AGENT_QUEUE_PULL=dispatch
@@ -1621,7 +1621,7 @@ second line of the brief
     "check(alert): HomelabCronJobFailed trader-markets-history-bars firing, alertmanager-fleet tripped since 2026-11-25, expected: no fleet=fix alert"; do
     run "$AQ" add --project level --priority high --from "board:level:lv-$n" --slug "lv-$n" --tags "red alert cause:c$n" --title "$t" -- "$t"
     assert_failure 5
-    assert_output --partial "its board row lv-$n on level is left un-started where it is"
+    assert_output --partial "row lv-$n is left un-started where it is"
     n=$((n + 1))
   done
   # The next pass pulls the same row again and is held again, still filing nothing.
