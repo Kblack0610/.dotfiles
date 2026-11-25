@@ -248,6 +248,46 @@ phase_takes() {
     { grep -oiE '[a-z]{2,4}-[0-9]+$' || true; } | tr 'A-Z' 'a-z' | awk '!seen[$0]++'
 }
 
+# plan_taken_rows <plan file> -> each board row the plan owns, one a line: what every phase line takes, ticked
+# or not (phase_takes), and its `rows:` line (plan_rows), which its last phase closes. The one taken-row
+# query: agent-land's loose_gate and the loose-row detector read it.
+plan_taken_rows() {
+  [ -f "$1" ] || return 0
+  { phase_takes "$(awk -v mode=list -v sup=0 "$_PLAN_PHASES_AWK" "$1" | cut -f2-)"; plan_rows "$1"; } | sort -u
+}
+
+# item_filed_rows <item> -> each agent-lane board row queue item <item> filed in the record's 30 days, one id
+# a line: one it added itself (`added`, by it) and one inbox-triage filed from its outbox line (`filed`, the
+# line's `#from/<item>`). The board keeps no `#from/` tag (triage strips it), so the ingest record (`notes
+# log`) is the one place that says who filed a row. Fails when the record cannot be read.
+item_filed_rows() {
+  local out st
+  # Streamed, not held in a variable: the record's 30 days run to tens of MB.
+  out="$(notes log --days 30 --json 2>/dev/null | jq -r --arg i "$1" 'select((.id // "") != "" and .lane == "agent")
+    | select((.action == "added" and .by == $i)
+        or (.action == "filed" and any((.text // "") | splits("\\s+"); . == "#from/" + $i)))
+    | .id'; st=("${PIPESTATUS[@]}"); [ "${st[0]}" = 0 ] && [ "${st[1]}" = 0 ])" || return 1
+  [ -z "$out" ] || awk '!seen[$0]++' <<<"$out"
+}
+
+# plan_loose_rows <plan file> <item> [<own row id>] -> each row <item> filed (item_filed_rows) still open on the
+# agent lane that no phase of the plan takes (plan_taken_rows): no phase or plan row of any plan (agent-queue
+# add --plan files those), and not <own row id>, the row the item works. A found blocker the plan does not
+# own. Fails when the record or the board cannot be read.
+plan_loose_rows() {
+  local filed id board taken ids=()
+  filed="$(item_filed_rows "$2")" || return 1
+  [ -n "$filed" ] || return 0
+  for id in $filed; do ids+=(--id "$id"); done
+  board="$(notes board --json "${ids[@]}" 2>/dev/null)" && [ -n "$board" ] || return 1
+  taken="$(plan_taken_rows "$1" | jq -Rsc 'split("\n") | map(select(. != ""))')"
+  jq -r --arg own "${3:-}" --argjson taken "$taken" '.rows[]?
+    | select(.state == "open" and (.lane // "agent") == "agent" and .id != $own and (.id | IN($taken[]) | not))
+    | select((.details // []) | if type == "array" then join("\n") else tostring end
+        | test("(^|\\s)(Phases? [0-9]+( and [0-9]+)* of the plan |Run the open phases of the approved plan )") | not)
+    | .id' <<<"$board"
+}
+
 # plan_rows_add <plan file> <row id> -- put <row id> on the plan's `rows:` line, a new line under its
 # `epic:` line (else its title, else the top) when it has none, so agent-land closes that row with
 # the plan's last phase. A row already on it is left as is. Written in place, so a link stays a link.
@@ -275,28 +315,57 @@ plan_row_task() {
   printf "Run the open phases of the approved plan %s in order, one PR each, marking each done in the plan's ## Phases." "$1"
 }
 
-# plan_row_title <plan file> -> the title of that row: the plan's first `# ` heading (outside a leading
-# `---` frontmatter block and code fences), then `(plan <slug>)`, the heading cut at a word so the
-# whole fits the agent board's 80-character title (notes-cli TITLE_MAX). A plan with no heading, or a
-# slug too long to leave 20 characters for one, gets `plan <slug>: run its open phases`, slug first:
-# ask-sweep finds a plan's row by its slug, so a cut must never reach it. `#`, `<` and `>` are
-# dropped, or the heading would add tags or a marker. Why: slugs are session names
-# ("swirling-sprouting-knuth"), and the human could not tell what a row was for (2026-11-24, ar-5348).
+# plan_heading <plan file> -> the plan's first `# ` heading (outside a leading `---` frontmatter block
+# and code fences) as one title-safe line, or nothing. `#`, `<` and `>` are dropped, or the heading
+# would add tags or a marker. The one reading of a plan's name for a board row's title.
+plan_heading() {
+  awk 'NR == 1 && /^---[[:space:]]*$/ { fm = 1; next }
+    fm { if (/^---[[:space:]]*$/) fm = 0; next }
+    /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
+    !fence && /^# +[^[:space:]]/ { sub(/^# +/, ""); print; exit }' "$1" 2>/dev/null | title_clean
+}
+
+# title_clean < text -> one title-safe line: `#`, `<`, `>` and non-ASCII dropped, spaces squeezed.
+title_clean() {
+  LC_ALL=C tr -d '#<>' | LC_ALL=C tr -cd '\40-\176' | sed 's/  */ /g; s/^ //; s/ $//'
+}
+
+# title_cut <text> <room> -> the text cut to <room> characters at a word, trailing separators dropped.
+title_cut() {
+  local h="$1" room="$2"
+  [ "${#h}" -gt "$room" ] || { printf '%s\n' "$h"; return 0; }
+  if [ "${h:room:1}" = ' ' ]; then h="${h:0:room}"; else h="${h:0:room}"; h="${h% *}"; fi
+  sed 's/[ :,;-]*$//' <<<"$h"
+}
+
+# plan_row_title <plan file> -> the title of that row: the plan's heading (plan_heading), then
+# `(plan <slug>)`, the heading cut at a word so the whole fits the agent board's 80-character title
+# (notes-cli TITLE_MAX). A plan with no heading, or a slug too long to leave 20 characters for one,
+# gets `plan <slug>: run its open phases`, slug first: ask-sweep finds a plan's row by its slug, so a
+# cut must never reach it. Why: slugs are session names ("swirling-sprouting-knuth"), and the human
+# could not tell what a row was for (2026-11-24, ar-5348).
 plan_row_title() {
   local slug h room
   slug=$(basename "$1" .md)
   room=$((80 - ${#slug} - 8))
-  h=$(awk 'NR == 1 && /^---[[:space:]]*$/ { fm = 1; next }
-    fm { if (/^---[[:space:]]*$/) fm = 0; next }
-    /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
-    !fence && /^# +[^[:space:]]/ { sub(/^# +/, ""); print; exit }' "$1" 2>/dev/null |
-    LC_ALL=C tr -d '#<>' | LC_ALL=C tr -cd '\40-\176' | sed 's/  */ /g; s/^ //; s/ $//')
+  h=$(plan_heading "$1")
   if [ -z "$h" ] || [ "$room" -lt 20 ]; then printf 'plan %s: run its open phases\n' "$slug"; return 0; fi
-  if [ "${#h}" -gt "$room" ]; then
-    if [ "${h:room:1}" = ' ' ]; then h="${h:0:room}"; else h="${h:0:room}"; h="${h% *}"; fi
-    h=$(sed 's/[ :,;-]*$//' <<<"$h")
-  fi
-  printf '%s (plan %s)\n' "$h" "$slug"
+  printf '%s (plan %s)\n' "$(title_cut "$h" "$room")" "$slug"
+}
+
+# plan_phase_title <plan file> <phases> <phase name> -> the title of a phase's story row: the phase
+# name, then `(P<n>, <plan heading>)`. The name leads and the heading is cut to what is left of the 80
+# characters (dropped under 12), so the row says the work, never the session slug the plan file is
+# named for. <phases> is the item's `phases:` value ("2" or "2 3"). Why: rows read "<slug> P2: Intake
+# gate" and the human could not tell the plan from the slug (2026-11-24, ar-5462).
+plan_phase_title() {
+  local tag h room name
+  name=$(title_clean <<<"$3")
+  tag="P${2// /+}"
+  h=$(plan_heading "$1")
+  room=$((80 - ${#name} - ${#tag} - 5))
+  if [ -n "$h" ] && [ "$room" -ge 12 ]; then printf '%s (%s, %s)\n' "$name" "$tag" "$(title_cut "$h" "$room")"; return 0; fi
+  printf '%s (%s)\n' "$(title_cut "$name" $((80 - ${#tag} - 3)))" "$tag"
 }
 
 # plan_row_plan <text> -> the plan a plan row's brief names (plan_row_task), whether or not that file
