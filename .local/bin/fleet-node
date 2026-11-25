@@ -78,25 +78,24 @@ behind() {
     | "\($p) is behind origin/main (\(.detail)): dotfiles-autopull --now \($p)"' <<<"$drift"
 }
 
-# clone_shape -> one line per stowed dotfiles checkout that is shallow or does not fetch every branch,
-# with the commands that fix it. A pushed agent branch then has no remote-tracking ref, so
+# clone_shape -> one line per fault in each stowed dotfiles checkout's shape, with the command that fixes
+# it. One that fetches only some branches keeps no remote-tracking ref for a pushed agent branch, so
 # `git branch -r --contains` is empty and fleet-shepherd's takeover reads its commits as not pushed and
 # never hands the stalled session over (ar-5157: razer-laptop's `--depth 1` clone fetched only main,
-# and three sessions sat STALLED 9 to 16h on 2026-11-24).
+# and three sessions sat STALLED 9 to 16h on 2026-11-24). A shallow one stops history at its graft, so
+# a merge base past it reads as missing.
 clone_shape() {
-  local repo fix specs
+  local repo q specs
   for repo in "${DOTFILES_DIR:-$HOME/.dotfiles}" "${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}"; do
-    # Not a checkout of its own (missing, or a parent repo's): what it lacks is another check's line.
-    [ -e "$repo/.git" ] && [ "$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null)" = "$(cd "$repo" && pwd -P)" ] || continue
-    fix="" specs=$(git -C "$repo" config --get-all remote.origin.fetch 2>/dev/null) || true
+    # Not a checkout of its own (missing, or a parent repo's), or no origin to fetch from: what it lacks
+    # is another check's line.
+    [ -e "$repo/.git" ] && [ "$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null)" = "$(cd "$repo" && pwd -P)" ] &&
+      git -C "$repo" remote get-url origin >/dev/null 2>&1 || continue
+    q=$(printf %q "$repo") specs=$(git -C "$repo" config --get-all remote.origin.fetch 2>/dev/null) || true
     grep -qxE '\+?refs/heads/\*:refs/remotes/origin/\*' <<<"$specs" ||
-      fix="git -C $repo config --replace-all remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*' && "
-    if [ "$(git -C "$repo" rev-parse --is-shallow-repository 2>/dev/null)" = true ]; then
-      fix+="git -C $repo fetch --unshallow origin"
-    elif [ -n "$fix" ]; then
-      fix+="git -C $repo fetch origin"
-    fi
-    [ -z "$fix" ] || echo "$repo is a shallow or one-branch clone, so a pushed agent branch reads as unpushed: $fix"
+      echo "$repo fetches only some branches, so a pushed agent branch reads as unpushed: git -C $q remote set-branches --add origin '*' && git -C $q fetch origin"
+    [ "$(git -C "$repo" rev-parse --is-shallow-repository 2>/dev/null)" != true ] ||
+      echo "$repo is a shallow clone, so history stops at its graft: git -C $q fetch --unshallow origin"
   done
   return 0
 }
