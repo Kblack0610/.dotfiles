@@ -280,7 +280,7 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   message 'buy the clip pack'
   answer '{"quote":"buy it","row":"buy the clip pack","tier":2,"size":"S","done_is_stated":true,"human_only":true}'
   run "$SWEEP" run
-  assert_called 'ptask board add --want ask buy the clip pack'
+  assert_called 'ptask board add --want ask --why upkeep buy the clip pack'
   assert_not_called 'ptask board --agent add buy'
 }
 
