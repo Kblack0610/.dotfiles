@@ -117,7 +117,7 @@ file_plan() {
   esac
   say "agent-queue refused the plan $planf: $why"
   rc=0
-  notes ptask "$board" --agent add --why upkeep "fix(plan): $slug: agent-queue refuses its Phases checklist ($(ascii 160 <<<"$why")); fix it, then agent-queue add --plan $planf #size/s #low" \
+  notes ptask "$board" --agent add "fix(plan): $slug: agent-queue refuses its Phases checklist ($(ascii 160 <<<"$why")); fix it, then agent-queue add --plan $planf #size/s" \
     >/dev/null 2>&1 || rc=$?
   # 3: an open twin; 4: the outbox took it, where inbox-triage joins a later twin.
   case "$rc" in 0|3|4) FILED=$((FILED + 1)); return 0 ;; esac
