@@ -3829,6 +3829,26 @@ picks_order() { DRY=1 JUDGE_RC='' fill_day 4 | grep -oE ': (ap|gm)-[0-9]+ \[' | 
   assert_output --partial 'unplaceable: site'
 }
 
+@test "a worker whose probe finds no checkout of a repo it lists takes no item of it, and hosts says so" {
+  # 2026-11-24 (ar-5245): razer-laptop listed unity-core-playground but never cloned it, so every pass placed
+  # an item there and its wt died with "not a directory", leaving the item queued for the next pass.
+  mkdir -p "$SANDBOX/repos/game"
+  project game beta "$SANDBOX/repos/game"
+  worker '2.0 16 1 50'
+  queued_item in-game low "$(date -u +%FT%TZ)"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_success
+  refute_output --partial unplaceable
+  refute_output --partial 'no checkout'
+  echo "$SANDBOX/repos/game" > "$NOTES_FIXTURE/ssh.missing"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_success
+  assert_output --partial "unplaceable: game, 1 queued item: razer-laptop lists $SANDBOX/repos/game but has no checkout there"
+  assert_output --partial "; no checkout of $SANDBOX/repos/game"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts --json
+  assert_equal "$(jq -r '.missing[0]' <<<"$output")" "$SANDBOX/repos/game"
+}
+
 @test "hosts counts a worker's Claude items past the reap grace with no transcript as stuck at start" {
   # 2026-11-18: 27 sessions sat on razer-laptop's first-run screen for hours and nothing paged.
   project game beta "$SANDBOX/repos/game"
