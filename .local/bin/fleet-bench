@@ -5039,7 +5039,7 @@ board_upsert() {
 # never takes it twice (flock on a second descriptor of one file would wait on itself).
 upsert_lock_take() {
   mkdir -p "${BENCH_UPSERT_LOCK%/*}" 2>/dev/null
-  exec {UPSERT_LOCK_FD}>>"$BENCH_UPSERT_LOCK" 2>/dev/null || { UPSERT_LOCK_WHY="cannot open the board upsert lock $BENCH_UPSERT_LOCK"; return 2; }
+  { exec {UPSERT_LOCK_FD}>>"$BENCH_UPSERT_LOCK"; } 2>/dev/null || { UPSERT_LOCK_WHY="cannot open the board upsert lock $BENCH_UPSERT_LOCK"; return 2; }
   flock -w "$BENCH_UPSERT_LOCK_WAIT" "$UPSERT_LOCK_FD" && return 0
   upsert_lock_drop
   UPSERT_LOCK_WHY="board upsert lock $BENCH_UPSERT_LOCK held for ${BENCH_UPSERT_LOCK_WAIT}s by another filer"
