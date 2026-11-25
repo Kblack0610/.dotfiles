@@ -82,7 +82,7 @@ load 'fleet_dispatch/common'
   [ -n "$(qitem queued now-one)" ] || fail "the urgent item started past the load hold"
 }
 
-@test "reap files an approved plan whose session is gone as one board row, queues nothing, and files it once" {
+@test "reap files an approved plan whose session is gone as its phase rows, queues nothing, and files it once" {
   # dispatch's pass is not a pull: only the board fills the queue (agent-queue pull_ok)
   unset AGENT_QUEUE_PULL
   stub agent-ask 'echo other-session'
@@ -93,8 +93,26 @@ load 'fleet_dispatch/common'
   assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
   assert_output --partial 'could not file the phases of'
   [ ! -e "$FLEET_DISPATCH_DIR/plans-filed" ] || fail "a plan nothing was filed for is marked filed"
-  # with a board, agent-queue files the row (agent_queue.bats) and exits 5: filed once, then never again
-  stub agent-queue 'case "$1" in add) echo "add $*" >> "$NOTES_FIXTURE/aq-adds"; exit 5 ;; esac; exit 0'
+  # held with nothing filed (its epic: new proposal waits): not marked filed, so the next pass tries again (ar-5605)
+  stub agent-queue 'case "$1" in add) echo "agent-queue: x.md waits on its epic: new proposal in inbox-triage; nothing filed" >&2; exit 5 ;; esac; exit 0'
+  run reconcile_plans
+  assert_success
+  [ ! -e "$FLEET_DISPATCH_DIR/plans-filed" ] || fail "a plan whose add filed nothing is marked filed"
+  grep -q 'left orphan.md for next pass: .*nothing filed' "$FLEET_DISPATCH_DIR/log.md"
+  # a checklist agent-queue refuses, on a project with no board: nothing to file it on, so it is said and not marked
+  stub agent-queue 'case "$1" in add) echo "agent-queue: --plan x.md: could not read its Phases checklist: no ## Phases" >&2; exit 1 ;; esac; exit 0'
+  run reconcile_plans
+  assert_output --partial 'could not file the phases of'
+  [ ! -e "$FLEET_DISPATCH_DIR/plans-filed" ] || fail "a refused plan with no fix row is marked filed"
+  # with a board, the refusal files one fix(plan) row and marks the plan filed, so the next pass does not retry it (ar-5605)
+  jq -n '{trackers: {game: {lab: "game"}}, paths: {}}' > "$DISPATCH_PROJECT_MAP"
+  run reconcile_plans
+  assert_success
+  grep -q "notes ptask game --agent add --why fault fix(plan): orphan: agent-queue refuses its Phases checklist (no  Phases); fix it, then agent-queue add --plan $SANDBOX/orphan.md" "$NOTES_FIXTURE/calls.log"
+  grep -qxF "$SANDBOX/orphan.md" "$FLEET_DISPATCH_DIR/plans-filed"
+  rm "$FLEET_DISPATCH_DIR/plans-filed"
+  # with a board, agent-queue files each phase as its row (agent_queue.bats) and exits 5: filed once, then never again
+  stub agent-queue 'case "$1" in add) echo "add $*" >> "$NOTES_FIXTURE/aq-adds"; echo "held orphan-p2 -> game:gm-1"; exit 5 ;; esac; exit 0'
   run reconcile_plans
   assert_success
   grep -q 'filed orphan.md to run its open phases' "$FLEET_DISPATCH_DIR/log.md"

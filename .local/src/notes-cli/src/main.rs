@@ -23,7 +23,6 @@ mod focus_sweep;
 mod gate;
 mod improve;
 mod inbox;
-mod inbox_ack;
 mod index;
 mod ingest;
 mod knowledge;
@@ -238,8 +237,7 @@ enum Cmd {
         #[arg(long, conflicts_with_all = ["json", "agent", "version", "done_days"])]
         weigh: bool,
     },
-    /// Triage the dated-capture inbox (list / add / archive), and mark inbox page rows
-    /// reviewed (ack). No subcommand = list.
+    /// Triage the dated-capture inbox (list / add / archive). No subcommand = list.
     Inbox {
         #[command(subcommand)]
         sub: Option<InboxCmd>,
@@ -821,7 +819,8 @@ enum PtaskCmd {
     /// Close the first matching open task undelivered: the row stays, ticked, with the
     /// reason in its marker. Needs --why or --dup
     Drop {
-        /// Why it will not be delivered: stale, superseded, or where it moved ("moved: ideas.md")
+        /// Why it will not be delivered: stale, superseded, or where it moved ("moved: ideas.md").
+        /// Each open row gated #after/ on it is named on stderr, with the command that frees it
         #[arg(long, value_name = "WHY")]
         why: Option<String>,
         /// It duplicates this row (its id, like ar-142); its open children move under that row
@@ -1150,14 +1149,6 @@ enum InboxCmd {
         /// Archive every dated capture before YYYY-MM-DD
         #[arg(long)]
         before: Option<String>,
-    },
-    /// Mark a Handled-today row of the inbox page reviewed (it folds into `+N reviewed`), or
-    /// take the mark back with --undo; republishes the page
-    Ack {
-        /// The row's key: the `ts` of its ingest event, as the page's `<!-- ack:... -->` holds it
-        key: String,
-        #[arg(long)]
-        undo: bool,
     },
 }
 
@@ -1993,10 +1984,6 @@ fn main() -> Result<()> {
                     stale,
                     before,
                 }) => inbox::archive(&prof, &log, target.as_deref(), stale, before.as_deref())?,
-                Some(InboxCmd::Ack { key, undo }) => {
-                    inbox_ack::mark(&prof, &key, !undo)?;
-                    daily::publish_inbox_page(&prof, &log)?;
-                }
             }
             0
         }
