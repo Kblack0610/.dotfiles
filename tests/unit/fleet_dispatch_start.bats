@@ -2119,10 +2119,11 @@ stacked_pair() {
 
 # --- rollup ---------------------------------------------------------------------------
 
-# reject <harness> <model> <why> [days ago] -- one lane trainee run in model-lane's log that a review sent back
+# reject <harness> <model> <why> [days ago] -- one lane trainee run in model-lane's log that a review sent back;
+# its id is its line number, since the log folds a run's copies by id
 reject() {
   jq -nc --arg h "$1" --arg m "$2" --arg w "$3" --arg t "$(date -u -d "${4:-0} days ago" +%FT%T+00:00)" \
-    '{id: ("r" + ($t | gsub("[^0-9]"; ""))), ts: $t, lane: "trainee", ran: $m, harness: $h, outcome: "redo", why: $w, item: "ar-x"}' >> "$DISPATCH_LANE_RUNS"
+    --arg n "$(wc -l < "$DISPATCH_LANE_RUNS")" '{id: ("r" + $n), ts: $t, lane: "trainee", ran: $m, harness: $h, outcome: "redo", why: $w, item: "ar-x"}' >> "$DISPATCH_LANE_RUNS"
 }
 
 rollup_setup() {
@@ -2152,6 +2153,17 @@ rollup_setup() {
   assert_output 'rollup: no new cause since '"$(date -u -d '7 days ago' +%F)"
   run grep -c '^notes ptask agent-runtime --agent add ' "$NOTES_FIXTURE/calls.log"
   assert_output 1
+}
+
+@test "rollup: a trainee reject the union merge doubled beside its later ok rating counts by the newest, so it files nothing" {
+  rollup_setup
+  for i in 1 2 3; do reject nim glm 'nim:glm left no diff'; done
+  # each run was re-rated ok on another clone; ~/.agent's union merge kept the old redo copy beside it
+  printf '%s\n' "$(jq -c '. + {outcome: "ok", rated: "2099-01-01T00:00:00+00:00"}' "$DISPATCH_LANE_RUNS")" >> "$DISPATCH_LANE_RUNS"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
+  assert_success
+  assert_output 'rollup: no new cause since '"$(date -u -d '7 days ago' +%F)"
+  assert_not_called 'ptask agent-runtime --agent add'
 }
 
 @test "rollup: two rejects of a cause, or three older than the window, file nothing" {
