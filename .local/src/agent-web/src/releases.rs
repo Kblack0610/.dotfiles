@@ -6,6 +6,7 @@
 //! page re-reads every minute while it shows (Prometheus has no push); a project page's checks
 //! line reads through the same keep.
 
+use crate::cache::failed;
 use axum::extract::Query as UrlQuery;
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -103,12 +104,7 @@ fn render(s: &Releases, q: &Query) -> String {
         app,
         app_links: app.map(|a| hub_core::table::links(&[a]).pop().unwrap_or_default()),
     };
-    serde_json::to_string(&out).unwrap_or_else(|e| failed(e.to_string()))
-}
-
-/// A body the tab can still render when reading itself failed.
-fn failed(e: String) -> String {
-    serde_json::json!({ "rows": [], "errors": [e] }).to_string()
+    serde_json::to_string(&out).unwrap_or_else(|e| failed(&["rows"], e.to_string()))
 }
 
 /// The view `q` asks for, over a read of its own joined to the queue `items`, each app with its
@@ -127,7 +123,7 @@ pub async fn get(q: Query, (items, queue_error): (Vec<Item>, Option<String>)) ->
     };
     match tokio::task::spawn_blocking(read).await {
         Ok(s) => render(&s, &q),
-        Err(e) => failed(e.to_string()),
+        Err(e) => failed(&["rows"], e.to_string()),
     }
 }
 
@@ -453,11 +449,5 @@ mod tests {
             "an unknown app's read says what it was asked"
         );
         assert!(body(Query::default()).get("asked").is_none());
-    }
-
-    #[test]
-    fn a_failed_read_still_gives_the_tab_a_body() {
-        let v: serde_json::Value = serde_json::from_str(&failed("gone".into())).unwrap();
-        assert_eq!(v["errors"][0], "gone");
     }
 }

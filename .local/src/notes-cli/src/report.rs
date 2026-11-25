@@ -530,18 +530,9 @@ pub struct New {
     pub from: String,
 }
 
-/// `title` in kebab case: lowercase letters and digits, every other run one `-`, at most 60.
+/// `title` in kebab case (`md::kebab`), at most 60 characters.
 fn slugify(title: &str) -> String {
-    let mut s = String::new();
-    for c in title.chars() {
-        if c.is_ascii_alphanumeric() {
-            s.push(c.to_ascii_lowercase());
-        } else if !s.ends_with('-') && !s.is_empty() {
-            s.push('-');
-        }
-    }
-    let s = s.trim_end_matches('-');
-    let mut cut = s.chars().take(60).collect::<String>();
+    let mut cut = crate::md::kebab(title).chars().take(60).collect::<String>();
     while cut.ends_with('-') {
         cut.pop();
     }
@@ -770,9 +761,7 @@ pub fn read(p: &Profile, log: &Logger, id: &str, now: DateTime<FixedOffset>) -> 
 mod tests {
     use super::*;
 
-    fn d(s: &str) -> NaiveDate {
-        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
-    }
+    use crate::md::date as d;
 
     fn at(s: &str) -> DateTime<FixedOffset> {
         DateTime::parse_from_rfc3339(s).unwrap()

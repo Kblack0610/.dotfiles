@@ -245,9 +245,7 @@ fn ensure_done_stamp(line: &str, today: NaiveDate) -> String {
 mod tests {
     use super::*;
 
-    fn d(s: &str) -> NaiveDate {
-        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
-    }
+    use crate::md::date as d;
 
     #[test]
     fn sweep_moves_checked_to_done() {
