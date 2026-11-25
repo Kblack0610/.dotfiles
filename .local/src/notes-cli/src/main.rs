@@ -1356,6 +1356,17 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
 
 /// `notes row parse|types`. Parse reads bytes, so one line that is not UTF-8 still gets its
 /// own output line instead of failing the rest.
+/// The commands that need no profile, run before one is resolved: the row grammar (agent-queue
+/// and the triage prompts call it where none may resolve) and weighing rows from stdin (day-log
+/// runs it over the notes history).
+fn profile_free(cmd: &Cmd) -> Option<Result<()>> {
+    match cmd {
+        Cmd::Row { sub } => Some(row_cmd(sub)),
+        Cmd::Board { weigh: true, .. } => Some(read_stdin().and_then(|s| board::print_weigh(&s))),
+        _ => None,
+    }
+}
+
 fn row_cmd(sub: &RowCmd) -> Result<()> {
     use std::io::{BufRead, Write};
     let mut out = std::io::stdout().lock();
@@ -1541,14 +1552,8 @@ fn read_stdin() -> Result<String> {
 fn main() -> Result<()> {
     reset_sigpipe();
     let cli = Cli::parse();
-    // The grammar needs no profile, and its callers (agent-queue, the triage prompts) run where
-    // none may resolve.
-    if let Cmd::Row { sub } = &cli.cmd {
-        return row_cmd(sub);
-    }
-    // Weighing rows read from stdin needs no profile either: day-log runs it over the notes history.
-    if let Cmd::Board { weigh: true, .. } = &cli.cmd {
-        return board::print_weigh(&read_stdin()?);
+    if let Some(done) = profile_free(&cli.cmd) {
+        return done;
     }
     let prof = config::resolve(cli.profile.as_deref())?;
     let log = logging::Logger::new(prof.log_file.clone(), cli.verbose);
