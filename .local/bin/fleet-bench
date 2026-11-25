@@ -3764,6 +3764,9 @@ models_json() {
                c: (if $cl then cls else null end), l: (if $ln then $rix[.lane_run // ""].lane // "unrouted" else null end)})) as $done
     | ($runs | map(select(($vix[.id] | not) and (.ts | sub("\\+00:00$"; "Z") | fromdateiso8601) >= $since)
         | . + {h: (.harness // "claude"), ran: (.ran | if . then alias else . end), lane: (.lane // "unrouted")})) as $rs
+    # $firsts: the first rated run of each item on any pair (eval lane left out), so an item a trainee had
+    # rejected is a miss for the trainee pair and no first success for the claude run that landed it.
+    | ($rs | map(select(.outcome and .lane != "eval")) | group_by(.item // .id) | map(min_by(.ts))) as $firsts
     | ([$done[] | {m, h, c, l}] + (if $cl then [] else [$rs[] | {m: .ran, h, c: null, l: (if $ln then .lane else null end)}] end) | unique_by([.m, .h, .c, .l])) as $pairs
     | {days: $days, models: ($pairs | map(. as {m: $m, h: $h, c: $c, l: $l}
         | ($done | map(select(.m == $m and .h == $h and .c == $c and .l == $l))) as $ia
@@ -3771,15 +3774,15 @@ models_json() {
         | ($ia | map(select(canary)) | length) as $canaries
         | ($it | map(select(landed)) | length) as $landed
         | ($it | map(sids[]) | unique | map($o[.] // empty)) as $sess
-        | ($ia | map({landed: landed, source: (if metered then "gateway" elif any(own($h)[]; $o[.].cost_usd != null) then "list" else null end)})) as $priced_items
+        | ($ia | map({landed: landed, canary: canary, source: (if metered then "gateway" elif any(own($h)[]; $o[.].cost_usd != null) then "list" else null end)})) as $priced_items
         | ($rs | map(select(($cl | not) and .ran == $m and .h == $h and (($ln | not) or .lane == $l)))) as $r
         | ($r | map(select(.outcome)) | length) as $rated
         | ($r | map(select(.outcome == "redo")) | length) as $redo
-        | ($r | map(select(.outcome and .lane != "eval")) | group_by(.item // .id) | map(min_by(.ts))) as $first
+        | ($firsts | map(select(($cl | not) and .ran == $m and .h == $h and (($ln | not) or .lane == $l)))) as $first
         | ($first | map(select(.outcome == "ok")) | length) as $first_ok
         | cost_of($ia; $h) as $cost
         | ($priced_items | map(.source // empty) | unique) as $src
-        | ($priced_items | map(select(.landed and .source)) | length) as $priced
+        | ($priced_items | map(select(.landed and .source and (.canary | not))) | length) as $priced
         | ($it | map(select(landed))) as $li
         | [$li | map(prkeys[]) | unique[] | $cix[.] // empty] as $cr
         | ($li | map(own($h)[]) | unique | map($sp[.].points // empty)) as $pt
@@ -3824,7 +3827,7 @@ models_section() {
     echo
     cols="${cols}Lane | "; lead="${lead}"'\(.lane) | ' ;;
   esac
-  echo "An item that ended for a cause outside the model (\`end_reason\` ${UNRATED_ENDS// /, }: a quota end, a provider failure, a kill) counts in Done but not in Rate or Failed; \`models --json\` has it as \`unrated\`. A canary item (\`from: canary\`) is an eval, not work: it is in the Canary column and in no other count of the row but Cost, so Done, Landed and Rate are real work only. First attempt is the share of items whose first rated run on the pairing was approved (a trainee diff the review rejected is a miss for its harness, though a Claude run lands the row after); runs in lane eval are left out. Cost and Points count only the sessions the pairing ran itself, never the Claude reviewer's or lander's, and Cost reads - when none of them has a price (agy publishes none)."
+  echo "An item that ended for a cause outside the model (\`end_reason\` ${UNRATED_ENDS// /, }: a quota end, a provider failure, a kill) counts in Done but not in Rate or Failed; \`models --json\` has it as \`unrated\`. A canary item (\`from: canary\`) is an eval, not work: it is in the Canary column and in no other count of the row but Cost, so Done, Landed and Rate are real work only. First attempt is the share of items whose first rated run, on any pairing, was this one's and approved (a trainee diff the review rejected is a miss for its harness, and no first success for the Claude run that lands the row after); runs in lane eval are left out. Redo counts model-lane runs, not items, so a canary run outside lane eval still shows there. Cost and Points count only the sessions the pairing ran itself, never the Claude reviewer's or lander's, and Cost reads - when none of them has a price (agy publishes none)."
   echo
   echo "Rate and First pass show their Wilson 95% interval and n (rated items; PRs whose CI ran a gate), so a rate on a few items reads as the range it is; CI red is a mean count per PR, so it shows its n (PRs with a \`pr-ci\` row) and no interval."
   echo

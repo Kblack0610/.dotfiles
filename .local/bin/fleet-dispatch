@@ -3320,9 +3320,10 @@ cmd_trainee_review() {
 trainee_no_diff_kind() {
   local f=.no-diff w=''
   [ -f "$f" ] || return 0
-  w=$(head -n1 "$f" | tr -d '[:space:]:' | tr '[:upper:]' '[:lower:]')
+  # The first word of the first line, lower-case; "already fixed" and "already_fixed" read as already-fixed.
+  w=$(head -n1 "$f" | tr '[:upper:]_' '[:lower:]-' | sed -E 's/^[[:space:]]*already[[:space:]]+fixed/already-fixed/; s/^[[:space:]]*([a-z-]+).*/\1/')
   rm -f "$f"
-  case "$w" in already-fixed* ) echo already-fixed ;; blocked* ) echo blocked ;; esac
+  case "$w" in already-fixed | blocked) echo "$w" ;; esac
   return 0
 }
 

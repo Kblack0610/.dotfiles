@@ -2452,15 +2452,15 @@ models_fixture() {
 @test "models: a canary item is in its own column and in no Done, Landed, Rate or Failed count; a real item beside it is unchanged" {
   models_fixture '{"slug":"real","model":"sonnet","status":"ok","pr":"o/r#1","sessions":"s1"}
 {"slug":"canary-a","model":"sonnet","from":"canary","status":"failed","sessions":"s2"}
-{"slug":"canary-b","model":"sonnet","tags":"canary eval","status":"ok","pr":"o/r#2"}' \
+{"slug":"canary-b","model":"sonnet","tags":"canary eval","status":"ok","pr":"o/r#2","gateway_cost_usd":"2"}' \
     '{"session_id":"s1","cost_usd":3}
 {"session_id":"s2","cost_usd":1}' ''
   run env BENCH_NOW=$T0 "$SUBJECT" models --json
   assert_success
-  assert_equal "$(jq -c '.models[] | select(.model == "sonnet") | [.done, .canary, .landed, .landed_rate, .failed, .cost_usd, .cost_per_pr]' <<<"$output")" '[1,2,1,1,0,4,3]'
+  assert_equal "$(jq -c '.models[] | select(.model == "sonnet") | [.done, .canary, .landed, .landed_rate, .failed, .cost_usd, .cost_per_pr]' <<<"$output")" '[1,2,1,1,0,6,3]'
   run env BENCH_NOW=$T0 "$SUBJECT" models
   assert_success
-  assert_line '| sonnet | claude | 1 | 2 | 1 | 1 (0.21-1, n 1) | 0 | - | 0 | $4 | $3 | list | - | - | - | - |'
+  assert_line '| sonnet | claude | 1 | 2 | 1 | 1 (0.21-1, n 1) | 0 | - | 0 | $6 | $3 | mixed | - | - | - | - |'
 }
 
 @test "models: first attempt is the share of items whose first rated run was approved, so a rejected run counts against its harness; eval runs and unrated runs are left out" {
@@ -2472,10 +2472,15 @@ models_fixture() {
     jq -nc --arg t "$(t 100)" '{id:"r3",ts:$t,lane:"trainee",harness:"agy",ran:"flash",item:"y",outcome:"ok"}'
     jq -nc --arg t "$(t 90)" '{id:"r4",ts:$t,lane:"trainee",harness:"agy",ran:"flash",item:"z",outcome:null,cause:"already-fixed"}'
     jq -nc --arg t "$(t 80)" '{id:"r5",ts:$t,lane:"eval",harness:"agy",ran:"flash",item:"c",outcome:"redo"}'
+    # x went back to claude after the trainee miss, and w is claude's own first run
+    jq -nc --arg t "$(t 70)" '{id:"r6",ts:$t,lane:"sonnet",ran:"sonnet",item:"x",outcome:"ok"}'
+    jq -nc --arg t "$(t 60)" '{id:"r7",ts:$t,lane:"sonnet",ran:"sonnet",item:"w",outcome:"ok"}'
   )"
   run env BENCH_NOW=$T0 "$SUBJECT" models --json
   assert_success
   assert_equal "$(jq -c '.models[] | select(.model == "flash" and .harness == "agy") | [.first_attempt_ok, .first_attempt_n, .first_attempt_rate]' <<<"$output")" '[1,2,0.5]'
+  # claude:sonnet landed x only after the trainee's miss, so x is no first success of its own
+  assert_equal "$(jq -c '.models[] | select(.model == "sonnet" and .harness == "claude") | [.first_attempt_ok, .first_attempt_n]' <<<"$output")" '[1,1]'
 }
 
 @test "models: a non-claude pair's cost and points are its own sessions, never the Claude reviewer's; with none priced the cost is null and prints -" {

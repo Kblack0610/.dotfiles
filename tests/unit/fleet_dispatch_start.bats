@@ -1237,6 +1237,8 @@ trainee_start_ready() {
   w="$SANDBOX/wt" && git -C "$m" worktree add -q "$w" 2>/dev/null
   # slug|first line of .no-diff ("-" for no file)|the reject reason that results
   for spec in "t-fixed|Already-Fixed: the title is fine|paid:glm found the task already fixed in the code (already-fixed), with no diff" \
+              "t-spc|already fixed, see menu.md|paid:glm found the task already fixed in the code (already-fixed), with no diff" \
+              "t-pre|blockedness|paid:glm left no diff" \
               "t-block|blocked|paid:glm could not do the task without a human decision or access it lacks (blocked), with no diff" \
               "t-word|gave up|paid:glm left no diff" \
               "t-none|-|paid:glm left no diff"; do
