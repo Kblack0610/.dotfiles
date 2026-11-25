@@ -181,7 +181,7 @@ jobs:
     runs-on: *pool
     timeout-minutes: 25
     outputs:
-      job-image: ${{ vars.LINUX_RUNNER_JOB_POD != '' && steps.lean.outputs.ref || '' }}
+      job-image: ${{ '["self-hosted","linux","x64","job-pod"]' != '' && steps.lean.outputs.ref || '' }}
     steps:
       - uses: actions/checkout@v4
       # Smallest stage first: the later stages build on its layers in this pod's docker.
@@ -262,7 +262,7 @@ jobs:
   fast:
     name: fast tier (${{ matrix.tier }} ${{ matrix.shard }})
     needs: [weights, image]
-    runs-on: &job-pod ${{ fromJSON(needs.image.outputs.job-image != '' && vars.LINUX_RUNNER_JOB_POD || ((github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.LINUX_RUNNER_LIGHT || '"ubuntu-24.04"')) }}
+    runs-on: &job-pod ${{ fromJSON(needs.image.outputs.job-image != '' && '["self-hosted","linux","x64","job-pod"]' || ((github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.LINUX_RUNNER_LIGHT || '"ubuntu-24.04"')) }}
     # An empty image runs the job on the runner itself.
     container: &job-image
       image: ${{ needs.image.outputs.job-image }}
