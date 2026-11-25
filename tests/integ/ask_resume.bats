@@ -25,7 +25,8 @@ EOF
 
   # A model resume is a queue item (agent-queue's own suite pins what add writes). The stub
   # records each call with the session env it saw, files the item running, and AQ_REFUSE makes
-  # the add fail as an unknown project would.
+  # the add fail as an unknown project would. AQ_MOVE_FAIL refuses every move with exit 1, and
+  # AQ_OK_RC refuses only a done ok close, with that exit (6: the item's watch still trips).
   cat > "$SANDBOX/bin/agent-queue" <<'EOF'
 #!/usr/bin/env bash
 printf 'agent-queue %s | sid=%s item=%s\n' "$*" "${CLAUDE_CODE_SESSION_ID:-}" "${AGENT_QUEUE_ITEM:-}" >> "$NOTES_FIXTURE/calls.log"
@@ -33,7 +34,8 @@ case "$1" in
   add) [ -z "${AQ_REFUSE:-}" ] || { echo "agent-queue: unknown project" >&2; exit 1; }
        while [ "$1" != --slug ]; do shift; done; echo "running $(tr A-Z a-z <<<"$2") -> /q/running/x.md" ;;
   show) printf '{"state":"running","pr":"%s"}\n' "${AQ_PR:-}" ;;
-  move) [ -z "${AQ_MOVE_FAIL:-}" ] || exit 1 ;;
+  move) [ -z "${AQ_MOVE_FAIL:-}" ] || exit 1
+        [[ -z "${AQ_OK_RC:-}" || "$*" != *"--status ok"* ]] || exit "$AQ_OK_RC" ;;
 esac
 EOF
   chmod +x "$SANDBOX/bin/agent-queue"
@@ -339,19 +341,36 @@ EOF
   local log="$AGENTCTL_STATE_DIR/ask-resume/alpha.log"
   AQ_MOVE_FAIL=1 _closing 0
   run cat "$log"
-  assert_output "ask-resume: $slug is left open: agent-queue move $slug done --status ok"
+  assert_output "ask-resume: $slug is left open (exit 1): agent-queue move $slug done --status ok"
   run grep -c "^agent-queue move $slug done --status ok " "$NOTES_FIXTURE/calls.log"
   assert_output 1
   AQ_MOVE_FAIL=1 _closing 7
   run cat "$log"
-  assert_output "ask-resume: $slug is left open: agent-queue move $slug done --status failed"
+  assert_output "ask-resume: $slug is left open (exit 1): agent-queue move $slug done --status failed"
   run grep -c "^agent-queue move $slug done --status failed " "$NOTES_FIXTURE/calls.log"
   assert_output 1
   AQ_MOVE_FAIL=1 AQ_PR='o/r#9' _closing 0
   run cat "$log"
-  assert_output "ask-resume: $slug is left open: agent-queue move $slug review"
+  assert_output "ask-resume: $slug is left open (exit 1): agent-queue move $slug review"
   run grep -c "^agent-queue move $slug review " "$NOTES_FIXTURE/calls.log"
   assert_output 1
+}
+
+@test "an ok close refused because the red item's watch still trips closes failed; any other refusal leaves it open (ar-5414)" {
+  local id slug log="$AGENTCTL_STATE_DIR/ask-resume/alpha.log"
+  mkdir -p "$AGENTCTL_STATE_DIR/ask-resume"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/agentctl-run"
+  for rc in 6 1; do
+    id="$(gate alpha)"
+    "$AGENT_ASK" answer "$id" approve >/dev/null 2>&1
+    slug="ask-resume-$(tr A-Z a-z <<<"$id")"
+    : > "$log"
+    AQ_OK_RC=$rc ask-resume "$id" 2>/dev/null || true
+    run cat "$log"
+    assert_output "ask-resume: $slug is left open (exit $rc): agent-queue move $slug done --status ok"
+    run grep -c "^agent-queue move $slug done --status failed " "$NOTES_FIXTURE/calls.log"
+    assert_output "$([ "$rc" = 6 ] && echo 1 || echo 0)"
+  done
 }
 
 @test "an item agent-queue refuses leaves the ask resumable and runs no model" {

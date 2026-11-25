@@ -3606,21 +3606,24 @@ cancel_stamp() {
 # its watch reads OK, the check agent-land's watch_gate runs (lib/watch-item.sh), so a close by hand
 # cannot say a red is gone while it still trips (ar-2550 did, ar-5414). Run before the queue lock: a
 # probe can take a while. A PR that fixed one KPI of a many-KPI watch leaves the item in review. A
-# watch routed to alert or owned: is exempt (watch_route_owned), and a skipped probe (no loop here, a
-# watch not known here) is said on stderr; a busy loop lock exits LOCK_BUSY, which agent-land retries.
+# watch routed to alert or owned: is exempt (watch_route_owned); the exemption and a skipped probe (no
+# loop here, a watch not known here) are said on stderr. A busy loop lock exits LOCK_BUSY, and a
+# watch that still trips exits AQ_EX_WATCH_OPEN, which reap and ask-resume read by its code.
+AQ_EX_WATCH_OPEN=6
 watch_close_check() {
-  local f w t out rc=0
+  local f w t out r rc=0
   f="$(find_item "$1")"; [ -n "$f" ] || return 0
   t="$(fm_get "$f" title)"; [ -n "$t" ] || t="$(fm_body "$f" | awk 'NR==1')"
   w="$(item_watch "$(fm_get "$f" tags)" "$t")"
   [ -n "$w" ] || return 0
-  ! watch_route_owned "$w" || return 0
+  if r="$(watch_route_owned "$w")"; then echo "agent-queue: watch $w routes to $r, so its close is not probed" >&2; return 0; fi
   out="$(watch_probe recheck "$w")" || rc=$?
   [ "$rc" != 75 ] || { echo "agent-queue: $out" >&2; exit "$LOCK_BUSY"; }
+  [[ "$rc" != 0 || "$out" == *" OK" ]] || echo "agent-queue: $out" >&2
+  [ "$rc" != 0 ] || return 0
+  echo "agent-queue: $1 is a red item for watch $w, and done ok would say that red is gone: $out. Land its fix with agent-land <N>, which resolves the watch with the PR and closes the item once it reads OK; a PR that fixed one KPI of a many-KPI watch leaves the item in review (agent-queue move $1 review) until the watch reads OK" >&2
   # gate: aq-watch-close
-  [ "$rc" = 0 ] ||
-    die "$1 is a red item for watch $w, and done ok would say that red is gone: $out. Land its fix with agent-land <N>, which resolves the watch with the PR and closes the item once it reads OK; a PR that fixed one KPI of a many-KPI watch leaves the item in review (agent-queue move $1 review) until the watch reads OK"
-  [[ "$out" == *" OK" ]] || echo "agent-queue: $out" >&2
+  exit "$AQ_EX_WATCH_OPEN"
 }
 
 # move <slug> <state> [--status s] [--end reason] [--if <state>] -- --end records why the run ended

@@ -1052,15 +1052,21 @@ reap_stuck() {
   mkdir -p "${f%/*}" && printf '%s %s\n%s\n' "$first" "$filed" "$5" > "$f"
 }
 reap_unstuck() { [ ! -e "$DIR/stuck/$1" ] || rm -f "$DIR/stuck/$1"; }
+# watch_wait <slug>: 0 while reap_stuck holds the item for its watch (reap_close_ok's title), the one
+# wait a merged PR does not end.
+watch_wait() { [[ "$(sed -n 2p "$DIR/stuck/$1" 2>/dev/null)" == 'fix(red): '* ]]; }
 
 # reap_close_ok <slug> <item json> <session> <state> <what> -> 0 once the item closed done ok. A red
 # watch item closes ok only once its watch reads OK (agent-queue watch_close_check): until then it waits
 # in review, each pass trying the close again, and after DISPATCH_ORPHAN_HOURS one row says <what> did
-# not clear it (reap_stuck), so a fix that did not hold is not left there. 1 on any refusal.
+# not clear it (reap_stuck), so a fix that did not hold is not left there. Each pass's close is the
+# recheck, so the item closes on the first pass after its watch reads OK. 1 on any refusal; the watch
+# refusal is agent-queue's exit 6 (AQ_EX_WATCH_OPEN), any other leaves the item as it was.
 reap_close_ok() {
-  local err
-  if err=$(agent-queue move "$1" "done" --status ok --if "$4" 2>&1 >/dev/null); then reap_unstuck "$1"; return 0; fi
-  case "$err" in *"is a red item for watch"*) ;; *) return 1 ;; esac
+  local rc=0
+  agent-queue move "$1" "done" --status ok --if "$4" >/dev/null 2>&1 || rc=$?
+  [ "$rc" != 0 ] || { reap_unstuck "$1"; return 0; }
+  [ "$rc" = 6 ] || return 1
   if [ "$4" != review ]; then
     agent-queue move "$1" review --if "$4" >/dev/null || return 1
     note_add "$1" "$2" "session $3 ended; $5 and its watch still trips, so it stays in review until the watch reads OK"
@@ -5384,9 +5390,12 @@ settle_item() {
       return 0
     fi
   fi
-  # A PR read again ends any wait reap_stuck held, so a later stall logs anew; a merged one ends it at
-  # its close below, since a red item whose watch still trips stays held after the merge reads.
-  case "$state" in OPEN | CLOSED) reap_unstuck "$1" ;; esac
+  # A PR read again ends any wait reap_stuck held, so a later stall logs anew; a merged one ends every
+  # wait but a red item's whose watch still trips (watch_wait), which its close below ends.
+  case "$state" in
+  OPEN | CLOSED) reap_unstuck "$1" ;;
+  MERGED) [ -z "$oid" ] || watch_wait "$1" || reap_unstuck "$1" ;;
+  esac
   # Already parked on its open PR, this pass reaps nothing: no event for every pass of the wait,
   # unless its checks finished with nobody on it (own_parked_pr).
   [ "$state:$st" != OPEN:review ] || { own_parked_pr "$1" "$2" "$it" "$head" "$ci" "$mergeable"; return 0; }
@@ -5404,7 +5413,7 @@ settle_item() {
     return 0 ;;
   esac
   # An item reap_stuck holds (a merged red item whose watch still trips) logs once, not every pass.
-  [ -e "$DIR/stuck/$1" ] || dispatch_event reaped "$(jq -r '.project // empty' <<<"$it")" "session $2 gone" --item "$1" --why "item was $st"
+  watch_wait "$1" || dispatch_event reaped "$(jq -r '.project // empty' <<<"$it")" "session $2 gone" --item "$1" --why "item was $st"
   if [ -n "$pr" ]; then
     case "$state" in
     MERGED)
@@ -5413,7 +5422,7 @@ settle_item() {
           "chore(review): PR $pr merged with no merge commit its forge reads; record it (agent-queue set merged=<sha>) or close the item"
         return 0
       }
-      agent-queue set "$1" "merged=$oid" >/dev/null || return 0
+      [ "$(jq -r '.merged // ""' <<<"$it")" = "$oid" ] || agent-queue set "$1" "merged=$oid" >/dev/null || return 0
       reap_close_ok "$1" "$it" "$2" "$st" "PR $pr merged" || return 0
       logline "reaped $2: session gone, queue item $1 done, PR $pr merged"
       close_row "$1" ;;

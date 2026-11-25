@@ -29,13 +29,13 @@ watch_probe() {
   esac
 }
 
-# watch_route_owned <watch>: 0 when triage-routes sends the watch's red to `alert` or `owned:<row>`.
-# Such an item's job is the ask or the owner, not the red (no merge clears an alert route's KPI), so it
-# closes ok while the watch still trips, and cause_tries reads that close as the cause's owner. 1 for
-# any other route, and when fleet-bench cannot say, so the probe decides.
+# watch_route_owned <watch>: 0 and the route when triage-routes sends the watch's red to `alert` or
+# `owned:<row>`. Such an item's job is the ask or the owner, not the red (no merge clears an alert
+# route's KPI), so it closes ok while the watch still trips, and cause_tries reads that close as the
+# cause's owner. 1 for any other route, and when fleet-bench cannot say, so the probe decides.
 watch_route_owned() {
   local r
   r=$(fleet-bench triage --route "watch $1" 2>/dev/null | cut -f2) || return 1
-  case "$r" in alert | owned:?*) return 0 ;; esac
+  case "$r" in alert | owned:?*) printf '%s\n' "$r"; return 0 ;; esac
   return 1
 }

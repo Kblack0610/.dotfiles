@@ -2694,7 +2694,7 @@ EOS
   watch_fixture red-chain 'red watch' 'check(watch): board-chain tripped since 2026-11-20, expected: chain OK'
   printf '1\n' > "$NOTES_FIXTURE/watch.rc"
   run "$AQ" move red-chain done --status ok
-  assert_failure
+  assert_failure 6
   assert_output --partial 'red-chain is a red item for watch board-chain, and done ok would say that red is gone: watch board-chain did not read OK on recheck (exit 1): TRIP: board-chain 12 KPIs over'
   assert_output --partial 'agent-land <N>'
   assert_output --partial 'agent-queue move red-chain review'
@@ -2730,7 +2730,19 @@ EOS
   printf 'owned:ar-1\n' > "$NOTES_FIXTURE/route"
   run "$AQ" move red-owned done --status ok
   assert_success
+  assert_output --partial 'watch board-chain routes to owned:ar-1, so its close is not probed'
+  watch_fixture red-asked 'red watch' 'check(watch): board-chain tripped'
+  printf 'alert\n' > "$NOTES_FIXTURE/route"
+  run "$AQ" move red-asked done --status ok
+  assert_success
+  assert_output --partial 'routes to alert'
   [ ! -s "$NOTES_FIXTURE/watch.log" ]
+  # A route fleet-bench cannot read (the routes file gone, exit 2) leaves the close to the probe.
+  watch_fixture red-unrouted 'red watch' 'check(watch): board-chain tripped'
+  printf '#!/usr/bin/env bash\nexit 2\n' > "$SANDBOX/bin/fleet-bench"
+  run "$AQ" move red-unrouted done --status ok
+  assert_failure 6
+  assert_equal "$(cat "$NOTES_FIXTURE/watch.log")" 'watch-companion-loop recheck board-chain lock=free'
 }
 
 @test "move done ok on a red watch item: a watch not known here closes and says so, a busy loop lock exits 75 for a retry (ar-5414)" {
