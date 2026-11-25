@@ -25,7 +25,7 @@
       bucket, kind, target and system. Exit 1 on any finding, and nothing is written.
   row-value report [--project P] [--tsv FILE] DIR
       the ledger from DIR/rows.tsv and DIR/verdicts.tsv as markdown on stdout: counts by bucket,
-      per system and per epic, then every row with its bucket and tie (epic, plan, the red it
+      per system, per epic and per source, then every row with its bucket and tie (epic, plan, the red it
       answers, the project it serves; P is the board's own, default agent-runtime). --tsv also
       writes the joined ledger, one line per row (its `why` is the verdict's).
   row-value compare [--id COL] [--verdict COL] [--mine-verdict COL] [--map FROM=TO,...] MINE THEIRS
@@ -194,8 +194,15 @@ def cmd_export(a):
     named = merged_names(a.repo, a.since)
     source = {}
     if a.inflow:
-        with open(a.inflow) as f:
-            inflow = json.load(f)
+        try:
+            with open(a.inflow) as f:
+                inflow = json.load(f)
+        except (OSError, ValueError) as e:
+            die(f"--inflow {a.inflow}: {e}", 1)
+        if not isinstance(inflow, dict):
+            die(f"--inflow {a.inflow} is not a fleet-bench inflow --json object", 1)
+        if inflow.get("sources") and not any("open_ids" in s for s in inflow["sources"]):
+            die(f"--inflow {a.inflow} has no open_ids: save it again with a fleet-bench that lists them", 1)
         if inflow.get("project") != a.project:
             die(f"--inflow {a.inflow} is for {inflow.get('project')!r}, not {a.project}", 1)
         for s in inflow.get("sources", []):
@@ -228,8 +235,7 @@ def cmd_export(a):
                 tags = " ".join(tags)
                 f.write(f"{r['id']} [{r['state']}] {r.get('priority') or '-'} epic:{r.get('parent') or '-'}"
                         f" why:{r.get('prio_why') or '-'} since:{r.get('since') or '-'}"
-                        f" plan:{plan_of(r)} after:{after_of(r)} children:{children.get(r['id'], 0)}"
-                        f" source:{source.get(r['id'], '-')}\n")
+                        f" plan:{plan_of(r)} after:{after_of(r)} children:{children.get(r['id'], 0)}\n")
                 f.write(f"  {clean(r.get('text'))}{' ' + tags if tags else ''}\n")
                 for d in r.get("details") or []:
                     f.write(f"  | {clean(d)[:600]}\n")
@@ -245,6 +251,10 @@ def cmd_export(a):
         for r in reds or ["(none live)" if a.reds_cmd else "(not read: --reds-cmd '')"]:
             f.write(f"- {r}\n")
     print(f"{len(rows)} rows in {len(chunks)} chunks -> {a.dir}")
+    if a.inflow:
+        unsourced = sum(1 for r in rows if r["id"] not in source)
+        if unsourced:
+            print(f"{unsourced} rows are not in {a.inflow} (filed or reopened after it was saved): source -")
 
 
 def rubric_lists(path):
@@ -424,6 +434,7 @@ def cmd_report(a):
            f"Misfiled (served project is not {home}): {sum(1 for r in ledger if r['project'] != home)}.", ""]
     out += table("Per system", lambda r: r["system"])
     out += table("Per epic", lambda r: r["epic"])
+    out += table("Per source", lambda r: r.get("source", "-"))
     out += ["## Every row", ""]
     for system in sorted({r["system"] for r in ledger}):
         out += [f"### {system}", "", "| id | bucket | verdict | tie | evidence |", "|---|---|---|---|---|"]

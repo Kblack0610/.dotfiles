@@ -75,14 +75,22 @@ judge_ok() {
   printf '%s' '{"project":"agent-runtime","sources":[{"source":"from: dream","open_ids":["ar-3","ar-10"]},{"source":"pre-log","open_ids":[]}]}' > "$HOME/inflow.json"
   run "$RV" export --board "$HOME/board.json" --scorecard "$HOME/latest.md" --reds-cmd "" --inflow "$HOME/inflow.json" --chunk 2 "$D"
   assert_success
+  assert_output --partial "1 rows are not in $HOME/inflow.json"
   run awk -F'\t' '{ print $1, $12 }' "$D/rows.tsv"
   assert_output "$(printf 'id source\nar-3 from: dream\nar-20 -\nar-10 from: dream')"
-  run cat "$D/chunk-02.txt"
-  assert_output --partial "children:0 source:from: dream"
   printf '%s' '{"project":"game","sources":[]}' > "$HOME/inflow.json"
   run "$RV" export --board "$HOME/board.json" --scorecard "$HOME/latest.md" --reds-cmd "" --inflow "$HOME/inflow.json" "$D"
   assert_failure 1
   assert_output --partial "is for 'game', not agent-runtime"
+  # an inflow saved before open_ids existed fails, so a stale file cannot leave every source -
+  printf '%s' '{"project":"agent-runtime","sources":[{"source":"pre-log","open":3}]}' > "$HOME/inflow.json"
+  run "$RV" export --board "$HOME/board.json" --scorecard "$HOME/latest.md" --reds-cmd "" --inflow "$HOME/inflow.json" "$D"
+  assert_failure 1
+  assert_output --partial "has no open_ids"
+  : > "$HOME/inflow.json"
+  run "$RV" export --board "$HOME/board.json" --scorecard "$HOME/latest.md" --reds-cmd "" --inflow "$HOME/inflow.json" "$D"
+  assert_failure 1
+  assert_output --partial "row-value: --inflow $HOME/inflow.json:"
 }
 
 @test "export: the context names the KPIs past threshold and each live red once" {
@@ -220,6 +228,7 @@ judge_ok() {
   assert_output --partial "# Row ledger, 3 open agent-runtime rows"
   assert_output --partial "Misfiled (served project is not agent-runtime): 1."
   assert_output --partial "| dispatch | 1 |"
+  assert_output --partial "## Per source"
   assert_output --partial "| ar-20 | fixed | keep | epic:ar-2 | abc123 dispatch.py:40 |"
   assert_output --partial "| ar-10 | improvement | park | epic:ar-3 plan:tidy-plan move:trader | - |"
   run awk -F'\t' '$1 == "ar-10" { print $NF }' "$HOME/ledger.tsv"
