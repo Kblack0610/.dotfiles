@@ -7,7 +7,7 @@ boards.rs	2
 briefing.rs	1
 budget.rs	1
 builds.rs	1
-ci.rs	2
+ci.rs	1
 costs.rs	1
 deliverables.rs	2
 departments.rs	4
