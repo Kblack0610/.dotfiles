@@ -80,6 +80,10 @@ runs:
             if [ "$SEED" != true ]; then
               docker tag "$ref" "$TAG"
               docker image inspect "$TAG" >/dev/null
+              # The first container off a pulled image took 7 to 217 s on a busy node in run 45593263214
+              # (a loaded one, 0.6 s): it is paid here, inside this step, never in the shard's own.
+              t=$SECONDS; docker run --rm --network none --entrypoint true "$TAG"
+              echo "first run of $TAG: $((SECONDS - t)) s"
             fi
             echo pulled=true >> "$GITHUB_OUTPUT"
           else
