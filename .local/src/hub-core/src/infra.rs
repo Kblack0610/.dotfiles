@@ -409,11 +409,18 @@ impl Infra {
     }
 
     /// The runners whose liveness CI judges: every registration but one on a host the governor
-    /// has powered off (`powered_off`), a Forgejo seat (offline by design until the governor
-    /// lends it its slot) and a registration on a host the topology lists no slot for (stale,
-    /// not down). `runners_down` and `runners_up` both read this, so up plus down is the roster.
+    /// has powered off (`powered_off`), one offline that the governor withholds on that host (a
+    /// pin such as machine-mode reserved, load or a drain stopped it), a Forgejo seat (offline by
+    /// design until the governor lends it its slot) and a registration on a host the topology
+    /// lists no slot for (stale, not down). `runners_down` and `runners_up` both read this, so up
+    /// plus down is the roster.
     fn judged(&self) -> Vec<&Series> {
         let off = self.powered_off();
+        let held: std::collections::HashSet<(&str, &str)> = self
+            .get("withheld")
+            .iter()
+            .map(|s| (s.label("host"), s.label("name")))
+            .collect();
         let alias = self.aliases();
         let hosts: Option<std::collections::HashSet<String>> = self
             .ci_hosts()
@@ -421,6 +428,7 @@ impl Infra {
         self.get("runners")
             .iter()
             .filter(|s| !off.contains_key(s.label("host")))
+            .filter(|s| is_up(s) || !held.contains(&(s.label("host"), s.label("name"))))
             .filter(|s| s.label("forge") != "forgejo")
             .filter(|s| {
                 hosts
@@ -431,19 +439,11 @@ impl Infra {
     }
 
     /// The runners that are down: the judged ones offline or missing whose name no other series
-    /// reports up and the governor does not withhold, each name once (two exporter pods report
-    /// one runner twice during a rollout, one of them stale). A withheld runner is offline by the
-    /// governor's choice (a pin such as machine-mode reserved, load, a drain), not down. RED NOW
-    /// on every surface and the phone's CI line read this, so none of them judges a runner itself.
-    /// By host, then name.
+    /// reports up, each name once (two exporter pods report one runner twice during a rollout,
+    /// one of them stale). RED NOW on every surface and the phone's CI line read this, so none of
+    /// them judges a runner itself. By host, then name.
     pub fn runners_down(&self) -> Vec<&Series> {
         let judged = self.judged();
-        let held: std::collections::HashSet<&str> = self
-            .get("withheld")
-            .iter()
-            .map(|s| s.label("name"))
-            .filter(|n| !n.is_empty())
-            .collect();
         let up: std::collections::HashSet<&str> = judged
             .iter()
             .filter(|s| is_up(s))
@@ -454,7 +454,6 @@ impl Infra {
             .into_iter()
             .filter(|s| matches!(s.label("state"), "offline" | "missing"))
             .filter(|s| !up.contains(s.label("name")))
-            .filter(|s| !held.contains(s.label("name")))
             .collect();
         down.sort_by_key(|s| (s.label("host"), s.label("name")));
         let mut seen = std::collections::HashSet::new();
@@ -625,13 +624,15 @@ mod tests {
     }
 
     #[test]
-    fn a_runner_the_governor_withholds_is_not_down() {
+    fn a_runner_the_governor_withholds_is_not_down_and_leaves_the_roster() {
+        let ws = "cachyos-x8664-main";
         let mut i = Infra::default();
         i.instant.insert(
             "runners",
             vec![
-                runner("ws-unity-pool-1", "cachyos-x8664-main", "offline"),
-                runner("ws-unity-pool-2", "cachyos-x8664-main", "offline"),
+                runner("ws-unity-pool-1", ws, "offline"),
+                runner("ws-unity-pool-2", ws, "offline"),
+                runner("ws-unity-pool-3", ws, "idle"),
             ],
         );
         let names = |i: &Infra| -> Vec<String> {
@@ -641,17 +642,25 @@ mod tests {
                 .collect()
         };
         assert_eq!(names(&i), ["ws-unity-pool-1", "ws-unity-pool-2"]);
-        // machine-mode reserved pins the host to 0 slots: the governor withholds pool-1 and it
-        // stops, so only the one it still wants up is down.
+        let held = |name: &str, host: &str| {
+            let mut s = cc("github_runner_withheld", ("name", name), 1.0);
+            s.labels.insert("host".into(), host.into());
+            s
+        };
+        // machine-mode reserved pins the host: the governor withholds pool-1 and pool-3, pool-1
+        // stops, pool-3 idles. Only pool-2, which it still wants up, is down, and the roster
+        // (up plus down) leaves out the stopped one as it does a powered-off host's.
         i.instant.insert(
             "withheld",
-            vec![cc(
-                "github_runner_withheld",
-                ("name", "ws-unity-pool-1"),
-                1.0,
-            )],
+            vec![
+                held("ws-unity-pool-1", ws),
+                held("ws-unity-pool-3", ws),
+                // The same name withheld on another host holds nothing here.
+                held("ws-unity-pool-2", "tuf-b550"),
+            ],
         );
         assert_eq!(names(&i), ["ws-unity-pool-2"]);
+        assert_eq!(i.runners_up(), 1);
     }
 
     #[test]
