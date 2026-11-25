@@ -1,0 +1,2 @@
+{"type":"user","timestamp":"2026-11-24T09:00:00.000Z","message":{"content":"go on"}}
+{"type":"assistant","timestamp":"2026-11-24T09:01:00.000Z","isApiErrorMessage":true,"message":{"content":[{"type":"text","text":"API Error: 529 overloaded"}]}}
