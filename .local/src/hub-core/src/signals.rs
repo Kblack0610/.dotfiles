@@ -90,7 +90,10 @@ pub fn mail(tsv: &str, now: i64) -> Vec<Value> {
 
 /// The janitor's NEEDS YOU items in `infra-cleanup.md`: `- <when> [<who>] NEEDS YOU: <what>`.
 /// The section header names NEEDS YOU too, but is no item.
-/// One item per what, the newest pass's: the janitor repeats a line on each pass it persists.
+/// One item per subject, the newest pass's: the janitor repeats a line on each pass it persists,
+/// with its evidence in parentheses growing each time ("HostSoftLockup x1 (06:20Z)", then "x2 (06:20Z,
+/// 06:50Z)"). `key` is the what without its parenthesized groups, whitespace folded; the Needs id is
+/// built from it, so a kept item keeps its id across passes.
 pub fn janitor(md: &str) -> Vec<Value> {
     let mut seen = std::collections::HashSet::new();
     let mut out: Vec<Value> = md
@@ -101,12 +104,31 @@ pub fn janitor(md: &str) -> Vec<Value> {
             let (when, rest) = rest.split_once(" [")?;
             let (who, rest) = rest.split_once("] NEEDS YOU")?;
             let what = rest.trim_start_matches(':').trim();
-            seen.insert(what.to_string())
-                .then(|| json!({"when": when.trim(), "who": who, "what": what}))
+            let key = janitor_key(what);
+            seen.insert(key.clone())
+                .then(|| json!({"when": when.trim(), "who": who, "what": what, "key": key}))
         })
         .collect();
     out.reverse();
     out
+}
+
+/// A janitor line's subject: its text with every parenthesized group (nested ones too) removed and
+/// runs of whitespace folded to one space. An unbalanced ")" is kept as text, and a "(" never closed
+/// leaves the whole text as the key, so two lines that differ after it stay two items.
+fn janitor_key(what: &str) -> String {
+    let mut depth = 0usize;
+    let mut kept = String::with_capacity(what.len());
+    for c in what.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth > 0 => depth -= 1,
+            _ if depth == 0 => kept.push(c),
+            _ => {}
+        }
+    }
+    let src = if depth == 0 { kept.as_str() } else { what };
+    src.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// A runner stopped at its day budget today: the newest outcome line of its activity.log is
@@ -260,7 +282,7 @@ mod tests {
         assert_eq!(j.len(), 2);
         assert_eq!(
             j[0],
-            json!({"when": "Thu 06:30", "who": "janitor", "what": "pvc stuck"})
+            json!({"when": "Thu 06:30", "who": "janitor", "what": "pvc stuck", "key": "pvc stuck"})
         );
         assert_eq!(j[1]["what"], "node disk 91%");
         // A line the janitor repeats on a later pass is one item, at its newest time.
@@ -269,8 +291,38 @@ mod tests {
         assert_eq!(j.len(), 2);
         assert_eq!(
             j[1],
-            json!({"when": "Fri 02:00", "who": "janitor", "what": "pvc stuck"})
+            json!({"when": "Fri 02:00", "who": "janitor", "what": "pvc stuck", "key": "pvc stuck"})
         );
+    }
+
+    #[test]
+    fn a_janitor_line_whose_evidence_grows_is_one_item_per_node() {
+        let line = |when: &str, node: &str, ev: &str| {
+            format!("- {when} [janitor] NEEDS YOU: node {node} meets quarantine (HostSoftLockup {ev}, host-only) but 2 nodes are already or newly quarantined - not tainted; check the trigger queries\n")
+        };
+        let md = [
+            line("06:20", "deskslim-1", "x1 (06:20Z)"),
+            line("06:50", "deskslim-1", "x2 (06:20Z, 06:50Z)"),
+            line("07:10", "msi-b550", "x3 (06:50Z, 07:00Z, 07:10Z)"),
+            line("10:50", "deskslim-1", "x3 (06:20Z, 06:50Z, 10:50Z)"),
+        ]
+        .concat();
+        let j = janitor(&md);
+        // Negative control: two nodes stay two items.
+        assert_eq!(j.len(), 2);
+        assert_eq!(j[0]["when"], "07:10");
+        assert_eq!(j[1]["when"], "10:50");
+        // The newest pass's full text is shown; the key drops the evidence.
+        assert!(j[1]["what"]
+            .as_str()
+            .unwrap()
+            .contains("x3 (06:20Z, 06:50Z, 10:50Z)"));
+        assert_eq!(
+            j[1]["key"],
+            "node deskslim-1 meets quarantine but 2 nodes are already or newly quarantined - not tainted; check the trigger queries"
+        );
+        // An unclosed "(" keeps the whole text as the key.
+        assert_eq!(janitor_key("disk  91% (rising"), "disk 91% (rising");
     }
 
     #[test]
