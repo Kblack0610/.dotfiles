@@ -167,3 +167,15 @@ kinds() {
   run kinds "$BATS_TEST_TMPDIR/nokind.yml"
   assert_line 'lint -'
 }
+
+@test "every test-image step passes the registry secret and address, and the action hardcodes no address" {
+  run awk '/uses: \.\/\.github\/actions\/test-image/ { n++; getline; getline; a = $0; getline; if (a !~ /CI_REGISTRY_PASSWORD: \$\{\{ secrets\.CI_REGISTRY_PASSWORD \}\}/ || $0 !~ /CI_REGISTRY: \$\{\{ vars\.CI_REGISTRY \}\}/) bad++ } END { print n, bad + 0 }' "$WF"
+  assert_output "5 0"
+  ACT="$BATS_TEST_DIRNAME/../../.github/actions/test-image/action.yml"
+  # The address is the home LAN's and this repo is public (the sensitive-token scan): it is a repo variable.
+  run grep -cE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' "$ACT"
+  assert_output "0"
+  # Hosted runners cannot reach the LAN: the registry step is for self-hosted ones only.
+  run grep -c "runner.environment == 'self-hosted'" "$ACT"
+  assert_output "1"
+}
