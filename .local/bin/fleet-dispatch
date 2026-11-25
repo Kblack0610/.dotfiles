@@ -6353,8 +6353,8 @@ host_takers() {
   need=$(weight_units "$(jq -r '.weight // "light"' <<<"$1")")
   while IFS= read -r name; do
     host_runs "$name" "$agent" || continue
+    ! host_lacks_clone "$name" "$dir" || continue
     echo "$name"
-    host_lacks_clone "$name" "$dir" && continue
   done < <(fleet_hosts | jq -sr --arg d "$dir" --argjson c "$classes" --argjson n "$need" 'map(select(.repos | index($d)) | select((.max_live | tonumber? // 0) >= $n)
     | select($c == null or any(.first[]?; . as $x | $c | index($x)))) | .[].name')
 }
@@ -6506,6 +6506,18 @@ cmd_hosts() {
     unplaced <<<"$queue"; fi
 }
 
+# unplaced_lacking <roster json array> <dir> -> the workers listing <dir> that have no checkout of it, when every
+# worker listing it lacks one (a lone one with a checkout takes the item, so another cause holds it); else nothing.
+unplaced_lacking() {
+  local w n=0 lack=''
+  while IFS= read -r w; do
+    n=$((n + 1))
+    if host_lacks_clone "$w" "$2"; then lack+="$w "; fi
+  done < <(jq -r --arg d "$2" '.[] | select(.repos | index($d)) | .name' <<<"$1")
+  [ "$n" -gt 0 ] && [ "$(wc -w <<<"$lack")" -eq "$n" ] && printf '%s' "$lack"
+  return 0
+}
+
 # unplaced -> one line per project and reason for the queued items no worker could take on
 # any pass (host_takers names none), so a gap in the workers' standard repo list (home-config
 # fleet_workers fleet_repos, fleet_repos_extra) or a harness no worker runs shows here. A worker that is merely busy
@@ -6523,7 +6535,7 @@ unplaced() {
       why="no worker clones $dir"
     elif ! jq -e --arg d "$dir" --argjson n "$need" 'any(.[]; (.repos | index($d)) and (.max_live | tonumber? // 0) >= $n)' <<<"$roster" >/dev/null; then
       why="no worker that clones it has a fleet_max_live of $need, the run units a heavy item holds"
-    elif lacks=$(jq -r --arg d "$dir" '.[] | select(.repos | index($d)) | .name' <<<"$roster" | while read -r w; do ! host_lacks_clone "$w" "$dir" || echo "$w"; done) && [ -n "$lacks" ]; then
+    elif lacks=$(unplaced_lacking "$roster" "$dir") && [ -n "$lacks" ]; then
       why="$(tr '\n' ' ' <<<"$lacks")lists $dir but has no checkout there (its probe); run the fleet-worker play"
     else
       why="no worker runs $agent ready"
