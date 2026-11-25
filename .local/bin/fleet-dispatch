@@ -5286,8 +5286,9 @@ after_cleared_since() {
 # a board row still started closes on merge proof, close_row), OPEN waits in review/ for the merge
 # (where a --pr-only run leaves it; waiting/ is only for an item whose session needs the human), CLOSED is failed; a state its forge cannot read (so_pr_view), or a bare pr: whose PR
 # lacks the item's stamp, leaves it for the next pass. No PR but a `report` (a doc+ask kind's
-# doc, a stack-review report) is done ok: that was the deliverable. A waiting or review item with
-# neither stays parked on its blocker, any other item with neither is failed, the reason in note.
+# doc, a stack-review report) is done ok: that was the deliverable. A review item with neither stays
+# parked, and so does a waiting one with a pending ask; a waiting one with no ask goes back to queued/
+# once (ar-5661). Any other item with neither is failed, the reason in note.
 # Every move is a compare-and-set on the state read here (`--if`), and a note is written only after
 # it: an item its session closed or a human requeued meanwhile is left as it is. So is one already queued
 # when read here: item_sessions lists none, so its session (on an ask) or a human requeued it after that
@@ -5400,6 +5401,18 @@ settle_item() {
   # unless its checks finished with nobody on it (own_parked_pr).
   [ "$state:$st" != OPEN:review ] || { own_parked_pr "$1" "$2" "$it" "$head" "$ci" "$mergeable"; return 0; }
   case "$st:$pr$report" in waiting: | review:)
+    # waiting/ is for an item whose session needs the human, and that need is a pending ask (read above):
+    # with none, nothing would ever move it, so it goes back for its next start (ar-5661). Once: a run
+    # that ends waiting again after that requeue stays parked, with one row.
+    if [ "$st" = waiting ] && [ -z "$ask" ]; then
+      if [[ "$(jq -r '.note // ""' <<<"$it")" == *"ended: waiting with no ask, PR or report; requeued"* ]]; then
+        reap_stuck "$1" "$it" 0 "reaped $2: queue item $1 waits again with no ask, PR or report after its requeue" \
+          "chore(review): queue item $1 twice ended waiting with no ask, PR or report; find what it waits on or close it"
+        return 0
+      fi
+      set_end; requeue_blocked "$1" "$2" "waiting with no ask, PR or report"
+      return 0
+    fi
     [ -z "$(jq -r '.note // ""' <<<"$it")" ] || return 0
     note_add "$1" "$it" "session $2 ended; $st without a PR"
     logline "reaped $2: queue item $1 stays $st without a PR"

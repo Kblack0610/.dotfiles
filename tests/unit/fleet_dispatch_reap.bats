@@ -787,31 +787,44 @@ real_epic_board() {
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-b.md)" status)" failed
 }
 
-@test "reap: a waiting item without a PR stays waiting with a note after its session ends" {
+@test "reap: a waiting item with no ask, PR or report goes back to queued once; one with an ask, or in review, stays parked (ar-5661)" {
   project game beta "$SANDBOX/repos/game"
+  started_item idle lab:game-agent-2 run '' auto:epics waiting
   started_item blocked lab:game-agent-1 run '' human waiting
-  started_item no-note lab:game-agent-2 run '' human waiting
-  agent-queue set blocked 'note=waiting for the human to answer ask abc' lane_run=trial-1 >/dev/null
+  started_item parked lab:game-agent-3 run '' human review
+  id=$(agent-ask post --project game --task blocked --options 'a=keep it|b=drop it' 'which API?')
+  agent-queue set blocked "note=waiting for the human to answer ask $id" lane_run=trial-1 >/dev/null
   stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"'
 
   run cmd_reap
   assert_success
   refute_output --partial 'failed queue item'
+  assert_output --partial 'requeued queue item idle (game-agent-2 ended: waiting with no ask, PR or report)'
+  [ -n "$(qitem queued idle)" ] || fail "a waiting item with no ask was not requeued"
+  assert_equal "$(qfield "$(qitem queued idle)" note)" 'session game-agent-2 ended: waiting with no ask, PR or report; requeued'
+  grep -q 'reaped game-agent-2: session gone, queue item idle requeued: waiting with no ask, PR or report' "$FLEET_DISPATCH_DIR/log.md"
+  # NEGATIVE CONTROLS: a pending ask with no row keeps the item waiting and its note; a review item with no PR stays in review.
   assert_equal "$(agent-queue show blocked --json | jq -r .state)" waiting
-  assert_equal "$(qfield "$(qitem waiting blocked)" note)" 'waiting for the human to answer ask abc'
-  assert_equal "$(agent-queue show no-note --json | jq -r .state)" waiting
-  assert_equal "$(qfield "$(qitem waiting no-note)" note)" 'session game-agent-2 ended; waiting without a PR'
+  assert_equal "$(qfield "$(qitem waiting blocked)" note)" "waiting for the human to answer ask $id"
+  assert_equal "$(agent-queue show parked --json | jq -r .state)" review
+  assert_equal "$(qfield "$(qitem review parked)" note)" 'session game-agent-3 ended; review without a PR'
   assert_not_called 'model-lane'
   mtime=$(stat -c %y "$(qitem waiting blocked)")
   dispatch_event() { echo "$*" >> "$NOTES_FIXTURE/events.log"; }
 
+  # Its requeued run ends waiting again: it stays parked, with one row, and is not requeued a second time.
+  agent-queue move idle running >/dev/null
+  agent-queue move idle waiting >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
   run cmd_reap
   assert_success
+  run cmd_reap
+  assert_success
+  assert_equal "$(agent-queue show idle --json | jq -r .state)" waiting
+  assert_equal "$(grep -c 'twice ended waiting with no ask, PR or report' "$NOTES_FIXTURE/calls.log")" 1
   assert [ ! -e "$NOTES_FIXTURE/events.log" ]
   assert_equal "$(stat -c %y "$(qitem waiting blocked)")" "$mtime"
-  assert_equal "$(agent-queue show blocked --json | jq -r .state)" waiting
-  assert_equal "$(agent-queue show no-note --json | jq -r .state)" waiting
-  assert_not_called 'model-lane'
+  assert_equal "$(agent-queue show parked --json | jq -r .state)" review
 }
 
 # 2026-11-13 (ar-2267): consoles-p3 was closed status:failed while queued on an unanswered ask (OBAJTo);
