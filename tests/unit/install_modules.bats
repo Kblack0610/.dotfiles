@@ -228,6 +228,7 @@ SH
   assert_output --partial "codex install failed (npm @openai/codex): npm error ETIMEDOUT fetch"
   refute_output --partial "codex installed"
   assert_equal "$(cat "$BATS_TEST_TMPDIR/npm-calls")" 3
+  assert_output --partial "agy up to date"   # the rest of the step still ran
 }
 
 # --- the catalog steps and helpers every OS installer shares (base_functions.sh) ---------------
