@@ -1029,6 +1029,30 @@ OUT
   refute_output --partial 'fix-crash'
 }
 
+# ar-4229 (2026-11-23): its green PR got a lander while ask yaEAMh, which an earlier run of it posted with no --task, held the merge.
+@test "reap: a green parked PR whose run posted an untagged ask gets no lander: the item goes back to its row behind that ask (ar-4892)" {
+  local h1=1111111111111111111111111111111111111111 it id
+  pr_item OPEN
+  agent-queue claim fix-crash --sid run-2 >/dev/null
+  run cmd_reap
+  assert_output --partial 'review queue item fix-crash (PR o/game#12 open'
+  # NEGATIVE CONTROL: an untagged ask from a session that never ran it, or from its run on another project, holds nothing
+  CLAUDE_CODE_SESSION_ID=else-9 agent-ask post --project game --options 'a=yes|b=no' 'something else?' >/dev/null
+  CLAUDE_CODE_SESSION_ID=run-2 agent-ask post --project tools --options 'a=yes|b=no' 'a tools question?' >/dev/null
+  it=$(agent-queue show fix-crash --json)
+  run item_ask fix-crash "$it"
+  assert_success
+  assert_output ''
+  id=$(CLAUDE_CODE_SESSION_ID=run-2 agent-ask post --project game --options 'land=land it|close=close it' 'land or close o/game#12?')
+  run item_ask fix-crash "$it"
+  assert_output "$id=land+close"
+  fix_ended "$h1" PASS
+  run cmd_reap
+  assert_success
+  assert_output --partial "returned queue item fix-crash to its board row behind ask $id"
+  refute_output --partial 'land queue item fix-crash'
+}
+
 # ar-2589: #2182's fix-ci tries were spent on a superseded red at 4bbda5c; that head read green and sat in review, ownerless.
 @test "reap: a head whose fix-ci tries were escalated and then reads green gets a lander, once its land tries are its own" {
   local h1=1111111111111111111111111111111111111111

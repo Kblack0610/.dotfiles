@@ -1043,10 +1043,10 @@ reap_unstuck() { [ ! -e "$DIR/stuck/$1" ] || rm -f "$DIR/stuck/$1"; }
 
 # file_row <human|agent> <item json> <row text> -> where the row went: that side (the human sheet or
 # the agent board) of the board the item came from (a dotfiles item's row is on agent-runtime), else
-# its project's, with the new row's id ("on the <sheet> sheet as <id>", which follow_moved_gates reads
-# from the drop reason skip_exits writes). fleet-dispatch is a direct filer (each caller's stamp files
-# a row once), so the row is filed, not sent to the outbox; exit 3 is a twin already open, exit 4 a vouch notes could not
-# make. A refused row is said on stderr here, so no caller has to.
+# its project's, with the new row's id ("on the <sheet> sheet as <id>", which follow_moved_gates
+# reads from the drop reason skip_exits writes). fleet-dispatch is a direct filer (each caller's stamp
+# files a row once), so the row is filed, not sent to the outbox; exit 3 is a twin already open, exit
+# 4 a vouch notes could not make. A refused row is said on stderr here, so no caller has to.
 file_row() {
   local prof sheet row out re id='' rc=0 lane=() what=sheet
   [ "$1" = human ] || lane=(--agent) what=board
@@ -1054,6 +1054,7 @@ file_row() {
   row=$(item_row "$2")
   [ -z "$row" ] || IFS=$'\x1f' read -r prof sheet _ <<<"$row"
   out=$(np "$prof" ptask "$sheet" "${lane[@]}" add "$3" --origin fleet-dispatch 2>/dev/null) || rc=$?
+  out=${out%%$'\n'*}   # the new row is the first line notes prints; a detail line under it may carry another id
   re='<!-- id:([A-Za-z0-9_-]+)'
   [[ $out =~ $re ]] && id=${BASH_REMATCH[1]}
   case "$rc" in
@@ -4546,22 +4547,29 @@ restore_tick() {
 item_state() { agent-queue show "$1" --json 2>/dev/null | jq -r '.state // empty'; }
 
 # item_ask <slug> <item json> -> the ask tag (agent-queue requeue --ask) of the pending ask the item
-# waits on: the newest one filed for it (`agent-ask post --task <slug>`, by created), else the one its `ask:` names;
-# nothing when no such ask is pending. The tag names every option the ask offers, since any answer the
-# human gives is the decision the run stopped for. Fails when the asks cannot be read, so the caller
-# moves nothing on a guess.
+# waits on: the newest one filed for it (`agent-ask post --task <slug>`, by created), else the newest
+# one with no task that one of its runs asked (the ask's first `claude_session:` is in the item's
+# `sessions:`) on its project, else the one its `ask:` names; nothing when no such ask is pending. An
+# untagged ask counts because a run that posts without --task is still blocked on it: ar-4229's green
+# PR was given a lander while ask yaEAMh, which an earlier run of it posted, still held the merge
+# (2026-11-23, ar-4892). The tag names every option the ask offers, since any answer the human gives
+# is the decision the run stopped for. Fails when the asks cannot be read, so the caller moves nothing
+# on a guess.
 item_ask() {
-  local own asks; own=$(jq -r '.ask // ""' <<<"$2")
+  local own sids project asks
+  IFS=$'\x1f' read -r own sids project < <(jq -r '[.ask // "", .sessions // "", .project // ""] | join("\u001f")' <<<"$2")
   # --open: a parked ask still holds its item; parking only takes it off the boards.
   asks=$(agent-ask list --all --open 2>/dev/null) || return 1
-  awk -F'\t' -v s="$1" -v own="$own" '
+  awk -F'\t' -v s="$1" -v own="$own" -v sids=" $sids " -v project="$project" '
     function tag(   n, o, i, t) {
       n = split($7, o, "|"); t = ""
       for (i = 1; i <= n; i++) { sub(/ .*/, "", o[i]); if (o[i] != "") t = t (t == "" ? "" : "+") o[i] }
       return $1 (t == "" ? "" : "=" t)
     }
-    $8 == s && $12 >= at { id = tag(); at = $12 } $1 == own { mine = tag() }
-    END { print (id != "" ? id : mine) }' <<<"$asks"
+    $8 == s && $12 >= at { id = tag(); at = $12 }
+    $8 == "" && $16 != "" && $2 == project && index(sids, " " $16 " ") && $12 >= rat { run = tag(); rat = $12 }
+    $1 == own { mine = tag() }
+    END { print (id != "" ? id : (run != "" ? run : mine)) }' <<<"$asks"
 }
 
 # note_add <slug> <item json> <text> -- the item's note becomes this text, with the note it had kept
@@ -7968,12 +7976,13 @@ follow_moved_gates() {
     [[ $g == after/?* ]] && [ "${GATE_ST[$g]}" = dead ] && ids+=(--id "${g#after/}")
   done
   [ ${#ids[@]} -gt 0 ] || return 0
-  dead_json=$(notes board --json "${ids[@]}" 2>/dev/null) || dead_json='{}'
+  dead_json=$(notes board --json "${ids[@]}" 2>/dev/null) || return 0
   ids=()
   while IFS=$'\t' read -r old to; do COPY[$old]=$to; ids+=(--id "$to"); done < <(jq -r '.rows[]? | select(.id != null) | .id as $i
     | (.marker // "") | capture("dropped: on the [^:]* sheet as (?<c>[A-Za-z0-9_-]+):") | [$i, .c] | @tsv' <<<"$dead_json")
+  # A read that fails moves nothing this pass, as the open board's does: an empty read would look like a closed copy.
   copy_json='{}'
-  [ ${#ids[@]} -eq 0 ] || copy_json=$(notes board --json "${ids[@]}" 2>/dev/null) || copy_json='{}'
+  [ ${#ids[@]} -eq 0 ] || copy_json=$(notes board --json "${ids[@]}" 2>/dev/null) || return 0
   while IFS=$'\x1f' read -r prof p lane id t; do
     for g in $t; do
       [[ $g == after/?* ]] && [ "${GATE_ST[$g]:-}" = dead ] || continue
