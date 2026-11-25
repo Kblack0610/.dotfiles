@@ -13,11 +13,12 @@ ASSERT_REF=v2.1.0
 VENDOR="$(cd "$(dirname "$0")" && pwd)/vendor"
 BATS="$VENDOR/bats-core/bin/bats"
 
-[ -x "$BATS" ] && exit 0
+# All three, not just bats: a failed helper clone must be retried, not skipped as "vendored".
+[ -x "$BATS" ] && [ -d "$VENDOR/bats-support" ] && [ -d "$VENDOR/bats-assert" ] && exit 0
 
 mkdir -p "$VENDOR"
 echo "==> vendoring bats-core $BATS_REF + helpers into tests/vendor"
-git clone --quiet --depth 1 --branch "$BATS_REF" https://github.com/bats-core/bats-core.git "$VENDOR/bats-core"
-git clone --quiet --depth 1 --branch "$SUPPORT_REF" https://github.com/bats-core/bats-support.git "$VENDOR/bats-support"
-git clone --quiet --depth 1 --branch "$ASSERT_REF" https://github.com/bats-core/bats-assert.git "$VENDOR/bats-assert"
+[ -d "$VENDOR/bats-core" ] || git clone --quiet --depth 1 --branch "$BATS_REF" https://github.com/bats-core/bats-core.git "$VENDOR/bats-core"
+[ -d "$VENDOR/bats-support" ] || git clone --quiet --depth 1 --branch "$SUPPORT_REF" https://github.com/bats-core/bats-support.git "$VENDOR/bats-support"
+[ -d "$VENDOR/bats-assert" ] || git clone --quiet --depth 1 --branch "$ASSERT_REF" https://github.com/bats-core/bats-assert.git "$VENDOR/bats-assert"
 echo "==> ok: $("$BATS" --version)"
