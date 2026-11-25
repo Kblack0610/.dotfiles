@@ -3364,6 +3364,7 @@ mod tests {
             let f = root.join(name);
             std::fs::write(&f, format!("#!/usr/bin/env bash\n{body}\n")).unwrap();
             std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+            crate::config::test_exec_ready(&f, &[]);
             f.to_string_lossy().into_owned()
         };
         let limit = std::time::Duration::from_secs(20);

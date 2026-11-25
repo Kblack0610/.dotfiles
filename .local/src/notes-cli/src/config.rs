@@ -1135,6 +1135,29 @@ pub fn print_comms(c: &Comms) {
     }
 }
 
+/// Run a stub a test just wrote, once, until its exec stops failing with ETXTBSY (26): another
+/// test's fork holds the stub's write fd until that child execs, an event no API reports. A test
+/// calls this before the runs it asserts on, so those start after the last writer is gone. `env`
+/// is set for this run alone, for a stub that must do nothing here.
+#[cfg(test)]
+pub(crate) fn test_exec_ready(stub: &Path, env: &[(&str, &str)]) {
+    const ETXTBSY: i32 = 26;
+    loop {
+        match std::process::Command::new(stub)
+            .envs(env.iter().copied())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+        {
+            Err(e) if e.raw_os_error() == Some(ETXTBSY) => std::thread::yield_now(),
+            r => {
+                r.unwrap();
+                return;
+            }
+        }
+    }
+}
+
 /// A fully-populated profile rooted at `root`, for unit tests across the crate.
 #[cfg(test)]
 pub(crate) fn test_profile(root: &str) -> Profile {
