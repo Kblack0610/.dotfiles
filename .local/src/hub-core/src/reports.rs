@@ -283,21 +283,25 @@ fn day_line_of(all: &[Entry], date: &str) -> Option<DayLine> {
 /// `3 reports, 1 unread, 2 digests, 1 note`: a day's files by kind, the Daily line's and an
 /// Archive day's head.
 fn count_of(day: &[&Entry]) -> String {
-    let n = |kind: &str| day.iter().filter(|e| e.kind == kind).count();
+    let (mut reports, mut digests, mut notes) = (0, 0, 0);
+    for e in day {
+        match e.kind.as_str() {
+            "report" => reports += 1,
+            "digest" => digests += 1,
+            "capture" => notes += 1,
+            _ => {}
+        }
+    }
     let unread = day.iter().filter(|e| e.unread()).count();
-    [
-        (n("report"), "report"),
-        (n("digest"), "digest"),
-        (n("capture"), "note"),
-    ]
-    .into_iter()
-    .filter(|(k, _)| *k > 0)
-    .map(|(k, unit)| match unit {
-        "report" => with_unread(counted(k, unit), unread),
-        _ => counted(k, unit),
-    })
-    .collect::<Vec<_>>()
-    .join(", ")
+    [(reports, "report"), (digests, "digest"), (notes, "note")]
+        .into_iter()
+        .filter(|(k, _)| *k > 0)
+        .map(|(k, unit)| match unit {
+            "report" => with_unread(counted(k, unit), unread),
+            _ => counted(k, unit),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// What marking report `id` read runs, or why it is refused first: an id is a date and a

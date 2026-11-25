@@ -39,7 +39,9 @@ function reportRow(r) {
   return open ? row + reportBody(r) : row;
 }
 
-const reportTable = (rows) => `<table class="tbl rrep">${rows.map(reportRow).join("")}</table>`;
+// The head names each column's phone role, so table.js's tblStamp lays a row out as lead and glance.
+const REPORTS_HEAD = `<tr><th data-role="lead">report</th><th>from</th><th data-role="glance">state</th><th class="n" data-role="glance">when</th></tr>`;
+const reportTable = (rows) => `<table class="tbl rrep">${REPORTS_HEAD}${rows.map(reportRow).join("")}</table>`;
 
 // A section of Today: its head, its rows; Digests and Your notes start folded, and any fold stays
 // as the reader leaves it.
