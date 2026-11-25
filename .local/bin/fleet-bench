@@ -7125,7 +7125,7 @@ canary_retire() {
 # repeated slug is said and skipped. fleet-dispatch calls it (canary_top_up) to keep DISPATCH_CANARY_KEEP canaries queued; the
 # weekly retro queues none. Says one line a lane that queued, and returns 1 when a lane could not be queued.
 canary_top_up() {
-  local left=$1 h m e src why label lane entry got rc=0 round
+  local left=$1 h m e src route why label lane entry got rc=0 round
   local -A lanes=() queued=() dead=()
   local -a active=("||")
   # An earlier week's queued items go first: they hold floor slots for lanes that no longer replay them.
@@ -7143,9 +7143,12 @@ canary_top_up() {
       if [ "$h" = claude ]; then
         if ! why=$($BENCH_ROOM_CMD 2>&1); then say "canary: $label not queued, no Claude account has room${why:+: $why}"; continue; fi
       else
-        src=$(jq -r --arg h "$h" '.harnesses[$h].source // empty' "$BENCH_HARNESSES" 2>/dev/null)
+        IFS=$'\x1f' read -r src route < <(jq -r --arg h "$h" --arg m "$m" '.harnesses[$h] as $x
+          | [$x.source // "", (($x.models // {})[$m] // "" | if ($x.launcher // $h) == "opencode" then sub("^[^/]*/"; "") else . end)] | join("\u001f")' "$BENCH_HARNESSES" 2>/dev/null)
         if [ -z "$src" ]; then say "canary: $label not queued, $h has no source in $BENCH_HARNESSES"; continue; fi
-        if ! why=$($BENCH_ROOM_CMD --source "$src" 2>&1); then say "canary: $label not queued, ${why:-$src has no room}"; continue; fi
+        # The model's own route as well as its source, as fleet-dispatch's start asks (harness_route): a
+        # source with room still refuses a route whose daily quota is spent (ar-4601: ocfree beam, 11-22).
+        if ! why=$($BENCH_ROOM_CMD --source "$src" ${route:+--model "$route"} 2>&1); then say "canary: $label not queued, ${why:-$src has no room}"; continue; fi
       fi
       active+=("$h|$m|$e")
     done 3<"$BENCH_CANARY_LANES"
