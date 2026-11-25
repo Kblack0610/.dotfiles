@@ -186,6 +186,18 @@ bucket() { tail -n 1 "$GH_CALLS_DIR"/*.tsv | cut -f2; }
   assert_equal "$(tail -n 1 "$BATS_TEST_TMPDIR/real.log")" 'tok-acme|run view 5 -R acme/x'
   PATH="$BATS_TEST_TMPDIR/wrap:/usr/bin/nonexistent" run -127 "$BASH" "$BATS_TEST_TMPDIR/wrap/gh" --version
   assert_output --partial 'no gh on PATH besides this wrapper'
+  # A second copy of the wrapper (a worktree's .local/bin ahead of ~/.local/bin) is skipped too, so neither
+  # execs the other forever (ar-4949); `timeout` turns that loop into a failure here.
+  local to; to=$(command -v timeout)
+  mkdir -p "$BATS_TEST_TMPDIR/copy"
+  cp "$WRAP" "$BATS_TEST_TMPDIR/copy/gh"
+  : >"$BATS_TEST_TMPDIR/real.log"
+  PATH="$BATS_TEST_TMPDIR/copy:$BATS_TEST_TMPDIR/wrap:$BATS_TEST_TMPDIR/real:$PATH" run "$to" 10 gh run view 6 -R acme/x
+  assert_success
+  assert_equal "$(tail -n 1 "$BATS_TEST_TMPDIR/real.log")" 'tok-acme|run view 6 -R acme/x'
+  # NEGATIVE CONTROL: the copy alone, with no real gh after it, finds none rather than running the wrapper
+  PATH="$BATS_TEST_TMPDIR/copy:$BATS_TEST_TMPDIR/wrap:/usr/bin/nonexistent" run -127 "$to" 10 "$BASH" "$BATS_TEST_TMPDIR/copy/gh" --version
+  assert_output --partial 'no gh on PATH besides this wrapper'
 }
 
 # gh-app against a stub curl: the JWT is signed with a throwaway key, and the stub answers by URL.

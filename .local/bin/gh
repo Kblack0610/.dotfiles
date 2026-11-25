@@ -44,11 +44,15 @@ acct_home=$(getent passwd "$(id -un)" | cut -d: -f6)
 [ -z "$acct_home" ] || [ "$(readlink -f "${HOME:-/}")" = "$(readlink -f "$acct_home")" ] \
   || { echo "gh: HOME is ${HOME:-unset}, not $acct_home: a sandboxed caller never reaches GitHub" >&2; exit 3; }
 self=$(readlink -f "${BASH_SOURCE[0]}")
+# wrapper_copy <file>: a copy of this wrapper from another checkout, which line 2 of every copy names.
+# A worktree's .local/bin ahead of ~/.local/bin (a session profiling a worktree script) put two copies
+# on PATH: each took the other for the real gh and, with GH_WRAPPED set, exec'd it, at 100% CPU (ar-4949).
+wrapper_copy() { head -c 256 "$1" 2>/dev/null | grep -qa "^# gh - the fleet's gh:"; }
 real="${GH_REAL:-}"
 if [ -z "$real" ]; then
   IFS=: read -r -a dirs <<<"$PATH"
   for d in "${dirs[@]}"; do
-    [ -f "$d/gh" ] && [ -x "$d/gh" ] && [ "$(readlink -f "$d/gh")" != "$self" ] && { real="$d/gh"; break; }
+    [ -f "$d/gh" ] && [ -x "$d/gh" ] && [ "$(readlink -f "$d/gh")" != "$self" ] && ! wrapper_copy "$d/gh" && { real="$d/gh"; break; }
   done
 fi
 [ -n "$real" ] || { echo "gh: no gh on PATH besides this wrapper ($self)" >&2; exit 127; }
