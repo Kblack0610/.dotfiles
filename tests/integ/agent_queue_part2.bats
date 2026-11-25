@@ -1420,6 +1420,29 @@ notes --profile work ptask level run lv-8'
   assert_output 0
 }
 
+@test "add writes its story row with the queue lock free, and a slug queued meanwhile stops it (ar-5606)" {
+  story_notes
+  # The stub notes the call when the queue lock is held; a race file makes its row write queue the slug first.
+  sed -i '2i flock -n -x "$AGENT_QUEUE_DIR/.lock" true || printf "locked %s\\n" "$*" >> "$NOTES_FIXTURE/underlock.log"\ncase " $* " in *" add "*) [ ! -e "$NOTES_FIXTURE/race" ] || { mkdir -p "$AGENT_QUEUE_DIR/queued"; printf "slug: raced\\nproject: level\\n---\\nx\\n" > "$AGENT_QUEUE_DIR/queued/20260101-000000-raced.md"; } ;; esac' "$SANDBOX/bin/notes"
+  run "$AQ" add --project level --slug free "feat(menu): free"
+  assert_success
+  assert_line "story lv-9 on the level agent board"
+  run "$AQ" add --running --project level --slug linked "feat(menu): linked"
+  assert_success
+  grep -q -- '--agent add' "$NOTES_FIXTURE/calls.log"
+  grep -q -- '--agent run lv-9' "$NOTES_FIXTURE/calls.log"
+  [ ! -s "$NOTES_FIXTURE/underlock.log" ]
+  # Back under the lock, the add finds the slug the other add queued and writes no second item.
+  touch "$NOTES_FIXTURE/race"
+  run "$AQ" add --project level --slug raced "feat(menu): raced"
+  assert_failure
+  assert_output --partial "already in the queue: raced (added while its row was written)"
+  [ "$(find "$AGENT_QUEUE_DIR" -name '*-raced.md' | wc -l)" = 1 ]
+  # NEGATIVE CONTROL: the stub does see a held lock.
+  flock -x "$AGENT_QUEUE_DIR/.lock" "$SANDBOX/bin/notes" ptask level --agent list >/dev/null
+  [ "$(grep -c '^locked ' "$NOTES_FIXTURE/underlock.log")" = 1 ]
+}
+
 @test "a re-queue links its last item's open row by id, whatever its words; a closed one gets a new row" {
   story_notes
   "$AQ" add --project level --slug again "feat(menu): first words" >/dev/null

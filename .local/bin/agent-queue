@@ -2085,7 +2085,6 @@ board_row_priority() {
 # a priority (ar-2943), and its "low" would demote the human's #urgent row. It retags with bump.
 add_row_prio() {
   [ -z "${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}" ] || return 0
-  [ -n "${AQ_LOCKED-}" ] || unlock # notes writes the row and can be slow; the rest of add only reads
   row_prio_write "$1" "$2"
 }
 
@@ -2305,6 +2304,11 @@ cmd_add() {
   # Only a session taking the item works it. One queueing it for later did not, and outcomes
   # would charge that session's cost and revert count to this item.
   [ -z "$running" ] || sid="$(claude_sid)" || sid=
+  # notes writes the story row (link_row, prior_story, file_story, brief_to_row) and can be slow, so
+  # the lock is let go while it runs and taken again to write the item: held, a slow notes stalled
+  # every queue reader (ar-5606). Back under the lock, the slug and the cap are checked again, since
+  # another add may have come in meanwhile; a row this add filed stays for dispatch to promote.
+  unlock
   local story='' sboard='' sprof='' srow='' linked_row=''
   # No story row for work with its own record: a canary (fleet-bench canary), a trainee review (the trainee's row), an ask's resume (the ask).
   case "$from" in
@@ -2338,6 +2342,13 @@ cmd_add() {
   if [ -n "$running" ] && [ -n "$linked_row" ] && [ -z "$priority_given" ]; then
     priority="$(board_row_priority "$sboard" "$srow" "$priority")"
   fi
+  lock
+  [ -z "$(find_item "$slug")" ] || die "already in the queue: $slug (added while its row was written)"
+  if [ -n "$capped" ] && ! admit "$from" "$priority" "$tags" "$project" "$slug" "$hold_title"; then
+    unlock
+    [ -z "$story" ] || echo "agent-queue: row $srow on $sboard is left un-started: dispatch promotes it as the queue drains" >&2
+    exit "$AQ_EX_HELD"
+  fi
   mkdir -p "$AQ_DIR/$state"
   local f tmp
   f="$AQ_DIR/$state/$(date +%Y%m%d-%H%M%S)-$slug.md"
@@ -2359,6 +2370,7 @@ cmd_add() {
     printf -- '---\n%s\n' "$text"
   } > "$tmp" && mv -- "$tmp" "$f" || die "could not write $f"
   item_event item-added "$f" --to "$state"
+  unlock # the rest writes the board (notes) or starts the item, which takes the lock itself
   echo "$state $slug -> $f"
   [ -z "$story" ] || echo "story $srow on the $sboard agent board${epic:+, under $epic}"
   [ -z "$running" ] || mark_row "$f" run
