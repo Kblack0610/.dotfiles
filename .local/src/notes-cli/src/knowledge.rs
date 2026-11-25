@@ -65,14 +65,21 @@ pub struct Batch {
     pub ops: Vec<Op>,
 }
 
+/// A string field the engine's model writes: `null` reads as absent (empty), as the model emits
+/// `"why": null` for a source an op uses, and one null must not refuse the whole night's batch
+/// (2026-07-14, refused 2026-11-25, ar-4251).
+fn null_empty<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.unwrap_or_default())
+}
+
 #[derive(Deserialize)]
 pub struct Source {
     pub id: String,
     pub path: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_empty")]
     pub excerpt: String,
     /// For a source no op uses: why nothing in it was kept. The log's Dispositions show it.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_empty")]
     pub why: String,
 }
 
@@ -81,21 +88,21 @@ pub struct Op {
     /// `create`, `update`, or `domain` (register a domain: `id`, `is`, `aliases`, `canonical`)
     pub op: String,
     /// vault-relative, e.g. `knowledge/software/infra/litellm-gateway.md`
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_empty")]
     pub path: String,
     /// the whole new file, frontmatter included
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_empty")]
     pub content: String,
     /// a `domain` op's id, `is` line, aliases and canonical docs (`knowledge_registry::Domain`)
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_empty")]
     pub id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_empty")]
     pub is: String,
     #[serde(default)]
     pub aliases: Vec<String>,
     #[serde(default)]
     pub canonical: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_empty")]
     pub reason: String,
     #[serde(default)]
     pub sources: Vec<String>,
@@ -1513,6 +1520,22 @@ mod tests {
             None,
             &List::default(),
         )
+    }
+
+    #[test]
+    fn a_null_string_in_the_batch_reads_as_absent() {
+        // The 2026-07-14 batch the engine refused on 2026-11-25 (ar-4251): `"why": null` on a source an op uses.
+        let b: Batch = serde_json::from_str(
+            r#"{"date": "2026-07-14",
+                "sources": [{"id": "s1", "path": "p", "excerpt": null, "why": null}],
+                "ops": [{"op": "create", "path": "knowledge/a.md", "content": "x", "reason": null, "sources": ["s1"]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (b.sources[0].why.as_str(), b.sources[0].excerpt.as_str()),
+            ("", "")
+        );
+        assert_eq!(b.ops[0].reason, "");
     }
 
     #[test]
