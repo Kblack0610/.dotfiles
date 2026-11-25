@@ -258,7 +258,8 @@ impl Row for Machine {
             NO_DATA => self.state == NO_DATA,
             "cloud" => self.place == "cloud",
             "governed" => self.governor.is_some() || self.power.is_some(),
-            _ => false,
+            // A node state (`NotReady`, `quarantined`, `cordoned`), alone or joined.
+            _ => self.state.split(", ").any(|p| p == s),
         }
     }
     /// A bare word finds a machine by its name, what its slots do, jobs and the governor's words.
@@ -572,7 +573,11 @@ pub fn build(infra: &Infra) -> (Vec<Machine>, Vec<Pool>) {
                 }
                 _ => NO_DATA.into(),
             };
-            if let Some(n) = node_state.get(&h) {
+            // A governor power state (stopped, suspended) says why the node is away: it stays.
+            if let Some(n) = node_state
+                .get(&h)
+                .filter(|_| mm.power.is_none() || mm.state == "up")
+            {
                 mm.state = n.clone();
             }
             mm

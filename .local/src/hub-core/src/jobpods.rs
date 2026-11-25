@@ -16,6 +16,9 @@ pub const NAMESPACE: &str = "arc-runners";
 /// its key's domain stays out of this public repo.
 pub const CI_TAINT: &str = ".+/ci";
 
+/// The taint home-config puts on a quarantined node, matched the same way.
+pub const DEGRADED_TAINT: &str = ".+/degraded";
+
 /// Each job pod starting, running or waiting for room: its phase, its node (none while
 /// unscheduled) and its owner. Its requests are `requests_query`, apart, so a pod that requests
 /// nothing still counts.
@@ -43,6 +46,7 @@ pub fn alloc_query() -> String {
 /// true), `quarantined` (the home-config degraded taint, matched by name) or `cordoned`
 /// (unschedulable). A healthy node has none.
 pub fn node_state_query() -> String {
+    let degraded = format!(r#"max by (node) (kube_node_spec_taint{{key=~"{DEGRADED_TAINT}"}})"#);
     let tag =
         |q: &str, state: &str| format!(r#"label_replace({q}, "state", "{state}", "node", ".*")"#);
     [
@@ -50,10 +54,7 @@ pub fn node_state_query() -> String {
             r#"max by (node) (kube_node_status_condition{condition="Ready",status="true"} == 0)"#,
             "NotReady",
         ),
-        tag(
-            r#"max by (node) (kube_node_spec_taint{key=~".+/degraded"})"#,
-            "quarantined",
-        ),
+        tag(&degraded, "quarantined"),
         tag(
             "max by (node) (kube_node_spec_unschedulable == 1)",
             "cordoned",
@@ -74,8 +75,9 @@ pub struct JobPod {
     /// No scale set keeps warm runners (minRunners 0), so a running pod is a job, unless it is
     /// `reserved`.
     pub running: bool,
-    /// A DaemonSet pod (`ci-build-slot`, home-config #1514): it runs a pause container that books
-    /// the CPU of the out-of-k8s Unity build slot. A reservation, never a job.
+    /// A DaemonSet pod: it sits on every node it selects, so it is never a job. Today the one is
+    /// `ci-build-slot` (home-config #1514), a pause container booking the CPU of the out-of-k8s
+    /// Unity build slot; any other DaemonSet added to the namespace is a reservation too.
     pub reserved: bool,
     /// Cores and bytes it requests.
     pub cpu: f64,
@@ -511,7 +513,7 @@ pub(crate) mod tests {
             .all(|p| !p.reserved));
         let b = booked(&i, &pods);
         // Booked against allocatable like any pod, and named apart.
-        assert_eq!(b["ms-a2"].cell(), "11.7/32 24.5G/92G, 7.4 reserved");
+        assert_eq!(b["ms-a2"].cell(), "11.7/32 23G/92G, 7.4 reserved");
         assert_eq!(b["tuf-b550"].cell(), "7.4/32 21G/63G, 7.4 reserved");
         let r = running_by_node(&pods);
         assert_eq!(r["ms-a2"].keys().collect::<Vec<_>>(), ["[arc-org-light]"]);

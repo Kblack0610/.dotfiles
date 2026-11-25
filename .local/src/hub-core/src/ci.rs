@@ -369,6 +369,9 @@ impl Glance {
                 crate::jobpods::cores(b.cpu),
                 b.cpu_alloc.round()
             );
+            if b.reserved > 0.0 {
+                s += &format!(" ({} reserved)", crate::jobpods::cores(b.reserved));
+            }
         }
         s += &format!(", {} runners up", self.up_line());
         if self.done > 0 {
@@ -2159,7 +2162,7 @@ mod tests {
         let (ms, tuf) = (row("ms-a2"), row("tuf-b550"));
         assert_eq!(ms.running, ["[arc-org-light] x2"]);
         assert_eq!(ms.busy, 2);
-        assert_eq!(ms.booked.unwrap().cell(), "11.7/32 24.5G/92G, 7.4 reserved");
+        assert_eq!(ms.booked.unwrap().cell(), "11.7/32 23G/92G, 7.4 reserved");
         assert_eq!((tuf.busy, tuf.running.len()), (0, 0));
         assert_eq!(tuf.booked.unwrap().cell(), "7.4/32 21G/63G, 7.4 reserved");
         assert_eq!(
@@ -2167,6 +2170,12 @@ mod tests {
             ("up", "NotReady, cordoned")
         );
         assert_eq!(g.busy, 3, "the reservations are no running job");
+        assert!(
+            g.head(|s| format!("{}m", s / 60))
+                .contains("booked 19.1/64 cpu (14.7 reserved)"),
+            "{}",
+            g.head(|s| format!("{}m", s / 60))
+        );
         assert_eq!(
             g.pending_line().as_deref(),
             Some("waiting for room: arc-org-light (1.69 cpu 1.2G)")

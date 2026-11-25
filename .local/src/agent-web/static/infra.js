@@ -48,7 +48,7 @@ const alertHue = (g) => ({ red: "var(--b-needs)", ok: "var(--b-done)" })[g && g.
 function glanceHead(g) {
   let s = `${g.busy} running, ${g.queued} queued`;
   if (g.queued > 0 && g.oldest != null) s += ` (oldest ${secs(g.oldest)})`;
-  if (g.booked) s += `, booked ${cores1(g.booked.cpu)}/${Math.round(g.booked.cpu_alloc)} cpu`;
+  if (g.booked) s += `, booked ${cores1(g.booked.cpu)}/${Math.round(g.booked.cpu_alloc)} cpu${g.booked.reserved > 0 ? ` (${cores1(g.booked.reserved)} reserved)` : ""}`;
   s += `, ${upLine(g)} runners up`;
   if (g.done > 0) s += `, ${g.done} done 24h${g.pass != null ? `, ${pct(g.pass)} passed` : ""}`;
   return s;
