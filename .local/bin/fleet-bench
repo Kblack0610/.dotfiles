@@ -268,6 +268,7 @@ set -uo pipefail
 : "${BENCH_TIME_DAYS:=7}"
 : "${BENCH_QUEUE_STATS_CMD:=agent-queue stats --json}"   # given --since <date>
 : "${BENCH_QUEUE_DAYS:=7}"           # what the queue line and the scorecard's queue tables cover
+: "${BENCH_KINDS:=${DISPATCH_KINDS:-$HOME/.config/fleet-dispatch/kinds.json}}"   # fleet-dispatch's kinds: canary matrix reads which kinds open a PR
 : "${BENCH_TRAINEE_CMD:=timeout 120 fleet-dispatch trainee-pool --json}"   # the trainee pool and the floor's state, as dispatch reads them
 : "${BENCH_SIZES_DAYS:=28}"          # the done items fleet-bench sizes calibrates on
 : "${BENCH_SECTIONS_DAYS:=7}"        # the merged PRs fleet-bench sections covers
