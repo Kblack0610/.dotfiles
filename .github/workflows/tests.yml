@@ -93,7 +93,7 @@ jobs:
   # container's /tmp, where every bats sandbox lives, in memory (ar-5740). A job that runs in
   # the test image as its job container gets the same from home-config's arc-repo-dotfiles-pods-hook
   # template (ar-6016). The container's exit waits on the same disk (up to 6 minutes after the
-  # tests passed, run 45684648964), so in CI docker.sh never stops it inside the job. Every stall
+  # tests passed, run 45684648964), so in CI no step waits on it: docker.sh removes it in the background. Every stall
   # over 60 s in 83 fast jobs fell on deskslim-1/2 or msi-b550, none on ms-a2 or tuf-b550: the
   # lever left is every pod's writes to a node, one image copy a node (ar-6016, ar-6047).
   # On 2026-11-23 the account sat at its hosted parallel-job cap (36 running, 105 queued), so a
