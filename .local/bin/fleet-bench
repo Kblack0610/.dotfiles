@@ -113,7 +113,7 @@
 #                                retires earlier weeks' queued canaries and queues the week's canary run: the claude lane, then each lane in
 #                                BENCH_CANARY_LANES whose source has room
 #   fleet-bench canary list [--by harness,model[,pts]] [--json] | verify [id...] | queue [--harness h [--model m [--effort e]] [--task id[,id]] [--pts n[,n]]]
-#                                | retire | start <id> | score <id> [--end <reason>] | matrix [--harness h] [--days N] [--json]
+#                                | retire | start <id> | score <id> | matrix [--harness h] [--days N] [--json]
 #                                | shepherd [--days N] [--json] | dream [--days N] [--json]
 #                                the fixed eval set: tasks from merged PRs, the pre-merge commit and
 #                                the PR's own tests as the oracle. queue adds one canary item per task
@@ -2199,6 +2199,9 @@ ledger_systems() {
 # ownerless_running: running or waiting items with no session (reap flags them).
 # epic_linked_share: the agent rows filed under an epic (#of/), over every project automation manages;
 # a project with no epic yet counts, all its rows unlinked, since the link pass gives each row one.
+# uncaused_close_share: the done items finished in the window that closed failed with no end_reason, over every one
+# finished; end_reason is the one record of why a run ended (lib/end-reasons.sh), so a failed close with none is a
+# cause no reader can find (ar-5427).
 # landed_unverified: open epics whose every leaf is done, waiting on proof of the outcome. doctor_fail: FAIL lines in the last notes doctor.
 # dup_pairs: instructions two homes restate, from the newest nightly docs-cleanup night's dups.json
 # (skill-drift --dups); the bound is dup_pairs_max, the same row skill-drift --dups --check holds.
@@ -2228,7 +2231,7 @@ ledger_systems() {
 # release_overdue and version_tag_drift are the release link (release_kpis): a project a day past its
 # target date with that version uncut, else a sheet-counter project a day past its cadence due date with
 # done rows and no cut; and a tagged project whose sheet is not its tag plus one patch.
-KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified release_overdue version_tag_drift doctor_fail dup_pairs plans_unqueued routes_unresolved reds_unfixed reds_spent requested_unstarted_h orphan_request_rows next_up_blocked stale_urgent_d urgent_per_board playtest_waiting_d done_inline_old prio_default request_to_live_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_review step_age_p90_waiting queue_net_24h estimated_token_share"
+KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running uncaused_close_share epic_linked_share landed_unverified release_overdue version_tag_drift doctor_fail dup_pairs plans_unqueued routes_unresolved reds_unfixed reds_spent requested_unstarted_h orphan_request_rows next_up_blocked stale_urgent_d urgent_per_board playtest_waiting_d done_inline_old prio_default request_to_live_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_review step_age_p90_waiting queue_net_24h estimated_token_share"
 
 # wants_stats <now> -> {total, unstamped, by_project: {<from>: {total, unstamped}}} over the last
 # CHAIN_DAYS of the notes ingest record; nothing and a failure when the record cannot be read.
@@ -2538,6 +2541,9 @@ chain_links() {
       "epic_linked_share=\(n(if $b == null or $p == null then null
         else ratio($linkable | map(select(.tags | any(startswith("of/")))) | length; $linkable | length) end))",
       "landed_unverified=\(n(if $p == null then null else [$p[] | (.epics // [])[] | select(leaves_landed)] | length end))",
+      "uncaused_close_share=\(n(if $d == null then null
+        else [$d[] | select((.finished // "" | fromdateiso8601? // 0) > $t - $days * 86400)] as $w
+          | ratio($w | map(select(.status == "failed" and ((.end_reason // "") == ""))) | length; $w | length) end))",
       "requested_unstarted_h=\(n(if $b == null then null else [$b | oldest_request($t) | .h] | first // 0 end))",
       "cost_per_merged_item=\(n(if $d == null then null else [$d[] | select(.merged and (.finished // "" | fromdateiso8601? // 0) > $t - $days * 86400)
         | [.cost_usd, .gateway_cost_usd] | map(tonumber? // empty) | select(length > 0) | add]
@@ -7046,16 +7052,17 @@ canary_top_up() {
   return "$rc"
 }
 
-# canary_lane -> {harness, model, effort, session_id} of the run scoring now: harness, model and effort from its
-# queue item (fleet-dispatch records what it started), else codex when CODEX_THREAD_ID is set, else
-# claude. The session is that harness's own id, else the newest one claimed on the item.
+# canary_lane -> {harness, model, effort, session_id, end_reason} of the run scoring now: harness, model, effort and
+# end_reason (why the session ended: the one record, which fleet-dispatch record-end writes in the canary tail)
+# from its queue item, else codex when CODEX_THREAD_ID is set, else claude. The session is that harness's own
+# id, else the newest one claimed on the item.
 canary_lane() {
   local it=null
   [ -z "${AGENT_QUEUE_ITEM:-}" ] || it=$($BENCH_CANARY_QUEUE_CMD show "$AGENT_QUEUE_ITEM" --json 2>/dev/null | jq -ce objects) || it=null
   jq -nc --argjson it "$it" --arg cx "${CODEX_THREAD_ID:-}" --arg cl "${CLAUDE_CODE_SESSION_ID:-}" '
     def nz: if . == "" then null else . end;
     ($it.agent // (if $cx != "" then "codex" else "claude" end)) as $h
-    | {harness: $h, model: ($it.model // null | nz), effort: ($it.effort // null | nz),
+    | {harness: $h, model: ($it.model // null | nz), effort: ($it.effort // null | nz), end_reason: ($it.end_reason // null | nz),
        session_id: ((if $h == "claude" then $cl elif $h == "codex" then $cx else "" end | nz)
                     // ($it.sessions // "" | split(" ") | map(select(length > 0)) | last))}'
 }
@@ -7094,27 +7101,19 @@ canary_keep() {
 # were provider refusals scored as model fails (agent-runtime docs/canary-free-failures-2026-11-19.md).
 CANARY_UNRUN_ENDS="$UNRATED_ENDS timeout"
 
-# canary score <id> [--end <end_reason>]: run the oracle over the session's tree and append one score row, then put the tree
+# canary score <id>: run the oracle over the session's tree and append one score row, then put the tree
 # back at the task's base, clean, so wt reaps it as landed (a dirty one was held forever: 23 of 134
 # held trees on 2026-11-18); the run's diff stays as <run>.patch beside its log (canary_keep). A run is
 # the queue item ($AGENT_QUEUE_ITEM) or the task and week, and it scores once: a second score is refused.
-# --end is why the session ended (END_REASONS), which fleet-dispatch's canary tail reads from the harness's
-# record once the run is over; empty is unknown, and so is a word outside END_REASONS (said, so the run
-# still scores). The row keeps it as end_reason, and an end in CANARY_UNRUN_ENDS scores pass null, not
-# run, whatever the oracle said. A positive control run (canary_control) is marked control, and when it
-# fails it says that its whole week now reads instrument (canary_graded).
+# Why the session ended is the item's end_reason, which fleet-dispatch's canary tail writes from the harness's
+# record once the run is over (record-end); none is unknown, and the oracle alone scores it. The row keeps it
+# as end_reason, and an end in CANARY_UNRUN_ENDS scores pass null, not run, whatever the oracle said. A
+# positive control run (canary_control) is marked control, and when it fails it says that its whole week now
+# reads instrument (canary_graded).
 canary_score() {
   local t top run log rc=0 cfg r repos lane base reset=1 id="${1:-}" end='' pass verdict control
-  t=$(canary_task "${id:?usage: fleet-bench canary score <id> [--end <end_reason>]}") || return 2
-  shift
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --end) [ $# -ge 2 ] || { say "canary score: --end needs a reason (or an empty one)"; return 2; }; end=$2; shift 2
-        [ -n "$end" ] || say "canary score: the session's end is unknown (the harness record said nothing), so the oracle alone scores it" ;;
-      *) say "usage: fleet-bench canary score <id> [--end <end_reason>]"; return 2 ;;
-    esac
-  done
-  [ -z "$end" ] || [[ " $END_REASONS " == *" $end "* ]] || { say "canary score: --end '$end' is not one of: $END_REASONS; scored as unknown"; end=''; }
+  t=$(canary_task "${id:?usage: fleet-bench canary score <id>}") || return 2
+  [ $# -eq 1 ] || { say "usage: fleet-bench canary score <id>"; return 2; }
   top=$(git rev-parse --show-toplevel 2>/dev/null) || { say "canary score: not in a git worktree"; return 2; }
   run=${AGENT_QUEUE_ITEM:-canary-$id-$(canary_week)}
   if [ -s "$CANARY" ] && jq -e --arg r "$run" 'select(.run == $r)' "$CANARY" >/dev/null 2>&1; then
@@ -7132,6 +7131,9 @@ canary_score() {
           printf '%s\t%s\n' "$(basename "$r")" "$(git -C "$r" rev-parse --short=12 HEAD 2>/dev/null || echo null)"
         done | jq -Rn '[inputs | split("\t") | {key: .[0], value: .[1]}] | from_entries')
   lane=$(canary_lane)
+  end=$(jq -r '.end_reason // empty' <<<"$lane")
+  [ -z "${AGENT_QUEUE_ITEM:-}" ] || [ -n "$end" ] ||
+    say "canary score: the session's end is unknown (the item has no end_reason: the harness record said nothing), so the oracle alone scores it"
   pass=false verdict=fail
   [ "$rc" != 0 ] || { pass=true verdict=pass; }
   [[ " $CANARY_UNRUN_ENDS " != *" ${end:-none} "* ]] || { pass=null verdict="not run (the session ended: $end)"; }
