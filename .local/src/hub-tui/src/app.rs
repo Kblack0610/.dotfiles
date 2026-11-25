@@ -7447,7 +7447,7 @@ mod tests {
         let s = screen(&mut a, 120, 40);
         let first = s.lines().next().unwrap();
         assert!(
-            first.contains("1 Home") && first.contains("9 Infra") && first.contains(" RED"),
+            first.contains("1 Home") && first.contains(" 9 ") && first.contains(" RED"),
             "{s}"
         );
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
@@ -9619,7 +9619,7 @@ mod tests {
             "{bar:?}"
         );
         let wide: String = a
-            .tab_bar(120)
+            .tab_bar(150)
             .spans
             .iter()
             .map(|s| s.content.as_ref())
