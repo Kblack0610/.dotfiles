@@ -52,6 +52,8 @@ for no in \$(cat "$SANDBOX/can-i-no" 2>/dev/null); do case "\$*" in *"\$no"*) ec
 echo yes
 EOF
   mkdir -p "$HOME/.local/bin" "$HOME/.config/agent-web" "$HOME/.config/systemd/user"
+  # One can-i per KUBE_NEEDS entry, counted from fleet-node itself.
+  N_NEEDS=$(sed -n '/^KUBE_NEEDS=(/,/^)/p' "$FLEET_NODE" | grep -c '^  "')
   printf '#!/bin/sh\nexit 0\n' >"$HOME/.local/bin/agent-web"
   chmod +x "$SANDBOX/bin/kubectl" "$HOME/.local/bin/agent-web"
   echo '{}' >"$HOME/.config/agent-web/oauth.json"
@@ -93,7 +95,7 @@ EOF
   assert_output ''
   # Every can-i went to home-k3s through the scoped kubeconfig, never kubectl's own.
   run grep -c "^KUBECONFIG=$FLEET_KUBECONFIG_SCOPED --context home-k3s .*auth can-i" "$SANDBOX/kubectl.log"
-  assert_output 11
+  assert_output "$N_NEEDS"
 }
 
 @test "one account with no token is enough to fail ready claude" {
@@ -213,7 +215,7 @@ EOF
   run "$FLEET_NODE" ready
   assert_success
   run grep -c "^KUBECONFIG=$HOME/.kube/config --context home-k3s" "$SANDBOX/kubectl.log"
-  assert_output 11
+  assert_output "$N_NEEDS"
 }
 
 @test "agent-web's missing pieces are each named" {

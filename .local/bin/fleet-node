@@ -77,11 +77,12 @@ store_unreachable() {
   . "$here/../lib/store-remote.sh"
   load_conf
   [ -n "$STORE_PRIMARY_URL$STORE_BACKUP_URL" ] || { echo "no store remotes in $CONF: stow the private overlay"; return 0; }
-  local r url
-  for r in origin backup; do
-    case "$r" in origin) url=$STORE_PRIMARY_URL ;; *) url=$STORE_BACKUP_URL ;; esac
+  local p r url
+  for p in "origin|$STORE_PRIMARY_URL" "backup|$STORE_BACKUP_URL"; do
+    r=${p%%|*} url=${p#*|}
     if [ -z "$url" ]; then echo "no $r store remote in $CONF"
-    elif ! timeout 30 bash -c '. "$1"; shift; net "$@"' _ "$here/../lib/store-remote.sh" "$r" ls-remote "$url" HEAD >/dev/null 2>&1; then
+    # net bounds itself (ssh ConnectTimeout, git's http low-speed limit), as store-sync and fleet-lease run it.
+    elif ! net "$r" ls-remote "$url" HEAD >/dev/null 2>&1; then
       echo "cannot reach the $r store remote ($url) the way store-sync does"
     fi
   done
@@ -118,14 +119,14 @@ kube_needs() {
   err=$(mktemp)
   for need in "${KUBE_NEEDS[@]}"; do
     args=${need%%|*} who=${need#*|}
-    # can-i answers yes or no on stdout; a warning (a cluster-scoped kind under a namespaced context)
-    # or the reason it could not ask goes to stderr.
+    # can-i answers yes or no on stdout; a warning (a cluster-scoped kind under a namespaced context,
+    # with a blank line after it) or the reason it could not ask goes to stderr, so the two stay apart.
     # shellcheck disable=SC2086 # args is a word list
     out=$(KUBECONFIG="$kcfg" kubectl --context home-k3s --request-timeout=10s auth can-i $args 2>"$err")
     case "$out" in
       yes) ;;
       no*) echo "the kubeconfig at $kcfg may not $args: $who (home-config fleet-read-rbac.yaml)" ;;
-      *) echo "cannot ask home-k3s with the kubeconfig at $kcfg: $(grep -v '^Warning:' "$err" | head -n 1)"; break ;;
+      *) echo "cannot ask home-k3s with the kubeconfig at $kcfg: $(grep -v -e '^Warning:' -e '^$' "$err" | head -n 1)"; break ;;
     esac
   done
   rm -f "$err"
