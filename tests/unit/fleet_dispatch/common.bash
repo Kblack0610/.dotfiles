@@ -766,6 +766,10 @@ restore_setup() {
   mkdir -p "$TMUX_SERVERS_DIR" "$HOME/.claude/sessions" "$HOME/.agent/spin-down"
   stub tmx 'echo "tmx $*" >> "$NOTES_FIXTURE/calls.log"'
   stub agent-panel 'exit 0'
+  # wt revive puts a reaped worktree back only when the test says one was reaped (wt.revives).
+  stub wt 'echo "wt $*" >> "$NOTES_FIXTURE/calls.log"
+[ -e "$NOTES_FIXTURE/wt.revives" ] || { echo "wt: nothing reaped at $2" >&2; exit 1; }
+mkdir -p "$2"; echo "revived ${2##*/} on $4"'
   printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.sessions.hub"
 }
 

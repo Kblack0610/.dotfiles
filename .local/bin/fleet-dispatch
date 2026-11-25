@@ -177,6 +177,8 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/end-reasons.sh"
 # shellcheck source=../lib/claude-end.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/claude-end.sh"
+# shellcheck source=../lib/claude-transcript.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/claude-transcript.sh"
 # shellcheck source=../lib/wake-pace.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/wake-pace.sh"
 LEVEL=$(machine_level)
@@ -2559,7 +2561,7 @@ cmd_lane_sandbox() { local sbx_env sbx_flags; lane_sandbox "$1" || return 1; pri
 # server: a permission-mode line, or the mode on a user turn, whichever is last.
 last_mode() {
   local t
-  t=$(compgen -G "$HOME/.claude/projects/*/$1.jsonl" | awk 'NR==1')
+  t=$(session_transcript "$1")
   [ -n "$t" ] || return 0
   tac "$t" | grep -m1 -o '"permissionMode":"[A-Za-z]*"' | cut -d'"' -f4
 }
@@ -4349,7 +4351,7 @@ wound_down() { compgen -G "$HOME/.agent/spin-down/$1.[rf]*" >/dev/null || compge
 # meanwhile stays owed. Each reopened pane is tagged @fleet_restored with the record's time, when its
 # server was last seen alive, so fleet-sessions runs its close timer on from the quiet it had then.
 restore_world() {
-  local f=$1 dry=$2 srv sess win cwd id mode project item it prompt said failed=0 opened=0 owed=0 walked alive
+  local f=$1 dry=$2 srv sess win cwd id mode project item it prompt said out failed=0 opened=0 owed=0 walked alive
   walked=$(sha256sum < "$f")
   srv=$(jq -r .server "$f")
   alive=$(date -d "$(jq -r '.at // empty' "$f")" +%s 2>/dev/null) || alive=
@@ -4358,7 +4360,17 @@ restore_world() {
     if [ -z "$id" ]; then echo "$srv:$sess:$win: no conversation, not reopened ($cwd)"; continue; fi
     if wound_down "$id"; then echo "$srv:$sess:$win: wound down on purpose, skipped"; continue; fi
     if claude_pid_live "$id"; then echo "$srv:$sess:$win: already running, skipped"; continue; fi
-    if [ ! -d "$cwd" ]; then echo "$srv:$sess:$win: $cwd is gone, skipped (claude --resume $id)"; continue; fi
+    # A worktree wind-down or wt done reaped since comes back first, on the branch the conversation
+    # last ran on, as agent-ask reopen puts one back: claude --resume finds a session by its directory
+    # (ar-2902). wt revive refuses a slot another session holds now, and a cwd that is no worktree.
+    if [ ! -d "$cwd" ]; then
+      if [ "$dry" = 1 ]; then echo "$srv:$sess:$win: $cwd is gone, would put it back (wt revive)"
+      elif out=$(wt revive "$cwd" --branch "$(session_branch "$id")" </dev/null 2>&1); then
+        echo "$srv:$sess:$win: ${out##*$'\n'}"
+      else
+        echo "$srv:$sess:$win: $cwd is gone and could not be put back (${out##*$'\n'}), skipped (claude --resume $id)"; continue
+      fi
+    fi
     item=$(agent-queue mine --sid "$id" --newest 2>/dev/null) || item=''
     it=''; [ -z "$item" ] || it=$(agent-queue show "$item" --json 2>/dev/null) || it=''
     mode=$(resume_mode "$id" "$(jq -r '.mode // empty' <<<"$it" 2>/dev/null)")

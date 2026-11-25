@@ -931,6 +931,31 @@ claude_end_item() {
   assert_output --partial 'no lost server on record'
 }
 
+@test "restore puts back a worktree reaped since, on the conversation's last branch, before it reopens it (ar-2902)" {
+  restore_setup
+  W="$SANDBOX/worktrees/game-reaped"
+  lost_pane reaped "$W" conv-reaped
+  transcript conv-reaped '{"gitBranch":"main","permissionMode":"bypassPermissions"}
+{"type":"user","message":"\"gitBranch\":\"quoted\""}
+{"gitBranch":"fix/reaped"}'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore --dry-run
+  assert_success
+  assert_output --partial "hub:dotfiles:reaped: $W is gone, would put it back (wt revive)"
+  assert_not_called 'wt revive'
+  # Negative control: a slot wt cannot put back is skipped with its reason, and nothing reopens.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_success
+  assert_called "wt revive $W --branch fix/reaped"
+  assert_output --partial "hub:dotfiles:reaped: $W is gone and could not be put back (wt: nothing reaped at $W), skipped (claude --resume conv-reaped)"
+  assert_not_called '--resume conv-reaped'
+  : > "$NOTES_FIXTURE/wt.revives"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_success
+  assert_output --partial 'hub:dotfiles:reaped: revived game-reaped on fix/reaped'
+  assert_called "-n reaped -c $W ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume conv-reaped"
+  assert_output --partial 'hub: reopened 1, failed 0'
+}
+
 @test "restore reopens a conversation that several queue items list, with the running one updated last (ar-2676)" {
   restore_setup
   G="$SANDBOX/repos/game"

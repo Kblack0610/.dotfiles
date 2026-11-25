@@ -210,6 +210,9 @@ JQ_MONEY='def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/tmux/panel-palette.sh"
 # shellcheck source=../lib/typed-prefixes.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/typed-prefixes.sh"
+# session_transcript, session_branch
+# shellcheck source=../lib/claude-transcript.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/claude-transcript.sh"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
 
@@ -1679,10 +1682,6 @@ cmd_reopen() {
   return 1
 }
 
-# session_transcript <claude session>: its transcript file. Accounts share the transcripts, so
-# any copy will do.
-session_transcript() { ls "$HOME"/.claude*/projects/*/"$1".jsonl 2>/dev/null | awk 'NR==1'; }
-
 # session_resumable <session id>: claude --resume can open it, because it has a Claude
 # transcript. A headless run that owns an ask under another harness's id (a Codex thread) has
 # none, so nothing offers to reopen it and its answer is given on the card.
@@ -1694,15 +1693,6 @@ session_cwd() {
   local t; t="$(session_transcript "$1")"
   [ -n "$t" ] || return 0
   grep -m1 '"cwd":' "$t" | jq -r '.cwd // empty' 2>/dev/null
-}
-
-# session_branch <claude session>: the git branch the conversation last ran on, from the last
-# transcript line that records one (a session can switch branches mid-run).
-session_branch() {
-  local t; t="$(session_transcript "$1")"
-  [ -n "$t" ] || return 0
-  # Only a top-level field counts: a message can quote the key.
-  grep '"gitBranch":' "$t" | jq -rR 'fromjson? | objects | .gitBranch // empty | strings' 2>/dev/null | tail -1
 }
 
 # live_row <claude_session>: the agent-panel row of that session while it lives, else nothing. This
