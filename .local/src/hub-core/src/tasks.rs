@@ -289,7 +289,7 @@ impl crate::table::Row for Row {
         "section", "type", "area", "epic", "project", "lane", "priority", "state",
     ];
     const LEAD: &'static str = "title";
-    const GLANCE: &'static [&'static str] = &["epic", "rows", "priority", "state"];
+    const GLANCE: &'static [&'static str] = &["epic", "priority", "state"];
 
     fn val(&self, col: &str) -> Val {
         let text = |s: &str| Val::Text(s.to_string());
