@@ -1510,7 +1510,7 @@ fn knowledge_cmd(prof: &config::Profile, log: &logging::Logger, sub: KnowledgeCm
 }
 
 /// `ptask done` and `ptask drop`: close the row the query names, settling its open children
-/// (`--children`, and a dup's children move under the row it duplicates).
+/// (`--children`, and a dup's children and `#after/` waiters move to the row it duplicates).
 fn ptask_close(
     prof: &config::Profile,
     log: &logging::Logger,
