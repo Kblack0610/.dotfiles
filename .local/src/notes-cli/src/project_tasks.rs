@@ -2609,9 +2609,15 @@ pub fn drop(
     children: Option<&Children>,
 ) -> Result<i32> {
     let stamp = drop_stamp(why, dup)?;
-    let dropped_id = match sheet_and_content(p, name, lane)? {
-        Some((_, content)) => find_open(&content, pick).and_then(|r| md::row_id(&r)),
-        None => None,
+    // Read before any write, so the report cannot fail once the row is closed.
+    let waiters = match (dup, sheet_and_content(p, name, lane)?) {
+        (None, Some((_, content))) => {
+            match find_open(&content, pick).and_then(|r| md::row_id(&r)) {
+                Some(id) => waiter_notes(name, &id, &live_rows_with_lane(p, name)?),
+                None => Vec::new(),
+            }
+        }
+        _ => Vec::new(),
     };
     // A dup's children carry on under the row it duplicates, unless --children says otherwise.
     let onto = dup.map(|d| Children::Onto(d.trim().to_lowercase()));
@@ -2631,8 +2637,8 @@ pub fn drop(
         Some(close(l))
     })?;
     if matched.is_some() {
-        if let Some(id) = &dropped_id {
-            settle_waiters(p, log, name, id, dup.map(|d| d.trim().to_lowercase()))?;
+        for w in &waiters {
+            eprintln!("{w}");
         }
     }
     let day = chrono::Local::now().date_naive();
@@ -2646,60 +2652,41 @@ pub fn drop(
     Ok(code)
 }
 
-/// The open rows of the project that wait on `id` with `#after/<id>`, once `id` is dropped: that
-/// gate never clears, since a dropped row never closes done. A dup's waiters wait on the row it
-/// duplicates instead (the kept row itself just loses the gate); after a `--why` drop each waiter
-/// is named on stderr with the command that frees it, since only a person knows whether its work
-/// still stands. Why: ar-2856 was dropped on 2026-11-25 while ar-3032 waited on it, and
-/// queue-starved paged on the dead gate (ar-5747).
-fn settle_waiters(
-    p: &Profile,
-    log: &Logger,
-    name: &str,
-    id: &str,
-    dup: Option<String>,
-) -> Result<()> {
+/// Every open row on the project's live sheets ([`live_sheets`]), with the lane of its sheet.
+fn live_rows_with_lane(p: &Profile, name: &str) -> Result<Vec<(String, Lane)>> {
+    let mut out = Vec::new();
+    for (path, _, lane) in live_sheets(p, name)? {
+        let content = fs::read_to_string(&path)?;
+        out.extend(
+            md::section_numbered(&content, sheet::TASKS)
+                .into_iter()
+                .filter(|(_, l)| md::is_open_task(l))
+                .map(|(_, l)| (l.to_string(), lane)),
+        );
+    }
+    Ok(out)
+}
+
+/// One line per open row in `rows` gated `#after/<id>`, for a `--why` drop of `id`: a dropped row
+/// never closes done, so that gate never clears, and only a person knows whether the waiter's work
+/// still stands. Each line names the command that frees it on its own lane. A dup needs none:
+/// `agent-queue gate` follows a dup-closed row to the row it was folded into. Why: ar-2856 was
+/// dropped on 2026-11-25 while ar-3032 waited on it, and queue-starved paged on the dead gate
+/// (ar-5747).
+fn waiter_notes(name: &str, id: &str, rows: &[(String, Lane)]) -> Vec<String> {
     let gate = format!("after/{id}");
-    let waits = |l: &str| md::find_hashtags(l).contains(&gate);
-    let waiters: Vec<String> = live_rows(p, name)?
-        .into_iter()
-        .filter(|l| waits(l))
-        .collect();
-    if waiters.is_empty() {
-        return Ok(());
-    }
-    // drop_tag matches a whole token as written, so take each waiter's own spelling of the gate.
-    let as_written = |l: &str| {
-        md::find_hashtags_cased(l)
-            .into_iter()
-            .find(|t| t.to_lowercase() == gate)
-            .map(|t| format!("#{t}"))
-    };
-    match dup {
-        Some(to) => {
-            let onto = format!("#after/{to}");
-            let why = format!("-#{gate} +{onto}");
-            rewrite_rows(p, log, name, "tagged", &why, waits, |l| {
-                let bare = as_written(l).map_or_else(|| l.to_string(), |t| md::drop_tag(l, &t));
-                if md::row_id(l).as_deref() == Some(to.as_str()) {
-                    bare
-                } else {
-                    md::add_tag(&bare, &onto)
-                }
-            })?;
-        }
-        None => {
-            for w in &waiters {
-                let wid = md::row_id(w).unwrap_or_else(|| md::task_text(w));
-                eprintln!(
-                    "{wid} waits on {id} with #{gate}, which never clears now that {id} is dropped: \
-                     notes ptask {name} --agent tag --remove {gate} {wid} (the human lane drops --agent), \
-                     or drop {wid} if its work went with {id}"
-                );
-            }
-        }
-    }
-    Ok(())
+    rows.iter()
+        .filter(|(l, _)| md::row_id(l).as_deref() != Some(id))
+        .filter(|(l, _)| md::find_hashtags(l).contains(&gate))
+        .map(|(l, lane)| {
+            let wid = md::row_id(l).unwrap_or_else(|| md::task_text(l));
+            let flag = if *lane == Lane::Agent { " --agent" } else { "" };
+            format!(
+                "{wid} waits on {id} with #{gate}, which never clears now that {id} is dropped: \
+                 notes ptask {name}{flag} tag --remove {gate} {wid}, or drop {wid} if its work went with {id}"
+            )
+        })
+        .collect()
 }
 
 /// Refuse an epic written to the agent board: the human owns epics, and dispatch would start
@@ -7096,41 +7083,70 @@ mod inbox_tests {
         );
     }
 
-    // ar-5747: a dropped row never closes done, so a row gated #after/ on it would wait for good.
-    // A dup's waiters follow it to the kept row; a --why drop leaves its waiters as they are.
+    // ar-5747: a dropped row never closes done, so a row gated #after/ on it waits for good. A
+    // --why drop names each waiter with its own lane's command, and leaves every row as it was.
     #[test]
-    fn a_dup_moves_its_waiters_onto_the_kept_row_and_a_why_drop_leaves_them() {
-        let tasks = "- [ ] feat(ui): the menu #high <!-- id:sc-1 -->\n\
-             - [ ] fix(ui): menu flicker #high #after/SC-1 <!-- id:sc-2 -->\n\
-             - [ ] feat(ui): the menu again #high #after/sc-1 <!-- id:sc-4 -->\n\
-             - [ ] fix(ui): menu sound #high #after/sc-4 <!-- id:sc-5 -->\n";
-        let v = vault("dup-waiters", "", tasks);
-        let go = |id: &str, why: Option<&str>, dup: Option<&str>| {
-            drop(
-                &v.p,
-                &v.log,
-                "scratch",
-                &Pick::Id(id.into()),
-                why,
-                dup,
-                Lane::Human,
-                None,
-            )
+    fn a_why_drop_names_each_waiter_with_its_lanes_command() {
+        let rows = |r: &[(&str, Lane)]| -> Vec<(String, Lane)> {
+            r.iter().map(|(l, lane)| (l.to_string(), *lane)).collect()
         };
-        assert_eq!(go("sc-1", None, Some("sc-4")).unwrap(), 0);
-        let moved = row_of(&v, "sc-2");
-        assert!(moved.contains("#after/sc-4"), "{moved}");
-        assert!(!moved.to_lowercase().contains("#after/sc-1"), "{moved}");
-        let kept = row_of(&v, "sc-4");
+        let notes = waiter_notes(
+            "scratch",
+            "sc-1",
+            &rows(&[
+                (
+                    "- [ ] feat(ui): the menu #after/sc-9 <!-- id:sc-1 -->",
+                    Lane::Agent,
+                ),
+                (
+                    "- [ ] fix(ui): flicker #high #after/SC-1 <!-- id:sc-2 -->",
+                    Lane::Agent,
+                ),
+                (
+                    "- [ ] fix(ui): sound #after/sc-1 <!-- id:sc-3 -->",
+                    Lane::Human,
+                ),
+                (
+                    "- [ ] fix(ui): other #after/sc-10 <!-- id:sc-4 -->",
+                    Lane::Agent,
+                ),
+            ]),
+        );
+        assert_eq!(notes.len(), 2, "{notes:?}");
         assert!(
-            !kept.contains("#after/"),
-            "the kept row waits on nothing: {kept}"
+            notes[0].starts_with("sc-2 waits on sc-1")
+                && notes[0].contains("notes ptask scratch --agent tag --remove after/sc-1 sc-2"),
+            "{}",
+            notes[0]
+        );
+        assert!(
+            notes[1].contains("notes ptask scratch tag --remove after/sc-1 sc-3"),
+            "{}",
+            notes[1]
         );
 
-        assert_eq!(go("sc-4", Some("stale"), None).unwrap(), 0);
+        let v = vault(
+            "why-waiters",
+            "",
+            "- [ ] feat(ui): the menu #high <!-- id:sc-1 -->\n\
+             - [ ] fix(ui): menu sound #high #after/sc-1 <!-- id:sc-5 -->\n",
+        );
+        let pick = Pick::Id("sc-1".into());
+        let go = drop(
+            &v.p,
+            &v.log,
+            "scratch",
+            &pick,
+            Some("stale"),
+            None,
+            Lane::Human,
+            None,
+        );
+        assert_eq!(go.unwrap(), 0);
+        assert!(row_of(&v, "sc-1").contains("dropped: stale"));
         assert!(
-            row_of(&v, "sc-5").contains("#after/sc-4"),
-            "a --why drop names its waiters, never retags them"
+            row_of(&v, "sc-5").contains("#after/sc-1"),
+            "no row is retagged"
         );
     }
 

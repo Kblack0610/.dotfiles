@@ -821,7 +821,8 @@ enum PtaskCmd {
     /// Close the first matching open task undelivered: the row stays, ticked, with the
     /// reason in its marker. Needs --why or --dup
     Drop {
-        /// Why it will not be delivered: stale, superseded, or where it moved ("moved: ideas.md")
+        /// Why it will not be delivered: stale, superseded, or where it moved ("moved: ideas.md").
+        /// Each open row gated #after/ on it is named on stderr, with the command that frees it
         #[arg(long, value_name = "WHY")]
         why: Option<String>,
         /// It duplicates this row (its id, like ar-142); its open children move under that row
@@ -1510,7 +1511,7 @@ fn knowledge_cmd(prof: &config::Profile, log: &logging::Logger, sub: KnowledgeCm
 }
 
 /// `ptask done` and `ptask drop`: close the row the query names, settling its open children
-/// (`--children`, and a dup's children and `#after/` waiters move to the row it duplicates).
+/// (`--children`, and a dup's children move under the row it duplicates).
 fn ptask_close(
     prof: &config::Profile,
     log: &logging::Logger,
