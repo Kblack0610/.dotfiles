@@ -30,16 +30,28 @@ cores="${LOAD_CORES:-$(nproc)}"
 level=$(awk -v r="$load1" -v c="$cores" -v h="$HOT_RATIO" 'BEGIN { r = c > 0 ? r / c : 0; print (r < 1 ? 0 : (r < h ? 1 : 2)) }')
 class="${LEVEL_CLASS[$level]}"
 
-# CPU busy since the last run. /proc/stat counts since boot, so a percentage needs the previous
-# sample; the first run has none and reads -, never a since-boot average. Iowait counts as idle.
+# CPU busy over the last CPU_WINDOW seconds or more. /proc/stat counts since boot, so a
+# percentage needs an earlier sample; the first run has none and reads -, never a since-boot
+# average. Iowait counts as idle. Every bar that shows this chip (waybar on each monitor, the
+# pin, Noctalia) runs this script against the one sample file, so a run that finds a sample
+# younger than CPU_WINDOW prints the figure saved with it and leaves the file alone: each
+# bar shows the same number, and none measures over the sliver since another bar's run.
+CPU_WINDOW=10
 cpu_state="${LOAD_CPU_STATE:-${XDG_RUNTIME_DIR:-/tmp}/waybar-load-cpu}"
+now="${LOAD_NOW:-$EPOCHSECONDS}"
 read -r _ user nice sys idle iowait irq softirq steal _ < "${LOAD_STAT:-/proc/stat}"
 total=$((user + nice + sys + idle + iowait + irq + softirq + steal)) rest=$((idle + iowait))
-cpu=-
-if [ -r "$cpu_state" ] && read -r prev_total prev_rest < "$cpu_state" && ((total > prev_total)); then
-  cpu="$((100 * (total - prev_total - rest + prev_rest) / (total - prev_total)))%"
+cpu=- fresh=false
+if [ -r "$cpu_state" ] && read -r prev_t prev_total prev_rest prev_cpu < "$cpu_state" && [ -n "${prev_cpu:-}" ]; then
+  if ((now - prev_t < CPU_WINDOW && now >= prev_t)); then
+    cpu=$prev_cpu fresh=true
+  elif ((total > prev_total)); then
+    cpu="$((100 * (total - prev_total - rest + prev_rest) / (total - prev_total)))%"
+  fi
 fi
-printf '%s %s\n' "$total" "$rest" > "$cpu_state"
+if ! $fresh; then
+  printf '%s %s %s %s\n' "$now" "$total" "$rest" "$cpu" > "$cpu_state.$$" && mv -f "$cpu_state.$$" "$cpu_state"
+fi
 
 printf -v text 'CPU %s L %.1f' "$cpu" "$load1"
 
