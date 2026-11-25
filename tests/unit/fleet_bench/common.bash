@@ -29,6 +29,7 @@ setup() {
   export BENCH_PROFILE=personal BENCH_ADMISSION_CMD=false BENCH_LESSONS_CMD=false BENCH_DONE_ITEMS_CMD=false BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_HUB_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/doctor.last" BENCH_DOCS_CLEANUP_DIR="$SANDBOX/docs-cleanup" BENCH_INGEST="$SANDBOX/ingest.jsonl"
   export BENCH_STEPS_CMD=false BENCH_INBOX_CMD=false BENCH_MIX_CMD=false   # nor the real ingest record, inboxes or class mix
   export BENCH_CHURN_MERGES_CMD=false   # nor the real merge log: the churn KPIs read no merges unless a test serves them
+  export BENCH_INTAKE_CMD=false   # nor the real notes ingest record: the cap KPIs read null unless a test serves its day counts
   export BENCH_STOPPED_CMD=false PIPELINE_SNAPSHOT="$SANDBOX/pipeline/pipeline.json"   # nor the real dispatch or snapshot
   export BENCH_HEADROOM="$SANDBOX/headroom.json" BENCH_DISPATCH_LOG="$SANDBOX/activity.log"   # nor the real dispatch pass or its log
   export BENCH_FLEET_COST_CMD=false BENCH_FLEET_COST_FILE="$SANDBOX/fleet-cost.json" BENCH_HUB_FIGURE_CMD=false   # nor the real estimator or hub
@@ -134,12 +135,15 @@ case "$4" in
   list) cat "$B" ;;
   add) [ -z "$ADD_RC" ] || exit "$ADD_RC"
        k=$(sed -E 's/ #(low|high|urgent)$//' <<<"$5" | tr '[:upper:]' '[:lower:]')
-       printf 'board.md\t9\t%s\t- [ ] %s\n' "$k" "$5" >> "$B"
-       printf -- '- [ ] %s <!-- id:ar-9%s -->\n' "$5" "$(wc -l < "$B")" ;;
+       n=ar-9$(( $(wc -l < "$B") + 1 ))
+       printf 'board.md\t9\t%s\t- [ ] %s <!-- id:%s -->\n' "$k" "$5" "$n" >> "$B"
+       printf -- '- [ ] %s <!-- id:%s -->\n' "$5" "$n" ;;
+  # edit and drop name a row by its id (the marker in field 4) or by a title prefix
   edit) [ "$6" = --text ] || exit 8
-        awk -F'\t' -v OFS='\t' -v q="$5" -v t="$7" 'index($3, q) { $3 = tolower(t); $4 = "- [ ] " t } 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
-  drop) [ "$6" = --why ] || exit 8
-        awk -F'\t' -v q="$5" 'index($3, tolower(q)) != 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
+        awk -F'\t' -v OFS='\t' -v q="$5" -v t="$7" '(q ~ /^[a-z]+-[0-9]+$/ ? index($4, "<!-- id:" q " ") : index($3, q)) {
+          m = match($4, /<!-- id:[^ ]+ -->/) ? " " substr($4, RSTART, RLENGTH) : ""; $3 = tolower(t); $4 = "- [ ] " t m } 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
+  drop) [ "$6" = --why ] || [ "$6" = --dup ] || exit 8
+        awk -F'\t' -v q="$5" '(q ~ /^[a-z]+-[0-9]+$/ ? index($4, "<!-- id:" q " ") : index($3, tolower(q)) == 1) == 0' "$B" > "$B.new" && mv "$B.new" "$B" ;;
   done) [ "$6" = --proof ] || exit 8
         [ ! -e "$B.done-fails" ] || exit 1
         awk -F'\t' -v q="$5" 'index($3, q) != 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
