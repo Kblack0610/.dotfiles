@@ -350,7 +350,7 @@ bats_require_minimum_version 1.5.0
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_failure
   assert_output --partial 'wt: disk full'
-  grep -qE 'could not start queue item gm-1 \(exit 1\): .*wt new failed for queue item gm-1' \
+  grep -qE 'could not start queue item gm-1 \(exit 1\): .*wt: disk full.*wt new failed for queue item gm-1' \
     "$HOME/.local/state/agentctl/fleet-dispatch/activity.log" || fail "the cause is not in the activity log"
 }
 

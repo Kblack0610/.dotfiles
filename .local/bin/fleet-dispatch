@@ -6916,16 +6916,14 @@ route() {
   return 1
 }
 
-# start_run <cmd_start args> -- cmd_start with its stderr kept: replayed as it came, and its last line in
-# START_CAUSE, so a pass that could not start an item names the cause in its FAILED reason (activity.log, the
-# outcome) and not only in a journal line a silent return never wrote (ar-3995). Empty when it said nothing.
+# start_run <cmd_start args> -- cmd_start with its stderr kept: replayed when it returns (not live: a start is seconds), and its last three lines (the wrapper's and what a child printed before it) in START_CAUSE, so a pass that could not start an item names the cause in its FAILED reason (activity.log, the outcome) and not only in a journal line a silent return never wrote (ar-3995). Empty when it said nothing.
 start_run() {
   local errf rc
   START_CAUSE=''
-  errf=$(mktemp "${TMPDIR:-/tmp}/fleet-dispatch-start.XXXXXX") || { say "start: no temp file for cmd_start's stderr"; return 1; }
+  errf=$(mktemp "${TMPDIR:-/tmp}/fleet-dispatch-start.XXXXXX") || { START_CAUSE="no temp file for cmd_start's stderr"; say "start: $START_CAUSE"; return 1; }
   cmd_start "$@" 2>"$errf"; rc=$?
   cat "$errf" >&2
-  START_CAUSE=$(grep -v '^[[:space:]]*$' "$errf" | tail -n 1 | sed 's/^fleet-dispatch: //' | cut -c1-300)
+  START_CAUSE=$(grep -v '^[[:space:]]*$' "$errf" | tail -n 3 | sed 's/^fleet-dispatch: //' | paste -sd'|' | sed 's/|/ | /g' | cut -c1-400)
   rm -f "$errf"
   return "$rc"
 }
