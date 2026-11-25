@@ -2618,8 +2618,8 @@ harness_route() {
 # harness_ready_why <harness> -> why this machine cannot run it as a fleet worker does, rc 1, or nothing.
 # A worker runs codex, on its own ChatGPT login (the codex and agent-codex it runs), and a sandboxed
 # opencode harness (headless, its own config_dir) or agy harness (agy and agent-agy, on its own
-# Google login), which need the map entry, the launcher, the lane sandbox's profile and srt's tools
-# (SANDBOX_SRT_NEEDS); opencode also its config and key file. The map, the configs and the profiles
+# Google login), which need the map entry, the launcher, the lane sandbox's profile and an srt that
+# starts under it (sandbox_srt_start_refusal); opencode also its config and key file. The map, the configs and the profiles
 # come with the private overlay; the key files and srt with home-config's fleet-worker role; the
 # codex and agy logins are the human's (`codex login`, `agy` there).
 harness_ready_why() {
@@ -2641,7 +2641,7 @@ harness_ready_why() {
   command -v "$l" >/dev/null 2>&1 || { echo "$l is not on PATH"; return 1; }
   prof="$SANDBOX_DIR/$sbx.json"
   jq -e "$SANDBOX_SHAPE" "$prof" >/dev/null 2>&1 || { echo "its lane sandbox $prof is missing or not a valid profile"; return 1; }
-  why=$(sandbox_srt_refusal); [ -z "$why" ] || { echo "lane sandbox '$sbx' cannot hold $h: $why"; return 1; }
+  why=$(sandbox_srt_start_refusal "$prof"); [ -z "$why" ] || { echo "lane sandbox '$sbx' cannot hold $h: $why"; return 1; }
   if [ "$l" = agy ]; then
     command -v agent-agy >/dev/null 2>&1 || { echo "agent-agy is not on PATH"; return 1; }
     # /usage spends no quota. Bounded as codex's is: a logged-out agy waits on a browser sign-in.

@@ -1840,6 +1840,11 @@ trainee_start_ready() {
   touch "$NOTES_FIXTURE/agy.hang"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready agy
   assert_output 'agy: agy /usage did not answer in 20s: not signed in here? (agy, as the human)'
+  # An srt on PATH that cannot start fails the harness with srt's own error (ar-3897, 2026-11-19).
+  stub srt '[ "$1" = --settings ] && [ -s "$2" ] && [ "$3 $4" = "-- true" ] || exit 2
+echo "node: error while loading shared libraries: libsimdjson.so.36" >&2; exit 127'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready paid
+  assert_output "paid: lane sandbox 'pub' cannot hold paid: srt cannot start here (rc 127): node: error while loading shared libraries: libsimdjson.so.36"
 }
 
 @test "start: a hand start takes the account room names, not the one pick would (ar-275)" {
