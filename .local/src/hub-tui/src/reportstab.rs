@@ -28,9 +28,20 @@ pub fn inner_of(word: &str, today: &str) -> &'static str {
     }
 }
 
+/// The strip, the page's first line on every path (loading and error too, dashboards rule 3);
+/// `needs` flags Today when something needs the human.
+pub fn strip(inner: &str, needs: bool, p: Palette, w: usize) -> Line<'static> {
+    let flagged: &[&str] = if needs { &["needs"] } else { &[] };
+    crate::innertabs::strip(tab(), inner, flagged, p, w)
+}
+
 /// The page: the strip, the headline counts, then the inner tab's sections.
 pub fn page(v: &View, inner: &str, p: Palette, w: usize) -> Vec<Line<'static>> {
-    let mut out = vec![crate::innertabs::strip(tab(), inner, &[], p, w)];
+    let needs = v
+        .sections
+        .iter()
+        .any(|s| s.id == "needs" && !s.rows.is_empty());
+    let mut out = vec![strip(inner, needs, p, w)];
     out.push(clip_line(tiles(v, p), w));
     if inner == "archive" {
         out.extend(archive(v, p, w));
@@ -87,9 +98,16 @@ fn first(r: &Row, indent: &str, p: Palette, w: usize) -> Line<'static> {
 }
 
 fn section(s: &Section, p: Palette, w: usize) -> Vec<Line<'static>> {
-    // A section with nothing is left out, not drawn empty.
+    // An empty section is left out, but the two the human checks first say so, as the web does.
     if s.rows.is_empty() {
-        return vec![];
+        let empty = match s.id {
+            "needs" => "Nothing needs you.",
+            "stream" => "No reports today.",
+            _ => return vec![],
+        };
+        let mut out = head(s.title, 0, p, w);
+        out.push(Line::styled(format!("  {empty}"), p.dim()));
+        return out;
     }
     let mut out = head(s.title, s.rows.len(), p, w);
     if s.folded {
@@ -204,14 +222,16 @@ mod tests {
     }
 
     #[test]
-    fn a_section_with_no_rows_is_left_out_and_a_line_never_passes_the_width() {
+    fn an_empty_day_says_so_for_needs_and_stream_only_and_a_line_never_passes_the_width() {
         let t = text(&page(
             &build(&[], "2026-11-24"),
             "today",
             Palette::default(),
             40,
         ));
-        assert!(!t.iter().any(|l| l.contains("NEEDS YOU")), "{t:?}");
+        assert!(t.contains(&"  Nothing needs you.".to_string()), "{t:?}");
+        assert!(t.contains(&"  No reports today.".to_string()), "{t:?}");
+        assert!(!t.iter().any(|l| l.contains("DIGESTS")), "{t:?}");
         let t = text(&page(&view(), "today", Palette::default(), 30));
         assert!(t.iter().all(|l| l.chars().count() <= 30), "{t:?}");
     }

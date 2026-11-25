@@ -5146,8 +5146,20 @@ impl App {
             },
             // Every report agents filed, read-only (reportstab.rs; agent-web marks one read).
             (Tab::Reports, ..) => match &self.reports {
-                None => reading("the reports"),
-                Some(Err(e)) => (vec![Line::styled(e.clone(), self.p.warn())], vec![]),
+                None => (
+                    vec![
+                        reportstab::strip(self.reports_inner, false, self.p, w),
+                        Line::styled("Reading the reports...", self.p.dim()),
+                    ],
+                    vec![],
+                ),
+                Some(Err(e)) => (
+                    vec![
+                        reportstab::strip(self.reports_inner, false, self.p, w),
+                        Line::styled(e.clone(), self.p.warn()),
+                    ],
+                    vec![],
+                ),
                 Some(Ok(v)) => (reportstab::page(v, self.reports_inner, self.p, w), vec![]),
             },
             // The daily note's Focus lanes, read-only (focustab.rs).
@@ -7546,6 +7558,16 @@ mod tests {
         a.runner = Arc::new(Fake::default());
         let right = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Right)));
         a.handle(Msg::Tab(Tab::Reports, None));
+        let loading = a
+            .page_lines(80)
+            .iter()
+            .map(crate::fit::plain)
+            .collect::<Vec<_>>();
+        assert!(
+            loading[0].contains("Today") && loading[0].contains("Archive"),
+            "{loading:?}"
+        );
+        assert!(loading[1].contains("Reading the reports..."), "{loading:?}");
         // The fake lists nothing: the read answers an empty tab, not an error.
         let first = rx.recv().unwrap();
         assert!(matches!(first, Msg::Reports(_)), "entering reads the list");
