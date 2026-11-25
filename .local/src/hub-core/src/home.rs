@@ -599,7 +599,7 @@ impl crate::table::Row for Running {
             }),
             "project" => some(Some(&self.project)).map(|p| Link::To(Kind::Project, p)),
             "row" => some(self.row.as_deref()).map(|r| Link::To(Kind::Row, r)),
-            "epic" => some(self.epic.as_deref()).map(|e| Link::To(Kind::Epic, e)),
+            "epic" => some(self.epic.as_deref()).map(|e| Link::To(Kind::Row, e)),
             "pr" => some(self.pr_url.as_deref()).map(Link::Url),
             "ci" => some(self.ci_url.as_deref()).map(Link::Url),
             _ => None,
@@ -2045,7 +2045,7 @@ mod tests {
                 Some("#sessions/sessions/lab%2Frepo-agent-2%3A1"),
                 Some("#projects/p"),
                 Some("#projects/all?q=id:=tr-9"),
-                Some("#projects/all?q=id:=tr-1&s=epics")
+                Some("#projects/all?q=id:=tr-1")
             )
         );
         assert_eq!(
