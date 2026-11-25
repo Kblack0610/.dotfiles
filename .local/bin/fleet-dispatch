@@ -7117,9 +7117,9 @@ cmd_starved() {
   # A run start in the window proves the passes move the queue, which clears the high items they work
   # through in order. It does not clear an urgent item they passed over: that one sits first in the
   # order, so a pass that started others and not it is held by something specific to it (2026-11-10:
-  # four human urgent items sat 2h behind a weekly pace while run-floor starts kept this healthy).
+  # four human urgent items sat 2h behind a weekly pace while run-floor starts kept this healthy; a fresh ask too, ar-3468).
   if [ -z "$stopped" ] && [ -n "$started" ] && [ "$(date -d "$started" +%s 2>/dev/null || echo 0)" -ge "$cut" ] &&
-    ! jq -e --argjson cut "$cut" 'select(.priority == "urgent" and .t != null and .t < $cut)' <<<"$queue" >/dev/null 2>&1; then
+    ! jq -e --argjson cut "$cut" --argjson now "$(date +%s)" --argjson h "$DISPATCH_ASK_FRESH_H" "$ASK_JQ"'select(runs_now($now; $h) and .t != null and .t < $cut)' <<<"$queue" >/dev/null 2>&1; then
     [ -z "$side" ]; return
   fi
   # Away, the target's carry and gate share one room read (ACCT_ROWS); here, a full fleet reads none.
@@ -7128,9 +7128,9 @@ cmd_starved() {
   local TARGET TARGET_WHEN TOTAL_LIVE NEEDS_LIVE NEEDS_NOTE
   pace_target
   [ "$qrc" = 0 ] || { echo "agent-queue unreadable"; return 1; }
-  items=$(jq -cs --argjson cut "$cut" '
-    [.[] | select((.priority == "urgent" or .priority == "high") and .t != null and .t < $cut)]
-    | sort_by(.t) | .[] | . + {line: "\(.slug) (\(.priority)\(if ((" " + (.tags // "") + " ") | contains(" red ")) then ", red" else "" end), queued \(.queued)"}' <<<"$queue") || { echo "agent-queue unreadable"; return 1; }
+  items=$(jq -cs --argjson cut "$cut" --argjson now "$(date +%s)" --argjson h "$DISPATCH_ASK_FRESH_H" "$ASK_JQ"'
+    [.[] | select((.priority == "urgent" or .priority == "high" or runs_now($now; $h)) and .t != null and .t < $cut)]
+    | sort_by(.t) | .[] | . + {line: "\(.slug) (\(.priority)\(if ((" " + (.tags // "") + " ") | contains(" red ")) then ", red" else "" end)\(if .priority != "urgent" and fresh_ask($now; $h) then ", ask" else "" end), queued \(.queued)"}' <<<"$queue") || { echo "agent-queue unreadable"; return 1; }
   # Each item names the firing finding that holds it (held_by, as pick_item reads it): the last pass's
   # line names another item's start when the passes go past this one. On 11-22 an urgent item sat
   # 100 min behind "starved pool:unity" while the probe showed only a run-floor start of another item (ar-3172).
@@ -7149,12 +7149,12 @@ cmd_starved() {
   [ -n "$stopped$items$board$low" ] || { [ -z "$side" ]; return; }
   # A full fleet is working, not blocked (cmd_run): at its pace target no pass starts a high item,
   # so one waits on sessions finishing, and no pass reaches the fill there, so unjudged board rows
-  # wait too (board_starved is not read). Only that case holds: an urgent item may preempt a runner session there, and the red
+  # wait too (board_starved is not read). Only that case holds: an urgent item or fresh ask may preempt a runner session there, and the red
   # and human floors go past the target, so a red item, a standing
   # hold or low water still trips. On 11-11 this tripped 4h at 42 of 25 live sessions. Once the
   # fleet is under its target, a waiting item trips it at once.
   if [ -n "$TOTAL_LIVE" ] && [ "$TOTAL_LIVE" -ge "$TARGET" ] && [ -z "$stopped$low" ] &&
-    ! grep -qE '\(urgent, |, red, ' <<<"$items"; then
+    ! grep -qE '\(urgent, |, (red|ask), ' <<<"$items"; then
     echo "held by a full fleet ($TOTAL_LIVE live sessions, the $TARGET_WHEN pace target is $TARGET$NEEDS_NOTE), so nothing is starved"
     [ -z "$side" ]; return
   fi
@@ -7447,7 +7447,7 @@ last_run_start() {
 
 # stats -- one JSON object for the feed (agent-mqtt-publish summary/dispatch), numbers only where a
 # number will do, because mqtt2prom keeps nothing else: runnable items and the oldest one's age, by
-# all and by urgent (runnable_urgent, oldest_urgent_s: priority urgent only, and only what a start would
+# all and by urgent (runnable_urgent, oldest_urgent_s: urgent items and fresh asks, runs_now, and only what a start would
 # take, as next_items does) with the high ones counted apart (runnable_high, oldest_high_s); the low water and whether runnable is under it;
 # the last pass and last run start;
 # reap moves in the last hour, and the items moved
@@ -7485,10 +7485,10 @@ cmd_stats() {
     jq -Rsc --argjson now "$now" --slurpfile q <(printf '%s\n' "$q") \
       --argjson pass "${pass:-null}" --argjson start "${started:-null}" --argjson flap "$DISPATCH_FLAP_MOVES" --argjson hr "${hr:-null}" --argjson aq "$aq" --argjson board "${board:-null}" \
       --argjson low "$DISPATCH_LOW_WATER" \
-      --argjson held "${held_since:-null}" --argjson focus_n "$(wc -w <<<"$FOCUS_PROJECTS")" '
+      --argjson held "${held_since:-null}" --argjson focus_n "$(wc -w <<<"$FOCUS_PROJECTS")" --argjson h "$DISPATCH_ASK_FRESH_H" "$ASK_JQ"'
       [split("\n")[] | select(length > 0) | split(" ")] as $ev
-      | ($q | map(select(.priority == "urgent"))) as $u
-      | ($q | map(select(.priority == "high"))) as $hi
+      | ($q | map(select(runs_now($now; $h)))) as $u
+      | ($q | map(select(.priority == "high" and (runs_now($now; $h) | not)))) as $hi
       | def age(x): if (x | map(.t // empty) | length) == 0 then null else $now - (x | map(.t // empty) | min) end;
         def undone: . as $m | any(range(1; $m | length); $m[.].kind == "move" and $m[.].from == $m[. - 1].from and $m[.].to == $m[. - 1].to);
         ($ev | map(select(.[0] == "move" or .[0] == "start") | {kind: .[0], slug: .[1], from: .[2], to: .[3]}) | group_by(.slug)

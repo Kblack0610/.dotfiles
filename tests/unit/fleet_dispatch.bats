@@ -3165,6 +3165,17 @@ picks_order() { DRY=1 JUDGE_RC='' fill_day 4 | grep -oE ': (ap|gm)-[0-9]+ \[' | 
   assert_failure
   assert_output --partial 'stuck-red (high, red'
   rm "$AGENT_QUEUE_DIR"/queued/*-stuck-red.md
+  # A fresh ask behind a full fleet starves too: it may preempt like an urgent item (runs_now, ar-3468).
+  queued_item stuck-ask high "$old" requested
+  sed -i "s/^queued: /asked: $(date +%F)\nqueued: /" "$AGENT_QUEUE_DIR"/queued/*-stuck-ask.md
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'stuck-ask (high, ask'
+  # Negative control: asked before DISPATCH_ASK_FRESH_H, it is a high item and the full fleet holds it.
+  sed -i "s/^asked: .*/asked: $(date -d '-3 days' +%F)/" "$AGENT_QUEUE_DIR"/queued/*-stuck-ask.md
+  run cmd_starved
+  assert_success
+  rm "$AGENT_QUEUE_DIR"/queued/*-stuck-ask.md
   # A standing hold still trips at a full fleet, led by its Stopped line.
   fleet_state 3
   hold_for 125 'no account has room; main is the closest, 5 points over its weekly pace, queue item stuck waits'
@@ -3449,6 +3460,10 @@ picks_order() { DRY=1 JUDGE_RC='' fill_day 4 | grep -oE ': (ap|gm)-[0-9]+ \[' | 
   run cmd_stats
   assert_equal "$(jq -c '[.runnable_urgent, .runnable_high, .oldest_urgent_s]' <<<"$output")" '[0,2,null]'
   jq -e '.oldest_high_s >= 10790' <<<"$output"
+  # A fresh ask counts as urgent and not as high, since it runs now as one does (runs_now, ar-3468).
+  sed -i "s/^queued: /asked: $(date +%F)\ntags: requested\nqueued: /" "$AGENT_QUEUE_DIR"/queued/*-high-a.md
+  run cmd_stats
+  assert_equal "$(jq -c '[.runnable_urgent, .runnable_high]' <<<"$output")" '[1,1]'
 }
 
 @test "promote: the promoted row leaves the candidates snapshot at once, every other row stays" {
