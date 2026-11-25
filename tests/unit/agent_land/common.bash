@@ -113,6 +113,27 @@ case "$1 $2" in
   esac ;;
 esac
 EOF
+  land_stub_tools
+
+  # The real agent-queue, on a sandbox store: the item steps are its verbs.
+  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
+  # An ok close pulls the rows after it (pull_after), even under START=0: a silent stub, never the PATH one.
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/fleet-dispatch"; chmod +x "$SANDBOX/bin/fleet-dispatch"
+  export AGENT_QUEUE_DIR="$SANDBOX/queue" AGENT_QUEUE_START=0
+  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh"
+  # validate_gate reads the repo's ask policy and a sandbox ask store (judge_work_level).
+  export AGENT_ASK_PROMPT="$REPO_ROOT/.config/agent-ask/policy.md" AGENT_ASK_ROOT="$SANDBOX/asks"
+  unset CLAUDE_CODE_SESSION_ID
+
+  # The item most cases land: an agent-lane board row's. Every landing needs one.
+  item ship 'board:dotfiles:ship it' agent
+
+  PLAN="$SANDBOX/plan.md"
+  printf '%s\n' '## Phases' '' '- [x] 1. done already (#1)' '- [ ] 6. agent-land' '- [ ] 7. gate-then-land' '- [ ] 6b. not this one' >"$PLAN"
+}
+
+# land_stub_tools: the git, comms-lint, dotfiles-autopull, schedules-sync and shape-grow stubs on the sandbox PATH
+land_stub_tools() {
   printf '0\n' >"$NOTES_FIXTURE/behind"
   cat >"$SANDBOX/bin/git" <<'EOF'
 #!/usr/bin/env bash
@@ -193,22 +214,6 @@ exit "$(cat "$NOTES_FIXTURE/shape.rc" 2>/dev/null || echo 0)"
 EOF
   chmod +x "$SANDBOX/bin/shape-grow"
   export SHAPE_GROW="$SANDBOX/bin/shape-grow"
-
-  # The real agent-queue, on a sandbox store: the item steps are its verbs.
-  cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
-  # An ok close pulls the rows after it (pull_after), even under START=0: a silent stub, never the PATH one.
-  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/fleet-dispatch"; chmod +x "$SANDBOX/bin/fleet-dispatch"
-  export AGENT_QUEUE_DIR="$SANDBOX/queue" AGENT_QUEUE_START=0
-  export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh"
-  # validate_gate reads the repo's ask policy and a sandbox ask store (judge_work_level).
-  export AGENT_ASK_PROMPT="$REPO_ROOT/.config/agent-ask/policy.md" AGENT_ASK_ROOT="$SANDBOX/asks"
-  unset CLAUDE_CODE_SESSION_ID
-
-  # The item most cases land: an agent-lane board row's. Every landing needs one.
-  item ship 'board:dotfiles:ship it' agent
-
-  PLAN="$SANDBOX/plan.md"
-  printf '%s\n' '## Phases' '' '- [x] 1. done already (#1)' '- [ ] 6. agent-land' '- [ ] 7. gate-then-land' '- [ ] 6b. not this one' >"$PLAN"
 }
 
 # board_calls -> the notes calls that write a board, leaving out the chain's ingest record lines
