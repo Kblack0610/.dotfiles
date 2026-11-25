@@ -3762,6 +3762,7 @@ start_host_checks() {
     { say "start: $item resumes its last $harness thread, which is on this machine; start it here, without --host"; return 2; }
   jq -e --arg d "$cwd" '.repos | index($d)' <<<"$hjson" >/dev/null ||
     { say "start: $host has no clone of $cwd (fleet_repos or fleet_repos_extra); $item stays queued"; return 2; }
+  ! host_noclone "$host" "$cwd" || { say "start: $host lists $cwd in fleet_repos but has no checkout of it (its probe); clone it there; $item stays queued"; return 2; }
 }
 
 # dispatch_tag <host> <server> <session> <window> <pane> <label> -- tag what an agent started with @dispatch.
@@ -6197,7 +6198,7 @@ unpark_preempted() {
 # board command fails and git-sync-notes.service fails CHDIR: razer-laptop, 2026-11-19, ar-3784), and after a "kit" line its
 # `fleet-dispatch kit` (claude, codex, opencode, srt), so a worker with no claude still takes an item
 # on a harness it has: HOST_PROBE[<name>] is "<load> <cores> <ready 0|1> <mem %> <conflict 0|1> <notes 0|1>", or "unreachable",
-# and HOST_KIT[<name>] the kit, empty from an older fleet-dispatch there (no kit verb). HOST_MAX[<name>] is its fleet_max_live and HOST_FREE[<name>] that less the run units its live sessions hold,
+# and HOST_NOCLONE[<name>] each roster repo the worker has no checkout of, one path a line (the clones section of the probe), and HOST_KIT[<name>] the kit, empty from an older fleet-dispatch there (no kit verb). HOST_MAX[<name>] is its fleet_max_live and HOST_FREE[<name>] that less the run units its live sessions hold,
 # and start_items takes each start there off it; HOST_RUNS is the runs that count, the given ones and
 # each gateway run on a worker (live_runs --gateway). For a worker that lists fleet_harnesses, the same ssh runs
 # `fleet-dispatch harness-ready` on them after a "harnesses" line: HOST_HARN[<name>] is the ones it
@@ -6205,18 +6206,23 @@ unpark_preempted() {
 # pass, before the gates, so every gate and pick in it reads the same numbers: a gate runs in a
 # subshell and cannot write back.
 HOST_RUNS=''
-declare -gA HOST_PROBE=() HOST_FREE=() HOST_MAX=() HOST_HARN=() HOST_HARN_WHY=() HOST_KIT=()   # -g: global when a test sources this inside a function
+declare -gA HOST_PROBE=() HOST_FREE=() HOST_MAX=() HOST_HARN=() HOST_HARN_WHY=() HOST_KIT=() HOST_NOCLONE=()   # -g: global when a test sources this inside a function
 probe_hosts() {
-  local name place max listed bad out h ready why answers
-  HOST_PROBE=() HOST_FREE=() HOST_MAX=() HOST_HARN=() HOST_HARN_WHY=() HOST_KIT=() HOST_RUNS="$1"$'\n'"$(live_runs --gateway)"
+  local name place max listed bad out h ready why answers chk repos
+  HOST_PROBE=() HOST_FREE=() HOST_MAX=() HOST_HARN=() HOST_HARN_WHY=() HOST_KIT=() HOST_NOCLONE=() HOST_RUNS="$1"$'\n'"$(live_runs --gateway)"
   fleet_hosts >/dev/null
   while IFS='|' read -r name place max listed bad; do
     [ "$place" = true ] || continue
     HOST_MAX[$name]=$max
     HOST_FREE[$name]=$(( max - $(units_on "$name" <<<"$HOST_RUNS") ))
+    # The roster lists a clone the worker may not have (razer-laptop had none of unity-core-playground, 2026-11-24, ar-5124): each is tested
+    # there, in the same ssh, and one missing is never placed on (host_takers) or started on (start_host_checks).
+    mapfile -t repos < <(fleet_host "$name" | jq -r '.repos[]?')
+    chk=''; [ ${#repos[@]} -eq 0 ] || chk=$(printf ' %q' "${repos[@]}")
     # shellcheck disable=SC2016,SC2086 # the worker's shell expands these, not this one; listed splits into names
-    if out=$(fleet_host_run "$name" sh -c 'cut -d" " -f1 /proc/loadavg; nproc; command -v wt >/dev/null && test -f "$HOME/.agent/.sync/peer" && echo 1 || echo 0; awk '\''/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {print t ? int(a * 100 / t) : -1}'\'' /proc/meminfo; test -e "$HOME/.agent/.sync/conflict" && echo 1 || echo 0; test -e "$HOME/.notes/.git" && echo 1 || echo 0; echo kit; fleet-dispatch kit 2>/dev/null || :; [ $# -eq 0 ] || { echo harnesses; fleet-dispatch harness-ready "$@" 2>/dev/null || :; }' _ $listed 2>/dev/null); then
-      HOST_PROBE[$name]=$(sed '/^kit$/,$d; /^harnesses$/,$d' <<<"$out" | tr '\n' ' ')
+    if out=$(fleet_host_run "$name" sh -c 'cut -d" " -f1 /proc/loadavg; nproc; command -v wt >/dev/null && test -f "$HOME/.agent/.sync/peer" && echo 1 || echo 0; awk '\''/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {print t ? int(a * 100 / t) : -1}'\'' /proc/meminfo; test -e "$HOME/.agent/.sync/conflict" && echo 1 || echo 0; test -e "$HOME/.notes/.git" && echo 1 || echo 0; echo clones; for d in'"$chk"'; do test -e "$d/.git" || echo "$d"; done; echo kit; fleet-dispatch kit 2>/dev/null || :; [ $# -eq 0 ] || { echo harnesses; fleet-dispatch harness-ready "$@" 2>/dev/null || :; }' _ $listed 2>/dev/null); then
+      HOST_PROBE[$name]=$(sed '/^clones$/,$d; /^kit$/,$d; /^harnesses$/,$d' <<<"$out" | tr '\n' ' ')
+      HOST_NOCLONE[$name]=$(sed '1,/^clones$/d; /^kit$/,$d' <<<"$out")
       HOST_KIT[$name]=$(sed '1,/^kit$/d; /^harnesses$/,$d' <<<"$out" | tr '\n' ' ')
       ready='' why=${bad:+"$bad: not a harness name ([a-z0-9-]), so its probe never asks"} answers=$'\n'"$(sed '1,/^harnesses$/d' <<<"$out")"$'\n'
       for h in $listed; do
@@ -6292,6 +6298,9 @@ host_agent() {
   echo "$agent"
 }
 
+# host_noclone <name> <repo dir> -- the worker's probe found no checkout of that roster repo.
+host_noclone() { [[ $'\n'"${HOST_NOCLONE[$1]:-}"$'\n' == *$'\n'"$2"$'\n'* ]]; }
+
 # host_takers <item json> -> the roster's workers provisioned for this item, one name a line: an
 # item with no cloud route, heavy or light, plan or none (host_agent), in a repo the worker has cloned (fleet_repos,
 # fleet_repos_extra), on a harness the worker runs (host_runs: its kit, and past claude fleet_harnesses, probed ready),
@@ -6315,6 +6324,7 @@ host_takers() {
   need=$(weight_units "$(jq -r '.weight // "light"' <<<"$1")")
   while IFS= read -r name; do
     host_runs "$name" "$agent" || continue
+    ! host_noclone "$name" "$dir" || continue
     echo "$name"
   done < <(fleet_hosts | jq -sr --arg d "$dir" --argjson c "$classes" --argjson n "$need" 'map(select(.repos | index($d)) | select((.max_live | tonumber? // 0) >= $n)
     | select($c == null or any(.first[]?; . as $x | $c | index($x)))) | .[].name')

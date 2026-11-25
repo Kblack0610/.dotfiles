@@ -510,6 +510,28 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   assert_output --partial 'razer-laptop is at its fleet_max_live'
 }
 
+# ar-5124: the roster listed unity-core-playground for razer-laptop, which had no checkout: wt failed there and every kick exited 1.
+@test "a worker whose probe finds no checkout of a roster repo takes no item of it, and start --host says why" {
+  project game beta "$SANDBOX/repos/game"
+  worker '2.0 16 1 50'
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu" >/dev/null
+  # Negative control: the probe reports the repo missing, so nothing is placed and no start is tried.
+  { tr ' ' '\n' <<<'2.0 16 1 50'; echo clones; echo "$SANDBOX/repos/game"; echo kit; cat "$NOTES_FIXTURE/ssh.kit"; } > "$NOTES_FIXTURE/ssh.probe"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'started queue item fix-menu on razer-laptop'
+  refute_output --partial 'could not start queue item fix-menu'
+  assert_not_called 'wt new'
+  [ -n "$(qitem queued fix-menu)" ] || fail "the item left the queue: $output"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --host razer-laptop
+  assert_failure 2
+  assert_output --partial "has no checkout of $SANDBOX/repos/game"
+  # Positive control: the same probe with the clone present places it.
+  { tr ' ' '\n' <<<'2.0 16 1 50'; echo clones; echo kit; cat "$NOTES_FIXTURE/ssh.kit"; } > "$NOTES_FIXTURE/ssh.probe"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item fix-menu on razer-laptop'
+}
+
 # ar-2891: on 2026-11-24 razer-laptop sat at 1 live item while 92 heavy or plan items could only run here.
 @test "a heavy item goes to a worker that clones its repo and holds 2 of its units; with 1 free the worker refuses it" {
   project game beta "$SANDBOX/repos/game"
