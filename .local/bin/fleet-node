@@ -12,7 +12,8 @@
 #   fleet-node ready
 #       whether this peer can hold the fleet lease and run every singleton lane, checked here
 #       rather than found missing at failover: one line per need it lacks (each signin line,
-#       a dotfiles checkout behind origin/main, a store remote it cannot reach, a home-k3s call
+#       a dotfiles checkout behind origin/main or one that is shallow or fetches only some
+#       branches, a store remote it cannot reach, a home-k3s call
 #       the lanes make that its kubeconfig may not, agent-web), exit 1; nothing and exit 0 when
 #       it lacks none. It fetches both dotfiles checkouts and asks the store remotes and the
 #       cluster, so it takes seconds.
@@ -75,6 +76,28 @@ behind() {
   jq -r --arg pub "$pub" --arg priv "$priv" '.findings[] | select(.type == "BEHIND")
     | (if .repo == "public" then $pub else $priv end) as $p
     | "\($p) is behind origin/main (\(.detail)): dotfiles-autopull --now \($p)"' <<<"$drift"
+}
+
+# clone_shape -> one line per fault in each stowed dotfiles checkout's shape, with the command that fixes
+# it. One that fetches only some branches keeps no remote-tracking ref for a pushed agent branch, so
+# `git branch -r --contains` is empty and fleet-shepherd's takeover reads its commits as not pushed and
+# never hands the stalled session over (ar-5157: razer-laptop's `--depth 1` clone fetched only main,
+# and three sessions sat STALLED 9 to 16h on 2026-11-24). A shallow one stops history at its graft, so
+# a merge base past it reads as missing.
+clone_shape() {
+  local repo q specs
+  for repo in "${DOTFILES_DIR:-$HOME/.dotfiles}" "${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}"; do
+    # Not a checkout of its own (missing, or a parent repo's), or no origin to fetch from: what it lacks
+    # is another check's line.
+    [ -e "$repo/.git" ] && [ "$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null)" = "$(cd "$repo" && pwd -P)" ] &&
+      git -C "$repo" remote get-url origin >/dev/null 2>&1 || continue
+    q=$(printf %q "$repo") specs=$(git -C "$repo" config --get-all remote.origin.fetch 2>/dev/null) || true
+    grep -qxE '\+?refs/heads/\*:refs/remotes/origin/\*' <<<"$specs" ||
+      echo "$repo fetches only some branches, so a pushed agent branch reads as unpushed: git -C $q remote set-branches --add origin '*' && git -C $q fetch origin"
+    [ "$(git -C "$repo" rev-parse --is-shallow-repository 2>/dev/null)" != true ] ||
+      echo "$repo is a shallow clone, so history stops at its graft: git -C $q fetch --unshallow origin"
+  done
+  return 0
 }
 
 # store_unreachable -> one line per agent store remote this peer cannot reach the way store-sync and
@@ -162,6 +185,7 @@ web_needs() {
 lease_needs() {
   missing
   behind
+  clone_shape
   store_unreachable
   kube_needs
   web_needs
