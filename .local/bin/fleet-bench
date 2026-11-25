@@ -6696,7 +6696,7 @@ canary_lane_why() {
 
 # canary_queue [--harness h [--model m [--effort e]]] [--max N] [--task id[,id]] [--pts n[,n]] [--off-claude]: the CLI. With a lane it queues that lane's
 # missing tasks (at most N when given; only the named ids and sizes when --task or --pts is given); with --max alone it tops up across the claude lane and every lane
-# in BENCH_CANARY_LANES (canary_top_up), one task a lane a round, so a few canaries run across lanes together. --off-claude (fleet-dispatch, while its fleet share is full) leaves the claude lanes out.
+# in BENCH_CANARY_LANES (canary_top_up), one task a lane a round, so a few canaries run across lanes together. --off-claude (fleet-dispatch, while a project share is full) leaves the claude lanes out.
 canary_queue() {
   local why harness="" model="" effort="" max="" only_ids="" only_pts="" off_claude=""   # only_*: read by canary_lane_queue, off_claude by canary_top_up (dynamic scope)
   while [ $# -gt 0 ]; do
