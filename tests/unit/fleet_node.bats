@@ -17,6 +17,8 @@ setup() {
   printf '#!/bin/sh\nexit 1\n' >"$SANDBOX/bin/rbw" && chmod +x "$SANDBOX/bin/rbw"
   export DOTFILES_DIR="$HOME/.dotfiles" DOTFILES_PRIVATE="$HOME/.dotfiles-private" DOTFILES_AUTOPULL_LOCK_SECS=0
   export STORE_SYNC_CONF="$SANDBOX/store.env" FLEET_KUBECONFIG_SCOPED="$SANDBOX/scoped-kubeconfig"
+  # No roster unless a test writes one, so this node reads as the workstation, never a fleet worker.
+  export FLEET_INVENTORY="$SANDBOX/inventory.yml" FLEET_HOST=node1
   RBW_DB="${XDG_CACHE_HOME:-$HOME/.cache}/rbw"
 }
 
@@ -135,6 +137,18 @@ EOF
   mv "$HOME/.codex" "$HOME/codexhome"
   CODEX_HOME="$HOME/codexhome" run "$FLEET_NODE" signin
   assert_success
+}
+
+@test "a fleet worker is asked for codex only when its fleet_harnesses names it" {
+  sign_in_all
+  rm -r "$HOME/.codex"
+  printf 'all:\n  children:\n    fleet_workers:\n      hosts:\n        node1:\n          ansible_host: 192.0.2.5\n          fleet_harnesses: [nim]\n' >"$FLEET_INVENTORY"
+  run "$FLEET_NODE" signin
+  assert_success
+  sed -i 's/\[nim\]/[nim, codex]/' "$FLEET_INVENTORY"
+  run "$FLEET_NODE" signin
+  assert_failure 1
+  assert_output 'sign in to codex: codex login'
 }
 
 @test "rbw not installed is its own line" {

@@ -39,13 +39,22 @@ unsigned_accounts() {
   done <"$accounts"
 }
 
+# codex_runs_here -> 0 unless this node is a fleet worker whose inventory fleet_harnesses leaves
+# codex out: codex runs on the workstation only (the human, 2026-11-19, ask LCLhHi).
+codex_runs_here() {
+  # shellcheck source=../lib/fleet-hosts.sh
+  . "$here/../lib/fleet-hosts.sh"
+  local me; me=$(fleet_host "$FLEET_HOST")
+  [ -z "$me" ] || jq -e 'any(.harnesses[]; . == "codex")' <<<"$me" >/dev/null
+}
+
 # missing -> one line per thing the human still has to do on this node.
 missing() {
   unsigned_accounts
   [ -s "${GH_CONFIG_DIR:-$HOME/.config/gh}/hosts.yml" ] || echo "sign in to GitHub: gh auth login"
   [ -d "$HOME/.dotfiles-private/.git" ] ||
     echo "clone the private overlay: gh repo clone Kblack0610/.dotfiles-private ~/.dotfiles-private, then ~/.dotfiles-private/.local/bin/restore-private-state"
-  [ -s "${CODEX_HOME:-$HOME/.codex}/auth.json" ] || echo "sign in to codex: codex login"
+  ! codex_runs_here || [ -s "${CODEX_HOME:-$HOME/.codex}/auth.json" ] || echo "sign in to codex: codex login"
   # rbw keeps its vault copy in its cache dir once `rbw login` has run; config alone is not a sign-in.
   local rbw_db="${XDG_CACHE_HOME:-$HOME/.cache}/rbw${RBW_PROFILE:+-$RBW_PROFILE}"
   if ! command -v rbw >/dev/null 2>&1; then
