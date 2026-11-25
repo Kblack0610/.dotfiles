@@ -72,7 +72,7 @@ setup() {
 @test "keep records the human's keep answer, so aged waits a day past it; a wrong ask writes nothing (ar-5307)" {
   "$HOLD" set critical --kind resource --by human "lockdown"
   sed -i "s/^since: .*/since: $(date -d '-4 days' +%Y-%m-%dT%H:%M:%S%z)/" "$AGENT_HOLD_DIR/critical"
-  "$HOLD" grant critical hc-1
+  sed -i "s/^granted: .*/granted: hc-1/" "$AGENT_HOLD_DIR/critical"
   # A stub agent-ask: each ask id is a file of `key: value` lines.
   mkdir -p "$SANDBOX/asks"
   printf '#!/usr/bin/env bash\n[ "$1" = show ] && cat "%s/asks/$2"\n' "$SANDBOX" > "$SANDBOX/bin/agent-ask"
@@ -127,6 +127,72 @@ setup() {
   run "$HOLD" keep critical --ask new
   assert_failure 1
   [ ! -e "$AGENT_HOLD_DIR/critical" ]
+}
+
+@test "grant on the human's hold takes the human's grant answer naming the hold and each name, recorded beside it; an agent's hold grants as before (ar-6046)" {
+  "$HOLD" set critical --kind resource --by human "lockdown"
+  sed -i "s/^since: .*/since: $(date -d '-4 days' +%Y-%m-%dT%H:%M:%S%z)/" "$AGENT_HOLD_DIR/critical"
+  mkdir -p "$SANDBOX/asks"
+  printf '#!/usr/bin/env bash\n[ "$1" = show ] && cat "%s/asks/$2"\n' "$SANDBOX" > "$SANDBOX/bin/agent-ask"
+  chmod +x "$SANDBOX/bin/agent-ask"
+  export AGENT_ASK="$SANDBOX/bin/agent-ask"
+  ask() { printf 'question: %s\nanswer: %s\nanswered_by: %s\nanswered_at: %s\ncontext: \n' "$2" "$3" "$4" "$(date -d "-${5:-1} hours" +%Y-%m-%dT%H:%M:%S%z)" > "$SANDBOX/asks/$1"; }
+  # No ask: an agent's own word is refused.
+  run "$HOLD" grant critical hc-1
+  assert_failure 1
+  assert_output --partial 'only the human grants'
+  # Negative controls: answered hold, answered by an agent, about another hold, a name it does not
+  # say, answered before since, a name only inside a longer id, a dot read as any character, no ask.
+  ask a1 "May hc-1 run under the critical hold?" hold human
+  ask a2 "May hc-1 run under the critical hold?" grant agent
+  ask a3 "May hc-1 run under the critical-dns hold?" grant human
+  ask a4 "May hc-1 run under the critical hold?" grant human
+  ask a5 "May hc-1 run under the critical hold?" grant human 100
+  ask a6 "May hc-10 run under the critical hold?" grant human
+  ask a7 "May v1x2 run under the critical hold?" grant human
+  for args in "a1 hc-1" "a2 hc-1" "a3 hc-1" "a4 hc-1 hc-2" "a5 hc-1" "a6 hc-1" "a7 v1.2" "missing hc-1"; do
+    read -ra a <<<"$args"
+    run "$HOLD" grant critical --ask "${a[@]}"
+    assert_failure 1
+  done
+  run "$HOLD" show critical
+  assert_line 'granted: '
+  refute_output --partial 'granted_ask'
+  # The human's grant answer naming both: each name is granted and carries the ask.
+  ask ok "May hc-1 and ar-5 run under the critical hold?" grant human
+  run "$HOLD" grant critical --ask ok hc-1 ar-5
+  assert_success
+  assert_output 'granted: critical for hc-1,ar-5 (ask ok)'
+  run "$HOLD" show critical
+  assert_line 'granted: hc-1,ar-5'
+  assert_line 'granted_ask: hc-1=ok,ar-5=ok'
+  run "$HOLD" check critical --no-caller --for ar-5
+  assert_success
+  # A name granted again under a newer ask takes that ask.
+  ask ok2 "May hc-1 run under the critical hold?" grant human
+  run "$HOLD" grant critical --ask ok2 hc-1
+  assert_success
+  run "$HOLD" show critical
+  assert_line 'granted: hc-1,ar-5'
+  assert_line 'granted_ask: ar-5=ok,hc-1=ok2'
+  # A re-set by an agent would hand the hold to a setter whose grants need no ask: refused.
+  run "$HOLD" set critical --kind resource --by coordinator "lockdown"
+  assert_failure 1
+  assert_output --partial 'the human set critical'
+  run "$HOLD" show critical
+  assert_line 'by: human'
+  # A re-set drops the grants and the asks with them.
+  "$HOLD" set critical --kind resource --by human "lockdown, reworded"
+  run "$HOLD" show critical
+  assert_line 'granted: '
+  refute_output --partial 'granted_ask'
+  # A hold an agent set grants on the caller's word, as before.
+  "$HOLD" set chores --kind resource --by agent-7 "parked"
+  run "$HOLD" grant chores hc-3
+  assert_success
+  run "$HOLD" show chores
+  assert_line 'granted: hc-3'
+  assert_line 'granted_ask: '
 }
 
 @test "a hold on one resource leaves another free" {
@@ -310,7 +376,7 @@ as_session() { mkdir -p "$SANDBOX/$1" && cd "$SANDBOX/$1"; }
 }
 
 @test "grant takes row, epic and plan ids and keeps since; a name with a space is refused (ar-5236)" {
-  "$HOLD" set critical --kind resource --by human "lockdown"
+  "$HOLD" set critical --kind resource --by coordinator "lockdown"
   sed -i 's/^since: .*/since: 2026-11-20T16:10:54-0800/' "$AGENT_HOLD_DIR/critical"
   run "$HOLD" grant critical hc-952 ar-4938 pasted-content-id-9f60-we-optimized-rossum
   assert_success
@@ -327,7 +393,7 @@ as_session() { mkdir -p "$SANDBOX/$1" && cd "$SANDBOX/$1"; }
 }
 
 @test "check --for passes on a granted row, epic or plan and names each; ungranted ids and --no-caller stay held" {
-  "$HOLD" set critical --kind resource --by human "lockdown"
+  "$HOLD" set critical --kind resource --by coordinator "lockdown"
   "$HOLD" grant critical hc-1 ar-5235 plan-x
   run "$HOLD" check critical --no-caller --for hc-2 plan-x hc-1
   assert_success

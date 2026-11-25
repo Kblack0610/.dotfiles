@@ -39,23 +39,15 @@ payload() {
   [ ! -e "$LEDGER" ] || fail "ledger written: $(cat "$LEDGER")"
 }
 
-@test "an attended approval grants its plan on the human's holds, never on an agent's or from a dispatched session" {
+@test "an attended approval writes no grant on the human's hold: that takes the human's answered ask (ar-6046)" {
   export AGENT_HOLD_DIR="$HOME/.agent/holds"
   mkdir -p "$AGENT_HOLD_DIR"
   printf 'since: 2026-11-20T10:00:00-0800\nby: human\nkind: resource\nreason: r\ngranted: hc-1\n' > "$AGENT_HOLD_DIR/critical"
-  printf 'since: 2026-11-20T10:00:00-0800\nby: agent\nkind: resource\nreason: r\ngranted: \n' > "$AGENT_HOLD_DIR/chores"
   CLAUDE_CODE_SESSION_ATTENDED=1 AGENT_QUEUE_ITEM= run bash "$HOOK" <<<"$(payload "$HOME/plans/p.md")"
   assert_success
-  assert_output --partial 'granted p on the human'
+  refute_output --partial 'granted'
   run grep '^granted:' "$AGENT_HOLD_DIR/critical"
-  assert_output 'granted: hc-1,p'
-  run grep '^granted:' "$AGENT_HOLD_DIR/chores"
-  assert_output 'granted: '
-  printf 'since: 2026-11-20T10:00:00-0800\nby: human\nkind: resource\nreason: r\ngranted: \n' > "$AGENT_HOLD_DIR/critical"
-  CLAUDE_CODE_SESSION_ATTENDED=1 AGENT_QUEUE_ITEM=ar-1 run bash "$HOOK" <<<"$(payload "$HOME/plans/p.md")"
-  assert_success
-  run grep '^granted:' "$AGENT_HOLD_DIR/critical"
-  assert_output 'granted: '
+  assert_output 'granted: hc-1'
 }
 
 # proposing <add rc> <add output>: agame gets a board, and a stub notes records each call (with the

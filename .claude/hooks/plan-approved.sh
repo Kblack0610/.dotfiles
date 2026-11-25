@@ -26,17 +26,8 @@ say() { said+=("$1"); }
 trap '[ "${#said[@]}" -eq 0 ] || jq -nc --arg c "plan-approved: ${said[*]}" '"'"'{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $c}}'"'"'' EXIT
 here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../.."
 
-# The human approving a plan narrows each hold they set to its rows: the plan's slug goes on the
-# hold's `granted:`, and agent-queue's gate clears a #hold/ row or item whose plan it names (ar-5183).
-# Only an attended session's approval counts (a dispatched one also reads ATTENDED=1, but has an
-# item), and only a hold `by: human`: an agent's hold is lifted by its own rule, not by a plan.
-if [ "${CLAUDE_CODE_SESSION_ATTENDED:-0}" = 1 ] && [ -z "${AGENT_QUEUE_ITEM:-}" ]; then
-  slug=$(basename "$plan" .md) granted=()
-  while IFS=$'\t' read -r res _ by _; do
-    [ "$by" = human ] && timeout 10 "$here/.local/bin/agent-hold" grant "$res" "$slug" >/dev/null 2>&1 && granted+=("$res")
-  done < <(timeout 10 "$here/.local/bin/agent-hold" list 2>/dev/null)
-  [ "${#granted[@]}" -eq 0 ] || say "granted $slug on the human's hold(s) ${granted[*]}: its #hold/ rows may start while the rest stay held."
-fi
+# An approval grants nothing on a hold: a grant on a hold the human set takes the human's answered
+# ask (agent-hold grant --ask, ar-6046), and approving a plan is no answer about a hold.
 
 # An `epic: new` line (plan_epic_new) is proposed once: `notes ptask add` files it in a hand session,
 # after its self-check, with the ids the plan reviewed on Overlap: as --checked, and sends it to the
