@@ -130,20 +130,31 @@ run_hook() {
   assert_output 1
 }
 
-@test "a read-only session is registered with no edits (ar-143)" {
-  : > "$TRANSCRIPT"
+@test "a read-only headless session is not registered" {
+  echo '{"type":"user","entrypoint":"sdk-cli","message":{"content":"q"}}' > "$TRANSCRIPT"
+  AGENTCTL_NAME= run_hook
+  [ ! -e "$REG" ]
+}
+
+@test "a read-only interactive session is registered with no edits (ar-143)" {
+  cat > "$TRANSCRIPT" <<'JSONL'
+{"type":"api-request-shape","tools":[{"name":"Edit"},{"name":"Write"}]}
+{"type":"user","entrypoint":"cli","message":{"content":"q"}}
+JSONL
   AGENTCTL_NAME= run_hook
   run jq -c '[.session_id, .edits]' "$REG"
   assert_output '["self",0]'
 }
 
-@test "edits counts the edit tool calls, not the schema and result lines that name them (ar-143)" {
+@test "edits counts the edit tool calls, not the schema and other lines that name them (ar-143)" {
   cat > "$TRANSCRIPT" <<'JSONL'
 {"type":"api-request-shape","tools":[{"name":"Edit"},{"name":"Write"},{"name":"MultiEdit"},{"name":"NotebookEdit"}]}
 {"type":"attachment","attachment":{"type":"prompt_snapshot","tools":[{"name":"Edit"}]}}
 {"type":"assistant","message":{"content":[{"type":"text","text":"x"},{"type":"tool_use","name":"Edit"},{"type":"tool_use","name":"Write"}]}}
-{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo '\"name\":\"Edit\"'"}}]}}
-{"type":"user","message":{"content":[{"type":"tool_result","content":"{\"type\":\"tool_use\",\"name\":\"Edit\"}"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","name":"Edit"},"a string block"]}}
+{"type":"assistant","name":"Edit","message":{"content":"a string body"}}
+{"type":"user","message":{"content":[{"type":"tool_use","name":"Edit"}]}}
+[{"type":"tool_use","name":"Edit"}]
 {"type":"assistant","message":{"content":[{"type":"tool_use","name":"NotebookEdit"}]}}
 not json "name":"Edit"
 JSONL

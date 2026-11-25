@@ -227,8 +227,8 @@ resolve_id() {
   if [ -z "$matches" ]; then
     matches=$(live_lines | cut -f1 | sort -u | grep -i "^${want}")
   fi
-  # Sessions that made no file edit are never registered at all - and a session
-  # killed before it got going is exactly the one you most need to pick back up.
+  # A headless session that did no work is never registered, and a session killed
+  # before its first Stop is exactly the one you most need to pick back up.
   # Fall back to the transcripts on disk.
   if [ -z "$matches" ]; then
     matches=$(find_transcripts "${want}*.jsonl" \

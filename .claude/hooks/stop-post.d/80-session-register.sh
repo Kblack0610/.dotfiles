@@ -5,12 +5,15 @@
 # Key points:
 #   - Destination is the AGENT axis ~/.agent/sessions/{project}/sessions.jsonl,
 #     never the human ~/.notes/inbox (low-noise, agent-facing by design).
-#   - Every session is registered from its first Stop, read-only ones too: a session spends
-#     whether or not it edits, and agentctl-session-outcomes, fleet-bench and `sessions` read
-#     their sessions from here. `edits` counts the Edit/Write/MultiEdit/NotebookEdit tool_use
-#     calls, not lines naming them: every transcript carries the tool schemas (ar-143). An
-#     agentctl runner (AGENTCTL_NAME, which the runner wrapper exports) also gets its name in
-#     `agentctl` (outcome rows already use `runner` as a boolean).
+#   - Registered: every interactive session (transcript entrypoint `cli`, a hand or a dispatched
+#     tmux session, read-only or editing through Bash: agentctl-session-outcomes, fleet-bench and
+#     `sessions` read their sessions from here), and a headless `claude -p` call only when it made
+#     an edit call, left a dirty git tree, or is an agentctl runner (AGENTCTL_NAME, which the runner
+#     wrapper exports): a read-only runner still spends, and its row carries the runner's name in
+#     `agentctl` (outcome rows already use `runner` as a boolean). A read-only headless call (a judge,
+#     a probe; thousands a day) -> no entry.
+#   - `edits` counts the Edit/Write/MultiEdit/NotebookEdit tool_use calls, not lines naming them:
+#     an interactive transcript carries the tool schemas, so a line count read 2+ with no edit (ar-143).
 #   - Upsert by session_id: exactly ONE line per session, not per turn.
 #   - Self-heals: drops lines whose transcript file no longer exists, but only lines
 #     this machine wrote (`host`). store-sync shares the registry across the fleet, so
@@ -43,13 +46,26 @@ if [ ! -d "$PROJECT_DIR" ]; then
   [ -n "$PRIOR" ] && PROJECT_NAME=$(basename "$(dirname "$PRIOR")")
 fi
 
-# --- edits: the edit tool calls; grep only narrows the lines jq parses ---
+# --- the gate: an interactive session, or a headless one that did work ---
+# edits: the edit tool calls; grep only narrows the lines jq parses, and a line that is not a
+# JSON object, or a content block that is not one, is skipped rather than failing the count.
 EDITS=$(grep -E '"name":"(Edit|Write|MultiEdit|NotebookEdit)"' "$TRANSCRIPT" 2>/dev/null |
-  jq -Rn '[inputs | fromjson? | select(.type == "assistant") | .message.content[]?
+  jq -Rn '[inputs | fromjson? | objects | select(.type == "assistant") | .message.content? | arrays | .[] | objects
            | select(.type == "tool_use" and (.name | IN("Edit", "Write", "MultiEdit", "NotebookEdit")))] | length' 2>/dev/null)
 EDITS=${EDITS:-0}
+INTERACTIVE=false
+grep -m1 -q -F '"entrypoint":"cli"' "$TRANSCRIPT" 2>/dev/null && INTERACTIVE=true
+DIRTY=false
 cd "$PROJECT_DIR" 2>/dev/null || true
+if git rev-parse --git-dir >/dev/null 2>&1; then
+  if ! git diff --quiet HEAD 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
+    DIRTY=true
+  fi
+fi
 AGENTCTL="${AGENTCTL_NAME:-}"
+if [ "$EDITS" -lt 1 ] && [ "$INTERACTIVE" = false ] && [ "$DIRTY" = false ] && [ -z "$AGENTCTL" ]; then
+  exit 0
+fi
 
 # --- build the record fields ---
 HISTORY="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/history.jsonl"
