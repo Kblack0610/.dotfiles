@@ -187,7 +187,7 @@
 #                                a frozen forecast against what the fleet did since, per session
 #   fleet-bench queue [--json]   the agent queue over BENCH_QUEUE_DAYS: done by outcome, PRs, per
 #                                day, wait and time to PR, from `agent-queue stats`
-#   fleet-bench models [--by class,lane] [--json] landed rate, redo rate, reverts, cost, CI reds, first-pass
+#   fleet-bench models [--by class,lane] [--json] landed rate (real work only; canaries in their own column), redo rate, first-attempt approval, reverts, cost, CI reds, first-pass
 #                                share and window points per PR by model over BENCH_QUEUE_DAYS: queue
 #                                model= joined to outcomes, model-lane runs, pr-ci.jsonl and sources;
 #                                --by class splits each pairing by the task class on its outcome rows,
@@ -1156,7 +1156,7 @@ outcomes_newest() {
 }
 
 outcomes_latest() {
-  outcomes_newest | jq -cs 'map({key: .session_id, value: {prs_merged, reverted_7d, cost_usd, cost_by_model, models, edits, activity, class, tool_errors: .hard_errors.tool_errors}}) | from_entries'
+  outcomes_newest | jq -cs 'map({key: .session_id, value: {prs_merged, reverted_7d, harness, cost_usd, cost_by_model, models, edits, activity, class, tool_errors: .hard_errors.tool_errors}}) | from_entries'
 }
 
 # in_window <file> <epoch field> <now> [since] -> the file's rows whose field falls since
@@ -3835,8 +3835,14 @@ models_json() {
     def check: ((.type // "") | IN($nopr[])) and ((.pr // "") == "");
     def metered: (.gateway_cost_usd // "") != "";
     def alias: capture("^claude-(?<f>[a-z]+)-").f // .;
+    def canary: (.from // "") == "canary" or ((.tags // "") | test("(^| )canary( |$)"));
     ($outcomes[0] // {}) as $o
-    | def cls: ([sids[] | $o[.].class // empty] | first) as $c
+    # own($h): the item sessions pair h ran itself. A claude session on an item of another harness is the
+    # reviewer or lander it handed off to, so its cost and points are Claude, never the pair.
+    | def own($h): [sids[] | select((($o[.].harness // "") == "claude" and $h != "claude") | not)];
+      def cost_of($its; $h): ($its | map(select(metered) | .gateway_cost_usd | tonumber) | add // 0)
+        + ($its | map(select(metered | not) | own($h)[]) | unique | map($o[.].cost_usd // 0) | add // 0);
+      def cls: ([sids[] | $o[.].class // empty] | first) as $c
         | if $c then "\($c.kind // "untyped")/\($c.size // "-")" else "unclassed" end;
       def spent_most: [sids[] | $o[.] // empty] as $rows
         | ([$rows[] | .cost_by_model // {} | to_entries[] | select(.value > 0 and (.key | startswith("<") | not))]
@@ -3848,35 +3854,43 @@ models_json() {
     | ($all | map(select(.status == "cancelled" and .end_reason == "returned"))) as $ret
     | ($runs | map(select(($vix[.id] | not) and (.ts | sub("\\+00:00$"; "Z") | fromdateiso8601) >= $since)
         | . + {h: (.harness // "claude"), ran: (.ran | if . then alias else . end), lane: (.lane // "unrouted")})) as $rs
+    # $firsts: the first rated run of each item on any pair (eval lane left out), so an item a trainee had
+    # rejected is a miss for the trainee pair and no first success for the claude run that landed it.
+    | ($rs | map(select(.outcome and .lane != "eval")) | group_by(.item // .id) | map(min_by(.ts))) as $firsts
     | ([($done + $ret)[] | {m, h, c, l}] + (if $cl then [] else [$rs[] | {m: .ran, h, c: null, l: (if $ln then .lane else null end)}] end) | unique_by([.m, .h, .c, .l])) as $pairs
     | {days: $days, models: ($pairs | map(. as {m: $m, h: $h, c: $c, l: $l}
-        | ($done | map(select(.m == $m and .h == $h and .c == $c and .l == $l))) as $it
+        | ($done | map(select(.m == $m and .h == $h and .c == $c and .l == $l))) as $ia
+        | ($ia | map(select(canary | not))) as $it
+        | ($ia | map(select(canary)) | length) as $canaries
         | ($it | map(select(landed)) | length) as $landed
         | ($it | map(sids[]) | unique | map($o[.] // empty)) as $sess
-        | ($it | map({landed: landed, source: (if metered then "gateway" elif any(sids[]; $o[.].cost_usd != null) then "list" else null end)})) as $priced_items
+        | ($ia | map({landed: landed, canary: canary, source: (if metered then "gateway" elif any(own($h)[]; $o[.].cost_usd != null) then "list" else null end)})) as $priced_items
         | ($rs | map(select(($cl | not) and .ran == $m and .h == $h and (($ln | not) or .lane == $l)))) as $r
         | ($r | map(select(.outcome)) | length) as $rated
         | ($r | map(select(.outcome == "redo")) | length) as $redo
-        | (($it | map(select(metered) | .gateway_cost_usd | tonumber) | add // 0)
-           + ($it | map(select(metered | not) | sids[]) | unique | map($o[.].cost_usd // 0) | add // 0)) as $cost
+        | ($firsts | map(select(($cl | not) and .ran == $m and .h == $h and (($ln | not) or .lane == $l)))) as $first
+        | ($first | map(select(.outcome == "ok")) | length) as $first_ok
+        | cost_of($ia; $h) as $cost
         | ($priced_items | map(.source // empty) | unique) as $src
-        | ($priced_items | map(select(.landed and .source)) | length) as $priced
+        | ($priced_items | map(select(.landed and .source and (.canary | not))) | length) as $priced
         | ($it | map(select(landed))) as $li
         | [$li | map(prkeys[]) | unique[] | $cix[.] // empty] as $cr
-        | ($li | map(sids[]) | unique | map($sp[.].points // empty)) as $pt
-        | ($li | map(select(any(sids[]; $sp[.].points != null))) | length) as $pointed
-        | ($ret | map(select(.m == $m and .h == $h and .c == $c and .l == $l)) | length) as $returned
+        | ($li | map(own($h)[]) | unique | map($sp[.].points // empty)) as $pt
+        | ($li | map(select(any(own($h)[]; $sp[.].points != null))) | length) as $pointed
+        | ($ret | map(select(.m == $m and .h == $h and .c == $c and .l == $l and (canary | not))) | length) as $returned
         | ($it | map(select(check))) as $chk
         | ($it | map(select(check | not))) as $code
         | ($code | map(select(unrated)) | length) as $unrated
         | (($code | length) - $unrated) as $ln_n
         | ($cr | map(select(ran_gate))) as $ran | ($ran | map(select(first_try)) | length) as $fp
-        | {model: $m, harness: $h, done: ($it | length), checks: ($chk | length), checks_ok: ($chk | map(select(.status == "ok")) | length), checks_failed: ($chk | map(select(.status == "failed")) | length), returned: $returned, code: ($code | length), landed: $landed, landed_rate: ratio($landed; $ln_n), landed_n: $ln_n, landed_ci: wilson($landed; $ln_n),
+        | {model: $m, harness: $h, done: ($it | length), canary: $canaries, checks: ($chk | length), checks_ok: ($chk | map(select(.status == "ok")) | length), checks_failed: ($chk | map(select(.status == "failed")) | length), returned: $returned, code: ($code | length), landed: $landed, landed_rate: ratio($landed; $ln_n), landed_n: $ln_n, landed_ci: wilson($landed; $ln_n),
            failed: ($code | map(select(.status == "failed" and (unrated | not))) | length), unrated: $unrated,
            fix_none: ($li | map(select(.review_fix == "none")) | length), fix_small: ($li | map(select(.review_fix == "small")) | length),
            runs: ($r | length), approved: ($r | map(select(.outcome == "ok")) | length), rated: $rated, redo: $redo, redo_rate: ratio($redo; $rated),
            reverts: ($sess | map(.reverted_7d // 0) | add // 0),
-           cost_usd: ($cost * 100 | round / 100), priced: $priced, cost_per_pr: (if $priced > 0 then ($cost / $priced * 100 | round / 100) else null end),
+           first_attempt_ok: $first_ok, first_attempt_n: ($first | length), first_attempt_rate: ratio($first_ok; $first | length), first_attempt_ci: wilson($first_ok; $first | length),
+           cost_usd: (if $h != "claude" and ($src | length) == 0 then null else ($cost * 100 | round / 100) end), priced: $priced,
+           cost_per_pr: (if $priced > 0 then (cost_of($it; $h) / $priced * 100 | round / 100) else null end),
            source: (if ($src | length) > 1 then "mixed" else ($src[0] // "-") end),
            ci_prs: ($cr | length), ci_red_per_pr: ratio($cr | map(.ci_red // 0) | add // 0; $cr | length),
            first_pass_share: ratio($fp; $ran | length), first_pass_n: ($ran | length), first_pass_ci: wilson($fp; $ran | length),
@@ -3906,18 +3920,18 @@ models_section() {
     echo
     cols="${cols}Lane | "; lead="${lead}"'\(.lane) | ' ;;
   esac
-  echo "An item that ended for a cause outside the model (\`end_reason\` ${UNRATED_ENDS// /, }: a quota end, a provider failure, a kill) counts in Done but not in Rate or Failed; \`models --json\` has it as \`unrated\`. A check is in Done and in neither Rate nor Failed."
+  echo "An item that ended for a cause outside the model (\`end_reason\` ${UNRATED_ENDS// /, }: a quota end, a provider failure, a kill) counts in Done but not in Rate or Failed; \`models --json\` has it as \`unrated\`. A canary item (\`from: canary\`) is an eval, not work: it is in the Canary column and in no other count of the row but Cost, so Done, Landed and Rate are real work only. A check is in Done and in neither Rate nor Failed. First attempt is the share of items whose first rated run, on any pairing, was this one's and approved (a trainee diff the review rejected is a miss for its harness, and no first success for the Claude run that lands the row after); runs in lane eval are left out. Redo counts model-lane runs, not items, so a canary run outside lane eval still shows there. Cost and Points count only the sessions the pairing ran itself, never the Claude reviewer's or lander's, and Cost reads - when none of them has a price (agy publishes none)."
   echo
   echo "Rate and First pass show their Wilson 95% interval and n (rated items; PRs whose CI ran a gate), so a rate on a few items reads as the range it is; CI red is a mean count per PR, so it shows its n (PRs with a \`pr-ci\` row) and no interval."
   echo
   local redo_h="Redo | " redo_c='\(.redo) | ' hdr
   case ",$by," in *,class,*) redo_h="" redo_c="" ;; esac
-  hdr="${cols}Model | Harness | Done | Checks | Returned | Landed | Rate | Failed | ${redo_h}Reverts | Cost | Per PR | Source | CI red | First pass | Points | Points per PR"
+  hdr="${cols}Model | Harness | Done | Canary | Checks | Returned | Landed | Rate | Failed | ${redo_h}First attempt | Reverts | Cost | Per PR | Source | CI red | First pass | Points | Points per PR"
   echo "| $hdr |"
   echo "|$(sed 's/[^|][^|]*/---/g' <<<"$hdr")|"
   jq -r "$JQ_LIB"'def d: if . == null then "-" else tostring end;
     .models | sort_by(.class, .lane, -.done)[]
-    | "| '"$lead"'\(.model) | \(.harness) | \(.done) | \(.checks)\(if .checks_failed > 0 then " (\(.checks_failed) failed)" else "" end) | \(.returned) | \(.landed) | \(ci_cell(.landed_rate; .landed_ci; .landed_n)) | \(.failed) | '"$redo_c"'\(.reverts) | $\(.cost_usd) | \(if .cost_per_pr == null then "-" else "$\(.cost_per_pr)" end) | \(.source) | \(if .ci_red_per_pr == null then "-" else "\(.ci_red_per_pr) (n \(.ci_prs))" end) | \(ci_cell(.first_pass_share; .first_pass_ci; .first_pass_n)) | \(.points | d) | \(.points_per_pr | d) |"' <<<"$j"
+    | "| '"$lead"'\(.model) | \(.harness) | \(.done) | \(.canary) | \(.checks)\(if .checks_failed > 0 then " (\(.checks_failed) failed)" else "" end) | \(.returned) | \(.landed) | \(ci_cell(.landed_rate; .landed_ci; .landed_n)) | \(.failed) | '"$redo_c"'\(ci_cell(.first_attempt_rate; .first_attempt_ci; .first_attempt_n)) | \(.reverts) | \(if .cost_usd == null then "-" else "$\(.cost_usd)" end) | \(if .cost_per_pr == null then "-" else "$\(.cost_per_pr)" end) | \(.source) | \(if .ci_red_per_pr == null then "-" else "\(.ci_red_per_pr) (n \(.ci_prs))" end) | \(ci_cell(.first_pass_share; .first_pass_ci; .first_pass_n)) | \(.points | d) | \(.points_per_pr | d) |"' <<<"$j"
 }
 
 # trainee_section <now>: the trainee ladder in the scorecard. Per pair (lane trainee in model-lane's log,
