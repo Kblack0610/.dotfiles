@@ -694,6 +694,43 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
   cmp "$PROJ/scratch/ideas.md" "$BATS_TEST_TMPDIR/ideas.before" || fail "ideas.md changed"
 }
 
+@test "--backlog: health work is never an improvement: a stage criterion, a missing test and a CI fault with a number stay on the board, polish still leaves (ar-5401)" {
+  sheet '' ''
+  agent_board '- [ ] a: meet the prod stage standard #low <!-- id:sc-1 -->\n- [ ] b: add a bats case for the parser #low <!-- id:sc-2 -->\n- [ ] c: the nightly CI takes 14 min #low <!-- id:sc-3 -->\n- [ ] d: a glow on the menu #low <!-- id:sc-4 -->\n'
+  answer '{"n": 1, "action": "improvement", "why": "a nice-to-have"}' \
+    '{"n": 2, "action": "improvement", "why": "a nice-to-have"}' \
+    '{"n": 3, "action": "improvement", "why": "a nice-to-have"}' \
+    '{"n": 4, "action": "improvement", "why": "polish nobody asked for"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_success
+  assert_output --partial 'kept 3, refused 0, raised 0, improvements 1'
+  board="$PROJ/scratch/agent/README.md"
+  grep -q '\[ \] a: meet the prod stage standard' "$board" || fail "the stage criterion left the board"
+  grep -q '\[ \] b: add a bats case' "$board" || fail "the missing test left the board"
+  grep -q '\[ \] c: the nightly CI' "$board" || fail "the CI fault left the board"
+  grep -q '\[ \] d: a glow' "$board" && fail "the polish stayed on the board"
+  run cat "$PROJ/scratch/improvements.md"
+  assert_output --partial '- d: a glow on the menu ('
+  refute_output --partial 'stage standard'
+  refute_output --partial 'bats case'
+  refute_output --partial 'nightly CI'
+}
+
+@test "session line: a health-work line with an improvement verdict stays where it is and files nothing (negative control: polish is kept)" {
+  sheet '- [ ] chore(ui): meet the prod stage standard #agent #from/ab12cd34\n- [ ] chore(ui): a nicer empty state #agent #from/ab12cd34\n' ''
+  answer '{"n": 1, "action": "improvement", "project": "scratch", "why": "a nice-to-have"}' \
+    '{"n": 2, "action": "improvement", "project": "scratch", "why": "polish nobody asked for"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'improvements 1'
+  run cat "$PROJ/scratch/improvements.md"
+  assert_output --partial 'a nicer empty state'
+  refute_output --partial 'stage standard'
+  run inbox
+  assert_output --partial 'meet the prod stage standard'
+  refute_output --partial 'empty state'
+}
+
 @test "--backlog: the human's own board never loses a row to an improvement (negative control: the same answer on the agent board moves it)" {
   sheet '' '- [ ] a glow on the menu #low <!-- id:sc-2 -->\n'
   answer '{"n": 1, "action": "improvement", "why": "polish nobody asked for"}'

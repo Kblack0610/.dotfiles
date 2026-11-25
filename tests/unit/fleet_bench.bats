@@ -3751,6 +3751,78 @@ LIB
   refute_line --partial 'kpi="prio_default",subject='
 }
 
+@test "inflow: every open row has a source, and each source's arrivals say how they ended" {
+  local today d2 d3 ev
+  today=$(date -d "@$T0" +%F); d2=$(date -d "@$((T0 - 86400))" +%F); d3=$(date -d "@$((T0 - 2 * 86400))" +%F)
+  jq -c '.rows = [
+    {project: "game", lane: "agent", state: "open", id: "g-5000", since: "'"$d2"'"},
+    {project: "game", lane: "agent", state: "open", id: "g-5001", since: "'"$d3"'"},
+    {project: "game", lane: "agent", state: "doing", id: "g-5002", since: "'"$today"'"},
+    {project: "game", lane: "agent", state: "open", id: "g-100", since: "'"$d3"'"},
+    {project: "game", lane: "agent", state: "open", id: "g-5004", since: ""},
+    {project: "game", lane: "agent", state: "open", id: "g-5008", since: "'"$today"'"},
+    {project: "other", lane: "agent", state: "open", id: "o-1", since: "'"$today"'"},
+    {project: "game", lane: "human", state: "open", id: "g-5003", since: "'"$today"'"}]' <<<'{}' > "$SANDBOX/board.json"
+  printf '#!/usr/bin/env bash\ncat %q\n' "$SANDBOX/board.json" > "$SANDBOX/bin/board-stub"
+  chmod +x "$SANDBOX/bin/board-stub"
+  export BENCH_BOARD_CMD=board-stub
+  ev() { jq -cn --arg a "$1" --arg id "$2" --arg day "$3" --arg by "$4" --argjson x "$5" \
+    '{action: $a, id: $id, from: "game", lane: "agent", ts: "\($day)T10:00:00-08:00", by: $by} + $x'; }
+  {
+    ev added g-5000 "$d2" s1 '{"origin": "agent-queue"}'
+    ev filed g-5001 "$d3" inbox-triage '{"text": "#agent #from/dream fix(x): y"}'
+    ev added g-5002 "$today" 3e2471be '{"why": "self-check"}'
+    ev added g-5004 "$today" 3e2471be '{}'
+    ev added g-5005 "$d2" s1 '{"origin": "plan"}'
+    ev done g-5005 "$today" s1 '{"why": "pr:o/r#1", "pr": "o/r#1"}'
+    ev added g-5006 "$d2" fleet-bench '{"origin": "fleet-bench"}'
+    ev dropped g-5006 "$today" human '{"why": "dropped: dup"}'
+    ev added g-5007 "$d3" s1 '{"origin": "plan"}'
+    ev dropped g-5007 "$d2" human '{}'
+    ev reopened g-5007 "$d2" human '{"ts": "'"$d2"'T11:00:00-08:00"}'
+    ev done g-5007 "$today" s1 '{"why": "pr:o/r#2"}'
+    ev added g-5008 "$today" s1 '{"origin": "plan"}'
+    ev added g-5009 "$d2" s1 '{"origin": "plan"}'
+    ev settled g-5009 "$today" fleet-dispatch '{"pr": "o/r#3", "why": "row closed on merge proof"}'
+    ev added g-5010 "$d2" s1 '{"origin": "fleet-bench"}'
+    ev settled g-5010 "$today" fleet-dispatch '{"why": "row un-started: item ended failed"}'
+    ev added g-5011 "$(date -d "@$((T0 - 20 * 86400))" +%F)" s1 '{"origin": "plan"}'
+    ev filed g-5011 "$today" inbox-triage '{}'
+    jq -cn '{action: "added", id: "g-4999", from: "game", lane: "agent", ts: "2000-01-01T10:00:00-08:00", by: "s1", origin: "plan"}'
+    jq -cn '{action: "added", id: "o-1", from: "other", lane: "agent", ts: "'"$today"'T10:00:00-08:00", by: "s1", origin: "ask-sweep"}'
+  } > "$BENCH_INGEST"
+  BENCH_NOW=$T0 run "$SUBJECT" inflow --project game --json
+  assert_success
+  # every open agent row of the project is attributed; a human row and another project's row are not
+  run jq -c '[.open_rows, .attributed]' <<<"$output"
+  assert_output '[6,6]'
+  BENCH_NOW=$T0 run "$SUBJECT" inflow --project game --json
+  run jq -cS '[.sources[] | select(.open > 0) | {(.source): .open}] | add' <<<"$output"
+  assert_output '{"agent-queue":1,"from: dream":1,"plan":1,"pre-log":1,"self-check":1,"session":1}'
+  # known origins come back as written (the negative control), and each arrival's end is the last close after its last reopen
+  BENCH_NOW=$T0 run "$SUBJECT" inflow --project game --json
+  run jq -c '.sources[] | select(.source == "plan") | [.arrived, .closed_by_pr, .dropped, .still_open]' <<<"$output"
+  assert_output '[4,3,0,1]'
+  BENCH_NOW=$T0 run "$SUBJECT" inflow --project game --json
+  run jq -c '.sources[] | select(.source == "fleet-bench") | [.arrived, .dropped, .gone, (.daily | add)]' <<<"$output"
+  assert_output '[2,1,1,2]'
+  # a settled event closes a row only with a PR (g-5009; g-5010 was un-started), a row re-filed in the window arrived
+  # before it (g-5011), and the 2000 arrival is outside the window; the window reads from the record's first event in it
+  BENCH_NOW=$T0 run "$SUBJECT" inflow --project game --days 3 --json
+  run jq -c '[.covered_days, ([.sources[].arrived] | add)]' <<<"$output"
+  assert_output '[3,10]'
+  BENCH_NOW=$T0 run "$SUBJECT" inflow --project game
+  assert_success
+  assert_line --partial 'inflow game: 6 open agent rows, 6 attributed to a source'
+  # an unreadable record or board is an error, never an empty table
+  BENCH_INGEST="$SANDBOX/none" run "$SUBJECT" inflow --project game
+  assert_failure 1
+  BENCH_BOARD_CMD=false run "$SUBJECT" inflow --project game
+  assert_failure 1
+  run "$SUBJECT" inflow --days 0
+  assert_failure 2
+}
+
 @test "chain: each KPI goes past its bound on a fixture that breaks its link, and only that one" {
   chain_fixture
   cp "$SANDBOX/items.jsonl" "$SANDBOX/items.ok"; cp "$DONE" "$DONE.ok"; cp "$BJSON" "$BJSON.ok"; cp "$PJSON" "$PJSON.ok"
