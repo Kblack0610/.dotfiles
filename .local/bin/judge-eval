@@ -263,12 +263,15 @@ JQ_EVAL="$JQ_EPOCH"'
          reason: "", at: $s.ts, answered_at: (if $t == null then null else $t.ts end), judge_call: "",
          outcome: (if ($now - $s.e) < $settle then "pending" elif $t != null then "fp" else "tp" end)}] as $priorows
    # A row a runner wrote is right when nothing edits, drops, moves or re-tags it for the settle
-   # window, writes by the planner aside; untouched($src) makes the verdict for the lane scored by $src.
+   # window, writes by the planner aside, and so do the runner's own later writes (inbox-triage
+   # re-scoping a title it filed is its pass, not someone correcting it; 150 such edits in 30 days,
+   # runner_score_inbox_triage 0%, ar-3862); untouched($src) makes the verdict for the lane scored by $src.
    # Each settle-window verdict here (and the priority and defer ones) stays pending until its window
    # ends, wrong or right: a miss known early would fill a young window (a fix watermark) with misses
    # alone, since a right answer needs the whole window (runner-score at 21% on an 87% lane, 2026-11-22).
    | def untouched($src): . as $f
-      | ([($touch[$f.id] // [])[] | select(.e > $f.e and .e <= ($f.e + $settle) and (planner($f.id; .e) | not))] | first) as $t
+      | ([($touch[$f.id] // [])[] | select(.e > $f.e and .e <= ($f.e + $settle) and (planner($f.id; .e) | not)
+           and ((.by // "") == "" or (.by // "") != ($f.by // "")))] | first) as $t
       | {agent: $by[$src], id: $f.id, project: (if ($f.to // "") == "" then $f.from else $f.to end),
          question: ($f.text // ""), rule: "", kind: "answer", want: "untouched",
          human: (if $t == null then "" else $t.action + (if ($t.by // "") == "" then "" else " by \($t.by)" end) end), reason: "", at: $f.ts,

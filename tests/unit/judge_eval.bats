@@ -453,6 +453,8 @@ cell() {
     # a later line joined to the row as a dup repeats it, and corrects nothing
     ev filed t-dup "$(ago '-3 days')"; ev dup t-dup "$(ago '-3 days +1 hour')"
     ev filed t-session "$(ago '-3 days')" by=ab12cd34
+    # the triager rewriting a row it filed is its own pass; t-edited, by someone else, is the control
+    ev filed t-self "$(ago '-3 days')" by=inbox-triage; ev edited t-self "$(ago '-3 days +2 hours')" by=inbox-triage
     ev filed t-sized "$(ago '-3 days')"; ev tagged t-sized "$(ago '-3 days +1 hour')" by=inbox-size 'why=+#pts/3'
     ev filed t-held "$(ago '-3 days')"; ev tagged t-held "$(ago '-3 days +1 hour')" by=ab12cd34 'why=+#hold/critical +#after/ar-1 +#ask/abc +#desk/human +#plan +#go -#size/s +#size/m'
     ev filed t-resized "$(ago '-3 days')"; ev tagged t-resized "$(ago '-3 days +1 hour')" by=human 'why=-#size/s +#size/l'
@@ -462,10 +464,10 @@ cell() {
   } > "$INGEST"
   run "$JUDGE_EVAL" inbox-triage --json
   assert_success
-  # tp: t-kept, t-late (dropped after the window), t-planned, t-sized, t-held (a pass's sizing or gating re-tag is no correction) and t-dup;
+  # tp: t-kept, t-late (dropped after the window), t-planned, t-sized, t-held (a pass's sizing or gating re-tag is no correction), t-dup and t-self;
   # fp: t-edited, t-moved, t-resized (a human's), t-mixed (a non-pass word); pending: t-young, t-young-edited
   run jq -c '.agents[0] | [.total | .verdicts, .tp, .fp, .pending, .scored, .precision], (.misses | map([.id, .answer]) | sort)' <<<"$output"
-  assert_line '[12,6,4,2,10,60]'
+  assert_line '[13,7,4,2,11,63.6]'
   assert_line '[["t-edited","edited by ab12cd34"],["t-mixed","tagged by inbox-size"],["t-moved","rehomed"],["t-resized","tagged by human"]]'
 }
 
