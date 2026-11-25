@@ -14,11 +14,11 @@ use crate::display::fmt::age;
 use crate::fleet::{self, runner, runner::Watch, Conf};
 use crate::jobs::{self, Job, State};
 use crate::prom::{self, Series};
-use crate::queue;
 use crate::reading::JobState;
 use crate::reds::{self, Red, Route};
 use crate::session_actions::Runner;
 use crate::table::{Row, Val};
+use crate::tasks;
 use crate::vocab::Level;
 
 /// How far back a streak looks; agentctl's ledger and the journal both hold a week.
@@ -965,6 +965,27 @@ fn red_keys(row: &Schedule, mine: &[&Watch]) -> Vec<String> {
     keys
 }
 
+/// The open board rows each `nightly:<repo>` hold keeps back, by that key. Held work is a board
+/// row carrying its gate as `#nightly/<repo>`, or `#nightly/<repo>/<day>` for the night of that
+/// day (agent-queue `gate_board_tag`); a row dated after the feed's day waits for a later night,
+/// and a started or closed row is held by nothing.
+fn nightly_held(f: &tasks::Feed) -> HashMap<String, usize> {
+    let mut held = HashMap::new();
+    for gate in f
+        .rows
+        .iter()
+        .filter(|r| r.state != "done" && !r.doing())
+        .flat_map(|r| &r.tags)
+        .filter_map(|t| t.strip_prefix("nightly/"))
+    {
+        let (repo, day) = gate.split_once('/').unwrap_or((gate, ""));
+        if day.is_empty() || day <= f.today.as_str() {
+            *held.entry(format!("nightly:{repo}")).or_default() += 1;
+        }
+    }
+    held
+}
+
 /// Fill what depends on the rest of the fleet: the triage word, the open reds, and After.
 fn join(
     row: &mut Schedule,
@@ -1286,11 +1307,11 @@ pub fn read_with(
     let mut errors = vec![];
     let mut rows = vec![];
 
-    let (timers, k8s, reds, queued, live) = std::thread::scope(|s| {
+    let (timers, k8s, reds, board, live) = std::thread::scope(|s| {
         let timers = s.spawn(|| read_timers(runner, at, &home));
         let k8s = s.spawn(|| read_k8s(at, off));
         let reds = s.spawn(|| open_reds(reds, runner));
-        let queued = s.spawn(|| queue::list(runner, "queued"));
+        let board = s.spawn(|| tasks::feed(runner));
         let live = s.spawn(|| {
             runner
                 .output(&["agentctl", "liveness"].map(String::from))
@@ -1303,7 +1324,7 @@ pub fn read_with(
                 .unwrap_or_else(|_| (vec![], vec![], vec![gone()])),
             k8s.join().unwrap_or_else(|_| (vec![], vec![gone()])),
             reds.join().unwrap_or_else(|_| Err(gone())),
-            queued.join().unwrap_or_else(|_| Err(gone())),
+            board.join().unwrap_or_else(|_| Err(gone())),
             live.join().unwrap_or_else(|_| Err(gone())),
         )
     });
@@ -1355,13 +1376,7 @@ pub fn read_with(
         errors.push(e);
         vec![]
     });
-    let queued = noted(queued, "queue", &mut errors);
-    let mut held: HashMap<String, usize> = HashMap::new();
-    for t in queued.iter().flat_map(|i| i.tag_list()) {
-        if t.starts_with("nightly:") {
-            *held.entry(t.to_string()).or_default() += 1;
-        }
-    }
+    let held = noted(board.map(|f| nightly_held(&f)), "board", &mut errors);
 
     for (row, m) in rows.iter_mut().zip(&mine) {
         row.judge(at);
@@ -1928,6 +1943,36 @@ Id=bare.service\nDescription=bare.service\nResult=exit-code\nExecStart=\n";
         assert_eq!(
             row.triage, "agent nightly-fix",
             "no item: the route it would take"
+        );
+    }
+
+    #[test]
+    fn a_nightly_hold_counts_the_board_rows_that_carry_its_gate() {
+        let row = |state: &str, tags: &[&str]| tasks::Row {
+            state: state.into(),
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            ..Default::default()
+        };
+        let f = tasks::Feed {
+            today: "2026-11-25".into(),
+            rows: vec![
+                row("open", &["nightly/app", "of/ar-1"]),
+                row("doing", &["nightly/app/2026-11-25"]),
+                row("open", &["nightly/app/2026-11-24"]),
+                row("open", &["nightly/app/2026-11-26"]),
+                row("done", &["nightly/app"]),
+                row("open", &["nightly/web"]),
+                row("open", &["size/m"]),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            nightly_held(&f),
+            HashMap::from([
+                ("nightly:app".to_string(), 2),
+                ("nightly:web".to_string(), 1)
+            ]),
+            "a later night's row, a started row and a closed row are not held by tonight's run"
         );
     }
 
