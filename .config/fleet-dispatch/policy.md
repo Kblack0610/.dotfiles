@@ -43,7 +43,7 @@ A skip does not park a row: `fleet-dispatch` gives each agent-lane skip the exit
 
 - (needs-person) Playtests, device, pad or headset runs, anything that needs a person to look, play or listen.
 - (release) Releases, tags, signing keys, payments, purchases. A store listing, pricing or ads change is `market` work, which a merging session never does.
-- (prod-write) Production data or infrastructure writes: the paying production surface (the client production cluster on DigitalOcean and production databases), backfills and migrations run against it, DNS, secrets, flipping a flag on in prod. A `check(alert)` or `check(watch)` row fixed on home-k3s or forge by its runbook is agent work, not prod-write, even when the app it heals has live users: that is what triage routed it to the agent lane for.
+- (prod-write) Production data or infrastructure writes: backfills, migrations run against prod, DNS, secrets, flipping a flag on in prod. One exception: a `check(alert)` or `check(watch)` row that triage routed to the agent lane, fixed on home-k3s or forge by its runbook (a restart, rollout, scale, job rerun or a config fix through git), is agent work even when the app it heals has live users. A runbook step that touches DNS, a secret, a prod flag or production data is still prod-write.
 - (compliance) Anything touching health information, compliance or privacy. A legal review is `legal` work, which a merging session never does.
 - (question) Rows that ask a question, and wishes ("would be cool", "should i", "maybe", "ideally", "investigate whether"), unless the row is `#requested`.
 - (design) Anything that needs a product or design decision the row does not already make: that decision is `design` work, which a merging session never does.
