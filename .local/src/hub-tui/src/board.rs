@@ -819,7 +819,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_withheld_runner_is_no_slot_and_says_nothing_on_its_row() {
+    fn a_withheld_runner_is_no_slot_and_has_no_row_anywhere() {
         let mut i = fixture();
         i.instant.insert(
             "withheld",
@@ -836,9 +836,9 @@ pub(crate) mod tests {
             ),
             "a held slot is no job on its row: {out}"
         );
-        assert_line(
-            &out,
-            "razer-laptop 3 withheld unity - - the governor holds it back -",
+        assert!(
+            !has(&out, "razer-laptop 3 withheld"),
+            "no job, no runners row: {out}"
         );
     }
 
