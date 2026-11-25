@@ -1340,6 +1340,33 @@ notes --profile work ptask level run lv-8'
   assert_output 0
 }
 
+@test "a --repeat add that links an open twin brings its brief, priority and tags up to date; without --repeat it is left as it was (ar-5138)" {
+  story_notes
+  echo 3 > "$NOTES_FIXTURE/story.rc"
+  echo 'already open on /x/agent/README.md: - [ ] feat(menu): nightly pass <!-- id:lv-4 -->' > "$NOTES_FIXTURE/story.out"
+  "$AQ" add --project level --slug pass --repeat --priority high --tags "cleanup cause:menu" -- $'feat(menu): nightly pass\ntonight: area docs' >/dev/null
+  [ "$(field "$(item queued pass)" row)" = level:lv-4 ]
+  run cat "$NOTES_FIXTURE/calls.log"
+  assert_output --partial '--agent edit lv-4 --brief=tonight: area docs'
+  assert_output --partial '--agent tag --add high --add cleanup lv-4'
+  # a tag a hashtag cannot carry stays on the item alone
+  refute_output --partial 'cause:menu'
+  # NEGATIVE CONTROL: the same add without --repeat links its twin and leaves its brief and tags
+  : > "$NOTES_FIXTURE/calls.log"
+  echo 'already open on /x/agent/README.md: - [ ] feat(menu): nightly pass <!-- id:lv-5 -->' > "$NOTES_FIXTURE/story.out"
+  "$AQ" add --project level --slug pass2 --priority high --tags cleanup -- $'feat(menu): nightly pass\ntonight: area skills' >/dev/null
+  [ "$(field "$(item queued pass2)" row)" = level:lv-5 ]
+  run grep -c -e '--agent edit' -e '--agent tag' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # NEGATIVE CONTROL: a twin an item already started keeps its brief, since its session has it
+  : > "$NOTES_FIXTURE/calls.log"
+  echo 'already open on /x/agent/README.md: - [/] feat(menu): nightly pass <!-- id:lv-6 -->' > "$NOTES_FIXTURE/story.out"
+  "$AQ" add --project level --slug pass3 --repeat --priority high --tags cleanup -- $'feat(menu): nightly pass\ntonight: area dups' >/dev/null
+  [ "$(field "$(item queued pass3)" row)" = level:lv-6 ]
+  run grep -c -e '--agent edit' -e '--agent tag' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
 @test "a re-queue links its last item's open row by id, whatever its words; a closed one gets a new row" {
   story_notes
   "$AQ" add --project level --slug again "feat(menu): first words" >/dev/null
