@@ -1136,11 +1136,6 @@ pub fn look_tag(line: &str) -> Option<Look> {
     first.or_else(|| last.and_then(look_word))
 }
 
-/// `line` without its `#ask` or `#investigate` tag, the rest as it was.
-pub fn without_look_tag(line: &str) -> String {
-    without_words(line, |w| look_word(w).is_some())
-}
-
 /// `line` without its look tag and every routing word.
 pub fn without_look_and_routing_tags(line: &str) -> String {
     without_words(line, |w| look_word(w).is_some() || is_routing_word(w))

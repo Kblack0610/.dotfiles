@@ -507,10 +507,6 @@ mod tests {
             None
         );
         assert_eq!(
-            md::without_look_tag("#investigate why slow #p:demo"),
-            "why slow #p:demo"
-        );
-        assert_eq!(
             answer(
                 &p,
                 &log,
