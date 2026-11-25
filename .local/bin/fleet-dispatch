@@ -3880,6 +3880,25 @@ dispatch_tag() {
   on_host "$1" tmux -L "$2" set-option "${scope[@]}" -t "$tgt" @dispatch "$6" || say "could not tag $3${4:+:$4} with @dispatch"
 }
 
+# start_record <item> <server> <session> <host> <field=value>... -- mark the item a start just launched as
+# running on its session, or close that session and return 1. The move to running is what keeps the next pass
+# off the item, so a launch it cannot record does not stay up: on 11-17 a queue lock miss left ar-2743 queued
+# under a live session, and the red floor started it a second time 15 min later (ar-2753). The two writes share
+# one wait on the queue lock, as long as a start waits for the start lock, so a start never holds that lock past
+# what the next one waits.
+start_record() {
+  local item=$1 server=$2 session=$3 host=$4 end=$((SECONDS + DISPATCH_START_WAIT))
+  shift 4
+  AGENT_QUEUE_LOCK_WAIT=$((DISPATCH_START_WAIT > 1 ? DISPATCH_START_WAIT : 1)) agent-queue set "$item" "$@" >/dev/null &&
+    AGENT_QUEUE_LOCK_WAIT=$((end - SECONDS > 1 ? end - SECONDS : 1)) agent-queue move "$item" running >/dev/null && return 0
+  if on_host "$host" tmux-close -L "$server" session "$session" >/dev/null 2>&1; then
+    say "started $session, but could not mark queue item $item running; closed $session, so $item stays queued with no session on it (wt gc reaps its empty worktree)"
+  else
+    say "started $session, but could not mark queue item $item running, nor close $session: it works $item while the item reads queued"
+  fi
+  return 1
+}
+
 # cmd_start -- THE way an agent starts a session, whoever it is: this runner's `run` pass, an
 # agent launching one for a board row, a reboot restore. Each comes out tagged @dispatch on its
 # server, on the session, or on the window for a --window start (the human reads [dispatch] as "an agent started this"), except a resume of the human's
@@ -4111,21 +4130,8 @@ cmd_start() {
     # marks the row as trained once, counts toward its harness's cap, and its review hand-off reads it;
     # `direct:` marks a direct run the same way, for its landing.
     trn=''; [ -n "$drc" ] || [ "$harness" = claude ] || [ -z "$(harness_sandbox "$harness")" ] || is_canary "$it" || trn="$harness:$model"
-    # The move to running is what keeps the next pass off this item, so a launch it cannot record does not
-    # stay up: on 11-17 a queue lock miss left ar-2743 queued under a live session, and the red floor started
-    # it a second time 15 min later (ar-2753). The record's two writes share one wait on the queue lock, as
-    # long as a start waits for the start lock, so a start never holds that lock past what the next one waits.
-    local rec_end=$((SECONDS + DISPATCH_START_WAIT))
-    AGENT_QUEUE_LOCK_WAIT=$((DISPATCH_START_WAIT > 1 ? DISPATCH_START_WAIT : 1)) agent-queue set "$item" "session=$server:$session" "account=$acct" "origin=$origin" "model=$model" "agent=$harness" ${size:+"size=$size"} ${host:+"host=$host"} ${trn:+"trainee=$trn"} ${drc:+"direct=$drc"} >/dev/null &&
-      AGENT_QUEUE_LOCK_WAIT=$((rec_end - SECONDS > 1 ? rec_end - SECONDS : 1)) agent-queue move "$item" running >/dev/null || {
-        exec 7>&-
-        if on_host "$host" tmux-close -L "$server" session "$session" >/dev/null 2>&1; then
-          say "started $session, but could not mark queue item $item running; closed $session, so $item stays queued with no session on it (wt gc reaps its empty worktree)"
-        else
-          say "started $session, but could not mark queue item $item running, nor close $session: it works $item while the item reads queued"
-        fi
-        return 1
-      }
+    start_record "$item" "$server" "$session" "$host" "session=$server:$session" "account=$acct" "origin=$origin" "model=$model" "agent=$harness" ${size:+"size=$size"} ${host:+"host=$host"} ${trn:+"trainee=$trn"} ${drc:+"direct=$drc"} ||
+      { exec 7>&-; return 1; }
     # The id was chosen above, so the claim is made here and not in the session's own start, where
     # it waited on the queue lock (up to 2.9 s, 2026-11-06). Both outcome joins go through `sessions:`.
     [ -z "$sid" ] || agent-queue claim "$item" --sid "$sid" >/dev/null || say "could not claim $sid on queue item $item"
