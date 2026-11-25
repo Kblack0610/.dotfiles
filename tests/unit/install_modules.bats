@@ -199,3 +199,64 @@ SH
   assert_output --partial next-module
   [ ! -e "$HOME/.local/bin/agy" ]
 }
+
+# --- the catalog steps and helpers every OS installer shares (base_functions.sh) ---------------
+
+@test "install_catalog installs the common list, this OS's list and any extras through PKG_INSTALL" {
+  rec() { echo "pkg $1"; }
+  PACKAGES_DEMO="a b" PACKAGES_DEMO_ARCH="c" PKG_INSTALL=rec PKG_OS=arch
+  run install_catalog DEMO d
+  assert_success
+  assert_output "$(printf 'pkg a\npkg b\npkg c\npkg d')"
+}
+
+@test "install_catalog with no package helper set installs nothing and says so" {
+  PACKAGES_DEMO="a"
+  run install_catalog DEMO
+  assert_success
+  assert_output --partial "No default implementation"
+}
+
+@test "install_pacman_package goes through sudo on Arch and runs pacman bare as root on WSL" {
+  # The Arch and WSL copies differed only here: WSL's empty $SUDO when it runs as root with no sudo.
+  local b="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$b"
+  printf '#!/bin/sh\n[ "$1" = -Q ] && exit 1\necho "pacman $*" >>"%s/calls"\n' "$BATS_TEST_TMPDIR" >"$b/pacman"
+  printf '#!/bin/sh\necho "sudo $1" >>"%s/calls"\nexec "$@"\n' "$BATS_TEST_TMPDIR" >"$b/sudo"
+  chmod +x "$b/pacman" "$b/sudo"
+  unset SUDO
+  PATH="$b:$PATH" run install_pacman_package one
+  assert_success
+  SUDO="" PATH="$b:$PATH" run install_pacman_package two
+  assert_success
+  run cat "$BATS_TEST_TMPDIR/calls"
+  assert_output "$(printf 'sudo pacman\npacman -S --noconfirm one\npacman -S --noconfirm two')"
+}
+
+@test "setup_theme renders this OS's THEME_TARGETS list from packages.conf" {
+  sandbox_init
+  mkdir -p "$HOME/.local/bin"
+  printf '#!/bin/sh\necho "theme-switch $*"\n' >"$HOME/.local/bin/theme-switch"
+  chmod +x "$HOME/.local/bin/theme-switch"
+  THEME_TARGETS_DEMO="kitty,nvim" PKG_OS=demo
+  run setup_theme
+  assert_success
+  assert_output --partial "theme-switch batman --only kitty,nvim"
+}
+
+@test "every OS installer names a package helper that exists and, where it renders a theme, its targets" {
+  # PKG_INSTALL is called by name, so a helper renamed in one file would fail only at install time.
+  local dir="$REPO_ROOT/.local/src/installation_scripts" f helper os
+  load_config
+  for f in "$dir"/linux/install_arch.sh "$dir"/linux/install_debian.sh "$dir"/linux/install_wsl.sh \
+    "$dir"/mac/install_mac.sh "$dir"/android/install_android.sh; do
+    helper=$(sed -n 's/^PKG_INSTALL=\([a-z_]*\) .*/\1/p' "$f")
+    os=$(sed -n 's/^PKG_INSTALL=.* PKG_OS=\([a-z]*\)$/\1/p' "$f")
+    [ -n "$helper" ] && [ -n "$os" ] || { echo "$f sets no PKG_INSTALL and PKG_OS"; return 1; }
+    grep -qE "^$helper\(\) \{" "$f" "$dir/base_functions.sh" || { echo "$f: no $helper()"; return 1; }
+    if grep -qE '^ *step +[a-z]+ +setup_theme$' "$f"; then
+      local targets="THEME_TARGETS_${os^^}"
+      [ -n "${!targets:-}" ] || { echo "$f runs setup_theme but packages.conf has no $targets"; return 1; }
+    fi
+  done
+}

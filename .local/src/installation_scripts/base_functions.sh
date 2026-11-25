@@ -125,10 +125,30 @@ create_directories() {
     log_info "Directory structure created"
 }
 
+# Each OS installer names its package helper and its packages.conf OS tag right after
+# sourcing this file (PKG_INSTALL=install_pacman_package PKG_OS=arch), and the catalog
+# steps below then install the same way on every OS.
+PKG_INSTALL=""
+PKG_OS=""
+
+# install_catalog <CATEGORY> [package...] - PACKAGES_<CATEGORY> and PACKAGES_<CATEGORY>_<OS>
+# from packages.conf, plus any packages named here, through this OS's package helper.
+install_catalog() {
+    local common="PACKAGES_$1" own="PACKAGES_$1_${PKG_OS^^}"
+    shift
+    if [[ -z "$PKG_INSTALL" ]]; then
+        log_info "No default implementation - override in OS-specific file"
+        return 0
+    fi
+    # Unquoted on purpose: each catalog entry is one space-separated string.
+    # shellcheck disable=SC2086
+    install_package_list "$PKG_INSTALL" "$PKG_OS" ${!common:-} ${!own:-} "$@"
+}
+
 # Install basic requirements
 install_basics() {
     log_section "Installing basic requirements"
-    log_info "No default implementation - override in OS-specific file"
+    install_catalog BASIC
 }
 
 # Update system packages
@@ -137,28 +157,40 @@ update_system() {
     log_info "No default implementation - override in OS-specific file"
 }
 
-
-# Install basic requirements
-install_os_reqs() {
-    log_section "Installing basic requirements"
-    log_info "No default implementation - override in OS-specific file"
-}
 # Install development tools
 install_tools() {
     log_section "Installing development tools"
-    log_info "No default implementation - override in OS-specific file"
+    install_catalog DEV
 }
 
 # Install terminal enhancements
 install_terminal() {
     log_section "Installing terminal enhancements"
-    log_info "No default implementation - override in OS-specific file"
+    install_catalog TERMINAL
 }
 
 # Install GUI applications
 install_gui() {
     log_section "Installing GUI applications"
-    log_info "No default implementation - override in OS-specific file"
+    install_catalog GUI
+}
+
+# The pacman helper Arch and Arch-on-WSL share. $SUDO is unset on Arch (sudo) and
+# empty on a root WSL shell, which has no sudo.
+install_pacman_package() {
+    local package="$1"
+
+    if pacman -Q "$package" &>/dev/null; then
+        log_info "$package already installed"
+        return 0
+    fi
+
+    log_info "Installing $package..."
+    if ${SUDO-sudo} pacman -S --noconfirm "$package" &>/dev/null; then
+        log_info "✓ $package installed"
+    else
+        log_warning "✗ Failed to install $package"
+    fi
 }
 
 # Install language runtimes
@@ -321,7 +353,9 @@ setup_kubernetes() {
     log_info "Kubernetes directories created"
 
     # Offer to run cluster setup wizard
-    local k8s_setup="$SCRIPT_DIR/linux/k8s-clusters-setup.sh"
+    # Relative to this file: each OS installer points $SCRIPT_DIR at its own subdirectory.
+    local k8s_setup
+    k8s_setup="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/linux/k8s-clusters-setup.sh"
     if [[ -x "$k8s_setup" && "${INSTALL_YES:-}" != 1 ]]; then
         echo ""
         read -p "Run Kubernetes cluster setup wizard? (y/N): " -n 1 -r
@@ -387,10 +421,19 @@ build_local_rust_tools() {
 # One definition for every node: a native host and the fleet-agent image both
 # install through these steps, so their tool versions cannot drift apart.
 
-# The packages the fleet module needs; OS installers override with their helper.
+# The packages the fleet module needs.
 install_fleet_packages() {
     log_section "Installing fleet packages"
-    log_info "No default implementation - override in OS-specific file"
+    install_catalog FLEET
+}
+
+# The fleet module's steps, the same on every OS that runs agent sessions.
+fleet_steps() {
+    step fleet      install_fleet_packages
+    step fleet      install_tmux
+    step fleet      install_agent_harnesses
+    step fleet      install_rust
+    step fleet      build_fleet_tools
 }
 
 # tmux 3.8 with tree-mode-self-kill.patch, built from the release tarball into
@@ -642,6 +685,68 @@ install_music() {
     log_info "No default implementation - override in OS-specific file"
 }
 
+# keyd (key remapping daemon: F12 -> Super layer) with the stowed config. Debian stable has no
+# keyd package (Ubuntu 23.10+ universe does): with none installed it says where to get it.
+setup_keyd() {
+    log_section "Setting up keyd (key remapping)"
+
+    [[ -n "$PKG_INSTALL" ]] && "$PKG_INSTALL" "keyd"
+    if ! command -v keyd &>/dev/null; then
+        log_warning "keyd not available from the package manager - install from source: https://github.com/rvaiya/keyd"
+        return 0
+    fi
+
+    local src="$HOME/.dotfiles/.config/keyd/default.conf"
+    local dst="/etc/keyd/default.conf"
+
+    if [[ ! -f "$src" ]]; then
+        log_warning "keyd source config not found at $src - skipping"
+        return 0
+    fi
+
+    sudo install -Dm644 "$src" "$dst"
+    log_info "Installed keyd config to $dst"
+
+    sudo systemctl enable --now keyd
+    sudo keyd reload &>/dev/null || true
+    log_info "keyd enabled and reloaded"
+}
+
+# Render theme-switch's generated output: the THEME_TARGETS_<OS> list in packages.conf. Those
+# files are NOT tracked -- they are the render of a tracked palette + template, and tracking them
+# meant the theme-day/theme-night timers dirtied the repo twice a day. A fresh clone therefore
+# has none of them, and sketchybarrc hard-`source`s colors.sh, so it must be rendered at install.
+#
+# --only the generated targets on purpose: termux is the one TRACKED render (the phone reads it
+# over git), it already ships correct, and re-rendering it here would leave a fresh install with
+# a dirty tree before first login.
+setup_theme() {
+    log_section "Rendering theme (generated config)"
+
+    local targets_var="THEME_TARGETS_${PKG_OS^^}"
+    local targets="${!targets_var:-}"
+    if [[ -z "$targets" ]]; then
+        log_warning "$targets_var not defined in packages.conf - skipping"
+        return 0
+    fi
+
+    local theme_switch="$HOME/.local/bin/theme-switch"
+    if [[ ! -x "$theme_switch" ]]; then
+        log_warning "theme-switch not found at $theme_switch - skipping"
+        log_info "Render later with:  theme-switch <theme> --only $targets"
+        return 0
+    fi
+
+    # Honour a theme already chosen on this machine; otherwise the daytime
+    # default, matching what theme-day.timer applies at 07:00.
+    local state="$HOME/.config/theme/current"
+    local theme="batman"
+    [[ -r "$state" ]] && theme="$(<"$state")"
+
+    log_info "Rendering generated theme files for: $theme"
+    "$theme_switch" "$theme" --only "$targets"
+}
+
 # Printed after a real (non dry-run) install. OS installers override this to
 # add their own manual follow-ups.
 post_install_notes() {
@@ -775,11 +880,7 @@ install_all() {
     step dev        install_rust
     step dev        build_local_rust_tools
 
-    step fleet      install_fleet_packages
-    step fleet      install_tmux
-    step fleet      install_agent_harnesses
-    step fleet      install_rust
-    step fleet      build_fleet_tools
+    fleet_steps
 
     step containers install_kubernetes
     step containers setup_kubernetes
@@ -799,13 +900,14 @@ install_all() {
 # Export all functions for overriding
 export -f log_info log_error log_warning log_section
 export -f create_directories update_system
+export -f install_catalog install_pacman_package
 export -f install_basics install_tools install_terminal install_gui install_runtime
 export -f install_zsh install_oh_my_zsh install_starship
 export -f install_nvim install_tmux install_kitty install_lazygit install_rust build_local_rust_tools
-export -f install_fleet_packages build_tmux_patched_source install_agent_harnesses build_fleet_tools
+export -f install_fleet_packages fleet_steps build_tmux_patched_source install_agent_harnesses build_fleet_tools
 export -f install_kubernetes setup_kubernetes setup_printing setup_sunshine
 export -f install_fonts setup_ssh_key apply_dotfiles setup_dotfiles_private deploy_skills install_npm_packages setup_ai_memory
-export -f install_music post_install_notes
+export -f setup_keyd setup_theme install_music post_install_notes
 export -f _csv_has module_selected step _collect_modules validate_module_names print_modules run_install
 export -f install_all
 export -f _resolve_pkg_name install_package_list
