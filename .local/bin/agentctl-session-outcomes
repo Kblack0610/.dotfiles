@@ -10,6 +10,7 @@
 #   agentctl-session-outcomes backfill-harness YYYY-MM     give that month's rows with no harness one
 #   agentctl-session-outcomes rework DIR [--days N] [--until T] [--sample N]   rework over a repo's commits
 #   agentctl-session-outcomes lessons [--days N] [--json] [--cached]   did each lesson with a sig change behaviour
+#   agentctl-session-outcomes headless-rows                this machine's opencode, Codex and agy rows (what `run` reads of a worker)
 #
 # run: every registry session (~/.agent/sessions/*/sessions.jsonl) that is new, was
 # resumed, or just turned SO_FINAL_DAYS old gets one line in ~/.agent/outcomes. Outcomes:
@@ -29,7 +30,8 @@
 # escalations, merged PRs with their lines and CI reds), read once per run. The account is the
 # Claude config dir its transcript lives under, as `agent-usage burn` names it.
 # An opencode or Codex session has no registry row, so its line comes from opencode's DB
-# (so_opencode_rows) or Codex's rollout files (so_codex_rows).
+# (so_opencode_rows) or Codex's rollout files (so_codex_rows), this machine's and, over ssh, each
+# fleet worker's (worker_rows), since a run placed on a worker leaves its record there.
 # `harness` on a line is what its launcher recorded (HARNESS_DEF). A gateway item's real spend
 # goes on the item as gateway_cost_usd (gateway_push).
 # A PR's state, merge and body facts come from the PR store (`schedules-sync prs`, one read per repo
@@ -41,7 +43,8 @@
 # lists that repo (so_mapped_repos): then the store's list has a gap, those sessions are held and the
 # run ends STALLED after writing the rest. The report says which.
 # Seams: SO_SESSIONS SO_OUT SO_NOW SCHEDULES_SYNC SO_LIB_DIR SO_RBW SO_CURL SO_BENCH SO_QUEUE SO_LESSONS_DIR
-# SO_OPENCODE_DB SO_CODEX_SESSIONS SO_PROJECT_LIB SO_HARNESSES SO_PROJECT_MAP SO_ROADMAP SO_TRANSCRIPT_ROOTS.
+# SO_OPENCODE_DB SO_CODEX_SESSIONS SO_PROJECT_LIB SO_HARNESSES SO_PROJECT_MAP SO_ROADMAP SO_TRANSCRIPT_ROOTS
+# SO_WORKERS SO_WORKER_RUN SO_WORKER_SECS.
 # `class` on a line is {size, kind} of the queue item the session worked: the size and kind of the
 # item's `row:` on its project's roadmap, the item's own `type:` when the row is not there. The first
 # item of a chain that has either wins; a session with no item has no class. fleet-bench models --by
@@ -75,6 +78,9 @@ OC_DB="${SO_OPENCODE_DB:-$HOME/.local/share/opencode/opencode.db}"
 CX_DIR="${SO_CODEX_SESSIONS:-$HOME/.codex/sessions}"
 AGY_DIR="${SO_AGY_RUNS:-$HOME/.agent/agy/runs}"   # the logs agent-agy keeps of fleet-dispatch's agy runs
 HARNESSES="${SO_HARNESSES:-$HOME/.config/agentctl/harnesses.json}"
+WORKERS="${SO_WORKERS:-fleet_peers}"   # prints the fleet workers whose headless rows `run` reads, one a line
+WORKER_RUN="${SO_WORKER_RUN:-fleet_host_run}"   # given <worker> <command...>: runs it there (fleet-hosts.sh)
+WORKER_SECS="${SO_WORKER_SECS:-300}"   # one worker's headless-rows read; past it, its rows wait for the next run
 PROJECT_MAP="${SO_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}"   # a PR's repo -> its clone and its apps
 TR_ROOTS="${SO_TRANSCRIPT_ROOTS:-}"   # colon-separated; unset: every ~/.claude*/projects, for the links local transcripts recorded
 # Money as `worst` and `card` print it.
@@ -101,6 +107,8 @@ SCHEDULES="${SCHEDULES_SYNC:-$LIB_DIR/../bin/schedules-sync}"
 . "$LIB_DIR/agent-merge-proof.sh"   # merge_proof_branch: the branch rework reads
 # shellcheck source=/dev/null
 . "$LIB_DIR/harness-projects.sh"   # harness_run_dbs: a sandboxed harness's own opencode.db
+# shellcheck source=/dev/null
+. "$LIB_DIR/fleet-hosts.sh"   # fleet_peers, fleet_host_run: worker_rows
 
 # queue_index FILE - what the queue knows of each session, {"<sid>": {agent, pr, items, iprojects, refs, landed}}: the
 # work items whose `sessions:` list it (the ledger join every reader of a row uses; a session can work
@@ -181,6 +189,66 @@ due_rows() {
     '
 }
 
+# headless_rows WORK - stdout: one registry-shaped line per session of a headless launcher on this
+# machine, none of which has a Stop hook: opencode's DBs (the shared one, and each lane sandbox's own,
+# harness_run_dbs: ocfree keeps its sessions in a DB of its own), Codex's rollouts, agy's run logs. A
+# source that cannot be read (a DB opencode's next upgrade reshapes) loses only its own lines, never
+# every Claude session's row, and nothing reads as zero, since no line is written: its note goes to
+# WORK/notes, one a line, and to stderr.
+headless_rows() {
+  local work=$1 db dbn=0
+  while IFS= read -r db; do
+    dbn=$((dbn + 1)); mkdir -p "$work/oc$dbn"
+    if so_opencode_rows "$db" "$work/oc$dbn" > "$work/oc$dbn.jsonl" 2>"$work/oc.err"; then cat "$work/oc$dbn.jsonl"
+    else headless_note "$work" "opencode rows unread from $db: $(head -c 120 "$work/oc.err")"; fi
+  done < <(printf '%s\n' "$OC_DB"; harness_run_dbs "$HARNESSES")
+  if so_codex_rows "$CX_DIR" "$work" "$HARNESSES" > "$work/codex.jsonl" 2>"$work/cx.err"; then cat "$work/codex.jsonl"
+  else headless_note "$work" "codex rows unread: $(head -c 120 "$work/cx.err")"; fi
+  if so_agy_rows "$AGY_DIR" "$work" > "$work/agy.jsonl" 2>"$work/agy.err"; then cat "$work/agy.jsonl"
+  else headless_note "$work" "agy rows unread: $(head -c 120 "$work/agy.err")"; fi
+}
+
+headless_note() { printf '%s\n' "$2" >> "$1/notes"; echo "$NAME: $2" >&2; }
+
+# worker_rows WORK - stdout: each fleet worker's headless_rows, read over ssh (`headless-rows` there),
+# every worker at once so a sleeping laptop's ssh timeout is not added up. A run fleet-dispatch placed
+# on a worker (`host:` on its item) left its record in that worker's opencode.db, ~/.codex or agy logs,
+# so read here alone it got no line: on 2026-11-24 the 42 gateway canary runs razer-laptop ran joined
+# no outcome, and so no canary or trainee score, while all 97 run here did (ar-3182). A worker that
+# does not answer, or an older one without the verb, is a note and no lines; a session never seen is
+# always due, so the next run that reads that worker writes them. A source the worker could not read
+# is a note naming the worker.
+worker_rows() {
+  local work=$1 w f rc line pids=()
+  mkdir -p "$work/workers"
+  while IFS= read -r w; do
+    [[ "$w" =~ ^[A-Za-z0-9._-]+$ ]] || continue
+    { $WORKER_RUN "$w" timeout "$WORKER_SECS" agentctl-session-outcomes headless-rows \
+        > "$work/workers/$w.jsonl" 2> "$work/workers/$w.err"; echo $? > "$work/workers/$w.rc"; } &
+    pids+=("$!")
+  done < <($WORKERS 2>"$work/workers.err")
+  [ "${#pids[@]}" -eq 0 ] || wait "${pids[@]}"
+  # A roster that cannot be read lists no worker; said, since every run placed on one would go unread.
+  [ ! -s "$work/workers.err" ] || headless_note "$work" "fleet workers unread: $(head -c 120 "$work/workers.err" | tr '\n' ' ')"
+  for f in "$work"/workers/*.rc; do
+    [ -f "$f" ] || continue
+    w=$(basename "$f" .rc); rc=$(cat "$f")
+    if [ "$rc" = 0 ]; then
+      cat "$work/workers/$w.jsonl"
+      while IFS= read -r line; do headless_note "$work" "$w: $line"; done < <(sed -n "s/^$NAME: //p" "$work/workers/$w.err")
+    else headless_note "$work" "$w rows unread (rc $rc): $(head -c 120 "$work/workers/$w.err" | tr '\n' ' ')"; fi
+  done
+}
+
+# headless-rows: this machine's headless_rows alone, the read a lease holder's `run` makes of a worker.
+cmd_headless_rows() {
+  local work
+  work="$(mktemp -d)" || return 1
+  # shellcheck disable=SC2064
+  trap "rm -rf '$work'" EXIT
+  headless_rows "$work"
+}
+
 die_stalled() {
   echo "$NAME: $1" >&2
   proof_outcome "$NAME" STALLED "$1"
@@ -232,27 +300,18 @@ cmd_run() {
 
   so_latest "$OUT" > "$work/seen.jsonl" || die_stalled "could not read $OUT"
 
-  # A DB opencode's next upgrade reshapes loses its lines and says so, like the bench below: it must
-  # not stall every Claude session's row. Nothing reads as zero, because no line is written.
-  # A harness in its own lane sandbox (ocfree) keeps its sessions in a DB of its own, read beside the
-  # shared one; one DB that cannot be read loses only its own lines.
-  local oc_note="" db dbn=0
-  : > "$work/opencode.jsonl"
-  while IFS= read -r db; do
-    dbn=$((dbn + 1)); mkdir -p "$work/oc$dbn"
-    if so_opencode_rows "$db" "$work/oc$dbn" > "$work/oc$dbn.jsonl" 2>"$work/oc.err"; then cat "$work/oc$dbn.jsonl" >> "$work/opencode.jsonl"
-    else oc_note="$oc_note; opencode rows unread from $db: $(head -c 120 "$work/oc.err")"; echo "$NAME: opencode rows unread from $db" >&2; fi
-  done < <(printf '%s\n' "$OC_DB"; harness_run_dbs "$HARNESSES")
-  so_codex_rows "$CX_DIR" "$work" "$HARNESSES" > "$work/codex.jsonl" 2>"$work/cx.err" ||
-    { oc_note="$oc_note; codex rows unread: $(head -c 120 "$work/cx.err")"; : > "$work/codex.jsonl"; echo "$NAME: codex rows unread" >&2; }
-  so_agy_rows "$AGY_DIR" "$work" > "$work/agy.jsonl" 2>"$work/agy.err" ||
-    { oc_note="$oc_note; agy rows unread: $(head -c 120 "$work/agy.err")"; : > "$work/agy.jsonl"; echo "$NAME: agy rows unread" >&2; }
+  # Headless sessions (opencode, Codex, agy) from this machine's records and each fleet worker's.
+  : > "$work/notes"
+  headless_rows "$work" > "$work/headless.jsonl"
+  worker_rows "$work" >> "$work/headless.jsonl"
+  local oc_note
+  oc_note=$(sed 's/^/; /' "$work/notes" | tr -d '\n')
 
   # Registry rows due for an observation. A session id can sit in two project files
   # (it moved project mid-life); the newest Stop wins.
   if compgen -G "$SESSIONS/*/sessions.jsonl" >/dev/null; then
     cat "$SESSIONS"/*/sessions.jsonl
-  fi | cat - "$work/opencode.jsonl" "$work/codex.jsonl" "$work/agy.jsonl" | due_rows "$work/seen.jsonl" "$all" > "$work/due.jsonl" || die_stalled "could not read the session registry"
+  fi | cat - "$work/headless.jsonl" | due_rows "$work/seen.jsonl" "$all" > "$work/due.jsonl" || die_stalled "could not read the session registry"
 
   if [ ! -s "$work/due.jsonl" ]; then
     echo "$NAME: nothing due"
@@ -1114,6 +1173,7 @@ case "${1:-run}" in
   backfill-harness) shift; cmd_backfill_harness "$@" ;;
   rework) shift; cmd_rework "$@" ;;
   lessons) shift; cmd_lessons "$@" ;;
+  headless-rows) shift; cmd_headless_rows "$@" ;;
   -h|--help) sed -n '2,40p' "$0" ;;
-  *) echo "usage: $NAME [run [--all]] | worst [--by hook|skill] [--project P] [--days N] [-n N] [--json] | card <sid> [--json] | ran [--days N] [-n N] | ended [--days N] | langfuse [--all] | backfill-harness YYYY-MM | rework DIR [--days N] [--until T] [--sample N] | lessons [--days N] [--json] [--cached]" >&2; exit 2 ;;
+  *) echo "usage: $NAME [run [--all]] | worst [--by hook|skill] [--project P] [--days N] [-n N] [--json] | card <sid> [--json] | ran [--days N] [-n N] | ended [--days N] | langfuse [--all] | backfill-harness YYYY-MM | rework DIR [--days N] [--until T] [--sample N] | lessons [--days N] [--json] [--cached] | headless-rows" >&2; exit 2 ;;
 esac
