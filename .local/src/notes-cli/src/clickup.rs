@@ -377,9 +377,7 @@ pub fn push(p: &Profile, log: &Logger) -> Result<i32> {
 mod tests {
     use super::*;
 
-    fn d(s: &str) -> chrono::NaiveDate {
-        chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
-    }
+    use crate::md::date as d;
 
     #[test]
     fn parse_cache_reads_4col_and_legacy_3col() {

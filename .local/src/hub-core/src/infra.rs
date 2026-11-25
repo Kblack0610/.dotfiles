@@ -45,6 +45,10 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // No row for an idle runner, or for a job whose labels name no kind on a slot of several caps.
         ("job_kind", "max by (runner, kind) (ci_runner_job)".into()),
         ("waiting", format!("{W} (github_actions_job_waiting)")),
+        // The ephemeral pools (ARC scale sets, the KEDA forgejo-runner job) with their labels: no
+        // runner of theirs is registered between jobs, so these hold the labels a waiting job asks
+        // for (`ci::Pool`).
+        ("pools", format!("{W} (ci_runner_pool)")),
         // GitHub answering the exporter's runner reads. The per-repo run-list sources are left
         // out: one failed call there leaves every runner row intact, so it is no reason to say
         // runner rows may be missing.
@@ -123,6 +127,7 @@ pub const OPTIONAL: &[&str] = &[
     "cores",
     "runner_use",
     "job_kind",
+    "pools",
     "withheld",
     "lent",
     "expected",
@@ -845,6 +850,7 @@ mod tests {
                 "cores",
                 "runner_use",
                 "job_kind",
+                "pools",
                 "withheld",
                 "lent",
                 "expected",

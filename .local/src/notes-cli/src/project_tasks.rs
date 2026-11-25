@@ -12,7 +12,7 @@
 use crate::agent_sheet::Lane;
 use crate::config::Profile;
 use crate::logging::Logger;
-use crate::md;
+use crate::md::{self, is_match};
 use crate::project_sweep;
 use crate::projects;
 use crate::sheet::{self, V};
@@ -186,12 +186,6 @@ fn sheet_and_content(p: &Profile, name: &str, lane: Lane) -> Result<Option<(Path
     };
     let content = fs::read_to_string(&sheet)?;
     Ok(Some((sheet, content)))
-}
-
-/// An open task matching `query` (already lower-cased) - the shared predicate for
-/// `done`/`start`/`rm`, matching `focus.rs::is_match`.
-pub(crate) fn is_match(line: &str, query: &str) -> bool {
-    md::is_open_task(line) && md::task_key(line).contains(query)
 }
 
 /// Which row a verb acts on: the first open task whose text contains some words, the open
@@ -521,6 +515,13 @@ pub(crate) fn add_via(
     }
     let mut checked = Vec::new();
     if writer.self_checks() {
+        // The gate first: a row it refuses needs no shortlist review.
+        if lane == Lane::Agent {
+            if let Some(why) = crate::gate::refusal(&canon, &block[0], want.is_some())? {
+                eprintln!("{why}");
+                return Ok(crate::gate::EXIT_GATED);
+            }
+        }
         match self_check(p, name, text, &block[0], &writer.checked)? {
             Ok(shown) => checked = shown,
             Err(rc) => return Ok(rc),
@@ -1186,6 +1187,62 @@ fn parent_script(argv: &[String]) -> Option<&str> {
     None
 }
 
+/// Is `text` a session's follow-up: an outbox line its writer tagged `#from/<writer>`
+/// ([`inbox_followup`]), as `agentctl-inbox-triage`'s `is_session` reads it.
+fn session_line(text: &str) -> bool {
+    md::find_hashtags(text)
+        .iter()
+        .any(|t| t.starts_with("from/"))
+}
+
+/// Why the intake gate refuses the rows `block` a filing of `line` would write on `dest`, or None.
+/// Only a session's follow-up on an agent board is gated; the person's words never are.
+fn followup_refusal(
+    dest: &Path,
+    lane: Lane,
+    line: &str,
+    block: &[String],
+    how: &Filing,
+) -> Result<Option<String>> {
+    if lane != Lane::Agent || !session_line(line) {
+        return Ok(None);
+    }
+    let canon = dest.file_name().unwrap_or_default().to_string_lossy();
+    for row in block.iter().filter(|l| md::is_open_task(l)) {
+        if let Some(why) = crate::gate::refusal(&canon, row, how.want.is_some())? {
+            return Ok(Some(why));
+        }
+    }
+    Ok(None)
+}
+
+/// The row texts a filing writes: a standing link's rows, the line itself when it is filed as
+/// written, else the model's `--as` texts; `#agent` dropped, each one typed or nothing is filed.
+fn filing_texts(
+    linked: Option<&[String]>,
+    as_is: bool,
+    line: &str,
+    texts: &[String],
+) -> Result<Vec<String>> {
+    let own;
+    let texts: &[String] = match linked {
+        Some(l) => l,
+        None if as_is => {
+            if !projects::is_typed(line) {
+                bail!("'{line}' is not typed yet, so file needs --as \"<type(area): title>\" or --dup <id>");
+            }
+            own = [line.to_string()];
+            &own
+        }
+        None => texts,
+    };
+    let texts: Vec<String> = texts.iter().map(|t| md::without_agent_tag(t)).collect();
+    if let Some(bad) = texts.iter().find(|t| !projects::is_typed(t)) {
+        bail!("'{bad}' is not `type(area): title` (README \"The task row\"), so nothing was filed");
+    }
+    Ok(texts)
+}
+
 /// A session's row as an outbox line: `#agent #p:<project> #from/<writer> <text>` plus its
 /// details, which `inbox-triage` files, joins to a twin or drops. A human-lane row and an epic
 /// (which lives on the human sheet) carry no `#agent`, and a `--want` channel rides as
@@ -1486,20 +1543,7 @@ fn file_via(
             to,
             details: extra,
         } if dup_id.is_none() => {
-            let texts: Vec<String> = if let Some(l) = &linked {
-                l.clone()
-            } else if as_is {
-                if !projects::is_typed(&line.text) {
-                    bail!("'{}' is not typed yet, so file needs --as \"<type(area): title>\" or --dup <id>", line.text);
-                }
-                vec![line.text.clone()]
-            } else {
-                texts.clone()
-            };
-            let texts: Vec<String> = texts.iter().map(|t| md::without_agent_tag(t)).collect();
-            if let Some(bad) = texts.iter().find(|t| !projects::is_typed(t)) {
-                bail!("'{bad}' is not `type(area): title` (README \"The task row\"), so nothing was filed");
-            }
+            let texts = filing_texts(linked.as_deref(), as_is, &line.text, texts)?;
             let to = to.as_deref().map(parse_to).transpose()?;
             let cur = version_in(&dest_dir, &base);
             if let Some(v) = to {
@@ -1532,6 +1576,11 @@ fn file_via(
                 if let Some(l) = link_standing(p, log, dest_name, &dest_proj, &texts, bin)? {
                     return file_via(p, log, name, pick, how, lane, None, Some(l));
                 }
+            }
+            // On the rows a standing link leaves: the call above re-enters here with them.
+            if let Some(why) = followup_refusal(&dest_proj, dest_lane, &line.text, &block, how)? {
+                eprintln!("{why}");
+                return Ok(crate::gate::EXIT_GATED);
             }
             // A frozen release window takes these rows only through its interrupt lane: the
             // human's own words from their sheet's inbox, or a want by a human channel, are one.
@@ -1776,6 +1825,7 @@ fn note_ids(proj_dir: &Path, lines: &[String]) -> Result<()> {
 /// The write lock every `notes ptask` writer holds from its read to its write, and around id
 /// minting: `<state_dir>/ptask.lock`. Without it two writers (a dispatch pass and a session)
 /// read the same sheet, and the second write loses the first one's row, or both mint one id.
+/// A writer that also takes the outbox lock takes this one first (`outbox::move_line`).
 pub(crate) fn lock(p: &Profile) -> Result<md::FileLock> {
     md::lock_file(&p.state_dir.join("ptask.lock"))
 }

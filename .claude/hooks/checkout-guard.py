@@ -14,12 +14,11 @@ command runs in comes from forge-guard's walker, which also sets what is not cov
 `fleet-sessions` CHECKOUT rows and the main-checkout-branch watch catch what gets past this.
 Fail-open: any error allows the command.
 """
-import json
 import os
 import subprocess
-import sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+import hooklib
+
 # merge_proof_branch: the one reader of a repo's default branch (fleet-states.md Owners).
 MERGE_PROOF_LIB = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", ".local", "lib", "agent-merge-proof.sh")
 NEW_BRANCH_SHORT = set("bBcCd")  # also inside a cluster: -qb
@@ -31,15 +30,6 @@ MSG = (
     "<ref>:<path>`, `git diff main...<ref>`) or use a worktree (`wt new`, or `git worktree add "
     "~/.worktrees/<repo>-<slug> <ref>`)."
 )
-
-
-def _forge():
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location("forge_guard", os.path.join(HERE, "forge-guard.py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 FORGE = None  # loaded past decide's prefilter, or set by walker-guards.py: it runs on every Bash call
@@ -56,11 +46,17 @@ def deployed(d):
     return None
 
 
-def default_branch(top):
-    """origin's default branch name, as merge_proof_branch reads it; "" when it cannot tell."""
-    r = subprocess.run(["bash", "-c", '. "$1" && merge_proof_branch "$2"', "checkout-guard", MERGE_PROOF_LIB, top],
+def default_ref(top):
+    """origin's default branch as <remote>/<branch>, as merge_proof_ref reads it (home-config:
+    forgejo/master); "" when it cannot tell."""
+    r = subprocess.run(["bash", "-c", '. "$1" && merge_proof_ref "$2"', "checkout-guard", MERGE_PROOF_LIB, top],
                        capture_output=True, text=True, timeout=3)
     return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def default_branch(top):
+    """origin's default branch name, as merge_proof_branch reads it; "" when it cannot tell."""
+    return default_ref(top).partition("/")[2]
 
 
 def moves_head(top, verb, args):
@@ -107,20 +103,9 @@ def decide(data):
     cmd = (data.get("tool_input") or {}).get("command") or ""
     if not any(w in cmd for w in ("checkout", "switch")):
         return None
-    FORGE = FORGE or _forge()
+    FORGE = FORGE or hooklib.load("forge-guard")
     return FORGE.reason(cmd, data.get("cwd") or os.getcwd(), check)
 
 
-def main():
-    r = decide(json.load(sys.stdin))
-    if r:
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": r}}))
-
-
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception:
-        pass
-    sys.exit(0)
+    hooklib.run(decide)

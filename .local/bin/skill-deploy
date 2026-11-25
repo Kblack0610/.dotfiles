@@ -41,8 +41,8 @@
 set -uo pipefail
 
 SKILLS="${CLAUDE_SKILLS:-$HOME/.claude/skills}"
-PUB="${DOTFILES:-$HOME/.dotfiles}"
-PRIV="${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}"
+# shellcheck source=../lib/dotfiles-repos.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/dotfiles-repos.sh"
 
 DRY=0 QUIET=0 ADOPT=0
 for arg in "$@"; do
