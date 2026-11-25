@@ -361,8 +361,9 @@ cmd_lock_miss() {
   # A missing log (or no .1 yet) is no misses: only a jq failure is unreadable.
   out=$({ cat "$AQ_LOCK_MISS_LOG.1" "$AQ_LOCK_MISS_LOG" 2>/dev/null || :; } | jq -nrR --arg cut "$cut" '
     [inputs | fromjson? | objects | select((.ts // "") >= $cut)] | (last // {}) as $l
-    | [$l.locks[]? | select(startswith(".lock holds")) | split(" ")[3] | tonumber?] as $h
-    | ([$l.procs[]? | select(.pid as $p | $h | index($p)) | "\(.pid) \(.cmd)"] | unique | first) as $who
+    | ([$l.locks[]? | select(startswith(".lock holds")) | split(" ") | {w: .[2], p: (.[3] | tonumber?)}
+      | select(.p)] | map(select(.w == "WRITE")) + map(select(.w != "WRITE")) | map(.p)) as $h
+    | (first($h[] as $p | $l.procs[]? | select(.pid == $p) | "\(.pid) \(.cmd)") // null) as $who
     | "\(length)\t\($l.ts): \($l.cmd) from \($l.caller)\(if $who then ", held by \($who)" else "" end)"') ||
     { echo "unreadable: $AQ_LOCK_MISS_LOG"; return 2; }
   n="${out%%$'\t'*}"

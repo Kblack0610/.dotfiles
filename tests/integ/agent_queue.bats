@@ -5013,11 +5013,12 @@ already"
 }
 
 # ar-5560: every line read "locks":[] on btrfs, so a 14 minute hold by an add stuck on notes named no holder.
-@test "lock-miss names the pid and command holding .lock, never a waiter" {
+@test "lock-miss names the pid and command holding .lock, the writer before a reader, never a waiter" {
   mkdir -p "$AGENT_QUEUE_DIR"
   jq -nc --arg ts "$(date -u -Is)" '{ts: $ts, cmd: "agent-queue show x", caller: "hub",
-    locks: [".gate holds WRITE 11", ".lock waits READ 12", ".lock holds WRITE 13"],
+    locks: [".gate holds WRITE 11", ".lock holds READ 9", ".lock waits READ 12", ".lock holds WRITE 13"],
     procs: [{file: ".gate", pid: 11, cmd: "flock"}, {file: ".lock", pid: 12, cmd: "agent-queue list"},
+      {file: ".lock", pid: 9, cmd: "agent-queue show y"},
       {file: ".gate", pid: 13, cmd: "agent-queue add --plan p"}, {file: ".lock", pid: 13, cmd: "agent-queue add --plan p"}]}' \
     > "$AGENT_QUEUE_DIR/lock-miss.jsonl"
   run "$AQ" lock-miss
