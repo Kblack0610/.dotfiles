@@ -388,14 +388,15 @@ _epic_line() {
 # of a phase shares (agent-queue's `phases:` and item slugs, fleet-sessions): the line's own
 # `P<N>` label when it opens with one (`- [ ] P8 freellmapi ...`), else its place in the
 # checklist. A plan that files P9 above P8 is numbered by its labels, never by position.
-# A sub-phase line (`1b. ...`: a digit, a lowercase letter, a punctuation mark) is numbered by that
-# label, a string ("1b"), and takes no place: the phases below it keep their numbers, so adding a 1b to a plan whose phases are
+# A sub-phase line (`1b. ...`: a digit, a lowercase letter, a punctuation mark; or a `P3b` label)
+# is numbered by that label, a string ("1b", "3b"), and takes no place: the phases below it keep their numbers, so adding a 1b to a plan whose phases are
 # queued shifts no item (lesson 2026-11-09, `phases: 6` read as the ticked "5").
 plan_phase_list() {
   { [ -f "$1" ] && awk -v mode=list -v sup="$(_plan_sup "$1")" "$_PLAN_PHASES_AWK" "$1"; } \
     | jq -cRn '[inputs | split("\t") | {state: .[0], name: (.[1:] | join(" "))}]
       | reduce .[] as $p ({pos: 0, out: []};
-          (($p.name | capture("^(?<l>[0-9]+[a-z])[.:)]") | .l) // null) as $sub
+          (($p.name | capture("^(?<l>[0-9]+[a-z])[.:)]") | .l)
+            // ($p.name | capture("^[Pp](?<l>[0-9]+[a-z])([^0-9A-Za-z]|$)") | .l) // null) as $sub
           | (($p.name | capture("^[Pp](?<l>[0-9]+)([^0-9A-Za-z]|$)") | .l | tonumber) // null) as $lab
           | if $sub != null then .out += [$p + {n: $sub}]
             else .pos += 1 | .out += [$p + {n: ($lab // .pos)}] end)
