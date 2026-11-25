@@ -1,7 +1,7 @@
 // Pure-function tests for .config/hunk/extensions/task-tag.ts. Lives here, not beside the
 // extension: every *.ts in ~/.config/hunk/extensions/ is loaded by Hunk as an extension.
 import { describe, expect, test } from "bun:test";
-import { located, parseTaskNote, route, toAsciiLine, withPriority } from "../../.config/hunk/extensions/task-tag.ts";
+import { located, parseTaskNote, route, toAsciiLine } from "../../.config/hunk/extensions/task-tag.ts";
 
 describe("parseTaskNote", () => {
   test("no tag is not a task", () => {
@@ -37,19 +37,9 @@ describe("toAsciiLine", () => {
   });
 });
 
-describe("located / withPriority", () => {
+describe("located", () => {
   test("appends location", () => {
     expect(located("fix this", "src/a.ts", 12)).toBe("fix this (src/a.ts:12)");
-  });
-  test("defaults to #low", () => {
-    expect(withPriority("fix this (a.ts:1)")).toBe("fix this (a.ts:1) #low");
-  });
-  test("keeps an explicit priority instead of #low", () => {
-    expect(withPriority("fix this #urgent (a.ts:1)")).toBe("fix this #urgent (a.ts:1)");
-    expect(withPriority("#high fix (a.ts:1)")).toBe("#high fix (a.ts:1)");
-  });
-  test("#lowercase is not a priority", () => {
-    expect(withPriority("#lowercase it")).toBe("#lowercase it #low");
   });
 });
 
@@ -97,9 +87,9 @@ describe("note_created handler", () => {
     return { calls: existsSync(log) ? readFileSync(log, "utf8").trim() : "", toasts };
   }
 
-  test("#task:<project> adds a #low row to that board", async () => {
+  test("#task:<project> adds an untagged row to that board, for triage's rubric", async () => {
     const r = await fire("fix this #task:agent-runtime");
-    expect(r.calls).toBe("ptask agent-runtime add fix this (src/a.ts:7) #low");
+    expect(r.calls).toBe("ptask agent-runtime add fix this (src/a.ts:7)");
     expect(r.toasts[0]).toContain("agent-runtime board");
   });
 
