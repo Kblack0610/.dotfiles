@@ -57,6 +57,10 @@
 #                                       an agent answer to an approval, a judge human-only ask or one at
 #                                       the human floor is refused. Any answer releases what the
 #                                       ask holds (agent-queue ask_pending).
+#   agent-ask said --since <time> <words...>
+#                                       exit 0 when the human typed those words in this attended
+#                                       session since <time> (the relay's transcript check, for
+#                                       agent-hold set --by human), else say what is missing, exit 1
 #   agent-ask deliver <id> | --all      deliver a recorded answer: typed into its live session,
 #                                       else a board row, then its `resume` (via ask-resume).
 #                                       agent-ask-deliver.path runs --all on each answer
@@ -953,19 +957,35 @@ answer_row() {
   file_board_row "$1" "$(field "$1" question) -> answered: $2$how${4:+; $4}"
 }
 
-# relay_proof <id> <quote> <answer>: why an attended session may record the human's answer to <id>, or
-# what is missing (stderr, rc 1). The quote must be in one entry of the session's own transcript
-# newer than the ask (`agent-panel human`: a typed prompt or a dialog answer, never a paste or
-# what the fleet typed), and the ask's id in that entry's words or in what they were shown. The
-# transcript is the harness's record, so an agent's own "the human said yes" proves nothing. The
-# quote is 3+ characters unless it is the whole entry, so a stray "a" cannot stand for a message,
-# and the answer is one of the ask's options when it has any, so the words cannot be attached to
-# an answer they do not pick. Only a pending ask, or one the judge or a hold answered, takes it.
-relay_proof() {
-  local id="$1" quote="$2" answer="$3" f sid t made said opts
+# human_words <quote> <since>: the human's own entries in this session's transcript newer than <since>
+# whose words contain <quote>, one JSON line each (`agent-panel human`: a typed prompt or a dialog
+# answer, never a paste or what the fleet typed), or what is missing (stderr, rc 1). The transcript
+# is the harness's record, so an agent's own "the human said yes" proves nothing. The quote is 3+
+# characters unless it is the whole entry, so a stray "a" cannot stand for a message. A dispatched
+# session has no human at it. relay_proof and `said` (agent-hold set --by human) both check through it.
+human_words() {
+  local quote="$1" since="$2" sid t said hits
   [ -z "${AGENT_QUEUE_ITEM:-}" ] || { echo "a dispatched session (AGENT_QUEUE_ITEM set) has no human at it" >&2; return 1; }
   sid="${CLAUDE_CODE_SESSION_ID:-}"
   [ -n "$sid" ] || { echo "no CLAUDE_CODE_SESSION_ID to find the transcript by" >&2; return 1; }
+  t="$(session_transcript "$sid")"
+  [ -n "$t" ] || { echo "no transcript for session $sid" >&2; return 1; }
+  command -v agent-panel >/dev/null 2>&1 || { echo "agent-panel is not installed" >&2; return 1; }
+  said="$(agent-panel human "$t" --since "$since")" || { echo "agent-panel human failed on $t" >&2; return 1; }
+  hits="$(jq -c -s --arg q "$quote" '
+    def n: ascii_downcase | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "");
+    .[] | select(((.text | n) | contains($q | n)) and (($q | n | length) >= 3 or (.text | n) == ($q | n)))' <<<"$said" 2>/dev/null)"
+  [ -n "$hits" ] || { echo "no words of the human's in this session since $since contain: $quote" >&2; return 1; }
+  printf '%s\n' "$hits"
+}
+
+# relay_proof <id> <quote> <answer>: why an attended session may record the human's answer to <id>, or
+# what is missing (stderr, rc 1). The quote passes human_words since the ask was posted, and the ask's
+# id is in that entry's words or in what they were shown. The answer is one of the ask's options when
+# it has any, so the words cannot be attached to an answer they do not pick. Only a pending ask, or
+# one the judge or a hold answered, takes it.
+relay_proof() {
+  local id="$1" quote="$2" answer="$3" f made hits
   f="$(find_ask "$id")"; [ -n "$f" ] || { echo "no ask '$id'" >&2; return 1; }
   id="$(field "$f" id)"; made="$(date -u -d "$(field "$f" created)" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
   [ -n "$made" ] || { echo "ask $id has no created time to look after" >&2; return 1; }
@@ -974,23 +994,27 @@ relay_proof() {
     pending:*|answered:judge|answered:hold) ;;
     *) echo "ask $id is $(field "$f" status), not waiting on the human" >&2; return 1 ;;
   esac
-  opts="$(field "$f" options)"
+  local opts; opts="$(field "$f" options)"
   if [ -n "$opts" ] && [ -z "$(named_option "$opts" "$answer")" ]; then
     echo "the answer '$answer' names none (or more than one) of ask $id's options: $opts" >&2; return 1
   fi
-  t="$(session_transcript "$sid")"
-  [ -n "$t" ] || { echo "no transcript for session $sid" >&2; return 1; }
-  command -v agent-panel >/dev/null 2>&1 || { echo "agent-panel is not installed" >&2; return 1; }
-  said="$(agent-panel human "$t" --since "$made")" || { echo "agent-panel human failed on $t" >&2; return 1; }
-  jq -e -s --arg q "$quote" '
+  hits="$(human_words "$quote" "$made")" || return 1
+  jq -e -s --arg id "$id" '
     def n: ascii_downcase | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "");
-    any(.[]; ((.text | n) | contains($q | n)) and (($q | n | length) >= 3 or (.text | n) == ($q | n)))' <<<"$said" >/dev/null 2>&1 ||
-    { echo "no words of the human's in this session since the ask was posted contain: $quote" >&2; return 1; }
-  jq -e -s --arg q "$quote" --arg id "$id" '
-    def n: ascii_downcase | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "");
-    any(.[]; ((.text | n) | contains($q | n)) and (($q | n | length) >= 3 or (.text | n) == ($q | n)) and
-             (((.shown | n) | contains($id | n)) or ((.text | n) | contains($id | n))))' <<<"$said" >/dev/null 2>&1 ||
+    any(.[]; ((.shown // "" | n) | contains($id | n)) or ((.text | n) | contains($id | n)))' <<<"$hits" >/dev/null 2>&1 ||
     { echo "the quote is in the transcript, but ask $id is in neither what the human was shown nor their words there" >&2; return 1; }
+}
+
+# cmd_said --since <time> <words...>: exit 0 when the human typed those words in this attended
+# session since <time> (human_words), else say what is missing and exit 1. A command that takes the
+# human's word for something no ask carries (agent-hold set --by human) checks the quote here.
+cmd_said() {
+  local since=""
+  [ "${1:-}" = --since ] && { since="${2:-}"; shift 2 2>/dev/null || shift $#; }
+  local quote; quote="$(oneline "$*")"
+  [ -n "$since" ] && [ -n "$quote" ] || { echo "usage: agent-ask said --since <time> <the human's words>" >&2; return 2; }
+  since="$(date -u -d "$since" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" || { echo "agent-ask said: --since does not read as a time" >&2; return 2; }
+  human_words "$quote" "$since" >/dev/null
 }
 
 # cmd_answer_cli [--by who] [--quote words] <id> <answer...>: the `answer` subcommand. `human` needs
@@ -2843,6 +2867,7 @@ case "$sub" in
   live-sessions) live_sessions ;;
   titles) session_titles ;;
   answer) cmd_answer_cli "$@" ;;
+  said)   cmd_said "$@" ;;
   cancel) cmd_cancel "$@" ;;
   park)   cmd_park "$@" ;;
   unpark) cmd_unpark "$@" ;;
