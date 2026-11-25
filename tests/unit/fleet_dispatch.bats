@@ -419,6 +419,27 @@ item_tags() { sed -n 's/^tags: //p' "$AGENT_QUEUE_DIR"/*/*-"$1".md; }
   [ -z "$(agent-queue list --state queued --json | jq -r 'select(.slug == "ga-6") | .slug')" ]
 }
 
+@test "a pass pulls the rows after a row closed with no queue item, as an ok close does, and only once (ar-4129)" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent ga-1 "- [/] feat(game): the map first <!-- id:ga-1 -->"
+  row game agent ga-2 "- [ ] feat(game): then its doors $T #low #after/ga-1 <!-- id:ga-2 -->"
+  row game agent ga-8 "- [/] feat(game): the walls <!-- id:ga-8 -->"
+  row game agent ga-9 "- [ ] feat(game): then its roof $T #low #after/ga-8 <!-- id:ga-9 -->"
+  mkdir -p "$FLEET_DISPATCH_DIR"
+  # The first pass records what waits; nothing has cleared, so nothing is pulled.
+  GATES_LOADED=''; load_gates; pull_closed_after
+  assert_equal "$(sort "$AFTER_PENDING" | paste -sd,)" "ga-1,ga-8"
+  [ -z "$(agent-queue list --state queued --json)" ]
+  # ga-1 is closed by hand (no item ran pull_after); ga-8 is still open: the negative control.
+  notes ptask game --agent done ga-1
+  GATES_LOADED=''; load_gates; pull_closed_after
+  assert_equal "$(agent-queue list --state queued --json | jq -r .slug | paste -sd,)" "ga-2"
+  assert_equal "$(cat "$AFTER_PENDING")" "ga-8"
+  # The next pass does not pull ga-1 again.
+  GATES_LOADED=''; load_gates; run pull_closed_after
+  refute_output --partial "pull-after ga-1"
+}
+
 @test "pull-after --queue-only queues the rows gated on the closed row and starts none" {
   project game beta "$SANDBOX/repos/game"
   row game agent ga-1 "- [/] feat(game): the map first <!-- id:ga-1 -->"

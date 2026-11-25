@@ -11,7 +11,7 @@
 #   fleet-dispatch exits [--dry-run] give each skipped agent row its rule's exit, and move the #after/ gates on a row sent to the sheet (skip_exits; each run pass does); --dry-run lists them
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
 #   fleet-dispatch promote --project P [--profile X] [--agent] [--dispatch] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item; --dispatch makes it a capped pull like dispatch's own
-#   fleet-dispatch pull-after [--queue-only] ID  promote, and start unless low or --queue-only, the open rows gated #after/ID: agent-queue runs it when ID's item closes ok
+#   fleet-dispatch pull-after [--queue-only] ID  promote, and start unless low or --queue-only, the open rows gated #after/ID: agent-queue runs it when ID's item closes ok, and a pass runs it --queue-only for a row closed with no item (pull_closed_after)
 #   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session; a row whose #ask/ gate was answered another way is held or dropped, one on a cancelled ask closes on its done item's merged PR, follows the ask it joined, or is asked again
 #   fleet-dispatch headroom [--json] how many more queue items could start now, and the margin under each limit
 #   fleet-dispatch idle-cap          rc 1 when live sessions are at the pace target with under DISPATCH_IDLE_CAP_PCT of them busy,
@@ -224,6 +224,7 @@ PROVIDER_ENDS="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/pro
 # unattended only through its own gate (policy.md "Tier"): a red item and a tier-3 row of any project
 # (t3_picks, in day_picks) merge behind the red-fix gate, which agent-land enforces.
 UNATTENDED_TIER_CEILING=2
+AFTER_PENDING="$DIR/after-pending"   # one row id a line: what an open row's #after/ gate waited on at the last pass (pull_closed_after)
 LANE_CACHE="$DIR/lane-cache"   # <day> TAB <slug> TAB <verdict json>: the verdict of an item no source could take, for the rest of the day
 unset TRAINEE_GATE    # set only by trainee_floor_why, never inherited
 NO_ROUTE=()   # this pass's "<slug> (<why>)" for items no source with room could take; NO_ROOM, the account reason
@@ -8462,6 +8463,7 @@ cmd_run() {
   # Once a pass, so each subshell of the pass reads the same gates; after the reap, whose returns
   # write gates onto the rows they un-start (agent-queue return_gates).
   GATES_LOADED=''; load_gates; pass_mark gates
+  [ "$DRY" = 1 ] || { pull_closed_after; pass_mark pulled; }
   pass_reset
   [ "$DRY" = 1 ] || { triage_pass; pass_mark triage; }
   # Each skip takes the exit its rule names (plan, the human, a gate); a dry run only reads.
@@ -9066,6 +9068,27 @@ cmd_pull_after() {
     | {profile: (.profile // ""), project, lane, key: .id, raw: (.raw // .text // "")}' <<<"$board")
   rm -f "$err"
   return 0
+}
+
+# pull_closed_after -- pull-after --queue-only each row id an #after/ gate waited on at the last pass that
+# reads clear now. A row closed with no queue item (the human's answer, a session's notes ptask done) runs
+# no agent-queue pull_after, so its rows waited for a pass to rank them, a low one for good (2026-11-20:
+# ar-2099 behind ar-1969 until a hand pull-after, ar-4129). A row an item closed ok had its rows pulled
+# then, and they are no longer open, so none is pulled twice. The pass's own start takes what this queues.
+# Reads load_gates (a gate keyed @<row> is a grant, not an order); a failed read leaves the file as it was.
+pull_closed_after() {
+  [ -z "$GATES_FAILED" ] || return 0
+  local g id now=''
+  for g in "${!GATE_ST[@]}"; do
+    [[ $g == after/?* && $g != *@* && ${GATE_ST[$g]} == pending ]] && now+="${g#after/}"$'\n'
+  done
+  if [ -f "$AFTER_PENDING" ]; then
+    while IFS= read -r id; do
+      [ -n "$id" ] && [ "${GATE_ST[after/$id]:-}" = clear ] || continue
+      PULL=after cmd_pull_after --queue-only "$id" </dev/null || say "pull_closed_after: pull-after $id failed, so a pass ranks the rows after it"
+    done <"$AFTER_PENDING"
+  fi
+  printf '%s' "$now" >"$AFTER_PENDING.tmp" && mv "$AFTER_PENDING.tmp" "$AFTER_PENDING"
 }
 
 # all_open -- candidates without the judged filter: every open, eligible row
