@@ -540,6 +540,24 @@ ptask game --agent tag --add pr/kblack0610/dotfiles/3021 gx-6'
   assert_output 0
 }
 
+@test "skip_exits: a #low row that is health work is not shelved in improvements.md: it stays open on the board (ar-5401)" {
+  exits_fixture
+  touch "$NOTES_FIXTURE/improve.health"
+  skip_exits
+  # the other five exits are taken; gx-3 asked notes improve, was refused, and was neither dropped nor recorded
+  assert_equal "$EXITS_TAKEN" 5
+  grep -q 'notes --profile bnb improve game' "$NOTES_FIXTURE/calls.log" || fail "notes improve never asked"
+  grep -q 'id:gx-3 dropped' "$NOTES_FIXTURE/rows.game.agent" && fail "the health row was dropped"
+  grep -q 'id:gx-3 ' "$NOTES_FIXTURE/rows.game.agent" || fail "the health row is gone"
+  assert_equal "$(jq -r 'select(.exit) | "\(.key)=\(.exit)"' "$FLEET_DISPATCH_DIR/verdicts.jsonl" | paste -sd,)" \
+    'gx-1=plan,gx-2=sheet,gx-4=after/gx-9,gx-5=plan,gx-6=pr/kblack0610/dotfiles/3021'
+  # negative control: with no refusal the same row is shelved (the test above)
+  rm "$NOTES_FIXTURE/improve.health"
+  skip_exits
+  assert_equal "$EXITS_TAKEN" 1
+  grep -q 'id:gx-3 dropped: kept in game improvements.md' "$NOTES_FIXTURE/rows.game.agent"
+}
+
 @test "skip_exits: --dry-run lists each row's exit and the counts, and writes nothing" {
   exits_fixture
   cp "$FLEET_DISPATCH_DIR/verdicts.jsonl" "$SANDBOX/before"

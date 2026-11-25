@@ -43,6 +43,64 @@ fn one_line(text: &str) -> String {
         .join(" ")
 }
 
+/// Exit code of a refusal: the text is health work, which belongs on the board.
+const HEALTH_EXIT: i32 = 3;
+
+/// Why `text` is health work, not a nice-to-have, or `None`. Health work closes a named
+/// stage-standard criterion, adds a test for shipped behaviour that has none, or fixes a CI, perf
+/// or alerting fault backed by a number; the human wants all of it done, so it never goes to
+/// `improvements.md` (2026-11-24: 100 such rows were moved there and restored by hand). A false
+/// positive keeps one row on the board; a false negative loses the work, so the lists lean wide.
+fn health(text: &str) -> Option<&'static str> {
+    const STAGE: [&str; 5] = [
+        "stage standard",
+        "stage-standard",
+        "to standard",
+        "stage criterion",
+        "stage criteria",
+    ];
+    const TEST: [&str; 13] = [
+        "test coverage",
+        "coverage",
+        "untested",
+        "no test",
+        "missing test",
+        "regression test",
+        "add test",
+        "add a test",
+        "tests for",
+        "unit test",
+        "integration test",
+        "bats case",
+        "cargo test",
+    ];
+    const FAULT: [&str; 14] = [
+        "ci", "flaky", "flake", "perf", "latency", "slow", "slower", "alert", "alerts", "alerting",
+        "fps", "oom", "timeout", "memory",
+    ];
+    let low = text.to_ascii_lowercase();
+    if STAGE.iter().any(|p| low.contains(p)) {
+        return Some("closes a stage-standard criterion");
+    }
+    if TEST.iter().any(|p| low.contains(p)) {
+        return Some("adds a test for shipped behaviour");
+    }
+    let words: Vec<&str> = low
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    // A measured number is a token that starts with a digit (`40`, `3s`, `200ms`, `12%`), not the
+    // digits inside an id such as `ar-5401` or a `#c1124` tag.
+    let measured = low.split_whitespace().any(|t| {
+        t.trim_matches(|c: char| !c.is_ascii_alphanumeric())
+            .starts_with(|c: char| c.is_ascii_digit())
+    });
+    if measured && words.iter().any(|w| FAULT.contains(w)) {
+        return Some("fixes a CI, perf or alerting fault with a number");
+    }
+    None
+}
+
 /// Append `- <text>` to `file` in `dir`, the header first when the file is new. `Ok(false)`
 /// when the line is already there, so a retried write adds nothing. Any `file` but
 /// [`IMPROVEMENTS`] is refused: the person's `ideas.md` is never written from here.
@@ -107,14 +165,29 @@ pub struct Args {
     /// Why it is an improvement, kept on its `improvement` event (`notes log` shows it)
     #[arg(long, value_name = "WHY")]
     why: Option<String>,
+    /// Write nothing: exit 3 when the text is health work, else 0 (a dry run asks this)
+    #[arg(long)]
+    check: bool,
     #[arg(required = true, num_args = 1..)]
     text: Vec<String>,
 }
 
-/// `notes improve`: print `improved <project>: <text>` and record it. Exit 1 on an empty text; a
-/// project that is not one is an error naming it.
+/// `notes improve`: print `improved <project>: <text>` and record it. Exit 1 on an empty text,
+/// exit 3 (nothing written) on health work, which stays on the board; a project that is not one
+/// is an error naming it.
 pub fn run(p: &Profile, log: &Logger, a: Args) -> Result<i32> {
-    save(p, log, &a.project, a.why.as_deref(), &a.text.join(" "))
+    let text = a.text.join(" ");
+    if a.check {
+        return Ok(refuse_health(&one_line(&text)).unwrap_or(0));
+    }
+    save(p, log, &a.project, a.why.as_deref(), &text)
+}
+
+/// The refusal exit, said on stderr, when `text` is health work.
+fn refuse_health(text: &str) -> Option<i32> {
+    let why = health(text)?;
+    eprintln!("health work, not an improvement ({why}): it stays on the board");
+    Some(HEALTH_EXIT)
 }
 
 fn save(p: &Profile, log: &Logger, project: &str, why: Option<&str>, text: &str) -> Result<i32> {
@@ -122,6 +195,9 @@ fn save(p: &Profile, log: &Logger, project: &str, why: Option<&str>, text: &str)
     if text.is_empty() {
         eprintln!("nothing to keep: the text is empty");
         return Ok(1);
+    }
+    if let Some(rc) = refuse_health(&text) {
+        return Ok(rc);
     }
     let dir = projects::project_dir(p, project)?;
     let day = chrono::Local::now().format("%Y-%m-%d").to_string();
@@ -209,6 +285,51 @@ mod tests {
             "{rec}"
         );
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn health_work_is_refused_for_each_kind_and_a_nicety_is_kept() {
+        let (root, p, log) = project("health");
+        let f = root.join("lab/projects/current/demo").join(IMPROVEMENTS);
+        for (text, kind) in [
+            ("meet the prod stage standard", "stage"),
+            ("add a bats case for the parser", "test"),
+            ("coverage for the sweep", "test"),
+            ("CI takes 14 min on the nightly #c1124", "ci"),
+            ("alerting fires 3x a day on a clean run", "alert"),
+            ("sweep is slow, 40s a pass", "perf"),
+        ] {
+            assert_eq!(
+                save(&p, &log, "demo", None, text).unwrap(),
+                HEALTH_EXIT,
+                "{kind}: {text}"
+            );
+        }
+        assert!(!f.exists(), "a refusal writes nothing");
+        let rec = fs::read_to_string(ingest::path(&p)).unwrap_or_default();
+        assert!(
+            !rec.contains("improvement"),
+            "a refusal records nothing: {rec}"
+        );
+        // NEGATIVE CONTROLS: polish, and a fault word with no measured number (an id is no number).
+        for text in [
+            "a nicer empty state",
+            "the CI badge colour, row ar-5401",
+            "slow fade on the menu",
+        ] {
+            assert_eq!(save(&p, &log, "demo", None, text).unwrap(), 0, "{text}");
+        }
+        assert_eq!(fs::read_to_string(&f).unwrap().matches("\n- ").count(), 3);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn check_asks_without_writing() {
+        assert_eq!(
+            refuse_health("meet the prod stage standard"),
+            Some(HEALTH_EXIT)
+        );
+        assert_eq!(refuse_health("a nicer empty state"), None);
     }
 
     #[test]

@@ -2285,7 +2285,8 @@ skip_exits() {
           where=$(file_row human "$(jq -cn --arg pr "$prof" --arg p "$p" '{profile: $pr, project: $p}')" "$body (agent row $id)")
           case "$where" in "not filed"*) continue ;; esac
         else
-          np "$prof" improve "$p" --why "$why" -- "$body" >/dev/null 2>&1 || { say "skip_exits: notes improve refused $p $id"; continue; }
+          # exit 3 is health work: it stays on the board, skipped, never shelved (ar-5401)
+          np "$prof" improve "$p" --why "$why" -- "$body" >/dev/null 2>&1 || { [ $? = 3 ] || say "skip_exits: notes improve refused $p $id"; continue; }
           where="kept in $p improvements.md"
         fi
         # Filed is the exit: a drop that fails is said and its exit recorded all the same, so a later pass

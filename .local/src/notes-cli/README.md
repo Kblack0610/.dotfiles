@@ -112,7 +112,7 @@ current/<name>/
   summary.md               generated: a dated STATUS block (lab-status) and the AUTO release feed (lab-sync); no hand text. STATUS is a headline, then `Done:`, `Doing:`, `Next:` and `Needs you:` each on its own line (`comms-lint --channel lab-status`); `projects --stats --json` sends the headline as `status` and the lines as `status_parts`, and still reads the old one-line shape, minus the numbers it pasted
   agent/README.md          the agent board (`ptask --agent`): the same two sections, no `Version:` line (it follows the sheet)
   ideas.md                 unshaped ideas for this project, written by the person only
-  improvements.md          optional: nice-to-haves agents found, one line each, written only by `notes improve` (the triager's `improvement` verdict); a line becomes work with `ptask <name> --agent add`
+  improvements.md          optional: nice-to-haves agents found, one line each, written only by `notes improve` (the triager's `improvement` verdict, dispatch's skip exit); it refuses health work with exit 3 (a stage criterion, a missing test, a CI, perf or alert fault with a number: `--check` asks without writing), which stays a board row; a line becomes work with `ptask <name> --agent add`
   playtest.md              type game only: things to play and check off, one per row (`ptask --playtest`)
   docs/idea.md             type game only: the pitch, what it is and who it is for
   agent/versions/vX.Y.Z.md notes for a version, and the closed rows that rolled off either sheet's Done (`## Done rows` for the board, `## Sheet done rows` for the sheet) until the release freezes them
