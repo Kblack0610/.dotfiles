@@ -757,9 +757,7 @@ pub fn slots_of(runner: &str) -> &str {
 /// The pass rate (`verdict`) of each runner group's (`slots_of`) last `last` jobs that completed
 /// before `until`, from the job archive's text: what `hub ci hosts` prints. A GitHub-hosted job is
 /// no host's, so it is left out, and so is a job `verdict` does not count (cancelled, skipped).
-/// Hosted is told by the runner name GitHub gives every hosted runner, not by the labels: the
-/// archive's self-hosted Unity jobs carry `unity`, `unity-gate` and no `self-hosted`. A line that
-/// does not parse is an error, not a skip: a window of 50 short of its jobs reads as a real rate.
+/// Hosted is told by the runner name (`run_detail::hosted`). A line that does not parse is an error, not a skip: a window of 50 short of its jobs reads as a real rate.
 pub fn pass_by_runner(
     archive: &str,
     until: i64,
@@ -775,7 +773,7 @@ pub fn pass_by_runner(
         let Some(runner) = j
             .runner_name
             .as_deref()
-            .filter(|r| !r.is_empty() && !r.starts_with("GitHub Actions"))
+            .filter(|r| !r.is_empty() && !run_detail::hosted(r))
         else {
             continue;
         };

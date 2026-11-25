@@ -370,9 +370,10 @@ fn short_sha(s: &str) -> &str {
     s.get(..7).unwrap_or(s)
 }
 
-fn hosted(j: &Job, runner: &str) -> bool {
+/// A GitHub-hosted runner, told by the name GitHub gives every one, never by the labels: the
+/// archive's self-hosted Unity jobs carry `unity` and `unity-gate` with no `self-hosted` (ar-3083).
+pub(crate) fn hosted(runner: &str) -> bool {
     runner.starts_with("GitHub Actions")
-        || (!j.labels.is_empty() && !j.labels.iter().any(|l| l == "self-hosted"))
 }
 
 /// What kind of slot a job ran on, from the cap labels the job asked for: the class half of `pool/owned`.
@@ -405,7 +406,7 @@ fn job_row(j: &Job, rates: &Rates) -> JobRow {
     let runner = j.runner_name.clone().unwrap_or_default();
     let (created, started, completed) = (ts(&j.created_at), ts(&j.started_at), ts(&j.completed_at));
     let took = span(started, completed);
-    let is_hosted = !runner.is_empty() && hosted(j, &runner);
+    let is_hosted = hosted(&runner);
     let price = rates.price(&runner, is_hosted, took);
     let host = if is_hosted {
         String::new()
@@ -677,6 +678,37 @@ pub(crate) mod tests {
             ["12s", "1m24", "21m", "43m10", "1h42"]
         );
         assert_eq!(took_text(None), "-");
+    }
+
+    #[test]
+    fn hosted_is_told_by_the_runner_name_never_by_a_missing_self_hosted_label() {
+        // A playground Unity gate job asks for unity and unity-gate with no self-hosted (ar-3083).
+        let job = |runner: &str, labels: &[&str]| Job {
+            runner_name: Some(runner.into()),
+            labels: labels.iter().map(|l| l.to_string()).collect(),
+            ..Default::default()
+        };
+        let unity = job_row(
+            &job("razer-laptop-unity-pool-1", &["unity", "unity-gate"]),
+            &rates(),
+        );
+        assert_eq!(
+            (
+                unity.class.as_str(),
+                unity.runner.as_str(),
+                unity.host.as_str()
+            ),
+            ("pool/owned", "razer-laptop-unity-pool-1", "razer-laptop")
+        );
+        let gh = job_row(&job("GitHub Actions 12", &["ubuntu-latest"]), &rates());
+        assert_eq!(
+            (
+                gh.class.as_str(),
+                gh.runner.as_str(),
+                gh.price.basis.as_str()
+            ),
+            ("hosted", "github-hosted", "github-hosted")
+        );
     }
 
     #[test]
