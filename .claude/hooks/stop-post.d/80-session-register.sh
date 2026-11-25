@@ -45,8 +45,9 @@ fi
 # --- meaningful gate: real work only, else skip silently ---
 # grep -c prints "0" and exits 1 on no match; capture stdout only, default empty->0.
 # shellcheck source=../../../.local/lib/edit-tools.sh
-. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../../.local/lib/edit-tools.sh"
-EDITS=$(grep -c -E "\"name\":\"($(edit_tools_re))\"" "$TRANSCRIPT" 2>/dev/null)
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../../.local/lib/edit-tools.sh" &&
+  EDIT_RE="$(edit_tools_re)" || { echo "80-session-register: no edit-tool list, so the session was not registered" >&2; exit 0; }
+EDITS=$(grep -c -E "\"name\":\"($EDIT_RE)\"" "$TRANSCRIPT" 2>/dev/null)
 EDITS=${EDITS:-0}
 DIRTY=false
 cd "$PROJECT_DIR" 2>/dev/null || true

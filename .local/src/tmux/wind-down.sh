@@ -413,8 +413,7 @@ reopen_asks() {
     while IFS= read -r af; do
       err="$(CLAUDE_CODE_SESSION_ID="$1" "$SCRIPT_DIR/../../bin/agent-ask" reopen-on-answer "$(basename "$af" .md)" 2>&1 >/dev/null)" ||
         printf '[%s] fire: ask %s not set to reopen: %s\n' "$(date '+%F %T' 2>/dev/null)" "$(basename "$af" .md)" "${err##*$'\n'}" >> "$2" 2>/dev/null || true
-    done < <(grep -lxF "claude_session: $1" "$(ask_root)"/*/*.md 2>/dev/null |
-      while IFS= read -r af; do ask_open "$af" && printf '%s\n' "$af"; done)
+    done < <(grep -lxF "claude_session: $1" "$(ask_root)"/*/*.md 2>/dev/null | ask_open_files)
   fi
 }
 

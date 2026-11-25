@@ -5,6 +5,7 @@
 #
 #   ask_root            the store: $AGENT_ASK_ROOT, else ~/.agent/asks (one <project>/<id>.md per ask)
 #   ask_open <file>     0 when the ask is still open (`status: pending`), parked or not
+#   ask_open_files      the open ones of the ask files named on stdin, one a line, in one grep
 #
 # Pending for the human (the Needs you count, `agent-ask list --pending`) is open and not parked:
 # agent-ask is_parked. A reader asking only whether an ask is still filed (a session's own ask, a
@@ -13,4 +14,8 @@
 
 ask_root() { printf '%s\n' "${AGENT_ASK_ROOT:-$HOME/.agent/asks}"; }
 
-ask_open() { grep -qx 'status: pending' "$1" 2>/dev/null; }
+ASK_OPEN_LINE='status: pending'
+
+ask_open() { grep -qxF "$ASK_OPEN_LINE" "$1" 2>/dev/null; }
+
+ask_open_files() { xargs -r -d '\n' grep -lxF "$ASK_OPEN_LINE" 2>/dev/null; }

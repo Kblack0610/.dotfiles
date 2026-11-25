@@ -1445,7 +1445,7 @@ rejudge_timed_out() {
     rejudge "$f" "$(timed_out_reason again)" >/dev/null
     return 0
   done < <(ask_files --all | xargs -r -d '\n' grep -lx 'judge: error' 2>/dev/null |
-    xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null)
+    ask_open_files)
 }
 
 # cmd_sweep [project|--all]: judge every pending ask again and answer or arm the live ones (rejudge).
@@ -1474,7 +1474,7 @@ cmd_assume_due() {
   load_queue_asks
   while IFS= read -r f; do gh_login_settle "$f" || true
   done < <(ask_files --all | xargs -r -d '\n' grep -lx 'login: gh' 2>/dev/null |
-    xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null)
+    ask_open_files)
   while IFS= read -r f; do
     load_ask "$f"
     due="$(date -d "${ASK[assume_at]}" +%s 2>/dev/null)" && [ "$due" -le "$now" ] || continue
@@ -1486,7 +1486,7 @@ cmd_assume_due() {
     in_dialog "$(live_row "${ASK[claude_session]:-}")" && continue
     cmd_answer --by judge "${ASK[id]}" "$ans"
   done < <(ask_files --all | xargs -r -d '\n' grep -l '^assume_at: .' 2>/dev/null |
-    xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null)
+    ask_open_files)
   cmd_expire
   # Last, so a stalled call never holds expiry.
   rejudge_timed_out
@@ -2134,7 +2134,7 @@ cmd_settle_session() {
   local full text f opts pick yes=""; full="$(oneline "$*")"; text="$(cut -c1-200 <<<"$full")"
   # A bare yes answers only the one question on screen: the session's only pending ask.
   if bare_yes "$full" && [ "$(ask_files --all | xargs -r -d '\n' grep -lxF "claude_session: $owner" |
-        xargs -r -d '\n' grep -lx 'status: pending' | wc -l)" -eq 1 ]; then yes=1; fi
+        ask_open_files | wc -l)" -eq 1 ]; then yes=1; fi
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     grep -qxF "claude_session: $owner" "$f" || continue
@@ -2369,7 +2369,7 @@ cmd_expire() {
     else
       close_ask cancelled "$id" "$why" 2>/dev/null
     fi
-  done < <(ask_files --all | xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null | sort)
+  done < <(ask_files --all | ask_open_files | sort)
 }
 # row_named <text>: whether the text names exactly one board row id, `<code>-<n>` with a tracker
 # code from project-map.json (project_codes, read once into ROW_CODES), as a whole word. Sets
@@ -2642,7 +2642,7 @@ older_asks() {
     load_ask "$g"
     [ "${ASK[id]:-}" != "$me" ] && [[ "${ASK[created]:-}" < "$created" ]] && joinable || continue
     printf '%s\t- %s (%s): %s\n' "${ASK[created]}" "${ASK[id]}" "${ASK[project]:-}" "${ASK[question]:-}"
-  done < <(ask_files --all | xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null) |
+  done < <(ask_files --all | ask_open_files) |
     sort -r | awk 'NR<=30' | cut -f2-
 }
 

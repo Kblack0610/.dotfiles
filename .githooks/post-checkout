@@ -18,7 +18,7 @@ top="$PWD"
 [ "$top" -ef "${DOTFILES:-$HOME/.dotfiles}" ] || exit 0
 # merge_proof_branch: the one reader of a repo's default branch (fleet-states.md Owners).
 # shellcheck source=../.local/lib/agent-merge-proof.sh
-. "$(dirname "$(readlink -f "$0")")/../.local/lib/agent-merge-proof.sh" || exit 0
+. "$(dirname "$(readlink -f "$0")")/../.local/lib/agent-merge-proof.sh" || { echo "post-checkout: cannot source agent-merge-proof.sh, so the branch check did not run" >&2; exit 0; }
 default="$(merge_proof_branch "$top")" || default=main
 [ "$(git symbolic-ref -q --short HEAD)" = "$default" ] && exit 0
 

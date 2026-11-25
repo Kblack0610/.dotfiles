@@ -47,7 +47,7 @@ jq -r 'select((.isSidechain // false) | not)
 # Already filed: an open ask this session owns. A parked one counts: it is filed, and the human
 # chose to answer it later, so a second ask would only repeat it.
 # shellcheck source=../../../.local/lib/ask-store.sh
-. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../../.local/lib/ask-store.sh" || exit 0
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../../.local/lib/ask-store.sh" || { echo "88-ask-filed: cannot source ask-store.sh, so the ask check did not run" >&2; exit 0; }
 while IFS= read -r f; do
   ask_open "$f" && exit 0
 done < <(grep -lx "claude_session: $SID" "$(ask_root)"/*/*.md 2>/dev/null)

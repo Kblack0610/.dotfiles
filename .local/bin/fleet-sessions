@@ -55,9 +55,8 @@ set -uo pipefail
 # The board counts a session's PRs the way the nightly outcomes do (so_transcript_metrics).
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/session-outcomes.sh"
-# shellcheck source=../lib/edit-tools.sh
-. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/edit-tools.sh"
-EDIT_TOOLS_RE="$(edit_tools_re)"   # activity_line's "editing": a busy pane in one of these tools
+# session-outcomes.sh brings edit-tools.sh. activity_line's "editing": a busy pane in one of these tools.
+EDIT_TOOLS_RE="$(edit_tools_re)"
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh"
 # shellcheck source=/dev/null
