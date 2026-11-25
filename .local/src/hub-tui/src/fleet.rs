@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 use serde_json::Value;
 
 use crate::fit::{cell, clip_line, Cell};
-use crate::fmt::{older, Palette};
+use crate::fmt::{dash, older, Palette};
 use hub_core::display::fmt::{dur_min, dur_secs, hours_min};
 
 /// Changes listed under the table; watch.log keeps them all.
@@ -19,14 +19,6 @@ use hub_core::layout::FOLD_ROWS;
 fn s<'a>(v: &'a Value, k: &str) -> &'a str {
     v[k].as_str().unwrap_or("")
 }
-fn dash(x: &str) -> String {
-    if x.is_empty() {
-        "-".into()
-    } else {
-        x.into()
-    }
-}
-
 /// The SESSION column's width; a longer name keeps its tail.
 pub const NAME_MAX: usize = 30;
 
@@ -164,7 +156,7 @@ pub fn row(x: &Value, p: Palette) -> Vec<Cell> {
         wait.into(),
         dur_min(n("idle_min")).into(),
         dur_min(n("age_min")).into(),
-        dash(&labels.join(",")).into(),
+        dash(labels.join(",")).into(),
         why.into(),
     ]
 }
@@ -288,9 +280,7 @@ pub mod tests {
         }
     }
 
-    fn text(lines: &[Line]) -> String {
-        lines.iter().map(plain).collect::<Vec<_>>().join("\n")
-    }
+    use crate::fit::plain_text as text;
 
     /// The page as the Sessions tab draws it: the fixture's sessions in the session table.
     fn page(watch: &Watch, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {

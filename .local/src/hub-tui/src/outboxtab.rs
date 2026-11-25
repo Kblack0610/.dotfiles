@@ -94,18 +94,7 @@ mod tests {
     use super::*;
     use hub_core::outbox::{build, Doc};
 
-    fn text(lines: &[Line]) -> String {
-        lines
-            .iter()
-            .map(|l| {
-                l.spans
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
+    use crate::fit::plain_text as text;
 
     #[test]
     fn the_waiting_lines_then_todays_steps() {

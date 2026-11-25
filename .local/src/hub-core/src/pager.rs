@@ -260,9 +260,7 @@ impl Paths {
             config: var("COMMS_CHANNELS")
                 .unwrap_or_else(|| home.join(".config/comms-lint/channels.toml")),
             ledger: crate::actions::Paths::from_env().notify_log,
-            paged: var("XDG_STATE_HOME")
-                .unwrap_or_else(|| home.join(".local/state"))
-                .join("hub/needs-paged"),
+            paged: agent_core::vocab::state_home().join("hub/needs-paged"),
         }
     }
 }
