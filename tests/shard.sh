@@ -22,7 +22,7 @@
 # Each file goes whole to one shard: heaviest first, onto the lightest shard so far (LPT), by
 # the seconds in the table $SHARD_WEIGHTS names. CI builds that table once per run from the
 # newest green main run's JUnit (.github/workflows/tests.yml, job weights), so it never goes
-# stale the way a committed table did. A file the table does not list weighs its tier's median,
+# stale the way a committed table did. A file the table does not list weighs the seconds it declares (`# shard-seconds: N` in its first lines), else its tier's median,
 # and with no table each file weighs its @test count; both are said on stderr, so a skewed
 # split shows why. Every file is in exactly one shard whatever the weights are, as long as
 # every shard reads the same table. Why: on 2026-11-07 the unit tier took 8m45 of its 10-minute
@@ -55,20 +55,30 @@ junit() {
   exit 0
 }
 
-# weigh <tier> <files>: each file with its weight, "<weight><TAB><file>": the table's seconds, the
-# tier's median for a file the table does not list (1s when it lists none of the tier), or its
-# @test count when there is no table.
+# weigh <tier> <files>: each file with its weight, "<weight><TAB><file>": the table's seconds, else
+# the seconds the file declares in its first lines (`# shard-seconds: N`, for a file main's JUnit
+# has not measured yet, such as one just split off another), else the tier's median (1s when it
+# lists none of the tier), or its @test count when there is no table. Why a declaration: a half
+# split off a 430 s file weighed the 2 s median in the run that adds it, so one shard took it on
+# top of a full load and ran past its guard (ar-5740). The table wins once it lists the file, and
+# the run says to delete the line.
 weigh() {
-  local tier=$1 files=$2 med
+  local tier=$1 files=$2 med decl
   if [ -n "$WEIGHTS" ]; then
     [ -r "$WEIGHTS" ] || die "cannot read the weights table $WEIGHTS"
     med=$(awk -F'\t' -v tier="$tier/" '!/^#/ && index($2, tier) == 1 { print $1 }' "$WEIGHTS" | sort -g |
       awk '{ v[NR] = $1 } END { print NR ? (NR % 2 ? v[(NR + 1) / 2] : (v[NR / 2] + v[NR / 2 + 1]) / 2) : 1 }')
+    decl=$(cd "$DIR" && while read -r f; do
+      d=$(sed -n '1,15s/^# shard-seconds: \([0-9.][0-9.]*\).*/\1/p' "$f" 2>/dev/null | head -1)
+      [ -z "$d" ] || printf '%s\t%s\n' "$d" "$f"
+    done <<<"$files")
     awk -F'\t' -v tier="$tier/" -v med="$med" '
       FILENAME == ARGV[1] { if (!/^#/ && index($2, tier) == 1) w[$2] = $1; next }
-      ($0 in w) { printf "%s\t%s\n", w[$0], $0; next }
+      FILENAME == ARGV[2] { if (NF) d[$2] = $1; next }
+      ($0 in w) { printf "%s\t%s\n", w[$0], $0; if ($0 in d) print "shard.sh: " $0 " declares shard-seconds and the table lists it: delete the declaration" > "/dev/stderr"; next }
+      ($0 in d) { printf "%s\t%s\n", d[$0], $0; print "shard.sh: " $0 " is not in the table; it weighs its declared " d[$0] "s" > "/dev/stderr"; next }
       { printf "%s\t%s\n", med, $0; print "shard.sh: " $0 " is not in the table; it weighs the median, " med "s" > "/dev/stderr" }
-    ' "$WEIGHTS" <(printf '%s\n' "$files")
+    ' "$WEIGHTS" <(printf '%s\n' "$decl") <(printf '%s\n' "$files")
   else
     echo "shard.sh: no weights table (SHARD_WEIGHTS); each file weighs its @test count" >&2
     (cd "$DIR" && while read -r f; do printf '%s\t%s\n' "$(grep -c '^@test' "$f" || true)" "$f"; done <<<"$files")
