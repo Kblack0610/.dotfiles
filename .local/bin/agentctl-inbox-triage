@@ -451,10 +451,19 @@ ask_context() {
 # it already kept.
 improve_line() {
   local from="$1" raw="$2" text="$3" dest="$4" why="$5"
-  if [ "$DRY" = 1 ]; then printf 'would improve [%s -> %s] %s (%s)\n' "$from" "$dest" "$raw" "$why"; IMPROVED=$((IMPROVED + 1)); return 0; fi
+  # Health work (a stage criterion, a missing test, a CI/perf/alert fault with a number) is no
+  # nice-to-have: `notes improve` refuses it with exit 3 and the line stays for a row to be filed.
+  local rc=0
+  if [ "$DRY" = 1 ]; then
+    notes improve "$dest" --check -- "$text" >/dev/null 2>&1 || rc=$?
+    [ "$rc" != 3 ] || { leave "health work, not an improvement"; return 1; }
+    printf 'would improve [%s -> %s] %s (%s)\n' "$from" "$dest" "$raw" "$why"; IMPROVED=$((IMPROVED + 1)); return 0
+  fi
   # A failed write records nothing (an older notes with no `improve` verb is fixed by
   # notes-bootstrap --build-only): the line stays and the next sweep asks again.
-  notes improve "$dest" --why "$why" -- "$text" >/dev/null || {
+  notes improve "$dest" --why "$why" -- "$text" >/dev/null || rc=$?
+  [ "$rc" != 3 ] || { leave "health work, not an improvement"; return 1; }
+  [ "$rc" = 0 ] || {
     say "$from: not kept as an improvement of $dest (an old notes? notes-bootstrap --build-only), left: $raw"
     proof_why "notes improve failed"
     FAILED=$((FAILED + 1)); return 1
@@ -790,8 +799,16 @@ improve_row() {
   local p="$1" words
   words="$(sed -E 's/^[[:space:]]*- \[.\] //; s/[[:space:]]*<!--.*-->[[:space:]]*$//; s/(^|[[:space:]])#[A-Za-z][^[:space:]]*//g; s/^[[:space:]]+//' <<<"$2")"
   [ -n "$words" ] || return 1
-  if [ "$DRY" = 1 ]; then printf 'would run: notes improve'; printf ' %q' "$p" --why "$3" -- "$words"; echo; return 0; fi
-  notes improve "$p" --why "$3" -- "$words" >/dev/null || {
+  # Exit 3 is health work, which stays on the board: no failure, the row is kept (backlog_row).
+  local rc=0
+  if [ "$DRY" = 1 ]; then
+    notes improve "$p" --check -- "$words" >/dev/null 2>&1 || rc=$?
+    [ "$rc" != 3 ] || { say "$p: health work, not an improvement, kept: $2"; return 1; }
+    printf 'would run: notes improve'; printf ' %q' "$p" --why "$3" -- "$words"; echo; return 0
+  fi
+  notes improve "$p" --why "$3" -- "$words" >/dev/null || rc=$?
+  [ "$rc" != 3 ] || { say "$p: health work, not an improvement, kept: $2"; return 1; }
+  [ "$rc" = 0 ] || {
     say "$p: not kept as an improvement (an old notes? notes-bootstrap --build-only): $2"
     proof_why "notes improve failed"; FAILED=$((FAILED + 1)); return 1
   }
