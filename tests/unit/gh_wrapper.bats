@@ -173,7 +173,7 @@ bucket() { tail -n 1 "$GH_CALLS_DIR"/*.tsv | cut -f2; }
   assert_failure 3
   assert_equal "$(cat "$BATS_TEST_TMPDIR/stdin.log")" body
   run cut -f2- "$GH_CALLS_DIR/$(date +%F).tsv"
-  assert_output $'user\t3\tland-thing\tship\tpr edit 5 -R acme/x --body-file -'
+  assert_output $'user\t3\tland-thing\tship\tpr edit 5 -R acme/x --body-file -\t-'
 }
 
 @test "with GH_REAL unset it runs the next gh on PATH, skipping itself" {
