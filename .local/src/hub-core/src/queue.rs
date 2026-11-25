@@ -944,7 +944,7 @@ fn argv(args: &[&str]) -> Vec<String> {
 /// One record an item names and where it opens (`Item::links`); the web gets the link as its href.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ItemLink {
-    /// session, project, row, pr or ci.
+    /// session, project, row, item (a fix's queue item, `Red::links`), pr or ci.
     pub what: &'static str,
     pub text: String,
     #[serde(rename = "href")]

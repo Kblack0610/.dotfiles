@@ -35,7 +35,7 @@ const alst = run("alst");
 const NOW = Math.floor(Date.now() / 1e3);
 const fix = (slug, outcome, o = {}) => ({ slug, red: `watch ${slug}`, outcome, queued: new Date(Date.now() - 3 * 3600e3).toISOString(), pr: null, pr_url: null, ...o });
 const fixes = {
-  open: [fix("ar-3", "came back", { slug: "red-x-1124", row: "ar-3", pr: "Kblack0610/.dotfiles#1170", pr_url: "https://github.com/Kblack0610/.dotfiles/pull/1170", links: [
+  open: [fix("ar-3", "came back", { slug: "red-x-1124", row: "ar-3", pr: "Kblack0610/.dotfiles#1170 988", pr_url: "https://github.com/Kblack0610/.dotfiles/pull/1170", links: [
     { what: "row", text: "ar-3", href: "#projects/all?q=id:=ar-3" }, { what: "item", text: "red-x-1124", href: "#queue/red-x-1124" },
     { what: "pr", text: ".dotfiles#1170", href: "https://github.com/Kblack0610/.dotfiles/pull/1170" }, { what: "ci", text: "CI runs of Kblack0610/.dotfiles#1170", href: "#infra/runs?bq=pr:=Kblack0610%2F.dotfiles%231170" }] }),
     fix("ar-2", "queued", { pr: "986", links: [{ what: "item", text: "ar-2", href: "#queue/ar-2" }] })],
@@ -180,6 +180,7 @@ test("fixes: open rows lead with their ticket, then outcome, red, run, PR, CI an
   assert.match(openPart, /pr <a class="tl" href="https:\/\/github.com\/Kblack0610\/.dotfiles\/pull\/1170"[^>]*>.dotfiles#1170<\/a>/);
   assert.match(openPart, /<a class="tl" href="#infra\/runs\?bq=pr:=[^"]+">CI runs of Kblack0610\/.dotfiles#1170<\/a>/);
   assert.equal(openPart.match(/#projects\/all/g).length, 1, "a fix with no row draws no ticket link");
+  assert.match(openPart, /CI runs of Kblack0610\/.dotfiles#1170<\/a><\/span><span class="by">PR 988<\/span>/, "a bare PR beside a linked one keeps its label");
   assert.match(openPart, /<span class="by">PR 986<\/span>/, "a PR with no repo is text, not a link");
   assert.match(openPart, /<span class="by">3h<\/span>/);
   assert.match(foldPart, /<summary class="muted fold">\+2 settled<\/summary>/);

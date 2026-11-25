@@ -134,11 +134,12 @@ function alertPages(a) {
 const ALERTS_FIX_COLOR = { "came back": "var(--b-needs)", "still red": "var(--b-needs)", "no fix": "var(--b-needs)", "needs merge": "var(--b-stalled)",
   fixing: "var(--b-working)", queued: "var(--b-working)", fixed: "var(--b-done)", cleared: "var(--b-done)" };
 // A fix's row leads with its ticket (the board row id), then the run, session, PR and CI pages
-// hub-core's `Red::links` names; a PR that names no repo stays as its label.
+// hub-core's `Red::links` names.
 function alertsFixRow(r) {
   const links = r.links || [], ticket = links.find((l) => l.what === "row");
   const rest = links.filter((l) => l !== ticket).map((l) => `<span class="by">${l.what === "ci" ? "" : esc(l.what) + " "}${tblLink(l.href, l.text)}</span>`).join("");
-  const bare = r.pr && !links.some((l) => l.what === "pr") ? `<span class="by">PR ${esc(r.pr)}</span>` : "";
+  // Each PR that names no repo (a bare number) has no page, so it stays as its label.
+  const bare = (r.pr || "").split(/[\s,]+/).filter((t) => t && !/^https?:/.test(t) && !t.includes("/")).map((t) => `<span class="by">PR ${esc(t)}</span>`).join("");
   return `<div class="pr"><span class="chip sm" style="--c:${ALERTS_FIX_COLOR[r.outcome] || "var(--c-other)"}">${esc(r.outcome.toUpperCase())}</span>` +
     `${ticket ? `<span class="by">${tblLink(ticket.href, ticket.text)}</span>` : ""}<span class="pt">${esc(r.red)}</span>${r.project ? `<span class="by">${esc(r.project)}</span>` : ""}${rest}${bare}<span class="by">${r.queued ? ago(r.queued) : "-"}</span></div>`;
 }

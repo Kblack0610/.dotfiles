@@ -67,7 +67,7 @@ pub struct Alert {
     /// fixes could not be read) or `firing` (an Alertmanager rule, which no fix item is filed
     /// under).
     pub state: String,
-    /// The fix item's slug, for a link to its queue record.
+    /// The fix item's slug: the hub's `i` opens it on Queue. The web links `owner_href`.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub slug: String,
     /// The fix item's queue page (`hub_core::links`), which the owner cell opens.
