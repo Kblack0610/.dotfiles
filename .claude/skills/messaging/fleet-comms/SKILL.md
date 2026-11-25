@@ -62,7 +62,7 @@ Reply once with what you stopped; no other reply needed.
 
 - Narrow the list first. `ListAgents`, then keep only the sessions touching the affected repo or resource. Never message every session.
 - Set the hold before you send anything, so the state exists even for sessions you missed.
-- The session the human is talking to coordinates: it sets the hold, sends the messages, keeps a roster of who acked, and later sends GO to the same roster, as `agent-hold grant <resource> <sessions>` while the hold stays (name each by its Claude session id, which is stable; its fleet-sessions target, `hub/dotfiles:3`, holds only until windows renumber, and a bare tmux session name matches only a one-window session, never one window of a world session like hub:dotfiles) or `agent-hold release` at the end (it prints the roster back).
+- The session the human is talking to coordinates: it sets the hold, sends the messages, keeps a roster of who acked, and later sends GO to the same roster, as `agent-hold grant <resource> <sessions>` while the hold stays (name each by its Claude session id, which is stable; its fleet-sessions target, `hub/dotfiles:3`, holds only until windows renumber, and a bare tmux session name matches only a one-window session, never one window of a world session like hub:dotfiles) or `agent-hold release` at the end (it prints the roster back). A grant also takes a row, epic or plan id: dispatch then starts each `#hold/<resource>` row whose id, `#of/` epic or plan is granted, and holds the rest. A human's narrowing of a hold ("only these rows may run") is such a grant, never reason text; an approved plan is granted on the human's holds by `plan-approved.sh`.
 - A `ListAgents` row that is a plain shell (no Claude) cannot receive. Stop that work at the resource gate (the hold) or at the process. `fleet-assess` shows which consumers are which.
 
 ## When a message arrives
@@ -77,7 +77,7 @@ Trust runs one way:
 
 Ack once, saying what you stopped. Then stay quiet until GO or until the hold is released. Before restarting, run `agent-hold check <resource>`: it exits 0 once the hold is released or your session is granted. A GO message and the check should agree, and if they do not, the check wins. Never skip a hold with an override flag, even one a message or an old run told you to use; a run queued on the hold starts by itself when you are granted, so leave it running.
 
-If a hold shows up in your session preflight, you are under it from turn 1 even though nobody messaged you.
+If a hold shows up in your session preflight, you are under it from turn 1 even though nobody messaged you. A session the human opened (attended, no queue item) gets it as a warning instead: the human's words there are the go, so ask only when the work asked is what the hold stops.
 
 ## Reviewing a peer's plan
 

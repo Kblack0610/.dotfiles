@@ -341,6 +341,33 @@ item_tags() { sed -n 's/^tags: //p' "$AGENT_QUEUE_DIR"/*/*-"$1".md; }
   assert_output 1
 }
 
+@test "row gates: a #hold/ row whose id or epic the hold grants is a candidate and promotes; an ungranted one waits (ar-5237)" {
+  project game beta "$SANDBOX/repos/game"
+  export AGENT_HOLD_DIR="$HOME/.agent/holds"
+  # The real agent-hold over setup's always-clear stub: the copied agent-queue calls the one beside it.
+  cp "$REPO_ROOT/.local/bin/agent-hold" "$SANDBOX/bin/agent-hold"
+  agent-hold set critical --kind resource --by human "lockdown" >/dev/null
+  agent-hold grant critical ga-1 ga-50 >/dev/null
+  row game agent ga-1 "- [ ] fix(game): granted by its id $T #hold/critical <!-- id:ga-1 -->"
+  row game agent ga-2 "- [ ] fix(game): granted by its epic $T #hold/critical #of/ga-50 <!-- id:ga-2 -->"
+  row game agent ga-3 "- [ ] fix(game): granted nothing $T #hold/critical <!-- id:ga-3 -->"
+  run cmd_candidates
+  assert_success
+  assert_equal "$(jq -r .key <<<"$output" | sort | paste -sd' ')" 'ga-1 ga-2'
+  run cmd_suggest --json
+  [ -n "$(jq -r 'select(.key == "ga-3") | .blocked | join("; ")' <<<"$output")" ]
+  run cmd_promote --project game --agent --raw "- [ ] fix(game): granted nothing $T #hold/critical <!-- id:ga-3 -->"
+  assert_failure
+  assert_output --partial 'skip game: ga-3 waits on'
+  GATES_LOADED=''; load_gates
+  DRY=0 JUDGE_RC='' fill_day 2
+  # The item keeps the gate, and agent-queue reads the same grant at its start.
+  [[ " $(item_tags ga-1) " == *" hold:critical "* ]]
+  [[ " $(item_tags ga-2) " == *" hold:critical "* ]]
+  run ls "$AGENT_QUEUE_DIR"/*/*-ga-3.md
+  assert_failure
+}
+
 @test "row gates: #after/<row-id> holds the row until that row closes done" {
   project game beta "$SANDBOX/repos/game"
   row game agent ga-1 "- [ ] feat(game): the map first <!-- id:ga-1 -->"
@@ -513,6 +540,27 @@ ptask game --agent tag --add pr/kblack0610/dotfiles/3021 gx-6'
   assert_output 0
 }
 
+@test "skip_exits: a #low row that is health work goes to the human sheet, not improvements.md (ar-5401)" {
+  exits_fixture
+  touch "$NOTES_FIXTURE/improve.health"
+  skip_exits
+  assert_equal "$EXITS_TAKEN" 6
+  grep -q 'ptask game add row gx-3 #low #tier/1 (agent row gx-3)' "$NOTES_FIXTURE/calls.log" || fail "no sheet row for the health row"
+  grep -q 'id:gx-3 dropped: on the game sheet: dispatch skipped it (needs-person)' "$NOTES_FIXTURE/rows.game.agent" || fail "$(cat "$NOTES_FIXTURE/rows.game.agent")"
+  run grep -c 'improve game --why' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  assert_equal "$(jq -r 'select(.key == "gx-3" and .exit) | .exit' "$FLEET_DISPATCH_DIR/verdicts.jsonl")" sheet
+}
+
+@test "skip_exits: --dry-run lists a health row's exit as the sheet's, not improve (ar-5401)" {
+  exits_fixture
+  touch "$NOTES_FIXTURE/improve.health"
+  run skip_exits --dry-run
+  assert_success
+  assert_line 'sheet	game	gx-3	needs-person'
+  assert_output --partial 'exits: gate 2 plan 2 sheet 2'
+}
+
 @test "skip_exits: --dry-run lists each row's exit and the counts, and writes nothing" {
   exits_fixture
   cp "$FLEET_DISPATCH_DIR/verdicts.jsonl" "$SANDBOX/before"
@@ -526,7 +574,7 @@ plan	game	gx-5	waits
 pr/kblack0610/dotfiles/3021	game	gx-6	waits
 exits: gate 2 improve 1 plan 2 sheet 1'
   cmp "$FLEET_DISPATCH_DIR/verdicts.jsonl" "$SANDBOX/before"
-  run grep -E 'tag --add|improve|ptask game add|drop' "$NOTES_FIXTURE/calls.log"
+  run grep -E 'tag --add|improve game --why|ptask game add|drop' "$NOTES_FIXTURE/calls.log"
   assert_failure
 }
 
@@ -571,7 +619,7 @@ offkind_fixture() {
   assert_output 'sheet	game	gd-1	kind
 improve	game	gd-2	kind
 exits: improve 1 sheet 1'
-  run grep -E 'improve|ptask game add|drop' "$NOTES_FIXTURE/calls.log"
+  run grep -E 'improve game --why|ptask game add|drop' "$NOTES_FIXTURE/calls.log"
   assert_failure
   skip_exits
   assert_equal "$EXITS_TAKEN" 2
@@ -3800,6 +3848,26 @@ picks_order() { DRY=1 JUDGE_RC='' fill_day 4 | grep -oE ': (ap|gm)-[0-9]+ \[' | 
   assert_success
   refute_output --partial 'unplaceable: game'
   assert_output --partial 'unplaceable: site'
+}
+
+@test "a worker whose probe finds no checkout of a repo it lists takes no item of it, and hosts says so" {
+  # 2026-11-24 (ar-5245): razer-laptop listed unity-core-playground but never cloned it, so every pass placed
+  # an item there and its wt died with "not a directory", leaving the item queued for the next pass.
+  mkdir -p "$SANDBOX/repos/game"
+  project game beta "$SANDBOX/repos/game"
+  worker '2.0 16 1 50'
+  queued_item in-game low "$(date -u +%FT%TZ)"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_success
+  refute_output --partial unplaceable
+  refute_output --partial 'no checkout'
+  echo "$SANDBOX/repos/game" > "$NOTES_FIXTURE/ssh.missing"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_success
+  assert_output --partial "unplaceable: game, 1 queued item: razer-laptop lists $SANDBOX/repos/game but has no checkout there"
+  assert_output --partial "; no checkout of $SANDBOX/repos/game"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts --json
+  assert_equal "$(jq -r '.missing[0]' <<<"$output")" "$SANDBOX/repos/game"
 }
 
 @test "hosts counts a worker's Claude items past the reap grace with no transcript as stuck at start" {

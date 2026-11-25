@@ -509,7 +509,7 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   plan stale '1 day ago 1 hour ago' "$OPEN"
   run "$SWEEP" run --dry-run
   assert_success
-  assert_output --partial 'would file [board] plan stale: run its open phases'
+  assert_output --partial 'would file [board] stale (plan stale)'
   assert_not_called ' add '
 }
 

@@ -184,6 +184,47 @@ EOF
   assert_success
 }
 
+# A bare origin with main and a pushed agent branch one commit past it.
+dot_origin() {
+  git init -q --bare "$SANDBOX/dot.git"
+  git clone -q "$SANDBOX/dot.git" "$SANDBOX/work" 2>/dev/null
+  git -C "$SANDBOX/work" -c user.email=t@t -c user.name=t commit -q --allow-empty -m one
+  git -C "$SANDBOX/work" push -q origin HEAD:main
+  git -C "$SANDBOX/work" -c user.email=t@t -c user.name=t commit -q --allow-empty -m two
+  git -C "$SANDBOX/work" push -q origin HEAD:agent-1
+}
+
+@test "a shallow one-branch dotfiles clone is not ready, and the commands it names make it ready" {
+  # ar-5157: razer-laptop's --depth 1 clone fetched only main, so every pushed agent branch had no
+  # remote-tracking ref and the shepherd's takeover read it as unpushed.
+  lease_ready_all
+  dot_origin
+  git clone -q --depth 1 -b main "file://$SANDBOX/dot.git" "$DOTFILES_DIR"
+  run "$FLEET_NODE" ready
+  assert_failure 1
+  assert_line --partial "$DOTFILES_DIR fetches only some branches, so a pushed agent branch reads as unpushed: "
+  assert_line --partial "$DOTFILES_DIR is a shallow clone, so history stops at its graft: "
+  assert_equal "${#lines[@]}" 2
+  local line
+  for line in "${lines[@]}"; do bash -c "${line#*: }"; done
+  run git -C "$DOTFILES_DIR" branch -r --contains origin/agent-1
+  assert_output --partial 'origin/agent-1'
+  run "$FLEET_NODE" ready
+  assert_success
+  assert_output ''
+}
+
+@test "a full clone that fetches only main names the fetch, not a shallow history" {
+  lease_ready_all
+  dot_origin
+  git clone -q --single-branch -b main "$SANDBOX/dot.git" "$DOTFILES_DIR"
+  local q
+  q=$(printf %q "$DOTFILES_DIR") # the sandbox path has a space, so the printed commands quote it
+  run "$FLEET_NODE" ready
+  assert_failure 1
+  assert_output "$DOTFILES_DIR fetches only some branches, so a pushed agent branch reads as unpushed: git -C $q remote set-branches --add origin '*' && git -C $q fetch origin"
+}
+
 @test "a store remote it cannot reach is not ready, the other still counts" {
   lease_ready_all
   printf 'STORE_PRIMARY_URL=%q\nSTORE_BACKUP_URL=%q\n' "$SANDBOX/origin.git" "$SANDBOX/gone.git" >"$STORE_SYNC_CONF"

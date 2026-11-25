@@ -213,7 +213,7 @@
     },
     "settled_by": {
       "type": "string",
-      "description": "hold:<name> when a listed hold of the human decides the ask, ask:<id> when a listed older ask asks the same action on the same target; else empty (policy, Settled already)"
+      "description": "ask:<id> when a listed older ask asks the same action on the same target; else empty (policy, Settled already)"
     }
   }
 }

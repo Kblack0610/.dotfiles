@@ -72,7 +72,9 @@ case "$1 $2" in
 'api '*) [ ! -f "$NOTES_FIXTURE/files.fail" ] || { echo 'HTTP 502'; exit 1; }
   [ ! -f "$NOTES_FIXTURE/files.toobig" ] || { echo '{"message":"Server Error: Sorry, this diff is taking too long to generate.","errors":[{"resource":"PullRequest","field":"diff","code":"not_available"}],"status":"422"}'; echo 'gh: Server Error (HTTP 422)' >&2; exit 1; }
   cat "$NOTES_FIXTURE/files" 2>/dev/null || true ;;
-'pr merge') cp "$NOTES_FIXTURE/merged.state" "$NOTES_FIXTURE/state" ;;
+# merge.fail: gh pr merge errors and merges nothing
+'pr merge') [ ! -f "$NOTES_FIXTURE/merge.fail" ] || { echo 'GraphQL: Pull request is not mergeable' >&2; exit 1; }
+  cp "$NOTES_FIXTURE/merged.state" "$NOTES_FIXTURE/state" ;;
 # search.json: the open PRs a body search finds, as gh search prs --json prints them ([] when absent); search.fail: the call fails
 'search prs') [ ! -f "$NOTES_FIXTURE/search.fail" ] || { echo 'gh: API rate limit exceeded (HTTP 403)' >&2; exit 1; }
   cat "$NOTES_FIXTURE/search.json" 2>/dev/null || echo '[]' ;;
@@ -602,6 +604,15 @@ moved_again() {
   assert_output 1
   run grep -c 'git push\|pr merge\|^notes' <(not_recorded)
   assert_output 0
+}
+
+@test "a --partial merge that fails leaves no partial marker (ar-2904)" {
+  touch "$NOTES_FIXTURE/merge.fail"
+  run "$LAND" 42 --item ship --partial
+  assert_failure 1
+  assert_output --partial 'merge failed: GraphQL: Pull request is not mergeable'
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '.partial // ""' <<<"$output")" ''
 }
 
 @test "a merge that does not read MERGED stops before the board step" {
@@ -2123,6 +2134,15 @@ untouched() {
   assert_output --partial 'queue item two records #42 in o/p o/r: pass --repo <owner>/<repo>'
 }
 
+@test "a --partial landing whose proof fails after the merge keeps the partial marker (ar-2904)" {
+  touch "$NOTES_FIXTURE/not.ancestor"
+  run "$LAND" 42 --item ship --partial
+  assert_failure 1
+  assert_output --partial 'proof failed: merge_proof: REFUSING'
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '.partial // ""' <<<"$output")" yes
+}
+
 @test "a merge commit not on origin/<base> is refused: the item stays open and no row closes" {
   item fix 'board:game:fix it' human
   touch "$NOTES_FIXTURE/not.ancestor"
@@ -2363,7 +2383,7 @@ real_notes_board() {
   assert_line 'landed #42'
 }
 
-@test "prs: after the merge the PR store refreshes that repo; a failed refresh is said and never fails the landing, an unlisted repo is silent" {
+@test "prs: after the merge the PR store refreshes that repo; a failed refresh is said and never fails the landing, an unlisted repo is said and filed once" {
   run "$LAND" 42 --item ship
   assert_success
   run grep '^schedules-sync' "$LOG"
@@ -2374,9 +2394,27 @@ real_notes_board() {
   assert_line 'prs: o/r not refreshed (o/r: HTTP 502); its next poll reads the merge'
   assert_line 'landed #42'
   printf '3\n' >"$NOTES_FIXTURE/ss.rc"
+  : >"$LOG"
   run "$LAND" 42 --item ship
   assert_success
-  refute_output --partial 'prs:'
+  assert_line --partial 'prs: o/r is in no schedules-sync repos list'
+  assert_line 'prs: filed on the agent-runtime outbox'
+  assert_line 'landed #42'
+  run grep -c '^notes ptask agent-runtime --agent add --why runtime-fault fix(ledger): o/r is in no schedules-sync repos list' "$LOG"
+  assert_output 1
+  printf '3\n' >"$NOTES_FIXTURE/ptask.agent.add.rc"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'prs: a like row is already open on agent-runtime'
+  printf '5\n' >"$NOTES_FIXTURE/ptask.agent.add.rc"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line --partial 'prs: not filed, notes wants its shortlist read first: notes ptask agent-runtime --agent add --why runtime-fault --checked <ids>'
+  printf '1\n' >"$NOTES_FIXTURE/ptask.agent.add.rc"; echo 'board locked' >"$NOTES_FIXTURE/ptask.agent.added"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'prs: could not file it on agent-runtime (board locked)'
+  assert_line 'landed #42'
 }
 
 @test "partial landing holds after items and the board until the other repo lands" {
@@ -2543,7 +2581,7 @@ real_notes_board() {
 @test "partial dry run describes keeping the item and row open" {
   run "$LAND" 42 --item ship --partial --dry-run
   assert_success
-  assert_output --partial 'partial=yes before merging'
+  assert_output --partial 'partial=yes once #42 is merged'
   assert_output --partial 'board: left open until the final landing'
   refute_output --partial 'move ship done'
   refute_output --partial 'board: notes'

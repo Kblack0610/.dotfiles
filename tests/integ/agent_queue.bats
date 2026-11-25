@@ -366,7 +366,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_output $'d-app-urgent\na-app\nb-app-cleanup\nc-game\ne-tools'
   printf 'game\tfocus\napp\tlow\ntools\thigh\n' > "$NOTES_FIXTURE/prios"
   run bash -c "'$AQ' list --json | jq -r .slug"
-  # The same order: the queue reads no project tag (the fleet's share is DISPATCH_FLEET_PROJECTS).
+  # The same order: the queue reads no project tag (a project's share of starts is DISPATCH_PROJECT_SHARE).
   assert_output $'d-app-urgent\na-app\nb-app-cleanup\nc-game\ne-tools'
   run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = d-app-urgent ]
@@ -1141,6 +1141,44 @@ gate_rbw() {
   run "$AQ" gate after/ar-2
   assert_failure 3
   assert_output --partial "notes board --json failed"
+}
+
+@test "gate --all clears each #hold/ row whose id, epic or plan is granted, and the tag and an ungranted row stay held (ar-5237)" {
+  gate_rbw
+  export AGENT_HOLD_DIR="$SANDBOX/holds"
+  "$REPO_ROOT/.local/bin/agent-hold" set critical --kind resource --by human "lockdown" >/dev/null
+  "$REPO_ROOT/.local/bin/agent-hold" grant critical ar-1 ar-50 plan-x >/dev/null
+  jq -n '{rows: [{id: "ar-1", state: "open", text: "fix(a): one", tags: ["hold/critical"]},
+                 {id: "ar-2", state: "open", text: "fix(b): two", tags: ["hold/critical", "of/ar-50"]},
+                 {id: "ar-3", state: "open", text: "feat(c): P1", details: ["Phase 1 of the plan /p/plan-x.md: c"], tags: ["hold/critical"]},
+                 {id: "ar-4", state: "open", text: "fix(d): four", tags: ["hold/critical", "of/ar-51"]}], done: []}' > "$NOTES_FIXTURE/board.json"
+  run "$AQ" gate --json --all
+  assert_failure 3
+  [ "$(jq -sr 'map(select(.row == null) | "\(.tag)|\(.state)") | join(" ")' <<<"$output")" = "hold/critical|pending" ]
+  [ "$(jq -sr 'map(select(.row != null) | "\(.row)|\(.state)|\(.queue)") | sort | join(" ")' <<<"$output")" = \
+    "ar-1|clear|hold:critical ar-2|clear|hold:critical ar-3|clear|hold:critical" ]
+  [[ "$(jq -sr 'map(select(.row == "ar-2")) | .[0].why' <<<"$output")" == "granted ar-50 by the critical hold" ]]
+  # Text names the row a grant clears; no grant, no row line.
+  run "$AQ" gate --all
+  assert_output --partial "(row ar-1)"
+  "$REPO_ROOT/.local/bin/agent-hold" release critical >/dev/null
+  "$REPO_ROOT/.local/bin/agent-hold" set critical --kind resource --by human "lockdown" >/dev/null
+  run "$AQ" gate --json --all
+  [ "$(jq -sr 'map(select(.row != null)) | length' <<<"$output")" = 0 ]
+}
+
+@test "a queued hold: item starts when its row, epic or plan is granted; an ungranted one stays held (ar-5237)" {
+  export AGENT_HOLD_DIR="$SANDBOX/holds"
+  legacy forms "tags: hold:critical" --project game "fill the store forms"
+  legacy other "tags: hold:critical" --project game "other work"
+  "$REPO_ROOT/.local/bin/agent-hold" set critical --kind resource --by human "lockdown" >/dev/null
+  run "$AQ" next --json
+  assert_failure
+  "$REPO_ROOT/.local/bin/agent-hold" grant critical forms >/dev/null
+  run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = forms ]
+  run "$AQ" list --state queued
+  assert_output --partial "hold:critical (since"
 }
 
 @test "gate names the fix for a dead after/: a date or time is an at/ gate, a queue item's slug is its row (ar-4471)" {
@@ -4605,6 +4643,34 @@ a"
   assert_output "gm-7,gm-9"
 }
 
+@test "at the cap a low pull or an urgent add never returns a phase of a plan chain; the plain item goes" {
+  # 2026-11-23 (ar-5357): P2 and P3 of a plan went back to their rows for low ar-4852 and urgent
+  # bar-139, and the chain stopped there.
+  printf '# P\n\n## Phases\n\n- [ ] one\n- [ ] two\n' > "$SANDBOX/plan.md"
+  # b goes in first, so it ranks before the phases and the last-ranked item is a phase.
+  "$AQ" add --project game --from shepherd --priority low --slug b "b" >/dev/null
+  "$AQ" add --project game --from shepherd --priority low --slug p2 "feat(game): P2
+Phase 2 of the plan $SANDBOX/plan.md: the doors." >/dev/null
+  legacy p3 "plan: $SANDBOX/plan.md" --project game --from shepherd --priority low "feat(game): P3"
+  for s in p2 p3 b; do "$AQ" set "$s" row="game:gm-$s" >/dev/null; done
+  export AGENT_QUEUE_CAP=3
+  AGENT_QUEUE_PULL=after run "$AQ" add --project game --priority low --from board:game:gm-9 --slug gm-9 "feat(game): the hinges"
+  assert_success
+  assert_output --partial "returned b to its board row to make room for low gm-9 under the cap of 3"
+  # What is left is the two phases and gm-9, a sibling of this pull-after (AQ_ROOM_KEEP): all held.
+  AQ_ROOM_KEEP=" gm-9" AGENT_QUEUE_PULL=after run "$AQ" add --project game --priority low --from board:game:gm-8 --slug gm-8 "feat(game): the locks"
+  assert_failure 5
+  refute_output --partial "returned p"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority urgent --slug u1 "urgent one"
+  assert_success
+  assert_output --partial "returned gm-9 to its board row"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority urgent --slug u2 "urgent two"
+  assert_failure 5
+  refute_output --partial "returned p"
+  run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
+  assert_output "p2,p3,u1"
+}
+
 @test "make_room returns an item held to a clock time, moves nothing for an add the lock refuses, and never returns an item that started" {
   "$AQ" add --project game --priority low --slug h "the human's" >/dev/null
   legacy n "tags: at:23:59" --project game --from shepherd --priority low "tonight"
@@ -4732,8 +4798,8 @@ a"
   assert_called "ptask level --agent add --detail=Run the open phases of the approved plan $SANDBOX/orphan.md in order"
   # A filer that names no priority files the row untagged, for the priority rubric to judge (ar-5255);
   # NEGATIVE CONTROL: the add default (high) tagged it before.
-  run grep -e '-- plan orphan: run its open phases' "$NOTES_FIXTURE/calls.log"
-  assert_output --regexp '-- plan orphan: run its open phases( #of/[a-z0-9-]+)?$'
+  run grep -e '-- P (plan orphan)' "$NOTES_FIXTURE/calls.log"
+  assert_output --regexp '-- P \(plan orphan\)( #of/[a-z0-9-]+)?$'
   refute_output --regexp '#(urgent|high|normal|low)'
   # From a session (dispatch with AGENT_QUEUE_ITEM inherited) the filer is not refused for naming none.
   CLAUDE_CODE_SESSION_ID=s1 run "$AQ" add --plan "$SANDBOX/orphan.md" --project level --from auto:plans
@@ -5138,7 +5204,7 @@ already"
   run grep -- '--agent add' "$NOTES_FIXTURE/calls.log"
   assert_output --partial " --origin plan -- "
   # A filer that does name one keeps it.
-  assert_output --partial "plan orig: run its open phases #low"
+  assert_output --partial "P (plan orig) #low"
 }
 
 # ar-3852: an after: on an item that is live with an open PR is stacked, not held.

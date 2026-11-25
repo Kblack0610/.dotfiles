@@ -1,7 +1,7 @@
 ---
 name: inbox-report
 description: >-
-  File a report for the human with `notes report add`: listed in that day's refs index, one click from the daily note. Use for "put a report in my inbox", "I want a report tomorrow morning", "send me the writeup". Short pages: agent-notify; wording: comms-standard.
+  File a report for the human with `notes report add`: read in the Reports tab (agent-web Today, hub TUI). Use for "put a report in my inbox", "I want a report tomorrow morning", "send me the writeup". Short pages: agent-notify; wording: comms-standard.
 metadata:
   category: messaging
   tags: [report, notes, refs, inbox]
@@ -28,6 +28,7 @@ Not for a short alert (`agent-notify`), the daily briefing (`agentctl-briefing` 
 4. Check the prose: `comms-lint --channel report - <<< "<summary>"` and `python3 ~/.claude/skills/de-ai-writing/scripts/check.py <body>`. Fix what they flag.
 5. File it: `notes report add --title '<title>' --summary "<summary>" --body <body> [--date <date>] [--slug <slug>] [--needs-you]`. It refuses a missing title or summary, a summary over five lines and non-ASCII text, then rebuilds the day's index. The same slug on the same day revises the report and marks it unread again.
 6. Page only when it needs the human (`--needs-you`): `agent-notify -p normal -t '<title>' '<the one thing they must do> - <id>'`, after `comms-lint --channel page` passes on the message. A report the human reads at leisure does not page; the Reports tab's unread count is the signal.
+7. Tell the human where it is, in the conversation and in any page: the report's title, in the Reports tab (agent-web Today -> Reports, or the hub TUI Reports tab). The `refs/<date>/` folder is storage: never give its path as the place to read it, and never call it, or `~/.notes/inbox/` (the human's own captures), "the inbox". Why: a session sent the human to a refs path as "today's inbox" (2026-11-24).
 
 ## Do NOT
 
@@ -35,3 +36,4 @@ Not for a short alert (`agent-notify`), the daily briefing (`agentctl-briefing` 
 - Leave it under `/tmp`, a scratch dir or `~/.cache`: the human cannot click to those, and tmpfs is gone on reboot.
 - File one report per item of a set: one report with a table, so the day's index stays short.
 - Repeat the report in a page: a page points at a report, never restates it.
+- Point the human at a file path: name the report and the Reports tab (step 7).
