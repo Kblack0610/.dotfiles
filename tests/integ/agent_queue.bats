@@ -2636,7 +2636,7 @@ EOF
   [ "$(field "$f" phases)" = 2 ]
   [ "$(field "$f" priority)" = high ]
   [ "$(field "$f" tags)" = ui ]
-  [ "$(field "$f" title)" = "my-plan P2: Second thing: details" ]
+  [ "$(field "$f" title)" = "Second thing: details (P2, A plan)" ]
   [ "$(field "$f" row)" = level:lv-2 ]
   grep -qF "Phase 2 of the plan $SANDBOX/my-plan.md: Second thing. Read the plan whole, then do ONLY this phase, to merged." "$f"
   assert_line 'held my-plan-p4 -> level:lv-3 (#after/lv-2)'
@@ -2708,7 +2708,7 @@ EOF
   assert_success
   f="$(item queued marked-p3)"
   [ "$(field "$f" after)" = "" ]
-  [ "$(field "$f" title)" = "marked P3: Third thing: runs beside 2" ]
+  [ "$(field "$f" title)" = "Third thing: runs beside 2 (P3)" ]
   [ "$(field "$(item queued marked-p8)" after)" = "" ]
   assert_line 'held marked-p4 -> level:lv-4 (#after/lv-2)'
   assert_line 'held marked-p6 -> level:lv-5 (#after/lv-4)'
@@ -2847,7 +2847,7 @@ EOF2
   AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/labelled.md" --project level
   assert_success
   [ "$(field "$(item queued labelled-p7)" phases)" = 7 ]
-  [ "$(field "$(item queued labelled-p7)" title)" = "labelled P7: Check a thing first" ]
+  [ "$(field "$(item queued labelled-p7)" title)" = "Check a thing first (P7)" ]
   assert_line 'held labelled-p8 -> level:lv-3 (#after/lv-2)'
   assert_line 'held labelled-p10 -> level:lv-4 (#after/lv-3)'
   # The ticked box and the open phase are read by the same number: p9 landed, p8 did not.
@@ -4262,12 +4262,12 @@ notes --profile work ptask level run lv-8'
 @test "a plan item's story takes the plan's epic and a heavy item is sized m" {
   story_notes
   printf '%s\n' 'epic: lv-3' '## Phases' '- [ ] P1 one' > "$SANDBOX/lv.md"
-  echo 'feat(level): lv P1: one' > "$NOTES_FIXTURE/propose.out"
+  echo 'feat(level): one (P1)' > "$NOTES_FIXTURE/propose.out"
   run "$AQ" add --plan "$SANDBOX/lv.md" --project game --weight heavy --slug lvp
   assert_success
-  run grep -c -- '--agent propose -- lv P1: one$' "$NOTES_FIXTURE/calls.log"
+  run grep -c -- '--agent propose -- one (P1)$' "$NOTES_FIXTURE/calls.log"
   assert_output 1
-  run grep -c -- "--agent add --detail=Phase 1 of the plan $SANDBOX/lv.md: one\. .* -- feat(level): lv P1: one #high #of/lv-3$" "$NOTES_FIXTURE/calls.log"
+  run grep -c -- "--agent add --detail=Phase 1 of the plan $SANDBOX/lv.md: one\. .* -- feat(level): one (P1) #high #of/lv-3$" "$NOTES_FIXTURE/calls.log"
   assert_output 1
   [ "$(field "$(item queued lvp-p1)" row)" = level:lv-9 ]
 }
@@ -4769,7 +4769,7 @@ Phase 2 of the plan $SANDBOX/plan.md: the doors." >/dev/null
   # add_plan queues P1 and files P2 on its board row behind #after/, its brief the real writer's.
   run "$AQ" add --plan "$SANDBOX/pp.md" --project level --priority low --slug pp
   assert_output --partial "held pp-p2 -> level:"
-  brief=$(sed -n 's/.*--agent add --detail=\(Phase 2 of the plan .*: two\. .*\) -- pp P2: two .*/\1/p' "$NOTES_FIXTURE/calls.log")
+  brief=$(sed -n 's/.*--agent add --detail=\(Phase 2 of the plan .*: two\. .*\) -- two (P2) .*/\1/p' "$NOTES_FIXTURE/calls.log")
   [[ "$brief" == "Phase 2 of the plan $SANDBOX/pp.md: two. "* ]] || fail "no P2 brief in calls.log: $brief"
   export AGENT_QUEUE_CAP=1 AGENT_QUEUE_PULL=dispatch
   # Negative controls: the brief naming a plan file that is gone, a row that only mentions a plan,
