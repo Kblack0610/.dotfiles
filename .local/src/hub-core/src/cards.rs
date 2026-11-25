@@ -967,7 +967,8 @@ pub fn projects(p: &crate::projects::Projects) -> Card {
     let mut c = Card::new(
         "projects",
         "Projects",
-        "lab projects with their board slice and queue (notes projects --stats)",
+        "lab projects with their board slice and queue (notes projects --stats); growing is the \
+         projects whose board filed more points than it closed in the last 7 days (day-log)",
     )
     .part(
         "In flight",
@@ -982,6 +983,12 @@ pub fn projects(p: &crate::projects::Projects) -> Card {
             .count(),
         Level::Ok,
     );
+    // The board's growth, per project (`board_flow`): left out when no day-log record carries
+    // points, since a count of none read is not a count of zero.
+    if cards.iter().any(|c| c.board_7d.is_some()) {
+        let n = cards.iter().filter(|c| c.growing()).count();
+        c = c.part("Growing", n, lvl(n, Level::Warn));
+    }
     // Every project counted is one green: a bar of one segment would repeat the big number.
     c.level = worst(0, 0, cards.len());
     c.big = cards.len().to_string();
@@ -2064,6 +2071,29 @@ mod tests {
             "#projects/busy"
         );
         assert_eq!(projects(&Default::default()).level, Level::Nodata);
+        // The board's growth is a part only once a day-log record has points: no reading is no
+        // part, never a 0.
+        assert!(c.parts.iter().all(|p| p.label != "Growing"));
+        let grew = |net: i64| crate::projects::Card {
+            board_7d: Some(crate::board_flow::BoardFlow {
+                net,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let read = projects(&crate::projects::Projects {
+            cards: vec![grew(120), grew(-5), grew(0), grew(7)],
+            ..Default::default()
+        });
+        let growing = read.parts.iter().find(|p| p.label == "Growing").unwrap();
+        assert_eq!((growing.value.as_str(), growing.level), ("2", Level::Warn));
+        // Nothing grew: the part reads 0 and is green (Home's grid then leaves it out).
+        let calm = projects(&crate::projects::Projects {
+            cards: vec![grew(-5), grew(0)],
+            ..Default::default()
+        });
+        let growing = calm.parts.iter().find(|p| p.label == "Growing").unwrap();
+        assert_eq!((growing.value.as_str(), growing.level), ("0", Level::Ok));
         // A read that failed is said, and a green card never hides it.
         let c = projects(&crate::projects::Projects {
             errors: vec!["notes projects: exit 1".into()],
