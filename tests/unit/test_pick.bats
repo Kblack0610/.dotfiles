@@ -212,11 +212,17 @@ setup() {
 
 # watch_bind.bats asserts binds only through panel.bash's bind_for, which reads TMUX_CONF, so #2276's
 # .tmux.conf change was not picked and passed CI against the old bind (ar-2652).
-@test "picker: a test that loads a helper is picked by the repo file that helper defaults a variable to" {
+@test "picker: a test that loads a helper is picked by the repo path that helper gives as a default" {
   . "$REPO_ROOT/.local/lib/test-pick.sh"
   run test_picked .tmux.conf tests/integ/x.bats <<<$'load \'../helpers/panel\'\nassert_equal "$(bind_for P)" x'
   assert_success
   run test_picked .tmux.conf tests/integ/watch_bind.bats <"$REPO_ROOT/tests/integ/watch_bind.bats"
+  assert_success
+  # A $TESTS_DIR default (panel.bash's PANEL_MANIFEST) and a directory default given to a function
+  # argument (hypr.bash: "${2:-$REPO_ROOT/.config/hypr}"), for a file anywhere under it.
+  run test_picked tests/panels.manifest tests/integ/x.bats <<<$'load \'../helpers/panel\'\nrun true'
+  assert_success
+  run test_picked .config/hypr/conf/x.lua tests/unit/x.bats <<<$'load \'../helpers/hypr\'\nrun hypr_dump rules'
   assert_success
   # Negative controls: the same test for another file, and a test that loads a helper with no such
   # variable (sandbox.bash names its scripts only for the tests that use them).
