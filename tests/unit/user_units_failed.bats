@@ -11,13 +11,15 @@ setup() {
   cat > "$BATS_TEST_TMPDIR/bin/systemctl" <<'EOF'
 #!/usr/bin/env bash
 [ -z "${STUB_SYSTEMCTL_FAIL-}" ] || { echo "Failed to connect to bus: No medium found" >&2; exit 1; }
+# show -p Transient --value <unit>: yes for a unit named in $STUB_TRANSIENT
+if [ "$2" = show ]; then grep -qxF -- "${!#}" "$STUB_TRANSIENT" 2>/dev/null && echo yes || echo no; exit 0; fi
 cat "$STUB_FAILED"
 EOF
   chmod +x "$BATS_TEST_TMPDIR/bin/systemctl"
-  export PATH="$BATS_TEST_TMPDIR/bin:$PATH" STUB_FAILED="$BATS_TEST_TMPDIR/failed"
+  export PATH="$BATS_TEST_TMPDIR/bin:$PATH" STUB_FAILED="$BATS_TEST_TMPDIR/failed" STUB_TRANSIENT="$BATS_TEST_TMPDIR/transient"
   : > "$STUB_FAILED"
   # The watch's exclude list (its expect_cmd in ~/.agent/watches/systemd-user-failed.yaml).
-  EXCLUDES=(--exclude 'agentctl@*' --exclude 'app-*' --exclude 'run-*')
+  EXCLUDES=(--exclude 'agentctl@*' --exclude 'app-*' --exclude 'run-*' --exclude-transient)
 }
 
 failed() { printf '%s loaded failed failed %s\n' "$1" "${2:-unit}" >> "$STUB_FAILED"; }
@@ -73,4 +75,17 @@ failed() { printf '%s loaded failed failed %s\n' "$1" "${2:-unit}" >> "$STUB_FAI
 @test "an unknown argument is a usage error" {
   run "$BIN" --nope
   assert_failure 2
+}
+
+@test "--exclude-transient leaves out a named systemd-run unit the run-* glob misses, never a real unit" {
+  failed ar-3634-backlog-dry-0140.service
+  failed git-sync-notes.service
+  echo ar-3634-backlog-dry-0140.service > "$STUB_TRANSIENT"
+  run "$BIN" "${EXCLUDES[@]}"
+  assert_failure 1
+  assert_output "git-sync-notes.service"
+  # negative control: without the flag the transient unit trips it too
+  run "$BIN" --exclude 'run-*'
+  assert_output "ar-3634-backlog-dry-0140.service
+git-sync-notes.service"
 }
