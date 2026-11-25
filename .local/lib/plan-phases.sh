@@ -275,6 +275,30 @@ plan_row_task() {
   printf "Run the open phases of the approved plan %s in order, one PR each, marking each done in the plan's ## Phases." "$1"
 }
 
+# plan_row_title <plan file> -> the title of that row: the plan's first `# ` heading (outside a leading
+# `---` frontmatter block and code fences), then `(plan <slug>)`, the heading cut at a word so the
+# whole fits the agent board's 80-character title (notes-cli TITLE_MAX). A plan with no heading, or a
+# slug too long to leave 20 characters for one, gets `plan <slug>: run its open phases`, slug first:
+# ask-sweep finds a plan's row by its slug, so a cut must never reach it. `#`, `<` and `>` are
+# dropped, or the heading would add tags or a marker. Why: slugs are session names
+# ("swirling-sprouting-knuth"), and the human could not tell what a row was for (2026-11-24, ar-5348).
+plan_row_title() {
+  local slug h room
+  slug=$(basename "$1" .md)
+  room=$((80 - ${#slug} - 8))
+  h=$(awk 'NR == 1 && /^---[[:space:]]*$/ { fm = 1; next }
+    fm { if (/^---[[:space:]]*$/) fm = 0; next }
+    /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
+    !fence && /^# +[^[:space:]]/ { sub(/^# +/, ""); print; exit }' "$1" 2>/dev/null |
+    LC_ALL=C tr -d '#<>' | LC_ALL=C tr -cd '\40-\176' | sed 's/  */ /g; s/^ //; s/ $//')
+  if [ -z "$h" ] || [ "$room" -lt 20 ]; then printf 'plan %s: run its open phases\n' "$slug"; return 0; fi
+  if [ "${#h}" -gt "$room" ]; then
+    if [ "${h:room:1}" = ' ' ]; then h="${h:0:room}"; else h="${h:0:room}"; h="${h% *}"; fi
+    h=$(sed 's/[ :,;-]*$//' <<<"$h")
+  fi
+  printf '%s (plan %s)\n' "$h" "$slug"
+}
+
 # plan_row_plan <text> -> the plan a plan row's brief names (plan_row_task), whether or not that file
 # still exists (a caller that queues it checks); nothing for any other text.
 plan_row_plan() {

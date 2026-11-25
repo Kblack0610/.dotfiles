@@ -94,8 +94,8 @@ plan_rows_hold() {
 }
 
 # file_plan <board> <project> <plan-file>: the plan's row within the run's cap, filed as fleet-dispatch's
-# reconcile_plans files one: agent-queue add --plan from a filer puts one untagged row on the board (the priority rubric judges it), "plan
-# <slug>: run its open phases", and exits 5; dispatch's promote turns it into the plan's chain. It is
+# reconcile_plans files one: agent-queue add --plan from a filer puts one untagged row on the board (the priority rubric judges it),
+# titled by plan_row_title, and exits 5; dispatch's promote turns it into the plan's chain. It is
 # no human's want, so it carries no #requested. Returns 1 when not filed. A plan agent-queue refuses (a
 # Phases checklist it cannot read) is its author's fault, not the sweep's: it gets one `fix(plan)` row
 # on its board naming its slug and agent-queue's reason, inside the cap like any row, so that board owns
@@ -106,7 +106,7 @@ file_plan() {
   if [ "$FILED" -ge "$ASK_SWEEP_MAX" ]; then OVER=$((OVER + 1)); return 1; fi
   slug="$(basename "$planf" .md)"
   if [ "$DRY" = 1 ]; then
-    FILED=$((FILED + 1)); printf 'would file [%s] plan %s: run its open phases\n' "$board" "$slug"; return 0
+    FILED=$((FILED + 1)); printf 'would file [%s] %s\n' "$board" "$(plan_row_title "$planf")"; return 0
   fi
   out=$(agent-queue add --plan "$planf" --project "$p" --from auto:ask-sweep 2>&1 </dev/null) || rc=$?
   if [ "$rc" -eq 0 ] || [ "$rc" -eq 5 ]; then FILED=$((FILED + 1)); return 0; fi
