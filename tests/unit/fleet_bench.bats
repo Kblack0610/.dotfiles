@@ -1784,6 +1784,27 @@ board_row() { printf 'board.md\t5\t%s\t- [%s] %s\n' "${2,,}" "$1" "$2" >> "$BOAR
   assert_output WORKED
 }
 
+@test "triage: a started watch row no live item holds closes on recovery; one a live item holds stays" {
+  triage_setup
+  export TRIAGE_ITEMS_CMD=items-stub; ITEMS="$SANDBOX/items.jsonl"
+  printf '#!/usr/bin/env bash\ncat %q\n' "$ITEMS" > "$SANDBOX/bin/items-stub"; chmod +x "$SANDBOX/bin/items-stub"
+  watch drift OK -90000 normal
+  watch load OK -90000 normal
+  board_row '/' 'check(watch): drift tripped since 2026-11-01, expected: drift is healthy. <!-- id:ar-9001 -->'
+  board_row '/' 'check(watch): load tripped since 2026-11-01, expected: load is healthy. <!-- id:ar-9002 -->'
+  # ar-9001's item closed with no PR; ar-9002's is still running
+  printf '%s\n' '{"slug":"red-drift","state":"done","status":"ok","row":"agent-runtime:ar-9001"}' \
+    '{"slug":"red-load","state":"running","row":"agent-runtime:ar-9002"}' > "$ITEMS"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line 'retire: check(watch): drift tripped since'
+  refute_line 'retire: check(watch): load tripped since'
+  # negative control: the queue cannot be read, so neither started row closes
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/items-stub"
+  run "$SUBJECT" triage --dry-run
+  refute_line --partial 'retire: check(watch)'
+}
+
 @test "triage: a recovered watch's row on the human sheet closes too; a still-red watch's is not retired" {
   triage_setup
   watch drift OK -90000 normal
@@ -2177,6 +2198,35 @@ cause_of() { printf '%s' 'lock .* held by pid' | sha256sum | cut -c1-8; }
   rm "$BOARD"; printf 'board.md\t1\tother task\t- [ ] other task #low\n' > "$BOARD"
   run "$SUBJECT" triage
   [ ! -s "$PLOG" ]
+}
+
+@test "triage: a started red row whose item closed with no PR goes back to todo and is queued again; a refusal is said" {
+  log_triage_setup
+  lock_route
+  run "$SUBJECT" triage
+  assert_success
+  # started by an item that has since closed with no PR, the row naming its id
+  sed -i 's/- \[ \] \(fix(logs).*\)$/- [\/] \1 <!-- id:ar-9123 -->/' "$BOARD"
+  printf '%s\n' '{"slug":"red-lock","state":"done","status":"ok","row":"agent-runtime:ar-9123"}' > "$ITEMS"; : > "$PLOG"
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c -- '--agent unstart --exact -- - \[/\] fix(logs)' "$NLOG"
+  assert_output 1
+  run cat "$PLOG"
+  assert_output --regexp '--raw - \[ \] fix\(logs\): alpha error .*id:ar-9123'
+  # negative control: an item still holds the row, so it is neither put back nor queued
+  sed -i 's/- \[ \] \(fix(logs)\)/- [\/] \1/' "$BOARD"; : > "$PLOG"; : > "$NLOG"
+  printf '%s\n' '{"slug":"red-lock","state":"running","row":"agent-runtime:ar-9123"}' > "$ITEMS"
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c -- 'unstart' "$NLOG"
+  assert_output 0
+  [ ! -s "$PLOG" ]
+  # a promote that refuses says why instead of dropping it
+  : > "$ITEMS"; sed -i 's/- \[\/\] \(fix(logs)\)/- [ ] \1/' "$BOARD"
+  printf '#!/usr/bin/env bash\necho "row is not todo" >&2; exit 4\n' > "$SANDBOX/bin/promote-stub"
+  run "$SUBJECT" triage
+  assert_output --partial 'not queued: row is not todo'
 }
 
 @test "triage: a high or urgent watch is a row after one pass; a low one after 30 minutes, the hour it trips" {

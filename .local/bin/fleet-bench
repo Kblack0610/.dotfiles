@@ -5555,8 +5555,17 @@ triage_promote() {
     more=''; [ "$tries" -eq 0 ] || more=" retry:$(cause_slugs "$items" "$cause" "$trip")"
     model=(); [ "$tries" -lt "$TRIAGE_FIX_TRIES" ] || { more=" escalate$more"; model=(--model "$TRIAGE_ESCALATE_MODEL"); }
     raw=$(awk -F'\t' -v p="${key,,}" 'index($3, p) == 1 { print $4; exit }' <<<"$board")
+    # A started row no live item holds (its item closed with no PR) goes back to todo, so its red is
+    # queued again; one an item holds is that item's (cause_tries saw it in hand).
+    if [[ "$raw" == '- [/]'* ]] && ! row_in_hand "$items" "$raw"; then
+      $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent unstart --exact -- "$raw" >/dev/null 2>&1 \
+        || { say "triage: could not put $key back to todo"; continue; }
+      raw="- [ ]${raw#- \[/\]}"
+    fi
     [[ "$raw" == '- [ ]'* ]] || continue
-    $TRIAGE_PROMOTE_CMD --agent --dispatch --project "$KPI_BOARD" "${model[@]}" --tags "red$kind cause:$cause$more${tags:+ $tags}" --raw "$raw" >/dev/null 2>&1 || continue
+    local perr
+    perr=$($TRIAGE_PROMOTE_CMD --agent --dispatch --project "$KPI_BOARD" "${model[@]}" --tags "red$kind cause:$cause$more${tags:+ $tags}" --raw "$raw" 2>&1 >/dev/null) \
+      || { say "triage: $key not queued: $(head -1 <<<"${perr:-no reason given}")"; continue; }
     n=$((n + 1)); [ -n "$kind" ] || capped=$((capped + 1))
   done <<<"$1"
   triage_spent_write "$spent"
@@ -6032,7 +6041,19 @@ alerts_readable() {
   if [ "$s" = OK ] || { [ "$s" = TRIP ] && [ -n "$(triage_alerts)" ]; }; then echo 1; else echo 0; fi
 }
 
-# triage_retire <dry> -> closes each check(watch), fix(hold), fix(logs) or fix(unit) row nobody started whose
+# row_in_hand <items json> <raw row> -> rc 0 when a live queue item (queued, running, waiting, review)
+# holds the row its id names, when the row names no id, or when the items cannot be read. A `[/]` row
+# held by none is orphaned: its item closed (ok with no PR, cancelled) and nothing works it, so triage
+# treats it as a todo row (ar-4415, ar-4654: six such rows sat open on watches that read OK).
+row_in_hand() {
+  local rc
+  [[ $2 =~ id:([a-z]+-[0-9]+) ]] || return 0
+  jq -e --arg id "${BASH_REMATCH[1]}" 'any(.[]; (.state | IN("queued", "running", "waiting", "review"))
+    and ((.row // "") | . == $id or endswith(":" + $id)))' <<<"$1" >/dev/null 2>&1
+  rc=$?; [ "$rc" != 1 ]
+}
+
+# triage_retire <dry> -> closes each check(watch), fix(hold), fix(logs) or fix(unit) row nobody works (todo, or started with no live item: row_in_hand) whose
 # key left reds_live, so a recovered fault stops reading as a red; if it comes back, triage files it
 # again. Only a reading that says "not red" closes a row. These stay open: every row when the queue or the
 # board cannot be read, a watch whose probe could not run (ERROR), a log row log_recent does not read
@@ -6066,7 +6087,8 @@ triage_retire() {
     case $key in 'check(watch): '* | 'check(alert): '* | 'fix(hold): '* | 'fix(logs): '* | 'fix(unit): '*) ;; *) continue ;; esac
     runner=; [[ $key =~ ^fix\(logs\):\ ([^ ]+) ]] && runner=${BASH_REMATCH[1]}
     [ "$scope" != - ] || scope=
-    [[ $raw == '- [ ]'* ]] && ! grep -qxF -- "$key" <<<"$live" || continue
+    ! grep -qxF -- "$key" <<<"$live" || continue
+    [[ $raw == '- [ ]'* ]] || { [[ $raw == '- [/]'* ]] && ! row_in_hand "$items" "$raw"; } || continue
     [[ $key == 'check(alert): '* ]] && [ "$alerts_read" = 0 ] && continue
     if [[ $key == 'fix(logs): '* ]]; then
       [ "$logs_read" = 1 ] && grep -qxF -- "runner $runner" <<<"$recent" && ! grep -qxF -- "$key" <<<"$recent" || continue

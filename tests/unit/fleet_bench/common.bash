@@ -140,6 +140,8 @@ case "$4" in
         awk -F'\t' -v OFS='\t' -v q="$5" -v t="$7" 'index($3, q) { $3 = tolower(t); $4 = "- [ ] " t } 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
   drop) [ "$6" = --why ] || exit 8
         awk -F'\t' -v q="$5" 'index($3, tolower(q)) != 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
+  unstart) [ "$5 $6" = "--exact --" ] || exit 8   # a started row back to todo, found by its raw text
+        awk -F'\t' -v OFS='\t' -v r="$7" '$4 == r { $4 = "- [ ]" substr($4, 6) } 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
   done) [ "$6" = --proof ] || exit 8
         [ ! -e "$B.done-fails" ] || exit 1
         awk -F'\t' -v q="$5" 'index($3, q) != 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
