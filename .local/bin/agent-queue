@@ -476,8 +476,9 @@ finished_ok() {
 # row an ok close cleared (AGENT_QUEUE_PULL=after).
 # Provisional, confidence low (rules.jsonl): 30 keeps the queued age p90 under its bound
 # (step_age_p90_queued_max, 420m since ar-4471) at the rate the oldest items drain, about 4.3 an hour on
-# 2026-11-24 (45 queued, p90 9.5h at the old 50), not the 7.6 an hour mean that sized 50 (ar-4554);
-# revisit when queued age p90 stays over it at the cap.
+# 2026-11-24 (45 queued, p90 9.5h at the old 50), not the 7.6 an hour mean that sized 50 (ar-4554).
+# Re-measure from the queued row of `fleet-bench pipeline`: the tail rate is 0.9 x wip / age p90.
+# Revisit when queued age p90 stays over it at the cap.
 AQ_EX_HELD=5
 AQ_CAP="${AGENT_QUEUE_CAP:-30}"
 AQ_HELD_DAYS=7
