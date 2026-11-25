@@ -75,10 +75,14 @@ seen() {
     | from_entries' "$RECORD" 2>/dev/null || echo '{}'
 }
 
+# refused <project> <why> <text>: the row could not be planned, and the record keeps it from being
+# tried every pass. It counts as declined, so the pass is BLOCKED; a caller whose refusal is this
+# script's fault, not the row's, also returns 1, which keeps the pass FAILED.
 refused() {
   say "$1: $3 ($2)"
   proof_why "$1: $2"
   FAILED=$((FAILED + 1))
+  DECLINED=$((DECLINED + 1))
   [ "$DRY" = 1 ] || notes ingest record --action refused --from "$1" --why "$2" -- "$3" >/dev/null 2>&1
 }
 
@@ -119,12 +123,12 @@ plan_row() {
     FAILED=$((FAILED + 1)); return 1
   fi
   ans="$(sed -n '/^INBOX-PLAN-START$/,/^INBOX-PLAN-END$/p' <<<"$out" | sed '1d;$d' | jq -c -n '[inputs | select(type == "object")] | .[:1][]' 2>/dev/null)"
-  [ -n "$ans" ] || { refused "$p" "the model returned no plan" "$text"; return 1; }
+  [ -n "$ans" ] || { refused "$p" "the model returned no plan" "$text"; return 0; }
 
   local goal size new d r n=0 why
   local -a dets=() rows=()
   goal="$(jq -r '.goal // "" | tostring' <<<"$ans" | clean 200)"
-  [ -n "$goal" ] || { refused "$p" "the plan had no goal" "$text"; return 1; }
+  [ -n "$goal" ] || { refused "$p" "the plan had no goal" "$text"; return 0; }
   dets=(--detail "goal: $goal")
   while IFS= read -r d; do d="$(clean 200 <<<"$d")"; [ -n "$d" ] && dets+=(--detail "approach: $d"); done \
     < <(jq -r '[.approach[]? | strings] | .[:6][]' <<<"$ans")
@@ -151,8 +155,12 @@ plan_row() {
     echo; return 0
   fi
   local err rc
+  # A row edited while the model ran (a board pass re-ranked it) no longer matches $raw: the row's
+  # change, not a fault here. Any other refusal from edit is one (ar-3577's parent guard was).
   if ! { err="$(notes ptask "$p" "${lanes[@]}" --exact edit --text "$new" "${dets[@]}" -- "$raw" 2>&1 1>&3)"; } 3>&1; then
-    refused "$p" "$(tail -n 1 <<<"${err:-not edited}" | clean 160)" "$text"; return 1
+    refused "$p" "$(tail -n 1 <<<"${err:-not edited}" | clean 160)" "$text"
+    [[ "$err" == *"no open task matches"* ]] && return 0
+    return 1
   fi
   PLANNED=$((PLANNED + 1))
   if [ "${#tags[@]}" -gt 0 ] && ! notes ptask "$p" "${lanes[@]}" tag "${tags[@]}" -- "$id" >/dev/null; then
@@ -204,7 +212,6 @@ hold_row() {
   # refusal is recorded so the row is not tried every pass, and the pass reports BLOCKED, not FAILED.
   if [[ "$out" == *"already finished ok"* ]]; then
     refused "$p" "not held: $(grep -m1 'already finished ok' <<<"$out" | clean 140)" "$text"
-    DECLINED=$((DECLINED + 1))
     return 0
   fi
   # A row gated on something that clears (a pending ask, an #after/ PR) is not ready yet, and nothing

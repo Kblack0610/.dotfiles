@@ -162,17 +162,33 @@ record() { cat "$HOME/.local/state/notes/ingest.jsonl" 2>/dev/null; }
   sheet '- [ ] feat(brand): a brand kit #plan <!-- id:sc-1 -->\n'
   answer '{"approach": ["something"]}'
   run "$PLAN"
-  assert_failure
+  assert_success
   assert_output --partial 'refused 1'
   run cat "$SHEET"
   assert_output --partial '#plan'
   run record
   assert_output --regexp '"action":"refused".*the plan had no goal'
-  grep -q 'outcome=FAILED .*why: scratch: the plan had no goal$' "$HOME/.local/state/agentctl/inbox-plan/activity.log"
+  assert_equal "$(outcome)" BLOCKED
+  run tail -n 1 "$HOME/.local/state/agentctl/inbox-plan/activity.log"
+  assert_output --regexp 'outcome=BLOCKED .*why: scratch: the plan had no goal$'
   run "$PLAN"
   assert_success
   assert_output --partial 'planned 0'
   [ "$(wc -l <"$NOTES_FIXTURE/model.log")" = 1 ] || fail "asked the model again"
+}
+
+@test "a row re-ranked while the model ran is refused and recorded, and the pass is BLOCKED, not FAILED" {
+  # 2026-11-24: a board pass re-ranked three unity-core-playground rows mid-call, so edit found no
+  # row matching the one read, and fleet-liveness went red on inbox-plan (ar-2129).
+  sheet '- [ ] feat(brand): a brand kit #plan #high <!-- id:sc-1 -->\n'
+  answer '{"goal": "one kit", "approach": ["collect the assets"], "checks": [], "size": "s", "split": []}'
+  printf '#!/usr/bin/env bash\nsed -i "s/#high/#low/" "%s"\ncat "$NOTES_FIXTURE/model.out"\n' "$SHEET" >"$SANDBOX/bin/model-stub"
+  run "$PLAN"
+  assert_success
+  assert_output --partial 'planned 0, split into 0 rows, refused 1'
+  assert_equal "$(outcome)" BLOCKED
+  run record
+  assert_output --regexp '"action":"refused".*no open task matches'
 }
 
 @test "a failed model call keeps its stderr in the log and its first words in the outcome" {
