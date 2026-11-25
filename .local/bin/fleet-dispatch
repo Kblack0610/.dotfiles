@@ -5951,17 +5951,18 @@ load_findings() {
 }
 
 # landing_deep -- DEEP_LANDING is "<repo> <depth>" for each repo whose landing queue holds more than
-# DISPATCH_LANDING_QUEUE_MAX PRs (empty is off), read once a pass from the fleet state document: the deepest
+# DISPATCH_LANDING_QUEUE_MAX PRs (empty or 0 is off), read once a pass from the fleet state document: the deepest
 # landing_queue a session row of that repo carries (fleet-sessions counts the PRs labeled
-# FLEET_QUEUE_LABEL in the PR store, on each row waiting its landing turn). A missing or stale
-# document names none, as freed_item reads it, since pace_target already holds every start on one.
+# FLEET_QUEUE_LABEL in the PR store, on each row waiting its landing turn, so a queue no live session
+# waits in reads as none). A missing or stale document names none, as freed_item reads it, since
+# pace_target already holds every start on one.
 # Why: on 2026-11-24 30 to 45 unity-core-playground PRs waited in the queue, waits passed 3h, and
 # dispatch kept starting the repo's items; the human's answer (ask xxrlO7, ar-5306) was to hold new
 # starts for a repo while its queue is over 15 PRs and resume below it.
 landing_deep() {
   [ "${DEEP_LANDING+set}" = set ] && return 0
   DEEP_LANDING=''
-  [[ "${DISPATCH_LANDING_QUEUE_MAX:-}" =~ ^[0-9]+$ ]] || return 0
+  [[ "${DISPATCH_LANDING_QUEUE_MAX:-}" =~ ^[0-9]+$ ]] && [ "$DISPATCH_LANDING_QUEUE_MAX" -gt 0 ] || return 0
   local p d r
   while IFS=$'\t' read -r p d; do
     r=$(item_repo "$p"); [ -n "$r" ] && DEEP_LANDING+="$r $d"$'\n'
@@ -6552,7 +6553,9 @@ finding_hold() {
 # razer laptop held 6 unity-core-playground items for 7h with the box 80% idle.
 # Admission holds as capacity does: the admitted slots are full, so another session's gate only queues behind them (ar-3132).
 # A landing queue deeper than DISPATCH_LANDING_QUEUE_MAX (landing_deep) holds its repo's items too, all
-# but an urgent one: gate-line.py seats an urgent PR ahead of the queue, so it does not wait behind it.
+# but an urgent one (gate-line.py seats an urgent PR ahead of the queue, so it does not wait behind it),
+# a red one (the red on main is often why the queue backs up) and the human's own ask (human_ask), the
+# items the fleet share cap lets through too.
 held_by() {
   local repo f rule scope d out=()
   repo=$(item_repo "$(jq -r .project <<<"$1")")
@@ -6565,8 +6568,10 @@ held_by() {
     esac
     out+=("$rule $scope")
   done <<<"$2"
-  if [ -n "$repo" ] && [ -n "${DEEP_LANDING:-}" ] && [ "$(jq -r .priority <<<"$1")" != urgent ]; then
-    d=$(awk -v r="$repo" '$1 == r { print $2; exit }' <<<"$DEEP_LANDING")
+  if [ -n "$repo" ] && [ -n "${DEEP_LANDING:-}" ] && ! jq -e "$HUMAN_ASK_JQ"'
+      .priority == "urgent" or ((" " + (.tags // "") + " ") | contains(" red ")) or human_ask' <<<"$1" >/dev/null; then
+    # Two projects on one repo give a line each: the deepest is the repo's.
+    d=$(awk -v r="$repo" '$1 == r && $2 > m { m = $2 } END { if (m) print m }' <<<"$DEEP_LANDING")
     [ -z "$d" ] || out+=("landing queue $repo $d PRs over $DISPATCH_LANDING_QUEUE_MAX")
   fi
   [ ${#out[@]} -eq 0 ] || (IFS=,; echo "${out[*]}")

@@ -169,7 +169,7 @@ landing_rows() {
 
 # 2026-11-24: 30 to 45 unity-core-playground PRs sat in the landing queue, waits passed 3h, and dispatch kept
 # starting the repo's items (ar-5306); the human's answer (ask xxrlO7) was to hold them while it is over 15.
-@test "a landing queue over DISPATCH_LANDING_QUEUE_MAX holds its repo's items but an urgent one, and they start again at the max" {
+@test "a landing queue over DISPATCH_LANDING_QUEUE_MAX holds its repo's items but an urgent or red one, and they start again at the max" {
   two_items
   export DISPATCH_LANDING_QUEUE_MAX=15
   landing_rows game 12 16
@@ -185,6 +185,12 @@ landing_rows() {
   assert_success
   assert_output --partial 'started queue item urgent-1'
   [ -n "$(qitem queued fix-game)" ] || fail "the high item stays held"
+  # So does a red one: the red on main is often why the queue backs up.
+  agent-queue add --project game --slug red-1 --priority high --tags red "fix main"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item red-1'
+  [ -n "$(qitem queued fix-game)" ] || fail "the plain high item stays held"
   # At the max it no longer holds.
   landing_rows game 15
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
@@ -192,14 +198,14 @@ landing_rows() {
   assert_output --partial 'started queue item fix-game'
 }
 
-@test "negative control: with DISPATCH_LANDING_QUEUE_MAX empty a deep landing queue holds nothing" {
+@test "negative control: with DISPATCH_LANDING_QUEUE_MAX empty or 0 a deep landing queue holds nothing" {
   two_items
-  export DISPATCH_LANDING_QUEUE_MAX=
   landing_rows game 40
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --partial 'started queue item fix-game'
-  refute_output --partial 'landing queue game'
+  for max in '' 0; do
+    run env DISPATCH_LANDING_QUEUE_MAX="$max" "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+    assert_output --partial 'would start queue item fix-game'
+    refute_output --partial 'landing queue game'
+  done
 }
 
 # 2026-11-05: held unity items kept every pass off the board for 7h, so the rows filed to fix the
