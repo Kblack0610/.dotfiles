@@ -4200,26 +4200,28 @@ start_rows() {
   assert_line '| sandboxed_lane_pct | - | - | - | - |'
 }
 
-@test "kpi: pool_busy_share is the busy share of the idle_pool pools over 7d and 28d from Prometheus; no knob reads none" {
+@test "kpi: pool_busy_share is the busy share of the idle_pool pools over 7d and 28d from VictoriaMetrics; no knob reads none" {
   kpi_setup
   export BENCH_CLASSES="$SANDBOX/classes.json"
   echo '{"idle_pool": {"pools": ["unity", "heavy"], "busy_below": 0.5}}' > "$BENCH_CLASSES"
-  stub_prom 'case "$*" in
-  *"[7d:10m]"*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{},\"value\":[1,\"0.21349\"]}]}}" ;;
-  *) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{},\"value\":[1,\"0.5\"]}]}}" ;;
+  stub_prom 'exit 7'   # Prometheus keeps about 52 h, so neither window may come from it
+  stub_vm 'case "$*" in
+  *cc%3Apool_busy*7d%3A10m*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{},\"value\":[1,\"0.21349\"]}]}}" ;;
+  *cc%3Apool_busy*28d%3A10m*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{},\"value\":[1,\"0.5\"]}]}}" ;;
+  *) exit 7 ;;
 esac'
   run "$SUBJECT" kpi --json
   assert_success
   run jq -c '.pool_busy_share | [.["7d"], .["28d"]]' <<<"$output"
   assert_output '[0.213,0.5]'
-  run grep -c 'pool=~"unity|heavy"' "$SANDBOX/curl.log"
+  run grep -c 'pool%3D~%22unity%7Cheavy%22' "$SANDBOX/kubectl.log"
   assert_output 2
-  : > "$SANDBOX/curl.log"
+  : > "$SANDBOX/kubectl.log"
   echo '{}' > "$BENCH_CLASSES"
   run "$SUBJECT" kpi --json
   run jq -c '.pool_busy_share | [.["7d"], .["28d"]]' <<<"$output"
   assert_output '[null,null]'
-  run grep -c 'cc:pool_busy' "$SANDBOX/curl.log"
+  run grep -c 'cc%3Apool_busy' "$SANDBOX/kubectl.log"
   assert_output 0
 }
 
