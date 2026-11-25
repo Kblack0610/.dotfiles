@@ -284,7 +284,7 @@ plan_row_task() {
 plan_row_title() {
   local slug h room
   slug=$(basename "$1" .md)
-  h=$(sed -n 's/^# \{1,\}//p' "$1" 2>/dev/null | head -n 1 | LC_ALL=C tr -d '#<>' | LC_ALL=C tr -cd '\40-\176' | sed 's/  */ /g; s/^ //; s/ $//')
+  h=$(sed -n '/^# \{1,\}/{s///p;q;}' "$1" 2>/dev/null | LC_ALL=C tr -d '#<>' | LC_ALL=C tr -cd '\40-\176' | sed 's/  */ /g; s/^ //; s/ $//')
   if [ -z "$h" ]; then printf 'plan %s: run its open phases\n' "$slug"; return 0; fi
   room=$((80 - ${#slug} - 8))
   [ "$room" -ge 20 ] || room=20
