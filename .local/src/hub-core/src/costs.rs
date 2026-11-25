@@ -423,7 +423,7 @@ pub fn snapshot(date: &str, text: &str) -> Option<Snapshot> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
     Some(Snapshot {
         date: date.to_string(),
-        generated_at: v["generated_at"].as_str().and_then(epoch),
+        generated_at: v["generated_at"].as_str().and_then(crate::fleet::ts),
         tools: serde_json::from_value(v["by_tool"].clone()).unwrap_or_default(),
         unallocated_usd: v["by_tool_unallocated_usd"].as_f64(),
         parts: {
@@ -451,12 +451,6 @@ pub fn snapshot(date: &str, text: &str) -> Option<Snapshot> {
             .next()
             .map(str::to_string),
     })
-}
-
-fn epoch(t: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(t)
-        .ok()
-        .map(|t| t.timestamp())
 }
 
 /// A model id as the table shows it: Claude's without its `claude-` prefix.
@@ -510,22 +504,15 @@ impl Row for Slice {
     const FACETS: &'static [&'static str] = &["harness", "model", "project", "kind"];
 
     fn val(&self, col: &str) -> Val {
-        let text = |s: &str| {
-            if s.is_empty() {
-                Val::None
-            } else {
-                Val::Text(s.to_string())
-            }
-        };
         match col {
-            "session" => text(&self.session),
-            "title" => text(&self.title),
-            "project" => text(&self.project),
-            "harness" => text(&self.harness),
-            "model" => text(&self.model),
-            "runner" => text(&self.runner),
-            "kind" => text(&self.kind),
-            "account" => text(&self.account),
+            "session" => Val::word(&self.session),
+            "title" => Val::word(&self.title),
+            "project" => Val::word(&self.project),
+            "harness" => Val::word(&self.harness),
+            "model" => Val::word(&self.model),
+            "runner" => Val::word(&self.runner),
+            "kind" => Val::word(&self.kind),
+            "account" => Val::word(&self.account),
             "cost" => Val::Num(self.cost),
             "tokens" => Val::Num(self.tokens),
             _ => Val::None,

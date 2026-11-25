@@ -177,9 +177,7 @@ pub(crate) fn aimed(line: &str, today: NaiveDate, aim: Option<&Aim>) -> Rank {
 mod tests {
     use super::*;
 
-    fn d(s: &str) -> NaiveDate {
-        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
-    }
+    use crate::md::date as d;
 
     const TODAY: &str = "2026-11-09";
 

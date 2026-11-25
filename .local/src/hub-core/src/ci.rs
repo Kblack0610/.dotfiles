@@ -1246,22 +1246,15 @@ impl Row for Slot {
     const GLANCE: &'static [&'static str] = &["state", "ran", "job"];
 
     fn val(&self, col: &str) -> Val {
-        let text = |s: &str| {
-            if s.is_empty() {
-                Val::None
-            } else {
-                Val::Text(s.to_string())
-            }
-        };
         match col {
-            "host" => text(&self.host),
-            "slot" => text(&self.slot),
-            "state" => text(&self.state),
-            "pool" => text(&self.pool),
+            "host" => Val::word(&self.host),
+            "slot" => Val::word(&self.slot),
+            "state" => Val::word(&self.state),
+            "pool" => Val::word(&self.pool),
             "ran" => opt(self.ran),
             "usual" => opt(self.usual),
-            "job" => text(&self.job),
-            "ref" => text(&self.reference()),
+            "job" => Val::word(&self.job),
+            "ref" => Val::word(&self.reference()),
             _ => Val::None,
         }
     }
@@ -1305,8 +1298,7 @@ impl Row for Queued {
     fn val(&self, col: &str) -> Val {
         match col {
             "job" => Val::Text(self.job.clone()),
-            "pool" if self.pool.is_empty() => Val::None,
-            "pool" => Val::Text(self.pool.clone()),
+            "pool" => Val::word(&self.pool),
             "ref" => Val::Text(self.reference()),
             "n" => Val::Num(self.n as f64),
             "wait" => Val::Num(self.wait as f64),
