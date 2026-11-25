@@ -32,7 +32,8 @@
 # line becomes "- [x] <phase> (#<pr>)"; when that leaves no open phase, each row on the plan's `rows:` line
 # closes with the same proof). A row another open queue item names stays open for that item's landing (row_worker). After the merge, one "body:" line scores the PR body
 # against comms-standard (comms-lint --channel pr-body); it never fails the landing. Before that, a *.md or *.txt
-# file at the top of ~/.cache whose text is the merged body (the --body-file a session wrote) is deleted. One line per step.
+# file at the top of ~/.cache whose text is the merged body (the --body-file a session wrote) is deleted. Each "After deploy: <step>"
+# line of the body, a step that can run only once the change is live, is added as its own item (deploy_steps). One line per step.
 # The item is --item, else $AGENT_QUEUE_ITEM (set in a session fleet-dispatch started), else the
 # one this session added or claimed (`agent-queue mine`). No item, no landing: every merged PR
 # is a unit of work on the work ledger, so add one first (`agent-queue add --running`). An item
@@ -1253,6 +1254,34 @@ unlisted_repo() {
   esac
 }
 
+# deploy_steps: each "After deploy: <step>" line of the merged PR's body is a step the PR leaves for
+# once its change is live (a migration of the live store, a restart, a re-seed). Each is added as its
+# own item on the landed item's project, so the step has an owner: #3249 left `notes projects --migrate
+# unity-core-playground` in a sentence, nobody ran it, and from 09:06 to 13:30 on 2026-11-23 no board
+# view or dispatch pass read a unity sprint (ar-4887). The slug names the PR, line and repo, so a re-run
+# of this landing adds none twice. High, since main's change is only half applied until it runs. Never
+# fails the landing: the merge stands, and a step not added is said with the add to run by hand.
+deploy_steps() {
+  local text step n=0 slug project out rc steps=() repo=${pr_ref%#*}
+  text=$(pr_view body .body 2>&1) || { echo "deploy: no After deploy: step read ($api pr view: $(lastline "$text")); re-run agent-land $pr to add them" >&2; return 0; }
+  mapfile -t steps < <(tr -d '\r' <<<"$text" | sed -n 's/^After deploy:[[:space:]]*//p' | sed 's/[[:space:]]*$//' | grep . || true)
+  [ "${#steps[@]}" -gt 0 ] || return 0
+  project=$(jq -r '.project // empty' <<<"$it")
+  for step in "${steps[@]}"; do
+    n=$((n + 1)) rc=0
+    slug="after-deploy-$pr-$n-${repo##*/}"   # the repo last: agent-queue cuts a slug at 40 characters
+    out=$(aq_retry add --project "$project" --priority high --slug "$slug" \
+      "chore(deploy): $step (left by $pr_ref)"$'\n\n'"$pr_ref (merge ${merged:0:12}) left this step for once its change is live: $step"$'\n'"Check the change is live first (a dotfiles merge: the main checkout is at or past the merge; a service: its rollout finished), then run it and prove what it changed." 2>&1) || rc=$?
+    case "$rc" in
+      0) echo "deploy: added $slug: $step" ;;
+      5) echo "deploy: $slug filed on the $project board, the queue takes it from there: $step" ;;
+      4) echo "deploy: $slug already ran: $step" ;;
+      *) if [[ "$out" == *"already in the queue"* ]]; then echo "deploy: $slug already queued: $step"
+         else echo "deploy: not added ($(lastline "$out")): agent-queue add --project $project --priority high --slug $slug 'chore(deploy): $step (left by $pr_ref)'" >&2; fi ;;
+    esac
+  done
+}
+
 # credit -> ", <what agent-queue attribute recorded>" for the item line: the PR's changed files
 # credit the item to the registry project whose `path` owns most of them (a game inside the
 # playground). It never fails the landing: the PR is merged, and the item keeps the project it
@@ -1573,6 +1602,7 @@ if [[ "$pr_ref" == */*#* ]]; then
 fi
 chain_event land merged "$(jq -r .project <<<"$it")" "$(jq -r '.title // ((.task // "") | split("\n")[0])' <<<"$it")" \
   --item "$item" --id "$(jq -r '(.row // "") | sub("^[^:]*:"; "")' <<<"$it")" --pr "$pr_ref" --sha "$merged"
+deploy_steps
 
 case "$done_as" in
 '')
