@@ -17,17 +17,19 @@ setup() {
   export FLEET_BENCH_DIR="$HOME/.agent/bench" BENCH_LIB_DIR="$REPO_ROOT/.local/lib"
   export RULES_REGISTER="$SANDBOX/rules.jsonl"
   printf -- '- Keep it under ten.\n- Never force push.\n' > "$SANDBOX/rules.md"
+  # What a rule row's enforced_by points at: a file that exists, so a fixture row has an enforcer.
+  export ENF="test:$SANDBOX/rules.md"
 }
 
 # row <anchor> <confidence> <measure> <max>: a provisional row on the sandbox source.
 row() {
   jq -nc --arg s "$SANDBOX/rules.md" --arg a "$1" --arg c "$2" --arg m "$3" --argjson x "$4" \
-    '{source: $s, anchor: $a, kind: "provisional", confidence: $c, action: "keep", measure: $m, max: $x}' >> "$RULES_REGISTER"
+    '{source: $s, anchor: $a, kind: "provisional", enforced_by: env.ENF, confidence: $c, action: "keep", measure: $m, max: $x}' >> "$RULES_REGISTER"
 }
 
 @test "rules: the summary counts kinds, confidence, actions and what was measured" {
   row 'under ten' high 'echo 3' 10
-  jq -nc --arg s "$SANDBOX/rules.md" '{source: $s, anchor: "force push", kind: "invariant", action: "keep"}' >> "$RULES_REGISTER"
+  jq -nc --arg s "$SANDBOX/rules.md" '{source: $s, anchor: "force push", kind: "invariant", enforced_by: env.ENF, action: "keep"}' >> "$RULES_REGISTER"
   run "$SUBJECT" rules
   assert_success
   assert_line 'rules=2'
@@ -66,7 +68,7 @@ row() {
 }
 
 @test "rules --check: a min bound reads the other way" {
-  jq -nc --arg s "$SANDBOX/rules.md" '{source: $s, anchor: "under ten", kind: "provisional", confidence: "high", measure: "echo 3", min: 5}' >> "$RULES_REGISTER"
+  jq -nc --arg s "$SANDBOX/rules.md" '{source: $s, anchor: "under ten", kind: "provisional", enforced_by: env.ENF, confidence: "high", measure: "echo 3", min: 5}' >> "$RULES_REGISTER"
   run "$SUBJECT" rules --check
   assert_failure 1
   assert_output --partial 'against min 5'
@@ -109,7 +111,7 @@ gh_stub() { gh_script "echo $(printf %q "$1") >&2; exit 1"; }
 @test "rules: a rate-limited counting measure drops its 0 and is counted as limited" {
   gh_stub 'gh: API rate limit exceeded for user ID 1. (HTTP 403)'
   jq -nc --arg s "$SANDBOX/rules.md" --arg m "gh run list | wc -l" \
-    '{source: $s, anchor: "under ten", kind: "provisional", confidence: "low", measure: $m, min: 5}' >> "$RULES_REGISTER"
+    '{source: $s, anchor: "under ten", kind: "provisional", enforced_by: env.ENF, confidence: "low", measure: $m, min: 5}' >> "$RULES_REGISTER"
   run "$SUBJECT" rules --check
   assert_success
   run "$SUBJECT" rules
@@ -128,15 +130,15 @@ gh_stub() { gh_script "echo $(printf %q "$1") >&2; exit 1"; }
 @test "rules --check: a copy read through \$HOME restates too, and a count of its own lines is a real bound" {
   cp "$SANDBOX/rules.md" "$HOME/r.md"
   printf 'CAP=10\n' >> "$HOME/r.md"
-  jq -nc '{source: "~/r.md", anchor: "under ten", kind: "provisional", confidence: "low", measure: "sed -n '"'"'s/^CAP=//p'"'"' \"$HOME/r.md\"", max: 10}' >> "$RULES_REGISTER"
-  jq -nc '{source: "~/r.md", anchor: "Never force push", kind: "provisional", confidence: "high", measure: "grep -c \"^- \" ~/r.md", max: 5}' >> "$RULES_REGISTER"
+  jq -nc '{source: "~/r.md", anchor: "under ten", kind: "provisional", enforced_by: env.ENF, confidence: "low", measure: "sed -n '"'"'s/^CAP=//p'"'"' \"$HOME/r.md\"", max: 10}' >> "$RULES_REGISTER"
+  jq -nc '{source: "~/r.md", anchor: "Never force push", kind: "provisional", enforced_by: env.ENF, confidence: "high", measure: "grep -c \"^- \" ~/r.md", max: 5}' >> "$RULES_REGISTER"
   run "$SUBJECT" rules --json
   assert_equal "$(jq -c '[.[] | .state]' <<<"$output")" '["restates","ok"]'
 }
 
 @test "rules --json: each row carries the one state --check fails on, and a source elsewhere is absent, not a failure" {
   row 'under ten' high 'echo 11' 10
-  jq -nc '{source: "/nonexistent/x.md", anchor: "elsewhere rule", kind: "invariant"}' >> "$RULES_REGISTER"
+  jq -nc '{source: "/nonexistent/x.md", anchor: "elsewhere rule", kind: "invariant", enforced_by: env.ENF}' >> "$RULES_REGISTER"
   run "$SUBJECT" rules --json
   assert_equal "$(jq -c '[.[] | .state]' <<<"$output")" '["moved","absent"]'
   run "$SUBJECT" rules --check
@@ -148,7 +150,7 @@ gh_stub() { gh_script "echo $(printf %q "$1") >&2; exit 1"; }
   row 'under ten' high "wc -c < '$SANDBOX/rules.md'" 100000
   printf 'CAP=10\n' >> "$SANDBOX/rules.md"
   jq -nc --arg s "$SANDBOX/rules.md" --arg m "sed -n 's/^CAP=//p' '$SANDBOX/rules.md'" \
-    '{source: $s, anchor: "Never force push", kind: "provisional", confidence: "low", measure: $m}' >> "$RULES_REGISTER"
+    '{source: $s, anchor: "Never force push", kind: "provisional", enforced_by: env.ENF, confidence: "low", measure: $m}' >> "$RULES_REGISTER"
   run "$SUBJECT" rules --check
   assert_success
   run "$SUBJECT" rules --json
@@ -157,7 +159,7 @@ gh_stub() { gh_script "echo $(printf %q "$1") >&2; exit 1"; }
 }
 
 @test "rules --check: a reading that prints no number is dead too" {
-  jq -nc --arg s "$SANDBOX/rules.md" '{source: $s, anchor: "under ten", kind: "provisional", confidence: "low", measure: "echo nope"}' >> "$RULES_REGISTER"
+  jq -nc --arg s "$SANDBOX/rules.md" '{source: $s, anchor: "under ten", kind: "provisional", enforced_by: env.ENF, confidence: "low", measure: "echo nope"}' >> "$RULES_REGISTER"
   run "$SUBJECT" rules --check
   assert_failure 1
   assert_output --partial 'dead measure: rules.md: under ten'
@@ -165,14 +167,14 @@ gh_stub() { gh_script "echo $(printf %q "$1") >&2; exit 1"; }
 
 @test "rules --json: a .md source is a rule, a script or config a mechanism, and a row's own form wins" {
   printf 'Never force push\n' > "$SANDBOX/hook.sh"
-  jq -nc --arg s "$SANDBOX/rules.md" '{source: $s, anchor: "under ten", kind: "provisional", confidence: "low"}' >> "$RULES_REGISTER"
-  jq -nc --arg s "$SANDBOX/hook.sh" '{source: $s, anchor: "Never force push", kind: "invariant"}' >> "$RULES_REGISTER"
-  jq -nc --arg s "$SANDBOX/hook.sh" '{source: $s, anchor: "Never force push", kind: "invariant", form: "rule"}' >> "$RULES_REGISTER"
+  jq -nc --arg s "$SANDBOX/rules.md" '{source: $s, anchor: "under ten", kind: "provisional", enforced_by: env.ENF, confidence: "low"}' >> "$RULES_REGISTER"
+  jq -nc --arg s "$SANDBOX/hook.sh" '{source: $s, anchor: "Never force push", kind: "invariant", enforced_by: env.ENF}' >> "$RULES_REGISTER"
+  jq -nc --arg s "$SANDBOX/hook.sh" '{source: $s, anchor: "Never force push", kind: "invariant", enforced_by: env.ENF, form: "rule"}' >> "$RULES_REGISTER"
   run "$SUBJECT" rules --json
   assert_equal "$(jq -c '[.[] | .form]' <<<"$output")" '["rule","mechanism","rule"]'
   run "$SUBJECT" rules
   assert_line 'mechanisms=1'
-  jq -nc --arg s "$SANDBOX/rules.md" '{source: $s, anchor: "under ten", kind: "invariant", form: "mechanims"}' >> "$RULES_REGISTER"
+  jq -nc --arg s "$SANDBOX/rules.md" '{source: $s, anchor: "under ten", kind: "invariant", enforced_by: env.ENF, form: "mechanims"}' >> "$RULES_REGISTER"
   run "$SUBJECT" rules --check
   assert_failure 1
   assert_output --partial 'form: rules.md: under ten: mechanims is neither rule nor mechanism'
@@ -186,21 +188,21 @@ gh_stub() { gh_script "echo $(printf %q "$1") >&2; exit 1"; }
 }
 
 @test "rules --check: a source not on this machine is no failure" {
-  jq -nc '{source: "/nonexistent/x.md", anchor: "a", kind: "invariant"}' >> "$RULES_REGISTER"
+  jq -nc '{source: "/nonexistent/x.md", anchor: "a", kind: "invariant", enforced_by: env.ENF}' >> "$RULES_REGISTER"
   run "$SUBJECT" rules --check
   assert_success
 }
 
 @test "rules: a ~ source resolves under HOME" {
   cp "$SANDBOX/rules.md" "$HOME/r.md"
-  jq -nc '{source: "~/r.md", anchor: "under ten", kind: "invariant"}' >> "$RULES_REGISTER"
+  jq -nc '{source: "~/r.md", anchor: "under ten", kind: "invariant", enforced_by: env.ENF}' >> "$RULES_REGISTER"
   run "$SUBJECT" rules --json
   assert_success
   assert_equal "$(jq -r '.[0].anchored' <<<"$output")" true
 }
 
 @test "rules: a multi-line anchor is stale on its own row and leaves the next row's value alone" {
-  jq -nc --arg s "$SANDBOX/rules.md" '{source: $s, anchor: "two\nlines", kind: "invariant"}' >> "$RULES_REGISTER"
+  jq -nc --arg s "$SANDBOX/rules.md" '{source: $s, anchor: "two\nlines", kind: "invariant", enforced_by: env.ENF}' >> "$RULES_REGISTER"
   row "under ten" high 'echo 3' 10
   run "$SUBJECT" rules --json
   assert_success
@@ -208,9 +210,9 @@ gh_stub() { gh_script "echo $(printf %q "$1") >&2; exit 1"; }
 }
 
 @test "rules --scenarios: each hard scenario is listed with whether its rule text is still in its source" {
-  jq -nc --arg s "$SANDBOX/rules.md" '{source: $s, anchor: "Never force push.", kind: "invariant", scenario: "a pushed branch has the wrong history"}' >> "$RULES_REGISTER"
-  jq -nc --arg s "$SANDBOX/rules.md" '{source: $s, anchor: "Always force push.", kind: "invariant", scenario: "a trim reworded the rule away"}' >> "$RULES_REGISTER"
-  jq -nc '{source: "/nonexistent/x.md", anchor: "elsewhere rule", kind: "invariant", scenario: "a source on another machine"}' >> "$RULES_REGISTER"
+  jq -nc --arg s "$SANDBOX/rules.md" '{source: $s, anchor: "Never force push.", kind: "invariant", enforced_by: env.ENF, scenario: "a pushed branch has the wrong history"}' >> "$RULES_REGISTER"
+  jq -nc --arg s "$SANDBOX/rules.md" '{source: $s, anchor: "Always force push.", kind: "invariant", enforced_by: env.ENF, scenario: "a trim reworded the rule away"}' >> "$RULES_REGISTER"
+  jq -nc '{source: "/nonexistent/x.md", anchor: "elsewhere rule", kind: "invariant", enforced_by: env.ENF, scenario: "a source on another machine"}' >> "$RULES_REGISTER"
   row 'under ten' high 'echo 3' 10
   run "$SUBJECT" rules --scenarios
   assert_failure 1
@@ -344,6 +346,157 @@ gate_row() {
   assert_line 'rules=0'
 }
 
+# enf_row <enforced_by|null> [source]: a rule row (a .md source) with that enforced_by.
+enf_row() {
+  jq -nc --arg s "${2:-$SANDBOX/rules.md}" --argjson e "$1" \
+    '{source: $s, anchor: "Never force push", kind: "invariant", action: "keep"} + (if $e == null then {} else {enforced_by: $e} end)' >> "$RULES_REGISTER"
+}
+
+@test "rules --check: a rule row that names no enforced_by fails, and a mechanism row is its own enforcer" {
+  echo 'Never force push' > "$SANDBOX/hook.sh"
+  enf_row null
+  enf_row null "$SANDBOX/hook.sh"
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'enforcer: rules.md: Never force push: names no enforced_by'
+  refute_output --partial 'hook.sh'
+  run "$SUBJECT" rules --json
+  assert_equal "$(jq -c '[.[] | [.enforcer, .state]]' <<<"$output")" '[["missing","enforcer"],["self","ok"]]'
+}
+
+@test "rules --check: an enforced_by that is not test:, hook:, ci: or review is bad" {
+  enf_row '"lint"'
+  enf_row '"test:"'
+  enf_row "\"test:$SANDBOX/rules.md::\""
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_equal "$(grep -c 'enforcer: rules.md: Never force push: enforced_by .* is not review' <<<"$output")" 3
+}
+
+@test "rules --check: a relative path is bad, not read against the caller's directory" {
+  enf_row '"test:tests/unit/x.bats"'
+  enf_row '"hook:.claude/hooks/h.sh"'
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_equal "$(grep -c 'is not review, test:' <<<"$output")" 2
+}
+
+@test "rules --check: a test name that survives only in a comment is dead" {
+  printf '# was: @test "old name"\n@test "new name" {\n}\n' > "$SANDBOX/y.bats"
+  enf_row "\"test:$SANDBOX/y.bats::new name\""
+  run "$SUBJECT" rules --check
+  assert_success
+  : > "$RULES_REGISTER"
+  printf '# old name only here\n@test "new name" {\n}\n' > "$SANDBOX/y.bats"
+  enf_row "\"test:$SANDBOX/y.bats::old name\""
+  run "$SUBJECT" rules --check
+  assert_failure 1
+}
+
+@test "rules --check: a dead enforcer shows beside a moved number, not after it" {
+  row 'under ten' high 'echo 11' 10
+  jq -c '.enforced_by = "hook:/nonexistent/gone.sh"' "$RULES_REGISTER" > "$SANDBOX/r2" && mv "$SANDBOX/r2" "$RULES_REGISTER"
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'moved: rules.md: under ten'
+  assert_output --partial 'enforcer: rules.md: under ten: enforced_by hook:/nonexistent/gone.sh does not resolve'
+}
+
+@test "rules --check: an enforcer whose file is gone, or whose test name is not in the file, is dead (negative control)" {
+  enf_row "\"hook:$SANDBOX/gone.sh\""
+  enf_row "\"ci:$SANDBOX/gone.yml\""
+  enf_row "\"test:$SANDBOX/rules.md::no such test\""
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_equal "$(grep -c 'does not resolve: no such file, or the test name is not in it' <<<"$output")" 3
+}
+
+@test "rules --check: a test, hook or ci that is there passes, a ~ path resolves under HOME and a test name is found in the file" {
+  printf '@test "a named test" {\n}\n' > "$SANDBOX/x.bats"
+  mkdir -p "$HOME/.dotfiles/.claude/hooks"
+  : > "$HOME/.dotfiles/.claude/hooks/h.sh"
+  enf_row "\"test:$SANDBOX/x.bats::a named test\""
+  enf_row '"hook:~/.dotfiles/.claude/hooks/h.sh"'
+  enf_row "\"ci:$SANDBOX/rules.md\""
+  run "$SUBJECT" rules --check
+  assert_success
+  assert_output ''
+}
+
+@test "rules --check: a source on another machine is absent before its enforcer is read" {
+  enf_row '"hook:/nonexistent/h.sh"' /nonexistent/x.md
+  run "$SUBJECT" rules --check
+  assert_success
+}
+
+@test "rules --check: the review rows only shrink against the baseline, in both directions" {
+  export RULES_PROSE_BASELINE="$SANDBOX/prose-baseline"
+  enf_row '"review"'
+  enf_row '"review"'
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial "prose-only: 2 rule rows name no check but review, and $RULES_PROSE_BASELINE has no review=N line"
+  printf '# comment\nreview=1\n' > "$RULES_PROSE_BASELINE"
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'prose-only: 2 rule rows name no check but review, over the baseline 1'
+  printf 'review=2\n' > "$RULES_PROSE_BASELINE"
+  run "$SUBJECT" rules --check
+  assert_success
+  printf 'review=3\n' > "$RULES_PROSE_BASELINE"
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial "under the baseline 3; lower review= in $RULES_PROSE_BASELINE to 2"
+  run "$SUBJECT" rules
+  assert_line 'prose_only=2'
+}
+
+@test "rules --check: a mechanism row that says review is not a prose-only rule row" {
+  export RULES_PROSE_BASELINE="$SANDBOX/prose-baseline"
+  echo 'review=0' > "$RULES_PROSE_BASELINE"
+  echo 'Never force push' > "$SANDBOX/hook.sh"
+  enf_row '"review"' "$SANDBOX/hook.sh"
+  run "$SUBJECT" rules --check
+  assert_success
+}
+
+# lesson_dir <seen> [enforced_by marker]: a lessons dir with one lesson the sweep found <seen> times.
+lesson_dir() {
+  export RULES_LESSONS_DIR="$SANDBOX/lessons" RULES_LESSONS_CMD="$REPO_ROOT/.local/bin/lessons"
+  mkdir -p "$RULES_LESSONS_DIR"
+  printf -- '- **2026-11-20** **Run it twice.** Why: it recurred.\n  <!-- seen:%s 2026-11-21 -->%s\n' "$1" "${2:+ $2}" > "$RULES_LESSONS_DIR/proj.md"
+}
+
+@test "rules --check: a lesson the sweep found twice must name a check that resolves, or say review; once is no failure" {
+  lesson_dir 1
+  run "$SUBJECT" rules --check
+  assert_success
+  lesson_dir 2
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'lesson: proj.md:1: seen 2 times, enforced_by missing'
+  lesson_dir 2 '<!-- enforced_by:lint -->'
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'enforced_by lint'
+  lesson_dir 2 "<!-- enforced_by:hook:$SANDBOX/gone.sh -->"
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  lesson_dir 2 '<!-- enforced_by:review -->'
+  run "$SUBJECT" rules --check
+  assert_success
+  printf '@test "a named test" {\n}\n' > "$SANDBOX/x.bats"
+  lesson_dir 2 "<!-- enforced_by:test:$SANDBOX/x.bats::a named test -->"
+  run "$SUBJECT" rules --check
+  assert_success
+  lesson_dir 2 "<!-- enforced_by:test:$SANDBOX/x.bats::no such test -->"
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  lesson_dir 2 "<!-- enforced_by:test:$SANDBOX/rules.md -->"
+  run "$SUBJECT" rules --check
+  assert_success
+}
+
 real_register() { [ -s "$REAL" ] || skip "no register at $REAL"; }
 
 @test "register: every row is a whole row of its kind" {
@@ -359,7 +512,9 @@ real_register() { [ -s "$REAL" ] || skip "no register at $REAL"; }
       or (((.anchor // "") + (.measure // "")) | test("\n"))
       or (.kind == "invariant" and (.measure != null or .max != null or .min != null))
       or (.kind == "invariant" and (.scenario // "") == "")
-      or (.form != null and (.form | IN("rule", "mechanism") | not))) | .anchor' "$REAL"
+      or (.form != null and (.form | IN("rule", "mechanism") | not))
+      or ((.form // (if (.source | test("\\.md$")) then "rule" else "mechanism" end)) == "rule" and (.enforced_by // "") == "")
+      or ((.enforced_by // "review") | test("^(review|(test|hook|ci):.+)$") | not)) | .anchor' "$REAL"
   assert_output ''
 }
 
@@ -382,7 +537,7 @@ real_register() { [ -s "$REAL" ] || skip "no register at $REAL"; }
   local states="$output"
   # Only this repo's sources: a rule edited or a measure gone elsewhere is the scorecard's line, and
   # must not go red on a session here that only touched fleet-bench.
-  run jq -r '.[] | select((.source | startswith("~/.dotfiles/")) and (.anchored == false or .dead))
+  run jq -r '.[] | select((.source | startswith("~/.dotfiles/")) and (.anchored == false or .dead or .enforcer == "dead"))
     | "\(.source): \(.anchor)"' <<<"$states"
   assert_output ''
   # A copied bound is the register's own fault wherever its source lives, so no row may carry one.
@@ -421,7 +576,7 @@ real_register() { [ -s "$REAL" ] || skip "no register at $REAL"; }
   gate_row human-gate 'human:2026-11-19 "hold the release"' '{"added": "2026-11-21", "source": "~/.dotfiles-private/x"}'
   gate_row agent-late 'agent:#30' '{"added": "2026-11-22", "source": "~/.dotfiles/x"}'
   gate_row agent-early 'agent:abc1234 (before PR numbers)' '{"added": "2026-11-20"}'
-  jq -nc '{source: "~/r.md", anchor: "a rule", kind: "provisional", added: "2026-11-21"}' >> "$RULES_REGISTER"
+  jq -nc '{source: "~/r.md", anchor: "a rule", kind: "provisional", enforced_by: env.ENF, added: "2026-11-21"}' >> "$RULES_REGISTER"
   run "$SUBJECT" rules --new --since 2026-11-20 --until 2026-11-22
   assert_success
   assert_output "$(printf '%s\t%s\t%s\t%s\t%s\n' \
