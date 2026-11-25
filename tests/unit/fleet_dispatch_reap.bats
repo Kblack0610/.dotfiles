@@ -99,6 +99,18 @@ load 'fleet_dispatch/common'
   assert_success
   [ ! -e "$FLEET_DISPATCH_DIR/plans-filed" ] || fail "a plan whose add filed nothing is marked filed"
   grep -q 'left orphan.md for next pass: .*nothing filed' "$FLEET_DISPATCH_DIR/log.md"
+  # a checklist agent-queue refuses, on a project with no board: nothing to file it on, so it is said and not marked
+  stub agent-queue 'case "$1" in add) echo "agent-queue: --plan x.md: could not read its Phases checklist: no ## Phases" >&2; exit 1 ;; esac; exit 0'
+  run reconcile_plans
+  assert_output --partial 'could not file the phases of'
+  [ ! -e "$FLEET_DISPATCH_DIR/plans-filed" ] || fail "a refused plan with no fix row is marked filed"
+  # with a board, the refusal files one fix(plan) row and marks the plan filed, so the next pass does not retry it (ar-5605)
+  jq '.trackers.game.lab = "game"' "$DISPATCH_PROJECT_MAP" > "$SANDBOX/map.new" && mv "$SANDBOX/map.new" "$DISPATCH_PROJECT_MAP"
+  run reconcile_plans
+  assert_success
+  grep -q "notes ptask game --agent add --why fault fix(plan): orphan: agent-queue refuses its Phases checklist (no  Phases); fix it, then agent-queue add --plan $SANDBOX/orphan.md" "$NOTES_FIXTURE/calls.log"
+  grep -qxF "$SANDBOX/orphan.md" "$FLEET_DISPATCH_DIR/plans-filed"
+  rm "$FLEET_DISPATCH_DIR/plans-filed"
   # with a board, agent-queue files each phase as its row (agent_queue.bats) and exits 5: filed once, then never again
   stub agent-queue 'case "$1" in add) echo "add $*" >> "$NOTES_FIXTURE/aq-adds"; echo "held orphan-p2 -> game:gm-1"; exit 5 ;; esac; exit 0'
   run reconcile_plans
