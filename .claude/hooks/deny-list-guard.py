@@ -25,7 +25,6 @@ MSG = (
 )
 
 
-
 def squeeze(s):
     """One space between words, none around a pipe or redirect, so `a | b` and `a|b` read alike."""
     return re.sub(r"\s*([|<>])\s*", r"\1", " ".join(s.split()))

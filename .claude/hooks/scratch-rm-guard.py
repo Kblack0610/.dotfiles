@@ -43,7 +43,6 @@ ROOT_MSG = (
 )
 
 
-
 FORGE = None  # loaded past decide's prefilter, or set by walker-guards.py: it runs on every Bash call
 STATE = {}  # caller id, live ids (read once, on first need)
 

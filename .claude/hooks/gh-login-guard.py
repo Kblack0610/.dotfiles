@@ -47,7 +47,6 @@ MSG = (
 )
 
 
-
 FORGE = None  # loaded past decide's prefilter, or set by walker-guards.py: it runs on every Bash call
 
 

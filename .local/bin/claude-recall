@@ -556,13 +556,18 @@ STATS_KINDS = DEFAULT_KINDS + USE_KINDS + ("bypass", "denied")
 
 @functools.lru_cache(maxsize=None)
 def hook_module(name):
-    """The hook <name>.py from this checkout's .claude/hooks, loaded by hooklib with that dir on sys.path,
-    so the hook's own `import hooklib` resolves as it does when the hook runs."""
+    """The hook <name>.py from this checkout's .claude/hooks, loaded by hooklib with that dir on sys.path
+    only for the load, so the hook's own `import hooklib` resolves as it does when the hook runs and no
+    hook file shadows a module name afterwards (hooklib stays cached in sys.modules for later loads)."""
     hooks = str(Path(__file__).resolve().parents[2] / ".claude" / "hooks")
-    if hooks not in sys.path:
-        sys.path.append(hooks)
-    import hooklib
-    return hooklib.load(name)
+    sys.path.insert(0, hooks)
+    try:
+        import hooklib
+        return hooklib.load(name)
+    finally:
+        sys.path.remove(hooks)
+
+
 # How a tool_result reads when a PreToolUse hook denied the call, so it never ran.
 DENIED = "PreToolUse:Bash hook error:"
 

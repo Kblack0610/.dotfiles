@@ -72,7 +72,6 @@ WHY = ("No agent cuts a release: cut.yml cuts it when the sprint's window says s
 MSG = "release-guard: {what} would {does}. " + WHY
 
 
-
 FORGE = None  # loaded past decide's prefilter, or set by walker-guards.py: it runs on every Bash call
 
 
