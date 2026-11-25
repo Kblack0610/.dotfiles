@@ -126,12 +126,13 @@ function diskCell(m) {
 const cores1 = (c) => (Math.round(c * 10) / 10).toFixed(1);
 const bookedShare = (b) => Math.max(b.cpu_alloc > 0 ? b.cpu / b.cpu_alloc : 0, b.mem_alloc > 0 ? b.mem / b.mem_alloc : 0);
 // hub_core::machines::Machine::booked_cell, or - on no CI node.
-// hub_core::jobpods::Booked::cell: `4.4/32 2.5G/92G`, bare `1.7 1.2G` on a node with no allocatable read.
+// hub_core::jobpods::Booked::cell: `4.4/32 2.5G/92G`, bare `1.7 1.2G` on a node with no allocatable read, `, 7.4 reserved` for a reservation pod's CPU.
 const bookedCell = (m) => {
   const b = m.booked;
   if (!b) return "-";
-  if (!(b.cpu_alloc > 0)) return `${cores1(b.cpu)} ${bytes(b.mem)}`;
-  return `${cores1(b.cpu)}/${Math.round(b.cpu_alloc)} ${bytes(b.mem)}/${bytes(b.mem_alloc)}`;
+  const rsv = b.reserved > 0 ? `, ${cores1(b.reserved)} reserved` : "";
+  if (!(b.cpu_alloc > 0)) return `${cores1(b.cpu)} ${bytes(b.mem)}${rsv}`;
+  return `${cores1(b.cpu)}/${Math.round(b.cpu_alloc)} ${bytes(b.mem)}/${bytes(b.mem_alloc)}${rsv}`;
 };
 // hub_core::ci::Next::line: the oldest waiting job that fits the machine, its repo and how long it has waited.
 const nextLine = (x) => `${x.job}${x.repo ? ` (${x.repo})` : ""} ${secs(x.wait)}`;

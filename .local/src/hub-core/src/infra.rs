@@ -95,6 +95,9 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         ("job_pods", crate::jobpods::pods_query()),
         ("job_requests", crate::jobpods::requests_query()),
         ("ci_alloc", crate::jobpods::alloc_query()),
+        // Each node NotReady, quarantined (the degraded taint) or cordoned, for the machine rows'
+        // state.
+        ("node_state", crate::jobpods::node_state_query()),
         // Each job kind's weight, the share of a slot one of its jobs takes: the governor's hourly
         // p90 measurement (`measured="true"`), else 1 (`measured="false"`). The Job kinds WEIGHT.
         ("kind_weight", "ci_governor_kind_weight".into()),
@@ -137,6 +140,7 @@ pub const OPTIONAL: &[&str] = &[
     "job_pods",
     "job_requests",
     "ci_alloc",
+    "node_state",
     "kind_weight",
     "job_usual",
     "rates",
@@ -860,6 +864,7 @@ mod tests {
                 "job_pods",
                 "job_requests",
                 "ci_alloc",
+                "node_state",
                 "kind_weight",
                 "job_usual",
                 "rates",

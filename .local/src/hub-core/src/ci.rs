@@ -230,6 +230,8 @@ pub struct JobKind {
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct Host {
     pub host: String,
+    /// `Machine::state`: `up`, or `NotReady`, `quarantined`, `cordoned` for a node that takes no job.
+    pub state: String,
     /// Jobs running there (`Machine::busy`).
     pub busy: u32,
     /// What its job pods book (`Machine::booked`); None for a machine that is no CI node (an
@@ -461,6 +463,7 @@ pub fn glance(infra: &Infra) -> Glance {
         }
         g.machines.push(Host {
             host: m.host.clone(),
+            state: m.state.clone(),
             busy: m.busy,
             booked: m.booked,
             cpu: m.cpu,
@@ -2132,6 +2135,41 @@ mod tests {
         assert_eq!(
             g.head(|s| format!("{}m", s / 60)),
             "3 running, 2 queued (oldest 15m), booked 4.4/64 cpu, 4/4 runners up, 4 done 24h, 50% passed"
+        );
+    }
+
+    /// ar-6008: the `ci-build-slot` pause pod books the Unity build slot's CPU. Its node's row
+    /// says reserved CPU, never a running job, and a node that is down or quarantined says so.
+    #[test]
+    fn a_reservation_pod_is_reserved_cpu_on_its_row_and_a_down_node_says_so() {
+        let mut i = clustered();
+        let (pods, req) = crate::jobpods::tests::reservations();
+        i.instant.get_mut("job_pods").unwrap().extend(pods);
+        i.instant.get_mut("job_requests").unwrap().extend(req);
+        i.instant.insert(
+            "node_state",
+            vec![
+                crate::jobpods::tests::node_state("tuf-b550", "NotReady"),
+                crate::jobpods::tests::node_state("tuf-b550", "cordoned"),
+            ],
+        );
+        i.derive();
+        let g = &i.ci.glance;
+        let row = |h: &str| g.machines.iter().find(|m| m.host == h).unwrap();
+        let (ms, tuf) = (row("ms-a2"), row("tuf-b550"));
+        assert_eq!(ms.running, ["[arc-org-light] x2"]);
+        assert_eq!(ms.busy, 2);
+        assert_eq!(ms.booked.unwrap().cell(), "11.7/32 24.5G/92G, 7.4 reserved");
+        assert_eq!((tuf.busy, tuf.running.len()), (0, 0));
+        assert_eq!(tuf.booked.unwrap().cell(), "7.4/32 21G/63G, 7.4 reserved");
+        assert_eq!(
+            (ms.state.as_str(), tuf.state.as_str()),
+            ("up", "NotReady, cordoned")
+        );
+        assert_eq!(g.busy, 3, "the reservations are no running job");
+        assert_eq!(
+            g.pending_line().as_deref(),
+            Some("waiting for room: arc-org-light (1.69 cpu 1.2G)")
         );
     }
 
