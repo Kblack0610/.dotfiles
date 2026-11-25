@@ -28,6 +28,7 @@ setup() {
   export BENCH_VERDICTS_CMD=false   # nor the real dispatch judge
   export BENCH_PROFILE=personal BENCH_ADMISSION_CMD=false BENCH_LESSONS_CMD=false BENCH_DONE_ITEMS_CMD=false BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_HUB_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/doctor.last" BENCH_DOCS_CLEANUP_DIR="$SANDBOX/docs-cleanup" BENCH_INGEST="$SANDBOX/ingest.jsonl"
   export BENCH_STEPS_CMD=false BENCH_INBOX_CMD=false BENCH_MIX_CMD=false   # nor the real ingest record, inboxes or class mix
+  export BENCH_CHURN_MERGES_CMD=false   # nor the real merge log: the churn KPIs read no merges unless a test serves them
   export BENCH_STOPPED_CMD=false PIPELINE_SNAPSHOT="$SANDBOX/pipeline/pipeline.json"   # nor the real dispatch or snapshot
   export BENCH_HEADROOM="$SANDBOX/headroom.json" BENCH_DISPATCH_LOG="$SANDBOX/activity.log"   # nor the real dispatch pass or its log
   export BENCH_FLEET_COST_CMD=false BENCH_FLEET_COST_FILE="$SANDBOX/fleet-cost.json" BENCH_HUB_FIGURE_CMD=false   # nor the real estimator or hub

@@ -1267,7 +1267,7 @@ asks_order() { bash -c '. "$1"; ask_rows | jq -r "map(.id) | join(\" \")"' _ "$S
   run "$SUBJECT" kpi --json
   assert_success
   run jq -c 'with_entries(select(.value.now | not) | .value |= [.["7d"], .["28d"]])' <<<"$output"
-  assert_output '{"sessions":[1,2],"merged_prs":[2,3],"revert_rate":[0.25,0.2],"interrupts_per_day":[0.286,0.071],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"first_pass_share":[null,null],"plan_gate_deny_rate":[0.25,0.5],"canary_runs":[0,0],"canary_pass_rate":[null,null],"canary_cost_per_task":[null,null],"canary_min_per_task":[null,null],"canary_turns_per_task":[null,null],"responses_per_merged_pr":[null,null],"context_per_merged_pr":[null,null],"tool_chars_per_call":[null,null],"locate_read_share":[null,null],"reread_share":[null,null],"cache_write_share":[null,null],"start_share":[null,null],"start_context_median":[null,null],"compactions_per_session":[null,null],"rework_candidate_7d":[null,null],"rework_verified_30d":[null,null],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"pages_held_per_day":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_answered_pct":[null,null],"ask_unclear_pct":[null,null],"judge_human_only_live_pct":[null,null],"ask_human_only_pct":[null,null],"dispatch_false_defer_pct":[null,null],"human_answered_per_day":[0,0],"ask_wait_p90_min":[null,null],"startup_ready_ms_p50":[null,null],"sandboxed_lane_pct":[null,null],"pool_busy_share":[null,null]}'
+  assert_output '{"sessions":[1,2],"merged_prs":[2,3],"revert_rate":[0.25,0.2],"interrupts_per_day":[0.286,0.071],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"first_pass_share":[null,null],"plan_gate_deny_rate":[0.25,0.5],"canary_runs":[0,0],"canary_pass_rate":[null,null],"canary_cost_per_task":[null,null],"canary_min_per_task":[null,null],"canary_turns_per_task":[null,null],"responses_per_merged_pr":[null,null],"context_per_merged_pr":[null,null],"tool_chars_per_call":[null,null],"locate_read_share":[null,null],"reread_share":[null,null],"cache_write_share":[null,null],"start_share":[null,null],"start_context_median":[null,null],"compactions_per_session":[null,null],"rework_candidate_7d":[null,null],"rework_verified_30d":[null,null],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"pages_held_per_day":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_answered_pct":[null,null],"ask_unclear_pct":[null,null],"judge_human_only_live_pct":[null,null],"ask_human_only_pct":[null,null],"dispatch_false_defer_pct":[null,null],"human_answered_per_day":[0,0],"ask_wait_p90_min":[null,null],"startup_ready_ms_p50":[null,null],"sandboxed_lane_pct":[null,null],"pool_busy_share":[null,null],"churn_merges_per_day":[null,null],"churn_filed_per_closed":[null,null],"churn_reopens_per_day":[null,null],"churn_followups_per_pr":[null,null]}'
   run "$SUBJECT" kpi
   assert_line '| revert_rate | 0.25 | 0.2 | max 0.1 | past |'
   assert_line '| interrupts_per_day | 0.286 | 0.071 | max 0.2 | past |'
@@ -1425,7 +1425,7 @@ ask_row() {
   run jq -sc '[map(.sessions), (map(.date) | unique | length)]' <<<"$output"
   assert_output '[[0,1,1],3]'
   run "$SUBJECT" kpi --trend 3
-  assert_line '| date | sessions | merged_prs | revert_rate | interrupts_per_day | cost_per_pr | ci_red_per_pr | first_pass_share | plan_gate_deny_rate | canary_runs | canary_pass_rate | canary_cost_per_task | canary_min_per_task | canary_turns_per_task | responses_per_merged_pr | context_per_merged_pr | tool_chars_per_call | locate_read_share | reread_share | cache_write_share | start_share | start_context_median | compactions_per_session | rework_candidate_7d | rework_verified_30d |'
+  assert_line '| date | sessions | merged_prs | revert_rate | interrupts_per_day | cost_per_pr | ci_red_per_pr | first_pass_share | plan_gate_deny_rate | canary_runs | canary_pass_rate | canary_cost_per_task | canary_min_per_task | canary_turns_per_task | responses_per_merged_pr | context_per_merged_pr | tool_chars_per_call | locate_read_share | reread_share | cache_write_share | start_share | start_context_median | compactions_per_session | rework_candidate_7d | rework_verified_30d | churn_merges_per_day | churn_filed_per_closed | churn_reopens_per_day | churn_followups_per_pr |'
   run "$SUBJECT" kpi --trend 0
   assert_failure 2
   run "$SUBJECT" kpi --at 'not a time'
@@ -3815,6 +3815,10 @@ LIB
   BENCH_NOW=$T0 run "$SUBJECT" inflow --project game --json
   run jq -cS '[.sources[] | select(.open > 0) | {(.source): .open}] | add' <<<"$output"
   assert_output '{"agent-queue":1,"from: dream":1,"plan":1,"pre-log":1,"self-check":1,"session":1}'
+  # --json names each source's open rows, so a ledger can carry the source per row
+  BENCH_NOW=$T0 run "$SUBJECT" inflow --project game --json
+  run jq -cS '[.sources[] | select(.source == "pre-log" or .source == "from: dream") | {(.source): .open_ids}] | add' <<<"$output"
+  assert_output '{"from: dream":["g-5001"],"pre-log":["g-100"]}'
   # known origins come back as written (the negative control), and each arrival's end is the last close after its last reopen
   BENCH_NOW=$T0 run "$SUBJECT" inflow --project game --json
   run jq -c '.sources[] | select(.source == "plan") | [.arrived, .closed_by_pr, .dropped, .still_open]' <<<"$output"
