@@ -214,20 +214,19 @@ const POOL_CELLS = {
   machines: (p) => td("wrap", poolSeats(p)),
 };
 
-// The CI slots, from hub_core::ci (the one join the TUI and fleet-bench share): every machine's
-// slots with the job each runs and how long against its usual; a late job (past an hour or its
+// The CI slots, from hub_core::ci (the one join the TUI and fleet-bench share): each runner
+// with a job and the job it runs and how long against its usual; a late job (past an hour or its
 // usual p90) shows amber.
 const SLOT_COLS = { host: ["host"], slot: ["slot"], state: ["state"], pool: ["pool"], ran: ["ran", "n"], usual: ["usual", "n"], job: ["job"], ref: ["ref"] };
-const slotState = (s) => (s === "off" ? "bad" : s === "withheld" ? "warn" : s === "busy" ? "" : "muted");
 const SLOT_CELLS = {
   host: (r, l) => td("", tblLink(l.host, r.host)),
   slot: (r) => td("", esc(r.slot)),
-  state: (r) => td(slotState(r.state), esc(r.state)),
+  state: (r) => td("", esc(r.state)),
   pool: (r, l) => td("muted", tblLink(l.pool, r.pool)),
   ran: (r) => td(`n${r.late ? " warn" : ""}`, secs(r.ran) + (r.late ? "!" : "")),
   usual: (r) => td("n muted", secs(r.usual)),
-  job: (r) => (r.state === "busy" ? td("wrap", esc(r.job || "-")) : td("muted wrap", esc(r.note || ""))),
-  ref: (r) => td("muted", esc(r.state === "busy" ? ciRef(r) : "")),
+  job: (r) => td("wrap", esc(r.job || "-")),
+  ref: (r) => td("muted", esc(ciRef(r))),
 };
 
 const QUEUED_COLS = { job: ["job"], pool: ["pool"], ref: ["ref"], n: ["n", "n"], wait: ["wait", "n"], needs: ["needs"], can: ["can run on"], starts: ["starts"] };
@@ -238,7 +237,7 @@ const QUEUED_CELLS = {
   n: (q) => td("n", q.n),
   wait: (q) => td("n", secs(q.wait)),
   needs: (q) => td("muted", esc(q.needs.join(", "))),
-  can: (q) => td("wrap", q.can.length ? q.can.map((f) => `${esc(f.host)} <span class="muted">${esc(f.state)}</span>`).join(", ") : q.needs.length ? "nobody" : "-"),
+  can: (q) => td("wrap", q.can.length ? q.can.map((f) => `${esc(f.host)} <span class="muted">${esc(f.state)}</span>`).join(", ") : q.needs.length ? (q.pool === "github-hosted" ? "GitHub" : "nobody") : "-"),
   // hub_core::ci::Queued::starts: now, in about its fitting slot's usual time left, or - (no usual).
   starts: (q) => td("muted", q.starts == null ? "-" : `${q.starts === 0 ? "now" : `in ${secs(q.starts)}`} ${esc(q.at)}`),
 };
