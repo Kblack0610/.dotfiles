@@ -1455,23 +1455,25 @@ fn sheet_actions(events: &[crate::ingest::Event]) -> Vec<String> {
         .enumerate()
         .filter(|(i, e)| !told_above(*i, e))
         .map(|(_, e)| e)
-        .partition(|e| e.lane == "human" && e.by != "human");
+        // A writer is a session or a runner unless it is the human or unrecorded.
+        .partition(|e| {
+            (e.lane == "human" || e.from == "focus") && !matches!(e.by.as_str(), "human" | "")
+        });
 
     let hidden = yours.len().saturating_sub(SHEET_ACTIONS_SHOWN);
     let mut lines = Vec::new();
+    if hidden > 0 {
+        lines.push(format!("+{hidden} older, not shown: `notes log`"));
+    }
     // `log_line` leads with `YYYY-MM-DD `; the page is one day, so its rows lead with the time.
     lines.extend(yours[hidden..].iter().map(|e| {
         let l = crate::ingest::log_line(e);
         l.get(11..).unwrap_or(&l).to_string()
     }));
-    if hidden > 0 {
-        lines.push(format!("{hidden} earlier: `notes log`"));
-    }
-    if !rest.is_empty() {
-        lines.push(format!(
-            "{} other writes (your own, Focus, the agent boards, dispatch): `notes log`",
-            rest.len()
-        ));
+    match rest.len() {
+        0 => {}
+        1 => lines.push("1 other write: `notes log`".into()),
+        n => lines.push(format!("{n} other writes: `notes log`")),
     }
     lines
 }
@@ -3120,10 +3122,7 @@ mod tests {
         );
         assert!(lines[0].ends_with(": shipped"), "{}", lines[0]);
         // The human's own add and the five agent-lane edits are one count.
-        assert_eq!(
-            lines[1],
-            "6 other writes (your own, Focus, the agent boards, dispatch): `notes log`"
-        );
+        assert_eq!(lines[1], "6 other writes: `notes log`");
 
         let many: Vec<_> = (0..SHEET_ACTIONS_SHOWN + 2)
             .map(|n| {
@@ -3134,8 +3133,8 @@ mod tests {
             .collect();
         let lines = sheet_actions(&many);
         assert_eq!(lines.len(), SHEET_ACTIONS_SHOWN + 1);
-        assert!(lines[0].ends_with("row 2"), "{}", lines[0]);
-        assert_eq!(lines[SHEET_ACTIONS_SHOWN], "2 earlier: `notes log`");
+        assert_eq!(lines[0], "+2 older, not shown: `notes log`");
+        assert!(lines[1].ends_with("row 2"), "{}", lines[1]);
     }
 
     #[test]
@@ -3317,7 +3316,7 @@ mod tests {
 - [[demo/README|demo]]: 1 waiting
 
 ## Your sheets, changed by sessions
-- 4 other writes (your own, Focus, the agent boards, dispatch): `notes log`
+- 4 other writes: `notes log`
 "
         );
         assert!(page.stat.unwrap().ends_with(
