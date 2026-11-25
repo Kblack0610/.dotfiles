@@ -344,6 +344,16 @@ bats_require_minimum_version 1.5.0
   assert_equal "$(outcome)" FAILED
 }
 
+@test "run names the cmd_start cause in the FAILED reason and the activity log, not only exit 1 (ar-3995)" {
+  game_ready
+  stub wt 'echo "wt: disk full" >&2; exit 1'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_failure
+  assert_output --partial 'wt: disk full'
+  grep -qE 'could not start queue item gm-1 \(exit 1\): .*wt new failed for queue item gm-1' \
+    "$HOME/.local/state/agentctl/fleet-dispatch/activity.log" || fail "the cause is not in the activity log"
+}
+
 @test "run publishes FAILED when it could not judge" {
   project game beta "$SANDBOX/repos/game"
   row game human 'fix crash' "- [ ] fix crash $T"
