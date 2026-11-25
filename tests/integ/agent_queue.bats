@@ -33,6 +33,8 @@ setup() {
 # The file is a redirect, not an operand: awk reads stdin for an empty one, which hangs a local run (ar-3455).
 field() { awk -v k="$2: " '$0 == "---" { exit } index($0, k) == 1 { print substr($0, length(k) + 1) }' <"$1"; }
 item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
+# A done item sits under its close day: the glob stays outside the quotes, since the sandbox path has a space.
+done_item() { ls "$AGENT_QUEUE_DIR"/done/*/*-"$1".md; }
 
 @test "add writes one queued item with the defaults and the task as typed" {
   run "$AQ" add --project game "Menu: pick sides" "and add people"
@@ -3680,36 +3682,36 @@ EOF
   "$AQ" set v type=fix tags=verify
   for s in a k v z; do "$AQ" move "$s" done --status ok; done
   # a fix with no PR missed; a clean check and a verify (a proof, whatever its kind) say nothing of the model
-  assert_equal "$(for s in a k v; do field "$(item 'done/*' "$s")" outcome; done | paste -sd' ')" 'no-pr unrated unrated'
+  assert_equal "$(for s in a k v; do field "$(done_item "$s")" outcome; done | paste -sd' ')" 'no-pr unrated unrated'
   # closed before the stamp existed; z closed outside the window
-  for s in a k v z; do sed -i '/^outcome: /d' "$(item 'done/*' "$s")"; done
-  mkdir -p "$AGENT_QUEUE_DIR/done/2000-01-01"; mv "$(item 'done/*' z)" "$AGENT_QUEUE_DIR/done/2000-01-01/"
+  for s in a k v z; do sed -i '/^outcome: /d' "$(done_item "$s")"; done
+  mkdir -p "$AGENT_QUEUE_DIR/done/2000-01-01"; mv "$(done_item z)" "$AGENT_QUEUE_DIR/done/2000-01-01/"
   run "$AQ" backfill-outcome --dry-run
   assert_success
   assert_line 'a: no-pr'
   assert_line 'k: unrated'
   assert_line 'v: unrated'
   assert_line --partial 'would stamp 3 of 3 done items since'
-  assert_equal "$(field "$(item 'done/*' a)" outcome)" ''
+  assert_equal "$(field "$(done_item a)" outcome)" ''
   run "$AQ" backfill-outcome
   assert_success
   assert_line --partial 'stamped 3 of 3 done items since'
-  assert_equal "$(for s in a k v; do field "$(item 'done/*' "$s")" outcome; done | paste -sd' ')" 'no-pr unrated unrated'
-  assert_equal "$(field "$(item 'done/*' z)" outcome)" ''
+  assert_equal "$(for s in a k v; do field "$(done_item "$s")" outcome; done | paste -sd' ')" 'no-pr unrated unrated'
+  assert_equal "$(field "$(done_item z)" outcome)" ''
   run "$AQ" backfill-outcome
   assert_line --partial 'stamped 0 of 3'
   run "$AQ" backfill-outcome --days 100000
   assert_line --partial 'stamped 1 of 4'
   # a PR recorded after the close (agent-land's partial path) makes it landed
   "$AQ" set a pr=o/r#9 merged=0123456789abcdef0123456789abcdef01234567
-  assert_equal "$(field "$(item 'done/*' a)" outcome)" landed
+  assert_equal "$(field "$(done_item a)" outcome)" landed
   # An outcome the rule no longer gives goes. NEGATIVE CONTROL: tab-split, the empty outcome collapsed
   # and the slug was written as k's outcome.
-  sed -i '/^status: /d' "$(item 'done/*' k)"
+  sed -i '/^status: /d' "$(done_item k)"
   run "$AQ" backfill-outcome --dry-run
   assert_line 'k: no outcome'
   "$AQ" backfill-outcome
-  assert_equal "$(grep -c '^outcome:' "$(item 'done/*' k)")" 0
+  assert_equal "$(grep -c '^outcome:' "$(done_item k)")" 0
   run "$AQ" backfill-outcome --days x
   assert_failure
 }

@@ -1625,7 +1625,7 @@ SH
     '["opus",3,2,1.5,1,14,4.67]'
   run "$SUBJECT" models
   # these sessions have no cost_usd: an unpriced PR reads -, never $0 at a list price
-  assert_line '| opus | claude | 3 | 0 | 0 | 3 | 1 (0.44-1, n 3) | 0 | 0 | 0 | $0 | - | - | 1.5 (n 2) | 1 (0.21-1, n 1) | 14 | 4.67 |'
+  assert_line '| opus | claude | 3 | 0 | 3 | 0 | 0 | 1 (0.44-1, n 3) | 0 | 0 | 0 | $0 | - | - | 1.5 (n 2) | 1 (0.21-1, n 1) | 14 | 4.67 |'
 }
 
 # merge_repo <dir> <epoch>...: a clone of a local remote holding one commit per epoch
