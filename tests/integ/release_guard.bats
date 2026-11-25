@@ -70,8 +70,17 @@ allowed() { assert_success; assert_output ''; }
 
 @test "an API dispatch of a cut or release workflow, or one named by id, is denied; an ordinary one passes (ar-4040)" {
   local c
+  # a cut has no allowed form, whatever spelling of the file GitHub may resolve
   for c in 'gh api -X POST repos/o/r/actions/workflows/cut.yml/dispatches -f ref=main' \
-           'gh api repos/o/r/actions/workflows/release.yml/dispatches -f ref=v0.5.2 -f inputs[tag]=v0.5.2' \
+           'gh api -X POST repos/o/r/actions/workflows/CUT.yml/dispatches -f ref=main' \
+           'gh api -X POST repos/o/r/actions/workflows/cut%2Eyml/dispatches -f ref=main'; do
+    run at "$T/game" "$c"
+    denied
+    assert_output --partial 'cut a release'
+    refute_output --partial 'gh workflow run <file>.yml'
+  done
+  for c in 'gh api repos/o/r/actions/workflows/release.yml/dispatches -f ref=v0.5.2 -f inputs[tag]=v0.5.2' \
+           'gh api repos/o/r/actions/workflows/Release.YML/dispatches -f ref=v0.5.2' \
            'gh api --method POST repos/o/r/actions/workflows/12345/dispatches -f ref=main' \
            'curl -X POST https://api.github.com/repos/o/r/actions/workflows/steam.yml/dispatches -d @in.json'; do
     run at "$T/game" "$c"

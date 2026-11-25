@@ -32,6 +32,7 @@ import os
 import re
 import shlex
 import subprocess
+import urllib.parse
 
 import hooklib
 
@@ -279,7 +280,11 @@ def check_api(head, argv, cwd):
     if GUARDED_API.search(path):
         return deny(shown, LOCKS)
     wf = DISPATCH_API.search(path)
-    if wf and (wf.group(1) in CUT_WORKFLOWS | RELEASE_WORKFLOWS or not wf.group(1).endswith((".yml", ".yaml"))):
+    # the segment as GitHub may resolve it: decoded, its last part, any case (review, ar-4040)
+    name = wf and os.path.basename(urllib.parse.unquote(wf.group(1))).lower()
+    if name in CUT_WORKFLOWS:
+        return deny(shown, "cut a release")
+    if name and (name in RELEASE_WORKFLOWS or not name.endswith((".yml", ".yaml"))):
         # the API's inputs are a JSON body: `gh workflow run` is the form whose fields this guard reads (ar-4040)
         return deny(shown, "start %s through the API, where this guard cannot read its inputs: use "
                     "`gh workflow run <file>.yml`" % wf.group(1))
