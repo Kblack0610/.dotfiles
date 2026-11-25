@@ -3253,7 +3253,7 @@ cleanup() {
   assert_output --partial 'unit/tool.bats'
 }
 
-@test "hold: a cancelled merge run still dates the merge, and an unreadable repo is said, not green" {
+@test "hold: a cancelled merge run still dates the merge, and an unreadable repo is said, not green, and reads reds_unfixed ?" {
   hold_setup
   cleanup a -3590 5 aaa11111 .local/bin/tool
   echo 'run tool' > "$GHD/tool.bats"
@@ -3261,11 +3261,19 @@ cleanup() {
   failed 3 unit/tool.bats
   run "$SUBJECT" triage --dry-run
   assert_output --partial 'cleanup merge a (PR 5 at aaa11111)'
+  run "$SUBJECT" ledger
+  assert_line --regexp '^reds_unfixed=[0-9]+$'
   touch "$GHD/down"
   run "$SUBJECT" triage --dry-run
   assert_success
   assert_output --partial 'hold: cannot read the runs on o/r main'
   refute_output --partial 'fix(hold)'
+  # what is red now is partly unread, so reds_unfixed reads ? and the reds list says what it may miss (ar-5413)
+  run "$SUBJECT" ledger
+  assert_line 'reds_unfixed=?'
+  run "$SUBJECT" reds
+  assert_success
+  assert_line 'unreadable: a cleanup hold could not be read, so a fix below may read fixed while its red is live'
 }
 
 # liveness_runner <name> <owner/repo> <command path>: a scheduled runner whose COMMAND is that path

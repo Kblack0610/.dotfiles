@@ -5902,12 +5902,14 @@ alert_titles() {
 # to alert is "alert route" (its watch pages, and the KPI it trips on is not a merge's to clear).
 # Each red row also names its item's board row id (row, the ticket) and session, and a fix in hand (queued or fixing) its due epoch,
 # which the overviews read as past its ETA (hub_core::alerts). Counted, never judged.
+# Returns 3 after its rows when a cleanup hold could not be read (hold_reds said which): a red that
+# hold should key may be missing from live, so a fix can read fixed while its red is not gone.
 reds_json() {
-  local t="$1" items holds live watches='{}' f n parsed alerted
+  local t="$1" items holds live watches='{}' f n parsed alerted partial=0
   items=$(reds_items "$t") || { say "reds: cannot read the queue ($TRIAGE_ITEMS_CMD)"; return 1; }
   parsed=$(red_titles "$items") || return 1
   alerted=$(alert_titles "$items") || return 1
-  holds=$(hold_reds "$t" "$items" | jq -cs .)
+  holds=$(hold_reds "$t" "$items" | jq -cs .) || partial=3
   live=$(reds_live "$(jq -c '.[]' <<<"$holds")" | sort -u | jq -Rsc 'split("\n") | map(select(. != ""))')
   for f in "$TRIAGE_WATCH_STATE"/*.since; do
     [ -e "$f" ] || continue
@@ -5958,21 +5960,24 @@ reds_json() {
     | ([$reds[] | .fix_min // empty] | sort) as $m
     | (if ($m | length) >= $n then $m[((($m | length) * 0.9) | ceil) - 1] else null end) as $p90
     | ($reds[] | . + {due: (if $p90 != null and (.outcome == "queued" or .outcome == "fixing") and (.queued | ep) != null
-                             then (.queued | ep) + $p90 * 60 else null end)}), $cleanups[]' <<<"$items"
+                             then (.queued | ep) + $p90 * 60 else null end)}), $cleanups[]' <<<"$items" || return 1
+  return "$partial"
 }
 
 # reds_counts <now> -> the KPI lines: merged fixes whose red is back or never went (reds_unfixed),
-# and the median minutes from queued to merged (red_fix_min_p50), ? when the queue cannot be read
+# and the median minutes from queued to merged (red_fix_min_p50), ? when the queue cannot be read;
+# reds_unfixed alone is ? when a cleanup hold cannot be (reds_json returns 3), since it reads what is red now
 reds_counts() {
-  local rows
-  rows=$(reds_json "$1" | jq -cs .) || { echo "reds_unfixed=?"; echo "red_fix_min_p50=?"; return 0; }
-  jq -r --argjson fix "$FIX_SINCE" "$JQ_LIB"'"reds_unfixed=\([.[] | select((.outcome == "still red" or .outcome == "came back")
-      and ((.finished | ep) // $fix) >= $fix)] | length)",
+  local rows rc=0
+  rows=$(reds_json "$1" | jq -cs .) || rc=$?
+  [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || { echo "reds_unfixed=?"; echo "red_fix_min_p50=?"; return 0; }
+  jq -r --argjson fix "$FIX_SINCE" --argjson part "$rc" "$JQ_LIB"'"reds_unfixed=\(if $part != 0 then "?" else [.[] | select((.outcome == "still red" or .outcome == "came back")
+      and ((.finished | ep) // $fix) >= $fix)] | length end)",
     "red_fix_min_p50=\([.[] | .fix_min // empty] | sort | if length == 0 then "?" else .[(length - 1) / 2 | floor] end)"' <<<"$rows"
 }
 
 cmd_reds() {
-  local json=0 rows
+  local json=0 rows rc=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --json) json=1 ;;
@@ -5982,7 +5987,10 @@ cmd_reds() {
     shift
   done
   [[ "$REDS_DAYS" =~ ^[1-9][0-9]*$ ]] || { say "reds: --days takes a day count"; return 2; }
-  rows=$(reds_json "$(now)") || return 1   # reds_json said why
+  # reds_json said why; a partial read (3) still lists its rows, and the text says what it may miss
+  rows=$(reds_json "$(now)") || rc=$?
+  [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || return 1
+  [ "$rc" -eq 0 ] || [ "$json" = 1 ] || echo "unreadable: a cleanup hold could not be read, so a fix below may read fixed while its red is live"
   if [ "$json" = 1 ]; then [ -z "$rows" ] || printf '%s\n' "$rows"; return 0; fi
   [ -n "$rows" ] || { echo "no red fix queued in the last $REDS_DAYS days"; return 0; }
   jq -rs --arg d "$REDS_DAYS" '
