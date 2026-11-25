@@ -79,10 +79,14 @@ tip() { jq -r .tooltip <<< "$output"; }
   assert_equal "$(jq -r .text <<< "$output")" "CPU 100% L 12.0"
 }
 
-@test "a sample file in the old two-field form reads as no sample" {
-  echo "1000 900" > "$LOAD_CPU_STATE"
-  run "$MODULE"
-  assert_equal "$(jq -r .text <<< "$output")" "CPU - L 12.0"
+@test "a sample in the old two-field form, a damaged one or one past CPU_MAX_AGE reads as none" {
+  for saved in "1000 900" "abc 1000 900 20%" "4000 1000 900 20%"; do
+    echo "$saved" > "$LOAD_CPU_STATE"
+    run "$MODULE"
+    assert_success
+    assert_equal "$(jq -r .text <<< "$output")" "CPU - L 12.0"
+    assert_equal "$(cat "$LOAD_CPU_STATE")" "5000 2000 1400 -"
+  done
 }
 
 @test "iowait counts as idle" {

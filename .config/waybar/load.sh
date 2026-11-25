@@ -30,27 +30,33 @@ cores="${LOAD_CORES:-$(nproc)}"
 level=$(awk -v r="$load1" -v c="$cores" -v h="$HOT_RATIO" 'BEGIN { r = c > 0 ? r / c : 0; print (r < 1 ? 0 : (r < h ? 1 : 2)) }')
 class="${LEVEL_CLASS[$level]}"
 
-# CPU busy over the last CPU_WINDOW seconds or more. /proc/stat counts since boot, so a
-# percentage needs an earlier sample; the first run has none and reads -, never a since-boot
-# average. Iowait counts as idle. Every bar that shows this chip (waybar on each monitor, the
-# pin, Noctalia) runs this script against the one sample file, so a run that finds a sample
-# younger than CPU_WINDOW prints the figure saved with it and leaves the file alone: each
-# bar shows the same number, and none measures over the sliver since another bar's run.
-CPU_WINDOW=10
+# CPU busy since an earlier sample. /proc/stat counts since boot, so a percentage needs one; the
+# first run has none and reads -, never a since-boot average. Iowait counts as idle. Every bar
+# that shows this chip (waybar on each monitor, the pin, Noctalia) runs this script against the
+# one sample file, so a run that finds a sample younger than CPU_WINDOW prints the figure saved
+# with it and leaves the file alone: the bars show one number, and none measures over the sliver
+# since another bar's run. On the 15 s poll (config.base) the span measured is that interval.
+# Two bars that find the sample stale in the same second may each measure; the last write wins.
+# A sample older than CPU_MAX_AGE (a suspend, a module gated off) reads as none, so the chip
+# never shows an average over hours as current.
+CPU_WINDOW=10 CPU_MAX_AGE=120
 cpu_state="${LOAD_CPU_STATE:-${XDG_RUNTIME_DIR:-/tmp}/waybar-load-cpu}"
 now="${LOAD_NOW:-$EPOCHSECONDS}"
 read -r _ user nice sys idle iowait irq softirq steal _ < "${LOAD_STAT:-/proc/stat}"
 total=$((user + nice + sys + idle + iowait + irq + softirq + steal)) rest=$((idle + iowait))
 cpu=- fresh=false
-if [ -r "$cpu_state" ] && read -r prev_t prev_total prev_rest prev_cpu < "$cpu_state" && [ -n "${prev_cpu:-}" ]; then
-  if ((now - prev_t < CPU_WINDOW && now >= prev_t)); then
+if [ -r "$cpu_state" ] && read -r prev_t prev_total prev_rest prev_cpu < "$cpu_state" \
+  && [[ -n "${prev_cpu:-}" && "$prev_t $prev_total $prev_rest" =~ ^[0-9]+\ [0-9]+\ [0-9]+$ ]] \
+  && ((now >= prev_t && now - prev_t <= CPU_MAX_AGE)); then
+  if ((now - prev_t < CPU_WINDOW)); then
     cpu=$prev_cpu fresh=true
   elif ((total > prev_total)); then
     cpu="$((100 * (total - prev_total - rest + prev_rest) / (total - prev_total)))%"
   fi
 fi
 if ! $fresh; then
-  printf '%s %s %s %s\n' "$now" "$total" "$rest" "$cpu" > "$cpu_state.$$" && mv -f "$cpu_state.$$" "$cpu_state"
+  printf '%s %s %s %s\n' "$now" "$total" "$rest" "$cpu" > "$cpu_state.$$" 2>/dev/null \
+    && mv -f "$cpu_state.$$" "$cpu_state" 2>/dev/null || rm -f "$cpu_state.$$"
 fi
 
 printf -v text 'CPU %s L %.1f' "$cpu" "$load1"
