@@ -4464,6 +4464,29 @@ notes --profile work ptask level run lv-8'
   assert_output "$(printf '%s\n' 'notes --profile bnb ptask level --agent start lv-2' 'notes --profile bnb ptask level --agent run lv-2')"
 }
 
+@test "--row carries the item's longer task onto the row as detail lines the row lacks, so a plain return keeps it (ar-3159)" {
+  story_notes
+  jq -n '{rows: [{project: "level", id: "lv-2", state: "doing", text: "feat(menu): the row's work", details: ["already on the row"]},
+                 {project: "level", id: "lv-2", state: "done", text: "feat(menu): an old copy", details: []}]}' > "$NOTES_FIXTURE/board.json"
+  run "$AQ" add --running --project game --row lv-2 --slug longer "$(printf '%s\n' "feat(menu): the row's work" 'the step the row lacks' 'already on the row')"
+  assert_success
+  run grep ' edit ' "$NOTES_FIXTURE/calls.log"
+  assert_output "notes --profile bnb ptask level --agent edit lv-2 --detail=the step the row lacks"
+  # NEGATIVE CONTROL: a task that is only the row's own words writes nothing to it.
+  rm -f "$(item running longer)"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" add --running --project game --row lv-2 --slug same "feat(menu): the row's work"
+  assert_success
+  run grep -c ' edit ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # A row the board read does not find warns, and the add still links it.
+  rm -f "$(item running same)"; echo '{"rows": []}' > "$NOTES_FIXTURE/board.json"
+  run "$AQ" add --running --project game --row lv-2 --slug unread "$(printf '%s\n' x 'more')"
+  assert_success
+  assert_output --partial "row lv-2 on level was not read, so the item's task is not on it"
+  [ "$(field "$(item running unread)" row)" = level:lv-2 ]
+}
+
 @test "--row refuses an id that is not an open row, a row a live item names and a project with no board, writing nothing" {
   story_notes
   touch "$NOTES_FIXTURE/closed.lv-7"

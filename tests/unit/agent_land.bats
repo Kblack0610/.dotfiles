@@ -2326,6 +2326,8 @@ real_notes_board() {
   assert_success
   grep -qE -- '^- \[/\] fix\(menu\): the back button .*id:gm-2' "$dir/agent/README.md" ||
     fail "the row was not started: $(cat "$dir/agent/README.md")"
+  # the item's task is on the row as a detail line, so a plain return would keep it (ar-3159)
+  grep -qF 'work the filed row' "$dir/agent/README.md" || fail "the task is not on the row: $(cat "$dir/agent/README.md")"
   run "$LAND" 42 --item back
   assert_success
   assert_output --partial 'board: closed "gm-2" with pr:o/r#42'

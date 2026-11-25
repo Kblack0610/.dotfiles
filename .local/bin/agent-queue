@@ -1980,6 +1980,27 @@ link_row() {
   printf '%s\t%s\t%s\n' "$project" "$lab" "$id"
 }
 
+# brief_to_row <project> <profile> <id> <task> -- an item linked to a row already filed (link_row) carries
+# its task onto that row: each line of its brief (row_brief) the row's details lack goes on as a detail
+# line, after the row's own. Why: the row is the task's record, and a plain return un-starts it with
+# nothing else kept, so an item's longer task was lost (ar-3159). A failed read or write warns; the add goes on.
+brief_to_row() {
+  local feed words brief line out
+  local -a add=()
+  feed="$(notes board --json --id "$3" 2>/dev/null | jq -c --arg p "$1" --arg k "$3" \
+    'first(.rows[]? | select(.project == $p and .id == $k and (.state == "open" or .state == "doing"))) // empty' 2>/dev/null)"
+  [ -n "$feed" ] || { echo "agent-queue: row $3 on $1 was not read, so the item's task is not on it" >&2; return 0; }
+  words="$(jq -r .text <<<"$feed")"
+  brief="$(row_brief "$words" "$4")"
+  while IFS= read -r line; do
+    [ -n "${line//[[:space:]]/}" ] || continue
+    jq -e --arg l "$line" '(.details // []) | index($l) != null' <<<"$feed" >/dev/null || add+=("--detail=$line")
+  done <<<"$brief"
+  [ ${#add[@]} -gt 0 ] || return 0
+  out="$(notes ${2:+--profile "$2"} ptask "$1" --agent edit "$3" "${add[@]}" 2>&1)" ||
+    echo "agent-queue: row $3 on $1 did not take the item's task: ${out##*$'\n'}" >&2
+}
+
 # named_row <title> -> the one row id (`ucp-134`) the title names as its subject, else nothing and
 # rc 1: none, or two that differ. A subject is the first word (`ucp-134: ...`) or an id in brackets
 # (`... (ucp-134)`, `[ucp-134]`); an id in the sentence (`after ar-40 lands`) only mentions a row.
@@ -2262,7 +2283,7 @@ cmd_add() {
   # Only a session taking the item works it. One queueing it for later did not, and outcomes
   # would charge that session's cost and revert count to this item.
   [ -z "$running" ] || sid="$(claude_sid)" || sid=
-  local story='' sboard='' sprof='' srow=''
+  local story='' sboard='' sprof='' srow='' linked_row=''
   # No story row for work with its own record: a canary (fleet-bench canary), a trainee review (the trainee's row), an ask's resume (the ask).
   case "$from" in
     board:* | canary | trainee | ask:*) ;;
@@ -2278,16 +2299,18 @@ cmd_add() {
          else
            printf '%s\n' "$linked" >&2; exit 1
          fi
+         linked_row=1
        else
          story="$(prior_story "$slug" "$project")"
          if [ -z "$story" ] && [ -n "$named" ] && story="$(link_row "$named" "$named_project" 2>/dev/null)"; then
-           project="$named_project"
+           project="$named_project" linked_row=1
            echo "agent-queue: $slug works row $named, which its title names; it closes that row when it lands" >&2
          fi
          [ -n "$story" ] || { story="$(file_story "$project" "${title:-$(head -1 <<<"$text")}" "$priority" "$epic" "$want" "$text" "" "" "$tags")"; priority_given=''; }
        fi ;;
   esac
   [ -z "$story" ] || IFS=$'\t' read -r sboard sprof srow <<<"$story"
+  [ -z "$linked_row" ] || brief_to_row "$sboard" "$sprof" "$srow" "$text"
   mkdir -p "$AQ_DIR/$state"
   local f tmp
   f="$AQ_DIR/$state/$(date +%Y%m%d-%H%M%S)-$slug.md"
