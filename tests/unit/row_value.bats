@@ -33,7 +33,8 @@ EOF
 }
 
 export_fixture() {
-  run "$RV" export --board "$HOME/board.json" --scorecard "$HOME/latest.md" --reds-cmd "$HOME/reds" --chunk 2 "$D"
+  # --reds-cmd is a shell string and the sandbox HOME holds a space, so the path is quoted for sh.
+  run "$RV" export --board "$HOME/board.json" --scorecard "$HOME/latest.md" --reds-cmd "$(printf %q "$HOME/reds")" --chunk 2 "$D"
   assert_success
 }
 
