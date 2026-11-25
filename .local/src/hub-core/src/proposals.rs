@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::session_actions::Runner;
+use crate::session_actions::{argv, Runner};
 use crate::table::{Row, Val};
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -59,16 +59,12 @@ impl Row for Proposal {
     }
 }
 
-fn argv(args: &[&str]) -> Vec<String> {
-    std::iter::once("agent-propose")
-        .chain(args.iter().copied())
-        .map(String::from)
-        .collect()
-}
+/// The CLI this module reads and writes through.
+const CLI: &str = "agent-propose";
 
 /// The open proposals, newest first.
 pub fn read(runner: &dyn Runner) -> Result<Vec<Proposal>, String> {
-    let out = runner.run(&argv(&["list", "--json"]))?;
+    let out = runner.run(&argv(&[CLI, "list", "--json"]))?;
     let mut rows: Vec<Proposal> =
         serde_json::from_str(&out).map_err(|e| format!("agent-propose list: {e}"))?;
     rows.reverse();
@@ -156,7 +152,7 @@ fn decide(runner: &dyn Runner, verb: &str, id: &str) -> Result<String, String> {
     if !is_id(id) {
         return Err("bad proposal id".into());
     }
-    runner.run(&argv(&[verb, id]))
+    runner.run(&argv(&[CLI, verb, id]))
 }
 
 /// `agent-propose accept <id>`: runs the proposal's verb, then records the decision.

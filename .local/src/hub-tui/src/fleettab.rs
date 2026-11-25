@@ -13,16 +13,9 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
 use crate::fit::{cell, clip_line, len, wrap, Table};
-use crate::fmt::{clock, older, pct, Palette};
+use crate::fmt::{clock, heading, older, pct, Palette};
 use hub_core::display::fmt::{dur_secs, tokens, usd_opt};
 use hub_core::layout::FOLD_ROWS;
-
-fn heading(title: &str, rest: String, p: Palette) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(title.to_string(), p.head()),
-        Span::styled(rest, p.dim()),
-    ])
-}
 
 /// The rows as shown: the table's query, state and sort applied. j/k step through these and
 /// Enter opens the one selected.
@@ -797,7 +790,7 @@ pub fn runner_page(
 
     out.push(Line::raw(""));
     out.push(clip_line(
-        heading("STATUS", "  its status file, then activity.log".into(), p),
+        heading("STATUS", "  its status file, then activity.log", p),
         w,
     ));
     if r.status.is_empty() {
@@ -828,7 +821,7 @@ pub fn runner_page(
 
     out.push(Line::raw(""));
     let floor = if r.calls.partial { "+" } else { "" };
-    out.push(clip_line(heading("CALLS", "  calls.jsonl".into(), p), w));
+    out.push(clip_line(heading("CALLS", "  calls.jsonl", p), w));
     let row = |l: &str, t: &Totals, f: &str| {
         vec![
             l.to_string().into(),
