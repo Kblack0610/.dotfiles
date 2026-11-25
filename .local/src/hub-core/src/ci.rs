@@ -8,6 +8,10 @@
 //! same). A queued job no online runner can take is `Queued::missing`, the labels none holds:
 //! the board draws it red, so a label standing in for a place (2026-11-10: `lan`) shows at a
 //! glance instead of as an hour of queue.
+//!
+//! An ephemeral pool (an ARC scale set, the KEDA forgejo-runner job) registers no runner until a
+//! job starts a pod, and GitHub lists that pod's runner with no labels, so a pool's labels come
+//! from the exporter's `ci_runner_pool` row (`Pool`) and it holds them like a runner (ar-5477).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -61,8 +65,10 @@ pub struct Slot {
 /// A host that can take a job, and whether a slot is free there now.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Fit {
+    /// The machine, or for an ephemeral pool its name (`arc-org-light`).
     pub host: String,
-    /// `idle`, `busy`, `lent`, `withheld` or `standby` (`now_of`).
+    /// `idle`, `busy`, `lent`, `withheld` or `standby` (`now_of`), or `pool`: an ephemeral pool
+    /// that starts a pod for it.
     pub state: String,
 }
 
@@ -73,6 +79,8 @@ pub struct Queued {
     /// The pool the exporter files it under.
     pub pool: String,
     pub repo: String,
+    /// `github` or `forgejo`: which forge's pools may take it.
+    pub forge: String,
     pub pr: String,
     pub branch: String,
     pub n: u32,
@@ -80,9 +88,10 @@ pub struct Queued {
     pub wait: i64,
     /// The labels it needs, less `COMMON`.
     pub needs: Vec<String>,
-    /// Hosts with an online runner holding every label, free ones first. Empty: nobody can.
+    /// Hosts with an online runner holding every label, and the pools holding them, free ones
+    /// first. Empty: nobody can.
     pub can: Vec<Fit>,
-    /// The labels no online runner holds, when nobody can take it.
+    /// The labels no online runner or pool holds, when nobody can take it.
     pub missing: Vec<String>,
     /// No online runner can take it: a label none of them holds, or no one runner holding all.
     pub stuck: bool,
@@ -648,6 +657,46 @@ fn holds(have: &[String], need: &[String]) -> bool {
     need.iter().all(|x| have.contains(x))
 }
 
+/// An ephemeral runner pool, the exporter's `ci_runner_pool` row: an ARC scale set or the KEDA
+/// forgejo-runner job.
+struct Pool<'a> {
+    name: &'a str,
+    forge: &'a str,
+    /// `org` (every repo of its owner), or the `owner/repo` of a repo-scoped scale set.
+    scope: &'a str,
+    labels: Vec<String>,
+}
+
+impl Pool<'_> {
+    /// Whether it may take a job of this forge (empty reads github, on either side) in this
+    /// repo. The waiting row names its repo without the owner, so a repo-scoped pool matches by
+    /// the short name: a same-named repo of another owner would match too.
+    fn serves(&self, forge: &str, repo: &str) -> bool {
+        let github = |f: &str| if f.is_empty() { "github" } else { f }.to_string();
+        let scope = self.scope.rsplit('/').next().unwrap_or_default();
+        github(self.forge) == github(forge)
+            && (self.scope == "org" || scope.eq_ignore_ascii_case(repo))
+    }
+}
+
+/// The pools that may take a job of this forge in this repo.
+fn serving<'p>(pools: &'p [Pool<'p>], forge: &str, repo: &str) -> Vec<&'p Pool<'p>> {
+    pools.iter().filter(|p| p.serves(forge, repo)).collect()
+}
+
+fn pools(infra: &Infra) -> Vec<Pool<'_>> {
+    infra
+        .get("pools")
+        .iter()
+        .map(|s| Pool {
+            name: s.label("name"),
+            forge: s.label("forge"),
+            scope: s.label("scope"),
+            labels: lower(s.label("labels")),
+        })
+        .collect()
+}
+
 /// One row per runner name, a running one winning when two exporter pods disagree during a
 /// rollout.
 fn runners(infra: &Infra) -> Vec<Runner<'_>> {
@@ -889,7 +938,7 @@ pub fn build(infra: &Infra) -> Ci {
 /// Waiting jobs grouped by job and run, oldest first. A stuck run (queued with no jobs) is RED
 /// NOW's, so it cannot pass for the queue's age.
 fn queue(infra: &Infra, all: &[Runner], off: &HashMap<&str, &str>) -> Vec<Queued> {
-    let mut by: BTreeMap<[String; 5], Queued> = BTreeMap::new();
+    let mut by: BTreeMap<[String; 6], Queued> = BTreeMap::new();
     for s in infra.get("waiting") {
         if s.label("stuck") == "true" {
             continue;
@@ -900,6 +949,7 @@ fn queue(infra: &Infra, all: &[Runner], off: &HashMap<&str, &str>) -> Vec<Queued
             .entry([
                 job_name(s),
                 s.label("repo").into(),
+                s.label("forge").into(),
                 s.label("pr").into(),
                 s.label("branch").into(),
                 labels.join(","),
@@ -908,6 +958,7 @@ fn queue(infra: &Infra, all: &[Runner], off: &HashMap<&str, &str>) -> Vec<Queued
                 job: job_name(s),
                 pool: s.label("pool").into(),
                 repo: s.label("repo").into(),
+                forge: s.label("forge").into(),
                 pr: s.label("pr").into(),
                 branch: s.label("branch").into(),
                 needs: s
@@ -929,12 +980,13 @@ fn queue(infra: &Infra, all: &[Runner], off: &HashMap<&str, &str>) -> Vec<Queued
         })
         .collect();
     let usual = usual(infra);
+    let pools = pools(infra);
     let mut out: Vec<Queued> = by
         .into_iter()
         .map(|([.., labels], mut q)| {
             let need = lower(&labels);
             if !need.is_empty() {
-                q.can = fits(all, off, &need);
+                q.can = fits(all, off, &serving(&pools, &q.forge, &q.repo), &need);
                 (q.at, q.starts) = starts(all, off, &usual, &need);
                 if q.at.is_empty() {
                     q.at = q.can.first().map(|f| f.host.clone()).unwrap_or_default();
@@ -947,11 +999,17 @@ fn queue(infra: &Infra, all: &[Runner], off: &HashMap<&str, &str>) -> Vec<Queued
         // GitHub's own runners are not ours to hold: a hosted job waits on GitHub, never stuck.
         q.stuck = !q.hosted() && q.can.is_empty() && !q.needs.is_empty();
         if q.stuck {
-            // The labels no online runner holds; empty when each is held but never together.
+            // The labels no online runner or pool of its own holds; empty when each is held but
+            // never together.
+            let mine = serving(&pools, &q.forge, &q.repo);
             q.missing = q
                 .needs
                 .iter()
-                .filter(|n| !online.iter().any(|r| r.labels.contains(&n.to_lowercase())))
+                .filter(|n| {
+                    let n = n.to_lowercase();
+                    !online.iter().any(|r| r.labels.contains(&n))
+                        && !mine.iter().any(|p| p.labels.contains(&n))
+                })
                 .cloned()
                 .collect();
         }
@@ -989,11 +1047,12 @@ fn starts(
 }
 
 /// The hosts with an online runner (or one waiting on a powered-off host) holding every label
-/// (`now_of`).
-fn fits(all: &[Runner], off: &HashMap<&str, &str>, need: &[String]) -> Vec<Fit> {
+/// (`now_of`), and the pools that may take the job holding them (`pools`, state `pool`), after
+/// an idle runner: a pool starts a pod once a node has room.
+fn fits(all: &[Runner], off: &HashMap<&str, &str>, pools: &[&Pool], need: &[String]) -> Vec<Fit> {
     let mut by: BTreeMap<&str, &str> = BTreeMap::new();
     let rank = |s: &str| {
-        ["idle", "busy", "lent", "withheld", "standby"]
+        ["idle", "pool", "busy", "lent", "withheld", "standby"]
             .iter()
             .position(|x| *x == s)
             .unwrap_or(9)
@@ -1007,6 +1066,9 @@ fn fits(all: &[Runner], off: &HashMap<&str, &str>, need: &[String]) -> Vec<Fit> 
         if rank(state) < rank(e) {
             *e = state;
         }
+    }
+    for p in pools.iter().filter(|p| holds(&p.labels, need)) {
+        by.entry(p.name).or_insert("pool");
     }
     let mut out: Vec<Fit> = by
         .into_iter()
@@ -1037,12 +1099,13 @@ pub struct PoolMatch {
 /// total busy/slots says nothing about a job that fits two of its ten runners (2026-11-05:
 /// razer-laptop-unity-pool-1/2 were the only ones that matched while mac-studio slots sat idle).
 /// Nothing when no job waits that long, or no runner is read: the finding then falls back to the
-/// pool's own totals.
+/// pool's own totals. A job an ephemeral pool of its own holds is left out: its labels match.
 pub fn pool_match(infra: &Infra, min_wait: i64) -> Vec<PoolMatch> {
     let all = runners(infra);
     if all.is_empty() {
         return vec![];
     }
+    let pools = pools(infra);
     let mut sets: BTreeMap<String, BTreeSet<Vec<String>>> = BTreeMap::new();
     for s in infra.get("waiting") {
         let mut labels = lower(s.label("labels"));
@@ -1052,6 +1115,9 @@ pub fn pool_match(infra: &Infra, min_wait: i64) -> Vec<PoolMatch> {
             && !s.label("pool").is_empty()
             && s.label("pool") != HOSTED
             && !labels.is_empty()
+            && !serving(&pools, s.label("forge"), s.label("repo"))
+                .iter()
+                .any(|p| holds(&p.labels, &labels))
         {
             sets.entry(s.label("pool").into())
                 .or_default()
@@ -1266,7 +1332,10 @@ impl Row for Queued {
     fn in_state(&self, s: &str) -> bool {
         match s {
             "stuck" => self.stuck,
-            "free" => self.can.iter().any(|f| f.state == "idle"),
+            "free" => self
+                .can
+                .iter()
+                .any(|f| f.state == "idle" || f.state == "pool"),
             _ => false,
         }
     }
@@ -1586,6 +1655,91 @@ mod tests {
         let ci = build(&i);
         let soak = ci.queue.iter().find(|q| q.job == "Soak").unwrap();
         assert_eq!(soak.missing, ["unity-full", "lan"]);
+    }
+
+    /// ar-5477: an ephemeral pool holds its labels with no pod running, and GitHub lists a busy
+    /// scale-set runner with none, so its jobs are never stuck. A pool serves its own forge, and a
+    /// repo-scoped one only its repo.
+    #[test]
+    fn a_pool_with_no_pod_holds_its_labels_for_its_forge_and_scope() {
+        let mut i = board();
+        let job = |job: &str, repo: &str, forge: &str, labels: &str| {
+            (
+                json!({"pool": "light", "repo": repo, "forge": forge, "stuck": "false",
+                    "job_name": job, "workflow": "ci", "labels": labels}),
+                "600",
+            )
+        };
+        i.instant.insert(
+            "waiting",
+            series(vec![
+                job("gate", ".dotfiles", "github", "self-hosted,linux,x64,light"),
+                job("Type Check", "platform", "github", "light"),
+                job("Integration", "platform", "github", "heavy"),
+                job("kustomize-builds", "home-config", "forgejo", "docker"),
+                job("compose", "platform", "github", "docker"),
+                job("private", "game", "github", "self-hosted,arc-repo-dotfiles"),
+            ]),
+        );
+        i.instant.insert(
+            "pools",
+            series(vec![
+                (json!({"name": "arc-org-light", "forge": "github", "scope": "org",
+                    "labels": "self-hosted,linux,x64,light,arc-org-light"}), "15"),
+                (json!({"name": "arc-repo-dotfiles", "forge": "github", "scope": "Kblack0610/.dotfiles",
+                    "labels": "self-hosted,linux,x64,light,arc-repo-dotfiles"}), "20"),
+                (json!({"name": "forgejo-runner", "forge": "forgejo", "scope": "org",
+                    "labels": "docker,linux-amd64,self-hosted,linux,x64,light"}), "7"),
+            ]),
+        );
+        let ci = build(&i);
+        let can = |job: &str| {
+            let q = ci.queue.iter().find(|q| q.job == job).unwrap();
+            (
+                q.stuck,
+                q.can
+                    .iter()
+                    .map(|f| format!("{} {}", f.host, f.state))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(
+            can("gate"),
+            (
+                false,
+                vec!["arc-org-light pool".into(), "arc-repo-dotfiles pool".into()]
+            )
+        );
+        assert_eq!(
+            can("Type Check"),
+            (false, vec!["arc-org-light pool".into()])
+        );
+        assert_eq!(
+            can("kustomize-builds"),
+            (false, vec!["forgejo-runner pool".into()])
+        );
+        // No pool holds heavy; a Forgejo pool takes no GitHub job; a repo pool no other repo's.
+        assert_eq!(can("Integration"), (true, vec![]));
+        assert_eq!(can("compose"), (true, vec![]));
+        assert_eq!(can("private"), (true, vec![]));
+        let red = ci.red.join("\n");
+        assert!(!red.contains("holds light"), "{red}");
+        assert!(
+            red.contains("Integration (platform) needs [heavy]: no online runner holds heavy"),
+            "{red}"
+        );
+        assert!(
+            red.contains("compose (platform) needs [docker]: no online runner holds docker"),
+            "{red}"
+        );
+        assert!(!red.contains("kustomize-builds"), "{red}");
+        // Nor are a pool's jobs fleet-bench's "no runner matches" finding.
+        let m = pool_match(&i, 0);
+        assert_eq!(m.len(), 1);
+        assert_eq!(
+            m[0].labels,
+            "light/arc-repo-dotfiles,self-hosted | docker | heavy"
+        );
     }
 
     /// GitHub's own runners hold their label, not ours: a hosted job that waits is queued on
