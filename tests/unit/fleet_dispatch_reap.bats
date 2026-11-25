@@ -497,6 +497,27 @@ real_epic_board() {
   refute_output --partial 'flagged queue item fix-crash'
 }
 
+@test "reap: an item with no session and only the open_pr: agent-land left settles by that PR, as by pr: (ar-4551)" {
+  pr_item CLOSED
+  sed -i '/^session: /d; s/^pr: /open_pr: /' "$AGENT_QUEUE_DIR"/running/*-fix-crash.md
+  run cmd_reap
+  assert_success
+  f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)
+  assert_equal "$(qfield "$f" status) $(qfield "$f" pr)" "failed o/game#12"
+  grep -q 'the open_pr: agent-land left, o/game#12, recorded' "$FLEET_DISPATCH_DIR/log.md"
+  refute_output --partial 'flagged queue item fix-crash'
+}
+
+# NEGATIVE CONTROL for ar-4551: with neither pr: nor open_pr:, the same item is flagged and stays.
+@test "reap: an item with no session, no pr: and no open_pr: is flagged and stays (ar-4551)" {
+  pr_item CLOSED
+  sed -i '/^session: /d; /^pr: /d' "$AGENT_QUEUE_DIR"/running/*-fix-crash.md
+  run cmd_reap
+  assert_success
+  [ -n "$(qitem running fix-crash)" ] || fail "moved an item nothing says has ended"
+  assert_output --partial 'flagged queue item fix-crash (no session recorded: nothing watches'
+}
+
 @test "reap: an item whose pr: names two PRs reads each one, parks while either is open and records both merges in step (ar-1431)" {
   pr_item OPEN
   sed -i '/^session: /d' "$AGENT_QUEUE_DIR"/running/*-fix-crash.md
