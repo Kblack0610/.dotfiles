@@ -1331,7 +1331,7 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)], score: Option<&str>) -
         }],
         more: vec![
             ("Waiting in project inboxes".into(), inboxes),
-            ("Sheet actions".into(), sheet_actions(&events)),
+            ("Your sheets, changed by sessions".into(), sheet_actions(&events)),
         ],
     }
 }
@@ -1410,16 +1410,17 @@ fn decisions(dirs: &[(String, PathBuf)], name: &dyn Fn(&str, &str) -> String) ->
 
 /// A session's or a runner's new row on a human sheet: intake that did not come through the
 /// sweep, so the page counts it under Handled today. The human's own adds and the agent lane's
-/// follow-ups stay under Sheet actions.
+/// follow-ups are counted under "Your sheets, changed by sessions".
 fn session_intake(e: &crate::ingest::Event) -> bool {
     e.action == "added" && e.lane == "human" && e.id.is_some() && e.by != "human"
 }
 
 /// Past this many, the page lists the newest and points at `notes log`.
-const SHEET_ACTIONS_SHOWN: usize = 40;
+const SHEET_ACTIONS_SHOWN: usize = 10;
 
-/// The day's verb writes for the page: a line each for Focus and the human lane, oldest first,
-/// and one line per action and board for the agent lane, which writes far too many to list.
+/// The day's verb writes for the page: a line each for a row a session changed on the human's
+/// own sheets, the newest [`SHEET_ACTIONS_SHOWN`], oldest first; every other write (the
+/// human's own, Focus, the agent boards, dispatch's notes) is one count, `notes log` has each.
 /// Intake has its own rows above, so a line added to the outbox, or added and then filed, or a
 /// session's new row on a human sheet, is not told twice here.
 fn sheet_actions(events: &[crate::ingest::Event]) -> Vec<String> {
@@ -1449,41 +1450,30 @@ fn sheet_actions(events: &[crate::ingest::Event]) -> Vec<String> {
                             && n.text == e.text
                     })))
     };
-    let (agent, human): (Vec<_>, Vec<_>) = events
+    let (yours, rest): (Vec<_>, Vec<_>) = events
         .iter()
         .enumerate()
         .filter(|(i, e)| !told_above(*i, e))
         .map(|(_, e)| e)
-        .partition(|e| e.lane == "agent");
+        // A writer is a session or a runner unless it is the human or unrecorded.
+        .partition(|e| {
+            (e.lane == "human" || e.from == "focus") && !matches!(e.by.as_str(), "human" | "")
+        });
 
-    let hidden = human.len().saturating_sub(SHEET_ACTIONS_SHOWN);
+    let hidden = yours.len().saturating_sub(SHEET_ACTIONS_SHOWN);
     let mut lines = Vec::new();
     if hidden > 0 {
-        lines.push(format!("+{hidden} older: notes log"));
+        lines.push(format!("+{hidden} older, not shown: `notes log`"));
     }
     // `log_line` leads with `YYYY-MM-DD `; the page is one day, so its rows lead with the time.
-    lines.extend(human[hidden..].iter().map(|e| {
+    lines.extend(yours[hidden..].iter().map(|e| {
         let l = crate::ingest::log_line(e);
         l.get(11..).unwrap_or(&l).to_string()
     }));
-
-    let mut folded: std::collections::BTreeMap<_, (usize, Vec<&str>)> = Default::default();
-    for e in agent {
-        let (count, ids) = folded.entry((&e.action, &e.from, &e.to)).or_default();
-        *count += 1;
-        ids.extend(e.id.as_deref());
-    }
-    for ((action, from, to), (count, ids)) in folded {
-        let place = if to.is_empty() {
-            from.clone()
-        } else {
-            format!("{from} -> {to}")
-        };
-        let mut shown = ids[..ids.len().min(3)].join(", ");
-        if ids.len() > 3 {
-            shown.push_str(&format!(" +{}", ids.len() - 3));
-        }
-        lines.push(format!("agent lane: {action} {count} on {place} ({shown})"));
+    match rest.len() {
+        0 => {}
+        1 => lines.push("1 other write: `notes log`".into()),
+        n => lines.push(format!("{n} other writes: `notes log`")),
     }
     lines
 }
@@ -3100,7 +3090,7 @@ mod tests {
     }
 
     #[test]
-    fn sheet_actions_tell_a_line_once_and_fold_the_agent_lane() {
+    fn sheet_actions_list_what_sessions_did_to_your_sheets_and_count_the_rest() {
         use crate::ingest::Event;
         let row = |action, lane, line: &str| {
             let mut e = Event::row(action, "demo", "", lane, line);
@@ -3119,20 +3109,31 @@ mod tests {
             let line = format!("- [ ] a row <!-- id:dm-{n} -->");
             events.push(row("edited", "agent", &line));
         }
-        assert_eq!(
-            sheet_actions(&events),
-            [
-                "10:41 added demo by human: stays put",
-                "agent lane: edited 5 on demo (dm-1, dm-2, dm-3 +2)",
-            ]
+        // A session closing a row on the human's sheet is the one kind listed.
+        let mut closed = row("done", "human", "- [ ] shipped <!-- id:dm-9 -->");
+        closed.by = "5227cc0a".into();
+        events.push(closed);
+        let lines = sheet_actions(&events);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines[0].starts_with("10:41 done ") && lines[0].contains("dm-9"),
+            "{}",
+            lines[0]
         );
+        assert!(lines[0].ends_with(": shipped"), "{}", lines[0]);
+        // The human's own add and the five agent-lane edits are one count.
+        assert_eq!(lines[1], "6 other writes: `notes log`");
 
         let many: Vec<_> = (0..SHEET_ACTIONS_SHOWN + 2)
-            .map(|n| row("done", "human", &format!("- [ ] row {n}")))
+            .map(|n| {
+                let mut e = row("done", "human", &format!("- [ ] row {n}"));
+                e.by = "5227cc0a".into();
+                e
+            })
             .collect();
         let lines = sheet_actions(&many);
         assert_eq!(lines.len(), SHEET_ACTIONS_SHOWN + 1);
-        assert_eq!(lines[0], "+2 older: notes log");
+        assert_eq!(lines[0], "+2 older, not shown: `notes log`");
         assert!(lines[1].ends_with("row 2"), "{}", lines[1]);
     }
 
@@ -3240,7 +3241,7 @@ mod tests {
         plan.id = Some("dm-5".into());
         plan.why = Some("3 plan lines, split into 2 rows".into());
         record(&p, &plan);
-        // A verb's own write is not intake: it shows under Sheet actions, never as a red row.
+        // A verb's own write is not intake: it is counted under the sheets section, never a red row.
         let mut removed = Event::row("removed", "focus", "", "", "- [ ] a Focus row");
         removed.by = "human".into();
         record(&p, &removed);
@@ -3314,10 +3315,8 @@ mod tests {
 ## Waiting in project inboxes
 - [[demo/README|demo]]: 1 waiting
 
-## Sheet actions
-- HH:MM removed focus by human: a Focus row
-- HH:MM added dm-8 demo (human) by human: mine
-- agent lane: edited 2 on demo (dm-1, dm-2)
+## Your sheets, changed by sessions
+- 4 other writes: `notes log`
 "
         );
         assert!(page.stat.unwrap().ends_with(

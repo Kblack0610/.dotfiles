@@ -86,6 +86,19 @@ SH
   [ -s "$LEDGER" ] || fail "no ledger line"
 }
 
+@test "an epic: new whose Overlap rows are another project's is filed on that board and ledgered there (ar-5288)" {
+  proposing 0 '- [ ] epic(ui): a lobby #plan/p <!-- id:ot-9 -->'
+  jq '.trackers.other = {"lab": "personal", "code": "ot"}' "$HOME/.config/shared-hooks/project-map.json" > "$BATS_TEST_TMPDIR/m.json"
+  mv "$BATS_TEST_TMPDIR/m.json" "$HOME/.config/shared-hooks/project-map.json"
+  sed -i 's/ag-1 and ag-2/ot-1 and ot-2/' "$HOME/plans/p.md"
+  run bash "$HOOK" <<<"$(payload "$HOME/plans/p.md")"
+  assert_success
+  run grep -F ' add ' "$CALLS"
+  assert_output 'ptask other add --checked ot-1,ot-2 -- epic(ui): a lobby #plan/p [s-1]'
+  run jq -r .project "$LEDGER"
+  assert_output 'other'
+}
+
 @test "an epic: new sent to the outbox stays in the plan, pending" {
   proposing 4 'inboxed: - [ ] #p:agame #from/x epic(ui): a lobby #plan/p'
   run bash "$HOOK" <<<"$(payload "$HOME/plans/p.md")"
