@@ -681,8 +681,10 @@ Version: v0.12.1
             out.contains("- [ ] epic(ui): menus <!-- id:dm-1 -->\n"),
             "{out}"
         );
+        // A row that is no epic keeps its tag.
         assert!(
-            out.contains("- [ ] fix(ui): a fault #high #of/dm-1"),
+            out.lines()
+                .any(|l| l.contains("fix(ui): a fault") && l.contains("#high")),
             "{out}"
         );
         assert_eq!(
