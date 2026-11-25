@@ -1761,6 +1761,12 @@ second line of the brief
   assert_output --partial "row lv-2 is left un-started where it is"
   run grep -c ' ptask level --agent add ' "$NOTES_FIXTURE/calls.log"
   assert_output 0
+  # So does dispatch's pull of a board row: the row it came from is the row (ar-3407).
+  AGENT_QUEUE_PULL=dispatch run "$AQ" add --project level --from board:level:lv-7 --slug lv-7 "feat(menu): pulled"
+  assert_failure 5
+  assert_output --partial "row lv-7 is left un-started where it is"
+  run grep -c ' ptask level --agent add ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
   run "$AQ" add --project level --slug titled --title "feat(menu): the title" "the real wording of the task"
   assert_failure 5
   assert_called "--detail=the real wording of the task -- "
