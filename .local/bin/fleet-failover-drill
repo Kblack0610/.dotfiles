@@ -67,9 +67,11 @@ cleanup() {
 trap cleanup EXIT
 
 [ "$(holder)" = "$ME" ] || fail "this machine ($ME) does not hold the lease: run the drill on the holder ($(holder))"
-[ -n "$taker" ] || taker=$(fleet-node peers --names | grep -vx "$ME" | head -n 1)
+# Read to a variable first: a producer cut off by grep -q dies of SIGPIPE, which pipefail reads as a failure.
+ready=$(fleet-node peers --names) || true
+[ -n "$taker" ] || taker=$(grep -vxm 1 "$ME" <<<"$ready")
 [ -n "$taker" ] || fail "no other lease-ready peer: fleet-node peers"
-fleet-node peers --names | grep -qx "$taker" || fail "$taker is not lease-ready: fleet-node peers"
+grep -qx "$taker" <<<"$ready" || fail "$taker is not lease-ready: fleet-node peers"
 fleet_host "$taker" >/dev/null || fail "$taker is not in the fleet roster, so the drill cannot reach it"
 ! pgrep -f '(^|/)agent-land [0-9]' >/dev/null || fail "an agent-land is running: wait for the landing to finish"
 pass "preconditions: $ME holds the lease, $taker is lease-ready"
