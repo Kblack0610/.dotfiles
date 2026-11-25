@@ -1225,6 +1225,36 @@ case "${@: -1}" in *awk*) eval "${@: -1}" ;; *) echo "did its own" ;; esac'
   assert_equal "$(grep -c 'ptask game --agent add chore(land)' "$NOTES_FIXTURE/calls.log")" 1
 }
 
+# ar-5322: ucp-2350's partial parked in review on 2026-11-22 01:26 behind an after: item done at 09:12,
+# and nothing moved it again.
+@test "reap: a parked partial goes back once its after: item closes after it parked, and parks for good when that run ends without the landing" {
+  pr_item MERGED
+  agent-queue set fix-crash "merged=$OID" partial=yes >/dev/null
+  run cmd_reap
+  agent-queue move fix-crash running >/dev/null
+  agent-queue set fix-crash session=lab:game-agent-1 >/dev/null
+  run cmd_reap
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
+  agent-queue add --slug gate --project game 'gate work' >/dev/null
+  agent-queue set fix-crash after=gate review=2026-01-01T00:00:00Z >/dev/null
+  # NEGATIVE CONTROL: its after: item still open, it stays parked.
+  run cmd_reap
+  refute_output --partial 'requeued queue item fix-crash'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
+  agent-queue move gate done --status ok >/dev/null
+  run cmd_reap
+  assert_output --partial 'requeued queue item fix-crash (game-agent-1 ended: its final landing, after o/game#12 merged as a partial, now that gate closed)'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .partial] | join(" ")')" 'queued yes'
+  # That run also ends without the landing: it parks, and the closed gate does not send it back again.
+  agent-queue move fix-crash running >/dev/null
+  agent-queue set fix-crash session=lab:game-agent-1 >/dev/null
+  run cmd_reap
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
+  run cmd_reap
+  refute_output --partial 'requeued queue item fix-crash'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
+}
+
 # ar-2897: kblack0610/asset-library-hd#4, a repo gh does not know, logged "could not read PR" on every pass.
 @test "reap: a gone item whose PR cannot be read is logged once, and goes to the agent board as a red once it has stood DISPATCH_ORPHAN_HOURS" {
   pr_item OPEN

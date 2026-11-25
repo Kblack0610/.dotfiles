@@ -5146,6 +5146,21 @@ restart_human_item() {
   [ "$3" = limit ] || [ "$(jq -r '.from // ""' <<<"$2")" != human ] || agent-queue start "$1" </dev/null 3<&- || true
 }
 
+# after_cleared_since <item json> <time> -> the item's after: item that closed last, when every one is done
+# and that one finished after <time> (both UTC ISO stamps, so they compare as text); fails otherwise,
+# and on an after: item the queue no longer finds.
+after_cleared_since() {
+  local a j st fin last='' lastfin=''
+  for a in $(jq -r '.after // ""' <<<"$1"); do
+    j=$(agent-queue show "$a" --json 2>/dev/null) || return 1
+    IFS=$'\x1f' read -r st fin < <(jq -r '[.state // "", .finished // ""] | join("\u001f")' <<<"$j")
+    [ "$st" = done ] || return 1
+    [[ ! "$fin" > "$lastfin" ]] || last=$a lastfin=$fin
+  done
+  [ -n "$last" ] && [ -n "$2" ] && [[ "$lastfin" > "$2" ]] || return 1
+  echo "$last"
+}
+
 # settle_item <slug> <session> -- its session is gone. Closed by the session: nothing to do.
 # Still open, it goes by its PR's state (merged: when the item has one, else item_pr_state): MERGED records merged: and is done ok (and
 # a board row still started closes on merge proof, close_row), OPEN waits in review/ for the merge
@@ -5180,10 +5195,16 @@ settle_item() {
   it=$(item_with_branch_pr "$1" "$2")
   # A partial merge proves only one repo landed, and with its session gone nobody makes the final
   # landing (ucp-162 sat in review from 2026-11-08): the next start finishes it (pr_line), once. A second
-  # run that also ends without it parks in review, where the human sees it, instead of looping.
+  # run that also ends without it parks in review, where the human sees it, instead of looping. A parked
+  # one that waits after another item was held, not failed: once its last after: item closes after it
+  # parked, it goes back for one more start (ucp-2350 sat in review from 2026-11-22 01:26 behind an
+  # after: item done at 09:12, ar-5322), and a run that ends without the landing again parks for good.
   if [ "$(jq -r '.partial // ""' <<<"$it")" = yes ]; then
-    if [[ "$(jq -r '.note // ""' <<<"$it")" != *"ended: its final landing"* ]]; then
-      set_end; requeue_blocked "$1" "$2" "its final landing, after $(jq -r '.pr // "a PR"' <<<"$it") merged as a partial"
+    local cleared=''
+    [ "$st" != review ] || cleared=$(after_cleared_since "$it" "$(jq -r '.review // ""' <<<"$it")") || cleared=''
+    if [ -n "$cleared" ] || [[ "$(jq -r '.note // ""' <<<"$it")" != *"ended: its final landing"* ]]; then
+      set_end; requeue_blocked "$1" "$2" "its final landing, after $(jq -r '.pr // "a PR"' <<<"$it") merged as a partial${cleared:+, now that $cleared closed}"
+      [ -z "$cleared" ] || reap_unstuck "$1"
       return 0
     fi
     [ "$st" = review ] || agent-queue move "$1" review --if "$st" >/dev/null || return 0
