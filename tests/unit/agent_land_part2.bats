@@ -115,8 +115,8 @@ load 'agent_land/common'
   item tidy 'board:dotfiles:tidy it' agent
   run "$LAND" 42 --item tidy --dry-run
   assert_success
-  assert_line --index 13 'item: agent-queue set tidy pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute tidy && agent-queue move tidy done --status ok'
-  assert_line --index 14 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
+  assert_line --index 14 'item: agent-queue set tidy pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute tidy && agent-queue move tidy done --status ok'
+  assert_line --index 15 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
   run agent-queue show tidy --json
   assert_equal "$(jq -r .state <<<"$output")" running
 }
@@ -1677,4 +1677,31 @@ EOF
   assert_failure 1
   assert_output --partial 'was worked by session s-hand, which also worked crit'
   assert_equal "$(merges)" 0
+}
+
+# GitHub refuses to merge a PR that changes .github/workflows for an OAuth token with no workflow scope,
+# and says so only at the merge, after the checks (platform#1672, ar-5191).
+@test "a PR that changes .github/workflows fails before the checks when the token lacks the workflow scope, and lands once it has it (ar-5191)" {
+  item ship
+  printf '%s\n' README.md .github/workflows/ci.yml >"$NOTES_FIXTURE/files"
+  printf 'HTTP/2.0 200 OK\r\nX-Oauth-Scopes: admin:org, gist, repo\r\n\r\n' >"$NOTES_FIXTURE/user.headers"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'agent-land: workflow failed: #42 changes .github/workflows and this gh token'"'"'s scopes (admin:org, gist, repo) have no workflow'
+  run grep -c 'pr checks\|pr merge' "$LOG"
+  assert_output 0
+  # Negative control: the same PR with a token that has the scope lands.
+  printf 'HTTP/2.0 200 OK\r\nX-Oauth-Scopes: gist, repo, workflow\r\n\r\n' >"$NOTES_FIXTURE/user.headers"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'landed #42'
+}
+
+@test "a token whose scopes lack workflow lands a PR that changes no workflow file (ar-5191)" {
+  item ship
+  printf '%s\n' README.md .github/actions/x.yml >"$NOTES_FIXTURE/files"
+  printf 'HTTP/2.0 200 OK\r\nX-Oauth-Scopes: repo\r\n\r\n' >"$NOTES_FIXTURE/user.headers"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'landed #42'
 }

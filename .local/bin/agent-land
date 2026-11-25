@@ -1052,6 +1052,23 @@ link_task_row() {
 # (wait_checks refuses "none reported" for it). The line is a claim, not proof: CI and the post-merge
 # hold check are the backstops.
 # Checked on the item, not where it was queued, so `agent-queue add` cannot skip it. An unreadable
+# workflow_gate: GitHub refuses to merge a PR that changes .github/workflows for an OAuth token with no
+# `workflow` scope, and says so only at the merge, after the checks (platform#1672, ar-5191: this
+# workstation's gh has admin:org, gist and repo). So before the wait such a PR fails with the way out. A
+# token whose scopes GitHub does not list (fine-grained, app) passes, as does a file list that cannot be
+# read: the merge itself still says what it lacks. Forgejo has no such scope.
+workflow_gate() {
+  [ -z "$fj" ] || return 0
+  local files scopes
+  files=$(pr_files 2>/dev/null) || return 0
+  grep -q '^\.github/workflows/' <<<"$files" || return 0
+  scopes=$(gh api -i user 2>/dev/null | tr -d '\r' | sed -nE 's/^x-oauth-scopes: *//Ip' | head -n 1)
+  [ -n "$scopes" ] || return 0
+  [[ ",${scopes// /}," != *,workflow,* ]] || return 0
+  # gate: none
+  fail workflow "#$pr changes .github/workflows and this gh token's scopes ($scopes) have no workflow, so GitHub would refuse its merge after the checks: merge it from a host whose gh token has the scope (gh pr merge $pr${repo:+ -R $repo} $method), then re-run agent-land $pr${repo:+ --repo $repo}${item:+ --item $item} to record it; or ask the human to run gh auth refresh -s workflow here"
+}
+
 # tier counts as 3, the side that waits.
 tier='' body=''
 # gate: al-review-gate
@@ -1432,6 +1449,7 @@ if [ "$dry" -eq 1 ]; then
   echo "review: fleet-dispatch item-tier $item  (tier 3: the body needs a \"Review: \" line and the checks must run)"
   [ "$partial" -eq 1 ] || [ -z "$(jq -r '.plan // ""' <<<"$it")" ] ||
     echo "loose: plan_loose_rows $(jq -r .plan <<<"$it") $item  (notes log, then notes board --json --id: an open agent row $item filed that no phase line takes stops the landing)"
+  [ -n "$fj" ] || echo "workflow: gh api repos/<owner>/<repo>/pulls/$pr/files, then gh api -i user  (a PR that changes .github/workflows stops here when the token's X-OAuth-Scopes lack workflow)"
   echo "shape: shape-grow \$(git merge-base HEAD origin/<base>) HEAD  (no function over 150 lines gets longer, unless the body has a \"Split: <row id>\" line naming an open row that names each function)"
   echo "checks: gh pr checks $pr${repo:+ -R $repo} --watch --fail-fast -i $CHECKS_WATCH_INTERVAL  (must pass, or report none on a tier 1 or 2 item; a land that would refuse none, on a head with workflow files, first waits up to $CHECKS_FIRST_RUN_TRIES x ${CHECKS_QUEUED_POLL}s for its first run, AGENT_LAND_CHECKS_FIRST_RUN_TRIES)"
   echo "fetch: git fetch origin && git rev-list --count HEAD..origin/<base of #$pr>  (0 before the checks; after them git merge origin/<base> && git push, then the checks again on that head)"
@@ -1554,6 +1572,7 @@ else
   stack_gate
   review_gate
   loose_gate
+  workflow_gate
   # A head behind <base> is caught up first, the same merge as after the gate: a session that
   # stopped on exit 3 here left its green PR open while main moved (six waiting on 2026-11-07).
   catch_up before || true
