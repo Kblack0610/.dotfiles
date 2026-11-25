@@ -2989,6 +2989,26 @@ EOF
   assert_success
 }
 
+# 2026-11-24 22:45Z: dotfiles-agent-22 returned its own item, the return killed its session, and the
+# `add --after` it chained next never ran (ar-5293).
+@test "return or cancel from the item's own session leaves that session up; another caller's still closes it" {
+  "$AQ" add --project game --running --from shepherd --session lab:game-agent-4 --slug mine "mine"
+  "$AQ" set mine origin=run
+  echo game-agent-4 > "$NOTES_FIXTURE/tmux.session"
+  TMUX="/tmp/tmux-1000/lab,1,0" AGENT_QUEUE_ITEM=mine run "$AQ" cancel mine --why "done another way"
+  assert_success
+  assert_output --partial "left lab:game-agent-4 open: it is the caller's own session"
+  run grep -c kill-session "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # negative control: the same item closed from another session kills its session
+  "$AQ" add --project game --running --from shepherd --session lab:game-agent-5 --slug theirs "theirs"
+  "$AQ" set theirs origin=run
+  TMUX="/tmp/tmux-1000/lab,1,0" AGENT_QUEUE_ITEM=mine run "$AQ" cancel theirs --why "done another way"
+  assert_success
+  run grep -- "-L lab kill-session -t =game-agent-5" "$NOTES_FIXTURE/calls.log"
+  assert_success
+}
+
 # 2026-11-12: two cleanup sessions cancelled 425 items and the items said only "cancelled".
 @test "cancel from a session needs --why, and records who and why on the item and in the event" {
   "$AQ" add --project game --from shepherd --slug w1 "w1"

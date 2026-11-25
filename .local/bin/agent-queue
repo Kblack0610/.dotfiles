@@ -2944,7 +2944,12 @@ cancel_close() {
   # Close what the item owns: its window when it recorded one (a hand start), its session only
   # when fleet-dispatch made it (`origin:`), else nothing. tmux-close spares world sessions.
   if [ -n "$session" ] && [ "$(state_of "$f")" != queued ] && [ -z "${AQ_RETURN_KEEP_SESSION-}" ]; then
-    if [ -n "$window" ]; then
+    # Never the caller's own: a session returning or cancelling its own item died mid-command, before what it
+    # chained after (2026-11-24 22:45Z: dotfiles-agent-22 died in `return`, its `add --after` never ran, and
+    # ar-5199 sat with no item for 2h, ar-5293). It winds itself down.
+    if [ -z "$host" ] && [ "$(own_session)" = "$server:$session" ]; then
+      echo "agent-queue: left $server:$session open: it is the caller's own session, which winds itself down" >&2
+    elif [ -n "$window" ]; then
       close_on "$host" -L "$server" window "$window" 2>/dev/null && echo "closed window $window of $session" ||
         echo "agent-queue: window $window was not open on $server" >&2
     elif [ -n "$(fm_get "$f" origin)" ]; then
