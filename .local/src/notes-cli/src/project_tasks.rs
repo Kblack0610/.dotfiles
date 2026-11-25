@@ -1201,6 +1201,54 @@ fn session_line(text: &str) -> bool {
         .any(|t| t.starts_with("from/"))
 }
 
+/// Why the intake gate refuses the rows `block` a filing of `line` would write on `dest`, or None.
+/// Only a session's follow-up on an agent board is gated; the person's words never are.
+fn followup_refusal(
+    dest: &Path,
+    lane: Lane,
+    line: &str,
+    block: &[String],
+    how: &Filing,
+) -> Result<Option<String>> {
+    if lane != Lane::Agent || !session_line(line) {
+        return Ok(None);
+    }
+    let canon = dest.file_name().unwrap_or_default().to_string_lossy();
+    for row in block.iter().filter(|l| md::is_open_task(l)) {
+        if let Some(why) = crate::gate::refusal(&canon, row, how.want.is_some())? {
+            return Ok(Some(why));
+        }
+    }
+    Ok(None)
+}
+
+/// The row texts a filing writes: a standing link's rows, the line itself when it is filed as
+/// written, else the model's `--as` texts; `#agent` dropped, each one typed or nothing is filed.
+fn filing_texts(
+    linked: Option<&[String]>,
+    as_is: bool,
+    line: &str,
+    texts: &[String],
+) -> Result<Vec<String>> {
+    let own;
+    let texts: &[String] = match linked {
+        Some(l) => l,
+        None if as_is => {
+            if !projects::is_typed(line) {
+                bail!("'{line}' is not typed yet, so file needs --as \"<type(area): title>\" or --dup <id>");
+            }
+            own = [line.to_string()];
+            &own
+        }
+        None => texts,
+    };
+    let texts: Vec<String> = texts.iter().map(|t| md::without_agent_tag(t)).collect();
+    if let Some(bad) = texts.iter().find(|t| !projects::is_typed(t)) {
+        bail!("'{bad}' is not `type(area): title` (README \"The task row\"), so nothing was filed");
+    }
+    Ok(texts)
+}
+
 /// A session's row as an outbox line: `#agent #p:<project> #from/<writer> <text>` plus its
 /// details, which `inbox-triage` files, joins to a twin or drops. A human-lane row and an epic
 /// (which lives on the human sheet) carry no `#agent`, and a `--want` channel rides as
@@ -1501,20 +1549,7 @@ fn file_via(
             to,
             details: extra,
         } if dup_id.is_none() => {
-            let texts: Vec<String> = if let Some(l) = &linked {
-                l.clone()
-            } else if as_is {
-                if !projects::is_typed(&line.text) {
-                    bail!("'{}' is not typed yet, so file needs --as \"<type(area): title>\" or --dup <id>", line.text);
-                }
-                vec![line.text.clone()]
-            } else {
-                texts.clone()
-            };
-            let texts: Vec<String> = texts.iter().map(|t| md::without_agent_tag(t)).collect();
-            if let Some(bad) = texts.iter().find(|t| !projects::is_typed(t)) {
-                bail!("'{bad}' is not `type(area): title` (README \"The task row\"), so nothing was filed");
-            }
+            let texts = filing_texts(linked.as_deref(), as_is, &line.text, texts)?;
             let to = to.as_deref().map(parse_to).transpose()?;
             let cur = version_in(&dest_dir, &base);
             if let Some(v) = to {
@@ -1548,18 +1583,10 @@ fn file_via(
                     return file_via(p, log, name, pick, how, lane, None, Some(l));
                 }
             }
-            // A session's follow-up passes the intake gate of a gated board, on the rows a standing link
-            // leaves (the call above re-enters here with them); the person's words do not need to.
-            if dest_lane == Lane::Agent && session_line(&line.text) {
-                let canon = dest_proj
-                    .file_name()
-                    .map_or(dest_name.into(), |n| n.to_string_lossy());
-                for row in block.iter().filter(|l| md::is_open_task(l)) {
-                    if let Some(why) = crate::gate::refusal(&canon, row, how.want.is_some())? {
-                        eprintln!("{why}");
-                        return Ok(crate::gate::EXIT_GATED);
-                    }
-                }
+            // On the rows a standing link leaves: the call above re-enters here with them.
+            if let Some(why) = followup_refusal(&dest_proj, dest_lane, &line.text, &block, how)? {
+                eprintln!("{why}");
+                return Ok(crate::gate::EXIT_GATED);
             }
             // A frozen release window takes these rows only through its interrupt lane: the
             // human's own words from their sheet's inbox, or a want by a human channel, are one.
