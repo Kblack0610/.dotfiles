@@ -868,6 +868,8 @@ exec git-upload-pack "\$@"
 EOF
   chmod +x "$SANDBOX/upload-pack-mid-move"
   git -C "$SANDBOX/a" config remote.origin.uploadpack "$SANDBOX/upload-pack-mid-move"
+  # A local write, so --now fetches: a clean tree at origin's head exits before the fetch.
+  echo '{"n":"a"}' >> "$SANDBOX/a/queue/events.jsonl"
   run on a --now
   assert_success
   refute_output --partial CONFLICT
@@ -896,7 +898,7 @@ EOF
   on b --now >/dev/null
   run on a --now
   assert_success
-  run git -C "$ORIGIN" ls-tree -r --name-only master -- queue
+  run git -C "$ORIGIN" ls-tree -r --name-only master -- queue/queued queue/running queue/done
   assert_output 'queue/done/2026-11-21/s.md'
   [ ! -e "$SANDBOX/a/queue/running/s.md" ]
   assert_equal "$(git -C "$ORIGIN" rev-list --parents -1 master | wc -w)" 3

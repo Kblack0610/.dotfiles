@@ -211,7 +211,7 @@ bucket() { tail -n 1 "$GH_CALLS_DIR"/*.tsv | cut -f2; }
   assert_success
   assert_equal "$(tail -n 1 "$BATS_TEST_TMPDIR/real.log")" 'none|run view 7 -R acme/x'
   # The copy check reads line 2's opening, which every copy shares: a rewrite of it here breaks the check.
-  assert_equal "$(sed -n 2p "$WRAP" | cut -c1-21)" "# gh - the fleet's gh:"
+  assert_equal "$(sed -n 2p "$WRAP" | cut -c1-22)" "# gh - the fleet's gh:"
 }
 
 # gh-app against a stub curl: the JWT is signed with a throwaway key, and the stub answers by URL.

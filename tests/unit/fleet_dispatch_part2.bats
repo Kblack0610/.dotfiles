@@ -688,6 +688,7 @@ J
   assert_failure
   assert_output --partial 'stuck-red (high, red'
   rm "$AGENT_QUEUE_DIR"/queued/*-stuck-red.md
+  fleet_state 3
   # A fresh ask behind a full fleet starves too: it may preempt like an urgent item (runs_now, ar-3468).
   queued_item stuck-ask high "$old" requested
   sed -i "s/^queued: /asked: $(date +%F)\nqueued: /" "$AGENT_QUEUE_DIR"/queued/*-stuck-ask.md

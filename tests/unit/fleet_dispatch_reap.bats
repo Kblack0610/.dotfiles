@@ -1088,11 +1088,13 @@ OUT
   assert_output --partial 'review queue item fix-crash (PR o/game#12 open'
   # NEGATIVE CONTROL: an untagged ask from a session that never ran it, or its run's ask filed for another task, holds nothing
   x=$(CLAUDE_CODE_SESSION_ID=else-9 agent-ask post --project game --options 'a=yes|b=no' 'something else?')
-  CLAUDE_CODE_SESSION_ID=run-2 agent-ask post --project game --task other-x --options 'a=yes|b=no' 'about other-x?' >/dev/null
+  o=$(CLAUDE_CODE_SESSION_ID=run-2 agent-ask post --project game --task other-x --options 'a=yes|b=no' 'about other-x?')
   it=$(agent-queue show fix-crash --json)
   run item_ask fix-crash "$it"
   assert_success
   assert_output ''
+  # One open question per session (#990): the other-x ask closes before the run asks its own.
+  agent-ask cancel "$o" superseded >/dev/null
   # Its run's own untagged ask holds it, on whatever project the run filed it (yaEAMh was home-config, its item agent-runtime).
   id=$(CLAUDE_CODE_SESSION_ID=run-2 agent-ask post --project tools --options 'land=land it|close=close it' 'land or close o/game#12?')
   run item_ask fix-crash "$it"

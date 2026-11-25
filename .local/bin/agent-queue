@@ -479,8 +479,11 @@ finished_ok() {
 # under another slug with its box left unticked ran again (ar-1613: snuggly-hamster P6, landed by
 # dup-flaky-p6-vocabulary in #1267, queued again by auto:plans on 2026-11-10).
 plan_landed() {
-  local canon f p line path ph
+  local canon f p line path ph bre re1 re2
   canon="$(realpath -m -- "$1")"
+  # The path runs up to the plan's own file name, so a directory with a space in it still reads.
+  bre="$(basename "$1")"; bre="${bre//./\\.}"
+  re1="^(Phase |P)([0-9]+) of (the plan )?((.*/)?$bre)([.,;:) ]|\$)" re2="Plan: ((.*/)?$bre) phase P?([0-9]+)"
   grep -lF -- "/$(basename "$1")" "$AQ_DIR"/done/*/*.md 2>/dev/null | while IFS= read -r f; do
     [ "$(fm_get "$f" status)" = ok ] || continue
     p="$(fm_get "$f" plan)" ph=''
@@ -488,9 +491,8 @@ plan_landed() {
       [ "$(realpath -m -- "$p")" = "$canon" ] && ph="$(fm_get "$f" phases)"
     else
       line="$(fm_body "$f" | awk 'NR==1')" path=''
-      if [[ "$line" =~ ^(Phase\ |P)([0-9]+)\ of\ (the\ plan\ )?([^ ]+) ]]; then ph="${BASH_REMATCH[2]}" path="${BASH_REMATCH[4]}"
-      elif [[ "$line" =~ Plan:\ ([^ ]+)\ phase\ P?([0-9]+) ]]; then ph="${BASH_REMATCH[2]}" path="${BASH_REMATCH[1]}"; fi
-      while [[ "$path" == *[.,\;:\)] ]]; do path="${path%?}"; done
+      if [[ "$line" =~ $re1 ]]; then ph="${BASH_REMATCH[2]}" path="${BASH_REMATCH[4]}"
+      elif [[ "$line" =~ $re2 ]]; then ph="${BASH_REMATCH[3]}" path="${BASH_REMATCH[1]}"; fi
       [ -n "$path" ] && [ "$(realpath -m -- "${path/#\~/$HOME}")" = "$canon" ] || ph=''
     fi
     for p in ${ph//,/ }; do [[ "$p" =~ ^[0-9]+$ ]] && printf '%s\t%s\n' "$p" "$(fm_get "$f" slug)"; done
@@ -2349,6 +2351,14 @@ cmd_add() {
   { [ -z "$running" ] && [ -z "$GATES" ] && [ -z "${AQ_ADMITTED:-}" ]; } || capped=''
   [ -z "$capped" ] || [ -n "$from_given" ] || [ -z "${AGENT_QUEUE_ITEM:-}" ] || from="item:$AGENT_QUEUE_ITEM"
   [ -z "$capped" ] || ! pull_ok "$running" "$from" "$from_given" || make_room "$priority" "$tags" "$slug"
+  # `type(area): title` on the first line or --title, parsed by the grammar's one home before the lock (ar-5606).
+  local ctype='' carea='' parsed ok=''
+  if parsed="$(head -1 <<<"${title:-$text}" | notes row parse 2>/dev/null)" && [ -n "$parsed" ]; then
+    IFS=$'\t' read -r ctype carea _ ok <<<"$parsed"
+  else
+    echo "agent-queue: notes row parse failed, so $slug is untyped (an old notes? notes-bootstrap --build-only)" >&2
+  fi
+  [ "$ok" = 1 ] || ctype='' carea=''
   lock
   [ -z "$(find_item "$slug")" ] || die "already in the queue: $slug"
   local why
@@ -2361,16 +2371,8 @@ cmd_add() {
   if [ -n "$GATES" ] || ! pull_ok "$running" "$from" "$from_given"; then add_board_hold; fi
   [ -z "$capped" ] || admit "$from" "$priority" "$tags" "$project" "$slug" "$hold_title" || add_cap_hold
   check_after "$after" "$slug"
-  local state=queued now; now="$(now_utc)"
+  local state=queued now sid=''; now="$(now_utc)"
   [ -n "$running" ] && state=running
-  # `type(area): title` on the task's first line or its --title, parsed by the grammar's one home.
-  local ctype='' carea='' sid='' parsed ok=''
-  if parsed="$(head -1 <<<"${title:-$text}" | notes row parse 2>/dev/null)" && [ -n "$parsed" ]; then
-    IFS=$'\t' read -r ctype carea _ ok <<<"$parsed"
-  else
-    echo "agent-queue: notes row parse failed, so $slug is untyped (an old notes? notes-bootstrap --build-only)" >&2
-  fi
-  [ "$ok" = 1 ] || ctype='' carea=''
   [ -z "$running" ] || area_held "$project" "$carea"
   # Only a session taking the item works it. One queueing it for later did not, and outcomes
   # would charge that session's cost and revert count to this item.
@@ -4368,7 +4370,7 @@ cmd_stats() {
        by_project: ($done | group(.project)),
        by_source: ($done | group(source)),
        by_end: ($done | map(select((.end_reason // "") != "")) | count_by(.end_reason)),
-       done_by_tag: ([$done[] | (.tags // "" | split(" ") | map(select(. != ""))[]) as $t | {t: $t}] | count_by(.t))}')"
+       done_by_tag: ([$done[] | (.tags // "" | split(" ") | map(select(. != ""))[]) as $t | {t: $t}] | count_by(.t))}')" || exit 1
   if [ -n "$json" ]; then printf '%s\n' "$stats"; return 0; fi
   jq -r 'def dur: if . == null then "-" elif . >= 120 then "\(. / 60 | floor)h" else "\(.)m" end;
     def pairs: to_entries | map("\(.key) \(.value)") | join(", ");

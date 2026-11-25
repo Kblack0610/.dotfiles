@@ -2499,7 +2499,7 @@ fix_item() {
   assert_output --partial 'add failed for check(watch): links'
   assert_output --partial '1 queued as red fixes'
   # the failed write is the last line, which fleet-dispatch names a failed triage by (ar-5583)
-  assert_equal "${lines[-1]}" 'fleet-bench: board write failed for check(watch): links'
+  assert_equal "${lines[-1]}" 'fleet-bench: board write failed for check(watch): links tripped since'
   run grep -c 'fix(logs): alpha error' "$BOARD"
   assert_output 1
   run cat "$PLOG"

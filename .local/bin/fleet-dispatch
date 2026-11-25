@@ -5539,7 +5539,7 @@ item_with_branch_pr() {
   local it pr from=open_pr
   it=$(agent-queue show "$1" --json 2>/dev/null)
   if [ -z "$(jq -r '(.pr // "") + (.report // "")' <<<"$it" 2>/dev/null)" ] &&
-    { pr=$(jq -r '.open_pr // "" | split(" ")[0]' <<<"$it" 2>/dev/null); [ -n "$pr" ] || { from=branch; pr=$(branch_pr "$it"); }; } &&
+    { pr=$(jq -r '(.open_pr // "") | split(" ")[0] // ""' <<<"$it" 2>/dev/null); [ -n "$pr" ] || { from=branch; pr=$(branch_pr "$it"); }; } &&
     agent-queue set "$1" "pr=$pr" >/dev/null; then
     if [ "$from" = open_pr ]; then logline "reaped $2: queue item $1 had no PR recorded; the open_pr: agent-land left, $pr, recorded"
     else logline "reaped $2: queue item $1 had no PR recorded; its branch's PR $pr recorded"; fi
@@ -8146,7 +8146,7 @@ reconcile_plans() {
   # By file name, as PLAN_ITEMS_JQ and ask-sweep match: an item names ~/.claude/plans/<f>, the
   # ledger the account's own ~/.claude-<acct>/plans/<f>.
   held=$(sed 's#.*/##' <<<"$held")
-  filed=$(sed 's#^[^\t]*/##' "$PLANS_FILED" 2>/dev/null)
+  filed=$(sed 's#^[^\t]*/##' "$PLANS_FILED" 2>/dev/null) || filed=''
   while IFS= read -r c; do
     plan=$(jq -r .plan <<<"$c"); project=$(jq -r .project <<<"$c"); name=${plan##*/}
     open=$(plan_phase_list "$plan" | jq -r '[.[] | select(.state == "open") | .n | tostring] | join(",")')

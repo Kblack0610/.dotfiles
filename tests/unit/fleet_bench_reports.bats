@@ -3918,8 +3918,8 @@ echo "$2: room"; exit 0
   assert_line "fleet-bench: canary: 3 queued for $week (codex/sol)"
   assert_line "fleet-bench: canary: 1 queued for $week"
   assert_line "fleet-bench: canary: 1 queued for $week (claude/haiku@max)"
-  # The claude lanes took greet2 alone: greet (game) and greet3 (gamerepo, owned by game) went to codex only.
-  assert_equal "$(ls "$CQ" | grep -c "^canary-greet2-$week")" 2
+  # Codex and both claude lanes took greet2: greet (game) and greet3 (gamerepo, owned by game) went to codex only.
+  assert_equal "$(ls "$CQ" | grep -c "^canary-greet2-$week")" 3
   assert_equal "$(ls "$CQ" | grep -c "^canary-greet-$week")" 1
   assert_equal "$(ls "$CQ" | grep -c "^canary-greet3-$week")" 1
   # The positive control: without it every lane queues every task.

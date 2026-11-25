@@ -459,9 +459,9 @@ load 'agent_land/common'
   assert_line 'item: huge done with pr:o/r#42, credited to arena (touches arena)'
   assert_line 'landed #42'
   run grep -c '^git fetch -q origin 5eedbase5eedbase 0123456789abcdef$' "$LOG"
-  assert_output 1
+  assert_output 2  # workflow_gate, then validate_gate after the catch-up
   run grep -c '^git diff --name-status -M 5eedbase5eedbase...0123456789abcdef$' "$LOG"
-  assert_output 1
+  assert_output 2
 }
 
 @test "files that cannot be read leave the item's project and never fail the landing" {
