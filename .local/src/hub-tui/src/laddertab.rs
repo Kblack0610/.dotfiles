@@ -13,7 +13,7 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::{DataTable, Took};
 use crate::fit::{cell, clip_line, Cell, Table};
-use crate::fmt::Palette;
+use crate::fmt::{dash, Palette};
 use crate::projtab::{wrapped, ProjView};
 use crate::tasktab::TaskView;
 
@@ -276,14 +276,6 @@ pub(crate) fn section(
     }
 }
 
-pub(crate) fn dash(s: &str) -> String {
-    if s.is_empty() {
-        "-".into()
-    } else {
-        s.into()
-    }
-}
-
 /// A project's cells, the same words as agent-web's row: a check that could not run says so in
 /// red, never zero; a failing count is red, and the not-yet rows beside it are a TODO.
 fn prow(r: &Project, p: Palette) -> Vec<Cell> {
@@ -321,7 +313,7 @@ fn rrow(r: &Requirement, p: Palette) -> Vec<Cell> {
         r.applies.join(" ").into(),
         r.requirement.clone().into(),
         cell(r.says, style),
-        dash(&r.skills.join(" ")).into(),
+        dash(r.skills.join(" ")).into(),
     ]
 }
 

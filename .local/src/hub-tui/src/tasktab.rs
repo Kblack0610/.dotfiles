@@ -21,7 +21,7 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
 use crate::fit::{cell, clip_line, wrap, Cell, Table};
-use crate::fmt::Palette;
+use crate::fmt::{heading, Palette};
 
 /// What a key on the rows asks the app to do.
 #[derive(Debug, PartialEq)]
@@ -124,11 +124,8 @@ impl TaskView {
     /// A new read keeps the selection on the same line when it is still open.
     pub fn reselect(&mut self, was: Option<Row>, f: &Feed) {
         let rows = shown(f, self);
-        let at = was.and_then(|w| {
-            rows.iter()
-                .position(|r| r.sheet == w.sheet && r.raw == w.raw)
-        });
-        self.table.keep(at, rows.len());
+        self.table
+            .reselect(&rows, was, |r, w| r.sheet == w.sheet && r.raw == w.raw);
     }
 
     /// The selected row when it can be written, else why not (said on the status line).
@@ -427,13 +424,6 @@ pub fn sprint_lines(rows: &[tasks::SprintRow], p: Palette, w: usize) -> Vec<Line
         .fit(w, p.head()),
     );
     out
-}
-
-fn heading(title: &str, rest: String, p: Palette) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(title.to_string(), p.head()),
-        Span::styled(rest, p.dim()),
-    ])
 }
 
 fn prio_style(priority: &str, p: Palette) -> ratatui::style::Style {

@@ -167,31 +167,24 @@ impl Row for SessionRow {
         &[("needs you", crate::vocab::Level::Bad)];
 
     fn val(&self, col: &str) -> Val {
-        let text = |s: &str| {
-            if s.is_empty() {
-                Val::None
-            } else {
-                Val::Text(s.to_string())
-            }
-        };
         match col {
-            "bucket" => text(&self.bucket),
-            "activity" => text(&self.activity),
-            "project" => text(&self.project),
-            "task" => text(&self.task),
-            "by" => text(&self.by),
-            "pr" => text(&self.pr_state),
+            "bucket" => Val::word(&self.bucket),
+            "activity" => Val::word(&self.activity),
+            "project" => Val::word(&self.project),
+            "task" => Val::word(&self.task),
+            "by" => Val::word(&self.by),
+            "pr" => Val::word(&self.pr_state),
             "phases" => self.phases_done.map_or(Val::None, |n| Val::Num(n as f64)),
             "idle" => self.idle_min.map_or(Val::None, |n| Val::Num(n as f64)),
             "cost" => self.cost_usd.map_or(Val::None, Val::Num),
-            "acct" => text(&self.account),
-            "harness" => text(&self.harness),
-            "close" => text(&self.close),
+            "acct" => Val::word(&self.account),
+            "harness" => Val::word(&self.harness),
+            "close" => Val::word(&self.close),
             "item" if self.unlinked => Val::Text("none".into()),
-            "item" => text(&self.item),
+            "item" => Val::word(&self.item),
             "source" => Val::Text(self.source.name().into()),
-            "session" if self.target.is_empty() => text(&self.session_id),
-            "session" => text(&self.target),
+            "session" if self.target.is_empty() => Val::word(&self.session_id),
+            "session" => Val::word(&self.target),
             "ctx" => self.context_pct.map_or(Val::None, |n| Val::Num(n as f64)),
             _ => Val::None,
         }

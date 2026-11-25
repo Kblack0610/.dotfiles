@@ -292,10 +292,7 @@ impl Row for SprintRow {
     const GLANCE: &'static [&'static str] = &["outcome", "pts"];
 
     fn val(&self, col: &str) -> Val {
-        let text = |s: &str| match s {
-            "" => Val::None,
-            s => Val::Text(s.to_string()),
-        };
+        let text = Val::word;
         let opt = |s: &Option<String>| s.as_deref().map_or(Val::None, text);
         match col {
             "id" => opt(&self.id),
