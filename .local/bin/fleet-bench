@@ -5586,7 +5586,7 @@ alert_titles() {
 # fix is "fixed" only while nothing it was queued for is red now; red again with the watch's trip
 # after the merge is "came back", red the whole time is "still red", and red now with its row routed
 # to alert is "alert route" (its watch pages, and the KPI it trips on is not a merge's to clear).
-# Each red row also names its item's session, and a fix in hand (queued or fixing) its due epoch,
+# Each red row also names its item's board row id (row, the ticket) and session, and a fix in hand (queued or fixing) its due epoch,
 # which the overviews read as past its ETA (hub_core::alerts). Counted, never judged.
 reds_json() {
   local t="$1" items holds live watches='{}' f n parsed alerted
@@ -5607,10 +5607,14 @@ reds_json() {
     # each grows with the queue or the watches, past the 128 KB one argument can carry: they come in as files
     $live[0] as $live | $w[0] as $w | $holds[0] as $holds | $parsed[0] as $parsed | $alerted[0] as $alerted
     | def title: .title // .task // "";
+    # the board row the item works as, its id alone (ar-5133): its row:, else the row it was promoted from (agent-queue item_row)
+    def rowid: (.row // "") as $r | (.from // "") as $f
+        | (if $r != "" then $r elif ($f | startswith("board:")) then ($f | ltrimstr("board:")) else "" end)
+        | (split(":") | last // "") | if . == "" then null else . end;
     ([$holds[].merges[].slug]) as $went
     | ([.[] | select(tagged("red")) | title | select(startswith("fix(hold): "))]) as $held
     | ([.[] | select(tagged("cleanup") and (tagged("red") | not) and (.merged // "") != "")
-        | {slug, project: (.project // ""), red: ("cleanup " + (title[0:60])), cause: null, state, queued, finished, pr, merged,
+        | {slug, row: rowid, project: (.project // ""), red: ("cleanup " + (title[0:60])), cause: null, state, queued, finished, pr, merged,
            fix_min: null, cleanup: true,
            outcome: (.slug as $s | if $s | IN($went[]) then "went red"
                      elif any($held[]; contains(" \($s) (")) then "recovered"
@@ -5620,7 +5624,7 @@ reds_json() {
     | ((" " + (.tags // "") + " ") | capture(" cause:(?<c>[^ ]+) ").c // null) as $cause
     | ([$live[] as $k | select($t | startswith($k))] | length > 0) as $red
     | (.finished | ep) as $fin
-    | {slug, project: (.project // ""), red: (if $r.name then "\($r.area) \($r.name)" else $t[0:60] end), cause: $cause, state,
+    | {slug, row: rowid, project: (.project // ""), red: (if $r.name then "\($r.area) \($r.name)" else $t[0:60] end), cause: $cause, state,
        session, queued, finished, pr, merged,
        fix_min: (if .merged != null and $fin != null and (.queued | ep) != null then ((($fin - (.queued | ep)) / 60) | floor) else null end),
        outcome: (

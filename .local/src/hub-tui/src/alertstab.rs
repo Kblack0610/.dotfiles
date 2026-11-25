@@ -513,7 +513,12 @@ pub fn fixes(a: &Alerts, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
                     } else {
                         format!("  {}", f.project)
                     },
-                    f.slug
+                    // The ticket, the board row the fix works as, then the queue item `i` opens
+                    // when its slug differs; the slug alone when it names no row.
+                    match f.row.as_deref().filter(|r| *r != f.slug) {
+                        Some(row) => format!("{row} ({})", f.slug),
+                        None => f.slug.clone(),
+                    }
                 )),
                 Span::styled(f.age(now), p.dim()),
             ]),
@@ -936,8 +941,8 @@ pub(crate) mod tests {
         let mut a = sample();
         a.fixes = reds(&[
             r#"{"slug":"ar-1","red":"watch a","queued":"2026-11-06T10:00:00Z","merged":"x","fix_min":34,"pr":"Kblack0610/.dotfiles#1185","outcome":"fixed"}"#,
-            r#"{"slug":"ar-2","red":"watch playground-nightly","queued":"2026-11-06T11:00:00Z","outcome":"queued"}"#,
-            r#"{"slug":"ar-3","red":"runner dream","queued":"2026-11-05T12:00:00Z","merged":"y","fix_min":60,"pr":"Kblack0610/.dotfiles#1170","outcome":"came back"}"#,
+            r#"{"slug":"red-x-1106","row":"ar-2","red":"watch playground-nightly","queued":"2026-11-06T11:00:00Z","outcome":"queued"}"#,
+            r#"{"slug":"ar-3","row":"ar-3","red":"runner dream","queued":"2026-11-05T12:00:00Z","merged":"y","fix_min":60,"pr":"Kblack0610/.dotfiles#1170","outcome":"came back"}"#,
             r#"{"slug":"ar-4","red":"watch b","queued":"2026-11-06T09:00:00Z","outcome":"cancelled"}"#,
         ]);
         let now = chrono::DateTime::parse_from_rfc3339("2026-11-06T12:00:00Z")
@@ -952,8 +957,8 @@ pub(crate) mod tests {
         );
         assert_eq!(lines[1], "  CAME BACK    runner dream  ar-3  #1170  24h");
         assert_eq!(
-            lines[2],
-            "  QUEUED       watch playground-nightly  ar-2  1h"
+            lines[2], "  QUEUED       watch playground-nightly  ar-2 (red-x-1106)  1h",
+            "the ticket, then the queue item when its slug differs"
         );
         assert_eq!(lines[3], "  +2 settled");
         assert_eq!(lines.len(), 4, "settled rows fold to their count: {s}");

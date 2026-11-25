@@ -26,6 +26,7 @@ use crate::holds::{self, Hold};
 use crate::home::{Chip, Level};
 use crate::infra::Infra;
 use crate::layout::FOLD_ROWS;
+use crate::links::{Kind, Link};
 use crate::reds::{self, Red, Reds};
 use crate::table::{Row, Val};
 
@@ -66,9 +67,12 @@ pub struct Alert {
     /// fixes could not be read) or `firing` (an Alertmanager rule, which no fix item is filed
     /// under).
     pub state: String,
-    /// The fix item's slug, for a link to its queue record.
+    /// The fix item's slug: the hub's `i` opens it on Queue. The web links `owner_href`.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub slug: String,
+    /// The fix item's queue page (`hub_core::links`), which the owner cell opens.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub owner_href: String,
     /// Who is fixing it while its fix is in hand and not past its due time: the item's tmux
     /// session, else its slug while it waits to start. Empty when it has no owner, its fix
     /// did not hold, it waits on someone or is late: the rows `unfixed` keeps.
@@ -495,6 +499,7 @@ fn owner(a: &mut Alert, key: Option<&str>, fixes: Option<&[Red]>, now: i64) {
             a.project = r.project.clone();
         }
         a.slug = r.slug.clone();
+        a.owner_href = Link::to(Kind::Queue, &r.slug).href();
         a.pr_url = r.pr_url.clone();
     }
     if !a.error() {
@@ -1186,6 +1191,7 @@ mod tests {
             ]
         );
         assert_eq!(a.firing[0].slug, "ar-1");
+        assert_eq!(a.firing[0].owner_href, "#queue/ar-1");
         assert_eq!((a.counts.fixes_open, a.counts.fixes_settled), (3, 1));
         assert_eq!(a.counts.no_owner, 3);
     }
