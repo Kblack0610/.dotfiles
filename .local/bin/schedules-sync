@@ -6,8 +6,8 @@ timeout (the longest `needs:` path of job timeouts, GitHub's 360 min where a job
 none), its purpose (the comment block right above `on:`, else the file's first comment
 block), its job graph, and its last SCHEDULES_RUNS scheduled runs (id, url, status,
 conclusion, start, end, failed jobs). It also records the repo's night set, config/ci/nightly.json
-on the base (keys are workflow files: `night` the ones the nightly runs, `held` the ones it
-holds back), as `night: {night, held, sha, etag}`, read through the contents API conditional on
+on the base (keys are workflow files: `night` the ones the nightly starts first, `wide` the ones
+it starts once those finished, `held` the ones it holds back), as `night: {night, wide, held, sha, etag}`, read through the contents API conditional on
 its ETag and decoded only when its sha moves; a file that is not a JSON object keeps its sha
 with `error` set. A repo without the file has `night_absent` (when it was found missing)
 instead and is asked again a day later. It writes them to one file, SCHEDULES_STATE
