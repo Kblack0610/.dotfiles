@@ -559,7 +559,8 @@ EOF
   chmod +x "$SANDBOX/bin/dbus-monitor"
   run timeout 20 "$DESK" notify bell
   assert_success
-  assert_equal "$(jq -r .text <<<"$output")" " 2 agents, 2 health"
+  # No NotificationClosed: all three Agents pages from :1.7 still count.
+  assert_equal "$(jq -r .text <<<"$output")" " 3 agents, 2 health"
 }
 
 @test "notify show passes on the clicked action of a --wait popup, and a / in a tag stays out of the path" {

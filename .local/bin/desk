@@ -170,7 +170,7 @@ notify_show() {
     rm -f "$f"
     {
         read -r id || return 1
-        owner="$(notify_owner)"  # empty when the bus did not answer: then no app, or it reads as the owner
+        owner="$(notify_owner)" || owner=""  # a bus that did not answer: no owner, then no app, or it reads as the owner
         printf '%s %s%s\n' "$id" "$owner" "${owner:+${app:+ $app}}" > "$f"
         cat
     } < <(notify-send -p -h "string:x-canonical-private-synchronous:$tag" "$@")
