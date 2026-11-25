@@ -570,6 +570,32 @@ claude_end_item() {
   ! grep -q '^gh ' "$NOTES_FIXTURE/calls.log" || fail "read gh for a recorded merge"
 }
 
+@test "reap: a done item whose pr: gh says does not exist is said and left to the orphan timer; a repo with a checkout here, or any other failure, is the forge not answering (ar-4702)" {
+  landed_item MERGED
+  gh_script 'echo "GraphQL: Could not resolve to a PullRequest with the number of 12. (repository.pullRequest)" >&2; exit 1'
+  run cmd_reap
+  assert_success
+  assert_output --partial 'land_orphan: fix-crash: the forge has no PR o/game#12, so no PR holds its row'
+  refute_output --partial 'closed game: fix crash'
+  # a repo no checkout here holds is missing too
+  agent-queue set fix-crash pr=o/gone#12 >/dev/null
+  gh_script 'echo "GraphQL: Could not resolve to a Repository with the name o/gone. (repository)" >&2; exit 1'
+  run cmd_reap
+  assert_output --partial 'land_orphan: fix-crash: the forge has no PR o/gone#12'
+  # NEGATIVE CONTROLS: GitHub says the same of a repo the token cannot see, so one a checkout here has as
+  # a remote is not missing; nor is a forge that did not answer.
+  git -C "$SANDBOX/repos/game" remote add mirror https://github.com/O/Game.git
+  agent-queue set fix-crash pr=o/game#12 >/dev/null
+  gh_script 'echo "GraphQL: Could not resolve to a Repository with the name o/game. (repository)" >&2; exit 1'
+  run cmd_reap
+  assert_success
+  refute_output --partial 'land_orphan:'
+  gh_script 'echo "HTTP 502: Bad Gateway" >&2; exit 1'
+  run cmd_reap
+  assert_success
+  refute_output --partial 'land_orphan:'
+}
+
 @test "reap: an item with one PR per repo closes its row on its first PR's merge proof" {
   # NEGATIVE CONTROL: the whole list as one ref gave merge_proof "pr 9" and a two-sha commit, so no proof.
   landed_item MERGED 'o/game#12 o/tools#9'
@@ -1607,6 +1633,8 @@ settle_fixture() {
   ask gone3 cancelled '' question credential_or_account ''
   printf 'closed_reason: joined nope99: the same question\n' >> "$d/gone3.md"
   printf 'context: %s\n' 'Re-posed by fleet-dispatch: ask old1 was cancelled (stale) before anyone answered it.' >> "$d/gone3.md"
+  ask gone4 cancelled '' question credential_or_account ''
+  printf 'closed_reason: duplicate of hold1: the human answered "b: keep it held" on row gm-1 after this was asked\n' >> "$d/gone4.md"
   ask gate1 cancelled '' gate '' ''
   printf 'options: approve|hold\noption_notes: \nclosed_reason: stale\n' >> "$d/gate1.md"
   # post writes a pending ask rep<N> from its flags and prints its id, as the real one does
@@ -1629,6 +1657,7 @@ esac'
   row game agent gm-9 "- [ ] feat(game): joined ask $T #ask/gone2/a <!-- id:gm-9 -->"
   row game agent gm-10 "- [ ] feat(game): joined, no option $T #ask/gone2 <!-- id:gm-10 -->"
   row game agent gm-11 "- [ ] feat(game): joined a missing ask $T #ask/gone3/a <!-- id:gm-11 -->"
+  row game agent gm-14 "- [ ] feat(game): duplicate ask $T #ask/gone4/a <!-- id:gm-14 -->"
   row game agent gm-12 "- [ ] feat(game): same cancelled ask $T #ask/gone1/b <!-- id:gm-12 -->"
   row game agent gm-13 "- [ ] feat(game): cancelled gate $T #ask/gate1/approve <!-- id:gm-13 -->"
   row game agent gm-5 "- [ ] feat(game): still waits $T #ask/hold1/a <!-- id:gm-5 -->"
@@ -1652,6 +1681,9 @@ esac'
   grep -q '^- \[ \] feat(game): cancelled ask .*#ask/rep1/a <!-- id:gm-4 -->' <<<"$rows"
   grep -q '^- \[ \] feat(game): joined ask .*#ask/hold1/a <!-- id:gm-9 -->' <<<"$rows"
   grep -q '^- \[ \] feat(game): joined, no option .*#ask/hold1 <!-- id:gm-10 -->' <<<"$rows"
+  # expire's cancel as a duplicate of an answered ask is followed the same way (ar-4703)
+  grep -q '^- \[ \] feat(game): duplicate ask .*#ask/hold1/a <!-- id:gm-14 -->' <<<"$rows"
+  grep -q 'moved game row gm-14 from #ask/gone4/a to ask hold1: ask gone4 was cancelled as a duplicate of it' "$FLEET_DISPATCH_DIR/log.md"
   # gone3 is itself a re-post: cancelled again, it stays dead for dead_holds, never posed a third time
   grep -q '^- \[ \] feat(game): joined a missing ask .*#ask/gone3/a <!-- id:gm-11 -->' <<<"$rows"
   run grep -E '^agent-hold set row-gm-(4|11) ' "$NOTES_FIXTURE/calls.log"

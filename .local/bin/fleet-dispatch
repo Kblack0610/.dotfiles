@@ -4959,7 +4959,8 @@ PR_STATE_JSON=state,mergeCommit,headRefOid,statusCheckRollup,mergeable
 PR_STATE_JQ="$CI_JQ"' [.state, (.mergeCommit.oid // "-"), (.headRefOid // "-"), ci, (.mergeable // "-")] | join(" ")'
 
 # item_pr_state <slug> <item json> -> PR_STATE_JQ's line for the item's PR; fails when its forge cannot
-# be read (so_pr_view). A bare pr: names no repo and one project spans repos, so it reads from the
+# be read, 3 when a pr: of one PR names one its forge says does not exist (so_pr_view).
+# A bare pr: names no repo and one project spans repos, so it reads from the
 # project's checkout and prints nothing unless a line of the PR's body is exactly the item's `Item:` stamp.
 # A pr: of several PRs (one per repo, a public and private split) reads each one: OPEN while any is open,
 # else CLOSED while any closed unmerged, else MERGED with each merge commit comma-joined in pr: order
@@ -4998,16 +4999,20 @@ own_record() { [ "$(agent-queue show "$1" --json 2>/dev/null | jq -r '.file // "
 # land_orphan <slug> [open] [item json] -- a started row whose item ended ok before its PR merged (closed by hand
 # before agent-queue refused that): the row goes by that PR, not by the orphan timer. A merged:
 # commit, or a PR its forge reads as MERGED (item_pr_state, then recorded), goes to close_row; OPEN leaves it started for the
-# merge. Returns 1 when no PR holds the row, so the timer decides: no PR or closed unmerged; 2 when
-# the forge did not answer. `open` lets close_row close a row not started, and the item json reads that
-# record instead of the slug's newest (land_row).
+# merge. Returns 1 when no PR holds the row, so the timer decides: no PR, closed unmerged, or a pr: its
+# forge says does not exist (said on each pass, since no later read finds it either); 2 when the forge
+# did not answer. `open` lets close_row close a row not started, and the item json reads that record
+# instead of the slug's newest (land_row).
 land_orphan() {
   local it=${3:-} oid info state
   [ -n "$it" ] || it=$(agent-queue show "$1" --json 2>/dev/null) || return 1
   oid=$(jq -r '.merged // ""' <<<"$it")
   if [ -z "$oid" ]; then
     [ -n "$(jq -r '.pr // ""' <<<"$it")" ] || return 1
-    info=$(item_pr_state "$1" "$it") || return 2
+    info=$(item_pr_state "$1" "$it") || {
+      [ $? = 3 ] || return 2
+      say "land_orphan: $1: the forge has no PR $(jq -r .pr <<<"$it"), so no PR holds its row"; return 1
+    }
     read -r state oid _ <<<"$info"; oid=${oid#-} oid=${oid//,/ }
     case "$state" in
     # From land_row, an open PR holds the row only for an item that ended ok: a failed or cancelled
@@ -7843,13 +7848,14 @@ ask_failed_rows() {
 # #hold/row-<row id>, an agent-hold the human releases to start it. A missing ask and a
 # human-sheet row stay in dead_holds for a person. A cancelled ask (nobody
 # decided: agent-ask cancel has no actor) leaves its rows dead the same way (ar-3863, 2026-11-19):
-# one cancelled because it joined an older ask moves its rows' gate to that ask. Any other cancel
+# one cancelled because it joined an older ask, or as a duplicate of an answered one, moves its rows'
+# gate to that ask. Any other cancel
 # sets no hold, which only a person clears (ar-4646: ucp-463 sat held on work #2129 had merged): a
 # done queue item on the row whose PR merged closes it on merge proof (land_row), and otherwise
 # the ask is posed again (repose_ask) and the row gated on the new one.
 SETTLE_SKIP_RE='\b(skip|skipped|drop|cancel|cancelled|abandon|scrap|not needed|no longer needed)\b'
 settle_answered_gates() {
-  local board prof p id t g aid ask st ans who why hold had rsn to rc
+  local board prof p id t g aid ask st ans who why hold had rsn to how rc
   load_gates
   [ -z "$GATES_FAILED" ] || return 0
   board=$(notes board --json 2>/dev/null) || return 0
@@ -7862,10 +7868,14 @@ settle_answered_gates() {
       # Any answer, as ask_pending reads it: the human's, the judge's or an agent's.
       if [ "$st" = cancelled ]; then
         rsn=$(sed -n '/^closed_reason: */{s///p;q;}' <<<"$ask" | tr -cd ' -~' | tr -d '#<>' | cut -c1-160)
-        # join_ask moved the asker's sessions to the older ask: the gate follows, options and all.
-        if [[ $rsn =~ ^joined\ ([A-Za-z0-9_-]+): ]] && to=${BASH_REMATCH[1]} && agent-ask show "$to" </dev/null >/dev/null 2>&1; then
+        # join_ask moved the asker's sessions to the older ask, and expire cancels an ask on a row as a
+        # duplicate of the answer the human gave on it since (WArrA5, ar-4703): the gate follows, options and all.
+        # The option goes with it: the other ask's answer settles the row as any answer does.
+        if [[ $rsn =~ ^(joined|duplicate\ of)\ ([A-Za-z0-9_-]+): ]] && to=${BASH_REMATCH[2]} && how=${BASH_REMATCH[1]} &&
+          agent-ask show "$to" </dev/null >/dev/null 2>&1; then
+          [ "$how" = joined ] || how='was cancelled as a duplicate of'
           if np "$prof" ptask "$p" --agent tag --add "ask/$to${g#ask/$aid}" --remove "$g" "$id" </dev/null >/dev/null 2>&1; then
-            logline "moved $p row $id from #$g to ask $to: ask $aid joined it"
+            logline "moved $p row $id from #$g to ask $to: ask $aid $how it"
           else
             say "settle_answered_gates: could not retag $p row $id from #$g to #ask/$to"
           fi
