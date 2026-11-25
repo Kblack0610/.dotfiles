@@ -1361,16 +1361,20 @@ index_rows() { # <queue_index output>
 # item_recs <file>... -> one record per item file for ITEM_JQ, all read by one awk: state, file,
 # task and the first weight in its header, then its header keys and values; fields end in \x1f and
 # the record in \x1e. Header keys by HDR_AWK; the object keeps the last of a repeated key and the
-# rules (after, tags, weight) read the first.
+# rules (after, tags, weight) read the first. A file gone by the time it is read (moved or finished
+# after the listing) is no item: read as one, it kept its listed state and lost every header, and
+# stats crashed on its missing queued: (ar-1405).
 item_recs() {
   printf '%s\n' "$@" | AQ_DONE="$AQ_DIR/done/" awk "$HDR_AWK"'{
-    f = $0; task = ""; body = 0; w = ""; sw = 0; kv = ""
-    while ((getline line < f) > 0) {
+    f = $0; task = ""; body = 0; w = ""; sw = 0; kv = ""; got = 0
+    while ((r = (getline line < f)) > 0) {
+      got = 1
       if (body) { task = task line "\n"; continue }
       if (line == "---") { body = 1; continue }
       if (hdr(line)) { kv = kv HK "\037" HV "\037"; if (HK == "weight" && !sw++) w = HV }
     }
     close(f)
+    if (r < 0 && !got) next
     sub(/\n+$/, "", task)
     if (index(f, ENVIRON["AQ_DONE"]) == 1) st = "done"; else { st = f; sub(/\/[^\/]*$/, "", st); sub(/.*\//, "", st) }
     printf "%s\037%s\037%s\037%s\037%s\036", st, f, task, w, kv }'
@@ -4058,7 +4062,9 @@ cmd_stats() {
     def at($name): map(select(.stage == $name) | .item);
     (map(select(.state == "done"))) as $done
     | (map(select(.state == "queued"))) as $queued
-    | ($queued | map(select(.hold == null) | {slug, project, minutes: (.queued | age)}) | sort_by(-.minutes)) as $runnable
+    # An item with no queued: stamp is named, never a bare "strptime/1 requires string inputs" (ar-1405).
+    | ($queued | map(select(.hold == null) | {slug, project, minutes: (if (.queued | type) == "string" then .queued | age
+        else error("queued item \(.slug // .file) has no queued: stamp") end)}) | sort_by(-.minutes)) as $runnable
     | {since: $since,
        active: (map(select(.state != "done")) | count_by(.state)),
        done: ($done | count_by(.status // "unknown")),

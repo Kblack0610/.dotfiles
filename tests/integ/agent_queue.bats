@@ -3543,6 +3543,32 @@ EOF
   assert_output --partial "project: app 1 (0 PR), game 1 (1 PR)"
 }
 
+@test "a queued file gone between the listing and the read is no item, and one with no queued: stamp is named (ar-1405)" {
+  "$AQ" add --project game --slug a "a"
+  # The listing names a queued file that is gone when the read reaches it: an item moved or
+  # finished in between. sort is items_in's last step, so a sort that adds the path stands in for the race.
+  real="$(command -v sort)"
+  gone="$AGENT_QUEUE_DIR/queued/20261110-074700-gone.md"
+  printf '#!/usr/bin/env bash\nout="$(%q "$@")"; [ -z "$out" ] || printf "%%s\\n" "$out"\ncase "$out" in *%q*) printf "%%s\\n" %q ;; esac\n' "$real" "$AGENT_QUEUE_DIR/queued/" "$gone" > "$SANDBOX/bin/sort"
+  chmod +x "$SANDBOX/bin/sort"
+  run bash -c "'$AQ' list --json --state queued | jq -r .slug"
+  assert_success
+  assert_output a
+  run "$AQ" stats --json --since 2000-01-01
+  assert_success
+  [ "$(jq -c '.sitting | [.queued, .runnable]' <<<"$output")" = '[1,1]' ]
+  # With the real sort the listing has no gone path, and the queue reads the same.
+  rm "$SANDBOX/bin/sort"
+  run "$AQ" stats --json --since 2000-01-01
+  assert_success
+  [ "$(jq -c '.sitting | [.queued, .runnable]' <<<"$output")" = '[1,1]' ]
+  # A real item with no queued: stamp fails stats by its name, not as "strptime/1 requires string inputs".
+  sed -i '/^queued:/d' "$(item queued a)"
+  run "$AQ" stats --json --since 2000-01-01
+  assert_failure
+  assert_output --partial "queued item a has no queued: stamp"
+}
+
 @test "stats wait for an after: item runs from its predecessor's finish, not from when it was queued" {
   "$AQ" add --project game --slug p "p"
   legacy f "after: p" --project game "f"
