@@ -1217,16 +1217,18 @@ watch_gate() {
 }
 
 # unlisted_repo <store key>: the merged PR's repo is in no `schedules-sync repos` list (sync-prs exit
-# 3). Says so with the fix, and files it on the outbox (notes exits 3 or 5 while a like row is open,
-# so a second landing there files nothing new). Never fails the landing: the merge stands.
+# 3). Says so with the fix, and files it on the outbox (notes exits 3 while a like row is open, so a
+# second landing there files nothing new; 5, a hand session's shortlist to read, files nothing and
+# prints the add to run by hand). Never fails the landing: the merge stands.
 unlisted_repo() {
   local board=${AGENT_LAND_LEDGER_BOARD:-agent-runtime} out rc=0
   echo "prs: $1 is in no schedules-sync repos list, so the run ledger never reads it and fleet-bench's cleanup hold reads it as unread: add it to the exporter's FEED_REPOS or FORGEJO_REPOS (home-config apps/github-runner-exporter/deployment.yaml) if it runs CI, else to a prsOnly tracker in project-map.json" >&2
-  out=$(notes ptask "$board" --agent add --why runtime-fault \
-    "fix(ledger): $1 is in no schedules-sync repos list, so nothing guards its main after a cleanup merge: add it to the exporter's repo list (home-config apps/github-runner-exporter/deployment.yaml) if it runs CI, else a prsOnly tracker in project-map.json #high #size/s" 2>&1) || rc=$?
+  local row="fix(ledger): $1 is in no schedules-sync repos list, so nothing guards its main after a cleanup merge: add it to the exporter's repo list (home-config apps/github-runner-exporter/deployment.yaml) if it runs CI, else a prsOnly tracker in project-map.json #high #size/s"
+  out=$(notes ptask "$board" --agent add --why runtime-fault "$row" 2>&1 </dev/null) || rc=$?
   case "$rc" in
     0 | 4) echo "prs: filed on the $board outbox" >&2 ;;
-    3 | 5) echo "prs: a like row is already open on $board" >&2 ;;
+    3) echo "prs: a like row is already open on $board" >&2 ;;
+    5) echo "prs: not filed, notes wants its shortlist read first: notes ptask $board --agent add --why runtime-fault --checked <ids> '$row'" >&2 ;;
     *) echo "prs: could not file it on $board ($(lastline "$out"))" >&2 ;;
   esac
 }
