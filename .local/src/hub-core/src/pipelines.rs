@@ -327,7 +327,8 @@ fn files_of<'a>(repo: &'a CiRepo, errors: &mut Vec<String>) -> Vec<File<'a>> {
     if let Some(e) = &n.error {
         errors.push(format!("{}: {e}", repo.repo));
     }
-    let sets = [("on", &n.night), ("held", &n.held)];
+    // A `wide` member runs in the same night, after the `night` step: on, as that step's are.
+    let sets = [("on", &n.night), ("on", &n.wide), ("held", &n.held)];
     for (word, set) in sets {
         for (name, title) in set {
             match out.iter_mut().find(|f| base_name(f.path) == name) {
@@ -993,6 +994,32 @@ mod tests {
             p.errors,
             ["Org/game: config/ci/nightly.json names gone.yml, which is not a workflow on main"]
         );
+    }
+
+    #[test]
+    fn a_wide_member_is_on_the_night_as_a_night_member_is() {
+        let repo: CiRepo = serde_json::from_value(json!({
+            "repo": "Org/game", "base": "main",
+            "unscheduled": {".github/workflows/test.yml": "s1", ".github/workflows/hd.yml": "s2",
+                            ".github/workflows/soak.yml": "s3"},
+            "night": {"night": {"test.yml": "Tests (all)"}, "wide": {"hd.yml": "HD (all)"},
+                      "held": {"soak.yml": "Soak (all)"}, "sha": "n1"}
+        }))
+        .unwrap();
+        let mut errors = vec![];
+        let night: Vec<_> = files_of(&repo, &mut errors)
+            .iter()
+            .map(|f| (base_name(f.path), f.night))
+            .collect();
+        assert_eq!(
+            night,
+            [
+                ("hd.yml", Some(("on", "HD (all)"))),
+                ("soak.yml", Some(("held", "Soak (all)"))),
+                ("test.yml", Some(("on", "Tests (all)"))),
+            ]
+        );
+        assert!(errors.is_empty(), "{errors:?}");
     }
 
     #[test]
