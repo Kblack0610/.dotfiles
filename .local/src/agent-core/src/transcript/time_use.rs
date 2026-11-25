@@ -127,6 +127,7 @@ fn job_wait(command: &str, patterns: &[(Wait, &str)]) -> Wait {
 /// is a gate, where its command line names none. One level: a script that runs another script of
 /// the session's own stays a job. A script gone from disk, over WRAPPER_MAX_BYTES, or named after
 /// a `cd` is a plain job, and the class is the file's text now, not when the command ran.
+/// session-outcomes.sh (so_wrapper_classes) and agent-usage-burn.py (wrapper_class) read it the same way.
 fn wrapper_wait(command: &str, cwd: &str, patterns: &[(Wait, &str)]) -> Wait {
     if cwd.is_empty() {
         return Wait::Jobs;

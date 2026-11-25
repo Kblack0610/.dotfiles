@@ -80,3 +80,32 @@ investigate scripts/test/run.sh Foo
 investigate rg -n 'gh run watch' docs
 EOF
 }
+
+# agent-11, 2026-11-05: `bash Logs/gate-land.sh` ran scripts/test/suite.sh on the pool, and time_use.rs
+# read it as a gate (ar-304) while session-outcomes.sh and agent-usage-burn.py counted no CI poll (ar-4253).
+@test "a session-written wrapper counts as what its text runs in both readers, as time_use.rs reads it; one gone, one with no cwd, or a file only read, is a plain job" {
+  mkdir -p "$SANDBOX/w/Logs"
+  printf '#!/bin/bash\n# not gh run view here\nset -e\nscripts/test/suite.sh --pr 1\n' > "$SANDBOX/w/Logs/gate-land.sh"
+  printf 'cd x && bats tests/unit\n' > "$SANDBOX/w/Logs/test.sh"
+  printf "sleep 600\necho 'agent-land 1'\n" > "$SANDBOX/w/Logs/plain.sh"
+  jq -nc --arg d "$SANDBOX/w" '["bash Logs/gate-land.sh; echo exit=$?", "timeout 600 bash Logs/test.sh", "Logs/plain.sh", "cat Logs/gate-land.sh", "bash Logs/none.sh"]
+    | to_entries[] | {type: "assistant", cwd: $d, message: {id: "m\(.key)", content: [{type: "tool_use", id: "t\(.key)", name: "Bash", input: {command: .value}}]}}' > "$SANDBOX/t.jsonl"
+  echo '{"type":"assistant","message":{"id":"nc","content":[{"type":"tool_use","id":"nc","name":"Bash","input":{"command":"bash Logs/gate-land.sh"}}]}}' >> "$SANDBOX/t.jsonl"
+  # shellcheck source=/dev/null
+  . "$REPO_ROOT/.local/lib/session-outcomes.sh"
+  run so_transcript_metrics "$SANDBOX/t.jsonl"
+  assert_success
+  assert_equal "$(jq -c '.activity | [.test_runs, .ci_polls]' <<<"$output")" '[1,1]'
+  run python3 -I - "$BURN" "$SANDBOX/w" <<'PY'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("burn", sys.argv[1])
+mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("burn", loader))
+loader.exec_module(mod)
+p, cwd = mod.time_use_patterns(), sys.argv[2]
+for c in ["bash Logs/gate-land.sh; echo exit=$?", "timeout 600 bash Logs/test.sh", "Logs/plain.sh", "cat Logs/gate-land.sh", "bash Logs/none.sh"]:
+    print(mod.wrapper_class(c, cwd, p), mod.call_class("Bash", {"command": c}, p, cwd))
+print(mod.call_class("Bash", {"command": "bash Logs/gate-land.sh"}, p))
+PY
+  assert_success
+  assert_output $'gate wait\ntest investigate\njobs investigate\njobs investigate\njobs investigate\ninvestigate'
+}

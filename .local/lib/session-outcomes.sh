@@ -57,14 +57,18 @@ SO_PR_JQ='
 # assignments, wrappers with their options, `timeout N`, `flock FILE` and if/while/until/do/then/else/!, any path,
 # the text and a boundary. agent-usage-burn.py matches the same way;
 # tests/fixtures/time-use-commands.tsv holds the three readers to it.
-SO_TIME_USE_LINES="$(jq -Rsc '[splits("\n") | gsub("^\\s+|\\s+$"; "") | capture("^(?<kind>gate|test|build)\\s+(?<text>.*)$")
-  | .re = "(^|[;&|(\\n`])\\s*((\\w+=\\S*|(env|nice|xargs|sudo|nohup|exec|command|time|stdbuf|setsid|ionice|sh|bash|zsh)(\\s+-n\\s+[0-9]+|\\s+-\\S+)*|timeout(\\s+-\\S+)*\\s+[0-9]\\S*|flock(\\s+-\\S+)*\\s+\\S+|if|while|until|do|then|else|!)\\s+)*(\\S*/)?"
+# SO_TIME_USE_WRAP: what a command start may carry before its command word (assignments, wrappers with
+# their options, `timeout N`, `flock FILE`, the keywords), one regex for the line match and the word read.
+SO_TIME_USE_WRAP='((\w+=\S*|(env|nice|xargs|sudo|nohup|exec|command|time|stdbuf|setsid|ionice|sh|bash|zsh)(\s+-n\s+[0-9]+|\s+-\S+)*|timeout(\s+-\S+)*\s+[0-9]\S*|flock(\s+-\S+)*\s+\S+|if|while|until|do|then|else|!)\s+)*'
+SO_TIME_USE_LINES="$(jq -Rsc --arg wrap "$SO_TIME_USE_WRAP" '[splits("\n") | gsub("^\\s+|\\s+$"; "") | capture("^(?<kind>gate|test|build)\\s+(?<text>.*)$")
+  | .re = "(^|[;&|(\\n`])\\s*" + $wrap + "(\\S*/)?"
       + (.text | gsub("(?<c>[\\\\.^$|?*+()\\[\\]{}])"; "\\\(.c)")) + "($|[^\\w.])"]' \
   "${TIME_USE_CONF:-$SO_LIB/../../.config/agent-panel/time-use.conf}" 2>/dev/null)" || SO_TIME_USE_LINES='[]'
 [ "$SO_TIME_USE_LINES" != '[]' ] ||
   echo "session-outcomes: no gate or test line in ${TIME_USE_CONF:-time-use.conf}; every command counts as jobs" >&2
 SO_PR_JQ="$SO_PR_JQ
-  def time_use_lines: ${SO_TIME_USE_LINES:-[]};"'
+  def time_use_lines: ${SO_TIME_USE_LINES:-[]};
+  def time_use_wrap: $(jq -n --arg w "$SO_TIME_USE_WRAP" '$w');"'
   def time_use_unquoted:
     gsub("(?<!<)<<(?!<)-?[ \\t]*(?<q>[\u0027\"]?)(?<w>[A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_])\\k<q>(?<rest>[^\\n]*)(?:\\n[^\\n]*)*?\\n[ \\t]*\\k<w>[ \\t]*(?![^\\n])"; "\(.rest)")
     | gsub("(?:^|(?<=[\\s;&|(`/]))(?<sh>(?:ba|z)?sh(?:\\s+-\\S+)*?\\s+-[a-z]*c\\s+)(?:\u0027(?<sq>[^\u0027]*)\u0027|\"(?<dq>(?:\\\\.|[^\"\\\\])*)\")"; "\(.sh)\n\(.sq // .dq)\n")
@@ -75,6 +79,18 @@ SO_PR_JQ="$SO_PR_JQ
     | if length == 0 then "jobs"
       else ($c | time_use_unquoted) as $u
         | first(.[] | select(.re as $re | $u | test($re)) | .kind) // "jobs" end;
+  # time_use_words(cwd): the files a command runs as its command words (a path or *.sh, past its
+  # wrappers, joined to cwd), which time_use.rs wrapper_wait reads; time_use_wrapped($k; $texts): the
+  # strongest class of those files'"'"' texts, $texts a {path: class} map (so_wrapper_classes), else $k.
+  def time_use_words($cwd):
+    time_use_unquoted | splits("[;&|(\\n`]") | capture("^\\s*" + time_use_wrap + "(?<w>\\S+)")? | .w
+    | select((startswith("-") | not) and (contains("/") or endswith(".sh")))
+    | if startswith("/") then . else $cwd + "/" + . end;
+  def time_use_wrapped($cwd; $texts):
+    . as $c
+    | if ($cwd | type) != "string" or $cwd == "" then "jobs"
+      else [$c | time_use_words($cwd) | $texts[.] // empty] as $ks
+        | first(("gate", "test", "build") | select(IN($ks[]))) // "jobs" end;
 '
 
 # so_canon_init MAP - the store host and the alias list, read once per run (so_canon_claims reads them
@@ -146,8 +162,12 @@ so_mapped_repos() {
 # so a hook whose reason starts with `<name>: ` is counted and one that does not is invisible.
 # plan_gate counts ExitPlanMode calls and how many of them plan-standard.sh denied;
 # the human rejecting a plan is `denied` under hard_errors, not a gate denial.
+# A Bash command no line names, run through a script the session wrote (`bash Logs/gate-land.sh`),
+# counts as what that script's text runs (so_wrapper_classes), as time_use.rs reads it.
 so_transcript_metrics() {
-  jq -nR --argjson sigs "${2:-[]}" "$CLAUDE_END_JQ$SO_PR_JQ"'
+  local wrapped
+  wrapped=$(so_wrapper_classes "$1") || wrapped='{}'
+  jq -nR --argjson sigs "${2:-[]}" --argjson wrapped "$wrapped" "$CLAUDE_END_JQ$SO_PR_JQ"'
     def text_of: if type == "string" then .
                  elif type == "array" then ([.[]? | .text? // empty] | join("\n"))
                  else "" end;
@@ -182,7 +202,7 @@ so_transcript_metrics() {
                else . end)
             | if $u.name == "Bash" then
               ($u.input.command // "") as $c
-              | ($c | time_use_class) as $k
+              | ($c | time_use_class | if . == "jobs" then $c | time_use_wrapped($r.cwd; $wrapped) else . end) as $k
               | .test_runs += (if $k == "test" then 1 else 0 end)
               | .ci_polls += (if $k == "gate" then 1 else 0 end)
               | (if ($c | test("\\bgit\\s+commit\\b")) then .since_edit = {} else . end)
@@ -251,6 +271,23 @@ so_transcript_metrics() {
                     compactions },
         uses }
   ' < "$1"
+}
+
+# so_wrapper_classes TRANSCRIPT -> {path: class}: each file a Claude transcript's Bash commands that no
+# time-use.conf line names run as a command word (time_use_words, joined to the record's cwd), as the
+# time_use_class of its text: time_use.rs wrapper_wait. One level; a file gone or over 64 KB
+# is left out, so its command stays a plain job; the class is the file's text now.
+so_wrapper_classes() {
+  local p
+  jq -nrR "$SO_PR_JQ"'inputs | fromjson? | select(type == "object" and .type == "assistant")
+    | .cwd as $d | select(($d | type) == "string" and $d != "")
+    | .message.content | if type == "array" then .[] else empty end
+    | select(.type == "tool_use" and .name == "Bash") | (.input.command // "") | strings
+    | select(time_use_class == "jobs") | time_use_words($d)' < "$1" 2>/dev/null | sort -u |
+    while IFS= read -r p; do
+      [ -f "$p" ] && [ "$(wc -c < "$p" 2>/dev/null || echo 65537)" -le 65536 ] || continue
+      jq -Rs --arg p "$p" "$SO_PR_JQ"'{($p): time_use_class}' "$p" 2>/dev/null
+    done | jq -s 'add // {}'
 }
 
 # so_project_of DIR -> the project an opencode or Codex session in DIR files under: the resolver's

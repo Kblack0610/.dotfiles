@@ -72,9 +72,16 @@ TIME_USE_QUOTED = re.compile(TIME_USE_QUOTE)
 # A heredoc, `<<[-] WORD` (WORD may be quoted), through its end line: cut to what follows WORD.
 TIME_USE_HEREDOC = re.compile(r"(?<!<)<<(?!<)-?[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_])\1"
                               r"([^\n]*)(?:\n[^\n]*)*?\n[ \t]*\2[ \t]*(?![^\n])")
-TIME_USE_START = (r"(^|[;&|(\n`])\s*((\w+=\S*|(env|nice|xargs|sudo|nohup|exec|command|time|stdbuf|setsid|ionice|sh|bash|zsh)"
-                  r"(\s+-n\s+[0-9]+|\s+-\S+)*|timeout(\s+-\S+)*\s+[0-9]\S*|flock(\s+-\S+)*\s+\S+|if|while|until|do|then|else|!)\s+)*"
-                  r"(\S*/)?")
+# What a command start may carry before its command word: assignments, wrappers with their options,
+# `timeout N`, `flock FILE` and the keywords.
+TIME_USE_WRAP = (r"((\w+=\S*|(env|nice|xargs|sudo|nohup|exec|command|time|stdbuf|setsid|ionice|sh|bash|zsh)"
+                 r"(\s+-n\s+[0-9]+|\s+-\S+)*|timeout(\s+-\S+)*\s+[0-9]\S*|flock(\s+-\S+)*\s+\S+|if|while|until|do|then|else|!)\s+)*")
+TIME_USE_START = r"(^|[;&|(\n`])\s*" + TIME_USE_WRAP + r"(\S*/)?"
+# A command's word past its wrappers, one a command start (time_use.rs wrapper_wait).
+TIME_USE_SEGMENTS = re.compile(r"[;&|(\n`]")
+TIME_USE_WORD = re.compile(r"\s*" + TIME_USE_WRAP + r"(\S+)")
+WRAPPER_MAX_BYTES = 64 * 1024
+TIME_USE_STRENGTH = {"gate": 3, "test": 2, "build": 1}
 TIME_USE_END = r"($|[^\w.])"
 MIX = ("investigate", "wait", "write", "reply")
 IDLE_LONG = 3600     # the prompt cache TTL these sessions request ("1h")
@@ -320,7 +327,32 @@ def time_use_class(command, patterns):
     return "jobs"
 
 
-def call_class(name, inp, patterns):
+def wrapper_class(command, cwd, patterns):
+    """What a session-written script counts as, by its text: for each command word of `command`
+    that names a file (a path or `*.sh`, joined to `cwd`), the strongest time_use_class of those
+    files' text; time_use.rs `wrapper_wait`. One level; a file gone, over WRAPPER_MAX_BYTES or not
+    UTF-8 is a plain job, and the class is the file's text now."""
+    best = "jobs"
+    if not cwd:
+        return best
+    for seg in TIME_USE_SEGMENTS.split(unquoted(command)):
+        word = TIME_USE_WORD.match(seg).group(TIME_USE_WORD.groups)
+        if word.startswith("-") or not ("/" in word or word.endswith(".sh")):
+            continue
+        path = os.path.join(cwd, word)
+        try:
+            if not os.path.isfile(path) or os.path.getsize(path) > WRAPPER_MAX_BYTES:
+                continue
+            with open(path, encoding="utf-8") as f:
+                kind = time_use_class(f.read(), patterns)
+        except (OSError, UnicodeDecodeError):
+            continue
+        if TIME_USE_STRENGTH.get(kind, 0) > TIME_USE_STRENGTH.get(best, 0):
+            best = kind
+    return best
+
+
+def call_class(name, inp, patterns, cwd=""):
     """One tool call's turn class: wait for a plain wait, write for an edit or a write command,
     wait for a time-use.conf gate, else investigate. Write comes before the gate, so agent-land,
     a gate line that also merges, stays write."""
@@ -332,7 +364,10 @@ def call_class(name, inp, patterns):
         return "wait"
     if name in WRITE_TOOLS or (name == "Bash" and WRITE_RE.search(probe)):
         return "write"
-    if time_use_class(command, patterns) == "gate":
+    kind = time_use_class(command, patterns)
+    if kind == "jobs" and name == "Bash":
+        kind = wrapper_class(command, cwd, patterns)
+    if kind == "gate":
         return "wait"
     return "investigate"
 
@@ -398,7 +433,7 @@ def scan(path, start, end, acc):
                     if not isinstance(b, dict) or b.get("type") != "tool_use":
                         continue
                     tmid = msg.get("id") or d.get("requestId")
-                    c = call_class(b.get("name"), b.get("input") or {}, acc["time_use"])
+                    c = call_class(b.get("name"), b.get("input") or {}, acc["time_use"], d.get("cwd") or "")
                     if c == "wait":
                         acc["wait_calls"] += 1
                         wait_mids.add(tmid)
