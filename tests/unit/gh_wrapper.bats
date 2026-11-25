@@ -306,11 +306,14 @@ gh_calls() { { grep -vc '^none|api rate_limit' "$BATS_TEST_TMPDIR/real.log" || t
   assert_success
   assert_equal "$(gh_calls)" 1
   assert_equal "$(bucket)" user
+  # the row names the ancestor that granted the reserve, where the caller column has only the parent (bash -c)
+  assert_equal "$(tail -n 1 "$GH_CALLS_DIR"/*.tsv | cut -f4,7)" "$(printf 'bash\tci-gate.sh')"
   # NEGATIVE CONTROL: the same chain under a script no list names waits
   cp "$BATS_TEST_TMPDIR/ci-gate.sh" "$BATS_TEST_TMPDIR/ci-cost.sh"
   run bash -o pipefail "$BATS_TEST_TMPDIR/ci-cost.sh" </dev/null
   assert_equal "$(gh_calls)" 1
   assert_equal "$(bucket)" user:deferred
+  assert_equal "$(tail -n 1 "$GH_CALLS_DIR"/*.tsv | cut -f7)" -
 }
 
 @test "budget: the human at a terminal never waits" {
