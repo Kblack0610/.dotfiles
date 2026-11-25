@@ -2049,7 +2049,7 @@ mod tests {
         assert!(hub.contains("- `LSD/ci.md`"), "{hub}");
         let schema = fs::read_to_string(root.join("knowledge/SCHEMA.md")).unwrap();
         assert!(
-            schema.contains("- `core/ops`: what belongs here Aliases: `release`."),
+            schema.contains("- `core/ops`: what belongs here. Aliases: `release`."),
             "{schema}"
         );
         assert!(!schema.contains("{{domains}}"));
