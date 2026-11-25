@@ -1760,6 +1760,23 @@ impl App {
         }
     }
 
+    /// The pages the daily note and the reports hold read on the tick and `r` while shown.
+    fn read_dated(&mut self) {
+        match self.tab {
+            Tab::Daily => self.read_daily(),
+            Tab::Reports => self.read_reports(),
+            _ => {}
+        }
+    }
+
+    /// A finished reports read: keep it, and read again if a refresh came in while it ran.
+    fn got_reports(&mut self, v: Result<hub_core::reports::View, String>) {
+        self.reports = Some(v);
+        if self.reports_read.done() {
+            self.read_reports();
+        }
+    }
+
     /// `notes report list` has no watch here (`notes` is the writer), so the Reports tab reads on
     /// entering, on `r` and on the tick while it is shown.
     pub fn read_reports(&mut self) {
@@ -2273,12 +2290,7 @@ impl App {
                 if self.tab == Tab::Log {
                     self.read_log_tab();
                 }
-                if self.tab == Tab::Daily {
-                    self.read_daily();
-                }
-                if self.tab == Tab::Reports {
-                    self.read_reports();
-                }
+                self.read_dated();
                 if self.tab == Tab::Projects {
                     self.read_projects();
                 }
@@ -2529,12 +2541,7 @@ impl App {
                     self.read_outbox();
                 }
             }
-            Msg::Reports(v) => {
-                self.reports = Some(*v);
-                if self.reports_read.done() {
-                    self.read_reports();
-                }
-            }
+            Msg::Reports(v) => self.got_reports(*v),
             Msg::Infra(i) => {
                 self.infra = Some(*i);
                 if self.infra_read.done() {
@@ -2737,10 +2744,7 @@ impl App {
         if self.tab == Tab::Log && self.log_key(k) {
             return;
         }
-        if self.tab == Tab::Daily && self.daily_key(k) {
-            return;
-        }
-        if self.tab == Tab::Reports && self.reports_key(k) {
+        if self.tab == Tab::Daily && self.daily_key(k) || self.reports_key(k) {
             return;
         }
         if self.tab == Tab::Sessions && self.sessions_key(k) {
@@ -2858,12 +2862,7 @@ impl App {
                     self.read_home();
                     self.read_home_cards();
                 }
-                if self.tab == Tab::Daily {
-                    self.read_daily();
-                }
-                if self.tab == Tab::Reports {
-                    self.read_reports();
-                }
+                self.read_dated();
                 if self.tab == Tab::Projects {
                     self.read_projects();
                     self.read_proj_page();
@@ -3741,8 +3740,9 @@ impl App {
 
     /// Reports' own keys: Left and Right switch Today and Archive, each from its top.
     fn reports_key(&mut self, k: KeyEvent) -> bool {
-        if k.modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        if self.tab != Tab::Reports
+            || k.modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
         {
             return false;
         }
@@ -4827,18 +4827,14 @@ impl App {
             Tab::Costs => format!(
                 "<-/-> view  b/B cut  w window  / query  s sort  S asc/desc  K keys  y spend  g cut  V open group  v row  , / . day  u tokens  U day/7d  l langfuse  e sections  t/T sort them  x clear  o Grafana  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
-            Tab::Reports => {
-                "<-/-> Today or Archive  j/k PgUp/PgDn ^d/^u scroll  r refresh  Tab pages  q quit".into()
-            }
+            Tab::Reports => format!("<-/-> Today/Archive  j/k scroll  r refresh  {tabs} tabs  q quit"),
             Tab::Daily if self.daily_outbox => {
                 "Enter edit in $EDITOR  o/Esc the note  j/k PgUp/PgDn ^d/^u scroll  r refresh  Tab pages  q quit".into()
             }
-            Tab::Daily if self.focus_day.is_some() => {
-                "[ ] day  t today  o outbox  j/k PgUp/PgDn ^d/^u scroll  r refresh  Tab pages  q quit".into()
-            }
-            Tab::Daily => {
-                "[ ] day  o outbox  j/k PgUp/PgDn ^d/^u scroll  r refresh  Tab pages  q quit".into()
-            }
+            Tab::Daily => format!(
+                "[ ] day  {}o outbox  j/k PgUp/PgDn ^d/^u scroll  r refresh  Tab pages  q quit",
+                if self.focus_day.is_some() { "t today  " } else { "" }
+            ),
             Tab::Log if self.log_days => {
                 format!("j/k pick a day  Enter open it  Esc back  {tabs} tabs  q quit")
             }
@@ -5131,37 +5127,14 @@ impl App {
             },
             // Daily's outbox view: the outbox and today's intake steps (outboxtab.rs); Enter
             // edits the file.
-            (Tab::Daily, ..) if self.daily_outbox => match &self.outbox {
-                None => reading("the outbox"),
-                Some(Err(e)) => (vec![Line::styled(e.clone(), self.p.warn())], vec![]),
-                Some(Ok(v)) => {
-                    let mut l = match &self.outbox_said {
-                        Some(Ok(m)) => vec![Line::styled(m.clone(), self.p.dim())],
-                        Some(Err(e)) => vec![Line::styled(e.clone(), self.p.warn())],
-                        None => vec![],
-                    };
-                    l.extend(outboxtab::page(v, self.p, w));
-                    (l, vec![])
-                }
-            },
-            // Every report agents filed, read-only (reportstab.rs; agent-web marks one read).
-            (Tab::Reports, ..) => match &self.reports {
-                None => (
-                    vec![
-                        reportstab::strip(self.reports_inner, false, self.p, w),
-                        Line::styled("Reading the reports...", self.p.dim()),
-                    ],
-                    vec![],
-                ),
-                Some(Err(e)) => (
-                    vec![
-                        reportstab::strip(self.reports_inner, false, self.p, w),
-                        Line::styled(e.clone(), self.p.warn()),
-                    ],
-                    vec![],
-                ),
-                Some(Ok(v)) => (reportstab::page(v, self.reports_inner, self.p, w), vec![]),
-            },
+            (Tab::Daily, ..) if self.daily_outbox => (
+                outboxtab::lines(self.outbox.as_ref(), self.outbox_said.as_ref(), self.p, w),
+                vec![],
+            ),
+            (Tab::Reports, ..) => (
+                reportstab::lines(self.reports.as_ref(), self.reports_inner, self.p, w),
+                vec![],
+            ),
             // The daily note's Focus lanes, read-only (focustab.rs).
             (Tab::Daily, ..) => match &self.focus {
                 None => reading("the daily note"),

@@ -35,6 +35,22 @@ pub fn strip(inner: &str, needs: bool, p: Palette, w: usize) -> Line<'static> {
     crate::innertabs::strip(tab(), inner, flagged, p, w)
 }
 
+/// Every report agents filed, read-only (agent-web marks one read): the strip with the loading
+/// line or the error while the read has not landed, else the page.
+pub fn lines(
+    view: Option<&Result<View, String>>,
+    inner: &str,
+    p: Palette,
+    w: usize,
+) -> Vec<Line<'static>> {
+    let said = match view {
+        Some(Ok(v)) => return page(v, inner, p, w),
+        Some(Err(e)) => Line::styled(e.clone(), p.warn()),
+        None => Line::styled("Reading the reports...", p.dim()),
+    };
+    vec![strip(inner, false, p, w), said]
+}
+
 /// The page: the strip, the headline counts, then the inner tab's sections.
 pub fn page(v: &View, inner: &str, p: Palette, w: usize) -> Vec<Line<'static>> {
     let needs = v
