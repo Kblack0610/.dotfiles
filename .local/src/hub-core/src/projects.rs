@@ -2017,6 +2017,7 @@ mod tests {
         );
         today.status = Some("ok".into());
         today.merged = Some("abc123".into());
+        today.outcome = Some("landed".into());
         // Closed today too: a check (ok, no merge) and a failed run with a merge, which counts
         // in neither.
         let mut check = item("k", State::Done, "trader", None);
@@ -2024,6 +2025,7 @@ mod tests {
         let mut failed = item("f", State::Done, "trader", None);
         (failed.finished, failed.status) = (Some(ago(0)), Some("failed".into()));
         failed.merged = Some("def456".into());
+        failed.outcome = Some("failed".into());
         let mut before = item("y", State::Done, "trader", None);
         before.finished = Some(ago(48));
         let q = Queue {
