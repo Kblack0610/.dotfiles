@@ -1075,8 +1075,7 @@ check_fixture() {
   run up
   assert_failure
   assert_output --partial 'board upsert lock'
-  run grep -c -- '--agent add' "$NLOG"
-  assert_output 0
+  [ ! -s "$NLOG" ]   # not one notes call: the board is not even read
   # Negative control: released, the same filer adds the one row, and a rerun finds it and adds nothing.
   exec 8>&-
   run up
