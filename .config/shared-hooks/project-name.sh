@@ -124,6 +124,16 @@ project_of_code() {
     "$map_file" 2>/dev/null || true
 }
 
+# plan_epic_project <plan file> -> the project whose row code the plan's `epic: <code>-<N>` line
+# carries (project_of_code), or "" (no line, no map, an unknown code). A plan files under that
+# project, not its writer's: a game's plan written from the playground checkout counts on the game.
+plan_epic_project() {
+  local code
+  code=$(sed -nE '/^epic: *([a-z0-9]+)-[0-9]+([^0-9].*)?$/{s//\1/p;q;}' "$1" 2>/dev/null)
+  [ -n "$code" ] && project_of_code "$code"
+  return 0
+}
+
 # project_codes -> every row-id code the trackers name, `|`-joined (`ar|hc|ucp`), or "".
 project_codes() {
   local map_file; map_file="$(project_map_file)"

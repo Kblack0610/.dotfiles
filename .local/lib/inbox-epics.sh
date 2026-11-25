@@ -131,7 +131,7 @@ row_checked() {
   of="$(own_parent "$4" "$2" "$5")" && [ -n "$(no_parent "$r")" ] && [[ "$r" != epic\(* ]] \
     && r="$(no_parent "$r") #of/$of"
   if [ -n "$r" ]; then
-    read -r -a words <<<"$4"
+    read -r -d '' -a words <<<"$4" || true
     for t in "${words[@]}"; do
       case "$t" in
         '#after/'?*) [[ " $r " == *" $t "* ]] || r="$r $t" ;;

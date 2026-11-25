@@ -76,12 +76,11 @@ fi
 # plan_epic_dir <plan> -> $PLANS_ROOT/<project> for the project whose registry `code` the plan's
 # `epic: <code>-<N>` line carries, or nothing (no line, no map, an unknown code).
 plan_epic_dir() {
-  local code proj
-  code=$(sed -nE '/^epic: *([a-z0-9]+)-[0-9]+([^0-9].*)?$/{s//\1/p;q;}' "$1" 2>/dev/null)
-  [ -n "$code" ] || return 0
-  declare -F project_of_code >/dev/null 2>&1 || return 0   # the resolver source above was skipped
-  proj=$(project_of_code "$code")
+  local proj
+  declare -F plan_epic_project >/dev/null 2>&1 || return 0   # the resolver source above was skipped
+  proj=$(plan_epic_project "$1")
   [ -n "$proj" ] && printf '%s\n' "$PLANS_ROOT/$proj"
+  return 0
 }
 
 # Created only when a plan is linked: a session that wrote no plan (a headless run in a
@@ -110,9 +109,15 @@ while IFS= read -r f; do
   # removed. -print -quit stops at the first hit, so this stays cheap over a large tree.
   # A plan with an `epic: <code>-<N>` line is filed under the project that epic's row code names,
   # not the session's: a game's plan written from the playground checkout counts on the game.
-  dest=$(plan_epic_dir "$f")
-  dest=${dest:-$DEST_DIR}
+  epic=$(plan_epic_dir "$f")
+  dest=${epic:-$DEST_DIR}
   [ "$(readlink "$dest/$base" 2>/dev/null)" = "../_live/$base" ] && continue   # already linked
+  # An epic: line written after the plan's first write (PostToolUse links at that write): the link
+  # this session made under its own project moves to the epic's, or first writer wins would keep it.
+  if [ -n "$epic" ] && [ "$(readlink "$DEST_DIR/$base" 2>/dev/null)" = "../_live/$base" ]; then
+    rm -f "$DEST_DIR/$base"
+    rmdir "$DEST_DIR" 2>/dev/null || true
+  fi
   owned_elsewhere=$(find "$PLANS_ROOT" -path "$SRC_DIR" -prune -o -path "$PLANS_ROOT/*/*" \
     \( -type f -o -type l \) -name "$base" -not -path "$dest/*" -print -quit 2>/dev/null)
   [ -n "$owned_elsewhere" ] && continue

@@ -223,6 +223,29 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_output orphan.md
 }
 
+@test "an orphan plan written by its store path _live/ is homed by its writer, and one with an epic: line by the epic's project" {
+  plan stored '1 day ago 1 hour ago' "$OPEN"
+  rm "$ASK_SWEEP_PLAN_CACHE/board/stored.md"
+  plan gamey '1 day ago 1 hour ago' "epic: tw-7\n$OPEN"
+  rm "$ASK_SWEEP_PLAN_CACHE/board/gamey.md"
+  jq '.trackers.two.code = "tw"' "$PROJECT_MAP_FILE" > "$PROJECT_MAP_FILE.new" && mv "$PROJECT_MAP_FILE.new" "$PROJECT_MAP_FILE"
+  # repo two's session wrote stored.md by its store path; board's session wrote gamey.md
+  t="$ASK_SWEEP_TRANSCRIPTS/x-two/w.jsonl"; mkdir -p "${t%/*}"
+  jq -cn --arg c "$R/two" --arg f "$SANDBOX/.agent/plans/_live/stored.md" \
+    '{type: "assistant", cwd: $c, message: {content: [{type: "tool_use", id: "t1", name: "Write", input: {file_path: $f, content: "x"}}]}}' > "$t"
+  b="$ASK_SWEEP_TRANSCRIPTS/x-board/w.jsonl"; mkdir -p "${b%/*}"
+  jq -cn --arg c "$R/board" --arg f "$SANDBOX/acct/plans/gamey.md" \
+    '{type: "assistant", cwd: $c, message: {content: [{type: "tool_use", id: "t2", name: "Write", input: {file_path: $f, content: "x"}}]}}' > "$b"
+  touch -d '3 days ago' "$t" "$b"
+  run "$SWEEP" run
+  assert_success
+  assert_called "agent-queue add --plan $ASK_SWEEP_PLANS/stored.md --project two --from auto:ask-sweep"
+  assert_called "agent-queue add --plan $ASK_SWEEP_PLANS/gamey.md --project two --from auto:ask-sweep"
+  [ "$(readlink "$ASK_SWEEP_PLAN_CACHE/two/gamey.md")" = ../_live/gamey.md ] || fail "gamey.md was not linked under its epic's project"
+  [ ! -e "$ASK_SWEEP_PLAN_CACHE/board/gamey.md" ] || fail "gamey.md was linked under its writer's project"
+  assert [ ! -s "$ASK_SWEEP_DIR/no-home" ]
+}
+
 @test "the summary says what it read, so a clean read never looks like no read" {
   plan bare '1 day ago 1 hour ago' 'just text'
   message 'add a slide'

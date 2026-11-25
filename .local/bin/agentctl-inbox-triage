@@ -844,7 +844,7 @@ improve_ok() {
     0) return 0 ;;
     3) say "$p: health work, not an improvement, kept: $2" ;;
     *) say "$p: not kept as an improvement (an old notes? notes-bootstrap --build-only): $2"
-       proof_why "notes improve --check failed"; FAILED=$((FAILED + 1)) ;;
+       [ "$DRY" = 1 ] || { proof_why "notes improve --check failed"; FAILED=$((FAILED + 1)); } ;;
   esac
   return 1
 }
@@ -966,9 +966,16 @@ backlog_row() {
       why="$(clean 100 <<<"$why")"
       if [ "$lane" = agent ] && [ -n "$why" ] && ! [[ " $raw " =~ [[:space:]]#requested[[:space:]] ]] &&
         improve_ok "$p" "$raw" &&
-        pt "$p" "$lane" --exact drop --why "triage: improvement: kept in improvements.md" -- "$raw" &&
-        improve_row "$p" "$raw" "$why"; then
-        IMPROVED=$((IMPROVED + 1)) VERDICT=improvement
+        pt "$p" "$lane" --exact drop --why "triage: improvement: kept in improvements.md" -- "$raw"; then
+        # A write that fails after the drop reopens the row, so its words stay on the board.
+        if improve_row "$p" "$raw" "$why"; then
+          IMPROVED=$((IMPROVED + 1)) VERDICT=improvement
+        elif [ -n "$own" ] && pt "$p" "$lane" reopen --why "triage: the improvements.md write failed" "$own"; then
+          KEPT=$((KEPT + 1))
+        else
+          say "$p: dropped, not in improvements.md and not reopened: $raw"
+          DROPPED=$((DROPPED + 1)) VERDICT=drop
+        fi
       else
         KEPT=$((KEPT + 1))
       fi

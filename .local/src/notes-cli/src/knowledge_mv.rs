@@ -434,7 +434,13 @@ pub fn run(p: &Profile, log: &Logger, moves: &[Move], dry_run: bool) -> Result<O
         );
         prune_emptied(&p.root, &m.from);
     }
-    record(p, moves)?;
+    // The pages have moved already: a failed record costs trace its history, never the run.
+    if let Err(e) = record(p, moves) {
+        log.warn(
+            "knowledge mv",
+            &format!("the move record was not written: {e:#}"),
+        );
+    }
     Ok(outcome)
 }
 

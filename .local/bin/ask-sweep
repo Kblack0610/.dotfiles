@@ -185,8 +185,9 @@ sweep_plan() {
 }
 
 # plan_homes <plan>... -> "<plan> TAB <project>" for each open plan no project dir links: the project
-# of the session that wrote it (the cwd of a transcript whose Write tool call made it; the oldest when
-# several did), linked into ASK_SWEEP_PLAN_CACHE/<project> as the Stop hook 85-sync-plans.sh would
+# its `epic:` line names (plan_epic_project), else that of the session that wrote it, through any
+# plans/ link or the store path _live/ (the cwd of a transcript whose Write tool call made it; the
+# oldest when several did), linked into ASK_SWEEP_PLAN_CACHE/<project> as the Stop hook 85-sync-plans.sh would
 # have, so later sweeps find it there. One grep pass (about 6 s over 27 GB, 2026-11-25) reads them all.
 # A plan no transcript wrote, or whose session has no cwd, gets an empty project and goes into
 # ASK_SWEEP_DIR/no-home, which later passes skip: it stays counted, never dropped unseen (ar-5518).
@@ -200,14 +201,14 @@ plan_homes() {
   done
   ((${#want[@]})) || return 0
   # "<mtime> TAB <transcript> TAB <plan name>", oldest first
-  hits="$(printf '%s\n' "${want[@]##*/}" | sed 's/[.[\*^$()+?{|]/\\&/g; s#^#"name":"Write","input":\\{"file_path":"[^"]*/plans/#; s#$#"#' |
+  hits="$(printf '%s\n' "${want[@]##*/}" | sed 's/[.[\*^$()+?{|]/\\&/g; s#^#"name":"Write","input":\\{"file_path":"[^"]*/plans/(_live/)?#; s#$#"#' |
     LC_ALL=C grep -rHoE --include='*.jsonl' -f - "$ASK_SWEEP_TRANSCRIPTS/" 2>/dev/null |
-    sed -nE 's#^(.*\.jsonl):.*/plans/([^"/]+)"$#\1\t\2#p' | sort -u |
+    sed -nE 's#^(.*\.jsonl):.*/plans/(_live/)?([^"/]+)"$#\1\t\3#p' | sort -u |
     while IFS=$'\t' read -r t base; do printf '%s\t%s\t%s\n' "$(stat -c %Y "$t" 2>/dev/null || echo 0)" "$t" "$base"; done |
     sort -n)"
   for f in "${want[@]}"; do
-    base="${f##*/}"; p=""
-    while IFS=$'\t' read -r _ t _; do
+    base="${f##*/}"; p="$(plan_epic_project "$f")"
+    [ -n "$p" ] || while IFS=$'\t' read -r _ t _; do
       cwd="$(jq -Rrn 'first(limit(50; inputs) | fromjson? | objects | select(.cwd? | type == "string") | .cwd)' "$t" 2>/dev/null)"
       [ -n "$cwd" ] && { p="$(resolve_project_name "$cwd")"; break; }
     done < <(awk -F'\t' -v b="$base" '$3 == b' <<<"$hits")

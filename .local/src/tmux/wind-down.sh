@@ -425,7 +425,8 @@ cmd_note() {
   mkdir -p "$dir"
   note="$dir/$(date +%Y-%m-%d)-wind-down.md"
   # Two sessions winding down at once each add a whole block, never interleaved lines.
-  ( flock 9; [ -s "$note" ] && echo; cat "$draft" ) 9>>"$note" >>"$note"
+  # A draft with no final newline gets one, so the next block starts on its own line.
+  ( flock 9; [ -s "$note" ] && echo; cat "$draft"; [ -z "$(tail -c1 "$draft")" ] || echo ) 9>>"$note" >>"$note"
   echo "$note"
 }
 

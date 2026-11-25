@@ -279,7 +279,8 @@ EOF
 @test "note appends the draft to today's note on the agent runtime axis, never over another session's block (ar-3365)" {
   # The wrap-up is agent runtime state: in ~/.notes it would put an agent's scratch into the
   # human's journal. Every session of the day shares the file, so a whole-file write cut it.
-  printf '# Session wrap-up - one\n' > "$BATS_TEST_TMPDIR/a.md"
+  # The first draft has no final newline: the next block still starts on its own line.
+  printf '# Session wrap-up - one' > "$BATS_TEST_TMPDIR/a.md"
   printf '# Session wrap-up - two\n' > "$BATS_TEST_TMPDIR/b.md"
   run bash "$WIND_DOWN" note "$BATS_TEST_TMPDIR/a.md"
   assert_success

@@ -795,6 +795,18 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
   refute_output --partial 'barrel roll'
 }
 
+@test "--backlog: an improvement whose improvements.md write fails after the drop is reopened, not lost (ar-5182 review)" {
+  sheet '' ''
+  agent_board '- [ ] c: a glow on the menu #low <!-- id:sc-3 -->\n'
+  # a directory where the file goes: --check passes, the write after the drop cannot
+  mkdir -p "$PROJ/scratch/improvements.md"
+  answer '{"n": 1, "action": "improvement", "why": "polish"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_output --partial 'not written to improvements.md'
+  refute_output --partial 'improvements 1'
+  grep -q '\[ \] c: a glow on the menu' "$PROJ/scratch/agent/README.md" || fail "the row is in neither place"
+}
+
 @test "--backlog: health work is never an improvement: a stage criterion, a missing test and a CI fault with a number stay on the board, polish still leaves (ar-5401)" {
   sheet '' ''
   agent_board '- [ ] a: meet the prod stage standard #low <!-- id:sc-1 -->\n- [ ] b: add a bats case for the parser #low <!-- id:sc-2 -->\n- [ ] c: the nightly CI takes 14 min #low <!-- id:sc-3 -->\n- [ ] d: a glow on the menu #low <!-- id:sc-4 -->\n'

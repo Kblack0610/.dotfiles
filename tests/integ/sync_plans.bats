@@ -333,6 +333,30 @@ epic_map() {
   assert_output '0'
 }
 
+@test "an epic: line written after the plan's first write moves this session's link to the epic's project" {
+  # PostToolUse links at the first write, before the plan names its epic; first writer wins must
+  # not then hold it under the session's project. Negative control: another project's link stays.
+  epic_map
+  f=$(plan late)
+  run post_write "$f"
+  run landed
+  assert_output 'late.md'
+  printf 'epic: bt-12\n' >> "$f"
+  run post_write "$f"
+  assert_success
+  run readlink "$HOME/.agent/plans/beta/late.md"
+  assert_output '../_live/late.md'
+  run landed_count
+  assert_output '0'
+  f=$(plan held)
+  printf 'epic: bt-12\n' >> "$f"
+  mkdir -p "$HOME/.agent/plans/gamma"
+  ln -s ../_live/held.md "$HOME/.agent/plans/gamma/held.md"
+  run post_write "$f"
+  assert [ -L "$HOME/.agent/plans/gamma/held.md" ]
+  assert [ ! -e "$HOME/.agent/plans/beta/held.md" ]
+}
+
 @test "an epic: line with a code the registry does not know files the plan as before" {
   epic_map
   f=$(plan stray)
