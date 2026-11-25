@@ -5,7 +5,7 @@
 #                            (agent-panel, which is Rust, passes them to fzf as they are)
 #   next <panel>             ctrl-/'s transform: the next layout as an fzf action, saved
 #   scroll                   the preview scroll keys alone (PANEL_SCROLL_BINDS) as one --bind,
-#                            for an fzf float that keeps its own preview window (control-menu)
+#                            for an fzf float that keeps its own preview window and cannot source the library
 #
 # All are panel-lib's; this file only names the panel and prints.
 SELF="$(realpath "${BASH_SOURCE[0]}")"

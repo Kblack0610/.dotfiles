@@ -191,6 +191,9 @@ action() {
 
 menu() {
     command -v fzf >/dev/null 2>&1 || { echo "control-menu needs fzf" >&2; exit 2; }
+    # The scroll keys every panel shares; none (the helper missing) still opens the menu.
+    local scroll
+    mapfile -t scroll < <("$(dirname "$SELF")/../src/tmux/panel-layout.sh" scroll 2>/dev/null)
     # The first list is the registry alone, so the menu opens at once; the bar texts replace it
     # when every chip has answered (fleet_pulse can take its 8s curl timeout).
     rows | fzf --ansi --no-sort --layout=reverse --height=100% \
@@ -198,7 +201,7 @@ menu() {
         --prompt='control> ' \
         --header='enter click (a dropdown opens here, esc comes back)   alt-enter right-click   ctrl-r refresh   ctrl-d/u scroll   esc close' \
         --preview="$SELF preview {1} {3}" --preview-window='right,60%,wrap' \
-        "$("$(dirname "$SELF")/../src/tmux/panel-layout.sh" scroll)" \
+        "${scroll[@]}" \
         --bind="start:reload($SELF rows --live)" \
         --bind="ctrl-r:reload($SELF rows --live)+refresh-preview" \
         --bind="enter:transform($SELF action {1} left {3})" \

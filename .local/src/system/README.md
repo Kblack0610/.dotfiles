@@ -13,7 +13,7 @@
 | enter | Browse that bucket with `dua` (stays on its drive). Delete from inside dua if you want to. |
 | ctrl-x | Run the bucket's reclaim command. It shows the command and runs it only after you type `y`, then rescans that bucket. |
 | ctrl-r | Rescan every bucket. Takes about 2 minutes on a full 2 TB disk. |
-| alt-d | Full drive detail: `lsblk` plus `duf`. |
+| ctrl-o | Full drive detail: `lsblk` plus `duf`. |
 | ctrl-d / ctrl-u | Scroll the preview half a page, as in every panel (page-down / page-up a whole page). |
 | esc | Quit. |
 
