@@ -5009,13 +5009,15 @@ upsert_closed() {
 }
 
 # upsert_report <rows> [more]: the one line and the outcome after board_upsert; NOOP when it wrote
-# nothing, FAILED and status 1 when a row's write failed (UPSERT_FAILED)
+# nothing, FAILED and status 1 when a row's write failed (UPSERT_FAILED). A failure is the last line,
+# since fleet-dispatch's triage_pass names a failed triage by its last line (ar-5583).
 upsert_report() {
   local did="$UPSERT_ADDED added, $UPSERT_EDITED refreshed"
   [ "${UPSERT_REOPENED:-0}" -eq 0 ] || did+=", $UPSERT_REOPENED reopened"
   did+="${2:+, $2}"
   say "$(grep -c . <<<"$1") rows due: $did"
   if [ -n "${UPSERT_FAILED:-}" ]; then
+    say "board write failed for $UPSERT_FAILED"
     report_outcome FAILED "board write failed for $UPSERT_FAILED; $did"
     return 1
   elif [ $((UPSERT_ADDED + UPSERT_EDITED + ${UPSERT_REOPENED:-0})) -eq 0 ] && [ -z "${2:-}" ]; then
