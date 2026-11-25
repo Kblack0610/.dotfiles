@@ -1892,10 +1892,11 @@ ask_about() { basename "$(grep -l "^question: .*$1" "$HOME"/.agent/asks/*/*.md)"
   run "$TRIAGE"
   assert_success
   assert_output --partial 'improvements 1'
-  run cat "$SHEET"
-  assert_output --partial 'epic(ui): a pause menu the player can open mid-match'
-  refute_line --regexp '^- \[ \] epic\(ui\)'
-  assert_output --partial 'intake gate'
+  run tasks
+  refute_output --partial 'epic(ui)'
+  # A dropped row leaves the sheet at once for the version note.
+  run cat "$PROJ/scratch/agent/versions/v0.1.0.md"
+  assert_output --regexp '- \[x\] epic\(ui\): a pause menu the player can open mid-match .*dropped: intake gate'
 }
 
 @test "improvement verdict: a person's line, and a project not on the board, stay where they are (negative controls)" {
