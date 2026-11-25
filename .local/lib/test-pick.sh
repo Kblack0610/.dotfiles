@@ -218,6 +218,17 @@ test_picked() {
     done < <(sed -nE "s/^[[:space:]]*load[[:space:]]+['\"]?([^'\" ]+).*/\1/p" <<<"$new")
     text+=$more new=$more
   done
+  # A shared helper that reads a repo file for the tests that load it names that file as a defaulted
+  # variable (panel.bash: TMUX_CONF="${TMUX_CONF:-$REPO_ROOT/.tmux.conf}", which bind_for reads), so a
+  # test that loads it names the file: watch_bind.bats asserts binds only through bind_for, and
+  # #2276's .tmux.conf change was not picked and passed CI against the old bind (ar-2652).
+  while read -r rel; do
+    [ -f "$_TEST_PICK_REPO/tests/helpers/$rel.bash" ] || continue
+    while read -r inc; do
+      text+=$'\n'"\$REPO_ROOT/$inc"
+    done < <(sed -nE 's/^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)="\$\{\2:-\$\{?REPO_ROOT\}?\/([^"} ]+)\}".*/\3/p' \
+      "$_TEST_PICK_REPO/tests/helpers/$rel.bash")
+  done < <(sed -nE "s#^[[:space:]]*load[[:space:]]+['\"]?\.\./helpers/([^'\" ]+).*#\1#p" <<<"$text")
   # A test-side file the test runs from a sibling directory of tests/ (`node --test
   # "$BATS_TEST_DIRNAME/../agent-web/readers.test.mjs"`) picks the test when it changes, and the
   # directories it names count as the test's (the last check below): readers.test.mjs reads

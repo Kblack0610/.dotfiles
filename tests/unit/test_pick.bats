@@ -210,6 +210,22 @@ setup() {
   assert_success
 }
 
+# watch_bind.bats asserts binds only through panel.bash's bind_for, which reads TMUX_CONF, so #2276's
+# .tmux.conf change was not picked and passed CI against the old bind (ar-2652).
+@test "picker: a test that loads a helper is picked by the repo file that helper defaults a variable to" {
+  . "$REPO_ROOT/.local/lib/test-pick.sh"
+  run test_picked .tmux.conf tests/integ/x.bats <<<$'load \'../helpers/panel\'\nassert_equal "$(bind_for P)" x'
+  assert_success
+  run test_picked .tmux.conf tests/integ/watch_bind.bats <"$REPO_ROOT/tests/integ/watch_bind.bats"
+  assert_success
+  # Negative controls: the same test for another file, and a test that loads a helper with no such
+  # variable (sandbox.bash names its scripts only for the tests that use them).
+  run test_picked .zshrc tests/integ/x.bats <<<$'load \'../helpers/panel\'\nassert_equal "$(bind_for P)" x'
+  assert_failure
+  run test_picked .local/bin/agent-ask tests/integ/x.bats <<<$'load \'../helpers/sandbox\'\nrun true'
+  assert_failure
+}
+
 @test "picker: a script the test runs by path is read one level down for the repo paths it names" {
   . "$REPO_ROOT/.local/lib/test-pick.sh"
   # A fixture repo, so the controls do not ride on what a live hook happens to say.
