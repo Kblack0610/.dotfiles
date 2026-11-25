@@ -104,7 +104,7 @@ def scratch_firefox(tool, width=1400, height=900, prefs=None, script_timeout_ms=
         m.cmd("WebDriver:Navigate", url="about:blank")
         drawn = m.cmd("WebDriver:ExecuteScript", script="return window.innerWidth", args=[])["value"]
         if drawn != width:
-            raise RuntimeError(f"{tool}: asked for a {width} px window, Firefox draws {drawn}")
+            raise SystemExit(f"{tool}: asked for a {width} px window, Firefox draws {drawn}")
         yield m
     finally:
         if ff:
