@@ -471,3 +471,16 @@ PY
   run env DOTFILES_PRIVATE="$PRIVATE" "$t/repo/.local/bin/fact-owners" check --doc "$DOC" --generated "$t/repo/.local/bin/reader"
   assert_output --partial "a schema doc with no \`<!-- derived: <row> -->\` tag"
 }
+
+@test "negative controls for the row-id, item-active, size-tag, priority and number-formatters rows: a fresh copy of each is found" {
+  local t="$BATS_TEST_TMPDIR"
+  printf '%s\n' "  id=\"\$(grep -o 'id:[a-z0-9]*-[0-9]*' <<<\"\$out\")\"" > "$t/marker"
+  printf '%s\n' "  jq 'select(.state == \"running\" or .state == \"review\" or .state == \"waiting\")'" > "$t/active"
+  printf '%s\n' '  [[ "$text" == *"#size/"* ]] || text+=" #size/s"' > "$t/size"
+  printf '%s\n' '  case "$p" in urgent) echo 0 ;; high) echo 1 ;; low) echo 3 ;; esac' > "$t/prio"
+  printf '%s\n' 'pub fn age(secs: i64) -> String { String::new() }' > "$t/fmt.rs"
+  run check_owner_copies "$DOC" "$t/marker" "$t/active" "$t/size" "$t/prio" "$t/fmt.rs"
+  assert_failure
+  for f in marker active size prio fmt.rs; do assert_output --partial "$t/$f:1:"; done
+  assert_output --partial "number-formatters"
+}
