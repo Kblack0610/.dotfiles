@@ -290,25 +290,43 @@ pub fn import(p: &Profile, input: &str) -> std::io::Result<(usize, Option<String
     Ok((take.len(), newest))
 }
 
-/// Keep the events of the last [`KEEP_DAYS`], then only the newest lines that fit in `keep_bytes`.
-/// RFC 3339 stamps of one zone sort as text.
+/// Keep the events of the last [`KEEP_DAYS`], then only the newest lines that fit in `keep_bytes`,
+/// newest by stamp, not by place: `import` appends a worker's older lines at the end, and a cut by
+/// place dropped this machine's later lines and kept them (ar-4902: 28 closes lost, chain drift).
+/// The kept lines are written in stamp order. A line with no stamp is dated by the line before it.
 fn prune(path: &std::path::Path, keep_bytes: usize) -> std::io::Result<()> {
-    let cut = (chrono::Local::now() - chrono::Duration::days(KEEP_DAYS)).to_rfc3339();
+    let cut = chrono::Local::now().fixed_offset() - chrono::Duration::days(KEEP_DAYS);
     let text = fs::read_to_string(path)?;
-    let recent: Vec<&str> = text
+    let mut last = None;
+    let mut recent: Vec<(chrono::DateTime<chrono::FixedOffset>, &str)> = text
         .lines()
-        .filter(|l| l.get(7..7 + cut.len()).is_some_and(|ts| ts >= &cut[..]))
+        .filter_map(|l| {
+            last = stamp(l).or(last);
+            last.map(|t| (t, l))
+        })
+        .filter(|(t, _)| *t >= cut)
         .collect();
+    // Stable, so lines of one stamp keep their order.
+    recent.sort_by_key(|(t, _)| *t);
     let mut size = 0;
     let from = recent
         .iter()
-        .rposition(|l| {
+        .rposition(|(_, l)| {
             size += l.len() + 1;
             size > keep_bytes
         })
         .map_or(0, |i| i + 1);
-    let kept: String = recent[from..].iter().map(|l| format!("{l}\n")).collect();
+    let kept: String = recent[from..]
+        .iter()
+        .map(|(_, l)| format!("{l}\n"))
+        .collect();
     crate::md::write_atomic(path, &kept).map_err(std::io::Error::other)
+}
+
+/// The `ts` a record line opens with (`{"ts":"<RFC 3339>",...`), any zone.
+fn stamp(l: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    let rest = l.strip_prefix("{\"ts\":\"")?;
+    chrono::DateTime::parse_from_rfc3339(&rest[..rest.find('"')?]).ok()
 }
 
 /// Every event on `day` (`YYYY-MM-DD`), oldest first. A line that does not parse is skipped.
@@ -765,6 +783,46 @@ mod tests {
             fs::read_to_string(path(&p)).unwrap(),
             after,
             "under the target, nothing goes"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_prune_cuts_by_stamp_so_an_imported_older_block_goes_before_newer_local_lines() {
+        let dir = std::env::temp_dir().join(format!("ingest-prune-order-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let p = crate::config::test_profile(dir.to_str().unwrap());
+        fs::create_dir_all(path(&p).parent().unwrap()).unwrap();
+        let day =
+            |h: i64| (chrono::Utc::now() - chrono::Duration::hours(h)).format("%Y-%m-%dT%H:%M:%SZ");
+        let line = |h: i64, t: &str| {
+            let mut e = Event::new("filed", "outbox", "nc", t);
+            e.ts = day(h).to_string();
+            serde_json::to_string(&e).unwrap()
+        };
+        // This machine's lines, then a worker's older block appended by import, as the record holds them.
+        let text = [
+            line(3, "local a"),
+            line(2, "local b"),
+            line(1, "local c"),
+            line(30, "worker x"),
+            line(29, "worker y"),
+        ]
+        .join("\n")
+            + "\n";
+        fs::write(path(&p), &text).unwrap();
+        let three: usize = text.lines().take(3).map(|l| l.len() + 1).sum();
+        prune(&path(&p), three).unwrap();
+        let texts: Vec<String> = fs::read_to_string(path(&p))
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str::<Event>(l).unwrap().text)
+            .collect();
+        // NEGATIVE CONTROL: a cut by place keeps the last three lines, local c and the worker's block.
+        assert_eq!(
+            texts,
+            ["local a", "local b", "local c"],
+            "the newest by stamp, in stamp order"
         );
         let _ = fs::remove_dir_all(&dir);
     }
