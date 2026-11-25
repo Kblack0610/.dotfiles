@@ -213,6 +213,26 @@ load 'fleet_dispatch/common'
   assert_not_called 'wt new'
 }
 
+@test "a start that cannot mark its item running closes the session it opened, so no pass starts the item twice (ar-2753)" {
+  two_items
+  # The queue refuses the move to running, as a lock miss does; every other call goes through.
+  local real="$SANDBOX/bin/agent-queue.real"; cp "$SANDBOX/bin/agent-queue" "$real"
+  stub agent-queue "[ \"\$1 \$3\" = 'move running' ] && { echo 'agent-queue: the queue is locked by another writer' >&2; exit 1; }; exec '$real' \"\$@\""
+  stub tmux-close 'echo "tmux-close $*" >> "$NOTES_FIXTURE/calls.log"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-app
+  assert_failure
+  assert_output --partial 'could not mark queue item fix-app running; closed'
+  assert_called 'tmux-close -L'
+  [ -n "$(qitem queued fix-app)" ] || fail "fix-app stays queued"
+  # Negative control: a move that goes through leaves the session up.
+  : > "$NOTES_FIXTURE/calls.log"
+  cp "$real" "$SANDBOX/bin/agent-queue"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-game
+  assert_success
+  assert_not_called 'tmux-close'
+  [ -n "$(qitem running fix-game)" ] || fail "fix-game is not running"
+}
+
 # --- start: the one launch path for every agent-started session --------------------------
 # 2026-10-28: only `run` tagged @dispatch and kept a record, so restored and hand-launched
 # sessions showed no [dispatch] and an agent tagged two by hand with set-option.

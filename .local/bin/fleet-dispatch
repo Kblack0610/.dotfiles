@@ -4111,8 +4111,18 @@ cmd_start() {
     # marks the row as trained once, counts toward its harness's cap, and its review hand-off reads it;
     # `direct:` marks a direct run the same way, for its landing.
     trn=''; [ -n "$drc" ] || [ "$harness" = claude ] || [ -z "$(harness_sandbox "$harness")" ] || is_canary "$it" || trn="$harness:$model"
-    agent-queue set "$item" "session=$server:$session" "account=$acct" "origin=$origin" "model=$model" "agent=$harness" ${size:+"size=$size"} ${host:+"host=$host"} ${trn:+"trainee=$trn"} ${drc:+"direct=$drc"} >/dev/null &&
-      agent-queue move "$item" running >/dev/null || say "started $session, but could not mark queue item $item running"
+    # The move to running is what keeps the next pass off this item, so a launch it cannot record does not
+    # stay up: on 11-17 a queue lock miss left ar-2743 queued under a live session, and the red floor started
+    # it a second time 15 min later (ar-2753). The record waits on the queue lock as long as a start waits.
+    AGENT_QUEUE_LOCK_WAIT=$DISPATCH_START_WAIT agent-queue set "$item" "session=$server:$session" "account=$acct" "origin=$origin" "model=$model" "agent=$harness" ${size:+"size=$size"} ${host:+"host=$host"} ${trn:+"trainee=$trn"} ${drc:+"direct=$drc"} >/dev/null &&
+      AGENT_QUEUE_LOCK_WAIT=$DISPATCH_START_WAIT agent-queue move "$item" running >/dev/null || {
+        if on_host "$host" tmux-close -L "$server" session "$session" >/dev/null 2>&1; then
+          say "started $session, but could not mark queue item $item running; closed $session, so $item stays queued with no session on it"
+        else
+          say "started $session, but could not mark queue item $item running, nor close $session: it works $item while the item reads queued"
+        fi
+        return 1
+      }
     # The id was chosen above, so the claim is made here and not in the session's own start, where
     # it waited on the queue lock (up to 2.9 s, 2026-11-06). Both outcome joins go through `sessions:`.
     [ -z "$sid" ] || agent-queue claim "$item" --sid "$sid" >/dev/null || say "could not claim $sid on queue item $item"
