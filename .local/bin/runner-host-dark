@@ -33,17 +33,19 @@ STEP=60
 # read as last known over this long: it drops its series on a pass it cannot read GitHub, which is
 # what a runner outage looks like (2026-11-22 22:45-23:30Z: 39 runners offline and no
 # ci_governor_rate_usd_per_hour), so a read of now goes blind then. While it reports, now wins, so a
-# host it dropped or powered back on is read as it is. Last known is the series as it stood at the
-# governor's last report: a series it stopped emitting before then (a host it dropped, a slots pin
-# that lifted) is gone, never its last value. 2026-11-25 14:03Z: a 2-minute gap read tuf-b550,
-# powered off since 10:21Z, as still under a pin lifted 14h before, and the workstation, dropped
-# at 02:24Z, as still governed; the OK lifted the watch's quarantine.
+# host it dropped or powered back on is read as it is. Last known is each series as it read at or
+# after the governor's last report: a series it stopped emitting before then (a host it dropped, a
+# slots pin that lifted) is gone, never its last value. 2026-11-25 14:03Z: a 2-minute gap read
+# tuf-b550, powered off since 10:21Z, as still under a pin lifted 14h before, and the workstation,
+# dropped at 02:24Z, as still governed; the OK lifted the watch's quarantine.
 KNOWN=1d
 # The governor's last report, as an epoch. timestamp() gives a sample's own time only on a bare
 # selector (on `x == 1` it gives the evaluation step), so the value is filtered with `and`.
 LAST_OK="max(last_over_time((timestamp(ci_governor_ok) and ci_governor_ok == 1)[$KNOWN:${STEP}s]))"
-# at_last <bare selector> -> each host's last value of it over $KNOWN, if it still read at the governor's last report.
-at_last() { echo "(max by (host) (last_over_time($1[$KNOWN])) and on (host) (max by (host) (last_over_time(timestamp($1)[$KNOWN:${STEP}s])) - on () group_left () $LAST_OK >= -$STEP))"; }
+# at_last <bare selector> -> per host, the last value over $KNOWN of each of its series still read at
+# or after the governor's last report. Every governor series comes from one scrape and shares its
+# timestamp, so the 1s slack only absorbs float error: a series dropped one pass earlier is 60s short.
+at_last() { echo "(max by (host) (last_over_time($1[$KNOWN]) and (last_over_time(timestamp($1)[$KNOWN:${STEP}s]) - on () group_left () $LAST_OK >= -1)))"; }
 # known <selector> -> the governor's reading per host now, or its last known one while it is not reporting.
 known() { echo "(max by (host) ($1) or ($(at_last "$1") unless on () (max(ci_governor_ok) == 1)))"; }
 
