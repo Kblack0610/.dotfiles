@@ -237,10 +237,23 @@ def copy_hits(r, files):
     w = writer_files(r)
     out = []
     for ln in grep_hits(sp[0], files):
-        path = ln.split(":", 1)[0]
-        if os.path.realpath(path) not in w:
+        path, num = ln.split(":", 2)[:2]
+        if os.path.realpath(path) not in w and not in_test_module(path, num):
             out.append((path, ln))
     return out, None
+
+
+_TEST_START = {}
+
+
+def in_test_module(path, num):
+    """Whether line `num` of a Rust file sits at or below its `#[cfg(test)]` line: a test spells what it checks."""
+    if not path.endswith(".rs") or not num.isdigit():
+        return False
+    if path not in _TEST_START:
+        lines = read(path).splitlines()
+        _TEST_START[path] = next((i + 1 for i, ln in enumerate(lines) if ln.strip() == "#[cfg(test)]"), 1 << 30)
+    return int(num) >= _TEST_START[path]
 
 
 def check_copies(doc, files, debt_ok=True):

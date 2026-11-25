@@ -1,22 +1,34 @@
 #!/usr/bin/env python3
 """row-value - judge what each open board row improves, check the verdicts, compare two judges.
 
-  row-value export [--project P] [--chunk N] [--board FILE] [--scorecard FILE] DIR
+  row-value export [--project P] [--chunk N] [--board FILE] [--scorecard FILE] [--inflow FILE] DIR
       the project's open agent rows (open and doing) into DIR: rows.tsv (id, state, priority,
-      epic, why, since, text), chunk-NN.txt (about N rows each, sorted by epic then id so rows
+      epic, why, requested, since, plan, after, children, exported_children, source, text),
+      chunk-NN.txt (about N rows each, sorted by epic then id so rows
       of one cause sit together) and context.md (the KPIs the project's scorecard marks past, and
       the reds `fleet-bench reds` shows still live; --scorecard and --reds-cmd swap those, "" skips
       one, and a missing scorecard or a failed reds command fails the export). Each --repo is
       fetched, then a row whose id a commit subject on its origin/main names (last --since days)
-      gets a `merged:` line, evidence a text read cannot see. It clears DIR's last chunks, judge
+      gets a `merged:` line, evidence a text read cannot see. --inflow is a saved
+      `fleet-bench inflow --json`, whose open_ids give each row its source (the filer); without it
+      the source is `-`. It clears DIR's last chunks, judge
       files and verdicts. A judge
       reads one chunk, context.md and the rubric, and writes DIR/judge-NN.tsv.
   row-value merge [--rubric FILE] DIR
       checks every DIR/judge-*.tsv against the rubric's lists and DIR/rows.tsv: each exported
       id exactly once, no unknown id, each field in its list, `into` naming another exported row
       that is kept when the verdict is merge, a doing row kept, a requested row never dropped
-      or parked. Writes DIR/verdicts.tsv (with a header) and prints the counts
-      by verdict, kind and target. Exit 1 on any finding, and nothing is written.
+      or parked, a bucket that fits its verdict and the row (container: open children, and
+      dropped only with every child; chain: an #after/ tag; red: a ref). Each DIR/check-*.tsv line (id, bucket, evidence, why: the HEAD check of a
+      row the judge bucketed fault or fixed) replaces its bucket, evidence and why; a fault or
+      fixed row with no evidence fails. Writes DIR/verdicts.tsv (with a header) and prints the counts by verdict,
+      bucket, kind, target and system. Exit 1 on any finding: nothing is written, and the last
+      verdicts.tsv is removed.
+  row-value report [--project P] [--tsv FILE] DIR
+      the ledger from DIR/rows.tsv and DIR/verdicts.tsv as markdown on stdout: counts by bucket,
+      per system, per epic and per source, then every row with its bucket and tie (epic, plan, the red it
+      answers, the project it serves; P is the board's own, default agent-runtime). --tsv also
+      writes the joined ledger, one line per row (its `why` is the verdict's).
   row-value compare [--id COL] [--verdict COL] [--mine-verdict COL] [--map FROM=TO,...] MINE THEIRS
       agreement between two verdict files on the ids both judged: the share that agree, Cohen's
       kappa, the confusion table, and each disagreement as `id<TAB>mine<TAB>theirs`. THEIRS may
@@ -28,6 +40,7 @@ through `notes board --json`; nothing here writes a board row.
 """
 import argparse
 import collections
+import contextlib
 import json
 import os
 import re
@@ -37,8 +50,18 @@ import sys
 HERE = os.path.dirname(os.path.realpath(__file__))
 RUBRIC = os.path.join(HERE, "..", "..", ".config", "row-value", "rubric.md")
 SCORECARD = "~/.notes/lab/projects/current/{project}/docs/bench/latest.md"
-FIELDS = ["id", "target", "ref", "kind", "verdict", "into", "why"]
-ROW_FIELDS = ["id", "state", "priority", "epic", "why", "requested", "since", "text"]
+FIELDS = ["id", "target", "ref", "kind", "verdict", "into", "bucket", "system", "project", "evidence", "why"]
+CHECK_FIELDS = ["id", "bucket", "evidence", "why"]
+ROW_FIELDS = ["id", "state", "priority", "epic", "why", "requested", "since", "plan", "after", "children",
+              "exported_children", "source", "text"]
+LEDGER_FIELDS = ["id", "state", "epic", "plan", "after", "children", "source", "bucket", "system", "project", "target",
+                 "ref", "kind", "verdict", "into", "evidence", "why", "text"]
+# The verdicts each bucket allows: the rubric's "Bucket" section says why.
+BUCKET_VERDICTS = {"red": {"keep"}, "fault": {"keep"}, "sot": {"keep"}, "requested": {"keep"},
+                   "chain": {"keep"}, "container": {"keep", "drop"}, "improvement": {"park"},
+                   "drop": {"drop", "merge"}, "fixed": {"keep", "drop"}}
+# A plan file under ~/.agent/plans or ~/.claude/plans; a repo's docs/plans/ path is not a plan.
+PLAN_RE = re.compile(r"\.(?:agent|claude)/plans/(?:[\w.-]+/)?([\w.-]+?)\.md")
 # The reds table's outcomes for a red not yet fixed: fleet-bench cmd_reds.
 LIVE_RED = ("queued", "fixing", "still red", "came back", "needs merge", "no fix", "alert route")
 
@@ -153,7 +176,40 @@ def cmd_export(a):
         return int(m.group(1)) if m else 0
 
     rows.sort(key=lambda r: (r.get("parent") or "~", num(r["id"])))
+    # Open children on any lane or project count, so a parent whose children sit elsewhere is
+    # still a container; exported_children are the ones this judging decides.
+    children = collections.Counter(r.get("parent") for r in board.get("rows", [])
+                                   if r.get("parent") and r.get("state") in ("open", "doing"))
+    exported_children = collections.Counter(r.get("parent") for r in rows if r.get("parent"))
+
+    def plan_of(r):
+        """The plan file a row's text or details name (a phase row's brief does), by its slug."""
+        for t in [r.get("text") or ""] + list(r.get("details") or []):
+            m = PLAN_RE.search(t)
+            if m:
+                return m.group(1)
+        return "-"
+
+    def after_of(r):
+        return ",".join(t.split("/", 1)[1] for t in r.get("tags") or [] if t.startswith("after/")) or "-"
+
     named = merged_names(a.repo, a.since)
+    source = {}
+    if a.inflow:
+        try:
+            with open(a.inflow) as f:
+                inflow = json.load(f)
+        except (OSError, ValueError) as e:
+            die(f"--inflow {a.inflow}: {e}", 1)
+        if not isinstance(inflow, dict):
+            die(f"--inflow {a.inflow} is not a fleet-bench inflow --json object", 1)
+        if inflow.get("sources") and not any("open_ids" in s for s in inflow["sources"]):
+            die(f"--inflow {a.inflow} has no open_ids: save it again with a fleet-bench that lists them", 1)
+        if inflow.get("project") != a.project:
+            die(f"--inflow {a.inflow} is for {inflow.get('project')!r}, not {a.project}", 1)
+        for s in inflow.get("sources", []):
+            for i in s.get("open_ids") or []:
+                source[i] = s["source"]
     kpis = past_kpis(scorecard) if scorecard else []
     reds = live_reds(a.reds_cmd) if a.reds_cmd else []
     os.makedirs(a.dir, exist_ok=True)
@@ -167,7 +223,9 @@ def cmd_export(a):
 
     write_tsv(os.path.join(a.dir, "rows.tsv"), ROW_FIELDS,
               [[r["id"], r["state"], r.get("priority") or "-", r.get("parent") or "-", r.get("prio_why") or "-",
-                "yes" if requested(r) else "no", r.get("since") or "-", r.get("text")] for r in rows])
+                "yes" if requested(r) else "no", r.get("since") or "-", plan_of(r), after_of(r),
+                children.get(r["id"], 0), exported_children.get(r["id"], 0), source.get(r["id"], "-"),
+                r.get("text")] for r in rows])
     n = max(1, a.chunk)
     chunks = [rows[i:i + n] for i in range(0, len(rows), n)]
     for k, chunk in enumerate(chunks, 1):
@@ -178,7 +236,8 @@ def cmd_export(a):
                     tags.append("#requested")
                 tags = " ".join(tags)
                 f.write(f"{r['id']} [{r['state']}] {r.get('priority') or '-'} epic:{r.get('parent') or '-'}"
-                        f" why:{r.get('prio_why') or '-'} since:{r.get('since') or '-'}\n")
+                        f" why:{r.get('prio_why') or '-'} since:{r.get('since') or '-'}"
+                        f" plan:{plan_of(r)} after:{after_of(r)} children:{children.get(r['id'], 0)}\n")
                 f.write(f"  {clean(r.get('text'))}{' ' + tags if tags else ''}\n")
                 for d in r.get("details") or []:
                     f.write(f"  | {clean(d)[:600]}\n")
@@ -194,22 +253,60 @@ def cmd_export(a):
         for r in reds or ["(none live)" if a.reds_cmd else "(not read: --reds-cmd '')"]:
             f.write(f"- {r}\n")
     print(f"{len(rows)} rows in {len(chunks)} chunks -> {a.dir}")
+    if a.inflow:
+        unsourced = sum(1 for r in rows if r["id"] not in source)
+        if unsourced:
+            print(f"{unsourced} rows are not in {a.inflow} (not open on the board it was computed from): source -")
 
 
 def rubric_lists(path):
     lists = {}
     with open(path) as f:
         for line in f:
-            m = re.fullmatch(r"(target|kind|verdict): ([a-z -]+)", line.strip())
+            m = re.fullmatch(r"(target|kind|verdict|bucket|system): ([a-z -]+)", line.strip())
             if m:
                 lists[m.group(1)] = set(m.group(2).split())
-    missing = {"target", "kind", "verdict"} - set(lists)
+    missing = {"target", "kind", "verdict", "bucket", "system"} - set(lists)
     if missing:
         die(f"{path}: no list line for {', '.join(sorted(missing))}", 1)
     return lists
 
 
+def read_checks(d, judged, findings):
+    """id -> check line from DIR/check-*.tsv: the HEAD verdict on a fault row, which replaces
+    the text judge's bucket, evidence and why. Each id at most once, and only fault or fixed."""
+    checks = {}
+    for name in sorted(p for p in os.listdir(d) if re.fullmatch(r"check-.*\.tsv", p)):
+        with open(os.path.join(d, name)) as f:
+            for n, line in enumerate(f, 1):
+                line = line.rstrip("\n")
+                if not line.strip():
+                    continue
+                cells = line.split("\t")
+                where = f"{name}:{n}"
+                if len(cells) != len(CHECK_FIELDS):
+                    findings.append(f"{where}: {len(cells)} fields, want {len(CHECK_FIELDS)}")
+                    continue
+                c = dict(zip(CHECK_FIELDS, (x.strip() for x in cells)))
+                if c["id"] not in judged:
+                    findings.append(f"{where}: {c['id']} is not a judged row")
+                elif c["id"] in checks:
+                    findings.append(f"{where}: {c['id']} checked twice (first in {checks[c['id']]['_at']})")
+                elif c["bucket"] not in ("fault", "fixed"):
+                    findings.append(f"{where}: a HEAD check says fault or fixed, not {c['bucket']!r}")
+                elif judged[c["id"]]["bucket"] not in ("fault", "fixed"):
+                    findings.append(f"{where}: {c['id']} is {judged[c['id']]['bucket']}, not a fault row to check")
+                else:
+                    c["_at"] = where
+                    checks[c["id"]] = c
+    return checks
+
+
 def cmd_merge(a):
+    # The last verdicts.tsv goes first: a merge that fails leaves none, so report never reads
+    # verdicts the current judge files no longer give.
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(os.path.join(a.dir, "verdicts.tsv"))
     lists = rubric_lists(a.rubric)
     rows_path = os.path.join(a.dir, "rows.tsv")
     if not os.path.exists(rows_path):
@@ -240,22 +337,49 @@ def cmd_merge(a):
                 if v["id"] in judged:
                     findings.append(f"{where}: {v['id']} judged twice (first in {judged[v['id']]['_at']})")
                     continue
-                for field in ("target", "kind", "verdict"):
-                    if v[field] not in lists[field]:
-                        findings.append(f"{where}: {field} {v[field]!r} is not in the rubric's list")
-                if v["verdict"] == "merge" and (v["into"] not in known or v["into"] == v["id"]):
-                    findings.append(f"{where}: merge into {v['into']!r}, not another exported row")
-                # The rubric's bounds on a verdict that the export can check.
-                if info[v["id"]].get("state") == "doing" and v["verdict"] != "keep":
-                    findings.append(f"{where}: {v['id']} is doing (a live queue item), so keep, not {v['verdict']}")
-                if info[v["id"]].get("requested") == "yes" and v["verdict"] in ("drop", "park"):
-                    findings.append(f"{where}: {v['id']} was requested by the human, so never {v['verdict']}")
                 v["_at"] = where
                 judged[v["id"]] = v
+    for i, c in read_checks(a.dir, judged, findings).items():
+        judged[i].update(bucket=c["bucket"], evidence=c["evidence"], why=c["why"], _at=judged[i]["_at"] + "+" + c["_at"])
     for v in judged.values():
+        where, row = v["_at"], info[v["id"]]
+        for field in ("target", "kind", "verdict", "bucket", "system"):
+            if v[field] not in lists[field]:
+                findings.append(f"{where}: {field} {v[field]!r} is not in the rubric's list")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", v["project"]):
+            findings.append(f"{where}: project {v['project']!r} is not a project name")
+        if v["verdict"] == "merge" and (v["into"] not in known or v["into"] == v["id"]):
+            findings.append(f"{where}: merge into {v['into']!r}, not another exported row")
+        # The rubric's bounds on a verdict and a bucket that the export can check.
+        if row.get("state") == "doing" and v["verdict"] != "keep":
+            findings.append(f"{where}: {v['id']} is doing (a live queue item), so keep, not {v['verdict']}")
+        if row.get("requested") == "yes" and v["verdict"] in ("drop", "park"):
+            findings.append(f"{where}: {v['id']} was requested by the human, so never {v['verdict']}")
+        allowed = BUCKET_VERDICTS.get(v["bucket"])
+        if allowed and v["verdict"] not in allowed:
+            findings.append(f"{where}: bucket {v['bucket']} takes verdict {'/'.join(sorted(allowed))}, not {v['verdict']}")
+        if v["bucket"] in ("fault", "fixed") and v["evidence"] in ("", "-"):
+            findings.append(f"{where}: {v['id']} is {v['bucket']} with no evidence: a check-*.tsv line gives its HEAD check")
+        has_children = (row.get("children") or "0") != "0"
+        if has_children != (v["bucket"] == "container"):
+            findings.append(f"{where}: {v['id']} has {row.get('children') or 0} open children, so "
+                            + (f"container, not {v['bucket']}" if has_children else "not container"))
+        if v["bucket"] == "chain" and row.get("after", "-") == "-":
+            findings.append(f"{where}: {v['id']} is chain with no #after/ tag")
+        if v["bucket"] == "red" and v["ref"] in ("", "-"):
+            findings.append(f"{where}: {v['id']} is red with no ref naming the red")
+        if v["bucket"] not in ("fault", "fixed") and v["evidence"] not in ("", "-"):
+            findings.append(f"{where}: {v['id']} is {v['bucket']}, so evidence is -, not {v['evidence']!r}")
         into = judged.get(v["into"]) if v["verdict"] == "merge" else None
         if into and into["verdict"] != "keep":
-            findings.append(f"{v['_at']}: {v['id']} merges into {into['id']}, which is {into['verdict']}, not keep")
+            findings.append(f"{where}: {v['id']} merges into {into['id']}, which is {into['verdict']}, not keep")
+    closing = {i for i, v in judged.items() if v["verdict"] in ("drop", "merge") or v["bucket"] == "fixed"}
+    for v in judged.values():
+        if v["bucket"] == "container" and v["verdict"] == "drop":
+            row = info[v["id"]]
+            kids = [i for i in exported if info[i].get("epic") == v["id"]]
+            if row.get("children") != row.get("exported_children") or any(k not in closing for k in kids):
+                findings.append(f"{v['_at']}: {v['id']} drops with open children that stay (drop --children closes them all)")
     unjudged = [i for i in exported if i not in judged]
     if unjudged:
         findings.append(f"{len(unjudged)} rows not judged: {' '.join(unjudged[:20])}")
@@ -264,9 +388,66 @@ def cmd_merge(a):
         sys.exit(1)
     write_tsv(os.path.join(a.dir, "verdicts.tsv"), FIELDS, [[judged[i][k] for k in FIELDS] for i in exported])
     print(f"{len(exported)} rows judged -> {os.path.join(a.dir, 'verdicts.tsv')}")
-    for field in ("verdict", "kind", "target"):
+    for field in ("verdict", "bucket", "kind", "target", "system"):
         c = collections.Counter(v[field] for v in judged.values())
         print(f"{field}: " + ", ".join(f"{k} {n}" for k, n in c.most_common()))
+
+
+def tie(r, home):
+    """What a ledger row is tied to: its epic, its plan, the red it answers, the project it serves."""
+    parts = [f"epic:{r['epic']}"] if r["epic"] != "-" else []
+    if r["plan"] != "-":
+        parts.append(f"plan:{r['plan']}")
+    if r["bucket"] == "red" and r["ref"] != "-":
+        parts.append(f"red:{r['ref']}")
+    if r["project"] != home:
+        parts.append(f"move:{r['project']}")
+    return " ".join(parts) or "-"
+
+
+def cmd_report(a):
+    rows_path, verdicts_path = (os.path.join(a.dir, f) for f in ("rows.tsv", "verdicts.tsv"))
+    for path in (rows_path, verdicts_path):
+        if not os.path.exists(path):
+            die(f"{path} missing: run row-value export and merge first", 1)
+    _, rows = read_tsv(rows_path)
+    cols, verdicts = read_tsv(verdicts_path)
+    if not set(FIELDS) <= set(cols):
+        die(f"{verdicts_path} lacks {', '.join(f for f in FIELDS if f not in cols)}: run row-value merge again", 1)
+    vmap = {v["id"]: v for v in verdicts}
+    missing = [r["id"] for r in rows if r["id"] not in vmap]
+    if missing:
+        die(f"{len(missing)} exported rows have no verdict ({' '.join(missing[:10])}): run row-value merge", 1)
+    home = a.project
+    ledger = [{**r, **vmap[r["id"]]} for r in rows]
+    if a.tsv:
+        write_tsv(a.tsv, LEDGER_FIELDS + ["tie"], [[r.get(k, "-") for k in LEDGER_FIELDS] + [tie(r, home)] for r in ledger])
+    buckets = [b for b, _ in collections.Counter(r["bucket"] for r in ledger).most_common()]
+
+    def table(title, key):
+        groups = collections.defaultdict(collections.Counter)
+        for r in ledger:
+            groups[key(r)][r["bucket"]] += 1
+        out = [f"## {title}", "", f"| {title.split()[-1]} | rows | " + " | ".join(buckets) + " |",
+               "|---|---|" + "---|" * len(buckets)]
+        for g, c in sorted(groups.items(), key=lambda kv: (-sum(kv[1].values()), kv[0])):
+            out.append(f"| {g} | {sum(c.values())} | " + " | ".join(str(c[b]) for b in buckets) + " |")
+        return out + [""]
+
+    total = collections.Counter(r["bucket"] for r in ledger)
+    out = [f"# Row ledger, {len(ledger)} open {home} rows", "",
+           "Buckets: " + ", ".join(f"{b} {total[b]}" for b in buckets) + ".",
+           f"Misfiled (served project is not {home}): {sum(1 for r in ledger if r['project'] != home)}.", ""]
+    out += table("Per system", lambda r: r["system"])
+    out += table("Per epic", lambda r: r["epic"])
+    out += table("Per source", lambda r: r.get("source", "-"))
+    out += ["## Every row", ""]
+    for system in sorted({r["system"] for r in ledger}):
+        out += [f"### {system}", "", "| id | bucket | verdict | tie | evidence |", "|---|---|---|---|---|"]
+        for r in sorted((r for r in ledger if r["system"] == system), key=lambda r: (r["epic"], r["bucket"], r["id"])):
+            out.append(f"| {r['id']} | {r['bucket']} | {r['verdict']} | {tie(r, home)} | {r['evidence']} |")
+        out.append("")
+    print("\n".join(out).rstrip())
 
 
 def read_verdicts(path, id_col, verdict_col, mapping):
@@ -331,12 +512,17 @@ def main():
     e.add_argument("--board", help="a saved `notes board --json`, instead of calling notes")
     e.add_argument("--scorecard", help=f"the scorecard whose past KPIs the judges score against (default {SCORECARD}; '' for none)")
     e.add_argument("--reds-cmd", default="fleet-bench reds")
+    e.add_argument("--inflow", help="a saved `fleet-bench inflow --json`, for each row's source")
     e.add_argument("--repo", action="append", default=[], help="a git checkout whose origin/main commit subjects name rows")
     e.add_argument("--since", type=int, default=30, help="days of commits --repo reads")
     e.add_argument("dir")
     m = sub.add_parser("merge")
     m.add_argument("--rubric", default=RUBRIC)
     m.add_argument("dir")
+    r = sub.add_parser("report")
+    r.add_argument("--project", default="agent-runtime", help="the board's own project: a row serving any other is a move")
+    r.add_argument("--tsv", help="also write the joined ledger here")
+    r.add_argument("dir")
     c = sub.add_parser("compare")
     c.add_argument("--id", default="id")
     c.add_argument("--verdict", default="verdict")
@@ -345,7 +531,7 @@ def main():
     c.add_argument("mine")
     c.add_argument("theirs")
     a = p.parse_args()
-    {"export": cmd_export, "merge": cmd_merge, "compare": cmd_compare}[a.cmd](a)
+    {"export": cmd_export, "merge": cmd_merge, "report": cmd_report, "compare": cmd_compare}[a.cmd](a)
 
 
 if __name__ == "__main__":

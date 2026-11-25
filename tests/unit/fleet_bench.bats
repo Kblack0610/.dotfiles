@@ -3815,6 +3815,10 @@ LIB
   BENCH_NOW=$T0 run "$SUBJECT" inflow --project game --json
   run jq -cS '[.sources[] | select(.open > 0) | {(.source): .open}] | add' <<<"$output"
   assert_output '{"agent-queue":1,"from: dream":1,"plan":1,"pre-log":1,"self-check":1,"session":1}'
+  # --json names each source's open rows, so a ledger can carry the source per row
+  BENCH_NOW=$T0 run "$SUBJECT" inflow --project game --json
+  run jq -cS '[.sources[] | select(.source == "pre-log" or .source == "from: dream") | {(.source): .open_ids}] | add' <<<"$output"
+  assert_output '{"from: dream":["g-5001"],"pre-log":["g-100"]}'
   # known origins come back as written (the negative control), and each arrival's end is the last close after its last reopen
   BENCH_NOW=$T0 run "$SUBJECT" inflow --project game --json
   run jq -c '.sources[] | select(.source == "plan") | [.arrived, .closed_by_pr, .dropped, .still_open]' <<<"$output"
