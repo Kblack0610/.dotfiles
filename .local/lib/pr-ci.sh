@@ -2,8 +2,8 @@
 # Sourced, never executed (SC2148).
 #
 # pr-ci.sh - the one reading of a PR's statusCheckRollup, for every script that asks gh whether a
-# PR is red: fleet-sessions (a live session's PR) and fleet-dispatch (a parked review item's PR,
-# own_parked_pr). Prefix it to a jq filter over a PR's JSON: ci and red are defs.
+# PR is red: fleet-sessions (a live session's PR), fleet-dispatch (a parked review item's PR,
+# own_parked_pr), agent-land and the Prefix+S PR board (pr-viewer.sh). Prefix it to a jq filter over a PR's JSON: ci and red are defs.
 #
 # checks -> the rollup with each check's older runs dropped. A new run of a workflow on the same commit (a
 # pull_request edit or a manual run, not a re-run attempt) is a new check suite, and the rollup keeps
