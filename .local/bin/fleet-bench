@@ -1144,7 +1144,7 @@ outcomes_newest() {
 }
 
 outcomes_latest() {
-  outcomes_newest | jq -cs 'map({key: .session_id, value: {prs_merged, reverted_7d, cost_usd, cost_by_model, models, edits, activity, class, tool_errors: .hard_errors.tool_errors}}) | from_entries'
+  outcomes_newest | jq -cs 'map({key: .session_id, value: {prs_merged, reverted_7d, harness, cost_usd, cost_by_model, models, edits, activity, class, tool_errors: .hard_errors.tool_errors}}) | from_entries'
 }
 
 # in_window <file> <epoch field> <now> [since] -> the file's rows whose field falls since

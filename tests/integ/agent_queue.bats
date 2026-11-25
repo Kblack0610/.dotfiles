@@ -1782,7 +1782,7 @@ notes --profile bnb ptask game --agent run gm-9"
   for s in afx blk; do "$AQ" add --project game --running --slug "$s" "$s" >/dev/null; "$AQ" set "$s" "lane_run=r-$s" >/dev/null; done
   "$AQ" move afx queued --cause already-fixed >/dev/null
   "$AQ" move blk queued --cause blocked >/dev/null
-  run grep -E 'r-(afx|blk)' "$NOTES_FIXTURE/calls.log"
+  run grep -E '^model-lane outcome r-(afx|blk) ' "$NOTES_FIXTURE/calls.log"
   assert_output $'model-lane outcome r-afx unrated --cause already-fixed\nmodel-lane outcome r-blk unrated --cause blocked'
 }
 

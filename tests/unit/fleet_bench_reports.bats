@@ -2433,7 +2433,7 @@ qstats_fixture() {
   run env BENCH_NOW=$T0 "$SUBJECT" models
   assert_success
   assert_line '| sonnet | claude | 2 | 0 | 1 | 0.5 (0.09-0.91, n 2) | 1 | 1 | 0.5 (0.09-0.91, n 2) | 1 | $8 | $8 | list | - | - | - | - |'
-  assert_line '| opus | claude | 1 | 0 | 1 | 1 (0.21-1, n 1) | 0 | 0 | 0 | - | 0 | $3 | $3 | list | - | - | - | - |'
+  assert_line '| opus | claude | 1 | 0 | 1 | 1 (0.21-1, n 1) | 0 | 0 | - | 0 | $3 | $3 | list | - | - | - | - |'
   run "$SUBJECT" models --bogus
   assert_failure 2
 }
@@ -2460,7 +2460,7 @@ models_fixture() {
   assert_equal "$(jq -c '.models[] | select(.model == "sonnet") | [.done, .canary, .landed, .landed_rate, .failed, .cost_usd, .cost_per_pr]' <<<"$output")" '[1,2,1,1,0,6,3]'
   run env BENCH_NOW=$T0 "$SUBJECT" models
   assert_success
-  assert_line '| sonnet | claude | 1 | 2 | 1 | 1 (0.21-1, n 1) | 0 | - | 0 | $6 | $3 | mixed | - | - | - | - |'
+  assert_line '| sonnet | claude | 1 | 2 | 1 | 1 (0.21-1, n 1) | 0 | 0 | - | 0 | $6 | $3 | mixed | - | - | - | - |'
 }
 
 @test "models: first attempt is the share of items whose first rated run was approved, so a rejected run counts against its harness; eval runs and unrated runs are left out" {

@@ -1262,8 +1262,10 @@ trainee_start_ready() {
   agent-queue set t-diff agent=paid model=glm trainee=paid:glm >/dev/null; agent-queue move t-diff running >/dev/null
   printf 'b\n' > "$w/menu.md"; printf 'blocked\n' > "$w/.no-diff"
   run bash -c "cd $(printf %q "$w") && $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") trainee-review t-diff"
-  assert_success; assert_output --partial "t-diff's diff is"
-  ! grep -q 'no-diff' "$HOME/.local/state/agentctl/dispatch/trainee/t-diff.patch" || fail "the marker is in the patch"
+  assert_success
+  p="$HOME/.local/state/agentctl/dispatch/trainee/t-diff.patch"
+  grep -q 'menu.md' "$p" || fail "the diff was not saved"
+  ! grep -q 'no-diff' "$p" || fail "the marker is in the patch"
 }
 
 @test "trainee_waiting fetches the patch a trainee run left on its fleet worker; a run here, or a worker with no patch, fetches nothing" {
