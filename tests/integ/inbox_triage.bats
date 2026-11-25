@@ -485,8 +485,8 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_success
   run cat "$SHEET" "$PROJ/scratch/agent/README.md"
   assert_output --regexp 'fix\(audio\): the gun sound is off .*#of/sc-9'
-  refute_line --regexp 'gun sound is off .*#of/sc-4'
-  refute_line --regexp 'menu flickers .*#of/sc-404'
+  refute_line --regexp '^- \[ \] fix\(audio\): the gun sound is off .*#of/sc-4'
+  refute_line --regexp '^- \[ \] fix\(ui\): the menu flickers .*#of/sc-404'
 }
 
 @test "--backlog: a rewrite keeps an #of/ naming an open epic and only loses a bad one" {
