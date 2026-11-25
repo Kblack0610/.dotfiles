@@ -2346,7 +2346,7 @@ the_ask() { find "$HOME/.agent/asks/${1:-demo}" -name '*.md'; }
   assert_line --regexp '^closed_reason: refused at post: a credential for mem0'
   rm -rf "$HOME/.agent/asks/demo"
   # negative controls: a service named only past the first table, a word that only contains a
-  # service's name, and a missing doc are no match, so each is asked
+  # service's name, a service named only in the context, and a missing doc are no match
   for q in 'log in to Steam on the mini?' 'add mem0x to the panel?'; do
     run "$AGENT_ASK" post --project demo "$q"
     assert_success
@@ -2354,6 +2354,11 @@ the_ask() { find "$HOME/.agent/asks/${1:-demo}" -name '*.md'; }
     assert_line 'status: pending'
     rm -rf "$HOME/.agent/asks/demo"
   done
+  run "$AGENT_ASK" post --project demo --context 'for the mem0 mirror' 'a Steam partner login?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  rm -rf "$HOME/.agent/asks/demo"
   export AGENT_ASK_CREDENTIALS_DOC="$BATS_TEST_TMPDIR/absent.md"
   run "$AGENT_ASK" post --project demo 'mint me a mem0 key?'
   assert_success
@@ -2412,11 +2417,18 @@ the_ask() { find "$HOME/.agent/asks/${1:-demo}" -name '*.md'; }
   assert_line --regexp '^closed_reason: routed at post: .*sheet row sh-9, hold human-'
   rm -rf "$HOME/.agent/asks/demo" "$BATS_TEST_TMPDIR/hold.calls"
   : > "$NOTES_FIXTURE/calls.log"
-  # negative control: a resume runs on the answer, so it stays an ask
+  # negative controls: a resume runs on the answer and a gate is the asker's to read, so each
+  # stays an ask
   run "$AGENT_ASK" post --project demo --resume 'echo go' 'plug in the drive?'
   assert_success
   run cat "$(the_ask)"
   assert_line 'status: pending'
+  rm -rf "$HOME/.agent/asks/demo"
+  run "$AGENT_ASK" post --project demo --kind gate 'plug in the drive?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  assert_line 'kind: gate'
   assert [ ! -e "$BATS_TEST_TMPDIR/hold.calls" ]
   rm -rf "$HOME/.agent/asks/demo"
   # negative control: a row that cannot be added takes the hold back and leaves the ask
@@ -2460,8 +2472,33 @@ the_ask() { find "$HOME/.agent/asks/${1:-demo}" -name '*.md'; }
   run grep -c 'what refresh rate is the razer monitor?' "$BATS_TEST_TMPDIR/judge.calls"
   assert_output '2'
   grep -qF -- '- mem0: the razer monitor runs at 144 Hz' "$BATS_TEST_TMPDIR/judge.calls"
-  run cat "$(the_ask)"
+  local f; f="$(the_ask)"
+  run cat "$f"
   assert_line 'status: pending'
+  assert_line 'judge_human_said: 1 lines'
+  # a later pass judges it with the section, in one call
+  : > "$BATS_TEST_TMPDIR/judge.calls"
+  "$AGENT_ASK" judge "$(basename "$f" .md)"
+  run grep -c 'what refresh rate is the razer monitor?' "$BATS_TEST_TMPDIR/judge.calls"
+  assert_output '1'
+  grep -q '^## What the human already said' "$BATS_TEST_TMPDIR/judge.calls"
+  rm -rf "$HOME/.agent/asks/demo" "$BATS_TEST_TMPDIR/judge.calls"
+  # a second call that fails leaves the first verdict
+  cat > "$BATS_TEST_TMPDIR/judge-once" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$BATS_TEST_TMPDIR/judge.calls"
+[ "\$(grep -c 'what refresh rate' "$BATS_TEST_TMPDIR/judge.calls")" -le 1 ] || exit 7
+printf '%s\n' '$(SCORE_TYPE=human_fact score knowledge "" "first verdict")'
+SH
+  chmod +x "$BATS_TEST_TMPDIR/judge-once"
+  AGENT_ASK_JUDGE_CMD="$BATS_TEST_TMPDIR/judge-once" "$AGENT_ASK" post --project demo 'what refresh rate is the razer monitor?' >/dev/null
+  run grep -c 'what refresh rate is the razer monitor?' "$BATS_TEST_TMPDIR/judge.calls"
+  assert_output '2'
+  run cat "$(the_ask)"
+  assert_line 'judge: human'
+  assert_line 'judge_reason: first verdict'
+  refute_line --partial 'judge_human_said'
+  assert [ ! -e "$(the_ask).first" ]
   rm -rf "$HOME/.agent/asks/demo" "$BATS_TEST_TMPDIR/judge.calls"
   # the project's lessons are the other source, with pick's heading left out
   printf '#!/usr/bin/env bash\nexit 0\n' > "$BATS_TEST_TMPDIR/mem0"

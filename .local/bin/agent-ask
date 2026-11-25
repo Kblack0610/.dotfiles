@@ -220,7 +220,7 @@ JQ_MONEY='def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 
 # for either is refused (policy.md, `credential_or_account`). A physical action is no decision:
 # it becomes a resource hold plus a row on the project's human sheet. A human fact is judged
 # once more with what mem0 and the project's lessons already hold on it.
-: "${AGENT_ASK_CREDENTIALS_DOC:=$HOME/dev/home/home-config/docs/credentials.md}"
+: "${AGENT_ASK_CREDENTIALS_DOC:=${HOME_CONFIG:-$HOME/dev/home/home-config}/docs/credentials.md}"
 : "${AGENT_ASK_RBW_CMD:=rbw}"
 : "${AGENT_ASK_HOLD_CMD:=agent-hold}"
 : "${AGENT_ASK_LESSONS_CMD:=lessons}"
@@ -679,15 +679,17 @@ cmd_post() {
     case "$(field "$file" judge_type)" in
       credential_or_account)
         local held
-        if held="$(held_credential "$(ask_text "$file")")"; then
-          close_ask cancelled "$id" "refused at post: $held" 2>/dev/null
+        # The question only: the context of an ask for an outside account often names a
+        # service we run, and a refusal there would keep the real ask from the human.
+        if held="$(held_credential "$(field "$file" question)")" &&
+            close_ask cancelled "$id" "refused at post: $held" 2>/dev/null; then
           echo "agent-ask post: no ask filed: this asks for $held. If the credential you need is another service's, name only that one in the ask." >&2
           return 2
         fi ;;
       human_physical_action)
-        # A blocker ask is shared by the sessions it stops, an audit reviews an answer, and a
-        # resume runs on the answer: each needs the ask, so only a plain one is routed.
-        if [ -z "$blocker$audit_of$resume" ] && route_physical "$file"; then return 0; fi ;;
+        # A gate or approval, a blocker ask shared by the sessions it stops, an audit of an
+        # answer and a resume run on the answer each need the ask: only a plain question is routed.
+        if [ "$kind" = question ] && [ -z "$blocker$audit_of$resume" ] && route_physical "$file"; then return 0; fi ;;
     esac
     if answer_live "$file"; then
       if [ "$wait" -eq 1 ]; then field "$file" answer; else printf '%s\n' "$id"; fi
@@ -1435,8 +1437,12 @@ judge_guarded() {
   drop_field "$1" judge judge_reason judged_at
   timeout --kill-after=5 "$AGENT_ASK_JUDGE_TIMEOUT" "${BASH_SOURCE[0]}" judge "$(field "$1" id)" >/dev/null 2>&1 < /dev/null
   case $? in
-    124|137) [ -n "$(field "$1" judge)" ] || judge_record "$1" error "" "$2" "" ;;
+    124|137)
+      # A guard that ends the second human_fact call (cmd_judge) puts the first verdict back.
+      if [ -f "$1.first" ] && [ "$(field "$1" status)" = pending ]; then cat "$1.first" > "$1"; queue_changed
+      else [ -n "$(field "$1" judge)" ] || judge_record "$1" error "" "$2" ""; fi ;;
   esac
+  rm -f -- "$1.first"
 }
 
 # timed_out_reason [again]: the judge_reason of a call the guard ended, at post or (again) on the
@@ -2581,7 +2587,9 @@ cmd_judge() {
     judge_record "$f" human gate "the ask $floor; not sent to the judge" ""
     return 0
   fi
-  local prompt precedents older out wd rc verdict call rule answer cid settled
+  local prompt precedents older out wd rc verdict call rule answer cid settled said_in="${AGENT_ASK_SAID:-}"
+  # An ask once judged with what the human already said is judged with it on every pass, in one call.
+  [ -n "$said_in" ] || [ -z "$(field "$f" judge_human_said)" ] || said_in="$(human_said "$f")"
   precedents="$(cmd_precedents "$(field "$f" created)" 2>/dev/null)"
   # What can settle the ask with no human (policy, Settled already): the older asks still waiting,
   # one of which may be this same question.
@@ -2606,10 +2614,10 @@ $precedents
 ## Older pending asks
 
 $older
-}${AGENT_ASK_SAID:+
+}${said_in:+
 ## What the human already said
 
-$AGENT_ASK_SAID
+$said_in
 }
 ## Answer
 
@@ -2667,17 +2675,18 @@ Return the verdict in the structured output."
   settled=$(jq -r .settled_by <<<"$verdict")
   [ -z "$settled" ] || set_field "$f" judge_settled_by "$(oneline "$settled")"
   judge_record "$f" "$call" "$rule" "$(jq -r .reason <<<"$verdict")" "$cid"
+  [ -z "$said_in" ] || set_field "$f" judge_human_said "$(grep -c '^- ' <<<"$said_in") lines"
   # A human fact the human may already have told: judged once more with what mem0 and the
-  # project's lessons hold on it. The second verdict replaces the first; a second call that fails
-  # leaves the first as it was.
-  if [ -z "${AGENT_ASK_SAID:-}" ] && [ "$call" = human ] && [ "$(jq -r .type <<<"$verdict")" = human_fact ]; then
-    local said snap
+  # project's lessons hold on it. The second verdict replaces the first; a second call that fails,
+  # or that the guard ends (judge_guarded), leaves the first as it was ($f.first).
+  if [ -z "$said_in" ] && [ "$call" = human ] && [ "$(jq -r .type <<<"$verdict")" = human_fact ]; then
+    local said
     said="$(human_said "$f")"
     [ -n "$said" ] || return 0
-    snap="$(mktemp)"; cp "$f" "$snap"
+    cp "$f" "$f.first"
     AGENT_ASK_SAID="$said" cmd_judge "$id" ||
-      { [ "$(field "$f" status)" = pending ] && cat "$snap" > "$f"; queue_changed; }
-    rm -f -- "$snap"
+      { [ "$(field "$f" status)" = pending ] && cat "$f.first" > "$f"; queue_changed; }
+    rm -f -- "$f.first"
   fi
   return 0
 }
@@ -2692,13 +2701,13 @@ human_said() {
       # shellcheck disable=SC2086 # a word list, like AGENT_ASK_JUDGE_CMD
       $AGENT_ASK_MEM0_CMD "$q"
     elif mem0_load >/dev/null 2>&1; then
-      mem0_search "$q" 3
+      MEM0_TRIES=1 MEM0_TIMEOUT=5 mem0_search "$q" 3   # inside the judge's guard: one short try
     fi 2>/dev/null | sed '/^$/d; s/^/- mem0: /'
     # pick heads its hits with a "## Lessons" line; only the "- " rows are lessons.
     lf="$AGENT_ASK_LESSONS_DIR/$(field "$1" project).md"
     # shellcheck disable=SC2086 # a word list
     [ ! -r "$lf" ] || $AGENT_ASK_LESSONS_CMD pick -n 3 --matched "$lf" "$q" 2>/dev/null | sed -n 's/^- *\(..*\)/- lesson: \1/p'
-  } | head -c 2000
+  } | cut -c1-300 | head -n 8
 }
 
 # held_credential <text>: when the text names a credential we hold, print what to do instead and
@@ -2709,6 +2718,8 @@ human_said() {
 # is asked whether it is unlocked first, so post never opens an unlock prompt.
 held_credential() {
   local text="$1" svc admin name
+  [ -r "$AGENT_ASK_CREDENTIALS_DOC" ] ||
+    echo "agent-ask post: $AGENT_ASK_CREDENTIALS_DOC unreadable; no service we run is checked (HOME_CONFIG)" >&2
   if [ -r "$AGENT_ASK_CREDENTIALS_DOC" ]; then
     while IFS=$'\t' read -r svc admin; do
       [ -n "$svc" ] && grep -qiwF -- "$svc" <<<"$text" || continue
