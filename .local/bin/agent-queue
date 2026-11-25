@@ -495,7 +495,10 @@ admission_now() {
 # waited for a pass, and a pass then never took the backlog tier, retired by ar-4626; 2026-11-20, chain-after-stuck), returns
 # the last-ranked runnable item to its board row (cmd_return: lossless, the row is un-started and dispatch promotes it
 # again), so the add goes in under the cap. Never chosen: urgent or red work, the human's (human_work),
-# an item with no row to return to, a chain's head. No such item: nothing moves, and admit holds the add
+# an item with no row to return to, a chain's head, a phase of a plan (its plan: line or a phase brief,
+# PHASE_BRIEF_RE): an approved plan's phases go in past the cap, and a returned one waits on its row behind
+# the cap's fill, so the chain stops there (2026-11-23: P2 and P3 of a plan went back for a low row and an
+# urgent one, ar-5357). No such item: nothing moves, and admit holds the add
 # like any other. Runs before the add takes the lock, since the return takes it: an add the lock would
 # refuse (already queued, finished ok, its cause: owned) moves nothing, and a victim that starts
 # meanwhile is not returned. A pull-after's pull returns only an item it does not outrank, and never one
@@ -509,11 +512,12 @@ make_room() {
   ( cause_owner "$2" ) >/dev/null 2>&1 || return 0
   [ -n "${repeat:-}" ] || [ -z "$(finished_ok "$3" "${slug_from_text:+$text}" "${from:-}")" ] || return 0
   now="$(admission_now)" && read -r r l <<<"$now" && [[ "$r" =~ ^[0-9]+$ ]] && [ "$r" -ge "$l" ] || return 0
-  victim="$(collect queued | jq -r --argjson pr "$pr" --arg keep " ${AQ_ROOM_KEEP:-} " '
+  victim="$(collect queued | jq -r --argjson pr "$pr" --arg keep " ${AQ_ROOM_KEEP:-} " --arg phase "$PHASE_BRIEF_RE" '
     ([.[] | (.after // "") | splits("[ ,]+") | select(. != "")]) as $heads
     | [.[] | select(.priority != "urgent" and (.row // "") != "")
         | select((" " + (.tags // "") + " ") | test(" (red|requested|#requested) ") | not)
         | select(.from != "human")
+        | select((.plan // "") == "" and ((.task // "") | test($phase) | not))
         | select(({"urgent":0,"high":1,"normal":2,"low":3}[.priority] // 1) >= $pr)
         | select(.slug as $s | $keep | contains(" \($s) ") | not)
         | select(.slug as $s | $heads | index($s) | not)] | last | .slug // empty')" || return 0
