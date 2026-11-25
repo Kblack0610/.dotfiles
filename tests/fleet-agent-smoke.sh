@@ -17,6 +17,7 @@ probe_line=$(grep -m1 "fleet_host_run \"\$name\" sh -c '.*\.sync/peer" "$repo/.l
   { echo "smoke: no readiness probe found in fleet-dispatch probe_hosts" >&2; exit 1; }
 probe_word=${probe_line#*sh -c }
 probe_word=${probe_word%% _ \$listed*}
+chk=''   # the probe splices the roster repos it checks (probe_hosts); a fresh node has none to check
 eval "probe=$probe_word"
 [ "${1:-}" != --probe ] || { printf '%s\n' "$probe"; exit 0; }
 

@@ -527,7 +527,7 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   mkdir -p "$SANDBOX/repos/game"; rm -rf "$SANDBOX/repos/game/.git"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --host razer-laptop
   assert_failure 2
-  assert_output --partial "has no checkout of $SANDBOX/repos/game"
+  assert_output --partial 'but has no checkout of it'
   # Positive control: the same probe with the clone present places it.
   { tr ' ' '\n' <<<'2.0 16 1 50'; echo clones; echo kit; cat "$NOTES_FIXTURE/ssh.kit"; } > "$NOTES_FIXTURE/ssh.probe"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
