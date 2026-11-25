@@ -73,7 +73,7 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   plan stale '1 day ago 1 hour ago' "$OPEN"
   run "$SWEEP" run
   assert_success
-  assert_called "agent-queue add --plan $ASK_SWEEP_PLANS/stale.md --project board --priority low --from auto:ask-sweep"
+  assert_called "agent-queue add --plan $ASK_SWEEP_PLANS/stale.md --project board --from auto:ask-sweep"
   : > "$NOTES_FIXTURE/calls.log"
   run "$SWEEP" run
   assert_success
@@ -144,8 +144,8 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   run "$SWEEP" run
   assert_success
   assert_not_called 'held.md'
-  assert_called "agent-queue add --plan $ASK_SWEEP_PLANS/closed.md --project board --priority low --from auto:ask-sweep"
-  assert_called "agent-queue add --plan $ASK_SWEEP_PLANS/unmarked.md --project board --priority low --from auto:ask-sweep"
+  assert_called "agent-queue add --plan $ASK_SWEEP_PLANS/closed.md --project board --from auto:ask-sweep"
+  assert_called "agent-queue add --plan $ASK_SWEEP_PLANS/unmarked.md --project board --from auto:ask-sweep"
   [ "$(grep -c 'notes board --json' "$NOTES_FIXTURE/calls.log")" -eq 1 ] || fail "the board feed was read more than once a run"
 }
 
@@ -160,7 +160,7 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   jq -cn --arg f "$SANDBOX/acct-plans/live.md" '[{plan_file: $f}]' > "$NOTES_FIXTURE/live.json"
   run "$SWEEP" run
   assert_success
-  assert_called "agent-queue add --plan $ASK_SWEEP_PLANS/open.md --project board --priority low --from auto:ask-sweep"
+  assert_called "agent-queue add --plan $ASK_SWEEP_PLANS/open.md --project board --from auto:ask-sweep"
   assert_not_called 'live.md'
   assert_not_called 'storeonly.md'
   assert_not_called '--project _live'
@@ -178,7 +178,7 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_success
   assert_not_called '/filed.md'
   assert_not_called 'real.md'
-  assert_called "agent-queue add --plan $ASK_SWEEP_PLANS/unfiled.md --project board --priority low --from auto:ask-sweep"
+  assert_called "agent-queue add --plan $ASK_SWEEP_PLANS/unfiled.md --project board --from auto:ask-sweep"
 }
 
 @test "a plan with no checklist files no row and is only counted" {
@@ -196,7 +196,7 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   plan homed '1 day ago 1 hour ago' "$OPEN"
   run "$SWEEP" run
   assert_success
-  assert_called "agent-queue add --plan $ASK_SWEEP_PLANS/homed.md --project board --priority low --from auto:ask-sweep"
+  assert_called "agent-queue add --plan $ASK_SWEEP_PLANS/homed.md --project board --from auto:ask-sweep"
   assert_not_called 'orphan'
   assert_output --partial 'open plans 2'
   assert_output --partial 'no cache copy 1'
@@ -323,7 +323,7 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   run "$SWEEP" run
   assert_failure
   assert_output --partial 'board: model call failed (exit 1)'
-  assert_called "agent-queue add --plan $ASK_SWEEP_PLANS/stale.md --project board --priority low --from auto:ask-sweep"
+  assert_called "agent-queue add --plan $ASK_SWEEP_PLANS/stale.md --project board --from auto:ask-sweep"
   assert_equal "$(cat "$AGENTCTL_STATE_DIR/ask-sweep/last-outcome")" FAILED
   run tail -1 "$AGENTCTL_STATE_DIR/ask-sweep/activity.log"
   assert_output --partial 'why: board: model call failed (exit 1)'

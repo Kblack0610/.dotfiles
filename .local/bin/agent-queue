@@ -1774,6 +1774,7 @@ overflow_row() {
 # <body> is its brief (row_brief), and the item keeps a snapshot of it beside the run.
 # A plan phase's row also carries `#takes/<id>` for each row it takes (AQ_ITEM_TAKES, ar-3886).
 # <want> is the channel of a human's want, or empty: the notes writer then stamps #requested.
+# An empty <priority> files the row untagged: a machine filer's, judged by the priority rubric.
 # <keep> non-empty files the row un-started (an add over the cap, see overflow_row). <gates>, board gate
 # tags with no #, go on the row it files, and onto an open twin it links (gate_row). <tags>, the item's,
 # add `interrupt` to those when they hold it (interrupt_tag), so an open twin joins too.
@@ -1809,7 +1810,7 @@ file_story() {
   # `--detail=`: a brief that opens with a dash is its value, not a flag.
   brief="$(row_brief "$row" "${6:-}")"
   [ -z "$brief" ] || detail=("--detail=$brief")
-  out="$(notes --profile "$lab" ptask "$project" --agent add "${detail[@]}" "${want[@]}" "${origin[@]}" -- "$row #$prio$of$gt" 2>&1)" || rc=$?
+  out="$(notes --profile "$lab" ptask "$project" --agent add "${detail[@]}" "${want[@]}" "${origin[@]}" -- "$row${prio:+ #$prio}$of$gt" 2>&1)" || rc=$?
   id="$(sed -nE '/.*<!--.*\bid:([a-z0-9]+-[0-9]+).*/{s//\1/p;q;}' <<<"$out")"
   case "$rc" in
     4) if [ -n "$keep" ]; then printf 'inbox\n'
@@ -2026,7 +2027,11 @@ cmd_add() {
       board_only_say
       # The row's brief names the plan by its absolute path, which dispatch's promote reads back to queue
       # the chain (plan_row_plan).
-      AQ_FILE_ORIGIN=plan overflow_row "$pproject" "$ptitle" "$priority" "" "" "$(plan_row_task "$(realpath "$planf")")" "" "$(basename "$planf" .md)" || exit 1
+      # A machine filer that names no priority files the row untagged, for `agentctl-inbox-triage --backlog
+      # --priority` to judge by the rubric; the add default (high) is the human's, not a filer's.
+      local row_prio="$priority"
+      case "$from" in auto:?*) [ -n "$priority_given" ] || row_prio="" ;; esac
+      AQ_FILE_ORIGIN=plan overflow_row "$pproject" "$ptitle" "$row_prio" "" "" "$(plan_row_task "$(realpath "$planf")")" "" "$(basename "$planf" .md)" || exit 1
       exit "$AQ_EX_HELD"
     fi
     AQ_ADMITTED=1 plan_add_waiting; return
