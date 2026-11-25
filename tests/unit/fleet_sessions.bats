@@ -7111,6 +7111,24 @@ JSONL
   assert_output "$(printf 'o/three\t3\tFAIL\tabc123')"
 }
 
+@test "CI_JQ: a check of a PR_CI_NO_VERDICT workflow is neither red nor pending (ar-3499)" {
+  # 2026-11-18 ucp#2870: Checks passed, and Drop closed gates' "Run Checks the slot refused", which
+  # acts on other PRs, was cancelled by its concurrency group on this PR's head: the PR read CI FAIL.
+  check() { printf '{"name":"%s","workflowName":"%s","conclusion":"%s","status":"%s","detailsUrl":"https://github.com/o/r/actions/runs/%s/job/%s"}' "$1" "$2" "$3" "${4:-COMPLETED}" "$5" "$5"; }
+  local view
+  for c in CANCELLED FAILURE ''; do
+    view=$(printf '{"statusCheckRollup":[%s,%s]}' "$(check Checks Checks SUCCESS COMPLETED 1)" \
+      "$(check 'Run Checks the slot refused' 'Drop closed gates' "$c" "$([ -n "$c" ] && echo COMPLETED || echo QUEUED)" 2)")
+    [ "$(jq -r "$CI_JQ"' ci' <<<"$view")" = PASS ]
+    [ "$(jq -r "$CI_JQ"' red' <<<"$view")" = - ]
+    # negative control: with the list off, the same check counts
+    [ "$(PR_CI_NO_VERDICT='' jq -r "$CI_JQ"' ci' <<<"$view")" = "$([ -n "$c" ] && echo FAIL || echo PENDING)" ]
+  done
+  # a workflow the list does not name is still read
+  view=$(printf '{"statusCheckRollup":[%s,%s]}' "$(check Checks Checks SUCCESS COMPLETED 1)" "$(check Lint 'Drop closed gates x' CANCELLED COMPLETED 2)")
+  [ "$(jq -r "$CI_JQ"' ci' <<<"$view")" = FAIL ]
+}
+
 @test "self_wait reads a tail --pid on another process as an event wait, and the row stays WORKING (ar-2426)" {
   # 2026-11-14: a `tail --pid <pid>` waiting on another process, the event wait the rules ask for,
   # read "background shell is not a gate or test" and drew a nudge.
