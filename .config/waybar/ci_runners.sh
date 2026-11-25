@@ -147,7 +147,7 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
         then ["* not measured yet, counted as a whole slot"] else [] end)
      + [""] + [$mhead] + (if ($machines | length) > 0 then $machines else ["no machine reports"] end)
      + (if ($g.off | length) > 0 then ["cloud: \($g.off | length) host\(if ($g.off | length) == 1 then "" else "s" end) off"] else [] end)
-     + (if ($g.pending // [] | length) > 0 then ["waiting for room: " + ([$g.pending[] | ptext] | join(", ")) | esc | paint($yel)] else [] end)
+     + (if ($g.pending | length) > 0 then ["waiting for room: " + ([$g.pending[] | ptext] | join(", ")) | esc | paint($yel)] else [] end)
      + (if ($g.down | length) > 0 then ["", "DOWN:"] + [$g.down[] | "  \(.host | esc)  \(.n) \(.state | esc)"] else [] end)
      + (if ($g.long | length) > 0 then ["", ("long runs: " + ([$g.long[] | "\(.what | esc) \(.ran | dur)"] | join(", ")) | paint($yel))] else [] end)
      + (if ($next | length) > 0 then ["", $nhead] + $next else [] end)

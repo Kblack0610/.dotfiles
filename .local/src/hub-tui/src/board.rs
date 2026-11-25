@@ -642,7 +642,7 @@ pub(crate) mod tests {
         let i = fixture();
         let ci = tab(&i, "ci", 160);
         assert!(
-            ci.starts_with("CI RUNNERS  3 running, 4 queued (oldest 2h28m), - queued -, 4/5 runners up, 112 done 24h, 44% passed  failed 24h 2 (Runs, red)\n\nRUNNERS  all 5  busy 3  idle 1  off 1  late 1\nHOST"),
+            ci.starts_with("CI RUNNERS  3 running, 4 queued (oldest 2h28m), 4/5 runners up, 112 done 24h, 44% passed  failed 24h 2 (Runs, red)\n\nRUNNERS  all 5  busy 3  idle 1  off 1  late 1\nHOST"),
             "{ci}"
         );
         // A late job carries the bang; each slot names its pool, job and ref.
@@ -852,10 +852,11 @@ pub(crate) mod tests {
             &out,
             "MACHINE STATE BOOKED CPU 6H LOAD MEM TEMP DISK RUNNING NEXT GOVERNOR POWER UP",
         );
+        // RUNNING keeps its cap however wide the terminal; the pods' kind leads it.
         assert!(
             has(
                 &out,
-                "razer-laptop up [###.] 2.5/4 1.0G/16G 91% 31% 9.8/16 60% 84C - [arc-org-light] x2, [unity] unity-core-playground x2, [unity] platform - - - -"
+                "razer-laptop up [###.] 2.5/4 1.0G/16G 91% 31% 9.8/16 60% 84C - [arc-org-light] x2, [unity] unity-core-playground x2, [~ - - - -"
             ),
             "{out}"
         );
@@ -1091,7 +1092,7 @@ pub(crate) mod tests {
         let row = |w| tab(&i, "machines", w);
         assert!(has(
             &row(200),
-            "razer-laptop up [###.] 2.5/4 1.0G/16G 91% 31% 9.8/16 60% 84C - [arc-org-light] x2, [unity] unity-core-playground x2, [unity] platform"
+            "razer-laptop up [###.] 2.5/4 1.0G/16G 91% 31% 9.8/16 60% 84C - [arc-org-light] x2, [unity] unity-core-playground x2, [~"
         ));
         // Narrower, what it runs takes the room left; below that it drops the booking for it.
         assert_line(
@@ -1232,7 +1233,7 @@ pub(crate) mod tests {
         assert!(
             has(
                 &out,
-                "workstation no data [....] 0.0/4 - - - - - - [gates] unity-core-playground, [gates] unity-core-playg~"
+                "workstation no data - - - - - - - [gates] unity-core-playground, [gates] unity-core-playg~"
             ),
             "{out}"
         );
