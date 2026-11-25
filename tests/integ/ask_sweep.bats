@@ -190,16 +190,37 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_output --partial 'no checklist 1'
 }
 
-@test "an open plan with no cache copy files no row and is counted, not dropped unseen" {
+# ar-5518: 27 of 66 idle plans had no project copy and were only counted, so nothing ever filed them.
+@test "an open plan with no cache copy is homed by the session that wrote it; one no session wrote is counted once" {
   plan orphan '1 day ago 1 hour ago' "$OPEN"
   rm "$ASK_SWEEP_PLAN_CACHE/board/orphan.md"
+  plan written '1 day ago 1 hour ago' "$OPEN"
+  rm "$ASK_SWEEP_PLAN_CACHE/board/written.md"
   plan homed '1 day ago 1 hour ago' "$OPEN"
+  # the session in repo two wrote written.md; one in board only read it, and named orphan.md
+  t="$ASK_SWEEP_TRANSCRIPTS/x-two/w.jsonl"; mkdir -p "${t%/*}"
+  jq -cn --arg c "$R/two" --arg f "$SANDBOX/acct/plans/written.md" \
+    '{type: "assistant", cwd: $c, message: {content: [{type: "tool_use", id: "t1", name: "Write", input: {file_path: $f, content: "x"}}]}}' > "$t"
+  r="$ASK_SWEEP_TRANSCRIPTS/x-board/r.jsonl"; mkdir -p "${r%/*}"
+  jq -cn --arg c "$R/board" --arg f "$SANDBOX/acct/plans/written.md" --arg o "$SANDBOX/acct/plans/orphan.md" \
+    '{type: "assistant", cwd: $c, message: {content: [{type: "tool_use", id: "t2", name: "Read", input: {file_path: $f}}, {type: "tool_use", id: "t3", name: "Read", input: {file_path: $o}}]}}' > "$r"
+  touch -d '3 days ago' "$t" "$r"   # past the message lookback: read only for the plan
   run "$SWEEP" run
   assert_success
   assert_called "agent-queue add --plan $ASK_SWEEP_PLANS/homed.md --project board --from auto:ask-sweep"
+  assert_called "agent-queue add --plan $ASK_SWEEP_PLANS/written.md --project two --from auto:ask-sweep"
+  [ "$(readlink "$ASK_SWEEP_PLAN_CACHE/two/written.md")" = ../_live/written.md ] || fail "written.md was not linked under its writer's project"
   assert_not_called 'orphan'
-  assert_output --partial 'open plans 2'
+  assert_output --partial 'open plans 3'
   assert_output --partial 'no cache copy 1'
+  run cat "$ASK_SWEEP_DIR/no-home"
+  assert_output orphan.md
+  # negative control: a second run skips the orphan's transcript read and still counts it, once
+  run "$SWEEP" run
+  assert_success
+  assert_output --partial 'no cache copy 1'
+  run cat "$ASK_SWEEP_DIR/no-home"
+  assert_output orphan.md
 }
 
 @test "the summary says what it read, so a clean read never looks like no read" {
