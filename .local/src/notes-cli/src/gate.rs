@@ -99,10 +99,12 @@ fn admitted(events: &[Event], project: &str) -> usize {
         .count()
 }
 
-/// Whether the cap lets `row` through whatever the day's count: the person's want, or a row whose
-/// `#why` is an urgent reason (a red, an outage). `requested` is no reason a session may give itself.
+/// Whether the cap lets `row` through whatever the day's count: the person's want, an epic (never
+/// counted either), or a row whose `#why` is an urgent reason (a red, an outage). `requested` is no
+/// reason a session may give itself.
 fn cap_exempt(all: &[Reason], row: &str, wanted: bool) -> bool {
     wanted
+        || crate::epics::is_epic(row)
         || reasons::slug_of(row).is_some_and(|s| {
             all.iter()
                 .any(|r| r.slug == s && r.slug != ASKED && r.priority == "urgent")

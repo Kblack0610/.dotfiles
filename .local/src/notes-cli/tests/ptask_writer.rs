@@ -2100,7 +2100,14 @@ fn a_gated_board_takes_ten_new_agent_rows_a_day_and_holds_the_eleventh() {
         "chore(w3): a story row of an item already started #size/s",
     ));
     ok(&add_as(&h, &[], &[], "docs(w4): typed by a person #size/s"));
-    assert_eq!(ids(&h.board()).len(), 14, "{}", h.board());
+    // An epic is no new work row: a machine filer's epic goes in on a full day and is not counted.
+    ok(&add_as(
+        &h,
+        &[("AGENTCTL_NAME", "fleet-bench")],
+        &[],
+        "epic(w5): a new epic",
+    ));
+    assert_eq!(ids(&h.board()).len(), 15, "{}", h.board());
     // The record counts the ten, the urgent red, and the four rows the cap turned away.
     assert_eq!(h.cap_today(), (11, 4));
 }
