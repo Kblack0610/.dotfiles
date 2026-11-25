@@ -136,6 +136,40 @@ off_pool() {
   assert_output 0
 }
 
+# job_image_chain <wf>: the image job's job-image output, read through the step that names it to the
+# lean seed's ref; prints "ok", else the first link that does not hold
+job_image_chain() {
+  awk '
+    /^  image:$/ { i = 1; next } i && /^  [A-Za-z0-9_-]+:$/ { i = 0 }
+    !i { next }
+    /^      job-image: \$\{\{ steps\.job-image\.outputs\.ref \}\}$/ { out = 1 }
+    /^        id: lean$/ { lean = 1 }
+    /^        id: job-image$/ { jm = 1; next }
+    jm && /^        if: vars\.LINUX_RUNNER_JOB_POD != '"''"'$/ { gate = 1 }
+    jm && /^          REF: \$\{\{ steps\.lean\.outputs\.ref \}\}$/ { ref = 1 }
+    /^      - / { jm = 0 }
+    END {
+      if (!out) print "job-image output does not read steps.job-image"
+      else if (!lean) print "no seed step with id lean"
+      else if (!gate) print "the job-image step is not gated on LINUX_RUNNER_JOB_POD"
+      else if (!ref) print "the job-image step does not read steps.lean.outputs.ref"
+      else print "ok"
+    }
+  ' "$1"
+}
+
+@test "the image job's job-image is the lean seed's ref, named in a step behind the job-pod variable" {
+  run job_image_chain "$WF"
+  assert_output ok
+  local act="$BATS_TEST_DIRNAME/../../.github/actions/test-image/action.yml"
+  run grep -cxF '    value: ${{ steps.ref.outputs.ref }}' "$act"
+  assert_output 1
+  # Negative control: a renamed lean seed breaks the chain by name.
+  sed '/^  image:$/,/^  [a-z]/ s/^        id: lean$/        id: lean-seed/' "$WF" >"$BATS_TEST_TMPDIR/renamed.yml"
+  run job_image_chain "$BATS_TEST_TMPDIR/renamed.yml"
+  assert_output 'no seed step with id lean'
+}
+
 # job_pod_faults <wf>: "<job>: <fault>" for a job on the job-pod anchor with no job image, no need
 # on the image job, or a test-image step that also runs inside the image
 job_pod_faults() {

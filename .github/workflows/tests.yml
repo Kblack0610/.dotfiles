@@ -202,7 +202,7 @@ jobs:
         env:
           REF: ${{ steps.lean.outputs.ref }}
         run: |
-          [ -n "$REF" ] || echo "::warning::no lean registry ref, so fast and lint run on the dind pool"
+          [ -n "$REF" ] || echo "::notice::no lean registry ref (a fork, a hosted runner or a registry miss), so fast and lint run on the dind pool"
           echo "ref=$REF" | tee -a "$GITHUB_OUTPUT"
       - name: Seed the rust stage
         uses: ./.github/actions/test-image
