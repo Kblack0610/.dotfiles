@@ -432,6 +432,8 @@ jobs:
         run: tests/docker.sh test-files NOTES_BIN=/work/.local/src/notes-cli/target/debug/notes FILES="integ/inbox_triage.bats integ/inbox_plan.bats" BATS_FLAGS="--print-output-on-failure"
       - name: Brief backfill, on the real notes
         run: tests/docker.sh test-files NOTES_BIN=/work/.local/src/notes-cli/target/debug/notes FILES="integ/agent_queue_backfill.bats" BATS_FLAGS="--print-output-on-failure"
+      - name: Day-log board flow, on the real notes weigh
+        run: tests/docker.sh test-files NOTES_BIN=/work/.local/src/notes-cli/target/debug/notes FILES="unit/day_log.bats" BATS_FLAGS="--print-output-on-failure --filter 'board:'"
 
   skills:
     name: skill lint (frontmatter + house rules)
