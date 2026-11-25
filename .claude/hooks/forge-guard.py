@@ -29,15 +29,14 @@ is denied too, naming `agent-land`, which lands a Forgejo PR through that API an
 those 62 were home-config and bnb-game-servers PRs merged by a raw Forgejo call (ar-1213).
 """
 import functools
-import importlib.util
 import json
 import os
 import re
 import shlex
 import subprocess
-import sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+import hooklib
+
 MARKERS = (".forgejo/workflows/mirror-to-github.yaml", ".forgejo/workflows/mirror-to-github.yml")
 SEPARATORS = set(";&|()")
 NL = "\x1e"  # newline sentinel: a separator that also ends a comment
@@ -81,10 +80,7 @@ SHORT_VALUE = set("AbcCDeEHKmoPqQrtuUwxyYz")
 
 @functools.lru_cache(maxsize=None)
 def _strip_heredocs():
-    spec = importlib.util.spec_from_file_location("block_poll", os.path.join(HERE, "block-poll.py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.strip_heredocs
+    return hooklib.load("block-poll").strip_heredocs
 
 
 def git(top, *args):
@@ -395,16 +391,5 @@ def decide(data):
     return reason(cmd, data.get("cwd") or os.getcwd())
 
 
-def main():
-    r = decide(json.load(sys.stdin))
-    if r:
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": r}}))
-
-
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception:
-        pass
-    sys.exit(0)
+    hooklib.run(decide)

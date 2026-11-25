@@ -20,11 +20,11 @@ tool on that file is checked the same way: after the Bash form was denied, 6 of 
 left (2026-11-06/07, usage-cleanup pass 6) came through Read.
 Fail-open: any error allows the call.
 """
-import json
 import os
 import re
 import subprocess
-import sys
+
+import hooklib
 
 SEP = r"(?:^|[;&|(){}\s])"
 END = r"(?=[;&|(){}\s]|$)"
@@ -207,7 +207,7 @@ def live_reason(text):
 # gate: hook-block-poll
 def decide(data):
     """The deny reason for one PreToolUse payload, or None. walker-guards.py calls this for Bash;
-    main() serves the Read hook, which walker-guards does not run on."""
+    run as a script it serves the Read hook, which walker-guards does not run on."""
     tool = data.get("tool_name", "Bash")
     tin = data.get("tool_input") or {}
     if tool == "Read":
@@ -221,16 +221,5 @@ def decide(data):
     return "block-poll: " + reason if reason else None
 
 
-def main():
-    r = decide(json.load(sys.stdin))
-    if r:
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": r}}))
-
-
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception:
-        pass
-    sys.exit(0)
+    hooklib.run(decide)

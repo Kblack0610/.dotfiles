@@ -82,3 +82,47 @@ FAKE
   run grep '^rmi' "$LOG"
   assert_output "rmi ${new%-*}-0123456789ab"
 }
+
+@test "each kind has its own tag, the full one keeps the old shape, and --build targets the kind" {
+  run "$T/tests/docker.sh" --image
+  full="$output"
+  [[ "$full" =~ ^cockpit-tests:tmux3\.8- ]]
+  TEST_IMAGE_KIND=full run "$T/tests/docker.sh" --image
+  assert_output "$full"
+  TEST_IMAGE_KIND=lean run "$T/tests/docker.sh" --image
+  [[ "$output" =~ ^cockpit-tests:lean-tmux3\.8-fzf[0-9.]+-[0-9a-f]{12}$ ]]
+  [ "${output#cockpit-tests:lean-}" = "${full#cockpit-tests:}" ]
+  TEST_IMAGE_KIND=rust run "$T/tests/docker.sh" --image
+  [[ "$output" =~ ^cockpit-tests:rust-tmux3\.8- ]]
+  TEST_IMAGE_KIND=lean run "$T/tests/docker.sh" --build
+  assert_success
+  run grep -c '^build .*--target lean ' "$LOG"
+  assert_output 1
+  run "$T/tests/docker.sh" --build
+  run grep -c '^build .*--target full ' "$LOG"
+  assert_output 1
+}
+
+@test "a kind that is not a Dockerfile stage is refused" {
+  TEST_IMAGE_KIND=slim run "$T/tests/docker.sh" --image
+  assert_failure 2
+  assert_output --partial 'lean, rust or full'
+}
+
+@test "a new build of one kind leaves the other kinds' images alone" {
+  TEST_IMAGE_KIND=lean run "$T/tests/docker.sh" --image
+  lean="$output"
+  run "$T/tests/docker.sh" --image
+  full="$output"
+  printf '%s\n' "${lean%-*}-0123456789ab" "${full%-*}-0123456789ab" "$full" > "$BATS_TEST_TMPDIR/images"
+  TEST_IMAGE_KIND=lean run "$T/tests/docker.sh" --build
+  assert_success
+  run grep '^rmi' "$LOG"
+  assert_output "rmi ${lean%-*}-0123456789ab"
+}
+
+@test "tests/Dockerfile defines every stage docker.sh can target" {
+  for kind in lean rust full; do
+    grep -qE "^FROM .* AS $kind\$" "$BATS_TEST_DIRNAME/../Dockerfile" || fail "no stage named $kind in tests/Dockerfile"
+  done
+}

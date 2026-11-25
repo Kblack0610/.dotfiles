@@ -1,8 +1,10 @@
 name: test image
 description: >-
-  Load the tests/Dockerfile image (every tests.yml job's one toolchain) from the Actions cache, or build it once and cache it, so a
+  Load the tests/Dockerfile image (every tests.yml job's toolchain, in the stage the job names) from the Actions cache, or build it once and cache it, so a
   later tests/docker.sh finds it present and does not rebuild. The cache key is the image tag,
-  which ends in a hash of everything the image is built from (tests/docker.sh --image).
+  which ends in a hash of everything the image is built from (tests/docker.sh --image). The job's
+  env TEST_IMAGE_KIND (lean, rust or full) picks the Dockerfile stage, so a job loads only the
+  bytes it uses and the kind is in the tag, so in the key.
 inputs:
   tmux:
     description: TMUX_REF for the image; empty is tests/docker.sh's default
