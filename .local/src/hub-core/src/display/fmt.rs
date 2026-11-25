@@ -1,6 +1,6 @@
 //! The one home of how a number reads: money, tokens, durations, ages and counts. Every surface
 //! (agent-web through hub-core, the TUI, the panel's cards) calls these, so `$214` and `2h28m`
-//! read the same everywhere; a copy elsewhere fails `number_formatters_have_one_home`.
+//! read the same everywhere; a copy elsewhere fails the `number-formatters` Owners row (`fact-owners check`, run by `tests/unit/fleet_states_doc.bats`).
 
 /// Dollars as the views show them: cents under $100, whole dollars above. [`usd_est`] is the
 /// second form, for an estimate, not a measured price.
@@ -155,110 +155,6 @@ mod tests {
         assert_eq!(age(300), "5m");
         assert_eq!(age(7200), "2h");
         assert_eq!(age(3 * 86400), "3d");
-    }
-
-    /// The sources of the crates that draw text, as `crate/src/file.rs` and their code above the tests.
-    fn sources() -> Vec<(String, String)> {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
-        let mut out = Vec::new();
-        for krate in ["hub-core", "hub-tui", "agent-web"] {
-            let mut todo = vec![root.join(krate).join("src")];
-            while let Some(d) = todo.pop() {
-                for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
-                    let p = e.path();
-                    if p.is_dir() {
-                        todo.push(p);
-                    } else if p.extension().is_some_and(|x| x == "rs") {
-                        let rel = p
-                            .strip_prefix(&root)
-                            .unwrap()
-                            .to_string_lossy()
-                            .into_owned();
-                        if rel.starts_with("hub-core/src/display") {
-                            continue;
-                        }
-                        let src = std::fs::read_to_string(&p).unwrap();
-                        let code = src.split("#[cfg(test)]").next().unwrap_or(&src).to_string();
-                        out.push((rel, code));
-                    }
-                }
-            }
-        }
-        out
-    }
-
-    /// Names a number formatter goes by when a file writes its own copy.
-    const COPIES: [&str; 11] = [
-        "usd", "usd_opt", "money", "dollars", "kilo", "dur", "age", "ago", "mins", "hrs", "plural",
-    ];
-
-    /// Per source file, the formatters it still writes itself: a `fn` named like one of [`COPIES`],
-    /// or a hand-built plural (`if n == 1 { "" } else { "s" }`).
-    fn own_number_sites() -> std::collections::BTreeMap<String, usize> {
-        let mut out = std::collections::BTreeMap::new();
-        for (rel, code) in sources() {
-            let n = code
-                .lines()
-                .map(str::trim_start)
-                .filter(|l| {
-                    let l = l
-                        .strip_prefix("pub(crate) ")
-                        .or(l.strip_prefix("pub "))
-                        .unwrap_or(l);
-                    COPIES.iter().any(|c| {
-                        l.strip_prefix("fn ")
-                            .is_some_and(|r| r.starts_with(&format!("{c}(")) && !r.contains("self"))
-                    }) || l.contains(r#"{ "" } else { "s" }"#)
-                        || l.contains(r#"{ "s" } else { "" }"#)
-                })
-                .count();
-            if n > 0 {
-                out.insert(rel, n);
-            }
-        }
-        out
-    }
-
-    /// Money, tokens, durations, ages and plurals are written once, in this module. A file that
-    /// writes its own is in `number-sites.baseline`, which only shrinks.
-    #[test]
-    fn number_formatters_have_one_home() {
-        let base: std::collections::BTreeMap<String, usize> = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("number-sites.baseline"),
-        )
-        .unwrap()
-        .lines()
-        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
-        .filter_map(|l| l.split_once('\t'))
-        .map(|(f, n)| (f.to_string(), n.parse().unwrap()))
-        .collect();
-        let now = own_number_sites();
-        println!(
-            "own number formatters: {} (baseline {})",
-            now.values().sum::<usize>(),
-            base.values().sum::<usize>()
-        );
-        let mut bad = Vec::new();
-        for (f, n) in &now {
-            let was = base.get(f).copied().unwrap_or(0);
-            if *n > was {
-                bad.push(format!(
-                    "{f}: {n} own formatters, baseline {was}: call hub_core::display::fmt"
-                ));
-            } else if *n < was {
-                bad.push(format!(
-                    "{f}: {n} now, baseline {was}: lower the baseline to {n}"
-                ));
-            }
-        }
-        for (f, was) in &base {
-            if !now.contains_key(f) {
-                bad.push(format!(
-                    "{f}: none now, baseline {was}: drop it from the baseline"
-                ));
-            }
-        }
-        assert!(bad.is_empty(), "{}", bad.join("\n"));
     }
 
     #[test]

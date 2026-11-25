@@ -89,7 +89,7 @@ test("the Local Unity table lists each failed gate by branch and platform, newes
 
 const slot = (o) => ({ host: "razer", slot: "1", state: "busy", pool: "unity", job: "PlayMode", repo: "unity", pr: "412", branch: "feat", ran: 7000, usual: 600, late: true, note: "", ...o });
 const queued = (o) => ({ job: "HD tests", pool: "unity", repo: "unity", pr: "", branch: "main", n: 1, wait: 900, needs: ["unity-full", "hd-library"], can: [], missing: ["hd-library"], stuck: true, ...o });
-const ci = { hosts: 2, slots: 3, busy: 1, queued: 1, oldest: 900, local: [], rows: [slot({}), slot({ slot: "2", state: "idle", job: "", late: false, ran: null, usual: null }), slot({ host: "mini", state: "off", late: false, ran: null, usual: null })], queue: [queued({})], red: ["HD tests (unity) needs [unity-full, hd-library]: no online runner holds hd-library"], day: { runs: 12, pass: 0.75, failed_main: 1, failed_branch: 2, cancelled: 1, local: 4, local_pass: 0.5, read: true } };
+const ci = { hosts: 2, slots: 3, busy: 1, queued: 1, oldest: 900, local: [], rows: [slot({}), slot({ slot: "2", job: "Tests", late: false, ran: 60 }), slot({ host: "mini", late: false, ran: 30, usual: null })], queue: [queued({})], red: ["HD tests (unity) needs [unity-full, hd-library]: no online runner holds hd-library"], day: { runs: 12, pass: 0.75, failed_main: 1, failed_branch: 2, cancelled: 1, local: 4, local_pass: 0.5, read: true } };
 
 test("CI runners: a job nobody can take is a red line naming the missing label, and a late run is marked", () => {
   Object.assign(ist, { open: {} });
@@ -97,10 +97,17 @@ test("CI runners: a job nobody can take is a red line naming the missing label, 
   assert.match(h, /^<h2 class="sec bad" id="sec-ci">Runners <span class="n">3<\/span><\/h2>/, "a job nobody can take hues the head red");
   assert.match(h, /<div class="panel down">[\s\S]*HD tests \(unity\) needs \[unity-full, hd-library\]: no online runner holds hd-library/);
   assert.match(h, /<td class="n warn">1h 57m!<\/td>/);
-  assert.match(h, /<td class="bad">off<\/td>/);
-  assert.match(h, /<td class="muted">idle<\/td>/);
+  assert.ok(!/<td class="(bad|muted)">(off|idle|withheld)<\/td>/.test(h), "a runner with no job has no row");
   assert.match(h, /<td class="bad">HD tests<\/td>/, "a stuck queued job is red");
   assert.match(h, /<td class="wrap">nobody<\/td>/);
+});
+
+test("CI runners: a GitHub-hosted job waits on GitHub, not on nobody", () => {
+  Object.assign(ist, { open: {} });
+  const h = section({ ...ci, red: [], queue: [queued({ pool: "github-hosted", needs: ["ubuntu-24.04"], missing: [], stuck: false })] });
+  assert.ok(!h.includes('class="panel down"'), "no red panel");
+  assert.match(h, /<td class="wrap">GitHub<\/td>/);
+  assert.ok(!h.includes(">nobody<"));
 });
 
 test("CI runners: a queued job some host can take names it, and is not red", () => {

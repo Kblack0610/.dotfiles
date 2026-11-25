@@ -8386,22 +8386,7 @@ mod shape_tests {
         .unwrap();
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&gate, fs::Permissions::from_mode(0o755)).unwrap();
-        // Another test's fork can hold our write fd until its child execs, and exec then fails
-        // with ETXTBSY (26). Run the stub once, retrying on that error alone, so the runs the
-        // test cares about start after the last writer is gone.
-        const ETXTBSY: i32 = 26;
-        loop {
-            match std::process::Command::new(&gate)
-                .env("GATE_PROBE", "1")
-                .status()
-            {
-                Err(e) if e.raw_os_error() == Some(ETXTBSY) => std::thread::yield_now(),
-                r => {
-                    r.unwrap();
-                    break;
-                }
-            };
-        }
+        crate::config::test_exec_ready(&gate, &[("GATE_PROBE", "1")]);
         let gate = gate.display().to_string();
         (s, sheet, gate)
     }

@@ -27,12 +27,10 @@ no default branch on origin (~/.notes and ~/.agent push to `backup`), which allo
 bypass by hand when one is meant. It walks the command with forge-guard's walker. Fail-open: any
 error allows the command.
 """
-import importlib.util
-import json
 import os
-import sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+import hooklib
+
 HOOKED = {"commit", "push", "merge", "pull", "am", "rebase", "cherry-pick", "revert"}
 # git commit's flags that take a value: a short one ends its cluster, so `-mn` is a message "n".
 COMMIT_SHORT_VALUE = set("mFCct")
@@ -78,13 +76,6 @@ PUSH_MSG = (
 
 FORGE = None  # set by walker-guards.py, else loaded in decide
 CHECKOUT = None
-
-
-def _load(name):
-    spec = importlib.util.spec_from_file_location(name.replace("-", "_"), os.path.join(HERE, name + ".py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 def env_hookspath(env):
@@ -238,7 +229,7 @@ def check(head, argv, env, cwd):
         return None
     top = FORGE.git(d, "rev-parse", "--show-toplevel")
     global CHECKOUT
-    CHECKOUT = CHECKOUT or _load("checkout-guard")
+    CHECKOUT = CHECKOUT or hooklib.load("checkout-guard")
     default_remote, _, default = CHECKOUT.default_ref(top).partition("/") if top else ("", "", "")
     remote = FORGE.push_target(top, args) if default else ""
     dests = push_dests(top, args, remote) if remote and canonical_remote(top, remote, default_remote) else None
@@ -256,20 +247,9 @@ def decide(data):
     cmd = (data.get("tool_input") or {}).get("command") or ""
     if "git" not in cmd:
         return None
-    FORGE = FORGE or _load("forge-guard")
+    FORGE = FORGE or hooklib.load("forge-guard")
     return FORGE.reason(cmd, data.get("cwd") or os.getcwd(), check)
 
 
-def main():
-    r = decide(json.load(sys.stdin))
-    if r:
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": r}}))
-
-
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception:
-        pass
-    sys.exit(0)
+    hooklib.run(decide)

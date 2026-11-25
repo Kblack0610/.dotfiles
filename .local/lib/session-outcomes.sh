@@ -16,6 +16,8 @@
 # shellcheck source=origin-repo.sh
 SO_LIB="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 . "$SO_LIB/origin-repo.sh" || return 1
+# shellcheck source=claude-end.sh
+. "$SO_LIB/claude-end.sh" || return 1
 
 # SO_PR_JQ - the jq defs every harness's scan shares: the PR scan, and time_use_class (below), which counts a
 # session's test runs and CI polls. pr_cmd: a command that opens or merges
@@ -145,7 +147,7 @@ so_mapped_repos() {
 # plan_gate counts ExitPlanMode calls and how many of them plan-standard.sh denied;
 # the human rejecting a plan is `denied` under hard_errors, not a gate denial.
 so_transcript_metrics() {
-  jq -nR --argjson sigs "${2:-[]}" "$SO_PR_JQ"'
+  jq -nR --argjson sigs "${2:-[]}" "$CLAUDE_END_JQ$SO_PR_JQ"'
     def text_of: if type == "string" then .
                  elif type == "array" then ([.[]? | .text? // empty] | join("\n"))
                  else "" end;
@@ -159,7 +161,7 @@ so_transcript_metrics() {
         uses: { subagents: {}, skills: {}, slash: {} } };
       (if .entrypoint == null and ($r.entrypoint | type) == "string" then .entrypoint = $r.entrypoint else . end)
       | if $r.type == "assistant" then
-        (if $r.isApiErrorMessage == true then .api_error += 1 else . end)
+        (if ($r | is_api_error) then .api_error += 1 else . end)
         | (if ($r.message.id | type) == "string" then
              ($r.message.usage // {} | [.input_tokens, .cache_creation_input_tokens, .cache_read_input_tokens, .output_tokens]
               | map(. // 0) | add) as $tokens
