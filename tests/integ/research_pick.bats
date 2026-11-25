@@ -67,7 +67,7 @@ repo() {
   assert_output '["hot",null]'
 }
 
-@test "a picked board row is in flight while the board lists it, open or under the item dispatch promoted it to (ar-3227)" {
+@test "a picked board row is in flight while the board lists it under the item dispatch promoted it to (ar-3227)" {
   mkdir -p "$RESEARCH_DIR"
   # An older pick's row still counts after a later pick that was queued straight, with no row.
   printf '%s\n' '{"facet": "cold", "day": 1, "row": "agent-runtime:ar-7"}' '{"facet": "hot", "day": 2}' > "$RESEARCH_DIR/picks.jsonl"
@@ -83,6 +83,33 @@ repo() {
   echo '{"rows": [{"project": "agent-runtime", "id": "ar-8", "state": "open"}]}' > "$NOTES_FIXTURE/board.json"
   run "$PICK" run
   assert_called 'agent-queue add --project '
+}
+
+@test "a picked row still open holds its own facet only; started, it holds the lane (ar-4979)" {
+  mkdir -p "$RESEARCH_DIR"
+  # hot would lead (stale since day 1, the busier repo); its row ar-7 is filed and not started.
+  echo '{"facet": "hot", "day": 1, "row": "agent-runtime:ar-7"}' > "$RESEARCH_DIR/picks.jsonl"
+  stub notes 'case "$1" in board) cat "$NOTES_FIXTURE/board.json" ;; *) case "$4" in list) exit 0 ;; add) printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log" ;; esac ;; esac; exit 0'
+  echo '{"rows": [{"project": "agent-runtime", "id": "ar-7", "state": "open"}]}' > "$NOTES_FIXTURE/board.json"
+  run "$PICK" run
+  assert_success
+  refute_output --partial 'still in flight'
+  assert_called 'agent-queue add --project cold'
+  assert_not_called 'agent-queue add --project hot'
+  [ "$(jq -sr '.[-1].facet' "$RESEARCH_DIR/picks.jsonl")" = cold ]
+  # Both facets with an open row: none is picked, and the line names them.
+  : > "$NOTES_FIXTURE/calls.log"
+  echo '{"facet": "cold", "day": 2, "row": "agent-runtime:ar-8"}' >> "$RESEARCH_DIR/picks.jsonl"
+  echo '{"rows": [{"project": "agent-runtime", "id": "ar-7", "state": "open"}, {"project": "agent-runtime", "id": "ar-8", "state": "open"}]}' > "$NOTES_FIXTURE/board.json"
+  run "$PICK" run
+  assert_success
+  assert_output --partial 'no facet to queue: each one on disk has a picked row still open on its board (hot cold)'
+  assert_not_called 'agent-queue add'
+  # NEGATIVE CONTROL: dispatch started ar-7 (doing), so the lane is held and cold waits too.
+  echo '{"rows": [{"project": "agent-runtime", "id": "ar-7", "state": "doing"}]}' > "$NOTES_FIXTURE/board.json"
+  run "$PICK" run
+  assert_output --partial 'still in flight, nothing queued: ar-7 board row on agent-runtime, doing'
+  assert_not_called 'agent-queue add'
 }
 
 @test "a board that cannot be read while a pick has a row queues nothing" {
