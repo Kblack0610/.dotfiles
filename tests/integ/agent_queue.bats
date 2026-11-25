@@ -963,7 +963,7 @@ mix_classes() { jq --argjson on "$1" '.on = $on | del(.classes[].min_live)' "$RE
   # set tags= is checked like add.
   run "$AQ" set forms "tags=hold:a/b"
   assert_failure; assert_output --partial "hold:<resource>"
-  "$REPO_ROOT/.local/bin/agent-hold" release mac-desktop >/dev/null
+  "$REPO_ROOT/.local/bin/agent-hold" release mac-desktop --by unity-agent-6 >/dev/null
   run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = forms ]
 }
@@ -1338,7 +1338,7 @@ gate_rbw() {
   legacy code "tags: hold:mac-desktop desk:auth" --project game "2fa step" >/dev/null
   run "$AQ" next --json
   assert_failure
-  "$REPO_ROOT/.local/bin/agent-hold" release mac-desktop >/dev/null
+  "$REPO_ROOT/.local/bin/agent-hold" release mac-desktop --by other >/dev/null
   run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = code ]
   run "$AQ" list --state queued

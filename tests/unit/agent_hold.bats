@@ -476,6 +476,8 @@ STUB
   grep -qx 'by: agent-42' "$AGENT_HOLD_DIR/mac-desktop"
   run "$HOLD" release mac-desktop --by
   assert_failure 2
+  run "$HOLD" release mac-desktop --by ' '
+  assert_failure 2
   # its holder releases it
   run "$HOLD" release mac-desktop --by agent-42
   assert_success
@@ -496,6 +498,7 @@ STUB
   run "$HOLD" release mac-desktop --force
   assert_success
   [ ! -e "$AGENT_HOLD_DIR/mac-desktop" ]
+  grep -F 'forced over agent-42' "$HOME/.agent/audit/actions.jsonl"
   # Negative control: a hold that is not a claim is still released by anyone.
   "$HOLD" set unity-tests --by d "96 C"
   run "$HOLD" release unity-tests

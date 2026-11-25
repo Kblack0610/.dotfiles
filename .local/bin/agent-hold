@@ -411,7 +411,8 @@ cmd_release() {
   while [ $# -gt 0 ]; do
     case "$1" in
       --by) [ $# -ge 2 ] || { echo "agent-hold release: --by needs a value" >&2; exit 2; }
-        by="$(oneline "$2")"; shift 2 ;;
+        by="$(oneline "$2")"; shift 2
+        [ -n "$by" ] || { echo "agent-hold release: --by needs a value" >&2; exit 2; } ;;
       --force) force=1; shift ;;
       *) echo "agent-hold release: unknown argument $1" >&2; exit 2 ;;
     esac
@@ -422,10 +423,16 @@ cmd_release() {
   reason="$(field "$f" reason)"; roster="$(field "$f" roster)"
   # A claim is one session's: another session's release would free a desktop still being driven
   # (2026-11-06, a session released agent-42's mac-desktop claim, ar-751). A claim whose holder is
-  # gone is freed with --force by whoever finds it.
-  if [ "$(field "$f" kind)" = claim ] && [ -z "$force" ]; then
-    if [ -n "$by" ]; then [ "$(field "$f" by)" = "$by" ]; else owns_claim "$f" "$(callers)"; fi ||
-      { echo "agent-hold release: $resource is claimed by $(field "$f" by) since $(field "$f" since): $reason. Only its holder releases it; --force when that session is gone." >&2; exit 1; }
+  # gone is freed with --force by whoever finds it. The check catches a release by mistake; it does
+  # not prove a holder gone, and the audit line names whose claim a --force freed.
+  local forced=""
+  if [ "$(field "$f" kind)" = claim ]; then
+    local holder; holder="$(field "$f" by)"
+    if [ -n "$force" ]; then forced=" (forced over $holder's claim)"
+    else
+      if [ -n "$by" ]; then [ "$holder" = "$by" ]; else owns_claim "$f" "$(callers)"; fi ||
+        { echo "agent-hold release: $resource is claimed by $holder since $(field "$f" since): $reason. Only its holder releases it (agent-hold release $resource --by $holder, from that session); --force only when that session is gone." >&2; exit 1; }
+    fi
   fi
   local unit failed=""
   for unit in $(field "$f" lowered | tr ',' ' '); do
@@ -449,7 +456,7 @@ cmd_release() {
   # A lifted hold is what held starts back: wake a kick (dispatch_wake) rather than wait for the timer.
   dispatch_wake "agent-hold release $resource"
   notify -p low -t "go: $resource" "released (was: $reason)"
-  audit_append "$(default_by)" hold.released "$resource" ok "was: $reason${force:+ (forced)}"
+  audit_append "$(default_by)" hold.released "$resource" ok "was: $reason$forced"
   echo "released: $resource"
   # Printed so the caller can send GO to exactly the sessions that were told to stop.
   [ -n "$roster" ] && echo "roster: $roster"
