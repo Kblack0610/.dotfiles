@@ -306,7 +306,7 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
            "kinds": [{"kind": "x&y", "waiting": 0, "oldest": null, "done": 1, "pass": 1}]}'
   run "$MODULE"
   [[ "$(tip)" == *"a&lt;b          -        -        -"* ]]
-  [[ "$(tip)" == *"x&amp;y       -       -       0      -     1  100%"* ]]
+  [[ "$(tip)" == *"x&amp;y       -       -       0      -     1     -  100%"* ]]
 }
 
 @test "a warning on stderr does not break the read" {
