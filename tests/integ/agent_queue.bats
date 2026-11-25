@@ -4521,6 +4521,27 @@ notes --profile work ptask level run lv-8'
   assert_output "$(printf '%s\n' 'notes --profile bnb ptask level --agent start lv-2' 'notes --profile bnb ptask level --agent run lv-2')"
 }
 
+@test "a --running add with no --priority records its row's priority, and a session's new story files at normal (ar-4374)" {
+  story_notes
+  jq -n '{rows: [{project: "level", id: "lv-2", state: "doing", text: "feat(menu): w", priority: "normal"},
+                 {project: "level", id: "lv-2", state: "done", text: "feat(menu): old", priority: "urgent"}]}' > "$NOTES_FIXTURE/board.json"
+  "$AQ" add --running --project game --row lv-2 --slug linked "feat(menu): w" >/dev/null
+  [ "$(field "$(item running linked)" priority)" = normal ]
+  rm -f "$(item running linked)"
+  # A priority the add names wins over the row's.
+  "$AQ" add --running --project game --row lv-2 --priority low --slug named "feat(menu): w" >/dev/null
+  [ "$(field "$(item running named)" priority)" = low ]
+  rm -f "$(item running named)"
+  # A session's add that files its own story: normal, on the item and the new row.
+  : > "$NOTES_FIXTURE/calls.log"
+  CLAUDE_CODE_SESSION_ID=s1 "$AQ" add --running --project level --slug own "chore(x): its own work" >/dev/null
+  [ "$(field "$(item running own)" priority)" = normal ]
+  grep -q ' --agent add .*#normal' "$NOTES_FIXTURE/calls.log"
+  # NEGATIVE CONTROL: the human's --running add by hand, no session, keeps high.
+  "$AQ" add --running --project level --slug mine "chore(x): the human's" >/dev/null
+  [ "$(field "$(item running mine)" priority)" = high ]
+}
+
 @test "--row carries the item's longer task onto the row as detail lines the row lacks, so a plain return keeps it (ar-3159)" {
   story_notes
   jq -n '{rows: [{project: "level", id: "lv-2", state: "doing", text: "feat(menu): the row's work", details: ["already on the row"]},

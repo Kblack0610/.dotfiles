@@ -13,7 +13,8 @@
 #       --tags interrupt puts #interrupt on its story row (or an open twin), so a locked sprint takes it (notes' interrupt
 #       lane, window.rs): for a bounded machine filer whose row must start under any sprint (research-pick, one a night).
 #       --priority defaults to high only for an add by hand: one from a session ($CLAUDE_CODE_SESSION_ID or
-#       $AGENT_QUEUE_ITEM set) names it, except --running, --want, --dry-run and --check. A session's
+#       $AGENT_QUEUE_ITEM set) names it, except --running, --want, --dry-run and --check. A --running add
+#       that names none takes its linked row's priority, and a session's new story is normal (ar-4374). A session's
 #       --plan queues at high at most: urgent stays for the human's own add, a red, and dispatch's promote.
 #       The human's own add that links a row (--row, the title's row) with an explicit --priority retags that row.
 #       --after holds the item until every slug it names closed ok: a comma or space list, and it repeats.
@@ -2063,6 +2064,15 @@ add_priority() {
   fi
 }
 
+# board_row_priority <project> <id> <default> -> the open row's priority as the feed reads it (an untagged
+# row is normal, fleet-dispatch row_priority), or <default> when notes cannot say.
+board_row_priority() {
+  local p
+  p="$(notes board --json --id "$2" 2>/dev/null | jq -r --arg p "$1" --arg k "$2" \
+    'first(.rows[]? | select(.project == $p and .id == $k and (.state == "open" or .state == "doing")) | .priority // empty) // empty' 2>/dev/null)"
+  case "$p" in urgent | high | normal | low) echo "$p" ;; *) echo "$3" ;; esac
+}
+
 # add_row_prio <file> <priority> -- a row filed before this add (--row, its title's row, a re-queue's
 # row) takes the --priority the human's own add named, since the order reads the row (row_prios); a
 # story row was filed at it already. A session's add leaves a linked row as it is: every session names
@@ -2140,6 +2150,9 @@ cmd_add() {
   done
   after="$(word_list "$after")"
   priority="$(add_priority "$priority" "$priority_given$running$want$dry" "$planf" "$tags" "$from")" || exit 1
+  # A session's --running add with no priority files its new story at normal, real work in its turn; a
+  # row it links gives its own below. The human's add by hand (no session) keeps high (ar-4374).
+  [ -z "$running" ] || [ -n "$priority_given" ] || [ -z "${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}" ] || priority=normal
   if [ -n "$planf" ]; then
     [ "${#task[@]}" -eq 0 ] || die "--plan writes its own tasks; pass no task with it"
     [ -z "$want" ] || die "--want names a human's channel; --plan items are agent-made and carry none"
@@ -2311,6 +2324,11 @@ cmd_add() {
   esac
   [ -z "$story" ] || IFS=$'\t' read -r sboard sprof srow <<<"$story"
   [ -z "$linked_row" ] || brief_to_row "$sboard" "$sprof" "$srow" "$text"
+  # A --running add that named no priority records its row's (ar-4374: a default high made 167 of 641
+  # high done items, 11-19..21, session records of normal rows).
+  if [ -n "$running" ] && [ -n "$linked_row" ] && [ -z "$priority_given" ]; then
+    priority="$(board_row_priority "$sboard" "$srow" "$priority")"
+  fi
   mkdir -p "$AQ_DIR/$state"
   local f tmp
   f="$AQ_DIR/$state/$(date +%Y%m%d-%H%M%S)-$slug.md"
