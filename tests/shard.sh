@@ -69,7 +69,7 @@ weigh() {
     med=$(awk -F'\t' -v tier="$tier/" '!/^#/ && index($2, tier) == 1 { print $1 }' "$WEIGHTS" | sort -g |
       awk '{ v[NR] = $1 } END { print NR ? (NR % 2 ? v[(NR + 1) / 2] : (v[NR / 2] + v[NR / 2 + 1]) / 2) : 1 }')
     decl=$(cd "$DIR" && while read -r f; do
-      d=$(sed -n '1,15s/^# shard-seconds: \([0-9.][0-9.]*\).*/\1/p' "$f" 2>/dev/null | head -1)
+      d=$(awk 'NR > 15 { exit } match($0, /^# shard-seconds: [0-9.]+/) { sub(/^# shard-seconds: /, ""); print $1; exit }' "$f" 2>/dev/null)
       [ -z "$d" ] || printf '%s\t%s\n' "$d" "$f"
     done <<<"$files")
     awk -F'\t' -v tier="$tier/" -v med="$med" '
