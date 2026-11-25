@@ -2207,6 +2207,9 @@ human_exit() {
 #    row with no verdict. Any other waits skip takes the plan exit.
 #  - kind: a row of a kind kinds.json turns off (epic aside, and not a parent) never reaches the judge,
 #    so with no verdict it takes the human exit, as rule `kind`: no worker or judge reads it on the lane.
+#  - t3-skip: a row no worker takes because a DISPATCH_T3_SKIP word keeps it with the human (nobody_why
+#    says `tier3 skip:`) reaches no judge either, so it takes the human exit too, unless it is an epic, a
+#    parent or gated #after/ or #pr/; else sprint-stalled counted it every pass (ar-4527: ucp-2700 on dns).
 #  - size: a row sized L or XL (`#size/`) takes the plan exit as rule `too-big` whatever the judge has
 #    said or not yet said (it judges only the rows a pass reaches, and one no worker takes never gets there):
 #    a skip that names a human rule or a gate keeps its own exit. Not an epic, a parent, a row gated
@@ -2220,7 +2223,7 @@ human_exit() {
 # nothing and prints `<exit> TAB <project> TAB <id> TAB <rule>` per row (`plan-wait` for a plan row
 # past the room), then the counts. Sets PLAN_TAGGED and EXITS_TAKEN.
 skip_exits() {
-  local dry='' follow='' board rows room p prof id raw line dsig dj rule req prio planned d e body why where gate
+  local dry='' follow='' board rows room p prof id raw line dsig dj rule req prio planned d e body why where gate wk
   local -a add
   local -A ids=() n=()
   case "${1:-}" in
@@ -2262,7 +2265,7 @@ skip_exits() {
   fi
   rows=$(jq -r --argjson prules "$(policy_rules)" --argjson n "$DISPATCH_DETAIL_CHARS" \
       --argjson kinds "$kinds" --argjson elig "$elig" --slurpfile ssf <(printf '%s\n' "$ss") \
-      --arg at "$(date -Iseconds)" --arg sig "$(policy_sig)" \
+      --arg at "$(date -Iseconds)" --arg sig "$(policy_sig)" --arg t3 "$DISPATCH_T3_SKIP" \
       --slurpfile v <(latest_verdicts) "$ROW_JQ"'
     ($v | map(select(.lane == "agent" and .verdict == "skip" and .exit == null and usable($prules)))
        | map({key: "\(.project)\t\(.key)", value: .}) | from_entries) as $by
@@ -2277,6 +2280,11 @@ skip_exits() {
         "\(.profile)\t\(.project)\t\(.id)\t\($d.line)\t\($d.dsig // "-")\t\(details_json($n))\t\($d.rule)\t\(.requested == true)\t\(planned)\t\($d | tojson)\t\(.raw)"
       elif $off[.type // ""] and ($parents[.id] | not) and ($gone["\(.project)\t\(.id)"] | not) then
         "\(.profile)\t\(.project)\t\(.id)\t-\t-\t\(details_json($n))\tkind\t\(.requested == true)\tfalse\t\({project, lane: "agent", key: .id, verdict: "skip", rule: "kind", reason: "kind \(.type) is off", at: $at, policy: $sig} | tojson)\t\(.raw)"
+      elif (.type // "") != "epic" and ($parents[.id] | not) and ($gone["\(.project)\t\(.id)"] | not)
+          and (.project as $pj | $elig | index($pj)) != null
+          and (any((.tags_cased // .tags // [])[]?; startswith("after/") or startswith("pr/")) | not)
+          and ((.raw // "") | sub("^- \\[.\\] "; "") | split("<!--")[0] | test($t3; "i")) then
+        "\(.profile)\t\(.project)\t\(.id)\t-\t-\t\(details_json($n))\tt3-skip\t\(.requested == true)\tfalse\t\({project, lane: "agent", key: .id, verdict: "skip", rule: "t3-skip", at: $at, policy: $sig} | tojson)\t\(.raw)"
       elif ((.size // "") | ascii_downcase | IN("l", "xl")) and (.type // "") != "epic" and ($parents[.id] | not)
           and (.project as $pj | $elig | index($pj)) != null
           and (($ss["\(.project)\t\(.id)"].failed // false) | not)
@@ -2286,8 +2294,15 @@ skip_exits() {
       else empty end' <<<"$board")
   # raw last: read hands it the rest of the line; details_json and the verdict are JSON, with no bare
   # tab. No field is empty: a tab is IFS whitespace, so read would fold an empty one into its neighbour
+  wk=$(workers)
   while IFS=$'\t' read -r prof p id line dsig dj rule req planned d raw; do
     [ -n "$id" ] || continue
+    # A skip word keeps a row only where no worker takes it by tier (nobody_why); elsewhere a worker does.
+    if [ "$rule" = t3-skip ]; then
+      nobody_why_set "$wk" agent "$raw"
+      [[ "$NOBODY" == "tier3 skip: "* ]] || continue
+      d=$(jq -c --arg r "$NOBODY" '. + {reason: $r}' <<<"$d")
+    fi
     # the verdict must still hold for the row as it reads now (ROW_JQ holds)
     [ "$line" = - ] || [ "$(row_sig "$raw")" = "$line" ] || continue
     [ "$dsig" = - ] || [ "$(detail_sig "$dj")" = "$dsig" ] || continue
@@ -2299,7 +2314,7 @@ skip_exits() {
       [ -n "$gate" ] && jq -e '(.size | IN("S", "M")) and .clear == true and .agent_only == true and ((.area // "") != "")' <<<"$d" >/dev/null || gate=''
       if [ -n "$gate" ]; then e=gate; else e=plan; fi
     elif [[ " $DISPATCH_PLAN_RULES " == *" $rule "* ]]; then e=plan
-    elif [[ " $DISPATCH_HUMAN_RULES " == *" $rule "* ]] || [ "$rule" = kind ]; then e=human
+    elif [[ " $DISPATCH_HUMAN_RULES " == *" $rule "* ]] || [ "$rule" = kind ] || [ "$rule" = t3-skip ]; then e=human
     fi
     [ -n "$e" ] || continue
     if [ "$e" = plan ] && [ "$planned" = true ]; then
@@ -2320,6 +2335,7 @@ skip_exits() {
     fi
     [ "$DISPATCH_EXIT_MAX" = 0 ] || [ "$EXITS_TAKEN" -lt "$DISPATCH_EXIT_MAX" ] || break
     if [ "$rule" = kind ]; then why="dispatch never starts it: $(jq -r '.reason // ""' <<<"$d") (kinds.json)"
+    elif [ "$rule" = t3-skip ]; then why="dispatch never starts it: $(jq -r '.reason // ""' <<<"$d") (DISPATCH_T3_SKIP keeps it with the human)"
     else why="dispatch skipped it ($rule): $(jq -r '.reason // ""' <<<"$d")"; fi
     case "$e" in
       plan)

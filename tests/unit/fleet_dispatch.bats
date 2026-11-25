@@ -662,6 +662,36 @@ exits: improve 1 sheet 1'
   refute_output --partial 'gd-1'
 }
 
+@test "skip_exits: a row a DISPATCH_T3_SKIP word keeps from every worker takes the human exit, so sprint-stalled stops counting it; a row a worker takes or one gated stays (ar-4527)" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent gt-1 "- [ ] fix(ci): flag DNS EAI_AGAIN as infra #tier/3 #high <!-- id:gt-1 -->"
+  row game agent gt-2 "- [ ] fix(game): maybe a new menu #tier/3 #low <!-- id:gt-2 -->"
+  row game agent gt-3 "- [ ] fix(game): the prod menu $T #high <!-- id:gt-3 -->"
+  row game agent gt-4 "- [ ] fix(ci): the dns pool #tier/3 #high #after/gt-9 <!-- id:gt-4 -->"
+  row game agent gt-5 "- [ ] fix(game): a plain one #tier/3 #high <!-- id:gt-5 -->"
+  : > "$NOTES_FIXTURE/board.rows"
+  board_row game agent gt-1 '[]' '[]'; board_row game agent gt-2 '[]' '[]'; board_row game agent gt-3 '[]' '[]'
+  board_row game agent gt-4 '["after/gt-9"]' '[]'; board_row game agent gt-5 '[]' '[]'
+  : > "$NOTES_FIXTURE/calls.log"
+  run skip_exits --dry-run
+  assert_success
+  assert_output 'sheet	game	gt-1	t3-skip
+improve	game	gt-2	t3-skip
+exits: improve 1 sheet 1'
+  skip_exits
+  assert_equal "$EXITS_TAKEN" 2
+  grep -q 'id:gt-1 dropped: on the game sheet: dispatch never starts it: tier3 skip: DNS (DISPATCH_T3_SKIP keeps it with the human)' "$NOTES_FIXTURE/rows.game.agent"
+  grep -qF 'improve game --why dispatch never starts it: tier3 skip: maybe' "$NOTES_FIXTURE/calls.log"
+  assert_equal "$(jq -r 'select(.exit) | "\(.key)=\(.rule)/\(.exit)"' "$FLEET_DISPATCH_DIR/verdicts.jsonl" | paste -sd,)" 'gt-1=t3-skip/sheet,gt-2=t3-skip/improve'
+  # NEGATIVE CONTROL: a tier-1 row with a skip word (a worker takes it), a gated one and a plain tier-3 one stay.
+  run grep -E 'gt-[345]' "$NOTES_FIXTURE/calls.log"
+  assert_failure
+  # each exit is on record, so a second pass files no copy
+  : > "$NOTES_FIXTURE/calls.log"
+  skip_exits
+  assert_equal "$EXITS_TAKEN" 0
+}
+
 @test "skip_exits: every skip rule in the shipped policy has exactly one exit" {
   one_exit() {
     local r n bad=''
