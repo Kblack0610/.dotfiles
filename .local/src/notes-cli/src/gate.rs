@@ -2,8 +2,9 @@
 //! config, agent-runtime by default) a session's row enters the board only as an evidenced fault,
 //! a plan phase or the person's ask. The write carries the person's want (`--want`), or the row a `#why/<slug>` whose reason
 //! is urgent or high in `priority-reasons.tsv` (a red, an outage, a runtime fault that happens now
-//! or recurs). Anything else is an improvement, kept by `notes improve`, never a row dispatch can
-//! pick. A plan's phases come through `agent-queue add --plan`, a direct filer, and a person's
+//! or recurs), or the row is health work as `notes improve --check` judges it (`improve::health_of`,
+//! the one list, which `notes improve` itself refuses). Anything else is an improvement, kept by
+//! `notes improve`, never a row dispatch can pick. A plan's phases come through `agent-queue add --plan`, a direct filer, and a person's
 //! own words are never gated, so neither reaches this check.
 
 use crate::reasons::{self, Reason};
@@ -31,7 +32,8 @@ pub(crate) fn refusal(project: &str, row: &str, wanted: bool) -> Result<Option<S
 }
 
 fn refusal_in(all: &[Reason], project: &str, row: &str, wanted: bool) -> Option<String> {
-    if wanted || crate::epics::is_epic(row) {
+    // Health work is refused by `notes improve` (exit 3), so the board is its only home.
+    if wanted || crate::epics::is_epic(row) || crate::improve::health_of(row).is_some() {
         return None;
     }
     let evidence = |r: &&Reason| ADMITS.contains(&r.priority.as_str()) && r.slug != ASKED;
@@ -70,6 +72,9 @@ mod tests {
             "- [ ] fix(ci): main is red #high #why/red-main",
             "- [ ] fix(views): the board is down #urgent #why/outage",
             "- [ ] epic(views): every tab reads hub-core",
+            // health work by `notes improve --check`, whatever its reason
+            "- [ ] test(probe): add a regression test for the probe #normal #why/upkeep",
+            "- [ ] fix(ci): the shard takes 40s over budget on a flaky ci run #normal",
         ] {
             assert_eq!(r(pass), None, "{pass}");
         }

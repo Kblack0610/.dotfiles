@@ -1938,6 +1938,13 @@ fn a_gated_board_takes_a_hand_sessions_row_only_as_a_fault_or_the_persons_ask() 
         &["--want", "human"],
         "feat(cli): a json flag the person asked for #high #size/s",
     ));
+    // Health work, as `notes improve --check` judges it, whatever reason it names.
+    ok(&add_as(
+        &h,
+        &[HAND],
+        &["--why", "upkeep"],
+        "test(menu): add a regression test for the menu #size/s",
+    ));
     // A person at a terminal is never gated.
     ok(&add_as(
         &h,
@@ -1945,7 +1952,7 @@ fn a_gated_board_takes_a_hand_sessions_row_only_as_a_fault_or_the_persons_ask() 
         &[],
         "docs(readme): typed by a person #size/s",
     ));
-    assert_eq!(ids(&h.board()).len(), 4, "{}", h.board());
+    assert_eq!(ids(&h.board()).len(), 5, "{}", h.board());
 }
 
 #[test]
