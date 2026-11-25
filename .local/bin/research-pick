@@ -39,8 +39,9 @@ expand() { local p="$1"; printf '%s' "${p/#\~/$HOME}"; }
 # picked board row dispatch has started (doing, under the item it promoted it to, whose slug and from
 # are the row's, not research-<id>); those hold the lane. A picked row still open is only filed, so
 # it prints "open<TAB><facet>" and holds that facet alone (ar-4979: ar-4274, open from 11-21, held
-# every facet for days). rc 1 when the queue, or the board while a pick has a row, cannot be read,
-# which queues nothing: an unknown queue might already hold one.
+# every facet for days). rc 1 when the queue, the board while a pick has a row, or the picks record
+# (a line jq cannot read, a picked row with no facet) cannot be read, which queues nothing: an unknown
+# queue might already hold one.
 in_flight() {
   local out rows
   out=$(agent-queue list --json --state active 2>/dev/null) || return 1
@@ -185,7 +186,7 @@ cmd_run() {
   local flight busy held ranked score id stale c today
   today=$(( $(date +%s) / 86400 ))
   if ! flight=$(in_flight); then
-    say "the queue, or the board holding the last pick's row, could not be read, nothing queued"
+    say "the queue, the board holding the last pick's row, or $PICKS could not be read, nothing queued"
   elif busy=$(awk -F'\t' '$1 != "open"' <<<"$flight"); [ -n "$busy" ]; then
     say "research item still in flight, nothing queued: $(head -n 1 <<<"$busy")"
   else
