@@ -90,6 +90,13 @@ setup() {
   done
   run "$HOLD" show critical
   refute_output --partial 'kept'
+  # A keep 25 hours ago is a day past: the hold stands again.
+  ask old "Keep the critical hold?" keep human 25
+  run "$HOLD" keep critical --ask old
+  assert_success
+  run "$HOLD" aged
+  assert_failure 1
+  assert_line --index 0 --partial 'critical: held 4d'
   ask ok "Keep the critical hold?" keep human
   run "$HOLD" keep critical --ask ok
   assert_success
@@ -101,12 +108,23 @@ setup() {
   run "$HOLD" aged
   assert_success
   assert_output ''
-  # A day past the keep it stands again.
-  ask old "Keep the critical hold?" keep human 25
-  "$HOLD" keep critical --ask old
-  run "$HOLD" aged
+  # Replaying the older ask cannot move the keep back.
+  run "$HOLD" keep critical --ask old
   assert_failure 1
-  assert_line --index 0 --partial 'critical: held 4d'
+  run "$HOLD" show critical
+  assert_line 'kept_ask: ok'
+  # A same-kind re-set rewords it and carries the keep with since.
+  "$HOLD" set critical --kind resource --by human "lockdown, reworded"
+  run "$HOLD" show critical
+  assert_line 'kept_ask: ok'
+  run "$HOLD" aged
+  assert_success
+  # A released hold is not brought back by a keep.
+  "$HOLD" release critical
+  ask new "Keep the critical hold?" keep human 0
+  run "$HOLD" keep critical --ask new
+  assert_failure 1
+  [ ! -e "$AGENT_HOLD_DIR/critical" ]
 }
 
 @test "a hold on one resource leaves another free" {

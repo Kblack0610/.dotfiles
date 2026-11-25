@@ -86,11 +86,18 @@ impl Hold {
         format!("agent-hold show {}", self.resource)
     }
 
-    /// "held 3d by <who>", or "held since an unreadable time by <who>".
+    /// "held 3d by <who>", or "held since an unreadable time by <who>", plus ", kept 1d ago" when
+    /// the human re-confirmed it since it was set, so a reader sees the keep took.
     pub fn held(&self, now: i64) -> String {
-        match self.days(now) {
+        let held = match self.days(now) {
             Some(d) => format!("held {d}d by {}", self.by),
             None => format!("held since an unreadable time by {}", self.by),
+        };
+        match self.kept {
+            Some(k) if self.since.is_none_or(|s| k > s) => {
+                format!("{held}, kept {}d ago", (now - k).max(0) / 86400)
+            }
+            _ => held,
         }
     }
 
@@ -99,6 +106,7 @@ impl Hold {
         json!({
             "resource": self.resource,
             "since": self.since,
+            "kept": self.kept,
             "held": self.held(now),
             "reason": self.reason,
         })
@@ -172,7 +180,7 @@ mod tests {
         assert!(kept.standing(NOW - 3600 + STANDING_SECS));
         // Negative control: the same hold never kept stands.
         assert!(hold("resource", HUMAN, 4 * 86400).standing(NOW));
-        // A keep older than since (a re-set that kept since but not the keep) changes nothing.
+        // A keep older than since (a file written by hand) changes nothing.
         let stale = Hold {
             kept: Some(NOW - 9 * 86400),
             ..hold("resource", HUMAN, 4 * 86400)
@@ -184,6 +192,8 @@ mod tests {
             ..kept.clone()
         };
         assert!(!unread.standing(NOW));
+        assert_eq!(kept.held(NOW), "held 4d by human, kept 0d ago");
+        assert_eq!(stale.held(NOW), "held 4d by human");
         assert_eq!(
             Hold::parse("critical", "kind: resource\nby: human\nsince: 2026-11-20T16:10:54-0800\nkept: 2026-11-24T17:30:08-0800\nkept_ask: M0yWLL\n").kept,
             crate::fleet::ts("2026-11-24T17:30:08-0800")
