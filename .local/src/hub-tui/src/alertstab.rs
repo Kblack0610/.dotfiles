@@ -513,7 +513,8 @@ pub fn fixes(a: &Alerts, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
                     } else {
                         format!("  {}", f.project)
                     },
-                    f.slug
+                    // The ticket, the board row the fix works as; the item's slug when it names none.
+                    f.row.as_deref().unwrap_or(&f.slug)
                 )),
                 Span::styled(f.age(now), p.dim()),
             ]),

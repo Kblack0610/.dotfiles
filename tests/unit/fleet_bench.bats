@@ -2943,6 +2943,28 @@ red_item() {
   assert_equal "$(jq -c '.project' <<<"$output")" '""'
 }
 
+@test "reds: each row names its board row id, the ticket the Alerts tab links, from row: or a board: from; none reads null" {
+  log_triage_setup
+  : > "$AGENTCTL_STATE_DIR/runs.jsonl"
+  watch fine OK -100 normal
+  red_item a done 'check(watch): fine tripped since 2026-11-01, expected: fine' -7200 -3600 r#1 sha1
+  parses 'check(watch): fine tripped since 2026-11-01, expected: fine' check watch 'fine tripped since 2026-11-01, expected: fine'
+  jq -c '. + {row: "agent-runtime:ar-5133"}' "$ITEMS" > "$ITEMS.p" && mv "$ITEMS.p" "$ITEMS"
+  run "$SUBJECT" reds --json
+  assert_success
+  assert_equal "$(jq -r '.row' <<<"$output")" ar-5133
+  jq -c 'del(.row) + {from: "board:home-config:hc-9"}' "$ITEMS" > "$ITEMS.p" && mv "$ITEMS.p" "$ITEMS"
+  run "$SUBJECT" reds --json
+  assert_success
+  assert_equal "$(jq -r '.row' <<<"$output")" hc-9
+  # negative control: an item with no row and no board: from keeps its line, with row null
+  jq -c 'del(.row) + {from: "human"}' "$ITEMS" > "$ITEMS.p" && mv "$ITEMS.p" "$ITEMS"
+  run "$SUBJECT" reds --json
+  assert_success
+  assert_equal "$(jq -c '.row' <<<"$output")" null
+  assert_equal "$(jq -r '.slug' <<<"$output")" a
+}
+
 @test "reds: a merged fix whose red is routed to alert reads alert route and is not unfixed; with no alert line it counts" {
   log_triage_setup
   : > "$AGENTCTL_STATE_DIR/runs.jsonl"
