@@ -28,7 +28,7 @@ name: shell tests
 # it runs, because a pool pod loads its image over a link shared with the whole pool: the one
 # 943 MB image ran every job out of its timeout in the cache restore on 2026-11-25 (ar-5632). A pool
 # runner pulls it from the LAN registry instead (the CI_REGISTRY variable and CI_REGISTRY_PASSWORD secret; the action
-# says when), and a pull that fails fails the step within 5 minutes: the Actions cache and a build are for a
+# says when), and a pull that fails fails the step within about 6 minutes: the Actions cache and a build are for a
 # runner with no registry only, since either one behind a failed pull ran the job into its guard (ar-5959). No step installs a tool on the runner (~/.local/src/docs/ci.md, Runners; tests/unit/ci_gate.bats).
 #   image  first, before every job that loads the image: makes sure the registry holds all three
 #          stages for the current tag, building and pushing them once when it does not. Without it
