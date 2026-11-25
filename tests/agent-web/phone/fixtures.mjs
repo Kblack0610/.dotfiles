@@ -539,6 +539,35 @@ const GRID_CARDS = [
   kcard("projects", "Projects", "-", "no data", "nodata", [], [], [], { error: "lab: unreadable" }),
 ];
 
+// hub_core::reports::View as it serializes: Needs you, the stream, a digest and a capture, then a
+// week of archive days, the titles long so a phone row cuts instead of widening the page.
+const dayOf = (min) => iso(ago(min)).slice(0, 10);
+const REPORT_TODAY = dayOf(0);
+function reportRow(i, date, state, kind = "report") {
+  const slug = pick(SLUGS, i), id = `${date}-${slug}`;
+  return {
+    id, kind, date, title: pick(TEXT, i), lead: pick(TEXT, i + 3), summary: pick(TEXT, i + 3), from: pick(PROJECTS, i),
+    at: iso(ago(20 + i * 35)), state, level: state === "needs you" ? "warn" : "", unread: state === "needs you" || state === "unread",
+    target: `journal/refs/${date}/${slug}`, link: `#reports/${id}`,
+  };
+}
+const reportSec = (id, title, folded, rows) => ({ id, title, folded, rows });
+const reportArchive = Array.from({ length: 7 }, (_, d) => {
+  const date = dayOf(1440 * (d + 1)), rows = [0, 1, 2].map((i) => reportRow(d * 3 + i, date, i ? "read" : "unread"));
+  return { date, count: "3 reports, 1 unread", unread: 1, rows, link: `#reports/${date}` };
+});
+const reports = {
+  today: REPORT_TODAY,
+  tiles: [{ label: "unread", n: 4, level: "" }, { label: "needs you", n: 2, level: "warn" }, { label: "today", n: 5, level: "" }, { label: "digests", n: 1, level: "" }],
+  sections: [
+    reportSec("needs", "Needs you", false, [0, 1].map((i) => reportRow(i, REPORT_TODAY, "needs you"))),
+    reportSec("stream", "Today", false, [2, 3, 4, 5, 6].map((i) => reportRow(i, REPORT_TODAY, i < 4 ? "unread" : "read"))),
+    reportSec("digests", "Digests", true, [reportRow(7, REPORT_TODAY, "digest", "digest")]),
+    reportSec("captures", "Your notes", true, [reportRow(8, REPORT_TODAY, "capture", "capture")]),
+  ],
+  moved: "2 unread moved to archive", archive: reportArchive, older_days: 3, unread: 4,
+};
+
 // The one order every surface draws (hub_core::cards::ORDER), read from hub-core so a change there
 // moves the fixture too.
 const CARDS_RS = readFileSync(new URL("../../../.local/src/hub-core/src/cards.rs", import.meta.url), "utf8");
@@ -555,6 +584,6 @@ export const FIXTURES = {
   "/api/alerts": alerts, "/api/infra": infra, "/api/jobs": jobs,
   "/api/log": log, "/api/log/work": logWork, "/api/log/history": logHistory, "/api/actions": actions,
   "/api/fleet": fleet, "/api/schedules": schedules, "/api/stack": stack, "/api/stack?rpg=2": stackPage(2), "/api/costs": costs, "/api/releases": releases, "/api/releases/lanes": lanes, "/api/builds": builds,
-  "/api/pipelines": pipelines, "/api/tests": tests,
+  "/api/pipelines": pipelines, "/api/tests": tests, "/api/reports": reports,
   ...Object.fromEntries(Object.entries(RUNNER_PAGES).map(([name, r]) => [`/api/fleet/runner?name=${name}`, r])),
 };

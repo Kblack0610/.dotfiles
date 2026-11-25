@@ -51,6 +51,9 @@ pub enum Kind {
     /// project's Sprint inner tab opened on that window. Not in `PAGES`: its word sits after the
     /// project, not after the tab.
     Sprint,
+    /// A report on the Reports tab, by its id (`<date>-<slug>`), or one day of them by its date:
+    /// the tab opens with that report unfolded, or that day's reports.
+    Report,
 }
 
 /// An entity page that sits inside a tab's inner tab: its kind, the tab, the `#tab/<word>/<id>`
@@ -202,6 +205,7 @@ impl Link {
             // home.js keys Needs you's view with `n`: `ns` is the state its tiles set.
             Kind::Needs => format!("#home?ns={seg}"),
             Kind::Ask => format!("#home/ask/{seg}"),
+            Kind::Report => format!("#reports/{seg}"),
             Kind::Sprint => {
                 let (key, version) = id.rsplit_once('/').unwrap_or((id, ""));
                 format!("#projects/{}/sprint/{}", component(key), component(version))
@@ -244,6 +248,7 @@ impl Link {
             Kind::Skill => ("stack", format!("skills skill:={id}")),
             // The hub's Home takes no filter word, so it opens the whole list.
             Kind::Needs | Kind::Ask => ("home", String::new()),
+            Kind::Report => ("reports", id.clone()),
             // The project's key, then `sprint/<version>`, as the web's hash after the project.
             Kind::Sprint => {
                 let (key, version) = id.rsplit_once('/').unwrap_or((id, ""));
@@ -415,6 +420,13 @@ mod tests {
         assert_eq!(
             both(Kind::Ask, "KKuNfh"),
             ("#home/ask/KKuNfh".into(), a("home", ""))
+        );
+        assert_eq!(
+            both(Kind::Report, "2026-11-24-ups-switch"),
+            (
+                "#reports/2026-11-24-ups-switch".into(),
+                a("reports", "2026-11-24-ups-switch")
+            )
         );
         assert_eq!(
             both(Kind::Sprint, "bnb/unity/v0.5.5"),

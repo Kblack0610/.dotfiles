@@ -40,6 +40,7 @@ mod push;
 mod queue;
 mod releases;
 mod remote;
+mod reports;
 mod reqlog;
 mod schedules;
 mod sessions;
@@ -278,6 +279,8 @@ fn router(state: Shared) -> Router {
         .route("/api/coverage", get(departments::get))
         .route("/api/focus", get(focus::get).put(focus::save))
         .route("/api/inbox/ack", post(focus::ack))
+        .route("/api/reports", get(reports::get))
+        .route("/api/reports/read", post(reports::read))
         .route("/api/outbox", get(outbox::get).put(outbox::save))
         .route("/api/queue", get(queue::list).post(queue::add))
         .route("/api/queue/cancel", post(queue::cancel))
