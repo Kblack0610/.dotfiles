@@ -38,6 +38,8 @@ The one home for CI doctrine across every repo the fleet works in. Each rule is 
 
 - A CI job's tools come from one image; a runner is docker plus a label, chosen once per workflow. No step installs a tool on the runner (apt, rustup, a setup action), and the runner choice is one YAML anchor every job references. Why: dotfiles jobs got their tools three ways (runner apt, the test image, runner rustup), so a move to the home pool meant installing the same tools on every pool host, checking for them in CI and keeping three lists in step (plan ck-report-only-draws-nested-owl; dotfiles `tests/unit/ci_gate.bats` checks it there). Other repos adopt it when they next touch CI.
 
+- A pool pod loads a shared image and never builds it: one job per run, ahead of the jobs that need the image, makes the registry hold it, and the rest only pull. Why: a tag change sent every pod to the registry at once (dotfiles 2026-11-25: 34 misses, 20 pushes of one tag, a 1 GbE link full), and the stage built inside a job's hang guard was killed before it pushed, so every later run missed again (dotfiles `tests.yml` `image`, ar-5740). The registry host's link is the shared resource: a pod pulls a few hundred MB, so what a run adds is its pod count times the image, and a job that can skip loading the image does (lever 1).
+
 ## Red handling
 
 One decision list. Walk it top to bottom for every red.

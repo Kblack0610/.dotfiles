@@ -29,6 +29,11 @@ name: shell tests
 # 943 MB image ran every job out of its timeout in the cache restore on 2026-11-25 (ar-5632). A pool
 # runner pulls it from the LAN registry instead (the CI_REGISTRY variable and CI_REGISTRY_PASSWORD secret; the action
 # says when). No step installs a tool on the runner (~/.local/src/docs/ci.md, Runners; tests/unit/ci_gate.bats).
+#   image  first, before every job that loads the image: makes sure the registry holds all three
+#          stages for the current tag, building and pushing them once when it does not. Without it
+#          every pod missed the registry at once when the tag changed (2026-11-25: 34 pods, 20
+#          pushes, the registry host's link full) and the notes job cold-built the rust stage
+#          under its 10-minute guard, so the stage was never pushed (ar-5740).
 #   gate   the one required check: red unless every gating job ran and passed.
 #   report the fast and ui tiers' JUnit, drawn on the run's Summary page: a row per file
 #          and every failed test, so a red reads without opening the logs.
@@ -157,9 +162,46 @@ jobs:
           echo "matrix=$matrix" >>"$GITHUB_OUTPUT"
           { echo 'picked<<EOF_PICKED'; cat "$RUNNER_TEMP/picked"; echo EOF_PICKED; } >>"$GITHUB_OUTPUT"
 
+  # One pod per run holds the registry's copy of the image current, so the jobs behind it only pull.
+  # On a tag the registry has (every run but the first after a Dockerfile change or a new ISO week)
+  # it is three manifest reads, about 20 s with the pod's start. Its timeout is the cold build of
+  # all three stages in one pod, the one place a pool pod builds; it is a hang guard like the rest.
+  # A hosted runner or a fork has no registry, so there it only checks out.
+  image:
+    name: test image in the registry
+    runs-on: *pool
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      # Smallest stage first: the later stages build on its layers in this pod's docker.
+      - name: Seed the lean stage
+        uses: ./.github/actions/test-image
+        env:
+          TEST_IMAGE_KIND: lean
+        with:
+          seed: true
+          registry: ${{ vars.CI_REGISTRY }}
+          registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
+      - name: Seed the rust stage
+        uses: ./.github/actions/test-image
+        env:
+          TEST_IMAGE_KIND: rust
+        with:
+          seed: true
+          registry: ${{ vars.CI_REGISTRY }}
+          registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
+      - name: Seed the full stage
+        uses: ./.github/actions/test-image
+        env:
+          TEST_IMAGE_KIND: full
+        with:
+          seed: true
+          registry: ${{ vars.CI_REGISTRY }}
+          registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
+
   fast:
     name: fast tier (${{ matrix.tier }} ${{ matrix.shard }})
-    needs: weights
+    needs: [weights, image]
     runs-on: *pool
     timeout-minutes: 10
     env:
@@ -222,6 +264,7 @@ jobs:
 
   ui:
     name: ui tier (tmux ${{ matrix.tmux }}, container)
+    needs: image
     runs-on: *pool
     timeout-minutes: 25
     env:
@@ -288,7 +331,7 @@ jobs:
   # !cancelled(): a skipped required check counts as passed, so a cancelled run must read red.
   gate:
     name: gate
-    needs: [fast, ui, rust, notes, skills, lint]
+    needs: [image, fast, ui, rust, notes, skills, lint]
     if: ${{ always() }}
     runs-on: *pool
     timeout-minutes: 2
@@ -337,6 +380,7 @@ jobs:
 
   rust:
     name: rust crates (test + fmt + clippy)
+    needs: image
     runs-on: *pool
     timeout-minutes: 20
     env:
@@ -437,6 +481,7 @@ jobs:
   # (274-296 s of a 5.0-6.0 min run, 2026-11-19), and here they run beside it.
   notes:
     name: notes bats (real notes binary)
+    needs: image
     runs-on: *pool
     timeout-minutes: 10
     env:
@@ -485,6 +530,7 @@ jobs:
 
   lint:
     name: shellcheck + house rules
+    needs: image
     runs-on: *pool
     timeout-minutes: 15
     env:
