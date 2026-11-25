@@ -101,6 +101,19 @@ pub fn older(total: usize, shown: usize, p: Palette) -> Option<ratatui::text::Li
         .then(|| ratatui::text::Line::styled(format!("  +{} older", total - shown), p.dim()))
 }
 
+/// A blank word as `-`, the way every table shows one.
+pub fn dash(s: &str) -> String {
+    if s.is_empty() { "-" } else { s }.into()
+}
+
+/// A section's heading: the title, then `rest` dimmed. A caller that wants a gap puts it in `rest`.
+pub fn heading(title: &str, rest: impl Into<String>, p: Palette) -> ratatui::text::Line<'static> {
+    ratatui::text::Line::from(vec![
+        ratatui::text::Span::styled(title.to_string(), p.head()),
+        ratatui::text::Span::styled(rest.into(), p.dim()),
+    ])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

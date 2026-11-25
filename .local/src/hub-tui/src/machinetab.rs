@@ -10,9 +10,9 @@ use hub_core::machine_page::{MachinePage, RecentJob};
 use hub_core::table::Row as _;
 use ratatui::text::{Line, Span};
 
-use crate::controls::{dash, page_field};
+use crate::controls::page_field;
 use crate::fit::{self, cell, clip_line, Table};
-use crate::fmt::{clock, Palette};
+use crate::fmt::{clock, dash, heading, Palette};
 use hub_core::display::fmt::dur_secs;
 
 /// The page's own keys, as its heading says them.
@@ -81,7 +81,11 @@ pub fn page(
     out.push(blank());
     match &page.live {
         Some(live) => out.extend(sensors(live, p, w)),
-        None => out.push(heading("SENSORS", hub_core::reading::NOT_READ, p)),
+        None => out.push(heading(
+            "SENSORS",
+            format!("  {}", hub_core::reading::NOT_READ),
+            p,
+        )),
     }
     out.push(blank());
     out.extend(slots(page, p, w));
@@ -106,7 +110,7 @@ pub fn page(
         }
         None => out.push(heading(
             &format!("{DAYS} DAYS"),
-            hub_core::reading::NOT_READ,
+            format!("  {}", hub_core::reading::NOT_READ),
             p,
         )),
     }
@@ -117,18 +121,11 @@ pub fn page(
     out.into_iter().map(|l| clip_line(l, w)).collect()
 }
 
-pub(crate) fn heading(title: &str, rest: impl Into<String>, p: Palette) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(title.to_string(), p.head()),
-        Span::styled(format!("  {}", rest.into()), p.dim()),
-    ])
-}
-
 /// Each runner with what it takes, what it does and what it uses, then the rest of the machine by class;
 /// TAKES is the first column to go when the width runs short.
 fn slots(page: &MachinePage, p: Palette, w: usize) -> Vec<Line<'static>> {
     if page.slots.is_empty() {
-        return vec![heading("SLOTS", "no runner and no core reading", p)];
+        return vec![heading("SLOTS", "  no runner and no core reading", p)];
     }
     let runners: Vec<_> = page.slots.iter().filter(|s| s.runner).collect();
     let busy = runners.iter().filter(|s| s.now == "busy").count();
@@ -144,7 +141,7 @@ fn slots(page: &MachinePage, p: Palette, w: usize) -> Vec<Line<'static>> {
             t.into()
         }
     };
-    let mut out = vec![heading("SLOTS", head, p)];
+    let mut out = vec![heading("SLOTS", format!("  {head}"), p)];
     out.extend(
         Table {
             header: vec!["SLOT", "TAKES", "NOW", "JOB", "CORES", "MEM", "DISK"],
@@ -165,7 +162,11 @@ fn slots(page: &MachinePage, p: Palette, w: usize) -> Vec<Line<'static>> {
                         } else {
                             s.now.clone().into()
                         },
-                        if s.runner { dash(&s.job) } else { "".into() },
+                        if s.runner {
+                            dash(&s.job).into()
+                        } else {
+                            "".into()
+                        },
                         read(s.cores_text()),
                         read(s.mem_text()),
                         read(s.disk_text()),
@@ -191,7 +192,7 @@ fn power(pw: &PowerHistory, p: Palette, now: i64) -> Vec<Line<'static>> {
         .map(|d| format!("{} {:.1}h", d.day.get(5..).unwrap_or(&d.day), d.hours))
         .collect();
     let mut out = vec![
-        heading("POWER", "hours run per UTC day, newest change first", p),
+        heading("POWER", "  hours run per UTC day, newest change first", p),
         Line::raw(format!(
             "  {}",
             if days.is_empty() {
@@ -221,11 +222,11 @@ fn power(pw: &PowerHistory, p: Palette, now: i64) -> Vec<Line<'static>> {
 /// Its busy CI slots and local gates.
 fn running(page: &MachinePage, p: Palette, w: usize) -> Vec<Line<'static>> {
     if page.running.is_empty() {
-        return vec![heading("RUNNING", "no CI job runs here", p)];
+        return vec![heading("RUNNING", "  no CI job runs here", p)];
     }
     let mut out = vec![heading(
         "RUNNING",
-        format!("{} jobs", page.running.len()),
+        format!("  {} jobs", page.running.len()),
         p,
     )];
     out.extend(
@@ -237,16 +238,16 @@ fn running(page: &MachinePage, p: Palette, w: usize) -> Vec<Line<'static>> {
                 .map(|s| {
                     let ran = s.ran.map_or("-".into(), |r| dur_secs(r as f64));
                     vec![
-                        dash(&s.job),
-                        dash(&s.pool),
-                        dash(&s.slot),
+                        dash(&s.job).into(),
+                        dash(&s.pool).into(),
+                        dash(&s.slot).into(),
                         if s.late {
                             cell(ran, p.warn())
                         } else {
                             ran.into()
                         },
                         s.usual.map_or("-".into(), |u| dur_secs(u as f64).into()),
-                        dash(&s.reference()),
+                        dash(&s.reference()).into(),
                     ]
                 })
                 .collect(),
@@ -267,7 +268,7 @@ fn history(h: &HostHistory, p: Palette, now: i64, w: usize) -> Vec<Line<'static>
     let mut out = vec![heading(
         &format!("{days} DAYS"),
         format!(
-            "cpu by hour from {}, {} readings",
+            "  cpu by hour from {}, {} readings",
             clock(h.from as i64, now),
             h.readings
         ),
@@ -362,19 +363,19 @@ fn more(n: usize, p: Palette) -> Option<Line<'static>> {
 /// Every device's temperatures and fans, a hot one in amber.
 fn sensors(live: &HostNow, p: Palette, w: usize) -> Vec<Line<'static>> {
     if let Some(why) = unread(live, "sensors") {
-        return vec![heading("SENSORS", why, p)];
+        return vec![heading("SENSORS", format!("  {why}"), p)];
     }
     if live.devices.is_empty() {
         return vec![heading(
             "SENSORS",
-            "none: its node exporter publishes no hwmon reading",
+            "  none: its node exporter publishes no hwmon reading",
             p,
         )];
     }
     let mut out = vec![heading(
         "SENSORS",
         format!(
-            "{}, amber at {HOT_C:.0}C",
+            "  {}, amber at {HOT_C:.0}C",
             hub_core::display::fmt::counted(live.devices.len(), "device")
         ),
         p,
@@ -388,14 +389,14 @@ fn sensors(live: &HostNow, p: Palette, w: usize) -> Vec<Line<'static>> {
                 .map(|d| {
                     let hot = d.hottest.map_or("-".into(), |c| format!("{c:.0}C"));
                     vec![
-                        dash(&d.device),
+                        dash(&d.device).into(),
                         if d.in_state("hot") {
                             cell(hot, p.warn())
                         } else {
                             hot.into()
                         },
-                        dash(&d.readings()),
-                        dash(&d.chip),
+                        dash(&d.readings()).into(),
+                        dash(&d.chip).into(),
                     ]
                 })
                 .collect(),
@@ -413,17 +414,17 @@ fn sensors(live: &HostNow, p: Palette, w: usize) -> Vec<Line<'static>> {
 /// Its Kubernetes pods, busiest first.
 fn pods(live: &HostNow, p: Palette, w: usize) -> Vec<Line<'static>> {
     if let Some(why) = unread(live, "pods") {
-        return vec![heading("PODS", why, p)];
+        return vec![heading("PODS", format!("  {why}"), p)];
     }
     if live.pods.is_empty() {
-        return vec![heading("PODS", "none: no Kubernetes pod runs here", p)];
+        return vec![heading("PODS", "  none: no Kubernetes pod runs here", p)];
     }
     let cpu: f64 = live.pods.iter().filter_map(|x| x.cpu).sum();
     let mem: f64 = live.pods.iter().filter_map(|x| x.mem).sum();
     let mut out = vec![heading(
         "PODS",
         format!(
-            "{} running, {} cores, {} together",
+            "  {} running, {} cores, {} together",
             live.pods.len(),
             cores(Some(cpu)),
             bytes(mem)
@@ -439,8 +440,8 @@ fn pods(live: &HostNow, p: Palette, w: usize) -> Vec<Line<'static>> {
                 .take(LIVE_ROWS)
                 .map(|x| {
                     vec![
-                        dash(&x.pod),
-                        dash(&x.namespace),
+                        dash(&x.pod).into(),
+                        dash(&x.namespace).into(),
                         cores(x.cpu).into(),
                         x.mem.map_or("-".into(), |m| bytes(m).into()),
                     ]
@@ -467,9 +468,9 @@ fn procs(rows: &[Proc], image: bool, p: Palette, w: usize) -> Vec<Line<'static>>
             .take(LIVE_ROWS)
             .map(|x| {
                 vec![
-                    dash(&x.name),
+                    dash(&x.name).into(),
                     if image {
-                        dash(&x.image)
+                        dash(&x.image).into()
                     } else {
                         x.count.map_or("-".into(), |n| format!("{n:.0}").into())
                     },
@@ -498,11 +499,11 @@ fn sessions(rows: &[Session], p: Palette, w: usize) -> Vec<Line<'static>> {
             .take(LIVE_ROWS)
             .map(|x| {
                 vec![
-                    dash(&x.project),
-                    dash(&x.item),
+                    dash(&x.project).into(),
+                    dash(&x.item).into(),
                     cores(x.cpu).into(),
                     x.mem.map_or("-".into(), |m| bytes(m).into()),
-                    dash(&x.tests),
+                    dash(&x.tests).into(),
                 ]
             })
             .collect(),
@@ -523,24 +524,24 @@ fn inventory(live: &HostNow, p: Palette, w: usize) -> Vec<Line<'static>> {
     if let Some(why) = unread(live, "inventory") {
         return vec![heading(
             "CONTAINERS, PROCESSES, AGENT SESSIONS, SERVICES",
-            why,
+            format!("  {why}"),
             p,
         )];
     }
     if !live.inventory {
         return vec![heading(
             "CONTAINERS, PROCESSES, AGENT SESSIONS, SERVICES",
-            "not collected: no node_inventory.prom (home-config role node-inventory-metrics)",
+            "  not collected: no node_inventory.prom (home-config role node-inventory-metrics)",
             p,
         )];
     }
     let mut out = vec![];
     if live.containers.is_empty() {
-        out.push(heading("CONTAINERS", "no Docker container runs here", p));
+        out.push(heading("CONTAINERS", "  no Docker container runs here", p));
     } else {
         out.push(heading(
             "CONTAINERS",
-            format!("{} running in Docker", live.containers.len()),
+            format!("  {} running in Docker", live.containers.len()),
             p,
         ));
         out.extend(procs(&live.containers, true, p, w));
@@ -552,7 +553,7 @@ fn inventory(live: &HostNow, p: Palette, w: usize) -> Vec<Line<'static>> {
     out.push(heading(
         "PROCESSES",
         format!(
-            "the busiest {} names{of}, by cpu and memory",
+            "  the busiest {} names{of}, by cpu and memory",
             live.processes.len()
         ),
         p,
@@ -562,14 +563,14 @@ fn inventory(live: &HostNow, p: Palette, w: usize) -> Vec<Line<'static>> {
     if live.sessions.is_empty() {
         out.push(heading(
             "AGENT SESSIONS",
-            "none runs in its own scope here",
+            "  none runs in its own scope here",
             p,
         ));
     } else {
         out.push(heading(
             "AGENT SESSIONS",
             format!(
-                "{} in their own scopes, the busiest first",
+                "  {} in their own scopes, the busiest first",
                 live.sessions.len()
             ),
             p,
@@ -579,7 +580,7 @@ fn inventory(live: &HostNow, p: Palette, w: usize) -> Vec<Line<'static>> {
     out.push(Line::raw(""));
     out.push(heading(
         "SERVICES",
-        format!("{} systemd services running", live.services.len()),
+        format!("  {} systemd services running", live.services.len()),
         p,
     ));
     let lines = fit::wrap(&live.services, " ", w.saturating_sub(2));
@@ -591,13 +592,17 @@ fn inventory(live: &HostNow, p: Palette, w: usize) -> Vec<Line<'static>> {
 fn downtime(h: &HostHistory, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
     if let Some(why) = &h.down_unread {
         let text = format!("{}: {why}", hub_core::reading::NOT_READ);
-        return vec![heading("DOWNTIME", text, p)];
+        return vec![heading("DOWNTIME", format!("  {text}"), p)];
     }
     if h.down.is_empty() {
         let text = "no record in the window (one is written once a downtime ends)";
-        return vec![heading("DOWNTIME", text, p)];
+        return vec![heading("DOWNTIME", format!("  {text}"), p)];
     }
-    let mut out = vec![heading("DOWNTIME", format!("{} records", h.down.len()), p)];
+    let mut out = vec![heading(
+        "DOWNTIME",
+        format!("  {} records", h.down.len()),
+        p,
+    )];
     out.extend(
         Table {
             header: vec!["FROM", "TO", "TOOK", "CAUSE", "WHY"],
@@ -630,9 +635,13 @@ fn downtime(h: &HostHistory, p: Palette, now: i64, w: usize) -> Vec<Line<'static
 /// The CI jobs that ran there, newest first, a failure in red.
 fn recent(rows: &[RecentJob], p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
     if rows.is_empty() {
-        return vec![heading("RECENT CI JOBS", "none in the jobs archive", p)];
+        return vec![heading("RECENT CI JOBS", "  none in the jobs archive", p)];
     }
-    let mut out = vec![heading("RECENT CI JOBS", format!("last {}", rows.len()), p)];
+    let mut out = vec![heading(
+        "RECENT CI JOBS",
+        format!("  last {}", rows.len()),
+        p,
+    )];
     out.extend(
         Table {
             header: vec!["STARTED", "REPO", "JOB", "RUNNER", "CONCLUSION", "TOOK"],
@@ -648,9 +657,9 @@ fn recent(rows: &[RecentJob], p: Palette, now: i64, w: usize) -> Vec<Line<'stati
                     };
                     vec![
                         j.started.map_or("-".into(), |t| clock(t, now).into()),
-                        dash(&j.repo),
-                        dash(&j.job),
-                        dash(&j.runner),
+                        dash(&j.repo).into(),
+                        dash(&j.job).into(),
+                        dash(&j.runner).into(),
                         c,
                         j.took.map_or("-".into(), |t| dur_secs(t as f64).into()),
                     ]
@@ -676,11 +685,11 @@ fn recent(rows: &[RecentJob], p: Palette, now: i64, w: usize) -> Vec<Line<'stati
 /// The firing alerts that name it.
 fn alerts(page: &MachinePage, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
     if page.alerts.is_empty() {
-        return vec![heading("ALERTS", "none names it", p)];
+        return vec![heading("ALERTS", "  none names it", p)];
     }
     let mut out = vec![heading(
         "ALERTS",
-        format!("{} firing", page.alerts.len()),
+        format!("  {} firing", page.alerts.len()),
         p,
     )];
     out.extend(
@@ -692,10 +701,10 @@ fn alerts(page: &MachinePage, p: Palette, now: i64, w: usize) -> Vec<Line<'stati
                 .map(|a| {
                     vec![
                         a.what.clone().into(),
-                        dash(&a.sev),
-                        dash(&a.state),
+                        dash(&a.sev).into(),
+                        dash(&a.state).into(),
                         a.since.map_or("-".into(), |t| clock(t, now).into()),
-                        dash(&a.owner),
+                        dash(&a.owner).into(),
                     ]
                 })
                 .collect(),
@@ -722,18 +731,7 @@ mod tests {
     const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
     use hub_core::session_page::Part;
 
-    fn text(lines: &[Line]) -> String {
-        lines
-            .iter()
-            .map(|l| {
-                l.spans
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
+    use crate::fit::plain_text as text;
 
     fn fixture() -> MachinePage {
         MachinePage {

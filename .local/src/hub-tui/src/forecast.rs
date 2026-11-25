@@ -579,9 +579,7 @@ pub mod tests {
         }
     }
 
-    fn text(lines: &[Line]) -> String {
-        lines.iter().map(plain).collect::<Vec<_>>().join("\n")
-    }
+    use crate::fit::plain_text as text;
 
     #[test]
     fn the_three_fixtures_parse_with_the_fields_the_page_reads() {

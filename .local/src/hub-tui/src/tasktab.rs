@@ -21,7 +21,7 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
 use crate::fit::{cell, clip_line, wrap, Cell, Table};
-use crate::fmt::Palette;
+use crate::fmt::{heading, Palette};
 
 /// What a key on the rows asks the app to do.
 #[derive(Debug, PartialEq)]
@@ -427,13 +427,6 @@ pub fn sprint_lines(rows: &[tasks::SprintRow], p: Palette, w: usize) -> Vec<Line
         .fit(w, p.head()),
     );
     out
-}
-
-fn heading(title: &str, rest: String, p: Palette) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(title.to_string(), p.head()),
-        Span::styled(rest, p.dim()),
-    ])
 }
 
 fn prio_style(priority: &str, p: Palette) -> ratatui::style::Style {

@@ -13,7 +13,7 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::{DataTable, Took};
 use crate::fit::{cell, clip_line, Cell, Table};
-use crate::fmt::Palette;
+use crate::fmt::{dash, Palette};
 use crate::projtab::{wrapped, ProjView};
 use crate::tasktab::TaskView;
 
@@ -273,14 +273,6 @@ pub(crate) fn section(
             format!("  {before} above, {after} below"),
             p.dim(),
         ));
-    }
-}
-
-pub(crate) fn dash(s: &str) -> String {
-    if s.is_empty() {
-        "-".into()
-    } else {
-        s.into()
     }
 }
 

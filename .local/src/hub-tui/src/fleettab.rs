@@ -13,16 +13,9 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
 use crate::fit::{cell, clip_line, len, wrap, Table};
-use crate::fmt::{clock, older, pct, Palette};
+use crate::fmt::{clock, heading, older, pct, Palette};
 use hub_core::display::fmt::{dur_secs, tokens, usd_opt};
 use hub_core::layout::FOLD_ROWS;
-
-fn heading(title: &str, rest: String, p: Palette) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(title.to_string(), p.head()),
-        Span::styled(rest, p.dim()),
-    ])
-}
 
 /// The rows as shown: the table's query, state and sort applied. j/k step through these and
 /// Enter opens the one selected.

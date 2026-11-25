@@ -15,7 +15,7 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::{DataTable, Took};
 use crate::fit::{cell, clip_line, Cell, Table};
-use crate::fmt::{clock, pct, Palette};
+use crate::fmt::{clock, dash, pct, Palette};
 use hub_core::display::fmt::dur_secs;
 
 /// The tables in `hub_core::layout` section order; an index here is a table's view.
@@ -315,14 +315,6 @@ impl Draw<'_> {
     }
 }
 
-fn or_dash(s: String) -> Cell {
-    if s.is_empty() {
-        "-".into()
-    } else {
-        s.into()
-    }
-}
-
 fn num(v: Option<f64>) -> Cell {
     v.map_or("-".into(), |x| format!("{x:.0}").into())
 }
@@ -404,7 +396,7 @@ fn machines(d: &Draw, rows: &[Machine], now: i64) -> Vec<Line<'static>> {
                 pct(m.mem).into(),
                 temp,
                 pct(m.disk).into(),
-                or_dash(m.running.join(", ")),
+                dash(&m.running.join(", ")).into(),
                 m.next
                     .as_ref()
                     .map_or("-".into(), |n| n.line(|s| dur_secs(s as f64)).into()),
@@ -443,7 +435,7 @@ fn pools(d: &Draw, rows: &[Pool]) -> Vec<Line<'static>> {
         |r| {
             vec![
                 r.pool.clone().into(),
-                or_dash(shown(r, "weight")),
+                dash(&shown(r, "weight")).into(),
                 num(r.running),
                 match r.waiting {
                     Some(x) if x > 0.0 => cell(format!("{x:.0}"), p.warn()),
@@ -452,7 +444,7 @@ fn pools(d: &Draw, rows: &[Pool]) -> Vec<Line<'static>> {
                 r.oldest.map_or("-".into(), |s| dur_secs(s).into()),
                 num(r.done),
                 cell(pct(r.pass), p.pass(r.pass)),
-                or_dash(shown(r, "machines")),
+                dash(&shown(r, "machines")).into(),
             ]
         },
         Table {
@@ -490,15 +482,15 @@ fn runners(d: &Draw, rows: &[Slot]) -> Vec<Line<'static>> {
                 r.host.clone().into(),
                 r.slot.clone().into(),
                 cell(&r.state, state),
-                or_dash(r.pool.clone()),
+                dash(&r.pool).into(),
                 if r.late {
                     cell(format!("{}!", secs(r.ran)), p.warn())
                 } else {
                     secs(r.ran).into()
                 },
                 secs(r.usual).into(),
-                or_dash(if busy { r.job.clone() } else { r.note.clone() }),
-                or_dash(if busy { r.reference() } else { String::new() }),
+                dash(if busy { &r.job } else { &r.note }).into(),
+                dash(&if busy { r.reference() } else { String::new() }).into(),
             ]
         },
         Table {
@@ -546,11 +538,11 @@ fn queued(d: &Draw, rows: &[Queued]) -> Vec<Line<'static>> {
             };
             vec![
                 cell(&q.job, s),
-                or_dash(q.pool.clone()),
-                or_dash(q.reference()),
+                dash(&q.pool).into(),
+                dash(&q.reference()).into(),
                 q.n.to_string().into(),
                 dur_secs(q.wait as f64).into(),
-                or_dash(q.needs.join(", ")),
+                dash(&q.needs.join(", ")).into(),
                 cell(can, s),
                 match q.starts {
                     None => "-".into(),

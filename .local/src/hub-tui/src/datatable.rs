@@ -151,6 +151,12 @@ impl DataTable {
         self.clamp(n);
     }
 
+    /// After a re-read: the selection on the row whose `key` is `id`, or the index kept in range.
+    pub fn reselect<T, K: PartialEq>(&mut self, rows: &[T], id: Option<K>, key: impl Fn(&T) -> K) {
+        let at = id.and_then(|id| rows.iter().position(|r| key(r) == id));
+        self.keep(at, rows.len());
+    }
+
     /// The header and the `h` rows of a drawn table that keep the selection in view: the header
     /// stays, rows scroll under it.
     pub fn window(&mut self, table: Vec<Line<'static>>, h: usize) -> Vec<Line<'static>> {

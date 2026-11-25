@@ -22,7 +22,7 @@ use ratatui::text::{Line, Span};
 use crate::datatable::{DataTable, Took};
 use crate::fit::{cell, clip_line, Cell, Table};
 use crate::flowline::{self, LineView};
-use crate::fmt::{clock, Palette};
+use crate::fmt::{clock, heading, Palette};
 use hub_core::display::fmt::{counted, dur_min, usd};
 
 /// What a key on the Queue tab asks the app to do.
@@ -312,13 +312,6 @@ impl QueueView {
 /// Why cancel and priority leave a finished item alone.
 fn done_row(i: &Item) -> Result<String, String> {
     Err(format!("{} is done", i.slug))
-}
-
-fn heading(title: &str, rest: String, p: Palette) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(title.to_string(), p.head()),
-        Span::styled(rest, p.dim()),
-    ])
 }
 
 /// The STATE column: what the item needs, or how it finished.
