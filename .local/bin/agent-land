@@ -1180,7 +1180,7 @@ shape_gate() {
   fi
   mb=$(git merge-base HEAD "$remote/$base" 2>&1) || fail shape "git merge-base HEAD $remote/$base: $(lastline "$mb")"
   out=$("${SHAPE_GROW:-$(dirname "$(readlink -f "$0")")/shape-grow}" --body - "$mb" HEAD 2>&1 <<<"$body") || rc=$?
-  list=$(grep -v '^shape-grow: ' <<<"$out" | paste -sd';' | sed 's/;/; /g')
+  list=$({ grep -v '^shape-grow: ' <<<"$out" || true; } | paste -sd';' | sed 's/;/; /g')
   case $rc in
     0) echo "shape: clean${list:+, covered: $list}" ;;
     1) fail shape "$list. $(grep -m1 '^shape-grow: fix' <<<"$out" | sed 's/^shape-grow: //')" ;;
