@@ -1250,6 +1250,32 @@ gate_rbw() {
   refute grep -q ' tag ' "$NOTES_FIXTURE/calls.log"
 }
 
+@test "a pr: gate on a PR the item opened is refused by set and left off its row by return (ar-4042)" {
+  mkdir -p "$HOME/.cache/agent-queue/pr"
+  echo OPEN > "$HOME/.cache/agent-queue/pr/o_r_8"; echo OPEN > "$HOME/.cache/agent-queue/pr/o_r_9"
+  legacy own "pr: o/r#8" --project game --from shepherd "own pr"
+  "$AQ" set own row=game:gm-4 >/dev/null
+  run "$AQ" set own tags="pr:o/r#8"
+  assert_failure
+  assert_output --partial "pr:o/r#8: own opened that PR"
+  # The same set that records the PR is refused too, and writes neither.
+  run "$AQ" set own open_pr="o/r#7" tags="pr:o/r#7"
+  assert_failure
+  refute grep -q '^open_pr:' "$(item queued own)"
+  # A tag written past the check (a hand edit) goes on no row; the other PR still does.
+  legacy_hold own "tags: pr:o/r#8 pr:o/r#9"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" return own --why "back to the board"
+  assert_success
+  assert_called "ptask game --agent tag --add pr/o/r/9 gm-4"
+  refute grep -q 'pr/o/r/8' "$NOTES_FIXTURE/calls.log"
+  # Negative control: an item may wait on a PR it did not open.
+  legacy other "pr: o/r#7" --project game --from shepherd "other"
+  "$AQ" set other row=game:gm-3 >/dev/null
+  run "$AQ" set other tags="pr:o/r#9"
+  assert_success
+}
+
 @test "return leaves a row started, exit 1, when it did not take its gates" {
   gate_rbw
   legacy gx "tags: rbw:infra/y" --project game --from shepherd "x"

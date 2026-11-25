@@ -3239,6 +3239,18 @@ cmd_set() {
   lock
   f="$(find_item "$slug" any)"; [ -n "$f" ] || die "no item: $slug"
   [[ "$f" == "$AQ_DIR"/done/* ]] || for kv in "$@"; do [ "${kv%%=*}" != tags ] || cause_owner "${kv#*=}" "$slug"; done
+  # A pr: tag on a PR the item opened (open_pr: or pr:, this set's included) waits for the item's own work, so it
+  # would never start (ar-4042).
+  local own_set="" t
+  for kv in "$@"; do case "$kv" in pr=* | open_pr=*) own_set+=" ${kv#*=}" ;; esac; done
+  own_set=" $(own_prs "$f")$own_set "
+  for kv in "$@"; do
+    [ "${kv%%=*}" = tags ] || continue
+    for t in ${kv#*=}; do
+      [[ "$t" != pr:?* || "$own_set" != *" ${t#pr:} "* ]] ||
+        die "$t: $slug opened that PR, so a gate on it would wait for its own work; land it with agent-land, or move $slug to review"
+    done
+  done
   # A gate on a queued item sends it back to its board row (below), so one with no row is refused
   # before anything is written: it would stay queued with a pending hold.
   local new_after new_tags HOLD HOLD_DEAD
@@ -3360,12 +3372,17 @@ gate_row() {
 # settles, so neither goes. Nor does an after: item with no row that is in <chain> (the slugs this
 # return closes, space-padded): it closes here undelivered, so nothing is left to wait on. Dies naming
 # a hold with no board form: any other after: item with no row, or a tag value a hashtag cannot carry.
-return_gates() { pending_gates "$(fm_get "$1" slug)" "$(fm_get "$1" after)" "$(fm_get "$1" tags)" "$2" return; }
+# A pr: tag naming a PR the item opened itself goes on no row: that row would wait for its own work (ar-4042).
+return_gates() { pending_gates "$(fm_get "$1" slug)" "$(fm_get "$1" after)" "$(fm_get "$1" tags)" "$2" return " $(own_prs "$1") "; }
 
-# pending_gates <slug> <after> <tags> <chain> <verb> -> return_gates for these header values; <verb> is
-# the act a die names (`return`, or `hold` for an add, cmd_add). An add passes no chain.
+# own_prs <file> -> the PRs the item opened, open_pr: and pr:, space-separated <owner>/<repo>#<N>.
+own_prs() { word_list "$(fm_get "$1" open_pr) $(fm_get "$1" pr)"; }
+
+# pending_gates <slug> <after> <tags> <chain> <verb> [<own>] -> return_gates for these header values; <verb>
+# is the act a die names (`return`, or `hold` for an add, cmd_add). An add passes no chain. <own>, space-padded,
+# is the item's own PRs, whose pr: tags are left off.
 pending_gates() {
-  local slug=$1 chain=$4 verb=$5 s g row t attag="" desk="" out="" AST HOLD HOLD_DEAD GB
+  local slug=$1 chain=$4 verb=$5 own=${6:-} s g row t attag="" desk="" out="" AST HOLD HOLD_DEAD GB
   for s in $2; do
     after_status "$s"
     [ -z "$AST" ] || continue
@@ -3386,6 +3403,7 @@ pending_gates() {
       ask:?*) ;;
       # Not a gate: the rank its hold: gives it among the desk's waiters (desk_wait), which promote puts back.
       desk:?*) desk="desk/${t#desk:}"; continue ;;
+      pr:?*) [[ "$own" != *" ${t#pr:} "* ]] || continue ;;&
       # Judged with the item's at: date, as hold_for judges a nightly: on that night.
       at:* | rbw:* | pr:* | hold:* | nightly:*) hold_for "" "$t${attag:+ $attag}"; [[ "$HOLD" == "$t"* ]] || continue ;;
       *) continue ;;
