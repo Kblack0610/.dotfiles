@@ -117,7 +117,7 @@ Every add below starts here (global CLAUDE.md, Subtract First).
 
 ### Register a new MCP server
 
-1. For Claude: the committed `.mcp.json` of the repo that uses it (the rule is in the global CLAUDE.md "Standards"; `enableAllProjectMcpServers` in settings.json approves it). Not `claude mcp add -s user`, and not a `.mcp.json` above the repos either: Claude Code walks up from the cwd, so that too starts the server in every session. A server most sessions do not need goes in `~/.dotfiles-private/.claude/mcp-optional/<name>.json` and loads with `claude-mcp <name>`.
+1. For Claude: add it to the committed `.mcp.json` of the repo that uses it (the rule is in the global CLAUDE.md "Standards"; `enableAllProjectMcpServers` in settings.json approves it). Not `claude mcp add -s user`, and not a `.mcp.json` above the repos either: Claude Code walks up from the cwd, so that too starts the server in every session. A server most sessions do not need goes in `~/.dotfiles-private/.claude/mcp-optional/<name>.json` and loads with `claude-mcp <name>`.
 2. For Codex / Gemini / OpenCode: edit `~/.dotfiles-private/.config/rulesync-global/.rulesync/mcp.json` and run the sync.
 3. Restart any tool already running to pick up the change.
 
