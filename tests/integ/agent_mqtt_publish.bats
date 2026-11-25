@@ -22,7 +22,7 @@ setup() {
 #!/usr/bin/env bash
 t="" m=""
 while [ $# -gt 0 ]; do
-  case "$1" in -t) t="$2"; shift 2 ;; -m) m="$2"; shift 2 ;; *) shift ;; esac
+  case "$1" in -h) printf '%s\n' "$2" >> "$NOTES_FIXTURE/mqtt.hosts"; shift 2 ;; -t) t="$2"; shift 2 ;; -m) m="$2"; shift 2 ;; *) shift ;; esac
 done
 [ -n "${MQTT_STUB_FAIL:-}" ] && exit 1
 # MQTT_STUB_MISSES=N: the first N calls fail, then the broker answers.
@@ -33,6 +33,16 @@ fi
 printf '%s\t%s\n' "$t" "$m" >> "$NOTES_FIXTURE/mqtt.log"
 EOF
   chmod +x "$SANDBOX/bin/mosquitto_pub"
+  # The resolver: `getent ahosts <name>` answers 192.0.2.7 and counts each lookup in getent.calls;
+  # GETENT_STUB_MISSES=N fails the first N.
+  cat > "$SANDBOX/bin/getent" <<'EOF'
+#!/usr/bin/env bash
+[ "$1" = ahosts ] || exit 2
+n=$(cat "$NOTES_FIXTURE/getent.calls" 2>/dev/null || echo 0); echo $((n + 1)) > "$NOTES_FIXTURE/getent.calls"
+[ "$n" -lt "${GETENT_STUB_MISSES:-0}" ] && exit 2
+printf '192.0.2.7       STREAM %s\n192.0.2.7       DGRAM  \n' "$2"
+EOF
+  chmod +x "$SANDBOX/bin/getent"
 
   # This host holds the fleet lease unless a test says otherwise (FLEET_LEASE_RC).
   printf '#!/usr/bin/env bash\n[ "$1" = held ] && exit "${FLEET_LEASE_RC:-0}"\n' > "$SANDBOX/bin/fleet-lease"
@@ -382,6 +392,29 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   MQTT_STUB_MISSES=1 AGENT_MQTT_BACKOFF=0.5 AGENT_MQTT_RETRIES=x run "$PUB" --quiet
   assert_success
   [ -n "$(payload agents/testhost/runner/alpha)" ]
+}
+
+@test "broker lookup: one per run, and every call goes to that address, not the name (ar-2310)" {
+  run "$PUB" --full --quiet
+  assert_success
+  [ "$(cat "$NOTES_FIXTURE/getent.calls")" = 1 ]
+  [ "$(sort -u "$NOTES_FIXTURE/mqtt.hosts")" = 192.0.2.7 ]
+  [ "$(wc -l < "$NOTES_FIXTURE/mqtt.hosts")" -gt 1 ]
+}
+
+@test "broker lookup: a missed lookup is retried and the run still succeeds" {
+  GETENT_STUB_MISSES=1 run "$PUB" --quiet
+  assert_success
+  [ -n "$(payload agents/testhost/runner/alpha)" ]
+  [ "$(cat "$NOTES_FIXTURE/getent.calls")" = 2 ]
+}
+
+@test "broker lookup: a name that never resolves fails the run with nothing sent" {
+  GETENT_STUB_MISSES=99 AGENT_MQTT_RETRIES=2 run "$PUB"
+  assert_failure
+  assert_output --partial "cannot resolve broker stub"
+  [ ! -s "$PUBLOG" ]
+  [ "$(cat "$NOTES_FIXTURE/getent.calls")" = 3 ]
 }
 
 @test "dry-run prints the snapshot and never calls the broker" {

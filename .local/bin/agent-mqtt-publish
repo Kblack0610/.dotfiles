@@ -392,12 +392,26 @@ snapshot() {
 # no longer in the snapshot can be deleted. Filenames are the topic with / -> %.
 tfile() { printf '%s/sent/%s' "$CACHE" "${1//\//%}"; }
 
+# broker_addr <host> -> its first stream address, looked up once a run and retried like a publish.
+# mosquitto_pub resolves -h on every call, and the broker's record lives 10s, so each of a --full run's
+# 310 calls paid a fresh lookup; at about 200ms a lookup that was 62s, past the unit's 60s (ar-2310).
+# An address passes through as itself. With no getent (macOS) each call resolves the name, as before.
+broker_addr() {
+    command -v getent >/dev/null 2>&1 || { printf '%s\n' "$1"; return 0; }
+    local i
+    for ((i = 0; i <= PUB_RETRIES; i++)); do
+        [ "$i" -gt 0 ] && sleep $((PUB_BACKOFF << (i - 1)))
+        getent ahosts "$1" 2>/dev/null | awk '$2 == "STREAM" { print $1; ok = 1; exit } END { exit !ok }' && return 0
+    done
+    return 1
+}
+
 publish() {
     local i
     for ((i = 0; i <= PUB_RETRIES; i++)); do
         # Backoff, not a wait on a signal: the broker has no event to await.
         [ "$i" -gt 0 ] && sleep $((PUB_BACKOFF << (i - 1)))
-        timeout "$PUB_TIMEOUT" mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -q 1 -r \
+        timeout "$PUB_TIMEOUT" mosquitto_pub -h "$MQTT_ADDR" -p "$MQTT_PORT" -q 1 -r \
             -t "$1" -m "$2" 2>/dev/null && return 0
     done
     return 1
@@ -420,6 +434,7 @@ main() {
     # republishes everything, and the next fleet-state pass any change.
     exec 9>"$CACHE/lock"
     flock -w 20 9 || { say "lock busy"; return 0; }
+    MQTT_ADDR="$(broker_addr "$MQTT_HOST")" || { say "cannot resolve broker $MQTT_HOST"; return 1; }
     snap="$(snapshot; feed_lines)"
 
     local -A want=()
