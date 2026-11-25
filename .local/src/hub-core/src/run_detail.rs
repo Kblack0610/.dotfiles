@@ -709,6 +709,9 @@ pub(crate) mod tests {
             ),
             ("hosted", "github-hosted", "github-hosted")
         );
+        // A job no runner took yet is neither.
+        let unrun = job_row(&job("", &["unity", "unity-gate"]), &rates());
+        assert_eq!((unrun.class.as_str(), unrun.runner.as_str()), ("-", ""));
     }
 
     #[test]
