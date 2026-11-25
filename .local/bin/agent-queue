@@ -1909,6 +1909,13 @@ prior_story() {
 }
 
 # --- verbs ---
+# plan_row_priority <from> <priority named> <priority> -> the tag a plan's board row is filed with. A machine
+# filer (auto:*) that names none files it untagged (empty), for `agentctl-inbox-triage --backlog --priority`
+# to judge by the rubric; the add default (high) is the human's, not a filer's.
+plan_row_priority() {
+  case "$1" in auto:?*) [ -n "$2" ] || return 0 ;; esac
+  echo "$3"
+}
 # add_priority <priority> <named> <plan> <tags> <from> -> the priority an add files at. <named> is
 # non-empty when the caller named one (or adds --running, --want, --dry-run, --check). The high default
 # is the human's add by hand. A session decides: high is for what blocks a release or a red on main,
@@ -2033,11 +2040,7 @@ cmd_add() {
       board_only_say
       # The row's brief names the plan by its absolute path, which dispatch's promote reads back to queue
       # the chain (plan_row_plan).
-      # A machine filer that names no priority files the row untagged, for `agentctl-inbox-triage --backlog
-      # --priority` to judge by the rubric; the add default (high) is the human's, not a filer's.
-      local row_prio="$priority"
-      case "$from" in auto:?*) [ -n "$priority_given" ] || row_prio="" ;; esac
-      AQ_FILE_ORIGIN=plan overflow_row "$pproject" "$ptitle" "$row_prio" "" "" "$(plan_row_task "$(realpath "$planf")")" "" "$(basename "$planf" .md)" || exit 1
+      AQ_FILE_ORIGIN=plan overflow_row "$pproject" "$ptitle" "$(plan_row_priority "$from" "$priority_given" "$priority")" "" "" "$(plan_row_task "$(realpath "$planf")")" "" "$(basename "$planf" .md)" || exit 1
       exit "$AQ_EX_HELD"
     fi
     AQ_ADMITTED=1 plan_add_waiting; return
