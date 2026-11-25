@@ -5592,8 +5592,9 @@ other_source_start() {
 # agent-queue takes them), one task a lane a round, so a week's set trickles in as each one finishes
 # instead of sitting in the queue whole (the cap and the queue age count every queued item). They start
 # in queue order like any item, the class mix (classes.json `cleanup`, tag `canary`) keeping their class
-# from falling behind. While a project share is full only the lanes on their own source queue (--off-claude:
-# a Claude lane's canary would wait at the cap). Skipped in a dry run, at 0, and while floor_gate is shut
+# from falling behind. While a project share is full, no Claude lane queues a canary task of that project
+# (--off-claude <projects>: it would wait at the cap); the lanes on their own source and the other projects'
+# tasks still queue (ar-5406: at agent-runtime:10 a share was nearly always full, so no Claude canary queued). Skipped in a dry run, at 0, and while floor_gate is shut
 # (a red cluster with the gateway down), dispatch's hold included;
 # a failure is said once, never the end of the pass.
 canary_top_up() {
@@ -5607,8 +5608,10 @@ canary_top_up() {
   want=$(( DISPATCH_CANARY_KEEP - have - live ))
   [ "$want" -gt 0 ] || return 0
   floor_gate; [ -z "$FLOOR_WHY" ] || return 0   # only when canaries are missing: it reads gate and the gateway
-  # While the share is full a Claude lane's canary would wait in queued/, so only the lanes on their own source queue (SHARE_JQ).
-  local off=(); if share_full; then off=(--off-claude); note=", a project share full: no Claude lane"; fi
+  local off=() full
+  share_state
+  full=$(jq -r '[.projects | to_entries[] | select(.value.full) | .key] | join(",")' <<<"$SHARE_STATE")
+  [ -z "$full" ] || { off=(--off-claude "$full"); note=", share full on $full: no Claude lane there"; }
   out=$(AGENT_QUEUE_PULL=dispatch fleet-bench canary queue --max "$want" "${off[@]}" 2>&1) || rc=$?
   [ "$rc" = 0 ] || note="$note, not every lane queued"
   [ -n "$out" ] || [ "$rc" = 0 ] || out="fleet-bench exited $rc"

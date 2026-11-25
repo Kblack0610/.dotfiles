@@ -3833,23 +3833,34 @@ cancel c-old-lane --why canary: superseded by the $week set"
 }
 
 # ar-4554: fleet-dispatch passes --off-claude while a project share is full, which holds a Claude lane's canary.
-@test "canary top-up: --off-claude queues only the lanes on their own source, never the claude baseline or a claude lane" {
+# ar-5406: it names the full projects, and a Claude lane leaves out only their tasks: at agent-runtime:10 some
+# share was nearly always full, so with the old switch no Claude canary queued.
+@test "canary top-up: --off-claude <projects> leaves out a claude lane's tasks of those projects, its owner's included, and no other lane's" {
   kpi_setup; kpi_fixture; canary_fixture
   week=$(date -d "@$T0" +%Gw%V)
+  jq '.id = "greet2" | .project = "other"' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/greet2.json"
+  jq '.id = "greet3" | .project = "gamerepo"' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/greet3.json"
+  export PROJECT_MAP_FILE="$SANDBOX/pmap.json"
+  echo '{"trackers":{"gamerepo":{"owner":"game"}}}' > "$PROJECT_MAP_FILE"
   export BENCH_CANARY_LANES="$SANDBOX/canary-lanes" BENCH_HARNESSES="$SANDBOX/harnesses.json" BENCH_ROOM_CMD=room-stub
   printf 'codex sol\nclaude haiku max\n' > "$BENCH_CANARY_LANES"
   echo '{"harnesses":{"codex":{"source":"codex"}}}' > "$BENCH_HARNESSES"
   printf '#!/usr/bin/env bash\necho room\n' > "$SANDBOX/bin/room-stub"; chmod +x "$SANDBOX/bin/room-stub"
-  run "$SUBJECT" canary queue --max 9 --off-claude
+  run "$SUBJECT" canary queue --max 9 --off-claude game
   assert_success
-  assert_output "fleet-bench: canary: 1 queued for $week (codex/sol)"
-  assert_equal "$(ls "$CQ"/*.json)" "$CQ/canary-greet-$week-codex-sol.json"
-  # The positive control: without it the claude baseline and the claude lane queue too.
+  assert_line "fleet-bench: canary: 3 queued for $week (codex/sol)"
+  assert_line "fleet-bench: canary: 1 queued for $week"
+  assert_line "fleet-bench: canary: 1 queued for $week (claude/haiku@max)"
+  # The claude lanes took greet2 alone: greet (game) and greet3 (gamerepo, owned by game) went to codex only.
+  assert_equal "$(ls "$CQ" | grep -c "^canary-greet2-$week")" 2
+  assert_equal "$(ls "$CQ" | grep -c "^canary-greet-$week")" 1
+  assert_equal "$(ls "$CQ" | grep -c "^canary-greet3-$week")" 1
+  # The positive control: without it every lane queues every task.
   run "$SUBJECT" canary queue --max 9
   assert_success
-  assert_equal "$(ls "$CQ"/*.json | wc -l)" 3
-  # It names the top-up alone.
-  run "$SUBJECT" canary queue --harness codex --model sol --off-claude
+  assert_equal "$(ls "$CQ"/*.json | wc -l)" 9
+  # It names the top-up alone, and needs its projects.
+  run "$SUBJECT" canary queue --harness codex --model sol --off-claude game
   assert_failure 2
 }
 
