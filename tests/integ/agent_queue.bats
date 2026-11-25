@@ -3703,6 +3703,13 @@ EOF
   # a PR recorded after the close (agent-land's partial path) makes it landed
   "$AQ" set a pr=o/r#9 merged=0123456789abcdef0123456789abcdef01234567
   assert_equal "$(field "$(item 'done/*' a)" outcome)" landed
+  # An outcome the rule no longer gives goes. NEGATIVE CONTROL: tab-split, the empty outcome collapsed
+  # and the slug was written as k's outcome.
+  sed -i '/^status: /d' "$(item 'done/*' k)"
+  run "$AQ" backfill-outcome --dry-run
+  assert_line 'k: no outcome'
+  "$AQ" backfill-outcome
+  assert_equal "$(grep -c '^outcome:' "$(item 'done/*' k)")" 0
   run "$AQ" backfill-outcome --days x
   assert_failure
 }
