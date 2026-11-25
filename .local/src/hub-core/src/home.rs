@@ -1246,11 +1246,9 @@ pub fn needs(
     }
     for j in state["janitor"].as_array().into_iter().flatten() {
         let what = str_of(j, "what");
-        // The id is the line's subject (signals::janitor `key`), so it holds across passes.
-        let key = j["key"].as_str().unwrap_or(what);
         out.push(condition(
             Kind::Janitor,
-            format!("janitor:{key}"),
+            format!("janitor:{}", j["key"].as_str().unwrap_or(what)),
             format!(
                 "Home cluster needs you: {} ({}, {}).",
                 what.trim_end_matches('.'),
