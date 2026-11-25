@@ -254,10 +254,10 @@ impl Backoff {
         self.strikes = 0;
     }
 
-    /// The wait before the next card read: `GAP` after a read that sent nothing (the cards drew
-    /// what was last sent), else the throttle's hold or `GAP`. The card read runs ten readers and
-    /// a Home build, and the poke comes from hooks many times a minute, so a read that found no
-    /// change waits `GAP` like a send.
+    /// The wait before the next card read: `GAP` after a read whose cards had not changed (`None`),
+    /// else the throttle's hold or `GAP` after a send. The card read runs every tab's reader and a
+    /// Home build, and the poke comes from hooks many times a minute, so an unchanged read waits
+    /// `GAP` like a send.
     fn next_read(&mut self, sent: Option<&Sent>) -> Duration {
         match sent {
             Some(s) if s.throttled => self.throttled(s.retry_after).max(GAP),
@@ -551,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn a_read_that_sent_nothing_waits_the_gap_and_keeps_the_backoff() {
+    fn an_unchanged_read_waits_the_gap_and_keeps_the_backoff() {
         let mut b = Backoff::default();
         let throttled = Sent {
             throttled: true,
