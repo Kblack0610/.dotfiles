@@ -73,6 +73,10 @@ struct RawConfig {
     /// Absent = [`DIRECT_FILERS`]; a list here replaces it whole.
     #[serde(default)]
     agent_direct_filers: Option<Vec<String>>,
+    /// The projects whose intake is gated ([`intake_gated`], `gate.rs`). Absent = [`GATED`]; a
+    /// list here replaces it whole, and an empty one turns the gate off.
+    #[serde(default)]
+    intake_gated: Option<Vec<String>>,
 }
 
 /// One `[project_type.<type>]` table. Both keys are optional.
@@ -153,6 +157,19 @@ pub fn agent_direct_filers() -> Vec<String> {
         .ok()
         .and_then(|(raw, _)| raw.agent_direct_filers)
         .unwrap_or_else(|| DIRECT_FILERS.iter().map(|s| s.to_string()).collect())
+}
+
+/// The projects a fresh install gates: agent-runtime, which filed about twice what it closed while
+/// its sessions filed their own follow-ups (plan cozy-kahn, 2026-11-24).
+const GATED: [&str; 1] = ["agent-runtime"];
+
+/// `intake_gated`: the projects whose board takes a session's row only as an evidenced fault, a
+/// plan phase or the person's ask (`gate.rs`). The config's own list when it has one, else [`GATED`].
+pub fn intake_gated() -> Vec<String> {
+    load_raw()
+        .ok()
+        .and_then(|(raw, _)| raw.intake_gated)
+        .unwrap_or_else(|| GATED.iter().map(|s| s.to_string()).collect())
 }
 
 /// `[release]`: a project's release cadence by stage (`stages.md`, "Versions"). The defaults
@@ -722,6 +739,7 @@ fn builtin_default() -> RawConfig {
         projects: ProjectsShape::default(),
         project_type: HashMap::new(),
         agent_direct_filers: None,
+        intake_gated: None,
     }
 }
 

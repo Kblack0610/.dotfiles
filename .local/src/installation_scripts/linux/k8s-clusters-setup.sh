@@ -6,17 +6,10 @@
 
 set -euo pipefail
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+# The installer's colours and log_info, log_warning and log_error.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/base_functions.sh"
 
-log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 # ============================================================================
 # Install Dependencies
@@ -66,7 +59,7 @@ setup_k3d_local() {
 
     # Check if cluster already exists
     if k3d cluster list | grep -q "k3d-local"; then
-        log_warn "k3d-local cluster already exists"
+        log_warning "k3d-local cluster already exists"
         read -p "Delete and recreate? (y/N): " -n 1 -r
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
@@ -135,7 +128,7 @@ setup_home_k3s() {
     if kubectl cluster-info --context home-k3s &> /dev/null; then
         log_success "Connected to home k3s."
     else
-        log_warn "Could not reach home k3s. Check the LAN or tailnet."
+        log_warning "Could not reach home k3s. Check the LAN or tailnet."
     fi
 }
 

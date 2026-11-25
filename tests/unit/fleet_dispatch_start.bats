@@ -879,8 +879,8 @@ load 'fleet_dispatch/common'
   # The canary oracle runs before and the score after, outside the sandbox; the run's line starts from env -i.
   # A start that fails skips the run and the score (the tree is not at base); the settings go either way.
   [[ "$line" == *":: trap rm\\ -f\\ "*"/srt-ses_eval"*".json EXIT; trap 'exit 129' HUP TERM; fleet-bench canary start c-7 && { timeout 180m env -i "* ]] || fail "no canary start then env -i: $line"
-  # The score is told why the session ended, read once the run is over, where it ran.
-  [[ "$line" == *"; BENCH_CANARY_WRAP="*" AGENT_QUEUE_ITEM=fix-menu fleet-bench canary score c-7 --end \"\$(fleet-dispatch item-end paid ses_eval"*")\" && agent-queue move fix-menu done --status ok; tmux set-option -t \"\$TMUX_PANE\" @headless fix-menu 2>/dev/null; env -i "* ]] || fail "no canary score, then the replay, after: $line"
+  # Why the session ended is written once to the item, read once the run is over where it ran; the score reads it from the item.
+  [[ "$line" == *"; fleet-dispatch record-end fix-menu paid ses_eval"*"; BENCH_CANARY_WRAP="*" AGENT_QUEUE_ITEM=fix-menu fleet-bench canary score c-7 && agent-queue move fix-menu done --status ok; tmux set-option -t \"\$TMUX_PANE\" @headless fix-menu 2>/dev/null; env -i "* ]] || fail "no canary score, then the replay, after: $line"
   [[ "$line" == *"TMPDIR=$qr/tmp CLAUDE_CODE_TMPDIR=$qr/tmp AGENT_QUEUE_ITEM=fix-menu "*"XDG_DATA_HOME=$qr/data "*" srt --settings $qr/srt-ses_eval"*".json -- opencode run --standalone"* ]] || fail "opencode is not inside srt: $line"
   # The config is named by its target, which the sandbox re-allows; a link inside a masked dir would not resolve.
   [[ "$line" == *"OPENCODE_CONFIG=$(printf %q "$SANDBOX/eval-paid.json") "* ]] || fail "config not by its target: $line"
@@ -902,7 +902,7 @@ load 'fleet_dispatch/common'
   printf '#!/usr/bin/env bash\necho "srt ${*: -1} key=${LITELLM_MASTER_KEY:-none} tmp=$TMPDIR" >> %q\n' "$pane/log" > "$pane/srt"
   printf '#!/usr/bin/env bash\necho "%s $*" >> %q\n' timeout "$pane/log" > "$pane/timeout"
   printf '#!/usr/bin/env bash\necho "%s $*" >> %q\n' agent-queue "$pane/log" > "$pane/agent-queue"
-  printf '#!/usr/bin/env bash\n[ "$1" != run-result ] || echo "no queue item"\n[ "$1" != item-end ] || { echo "fleet-dispatch $*" >> %q; echo provider; }\n' "$pane/log" > "$pane/fleet-dispatch"
+  printf '#!/usr/bin/env bash\n[ "$1" != run-result ] || echo "no queue item"\n[ "$1" != record-end ] || echo "fleet-dispatch $*" >> %q\n' "$pane/log" > "$pane/fleet-dispatch"
   chmod +x "$pane"/*
   run env START_FAILS=1 PATH="$pane:$PATH" bash -c "${line#* :: }"
   assert_failure 1
@@ -911,9 +911,10 @@ load 'fleet_dispatch/common'
   : > "$pane/log"; PATH="$pane:$PATH" bash -c "${line#* :: }"
   # Then the replay: srt again, on the run's session id (the last argument).
   run cut -d' ' -f1-3 "$pane/log"
-  assert_equal "$(head -n 6 <<<"$output")" "$(printf '%s\n' 'fleet-bench canary start' 'timeout 180m env' 'fleet-dispatch item-end paid' 'fleet-bench canary score' 'srt oracle-cmd key=none' 'agent-queue move fix-menu')"
+  assert_equal "$(head -n 6 <<<"$output")" "$(printf '%s\n' 'fleet-bench canary start' 'timeout 180m env' 'fleet-dispatch record-end fix-menu' 'fleet-bench canary score' 'srt oracle-cmd key=none' 'agent-queue move fix-menu')"
   [[ "$(sed -n 7p <<<"$output")" == "srt ses_eval"*" key=none" ]] || fail "no replay after the score: $output"
-  grep -qx 'fleet-bench canary score c-7 --end provider' "$pane/log" || fail "the score was not given the end: $(cat "$pane/log")"
+  grep -q '^fleet-dispatch record-end fix-menu paid ses_eval' "$pane/log" || fail "the end was not recorded on the item: $(cat "$pane/log")"
+  grep -qx 'fleet-bench canary score c-7' "$pane/log" || fail "the score was given more than the task: $(cat "$pane/log")"
   grep -qF "tmp=$run/tmp" "$pane/log" || fail "the oracle's srt has no TMPDIR in the run dir: $(cat "$pane/log")"
   run ls "$run"; refute_output --partial srt-ses_eval
 }
@@ -923,7 +924,7 @@ load 'fleet_dispatch/common'
 agy_ready() {
   harness_ready
   harness_sandboxed paid
-  harness_set '.harnesses.agy = {source: "agy", headless: true, timeout_min: 180, projects: ["game"], sandbox: "pub", models: {flash: "gemini-3.8-flash-medium"}}'
+  harness_set '.harnesses.agy = {source: "agy", end_classifier: "agy", headless: true, timeout_min: 180, projects: ["game"], sandbox: "pub", models: {flash: "gemini-3.8-flash-medium"}}'
   export SANDBOX_AGY_STATE="$HOME/.gemini/antigravity-cli"
   mkdir -p "$SANDBOX_AGY_STATE"
   stub agy 'exit 0'   # the start runs only its /usage check; ~/.local/bin, on PATH here, may hold the real one
@@ -951,7 +952,7 @@ agy_ready() {
   assert_equal "$(jq -c .filesystem.allowWrite <<<"$s")" "[\".\",\"$SANDBOX_AGY_STATE\",\"$runs/tmp\"]"
   jq -e --arg b "$(realpath "$(command -v agy)")" '.filesystem.allowRead | index($b)' <<<"$s" >/dev/null || fail "agy's binary not readable: $s"
   # The pane line as a shell runs it: agy prints P1's success stream; agent-agy keeps it and the exit,
-  # item-end reads the end from that log, and the replay opens agy on the run's conversation.
+  # record-end reads the end from that log, onto the item, and the replay opens agy on the run's conversation.
   pane="$SANDBOX/pane" && mkdir -p "$pane"
   printf '#!/usr/bin/env bash\necho "fleet-bench $*" >> %q\n' "$pane/log" > "$pane/fleet-bench"
   printf '#!/usr/bin/env bash\necho "srt key=${LITELLM_MASTER_KEY:-none}" >> %q\nwhile [ "$1" != -- ]; do shift; done; shift; exec "$@"\n' "$pane/log" > "$pane/srt"
@@ -959,15 +960,16 @@ agy_ready() {
   printf '#!/usr/bin/env bash\nif [ "$1" = --output-format ]; then cat %q; else echo "agy tui $*" >> %q; fi\n' \
     "$REPO_ROOT/tests/fixtures/harness-contract/agy-success.jsonl" "$pane/log" > "$pane/agy"
   printf '#!/usr/bin/env bash\necho "%s $*" >> %q\n' agent-queue "$pane/log" > "$pane/agent-queue"
-  printf '#!/usr/bin/env bash\n[ "$1" != item-end ] || exec %q "$@"\necho "no queue item"\n' "$REPO_ROOT/.local/bin/fleet-dispatch" > "$pane/fleet-dispatch"
+  printf '#!/usr/bin/env bash\n[ "$1" != record-end ] || exec %q "$@"\necho "no queue item"\n' "$REPO_ROOT/.local/bin/fleet-dispatch" > "$pane/fleet-dispatch"
   chmod +x "$pane"/*
   PATH="$pane:$PATH" bash -c "${line#* :: }" >/dev/null
   run cat "$pane/log"
   assert_line --index 0 'fleet-bench canary start c-7'
   assert_line --index 1 'srt key=none'
-  assert_line --index 2 --regexp '^fleet-bench canary score c-7 --end stopped$'
-  assert_line --index 3 'agent-queue move fix-menu done --status ok'
-  assert_line --index 5 'agy tui --conversation 8138a473-5239-47fc-afb9-b84f14384328'
+  assert_line --index 2 'agent-queue set fix-menu end_reason=stopped'
+  assert_line --index 3 'fleet-bench canary score c-7'
+  assert_line --index 4 'agent-queue move fix-menu done --status ok'
+  assert_line --index 6 'agy tui --conversation 8138a473-5239-47fc-afb9-b84f14384328'
   log=$(ls "$runs"/agy_*.jsonl)
   assert_equal "$(jq -r .event "$log" | sed -n '1p;$p' | tr '\n' ' ')" 'start exit '
   run ls "$runs"; refute_output --partial srt-agy_
@@ -1827,7 +1829,7 @@ trainee_start_ready() {
   # agy: its launcher, agent-agy and a lane sandbox, then a bounded /usage on the human's login. Both are
   # stubbed: the developer's own ~/.local/bin, on PATH here, may hold the real ones.
   stub agent-agy 'exit 0'
-  harness_set '.harnesses.agy = {source: "agy", headless: true, timeout_min: 180, models: {flash: "gemini-3.8-flash-medium"}}'
+  harness_set '.harnesses.agy = {source: "agy", end_classifier: "agy", headless: true, timeout_min: 180, models: {flash: "gemini-3.8-flash-medium"}}'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready agy
   assert_output 'agy: it names no lane sandbox, and a worker runs only a sandboxed harness'
   harness_set '.harnesses.agy.sandbox = "pub"'
