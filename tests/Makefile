@@ -25,11 +25,6 @@ BATS      := $(VENDOR)/bats-core/bin/bats
 RUN_BATS  := $(HERE)run-bats.sh
 ARTIFACTS := $(HERE)artifacts
 
-# Pinned so a CI run and a laptop run agree.
-BATS_REF    := v1.12.0
-SUPPORT_REF := v0.3.0
-ASSERT_REF  := v2.1.0
-
 BATS_FLAGS ?= --print-output-on-failure --timing
 
 # JUNIT=1 (CI sets it) makes each bats run also write a JUnit report.xml under
@@ -68,16 +63,9 @@ help:
 	@echo "  ./docker.sh --shell   interactive shell in the test image"
 
 bootstrap: $(BATS)
+# bootstrap.sh holds the pinned refs and needs no make, so CI and docker.sh call it directly.
 $(BATS):
-	@mkdir -p $(VENDOR)
-	@echo "==> vendoring bats-core $(BATS_REF) + helpers into tests/vendor"
-	@git clone --quiet --depth 1 --branch $(BATS_REF) \
-		https://github.com/bats-core/bats-core.git      $(VENDOR)/bats-core
-	@git clone --quiet --depth 1 --branch $(SUPPORT_REF) \
-		https://github.com/bats-core/bats-support.git   $(VENDOR)/bats-support
-	@git clone --quiet --depth 1 --branch $(ASSERT_REF) \
-		https://github.com/bats-core/bats-assert.git    $(VENDOR)/bats-assert
-	@echo "==> ok: $$($(BATS) --version)"
+	@$(HERE)bootstrap.sh
 
 test: test-fast test-ui
 

@@ -71,7 +71,7 @@ command -v "$DOCKER" >/dev/null 2>&1 || {
 
 # Vendor bats on the HOST, before the container starts, so the container itself needs no
 # network. Cloning inside would also write into the bind mount as a different UID.
-[ -x "$HERE/vendor/bats-core/bin/bats" ] || make -C "$HERE" bootstrap
+"$HERE/bootstrap.sh"
 
 if [ -z "${COCKPIT_TEST_IMAGE:-}" ] && "$DOCKER" image inspect "$IMAGE" >/dev/null 2>&1; then
   echo "==> image $IMAGE (present, not rebuilt)"
