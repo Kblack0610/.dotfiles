@@ -203,6 +203,105 @@ load 'agent_land/common'
   assert_output 1
 }
 
+# pick_fixture: a checkout whose tests/pick.sh answers from files, so the head's pick (mine.<tier>) and
+# the base's new files' pick (theirs.<tier>, read when PICK_CHANGED is set) are named by the case.
+# pick.fail: the picker exits 1; theirs.full: the base's pick is the whole tier ("(full: ...)" on stderr).
+pick_fixture() {
+  local top="$SANDBOX/pickrepo" t
+  mkdir -p "$top/tests"
+  cat >"$top/tests/pick.sh" <<'EOS'
+#!/usr/bin/env bash
+d=$(dirname "$0")
+[ ! -f "$d/pick.fail" ] || exit 1
+if [ -n "${PICK_CHANGED+x}" ]; then
+  [ ! -f "$d/theirs.full" ] || echo "$1: all 9 files (full: the change touches the test harness)" >&2
+  cat "$d/theirs.$1" 2>/dev/null
+else cat "$d/mine.$1" 2>/dev/null; fi
+exit 0
+EOS
+  chmod +x "$top/tests/pick.sh"
+  printf '%s\n' '# broad' 'unit/smoke.bats # the harness' >"$top/tests/broad.txt"
+  for t in unit integ rust; do : >"$top/tests/mine.$t"; : >"$top/tests/theirs.$t"; done
+  printf '%s\n' unit/a.bats >"$top/tests/mine.unit"
+  printf '%s\n' "$top" >"$NOTES_FIXTURE/toplevel"
+  printf '0\n1\n' >"$NOTES_FIXTURE/behind.seq"
+  printf 'x\n' >"$NOTES_FIXTURE/diff.status"
+  PICKDIR="$top/tests"
+}
+
+@test "main moves on during the gate's checks and its new files pick no test the head's run picked: that green head lands behind it, no merge-up, no second run (ar-6019)" {
+  pick_fixture
+  printf '%s\n' unit/b.bats >"$PICKDIR/theirs.unit"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'fetch: origin/main moved on by 1 and none of it can affect a test the head'"'"'s own run picked; landing that green head behind it (no strict checks on main)'
+  assert_line 'landed #42'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 0
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 1
+}
+
+@test "main's new files pick a test the head's run picked: merged up and re-run, as before" {
+  pick_fixture
+  printf '%s\n' unit/a.bats >"$PICKDIR/theirs.unit"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'none of it can affect'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 1
+}
+
+@test "main's new files pick only the broad set, which every head runs: they do not count as shared" {
+  pick_fixture
+  printf '%s\n' unit/smoke.bats >"$PICKDIR/theirs.unit"
+  printf '%s\n' unit/smoke.bats >>"$PICKDIR/mine.unit"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'none of it can affect'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 0
+}
+
+@test "main's new files send the picker to the whole tier (the harness): merged up and re-run" {
+  pick_fixture
+  : >"$PICKDIR/theirs.full"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'none of it can affect'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 1
+}
+
+@test "a picker that fails: merged up and re-run, never landed behind on a guess" {
+  pick_fixture
+  : >"$PICKDIR/pick.fail"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'none of it can affect'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 1
+}
+
+@test "a strict base never lands a head behind it, whatever the pick says" {
+  pick_fixture
+  printf '%s\n' unit/b.bats >"$PICKDIR/theirs.unit"
+  echo '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true}}]' >"$NOTES_FIXTURE/rules.json"
+  run "$LAND" 42 --item ship
+  refute_output --partial 'none of it can affect'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 1
+}
+
+@test "main's new files miss the pick but merging them conflicts: the merge-up runs and exits 3" {
+  pick_fixture
+  printf '%s\n' unit/b.bats >"$PICKDIR/theirs.unit"
+  : >"$NOTES_FIXTURE/tree.conflicts"
+  run "$LAND" 42 --item ship
+  assert_failure 3
+  refute_output --partial 'none of it can affect'
+}
+
 @test "a pushed head that reports no checks, after the gate's head ran green, is never merged" {
   printf '0\n1\n' >"$NOTES_FIXTURE/behind.seq"
   printf 'green\n' >"$NOTES_FIXTURE/checks.seq"

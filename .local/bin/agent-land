@@ -522,6 +522,35 @@ checks_policy() {
 strict_checks() { checks_policy && [ "$strict" = yes ]; }
 required_checks() { checks_policy && [ "$required" = yes ]; }
 
+# moved_misses_pick: what <base> gained since the head last had it (HEAD...<base>) can affect no test
+# the head's own run picked, so a green run of the head stands for the merge. The repo's tests/pick.sh
+# answers both ways, per tier: the tests the head's changes pick, and the tests the base's new files
+# pick (its PICK_CHANGED seam). The broad set runs on every head, so its lines do not count as a
+# shared pick; a base change the picker answers with the whole tier (the harness) is never a miss.
+# No picker, a picker that fails or a tier it cannot read: 1, the head is merged up and re-run as before. Why: a
+# green run that outlived main's next merge was re-run until a saturated pool cut it (ar-6019:
+# #3546 went green twice and never landed).
+moved_misses_pick() {
+  local top mb moved tier mine theirs broad errf
+  top=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
+  [ -x "$top/tests/pick.sh" ] || return 1
+  mb=$(git merge-base HEAD "$remote/$base" 2>/dev/null) || return 1
+  moved=$(git diff --name-only "HEAD...$remote/$base" 2>/dev/null) || return 1
+  [ -n "$moved" ] || return 0
+  for tier in unit integ rust; do
+    mine=$(cd "$top" && tests/pick.sh "$tier" "$mb" 2>/dev/null) || return 1
+    errf=$(mktemp) || return 1
+    theirs=$(cd "$top" && PICK_CHANGED=$moved tests/pick.sh "$tier" "$mb" 2>"$errf") || { rm -f "$errf"; return 1; }
+    # "(full: <why>)" is the picker falling back to the whole tier, which a base change to the harness does
+    ! grep -q '(full:' "$errf" || { rm -f "$errf"; return 1; }
+    rm -f "$errf"
+    broad=$(sed -n "s#^\($tier/[^[:space:]#]*\.bats\).*#\1#p" "$top/tests/broad.txt" 2>/dev/null) || broad=''
+    [ -z "$broad" ] || theirs=$(grep -vxFf <(printf '%s\n' "$broad") <<<"$theirs" || true)
+    [ -z "$mine" ] || [ -z "$theirs" ] || ! grep -qxFf <(printf '%s\n' "$theirs") <<<"$mine" || return 1
+  done
+  return 0
+}
+
 # catch_up: a base the head is behind is merged in and pushed, before the gate and again after it if
 # the base moved on during the checks. A merge of <base> does not keep the checks green: a pushed head
 # is a new tree, and merging one before its checks ran shipped a broken one (dotfiles #1504; #1731
@@ -532,7 +561,8 @@ required_checks() { checks_policy && [ "$required" = yes ]; }
 # head lands behind it, which such a base allows, unless merging the base would conflict (then the
 # merge below runs and exits 3, since GitHub would refuse that head anyway): a base that merges faster than its checks run would otherwise loop it forever
 # (dotfiles #1059 went green 9 times in an hour), and exiting 3 sent the caller round its own gate,
-# which a busy base outruns every time (#916). A strict base has no bound, since it refuses a head
+# which a busy base outruns every time (#916). Before that bound, a head whose base's new files can
+# affect no test its own run picked (moved_misses_pick) lands behind it at once, with no re-run. A strict base has no bound, since it refuses a head
 # that is behind (2026-11-05: unity-core-playground #1837 was refused twice). A conflict is aborted
 # and exits 3.
 CATCHUP_WAITS=1
@@ -544,9 +574,17 @@ catch_up() {
     [ "${1:-}" = before ] || echo "fetch: current with $remote/$base"
     return 0
   fi
-  if [ "${1:-}" = after ] && [ "${2:-0}" -ge "$CATCHUP_WAITS" ] && ! strict_checks &&
+  local why=''
+  if [ "${1:-}" = after ]; then
+    if [ "${2:-0}" -ge "$CATCHUP_WAITS" ]; then
+      why='during the checks on the merged-up head'
+    elif moved_misses_pick; then
+      why="and none of it can affect a test the head's own run picked"
+    fi
+  fi
+  if [ -n "$why" ] && ! strict_checks &&
     git merge-tree --write-tree --quiet HEAD "$remote/$base" >/dev/null 2>&1; then
-    echo "fetch: $remote/$base moved on by $behind during the checks on the merged-up head; landing that green head behind it (no strict checks on $base)"
+    echo "fetch: $remote/$base moved on by $behind $why; landing that green head behind it (no strict checks on $base)"
     return 0
   fi
   # Before the merge, so a refusal leaves the checkout as it was. A fork head is not origin's branch.
