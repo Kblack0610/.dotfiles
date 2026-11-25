@@ -394,6 +394,8 @@ BENCH_HUB_TIMEOUT_S=30                               # hub projects --json takes
 : "${BENCH_STOPPED_CMD:=fleet-dispatch stopped --json}"   # why nothing is leaving the queue, when dispatch has stopped
 : "${BENCH_HEADROOM:=${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}/headroom.json}"   # the last dispatch pass's gate and its standing hold
 : "${BENCH_DISPATCH_LOG:=${AGENTCTL_STATE_DIR:-${AGENTCTL_STATE:-$HOME/.local/state/agentctl}}/fleet-dispatch/activity.log}"   # one line per dispatch pass: how it ended
+: "${BENCH_UPSERT_LOCK:=${AGENTCTL_STATE_DIR:-${AGENTCTL_STATE:-$HOME/.local/state/agentctl}}/fleet-bench/board-upsert.lock}"   # board_upsert's read-then-write, one process at a time
+: "${BENCH_UPSERT_LOCK_WAIT:=120}"   # seconds a second filer waits for it: a pass takes seconds, so this is a stuck holder
 BENCH_RECORD_TAIL=5000   # lines of the dispatch record pipeline_json reads: more than a day of passes (about 1000 a day, 2026-11-23)
 : "${PIPELINE_SNAPSHOT:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/pipeline/pipeline.json}"   # what the Queue tab's pipeline line reads
 : "${CHAIN_DAYS:=7}"                 # the merged PRs ledger_coverage counts
@@ -4958,11 +4960,17 @@ upsert_why() {
 # of that row, its children moving under it; a twin being done, or one with no id, is left and said.
 # Leaves the counts in UPSERT_ADDED, UPSERT_EDITED, UPSERT_REOPENED and UPSERT_DROPPED and the failed
 # keys in UPSERT_FAILED, which upsert_report reports FAILED, so every caller ends with upsert_report;
-# status 1 only when the board cannot be read.
+# status 1 only when the board cannot be read, 2 when the upsert lock stays held (nothing is written).
+# The read of the board and the writes after it are one section under BENCH_UPSERT_LOCK: the timed
+# runner and every dispatch pass run triage, and two of them reading before either added filed the
+# same key twice, then dropped one as a dup (2026-11-25: 45 same-day dup drops of check rows, ar-6078).
+# A key whose row closed within the board feed's window is reopened with the red as a detail line,
+# so the trip is history on that row, not a row of its own.
 board_upsert() {
-  local board closed p text pri why have hid twin id rc added=0 edited=0 reopened=0 dropped=0 failed=() twins=()
+  local board closed p text pri why have hid twin id rc added=0 edited=0 reopened=0 dropped=0 failed=() twins=() trip=()
   UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_DROPPED=0; UPSERT_FAILED=
-  board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
+  upsert_lock_take || { say "$UPSERT_LOCK_WHY"; report_outcome FAILED "$UPSERT_LOCK_WHY"; return 2; }
+  board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { upsert_lock_drop; report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
   closed=$(upsert_closed)
   while IFS=$'\t' read -r p text pri; do
     [[ "$text" == *'#size/'* ]] || text+=" #size/s"
@@ -4992,8 +5000,9 @@ board_upsert() {
     done
     id=; [ -n "$have" ] || id=$(awk -F'\t' -v p="${p,,}" 'index($2, p) == 1 { print $1; exit }' <<<"$closed")
     if [ -n "$id" ]; then
+      trip=(--detail "$(date -d "@$(now)" +%F) red again after it closed")
       if $BENCH_NOTES_CMD ptask "$KPI_BOARD" reopen "$id" --why "fleet-bench: $p red again" >/dev/null; then
-        if $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent edit "$id" --text "$text" >/dev/null; then
+        if $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent edit "$id" --text "$text" "${trip[@]}" >/dev/null; then
           reopened=$((reopened + 1))
         else
           say "edit failed for reopened $p ($id)"; failed+=("$p")
@@ -5018,9 +5027,25 @@ board_upsert() {
       fi
     fi
   done <<<"$1"
+  upsert_lock_drop
   UPSERT_ADDED=$added; UPSERT_EDITED=$edited; UPSERT_REOPENED=$reopened; UPSERT_DROPPED=$dropped
   UPSERT_FAILED=$(IFS=';'; echo "${failed[*]}")
 }
+
+# upsert_lock_take / upsert_lock_drop: the one process-wide lock on filing rows (BENCH_UPSERT_LOCK),
+# held by board_upsert and triage_human around their read-then-add, so two triage runs (the timed
+# runner and a dispatch pass) never both find a key missing and both file it. rc 1 when the lock is
+# held past BENCH_UPSERT_LOCK_WAIT, 2 when it cannot be opened; UPSERT_LOCK_WHY says which. A caller
+# never takes it twice (flock on a second descriptor of one file would wait on itself).
+upsert_lock_take() {
+  mkdir -p "${BENCH_UPSERT_LOCK%/*}" 2>/dev/null
+  { exec {UPSERT_LOCK_FD}>>"$BENCH_UPSERT_LOCK"; } 2>/dev/null || { UPSERT_LOCK_WHY="cannot open the board upsert lock $BENCH_UPSERT_LOCK"; return 2; }
+  flock -w "$BENCH_UPSERT_LOCK_WAIT" "$UPSERT_LOCK_FD" && return 0
+  upsert_lock_drop
+  UPSERT_LOCK_WHY="board upsert lock $BENCH_UPSERT_LOCK held for ${BENCH_UPSERT_LOCK_WAIT}s by another filer"
+  return 1
+}
+upsert_lock_drop() { [ -z "${UPSERT_LOCK_FD:-}" ] || exec {UPSERT_LOCK_FD}>&-; UPSERT_LOCK_FD=; }
 
 # upsert_closed -> "id TAB lowercased text" for each KPI_BOARD agent row of the active profile
 # (BENCH_PROFILE, else `notes config`) closed in the board feed's window (BENCH_BOARD_CMD,
@@ -5441,6 +5466,8 @@ triage_twins() {
 # (a watch that trips, clears and trips) does not page again: up to 6 pages a row on 2026-11-18.
 triage_human() {
   local key text pri route sheet have why n=0
+  grep -q $'\thuman:' <<<"$1" || { echo 0; return 0; }
+  upsert_lock_take || { say "triage: $UPSERT_LOCK_WHY: the human sheet rows wait for the next pass"; echo 0; return 0; }
   while IFS=$'\t' read -r key text pri route _; do
     case "$route" in human:?*) sheet=${route#human:} ;; *) continue ;; esac
     have=$($BENCH_NOTES_CMD ptask "$sheet" list 2>/dev/null) || continue
@@ -5451,6 +5478,7 @@ triage_human() {
     $TRIAGE_NOTIFY_CMD -t 'Needs you' -d "needs:$sheet:$key" "$sheet sheet: $key" >/dev/null 2>&1
     n=$((n + 1))
   done <<<"$1"
+  upsert_lock_drop
   echo "$n"
 }
 
@@ -6146,7 +6174,10 @@ cmd_triage() {
     return 0
   fi
   filed=$(triage_filed "$rows")
-  if [ -n "$filed" ]; then board_upsert "$(cut -f1-3 <<<"$filed")" || return 1; else UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_DROPPED=0; UPSERT_FAILED=; fi
+  # A held lock fails this pass's filing (upsert_report says so) but not the human sheet, twins or red fixes after it.
+  if [ -n "$filed" ]; then
+    board_upsert "$(cut -f1-3 <<<"$filed")" || { [ $? = 2 ] || return 1; UPSERT_FAILED="$UPSERT_LOCK_WHY"; }
+  else UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_DROPPED=0; UPSERT_FAILED=; fi
   h=$(triage_human "$rows")
   triage_twins "$rows" "$(cut -f1 <<<"$filed")"
   q=$(triage_promote "$rows")
@@ -7416,7 +7447,8 @@ canary_lanes_section() {
 # except an end that says nothing about the model (UNRATED_ENDS; a score not run, canary_ran). Proven
 # is a pass, failing is fails and no pass, excluded is BENCH_MATRIX's why (an entry naming a `harness`
 # holds that one alone) or what route() refuses the harness by its harnesses.json entry (a stack none of
-# whose projects its `projects` allowlist names, plan items when headless with no resume), no work is a cell no item
+# whose projects its `projects` allowlist names, plan items when headless with no resume, and a mode or a
+# stack's PR-opening kinds whose capability its `capabilities` list leaves out), no work is a cell no item
 # on any harness touched in the window, empty is the rest. A kind and scope are a row's type and area from
 # `notes row parse`, the grammar's one home (agent-queue add records them on an item); an untyped one is in
 # no cell. Each mode is mode_of's test on the item
@@ -7451,7 +7483,10 @@ MATRIX_JQ='
   | ($all | map(.sessions // "" | split(" ")[]) | map(select(. != "")) | INDEX(.)) as $claimed
   | ([$o[] | select(.harness == $h and ($claimed[.session_id // ""] | not))
       | {v: (if (.prs_merged // 0) > 0 then "pass" else null end), at: (.updated // ""), ref: .session_id}]) as $hand
-  | ([$m.excluded[]? | select(.harness == null or .harness == $h)] + $xstacks
+  | ([$hd.lacks[]? | "\($h) lacks the \(.cap) capability (harnesses.json): \(.why // "")" as $w | select(.mode != null) | {mode, why: $w}]
+      + [$hd.lacks[]? | "\($h) lacks the \(.cap) capability (harnesses.json): \(.why // "")" as $w | select(.stack != null) | .stack as $st
+         | $m.kinds[] | select(. as $kd | ($prkinds // $m.kinds) | index($kd)) | {kind: ., stack: $st, why: $w}]) as $caps
+  | ([$m.excluded[]? | select(.harness == null or .harness == $h)] + $xstacks + $caps
       + if $hd.headless == true and $hd.resume != true
         then [{mode: "plan", why: "\($h) runs headless and cannot resume, so it takes no plan item (harnesses.json)"}] else [] end) as $exs
   | def excluded($kind; $stack; $mode): first($exs[] | select((.kind // null) == $kind and (.stack // null) == $stack
@@ -7490,7 +7525,10 @@ canary_matrix() {
   # A harness the map does not have (claude) adds none.
   hd='{}' xstacks='[]'
   if [ -e "$BENCH_HARNESSES" ]; then
-    hd=$(jq -ce --arg h "$h" '.harnesses[$h] // {} | objects' "$BENCH_HARNESSES" 2>/dev/null) ||
+    # lacks: each capability of the map's vocabulary the entry does not list, with its stack or mode.
+    hd=$(jq -ce --arg h "$h" '(.capabilities // {}) as $voc | .harnesses[$h] as $e | ($e // {} | objects)
+        + (if $e == null then {} else {lacks: [$voc | to_entries[] | select(.key as $k | ($e.capabilities // []) | any(. == $k) | not)
+            | {cap: .key, stack: .value.stack, mode: .value.mode, why: .value.why}]} end)' "$BENCH_HARNESSES" 2>/dev/null) ||
       { say "canary matrix: $BENCH_HARNESSES is unreadable, or its $h entry is no object"; return 2; }
     if jq -e 'has("projects")' <<<"$hd" >/dev/null; then
       local st why rc refused
@@ -7505,6 +7543,8 @@ canary_matrix() {
       done < <(jq -r '.stacks | to_entries[] | select(.value.projects | length > 0) | "\(.key)\t\(.value.projects | join(" "))"' "$BENCH_MATRIX")
     fi
   fi
+  # The kinds that open a PR, which a stack-bound capability (unity_gate) refuses a harness without it (route()).
+  prkinds=$(jq -c '[to_entries[] | select((.value.exit // "") | . == "" or . == "pr") | .key]' "$BENCH_KINDS" 2>/dev/null) || prkinds=null
   since=$(date -u -d "@$(( $(now) - days * 86400 ))" +%F)
   tasks=$(canary_tasks) || return 2
   # A task's kind and scope, as an item's, are its row's type and area: one `notes row parse` of each first line.
@@ -7522,7 +7562,7 @@ canary_matrix() {
               | .paths // {} | to_entries[] | select(.value as $p | $ps | index($p)) | "\(.key)\t\(.value)"' "$BENCH_PROJECT_MAP" 2>/dev/null |
             while IFS=$'\t' read -r dir p; do forge_canonical "$dir" && printf '%s\n' "$p"; done | jq -Rsc 'split("\n") | map(select(. != "")) | unique')
   jq -n --arg h "$h" --arg since "$since" --slurpfile m "$BENCH_MATRIX" --slurpfile k "$(kpi_canary)" --argjson forgejo "$forgejo" \
-    --argjson hd "$hd" --argjson xstacks "$xstacks" \
+    --argjson hd "$hd" --argjson xstacks "$xstacks" --argjson prkinds "$prkinds" \
     --slurpfile o <(outcomes_newest | jq -c --arg since "$since" 'select((.updated // "") >= $since)') \
     --slurpfile items <(printf '%s\n' "$items") \
     --rawfile tsr <(printf '%s' "$tasks") \
