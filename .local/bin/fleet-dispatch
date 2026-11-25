@@ -5377,6 +5377,29 @@ takeover_branch() {
   echo "takeover queue item $slug (branch $name at ${sha:0:12}, try $((tries + 1)) of $DISPATCH_FIX_TRIES)"
 }
 
+# infra_rerun <slug> <item json> <head> <red runs> -- own_parked_pr's one rerun of a head whose red the
+# runners caused (INFRA): `gh run rerun --failed` on each red run, stamped `rerun_tries: 1 <head>` first, so
+# a failed write never reruns twice. It takes no session and no admission slot. Returns 1, rerunning
+# nothing, when this head was rerun already or no run is named; a rerun gh refuses is logged and returns 1
+# too. Either way the red goes the FAIL way.
+infra_rerun() {
+  local pr project dir r ran=''
+  [ "${4:--}" != - ] && [ "$(jq -r '.rerun_tries // "" | split(" ")[1] // ""' <<<"$2")" != "$3" ] || return 1
+  IFS=$'\x1f' read -r pr project < <(jq -r '[(.pr // "" | split(" ")[0]), .project // ""] | join("\u001f")' <<<"$2")
+  agent-queue set "$1" "rerun_tries=1 $3" >/dev/null || return 1
+  [[ "$pr" == */*#* ]] || dir=$(repo_dir "$project") || return 1
+  for r in ${4//,/ }; do
+    if [[ "$pr" == */*#* ]]; then gh run rerun "$r" --failed -R "${pr%#*}" >/dev/null 2>&1
+    else (cd "$dir" && gh run rerun "$r" --failed >/dev/null 2>&1); fi && { ran+=" $r"; continue; }
+    logline "queue item $1: gh run rerun $r --failed refused for PR $pr"
+  done
+  [ -n "$ran" ] || return 1
+  agent-queue set "$1" "note=PR $pr red at ${3:0:12} on cancelled or timed-out jobs only; reran run${ran} once" >/dev/null
+  logline "queue item $1: PR $pr red at ${3:0:12} on cancelled or timed-out jobs only, reran run${ran} (once per head)"
+  dispatch_event rerun "$project" "PR red on runner timeouts only: reran its failed jobs once" --item "$1" --pr "$pr" --sha "$3"
+  echo "rerun queue item $1 (PR $pr red at ${3:0:12} on runner timeouts, run${ran})"
+}
+
 # own_parked_pr <slug> <session> <item json> <head oid> <ci> [mergeable] [red runs] -- a review item whose session is gone
 # gets an owner once its PR checks finish, since nothing else restarts a parked PR. Red (ci FAIL): a
 # fix-ci session (16 of 20 parked PRs were red on 2026-11-09). Green (ci PASS): a lander that lands
@@ -5397,29 +5420,6 @@ takeover_branch() {
 # and the reverse (#2182 sat in review green with nobody on it). A lander that asks the human is held
 # on its ask by settle_item before this runs. A session reap cannot witness (`unrecorded`, a cloud run)
 # is never read as gone here.
-# infra_rerun <slug> <item json> <head> <red runs> -- own_parked_pr's one rerun of a head whose red the
-# runners caused (INFRA): `gh run rerun --failed` on each red run, stamped `rerun_tries: 1 <head>` first, so
-# a failed write never reruns twice. It takes no session and no admission slot. Returns 1, rerunning
-# nothing, when this head was rerun already or no run is named; a rerun gh refuses is logged and returns 1
-# too. Either way the red goes the FAIL way.
-infra_rerun() {
-  local pr project dir r ran=''
-  [ "${4:--}" != - ] && [ "$(jq -r '.rerun_tries // "" | split(" ")[1] // ""' <<<"$2")" != "$3" ] || return 1
-  IFS=$'\x1f' read -r pr project < <(jq -r '[.pr // "", .project // ""] | join("\u001f")' <<<"$2")
-  agent-queue set "$1" "rerun_tries=1 $3" >/dev/null || return 1
-  [[ "$pr" == */*#* ]] || dir=$(repo_dir "$project") || return 1
-  for r in ${4//,/ }; do
-    if [[ "$pr" == */*#* ]]; then gh run rerun "$r" --failed -R "${pr%#*}" >/dev/null 2>&1
-    else (cd "$dir" && gh run rerun "$r" --failed >/dev/null 2>&1); fi && { ran+=" $r"; continue; }
-    logline "queue item $1: gh run rerun $r --failed refused for PR $pr"
-  done
-  [ -n "$ran" ] || return 1
-  agent-queue set "$1" "note=PR $pr red at ${3:0:12} on cancelled or timed-out jobs only; reran run${ran} once" >/dev/null
-  logline "queue item $1: PR $pr red at ${3:0:12} on cancelled or timed-out jobs only, reran run${ran} (once per head)"
-  dispatch_event rerun "$project" "PR red on runner timeouts only: reran its failed jobs once" --item "$1" --pr "$pr" --sha "$3"
-  echo "rerun queue item $1 (PR $pr red at ${3:0:12} on runner timeouts, run${ran})"
-}
-
 own_parked_pr() {
   local slug=$1 it=$3 head=$4 owner verb color cause tries human hhead howners pr project note trn held where why='' clear=()
   # INFRA (PR_STATE_JQ): the runners' red, not the code's. fix-ci may not rerun a timeout (its log names no

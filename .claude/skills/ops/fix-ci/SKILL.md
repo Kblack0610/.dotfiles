@@ -42,7 +42,7 @@ The repo's runbook owns the steps only it has: reading the run, naming the merge
 
 ## Do NOT, to get green
 
-- Rerun a test failure. A rerun is only for an infra fault the log names (runner lost, registry 5xx, rate limit), once per PR tip. A red of jobs cancelled at their timeout and nothing else is one: dispatch has rerun it once by the time a parked PR reaches you (`own_parked_pr`, `rerun_tries:`), so if it is cut again, treat it as the code's, a hang.
+- Rerun a test failure. A rerun is only for an infra fault the log names (runner lost, registry 5xx, rate limit), once per PR tip. A red of jobs cancelled at their timeout and nothing else is one. When the item's `rerun_tries:` names this head, dispatch already reran it (`own_parked_pr`), so a second cut is the code's, a hang; otherwise rerun it once yourself.
 - Raise a timeout, add a retry, add a skip, or silence logged errors.
 - Treat a red check as optional.
 
