@@ -372,6 +372,35 @@ enf_row() {
   assert_equal "$(grep -c 'enforcer: rules.md: Never force push: enforced_by .* is not review' <<<"$output")" 3
 }
 
+@test "rules --check: a relative path is bad, not read against the caller's directory" {
+  enf_row '"test:tests/unit/x.bats"'
+  enf_row '"hook:.claude/hooks/h.sh"'
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_equal "$(grep -c 'is not review, test:' <<<"$output")" 2
+}
+
+@test "rules --check: a test name that survives only in a comment is dead" {
+  printf '# was: @test "old name"\n@test "new name" {\n}\n' > "$SANDBOX/y.bats"
+  enf_row "\"test:$SANDBOX/y.bats::new name\""
+  run "$SUBJECT" rules --check
+  assert_success
+  : > "$RULES_REGISTER"
+  printf '# old name only here\n@test "new name" {\n}\n' > "$SANDBOX/y.bats"
+  enf_row "\"test:$SANDBOX/y.bats::old name\""
+  run "$SUBJECT" rules --check
+  assert_failure 1
+}
+
+@test "rules --check: a dead enforcer shows beside a moved number, not after it" {
+  row 'under ten' high 'echo 11' 10
+  jq -c '.enforced_by = "hook:/nonexistent/gone.sh"' "$RULES_REGISTER" > "$SANDBOX/r2" && mv "$SANDBOX/r2" "$RULES_REGISTER"
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'moved: rules.md: under ten'
+  assert_output --partial 'enforcer: rules.md: under ten: enforced_by hook:/nonexistent/gone.sh does not resolve'
+}
+
 @test "rules --check: an enforcer whose file is gone, or whose test name is not in the file, is dead (negative control)" {
   enf_row "\"hook:$SANDBOX/gone.sh\""
   enf_row "\"ci:$SANDBOX/gone.yml\""
@@ -436,7 +465,7 @@ lesson_dir() {
   printf -- '- **2026-11-20** **Run it twice.** Why: it recurred.\n  <!-- seen:%s 2026-11-21 -->%s\n' "$1" "${2:+ $2}" > "$RULES_LESSONS_DIR/proj.md"
 }
 
-@test "rules --check: a lesson the sweep found twice must name a check that resolves; once is no failure" {
+@test "rules --check: a lesson the sweep found twice must name a check that resolves, or say review; once is no failure" {
   lesson_dir 1
   run "$SUBJECT" rules --check
   assert_success
@@ -444,11 +473,21 @@ lesson_dir() {
   run "$SUBJECT" rules --check
   assert_failure 1
   assert_output --partial 'lesson: proj.md:1: seen 2 times, enforced_by missing'
-  lesson_dir 2 '<!-- enforced_by:review -->'
+  lesson_dir 2 '<!-- enforced_by:lint -->'
   run "$SUBJECT" rules --check
   assert_failure 1
-  assert_output --partial 'enforced_by review'
+  assert_output --partial 'enforced_by lint'
   lesson_dir 2 "<!-- enforced_by:hook:$SANDBOX/gone.sh -->"
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  lesson_dir 2 '<!-- enforced_by:review -->'
+  run "$SUBJECT" rules --check
+  assert_success
+  printf '@test "a named test" {\n}\n' > "$SANDBOX/x.bats"
+  lesson_dir 2 "<!-- enforced_by:test:$SANDBOX/x.bats::a named test -->"
+  run "$SUBJECT" rules --check
+  assert_success
+  lesson_dir 2 "<!-- enforced_by:test:$SANDBOX/x.bats::no such test -->"
   run "$SUBJECT" rules --check
   assert_failure 1
   lesson_dir 2 "<!-- enforced_by:test:$SANDBOX/rules.md -->"

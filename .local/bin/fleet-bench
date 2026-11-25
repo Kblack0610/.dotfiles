@@ -3082,7 +3082,7 @@ cmd_ledger() {
 # `form` says whether a row is a rule (text a session reads, a .md source) or a mechanism (a hook,
 # script or config that enforces one); the source decides it, and a row's own `form` overrides that.
 # `enforced_by` names what holds a rule row to its text: `test:<path>` (a bats file, optionally
-# `test:<path>::<test name>`), `hook:<path>`, `ci:<path>`, or `review` (nothing but a reader, the prose-only
+# `test:<path>::<test name>`; an absolute or ~ path), `hook:<path>`, `ci:<path>`, or `review` (nothing but a reader, the prose-only
 # row). A mechanism row is its own enforcer and needs none. `enforcer` is the verdict: ok, review, missing (a
 # rule row names none), bad (not that grammar) or dead (the path, or the test name in it, is not there; a
 # source on another machine is absent first, as for every row). --check fails a missing, bad or dead one, and
@@ -3090,7 +3090,7 @@ cmd_ledger() {
 # rule row names a check, or it is one more prose-only row and the count has to be argued for.
 
 # rules_enforcer <enforced_by> -> none (empty), review, ok, bad or dead: `<kind>:<path>[::<test name>]`
-# resolved against the disk, `~` as HOME, the test name searched in the file as a fixed string.
+# resolved against the disk: an absolute path or one under `~`, and the name as written in an `@test "<name>"` line.
 rules_enforcer() {
   local v="$1" path name=""
   [ -n "$v" ] || { echo none; return; }
@@ -3100,7 +3100,8 @@ rules_enforcer() {
   if [ "${v%%:*}" = test ] && [[ "$path" == *::* ]]; then name="${path#*::}" path="${path%%::*}"; [ -n "$name" ] || { echo bad; return; }; fi
   [ -n "$path" ] || { echo bad; return; }
   path="${path/#\~/$HOME}"
-  if [ -f "$path" ] && { [ -z "$name" ] || grep -qF -- "$name" "$path"; }; then echo ok; else echo dead; fi
+  [[ "$path" == /* ]] || { echo bad; return; }
+  if [ -f "$path" ] && { [ -z "$name" ] || grep -qF -- "@test \"$name\"" "$path"; }; then echo ok; else echo dead; fi
 }
 
 # rules_states -> each register row, one JSON object a line, with form, anchored, value, limited, holds, moved, dead, restates, state.
@@ -3168,7 +3169,7 @@ rules_problems() {
       elif .state == "restates" then "restates: \($f): \(.anchor): its bound is a copy of the number its measure reads from \($f); drop max/min, the reading is the number"
       elif .state == "moved" then "moved: \($f): \(.anchor): \(.value) against \(if .max != null then "max \(.max)" else "min \(.min)" end), recorded \(.confidence)"
       else empty end,
-    (select(.state == "enforcer") | "enforcer: \($f): \(.anchor): " + (
+    (select(.enforcer | IN("missing", "bad", "dead")) | select(.anchored != null) | "enforcer: \($f): \(.anchor): " + (
       if .enforcer == "missing" then "names no enforced_by; give test:<path>, hook:<path>, ci:<path>, or review when only a reader holds it"
       elif .enforcer == "bad" then "enforced_by \(.enforced_by) is not review, test:<path>[::<test name>], hook:<path> or ci:<path>"
       else "enforced_by \(.enforced_by) does not resolve: no such file, or the test name is not in it" end)),
@@ -3193,14 +3194,14 @@ rules_prose_problems() {
 }
 
 # rules_lesson_problems -> one line per lesson the dream sweep found RULES_LESSON_SEEN times or more whose
-# enforced_by marker is not a test, hook or ci that resolves (review does not count: a lesson found twice is
-# a rule a session keeps missing, and prose is what missed it). No lessons dir or CLI is no problem.
+# enforced_by marker is neither a test, hook or ci that resolves nor an explicit `review` (a lesson no check can
+# hold says so in writing, so the lesson is not silently one more prose rule). No lessons dir or CLI is no problem.
 rules_lesson_problems() {
   local lessons="${RULES_LESSONS_CMD:-$(dirname "$0")/lessons}" at seen enf title
   [ -d "${RULES_LESSONS_DIR:-$HOME/.agent/lessons}" ] && [ -x "$lessons" ] || return 0
   while IFS=$'\t' read -r at seen enf title; do
     [ "$enf" != - ] || enf=
-    [ "$enf" != review ] && [ "$(rules_enforcer "$enf")" = ok ] && continue
+    [ "$(rules_enforcer "$enf")" != ok ] && [ "$enf" != review ] || continue
     echo "lesson: ${at##*/}: seen $seen times, enforced_by ${enf:-missing}; add <!-- enforced_by:test:<path> --> (or hook:, ci:) once a check holds it: $title"
   done < <("$lessons" seen --min "$RULES_LESSON_SEEN" "${RULES_LESSONS_DIR:-$HOME/.agent/lessons}")
 }

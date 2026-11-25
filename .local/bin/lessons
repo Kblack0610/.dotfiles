@@ -92,7 +92,7 @@ function open_lesson(t,   k) {
 }
 # Before the rule that opens a bullet lesson, so the bullet opens under the group.
 /^- / && day {
-  head[start[n]] = 1; grp = date[n]; delete text[n]; delete bytes[n]; delete end[n]; delete sups[n]; delete seen[n]; delete enf[n]
+  head[start[n]] = 1; grp = date[n]; delete text[n]; delete bytes[n]; delete end[n]; delete sups[n]; delete swept[n]; delete enf[n]
   for (l = start[n]; l < NR; l++) own[l] = 0
   n--; cur = 0; insec = 0; day = 0
 }
@@ -114,9 +114,9 @@ function open_lesson(t,   k) {
     # The dream sweep marker (the highest N in the lesson) and the enforced_by marker (the last one),
     # in the grammar of a register row enforced_by.
     s = $0
-    while (match(s, /<!-- seen:[0-9]+ /)) { v = substr(s, RSTART + 10, RLENGTH - 11) + 0; if (v > seen[cur]) seen[cur] = v; s = substr(s, RSTART + RLENGTH) }
+    while (match(s, /<!-- seen:[0-9]+ /)) { v = substr(s, RSTART + 10, RLENGTH - 11) + 0; if (v > swept[cur]) swept[cur] = v; s = substr(s, RSTART + RLENGTH) }
     s = $0
-    while (match(s, /<!-- enforced_by:[^ ]+ -->/)) { enf[cur] = substr(s, RSTART + 17, RLENGTH - 21); s = substr(s, RSTART + RLENGTH) }
+    while ((i = index(s, "<!-- enforced_by:")) && (j = index(substr(s, i + 17), " -->"))) { enf[cur] = substr(s, i + 17, j - 1); s = substr(s, i + 17 + j + 3) }
     s = $0
     while (match(s, /<!-- supersedes:[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f] -->/)) {
       sups[cur] = sups[cur] " " substr(s, RSTART + 16, 8); s = substr(s, RSTART + RLENGTH)
@@ -291,8 +291,8 @@ END {
 SEEN='
 END {
   for (r = 1; r <= n; r++) {
-    if (seen[r] < min) continue
-    printf "%s:%d\t%d\t%s\t%s\n", ENVIRON["LESSONS_FILE"], start[r], seen[r], (enf[r] == "" ? "-" : enf[r]), substr(title[r], 1, 100)
+    if (swept[r] < min) continue
+    printf "%s:%d\t%d\t%s\t%s\n", ENVIRON["LESSONS_FILE"], start[r], swept[r], (enf[r] == "" ? "-" : enf[r]), substr(title[r], 1, 100)
   }
 }
 '
