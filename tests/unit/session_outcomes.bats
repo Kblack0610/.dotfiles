@@ -452,6 +452,25 @@ fj_alias_setup() {
   assert_output '{"prs":[{"repo":"git.public.test/o/r","number":1}]}'
 }
 
+@test "so_rework_repos: a Forgejo clone on any alias host is keyed by the store's host, so its PRs find their clone and project (ar-883)" {
+  # shellcheck source=/dev/null
+  . "$REPO_ROOT/.local/lib/session-outcomes.sh"
+  export SO_FORGEJO_HOSTS="git.example.test git.public.test"
+  local d
+  for d in gh fj other; do git init -q "$BATS_TEST_TMPDIR/$d"; done
+  git -C "$BATS_TEST_TMPDIR/gh" remote add origin git@github.com:o/r.git
+  git -C "$BATS_TEST_TMPDIR/fj" remote add origin ssh://git@git.public.test:2222/o/audio.git
+  git -C "$BATS_TEST_TMPDIR/other" remote add origin https://git.other.test/o/x.git
+  jq -n --arg t "$BATS_TEST_TMPDIR" '{forges: {forgejo: "git.example.test"}, paths: {"\($t)/gh": "a", "\($t)/fj": "audio", "\($t)/other": "x"}}' > "$BATS_TEST_TMPDIR/m.json"
+  run so_rework_repos "$BATS_TEST_TMPDIR/m.json"
+  assert_success
+  assert_output "$(printf 'git.example.test/o/audio\t%s/fj\no/r\t%s/gh' "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR")"
+  # Negative control: with no alias list the Forgejo clone is left out, as any other host is.
+  unset SO_CANON_ALIASES SO_CANON_STORE; export SO_FORGEJO_HOSTS=""
+  run so_rework_repos "$BATS_TEST_TMPDIR/m.json"
+  assert_output "$(printf 'o/r\t%s/gh' "$BATS_TEST_TMPDIR")"
+}
+
 @test "a dropped claim in a repo the project map lists is a hard error: the run writes the rest, holds that session, ends STALLED naming the repo" {
   fj_alias_setup
   touch "$GH_FIXTURE/prs.git.example.test-o-audio.unlisted"

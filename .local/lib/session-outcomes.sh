@@ -712,12 +712,19 @@ so_rework_commits() {
       capture("^(?<sha>[0-9a-f]+) (?<at>[0-9]+) (?<s>.*)$") | .at |= tonumber | .fix = (.s | ascii_downcase | test($re))'
 }
 
-# so_rework_repos MAP - one `owner/repo<TAB>dir` line per project-map checkout whose origin is on
-# GitHub, so a PR's repo finds the clone blame runs in.
+# so_rework_repos MAP - one `<store key><TAB>dir` line per project-map checkout whose origin is on
+# GitHub (owner/repo) or on a Forgejo alias host (host/owner/repo under the store's host, so_store_key),
+# so a PR's repo finds the clone blame and attribution run in. Why: GitHub alone left every Forgejo PR's
+# project null, 214 rows from home-config, bnb-game-servers and audio (ar-883). Any other host is left out.
 so_rework_repos() {
-  local dir repo
+  local dir repo host
+  [ -n "${SO_CANON_ALIASES+set}" ] || so_canon_init "$1" || return 1
   jq -r '.paths // {} | keys[]' "$1" 2>/dev/null | while IFS= read -r dir; do
-    repo=$(origin_repo "$dir" github.com) || continue
+    if ! repo=$(origin_repo "$dir" github.com); then
+      host=$(origin_host "$dir") && [ -n "$host" ] && repo=$(origin_repo "$dir") || continue
+      repo=$(so_store_key "$1" "$host/$repo")
+      [ -n "${SO_CANON_STORE:-}" ] && [[ "${repo,,}" == "${SO_CANON_STORE,,}"/* ]] || continue
+    fi
     printf '%s\t%s\n' "$repo" "$dir"
   done
 }
