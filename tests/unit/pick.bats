@@ -49,7 +49,7 @@ setup() {
 @test "a pull request's change list is read with rename detection off" {
   # The diff is stubbed; every other git call (the picker's ls-files and grep) is the real git.
   mkdir -p "$BATS_TEST_TMPDIR/bin"
-  printf '#!/bin/sh\ncase " $* " in *" diff "*) printf "%%s\\n" "$*" >>"%s/git_args"; echo .local/bin/fleet-dispatch ;; *) exec %s "$@" ;; esac\n' \
+  printf '#!/bin/sh\nif [ "$1 $3" = "-C diff" ]; then printf "%%s\\n" "$*" >>%q/git_args; echo .local/bin/fleet-dispatch; else exec %q "$@"; fi\n' \
     "$BATS_TEST_TMPDIR" "$(command -v git)" >"$BATS_TEST_TMPDIR/bin/git"
   chmod +x "$BATS_TEST_TMPDIR/bin/git"
   PATH="$BATS_TEST_TMPDIR/bin:$PATH" run --separate-stderr "$SUBJECT" unit HEAD
