@@ -49,40 +49,62 @@ ahead_paths() {
     [ -n "$changed" ] || break
     changed="$(comm -12 <(git -C "$d" diff --name-only "$mb" HEAD 2>/dev/null | sort) <(printf '%s\n' "$changed"))"
   done <<<"$mbs"
-  [ -z "$changed" ] || not_landed "$d" "$base" "$changed"
+  [ -z "$changed" ] || not_landed "$d" "$base" "$mbs" "$changed"
 }
 
-# not_landed <dir> <base> <paths, one per line>: the paths whose HEAD content the base has not had,
-# one per line. A path is landed when a base commit the branch lacks (HEAD..base) gave it HEAD's blob
-# or pin, so a squash the base then moved past counts 0, or when HEAD pins a submodule commit that the
-# base's pin descends from (checked only where the submodule is checked out). Only the paths that
-# differ from the base tip and every merge base get here, so the walk is bounded by them.
+# not_landed <dir> <base> <merge bases> <paths, one per line>: the paths whose HEAD content the base has
+# not kept, one per line. A path is landed when a base commit the branch lacks (HEAD..base, a merge by
+# its first-parent diff) gave it HEAD's blob or pin, so a squash the base then moved past counts 0, or
+# when HEAD moved a submodule pin forward from every merge base's to a commit the base's pin descends
+# from (checked only where the submodule is checked out). Either way the base tip must differ from
+# every merge base there: a base that reverted the path holds none of the branch's work. Only the paths
+# that differ from the base tip and every merge base get here, so the walk is bounded by them. A path
+# git quotes (core.quotePath) matches no pathspec and still counts, as diff --name-only named it.
 not_landed() {
-  local d="$1" base="$2" top p sha bpin
+  local d="$1" base="$2" mbs="$3" top kind sha p bpin mb fwd
   local -a ps
-  top="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" || { printf '%s\n' "$3"; return 0; }
-  mapfile -t ps <<<"$3"
+  top="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" || { printf '%s\n' "$4"; return 0; }
+  mapfile -t ps <<<"$4"
   {
-    git -C "$top" --literal-pathspecs log --no-renames --format= --raw --no-abbrev "HEAD..$base" -- "${ps[@]}" 2>/dev/null \
-      | awk -F'\t' '/^:/ { split($1, f, " "); print "S\t" f[4] "\t" $2 }'
-    git -C "$top" --literal-pathspecs ls-tree -r HEAD -- "${ps[@]}" 2>/dev/null \
-      | awk -F'\t' '{ split($1, f, " "); print "H\t" f[1] " " f[3] "\t" $2 }'
+    # P first: the awk below needs every path before a merge base closes.
     printf 'P\t%s\n' "${ps[@]}"
+    git -C "$top" --literal-pathspecs log --no-renames --diff-merges=first-parent --format= --raw --no-abbrev \
+      "HEAD..$base" -- "${ps[@]}" 2>/dev/null \
+      | awk -F'\t' '/^:/ { split($1, f, " "); print "S\t" f[4] "\t" $2 }'
+    # "<tag>\t<mode> <sha>\t<path>" for each path HEAD (H), the base tip (B) and each merge base (M) has.
+    while read -r kind rev; do
+      git -C "$top" --literal-pathspecs ls-tree -r "$rev" -- "${ps[@]}" 2>/dev/null \
+        | awk -F'\t' -v t="$kind" '{ split($1, f, " "); print t "\t" f[1] " " f[3] "\t" $2 }'
+      [ "$kind" != M ] || printf 'M\t-\t\n'
+    done < <(printf 'H HEAD\nB %s\n' "$base"; sed 's/^/M /' <<<"$mbs")
   } | awk -F'\t' '
+    # A path a tree lacks reads as the all-zero blob, which git log --raw gives a deletion.
+    function sha(e) { if (e == "") e = "000000 0000000000000000000000000000000000000000"; split(e, f, " "); return f[2] }
     $1 == "S" { seen[$3 "\t" $2] = 1; next }
     $1 == "H" { head[$3] = $2; next }
-    {
-      # A path HEAD lacks was deleted: git log --raw gives a deletion the all-zero blob.
-      h = ($2 in head) ? head[$2] : "000000 0000000000000000000000000000000000000000"
-      split(h, f, " ")
-      if (($2 "\t" f[2]) in seen) next
-      if (f[1] == "160000") print "G\t" f[2] "\t" $2; else print "F\t-\t" $2
+    $1 == "B" { tip[$3] = $2; next }
+    # One M record with an empty path closes a merge base: a path it lacked compares as absent.
+    $1 == "M" && $3 == "" { for (p in want) if (sha(tip[p]) == sha(mbe[p])) reverted[p] = 1; delete mbe; nmb++; next }
+    $1 == "M" { mbe[$3] = $2; next }
+    { want[$2] = 1; order[++n] = $2 }
+    END {
+      if (!nmb) for (p in want) reverted[p] = 1
+      for (i = 1; i <= n; i++) {
+        p = order[i]; h = head[p]; s = sha(h); split(h, f, " ")
+        if (!(p in reverted) && ((p "\t" s) in seen)) continue
+        if (!(p in reverted) && f[1] == "160000") print "G\t" s "\t" p; else print "F\t-\t" p
+      }
     }' \
   | while IFS=$'\t' read -r kind sha p; do
       if [ "$kind" = G ] && [ -e "$top/$p/.git" ] \
         && bpin="$(git -C "$top" rev-parse -q --verify "$base:$p" 2>/dev/null)" \
         && git -C "$top/$p" merge-base --is-ancestor "$sha" "$bpin" 2>/dev/null; then
-        continue
+        # A pin moved back to an older commit is the branch's change, though the base descends from it.
+        fwd=1
+        while read -r mb; do
+          git -C "$top/$p" merge-base --is-ancestor "$sha" "$(git -C "$top" rev-parse -q --verify "$mb:$p" 2>/dev/null)" 2>/dev/null && fwd=0
+        done <<<"$mbs"
+        [ "$fwd" = 0 ] || continue
       fi
       printf '%s\n' "$p"
     done

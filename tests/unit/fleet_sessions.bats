@@ -1479,6 +1479,12 @@ MD
   [ "$("${g[@]}" diff --name-only "$("${g[@]}" merge-base origin/main HEAD)" HEAD | wc -l)" -eq 2 ]
   run ahead_files "$SANDBOX/wt" origin/main
   assert_output 0
+  # a base that reverted f to the merge base's blob holds none of the branch's work: f counts again
+  "${g[@]}" checkout -q squash; echo 0 > "$SANDBOX/wt/f"; "${g[@]}" add f; "${g[@]}" commit -q -m 'revert f'
+  "${g[@]}" push -q origin squash:main 2>/dev/null
+  "${g[@]}" checkout -q feat/x; "${g[@]}" fetch -q origin
+  run ahead_paths "$SANDBOX/wt" origin/main
+  assert_output f
   # negative control: a blob the base never had still counts, by name; the landed deletion does not
   echo 4 > "$SANDBOX/wt/f"; "${g[@]}" add f; "${g[@]}" commit -q -m 'f again'
   run ahead_paths "$SANDBOX/wt" origin/main
@@ -1519,6 +1525,16 @@ MD
   "${g[@]}" -C "$w" checkout -q feat/x; "${g[@]}" -C "$w" fetch -q origin
   run ahead_files "$w" origin/main
   assert_output 0
+  # a pin moved back below the merge base's is the branch's change, though the base descends from it
+  "${g[@]}" -C "$w" merge -q -m 'take main' origin/main                 # the merge base now pins c4
+  "${g[@]}" -C "$w" checkout -q squash
+  pin c5
+  "${g[@]}" -C "$w" push -q origin squash:main 2>/dev/null
+  "${g[@]}" -C "$w" checkout -q feat/x; "${g[@]}" -C "$w" fetch -q origin
+  git -C "$sm" checkout -q --detach HEAD~3                                # c2, an ancestor of c4 and c5
+  "${g[@]}" -C "$w" add External/core; "${g[@]}" -C "$w" commit -q -m 'pin back to c2'
+  run ahead_paths "$w" origin/main
+  assert_output External/core
 }
 
 @test "the ledger nudges once per fact, and a new fact is nudgeable again" {
