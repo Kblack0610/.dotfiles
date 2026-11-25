@@ -510,6 +510,24 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   assert_output --partial 'razer-laptop is at its fleet_max_live'
 }
 
+# ar-3217: on 2026-11-18 razer read 2 of 3 free with two hand sessions on it.
+@test "a hand start on a worker holds its fleet_max_live, as a dispatched one does; one here does not (ar-3217)" {
+  game_ready
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  worker '2.0 16 1 50'
+  started_item by-hand lab:game-agent-1 hand
+  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  # NEGATIVE CONTROL: the same hand start on this machine names no worker, so the worker stays free.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  refute_output --partial 'razer-laptop is at its fleet_max_live'
+  sed -i 's/^session: .*/&\nhost: razer-laptop/' "$(qitem running by-hand)"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'razer-laptop is at its fleet_max_live'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_not_called 'wt new'
+}
+
 # ar-2891: on 2026-11-24 razer-laptop sat at 1 live item while 92 heavy or plan items could only run here.
 @test "a heavy item goes to a worker that clones its repo and holds 2 of its units; with 1 free the worker refuses it" {
   project game beta "$SANDBOX/repos/game"
