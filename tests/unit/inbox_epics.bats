@@ -22,6 +22,21 @@ setup() {
   assert_equal "$(epics_of app "$EPICS")" "$(printf 'ap-1\tapp\tepic(api): auth')"
 }
 
+@test "own_parent names the line's own #of/ only when it is an open row of the project" {
+  run own_parent 'feat(ui): a child #of/gm-3 #size/s' game "$BOARD"
+  assert_success
+  assert_output 'gm-3'
+  run own_parent 'feat(ui): a child #of/gm-1' game "$BOARD"
+  assert_output 'gm-1'
+  for id in gm-2 gm-404 ap-1; do
+    run own_parent "feat(ui): a child #of/$id" game "$BOARD"
+    assert_failure
+    assert_output ''
+  done
+  run own_parent 'feat(ui): no parent at all' game "$BOARD"
+  assert_failure
+}
+
 @test "a row keeps an open epic of its project, tags in place" {
   run epic_checked 'fix(ui): a bug #size/s #of/gm-1 #high' game "$EPICS"
   assert_output 'fix(ui): a bug #size/s #of/gm-1 #high'

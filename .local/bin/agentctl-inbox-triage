@@ -561,7 +561,7 @@ route() {
   # beside it is filed, with their projects (see pass).
   leave() { if [ "$from" = outbox ]; then left_why[$n]="$1"; else left "$from" "$text" "$1"; fi; }
   local filed_board=""
-  local own
+  local own line_of
   while IFS=$'\x1f' read -r n action id of dest lane plan why epic own rows cands; do
     [ "$n" -ge 1 ] 2>/dev/null && [ "$n" -le "${#raws[@]}" ] || continue
     raw="${raws[n - 1]}" from="${froms[n - 1]}" text="${texts[n - 1]}"
@@ -615,8 +615,14 @@ route() {
           # only when the person typed #plan and no #go; any other #plan gets #go beside it.
           own_plan=''; [[ " ${text,,} " == *" #plan "* ]] && own_plan=1 plan=1
           go=1; [ -n "$own_plan" ] && [[ " ${text,,} " != *" #go "* ]] && go=''
+          # The line's own #of/ naming an open row of the project is the writer's parent (a split
+          # L row): every row filed from it goes under that row, whatever epic the model picked,
+          # so no new epic is filed for them either (it would sit with no children).
+          line_of="$(own_parent "$text" "${dest:-$from}" "$board")" || line_of=''
+          [ -n "$line_of" ] && epic=''
           for r in "${rowv[@]}"; do
             r="$(epic_checked "$(clean 150 <<<"$r")" "${dest:-$from}" "$epics")"
+            [ -n "$line_of" ] && [ -n "$(no_parent "$r")" ] && [[ "$r" != epic\(* ]] && r="$(no_parent "$r") #of/$line_of"
             if [ -n "$plan" ] && [ "${#asv[@]}" = 0 ] && [[ " $r " != *" #plan "* ]]; then r="$r #plan"; fi
             if [ -n "$go" ] && [[ " $r " == *" #plan "* && " $r " != *" #go "* ]]; then r="$r #go"; fi
             [ -n "$r" ] && asv+=("$r")

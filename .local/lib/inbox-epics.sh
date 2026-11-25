@@ -106,6 +106,18 @@ parent_word() { grep -oE '(^| )#of/[^ ]+' <<<"$1" | tail -n 1 | sed 's/.*#of\///
 # no_parent <text>: the words without any `#of/` tag, one space apart.
 no_parent() { sed -E 's/(^| )#of\/[^ ]+//g; s/  +/ /g; s/^ //; s/ $//' <<<"$1"; }
 
+# own_parent <line> <project> <board json>: the id the line's own last `#of/<id>` names, when that is
+# an open row of the project, epic or not; nothing (exit 1) otherwise. The writer chose it: a session
+# splitting an L row files its children under that row, and the model, told to pick only epics, would
+# drop the link (epic_checked strips any non-epic), leaving the L row looking unsplit to dispatch.
+own_parent() {
+  local id
+  id="$(parent_word "$1")"
+  [ -n "$id" ] && jq -e --arg id "$id" --arg p "$2" \
+    'any(.rows[]?; .id == $id and .project == $p and .state != "done")' >/dev/null <<<"$3" || return 1
+  printf '%s\n' "$id"
+}
+
 # read_board: `notes board --json` into BOARD, which holds the board only when it returns 0. A
 # failed read puts notes' own first error line and exit code in the log (the caller's say) and the
 # pass's reason (proof_why), so the red it raises names its cause.
