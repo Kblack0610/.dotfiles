@@ -212,6 +212,11 @@ sandbox_detach_env() {
   export XDG_RUNTIME_DIR="$SANDBOX/run"
   mkdir -p "$XDG_RUNTIME_DIR"
 
+  # agent-queue's order ages a queued item from its ready time to the wall clock (AGENT_QUEUE_AGE_STEP),
+  # and fixtures carry fixed past dates, so the date a suite runs would decide their order. Off for
+  # every test; agent_queue.bats "ranks one tier higher" sets a step and a whole AGENT_QUEUE_NOW.
+  export AGENT_QUEUE_AGE_STEP=0
+
   # A runner shell that exports NO_COLOR or PANEL_NO_COLOR would blank every palette the
   # colour fixtures assert on (md_render, panel_lib, questions_panel). A test that wants no
   # colour sets it itself, after sandbox_init.

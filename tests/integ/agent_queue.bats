@@ -309,7 +309,9 @@ load 'agent_queue/common'
     sed -i "s/^queued: .*/queued: 2026-11-10T${s#*=}:00Z/" "$(item queued "${s%%=*}")"
   done
   export AGENT_QUEUE_NOW="$(date -d 2026-11-10T04:00:00Z +%Y-%m-%dT%H:%M)"
-  # At 04:00 with the 120m default: l-old waited 240m (two steps, low -> high, and no further), l-mid
+  # The sandbox turns aging off (sandbox.bash); this test sets agent-queue's default step back.
+  export AGENT_QUEUE_AGE_STEP=120
+  # At 04:00 with a 120m step: l-old waited 240m (two steps, low -> high, and no further), l-mid
   # 150m (one step, low -> normal), n-new 60m (none). Ties in a tier go by queued time. l-held has no
   # ready while its body holds it, so it has not aged: it ages from when the hold lifts.
   run bash -c "'$AQ' list --json | jq -r 'select(.state == \"queued\") | .slug'"
