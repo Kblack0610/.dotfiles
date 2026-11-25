@@ -64,7 +64,8 @@
 #                          judge each GitHub run the runner exporter lists as stuck (queued, no jobs)
 #                          for FLEET_SHEPHERD_GHOST_AGE_H or more, as GitHub reads it now: still
 #                          queued, made that long ago and with no job is a ghost. Each verdict is a
-#                          line of $LEDGER/ghost-runs.tsv; a ghost is cancelled only with
+#                          line of $LEDGER/ghost-runs.tsv; a ghost is cancelled (deleted when GitHub
+#                          refuses both cancels as not cancellable) only with
 #                          FLEET_SHEPHERD_GHOST_CANCEL=1, else logged as would-cancel (dry run). Every
 #                          run calls it first; exit 1 when the exporter is unreadable
 #   fleet-shepherd lease   record that this session is the shepherd pass running now and tag its
@@ -704,8 +705,11 @@ ghost_last() { awk -F'\t' -v u="$1" '$3 == u { v = $2 } END { print v }' "$GHOST
 # A ghost run is the reaper's to end: nothing else ever finishes it, and Alerts shows it high until
 # someone does. A dry run (GHOST_CANCEL unset) logs what it would do. GitHub's cancel is tried
 # first; a run it refuses as not cancellable (HTTP 409; a ghost often is) gets force-cancel, the
-# API's call for a run that no longer answers cancel, and the log says which one ended it. Any
-# other refusal (auth, rate limit) is cancel-failed and tried again next run, logged once.
+# API's call for a run that no longer answers cancel, and the log says which one ended it. A run
+# force-cancel refuses as not cancellable too is deleted: a ghost has no job and no log to lose, and
+# DELETE is the one call that ends it (2026-11-24: GitHub answered both cancels on 26 ghosts with HTTP
+# 409 "has not been queued yet"; the human chose delete, ask 44Ljyz). Any other refusal (auth, rate
+# limit) is cancel-failed and tried again next run, logged once.
 cmd_ghost_runs() {
   local cand slug id url why rc verdict out unread=""
   mkdir -p "$LEDGER" || die "cannot create $LEDGER"
@@ -724,7 +728,9 @@ cmd_ghost_runs() {
       0)
         if [ "$FLEET_SHEPHERD_GHOST_CANCEL" != 1 ]; then verdict=would-cancel
         elif out="$(gh api -X POST "repos/$slug/actions/runs/$id/cancel" 2>&1 >/dev/null)"; then verdict=cancelled
-        elif [[ "$out" == *"HTTP 409"* ]] && gh api -X POST "repos/$slug/actions/runs/$id/force-cancel" >/dev/null 2>&1; then verdict=force-cancelled
+        elif [[ "$out" != *"HTTP 409"* ]]; then verdict=cancel-failed
+        elif out="$(gh api -X POST "repos/$slug/actions/runs/$id/force-cancel" 2>&1 >/dev/null)"; then verdict=force-cancelled
+        elif [[ "$out" == *"HTTP 409"* ]] && gh api -X DELETE "repos/$slug/actions/runs/$id" >/dev/null 2>&1; then verdict=deleted
         else verdict=cancel-failed
         fi ;;
       1) verdict=kept ;;
@@ -733,7 +739,7 @@ cmd_ghost_runs() {
     # A cancel is an act, so the rundown carries it as sweep-cancel's does, a failed one once; a
     # verdict alone stays in GHOSTS.
     case $verdict in
-      cancelled|force-cancelled) cmd_log "ghost run $url: $verdict, queued $why with no jobs" ;;
+      cancelled|force-cancelled|deleted) cmd_log "ghost run $url: $verdict, queued $why with no jobs" ;;
       cancel-failed) [ "$(ghost_last "$url")" = cancel-failed ] || cmd_log "ghost run $url: cancel-failed, queued $why with no jobs; tried again each run" ;;
     esac
     printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$verdict" "$url" "$why" >> "$GHOSTS"
