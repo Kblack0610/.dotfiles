@@ -5412,8 +5412,8 @@ settle_item() {
       "chore(review): reap has not read PR $pr for ${DISPATCH_ORPHAN_HOURS}h; correct the item's pr: or close the item"
     return 0 ;;
   esac
-  # An item reap_stuck holds (a merged red item whose watch still trips) logs once, not every pass.
-  watch_wait "$1" || dispatch_event reaped "$(jq -r '.project // empty' <<<"$it")" "session $2 gone" --item "$1" --why "item was $st"
+  # An item reap_stuck holds (a merged PR with no merge commit, or a red item whose watch still trips) logs once, not every pass.
+  [ -e "$DIR/stuck/$1" ] || dispatch_event reaped "$(jq -r '.project // empty' <<<"$it")" "session $2 gone" --item "$1" --why "item was $st"
   if [ -n "$pr" ]; then
     case "$state" in
     MERGED)

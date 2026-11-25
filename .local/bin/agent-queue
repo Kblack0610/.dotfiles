@@ -3691,7 +3691,13 @@ cmd_move() {
   fi
   if [ "$to" = done ] && [ "$status" = cancelled ]; then cancel_check "$why"
   elif [ -n "$why$ask" ]; then die "--why and --ask record a cancel: use them with move <slug> done --status cancelled"; fi
-  [ "$to" != done ] || [ "$status" != ok ] || [ -n "${AQ_LOCKED-}" ] || watch_close_check "$slug"
+  # The watch probe runs outside the lock, after the --if compare (made again under the lock below), so a
+  # caller whose item moved on meanwhile reads 3, not the watch's 6 (ar-5414).
+  if [ "$to" = done ] && [ "$status" = ok ] && [ -z "${AQ_LOCKED-}" ]; then
+    lock_read; f="$(find_item "$slug")"; unlock_read
+    [ -z "$expect" ] || [ -z "$f" ] || [ "$(state_of "$f")" = "$expect" ] || { echo "agent-queue: $slug is $(state_of "$f"), not $expect: left as it is" >&2; return 3; }
+    watch_close_check "$slug"
+  fi
   [ -n "${AQ_LOCKED-}" ] || lock
   f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
   from="$(state_of "$f")"

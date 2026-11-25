@@ -2765,6 +2765,11 @@ EOS
   run "$AQ" move red-chain review
   assert_success
   [ ! -s "$NOTES_FIXTURE/watch.log" ]
+  # A close whose --if no longer holds reads 3 before any probe: reap gets the move, not the watch.
+  run "$AQ" move red-chain done --status ok --if running
+  assert_failure 3
+  assert_output --partial 'red-chain is review, not running'
+  [ ! -s "$NOTES_FIXTURE/watch.log" ]
   # Once the watch reads OK, the same close goes through.
   printf '0\n' > "$NOTES_FIXTURE/watch.rc"
   run "$AQ" move red-chain done --status ok

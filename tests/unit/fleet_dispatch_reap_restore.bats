@@ -1356,6 +1356,25 @@ case "${@: -1}" in *awk*) eval "${@: -1}" ;; *) echo "did its own" ;; esac'
   [ ! -e "$FLEET_DISPATCH_DIR/stuck/fix-crash" ] || fail "a settled item left its stuck marker"
 }
 
+@test "reap: a merged red watch item whose watch still trips waits in review, logs once, and closes ok once the watch reads OK (ar-5414)" {
+  pr_item MERGED
+  agent-queue set fix-crash "tags=red watch" "title=check(watch): spend tripped since 2026-11-20, expected: spend under cap" >/dev/null
+  stub watch-companion-loop 'exit "$(cat "$NOTES_FIXTURE/watch.rc")"'
+  echo 1 > "$NOTES_FIXTURE/watch.rc"
+  : > "$NOTES_FIXTURE/calls.log"
+  run cmd_reap
+  run cmd_reap
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
+  assert_equal "$(grep -c 'in review: PR o/game#12 merged, its watch still trips' "$FLEET_DISPATCH_DIR/log.md")" 1
+  assert_equal "$(grep -c -- '--action reaped' "$NOTES_FIXTURE/calls.log")" 1
+  [ -e "$FLEET_DISPATCH_DIR/stuck/fix-crash" ] || fail "the merge ended the watch's wait"
+  # Once the watch reads OK, the next pass closes it ok and ends the wait.
+  echo 0 > "$NOTES_FIXTURE/watch.rc"
+  run cmd_reap
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .status] | join("|")')" 'done|ok'
+  [ ! -e "$FLEET_DISPATCH_DIR/stuck/fix-crash" ] || fail "a closed item left its stuck marker"
+}
+
 @test "reap: a stuck item whose agent board refuses the row says so on stderr, pages nobody, and files it once the board takes it" {
   pr_item OPEN
   : > "$NOTES_FIXTURE/pr.state"

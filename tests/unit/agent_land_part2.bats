@@ -1288,6 +1288,46 @@ EOF
   assert_equal "$(jq -r '[.state, .status] | join("|")' <<<"$output")" 'done|ok'
 }
 
+@test "a red watch item routed to its owner lands while the watch trips, and its PR still resolves the watch (ar-5414)" {
+  cat >"$SANDBOX/bin/watch-companion-loop" <<'EOF'
+#!/usr/bin/env bash
+printf 'watch-companion-loop %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
+echo "TRIP: spend still over limit"
+exit 1
+EOF
+  cat >"$SANDBOX/bin/fleet-bench" <<'EOF'
+#!/usr/bin/env bash
+[ "$1 $2" = "triage --route" ] || exit 2
+printf '%s\towned:ar-1\t-\t\n' "$3"
+EOF
+  chmod +x "$SANDBOX/bin/watch-companion-loop" "$SANDBOX/bin/fleet-bench"
+
+  cat >"$AGENT_QUEUE_DIR/running/20261103-100000-red-spend.md" <<'EOF'
+slug: red-spend
+project: dotfiles
+mode: oneshot
+priority: urgent
+from: fleet-bench
+agent: claude
+tags: red watch cause:ab12
+row: dotfiles:ship red
+queued: 2026-11-03T10:00:00Z
+started: 2026-11-03T10:00:00Z
+---
+check(watch): spend tripped since 2026-11-20, expected: spend under cap
+EOF
+
+  run "$LAND" 42 --item red-spend
+  assert_success
+  assert_line 'watch spend routes to owned:ar-1, so its close is not probed'
+  assert_line 'landed #42'
+  # The merge is recorded as the fix watermark, and nothing else probes the watch.
+  [ "$(grep -c '^watch-companion-loop ' "$LOG")" -eq 1 ]
+  grep -q '^watch-companion-loop resolve spend --pr o/r#42$' "$LOG"
+  run agent-queue show red-spend --json
+  assert_equal "$(jq -r '[.state, .status] | join("|")' <<<"$output")" 'done|ok'
+}
+
 @test "a red watch item with --partial skips the probe check, and a non-red item with check(watch) in its task skips it too (ar-1605)" {
   cat >"$SANDBOX/bin/watch-companion-loop" <<'EOF'
 #!/usr/bin/env bash

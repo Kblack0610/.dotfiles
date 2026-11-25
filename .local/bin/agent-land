@@ -1236,13 +1236,19 @@ json_watch() {
 # step 5) and rechecks; a bare #N with no repo rechecks only. Still red means the fix did not clear
 # it, or waits on a deploy: re-running agent-land once it clears closes the item and its board row.
 # The move to done that follows rechecks it once more (agent-queue cmd_move): no flag skips that. A
-# watch routed to alert or owned: is the ask's or owner's job, so neither check probes it.
+# watch routed to alert or owned: is the ask's or owner's job, so neither check refuses on it; its PR
+# still resolves the watch.
 # gate: al-watch-gate
 watch_gate() {
   local w out verb route
   w=$(json_watch "$1")
   [ -n "$w" ] || return 0
-  if route=$(watch_route_owned "$w"); then echo "watch $w routes to $route, so its close is not probed"; return 0; fi
+  if route=$(watch_route_owned "$w"); then
+    # Only the refusal is the owner's: the merge is still the fix watermark, so a windowed probe counts from it.
+    [[ "$pr_ref" != */* ]] || watch_probe resolve "$w" --pr "$pr_ref" >/dev/null || true
+    echo "watch $w routes to $route, so its close is not probed"
+    return 0
+  fi
   verb=(recheck "$w")
   [[ "$pr_ref" != */* ]] || verb=(resolve "$w" --pr "$pr_ref")
   out=$(watch_probe "${verb[@]}") || fail item "$out"
