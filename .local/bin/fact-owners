@@ -2,7 +2,7 @@
 """fact-owners - one home per derived fact, enforced.
 
   fact-owners check [--doc DOC] [--cells|--pins|--copies|--generated|--debt|--rows] [FILE...]
-  fact-owners scan  [--doc DOC]          copies the generated rules find that no row or Debt entry covers
+  fact-owners scan  [--doc DOC]          what the generated rules and the copy regexes find that no Debt entry covers
   fact-owners count [--unowned|--debt|--json]
   fact-owners files                      the tracked files the copies are looked for in
 
@@ -28,6 +28,7 @@ BOARDS = [os.path.join(HOME, ".notes/lab/projects/current/agent-runtime", f) for
 TREES = [".local/bin/", ".local/lib/", ".local/src/", ".config/shared-hooks/", ".claude/"]
 COLS = ["fact", "writer", "home", "copy", "lock", "pinned", "debt"]
 SEP = "\x1e"
+KNOWN_FLAGS = {"cells", "pins", "copies", "generated", "debt", "rows", "unowned", "json"}
 
 
 def private_root():
@@ -118,11 +119,11 @@ def owned_files():
             t = os.path.realpath(p)
             if any(t == os.path.join(ROOT, s) or t.startswith(os.path.join(ROOT, s) + "/") for s in sm):
                 continue
-        out.append(p)
+        out.append(os.path.realpath(p) if os.path.islink(p) else p)
     if PRIVATE:
         pl = subprocess.run(["git", "-C", PRIVATE, "ls-files", "--", ".local/bin"], capture_output=True, text=True).stdout.split("\n")
         out += [os.path.join(PRIVATE, f) for f in pl if f and not re.search(r"\.(md|svg|bats)$", f)]
-    return out
+    return list(dict.fromkeys(out))
 
 
 def root_of(span):
@@ -136,7 +137,7 @@ def grep_hits(re_, files):
     """`file:line:text` lines of grep -E over files, binary files skipped."""
     if not files:
         return []
-    r = subprocess.run(["xargs", "-0", "grep", "-nIE", "-e", re_, "--"], input="\0".join(files) + "\0",
+    r = subprocess.run(["xargs", "-0", "grep", "-HnIE", "-e", re_, "--"], input="\0".join(files) + "\0",
                        capture_output=True, text=True, errors="replace")
     return [ln for ln in r.stdout.splitlines() if ln]
 
@@ -145,10 +146,14 @@ def regex_ok(re_):
     return subprocess.run(["grep", "-qE", "-e", re_], input="", capture_output=True, text=True).returncode != 2
 
 
-def writer_file(r):
-    sp = spans(r["writer"])
-    root, p = root_of(sp[0]) if sp else (ROOT, "")
-    return os.path.join(root, p.split(":")[0]) if root else None
+def writer_files(r):
+    """The real paths of every file the writer cell names a function in: a writer and its twin."""
+    out = set()
+    for s in spans(r["writer"]):
+        root, p = root_of(s)
+        if root and ":" in p and os.path.isfile(os.path.join(root, p.split(":")[0])):
+            out.add(os.path.realpath(os.path.join(root, p.split(":")[0])))
+    return out
 
 
 # ---- the table's own checks (moved from tests/unit/fleet_states_doc.bats) ----------------------
@@ -166,6 +171,9 @@ def check_cells(doc):
             continue
         root, first = root_of(fns[0])
         if root is None:
+            continue
+        if ":" not in first:
+            bad.append(f"{r['fact']}: writer {first} names no function (path:fn)")
             continue
         file, fns[0] = first.split(":", 1)
         if not os.path.isfile(os.path.join(root, file)):
@@ -226,11 +234,11 @@ def copy_hits(r, files):
         return [], None
     if not regex_ok(sp[0]):
         return [], f"{r['fact']}: its forbidden copy is not a valid regex: {sp[0]}"
-    w = writer_file(r)
+    w = writer_files(r)
     out = []
     for ln in grep_hits(sp[0], files):
         path = ln.split(":", 1)[0]
-        if not w or path != w:
+        if os.path.realpath(path) not in w:
             out.append((path, ln))
     return out, None
 
@@ -438,6 +446,14 @@ def check_generated(doc, files, debt_ok=True):
         for rule in rules.get(kind, []):
             if rule["row"] not in keys:
                 bad.append(f"rule {rule.get('name', rule['row'])}: no Owners row `{rule['row']}`")
+    for rule in rules.get("vocab", []):
+        try:
+            empty = not vocab_words(rule["source"])
+        except OSError as e:
+            bad.append(f"rule {rule['name']}: its source is unreadable: {e.filename}")
+            continue
+        if empty:
+            bad.append(f"rule {rule['name']}: its source {json.dumps(rule['source'])} yields no words, so it can find no copy")
     for row, path, msg in generated_hits(doc, files):
         r = keys.get(row)
         if r and debt_ok and covered(r, path):
@@ -454,11 +470,9 @@ def check_generated(doc, files, debt_ok=True):
         body = "\n".join(code_lines(fn_body(os.path.join(root, f), fn))) if root else None
         if body is not None and not re.search(r"\b" + re.escape(c["key"].split(".")[-1]) + r"\b", body):
             bad.append(f"config key {c['key']} of {c['conf']}: its reader {c['reader']} never reads it")
-    tagged = 0
     for d in rules.get("schema_docs", []):
         for ln in read(os.path.join(ROOT, d)).splitlines():
             for k in re.findall(r"<!-- derived: ([a-z0-9-]+) -->", ln):
-                tagged += 1
                 if k not in keys:
                     bad.append(f"{d}: a field is tagged derived: {k} with no Owners row `{k}`: {ln.strip()[:80]}")
         if not any("<!-- derived:" in ln for ln in read(os.path.join(ROOT, d)).splitlines()):
@@ -487,11 +501,14 @@ def main(argv):
     i = 0
     while i < len(args):
         a = args[i]
-        if a == "--doc":
+        if a == "--doc" and i + 1 < len(args):
             doc = args[i + 1]
             i += 1
-        elif a.startswith("--"):
+        elif a.startswith("--") and a[2:] in KNOWN_FLAGS:
             flags.add(a[2:])
+        elif a.startswith("--"):
+            print(f"fact-owners: unknown option {a}", file=sys.stderr)
+            return 2
         else:
             files.append(a)
         i += 1

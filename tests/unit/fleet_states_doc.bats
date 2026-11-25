@@ -119,8 +119,7 @@ check_svg() { # <doc> <svg>
   diff <("$GEN" --doc "$1" --out -) "$2" > /dev/null || { echo "$2 is not close-flow-svg's output of $1: run close-flow-svg"; return 1; }
 }
 
-# The Owners table is checked by .local/bin/fact-owners, the one checker the CI gate, the KPI and the plan
-# hook call. These wrappers hand it this test's PRIVATE (a stand-in repo in the negative controls) and
+# The Owners table is checked by .local/bin/fact-owners, the one checker (this file is its CI run). These wrappers hand it this test's PRIVATE (a stand-in repo in the negative controls) and
 # keep each check's output for the assertions below.
 FACT_OWNERS() { DOTFILES_PRIVATE="$PRIVATE" "$REPO_ROOT/.local/bin/fact-owners" "$@"; }
 
@@ -443,7 +442,7 @@ check_owner_copies() { # <doc> <file>...
   assert_output --partial "$t/hub-core/src/fresh.rs:1: a list of 3 account words"
 }
 
-@test "negative controls for schema tags and config keys: a tag with no row, a schema doc with no tag, a key the conf lacks and a reader that never reads it all fail" {
+@test "negative controls for schema tags and config keys: a tag with no row, a schema doc with no tag, a key the conf lacks, a reader that never reads it and a vocabulary rule that reads no words all fail" {
   local t="$BATS_TEST_TMPDIR"
   mkdir -p "$t/repo/.config/fact-owners" "$t/repo/.local/bin" "$t/repo/docs"
   cp "$REPO_ROOT/.config/fact-owners/rules.json" "$t/repo/.config/fact-owners/"
@@ -453,7 +452,7 @@ check_owner_copies() { # <doc> <file>...
 import json, sys
 p = sys.argv[1]
 d = json.load(open(p))
-d["vocab"], d["raw"] = [], []
+d["vocab"], d["raw"] = [{"row": "buckets", "name": "empty", "source": {"words": []}, "home": []}], []
 d["schema_docs"] = ["docs/schema.md"]
 d["config_keys"] = [{"conf": "conf.json", "key": "absent", "reader": ".local/bin/reader:load"},
                     {"conf": "conf.json", "key": "rung", "reader": ".local/bin/reader:load"}]
@@ -465,6 +464,7 @@ PY
   run env DOTFILES_PRIVATE="$PRIVATE" "$t/repo/.local/bin/fact-owners" check --doc "$DOC" --generated "$t/repo/.local/bin/reader"
   assert_failure
   assert_output --partial "tagged derived: no-such-row with no Owners row"
+  assert_output --partial "rule empty: its source {\"words\": []} yields no words"
   assert_output --partial "config key absent: not in conf.json"
   assert_output --partial "its reader .local/bin/reader:load never reads it"
   printf '%s\n' 'no tag here' > "$t/repo/docs/schema.md"
