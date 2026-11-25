@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Block commits that add client/employer/infra identifiers to this PUBLIC repo.
 # Patterns live in .githooks/sensitive-tokens.txt. Private content belongs in the
-# ~/.dotfiles-private overlay. Bypass (rarely, deliberately) with: git commit --no-verify
+# ~/.dotfiles-private overlay. Only the human bypasses it, by hand (skip-guard denies an agent --no-verify).
 set -uo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
@@ -21,7 +21,6 @@ if [ -n "$hits" ]; then
   sed 's/^/    /;30q' <<<"$hits" >&2
   echo "" >&2
   echo "  → Move the file into ~/.dotfiles-private, or redact the identifier." >&2
-  echo "  → Deliberate exception: git commit --no-verify" >&2
   exit 1
 fi
 exit 0
