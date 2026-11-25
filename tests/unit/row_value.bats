@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # row-value: export a board's open agent rows for the value judges, check and merge their
-# verdicts against the rubric's lists, compare two judges. Fixtures are files: a saved board
+# verdicts against the rubric's lists and rules, compare two judges. Fixtures are files: a saved board
 # JSON, a scorecard and a stub reds command; no judge runs and notes is never called.
 
 setup() {
@@ -13,7 +13,7 @@ setup() {
   D="$HOME/rv"
   cat >"$HOME/board.json" <<'EOF'
 {"today":"2026-11-24","rows":[
- {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-20","priority":"high","parent":"ar-2","prio_why":"fault","since":"2026-11-20","text":"fix(dispatch): lost item","tags":["of/ar-2"],"details":["seen twice"]},
+ {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-20","priority":"high","parent":"ar-2","prio_why":"fault","since":"2026-11-20","text":"fix(dispatch): lost item","tags":["of/ar-2"],"details":["seen twice"],"requested":true},
  {"project":"agent-runtime","lane":"agent","state":"doing","id":"ar-3","priority":"normal","parent":"ar-1","prio_why":null,"since":"2026-11-21","text":"feat(bench): a KPI","tags":[],"details":[]},
  {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-10","priority":"low","parent":"ar-1","prio_why":"upkeep","since":"2026-11-22","text":"chore(notes): tidy","tags":[],"details":[]},
  {"project":"agent-runtime","lane":"agent","state":"done","id":"ar-4","text":"done row","tags":[],"details":[]},
@@ -21,8 +21,12 @@ setup() {
  {"project":"other","lane":"agent","state":"open","id":"ot-1","text":"other board","tags":[],"details":[]}
 ]}
 EOF
-  printf '%s\n' '| you | buzzes_per_day | 20.0 | 5.0 | max 15 | past |' \
-    '| ci_red_per_pr | 0.569 | 0.594 | max 0.5 | past |' '| revert_rate | 0.004 | 0.004 | max 0.05 | ok |' >"$HOME/latest.md"
+  # Two tables of the scorecard's shape: vitals lead with a question column, KPIs with the name.
+  printf '%s\n' '| Question | KPI | 7d | 28d | threshold | status |' '|---|---|---|---|---|---|' \
+    '| you | buzzes_per_day | 20.0 | 5.0 | max 15 | past |' '' \
+    '| KPI | 7d | 28d | threshold | status |' '|---|---|---|---|---|' \
+    '| ci_red_per_pr | 0.569 | 0.594 | max 0.5 | past |' '| revert_rate | 0.004 | 0.004 | max 0.05 | ok |' \
+    '' '| Mode | Status | Pass | Fail | past |' '| nightly | ok | 3 | 0 | past |' >"$HOME/latest.md"
   printf '%s\n' '#!/bin/sh' "echo '| ar-9 | watch chain-lag | still red | x |'" \
     "echo '| ar-9 | watch chain-lag | came back | x |'" "echo '| ar-8 | watch old | fixed | x |'" >"$HOME/reds"
   chmod +x "$HOME/reds"
@@ -44,8 +48,10 @@ judge() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@"; }
   assert_output --partial "ar-3 [doing] normal epic:ar-1"
   refute_output --partial "ar-20"
   run cat "$D/chunk-02.txt"
-  assert_output --partial "fix(dispatch): lost item #of/ar-2"
+  assert_output --partial "fix(dispatch): lost item #of/ar-2 #requested"
   assert_output --partial "  | seen twice"
+  run awk -F'\t' '$1 == "ar-20" { print $6 }' "$D/rows.tsv"
+  assert_output yes
 }
 
 @test "export: the context names the KPIs past threshold and each live red once" {
@@ -54,6 +60,7 @@ judge() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@"; }
   assert_output --partial "- buzzes_per_day 20.0 (max 15)"
   assert_output --partial "- ci_red_per_pr 0.569 (max 0.5)"
   refute_output --partial "revert_rate"
+  refute_output --partial "nightly"
   assert_output --partial "- ar-9 watch chain-lag (still red)"
   refute_output --partial "came back"
   refute_output --partial "ar-8"
@@ -73,9 +80,27 @@ judge() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@"; }
   assert_output --partial "lost item found (ar-20) (#7)"
   run grep -c '  merged:' "$D/chunk-01.txt"
   assert_output 1
-  run "$RV" export --board "$HOME/board.json" --reds-cmd "" --repo "$HOME/nope" "$D"
+  run "$RV" export --board "$HOME/board.json" --scorecard "" --reds-cmd "" --repo "$HOME/nope" "$D"
   assert_failure 1
-  assert_output --partial "git log in $HOME/nope failed"
+  assert_output --partial "git fetch in $HOME/nope failed"
+}
+
+@test "export: a missing scorecard or a failed reds command fails instead of an empty context" {
+  run "$RV" export --board "$HOME/board.json" --reds-cmd "" "$D"
+  assert_failure 1
+  assert_output --partial "no scorecard at $HOME/.notes/lab/projects/current/agent-runtime/docs/bench/latest.md"
+  run "$RV" export --board "$HOME/board.json" --project other --reds-cmd "" "$D"
+  assert_failure 1
+  assert_output --partial "projects/current/other/docs/bench/latest.md"
+  run "$RV" export --board "$HOME/board.json" --scorecard "$HOME/latest.md" --reds-cmd false "$D"
+  assert_failure 1
+  assert_output --partial "reds-cmd 'false' failed (1)"
+  [ ! -e "$D/context.md" ]
+  run "$RV" export --board "$HOME/board.json" --scorecard "" --reds-cmd "" "$D"
+  assert_success
+  run cat "$D/context.md"
+  assert_output --partial "(not read: --scorecard '')"
+  assert_output --partial "(not read: --reds-cmd '')"
 }
 
 @test "merge: every row judged once in the rubric's words writes verdicts.tsv and counts" {
@@ -91,6 +116,23 @@ judge() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@"; }
   assert_output --partial "verdict: keep 1, park 1, merge 1"
   run head -1 "$D/verdicts.tsv"
   assert_output "$(printf 'id\ttarget\tref\tkind\tverdict\tinto\twhy')"
+  export_fixture
+  [ ! -e "$D/judge-01.tsv" ] && [ ! -e "$D/verdicts.tsv" ]
+}
+
+@test "merge: the rubric's bounds hold: doing is keep, requested never drop or park, merge only into a kept row" {
+  export_fixture
+  {
+    judge ar-3 none - polish park - "tidy"
+    judge ar-10 none - dup merge ar-20 "same"
+    judge ar-20 red - superseded drop - "done"
+  } >"$D/judge-01.tsv"
+  run "$RV" merge "$D"
+  assert_failure 1
+  assert_output --partial "ar-3 is doing (a live queue item), so keep, not park"
+  assert_output --partial "ar-20 was requested by the human, so never drop"
+  assert_output --partial "ar-10 merges into ar-20, which is drop, not keep"
+  [ ! -e "$D/verdicts.tsv" ]
 }
 
 @test "merge: a missing row, a twice-judged row, a word outside the lists or a bad merge fails and writes nothing" {
@@ -135,6 +177,12 @@ judge() { printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$@"; }
   assert_output --partial "agree 2/3 (66.7%)"
   assert_output --partial "$(printf 'ar-3\tpark\tkeep')"
   refute_output --partial "$(printf 'ar-1\tkeep')"
+  printf 'id\tverdict\tkind\nar-1\tkeep\twork\nar-2\tdrop\tdup\n' >"$HOME/mine.tsv"
+  printf 'id\tlabel\nar-1\twork\nar-2\tstale\n' >"$HOME/theirs.tsv"
+  run "$RV" compare --mine-verdict kind --verdict label "$HOME/mine.tsv" "$HOME/theirs.tsv"
+  assert_success
+  assert_output --partial "agree 1/2 (50.0%)"
+  assert_output --partial "$(printf 'ar-2\tdup\tstale')"
   run "$RV" compare --id nope "$HOME/mine.tsv" "$HOME/theirs.tsv"
   assert_failure 1
   assert_output --partial "no column 'nope'"
