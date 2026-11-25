@@ -3913,33 +3913,32 @@ cancel c-old-lane --why canary: superseded by the $week set"
   assert_output '[1,1,1,3]'
 }
 
-@test "canary score --end: the row records why the session ended; a provider, timeout or other unrated end scores not run, out of list, lanes and the KPI pass rate" {
+@test "canary score: the row records the item's end_reason; a provider, timeout or other unrated end scores not run, out of list, lanes and the KPI pass rate" {
   kpi_setup; kpi_fixture; canary_fixture
   git -C "$CREPO" worktree add -q --detach "$SANDBOX/wt" "$CBASE"
   cd "$SANDBOX/wt"
-  for s in g1 g2 g3 g4 g5; do jq -n --arg s "$s" '{slug: $s, agent: "go", model: "glm", sessions: "ses_\($s)"}' > "$CQ/$s.json"; done
+  for s in g1:provider g2:timeout g3:stopped g4:none g5:; do
+    jq -n --arg s "${s%%:*}" --arg e "${s#*:}" '{slug: $s, agent: "go", model: "glm", sessions: "ses_\($s)"} + (if $e == "" or $e == "none" then {} else {end_reason: $e} end)' > "$CQ/${s%%:*}.json"
+  done
   # A provider refusal with no diff is not run, not a fail, though the oracle failed.
-  AGENT_QUEUE_ITEM=g1 run "$SUBJECT" canary score greet --end provider
+  AGENT_QUEUE_ITEM=g1 run "$SUBJECT" canary score greet
   assert_success
   assert_output --partial 'canary greet: not run (the session ended: provider) (exit 1)'
   # A timeout is not run even when the tree it left would pass.
   echo 'echo hello' > greet.sh
-  AGENT_QUEUE_ITEM=g2 run "$SUBJECT" canary score greet --end timeout
+  AGENT_QUEUE_ITEM=g2 run "$SUBJECT" canary score greet
   assert_output --partial 'canary greet: not run (the session ended: timeout) (exit 0)'
   # Negative control: a model that finished its turn (stopped) and failed is a fail, its end kept.
-  AGENT_QUEUE_ITEM=g3 run "$SUBJECT" canary score greet --end stopped
+  AGENT_QUEUE_ITEM=g3 run "$SUBJECT" canary score greet
   assert_output --partial 'canary greet: fail (exit 1)'
-  # A word outside END_REASONS is said and scored as unknown, so the run still scores; no --end is unknown too.
+  # An item with no end_reason is said (the record had nothing) and scores on the oracle alone.
   echo 'echo hello' > greet.sh
-  AGENT_QUEUE_ITEM=g4 run "$SUBJECT" canary score greet --end bogus
+  AGENT_QUEUE_ITEM=g4 run "$SUBJECT" canary score greet
   assert_success
-  assert_output --partial "--end 'bogus' is not one of"
-  assert_output --partial 'canary greet: pass (exit 0)'
-  # An empty --end (item-end found no record) is said, so a silent fallback to the oracle can be counted.
-  AGENT_QUEUE_ITEM=g4 run "$SUBJECT" canary score greet --end ''
-  assert_failure 3
   assert_output --partial "the session's end is unknown"
-  AGENT_QUEUE_ITEM=g5 run "$SUBJECT" canary score greet --frob
+  assert_output --partial 'canary greet: pass (exit 0)'
+  # The end is the item's, so a flag for it is gone: there is one record.
+  AGENT_QUEUE_ITEM=g5 run "$SUBJECT" canary score greet --end provider
   assert_failure 2
   run jq -c '[.run, .pass, .rc, .end_reason]' "$FLEET_BENCH_DIR/canary.jsonl"
   assert_output $'["g1",null,1,"provider"]\n["g2",null,0,"timeout"]\n["g3",false,1,"stopped"]\n["g4",true,0,null]'
