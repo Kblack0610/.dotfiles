@@ -43,9 +43,9 @@ Rules that bound the verdict:
 
 Pick the first that fits. Each bucket allows only some verdicts, and `row-value merge` checks it.
 
-- `container`: the row's header shows `children:` above 0 (it is a parent with open children). It is judged by its children, so it is `keep`. A row with open children is always `container`, and no other row is.
+- `container`: the row's header shows `children:` above 0 (it is a parent with open children). It is judged by its children: `keep`, or `drop` when every open child is dropped, merged or fixed in this pass (the cut closes them together with `drop --children`). A row with open children is always `container`, and no other row is.
 - `chain`: a phase of a live (not superseded) plan held by `after:` (an `#after/` tag), even when its brief only points at the plan: the tag is how a chain holds its waiting phases, and dropping the row stops the chain. Verdict `keep`. A phase row with no `after:` is bucketed by what its phase does.
-- `red`: a live red in the context names it, or it answers one. Put the red in `ref`. Verdict `keep`.
+- `red`: a live red in the context names it, or it answers one. Put the red in `ref` (required). Verdict `keep`.
 - `fault`: a runtime defect you can point at in code (wrong state, lost or stuck work, a false page, a crash, a refusal of good work). Verdict `keep`. A fault row must be checked at HEAD: leave `evidence` as `-`, and the HEAD check writes it.
 - `fixed`: the defect or the work is already gone at HEAD. Evidence names the commit or file:line that shows it. Verdict `keep` or `drop` (the cut closes it done with that proof).
 - `sot`: source-of-truth and efficiency work: removes a copy, a second reader of one fact, or a gate with no number behind it. Verdict `keep`.

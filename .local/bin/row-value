@@ -3,7 +3,7 @@
 
   row-value export [--project P] [--chunk N] [--board FILE] [--scorecard FILE] DIR
       the project's open agent rows (open and doing) into DIR: rows.tsv (id, state, priority,
-      epic, why, requested, since, plan, after, children, text), chunk-NN.txt (about N rows each, sorted by epic then id so rows
+      epic, why, requested, since, plan, after, children, exported_children, text), chunk-NN.txt (about N rows each, sorted by epic then id so rows
       of one cause sit together) and context.md (the KPIs the project's scorecard marks past, and
       the reds `fleet-bench reds` shows still live; --scorecard and --reds-cmd swap those, "" skips
       one, and a missing scorecard or a failed reds command fails the export). Each --repo is
@@ -15,15 +15,16 @@
       checks every DIR/judge-*.tsv against the rubric's lists and DIR/rows.tsv: each exported
       id exactly once, no unknown id, each field in its list, `into` naming another exported row
       that is kept when the verdict is merge, a doing row kept, a requested row never dropped
-      or parked, a bucket that fits its verdict and the row (container: open children; chain:
-      an #after/ tag). Each DIR/check-*.tsv line (id, bucket, evidence, why: the HEAD check of a
-      fault row) replaces that row's bucket, evidence and why; a fault or fixed row with no
-      evidence fails. Writes DIR/verdicts.tsv (with a header) and prints the counts by verdict,
+      or parked, a bucket that fits its verdict and the row (container: open children, and
+      dropped only with every child; chain: an #after/ tag; red: a ref). Each DIR/check-*.tsv line (id, bucket, evidence, why: the HEAD check of a
+      row the judge bucketed fault or fixed) replaces its bucket, evidence and why; a fault or
+      fixed row with no evidence fails. Writes DIR/verdicts.tsv (with a header) and prints the counts by verdict,
       bucket, kind, target and system. Exit 1 on any finding, and nothing is written.
-  row-value report [--tsv FILE] DIR
+  row-value report [--project P] [--tsv FILE] DIR
       the ledger from DIR/rows.tsv and DIR/verdicts.tsv as markdown on stdout: counts by bucket,
       per system and per epic, then every row with its bucket and tie (epic, plan, the red it
-      answers, the project it serves). --tsv also writes the joined ledger, one line per row.
+      answers, the project it serves; P is the board's own, default agent-runtime). --tsv also
+      writes the joined ledger, one line per row (its `why` is the verdict's).
   row-value compare [--id COL] [--verdict COL] [--mine-verdict COL] [--map FROM=TO,...] MINE THEIRS
       agreement between two verdict files on the ids both judged: the share that agree, Cohen's
       kappa, the confusion table, and each disagreement as `id<TAB>mine<TAB>theirs`. THEIRS may
@@ -46,14 +47,16 @@ RUBRIC = os.path.join(HERE, "..", "..", ".config", "row-value", "rubric.md")
 SCORECARD = "~/.notes/lab/projects/current/{project}/docs/bench/latest.md"
 FIELDS = ["id", "target", "ref", "kind", "verdict", "into", "bucket", "system", "project", "evidence", "why"]
 CHECK_FIELDS = ["id", "bucket", "evidence", "why"]
-ROW_FIELDS = ["id", "state", "priority", "epic", "why", "requested", "since", "plan", "after", "children", "text"]
+ROW_FIELDS = ["id", "state", "priority", "epic", "why", "requested", "since", "plan", "after", "children",
+              "exported_children", "text"]
 LEDGER_FIELDS = ["id", "state", "epic", "plan", "after", "children", "bucket", "system", "project", "target",
                  "ref", "kind", "verdict", "into", "evidence", "why", "text"]
 # The verdicts each bucket allows: the rubric's "Bucket" section says why.
 BUCKET_VERDICTS = {"red": {"keep"}, "fault": {"keep"}, "sot": {"keep"}, "requested": {"keep"},
-                   "chain": {"keep"}, "container": {"keep"}, "improvement": {"park"},
+                   "chain": {"keep"}, "container": {"keep", "drop"}, "improvement": {"park"},
                    "drop": {"drop", "merge"}, "fixed": {"keep", "drop"}}
-PLAN_RE = re.compile(r"plans/(?:_live/)?(?:[\w.-]+/)?([\w.-]+?)\.md")
+# A plan file under ~/.agent/plans or ~/.claude/plans; a repo's docs/plans/ path is not a plan.
+PLAN_RE = re.compile(r"\.(?:agent|claude)/plans/(?:[\w.-]+/)?([\w.-]+?)\.md")
 # The reds table's outcomes for a red not yet fixed: fleet-bench cmd_reds.
 LIVE_RED = ("queued", "fixing", "still red", "came back", "needs merge", "no fix", "alert route")
 
@@ -168,7 +171,11 @@ def cmd_export(a):
         return int(m.group(1)) if m else 0
 
     rows.sort(key=lambda r: (r.get("parent") or "~", num(r["id"])))
-    children = collections.Counter(r.get("parent") for r in rows if r.get("parent"))
+    # Open children on any lane or project count, so a parent whose children sit elsewhere is
+    # still a container; exported_children are the ones this judging decides.
+    children = collections.Counter(r.get("parent") for r in board.get("rows", [])
+                                   if r.get("parent") and r.get("state") in ("open", "doing"))
+    exported_children = collections.Counter(r.get("parent") for r in rows if r.get("parent"))
 
     def plan_of(r):
         """The plan file a row's text or details name (a phase row's brief does), by its slug."""
@@ -196,7 +203,7 @@ def cmd_export(a):
     write_tsv(os.path.join(a.dir, "rows.tsv"), ROW_FIELDS,
               [[r["id"], r["state"], r.get("priority") or "-", r.get("parent") or "-", r.get("prio_why") or "-",
                 "yes" if requested(r) else "no", r.get("since") or "-", plan_of(r), after_of(r),
-                children.get(r["id"], 0), r.get("text")] for r in rows])
+                children.get(r["id"], 0), exported_children.get(r["id"], 0), r.get("text")] for r in rows])
     n = max(1, a.chunk)
     chunks = [rows[i:i + n] for i in range(0, len(rows), n)]
     for k, chunk in enumerate(chunks, 1):
@@ -261,6 +268,8 @@ def read_checks(d, judged, findings):
                     findings.append(f"{where}: {c['id']} checked twice (first in {checks[c['id']]['_at']})")
                 elif c["bucket"] not in ("fault", "fixed"):
                     findings.append(f"{where}: a HEAD check says fault or fixed, not {c['bucket']!r}")
+                elif judged[c["id"]]["bucket"] not in ("fault", "fixed"):
+                    findings.append(f"{where}: {c['id']} is {judged[c['id']]['bucket']}, not a fault row to check")
                 else:
                     c["_at"] = where
                     checks[c["id"]] = c
@@ -327,9 +336,20 @@ def cmd_merge(a):
                             + (f"container, not {v['bucket']}" if has_children else "not container"))
         if v["bucket"] == "chain" and row.get("after", "-") == "-":
             findings.append(f"{where}: {v['id']} is chain with no #after/ tag")
+        if v["bucket"] == "red" and v["ref"] in ("", "-"):
+            findings.append(f"{where}: {v['id']} is red with no ref naming the red")
+        if v["bucket"] not in ("fault", "fixed") and v["evidence"] not in ("", "-"):
+            findings.append(f"{where}: {v['id']} is {v['bucket']}, so evidence is -, not {v['evidence']!r}")
         into = judged.get(v["into"]) if v["verdict"] == "merge" else None
         if into and into["verdict"] != "keep":
             findings.append(f"{where}: {v['id']} merges into {into['id']}, which is {into['verdict']}, not keep")
+    closing = {i for i, v in judged.items() if v["verdict"] in ("drop", "merge") or v["bucket"] == "fixed"}
+    for v in judged.values():
+        if v["bucket"] == "container" and v["verdict"] == "drop":
+            row = info[v["id"]]
+            kids = [i for i in exported if info[i].get("epic") == v["id"]]
+            if row.get("children") != row.get("exported_children") or any(k not in closing for k in kids):
+                findings.append(f"{v['_at']}: {v['id']} drops with open children that stay (drop --children closes them all)")
     unjudged = [i for i in exported if i not in judged]
     if unjudged:
         findings.append(f"{len(unjudged)} rows not judged: {' '.join(unjudged[:20])}")
@@ -361,7 +381,9 @@ def cmd_report(a):
         if not os.path.exists(path):
             die(f"{path} missing: run row-value export and merge first", 1)
     _, rows = read_tsv(rows_path)
-    _, verdicts = read_tsv(verdicts_path)
+    cols, verdicts = read_tsv(verdicts_path)
+    if not set(FIELDS) <= set(cols):
+        die(f"{verdicts_path} lacks {', '.join(f for f in FIELDS if f not in cols)}: run row-value merge again", 1)
     vmap = {v["id"]: v for v in verdicts}
     missing = [r["id"] for r in rows if r["id"] not in vmap]
     if missing:

@@ -13,11 +13,11 @@ setup() {
   D="$HOME/rv"
   cat >"$HOME/board.json" <<'EOF'
 {"today":"2026-11-24","rows":[
- {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-20","priority":"high","parent":"ar-2","prio_why":"fault","since":"2026-11-20","text":"fix(dispatch): lost item","tags":["of/ar-2"],"details":["seen twice"],"requested":true},
+ {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-20","priority":"high","parent":"ar-2","prio_why":"fault","since":"2026-11-20","text":"fix(dispatch): lost item","tags":["of/ar-2"],"details":["seen twice","see docs/plans/index.md"],"requested":true},
  {"project":"agent-runtime","lane":"agent","state":"doing","id":"ar-3","priority":"normal","parent":"ar-1","prio_why":null,"since":"2026-11-21","text":"feat(bench): a KPI","tags":[],"details":[]},
  {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-10","priority":"low","parent":"ar-3","prio_why":"upkeep","since":"2026-11-22","text":"chore(notes): tidy","tags":["after/ar-3"],"details":["Phase 2 of the plan /h/.agent/plans/_live/tidy-plan.md: tidy"]},
  {"project":"agent-runtime","lane":"agent","state":"done","id":"ar-4","text":"done row","tags":[],"details":[]},
- {"project":"agent-runtime","lane":"human","state":"open","id":"ar-5","text":"human row","tags":[],"details":[]},
+ {"project":"agent-runtime","lane":"human","state":"open","id":"ar-5","parent":"ar-3","text":"human row","tags":[],"details":[]},
  {"project":"other","lane":"agent","state":"open","id":"ot-1","text":"other board","tags":[],"details":[]}
 ]}
 EOF
@@ -58,7 +58,7 @@ judge_ok() {
   assert_output "$(printf 'id\nar-3\nar-20\nar-10')"
   run cat "$D/chunk-01.txt"
   assert_output --partial "ar-3 [doing] normal epic:ar-1"
-  assert_output --partial "plan:- after:- children:1"
+  assert_output --partial "plan:- after:- children:2"
   assert_output --partial "fix(dispatch): lost item #of/ar-2 #requested"
   assert_output --partial "  | seen twice"
   refute_output --partial "ar-10"
@@ -66,8 +66,9 @@ judge_ok() {
   assert_output --partial "ar-10 [open] low epic:ar-3 why:upkeep since:2026-11-22 plan:tidy-plan after:ar-3 children:0"
   run awk -F'\t' '$1 == "ar-20" { print $6 }' "$D/rows.tsv"
   assert_output yes
-  run awk -F'\t' '$1 == "ar-10" || $1 == "ar-3" { print $1, $8, $9, $10 }' "$D/rows.tsv"
-  assert_output "$(printf 'ar-3 - - 1\nar-10 tidy-plan ar-3 0')"
+  # ar-3's children count its human-lane child ar-5; a repo docs/plans/ path is no plan.
+  run awk -F'\t' '$1 != "id" { print $1, $8, $9, $10, $11 }' "$D/rows.tsv"
+  assert_output "$(printf 'ar-3 - - 2 1\nar-20 - - 0 0\nar-10 tidy-plan ar-3 0 0')"
 }
 
 @test "export: the context names the KPIs past threshold and each live red once" {
@@ -148,32 +149,43 @@ judge_ok() {
   run "$RV" merge "$D"
   assert_failure 1
   assert_output --partial "ar-20 is fault with no evidence"
-  printf 'ar-99\tfault\tx\ty\nar-3\tchain\tx\ty\nar-20\tfault\ta.py:1\tthere\nar-20\tfixed\tb\tz\nar-10\tfault\n' >"$D/check-01.tsv"
+  printf 'ar-99\tfault\tx\ty\nar-3\tchain\tx\ty\nar-20\tfault\ta.py:1\tthere\nar-20\tfixed\tb\tz\nar-10\tfault\nar-10\tfixed\tc\tw\n' >"$D/check-01.tsv"
   run "$RV" merge "$D"
   assert_failure 1
   assert_output --partial "ar-99 is not a judged row"
   assert_output --partial "a HEAD check says fault or fixed, not 'chain'"
   assert_output --partial "ar-20 checked twice"
   assert_output --partial "check-01.tsv:5: 2 fields, want 4"
+  assert_output --partial "ar-10 is improvement, not a fault row to check"
   [ ! -e "$D/verdicts.tsv" ]
 }
 
-@test "merge: a bucket fits its verdict and the row: container is a parent, chain has #after/" {
+@test "merge: a bucket fits its verdict and the row: container is a parent, chain has #after/, red a ref" {
   export_fixture
   {
-    judge ar-3 kpi - work keep - sot telemetry agent-runtime - x
+    judge ar-3 kpi - work keep - sot telemetry agent-runtime a.py:1 x
     judge ar-10 none - polish keep - improvement notes 'Trader!' - y
   } >"$D/judge-01.tsv"
   judge ar-20 red - work keep - chain dispatch agent-runtime - z >"$D/judge-02.tsv"
   run "$RV" merge "$D"
   assert_failure 1
-  assert_output --partial "ar-3 has 1 open children, so container, not sot"
+  assert_output --partial "ar-3 has 2 open children, so container, not sot"
+  assert_output --partial "ar-3 is sot, so evidence is -, not 'a.py:1'"
   assert_output --partial "bucket improvement takes verdict park, not keep"
   assert_output --partial "project 'Trader!' is not a project name"
   assert_output --partial "ar-20 is chain with no #after/ tag"
   judge ar-20 red - work keep - container dispatch agent-runtime - z >"$D/judge-02.tsv"
   run "$RV" merge "$D"
   assert_output --partial "ar-20 has 0 open children, so not container"
+  {
+    judge ar-3 kpi - work drop - container telemetry agent-runtime - x
+    judge ar-10 none - polish drop - drop notes agent-runtime - y
+  } >"$D/judge-01.tsv"
+  judge ar-20 red - work keep - red dispatch agent-runtime - z >"$D/judge-02.tsv"
+  run "$RV" merge "$D"
+  assert_output --partial "ar-20 is red with no ref naming the red"
+  # Its exported child ar-10 drops, but its human-lane child ar-5 stays.
+  assert_output --partial "ar-3 drops with open children that stay"
   [ ! -e "$D/verdicts.tsv" ]
 }
 
@@ -182,6 +194,10 @@ judge_ok() {
   run "$RV" report "$D"
   assert_failure 1
   assert_output --partial "verdicts.tsv missing"
+  printf 'id\ttarget\tref\tkind\tverdict\tinto\twhy\n' >"$D/verdicts.tsv"
+  run "$RV" report "$D"
+  assert_failure 1
+  assert_output --partial "lacks bucket, system, project, evidence: run row-value merge again"
   judge_ok
   run "$RV" merge "$D"
   assert_success
