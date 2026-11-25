@@ -8,6 +8,7 @@
 //!
 //! Config file is read from (first that exists):
 //!   `$NOTES_CONFIG`, `~/.config/notes/config.toml`, `~/.dotfiles/.config/notes/config.toml`.
+//! A unit-test build reads `$NOTES_CONFIG` alone (`config_paths`, ar-4202).
 //! If none exist, a built-in `personal` default is used so the tool works out of the box.
 
 use anyhow::{anyhow, Context, Result};
