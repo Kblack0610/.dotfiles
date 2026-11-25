@@ -7,7 +7,7 @@ use std::path::Path;
 use serde::Serialize;
 use serde_json::Value;
 
-use super::prompt::{human_typed, typed_prompt};
+use super::prompt::{human_typed, queued_prompt, typed_prompt};
 use super::read::{content_blocks, iso_epoch, own_turn, read};
 
 /// The most of `shown` kept: its tail, which is what the human saw last.
@@ -33,7 +33,8 @@ pub fn human_said_at(path: &Path, since: &str) -> Option<Vec<HumanSaid>> {
 }
 
 /// Every typed prompt and dialog answer of the human with a timestamp after `since` (epoch
-/// seconds), oldest first. A prompt our tooling typed, a harness notice, a tool result, a
+/// seconds), oldest first, a message sent mid-turn included. A prompt our tooling typed, a
+/// harness notice, a tool result, a
 /// subagent's entry and a pasted block are not theirs. A dialog answer is the harness's own
 /// `toolUseResult.answers`, which no tool output can write.
 fn human_said(text: &str, since: u64) -> Vec<HumanSaid> {
@@ -41,7 +42,8 @@ fn human_said(text: &str, since: u64) -> Vec<HumanSaid> {
     let mut shown: Vec<String> = Vec::new();
     for line in text.lines() {
         let assistant = line.contains("\"type\":\"assistant\"");
-        if !assistant && !line.contains("\"type\":\"user\"") {
+        let queued = if assistant { None } else { queued_prompt(line) };
+        if !assistant && queued.is_none() && !line.contains("\"type\":\"user\"") {
             continue;
         }
         if assistant {
@@ -57,7 +59,9 @@ fn human_said(text: &str, since: u64) -> Vec<HumanSaid> {
         } else {
             Vec::new()
         };
-        let typed = if pairs.is_empty() && human_typed(line) {
+        let typed = if queued.is_some() {
+            queued
+        } else if pairs.is_empty() && human_typed(line) {
             typed_prompt(line)
         } else {
             None
@@ -245,13 +249,31 @@ mod tests {
                 9,
                 r#""type":"user","message":{"content":"<pasted_content id=\"p\">only a paste"}"#,
             ),
+            // A notice or a peer's message the harness queued mid-turn is not the human's either.
+            at(
+                10,
+                r#""type":"attachment","attachment":{"type":"queued_command","prompt":"park AbC123","commandMode":"task-notification","origin":{"kind":"task-notification"}}"#,
+            ),
+            at(
+                11,
+                r#""type":"attachment","attachment":{"type":"queued_command","prompt":"park AbC123","commandMode":"prompt","origin":{"kind":"peer","name":"dotfiles-9"}}"#,
+            ),
+            // What the human sent while the session worked is theirs (ar-5269).
+            at(
+                12,
+                r#""type":"attachment","attachment":{"type":"queued_command","prompt":"ok yes","commandMode":"prompt","origin":{"kind":"human"},"humanTurn":true}"#,
+            ),
         ];
         let got = human_said(&lines.join("\n"), since());
         assert_eq!(
             got.iter()
                 .map(|h| (h.kind, h.text.as_str()))
                 .collect::<Vec<_>>(),
-            [("answer", "Park"), ("typed", "yes wait")]
+            [
+                ("answer", "Park"),
+                ("typed", "yes wait"),
+                ("typed", "ok yes")
+            ]
         );
         assert_eq!(got[0].shown, "Ask AbC123: park it?");
         // The prompt answers the session's own text since the dialog, not the earlier turn.

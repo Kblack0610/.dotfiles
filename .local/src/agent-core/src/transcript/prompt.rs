@@ -61,6 +61,29 @@ fn fleet_typed(prompt: &str) -> bool {
     typed_kind(prompt).is_some()
 }
 
+/// The words of a message the human sent while the session worked. The harness queues it and
+/// delivers it mid-turn as a `queued_command` attachment, never as a user entry, so read only as
+/// a user entry an answer typed mid-turn was refused (ar-5269: 'ok yes' in session dde1b8cd). A
+/// task notice or a peer's message queued the same way names another origin and is not theirs.
+pub(super) fn queued_prompt(line: &str) -> Option<String> {
+    if !line.contains("\"queued_command\"") {
+        return None;
+    }
+    let v = serde_json::from_str::<Value>(line).ok()?;
+    let a = v.get("attachment")?;
+    if v.get("type").and_then(Value::as_str) != Some("attachment")
+        || v.get("isSidechain").and_then(Value::as_bool) == Some(true)
+        || a.get("type").and_then(Value::as_str) != Some("queued_command")
+        || a.get("commandMode").and_then(Value::as_str) != Some("prompt")
+        || a.pointer("/origin/kind").and_then(Value::as_str) != Some("human")
+    {
+        return None;
+    }
+    let s = a.get("prompt")?.as_str()?.trim();
+    (!s.is_empty() && !HARNESS.iter().any(|h| s.starts_with(h)) && !fleet_typed(s))
+        .then(|| s.to_string())
+}
+
 /// The text of a prompt the human typed, for a main-thread user entry that is one: a string,
 /// not a tool result, a reminder or a notice the harness queued.
 pub(super) fn typed_prompt(line: &str) -> Option<String> {
