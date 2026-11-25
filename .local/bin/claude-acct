@@ -1314,8 +1314,14 @@ all_json() {
           else . end'
 }
 
-# day_time <epoch> -> "Thu 19:00", or - when there is none
-day_time() { if [[ -n "$1" && "$1" != null ]]; then date -d "@$1" '+%a %H:%M'; else printf -- -; fi; }
+# day_time <epoch> -> "Thu 19:00", or - when there is none. A weekday names one day only within
+# the coming week, so a time 7 days out or more (a gateway team's reset) carries its date too:
+# "Mon 11-30 16:00".
+day_time() {
+    [[ -n "$1" && "$1" != null ]] || { printf -- -; return; }
+    local now="${CLAUDE_ACCT_NOW:-$(date +%s)}"
+    if (( $1 - now >= 7 * 86400 )); then date -d "@$1" '+%a %m-%d %H:%M'; else date -d "@$1" '+%a %H:%M'; fi
+}
 
 # cmd_run [--acct <name>] [claude args]: exec claude on the account cmd_pick chooses. Main is the
 # unset dir, so an alt account inherited from a parent session is dropped, not passed on. The

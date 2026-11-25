@@ -508,6 +508,20 @@ week() {
 # field <name> <jq>: from status --json's rows or room --json's accounts
 field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | .[] | select(.name == \$a) | $2"; }
 
+@test "status: a reset 7 days out or more shows its date, a nearer one its weekday alone" {
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 30 200
+  run "$ACCT" status
+  assert_success
+  assert_output --partial "$(date -d "@$((NOW + 200 * 3600))" '+%a %m-%d %H:%M')"
+  # negative control: 6 days out reads as the weekday alone
+  week main 30 144
+  run "$ACCT" status
+  assert_success
+  assert_output --partial "$(date -d "@$((NOW + 144 * 3600))" '+%a %H:%M')"
+  refute_output --partial "$(date -d "@$((NOW + 144 * 3600))" '+%a %m-%d %H:%M')"
+}
+
 @test "status --json: run_out is when the live sessions empty the week at their burn now" {
   # 2026-11-09: a straight line from the week start said main ran out Tue 21:12; its burn then ran
   # it out Wed night to Thu morning (backtest: .59 points/h off over 6h, live x rate .32).
