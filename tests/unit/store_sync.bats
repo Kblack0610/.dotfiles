@@ -1114,6 +1114,7 @@ lose_head_tree() {
 
 # empty_object <machine> <oid>: a reboot mid-commit leaves the object's file at zero bytes (ar-4193).
 empty_object() {
+  mkdir -p "$SANDBOX/$1/.git/objects/${2:0:2}"
   rm -f "$SANDBOX/$1/.git/objects/${2:0:2}/${2:2}"
   : > "$SANDBOX/$1/.git/objects/${2:0:2}/${2:2}"
 }
