@@ -31,5 +31,8 @@ setup() {
 @test "fleet-assess CAP_PROBE lists the pane scopes from the lib" {
   run bash -c 'set -e; . "$1/.local/lib/agent-units.sh"; eval "$(grep "^CAP_PROBE=" "$1/.local/bin/fleet-assess")"; printf "%s" "$CAP_PROBE"' _ "$ROOT"
   [ "$status" -eq 0 ]
-  [[ "$output" == *'--state=active "tmux-spawn-*.scope" "agent-*.scope" app-agentctl.slice '* ]]
+  local g
+  for g in "${AGENT_PANE_SCOPES[@]}"; do
+    [[ "$output" == *"\"$g\" "* ]] || { echo "CAP_PROBE does not list $g" >&2; return 1; }
+  done
 }
