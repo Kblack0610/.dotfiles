@@ -394,6 +394,8 @@ BENCH_HUB_TIMEOUT_S=30                               # hub projects --json takes
 : "${BENCH_STOPPED_CMD:=fleet-dispatch stopped --json}"   # why nothing is leaving the queue, when dispatch has stopped
 : "${BENCH_HEADROOM:=${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}/headroom.json}"   # the last dispatch pass's gate and its standing hold
 : "${BENCH_DISPATCH_LOG:=${AGENTCTL_STATE_DIR:-${AGENTCTL_STATE:-$HOME/.local/state/agentctl}}/fleet-dispatch/activity.log}"   # one line per dispatch pass: how it ended
+: "${BENCH_UPSERT_LOCK:=${AGENTCTL_STATE_DIR:-${AGENTCTL_STATE:-$HOME/.local/state/agentctl}}/fleet-bench/board-upsert.lock}"   # board_upsert's read-then-write, one process at a time
+: "${BENCH_UPSERT_LOCK_WAIT:=120}"   # seconds a second filer waits for it: a pass takes seconds, so this is a stuck holder
 BENCH_RECORD_TAIL=5000   # lines of the dispatch record pipeline_json reads: more than a day of passes (about 1000 a day, 2026-11-23)
 : "${PIPELINE_SNAPSHOT:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/pipeline/pipeline.json}"   # what the Queue tab's pipeline line reads
 : "${CHAIN_DAYS:=7}"                 # the merged PRs ledger_coverage counts
@@ -4958,11 +4960,19 @@ upsert_why() {
 # of that row, its children moving under it; a twin being done, or one with no id, is left and said.
 # Leaves the counts in UPSERT_ADDED, UPSERT_EDITED, UPSERT_REOPENED and UPSERT_DROPPED and the failed
 # keys in UPSERT_FAILED, which upsert_report reports FAILED, so every caller ends with upsert_report;
-# status 1 only when the board cannot be read.
+# status 1 only when the board cannot be read or the upsert lock stays held.
+# The read of the board and the writes after it are one section under BENCH_UPSERT_LOCK: the timed
+# runner and every dispatch pass run triage, and two of them reading before either added filed the
+# same key twice, then dropped one as a dup (2026-11-25: 45 same-day dup drops of check rows, ar-6078).
+# A tripped watch or alert whose row is closed has it reopened with the trip as a detail line,
+# so the trip is history on the one row, never a row of its own.
 board_upsert() {
-  local board closed p text pri why have hid twin id rc added=0 edited=0 reopened=0 dropped=0 failed=() twins=()
+  local board closed p text pri why have hid twin id rc added=0 edited=0 reopened=0 dropped=0 failed=() twins=() trip=() ufd
   UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_DROPPED=0; UPSERT_FAILED=
-  board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
+  mkdir -p "${BENCH_UPSERT_LOCK%/*}" 2>/dev/null
+  exec {ufd}>>"$BENCH_UPSERT_LOCK" && flock -w "$BENCH_UPSERT_LOCK_WAIT" "$ufd" \
+    || { exec {ufd}>&-; report_outcome FAILED "board upsert lock $BENCH_UPSERT_LOCK held for ${BENCH_UPSERT_LOCK_WAIT}s by another filer"; return 1; }
+  board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { exec {ufd}>&-; report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
   closed=$(upsert_closed)
   while IFS=$'\t' read -r p text pri; do
     [[ "$text" == *'#size/'* ]] || text+=" #size/s"
@@ -4992,8 +5002,9 @@ board_upsert() {
     done
     id=; [ -n "$have" ] || id=$(awk -F'\t' -v p="${p,,}" 'index($2, p) == 1 { print $1; exit }' <<<"$closed")
     if [ -n "$id" ]; then
+      trip=(); case "$p" in 'check(watch): '*|'check(alert): '*) trip=(--detail "$(date -d "@$(now)" +%F) tripped again after it closed") ;; esac
       if $BENCH_NOTES_CMD ptask "$KPI_BOARD" reopen "$id" --why "fleet-bench: $p red again" >/dev/null; then
-        if $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent edit "$id" --text "$text" >/dev/null; then
+        if $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent edit "$id" --text "$text" "${trip[@]}" >/dev/null; then
           reopened=$((reopened + 1))
         else
           say "edit failed for reopened $p ($id)"; failed+=("$p")
@@ -5018,6 +5029,7 @@ board_upsert() {
       fi
     fi
   done <<<"$1"
+  exec {ufd}>&-
   UPSERT_ADDED=$added; UPSERT_EDITED=$edited; UPSERT_REOPENED=$reopened; UPSERT_DROPPED=$dropped
   UPSERT_FAILED=$(IFS=';'; echo "${failed[*]}")
 }

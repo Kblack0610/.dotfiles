@@ -1799,6 +1799,9 @@ closed_feed() {
   assert_output 1
   run grep -c -- '--agent edit ar-77 --text check(watch): spend tripped since ' "$NLOG"
   assert_output 1
+  # the trip is a detail line on the reopened row (ar-6078)
+  run grep -Ec -- '--agent edit ar-77 --text .* --detail [0-9]{4}-[0-9]{2}-[0-9]{2} tripped again after it closed$' "$NLOG"
+  assert_output 1
   run grep -c -- '--agent add check(watch): spend' "$NLOG"
   assert_output 0
   # negative control: a row closed on another board or in another profile is not this cause's row
