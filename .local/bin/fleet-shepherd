@@ -1186,16 +1186,19 @@ shared_items() {
 
 # shared_sample: one owner holds each shared red episode (ar-623); who counts as an owner is the
 # SHARED row of .local/src/docs/fleet-states.md (ar-2448, ar-2523). An owner that stops being one
-# is dropped and the fact matched again; with no owner, one is filed per test. Only the board fills
+# is dropped and the fact matched again; a test with no owner of its own goes to its class's
+# (shared_class_owner, ar-5285), and with neither, one is filed for it. Only the board fills
 # the queue (QUEUE.md "Admission"), so the add leaves a board row, which owns the test while it is
 # open and hands it to the item dispatch makes of it (shared_board_owner). A failed add, or one
 # whose slug is taken by an item that does not own the test, files nothing, so the row stays a
 # `shared red:` line the pass escalates; a queue that reads empty or a document that cannot be
 # read changes nothing.
+# SHARED_WORD_JQ: `word`, a name as a regex that matches it whole, not inside a longer name or a dotted path.
+SHARED_WORD_JQ='def word: gsub("(?<c>[^A-Za-z0-9_])"; "\\\(.c)") | "(^|[^A-Za-z0-9_.])" + . + "($|[^A-Za-z0-9_])";'
 # SHARED_OWNER_JQ: the active items as inputs, $t the test without its parameters, $q main's
 # unexpired quarantine entries, $full the test as it failed; each owning item's slug out, then
 # row:<row> per quarantine row. A quarantine entry with no parameters covers every case.
-SHARED_OWNER_JQ='def word: gsub("(?<c>[^A-Za-z0-9_])"; "\\\(.c)") | "(^|[^A-Za-z0-9_.])" + . + "($|[^A-Za-z0-9_])";
+SHARED_OWNER_JQ="$SHARED_WORD_JQ"'
   ($t | split(".")) as $p | ($p[-2:] | join(".")) as $cm
   | [$q[] | select(.test == $full or .test == $t) | .row // "" | select(. != "")] as $rows
   | select($t != "")
@@ -1217,6 +1220,93 @@ shared_quarantine() {
 shared_owners() {
   jq -rn --arg t "${1%%(*}" --arg full "$1" --argjson q "${quarantine:-[]}" "$SHARED_OWNER_JQ" <<<"$active" 2>/dev/null
 }
+# One owner per test class (ar-5285): on 2026-11-24 DodgeballCourtPlayTests had an item per red
+# method (ucp-3390, ucp-3391), and ShapeCityTiersPlayTests one beside its class's fix item (ucp-3180
+# by ucp-3170). A test no item names as Class.Method goes to an owner of its class, and its evidence
+# is appended there (shared_fold): the owner a sibling method's episode holds, else a live fix item
+# that is not low and whose title names the class, else an open fix row on the board that names it
+# and no live item works. An item that only cites the class in its brief, or is no fix, owns nothing.
+# SHARED_CLASS_JQ: the active items as inputs, $c the class; each owning item's slug out.
+SHARED_CLASS_JQ="$SHARED_WORD_JQ"'
+  select($c != "") | inputs | select((.priority // "") != "low" and .type == "fix")
+  | select(.title // "" | test($c | word)) | .slug'
+# SHARED_CLASS_ROW_JQ: the board as input, $worked the rows live items work, $p the project, $c the
+# class; the open fix rows that name it and no live item works, as board:<project>:<id>.
+SHARED_CLASS_ROW_JQ="$SHARED_WORD_JQ"'
+  .rows[]? | select(.project == $p and .type == "fix" and (.priority // "") != "low")
+  | select((.project + ":" + .id) | IN($worked[]) | not)
+  | select(.text // "" | test($c | word)) | "board:" + .project + ":" + .id'
+# shared_class <test>: the class a test method is in, parameters off; empty for a bare name.
+shared_class() {
+  local t="${1%%(*}"
+  [ "${t%.*}" != "$t" ] || return 0
+  t="${t%.*}"; echo "${t##*.}"
+}
+# shared_class_owners <class>: the live items that own a red in that class (SHARED_CLASS_JQ).
+shared_class_owners() {
+  jq -rn --arg c "$1" "$SHARED_CLASS_JQ" <<<"$active" 2>/dev/null
+}
+# shared_class_owner <class>: the one owner a red in that class goes to, or nothing, from $rows,
+# $SHARED_ITEMS, $active and $board (shared_board_read, which the caller runs).
+shared_class_owner() {
+  local c="$1" f t o
+  [ -n "$c" ] || return 0
+  while IFS=$'\t' read -r f t _; do
+    [ -n "$f" ] && [ "$(shared_class "$t")" = "$c" ] || continue
+    o="$(awk -F'\t' -v f="$f" '$1 == f { s = $2 } END { print s }' "$SHARED_ITEMS")"
+    case "$o" in '' | row:*) ;; *) echo "$o"; return ;; esac
+  done <<<"$rows"
+  o="$(shared_class_owners "$c" | awk 'NR==1')"
+  [ -z "$o" ] || { echo "$o"; return; }
+  [ -n "$board" ] || return 0
+  jq -r --arg c "$c" --arg p "$FLEET_SHARED_RED_PROJECT" --argjson worked "$(jq -sc '[.[].row // empty]' <<<"$active" 2>/dev/null || echo '[]')" \
+    "$SHARED_CLASS_ROW_JQ" <<<"$board" 2>/dev/null | awk 'NR==1'
+}
+# shared_board_read [--again]: $board from `notes board --json`, read once a sample unless --again
+# (a row filed since the read); a board that cannot be read leaves it as it was.
+shared_board_read() {
+  local b
+  [ "${1:-}" = --again ] || [ -z "$board_read" ] || return 0
+  board_read=1
+  b="$(notes board --json 2>/dev/null)" && [ -n "$b" ] && board="$b"
+  return 0
+}
+# shared_row_profile <project:id>: the notes profile an open row of $board is on, or nothing.
+shared_row_profile() {
+  jq -r --arg p "${1%%:*}" --arg k "${1#*:}" 'first(.rows[]? | select(.project == $p and .id == $k) | .profile) // empty' <<<"${board:-null}" 2>/dev/null
+}
+# shared_fold <owner> <class> <reason>: append a red's evidence to the owner of its class. A queued
+# item is retasked, so its session is briefed with it and its row says it too; a started item or a
+# board-only row gets it as a detail line on its row, the record. Logged either way.
+shared_fold() {
+  local o="$1" c="$2" reason="$3" line item row="" prof out="" a
+  line="Also red on several branches at once, $(date +%F): $reason. fleet-shepherd appended it here, as one owner per test class (ar-5285)."
+  case "$o" in
+    board:*) row="${o#board:}" ;;
+    *) item="$(jq -c --arg s "$o" 'select(.slug == $s)' <<<"$active" 2>/dev/null | head -1)"
+       if [ -z "$item" ]; then
+         # filed this sample: the queue read before the add does not have it
+         a="$(agent-queue list --json --state active 2>/dev/null)" && [ -n "$a" ] && active="$a"
+         item="$(jq -c --arg s "$o" 'select(.slug == $s)' <<<"$active" 2>/dev/null | head -1)"
+       fi
+       if [ "$(jq -r '.state // empty' <<<"$item")" = queued ] &&
+          out="$(agent-queue retask "$o" "$(jq -r '.task // empty' <<<"$item")"$'\n\n'"$line" 2>&1)"; then
+         cmd_log "shared red: $reason; appended to $(shared_owner_name "$o"), which owns a red in $c" >/dev/null
+         return 0
+       fi
+       row="$(jq -r '.row // empty' <<<"$item")" ;;
+  esac
+  if [ -n "$row" ]; then
+    prof="$(shared_row_profile "$row")"
+    [ -n "$prof" ] || { shared_board_read --again; prof="$(shared_row_profile "$row")"; }
+    if [ -n "$prof" ] && out="$(notes --profile "$prof" ptask "${row%%:*}" --agent edit "${row#*:}" --detail "$line" 2>&1)"; then
+      cmd_log "shared red: $reason; appended to $(shared_owner_name "$o")${item:+ on its row ${row#*:}}, which owns a red in $c" >/dev/null
+      return 0
+    fi
+    [ -n "$prof" ] || out="row ${row#*:} is not open on the board"
+  fi
+  cmd_log "shared red: $reason; owned by $(shared_owner_name "$o") for its class $c, but the evidence could not be appended: ${out:-it has no board row}" >/dev/null
+}
 # shared_owner_name <owner>: an owner as a reader names it.
 shared_owner_name() {
   case "$1" in
@@ -1236,7 +1326,7 @@ shared_board_owner() {
   jq -e --arg p "${r%%:*}" --arg k "${r#*:}" 'any(.rows[]?; .project == $p and .id == $k)' <<<"$board" >/dev/null && echo "$1"
 }
 shared_sample() {
-  local fact test reason cm active quarantine slug out keep rows now board=""
+  local fact test reason cm cls active quarantine slug out keep rows now board="" board_read=""
   touch "$SHARED_ITEMS" 2>/dev/null || return 0
   active="$(agent-queue list --json --state active 2>/dev/null)" || return 0
   # One read of the board (every open row, every profile) a sample, only while a row owns a red.
@@ -1252,7 +1342,7 @@ shared_sample() {
       case "$slug" in board:*) now="$(shared_board_owner "$slug")" ;; esac
       if [ -n "$now" ] && [ "$now" = "$slug" ] && [ "${slug#board:}" != "$slug" ]; then
         printf '%s\t%s\n' "$fact" "$slug"
-      elif [ -n "$now" ] && shared_owners "$test" | grep -qxF -- "$now"; then
+      elif [ -n "$now" ] && { shared_owners "$test"; shared_class_owners "$(shared_class "$test")"; } | grep -qxF -- "$now"; then
         [ "$now" = "$slug" ] || cmd_log "shared red: $test is owned by queue item $now, started from $(shared_owner_name "$slug")" >/dev/null
         printf '%s\t%s\n' "$fact" "$now"
       else
@@ -1266,6 +1356,14 @@ shared_sample() {
     cm="${test%%(*}"; cm="$(awk -F. '{ print (NF > 1 ? $(NF - 1) "." : "") $NF }' <<<"$cm")"
     slug="$(shared_owners "$test" | awk 'NR==1')"
     if [ -z "$slug" ]; then
+      cls="$(shared_class "$test")"
+      [ -z "$cls" ] || shared_board_read  # here, not in the subshell below, so a sample reads it once
+      slug="$(shared_class_owner "$cls")"
+      if [ -n "$slug" ]; then
+        shared_fold "$slug" "$cls" "$reason"
+        printf '%s\t%s\n' "$fact" "$slug" >> "$SHARED_ITEMS"
+        continue
+      fi
       out="$(agent-queue add --priority high --from shepherd --project "$FLEET_SHARED_RED_PROJECT" --tags '#size/s' \
         --slug "shared-red-$cm" --repeat --title "fix(test): $cm red on several branches at once" \
         "$reason. One test red on several branches at once is a shared cause, not any one branch's work, and every branch gates again into it until it is owned. You own it: reproduce $test on a clean origin/main first. If it fails there, land a quarantine line for it in scripts/test/quarantine.txt (an expiry and this item's board row, docs/operations/ci.md rule 5) through a normal gate, then fix the cause and remove the line. If it passes on main, it is the branches' shared base (a pin, an asset): name it on the agent board and close this item." 2>&1)"

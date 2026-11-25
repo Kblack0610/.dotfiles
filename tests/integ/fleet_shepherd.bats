@@ -324,7 +324,7 @@ exit 0'
   refute_output --partial FooTests
 }
 
-@test "an item that names only the test's class, or is low priority, is no owner, so check files one that is (ar-2448)" {
+@test "an item that is no fix item and names only the test's class, or is low priority, is no owner, so check files one that is (ar-2448)" {
   # 2026-11-14: NetProtocolTests went to gate-spread-lumping, a low gate-spread item citing it as evidence
   stub agent-queue 'echo "$*" >> "$HOME/aq.calls"
 case "$1" in
@@ -443,6 +443,100 @@ esac'
   grep -q 'no longer owned by board row ucp-77 on unity-core-playground' "$FLEET_SHEPHERD_DIR/log.md"
   run grep -c '^add ' "$HOME/aq.calls"
   assert_output 2
+}
+
+# class_doc <test>...: one shared red on three branches per test, each with sid-1 in it
+class_doc() {
+  printf '%s\n' "$@" | jq -Rn '{schema: 1, sessions: [], main: [], shared: [inputs | {test: ., id: ("shared-" + .),
+    reason: (. + " red on 3 branches in 2h: a, b, c"), fact: ("SHARED " + . + " @100"), nudged: false, escalated: false, owners: ["sid-1"]}]}' > "$FLEET_STATE_FILE"
+}
+# class_stubs: a queue whose add is board-only (each add files the next board row, ucp-71, ucp-72, ...) and a
+# notes that serves that board and records its row edits
+class_stubs() {
+  stub agent-queue 'echo "$*" >> "$HOME/aq.calls"
+case "$1" in
+  list) if [ -n "${STUB_ACTIVE:-}" ]; then printf "%s\n" "$STUB_ACTIVE"; else echo "{\"slug\":\"other\",\"task\":\"x\"}"; fi ;;
+  add) t=""; while [ $# -gt 0 ]; do [ "$1" = --title ] && t="$2"; shift; done
+       n=$(( $(grep -c "^add " "$HOME/aq.calls") + 70 ))
+       jq --arg id "ucp-$n" --arg t "$t" ".rows += [{project: \"unity-core-playground\", id: \$id, profile: \"bnb\", type: \"fix\", priority: \"high\", text: \$t}]" \
+         "$HOME/board.json" > "$HOME/board.tmp" && mv "$HOME/board.tmp" "$HOME/board.json"
+       echo "held shared-red -> unity-core-playground:ucp-$n"; exit 5 ;;
+esac'
+  stub notes 'case "$*" in "board --json") cat "$HOME/board.json" ;; *" edit "*) printf "%s\n" "$*" >> "$HOME/notes.calls" ;; *) exit 2 ;; esac'
+  echo '{"rows":[]}' > "$HOME/board.json"
+}
+
+@test "two methods of one class red on several branches file one owner, and the second's evidence is appended to it (ar-5285)" {
+  # 2026-11-24: DodgeballCourtPlayTests got one item per red method in the same minute (ucp-3390, ucp-3391)
+  class_stubs
+  class_doc 'P.Tests.FooTests.Bar("x")' 'P.Tests.FooTests.Qux'
+  run checked
+  assert_success
+  assert_line --partial 'nudge SHARED: P.Tests.FooTests.Bar("x") is owned by board row ucp-71 on unity-core-playground'
+  assert_line --partial 'nudge SHARED: P.Tests.FooTests.Qux is owned by board row ucp-71 on unity-core-playground'
+  refute_output --partial 'shared red:'
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 1
+  run cat "$HOME/notes.calls"
+  assert_output --partial '--profile bnb ptask unity-core-playground --agent edit ucp-71 --detail Also red on several branches at once'
+  assert_output --partial 'P.Tests.FooTests.Qux red on 3 branches in 2h: a, b, c'
+  grep -q 'appended to board row ucp-71 on unity-core-playground, which owns a red in FooTests' "$FLEET_SHEPHERD_DIR/log.md"
+  # the next check keeps both episodes on that row: nothing filed, nothing appended twice
+  run checked
+  assert_line --partial 'nudge SHARED: P.Tests.FooTests.Qux is owned by board row ucp-71'
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 1
+  run grep -c ' edit ' "$HOME/notes.calls"
+  assert_output 1
+  # dispatch starts the row: the item made of it, naming only Bar, keeps Qux's episode too
+  STUB_ACTIVE='{"slug":"ucp-71","type":"fix","state":"running","priority":"high","title":"fix(test): FooTests.Bar red on several branches at once","row":"unity-core-playground:ucp-71"}' run checked
+  assert_line --partial 'nudge SHARED: P.Tests.FooTests.Qux is owned by queue item ucp-71'
+  refute grep -q 'Qux is no longer owned' "$FLEET_SHEPHERD_DIR/log.md"
+  # negative control: a method of another class gets its own owner
+  class_doc 'P.Tests.FooTests.Bar("x")' 'P.Tests.FooTests.Qux' 'P.Tests.BazTests.Bar'
+  STUB_ACTIVE='{"slug":"ucp-71","type":"fix","state":"running","priority":"high","title":"fix(test): FooTests.Bar red on several branches at once","row":"unity-core-playground:ucp-71"}' run checked
+  assert_line --partial 'nudge SHARED: P.Tests.BazTests.Bar is owned by board row ucp-72 on unity-core-playground'
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 2
+}
+
+@test "a live fix item or open fix row whose title names the test's class owns a shared red, and gets its evidence (ar-5285)" {
+  # 2026-11-23: ShapeCityTiersPlayTests got a shared-red item (ucp-3180) beside its class's running fix item (ucp-3170)
+  class_stubs
+  echo '{"rows":[{"project":"unity-core-playground","id":"ucp-5","profile":"bnb","type":"fix","priority":"high","text":"fix(tests): FooTests tier gate fails on main"}]}' > "$HOME/board.json"
+  class_doc 'P.Tests.FooTests.Bar("x")'
+  # class_round <active-json>: the red checked fresh against that queue
+  class_round() { : > "$FLEET_SHEPHERD_DIR/.shared"; : > "$HOME/aq.calls"; : > "$HOME/notes.calls"; STUB_ACTIVE="$1" run checked; }
+  # a queued item is retasked: its brief and its row get the evidence
+  class_round '{"slug":"fix-foo","type":"fix","state":"queued","priority":"high","title":"fix(tests): FooTests tier gate fails on main","task":"the gate brief","row":"unity-core-playground:ucp-5"}'
+  assert_line --partial 'nudge SHARED: P.Tests.FooTests.Bar("x") is owned by queue item fix-foo'
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 0
+  run grep -A2 '^retask fix-foo the gate brief' "$HOME/aq.calls"
+  assert_output --partial 'Also red on several branches at once'
+  assert_output --partial 'P.Tests.FooTests.Bar("x") red on 3 branches in 2h: a, b, c'
+  # a started item already has its brief: the evidence goes on its row
+  class_round '{"slug":"fix-foo","type":"fix","state":"running","priority":"high","title":"fix(tests): FooTests tier gate fails on main","task":"the gate brief","row":"unity-core-playground:ucp-5"}'
+  assert_line --partial 'is owned by queue item fix-foo'
+  refute grep -q '^retask' "$HOME/aq.calls"
+  run cat "$HOME/notes.calls"
+  assert_output --partial '--agent edit ucp-5 --detail Also red on several branches at once'
+  # an open fix row no live item works owns it as a row
+  class_round '{"slug":"other","task":"x"}'
+  assert_line --partial 'is owned by board row ucp-5 on unity-core-playground'
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 0
+  # negative controls: a low fix item, a fix item citing the class only in its brief, an item that is no fix,
+  # and one naming a longer class own nothing, so one owner is filed
+  echo '{"rows":[]}' > "$HOME/board.json"
+  class_round "$(printf '%s\n' '{"slug":"low","type":"fix","state":"queued","priority":"low","title":"fix(tests): FooTests flake"}' \
+    '{"slug":"brief","type":"fix","state":"queued","priority":"high","title":"fix(ci): PR 9 is red","task":"see FooTests"}' \
+    '{"slug":"check","type":"check","state":"queued","priority":"high","title":"check(tests): FooTests runs slow"}' \
+    '{"slug":"longer","type":"fix","state":"queued","priority":"high","title":"fix(tests): FooTestsMore red"}')"
+  assert_line --partial 'is owned by board row ucp-71 on unity-core-playground'
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 1
+  refute grep -q '^retask' "$HOME/aq.calls"
 }
 
 @test "an owner item that landed, or no longer names the test, is dropped and the episode gets a live owner (ar-2448)" {
