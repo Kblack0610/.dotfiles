@@ -628,8 +628,8 @@ EOF2
   assert_output high
   run awk -F'\t' '$2 == "ar-61" { print $4 }' "$HOME/focus/focus-telemetry.tsv"
   assert_output low
-  run awk -F'\t' '$1 == "ar-62" { print $5 }' "$HOME/focus.log"
-  assert_output "-"
+  run awk -F'\t' '$1 == "ar-62" { print "[" $5 "]" }' "$HOME/focus.log"
+  assert_output "[-]"
   # The check row (ar-51) and the human's own row (ar-62) rank as reds but keep their tag.
   run cut -f1,2 "$HOME/focus/focus-telemetry.tsv"
   assert_output "$(printf 'rank\tid\nred\tar-51\nred\tar-61')"
