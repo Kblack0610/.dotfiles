@@ -6536,7 +6536,7 @@ unplaced() {
     elif ! jq -e --arg d "$dir" --argjson n "$need" 'any(.[]; (.repos | index($d)) and (.max_live | tonumber? // 0) >= $n)' <<<"$roster" >/dev/null; then
       why="no worker that clones it has a fleet_max_live of $need, the run units a heavy item holds"
     elif lacks=$(unplaced_lacking "$roster" "$dir") && [ -n "$lacks" ]; then
-      why="$(tr '\n' ' ' <<<"$lacks")lists $dir but has no checkout there (its probe); run the fleet-worker play"
+      why="${lacks}lists $dir but has no checkout there (its probe); run the fleet-worker play"
     else
       why="no worker runs $agent ready"
     fi
