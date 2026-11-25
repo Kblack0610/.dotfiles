@@ -3044,7 +3044,7 @@ harness_needs_why() {
       project=$(jq -r '.project // ""' <<<"$it")
       while IFS=$'\t' read -r cap stack; do
         [ -n "$cap" ] || continue
-        jq -e --arg s "$stack" --arg p "$project" '.stacks[$s].projects // [] | index([$p])' "$MATRIX" >/dev/null 2>&1; rc=$?
+        rc=0; jq -e --arg s "$stack" --arg p "$project" '.stacks[$s].projects // [] | index([$p])' "$MATRIX" >/dev/null 2>&1 || rc=$?   # 1: not in the stack, which set -e must not take for a failure
         [ "$rc" = 0 ] && needs+=("$cap")
         [ "$rc" = 0 ] || [ "$rc" = 1 ] || { echo "the stack list $MATRIX is unreadable, so what $project needs is unknown"; return 2; }
       done <<<"$rows"
@@ -6934,10 +6934,10 @@ route() {
     elif [ -n "$(harness_sandbox "$h")" ] && ! pwhy=$(sandbox_item_why "$it" "$h" "$m" "$verdict"); then why+=("$h: $pwhy")
     elif [ -z "$m" ]; then why+=("$h: the item names no model: for it")
     elif [ -n "${PLACE_HOST:-}" ] && ! host_runs "$PLACE_HOST" "$h"; then why+=("$h: placed on $PLACE_HOST, which does not run it (its kit and fleet_harnesses, fleet-dispatch hosts)")
-    elif ! pwhy=$(harness_needs_why "$h" "$it" "$tier" "$pinned"); then why+=("$h: $pwhy")
     elif ! takes_plan "$h" && [ "$(jq -r .mode <<<"$it")" = plan ]; then why+=("$h: runs headless and cannot resume, and this is a plan item")
     elif [ "$hl" = 1 ] && [ "$erc" = 0 ]; then why+=("$h: runs headless, and this is $excl work (excluded in $MATRIX)")
     elif [ "$hl" = 1 ] && [ "$erc" = 2 ]; then why+=("$h: runs headless, and the exclusion list $MATRIX is unreadable or has a bad match")
+    elif ! pwhy=$(harness_needs_why "$h" "$it" "$tier" "$pinned"); then why+=("$h: $pwhy")
     elif [ "$overflow" = 1 ] && ! jq -e --arg c "$h:$m" '.trial == $c or any(.promoted[]?, .direct[]?; . == $c)' <<<"${verdict:-null}" >/dev/null 2>&1; then
       why+=("$h: pay-per-use, so it takes only a class it was promoted for or its trial pick")
     elif [ "$overflow" = 1 ] && [ "${ACCT_RC:-1}" = 0 ]; then why+=("$h: pay-per-use, and an account has room")
