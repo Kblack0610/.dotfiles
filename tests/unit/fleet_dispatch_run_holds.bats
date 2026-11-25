@@ -303,6 +303,7 @@ landing_rows() {
   [ -n "$(qitem running now-one)" ] || fail "the urgent item did not start after the park"
   assert_equal "$(outcome)" WORKED
   grep -q 'preempted l2 (lab/game-agent-l2) for urgent now-one' "$FLEET_DISPATCH_DIR/log.md" || fail "no preempted log line"
+  [ -f "$FLEET_DISPATCH_DIR/preempted/l2" ] || fail "no preempt marker for l2: the rest window reads it (ar-3470)"
 }
 
 @test "preempt: at the pace target with run units free, an urgent item still parks a runner session and starts; a high one waits" {
@@ -415,8 +416,9 @@ landing_rows() {
   sed -i 's/^priority: high/priority: low/' "$AGENT_QUEUE_DIR"/running/*-r1.md
   printf 'game-agent-a1\ngame-agent-r1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   park_stub
-  mkdir -p "$FLEET_DISPATCH_DIR"
-  printf -- '- %s preempted r1 (lab/game-agent-r1) for urgent earlier\n' "$(date -d '-10 min' '+%Y-%m-%d %H:%M')" >> "$FLEET_DISPATCH_DIR/log.md"
+  # r1 was parked for an urgent item 10 minutes ago: its marker, never a log line, holds the rest (ar-3470)
+  mkdir -p "$FLEET_DISPATCH_DIR/preempted"
+  touch -d '-10 min' "$FLEET_DISPATCH_DIR/preempted/r1"
   agent-queue add --project game --slug now-one --priority urgent "now one" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
