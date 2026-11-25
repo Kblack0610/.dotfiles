@@ -1028,7 +1028,7 @@ check_fixture() {
   run up
   assert_success
   refute_output --partial 'board write failed'
-  assert_output --partial '0 added, 1 refreshed'
+  assert_output --partial '0 added, 1 refreshed, 1 twins dropped'
   run grep -c -- '--agent drop ar-32 --dup ar-31$' "$NLOG"
   assert_output 1
   run grep -c -- '--agent edit ar-31 --text check(watch): spend tripped since 2026-11-25, z #size/s$' "$NLOG"
@@ -1045,6 +1045,23 @@ check_fixture() {
   run grep -c -- '--agent drop' "$NLOG"
   assert_output 0
   run grep -c -- '--agent edit ar-31 --text ' "$NLOG"
+  assert_output 1
+  # A hand row with no id ahead of a row being done: the key's row is the first with an id (the one
+  # being done), the open twin after it is dropped as its dup, and the hand row is left.
+  : > "$NLOG"
+  printf 'board.md\t1\tcheck(watch): spend tripped since hand\t- [ ] check(watch): spend tripped since hand\nboard.md\t4\tcheck(watch): spend tripped since d\t  - [/] check(watch): spend tripped since d <!-- id:ar-33 -->\n' > "$BOARD.top"
+  cat "$BOARD" >> "$BOARD.top" && mv "$BOARD.top" "$BOARD"
+  rows=$(printf '%s\t%s\t%s\n' 'check(watch): spend tripped since' 'check(watch): spend tripped since 2026-11-25, v' '#high')
+  run up
+  assert_success
+  refute_output --partial 'board write failed'
+  run grep -c -- '--agent drop' "$NLOG"
+  assert_output 1
+  run grep -c -- '--agent drop ar-31 --dup ar-33$' "$NLOG"
+  assert_output 1
+  run grep -c -- '--agent edit ar-33 --text ' "$NLOG"
+  assert_output 1
+  run grep -c 'spend tripped since hand' "$BOARD"
   assert_output 1
 }
 
