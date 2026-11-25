@@ -1,11 +1,23 @@
 name: test image
 description: >-
-  Load the tests/Dockerfile image (every tests.yml job's one toolchain) from the Actions cache, or build it once and cache it, so a
-  later tests/docker.sh finds it present and does not rebuild. The cache key is the image tag,
-  which ends in a hash of everything the image is built from (tests/docker.sh --image).
+  Load the tests/Dockerfile image (every tests.yml job's toolchain, in the stage the job names)
+  from the LAN registry on a home-pool runner, else from the Actions cache, else build it once and
+  save it, so a later tests/docker.sh finds it present and does not rebuild. The image tag ends in
+  a hash of everything the image is built from (tests/docker.sh --image). The job's env
+  TEST_IMAGE_KIND (lean, rust or full) picks the Dockerfile stage, so the kind is in the tag, so in
+  the registry name and the cache key. The registry is used only when both inputs registry (host:port,
+  a repo variable: the address is the home LAN's and this repo is public) and registry-password
+  (a repo secret) are set and the runner is self-hosted: a GitHub-hosted runner cannot reach the
+  LAN, and a fork's pull request has no secret.
 inputs:
   tmux:
     description: TMUX_REF for the image; empty is tests/docker.sh's default
+    default: ''
+  registry:
+    description: host:port of the LAN registry (tests.yml passes vars.CI_REGISTRY); empty turns the registry off
+    default: ''
+  registry-password:
+    description: the registry login's password (tests.yml passes secrets.CI_REGISTRY_PASSWORD); empty turns the registry off
     default: ''
 runs:
   using: composite
@@ -26,8 +38,36 @@ runs:
           [ "$(date -u -d "$created" +%G-W%V)" = "$week" ]; then
           echo present=true >> "$GITHUB_OUTPUT"
         fi
+    # The pool's registry (home-config apps/ci-registry, Address and Push rules): a pod pulls over
+    # the LAN, not the shared WAN the Actions cache comes over (ar-5632). Plain HTTP, login for
+    # push and pull; the pool's dind has --insecure-registry for it. The name is the image's own
+    # tag plus the week, never a moving tag; only kblab-ci/dotfiles/* accepts a push from this
+    # login. A failed login or pull is not fatal: the cache path below still serves the image.
+    - id: reg
+      if: steps.tag.outputs.present != 'true' && runner.environment == 'self-hosted' && inputs.registry != '' && inputs.registry-password != ''
+      shell: bash
+      env:
+        TAG: ${{ steps.tag.outputs.tag }}
+        WEEK: ${{ steps.tag.outputs.week }}
+        REGISTRY: ${{ inputs.registry }}
+        PASSWORD: ${{ inputs.registry-password }}
+      run: |
+        ref="$REGISTRY/kblab-ci/dotfiles/test-image:${TAG#*:}-$WEEK"
+        echo "ref=$ref" >> "$GITHUB_OUTPUT"
+        if timeout 30 docker login "$REGISTRY" -u ci --password-stdin <<<"$PASSWORD" >/dev/null; then
+          echo login=true >> "$GITHUB_OUTPUT"
+          if timeout 300 docker pull -q "$ref" >/dev/null; then
+            docker tag "$ref" "$TAG"
+            docker image inspect "$TAG" >/dev/null
+            echo pulled=true >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::registry has no $ref (or not reachable); using the Actions cache"
+          fi
+        else
+          echo "::warning::registry login failed; using the Actions cache"
+        fi
     - id: cache
-      if: steps.tag.outputs.present != 'true'
+      if: steps.tag.outputs.present != 'true' && steps.reg.outputs.pulled != 'true'
       uses: actions/cache/restore@v4
       with:
         path: ${{ runner.temp }}/test-image.tar
@@ -40,9 +80,10 @@ runs:
       run: |
         docker load -q -i "$RUNNER_TEMP/test-image.tar"
         docker image inspect "$TAG" >/dev/null
-    # A miss builds and saves before the tests run, so a red test still leaves the image cached.
-    # A last week's image still under the tag is dropped first, or --build would keep it.
-    - if: steps.tag.outputs.present != 'true' && steps.cache.outputs.cache-hit != 'true'
+    # A miss builds before the tests run, so a red test still leaves the image saved. A last
+    # week's image still under the tag is dropped first, or --build would keep it.
+    - id: build
+      if: steps.tag.outputs.present != 'true' && steps.reg.outputs.pulled != 'true' && steps.cache.outputs.cache-hit != 'true'
       shell: bash
       env:
         TMUX_REF: ${{ inputs.tmux }}
@@ -50,9 +91,39 @@ runs:
       run: |
         docker rmi "$TAG" >/dev/null 2>&1 || true
         tests/docker.sh --build
-        docker save -o "$RUNNER_TEMP/test-image.tar" "$TAG"
-    - if: steps.tag.outputs.present != 'true' && steps.cache.outputs.cache-hit != 'true'
+    # A logged-in pool runner that got the image from the cache or a build puts it in the registry
+    # (two jobs pushing one tag is harmless), so the next pod pulls it over the LAN: a cache hit
+    # alone would never seed the registry. A failed push warns and leaves pushed unset.
+    - id: push
+      if: steps.reg.outputs.login == 'true' && steps.reg.outputs.pulled != 'true' && (steps.build.outcome == 'success' || steps.cache.outputs.cache-hit == 'true')
+      shell: bash
+      env:
+        TAG: ${{ steps.tag.outputs.tag }}
+        REF: ${{ steps.reg.outputs.ref }}
+      run: |
+        docker tag "$TAG" "$REF"
+        if timeout 600 docker push -q "$REF" >/dev/null; then
+          echo pushed=true >> "$GITHUB_OUTPUT"
+        else
+          echo "::warning::push of $REF failed; the image goes to the Actions cache instead"
+        fi
+    # The Actions cache is saved from a build unless the registry took the image: a 943 MB upload
+    # per build is the transfer this action exists to avoid, but a push that failed, or no registry
+    # (hosted runner), still needs the cache fallback.
+    - id: save
+      if: steps.build.outcome == 'success' && steps.push.outputs.pushed != 'true'
+      shell: bash
+      env:
+        TAG: ${{ steps.tag.outputs.tag }}
+      run: docker save -o "$RUNNER_TEMP/test-image.tar" "$TAG"
+    - if: steps.save.outcome == 'success'
       uses: actions/cache/save@v4
       with:
         path: ${{ runner.temp }}/test-image.tar
         key: test-image-${{ steps.tag.outputs.tag }}-${{ steps.tag.outputs.week }}
+    # The login stays in the docker config of a pool pod that outlives the job's steps: drop it.
+    - if: always() && steps.reg.outputs.login == 'true'
+      shell: bash
+      env:
+        REGISTRY: ${{ inputs.registry }}
+      run: docker logout "$REGISTRY" >/dev/null 2>&1 || true
