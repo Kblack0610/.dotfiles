@@ -26,8 +26,9 @@ name: shell tests
 # loads it, tests/docker.sh runs in it), so a runner needs only docker and a label. The image has
 # three stages (lean, rust, full) and a job's env TEST_IMAGE_KIND names the smallest one with what
 # it runs, because a pool pod loads its image over a link shared with the whole pool: the one
-# 943 MB image ran every job out of its timeout in the cache restore on 2026-11-25 (ar-5632). No step
-# installs a tool on the runner (~/.local/src/docs/ci.md, Runners; tests/unit/ci_gate.bats).
+# 943 MB image ran every job out of its timeout in the cache restore on 2026-11-25 (ar-5632). A pool
+# runner pulls it from the LAN registry instead (the CI_REGISTRY variable and CI_REGISTRY_PASSWORD secret; the action
+# says when). No step installs a tool on the runner (~/.local/src/docs/ci.md, Runners; tests/unit/ci_gate.bats).
 #   gate   the one required check: red unless every gating job ran and passed.
 #   report the fast and ui tiers' JUnit, drawn on the run's Summary page: a row per file
 #          and every failed test, so a red reads without opening the logs.
@@ -192,6 +193,9 @@ jobs:
       # The image (tests/Dockerfile), only for a shard with files to run.
       - if: steps.pick.outputs.run == 'true'
         uses: ./.github/actions/test-image
+        with:
+          registry: ${{ vars.CI_REGISTRY }}
+          registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
       - name: Fast tier shard
         env:
           JUNIT: 1
@@ -243,6 +247,8 @@ jobs:
       # The image comes from the Actions cache when nothing it is built from changed.
       - uses: ./.github/actions/test-image
         with:
+          registry: ${{ vars.CI_REGISTRY }}
+          registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
           tmux: ${{ matrix.tmux }}
       - uses: ./.github/actions/bats-vendor
       # tests/ui/session_send.bats drives the real agent-panel binary, built in the same image it
@@ -357,6 +363,9 @@ jobs:
       # which clippy lints a run checks.
       - if: steps.pick.outputs.run == 'true'
         uses: ./.github/actions/test-image
+        with:
+          registry: ${{ vars.CI_REGISTRY }}
+          registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
       - if: steps.pick.outputs.run == 'true'
         uses: ./.github/actions/bats-vendor
       # The registry (tests/docker.sh's CARGO_HOME, .cargo-ci in the checkout) and every crate's
@@ -436,6 +445,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/test-image
+        with:
+          registry: ${{ vars.CI_REGISTRY }}
+          registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
       # The rust job's key: main saves one cache, and this job only restores it.
       - name: Restore cargo
         uses: actions/cache/restore@v4
@@ -485,6 +497,9 @@ jobs:
       # reproduce locally. lint.sh itself is shared with the Makefile and the Stop hook, so
       # the severity ratchet and the file list have exactly one definition.
       - uses: ./.github/actions/test-image
+        with:
+          registry: ${{ vars.CI_REGISTRY }}
+          registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
       - uses: ./.github/actions/bats-vendor
       - name: lint
         run: tests/docker.sh lint
