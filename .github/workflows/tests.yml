@@ -78,7 +78,7 @@ jobs:
   # a slow runner. The fixed cost per shard (job start to the bats step: checkout, bats, cached
   # debs) was 8-9 s in run 44887277102, before the shards ran in the test image, which adds its
   # load from the Actions cache to that.
-  # Since #3519 a shard runs bats with the pod's one core (cpus.sh), not the host's 32, so its wall is
+  # Since #3519 a shard runs bats with the pod's one core (cpus.sh) where it once took the host's 32, so its wall is
   # its predicted seconds plus about 3 minutes of image pull and container start. The table grew
   # from 4320 s to 5305 s: twelve unit shards read 442 s each, and in run 45616843061 on a drained
   # pool they were cut at the 10 minute guard with half their tests done. Twenty unit and six integ
