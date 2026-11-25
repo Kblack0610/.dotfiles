@@ -13,7 +13,7 @@ use hub_core::table::{Summary, View};
 use serde::{Deserialize, Serialize};
 
 use crate::builds;
-use crate::cache::{off, ReadCache};
+use crate::cache::{failed, off, ReadCache};
 
 /// The sources change by the hour (a sync, a timer firing), and their read lists systemd's
 /// timers, so tabs and keystrokes share one read for this long.
@@ -58,12 +58,7 @@ fn render(p: &Pipelines, q: &Query) -> String {
         errors: &p.errors,
         table,
     };
-    serde_json::to_string(&out).unwrap_or_else(|e| failed(e.to_string()))
-}
-
-/// A body the section can still render when reading itself failed.
-fn failed(e: String) -> String {
-    serde_json::json!({ "rows": [], "errors": [e] }).to_string()
+    serde_json::to_string(&out).unwrap_or_else(|e| failed(&["rows"], e.to_string()))
 }
 
 async fn sources() -> Result<std::sync::Arc<Sources>, String> {
@@ -79,7 +74,8 @@ pub async fn get(q: Query, items: (Vec<Item>, Option<String>)) -> String {
         p.errors.extend(b.errors.iter().cloned());
         Ok::<_, String>(p)
     };
-    read.await.map_or_else(failed, |p| render(&p, &q))
+    read.await
+        .map_or_else(|e| failed(&["rows"], e), |p| render(&p, &q))
 }
 
 /// The pipeline `q` names, opened; the error is a request that names none.
@@ -153,11 +149,5 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(v["rows"][0]["pipeline"], "lint");
-    }
-
-    #[test]
-    fn a_failed_read_still_gives_the_section_a_body() {
-        let v: serde_json::Value = serde_json::from_str(&failed("gone".into())).unwrap();
-        assert_eq!(v["errors"][0], "gone");
     }
 }

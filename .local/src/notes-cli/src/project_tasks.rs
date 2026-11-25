@@ -12,7 +12,7 @@
 use crate::agent_sheet::Lane;
 use crate::config::Profile;
 use crate::logging::Logger;
-use crate::md;
+use crate::md::{self, is_match};
 use crate::project_sweep;
 use crate::projects;
 use crate::sheet::{self, V};
@@ -186,12 +186,6 @@ fn sheet_and_content(p: &Profile, name: &str, lane: Lane) -> Result<Option<(Path
     };
     let content = fs::read_to_string(&sheet)?;
     Ok(Some((sheet, content)))
-}
-
-/// An open task matching `query` (already lower-cased) - the shared predicate for
-/// `done`/`start`/`rm`, matching `focus.rs::is_match`.
-pub(crate) fn is_match(line: &str, query: &str) -> bool {
-    md::is_open_task(line) && md::task_key(line).contains(query)
 }
 
 /// Which row a verb acts on: the first open task whose text contains some words, the open
