@@ -36,7 +36,14 @@ stdout_tty=0
 # of who waits let each new script spend the reserve: ci-cost.py took it to 14 on 2026-11-17.
 : "${GH_RESERVE_CALLERS:=agent-land gh-run-wait gate-and-land.sh ci-gate.sh gate-line.py night.sh agentctl-playground-night}"
 
-[ -z "${GH_WRAPPED:-}" ] || exec "${GH_REAL:?}" "$@" # a gh that gh itself started: already counted
+# wrapper_copy <file>: this wrapper or a copy of it from another checkout, told by the opening of
+# line 2, which every copy back to the first shares; tests/unit/gh_wrapper.bats checks it stays.
+# A worktree's .local/bin ahead of ~/.local/bin (a session profiling a worktree script) put two copies
+# on PATH: each took the other for the real gh and, with GH_WRAPPED set, exec'd it, at 100% CPU (ar-4949).
+# An older copy still hands GH_REAL a copy, so a GH_REAL that is one is refused, never exec'd.
+wrapper_copy() { head -c 256 "$1" 2>/dev/null | grep -qa "^# gh - the fleet's gh:"; }
+not_wrapper() { ! wrapper_copy "$1" || { echo "gh: GH_REAL ($1) is a copy of this wrapper, not gh" >&2; exit 127; }; }
+[ -z "${GH_WRAPPED:-}" ] || { not_wrapper "${GH_REAL:?}"; exec "$GH_REAL" "$@"; } # a gh that gh itself started: already counted
 # A sandboxed HOME (a test's temp home) never reaches GitHub. A test that forgot to put its gh stub
 # first on PATH acts on the real repos with the real token otherwise: tests/playground-night.sh
 # started hd.yml and soak.yml on unity-core-playground main on 2026-11-12.
@@ -44,15 +51,12 @@ acct_home=$(getent passwd "$(id -un)" | cut -d: -f6)
 [ -z "$acct_home" ] || [ "$(readlink -f "${HOME:-/}")" = "$(readlink -f "$acct_home")" ] \
   || { echo "gh: HOME is ${HOME:-unset}, not $acct_home: a sandboxed caller never reaches GitHub" >&2; exit 3; }
 self=$(readlink -f "${BASH_SOURCE[0]}")
-# wrapper_copy <file>: a copy of this wrapper from another checkout, which line 2 of every copy names.
-# A worktree's .local/bin ahead of ~/.local/bin (a session profiling a worktree script) put two copies
-# on PATH: each took the other for the real gh and, with GH_WRAPPED set, exec'd it, at 100% CPU (ar-4949).
-wrapper_copy() { head -c 256 "$1" 2>/dev/null | grep -qa "^# gh - the fleet's gh:"; }
 real="${GH_REAL:-}"
+[ -z "$real" ] || not_wrapper "$real"
 if [ -z "$real" ]; then
   IFS=: read -r -a dirs <<<"$PATH"
   for d in "${dirs[@]}"; do
-    [ -f "$d/gh" ] && [ -x "$d/gh" ] && [ "$(readlink -f "$d/gh")" != "$self" ] && ! wrapper_copy "$d/gh" && { real="$d/gh"; break; }
+    [ -f "$d/gh" ] && [ -x "$d/gh" ] && ! wrapper_copy "$d/gh" && { real="$d/gh"; break; }
   done
 fi
 [ -n "$real" ] || { echo "gh: no gh on PATH besides this wrapper ($self)" >&2; exit 127; }
