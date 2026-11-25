@@ -98,10 +98,25 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
       # A pull request checks out its merge commit; depth 2 brings its first parent, the base
-      # tip, so HEAD^1..HEAD is exactly the change.
+      # tip, so HEAD^1..HEAD is exactly the change. The pick reads text only, so the 42 binary
+      # files (fonts, wallpapers: 75 MB of the 104 MB tree) stay out: a full depth-2 fetch is
+      # 62 MB, and on arc-repo-dotfiles pods with a run's 20 jobs fetching at once it took 90-180 s
+      # against this job's 3 min (ar-5643). This one is 8.6 MB and picks the same files.
       - uses: actions/checkout@v4
         with:
           fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !*.ttf
+            !*.jpeg
+            !*.jpg
+            !*.png
+            !*.woff2
+            !*.webp
+            !*.wav
+            !*.pb
       - name: Weights from the newest green main run
         id: junit
         env:
