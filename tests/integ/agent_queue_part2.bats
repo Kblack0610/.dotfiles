@@ -1504,7 +1504,7 @@ notes --profile work ptask level run lv-8'
 
 @test "--row carries the item's longer task onto the row as detail lines the row lacks, so a plain return keeps it (ar-3159)" {
   story_notes
-  jq -n '{rows: [{project: "level", id: "lv-2", state: "doing", text: "feat(menu): the row's work", details: ["already on the row"]},
+  jq -n '{rows: [{project: "level", id: "lv-2", state: "doing", text: "feat(menu): the row'\''s work", details: ["already on the row"]},
                  {project: "level", id: "lv-2", state: "done", text: "feat(menu): an old copy", details: []}]}' > "$NOTES_FIXTURE/board.json"
   run "$AQ" add --running --project game --row lv-2 --slug longer "$(printf '%s\n' "feat(menu): the row's work" 'the step the row lacks' 'already on the row')"
   assert_success
