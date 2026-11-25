@@ -134,6 +134,18 @@ load 'fleet_dispatch/common'
   agent-queue show ga-2 >/dev/null 2>&1 || fail "the timed check row (negative control) was not promoted"
 }
 
+@test "an item already queued in a client's work project is never started on another machine; the next item is (ar-6083)" {
+  two_items
+  jq '. + {clients: {acme: {profile: "acmework"}}} | .trackers.game.client = "acme"' "$DISPATCH_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$DISPATCH_PROJECT_MAP"
+  export PROJECT_MACHINE_PROFILE=personal
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_success
+  assert_output --partial "queue item fix-game is in game, a client's work project hidden on this machine: never started here"
+  refute_output --partial 'would start queue item fix-game'
+  assert_output --partial 'would start queue item fix-app: app oneshot low'
+  assert_not_called 'wt new'
+}
+
 @test "run --dry-run names each held item and the one that would start while a pool its head feeds is starved" {
   two_items
   findings "$(finding starved pool:unity '["game"]')"

@@ -2081,6 +2081,23 @@ work_machine_guard() {
   die "this is a work machine ($PROJECT_MACHINE_PROFILE): no dispatcher runs here and home runners never take work. Put the follow-up in the project's tracker (ticket), or work it in this session"
 }
 
+# client_guard <add args...> -- a client's work project (its tracker names a `client`) is hidden on every
+# machine but that client's (project_visible), and no add here files work for one: a sweep of stale plans
+# re-queued a client repo's plan on the personal box, and its run pushed and admin-merged a PR in the
+# client's repo overnight (ar-6083). A --running record is a hand session's own record and passes.
+client_guard() {
+  add_writes_work "$@" || return 0
+  local project="" key
+  while [ $# -gt 0 ]; do
+    case "$1" in --) break ;; --project) project="${2-}"; shift 2 || break ;; *) shift ;; esac
+  done
+  [ -n "$project" ] || project="$(project_of_cwd)"
+  [ -n "$project" ] || return 0
+  key="$(project_lookup "$project")" || key="$project"
+  project_visible "$key" && return 0
+  die "$key is a client's work project, hidden on this machine ($PROJECT_MACHINE_PROFILE): no agent here queues or runs work in it. Work it on that client's machine, or by hand"
+}
+
 cmd_add() {
   local project="" mode=oneshot priority=high tags="" after="" from=human agent=claude slug=""
   local running="" session="" task=() tag planf="" dry="" check="" weight="" title="" epic="" repeat="" from_given="" want="" row="" priority_given=""
@@ -4245,7 +4262,7 @@ cmd_backfill_briefs() {
   trap 'AGENT_STORE_HOOK=1 store-sync --now --bg 8>&- 2>/dev/null' EXIT
 command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
-  add) shift; work_machine_guard "$@"; cmd_add "$@" ;;
+  add) shift; work_machine_guard "$@"; client_guard "$@"; cmd_add "$@" ;;
   list | next | show | mine | claim | cancel | return | bump | set | retask | attribute | move | requeue | handoff | start | reopen | stats | admission | mix | gate) v="$1"; shift; "cmd_$v" "$@" ;;
   lock-miss) shift; cmd_lock_miss "$@" ;;
   credit-of) shift; cmd_credit_of "$@" ;;
