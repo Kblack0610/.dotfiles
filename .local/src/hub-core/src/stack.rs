@@ -316,7 +316,7 @@ impl Row for Hook {
     fn vals(&self, col: &str) -> Vec<Val> {
         match col {
             "matcher" if self.matcher.is_empty() => vec![Val::word("*")],
-            "matcher" => self.matcher.split('|').map(text).collect(),
+            "matcher" => self.matcher.split('|').map(Val::word).collect(),
             _ => vec![self.val(col)],
         }
     }

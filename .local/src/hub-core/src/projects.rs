@@ -458,7 +458,7 @@ impl crate::table::Row for Card {
             "state" => Val::word(self.state),
             "profile" => Val::word(&self.profile),
             "stage" => Val::word(&self.stage),
-            "version" => self.version.as_deref().map_or(Val::None, word),
+            "version" => self.version.as_deref().map_or(Val::None, Val::word),
             "prio" => Val::word(&self.prio),
             "open" => num(Some(self.progress.open)),
             "doing" => Val::Num(self.doing as f64),

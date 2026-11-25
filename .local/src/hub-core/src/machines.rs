@@ -303,7 +303,7 @@ impl Row for Pool {
     fn val(&self, col: &str) -> Val {
         match col {
             "pool" => Val::word(&self.pool),
-            "weight" => self.weight.as_deref().map_or(Val::None, text),
+            "weight" => self.weight.as_deref().map_or(Val::None, Val::word),
             "running" => self.running.into(),
             "waiting" => self.waiting.into(),
             "oldest" => self.oldest.into(),
