@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """row-value - judge what each open board row improves, check the verdicts, compare two judges.
 
-  row-value export [--project P] [--chunk N] [--board FILE] [--scorecard FILE] [--inflow FILE] DIR
+  row-value export [--project P] [--chunk N] [--board FILE] [--scorecard FILE] [--inflow FILE] [--except FILE] DIR
       the project's open agent rows (open and doing) into DIR: rows.tsv (id, state, priority,
       epic, why, requested, since, plan, after, children, exported_children, source, text),
       chunk-NN.txt (about N rows each, sorted by epic then id so rows
@@ -11,9 +11,10 @@
       fetched, then a row whose id a commit subject on its origin/main names (last --since days)
       gets a `merged:` line, evidence a text read cannot see. --inflow is a saved
       `fleet-bench inflow --json`, whose open_ids give each row its source (the filer); without it
-      the source is `-`. It clears DIR's last chunks, judge
-      files and verdicts. A judge
-      reads one chunk, context.md and the rubric, and writes DIR/judge-NN.tsv.
+      the source is `-`. --except is a headed TSV (a ledger) whose `id` rows are left out, so only
+      the rows filed since it are judged; they still count as children. It clears DIR's last
+      chunks, judge files and verdicts. A judge reads one chunk, context.md and the rubric, and
+      writes DIR/judge-NN.tsv.
   row-value merge [--rubric FILE] DIR
       checks every DIR/judge-*.tsv against the rubric's lists and DIR/rows.tsv: each exported
       id exactly once, no unknown id, each field in its list, `into` naming another exported row
@@ -35,12 +36,32 @@
       use other column names (--id, --verdict, header row read) and other verdict words (--map);
       --mine-verdict compares another column of MINE (kind, target) for a confusion table.
 
+  row-value apply [--project P] [--board FILE] [--plans DIR] [--orphans FILE] [--write] --log FILE LEDGER...
+      the cut, from each LEDGER (`report --tsv`, a later one winning): for every row still open
+      (a doing row is left alone), `fixed` is `notes ptask done --proof`, a drop `drop --why` or a
+      merge `drop --dup`, an improvement `notes improve` then `drop --why` (unless improve calls it
+      health work, or its project has no notes project), and a kept row serving another project
+      `move --project` when that project has an agent board (a red stays: its watch is the
+      fleet's). A plan-bookkeeping drop goes only when its plan has no open phase or its chain is
+      live (an active queue item or another open row names the plan). An orphan plan's row on
+      another board moves there; here it stays until --orphans (id, decision, why, plan) keeps it
+      or parks it (a `Parked:` line in the plan file, then the drop). Without --write it writes
+      nothing and logs what it would do. The log has one line per open row of P: id, action,
+      result, detail, why; exit 1 when a write failed.
+  row-value cut-report [--project P] [--board FILE] [--rubric FILE] --log FILE LEDGER...
+      the after-cut report as markdown: the before and after counts, then the Cut table (each row
+      the log shows closed or moved, and how) and the Remains table (each row open now, its
+      bucket, tie and why), both grouped by system, each group opening with the rubric's line
+      for that system.
+
 The rubric, its lists and its rules are data: ~/.config/row-value/rubric.md. Every board read goes
-through `notes board --json`; nothing here writes a board row.
+through `notes board --json`; only `apply --write` writes, and only through `notes ptask` and
+`notes improve`.
 """
 import argparse
 import collections
 import contextlib
+import datetime
 import json
 import os
 import re
@@ -100,6 +121,12 @@ def load_board(path):
     if out.returncode != 0:
         die(f"notes board --json failed: {out.stderr.strip()}", 1)
     return json.loads(out.stdout)
+
+
+def open_rows(board, project):
+    """The project's open and doing agent-lane rows."""
+    return [r for r in board.get("rows", [])
+            if r.get("project") == project and r.get("lane") == "agent" and r.get("state") in ("open", "doing")]
 
 
 def past_kpis(path):
@@ -165,11 +192,17 @@ def cmd_export(a):
     if scorecard and not os.path.exists(scorecard):
         die(f"no scorecard at {scorecard}: pass --scorecard FILE, or --scorecard '' to list no KPI", 1)
     board = load_board(a.board)
-    rows = [r for r in board.get("rows", [])
-            if r.get("project") == a.project and r.get("lane") == "agent"
-            and r.get("state") in ("open", "doing")]
+    rows = open_rows(board, a.project)
+    if a.except_:
+        if not os.path.exists(a.except_):
+            die(f"--except {a.except_}: no such file", 1)
+        cols, old = read_tsv(a.except_)
+        if "id" not in cols:
+            die(f"--except {a.except_} has no id column", 1)
+        seen = {r["id"] for r in old}
+        rows = [r for r in rows if r["id"] not in seen]
     if not rows:
-        die(f"no open agent rows on {a.project}", 1)
+        die(f"no open agent rows on {a.project}" + (f" beyond {a.except_}" if a.except_ else ""), 1)
 
     def num(i):
         m = re.search(r"(\d+)$", i or "")
@@ -450,6 +483,316 @@ def cmd_report(a):
     print("\n".join(out).rstrip())
 
 
+APPLY_LOG = ["id", "action", "result", "detail", "why"]
+# A plan-bookkeeping row's plan, when the export found no plan path: "(plan <slug>)" in its title
+# or "plan <slug>: run its open phases".
+PLAN_WORD_RE = re.compile(r"\(plan ([\w.-]+)\)|\bplan ([\w.-]+): run its open phases")
+CLOSED = ("done", "dup", "drop", "improve", "move", "park")
+KEPT = ("red", "fault", "sot", "requested", "chain", "container")
+
+
+def read_ledgers(paths):
+    """id -> ledger row over every LEDGER, a later file's line winning (the delta judged after)."""
+    out = {}
+    for path in paths:
+        if not os.path.exists(path):
+            die(f"{path}: no such ledger", 1)
+        cols, rows = read_tsv(path)
+        need = {"id", "bucket", "verdict", "into", "project", "kind", "evidence", "why", "text"}
+        if not need <= set(cols):
+            die(f"{path} lacks {', '.join(sorted(need - set(cols)))}: write it with row-value report --tsv", 1)
+        out.update((r["id"], r) for r in rows)
+    return out
+
+
+def plan_slug(r):
+    if r.get("plan", "-") not in ("", "-"):
+        return r["plan"]
+    m = PLAN_WORD_RE.search(r.get("text") or "")
+    return (m.group(1) or m.group(2)) if m else None
+
+
+def open_phases(path):
+    """The `- [ ]` lines under a plan file's `## Phases`."""
+    n, inside = 0, False
+    with open(path) as f:
+        for line in f:
+            if line.startswith("## "):
+                inside = line.strip() == "## Phases"
+            elif inside and line.lstrip().startswith("- [ ]"):
+                n += 1
+    return n
+
+
+def plan_state(slug, self_id, plans, board_rows, items):
+    """Why a plan-bookkeeping row for SLUG can go, or None when its plan is an orphan: open
+    phases and no live chain (no active queue item and no other open row names the plan)."""
+    files = [os.path.join(d, f"{slug}.md") for d, _, fs in os.walk(plans) if f"{slug}.md" in fs]
+    if not files:
+        return f"plan {slug}: no plan file"
+    left = max(open_phases(f) for f in files)
+    if not left:
+        return f"plan {slug}: no open phase"
+    word = re.compile(rf"(?<![\w.-]){re.escape(slug)}(?![\w-])")
+    for it in items:
+        if word.search(" ".join(str(it.get(k) or "") for k in ("task", "title", "slug"))):
+            return f"plan {slug}: chain live (item {it.get('slug')})"
+    for r in board_rows:
+        if r["id"] != self_id and word.search(" ".join([r.get("text") or ""] + list(r.get("details") or []))):
+            return f"plan {slug}: phase row {r['id']} open"
+    return None
+
+
+def active_items(cmd):
+    out = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    if out.returncode != 0:
+        die(f"{cmd!r} failed ({out.returncode}): {out.stderr.strip()[:300]}", 1)
+    items = []
+    for line in out.stdout.splitlines():
+        if line.strip():
+            items.append(json.loads(line))
+    return items
+
+
+def title_of(text):
+    """A row's text without its tags, for the report and for improvements.md."""
+    return clean(re.sub(r"(?<!\S)#\S+", "", text or ""))
+
+
+def proof_of(evidence):
+    return "head-check " + clean(evidence).replace("-->", "->")[:160]
+
+
+def plan_action(r, row, ctx):
+    """(action, argv or None, detail) for one ledger row still open on the board."""
+    rid, bucket, verdict = r["id"], r["bucket"], r["verdict"]
+    if row["state"] == "doing":
+        return "keep", None, "doing: a live queue item, untouched"
+    pt = [ctx.notes, "ptask", ctx.project, "--agent"]
+    if bucket == "fixed":
+        return "done", pt + ["done", rid, "--proof", proof_of(r["evidence"])], r["evidence"]
+    if verdict == "merge":
+        if r["into"] in ctx.open_ids:
+            return "dup", pt + ["drop", rid, "--dup", r["into"]], f"dup of {r['into']}"
+        return "drop", pt + ["drop", rid, "--why", f"{r['why']} (dup of {r['into']}, closed)"], f"dup of closed {r['into']}"
+    if verdict == "drop":
+        why = r["why"]
+        if r["kind"] == "plan-bookkeeping":
+            slug = plan_slug(r)
+            if not slug:
+                return ctx.orphan(r, None, "plan bookkeeping that names no plan")
+            state = plan_state(slug, rid, ctx.plans, ctx.board_rows, ctx.items)
+            if state is None:
+                # The row is the only start its plan's chain has: on its own project's board
+                # dispatch still promotes it; here the session decides keep or park.
+                if r["project"] != ctx.project and ctx.has_board(r["project"]):
+                    return "move", pt + ["move", rid, "--project", r["project"]], \
+                        f"{r['project']} (plan {slug}: orphan, the row starts its chain)"
+                return ctx.orphan(r, slug, f"plan {slug}: open phases and no live chain")
+            why = f"{why}; {state}"
+        extra = ["--children", "drop"] if bucket == "container" else []
+        return "drop", pt + ["drop", rid, "--why", why] + extra, why
+    if bucket == "improvement":
+        text = f"{title_of(r['text'])} (was {rid})"
+        if not ctx.has_project(r["project"]):
+            return "keep", None, f"no notes project {r['project']}: stays until the human names one"
+        if ctx.health(text):
+            return "keep", None, "notes improve calls it health work: stays"
+        return "improve", [[ctx.notes, "improve", r["project"], "--why", r["why"], "--", text],
+                           pt + ["drop", rid, "--why", f"moved to improvements: {r['project']}"]], r["project"]
+    if bucket in KEPT and r["project"] != ctx.project:
+        if bucket == "red":
+            return "keep", None, f"red: a fleet watch, stays here though it serves {r['project']}"
+        if ctx.moving_parent(r):
+            return "keep", None, f"moves with its parent {r['epic']}"
+        if not ctx.has_board(r["project"]):
+            return "keep", None, f"{r['project']} has no agent board: stays until the human names one"
+        return "move", pt + ["move", rid, "--project", r["project"]], r["project"]
+    return "keep", None, bucket
+
+
+class Ctx:
+    def __init__(self, a, board):
+        self.notes, self.project, self.plans = a.notes, a.project, os.path.expanduser(a.plans)
+        self.board_rows = [r for r in board.get("rows", []) if r.get("state") in ("open", "doing")]
+        self.open_ids = {r["id"] for r in self.board_rows}
+        self.items = active_items(a.queue_cmd)
+        self._boards, self._health, self.ledger = {}, {}, {}
+        self.decided = {}
+        if a.orphans:
+            cols, rows = read_tsv(a.orphans)
+            if cols[:3] != ["id", "decision", "why"] or any(r["decision"] not in ("keep", "park") for r in rows):
+                die(f"--orphans {a.orphans}: want a headed TSV id, decision (keep or park), why[, plan]", 1)
+            self.decided = {r["id"]: r for r in rows}
+
+    def orphan(self, r, slug, detail):
+        """An orphan plan's row: kept (it starts its plan's chain) or parked (a `Parked:` line in
+        its plan file, then dropped) as --orphans decides; undecided, it stays and is listed."""
+        d = self.decided.get(r["id"])
+        if not d:
+            return "orphan", None, detail
+        if d["decision"] == "keep":
+            return "keep", None, f"{detail}: kept, the row starts its chain; {d['why']}"
+        slug = d.get("plan") or slug
+        files = [os.path.join(dp, f"{slug}.md") for dp, _, fs in os.walk(self.plans) if f"{slug}.md" in fs] if slug else []
+        if not files:
+            die(f"--orphans parks {r['id']}, whose plan {slug} has no file to mark", 1)
+        why = f"plan {slug} parked: {d['why']}"
+        pt = [self.notes, "ptask", self.project, "--agent"]
+        return "park", [("park", files, d["why"], r["id"]), pt + ["drop", r["id"], "--why", why]], why
+
+    def has_board(self, project):
+        if project not in self._boards:
+            out = subprocess.run([self.notes, "ptask", project, "--agent", "list"], capture_output=True, text=True)
+            self._boards[project] = out.returncode == 0
+        return self._boards[project]
+
+    def has_project(self, project):
+        key = "project:" + project
+        if key not in self._boards:
+            out = subprocess.run([self.notes, "ptask", project, "list"], capture_output=True, text=True)
+            self._boards[key] = out.returncode == 0
+        return self._boards[key]
+
+    def health(self, text):
+        if text not in self._health:
+            out = subprocess.run([self.notes, "improve", "--check", self.project, "--", text], capture_output=True, text=True)
+            if out.returncode not in (0, 3):
+                die(f"notes improve --check failed ({out.returncode}): {out.stderr.strip()[:300]}", 1)
+            self._health[text] = out.returncode == 3
+        return self._health[text]
+
+    def moving_parent(self, r):
+        p = self.ledger.get(r.get("epic", "-"))
+        return bool(p and p["project"] == r["project"] and p["bucket"] in KEPT and p["bucket"] != "red"
+                    and p["id"] in self.open_ids)
+
+
+def cmd_apply(a):
+    board = load_board(a.board)
+    ledger = read_ledgers(a.ledger)
+    ctx = Ctx(a, board)
+    ctx.ledger = ledger
+    log, counts = [], collections.Counter()
+    for row in open_rows(board, a.project):
+        r = ledger.get(row["id"])
+        if not r:
+            log.append([row["id"], "unjudged", "-", "not in any ledger", "-"])
+            counts["unjudged"] += 1
+            continue
+        action, argv, detail = plan_action(r, row, ctx)
+        result = "planned" if argv else "-"
+        if argv and a.write:
+            for cmd in argv if isinstance(argv[0], (list, tuple)) else [argv]:
+                if cmd[0] == "park":
+                    park_plans(*cmd[1:])
+                    continue
+                out = subprocess.run(cmd, capture_output=True, text=True)
+                if out.returncode != 0:
+                    result = f"failed {out.returncode}: " + (out.stderr.strip().splitlines() or ["-"])[-1][:200]
+                    break
+                result = "ok"
+        counts[f"{action} {result.split(':')[0]}"] += 1
+        log.append([row["id"], action, result, detail, r["why"]])
+    write_tsv(a.log, APPLY_LOG, log)
+    print(f"{len(log)} open rows -> {a.log}" + ("" if a.write else " (dry run: nothing written)"))
+    print(", ".join(f"{k} {n}" for k, n in sorted(counts.items())))
+    return 1 if any(k.endswith(" failed") for k in counts) else 0
+
+
+def park_plans(files, why, rid):
+    """A `Parked:` line under each plan file's heading, once: the plan is kept, its chain unqueued."""
+    day = datetime.date.today().isoformat()
+    line = f"Parked: {day}, {why}; its board row {rid} was dropped. Queue it again with `agent-queue add --plan`."
+    for path in files:
+        with open(path) as f:
+            text = f.read()
+        if f"its board row {rid} was dropped" in text:
+            continue
+        head, sep, rest = text.partition("\n")
+        with open(path, "w") as f:
+            f.write(f"{head}{sep}\n{line}\n{rest}" if sep else f"{text}\n\n{line}\n")
+
+
+def system_lines(path):
+    """system -> its line in the rubric's System section."""
+    out, inside = {}, False
+    with open(path) as f:
+        for line in f:
+            if line.startswith("## "):
+                inside = line.startswith("## System")
+            m = re.match(r"- `([a-z]+)`: (.+)", line.strip()) if inside else None
+            if m:
+                out[m.group(1)] = m.group(2).rstrip(".")
+    return out
+
+
+def cmd_cut_report(a):
+    cols, log = read_tsv(a.log)
+    if cols != APPLY_LOG:
+        die(f"{a.log} is not a row-value apply log", 1)
+    ledger = read_ledgers(a.ledger)
+    systems = system_lines(a.rubric)
+    board = load_board(a.board)
+    now = open_rows(board, a.project)
+    home = a.project
+    how = {"done": "closed done", "dup": "dropped as a dup", "drop": "dropped", "improve": "moved to improvements",
+           "move": "moved to another board", "park": "dropped, its plan parked"}
+    cut = [e for e in log if e["action"] in CLOSED and e["result"] == "ok"]
+
+    def system(i):
+        return ledger.get(i, {}).get("system", "-")
+
+    def grouped(entries, header, cells):
+        out = []
+        for s in sorted({system(e["id"]) for e in entries}):
+            group = [e for e in entries if system(e["id"]) == s]
+            line = systems.get(s, "rows judged after the ledger, or with no system")
+            out += [f"### {s} ({len(group)})", "", f"Rows about {line}.", "", header,
+                    "|" + "---|" * (header.count("|") - 1)]
+            out += [cells(e) for e in sorted(group, key=lambda e: e["id"])]
+            out.append("")
+        return out
+
+    def esc(s):
+        return clean(s).replace("|", "/")
+
+    def what(e):
+        d = e["detail"]
+        if e["action"] == "done":
+            return f"closed done, proof {d}"
+        if e["action"] in ("improve", "move"):
+            return f"{how[e['action']]} ({d})"
+        return how[e["action"]]
+
+    remain = [{"id": r["id"], "text": r.get("text") or ""} for r in now]
+    kept_why = {e["id"]: e for e in log}
+    out = [f"# After the cut: {home}, {board.get('today', '')}", "",
+           f"Before: {len(log)} open rows. After: {len(now)} open rows. Cut: {len(cut)}.", ""]
+    c = collections.Counter(e["action"] for e in cut)
+    out.append("Cut by action: " + ", ".join(f"{how[k]} {n}" for k, n in c.most_common()) + ".")
+    left = collections.Counter(ledger[r["id"]]["bucket"] if r["id"] in ledger else "unjudged" for r in remain)
+    out += ["Remains by bucket: " + ", ".join(f"{k} {n}" for k, n in left.most_common()) + ".", ""]
+    failed = [e for e in log if e["result"].startswith("failed")]
+    if failed:
+        out += ["Failed writes (still open): " + ", ".join(f"{e['id']} ({esc(e['result'])})" for e in failed) + ".", ""]
+    out += ["## Cut", ""]
+    out += grouped(cut, "| id | title | what happened | why |",
+                   lambda e: f"| {e['id']} | {esc(title_of(ledger[e['id']]['text']))[:90]} | {esc(what(e))} | {esc(e['why'])} |")
+    out += ["## Remains", ""]
+
+    def remains(e):
+        r = ledger.get(e["id"])
+        if not r:
+            return f"| {e['id']} | {esc(title_of(e['text']))[:90]} | - | - | filed after the ledger: judged by the next pass |"
+        stay = kept_why.get(e["id"], {})
+        why = r["why"] if stay.get("action") in (None, "keep") and stay.get("detail") in (None, r["bucket"]) else \
+            f"{stay.get('detail')}; {r['why']}"
+        return f"| {e['id']} | {esc(title_of(r['text']))[:90]} | {r['bucket']} | {esc(r.get('tie', '-'))} | {esc(why)} |"
+    out += grouped(remain, "| id | title | bucket | tie | why it stays |", remains)
+    print("\n".join(out).rstrip())
+
+
 def read_verdicts(path, id_col, verdict_col, mapping):
     cols, rows = read_tsv(path)
     for c in (id_col, verdict_col):
@@ -515,6 +858,7 @@ def main():
     e.add_argument("--inflow", help="a saved `fleet-bench inflow --json`, for each row's source")
     e.add_argument("--repo", action="append", default=[], help="a git checkout whose origin/main commit subjects name rows")
     e.add_argument("--since", type=int, default=30, help="days of commits --repo reads")
+    e.add_argument("--except", dest="except_", help="a headed TSV whose id rows are not exported again")
     e.add_argument("dir")
     m = sub.add_parser("merge")
     m.add_argument("--rubric", default=RUBRIC)
@@ -523,6 +867,23 @@ def main():
     r.add_argument("--project", default="agent-runtime", help="the board's own project: a row serving any other is a move")
     r.add_argument("--tsv", help="also write the joined ledger here")
     r.add_argument("dir")
+    ap = sub.add_parser("apply")
+    ap.add_argument("--project", default="agent-runtime")
+    ap.add_argument("--board", help="a saved `notes board --json`, instead of calling notes")
+    ap.add_argument("--plans", default="~/.agent/plans", help="where plan files live")
+    ap.add_argument("--queue-cmd", default="agent-queue list --json --state active",
+                    help="prints the active queue items, one JSON object a line")
+    ap.add_argument("--notes", default="notes", help="the notes binary")
+    ap.add_argument("--orphans", help="a headed TSV (id, decision keep|park, why, and plan when the row names none) settling orphan plan rows")
+    ap.add_argument("--write", action="store_true", help="run the writes; without it, a dry run")
+    ap.add_argument("--log", required=True)
+    ap.add_argument("ledger", nargs="+")
+    cr = sub.add_parser("cut-report")
+    cr.add_argument("--project", default="agent-runtime")
+    cr.add_argument("--board", help="a saved `notes board --json` read after the cut")
+    cr.add_argument("--rubric", default=RUBRIC)
+    cr.add_argument("--log", required=True)
+    cr.add_argument("ledger", nargs="+")
     c = sub.add_parser("compare")
     c.add_argument("--id", default="id")
     c.add_argument("--verdict", default="verdict")
@@ -531,7 +892,8 @@ def main():
     c.add_argument("mine")
     c.add_argument("theirs")
     a = p.parse_args()
-    {"export": cmd_export, "merge": cmd_merge, "report": cmd_report, "compare": cmd_compare}[a.cmd](a)
+    sys.exit({"export": cmd_export, "merge": cmd_merge, "report": cmd_report, "compare": cmd_compare,
+              "apply": cmd_apply, "cut-report": cmd_cut_report}[a.cmd](a) or 0)
 
 
 if __name__ == "__main__":
