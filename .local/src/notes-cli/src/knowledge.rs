@@ -59,27 +59,28 @@ const EXCERPT_MAX: usize = 1500;
 #[derive(Deserialize)]
 pub struct Batch {
     pub date: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub sources: Vec<Source>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub ops: Vec<Op>,
 }
 
-/// A string field the engine's model writes: `null` reads as absent (empty), as the model emits
-/// `"why": null` for a source an op uses, and one null must not refuse the whole night's batch
-/// (2026-07-14, refused 2026-11-25, ar-4251).
-fn null_empty<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
-    Ok(Option::<String>::deserialize(d)?.unwrap_or_default())
+/// A field the engine's model writes: `null` reads as absent (the default), so one `"why": null`
+/// is the same as no `why` and never refuses the whole batch.
+fn null_default<'de, D: serde::Deserializer<'de>, T: Default + Deserialize<'de>>(
+    d: D,
+) -> Result<T, D::Error> {
+    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
 }
 
 #[derive(Deserialize)]
 pub struct Source {
     pub id: String,
     pub path: String,
-    #[serde(default, deserialize_with = "null_empty")]
+    #[serde(default, deserialize_with = "null_default")]
     pub excerpt: String,
     /// For a source no op uses: why nothing in it was kept. The log's Dispositions show it.
-    #[serde(default, deserialize_with = "null_empty")]
+    #[serde(default, deserialize_with = "null_default")]
     pub why: String,
 }
 
@@ -88,23 +89,23 @@ pub struct Op {
     /// `create`, `update`, or `domain` (register a domain: `id`, `is`, `aliases`, `canonical`)
     pub op: String,
     /// vault-relative, e.g. `knowledge/software/infra/litellm-gateway.md`
-    #[serde(default, deserialize_with = "null_empty")]
+    #[serde(default, deserialize_with = "null_default")]
     pub path: String,
     /// the whole new file, frontmatter included
-    #[serde(default, deserialize_with = "null_empty")]
+    #[serde(default, deserialize_with = "null_default")]
     pub content: String,
     /// a `domain` op's id, `is` line, aliases and canonical docs (`knowledge_registry::Domain`)
-    #[serde(default, deserialize_with = "null_empty")]
+    #[serde(default, deserialize_with = "null_default")]
     pub id: String,
-    #[serde(default, deserialize_with = "null_empty")]
+    #[serde(default, deserialize_with = "null_default")]
     pub is: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub aliases: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub canonical: Vec<String>,
-    #[serde(default, deserialize_with = "null_empty")]
+    #[serde(default, deserialize_with = "null_default")]
     pub reason: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub sources: Vec<String>,
     /// why a large shrink is intended (a split or a merge); absent = shrink guard applies
     #[serde(default)]
@@ -1524,13 +1525,19 @@ mod tests {
 
     #[test]
     fn a_null_string_in_the_batch_reads_as_absent() {
-        // The 2026-07-14 batch the engine refused on 2026-11-25 (ar-4251): `"why": null` on a source an op uses.
+        // The engine refused its 2026-07-14 batch on 2026-11-25 for `"why": null` (ar-4251).
         let b: Batch = serde_json::from_str(
             r#"{"date": "2026-07-14",
                 "sources": [{"id": "s1", "path": "p", "excerpt": null, "why": null}],
-                "ops": [{"op": "create", "path": "knowledge/a.md", "content": "x", "reason": null, "sources": ["s1"]}]}"#,
+                "ops": [{"op": "create", "path": "knowledge/a.md", "content": "x", "reason": null, "sources": ["s1"]},
+                        {"op": "domain", "id": "d", "is": "x", "aliases": null, "canonical": null, "sources": null}]}"#,
         )
         .unwrap();
+        assert!(
+            b.ops[1].aliases.is_empty()
+                && b.ops[1].canonical.is_empty()
+                && b.ops[1].sources.is_empty()
+        );
         assert_eq!(
             (b.sources[0].why.as_str(), b.sources[0].excerpt.as_str()),
             ("", "")
