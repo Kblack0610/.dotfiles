@@ -57,6 +57,18 @@
       bucket, tie and why), both grouped by system, each group opening with the rubric's line
       for that system.
 
+  row-value focus [--project P] [--board FILE] [--rubric FILE] [--out DIR] [--write] --log FILE LEDGER...
+      the focus passes: every open kept row (a red, requested, fault or sot row; a doing row is a
+      live item and a chain, container, improvement or unjudged row is not worked here) goes to one
+      group of the rubric's Focus section, a `sot` row to its own group and any other by system,
+      and each group is ranked live reds, the human's asks, faults that block landing or dispatch
+      (a high or urgent fault in dispatch or ci), the remaining faults, then sot. It writes
+      DIR/focus-<group>.tsv (rank, id, bucket, priority, epic, title), the list a group's queue item
+      works leaf by leaf, and prints the counts. A live red of kind work below high is
+      retagged `notes ptask tag --why runtime-fault` with --write (a check row names a red and fixes
+      nothing); nothing else is retagged. The log has one
+      line per listed row: id, group, rank, priority, action, result.
+
 The rubric, its lists and its rules are data: ~/.config/row-value/rubric.md. Every board read goes
 through `notes board --json`; only `apply --write` writes, and only through `notes ptask` and
 `notes improve`.
@@ -802,6 +814,94 @@ def system_lines(path):
     return out
 
 
+FOCUS_LOG = ["id", "group", "rank", "priority", "action", "result"]
+RANKS = ["red", "requested", "blocks landing or dispatch", "fault", "sot"]
+HIGH = ("urgent", "high")
+
+
+def focus_groups(path):
+    """[(id, title, systems, bucket)] from the rubric's Focus section, in file order: a line is
+    "- `id`: title; systems a b" or "- `id`: title; bucket sot"."""
+    out, inside = [], False
+    with open(path) as f:
+        for line in f:
+            if line.startswith("## "):
+                inside = line.startswith("## Focus")
+            m = re.match(r"- `([a-z]+)`: ([^;]+); (systems|bucket) (.+)", line.strip()) if inside else None
+            if m:
+                words = m.group(4).rstrip(".").split()
+                out.append((m.group(1), m.group(2), words if m.group(3) == "systems" else [], words[0] if m.group(3) == "bucket" else None))
+    return out
+
+
+def focus_rank(r, priority):
+    """Index into RANKS for a ledger row worked by a focus pass, or None for a row none works."""
+    if r["bucket"] == "red":
+        return 0
+    if r["bucket"] == "requested":
+        return 1
+    if r["bucket"] == "fault":
+        return 2 if priority in HIGH and r["system"] in ("dispatch", "ci") else 3
+    return 4 if r["bucket"] == "sot" else None
+
+
+def cmd_focus(a):
+    board = load_board(a.board)
+    ledger = read_ledgers(a.ledger)
+    groups = focus_groups(a.rubric)
+    if not groups:
+        die(f"{a.rubric} has no Focus section", 1)
+
+    def group_of(r):
+        for gid, _, _, bucket in groups:
+            if bucket and r["bucket"] == bucket:
+                return gid
+        for gid, _, systems, bucket in groups:
+            if not bucket and r["system"] in systems:
+                return gid
+        return None
+    listed = collections.defaultdict(list)
+    skipped = collections.Counter()
+    for row in open_rows(board, a.project):
+        r = ledger.get(row["id"])
+        priority = row.get("priority") or "normal"
+        if row["state"] == "doing":
+            skipped["doing"] += 1
+        elif not r:
+            skipped["unjudged"] += 1
+        elif focus_rank(r, priority) is None:
+            skipped[r["bucket"]] += 1
+        elif group_of(r) is None:
+            die(f"{row['id']}: system {r['system']} is in no Focus group of {a.rubric}", 1)
+        else:
+            listed[group_of(r)].append((focus_rank(r, priority), row, r, priority))
+    os.makedirs(a.out, exist_ok=True)
+    pt = [a.notes, "ptask", a.project, "--agent"]
+    failed = 0
+    with open(a.log, "w") as log:
+        log.write("\t".join(FOCUS_LOG) + "\n")
+        for gid, title, _, _ in groups:
+            rows = sorted(listed[gid], key=lambda t: (t[0], 0 if t[3] in HIGH else 1, int(re.sub(r"\D", "", t[1]["id"]) or 0)))
+            write_tsv(os.path.join(a.out, f"focus-{gid}.tsv"), ["rank", "id", "bucket", "priority", "epic", "title"],
+                      [[RANKS[k], row["id"], r["bucket"], pr, r["epic"], title_of(row["text"])] for k, row, r, pr in rows])
+            for k, row, r, pr in rows:
+                action, result = "-", "-"
+                if k == 0 and pr not in HIGH and r["kind"] == "work":
+                    action = "tag"
+                    result = "planned"
+                    if a.write:
+                        out = subprocess.run(pt + ["tag", "--why", "runtime-fault", row["id"]], capture_output=True, text=True)
+                        result = "ok" if out.returncode == 0 else f"failed {out.returncode}: {(out.stderr.strip().splitlines() or ['-'])[-1][:200]}"
+                        failed += out.returncode != 0
+                log.write("\t".join(clean(str(c)) for c in [row["id"], gid, RANKS[k], pr, action, result]) + "\n")
+    print(f"focus groups -> {a.out}" + ("" if a.write else " (dry run: nothing retagged)"))
+    for gid, title, _, _ in groups:
+        n = collections.Counter(RANKS[k] for k, *_ in listed[gid])
+        print(f"{gid}: {title}: {len(listed[gid])} rows (" + ", ".join(f"{RANKS[i]} {n[RANKS[i]]}" for i in range(len(RANKS))) + ")")
+    print("not worked here: " + ", ".join(f"{k} {n}" for k, n in sorted(skipped.items())))
+    return 1 if failed else 0
+
+
 def cmd_cut_report(a):
     entries = {}
     for path in a.log:
@@ -972,6 +1072,15 @@ def main():
     cr.add_argument("--rubric", default=RUBRIC)
     cr.add_argument("--log", required=True, action="append", help="an apply log; repeat it for a re-run, the later run winning per row")
     cr.add_argument("ledger", nargs="+")
+    fo = sub.add_parser("focus")
+    fo.add_argument("--project", default="agent-runtime")
+    fo.add_argument("--board", help="a saved `notes board --json`, instead of calling notes")
+    fo.add_argument("--rubric", default=RUBRIC)
+    fo.add_argument("--notes", default="notes", help="the notes binary")
+    fo.add_argument("--out", required=True, help="where the focus-<group>.tsv lists go")
+    fo.add_argument("--write", action="store_true", help="retag the reds; without it, a dry run")
+    fo.add_argument("--log", required=True)
+    fo.add_argument("ledger", nargs="+")
     c = sub.add_parser("compare")
     c.add_argument("--id", default="id")
     c.add_argument("--verdict", default="verdict")
@@ -981,7 +1090,7 @@ def main():
     c.add_argument("theirs")
     a = p.parse_args()
     sys.exit({"export": cmd_export, "merge": cmd_merge, "report": cmd_report, "compare": cmd_compare,
-              "apply": cmd_apply, "cut-report": cmd_cut_report}[a.cmd](a) or 0)
+              "apply": cmd_apply, "cut-report": cmd_cut_report, "focus": cmd_focus}[a.cmd](a) or 0)
 
 
 if __name__ == "__main__":

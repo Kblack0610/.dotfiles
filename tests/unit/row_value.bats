@@ -547,3 +547,87 @@ EOF
   assert_failure 1
   assert_output --partial "the logs name rows no LEDGER holds: ar-99"
 }
+
+# focus: a saved board and a ledger; the stub notes logs each call.
+focus_fixture() {
+  mkdir -p "$HOME/bin"
+  printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$*" >>"$HOME/calls"' \
+    'case "$*" in *"tag --why runtime-fault ar-61"*) echo "refused: locked" >&2; exit 1 ;; esac' >"$HOME/bin/notes"
+  chmod +x "$HOME/bin/notes"
+  cat >"$HOME/board3.json" <<'EOF2'
+{"today":"2026-11-25","rows":[
+ {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-50","priority":"normal","text":"fix(dispatch): a live red #normal","tags":[],"details":[]},
+ {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-51","priority":"low","text":"check(watch): only names a red","tags":[],"details":[]},
+ {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-52","priority":"high","text":"fix(dispatch): lost item on a requeue","tags":[],"details":[]},
+ {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-53","priority":"normal","text":"fix(dispatch): wrong page text","tags":[],"details":[]},
+ {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-54","priority":"high","text":"fix(sessions): wind-down loses a note","tags":[],"details":[]},
+ {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-55","priority":"normal","text":"refactor(ci): one reader for the budget","tags":[],"details":[]},
+ {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-56","priority":"normal","text":"fix(dispatch): the human asked","tags":[],"details":[],"requested":true},
+ {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-57","priority":"normal","text":"feat(dispatch): a chained phase","tags":["after/ar-52"],"details":[]},
+ {"project":"agent-runtime","lane":"agent","state":"doing","id":"ar-58","priority":"high","text":"fix(dispatch): live item","tags":[],"details":[]},
+ {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-59","text":"chore(x): new since the ledger","tags":[],"details":[]},
+ {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-60","priority":"normal","text":"fix(views): a tile shows a stale count","tags":[],"details":[]},
+ {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-61","priority":"low","text":"fix(telemetry): a watch pages twice","tags":[],"details":[]}
+]}
+EOF2
+  # id state epic plan after children source bucket system project target ref kind verdict into evidence why text tie
+  fled() { printf '%s\topen\t%s\t-\t-\t0\t-\t%s\t%s\tagent-runtime\tnone\t-\t%s\tkeep\t-\t-\t-\t%s\t-\n' "$@"; }
+  {
+    printf 'id\tstate\tepic\tplan\tafter\tchildren\tsource\tbucket\tsystem\tproject\ttarget\tref\tkind\tverdict\tinto\tevidence\twhy\ttext\ttie\n'
+    fled ar-50 ar-1 red dispatch work "fix(dispatch): a live red #normal"
+    fled ar-51 ar-1 red telemetry check "check(watch): only names a red"
+    fled ar-52 ar-2 fault dispatch work "fix(dispatch): lost item on a requeue"
+    fled ar-53 ar-2 fault dispatch work "fix(dispatch): wrong page text"
+    fled ar-54 ar-3 fault sessions work "fix(sessions): wind-down loses a note"
+    fled ar-55 ar-4 sot ci work "refactor(ci): one reader for the budget"
+    fled ar-56 ar-2 requested dispatch work "fix(dispatch): the human asked"
+    fled ar-57 ar-2 chain dispatch work "feat(dispatch): a chained phase"
+    fled ar-58 ar-2 fault dispatch work "fix(dispatch): live item"
+    fled ar-60 ar-5 fault views work "fix(views): a tile shows a stale count"
+    fled ar-61 ar-1 red telemetry work "fix(telemetry): a watch pages twice"
+  } >"$HOME/fled.tsv"
+  FOCUS=(focus --board "$HOME/board3.json" --notes "$HOME/bin/notes" --out "$HOME/focus" --log "$HOME/focus.log")
+}
+
+@test "focus: each kept row goes to its group in rank order; chain, doing and unjudged rows are counted, not listed" {
+  focus_fixture
+  run "$RV" "${FOCUS[@]}" "$HOME/fled.tsv"
+  assert_success
+  assert_output --partial "focus groups -> $HOME/focus (dry run: nothing retagged)"
+  assert_output --partial "sot: source-of-truth copy removal: 1 rows (red 0, requested 0, blocks landing or dispatch 0, fault 0, sot 1)"
+  assert_output --partial "dispatch: dispatch and landing: 4 rows (red 1, requested 1, blocks landing or dispatch 1, fault 1, sot 0)"
+  assert_output --partial "telemetry: telemetry and alerts: 2 rows (red 2, requested 0, blocks landing or dispatch 0, fault 0, sot 0)"
+  assert_output --partial "rest: views, skills and the rest: 1 rows"
+  assert_output --partial "not worked here: chain 1, doing 1, unjudged 1"
+  run cut -f1-4 "$HOME/focus/focus-dispatch.tsv"
+  assert_output "$(printf 'rank\tid\tbucket\tpriority\nred\tar-50\tred\tnormal\nrequested\tar-56\trequested\tnormal\nblocks landing or dispatch\tar-52\tfault\thigh\nfault\tar-53\tfault\tnormal')"
+  # A session fault is high but blocks neither landing nor dispatch.
+  run cut -f1,2 "$HOME/focus/focus-sessions.tsv"
+  assert_output "$(printf 'rank\tid\nfault\tar-54')"
+  # Dry run: the log plans the two tags, and notes is never called.
+  run awk -F'\t' '$5 == "tag" { print $1, $6 }' "$HOME/focus.log"
+  assert_output "$(printf 'ar-50 planned\nar-61 planned')"
+  [ ! -e "$HOME/calls" ]
+}
+
+@test "focus --write: retags only a live work red below high, and exits 1 on a refused tag" {
+  focus_fixture
+  run "$RV" "${FOCUS[@]}" --write "$HOME/fled.tsv"
+  assert_failure 1
+  run cat "$HOME/calls"
+  assert_output "$(printf '%s\n' 'ptask agent-runtime --agent tag --why runtime-fault ar-50' 'ptask agent-runtime --agent tag --why runtime-fault ar-61')"
+  run awk -F'\t' '$5 == "tag" { print $1, $6 }' "$HOME/focus.log"
+  assert_output "$(printf 'ar-50 ok\nar-61 failed 1: refused: locked')"
+  # The check row (ar-51) ranks first in its group but its priority is left alone.
+  run cut -f1,2 "$HOME/focus/focus-telemetry.tsv"
+  assert_output "$(printf 'rank\tid\nred\tar-51\nred\tar-61')"
+}
+
+@test "focus: a system with no group in the rubric fails" {
+  focus_fixture
+  cp "$REPO_ROOT/.config/row-value/rubric.md" "$HOME/rubric.md"
+  sed -i '/^- `rest`:/d' "$HOME/rubric.md"
+  run "$RV" "${FOCUS[@]}" --rubric "$HOME/rubric.md" "$HOME/fled.tsv"
+  assert_failure 1
+  assert_output --partial "ar-60: system views is in no Focus group"
+}
