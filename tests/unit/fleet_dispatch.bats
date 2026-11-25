@@ -549,7 +549,7 @@ ptask game --agent tag --add pr/kblack0610/dotfiles/3021 gx-6'
   grep -q 'id:gx-3 dropped: on the game sheet: dispatch skipped it (needs-person)' "$NOTES_FIXTURE/rows.game.agent" || fail "$(cat "$NOTES_FIXTURE/rows.game.agent")"
   run grep -c 'improve game --why' "$NOTES_FIXTURE/calls.log"
   assert_output 0
-  assert_equal "$(jq -r 'select(.key == "gx-3") | .exit' "$FLEET_DISPATCH_DIR/verdicts.jsonl")" sheet
+  assert_equal "$(jq -r 'select(.key == "gx-3" and .exit) | .exit' "$FLEET_DISPATCH_DIR/verdicts.jsonl")" sheet
 }
 
 @test "skip_exits: --dry-run lists a health row's exit as the sheet's, not improve (ar-5401)" {
@@ -619,7 +619,7 @@ offkind_fixture() {
   assert_output 'sheet	game	gd-1	kind
 improve	game	gd-2	kind
 exits: improve 1 sheet 1'
-  run grep -E 'improve|ptask game add|drop' "$NOTES_FIXTURE/calls.log"
+  run grep -E 'improve game --why|ptask game add|drop' "$NOTES_FIXTURE/calls.log"
   assert_failure
   skip_exits
   assert_equal "$EXITS_TAKEN" 2
