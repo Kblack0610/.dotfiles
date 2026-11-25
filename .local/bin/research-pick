@@ -207,7 +207,7 @@ cmd_run() {
     0) say "coverage: $name uncovered, a roster row is already open"; return 0 ;;
     2) say "coverage: $name uncovered, the board could not be read, nothing filed"; return 0 ;;
   esac
-  add agent-runtime "research(roster): add a facet for $name ($path) to research-facets.json, or list it under exclude #research #size/s #low"
+  add agent-runtime "research(roster): add a facet for $name ($path) to research-facets.json, or list it under exclude #research #size/s"
   rc=$?
   case $rc in
     0) if [ "$DRY" = 1 ]; then say "coverage: would file a roster row for $name"; else say "coverage: filed a roster row for $name"; fi ;;
