@@ -1538,8 +1538,8 @@ fn ptask_close(
     }
 }
 
-/// `ptask tag`: its `--add` tags plus `--why`'s reason and priority, then the retag.
 #[allow(clippy::too_many_arguments)]
+/// `ptask tag`: its `--add` tags plus `--why`'s reason and priority, then the retag.
 fn ptask_tag(
     prof: &config::Profile,
     log: &logging::Logger,
