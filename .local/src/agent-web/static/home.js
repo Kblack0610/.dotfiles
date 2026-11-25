@@ -328,9 +328,10 @@ function drawHome() {
   // across and compact (app.css), and folds Vitals to its head line, its rows a tap away.
   const grid = hst.cards ? cardsHtml(hst.cards) : `<div class="empty">${esc(hst.cardsErr || "Reading the tabs.")}</div>`;
   const vfold = v ? pfold("home-vitals", `<span class="${v.all_ok ? "muted" : "warn"}">Vitals: ${esc(v.head)}</span>`, vitals) : "";
-  // A red Since last night leads the sections, under the cards (dashboards rule 4).
+  // A red Since last night leads the sections after Needs you (dashboards rule 4), whose head stays
+  // in the first phone screen under the cards (the Needs-you pattern, tests/agent-web/phone/render.mjs).
   const night = nightSection(), red = !!hst.night && hst.night.rows.some((r) => r.level === "bad");
-  paint(el, errs + grid + (red ? night : "") + vfold + needs + parkedSection() + (red ? "" : night) + propSection(h), askst.open);
+  paint(el, errs + grid + vfold + needs + (red ? night : "") + parkedSection() + (red ? "" : night) + propSection(h), askst.open);
   packCards(el);
 }
 // Session events re-render this often; keep a reply that is being typed, and a table's search
