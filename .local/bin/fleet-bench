@@ -4088,15 +4088,19 @@ cmd_skills() {
 # its budget (metered at the gateway), and a Codex or agy source's are the sum of its priced sessions' outcome
 # cost_usd: the harnesses.json price table, applied once by agentctl-session-outcomes, which
 # `agent-usage budget` sums too (burn's other_harness). Each part that cannot be read is null.
+# points_days is how much of the window the source's used percent covers (its 15-minute steps with a
+# sample): a source added mid-window, or a gap in the series, sums fewer days than the landed count
+# covers, so points_short marks one under 95% of the window rather than let it read as cheap (ar-3825).
 source_attr() {
-  local t="$1" days="$BENCH_QUEUE_DAYS" since rows pts usd hs
+  local t="$1" days="$BENCH_QUEUE_DAYS" since rows pts cov usd hs
   [ -z "${SOURCE_ATTR_JSON:-}" ] || { printf '%s\n' "$SOURCE_ATTR_JSON"; return 0; }   # the scorecard reads it once
   since=$(( t - days * 86400 ))
   rows=$($BENCH_SOURCES_CMD 2>/dev/null | jq -ce 'arrays' 2>/dev/null) || rows=null
   pts=$(vm_map account "sum by (account) (sum_over_time((clamp_min(max by (account) (claude_account_week_used_percent) - max by (account) (claude_account_week_used_percent offset 15m), 0))[${days}d:15m]))" "$t" 2>/dev/null) || pts=null
+  cov=$(vm_map account "count_over_time((max by (account) (claude_account_week_used_percent))[${days}d:15m])" "$t" 2>/dev/null) || cov=null
   usd=$(vm_map user_email "sum by (user_email) (increase(claude_code_cost_usage_USD_total[${days}d]))" "$t" 2>/dev/null) || usd=null
   hs=$(jq -ce '.harnesses // {} | map_values(.source)' "$BENCH_HARNESSES" 2>/dev/null) || hs='{}'
-  jq -cn --argjson rows "${rows:-null}" --argjson pts "${pts:-null}" --argjson usd "${usd:-null}" --argjson hs "$hs" \
+  jq -cn --argjson rows "${rows:-null}" --argjson pts "${pts:-null}" --argjson cov "${cov:-null}" --argjson usd "${usd:-null}" --argjson hs "$hs" \
      --argjson since "$since" --argjson t "$t" --argjson days "$days" \
      --slurpfile o <(outcomes_newest) \
      --slurpfile items <(bench_read $BENCH_DONE_ITEMS_CMD --since "$(date -d "@$since" +%F)" 2>/dev/null) "$JQ_LIB"'
@@ -4130,7 +4134,9 @@ source_attr() {
             elif .kind == "codex" or .kind == "agy" then $priced[$n]
             else null end) as $d
          | ([$landed[] | select(. == $n or $parent[. // ""] == $n)] | length) as $l
+         | (if $cov == null or $p == null then null else ($cov[$n] // 0) * 900 / 86400 end) as $pd
          | {name: $n, kind, parent, used: .week_used, points: $p,
+            points_days: ($pd | if . == null then . else (. * 10 | round) / 10 end), points_short: ($pd != null and $pd < $days * 0.95),
             usd: ($d | if . == null then . else round2 end),
             usd_src: (if .usd_max != null then "gateway" elif .kind == "claude" or .kind == "codex" or .kind == "agy" then "list" else null end),
             landed: $l,
@@ -4162,6 +4168,8 @@ sources_table() {
     "| Source | Kind | Used now | Points | Dollars | Landed | $ per point | PRs per point | Points per PR | Parent |",
     "|---|---|---|---|---|---|---|---|---|---|",
     (.sources[] | "| \(.name) | \(.kind) | \(.used | if . == null then "-" else "\(. | floor)%" end) | \(.points | d) | \(if .usd == null then "-" else "$\(.usd) \(.usd_src)" end) | \(.landed) | \(if .usd_per_point == null then "-" else "$\(.usd_per_point)" end) | \(.prs_per_point | d) | \(.points_per_pr | d) | \(.parent // "-") |"),
+    (.days as $w | [.sources[] | select(.points_short) | "\(.name) \(.points_days) of \($w) days"] as $s
+     | if $s == [] then empty else "", "- points cover less than the window, so they read low: " + ($s | join(", ")) end),
     (if .unattributed > 0 then "", "- landed on no source: \(.unattributed) (" + ([(.unattributed_why // {}) | to_entries[]
         | "\(.value) " + ({no_session: "name no session", no_outcome: "whose sessions have no outcome row yet (a hand session'"'"'s lands when it ends)",
                            no_account: "whose sessions'"'"' outcome rows name no account",

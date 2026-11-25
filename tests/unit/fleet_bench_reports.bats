@@ -1578,6 +1578,24 @@ SH
   assert_failure 2
 }
 
+@test "sources: a points series that covers less than the window is marked short, so its points read low; a whole one is not" {
+  export POINTS_STEPS_MAIN=336   # half the window: main's series began 3.5 days ago
+  sources_fixture
+  : > "$ITEMS"
+  run "$SUBJECT" sources --json
+  assert_success
+  assert_equal "$(jq -c '[.sources[] | select(.points != null) | [.name, .points_days, .points_short]]' <<<"$output")" \
+    '[["main",3.5,true],["bnb",7,false],["lazer",7,false],["reserve",7,false]]'
+  run "$SUBJECT" sources
+  assert_success
+  assert_line '- points cover less than the window, so they read low: main 3.5 of 7 days'
+  # negative control: the whole window marks nothing
+  unset POINTS_STEPS_MAIN
+  run "$SUBJECT" sources
+  assert_success
+  refute_output --partial 'points cover less'
+}
+
 @test "sources: an agy source lands its harness's PRs and prices only its priced sessions, unknown until one is (never \$0)" {
   sources_fixture
   sed -i 's/^ {"name":"reserve"/ {"name":"agy","kind":"agy","dir":"gemini","email":"","week_used":7,"usd_max":null,"parent":null},\n&/' "$SANDBOX/bin/status-stub"

@@ -411,7 +411,9 @@ STUB
   out_row game '{session_id: "s5", harness: "codex", updated_epoch: ($t - 3600), tokens_total: 50, cost_usd: null}'
   out_row game '{session_id: "s6", updated_epoch: ($t - 3600), tokens_total: 10}'
   stub_prom 'exit 7'   # every other Prometheus read stays dead, as before
+  # every points series covers the whole 7-day window (672 15-minute steps) unless a test says otherwise
   stub_vm 'case "$*" in
+  *count_over_time*week_used_percent*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"account\":\"main\"},\"value\":[1,\"${POINTS_STEPS_MAIN:-672}\"]},{\"metric\":{\"account\":\"bnb\"},\"value\":[1,\"672\"]},{\"metric\":{\"account\":\"reserve\"},\"value\":[1,\"672\"]},{\"metric\":{\"account\":\"lazer\"},\"value\":[1,\"672\"]}]}}" ;;
   *week_used_percent*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"account\":\"main\"},\"value\":[1,\"10\"]},{\"metric\":{\"account\":\"bnb\"},\"value\":[1,\"4\"]},{\"metric\":{\"account\":\"reserve\"},\"value\":[1,\"5\"]},{\"metric\":{\"account\":\"lazer\"},\"value\":[1,\"2\"]}]}}" ;;
   *cost_usage*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"user_email\":\"m@x\"},\"value\":[1,\"50\"]},{\"metric\":{\"user_email\":\"b@x\"},\"value\":[1,\"30\"]}]}}" ;;
   *) exit 7 ;;
