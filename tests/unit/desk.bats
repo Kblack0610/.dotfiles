@@ -489,8 +489,16 @@ sys.exit(1 if bad else 0)
   assert_success
   run "$DESK" notify show n --app-name="Needs you" title
   assert_success
+  run "$DESK" notify show h -aHealth title
+  assert_success
   assert_equal "$(cat "$FX/run/desk/notify-a.id")" "41 (':1.7',) Agents"
   assert_equal "$(cat "$FX/run/desk/notify-n.id")" "41 (':1.7',) Needs you"
+  assert_equal "$(cat "$FX/run/desk/notify-h.id")" "41 (':1.7',) Health"
+  # A bus that does not answer leaves no owner, and then no app to misread as one.
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gdbus"
+  run "$DESK" notify show a -a Agents title
+  assert_success
+  assert_equal "$(cat "$FX/run/desk/notify-a.id")" "41 "
 }
 
 # bell_fixture COUNT: swaync's stream says COUNT wait; the kept pages are three Agents and two
@@ -523,13 +531,13 @@ EOF
   # The two streams interleave in any order, and the last line is the state after both.
   last="$(tail -n 1 <<<"$output")"
   assert_equal "$(jq -r .text <<<"$last")" " 2 agents, 2 health"
-  assert_equal "$(jq -r .tooltip <<<"$last")" $'8 Notifications\nAgents 2\nHealth 2'
+  assert_equal "$(jq -r .tooltip <<<"$last")" $'8 Notifications\nAgents 2, Health 2'
   assert_equal "$(jq -r .alt <<<"$last")" notification
   [ ! -e "$FX/run/desk/notify-a2.id" ]
   [ -e "$FX/run/desk/notify-h1.id" ]
 }
 
-@test "notify bell names no group while swaync says nothing waits, and is swaync's only (ar-3668)" {
+@test "notify bell names no group while swaync says nothing waits, forgets every kept id, and is swaync's only (ar-3668)" {
   bell_fixture 0
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/dbus-monitor"
   chmod +x "$SANDBOX/bin/dbus-monitor"
@@ -537,9 +545,21 @@ EOF
   assert_success
   assert_equal "$(jq -r .text <<<"$output")" ""
   assert_equal "$(jq -r .tooltip <<<"$output")" "0 Notifications"
+  run ls "$FX/run/desk"
+  assert_output ""
   echo "notify=dunst" > "$STATE"
   run "$DESK" notify bell
   assert_failure 2
+}
+
+@test "notify bell ends with swaync's stream though dbus-monitor still runs, so the bar restarts it (ar-3668)" {
+  bell_fixture 2
+  # dbus-monitor that never prints and never exits: only the bell's kill ends it.
+  printf '#!/usr/bin/env bash\nmkfifo "$FX/never" && read -r _ < "$FX/never"\n' > "$SANDBOX/bin/dbus-monitor"
+  chmod +x "$SANDBOX/bin/dbus-monitor"
+  run timeout 20 "$DESK" notify bell
+  assert_success
+  assert_equal "$(jq -r .text <<<"$output")" " 2 agents, 2 health"
 }
 
 @test "notify show passes on the clicked action of a --wait popup, and a / in a tag stays out of the path" {

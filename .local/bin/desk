@@ -159,18 +159,19 @@ notify_owner() {
 # kept before the wait, so a drop meanwhile closes the popup and ends the wait.
 notify_show() {
     [[ -n "${1:-}" ]] || die "usage: desk notify show <tag> <notify-send args>" 2
-    local tag="$1" f id a prev="" app=""
+    local tag="$1" f id a prev="" app="" owner
     shift
     for a in "$@"; do
         case "$prev" in -a | --app-name) app="$a" ;; esac
-        case "$a" in --app-name=*) app="${a#*=}" ;; esac
+        case "$a" in --app-name=*) app="${a#*=}" ;; -a?*) app="${a#-a}" ;; esac
         prev="$a"
     done
     f="$(notify_file "$tag")" || exit 1
     rm -f "$f"
     {
         read -r id || return 1
-        printf '%s %s%s\n' "$id" "$(notify_owner)" "${app:+ $app}" > "$f"
+        owner="$(notify_owner)"  # empty when the bus did not answer: then no app, or it reads as the owner
+        printf '%s %s%s\n' "$id" "$owner" "${owner:+${app:+ $app}}" > "$f"
         cat
     } < <(notify-send -p -h "string:x-canonical-private-synchronous:$tag" "$@")
 }
@@ -191,19 +192,25 @@ notify_drop() {
 # (agent-notify names its pages Agents, Health or Needs you, the panel's groups). swaync hands
 # out no list over D-Bus, only a count, so the bell forgets a kept id when the notifier signals
 # NotificationClosed for it: the panel's dismiss and clear-all send it, a popup that times out
-# into the panel does not. An id from an earlier notifier process is not counted, and nothing
-# is while swaync's count is 0. Each bar runs its own; forgetting an id twice is harmless.
+# into the panel does not. A count of 0 forgets every kept id, which also clears one closed
+# while no bar ran, and an id from an earlier notifier process is never counted. Each bar runs
+# its own; forgetting an id twice is harmless. The bell ends when swaync's stream does, so the
+# bar starts it again (a swaync restart, or a bar that came up first).
 notify_bell() {
     {
-        swaync-client -swb | sed -u 's/^/S /' &
-        dbus-monitor --session "type='signal',interface='org.freedesktop.Notifications',member='NotificationClosed'" 2>/dev/null |
-            sed -u 's/^/D /' &
-        wait
+        local mon
+        dbus-monitor --session "type='signal',interface='org.freedesktop.Notifications',member='NotificationClosed'" \
+            2>/dev/null > >(sed -u 's/^/D /') &
+        mon=$!
+        swaync-client -swb | sed -u 's/^/S /' || true
+        kill "$mon" 2>/dev/null || true
     } | {
         local kind line last="" sender=""
         while read -r kind line; do
             case "$kind $line" in
-                "S "*) last="$line" ;;
+                "S "*)
+                    last="$line"
+                    [[ "$(jq -r '.text // "0"' <<<"$line")" != 0 ]] || rm -f "$(notify_dir)"/notify-*.id ;;
                 # dbus-monitor prints the signal's header, then its id and reason, one per line
                 "D signal "*) [[ "$line" =~ sender=([^ ]+) ]] && sender="${BASH_REMATCH[1]}"; continue ;;
                 "D uint32 "*)
@@ -239,7 +246,7 @@ notify_bell_line() {  # SWAYNC_JSON: that line with the group text and a tooltip
             | sort_by(-.n, .app)) as $gs
         | if ($gs | length) == 0 then .text = ""
           else .text = " " + ($gs | map("\(.n) \(.app | ascii_downcase)") | join(", "))
-             | .tooltip = ([.tooltip] + ($gs | map("\(.app) \(.n)")) | join("\n"))
+             | .tooltip = ((.tooltip // "") + "\n" + ($gs | map("\(.app) \(.n)") | join(", ")))
           end' <<<"$1"
 }
 
