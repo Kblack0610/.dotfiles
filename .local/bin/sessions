@@ -628,7 +628,9 @@ prompt_rows() {
 
 cmd_prompts() {
   # $1 = id or prefix. A terminal gets a window over the prompts; a pipe gets the plain list.
-  # In the window, enter jumps to that prompt in the session's live pane (`_jump`), ctrl-r
+  # In the window, typing matches like the session list: each word a case-insensitive
+  # substring, words ANDed (fzf's default fuzzy match lit scattered letters and kept nearly
+  # every prompt). Enter jumps to that prompt in the session's live pane (`_jump`), ctrl-r
   # reads the whole session in less from that prompt, and esc goes back. To carry on from
   # an old prompt, resume the session and pick it with Esc Esc.
   local id t rows
@@ -643,7 +645,7 @@ cmd_prompts() {
     return 0
   fi
   printf '%s\n' "$rows" | fzf \
-      --delimiter="$TAB" --with-nth=2 --wrap --no-sort --tac \
+      --delimiter="$TAB" --with-nth=2 --wrap --no-sort --tac --exact --ignore-case \
       --bind="enter:execute('$SELF' _jump $id {1} {3})" \
       --bind="ctrl-r:execute('$SELF' _read $id {1})" \
       --prompt="prompt> " \
@@ -855,9 +857,10 @@ so it is scriptable. Typing searches each session's whole card - every AI title
 it has carried, its first and last prompt, the files it touched, project and
 branch - which is why "email" finds the session that now goes by "aerc-nested-
 folders-config". In the window: the bottom pane is `sessions show` for the row
-under the cursor, enter resumes, ctrl-t lists that session's prompts (enter on
-one jumps to it in the session's live pane, in copy mode; ctrl-r reads the
-session from there in less, which is what enter does for a session not open),
+under the cursor, enter resumes, ctrl-t lists that session's prompts (typing
+narrows them the same way, each word a substring; enter on one jumps to it in
+the session's live pane, in copy mode; ctrl-r reads the session from there in
+less, which is what enter does for a session not open),
 ctrl-g escalates the query to a full-text sweep. To carry on from an old
 prompt: resume, then Esc Esc to it.
 
