@@ -1467,7 +1467,7 @@ item_json() {
 # Queue order: a `red` item first (something is broken), then an urgent one, then a `sprint` one (its row
 # is held by an open sprint, fleet-dispatch promote), then priority; inside each of those buckets the
 # class mix (MIX_JQ) when AQ_CLASSES is on; then queued time. No project rank: the order comes from the
-# item and its row, and the fleet's share of starts is fleet-dispatch's DISPATCH_FLEET_PROJECTS cap.
+# item and its row, and a project's share of starts is fleet-dispatch's DISPATCH_PROJECT_SHARE cap.
 # The one queue order: every reader (next, list, fleet-dispatch next_items) takes it as is, so a lower
 # tier starts only when no item of a higher one can: a pass takes the first it can place.
 # `after` and other tags hold, not reorder. Cleanup gets its turns from the mix's cleanup share.
