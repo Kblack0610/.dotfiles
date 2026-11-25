@@ -971,6 +971,29 @@ gate_runs_of() {
   assert_output '[[7,1]]'
 }
 
+@test "review: the window starts at the last good review, so a failed night's PRs are counted by the next, at most 7 days back" {
+  stub_review
+  merged_pr s1 7 35 -172800
+  # no good review on record: the 24h window leaves the PR merged two days ago out
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_success
+  [ ! -s "$FLEET_BENCH_DIR/pr-ci.jsonl" ]
+  # the last good review ran three days ago: the PR is in
+  echo $((T0 - 259200)) > "$FLEET_BENCH_DIR/review.ok"
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_success
+  run jq -sc 'map(.number)' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  assert_output '[7]'
+  assert_equal "$(cat "$FLEET_BENCH_DIR/review.ok")" "$T0"
+  # negative control: a stamp 30 days old reaches back only 7, so a PR merged 8 days ago stays out
+  merged_pr s2 8 35 -691200
+  echo $((T0 - 2592000)) > "$FLEET_BENCH_DIR/review.ok"
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_success
+  run jq -sc 'map(.number)' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  assert_output '[7]'
+}
+
 @test "review: a repo with sections gets each PR's sections and gate runs, a path in no root is other" {
   stub_review
   sections_map

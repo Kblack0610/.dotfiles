@@ -1774,7 +1774,7 @@ forgejo_ready() {
 }
 
 cmd_review() {
-  local t since cfg new repo num sid row rc n=0 red=0 failed=0 unsynced=0 later=0 msg days='' off=' '
+  local t since ok cfg new repo num sid row rc n=0 red=0 failed=0 unsynced=0 later=0 msg days='' off=' '
   case "${1:-}" in
     '') ;;
     --days) days=${2:-}; [[ "$days" =~ ^[1-9][0-9]*$ ]] || { say "usage: fleet-bench review [--days N]"; return 2; } ;;
@@ -1782,7 +1782,13 @@ cmd_review() {
   esac
   mkdir -p "$DIR"
   t=$(now)
-  since=$(( t - BENCH_WINDOW_H * 3600 )); [ -z "$days" ] || since=$(( t - days * 86400 ))
+  # The window starts at the last good review (review.ok), so a failed or missed night is counted by
+  # the next one; at most 7 days back, and never less than BENCH_WINDOW_H. merged_new skips a PR
+  # already counted, so the overlap costs no call per PR.
+  since=$(( t - BENCH_WINDOW_H * 3600 ))
+  ok=$(cat "$DIR/review.ok" 2>/dev/null) || ok=''
+  [[ ! "$ok" =~ ^[0-9]+$ ]] || [ "$ok" -ge "$since" ] || since=$(( ok > t - 7 * 86400 ? ok : t - 7 * 86400 ))
+  [ -z "$days" ] || since=$(( t - days * 86400 ))
   cfg=$(section_cfg) || { report_outcome FAILED "project map unreadable"; return 1; }
   new=$(merged_new "$since" "$cfg") || { report_outcome FAILED "merged PRs unreadable"; return 1; }
   # a recount leaves two lines for a PR until this runs, so it runs however the loop ends
@@ -1812,6 +1818,7 @@ cmd_review() {
     report_outcome FAILED "cannot count $failed PRs (gh, Forgejo or the run ledger), $n counted"
     return 1
   fi
+  echo "$t" > "$DIR/review.ok"
   if [ "$n" -eq 0 ]; then
     report_outcome NOOP "nothing new merged in the window"
     return 0
