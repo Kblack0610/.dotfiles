@@ -26,7 +26,7 @@ use crate::builds::{timed_as, Builds, Paths, Run};
 use crate::junit::{self, Loaded, PickRun};
 use crate::links::{Kind, Link};
 use crate::run_detail::{took_text, ts, Job, Record, RunDetail};
-use crate::session_actions::Runner;
+use crate::session_actions::{argv, Runner};
 
 /// A live job read is reused this long, so a page that repaints on every ledger line asks GitHub
 /// once. Once the run is done and every job has ended, the read is kept for good. There is no
@@ -192,10 +192,6 @@ pub struct Page {
     pub stages: Stages,
     pub artifacts: Artifacts,
     pub chain: Chain,
-}
-
-fn argv(a: &[&str]) -> Vec<String> {
-    a.iter().map(|s| s.to_string()).collect()
 }
 
 fn short(s: &str) -> &str {
@@ -723,7 +719,8 @@ fn pick(reg: &Registry, r: &Run) -> PickRun {
     }
 }
 
-fn applied(b: &Builds, repo: &str, l: &Loaded) -> Loaded {
+/// The run's results with the failures `repo`'s quarantine holds marked quarantined.
+pub fn applied(b: &Builds, repo: &str, l: &Loaded) -> Loaded {
     let lane = b
         .quarantine
         .iter()

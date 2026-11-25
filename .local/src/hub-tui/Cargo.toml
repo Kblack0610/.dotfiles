@@ -9,6 +9,7 @@ name = "hub"
 path = "src/main.rs"
 
 [dependencies]
+agent-core = { path = "../agent-core" }
 hub-core = { path = "../hub-core" }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 notify = { version = "8", default-features = false }
