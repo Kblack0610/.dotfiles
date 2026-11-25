@@ -142,7 +142,12 @@ def rows_at(epoch):
         rows = [json.loads(line) for line in weighed.stdout.splitlines()]
     except ValueError as e:
         raise OSError("notes board --weigh: not JSON lines") from e
-    return {r["id"]: r for r in rows}
+    # One id on a sheet and a version note at once (mid-roll): the closed record wins, whatever the grep order.
+    by_id = {}
+    for r in rows:
+        if by_id.get(r["id"], {}).get("state", "open") == "open":
+            by_id[r["id"]] = r
+    return by_id
 
 
 def flow_of(opened, left, now):
@@ -752,7 +757,11 @@ def line_of(week):
     parts = [f"{cell('merged')['value'] or 0:g} merged{signed(cell('merged')['delta'], plain)}"]
     if cell("queue.done")["value"] is not None:
         parts.append(f"{cell('queue.done')['value']:g} queue items done{signed(cell('queue.done')['delta'], plain)}")
-    if cell("board.opened")["value"] is not None and cell("board.closed")["value"] is not None:
+    if cell("board.opened")["value"] is not None and cell("board.done")["value"] is not None:
+        v = lambda k: f"{cell(k)['value']:g}"
+        parts.append(f"board +{v('board.opened')} ({v('board.opened_pts')} pts), {v('board.done')} done ({v('board.done_pts')} pts),"
+                     f" {v('board.dropped')} dropped ({v('board.dropped_pts')} pts)")
+    elif cell("board.opened")["value"] is not None and cell("board.closed")["value"] is not None:
         parts.append(f"board +{cell('board.opened')['value']:g}/-{cell('board.closed')['value']:g}")
     if cell("cost_usd")["value"] is not None:
         parts.append(f"{usd(cell('cost_usd')['value'])}{signed(cell('cost_usd')['delta'], usd)}")

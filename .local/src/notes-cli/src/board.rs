@@ -650,7 +650,9 @@ pub struct Weighed {
 /// [`Weighed`]; None for a line that is not a row with an id. A version note's rows carry no
 /// checkbox and are all closed, so a row done and rolled off in one day still reads done.
 pub fn weigh(entry: &str) -> Option<Weighed> {
-    let at = entry.find("/agent/")?;
+    // The path ends at the first sheet or version-note suffix: a project dir named `agent`, or
+    // `/agent/` in the row text, must not move it.
+    let at = ["/agent/README.md:", "/agent/versions/"].iter().filter_map(|s| entry.find(s)).min()?;
     let rest = &entry[at + "/agent/".len()..];
     let (closed, line) = if let Some(line) = rest.strip_prefix("README.md:") {
         if !md::is_task(line) {
@@ -1748,6 +1750,11 @@ mod tests {
     fn weigh_reads_project_state_and_weight_from_a_git_grep_line() {
         let w = |l: &str| weigh(l).map(|w| (w.project, w.id, w.state, w.weight));
         let at = "abc123:personal/projects/current/agent-runtime/agent/README.md:";
+        // A project dir named `agent`, and `/agent/` in the row text, leave the path split alone.
+        assert_eq!(
+            w("abc123:lab/projects/current/agent/agent/README.md:- [ ] fix: see x/agent/y <!-- id:ag-1 -->"),
+            Some(("agent".into(), "ag-1".into(), "open", 1))
+        );
         assert_eq!(
             w(&format!("{at}- [ ] fix(x): y #pts/5 <!-- id:ar-1 -->")),
             Some(("agent-runtime".into(), "ar-1".into(), "open", 5))

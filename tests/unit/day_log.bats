@@ -1203,3 +1203,13 @@ who_items() {
   refute_line --partial 'no item) [game#1]'
   assert_line --partial '- No item carries it (09:00, no item) [game#5]'
 }
+
+@test "week: a week whose records split done from dropped says rows and points of each, never one closed figure" {
+  week_fixture
+  for f in "$DAYLOG_DIR"/2026-10-2[1-7].json; do
+    jq '.work.board += {done: 1, dropped: 0, opened_pts: 3, done_pts: 2, dropped_pts: 0}' "$f" > "$SANDBOX/r"; mv "$SANDBOX/r" "$f"
+  done
+  run "$SUBJECT" week --date 2026-10-27 --line
+  assert_output --partial 'board +14 (21 pts), 7 done (14 pts), 0 dropped (0 pts)'
+  refute_output --partial 'board +14/-7'
+}
