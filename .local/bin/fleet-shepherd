@@ -1231,31 +1231,54 @@ SHARED_CLASS_JQ="$SHARED_WORD_JQ"'
   select($c != "") | inputs | select((.priority // "") != "low" and .type == "fix")
   | select(.title // "" | test($c | word)) | .slug'
 # SHARED_CLASS_ROW_JQ: the board as input, $worked the rows live items work, $p the project, $c the
-# class; the open fix rows that name it and no live item works, as board:<project>:<id>.
+# class; the open agent-lane fix rows (the lane shared_fold edits) that name it and no live item
+# works, as board:<project>:<id>.
 SHARED_CLASS_ROW_JQ="$SHARED_WORD_JQ"'
-  .rows[]? | select(.project == $p and .type == "fix" and (.priority // "") != "low")
+  .rows[]? | select(.project == $p and .lane == "agent" and .type == "fix" and (.priority // "") != "low")
   | select((.project + ":" + .id) | IN($worked[]) | not)
   | select(.text // "" | test($c | word)) | "board:" + .project + ":" + .id'
-# shared_class <test>: the class a test method is in, parameters off; empty for a bare name.
+# shared_class <test>: the class a test method is in, parameters off; empty unless the name is
+# Namespace.Class.Method, so a class or namespace that failed whole is not read as one.
 shared_class() {
   local t="${1%%(*}"
-  [ "${t%.*}" != "$t" ] || return 0
+  [[ "$t" == *.*.* ]] || return 0
   t="${t%.*}"; echo "${t##*.}"
 }
 # shared_class_owners <class>: the live items that own a red in that class (SHARED_CLASS_JQ).
 shared_class_owners() {
   jq -rn --arg c "$1" "$SHARED_CLASS_JQ" <<<"$active" 2>/dev/null
 }
+# shared_sibling_owners <class> [<fact>]: the owners on record for the other live episodes of that
+# class, from $rows and $SHARED_ITEMS; a quarantine row owns only its own test.
+shared_sibling_owners() {
+  local f t o
+  [ -n "$1" ] || return 0
+  while IFS=$'\t' read -r f t _; do
+    [ -n "$f" ] && [ "$f" != "${2:-}" ] && [ "$(shared_class "$t")" = "$1" ] || continue
+    o="$(awk -F'\t' -v f="$f" '$1 == f { s = $2 } END { print s }' "$SHARED_ITEMS")"
+    case "$o" in '' | row:*) ;; *) printf '%s\t%s\n' "$o" "$t" ;; esac
+  done <<<"$rows"
+}
+# shared_class_owned <owner> <test> <fact>: whether that owner holds the test through its class, the
+# predicate shared_class_owner files by and the keep loop keeps by: a live item of the class
+# (SHARED_CLASS_JQ), or one that still owns a sibling episode outright.
+shared_class_owned() {
+  local c o t
+  c="$(shared_class "$2")"
+  [ -n "$c" ] || return 1
+  shared_class_owners "$c" | grep -qxF -- "$1" && return 0
+  while IFS=$'\t' read -r o t; do
+    [ "$o" = "$1" ] && shared_owners "$t" | grep -qxF -- "$1" && return 0
+  done < <(shared_sibling_owners "$c" "$3")
+  return 1
+}
 # shared_class_owner <class>: the one owner a red in that class goes to, or nothing, from $rows,
 # $SHARED_ITEMS, $active and $board (shared_board_read, which the caller runs).
 shared_class_owner() {
-  local c="$1" f t o
+  local c="$1" o
   [ -n "$c" ] || return 0
-  while IFS=$'\t' read -r f t _; do
-    [ -n "$f" ] && [ "$(shared_class "$t")" = "$c" ] || continue
-    o="$(awk -F'\t' -v f="$f" '$1 == f { s = $2 } END { print s }' "$SHARED_ITEMS")"
-    case "$o" in '' | row:*) ;; *) echo "$o"; return ;; esac
-  done <<<"$rows"
+  o="$(shared_sibling_owners "$c" | awk -F'\t' 'NR==1 { print $1 }')"
+  [ -z "$o" ] || { echo "$o"; return; }
   o="$(shared_class_owners "$c" | awk 'NR==1')"
   [ -z "$o" ] || { echo "$o"; return; }
   [ -n "$board" ] || return 0
@@ -1330,7 +1353,7 @@ shared_sample() {
   touch "$SHARED_ITEMS" 2>/dev/null || return 0
   active="$(agent-queue list --json --state active 2>/dev/null)" || return 0
   # One read of the board (every open row, every profile) a sample, only while a row owns a red.
-  ! grep -q $'\tboard:' "$SHARED_ITEMS" || board="$(notes board --json 2>/dev/null)" || board=""
+  ! grep -q $'\tboard:' "$SHARED_ITEMS" || { board="$(notes board --json 2>/dev/null)" && board_read=1; } || board=""
   quarantine="$(shared_quarantine)"
   rows="$(jq -r '(.shared // [])[] | select(.escalated | not) | [.fact, .test, .reason] | @tsv' "$STATE_FILE" 2>/dev/null)" || return 0
   # Keep the mappings of the document's live facts whose item still owns the test. A queue that
@@ -1342,7 +1365,7 @@ shared_sample() {
       case "$slug" in board:*) now="$(shared_board_owner "$slug")" ;; esac
       if [ -n "$now" ] && [ "$now" = "$slug" ] && [ "${slug#board:}" != "$slug" ]; then
         printf '%s\t%s\n' "$fact" "$slug"
-      elif [ -n "$now" ] && { shared_owners "$test"; shared_class_owners "$(shared_class "$test")"; } | grep -qxF -- "$now"; then
+      elif [ -n "$now" ] && { shared_owners "$test" | grep -qxF -- "$now" || shared_class_owned "$now" "$test" "$fact"; }; then
         [ "$now" = "$slug" ] || cmd_log "shared red: $test is owned by queue item $now, started from $(shared_owner_name "$slug")" >/dev/null
         printf '%s\t%s\n' "$fact" "$now"
       else

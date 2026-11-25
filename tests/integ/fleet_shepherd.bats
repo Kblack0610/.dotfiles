@@ -458,7 +458,7 @@ case "$1" in
   list) if [ -n "${STUB_ACTIVE:-}" ]; then printf "%s\n" "$STUB_ACTIVE"; else echo "{\"slug\":\"other\",\"task\":\"x\"}"; fi ;;
   add) t=""; while [ $# -gt 0 ]; do [ "$1" = --title ] && t="$2"; shift; done
        n=$(( $(grep -c "^add " "$HOME/aq.calls") + 70 ))
-       jq --arg id "ucp-$n" --arg t "$t" ".rows += [{project: \"unity-core-playground\", id: \$id, profile: \"bnb\", type: \"fix\", priority: \"high\", text: \$t}]" \
+       jq --arg id "ucp-$n" --arg t "$t" ".rows += [{project: \"unity-core-playground\", id: \$id, profile: \"bnb\", lane: \"agent\", type: \"fix\", priority: \"high\", text: \$t}]" \
          "$HOME/board.json" > "$HOME/board.tmp" && mv "$HOME/board.tmp" "$HOME/board.json"
        echo "held shared-red -> unity-core-playground:ucp-$n"; exit 5 ;;
 esac'
@@ -503,7 +503,7 @@ esac'
 @test "a live fix item or open fix row whose title names the test's class owns a shared red, and gets its evidence (ar-5285)" {
   # 2026-11-23: ShapeCityTiersPlayTests got a shared-red item (ucp-3180) beside its class's running fix item (ucp-3170)
   class_stubs
-  echo '{"rows":[{"project":"unity-core-playground","id":"ucp-5","profile":"bnb","type":"fix","priority":"high","text":"fix(tests): FooTests tier gate fails on main"}]}' > "$HOME/board.json"
+  echo '{"rows":[{"project":"unity-core-playground","id":"ucp-5","profile":"bnb","lane":"agent","type":"fix","priority":"high","text":"fix(tests): FooTests tier gate fails on main"}]}' > "$HOME/board.json"
   class_doc 'P.Tests.FooTests.Bar("x")'
   # class_round <active-json>: the red checked fresh against that queue
   class_round() { : > "$FLEET_SHEPHERD_DIR/.shared"; : > "$HOME/aq.calls"; : > "$HOME/notes.calls"; STUB_ACTIVE="$1" run checked; }
@@ -526,9 +526,10 @@ esac'
   assert_line --partial 'is owned by board row ucp-5 on unity-core-playground'
   run grep -c '^add ' "$HOME/aq.calls"
   assert_output 0
-  # negative controls: a low fix item, a fix item citing the class only in its brief, an item that is no fix,
-  # and one naming a longer class own nothing, so one owner is filed
-  echo '{"rows":[]}' > "$HOME/board.json"
+  # negative controls: a human-lane fix row (shared_fold edits the agent lane), a low fix item, a fix item
+  # citing the class only in its brief, an item that is no fix, and one naming a longer class own nothing,
+  # so one owner is filed
+  echo '{"rows":[{"project":"unity-core-playground","id":"ucp-6","profile":"bnb","lane":"human","type":"fix","priority":"high","text":"fix(tests): FooTests tier gate"}]}' > "$HOME/board.json"
   class_round "$(printf '%s\n' '{"slug":"low","type":"fix","state":"queued","priority":"low","title":"fix(tests): FooTests flake"}' \
     '{"slug":"brief","type":"fix","state":"queued","priority":"high","title":"fix(ci): PR 9 is red","task":"see FooTests"}' \
     '{"slug":"check","type":"check","state":"queued","priority":"high","title":"check(tests): FooTests runs slow"}' \
@@ -537,6 +538,31 @@ esac'
   run grep -c '^add ' "$HOME/aq.calls"
   assert_output 1
   refute grep -q '^retask' "$HOME/aq.calls"
+}
+
+@test "a red folded into the item that owns its sibling method outright stays there, appended once (ar-5285)" {
+  # the item names FooTests.Bar in its brief, not the class in its title: the keep loop must take the
+  # sibling route the fold took, or it drops Qux each sample and appends it again
+  class_stubs
+  echo '{"rows":[{"project":"unity-core-playground","id":"ucp-8","profile":"bnb","lane":"agent","type":"fix","priority":"high","text":"fix(gameplay): court flake"}]}' > "$HOME/board.json"
+  export STUB_ACTIVE='{"slug":"court","type":"fix","state":"running","priority":"high","title":"fix(gameplay): court flake","task":"red on FooTests.Bar","row":"unity-core-playground:ucp-8"}'
+  class_doc 'P.Tests.FooTests.Bar("x")' 'P.Tests.FooTests.Qux'
+  run checked
+  assert_line --partial 'nudge SHARED: P.Tests.FooTests.Bar("x") is owned by queue item court'
+  assert_line --partial 'nudge SHARED: P.Tests.FooTests.Qux is owned by queue item court'
+  run checked
+  run checked
+  assert_line --partial 'nudge SHARED: P.Tests.FooTests.Qux is owned by queue item court'
+  refute grep -q 'Qux is no longer owned' "$FLEET_SHEPHERD_DIR/log.md"
+  run grep -c ' edit ucp-8 ' "$HOME/notes.calls"
+  assert_output 1
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 0
+  # negative control: once the item stops naming Bar, it owns neither, and one owner is filed for the class
+  STUB_ACTIVE='{"slug":"court","type":"fix","state":"running","priority":"high","title":"fix(gameplay): court flake","task":"x","row":"unity-core-playground:ucp-8"}' run checked
+  grep -q 'Qux is no longer owned by queue item court' "$FLEET_SHEPHERD_DIR/log.md"
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 1
 }
 
 @test "an owner item that landed, or no longer names the test, is dropped and the episode gets a live owner (ar-2448)" {
