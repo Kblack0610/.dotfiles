@@ -15,7 +15,7 @@ use ratatui::text::{Line, Span};
 use crate::datatable::DataTable;
 use crate::fit::{cell, clip_line, Cell, Table};
 
-use crate::fmt::{clock, Palette};
+use crate::fmt::{clock, dash, Palette};
 use hub_core::display::fmt::dur_since;
 
 /// Home's one table with a view: Needs you.
@@ -88,13 +88,12 @@ fn needs(h: &Home, view: &DataTable, p: Palette, now: i64, w: usize) -> Vec<Line
                     _ if machine => ("~", p.dim()),
                     _ => ("", ratatui::style::Style::new()),
                 };
-                let or_dash = |s: String| if s.is_empty() { "-".to_string() } else { s };
                 vec![
                     n.rank.to_string().into(),
                     cell(format!("{mark}{}", n.need.label()), style),
-                    or_dash(n.project.clone()).into(),
+                    dash(&n.project).into(),
                     dur_since(n.since, now).into(),
-                    or_dash(n.holds()).into(),
+                    dash(n.holds()).into(),
                     if machine {
                         cell(n.text.clone(), p.dim())
                     } else {
