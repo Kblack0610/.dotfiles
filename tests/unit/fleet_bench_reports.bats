@@ -1020,6 +1020,34 @@ check_fixture() {
   assert_output 'room: board_days ?, the board feed is unreadable'
 }
 
+@test "upsert: two open rows on one key edit the first by its id and drop the twin as its dup, so the write never fails (ar-5690)" {
+  kpi_setup
+  printf 'board.md\t2\tcheck(watch): spend tripped since 2026-11-24, x\t- [/] check(watch): spend tripped since 2026-11-24, x <!-- id:ar-31 -->\nboard.md\t3\tcheck(watch): spend tripped since 2026-11-25, y\t- [ ] check(watch): spend tripped since 2026-11-25, y #low <!-- id:ar-32 -->\n' >> "$BOARD"
+  rows=$(printf '%s\t%s\t%s\n' 'check(watch): spend tripped since' 'check(watch): spend tripped since 2026-11-25, z' '#high')
+  up() { bash -c '. "$1"; board_upsert "$2" && upsert_report "$2"' _ "$SUBJECT" "$rows" 2>&1; }
+  run up
+  assert_success
+  refute_output --partial 'board write failed'
+  assert_output --partial '0 added, 1 refreshed'
+  run grep -c -- '--agent drop ar-32 --dup ar-31$' "$NLOG"
+  assert_output 1
+  run grep -c -- '--agent edit ar-31 --text check(watch): spend tripped since 2026-11-25, z #size/s$' "$NLOG"
+  assert_output 1
+  run grep -c 'spend tripped since' "$BOARD"
+  assert_output 1
+  run grep -c 'z #size/s <!-- id:ar-31 -->' "$BOARD"
+  assert_output 1
+  # Negative control: one row on the key drops nothing, and its edit still names it by id.
+  : > "$NLOG"
+  rows=$(printf '%s\t%s\t%s\n' 'check(watch): spend tripped since' 'check(watch): spend tripped since 2026-11-25, w' '#high')
+  run up
+  assert_success
+  run grep -c -- '--agent drop' "$NLOG"
+  assert_output 0
+  run grep -c -- '--agent edit ar-31 --text ' "$NLOG"
+  assert_output 1
+}
+
 @test "retro check: a flat claim ends, so improve names its KPI again with last naming it" {
   kpi_setup; kpi_fixture
   claim ar-2 interrupts_per_day 0.286 max 0.2 20
@@ -1084,7 +1112,7 @@ check_fixture() {
   assert_output 1
   run grep 'guard ' "$BOARD"
   assert_output --partial 'recurred in 3 sessions'
-  run grep -c ' edit check(lesson): guard ' "$NLOG"
+  run grep -Ec ' edit ar-9[0-9]+ --text check\(lesson\): guard ' "$NLOG"
   assert_output 1
   refute grep -q ' add ' "$NLOG"
 }

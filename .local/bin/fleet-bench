@@ -4946,7 +4946,9 @@ upsert_why() {
 # row per key, matched as a lowercase title prefix (each key's shape is in lib/board-keys.sh, so
 # the backlog triager leaves the row's prefix alone): a row whose text moved is edited in place, one
 # that matches writes nothing, and an add that exits 3 found its twin already open (a near-dup), so
-# it counts as filed. A key with no open row but one closed in the board feed's window
+# it counts as filed. Every write names the row by its id, since `notes ptask edit` refuses a query
+# that matches two open rows; a row with no id marker (written by hand) is named by its prefix. Twins
+# a race left open on one key (ar-5690) are dropped as dups of the first. A key with no open row but one closed in the board feed's window
 # (upsert_closed) has that row reopened and its text refreshed, never a new row: a cause that is red
 # again is the same work (alertmanager-fleet was filed 27 times in 7 days, 2026-11-18). A row whose
 # condition cleared is triage_retire's. Every row is #size/s. A reopen that fails is said and the key
@@ -4956,17 +4958,35 @@ upsert_why() {
 # which upsert_report reports FAILED, so every caller ends with upsert_report; status 1 only when the
 # board cannot be read.
 board_upsert() {
-  local board closed p text pri why have id rc added=0 edited=0 reopened=0 failed=()
+  local board closed p text pri why have hid twin id rc added=0 edited=0 reopened=0 failed=() twins=()
   UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_FAILED=
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
   closed=$(upsert_closed)
   while IFS=$'\t' read -r p text pri; do
     [[ "$text" == *'#size/'* ]] || text+=" #size/s"
-    have=$(awk -F'\t' -v p="${p,,}" 'index($3, p) == 1 { print $3; exit }' <<<"$board")
+    # each open row on this key, board order: "id TAB doing TAB lowercased text", id empty when it
+    # has no marker; a twin someone is doing is left alone
+    mapfile -t twins < <(awk -F'\t' -v p="${p,,}" 'index($3, p) == 1 {
+      id = ""; if (match($4, /<!-- id:[^ ]+/)) id = substr($4, RSTART + 8, RLENGTH - 8)
+      print id "\t" (index($4, "- [/]") == 1 ? "doing" : "") "\t" $3 }' <<<"$board")
+    have=; hid=
+    if [ ${#twins[@]} -gt 0 ]; then
+      hid=${twins[0]%%$'\t'*}; have=${twins[0]#*$'\t'*$'\t'}
+      for twin in "${twins[@]:1}"; do
+        if [ -z "$hid" ] || [ -z "${twin%%$'\t'*}" ] || [[ "$twin" == *$'\t'doing$'\t'* ]]; then
+          say "$p has an open twin with no id or one being done: left for triage"
+          continue
+        fi
+        twin=${twin%%$'\t'*}
+        if ! $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent drop "$twin" --dup "$hid" >/dev/null; then
+          say "could not drop $twin, a twin of $hid for $p"
+        fi
+      done
+    fi
     id=; [ -n "$have" ] || id=$(awk -F'\t' -v p="${p,,}" 'index($2, p) == 1 { print $1; exit }' <<<"$closed")
     if [ -n "$id" ]; then
       if $BENCH_NOTES_CMD ptask "$KPI_BOARD" reopen "$id" --why "fleet-bench: $p red again" >/dev/null; then
-        if $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent edit "$p" --text "$text" >/dev/null; then
+        if $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent edit "$id" --text "$text" >/dev/null; then
           reopened=$((reopened + 1))
         else
           say "edit failed for reopened $p ($id)"; failed+=("$p")
@@ -4984,7 +5004,7 @@ board_upsert() {
         *) say "add failed for $p"; failed+=("$p") ;;
       esac
     elif [ "$have" != "${text,,}" ]; then
-      if $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent edit "$p" --text "$text" >/dev/null; then
+      if $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent edit "${hid:-$p}" --text "$text" >/dev/null; then
         edited=$((edited + 1))
       else
         say "edit failed for $p"; failed+=("$p")
