@@ -3467,6 +3467,13 @@ STUB
   echo 'echo hello' > greet.sh
   BENCH_CANARY_WRAP="false &&" AGENT_QUEUE_ITEM=canary-greet-w4 run "$SUBJECT" canary score greet
   assert_output --partial 'canary greet: fail (exit 1)'
+  # BENCH_CANARY_RUN_LOG (fleet-dispatch run-log) prints the harness's own log of the run, kept beside the
+  # canary log (ar-4133); a run it printed nothing for keeps no empty file.
+  [ ! -e "$FLEET_BENCH_DIR/canary/canary-greet-w4.harness.log" ] || fail "a run with no BENCH_CANARY_RUN_LOG kept a harness log"
+  BENCH_CANARY_RUN_LOG="echo run=ab12 cli starting" AGENT_QUEUE_ITEM=canary-greet-w4b run "$SUBJECT" canary score greet
+  assert_equal "$(cat "$FLEET_BENCH_DIR/canary/canary-greet-w4b.harness.log")" 'run=ab12 cli starting'
+  BENCH_CANARY_RUN_LOG="true" AGENT_QUEUE_ITEM=canary-greet-w4c run "$SUBJECT" canary score greet
+  [ ! -e "$FLEET_BENCH_DIR/canary/canary-greet-w4c.harness.log" ] || fail "an empty harness log was kept"
   # Negative control: a score run in a main checkout records, and leaves that tree as it was.
   cd "$CREPO"; git checkout -q --detach "$CBASE"; echo 'echo hello' > greet.sh
   AGENT_QUEUE_ITEM=canary-greet-w5 run "$SUBJECT" canary score greet
