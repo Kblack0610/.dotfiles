@@ -1,6 +1,6 @@
 //! The one home of how a number reads: money, tokens, durations, ages and counts. Every surface
 //! (agent-web through hub-core, the TUI, the panel's cards) calls these, so `$214` and `2h28m`
-//! read the same everywhere; a copy elsewhere fails the `number-formatters` Owners row (`fact-owners check`).
+//! read the same everywhere; a copy elsewhere fails the `number-formatters` Owners row (`fact-owners check`, run by `tests/unit/fleet_states_doc.bats`).
 
 /// Dollars as the views show them: cents under $100, whole dollars above. [`usd_est`] is the
 /// second form, for an estimate, not a measured price.

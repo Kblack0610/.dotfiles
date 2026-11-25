@@ -472,15 +472,27 @@ PY
   assert_output --partial "a schema doc with no \`<!-- derived: <row> -->\` tag"
 }
 
-@test "negative controls for the row-id, item-active, size-tag, priority and number-formatters rows: a fresh copy of each is found" {
+@test "negative controls for the row-id, item-active, size-tag and priority rows: a fresh copy of each is found" {
   local t="$BATS_TEST_TMPDIR"
   printf '%s\n' "  id=\"\$(grep -o 'id:[a-z0-9]*-[0-9]*' <<<\"\$out\")\"" > "$t/marker"
   printf '%s\n' "  jq 'select(.state == \"running\" or .state == \"review\" or .state == \"waiting\")'" > "$t/active"
   printf '%s\n' '  [[ "$text" == *"#size/"* ]] || text+=" #size/s"' > "$t/size"
   printf '%s\n' '  case "$p" in urgent) echo 0 ;; high) echo 1 ;; low) echo 3 ;; esac' > "$t/prio"
-  printf '%s\n' 'pub fn age(secs: i64) -> String { String::new() }' > "$t/fmt.rs"
-  run check_owner_copies "$DOC" "$t/marker" "$t/active" "$t/size" "$t/prio" "$t/fmt.rs"
+  run check_owner_copies "$DOC" "$t/marker" "$t/active" "$t/size" "$t/prio"
   assert_failure
-  for f in marker active size prio fmt.rs; do assert_output --partial "$t/$f:1:"; done
-  assert_output --partial "number-formatters"
+  for f in marker active size prio; do assert_output --partial "$t/$f:1:"; done
+}
+
+@test "number-formatters: a formatter written again and a hand-built plural either way round are found, a test helper is not" {
+  local t="$BATS_TEST_TMPDIR"
+  printf '%s\n' 'pub fn usd_opt(c: Option<f64>) -> String { String::new() }' > "$t/a.rs"
+  printf '%s\n' 'let s = if n == 1 { "" } else { "s" };' > "$t/b.rs"
+  printf '%s\n' 'let s = if n != 1 { "s" } else { "" };' > "$t/c.rs"
+  printf '%s\n' 'fn live() {}' '#[cfg(test)]' 'mod tests {' '    fn age(secs: f64) -> u8 { 0 }' '}' > "$t/d.rs"
+  run check_owner_copies "$DOC" "$t/a.rs" "$t/b.rs" "$t/c.rs" "$t/d.rs"
+  assert_failure
+  assert_output --partial "$t/a.rs:1:"
+  assert_output --partial "$t/b.rs:1:"
+  assert_output --partial "$t/c.rs:1:"
+  refute_output --partial "$t/d.rs"
 }
