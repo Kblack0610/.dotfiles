@@ -356,7 +356,12 @@ mod tests {
         // with no config the gated list is agent-runtime alone
         assert_eq!(
             capped_projects(&events),
-            ["agent-runtime", "demo", "held-board", "unity-core-playground"]
+            [
+                "agent-runtime",
+                "demo",
+                "held-board",
+                "unity-core-playground"
+            ]
         );
         assert_eq!(capped_projects(&[]), ["agent-runtime"]);
     }
