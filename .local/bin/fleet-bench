@@ -4465,7 +4465,7 @@ def churn_rows($merges):
   . as $ev
   | ([$ev[] | select(.action == "added" or .action == "filed")] | group_by(.id) | map(min_by(.ts))) as $arr
   | ([($arr[] | {d: .ts[0:10], k: "filed"}),
-      ($arr[] | select((.origin | length) == 0 and ((.by // "") | test("^[0-9a-f]{8}$"))) | {d: .ts[0:10], k: "followups"}),
+      ($arr[] | select((.origin == null or .origin == "") and ((.by // "") | test("^[0-9a-f]{8}$"))) | {d: .ts[0:10], k: "followups"}),
       ($ev[] | select(.action == "done" or (.action == "settled" and (.pr // "") != "")) | {d: .ts[0:10], k: "closed"}),
       ($ev[] | select(.action == "dropped" or .action == "dup") | {d: .ts[0:10], k: "dropped"}),
       ($ev[] | select(.action == "reopened") | {d: .ts[0:10], k: "reopened"}),
