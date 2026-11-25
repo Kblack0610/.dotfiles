@@ -35,7 +35,9 @@
 #   fleet-bench rules [--json|--check|--scenarios|--gates [BASE]|--changed SINCE|--new [--days N|--since T] [--until D] [--json|--line]]
 #                                the rule register (RULES_REGISTER): kinds, confidence, actions, and each
 #                                rule's number re-measured; --check fails when one moved against its
-#                                recorded confidence, its measure died, or a rule's text left its source;
+#                                recorded confidence, its measure died, or a rule's text left its source,
+#                                a rule row has no enforced_by that resolves (test:, hook:, ci: or review), the review rows outgrow
+#                                RULES_PROSE_BASELINE (or sit under it), or a lesson found twice names no enforced_by check;
 #                                --scenarios lists the hard scenarios a context trim must keep, 1 when any is stale;
 #                                --gates lists the gate markers (# gate: <id>) with no register row, a hook that denies with none, and a refusal
 #                                a diff against BASE (default origin/main) added with none: 1 when any; --check fails a gate row with no valid
@@ -273,6 +275,8 @@ set -uo pipefail
 : "${LEDGER_BASELINE:=$HOME/.config/agentctl/ledger-baseline}"
 : "${LEDGER_PIPELINES:=$HOME/.config/agentctl/PIPELINES.md}"   # its "Model calls outside agentctl-run" table: the files allowed to launch a model outside agentctl-run
 : "${RULES_REGISTER:=$HOME/.config/agentctl/rules.jsonl}"
+: "${RULES_PROSE_BASELINE:=$HOME/.config/agentctl/rules-prose-baseline}"   # review=N: the most rule rows that may name no check but review; lower it when rows gain one
+: "${RULES_LESSON_SEEN:=2}"   # a lesson the dream sweep found again this many times must name its enforced_by (lessons seen)
 : "${RULES_MEASURE_TIMEOUT:=20}"      # seconds one rule's measure may run
 # rules --changed: the files a session reads as rules (instruction-homes.json kinds global, repo, skill,
 # role, shared-docs), as repo paths, and the generated copies of them that would list a change twice.
@@ -3085,13 +3089,35 @@ cmd_ledger() {
 # situation the rule decides: the must-keep list a context trim is checked against (context-trim skill).
 # `form` says whether a row is a rule (text a session reads, a .md source) or a mechanism (a hook,
 # script or config that enforces one); the source decides it, and a row's own `form` overrides that.
+# `enforced_by` names what holds a rule row to its text: `test:<path>` (a bats file, optionally
+# `test:<path>::<test name>`; an absolute or ~ path), `hook:<path>`, `ci:<path>`, or `review` (nothing but a reader, the prose-only
+# row). A mechanism row is its own enforcer and needs none. `enforcer` is the verdict: ok, review, missing (a
+# rule row names none), bad (not that grammar) or dead (the path, or the test name in it, is not there; a
+# source on another machine is absent first, as for every row). --check fails a missing, bad or dead one, and
+# fails when the `review` rows outnumber RULES_PROSE_BASELINE (`review=N`), which may only shrink: a new
+# rule row names a check, or it is one more prose-only row and the count has to be argued for.
+
+# rules_enforcer <enforced_by> -> none (empty), review, ok, bad or dead: `<kind>:<path>[::<test name>]`
+# resolved against the disk: an absolute path or one under `~`, and the name as written in an `@test "<name>"` line.
+rules_enforcer() {
+  local v="$1" path name=""
+  [ -n "$v" ] || { echo none; return; }
+  [ "$v" != review ] || { echo review; return; }
+  case "$v" in test:*|hook:*|ci:*) ;; *) echo bad; return ;; esac
+  path="${v#*:}"
+  if [ "${v%%:*}" = test ] && [[ "$path" == *::* ]]; then name="${path#*::}" path="${path%%::*}"; [ -n "$name" ] || { echo bad; return; }; fi
+  [ -n "$path" ] || { echo bad; return; }
+  path="${path/#\~/$HOME}"
+  [[ "$path" == /* ]] || { echo bad; return; }
+  if [ -f "$path" ] && { [ -z "$name" ] || grep -qF -- "@test \"$name\"" "$path"; }; then echo ok; else echo dead; fi
+}
 
 # rules_states -> each register row, one JSON object a line, with form, anchored, value, limited, holds, moved, dead, restates, state.
 rules_states() {
   [ -s "$RULES_REGISTER" ] || return 0
-  local src anchor cmd value anchored limited err
+  local src anchor cmd enf value anchored limited err enforcer
   err=$(mktemp) || return 1
-  while IFS=$'\x1f' read -r src anchor cmd; do
+  while IFS=$'\x1f' read -r src anchor cmd enf; do
     src="${src/#\~/$HOME}"
     if [ ! -f "$src" ]; then anchored=null
     elif grep -qF -- "$anchor" "$src"; then anchored=true
@@ -3103,15 +3129,18 @@ rules_states() {
       # GitHub's 403 or 429 on a rate limit; a counting measure prints 0 then, so its number goes too.
       ! grep -qiE 'rate limit.*HTTP (403|429)' "$err" || { limited=true; value=; }
     fi
-    printf '%s\x1f%s\x1f%s\n' "$anchored" "$value" "$limited"
-  done < <(jq -r '[.source, .anchor, (.measure // "")] | map(gsub("\n"; " ")) | join("\u001f")' "$RULES_REGISTER") |
+    enforcer=$(rules_enforcer "$enf")
+    printf '%s\x1f%s\x1f%s\x1f%s\n' "$anchored" "$value" "$limited" "$enforcer"
+  done < <(jq -r '[.source, .anchor, (.measure // ""), (.enforced_by // "")] | map(gsub("\n"; " ")) | join("\u001f")' "$RULES_REGISTER") |
     jq -cRn --slurpfile rows "$RULES_REGISTER" '
       [inputs | split("\u001f")] as $seen
       | range($rows | length) as $i
-      | $rows[$i] + {anchored: ($seen[$i][0] | fromjson), value: ($seen[$i][1] | tonumber? // null), limited: ($seen[$i][2] == "true")}
+      | $rows[$i] + {anchored: ($seen[$i][0] | fromjson), value: ($seen[$i][1] | tonumber? // null), limited: ($seen[$i][2] == "true"), enforcer: $seen[$i][3]}
       | (.max != null or .min != null) as $bounded
       | (.source // "") as $raw | ($raw | sub("^~"; env.HOME)) as $src
       | .form = (.form // (if ($raw | test("\\.md$")) then "rule" else "mechanism" end))
+      | .enforcer = (if .enforcer == "none" and .form == "mechanism" then "self" else .enforcer end)
+      | .enforcer = (if .enforcer == "none" then "missing" else .enforcer end)
       | .limited = (.limited and .value == null)
       | .dead = (.measure != null and .value == null and (.limited | not))
       | ((.measure // "") | gsub("\\$\\{HOME\\}|\\$HOME"; "~") | gsub("~"; env.HOME)) as $reads
@@ -3121,7 +3150,8 @@ rules_states() {
           then ((.max == null or .value <= .max) and (.min == null or .value >= .min)) else null end)
       | .moved = (.holds != null and .holds != (.confidence != "low"))
       | .state = (if .anchored == false then "stale" elif .anchored == null or .limited then "absent"
-          elif .dead then "dead" elif .restates then "restates" elif .moved then "moved" else "ok" end)'
+          elif .dead then "dead" elif .restates then "restates" elif .moved then "moved"
+          elif .enforcer | IN("missing", "bad", "dead") then "enforcer" else "ok" end)'
   local rc=$?
   rm -f "$err"
   return "$rc"
@@ -3147,8 +3177,41 @@ rules_problems() {
       elif .state == "restates" then "restates: \($f): \(.anchor): its bound is a copy of the number its measure reads from \($f); drop max/min, the reading is the number"
       elif .state == "moved" then "moved: \($f): \(.anchor): \(.value) against \(if .max != null then "max \(.max)" else "min \(.min)" end), recorded \(.confidence)"
       else empty end,
+    (select(.enforcer | IN("missing", "bad", "dead")) | select(.anchored != null) | "enforcer: \($f): \(.anchor): " + (
+      if .enforcer == "missing" then "names no enforced_by; give test:<path>, hook:<path>, ci:<path>, or review when only a reader holds it"
+      elif .enforcer == "bad" then "enforced_by \(.enforced_by) is not review, test:<path>[::<test name>], hook:<path> or ci:<path>"
+      else "enforced_by \(.enforced_by) does not resolve: no such file, or the test name is not in it" end)),
     (select(.form | IN("rule", "mechanism") | not) | "form: \($f): \(.anchor): \(.form) is neither rule nor mechanism"),
     (select(.id != null) | rules_gate_problem)' --arg today "$(date -u +%F)" <<<"$1"
+}
+
+# rules_prose_problems <states array> -> the line --check fails on when the rule rows that name no check
+# but `review` are not exactly the RULES_PROSE_BASELINE count: more means a rule landed with no check, fewer
+# means the baseline is slack and the next prose row would hide in it, so it is lowered with the row.
+rules_prose_problems() {
+  local n base
+  n=$(jq 'map(select(.form == "rule" and .enforced_by == "review")) | length' <<<"$1")
+  base=$(sed -n 's/^review=\([0-9][0-9]*\)$/\1/p' "$RULES_PROSE_BASELINE" 2>/dev/null | tail -1)
+  if [ -z "$base" ]; then
+    [ "$n" -eq 0 ] || echo "prose-only: $n rule rows name no check but review, and $RULES_PROSE_BASELINE has no review=N line"
+  elif [ "$n" -gt "$base" ]; then
+    echo "prose-only: $n rule rows name no check but review, over the baseline $base; give the new row a test, hook or ci enforcer"
+  elif [ "$n" -lt "$base" ]; then
+    echo "prose-only: $n rule rows name no check but review, under the baseline $base; lower review= in $RULES_PROSE_BASELINE to $n"
+  fi
+}
+
+# rules_lesson_problems -> one line per lesson the dream sweep found RULES_LESSON_SEEN times or more whose
+# enforced_by marker is neither a test, hook or ci that resolves nor an explicit `review` (a lesson no check can
+# hold says so in writing, so the lesson is not silently one more prose rule). No lessons dir or CLI is no problem.
+rules_lesson_problems() {
+  local lessons="${RULES_LESSONS_CMD:-$(dirname "$0")/lessons}" at seen enf title
+  [ -d "${RULES_LESSONS_DIR:-$HOME/.agent/lessons}" ] && [ -x "$lessons" ] || return 0
+  while IFS=$'\t' read -r at seen enf title; do
+    [ "$enf" != - ] || enf=
+    [ "$(rules_enforcer "$enf")" != ok ] && [ "$enf" != review ] || continue
+    echo "lesson: ${at##*/}: seen $seen times, enforced_by ${enf:-missing}; add <!-- enforced_by:test:<path> --> (or hook:, ci:) once a check holds it: $title"
+  done < <("$lessons" seen --min "$RULES_LESSON_SEEN" "${RULES_LESSONS_DIR:-$HOME/.agent/lessons}")
 }
 
 # rules_summary <states array> -> the counts, key=value.
@@ -3159,6 +3222,7 @@ rules_summary() {
      "keep=\(n("action"; "keep"))", "rewrite=\(n("action"; "rewrite"))", "drop=\(n("action"; "drop"))",
      "measured=\(map(select(.holds != null)) | length)", "holds=\(n("holds"; true))", "past=\(n("holds"; false))",
      "mechanisms=\(n("form"; "mechanism"))",
+     "prose_only=\(map(select(.form == "rule" and .enforced_by == "review")) | length)",
      "limited=\(map(select(.limited)) | length)",
      "scenarios=\(map(select((.scenario // "") != "")) | length)"] | .[]' <<<"$1"
 }
@@ -3318,7 +3382,7 @@ cmd_rules() {
   [ "${1:-}" != --new ] || { shift; rules_new "$@"; return; }
   [ "${1:-}" != --gates ] || { rules_gates "${2:-}"; return; }
   states=$(rules_states | jq -s .)
-  problems=$(rules_problems "$states")
+  problems=$(rules_problems "$states"; rules_prose_problems "$states"; rules_lesson_problems)
   case "${1:-}" in
     --json) echo "$states" ;;
     --check) [ -z "$problems" ] || { echo "$problems"; return 1; } ;;

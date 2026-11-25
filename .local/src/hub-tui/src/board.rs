@@ -638,11 +638,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_ci_runners_section_lists_each_slot_with_its_job_time_and_the_queue_beside_it() {
+    fn the_ci_runners_section_lists_each_running_job_with_its_time_and_the_queue_beside_it() {
         let i = fixture();
         let ci = tab(&i, "ci", 160);
         assert!(
-            ci.starts_with("CI RUNNERS  3 running, 4 queued (oldest 2h28m), 4/5 runners up, 112 done 24h, 44% passed  failed 24h 2 (Runs, red)\n\nRUNNERS  all 5  busy 3  idle 1  off 1  late 1\nHOST"),
+            ci.starts_with("CI RUNNERS  3 running, 4 queued (oldest 2h28m), 4/5 runners up, 112 done 24h, 44% passed  failed 24h 2 (Runs, red)\n\nRUNNERS  all 3  busy 3  late 1\nHOST"),
             "{ci}"
         );
         // A late job carries the bang; each slot names its pool, job and ref.
@@ -654,10 +654,10 @@ pub(crate) mod tests {
             &ci,
             "razer-laptop 1 busy unity 36m - PlayMode 2 unity-core-playground#412",
         );
-        // No PR shows the branch; an idle slot and an offline host say so.
+        // No PR shows the branch; a runner with no job has no row.
         assert_line(&ci, "razer-laptop 2 busy unity 5m - E2E develop");
-        assert_line(&ci, "razer-laptop 3 idle unity - - - -");
-        assert_line(&ci, "mac-mini 1 off macos - - - -");
+        assert!(!has(&ci, "razer-laptop 3 idle"), "{ci}");
+        assert!(!has(&ci, "mac-mini 1 off"), "{ci}");
         // The queue, its own section, names each job's wait, what it needs and who can take it.
         assert_line(
             &tab(&i, "waiting", 160),
@@ -733,7 +733,7 @@ pub(crate) mod tests {
             "CI RUNNERS 0 running, 0 queued, -/- runners up, 112 done 24h, 44% passed",
         );
         // An empty table is its title and why, on one line, with no header or chips.
-        assert_line(&ci, "RUNNERS no runner reports");
+        assert_line(&ci, "RUNNERS no runner is running a job");
         assert_line(&section(Some(0), "waiting"), "WAITING nothing waiting");
         assert_line(
             &section(Some(0), "local"),
@@ -819,7 +819,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_withheld_runner_is_no_slot_and_says_nothing_on_its_row() {
+    fn a_withheld_runner_is_no_slot_and_has_no_row_anywhere() {
         let mut i = fixture();
         i.instant.insert(
             "withheld",
@@ -836,9 +836,9 @@ pub(crate) mod tests {
             ),
             "a held slot is no job on its row: {out}"
         );
-        assert_line(
-            &out,
-            "razer-laptop 3 withheld unity - - the governor holds it back -",
+        assert!(
+            !has(&out, "razer-laptop 3 withheld"),
+            "no job, no runners row: {out}"
         );
     }
 
