@@ -3198,7 +3198,7 @@ cmd_set() {
   # Keys are matched per argument: a title= or note= value holding " merged=" names no merged:.
   local new_pr="" set_pr="" set_merged=""
   for kv in "$@"; do
-    case "${kv%%=*}" in pr) set_pr=1 new_pr="${kv#*=}" ;; merged) set_merged=1 ;; esac
+    case "${kv%%=*}" in pr) set_pr=1 new_pr="$(word_list "${kv#*=}")" ;; merged) set_merged=1 ;; esac
   done
   if [ -n "$set_pr" ] && [ -z "$set_merged" ] && [ "$new_pr" != "$(fm_get "$f" pr)" ]; then
     local -a new_refs old_oids
@@ -3212,6 +3212,9 @@ cmd_set() {
     case "$kv" in
       session=*) kv="session=$(qualified "${kv#*=}")" || exit 1 ;;
       after=*) kv="after=$(word_list "${kv#*=}")" ;;
+      # pr: is a space list, as agent-land and reap split it: a comma list read as one ref, and agent-land
+      # failed all five PRs of release-lane-reserve 'no merge recorded' (2026-11-09, ar-1228).
+      pr=*) kv="pr=$(word_list "${kv#*=}")" ;;
       phases=*) kv="phases=$(word_list "${kv#*=}")" ;;
       title=*) kv="title=$(one_line "${kv#*=}")" ;;
     esac

@@ -1981,6 +1981,21 @@ handoff_repo() {
   [ -z "$(field "$f" merged)" ]
 }
 
+# ar-1228: release-lane-reserve's five PRs, written comma-separated, read as one ref (2026-11-09).
+@test "pr= written comma-separated is stored as the space list agent-land and reap split, once per PR" {
+  "$AQ" add --project game --running --slug cs "cs" >/dev/null
+  "$AQ" set cs "pr=o/game#1,o/web#2, o/game#1" >/dev/null
+  [ "$(field "$(item running cs)" pr)" = 'o/game#1 o/web#2' ]
+  # NEGATIVE CONTROL: a space list is stored as written.
+  "$AQ" set cs "pr=o/web#2 o/game#1" >/dev/null
+  [ "$(field "$(item running cs)" pr)" = 'o/web#2 o/game#1' ]
+  # The same list in either shape is no new pr:, so a done ok item keeps its merged: list.
+  "$AQ" set cs merged="aaa111 bbb222" >/dev/null
+  "$AQ" move cs done --status ok >/dev/null
+  "$AQ" set cs "pr=o/web#2,o/game#1" >/dev/null
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-cs.md)" merged)" = 'aaa111 bbb222' ]
+}
+
 @test "a failed done item still drops merged: on a new pr:, and a title naming merged= does not skip the drop" {
   "$AQ" add --project game --running --slug fd "fd" >/dev/null
   "$AQ" set fd pr=o/game#1 merged=aaa111 >/dev/null
