@@ -2225,7 +2225,10 @@ cmd_add() {
   fi
   if [ -n "$capped" ] && ! admit "$from" "$priority" "$tags" "$project" "$slug" "$hold_title"; then
     unlock # the board write is notes' and can be slow: the lock covers only the count
+    # A board pull (`--from board:<project>:<id>`, promote's add) names its row as surely as --row does:
+    # filing an overflow row for it wrote a twin each pass that triage then dropped as a dup (ar-6187).
     if [ -n "$row" ]; then echo "agent-queue: row $row is left un-started where it is: dispatch promotes it as the queue drains" >&2
+    elif [[ "$from" == board:* ]]; then echo "agent-queue: its row ${from#board:} is left un-started where it is: dispatch promotes it as the queue drains" >&2
     else overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "" "$slug" "$tags"; fi
     exit "$AQ_EX_HELD"
   fi

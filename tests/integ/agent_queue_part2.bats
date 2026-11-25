@@ -1606,6 +1606,34 @@ second line of the brief
   assert_called "--detail=the real wording of the task -- "
 }
 
+@test "an over-cap board pull (promote's --from board:) files no second row: the five check rows triage re-added each pass" {
+  # ar-6187, 2026-11-25: fleet-bench triage promoted each open check row (no id marker of any new kind) at
+  # the cap; the held add filed an overflow twin with the cut title each pass, which triage then dropped as a dup.
+  story_notes
+  export AGENT_QUEUE_CAP=1 AGENT_QUEUE_PULL=dispatch
+  "$AQ" add --project level --slug one "feat(menu): one" >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  local n=6109 t
+  for t in "check(alert): TraderLabPodUnschedulable freqtrade-league-66 firing, alertmanager-fleet tripped since 2026-11-25, expected: no fleet=fix alert, evidence: watch-companion-loop list --long alertmanager-fleet" \
+    "check(alert): TraderWatchBotBlind trader-web-77fdddd486-zvcpk firing, alertmanager-fleet tripped since 2026-11-25, expected: no fleet=fix alert, evidence: watch-companion-loop list --long alertmanager-fleet" \
+    "check(watch): triage-coverage tripped since 2026-11-25, expected: Every standing watch and runner has its own triage-routes line, and every runner's SKILL= names a sk, why: watch playground-gate-budget owned:hc-N is closed" \
+    "check(watch): unity-runners-online tripped since 2026-11-25, expected: At least 1 self-hosted runner labelled \`unity\` is online in the org., why: unity_online=N" \
+    "check(alert): HomelabCronJobFailed trader-markets-history-bars firing, alertmanager-fleet tripped since 2026-11-25, expected: no fleet=fix alert"; do
+    run "$AQ" add --project level --priority high --from "board:level:lv-$n" --slug "lv-$n" --tags "red alert cause:c$n" --title "$t" -- "$t"
+    assert_failure 5
+    assert_output --partial "its row level:lv-$n is left un-started where it is"
+    n=$((n + 1))
+  done
+  run grep -cE ' ptask level --agent (add|propose) ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*-lv-61*.md 2>/dev/null)" ] || fail "a held board pull wrote an item"
+  [ "$(jq -r 'select(.slug | startswith("lv-61")) | .slug' "$AGENT_QUEUE_DIR/admission.jsonl" | wc -l)" -eq 5 ]
+  # Negative control: the same over-cap add with no board row behind it is a human's, and files its row.
+  run "$AQ" add --project level --priority high --slug human-twin "check(watch): triage-coverage tripped since 2026-11-25"
+  assert_failure 5
+  assert_called "ptask level --agent add -- check(watch): triage-coverage tripped since 2026-11-25 #high"
+}
+
 @test "an over-cap add that is #requested files its row with --want, so it ranks first on the board" {
   story_notes
   export AGENT_QUEUE_CAP=1
