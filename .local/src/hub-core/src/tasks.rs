@@ -228,9 +228,10 @@ impl Row {
         self.state == "doing"
     }
 
-    /// Tagged `#urgent` or `#high`.
+    /// Tagged `#urgent` or `#high`. Never an epic: its priority is its most urgent open row's
+    /// (notes-cli `epics::Index::epic_priority`), so counting it would count that row twice.
     pub fn hot(&self) -> bool {
-        matches!(self.priority.as_str(), "urgent" | "high")
+        self.r#type.as_deref() != Some("epic") && matches!(self.priority.as_str(), "urgent" | "high")
     }
 
     /// What it ships in: a playtest check's game, any other row's version.

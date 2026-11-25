@@ -714,6 +714,8 @@ struct FeedRow {
     version: Option<String>,
     game: Option<String>,
     state: &'static str,
+    /// The row's tag as its word; an epic's is its most urgent open row's, or `empty` with none
+    /// ([`epic_ranked`]).
     priority: &'static str,
     /// `#tier/N`: how hard the row is, which `fleet-dispatch` matches against a worker's max.
     tier: Option<u8>,
@@ -751,7 +753,8 @@ struct FeedRow {
     /// triage) skips it, and the UIs still show it.
     automation: bool,
     /// The line carries no priority tag: `priority` is the rank's default, and
-    /// `agentctl-inbox-triage --backlog --priority` gives it a real one.
+    /// `agentctl-inbox-triage --backlog --priority` gives it a real one. Never an epic, whose
+    /// priority is derived ([`epic_ranked`]).
     untriaged: bool,
     /// The slug of the row's `#why/<slug>`: why it has its priority, one of
     /// `priority-reasons.tsv`. None for a row with no reason.
@@ -1210,6 +1213,30 @@ fn feed_row(
     }
 }
 
+/// `row` as the feed prints it: an open epic ranks and shows as its most urgent open row
+/// ([`crate::epics::Index::epic_priority`]), or as [`crate::epics::EMPTY`], ranked `#low`, with
+/// none. Never by a tag of its own, and never untriaged, so triage never tags one. Any other
+/// row is returned as it is.
+fn epic_ranked(
+    mut row: FeedRow,
+    line: &str,
+    tree: &crate::epics::Index,
+    today: chrono::NaiveDate,
+    aim: Option<&crate::rank::Aim>,
+) -> FeedRow {
+    let Some(id) = row.id.as_deref().filter(|_| crate::epics::is_epic(line)) else {
+        return row;
+    };
+    let prio = tree.epic_priority(id);
+    row.priority = prio.map_or(crate::epics::EMPTY, |i| md::PRIORITIES[i].0);
+    row.untriaged = false;
+    row.prio_why = None;
+    let mut rank = crate::rank::aimed(line, today, aim);
+    rank.prio = prio.unwrap_or(md::PRIORITIES.len() - 1) as u8;
+    row.rank = rank.key();
+    row
+}
+
 /// Every open row of one project dir: its sheet's open version, its agent sheet's, and its
 /// playtest checks, in that order. Split from [`print_json`] to test without a vault.
 fn feed_for_dir(
@@ -1225,6 +1252,7 @@ fn feed_for_dir(
     let mut agent_backlog = 0;
     let mut done_old = 0;
     let aim = crate::rank::Aim::of(dir);
+    let tree = crate::epics::Index::of(dir, crate::projects::open_version(dir));
     for (i, (lane, name)) in [(Lane::Human, "human"), (Lane::Agent, "agent")]
         .into_iter()
         .enumerate()
@@ -1255,7 +1283,8 @@ fn feed_for_dir(
             aim: aim.as_ref(),
         };
         for r in w.rows {
-            rows.push(feed_row(&o, (r.line, &r.text), r.details, today));
+            let row = feed_row(&o, (r.line, &r.text), r.details, today);
+            rows.push(epic_ranked(row, &r.text, &tree, today, o.aim));
         }
     }
     let file = crate::playtest::path(dir);
@@ -2332,6 +2361,58 @@ mod tests {
             "due tomorrow and #urgent rank ahead of a plain #low"
         );
         assert_eq!(child.rank, crate::rank::of(&child.raw, today).key());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // An epic ranks and shows as its most urgent open row, read across both lanes, whatever tag
+    // it carries; a closed or dropped row and a child epic do not count, and an epic with no open
+    // row is `empty`, ranked as `#low`. No epic is untriaged, so triage never tags one.
+    #[test]
+    fn an_epic_ranks_as_its_most_urgent_open_row() {
+        let dir = sheet(
+            "feedepicrank",
+            "# demo\nVersion: v0.3.0\n\n## Tasks\n\
+             - [ ] epic(a): hot one #low <!-- id:dm-1 -->\n\
+             - [ ] epic(b): calm one <!-- id:dm-2 -->\n\
+             - [ ] epic(c): nothing open <!-- id:dm-3 -->\n\
+             - [ ] epic(d): under an epic only #of/dm-3 <!-- id:dm-4 -->\n\
+             - [x] feat(c): closed one #urgent #of/dm-3 <!-- id:dm-5 done:2026-11-08 pr:1 -->\n\
+             - [x] feat(c): dropped one #urgent #of/dm-3 <!-- id:dm-6 dropped: stale -->\n",
+        );
+        let agent = crate::projects::agent_dir(&dir);
+        std::fs::create_dir_all(&agent).unwrap();
+        std::fs::write(
+            agent.join("README.md"),
+            "# demo agent\n\n## Tasks\n\
+             - [ ] fix(a): the fault #urgent #of/dm-1 <!-- id:dm-7 -->\n\
+             - [ ] chore(a): tidy #low #of/dm-1 <!-- id:dm-8 -->\n\
+             - [/] chore(b): sweep #low #of/dm-2 <!-- id:dm-9 -->\n\
+             - [ ] chore(b): untagged #of/dm-2 <!-- id:dm-10 -->\n",
+        )
+        .unwrap();
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 9).unwrap();
+        let (_, rows) = feed_for_dir("bnb", "demo", &dir, today);
+        let row = |id: &str| rows.iter().find(|r| r.id.as_deref() == Some(id)).unwrap();
+        let got: Vec<(&str, bool)> = ["dm-1", "dm-2", "dm-3"]
+            .iter()
+            .map(|id| (row(id).priority, row(id).untriaged))
+            .collect();
+        assert_eq!(
+            got,
+            [("urgent", false), ("normal", false), ("empty", false)]
+        );
+        assert!(row("dm-1").rank < row("dm-2").rank, "urgent child first");
+        assert!(row("dm-2").rank < row("dm-3").rank, "empty sinks");
+        let low = row("dm-8");
+        assert_eq!(
+            row("dm-3").rank / 1_000_000,
+            low.rank / 1_000_000,
+            "empty ranks as #low"
+        );
+        // NEGATIVE CONTROL: a leaf keeps its own tag's word and rank.
+        assert_eq!((low.priority, low.untriaged), ("low", false));
+        assert_eq!(low.rank, crate::rank::of(&low.raw, today).key());
+        assert!(row("dm-10").untriaged);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

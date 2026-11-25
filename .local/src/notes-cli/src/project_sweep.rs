@@ -10,7 +10,8 @@
 //! rewrites rows ([`Ctx::rewrite`]); the sweep at the end of every write only moves them. A row can never be aimed at a
 //! release already closed, so a tag below the sheet's `Version:` goes and the row follows the
 //! open version. And `#urgent` is legal only in the open version, so a row aimed later is
-//! rewritten to `#high`.
+//! rewritten to `#high`. An epic row carries no priority tag at all: it ranks as its most
+//! urgent open row, so the rewriting pass drops one.
 
 use std::collections::HashSet;
 
@@ -321,6 +322,20 @@ pub(crate) fn sweep_sheet(content: &str, ctx: &Ctx) -> Option<(String, Vec<Strin
             body.push((*l).to_string());
             continue;
         }
+        // An epic ranks as its most urgent open row (`epics::Index::epic_priority`), so a tag of
+        // its own is read by nothing and goes.
+        let untagged;
+        let l = match md::task_priority(l).filter(|_| epics::is_epic(l)) {
+            Some(tag) => {
+                report.push(format!(
+                    "{}: {tag} dropped, an epic ranks as its most urgent open row",
+                    md::task_text(l)
+                ));
+                untagged = md::strip_priority_tag(l);
+                untagged.as_str()
+            }
+            None => *l,
+        };
         let stale = matches!((sheet::target(l), cur), (Some(t), Some(c)) if t < c);
         if stale {
             report.push(format!(
@@ -330,11 +345,11 @@ pub(crate) fn sweep_sheet(content: &str, ctx: &Ctx) -> Option<(String, Vec<Strin
             ));
             body.push(md::split_version(l).0);
         } else if sheet::is_later(l, cur) {
-            let (line, note) = cap_priority((*l).to_string());
+            let (line, note) = cap_priority(l.to_string());
             report.extend(note);
             body.push(line);
         } else {
-            body.push((*l).to_string());
+            body.push(l.to_string());
         }
     }
 
@@ -649,7 +664,7 @@ Version: v0.12.1
         assert_eq!(
             out,
             "# d\nVersion: v0.12.1\n\n## Tasks\n\
-### Epics\n- [ ] epic(look): the look #high\n\n\
+### Epics\n- [ ] epic(look): the look\n\n\
 ### Now\n- [/] running #high <!-- run:1109 -->\n\n\
 ### Next up\n- [/] queued #low\n\n\
 ### Backlog\n- [ ] fire #urgent\n- [ ] low one #low\n- [ ] later one #v0.12.2\n\
@@ -658,16 +673,38 @@ Version: v0.12.1
         );
     }
 
+    // An epic ranks as its most urgent open row, so the rewriting sweep drops its own priority
+    // tag and says so; the sweep every write ends with moves rows only and keeps it.
+    #[test]
+    fn the_rewriting_sweep_drops_an_epics_priority_tag() {
+        let s = "# d\nVersion: v0.12.1\n\n## Tasks\n\
+- [ ] epic(ui): menus #low <!-- id:dm-1 -->\n- [ ] fix(ui): a fault #high #of/dm-1 <!-- id:dm-2 -->\n";
+        let (out, report) = sweep_sheet(s, &ctx()).unwrap();
+        assert!(out.contains("- [ ] epic(ui): menus <!-- id:dm-1 -->\n"), "{out}");
+        assert!(out.contains("- [ ] fix(ui): a fault #high #of/dm-1"), "{out}");
+        assert_eq!(
+            report,
+            ["epic(ui): menus: #low dropped, an epic ranks as its most urgent open row"]
+        );
+        // NEGATIVE CONTROL: with rewrite off, nothing is rewritten.
+        let moved = Ctx {
+            rewrite: false,
+            ..ctx()
+        };
+        let kept = sweep_sheet(s, &moved).map_or_else(|| s.to_string(), |r| r.0);
+        assert!(kept.contains("epic(ui): menus #low"), "{kept}");
+    }
+
     // Epics: a `#new` epic first, then by system in the list's order (an alias counts as its
     // system), an area the list does not name after those, rank within each; no list orders
     // by area word alone.
     #[test]
     fn epics_follow_the_system_list_with_new_ones_first() {
         let s = "# d\nVersion: v0.12.1\n\n## Tasks\n\
-- [ ] epic(zeta): off the list #urgent\n\
-- [ ] epic(ui): menus #low\n\
-- [ ] epic(ci): ci to standard #low\n\
-- [ ] epic(hud): health bar #urgent\n\
+- [ ] epic(zeta): off the list #c1101\n\
+- [ ] epic(ui): menus #c1105\n\
+- [ ] epic(ci): ci to standard #c1105\n\
+- [ ] epic(hud): health bar #c1101\n\
 - [ ] epic(net): rollback #new\n";
         let sys = |id: &str, aliases: &[&str]| crate::standing::System {
             id: id.into(),

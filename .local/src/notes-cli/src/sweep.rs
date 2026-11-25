@@ -298,7 +298,10 @@ fn bucket(body: &[&str], layout: Layout, retag: bool) -> Buckets {
                     // it stays untagged: it is untriaged, and a default `#high` would hide that
                     // (human, 2026-11-09: every row gets a real priority from triage).
                     let i = cur_lane.unwrap_or(default);
-                    let tag = retag && (layout == Layout::Focus || cur_lane.is_some());
+                    // Never an epic: it ranks as its most urgent open row, not by a tag.
+                    let tag = retag
+                        && (layout == Layout::Focus || cur_lane.is_some())
+                        && !crate::epics::is_epic(l);
                     let row = if tag {
                         md::add_tag(l, md::PRIORITIES[i].1)
                     } else {

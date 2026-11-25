@@ -1055,13 +1055,14 @@ priority_batch() {
 # --retag <word> its open rows tagged #<word>), in batches, the boards with the most such rows first.
 # A started row is never asked: agent-queue ranks its live item by the row's priority, and a
 # re-judge that turned a high plan phase #low queued the next phase behind every other item (ar-4436).
+# An epic is never asked either: it ranks as its most urgent open row, and `ptask tag` refuses it a tag.
 priority_pass() {
   local board rows p lane total off size r rc=0
   read_board || return 1
   board="$(managed_board <<<"$BOARD")"
   # shellcheck disable=SC2016 # jq source, not shell
   rows="$(jq -c --arg retag "$RETAG" --arg only "$ONLY" '[.rows[]
-    | select((.lane == "human" or .lane == "agent") and .id != null and .state == "open"
+    | select((.lane == "human" or .lane == "agent") and .id != null and .state == "open" and .type != "epic"
              and ($only == "" or .project == $only) and (.untriaged or ($retag != "" and .priority == $retag)))]' <<<"$board")"
   while IFS=$'\t' read -r p lane; do
     [ -n "$p" ] || continue

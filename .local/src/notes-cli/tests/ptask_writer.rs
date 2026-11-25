@@ -1592,7 +1592,7 @@ fn a_hand_session_files_no_row_without_a_priority_and_no_standing_epic() {
     let o = add_as(&h, &[HAND], &[], "fix(ui): the pause menu flickers #size/s");
     assert_eq!(o.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&o.stderr).contains("rules/priority.md"));
-    let o = add_human(&h, &[HAND], "epic(ui): ui to standard #low");
+    let o = add_human(&h, &[HAND], "epic(ui): ui to standard");
     assert_eq!(o.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&o.stderr).contains("standing epic"));
     assert!(ids(&h.board()).is_empty() && ids(&h.sheet()).is_empty());
@@ -1605,8 +1605,8 @@ fn an_epic_names_a_system_of_its_project_or_is_refused() {
     let h = Home::new("hand-epic-system");
     h.systems(Some(SYSTEMS));
     for text in [
-        "epic(views): no such system #low",
-        "epic(menu): an alias, not the id #low",
+        "epic(views): no such system",
+        "epic(menu): an alias, not the id",
     ] {
         let o = add_human(&h, &[HAND], text);
         assert_eq!(o.status.code(), Some(1), "{text}");
@@ -1617,11 +1617,15 @@ fn an_epic_names_a_system_of_its_project_or_is_refused() {
         );
     }
     assert!(ids(&h.sheet()).is_empty(), "{}", h.sheet());
-    ok(&add_human(
-        &h,
-        &[HAND],
-        "epic(docs): every page has an owner #low",
-    ));
+    // An epic takes no priority from a session: it ranks as its most urgent open row.
+    let o = add_human(&h, &[HAND], "epic(docs): every page has an owner #low");
+    assert_eq!(o.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("ranks as its most urgent open row"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    ok(&add_human(&h, &[HAND], "epic(docs): every page has an owner"));
     assert!(
         h.sheet().contains("epic(docs): every page has an owner"),
         "{}",
@@ -1631,7 +1635,7 @@ fn an_epic_names_a_system_of_its_project_or_is_refused() {
     let o = add_human(
         &h,
         &[("AGENT_QUEUE_ITEM", "ar-9")],
-        "epic(views): proposed #low",
+        "epic(views): proposed",
     );
     assert_eq!(o.status.code(), Some(4));
 }

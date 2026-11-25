@@ -57,6 +57,18 @@ pub(crate) fn parent_of(line: &str) -> Option<String> {
     md::split_parent(head).1
 }
 
+/// What an open epic with no open child shows as in `notes board --json`'s `priority`
+/// ([`Index::epic_priority`]); it ranks as `#low`, the last level.
+pub(crate) const EMPTY: &str = "empty";
+
+/// `line`'s priority tag as an index into [`md::PRIORITIES`], untagged as
+/// [`md::DEFAULT_PRIORITY`]: the order `rank.rs` sorts by.
+pub(crate) fn priority_index(line: &str) -> usize {
+    md::task_priority(line)
+        .and_then(|t| md::PRIORITIES.iter().position(|(_, hash, _)| *hash == t))
+        .unwrap_or(md::DEFAULT_PRIORITY)
+}
+
 /// Is this row an epic: typed `epic(area): <outcome>`.
 pub(crate) fn is_epic(line: &str) -> bool {
     line.contains("epic(") && projects::row_type_area(line).is_some_and(|(t, _)| t == "epic")
@@ -149,6 +161,9 @@ struct Node {
     proof: String,
     /// Where the row is, for a doctor line: `sheet line 12`.
     at: String,
+    /// The row's priority as an index into [`md::PRIORITIES`], untagged as
+    /// [`md::DEFAULT_PRIORITY`]: what an epic over it ranks as ([`Index::epic_priority`]).
+    prio: usize,
 }
 
 /// One open epic's rollup over its leaves, in every version.
@@ -315,6 +330,7 @@ impl Index {
             },
             proof: proof_of(line),
             at,
+            prio: priority_index(line),
         });
     }
 
@@ -338,6 +354,19 @@ impl Index {
             return false;
         }
         in_some_version(line)
+    }
+
+    /// What the open epic `id` ranks as: the most urgent of its open children that are not
+    /// epics themselves, as an index into [`md::PRIORITIES`]; `None` when it has no open child
+    /// ([`EMPTY`]). The one rule for an epic's priority: an epic row carries no tag of its own
+    /// (`projects::row_findings` refuses one), so it is derived here, never stored.
+    pub(crate) fn epic_priority(&self, id: &str) -> Option<usize> {
+        self.children(id)
+            .iter()
+            .map(|&i| &self.nodes[i])
+            .filter(|n| n.open && n.title.is_none())
+            .map(|n| n.prio)
+            .min()
     }
 
     /// Where each open child of `id` is, for a refusal to close it.
@@ -509,6 +538,13 @@ impl Index {
                 continue;
             }
             let at = &n.at;
+            if let Some(id) = n.id.as_deref().filter(|_| n.title.is_some()) {
+                if self.epic_priority(id).is_none() {
+                    out.push(format!(
+                        "{at}: epic {id} has no open row, so it ranks as {EMPTY}: close it or file its rows under it"
+                    ));
+                }
+            }
             let Some(p) = n.parent.as_deref() else {
                 continue;
             };
@@ -851,12 +887,43 @@ Version: v1.4.0 #alpha
         let want = [
             "sheet line 5: #of/dm-99 names no row in this project",
             "sheet line 7: open under dm-2, which is done",
+            "sheet line 8: epic dm-4 has no open row, so it ranks as empty: close it or file its rows under it",
             "sheet line 8: an epic takes no #of/ (it is the top of its tree)",
             "sheet line 10: #of/ loops back to this row",
             "sheet line 11: #of/ loops back to this row",
             "sheet line 14: 4 levels deep (epic, story, subtask is the most)",
         ];
         assert_eq!(f, want);
+    }
+
+    // An epic's priority is its most urgent open child's, a child epic, a closed row and a
+    // dropped one aside; with none open it has no priority and doctor names it.
+    #[test]
+    fn an_epic_takes_its_most_urgent_open_childs_priority() {
+        let dir = project(
+            "epicprio",
+            &[(
+                "README.md",
+                "# demo\nVersion: v1.4.0\n\n## Tasks\n\
+                 - [ ] epic(a): busy #low <!-- id:dm-1 -->\n\
+                 - [ ] feat(a): high one #high #of/dm-1 <!-- id:dm-2 -->\n\
+                 - [ ] feat(a): untagged #of/dm-1 <!-- id:dm-3 -->\n\
+                 - [x] feat(a): closed urgent #urgent #of/dm-1 <!-- id:dm-4 done:2026-11-05 pr:1 -->\n\
+                 - [ ] epic(b): idle <!-- id:dm-5 -->\n\
+                 - [ ] epic(b): a child epic #urgent #of/dm-5 <!-- id:dm-6 -->\n\
+                 - [x] feat(b): dropped #urgent #of/dm-5 <!-- id:dm-7 dropped: stale -->\n",
+            )],
+        );
+        let ix = Index::of(&dir, V14);
+        assert_eq!(ix.epic_priority("dm-1"), Some(1), "#high, not the epic's own #low");
+        assert_eq!(ix.epic_priority("dm-5"), None);
+        let f = ix.findings();
+        assert!(
+            f.iter().any(|l| l.contains("epic dm-5 has no open row")),
+            "{f:?}"
+        );
+        // NEGATIVE CONTROL: an epic with an open row is not named.
+        assert!(!f.iter().any(|l| l.contains("epic dm-1 ")), "{f:?}");
     }
 
     #[test]

@@ -1512,7 +1512,7 @@ pub(crate) fn filer_types() -> impl Iterator<Item = &'static str> {
 
 /// The row grammar the board feed parses, per top-level row: a retired priority word, two
 /// priorities, two created stamps on an open row, a retired tag or `since:` stamp, a malformed tier, `#size/xl` on a row that
-/// is not an epic, an epic on the agent board, and on the agent board a
+/// is not an epic, an epic on the agent board or with a priority tag, and on the agent board a
 /// done row with no proof marker (`ptask done` refuses one, so it was closed by hand).
 /// Human sheet rows are closed by hand by design. On the agent board the open rows are also
 /// held to `type(area): title` with a title of [`TITLE_MAX`] or fewer and to carrying an id,
@@ -1521,6 +1521,7 @@ pub(crate) fn filer_types() -> impl Iterator<Item = &'static str> {
 pub(crate) fn row_findings(content: &str, agent: bool) -> Vec<String> {
     let mut out = Vec::new();
     let (mut unprefixed, mut long, mut no_id) = (Vec::new(), Vec::new(), Vec::new());
+    let mut epic_tagged = Vec::new();
     for (i, line) in content.lines().enumerate() {
         if !line.starts_with("- [") {
             continue;
@@ -1579,6 +1580,9 @@ pub(crate) fn row_findings(content: &str, agent: bool) -> Vec<String> {
                     "line {n}: an epic belongs on the human sheet, not the agent board"
                 ));
             }
+            if epic && md::task_priority(line).is_some() {
+                epic_tagged.push(n);
+            }
             if !epic && project_tasks::size_tag(line) == Some("#size/xl") {
                 out.push(format!(
                     "line {n}: #size/xl is an epic's size; split the row or size it l"
@@ -1620,7 +1624,40 @@ pub(crate) fn row_findings(content: &str, agent: bool) -> Vec<String> {
             no_id.len()
         ));
     }
+    if let Some(first) = epic_tagged.first() {
+        out.push(format!(
+            "{} open epic(s) with a priority tag, which nothing reads: {EPIC_RANKS} (first: line {first}; `notes ptask <p> sweep` drops it)",
+            epic_tagged.len()
+        ));
+    }
     out
+}
+
+/// Why an epic takes no priority tag, in every refusal and finding that names one.
+pub(crate) const EPIC_RANKS: &str =
+    "an epic ranks as its most urgent open row (`notes board --json` priority), never by a tag of its own";
+
+/// Why an edit from `old` to `new` is refused: `new` is an epic with a priority tag `old` did
+/// not carry ([`EPIC_RANKS`]). The writer drops a tag the epic already had ([`unrank_epic`]).
+pub(crate) fn refuse_epic_priority(old: &str, new: &str) -> anyhow::Result<()> {
+    match md::task_priority(new) {
+        Some(tag) if crate::epics::is_epic(new) && md::task_priority(old) != Some(tag) => {
+            anyhow::bail!("{tag} on an epic: {EPIC_RANKS}, so nothing was written")
+        }
+        _ => Ok(()),
+    }
+}
+
+/// `new`, the edit of `old`, with the priority tag dropped when it is an epic's and `old`
+/// already had it: a tag left from before epics ranked by their rows goes on the next write,
+/// and only a new one is refused ([`refuse_epic_priority`]).
+pub(crate) fn unrank_epic(old: &str, new: String) -> String {
+    match md::task_priority(&new) {
+        Some(tag) if crate::epics::is_epic(&new) && md::task_priority(old) == Some(tag) => {
+            md::strip_priority_tag(&new)
+        }
+        _ => new,
+    }
 }
 
 /// The sheet's open rows with no priority. No writer defaults one, so an untagged row is one
@@ -1629,7 +1666,12 @@ pub(crate) fn row_findings(content: &str, agent: bool) -> Vec<String> {
 pub(crate) fn untriaged_finding(content: &str, today: chrono::NaiveDate) -> Option<String> {
     let (mut rows, mut old) = (Vec::new(), 0);
     for (i, line) in content.lines().enumerate() {
-        if line.starts_with("- [") && md::is_open_task(line) && md::task_priority(line).is_none() {
+        // An epic is never untriaged: it ranks as its most urgent open row.
+        if line.starts_with("- [")
+            && md::is_open_task(line)
+            && md::task_priority(line).is_none()
+            && !crate::epics::is_epic(line)
+        {
             rows.push(i + 1);
             // A row with no created stamp predates the stamps, so it is old by definition.
             if md::find_created(line, today).is_none_or(|c| c < today) {

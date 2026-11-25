@@ -140,8 +140,8 @@ plan_epic() {
   [[ "$v" != "epic "* ]] || printf '%s\n' "${v#epic }"
 }
 
-# plan_epic_new [<plan file>] -> the epic a plan proposes on its `epic: new epic(<system>): <outcome>
-# #<priority>` line (planning.md, Epic:), outside code fences, or nothing. Reads stdin with no file:
+# plan_epic_new [<plan file>] -> the epic a plan proposes on its `epic: new epic(<system>): <outcome>`
+# line (planning.md, Epic:), outside code fences, or nothing. Reads stdin with no file:
 # plan-standard.sh holds the plan as text.
 plan_epic_new() {
   [ $# -eq 0 ] || [ -f "$1" ] || return 0

@@ -658,7 +658,7 @@ fn standing_title(line: &str) -> bool {
 }
 
 /// Triage's checks, run by a hand session on its own add before it writes; the twin refusals and
-/// [`projects::row_findings`] ran already. The row carries a priority (triage's priority rubric, `~/.config/inbox-triage/rules/priority.md`
+/// [`projects::row_findings`] ran already. The row, unless it is an epic, carries a priority (triage's priority rubric, `~/.config/inbox-triage/rules/priority.md`
 /// judges which), a hand session files no standing epic, and every open row on either lane that
 /// [`similar`] lists for it is one the session named in `checked`. Ok(the ids shown) to write;
 /// Err([`EXIT_SHORTLIST`]) with the shortlist printed when one is not named.
@@ -669,7 +669,8 @@ fn self_check(
     row: &str,
     checked: &[String],
 ) -> Result<std::result::Result<Vec<String>, i32>> {
-    if md::task_priority(row).is_none() {
+    // An epic carries none: it ranks as its most urgent open row (`projects::row_findings` refuses one).
+    if md::task_priority(row).is_none() && !crate::epics::is_epic(row) {
         bail!("a row from a session carries #urgent, #high, #normal or #low, judged by triage's priority rubric (~/.config/inbox-triage/rules/priority.md), so nothing was added");
     }
     if crate::epics::is_epic(row) && standing_title(row) {
@@ -3734,8 +3735,9 @@ where
     };
     let after = std::cell::RefCell::new(None);
     let write = |l: &str| {
-        // A row is written with one priority tag, whatever the edit added (nc-70).
-        let new = f(l).map(|n| md::one_priority(&n));
+        // A row is written with one priority tag, whatever the edit added (nc-70), and an epic
+        // with none it already had.
+        let new = f(l).map(|n| projects::unrank_epic(l, md::one_priority(&n)));
         after.borrow_mut().clone_from(&new);
         Some(new.unwrap_or_else(|| l.to_string()))
     };
@@ -3748,6 +3750,7 @@ where
             // No edit writes a priority word no reader knows (`tag --add p1`, `edit --text "... #p1"`).
             if let Some(line) = after.borrow().as_deref() {
                 projects::refuse_retired_priority(&matched, line)?;
+                projects::refuse_epic_priority(&matched, line)?;
                 crate::reasons::refuse_bad(&matched, line)?;
             }
             write_sheet(&sheet, &new)?;
