@@ -1,8 +1,9 @@
 //! The intake gate (QUEUE.md "Admission"): on a gated project (`intake_gated` in the notes
 //! config, agent-runtime by default) a session's row enters the board only as an evidenced fault,
-//! a plan phase or the person's ask. The write carries the person's want (`--want`), or the row a `#why/<slug>` whose reason
-//! is urgent or high in `priority-reasons.tsv` (a red, an outage, a runtime fault that happens now
-//! or recurs), or the row is health work as `notes improve --check` judges it (`improve::health_of`,
+//! source-of-truth work, a plan phase or the person's ask. The write carries the person's want
+//! (`--want`), or the row a `#why/<slug>` whose reason is urgent or high in `priority-reasons.tsv`
+//! (a red, an outage, a runtime fault that happens now or recurs) or is `sot` (it removes a second
+//! copy, a second reader or a gate with no number), or the row is health work as `notes improve --check` judges it (`improve::health_of`,
 //! the one list, which `notes improve` itself refuses). Anything else is an improvement, kept by
 //! `notes improve`, never a row dispatch can pick. A plan's phases come through `agent-queue add --plan`, a direct filer, and a person's
 //! own words are never gated, so neither reaches this check.
@@ -20,6 +21,10 @@ const ADMITS: [&str; 2] = ["urgent", "high"];
 /// The reason a wanted row carries, which a session may not give itself.
 const ASKED: &str = "requested";
 
+/// The reasons that admit a row at any level: the human's scope for the runtime board, source-of-truth
+/// and efficiency work (delightful-leaf P4, ar-5605).
+const SCOPE: [&str; 1] = ["sot"];
+
 /// Why `row` may not enter `project`'s board, or None when it may. `project` is the canonical
 /// name (the project's directory); `wanted` is a `--want` on this write, the only form the
 /// person's ask takes, since a `#requested` a session typed into its own row is no ask.
@@ -36,7 +41,10 @@ fn refusal_in(all: &[Reason], project: &str, row: &str, wanted: bool) -> Option<
     if wanted || crate::epics::is_epic(row) || crate::improve::health_of(row).is_some() {
         return None;
     }
-    let evidence = |r: &&Reason| ADMITS.contains(&r.priority.as_str()) && r.slug != ASKED;
+    let evidence = |r: &&Reason| {
+        (ADMITS.contains(&r.priority.as_str()) && r.slug != ASKED)
+            || SCOPE.contains(&r.slug.as_str())
+    };
     let admitting: Vec<&str> = all
         .iter()
         .filter(evidence)
@@ -44,11 +52,11 @@ fn refusal_in(all: &[Reason], project: &str, row: &str, wanted: bool) -> Option<
         .collect();
     let why = match reasons::slug_of(row) {
         Some(s) if admitting.contains(&s.as_str()) => return None,
-        Some(s) => format!("its reason #why/{s} is no evidenced fault"),
+        Some(s) => format!("its reason #why/{s} is no evidenced fault or source-of-truth work"),
         None => "it names no reason".into(),
     };
     Some(format!(
-        "{project} takes a session's row only as an evidenced fault, a plan phase or the person's ask (QUEUE.md \"Admission\"), and {why}: give the reason that names its evidence (--why {}), file a phase with `agent-queue add --plan`, pass the person's ask with --want, or keep it with `notes improve {project} -- \"<text>\"`, so nothing was added",
+        "{project} takes a session's row only as an evidenced fault, source-of-truth work, a plan phase or the person's ask (QUEUE.md \"Admission\"), and {why}: give the reason that names its evidence (--why {}), file a phase with `agent-queue add --plan`, pass the person's ask with --want, or keep it with `notes improve {project} -- \"<text>\"`, so nothing was added",
         admitting.join("|")
     ))
 }
@@ -71,6 +79,8 @@ mod tests {
             "- [ ] fix(dispatch): a reaped item restarts #high #why/runtime-fault",
             "- [ ] fix(ci): main is red #high #why/red-main",
             "- [ ] fix(views): the board is down #urgent #why/outage",
+            // the human's scope: source-of-truth work at its own level (ar-5605)
+            "- [ ] refactor(views): one reader for the budget, delete the copy #normal #why/sot",
             "- [ ] epic(views): every tab reads hub-core",
             // health work by `notes improve --check`, whatever its reason
             "- [ ] test(probe): add a regression test for the probe #normal #why/upkeep",
@@ -78,6 +88,9 @@ mod tests {
         ] {
             assert_eq!(r(pass), None, "{pass}");
         }
+        // the sot row passes on its reason, not as health work
+        let sot = "- [ ] refactor(views): one reader for the budget, delete the copy #normal";
+        assert!(crate::improve::health_of(sot).is_none() && r(sot).is_some());
         assert_eq!(
             refusal_in(
                 &list(),
@@ -102,6 +115,7 @@ mod tests {
             assert!(
                 e.contains("evidenced fault")
                     && e.contains("runtime-fault")
+                    && e.contains("|sot")
                     && e.contains("notes improve agent-runtime"),
                 "{e}"
             );
