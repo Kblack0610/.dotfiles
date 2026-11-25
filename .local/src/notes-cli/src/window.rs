@@ -983,11 +983,12 @@ pub(crate) fn open(dir: &Path, cur: V, ix: &Index) -> Option<OpenWindow> {
     })
 }
 
-/// What the open version's window promises, as weights: the rows it holds still open (its
-/// committed rows and every interrupt that entered) and the interrupts that entered, open or
-/// shipped, which are its only scope growth. `None` when it has no snapshot. What
-/// `projects::TargetWork` weighs for the open version in place of its whole sheet (ar-3540).
-pub(crate) fn promise(dir: &Path, cur: V, ix: &Index) -> Option<(u32, u32)> {
+/// What the open version's window promises: the weight of the rows it holds still open in the
+/// version (its committed rows and every interrupt that entered; a row re-aimed later is that
+/// version's), and the interrupt rows that entered, open or shipped, its only scope growth.
+/// `None` when it has no snapshot. What `projects::TargetWork` weighs for the open version in
+/// place of its whole sheet (ar-3540).
+pub(crate) fn promise(dir: &Path, cur: V, ix: &Index) -> Option<(u32, Vec<String>)> {
     let snap = read(dir, cur)?;
     let rows = rows_for(dir, cur, ix, &snap);
     let c = Classes::of(&snap, &rows);
@@ -995,7 +996,6 @@ pub(crate) fn promise(dir: &Path, cur: V, ix: &Index) -> Option<(u32, u32)> {
     let open = rows
         .open
         .iter()
-        .chain(&rows.later)
         .filter(|l| {
             let k = key(l);
             let held = (snap.keys.contains(&k) && c.committed(&k) == Outcome::Open)
@@ -1004,18 +1004,18 @@ pub(crate) fn promise(dir: &Path, cur: V, ix: &Index) -> Option<(u32, u32)> {
         })
         .map(|l| projects::size_weight(l))
         .sum();
-    let mut weighed = HashSet::new();
-    let grown = rows
+    let mut seen = HashSet::new();
+    let interrupts = rows
         .open
         .iter()
         .chain(rows.closed.iter().filter(|l| !md::is_dropped(l)))
         .filter(|l| {
             let k = key(l);
-            c.interrupted.contains(&k) && weighed.insert(k)
+            c.interrupted.contains(&k) && seen.insert(k)
         })
-        .map(|l| projects::size_weight(l))
-        .sum();
-    Some((open, grown))
+        .cloned()
+        .collect();
+    Some((open, interrupts))
 }
 
 /// The Sprint count of an open window: its rows still open in the version, of the rows it holds.
