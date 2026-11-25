@@ -381,7 +381,7 @@ impl Infra {
     }
 
     /// The runners the governor holds back (`github_runner_withheld`), by name: an idle one takes
-    /// no job, so it is no slot and holds no label for a waiting job.
+    /// no job, so it is no slot, but the governor can release it, so a waiting job still fits it.
     pub fn withheld(&self) -> std::collections::HashSet<&str> {
         self.get("withheld")
             .iter()

@@ -646,17 +646,6 @@ struct Runner<'a> {
     kind: Option<&'a str>,
 }
 
-impl Runner<'_> {
-    /// Running, or idle and not withheld: a slot that can take a job now.
-    fn takes_jobs(&self) -> bool {
-        match self.s.label("state") {
-            "running" => true,
-            "idle" => !self.held,
-            _ => false,
-        }
-    }
-}
-
 fn lower(csv: &str) -> Vec<String> {
     csv.split(',')
         .map(|l| l.trim().to_lowercase())
@@ -980,10 +969,11 @@ fn queue(infra: &Infra, all: &[Runner], off: &HashMap<&str, &str>) -> Vec<Queued
         q.n += 1;
         q.wait = q.wait.max(wait);
     }
-    // A withheld idle runner takes no job, so a label only it holds is missing.
     let online: Vec<&Runner> = all
         .iter()
-        .filter(|r| r.takes_jobs() || off.contains_key(r.s.label("host")))
+        .filter(|r| {
+            matches!(r.s.label("state"), "running" | "idle") || off.contains_key(r.s.label("host"))
+        })
         .collect();
     let usual = usual(infra);
     let pools = pools(infra);
@@ -1136,7 +1126,9 @@ pub fn pool_match(infra: &Infra, min_wait: i64) -> Vec<PoolMatch> {
                 .iter()
                 .filter(|r| sets.iter().any(|set| holds(&r.labels, set)))
                 .collect();
-            let slot = |r: &&&Runner| r.takes_jobs();
+            let slot = |r: &&&Runner| {
+                r.s.label("state") == "running" || (r.s.label("state") == "idle" && !r.held)
+            };
             PoolMatch {
                 slots: fit.iter().filter(slot).count() as u32,
                 busy: fit
@@ -1651,30 +1643,6 @@ mod tests {
         let ci = build(&i);
         let soak = ci.queue.iter().find(|q| q.job == "Soak").unwrap();
         assert_eq!(soak.missing, ["unity-full", "lan"]);
-        // So is one held only by an idle runner the governor withholds: it takes no job (ar-5487).
-        let mut i = board();
-        i.instant.insert(
-            "runners",
-            series(vec![runner(
-                "razer",
-                "razer-unity-pool-1",
-                "idle",
-                "0",
-                FULL,
-                json!({}),
-            )]),
-        );
-        i.instant.insert(
-            "withheld",
-            series(vec![(json!({"name": "razer-unity-pool-1"}), "1")]),
-        );
-        let ci = build(&i);
-        let soak = ci.queue.iter().find(|q| q.job == "Soak").unwrap();
-        assert_eq!(
-            soak.missing,
-            ["unity-full", "lan"],
-            "a withheld runner holds no label"
-        );
     }
 
     /// ar-5477: an ephemeral pool holds its labels with no pod running, and GitHub lists a busy
