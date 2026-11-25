@@ -4975,22 +4975,49 @@ upsert_why() {
 # again is the same work (alertmanager-fleet was filed 27 times in 7 days, 2026-11-18). A row whose
 # condition cleared is triage_retire's. Every row is #size/s. A reopen that fails is said and the key
 # is filed as a new row, and a row whose add or edit fails is said and skipped, so one stuck row never
-# stops the pass (ar-4064: one failed add skipped every red fix promotion after it). Leaves the
-# counts in UPSERT_ADDED, UPSERT_EDITED and UPSERT_REOPENED and the failed keys in UPSERT_FAILED,
-# which upsert_report reports FAILED, so every caller ends with upsert_report; status 1 only when the
-# board cannot be read.
+# stops the pass (ar-4064: one failed add skipped every red fix promotion after it).
+# Each write names its row by id, since `notes ptask edit` refuses a query two open rows match: the
+# key's row is its first open row with an id marker, and only a key whose one row has none (written
+# by hand) is named by its prefix. A twin a race left open on the key (ar-5690) is dropped as a dup
+# of that row, its children moving under it; a twin being done, or one with no id, is left and said.
+# Leaves the counts in UPSERT_ADDED, UPSERT_EDITED, UPSERT_REOPENED and UPSERT_DROPPED and the failed
+# keys in UPSERT_FAILED, which upsert_report reports FAILED, so every caller ends with upsert_report;
+# status 1 only when the board cannot be read.
 board_upsert() {
-  local board closed p text pri why have id rc added=0 edited=0 reopened=0 failed=()
-  UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_FAILED=
+  local board closed p text pri why have hid twin id rc added=0 edited=0 reopened=0 dropped=0 failed=() twins=()
+  UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_DROPPED=0; UPSERT_FAILED=
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
   closed=$(upsert_closed)
   while IFS=$'\t' read -r p text pri; do
     [[ "$text" == *'#size/'* ]] || text+=" #size/s"
-    have=$(awk -F'\t' -v p="${p,,}" 'index($3, p) == 1 { print $3; exit }' <<<"$board")
+    # each open row on this key, board order: "id TAB doing TAB lowercased text", id empty when it
+    # has no marker
+    mapfile -t twins < <(awk -F'\t' -v p="${p,,}" 'index($3, p) == 1 {
+      id = ""; if (match($4, /<!-- id:[^ ]+/)) id = substr($4, RSTART + 8, RLENGTH - 8)
+      print id "\t" ($4 ~ /^[ \t]*- \[\/\]/ ? "doing" : "") "\t" $3 }' <<<"$board")
+    have=; hid=
+    for twin in "${twins[@]}"; do
+      [ -z "${twin%%$'\t'*}" ] || { hid=${twin%%$'\t'*}; have=${twin#*$'\t'*$'\t'}; break; }
+    done
+    if [ -z "$hid" ] && [ ${#twins[@]} -gt 0 ]; then
+      have=${twins[0]#*$'\t'*$'\t'}
+      [ ${#twins[@]} -eq 1 ] || { say "$p has ${#twins[@]} open rows and none has an id: left for triage"; failed+=("$p"); continue; }
+    fi
+    for twin in "${twins[@]}"; do
+      id=${twin%%$'\t'*}
+      [ "$id" != "$hid" ] || continue
+      if [ -z "$id" ] || [[ "$twin" == *$'\t'doing$'\t'* ]]; then
+        say "$p: open twin ${id:-with no id} of $hid left for triage"
+      elif $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent drop "$id" --dup "$hid" >/dev/null; then
+        dropped=$((dropped + 1))
+      else
+        say "could not drop $id, a twin of $hid for $p"; failed+=("$p")
+      fi
+    done
     id=; [ -n "$have" ] || id=$(awk -F'\t' -v p="${p,,}" 'index($2, p) == 1 { print $1; exit }' <<<"$closed")
     if [ -n "$id" ]; then
       if $BENCH_NOTES_CMD ptask "$KPI_BOARD" reopen "$id" --why "fleet-bench: $p red again" >/dev/null; then
-        if $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent edit "$p" --text "$text" >/dev/null; then
+        if $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent edit "$id" --text "$text" >/dev/null; then
           reopened=$((reopened + 1))
         else
           say "edit failed for reopened $p ($id)"; failed+=("$p")
@@ -5008,14 +5035,14 @@ board_upsert() {
         *) say "add failed for $p"; failed+=("$p") ;;
       esac
     elif [ "$have" != "${text,,}" ]; then
-      if $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent edit "$p" --text "$text" >/dev/null; then
+      if $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent edit "${hid:-$p}" --text "$text" >/dev/null; then
         edited=$((edited + 1))
       else
         say "edit failed for $p"; failed+=("$p")
       fi
     fi
   done <<<"$1"
-  UPSERT_ADDED=$added; UPSERT_EDITED=$edited; UPSERT_REOPENED=$reopened
+  UPSERT_ADDED=$added; UPSERT_EDITED=$edited; UPSERT_REOPENED=$reopened; UPSERT_DROPPED=$dropped
   UPSERT_FAILED=$(IFS=';'; echo "${failed[*]}")
 }
 
@@ -5035,12 +5062,13 @@ upsert_closed() {
 upsert_report() {
   local did="$UPSERT_ADDED added, $UPSERT_EDITED refreshed"
   [ "${UPSERT_REOPENED:-0}" -eq 0 ] || did+=", $UPSERT_REOPENED reopened"
+  [ "${UPSERT_DROPPED:-0}" -eq 0 ] || did+=", $UPSERT_DROPPED twins dropped"
   did+="${2:+, $2}"
   say "$(grep -c . <<<"$1") rows due: $did"
   if [ -n "${UPSERT_FAILED:-}" ]; then
     report_outcome FAILED "board write failed for $UPSERT_FAILED; $did"
     return 1
-  elif [ $((UPSERT_ADDED + UPSERT_EDITED + ${UPSERT_REOPENED:-0})) -eq 0 ] && [ -z "${2:-}" ]; then
+  elif [ $((UPSERT_ADDED + UPSERT_EDITED + ${UPSERT_REOPENED:-0} + ${UPSERT_DROPPED:-0})) -eq 0 ] && [ -z "${2:-}" ]; then
     report_outcome NOOP "every row already current"
   else
     report_outcome WORKED "$did"
@@ -6192,7 +6220,7 @@ cmd_triage() {
     return 0
   fi
   filed=$(triage_filed "$rows")
-  if [ -n "$filed" ]; then board_upsert "$(cut -f1-3 <<<"$filed")" || return 1; else UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_FAILED=; fi
+  if [ -n "$filed" ]; then board_upsert "$(cut -f1-3 <<<"$filed")" || return 1; else UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_DROPPED=0; UPSERT_FAILED=; fi
   h=$(triage_human "$rows")
   triage_twins "$rows" "$(cut -f1 <<<"$filed")"
   q=$(triage_promote "$rows")
