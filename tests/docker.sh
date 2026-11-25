@@ -119,12 +119,20 @@ fi
 #                     adds one under that name (tests/Dockerfile).
 # --rm                nothing persists but what is written into the bind mount
 # --shm-size          chromium (the phone render harness) runs out of docker's 64 MB /dev/shm
+# --tmpfs             /tmp, where every bats sandbox and HOME live, is memory, so a test's writes
+#                     and fsyncs never touch the disk. On a pool node the container start and
+#                     every test waited on that disk, shared by dozens of pods (ar-5740, the note
+#                     in tests.yml). exec because the sandboxes run their stubs from there; HOME
+#                     (/tmp/testhome, the image's) gets its own, as /tmp's hides the image's dir.
+tmpfs_opts=rw,exec,nosuid,nodev,mode=1777
 run_args=(
   --rm --init
   --network "$DOCKER_NETWORK"
   --user "$(id -u):$(id -g)"
   --env "USER=$(id -un)"
   --shm-size 1g
+  --tmpfs "/tmp:$tmpfs_opts"
+  --tmpfs "/tmp/testhome:$tmpfs_opts"
   --volume "$REPO:/work"
   --workdir /work
 )
