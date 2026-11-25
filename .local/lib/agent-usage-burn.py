@@ -872,7 +872,9 @@ def other_harnesses(start, end, root):
                 continue
         except OSError:
             continue
-        for line in open(f, errors="ignore"):
+        with open(f, errors="ignore") as fh:
+            lines = fh.readlines()
+        for line in lines:
             try:
                 r = json.loads(line)
             except ValueError:
