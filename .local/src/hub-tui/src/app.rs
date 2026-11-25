@@ -7044,7 +7044,7 @@ mod tests {
             st[1].prio = "focus".into();
         }
         a.handle(Msg::Projects(Box::new(l)));
-        let s = screen(&mut a, 140, 30);
+        let s = screen(&mut a, 160, 30);
         assert!(s.contains("v0.1.0   focus"), "{s}");
         assert!(s.lines().last().unwrap().contains("P focus"), "{s}");
         fake.0.lock().unwrap().clear();
