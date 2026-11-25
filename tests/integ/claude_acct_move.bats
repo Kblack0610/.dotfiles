@@ -146,7 +146,7 @@ q() { printf %q "$1"; }
 # socket <server> -- a socket file where tmux_servers_all looks; nothing listens on it
 socket() {
   mkdir -p "$TMUX_TMPDIR/tmux-$(id -u)"
-  python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TMUX_TMPDIR/tmux-$(id -u)/$1"
+  unix_sock "$TMUX_TMPDIR/tmux-$(id -u)/$1"
 }
 
 # Not `calls`: the sandbox helper defines that one, over the fixture dir the stock stubs use.

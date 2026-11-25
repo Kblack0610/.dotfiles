@@ -419,6 +419,10 @@ EOF
   printf '%s' "$state" > "$WATCH_STATE_DIR/$name.state"
 }
 
+# unix_sock <path> -- a bound AF_UNIX socket file at <path> that no process listens on: what a tmux
+# server or the systemd user manager leaves for a reader that tests `-S`. One home for it (ar-4870).
+unix_sock() { python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$1"; }
+
 # fleet_field <type> <field-no> — the given field of every row of a type, ANSI stripped.
 fleet_field() {
   "$FLEET" --list 2>/dev/null | awk -F'\t' -v t="$1" -v n="$2" '$1==t { print $n }' | strip_ansi
