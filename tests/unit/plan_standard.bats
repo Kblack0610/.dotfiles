@@ -257,44 +257,46 @@ proposal() {
 
 @test "an epic: new proposal passes once its shortlist is named on Overlap:" {
   epic_new '[{"id":"lb-1","percent":40,"text":"x"},{"id":"","percent":30,"text":"y"}]' '[{"id":"lb-2","percent":35,"text":"z"}]'
-  run gate labbed "$(proposal 'epic(ui): a lobby the player can open #low' 'lb-1 is the ci standing epic, lb-2 a ci story.')"
+  run gate labbed "$(proposal 'epic(ui): a lobby the player can open' 'lb-1 is the ci standing epic, lb-2 a ci story.')"
   assert_success
   assert_output ''
 }
 
 @test "an epic: new proposal is denied for each shortlist id Overlap: does not name" {
   epic_new '[{"id":"lb-1","percent":40,"text":"x"}]' '[{"id":"lb-2","percent":35,"text":"z"}]'
-  run gate labbed "$(proposal 'epic(ui): a lobby the player can open #low' 'lb-1 is other work.'; echo; echo '- Existing: lb-2 is read here, not on Overlap.')"
+  run gate labbed "$(proposal 'epic(ui): a lobby the player can open' 'lb-1 is other work.'; echo; echo '- Existing: lb-2 is read here, not on Overlap.')"
   assert_output --partial 'plan-standard: 1 gap'
   assert_output --partial 'Overlap: does not name lb-2'
 }
 
 @test "the shortlist is the top 5 of both lanes merged, as notes ptask add shows it" {
   epic_new '[{"id":"lb-1","percent":90},{"id":"lb-2","percent":80},{"id":"lb-3","percent":70}]' '[{"id":"lb-4","percent":60},{"id":"lb-5","percent":50},{"id":"lb-9","percent":21}]'
-  run gate labbed "$(proposal 'epic(ui): a lobby the player can open #low' 'lb-1, lb-2, lb-3, lb-4 and lb-5 are other work.')"
+  run gate labbed "$(proposal 'epic(ui): a lobby the player can open' 'lb-1, lb-2, lb-3, lb-4 and lb-5 are other work.')"
   assert_output ''
-  run gate labbed "$(proposal 'epic(ui): a lobby the player can open #low' 'lb-1, lb-2, lb-3 and lb-4 are other work.')"
+  run gate labbed "$(proposal 'epic(ui): a lobby the player can open' 'lb-1, lb-2, lb-3 and lb-4 are other work.')"
   assert_output --partial 'does not name lb-5'
   refute_output --partial 'lb-9'
 }
 
-@test "an epic: new proposal needs a listed system, a priority and a feature title" {
+@test "an epic: new proposal needs a listed system, no priority and a feature title" {
   epic_new '[]' '[]'
-  run gate labbed "$(proposal 'epic(gameplay): school days #low' 'none.')"
+  run gate labbed "$(proposal 'epic(gameplay): school days' 'none.')"
   assert_output --partial 'names epic(gameplay), no system of labbed: one of ci,ui'
+  run gate labbed "$(proposal 'epic(ui): a lobby the player can open #low' 'none.')"
+  assert_output --partial 'carries a priority, which notes refuses on an epic'
   run gate labbed "$(proposal 'epic(ui): a lobby the player can open' 'none.')"
-  assert_output --partial 'carries no priority'
-  run gate labbed "$(proposal 'epic(ui): ui to standard #low' 'none.')"
+  assert_output ''
+  run gate labbed "$(proposal 'epic(ui): ui to standard' 'none.')"
   assert_output --partial 'title, which notes and project-stage-check file'
-  run gate labbed "$(proposal 'epic(ui) a lobby #low' 'none.')"
+  run gate labbed "$(proposal 'epic(ui) a lobby' 'none.')"
   assert_output --partial 'is no epic(<system>): <outcome>'
-  NO_SYSTEMS=1 run gate labbed "$(proposal 'epic(ui): a lobby the player can open #low' 'none.')"
+  NO_SYSTEMS=1 run gate labbed "$(proposal 'epic(ui): a lobby the player can open' 'none.')"
   assert_output --partial 'printed no system list'
 }
 
 @test "an epic: new line inside a code fence is no proposal" {
   epic_new '[]' '[]'
-  run gate labbed "$(printf '```\nepic: new epic(ui): a lobby #low\n```\n\n'; base)"
+  run gate labbed "$(printf '```\nepic: new epic(ui): a lobby\n```\n\n'; base)"
   assert_output --partial 'No epic: <id> line'
 }
 
