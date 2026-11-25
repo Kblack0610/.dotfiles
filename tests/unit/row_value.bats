@@ -71,6 +71,20 @@ judge_ok() {
   assert_output "$(printf 'ar-3 - - 2 1\nar-20 - - 0 0\nar-10 tidy-plan ar-3 0 0')"
 }
 
+@test "export: --inflow gives each row its source from fleet-bench inflow --json, - when unnamed" {
+  printf '%s' '{"project":"agent-runtime","sources":[{"source":"from: dream","open_ids":["ar-3","ar-10"]},{"source":"pre-log","open_ids":[]}]}' > "$HOME/inflow.json"
+  run "$RV" export --board "$HOME/board.json" --scorecard "$HOME/latest.md" --reds-cmd "" --inflow "$HOME/inflow.json" --chunk 2 "$D"
+  assert_success
+  run awk -F'\t' '{ print $1, $12 }' "$D/rows.tsv"
+  assert_output "$(printf 'id source\nar-3 from: dream\nar-20 -\nar-10 from: dream')"
+  run cat "$D/chunk-02.txt"
+  assert_output --partial "children:0 source:from: dream"
+  printf '%s' '{"project":"game","sources":[]}' > "$HOME/inflow.json"
+  run "$RV" export --board "$HOME/board.json" --scorecard "$HOME/latest.md" --reds-cmd "" --inflow "$HOME/inflow.json" "$D"
+  assert_failure 1
+  assert_output --partial "is for 'game', not agent-runtime"
+}
+
 @test "export: the context names the KPIs past threshold and each live red once" {
   export_fixture
   run cat "$D/context.md"

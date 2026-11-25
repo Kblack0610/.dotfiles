@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """row-value - judge what each open board row improves, check the verdicts, compare two judges.
 
-  row-value export [--project P] [--chunk N] [--board FILE] [--scorecard FILE] DIR
+  row-value export [--project P] [--chunk N] [--board FILE] [--scorecard FILE] [--inflow FILE] DIR
       the project's open agent rows (open and doing) into DIR: rows.tsv (id, state, priority,
-      epic, why, requested, since, plan, after, children, exported_children, text), chunk-NN.txt (about N rows each, sorted by epic then id so rows
+      epic, why, requested, since, plan, after, children, exported_children, source, text),
+      chunk-NN.txt (about N rows each, sorted by epic then id so rows
       of one cause sit together) and context.md (the KPIs the project's scorecard marks past, and
       the reds `fleet-bench reds` shows still live; --scorecard and --reds-cmd swap those, "" skips
       one, and a missing scorecard or a failed reds command fails the export). Each --repo is
       fetched, then a row whose id a commit subject on its origin/main names (last --since days)
-      gets a `merged:` line, evidence a text read cannot see. It clears DIR's last chunks, judge
+      gets a `merged:` line, evidence a text read cannot see. --inflow is a saved
+      `fleet-bench inflow --json`, whose open_ids give each row its source (the filer); without it
+      the source is `-`. It clears DIR's last chunks, judge
       files and verdicts. A judge
       reads one chunk, context.md and the rubric, and writes DIR/judge-NN.tsv.
   row-value merge [--rubric FILE] DIR
@@ -48,8 +51,8 @@ SCORECARD = "~/.notes/lab/projects/current/{project}/docs/bench/latest.md"
 FIELDS = ["id", "target", "ref", "kind", "verdict", "into", "bucket", "system", "project", "evidence", "why"]
 CHECK_FIELDS = ["id", "bucket", "evidence", "why"]
 ROW_FIELDS = ["id", "state", "priority", "epic", "why", "requested", "since", "plan", "after", "children",
-              "exported_children", "text"]
-LEDGER_FIELDS = ["id", "state", "epic", "plan", "after", "children", "bucket", "system", "project", "target",
+              "exported_children", "source", "text"]
+LEDGER_FIELDS = ["id", "state", "epic", "plan", "after", "children", "source", "bucket", "system", "project", "target",
                  "ref", "kind", "verdict", "into", "evidence", "why", "text"]
 # The verdicts each bucket allows: the rubric's "Bucket" section says why.
 BUCKET_VERDICTS = {"red": {"keep"}, "fault": {"keep"}, "sot": {"keep"}, "requested": {"keep"},
@@ -189,6 +192,15 @@ def cmd_export(a):
         return ",".join(t.split("/", 1)[1] for t in r.get("tags") or [] if t.startswith("after/")) or "-"
 
     named = merged_names(a.repo, a.since)
+    source = {}
+    if a.inflow:
+        with open(a.inflow) as f:
+            inflow = json.load(f)
+        if inflow.get("project") != a.project:
+            die(f"--inflow {a.inflow} is for {inflow.get('project')!r}, not {a.project}", 1)
+        for s in inflow.get("sources", []):
+            for i in s.get("open_ids") or []:
+                source[i] = s["source"]
     kpis = past_kpis(scorecard) if scorecard else []
     reds = live_reds(a.reds_cmd) if a.reds_cmd else []
     os.makedirs(a.dir, exist_ok=True)
@@ -203,7 +215,8 @@ def cmd_export(a):
     write_tsv(os.path.join(a.dir, "rows.tsv"), ROW_FIELDS,
               [[r["id"], r["state"], r.get("priority") or "-", r.get("parent") or "-", r.get("prio_why") or "-",
                 "yes" if requested(r) else "no", r.get("since") or "-", plan_of(r), after_of(r),
-                children.get(r["id"], 0), exported_children.get(r["id"], 0), r.get("text")] for r in rows])
+                children.get(r["id"], 0), exported_children.get(r["id"], 0), source.get(r["id"], "-"),
+                r.get("text")] for r in rows])
     n = max(1, a.chunk)
     chunks = [rows[i:i + n] for i in range(0, len(rows), n)]
     for k, chunk in enumerate(chunks, 1):
@@ -215,7 +228,8 @@ def cmd_export(a):
                 tags = " ".join(tags)
                 f.write(f"{r['id']} [{r['state']}] {r.get('priority') or '-'} epic:{r.get('parent') or '-'}"
                         f" why:{r.get('prio_why') or '-'} since:{r.get('since') or '-'}"
-                        f" plan:{plan_of(r)} after:{after_of(r)} children:{children.get(r['id'], 0)}\n")
+                        f" plan:{plan_of(r)} after:{after_of(r)} children:{children.get(r['id'], 0)}"
+                        f" source:{source.get(r['id'], '-')}\n")
                 f.write(f"  {clean(r.get('text'))}{' ' + tags if tags else ''}\n")
                 for d in r.get("details") or []:
                     f.write(f"  | {clean(d)[:600]}\n")
@@ -481,6 +495,7 @@ def main():
     e.add_argument("--board", help="a saved `notes board --json`, instead of calling notes")
     e.add_argument("--scorecard", help=f"the scorecard whose past KPIs the judges score against (default {SCORECARD}; '' for none)")
     e.add_argument("--reds-cmd", default="fleet-bench reds")
+    e.add_argument("--inflow", help="a saved `fleet-bench inflow --json`, for each row's source")
     e.add_argument("--repo", action="append", default=[], help="a git checkout whose origin/main commit subjects name rows")
     e.add_argument("--since", type=int, default=30, help="days of commits --repo reads")
     e.add_argument("dir")
