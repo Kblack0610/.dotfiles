@@ -1,15 +1,16 @@
 #!/bin/bash
-# Stop-post: register a MEANINGFUL session into an agent-facing registry so an
+# Stop-post: register the session into an agent-facing registry so an
 # agent (or the user) can later list / resume / compact it. Never blocks.
 #
 # Key points:
 #   - Destination is the AGENT axis ~/.agent/sessions/{project}/sessions.jsonl,
 #     never the human ~/.notes/inbox (low-noise, agent-facing by design).
-#   - "Meaningful" = the session actually did work: >=1 Edit/Write tool_use in
-#     the transcript, OR a dirty git worktree, OR an agentctl runner (AGENTCTL_NAME,
-#     which the agentctl runner wrapper exports): a read-only runner still spends, and its row
-#     carries the cost and the runner's name in `agentctl` (outcome rows already use
-#     `runner` as a boolean). Pure Q&A / read-only by hand -> no entry.
+#   - Every session is registered from its first Stop, read-only ones too: a session spends
+#     whether or not it edits, and agentctl-session-outcomes, fleet-bench and `sessions` read
+#     their sessions from here. `edits` counts the Edit/Write/MultiEdit/NotebookEdit tool_use
+#     calls, not lines naming them: every transcript carries the tool schemas (ar-143). An
+#     agentctl runner (AGENTCTL_NAME, which the runner wrapper exports) also gets its name in
+#     `agentctl` (outcome rows already use `runner` as a boolean).
 #   - Upsert by session_id: exactly ONE line per session, not per turn.
 #   - Self-heals: drops lines whose transcript file no longer exists, but only lines
 #     this machine wrote (`host`). store-sync shares the registry across the fleet, so
@@ -42,21 +43,13 @@ if [ ! -d "$PROJECT_DIR" ]; then
   [ -n "$PRIOR" ] && PROJECT_NAME=$(basename "$(dirname "$PRIOR")")
 fi
 
-# --- meaningful gate: real work only, else skip silently ---
-# grep -c prints "0" and exits 1 on no match; capture stdout only, default empty->0.
-EDITS=$(grep -c -E '"name":"(Edit|Write|MultiEdit|NotebookEdit)"' "$TRANSCRIPT" 2>/dev/null)
+# --- edits: the edit tool calls; grep only narrows the lines jq parses ---
+EDITS=$(grep -E '"name":"(Edit|Write|MultiEdit|NotebookEdit)"' "$TRANSCRIPT" 2>/dev/null |
+  jq -Rn '[inputs | fromjson? | select(.type == "assistant") | .message.content[]?
+           | select(.type == "tool_use" and (.name | IN("Edit", "Write", "MultiEdit", "NotebookEdit")))] | length' 2>/dev/null)
 EDITS=${EDITS:-0}
-DIRTY=false
 cd "$PROJECT_DIR" 2>/dev/null || true
-if git rev-parse --git-dir >/dev/null 2>&1; then
-  if ! git diff --quiet HEAD 2>/dev/null || ! git diff --cached --quiet 2>/dev/null; then
-    DIRTY=true
-  fi
-fi
 AGENTCTL="${AGENTCTL_NAME:-}"
-if [ "${EDITS:-0}" -lt 1 ] && [ "$DIRTY" = false ] && [ -z "$AGENTCTL" ]; then
-  exit 0
-fi
 
 # --- build the record fields ---
 HISTORY="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/history.jsonl"

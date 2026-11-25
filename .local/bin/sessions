@@ -447,7 +447,7 @@ cmd_show() {
   dir="$(session_cwd "$id")"
   # Unregistered sessions carry no project or edit count; derive what we can.
   [ -n "$proj" ] || proj="$([ -n "$dir" ] && resolve_project "$dir")"
-  [ -n "$edits" ] || edits="? (never registered - no file edits)"
+  [ -n "$edits" ] || edits="? (never registered)"
   mark="$(live_marker "$id")"
 
   printf '%s\n' "${title:-(untitled)}"
