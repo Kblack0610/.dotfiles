@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # pre-push: refuse a push whose changed paths fail the offline steps of .github/workflows/tests.yml
 # (the house rules and shellcheck, cargo fmt + clippy). Why and budget: ~/.local/src/docs/ci.md
-# speed lever 3. Bypass, deliberately: git push --no-verify. CI stays the authority.
+# speed lever 3. CI stays the authority; an agent session cannot skip it (skip-guard).
 # Each tests.yml job is run here or named CI only; tests/unit/prepush_hook.bats checks the ids.
 #   runs:    lint  rust
-#   CI only: fast weights ui gate report notes skills
+#   CI only: fast weights image ui gate report notes skills
 # One step is no tests.yml job: the launch table check of the private repo's ledger.yml.
 # The first push per crate or toolchain builds its dependencies cold (minutes); later ones reuse the cache.
 # fast stays CI only: the unit bats took 17 s to over 120 s a push, past the 10 s budget.
@@ -113,7 +113,7 @@ if [ -x .local/bin/fleet-bench ] && [ -r "$priv/.config/agentctl/PIPELINES.md" ]
 fi
 
 if [ "$rc" -ne 0 ]; then
-  echo "pre-push: refused after $((SECONDS - started))s. Fix the above, or push with --no-verify (CI runs the same checks)." >&2
+  echo "pre-push: refused after $((SECONDS - started))s. Fix the above (CI runs the same checks)." >&2
   exit 1
 fi
 echo "pre-push: ok in $((SECONDS - started))s" >&2
