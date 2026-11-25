@@ -4647,10 +4647,11 @@ a"
   # 2026-11-23 (ar-5357): P2 and P3 of a plan went back to their rows for low ar-4852 and urgent
   # bar-139, and the chain stopped there.
   printf '# P\n\n## Phases\n\n- [ ] one\n- [ ] two\n' > "$SANDBOX/plan.md"
+  # b goes in first, so it ranks before the phases and the last-ranked item is a phase.
+  "$AQ" add --project game --from shepherd --priority low --slug b "b" >/dev/null
   "$AQ" add --project game --from shepherd --priority low --slug p2 "feat(game): P2
 Phase 2 of the plan $SANDBOX/plan.md: the doors." >/dev/null
   legacy p3 "plan: $SANDBOX/plan.md" --project game --from shepherd --priority low "feat(game): P3"
-  "$AQ" add --project game --from shepherd --priority low --slug b "b" >/dev/null
   for s in p2 p3 b; do "$AQ" set "$s" row="game:gm-$s" >/dev/null; done
   export AGENT_QUEUE_CAP=3
   AGENT_QUEUE_PULL=after run "$AQ" add --project game --priority low --from board:game:gm-9 --slug gm-9 "feat(game): the hinges"
