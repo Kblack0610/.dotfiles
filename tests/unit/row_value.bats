@@ -567,7 +567,9 @@ focus_fixture() {
  {"project":"agent-runtime","lane":"agent","state":"doing","id":"ar-58","priority":"high","text":"fix(dispatch): live item","tags":[],"details":[]},
  {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-59","text":"chore(x): new since the ledger","tags":[],"details":[]},
  {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-60","priority":"normal","text":"fix(views): a tile shows a stale count","tags":[],"details":[]},
- {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-61","priority":"low","text":"fix(telemetry): a watch pages twice","tags":[],"details":[]}
+ {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-61","priority":"low","text":"fix(telemetry): a watch pages twice","tags":[],"details":[]},
+ {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-62","priority":"low","prio_why":"requested","requested":true,"text":"fix(notes): the human asked, a red","tags":[],"details":[]},
+ {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-63","priority":"normal","text":"fix(trader): a trader fault","tags":[],"details":[]}
 ]}
 EOF2
   # id state epic plan after children source bucket system project target ref kind verdict into evidence why text tie
@@ -585,6 +587,8 @@ EOF2
     fled ar-58 ar-2 fault dispatch work "fix(dispatch): live item"
     fled ar-60 ar-5 fault views work "fix(views): a tile shows a stale count"
     fled ar-61 ar-1 red telemetry work "fix(telemetry): a watch pages twice"
+    fled ar-62 ar-1 red notes work "fix(notes): the human asked, a red"
+    fled ar-63 ar-5 fault ci work "fix(trader): a trader fault" | sed 's/\tagent-runtime\tnone/\ttrader\tnone/'
   } >"$HOME/fled.tsv"
   FOCUS=(focus --board "$HOME/board3.json" --notes "$HOME/bin/notes" --out "$HOME/focus" --log "$HOME/focus.log")
 }
@@ -598,7 +602,8 @@ EOF2
   assert_output --partial "dispatch: dispatch and landing: 4 rows (red 1, requested 1, blocks landing or dispatch 1, fault 1, sot 0)"
   assert_output --partial "telemetry: telemetry and alerts: 2 rows (red 2, requested 0, blocks landing or dispatch 0, fault 0, sot 0)"
   assert_output --partial "rest: views, skills and the rest: 1 rows"
-  assert_output --partial "not worked here: chain 1, doing 1, unjudged 1"
+  assert_output --partial "not worked here: chain 1, doing 1, other board 1, unjudged 1"
+  assert_output --partial "notes: notes: 1 rows (red 1,"
   run cut -f1-4 "$HOME/focus/focus-dispatch.tsv"
   assert_output "$(printf 'rank\tid\tbucket\tpriority\nred\tar-50\tred\tnormal\nrequested\tar-56\trequested\tnormal\nblocks landing or dispatch\tar-52\tfault\thigh\nfault\tar-53\tfault\tnormal')"
   # A session fault is high but blocks neither landing nor dispatch.
@@ -618,7 +623,14 @@ EOF2
   assert_output "$(printf '%s\n' 'ptask agent-runtime --agent tag --why runtime-fault ar-50' 'ptask agent-runtime --agent tag --why runtime-fault ar-61')"
   run awk -F'\t' '$5 == "tag" { print $1, $6 }' "$HOME/focus.log"
   assert_output "$(printf 'ar-50 ok\nar-61 failed 1: refused: locked')"
-  # The check row (ar-51) ranks first in its group but its priority is left alone.
+  # A retagged red reads high in its list and the log; a refused one keeps its old priority.
+  run awk -F'\t' '$2 == "ar-50" { print $4 }' "$HOME/focus/focus-dispatch.tsv"
+  assert_output high
+  run awk -F'\t' '$2 == "ar-61" { print $4 }' "$HOME/focus/focus-telemetry.tsv"
+  assert_output low
+  run awk -F'\t' '$1 == "ar-62" { print $5 }' "$HOME/focus.log"
+  assert_output "-"
+  # The check row (ar-51) and the human's own row (ar-62) rank as reds but keep their tag.
   run cut -f1,2 "$HOME/focus/focus-telemetry.tsv"
   assert_output "$(printf 'rank\tid\nred\tar-51\nred\tar-61')"
 }

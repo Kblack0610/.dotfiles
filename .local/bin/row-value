@@ -64,9 +64,10 @@
       and each group is ranked live reds, the human's asks, faults that block landing or dispatch
       (a high or urgent fault in dispatch or ci), the remaining faults, then sot. It writes
       DIR/focus-<group>.tsv (rank, id, bucket, priority, epic, title), the list a group's queue item
-      works leaf by leaf, and prints the counts. A live red of kind work below high is
+      works leaf by leaf, and prints the counts. A live red of kind work below high, and not asked for by the human, is
       retagged `notes ptask tag --why runtime-fault` with --write (a check row names a red and fixes
-      nothing); nothing else is retagged. The log has one
+      nothing, and a requested row keeps its reason); nothing else is retagged. A row serving another
+      project (not a red, not a dotfiles fix) is left to its own board. The log has one
       line per listed row: id, group, rank, priority, action, result.
 
 The rubric, its lists and its rules are data: ~/.config/row-value/rubric.md. Every board read goes
@@ -869,6 +870,8 @@ def cmd_focus(a):
             skipped["doing"] += 1
         elif not r:
             skipped["unjudged"] += 1
+        elif r["project"] != a.project and r["bucket"] != "red" and not DOTFILES_FIX_RE.search(r["evidence"]):
+            skipped["other board"] += 1
         elif focus_rank(r, priority) is None:
             skipped[r["bucket"]] += 1
         elif group_of(r) is None:
@@ -878,27 +881,40 @@ def cmd_focus(a):
     os.makedirs(a.out, exist_ok=True)
     pt = [a.notes, "ptask", a.project, "--agent"]
     failed = 0
+    # The retag pass runs first, so each list and the log show the priority the board now holds.
+    outcome = {}
+    for gid, _, _, _ in groups:
+        for n, (k, row, r, pr) in enumerate(listed[gid]):
+            # A red already high, a check row (it names a red and fixes nothing) and a row the human
+            # asked for (--why would replace its `requested` reason) keep their tag.
+            if k != 0 or pr in HIGH or r["kind"] != "work" or row.get("requested") or row.get("prio_why") == "requested":
+                continue
+            result = "planned"
+            if a.write:
+                try:
+                    out = subprocess.run(pt + ["tag", "--why", "runtime-fault", row["id"]], capture_output=True, text=True)
+                    code, err = out.returncode, (out.stderr.strip().splitlines() or ["-"])[-1][:200]
+                except OSError as e:
+                    code, err = 127, str(e)
+                result = "ok" if code == 0 else f"failed {code}: {err}"
+                failed += code != 0
+                if code == 0:
+                    listed[gid][n] = (k, row, r, "high")
+            outcome[row["id"]] = result
     with open(a.log, "w") as log:
         log.write("\t".join(FOCUS_LOG) + "\n")
         for gid, title, _, _ in groups:
             rows = sorted(listed[gid], key=lambda t: (t[0], 0 if t[3] in HIGH else 1, int(re.sub(r"\D", "", t[1]["id"]) or 0)))
             write_tsv(os.path.join(a.out, f"focus-{gid}.tsv"), ["rank", "id", "bucket", "priority", "epic", "title"],
-                      [[RANKS[k], row["id"], r["bucket"], pr, r["epic"], title_of(row["text"])] for k, row, r, pr in rows])
+                      [[RANKS[k], row["id"], r["bucket"], pr, r.get("epic", "-"), title_of(row["text"])] for k, row, r, pr in rows])
             for k, row, r, pr in rows:
-                action, result = "-", "-"
-                if k == 0 and pr not in HIGH and r["kind"] == "work":
-                    action = "tag"
-                    result = "planned"
-                    if a.write:
-                        out = subprocess.run(pt + ["tag", "--why", "runtime-fault", row["id"]], capture_output=True, text=True)
-                        result = "ok" if out.returncode == 0 else f"failed {out.returncode}: {(out.stderr.strip().splitlines() or ['-'])[-1][:200]}"
-                        failed += out.returncode != 0
-                log.write("\t".join(clean(str(c)) for c in [row["id"], gid, RANKS[k], pr, action, result]) + "\n")
+                result = outcome.get(row["id"], "-")
+                log.write("\t".join(clean(str(c)) for c in [row["id"], gid, RANKS[k], pr, "tag" if result != "-" else "-", result]) + "\n")
     print(f"focus groups -> {a.out}" + ("" if a.write else " (dry run: nothing retagged)"))
     for gid, title, _, _ in groups:
         n = collections.Counter(RANKS[k] for k, *_ in listed[gid])
         print(f"{gid}: {title}: {len(listed[gid])} rows (" + ", ".join(f"{RANKS[i]} {n[RANKS[i]]}" for i in range(len(RANKS))) + ")")
-    print("not worked here: " + ", ".join(f"{k} {n}" for k, n in sorted(skipped.items())))
+    print("not worked here: " + (", ".join(f"{k} {n}" for k, n in sorted(skipped.items())) or "none"))
     return 1 if failed else 0
 
 
