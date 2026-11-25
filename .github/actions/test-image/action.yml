@@ -37,6 +37,7 @@ runs:
       shell: bash
       env:
         TMUX_REF: ${{ inputs.tmux }}
+        SEED: ${{ inputs.seed }}
       # The week is in the key because the image also takes in what the hash cannot see: the
       # debian base tag and unpinned apt packages. A gate never tests an image over a week old.
       # A pool runner keeps its images between jobs, so one already present and built this week
@@ -45,7 +46,8 @@ runs:
         tag=$(tests/docker.sh --image) week=$(date -u +%G-W%V)
         echo "tag=$tag" >> "$GITHUB_OUTPUT"
         echo "week=$week" >> "$GITHUB_OUTPUT"
-        if created=$(docker image inspect -f '{{.Created}}' "$tag" 2>/dev/null) &&
+        # A seed run asks the registry, whatever this daemon holds.
+        if [ "$SEED" != true ] && created=$(docker image inspect -f '{{.Created}}' "$tag" 2>/dev/null) &&
           [ "$(date -u -d "$created" +%G-W%V)" = "$week" ]; then
           echo present=true >> "$GITHUB_OUTPUT"
         fi
@@ -81,13 +83,13 @@ runs:
             fi
             echo pulled=true >> "$GITHUB_OUTPUT"
           else
-            echo "::warning::registry has no $ref (or not reachable); using the Actions cache"
+            echo "::warning::registry has no $ref (or not reachable); the Actions cache or a build serves the image"
           fi
         else
-          echo "::warning::registry login failed; using the Actions cache"
+          echo "::warning::registry login failed; the Actions cache or a build serves the image"
         fi
     # The Actions cache is the loader for a run with no registry; a seed run builds instead, as the
-    # restore over the shared WAN is the slower path (1.3 MB/s on 2026-11-25).
+    # restore over the shared WAN is the slower path (1.3 MB/s on 2026-11-25), then pushes.
     - id: cache
       if: steps.tag.outputs.present != 'true' && steps.reg.outputs.pulled != 'true' && inputs.seed != 'true'
       uses: actions/cache/restore@v4
@@ -117,8 +119,8 @@ runs:
         tests/docker.sh --build
     # Only a seed run pushes: every job that loads the image waits for it (tests.yml `image`), so a
     # load job that missed the registry anyway builds for itself and leaves the registry alone,
-    # where twenty pushes of one tag at once were the 2026-11-25 burst. A failed push fails the
-    # seed, so the jobs behind it do not all rebuild on a registry that took nothing.
+    # where twenty pushes of one tag at once were the 2026-11-25 burst. A failed push warns, as the
+    # registry is a speed path and the Actions cache below still serves the jobs behind the seed.
     - id: push
       if: inputs.seed == 'true' && steps.build.outcome == 'success'
       shell: bash
@@ -127,11 +129,16 @@ runs:
         REF: ${{ steps.reg.outputs.ref }}
       run: |
         docker tag "$TAG" "$REF"
-        timeout 600 docker push -q "$REF" >/dev/null
-    # The Actions cache is the load path of a run with no registry (a hosted runner, a fork): a build
-    # there is saved for the next job. A pool pod never uploads a 943 MB cache for a registry miss.
+        if timeout 600 docker push -q "$REF" >/dev/null; then
+          echo pushed=true >> "$GITHUB_OUTPUT"
+        else
+          echo "::warning::push of $REF failed; the image goes to the Actions cache instead"
+        fi
+    # The Actions cache is saved from a build unless the registry took the image (a seed run's
+    # push): a 943 MB upload per build is the transfer this action exists to avoid, but a failed
+    # push, a load job's own build, or no registry (hosted runner) still needs the cache fallback.
     - id: save
-      if: steps.build.outcome == 'success' && inputs.seed != 'true' && steps.reg.outputs.login != 'true'
+      if: steps.build.outcome == 'success' && steps.push.outputs.pushed != 'true'
       shell: bash
       env:
         TAG: ${{ steps.tag.outputs.tag }}

@@ -199,6 +199,48 @@ jobs:
           registry: ${{ vars.CI_REGISTRY }}
           registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
 
+      # The weekly sweep's other tmux versions (the ui matrix below; unit/ci_gate.bats keeps the lists equal).
+      - name: Seed the full stage, tmux 3.4
+        if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+        uses: ./.github/actions/test-image
+        env:
+          TEST_IMAGE_KIND: full
+        with:
+          tmux: '3.4'
+          seed: true
+          registry: ${{ vars.CI_REGISTRY }}
+          registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
+      - name: Seed the full stage, tmux 3.5a
+        if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+        uses: ./.github/actions/test-image
+        env:
+          TEST_IMAGE_KIND: full
+        with:
+          tmux: '3.5a'
+          seed: true
+          registry: ${{ vars.CI_REGISTRY }}
+          registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
+      - name: Seed the full stage, tmux 3.6a
+        if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+        uses: ./.github/actions/test-image
+        env:
+          TEST_IMAGE_KIND: full
+        with:
+          tmux: '3.6a'
+          seed: true
+          registry: ${{ vars.CI_REGISTRY }}
+          registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
+      - name: Seed the full stage, tmux 3.7b
+        if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+        uses: ./.github/actions/test-image
+        env:
+          TEST_IMAGE_KIND: full
+        with:
+          tmux: '3.7b'
+          seed: true
+          registry: ${{ vars.CI_REGISTRY }}
+          registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
+
   fast:
     name: fast tier (${{ matrix.tier }} ${{ matrix.shard }})
     needs: [weights, image]

@@ -147,7 +147,7 @@ host_installs() {
 }
 
 # kinds <wf>: "<job> <kind>" for every job that loads the test image, kind "-" when it names none
-# A job names its stage in its env (6 spaces); the image job, which seeds all three, names one in each
+# A job names its stage in its env (6 spaces); the image job, which seeds every stage and the sweep's tmux versions, names one in each
 # step's env (10 spaces), in the order they run.
 kinds() {
   awk '
@@ -163,7 +163,7 @@ kinds() {
   assert_success
   # The cheapest stage with the tools each job runs (tests/Dockerfile): the pool's link is shared,
   # so a job that loads more than it uses can run out its timeout in the restore (ar-5632).
-  assert_output "$(printf '%s\n' 'fast lean' 'image lean,rust,full' 'lint lean' 'notes rust' 'rust full' 'ui full')"
+  assert_output "$(printf '%s\n' 'fast lean' 'image lean,rust,full,full,full,full,full' 'lint lean' 'notes rust' 'rust full' 'ui full')"
   # Negative control: a job with no kind is named "-".
   sed '/TEST_IMAGE_KIND: lean   # shellcheck/d' "$WF" >"$BATS_TEST_TMPDIR/nokind.yml"
   run kinds "$BATS_TEST_TMPDIR/nokind.yml"
@@ -206,13 +206,33 @@ waits_for_image() {
   assert_output 'lint'
 }
 
-@test "only a seed run of the test-image action pushes, and a failed push fails it" {
+@test "only a seed run of the test-image action pushes" {
   ACT="$BATS_TEST_DIRNAME/../../.github/actions/test-image/action.yml"
   push=$(sed -n '/^    - id: push$/,/^    # /p' "$ACT")
   [[ "$push" == *"inputs.seed == 'true'"* ]] || fail "the push step is not seed-only: $push"
-  [[ "$push" != *"|| echo"* && "$push" != *"::warning"* ]] || fail "a failed push is swallowed: $push"
   # Negative control: a push that loses the seed condition is not seed-only.
   sed "/^    - id: push\$/,/^      shell/ s/inputs.seed == 'true' && //" "$ACT" >"$BATS_TEST_TMPDIR/push.yml"
   run sed -n '/^    - id: push$/,/^    # /p' "$BATS_TEST_TMPDIR/push.yml"
   [[ "$output" != *"inputs.seed == 'true'"* ]]
+}
+
+# unseeded <wf>: tmux versions of the ui sweep matrix, bar docker.sh's default (the image job's own
+# steps), with no seed step in the image job
+unseeded() {
+  local v dflt
+  dflt=$(sed -nE 's/^TMUX_REF="\$\{TMUX_REF:-([^}]*)\}"$/\1/p' "$BATS_TEST_DIRNAME/../docker.sh")
+  [ -n "$dflt" ] || fail "no default TMUX_REF read from docker.sh"
+  for v in $(grep -E "^ +tmux: .*schedule" "$1" | grep -oE '"3\.[0-9a-z]+"' | tr -d '"' | sort -u); do
+    [ "$v" = "$dflt" ] || grep -qF "          tmux: '$v'" "$1" || echo "$v"
+  done
+}
+
+@test "the image job seeds every tmux version the weekly ui sweep loads" {
+  run unseeded "$WF"
+  assert_success
+  assert_output ''
+  # Negative control: a sweep version with no seed step is named.
+  sed "/tmux: '3.6a'/d" "$WF" >"$BATS_TEST_TMPDIR/unseeded.yml"
+  run unseeded "$BATS_TEST_TMPDIR/unseeded.yml"
+  assert_output '3.6a'
 }
