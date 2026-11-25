@@ -469,7 +469,7 @@ const SLOT_HEAD: [&str; 8] = [
     "HOST", "SLOT", "STATE", "POOL", "RAN", "USUAL", "JOB", "REF",
 ];
 
-/// Every CI slot with the job it runs and how long against its usual; a late job is amber.
+/// Every CI runner with a job, how long it has run against its usual; a late job is amber.
 fn runners(d: &Draw, rows: &[Slot]) -> Vec<Line<'static>> {
     let p = d.p;
     let secs = |v: Option<i64>| v.map_or("-".to_string(), |s| dur_secs(s as f64));
@@ -479,17 +479,10 @@ fn runners(d: &Draw, rows: &[Slot]) -> Vec<Line<'static>> {
         "no runner reports",
         None,
         |r| {
-            let state = match r.state.as_str() {
-                "busy" => Style::default(),
-                "withheld" => p.warn(),
-                "off" => p.bad(),
-                _ => p.dim(),
-            };
-            let busy = r.state == "busy";
             vec![
                 r.host.clone().into(),
                 r.slot.clone().into(),
-                cell(&r.state, state),
+                cell(&r.state, Style::default()),
                 or_dash(r.pool.clone()),
                 if r.late {
                     cell(format!("{}!", secs(r.ran)), p.warn())
@@ -497,8 +490,8 @@ fn runners(d: &Draw, rows: &[Slot]) -> Vec<Line<'static>> {
                     secs(r.ran).into()
                 },
                 secs(r.usual).into(),
-                or_dash(if busy { r.job.clone() } else { r.note.clone() }),
-                or_dash(if busy { r.reference() } else { String::new() }),
+                or_dash(r.job.clone()),
+                or_dash(r.reference()),
             ]
         },
         Table {
