@@ -2745,7 +2745,9 @@ audit_of() {
   a="$(live_post sid-1 'stuck once?' 2>/dev/null)"
   run "$AGENT_ASK" show "$a"; assert_line 'judge_reason: the judge call timed out after 1s'
   fake_judge "$(score ship_deploy "" "rules say fix it yourself.")"
-  "$AGENT_ASK" assume-due 2>/dev/null
+  # The healthy pass runs under the default guard: the whole judge call passed 1s on a loaded
+  # runner and timed out again (PR #3435 CI, 2026-11-25). Only the stalled calls need the 1s guard.
+  AGENT_ASK_JUDGE_TIMEOUT=30 "$AGENT_ASK" assume-due 2>/dev/null
   run "$AGENT_ASK" show "$a"
   assert_line 'judge: take-recommend'; assert_line 'answered_by: judge'; assert_line 'status: answered'
   # A call that stalls again keeps the error, says so, and is not tried a third time.
