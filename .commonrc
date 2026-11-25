@@ -135,27 +135,7 @@ function ensure_daily_note() {
         notes today
     else
         # Fallback to the legacy script if the binary isn't built on this machine
-        journal-create && legacy_link_refs_to_daily
-    fi
-}
-
-# Legacy ref-linker kept as a fallback for machines without the notes binary built.
-function legacy_link_refs_to_daily() {
-    local DATE=$(date +%Y-%m-%d)
-    local NOTE_FILE="$HOME/.notes/journal/daily/$DATE.md"
-    local REFS_DIR="$HOME/.notes/journal/refs/$DATE"
-    [[ ! -d "$REFS_DIR" ]] && return
-    [[ ! -f "$NOTE_FILE" ]] && return
-    local refs=($(find "$REFS_DIR" -type f -name "*.md" 2>/dev/null))
-    [[ ${#refs[@]} -eq 0 ]] && return
-    if grep -q "^## Refs$" "$NOTE_FILE"; then
-        for ref in "${refs[@]}"; do
-            local name=$(basename "$ref" .md)
-            local link="[[journal/refs/$DATE/$name]]"
-            grep -qF "$link" "$NOTE_FILE" || sed -i "/^## Refs$/a - $link" "$NOTE_FILE"
-        done
-    else
-        { echo ""; echo "## Refs"; for ref in "${refs[@]}"; do echo "- [[journal/refs/$DATE/$(basename "$ref" .md)]]"; done; } >> "$NOTE_FILE"
+        journal-create
     fi
 }
 

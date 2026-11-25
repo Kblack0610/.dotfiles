@@ -395,7 +395,8 @@ finalize() {
   local day="$1" f out
   f="$(snapshot "$day")" || return 1
   out="$DAYLOG_REFS_DIR/$day/shipped.md"
-  mkdir -p "${out%/*}" && markdown "$f" > "$out.tmp" && mv "$out.tmp" "$out" || { say "could not write $out"; return 1; }
+  # `generated: true` classes it as a digest for `notes report` and keeps it out of the knowledge engine's sources.
+  mkdir -p "${out%/*}" && { printf -- '---\ngenerated: true\n---\n\n'; markdown "$f"; } > "$out.tmp" && mv "$out.tmp" "$out" || { say "could not write $out"; return 1; }
   jq -r '"\(.merged | length) \(if (.merged | length) == 1 then "PR" else "PRs" end) merged across \(.merged | map(.repo) | unique | length) repos"' "$f"
 }
 

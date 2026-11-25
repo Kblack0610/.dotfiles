@@ -45,6 +45,7 @@ mod project_tasks;
 mod projects;
 mod propose;
 mod rank;
+mod report;
 mod sheet;
 mod shipped;
 mod show;
@@ -115,8 +116,14 @@ enum Cmd {
         #[arg(long, value_name = "BASE")]
         base: String,
     },
-    /// Link today's ref files into today's note's `## Refs` section
+    /// Rebuild today's refs index and point today's note's `## Refs` at it
     LinkRefs,
+    /// Agent reports for the human, one per file in the day's refs folder: add (or revise),
+    /// list across days, mark read
+    Report {
+        #[command(subcommand)]
+        sub: report::Cmd,
+    },
     /// Summarize a day's note into the continuous monthly log (dedup-safe)
     Summarize {
         /// Date to summarize (YYYY-MM-DD); defaults to yesterday
@@ -1539,6 +1546,7 @@ fn main() -> Result<()> {
             daily::link_refs(&prof, &log)?;
             0
         }
+        Cmd::Report { sub } => report::run(&prof, &log, sub)?,
         Cmd::Summarize { date, force } => {
             summarize::run(&prof, &log, date.as_deref(), force)?;
             0

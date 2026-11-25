@@ -553,7 +553,7 @@ fn morning_section(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> St
     // The day log, as one line: its first sentence is the count of what merged.
     let (shipped, link) = refs_note(p, &today_s, SHIPPED);
     if let Ok(text) = fs::read_to_string(shipped) {
-        let first = text
+        let first = crate::report::body_of(&text)
             .lines()
             .map(str::trim)
             .find(|l| !l.is_empty() && !l.starts_with('#'))
@@ -589,7 +589,7 @@ fn refresh_morning(p: &Profile, note: &Path, today: NaiveDate) -> Result<()> {
     Ok(())
 }
 
-/// Link today's ref files into the note's `## Refs` section and re-render `## Morning`
+/// Rebuild today's refs index, point the note's `## Refs` at it, and re-render `## Morning`
 /// (idempotent). The briefing writer calls this after it lands, so a note created before the
 /// briefing stops saying "not written yet".
 pub fn link_refs(p: &Profile, log: &Logger) -> Result<()> {
@@ -597,8 +597,7 @@ pub fn link_refs(p: &Profile, log: &Logger) -> Result<()> {
 }
 
 fn link_refs_on(p: &Profile, log: &Logger, day: NaiveDate) -> Result<()> {
-    let today = day.format("%Y-%m-%d").to_string();
-    let note = p.daily.join(format!("{today}.md"));
+    let note = p.daily.join(format!("{}.md", day.format("%Y-%m-%d")));
     if !note.exists() {
         return Ok(());
     }
@@ -606,53 +605,66 @@ fn link_refs_on(p: &Profile, log: &Logger, day: NaiveDate) -> Result<()> {
     if let Err(e) = refresh_morning(p, &note, day) {
         log.warn("link-refs", &format!("morning section skipped: {e}"));
     }
-    let refs_dir = p.refs.join(&today);
-    if !refs_dir.exists() {
+    link_day_refs(p, log, day)
+}
+
+/// Rebuild `day`'s refs index (`report::rebuild_index`) and make that day's note's `## Refs`
+/// the one link to it. The section carries the link once the day has a ref that `## Morning`
+/// does not already render (anything but the briefing and the day log). Lines the old per-file
+/// linker wrote for that day are replaced by the link; anything else under `## Refs` is the
+/// human's and stays. `notes report add` calls this for the day it files to, so a late write
+/// is listed by the index with no second pass.
+pub(crate) fn link_day_refs(p: &Profile, log: &Logger, day: NaiveDate) -> Result<()> {
+    let entries = crate::report::rebuild_index(p, day)?;
+    let note = p.daily.join(format!("{}.md", day.format("%Y-%m-%d")));
+    if !note.exists() {
         return Ok(());
     }
-
-    let mut names: Vec<String> = Vec::new();
-    for entry in fs::read_dir(&refs_dir)? {
-        let path = entry?.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("md") {
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                // The briefing and day log are rendered in `## Morning`; listing them here would
-                // say it twice.
-                if stem != "_index" && stem != BRIEFING && stem != SHIPPED {
-                    names.push(stem.to_string());
-                }
-            }
-        }
-    }
-    if names.is_empty() {
-        return Ok(());
-    }
-    names.sort();
-
-    let mut content = fs::read_to_string(&note)?;
-    let links: Vec<String> = names
+    let wanted = entries
         .iter()
-        .map(|n| format!("- [[{}/{}/{}]]", p.refs_rel, today, n))
-        .filter(|link| !content.contains(link.trim_start_matches("- ")))
-        .collect();
-    if links.is_empty() {
-        return Ok(());
+        .any(|e| e.stem != BRIEFING && e.stem != SHIPPED);
+    let content = fs::read_to_string(&note)?;
+    let updated = refs_section(&content, &p.refs_rel, day, wanted);
+    if updated != content {
+        md::write_atomic(&note, &updated)?;
+        log.info("link-refs", "linked the refs index");
     }
+    Ok(())
+}
 
-    if content.contains("## Refs") {
-        content = md::insert_under_heading(&content, "Refs", &links);
-    } else {
-        let mut block = String::from("\n## Refs\n");
-        for l in &links {
-            block.push_str(l);
-            block.push('\n');
+/// `content` with its `## Refs` holding `- [[<refs_rel>/<day>/_index]]` (when `wanted`) in
+/// place of the per-file links an older `link-refs` wrote for that day.
+fn refs_section(content: &str, refs_rel: &str, day: NaiveDate, wanted: bool) -> String {
+    let day = day.format("%Y-%m-%d");
+    let link = format!("- [[{refs_rel}/{day}/{}]]", crate::report::INDEX);
+    let per_file = format!("- [[{refs_rel}/{day}/");
+    let lines: Vec<&str> = content.lines().collect();
+    let Some(span) = md::section_span(&lines, "Refs") else {
+        if !wanted {
+            return content.to_string();
         }
         // keep Refs above any trailing footer
-        content = insert_before_footer(&content, &block);
+        return insert_before_footer(content, &format!("\n## Refs\n{link}\n"));
+    };
+    let mut body: Vec<&str> = lines[span.clone()]
+        .iter()
+        .copied()
+        .filter(|l| {
+            let l = l.trim_end();
+            *l == link || !(l.starts_with(&per_file) && l.ends_with("]]"))
+        })
+        .collect();
+    if wanted && !body.contains(&link.as_str()) {
+        body.insert(0, link.as_str());
     }
-    md::write_atomic(&note, &content)?;
-    log.info("link-refs", &format!("linked {} ref(s)", links.len()));
-    Ok(())
+    let mut out: Vec<&str> = lines[..span.start].to_vec();
+    out.extend(body);
+    out.extend(&lines[span.end..]);
+    let mut s = out.join("\n");
+    if content.ends_with('\n') {
+        s.push('\n');
+    }
+    s
 }
 
 /// Add the backlog footer if not already present.
@@ -2639,7 +2651,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             dir.join("journal/refs/2026-09-30/shipped.md"),
-            "# Day log, 2026-09-30\n\n3 PRs merged in 2 repos; 4 sessions spent $4.5. Gathered by `day-log`.\n",
+            "---\ngenerated: true\n---\n\n# Day log, 2026-09-30\n\n3 PRs merged in 2 repos; 4 sessions spent $4.5. Gathered by `day-log`.\n",
         )
         .unwrap();
         for (d, line) in [
@@ -2724,6 +2736,51 @@ mod tests {
         assert!(
             !out.contains("## Refs"),
             "the briefing is not listed twice:\n{out}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `## Refs` is one link to the day's index: the per-file lines an older `link-refs` wrote
+    /// go, a line the human typed stays, and a ref written after the last run is listed by the
+    /// index with no new line in the note.
+    #[test]
+    fn refs_is_one_index_link_and_a_late_ref_lands_in_the_index() {
+        let dir = std::env::temp_dir().join(format!("notes-refsindex-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let refs = dir.join("journal/refs/2026-09-30");
+        std::fs::create_dir_all(dir.join("journal/daily")).unwrap();
+        std::fs::create_dir_all(&refs).unwrap();
+        let p = profile(dir.to_str().unwrap());
+        let log = Logger::new(dir.join("log"), false);
+        let note = dir.join("journal/daily/2026-09-30.md");
+        create_note(&p, &log, d("2026-09-30"), &note).unwrap();
+        let mut text = std::fs::read_to_string(&note).unwrap();
+        text = insert_before_footer(
+            &text,
+            "\n## Refs\n- [[journal/refs/2026-09-30/old-paste]]\n- my own line\n",
+        );
+        std::fs::write(&note, text).unwrap();
+        std::fs::write(refs.join("old-paste.md"), "pasted\n").unwrap();
+
+        link_refs_on(&p, &log, d("2026-09-30")).unwrap();
+        let out = std::fs::read_to_string(&note).unwrap();
+        assert!(
+            out.contains("## Refs\n- [[journal/refs/2026-09-30/_index]]\n- my own line\n"),
+            "{out}"
+        );
+        assert!(!out.contains("old-paste]]"), "{out}");
+
+        std::fs::write(refs.join("late.md"), "written after the run\n").unwrap();
+        link_refs_on(&p, &log, d("2026-09-30")).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&note).unwrap(),
+            out,
+            "the note is unchanged"
+        );
+        let index = std::fs::read_to_string(refs.join("_index.md")).unwrap();
+        assert!(
+            index.contains("- [[journal/refs/2026-09-30/late|late]]"),
+            "{index}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
