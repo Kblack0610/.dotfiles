@@ -5168,7 +5168,7 @@ triage_alert_rows() {
 # FAILED, a failed unit and a high or urgent watch are #high. Sentinel stays observe-only: this
 # reads its state files.
 triage_rows() {
-  local c name sd v detail u res load f n since sev what why t
+  local c name sd v detail u res load f n since sev what why t unc qowner
   t=$(now)
   proof_lib && sd=$(proof_state_dir)
   for c in "$LEDGER_CONF_DIR"/*.conf; do
@@ -5194,8 +5194,14 @@ triage_rows() {
     n=$(basename "$f" .state)
     since=$(watch_tripped_since "$n" "$t") || continue
     # A quarantine (`watch-companion-loop quarantine`, a line `UNTIL OWNER AT WHY`) names the red's
-    # owner and expiry, so it files no row until UNTIL; then it is filed like any other red.
-    watch_quarantined "$TRIAGE_WATCH_STATE" "$n" "$t" && continue
+    # owner and expiry, so it files no row until UNTIL; then it is filed like any other red. It covers
+    # only the reds it was taken on: one the probe names since is filed now, as the why (ar-3916).
+    unc=
+    if watch_quarantine_open "$TRIAGE_WATCH_STATE" "$n" "$t"; then
+      unc=$(watch_uncovered "$TRIAGE_WATCH_STATE" "$n" | head -n 1)
+      [ -n "$unc" ] || continue
+      read -r _ qowner _ < "$TRIAGE_WATCH_STATE/$n.quarantine"
+    fi
     sev=$(watch_sev "$n")
     # The aggregate Alertmanager watch files one row a firing alert instead of its own, at the trip's
     # level (its probe's `page:` line, kept in .level as `watch-companion-loop tripped` reads it), not
@@ -5206,26 +5212,15 @@ triage_rows() {
     what=$(awk '/^what:/ { sub(/^what:[[:space:]]*(>-?|\|-?)?[[:space:]]*/, ""); on = 1; if ($0 != "") print; next }
                 on && /^[[:space:]]/ { sub(/^[[:space:]]+/, ""); print; next } on { exit }' "$TRIAGE_WATCHES/$n.yaml" 2>/dev/null \
       | tr '\n' ' ' | sed -E 's/\. .*/./; s/[[:space:]]+$//' | cut -c1-100)
-    # A probe's own `reason:` line (Sentinel's convention: vendor-check names its worst rows) is the
-    # why; a probe that prints one OK or RED line a stage (unity-core-playground's release-ready.py)
-    # names its first RED line; otherwise the last line of the redacted evidence, usually the
-    # error. Normalized, so a new pid or timestamp in it does not edit the row every pass.
-    o="$TRIAGE_WATCH_STATE/$n.out"
-    why=$({ sed -n '/^reason: ./{s/^reason: //p;q;}' "$o" | grep . || grep -m 1 -E '^RED[[:space:]]' "$o" \
-            || grep -v '^[[:space:]]*$' "$o" | tail -n 1; } 2>/dev/null \
-      | log_norm | tr -d '#' | cut -c1-100)
+    # The why is the first red line of the redacted evidence (sentinel-watch.sh watch_red_lines),
+    # normalized, so a new pid or timestamp in it does not edit the row every pass.
+    why=$({ [ -n "$unc" ] && printf '%s\n' "$unc" || watch_red_lines "$TRIAGE_WATCH_STATE/$n.out"; } | head -n 1 | tr -d '#' | cut -c1-100)
+    [ -z "$unc" ] || why+=" (not covered by the quarantine $qowner holds)"
     printf 'check(watch): %s tripped since\tcheck(watch): %s tripped since %s, expected: %s%s\t%s\n' "$n" "$n" \
       "$(date -d "@$since" +%Y-%m-%d)" "${what:-no manifest}" \
       "${why:+, why: $why, evidence: watch-companion-loop list --long $n}" \
       "$(case "$sev" in high|urgent) echo '#high' ;; normal) echo '#normal' ;; *) echo '#low' ;; esac)"
   done
-}
-
-# log_norm: a stderr line with what varies between runs taken out, so one error is one signature:
-# a leading timestamp, quoted strings, paths, hex ids and numbers become placeholders.
-log_norm() {
-  sed -E 's/^\[[^]]*\][[:space:]]*//; s/"[^"]*"/"Q"/g; s/'"'"'[^'"'"']*'"'"'/'"'"'Q'"'"'/g
-          s#(~|\.)?(/[^[:space:]/:"'"'"']+)+/?#P#g; s/\b[0-9a-f]{7,}\b/H/g; s/[0-9]+/N/g; s/[[:space:]]+/ /g; s/ $//'
 }
 
 # log_lines -> each readable run of the last TRIAGE_LOG_HOURS, oldest first, as "<name> TAB <err
