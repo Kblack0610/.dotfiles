@@ -2582,6 +2582,30 @@ SH
   assert_output ''
 }
 
+@test "an idle row reads the same bucket whatever its harness (ar-4125)" {
+  # agent-panel gives every harness one busy/idle reading (agent-core activity_status), so
+  # fleet-sessions buckets the row on status and idle_since alone, never on the harness name.
+  landed_fixture
+  local h row old=$(( $(date +%s) - 7200 )) want='' got
+  for h in claude codex opencode agy; do
+    row="{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"idle\",\"plan_mode\":false,\"session_id\":\"s-$h\",\"cwd\":\"$SANDBOX/wt\",\"idle_since\":$old,\"context_tokens\":0,\"plan_file\":\"\",\"transcript\":\"\",\"edited_files\":[],\"account\":\"$h\",\"harness\":\"$h\"}"
+    printf '#!/usr/bin/env bash\necho %q\nexit 0\n' "$row" > "$SANDBOX/bin/agent-panel"
+    run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+    assert_success
+    got=$(jq -r .bucket <<<"$output")
+    [ -n "$got" ] && [ "$got" != null ]
+    [ -n "$want" ] || want=$got
+    [ "$got" = "$want" ] || { echo "$h read $got, claude read $want"; return 1; }
+  done
+  # negative control: the same (agy) row busy reads WORKING, so the bucket follows the status
+  row="${row/\"status\":\"idle\"/\"status\":\"busy\"}"
+  row="${row/\"idle_since\":$old/\"idle_since\":$(date +%s)}"
+  printf '#!/usr/bin/env bash\necho %q\nexit 0\n' "$row" > "$SANDBOX/bin/agent-panel"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  [ "$want" != WORKING ]
+}
+
 @test "a session's row names its queue item, the board row and who started it (by), by the same join as its bucket" {
   landed_fixture
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
