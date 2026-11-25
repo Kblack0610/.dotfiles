@@ -58,6 +58,7 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub needs --json | --page
        hub ui-text --json
        hub bar --json
+       hub alerts --reasons --json
        hub ci [--json | --pool-match SECS]
        hub ci pass [--since WHEN] [--until WHEN] [--branch B]
        hub ci hosts [--since WHEN] [--until WHEN] [--last N]
@@ -233,6 +234,17 @@ fn main() {
     if it.peek().map(|a| a.as_str()) == Some("ui-text") {
         it.next();
         std::process::exit(ui_text(it.cloned().collect()));
+    }
+    if it.peek().map(|a| a.as_str()) == Some("alerts") {
+        it.next();
+        if it.cloned().collect::<Vec<String>>() != ["--reasons", "--json"] {
+            die(USAGE);
+        }
+        match hub_core::alerts::watch_reasons() {
+            Ok(r) => println!("{}", serde_json::json!({ "reasons": r })),
+            Err(e) => die(&format!("hub alerts: {e}")),
+        }
+        return;
     }
     if it.peek().map(|a| a.as_str()) == Some("bar") {
         it.next();

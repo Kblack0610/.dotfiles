@@ -133,6 +133,28 @@ pub struct Watch {
     pub evidence: String,
 }
 
+/// The longest a watch's reason runs on one hover or table cell, in characters.
+pub const REASON_CHARS: usize = 140;
+
+impl Watch {
+    /// Why it is red, in one line: the first line of its last probe output after the runner's own
+    /// status header (`TRIP exit 1 (want 0)`), cut to `REASON_CHARS`. Empty when the probe said
+    /// nothing past the header, so a surface can say "no reason recorded".
+    pub fn reason(&self) -> String {
+        let mut lines = self.evidence.lines();
+        let first = lines.next().unwrap_or_default();
+        let header = ["TRIP exit ", "ERROR exit ", "OK exit "]
+            .iter()
+            .any(|h| first.starts_with(h));
+        let line = if header { lines.next() } else { Some(first) };
+        let line = line.unwrap_or_default().trim();
+        match line.char_indices().nth(REASON_CHARS) {
+            Some((i, _)) => format!("{}...", line[..i].trim_end()),
+            None => line.to_string(),
+        }
+    }
+}
+
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Extras {

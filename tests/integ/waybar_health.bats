@@ -2,8 +2,9 @@
 # health.sh: the waybar health chip, every system at a glance. The bar is a pulse in the overall
 # colour and one dot per system, worst first; the hover is one row per system with what is down or
 # warning on it. What these pin: rows and levels come only from the cc:* rules, so a domain the
-# script has never heard of still shows; a watch names the reason, and a failing component names
-# it when no watch does; the head's counts are hub-core's published Infra figures, never a count of
+# script has never heard of still shows; each tripped watch is a line with its reason, read from
+# `hub alerts --reasons --json` and never from the watch state files (no reason, or no hub answer,
+# says so), and a failing component names itself when no watch does; the head's counts are hub-core's published Infra figures, never a count of
 # the rows; Prometheus down or empty reads ?, never a blank or a green chip.
 
 setup() {
@@ -21,6 +22,23 @@ setup() {
 cat "$FX/prom.json"
 STUB
   chmod +x "$SANDBOX/bin/curl"
+  # The hub's alerts model: reasons.json when a test wrote one, else no answer, as on the laptop.
+  cat > "$FX/hub" <<'STUB'
+#!/usr/bin/env bash
+[ "$*" = "alerts --reasons --json" ] || exit 2
+[ -f "$FX/reasons.json" ] || { echo "hub alerts: no such dir" >&2; exit 2; }
+cat "$FX/reasons.json"
+STUB
+  chmod +x "$FX/hub"
+  export HUB="$FX/hub"
+}
+
+# reasons [<watch>=<reason>]...: what the hub's alerts model holds, a watch by its `_` name.
+reasons() {
+  python3 - "$FX/reasons.json" "$@" <<'PY'
+import json, sys
+json.dump({"reasons": dict(a.split("=", 1) for a in sys.argv[2:])}, open(sys.argv[1], "w"))
+PY
 }
 
 # feed [d:<domain>=<level>] [w:<domain>:<item>=<level>] [c:<domain>:<component>=<level>] [o=<level>]
@@ -64,15 +82,49 @@ pulse() { printf "<span color='%s'>%s</span>" "$1" "$ICON"; }
 @test "worst systems lead, each names its watches worst first, and the head prints the published counts" {
   feed o=2 d:agents=0 d:spend=1 d:ci=2 d:queue=1 f:down=1 f:warn=2 f:up=1 \
     w:ci:playground_nightly=2 w:spend:claude_spend_daily=1 w:spend:claude_account_pace=1 w:queue:heal_flapping=1
+  reasons playground_nightly='nightly red 2d' claude_spend_daily='last 24h: $2954 (alert at $2400)' \
+    claude_account_pace='aws $1,011 ahead of pace' heal_flapping='flapped 4 times'
   run "$MODULE"
   assert_equal "$(text)" "$(pulse "$R")"
   assert_equal "$(class)" critical
   run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
   assert_line --index 0 "<b>System</b>  $(dot "$R")$(dot "$Y")$(dot "$Y")$(dot "$G")  1 down, 2 warn, 1 up"
-  assert_line --index 1 "<tt>ci      <span color='$R'>DOWN</span>  playground nightly"
-  assert_line --index 2 "queue   <span color='$Y'>warn</span>  heal flapping"
-  assert_line --index 3 "spend   <span color='$Y'>warn</span>  claude account pace, claude spend daily"
-  assert_line --index 4 "agents  <span color='$G'>up</span></tt>"
+  assert_line --index 1 "<tt>ci      <span color='$R'>DOWN</span>  playground nightly: nightly red 2d"
+  assert_line --index 2 "queue   <span color='$Y'>warn</span>  heal flapping: flapped 4 times"
+  assert_line --index 3 "spend   <span color='$Y'>warn</span>  claude account pace: aws \$1,011 ahead of pace"
+  assert_line --index 4 "               claude spend daily: last 24h: \$2954 (alert at \$2400)"
+  assert_line --index 5 "agents  <span color='$G'>up</span></tt>"
+}
+
+@test "a watch with nothing past its status header says no reason recorded, the reason pango-escaped" {
+  feed o=1 d:queue=1 w:queue:heal_flapping=1 w:queue:stale_rows=1
+  reasons stale_rows='1 < 2 rows & more' heal_flapping=''
+  run "$MODULE"
+  run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
+  assert_line --index 2 "<tt>queue  <span color='$Y'>warn</span>  heal flapping: no reason recorded"
+  assert_line --index 3 "             stale rows: 1 &lt; 2 rows &amp; more</tt>"
+}
+
+# Negative control: the hub gives no answer where the watches do not run, and a row then says where
+# to look, instead of a bare name or a made-up reason.
+@test "with no hub answer the row says the reason is on the workstation" {
+  feed o=1 d:queue=1 w:queue:heal_flapping=1
+  rm -f "$FX/reasons.json"
+  run "$MODULE"
+  run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
+  assert_line --index 2 "<tt>queue  <span color='$Y'>warn</span>  heal flapping: reason on the workstation</tt>"
+  # An answer with no watches at all is the same laptop, not a green or an empty reason.
+  reasons
+  run "$MODULE"
+  run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
+  assert_output --partial "heal flapping: reason on the workstation"
+}
+
+@test "the hub is not asked when no watch is tripped" {
+  feed o=0 d:k3s=0
+  printf '#!/usr/bin/env bash\ntouch "%s/asked"\n' "$FX" > "$FX/hub"
+  run "$MODULE"
+  [ ! -e "$FX/asked" ]
 }
 
 # Negative control for a chip that recounts: the head is the figures as sent, so figures that
@@ -114,9 +166,10 @@ pulse() { printf "<span color='%s'>%s</span>" "$1" "$ICON"; }
 
 @test "a watch answers for its system, so a component row does not repeat it" {
   feed o=2 d:home=2 w:home:voice_bedroom_puck=2 c:home:connectivity=2
+  reasons voice_bedroom_puck='no heartbeat 12m'
   run "$MODULE"
   run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
-  assert_output --partial "<span color='$R'>DOWN</span>  voice bedroom puck"
+  assert_output --partial "<span color='$R'>DOWN</span>  voice bedroom puck: no heartbeat 12m"
   refute_output --partial connectivity
 }
 
