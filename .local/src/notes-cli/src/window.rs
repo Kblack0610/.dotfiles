@@ -868,7 +868,9 @@ fn slip(cut: NaiveDate, day: NaiveDate, late: &str, ok: &str) -> String {
 }
 
 /// The score a cut writes: the counts, then the window's due day and the human's target
-/// (when one was promised for this version) against the day it was cut.
+/// (when one was promised for this version) against the day it was cut. A cut that delivered
+/// nothing, or carried more than it delivered, did not ship the promise, whatever the day, so
+/// its target reads `not shipped` (ar-3641: v0.5.3 delivered 1 of 71 and read `met`).
 fn cut_line(snap: &Snapshot, t: &Tally, cut: NaiveDate, target: Option<(V, NaiveDate)>) -> String {
     let mut line = format!(
         "committed {}, delivered {}, carried {}, dropped {}, interrupted {}; opened {}",
@@ -882,10 +884,15 @@ fn cut_line(snap: &Snapshot, t: &Tally, cut: NaiveDate, target: Option<(V, Naive
         None => line.push_str(&format!(", cut {cut}")),
     }
     if let Some((v, on)) = target {
+        let shipped = t.delivered > 0 && t.delivered >= t.open;
         line.push_str(&format!(
             "; target {} {on} {}",
             projects::fmt_version(v),
-            slip(cut, on, "missed by", "met")
+            if shipped {
+                slip(cut, on, "missed by", "met")
+            } else {
+                "not shipped".to_string()
+            }
         ));
     }
     line
@@ -2290,6 +2297,37 @@ mod tests {
         );
         let on_time = cut_line(&snap, &t, day("2026-11-26"), None);
         assert!(on_time.ends_with("cut 2026-11-26 (on time)"), "{on_time}");
+        let shipped_little = Tally {
+            committed: 71,
+            delivered: 1,
+            open: 70,
+            ..Tally::default()
+        };
+        let early = Some(((0, 2, 0), day("2026-11-27")));
+        let little = cut_line(&snap, &shipped_little, day("2026-11-26"), early);
+        assert!(
+            little.ends_with("target v0.2.0 2026-11-27 not shipped"),
+            "{little}"
+        );
+        let none = cut_line(
+            &snap,
+            &Tally {
+                committed: 3,
+                open: 3,
+                ..Tally::default()
+            },
+            day("2026-11-26"),
+            early,
+        );
+        assert!(none.ends_with("not shipped"), "{none}");
+        let most = Tally {
+            committed: 4,
+            delivered: 3,
+            open: 1,
+            ..Tally::default()
+        };
+        let met = cut_line(&snap, &most, day("2026-11-26"), early);
+        assert!(met.ends_with("target v0.2.0 2026-11-27 met"), "{met}");
         let _ = fs::remove_dir_all(&dir);
     }
 
