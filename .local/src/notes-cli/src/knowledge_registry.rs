@@ -213,11 +213,14 @@ pub fn render(reg: Option<&Registry>) -> String {
     };
     let mut out = String::new();
     for d in &reg.domain {
-        // The description ends in one period, so `Aliases:` starts a sentence (ar-3882).
-        let is = d.is.trim().trim_end_matches('.');
+        // The description ends a sentence, so `Aliases:` starts one (ar-3882).
+        let is = d.is.trim();
         out.push_str(&format!("- `{}`:", d.id));
         if !is.is_empty() {
-            out.push_str(&format!(" {is}."));
+            out.push_str(&format!(" {is}"));
+            if !is.ends_with(['.', '?', '!']) {
+                out.push('.');
+            }
         }
         if !d.aliases.is_empty() {
             out.push_str(&format!(" Aliases: {}.", tick(&d.aliases)));

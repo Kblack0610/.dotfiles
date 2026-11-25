@@ -475,6 +475,16 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_output --regexp 'odds per stage on /book .*id:sc-3'
 }
 
+@test "negative control: a dup of a closed #of/ parent stays the model's dup" {
+  sheet '- [ ] feat(ui): the stage cells on /book #of/sc-3 #size/m #normal #agent #from/ar-5404\n' \
+    '- [x] feat(ui): odds per stage on /book #pts/8 #size/l #normal <!-- id:sc-3 done:2026-11-20 -->\n'
+  answer '{"n": 1, "action": "dup", "id": "sc-3"}'
+  run "$TRIAGE"
+  refute_output --partial 'names sc-3 as its own parent'
+  run cat "$SHEET" "$PROJ/scratch/agent/README.md"
+  refute_line --regexp '^- \[ \] feat\(ui\): the stage cells on /book'
+}
+
 @test "a split line's own #of/ files no new epic and never turns an empty row into a bare tag" {
   sheet '- [ ] feat(ui): the stage cells on /book #of/sc-3 #size/m #normal #agent #from/ar-5404\n- [ ] feat(ui): the odds legend on /book #of/sc-3 #size/s #normal #agent #from/ar-5404\n' \
     '- [ ] feat(ui): odds per stage on /book #pts/8 #size/l #normal <!-- id:sc-3 -->\n'

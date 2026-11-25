@@ -5,7 +5,7 @@ use serde_json::Value;
 use super::read::iso_epoch;
 
 /// The newest timestamp of a prompt the human typed: a `typed_prompt` that is not one our own
-/// tooling types into the pane (`fleet_typed`).
+/// tooling types into the pane (`fleet_typed`), or a message they sent mid-turn (`queued_prompt`).
 pub(super) fn human_at(text: &str) -> Option<u64> {
     text.lines()
         .rev()
@@ -22,7 +22,7 @@ pub(super) fn human_at(text: &str) -> Option<u64> {
 /// A typed prompt the human sent, not one our tooling typed into the pane (a resume is no typed
 /// prompt at all, a task is one but not the human's).
 pub(super) fn human_typed(line: &str) -> bool {
-    typed_prompt(line).is_some_and(|p| !fleet_typed(&p))
+    typed_prompt(line).is_some_and(|p| !fleet_typed(&p)) || queued_prompt(line).is_some()
 }
 
 /// The one table of prompts the fleet types as if the human had (the shepherd's close, a
@@ -222,6 +222,19 @@ mod tests {
         assert_eq!(
             human_at(&[lines.join("\n"), quote].join("\n")),
             Some(base + 32 * 60)
+        );
+        // And so does a message the human sent mid-turn; a peer's queued the same way does not.
+        let queued = |min, kind| {
+            at(
+                min,
+                &format!(
+                    r#""type":"attachment","attachment":{{"type":"queued_command","prompt":"ok yes","commandMode":"prompt","origin":{{"kind":"{kind}"}}}}"#
+                ),
+            )
+        };
+        assert_eq!(
+            human_at(&[lines.join("\n"), queued(33, "human"), queued(34, "peer")].join("\n")),
+            Some(base + 33 * 60)
         );
         assert_eq!(human_at(&lines[2..].join("\n")), None);
     }

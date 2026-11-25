@@ -593,7 +593,7 @@ route() {
   # beside it is filed, with their projects (see pass).
   leave() { if [ "$from" = outbox ]; then left_why[$n]="$1"; else left "$from" "$text" "$1"; fi; }
   local filed_board=""
-  local own
+  local own parent
   while IFS=$'\x1f' read -r n action id of dest lane plan why epic own rows cands; do
     [ "$n" -ge 1 ] 2>/dev/null && [ "$n" -le "${#raws[@]}" ] || continue
     raw="${raws[n - 1]}" from="${froms[n - 1]}" text="${texts[n - 1]}"
@@ -618,10 +618,12 @@ route() {
     fi
     # A split line is a child of the row its own #of/ names, never a repeat of it: a dup of that row
     # files the line under it (ar-5549: ar-5404's children were merged into tr-340, tr-414, hc-888).
-    if [ "$action" = dup ] && [ -z "$of" ] && [ -n "$id" ] && [ "$(clean 40 <<<"$id")" = "$(parent_word "$text")" ]; then
+    if [ "$action" = dup ] && [ -z "$of" ] && [ -n "$id" ] && [ "$(clean 40 <<<"$id")" = "$(parent_word "$text")" ] \
+      && parent="$(jq -c --arg id "$id" 'first(.rows[] | select(.id == $id and .state != "done")) // empty' <<<"$board")" \
+      && [ -n "$parent" ]; then
       say "line $n names $id as its own parent: filed under it, not as its dup"
-      [ -n "$dest" ] || dest="$(jq -r --arg id "$id" 'first(.rows[] | select(.id == $id) | .project) // ""' <<<"$board")"
-      [ -n "$lane" ] || { [[ " ${text,,} " == *" #agent "* ]] && lane=agent; }
+      [ -n "$dest" ] || dest="$(jq -r '.project // ""' <<<"$parent")"
+      [ -n "$lane" ] || { [[ " ${text,,} " == *" #agent "* ]] && lane=agent; } || lane="$(jq -r '.lane // ""' <<<"$parent")"
       [ -n "${rows//$'\x1e'/}" ] || rows="$text"
       action=file id=''
     fi

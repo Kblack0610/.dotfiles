@@ -34,8 +34,7 @@ pub fn human_said_at(path: &Path, since: &str) -> Option<Vec<HumanSaid>> {
 
 /// Every typed prompt and dialog answer of the human with a timestamp after `since` (epoch
 /// seconds), oldest first, a message sent mid-turn included. A prompt our tooling typed, a
-/// harness notice, a tool result, a
-/// subagent's entry and a pasted block are not theirs. A dialog answer is the harness's own
+/// harness notice, a tool result, a subagent's entry and a pasted block are not theirs. A dialog answer is the harness's own
 /// `toolUseResult.answers`, which no tool output can write.
 fn human_said(text: &str, since: u64) -> Vec<HumanSaid> {
     let mut out = Vec::new();
