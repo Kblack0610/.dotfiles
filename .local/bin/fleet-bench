@@ -6540,13 +6540,15 @@ cmd_throughput() {
   [ -n "${BENCH_PROM_TSV:-}" ] || queue=$(prom_q github_job_queue_seconds "$to" | jq -r '.data.result[] | [.metric.pool, .metric.quantile, .value[1]] | @tsv')
   # Merges and the snapshot grow with the window and the fleet, so they go by file, never --arg (128 KB each).
   jq -rn --argjson a "$from" --argjson b "$to" --slurpfile sf <(printf '%s\n' "$snap") --rawfile m <(printf '%s\n' "$merges") \
-      --arg q "$queue" --rawfile r <(runs_between "$from" "$to") "$JQ_LIB"'
+      --arg q "$queue" --rawfile r <(runs_between "$from" "$to") --arg rf "$([ -r "$BENCH_RUNS_TSV" ] || echo "$BENCH_RUNS_TSV")" "$JQ_LIB"'
     $sf[0] as $s | (($b - $a) / 3600) as $h
     | ($q | split("\n") | map(select(. != "") | split("\t")) | reduce .[] as $x ({}; .[$x[0]][$x[1]] = ($x[2] | tonumber))) as $wait
     | ($r | run_rows) as $runs
     | ($runs | map(select(.res != "pass"))) as $bad
     | "window: \($a | hm) -> \($b | hm) (\($h | round1)h)",
-      (if ($runs | length) == 0 then "local runs: none recorded"
+      # a host with no run ledger never ran the Unity runner here, which is not a window with no runs
+      (if $rf != "" then "local runs unread: no \($rf) on this host"
+       elif ($runs | length) == 0 then "local runs: none recorded"
        else "local runs: \($runs | length / $h | round1)/h, \($bad | length * 100 / ($runs | length) | round)% not passed, editor \(($runs | map(.s) | add) / 3600 | round1)h, of which on runs not passed \((($bad | map(.s) | add) // 0) / 3600 | round1)h" end),
       ($m | split("\n") | map(select(. != "") | split("\t"))
        | (map(select(.[0] | startswith("!")) | .[0][1:]) | unique) as $unread

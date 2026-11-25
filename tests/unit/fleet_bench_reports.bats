@@ -1766,6 +1766,15 @@ live_merges() {
   assert_output --partial 'merges: none'
 }
 
+@test "throughput: a host with no run ledger says unread, not none recorded" {
+  use_fixture
+  export BENCH_RUNS_TSV="$SANDBOX/no-such/runs.tsv"
+  run "$SUBJECT" throughput --from $((T0 - 90000)) --to $((T0 - 86400))
+  assert_success
+  assert_line "local runs unread: no $BENCH_RUNS_TSV on this host"
+  refute_output --partial 'local runs: none recorded'
+}
+
 @test "throughput: a multi-day window with over 128 KB of merge rows still reads (ar-2446)" {
   use_fixture
   export BENCH_MERGES_TSV="$SANDBOX/merges-big.tsv"
