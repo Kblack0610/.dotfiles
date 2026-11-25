@@ -123,7 +123,7 @@ denied() { assert_output --partial 'python-write-guard: '; }
 
 @test "with no settings.json beside the hooks, every path is guarded (the deny before the narrowing)" {
   mkdir -p "$BATS_TEST_TMPDIR/c/hooks"
-  for f in python-write-guard.py forge-guard.py block-poll.py hosted-runner-guard.py; do
+  for f in python-write-guard.py hooklib.py forge-guard.py block-poll.py hosted-runner-guard.py; do
     cp "$BATS_TEST_DIRNAME/../../.claude/hooks/$f" "$BATS_TEST_TMPDIR/c/hooks/"
   done
   HOOK="$BATS_TEST_TMPDIR/c/hooks/python-write-guard.py"

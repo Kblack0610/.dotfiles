@@ -251,7 +251,8 @@ merged_not_checked_out() {
 
 @test "BEHIND: with no autopull to read the wait from, a fresh merge counts at once" {
   local bin="$BATS_TEST_TMPDIR/bin"
-  mkdir -p "$bin" && cp "$DRIFT" "$bin/dotfiles-drift"
+  mkdir -p "$bin" "$BATS_TEST_TMPDIR/lib" && cp "$DRIFT" "$bin/dotfiles-drift"
+  cp "$(dirname "$DRIFT")/../lib/dotfiles-repos.sh" "$BATS_TEST_TMPDIR/lib/"
   merged_not_checked_out 30
 
   run "$bin/dotfiles-drift"

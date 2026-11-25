@@ -23,8 +23,12 @@ name: shell tests
 #   lint   shellcheck + house rules, in the pinned image.
 #
 # Every job's tools come from one place, the tests/Dockerfile image (.github/actions/test-image
-# loads it, tests/docker.sh runs in it), so a runner needs only docker and a label. No step
-# installs a tool on the runner (~/.local/src/docs/ci.md, Runners; tests/unit/ci_gate.bats).
+# loads it, tests/docker.sh runs in it), so a runner needs only docker and a label. The image has
+# three stages (lean, rust, full) and a job's env TEST_IMAGE_KIND names the smallest one with what
+# it runs, because a pool pod loads its image over a link shared with the whole pool: the one
+# 943 MB image ran every job out of its timeout in the cache restore on 2026-11-25 (ar-5632). A pool
+# runner pulls it from the LAN registry instead (the CI_REGISTRY variable and CI_REGISTRY_PASSWORD secret; the action
+# says when). No step installs a tool on the runner (~/.local/src/docs/ci.md, Runners; tests/unit/ci_gate.bats).
 #   gate   the one required check: red unless every gating job ran and passed.
 #   report the fast and ui tiers' JUnit, drawn on the run's Summary page: a row per file
 #          and every failed test, so a red reads without opening the logs.
@@ -98,15 +102,33 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
       # A pull request checks out its merge commit; depth 2 brings its first parent, the base
-      # tip, so HEAD^1..HEAD is exactly the change.
+      # tip, so HEAD^1..HEAD is exactly the change. The pick reads path names and text only, so
+      # the binaries (fonts, wallpapers, most of the tree's bytes) stay out of the fetch: on ARC
+      # pods, with a run's jobs fetching at once, the full fetch ran past this job's timeout
+      # (ar-5643). The weights step warns when the objects pass 20 MB, the sign that a new binary
+      # type needs a line here.
       - uses: actions/checkout@v4
         with:
           fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !*.ttf
+            !*.jpeg
+            !*.jpg
+            !*.png
+            !*.woff2
+            !*.webp
+            !*.wav
+            !*.pb
       - name: Weights from the newest green main run
         id: junit
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          mb=$(du -sm .git/objects | cut -f1)
+          [ "$mb" -le 20 ] || echo "::warning::the text-only checkout fetched $mb MB of objects (budget 20): a binary type is missing from its sparse list"
           d=$RUNNER_TEMP/junit table=
           id=$(gh run list -R "$GITHUB_REPOSITORY" -w tests.yml -b main -e push -s success -L 1 \
             --json databaseId --jq '.[0].databaseId // empty') || id=
@@ -140,6 +162,8 @@ jobs:
     needs: weights
     runs-on: *pool
     timeout-minutes: 10
+    env:
+      TEST_IMAGE_KIND: lean   # the tmux-free tiers need no toolchain, chromium or tmux (tests/docker.sh)
     strategy:
       fail-fast: false
       matrix:
@@ -169,6 +193,9 @@ jobs:
       # The image (tests/Dockerfile), only for a shard with files to run.
       - if: steps.pick.outputs.run == 'true'
         uses: ./.github/actions/test-image
+        with:
+          registry: ${{ vars.CI_REGISTRY }}
+          registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
       - name: Fast tier shard
         env:
           JUNIT: 1
@@ -197,6 +224,8 @@ jobs:
     name: ui tier (tmux ${{ matrix.tmux }}, container)
     runs-on: *pool
     timeout-minutes: 25
+    env:
+      TEST_IMAGE_KIND: full   # tmux, fzf and the agent-panel build
     strategy:
       fail-fast: false
       matrix:
@@ -218,6 +247,8 @@ jobs:
       # The image comes from the Actions cache when nothing it is built from changed.
       - uses: ./.github/actions/test-image
         with:
+          registry: ${{ vars.CI_REGISTRY }}
+          registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
           tmux: ${{ matrix.tmux }}
       - uses: ./.github/actions/bats-vendor
       # tests/ui/session_send.bats drives the real agent-panel binary, built in the same image it
@@ -309,6 +340,7 @@ jobs:
     runs-on: *pool
     timeout-minutes: 20
     env:
+      TEST_IMAGE_KIND: full  # the toolchain plus the phone harness's chromium
       CARGO_INCREMENTAL: 0   # incremental state only helps a rebuild in place, and it bloats the cache
       RUST_JOBS: 4           # crates rust.sh gates at once, the runner's vCPU count (tests/rust.sh)
       DOCKER_NETWORK: bridge # every step here fetches: crates, the Tilecast checker (tests/docker.sh)
@@ -331,6 +363,9 @@ jobs:
       # which clippy lints a run checks.
       - if: steps.pick.outputs.run == 'true'
         uses: ./.github/actions/test-image
+        with:
+          registry: ${{ vars.CI_REGISTRY }}
+          registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
       - if: steps.pick.outputs.run == 'true'
         uses: ./.github/actions/bats-vendor
       # The registry (tests/docker.sh's CARGO_HOME, .cargo-ci in the checkout) and every crate's
@@ -405,10 +440,14 @@ jobs:
     runs-on: *pool
     timeout-minutes: 10
     env:
+      TEST_IMAGE_KIND: rust   # the notes build needs the toolchain, nothing else heavy
       CARGO_INCREMENTAL: 0
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/test-image
+        with:
+          registry: ${{ vars.CI_REGISTRY }}
+          registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
       # The rust job's key: main saves one cache, and this job only restores it.
       - name: Restore cargo
         uses: actions/cache/restore@v4
@@ -429,6 +468,10 @@ jobs:
         run: tests/docker.sh test-files NOTES_BIN=/work/.local/src/notes-cli/target/debug/notes FILES="unit/agent_land.bats unit/fleet_dispatch_reap.bats integ/research_pick.bats" BATS_FLAGS="--print-output-on-failure --filter 'end to end'"
       - name: Inbox triager and planner, on the real notes
         run: tests/docker.sh test-files NOTES_BIN=/work/.local/src/notes-cli/target/debug/notes FILES="integ/inbox_triage.bats integ/inbox_plan.bats" BATS_FLAGS="--print-output-on-failure"
+      # The pre-push hook's negative control needs the pinned toolchain, which the fast tier's lean
+      # image lacks (it skips there), so it runs here, in the rust image.
+      - name: Pre-push hook, rust fmt and clippy refusals
+        run: tests/docker.sh test-files FILES="unit/prepush_hook.bats" BATS_FLAGS="--print-output-on-failure --filter 'clippy sort_by'"
       - name: Brief backfill, on the real notes
         run: tests/docker.sh test-files NOTES_BIN=/work/.local/src/notes-cli/target/debug/notes FILES="integ/agent_queue_backfill.bats" BATS_FLAGS="--print-output-on-failure"
       - name: Day-log board flow, on the real notes weigh
@@ -444,14 +487,19 @@ jobs:
     name: shellcheck + house rules
     runs-on: *pool
     timeout-minutes: 15
+    env:
+      TEST_IMAGE_KIND: lean   # shellcheck and the house rules
     steps:
       - uses: actions/checkout@v4
-      # Runs in the SAME image as the ui tier, which pins shellcheck. Installing
+      # Runs in the image every job shares the base of (the lean stage), which pins shellcheck. Installing
       # it from apt here instead would mean CI lints with a different shellcheck than the
       # developer does, and the first version bump would produce findings nobody can
       # reproduce locally. lint.sh itself is shared with the Makefile and the Stop hook, so
       # the severity ratchet and the file list have exactly one definition.
       - uses: ./.github/actions/test-image
+        with:
+          registry: ${{ vars.CI_REGISTRY }}
+          registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
       - uses: ./.github/actions/bats-vendor
       - name: lint
         run: tests/docker.sh lint

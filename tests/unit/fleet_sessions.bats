@@ -6911,6 +6911,31 @@ JSONL
   [ "$(plan_row_title "$SANDBOX/bare.md")" = "plan bare: run its open phases" ]
 }
 
+@test "plan_phase_title: the phase name leads, then (P<n>, heading); no session slug, cut to 80 (ar-5462)" {
+  . "$REPO_ROOT/.local/lib/plan-phases.sh"
+  printf '# Pasted intake gate\n\n## Phases\n' > "$SANDBOX/pasted-content-id-0d29-d-cozy-kahn.md"
+  t="$(plan_phase_title "$SANDBOX/pasted-content-id-0d29-d-cozy-kahn.md" 2 "Intake gate")"
+  [ "$t" = "Intake gate (P2, Pasted intake gate)" ]
+  [[ "$t" != *cozy-kahn* ]]
+  [ "$(plan_phase_title "$SANDBOX/pasted-content-id-0d29-d-cozy-kahn.md" "4 5" "Fourth; Fifth")" = "Fourth; Fifth (P4+5, Pasted intake gate)" ]
+  # A long heading is cut at a word to what the phase name leaves; the phase name is never cut for it.
+  printf '# %s\n' "$(printf 'word %.0s' $(seq 1 30))" > "$SANDBOX/long.md"
+  t="$(plan_phase_title "$SANDBOX/long.md" 3 "Intake gate")"
+  [ "${#t}" -le 80 ]
+  [[ "$t" == "Intake gate (P3, word word "*"word)" ]]
+  # A phase name that leaves under 12 characters drops the heading; one over 80 is cut with its tag whole.
+  n="$(printf 'x%.0s' $(seq 1 70))"
+  [ "$(plan_phase_title "$SANDBOX/long.md" 3 "$n")" = "$n (P3)" ]
+  t="$(plan_phase_title "$SANDBOX/long.md" 3 "$(printf 'word %.0s' $(seq 1 30))")"
+  [ "${#t}" -le 80 ]
+  [[ "$t" == *" (P3)" ]]
+  # A name carrying a tag, a marker or non-ASCII is cleaned as the heading is, or notes would read it as a gate.
+  [ "$(plan_phase_title "$SANDBOX/long.md" 3 "wire #after/lv-2 <gate> $(printf '\303\251')" | cut -c1-30)" = "wire after/lv-2 gate (P3, word" ]
+  # NEGATIVE CONTROL: a plan with no heading gets the name and the tag only.
+  printf '## Phases\n' > "$SANDBOX/bare.md"
+  [ "$(plan_phase_title "$SANDBOX/bare.md" 2 "Intake gate")" = "Intake gate (P2)" ]
+}
+
 @test "plan_pointer: a stub is short, takes a zero-padded N, and ends the path at .md" {
   . "$REPO_ROOT/.local/lib/plan-phases.sh"
   printf '# canon\n' > "$SANDBOX/canon.md"

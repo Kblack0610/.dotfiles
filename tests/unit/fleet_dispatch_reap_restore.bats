@@ -294,11 +294,67 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   assert_equal "$(qfield "$f" status) $(qfield "$f" end_reason)" 'failed refused'
 }
 
+# claude_end_item <session> <transcript line>... -- a plain claude item on a gone session with no PR, its transcript where
+# fleet-dispatch reads it (CLAUDE_PROJECTS), and a model-lane run for it. claude is the baseline, so the map names no classifier for it.
+claude_end_item() {
+  local d="$HOME/.claude-x/projects/-game"
+  mkdir -p "$d"
+  CLAUDE_PROJECTS="$HOME/.claude*/projects"
+  printf '%s\n' "${@:2}" > "$d/$1.jsonl"
+  jq -n '{harnesses: {}}' > "$SANDBOX/harnesses.json"
+  HARNESSES="$SANDBOX/harnesses.json"
+  stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"'
+  project game beta "$SANDBOX/repos/game"
+  started_item cl lab:game-agent-1 run
+  agent-queue set cl agent=claude lane_run=r-cl >/dev/null; agent-queue claim cl --sid "$1" >/dev/null
+}
+
+@test "reap: a Claude run whose transcript ends on an API Error line is a provider end, filed unrated; one that ends any other way says nothing (negative control)" {
+  claude_end_item cl-prov '{"type":"user","timestamp":"2026-11-24T09:00:00.000Z","message":{"content":"go"}}' \
+    '{"type":"assistant","timestamp":"2026-11-24T09:01:00.000Z","isApiErrorMessage":true,"message":{"content":[{"type":"text","text":"API Error: 529 overloaded"}]}}'
+  run cmd_reap
+  f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-cl.md)
+  assert_equal "$(qfield "$f" status) $(qfield "$f" end_reason)" 'failed provider'
+  run grep -F 'model-lane outcome' "$NOTES_FIXTURE/calls.log"
+  assert_output 'model-lane outcome r-cl unrated --cause provider'
+  rm -rf "$AGENT_QUEUE_DIR/done"
+  : > "$NOTES_FIXTURE/calls.log"
+  # a later message makes the error not the last one: no cause, so no end_reason
+  claude_end_item cl-fine '{"type":"assistant","timestamp":"2026-11-24T09:01:00.000Z","isApiErrorMessage":true,"message":{"content":[{"type":"text","text":"API Error: 529 overloaded"}]}}' \
+    '{"type":"assistant","timestamp":"2026-11-24T09:05:00.000Z","message":{"content":[{"type":"text","text":"done"}]}}'
+  run item_end "$(agent-queue show cl --json)"
+  assert_success
+  assert_output ''
+  # and record-end writes what item-end says onto the item, the one record of why it ended
+  claude_end_item cl-rec '{"type":"assistant","timestamp":"2026-11-24T09:01:00.000Z","isApiErrorMessage":true,"message":{"content":[{"type":"text","text":"API Error: 503 unavailable"}]}}'
+  run cmd_record_end cl claude cl-rec
+  assert_success
+  assert_equal "$(qfield "$(qitem running cl)" end_reason)" provider
+}
+
+@test "backfill-end: a failed close with no end_reason takes the one its harness's record says, and one with no record, or an end already, is left (negative controls)" {
+  claude_end_item cl-bf '{"type":"assistant","timestamp":"2026-11-24T09:01:00.000Z","isApiErrorMessage":true,"message":{"content":[{"type":"text","text":"API Error: 529 overloaded"}]}}'
+  started_item nr lab:game-agent-2 run
+  agent-queue claim nr --sid cl-none >/dev/null
+  agent-queue move cl done --status failed >/dev/null
+  agent-queue move nr done --status failed >/dev/null
+  run cmd_backfill_end 30
+  assert_success
+  assert_line 'cl end_reason=provider'
+  assert_line 'backfill-end: 1 item(s) of the last 30d given an end_reason'
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-cl.md)" end_reason)" provider
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-nr.md)" end_reason)" ''
+  run cmd_backfill_end 30
+  assert_line 'backfill-end: 0 item(s) of the last 30d given an end_reason'
+  run cmd_backfill_end soon
+  assert_failure 2
+}
+
 # 2026-11-19: opencode-go's 5h budget ran out in one burst and 8 canary and trainee runs died at their first message (ar-3778).
 @test "provider hold: a run that ended on a provider refusal holds its source until the harness's hold_min after its end; a source it does not name is open" {
   oc_end_item ses_evalh 'error|provider.rate-limit'
   harness_set() { jq "$@" "$HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$HARNESSES"; }
-  harness_set '.harnesses.go.provider_hold_min = 300 | .harnesses.nim = {launcher: "opencode", source: "nim", timeout_min: 120, models: {glm: "nim (glm)"}}'
+  harness_set '.harnesses.go.provider_hold_min = 300 | .harnesses.nim = {launcher: "opencode", source: "nim", end_classifier: "opencode", timeout_min: 120, models: {glm: "nim (glm)"}}'
   run cmd_reap
   run provider_hold_scan
   run provider_hold_why go
@@ -337,7 +393,7 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
 @test "provider hold: a hold still standing survives a scan that reads no queue, and ladder_open_why turns the harness away" {
   mkdir -p "${PROVIDER_ENDS%/*}"
   printf 'gone-run\tgo\t%s\n' "$(( $(date +%s) + 600 ))" > "$PROVIDER_ENDS"
-  jq -n '{harnesses: {go: {launcher: "opencode", source: "go", timeout_min: 120, models: {glm: "go (glm-5.3)"}}}}' > "$SANDBOX/harnesses.json"
+  jq -n '{harnesses: {go: {launcher: "opencode", source: "go", end_classifier: "opencode", timeout_min: 120, models: {glm: "go (glm-5.3)"}}}}' > "$SANDBOX/harnesses.json"
   HARNESSES="$SANDBOX/harnesses.json"
   stub agent-queue 'exit 1'
   provider_hold_scan

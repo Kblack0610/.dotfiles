@@ -22,6 +22,47 @@ setup() {
   assert_equal "$(epics_of app "$EPICS")" "$(printf 'ap-1\tapp\tepic(api): auth')"
 }
 
+@test "own_parent names the line's own #of/ only when it is an open row of the project" {
+  run own_parent 'feat(ui): a child #of/gm-3 #size/s' game "$BOARD"
+  assert_success
+  assert_output 'gm-3'
+  run own_parent 'feat(ui): a child #of/gm-1' game "$BOARD"
+  assert_output 'gm-1'
+  for id in gm-2 gm-404 ap-1; do
+    run own_parent "feat(ui): a child #of/$id" game "$BOARD"
+    assert_failure
+    assert_output ''
+  done
+  run own_parent 'feat(ui): no parent at all' game "$BOARD"
+  assert_failure
+}
+
+@test "row_checked files a split's rows under the line's own parent, over the model's epic or none" {
+  local line='feat(ui): the stage cells #of/gm-3 #agent'
+  run row_checked 'feat(ui): show the cells #size/s #of/gm-1' game "$EPICS" "$line" "$BOARD"
+  assert_output 'feat(ui): show the cells #size/s #of/gm-3'
+  run row_checked 'feat(ui): show the legend #size/s' game "$EPICS" "$line" "$BOARD"
+  assert_output 'feat(ui): show the legend #size/s #of/gm-3'
+  # negative controls: an empty row, an epic row, and a line whose #of/ is no open row of the project
+  run row_checked '' game "$EPICS" "$line" "$BOARD"
+  assert_output ''
+  run row_checked 'epic(ui): a new pass #of/gm-1' game "$EPICS" "$line" "$BOARD"
+  assert_output 'epic(ui): a new pass #of/gm-1'
+  run row_checked 'feat(ui): show the cells #of/gm-1' game "$EPICS" 'a line #of/gm-2' "$BOARD"
+  assert_output 'feat(ui): show the cells #of/gm-1'
+  run row_checked 'feat(ui): show the cells #of/gm-3' game "$EPICS" 'a line' "$BOARD"
+  assert_output 'feat(ui): show the cells'
+}
+
+@test "unparented: a new epic is for a row with no parent" {
+  run unparented 'fix(ui): a #of/gm-3' 'fix(ui): b'
+  assert_success
+  run unparented 'fix(ui): a #of/gm-3' 'fix(ui): b #size/s #of/gm-1'
+  assert_failure
+  run unparented
+  assert_failure
+}
+
 @test "a row keeps an open epic of its project, tags in place" {
   run epic_checked 'fix(ui): a bug #size/s #of/gm-1 #high' game "$EPICS"
   assert_output 'fix(ui): a bug #size/s #of/gm-1 #high'
