@@ -4979,11 +4979,12 @@ upsert_why() {
 # A key whose row closed within the board feed's window is reopened with the red as a detail line,
 # so the trip is history on that row, not a row of its own.
 board_upsert() {
-  local board closed p text pri why have hid twin id rc added=0 edited=0 reopened=0 dropped=0 failed=() twins=() trip=()
+  local board closed human p text pri why have hid twin id rc added=0 edited=0 reopened=0 dropped=0 failed=() twins=() trip=()
   UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_DROPPED=0; UPSERT_FAILED=
   upsert_lock_take || { say "$UPSERT_LOCK_WHY"; report_outcome FAILED "$UPSERT_LOCK_WHY"; return 2; }
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { upsert_lock_drop; report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
   closed=$(upsert_closed)
+  human=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" list 2>/dev/null) || human=
   while IFS=$'\t' read -r p text pri; do
     [[ "$text" == *'#size/'* ]] || text+=" #size/s"
     # each open row on this key, board order: "id TAB doing TAB lowercased text", id empty when it
@@ -5010,6 +5011,11 @@ board_upsert() {
         say "could not drop $id, a twin of $hid for $p"; failed+=("$p")
       fi
     done
+    # A key whose row dispatch moved to the human sheet (skip_exits: a person's rule) has its owner there: filing
+    # or reopening it here would move it back and forth every pass (ar-6265).
+    if [ -z "$have" ] && awk -F'\t' -v p="${p,,}" '$4 ~ /^[ \t]*- \[[ \/]\]/ && index($3, p) == 1 { f = 1 } END { exit !f }' <<<"$human"; then
+      say "$p: open on the human sheet, left there"; continue
+    fi
     id=; [ -n "$have" ] || id=$(awk -F'\t' -v p="${p,,}" 'index($2, p) == 1 { print $1; exit }' <<<"$closed")
     if [ -n "$id" ]; then
       trip=(--detail "$(date -d "@$(now)" +%F) red again after it closed")
