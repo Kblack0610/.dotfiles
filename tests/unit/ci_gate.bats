@@ -183,3 +183,22 @@ kinds() {
   run grep -c "runner.environment == 'self-hosted'" "$ACT"
   assert_output "1"
 }
+
+# notes_bin_unlisted <wf> <tests dir>: a bats file with a case that skips without NOTES_BIN (the real
+# notes binary) that no NOTES_BIN step of <wf> names in its FILES. The fast tier skips those cases, so
+# an unlisted one runs nowhere: agent_queue.bats's end to end and credit_backfill.bats's FAIL criteria
+# case never ran in CI (ar-3030).
+notes_bin_unlisted() {
+  comm -23 <(cd "$2" && grep -lE '\|\| skip "NOTES_BIN' -- */*.bats | sort) \
+    <(grep -oE 'NOTES_BIN=[^ ]+ FILES="[^"]+"' "$1" | sed -E 's/.*FILES="//; s/"$//' | tr ' ' '\n' | sort -u)
+}
+
+@test "every bats file with a case that needs the real notes is run by a NOTES_BIN step" {
+  run notes_bin_unlisted "$WF" "$BATS_TEST_DIRNAME/.."
+  assert_success
+  assert_output ''
+  # Negative control: a NOTES_BIN file dropped from its step is named.
+  sed 's# integ/agent_queue.bats##' "$WF" >"$BATS_TEST_TMPDIR/drop.yml"
+  run notes_bin_unlisted "$BATS_TEST_TMPDIR/drop.yml" "$BATS_TEST_DIRNAME/.."
+  assert_output 'integ/agent_queue.bats'
+}

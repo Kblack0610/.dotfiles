@@ -5098,7 +5098,7 @@ already"
 # The row is the task's record (ar-2927), against the real notes and a sandbox vault: an item's body
 # is its row's brief, so a return loses nothing, the next promote briefs the new item from the row,
 # and a retask rewrites the row first. NEGATIVE CONTROL: before ar-2927 the re-promoted body was the
-# row line alone. The CI rust job builds notes and sets NOTES_BIN.
+# row line alone. CI's notes bats job builds notes and sets NOTES_BIN (ci_gate.bats checks it is listed).
 @test "end to end: a returned item's brief comes back from its row on the next promote, and retask rewrites the row" {
   [ -n "${NOTES_BIN:-}" ] || skip "NOTES_BIN names no built notes"
   ln -sf "$NOTES_BIN" "$SANDBOX/bin/notes"
