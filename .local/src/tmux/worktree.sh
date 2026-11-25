@@ -1739,7 +1739,7 @@ wt_other_claude() {
   [ -z "${TMUX_PANE:-}" ] || me="$(wt_current_server)/$TMUX_PANE"
   rows=$(agent-panel list --json 2>/dev/null) || return 2
   jq -r --arg s "$srv" --arg t "$1" --arg me "$me" \
-    'select(.server == $s and .tmux_session == $t and .pane != $me) | "\(.target | split(":")[-1]) \(.pane | split("/")[-1])"' <<<"$rows"
+    'select((.harness // "claude") == "claude" and .server == $s and .tmux_session == $t and .pane != $me) | "\(.target | split(":")[-1]) \(.pane | split("/")[-1])"' <<<"$rows"
 }
 
 # wt_done_arm <path> <name> -- arm the wind-down teardown for the Claude session `done` was

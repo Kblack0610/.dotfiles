@@ -37,9 +37,11 @@
 # host=<hostname,...>: the row exists only on those hosts (CLAUDE_ACCT_HOST overrides the name). Codex runs on the
 # workstation only (the human, 2026-11-19), so its two rows are not razer's: a host with no codex row has no Codex source to read.
 # `agy` is the Google AI Pro login the agy harness runs on; ref gemini is the "Gemini Models" group (Neon, Hydrogen,
-# 3.8 Flash), whose weekly and 5h buckets are gemini-weekly and gemini-5h. The other groups (3p: Claude and GPT
-# models; gemini-argon-wtu: Argon, weekly only) are not read until a lane runs a model in them. The human uses agy
-# by hand too, so it keeps 30% back like codex; max_live=2 and alert=off while it is a trial (provisional, low
+# 3.8 Flash), whose weekly and 5h buckets are gemini-weekly and gemini-5h. `agy-3p` is the "Claude and GPT models"
+# group (Claude Opus and Sonnet), buckets 3p-weekly and 3p-5h, the source of the agy-claude harness (ar-3990): a
+# run of a Claude model through agy spends that group, so it is gated on its own week, never on gemini's. The
+# gemini-argon-wtu group (Argon, weekly only) is not read until a lane runs a model in it. The human uses agy
+# by hand too, so each keeps 30% back like codex; max_live=2 and alert=off while they are a trial (provisional, low
 # confidence, revisit when the first agy canaries show a run's window use). Logged in on the workstation only.
 # The Claude accounts are in `accounts`; each source is in exactly one of the two. harnesses.json
 # ties a harness to its source with `source`. Edited by hand; claude-acct is the only reader.
@@ -53,3 +55,4 @@ go         litellm-key   ~/.local/state/agentctl/fleet-go.key     max_live=2 run
 nim        litellm-key   ~/.local/state/agentctl/fleet-nim.key    rpm=40 run_rpm=13 priority=low
 ocfree     litellm-key   ~/.local/state/agentctl/fleet-ocfree.key max_live=2 priority=low
 agy        agy           gemini                                   reserve=30 max_live=2 alert=off priority=low host=cachyos-x8664-main
+agy-3p     agy           3p                                       reserve=30 max_live=2 alert=off priority=low host=cachyos-x8664-main
