@@ -98,7 +98,6 @@ setup() {
   export DISPATCH_PROC_MEMINFO="$SANDBOX/meminfo"
   printf 'MemTotal: 1000 kB\nMemAvailable: 900 kB\n' > "$DISPATCH_PROC_MEMINFO"
   export DISPATCH_CANARY_KEEP=0   # off unless a test is about it ("canary top-up:"), so no pass asks fleet-bench for canaries
-  export DISPATCH_FLEET_SHARE=0   # off unless a test is about it ("fleet share:"), so a fleet project's item starts in queue order
   export DISPATCH_START_LOAD=0   # a start adds no pending load unless a test is about it, whatever the runner's cores
   export DISPATCH_PER_PASS=1   # one start a pass unless a test is about it; the shipped default, 0, is no cap
   printf '%s\n' 'policy' '- (fits) dispatch' '- (unclear) not clear' > "$DISPATCH_POLICY"
