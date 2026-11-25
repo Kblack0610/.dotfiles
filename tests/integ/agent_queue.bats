@@ -1143,6 +1143,44 @@ gate_rbw() {
   assert_output --partial "notes board --json failed"
 }
 
+@test "gate --all clears each #hold/ row whose id, epic or plan is granted, and the tag and an ungranted row stay held (ar-5237)" {
+  gate_rbw
+  export AGENT_HOLD_DIR="$SANDBOX/holds"
+  "$REPO_ROOT/.local/bin/agent-hold" set critical --kind resource --by human "lockdown" >/dev/null
+  "$REPO_ROOT/.local/bin/agent-hold" grant critical ar-1 ar-50 plan-x >/dev/null
+  jq -n '{rows: [{id: "ar-1", state: "open", text: "fix(a): one", tags: ["hold/critical"]},
+                 {id: "ar-2", state: "open", text: "fix(b): two", tags: ["hold/critical", "of/ar-50"]},
+                 {id: "ar-3", state: "open", text: "feat(c): P1", details: ["Phase 1 of the plan /p/plan-x.md: c"], tags: ["hold/critical"]},
+                 {id: "ar-4", state: "open", text: "fix(d): four", tags: ["hold/critical", "of/ar-51"]}], done: []}' > "$NOTES_FIXTURE/board.json"
+  run "$AQ" gate --json --all
+  assert_failure 3
+  [ "$(jq -sr 'map(select(.row == null) | "\(.tag)|\(.state)") | join(" ")' <<<"$output")" = "hold/critical|pending" ]
+  [ "$(jq -sr 'map(select(.row != null) | "\(.row)|\(.state)|\(.queue)") | sort | join(" ")' <<<"$output")" = \
+    "ar-1|clear|hold:critical ar-2|clear|hold:critical ar-3|clear|hold:critical" ]
+  [[ "$(jq -sr 'map(select(.row == "ar-2")) | .[0].why' <<<"$output")" == "granted ar-50 by the critical hold" ]]
+  # Text names the row a grant clears; no grant, no row line.
+  run "$AQ" gate --all
+  assert_output --partial "(row ar-1)"
+  "$REPO_ROOT/.local/bin/agent-hold" release critical >/dev/null
+  "$REPO_ROOT/.local/bin/agent-hold" set critical --kind resource --by human "lockdown" >/dev/null
+  run "$AQ" gate --json --all
+  [ "$(jq -sr 'map(select(.row != null)) | length' <<<"$output")" = 0 ]
+}
+
+@test "a queued hold: item starts when its row, epic or plan is granted; an ungranted one stays held (ar-5237)" {
+  export AGENT_HOLD_DIR="$SANDBOX/holds"
+  legacy forms "tags: hold:critical" --project game "fill the store forms"
+  legacy other "tags: hold:critical" --project game "other work"
+  "$REPO_ROOT/.local/bin/agent-hold" set critical --kind resource --by human "lockdown" >/dev/null
+  run "$AQ" next --json
+  assert_failure
+  "$REPO_ROOT/.local/bin/agent-hold" grant critical forms >/dev/null
+  run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = forms ]
+  run "$AQ" list --state queued
+  assert_output --partial "hold:critical (since"
+}
+
 @test "gate names the fix for a dead after/: a date or time is an at/ gate, a queue item's slug is its row (ar-4471)" {
   jq -n '{rows: [{id: "ar-1", state: "open", tags: []}], done: []}' > "$NOTES_FIXTURE/board.json"
   mkdir -p "$AGENT_QUEUE_DIR/queued"

@@ -179,7 +179,14 @@ HEADER=$(
       fi
     done
     if [ "${#HOLD_SHOWN[@]}" -gt 0 ]; then
-      echo "⛔ Active holds - do not start work on these until released (GO):"
+      # A session the human opened (attended, no queue item: a dispatched one reads ATTENDED=1 too)
+      # works on the human's own word, so a hold is a warning there; the gate that stops work is
+      # dispatch's, which a hold's grants narrow. Everyone else is under it from turn 1.
+      if [ "${CLAUDE_CODE_SESSION_ATTENDED:-0}" = 1 ] && [ -z "${AGENT_QUEUE_ITEM:-}" ]; then
+        echo "Active holds (a warning: the human opened this session; if the work asked is what a hold stops, ask before starting it):"
+      else
+        echo "STOP: Active holds - do not start work on these until released (GO):"
+      fi
       printf '%s\n' "${HOLD_SHOWN[@]}"
     fi
     if [ "$HOLD_OTHER" -gt 0 ]; then
