@@ -350,6 +350,9 @@ mod tests {
             "a nicer empty state",
             "the CI badge colour, row ar-5401",
             "slow fade on the menu",
+            "add testimonial carousel, up to standardize labels",
+            "memory icon for the 3 settings tabs",
+            "alert dialog redesign (2026-11-24)",
         ] {
             assert_eq!(save(&p, &log, "demo", None, text).unwrap(), 0, "{text}");
         }
