@@ -52,15 +52,15 @@ const HEALTH_EXIT: i32 = 3;
 /// `improvements.md` (2026-11-24: 100 such rows were moved there and restored by hand). A false
 /// positive keeps one row on the board; a false negative loses the work, so the lists lean wide.
 fn health(text: &str) -> Option<&'static str> {
-    const STAGE: [&str; 5] = [
+    // Phrases of whole words, a plural counting as the word (`test` is `tests`): `to standardize`
+    // and `testimonial` are no stage criterion and no test.
+    const STAGE: [&str; 4] = [
         "stage standard",
-        "stage-standard",
         "to standard",
         "stage criterion",
         "stage criteria",
     ];
-    const TEST: [&str; 13] = [
-        "test coverage",
+    const TEST: [&str; 12] = [
         "coverage",
         "untested",
         "no test",
@@ -68,34 +68,60 @@ fn health(text: &str) -> Option<&'static str> {
         "regression test",
         "add test",
         "add a test",
-        "tests for",
+        "test for",
         "unit test",
         "integration test",
         "bats case",
         "cargo test",
     ];
-    const FAULT: [&str; 14] = [
-        "ci", "flaky", "flake", "perf", "latency", "slow", "slower", "alert", "alerts", "alerting",
-        "fps", "oom", "timeout", "memory",
+    // A fault word as written or inflected (`performance`, `timeouts`, `flakiness`, `latencies`).
+    const FAULT_STEMS: [&str; 7] = ["perf", "flak", "latenc", "slow", "alert", "timeout", "leak"];
+    const FAULT_WORDS: [&str; 4] = ["ci", "oom", "fps", "memory"];
+    // What follows a digit run to make it a measurement.
+    const UNITS: [&str; 18] = [
+        "s", "ms", "sec", "secs", "second", "seconds", "min", "mins", "minute", "minutes", "h",
+        "hr", "hours", "x", "%", "times", "mb", "gb",
     ];
     let low = text.to_ascii_lowercase();
-    if STAGE.iter().any(|p| low.contains(p)) {
-        return Some("closes a stage-standard criterion");
-    }
-    if TEST.iter().any(|p| low.contains(p)) {
-        return Some("adds a test for shipped behaviour");
-    }
     let words: Vec<&str> = low
         .split(|c: char| !c.is_ascii_alphanumeric())
         .filter(|w| !w.is_empty())
         .collect();
-    // A measured number is a token that starts with a digit (`40`, `3s`, `200ms`, `12%`), not the
-    // digits inside an id such as `ar-5401` or a `#c1124` tag.
-    let measured = low.split_whitespace().any(|t| {
-        t.trim_matches(|c: char| !c.is_ascii_alphanumeric())
-            .starts_with(|c: char| c.is_ascii_digit())
+    let has = |phrase: &str| {
+        let p: Vec<&str> = phrase.split(' ').collect();
+        words.windows(p.len()).any(|w| {
+            w.iter()
+                .zip(&p)
+                .all(|(a, b)| a == b || a.strip_suffix('s') == Some(*b))
+        })
+    };
+    if STAGE.iter().any(|p| has(p)) {
+        return Some("closes a stage-standard criterion");
+    }
+    if TEST.iter().any(|p| has(p)) {
+        return Some("adds a test for shipped behaviour");
+    }
+    // A measured number is a digit run with a unit (`40s`, `200ms`, `12%`, `14 min`), not a bare
+    // count, a date, or the digits in an id such as `ar-5401` or a `#c1124` tag.
+    let toks: Vec<&str> = low
+        .split_whitespace()
+        .map(|t| t.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '%'))
+        .collect();
+    let fault_word =
+        |w: &str| FAULT_WORDS.contains(&w) || FAULT_STEMS.iter().any(|s| w.starts_with(s));
+    // A bare count counts when a unit or a fault word follows it (`14 min`, `3 timeouts a day`).
+    let measured = toks.iter().enumerate().any(|(i, t)| {
+        let rest = t.trim_start_matches(|c: char| c.is_ascii_digit() || c == '.');
+        rest.len() < t.len()
+            && if rest.is_empty() {
+                toks.get(i + 1)
+                    .is_some_and(|n| UNITS.contains(n) || fault_word(n))
+            } else {
+                UNITS.contains(&rest)
+            }
     });
-    if measured && words.iter().any(|w| FAULT.contains(w)) {
+    let fault = words.iter().any(|w| fault_word(w));
+    if measured && fault {
         return Some("fixes a CI, perf or alerting fault with a number");
     }
     None
@@ -178,7 +204,12 @@ pub struct Args {
 pub fn run(p: &Profile, log: &Logger, a: Args) -> Result<i32> {
     let text = a.text.join(" ");
     if a.check {
-        return Ok(refuse_health(&one_line(&text)).unwrap_or(0));
+        // Classifies the text only: no project is read, so a typo'd project is `save`'s error.
+        let text = one_line(&text);
+        if text.is_empty() {
+            return Ok(1);
+        }
+        return Ok(refuse_health(&text).unwrap_or(0));
     }
     save(p, log, &a.project, a.why.as_deref(), &text)
 }
@@ -298,6 +329,9 @@ mod tests {
             ("CI takes 14 min on the nightly #c1124", "ci"),
             ("alerting fires 3x a day on a clean run", "alert"),
             ("sweep is slow, 40s a pass", "perf"),
+            ("build performance dropped 30% on the nightly", "stem"),
+            ("3 timeouts a day in the sweep", "stem"),
+            ("add tests for the parser", "plural"),
         ] {
             assert_eq!(
                 save(&p, &log, "demo", None, text).unwrap(),
@@ -319,7 +353,7 @@ mod tests {
         ] {
             assert_eq!(save(&p, &log, "demo", None, text).unwrap(), 0, "{text}");
         }
-        assert_eq!(fs::read_to_string(&f).unwrap().matches("\n- ").count(), 3);
+        assert_eq!(fs::read_to_string(&f).unwrap().matches("\n- ").count(), 6);
         let _ = fs::remove_dir_all(&root);
     }
 

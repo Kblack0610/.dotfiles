@@ -540,22 +540,25 @@ ptask game --agent tag --add pr/kblack0610/dotfiles/3021 gx-6'
   assert_output 0
 }
 
-@test "skip_exits: a #low row that is health work is not shelved in improvements.md: it stays open on the board (ar-5401)" {
+@test "skip_exits: a #low row that is health work goes to the human sheet, not improvements.md (ar-5401)" {
   exits_fixture
   touch "$NOTES_FIXTURE/improve.health"
   skip_exits
-  # the other five exits are taken; gx-3 asked notes improve, was refused, and was neither dropped nor recorded
-  assert_equal "$EXITS_TAKEN" 5
-  grep -q 'notes --profile bnb improve game' "$NOTES_FIXTURE/calls.log" || fail "notes improve never asked"
-  grep -q 'id:gx-3 dropped' "$NOTES_FIXTURE/rows.game.agent" && fail "the health row was dropped"
-  grep -q 'id:gx-3 ' "$NOTES_FIXTURE/rows.game.agent" || fail "the health row is gone"
-  assert_equal "$(jq -r 'select(.exit) | "\(.key)=\(.exit)"' "$FLEET_DISPATCH_DIR/verdicts.jsonl" | paste -sd,)" \
-    'gx-1=plan,gx-2=sheet,gx-4=after/gx-9,gx-5=plan,gx-6=pr/kblack0610/dotfiles/3021'
-  # negative control: with no refusal the same row is shelved (the test above)
-  rm "$NOTES_FIXTURE/improve.health"
-  skip_exits
-  assert_equal "$EXITS_TAKEN" 1
-  grep -q 'id:gx-3 dropped: kept in game improvements.md' "$NOTES_FIXTURE/rows.game.agent"
+  assert_equal "$EXITS_TAKEN" 6
+  grep -q 'ptask game add row gx-3 #low #tier/1 (agent row gx-3)' "$NOTES_FIXTURE/calls.log" || fail "no sheet row for the health row"
+  grep -q 'id:gx-3 dropped: on the game sheet: dispatch skipped it (needs-person)' "$NOTES_FIXTURE/rows.game.agent" || fail "$(cat "$NOTES_FIXTURE/rows.game.agent")"
+  run grep -c 'improve game --why' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  assert_equal "$(jq -r 'select(.key == "gx-3") | .exit' "$FLEET_DISPATCH_DIR/verdicts.jsonl")" sheet
+}
+
+@test "skip_exits: --dry-run lists a health row's exit as the sheet's, not improve (ar-5401)" {
+  exits_fixture
+  touch "$NOTES_FIXTURE/improve.health"
+  run skip_exits --dry-run
+  assert_success
+  assert_line 'sheet	game	gx-3	needs-person'
+  assert_output --partial 'exits: gate 2 plan 2 sheet 2'
 }
 
 @test "skip_exits: --dry-run lists each row's exit and the counts, and writes nothing" {
@@ -571,7 +574,7 @@ plan	game	gx-5	waits
 pr/kblack0610/dotfiles/3021	game	gx-6	waits
 exits: gate 2 improve 1 plan 2 sheet 1'
   cmp "$FLEET_DISPATCH_DIR/verdicts.jsonl" "$SANDBOX/before"
-  run grep -E 'tag --add|improve|ptask game add|drop' "$NOTES_FIXTURE/calls.log"
+  run grep -E 'tag --add|improve game --why|ptask game add|drop' "$NOTES_FIXTURE/calls.log"
   assert_failure
 }
 
