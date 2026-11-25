@@ -477,11 +477,13 @@ finished_ok() {
 # respect the cap too (the human, 2026-11-18): at it, make_room first returns the last-ranked item
 # that has a row to its board, so they go in without the queue growing; so does pull-after's pull of a
 # row an ok close cleared (AGENT_QUEUE_PULL=after).
-# Provisional, confidence low (rules.jsonl): 50 is about 7h of wait at the 180 starts a day of
-# 2026-11-17, the queued bound (step_age_p90_queued_max, 420m since ar-4471); revisit when queued age p90
-# stays over it at the cap.
+# Provisional, confidence low (rules.jsonl): 30 keeps the queued age p90 under its bound
+# (step_age_p90_queued_max, 420m since ar-4471) at the rate the oldest items drain, about 4.3 an hour on
+# 2026-11-24 (45 queued, p90 9.5h at the old 50), not the 7.6 an hour mean that sized 50 (ar-4554).
+# Re-measure from the queued row of `fleet-bench pipeline`: the tail rate is 0.9 x wip / age p90.
+# Revisit when queued age p90 stays over it at the cap.
 AQ_EX_HELD=5
-AQ_CAP="${AGENT_QUEUE_CAP:-50}"
+AQ_CAP="${AGENT_QUEUE_CAP:-30}"
 AQ_HELD_DAYS=7
 AQ_ADMISSION_LOG="$AQ_DIR/admission.jsonl"
 
