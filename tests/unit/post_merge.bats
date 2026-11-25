@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 # .githooks/post-merge restarts noctalia.service when a merge in the stowed checkout changed the
 # Noctalia plugins: Noctalia's hot reload misses a file git replaced, so without the restart a
-# pulled chip.luau never loads. Each test merges in a throwaway repo with a stub systemctl.
+# pulled chip.luau never loads. It also re-renders a missing generated theme file, and a merge
+# anywhere else does neither. Each test merges in a throwaway repo with a stub systemctl.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -60,4 +61,32 @@ restarts() { grep -c 'restart noctalia.service' "$FX/calls.log" || true; }
   run merge_change .local/share/noctalia/plugins/dotfiles-chips/chip.luau
   assert_success
   [ "$(restarts)" = 0 ]
+}
+
+# theme_switch_stub <root>: a theme-switch under <root> that logs its call instead of rendering.
+theme_switch_stub() {
+  mkdir -p "$1/.local/src/theme"
+  printf '#!/usr/bin/env bash\necho "theme-switch $*" >> "$FX/calls.log"\n' > "$1/.local/src/theme/theme-switch"
+  chmod +x "$1/.local/src/theme/theme-switch"
+}
+
+@test "a merge in the stowed checkout re-renders a missing generated theme file" {
+  theme_switch_stub "$REPO"
+  run merge_change docs/desk.md
+  assert_success
+  assert_output --partial 're-rendering'
+  run grep -c '^theme-switch batman --only .*hyprland' "$FX/calls.log"
+  assert_output 1
+}
+
+# A worktree merge ran the main checkout's theme-switch, which reloads the live Hyprland, on every
+# merge while main lacked a new render (ar-3266).
+@test "a merge outside the stowed checkout renders no theme" {
+  export DOTFILES_ROOT="$SANDBOX/elsewhere"
+  theme_switch_stub "$DOTFILES_ROOT"
+  run merge_change docs/desk.md
+  assert_success
+  refute_output --partial 're-rendering'
+  run grep -c '^theme-switch' "$FX/calls.log"
+  assert_output 0
 }
