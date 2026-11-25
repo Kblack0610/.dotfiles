@@ -213,7 +213,8 @@ publish() {
   command -v jq >/dev/null 2>&1 || { echo "fleet-node: jq is not installed, so nothing was published" >&2; return 2; }
   [ -d "$STORE/.sync" ] || { echo "fleet-node: $STORE is no store peer, so nothing was published" >&2; return 2; }
   local needs cand=true f="$READY_DIR/$HOST" now rec old
-  [ ! -e "$STORE/.sync/no-lease" ] || cand=false
+  # fleet-lease renew takes the lease only on a joined clone (.sync/peer) with no no-lease marker.
+  [ -f "$STORE/.sync/peer" ] && [ ! -e "$STORE/.sync/no-lease" ] || cand=false
   needs=$(lease_needs)
   now=$(date +%s)
   rec=$(jq -cn --arg host "$HOST" --argjson cand "$cand" --arg needs "$needs" --argjson at "$now" \

@@ -5,7 +5,7 @@
 #
 # Run on the lease holder. The holder steps out with the .sync/no-lease marker (the same one the
 # fleet-worker play writes), so its renew stops and the lease lapses within the TTL; nothing running is
-# touched, because a session needs no lease. Then it checks, on the taker, that the lease is held, a
+# touched, because a session needs no lease; only the holder's singleton lanes stop at once and the taker's start within the TTL. Then it checks, on the taker, that the lease is held, a
 # dispatch pass ran, the agents Endpoints name the taker, and a page leaves it. Then the taker steps out
 # the same way and this machine takes the lease back (the second failover). A marker this script wrote is
 # removed on any exit, so a failed drill leaves the lease free to be taken, never held by a peer that
@@ -19,6 +19,8 @@ set -uo pipefail
 here=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 # shellcheck source=../lib/fleet-hosts.sh
 . "$here/../lib/fleet-hosts.sh"
+# shellcheck source=../lib/fleet-kubeconfig.sh
+. "$here/../lib/fleet-kubeconfig.sh"
 ME="${FLEET_HOST:-$(uname -n | cut -d. -f1)}"
 STORE="${AGENT_STORE_DIR:-$HOME/.agent}"
 MARKER="$STORE/.sync/no-lease"
@@ -61,7 +63,7 @@ wait_holder() {
 }
 
 cleanup() {
-  [ "$wrote_taker" -eq 0 ] || { on_taker_sh 'rm -f "$HOME/.agent/.sync/no-lease"' >/dev/null 2>&1 || say "WARN: could not remove $taker's no-lease marker: remove it by hand"; }
+  [ "$wrote_taker" -eq 0 ] || { on_taker_sh 'rm -f "${AGENT_STORE_DIR:-$HOME/.agent}/.sync/no-lease"' >/dev/null 2>&1 || say "WARN: could not remove $taker's no-lease marker: remove it by hand"; }
   [ "$wrote_mine" -eq 0 ] || rm -f "$MARKER"
 }
 trap cleanup EXIT
@@ -78,7 +80,8 @@ pass "preconditions: $ME holds the lease, $taker is lease-ready"
 [ "$dry" -eq 0 ] || exit 0
 
 t0=$(date +%s)
-touch "$MARKER" && wrote_mine=1
+touch "$MARKER" || fail "could not write $MARKER, so nothing was changed"
+wrote_mine=1
 fleet-lease renew >/dev/null 2>&1 || true
 say "step out: $ME wrote $MARKER; the lease lapses within the TTL"
 wait_holder "$taker" "$DRILL_LEASE_WAIT_S" || fail "$taker did not take the lease within ${DRILL_LEASE_WAIT_S}s (holder: $(holder))"
@@ -97,8 +100,19 @@ done
 pass "a dispatch pass ran on $taker"
 
 ips=$(on_taker hostname -I 2>/dev/null) || ips=''
-rec=$(KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}" kubectl -n agents get endpoints agents -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null)
-[ -n "$rec" ] && grep -qw -- "$rec" <<<"$ips" || fail "the agents Endpoints name '${rec:-nothing}', not an address of $taker ($ips)"
+# The credential agent-web-record patches the record with, so a worker reads it through its scoped kubeconfig.
+rec=$(KUBECONFIG=$(fleet_kubeconfig) kubectl --context home-k3s --request-timeout=10s -n agents get endpoints agents -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null)
+rec_ok=0
+for a in $rec; do
+  for ip in $ips; do [ "$a" != "$ip" ] || rec_ok=1; done
+done
+# Every address the record names must be the taker's: a leftover address of the old holder is the fault.
+for a in $rec; do
+  mine=0
+  for ip in $ips; do [ "$a" != "$ip" ] || mine=1; done
+  [ "$mine" -eq 1 ] || rec_ok=0
+done
+[ "$rec_ok" -eq 1 ] || fail "the agents Endpoints name '${rec:-nothing}', not only addresses of $taker ($ips)"
 pass "the agents Endpoints name $taker ($rec)"
 
 on_taker agent-notify -p low -t 'Failover drill' "Test page from $taker, which holds the fleet lease for the drill. Nothing to do." >/dev/null ||
@@ -108,7 +122,7 @@ pass "a test page left $taker: confirm it reached the phone"
 say "hand back: $taker steps out, $ME takes the lease"
 rm -f "$MARKER"; wrote_mine=0
 fleet-lease renew >/dev/null 2>&1 || true
-on_taker_sh 'touch "$HOME/.agent/.sync/no-lease"' && wrote_taker=1
+on_taker_sh 'touch "${AGENT_STORE_DIR:-$HOME/.agent}/.sync/no-lease"' && wrote_taker=1
 wait_holder "$ME" "$DRILL_LEASE_WAIT_S" || fail "$ME did not take the lease back within ${DRILL_LEASE_WAIT_S}s (holder: $(holder))"
 pass "$ME holds the lease again after $(($(date +%s) - t0))s in all"
 say "DONE: both failovers held; $taker may hold the lease again (its marker is removed on exit)"

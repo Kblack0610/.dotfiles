@@ -26,7 +26,7 @@ setup() {
 h=$(cat "$HOLDER_FILE")
 if [ ! -e "$SANDBOX/never" ]; then
   [ "$h" != node1 ] || [ ! -e "$AGENT_STORE_DIR/.sync/no-lease" ] || h=razer
-  [ "$h" != razer ] || [ ! -e "$RAZER_HOME/.agent/.sync/no-lease" ] || h=node1
+  [ "$h" != razer ] || [ ! -e "${RAZER_STORE:-$RAZER_HOME/.agent}/.sync/no-lease" ] || h=node1
 fi
 echo "$h" >"$HOLDER_FILE"
 case "$1" in
@@ -40,7 +40,7 @@ EOF
   cat >"$SANDBOX/bin/ssh" <<'EOF'
 #!/usr/bin/env bash
 n=$#; prefix=${@:n-1:1}; cmd=${@:n:1}
-exec env -u AGENT_STORE_DIR HOME="$RAZER_HOME" sh -c "$prefix $cmd"
+exec env -u AGENT_STORE_DIR ${RAZER_STORE:+"AGENT_STORE_DIR=$RAZER_STORE"} HOME="$RAZER_HOME" sh -c "$prefix $cmd"
 EOF
   printf '#!/bin/sh\nexit 1\n' >"$SANDBOX/bin/pgrep"
   printf '#!/bin/sh\necho 192.0.2.9\n' >"$SANDBOX/bin/kubectl"
@@ -125,4 +125,25 @@ EOF
   run "$DRILL"
   assert_failure 1
   assert_output --partial "FAIL: the agents Endpoints name '192.0.2.77'"
+}
+
+@test "Endpoints that still list the old holder's address beside the taker's fail the drill" {
+  printf '#!/bin/sh\necho "192.0.2.9 192.0.2.77"\n' >"$SANDBOX/bin/kubectl"
+  run "$DRILL"
+  assert_failure 1
+  assert_output --partial "FAIL: the agents Endpoints name '192.0.2.9 192.0.2.77'"
+}
+
+@test "Endpoints that list the taker on two addresses pass" {
+  printf '#!/bin/sh\necho "10.0.0.1 192.0.2.9"\n' >"$SANDBOX/bin/kubectl"
+  run "$DRILL"
+  assert_success
+}
+
+@test "a taker whose store is elsewhere gets its marker there" {
+  export RAZER_STORE="$SANDBOX/razer-store"
+  mkdir -p "$RAZER_STORE/.sync"
+  run "$DRILL"
+  assert_success
+  [ ! -e "$RAZER_STORE/.sync/no-lease" ]
 }

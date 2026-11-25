@@ -314,7 +314,7 @@ stub_store_sync() {
 @test "publish writes a ready record for a node with every need, and pushes it" {
   lease_ready_all
   stub_store_sync
-  mkdir -p "$HOME/.agent/.sync"
+  mkdir -p "$HOME/.agent/.sync" && touch "$HOME/.agent/.sync/peer"
   run "$FLEET_NODE" publish
   assert_success
   run jq -c '[.host, .candidate, .ready, .needs]' "$HOME/.agent/lease-ready/node1"
@@ -336,7 +336,7 @@ stub_store_sync() {
 @test "publish leaves an unchanged record alone, rewrites a changed one or an old one" {
   lease_ready_all
   stub_store_sync
-  mkdir -p "$HOME/.agent/.sync"
+  mkdir -p "$HOME/.agent/.sync" && touch "$HOME/.agent/.sync/peer"
   "$FLEET_NODE" publish
   first=$(jq -r .at "$HOME/.agent/lease-ready/node1")
   # Age the record by a minute: unchanged content inside the refresh window is not rewritten.
@@ -354,6 +354,16 @@ stub_store_sync() {
   run jq -r .ready "$HOME/.agent/lease-ready/node1"
   assert_output false
   assert_equal "$(wc -l <"$SANDBOX/store-sync.log")" 3
+}
+
+@test "publish records a clone that never joined the store as not a candidate" {
+  lease_ready_all
+  stub_store_sync
+  mkdir -p "$HOME/.agent/.sync"
+  run "$FLEET_NODE" publish
+  assert_success
+  run jq -r .candidate "$HOME/.agent/lease-ready/node1"
+  assert_output false
 }
 
 @test "publish on a machine with no store says so and writes nothing" {
