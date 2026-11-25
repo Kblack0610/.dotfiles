@@ -1,33 +1,84 @@
 #!/usr/bin/env python3
 """row-value - judge what each open board row improves, check the verdicts, compare two judges.
 
-  row-value export [--project P] [--chunk N] [--board FILE] [--scorecard FILE] DIR
+  row-value export [--project P] [--chunk N] [--board FILE] [--scorecard FILE] [--inflow FILE] [--except FILE] DIR
       the project's open agent rows (open and doing) into DIR: rows.tsv (id, state, priority,
-      epic, why, since, text), chunk-NN.txt (about N rows each, sorted by epic then id so rows
+      epic, why, requested, since, plan, after, children, exported_children, source, text),
+      chunk-NN.txt (about N rows each, sorted by epic then id so rows
       of one cause sit together) and context.md (the KPIs the project's scorecard marks past, and
       the reds `fleet-bench reds` shows still live; --scorecard and --reds-cmd swap those, "" skips
       one, and a missing scorecard or a failed reds command fails the export). Each --repo is
       fetched, then a row whose id a commit subject on its origin/main names (last --since days)
-      gets a `merged:` line, evidence a text read cannot see. It clears DIR's last chunks, judge
-      files and verdicts. A judge
-      reads one chunk, context.md and the rubric, and writes DIR/judge-NN.tsv.
+      gets a `merged:` line, evidence a text read cannot see. --inflow is a saved
+      `fleet-bench inflow --json`, whose open_ids give each row its source (the filer); without it
+      the source is `-`. --except is a headed TSV (a ledger) whose `id` rows are left out, so only
+      the rows filed since it are judged; they still count as children. It clears DIR's last
+      chunks, judge files and verdicts. A judge reads one chunk, context.md and the rubric, and
+      writes DIR/judge-NN.tsv.
   row-value merge [--rubric FILE] DIR
       checks every DIR/judge-*.tsv against the rubric's lists and DIR/rows.tsv: each exported
       id exactly once, no unknown id, each field in its list, `into` naming another exported row
       that is kept when the verdict is merge, a doing row kept, a requested row never dropped
-      or parked. Writes DIR/verdicts.tsv (with a header) and prints the counts
-      by verdict, kind and target. Exit 1 on any finding, and nothing is written.
+      or parked, a bucket that fits its verdict and the row (container: open children, and
+      dropped only with every child; chain: an #after/ tag; red: a ref). Each DIR/check-*.tsv line (id, bucket, evidence, why: the HEAD check of a
+      row the judge bucketed fault or fixed) replaces its bucket, evidence and why; a fault or
+      fixed row with no evidence fails. Writes DIR/verdicts.tsv (with a header) and prints the counts by verdict,
+      bucket, kind, target and system. Exit 1 on any finding: nothing is written, and the last
+      verdicts.tsv is removed.
+  row-value report [--project P] [--tsv FILE] DIR
+      the ledger from DIR/rows.tsv and DIR/verdicts.tsv as markdown on stdout: counts by bucket,
+      per system, per epic and per source, then every row with its bucket and tie (epic, plan, the red it
+      answers, the project it serves; P is the board's own, default agent-runtime). --tsv also
+      writes the joined ledger, one line per row (its `why` is the verdict's).
   row-value compare [--id COL] [--verdict COL] [--mine-verdict COL] [--map FROM=TO,...] MINE THEIRS
       agreement between two verdict files on the ids both judged: the share that agree, Cohen's
       kappa, the confusion table, and each disagreement as `id<TAB>mine<TAB>theirs`. THEIRS may
       use other column names (--id, --verdict, header row read) and other verdict words (--map);
       --mine-verdict compares another column of MINE (kind, target) for a confusion table.
 
+  row-value apply [--project P] [--board FILE] [--plans DIR] [--orphans FILE] [--write] --log FILE LEDGER...
+      the cut, from each LEDGER (`report --tsv`, a later one winning): for every row still open
+      (a doing row is left alone), `fixed` is `notes ptask done --proof`, a drop `drop --why` or a
+      merge `drop --dup`, an improvement `notes improve` then `drop --why` (unless improve calls it
+      health work, or its project has no notes project), and a kept row serving another project
+      `move --project` when that project has an agent board (a red stays: its watch is the
+      fleet's; so does a row whose evidence names a dotfiles file, since its fix is here). A
+      parent whose open children do not all close in the run stays, and so does a row an open
+      row waits on with #after/ (unless the close is done or a move), and parents are written
+      after their children. A plan-bookkeeping drop goes only when its plan has no open phase or its chain is
+      live (an active queue item or another open row names the plan). An orphan plan's row on
+      another board moves there; here it stays until --orphans (id, decision, why, plan) keeps it
+      or parks it (a `Parked:` line in the plan file, then the drop). Without --write it writes
+      nothing and logs what it would do. The log has one line per open row of P: id, action,
+      result, detail, why; exit 1 when a write failed.
+  row-value cut-report [--project P] [--board FILE] [--rubric FILE] --log FILE... LEDGER...
+      the after-cut report as markdown (--log repeats for a re-run, the later run winning per
+      row): the before and after counts, then the Cut table (each row
+      the log shows closed or moved, and how) and the Remains table (each row open now, its
+      bucket, tie and why), both grouped by system, each group opening with the rubric's line
+      for that system.
+
+  row-value focus [--project P] [--board FILE] [--rubric FILE] [--out DIR] [--write] --log FILE LEDGER...
+      the focus passes: every open kept row (a red, requested, fault or sot row; a doing row is a
+      live item and a chain, container, improvement or unjudged row is not worked here) goes to one
+      group of the rubric's Focus section, a `sot` row to its own group and any other by system,
+      and each group is ranked live reds, the human's asks, faults that block landing or dispatch
+      (a high or urgent fault in dispatch or ci), the remaining faults, then sot. It writes
+      DIR/focus-<group>.tsv (rank, id, bucket, priority, epic, title), the list a group's queue item
+      works leaf by leaf, and prints the counts. A live red of kind work below high, and not asked for by the human, is
+      retagged `notes ptask tag --why runtime-fault` with --write (a check row names a red and fixes
+      nothing, and a requested row keeps its reason); nothing else is retagged. A row serving another
+      project (not a red, not a dotfiles fix) is left to its own board. The log has one
+      line per listed row: id, group, rank, priority, action, result.
+
 The rubric, its lists and its rules are data: ~/.config/row-value/rubric.md. Every board read goes
-through `notes board --json`; nothing here writes a board row.
+through `notes board --json`; only `apply --write` writes, and only through `notes ptask` and
+`notes improve`.
 """
 import argparse
 import collections
+import contextlib
+import datetime
 import json
 import os
 import re
@@ -37,8 +88,18 @@ import sys
 HERE = os.path.dirname(os.path.realpath(__file__))
 RUBRIC = os.path.join(HERE, "..", "..", ".config", "row-value", "rubric.md")
 SCORECARD = "~/.notes/lab/projects/current/{project}/docs/bench/latest.md"
-FIELDS = ["id", "target", "ref", "kind", "verdict", "into", "why"]
-ROW_FIELDS = ["id", "state", "priority", "epic", "why", "requested", "since", "text"]
+FIELDS = ["id", "target", "ref", "kind", "verdict", "into", "bucket", "system", "project", "evidence", "why"]
+CHECK_FIELDS = ["id", "bucket", "evidence", "why"]
+ROW_FIELDS = ["id", "state", "priority", "epic", "why", "requested", "since", "plan", "after", "children",
+              "exported_children", "source", "text"]
+LEDGER_FIELDS = ["id", "state", "epic", "plan", "after", "children", "source", "bucket", "system", "project", "target",
+                 "ref", "kind", "verdict", "into", "evidence", "why", "text"]
+# The verdicts each bucket allows: the rubric's "Bucket" section says why.
+BUCKET_VERDICTS = {"red": {"keep"}, "fault": {"keep"}, "sot": {"keep"}, "requested": {"keep"},
+                   "chain": {"keep"}, "container": {"keep", "drop"}, "improvement": {"park"},
+                   "drop": {"drop", "merge"}, "fixed": {"keep", "drop"}}
+# A plan file under ~/.agent/plans or ~/.claude/plans; a repo's docs/plans/ path is not a plan.
+PLAN_RE = re.compile(r"\.(?:agent|claude)/plans/(?:[\w.-]+/)?([\w.-]+?)\.md")
 # The reds table's outcomes for a red not yet fixed: fleet-bench cmd_reds.
 LIVE_RED = ("queued", "fixing", "still red", "came back", "needs merge", "no fix", "alert route")
 
@@ -77,6 +138,12 @@ def load_board(path):
     if out.returncode != 0:
         die(f"notes board --json failed: {out.stderr.strip()}", 1)
     return json.loads(out.stdout)
+
+
+def open_rows(board, project):
+    """The project's open and doing agent-lane rows."""
+    return [r for r in board.get("rows", [])
+            if r.get("project") == project and r.get("lane") == "agent" and r.get("state") in ("open", "doing")]
 
 
 def past_kpis(path):
@@ -142,18 +209,57 @@ def cmd_export(a):
     if scorecard and not os.path.exists(scorecard):
         die(f"no scorecard at {scorecard}: pass --scorecard FILE, or --scorecard '' to list no KPI", 1)
     board = load_board(a.board)
-    rows = [r for r in board.get("rows", [])
-            if r.get("project") == a.project and r.get("lane") == "agent"
-            and r.get("state") in ("open", "doing")]
+    rows = open_rows(board, a.project)
+    if a.except_:
+        if not os.path.exists(a.except_):
+            die(f"--except {a.except_}: no such file", 1)
+        cols, old = read_tsv(a.except_)
+        if "id" not in cols:
+            die(f"--except {a.except_} has no id column", 1)
+        seen = {r["id"] for r in old}
+        rows = [r for r in rows if r["id"] not in seen]
     if not rows:
-        die(f"no open agent rows on {a.project}", 1)
+        die(f"no open agent rows on {a.project}" + (f" beyond {a.except_}" if a.except_ else ""), 1)
 
     def num(i):
         m = re.search(r"(\d+)$", i or "")
         return int(m.group(1)) if m else 0
 
     rows.sort(key=lambda r: (r.get("parent") or "~", num(r["id"])))
+    # Open children on any lane or project count, so a parent whose children sit elsewhere is
+    # still a container; exported_children are the ones this judging decides.
+    children = collections.Counter(r.get("parent") for r in board.get("rows", [])
+                                   if r.get("parent") and r.get("state") in ("open", "doing"))
+    exported_children = collections.Counter(r.get("parent") for r in rows if r.get("parent"))
+
+    def plan_of(r):
+        """The plan file a row's text or details name (a phase row's brief does), by its slug."""
+        for t in [r.get("text") or ""] + list(r.get("details") or []):
+            m = PLAN_RE.search(t)
+            if m:
+                return m.group(1)
+        return "-"
+
+    def after_of(r):
+        return ",".join(t.split("/", 1)[1] for t in r.get("tags") or [] if t.startswith("after/")) or "-"
+
     named = merged_names(a.repo, a.since)
+    source = {}
+    if a.inflow:
+        try:
+            with open(a.inflow) as f:
+                inflow = json.load(f)
+        except (OSError, ValueError) as e:
+            die(f"--inflow {a.inflow}: {e}", 1)
+        if not isinstance(inflow, dict):
+            die(f"--inflow {a.inflow} is not a fleet-bench inflow --json object", 1)
+        if inflow.get("sources") and not any("open_ids" in s for s in inflow["sources"]):
+            die(f"--inflow {a.inflow} has no open_ids: save it again with a fleet-bench that lists them", 1)
+        if inflow.get("project") != a.project:
+            die(f"--inflow {a.inflow} is for {inflow.get('project')!r}, not {a.project}", 1)
+        for s in inflow.get("sources", []):
+            for i in s.get("open_ids") or []:
+                source[i] = s["source"]
     kpis = past_kpis(scorecard) if scorecard else []
     reds = live_reds(a.reds_cmd) if a.reds_cmd else []
     os.makedirs(a.dir, exist_ok=True)
@@ -167,7 +273,9 @@ def cmd_export(a):
 
     write_tsv(os.path.join(a.dir, "rows.tsv"), ROW_FIELDS,
               [[r["id"], r["state"], r.get("priority") or "-", r.get("parent") or "-", r.get("prio_why") or "-",
-                "yes" if requested(r) else "no", r.get("since") or "-", r.get("text")] for r in rows])
+                "yes" if requested(r) else "no", r.get("since") or "-", plan_of(r), after_of(r),
+                children.get(r["id"], 0), exported_children.get(r["id"], 0), source.get(r["id"], "-"),
+                r.get("text")] for r in rows])
     n = max(1, a.chunk)
     chunks = [rows[i:i + n] for i in range(0, len(rows), n)]
     for k, chunk in enumerate(chunks, 1):
@@ -178,7 +286,8 @@ def cmd_export(a):
                     tags.append("#requested")
                 tags = " ".join(tags)
                 f.write(f"{r['id']} [{r['state']}] {r.get('priority') or '-'} epic:{r.get('parent') or '-'}"
-                        f" why:{r.get('prio_why') or '-'} since:{r.get('since') or '-'}\n")
+                        f" why:{r.get('prio_why') or '-'} since:{r.get('since') or '-'}"
+                        f" plan:{plan_of(r)} after:{after_of(r)} children:{children.get(r['id'], 0)}\n")
                 f.write(f"  {clean(r.get('text'))}{' ' + tags if tags else ''}\n")
                 for d in r.get("details") or []:
                     f.write(f"  | {clean(d)[:600]}\n")
@@ -194,22 +303,60 @@ def cmd_export(a):
         for r in reds or ["(none live)" if a.reds_cmd else "(not read: --reds-cmd '')"]:
             f.write(f"- {r}\n")
     print(f"{len(rows)} rows in {len(chunks)} chunks -> {a.dir}")
+    if a.inflow:
+        unsourced = sum(1 for r in rows if r["id"] not in source)
+        if unsourced:
+            print(f"{unsourced} rows are not in {a.inflow} (not open on the board it was computed from): source -")
 
 
 def rubric_lists(path):
     lists = {}
     with open(path) as f:
         for line in f:
-            m = re.fullmatch(r"(target|kind|verdict): ([a-z -]+)", line.strip())
+            m = re.fullmatch(r"(target|kind|verdict|bucket|system): ([a-z -]+)", line.strip())
             if m:
                 lists[m.group(1)] = set(m.group(2).split())
-    missing = {"target", "kind", "verdict"} - set(lists)
+    missing = {"target", "kind", "verdict", "bucket", "system"} - set(lists)
     if missing:
         die(f"{path}: no list line for {', '.join(sorted(missing))}", 1)
     return lists
 
 
+def read_checks(d, judged, findings):
+    """id -> check line from DIR/check-*.tsv: the HEAD verdict on a fault row, which replaces
+    the text judge's bucket, evidence and why. Each id at most once, and only fault or fixed."""
+    checks = {}
+    for name in sorted(p for p in os.listdir(d) if re.fullmatch(r"check-.*\.tsv", p)):
+        with open(os.path.join(d, name)) as f:
+            for n, line in enumerate(f, 1):
+                line = line.rstrip("\n")
+                if not line.strip():
+                    continue
+                cells = line.split("\t")
+                where = f"{name}:{n}"
+                if len(cells) != len(CHECK_FIELDS):
+                    findings.append(f"{where}: {len(cells)} fields, want {len(CHECK_FIELDS)}")
+                    continue
+                c = dict(zip(CHECK_FIELDS, (x.strip() for x in cells)))
+                if c["id"] not in judged:
+                    findings.append(f"{where}: {c['id']} is not a judged row")
+                elif c["id"] in checks:
+                    findings.append(f"{where}: {c['id']} checked twice (first in {checks[c['id']]['_at']})")
+                elif c["bucket"] not in ("fault", "fixed"):
+                    findings.append(f"{where}: a HEAD check says fault or fixed, not {c['bucket']!r}")
+                elif judged[c["id"]]["bucket"] not in ("fault", "fixed"):
+                    findings.append(f"{where}: {c['id']} is {judged[c['id']]['bucket']}, not a fault row to check")
+                else:
+                    c["_at"] = where
+                    checks[c["id"]] = c
+    return checks
+
+
 def cmd_merge(a):
+    # The last verdicts.tsv goes first: a merge that fails leaves none, so report never reads
+    # verdicts the current judge files no longer give.
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(os.path.join(a.dir, "verdicts.tsv"))
     lists = rubric_lists(a.rubric)
     rows_path = os.path.join(a.dir, "rows.tsv")
     if not os.path.exists(rows_path):
@@ -240,22 +387,49 @@ def cmd_merge(a):
                 if v["id"] in judged:
                     findings.append(f"{where}: {v['id']} judged twice (first in {judged[v['id']]['_at']})")
                     continue
-                for field in ("target", "kind", "verdict"):
-                    if v[field] not in lists[field]:
-                        findings.append(f"{where}: {field} {v[field]!r} is not in the rubric's list")
-                if v["verdict"] == "merge" and (v["into"] not in known or v["into"] == v["id"]):
-                    findings.append(f"{where}: merge into {v['into']!r}, not another exported row")
-                # The rubric's bounds on a verdict that the export can check.
-                if info[v["id"]].get("state") == "doing" and v["verdict"] != "keep":
-                    findings.append(f"{where}: {v['id']} is doing (a live queue item), so keep, not {v['verdict']}")
-                if info[v["id"]].get("requested") == "yes" and v["verdict"] in ("drop", "park"):
-                    findings.append(f"{where}: {v['id']} was requested by the human, so never {v['verdict']}")
                 v["_at"] = where
                 judged[v["id"]] = v
+    for i, c in read_checks(a.dir, judged, findings).items():
+        judged[i].update(bucket=c["bucket"], evidence=c["evidence"], why=c["why"], _at=judged[i]["_at"] + "+" + c["_at"])
     for v in judged.values():
+        where, row = v["_at"], info[v["id"]]
+        for field in ("target", "kind", "verdict", "bucket", "system"):
+            if v[field] not in lists[field]:
+                findings.append(f"{where}: {field} {v[field]!r} is not in the rubric's list")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", v["project"]):
+            findings.append(f"{where}: project {v['project']!r} is not a project name")
+        if v["verdict"] == "merge" and (v["into"] not in known or v["into"] == v["id"]):
+            findings.append(f"{where}: merge into {v['into']!r}, not another exported row")
+        # The rubric's bounds on a verdict and a bucket that the export can check.
+        if row.get("state") == "doing" and v["verdict"] != "keep":
+            findings.append(f"{where}: {v['id']} is doing (a live queue item), so keep, not {v['verdict']}")
+        if row.get("requested") == "yes" and v["verdict"] in ("drop", "park"):
+            findings.append(f"{where}: {v['id']} was requested by the human, so never {v['verdict']}")
+        allowed = BUCKET_VERDICTS.get(v["bucket"])
+        if allowed and v["verdict"] not in allowed:
+            findings.append(f"{where}: bucket {v['bucket']} takes verdict {'/'.join(sorted(allowed))}, not {v['verdict']}")
+        if v["bucket"] in ("fault", "fixed") and v["evidence"] in ("", "-"):
+            findings.append(f"{where}: {v['id']} is {v['bucket']} with no evidence: a check-*.tsv line gives its HEAD check")
+        has_children = (row.get("children") or "0") != "0"
+        if has_children != (v["bucket"] == "container"):
+            findings.append(f"{where}: {v['id']} has {row.get('children') or 0} open children, so "
+                            + (f"container, not {v['bucket']}" if has_children else "not container"))
+        if v["bucket"] == "chain" and row.get("after", "-") == "-":
+            findings.append(f"{where}: {v['id']} is chain with no #after/ tag")
+        if v["bucket"] == "red" and v["ref"] in ("", "-"):
+            findings.append(f"{where}: {v['id']} is red with no ref naming the red")
+        if v["bucket"] not in ("fault", "fixed") and v["evidence"] not in ("", "-"):
+            findings.append(f"{where}: {v['id']} is {v['bucket']}, so evidence is -, not {v['evidence']!r}")
         into = judged.get(v["into"]) if v["verdict"] == "merge" else None
         if into and into["verdict"] != "keep":
-            findings.append(f"{v['_at']}: {v['id']} merges into {into['id']}, which is {into['verdict']}, not keep")
+            findings.append(f"{where}: {v['id']} merges into {into['id']}, which is {into['verdict']}, not keep")
+    closing = {i for i, v in judged.items() if v["verdict"] in ("drop", "merge") or v["bucket"] == "fixed"}
+    for v in judged.values():
+        if v["bucket"] == "container" and v["verdict"] == "drop":
+            row = info[v["id"]]
+            kids = [i for i in exported if info[i].get("epic") == v["id"]]
+            if row.get("children") != row.get("exported_children") or any(k not in closing for k in kids):
+                findings.append(f"{v['_at']}: {v['id']} drops with open children that stay (drop --children closes them all)")
     unjudged = [i for i in exported if i not in judged]
     if unjudged:
         findings.append(f"{len(unjudged)} rows not judged: {' '.join(unjudged[:20])}")
@@ -264,9 +438,577 @@ def cmd_merge(a):
         sys.exit(1)
     write_tsv(os.path.join(a.dir, "verdicts.tsv"), FIELDS, [[judged[i][k] for k in FIELDS] for i in exported])
     print(f"{len(exported)} rows judged -> {os.path.join(a.dir, 'verdicts.tsv')}")
-    for field in ("verdict", "kind", "target"):
+    for field in ("verdict", "bucket", "kind", "target", "system"):
         c = collections.Counter(v[field] for v in judged.values())
         print(f"{field}: " + ", ".join(f"{k} {n}" for k, n in c.most_common()))
+
+
+def tie(r, home):
+    """What a ledger row is tied to: its epic, its plan, the red it answers, the project it serves."""
+    parts = [f"epic:{r['epic']}"] if r["epic"] != "-" else []
+    if r["plan"] != "-":
+        parts.append(f"plan:{r['plan']}")
+    if r["bucket"] == "red" and r["ref"] != "-":
+        parts.append(f"red:{r['ref']}")
+    if r["project"] != home:
+        parts.append(f"move:{r['project']}")
+    return " ".join(parts) or "-"
+
+
+def cmd_report(a):
+    rows_path, verdicts_path = (os.path.join(a.dir, f) for f in ("rows.tsv", "verdicts.tsv"))
+    for path in (rows_path, verdicts_path):
+        if not os.path.exists(path):
+            die(f"{path} missing: run row-value export and merge first", 1)
+    _, rows = read_tsv(rows_path)
+    cols, verdicts = read_tsv(verdicts_path)
+    if not set(FIELDS) <= set(cols):
+        die(f"{verdicts_path} lacks {', '.join(f for f in FIELDS if f not in cols)}: run row-value merge again", 1)
+    vmap = {v["id"]: v for v in verdicts}
+    missing = [r["id"] for r in rows if r["id"] not in vmap]
+    if missing:
+        die(f"{len(missing)} exported rows have no verdict ({' '.join(missing[:10])}): run row-value merge", 1)
+    home = a.project
+    ledger = [{**r, **vmap[r["id"]]} for r in rows]
+    if a.tsv:
+        write_tsv(a.tsv, LEDGER_FIELDS + ["tie"], [[r.get(k, "-") for k in LEDGER_FIELDS] + [tie(r, home)] for r in ledger])
+    buckets = [b for b, _ in collections.Counter(r["bucket"] for r in ledger).most_common()]
+
+    def table(title, key):
+        groups = collections.defaultdict(collections.Counter)
+        for r in ledger:
+            groups[key(r)][r["bucket"]] += 1
+        out = [f"## {title}", "", f"| {title.split()[-1]} | rows | " + " | ".join(buckets) + " |",
+               "|---|---|" + "---|" * len(buckets)]
+        for g, c in sorted(groups.items(), key=lambda kv: (-sum(kv[1].values()), kv[0])):
+            out.append(f"| {g} | {sum(c.values())} | " + " | ".join(str(c[b]) for b in buckets) + " |")
+        return out + [""]
+
+    total = collections.Counter(r["bucket"] for r in ledger)
+    out = [f"# Row ledger, {len(ledger)} open {home} rows", "",
+           "Buckets: " + ", ".join(f"{b} {total[b]}" for b in buckets) + ".",
+           f"Misfiled (served project is not {home}): {sum(1 for r in ledger if r['project'] != home)}.", ""]
+    out += table("Per system", lambda r: r["system"])
+    out += table("Per epic", lambda r: r["epic"])
+    out += table("Per source", lambda r: r.get("source", "-"))
+    out += ["## Every row", ""]
+    for system in sorted({r["system"] for r in ledger}):
+        out += [f"### {system}", "", "| id | bucket | verdict | tie | evidence |", "|---|---|---|---|---|"]
+        for r in sorted((r for r in ledger if r["system"] == system), key=lambda r: (r["epic"], r["bucket"], r["id"])):
+            out.append(f"| {r['id']} | {r['bucket']} | {r['verdict']} | {tie(r, home)} | {r['evidence']} |")
+        out.append("")
+    print("\n".join(out).rstrip())
+
+
+APPLY_LOG = ["id", "action", "result", "detail", "why"]
+# A plan-bookkeeping row's plan, when the export found no plan path: "(plan <slug>)" in its title
+# or "plan <slug>: run its open phases".
+PLAN_WORD_RE = re.compile(r"\(plan ([\w.-]+)\)|\bplan ([\w.-]+): run its open phases")
+# Evidence naming a file in this repo or the private overlay: the row's fix is runtime work
+# whatever project it serves, so a move would send its session to the wrong checkout.
+DOTFILES_FIX_RE = re.compile(r"(?<![\w-])(dotfiles(-private)?:|\.dotfiles(-private)?/|\.local/(bin|lib|src)/)")
+CLOSED = ("done", "dup", "drop", "improve", "move", "park")
+KEPT = ("red", "fault", "sot", "requested", "chain", "container")
+
+
+def read_ledgers(paths):
+    """id -> ledger row over every LEDGER, a later file's line winning (the delta judged after)."""
+    out = {}
+    for path in paths:
+        if not os.path.exists(path):
+            die(f"{path}: no such ledger", 1)
+        cols, rows = read_tsv(path)
+        need = {"id", "bucket", "verdict", "into", "project", "kind", "evidence", "why", "text", "system"}
+        if not need <= set(cols):
+            die(f"{path} lacks {', '.join(sorted(need - set(cols)))}: write it with row-value report --tsv", 1)
+        out.update((r["id"], r) for r in rows)
+    return out
+
+
+def plan_slug(r):
+    if r.get("plan", "-") not in ("", "-"):
+        return r["plan"]
+    m = PLAN_WORD_RE.search(r.get("text") or "")
+    return (m.group(1) or m.group(2)) if m else None
+
+
+def open_phases(path):
+    """The `- [ ]` lines under a plan file's `## Phases`."""
+    n, inside = 0, False
+    with open(path) as f:
+        for line in f:
+            if line.startswith("## "):
+                inside = line.strip() == "## Phases"
+            elif inside and line.lstrip().startswith("- [ ]"):
+                n += 1
+    return n
+
+
+def plan_state(slug, self_id, plans, board_rows, items, exclude=()):
+    """(why the plan-bookkeeping row for SLUG can go, or None, detail): None when its plan is
+    an orphan (open phases and no live chain: no active queue item and no other open row names
+    the plan) or has no file under PLANS (a wrong slug or an archived plan is not proof). A row
+    in EXCLUDE (closing in this run, or another bookkeeping row) is no proof of a live chain."""
+    files = [os.path.join(d, f"{slug}.md") for d, _, fs in os.walk(plans) if f"{slug}.md" in fs]
+    if not files:
+        return None, f"plan {slug}: no plan file under {plans}"
+    left = max(open_phases(f) for f in files)
+    if not left:
+        return f"plan {slug}: no open phase", None
+    word = re.compile(rf"(?<![\w.-]){re.escape(slug)}(?![\w-])")
+    for it in items:
+        if word.search(" ".join(str(it.get(k) or "") for k in ("task", "title", "slug"))):
+            return f"plan {slug}: chain live (item {it.get('slug')})", None
+    for r in board_rows:
+        if r["id"] != self_id and r["id"] not in exclude and word.search(" ".join([r.get("text") or ""] + list(r.get("details") or []))):
+            return f"plan {slug}: phase row {r['id']} open", None
+    return None, f"plan {slug}: open phases and no live chain"
+
+
+def active_items(cmd):
+    out = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    if out.returncode != 0:
+        die(f"{cmd!r} failed ({out.returncode}): {out.stderr.strip()[:300]}", 1)
+    items = []
+    for line in out.stdout.splitlines():
+        if line.strip():
+            items.append(json.loads(line))
+    return items
+
+
+def title_of(text):
+    """A row's text without its tags, for the report and for improvements.md."""
+    return clean(re.sub(r"(?<!\S)#\S+", "", text or ""))
+
+
+def proof_of(evidence):
+    return "head-check " + clean(evidence).replace("-->", "->")[:160]
+
+
+def plan_action(r, row, ctx):
+    """(action, argv or None, detail) for one ledger row still open on the board."""
+    rid, bucket, verdict = r["id"], r["bucket"], r["verdict"]
+    if row["state"] == "doing":
+        return "keep", None, "doing: a live queue item, untouched"
+    pt = [ctx.notes, "ptask", ctx.project, "--agent"]
+    if bucket == "fixed":
+        return "done", pt + ["done", rid, "--proof", proof_of(r["evidence"])], r["evidence"]
+    if verdict == "merge":
+        if r["into"] in ctx.open_ids:
+            return "dup", pt + ["drop", rid, "--dup", r["into"]], f"dup of {r['into']}"
+        return "drop", pt + ["drop", rid, "--why", f"{r['why']} (dup of {r['into']}, closed)"], f"dup of closed {r['into']}"
+    if verdict == "drop":
+        why = r["why"]
+        if r["kind"] == "plan-bookkeeping":
+            slug = plan_slug(r)
+            if not slug:
+                return ctx.orphan(r, None, "plan bookkeeping that names no plan")
+            state, orphan_why = plan_state(slug, rid, ctx.plans, ctx.board_rows, ctx.items, ctx.exclude)
+            if state is None and "no plan file" in orphan_why:
+                return ctx.orphan(r, slug, orphan_why)
+            if state is None:
+                # The row is the only start its plan's chain has: on its own project's board
+                # dispatch still promotes it; here the session decides keep or park.
+                if r["project"] != ctx.project and ctx.has_board(r["project"]) and not DOTFILES_FIX_RE.search(r["evidence"]):
+                    return "move", pt + ["move", rid, "--project", r["project"]], \
+                        f"{r['project']} (plan {slug}: orphan, the row starts its chain)"
+                return ctx.orphan(r, slug, orphan_why)
+            why = f"{why}; {state}"
+        extra = ["--children", "drop"] if bucket == "container" else []
+        return "drop", pt + ["drop", rid, "--why", why] + extra, why
+    if bucket == "improvement":
+        text = f"{title_of(r['text'])} (was {rid})"
+        if not ctx.has_project(r["project"]):
+            return "keep", None, f"no notes project {r['project']}: stays until the human names one"
+        if ctx.health(r["project"], text):
+            return "keep", None, "notes improve calls it health work: stays"
+        return "improve", [[ctx.notes, "improve", r["project"], "--why", r["why"], "--", text],
+                           pt + ["drop", rid, "--why", f"moved to improvements: {r['project']}"]], r["project"]
+    if bucket in KEPT and r["project"] != ctx.project:
+        if bucket == "red":
+            return "keep", None, f"red: a fleet watch, stays here though it serves {r['project']}"
+        if DOTFILES_FIX_RE.search(r["evidence"]):
+            return "keep", None, f"serves {r['project']}, but its fix is in dotfiles ({r['evidence'][:80]}): stays"
+        if not ctx.has_board(r["project"]):
+            return "keep", None, f"{r['project']} has no agent board: stays until the human names one"
+        return "move", pt + ["move", rid, "--project", r["project"]], r["project"]
+    return "keep", None, bucket
+
+
+class Ctx:
+    def __init__(self, a, board):
+        self.notes, self.project, self.plans = a.notes, a.project, os.path.expanduser(a.plans)
+        if not os.path.isdir(self.plans):
+            die(f"--plans {self.plans} is not a directory", 1)
+        self.board_rows = [r for r in board.get("rows", []) if r.get("state") in ("open", "doing")]
+        self.open_ids = {r["id"] for r in self.board_rows}
+        self.items = active_items(a.queue_cmd)
+        self._boards, self._health, self.ledger, self.exclude = {}, {}, {}, set()
+        self.decided = {}
+        if a.orphans:
+            cols, rows = read_tsv(a.orphans)
+            if cols[:3] != ["id", "decision", "why"] or any(r["decision"] not in ("keep", "park") for r in rows):
+                die(f"--orphans {a.orphans}: want a headed TSV id, decision (keep or park), why[, plan]", 1)
+            self.decided = {r["id"]: r for r in rows}
+
+    def orphan(self, r, slug, detail):
+        """An orphan plan's row: kept (it starts its plan's chain) or parked (a `Parked:` line in
+        its plan file, then dropped) as --orphans decides; undecided, it stays and is listed."""
+        d = self.decided.get(r["id"])
+        if not d:
+            return "orphan", None, detail
+        if d["decision"] == "keep":
+            return "keep", None, f"{detail}: kept, the row starts its chain; {d['why']}"
+        slug = d.get("plan") or slug
+        files = [os.path.join(dp, f"{slug}.md") for dp, _, fs in os.walk(self.plans) if f"{slug}.md" in fs] if slug else []
+        if not files:
+            die(f"--orphans parks {r['id']}, whose plan {slug} has no file to mark", 1)
+        why = f"plan {slug} parked: {d['why']}"
+        pt = [self.notes, "ptask", self.project, "--agent"]
+        return "park", [pt + ["drop", r["id"], "--why", why], ("park", files, d["why"], r["id"])], why
+
+    def has_board(self, project):
+        if project not in self._boards:
+            out = subprocess.run([self.notes, "ptask", project, "--agent", "list"], capture_output=True, text=True)
+            self._boards[project] = out.returncode == 0
+        return self._boards[project]
+
+    def has_project(self, project):
+        key = "project:" + project
+        if key not in self._boards:
+            out = subprocess.run([self.notes, "ptask", project, "list"], capture_output=True, text=True)
+            self._boards[key] = out.returncode == 0
+        return self._boards[key]
+
+    def health(self, project, text):
+        """True when `notes improve` refuses TEXT for PROJECT as health work (exit 3)."""
+        key = (project, text)
+        if key not in self._health:
+            out = subprocess.run([self.notes, "improve", "--check", project, "--", text], capture_output=True, text=True)
+            if out.returncode not in (0, 3):
+                die(f"notes improve --check failed ({out.returncode}): {out.stderr.strip()[:300]}", 1)
+            self._health[key] = out.returncode == 3
+        return self._health[key]
+
+
+def cmd_apply(a):
+    board = load_board(a.board)
+    ledger = read_ledgers(a.ledger)
+    ctx = Ctx(a, board)
+    ctx.ledger = ledger
+    # Every row is decided before any write, so a die (a bad --orphans line, a failed
+    # health check) leaves the board as it was. The second pass decides plan-bookkeeping rows
+    # again with every row the first pass closes, and every other bookkeeping row, set aside:
+    # neither is proof that a plan's chain is live.
+    rows = open_rows(board, a.project)
+
+    def decide():
+        return [(row["id"], ledger.get(row["id"])) + (plan_action(ledger[row["id"]], row, ctx) if row["id"] in ledger
+                                                       else ("unjudged", None, "not in any ledger")) for row in rows]
+    plans = decide()
+    ctx.exclude = {rid for rid, r, action, argv, _ in plans if r and (
+        r["kind"] == "plan-bookkeeping" or (argv and action in CLOSED))}
+    plans = decide()
+    closing = {rid for rid, _, action, argv, _ in plans if argv and action in CLOSED}
+    # A parent's close is refused while a child is open (only a container drops its children),
+    # so a parent whose children do not all close in this run stays; repeat until nothing changes.
+    # A row an open row waits on with #after/ is closed undelivered only with that waiter: its gate
+    # goes dead otherwise, and queue-starved trips on it (ar-3172: 15 kept chain rows, 2026-11-25).
+    kids, waiters = collections.defaultdict(set), collections.defaultdict(set)
+    for b in ctx.board_rows:
+        for t in b.get("tags") or []:
+            if t.startswith("of/"):
+                kids[t[3:]].add(b["id"])
+            elif t.lower().startswith("after/"):
+                waiters[t[6:].lower()].add(b["id"])
+    moving = {rid for rid, _, action, argv, _ in plans if argv and action == "move"}
+    held = True
+    while held:
+        held = False
+        for n, (rid, r, action, argv, detail) in enumerate(plans):
+            if rid not in closing:
+                continue
+            left = kids[rid] - closing
+            # A moved waiter keeps its gate on its new board, so only a waiter that closes counts.
+            waiting = waiters[rid.lower()] - (closing - moving) if action not in ("done", "move") else set()
+            if action != "move" and r["bucket"] != "container" and left:
+                plans[n] = (rid, r, "keep", None, f"open children {', '.join(sorted(left))}: stays until they close")
+            elif waiting:
+                plans[n] = (rid, r, "keep", None, f"open #after/ waiters {', '.join(sorted(waiting))}: stays until they close")
+            else:
+                continue
+            closing.discard(rid)
+            held = True
+    for n, (rid, r, action, argv, detail) in enumerate(plans):
+        if action == "dup" and r["into"] in closing:
+            why = f"{r['why']} (dup of {r['into']}, closed in this run)"
+            plans[n] = (rid, r, "drop", argv[:-2] + ["--why", why], f"dup of {r['into']}, closed in this run")
+    # Moves go first, a parent before its children (a move keeps an `of/` tag only when the
+    # target board holds the parent); then closes, the deepest child first.
+    parent = {k: p for p, ks in kids.items() for k in ks}
+
+    def height(i, seen=()):
+        return 0 if i in seen else max((1 + height(k, seen + (i,)) for k in kids[i]), default=0)
+
+    def depth(i, seen=()):
+        return 0 if i in seen or i not in parent else 1 + depth(parent[i], seen + (i,))
+    plans.sort(key=lambda p: (0, depth(p[0])) if p[2] == "move" else (1, height(p[0])))
+    filed = previous_improvements(a.log)
+    counts = collections.Counter()
+    with open(a.log, "w") as log:
+        log.write("\t".join(APPLY_LOG) + "\n")
+        for rid, r, action, argv, detail in plans:
+            # A dry run keeps an earlier run's mark, so a later --write still skips the improvement.
+            result = ("planned" + (f" {IMPROVED}" if rid in filed else "")) if argv else "-"
+            if argv and a.write:
+                result = run_writes(rid, argv if isinstance(argv[0], (list, tuple)) else [argv], filed)
+            counts[f"{action} {'failed' if result.startswith('failed') else result.split(' (')[0]}"] += 1
+            log.write("\t".join(clean(str(c)) for c in [rid, action, result, detail, r["why"] if r else "-"]) + "\n")
+            log.flush()
+    print(f"{len(plans)} open rows -> {a.log}" + ("" if a.write else " (dry run: nothing written)"))
+    print(", ".join(f"{k} {n}" for k, n in sorted(counts.items())))
+    return 1 if any(k.endswith(" failed") for k in counts) else 0
+
+
+IMPROVED = "(improvement filed)"
+
+
+def previous_improvements(path):
+    """Ids whose improvement an earlier run against this --log filed before its drop failed:
+    a re-run drops them without filing the improvement twice."""
+    if not os.path.exists(path):
+        return set()
+    cols, rows = read_tsv(path)
+    return {r["id"] for r in rows if cols == APPLY_LOG and r["result"].endswith(IMPROVED)}
+
+
+def run_writes(rid, cmds, filed):
+    """Run one row's writes in order, stopping at the first refusal; "ok" or "failed N: why"."""
+    done_improve = rid in filed
+    for cmd in cmds:
+        if cmd[0] == "park":
+            try:
+                park_plans(*cmd[1:])
+            except OSError as e:
+                return f"failed park: {e} (the row is dropped: add the Parked line by hand or reopen it)"
+            continue
+        if done_improve and cmd[1] == "improve":
+            continue
+        out = subprocess.run(cmd, capture_output=True, text=True)
+        if out.returncode != 0:
+            why = (out.stderr.strip().splitlines() or ["-"])[-1][:200]
+            return f"failed {out.returncode}: {why}" + (f" {IMPROVED}" if done_improve else "")
+        done_improve = done_improve or cmd[1] == "improve"
+    return "ok"
+
+
+def park_plans(files, why, rid):
+    """A `Parked:` line under each plan file's heading, once: the plan is kept, its chain unqueued."""
+    day = datetime.date.today().isoformat()
+    line = f"Parked: {day}, {why}; its board row {rid} was dropped. Queue it again with `agent-queue add --plan`."
+    for path in files:
+        with open(path) as f:
+            text = f.read()
+        if f"its board row {rid} was dropped" in text:
+            continue
+        head, sep, rest = text.partition("\n")
+        with open(path, "w") as f:
+            f.write(f"{head}{sep}\n{line}\n{rest}" if sep else f"{text}\n\n{line}\n")
+
+
+def system_lines(path):
+    """system -> its line in the rubric's System section."""
+    out, inside = {}, False
+    with open(path) as f:
+        for line in f:
+            if line.startswith("## "):
+                inside = line.startswith("## System")
+            m = re.match(r"- `([a-z]+)`: (.+)", line.strip()) if inside else None
+            if m:
+                out[m.group(1)] = m.group(2).rstrip(".")
+    return out
+
+
+FOCUS_LOG = ["id", "group", "rank", "priority", "action", "result"]
+RANKS = ["red", "requested", "blocks landing or dispatch", "fault", "sot"]
+HIGH = ("urgent", "high")
+
+
+def focus_groups(path):
+    """[(id, title, systems, bucket)] from the rubric's Focus section, in file order: a line is
+    "- `id`: title; systems a b" or "- `id`: title; bucket sot"."""
+    out, inside = [], False
+    with open(path) as f:
+        for line in f:
+            if line.startswith("## "):
+                inside = line.startswith("## Focus")
+            m = re.match(r"- `([a-z]+)`: ([^;]+); (systems|bucket) (.+)", line.strip()) if inside else None
+            if m:
+                words = m.group(4).rstrip(".").split()
+                out.append((m.group(1), m.group(2), words if m.group(3) == "systems" else [], words[0] if m.group(3) == "bucket" else None))
+    return out
+
+
+def focus_rank(r, priority):
+    """Index into RANKS for a ledger row worked by a focus pass, or None for a row none works."""
+    if r["bucket"] == "red":
+        return 0
+    if r["bucket"] == "requested":
+        return 1
+    if r["bucket"] == "fault":
+        return 2 if priority in HIGH and r["system"] in ("dispatch", "ci") else 3
+    return 4 if r["bucket"] == "sot" else None
+
+
+def cmd_focus(a):
+    board = load_board(a.board)
+    ledger = read_ledgers(a.ledger)
+    groups = focus_groups(a.rubric)
+    if not groups:
+        die(f"{a.rubric} has no Focus section", 1)
+
+    def group_of(r):
+        for gid, _, _, bucket in groups:
+            if bucket and r["bucket"] == bucket:
+                return gid
+        for gid, _, systems, bucket in groups:
+            if not bucket and r["system"] in systems:
+                return gid
+        return None
+    listed = collections.defaultdict(list)
+    skipped = collections.Counter()
+    for row in open_rows(board, a.project):
+        r = ledger.get(row["id"])
+        priority = row.get("priority") or "normal"
+        if row["state"] == "doing":
+            skipped["doing"] += 1
+        elif not r:
+            skipped["unjudged"] += 1
+        elif r["project"] != a.project and r["bucket"] != "red" and not DOTFILES_FIX_RE.search(r["evidence"]):
+            skipped["other board"] += 1
+        elif focus_rank(r, priority) is None:
+            skipped[r["bucket"]] += 1
+        elif group_of(r) is None:
+            die(f"{row['id']}: system {r['system']} is in no Focus group of {a.rubric}", 1)
+        else:
+            listed[group_of(r)].append((focus_rank(r, priority), row, r, priority))
+    os.makedirs(a.out, exist_ok=True)
+    pt = [a.notes, "ptask", a.project, "--agent"]
+    failed = 0
+    # The retag pass runs first, so each list and the log show the priority the board now holds.
+    outcome = {}
+    for gid, _, _, _ in groups:
+        for n, (k, row, r, pr) in enumerate(listed[gid]):
+            # A red already high, a check row (it names a red and fixes nothing) and a row the human
+            # asked for (--why would replace its `requested` reason) keep their tag.
+            if k != 0 or pr in HIGH or r["kind"] != "work" or row.get("requested") or row.get("prio_why") == "requested":
+                continue
+            result = "planned"
+            if a.write:
+                try:
+                    out = subprocess.run(pt + ["tag", "--why", "runtime-fault", row["id"]], capture_output=True, text=True)
+                    code, err = out.returncode, (out.stderr.strip().splitlines() or ["-"])[-1][:200]
+                except OSError as e:
+                    code, err = 127, str(e)
+                result = "ok" if code == 0 else f"failed {code}: {err}"
+                failed += code != 0
+                if code == 0:
+                    listed[gid][n] = (k, row, r, "high")
+            outcome[row["id"]] = result
+    with open(a.log, "w") as log:
+        log.write("\t".join(FOCUS_LOG) + "\n")
+        for gid, title, _, _ in groups:
+            rows = sorted(listed[gid], key=lambda t: (t[0], 0 if t[3] in HIGH else 1, int(re.sub(r"\D", "", t[1]["id"]) or 0)))
+            write_tsv(os.path.join(a.out, f"focus-{gid}.tsv"), ["rank", "id", "bucket", "priority", "epic", "title"],
+                      [[RANKS[k], row["id"], r["bucket"], pr, r.get("epic", "-"), title_of(row["text"])] for k, row, r, pr in rows])
+            for k, row, r, pr in rows:
+                result = outcome.get(row["id"], "-")
+                log.write("\t".join(clean(str(c)) for c in [row["id"], gid, RANKS[k], pr, "tag" if result != "-" else "-", result]) + "\n")
+    print(f"focus groups -> {a.out}" + ("" if a.write else " (dry run: nothing retagged)"))
+    for gid, title, _, _ in groups:
+        n = collections.Counter(RANKS[k] for k, *_ in listed[gid])
+        print(f"{gid}: {title}: {len(listed[gid])} rows (" + ", ".join(f"{RANKS[i]} {n[RANKS[i]]}" for i in range(len(RANKS))) + ")")
+    print("not worked here: " + (", ".join(f"{k} {n}" for k, n in sorted(skipped.items())) or "none"))
+    return 1 if failed else 0
+
+
+def cmd_cut_report(a):
+    entries = {}
+    for path in a.log:
+        cols, rows = read_tsv(path)
+        if cols != APPLY_LOG:
+            die(f"{path} is not a row-value apply log", 1)
+        entries.update((e["id"], e) for e in rows)
+    log = list(entries.values())
+    ledger = read_ledgers(a.ledger)
+    missing = sorted(e["id"] for e in log if e["action"] != "unjudged" and e["id"] not in ledger)
+    if missing:
+        die(f"the logs name rows no LEDGER holds: {', '.join(missing[:10])}", 1)
+    systems = system_lines(a.rubric)
+    board = load_board(a.board)
+    now = open_rows(board, a.project)
+    home = a.project
+    how = {"done": "closed done", "dup": "dropped as a dup", "drop": "dropped", "improve": "moved to improvements",
+           "move": "moved to another board", "park": "dropped, its plan parked"}
+    cut = [e for e in log if e["action"] in CLOSED and e["result"] == "ok"]
+
+    def system(i):
+        return ledger.get(i, {}).get("system", "-")
+
+    def grouped(entries, header, cells):
+        out = []
+        for s in sorted({system(e["id"]) for e in entries}):
+            group = [e for e in entries if system(e["id"]) == s]
+            line = systems.get(s, "rows judged after the ledger, or with no system")
+            out += [f"### {s} ({len(group)})", "", f"Rows about {line}.", "", header,
+                    "|" + "---|" * (header.count("|") - 1)]
+            out += [cells(e) for e in sorted(group, key=lambda e: e["id"])]
+            out.append("")
+        return out
+
+    def esc(s):
+        return clean(s).replace("|", "/")
+
+    def what(e):
+        d = e["detail"]
+        if e["action"] == "done":
+            return f"closed done, proof {d}"
+        if e["action"] in ("improve", "move"):
+            return f"{how[e['action']]} ({d})"
+        return how[e["action"]]
+
+    remain = [{"id": r["id"], "text": r.get("text") or ""} for r in now]
+    kept_why = {e["id"]: e for e in log}
+    out = [f"# After the cut: {home}, {board.get('today', '')}", "",
+           f"Before: {len(log)} open rows. After: {len(now)} open rows. Cut: {len(cut)}.", ""]
+    c = collections.Counter(e["action"] for e in cut)
+    out.append("Cut by action: " + ", ".join(f"{how[k]} {n}" for k, n in c.most_common()) + ".")
+    left = collections.Counter(ledger[r["id"]]["bucket"] if r["id"] in ledger else "unjudged" for r in remain)
+    out += ["Remains by bucket: " + ", ".join(f"{k} {n}" for k, n in left.most_common()) + ".", ""]
+    failed = [e for e in log if e["result"].startswith("failed")]
+    if failed:
+        out += ["Failed writes (still open): " + ", ".join(f"{e['id']} ({esc(e['result'])})" for e in failed) + ".", ""]
+    out += ["## Cut", ""]
+    out += grouped(cut, "| id | title | what happened | why |",
+                   lambda e: f"| {e['id']} | {esc(title_of(ledger[e['id']]['text']))[:90]} | {esc(what(e))} | {esc(e['why'])} |")
+    out += ["## Remains", ""]
+
+    def remains(e):
+        r = ledger.get(e["id"])
+        if not r:
+            return f"| {e['id']} | {esc(title_of(e['text']))[:90]} | - | - | filed after the ledger: judged by the next pass |"
+        stay = kept_why.get(e["id"])
+        if not stay:
+            why = f"open after the run, not in its log; {r['why']}"
+        elif stay["result"].startswith("failed"):
+            why = f"{stay['action']} {stay['result']}; {r['why']}"
+        elif stay["action"] == "keep" and stay["detail"] == r["bucket"]:
+            why = r["why"]
+        else:
+            why = f"{stay['detail']}; {r['why']}"
+        return f"| {e['id']} | {esc(title_of(r['text']))[:90]} | {r['bucket']} | {esc(r.get('tie', '-'))} | {esc(why)} |"
+    out += grouped(remain, "| id | title | bucket | tie | why it stays |", remains)
+    print("\n".join(out).rstrip())
 
 
 def read_verdicts(path, id_col, verdict_col, mapping):
@@ -331,12 +1073,44 @@ def main():
     e.add_argument("--board", help="a saved `notes board --json`, instead of calling notes")
     e.add_argument("--scorecard", help=f"the scorecard whose past KPIs the judges score against (default {SCORECARD}; '' for none)")
     e.add_argument("--reds-cmd", default="fleet-bench reds")
+    e.add_argument("--inflow", help="a saved `fleet-bench inflow --json`, for each row's source")
     e.add_argument("--repo", action="append", default=[], help="a git checkout whose origin/main commit subjects name rows")
     e.add_argument("--since", type=int, default=30, help="days of commits --repo reads")
+    e.add_argument("--except", dest="except_", help="a headed TSV whose id rows are not exported again")
     e.add_argument("dir")
     m = sub.add_parser("merge")
     m.add_argument("--rubric", default=RUBRIC)
     m.add_argument("dir")
+    r = sub.add_parser("report")
+    r.add_argument("--project", default="agent-runtime", help="the board's own project: a row serving any other is a move")
+    r.add_argument("--tsv", help="also write the joined ledger here")
+    r.add_argument("dir")
+    ap = sub.add_parser("apply")
+    ap.add_argument("--project", default="agent-runtime")
+    ap.add_argument("--board", help="a saved `notes board --json`, instead of calling notes")
+    ap.add_argument("--plans", default="~/.agent/plans", help="where plan files live")
+    ap.add_argument("--queue-cmd", default="agent-queue list --json --state active",
+                    help="prints the active queue items, one JSON object a line")
+    ap.add_argument("--notes", default="notes", help="the notes binary")
+    ap.add_argument("--orphans", help="a headed TSV (id, decision keep|park, why, and plan when the row names none) settling orphan plan rows")
+    ap.add_argument("--write", action="store_true", help="run the writes; without it, a dry run")
+    ap.add_argument("--log", required=True)
+    ap.add_argument("ledger", nargs="+")
+    cr = sub.add_parser("cut-report")
+    cr.add_argument("--project", default="agent-runtime")
+    cr.add_argument("--board", help="a saved `notes board --json` read after the cut")
+    cr.add_argument("--rubric", default=RUBRIC)
+    cr.add_argument("--log", required=True, action="append", help="an apply log; repeat it for a re-run, the later run winning per row")
+    cr.add_argument("ledger", nargs="+")
+    fo = sub.add_parser("focus")
+    fo.add_argument("--project", default="agent-runtime")
+    fo.add_argument("--board", help="a saved `notes board --json`, instead of calling notes")
+    fo.add_argument("--rubric", default=RUBRIC)
+    fo.add_argument("--notes", default="notes", help="the notes binary")
+    fo.add_argument("--out", required=True, help="where the focus-<group>.tsv lists go")
+    fo.add_argument("--write", action="store_true", help="retag the reds; without it, a dry run")
+    fo.add_argument("--log", required=True)
+    fo.add_argument("ledger", nargs="+")
     c = sub.add_parser("compare")
     c.add_argument("--id", default="id")
     c.add_argument("--verdict", default="verdict")
@@ -345,7 +1119,8 @@ def main():
     c.add_argument("mine")
     c.add_argument("theirs")
     a = p.parse_args()
-    {"export": cmd_export, "merge": cmd_merge, "compare": cmd_compare}[a.cmd](a)
+    sys.exit({"export": cmd_export, "merge": cmd_merge, "report": cmd_report, "compare": cmd_compare,
+              "apply": cmd_apply, "cut-report": cmd_cut_report, "focus": cmd_focus}[a.cmd](a) or 0)
 
 
 if __name__ == "__main__":

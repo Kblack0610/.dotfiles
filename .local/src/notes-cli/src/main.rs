@@ -20,6 +20,7 @@ mod find;
 mod focus;
 mod focus_move;
 mod focus_sweep;
+mod gate;
 mod improve;
 mod inbox;
 mod inbox_ack;

@@ -145,3 +145,94 @@ host_installs() {
   [ "${#lines[@]}" -eq 3 ] || fail "want the apt, rustup and GITHUB_PATH lines named: $output"
   [[ "$output" == *apt-get* && "$output" == *"rustup toolchain"* && "$output" == *GITHUB_PATH* ]]
 }
+
+# kinds <wf>: "<job> <kind>" for every job that loads the test image, kind "-" when it names none
+# A job names its stage in its env (6 spaces); the image job, which seeds every stage and the sweep's tmux versions, names one in each
+# step's env (10 spaces), in the order they run.
+kinds() {
+  awk '
+    /^  [A-Za-z0-9_-]+:$/ { if (job != "" && uses) print job, (kind == "" ? "-" : kind); job = $1; sub(/:$/, "", job); kind = ""; uses = 0 }
+    /^( {6}| {10})TEST_IMAGE_KIND:/ { kind = (kind == "" ? $2 : kind "," $2) }
+    /uses: \.\/\.github\/actions\/test-image/ { uses = 1 }
+    END { if (job != "" && uses) print job, (kind == "" ? "-" : kind) }
+  ' "$1" | sort
+}
+
+@test "every job that loads the test image names its stage, and the stage has what the job runs" {
+  run kinds "$WF"
+  assert_success
+  # The cheapest stage with the tools each job runs (tests/Dockerfile): the pool's link is shared,
+  # so a job that loads more than it uses can run out its timeout in the restore (ar-5632).
+  assert_output "$(printf '%s\n' 'fast lean' 'image lean,rust,full,full,full,full,full' 'lint lean' 'notes rust' 'rust full' 'ui full')"
+  # Negative control: a job with no kind is named "-".
+  sed '/TEST_IMAGE_KIND: lean   # shellcheck/d' "$WF" >"$BATS_TEST_TMPDIR/nokind.yml"
+  run kinds "$BATS_TEST_TMPDIR/nokind.yml"
+  assert_line 'lint -'
+}
+
+@test "every test-image step passes the registry address and secret, and the action hardcodes no address" {
+  uses=$(grep -c "uses: .\/.github\/actions\/test-image\$" "$WF")
+  [ "$uses" -ge 8 ] || fail "want every job loading the image counted, got $uses"
+  run grep -c '^          registry: \${{ vars\.CI_REGISTRY }}$' "$WF"
+  assert_output "$uses"
+  run grep -c '^          registry-password: \${{ secrets\.CI_REGISTRY_PASSWORD }}$' "$WF"
+  assert_output "$uses"
+  ACT="$BATS_TEST_DIRNAME/../../.github/actions/test-image/action.yml"
+  # The address is the home LAN's and this repo is public (the sensitive-token scan): it is a repo variable.
+  run grep -cE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' "$ACT"
+  assert_output "0"
+  # Hosted runners cannot reach the LAN: the registry step is for self-hosted ones only.
+  run grep -c "runner.environment == 'self-hosted'" "$ACT"
+  assert_output "1"
+}
+
+# waits_for_image <wf>: jobs that load the test image without needing the image job (the image job itself excluded)
+waits_for_image() {
+  awk '
+    /^  [A-Za-z0-9_-]+:$/ { if (job != "" && job != "image" && uses && !waits) print job; job = $1; sub(/:$/, "", job); uses = 0; waits = 0 }
+    /^    needs:.*(\[|[ ,])image([],]|$)/ { waits = 1 }
+    /uses: \.\/\.github\/actions\/test-image/ { uses = 1 }
+    END { if (job != "" && job != "image" && uses && !waits) print job }
+  ' "$1" | sort
+}
+
+@test "every job that loads the test image waits for the image job, so no pool pod builds it" {
+  run waits_for_image "$WF"
+  assert_success
+  assert_output ''
+  # Negative control: a lint job that dropped its needs is named.
+  sed '/^  lint:$/,/^  [a-z]/{/^    needs: image$/d}' "$WF" >"$BATS_TEST_TMPDIR/nowait.yml"
+  run waits_for_image "$BATS_TEST_TMPDIR/nowait.yml"
+  assert_output 'lint'
+}
+
+@test "only a seed run of the test-image action pushes" {
+  ACT="$BATS_TEST_DIRNAME/../../.github/actions/test-image/action.yml"
+  push=$(sed -n '/^    - id: push$/,/^    # /p' "$ACT")
+  [[ "$push" == *"inputs.seed == 'true'"* ]] || fail "the push step is not seed-only: $push"
+  # Negative control: a push that loses the seed condition is not seed-only.
+  sed "/^    - id: push\$/,/^      shell/ s/inputs.seed == 'true' && //" "$ACT" >"$BATS_TEST_TMPDIR/push.yml"
+  run sed -n '/^    - id: push$/,/^    # /p' "$BATS_TEST_TMPDIR/push.yml"
+  [[ "$output" != *"inputs.seed == 'true'"* ]]
+}
+
+# unseeded <wf>: tmux versions of the ui sweep matrix, bar docker.sh's default (the image job's own
+# steps), with no seed step in the image job
+unseeded() {
+  local v dflt
+  dflt=$(sed -nE 's/^TMUX_REF="\$\{TMUX_REF:-([^}]*)\}"$/\1/p' "$BATS_TEST_DIRNAME/../docker.sh")
+  [ -n "$dflt" ] || fail "no default TMUX_REF read from docker.sh"
+  for v in $(grep -E "^ +tmux: .*schedule" "$1" | grep -oE '"3\.[0-9a-z]+"' | tr -d '"' | sort -u); do
+    [ "$v" = "$dflt" ] || grep -qF "          tmux: '$v'" "$1" || echo "$v"
+  done
+}
+
+@test "the image job seeds every tmux version the weekly ui sweep loads" {
+  run unseeded "$WF"
+  assert_success
+  assert_output ''
+  # Negative control: a sweep version with no seed step is named.
+  sed "/tmux: '3.6a'/d" "$WF" >"$BATS_TEST_TMPDIR/unseeded.yml"
+  run unseeded "$BATS_TEST_TMPDIR/unseeded.yml"
+  assert_output '3.6a'
+}

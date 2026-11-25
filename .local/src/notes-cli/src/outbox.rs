@@ -24,7 +24,8 @@
 //! The section is also a doc the human edits from agent-web's Daily outbox view: `notes outbox show`
 //! gives its path, its items and their hash, and `notes outbox put --base <hash>` replaces them only when
 //! nothing wrote the file since (compare-and-swap), so a page never clobbers a sweep's move.
-//! Every write here holds one lock (`.outbox.lock` beside the file).
+//! Every write here holds one lock (`.outbox.lock` beside the file); `move_line`, which writes a
+//! ptask sheet too, takes the ptask lock before it, the order every ptask verb takes them in.
 
 use crate::config::Profile;
 use crate::ingest::{self, Event};
@@ -304,10 +305,11 @@ pub fn move_line(
     why: Option<&str>,
     raw: &str,
 ) -> Result<i32> {
-    let _lock = lock(p)?;
-    // The project sheet is a ptask sheet, so its write holds the ptask lock too (always taken
-    // after the outbox's: no ptask verb takes the outbox lock, so the order cannot invert).
+    // The project sheet is a ptask sheet, so its write holds the ptask lock too, taken before the
+    // outbox's as every ptask verb takes them (`ptask --agent add` appends here under its ptask
+    // lock). Taken the other way round, a triage move and an agent add deadlock.
     let _sheet = project_tasks::lock(p)?;
+    let _lock = lock(p)?;
     let content = read(p)?;
     let Some((rest, line)) = sheet::take_in(&content, HEADING, |l| l.raw == raw) else {
         eprintln!("no outbox line is '{raw}'");

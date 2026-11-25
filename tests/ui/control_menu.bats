@@ -62,6 +62,10 @@ gone() { ! _tm has-session 2>/dev/null; }
 }
 
 @test "Enter runs the selected chip's click and closes the menu" {
+  # Quarantined through 2026-12-08 and runs again by itself on 12-09 (ci.md rule 2; owner: the
+  # agent-runtime row "fix(tests): tests/ui/control_menu.bats 10 ... times out at its 10s wait", from
+  # ar-5326): on dotfiles#3524's head 45605893554 the menu closed and $FX/clicked stayed empty for 10s.
+  [[ "$(date -u +%F)" > 2026-12-08 ]] || skip "quarantined through 2026-12-08: the click can be lost as the menu closes (ar-5326)"
   open_menu
   wait_until 'screen_has "Good hover"'
   tmux_keys Enter
