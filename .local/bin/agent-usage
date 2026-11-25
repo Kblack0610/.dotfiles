@@ -679,8 +679,9 @@ cmd_spend() {
 # when Prometheus cannot be read (an `unreadable: ` line, as spend check), 64 for bad arguments.
 # A by_runner rule with no series at all is Prometheus missing its evaluations, not a changed label:
 # rule groups ran 120s on a 60s interval on 2026-11-25 and the rule went empty for 30 minutes while
-# every raw series stayed, and the watch tripped on it (ar-2693). That reads unreadable, which the
-# watch holds and pages low on once it stays; a rule with other runners but no fleet-dispatch trips.
+# every raw series stayed, and the watch tripped on it (ar-2693). An empty rule that held a
+# fleet-dispatch series within <age> reads unreadable, which the watch holds; an empty rule with
+# none that long, or a rule with other runners but no fleet-dispatch, trips.
 AU_PROC="${AGENT_USAGE_PROC:-/proc}"
 cmd_export() {
   local verb="${1:-}" age="${2:-1h}" secs now d f pid sid pstart started item sids got have beat runner turn rc=0 idle=0
@@ -735,10 +736,17 @@ cmd_export() {
       echo "exporting, no spend yet (no API call since it started): $item (session $sid, pid $pid)"; idle=$((idle + 1))
     fi
   done
+  # An empty rule that held a fleet-dispatch series within <age> missed its evaluations; one that
+  # held none that long is a deleted rule or a dropped label, so it trips like a missing series.
   if [ "$runner" = none ]; then
-    # A dark session above is still a trip; the rule's state alone is no answer about the label.
-    [ "$rc" -ne 0 ] || { echo "unreadable: Prometheus by_runner rule (no series at all: its evaluations missed, or the rule is gone)" >&2; return 2; }
-  elif [ "$runner" -eq 0 ]; then
+    runner=$(prom_q "count(last_over_time(cc:claude_code_cost_24h_usd:by_runner{agentctl_runner=\"fleet-dispatch\"}[$age]))" |
+      jq -er "$vec | length" 2>/dev/null) ||
+      { echo "unreadable: Prometheus by_runner rule history (no answer, or not a vector)" >&2; return 2; }
+    # A dark session above is still a trip; a missed evaluation alone is no answer about the label.
+    [ "$runner" -eq 0 ] || [ "$rc" -ne 0 ] ||
+      { echo "unreadable: Prometheus by_runner rule (no series now, a fleet-dispatch one within $age: its evaluations missed)" >&2; return 2; }
+  fi
+  if [ "$runner" -eq 0 ]; then
     echo 'no agentctl_runner="fleet-dispatch" series in cc:claude_code_cost_24h_usd:by_runner'; rc=1
   fi
   [ "$rc" -ne 0 ] || echo "${#live[@]} queue sessions past $age, each exporting ($((${#live[@]} - idle)) with cost, $idle not spent yet); the by_runner rule has a fleet-dispatch series"

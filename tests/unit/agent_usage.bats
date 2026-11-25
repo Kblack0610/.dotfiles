@@ -631,7 +631,8 @@ qproc() {
     > "$HOME/.claude/sessions/$1.json"
 }
 # export_curl <session ids exporting cost> <runners the by_runner rule holds, '' for none> [session ids
-# with only the session_count heartbeat]: Prometheus, answering by query. A cost session has the heartbeat too.
+# with only the session_count heartbeat] [fleet-dispatch series the rule held within the age, default 1]:
+# Prometheus, answering by query. A cost session has the heartbeat too.
 export_curl() {
   local res run_res
   res=$(jq -nc --arg cost "$1" --arg beat "$1 ${3:-}" '
@@ -641,6 +642,7 @@ export_curl() {
   cat > "$SANDBOX/bin/curl" <<STUB
 #!/usr/bin/env bash
 case "\$*" in
+  *last_over_time\(cc:*) [ "${4:-1}" -gt 0 ] && echo '{"status":"success","data":{"result":[{"metric":{},"value":[0,"${4:-1}"]}]}}' || echo '{"status":"success","data":{"result":[]}}' ;;
   *by_runner*) echo '{"status":"success","data":{"result":$run_res}}' ;;
   *) echo '{"status":"success","data":{"result":$res}}' ;;
 esac
@@ -703,12 +705,21 @@ turn() {
   assert_output 'no agentctl_runner="fleet-dispatch" series in cc:claude_code_cost_24h_usd:by_runner'
 }
 
-@test "export check: a by_runner rule with no series at all is Prometheus missing its evaluations, so it exits 2 unreadable" {
-  qproc 101 aaa-1 7200 ar-1
-  export_curl 'aaa-1' ''
+@test "export check: an empty by_runner rule that held fleet-dispatch within the age missed its evaluations, so it exits 2 unreadable" {
+  qproc 101 aaa-1 7200 ar-1; qproc 102 bbb-2 7200 ar-2
+  export_curl 'aaa-1' '' 'bbb-2'
   AGENT_USAGE_PROC="$SANDBOX/proc" run "$AU" export check
   assert_failure 2
-  assert_output 'unreadable: Prometheus by_runner rule (no series at all: its evaluations missed, or the rule is gone)'
+  assert_line 'exporting, no spend yet (no API call since it started): ar-2 (session bbb-2, pid 102)'
+  assert_line 'unreadable: Prometheus by_runner rule (no series now, a fleet-dispatch one within 1h: its evaluations missed)'
+}
+
+@test "export check: an empty by_runner rule with no fleet-dispatch series within the age is a gone rule or label, so it exits 1" {
+  qproc 101 aaa-1 7200 ar-1
+  export_curl 'aaa-1' '' '' 0
+  AGENT_USAGE_PROC="$SANDBOX/proc" run "$AU" export check
+  assert_failure 1
+  assert_output 'no agentctl_runner="fleet-dispatch" series in cc:claude_code_cost_24h_usd:by_runner'
 }
 
 @test "export check: an empty by_runner rule does not hide a dark session, which still exits 1" {
