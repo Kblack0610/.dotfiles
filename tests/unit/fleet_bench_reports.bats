@@ -1236,6 +1236,15 @@ fired() { eval_at "$@"; open_at "$@"; }
   assert_output human
 }
 
+@test "findings: throughput-drop needs live sessions at the floor, so a near-idle project is no demand" {
+  use_fixture
+  # the 14:20 replay fires with the default floor of 1 (above); a floor over its live count keeps it quiet
+  export KPI_THRESHOLDS="$BATS_TEST_TMPDIR/kpi"
+  echo 'finding_live_floor=99' > "$KPI_THRESHOLDS"
+  run fired 14:20
+  refute_output --partial 'throughput-drop'
+}
+
 @test "findings: the quiet morning after raises no starved or throughput-drop" {
   use_fixture
   for t in 00:30 01:30 02:30 03:30 04:30 05:30; do
