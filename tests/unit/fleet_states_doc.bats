@@ -6,9 +6,12 @@
 # The close table there drives the close flow's checks: (e) its Step ids and verdict words, in order,
 # must be the `# step:<id>` tagged branches of close_verdict in CLOSE_JQ, and (f) the committed
 # fleet-close-flow.svg must be close-flow-svg's output of it.
-# The Owners table names one writer per shared fact: (g) its forbidden copy matches nothing outside the
-# writer file, (h) the writer functions (shell or Rust) exist and take the lock the row names, and (i)
-# its pins exist (a bats @test, or a Rust test fn). A writer or pin spelled `private:<...>` resolves in
+# The Owners table names one writer per shared fact; `.local/bin/fact-owners check` reads it (g) its
+# forbidden copy matches nothing outside the writer file, (h) the writer functions (shell or Rust)
+# exist and take the lock the row names, (i) its pins exist (a bats @test, or a Rust test fn), (j) the
+# generated rules of .config/fact-owners/rules.json find no vocabulary list, raw two-field read or
+# untagged schema field outside a row's home, and (k) every known copy is Debt naming an open row,
+# with the count at or under `Debt pinned`. A writer or pin spelled `private:<...>` resolves in
 # the private repo ($DOTFILES_PRIVATE), and is skipped where that repo is not checked out (public CI).
 # Each check takes its files as arguments, so the negative controls run it on a broken copy.
 
@@ -116,95 +119,20 @@ check_svg() { # <doc> <svg>
   diff <("$GEN" --doc "$1" --out -) "$2" > /dev/null || { echo "$2 is not close-flow-svg's output of $1: run close-flow-svg"; return 1; }
 }
 
-# owner_rows <doc> -> fact, writer, home, copy, lock and pinned, one row of the Owners table per line,
-# split by \037. `\|` in a cell is the regex's alternation, not a cell border.
-owner_rows() {
-  awk '/^\| Fact \| Writer \| Home \| Forbidden copy \|/ {t = 1; next}
-    t && /^\| ---/ {next}
-    t && !/^\|/ {exit}
-    t { gsub(/\\\|/, "\036"); n = split($0, c, "|"); out = ""
-        for (i = 2; i < n; i++) { gsub(/^ +| +$/, "", c[i]); gsub(/\036/, "|", c[i]); out = out (i > 2 ? "\037" : "") c[i] }
-        print out }' "$1"
-}
+# The Owners table is checked by .local/bin/fact-owners, the one checker the CI gate, the KPI and the plan
+# hook call. These wrappers hand it this test's PRIVATE (a stand-in repo in the negative controls) and
+# keep each check's output for the assertions below.
+FACT_OWNERS() { DOTFILES_PRIVATE="$PRIVATE" "$REPO_ROOT/.local/bin/fact-owners" "$@"; }
 
-# spans <cell> -> its code spans, one per line
-spans() { awk -F'`' '{ for (i = 2; i <= NF; i += 2) print $i }' <<<"$1"; }
+# owned_files -> every tracked file the forbidden copies are checked in, from fact-owners
+owned_files() { FACT_OWNERS files; }
 
-# fn_body <file> <function> -> the function's lines, from `name() {` to the first unindented `}`; in
-# a .rs file from `fn name(`, `pub` or not, at any indent (a method in an impl), to the `}` at its indent
-fn_body() {
-  local rs=0; [[ "$1" != *.rs ]] || rs=1
-  awk -v f="$2" -v rs="$rs" '
-    !on && rs && $0 ~ ("^ *(pub(\\([a-z]+\\))? )?fn " f "[(<]") && $0 !~ /; *$/ {on = 1; match($0, /^ */); end = "^" substr($0, 1, RLENGTH) "}"}
-    !on && !rs && index($0, f "() {") == 1 {on = 1; end = "^}"}
-    on {print} on && $0 ~ end {exit}' "$1"
-}
-
-# takes_flock <file> <function> -> exit 0 when the function's code, comments aside, takes a flock:
-# `flock` in shell, std's `File::lock` or `try_lock` (flock(2) on Unix) in Rust
-takes_flock() {
-  local re='\bflock\b'; [[ "$1" != *.rs ]] || re='\bflock\b|\.(try_)?lock\(\)'
-  fn_body "$1" "$2" | grep -vE '^\s*(#|//)' | grep -qE "$re"
-}
-
-# owned_files -> every tracked file the forbidden copies are checked in: this repo's fleet code (skill scripts and hooks under .claude/ too) and,
-# where it is checked out, the private repo's bin. A symlink into a checked-out submodule (.local/bin/muxpoon) is skipped: the submodule's
-# code is another repo's, and CI has no checkout of it, so the test must read the same on both.
-owned_files() {
-  local f sm s t real
-  real=$(realpath -m "$REPO_ROOT")
-  mapfile -t sm < <(git -C "$REPO_ROOT" config -f .gitmodules --get-regexp '\.path$' 2>/dev/null | awk '{print $2}')
-  git -C "$REPO_ROOT" ls-files -- "$REPO_ROOT/.local/bin/" "$REPO_ROOT/.local/lib/" "$REPO_ROOT/.local/src/" "$REPO_ROOT/.config/shared-hooks/" "$REPO_ROOT/.claude/" |
-    grep -vE '\.(md|svg|bats)$' | while IFS= read -r f; do
-      if [ -L "$REPO_ROOT/$f" ]; then
-        t=$(realpath -m "$REPO_ROOT/$f")
-        for s in "${sm[@]}"; do [[ $t == "$real/$s" || $t == "$real/$s"/* ]] && continue 2; done
-      fi
-      printf '%s/%s\n' "$REPO_ROOT" "$f"
-    done
-  ! has_private || git -C "$PRIVATE" ls-files -- .local/bin | grep -vE '\.(md|svg|bats)$' | sed "s|^|$PRIVATE/|"
-}
-
-check_owner_cells() { # <doc>
-  local fact writer home copy lock pinned c file fn f lk body bad=0 fns root
-  [ "$(owner_rows "$1" | wc -l)" -gt 0 ] || { echo "no Owners table in $1"; return 1; }
-  while IFS=$'\037' read -r fact writer home copy lock pinned; do
-    for c in writer home copy lock pinned; do [ -n "${!c}" ] || { echo "$fact: no $c"; bad=1; }; done
-    mapfile -t fns < <(spans "$writer")
-    root=$REPO_ROOT
-    if [[ ${fns[0]} == private:* ]]; then
-      has_private || continue
-      root=$PRIVATE; fns[0]=${fns[0]#private:}
-    fi
-    file=${fns[0]%%:*}; fns[0]=${fns[0]#*:}
-    [ -f "$root/$file" ] || { echo "$fact: no writer $file"; bad=1; continue; }
-    lk=-; [ "$lock" = - ] || lk=$(spans "$lock")
-    [ "$lk" = - ] || takes_flock "$root/$file" "$lk" || { echo "$fact: its lock $lk takes no flock"; bad=1; }
-    # A writer span after the first is a function in the same file, or `<file>:<fn>` in another.
-    for fn in "${fns[@]}"; do
-      f=$file; [[ $fn != *:* ]] || { f=${fn%%:*}; fn=${fn#*:}; }
-      body=$(fn_body "$root/$f" "$fn")
-      [ -n "$body" ] || { echo "$fact: $f has no function $fn"; bad=1; continue; }
-      [ "$lk" = - ] || [ "$lk" = "$fn" ] || grep -vE '^\s*(#|//)' <<<"$body" | grep -qw "$lk" ||
-        { echo "$fact: $fn does not take its lock $lk"; bad=1; }
-    done
-  done < <(owner_rows "$1")
-  return "$bad"
-}
-
+check_owner_cells() { out=$(FACT_OWNERS check --doc "$1" --cells) || { echo "$out"; return 1; }; } # <doc>
+check_owner_pins() { out=$(FACT_OWNERS check --doc "$1" --pins) || { echo "$out"; return 1; }; } # <doc>
 check_owner_copies() { # <doc> <file>...
-  local doc=$1 fact writer home copy lock pinned file root re hits bad=0; shift
-  while IFS=$'\037' read -r fact writer home copy lock pinned; do
-    file=$(spans "$writer" | head -1); root=$REPO_ROOT; [[ $file != private:* ]] || { root=$PRIVATE; file=${file#private:}; }
-    file="$root/${file%%:*}"; re=$(spans "$copy" | head -1)
-    grep -qE -e "$re" </dev/null; [ $? -ne 2 ] || { echo "$fact: its forbidden copy is not a valid regex: $re"; bad=1; continue; }
-    hits=$(printf '%s\0' "$@" | xargs -0 grep -nIE -e "$re" -- 2>/dev/null | awk -v w="$file:" 'index($0, w) != 1')
-    [ -z "$hits" ] || { printf '%s: a copy outside its writer:\n%s\n' "$fact" "$hits"; bad=1; }
-  done < <(owner_rows "$doc")
-  return "$bad"
+  local doc=$1 out; shift
+  out=$(FACT_OWNERS check --doc "$doc" --copies "$@") || { echo "$out"; return 1; }
 }
-
-check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
 
 @test "the bucket table names exactly the buckets fleet-sessions emits" {
   run check_words "$DOC" "$SESSIONS"
@@ -459,4 +387,87 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
   assert_success
   assert_output --partial "/.claude/skills/memory/project-index/regen-anchor.sh"
   assert_output --partial "/.claude/hooks/stop-post.d/85-sync-plans.sh"
+}
+
+@test "fact-owners check passes on the real tree: every copy is owned or debt, the pin holds, the generated rules and schema tags hold" {
+  run env DOTFILES_PRIVATE="$PRIVATE" "$REPO_ROOT/.local/bin/fact-owners" check
+  assert_success
+}
+
+@test "negative controls for the generated rules: a fresh vocabulary list, a jq read of status and pr, a Python read and an owned writer's own read are each found or left alone" {
+  local t="$BATS_TEST_TMPDIR/tree" copies
+  mkdir -p "$t/hub-core/src"
+  # a bucket list spelled in a new Rust reader, the kind of copy that left LANDED out
+  printf '%s\n' '    let done = ["NEEDS", "STALLED", "DONE", "LANDED"];' > "$t/hub-core/src/cards.rs"
+  # the landed test in jq, and in Python, each in a file no row lists
+  printf '%s\n' "jq -r 'select(.status == \"ok\" and .pr != null) | .slug'" > "$t/fresh-shipped"
+  printf '%s\n' 'if item["status"] == "ok" and item.get("pr"):' > "$t/fresh-shipped.py"
+  # two bucket words are not a list of the vocabulary
+  printf '%s\n' 'let a = ["DONE", "STALLED"];' > "$t/hub-core/src/ok.rs"
+  # a comment does not count
+  printf '%s\n' '// ["NEEDS", "STALLED", "DONE"]' > "$t/hub-core/src/note.rs"
+  run env DOTFILES_PRIVATE="$PRIVATE" "$REPO_ROOT/.local/bin/fact-owners" check --generated "$t/hub-core/src/cards.rs" "$t/fresh-shipped" "$t/fresh-shipped.py" "$t/hub-core/src/ok.rs" "$t/hub-core/src/note.rs"
+  assert_failure
+  assert_output --partial "buckets: a copy outside its home"
+  assert_output --partial "$t/hub-core/src/cards.rs:1: a list of 4 session-bucket words"
+  assert_output --partial "landed: a copy outside its home"
+  assert_output --partial "$t/fresh-shipped:1: reads status and pr|merged together"
+  assert_output --partial "$t/fresh-shipped.py:1: reads status and pr|merged together"
+  refute_output --partial "ok.rs"
+  refute_output --partial "note.rs"
+}
+
+@test "negative controls for debt: a copy not listed, a stale entry, a missing file, a count above the pin and one below it all fail" {
+  local t="$BATS_TEST_TMPDIR" n
+  n=$(DOTFILES_PRIVATE="$PRIVATE" "$REPO_ROOT/.local/bin/fact-owners" count --debt)
+  # a debt entry dropped without lowering the pin
+  sed '/^| `kinds`/ s/`.local\/bin\/fleet-bench` (ar-5455); //' "$DOC" > "$t/dropped.md"
+  run FACT_OWNERS check --doc "$t/dropped.md" --debt
+  assert_failure
+  assert_output --partial "are below Debt pinned"
+  # an entry whose file holds no copy any more, one whose file is gone, and a pin under the count
+  sed -e '/^| `room-verdict`/ s/| - |$/| `.local\/bin\/fact-owners` (ar-5455) |/' \
+    -e '/^| One shepherd pass/ s/| - |$/| `.local\/bin\/no-such-file` (ar-5455) |/' \
+    -e "s/^Debt pinned: .*/Debt pinned: $((n - 1))/" "$DOC" > "$t/bad.md"
+  run FACT_OWNERS check --doc "$t/bad.md" --debt
+  assert_failure
+  assert_output --partial "debt .local/bin/fact-owners (ar-5455) is no longer a copy"
+  assert_output --partial "debt .local/bin/no-such-file does not exist"
+  assert_output --partial "are above Debt pinned $((n - 1))"
+  # a copy of the account list in a file no Debt cell lists
+  mkdir -p "$t/hub-core/src"
+  printf '%s\n' 'let names = ["main", "alt", "bnb"];' > "$t/hub-core/src/fresh.rs"
+  run FACT_OWNERS check --doc "$DOC" --generated "$t/hub-core/src/fresh.rs"
+  assert_failure
+  assert_output --partial "accounts: a copy outside its home"
+  assert_output --partial "$t/hub-core/src/fresh.rs:1: a list of 3 account words"
+}
+
+@test "negative controls for schema tags and config keys: a tag with no row, a schema doc with no tag, a key the conf lacks and a reader that never reads it all fail" {
+  local t="$BATS_TEST_TMPDIR"
+  mkdir -p "$t/repo/.config/fact-owners" "$t/repo/.local/bin" "$t/repo/docs"
+  cp "$REPO_ROOT/.config/fact-owners/rules.json" "$t/repo/.config/fact-owners/"
+  # a copy of the repo's rules pointed at a scratch tree: a tag naming no row, then an untagged doc
+  printf '%s\n' '| field | <!-- derived: no-such-row --> |' > "$t/repo/docs/schema.md"
+  python3 - "$t/repo/.config/fact-owners/rules.json" <<'PY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+d["vocab"], d["raw"] = [], []
+d["schema_docs"] = ["docs/schema.md"]
+d["config_keys"] = [{"conf": "conf.json", "key": "absent", "reader": ".local/bin/reader:load"},
+                    {"conf": "conf.json", "key": "rung", "reader": ".local/bin/reader:load"}]
+json.dump(d, open(p, "w"))
+PY
+  cp "$REPO_ROOT/.local/bin/fact-owners" "$t/repo/.local/bin/fact-owners"
+  printf '%s\n' '{"build": {"rung": "x"}}' > "$t/repo/conf.json"
+  printf '%s\n' 'load() {' '  :' '}' > "$t/repo/.local/bin/reader"
+  run env DOTFILES_PRIVATE="$PRIVATE" "$t/repo/.local/bin/fact-owners" check --doc "$DOC" --generated "$t/repo/.local/bin/reader"
+  assert_failure
+  assert_output --partial "tagged derived: no-such-row with no Owners row"
+  assert_output --partial "config key absent: not in conf.json"
+  assert_output --partial "its reader .local/bin/reader:load never reads it"
+  printf '%s\n' 'no tag here' > "$t/repo/docs/schema.md"
+  run env DOTFILES_PRIVATE="$PRIVATE" "$t/repo/.local/bin/fact-owners" check --doc "$DOC" --generated "$t/repo/.local/bin/reader"
+  assert_output --partial "a schema doc with no \`<!-- derived: <row> -->\` tag"
 }

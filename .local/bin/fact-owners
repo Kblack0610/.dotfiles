@@ -1,0 +1,536 @@
+#!/usr/bin/env python3
+"""fact-owners - one home per derived fact, enforced.
+
+  fact-owners check [--doc DOC] [--cells|--pins|--copies|--generated|--debt|--rows] [FILE...]
+  fact-owners scan  [--doc DOC]          copies the generated rules find that no row or Debt entry covers
+  fact-owners count [--unowned|--debt|--json]
+  fact-owners files                      the tracked files the copies are looked for in
+
+The Owners table in .local/src/docs/fleet-states.md names each fact's writer, its home, a forbidden
+copy (a `grep -E` regex), its lock, its pinning tests and its Debt: known copies still to remove,
+each with the open board row that removes it. `check` fails on a copy outside the writer that is
+not Debt, on a Debt entry that no longer matches (delete it), on a Debt count above the table's
+`Debt pinned: N` line, and on the generated rules of .config/fact-owners/rules.json: vocabulary
+literals, raw-input reads, config-key readers and schema tags. Rules and rows are data; this file
+is the mechanism. Why: the table alone covered only facts that had already drifted.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+
+HOME = os.path.expanduser("~")
+ROOT = os.path.realpath(os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", ".."))
+DOC_REL = ".local/src/docs/fleet-states.md"
+RULES_REL = ".config/fact-owners/rules.json"
+BOARDS = [os.path.join(HOME, ".notes/lab/projects/current/agent-runtime", f) for f in ("agent/README.md", "README.md")]
+TREES = [".local/bin/", ".local/lib/", ".local/src/", ".config/shared-hooks/", ".claude/"]
+COLS = ["fact", "writer", "home", "copy", "lock", "pinned", "debt"]
+SEP = "\x1e"
+
+
+def private_root():
+    p = os.environ.get("DOTFILES_PRIVATE") or os.path.join(HOME, ".dotfiles-private")
+    r = subprocess.run(["git", "-C", p, "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    return p if r.returncode == 0 and os.path.realpath(r.stdout.strip()) == os.path.realpath(p) else None
+
+
+PRIVATE = private_root()
+
+
+def read(path):
+    with open(path, errors="replace") as f:
+        return f.read()
+
+
+def rows_of(doc):
+    """Owners rows as dicts: the table that starts at the `| Fact | Writer |` header."""
+    out, on = [], False
+    for ln in read(doc).splitlines():
+        if re.match(r"\| Fact \| Writer \| Home \| Forbidden copy \|", ln):
+            on = True
+            continue
+        if not on or re.match(r"\|[ -]+\|", ln) and set(ln) <= set("| -"):
+            continue
+        if on and not ln.startswith("|"):
+            break
+        cells = [c.strip().replace(SEP, "|") for c in ln.replace("\\|", SEP).strip().strip("|").split("|")]
+        cells += [""] * (len(COLS) - len(cells))
+        r = dict(zip(COLS, cells))
+        m = re.match(r"`([a-z0-9-]+)`:? ", r["fact"])
+        r["key"] = m.group(1) if m else None
+        out.append(r)
+    return out
+
+
+def spans(cell):
+    return cell.split("`")[1::2]
+
+
+def pinned_count(doc):
+    m = re.search(r"^Debt pinned: (\d+)", read(doc), re.M)
+    return int(m.group(1)) if m else None
+
+
+def debt_entries(r):
+    """(path, board row) pairs of a row's Debt cell: `path (ar-N); path (ar-M)`."""
+    if r["debt"] in ("", "-"):
+        return []
+    return [(m.group(1), m.group(2)) for m in re.finditer(r"`([^`]+)` \((ar-\d+)\)", r["debt"])]
+
+
+def fn_body(path, fn):
+    rs = path.endswith(".rs")
+    out, on, end = [], False, None
+    for ln in read(path).splitlines():
+        if not on:
+            if rs and re.match(r"^ *(pub(\([a-z]+\))? )?fn " + re.escape(fn) + r"[(<]", ln) and not ln.rstrip().endswith(";"):
+                on, end = True, "^" + re.match(r"^ *", ln).group(0) + "}"
+            elif not rs and ln.startswith(fn + "() {"):
+                on, end = True, "^}"
+        if on:
+            out.append(ln)
+            if re.match(end, ln):
+                break
+    return out
+
+
+def code_lines(lines):
+    return [ln for ln in lines if not re.match(r"^\s*(#|//)", ln)]
+
+
+def takes_flock(path, fn):
+    pat = r"\bflock\b" + (r"|\.(try_)?lock\(\)" if path.endswith(".rs") else "")
+    return any(re.search(pat, ln) for ln in code_lines(fn_body(path, fn)))
+
+
+def owned_files():
+    sm = subprocess.run(["git", "-C", ROOT, "config", "-f", ".gitmodules", "--get-regexp", r"\.path$"],
+                        capture_output=True, text=True).stdout.split()[1::2]
+    ls = subprocess.run(["git", "-C", ROOT, "ls-files", "--"] + TREES, capture_output=True, text=True).stdout.split("\n")
+    out = []
+    for f in ls:
+        if not f or re.search(r"\.(md|svg|bats)$", f):
+            continue
+        p = os.path.join(ROOT, f)
+        if os.path.islink(p):
+            t = os.path.realpath(p)
+            if any(t == os.path.join(ROOT, s) or t.startswith(os.path.join(ROOT, s) + "/") for s in sm):
+                continue
+        out.append(p)
+    if PRIVATE:
+        pl = subprocess.run(["git", "-C", PRIVATE, "ls-files", "--", ".local/bin"], capture_output=True, text=True).stdout.split("\n")
+        out += [os.path.join(PRIVATE, f) for f in pl if f and not re.search(r"\.(md|svg|bats)$", f)]
+    return out
+
+
+def root_of(span):
+    """(root, path) of a writer or pin span; root is None when a private span has no checkout."""
+    if span.startswith("private:"):
+        return PRIVATE, span[len("private:"):]
+    return ROOT, span
+
+
+def grep_hits(re_, files):
+    """`file:line:text` lines of grep -E over files, binary files skipped."""
+    if not files:
+        return []
+    r = subprocess.run(["xargs", "-0", "grep", "-nIE", "-e", re_, "--"], input="\0".join(files) + "\0",
+                       capture_output=True, text=True, errors="replace")
+    return [ln for ln in r.stdout.splitlines() if ln]
+
+
+def regex_ok(re_):
+    return subprocess.run(["grep", "-qE", "-e", re_], input="", capture_output=True, text=True).returncode != 2
+
+
+def writer_file(r):
+    sp = spans(r["writer"])
+    root, p = root_of(sp[0]) if sp else (ROOT, "")
+    return os.path.join(root, p.split(":")[0]) if root else None
+
+
+# ---- the table's own checks (moved from tests/unit/fleet_states_doc.bats) ----------------------
+
+def check_cells(doc):
+    bad, rows = [], rows_of(doc)
+    if not rows:
+        return ["no Owners table in " + doc]
+    for r in rows:
+        for c in ("writer", "home", "copy", "lock", "pinned"):
+            if not r[c]:
+                bad.append(f"{r['fact']}: no {c}")
+        fns = spans(r["writer"])
+        if not fns:
+            continue
+        root, first = root_of(fns[0])
+        if root is None:
+            continue
+        file, fns[0] = first.split(":", 1)
+        if not os.path.isfile(os.path.join(root, file)):
+            bad.append(f"{r['fact']}: no writer {file}")
+            continue
+        lk = "-" if r["lock"] == "-" else (spans(r["lock"]) or ["-"])[0]
+        if lk != "-" and not takes_flock(os.path.join(root, file), lk):
+            bad.append(f"{r['fact']}: its lock {lk} takes no flock")
+        for fn in fns:
+            f = file
+            if ":" in fn:
+                f, fn = fn.split(":", 1)
+            if not os.path.isfile(os.path.join(root, f)):
+                bad.append(f"{r['fact']}: no file {f} (name a function by its full path)")
+                continue
+            body = fn_body(os.path.join(root, f), fn)
+            if not body:
+                bad.append(f"{r['fact']}: {f} has no function {fn}")
+            elif lk not in ("-", fn) and not any(re.search(r"\b" + re.escape(lk) + r"\b", ln) for ln in code_lines(body)):
+                bad.append(f"{r['fact']}: {fn} does not take its lock {lk}")
+    return bad
+
+
+def check_pins(doc):
+    bad = []
+    tests = [os.path.join(d, f) for d, _, fs in os.walk(os.path.join(ROOT, "tests")) for f in fs]
+    bats = "\n".join(read(f) for f in tests if f.endswith(".bats"))
+    rs = [os.path.join(d, f) for d, _, fs in os.walk(os.path.join(ROOT, ".local/src")) for f in fs if f.endswith(".rs")]
+    rs_text = None
+    for r in rows_of(doc):
+        for name in spans(r["pinned"]):
+            if name.startswith("private:"):
+                if not PRIVATE:
+                    continue
+                q = '"' + name[len("private:"):] + '"'
+                hit = any(q in read(os.path.join(d, f)) for d, _, fs in os.walk(os.path.join(PRIVATE, "tests")) for f in fs if f.endswith(".sh"))
+                if not hit:
+                    bad.append(f'{r["fact"]}: no private test {q}')
+                continue
+            if f'@test "{name}"' in bats:
+                continue
+            if re.fullmatch(r"[a-z0-9_]+", name):
+                rs_text = rs_text if rs_text is not None else "\n".join(read(f) for f in rs)
+                if re.search(r"^\s*fn " + name + r"\(\)", rs_text, re.M):
+                    continue
+            bad.append(f'{r["fact"]}: no @test "{name}"')
+    return bad
+
+
+def covered(r, path):
+    return any(os.path.realpath(f) == os.path.realpath(path) for p, _ in debt_entries(r) for f in entry_files(p))
+
+
+def copy_hits(r, files):
+    """Hits of a row's forbidden copy outside its writer file: (path, 'path:line:text') pairs."""
+    sp = spans(r["copy"].split("generated:")[0])
+    if not sp:
+        return [], None
+    if not regex_ok(sp[0]):
+        return [], f"{r['fact']}: its forbidden copy is not a valid regex: {sp[0]}"
+    w = writer_file(r)
+    out = []
+    for ln in grep_hits(sp[0], files):
+        path = ln.split(":", 1)[0]
+        if not w or path != w:
+            out.append((path, ln))
+    return out, None
+
+
+def check_copies(doc, files, debt_ok=True):
+    bad = []
+    for r in rows_of(doc):
+        hits, err = copy_hits(r, files)
+        if err:
+            bad.append(err)
+            continue
+        bad_hits = [ln for p, ln in hits if not (debt_ok and covered(r, p))]
+        if bad_hits:
+            bad.append(f"{r['fact']}: a copy outside its writer:\n" + "\n".join(bad_hits))
+    return bad
+
+
+# ---- the Debt column ---------------------------------------------------------------------------
+
+def board_open():
+    """Board row id -> its box (` ` open, `/` started, else closed); None where the notes are not checked out."""
+    boards = [b for b in BOARDS if os.path.isfile(b)]
+    if not boards:
+        return None
+    ids = {}
+    for b in boards:
+        for ln in read(b).splitlines():
+            m = re.match(r"\s*- \[(.)\] .*<!-- id:(ar-\d+)", ln)
+            if m:
+                ids[m.group(2)] = m.group(1)
+    return ids
+
+
+def entry_files(path):
+    """The checkouts a Debt path lives in: `private:<path>` only the private repo, else this one."""
+    if path.startswith("private:"):
+        return [os.path.join(PRIVATE, path[len("private:"):])] if PRIVATE else []
+    return [os.path.join(ROOT, path)]
+
+
+def check_debt(doc, files):
+    """A Debt entry names an existing file and still matches; the count stays under the pin."""
+    bad, n = [], 0
+    for r in rows_of(doc):
+        entries = debt_entries(r)
+        n += len(entries)
+        hits = {os.path.realpath(p) for p, _ in copy_hits(r, files)[0]}
+        if r["key"]:
+            hits |= {os.path.realpath(p) for _, p, _ in generated_hits(doc, files, r["key"])}
+        for path, row in entries:
+            if path.startswith("private:") and not PRIVATE:
+                continue
+            if not any(os.path.exists(f) for f in entry_files(path)):
+                bad.append(f"{r['fact']}: debt {path} does not exist")
+            elif not any(os.path.realpath(f) in hits for f in entry_files(path)):
+                bad.append(f"{r['fact']}: debt {path} ({row}) is no longer a copy: delete the entry and lower Debt pinned")
+    pin = pinned_count(doc)
+    if pin is None:
+        bad.append("no `Debt pinned: N` line in " + doc)
+    elif n > pin:
+        bad.append(f"debt entries {n} are above Debt pinned {pin}: a copy is listed, not removed")
+    elif n < pin:
+        bad.append(f"debt entries {n} are below Debt pinned {pin}: lower the pin so debt only shrinks")
+    return bad
+
+
+def check_rows(doc):
+    ids = board_open()
+    if ids is None:
+        return []
+    bad = []
+    for r in rows_of(doc):
+        for path, row in debt_entries(r):
+            if row not in ids:
+                bad.append(f"{r['fact']}: debt {path} names {row}, which is not on the board")
+            elif ids[row] not in " /":
+                bad.append(f"{r['fact']}: debt {path} names {row}, which is closed: remove the entry or file a new row")
+    return bad
+
+
+# ---- generated rules ---------------------------------------------------------------------------
+
+def load_rules():
+    p = os.path.join(ROOT, RULES_REL)
+    return json.load(open(p)) if os.path.exists(p) else {}
+
+
+def vocab_words(src):
+    if "json_keys" in src:
+        return list(json.load(open(os.path.join(ROOT, src["json_keys"]))).keys())
+    if "shell_var" in src:
+        f, var = src["shell_var"]
+        m = re.search(r"^" + var + r"=[\"']([^\"']*)[\"']", read(os.path.join(ROOT, f)), re.M)
+        return m.group(1).split() if m else []
+    if "rust_list" in src:
+        f, name = src["rust_list"]
+        m = re.search(r"\b" + name + r"\b[^=]*=\s*\[([^\]]*)\]", read(os.path.join(ROOT, f)))
+        return re.findall(r'"([^"]+)"', m.group(1)) if m else []
+    if "tsv_col" in src:
+        f, col = src["tsv_col"]
+        return [ln.split()[col] for ln in read(os.path.join(ROOT, f)).splitlines() if ln.split() and not ln.startswith("#")]
+    return list(src.get("words", []))
+
+
+COMMENT = re.compile(r"^\s*(#|//)")
+QUOTED = re.compile(r'"([^"\\\n]*)"|\'([^\'\\\n]*)\'')
+
+
+def line_vocab(ln, words):
+    found = set()
+    for m in QUOTED.finditer(ln):
+        toks = (m.group(1) or m.group(2) or "").split()
+        if toks and all(t in words for t in toks):
+            found.update(toks)
+    return found
+
+
+def code_text(f, tests=False):
+    """A file's lines, a Rust file cut at its test module: a test spells the words it checks."""
+    lines = [] if "/tests/" in f else read(f).splitlines()
+    if f.endswith(".rs") and not tests:
+        for i, ln in enumerate(lines):
+            if ln.strip() == "#[cfg(test)]":
+                return lines[:i]
+    return lines
+
+
+def vocab_hits(rule, files):
+    words, home = set(vocab_words(rule["source"])), {os.path.realpath(os.path.join(ROOT, h)) for h in rule["home"]}
+    need = rule.get("min", 3)
+    wre = re.compile(r"\b(?:" + "|".join(re.escape(w) for w in sorted(words, key=len, reverse=True)) + r")\b")
+    out = []
+    for f in files:
+        if os.path.realpath(f) in home or not os.path.isfile(f):
+            continue
+        lines = code_text(f, rule.get("tests", False))
+        if len(set(wre.findall("\n".join(lines)))) < need:
+            continue
+        per = [line_vocab(ln, words) if ('"' in ln or "'" in ln) and not COMMENT.match(ln) else set() for ln in lines]
+        i = 0
+        while i < len(lines):
+            win = set()
+            for j in range(i, min(i + 4, len(lines))):
+                win |= per[j]
+                if len(win) >= need and per[j]:
+                    out.append((rule["row"], f, f"{f}:{j + 1}: a list of {len(win)} {rule['name']} words"))
+                    i = j
+                    break
+            i += 1
+    return out
+
+
+def raw_patterns(field, f):
+    if f.endswith(".py"):
+        return re.compile(r"\[[\"']" + field + r"[\"']\]|\.get\([\"']" + field + r"[\"']")
+    if f.endswith(".rs"):
+        return re.compile(r"\." + field + r"\b|\b" + field + r":")
+    return re.compile(r"(^|[^\w.)\]\"'])\." + field + r"\b")
+
+
+def raw_hits(rule, files):
+    w = {os.path.realpath(os.path.join(ROOT, p)) for p in rule["writers"]}
+    win, out = rule.get("window", 12), []
+    for f in files:
+        if os.path.realpath(f) in w or not os.path.isfile(f):
+            continue
+        lines = code_text(f)
+        pats = [raw_patterns("(?:" + x + ")", f) for x in rule["fields"]]
+        at = [[i for i, ln in enumerate(lines) if p.search(ln) and not re.match(r"^\s*(#|//)", ln)] for p in pats]
+        if not all(at):
+            continue
+        for i in at[0]:
+            if all(any(abs(i - j) <= win for j in a) for a in at[1:]):
+                out.append((rule["row"], f, f"{f}:{i + 1}: reads {' and '.join(rule['fields'])} together"))
+                break
+    return out
+
+
+_HITS = {}
+
+
+def generated_hits(doc, files, key=None):
+    memo = (key, tuple(files))
+    if memo not in _HITS:
+        _HITS[memo] = _generated_hits(files, key)
+    return _HITS[memo]
+
+
+def _generated_hits(files, key):
+    rules = load_rules()
+    out = []
+    for rule in rules.get("vocab", []):
+        if key in (None, rule["row"]):
+            out += vocab_hits(rule, files)
+    for rule in rules.get("raw", []):
+        if key in (None, rule["row"]):
+            out += raw_hits(rule, files)
+    return out
+
+
+def check_generated(doc, files, debt_ok=True):
+    keys = {r["key"]: r for r in rows_of(doc) if r["key"]}
+    bad, rules = [], load_rules()
+    for kind in ("vocab", "raw"):
+        for rule in rules.get(kind, []):
+            if rule["row"] not in keys:
+                bad.append(f"rule {rule.get('name', rule['row'])}: no Owners row `{rule['row']}`")
+    for row, path, msg in generated_hits(doc, files):
+        r = keys.get(row)
+        if r and debt_ok and covered(r, path):
+            continue
+        bad.append(f"{row}: a copy outside its home (Owners row `{row}`): {msg}")
+    for c in rules.get("config_keys", []):
+        conf = json.load(open(os.path.join(ROOT, c["conf"])))
+        vals = conf.values() if isinstance(conf, dict) else conf
+        if not any(isinstance(v, dict) and c["key"].split(".")[0] in v for v in vals) and c["key"].split(".")[0] not in conf:
+            bad.append(f"config key {c['key']}: not in {c['conf']}")
+            continue
+        root, sp = root_of(c["reader"])
+        f, fn = sp.split(":", 1)
+        body = "\n".join(code_lines(fn_body(os.path.join(root, f), fn))) if root else None
+        if body is not None and not re.search(r"\b" + re.escape(c["key"].split(".")[-1]) + r"\b", body):
+            bad.append(f"config key {c['key']} of {c['conf']}: its reader {c['reader']} never reads it")
+    tagged = 0
+    for d in rules.get("schema_docs", []):
+        for ln in read(os.path.join(ROOT, d)).splitlines():
+            for k in re.findall(r"<!-- derived: ([a-z0-9-]+) -->", ln):
+                tagged += 1
+                if k not in keys:
+                    bad.append(f"{d}: a field is tagged derived: {k} with no Owners row `{k}`: {ln.strip()[:80]}")
+        if not any("<!-- derived:" in ln for ln in read(os.path.join(ROOT, d)).splitlines()):
+            bad.append(f"{d}: a schema doc with no `<!-- derived: <row> -->` tag")
+    return bad
+
+
+# ---- commands ----------------------------------------------------------------------------------
+
+def unowned(doc, files):
+    n = 0
+    for r in rows_of(doc):
+        hits, _ = copy_hits(r, files)
+        n += sum(1 for p, _ in hits if not covered(r, p))
+    keys = {r["key"]: r for r in rows_of(doc) if r["key"]}
+    n += sum(1 for row, p, _ in generated_hits(doc, files) if not (row in keys and covered(keys[row], p)))
+    return n
+
+
+def main(argv):
+    if not argv or argv[0] not in ("check", "scan", "count", "files"):
+        print(__doc__.strip().split("\n\n")[0], file=sys.stderr)
+        return 2
+    cmd, args = argv[0], argv[1:]
+    doc, only, files, flags = os.path.join(ROOT, DOC_REL), None, [], set()
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--doc":
+            doc = args[i + 1]
+            i += 1
+        elif a.startswith("--"):
+            flags.add(a[2:])
+        else:
+            files.append(a)
+        i += 1
+    files = files or owned_files()
+    if cmd == "files":
+        print("\n".join(files))
+        return 0
+    if cmd == "count":
+        d = sum(len(debt_entries(r)) for r in rows_of(doc))
+        u = unowned(doc, files)
+        if "unowned" in flags:
+            print(u)
+        elif "debt" in flags:
+            print(d)
+        else:
+            print(json.dumps({"owner_debt": d, "unowned": u}) if "json" in flags else f"owner_debt={d} unowned={u}")
+        return 0
+    if cmd == "scan":
+        bad = check_generated(doc, files) + check_copies(doc, files)
+        print("\n".join(bad) if bad else "no unowned copy")
+        return 1 if bad else 0
+    bad = []
+    parts = flags & {"cells", "pins", "copies", "generated", "debt", "rows"}
+    run = parts or {"cells", "pins", "copies", "generated", "debt", "rows"}
+    if "cells" in run:
+        bad += check_cells(doc)
+    if "pins" in run:
+        bad += check_pins(doc)
+    if "copies" in run:
+        bad += check_copies(doc, files)
+    if "generated" in run:
+        bad += check_generated(doc, files)
+    if "debt" in run:
+        bad += check_debt(doc, files)
+    if "rows" in run:
+        bad += check_rows(doc)
+    print("\n".join(bad))
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
