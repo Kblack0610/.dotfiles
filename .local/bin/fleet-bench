@@ -3356,15 +3356,16 @@ sandbox_kpi() {
 # pool_kpi <now> -> the pool KPI object, the same shape as comms_kpi. pool_busy_share: the time average
 # of cc:pool_busy over cc:pool_slots, summed over the pools fleet-dispatch's idle-pool rank term watches
 # (BENCH_CLASSES `idle_pool.pools`), sampled every 10m, the measure of that term (plan
-# can-we-wget-more-linked-pony P5; 2026-11-21 baseline about 0.2-0.25 on unity). No knob, or Prometheus
-# unread (a replay has no range answer), is no value.
+# can-we-wget-more-linked-pony P5; unity 0.592 over the 3 days before it went live, 2026-11-21). Read
+# from VictoriaMetrics (vm_map): Prometheus keeps about 52 h, so both windows read from it were the same
+# 2-day number. No knob, or VictoriaMetrics unread (a replay has no range answer), is no value.
 pool_kpi() {
   local re q w7 w28
   re=$(prom_label_re "$(jq -c '.idle_pool.pools' "$BENCH_CLASSES" 2>/dev/null)")
   [ -n "$re" ] || { echo '{}'; return 0; }
   q="(sum(cc:pool_busy{pool=~\"$re\"}) / sum(cc:pool_slots{pool=~\"$re\"}))"
-  w7=$(prom_map - "avg_over_time(${q}[7d:10m])" "$1") && [ -n "$w7" ] || w7='{}'
-  w28=$(prom_map - "avg_over_time(${q}[28d:10m])" "$1") && [ -n "$w28" ] || w28='{}'
+  w7=$(vm_map - "avg_over_time(${q}[7d:10m])" "$1") && [ -n "$w7" ] || w7='{}'
+  w28=$(vm_map - "avg_over_time(${q}[28d:10m])" "$1") && [ -n "$w28" ] || w28='{}'
   jq -nc --argjson a "$w7" --argjson b "$w28" '
     def v: .["-"] | if type == "number" and (isnan | not) and (isinfinite | not) then (. * 1000 | round) / 1000 else null end;
     {pool_busy_share: {"7d": ($a | v), "28d": ($b | v)}}' 2>/dev/null || echo '{}'

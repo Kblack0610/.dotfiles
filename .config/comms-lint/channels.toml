@@ -67,6 +67,15 @@ forbid = [
 quiet = ['\bRECOVERED\b', '\brecovered\b', '\bback to normal\b', 'all clear']
 source = { kind = "ledger", path = "~/.local/state/agent-notify/log" }
 
+# An agent report's summary (`notes report add --summary`): the 1-5 lines the refs day index and
+# the Reports tab show. The body is prose, checked with de-ai-writing before it is filed. A report
+# pages only when it needs the human (comms-standard, Report shape). Read back by its own reader.
+[channel.report]
+prose = true
+max_lines = 5
+max_line = 200
+source = { kind = "command", cmd = ["notes", "report", "list", "--json", "--since", "{since_date}"], ts = "updated", text = "summary", path = "id" }
+
 # The morning briefing page (refs/<date>/briefing.md), linted whole: the human overview. Needs you
 # holds at most 5 items, Landed yesterday 10 (8 changes, a rest line, the fleet line), Builds and
 # releases and Overnight 14, Money 6 (spent, one line per store or broker); each section must be there.
