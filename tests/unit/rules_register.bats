@@ -108,6 +108,28 @@ gh_stub() { gh_script "echo $(printf %q "$1") >&2; exit 1"; }
   assert_output --partial 'dead measure: rules.md: under ten'
 }
 
+# One failed gh run list turned the tests.yml budget rule dead on a Stack read; it read fine minutes
+# later (ar-3274). A transport failure is nothing measured, the same as a rate limit.
+@test "rules --check: a gh measure the API did not answer is not dead; a broken one is dead and says why" {
+  local e
+  for e in 'HTTP 502: Bad Gateway (https://api.github.com/graphql)' \
+    'Get "https://api.github.com/repos": read tcp: connection reset by peer' \
+    'Post "https://api.github.com/graphql": net/http: TLS handshake timeout'; do
+    : > "$RULES_REGISTER"
+    gh_stub "$e"
+    row 'under ten' high "gh run list" 10
+    run "$SUBJECT" rules --check
+    assert_success
+    run "$SUBJECT" rules --json
+    assert_equal "$(jq -c '.[0] | [.state, .limited, .dead]' <<<"$output")" '["absent",true,false]'
+  done
+  : > "$RULES_REGISTER"
+  row 'under ten' high "echo nope; echo 'jq: error: syntax error' >&2" 10
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'dead measure: rules.md: under ten (jq: error: syntax error)'
+}
+
 @test "rules: a rate-limited counting measure drops its 0 and is counted as limited" {
   gh_stub 'gh: API rate limit exceeded for user ID 1. (HTTP 403)'
   jq -nc --arg s "$SANDBOX/rules.md" --arg m "gh run list | wc -l" \
