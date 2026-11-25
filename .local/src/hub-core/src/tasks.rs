@@ -254,9 +254,10 @@ impl Row {
         self.state == "doing"
     }
 
-    /// Tagged `#urgent` or `#high`.
+    /// Tagged `#urgent` or `#high`. Never an epic: its priority is its most urgent open row's
+    /// (notes-cli `epics::Index::epic_priority`), so counting it would count that row twice.
     pub fn hot(&self) -> bool {
-        matches!(self.priority.as_str(), "urgent" | "high")
+        !self.is_epic() && matches!(self.priority.as_str(), "urgent" | "high")
     }
 
     /// What it ships in: a playtest check's game, any other row's version.
@@ -393,10 +394,12 @@ impl crate::table::Row for Row {
                 .as_deref()
                 .or(self.closed.as_deref())
                 .map_or(Val::None, |d| Val::Text(d.to_string())),
-            // Ascending sorts low first: the reverse of `PRIORITIES`, most urgent first.
+            // Ascending sorts low first: the reverse of `PRIORITIES`, most urgent first. An epic
+            // with no open row (`empty`) ranks as `low`, as the notes feed ranks it.
             "priority" => PRIORITIES
                 .iter()
                 .position(|p| *p == self.priority)
+                .or((self.priority == "empty").then_some(PRIORITIES.len() - 1))
                 .map_or(Val::None, |i| Val::Num((PRIORITIES.len() - 1 - i) as f64)),
             "size" => self
                 .size

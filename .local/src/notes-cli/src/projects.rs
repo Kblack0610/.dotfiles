@@ -1512,7 +1512,7 @@ pub(crate) fn filer_types() -> impl Iterator<Item = &'static str> {
 
 /// The row grammar the board feed parses, per top-level row: a retired priority word, two
 /// priorities, two created stamps on an open row, a retired tag or `since:` stamp, a malformed tier, `#size/xl` on a row that
-/// is not an epic, an epic on the agent board, and on the agent board a
+/// is not an epic, an epic on the agent board or with a priority tag, and on the agent board a
 /// done row with no proof marker (`ptask done` refuses one, so it was closed by hand).
 /// Human sheet rows are closed by hand by design. On the agent board the open rows are also
 /// held to `type(area): title` with a title of [`TITLE_MAX`] or fewer and to carrying an id,
@@ -1521,6 +1521,7 @@ pub(crate) fn filer_types() -> impl Iterator<Item = &'static str> {
 pub(crate) fn row_findings(content: &str, agent: bool) -> Vec<String> {
     let mut out = Vec::new();
     let (mut unprefixed, mut long, mut no_id) = (Vec::new(), Vec::new(), Vec::new());
+    let mut epic_tagged = Vec::new();
     for (i, line) in content.lines().enumerate() {
         if !line.starts_with("- [") {
             continue;
@@ -1579,6 +1580,9 @@ pub(crate) fn row_findings(content: &str, agent: bool) -> Vec<String> {
                     "line {n}: an epic belongs on the human sheet, not the agent board"
                 ));
             }
+            if epic && !prios.is_empty() {
+                epic_tagged.push(n);
+            }
             if !epic && project_tasks::size_tag(line) == Some("#size/xl") {
                 out.push(format!(
                     "line {n}: #size/xl is an epic's size; split the row or size it l"
@@ -1620,7 +1624,40 @@ pub(crate) fn row_findings(content: &str, agent: bool) -> Vec<String> {
             no_id.len()
         ));
     }
+    if let Some(first) = epic_tagged.first() {
+        out.push(format!(
+            "{} open epic(s) with a priority tag, which nothing reads: {EPIC_RANKS} (first: line {first}; `notes ptask <p> sweep` drops it)",
+            epic_tagged.len()
+        ));
+    }
     out
+}
+
+/// Why an epic takes no priority tag, in every refusal and finding that names one.
+const EPIC_RANKS: &str =
+    "an epic ranks as its most urgent open row (`notes board --json` priority), never by a tag of its own";
+
+/// Why a write of `new` is refused: it is an epic with a priority tag ([`EPIC_RANKS`]). The
+/// edit writer runs [`unrank_epic`] first, so only a tag the edit added is left to refuse.
+pub(crate) fn refuse_epic_priority(new: &str) -> anyhow::Result<()> {
+    match md::task_priority(new) {
+        Some(tag) if crate::epics::is_epic(new) => {
+            anyhow::bail!("{tag} on an epic: {EPIC_RANKS}, so nothing was written")
+        }
+        _ => Ok(()),
+    }
+}
+
+/// `new`, the edit of `old`, with the priority tag dropped when it is an epic's and `old`
+/// already had it: a tag left from before epics ranked by their rows goes on the next write,
+/// and only a new one is refused ([`refuse_epic_priority`]).
+pub(crate) fn unrank_epic(old: &str, new: String) -> String {
+    match md::task_priority(&new) {
+        Some(tag) if crate::epics::is_epic(&new) && md::task_priority(old) == Some(tag) => {
+            md::strip_priority_tag(&new)
+        }
+        _ => new,
+    }
 }
 
 /// The sheet's open rows with no priority. No writer defaults one, so an untagged row is one
@@ -1629,7 +1666,12 @@ pub(crate) fn row_findings(content: &str, agent: bool) -> Vec<String> {
 pub(crate) fn untriaged_finding(content: &str, today: chrono::NaiveDate) -> Option<String> {
     let (mut rows, mut old) = (Vec::new(), 0);
     for (i, line) in content.lines().enumerate() {
-        if line.starts_with("- [") && md::is_open_task(line) && md::task_priority(line).is_none() {
+        // An epic is never untriaged: it ranks as its most urgent open row.
+        if line.starts_with("- [")
+            && md::is_open_task(line)
+            && md::task_priority(line).is_none()
+            && !crate::epics::is_epic(line)
+        {
             rows.push(i + 1);
             // A row with no created stamp predates the stamps, so it is old by definition.
             if md::find_created(line, today).is_none_or(|c| c < today) {
@@ -6989,6 +7031,37 @@ mod move_layout_tests {
             row_findings("- [x] fix(a): b #low <!-- id:xy-4 -->\n", true),
             ["line 1: done with no proof marker (<!-- pr:N -->)"]
         );
+    }
+
+    // An epic ranks as its most urgent open row, so a tag of its own is flagged, an edit that
+    // keeps an old one drops it, and only a tag the edit adds is refused.
+    #[test]
+    fn an_epic_carries_no_priority_tag() {
+        let sheet = "- [ ] epic(ui): menus #low <!-- id:xy-1 -->\n\
+            - [ ] epic(ui): hud #high <!-- id:xy-2 -->\n\
+            - [ ] epic(ui): lobby <!-- id:xy-3 -->\n\
+            - [x] epic(ui): done one #low <!-- id:xy-4 pr:1 -->\n";
+        let got = row_findings(sheet, false);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert!(
+            got[0].starts_with("2 open epic(s) with a priority tag"),
+            "{got:?}"
+        );
+        assert!(got[0].contains("first: line 1"), "{got:?}");
+        let old = "- [ ] epic(ui): menus #low <!-- id:xy-1 -->";
+        let kept = unrank_epic(
+            old,
+            "- [ ] epic(ui): menus redo #low <!-- id:xy-1 -->".into(),
+        );
+        assert_eq!(kept, "- [ ] epic(ui): menus redo <!-- id:xy-1 -->");
+        assert!(refuse_epic_priority(&kept).is_ok());
+        let raised = unrank_epic(old, "- [ ] epic(ui): menus #high <!-- id:xy-1 -->".into());
+        let err = refuse_epic_priority(&raised).unwrap_err().to_string();
+        assert!(err.contains("#high on an epic"), "{err}");
+        // NEGATIVE CONTROL: a row that is no epic keeps its tag and is never refused one.
+        let row = "- [ ] fix(ui): a fault #high <!-- id:xy-5 -->";
+        assert_eq!(unrank_epic("- [ ] fix(ui): a fault #high", row.into()), row);
+        assert!(refuse_epic_priority(row).is_ok());
     }
 
     #[test]

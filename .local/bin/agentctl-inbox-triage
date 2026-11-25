@@ -1079,13 +1079,14 @@ priority_batch() {
 # A started row is never asked unless --reasons is on: agent-queue ranks its live item by the row's priority, and a
 # re-judge that turned a high plan phase #low queued the next phase behind every other item (ar-4436), so
 # priority_batch only ever raises it. --reasons adds every open or started row with no #why/, and keeps its priority.
+# An epic is never asked either: it ranks as its most urgent open row, and `ptask tag` refuses it a tag.
 priority_pass() {
   local board rows p lane total off size r rc=0
   read_board || return 1
   board="$(managed_board <<<"$BOARD")"
   # shellcheck disable=SC2016 # jq source, not shell
   rows="$(jq -c --arg retag "$RETAG" --arg only "$ONLY" --argjson reasons "$REASONS" '[.rows[]
-    | select((.lane == "human" or .lane == "agent") and .id != null and ($only == "" or .project == $only)
+    | select((.lane == "human" or .lane == "agent") and .id != null and .type != "epic" and ($only == "" or .project == $only)
              and ((.state == "open" and (.untriaged or ($retag != "" and .priority == $retag)))
                   or ($reasons == 1 and (.state == "open" or .state == "doing") and ((.prio_why // "") == ""))))]' <<<"$board")"
   while IFS=$'\t' read -r p lane; do

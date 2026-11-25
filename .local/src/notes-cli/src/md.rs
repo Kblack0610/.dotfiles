@@ -1452,6 +1452,11 @@ pub fn task_priority(line: &str) -> Option<&'static str> {
     split_priority(line).1
 }
 
+/// `line`'s priority tag as an index into [`PRIORITIES`], or None when it has none.
+pub(crate) fn priority_index(line: &str) -> Option<usize> {
+    task_priority(line).and_then(|t| PRIORITIES.iter().position(|(_, hash, _)| *hash == t))
+}
+
 /// A row's priority as its bare word (`urgent`, `high`, `normal`, `low`): its tag, else the default.
 pub(crate) fn priority_word(line: &str) -> &'static str {
     let tag = task_priority(line).unwrap_or(default_priority());
