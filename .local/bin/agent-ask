@@ -2707,7 +2707,7 @@ human_said() {
     lf="$AGENT_ASK_LESSONS_DIR/$(field "$1" project).md"
     # shellcheck disable=SC2086 # a word list
     [ ! -r "$lf" ] || $AGENT_ASK_LESSONS_CMD pick -n 3 --matched "$lf" "$q" 2>/dev/null | sed -n 's/^- *\(..*\)/- lesson: \1/p'
-  } | cut -c1-300 | head -n 8
+  } | cut -c1-300 | awk 'NR<=8'
 }
 
 # held_credential <text>: when the text names a credential we hold, print what to do instead and
@@ -2767,7 +2767,7 @@ route_physical() {
     echo "agent-ask post: a physical action, but no row could be added to the $project sheet; the ask stays with the human" >&2
     return 1
   fi
-  rid="$(sed -n 's/.*<!-- id:\([^ ]*\) -->.*/\1/p' <<<"$row" | head -n1)"
+  rid="$(sed -n '/<!-- id:/{s/.*<!-- id:\([^ ]*\) -->.*/\1/p;q;}' <<<"$row")"
   close_ask cancelled "$id" "routed at post: a physical action, not a decision: sheet row ${rid:-on $project}, hold $hold" 2>/dev/null
   echo "agent-ask post: no ask filed: a physical action is the human's to do, not to decide. Filed sheet row ${rid:-on $project} and hold $hold; work that needs it waits on 'agent-hold check $hold', released when the human has done it." >&2
   printf '%s\n' "$hold"
