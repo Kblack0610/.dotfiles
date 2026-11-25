@@ -21,9 +21,7 @@ const LANES: usize = md::PRIORITIES.len();
 
 /// Lane index for an open task, else [`LANES`] (no priority tag).
 fn lane_of(line: &str) -> usize {
-    md::task_priority(line)
-        .and_then(|tag| md::PRIORITIES.iter().position(|(_, hash, _)| *hash == tag))
-        .unwrap_or(LANES)
+    md::priority_index(line).unwrap_or(LANES)
 }
 
 /// The headings a sheet's `## Tasks` is cut into, above its `---` and `### Done`

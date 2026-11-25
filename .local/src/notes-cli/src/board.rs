@@ -1213,10 +1213,9 @@ fn feed_row(
     }
 }
 
-/// `row` as the feed prints it: an open epic ranks and shows as its most urgent open row
+/// An epic `row` as the feed prints it: it ranks and shows as its most urgent open row
 /// ([`crate::epics::Index::epic_priority`]), or as [`crate::epics::EMPTY`], ranked `#low`, with
-/// none. Never by a tag of its own, and never untriaged, so triage never tags one. Any other
-/// row is returned as it is.
+/// none. Never by a tag of its own, and never untriaged, so triage never tags one.
 fn epic_ranked(
     mut row: FeedRow,
     line: &str,
@@ -1224,7 +1223,7 @@ fn epic_ranked(
     today: chrono::NaiveDate,
     aim: Option<&crate::rank::Aim>,
 ) -> FeedRow {
-    let Some(id) = row.id.as_deref().filter(|_| crate::epics::is_epic(line)) else {
+    let Some(id) = row.id.as_deref() else {
         return row;
     };
     let prio = tree.epic_priority(id);
@@ -1252,7 +1251,8 @@ fn feed_for_dir(
     let mut agent_backlog = 0;
     let mut done_old = 0;
     let aim = crate::rank::Aim::of(dir);
-    let tree = crate::epics::Index::of(dir, crate::projects::open_version(dir));
+    // Built on the first epic row only: most projects have none.
+    let tree = std::cell::OnceCell::new();
     for (i, (lane, name)) in [(Lane::Human, "human"), (Lane::Agent, "agent")]
         .into_iter()
         .enumerate()
@@ -1284,7 +1284,13 @@ fn feed_for_dir(
         };
         for r in w.rows {
             let row = feed_row(&o, (r.line, &r.text), r.details, today);
-            rows.push(epic_ranked(row, &r.text, &tree, today, o.aim));
+            if row.r#type.as_deref() != Some("epic") {
+                rows.push(row);
+                continue;
+            }
+            let tree = tree
+                .get_or_init(|| crate::epics::Index::of(dir, crate::projects::open_version(dir)));
+            rows.push(epic_ranked(row, &r.text, tree, today, o.aim));
         }
     }
     let file = crate::playtest::path(dir);

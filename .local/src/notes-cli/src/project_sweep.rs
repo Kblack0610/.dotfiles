@@ -324,18 +324,15 @@ pub(crate) fn sweep_sheet(content: &str, ctx: &Ctx) -> Option<(String, Vec<Strin
         }
         // An epic ranks as its most urgent open row (`epics::Index::epic_priority`), so a tag of
         // its own is read by nothing and goes.
-        let untagged;
-        let l = match md::task_priority(l).filter(|_| epics::is_epic(l)) {
-            Some(tag) => {
-                report.push(format!(
-                    "{}: {tag} dropped, an epic ranks as its most urgent open row",
-                    md::task_text(l)
-                ));
-                untagged = md::strip_priority_tag(l);
-                untagged.as_str()
-            }
-            None => *l,
-        };
+        let mut l = (*l).to_string();
+        if let Some(tag) = md::task_priority(&l).filter(|_| epics::is_epic(&l)) {
+            report.push(format!(
+                "{}: {tag} dropped, an epic ranks as its most urgent open row",
+                md::task_text(&l)
+            ));
+            l = md::strip_priority_tag(&l);
+        }
+        let l = l.as_str();
         let stale = matches!((sheet::target(l), cur), (Some(t), Some(c)) if t < c);
         if stale {
             report.push(format!(
@@ -680,8 +677,14 @@ Version: v0.12.1
         let s = "# d\nVersion: v0.12.1\n\n## Tasks\n\
 - [ ] epic(ui): menus #low <!-- id:dm-1 -->\n- [ ] fix(ui): a fault #high #of/dm-1 <!-- id:dm-2 -->\n";
         let (out, report) = sweep_sheet(s, &ctx()).unwrap();
-        assert!(out.contains("- [ ] epic(ui): menus <!-- id:dm-1 -->\n"), "{out}");
-        assert!(out.contains("- [ ] fix(ui): a fault #high #of/dm-1"), "{out}");
+        assert!(
+            out.contains("- [ ] epic(ui): menus <!-- id:dm-1 -->\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("- [ ] fix(ui): a fault #high #of/dm-1"),
+            "{out}"
+        );
         assert_eq!(
             report,
             ["epic(ui): menus: #low dropped, an epic ranks as its most urgent open row"]

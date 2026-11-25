@@ -3750,7 +3750,7 @@ where
             // No edit writes a priority word no reader knows (`tag --add p1`, `edit --text "... #p1"`).
             if let Some(line) = after.borrow().as_deref() {
                 projects::refuse_retired_priority(&matched, line)?;
-                projects::refuse_epic_priority(&matched, line)?;
+                projects::refuse_epic_priority(line)?;
                 crate::reasons::refuse_bad(&matched, line)?;
             }
             write_sheet(&sheet, &new)?;

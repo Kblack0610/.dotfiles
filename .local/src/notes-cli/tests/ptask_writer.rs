@@ -1625,18 +1625,18 @@ fn an_epic_names_a_system_of_its_project_or_is_refused() {
         "{}",
         String::from_utf8_lossy(&o.stderr)
     );
-    ok(&add_human(&h, &[HAND], "epic(docs): every page has an owner"));
+    ok(&add_human(
+        &h,
+        &[HAND],
+        "epic(docs): every page has an owner",
+    ));
     assert!(
         h.sheet().contains("epic(docs): every page has an owner"),
         "{}",
         h.sheet()
     );
     // A queue item's epic waits in the outbox before any system is looked up.
-    let o = add_human(
-        &h,
-        &[("AGENT_QUEUE_ITEM", "ar-9")],
-        "epic(views): proposed",
-    );
+    let o = add_human(&h, &[("AGENT_QUEUE_ITEM", "ar-9")], "epic(views): proposed");
     assert_eq!(o.status.code(), Some(4));
 }
 

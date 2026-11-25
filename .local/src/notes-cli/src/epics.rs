@@ -61,14 +61,6 @@ pub(crate) fn parent_of(line: &str) -> Option<String> {
 /// ([`Index::epic_priority`]); it ranks as `#low`, the last level.
 pub(crate) const EMPTY: &str = "empty";
 
-/// `line`'s priority tag as an index into [`md::PRIORITIES`], untagged as
-/// [`md::DEFAULT_PRIORITY`]: the order `rank.rs` sorts by.
-pub(crate) fn priority_index(line: &str) -> usize {
-    md::task_priority(line)
-        .and_then(|t| md::PRIORITIES.iter().position(|(_, hash, _)| *hash == t))
-        .unwrap_or(md::DEFAULT_PRIORITY)
-}
-
 /// Is this row an epic: typed `epic(area): <outcome>`.
 pub(crate) fn is_epic(line: &str) -> bool {
     line.contains("epic(") && projects::row_type_area(line).is_some_and(|(t, _)| t == "epic")
@@ -330,7 +322,7 @@ impl Index {
             },
             proof: proof_of(line),
             at,
-            prio: priority_index(line),
+            prio: md::priority_index(line).unwrap_or(md::DEFAULT_PRIORITY),
         });
     }
 
@@ -915,7 +907,11 @@ Version: v1.4.0 #alpha
             )],
         );
         let ix = Index::of(&dir, V14);
-        assert_eq!(ix.epic_priority("dm-1"), Some(1), "#high, not the epic's own #low");
+        assert_eq!(
+            ix.epic_priority("dm-1"),
+            Some(1),
+            "#high, not the epic's own #low"
+        );
         assert_eq!(ix.epic_priority("dm-5"), None);
         let f = ix.findings();
         assert!(

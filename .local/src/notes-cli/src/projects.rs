@@ -1580,7 +1580,7 @@ pub(crate) fn row_findings(content: &str, agent: bool) -> Vec<String> {
                     "line {n}: an epic belongs on the human sheet, not the agent board"
                 ));
             }
-            if epic && md::task_priority(line).is_some() {
+            if epic && !prios.is_empty() {
                 epic_tagged.push(n);
             }
             if !epic && project_tasks::size_tag(line) == Some("#size/xl") {
@@ -1634,14 +1634,14 @@ pub(crate) fn row_findings(content: &str, agent: bool) -> Vec<String> {
 }
 
 /// Why an epic takes no priority tag, in every refusal and finding that names one.
-pub(crate) const EPIC_RANKS: &str =
+const EPIC_RANKS: &str =
     "an epic ranks as its most urgent open row (`notes board --json` priority), never by a tag of its own";
 
-/// Why an edit from `old` to `new` is refused: `new` is an epic with a priority tag `old` did
-/// not carry ([`EPIC_RANKS`]). The writer drops a tag the epic already had ([`unrank_epic`]).
-pub(crate) fn refuse_epic_priority(old: &str, new: &str) -> anyhow::Result<()> {
+/// Why a write of `new` is refused: it is an epic with a priority tag ([`EPIC_RANKS`]). The
+/// edit writer runs [`unrank_epic`] first, so only a tag the edit added is left to refuse.
+pub(crate) fn refuse_epic_priority(new: &str) -> anyhow::Result<()> {
     match md::task_priority(new) {
-        Some(tag) if crate::epics::is_epic(new) && md::task_priority(old) != Some(tag) => {
+        Some(tag) if crate::epics::is_epic(new) => {
             anyhow::bail!("{tag} on an epic: {EPIC_RANKS}, so nothing was written")
         }
         _ => Ok(()),
@@ -7031,6 +7031,37 @@ mod move_layout_tests {
             row_findings("- [x] fix(a): b #low <!-- id:xy-4 -->\n", true),
             ["line 1: done with no proof marker (<!-- pr:N -->)"]
         );
+    }
+
+    // An epic ranks as its most urgent open row, so a tag of its own is flagged, an edit that
+    // keeps an old one drops it, and only a tag the edit adds is refused.
+    #[test]
+    fn an_epic_carries_no_priority_tag() {
+        let sheet = "- [ ] epic(ui): menus #low <!-- id:xy-1 -->\n\
+            - [ ] epic(ui): hud #high <!-- id:xy-2 -->\n\
+            - [ ] epic(ui): lobby <!-- id:xy-3 -->\n\
+            - [x] epic(ui): done one #low <!-- id:xy-4 pr:1 -->\n";
+        let got = row_findings(sheet, false);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert!(
+            got[0].starts_with("2 open epic(s) with a priority tag"),
+            "{got:?}"
+        );
+        assert!(got[0].contains("first: line 1"), "{got:?}");
+        let old = "- [ ] epic(ui): menus #low <!-- id:xy-1 -->";
+        let kept = unrank_epic(
+            old,
+            "- [ ] epic(ui): menus redo #low <!-- id:xy-1 -->".into(),
+        );
+        assert_eq!(kept, "- [ ] epic(ui): menus redo <!-- id:xy-1 -->");
+        assert!(refuse_epic_priority(&kept).is_ok());
+        let raised = unrank_epic(old, "- [ ] epic(ui): menus #high <!-- id:xy-1 -->".into());
+        let err = refuse_epic_priority(&raised).unwrap_err().to_string();
+        assert!(err.contains("#high on an epic"), "{err}");
+        // NEGATIVE CONTROL: a row that is no epic keeps its tag and is never refused one.
+        let row = "- [ ] fix(ui): a fault #high <!-- id:xy-5 -->";
+        assert_eq!(unrank_epic("- [ ] fix(ui): a fault #high", row.into()), row);
+        assert!(refuse_epic_priority(row).is_ok());
     }
 
     #[test]
