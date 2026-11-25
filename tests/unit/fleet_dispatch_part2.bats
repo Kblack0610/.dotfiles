@@ -1294,6 +1294,8 @@ J
   # A project outside the stack needs nothing.
   harness_set '.harnesses.codex.capabilities = []'
   harness_needs_why codex '{"slug":"x","project":"game","mode":"oneshot","title":"fix the menu"}' 1 0
+  # A verify row only reports (kinds.json does not register it), so it needs no gate either.
+  harness_needs_why codex '{"slug":"x","project":"arena","type":"verify","mode":"oneshot","title":"verify the arena menu"}' 1 0
   # A canary replays a merged PR and opens none, so it needs no gate.
   harness_needs_why codex '{"slug":"x","project":"arena","mode":"oneshot","title":"canary","tags":"canary","canary":"c1"}' 1 0
 }

@@ -4121,10 +4121,10 @@ cancel c-old-lane --why canary: superseded by the $week set"
   assert_failure 2
   assert_output --partial 'its str entry is no object'
   # A capability of the map's vocabulary that a harness leaves out excludes its mode, and its stack's PR-opening
-  # kinds (a kind whose kinds.json exit is not pr stays open), as route()'s harness_needs_why refuses them.
+  # kinds (a kind whose kinds.json exit is not pr, or that it does not register, stays open), as route()'s harness_needs_why refuses them.
   echo '{"capabilities":{"lane_sandbox":{"mode":"lane-sandbox","why":"no profile"},"rust_gate":{"stack":"rust","why":"needs the gate"}},
     "harnesses":{"bare":{"capabilities":[]},"full":{"capabilities":["lane_sandbox","rust_gate"]}}}' > "$BENCH_HARNESSES"
-  echo '{"docs":{"exit":"report"}}' > "$SANDBOX/kinds.json"; export BENCH_KINDS="$SANDBOX/kinds.json"
+  echo '{"fix":{"exit":"pr"},"ci":{"exit":"pr"},"perf":{},"docs":{"exit":"report"}}' > "$SANDBOX/kinds.json"; export BENCH_KINDS="$SANDBOX/kinds.json"
   run "$SUBJECT" canary matrix --harness bare --json
   assert_success
   run jq -c '[.cells[] | select(.stack == "rust") | [.kind, .status]], [.modes[] | select(.status == "excluded") | .mode], [.cells[] | select(.kind == "fix" and .stack == "rust") | .why]' <<<"$output"

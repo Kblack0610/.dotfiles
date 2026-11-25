@@ -3011,6 +3011,18 @@ harness_tier_why() {
   return 1
 }
 
+# kind_opens_pr <item json> [unregistered: pr|no] -> rc 0 when the item's kind opens a PR (its kind's `exit` in kinds.json
+# is pr or empty), or it has no kind. A kind kinds.json does not register opens one only when `unregistered` is pr, the
+# default (the ladder's: a title it cannot class is an ordinary row); the capability gate says no, so a verify row,
+# which only reports, needs no CI gate. The caller has run load_kinds.
+kind_opens_pr() {
+  local kind
+  kind=$(item_kind "$1")
+  [ -n "$kind" ] || return 0
+  if [ -v 'KIND_EXIT[$kind]' ]; then [ -z "${KIND_EXIT[$kind]}" ] || [ "${KIND_EXIT[$kind]}" = pr ]
+  else [ "${2:-pr}" = pr ]; fi
+}
+
 # harness_needs_why <harness> <item json> <tier> <pinned 0|1> -> why the harness lacks a capability the item needs,
 # rc 1; rc 2, failing closed, when the map or the stack list cannot say; nothing and rc 0 when it has them all.
 # The one place a harness is refused for what it cannot do, from its `capabilities` list in the map (the
@@ -3018,14 +3030,14 @@ harness_tier_why() {
 # new code here. A row needs lane_sandbox under DISPATCH_SANDBOX_PROFILE, code_review when routed (not pinned) as
 # a red past the unattended ceiling (the red-fix gate), and each stack-bound capability (`stack` in the
 # vocabulary: unity_gate) when the item's project is in that stack of MATRIX and its kind opens a PR (a canary
-# replays a merged PR and opens none). Claude, which route() takes before this, has them all.
+# replays a merged PR and opens none; kind_opens_pr). Claude, which route() takes before this, has them all.
 harness_needs_why() {
-  local h="$1" it="$2" tier="$3" pinned="$4" project kind cap stack why rc needs=() rows
+  local h="$1" it="$2" tier="$3" pinned="$4" project cap stack why rc needs=() rows
   [ -z "$DISPATCH_SANDBOX_PROFILE" ] || needs+=(lane_sandbox)
   [ "$pinned" = 1 ] || [ "$tier" -le "$UNATTENDED_TIER_CEILING" ] || ! is_red "$it" || needs+=(code_review)
   if ! is_canary "$it"; then
-    load_kinds; kind=$(item_kind "$it")
-    if [ -z "$kind" ] || [ "${KIND_EXIT[$kind]:-pr}" = pr ]; then
+    load_kinds
+    if kind_opens_pr "$it" no; then
       rows=$(jq -r --arg h "$h" '(.harnesses[$h].capabilities // []) as $has | (.capabilities // {}) | to_entries[]
         | select(.value.stack != null) | . as $c | select($has | index($c.key) | not) | "\($c.key)\t\($c.value.stack)"' "$HARNESSES" 2>/dev/null) ||
         { echo "$HARNESSES is unreadable, so its capabilities are unknown"; return 2; }
@@ -3100,7 +3112,7 @@ item_points() { jq -r 'first((.points | tostring | select(test("^[0-9]+$"))), ((
 # slug, so a rejected or failed row goes to claude).
 # With a share N above 0, a tier-3 row tier3_pick takes is let through too. <who> names the run.
 ladder_row_why() {
-  local it="$1" who="$2" tiers="${3:-1}" share="${4:-0}" tags tier kind prev
+  local it="$1" who="$2" tiers="${3:-1}" share="${4:-0}" tags tier prev
   tags=" $(jq -r '.tags // ""' <<<"$it") "
   ! is_canary "$it" && [[ "$tags" != *" trainee-review "* && "$tags" != *" verify "* && "$tags" != *" validate "* ]] ||
     { echo "it is a canary, verify, validate or review item"; return 1; }
@@ -3115,8 +3127,8 @@ ladder_row_why() {
     echo "it is tier $tier, and $who takes tier ${tiers// /, } only$([ "$share" -gt 0 ] && echo ", and one tier-3 cleanup row in $share")"
     return 1
   fi
-  load_kinds; kind=$(item_kind "$it")
-  [ -z "$kind" ] || [ "${KIND_EXIT[$kind]:-pr}" = pr ] || { echo "its kind $kind opens no PR"; return 1; }
+  load_kinds
+  kind_opens_pr "$it" || { echo "its kind $(item_kind "$it") opens no PR"; return 1; }
 }
 
 # tier3_pick <item json> <share> -> rc 0 when a ladder run takes the tier-3 row: share is above 0,
@@ -6903,6 +6915,7 @@ route() {
     [ "$cands" != '[]' ] || { ROUTE_WHY="the trainee floor starts ${TRAINEE_HARNESS:-a trainee} as a trainee only, and it is none for this item"; return 1; }
   fi
   tier=$(item_tier "$it")
+  load_kinds   # once here: harness_needs_why runs in a subshell per candidate, which inherits it (its own load_kinds is then a no-op)
   while read -r h m; do
     if [ "$h" = claude ]; then
       [ "${CLAUDE_FULL:-0}" = 0 ] || { why+=("claude: the Claude pace target is full"); continue; }
