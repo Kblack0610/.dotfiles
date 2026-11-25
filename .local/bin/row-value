@@ -51,12 +51,15 @@
       or parks it (a `Parked:` line in the plan file, then the drop). Without --write it writes
       nothing and logs what it would do. The log has one line per open row of P: id, action,
       result, detail, why; exit 1 when a write failed.
-  row-value cut-report [--project P] [--board FILE] [--rubric FILE] --log FILE... LEDGER...
+  row-value cut-report [--project P] [--board FILE] [--rubric FILE] [--scope FILE] --log FILE... LEDGER...
       the after-cut report as markdown (--log repeats for a re-run, the later run winning per
       row): the before and after counts, then the Cut table (each row
       the log shows closed or moved, and how) and the Remains table (each row open now, its
       bucket, tie and why), both grouped by system, each group opening with the rubric's line
-      for that system.
+      for that system. --scope FILE (a headed TSV with an `id` column, one pass's ledger) limits
+      the counts and both tables to those rows, so a later pass reports only its own rows while
+      LEDGER... still carries the earlier passes' buckets. Before counts the scoped rows the logs saw
+      open; a scoped row filed after the run shows in Remains only.
 
   row-value focus [--project P] [--board FILE] [--rubric FILE] [--out DIR] [--write] --log FILE LEDGER...
       the focus passes: every open kept row (a red, requested, fault or sot row; a doing row is a
@@ -941,12 +944,25 @@ def cmd_cut_report(a):
         entries.update((e["id"], e) for e in rows)
     log = list(entries.values())
     ledger = read_ledgers(a.ledger)
+    scope = None
+    if a.scope:
+        if not os.path.exists(a.scope):
+            die(f"{a.scope}: no such scope file", 1)
+        cols, rows = read_tsv(a.scope)
+        if "id" not in cols:
+            die(f"{a.scope}: no id column", 1)
+        scope = {r["id"] for r in rows if r["id"]}
+        if not scope:
+            die(f"{a.scope}: no ids", 1)
+        log = [e for e in log if e["id"] in scope]
     missing = sorted(e["id"] for e in log if e["action"] != "unjudged" and e["id"] not in ledger)
     if missing:
         die(f"the logs name rows no LEDGER holds: {', '.join(missing[:10])}", 1)
     systems = system_lines(a.rubric)
     board = load_board(a.board)
     now = open_rows(board, a.project)
+    if scope is not None:
+        now = [r for r in now if r["id"] in scope]
     home = a.project
     how = {"done": "closed done", "dup": "dropped as a dup", "drop": "dropped", "improve": "moved to improvements",
            "move": "moved to another board", "park": "dropped, its plan parked"}
@@ -1100,6 +1116,7 @@ def main():
     cr.add_argument("--project", default="agent-runtime")
     cr.add_argument("--board", help="a saved `notes board --json` read after the cut")
     cr.add_argument("--rubric", default=RUBRIC)
+    cr.add_argument("--scope", help="a headed TSV with an id column (one pass's ledger): report only those rows")
     cr.add_argument("--log", required=True, action="append", help="an apply log; repeat it for a re-run, the later run winning per row")
     cr.add_argument("ledger", nargs="+")
     fo = sub.add_parser("focus")
