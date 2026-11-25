@@ -2232,8 +2232,8 @@ qstats_fixture() {
     '["kimi",0,0,0,0,1,0,0,0,null,0]
 ["sol",7,4,3,1,1,3,2,3,0.67,1]'
   run env BENCH_NOW=$T0 "$SUBJECT" models
-  assert_line '| sol | codex | 7 | 4 (1 failed) | 1 | 2 | 0.67 (0.21-0.94, n 3) | 1 | 0 | 0 | $0 | - | - | - | - | - | - |'
-  assert_line '| kimi | opencode-go | 0 | 0 | 1 | 0 | - | 0 | 0 | 0 | $0 | - | - | - | - | - | - |'
+  assert_line '| sol | codex | 7 | 0 | 4 (1 failed) | 1 | 2 | 0.67 (0.21-0.94, n 3) | 1 | 0 | - | 0 | - | - | - | - | - | - | - |'
+  assert_line '| kimi | opencode-go | 0 | 0 | 0 | 1 | 0 | - | 0 | 0 | - | 0 | - | - | - | - | - | - | - |'
   assert_line --partial 'A check is in Done and in neither Rate nor Failed'
   # BENCH_NOPR_TYPES overrides the kinds: empty splits nothing off, a list names the types
   run env BENCH_NOW=$T0 BENCH_NOPR_TYPES= "$SUBJECT" models --json
