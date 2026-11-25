@@ -629,8 +629,8 @@ prompt_rows() {
 cmd_prompts() {
   # $1 = id or prefix. A terminal gets a window over the prompts; a pipe gets the plain list.
   # In the window, typing matches like the session list: each word a case-insensitive
-  # substring, words ANDed (fzf's default fuzzy match lit scattered letters and kept nearly
-  # every prompt). Enter jumps to that prompt in the session's live pane (`_jump`), ctrl-r
+  # substring, words ANDed in any order (fzf's default fuzzy match lit scattered letters and
+  # kept nearly every prompt). fzf's operators (^ $ ! ') still apply. Enter jumps to that prompt in the session's live pane (`_jump`), ctrl-r
   # reads the whole session in less from that prompt, and esc goes back. To carry on from
   # an old prompt, resume the session and pick it with Esc Esc.
   local id t rows
