@@ -59,6 +59,11 @@
 #   fleet-bench prio-defaults [--json]
 #                                the open rows that rank by default (no priority tag or no #why/<reason>) by the filer
 #                                that wrote them, most first, with sample ids: the rows behind the prio_default KPI
+#   fleet-bench inflow [--project P] [--days N] [--json]
+#                                every open agent-lane row of a project (default agent-runtime) attributed to its source (the ingest
+#                                origin, else the #from/ a triage carried in, else self-check, else the writer; below the first logged
+#                                id "pre-log"), with each source's arrivals per day over N days (INFLOW_DAYS, 14), how they ended
+#                                (closed by PR, done with no PR, dropped, dup, still open) and the age of its open rows
 #   fleet-bench startup [--json|--check]
 #                                Claude Code start times (CLAUDE_STARTUP_LOG): medians over the last
 #                                startup_rolling_n starts; --check exits 1 past startup_ready_ms_p50_max,
@@ -366,6 +371,7 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${BENCH_LANE_VOIDS:=${BENCH_LANE_LOG%/*}/voids.jsonl}"   # model-lane's voids beside it: runs to rate no more (`model-lane void`)
 : "${BENCH_SKILLS_DIR:=$HOME/.claude/skills}"   # skills: a slash command is a skill when <dir>/<name>/SKILL.md exists
 : "${PRIO_SAMPLE:=3}"   # row ids shown per origin in prio_default
+: "${INFLOW_DAYS:=14}"   # the window inflow counts arrivals over
 : "${BENCH_INGEST:=$HOME/.local/state/notes/ingest.jsonl}"   # the notes CLI's record of every row it wrote: who, from where
 : "${BENCH_PROFILE:=}"                             # the profile board_open and board_days read; empty asks `notes config`
 BOARD_SHIP_DAYS=7                                    # days of shipped weight board_days reads: the notes sweep's BUDGET_WINDOW_DAYS
@@ -4336,6 +4342,103 @@ cmd_prio_defaults() {
   else jq -r '"prio_default \(.total)", (.origins[] | "  \(.origin) \(.n)  \(.ids | join(" "))")' <<<"$pd"; fi
 }
 
+# inflow_events <project> -> the ingest record's row events of one project's agent lane that say where a row
+# came from or how it ended (added, filed, done, settled, dropped, dup, reopened), one JSON object a line.
+# rc 1 when the record cannot be read.
+inflow_events() {
+  [ -r "$BENCH_INGEST" ] || return 1
+  { grep -hE '"action":"(added|filed|done|settled|dropped|dup|reopened)"' "$BENCH_INGEST" || :; } \
+    | jq -Rc --arg p "$1" 'fromjson? | select(.from == $p and (.id // "") != "" and (.lane == "agent" or .action == "settled"))
+        | {action, id, ts, by, origin, why, pr, text}'
+}
+
+# inflow [--project P] [--days N] [--json] -- every open agent-lane row of a project attributed to the source
+# that filed it, and each source's arrivals per day, how its arrivals ended and the age of its open rows.
+cmd_inflow() {
+  local project=agent-runtime days=$INFLOW_DAYS json=0 json_flag=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project=${2:?--project needs a name}; shift ;;
+      --days) days=${2:?--days needs a number}; shift ;;
+      --json) json=1; json_flag=(--json) ;;
+      *) say "usage: fleet-bench inflow [--project P] [--days N] [--json]"; return 2 ;;
+    esac
+    shift
+  done
+  case "$days" in ""|*[!0-9]*|0) say "inflow: --days is a whole number of days"; return 2 ;; esac
+  [ -n "${BENCH_READ_CACHE:-}" ] || { with_reads cmd_inflow --project "$project" --days "$days" "${json_flag[@]}"; return; }
+  bench_read $BENCH_BOARD_CMD 2>/dev/null | jq -ce 'select(.rows | arrays)' > "$BENCH_READ_CACHE/inflow.board" && [ -s "$BENCH_READ_CACHE/inflow.board" ] \
+    || { say "inflow: the board feed cannot be read"; return 1; }
+  inflow_events "$project" > "$BENCH_READ_CACHE/inflow.events" || { say "inflow: the ingest record cannot be read ($BENCH_INGEST)"; return 1; }
+  jq -rn --arg p "$project" --argjson days "$days" --argjson t "$(now)" --arg json "$json" \
+    --slurpfile e "$BENCH_READ_CACHE/inflow.events" --slurpfile f "$BENCH_READ_CACHE/inflow.board" "$JQ_LIB"'
+    def num: (capture("-(?<n>[0-9]+)$") | .n | tonumber) // null;
+    def day: .[0:10];
+    # the source of a row: the filer the ingest record names, else the #from/ its triage carried in, else
+    # a hand session'"'"'s self-check, else the writer; a row the record never saw is pre-log below its first id
+    def from_class: if . == null then null elif . == "" then "triage: no #from" elif . == "dream" or . == "ladder-scout" then "from: \(.)" else "from: item or session" end;
+    def source($first; $text; $logged; $id):
+      if $first == null then (if ($id | num) != null and ($id | num) < $logged then "pre-log" else "unrecorded" end)
+      elif ($first.origin // "") != "" then $first.origin
+      else (($first.text // $text // "") | capture("#from/(?<f>[^ ]*)") | .f | from_class) // (
+        if $first.why == "self-check" then "self-check"
+        elif ($first | human_writer) then "human"
+        elif ($first.by | test("^[0-9a-f]{8}$")) then "session"
+        else $first.by end) end;
+    # an event'"'"'s moment: ts carries the writer'"'"'s UTC offset, so strings do not order across a DST change
+    def at: sub("\\.[0-9]+"; "") | if test("Z$") then fromdateiso8601
+      else capture("^(?<d>.*)(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2})$")
+        | (.d + "Z" | fromdateiso8601) - (if .s == "-" then -1 else 1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60) end;
+    def close_kind: if (.pr // "") != "" or ((.why // "") | test("^pr:|/pull/")) then "closed by PR" else "done, no PR" end;
+    # how the row ended after its last reopen: the last closing event, else null. A settled event closes only
+    # when it carries a PR (closed on merge proof); the others un-start the row (item failed, cancelled, orphaned)
+    def ended($evs):
+      ($evs | map(select(.action != "added" and .action != "filed" and (.action != "settled" or (.pr // "") != ""))) | sort_by(.ts | at)) as $x
+      | ($x | map(.action == "reopened") | rindex(true)) as $r
+      | ($x | if $r == null then . else .[$r + 1:] end | map(select(.action != "reopened")) | last)
+      | if . == null then null elif .action == "dropped" then "dropped" elif .action == "dup" then "dup"
+        elif .action == "settled" then "closed by PR" else close_kind end;
+    ($f[0].rows | map(select(.project == $p and .lane == "agent"))) as $rows
+    | ($rows | map(select(.state == "open" or .state == "doing"))) as $open
+    | ($open | map({key: .id, value: true}) | from_entries) as $isopen
+    | ($e | group_by(.id) | map({key: .[0].id, value: .}) | from_entries) as $by
+    | ([$e[] | select(.action == "added") | .id | num | numbers] | min // 0) as $logged   # a filed event can re-file an old id
+    | ([$e[] | select(.action == "added") | .ts | day] | min) as $began_day
+    | ([$days, (if $began_day == null then 1 else ((($t - ($began_day + "T12:00:00Z" | fromdateiso8601)) / 86400 | floor) + 1) end)] | min) as $covered
+    | def first_ev($evs): ($evs // [] | map(select(.action == "added" or .action == "filed")) | sort_by(.ts | at) | first);
+      ($open | map(. as $r | first_ev($by[$r.id]) as $f
+        | {id: $r.id, source: source($f; $r.raw; $logged; $r.id), since: $r.since})) as $censused
+    | ($t - $days * 86400 | strflocaltime("%Y-%m-%d")) as $from
+    | def age: if (.since // "" | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$") | not) then null else (($t - (.since + "T12:00:00Z" | fromdateiso8601)) / 86400 | floor) end;
+      ([range(0; $days) | ($t - . * 86400) | strflocaltime("%Y-%m-%d")] | reverse) as $dates
+    | ([$by | keys[] | . as $id | first_ev($by[$id]) as $first | select($first != null and ($first.ts | day) > $from)
+        | {id: $id, day: ($first.ts | day), source: source($first; null; $logged; $id),   # a row counts once, on its first event
+           end: (if $isopen[$id] then "open" else (ended($by[$id]) // "gone") end)}]) as $arr
+    | ($censused | group_by(.source) | map({source: .[0].source, open: length,
+        age_p50: (map(age | numbers) | median), age_max: (map(age | numbers) | max)})) as $cens
+    | ($arr | group_by(.source) | map({source: .[0].source, arrived: length,
+        per_day: (length / $covered | round2),
+        daily: (. as $g | [$dates[] | . as $d | $g | map(select(.day == $d)) | length]),
+        closed_by_pr: (map(select(.end == "closed by PR")) | length), done_no_pr: (map(select(.end == "done, no PR")) | length),
+        dropped: (map(select(.end == "dropped")) | length), dup: (map(select(.end == "dup")) | length),
+        open: (map(select(.end == "open")) | length), gone: (map(select(.end == "gone")) | length)})) as $arrivals
+    | ([$cens[].source, $arrivals[].source] | unique) as $names
+    | {project: $p, days: $days, covered_days: $covered, dates: $dates, open_rows: ($open | length), attributed: ($censused | length),
+       sources: [$names[] | . as $n | ($cens | map(select(.source == $n)) | first) as $c | ($arrivals | map(select(.source == $n)) | first) as $a
+         | {source: $n, open: ($c.open // 0), open_age_p50_d: $c.age_p50, open_age_max_d: $c.age_max,
+            arrived: ($a.arrived // 0), arrived_per_day: ($a.per_day // 0), daily: ($a.daily // ([range(0; $days) | 0])),
+            closed_by_pr: ($a.closed_by_pr // 0), done_no_pr: ($a.done_no_pr // 0), dropped: ($a.dropped // 0), dup: ($a.dup // 0),
+            still_open: ($a.open // 0), gone: ($a.gone // 0)}] | sort_by(-.open, -.arrived)}
+    | if $json == "1" then . else
+      def d: if . == null then "-" else . end;
+      "inflow \(.project): \(.open_rows) open agent rows, \(.attributed) attributed to a source; arrivals over the last \(.covered_days) days" + (if .covered_days < .days then " (the record starts there, not \(.days) days ago)" else "" end),
+      "| source | open now | open age p50 d | open age max d | arrived | per day | closed by PR | done, no PR | dropped | dup | other | arrivals still open |",
+      "|---|---|---|---|---|---|---|---|---|---|---|---|",
+      (.sources[] | "| \(.source) | \(.open) | \(.open_age_p50_d | d) | \(.open_age_max_d | d) | \(.arrived) | \(.arrived_per_day) | \(.closed_by_pr) | \(.done_no_pr) | \(.dropped) | \(.dup) | \(.gone) | \(.still_open) |"),
+      "| total | \(.sources | map(.open) | add) |  |  | \(.sources | map(.arrived) | add) | \((.sources | map(.arrived_per_day) | add) | round2) | \(.sources | map(.closed_by_pr) | add) | \(.sources | map(.done_no_pr) | add) | \(.sources | map(.dropped) | add) | \(.sources | map(.dup) | add) | \(.sources | map(.gone) | add) | \(.sources | map(.still_open) | add) |" end
+  '
+}
+
 # startup [--json|--check] -- Claude Code start times over the last startup_rolling_n (20) starts:
 # the medians of ready, process (harness boot) and hook ms, each hook phase and each MCP server's
 # spawn. The threshold and window are kpi-thresholds keys, the same startup_ready_ms_p50_max the KPI
@@ -7615,6 +7718,7 @@ main() {
     kpi) shift; cmd_kpi "$@" ;;
     chain) shift; cmd_chain "$@" ;;
     prio-defaults) shift; cmd_prio_defaults "$@" ;;
+    inflow) shift; cmd_inflow "$@" ;;
     startup) shift; cmd_startup "$@" ;;
     pipeline) shift; cmd_pipeline "$@" ;;
     bottleneck) shift; cmd_bottleneck "$@" ;;
