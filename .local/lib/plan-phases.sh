@@ -103,6 +103,18 @@ plan_gated_rows() {
     | {slug: .id, task: ((.details // []) | if type == "array" then join("\n") else tostring end)}' 2>/dev/null || true
 }
 
+# plan_whole_rows [<board json>] -> each open board row agent-queue add --plan filed for a whole plan (its brief
+# is the plan_row_task sentence), one {slug: the row id, plan: the path} line for PLAN_ITEMS_JQ: dispatch
+# promotes the row into the plan's chain, so until then the row holds every open phase of that plan, as
+# the chain's items will. A session that queued its plan from a dispatched run (one-shot step 1a) read
+# WORKING while its row waited (ar-5445). Nothing when the board cannot be read.
+plan_whole_rows() {
+  { if [ $# -gt 0 ]; then printf '%s\n' "$1"; else notes board --json 2>/dev/null; fi; } | jq -c '.rows[]? | select(.state == "open")
+    | .id as $id | (.details // []) | if type == "array" then join("\n") else tostring end
+    | capture("Run the open phases of the approved plan (?<p>/[^\n]*?[.]md) in order")
+    | {slug: $id, plan: .p}' 2>/dev/null || true
+}
+
 # plan_pointer <plan file> -> "<canonical plan path> TAB <N>" when the file is a pointer stub, whose
 # opening lines say `Phase N of <path>.md` (a phase plan agent-queue wrote into ~/.claude*/plans/),
 # and that plan exists; else nothing. The queue items name the canonical plan, not the stub, and

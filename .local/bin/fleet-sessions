@@ -2782,9 +2782,9 @@ collect() {
       # phases were queued under the other) matches either.
       # A pointer stub ("Phase N of <plan>.md") reads through to that plan: its open phases are the
       # canonical plan's phase N on, and the items name the canonical file (2026-11-14).
-      # A phase add --plan filed on its board row behind a gate holds it as an item does (plan_gated_rows), read
-      # once a run.
-      [ -f "$CACHE/plan_gated" ] || { plan_gated_rows "$(board_feed)" > "$CACHE/plan_gated.$$" && mv -f "$CACHE/plan_gated.$$" "$CACHE/plan_gated"; }
+      # A phase add --plan filed on its board row behind a gate holds it as an item does (plan_gated_rows), and
+      # a whole plan filed as one row holds all its phases (plan_whole_rows, ar-5445), read once a run.
+      [ -f "$CACHE/plan_gated" ] || { local bf; bf="$(board_feed)"; { plan_gated_rows "$bf"; plan_whole_rows "$bf"; } > "$CACHE/plan_gated.$$" && mv -f "$CACHE/plan_gated.$$" "$CACHE/plan_gated"; }
       local canon ptgt pbase=1 pn
       canon="$(realpath -q -- "$plist" 2>/dev/null)" || canon="$plist"
       IFS=$'\t' read -r ptgt pn < <(plan_pointer "$plist")

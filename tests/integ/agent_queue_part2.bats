@@ -1988,6 +1988,36 @@ Phase 2 of the plan $SANDBOX/plan.md: the doors." >/dev/null
   assert_success
 }
 
+@test "add --plan from a session whose own plan is another file turns that file into a pointer at the queued plan (ar-5445)" {
+  story_notes
+  unset AGENT_QUEUE_PULL
+  source "$BATS_TEST_DIRNAME/../../.local/lib/plan-phases.sh"
+  printf '# P\n\n## Phases\n\n- [x] one\n- [ ] two\n- [ ] three\n' > "$SANDBOX/proj-plan.md"
+  local own="$HOME/.claude/plans/sess-1.md" canon
+  canon="$(realpath "$SANDBOX/proj-plan.md")"
+  mkdir -p "${own%/*}"
+  printf '# mine\n\n## Phases\n- [ ] do it all\n' > "$own"
+  # The board path: a dispatched session files the plan as one row.
+  AGENT_QUEUE_ITEM=sess-1 run "$AQ" add --plan "$SANDBOX/proj-plan.md" --project level --from auto:plans
+  assert_failure 5
+  assert_output --partial "$own now points at phase 2 of $canon"
+  assert_equal "$(plan_pointer "$own")" "$canon	2"
+  grep -qxF -- '- [ ] do it all' "$own.queued"
+  # NEGATIVE CONTROL: a stub already is left as it is, and so is a session whose own plan is the one queued.
+  cp "$own" "$SANDBOX/stub-before"
+  AGENT_QUEUE_ITEM=sess-1 run "$AQ" add --plan "$SANDBOX/proj-plan.md" --project level --from auto:plans
+  cmp -s "$own" "$SANDBOX/stub-before"
+  cp "$SANDBOX/proj-plan.md" "$HOME/.claude/plans/sess-2.md"
+  AGENT_QUEUE_ITEM=sess-2 run "$AQ" add --plan "$HOME/.claude/plans/sess-2.md" --project level --from auto:plans
+  [ ! -e "$HOME/.claude/plans/sess-2.md.queued" ]
+  refute_output --partial 'now points at'
+  # The queue path (the human's plan, queued as items) writes it too.
+  printf '# mine\n\n## Phases\n- [ ] do it all\n' > "$HOME/.claude/plans/sess-3.md"
+  AGENT_QUEUE_PULL=1 AGENT_QUEUE_ITEM=sess-3 run "$AQ" add --plan "$SANDBOX/proj-plan.md" --project level --priority low
+  assert_success
+  assert_equal "$(plan_pointer "$HOME/.claude/plans/sess-3.md")" "$canon	2"
+}
+
 # fleet-dispatch promote turns that row into the chain (ar-3262). NEGATIVE CONTROL: before it, --from
 # board: on a --plan was refused as no filer, and promote queued the row as one item for every phase.
 @test "dispatch's --plan --from board: queues the chain from auto:plan-row and puts the row on the plan's rows: line" {

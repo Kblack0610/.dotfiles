@@ -3100,6 +3100,23 @@ SH
   [ "$(jq -r .bucket <<<"$output")" = LANDED ]
 }
 
+@test "end to end: a session whose plan add --plan filed as one board row reads DONE while that row waits for dispatch (ar-5445)" {
+  # A dispatched session's add --plan files the whole plan as one row (plan_row_task's brief) that
+  # dispatch later turns into its chain. Until then the row holds every open phase.
+  landed_fixture
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout' '- [ ] Phase 3: docs'
+  panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  printf '{"rows":[{"project":"apociseum","id":"apo-8","state":"open","tags":["size/m"],"details":["Run the open phases of the approved plan %s in order, one PR each, marking each done in the plan ## Phases."]}],"done":[]}\n' \
+    "$SANDBOX/plan.md" > "$NOTES_FIXTURE/board.json"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: apo-8' ]
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  # Negative control: the row closed (promoted or dropped), nothing holds Phase 2.
+  sed -i 's|"state":"open"|"state":"done"|' "$NOTES_FIXTURE/board.json"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+}
+
 @test "end to end: a session whose plan's phases are queued reads DONE, whatever its plan says about a coordinator" {
   # 2026-11-17: critical work is queued and run by dispatch; no window stays to watch it, so a
   # `Coordinator:` line left in a plan changes nothing.

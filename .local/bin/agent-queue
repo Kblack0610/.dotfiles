@@ -30,6 +30,8 @@
 #   add --plan <plan.md> [--dry-run | --check] [--project p] [--priority p] [--tags t] [--weight w] [--after slug[,slug...]] [--slug prefix] [--repeat]
 #       one oneshot item per unchecked `## Phases` line, each after the one before, unless its line says
 #       `(independent)` (after --after alone) or `(after N; needs <result>)` (after phase N's item; `(after N, M; needs ...)` after several), where `needs` names the output the phase consumes: a missing `needs`, a shared-file reason (`edits`, `same file`, `conflicts`) or a marker that does not parse is refused; `(with N)` joins phase N's item; `(at YYYY-MM-DD HH:MM)` holds that phase alone until then (its at: tag) at no more than high priority; an `(independent)` marker may carry a note, `(independent; why)`; `--check` only reads and validates the markers. A phase that says `takes <row-id>` (or `takes board row <row-id>`) is filed at the higher of the plan's priority and that row's, and agent-land closes the row when the phase merges; its newly filed story row carries `#takes/<id>` (docs/agent-queue.md). A line opening `P<N>` is phase N, else its place counts; a `1b.` line is a sub-phase: it takes no place and is not queued
+#       From a session ($AGENT_QUEUE_ITEM) whose own plan (~/.claude/plans/<item>.md) is another file with an open phase,
+#       that file becomes a pointer stub at the plan's first open phase, its text kept as <file>.queued (own_plan_pointer).
 #   list [--json [--points]] [--state queued|running|waiting|review|done|active|all] [--date YYYY-MM-DD | --since YYYY-MM-DD|Nd|N]
 #       list joins each item's board row (`notes board --json`, one read of the whole board): the text list ends in a
 #       `<band>/<points>` column (`m/5`, the band alone when the row is unscored, `-` with none); --json joins
@@ -2179,9 +2181,12 @@ cmd_add() {
       # The row's brief names the plan by its absolute path, which dispatch's promote reads back to queue
       # the chain (plan_row_plan).
       AQ_FILE_ORIGIN=plan overflow_row "$pproject" "$ptitle" "$(plan_row_priority "$from" "$priority_given" "$priority")" "" "" "$(plan_row_task "$(realpath "$planf")")" "" "$(basename "$planf" .md)" || exit 1
+      own_plan_pointer "$(realpath "$planf")"
       exit "$AQ_EX_HELD"
     fi
-    AQ_ADMITTED=1 plan_add_waiting; return
+    AQ_ADMITTED=1 plan_add_waiting || return
+    [ -n "$dry" ] || own_plan_pointer "$(realpath "$planf")"
+    return
   fi
   [ -z "$dry" ] || die "--dry-run and --check go with --plan"
   local text
@@ -2703,6 +2708,26 @@ add_plan() {
   local f
   for s in "${added[@]}"; do f="$(find_item "$s")" && [ -n "$f" ] && start_at_add "$f" "$s" "$(takes_field "$ranked" "$s" 3 "$priority")"; done
 }
+# own_plan_pointer <plan>: a session that queued a plan at another path than its own (one-shot step 1's
+# ~/.claude/plans/$AGENT_QUEUE_ITEM.md, the file fleet-sessions reads for it, item_plan) left its own
+# open phases behind, so it read WORKING and shepherd never closed it (ar-5445, 2026-11-24). Its file
+# becomes a pointer stub, Phase N of <plan> (plan_pointer), N the plan's first open phase, which the
+# queued items or the plan's board row hold; the text it had is kept beside it as <file>.queued. Nothing
+# when the session has no plan of its own, it is this plan, it is a stub already, or it has no open phase.
+own_plan_pointer() {
+  local own="$HOME/.claude/plans/${AGENT_QUEUE_ITEM:-}.md" n name
+  [ -n "${AGENT_QUEUE_ITEM:-}" ] && [ -f "$own" ] || return 0
+  [ "$(realpath -q -- "$own")" != "$1" ] || return 0
+  [ -z "$(plan_pointer "$own")" ] || return 0
+  plan_phase_list "$own" | jq -e 'any(.[]; .state == "open")' >/dev/null 2>&1 || return 0
+  IFS=$'\t' read -r n name < <(plan_phase_list "$1" | jq -r 'first(.[] | select(.state == "open" and (.n | type) == "number")) | [.n, .name] | @tsv' 2>/dev/null) || true
+  [ -n "${n:-}" ] || return 0
+  cp -p -- "$own" "$own.queued" || { echo "agent-queue: $own still lists its own open phases: it could not be kept as $own.queued" >&2; return 0; }
+  printf '# %s: queued as %s\n\nPhase %s of %s\n\nagent-queue add --plan queued this work there (ar-5445): its phases are queue items or its board row. The plan this session wrote is kept as %s.queued.\n\n## Phases\n- [ ] queued: %s\n' \
+    "$AGENT_QUEUE_ITEM" "$(basename "$1")" "$n" "$1" "$(basename "$own")" "$name" > "$own"
+  echo "agent-queue: $own now points at phase $n of $1 (its text is in $own.queued)" >&2
+}
+
 # own_plan_item <plan>: the calling session's item ($AGENT_QUEUE_ITEM) is running and a phase of that plan (its plan:).
 # cmd_add --plan lets such a session add a line to its own plan (add_plan keeps the filed phases) and file
 # the new phase itself: through overflow_row it is a board row all the same, as a dispatched caller's add is.
