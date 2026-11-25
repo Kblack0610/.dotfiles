@@ -160,7 +160,7 @@
 # (it scores as silence), and parks, then on its return cancels, an ask no session or queue item waits on. The
 # judge reads the older pending asks, and its `settled_by` joins an ask to an older one on the same
 # question, its sessions moved there; each premise is checked again before it acts. A hold the human
-# set is no input: it narrows by `agent-hold grant`, which the queue's gate reads, never by its reason.
+# set is no input: it narrows by `agent-hold grant --ask`, which the queue's gate reads, never by its reason.
 #
 # THE ANSWER JUDGE. `post` runs `judge <id>` in the foreground behind AGENT_ASK_JUDGE_TIMEOUT:
 # one call to the registered agent `ask-judge` (its conf sets role, model, schema and the policy
