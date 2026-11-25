@@ -70,4 +70,4 @@ Not for a pile of tasks (`fleet-queue`), a release (the system cuts it; `release
 - Run a repo's full slow suite when its CLAUDE.md says to run only the affected classes.
 - Force-push, rebase a pushed branch, or `reset --soft` onto a moved base.
 - Cross the `go` hard-stop boundary: no release tags or cuts (`release-guard.py` denies them; the system cuts), deploys, secrets or external sends, even though the rest of the run is autonomous.
-- Close the window over a blocked run. A teardown that hides the blocker is worse than no wind-down.
+- Wind down a blocked run before its ask is filed. The ask is what shows the human the blocker and reopens this conversation on the answer.

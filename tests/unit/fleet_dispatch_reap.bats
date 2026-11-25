@@ -1039,6 +1039,9 @@ OUT
   assert_output --partial 'agent-land 12 --repo o/game --item fix-crash'
   assert_output --partial 'fleet-dispatch item-tier fix-crash'
   assert_output --partial 'never deleting the branch'
+  # a verdict for the human ends like any ask that is all that is left: wind down, the answer reopens it (ar-1865)
+  assert_output --partial 'and run /wind-down auto: the item waits on the answer, which reopens this conversation.'
+  refute_output --partial 'and end: the item waits on the answer'
   refute_output --partial '/fix-ci'
   # the lander pushed a base merge and it went red: fix-ci owns that head, on its own count
   fix_ended "$h2" FAIL
