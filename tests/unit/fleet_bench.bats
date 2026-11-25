@@ -3009,9 +3009,12 @@ red_item() {
   run "$SUBJECT" landed --project home-config --json
   assert_equal "$(jq -c '[.landed, .rows[0].slug, .rows[0].source]' <<<"$output")" '[1,"i","unrecorded"]'
   # an unreadable reds read leaves the reds null, never 0, and the rest still scores
+  # (reds_json says why on stderr, kept apart so the JSON still parses)
   printf '#!/usr/bin/env bash\nexit 3\n' > "$SANDBOX/bin/notes"
-  run "$SUBJECT" landed --json
+  bats_require_minimum_version 1.5.0
+  run --separate-stderr "$SUBJECT" landed --json
   assert_success
+  [ -n "$stderr" ]
   assert_equal "$(jq -c '[.reds_read, (.by_target[] | select(.target == "red") | .reds_fixed)]' <<<"$output")" '[false,null]'
   run "$SUBJECT" landed --days 0
   assert_failure 2
