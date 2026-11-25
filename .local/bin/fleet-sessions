@@ -1584,17 +1584,22 @@ critical_of() {
   printf '%s\t%s\n' "$crit" "$place"
 }
 
-# branch_runs <dir> <branch> -> <branch>'s main_runs in <dir>'s origin repo: gate_ci, main_health
-# and activity_line all read it, from one ledger read per repo per pass ($CACHE). A repo the ledger
-# does not sync has no runs ([]); one it cannot answer for is named unreadable once, and is rc 1
-# with the row blind on every read.
+# branch_runs <dir> <branch> -> <branch>'s main_runs in the repo <dir> lands on: gate_ci, main_health
+# and activity_line all read it, from one ledger read per repo per pass ($CACHE). That repo is
+# forge_of's, as prs_for reads it: a Forgejo one is the ledger's forgejo:<owner>/<repo>, since a
+# Forgejo-canonical checkout's origin is the GitHub mirror, which runs no CI (ar-2727). A repo the
+# ledger does not sync has no runs ([]); one it cannot answer for is named unreadable once, and is
+# rc 1 with the row blind on every read.
 branch_runs() {
-  local d="$1" b="$2" all one rc=0
+  local d="$1" b="$2" all one repo rc=0
   all="$CACHE/runs_$(repo_slug "$d")" || return 1
   one="${all}_${b//\//%2F}" # %2F: feat/x and feat_x are two branches
   if [ ! -f "$one" ]; then
     if [ ! -f "$all" ]; then
-      main_runs "$(origin_repo "$d")" > "$all" || rc=$?
+      repo="$(forge_of "$d")"
+      if [ "$repo" != origin ]; then repo="${repo#* }"; repo="forgejo:${repo#*/}"
+      else repo="$(origin_repo "$d")"; fi
+      main_runs "$repo" > "$all" || rc=$?
       case $rc in
         0) ;;
         3) echo '[]' > "$all" ;;

@@ -3882,6 +3882,11 @@ empty_submodule_fixture() {
   grep -qx 'prs fj.example/o/r --checks' "$LEDGER_DIR/calls"
   run work_blockers '' idle 0 0 0 30 "${f[@]:0:7}" - 1/1 - "${f[9]}" -
   assert_output ''
+  # its runs are read off the same forge: the ledger's forgejo:<owner>/<repo>, never the mirror (ar-2727)
+  : > "$LEDGER_DIR/calls"; rm -f "$CACHE"/runs_*
+  run branch_runs "$SANDBOX/wt" master
+  assert_success
+  grep -qx 'runs forgejo:o/r' "$LEDGER_DIR/calls"
   # NEGATIVE CONTROL: without the mirror marker the checkout lands on origin, the GitHub mirror,
   # whose PR list lacks #1084, so the same tree is unlanded with no PR
   rm "$SANDBOX/wt/.forgejo/workflows/mirror-to-github.yaml"
@@ -3890,6 +3895,11 @@ empty_submodule_fixture() {
   [ "${f[2]} ${f[3]}" = "1 -" ]
   run work_blockers '' idle 0 0 0 30 "${f[@]:0:7}" - 1/1 - "${f[9]}" -
   assert_output --partial 'not on the default branch, no PR'
+  # and its runs are origin's, not Forgejo's
+  : > "$LEDGER_DIR/calls"; rm -f "$CACHE"/runs_*
+  run branch_runs "$SANDBOX/wt" master
+  run grep -c '^runs forgejo:' "$LEDGER_DIR/calls"
+  assert_output 0
 }
 
 @test "end to end: behind and conflicts measure the branch against the remote tip" {
