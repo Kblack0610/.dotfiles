@@ -3,7 +3,8 @@
 # next session's preflight injects them. The plan itself lives once, in
 # ~/.agent/plans/_live/ (store-sync versions it and carries it to peers); ~/.claude/plans
 # is a link to that dir (claude-acct plans_store), and each project entry is a relative
-# link ../_live/<name>, which resolves on every peer.
+# link ../_live/<name>, which resolves on every peer. settings.json also runs it as
+# PostToolUse(Write|Edit|MultiEdit), so a plan is linked when it is written, Stop or not.
 #
 # ~/.claude/plans/ is FLAT, GLOBAL and PROJECT-LESS -- a plan's filename encodes
 # nothing about which project it belongs to. The previous implementation selected
@@ -42,10 +43,19 @@ command -v jq >/dev/null 2>&1 || exit 0
 [ -n "$STDIN_JSON" ] || exit 0
 [ "$(echo "$STDIN_JSON" | jq -r '.stop_hook_active // false' 2>/dev/null)" = "true" ] && exit 0
 
-TRANSCRIPT=$(echo "$STDIN_JSON" | jq -r '.transcript_path // empty' 2>/dev/null)
-# No transcript means no attribution, so copy NOTHING. A broadcast is precisely the
-# failure being removed here, and a missed sync self-heals on the next Stop.
-[ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ] || exit 0
+# As PostToolUse(Write|Edit|MultiEdit) the payload names the one file just written, which is the
+# whole attribution: a plan whose turn ends on an interrupt (a rejected ExitPlanMode, Esc) gets no
+# Stop, and 28 of 80 unlinked plans in the week to 2026-11-25 ended that way (ar-3571).
+WROTE=$(echo "$STDIN_JSON" | jq -r '.tool_input.file_path // empty' 2>/dev/null)
+PLAN_PATH_RE='(\.claude(-[A-Za-z0-9_]+)?/plans|\.agent/plans/_live)/[^/[:space:]"\\]+\.md'
+if [ -n "$WROTE" ]; then
+  [[ "$WROTE" =~ $PLAN_PATH_RE$ ]] || exit 0
+else
+  TRANSCRIPT=$(echo "$STDIN_JSON" | jq -r '.transcript_path // empty' 2>/dev/null)
+  # No transcript means no attribution, so copy NOTHING. A broadcast is precisely the
+  # failure being removed here, and a missed sync self-heals on the next Stop.
+  [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ] || exit 0
+fi
 
 # --- project ---
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${PWD:-.}}"
@@ -79,11 +89,15 @@ plan_epic_dir() {
 DEST_DIR="$PLANS_ROOT/$PROJECT_NAME"
 
 # (2) this session actually touched it. A transcript names a plan by its absolute path or as
-# `~/.claude/plans/<name>`, through any account's link (`.claude-bnb/plans`, claude-acct), so
-# the match is on `.claude<account>/plans/<name>`, which another dir named plans does not carry.
-# One scan per Stop lists every name it carries; each plan is then an exact name match.
-NAMED=$(grep -oE '\.claude(-[A-Za-z0-9_]+)?/plans/[^/[:space:]"\\]+\.md' "$TRANSCRIPT" 2>/dev/null |
-  sed 's#.*/##' | sort -u)
+# `~/.claude/plans/<name>`, through any account's link (`.claude-bnb/plans`, claude-acct), or by
+# its store path `~/.agent/plans/_live/<name>` (7 of the 80 above were written there), so the match
+# is on those, which another dir named plans does not carry. One scan per Stop lists every name it
+# carries; each plan is then an exact name match.
+if [ -n "$WROTE" ]; then
+  NAMED=${WROTE##*/}
+else
+  NAMED=$(grep -oE "$PLAN_PATH_RE" "$TRANSCRIPT" 2>/dev/null | sed 's#.*/##' | sort -u)
+fi
 [ -n "$NAMED" ] || exit 0
 
 while IFS= read -r f; do

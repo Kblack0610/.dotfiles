@@ -46,7 +46,7 @@ Each `*.sh` runs sequentially with stdout/stderr piped straight to the coordinat
 
 Current post-checks, in order:
 - `80-session-register.sh`: records the session in the session registry.
-- `85-sync-plans.sh`: links the plans this session wrote into `~/.agent/plans/<proj>/`, each a relative link into `~/.agent/plans/_live/`, the one store (`~/.claude/plans` links to it, `claude-acct plans-store`).
+- `85-sync-plans.sh`: links the plans this session wrote into `~/.agent/plans/<proj>/`, each a relative link into `~/.agent/plans/_live/`, the one store (`~/.claude/plans` links to it, `claude-acct plans-store`). It also runs as PostToolUse(Write|Edit|MultiEdit) on the one file written, since a turn that ends on an interrupt gets no Stop (ar-3571).
 - `86-empty-wakes.sh`: when an attended session, a `coordinator` included, has woken `EMPTY_WAKE_MAX` (4) times in a row on a Monitor expiry with no events since its last real prompt, labels it `spinning` and blocks each such wake once with the step (stop the watch, let the ask or a background command that exits carry the wait; a coordinator's is `coord-watch --until`); from twice that it pages once per run (`~/.local/state/empty-wakes/<id>.paged`). Removes the label after a real prompt.
 - `87-regen-anchor.sh`: regenerates the project anchor's auto block.
 - `88-ask-filed.sh`: when an attended session outside plan and manual mode ends its turn asking the human something, made no AskUserQuestion or ExitPlanMode call that turn, and owns no pending ask, blocks once with the instruction to file it with `agent-ask post`.
