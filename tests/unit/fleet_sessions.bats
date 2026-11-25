@@ -5058,6 +5058,39 @@ explain_state() {
   [ "$(jq -r '.stopped[0].since' "$doc")" = 1000 ]
 }
 
+@test "--write: a drop in the live count wakes a dispatch kick; the same or a higher count, an unread one or a worker wakes none (ar-5046)" {
+  landed_fixture
+  export FLEET_DISPATCH_DIR="$SANDBOX/dispatch"
+  local wake="$FLEET_DISPATCH_DIR/.wake"
+  # The live count is fleet-dispatch's reading (live_facts); this stand-in serves it from a file.
+  printf '#!/usr/bin/env bash\n[ "$1" = live ] && cat "$HOME/live" 2>/dev/null; exit 0\n' > "$SANDBOX/bin/fleet-dispatch"
+  chmod +x "$SANDBOX/bin/fleet-dispatch"
+  echo 3 > "$HOME/live"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_success
+  [ ! -e "$wake" ]   # the first count has nothing to fall from
+  echo 2 > "$HOME/live"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_success
+  grep -q 'fleet-sessions: live sessions fell from 3 to 2' "$wake"
+  rm -f "$wake"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write   # negative control: the same count
+  [ ! -e "$wake" ]
+  echo 4 > "$HOME/live"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write   # a rise
+  [ ! -e "$wake" ]
+  : > "$HOME/live"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write   # unread: wakes none and keeps the last count
+  [ ! -e "$wake" ]
+  echo 1 > "$HOME/live"
+  rm -f "$SANDBOX/lease-held"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write   # a worker runs no kick
+  [ ! -e "$wake" ]
+  : > "$SANDBOX/lease-held"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  grep -q 'fell from 4 to 1' "$wake"
+}
+
 @test "--write: a pass older than the document on disk leaves it alone" {
   landed_fixture
   local doc="$XDG_STATE_HOME/fleet/state.json"

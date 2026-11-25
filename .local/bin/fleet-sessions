@@ -63,6 +63,9 @@ set -uo pipefail
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/origin-repo.sh"
 # shellcheck source=../lib/tmux-servers.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/tmux-servers.sh" || exit 1   # tmux_servers_all
+# A drop in the live count wakes a fleet-dispatch kick (live_wake).
+# shellcheck source=../lib/dispatch-wake.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/dispatch-wake.sh"
 # A PR's check rollup as NONE, PENDING, FAIL or PASS (ci), and its red job ids (red): CI_JQ.
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/pr-ci.sh"
@@ -3594,11 +3597,26 @@ write_state() {
   if lease_held; then
     prom_textfile fleet_sessions.prom sessions_prom "$STATE_FILE" ||
       echo "fleet-sessions: could not write fleet_sessions.prom" >&2
+    live_wake "$dir/live-count"
   else
     echo "fleet-sessions: fleet_sessions.prom not published: this machine does not hold the fleet lease" >&2
   fi
   tmux_project "$STATE_FILE"
   worker_state_push "$STATE_FILE"
+}
+
+# live_wake <count file> -- wake a fleet-dispatch kick (dispatch_wake) when the sessions holding a pace slot
+# (`fleet-dispatch live`, as pace_target counts them) fell since the last document. A kick woken by the item's
+# move to done reads the document from before the session closed, still counting it, and starts nothing; this
+# wake comes once the document no longer counts it (ar-5046). An unread count wakes nothing and is not kept.
+live_wake() {
+  local now was
+  now="$(fleet-dispatch live "$STATE_FILE" 2>/dev/null)"
+  [[ "$now" =~ ^[0-9]+$ ]] || return 0
+  was="$(cat "$1" 2>/dev/null)"
+  printf '%s\n' "$now" > "$1" 2>/dev/null || true
+  [[ "$was" =~ ^[0-9]+$ ]] && [ "$now" -lt "$was" ] || return 0
+  dispatch_wake "fleet-sessions: live sessions fell from $was to $now"
 }
 
 # sessions_prom <state document> -> the fleet_sessions.prom lines: one series per session per

@@ -25,6 +25,8 @@
 #                                    for DISPATCH_STARVED_MIN (watch sprint-stalled); rc 2 when a read fails
 #   fleet-dispatch stopped [--json]  rc 1 and one line when a hold has stopped every pass for DISPATCH_STARVED_MIN:
 #                                    how long, why, what clears it (hub Home, the briefing, queue-starved)
+#   fleet-dispatch live [FILE]       the sessions that hold a pace slot in the fleet state document, as pace_target counts them
+#                                    (nothing when it is missing or stale): fleet-sessions wakes a kick when the count drops
 #   fleet-dispatch stats             one JSON object: runnable work, starts and reaps in the last hour, flapping items
 #   fleet-dispatch item-tier SLUG    the queue item's tier (item_tier): agent-land gates a tier-3 one
 #   fleet-dispatch trainee-pool [--json]  the board rows a trainee takes, how many each refusal turns away, and the floor open or shut
@@ -1173,6 +1175,24 @@ units_on() {
 # live_units -> the run units the runner's live sessions hold on this machine, out of TARGET.
 live_units() { live_runs | units_on ''; }
 
+# live_facts [<state document>] -> {live, needs, working, idle} from the fleet state document, nothing when it is
+# missing, unreadable or older than DISPATCH_STATE_FRESH_MIN. The one reading of which sessions hold a pace slot:
+# pace_target counts from it, and `fleet-dispatch live` hands the count to fleet-sessions, which wakes a kick when it drops.
+live_facts() {
+  jq -c --argjson now "$(date +%s)" --argjson fresh "$(( DISPATCH_STATE_FRESH_MIN * 60 ))" '
+    select($now - (.generated_epoch // 0) <= $fresh) | (.vocab.finished // []) as $done
+    | '"$WAITS_JQ"'
+    [.sessions[] | select(.bucket != "PARKED" and (.bucket | IN($done[]) | not) and ((.labels // []) | index("shepherd") | not)
+        and ((.account // "") | IN("codex", "opencode") | not))]
+    | (map(select(frees | not))) as $live
+    | {live: ($live | length),
+       needs: map(select(.open_job != "queue" and waits)) | length,
+       working: ($live | map(select(.bucket == "WORKING" or .bucket == "NEEDS")) | length),
+       idle: ($live | map(select(.bucket != "WORKING" and .bucket != "NEEDS")
+         | "\(.target) \(.bucket)\(if (.reason // "") != "" then ": \(.reason)" else "" end)"))}' \
+    "${1:-$FLEET_STATE_FILE}" 2>/dev/null
+}
+
 # pace_target -- TARGET is the live Claude sessions the fleet fills to now, TARGET_WHEN which cap:
 # the live count plus what the Claude accounts' spend has spare at their weekly pace (claude-acct's
 # fleet.spare, from ACCT_ROWS when the caller already read it: the working Opus sessions more that
@@ -1204,18 +1224,7 @@ pace_target() {
   else TARGET=$DISPATCH_TARGET_AWAY TARGET_WHEN=away; fi
   local spare live
   spare=$(jq -r '.fleet.spare // empty' <<<"${ACCT_ROWS:-$(claude-acct room --json 2>/dev/null)}" 2>/dev/null)
-  live=$(jq -c --argjson now "$(date +%s)" --argjson fresh "$(( DISPATCH_STATE_FRESH_MIN * 60 ))" '
-    select($now - (.generated_epoch // 0) <= $fresh) | (.vocab.finished // []) as $done
-    | '"$WAITS_JQ"'
-    [.sessions[] | select(.bucket != "PARKED" and (.bucket | IN($done[]) | not) and ((.labels // []) | index("shepherd") | not)
-        and ((.account // "") | IN("codex", "opencode") | not))]
-    | (map(select(frees | not))) as $live
-    | {live: ($live | length),
-       needs: map(select(.open_job != "queue" and waits)) | length,
-       working: ($live | map(select(.bucket == "WORKING" or .bucket == "NEEDS")) | length),
-       idle: ($live | map(select(.bucket != "WORKING" and .bucket != "NEEDS")
-         | "\(.target) \(.bucket)\(if (.reason // "") != "" then ": \(.reason)" else "" end)"))}' \
-    "$FLEET_STATE_FILE" 2>/dev/null)
+  live=$(live_facts)
   TOTAL_LIVE=$(jq -r '.live // empty' <<<"$live" 2>/dev/null)
   NEEDS_LIVE=$(jq -r '.needs // empty' <<<"$live" 2>/dev/null)
   WORKING_LIVE=$(jq -r '.working // empty' <<<"$live" 2>/dev/null)
@@ -9163,6 +9172,7 @@ main() {
     sprint-stalled) cmd_sprint_stalled ;;
     stats) cmd_stats ;;
     stopped) shift; cmd_stopped "$@" ;;
+    live) shift; jq -r '.live // empty' <<<"$(live_facts "$@")" ;;
     start) shift; PULL=$(start_pull) cmd_start "$@" ;;
     record) shift; cmd_record "$@" ;;
     restore) shift; cmd_restore "$@" ;;
