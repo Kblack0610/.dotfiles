@@ -1116,6 +1116,9 @@ impl<'a> Graph<'a> {
                 }
                 for n in &v.prs {
                     match line.tags.iter().find(|t| t.prs.contains(n)) {
+                        // A row closed after its PR shipped: tags on a line are cumulative, so the
+                        // PR is in this version too (ucp-2766, ucp-1270, ucp-3000).
+                        Some(t) if shipped_before(&t.version, bare) => {}
                         Some(t) if t.version != bare => out.push(format!(
                             "{p} lab {}: row PR #{n} shipped in {}",
                             v.version, t.tag
@@ -1177,6 +1180,20 @@ fn plain_version(v: &str) -> bool {
         && parts
             .iter()
             .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Whether tag version `shipped` (`1.3.0`, `0.5.0-shapecity3`) sorts before lab version `rolled`
+/// (`1.4.0`) by their numeric `major.minor.patch`. A version that does not parse orders nothing.
+fn shipped_before(shipped: &str, rolled: &str) -> bool {
+    let triple = |v: &str| {
+        let core = v.split('-').next()?;
+        plain_version(core).then(|| {
+            core.split('.')
+                .map(|p| p.parse::<u64>().unwrap_or(0))
+                .collect::<Vec<_>>()
+        })
+    };
+    matches!((triple(shipped), triple(rolled)), (Some(s), Some(r)) if s < r)
 }
 
 /// `2026-11-11`: the day the links are held from.
@@ -2148,8 +2165,11 @@ mod tests {
             "app".into(),
             Versions {
                 // v1.1.0 was rolled before the day and has no tag: history, not a red.
+                // v1.4.0's #11 shipped in the earlier app-v1.3.0: a late close, not a red. v1.2.0's
+                // #11 shipped in the later app-v1.3.0: the row claims a version its PR missed.
                 list: vec![
                     v("v1.1.0", since - 50, vec![]),
+                    v("v1.2.0", since + 5, vec![10, 11]),
                     v("v1.4.0", since + 5, vec![11, 13]),
                 ],
                 error: None,
@@ -2210,8 +2230,8 @@ mod tests {
                 "app deployWorkflows .github/workflows/bad.yml: \"nope\" is no registry target",
                 "app deployWorkflows .github/workflows/gone.yml: not a workflow on origin/main",
                 "app deployWorkflows .github/workflows/odd.yml: give the targets it deploys, or a reason it deploys none",
+                "app lab v1.2.0: row PR #11 shipped in app-v1.3.0",
                 "app lab v1.4.0: no tag of the line",
-                "app lab v1.4.0: row PR #11 shipped in app-v1.3.0",
                 "app lab v1.4.0: row PR #13 is in no tag of the line",
                 "lib: tag glob lib-v* matches no tag, and the lab has 1 shipped version(s)",
             ]

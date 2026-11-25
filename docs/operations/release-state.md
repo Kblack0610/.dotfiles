@@ -148,7 +148,7 @@ An opened app on the Releases tab lists its releases newest first with when each
 | deploy runs | a successful run since the date, of a workflow mapped to a `deployed: true` target, that resolves to no release; a run on the cut workflow's proof tag (version 0.0.0, `v0.0.0-test`) that recorded no Deployment built nothing and is skipped |
 | tag globs | a `tagGlob` that matches no tag while the lab has shipped versions |
 | tags | a release tag since the date that is flow or outside (Provenance) with no lab version of its number, and a PR in it (not a bot's, merged since the date, or a train member closed since it) with no board row, read from the queue items done since the date: the item that names the PR, else the one its body's `Item:` line names (a train or hand merge records none) |
-| versions | a version rolled since the date, at or above `releaseFrom`, with no tag of the line, and a row whose PR shipped in another tag or in none |
+| versions | a version rolled since the date, at or above `releaseFrom`, with no tag of the line, and a row whose PR shipped in a later tag or in none (a PR in an earlier tag is in this version too: the row closed late) |
 
 A gap older than the date is history nobody recorded: it is never a red, and the Releases tab says `before 2026-11-11` where its rows would be.
 
