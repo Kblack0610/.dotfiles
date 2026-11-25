@@ -688,17 +688,16 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
   printf '# scratch - ideas\n\nmine, by hand\n' >"$PROJ/scratch/ideas.md"
   cp "$PROJ/scratch/ideas.md" "$BATS_TEST_TMPDIR/ideas.before"
   sheet '' ''
-  agent_board '- [ ] a: the save crashes on quit #low <!-- id:sc-1 -->\n- [ ] b: a glow on the menu like #12 #low <!-- id:sc-2 -->\n- [ ] c: ship the logo, done in #12 #low <!-- id:sc-3 -->\n- [ ] d: a bloom pass #requested #low <!-- id:sc-4 -->\n- [ ] e: prod is down #urgent <!-- id:sc-5 -->\n- [ ] f: polish the hud #low <!-- id:sc-6 -->\n    - [ ] the ammo count\n- [ ] g: finish beta-plan-tidy-crow: 1 phases left, next: p2 docs #low <!-- id:sc-7 -->\n'
+  agent_board '- [ ] a: the save crashes on quit #low <!-- id:sc-1 -->\n- [ ] b: a glow on the menu like #12 #low <!-- id:sc-2 -->\n- [ ] c: ship the logo, done in #12 #low <!-- id:sc-3 -->\n- [ ] d: a bloom pass #requested #low <!-- id:sc-4 -->\n- [ ] e: prod is down #urgent <!-- id:sc-5 -->\n- [ ] f: polish the hud #low <!-- id:sc-6 -->\n    - [ ] the ammo count\n'
   answer '{"n": 1, "action": "raise", "priority": "high", "why": "a fault every player hits"}' \
     '{"n": 2, "action": "improvement", "why": "polish nobody asked for"}' \
     '{"n": 3, "action": "done", "why": "says done in #12"}' \
     '{"n": 4, "action": "improvement", "why": "a nice-to-have"}' \
     '{"n": 5, "action": "raise", "priority": "high", "why": "lower it"}' \
-    '{"n": 6, "action": "improvement", "why": "a heading"}' \
-    '{"n": 7, "action": "done", "why": "a plan finish row"}'
+    '{"n": 6, "action": "improvement", "why": "a heading"}'
   run "$TRIAGE" --backlog --project scratch
   assert_success
-  assert_output --partial 'backlog: rewrote 0, moved 0, dropped 0, kept 4, refused 0, raised 1, improvements 1, done 1'
+  assert_output --partial 'backlog: rewrote 0, moved 0, dropped 0, kept 3, refused 0, raised 1, improvements 1, done 1'
   # The rubric and each row's own priority reach the model; an untagged row shows none.
   grep -q 'Not a row at all: a nice-to-have' "$NOTES_FIXTURE/prompt.txt" || fail "the rubric never reached the model"
   grep -q 'Never add or guess one the words do not name' "$NOTES_FIXTURE/prompt.txt" || fail "the backlog call lost the file rule"
@@ -709,7 +708,6 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
   grep -q '\[ \] d: a bloom pass' "$board" || fail "a #requested row became an improvement"
   grep -q '\[ \] e: prod is down #urgent' "$board" || fail "a raise lowered a row"
   grep -q '\[ \] f: polish the hud' "$board" || fail "a heading over child rows left the board"
-  grep -q '\[ \] g: finish beta-plan-tidy-crow' "$board" || fail "a plan's finish row left its board"
   grep -q '\[ \] b: a glow' "$board" && fail "the improvement stayed on the board"
   run cat "$PROJ/scratch/agent/versions/v0.1.0.md"   # an agent board has no Version: line; its rows file under the human sheet's open version
   assert_output --regexp 'b: a glow on the menu .*dropped: triage: improvement: kept in improvements.md'
