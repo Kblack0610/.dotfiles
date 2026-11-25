@@ -765,8 +765,8 @@ enum PtaskCmd {
         on: Option<String>,
         /// What happens to its open children: `drop` closes each with this row's stamp, an id
         /// (like ar-142) moves them under that row. Without it, open children refuse the close
-        #[arg(long, value_name = "drop|ID")]
-        children: Option<String>,
+        #[arg(long, value_name = "drop|ID", value_parser = project_tasks::Children::parse)]
+        children: Option<project_tasks::Children>,
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
@@ -822,8 +822,8 @@ enum PtaskCmd {
         dup: Option<String>,
         /// What happens to its open children: `drop` closes each with this row's stamp, an id
         /// (like ar-142) moves them under that row. Without it, open children refuse the close
-        #[arg(long, value_name = "drop|ID")]
-        children: Option<String>,
+        #[arg(long, value_name = "drop|ID", value_parser = project_tasks::Children::parse)]
+        children: Option<project_tasks::Children>,
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
@@ -1492,6 +1492,53 @@ fn knowledge_cmd(prof: &config::Profile, log: &logging::Logger, sub: KnowledgeCm
 }
 
 #[allow(clippy::too_many_arguments)]
+/// `ptask done` and `ptask drop`: close the row the query names, settling its open children
+/// (`--children`, and a dup's children move under the row it duplicates).
+fn ptask_close(
+    prof: &config::Profile,
+    log: &logging::Logger,
+    name: &str,
+    pick: &dyn Fn(&[String]) -> Result<Pick>,
+    cmd: PtaskCmd,
+    lane: Lane,
+) -> Result<i32> {
+    match cmd {
+        PtaskCmd::Done {
+            proof,
+            unverified,
+            on,
+            children,
+            query,
+        } => project_tasks::done(
+            prof,
+            log,
+            name,
+            &pick(&query)?,
+            proof.as_deref(),
+            unverified.as_deref(),
+            on.as_deref(),
+            lane,
+            children.as_ref(),
+        ),
+        PtaskCmd::Drop {
+            why,
+            dup,
+            children,
+            query,
+        } => project_tasks::drop(
+            prof,
+            log,
+            name,
+            &pick(&query)?,
+            why.as_deref(),
+            dup.as_deref(),
+            lane,
+            children.as_ref(),
+        ),
+        _ => bail!("ptask_close takes done and drop only"),
+    }
+}
+
 /// `ptask tag`: its `--add` tags plus `--why`'s reason and priority, then the retag.
 fn ptask_tag(
     prof: &config::Profile,
@@ -1743,27 +1790,9 @@ fn main() -> Result<()> {
                     lane,
                     &writer,
                 )?,
-                Some(PtaskCmd::Done {
-                    proof,
-                    unverified,
-                    on,
-                    children,
-                    query,
-                }) => project_tasks::done(
-                    &prof,
-                    &log,
-                    &name,
-                    &pick(&query)?,
-                    proof.as_deref(),
-                    unverified.as_deref(),
-                    on.as_deref(),
-                    lane,
-                    children
-                        .as_deref()
-                        .map(project_tasks::Children::parse)
-                        .transpose()?
-                        .as_ref(),
-                )?,
+                Some(cmd @ (PtaskCmd::Done { .. } | PtaskCmd::Drop { .. })) => {
+                    ptask_close(&prof, &log, &name, &pick, cmd, lane)?
+                }
                 Some(PtaskCmd::Redate { on, dry_run, id }) => {
                     project_tasks::redate(&prof, &log, &name, &id, &on, dry_run, lane)?
                 }
@@ -1831,25 +1860,6 @@ fn main() -> Result<()> {
                 Some(PtaskCmd::Tag(t)) => {
                     ptask_tag(&prof, &log, &name, &pick(&t.query)?, t, lane, &writer)?
                 }
-                Some(PtaskCmd::Drop {
-                    why,
-                    dup,
-                    children,
-                    query,
-                }) => project_tasks::drop(
-                    &prof,
-                    &log,
-                    &name,
-                    &pick(&query)?,
-                    why.as_deref(),
-                    dup.as_deref(),
-                    lane,
-                    children
-                        .as_deref()
-                        .map(project_tasks::Children::parse)
-                        .transpose()?
-                        .as_ref(),
-                )?,
                 Some(PtaskCmd::Pass { .. }) => bail!("pass applies only with --playtest"),
                 Some(PtaskCmd::Edit {
                     text,
