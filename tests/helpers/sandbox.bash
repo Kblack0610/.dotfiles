@@ -124,6 +124,8 @@ sandbox_tool_files() {
 # sandbox_home -> $HOME, the XDG homes and TMPDIR inside $SANDBOX
 sandbox_home() {
   export HOME="$SANDBOX/home"
+  # `notes ptask add|tag --why` reads the reason list from $HOME; the sandbox has none, so it reads the repo's.
+  export NOTES_PRIORITY_REASONS="$REPO_ROOT/.config/inbox-triage/rules/priority-reasons.tsv"
   # HOME isolates ~/.gitconfig but not /etc/gitconfig. GitHub's runners ship one with
   # `filter.lfs.process`, which outranks a test's stubbed `filter.lfs.smudge`: the LFS
   # recycle fixture's submodule update failed there and the test passed by accident.
