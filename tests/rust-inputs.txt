@@ -28,3 +28,4 @@
 .local/src/project-map tests/fixtures/project-names.tsv
 .local/src/project-map tests/fixtures/project-visibility.json
 .local/src/project-map tests/fixtures/project-visibility.tsv
+.local/src/notes-cli  .config/inbox-triage/rules/priority-reasons.tsv
