@@ -32,6 +32,8 @@ setup() {
   ln -s "$REPO_ROOT/.local/bin/agent-hold" "$SANDBOX/bin/agent-hold"
   # Never a real waybar: the switch goes through desk, which signals it by process name.
   mkdir -p "$HOME/.local/bin" && ln -s "$REPO_ROOT/.local/bin/desk" "$HOME/.local/bin/desk"
+  # The default bar is noctalia; record waybar so the signal goes to the pkill stub.
+  mkdir -p "$HOME/.local/state/desk" && echo "bar=waybar-classic" > "$HOME/.local/state/desk/parts"
   printf '#!/usr/bin/env bash\necho "$*" >> "$FX/pkill.log"\n' > "$SANDBOX/bin/pkill"
   # The ConfigMap is cm.json. A merge-patch applies to it (a null removes the key) and fails
   # NotFound with none; create refuses one that exists; any other write fails, so a
