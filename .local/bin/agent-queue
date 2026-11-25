@@ -1875,8 +1875,8 @@ overflow_row() {
 # <keep> non-empty files the row un-started (an add over the cap, see overflow_row). <gates>, board gate
 # tags with no #, go on the row it files, and onto an open twin it links (gate_row). <tags>, the item's,
 # add `interrupt` to those when they hold it (interrupt_tag), so an open twin joins too.
-# Who files it, for `notes ptask add --origin`: a plan's phases (AQ_ITEM_PLAN, or AQ_FILE_ORIGIN=plan
-# for the plan's own row) file directly, and so does the row of an item being worked (<keep> empty:
+# Who files it, for `notes ptask add --origin`: a plan's phases (AQ_ITEM_PLAN) file directly,
+# and so does the row of an item being worked (<keep> empty:
 # its own record, not a follow-up). A kept row from a queue item or runner is its follow-up: notes sends
 # it to the outbox (exit 4), and this prints `inbox` instead of a row; from a session the human opened,
 # notes checks it first and a shortlist of similar rows (exit 5) is reported on stderr, with no row. `--origin agent-queue` is notes-cli's
@@ -1888,7 +1888,7 @@ file_story() {
   for g in $gates; do gt+=" #$g"; done
   [ -z "${5:-}" ] || want=(--want "$5")
   if [ -n "${5:-}" ]; then :
-  elif [ -n "${AQ_ITEM_PLAN:-}${AQ_FILE_ORIGIN:-}" ]; then origin=(--origin plan)
+  elif [ -n "${AQ_ITEM_PLAN:-}" ]; then origin=(--origin plan)
   elif [ -z "$keep" ]; then origin=(--origin agent-queue); fi
   [ -f "$AQ_MAP" ] || return 0
   IFS=$'\t' read -r project lab code < <(project_board "$1")
@@ -2007,13 +2007,6 @@ prior_story() {
 }
 
 # --- verbs ---
-# plan_row_priority <from> <priority named> <priority> -> the tag a plan's board row is filed with. A machine
-# filer (auto:*) that names none files it untagged (empty), for `agentctl-inbox-triage --backlog --priority`
-# to judge by the rubric; the add default (high) is the human's, not a filer's.
-plan_row_priority() {
-  case "$1" in auto:?*) [ -n "$2" ] || return 0 ;; esac
-  echo "$3"
-}
 # add_priority <priority> <named> <plan> <tags> <from> -> the priority an add files at. <named> is
 # non-empty when the caller named one (or adds --running, --want, --dry-run, --check). The high default
 # is the human's add by hand. A session decides: high is for what blocks a release or a red on main,
@@ -2024,8 +2017,8 @@ plan_row_priority() {
 # session plan phases that inherited urgent (ar-4349).
 add_priority() {
   local session="${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}"
-  # A machine filer's plan (--from auto:*) names none: its board row is filed untagged (cmd_add), so a session that
-  # runs the filer, or a dispatch pass that inherited AGENT_QUEUE_ITEM, is not refused for it.
+  # A machine filer's plan (--from auto:*) names none: its phases go at normal, so a session that runs
+  # the filer, or a dispatch pass that inherited AGENT_QUEUE_ITEM, is not refused for it.
   local filer_plan=''
   [ -z "$3" ] || [[ "$5" != auto:?* ]] || filer_plan=1
   [ -n "$2" ] || [ -z "$session" ] || [ -n "$filer_plan" ] ||
@@ -2123,22 +2116,19 @@ cmd_add() {
     [ -z "$row" ] || die "--row links one item; a plan's phases each file a story under its epic: line"
     [ "$mode" = oneshot ] && [ -z "$running" ] || die "--plan items are queued oneshot items: no --mode plan or --running"
     plan_check_markers "$planf" "$check"
-    # --from board:<project>:<id> is dispatch's promote of the row below: that row is the plan's (its
-    # `rows:` line, add_plan), which agent-land closes with the last phase, so no phase item names it.
+    # --from board:<project>:<id> is dispatch's promote of a plan row filed before ar-5605 (its brief is
+    # plan_row_task's): that row goes on the plan's `rows:` line (add_plan), which agent-land closes with
+    # the last phase, so no phase item names it.
     local plan_row=''
     case "$from" in board:?*:?*) plan_row="${from##*:}" from=auto:plan-row ;; esac
     if [ -z "$dry" ] && ! pull_ok "" "$from" "$from_given" && ! own_plan_item "$planf"; then
       [ -z "$plan_row" ] || { echo "agent-queue: its row $plan_row is left where it is: dispatch promotes it" >&2; exit "$AQ_EX_HELD"; }
-      # Resolved as every add is (dotfiles -> agent-runtime): unresolved, a repo whose work counts on an
-      # owner had no board, and every reap of a dotfiles plan failed and was retried each pass (ar-2787).
-      local pname="${project:-$(project_of_cwd)}" pproject ptitle="$(plan_row_title "$planf")"
-      [ -n "$pname" ] || die "no --project, and this directory is not a repo project-map knows"
-      pproject="$(project_resolve "$pname")" || die "unknown project: $pname (no checkout for it in $AQ_MAP)"
-      lock; admission_log "$from" "$pproject" "$(basename "$planf" .md)" "$ptitle" "" "" board-only; unlock
-      board_only_say
-      # The row's brief names the plan by its absolute path, which dispatch's promote reads back to queue
-      # the chain (plan_row_plan).
-      AQ_FILE_ORIGIN=plan overflow_row "$pproject" "$ptitle" "$(plan_row_priority "$from" "$priority_given" "$priority")" "" "" "$(plan_row_task "$(realpath "$planf")")" "" "$(basename "$planf" .md)" || exit 1
+      # A caller that may not queue (a dispatched session, reap's reconcile_plans) files the chain itself
+      # on the board: each open phase its own row, every later one gated #after/ the row before (add_plan
+      # reads each phase's `held` line), which dispatch promotes in turn. No row stands for the whole
+      # plan. Why: 97 "run the open phases of plan X" rows sat beside their phase rows or for plans
+      # nobody ran, and the ledger dropped 93 of them (ar-5605, plan delightful-leaf P4).
+      AQ_ADMITTED=1 plan_add_waiting
       exit "$AQ_EX_HELD"
     fi
     AQ_ADMITTED=1 plan_add_waiting; return

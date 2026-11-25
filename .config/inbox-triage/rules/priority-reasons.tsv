@@ -9,5 +9,6 @@ runtime-fault	high	an agent-runtime fault that happens now or recurs and gives a
 feature	normal	a feature or improvement with a named benefit (what gets better, for whom) that nothing waits on
 fault	normal	a fault that is not blocking anyone, with a named benefit in the fix
 epic-turn	normal	epic work in its turn: real work with a named benefit that is next in its epic
+sot	normal	source-of-truth or efficiency work: it removes a second copy of a fact, a second reader of one, or a gate with no number behind it
 upkeep	low	a tidy-up, a cleanup with a stated cost it removes, a re-measure, or a chore such as a config setting on one more machine
 minor-fault	low	a fault the priority table lists as low: a flake in a non-required job, deploy drift, stale wording, a missing dashboard
