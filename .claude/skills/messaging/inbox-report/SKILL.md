@@ -18,7 +18,7 @@ A long report the human asked for (an audit, a postmortem, a morning writeup) is
 - The human asks for a report, writeup or findings "in my inbox", "in the morning" or "where I can click to it".
 - A session's result is too long for a page or the conversation and the human will read it later.
 
-Not for a short alert (`agent-notify`), the daily briefing (`agentctl-briefing` writes its own ref), a capture the human made (`~/.notes/inbox/`, read by the triager), or project docs that belong in a repo (`docs-write`).
+Not for a short alert (`agent-notify`), the daily briefing (`agentctl-briefing` writes its own ref), a capture the human made (`~/.notes/captures/`, read by the triager), or project docs that belong in a repo (`docs-write`).
 
 ## Steps
 
@@ -28,7 +28,7 @@ Not for a short alert (`agent-notify`), the daily briefing (`agentctl-briefing` 
 4. Check the prose: `comms-lint --channel report - <<< "<summary>"` and `python3 ~/.claude/skills/de-ai-writing/scripts/check.py <body>`. Fix what they flag.
 5. File it: `notes report add --title '<title>' --summary "<summary>" --body <body> [--date <date>] [--slug <slug>] [--needs-you]`. It refuses a missing title or summary, a summary over five lines and non-ASCII text, then rebuilds the day's index. The same slug on the same day revises the report and marks it unread again.
 6. Page only when it needs the human (`--needs-you`): `agent-notify -p normal -t '<title>' '<the one thing they must do> - <id>'`, after `comms-lint --channel page` passes on the message. A report the human reads at leisure does not page; the Reports tab's unread count is the signal.
-7. Tell the human where it is, in the conversation and in any page: the report's title, in the Reports tab (agent-web Today -> Reports, or the hub TUI Reports tab). The `refs/<date>/` folder is storage: never give its path as the place to read it, and never call it, or `~/.notes/inbox/` (the human's own captures), "the inbox". Why: a session sent the human to a refs path as "today's inbox" (2026-11-24).
+7. Tell the human where it is, in the conversation and in any page: the report's title, in the Reports tab (agent-web Today -> Reports, or the hub TUI Reports tab). The `refs/<date>/` folder is storage: never give its path as the place to read it, and never call it, or `~/.notes/captures/` (the human's own captures), "the inbox". Why: a session sent the human to a refs path as "today's inbox" (2026-11-24).
 
 ## Do NOT
 

@@ -78,8 +78,8 @@ pub fn resolve_path(p: &Profile, target: &str) -> Option<PathBuf> {
         // makes a project silently resolve to "" and vanish from its bus. `?` because an org may
         // legitimately have no projects root, which is not the same as an unknown target.
         "projects" => p.projects.clone()?,
-        "inbox" => p.inbox.clone(),
-        "inbox-today" => p.inbox.join(format!(
+        "captures" => p.captures.clone(),
+        "captures-today" => p.captures.join(format!(
             "{}.md",
             Local::now().date_naive().format("%Y-%m-%d")
         )),
@@ -1124,7 +1124,7 @@ fn read_bounded(
 ///
 /// - Needs you: each line the sweep left or a write refused (`HH:MM <verb> (<project>): <line>`
 ///   with `why:`), each line still in the outbox, and today's quick-captures (the bullet lines
-///   in `inbox/<today>.md`, each with a short `(sess <id>)` suffix when it carried a session
+///   in `captures/<today>.md`, each with a short `(sess <id>)` suffix when it carried a session
 ///   marker, so it links back via `claude -r`).
 /// - Handled today: each line filed or joined to an open row, each row the planner planned
 ///   (with `added:`), each new row a session put on a human sheet (`added ... by <session>`),
@@ -1298,7 +1298,7 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)], score: Option<&str>) -
             detail: vec![],
         });
     }
-    let captures: Vec<String> = fs::read_to_string(p.inbox.join(format!("{today}.md")))
+    let captures: Vec<String> = fs::read_to_string(p.captures.join(format!("{today}.md")))
         .unwrap_or_default()
         .lines()
         .filter(|l| l.trim_start().starts_with("- "))
@@ -1540,7 +1540,7 @@ fn refresh_inbox(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
 }
 
 fn inbox_present(p: &Profile) -> bool {
-    p.inbox.is_dir() && crate::ingest::path(p).exists()
+    p.captures.is_dir() && crate::ingest::path(p).exists()
 }
 
 /// `notes ingest page`: publish the inbox page alone, which the sweep runs after each pass so
@@ -2955,7 +2955,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("notes-footer-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let daily = dir.join("journal/daily");
-        let inbox = dir.join("inbox");
+        let inbox = dir.join("captures");
         std::fs::create_dir_all(&daily).unwrap();
         std::fs::create_dir_all(&inbox).unwrap();
 

@@ -14,7 +14,7 @@ metadata:
 Before a reboot you lose every tmux/Claude session, dev server, and non-enabled service.
 This skill takes a **decision-oriented inventory** of what's running, separates "comes back on
 its own" from "you must restart it manually", flags **uncommitted/unpushed git work** (the only
-thing genuinely at risk), writes it all to a dated file in the **notes inbox**, and on the next
+thing genuinely at risk), writes it all to a dated file in the **notes captures folder**, and on the next
 boot helps you bring the right things back.
 
 Verbs: **`down`** and **`up`** (the planned reboot), **`snapshot`** (default) and **`restore`** (the inventory and the hand restore).
@@ -40,21 +40,21 @@ session-snapshot status                  # after boot: "up: no planned reboot in
 
 ## Where the artifact lives
 
-The checklist goes to the **notes inbox**, not `$HOME` root:
+The checklist goes to the **notes captures folder**, not `$HOME` root:
 
-- Full doc: `"$(notes path inbox)/<date>-reboot-restore.md"`
+- Full doc: `"$(notes path captures)/<date>-reboot-restore.md"`
 - Triage pointer (so it surfaces in `notes inbox`): `notes inbox add "reboot restore checklist -> <file>"`
 
-Use the resolved path from `notes path inbox`; never hard-code `~/.notes`. Never hand-write into
-`~/.notes/journal/` - but the inbox is a capture surface and a standalone dated file there is fine.
+Use the resolved path from `notes path captures`; never hard-code `~/.notes`. Never hand-write into
+`~/.notes/journal/` - but the captures folder is a capture surface and a standalone dated file there is fine.
 
 ## snapshot
 
-Gather, in parallel where possible, then write the dated file + inbox pointer:
+Gather, in parallel where possible, then write the dated file + captures pointer:
 
 ```bash
 DATE=$(date +%F)                      # the skill is allowed real dates; agents pass one if sandboxed
-OUT="$(notes path inbox)/${DATE}-reboot-restore.md"
+OUT="$(notes path captures)/${DATE}-reboot-restore.md"
 
 # 1. tmux sessions/windows (cwd + live branch + foreground cmd), on EVERY live named server.
 #    The worlds (hub, lab, ...) are named sockets and a bare `tmux` reaches only one of them, so
@@ -127,7 +127,7 @@ list them as action items. Ephemeral `mcp/filesystem` containers are noise - Cla
 After an unplanned reboot (a planned one used `up`), or for what `up` does not bring back:
 
 ```bash
-ls -t "$(notes path inbox)"/*-reboot-restore.md | head -1      # newest checklist
+ls -t "$(notes path captures)"/*-reboot-restore.md | head -1      # newest checklist
 ```
 
 Read it, then **with confirmation** offer to:

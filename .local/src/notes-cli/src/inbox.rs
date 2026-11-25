@@ -1,12 +1,12 @@
-//! `notes inbox` — the capture → triage → drain loop for `~/.notes/inbox`.
+//! `notes inbox` — the capture → triage → drain loop for `~/.notes/captures`.
 //!
-//! The inbox holds *dated human/agent captures only* (`/remember` writes
-//! `inbox/<date>.md`, and `notes inbox add` appends from the terminal). Telemetry/runtime state
+//! The captures folder holds *dated human/agent captures only* (`/remember` writes
+//! `captures/<date>.md`, and `notes inbox add` appends from the terminal). Telemetry/runtime state
 //! never belongs here — that lives under `~/.agent` or the XDG cache.
 //!
 //! - `list` (default) is the triage view: pending captures oldest-first.
 //! - `add` is the capture path from a shell.
-//! - `archive` is the drain: move triaged captures into `inbox/_archive/`,
+//! - `archive` is the drain: move triaged captures into `captures/_archive/`,
 //!   so the active view only ever shows what still needs processing.
 
 use crate::config::Profile;
@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 const STALE_DAYS: i64 = 14;
 const ARCHIVE_DIR: &str = "_archive";
 
-/// One pending capture in the inbox.
+/// One pending capture in the captures folder.
 struct Item {
     path: PathBuf,
     /// Date parsed from the filename prefix, if any.
@@ -101,7 +101,7 @@ fn truncate(s: &str) -> String {
     }
 }
 
-/// Files in the inbox top level that count as captures: `*.md`, excluding the
+/// Files in the captures folder top level that count as captures: `*.md`, excluding the
 /// archive subdir and dotfiles. Returns items sorted oldest-first (triage order).
 fn scan(dir: &Path, today: NaiveDate) -> Result<Vec<Item>> {
     let mut items = Vec::new();
@@ -152,15 +152,15 @@ fn mtime_age_days(path: &Path, today: NaiveDate) -> i64 {
 /// `notes inbox` / `notes inbox list` — the triage view.
 pub fn list(p: &Profile, _log: &Logger) -> Result<()> {
     let today = Local::now().date_naive();
-    let items = scan(&p.inbox, today)?;
+    let items = scan(&p.captures, today)?;
 
     if items.is_empty() {
-        println!("inbox clear ✨  ({})", p.inbox.display());
+        println!("captures clear ✨  ({})", p.captures.display());
         return Ok(());
     }
 
     let stale = items.iter().filter(|i| i.age_days >= STALE_DAYS).count();
-    println!("inbox — {} pending ({})\n", items.len(), p.inbox.display());
+    println!("captures — {} pending ({})\n", items.len(), p.captures.display());
     for it in &items {
         let flag = if it.age_days >= STALE_DAYS { "!" } else { " " };
         let age = match it.date {
@@ -182,7 +182,7 @@ pub fn list(p: &Profile, _log: &Logger) -> Result<()> {
 }
 
 /// `notes inbox add <text>` - append a timestamped bullet to today's capture
-/// file (`inbox/<YYYY-MM-DD>.md`), creating it with a header if new.
+/// file (`captures/<YYYY-MM-DD>.md`), creating it with a header if new.
 pub fn add(p: &Profile, log: &Logger, text: &str) -> Result<()> {
     let text = text.trim();
     if text.is_empty() {
@@ -206,22 +206,22 @@ pub fn add(p: &Profile, log: &Logger, text: &str) -> Result<()> {
 /// Append `- HH:MM <body>` to today's capture file and return its path. `body` may run over
 /// several lines; the caller indents the later ones.
 pub(crate) fn append(p: &Profile, body: &str) -> Result<PathBuf> {
-    fs::create_dir_all(&p.inbox)
-        .with_context(|| format!("creating inbox dir {}", p.inbox.display()))?;
+    fs::create_dir_all(&p.captures)
+        .with_context(|| format!("creating captures dir {}", p.captures.display()))?;
     // One writer at a time: the sweep's answers and `notes inbox add` both read and rewrite the file.
     let _lock = crate::md::lock_file(
-        &p.inbox
+        &p.captures
             .parent()
             .unwrap_or_else(|| Path::new("."))
-            .join(".inbox.lock"),
+            .join(".captures.lock"),
     )?;
     let now = Local::now();
     let date = now.date_naive().format("%Y-%m-%d").to_string();
-    let file = p.inbox.join(format!("{date}.md"));
+    let file = p.captures.join(format!("{date}.md"));
     let mut text = if file.exists() {
         fs::read_to_string(&file)?
     } else {
-        format!("# Inbox - {date}\n")
+        format!("# Captures - {date}\n")
     };
     if !text.ends_with('\n') {
         text.push('\n');
@@ -232,7 +232,7 @@ pub(crate) fn append(p: &Profile, body: &str) -> Result<PathBuf> {
 }
 
 /// `notes inbox archive [target] [--stale] [--before DATE]` — the drain.
-/// Move triaged captures into `inbox/_archive/`. Exactly one selector applies:
+/// Move triaged captures into `captures/_archive/`. Exactly one selector applies:
 /// a filename, `--stale` (age ≥ STALE_DAYS), or `--before <YYYY-MM-DD>`.
 pub fn archive(
     p: &Profile,
@@ -246,32 +246,32 @@ pub fn archive(
         bail!("pick exactly one: a filename, --stale, or --before <YYYY-MM-DD>");
     }
     let today = Local::now().date_naive();
-    let archive_dir = p.inbox.join(ARCHIVE_DIR);
+    let archive_dir = p.captures.join(ARCHIVE_DIR);
 
     let to_move: Vec<PathBuf> = if let Some(name) = target {
-        // Accept a bare filename or a path; resolve against the inbox.
+        // Accept a bare filename or a path; resolve against the captures folder.
         let candidate = {
             let raw = Path::new(name);
             if raw.is_absolute() {
                 raw.to_path_buf()
             } else {
-                p.inbox.join(name)
+                p.captures.join(name)
             }
         };
         if !candidate.is_file() {
-            bail!("no such inbox capture: {}", candidate.display());
+            bail!("no such capture: {}", candidate.display());
         }
         vec![candidate]
     } else if let Some(date_str) = before {
         let cutoff = NaiveDate::parse_from_str(date_str, "%Y-%m-%d")
             .with_context(|| format!("--before wants YYYY-MM-DD, got '{date_str}'"))?;
-        scan(&p.inbox, today)?
+        scan(&p.captures, today)?
             .into_iter()
             .filter(|i| i.date.map(|d| d < cutoff).unwrap_or(false))
             .map(|i| i.path)
             .collect()
     } else {
-        scan(&p.inbox, today)?
+        scan(&p.captures, today)?
             .into_iter()
             .filter(|i| i.age_days >= STALE_DAYS)
             .map(|i| i.path)
@@ -304,7 +304,7 @@ pub fn archive(
 /// Count of pending (non-archived) captures and how many are stale — for `doctor`.
 pub fn backlog_counts(p: &Profile) -> (usize, usize) {
     let today = Local::now().date_naive();
-    match scan(&p.inbox, today) {
+    match scan(&p.captures, today) {
         Ok(items) => {
             let stale = items.iter().filter(|i| i.age_days >= STALE_DAYS).count();
             (items.len(), stale)
