@@ -916,9 +916,11 @@ pub(crate) mod tests {
             ),
             "{out}"
         );
+        // The rows under the header, however many lines the legend wraps to.
         let order: Vec<&str> = out
             .lines()
-            .skip(3)
+            .skip_while(|l| !l.starts_with("KIND"))
+            .skip(1)
             .map(|l| l.split_whitespace().next().unwrap())
             .collect();
         assert_eq!(order, ["unity", "light", "windows"]);
@@ -1258,7 +1260,7 @@ pub(crate) mod tests {
             ),
             "{out}"
         );
-        assert_line(&out, "gates - 2 1 - 14 50% workstation 4");
+        assert_line(&out, "gates - 2 1 - 14 - 50% workstation 4");
         assert!(has(&out, "waiting 5"));
     }
 
