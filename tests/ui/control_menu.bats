@@ -79,15 +79,19 @@ gone() { ! _tm has-session 2>/dev/null; }
   printf 'slow|A slow chip|custom/slow\n' >> "$W/modules.registry"
   jq --arg e "$FX/slow.sh" '. + {"custom/slow": {exec: $e}}' "$W/config.base" > "$FX/conf" &&
     mv "$FX/conf" "$W/config.base"
+  # fd 9 holds the fifo open read-write for the whole test (fd 3 is bats'), so the release written
+  # after Enter waits in the pipe whenever the chip opens it, and opening it never blocks here.
+  exec 9<>"$FX/gate"
   open_menu
+  wait_until 'screen_has "A slow chip"'
   wait_until 'screen_has "Good hover"'
   run screen_matches "A good chip +OK 3"
   assert_failure
   tmux_keys Enter
-  # Opened read-write, the fifo never blocks this side, whether or not the reader still waits.
-  exec 3<>"$FX/gate"; printf 'go\n' >&3; exec 3>&-
+  printf 'go\n' >&9
   wait_until gone
   wait_until '[ -s "$FX/clicked" ]'
+  exec 9>&-
   assert_equal "$(cat "$FX/clicked")" left
 }
 
