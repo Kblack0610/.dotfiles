@@ -980,7 +980,7 @@ JOB='{"id":7,"name":"Feed fail","conclusion":"failure","runner_name":"hp-victus-
   assert_output '[[20,"completed"],[21,"in_progress"]]'
 }
 
-@test "feed runs: stale open runs cost one status listing per pass, not a read each; a rerun's old attempt is not read" {
+@test "feed runs: stale open runs cost one status listing per pass, not a read each; a rerun's old attempt is read once and closes" {
   game_files
   # 20 and 22 stay queued, 23 is in progress; 24's attempt 1 was superseded by a finished attempt 2
   feed 0 e1 1 false '' "$(gh_run 20 .github/workflows/test.yml 2025-11-04T10:00:00Z queued null)" \
@@ -997,6 +997,16 @@ JOB='{"id":7,"name":"Feed fail","conclusion":"failure","runner_name":"hp-victus-
   run "$SUBJECT"
   assert_success
   feed 1 e1 1 false ''
+  # ar-4126: no listing serves attempt 1 again, so it is read from its attempt, once
+  gh_run 24 .github/workflows/test.yml 2025-11-04T10:15:00Z completed cancelled | serve 'repos/o/game/actions/runs/24/attempts/1'
+  echo '{"jobs":[],"total_count":0}' | serve "repos/o/game/actions/runs/24/attempts/1/jobs?per_page=100"
+  : > "$GHD/calls"
+  SCHEDULES_NOW=1762430700 run "$SUBJECT"
+  assert_success
+  run grep -c 'actions/runs/24/attempts/1$' "$GHD/calls"
+  assert_output 1
+  run jq -sc 'map(select(.id == 24)) | group_by(.attempt) | map(last | [.attempt, .status, .conclusion])' "$LEDGER"
+  assert_output '[[1,"completed","cancelled"],[2,"completed","success"]]'
   rows=$(wc -l < "$LEDGER")
   for pass in 1762431000 1762431600; do
     : > "$GHD/calls"
