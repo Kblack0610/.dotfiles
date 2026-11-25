@@ -66,7 +66,7 @@ default.
 | Shared pusher (Linux + Mac) | `~/.local/src/fleet-pulse/push.sh` | dotfiles |
 | Linux timer | `~/.config/systemd/user/fleet-pulse.{service,timer}` | dotfiles |
 | Linux widget | `~/.config/waybar/fleet_pulse.sh` + `custom/fleet` in `config.{base,desktop,laptop}` | dotfiles |
-| Mac pusher (launchd) | `~/.config/launchd/com.kblack.fleet-pulse.plist` (runs `push.sh` FLEET_NAME=mac) | dotfiles |
+| Mac pusher (launchd) | `~/.dotfiles-private/.config/launchd/com.kblack.fleet-pulse.plist` (runs `push.sh` FLEET_NAME=mac) | dotfiles-private |
 | Mac widget | `sketchybar/items/fleet.sh` + `plugins/fleet.sh` (+ `sketchybarrc` source) | dotfiles |
 | Windows pusher (native only) | `.config/windows/scripts/fleet-push.ps1` + `installation_scripts/windows/setup_fleet_pulse.ps1` | dotfiles |
 | Windows-via-WSL pusher | `push.sh` + the systemd user timer, enrolled INSIDE WSL (see below) | dotfiles |
