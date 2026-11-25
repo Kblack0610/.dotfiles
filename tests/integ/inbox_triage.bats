@@ -445,6 +445,50 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   grep -q 'sc-9	scratch	epic(audio): the sound pass' "$NOTES_FIXTURE/prompt.txt" || fail "the epics never reached the model"
 }
 
+@test "a session's split keeps the line's own #of/ naming an open row, over the model's epic or none" {
+  # ar-5404: a session splitting an L row filed its children #of/<L row>; the model, told to pick
+  # only epics, dropped it, so every child landed under its standing epic and the L row stayed unsplit.
+  sheet '- [ ] feat(ui): the stage cells on /book #of/sc-3 #pts/3 #size/m #normal #agent #from/ar-5404\n- [ ] feat(ui): the Kelly cell on /book #of/sc-3 #size/s #normal #agent #from/ar-5404\n' \
+    '- [ ] epic(ui): the book page #size/xl <!-- id:sc-9 -->\n- [ ] feat(ui): odds per stage on /book #pts/8 #size/l #of/sc-9 #normal <!-- id:sc-3 -->\n'
+  answer '{"n": 1, "action": "file", "rows": ["feat(ui): show the stage cells on /book #size/m #normal"], "lane": "agent"}' \
+    '{"n": 2, "action": "file", "rows": ["feat(ui): show the Kelly cell on /book #size/s #normal #of/sc-9"], "lane": "agent"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'filed 2, left 0, refused 0'
+  run cat "$SHEET" "$PROJ/scratch/agent/README.md"
+  assert_output --regexp 'feat\(ui\): show the stage cells on /book .*#of/sc-3'
+  assert_output --regexp 'feat\(ui\): show the Kelly cell on /book .*#of/sc-3'
+  refute_line --regexp 'show the Kelly cell on /book .*#of/sc-9'
+}
+
+@test "a split line's own #of/ files no new epic and never turns an empty row into a bare tag" {
+  sheet '- [ ] feat(ui): the stage cells on /book #of/sc-3 #size/m #normal #agent #from/ar-5404\n- [ ] feat(ui): the odds legend on /book #of/sc-3 #size/s #normal #agent #from/ar-5404\n' \
+    '- [ ] feat(ui): odds per stage on /book #pts/8 #size/l #normal <!-- id:sc-3 -->\n'
+  answer '{"n": 1, "action": "file", "rows": ["feat(ui): show the stage cells on /book #size/m #normal"], "lane": "agent", "epic": "epic(ui): a book page people can read"}' \
+    '{"n": 2, "action": "file", "rows": [""], "lane": "agent"}'
+  run "$TRIAGE"
+  assert_success
+  run cat "$SHEET" "$PROJ/scratch/agent/README.md"
+  assert_output --regexp 'feat\(ui\): show the stage cells on /book .*#of/sc-3'
+  refute_output --partial 'a book page people can read'
+  refute_line --regexp '^- \[ \] +#of/sc-3'
+  run inbox
+  assert_output --partial 'the odds legend on /book'
+}
+
+@test "negative control: a line's #of/ naming a closed or unknown row leaves the model's epic pick" {
+  sheet '- [ ] fix(audio): the gun sound is off #of/sc-4 #agent #from/ab12cd34\n- [ ] fix(ui): the menu flickers #of/sc-404 #agent #from/ab12cd34\n' \
+    '- [ ] epic(audio): the sound pass #size/l <!-- id:sc-9 -->\n- [x] fix(audio): an old sound bug <!-- id:sc-4 done:2026-11-01 -->\n'
+  answer '{"n": 1, "action": "file", "rows": ["fix(audio): the gun sound is off #high #size/s #of/sc-9"]}' \
+    '{"n": 2, "action": "file", "rows": ["fix(ui): the menu flickers #low #size/s"]}'
+  run "$TRIAGE"
+  assert_success
+  run cat "$SHEET" "$PROJ/scratch/agent/README.md"
+  assert_output --regexp 'fix\(audio\): the gun sound is off .*#of/sc-9'
+  refute_line --regexp '^- \[ \] fix\(audio\): the gun sound is off .*#of/sc-4'
+  refute_line --regexp '^- \[ \] fix\(ui\): the menu flickers .*#of/sc-404'
+}
+
 @test "--backlog: a rewrite keeps an #of/ naming an open epic and only loses a bad one" {
   sheet '' '- [ ] epic(audio): the sound pass #size/l <!-- id:sc-9 -->\n- [ ] gun sound is off #low <!-- id:sc-1 -->\n- [ ] menu flickers #low <!-- id:sc-2 -->\n'
   answer '{"n": 1, "action": "keep"}' \
@@ -1914,6 +1958,44 @@ ask_about() { basename "$(grep -l "^question: .*$1" "$HOME"/.agent/asks/*/*.md)"
   assert_output --partial 'improvements 0'
   [ ! -e "$PROJ/scratch/improvements.md" ] || fail "improvements.md was written"
   grep -q 'empty state' "$PROJ/scratch/agent/README.md" || fail "no row"
+}
+
+@test "session line: on a gated board a file verdict with no evidenced fault is kept as an improvement; a runtime-fault row and the person's line file" {
+  sed -i '1i intake_gated = ["scratch"]' "$HOME/.config/notes/config.toml"
+  sheet '- [ ] chore(ui): a nicer empty state for the lobby #agent #from/ab12cd34\n- [ ] fix(ui): the pause menu drops input on resume #agent #from/ab12cd34\n- the gun sound is off\n' ''
+  answer '{"n": 1, "action": "file", "rows": ["chore(ui): a nicer empty state for the lobby #low #why/upkeep #size/s"], "lane": "agent"}' \
+    '{"n": 2, "action": "file", "rows": ["fix(ui): the pause menu drops input on resume #high #why/runtime-fault #size/s"], "lane": "agent"}' \
+    '{"n": 3, "action": "file", "rows": ["fix(audio): the gun sound plays late #high #size/s"], "lane": "agent"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'filed 2'
+  assert_output --partial 'improvements 1'
+  assert_output --partial 'refused 0'
+  agent="$PROJ/scratch/agent/README.md"
+  grep -q 'empty state' "$agent" && fail "the gate let polish onto the board: $(cat "$agent")"
+  grep -q 'drops input on resume' "$agent" || fail "the evidenced fault was not filed: $(cat "$agent")"
+  grep -q 'gun sound plays late' "$agent" || fail "the person's line was gated: $(cat "$agent")"
+  run inbox
+  refute_output --partial 'empty state'
+  run cat "$PROJ/scratch/improvements.md"
+  assert_output --partial '- chore(ui): a nicer empty state for the lobby ('
+  run jq -r 'select(.action == "improvement") | .why' "$HOME/.local/state/notes/ingest.jsonl"
+  assert_output --partial 'intake gate'
+}
+
+@test "session line: on a gated board a new epic whose rows the gate refuses is dropped again, never left with none" {
+  sed -i '1i intake_gated = ["scratch"]' "$HOME/.config/notes/config.toml"
+  systems ui
+  sheet '- [ ] feat(ui): a pause menu mid match #agent #from/ab12cd34\n' ''
+  answer '{"n": 1, "action": "file", "rows": ["feat(ui): a pause menu with resume and quit #normal #why/feature #size/m"], "epic": "epic(ui): a pause menu the player can open mid-match", "lane": "agent"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'improvements 1'
+  run tasks
+  refute_output --partial 'epic(ui)'
+  # A dropped row leaves the sheet at once for the version note.
+  run cat "$PROJ/scratch/agent/versions/v0.1.0.md"
+  assert_output --regexp '- \[x\] epic\(ui\): a pause menu the player can open mid-match .*dropped: intake gate'
 }
 
 @test "improvement verdict: a person's line, and a project not on the board, stay where they are (negative controls)" {

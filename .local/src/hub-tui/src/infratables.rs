@@ -461,27 +461,20 @@ const SLOT_HEAD: [&str; 8] = [
     "HOST", "SLOT", "STATE", "POOL", "RAN", "USUAL", "JOB", "REF",
 ];
 
-/// Every CI slot with the job it runs and how long against its usual; a late job is amber.
+/// Every CI runner with a job, how long it has run against its usual; a late job is amber.
 fn runners(d: &Draw, rows: &[Slot]) -> Vec<Line<'static>> {
     let p = d.p;
     let secs = |v: Option<i64>| v.map_or("-".to_string(), |s| dur_secs(s as f64));
     d.table(
         "RUNNERS".into(),
         rows,
-        "no runner reports",
+        "no runner is running a job",
         None,
         |r| {
-            let state = match r.state.as_str() {
-                "busy" => Style::default(),
-                "withheld" => p.warn(),
-                "off" => p.bad(),
-                _ => p.dim(),
-            };
-            let busy = r.state == "busy";
             vec![
                 r.host.clone().into(),
                 r.slot.clone().into(),
-                cell(&r.state, state),
+                cell(&r.state, Style::default()),
                 dash(&r.pool).into(),
                 if r.late {
                     cell(format!("{}!", secs(r.ran)), p.warn())
@@ -489,12 +482,8 @@ fn runners(d: &Draw, rows: &[Slot]) -> Vec<Line<'static>> {
                     secs(r.ran).into()
                 },
                 secs(r.usual).into(),
-                dash(if busy { &r.job } else { &r.note }).into(),
-                if busy {
-                    dash(r.reference()).into()
-                } else {
-                    "-".into()
-                },
+                dash(&r.job).into(),
+                dash(r.reference()).into(),
             ]
         },
         Table {
@@ -537,6 +526,8 @@ fn queued(d: &Draw, rows: &[Queued]) -> Vec<Line<'static>> {
                     .join(", ")
             } else if q.needs.is_empty() {
                 "-".into()
+            } else if q.hosted() {
+                "GitHub".into()
             } else {
                 "nobody".into()
             };

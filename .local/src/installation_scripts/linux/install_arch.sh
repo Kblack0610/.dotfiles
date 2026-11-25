@@ -12,23 +12,7 @@ source "$BASE_DIR/base_functions.sh"
 
 # Load configuration
 load_config
-
-# Helper: Install package with pacman
-install_pacman_package() {
-    local package="$1"
-    
-    if pacman -Q "$package" &>/dev/null; then
-        log_info "$package already installed"
-        return 0
-    fi
-    
-    log_info "Installing $package..."
-    if sudo pacman -S --noconfirm "$package" &>/dev/null; then
-        log_info "✓ $package installed"
-    else
-        log_warning "✗ Failed to install $package"
-    fi
-}
+PKG_INSTALL=install_pacman_package PKG_OS=arch
 
 # Helper: Install from AUR
 install_aur_package() {
@@ -75,39 +59,10 @@ update_system() {
     fi
 }
 
-# Override: Install basics
-install_basics() {
-    log_section "Installing basic requirements"
-    install_package_list install_pacman_package arch \
-        $PACKAGES_BASIC $PACKAGES_BASIC_ARCH
-}
-
-# Override: Install development tools
-install_tools() {
-    log_section "Installing development tools"
-    install_package_list install_pacman_package arch \
-        $PACKAGES_DEV $PACKAGES_DEV_ARCH
-}
-
-# Override: what an agent session runs (fleet module)
-install_fleet_packages() {
-    log_section "Installing fleet packages"
-    install_package_list install_pacman_package arch \
-        $PACKAGES_FLEET $PACKAGES_FLEET_ARCH
-}
-
-# Override: Install terminal enhancements
-install_terminal() {
-    log_section "Installing terminal enhancements"
-    install_package_list install_pacman_package arch \
-        $PACKAGES_TERMINAL $PACKAGES_TERMINAL_ARCH
-}
-
 # Override: Install GUI applications (Hyprland / Wayland stack)
 install_gui() {
     log_section "Installing GUI applications"
-    install_package_list install_pacman_package arch \
-        $PACKAGES_GUI $PACKAGES_GUI_ARCH
+    install_catalog GUI
     sudo systemctl enable --now bluetooth || log_warning "bluetooth.service not enabled (no bluez or no systemd?)"
 }
 
@@ -482,28 +437,6 @@ install_moonlight() {
     fi
 }
 
-# Override: Setup keyd (key remapping daemon — F12 → Super layer)
-setup_keyd() {
-    log_section "Setting up keyd (key remapping)"
-
-    install_pacman_package "keyd"
-
-    local src="$HOME/.dotfiles/.config/keyd/default.conf"
-    local dst="/etc/keyd/default.conf"
-
-    if [[ ! -f "$src" ]]; then
-        log_warning "keyd source config not found at $src — skipping"
-        return 0
-    fi
-
-    sudo install -Dm644 "$src" "$dst"
-    log_info "Installed keyd config to $dst"
-
-    sudo systemctl enable --now keyd
-    sudo keyd reload &>/dev/null || true
-    log_info "keyd enabled and reloaded"
-}
-
 # Ignore a short press of the case power button (a pet steps on it). Reload, never
 # restart, logind: a restart ends the graphical session.
 setup_power_key() {
@@ -707,35 +640,6 @@ setup_profile() {
     fi
 }
 
-# Render theme-switch's generated output. kitty's current-theme.conf, waybar's
-# style.css and palette.css, sketchybar's colors.sh, dunst's dunstrc.d/50-theme.conf, swaync's style.css, noctalia's palettes/dotfiles.json, hyprland's conf/theme.lua, nvim's kennethblack/theme.lua, starship.toml and lazygit's config.yml are NOT tracked -- they are the render of
-# a tracked palette + template, and tracking them meant the theme-day/theme-night
-# timers dirtied the repo twice a day. A fresh clone therefore has none of them,
-# and sketchybarrc hard-`source`s colors.sh, so it must be rendered at install.
-#
-# --only the generated targets on purpose: termux is the one TRACKED render
-# (the phone reads it over git), it already ships correct, and re-rendering it
-# here would leave a fresh install with a dirty tree before first login.
-setup_theme() {
-    log_section "Rendering theme (generated config)"
-
-    local theme_switch="$HOME/.local/bin/theme-switch"
-    if [[ ! -x "$theme_switch" ]]; then
-        log_warning "theme-switch not found at $theme_switch - skipping"
-        log_info "Render later with:  theme-switch <theme> --only kitty,waybar,sketchybar,dunst,swaync,noctalia,hyprland,nvim,starship,lazygit"
-        return 0
-    fi
-
-    # Honour a theme already chosen on this machine; otherwise the daytime
-    # default, matching what theme-day.timer applies at 07:00.
-    local state="$HOME/.config/theme/current"
-    local theme="batman"
-    [[ -r "$state" ]] && theme="$(<"$state")"
-
-    log_info "Rendering generated theme files for: $theme"
-    "$theme_switch" "$theme" --only kitty,waybar,sketchybar,dunst,swaync,noctalia,hyprland,nvim,starship,lazygit
-}
-
 # Configure rbw (Rust Bitwarden CLI) against the self-hosted Vaultwarden. The
 # `rbw` package itself is installed via PACKAGES_DEV_ARCH; this just points it at
 # the right server + account so secrets (e.g. Cloudflare API tokens) can be
@@ -934,11 +838,7 @@ install_all() {
     step dev         install_lazygit
     step dev         install_kitty
 
-    step fleet       install_fleet_packages
-    step fleet       install_tmux
-    step fleet       install_agent_harnesses
-    step fleet       install_rust
-    step fleet       build_fleet_tools
+    fleet_steps
 
     step containers  install_kubernetes
     step containers  setup_kubernetes

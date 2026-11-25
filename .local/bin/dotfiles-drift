@@ -39,8 +39,8 @@
 #   dotfiles-drift --json     machine-readable
 set -uo pipefail
 
-PUB="${DOTFILES:-$HOME/.dotfiles}"
-PRIV="${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}"
+# shellcheck source=../lib/dotfiles-repos.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/dotfiles-repos.sh"
 MODE=report
 case "${1:-}" in
   --quiet) MODE=quiet ;;
@@ -50,27 +50,6 @@ esac
 
 FINDINGS=()   # "TYPE|repo|path|detail"
 add() { FINDINGS+=("$1|$2|$3|$4"); }
-
-# is_repo_root <dir> - is <dir> the root of a git working tree?
-#
-# NOT `[ -d "$dir/.git" ]`, which every check below used to ask and which is FALSE for a git
-# WORKTREE: there `.git` is a regular FILE holding `gitdir: <main>/.git/worktrees/<name>`.
-# Worktrees are the working convention in these repos, so this was the detector declining to
-# look at exactly the tree someone was working in - and, unlike dotfiles-deploy, saying
-# nothing at all about it. Every check simply `return 0`d and the run printed
-# "dotfiles-drift: clean - merged == deployed". A detector that reports clean over a tree it
-# never opened is worse than no detector.
-#
-# `rev-parse --show-toplevel` answers the question git's own way and is worktree-blind by
-# construction; the result is compared against <dir> so a SUBDIRECTORY of some unrelated
-# checkout is still not accepted as a dotfiles repo.
-is_repo_root() {
-  local dir="$1" top
-  [ -d "$dir" ] || return 1
-  top="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" || return 1
-  [ -n "$top" ] || return 1
-  [ "$(readlink -f -- "$top")" = "$(readlink -f -- "$dir")" ]
-}
 
 # --- BEHIND -----------------------------------------------------------------
 # No fetch here: this runs from a monitoring probe every few hours and must stay

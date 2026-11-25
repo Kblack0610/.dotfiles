@@ -23,6 +23,7 @@
 #   playtest.<profile>.<project> what `notes ptask <name> --playtest list` prints; with none it fails
 #   stats.fail                  makes `projects --stats` fail
 #   roll.window                 the `window ...` lines `projects --release` prints after the freeze
+#   log.jsonl                   what `notes log ... --json` prints, every event whatever the filter; log.fail makes it fail
 set -uo pipefail
 
 FIX="${NOTES_FIXTURE:?NOTES_FIXTURE unset - stub used outside the sandbox}"
@@ -148,6 +149,9 @@ case "${1:-}" in
       jq -c --args '$ARGS.positional as $ids | {today: "", rows: [((.rows // []), (.done // []), (.elsewhere // []))[] | select(.id as $i | $ids | index($i))]}' \
         "${ids[@]}" < "$FIX/board.json"
     fi ;;
+  log)
+    [ ! -f "$FIX/log.fail" ] || { echo 'notes: the record is locked' >&2; exit 2; }
+    emit log.jsonl ;;
   today)
     : ;;                           # bootstrap no-op
   *)

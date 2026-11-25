@@ -145,3 +145,41 @@ host_installs() {
   [ "${#lines[@]}" -eq 3 ] || fail "want the apt, rustup and GITHUB_PATH lines named: $output"
   [[ "$output" == *apt-get* && "$output" == *"rustup toolchain"* && "$output" == *GITHUB_PATH* ]]
 }
+
+# kinds <wf>: "<job> <kind>" for every job that loads the test image, kind "-" when it names none
+kinds() {
+  awk '
+    /^  [A-Za-z0-9_-]+:$/ { if (job != "" && uses) print job, (kind == "" ? "-" : kind); job = $1; sub(/:$/, "", job); kind = ""; uses = 0 }
+    /^      TEST_IMAGE_KIND:/ { kind = $2 }
+    /uses: \.\/\.github\/actions\/test-image/ { uses = 1 }
+    END { if (job != "" && uses) print job, (kind == "" ? "-" : kind) }
+  ' "$1" | sort
+}
+
+@test "every job that loads the test image names its stage, and the stage has what the job runs" {
+  run kinds "$WF"
+  assert_success
+  # The cheapest stage with the tools each job runs (tests/Dockerfile): the pool's link is shared,
+  # so a job that loads more than it uses can run out its timeout in the restore (ar-5632).
+  assert_output "$(printf '%s\n' 'fast lean' 'lint lean' 'notes rust' 'rust full' 'ui full')"
+  # Negative control: a job with no kind is named "-".
+  sed '/TEST_IMAGE_KIND: lean   # shellcheck/d' "$WF" >"$BATS_TEST_TMPDIR/nokind.yml"
+  run kinds "$BATS_TEST_TMPDIR/nokind.yml"
+  assert_line 'lint -'
+}
+
+@test "every test-image step passes the registry address and secret, and the action hardcodes no address" {
+  uses=$(grep -c "uses: .\/.github\/actions\/test-image\$" "$WF")
+  [ "$uses" -ge 5 ] || fail "want every job loading the image counted, got $uses"
+  run grep -c '^          registry: \${{ vars\.CI_REGISTRY }}$' "$WF"
+  assert_output "$uses"
+  run grep -c '^          registry-password: \${{ secrets\.CI_REGISTRY_PASSWORD }}$' "$WF"
+  assert_output "$uses"
+  ACT="$BATS_TEST_DIRNAME/../../.github/actions/test-image/action.yml"
+  # The address is the home LAN's and this repo is public (the sensitive-token scan): it is a repo variable.
+  run grep -cE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' "$ACT"
+  assert_output "0"
+  # Hosted runners cannot reach the LAN: the registry step is for self-hosted ones only.
+  run grep -c "runner.environment == 'self-hosted'" "$ACT"
+  assert_output "1"
+}
