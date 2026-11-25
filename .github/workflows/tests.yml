@@ -187,12 +187,16 @@ jobs:
   # A hosted runner or a fork has no registry, so there it only checks out.
   # job-image is the lean stage's registry ref when the job-pod pool is on (the repo variable
   # LINUX_RUNNER_JOB_POD) and the registry holds the image, else empty: the jobs on &job-pod run in it.
+  # job-pod is that variable when job-image is set, else empty, so &job-pod reads its pool and its
+  # image from this one job and a --failed rerun, which reuses these outputs, cannot put the image on
+  # a &pool runner.
   image:
     name: test image in the registry
     runs-on: *pool
     timeout-minutes: 25
     outputs:
       job-image: ${{ vars.LINUX_RUNNER_JOB_POD != '' && steps.lean.outputs.ref || '' }}
+      job-pod: ${{ vars.LINUX_RUNNER_JOB_POD != '' && steps.lean.outputs.ref != '' && vars.LINUX_RUNNER_JOB_POD || '' }}
     steps:
       - uses: actions/checkout@v4
       # Smallest stage first: the later stages build on its layers in this pod's docker.
@@ -273,7 +277,7 @@ jobs:
   fast:
     name: fast tier (${{ matrix.tier }} ${{ matrix.shard }})
     needs: [weights, image]
-    runs-on: &job-pod ${{ fromJSON(needs.image.outputs.job-image != '' && vars.LINUX_RUNNER_JOB_POD || ((github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.LINUX_RUNNER_LIGHT || '"ubuntu-24.04"')) }}
+    runs-on: &job-pod ${{ fromJSON(needs.image.outputs.job-pod != '' && needs.image.outputs.job-pod || ((github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.LINUX_RUNNER_LIGHT || '"ubuntu-24.04"')) }}
     # An empty image runs the job on the runner itself.
     container: &job-image
       image: ${{ needs.image.outputs.job-image }}

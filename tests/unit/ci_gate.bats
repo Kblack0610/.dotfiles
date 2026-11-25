@@ -123,12 +123,15 @@ off_pool() {
   assert_output 'lint'
 }
 
-@test "the &job-pod anchor is the job-pod pool only when the image job names an image, else the &pool choice" {
+@test "the &job-pod anchor is the pool the image job names with its image, else the &pool choice" {
   local pool want
   pool=$(sed -nE 's/^    runs-on: &pool \$\{\{ fromJSON\((.*)\) \}\}$/\1/p' "$WF")
   [ -n "$pool" ] || fail "no expression read from the &pool anchor"
-  want="    runs-on: &job-pod \${{ fromJSON(needs.image.outputs.job-image != '' && vars.LINUX_RUNNER_JOB_POD || ($pool)) }}"
+  want="    runs-on: &job-pod \${{ fromJSON(needs.image.outputs.job-pod != '' && needs.image.outputs.job-pod || ($pool)) }}"
   run grep -cxF -- "$want" "$WF"
+  assert_output 1
+  # The image job names the pool only beside its image, so a --failed rerun reusing both agrees.
+  run grep -cxF -- "      job-pod: \${{ vars.LINUX_RUNNER_JOB_POD != '' && steps.lean.outputs.ref != '' && vars.LINUX_RUNNER_JOB_POD || '' }}" "$WF"
   assert_output 1
   # Negative control: a fallback that drifted from the &pool choice is not the anchor's.
   sed "/^    runs-on: &job-pod /s/ubuntu-24.04/ubuntu-22.04/" "$WF" >"$BATS_TEST_TMPDIR/drift.yml"
