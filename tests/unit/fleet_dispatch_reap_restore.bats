@@ -1769,6 +1769,40 @@ esac'
   refute_output --partial 'tl-1 ('
 }
 
+@test "reap follows a dead #after/ gate to the copy its drop names, by id, though the copy is aimed past the open release (ar-4825)" {
+  project game beta "$SANDBOX/repos/game"
+  echo v2.0.0 > "$NOTES_FIXTURE/later.version"
+  row game agent gm-20 "- [x] feat(game): pin bump $T <!-- id:gm-20 dropped: on the game sheet as hm-20: dispatch skipped it (waits) -->"
+  row game human hm-20 "- [ ] feat(game): pin bump #v2.0.0 (agent row gm-20) <!-- id:hm-20 -->"
+  row game agent gm-21 "- [ ] feat(game): play tests $T #after/gm-20 <!-- id:gm-21 -->"
+  # a copy the drop names that the human closed is not where the work went, and no text search overrides it
+  row game agent gm-24 "- [x] feat(game): shaders $T <!-- id:gm-24 dropped: on the game sheet as hm-24: dispatch skipped it (stage) -->"
+  row game human hm-24 "- [x] feat(game): shaders (agent row gm-24) <!-- id:hm-24 -->"
+  row game human hm-25 "- [ ] feat(game): shaders again (agent row gm-24) <!-- id:hm-25 -->"
+  row game agent gm-25 "- [ ] feat(game): waits on shaders $T #after/gm-24 <!-- id:gm-25 -->"
+  # NEGATIVE CONTROL: a drop that names no copy is found only by the open board's text, which lists no v2.0.0 row
+  row game agent gm-22 "- [x] feat(game): old drop $T <!-- id:gm-22 dropped: on the game sheet: dispatch skipped it (waits) -->"
+  row game human hm-22 "- [ ] feat(game): old drop #v2.0.0 (agent row gm-22) <!-- id:hm-22 -->"
+  row game agent gm-23 "- [ ] feat(game): waits on the old drop $T #after/gm-22 <!-- id:gm-23 -->"
+  run follow_moved_gates
+  assert_success
+  local agent; agent=$(cut -f2 "$NOTES_FIXTURE/rows.game.agent")
+  grep -q '^- \[ \] feat(game): play tests .*#after/hm-20 <!-- id:gm-21 -->' <<<"$agent"
+  grep -q 'moved game row gm-21 from #after/gm-20 to #after/hm-20: row gm-20 went there' "$FLEET_DISPATCH_DIR/log.md"
+  grep -q '^- \[ \] feat(game): waits on shaders .*#after/gm-24 <!-- id:gm-25 -->' <<<"$agent"
+  grep -q '^- \[ \] feat(game): waits on the old drop .*#after/gm-22 <!-- id:gm-23 -->' <<<"$agent"
+}
+
+@test "file_row says the new row's id, which skip_exits writes into the drop that follow_moved_gates reads (ar-4825)" {
+  np() { printf -- '- [ ] feat(game): pin bump (agent row gm-20) <!-- id:hm-20 -->\n'; }
+  run file_row human '{"project": "game"}' "feat(game): pin bump (agent row gm-20)"
+  assert_output 'on the game sheet as hm-20'
+  # NEGATIVE CONTROL: a filer that prints no row names no id
+  np() { :; }
+  run file_row human '{"project": "game"}' "feat(game): pin bump (agent row gm-20)"
+  assert_output 'on the game sheet'
+}
+
 @test "reap settle: a cancelled ask on a row whose done item's PR merged closes the row on merge proof, with no hold and no new ask" {
   landed_item MERGED
   settle_fixture

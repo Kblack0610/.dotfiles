@@ -1043,18 +1043,21 @@ reap_unstuck() { [ ! -e "$DIR/stuck/$1" ] || rm -f "$DIR/stuck/$1"; }
 
 # file_row <human|agent> <item json> <row text> -> where the row went: that side (the human sheet or
 # the agent board) of the board the item came from (a dotfiles item's row is on agent-runtime), else
-# its project's. fleet-dispatch is a direct filer (each caller's stamp files a row once), so the row
-# is filed, not sent to the outbox; exit 3 is a twin already open, exit 4 a vouch notes could not
+# its project's, with the new row's id ("on the <sheet> sheet as <id>", which follow_moved_gates reads
+# from the drop reason skip_exits writes). fleet-dispatch is a direct filer (each caller's stamp files
+# a row once), so the row is filed, not sent to the outbox; exit 3 is a twin already open, exit 4 a vouch notes could not
 # make. A refused row is said on stderr here, so no caller has to.
 file_row() {
-  local prof sheet row rc=0 lane=() what=sheet
+  local prof sheet row out re id='' rc=0 lane=() what=sheet
   [ "$1" = human ] || lane=(--agent) what=board
   IFS=$'\x1f' read -r prof sheet < <(jq -r '[.profile // "", .project // ""] | join("\u001f")' <<<"$2")
   row=$(item_row "$2")
   [ -z "$row" ] || IFS=$'\x1f' read -r prof sheet _ <<<"$row"
-  np "$prof" ptask "$sheet" "${lane[@]}" add "$3" --origin fleet-dispatch >/dev/null 2>&1 || rc=$?
+  out=$(np "$prof" ptask "$sheet" "${lane[@]}" add "$3" --origin fleet-dispatch 2>/dev/null) || rc=$?
+  re='<!-- id:([A-Za-z0-9_-]+)'
+  [[ $out =~ $re ]] && id=${BASH_REMATCH[1]}
   case "$rc" in
-    0) echo "on the $sheet $what" ;;
+    0) echo "on the $sheet $what${id:+ as $id}" ;;
     3) echo "joined its twin on the $sheet $what" ;;
     4) echo "in the outbox for the $sheet $what" ;;
     *) echo "not filed: the $sheet $what did not take the row (notes exit $rc)"; say "the $sheet $what did not take the row (notes exit $rc): $3" ;;
@@ -7946,21 +7949,38 @@ settle_answered_gates() {
 # on the dropped row's own sheet (a row id is unique across profiles: its code is project-map's, which
 # project-map-doctor keeps unique, and notes never reuses an id; a gate may cross projects and
 # profiles: apo-181 waits on ucp-2631, ar-4768; personal ar-1298 on bnb ucp-1443, ar-3172). The gate
-# becomes #after/<that row's id>, so the row waits on the work, not on a closed copy. A dead gate with
-# no such row, or whose copy has closed (whatever its marker), stays for dead_holds and a person. Why:
+# becomes #after/<that row's id>, so the row waits on the work, not on a closed copy. The dead row's
+# drop names its copy ("on the <sheet> sheet as <id>", file_row), and both are read by id (`notes board
+# --json --id`), which finds a row in any version: the open board lists only the open release's rows,
+# so a copy aimed past it (its body kept a #vX tag) was never found and the gate stayed dead (ar-4825).
+# A row dropped before its drop named the copy is found by the open board's text. A dead gate with no
+# such row, or whose copy has closed (whatever its marker), stays for dead_holds and a person. Why:
 # on 2026-11-22 ucp-2693 and ucp-2984 waited on ucp-2691 and ucp-2688, both sent to the sheet as
 # ucp-2983 and ucp-2988, and queue-starved paged (ar-3172).
 follow_moved_gates() {
-  local board prof p lane id t g old to
-  local -a lf
+  local board prof p lane id t g old to dead_json copy_json
+  local -a lf ids=()
+  local -A COPY=()
   load_gates
   [ -z "$GATES_FAILED" ] || return 0
   board=$(notes board --json 2>/dev/null) || return 0
+  for g in "${!GATE_ST[@]}"; do
+    [[ $g == after/?* ]] && [ "${GATE_ST[$g]}" = dead ] && ids+=(--id "${g#after/}")
+  done
+  [ ${#ids[@]} -gt 0 ] || return 0
+  dead_json=$(notes board --json "${ids[@]}" 2>/dev/null) || dead_json='{}'
+  ids=()
+  while IFS=$'\t' read -r old to; do COPY[$old]=$to; ids+=(--id "$to"); done < <(jq -r '.rows[]? | select(.id != null) | .id as $i
+    | (.marker // "") | capture("dropped: on the [^:]* sheet as (?<c>[A-Za-z0-9_-]+):") | [$i, .c] | @tsv' <<<"$dead_json")
+  copy_json='{}'
+  [ ${#ids[@]} -eq 0 ] || copy_json=$(notes board --json "${ids[@]}" 2>/dev/null) || copy_json='{}'
   while IFS=$'\x1f' read -r prof p lane id t; do
     for g in $t; do
       [[ $g == after/?* ]] && [ "${GATE_ST[$g]:-}" = dead ] || continue
       old=${g#after/}
-      to=$(jq -r --arg m "(agent row $old)" --arg self "$id" 'first(.rows[]?
+      to=$(jq -r --arg c "${COPY[$old]:-}" --arg self "$id" 'first(.rows[]?
+        | select(.id == $c and .id != $self and .lane == "human" and .state == "open")) | .id' <<<"$copy_json")
+      [ -n "$to" ] || [ -n "${COPY[$old]:-}" ] || to=$(jq -r --arg m "(agent row $old)" --arg self "$id" 'first(.rows[]?
         | select(.lane == "human" and .state == "open" and .id != null and .id != $self
             and ((.raw // "") | contains($m)))) | .id' <<<"$board")
       [ -n "$to" ] || continue

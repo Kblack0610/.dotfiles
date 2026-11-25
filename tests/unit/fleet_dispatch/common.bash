@@ -219,9 +219,12 @@ case "${args[0]}" in
             tags_cased: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0]],
             tags: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0] | ascii_downcase],
             since: ((.[1] | capture("since:(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2})") | .d) // null),
-            marker: ((.[1] | capture("<!--.* (?<m>dropped:)") | .m) // ""),
+            marker: ((.[1] | capture("<!-- (?<m>.*) -->") | .m) // ""),
             state: (if (.[1] | startswith("- [/]")) then "doing" elif (.[1] | startswith("- [x]")) then "done" else "open" end)}' < "$f"
-      done | jq -sc '{rows: map(select(.state != "done")), done: map(select(.state == "done"))}'
+      done | jq -sc '{rows: map(select(.state != "done")), done: map(select(.state == "done"))}' |
+        # $F/later.version names a release past the open one (v2.0.0): its open rows answer only --id, as the real feed lists the open release alone
+        if [[ " ${args[*]} " == *" --id "* ]] || [ ! -f "$F/later.version" ]; then cat
+        else jq -c --arg later "$(cat "$F/later.version")" '.rows |= map(select(.tags | index($later) | not))'; fi
     fi; } | if [ -f "$F/board.sprints" ]; then jq -c --slurpfile s "$F/board.sprints" '. + {sprints: $s[0]}'; else jq -c '. + {sprints: (.sprints // [])}'; fi |
     # --id <ID>...: `{today, rows}` of every row, open or closed, with one of those ids, as the real lookup.
     if [[ " ${args[*]} " == *" --id "* ]]; then
