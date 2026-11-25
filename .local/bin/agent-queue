@@ -2321,9 +2321,15 @@ cmd_add() {
     unlock # the board write is notes' and can be slow: the lock covers only the count
     # A pull from its board row (from: board:<project>:<id>) has its row already: filing the task again
     # relied on notes' twin check, which missed it (ar-3407: ar-2721 pulled, ar-3406 filed).
-    local held_row="$row"
-    [ -n "$held_row" ] || case "$from" in board:?*:?*) held_row="${from##*:}" ;; esac
-    if [ -n "$held_row" ]; then echo "agent-queue: row $held_row is left un-started where it is: dispatch promotes it as the queue drains" >&2
+    local held_row=''
+    case "$row:$from" in
+      :board:?*:?*) held_row="${from#board:}" ;;
+      :*) ;;
+      *) IFS=$'\t' read -r held_row _ < <(project_board "$project"); held_row="${held_row:-$project}:$row" ;;
+    esac
+    if [ -n "$held_row" ]; then
+      echo "agent-queue: row $held_row is left un-started where it is: dispatch promotes it as the queue drains" >&2
+      echo "held $slug -> $held_row"
     else overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "" "$slug" "$tags"; fi
     exit "$AQ_EX_HELD"
   fi

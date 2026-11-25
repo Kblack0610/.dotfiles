@@ -1758,15 +1758,20 @@ second line of the brief
   : > "$NOTES_FIXTURE/calls.log"
   run "$AQ" add --project level --row lv-2 --slug named "feat(menu): named"
   assert_failure 5
-  assert_output --partial "row lv-2 is left un-started where it is"
+  assert_output --partial "row level:lv-2 is left un-started where it is"
+  assert_line "held named -> level:lv-2"
   run grep -c ' ptask level --agent add ' "$NOTES_FIXTURE/calls.log"
   assert_output 0
   # So does dispatch's pull of a board row: the row it came from is the row (ar-3407).
   AGENT_QUEUE_PULL=dispatch run "$AQ" add --project level --from board:level:lv-7 --slug lv-7 "feat(menu): pulled"
   assert_failure 5
-  assert_output --partial "row lv-7 is left un-started where it is"
+  assert_output --partial "row level:lv-7 is left un-started where it is"
+  assert_line "held lv-7 -> level:lv-7"
   run grep -c ' ptask level --agent add ' "$NOTES_FIXTURE/calls.log"
   assert_output 0
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/*/*-named.md "$AGENT_QUEUE_DIR"/*/*-lv-7.md 2>/dev/null)" ] || fail "a held add wrote an item"
+  run jq -r 'select(.slug == "lv-7") | .from' "$AGENT_QUEUE_DIR/admission.jsonl"
+  assert_output "board:level:lv-7"
   run "$AQ" add --project level --slug titled --title "feat(menu): the title" "the real wording of the task"
   assert_failure 5
   assert_called "--detail=the real wording of the task -- "
