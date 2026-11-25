@@ -90,7 +90,28 @@ EOF
   echo '{"github:o/GAME":{"runs":4,"green":3,"pass":0.75,"workflows":{}}}' > "$SANDBOX/pass-trunk"
   echo '{"aws-burst-1-unity-pool":{"runs":50,"green":42,"pass":0.84},"mac-mini-mac":{"runs":3,"green":3,"pass":1.0}}' > "$SANDBOX/hosts"
   export DAYLOG_NOTES_DIR="$SANDBOX/notes"
-  sheet_commit 2026-10-20T12:00:00Z '- [ ] seed <!-- id:s-1 -->'
+  # notes board --weigh: the built notes when the notes CI job names one (NOTES_BIN), so the board
+  # cases prove the real contract there; else notes-stub, the same JSON for the shapes these cases
+  # write (`#pts/N`, else 1; a `dropped:` or `dup:` marker; a version note's rows are closed).
+  if [ -n "${NOTES_BIN:-}" ]; then
+    export DAYLOG_NOTES_CMD="$NOTES_BIN"
+  else
+    export DAYLOG_NOTES_CMD=notes-stub
+    cat > "$SANDBOX/bin/notes-stub" <<'EOF'
+#!/usr/bin/env python3
+import json, re, sys
+for e in sys.stdin.read().splitlines():
+    m = re.search(r"([^/:]+)/agent/(README\.md|versions/[^/:]+\.md):(.*)$", e)
+    row = m and re.match(r"\s*- (\[(.)\] )?.*<!-- id:([a-z]{2,4}-\d+)", m[3])
+    if not row or (m[2] == "README.md") != bool(row[1]):
+        continue
+    pts = re.search(r"#pts/(\d+)", m[3])
+    closed = m[2] != "README.md" or row[2] in "xX"
+    state = "open" if not closed else "dropped" if re.search(r"dropped:|dup:", m[3]) else "done"
+    print(json.dumps({"project": m[1], "id": row[3], "state": state, "weight": int(pts[1]) if pts else 1}))
+EOF
+  fi
+  sheet_commit 2026-10-20T12:00:00Z '- [ ] seed <!-- id:sd-1 -->'
   chmod +x "$SANDBOX/bin/"*-stub
   cat > "$DAYLOG_GROUPS" <<'EOF'
 # test groups
@@ -628,23 +649,56 @@ EOF
   assert_output --partial '- Plan phases: 5 ticked, 2 added'
 }
 
-@test "board: a row is opened or closed by what its id did across the day, and the sum balances" {
-  sheet_commit 2026-10-28T02:00:00Z '- [ ] stays <!-- id:d-1 -->\n- [ ] gets done <!-- id:d-2 -->\n- [/] gets deleted <!-- id:d-3 -->\n- [x] was done <!-- id:d-4 -->\n- [x] done and gone <!-- id:d-5 -->'
-  sheet_commit 2026-10-28T20:00:00Z '- [ ] stays <!-- id:d-1 -->\n- [x] gets done <!-- id:d-2 -->\n- [x] was done <!-- id:d-4 -->\n- [ ] new <!-- id:d-6 -->\n- [/] new with an ask <!-- id:d-7 ask:Ab12 -->\n- [ ] no id yet'
+@test "board: a row is opened, done or dropped by what its id did across the day, in rows and points" {
+  sheet_commit 2026-10-28T02:00:00Z '- [ ] stays #pts/2 <!-- id:dm-1 -->\n- [ ] gets done #pts/3 <!-- id:dm-2 -->\n- [/] gets deleted #pts/5 <!-- id:dm-3 -->\n- [x] was done <!-- id:dm-4 -->\n- [x] done and gone <!-- id:dm-5 -->\n- [ ] gets dropped #pts/8 <!-- id:dm-8 -->'
+  sheet_commit 2026-10-28T20:00:00Z '- [ ] stays #pts/2 <!-- id:dm-1 -->\n- [x] gets done #pts/3 <!-- id:dm-2 -->\n- [x] was done <!-- id:dm-4 -->\n- [ ] new #pts/1 <!-- id:dm-6 -->\n- [/] new with an ask #pts/2 <!-- id:dm-7 ask:Ab12 -->\n- [ ] no id yet\n- [x] gets dropped #pts/8 <!-- id:dm-8 dropped: 2026-10-28 -->'
   DAYLOG_NOW=1793300000 "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
-  run rec -c '.work.board' 2026-10-28
-  assert_output '{"opened":2,"closed":2,"open_end":3}'
+  run rec -c '.work.board | del(.by_project)' 2026-10-28
+  assert_output '{"opened":2,"closed":3,"done":1,"dropped":2,"open_end":3,"opened_pts":3,"done_pts":3,"dropped_pts":13,"open_pts":5}'
+  run rec -c '.work.board.by_project | map(.project)' 2026-10-28
+  assert_output '["demo"]'
+  run "$SUBJECT" show --date 2026-10-28
+  assert_output --partial '- Board: 2 rows opened (3 pts), 1 done (3 pts), 2 dropped (13 pts), 3 open (5 pts)'
+}
+
+@test "board: a row done and rolled into a version note the same day reads done, never dropped (negative control)" {
+  sheet_commit 2026-10-28T02:00:00Z '- [ ] ships today #pts/5 <!-- id:dm-1 -->\n- [ ] stays <!-- id:dm-2 -->'
+  mkdir -p "$DAYLOG_NOTES_DIR/lab/projects/current/demo/agent/versions"
+  printf '%s\n' '# v0.1.0' '- ships today #pts/5 <!-- id:dm-1 pr:12 -->' > "$DAYLOG_NOTES_DIR/lab/projects/current/demo/agent/versions/v0.1.0.md"
+  sheet_commit 2026-10-28T20:00:00Z '- [ ] stays <!-- id:dm-2 -->'
+  DAYLOG_NOW=1793300000 "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
+  run rec -c '.work.board | [.done, .done_pts, .dropped, .open_end]' 2026-10-28
+  assert_output '[1,5,0,1]'
+}
+
+@test "board: by_project splits the day per sheet project, the most open points first" {
+  sheet_commit 2026-10-28T02:00:00Z '- [ ] a #pts/1 <!-- id:dm-1 -->'
+  mkdir -p "$DAYLOG_NOTES_DIR/lab/projects/current/big/agent"
+  printf '%s\n' '- [ ] b #pts/8 <!-- id:bg-1 -->' '- [ ] c #pts/5 <!-- id:bg-2 -->' > "$DAYLOG_NOTES_DIR/lab/projects/current/big/agent/README.md"
+  sheet_commit 2026-10-28T20:00:00Z '- [x] a #pts/1 <!-- id:dm-1 -->'
+  DAYLOG_NOW=1793300000 "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
+  run rec -c '.work.board.by_project | map([.project, .opened_pts, .done_pts, .open_pts])' 2026-10-28
+  assert_output '[["big",13,0,13],["demo",0,1,0]]'
 }
 
 @test "board: a day that starts with no ids to join on reads unknown, not all opened (negative control)" {
   rm -rf "$DAYLOG_NOTES_DIR"
   sheet_commit 2026-10-28T02:00:00Z '- [ ] from before ids'
-  sheet_commit 2026-10-28T20:00:00Z '- [ ] from before ids <!-- id:d-1 -->\n- [ ] another <!-- id:d-2 -->'
+  sheet_commit 2026-10-28T20:00:00Z '- [ ] from before ids #pts/3 <!-- id:dm-1 -->\n- [ ] another <!-- id:dm-2 -->'
   DAYLOG_NOW=1793300000 "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
-  run rec -c '.work.board' 2026-10-28
-  assert_output '{"opened":null,"closed":null,"open_end":2}'
+  run rec -c '.work.board | [.opened, .done, .dropped, .open_end, .open_pts]' 2026-10-28
+  assert_output '[null,null,null,2,4]'
   run "$SUBJECT" show --date 2026-10-28
-  assert_output --partial '- Board: - rows opened, - closed, 2 open'
+  assert_output --partial '- Board: - rows opened (- pts), - done (- pts), - dropped (- pts), 2 open (4 pts)'
+}
+
+@test "board: a notes that cannot weigh names the board unreadable and keeps the rest of the record" {
+  printf '#!/usr/bin/env bash\necho "weigh broke" >&2; exit 3\n' > "$SANDBOX/bin/notes-broken"
+  chmod +x "$SANDBOX/bin/notes-broken"
+  DAYLOG_NOTES_CMD=notes-broken DAYLOG_NOW=1793300000 run "$SUBJECT" snapshot --date 2026-10-28
+  assert_success
+  run rec -r '.unreadable[]' 2026-10-28
+  assert_output --partial 'weigh broke'
 }
 
 @test "a source that fails keeps its last value and is named, and the record is still written" {

@@ -230,6 +230,12 @@ enum Cmd {
         /// the row it was folded into. READ-ONLY
         #[arg(long = "id", value_name = "ID", requires = "json", conflicts_with_all = ["agent", "version", "done_days"])]
         ids: Vec<String>,
+        /// Read `git grep` lines of agent sheets on stdin (`[<rev>:]<path>/agent/README.md:<line>`)
+        /// and print one JSON object per task row with an id: project, id, state (open, done,
+        /// dropped) and weight by the rule every rollup uses. READ-ONLY: day-log weighs the board
+        /// at a past notes commit through this, so the points rule has one home
+        #[arg(long, conflicts_with_all = ["json", "agent", "version", "done_days"])]
+        weigh: bool,
     },
     /// Triage the dated-capture inbox (list / add / archive), and mark inbox page rows
     /// reviewed (ack). No subcommand = list.
@@ -1540,6 +1546,10 @@ fn main() -> Result<()> {
     if let Cmd::Row { sub } = &cli.cmd {
         return row_cmd(sub);
     }
+    // Weighing rows read from stdin needs no profile either: day-log runs it over the notes history.
+    if let Cmd::Board { weigh: true, .. } = &cli.cmd {
+        return board::print_weigh(&read_stdin()?);
+    }
     let prof = config::resolve(cli.profile.as_deref())?;
     let log = logging::Logger::new(prof.log_file.clone(), cli.verbose);
 
@@ -1866,6 +1876,7 @@ fn main() -> Result<()> {
             version,
             projects,
             ids,
+            weigh: _,
         } => {
             if let Some(v) = version {
                 board::print_version(&v, &projects, json)?
