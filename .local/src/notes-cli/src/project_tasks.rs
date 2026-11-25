@@ -1660,7 +1660,6 @@ fn file_via(
     let mut ev = crate::ingest::Event::new(
         if dup_id.is_some() { "dup" } else { "filed" },
         name,
-        // The board's own name, so the daily cap counts a row filed through an alias or another case.
         &dest_proj.file_name().unwrap_or_default().to_string_lossy(),
         &line.text,
     );
