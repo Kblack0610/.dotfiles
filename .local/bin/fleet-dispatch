@@ -3388,12 +3388,11 @@ trainee_empty_why() {
 }
 
 # trainee_waiting -> the rows whose diff waits for a batch review, as item JSON lines: in review, a
-# trainee's, their patch in TRAINEE_DIR, no PR yet (an approved row whose PR has not merged is no new
-# diff), and no per-diff review-<slug> item (the old hand-off) open. A run on a fleet worker left its
-# patch in the worker's TRAINEE_DIR, so it is fetched here first (trainee_fetch).
+# trainee's, their patch in TRAINEE_DIR, and no PR yet (an approved row whose PR has not merged is no
+# new diff). A run on a fleet worker left its patch in the worker's TRAINEE_DIR, so it is fetched here
+# first (trainee_fetch).
 trainee_waiting() {
-  agent-queue list --json --state active 2>/dev/null | jq -sc '(map(.slug) | map({key: ., value: 1}) | from_entries) as $s
-    | .[] | select(.state == "review" and (.trainee // "") != "" and ((.pr // "") == "") and ($s["review-" + .slug] | not))' |
+  agent-queue list --json --state active 2>/dev/null | jq -c 'select(.state == "review" and (.trainee // "") != "" and ((.pr // "") == ""))' |
     while IFS= read -r it; do
       [ -s "$TRAINEE_DIR/$(jq -r .slug <<<"$it").patch" ] || trainee_fetch "$it" || continue
       echo "$it"
