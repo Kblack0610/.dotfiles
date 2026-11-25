@@ -145,7 +145,7 @@ PY
 # credential files an agent must not read or write. agy's rules are prefixes with no globs, so an entry
 # with a glob in the middle or a shell metacharacter is skipped, as sync-codex-home.sh's deny_rules does.
 # The key is the one agy's settings struct declares (permissions.allow, .deny, .ask), read from the
-# binary 2026-11-25, not yet exercised by a live deny. The hook form (hooks.json) is a follow-up.
+# binary 2026-11-25, not yet exercised by a live deny. A rule the human added by hand stays: the sync adds to the list. The hook form (hooks.json) is a follow-up.
 AGY_SETTINGS="${AGY_SETTINGS:-$GEMINI_HOME/antigravity-cli/settings.json}"
 AGY_DENY_COUNT=$(python3 - "$AGY_SETTINGS" "$CLAUDE_HOME/settings.json" "$HOME" <<'PY'
 import json, os, re, sys
@@ -163,9 +163,11 @@ for entry in deny:
     if not pat or re.search(r"[*|<>$~;&`\"'()]", pat):
         continue
     rules.add("command(" + " ".join(pat.split()) + ")")
-for rel in (".ssh", ".config/gh", ".claude/.credentials.json", ".codex/auth.json"):
+claude_home = os.path.dirname(claude)
+for cred in (os.path.join(home, ".ssh"), os.path.join(home, ".config/gh"), os.path.join(claude_home, ".credentials.json"),
+             os.path.join(home, ".claude/.credentials.json"), os.path.join(home, ".codex/auth.json")):
     for kind in ("read_file", "write_file"):
-        rules.add(f"{kind}({os.path.join(home, rel)})")
+        rules.add(f"{kind}({cred})")
 try:
     cur = json.load(open(path)) if os.path.getsize(path) else {}
 except FileNotFoundError:
@@ -175,14 +177,15 @@ except ValueError as e:
 if not isinstance(cur, dict) or not isinstance(cur.get("permissions") or {}, dict):
     sys.exit(f"agy: {path} has no permissions object; left as it is, fix it by hand")
 perms = cur.get("permissions") or {}
-perms["deny"] = sorted(rules)
+have = [r for r in perms.get("deny", []) if isinstance(r, str)] if isinstance(perms.get("deny", []), list) else []
+perms["deny"] = sorted(rules | set(have))
 cur["permissions"] = perms
 os.makedirs(os.path.dirname(path), exist_ok=True)
 with open(path + ".tmp", "w") as f:
     json.dump(cur, f, indent=2)
     f.write("\n")
 os.replace(path + ".tmp", path)
-print(len(rules))
+print(len(perms["deny"]))
 PY
 ) || AGY_DENY_COUNT="not written"
 

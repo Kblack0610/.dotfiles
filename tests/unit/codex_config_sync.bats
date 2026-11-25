@@ -219,16 +219,16 @@ PY
   assert_output '{"entries":[{"path":"~/mine"},{"path":"'"$CLAUDE_HOME"'/skills"}],"inherits":[{"path":"/x.json"}]}'
 }
 
-@test "agy: Claude's Bash denies land in its settings.json as command rules, with the credential files, and the human's keys stay" {
+@test "agy: Claude's Bash denies land in its settings.json as command rules, with the credential files, and the human's keys and deny rules stay" {
   mkdir -p "$GEMINI_HOME/antigravity-cli"
-  echo '{"trustedWorkspaces": ["/w"], "permissions": {"ask": ["command(x)"]}}' > "$GEMINI_HOME/antigravity-cli/settings.json"
+  echo '{"trustedWorkspaces": ["/w"], "permissions": {"ask": ["command(x)"], "deny": ["command(mine)"]}}' > "$GEMINI_HOME/antigravity-cli/settings.json"
   echo '{"permissions": {"deny": ["Bash(sudo *)", "Bash(git push --force*)", "Bash(curl * | sh)", "Read(**/.env)"]}}' > "$CLAUDE_HOME/settings.json"
   run "$SUBJECT"
   assert_success
   run "$SUBJECT"
   assert_success
   run jq -c '[.trustedWorkspaces, .permissions.ask, (.permissions.deny | map(select(startswith("command("))))]' "$GEMINI_HOME/antigravity-cli/settings.json"
-  assert_output '[["/w"],["command(x)"],["command(git push --force)","command(sudo)"]]'
+  assert_output '[["/w"],["command(x)"],["command(git push --force)","command(mine)","command(sudo)"]]'
   run jq -r '.permissions.deny[]' "$GEMINI_HOME/antigravity-cli/settings.json"
   assert_output --partial "write_file($HOME/.ssh)"
   refute_output --partial ".env"

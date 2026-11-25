@@ -1334,7 +1334,7 @@ STUB
   assert_equal "$(field c '[.prs[] | "\(.number) \(.state)"] | join(",")')" '12 MERGED'
 }
 
-@test "a trainee item with no landed_by credits its PR to the first session, the run that left the diff, not the reviewer that landed it (ar-4750)" {
+@test "a trainee item with no landed_by credits its PR to the trainee session before the reviewer's, the run that left the diff, not the reviewer that landed it (ar-4750)" {
   # NEGATIVE CONTROL: before ar-4750 a two-session item with no landed_by credited neither session, so an approved trainee diff read as nothing landed.
   queue_stub
   jq -cn '{slug: "trn", sessions: "sess-a sess-c", pr: "o/r#11", trainee: "ocfree:beam"}' > "$SANDBOX/items.jsonl"

@@ -393,7 +393,7 @@ so_agy_rows() {
       | [$ev[] | .step_update // empty | select(.state == "ERROR" and .step_type == "agent_response")] as $badturns
       | [$tools[] | select(.tool_name == "run_command")
          | {cmd: (.tool_info.parameters.CommandLine // ""),
-            exit: ((.tool_info.output // "") | first((capture("Command exited with code (?<c>-?[0-9]+)").c | tonumber), null))}
+            exit: ((.tool_info.output | strings // "") | first((capture("Command exited with code (?<c>-?[0-9]+)").c | tonumber), null))}
          | .class = (.cmd | time_use_class)] as $cmds
       | $r.usage as $u
       | {session_id: $id, harness: "agy", cwd: $i.init.cwd, title: "",
