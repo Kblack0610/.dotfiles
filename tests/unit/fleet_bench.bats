@@ -2576,7 +2576,7 @@ fix_item() {
   [ "$(grep -c . "$BOARD.home")" = 1 ]
 }
 
-@test "triage: a held filing lock defers every row, human sheet included, but still queues the red fixes (ar-6078)" {
+@test "triage: a held filing lock defers every row, human sheet included, but still queues the red fix of a row already filed (ar-6078)" {
   log_triage_setup
   export BENCH_UPSERT_LOCK="$SANDBOX/upsert.lock" BENCH_UPSERT_LOCK_WAIT=0
   watch spend TRIP -25200 high; watch puck TRIP -25200 high
