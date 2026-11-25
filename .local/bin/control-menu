@@ -177,7 +177,9 @@ click() {
         hyprctl dispatch "hl.dsp.exec_cmd([==[$cmd]==])" >/dev/null
         return
     fi
-    setsid -f sh -c "$cmd" >/dev/null 2>&1 </dev/null
+    # nohup: setsid -f's child sits in this popup's process group until it calls setsid(), so
+    # the hangup of the closing popup could kill it before the command ran (ui control_menu 10).
+    nohup setsid -f sh -c "$cmd" >/dev/null 2>&1 </dev/null
 }
 
 # action <key> <left|right> [arg]: execute (come back to the list) for a click that runs in
