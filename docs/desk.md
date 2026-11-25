@@ -4,13 +4,13 @@
 
 | Slot | Parts | Unit |
 |---|---|---|
-| bar | `waybar-classic`, `waybar-modern`, `noctalia` | `waybar.service` (our `launch.sh` drop-in), `noctalia.service` |
-| notify | `dunst`, `swaync` | `dunst.service`, `swaync.service` |
+| bar | `noctalia` (the default), `waybar-classic`, `waybar-modern` | `noctalia.service`, `waybar.service` (our `launch.sh` drop-in) |
+| notify | `dunst` (the default), `swaync` | `dunst.service`, `swaync.service` |
 
 ## Use
 
 ```
-desk current                 # bar=waybar-classic, notify=dunst
+desk current                 # bar=noctalia, notify=dunst
 desk use bar waybar-modern   # record it and switch now
 desk use notify swaync       # the notifier with a control panel
 desk parts                   # every slot's parts and units
@@ -18,7 +18,7 @@ desk parts                   # every slot's parts and units
 
 From the keyboard: Super+A, then d, then `c` waybar-classic, `m` waybar-modern, `n` noctalia, `d` dunst or `s` swaync. Super+A, then b, opens the bar's panels (see "Panel keys"). desk's answer comes back as a notification. `tests/unit/desk.bats` checks that every part has a key and each key runs the part its label names.
 
-The choice lives in `~/.local/state/desk/parts` and survives logout: `desk.service` (wanted by `graphical-session.target`) runs `desk start` at login. A slot with no line runs its first part.
+The choice lives in `~/.local/state/desk/parts` and survives logout: `desk.service` (wanted by `graphical-session.target`) runs `desk start` at login. A slot with no line runs its first part, the default: noctalia for the bar (the human's pick after a day on each, ask 217GgJ, 2026-11-20) and dunst for the notifier. A fresh install gets both, since `packages.conf` installs every part.
 
 Scripts and binds never signal a part directly:
 
@@ -58,7 +58,8 @@ Notifications stay with the notify slot: `config.toml` sets `[notification] enab
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| No bar after login | `desk.service` failed (a part did not start) or the graphical session target was not reached | `systemctl --user status desk.service waybar.service`, then `desk start` |
+| No bar after login | `desk.service` failed (a part did not start) or the graphical session target was not reached | `systemctl --user status desk.service noctalia.service waybar.service`, then `desk start` |
+| No bar after a pull on a machine with no `~/.local/state/desk/parts` | the default bar became noctalia (2026-11-24), and this machine has not installed it | `sudo pacman -S noctalia` and `desk start`, or keep waybar with `desk use bar waybar-classic` |
 | `desk use` says a part "needs X, which is not installed" | the part's package is missing | install it (`packages.conf` lists it), then rerun |
 | A chip does not refresh on a keybind | the chip has no `"signal"` key, so `desk signal` exits 2 | add `"signal": N` to the module in `config.base` |
 | swaync shows its default grey look | `~/.config/swaync/style.css` is not there: it is a gitignored render, which stow and `dotfiles-deploy` never link, so theme-switch links it when it writes it | `theme-switch "$(cat ~/.config/theme/current)" --only swaync` renders and links it |
