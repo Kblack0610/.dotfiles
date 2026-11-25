@@ -67,6 +67,13 @@ function briefFold() {
   return cfold("brief", `<b>Briefing</b> <a class="muted" href="${focusHref(b.note.target)}">open</a>`, `<div class="md">${body}</div>`, fcs.open);
 }
 
+// The day's refs as their count, one link to that day on Reports (hub_core::focus `reports`); a
+// day with none, or whose reports could not be read, keeps its ## Refs as written.
+function refsLine() {
+  const r = fcs.data.reports;
+  return r ? `<a class="dref" href="${esc(r.link)}"><b>${esc(r.label)}</b> <span class="muted">${esc(r.text)}</span></a>` : "";
+}
+
 const liveRows = () => !!fcs.data && !!fcs.data.note.date && !fcs.edit;
 
 // A lane's `+` line: Done takes no new rows, and the rollup is another note's.
@@ -190,6 +197,7 @@ function focusBody(v) {
     if (n.date) html += briefFold();
     if (f.rollup) { seed("rollup", false); html += cfold("rollup", "<b>Rollup</b>", `<div class="md">${md(f.rollup, { notes: true })}</div>`, fcs.open); }
   }
+  if (n.date) html += refsLine();
   // A daily note's other sections fold away under Focus; a note opened from a link is the
   // thing being read, so it is open, with its untitled top drawn as is. A day's Links footer
   // is the nav's places already.

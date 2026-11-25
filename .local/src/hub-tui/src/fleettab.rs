@@ -1228,7 +1228,7 @@ pub mod tests {
         let s = text(&fixture(), 160);
         for want in [
             "dispatch: unreadable",
-            "RUNNERS  3 of 3 rows, spend: 0 Costs",
+            "RUNNERS  3 of 3 rows, spend: Costs",
             "all 3  lead 1  deliver 0  observe 2  learn 0  maintain 0",
             "KIND",
             "FOR",
@@ -1679,7 +1679,7 @@ pub mod tests {
         r.extras = Extras::sentinel(vec![watch("TRIP"), watch("OK")]);
         let lines = page_text(Some(&Ok(r)), 120);
         assert!(
-            lines.contains(&"WATCHES  2 watches, 1 tripped: 7 Alerts, Watches".to_string()),
+            lines.contains(&"WATCHES  2 watches, 1 tripped: 8 Alerts, Watches".to_string()),
             "{lines:?}"
         );
         assert!(!lines.iter().any(|l| l.contains("LAST RUN")), "{lines:?}");

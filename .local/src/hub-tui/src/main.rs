@@ -33,6 +33,7 @@ mod projtab;
 mod proptab;
 mod queuetab;
 mod releases;
+mod reportstab;
 mod schedules;
 mod stacktab;
 mod tabreq;
@@ -846,6 +847,22 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
             a.focus = Some(hub_core::focus::read(&sys, "daily"));
         }
         a.tab = Tab::Daily;
+        for l in a.page_lines(w) {
+            let _ = writeln!(out, "{}", plain(&l));
+        }
+        return 0;
+    }
+    // Reports prints the stream, or with a word (`archive`, a date) that inner tab.
+    if tab == Some(Tab::Reports) {
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        a.reports = Some(hub_core::reports::read(
+            &hub_core::session_actions::System,
+            &today,
+        ));
+        a.reports_inner = section
+            .as_deref()
+            .map_or("today", |q| reportstab::inner_of(q, &today));
+        a.tab = Tab::Reports;
         for l in a.page_lines(w) {
             let _ = writeln!(out, "{}", plain(&l));
         }

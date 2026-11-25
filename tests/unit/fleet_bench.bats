@@ -2196,19 +2196,37 @@ fix_item() {
   assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red cause:$(cause_of) "
 }
 
-@test "triage: a cause in hand is not queued again: running, or closed with its PR waiting on a merge" {
+@test "triage: a cause in hand is not queued again: running, or in review with its PR waiting on a merge" {
   log_triage_setup
   lock_route
   fix_item ar-1 running ''
   run "$SUBJECT" triage
   assert_success
   [ ! -s "$PLOG" ]
-  : > "$ITEMS"; fix_item ar-1 done ok o/r#5 ''
+  : > "$ITEMS"; fix_item ar-1 review '' o/r#5 ''
   run "$SUBJECT" triage
   assert_success
   [ ! -s "$PLOG" ]
   run grep -c 'fix(logs): alpha error' "$BOARD"   # the row still files
   assert_output 1
+}
+
+# 2026-11-24 (ar-5294): ar-3447 closed recording #3091, whose merge ar-2940's landing recorded, so it
+# had no merged:, and triage read it as an owner waiting on a merge: playground-train-stuck tripped
+# again and went 17h with no item while 44 PRs waited in landing-queue.
+@test "triage: a closed fix that records a PR with no merge is a try that did not hold, not an owner" {
+  log_triage_setup
+  lock_route
+  for row in "done ok o/r#5" "done failed o/r#5"; do
+    : > "$ITEMS"; : > "$PLOG"
+    # shellcheck disable=SC2086
+    fix_item ar-1 $row
+    run "$SUBJECT" triage
+    assert_success
+    assert_output --partial '1 queued as red fixes'
+    run cat "$PLOG"
+    assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red cause:$(cause_of) retry:ar-1 --raw "
+  done
 }
 
 @test "triage: a fix that closed cancelled, failed or merged with the red still here is queued once more, naming it" {
@@ -2943,6 +2961,28 @@ red_item() {
   assert_equal "$(jq -c '.project' <<<"$output")" '""'
 }
 
+@test "reds: each row names its board row id, the ticket the Alerts tab links, from row: or a board: from; none reads null" {
+  log_triage_setup
+  : > "$AGENTCTL_STATE_DIR/runs.jsonl"
+  watch fine OK -100 normal
+  red_item a done 'check(watch): fine tripped since 2026-11-01, expected: fine' -7200 -3600 r#1 sha1
+  parses 'check(watch): fine tripped since 2026-11-01, expected: fine' check watch 'fine tripped since 2026-11-01, expected: fine'
+  jq -c '. + {row: "agent-runtime:ar-5133"}' "$ITEMS" > "$ITEMS.p" && mv "$ITEMS.p" "$ITEMS"
+  run "$SUBJECT" reds --json
+  assert_success
+  assert_equal "$(jq -r '.row' <<<"$output")" ar-5133
+  jq -c 'del(.row) + {from: "board:home-config:hc-9"}' "$ITEMS" > "$ITEMS.p" && mv "$ITEMS.p" "$ITEMS"
+  run "$SUBJECT" reds --json
+  assert_success
+  assert_equal "$(jq -r '.row' <<<"$output")" hc-9
+  # negative control: an item with no row and no board: from keeps its line, with row null
+  jq -c 'del(.row) + {from: "human"}' "$ITEMS" > "$ITEMS.p" && mv "$ITEMS.p" "$ITEMS"
+  run "$SUBJECT" reds --json
+  assert_success
+  assert_equal "$(jq -c '.row' <<<"$output")" null
+  assert_equal "$(jq -r '.slug' <<<"$output")" a
+}
+
 @test "reds: a merged fix whose red is routed to alert reads alert route and is not unfixed; with no alert line it counts" {
   log_triage_setup
   : > "$AGENTCTL_STATE_DIR/runs.jsonl"
@@ -3575,7 +3615,7 @@ q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
   run "$SUBJECT" chain --json
   assert_success
   run jq -c 'with_entries(.value |= [.["7d"], .status])' <<<"$output"
-  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"release_overdue":[0,"ok"],"version_tag_drift":[0,"ok"],"doctor_fail":[0,"ok"],"dup_pairs":[null,"-"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"reds_spent":[null,"-"],"requested_unstarted_h":[0,"-"],"orphan_request_rows":[0,"ok"],"next_up_blocked":[0,"ok"],"stale_urgent_d":[0,"ok"],"urgent_per_board":[0,"ok"],"playtest_waiting_d":[0,"ok"],"done_inline_old":[0,"ok"],"request_to_live_h":[null,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_review":[null,"-"],"step_age_p90_waiting":[null,"-"],"queue_net_24h":[null,"-"],"estimated_token_share":[null,"-"]}'
+  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"release_overdue":[0,"ok"],"version_tag_drift":[0,"ok"],"doctor_fail":[0,"ok"],"dup_pairs":[null,"-"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"reds_spent":[null,"-"],"requested_unstarted_h":[0,"-"],"orphan_request_rows":[0,"ok"],"next_up_blocked":[0,"ok"],"stale_urgent_d":[0,"ok"],"urgent_per_board":[0,"ok"],"playtest_waiting_d":[0,"ok"],"done_inline_old":[0,"ok"],"prio_default":[4,"-"],"request_to_live_h":[null,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_review":[null,"-"],"step_age_p90_waiting":[null,"-"],"queue_net_24h":[null,"-"],"estimated_token_share":[null,"-"]}'
   # the done items are read back a day past the window (8 days before T0, a local date), so an item
   # done before its PR merged counts; the pipeline reads the last day's
   run sort -u "$DONE.calls"
@@ -3655,6 +3695,57 @@ LIB
   # an unreadable project list reads ?, never 0
   BENCH_PROJECTS_CMD=false run "$SUBJECT" chain --json
   assert_equal "$(jq -c '[.release_overdue["7d"], .version_tag_drift["7d"]]' <<<"$output")" '[null,null]'
+}
+
+@test "chain: prio_default counts the open rows with no priority or no reason, and names the filer with the most" {
+  chain_fixture
+  printf '%s\n' prio_default_max=0 >> "$KPI_THRESHOLDS"
+  # the fixture's rows all carry a priority and a reason; d-2 has a priority and no reason, d-3 no priority
+  # (both agent-queue's: its first event wins over a later one), d-4 was filed by the human, d-5 has no
+  # event; a closed row, a row of a project with automation off and a playtest check never count
+  jq -c '.rows |= map(. + {priority: "normal", prio_why: "upkeep"})' "$BJSON" > "$BJSON.reasoned"
+  jq -c '.rows += [
+    {project: "game", id: "d-2", lane: "agent", state: "open", priority: "high", tags: ["of/t-0"]},
+    {project: "game", id: "d-3", lane: "agent", state: "open", untriaged: true, prio_why: "upkeep", tags: ["of/t-0"]},
+    {project: "game", id: "d-4", lane: "human", state: "open", priority: "normal", tags: []},
+    {project: "game", id: "d-5", lane: "agent", state: "open", priority: "low", tags: ["of/t-0"]},
+    {project: "game", id: "d-6", lane: "agent", state: "done", tags: []},
+    {project: "off", id: "o-1", lane: "agent", state: "open", automation: false, tags: []},
+    {project: "game", id: "d-7", lane: "playtest", state: "open", tags: []}]' "$BJSON.reasoned" > "$BJSON"
+  {
+    jq -cn '{action: "added", id: "d-2", by: "s1", origin: "agent-queue"}'
+    jq -cn '{action: "added", id: "d-3", by: "s1", origin: "agent-queue"}'
+    jq -cn '{action: "added", id: "d-2", by: "s2", origin: "ask-sweep"}'
+    jq -cn '{action: "filed", id: "d-4", by: ""}'
+    jq -cn '{action: "added", id: "g-1", by: "s3", origin: "fleet-bench"}'
+  } > "$BENCH_INGEST"
+  run "$SUBJECT" chain
+  assert_success
+  assert_line 'prio_default: 4 open rows with no priority or no #why, by filer: agent-queue 2, human 1, unrecorded 1'
+  run "$SUBJECT" chain --check
+  assert_failure 1
+  assert_output 'prio_default 4 (max 0)'
+  run "$SUBJECT" prio-defaults
+  assert_success
+  assert_output "$(printf '%s\n' 'prio_default 4' '  agent-queue 2  d-2 d-3' '  human 1  d-4' '  unrecorded 1  d-5')"
+  run "$SUBJECT" prio-defaults --json
+  run jq -c '[.total, .origins[0].origin]' <<<"$output"
+  assert_output '[4,"agent-queue"]'
+  # the gauge names the filer, so the front page can say whose default it is
+  source "$SUBJECT"
+  run bench_prom "$T0" '{"steps": []}'
+  assert_line 'agent_bench_kpi_subject{kpi="prio_default",subject="agent-queue"} 1'
+  # a row with no event is no filer, so a board that only has those names no subject
+  : > "$BENCH_INGEST"
+  run bench_prom "$T0" '{"steps": []}'
+  refute_line --partial 'kpi="prio_default",subject='
+  # negative control: every row carries a priority and a reason, so the KPI reads 0, passes and names no filer
+  cp "$BJSON.reasoned" "$BJSON"
+  run "$SUBJECT" chain --check
+  assert_success
+  assert_output ''
+  run bench_prom "$T0" '{"steps": []}'
+  refute_line --partial 'kpi="prio_default",subject='
 }
 
 @test "chain: each KPI goes past its bound on a fixture that breaks its link, and only that one" {

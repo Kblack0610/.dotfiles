@@ -3,7 +3,7 @@
 // Hunk keeps review notes in the session only; nothing reaches disk. This turns the
 // ones you mark into rows through the `notes` CLI so they outlive the review:
 //
-//   #task:<project>   -> notes ptask <project> add "<text> #low"
+//   #task:<project>   -> notes ptask <project> add "<text>", untagged unless the note names a priority
 //   #task             -> the repo's project board when exactly one maps to it
 //                        (project_lab_names in ~/.config/shared-hooks/project-name.sh),
 //                        else notes inbox add "<text>"
@@ -18,7 +18,6 @@ import { execFile } from "node:child_process";
 import type { HunkExtensionAPI } from "hunkdiff/extension";
 
 const TAG = /#task(?::([\w.-]+))?\b/;
-const PRIORITY = /(^|\s)#(urgent|high|normal|low)\b/;
 // Timeout guard on each external call, so a wedged `notes` cannot hold a handler forever.
 const EXEC_TIMEOUT_MS = 10_000;
 
@@ -63,11 +62,6 @@ export function parseTaskNote(body: string): TaskNote | null {
 /** The note text plus where it was written. */
 export function located(text: string, filePath: string, line: number): string {
   return `${text} (${toAsciiLine(filePath)}:${line})`;
-}
-
-/** A board row from a diff note defaults to #low: it is a follow-up nobody has judged yet, and triage can raise it. */
-export function withPriority(text: string): string {
-  return PRIORITY.test(text) ? text : `${text} #low`;
 }
 
 export type Route = { kind: "ptask"; project: string } | { kind: "inbox"; why: string };
@@ -124,9 +118,9 @@ export default function (hunk: HunkExtensionAPI) {
       const text = located(task.text, note.filePath, note.line);
 
       if (where.kind === "ptask") {
-        const row = withPriority(text);
-        await run("notes", ["ptask", where.project, "add", row], ctx.cwd);
-        ctx.notify(`#task -> ${where.project} board: ${row}`, "info");
+        // Untagged unless the note names a priority: triage's --priority pass judges it by the rubric.
+        await run("notes", ["ptask", where.project, "add", text], ctx.cwd);
+        ctx.notify(`#task -> ${where.project} board: ${text}`, "info");
       } else {
         await run("notes", ["inbox", "add", text], ctx.cwd);
         ctx.notify(`#task -> notes inbox (${resolveError || where.why})`, resolveError ? "warning" : "info");

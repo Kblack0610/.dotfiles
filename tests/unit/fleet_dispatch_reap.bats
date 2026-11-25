@@ -62,7 +62,7 @@ load 'fleet_dispatch/common'
   grep -q 'filed orphan.md to run its open phases' "$FLEET_DISPATCH_DIR/log.md"
   run reconcile_plans
   assert_equal "$(wc -l < "$NOTES_FIXTURE/aq-adds")" 1
-  grep -q -- "--plan $SANDBOX/orphan.md --project game --priority low --from auto:plans" "$NOTES_FIXTURE/aq-adds"
+  grep -q -- "--plan $SANDBOX/orphan.md --project game --from auto:plans" "$NOTES_FIXTURE/aq-adds"
 }
 
 @test "reap files no plan a done item held under another plans directory: it matches by file name" {

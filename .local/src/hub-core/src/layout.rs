@@ -27,7 +27,7 @@ pub struct Tab {
     pub inner: &'static [Inner],
 }
 
-pub const TABS: [Tab; 12] = [
+pub const TABS: [Tab; 13] = [
     // The landing page: every action that waits on the human, then the summary lines.
     Tab {
         id: "home",
@@ -47,6 +47,28 @@ pub const TABS: [Tab; 12] = [
         question: "What is my day?",
         sections: &["nav", "lanes", "briefing", "rollup", "sections", "outbox"],
         inner: &[],
+    },
+    // Every report an agent filed for the human (`hub_core::reports`, from `notes report list`):
+    // Today is what needs the human, then today's and the week's unread, then the day's digests and
+    // the human's own captures; Archive is every other report by day.
+    Tab {
+        id: "reports",
+        group: "Today",
+        title: "Reports",
+        question: "What did agents report to me?",
+        sections: &["needs", "stream", "digests", "captures", "archive"],
+        inner: &[
+            Inner {
+                id: "today",
+                title: "Today",
+                sections: &["needs", "stream", "digests", "captures"],
+            },
+            Inner {
+                id: "archive",
+                title: "Archive",
+                sections: &["archive"],
+            },
+        ],
     },
     Tab {
         id: "log",
@@ -1051,11 +1073,11 @@ mod tests {
         assert_eq!(at(Some("history")), Some("history"));
         assert_eq!(section("fixes"), None, "a new section is no retired name");
         // The tenth tab on the number row is 0.
-        assert_eq!(bar_digit("schedules"), Some(9));
-        assert_eq!(bar_digit("costs"), Some(0));
-        assert_eq!(bar_digit("alerts"), Some(7));
+        assert_eq!(bar_digit("infra"), Some(9));
+        assert_eq!(bar_digit("schedules"), Some(0));
+        assert_eq!(bar_digit("alerts"), Some(8));
         assert_eq!(
-            bar_digit("stack"),
+            bar_digit("costs"),
             None,
             "the eleventh bar tab has no digit"
         );
@@ -1075,7 +1097,7 @@ mod tests {
         assert_eq!(
             groups,
             [
-                ("Today", vec!["home", "daily", "log"]),
+                ("Today", vec!["home", "daily", "reports", "log"]),
                 ("Agents", vec!["queue", "sessions"]),
                 ("Projects", vec!["projects", "releases"]),
                 (
@@ -1084,10 +1106,12 @@ mod tests {
                 ),
             ]
         );
-        // The number row: Home 1, Log 2, Queue 3, Sessions 4, Projects 5, Releases 6, Alerts 7,
-        // Infra 8, Schedules 9, Costs 0 (Fleet, 5 until 2026-11-12, is Sessions' Runners).
+        // The number row: Home 1, Reports 2, Log 3, Queue 4, Sessions 5, Projects 6, Releases 7,
+        // Alerts 8, Infra 9, Schedules 0 (Fleet, 5 until 2026-11-12, is Sessions' Runners); Costs
+        // and Stack are past the tenth, so Tab reaches them.
         let ids = [
             "home",
+            "reports",
             "log",
             "queue",
             "sessions",
@@ -1097,6 +1121,7 @@ mod tests {
             "infra",
             "schedules",
             "costs",
+            "stack",
         ];
         let digits: Vec<Option<usize>> = ids.iter().map(|id| bar_digit(id)).collect();
         assert_eq!(
@@ -1111,16 +1136,19 @@ mod tests {
                 Some(7),
                 Some(8),
                 Some(9),
-                Some(0)
+                Some(0),
+                None,
+                None
             ]
         );
     }
 
     #[test]
     fn a_bar_label_is_the_digit_and_title_or_the_title_alone() {
-        assert_eq!(bar_label("sessions"), "4 Sessions");
-        assert_eq!(bar_label("alerts"), "7 Alerts");
-        assert_eq!(bar_label("costs"), "0 Costs", "the tenth is 0");
+        assert_eq!(bar_label("sessions"), "5 Sessions");
+        assert_eq!(bar_label("alerts"), "8 Alerts");
+        assert_eq!(bar_label("schedules"), "0 Schedules", "the tenth is 0");
+        assert_eq!(bar_label("costs"), "Costs", "past the tenth");
         assert_eq!(bar_label("daily"), "Daily", "off the bar");
     }
 

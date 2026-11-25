@@ -43,7 +43,7 @@ The one home for CI doctrine across every repo the fleet works in. Each rule is 
 One decision list. Walk it top to bottom for every red.
 
 1. Classify the red from its log and the same-commit history, never by rerunning it (`ci-cleanup` Reds buckets: infra, timeout, test, check, derived, pending).
-2. A test red is fixed, its cause reverted, or quarantined with an owner, an expiry of at most two weeks, and a board row. Why: a quarantine without an expiry is permanent (`playground-nightly-fix`).
+2. A test red is fixed, its cause reverted, or quarantined with an owner, an expiry of at most two weeks, and a board row. Why: a quarantine without an expiry is permanent (`fix-ci`).
 3. A rerun is allowed only for a red classified infra with evidence: the log shows a runner lost, a network or transport error, a rate limit or a registry pull failure, before the job's main work started. A test assertion or a timeout inside the tests is never infra. The infra cause is filed on the board or queue first. A rerun never turns a test red green. Why: blanket reruns hide flakes until main is red every night (the G2I digest rejects a client auto-retry workflow for this reason).
 4. No automatic retry, at the job or the test level. Why: the same.
 5. Never raise a timeout or a ceiling to pass. Why: it moves the hang guard into the budget (Budgets above).
