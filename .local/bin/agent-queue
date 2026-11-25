@@ -1919,11 +1919,17 @@ prior_story() {
 # session plan phases that inherited urgent (ar-4349).
 add_priority() {
   local session="${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}"
-  [ -n "$2" ] || [ -z "$session" ] ||
+  # A machine filer's plan (--from auto:*) names none: its board row is filed untagged (cmd_add), so a session that
+  # runs the filer, or a dispatch pass that inherited AGENT_QUEUE_ITEM, is not refused for it.
+  local filer_plan=''
+  [ -z "$3" ] || [[ "$5" != auto:?* ]] || filer_plan=1
+  [ -n "$2" ] || [ -z "$session" ] || [ -n "$filer_plan" ] ||
     die "a session's add passes --priority: urgent for what the human needs now, high when it blocks a release or a red on main, normal for real work in its turn, low for upkeep or cleanup"
   if [ -n "$3" ] && [ "$1" = urgent ] && [ -n "$session" ] && [[ " $4 " != *" red "* && "$5" != board:* ]]; then
     echo "agent-queue: a session's plan queues at high at most; urgent is the human's own add or a red" >&2
     echo high
+  elif [ -n "$filer_plan" ] && [ -z "$2" ]; then
+    echo normal
   else
     echo "$1"
   fi
