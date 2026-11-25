@@ -1648,6 +1648,20 @@ esac'
   stub agent-hold 'echo "agent-hold $*" >> "$NOTES_FIXTURE/calls.log"; [ "$1" != show ] || [[ " ${HELD:-} " == *" $2 "* ]]'
 }
 
+@test "reap: one reap at a time, so a reap beside a running one poses no cancelled ask again (ar-4798)" {
+  settle_fixture
+  row game agent gm-4 "- [ ] feat(game): cancelled ask $T #ask/gone1/a <!-- id:gm-4 -->"
+  mkdir -p "$FLEET_DISPATCH_DIR"
+  REAP_WAIT_S=0 run flock "$FLEET_DISPATCH_DIR/.reap" "$REPO_ROOT/.local/bin/fleet-dispatch" reap
+  assert_success
+  assert_output --partial 'so this one stood down'
+  ! grep -qs '^agent-ask post ' "$NOTES_FIXTURE/calls.log" || fail "a reap beside a running one posed the ask"
+  # NEGATIVE CONTROL: with no reap running, it reaps, and that reap poses the cancelled ask
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" reap
+  refute_output --partial 'stood down'
+  grep -qs '^agent-ask post ' "$NOTES_FIXTURE/calls.log" || fail "the unlocked reap posed no ask, so the lock proved nothing"
+}
+
 @test "reap settles a row whose #ask/ gate the human answered another way: a skip drops it, any other answer holds it, a cancel asks again" {
   settle_fixture
   row game agent gm-1 "- [ ] feat(game): xbox p3 $T #ask/hold1/b <!-- id:gm-1 -->"

@@ -432,7 +432,7 @@ heal_head() {
 # This machine's own state in the store's tree: written here, read here, never shared. A shared copy
 # is rewritten by every wake, so two peers' commits of it conflict and stop the sync (the panes file,
 # ar-3327). They go in this clone's info/exclude, as the merge attributes go in info/attributes.
-LOCAL_ONLY=(dispatch/.wake dispatch/.kick dispatch/.past-starts dispatch/.beside dispatch/after-pending)
+LOCAL_ONLY=(dispatch/.wake dispatch/.kick dispatch/.past-starts dispatch/.beside dispatch/.reap dispatch/after-pending)
 apply_local_excludes() {
   local ex a
   [ "$STORE_NAME" = agent ] || return 0

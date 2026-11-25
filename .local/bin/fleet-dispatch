@@ -7701,7 +7701,23 @@ store_fresh() {
   [ "$REAP_FRESH" = yes ]
 }
 
+# cmd_reap -- reap_once under $DIR/.reap, so one reap runs at a time: a pass reaps under its own lock,
+# but the shepherd runs `fleet-dispatch reap` beside it, and two reapers each posed a cancelled ask
+# again before either recorded it (2026-11-23 10:37: rrAFt6, zMcaQs and XqrCXG, two new asks each,
+# ar-4798). A reap that finds one running waits for it, up to REAP_WAIT_S, and then reaps, so it reads
+# what that one settled and what changed since it began; past the wait it stands down and says so.
 cmd_reap() {
+  local fd rc=0
+  mkdir -p "$DIR" && exec {fd}>"$DIR/.reap" || { say "reap: cannot open $DIR/.reap, so no reap ran"; return 1; }
+  flock -w "$REAP_WAIT_S" "$fd" || {
+    exec {fd}>&-; say "reap: another reap held $DIR/.reap past REAP_WAIT_S (${REAP_WAIT_S}s), so this one stood down"; return 0
+  }
+  reap_once || rc=$?
+  exec {fd}>&-
+  return "$rc"
+}
+
+reap_once() {
   local s d slug server sess _by project area state _weight agent started sids host want waits='' seen='' gone live lost active=()
   unset REAP_PANEL REAP_LOST REAP_FRESH; REAP_HOST=()
   fleet_hosts >/dev/null   # once, so each session_live subshell inherits the roster
@@ -8376,6 +8392,9 @@ pass_mark() { PASS_TIMES+="${PASS_TIMES:+, }$1 $(( SECONDS - ${PASS_MARK:-0} ))s
 
 # The longest a timed pass waits for a kick's lock: a kick starts a session or two, so well under it.
 KICK_WAIT_S=${KICK_WAIT_S:-120}
+# The longest a reap waits for another to finish (cmd_reap); a reap takes seconds to minutes, so this
+# is the guard against a wedged holder, not a timing.
+REAP_WAIT_S=${REAP_WAIT_S:-300}
 # The most times one kick reads the queue again because its wake file moved during the run.
 KICK_ROUNDS=${KICK_ROUNDS:-3}
 
