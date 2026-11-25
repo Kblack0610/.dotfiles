@@ -247,6 +247,46 @@ phase_takes() {
     { grep -oiE '[a-z]{2,4}-[0-9]+$' || true; } | tr 'A-Z' 'a-z' | awk '!seen[$0]++'
 }
 
+# plan_taken_rows <plan file> -> each board row the plan owns, one a line: what every phase line takes, ticked
+# or not (phase_takes), and its `rows:` line (plan_rows), which its last phase closes. The one taken-row
+# query: agent-land's loose_gate and the loose-row detector read it.
+plan_taken_rows() {
+  [ -f "$1" ] || return 0
+  { phase_takes "$(awk -v mode=list -v sup=0 "$_PLAN_PHASES_AWK" "$1" | cut -f2-)"; plan_rows "$1"; } | sort -u
+}
+
+# item_filed_rows <item> -> each agent-lane board row queue item <item> filed in the record's 30 days, one id
+# a line: one it added itself (`added`, by it) and one inbox-triage filed from its outbox line (`filed`, the
+# line's `#from/<item>`). The board keeps no `#from/` tag (triage strips it), so the ingest record (`notes
+# log`) is the one place that says who filed a row. Fails when the record cannot be read.
+item_filed_rows() {
+  local out st
+  # Streamed, not held in a variable: the record's 30 days run to tens of MB.
+  out="$(notes log --days 30 --json 2>/dev/null | jq -r --arg i "$1" 'select((.id // "") != "" and .lane == "agent")
+    | select((.action == "added" and .by == $i)
+        or (.action == "filed" and any((.text // "") | splits("\\s+"); . == "#from/" + $i)))
+    | .id'; st=("${PIPESTATUS[@]}"); [ "${st[0]}" = 0 ] && [ "${st[1]}" = 0 ])" || return 1
+  [ -z "$out" ] || awk '!seen[$0]++' <<<"$out"
+}
+
+# plan_loose_rows <plan file> <item> [<own row id>] -> each row <item> filed (item_filed_rows) still open on the
+# agent lane that no phase of the plan takes (plan_taken_rows): no phase or plan row of any plan (agent-queue
+# add --plan files those), and not <own row id>, the row the item works. A found blocker the plan does not
+# own. Fails when the record or the board cannot be read.
+plan_loose_rows() {
+  local filed id board taken ids=()
+  filed="$(item_filed_rows "$2")" || return 1
+  [ -n "$filed" ] || return 0
+  for id in $filed; do ids+=(--id "$id"); done
+  board="$(notes board --json "${ids[@]}" 2>/dev/null)" && [ -n "$board" ] || return 1
+  taken="$(plan_taken_rows "$1" | jq -Rsc 'split("\n") | map(select(. != ""))')"
+  jq -r --arg own "${3:-}" --argjson taken "$taken" '.rows[]?
+    | select(.state == "open" and (.lane // "agent") == "agent" and .id != $own and (.id | IN($taken[]) | not))
+    | select((.details // []) | if type == "array" then join("\n") else tostring end
+        | test("(^|\\s)(Phases? [0-9]+( and [0-9]+)* of the plan |Run the open phases of the approved plan )") | not)
+    | .id' <<<"$board"
+}
+
 # plan_rows_add <plan file> <row id> -- put <row id> on the plan's `rows:` line, a new line under its
 # `epic:` line (else its title, else the top) when it has none, so agent-land closes that row with
 # the plan's last phase. A row already on it is left as is. Written in place, so a link stays a link.
