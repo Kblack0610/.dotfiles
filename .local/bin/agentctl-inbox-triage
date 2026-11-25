@@ -95,6 +95,7 @@ SIZE_PROMPT="$PROMPTS/inbox-size/prompt.md"          # inbox-size
 REASONS_TSV="$PROMPTS/inbox-triage/rules/priority-reasons.tsv" # the reason list: the rubric includes it, notes reads it
 
 DRY=0; ONLY=""; BACKLOG=0; PRIORITY=0; SIZE=0; SCORED=0; RETAG=""; REASONS=0; LINK=0; LINKED=0; STANDING=0; NEW_EPICS=0; declare -A NEW_SEEN=(); TAGGED=0; WATCH=0; WAIT=0; SUMMARY=""; FILED=0; KEPT=0; FAILED=0; ROUTED=0; OVER=0
+declare -A WAITERS=()   # row id -> the open rows waiting on it with #after/<id> (backlog_pass fills it)
 REWROTE=0; MOVED=0; DROPPED=0; RAISED=0; CLOSED_DONE=0; REPORT=0; IMPROVED=0; CAPPED=0; BUDGET_STOP=0; ANSWERED=0; ASKED=0; VERDICT=keep; VDEST=""; VPRIO=""
 OUT=""; ANSWER_ID=""; DEFERRED='[]'; LINES_DROPPED=0
 FLAG=""; RECORD=""; OUTBOX=""
@@ -455,10 +456,19 @@ ask_context() {
 # it already kept.
 improve_line() {
   local from="$1" raw="$2" text="$3" dest="$4" why="$5"
-  if [ "$DRY" = 1 ]; then printf 'would improve [%s -> %s] %s (%s)\n' "$from" "$dest" "$raw" "$why"; IMPROVED=$((IMPROVED + 1)); return 0; fi
+  # Health work (a stage criterion, a missing test, a CI/perf/alert fault with a number) is no
+  # nice-to-have: `notes improve` refuses it with exit 3 and the line stays for a row to be filed.
+  local rc=0
+  if [ "$DRY" = 1 ]; then
+    notes improve "$dest" --check -- "$text" >/dev/null 2>&1 || rc=$?
+    [ "$rc" != 3 ] || { leave "health work, not an improvement"; return 1; }
+    printf 'would improve [%s -> %s] %s (%s)\n' "$from" "$dest" "$raw" "$why"; IMPROVED=$((IMPROVED + 1)); return 0
+  fi
   # A failed write records nothing (an older notes with no `improve` verb is fixed by
   # notes-bootstrap --build-only): the line stays and the next sweep asks again.
-  notes improve "$dest" --why "$why" -- "$text" >/dev/null || {
+  notes improve "$dest" --why "$why" -- "$text" >/dev/null || rc=$?
+  [ "$rc" != 3 ] || { leave "health work, not an improvement"; return 1; }
+  [ "$rc" = 0 ] || {
     say "$from: not kept as an improvement of $dest (an old notes? notes-bootstrap --build-only), left: $raw"
     proof_why "notes improve failed"
     FAILED=$((FAILED + 1)); return 1
@@ -809,8 +819,16 @@ improve_row() {
   local p="$1" words
   words="$(sed -E 's/^[[:space:]]*- \[.\] //; s/[[:space:]]*<!--.*-->[[:space:]]*$//; s/(^|[[:space:]])#[A-Za-z][^[:space:]]*//g; s/^[[:space:]]+//' <<<"$2")"
   [ -n "$words" ] || return 1
-  if [ "$DRY" = 1 ]; then printf 'would run: notes improve'; printf ' %q' "$p" --why "$3" -- "$words"; echo; return 0; fi
-  notes improve "$p" --why "$3" -- "$words" >/dev/null || {
+  # Exit 3 is health work, which stays on the board: no failure, the row is kept (backlog_row).
+  local rc=0
+  if [ "$DRY" = 1 ]; then
+    notes improve "$p" --check -- "$words" >/dev/null 2>&1 || rc=$?
+    [ "$rc" != 3 ] || { say "$p: health work, not an improvement, kept: $2"; return 1; }
+    printf 'would run: notes improve'; printf ' %q' "$p" --why "$3" -- "$words"; echo; return 0
+  fi
+  notes improve "$p" --why "$3" -- "$words" >/dev/null || rc=$?
+  [ "$rc" != 3 ] || { say "$p: health work, not an improvement, kept: $2"; return 1; }
+  [ "$rc" = 0 ] || {
     say "$p: not kept as an improvement (an old notes? notes-bootstrap --build-only): $2"
     proof_why "notes improve failed"; FAILED=$((FAILED + 1)); return 1
   }
@@ -847,6 +865,13 @@ backlog_row() {
   fi
   # a heading over child rows is never closed: its children would sit under a ticked row
   [ "$nkids" -gt 0 ] && [[ $action =~ ^(drop|dup|done|improvement)$ ]] && action=keep
+  # a row an open row waits on (#after/<id>, WAITERS) is never dropped, closed done (a drop --why here)
+  # or moved to improvements.md: that gate reads dropped and never clears, and queue-starved pages on it
+  # (ar-3172: the 2026-11-24 pass left 12). A dup still applies: the gate follows the fold.
+  if [ -n "$own" ] && [ -n "${WAITERS[$own]-}" ] && [[ $action =~ ^(drop|done|improvement)$ ]]; then
+    say "$p ($lane): $own kept: ${WAITERS[$own]} wait on it (#after/$own)"
+    action=keep
+  fi
   case "$action" in
     rewrite)
       # The parent the rewrite names (an open epic it kept, else a new one it proposed) goes on with
@@ -1019,6 +1044,11 @@ backlog_pass() {
   names="$(jq -r '[.projects[].project] | unique | join(", ")' <<<"$board")"
   shared_repos="$(shared_repos)"
   TYPES="$(row_types)" || return 1   # once a pass, read by every backlog_batch
+  # Each row id an open row of any project waits on with #after/<id>, and those rows: backlog_row keeps it.
+  # A doing row's gate is spent, so only open rows count; tags_cased keeps the id as the row writes it.
+  local w g
+  while read -r w g; do WAITERS[$g]+="${WAITERS[$g]:+ }$w"; done < <(jq -r '.rows[]? | select(.state == "open" and .id != null)
+    | .id as $w | (.tags_cased // .tags // [])[] | select(startswith("after/") and length > 6) | "\($w) \(.[6:])"' <<<"$BOARD")
   while IFS= read -r p; do
     [ -n "$ONLY" ] && [ "$p" != "$ONLY" ] && continue
     agentctl report --name "$NAME" "item=$p" >/dev/null 2>&1 || true

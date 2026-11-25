@@ -231,6 +231,12 @@ enum Cmd {
         /// the row it was folded into. READ-ONLY
         #[arg(long = "id", value_name = "ID", requires = "json", conflicts_with_all = ["agent", "version", "done_days"])]
         ids: Vec<String>,
+        /// Read `git grep` lines of agent sheets on stdin (`[<rev>:]<path>/agent/README.md:<line>`)
+        /// and print one JSON object per task row with an id: project, id, state (open, done,
+        /// dropped) and weight by the rule every rollup uses. READ-ONLY: day-log weighs the board
+        /// at a past notes commit through this, so the points rule has one home
+        #[arg(long, conflicts_with_all = ["json", "agent", "version", "done_days"])]
+        weigh: bool,
     },
     /// Triage the dated-capture inbox (list / add / archive), and mark inbox page rows
     /// reviewed (ack). No subcommand = list.
@@ -764,6 +770,10 @@ enum PtaskCmd {
         /// day its PR merged). Never a future day
         #[arg(long, value_name = "DAY")]
         on: Option<String>,
+        /// What happens to its open children: `drop` closes each with this row's stamp, an id
+        /// (like ar-142) moves them under that row. Without it, open children refuse the close
+        #[arg(long, value_name = "drop|ID", value_parser = project_tasks::Children::parse)]
+        children: Option<project_tasks::Children>,
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
@@ -814,9 +824,13 @@ enum PtaskCmd {
         /// Why it will not be delivered: stale, superseded, or where it moved ("moved: ideas.md")
         #[arg(long, value_name = "WHY")]
         why: Option<String>,
-        /// It duplicates this row (its id, like ar-142)
+        /// It duplicates this row (its id, like ar-142); its open children move under that row
         #[arg(long, value_name = "ID")]
         dup: Option<String>,
+        /// What happens to its open children: `drop` closes each with this row's stamp, an id
+        /// (like ar-142) moves them under that row. Without it, open children refuse the close
+        #[arg(long, value_name = "drop|ID", value_parser = project_tasks::Children::parse)]
+        children: Option<project_tasks::Children>,
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
@@ -1325,6 +1339,12 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
             pr,
             text: text.join(" "),
         },
+        Some(PtaskCmd::Done {
+            children: Some(_), ..
+        })
+        | Some(PtaskCmd::Drop {
+            children: Some(_), ..
+        }) => bail!("--playtest rows have no children: drop --children"),
         Some(PtaskCmd::Done { on: Some(_), .. }) => {
             bail!("--playtest done takes no --on: a playtest row closes today")
         }
@@ -1338,7 +1358,9 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
             unverified,
             pick: Pick::new(&query.join(" "), exact)?,
         },
-        Some(PtaskCmd::Drop { why, dup, query }) => playtest::Op::Drop {
+        Some(PtaskCmd::Drop {
+            why, dup, query, ..
+        }) => playtest::Op::Drop {
             stamp: project_tasks::drop_stamp(why.as_deref(), dup.as_deref())?,
             pick: Pick::new(&query.join(" "), exact)?,
         },
@@ -1351,6 +1373,17 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
 
 /// `notes row parse|types`. Parse reads bytes, so one line that is not UTF-8 still gets its
 /// own output line instead of failing the rest.
+/// The commands that need no profile, run before one is resolved: the row grammar (agent-queue
+/// and the triage prompts call it where none may resolve) and weighing rows from stdin (day-log
+/// runs it over the notes history).
+fn profile_free(cmd: &Cmd) -> Option<Result<()>> {
+    match cmd {
+        Cmd::Row { sub } => Some(row_cmd(sub)),
+        Cmd::Board { weigh: true, .. } => Some(read_stdin().and_then(|s| board::print_weigh(&s))),
+        _ => None,
+    }
+}
+
 fn row_cmd(sub: &RowCmd) -> Result<()> {
     use std::io::{BufRead, Write};
     let mut out = std::io::stdout().lock();
@@ -1476,6 +1509,53 @@ fn knowledge_cmd(prof: &config::Profile, log: &logging::Logger, sub: KnowledgeCm
     })
 }
 
+/// `ptask done` and `ptask drop`: close the row the query names, settling its open children
+/// (`--children`, and a dup's children move under the row it duplicates).
+fn ptask_close(
+    prof: &config::Profile,
+    log: &logging::Logger,
+    name: &str,
+    pick: &dyn Fn(&[String]) -> Result<Pick>,
+    cmd: PtaskCmd,
+    lane: Lane,
+) -> Result<i32> {
+    match cmd {
+        PtaskCmd::Done {
+            proof,
+            unverified,
+            on,
+            children,
+            query,
+        } => project_tasks::done(
+            prof,
+            log,
+            name,
+            &pick(&query)?,
+            proof.as_deref(),
+            unverified.as_deref(),
+            on.as_deref(),
+            lane,
+            children.as_ref(),
+        ),
+        PtaskCmd::Drop {
+            why,
+            dup,
+            children,
+            query,
+        } => project_tasks::drop(
+            prof,
+            log,
+            name,
+            &pick(&query)?,
+            why.as_deref(),
+            dup.as_deref(),
+            lane,
+            children.as_ref(),
+        ),
+        _ => bail!("ptask_close takes done and drop only"),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 /// `ptask tag`: its `--add` tags plus `--why`'s reason and priority, then the retag.
 fn ptask_tag(
@@ -1536,10 +1616,8 @@ fn read_stdin() -> Result<String> {
 fn main() -> Result<()> {
     reset_sigpipe();
     let cli = Cli::parse();
-    // The grammar needs no profile, and its callers (agent-queue, the triage prompts) run where
-    // none may resolve.
-    if let Cmd::Row { sub } = &cli.cmd {
-        return row_cmd(sub);
+    if let Some(done) = profile_free(&cli.cmd) {
+        return done;
     }
     let prof = config::resolve(cli.profile.as_deref())?;
     let log = logging::Logger::new(prof.log_file.clone(), cli.verbose);
@@ -1728,21 +1806,9 @@ fn main() -> Result<()> {
                     lane,
                     &writer,
                 )?,
-                Some(PtaskCmd::Done {
-                    proof,
-                    unverified,
-                    on,
-                    query,
-                }) => project_tasks::done(
-                    &prof,
-                    &log,
-                    &name,
-                    &pick(&query)?,
-                    proof.as_deref(),
-                    unverified.as_deref(),
-                    on.as_deref(),
-                    lane,
-                )?,
+                Some(cmd @ (PtaskCmd::Done { .. } | PtaskCmd::Drop { .. })) => {
+                    ptask_close(&prof, &log, &name, &pick, cmd, lane)?
+                }
                 Some(PtaskCmd::Redate { on, dry_run, id }) => {
                     project_tasks::redate(&prof, &log, &name, &id, &on, dry_run, lane)?
                 }
@@ -1810,15 +1876,6 @@ fn main() -> Result<()> {
                 Some(PtaskCmd::Tag(t)) => {
                     ptask_tag(&prof, &log, &name, &pick(&t.query)?, t, lane, &writer)?
                 }
-                Some(PtaskCmd::Drop { why, dup, query }) => project_tasks::drop(
-                    &prof,
-                    &log,
-                    &name,
-                    &pick(&query)?,
-                    why.as_deref(),
-                    dup.as_deref(),
-                    lane,
-                )?,
                 Some(PtaskCmd::Pass { .. }) => bail!("pass applies only with --playtest"),
                 Some(PtaskCmd::Edit {
                     text,
@@ -1867,6 +1924,7 @@ fn main() -> Result<()> {
             version,
             projects,
             ids,
+            weigh: _,
         } => {
             if let Some(v) = version {
                 board::print_version(&v, &projects, json)?
