@@ -1994,7 +1994,7 @@ brief_to_row() {
   brief="$(row_brief "$words" "$4")"
   while IFS= read -r line; do
     [ -n "${line//[[:space:]]/}" ] || continue
-    jq -e --arg l "$line" '(.details // []) | index($l) != null' <<<"$feed" >/dev/null || add+=("--detail=$line")
+    jq -e --arg l "$line" 'any((.details // [])[]; . == $l)' <<<"$feed" >/dev/null || add+=("--detail=$line")
   done <<<"$brief"
   [ ${#add[@]} -gt 0 ] || return 0
   out="$(notes ${2:+--profile "$2"} ptask "$1" --agent edit "$3" "${add[@]}" 2>&1)" ||
@@ -2322,6 +2322,7 @@ cmd_add() {
     [ -n "$tags" ] && printf 'tags: %s\n' "$tags"
     [ -n "$after" ] && printf 'after: %s\n' "$after"
     [ -n "${AQ_ITEM_PLAN:-}" ] && printf 'plan: %s\nphases: %s\n' "$AQ_ITEM_PLAN" "$AQ_ITEM_PHASES"
+    [ -n "${AQ_ITEM_PLAN:-}" ] && [ -n "${AQ_ITEM_PHASE_KEYS:-}" ] && printf 'phase_keys: %s\n' "$AQ_ITEM_PHASE_KEYS"
     printf 'from: %s\nagent: %s\nqueued: %s\n' "$from" "$agent" "$now"
     [ -n "$running" ] && printf 'started: %s\n' "$now"
     [ -n "$session" ] && printf 'session: %s\n' "$session"
@@ -2655,7 +2656,7 @@ add_plan() {
     else
       rc=0
       ttl="$(plan_phase_title "$planf" "$ph" "$ttl")"
-      out="$(AQ_ITEM_PLAN="$planf" AQ_ITEM_PHASES="$ph" AQ_ROWS_FILED="${key[*]}" AQ_ITEM_TAKES="$(takes_field "$ranked" "$s" 2)" \
+      out="$(AQ_ITEM_PLAN="$planf" AQ_ITEM_PHASES="$ph" AQ_ITEM_PHASE_KEYS="$(phase_keys_of "$planf" "$ph")" AQ_ROWS_FILED="${key[*]}" AQ_ITEM_TAKES="$(takes_field "$ranked" "$s" 2)" \
         cmd_add_one ${project:+--project "$project"} --priority "$pprio" ${ptags:+--tags "$ptags"} ${weight:+--weight "$weight"} \
           --from "$from" --agent "$agent" --slug "$s" --title "$ttl" ${wait:+--after "$wait"} ${repeat:+--repeat} -- "$text")" || rc=$?
       [ -z "$out" ] || printf '%s\n' "$out"
@@ -2713,6 +2714,36 @@ plan_gate_kept() {
     die "the phases above $s are filed, but its row $id is not gated on them: $GATE_HINT"
   echo "gated row $id ($s) on ${tags[*]}"
 }
+# A phase line's key: its words, without the PR numbers a landed tick appends (plan_phase_key's rule), so
+# a phase keeps its key when it is ticked or when lines are added above it (ar-3190).
+# shellcheck disable=SC2016 # literal jq
+PHASE_KEY_JQ='def phase_key: sub("(\\s*\\([^()]*#[0-9]+[^()]*\\))+\\s*$"; "") | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "");'
+# phase_keys_of <plan> <phases> -> the JSON array of those phases' keys, in that order; nothing when a
+# number names no line, or two.
+phase_keys_of() {
+  plan_phase_list "$1" | jq -c --arg ph "$2" "$PHASE_KEY_JQ"' . as $l | [$ph | split(" ")[] | select(. != "") as $n
+    | $l | map(select((.n | tostring) == $n)) | if length == 1 then .[0].name | phase_key else error("ambiguous") end]' 2>/dev/null
+}
+# phases_resolve <file> -- an item add --plan filed keeps phases: on the plan's checklist numbers of its own
+# lines: phase_keys: finds each line again, and a number that moved (phases added above it) is rewritten.
+# A line gone from the plan, or written twice, leaves phases: as it is and says so. Called with the lock held.
+# Why: phases: 5 went on naming phase 5 after the plan gained lines above it and its phase became 9 (ar-3190).
+phases_resolve() {
+  local f="$1" plan keys cur now
+  keys="$(fm_get "$f" phase_keys)" plan="$(fm_get "$f" plan)"
+  [ -n "$keys" ] && [ -f "$plan" ] || return 0
+  cur="$(fm_get "$f" phases)"
+  now="$(plan_phase_list "$plan" | jq -r --argjson k "$keys" "$PHASE_KEY_JQ"' . as $l
+    | [$k[] as $w | [$l[] | select((.name | phase_key) == $w) | .n | tostring] | if length == 1 then .[0] else "?" end]
+    | if any(.[]; . == "?") then "?" else join(" ") end' 2>/dev/null)" || return 0
+  if [ "$now" = "?" ]; then
+    echo "agent-queue: $(fm_get "$f" slug): a phase line it was filed for is gone from $plan, or written twice, so phases: $cur is kept (agent-queue set $(fm_get "$f" slug) phases=<N>)" >&2
+  elif [ -n "$now" ] && [ "$now" != "$cur" ]; then
+    header_set "$f" phases "$now"
+    echo "agent-queue: $(fm_get "$f" slug): phases: $cur -> $now, where its lines sit in $plan now" >&2
+  fi
+}
+
 # plan_item_rows <prefix> <plan> < groups -> one TSV row per queue item of add_plan's phase groups:
 # slug, dep, phases, brief, phase name (the title is plan_phase_title's), names, at: tag (empty when the phase has no `(at ...)` marker).
 plan_item_rows() {
@@ -2836,6 +2867,13 @@ cmd_next() {
 
 cmd_show() {
   local slug="${1:?usage: agent-queue show <slug>}" f
+  # An active plan item reads phases: where its lines sit now: that write takes the lock, then the read shares it.
+  if [ -d "$AQ_DIR" ] && f="$(find_item "$slug")" && [ -n "$f" ] && [ -n "$(fm_get "$f" phase_keys)" ]; then
+    [ -n "${AQ_LOCKED-}" ] || lock
+    f="$(find_item "$slug")" || f=''
+    [ -z "$f" ] || phases_resolve "$f"
+    [ -n "${AQ_LOCKED-}" ] || unlock
+  fi
   lock_read
   f="$(find_item "$slug" any)"; [ -n "$f" ] || die "no item: $slug"
   if [ "${2:-}" = --json ] && [ "${3:-}" = --points ]; then sizing_join "[$(item_json "$f")]" | jq -c '.[0]'; return 0; fi
@@ -3242,7 +3280,8 @@ cmd_set() {
       # pr: is a space list, as agent-land and reap split it: a comma list read as one ref, and agent-land
       # failed all five PRs of release-lane-reserve 'no merge recorded' (2026-11-09, ar-1228).
       pr=*) kv="pr=$(word_list "${kv#*=}")" ;;
-      phases=*) kv="phases=$(word_list "${kv#*=}")" ;;
+      # a number set by hand wins: the keys add --plan wrote would move it back (phases_resolve)
+      phases=*) kv="phases=$(word_list "${kv#*=}")"; header_del "$f" phase_keys ;;
       title=*) kv="title=$(one_line "${kv#*=}")" ;;
     esac
     header_set "$f" "${kv%%=*}" "${kv#*=}"
@@ -3596,6 +3635,7 @@ cmd_move() {
     queued) [ -z "$(fm_get "$f" started)" ] || header_set "$f" requeued "$(now_utc)"
       header_del "$f" session window started waiting review origin lane_run host desk_start ;;
     running) [ -n "$(fm_get "$f" started)" ] || header_set "$f" started "$(now_utc)"
+      phases_resolve "$f"
       # A new run has not ended yet: the last run's reason goes.
       header_del "$f" end_reason
       # A hold: tag gates one start: once running, the item's own session may claim that resource,

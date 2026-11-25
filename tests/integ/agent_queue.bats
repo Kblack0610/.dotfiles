@@ -3268,6 +3268,36 @@ chain_plan() {  # <name>: a four-phase plan, each phase after the one before
   [ "$(field "$(item queued ph)" phases)" = "3 4" ]
 }
 
+@test "an add --plan item keeps phases: on its own lines when the plan gains phases above them; a line gone is kept and said (ar-3190)" {
+  story_notes
+  printf '%s\n' '# gp' '## Phases' '- [ ] one' '- [ ] two (independent)' > "$SANDBOX/gp.md"
+  AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/gp.md" --project level --from shepherd --priority low >/dev/null
+  f="$(item queued gp-p2)"
+  [ "$(field "$f" phases)" = 2 ]
+  [ "$(field "$f" phase_keys)" = '["two (independent)"]' ]
+  # Two lines go in above it, and phase 1 is ticked with its PR: its line is phase 4 now.
+  printf '%s\n' '# gp' '## Phases' '- [x] one (#12)' '- [ ] found a' '- [ ] found b' '- [ ] two (independent)' > "$SANDBOX/gp.md"
+  run "$AQ" show gp-p2
+  assert_success
+  assert_line 'phases: 4'
+  assert_output --partial "gp-p2: phases: 2 -> 4"
+  # The start path reads it the same way: back to 2 by hand, then the move to running finds 4 again.
+  sed -i 's/^phases: 4$/phases: 2/' "$f"
+  "$AQ" move gp-p2 running >/dev/null 2>&1
+  [ "$(field "$(item running gp-p2)" phases)" = 4 ]
+  # NEGATIVE CONTROL: its line reworded, the item keeps its number and says why.
+  sed -i 's/^- \[ \] two (independent)$/- [ ] two, reworded/' "$SANDBOX/gp.md"
+  run "$AQ" show gp-p2
+  assert_success
+  assert_line 'phases: 4'
+  assert_output --partial "a phase line it was filed for is gone from $SANDBOX/gp.md"
+  # A number set by hand wins: the keys go, so no later read moves it back.
+  "$AQ" set gp-p2 phases=5 >/dev/null
+  [ -z "$(field "$(item running gp-p2)" phase_keys)" ]
+  run "$AQ" show gp-p2
+  assert_line 'phases: 5'
+}
+
 @test "set review_fix= takes none or small, what a trainee's review changed before it landed the diff, and refuses anything else" {
   "$AQ" add --project game --slug rf "A trainee row" >/dev/null
   "$AQ" set rf review_fix=small >/dev/null
