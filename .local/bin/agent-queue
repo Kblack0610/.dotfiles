@@ -471,6 +471,36 @@ finished_ok() {
   done
 }
 
+# plan_landed <plan> -> "<phase>\t<slug>" for each phase of <plan> a done item closed ok, whatever its slug:
+# an item with a plan: field names its phases:, and one queued by hand (no --plan) names the phase in its
+# task ("P6 of <plan>", "Phase 6 of the plan <plan>", "Plan: <plan> phase P3"). finished_ok reads only
+# the chain slug, so a phase landed under another slug with its box left unticked ran again (ar-1613:
+# snuggly-hamster P6, landed by dup-flaky-p6-vocabulary in #1267, queued again by auto:plans on 2026-11-10).
+plan_landed() {
+  local b b_re f p
+  b="$(basename "$1")"
+  b_re="${b//./\\.}"
+  grep -lF -- "/$b" "$AQ_DIR"/done/*/*.md 2>/dev/null | while IFS= read -r f; do
+    [ "$(fm_get "$f" status)" = ok ] || continue
+    p="$(fm_get "$f" plan)"
+    if [ -n "$p" ]; then
+      [ "$(basename "$p")" = "$b" ] || continue
+      fm_get "$f" phases | tr ' ,' '\n\n'
+    else
+      fm_body "$f" | grep -oE "(\\b[Pp]hase |\\bP)[0-9]+ of (the plan )?[^ ]*/$b_re|Plan: [^ ]*/$b_re phase P?[0-9]+" |
+        sed -E 's/^[^0-9]*([0-9]+) of .*/\1/; s/.* phase P?([0-9]+)$/\1/'
+    fi | grep -E '^[0-9]+$' | sed "s/\$/\t$(fm_get "$f" slug)/"
+  done
+}
+
+# landed_by <phases>: the item that landed every one of <phases> (space-separated), from add_plan's
+# landed map (plan_landed); 1 when one of them is not landed.
+landed_by() {
+  local p by=''
+  for p in $1; do [ -n "${landed[$p]:-}" ] || return 1; by="${landed[$p]}"; done
+  [ -n "$by" ] && echo "$by"
+}
+
 # Admission: the queue holds at most AQ_CAP items, every queued one counted, since each can start (a gated
 # add queues nothing: its board row takes the gate, cmd_add). The board is the ranked backlog, the queue the
 # ready buffer dispatch pulls from, so an add over the cap leaves its board row un-started with its
@@ -2647,21 +2677,27 @@ add_plan() {
   # a chain this add leaves short still closes it with its last phase.
   # A plan whose every phase already landed queues nothing, so its row goes on no rows: line (promote
   # hands such a row back with a failed verdict).
+  # A phase another item landed (plan_landed) counts as landed too: landed_by names that item.
+  local -A landed=()
+  local ln lsl
+  [ -n "$repeat" ] || while IFS=$'\t' read -r ln lsl; do landed[$ln]="${landed[$ln]:-$lsl}"; done < <(plan_landed "$planf")
   if [ -n "${plan_row:-}" ]; then
-    local s0 open=''
-    while IFS=$'\t' read -r s0 _; do
-      if [ -n "$repeat" ] || [ -z "$(finished_ok "$s0")" ]; then open=1; break; fi
+    local s0 ph0 open=''
+    while IFS=$'\t' read -r s0 _ ph0 _; do
+      if [ -n "$repeat" ] || { [ -z "$(finished_ok "$s0")" ] && ! landed_by "$ph0" >/dev/null; }; then open=1; break; fi
     done <<<"$rows"
     [ -n "$open" ] || { echo "agent-queue: every phase of $planf already landed; tick its boxes (nothing was added)" >&2; exit "$AQ_EX_FINISHED"; }
     if [ -n "$dry" ]; then echo "would put row $plan_row on the rows: line of $planf"
     else plan_rows_add "$planf" "$plan_row" || die "could not put row $plan_row on the rows: line of $planf (nothing was added)"; fi
   fi
-  # A phase whose item already finished ok landed with its box left unticked: it is skipped, never run
+  # A phase whose item, or another item that names it (plan_landed), already finished ok landed with its box left unticked: it is skipped, never run
   # twice, and the next phase still goes after it (an ok after: releases at once).
   # A phase that waits on one not yet landed is no queue item: cmd_add files it as its board row, gated
   # #after/<that phase's row> (add_gates), and each phase after it waits on that row id in turn (key).
-  local n=0 total why skipped=0 added=() out rc held=0 pend=()
-  local -A key=()
+  local n=0 total why by skipped=0 added=() out rc held=0 pend=()
+  # landed_as: a phase another item landed stands for that item in a later phase's after: (an ok after:
+  # releases at once), since its chain slug has no item to wait on.
+  local -A key=() landed_as=()
   total="$(wc -l <<<"$rows")"
   local at ptags pprio
   while IFS=$'\t' read -r s dep ph text ttl _ at; do
@@ -2669,13 +2705,14 @@ add_plan() {
     case "$dep" in
       chain) wait="$prev" ;;
       base) wait="$after" ;;
-      *) wait=''; for d in ${dep//,/ }; do wait+="${wait:+,}${key[$prefix-p$d]:-$prefix-p$d}"; done ;;
+      *) wait=''; for d in ${dep//,/ }; do wait+="${wait:+,}${key[$prefix-p$d]:-${landed_as[$prefix-p$d]:-$prefix-p$d}}"; done ;;
     esac
-    why=''
+    why='' by=''
     [ -n "$repeat" ] || why="$(finished_ok "$s")"
+    [ -n "$why$repeat" ] || ! by="$(landed_by "$ph")" || { why="phase $ph of $(basename "$planf") already landed on item $by"; landed_as[$s]="$by"; }
     if [ -n "$why" ]; then
       echo "agent-queue: skipped $why; tick its box in $planf" >&2
-      skipped=$((skipped + 1)); prev="$s"; continue
+      skipped=$((skipped + 1)); prev="${by:-$s}"; continue
     fi
     if [ -n "${rowof[$s]:-}" ]; then
       echo "agent-queue: kept $s on its board row ${rowof[$s]}, filed by an earlier add of $planf" >&2

@@ -259,6 +259,31 @@ load 'agent_queue/common'
   assert_line "held rq-p2 -> level:lv-9 (#after/lv-9)"
 }
 
+@test "add --plan skips a phase another item landed under its own slug, named in its task or its plan: field (ar-1613)" {
+  story_notes
+  printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two' '- [ ] P3 three' > "$SANDBOX/lp.md"
+  local d="$AGENT_QUEUE_DIR/done/2026-11-06"
+  mkdir -p "$d"
+  # P1 was queued by hand (no --plan) and P2 by another plan add: each closed ok with its box unticked.
+  printf 'slug: by-hand\nproject: level\nstatus: ok\n---\nP1 of %s. Read it first.\n' "$SANDBOX/lp.md" > "$d/20261106-000001-by-hand.md"
+  printf 'slug: other-p2\nproject: level\nplan: %s\nphases: 2\nstatus: ok\n---\nx\n' "$SANDBOX/lp.md" > "$d/20261106-000002-other-p2.md"
+  # NEGATIVE CONTROL: a phase whose item failed, and one that names another plan, did not land.
+  printf 'slug: tried\nproject: level\nstatus: failed\n---\nPhase 3 of the plan %s\n' "$SANDBOX/lp.md" > "$d/20261106-000003-tried.md"
+  printf 'slug: elsewhere\nproject: level\nstatus: ok\n---\nP3 of %s\n' "$SANDBOX/xlp.md" > "$d/20261106-000004-elsewhere.md"
+  run env AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/lp.md" --project level --slug lp
+  assert_success
+  assert_output --partial "skipped phase 1 of lp.md already landed on item by-hand"
+  assert_output --partial "skipped phase 2 of lp.md already landed on item other-p2"
+  [ -z "$(item queued lp-p1)" ] && [ -z "$(item queued lp-p2)" ] || fail "a phase landed under another slug was queued again"
+  # P3 waits on the item that landed P2, which releases it at once.
+  [ "$(field "$(item queued lp-p3)" after)" = other-p2 ] || fail "p3 does not go after the item that landed p2"
+  # --repeat queues every phase as new work.
+  "$AQ" move lp-p3 done --status failed >/dev/null
+  run env AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/lp.md" --project level --slug lp --repeat
+  assert_success
+  [ -n "$(item queued lp-p1)" ]
+}
+
 @test "a project inside a repo is runnable; a notes-only one is refused, as dispatch would" {
   run "$AQ" add --project level --slug in-repo "x"
   assert_success
