@@ -1235,13 +1235,13 @@ case "${@: -1}" in *awk*) eval "${@: -1}" ;; *) echo "did its own" ;; esac'
   agent-queue set fix-crash session=lab:game-agent-1 >/dev/null
   run cmd_reap
   assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
-  agent-queue add --slug gate --project game 'gate work' >/dev/null
+  started_item gate '' '' '' auto:test queued
   agent-queue set fix-crash after=gate review=2026-01-01T00:00:00Z >/dev/null
   # NEGATIVE CONTROL: its after: item still open, it stays parked.
   run cmd_reap
   refute_output --partial 'requeued queue item fix-crash'
   assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
-  agent-queue move gate done --status ok >/dev/null
+  agent-queue cancel gate --why test >/dev/null
   run cmd_reap
   assert_output --partial 'requeued queue item fix-crash (game-agent-1 ended: its final landing, after o/game#12 merged as a partial, now that gate closed)'
   assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .partial] | join(" ")')" 'queued yes'
@@ -1253,6 +1253,29 @@ case "${@: -1}" in *awk*) eval "${@: -1}" ;; *) echo "did its own" ;; esac'
   run cmd_reap
   refute_output --partial 'requeued queue item fix-crash'
   assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
+}
+
+# ar-5334: ar-5237's partial waited on validate-ar-5237-8f7334d4, and reap requeued it (a session with
+# nothing to do), then filed a stuck row on its second end.
+@test "reap: a partial whose final landing waits on a live validate item parks in review, with no requeue and no stuck row" {
+  pr_item MERGED
+  agent-queue set fix-crash "merged=$OID" partial=yes >/dev/null
+  started_item validate-fix-crash-11111111 '' '' '' auto:validate queued
+  agent-queue set fix-crash validate=validate-fix-crash-11111111 >/dev/null
+  run cmd_reap
+  assert_success
+  refute_output --partial 'requeued queue item fix-crash'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .partial] | join(" ")')" 'review yes'
+  run cmd_reap
+  refute_output --partial 'agent row for queue item fix-crash'
+  assert_not_called 'ptask game --agent add chore(land)'
+  assert_equal "$(grep -c 'validate-fix-crash-11111111 lands its final landing' "$FLEET_DISPATCH_DIR/log.md")" 1
+  # NEGATIVE CONTROL: with no live validate item, an ended run goes back for its final landing as before.
+  agent-queue cancel validate-fix-crash-11111111 --why test >/dev/null
+  agent-queue move fix-crash running >/dev/null
+  agent-queue set fix-crash session=lab:game-agent-1 >/dev/null
+  run cmd_reap
+  assert_output --partial 'requeued queue item fix-crash (game-agent-1 ended: its final landing, after o/game#12 merged as a partial)'
 }
 
 # ar-2897: kblack0610/asset-library-hd#4, a repo gh does not know, logged "could not read PR" on every pass.

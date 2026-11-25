@@ -3623,7 +3623,14 @@ validate_self_why() {
 # validate_task <validate slug> <author slug> <owner/repo#N> <head> <why>: a validate item's whole brief
 # (item_brief passes it as it stands).
 validate_task() {
-  local n=${3##*#} repo=${3%#*}
+  local n=${3##*#} repo=${3%#*} a plan ph name land='' sq="'" q="'\\''"
+  # An author holding one open phase of a plan: the pass lands that phase, so agent-land ticks its box.
+  a=$(agent-queue show "$2" --json 2>/dev/null) || a=''
+  IFS=$'\x1f' read -r plan ph < <(jq -r '[.plan // "", .phases // ""] | join("\u001f")' <<<"${a:-null}")
+  if [ -n "$plan" ] && [[ "$ph" =~ ^[0-9]+$ ]]; then
+    name=$(plan_phase_list "$plan" | jq -r --arg n "$ph" '[.[] | select(.state == "open" and (.n | tostring) == $n)] | if length == 1 then .[0].name else empty end')
+    [ -z "$name" ] || land=" --plan $plan --phase '${name//$sq/$q}'"
+  fi
   cat <<EOF
 This is agent-queue item $1: a review by a second agent of PR $3, the work of queue item $2, before it lands. The work is critical ($5), so agent-land merges it only on your pass verdict. You did not write it: review it as a stranger, and do not fix it yourself; the author makes any fix.
 
@@ -3631,7 +3638,7 @@ This is agent-queue item $1: a review by a second agent of PR $3, the work of qu
 2. Read what it was asked to do (\`agent-queue show $2\`) and the change (\`gh pr view $n -R $repo\`, \`gh pr diff $n -R $repo\`). Run /code-review high on it, and the tests that cover what it changed.
 3. Pass only when the diff does what its item asks, correctly, with no finding left unanswered; else fail. Record it on this item, with what you checked or the findings on one line:
    \`agent-queue set $1 verdict=<pass|fail> verdict_head=\$(git rev-parse HEAD) note="<what you checked, or the findings>"\`
-4. Run \`agent-land $n --repo $repo --item $2\` from this worktree. On a pass it merges the PR and closes $2; on a fail it leaves the PR open and sends $2 back to the queue with your note.
+4. Run \`agent-land $n --repo $repo --item $2$land\` from this worktree. On a pass it merges the PR and closes $2; on a fail it leaves the PR open and sends $2 back to the queue with your note.
 5. Run \`agent-queue move $1 done --status ok\`, then wind down.
 EOF
 }
@@ -5200,7 +5207,17 @@ settle_item() {
   # parked, it goes back for one more start (ucp-2350 sat in review from 2026-11-22 01:26 behind an
   # after: item done at 09:12, ar-5322), and a run that ends without the landing again parks for good.
   if [ "$(jq -r '.partial // ""' <<<"$it")" = yes ]; then
-    local cleared=''
+    local cleared='' v
+    # Its final landing waits on a live validate item (agent-land validate_gate), whose session lands it:
+    # a requeue starts a session with nothing to do, and a second end files a stuck row (ar-5237, ar-5334).
+    v=$(jq -r '.validate // ""' <<<"$it")
+    if [ -n "$v" ] && [[ "$(item_state "$v")" =~ ^(queued|running|waiting|review)$ ]]; then
+      [ "$st" != review ] || return 0
+      agent-queue move "$1" review --if "$st" >/dev/null || return 0
+      note_add "$1" "$it" "session $2 ended; $v lands its final landing"
+      logline "reaped $2: queue item $1 in review: $v lands its final landing"
+      return 0
+    fi
     [ "$st" != review ] || cleared=$(after_cleared_since "$it" "$(jq -r '.review // ""' <<<"$it")") || cleared=''
     if [ -n "$cleared" ] || [[ "$(jq -r '.note // ""' <<<"$it")" != *"ended: its final landing"* ]]; then
       set_end; requeue_blocked "$1" "$2" "its final landing, after $(jq -r '.pr // "a PR"' <<<"$it") merged as a partial${cleared:+, now that $cleared closed}"

@@ -2075,6 +2075,27 @@ rollup_setup() {
   [[ "$output" == *"read /home/u/.claude/plans/fix-menu.md first"*"left its unfinished work on branch feat/menu"* ]] || fail "the note is not named before the salvage branch"
 }
 
+# ar-5334: ar-5237's validate session landed #3444 with no --plan/--phase, so the author's plan box stayed open.
+@test "a validate brief lands an author holding one open plan phase with that phase's --plan and --phase" {
+  started_item fix-crash lab:game-agent-9 run
+  cat > "$SANDBOX/plan.md" <<'EOF'
+# p
+
+## Phases
+
+- [x] P1 first
+- [ ] P2 the user's fix (after 1)
+- [ ] P3 last
+EOF
+  agent-queue set fix-crash "plan=$SANDBOX/plan.md" phases=2 >/dev/null
+  run validate_task validate-fix-crash-01234567 fix-crash o/game#12 0123456789ab critical
+  assert_output --partial "agent-land 12 --repo o/game --item fix-crash --plan $SANDBOX/plan.md --phase 'P2 the user'\\''s fix (after 1)'"
+  # NEGATIVE CONTROL: an author holding two phases, or none, gets the bare landing.
+  agent-queue set fix-crash phases='2 3' >/dev/null
+  run validate_task validate-fix-crash-01234567 fix-crash o/game#12 0123456789ab critical
+  assert_output --partial 'agent-land 12 --repo o/game --item fix-crash` from this worktree'
+}
+
 @test "start never runs a validate item as its author: no author item, itself, the author's conversation or session (ar-1689)" {
   project game beta "$SANDBOX/repos/game"
   started_item fix-crash lab:game-agent-9 run
