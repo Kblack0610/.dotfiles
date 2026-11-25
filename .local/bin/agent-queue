@@ -495,28 +495,35 @@ admission_now() {
 # waited for a pass, and a pass then never took the backlog tier, retired by ar-4626; 2026-11-20, chain-after-stuck), returns
 # the last-ranked runnable item to its board row (cmd_return: lossless, the row is un-started and dispatch promotes it
 # again), so the add goes in under the cap. Never chosen: urgent or red work, the human's (human_work),
-# an item with no row to return to, a chain's head. No such item: nothing moves, and admit holds the add
+# an item with no row to return to, a chain's head, a plan's phase (plan_phase_item), whatever the add's
+# priority: its phases go in past the cap (a --plan, a phase pull), and a returned one waits on its row behind
+# dispatch's fill, which stops at the cap, so its chain stops there; a held urgent add's row ranks first and
+# goes in at the next free place (ar-5357). No such item: nothing moves, and admit holds the add
 # like any other. Runs before the add takes the lock, since the return takes it: an add the lock would
 # refuse (already queued, finished ok, its cause: owned) moves nothing, and a victim that starts
 # meanwhile is not returned. A pull-after's pull returns only an item it does not outrank, and never one
 # that the same pull-after already queued (AQ_ROOM_KEEP, its slugs), so rows behind one close do not
 # push each other out.
 make_room() {
-  local now r l victim pr=0
+  local now r l victim="" cands c f pr=0
   [ "$AQ_CAP" != 0 ] && { [ "$1" = urgent ] || [[ " $2 " == *" red "* ]] || [ "${AGENT_QUEUE_PULL:-}" = after ]; } || return 0
   [ "$1" = urgent ] || [[ " $2 " == *" red "* ]] || pr="$(prio_rank "$1" || echo 1)"
   [ -z "$(find_item "$3")" ] || return 0
   ( cause_owner "$2" ) >/dev/null 2>&1 || return 0
   [ -n "${repeat:-}" ] || [ -z "$(finished_ok "$3" "${slug_from_text:+$text}" "${from:-}")" ] || return 0
   now="$(admission_now)" && read -r r l <<<"$now" && [[ "$r" =~ ^[0-9]+$ ]] && [ "$r" -ge "$l" ] || return 0
-  victim="$(collect queued | jq -r --argjson pr "$pr" --arg keep " ${AQ_ROOM_KEEP:-} " '
+  cands="$(collect queued | jq -r --argjson pr "$pr" --arg keep " ${AQ_ROOM_KEEP:-} " '
     ([.[] | (.after // "") | splits("[ ,]+") | select(. != "")]) as $heads
     | [.[] | select(.priority != "urgent" and (.row // "") != "")
         | select((" " + (.tags // "") + " ") | test(" (red|requested|#requested) ") | not)
         | select(.from != "human")
         | select(({"urgent":0,"high":1,"normal":2,"low":3}[.priority] // 1) >= $pr)
         | select(.slug as $s | $keep | contains(" \($s) ") | not)
-        | select(.slug as $s | $heads | index($s) | not)] | last | .slug // empty')" || return 0
+        | select(.slug as $s | $heads | index($s) | not)] | reverse[] | "\(.slug)\t\(.file)"')" || return 0
+  while IFS=$'\t' read -r c f; do
+    [ -n "$c" ] && ! plan_phase_item "$f" || continue
+    victim="$c"; break
+  done <<<"$cands"
   [ -n "$victim" ] || return 0
   # Returned once it is no longer active, its row un-started or not (cmd_return says which).
   ( AQ_RETURN_QUEUED=1 cmd_return "$victim" --why "made room for $1 $3: the queue is at its cap of $l" ) >&2
@@ -534,6 +541,9 @@ make_room() {
 # through realpath, so it is absolute; the test files its brief through add_plan itself.
 PHASE_BRIEF_RE='(^|[[:space:]])Phases? [0-9]+( and [0-9]+)* of the plan (/[^:]+\.md):'
 plan_phase_task() { [[ "$1" =~ $PHASE_BRIEF_RE ]] && [ -f "${BASH_REMATCH[3]}" ]; }
+# plan_phase_item <item file> -- the item is a plan's phase: its plan: line (add_plan), else its brief
+# (plan_phase_task: a phase promoted from its row).
+plan_phase_item() { [ -n "$(fm_get "$1" plan)" ] || plan_phase_task "$(fm_body "$1")"; }
 
 # grant_names <id> <text> [<plan>] -> the names an agent-hold grant can give this work, space-separated:
 # its row id (or slug), each epic its text names (#of/<id>), and the slug of its plan: <plan> (an item's
@@ -727,7 +737,7 @@ stack_pr() {
 # PR #3076, started its dependent at once on #3076's head, three hours before #3076 merged (ar-4537).
 stack_dependent() {
   if [ -n "${1-}" ]; then
-    [ -n "$(fm_get "$1" plan)" ] || [[ " $(fm_get "$1" tags) " == *" validate "* ]] || plan_phase_task "$(fm_body "$1")"
+    plan_phase_item "$1" || [[ " $(fm_get "$1" tags) " == *" validate "* ]]
   else [ -n "${AQ_ADD_STACKS-}" ]; fi
 }
 
@@ -1467,7 +1477,7 @@ item_json() {
 # Queue order: a `red` item first (something is broken), then an urgent one, then a `sprint` one (its row
 # is held by an open sprint, fleet-dispatch promote), then priority; inside each of those buckets the
 # class mix (MIX_JQ) when AQ_CLASSES is on; then queued time. No project rank: the order comes from the
-# item and its row, and the fleet's share of starts is fleet-dispatch's DISPATCH_FLEET_PROJECTS cap.
+# item and its row, and a project's share of starts is fleet-dispatch's DISPATCH_PROJECT_SHARE cap.
 # The one queue order: every reader (next, list, fleet-dispatch next_items) takes it as is, so a lower
 # tier starts only when no item of a higher one can: a pass takes the first it can place.
 # `after` and other tags hold, not reorder. Cleanup gets its turns from the mix's cleanup share.
@@ -2112,7 +2122,7 @@ cmd_add() {
       [ -z "$plan_row" ] || { echo "agent-queue: its row $plan_row is left where it is: dispatch promotes it" >&2; exit "$AQ_EX_HELD"; }
       # Resolved as every add is (dotfiles -> agent-runtime): unresolved, a repo whose work counts on an
       # owner had no board, and every reap of a dotfiles plan failed and was retried each pass (ar-2787).
-      local pname="${project:-$(project_of_cwd)}" pproject ptitle="plan $(basename "$planf" .md): run its open phases"
+      local pname="${project:-$(project_of_cwd)}" pproject ptitle="$(plan_row_title "$planf")"
       [ -n "$pname" ] || die "no --project, and this directory is not a repo project-map knows"
       pproject="$(project_resolve "$pname")" || die "unknown project: $pname (no checkout for it in $AQ_MAP)"
       lock; admission_log "$from" "$pproject" "$(basename "$planf" .md)" "$ptitle" "" "" board-only; unlock
@@ -3910,7 +3920,7 @@ dispatch_held() {
 # dispatch pass. An item with no row has nothing waiting on it there. A failed pull leaves the rows for
 # the next pass, which reads the row closed. AGENT_QUEUE_START=0 (the shepherd's idle close) still pulls:
 # fleet-dispatch pull-after --queue-only queues the rows and starts none (2026-11-21: ar-4357 sat 10h behind
-# ar-4356, which the shepherd closed with the pull skipped and the fleet share kept a pass from filling it).
+# ar-4356, which the shepherd closed with the pull skipped and the fleet share cap, now DISPATCH_PROJECT_SHARE, kept a pass from filling it).
 pull_after() {
   local row rc=0
   row="$(item_row "$2")"
