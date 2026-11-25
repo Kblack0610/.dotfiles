@@ -1625,7 +1625,7 @@ SH
     '["opus",3,2,1.5,1,14,4.67]'
   run "$SUBJECT" models
   # these sessions have no cost_usd: an unpriced PR reads -, never $0 at a list price
-  assert_line '| opus | claude | 3 | 3 | 1 (0.44-1, n 3) | 0 | 0 | 0 | $0 | - | - | 1.5 (n 2) | 1 (0.21-1, n 1) | 14 | 4.67 |'
+  assert_line '| opus | claude | 3 | 0 | 0 | 3 | 1 (0.44-1, n 3) | 0 | 0 | 0 | $0 | - | - | 1.5 (n 2) | 1 (0.21-1, n 1) | 14 | 4.67 |'
 }
 
 # merge_repo <dir> <epoch>...: a clone of a local remote holding one commit per epoch
@@ -2204,6 +2204,32 @@ qstats_fixture() {
     done_by_tag: {}}' > "$QSTATS"
 }
 
+@test "models: a check with no PR and a returned item are counted apart, so Rate and Failed read only the code items a harness could land" {
+  export BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes" BENCH_LANE_LOG="$SANDBOX/runs.jsonl" ITEMS="$SANDBOX/done.jsonl"
+  export BENCH_DONE_ITEMS_CMD=done-stub
+  printf '#!/usr/bin/env bash\ncat "%s"\n' "$ITEMS" > "$SANDBOX/bin/done-stub"
+  chmod +x "$SANDBOX/bin/done-stub"
+  : > "$BENCH_LANE_LOG"
+  {
+    echo '{"slug":"a","model":"sol","agent":"codex","type":"fix","status":"ok","pr":"o/r#1"}'
+    echo '{"slug":"b","model":"sol","agent":"codex","type":"feat","status":"failed"}'
+    echo '{"slug":"c1","model":"sol","agent":"codex","type":"check","status":"ok"}'
+    echo '{"slug":"c2","model":"sol","agent":"codex","type":"check","status":"failed"}'
+    echo '{"slug":"c3","model":"sol","agent":"codex","type":"research","status":"ok"}'
+    echo '{"slug":"c4","model":"sol","agent":"codex","type":"check","status":"ok","pr":"o/r#2"}'
+    echo '{"slug":"r1","model":"sol","agent":"codex","type":"fix","status":"cancelled","end_reason":"returned"}'
+    echo '{"slug":"r2","model":"sol","agent":"codex","type":"fix","status":"cancelled"}'
+  } > "$ITEMS"
+  run env BENCH_NOW=$T0 "$SUBJECT" models --json
+  assert_success
+  # done 6 (a, b, c1-c4); c4 is a check that landed, so it is a code item; r1 is returned, r2 a plain cancel
+  assert_equal "$(jq -c '.models[] | [.done, .checks, .checks_ok, .returned, .code, .landed, .landed_n, .landed_rate, .failed]' <<<"$output")" \
+    '[6,3,2,1,3,2,3,0.67,1]'
+  run env BENCH_NOW=$T0 "$SUBJECT" models
+  assert_line '| sol | codex | 6 | 3 | 1 | 2 | 0.67 (0.21-0.94, n 3) | 1 | 0 | 0 | $0 | - | - | - | - | - | - |'
+  assert_line --partial 'Returned are items sent back to their board row'
+}
+
 @test "models: one model on two harnesses is two rows, gateway cost beats the sessions' sum per item, a row with both reads mixed, an unpriced PR does not cheapen Per PR, a chained session counts once" {
   export BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes" BENCH_LANE_LOG="$SANDBOX/runs.jsonl" ITEMS="$SANDBOX/done.jsonl"
   export BENCH_DONE_ITEMS_CMD=done-stub
@@ -2236,8 +2262,8 @@ qstats_fixture() {
     '[["claude",3,9,4.5,1,1,0,"list"],["claude-lazer",1,4.5,4.5,0,0,1,"gateway"],["opencode",2,8.25,8.25,1,2,0,"mixed"]]'
   run env BENCH_NOW=$T0 "$SUBJECT" models
   assert_success
-  assert_line '| sonnet | opencode | 2 | 1 | 0.5 (0.09-0.91, n 2) | 1 | 1 | 0 | $8.25 | $8.25 | mixed | - | - | - | - |'
-  assert_line '| sonnet | claude-lazer | 1 | 1 | 1 (0.21-1, n 1) | 0 | 0 | 1 | $4.5 | $4.5 | gateway | - | - | - | - |'
+  assert_line '| sonnet | opencode | 2 | 0 | 0 | 1 | 0.5 (0.09-0.91, n 2) | 1 | 1 | 0 | $8.25 | $8.25 | mixed | - | - | - | - |'
+  assert_line '| sonnet | claude-lazer | 1 | 0 | 0 | 1 | 1 (0.21-1, n 1) | 0 | 0 | 1 | $4.5 | $4.5 | gateway | - | - | - | - |'
 }
 
 @test "models: an item that ended for a cause outside the model (limit, provider, cut, refused) is left out of Rate and Failed; stopped and timeout stay in" {
@@ -2288,7 +2314,7 @@ qstats_fixture() {
   assert_equal "$(jq -c '[.models[] | [.runs, .rated, .redo_rate]] | unique' <<<"$output")" '[[null,null,null]]'
   run env BENCH_NOW=$T0 "$SUBJECT" models --by class
   assert_success
-  assert_line '| fix/s | sonnet | claude | 2 | 1 | 0.5 (0.09-0.91, n 2) | 1 | 0 | $10 | $10 | list | - | - | - | - |'
+  assert_line '| fix/s | sonnet | claude | 2 | 0 | 0 | 1 | 0.5 (0.09-0.91, n 2) | 1 | 0 | $10 | $10 | list | - | - | - | - |'
   # the default view has no class split and keeps model-lane's redo
   run env BENCH_NOW=$T0 "$SUBJECT" models --json
   assert_success
@@ -2328,15 +2354,15 @@ qstats_fixture() {
   assert_equal "$output" "$by_cl"
   run env BENCH_NOW=$T0 "$SUBJECT" models --by class,lane
   assert_success
-  assert_line '| Class | Lane | Model | Harness | Done | Landed | Rate | Failed | Reverts | Cost | Per PR | Source | CI red | First pass | Points | Points per PR |'
-  assert_line '| fix/s | sonnet | glm | opencode-go | 1 | 1 | 1 (0.21-1, n 1) | 0 | 0 | $4 | $4 | list | - | - | - | - |'
+  assert_line '| Class | Lane | Model | Harness | Done | Checks | Returned | Landed | Rate | Failed | Reverts | Cost | Per PR | Source | CI red | First pass | Points | Points per PR |'
+  assert_line '| fix/s | sonnet | glm | opencode-go | 1 | 0 | 0 | 1 | 1 (0.21-1, n 1) | 0 | 0 | $4 | $4 | list | - | - | - | - |'
   # lane alone keeps redo, counted on the runs of that lane in the window
   run env BENCH_NOW=$T0 "$SUBJECT" models --by lane --json
   assert_success
   assert_equal "$(jq -c '[.models[] | [.lane, .harness, .done, .rated, .redo, has("class")]]' <<<"$output")" \
     '[["opus","opencode-go",2,1,0,false],["sonnet","opencode-go",1,1,1,false],["unrouted","claude",1,1,1,false]]'
   run env BENCH_NOW=$T0 "$SUBJECT" models --by lane
-  assert_line '| Lane | Model | Harness | Done | Landed | Rate | Failed | Redo | Reverts | Cost | Per PR | Source | CI red | First pass | Points | Points per PR |'
+  assert_line '| Lane | Model | Harness | Done | Checks | Returned | Landed | Rate | Failed | Redo | Reverts | Cost | Per PR | Source | CI red | First pass | Points | Points per PR |'
   run env BENCH_NOW=$T0 "$SUBJECT" models --json
   assert_equal "$(jq -c '[.models[] | has("lane")] | unique' <<<"$output")" '[false]'
   run "$SUBJECT" models --by class,size
@@ -2432,8 +2458,8 @@ qstats_fixture() {
   assert_equal "$(row unrecorded claude '[.done, .landed, .priced, .cost_per_pr, .source]')" '[1,1,0,null,"-"]'
   run env BENCH_NOW=$T0 "$SUBJECT" models
   assert_success
-  assert_line '| sonnet | claude | 2 | 1 | 0.5 (0.09-0.91, n 2) | 1 | 1 | 1 | $8 | $8 | list | - | - | - | - |'
-  assert_line '| opus | claude | 1 | 1 | 1 (0.21-1, n 1) | 0 | 0 | 0 | $3 | $3 | list | - | - | - | - |'
+  assert_line '| sonnet | claude | 2 | 0 | 0 | 1 | 0.5 (0.09-0.91, n 2) | 1 | 1 | 1 | $8 | $8 | list | - | - | - | - |'
+  assert_line '| opus | claude | 1 | 0 | 0 | 1 | 1 (0.21-1, n 1) | 0 | 0 | 0 | $3 | $3 | list | - | - | - | - |'
   run "$SUBJECT" models --bogus
   assert_failure 2
 }
