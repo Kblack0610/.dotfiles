@@ -179,6 +179,9 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/claude-end.sh"
 # shellcheck source=../lib/wake-pace.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/wake-pace.sh"
+# The settle window is the start-load window too (pending_load): pace_get names a bad value and prints
+# nothing, which would count every start in the log, so a window that is not whole minutes stops here.
+[[ "$WAKE_SETTLE_MIN" =~ ^[0-9]+$ ]] || { echo "fleet-dispatch: WAKE_SETTLE_MIN is not a whole number of minutes (pace.conf)" >&2; exit 78; }
 LEVEL=$(machine_level)
 [ -n "$DISPATCH_WORKER_VERB" ] || read -r PER_PASS MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH_PER_PASS" DISPATCH_MAX_LOAD "$DISPATCH_MAX_LOAD")
 # Tier-3 rows fill never promotes, whatever the judge says (decide rows and the release kind are off in
