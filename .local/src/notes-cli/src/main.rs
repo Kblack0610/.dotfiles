@@ -763,6 +763,10 @@ enum PtaskCmd {
         /// day its PR merged). Never a future day
         #[arg(long, value_name = "DAY")]
         on: Option<String>,
+        /// What happens to its open children: `drop` closes each with this row's stamp, an id
+        /// (like ar-142) moves them under that row. Without it, open children refuse the close
+        #[arg(long, value_name = "drop|ID")]
+        children: Option<String>,
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
@@ -813,9 +817,13 @@ enum PtaskCmd {
         /// Why it will not be delivered: stale, superseded, or where it moved ("moved: ideas.md")
         #[arg(long, value_name = "WHY")]
         why: Option<String>,
-        /// It duplicates this row (its id, like ar-142)
+        /// It duplicates this row (its id, like ar-142); its open children move under that row
         #[arg(long, value_name = "ID")]
         dup: Option<String>,
+        /// What happens to its open children: `drop` closes each with this row's stamp, an id
+        /// (like ar-142) moves them under that row. Without it, open children refuse the close
+        #[arg(long, value_name = "drop|ID")]
+        children: Option<String>,
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
@@ -1324,6 +1332,12 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
             pr,
             text: text.join(" "),
         },
+        Some(PtaskCmd::Done {
+            children: Some(_), ..
+        })
+        | Some(PtaskCmd::Drop {
+            children: Some(_), ..
+        }) => bail!("--playtest rows have no children: drop --children"),
         Some(PtaskCmd::Done { on: Some(_), .. }) => {
             bail!("--playtest done takes no --on: a playtest row closes today")
         }
@@ -1337,7 +1351,9 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
             unverified,
             pick: Pick::new(&query.join(" "), exact)?,
         },
-        Some(PtaskCmd::Drop { why, dup, query }) => playtest::Op::Drop {
+        Some(PtaskCmd::Drop {
+            why, dup, query, ..
+        }) => playtest::Op::Drop {
             stamp: project_tasks::drop_stamp(why.as_deref(), dup.as_deref())?,
             pick: Pick::new(&query.join(" "), exact)?,
         },
@@ -1731,6 +1747,7 @@ fn main() -> Result<()> {
                     proof,
                     unverified,
                     on,
+                    children,
                     query,
                 }) => project_tasks::done(
                     &prof,
@@ -1741,6 +1758,11 @@ fn main() -> Result<()> {
                     unverified.as_deref(),
                     on.as_deref(),
                     lane,
+                    children
+                        .as_deref()
+                        .map(project_tasks::Children::parse)
+                        .transpose()?
+                        .as_ref(),
                 )?,
                 Some(PtaskCmd::Redate { on, dry_run, id }) => {
                     project_tasks::redate(&prof, &log, &name, &id, &on, dry_run, lane)?
@@ -1809,7 +1831,12 @@ fn main() -> Result<()> {
                 Some(PtaskCmd::Tag(t)) => {
                     ptask_tag(&prof, &log, &name, &pick(&t.query)?, t, lane, &writer)?
                 }
-                Some(PtaskCmd::Drop { why, dup, query }) => project_tasks::drop(
+                Some(PtaskCmd::Drop {
+                    why,
+                    dup,
+                    children,
+                    query,
+                }) => project_tasks::drop(
                     &prof,
                     &log,
                     &name,
@@ -1817,6 +1844,11 @@ fn main() -> Result<()> {
                     why.as_deref(),
                     dup.as_deref(),
                     lane,
+                    children
+                        .as_deref()
+                        .map(project_tasks::Children::parse)
+                        .transpose()?
+                        .as_ref(),
                 )?,
                 Some(PtaskCmd::Pass { .. }) => bail!("pass applies only with --playtest"),
                 Some(PtaskCmd::Edit {

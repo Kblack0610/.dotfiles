@@ -374,6 +374,64 @@ impl Index {
             .collect()
     }
 
+    /// The ids under `id` at any depth, dropped rows left out, each walked once.
+    pub(crate) fn descendants(&self, id: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut seen = HashSet::from([id.to_string()]);
+        let mut stack = vec![id.to_string()];
+        while let Some(j) = stack.pop() {
+            for k in self.children(&j) {
+                if let Some(c) = &self.nodes[*k].id {
+                    if seen.insert(c.clone()) {
+                        out.push(c.clone());
+                        stack.push(c.clone());
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The chain `[top, .., id]` when `id` sits under `top` at any depth, read up `id`'s
+    /// parents; `None` when it does not. What a re-parent onto `id` would loop through.
+    pub(crate) fn chain(&self, top: &str, id: &str) -> Option<Vec<String>> {
+        let mut up = vec![id.to_string()];
+        let mut cur = self.node(id)?;
+        while let Some(p) = &cur.parent {
+            if up.contains(p) {
+                return None;
+            }
+            up.push(p.clone());
+            if p == top {
+                up.reverse();
+                return Some(up);
+            }
+            cur = self.node(p)?;
+        }
+        None
+    }
+
+    /// How many children of the open row `id` closed done, and their ids, once none of its
+    /// children is open: 0 when every one was dropped. `None` while one is open, when `id` is
+    /// no open parent, and for an epic, which closes on proof of its outcome, never on its rows
+    /// alone.
+    pub(crate) fn spent(&self, id: &str) -> Option<(usize, Vec<String>)> {
+        self.node(id).filter(|n| n.open && n.title.is_none())?;
+        let kids: Vec<&Node> = self
+            .nodes
+            .iter()
+            .filter(|n| n.parent.as_deref() == Some(id))
+            .collect();
+        if kids.is_empty() || kids.iter().any(|n| n.open) {
+            return None;
+        }
+        let done: Vec<&&Node> = kids.iter().filter(|n| !n.dropped).collect();
+        Some((
+            done.len(),
+            done.iter().filter_map(|n| n.id.clone()).collect(),
+        ))
+    }
+
     /// The leaves under node `i`, each node walked once, so a loop cannot hang a read. The
     /// same leaves [`Index::counts`] counts at any depth: an over-deep chain is a doctor
     /// finding, never a second answer to which rows are leaves.
