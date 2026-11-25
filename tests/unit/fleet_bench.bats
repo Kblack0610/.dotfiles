@@ -1658,6 +1658,28 @@ tok_fixture() {
   assert_success
   assert_line --regexp '^check\(watch\): spend tripped since '
 }
+@test "triage: a quarantine covers only the reds it was taken on; a new one files a row naming it and the owner (ar-3916)" {
+  triage_setup
+  watch spend TRIP -25200 urgent
+  q=$TRIAGE_WATCH_STATE/spend
+  printf '%s ar-1 %s waits on the provider\n' $(( $(date +%s) + 3600 )) "$T0" > "$q.quarantine"
+  printf 'TRIP exit 1\nreason: lazer over budget at 2026-11-20T10:00 (91%%)\n' > "$q.quarantine.covers"
+  # the same red at a new time and share: covered, no row (below, a reordered pair is covered too)
+  printf 'TRIP exit 1\nreason: lazer over budget at 2026-11-21T08:13 (97%%)\n' > "$q.out"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'check(watch): spend'
+  # a red the quarantine was not taken on: one row, its why the new red and the owner
+  printf 'TRIP exit 1\nreason: main over budget at 2026-11-21T08:13 (99%%)\nreason: lazer over budget at 2026-11-21T08:13 (97%%)\n' > "$q.out"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --regexp '^check\(watch\): spend tripped since .*why: main over budget at N-N-NTN:N \(N%\) \(not covered by the quarantine ar-1 holds\)'
+  # a quarantine from before covers files covers whatever is red, as it did
+  rm "$q.quarantine.covers"
+  run "$SUBJECT" triage --dry-run
+  refute_output --partial 'check(watch): spend'
+}
+
 @test "triage: a paused watch files no row, whatever state it paused in" {
   triage_setup
   watch preview TRIP -25200 high

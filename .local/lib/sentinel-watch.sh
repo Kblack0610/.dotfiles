@@ -44,11 +44,44 @@ watch_is_stale() {
   (( now - lastrun > WATCH_STALE_FACTOR * $(watch_interval_secs "$1") ))
 }
 
-# watch_quarantined <state dir> <name> [now] -> exit 0 while <name>.quarantine holds: its first
-# field (UNTIL, epoch, written by `watch-companion-loop quarantine`) is ahead of now. A quarantined
-# red counts as a warning, not red, until then; past UNTIL it reads red again.
-watch_quarantined() {
+# log_norm: a line with what varies between runs taken out, so one error is one signature: a leading
+# timestamp, quoted strings, paths, hex ids and numbers become placeholders. fleet-bench signs stderr
+# lines with it, and watch_red_lines a watch's red lines.
+log_norm() {
+  sed -E 's/^\[[^]]*\][[:space:]]*//; s/"[^"]*"/"Q"/g; s/'"'"'[^'"'"']*'"'"'/'"'"'Q'"'"'/g
+          s#(~|\.)?(/[^[:space:]/:"'"'"']+)+/?#P#g; s/\b[0-9a-f]{7,}\b/H/g; s/[0-9]+/N/g; s/[[:space:]]+/ /g; s/ $//'
+}
+
+# watch_red_lines <evidence file> -> the red lines a watch's redacted evidence (<name>.out) names,
+# normalized (log_norm), in order: each `reason:` line (Sentinel's convention: vendor-check names its
+# worst rows), else each `RED` line of a probe that prints one OK or RED line a stage
+# (unity-core-playground's release-ready.py), else its last line, usually the error. The first is
+# fleet-bench triage's why; the set is what a quarantine covers. Nothing when the file is missing.
+watch_red_lines() {
+  { sed -n 's/^reason: \(.\)/\1/p' "$1" | grep . || grep -E '^RED[[:space:]]' "$1" \
+      || grep -v '^[[:space:]]*$' "$1" | tail -n 1; } 2>/dev/null | log_norm
+}
+
+# watch_uncovered <state dir> <name> -> each red line of <name>.out that <name>.quarantine.covers (the
+# evidence `watch-companion-loop quarantine` was taken on) does not name, so a reordered line or a new
+# timestamp is still covered. Nothing for a quarantine with no covers file (one taken before them):
+# it covers whatever is red, as it always did.
+watch_uncovered() {
+  [ -e "$1/$2.quarantine.covers" ] || return 0
+  grep -vxF -f <(watch_red_lines "$1/$2.quarantine.covers") <(watch_red_lines "$1/$2.out") || true
+}
+
+# watch_quarantine_open <state dir> <name> [now] -> exit 0 while <name>.quarantine's first field
+# (UNTIL, epoch, written by `watch-companion-loop quarantine`) is ahead of now, whatever it covers.
+watch_quarantine_open() {
   local until="" now="${3:-$(date +%s)}"
   [ -r "$1/$2.quarantine" ] && read -r until _ < "$1/$2.quarantine"
   [[ "$until" =~ ^[0-9]+$ ]] && (( 10#$until > 10#$now ))
+}
+
+# watch_quarantined <state dir> <name> [now] -> exit 0 while a quarantine holds: it is open and every
+# red line the watch names now is one it covers (ar-3916). A quarantined red counts as a warning, not
+# red; past UNTIL, or once it names a red the quarantine was not taken on, it reads red again.
+watch_quarantined() {
+  watch_quarantine_open "$@" && [ -z "$(watch_uncovered "$1" "$2")" ]
 }
