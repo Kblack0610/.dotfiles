@@ -1874,3 +1874,133 @@ fn a_focus_ends_on_its_hours_and_then_reads_as_none() {
         .status
         .success());
 }
+
+impl Home {
+    /// Gate `demo`'s intake, as `intake_gated` gates agent-runtime's (a top-level key, so it goes
+    /// before the profile table).
+    fn gate(&self) {
+        let path = self.0.join("config.toml");
+        let cfg = fs::read_to_string(&path).unwrap();
+        fs::write(&path, format!("intake_gated = [\"demo\"]\n{cfg}")).unwrap();
+    }
+}
+
+#[test]
+fn a_gated_board_takes_a_hand_sessions_row_only_as_a_fault_or_the_persons_ask() {
+    let h = Home::new("gate-hand");
+    let polish = "chore(ui): tidy the menu colours #low #size/s";
+    // NEGATIVE CONTROL: with no gate the same add files.
+    ok(&add_as(&h, &[HAND], &[], polish));
+    h.gate();
+    for (flags, text) in [
+        (vec![], "feat(ui): a sparkline on the menu #normal #size/s"),
+        (
+            vec!["--why", "fault"],
+            "fix(ui): the menu logs twice #size/s",
+        ),
+        (
+            vec!["--why", "requested"],
+            "feat(ui): a chip nobody asked for #size/s",
+        ),
+        (
+            vec![],
+            "feat(ui): a badge it tagged itself #high #requested #size/s",
+        ),
+    ] {
+        let o = add_as(&h, &[HAND], &flags, text);
+        assert_eq!(
+            o.status.code(),
+            Some(6),
+            "{text}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(
+            err.contains("evidenced fault") && err.contains("notes improve demo"),
+            "{err}"
+        );
+    }
+    assert_eq!(
+        ids(&h.board()).len(),
+        1,
+        "nothing more filed: {}",
+        h.board()
+    );
+    ok(&add_as(
+        &h,
+        &[HAND],
+        &["--why", "runtime-fault"],
+        "fix(api): the export times out #size/s",
+    ));
+    ok(&add_as(
+        &h,
+        &[HAND],
+        &["--want", "human"],
+        "feat(cli): a json flag the person asked for #high #size/s",
+    ));
+    // A person at a terminal is never gated.
+    ok(&add_as(
+        &h,
+        &[],
+        &[],
+        "docs(readme): typed by a person #size/s",
+    ));
+    assert_eq!(ids(&h.board()).len(), 4, "{}", h.board());
+}
+
+#[test]
+fn a_gated_board_files_a_sessions_follow_up_only_as_a_fault_and_the_persons_line_always() {
+    let h = Home::new("gate-file");
+    h.gate();
+    let readme = h.0.join("notes/projects/current/demo/README.md");
+    fs::write(
+        &readme,
+        "# demo\nVersion: v0.1.0\n\n## Inbox\n\
+         - #agent #from/abcdef01 the menu could fade in\n\
+         - #agent #from/abcdef01 the menu drops input on resume\n\
+         - the person wants a pause chip\n\n## Tasks\n",
+    )
+    .unwrap();
+    let file = |pick: &str, row: &str, want: bool| {
+        let mut args = vec![
+            "ptask", "demo", "file", pick, "--lane", "agent", "--as", row,
+        ];
+        if want {
+            args.extend(["--want", "human"]);
+        }
+        h.run(&args)
+    };
+    let o = file(
+        "could fade",
+        "feat(ui): the menu fades in #normal #why/feature #size/s",
+        false,
+    );
+    assert_eq!(
+        o.status.code(),
+        Some(6),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(
+        h.sheet().contains("the menu could fade in"),
+        "left in the inbox: {}",
+        h.sheet()
+    );
+    ok(&file(
+        "drops input",
+        "fix(ui): the menu drops input on resume #high #why/runtime-fault #size/s",
+        false,
+    ));
+    // The person's line carries no #from/ and is filed whatever its reason.
+    ok(&file(
+        "pause chip",
+        "feat(ui): a pause chip #normal #size/s",
+        true,
+    ));
+    let board = h.board();
+    assert!(!board.contains("fades in"), "{board}");
+    assert!(
+        board.contains("drops input on resume") && board.contains("a pause chip"),
+        "{board}"
+    );
+}

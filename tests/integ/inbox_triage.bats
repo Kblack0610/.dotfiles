@@ -1861,6 +1861,43 @@ ask_about() { basename "$(grep -l "^question: .*$1" "$HOME"/.agent/asks/*/*.md)"
   grep -q 'empty state' "$PROJ/scratch/agent/README.md" || fail "no row"
 }
 
+@test "session line: on a gated board a file verdict with no evidenced fault is kept as an improvement; a runtime-fault row and the person's line file" {
+  sed -i '1i intake_gated = ["scratch"]' "$HOME/.config/notes/config.toml"
+  sheet '- [ ] chore(ui): a nicer empty state for the lobby #agent #from/ab12cd34\n- [ ] fix(ui): the pause menu drops input on resume #agent #from/ab12cd34\n- the gun sound is off\n' ''
+  answer '{"n": 1, "action": "file", "rows": ["chore(ui): a nicer empty state for the lobby #low #why/upkeep #size/s"], "lane": "agent"}' \
+    '{"n": 2, "action": "file", "rows": ["fix(ui): the pause menu drops input on resume #high #why/runtime-fault #size/s"], "lane": "agent"}' \
+    '{"n": 3, "action": "file", "rows": ["fix(audio): the gun sound plays late #high #size/s"], "lane": "agent"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'filed 2'
+  assert_output --partial 'improvements 1'
+  assert_output --partial 'refused 0'
+  agent="$PROJ/scratch/agent/README.md"
+  grep -q 'empty state' "$agent" && fail "the gate let polish onto the board: $(cat "$agent")"
+  grep -q 'drops input on resume' "$agent" || fail "the evidenced fault was not filed: $(cat "$agent")"
+  grep -q 'gun sound plays late' "$agent" || fail "the person's line was gated: $(cat "$agent")"
+  run inbox
+  refute_output --partial 'empty state'
+  run cat "$PROJ/scratch/improvements.md"
+  assert_output --partial '- chore(ui): a nicer empty state for the lobby ('
+  run jq -r 'select(.action == "improvement") | .why' "$HOME/.local/state/notes/ingest.jsonl"
+  assert_output --partial 'intake gate'
+}
+
+@test "session line: on a gated board a new epic whose rows the gate refuses is dropped again, never left with none" {
+  sed -i '1i intake_gated = ["scratch"]' "$HOME/.config/notes/config.toml"
+  systems ui
+  sheet '- [ ] feat(ui): a pause menu mid match #agent #from/ab12cd34\n' ''
+  answer '{"n": 1, "action": "file", "rows": ["feat(ui): a pause menu with resume and quit #normal #why/feature #size/m"], "epic": "epic(ui): a pause menu the player can open mid-match", "lane": "agent"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'improvements 1'
+  run cat "$SHEET"
+  assert_output --partial 'epic(ui): a pause menu the player can open mid-match'
+  refute_line --regexp '^- \[ \] epic\(ui\)'
+  assert_output --partial 'intake gate'
+}
+
 @test "improvement verdict: a person's line, and a project not on the board, stay where they are (negative controls)" {
   sheet '- the lobby could use a nicer empty state\n- [ ] chore(x): another #agent #from/ab12cd34\n' ''
   answer '{"n": 1, "action": "improvement", "project": "scratch", "why": "polish"}' \

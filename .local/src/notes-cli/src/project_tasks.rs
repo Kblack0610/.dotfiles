@@ -521,6 +521,13 @@ pub(crate) fn add_via(
     }
     let mut checked = Vec::new();
     if writer.self_checks() {
+        // The gate first: a row it refuses needs no shortlist review.
+        if lane == Lane::Agent {
+            if let Some(why) = crate::gate::refusal(&canon, &block[0], want.is_some())? {
+                eprintln!("{why}");
+                return Ok(crate::gate::EXIT_GATED);
+            }
+        }
         match self_check(p, name, text, &block[0], &writer.checked)? {
             Ok(shown) => checked = shown,
             Err(rc) => return Ok(rc),
@@ -1186,6 +1193,14 @@ fn parent_script(argv: &[String]) -> Option<&str> {
     None
 }
 
+/// Is `text` a session's follow-up: an outbox line its writer tagged `#from/<writer>`
+/// ([`inbox_followup`]), as `agentctl-inbox-triage`'s `is_session` reads it.
+fn session_line(text: &str) -> bool {
+    md::find_hashtags(text)
+        .iter()
+        .any(|t| t.starts_with("from/"))
+}
+
 /// A session's row as an outbox line: `#agent #p:<project> #from/<writer> <text>` plus its
 /// details, which `inbox-triage` files, joins to a twin or drops. A human-lane row and an epic
 /// (which lives on the human sheet) carry no `#agent`, and a `--want` channel rides as
@@ -1531,6 +1546,19 @@ fn file_via(
             if let Some(bin) = systems {
                 if let Some(l) = link_standing(p, log, dest_name, &dest_proj, &texts, bin)? {
                     return file_via(p, log, name, pick, how, lane, None, Some(l));
+                }
+            }
+            // A session's follow-up passes the intake gate of a gated board, on the rows a standing link
+            // leaves (the call above re-enters here with them); the person's words do not need to.
+            if dest_lane == Lane::Agent && session_line(&line.text) {
+                let canon = dest_proj
+                    .file_name()
+                    .map_or(dest_name.into(), |n| n.to_string_lossy());
+                for row in block.iter().filter(|l| md::is_open_task(l)) {
+                    if let Some(why) = crate::gate::refusal(&canon, row, how.want.is_some())? {
+                        eprintln!("{why}");
+                        return Ok(crate::gate::EXIT_GATED);
+                    }
                 }
             }
             // A frozen release window takes these rows only through its interrupt lane: the
