@@ -23,6 +23,10 @@
 #       DIR/_archive/<project>-superseded.md under "replaced by: <corrector's first line>" and drop
 #       the corrector's marker (when it sat on the first line, that line's key changes). A dangling
 #       marker (target "-") is left for a session to read.
+#   lessons seen [--min N] [FILE|DIR...]
+#       "<file>:<line>\t<N>\t<enforced_by>\t<first line>" per lesson the dream sweep corroborated N times
+#       (its `<!-- seen:N DATE -->` marker, the highest in the lesson) at least --min times (1);
+#       enforced_by is its `<!-- enforced_by:test:PATH -->` marker, "-" when it has none.
 #   lessons fat [--max N] [--json] [FILE|DIR...]
 #       "<file>:<line>\t<bytes>\t<first line>" per lesson over N bytes (LESSON_MAX_BYTES, 1500):
 #       the ones to rewrite as rule, why and one pointer. --json: one count line per file.
@@ -42,7 +46,7 @@ set -euo pipefail
 
 LESSONS_DIR_DEFAULT="$HOME/.agent/lessons"
 
-usage() { sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # The parser every mode shares. Bytes, not characters (LC_ALL=C), so the hash is the same
 # under any locale. Per line: own[NR] is the lesson it belongs to (0 for a `# ` title or
@@ -88,7 +92,7 @@ function open_lesson(t,   k) {
 }
 # Before the rule that opens a bullet lesson, so the bullet opens under the group.
 /^- / && day {
-  head[start[n]] = 1; grp = date[n]; delete text[n]; delete bytes[n]; delete end[n]; delete sups[n]
+  head[start[n]] = 1; grp = date[n]; delete text[n]; delete bytes[n]; delete end[n]; delete sups[n]; delete swept[n]; delete enf[n]
   for (l = start[n]; l < NR; l++) own[l] = 0
   n--; cur = 0; insec = 0; day = 0
 }
@@ -107,6 +111,12 @@ function open_lesson(t,   k) {
       if (s ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] ./ && (i = index(substr(s, 12), " -->")) > 1)
         sig[cur] = sig[cur] "\n" substr(s, 12, i - 1)
     }
+    # The dream sweep marker (the highest N in the lesson) and the enforced_by marker (the last one),
+    # in the grammar of a register row enforced_by.
+    s = $0
+    while (match(s, /<!-- seen:[0-9]+ /)) { v = substr(s, RSTART + 10, RLENGTH - 11) + 0; if (v > swept[cur]) swept[cur] = v; s = substr(s, RSTART + RLENGTH) }
+    s = $0
+    while ((i = index(s, "<!-- enforced_by:")) && (j = index(substr(s, i + 17), " -->"))) { enf[cur] = substr(s, i + 17, j - 1); s = substr(s, i + 17 + j + 3) }
     s = $0
     while (match(s, /<!-- supersedes:[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f] -->/)) {
       sups[cur] = sups[cur] " " substr(s, RSTART + 16, 8); s = substr(s, RSTART + RLENGTH)
@@ -278,6 +288,15 @@ END {
 # fat: the lessons over max bytes, "<file>:<line>\t<bytes>\t<first line>", or with sum one
 # "<lessons>\t<over>\t<over bytes>\t<bytes>" line for the file.
 # shellcheck disable=SC2016
+SEEN='
+END {
+  for (r = 1; r <= n; r++) {
+    if (swept[r] < min) continue
+    printf "%s:%d\t%d\t%s\t%s\n", ENVIRON["LESSONS_FILE"], start[r], swept[r], (enf[r] == "" ? "-" : enf[r]), substr(title[r], 1, 100)
+  }
+}
+'
+
 FAT='
 END {
   for (r = 1; r <= n; r++) {
@@ -456,6 +475,26 @@ END {
   print c + 0
 }
 '
+
+cmd_seen() {
+  local min="${LESSON_SEEN_MIN:-1}" arg f files=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --min) min="${2:-}"; shift $(($# > 1 ? 2 : 1)) ;;
+      -h|--help) usage ;;
+      *) break ;;
+    esac
+  done
+  case "$min" in ''|*[!0-9]*) echo "lessons seen: --min takes a count" >&2; usage 2 ;; esac
+  [ $# -gt 0 ] || set -- "$LESSONS_DIR_DEFAULT"
+  for arg; do
+    if [ -d "$arg" ]; then files+=("$arg"/*.md); else files+=("$arg"); fi
+  done
+  for f in "${files[@]}"; do
+    [ -f "$f" ] || continue
+    LESSONS_FILE="$f" LC_ALL=C awk -v min="$min" "$PARSE$SEEN" "$f"
+  done
+}
 
 cmd_fat() {
   local max="${LESSON_MAX_BYTES:-1500}" json=0 arg f files=()
@@ -699,6 +738,7 @@ case "${1:-}" in
   log) shift; cmd_log "$@" ;;
   archive) shift; cmd_archive "$@" ;;
   supersede) shift; cmd_supersede "$@" ;;
+  seen) shift; cmd_seen "$@" ;;
   fat) shift; cmd_fat "$@" ;;
   compact) shift; cmd_compact "$@" ;;
   -h|--help|'') usage ;;
