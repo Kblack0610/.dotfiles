@@ -462,7 +462,15 @@ fn label(s: &str) -> String {
 /// human), Reports (title and the summary's first line, newest first), Digests, Your notes.
 pub fn index_text(p: &Profile, day: NaiveDate, all: &[Entry]) -> String {
     let link = |e: &Entry| format!("[[{}|{}]]", e.target(p), label(&e.title));
-    let mut reports: Vec<&Entry> = all.iter().filter(|e| e.kind == Kind::Report).collect();
+    // One pass sorts the files into their sections, in folder order.
+    let (mut reports, mut digests, mut captures) = (Vec::new(), Vec::new(), Vec::new());
+    for e in all {
+        match e.kind {
+            Kind::Report => reports.push(e),
+            Kind::Digest => digests.push(format!("- {}", link(e))),
+            Kind::Capture => captures.push(format!("- {}", link(e))),
+        }
+    }
     reports.sort_by(|a, b| b.created.cmp(&a.created));
     let (needs, rest): (Vec<&Entry>, Vec<&Entry>) =
         reports.into_iter().partition(|e| e.needs_you && e.unread());
@@ -481,15 +489,8 @@ pub fn index_text(p: &Profile, day: NaiveDate, all: &[Entry]) -> String {
     };
     section("Needs you", needs.iter().map(report_line).collect());
     section("Reports", rest.iter().map(report_line).collect());
-    for (heading, kind) in [("Digests", Kind::Digest), ("Your notes", Kind::Capture)] {
-        section(
-            heading,
-            all.iter()
-                .filter(|e| e.kind == kind)
-                .map(|e| format!("- {}", link(e)))
-                .collect(),
-        );
-    }
+    section("Digests", digests);
+    section("Your notes", captures);
     if all.is_empty() {
         s.push_str("\nNothing filed yet.\n");
     }
