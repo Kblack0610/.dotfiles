@@ -51,9 +51,9 @@ pub fn budget() -> PathBuf {
     fleet_state().with_file_name("budget.json")
 }
 
-/// agent-ask's store, one `<project>/<id>.md` per ask, by the variable agent-ask resolves.
+/// agent-ask's store, one `<project>/<id>.md` per ask: agent-core's `asks::root`.
 pub fn asks_dir() -> PathBuf {
-    env("AGENT_ASK_ROOT").unwrap_or_else(|| home().join(".agent/asks"))
+    agent_core::asks::root()
 }
 
 /// agent-propose's store.

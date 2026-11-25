@@ -134,7 +134,13 @@ AQ_PR_TTL="${AGENT_QUEUE_PR_TTL:-120}"
 # A `nightly:<repo>` item waits on the scheduled-run facts schedules-sync writes, through its `pending` verb.
 AQ_SCHEDULES="$AQ_BIN/schedules-sync"
 # An `ask:<id>[=<option>]` item waits on that agent-ask's answer, read from its file here.
-AQ_ASKS="${AGENT_ASK_ROOT:-$HOME/.agent/asks}"
+# shellcheck source=../lib/ask-store.sh
+. "$AQ_BIN/../lib/ask-store.sh"
+AQ_ASKS="$(ask_root)"
+# shellcheck source=../lib/fmt.sh
+. "$AQ_BIN/../lib/fmt.sh"   # now_utc, oneline
+# shellcheck source=../lib/agent-merge-proof.sh
+. "$AQ_BIN/../lib/agent-merge-proof.sh"   # merge_proof_ref: the one reader of a repo's default branch
 # A `hold:<resource>` item waits while this tree's agent-hold says that resource is held.
 AQ_HOLD="$AQ_BIN/agent-hold"
 # Of the items waiting on one resource, the best `desk:<class>` (agent-hold classes) starts once it
@@ -154,7 +160,6 @@ AQ_ASK="$AQ_BIN/agent-ask"
 ACTIVE="queued running waiting review"
 
 die() { echo "agent-queue: $*" >&2; exit 1; }
-now_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # The caller's own session as an item records it: <tmux server>:<session>, the shape reap reads.
 own_session() {
   [ -n "${TMUX:-}" ] || return 1
@@ -214,9 +219,6 @@ fm_get() { # file key
 # The file is read by redirect, never as an awk operand: awk reads stdin for an empty operand, and a
 # caller whose item lookup came back empty hung on the tool shell's open stdin (ar-3455).
 fm_body() { awk 'f { print } $0 == "---" { f = 1 }' 2>/dev/null <"$1"; }
-# one_line <text> -> the text on one line, each run of newlines, tabs or spaces as one space,
-# trimmed: a title as add --title and set title= write it.
-one_line() { printf '%s' "$1" | tr -s '\n\t' '  ' | sed 's/^ *//; s/ *$//'; }
 
 # item_row <file> -> the "<board>:<key>" of the row the item works, as ITEM_JQ reads `row`: its
 # `row:`, else the board row it was promoted from (`from: board:`), else nothing. Every reader of an
@@ -2092,7 +2094,7 @@ cmd_add() {
       --from) from="${2:?}"; from_given=1; shift 2 ;;
       --agent) agent="${2:?}"; shift 2 ;;
       --slug) slug="${2:?}"; shift 2 ;;
-      --title) title="$(one_line "${2:?}")"; shift 2 ;;
+      --title) title="$(oneline "${2:?}")"; shift 2 ;;
       --epic) epic="${2:?}"; shift 2 ;;
       --want) want="${2:?}"; ! headless || die "--want names a human's channel; a headless Claude run ($CLAUDE_CODE_ENTRYPOINT) has no human at hand, so its add carries none"; shift 2 ;;
       --row) row="${2:?}"; shift 2 ;;
@@ -3137,7 +3139,7 @@ cmd_set() {
       session=*) kv="session=$(qualified "${kv#*=}")" || exit 1 ;;
       after=*) kv="after=$(word_list "${kv#*=}")" ;;
       phases=*) kv="phases=$(word_list "${kv#*=}")" ;;
-      title=*) kv="title=$(one_line "${kv#*=}")" ;;
+      title=*) kv="title=$(oneline "${kv#*=}")" ;;
     esac
     header_set "$f" "${kv%%=*}" "${kv#*=}"
     set_kv+=("$kv")
@@ -3730,8 +3732,8 @@ cmd_handoff() {
   [ -z "$(git -C "$dir" status --porcelain 2>/dev/null)" ] ||
     die "$dir has uncommitted changes: commit and push them first, so the next session starts from them"
   sha="$(git -C "$dir" rev-parse HEAD)"
-  trunk="$(git -C "$dir" rev-parse -q --verify refs/remotes/origin/HEAD || git -C "$dir" rev-parse -q --verify refs/remotes/origin/main)" ||
-    die "$dir has no origin/HEAD or origin/main to tell its work from the trunk's"
+  trunk="$(merge_proof_ref "$dir")" && trunk="$(git -C "$dir" rev-parse -q --verify "refs/remotes/$trunk")" ||
+    die "$dir has no origin default branch (origin/HEAD, develop, main or master) to tell its work from the trunk's"
   # A head the trunk already holds has no work to carry: the next session starts from the trunk.
   if ! git -C "$dir" merge-base --is-ancestor "$sha" "$trunk" 2>/dev/null; then
     br="$(git -C "$dir" symbolic-ref --short -q HEAD)" || die "$dir is on a detached head: put the work on a branch and push it first"

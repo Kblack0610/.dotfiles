@@ -53,7 +53,11 @@ from collections import Counter, defaultdict
 WAIT_RE = re.compile(r"(^|[;&|\s(])sleep\s+\d|\buntil\b.*;\s*do\b|/tasks/[^\s'\"]+\.output")
 # A response's turn class, from its tool calls: write wins over wait, wait over investigate;
 # a response with no tool call is a reply.
-WRITE_TOOLS = {"Edit", "Write", "NotebookEdit", "MultiEdit"}
+# The edit tools: .config/agent-panel/edit-tools.conf, the one list (EDIT_TOOLS_CONF to read another).
+EDIT_TOOLS_CONF = os.environ.get("EDIT_TOOLS_CONF") or os.path.join(
+    os.path.dirname(os.path.realpath(__file__)), "..", "..", ".config", "agent-panel", "edit-tools.conf")
+with open(EDIT_TOOLS_CONF, encoding="utf-8") as _f:
+    WRITE_TOOLS = frozenset(ln.strip() for ln in _f if ln.strip() and not ln.lstrip().startswith("#"))
 WRITE_RE = re.compile(r"\bgit\s+(commit|push|merge)\b|\bgh\s+pr\s+(create|merge|edit|comment)\b|\bagent-land\b")
 # Which command is a merge gate, a test run or a build: the gate, test and build lines of
 # time-use.conf, where a line's text runs as a command. The match is agent-core's time_use.rs `runs`

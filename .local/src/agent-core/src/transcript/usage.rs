@@ -35,16 +35,29 @@ pub(super) fn last_entry(text: &str) -> Option<u64> {
         .max()
 }
 
+/// The Claude tools that write a file, one name a line: the one list, which the shell, jq and
+/// Python readers read too.
+const EDIT_TOOLS: &str = include_str!("../../../../../.config/agent-panel/edit-tools.conf");
+
+/// [`EDIT_TOOLS`]' names, past its comments and blank lines.
+fn edit_tools() -> Vec<&'static str> {
+    EDIT_TOOLS
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect()
+}
+
 /// Files the session changed with its edit tools, deduplicated, in first-edit order.
 pub(super) fn edited_files(text: &str) -> Vec<String> {
-    const TOOLS: [&str; 4] = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
+    let tools = edit_tools();
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for v in text
         .lines()
         .filter(|l| {
             l.contains("\"tool_use\"")
-                && TOOLS
+                && tools
                     .iter()
                     .any(|t| l.contains(&format!("\"name\":\"{t}\"")))
         })
@@ -56,7 +69,7 @@ pub(super) fn edited_files(text: &str) -> Vec<String> {
         };
         for c in blocks {
             let name = c.get("name").and_then(Value::as_str).unwrap_or("");
-            if c.get("type").and_then(Value::as_str) != Some("tool_use") || !TOOLS.contains(&name) {
+            if c.get("type").and_then(Value::as_str) != Some("tool_use") || !tools.contains(&name) {
                 continue;
             }
             let input = c.get("input");

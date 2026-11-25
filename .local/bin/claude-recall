@@ -1832,9 +1832,18 @@ def read_spans(name, inp, cwd):
     return []
 
 
+@functools.cache
+def edit_tools():
+    """The Claude tools that write a file: .config/agent-panel/edit-tools.conf, the one list."""
+    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..",
+                        ".config", "agent-panel", "edit-tools.conf")
+    with open(path, encoding="utf-8") as f:
+        return frozenset(ln.strip() for ln in f if ln.strip() and not ln.lstrip().startswith("#"))
+
+
 def write_paths(name, inp, cwd):
-    """The files a call wrote: Edit and Write targets, sed -i files and shell redirects."""
-    if name in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
+    """The files a call wrote: edit-tool targets, sed -i files and shell redirects."""
+    if name in edit_tools():
         p = inp.get("file_path") or inp.get("notebook_path")
         return [norm_path(p, cwd)] if p else []
     if name != "Bash":
@@ -2225,7 +2234,6 @@ def cmd_tool_calls(a):
 
 
 # --- answer-lag: does a question get its answer before work starts ------------
-EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
 # Pasted text and injected reminders quote other people and other sessions; an unclosed one (a
 # truncated paste) runs to the end of the prompt.
 NOT_ASKED = re.compile(r"<(pasted_content|system-reminder)\b[^>]*>.*?(?:</\1[^>]*>|\Z)", re.S)
@@ -2286,7 +2294,7 @@ def answer_turns(path, since, until):
                         turn["answered"] = True
                         break
                     turn["calls"] += 1
-                    turn["edited"] |= name in EDIT_TOOLS
+                    turn["edited"] |= name in edit_tools()
     if turn is not None:
         yield turn
 

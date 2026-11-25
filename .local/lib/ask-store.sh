@@ -1,0 +1,16 @@
+# shellcheck shell=bash
+# This file is SOURCED, never executed.
+#
+# ask-store.sh - where agent-ask keeps its asks, and whether one is still open.
+#
+#   ask_root            the store: $AGENT_ASK_ROOT, else ~/.agent/asks (one <project>/<id>.md per ask)
+#   ask_open <file>     0 when the ask is still open (`status: pending`), parked or not
+#
+# Pending for the human (the Needs you count, `agent-ask list --pending`) is open and not parked:
+# agent-ask is_parked. A reader asking only whether an ask is still filed (a session's own ask, a
+# reopen on its answer) wants ask_open, since a parked ask is still filed and still gets an answer.
+# agent-core asks.rs `root` is the Rust twin of ask_root.
+
+ask_root() { printf '%s\n' "${AGENT_ASK_ROOT:-$HOME/.agent/asks}"; }
+
+ask_open() { grep -qx 'status: pending' "$1" 2>/dev/null; }

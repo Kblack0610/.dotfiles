@@ -44,11 +44,13 @@ jq -r 'select((.isSidechain // false) | not)
     else empty end' "$TRANSCRIPT" 2>/dev/null \
   | awk '$0 == "P" {f = 0} $0 == "D" {f = 1} END {exit !f}' && exit 0
 
-# Already filed: a pending ask this session owns (the same match fleet-sessions' asks_for makes).
-ASKS_ROOT="${AGENT_ASK_ROOT:-$HOME/.agent/asks}"
+# Already filed: an open ask this session owns. A parked one counts: it is filed, and the human
+# chose to answer it later, so a second ask would only repeat it.
+# shellcheck source=../../../.local/lib/ask-store.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../../.local/lib/ask-store.sh" || exit 0
 while IFS= read -r f; do
-  grep -qx 'status: pending' "$f" && exit 0
-done < <(grep -lx "claude_session: $SID" "$ASKS_ROOT"/*/*.md 2>/dev/null)
+  ask_open "$f" && exit 0
+done < <(grep -lx "claude_session: $SID" "$(ask_root)"/*/*.md 2>/dev/null)
 
 # gate: hook-stop-ask-filed
 jq -n --arg r "ask-filed: Your turn ended waiting on the human, and no ask is filed, so no board shows it and nothing pages them. If you need their answer or their action before you continue, file it now: agent-ask post --options 'a=what a means|b=what b means' --recommend a --context \"<why, what it blocks>\" \"<one question, ending in ?>\" (it prints the question card and pages them), then end the turn on that card's question and numbered options as written, never on 'filed as ask X'. If it is a human-only action you will not wait on, add a human-sheet row instead (notes ptask <project> add \"... #<priority>\"; from a session the human opened it lists similar open rows first, exit 5: join the one that is it, or rerun with --checked <their ids>). If nothing is actually waiting on them, say so in one line and stop." \

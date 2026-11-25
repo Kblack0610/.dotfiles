@@ -180,7 +180,6 @@
 
 set -uo pipefail
 
-ASKS_ROOT="${AGENT_ASK_ROOT:-$HOME/.agent/asks}"
 : "${AGENT_ASK_QUEUE_CMD:=agent-queue}"
 # jq: a dollar amount to the cent ("$0.08"), for the card's telemetry line and trace's call line.
 JQ_MONEY='def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 | tostring | if length < 2 then "0" + . else . end)";'
@@ -203,6 +202,9 @@ JQ_MONEY='def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/judge.sh"
 # shellcheck source=../lib/fmt.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fmt.sh"
+# shellcheck source=../lib/ask-store.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/ask-store.sh"
+ASKS_ROOT="$(ask_root)"
 # shellcheck source=../lib/dispatch-wake.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/dispatch-wake.sh"
 # The panels' palette (C_*): a card reads like the panel that shows it and follows a theme swap.
@@ -248,9 +250,6 @@ human_floor() {
   printf "names %s, the judge's own authority\n" "$hit"
 }
 
-# collapse a value to a single physical line (files are one key:value per line)
-oneline() { printf '%s' "$1" | tr '\n\t' '  ' | sed -E 's/  +/ /g; s/^ +//; s/ +$//'; }
-
 # undefined_terms <context> <text...>: the session-jargon terms in the text that the context never
 # names, one per line. A term is a name for a machine: camelCase, a dotted name or file
 # (scale.net.botsPredicted, scaling-net.md), snake_case, a --flag, a row or item id (ucp-526,
@@ -269,9 +268,6 @@ undefined_terms() {
     grep -qFw -e "$t" <<<"$ctx" || printf '%s\n' "$t"
   done
 }
-
-# field <file> <key> -> first value (text after "key: ")
-field() { sed -n "/^$2: /{s///p;q;}" "$1" 2>/dev/null; }
 
 # load_ask <file>: every `key: value` of one ask into the global ASK, read once with no fork
 # (a `field` call per key made a card take half a second). The first `key: ` line wins, as in
