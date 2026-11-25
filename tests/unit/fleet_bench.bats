@@ -3695,6 +3695,10 @@ LIB
   source "$SUBJECT"
   run bench_prom "$T0" '{"steps": []}'
   assert_line 'agent_bench_kpi_subject{kpi="prio_default",subject="agent-queue"} 1'
+  # a row with no event is no filer, so a board that only has those names no subject
+  : > "$BENCH_INGEST"
+  run bench_prom "$T0" '{"steps": []}'
+  refute_line --partial 'kpi="prio_default",subject='
   # negative control: every row carries a priority and a reason, so the KPI reads 0, passes and names no filer
   cp "$BJSON.reasoned" "$BJSON"
   run "$SUBJECT" chain --check

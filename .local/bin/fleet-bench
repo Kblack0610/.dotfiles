@@ -1073,7 +1073,7 @@ bench_prom() {
         $k | to_entries[] | select(.value.status != "-") | [{kpi: .key}, (if .value.status == "past" then 1 else 0 end)]),
       gauge("agent_bench_kpi_subject"; "The row behind a KPI that names one, as project:id; the value is always 1.";
         ($or[] | [{kpi: "requested_unstarted_h", subject: "\(.project):\(.id)"}, 1]),
-        ($pd[] | select(.total > 0) | [{kpi: "prio_default", subject: .origins[0].origin}, 1])),
+        ($pd[] | ([.origins[] | select(.origin != "unrecorded")] | first) as $o | select($o != null) | [{kpi: "prio_default", subject: $o.origin}, 1])),
       gauge("agent_bench_vital"; "The front-page KPIs from BENCH_VITALS, by the question each answers; the value is its row. Read each one from agent_bench_kpi.";
         vitals($vitals) | to_entries[] | [{question: .value.question, kpi: .value.kpi}, .key]),
       gauge("agent_chain_wip"; "Items at each step of the work chain now, from the state files.";
@@ -2464,7 +2464,10 @@ chain_counts() {
   for s in board prio local plans routes queue reds spent pipeline; do cat "$PAR/$s"; done
 }
 
-# prio_origins -> {<row id>: its filer}, the first added or filed event of each id in the ingest record; rc 1 when it cannot be read.
+# prio_origins -> {<row id>: its filer}, the first added or filed event of each id in the ingest record: its
+# origin, else its writer ("human" for a hand write, "session" for a session id). A row a sweep runner filed
+# (inbox-triage, inbox-plan) names the runner, which carried the line in: the capture before it is not recorded.
+# rc 1 when the record cannot be read.
 # prio_defaults -> {total, origins: [{origin, n, ids}]}: the open agent and human rows that carry no
 # priority tag or no #why/<reason> (the board feed's untriaged and prio_why), grouped by the writer of the
 # row's first added or filed event in the ingest record, most first, ids sampled (PRIO_SAMPLE). An origin
@@ -2475,7 +2478,8 @@ prio_origins() {
   [ -r "$BENCH_INGEST" ] || return 1
   { grep -hE '"action":"(added|filed)"' "$BENCH_INGEST" || :; } | jq -Rnc "$JQ_LIB"'
     reduce (inputs | fromjson? | select((.id // "") != "")) as $e ({};
-      if has($e.id) then . else .[$e.id] = ($e | if human_writer then "human" else (.origin // .by) end) end)'
+      if has($e.id) then . else .[$e.id] = ($e | ((.origin | select(. != null and . != "")) // (if human_writer then "human" else .by end))
+        | if test("^[0-9a-f]{8}$") then "session" else . end) end)'
 }
 
 prio_defaults() {
