@@ -102,12 +102,12 @@ boardblock="$(jq -r --arg y "$C_YEL" "$JQ_PANGO"'
     + (.board_7d | if . == null then ""
        else ", net \(.net | if . > 0 then "+\(.)" else tostring end) pts in 7d (\(.in) in, \(.done) done, \(.dropped) dropped)" end),
   ([.cards[] | select((.agent_tiers.board // 0) > 0)] | sort_by(-.agent_tiers.board, .name)) as $b
-  | ([$b[].name | esc | length] + [7] | max) as $w
+  | ([$b[].name | length] + [7] | max) as $w
   | ([$b[].agent_tiers.board | tostring | length] + [4] | max) as $nw
   | ([$b[].net7d_cell // "-" | length] + [6] | max) as $cw
   | if ($b | length) > 0 then "<tt>" + ([("  " + ("PROJECT" | pad($w)) + "  " + ("ROWS" | lpad($nw)) + "  " + ("7D NET" | lpad($cw)))]
       + [$b[] | . as $c | (.net7d_cell // "-") as $n
-        | "  " + (.name | esc | pad($w)) + "  " + (.agent_tiers.board | tostring | lpad($nw))
+        | "  " + (.name | pad($w) | esc) + "  " + (.agent_tiers.board | tostring | lpad($nw))
           + "  " + (" " * ($cw - ($n | length))) + ($n | if $c.growing then paint($y) else . end)] | join("\n")) + "</tt>"
     else empty end
 ' <<< "$raw")"

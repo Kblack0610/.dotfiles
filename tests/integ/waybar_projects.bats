@@ -196,7 +196,8 @@ Not running: done, base</tt>
   run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
   assert_line "<b>Board</b>  160 rows, net -20 pts in 7d (40 in, 50 done, 10 dropped)"
   assert_line "<tt>  PROJECT  ROWS  7D NET"
-  assert_line "  a&amp;b   140      <span color=\"$Y\">+7</span>"
+  # The name is padded as shown and escaped after, so an escaped name keeps its row aligned.
+  assert_line "  a&amp;b       140      <span color=\"$Y\">+7</span>"
   assert_line "  web        12     -30</tt>"
   # A project with no rows on the board has no Board row.
   refute_output --partial "  idle "

@@ -12,7 +12,7 @@
 # shares, a part cell as an eighth block on the dim colour, the rest dim), then the board's head
 # line less its runner count (jobs running, queued, the CPU job pods book of the CI nodes', done
 # in 24h, pass rate painted red under 70% and amber under 90%), the ci domain's parts and why
-# runner rows may be short, then jobs by kind (running, waiting, oldest, done, pass), one row per
+# runner rows may be short, then jobs by kind (running, waiting, oldest, done, usual, pass), one row per
 # machine: BOOKED (the CPU and memory its job pods book of allocatable, then its cells like the
 # title's, `-` on no CI node), RUNNING (each job by kind and repo: a pod's scale set or
 # ScaledJob, a Unity slot's pool) and NEXT (the oldest waiting job that fits it, how long it has
