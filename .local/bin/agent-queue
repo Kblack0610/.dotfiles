@@ -2077,6 +2077,9 @@ work_machine_guard() {
   die "this is a work machine ($PROJECT_MACHINE_PROFILE): no dispatcher runs here and home runners never take work. Put the follow-up in the project's tracker (ticket), or work it in this session"
 }
 
+# cmd_add: an add over the admission cap that already has its row (--row, or a board pull from
+# promote) leaves that row where it is. Only one with no row gets an overflow row: a board pull's
+# overflow row was a twin that dispatch skipped to the human sheet beside the first (2026-11-25).
 cmd_add() {
   local project="" mode=oneshot priority=high tags="" after="" from=human agent=claude slug=""
   local running="" session="" task=() tag planf="" dry="" check="" weight="" title="" epic="" repeat="" from_given="" want="" row="" priority_given=""
@@ -2228,7 +2231,7 @@ cmd_add() {
   fi
   if [ -n "$capped" ] && ! admit "$from" "$priority" "$tags" "$project" "$slug" "$hold_title"; then
     unlock # the board write is notes' and can be slow: the lock covers only the count
-    if [ -n "$row" ]; then echo "agent-queue: row $row is left un-started where it is: dispatch promotes it as the queue drains" >&2
+    if [ -n "$row" ] || [[ "$from" == board:* ]]; then echo "agent-queue: row ${row:-${from##*:}} is left un-started where it is: dispatch promotes it as the queue drains" >&2
     else overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "" "$slug" "$tags"; fi
     exit "$AQ_EX_HELD"
   fi
