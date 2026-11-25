@@ -2225,7 +2225,7 @@ human_exit() {
 # DISPATCH_EXIT_MAX exits a pass (0 is no cap), so a backlog of skips drains over passes, not in one. A
 # row already started is left alone. --dry-run writes
 # nothing and prints `<exit> TAB <project> TAB <id> TAB <rule>` per row (`plan-wait` for a plan row
-# past the room), then the counts. Sets PLAN_TAGGED, EXITS_TAKEN and HELD.
+# past the room), then the counts. Sets PLAN_TAGGED, EXITS_TAKEN and EXITS_HELD.
 skip_exits() {
   local dry='' follow='' board rows room p prof id raw line dsig dj rule req prio planned d e body why where gate
   local -a add
@@ -2235,7 +2235,7 @@ skip_exits() {
     --dry-run) dry=1 ;;
     *) say "usage: fleet-dispatch exits [--dry-run]"; return 2 ;;
   esac
-  PLAN_TAGGED=0 EXITS_TAKEN=0 HELD=0
+  PLAN_TAGGED=0 EXITS_TAKEN=0 EXITS_HELD=0
   board=$(notes board --json 2>/dev/null) || { say "skip_exits: notes board --json failed"; return 0; }
   room=$(jq -r "$ROW_JQ"'[.rows[]? | select(plan_tagged)] | length' <<<"$board")
   room=$(( DISPATCH_PLAN_BACKLOG - ${room:-0} ))
@@ -2341,7 +2341,7 @@ skip_exits() {
       gate)
         np "$prof" ptask "$p" --agent tag --add "$gate" "$id" >/dev/null 2>&1 || { say "skip_exits: could not gate $p $id #$gate"; continue; }
         e=$gate ;;
-      hold) HELD=$(( HELD + 1 )) ;;
+      hold) EXITS_HELD=$(( EXITS_HELD + 1 )) ;;
       sheet | improve)
         body=$(sheet_body "$body")
         if [ "$e" = sheet ]; then
@@ -2370,7 +2370,7 @@ skip_exits() {
     return 0
   fi
   [ "$EXITS_TAKEN" = 0 ] || say "gave $EXITS_TAKEN skipped row(s) their exit"
-  [ "$HELD" = 0 ] || say "held $HELD skipped row(s) on the agent board: no person is needed for them"
+  [ "$EXITS_HELD" = 0 ] || say "held $EXITS_HELD skipped row(s) on the agent board: no person is needed for them"
   # The reap's follow_moved_gates ran before this, so a gate on a row sent to the sheet here would read
   # dead until the next pass, and queue-starved trips on it (ar-3172: ucp-3100 on ucp-3099, 2026-11-23).
   # It reads the gates again in a subshell: the pass's copy predates the drop, and a failed read there
