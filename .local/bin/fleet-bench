@@ -7447,7 +7447,8 @@ canary_lanes_section() {
 # except an end that says nothing about the model (UNRATED_ENDS; a score not run, canary_ran). Proven
 # is a pass, failing is fails and no pass, excluded is BENCH_MATRIX's why (an entry naming a `harness`
 # holds that one alone) or what route() refuses the harness by its harnesses.json entry (a stack none of
-# whose projects its `projects` allowlist names, plan items when headless with no resume), no work is a cell no item
+# whose projects its `projects` allowlist names, plan items when headless with no resume, and a mode or a
+# stack's PR-opening kinds whose capability its `capabilities` list leaves out), no work is a cell no item
 # on any harness touched in the window, empty is the rest. A kind and scope are a row's type and area from
 # `notes row parse`, the grammar's one home (agent-queue add records them on an item); an untyped one is in
 # no cell. Each mode is mode_of's test on the item
@@ -7482,7 +7483,10 @@ MATRIX_JQ='
   | ($all | map(.sessions // "" | split(" ")[]) | map(select(. != "")) | INDEX(.)) as $claimed
   | ([$o[] | select(.harness == $h and ($claimed[.session_id // ""] | not))
       | {v: (if (.prs_merged // 0) > 0 then "pass" else null end), at: (.updated // ""), ref: .session_id}]) as $hand
-  | ([$m.excluded[]? | select(.harness == null or .harness == $h)] + $xstacks
+  | ([$hd.lacks[]? | "\($h) lacks the \(.cap) capability (harnesses.json): \(.why // "")" as $w | select(.mode != null) | {mode, why: $w}]
+      + [$hd.lacks[]? | "\($h) lacks the \(.cap) capability (harnesses.json): \(.why // "")" as $w | select(.stack != null) | .stack as $st
+         | $m.kinds[] | select(. as $kd | ($prkinds // $m.kinds) | index($kd)) | {kind: ., stack: $st, why: $w}]) as $caps
+  | ([$m.excluded[]? | select(.harness == null or .harness == $h)] + $xstacks + $caps
       + if $hd.headless == true and $hd.resume != true
         then [{mode: "plan", why: "\($h) runs headless and cannot resume, so it takes no plan item (harnesses.json)"}] else [] end) as $exs
   | def excluded($kind; $stack; $mode): first($exs[] | select((.kind // null) == $kind and (.stack // null) == $stack
@@ -7521,7 +7525,10 @@ canary_matrix() {
   # A harness the map does not have (claude) adds none.
   hd='{}' xstacks='[]'
   if [ -e "$BENCH_HARNESSES" ]; then
-    hd=$(jq -ce --arg h "$h" '.harnesses[$h] // {} | objects' "$BENCH_HARNESSES" 2>/dev/null) ||
+    # lacks: each capability of the map's vocabulary the entry does not list, with its stack or mode.
+    hd=$(jq -ce --arg h "$h" '(.capabilities // {}) as $voc | .harnesses[$h] as $e | ($e // {} | objects)
+        + (if $e == null then {} else {lacks: [$voc | to_entries[] | select(.key as $k | ($e.capabilities // []) | any(. == $k) | not)
+            | {cap: .key, stack: .value.stack, mode: .value.mode, why: .value.why}]} end)' "$BENCH_HARNESSES" 2>/dev/null) ||
       { say "canary matrix: $BENCH_HARNESSES is unreadable, or its $h entry is no object"; return 2; }
     if jq -e 'has("projects")' <<<"$hd" >/dev/null; then
       local st why rc refused
@@ -7536,6 +7543,8 @@ canary_matrix() {
       done < <(jq -r '.stacks | to_entries[] | select(.value.projects | length > 0) | "\(.key)\t\(.value.projects | join(" "))"' "$BENCH_MATRIX")
     fi
   fi
+  # The kinds that open a PR, which a stack-bound capability (unity_gate) refuses a harness without it (route()).
+  prkinds=$(jq -c '[to_entries[] | select((.value.exit // "") | . == "" or . == "pr") | .key]' "$BENCH_KINDS" 2>/dev/null) || prkinds=null
   since=$(date -u -d "@$(( $(now) - days * 86400 ))" +%F)
   tasks=$(canary_tasks) || return 2
   # A task's kind and scope, as an item's, are its row's type and area: one `notes row parse` of each first line.
@@ -7553,7 +7562,7 @@ canary_matrix() {
               | .paths // {} | to_entries[] | select(.value as $p | $ps | index($p)) | "\(.key)\t\(.value)"' "$BENCH_PROJECT_MAP" 2>/dev/null |
             while IFS=$'\t' read -r dir p; do forge_canonical "$dir" && printf '%s\n' "$p"; done | jq -Rsc 'split("\n") | map(select(. != "")) | unique')
   jq -n --arg h "$h" --arg since "$since" --slurpfile m "$BENCH_MATRIX" --slurpfile k "$(kpi_canary)" --argjson forgejo "$forgejo" \
-    --argjson hd "$hd" --argjson xstacks "$xstacks" \
+    --argjson hd "$hd" --argjson xstacks "$xstacks" --argjson prkinds "$prkinds" \
     --slurpfile o <(outcomes_newest | jq -c --arg since "$since" 'select((.updated // "") >= $since)') \
     --slurpfile items <(printf '%s\n' "$items") \
     --rawfile tsr <(printf '%s' "$tasks") \
