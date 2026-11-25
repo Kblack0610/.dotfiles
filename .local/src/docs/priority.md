@@ -85,8 +85,8 @@ A fault or a feature with a named benefit is normal at least, under a "to standa
 A board row carries a priority word and a `#why/<slug>` from `.config/inbox-triage/rules/priority-reasons.tsv`, each slug naming one priority. A row with no reason, or no priority, is a default: `fleet-bench prio-defaults` counts them by the filer that wrote the row.
 
 - Backfill: `agentctl-inbox-triage --backlog --priority --reasons --retag high`, run from the deployed script on PATH (a worktree copy is refused: its rendered prompt is not one of the agent's PROMPT files). It stops at `MAX_CALLS_HOUR` (120 calls, about 2,100 rows an hour) with "stopped at its budget"; the next run continues over the rows still without a reason. Never raise the cap for it.
-- It keeps the priority a row has. When the model's reason belongs to another priority, the pass says so and writes nothing, so the row stays a default until `--retag` names its priority or the human changes the word. A human row is never lowered by it.
-- First run, 2026-11-25: defaults 4,054 to 1,928 in one hour (2,132 rows tagged, 5 closed mid-run); 654 mismatches said and not written, 37 of them a human row the model would lower (ask 90S7AX).
+- It keeps the priority a row has. When the model's reason belongs to another priority, the pass says so and writes nothing, so the row stays a default until `--retag` names its priority or the human changes the word. `--retag high` re-judges the agent-lane high rows and can lower one; a human row is never lowered (the pass says the lowering and the human decides).
+- The count after each run is `fleet-bench prio-defaults`; the first run's figures are in the P4 Results of `~/.agent/plans/_live/priority-reasons-default-count.md`.
 
 ## Where the scales fall short today
 
