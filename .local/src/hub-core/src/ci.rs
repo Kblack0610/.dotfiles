@@ -664,21 +664,20 @@ struct Pool<'a> {
 }
 
 impl Pool<'_> {
-    /// Whether it may take a job of this forge (empty reads github) in this repo, by its short
-    /// name as the waiting row gives it.
+    /// Whether it may take a job of this forge (empty reads github, on either side) in this
+    /// repo. The waiting row names its repo without the owner, so a repo-scoped pool matches by
+    /// the short name: a same-named repo of another owner would match too.
     fn serves(&self, forge: &str, repo: &str) -> bool {
-        let forge = if forge.is_empty() { "github" } else { forge };
+        let github = |f: &str| if f.is_empty() { "github" } else { f }.to_string();
         let scope = self.scope.rsplit('/').next().unwrap_or_default();
-        self.forge == forge && (self.scope == "org" || scope.eq_ignore_ascii_case(repo))
+        github(self.forge) == github(forge)
+            && (self.scope == "org" || scope.eq_ignore_ascii_case(repo))
     }
 }
 
-/// The pools that may take this job.
-fn serving<'p>(pools: &'p [Pool<'p>], q: &Queued) -> Vec<&'p Pool<'p>> {
-    pools
-        .iter()
-        .filter(|p| p.serves(&q.forge, &q.repo))
-        .collect()
+/// The pools that may take a job of this forge in this repo.
+fn serving<'p>(pools: &'p [Pool<'p>], forge: &str, repo: &str) -> Vec<&'p Pool<'p>> {
+    pools.iter().filter(|p| p.serves(forge, repo)).collect()
 }
 
 fn pools(infra: &Infra) -> Vec<Pool<'_>> {
@@ -1057,7 +1056,7 @@ fn queue(infra: &Infra, all: &[Runner], off: &HashMap<&str, &str>) -> Vec<Queued
         .map(|([.., labels], mut q)| {
             let need = lower(&labels);
             if !need.is_empty() {
-                q.can = fits(all, off, &serving(&pools, &q), &need);
+                q.can = fits(all, off, &serving(&pools, &q.forge, &q.repo), &need);
                 (q.at, q.starts) = starts(all, off, &usual, &need);
                 if q.at.is_empty() {
                     q.at = q.can.first().map(|f| f.host.clone()).unwrap_or_default();
@@ -1071,7 +1070,7 @@ fn queue(infra: &Infra, all: &[Runner], off: &HashMap<&str, &str>) -> Vec<Queued
         if q.stuck {
             // The labels no online runner or pool of its own holds; empty when each is held but
             // never together.
-            let mine = serving(&pools, q);
+            let mine = serving(&pools, &q.forge, &q.repo);
             q.missing = q
                 .needs
                 .iter()
@@ -1169,12 +1168,13 @@ pub struct PoolMatch {
 /// total busy/slots says nothing about a job that fits two of its ten runners (2026-11-05:
 /// razer-laptop-unity-pool-1/2 were the only ones that matched while mac-studio slots sat idle).
 /// Nothing when no job waits that long, or no runner is read: the finding then falls back to the
-/// pool's own totals.
+/// pool's own totals. A job an ephemeral pool of its own holds is left out: its labels match.
 pub fn pool_match(infra: &Infra, min_wait: i64) -> Vec<PoolMatch> {
     let all = runners(infra);
     if all.is_empty() {
         return vec![];
     }
+    let pools = pools(infra);
     let mut sets: BTreeMap<String, BTreeSet<Vec<String>>> = BTreeMap::new();
     for s in infra.get("waiting") {
         let mut labels = lower(s.label("labels"));
@@ -1183,6 +1183,9 @@ pub fn pool_match(infra: &Infra, min_wait: i64) -> Vec<PoolMatch> {
             && s.value.is_some_and(|v| v as i64 >= min_wait)
             && !s.label("pool").is_empty()
             && !labels.is_empty()
+            && !serving(&pools, s.label("forge"), s.label("repo"))
+                .iter()
+                .any(|p| holds(&p.labels, &labels))
         {
             sets.entry(s.label("pool").into())
                 .or_default()
@@ -1401,7 +1404,10 @@ impl Row for Queued {
     fn in_state(&self, s: &str) -> bool {
         match s {
             "stuck" => self.stuck,
-            "free" => self.can.iter().any(|f| f.state == "idle"),
+            "free" => self
+                .can
+                .iter()
+                .any(|f| f.state == "idle" || f.state == "pool"),
             _ => false,
         }
     }
@@ -1835,6 +1841,13 @@ mod tests {
             "{red}"
         );
         assert!(!red.contains("kustomize-builds"), "{red}");
+        // Nor are a pool's jobs fleet-bench's "no runner matches" finding.
+        let m = pool_match(&i, 0);
+        assert_eq!(m.len(), 1);
+        assert_eq!(
+            m[0].labels,
+            "light/arc-repo-dotfiles,self-hosted | docker | heavy"
+        );
     }
 
     #[test]
