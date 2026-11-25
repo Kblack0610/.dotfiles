@@ -339,7 +339,7 @@ jobs:
         run: |
           files=$(<"$RUNNER_TEMP/files")
           if [ -z "$files" ]; then
-            [ "$PICKED_FILES" != true ] || { echo "::error::the split gave $TAG files, but this step read none from $RUNNER_TEMP/files"; exit 1; }
+            [ "$PICKED_FILES" != true ] || { echo "::error::the split gave $TAG files, but this step read none from $RUNNER_TEMP/files (bash ${BASH_VERSION:-is not this step's shell})"; exit 1; }
             echo "nothing picked for $TAG"; exit 0
           fi
           start=$SECONDS rc=0

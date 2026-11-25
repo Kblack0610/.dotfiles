@@ -179,7 +179,9 @@ shard_step() { awk '/^      - name: Fast tier shard$/ { s = 1 } s && /^        r
   run sed -n '/^defaults:$/,/^[a-z]/p' "$WF"
   assert_line --index 1 '  run:'
   assert_line --index 2 '    shell: bash -e {0}'
-  run grep -nE '^ +shell: (sh|dash)( |$)' "$WF"
+  run grep -nE '^ +shell: (/bin/|/usr/bin/)?(sh|dash)( |$)' "$WF"
+  assert_failure
+  run grep -n '^    defaults:' "$WF"
   assert_failure
   shard_step "$WF" >"$BATS_TEST_TMPDIR/shard.sh"
   grep -q 'files=\$(<"\$RUNNER_TEMP/files")' "$BATS_TEST_TMPDIR/shard.sh" || fail "no shard script: $(cat "$BATS_TEST_TMPDIR/shard.sh")"
@@ -196,7 +198,7 @@ shard_step() { awk '/^      - name: Fast tier shard$/ { s = 1 } s && /^        r
   echo unit/a.bats >"$BATS_TEST_TMPDIR/files"
   RUNNER_TEMP=$BATS_TEST_TMPDIR TAG='unit 1/24' PICKED_FILES=true run dash -e "$BATS_TEST_TMPDIR/shard.sh"
   assert_failure 1
-  assert_output --partial '::error::'
+  assert_output --partial "(bash is not this step's shell)"
 }
 
 @test "the skills call passes the anchor's runner choice, fork rule included" {
