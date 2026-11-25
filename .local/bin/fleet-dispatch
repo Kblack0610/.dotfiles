@@ -3011,6 +3011,41 @@ harness_tier_why() {
   return 1
 }
 
+# harness_needs_why <harness> <item json> <tier> <pinned 0|1> -> why the harness lacks a capability the item needs,
+# rc 1; rc 2, failing closed, when the map or the stack list cannot say; nothing and rc 0 when it has them all.
+# The one place a harness is refused for what it cannot do, from its `capabilities` list in the map (the
+# vocabulary and each one's why are the map's top-level `capabilities`): adding a harness is a map entry, never
+# new code here. A row needs lane_sandbox under DISPATCH_SANDBOX_PROFILE, code_review when routed (not pinned) as
+# a red past the unattended ceiling (the red-fix gate), and each stack-bound capability (`stack` in the
+# vocabulary: unity_gate) when the item's project is in that stack of MATRIX and its kind opens a PR (a canary
+# replays a merged PR and opens none). Claude, which route() takes before this, has them all.
+harness_needs_why() {
+  local h="$1" it="$2" tier="$3" pinned="$4" project kind cap stack why rc needs=() rows
+  [ -z "$DISPATCH_SANDBOX_PROFILE" ] || needs+=(lane_sandbox)
+  [ "$pinned" = 1 ] || [ "$tier" -le "$UNATTENDED_TIER_CEILING" ] || ! is_red "$it" || needs+=(code_review)
+  if ! is_canary "$it"; then
+    load_kinds; kind=$(item_kind "$it")
+    if [ -z "$kind" ] || [ "${KIND_EXIT[$kind]:-pr}" = pr ]; then
+      rows=$(jq -r --arg h "$h" '(.harnesses[$h].capabilities // []) as $has | (.capabilities // {}) | to_entries[]
+        | select(.value.stack != null) | . as $c | select($has | index($c.key) | not) | "\($c.key)\t\($c.value.stack)"' "$HARNESSES" 2>/dev/null) ||
+        { echo "$HARNESSES is unreadable, so its capabilities are unknown"; return 2; }
+      project=$(jq -r '.project // ""' <<<"$it")
+      while IFS=$'\t' read -r cap stack; do
+        [ -n "$cap" ] || continue
+        jq -e --arg s "$stack" --arg p "$project" '.stacks[$s].projects // [] | index([$p])' "$MATRIX" >/dev/null 2>&1; rc=$?
+        [ "$rc" = 0 ] && needs+=("$cap")
+        [ "$rc" = 0 ] || [ "$rc" = 1 ] || { echo "the stack list $MATRIX is unreadable, so what $project needs is unknown"; return 2; }
+      done <<<"$rows"
+    fi
+  fi
+  for cap in "${needs[@]}"; do
+    jq -e --arg h "$h" --arg c "$cap" '.harnesses[$h].capabilities // [] | any(. == $c)' "$HARNESSES" >/dev/null 2>&1 && continue
+    why=$(jq -r --arg c "$cap" '.capabilities[$c].why // empty' "$HARNESSES" 2>/dev/null)
+    echo "it lacks the $cap capability (capabilities in $HARNESSES)${why:+: $why}"
+    return 1
+  done
+}
+
 # harness_sandbox <harness> -> the lane sandbox profile its runs are held to (its `sandbox` in the map), or nothing.
 harness_sandbox() { jq -r --arg h "$1" '.harnesses[$h].sandbox // empty' "$HARNESSES" 2>/dev/null; }
 
@@ -6836,8 +6871,10 @@ item_pinned() {
 # one (harness_project_why, pinned or not: ocfree carries public input only), an item no higher than
 # its `max_tier` unless a canary or a trainee row (harness_tier_why, pinned or not), only a canary or trainee item when
 # it runs in its own lane sandbox (sandbox_item_why; a trainee row offers the trainees first), and, when routed rather
-# than pinned, a tier within the unattended ceiling: only a red goes past it, and only to a harness that can run the
-# red-fix gate, or a trainee row (trainee_why: its review lands it, behind review_gate when it is tier 3). A `metered`
+# than pinned, a tier within the unattended ceiling: only a red goes past it, or a trainee row (trainee_why: its
+# review lands it, behind review_gate when it is tier 3). It also needs every capability the item calls for in
+# the harness's `capabilities` (harness_needs_why: the lane sandbox, the red-fix gate's code_review, a stack's
+# unity_gate), pinned or not except the red-fix gate. A `metered`
 # harness (pay-per-use, GLM) is overflow: routed, it takes only a class it was promoted for or its trial
 # pick, only while no account has room, and only tier-1 work, so an unscored lane never spends on spare work.
 route() {
@@ -6884,7 +6921,7 @@ route() {
     elif [ -n "$(harness_sandbox "$h")" ] && ! pwhy=$(sandbox_item_why "$it" "$h" "$m" "$verdict"); then why+=("$h: $pwhy")
     elif [ -z "$m" ]; then why+=("$h: the item names no model: for it")
     elif [ -n "${PLACE_HOST:-}" ] && ! host_runs "$PLACE_HOST" "$h"; then why+=("$h: placed on $PLACE_HOST, which does not run it (its kit and fleet_harnesses, fleet-dispatch hosts)")
-    elif [ -n "$DISPATCH_SANDBOX_PROFILE" ]; then why+=("$h: cannot hold sandbox $DISPATCH_SANDBOX_PROFILE")
+    elif ! pwhy=$(harness_needs_why "$h" "$it" "$tier" "$pinned"); then why+=("$h: $pwhy")
     elif ! takes_plan "$h" && [ "$(jq -r .mode <<<"$it")" = plan ]; then why+=("$h: runs headless and cannot resume, and this is a plan item")
     elif [ "$hl" = 1 ] && [ "$erc" = 0 ]; then why+=("$h: runs headless, and this is $excl work (excluded in $MATRIX)")
     elif [ "$hl" = 1 ] && [ "$erc" = 2 ]; then why+=("$h: runs headless, and the exclusion list $MATRIX is unreadable or has a bad match")
@@ -6895,7 +6932,6 @@ route() {
     elif [ "$pinned" = 0 ] && [ "$tier" -gt "$UNATTENDED_TIER_CEILING" ] && ! is_red "$it" &&
       ! { [ -n "$(harness_sandbox "$h")" ] && trainee_why "$it" "$h" >/dev/null; }; then
       why+=("$h: tier $tier is past the unattended ceiling")
-    elif [ "$pinned" = 0 ] && [ "$tier" -gt "$UNATTENDED_TIER_CEILING" ] && is_red "$it" && headless "$h"; then why+=("$h: runs headless, so it cannot hold the red-fix gate")
     elif pwhy=$(provider_hold_why "$src"); then why+=("$h: $pwhy")
     elif ! jq -e --arg s "$src" 'any(.sources[]?; .name == $s and .room.ok == true)' <<<"$ACCT_ROWS" >/dev/null 2>&1; then
       why+=("$h: $(jq -r --arg s "$src" '[.sources[]? | select(.name == $s) | "\($s): \(.room.why)"][0] // "no source \($s) in claude-acct room --json"' <<<"$ACCT_ROWS")")
