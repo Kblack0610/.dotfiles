@@ -5392,7 +5392,7 @@ settle_item() {
     fi
   fi
   # A PR read again ends any wait reap_stuck held, so a later stall logs anew; a merged one ends every
-  # wait but a red item's whose watch still trips (watch_wait), which its close below ends.
+  # wait but the hold for a watch (watch_wait: reap_stuck wrote it under a fix(red) title), which the close below ends.
   case "$state" in
   OPEN | CLOSED) reap_unstuck "$1" ;;
   MERGED) [ -z "$oid" ] || watch_wait "$1" || reap_unstuck "$1" ;;

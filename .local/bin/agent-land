@@ -1245,7 +1245,7 @@ watch_gate() {
   [ -n "$w" ] || return 0
   if route=$(watch_route_owned "$w"); then
     # Only the refusal is the owner's: the merge is still the fix watermark, so a windowed probe counts from it.
-    [[ "$pr_ref" != */* ]] || watch_probe resolve "$w" --pr "$pr_ref" >/dev/null || true
+    [[ "$pr_ref" != */* ]] || watch_probe resolve "$w" --pr "$pr_ref" >/dev/null || echo "agent-land: could not record the fix watermark for $w" >&2
     echo "watch $w routes to $route, so its close is not probed"
     return 0
   fi

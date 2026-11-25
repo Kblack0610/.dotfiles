@@ -1420,10 +1420,10 @@ notes --profile work ptask level run lv-8'
   assert_output 0
 }
 
-@test "add writes its story row with the queue lock free, and a slug queued meanwhile stops it (ar-5606)" {
+@test "add writes its story row with the queue lock free, and a slug or a cause owner queued meanwhile stops it (ar-5606)" {
   story_notes
   # The stub notes the call when the queue lock is held; a race file makes its row write queue the slug first.
-  sed -i '2i flock -n -x "$AGENT_QUEUE_DIR/.lock" true || printf "locked %s\\n" "$*" >> "$NOTES_FIXTURE/underlock.log"\ncase " $* " in *" add "*) [ ! -e "$NOTES_FIXTURE/race" ] || { mkdir -p "$AGENT_QUEUE_DIR/queued"; printf "slug: raced\\nproject: level\\n---\\nx\\n" > "$AGENT_QUEUE_DIR/queued/20260101-000000-raced.md"; } ;; esac' "$SANDBOX/bin/notes"
+  sed -i '2i flock -n -x "$AGENT_QUEUE_DIR/.lock" true || printf "locked %s\\n" "$*" >> "$NOTES_FIXTURE/underlock.log"\ncase " $* " in *" add "*) [ ! -e "$NOTES_FIXTURE/race" ] || { mkdir -p "$AGENT_QUEUE_DIR/queued"; printf "slug: raced\\nproject: level\\ntags: red cause:abc12345\\n---\\nx\\n" > "$AGENT_QUEUE_DIR/queued/20260101-000000-raced.md"; } ;; esac' "$SANDBOX/bin/notes"
   run "$AQ" add --project level --slug free "feat(menu): free"
   assert_success
   assert_line "story lv-9 on the level agent board"
@@ -1438,6 +1438,12 @@ notes --profile work ptask level run lv-8'
   assert_failure
   assert_output --partial "already in the queue: raced (added while its row was written)"
   [ "$(find "$AGENT_QUEUE_DIR" -name '*-raced.md' | wc -l)" = 1 ]
+  # The same goes for a cause: the item queued meanwhile owns cause:abc12345, so this add writes nothing.
+  rm "$AGENT_QUEUE_DIR/queued/20260101-000000-raced.md"
+  run "$AQ" add --project level --slug owner2 --tags "red cause:abc12345" "feat(menu): owner2"
+  assert_failure
+  assert_output --partial "cause:abc12345 is already owned by raced"
+  [ -z "$(find "$AGENT_QUEUE_DIR" -name '*-owner2.md')" ]
   # NEGATIVE CONTROL: the stub does see a held lock.
   flock -x "$AGENT_QUEUE_DIR/.lock" "$SANDBOX/bin/notes" ptask level --agent list >/dev/null
   [ "$(grep -c '^locked ' "$NOTES_FIXTURE/underlock.log")" = 1 ]
@@ -2020,6 +2026,10 @@ Phase 2 of the plan $SANDBOX/plan.md: the doors." >/dev/null
   canon="$(realpath "$SANDBOX/proj-plan.md")"
   mkdir -p "${own%/*}"
   printf '# mine\n\n## Phases\n- [ ] do it all\n' > "$own"
+  # The session's item names the plan it queues (one-shot step 1a); one that queues some other plan keeps its own.
+  mkdir -p "$AGENT_QUEUE_DIR/running"
+  for s in sess-1 sess-3; do printf 'slug: %s\nproject: level\n---\nqueue the plan proj-plan as a chain\n' "$s" > "$AGENT_QUEUE_DIR/running/20260101-000000-$s.md"; done
+  printf 'slug: sess-4\nproject: level\n---\nfix the menu, then queue a follow-up plan\n' > "$AGENT_QUEUE_DIR/running/20260101-000000-sess-4.md"
   # The board path: a dispatched session files the plan as one row.
   AGENT_QUEUE_ITEM=sess-1 run "$AQ" add --plan "$SANDBOX/proj-plan.md" --project level --from auto:plans
   assert_failure 5
@@ -2039,6 +2049,13 @@ Phase 2 of the plan $SANDBOX/plan.md: the doors." >/dev/null
   AGENT_QUEUE_PULL=1 AGENT_QUEUE_ITEM=sess-3 run "$AQ" add --plan "$SANDBOX/proj-plan.md" --project level --priority low
   assert_success
   assert_equal "$(plan_pointer "$HOME/.claude/plans/sess-3.md")" "$canon	2"
+  # NEGATIVE CONTROL: a session whose task does not name the plan it queues keeps its own plan.
+  printf '# O\n\n## Phases\n\n- [ ] alpha\n- [ ] beta\n' > "$SANDBOX/other-plan.md"
+  printf '# mine\n\n## Phases\n- [ ] fix the menu\n' > "$HOME/.claude/plans/sess-4.md"
+  AGENT_QUEUE_ITEM=sess-4 run "$AQ" add --plan "$SANDBOX/other-plan.md" --project level --from auto:plans
+  refute_output --partial 'now points at'
+  [ ! -e "$HOME/.claude/plans/sess-4.md.queued" ]
+  grep -qxF -- '- [ ] fix the menu' "$HOME/.claude/plans/sess-4.md"
 }
 
 # fleet-dispatch promote turns that row into the chain (ar-3262). NEGATIVE CONTROL: before it, --from

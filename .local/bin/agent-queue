@@ -30,7 +30,7 @@
 #   add --plan <plan.md> [--dry-run | --check] [--project p] [--priority p] [--tags t] [--weight w] [--after slug[,slug...]] [--slug prefix] [--repeat]
 #       one oneshot item per unchecked `## Phases` line, each after the one before, unless its line says
 #       `(independent)` (after --after alone) or `(after N; needs <result>)` (after phase N's item; `(after N, M; needs ...)` after several), where `needs` names the output the phase consumes: a missing `needs`, a shared-file reason (`edits`, `same file`, `conflicts`) or a marker that does not parse is refused; `(with N)` joins phase N's item; `(at YYYY-MM-DD HH:MM)` holds that phase alone until then (its at: tag) at no more than high priority; an `(independent)` marker may carry a note, `(independent; why)`; `--check` only reads and validates the markers. A phase that says `takes <row-id>` (or `takes board row <row-id>`) is filed at the higher of the plan's priority and that row's, and agent-land closes the row when the phase merges; its newly filed story row carries `#takes/<id>` (docs/agent-queue.md). A line opening `P<N>` is phase N, else its place counts; a `1b.` line is a sub-phase: it takes no place and is not queued
-#       From a session ($AGENT_QUEUE_ITEM) whose own plan (~/.claude/plans/<item>.md) is another file with an open phase,
+#       From a session ($AGENT_QUEUE_ITEM) whose task names this plan and whose own plan (~/.claude/plans/<item>.md) is another file with an open phase,
 #       that file becomes a pointer stub at the plan's first open phase, its text kept as <file>.queued (own_plan_pointer).
 #   list [--json [--points]] [--state queued|running|waiting|review|done|active|all] [--date YYYY-MM-DD | --since YYYY-MM-DD|Nd|N]
 #       list joins each item's board row (`notes board --json`, one read of the whole board): the text list ends in a
@@ -2306,8 +2306,8 @@ cmd_add() {
   [ -z "$running" ] || sid="$(claude_sid)" || sid=
   # notes writes the story row (link_row, prior_story, file_story, brief_to_row) and can be slow, so
   # the lock is let go while it runs and taken again to write the item: held, a slow notes stalled
-  # every queue reader (ar-5606). Back under the lock, the slug and the cap are checked again, since
-  # another add may have come in meanwhile; a row this add filed stays for dispatch to promote.
+  # every queue reader (ar-5606). Back under the lock, the slug, a cause: owner and the cap are checked
+  # again, since another add may have come in meanwhile; a row this add filed stays for dispatch to promote.
   unlock
   local story='' sboard='' sprof='' srow='' linked_row=''
   # No story row for work with its own record: a canary (fleet-bench canary), a trainee review (the trainee's row), an ask's resume (the ask).
@@ -2344,6 +2344,7 @@ cmd_add() {
   fi
   lock
   [ -z "$(find_item "$slug")" ] || die "already in the queue: $slug (added while its row was written)"
+  cause_owner "$tags"
   if [ -n "$capped" ] && ! admit "$from" "$priority" "$tags" "$project" "$slug" "$hold_title"; then
     unlock
     [ -z "$story" ] || echo "agent-queue: row $srow on $sboard is left un-started: dispatch promotes it as the queue drains" >&2
@@ -2724,12 +2725,15 @@ add_plan() {
 # ~/.claude/plans/$AGENT_QUEUE_ITEM.md, the file fleet-sessions reads for it, item_plan) left its own
 # open phases behind, so it read WORKING and shepherd never closed it (ar-5445, 2026-11-24). Its file
 # becomes a pointer stub, Phase N of <plan> (plan_pointer), N the plan's first open phase, which the
-# queued items or the plan's board row hold; the text it had is kept beside it as <file>.queued. Nothing
-# when the session has no plan of its own, it is this plan, it is a stub already, or it has no open phase.
+# queued items or the plan's board row hold; the text it had is kept beside it as <file>.queued. Only
+# when the session's own task names this plan's file (one-shot step 1a: its task IS the plan); a session
+# that queues some other plan on the way keeps its own phases. Nothing when the session has no plan of its
+# own, it is this plan, it is a stub already, or it has no open phase.
 own_plan_pointer() {
-  local own="$HOME/.claude/plans/${AGENT_QUEUE_ITEM:-}.md" n name
+  local own="$HOME/.claude/plans/${AGENT_QUEUE_ITEM:-}.md" n name f
   [ -n "${AGENT_QUEUE_ITEM:-}" ] && [ -f "$own" ] || return 0
   [ "$(realpath -q -- "$own")" != "$1" ] || return 0
+  f="$(find_item "$AGENT_QUEUE_ITEM")" && [ -n "$f" ] && fm_body "$f" | grep -qF -- "$(basename "$1" .md)" || return 0
   [ -z "$(plan_pointer "$own")" ] || return 0
   plan_phase_list "$own" | jq -e 'any(.[]; .state == "open")' >/dev/null 2>&1 || return 0
   IFS=$'\t' read -r n name < <(plan_phase_list "$1" | jq -r 'first(.[] | select(.state == "open" and (.n | type) == "number")) | [.n, .name] | @tsv' 2>/dev/null) || true
@@ -3646,7 +3650,7 @@ cancel_stamp() {
 # probe can take a while. A PR that fixed one KPI of a many-KPI watch leaves the item in review. A
 # watch routed to alert or owned: is exempt (watch_route_owned); the exemption and a skipped probe (no
 # loop here, a watch not known here) are said on stderr. A busy loop lock exits LOCK_BUSY, and a
-# watch that still trips exits AQ_EX_WATCH_OPEN, which reap and ask-resume read by its code.
+# watch that still trips exits AQ_EX_WATCH_OPEN, which fleet-dispatch reap reads by its code.
 AQ_EX_WATCH_OPEN=6
 watch_close_check() {
   local f w t out r rc=0
