@@ -859,9 +859,11 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
   page="$(find "$HOME/.notes" -path '*status/inbox.md' | head -1)"
   [ -n "$page" ] || fail "no inbox page"
   run cat "$page"
-  assert_output --regexp '[0-9]{2}:[0-9]{2} filed \[\[[^]]*\|sc-1\]\] scratch: chore\(build\): drop the old cache'
-  refute_output --partial '  - from: outbox'
-  assert_output --regexp '[0-9]{2}:[0-9]{2} left \(outbox\): stays for the model'
+  # Handled today is one count line; each line and where it went is `notes log`'s.
+  assert_output --partial '- 1 filed, 0 joined, '
+  refute_output --partial 'drop the old cache'
+  refute_output --partial 'ack:'
+  assert_output --partial '- in the outbox, not filed: stays for the model'
   assert_output --partial '  - why: no project named'
   assert_output --partial '; triage score n<30 (7d, 1 of 1 right, 0 pending, triage-untouched)'
   # judge-eval giving no cell leaves the score off the page, not a second count in its place.
@@ -941,7 +943,7 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
   page="$(find "$HOME/.notes" -path '*status/inbox.md' | head -1)"
   [ -n "$page" ] || { mkdir -p "$HOME/.notes/lab/inbox"; "$NOTES_BIN" ingest page; page="$(find "$HOME/.notes" -path '*status/inbox.md' | head -1)"; }
   run cat "$page"
-  assert_output --partial 'left (outbox): zz-9: yes'
+  assert_output --partial '- in the outbox, not filed: zz-9: yes'
   assert_output --partial 'why: no open row zz-9'
 }
 
@@ -1227,33 +1229,24 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
   assert_output --partial 'fix(audio): the gun sound plays off'
 }
 
-@test "inbox page: notes inbox ack folds a handled row into +N reviewed, --undo brings it back, a bad key writes nothing" {
+@test "inbox page: a report filed shows at the top under Reports, linked, and the page has no tick marks" {
   sheet '' ''
   outbox '- [ ] chore(build): drop the old cache #p:scratch\n'
   run "$TRIAGE"
   assert_success
   mkdir -p "$HOME/.notes/lab/inbox"
-  "$NOTES_BIN" ingest page
+  printf 'The table.\n' >"$BATS_TEST_TMPDIR/body.md"
+  run "$NOTES_BIN" report add --title 'Board cut P9' --summary 'Cut 3 rows.' --body "$BATS_TEST_TMPDIR/body.md"
+  assert_success
   page="$(find "$HOME/.notes" -path '*status/inbox.md' | head -1)"
   [ -n "$page" ] || fail "no inbox page"
-  key="$(grep -o '<!-- ack:[^ ]* -->' "$page" | head -1 | sed 's/<!-- ack:\(.*\) -->/\1/')"
-  [ -n "$key" ] || fail "no tickable row: $(cat "$page")"
-  grep -qE '^- \[ \] [0-9]{2}:[0-9]{2} filed \[\[[^]]*\|sc-1\]\] ' "$page" || fail "$(cat "$page")"
-  run "$NOTES_BIN" inbox ack 2026-01-01T00:00:00+00:00
+  run cat "$page"
+  assert_output --regexp '## Reports.*\[\[[^]]*/board-cut-p9\|Board cut P9\]\]: Cut 3 rows\..*## Needs you'
+  refute_output --partial 'ack:'
+  refute_output --partial 'reviewed'
+  # The negative control: the CLI that ticked rows is gone.
+  run "$NOTES_BIN" inbox ack -- 2026-01-01T00:00:00+00:00
   assert_failure
-  assert_output --partial 'no ingest event'
-  [ ! -e "$HOME/.local/state/notes/inbox-ack.jsonl" ] || fail "a bad key wrote a mark"
-  run "$NOTES_BIN" inbox ack -- "$key"
-  assert_success
-  run cat "$page"
-  assert_output --partial '- +1 reviewed'
-  assert_output --regexp '  - \[x\] [0-9]{2}:[0-9]{2} filed \[\[[^]]*\|sc-1\]\] '
-  refute_output --regexp '^- \[ \] [0-9]{2}:[0-9]{2} filed \[\[[^]]*\|sc-1\]\] '
-  run "$NOTES_BIN" inbox ack --undo -- "$key"
-  assert_success
-  run cat "$page"
-  refute_output --partial '- +1 reviewed'
-  assert_output --regexp '- \[ \] [0-9]{2}:[0-9]{2} filed \[\[[^]]*\|sc-1\]\] '
 }
 
 # ask-stub: the read-only answer call. It records the prompt and what it was run with, and replies
