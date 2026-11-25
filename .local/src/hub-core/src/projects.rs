@@ -461,21 +461,14 @@ impl crate::table::Row for Card {
     const TONES: &'static [(&'static str, Level)] = STATE_TONES;
 
     fn val(&self, col: &str) -> Val {
-        let word = |s: &str| {
-            if s.is_empty() {
-                Val::None
-            } else {
-                Val::Text(s.to_string())
-            }
-        };
         let num = |n: Option<u32>| n.map_or(Val::None, |n| Val::Num(f64::from(n)));
         match col {
-            "project" => word(&self.name),
-            "state" => word(self.state),
-            "profile" => word(&self.profile),
-            "stage" => word(&self.stage),
-            "version" => self.version.as_deref().map_or(Val::None, word),
-            "prio" => word(&self.prio),
+            "project" => Val::word(&self.name),
+            "state" => Val::word(self.state),
+            "profile" => Val::word(&self.profile),
+            "stage" => Val::word(&self.stage),
+            "version" => self.version.as_deref().map_or(Val::None, Val::word),
+            "prio" => Val::word(&self.prio),
             "open" => num(Some(self.progress.open)),
             "net7d" => self.board_7d.map_or(Val::None, |b| Val::Num(b.net as f64)),
             "doing" => Val::Num(self.doing as f64),

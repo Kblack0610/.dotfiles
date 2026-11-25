@@ -69,8 +69,7 @@ impl JobsView {
     /// Move the selection to the row with this id after a refresh, or keep the index in range.
     pub fn reselect(&mut self, jobs: &Jobs, id: Option<RowId>) {
         let rows = self.shown(jobs);
-        let at = id.and_then(|id| rows.iter().position(|j| row_id(j) == id));
-        self.table.keep(at, rows.len());
+        self.table.reselect(&rows, id, |j, id| row_id(j) == *id);
     }
 
     /// One status line: the view on the left, how many it keeps of the window on the right.

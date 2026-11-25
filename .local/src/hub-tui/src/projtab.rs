@@ -23,7 +23,7 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::{DataTable, Took};
 use crate::fit::{cell, clip_line, wrap, Cell, Table};
-use crate::fmt::Palette;
+use crate::fmt::{dash, Palette};
 use crate::tasktab::TaskView;
 
 /// One read of the cards' input that is not the board feed: `notes projects --stats --json`.
@@ -1509,7 +1509,6 @@ pub fn open_lines(
 
 /// One line of the list: `Card`'s columns, a blank word as `-`.
 fn row(c: &Card, p: Palette) -> Vec<Cell> {
-    let dash = |s: &str| if s.is_empty() { "-" } else { s }.to_string();
     let lit = |n: usize, on| {
         let style = if n > 0 { on } else { p.dim() };
         cell(n.to_string(), style)
