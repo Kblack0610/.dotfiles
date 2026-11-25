@@ -493,7 +493,7 @@ def copy_hits(files, base, head, cwd, conf_text=None):
 
 # --- stock: the copies already in a tree -------------------------------------------------------------
 
-def body_lines(lang, text, line, length):
+def stock_body(lang, text, line, length):
     """The lines of one function after its signature, comments and blanks left out, its closing brace
     kept (a three-line wrapper has a two-line body)."""
     out = []
@@ -517,7 +517,7 @@ def function_stock(tree, conf):
             if top and not ignored(name, conf):
                 by_name.setdefault(name, (line, length))
         for name, (line, length) in by_name.items():
-            body = body_lines(lang, text, line, length)
+            body = stock_body(lang, text, line, length)
             groups.setdefault((lang, name), []).append((len(body), '\n'.join(body)[:STOCK_CHARS]))
     names = extra = 0
     for sites in groups.values():
