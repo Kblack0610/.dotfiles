@@ -226,17 +226,7 @@ mod tests {
     use super::*;
     use hub_core::actions::Action;
 
-    fn text(l: &[Line]) -> String {
-        l.iter()
-            .map(|l| {
-                l.spans
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
+    use crate::fit::plain_text as text;
 
     fn act(at: i64, verb: &str) -> Action {
         Action {

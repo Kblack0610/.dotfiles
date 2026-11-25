@@ -9,8 +9,8 @@ use ratatui::text::{Line, Span};
 
 use crate::controls::page_field;
 use crate::fit::clip_line;
-use crate::fmt::{clock, Palette};
-use crate::machinetab::{block as share_block, heading, BLOCKS};
+use crate::fmt::{clock, heading, Palette};
+use crate::machinetab::{block as share_block, BLOCKS};
 
 /// The page's own keys, as its heading says them.
 pub const PAGE_KEYS: &str = "[Esc all pools  o Grafana]";
@@ -63,7 +63,7 @@ pub fn page(
         Some(h) => out.extend(history(h, p, now, w)),
         None => out.push(heading(
             &format!("{DAYS} DAYS"),
-            hub_core::reading::NOT_READ,
+            format!("  {}", hub_core::reading::NOT_READ),
             p,
         )),
     }
@@ -77,7 +77,7 @@ fn history(h: &PoolHistory, p: Palette, now: i64, w: usize) -> Vec<Line<'static>
     let mut out = vec![heading(
         &format!("{days} DAYS"),
         format!(
-            "by hour from {}, {} readings",
+            "  by hour from {}, {} readings",
             clock(h.from as i64, now),
             h.readings
         ),
@@ -139,18 +139,7 @@ mod tests {
     use hub_core::machines::Machine;
     use hub_core::session_page::Part;
 
-    fn text(lines: &[Line]) -> String {
-        lines
-            .iter()
-            .map(|l| {
-                l.spans
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
+    use crate::fit::plain_text as text;
 
     fn fixture() -> PoolPage {
         PoolPage {

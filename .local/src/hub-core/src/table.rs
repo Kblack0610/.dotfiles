@@ -35,6 +35,15 @@ impl From<Option<f64>> for Val {
 }
 
 impl Val {
+    /// A word as a cell: a blank one is no value, so it sorts last and draws as `-`.
+    pub fn word(s: &str) -> Val {
+        if s.is_empty() {
+            Val::None
+        } else {
+            Val::Text(s.to_string())
+        }
+    }
+
     /// The cell as a surface draws it: text as written, a whole number without its `.0`.
     pub fn shown(&self) -> Option<String> {
         match self {

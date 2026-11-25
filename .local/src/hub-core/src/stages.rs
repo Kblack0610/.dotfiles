@@ -138,14 +138,6 @@ impl Project {
     }
 }
 
-fn word(s: &str) -> Val {
-    if s.is_empty() {
-        Val::None
-    } else {
-        Val::Text(s.to_string())
-    }
-}
-
 impl Row for Project {
     const COLUMNS: &'static [&'static str] = &[
         "project", "type", "stage", "next", "met", "failing", "filed",
@@ -174,10 +166,10 @@ impl Row for Project {
 
     fn val(&self, col: &str) -> Val {
         match col {
-            "project" => word(&self.name),
-            "type" => word(self.kind.as_deref().unwrap_or("")),
-            "stage" => word(&self.stage),
-            "next" => word(&self.next),
+            "project" => Val::word(&self.name),
+            "type" => Val::word(self.kind.as_deref().unwrap_or("")),
+            "stage" => Val::word(&self.stage),
+            "next" => Val::word(&self.next),
             "met" if self.error.is_some() || self.total == 0 => Val::None,
             "met" => Val::Num(f64::from(self.met) / f64::from(self.total)),
             "failing" if self.error.is_some() => Val::None,
@@ -245,19 +237,19 @@ impl Row for Requirement {
 
     fn val(&self, col: &str) -> Val {
         match col {
-            "stage" => word(&self.stage),
-            "applies" => word(&self.applies.join(", ")),
-            "requirement" => word(&self.requirement),
-            "check" => word(self.says),
-            "by" => word(&self.skills.join(", ")),
+            "stage" => Val::word(&self.stage),
+            "applies" => Val::word(&self.applies.join(", ")),
+            "requirement" => Val::word(&self.requirement),
+            "check" => Val::word(self.says),
+            "by" => Val::word(&self.skills.join(", ")),
             _ => Val::None,
         }
     }
 
     fn vals(&self, col: &str) -> Vec<Val> {
         match col {
-            "applies" => self.applies.iter().map(|a| word(a)).collect(),
-            "by" => self.skills.iter().map(|a| word(a)).collect(),
+            "applies" => self.applies.iter().map(|a| Val::word(a)).collect(),
+            "by" => self.skills.iter().map(|a| Val::word(a)).collect(),
             _ => vec![self.val(col)],
         }
     }
