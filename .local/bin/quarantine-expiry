@@ -76,7 +76,7 @@ if [ "$dropped" != '[]' ]; then
     exit 2
   fi
   moved="$(jq -c --argjson d "$dropped" '[.rows[] | select(.lane == "human" and .state == "open" and .id != null) as $r
-      | $d[] | select(.id != $r.id and .project == $r.project and (($r.raw // "") | contains("(agent row \(.id))")))
+      | $d[] | .id as $i | select($i != $r.id and .project == $r.project and (($r.raw // "") | contains("(agent row \($i))")))
       | {key: .id, value: $r}] | unique_by(.key) | from_entries' <<<"$board")"
   found="$(jq -c --argjson m "$moved" '. + [$m[]]' <<<"$found")"
 fi
