@@ -821,7 +821,8 @@ enum PtaskCmd {
     /// Close the first matching open task undelivered: the row stays, ticked, with the
     /// reason in its marker. Needs --why or --dup
     Drop {
-        /// Why it will not be delivered: stale, superseded, or where it moved ("moved: ideas.md")
+        /// Why it will not be delivered: stale, superseded, or where it moved ("moved: ideas.md").
+        /// Each open row gated #after/ on it is named on stderr, with the command that frees it
         #[arg(long, value_name = "WHY")]
         why: Option<String>,
         /// It duplicates this row (its id, like ar-142); its open children move under that row
