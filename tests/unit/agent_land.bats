@@ -1612,7 +1612,9 @@ EOF2
   run agent-queue add --running --project game --slug back "gm-2: fix the back button"
   assert_success
   assert_output --partial 'back works row gm-2, which its title names'
-  [ "$(grep -c 'back button' "$dir/agent/README.md")" = 1 ] || fail "a second row was filed: $(cat "$dir/agent/README.md")"
+  # rows only: the item's task goes on the row as a detail line (brief_to_row, ar-3159), and it names the button too
+  [ "$(grep -c '^- \[.\] .*back button' "$dir/agent/README.md")" = 1 ] || fail "a second row was filed: $(cat "$dir/agent/README.md")"
+  grep -qxF '  gm-2: fix the back button' "$dir/agent/README.md" || fail "the task is not on the row: $(cat "$dir/agent/README.md")"
   printf '%s\n' '# plan' 'rows: gm-9' '' '## Phases' '' '- [ ] 1. the back button' >"$PLAN"
   run "$LAND" 42 --item back --plan "$PLAN" --phase "1. the back button"
   assert_success
