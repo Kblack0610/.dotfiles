@@ -278,8 +278,8 @@ pub fn stages() {
 /// The one project tag left of the retired project priority ladder: `#prio/focus` turns a
 /// project's release windows into sprints (`window::runs_sprints`) for as long as its
 /// `Focus until:` says. It ranks nothing: what starts next is the row's own priority
-/// (`priority.md`), and the fleet's share of starts is the dispatch conf's
-/// `DISPATCH_FLEET_PROJECTS`. The `prio/` prefix keeps it apart from a row's priority words.
+/// (`priority.md`), and a project's share of starts is the dispatch conf's
+/// `DISPATCH_PROJECT_SHARE`. The `prio/` prefix keeps it apart from a row's priority words.
 pub(crate) const PRIOS: [&str; 1] = ["prio/focus"];
 
 /// What a `--prio` write strips from the head: the focus, and the retired ladder's words, so a
@@ -616,7 +616,7 @@ pub fn prio(
         "normal" => None,
         "high" | "low" => bail!(
             "project priority '{v}' is retired: a row's own priority orders work (priority.md), \
-             and the fleet's share is the dispatch conf's DISPATCH_FLEET_PROJECTS (want: focus, normal)"
+             and a project's share of starts is the dispatch conf's DISPATCH_PROJECT_SHARE (want: focus, normal)"
         ),
         _ => bail!("unknown value '{v}' (want: focus, normal)"),
     };

@@ -3794,7 +3794,7 @@ cancel c-old-lane --why canary: superseded by the $week set"
   assert_failure 2
 }
 
-# ar-4554: fleet-dispatch passes --off-claude while its fleet share is full, which holds a Claude lane's canary.
+# ar-4554: fleet-dispatch passes --off-claude while a project share is full, which holds a Claude lane's canary.
 @test "canary top-up: --off-claude queues only the lanes on their own source, never the claude baseline or a claude lane" {
   kpi_setup; kpi_fixture; canary_fixture
   week=$(date -d "@$T0" +%Gw%V)

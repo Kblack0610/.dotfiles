@@ -366,7 +366,7 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_output $'d-app-urgent\na-app\nb-app-cleanup\nc-game\ne-tools'
   printf 'game\tfocus\napp\tlow\ntools\thigh\n' > "$NOTES_FIXTURE/prios"
   run bash -c "'$AQ' list --json | jq -r .slug"
-  # The same order: the queue reads no project tag (the fleet's share is DISPATCH_FLEET_PROJECTS).
+  # The same order: the queue reads no project tag (a project's share of starts is DISPATCH_PROJECT_SHARE).
   assert_output $'d-app-urgent\na-app\nb-app-cleanup\nc-game\ne-tools'
   run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = d-app-urgent ]
