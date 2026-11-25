@@ -63,7 +63,7 @@
 #                                every open agent-lane row of a project (default agent-runtime) attributed to its source (the ingest
 #                                origin, else the #from/ a triage carried in, else self-check, else the writer; below the first logged
 #                                id "pre-log"), with each source's arrivals per day over N days (INFLOW_DAYS, 14), how they ended
-#                                (closed by PR, done with no PR, dropped, dup, still open) and the age of its open rows
+#                                (closed by PR, done with no PR, dropped, dup, still open) and the age of its open rows; --json lists each source's open_ids
 #   fleet-bench startup [--json|--check]
 #                                Claude Code start times (CLAUDE_STARTUP_LOG): medians over the last
 #                                startup_rolling_n starts; --check exits 1 past startup_ready_ms_p50_max,
@@ -4420,7 +4420,7 @@ cmd_inflow() {
     | ([$by | keys[] | . as $id | first_ev($by[$id]) as $first | select($first != null and ($first.ts | day) > $from)
         | {id: $id, day: ($first.ts | day), source: source($first; null; $logged; $id),   # a row counts once, on its first event
            end: (if $isopen[$id] then "open" else (ended($by[$id]) // "gone") end)}]) as $arr
-    | ($censused | group_by(.source) | map({source: .[0].source, open: length,
+    | ($censused | group_by(.source) | map({source: .[0].source, open: length, ids: map(.id),
         age_p50: (map(age | numbers) | median), age_max: (map(age | numbers) | max)})) as $cens
     | ($arr | group_by(.source) | map({source: .[0].source, arrived: length,
         per_day: (length / $covered | round2),
@@ -4431,7 +4431,7 @@ cmd_inflow() {
     | ([$cens[].source, $arrivals[].source] | unique) as $names
     | {project: $p, days: $days, covered_days: $covered, dates: $dates, open_rows: ($open | length), attributed: ($censused | length),
        sources: [$names[] | . as $n | ($cens | map(select(.source == $n)) | first) as $c | ($arrivals | map(select(.source == $n)) | first) as $a
-         | {source: $n, open: ($c.open // 0), open_age_p50_d: $c.age_p50, open_age_max_d: $c.age_max,
+         | {source: $n, open: ($c.open // 0), open_ids: ($c.ids // []), open_age_p50_d: $c.age_p50, open_age_max_d: $c.age_max,
             arrived: ($a.arrived // 0), arrived_per_day: ($a.per_day // 0), daily: ($a.daily // ([range(0; $days) | 0])),
             closed_by_pr: ($a.closed_by_pr // 0), done_no_pr: ($a.done_no_pr // 0), dropped: ($a.dropped // 0), dup: ($a.dup // 0),
             still_open: ($a.open // 0), gone: ($a.gone // 0)}] | sort_by(-.open, -.arrived)}
