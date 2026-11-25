@@ -2217,17 +2217,29 @@ qstats_fixture() {
     echo '{"slug":"c2","model":"sol","agent":"codex","type":"check","status":"failed"}'
     echo '{"slug":"c3","model":"sol","agent":"codex","type":"research","status":"ok"}'
     echo '{"slug":"c4","model":"sol","agent":"codex","type":"check","status":"ok","pr":"o/r#2"}'
+    echo '{"slug":"l1","model":"sol","agent":"codex","type":"legal","status":"ok"}'
     echo '{"slug":"r1","model":"sol","agent":"codex","type":"fix","status":"cancelled","end_reason":"returned"}'
     echo '{"slug":"r2","model":"sol","agent":"codex","type":"fix","status":"cancelled"}'
+    echo '{"slug":"r3","model":"kimi","agent":"opencode-go","type":"fix","status":"cancelled","end_reason":"returned"}'
   } > "$ITEMS"
+  export BENCH_KINDS="$SANDBOX/kinds.json"
+  echo '{"fix":{"exit":"pr"},"check":{"exit":"pr"},"research":{"exit":"doc+ask"},"legal":{"exit":"doc+ask"}}' > "$BENCH_KINDS"
   run env BENCH_NOW=$T0 "$SUBJECT" models --json
   assert_success
-  # done 6 (a, b, c1-c4); c4 is a check that landed, so it is a code item; r1 is returned, r2 a plain cancel
-  assert_equal "$(jq -c '.models[] | [.done, .checks, .checks_ok, .returned, .code, .landed, .landed_n, .landed_rate, .failed]' <<<"$output")" \
-    '[6,3,2,1,3,2,3,0.67,1]'
+  # done 7 (a, b, c1-c4, l1); the checks are check (a clean one needs no PR), research and legal (kinds whose exit is no PR); c4 is a check
+  # that landed, so it is a code item; r1 is returned, r2 a plain cancel; r3 is returned on a pairing with no done item, which still gets a row
+  assert_equal "$(jq -c '.models[] | [.model, .done, .checks, .checks_ok, .checks_failed, .returned, .code, .landed, .landed_n, .landed_rate, .failed]' <<<"$output")" \
+    '["kimi",0,0,0,0,1,0,0,0,null,0]
+["sol",7,4,3,1,1,3,2,3,0.67,1]'
   run env BENCH_NOW=$T0 "$SUBJECT" models
-  assert_line '| sol | codex | 6 | 3 | 1 | 2 | 0.67 (0.21-0.94, n 3) | 1 | 0 | 0 | $0 | - | - | - | - | - | - |'
+  assert_line '| sol | codex | 7 | 4 (1 failed) | 1 | 2 | 0.67 (0.21-0.94, n 3) | 1 | 0 | 0 | $0 | - | - | - | - | - | - |'
+  assert_line '| kimi | opencode-go | 0 | 0 | 1 | 0 | - | 0 | 0 | 0 | $0 | - | - | - | - | - | - |'
   assert_line --partial 'Returned are items sent back to their board row'
+  # BENCH_NOPR_TYPES overrides the kinds: empty splits nothing off, a list names the types
+  run env BENCH_NOW=$T0 BENCH_NOPR_TYPES= "$SUBJECT" models --json
+  assert_equal "$(jq -c '.models[] | select(.model == "sol") | [.checks, .code]' <<<"$output")" '[0,7]'
+  run env BENCH_NOW=$T0 BENCH_NOPR_TYPES=legal "$SUBJECT" models --json
+  assert_equal "$(jq -c '.models[] | select(.model == "sol") | [.checks, .code]' <<<"$output")" '[1,6]'
 }
 
 @test "models: one model on two harnesses is two rows, gateway cost beats the sessions' sum per item, a row with both reads mixed, an unpriced PR does not cheapen Per PR, a chained session counts once" {
