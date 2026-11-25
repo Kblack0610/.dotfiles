@@ -39,9 +39,10 @@ pub fn load(runner: &dyn Runner) -> Loaded {
 }
 
 /// The list's columns, `Card`'s `Row::COLUMNS` in order, so the sort's mark lands on its header.
-const HEADER: [&str; 21] = [
-    "PROJECT", "STATE", "PROFILE", "STAGE", "VERSION", "PRIO", "OPEN", "DOING", "HOT", "DONE",
-    "7D", "PTS", "PTS7D", "WINDOW", "DUE", "PACE/WK", "RUN", "WAIT", "QUEUED", "SHIPPED", "OLDEST",
+const HEADER: [&str; 22] = [
+    "PROJECT", "STATE", "PROFILE", "STAGE", "VERSION", "PRIO", "OPEN", "NET7D", "DOING", "HOT",
+    "DONE", "7D", "PTS", "PTS7D", "WINDOW", "DUE", "PACE/WK", "RUN", "WAIT", "QUEUED", "SHIPPED",
+    "OLDEST",
 ];
 
 #[derive(Debug)]
@@ -1523,6 +1524,7 @@ fn row(c: &Card, p: Palette) -> Vec<Cell> {
             if c.prio == "focus" { p.head() } else { p.dim() },
         ),
         c.progress.open.to_string().into(),
+        cell(projects::net_cell(c), warn_if(c.growing(), p)),
         c.doing.to_string().into(),
         lit(c.hot, p.warn()),
         c.progress.done.to_string().into(),
@@ -1736,7 +1738,7 @@ fn list(pr: &Projects, pv: &ProjView, p: Palette, w: usize) -> (Vec<Line<'static
             header: HEADER.to_vec(),
             rows: shown.iter().map(|c| row(c, p)).collect(),
             keep: vec![
-                0, 1, 13, 16, 17, 18, 8, 20, 6, 3, 15, 19, 7, 9, 11, 12, 10, 14, 4, 5, 2,
+                0, 1, 14, 17, 18, 19, 9, 21, 6, 7, 3, 16, 20, 8, 10, 12, 13, 11, 15, 4, 5, 2,
             ],
             right: (6..HEADER.len()).collect(),
             mark: pv.table.mark::<Card>(),
@@ -1815,6 +1817,13 @@ pub(crate) mod tests {
                 &serde_json::from_str(r#"{"done":"the arena (#9).","needs":"nothing."}"#).unwrap(),
             ),
             status_date: "2026-11-05".into(),
+            // `garden` grew by 120 points this week; `demo` has no day-log reading.
+            board_7d: (done > 0).then_some(hub_core::board_flow::BoardFlow {
+                opened: 150,
+                done: 20,
+                dropped: 10,
+                net: 120,
+            }),
             ..Default::default()
         };
         Projects {
@@ -1823,6 +1832,7 @@ pub(crate) mod tests {
             errors: vec![],
             board_open: Some(4),
             board_backlog: Some(9),
+            board_7d: None,
         }
     }
 
@@ -2382,15 +2392,15 @@ pub(crate) mod tests {
         assert_eq!(
             s[4].split_whitespace().collect::<Vec<_>>(),
             [
-                "garden", "on", "track", "personal", "alpha", "v0.0.1", "focus", "1", "0", "0",
-                "3", "2", "3", "2", "3/4", "7d", "1.0", "0", "1", "0", "0", "-"
+                "garden", "on", "track", "personal", "alpha", "v0.0.1", "focus", "1", "+120", "0",
+                "0", "3", "2", "3", "2", "3/4", "7d", "1.0", "0", "1", "0", "0", "-"
             ]
         );
         assert_eq!(
             s[at.unwrap() - 2].split_whitespace().collect::<Vec<_>>(),
             [
-                "demo", "flow", "personal", "alpha", "-", "-", "2", "0", "0", "0", "2", "0", "2",
-                "no", "window", "-", "1.0", "0", "0", "0", "0", "-"
+                "demo", "flow", "personal", "alpha", "-", "-", "2", "-", "0", "0", "0", "2", "0",
+                "2", "no", "window", "-", "1.0", "0", "0", "0", "0", "-"
             ]
         );
         let tail = s.join("\n");
