@@ -62,7 +62,7 @@ Not for a pile of tasks (`fleet-queue`), a release (the system cuts it; `release
 7. **Wind down.** Invoke the `wind-down` skill in its `auto` mode, so step 0's checks run. The note lists: the PR and merge commit, what was validated with counts, the `assumed:` tally, and anything left on the board.
    - **`--pr-only`**: the open PR is the end the human asked for, so invoke it without `auto`; step 0's finished check would read the open PR as unlanded and refuse.
    - **Blocked on another queue item**: invoke it without `auto`, as `--pr-only` does (`references/landing.md` "Blocked on another queue item").
-   - **Blocked mode** (a red gate you cannot fix and no queue item fixes, or a hard gate with nothing else left to build): file it with `agent-ask post` and do NOT arm the teardown; read `references/landing.md` "Blocked mode".
+   - **Blocked mode** (a red gate you cannot fix and no queue item fixes, or a hard gate with nothing else left to build): file it with `agent-ask post` first, then invoke it in `auto` mode as above; read `references/landing.md` "Blocked mode".
 
 ## Do NOT
 

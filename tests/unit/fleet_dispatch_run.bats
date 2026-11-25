@@ -60,7 +60,8 @@ bats_require_minimum_version 1.5.0
   assert_output 0
   # A question blocks one step, and reap, not the session, moves the item to waiting.
   assert_called 'only that step is blocked, not the task'
-  run grep -cE 'agent-queue move gm-1 waiting|then stop and leave' "$NOTES_FIXTURE/calls.log"
+  assert_called 'once the ask is all that is left, run /wind-down auto: the answer reopens this conversation.'
+  run grep -cE 'agent-queue move gm-1 waiting|then stop and leave|leaving this window open' "$NOTES_FIXTURE/calls.log"
   assert_output 0
   assert_called 'tmux -L lab set-option -t =game-agent-1: @dispatch game: gm-1'
   [ ! -e "$FLEET_DISPATCH_DIR/live" ] || fail "wrote the retired dispatch/live ledger"

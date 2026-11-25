@@ -1474,6 +1474,9 @@ game low: fleet, #low, beta, 4d old"
   assert_output --partial 'a release row: it ends on live proof, never a PR or agent-land'
   assert_output --partial 'agent-queue set rel note="<proof>"; notes ptask game --agent done "ar-7" --proof "<proof>"; agent-queue move rel done --status ok'
   assert_output --partial 'If a step needs a decision from the human'
+  # an ask that is all that is left winds the session down, and the answer reopens it (ar-1865)
+  assert_output --partial 'once the ask is all that is left, run /wind-down auto: the answer reopens this conversation.'
+  refute_output --partial 'leaving this window open'
   refute_output --partial 'Merge with agent-land'
   refute_output --partial 'Item: rel'
   # the kind comes from the item's type too, and with no row there is no row to close
@@ -1492,7 +1495,7 @@ game low: fleet, #low, beta, 4d old"
   assert_output --partial 'agent-queue move rel done --status ok.'
   assert_output --partial 'agent-queue requeue rel --ask <id>, and stop: the answer starts this item again'
   refute_output --partial 'wind-down'
-  refute_output --partial 'leaving this window open'
+  refute_output --partial 'the answer reopens this conversation'
   # a release board row never dispatches on its own: the human starts it, or /release queues it
   load_kinds
   assert_equal "$(kind_off release game beta)" 'kind release is off'
