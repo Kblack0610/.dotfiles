@@ -5,17 +5,15 @@
 #
 #   agent-web-record          patch the record (exit 0 when it already names this machine)
 #
-# The credential is the one schedules-sync reads the cluster with on this machine: on a fleet
-# worker the schedules-sync account's kubeconfig, which home-config's fleet-worker role writes and
-# whose Role may patch this one object (apps/agents/record-rbac.yaml); elsewhere kubectl's own
-# (KUBECONFIG, else ~/.kube/config). AGENT_WEB_KUBECONFIG overrides both.
+# The credential is the one the fleet's tools read the cluster with on this machine (fleet_kubeconfig):
+# on a fleet worker the scoped account's kubeconfig, whose Role may patch this one object
+# (home-config apps/agents/record-rbac.yaml); elsewhere kubectl's own. AGENT_WEB_KUBECONFIG overrides it.
 
 set -uo pipefail
 
-if [ -n "${AGENT_WEB_KUBECONFIG:-}" ]; then KCFG=$AGENT_WEB_KUBECONFIG
-elif [ -r "$HOME/.config/schedules-sync/kubeconfig" ]; then KCFG=$HOME/.config/schedules-sync/kubeconfig
-else KCFG=${KUBECONFIG:-$HOME/.kube/config}
-fi
+# shellcheck source=../lib/fleet-kubeconfig.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-kubeconfig.sh"
+KCFG=${AGENT_WEB_KUBECONFIG:-$(fleet_kubeconfig)}
 NS=agents NAME=agents
 ADDR="${AGENT_WEB_ADDR:-0.0.0.0:8790}"
 PORT="${ADDR##*:}"
