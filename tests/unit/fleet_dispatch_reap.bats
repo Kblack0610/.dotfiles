@@ -82,7 +82,7 @@ load 'fleet_dispatch/common'
   [ -n "$(qitem queued now-one)" ] || fail "the urgent item started past the load hold"
 }
 
-@test "reap files an approved plan whose session is gone as one board row, queues nothing, and files it once" {
+@test "reap files an approved plan whose session is gone as its phase rows, queues nothing, and files it once" {
   # dispatch's pass is not a pull: only the board fills the queue (agent-queue pull_ok)
   unset AGENT_QUEUE_PULL
   stub agent-ask 'echo other-session'
@@ -93,8 +93,14 @@ load 'fleet_dispatch/common'
   assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
   assert_output --partial 'could not file the phases of'
   [ ! -e "$FLEET_DISPATCH_DIR/plans-filed" ] || fail "a plan nothing was filed for is marked filed"
-  # with a board, agent-queue files the row (agent_queue.bats) and exits 5: filed once, then never again
-  stub agent-queue 'case "$1" in add) echo "add $*" >> "$NOTES_FIXTURE/aq-adds"; exit 5 ;; esac; exit 0'
+  # held with nothing filed (its epic: new proposal waits): not marked filed, so the next pass tries again (ar-5605)
+  stub agent-queue 'case "$1" in add) echo "agent-queue: x.md waits on its epic: new proposal in inbox-triage; nothing filed" >&2; exit 5 ;; esac; exit 0'
+  run reconcile_plans
+  assert_success
+  [ ! -e "$FLEET_DISPATCH_DIR/plans-filed" ] || fail "a plan whose add filed nothing is marked filed"
+  grep -q 'left orphan.md for next pass: .*nothing filed' "$FLEET_DISPATCH_DIR/log.md"
+  # with a board, agent-queue files each phase as its row (agent_queue.bats) and exits 5: filed once, then never again
+  stub agent-queue 'case "$1" in add) echo "add $*" >> "$NOTES_FIXTURE/aq-adds"; echo "held orphan-p2 -> game:gm-1"; exit 5 ;; esac; exit 0'
   run reconcile_plans
   assert_success
   grep -q 'filed orphan.md to run its open phases' "$FLEET_DISPATCH_DIR/log.md"

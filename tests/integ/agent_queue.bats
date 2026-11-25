@@ -4794,19 +4794,27 @@ Phase 2 of the plan $SANDBOX/plan.md: the doors." >/dev/null
   assert_output --partial "game has no board row to file this on"
 }
 
-@test "a filer's --plan goes to the board as one row that runs its open phases; nothing is queued" {
+# ar-5605: a filer's plan used to go to the board as one "run the open phases of plan X" row, which sat
+# beside the phase rows or for plans nobody ran (97 rows, 93 dropped). NEGATIVE CONTROL: that row's
+# brief, "Run the open phases of the approved plan", is filed no more.
+@test "a filer's --plan files each open phase as its own board row, the later one #after/ the first; no plan row, nothing queued" {
   story_notes
   unset AGENT_QUEUE_PULL
+  echo 20 > "$NOTES_FIXTURE/story.seq"
   printf '# P\n\n## Phases\n\n- [ ] one\n- [ ] two\n' > "$SANDBOX/orphan.md"
   run "$AQ" add --plan "$SANDBOX/orphan.md" --project level --from auto:plans
   assert_failure 5
   assert_output --partial "only the board fills the queue"
-  assert_called "ptask level --agent add --detail=Run the open phases of the approved plan $SANDBOX/orphan.md in order"
-  # A filer that names no priority files the row untagged, for the priority rubric to judge (ar-5255);
-  # NEGATIVE CONTROL: the add default (high) tagged it before.
-  run grep -e '-- P (plan orphan)' "$NOTES_FIXTURE/calls.log"
-  assert_output --regexp '-- P \(plan orphan\)( #of/[a-z0-9-]+)?$'
-  refute_output --regexp '#(urgent|high|normal|low)'
+  assert_output --partial "held orphan-p1 -> level:lv-20"
+  assert_output --partial "held orphan-p2 -> level:lv-21 (#after/lv-20)"
+  assert_called "ptask level --agent add --detail=Phase 1 of the plan $SANDBOX/orphan.md: one."
+  assert_called "ptask level --agent add --detail=Phase 2 of the plan $SANDBOX/orphan.md: two."
+  assert_not_called "Run the open phases"
+  # A filer that names no priority files its phases at normal; NEGATIVE CONTROL: the add default (high) tagged them before.
+  run grep -e '-- one (P1, P)' "$NOTES_FIXTURE/calls.log"
+  assert_output --partial '#normal'
+  refute_output --regexp '#(urgent|high|low)'
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*orphan* 2>/dev/null)" ] || fail "a filer's plan queued a phase"
   # From a session (dispatch with AGENT_QUEUE_ITEM inherited) the filer is not refused for naming none.
   CLAUDE_CODE_SESSION_ID=s1 run "$AQ" add --plan "$SANDBOX/orphan.md" --project level --from auto:plans
   assert_failure 5
@@ -4854,14 +4862,14 @@ Phase 2 of the plan $SANDBOX/plan.md: the doors." >/dev/null
 # The project is resolved as every add resolves it: a repo whose work counts on its owner (tools ->
 # cockpit, as dotfiles -> agent-runtime) files on the owner's board. NEGATIVE CONTROL: unresolved,
 # tools had no board, the add failed, and reap retried every dotfiles plan each pass (ar-2787).
-@test "a filer's --plan for a repo with an owner files its row on the owner's board" {
+@test "a filer's --plan for a repo with an owner files its phase rows on the owner's board" {
   story_notes
   jq '.trackers.cockpit.lab = "bnb" | .trackers.cockpit.code = "ck"' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m.json" && mv "$SANDBOX/m.json" "$AGENT_QUEUE_PROJECT_MAP"
   unset AGENT_QUEUE_PULL
   printf '# P\n\n## Phases\n\n- [ ] one\n' > "$SANDBOX/owned.md"
   run "$AQ" add --plan "$SANDBOX/owned.md" --project tools --from auto:plans --priority low
   assert_failure 5
-  assert_called "ptask cockpit --agent add --detail=Run the open phases of the approved plan $SANDBOX/owned.md in order"
+  assert_called "ptask cockpit --agent add --detail=Phase 1 of the plan $SANDBOX/owned.md: one."
 }
 
 @test "every queued item counts against the cap, one held to a time of day or a date too" {
@@ -5210,7 +5218,7 @@ already"
   run grep -- '--agent add' "$NOTES_FIXTURE/calls.log"
   assert_output --partial " --origin plan -- "
   # A filer that does name one keeps it.
-  assert_output --partial "P (plan orig) #low"
+  assert_output --partial "one (P1, P) #low"
 }
 
 # ar-3852: an after: on an item that is live with an open PR is stacked, not held.
