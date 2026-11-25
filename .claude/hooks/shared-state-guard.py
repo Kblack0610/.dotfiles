@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """PreToolUse(Bash) guard: keep a session's hands off state another session or the fleet owns.
-walker-guards.py runs it.
+walker-guards.py runs it and hands it forge-guard's walker; it has no main of its own.
 
 The git stash stack is one per repository, shared by every worktree and so by every session in
 that repo. A pop, or an apply, drop or `stash branch` with no stash named, takes the top entry,
@@ -15,14 +15,10 @@ session (2026-11-10: a stopped comms timer was re-armed and work mail reached a 
 model). Denied: those three verbs on such a unit, naming `agentctl disable|stop|pause`.
 
 The walker is forge-guard's, so `git -C`, `bash -c`, `sudo` and a chain are read as git and bash
-read them. Fail-open: any error allows the command.
+read them. Fail-open: walker-guards skips a guard that raises.
 """
-import importlib.util
-import json
 import os
-import sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
 STASH_SUBS = {"list", "show", "drop", "pop", "apply", "branch", "push", "save", "clear", "create", "store"}
 SYSTEMCTL_VERBS = {"stop", "disable", "mask"}
 # systemctl's options that take the next word as their value, so it is never read as the verb.
@@ -45,14 +41,7 @@ UNIT_MSG = (
 )
 
 
-def _forge():
-    spec = importlib.util.spec_from_file_location("forge_guard", os.path.join(HERE, "forge-guard.py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-FORGE = None  # loaded past decide's prefilter, or set by walker-guards.py
+FORGE = None  # forge-guard, set by walker-guards.py before decide
 
 
 def stash_refusal(args):
@@ -116,26 +105,10 @@ def check(head, argv, env, cwd):
 # gate: hook-shared-state-guard
 def decide(data):
     """The deny reason for one PreToolUse payload, or None. walker-guards.py calls this."""
-    global FORGE
     if data.get("tool_name", "Bash") != "Bash":
         return None
     cmd = (data.get("tool_input") or {}).get("command") or ""
     if "stash" not in cmd and "agentctl" not in cmd:
         return None
-    FORGE = FORGE or _forge()
     return FORGE.reason(cmd, data.get("cwd") or os.getcwd(), check)
 
-
-def main():
-    r = decide(json.load(sys.stdin))
-    if r:
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": r}}))
-
-
-if __name__ == "__main__":
-    try:
-        main()
-    except Exception:
-        pass
-    sys.exit(0)

@@ -6,11 +6,12 @@
 setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
-  GUARD="$BATS_TEST_DIRNAME/../../.claude/hooks/shared-state-guard.py"
+  # It has no main: walker-guards runs it with forge-guard's walker, as on every Bash call.
+  WALKER="$BATS_TEST_DIRNAME/../../.claude/hooks/walker-guards.py"
   mkdir -p "$BATS_TEST_TMPDIR/work"
 }
 
-at() { jq -nc --arg c "$1" --arg d "$BATS_TEST_TMPDIR/work" '{tool_name:"Bash", cwd:$d, tool_input:{command:$c}}' | python3 "$GUARD"; }
+at() { jq -nc --arg c "$1" --arg d "$BATS_TEST_TMPDIR/work" '{tool_name:"Bash", cwd:$d, tool_input:{command:$c}}' | python3 "$WALKER"; }
 
 denied() { assert_success; assert_output --partial '"deny"'; assert_output --partial 'shared-state-guard:'; }
 allowed() { assert_success; assert_output ''; }
@@ -63,9 +64,7 @@ allowed() { assert_success; assert_output ''; }
   done
 }
 
-@test "a payload for another tool, or one it cannot read, is allowed" {
-  run bash -c "jq -nc '{tool_name:\"Read\", tool_input:{file_path:\"/x\"}}' | python3 '$GUARD'"
-  allowed
-  run bash -c "printf 'not json' | python3 '$GUARD'"
+@test "a payload for another tool is allowed" {
+  run bash -c "jq -nc '{tool_name:\"Read\", tool_input:{file_path:\"/x\"}}' | python3 '$WALKER'"
   allowed
 }
