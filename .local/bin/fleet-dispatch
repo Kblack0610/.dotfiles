@@ -3302,10 +3302,15 @@ ladder_open_why() {
 # trainee_brief <item json> -- a trainee's run: the task, done in its worktree and left there. The
 # sandbox lets it neither commit nor reach the queue, gh or the human, so its diff goes to review.
 trainee_brief() {
+  local trees
+  trees=$(trainee_manifests "$(repo_dir "$(jq -r '.project // ""' <<<"$1")")" | paste -sd, | sed 's/,/, /g')
   jq -r .task <<<"$1"
   echo
   echo "You run in a sandbox that sees this worktree alone: no skills, agent-queue, gh, push or human. Ignore any step above that needs one."
   echo "Make the smallest change in this worktree that fully does the task, run the repo's own tests for what you changed where they run here, and stop."
+  # The review refuses a diff that touches any other file (trainee_diff_why): say so before the run, not after it
+  # (ar-5117: six rejects on 11-23 to 11-25 had edited Rust, CSS, jq, an svg or a scratch json).
+  echo "Change only markdown files, and shell or bats files outside a cargo or npm tree${trees:+ ($trees)}, and leave no scratch file: a diff that touches any other file is rejected, since nothing here can build it. If the task needs another file, change nothing and write blocked in .no-diff."
   echo "Do not commit, push or open a pull request: leave your edits in the working tree. They are checked and landed, or the task is sent back, after you stop."
   echo "If you change nothing, say why in one word on the first line of a file named .no-diff in this worktree: already-fixed when the code already does what the task asks, blocked when the task cannot be done without a decision from the human or access you lack. No file means you failed."
 }
