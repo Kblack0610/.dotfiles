@@ -6,8 +6,8 @@ timeout (the longest `needs:` path of job timeouts, GitHub's 360 min where a job
 none), its purpose (the comment block right above `on:`, else the file's first comment
 block), its job graph, and its last SCHEDULES_RUNS scheduled runs (id, url, status,
 conclusion, start, end, failed jobs). It also records the repo's night set, config/ci/nightly.json
-on the base (keys are workflow files: `night` the ones the nightly runs, `held` the ones it
-holds back), as `night: {night, held, sha, etag}`, read through the contents API conditional on
+on the base (keys are workflow files: `night` the ones the nightly starts first, `wide` the ones
+it starts once those finished, `held` the ones it holds back), as `night: {night, wide, held, sha, etag}`, read through the contents API conditional on
 its ETag and decoded only when its sha moves; a file that is not a JSON object keeps its sha
 with `error` set. A repo without the file has `night_absent` (when it was found missing)
 instead and is asked again a day later. It writes them to one file, SCHEDULES_STATE
@@ -211,7 +211,7 @@ QUARANTINE_FILES = ("quarantine.py", "quarantine.txt")
 # repo-root path), cached when the base has them; an older quarantine.py needs neither.
 QUARANTINE_WITH = ("flake_patterns.py", "flake-causes.json")
 QUARANTINE_RECHECK = timedelta(days=1)  # how often a repo with no quarantine is asked again
-NIGHT_FILE = "config/ci/nightly.json"  # the repo's night set: which workflows the nightly runs or holds
+NIGHT_FILE = "config/ci/nightly.json"  # the repo's night set: which workflows the nightly runs (night, then wide) or holds
 # The nightly: the full run's title (playground scripts/test/last-nightly.py TITLES), its joined
 # summary, uploaded only when every shard reported (test.yml playmode-report), and each job's
 # suite output, where results.py names a quarantined test that passed.
@@ -1588,9 +1588,9 @@ def night_set(repo, base, prev, t):
     except ValueError:
         doc = None
     if doc is None:  # a broken file is shown as one, never read as an empty night
-        return {"night": {"night": {}, "held": {}, "sha": got["sha"], "etag": etag, "error": f"{NIGHT_FILE}: not a JSON object"}}
+        return {"night": {"night": {}, "wide": {}, "held": {}, "sha": got["sha"], "etag": etag, "error": f"{NIGHT_FILE}: not a JSON object"}}
     pick = lambda k: {f: str(n) for f, n in (doc.get(k) or {}).items()} if isinstance(doc.get(k), dict) else {}
-    return {"night": {"night": pick("night"), "held": pick("held"), "sha": got["sha"], "etag": etag}}
+    return {"night": {"night": pick("night"), "wide": pick("wide"), "held": pick("held"), "sha": got["sha"], "etag": etag}}
 
 
 def sync_repo(repo, base, prev, t, sched, jobs_last):
