@@ -1069,7 +1069,8 @@ review_gate() {
 # its item filed has a home in that plan: a found blocker is a `takes <row id>` phase line (planning.md,
 # Found work:), so the chain does the work and closes the row, never a row left loose while the plan reads done.
 # The rows are plan_loose_rows's: the ingest record says who filed a row, as the board keeps no #from/ tag.
-# A --partial landing is not checked (the final one is), nor is an item of no plan. A record or board it
+# A --partial landing is not checked (the final one is), nor is an item of no plan, nor a PR already merged
+# (only recorded, as review_gate; P3's reconcile_plans finds a row left loose that way). A record or board it
 # cannot read refuses, so a broken read never passes a loose row.
 # gate: al-loose-gate
 loose_gate() {
