@@ -777,12 +777,11 @@ pub fn costs(k: &crate::costs::Costs) -> Card {
         Level::Ok | Level::Nodata if !k.budget.needs.is_empty() => Level::Warn,
         l => l,
     };
-    c.big = if fc.why.is_some() {
-        "-".into()
+    (c.big, c.unit) = if fc.why.is_some() {
+        ("-".into(), "no data".into())
     } else {
-        fc.usd.clone()
+        (fc.usd.clone(), "estimated, 24h".into())
     };
-    c.unit = "estimated, 24h".into();
     c = c
         .part("Month", &k.budget.spent, Level::Ok)
         .part(

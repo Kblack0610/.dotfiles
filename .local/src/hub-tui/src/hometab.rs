@@ -466,10 +466,21 @@ pub fn page(
     }
     out.push(Line::raw(""));
 
+    // A red night leads the sections, under the cards, as agent-web's Home (dashboards rules 4, 8).
+    let red = night
+        .night
+        .is_some_and(|n| n.rows.iter().any(|r| r.area.level == briefing::Level::Bad));
+    if red {
+        night_section(&mut out, night, p, w);
+        out.push(Line::raw(""));
+    }
+
     out.extend(needs(h, &view.needs, p, now, w));
 
-    out.push(Line::raw(""));
-    night_section(&mut out, night, p, w);
+    if !red {
+        out.push(Line::raw(""));
+        night_section(&mut out, night, p, w);
+    }
 
     out.push(Line::raw(""));
     if h.proposals.is_empty() {
@@ -931,15 +942,25 @@ mod tests {
     }
 
     #[test]
-    fn since_last_night_sits_under_needs_you_and_only_names_what_is_not_ok() {
+    fn a_red_night_leads_under_the_cards_and_only_names_what_is_not_ok() {
         let n = night();
         let out = night_text(&home(), Some(&n), &Fixes::new());
         let at = |t: &str| out.find(t).unwrap_or_else(|| panic!("{t} missing: {out}"));
         assert!(
-            at("NEEDS YOU") < at("SINCE LAST NIGHT  since Thu 18:00"),
-            "{out}"
+            at("SINCE LAST NIGHT  since Thu 18:00") < at("NEEDS YOU"),
+            "a red night leads: {out}"
         );
-        assert!(at("SINCE LAST NIGHT") < at("PROPOSALS"), "{out}");
+        // Negative control: a night with no bad row keeps its place, under Needs you.
+        let mut calm = night();
+        calm.rows.retain(|r| r.area.level != briefing::Level::Bad);
+        let quiet = night_text(&home(), Some(&calm), &Fixes::new());
+        let qat = |t: &str| {
+            quiet
+                .find(t)
+                .unwrap_or_else(|| panic!("{t} missing: {quiet}"))
+        };
+        assert!(qat("NEEDS YOU") < qat("SINCE LAST NIGHT"), "{quiet}");
+        assert!(qat("SINCE LAST NIGHT") < qat("PROPOSALS"), "{quiet}");
         assert!(out.contains("watches: no such dir"), "{out}");
         let row = |t: &str| out.lines().find(|l| l.contains(t)).unwrap().to_string();
         let w = row("Workers overnight");

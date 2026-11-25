@@ -201,15 +201,13 @@ pub fn figures(cards: &[Card]) -> BTreeMap<String, i64> {
 }
 
 /// The whole number a card shows: a count (`12`), or dollars as the Costs card writes them
-/// (`usd_est`: `$573`, `$1,303`, `$5.23`; `about $573` for an estimate, `~$1,303` for a
-/// projection), rounded to whole dollars. Anything else (`3/5`, `-`, a word) is no figure.
+/// (`usd_est`: `$573`, `$1,303`, `$5.23`; `~$1,303` for a projection), rounded to whole dollars. Anything else (`3/5`, `-`, a word) is no figure.
 pub fn figure_value(v: &str) -> Option<i64> {
     if let Ok(n) = v.parse::<i64>() {
         return Some(n);
     }
     let usd = v
-        .strip_prefix("about ")
-        .or_else(|| v.strip_prefix('~'))
+        .strip_prefix('~')
         .unwrap_or(v)
         .strip_prefix('$')?
         .replace(',', "");
@@ -468,7 +466,6 @@ mod tests {
         for (v, want) in [
             ("12", Some(12)),
             ("$573", Some(573)),
-            ("about $1,303", Some(1303)),
             ("~$1,303", Some(1303)),
             ("$5.49", Some(5)),
             ("$0.50", Some(1)),
@@ -479,6 +476,7 @@ mod tests {
             ("$", None),
             ("$1.2k", None),
             ("about 5", None),
+            ("about $1,303", None),
         ] {
             assert_eq!(figure_value(v), want, "{v}");
         }

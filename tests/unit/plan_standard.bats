@@ -315,6 +315,12 @@ SH
   assert_output --partial 'epic: ot-2 is not an epic( row'
   run gate untyped "$(printf 'epic: ot-1\n\n'; base)"
   assert_output ''
+  # A fenced example above the real line is no epic: the real one is checked.
+  run gate untyped "$(printf '```\nepic: ot-2\n```\nepic: ot-1\n\n'; base)"
+  assert_output ''
+  # Overlap lists other work, so with no epic: line it does not move an exempt project onto a board.
+  run gate untyped "$(base | sed 's|^- Overlap: .*|- Overlap: ot-1 checked, unrelated.|')"
+  assert_output ''
 }
 
 @test "an epic: new whose Overlap rows are another project's is checked on that board, else on the cwd's (ar-5288)" {

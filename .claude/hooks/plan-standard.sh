@@ -118,7 +118,7 @@ epic_new_gaps() {
   if ! ids=$(project-stage-check "$board" --list --json 2>/dev/null | jq -er '.[].id' 2>/dev/null); then
     echo "epic: new: project-stage-check $board --list --json printed no system list, so epic($sys) cannot be checked"
   elif ! grep -qxF -- "$sys" <<<"$ids"; then
-    echo "epic: new names epic($sys), no system of $board: one of $(paste -sd, <<<"$ids")$([ -n "$target" ] || echo "; $board is this session's board, so a plan for another project names one of that project's rows on Overlap:")"
+    echo "epic: new names epic($sys), no system of $board: one of $(paste -sd, <<<"$ids")$([ -n "$target" ] || echo "; $board is this session's board, so a plan for another project names only that project's rows on Overlap:")"
   fi
   short=$(for lane in '' --agent; do
       notes ptask "$board" $lane similar --top 5 --json -- "$t" 2>/dev/null | jq -r '.[] | "\(.percent)\t\(.id)"' 2>/dev/null
@@ -129,7 +129,7 @@ epic_new_gaps() {
 }
 
 if epic_checked; then
-  epic=$(awk '/^```/ {f = !f; next} !f' <<<"$plan" | grep -m1 -oE '^epic:[[:space:]]*[a-z]+-[0-9]+' | sed -E 's/^epic:[[:space:]]*//')
+  epic=$(_epic_line epic <<<"$plan")
   row='' proposal=''
   [ -z "$epic" ] || row=$(lab_row "$epic" | grep -m1 'epic(')
   [ -n "$epic" ] || proposal=$(plan_epic_new <<<"$plan")

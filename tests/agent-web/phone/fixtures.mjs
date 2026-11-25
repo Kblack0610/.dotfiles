@@ -533,7 +533,7 @@ const GRID_CARDS = [
   kcard("done", "Done today", "85", "PRs merged", "ok", [], [["Shipped", "62"], ["Checks", "9"]], [["unity-core-playground", "30 shipped, 2 checks, 25 PRs", "ok"], ["dotfiles", "21 shipped, 40 PRs", "ok"]], { first_head: "By project", link: "#queue" }),
   kcard("health", "Health", "11 of 12", "machines up", "red", [["ok", 11], ["red", 1]], [["Domains down", "0"], ["Domains warn", "1", "warn"], ["Domains up", "6"], ["Vitals", "5/6", "warn"]], [["mac-mini", "down 2h", "red"]], { link: "#infra" }),
   kcard("ci", "CI", "4", "CI running", "red", [["ok", 5], ["red", 1]], [["Queued", "1"], ["Runners up", "5/6", "red"], ["No runner", "0"], ["Stuck", "0"]], [["runner-3 down", "CI runner", "red"], ["app CI", "oldest queued, 4m x1"]], { link: "#ci" }),
-  kcard("costs", "Costs", "$412", "Claude in 24h", "ok", [["ok", 3]], [["5h left", "62%"], ["Week", "41%"], ["Est.", "18%"]], [["agent-runtime", "$210", "ok"]]),
+  kcard("costs", "Costs", "$412", "estimated, 24h", "ok", [["ok", 3]], [["5h left", "62%"], ["Week", "41%"], ["Est.", "18%"]], [["agent-runtime", "$210", "ok"]]),
   kcard("releases", "Releases", "6", "apps", "warn", [["ok", 5], ["warn", 1]], [["Draft", "1", "warn"], ["Failed", "0"], ["Pinned", "2"]], [["binks", "draft gate"]]),
   kcard("schedules", "Schedules", "41", "scheduled", "ok", [["ok", 39], ["warn", 2]], [["Failing", "2", "warn"], ["Streak", "1"]], []),
   kcard("projects", "Projects", "-", "no data", "nodata", [], [], [], { error: "lab: unreadable" }),

@@ -527,7 +527,13 @@ test("Since last night shows only what is not ok, links each row and folds the o
   assert.equal(html.match(/data-fix=/g).length, 1);
   assert.match(html, /Infra, Nightly, Delivery, Costs ok/);
   // A red one leads the sections; only the cards come before it.
-  assert.ok(html.indexOf("Since last night") < html.indexOf("Needs you"), "a red night leads");
+  ctx.list = cards();
+  vm.runInContext("hst.cards = list; hst.cardsErr = null", ctx);
+  drawNight(night({ rows: [area("Workers overnight", "bad")] }));
+  const red = draw(home({ vitals: vitals() }));
+  const at = (t) => red.indexOf(t);
+  assert.ok(at('<div class="kgrid">') > -1 && at('<div class="kgrid">') < at('id="sec-night"'), "the cards come first");
+  assert.ok(at('id="sec-night"') < at('data-pf="home-vitals"') && at('data-pf="home-vitals"') < at('id="home-need-head"'), "a red night comes before Vitals and Needs you");
   // Negative control: a night with no red area keeps its place, after Needs you and before Proposals.
   const warn = drawNight(night({ rows: [area("Sessions", "warn")] }));
   assert.ok(warn.indexOf("Needs you") < warn.indexOf("Since last night") && warn.indexOf("Since last night") < warn.indexOf("Proposals"));
