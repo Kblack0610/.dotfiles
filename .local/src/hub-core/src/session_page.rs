@@ -262,7 +262,7 @@ fn board_parts(
                         .row(project, e)
                         .map(|x| format!(" \"{}\"", cap(&x.text, TITLE_MAX)))
                         .unwrap_or_default();
-                    Part::new("Epic", format!("{e}{title}")).link(Link::to(Kind::Row, e))
+                    Part::new("Epic", format!("{e}{title}")).link(Link::to(Kind::Epic, e))
                 });
                 let text = format!("{named} \"{}\" ({})", cap(&r.text, TITLE_MAX), r.state);
                 (Part::new(label, text), epic)
@@ -843,7 +843,7 @@ mod tests {
         assert_eq!(link("Queue item"), some("#queue/the-item"));
         assert_eq!(link("Project"), some("#projects/agent-runtime"));
         assert_eq!(link("Board row"), some("#projects/all?q=id:=ar-455"));
-        assert_eq!(link("Epic"), some("#projects/all?q=id:=ar-400"));
+        assert_eq!(link("Epic"), some("#projects/all?q=id:=ar-400&s=epics"));
         assert_eq!(link("PR"), some("https://github.com/o/r/pull/12"));
         assert_eq!(
             (text(&p, "CI"), link("CI")),

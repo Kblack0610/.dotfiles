@@ -69,6 +69,20 @@ impl Project {
     }
 }
 
+/// The rows under an epic: open ones and closed ones, counted over the whole feed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Children {
+    pub open: usize,
+    pub done: usize,
+}
+
+impl Children {
+    /// The ROWS cell: `12 open / 4 done`.
+    pub fn words(&self) -> String {
+        format!("{} open / {} done", self.open, self.done)
+    }
+}
+
 /// One open row. `raw` is the line as it stands, what a write passes back.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -120,6 +134,12 @@ pub struct Row {
     pub summary: String,
     /// The title of the epic `parent` names, when that row is on the board; set by [`feed`].
     pub epic: Option<String>,
+    /// The epic `parent` names is an open epic row, so it lists on the `epics` chip; a closed one
+    /// is on Done. Set by [`Feed::titles`].
+    pub epic_open: bool,
+    /// What hangs under an epic row, from the rows' `parent` links; set by [`Feed::titles`].
+    /// None on a row that is not an epic.
+    pub children: Option<Children>,
     /// The `#size/` weight, 1 unsized.
     pub weight: u32,
     /// The day a closed row closed.
@@ -223,6 +243,12 @@ impl Row {
         words.join("  ")
     }
 
+    /// An epic: a row the sweep lays out in the `epics` section. It lists on its own chip, never
+    /// among the tasks.
+    pub fn is_epic(&self) -> bool {
+        self.section.as_deref() == Some("epics")
+    }
+
     /// Started (`[/]`).
     pub fn doing(&self) -> bool {
         self.state == "doing"
@@ -231,8 +257,7 @@ impl Row {
     /// Tagged `#urgent` or `#high`. Never an epic: its priority is its most urgent open row's
     /// (notes-cli `epics::Index::epic_priority`), so counting it would count that row twice.
     pub fn hot(&self) -> bool {
-        self.r#type.as_deref() != Some("epic")
-            && matches!(self.priority.as_str(), "urgent" | "high")
+        !self.is_epic() && matches!(self.priority.as_str(), "urgent" | "high")
     }
 
     /// What it ships in: a playtest check's game, any other row's version.
@@ -250,11 +275,12 @@ impl Row {
 impl crate::table::Row for Row {
     const COLUMNS: &'static [&'static str] = &[
         "section", "type", "area", "title", "epic", "priority", "state", "when", "project", "lane",
-        "id", "version", "size", "pts", "tier", "since", "text", "profile", "tag",
+        "id", "version", "size", "pts", "tier", "since", "text", "profile", "tag", "rows",
     ];
     const STATES: &'static [&'static str] = &[
         "all",
         "in progress",
+        "epics",
         "filed today",
         "urgent",
         "requested",
@@ -293,21 +319,25 @@ impl crate::table::Row for Row {
             "profile" => text(&self.profile),
             "tag" if self.tags.is_empty() => Val::None,
             "tag" => Val::Text(self.tags.join(" ")),
+            "rows" => self.children.map_or(Val::None, |c| Val::Text(c.words())),
             _ => Val::None,
         }
     }
 
+    /// Every chip but `epics` lists tasks: an epic is a deliverable, listed on its own chip with
+    /// what hangs under it.
+    fn in_default(&self) -> bool {
+        !self.is_epic()
+    }
+
     fn in_state(&self, s: &str) -> bool {
         match s {
-            "in progress" => self.doing(),
-            "filed today" => self.filed_today,
+            "epics" => self.is_epic(),
+            "in progress" => self.doing() && !self.is_epic(),
+            "filed today" => self.filed_today && !self.is_epic(),
             // Asks of work still open: a closed row is Done's, not the chip's.
-            "urgent" => {
-                self.state != "done"
-                    && self.priority == "urgent"
-                    && self.r#type.as_deref() != Some("epic")
-            }
-            "requested" => self.state != "done" && self.requested,
+            "urgent" => self.state != "done" && self.priority == "urgent" && !self.is_epic(),
+            "requested" => self.state != "done" && self.requested && !self.is_epic(),
             // Every closed row, by day then project (`Feed::board_rows`), with its PR in WHEN.
             "done" => self.state == "done",
             _ => false,
@@ -320,11 +350,23 @@ impl crate::table::Row for Row {
         format!("{}/{project}\n{}", self.profile, self.raw).to_lowercase()
     }
 
-    /// The epic cell opens the epic's row.
+    /// The epic cell opens the epic's row, on the epics chip while it is open and on the default
+    /// chip once it is closed; an epic's rows cell opens the rows under it.
     fn link(&self, col: &str) -> Option<crate::links::Link> {
         use crate::links::{Kind, Link};
         match col {
-            "epic" => self.parent.as_deref().map(|e| Link::to(Kind::Row, e)),
+            "epic" => self.parent.as_deref().map(|e| {
+                let kind = if self.epic_open {
+                    Kind::Epic
+                } else {
+                    Kind::Row
+                };
+                Link::to(kind, e)
+            }),
+            "rows" => self
+                .children
+                .and(self.id.as_deref())
+                .map(|id| Link::to(Kind::Children, id)),
             _ => None,
         }
     }
@@ -366,6 +408,8 @@ impl crate::table::Row for Row {
             "version" => self
                 .release()
                 .map_or(Val::None, |v| Val::Text(release_order(v))),
+            // Most open rows first under a descending sort, not the words' alphabet.
+            "rows" => self.children.map_or(Val::None, |c| Val::Num(c.open as f64)),
             _ => self.val(col),
         }
     }
@@ -738,8 +782,9 @@ impl Feed {
         rows
     }
 
-    /// Give every row its [`row_title`] (plan files under `home`), and each row
-    /// under an epic that epic's title.
+    /// Give every row its [`row_title`] (plan files under `home`), each row
+    /// under an epic that epic's title, and each epic its [`Children`], counted over the open
+    /// and the closed rows by (project, parent).
     pub fn titles(&mut self, home: &str) {
         for r in self.rows.iter_mut().chain(&mut self.done) {
             (r.title, r.summary) = row_title(home, &r.text);
@@ -755,9 +800,46 @@ impl Feed {
                 ))
             })
             .collect();
+        let mut kids: std::collections::HashMap<(String, String), Children> =
+            std::collections::HashMap::new();
+        let open_epics: std::collections::HashSet<(String, String)> = self
+            .rows
+            .iter()
+            .filter(|r| r.is_epic())
+            .filter_map(|r| Some((r.project.clone()?.to_lowercase(), r.id.clone()?)))
+            .collect();
+        // A sub-epic lists on the epics chip, not among the epic's rows, so it is not counted.
+        for (r, closed) in self
+            .rows
+            .iter()
+            .map(|r| (r, false))
+            .chain(self.done.iter().map(|r| (r, true)))
+            .filter(|(r, _)| !r.is_epic())
+        {
+            if let (Some(p), Some(e)) = (r.project.as_deref(), r.parent.as_deref()) {
+                let c = kids.entry((p.to_lowercase(), e.to_string())).or_default();
+                if closed {
+                    c.done += 1;
+                } else {
+                    c.open += 1;
+                }
+            }
+        }
         for r in self.rows.iter_mut().chain(&mut self.done) {
             r.epic = match (r.project.as_deref(), r.parent.as_deref()) {
                 (Some(p), Some(e)) => by.get(&(p.to_lowercase(), e.to_string())).cloned(),
+                _ => None,
+            };
+            r.epic_open = match (r.project.as_deref(), r.parent.as_deref()) {
+                (Some(p), Some(e)) => open_epics.contains(&(p.to_lowercase(), e.to_string())),
+                _ => false,
+            };
+            r.children = match (r.is_epic(), r.project.as_deref(), r.id.as_deref()) {
+                (true, Some(p), Some(id)) => Some(
+                    kids.get(&(p.to_lowercase(), id.to_string()))
+                        .copied()
+                        .unwrap_or_default(),
+                ),
                 _ => None,
             };
         }
@@ -1706,10 +1788,13 @@ mod tests {
     fn a_row_under_an_epic_carries_its_title_and_links_it() {
         let fake = Fake {
             out: Ok(r#"{"today":"2026-11-12","rows":[
-                {"project":"ucp","lane":"human","id":"ucp-1","type":"epic","text":"epic(net): netcode to standard"},
+                {"project":"ucp","lane":"human","id":"ucp-1","type":"epic","section":"epics","text":"epic(net): netcode to standard"},
                 {"project":"ucp","lane":"human","id":"ucp-2","type":"feat","text":"feat(net): bot mode, bots plus a client","parent":"ucp-1"},
                 {"project":"other","lane":"human","id":"ucp-3","text":"x","parent":"ucp-1"},
-                {"project":"ucp","lane":"human","id":"ucp-4","text":"y","parent":"ucp-99"}]}"#),
+                {"project":"ucp","lane":"human","id":"ucp-4","text":"y","parent":"ucp-99"},
+                {"project":"ucp","lane":"human","id":"ucp-5","text":"z","parent":"ucp-7"}],
+                "done":[
+                {"project":"ucp","lane":"human","id":"ucp-7","type":"epic","section":"done","state":"done","text":"epic(old): shipped"}]}"#),
             calls: RefCell::default(),
         };
         let f = feed(&fake).unwrap();
@@ -1728,9 +1813,64 @@ mod tests {
         );
         assert_eq!(
             f.rows[1].link("epic").map(|l| l.href()),
-            Some("#projects/all?q=id:=ucp-1".to_string())
+            Some("#projects/all?q=id:=ucp-1&s=epics".to_string()),
+            "an epic is listed on the epics chip only, so the link opens that chip"
         );
         assert!(f.rows[0].link("epic").is_none());
+        assert_eq!(
+            f.rows[4].link("epic").map(|l| l.href()),
+            Some("#projects/all?q=id:=ucp-7".to_string()),
+            "a closed epic lists on the default chip with the done rows, so its link opens that"
+        );
+    }
+
+    #[test]
+    fn an_epic_counts_its_open_and_closed_rows_and_lists_only_on_its_chip() {
+        use crate::table::{Row as _, View};
+        let fake = Fake {
+            out: Ok(r#"{"today":"2026-11-12","rows":[
+                {"project":"ucp","lane":"human","id":"ucp-1","type":"epic","section":"epics","text":"epic(net): netcode","priority":"high"},
+                {"project":"ucp","lane":"human","id":"ucp-5","type":"epic","section":"epics","text":"epic(ui): empty one"},
+                {"project":"ucp","lane":"agent","id":"ucp-2","section":"now","state":"doing","text":"feat(net): one","parent":"ucp-1"},
+                {"project":"ucp","lane":"agent","id":"ucp-3","section":"next","text":"feat(net): two","parent":"ucp-1"},
+                {"project":"other","lane":"agent","id":"ucp-1","section":"next","text":"x","parent":"ucp-1"},
+                {"project":"ucp","lane":"agent","id":"ucp-4","section":"next","text":"fix(ui): loose"},
+                {"project":"ucp","lane":"human","id":"ucp-7","type":"epic","section":"epics","text":"epic(net): sub","parent":"ucp-1"}],
+                "done":[
+                {"project":"ucp","lane":"agent","id":"ucp-6","section":"done","state":"done","text":"feat(net): shipped","parent":"ucp-1"}]}"#),
+            calls: RefCell::default(),
+        };
+        let f = feed(&fake).unwrap();
+        let kids = |i: usize| f.rows[i].children;
+        assert_eq!(
+            kids(0),
+            Some(Children { open: 2, done: 1 }),
+            "a sub-epic lists on the epics chip, so it is not one of the rows"
+        );
+        assert_eq!(f.rows[0].val("rows"), Val::Text("2 open / 1 done".into()));
+        assert_eq!(
+            kids(1),
+            Some(Children { open: 0, done: 0 }),
+            "an epic with no rows reads 0 / 0, not a blank"
+        );
+        assert_eq!(kids(2), None, "a task has no count");
+        assert_eq!(
+            f.rows[0].link("rows").map(|l| l.href()),
+            Some("#projects/all?q=tag:=of/ucp-1".to_string())
+        );
+        assert!(f.rows[2].link("rows").is_none());
+        let rows = f.board_rows(None);
+        let on = |s: &str| -> Vec<String> {
+            View::new::<Row>("", s, "", "")
+                .apply(&rows)
+                .iter()
+                .filter_map(|r| r.id.clone())
+                .collect()
+        };
+        // NEGATIVE CONTROL: the default chip held both epics before this chip.
+        assert_eq!(on(""), ["ucp-2", "ucp-3", "ucp-1", "ucp-4", "ucp-6"]);
+        assert_eq!(on("epics"), ["ucp-1", "ucp-5", "ucp-7"]);
+        assert_eq!(on("in progress"), ["ucp-2"]);
     }
 
     fn add(text: &str, priority: &str, to: Option<&str>, game: Option<&str>) -> Verb {

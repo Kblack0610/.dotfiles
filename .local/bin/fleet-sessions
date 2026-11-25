@@ -2878,7 +2878,7 @@ collect() {
 }
 
 # nightly_item_owners -> "<repo slug>\t<session>" per running nightly-green-* or nightly-fix-* item
-# (the owner and fix items of playground-nightly-fix, steps 1 and 6), its repo its project's checkout
+# (the owner and fix items of fix-ci, "A red on main"), its repo its project's checkout
 # (project_repo_path), its session the Claude session it last ran in, else its tmux session. An item
 # with no session recorded owns nothing; one whose session is gone is moved off running by
 # `fleet-dispatch reap`, which each shepherd pass runs first. Why: 2026-11-15 unity-core-playground read owners [] while two
