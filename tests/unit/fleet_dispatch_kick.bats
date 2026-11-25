@@ -52,6 +52,24 @@ bats_require_minimum_version 1.5.0
   [ -n "$(qitem queued mine)" ] || fail "kick moved the item while a pass held the lock"
 }
 
+@test "kick starts beside a pass that is past its starts, and never beside one whose mark names no live pass (ar-5069)" {
+  game_ready
+  agent-queue add --project game --slug mine "mine"
+  mkdir -p "$FLEET_DISPATCH_DIR"
+  # negative control: a mark left by a killed pass names a pid that is no fleet-dispatch (this shell)
+  echo "$$" > "$FLEET_DISPATCH_DIR/.past-starts"
+  run flock "$FLEET_DISPATCH_DIR/.lock" "$REPO_ROOT/.local/bin/fleet-dispatch" kick
+  assert_success
+  assert_output --partial 'kick: a pass is running'
+  [ -n "$(qitem queued mine)" ] || fail "kick started beside a pass that is not past its starts"
+  # The holder's mark names a live fleet-dispatch: the kick itself, exec'd under the held lock.
+  run flock "$FLEET_DISPATCH_DIR/.lock" bash -c 'echo $$ > "$1/.past-starts"; exec "$2" kick' _ "$FLEET_DISPATCH_DIR" "$REPO_ROOT/.local/bin/fleet-dispatch"
+  assert_success
+  assert_output --partial 'kick: started 1'
+  [ -n "$(qitem running mine)" ] || fail "kick did not start beside a pass past its starts"
+  [ ! -e "$FLEET_DISPATCH_DIR/.kick" ] || fail "a kick that holds no lock left the lock's mark"
+}
+
 @test "kick at the pace target starts nothing" {
   game_ready
   agent-queue add --project game --slug mine "mine"

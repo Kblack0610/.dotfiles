@@ -2,7 +2,7 @@
 # fleet-dispatch - start one session per easy board row, for the shepherd to see through.
 #
 #   fleet-dispatch run [--dry-run]   one pass: start the queue items the gates allow, else fill from the board and start those
-#   fleet-dispatch kick              the fast path an event runs: start the queued items the gates and room allow, in seconds; no reap, triage, judge or board fill, and it stands down while a pass runs
+#   fleet-dispatch kick              the fast path an event runs: start the queued items the gates and room allow, in seconds; no reap, triage, judge or board fill; it stands down while a pass runs, until that pass is past its starts
 #   fleet-dispatch candidates        open rows eligible to judge, one JSON object per line
 #   fleet-dispatch suggest [--json|--write]  the Candidates: open rows of every dev+ project, ranked, with why, auto, verdict, held; --write stores them for the hub fold
 #   fleet-dispatch covered           the projects an untagged worker takes: stage dev or later, a repo, not on DISPATCH_OFF_PROJECTS
@@ -8284,15 +8284,20 @@ pass_room() {
 # cmd_kick -- the fast path an event runs: start what is already queued against the room, in seconds.
 # The same gates, pace target and start as a pass (load_gates, pass_room, run_queue), over the queue as it
 # stands: no reap, triage, judge, board fill or floor, which the timed `run` keeps. A pass holding the lock
-# already covers the event, so the kick stands down; it publishes no outcome (settle, KICK).
+# covers the event until its starts are done, so the kick stands down then; past them (pass_past_starts) the
+# kick starts alongside it. It publishes no outcome (settle, KICK).
 cmd_kick() {
   KICK=1 DRY=0
   mkdir -p "$DIR"
   exec 9>"$DIR/.lock"
-  flock -n 9 || { settle NOOP "kick: a pass is running, it covers this"; return 0; }
+  local locked=1
+  if ! flock -n 9; then
+    pass_past_starts || { settle NOOP "kick: a pass is running, it covers this"; return 0; }
+    locked=0
+  fi
   # The mark tells a timed pass that the lock is a kick's, held for seconds: it waits (cmd_run), where a
   # pass holding the lock is waited on by nobody. Burst kicks would otherwise leave every timed pass a NOOP.
-  : > "$DIR/.kick"
+  [ "$locked" = 0 ] || : > "$DIR/.kick"
   # A wake that lands while this runs is lost to systemd (the .path finds its unit already running), and
   # this run may have read the queue before the write: look again while the wake file moved, KICK_ROUNDS at most.
   local rc round seen
@@ -8301,8 +8306,20 @@ cmd_kick() {
     kick_start; rc=$?
     [ "$(stat -c %y "$DIR/.wake" 2>/dev/null)" != "$seen" ] || break
   done
-  rm -f "$DIR/.kick"
+  [ "$locked" = 0 ] || rm -f "$DIR/.kick"
   return "$rc"
+}
+
+# pass_past_starts -- rc 0 when the pass holding the lock is past its starts: $DIR/.past-starts names its pid,
+# written after its starts and share return and removed when it ends (main, run), and that pid is a live
+# fleet-dispatch. The rest of a pass (judge, headroom, snapshots) starts nothing and runs a minute or more,
+# and passes run back to back, so a kick that stood down there was served by no pass: on 2026-11-23 to 25,
+# 697 kicks logged "a pass is running" and 113 started something (ar-5069). A new pass clears a mark a
+# killed one left before it reads anything (cmd_run).
+pass_past_starts() {
+  local pid
+  pid=$(cat "$DIR/.past-starts" 2>/dev/null) && [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  grep -qa fleet-dispatch "/proc/$pid/cmdline" 2>/dev/null
 }
 
 # kick_start -- cmd_kick past its lock: the gates, the room, the start.
@@ -8345,6 +8362,7 @@ cmd_run() {
   # A NOOP that never read the gates leaves a standing hold as it is (PROOF_HELD_KEEP, agent-proof.sh).
   # A kick holds it for seconds: the pass waits out KICK_WAIT_S for it, never for another pass.
   flock -n 9 || { [ -e "$DIR/.kick" ] && flock -w "$KICK_WAIT_S" 9; } || { PROOF_HELD_KEEP=1 settle NOOP "another pass is running"; return 0; }
+  rm -f "$DIR/.past-starts"   # a killed pass's: a kick must not start beside this one's starts (pass_past_starts)
 
   [ "$DRY" = 1 ] || { cmd_reap; pass_mark reap; provider_hold_scan; pass_mark scan; }   # the scan reads the runs the reap just closed
   # Once a pass, so each subshell of the pass reads the same gates; after the reap, whose returns
@@ -9144,6 +9162,9 @@ main() {
       # After the pass, so the floors and the cap's let-go have started what they would; under its lock.
       [ "$DRY" = 1 ] || ! flock -n 9 2>/dev/null || share_return
       pass_mark share
+      # Past its starts: a kick may start beside the rest of this pass (pass_past_starts).
+      local past=''
+      if [ "$DRY" != 1 ] && flock -n 9 2>/dev/null; then printf '%s\n' "$$" > "$DIR/.past-starts" && past=1; fi
       # The judge after the pass, so no start waits on a model call: inside the fill alone it ran only on
       # passes that reached the board, and on 2026-11-23 a flapping k3s red and the load gate left 1,855
       # rows unjudged. A pass whose fill judged already does not judge again (judge_once).
@@ -9155,6 +9176,7 @@ main() {
       # read every board a second time beside the one running.
       if [ "$DRY" != 1 ] && flock -n 9 2>/dev/null; then candidates_write || true; hosts_write || true; fi
       pass_mark "headroom, candidates and hosts"
+      [ -z "$past" ] || rm -f "$DIR/.past-starts"
       [ -z "$ran" ] || say "pass steps: $PASS_TIMES; ${SECONDS}s in all"
       return "$rc" ;;
     kick) cmd_kick ;;
