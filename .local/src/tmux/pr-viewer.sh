@@ -66,7 +66,7 @@ _repo_rows() {
     --json number,title,createdAt,isDraft,reviewDecision,statusCheckRollup,url \
     --limit "$PR_LIMIT" --state open 2>/dev/null)" || return 0
   [ -n "$json" ] && [ "$json" != "[]" ] || return 0
-  json="$(jq -c "$CI_JQ"' map(. + {ci: ci})' <<<"$json")" || return 0
+  json="$(jq -c "$CI_JQ"' map(. + {ci: ci})' <<<"$json")" || { panel_warn "could not read CI for $repo"; return 0; }
 
   PR_JSON="$json" python3 - "$repo" "$PR_TITLE_WIDTH" \
     "$C_SEL" "$C_DIM" "$C_OFF" "$G_ATTN" "$G_BUSY" "$G_OK" "$G_IDLE" <<'PYTHON'
