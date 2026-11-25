@@ -477,9 +477,16 @@ sync_one() {
   if [ -n "$ref" ] && ! g merge-base --is-ancestor "$ref" HEAD; then
     # Every file the remote changed since the merge base that is dirty here goes into a commit
     # first, so the merge sees both sides instead of refusing to touch the working tree.
-    mapfile -t files < <(comm -12 \
-      <(g diff -z --no-renames --name-only "HEAD...$ref" | tr '\0' '\n' | sort -u) \
-      <(g status -z --porcelain=v1 -uall --no-renames | tr '\0' '\n' | cut -c4- | sort -u))
+    local dirty
+    dirty=$(g status -z --porcelain=v1 -uall --no-renames | tr '\0' '\n' | cut -c4- | sort -u)
+    mapfile -t files < <(comm -12 <(g diff -z --no-renames --name-only "HEAD...$ref" | tr '\0' '\n' | sort -u) <(printf '%s\n' "$dirty"))
+    # A queue item moved here since the last commit (a move mid-fetch) is dirty at both paths, and the
+    # remote changed only the old one: its new path goes in too, so the merge reads a move, not a bare
+    # delete, and the item driver keeps the close (razer-laptop 2026-11-23 18:05, ar-5087).
+    mapfile -t -O "${#files[@]}" files < <(awk '
+      NR == FNR { if ($0 ~ /^queue\//) { n = $0; sub(/.*\//, "", n); want[n] = 1; have[$0] = 1 } next }
+      /^queue\// { n = $0; sub(/.*\//, "", n); if ((n in want) && !($0 in have)) print }' \
+      <(printf '%s\n' "${files[@]}") <(printf '%s\n' "$dirty"))
     if [ "${#files[@]}" -gt 0 ]; then
       commit_paths "$HOST_TAG store-sync: local edits before merging $r $(date '+%Y-%m-%d_%H:%M:%S')" "${files[@]}" || return 3
     fi

@@ -847,6 +847,34 @@ move_item() {
   [ ! -e "$SANDBOX/d/queue/running/y.md" ]
 }
 
+# razer-laptop 2026-11-23 18:05: an item closed between the pass's commit and its fetch went into the
+# pre-merge commit as a bare delete of its queued path, and the merge stopped on a modify/delete (ar-5087).
+@test "an item moved while the fetch runs goes into the pre-merge commit at both paths, so the merge keeps the close (ar-5087)" {
+  peer a; queue_item a; peer b
+  sed -i 's/^k5: v5$/k5: b/' "$SANDBOX/b/queue/queued/x.md"
+  on b --now >/dev/null
+  # The move lands while a's fetch runs: after its own commit, before the merge looks at the tree.
+  cat > "$SANDBOX/upload-pack-mid-move" <<EOF
+#!/usr/bin/env bash
+q="$SANDBOX/a/queue"
+[ ! -e "\$q/queued/x.md" ] || { mkdir -p "\$q/done/2026-11-21"; sed 's/^k20: v20\$/k20: v20\nstatus: ok/' "\$q/queued/x.md" > "\$q/done/2026-11-21/x.md"; rm "\$q/queued/x.md"; }
+exec git-upload-pack "\$@"
+EOF
+  chmod +x "$SANDBOX/upload-pack-mid-move"
+  git -C "$SANDBOX/a" config remote.origin.uploadpack "$SANDBOX/upload-pack-mid-move"
+  run on a --now
+  assert_success
+  refute_output --partial CONFLICT
+  # The move came mid-fetch (the pass's own commit did not hold it), and the pre-merge commit holds both paths.
+  run git -C "$SANDBOX/a" log --format=%s --name-status --no-renames --grep='local edits before merging origin' master
+  assert_line --regexp '^D	queue/queued/x.md$'
+  assert_line --regexp '^A	queue/done/2026-11-21/x.md$'
+  run show "$ORIGIN" queue/done/2026-11-21/x.md
+  assert_line 'status: ok'
+  run git -C "$ORIGIN" ls-tree -r --name-only master -- queue/queued
+  assert_output ''
+}
+
 @test "a short item closed on one machine and moved open on another keeps only the close, though git saw no rename (ar-4262)" {
   peer a
   mkdir -p "$SANDBOX/a/queue/queued"
