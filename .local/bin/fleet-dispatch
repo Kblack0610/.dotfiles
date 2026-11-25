@@ -2323,9 +2323,10 @@ skip_exits() {
         e=$gate ;;
       sheet | improve)
         body=$(sed -E 's/(^|[[:space:]])#worker\/[^[:space:]]+//g; s/^[[:space:]]+//' <<<"$body")
-        # A spent plan exit names no person: the sheet row is seen there, not paged on Needs.
-        if [ -n "$spent" ] && [ "$req" != true ]; then
-          body=$(sed -E ':a; s/(^|[[:space:]])#(urgent|high)([[:space:]]|$)/\1#normal\3/; ta' <<<"$body")
+        # A spent plan exit names no person: the sheet row is seen there, not paged on Needs. Its
+        # #why/ reason went with the level it argued for (notes refuses a #high reason on a #normal row).
+        if [ -n "$spent" ] && [ "$req" != true ] && grep -qE '(^|[[:space:]])#(urgent|high)([[:space:]]|$)' <<<"$body"; then
+          body=$(sed -E ':a; s/(^|[[:space:]])#(urgent|high)([[:space:]]|$)/\1#normal\3/; ta; s/(^|[[:space:]])#why\/[^[:space:]]+//g' <<<"$body")
         fi
         if [ "$e" = sheet ]; then
           where=$(file_row human "$(jq -cn --arg pr "$prof" --arg p "$p" '{profile: $pr, project: $p}')" "$body (agent row $id)")

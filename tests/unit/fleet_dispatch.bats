@@ -557,7 +557,7 @@ exits: gate 2 improve 1 plan 2 sheet 1'
 
 @test "skip_exits: a spent plan exit files its sheet row at #normal at most, a #requested one keeps its level, a human rule keeps it, and a check(epics) row takes no exit (ar-5968)" {
   exits_fixture
-  row game agent gp-1 "- [ ] row gp-1 #high $T <!-- id:gp-1 -->"
+  row game agent gp-1 "- [ ] row gp-1 #high #why/red-main $T <!-- id:gp-1 -->"
   row game agent gp-2 "- [ ] row gp-2 #high #requested $T <!-- id:gp-2 -->"
   row game agent gp-3 "- [ ] row gp-3 #high $T <!-- id:gp-3 -->"
   row game agent gp-4 "- [ ] check(epics): verify gm-1 #high $T <!-- id:gp-4 -->"
