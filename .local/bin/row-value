@@ -525,22 +525,23 @@ def open_phases(path):
 
 
 def plan_state(slug, self_id, plans, board_rows, items):
-    """Why a plan-bookkeeping row for SLUG can go, or None when its plan is an orphan: open
-    phases and no live chain (no active queue item and no other open row names the plan)."""
+    """(why the plan-bookkeeping row for SLUG can go, or None, detail): None when its plan is
+    an orphan (open phases and no live chain: no active queue item and no other open row names
+    the plan) or has no file under PLANS (a wrong slug or an archived plan is not proof)."""
     files = [os.path.join(d, f"{slug}.md") for d, _, fs in os.walk(plans) if f"{slug}.md" in fs]
     if not files:
-        return f"plan {slug}: no plan file"
+        return None, f"plan {slug}: no plan file under {plans}"
     left = max(open_phases(f) for f in files)
     if not left:
-        return f"plan {slug}: no open phase"
+        return f"plan {slug}: no open phase", None
     word = re.compile(rf"(?<![\w.-]){re.escape(slug)}(?![\w-])")
     for it in items:
         if word.search(" ".join(str(it.get(k) or "") for k in ("task", "title", "slug"))):
-            return f"plan {slug}: chain live (item {it.get('slug')})"
+            return f"plan {slug}: chain live (item {it.get('slug')})", None
     for r in board_rows:
         if r["id"] != self_id and word.search(" ".join([r.get("text") or ""] + list(r.get("details") or []))):
-            return f"plan {slug}: phase row {r['id']} open"
-    return None
+            return f"plan {slug}: phase row {r['id']} open", None
+    return None, f"plan {slug}: open phases and no live chain"
 
 
 def active_items(cmd):
@@ -581,14 +582,14 @@ def plan_action(r, row, ctx):
             slug = plan_slug(r)
             if not slug:
                 return ctx.orphan(r, None, "plan bookkeeping that names no plan")
-            state = plan_state(slug, rid, ctx.plans, ctx.board_rows, ctx.items)
+            state, orphan_why = plan_state(slug, rid, ctx.plans, ctx.board_rows, ctx.items)
             if state is None:
                 # The row is the only start its plan's chain has: on its own project's board
                 # dispatch still promotes it; here the session decides keep or park.
                 if r["project"] != ctx.project and ctx.has_board(r["project"]):
                     return "move", pt + ["move", rid, "--project", r["project"]], \
                         f"{r['project']} (plan {slug}: orphan, the row starts its chain)"
-                return ctx.orphan(r, slug, f"plan {slug}: open phases and no live chain")
+                return ctx.orphan(r, slug, orphan_why)
             why = f"{why}; {state}"
         extra = ["--children", "drop"] if bucket == "container" else []
         return "drop", pt + ["drop", rid, "--why", why] + extra, why
@@ -596,7 +597,7 @@ def plan_action(r, row, ctx):
         text = f"{title_of(r['text'])} (was {rid})"
         if not ctx.has_project(r["project"]):
             return "keep", None, f"no notes project {r['project']}: stays until the human names one"
-        if ctx.health(text):
+        if ctx.health(r["project"], text):
             return "keep", None, "notes improve calls it health work: stays"
         return "improve", [[ctx.notes, "improve", r["project"], "--why", r["why"], "--", text],
                            pt + ["drop", rid, "--why", f"moved to improvements: {r['project']}"]], r["project"]
@@ -614,6 +615,8 @@ def plan_action(r, row, ctx):
 class Ctx:
     def __init__(self, a, board):
         self.notes, self.project, self.plans = a.notes, a.project, os.path.expanduser(a.plans)
+        if not os.path.isdir(self.plans):
+            die(f"--plans {self.plans} is not a directory", 1)
         self.board_rows = [r for r in board.get("rows", []) if r.get("state") in ("open", "doing")]
         self.open_ids = {r["id"] for r in self.board_rows}
         self.items = active_items(a.queue_cmd)
@@ -639,7 +642,7 @@ class Ctx:
             die(f"--orphans parks {r['id']}, whose plan {slug} has no file to mark", 1)
         why = f"plan {slug} parked: {d['why']}"
         pt = [self.notes, "ptask", self.project, "--agent"]
-        return "park", [("park", files, d["why"], r["id"]), pt + ["drop", r["id"], "--why", why]], why
+        return "park", [pt + ["drop", r["id"], "--why", why], ("park", files, d["why"], r["id"])], why
 
     def has_board(self, project):
         if project not in self._boards:
@@ -654,13 +657,15 @@ class Ctx:
             self._boards[key] = out.returncode == 0
         return self._boards[key]
 
-    def health(self, text):
-        if text not in self._health:
-            out = subprocess.run([self.notes, "improve", "--check", self.project, "--", text], capture_output=True, text=True)
+    def health(self, project, text):
+        """True when `notes improve` refuses TEXT for PROJECT as health work (exit 3)."""
+        key = (project, text)
+        if key not in self._health:
+            out = subprocess.run([self.notes, "improve", "--check", project, "--", text], capture_output=True, text=True)
             if out.returncode not in (0, 3):
                 die(f"notes improve --check failed ({out.returncode}): {out.stderr.strip()[:300]}", 1)
-            self._health[text] = out.returncode == 3
-        return self._health[text]
+            self._health[key] = out.returncode == 3
+        return self._health[key]
 
     def moving_parent(self, r):
         p = self.ledger.get(r.get("epic", "-"))
@@ -673,31 +678,60 @@ def cmd_apply(a):
     ledger = read_ledgers(a.ledger)
     ctx = Ctx(a, board)
     ctx.ledger = ledger
-    log, counts = [], collections.Counter()
+    # Every row is decided before any write, so a die (a bad --orphans line, a failed
+    # health check) leaves the board as it was.
+    plans = []
     for row in open_rows(board, a.project):
         r = ledger.get(row["id"])
-        if not r:
-            log.append([row["id"], "unjudged", "-", "not in any ledger", "-"])
-            counts["unjudged"] += 1
-            continue
-        action, argv, detail = plan_action(r, row, ctx)
-        result = "planned" if argv else "-"
-        if argv and a.write:
-            for cmd in argv if isinstance(argv[0], (list, tuple)) else [argv]:
-                if cmd[0] == "park":
-                    park_plans(*cmd[1:])
-                    continue
-                out = subprocess.run(cmd, capture_output=True, text=True)
-                if out.returncode != 0:
-                    result = f"failed {out.returncode}: " + (out.stderr.strip().splitlines() or ["-"])[-1][:200]
-                    break
-                result = "ok"
-        counts[f"{action} {result.split(':')[0]}"] += 1
-        log.append([row["id"], action, result, detail, r["why"]])
-    write_tsv(a.log, APPLY_LOG, log)
-    print(f"{len(log)} open rows -> {a.log}" + ("" if a.write else " (dry run: nothing written)"))
+        plans.append((row["id"], r) + (plan_action(r, row, ctx) if r else ("unjudged", None, "not in any ledger")))
+    closing = {rid for rid, _, action, argv, _ in plans if argv and action in CLOSED}
+    for n, (rid, r, action, argv, detail) in enumerate(plans):
+        if action == "dup" and r["into"] in closing:
+            why = f"{r['why']} (dup of {r['into']}, closed in this run)"
+            plans[n] = (rid, r, "drop", argv[:-2] + ["--why", why], f"dup of {r['into']}, closed in this run")
+    filed = previous_improvements(a.log)
+    counts = collections.Counter()
+    with open(a.log, "w") as log:
+        log.write("\t".join(APPLY_LOG) + "\n")
+        for rid, r, action, argv, detail in plans:
+            result = "planned" if argv else "-"
+            if argv and a.write:
+                result = run_writes(rid, argv if isinstance(argv[0], (list, tuple)) else [argv], filed)
+            counts[f"{action} {'failed' if result.startswith('failed') else result}"] += 1
+            log.write("\t".join(clean(str(c)) for c in [rid, action, result, detail, r["why"] if r else "-"]) + "\n")
+            log.flush()
+    print(f"{len(plans)} open rows -> {a.log}" + ("" if a.write else " (dry run: nothing written)"))
     print(", ".join(f"{k} {n}" for k, n in sorted(counts.items())))
     return 1 if any(k.endswith(" failed") for k in counts) else 0
+
+
+IMPROVED = "(improvement filed)"
+
+
+def previous_improvements(path):
+    """Ids whose improvement an earlier run against this --log filed before its drop failed:
+    a re-run drops them without filing the improvement twice."""
+    if not os.path.exists(path):
+        return set()
+    cols, rows = read_tsv(path)
+    return {r["id"] for r in rows if cols == APPLY_LOG and r["result"].endswith(IMPROVED)}
+
+
+def run_writes(rid, cmds, filed):
+    """Run one row's writes in order, stopping at the first refusal; "ok" or "failed N: why"."""
+    done_improve = rid in filed
+    for cmd in cmds:
+        if cmd[0] == "park":
+            park_plans(*cmd[1:])
+            continue
+        if done_improve and cmd[1] == "improve":
+            continue
+        out = subprocess.run(cmd, capture_output=True, text=True)
+        if out.returncode != 0:
+            why = (out.stderr.strip().splitlines() or ["-"])[-1][:200]
+            return f"failed {out.returncode}: {why}" + (f" {IMPROVED}" if done_improve else "")
+        done_improve = done_improve or cmd[1] == "improve"
+    return "ok"
 
 
 def park_plans(files, why, rid):
@@ -785,9 +819,15 @@ def cmd_cut_report(a):
         r = ledger.get(e["id"])
         if not r:
             return f"| {e['id']} | {esc(title_of(e['text']))[:90]} | - | - | filed after the ledger: judged by the next pass |"
-        stay = kept_why.get(e["id"], {})
-        why = r["why"] if stay.get("action") in (None, "keep") and stay.get("detail") in (None, r["bucket"]) else \
-            f"{stay.get('detail')}; {r['why']}"
+        stay = kept_why.get(e["id"])
+        if not stay:
+            why = f"open after the run, not in its log; {r['why']}"
+        elif stay["result"].startswith("failed"):
+            why = f"{stay['action']} {stay['result']}; {r['why']}"
+        elif stay["action"] == "keep" and stay["detail"] == r["bucket"]:
+            why = r["why"]
+        else:
+            why = f"{stay['detail']}; {r['why']}"
         return f"| {e['id']} | {esc(title_of(r['text']))[:90]} | {r['bucket']} | {esc(r.get('tie', '-'))} | {esc(why)} |"
     out += grouped(remain, "| id | title | bucket | tie | why it stays |", remains)
     print("\n".join(out).rstrip())

@@ -320,6 +320,7 @@ case "$*" in
   "improve --check"*health*) exit 3 ;;
   "improve --check"*) exit 0 ;;
   *"drop ar-37 "*) echo "refused: open children" >&2; exit 1 ;;
+  *"drop ar-33 "*) if [ -e "$HOME/refuse33" ]; then echo "refused: locked" >&2; exit 1; fi ;;
 esac
 EOF
   chmod +x "$HOME/bin/notes"
@@ -434,6 +435,45 @@ EOF
   assert_failure 1
   run awk -F'\t' '$1 == "ar-37" { print $2, $3 }' "$HOME/log.tsv"
   assert_output "drop failed 1: refused: open children"
+}
+
+@test "apply: decides every row before a write, a dup of a row this run closes gets a why, and a re-run files no improvement twice" {
+  apply_fixture
+  # A later ledger wins: ar-43 becomes a dup of ar-30, which this run closes; ar-40's plan has no file.
+  {
+    head -1 "$HOME/led.tsv"
+    printf 'ar-43\topen\t-\t-\t-\t0\t-\tdrop\tci\tagent-runtime\tnone\t-\tdup\tmerge\tar-30\t-\tsame\tchore(x): a check\t-\n'
+    printf 'ar-40\topen\t-\t-\t-\t0\t-\tdrop\tdispatch\tagent-runtime\tnone\t-\tplan-bookkeeping\tdrop\t-\t-\tfinish plan\tfeat(dispatch): Gone (plan gone-plan)\t-\n'
+  } >"$HOME/led2.tsv"
+  touch "$HOME/refuse33"
+  run "$RV" "${APPLY[@]}" --write --log "$HOME/log.tsv" "$HOME/led.tsv" "$HOME/led2.tsv"
+  assert_failure 1
+  run awk -F'\t' '$1 ~ /^ar-(33|40|43)$/ { print $1, $2, $3, $4 }' "$HOME/log.tsv"
+  assert_output "$(printf '%s\n' 'ar-33 improve failed 1: refused: locked (improvement filed) agent-runtime' \
+    "ar-40 orphan - plan gone-plan: no plan file under $HOME/plans" \
+    'ar-43 drop ok dup of ar-30, closed in this run')"
+  run grep -F 'drop ar-43 --why same (dup of ar-30, closed in this run)' "$HOME/calls"
+  assert_success
+  # The re-run drops ar-33 without filing its improvement again.
+  rm "$HOME/refuse33"
+  : >"$HOME/calls"
+  run "$RV" "${APPLY[@]}" --write --log "$HOME/log.tsv" "$HOME/led.tsv" "$HOME/led2.tsv"
+  assert_success
+  run grep -c '^improve agent-runtime ' "$HOME/calls"
+  assert_output 0
+  run grep -c 'drop ar-33 --why moved to improvements' "$HOME/calls"
+  assert_output 1
+  # A --orphans park whose plan has no file dies before any write; so does a missing --plans.
+  printf 'id\tdecision\twhy\tplan\nar-40\tpark\tfeature work\t\n' >"$HOME/orph.tsv"
+  : >"$HOME/calls"
+  run "$RV" "${APPLY[@]}" --orphans "$HOME/orph.tsv" --write --log "$HOME/log.tsv" "$HOME/led.tsv" "$HOME/led2.tsv"
+  assert_failure 1
+  assert_output --partial "parks ar-40, whose plan gone-plan has no file to mark"
+  run grep -E 'done|drop|move|improve [^-]' "$HOME/calls"
+  assert_failure
+  run "$RV" apply --board "$HOME/board2.json" --plans "$HOME/nope" --queue-cmd "$(printf %q "$HOME/queue")" --notes "$NOTES" --log "$HOME/log.tsv" "$HOME/led.tsv"
+  assert_failure 1
+  assert_output --partial "is not a directory"
 }
 
 @test "cut-report: before and after counts, then Cut and Remains grouped by system with the rubric's line" {
