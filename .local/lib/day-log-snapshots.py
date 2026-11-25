@@ -12,7 +12,8 @@ them, and a source it cannot read keeps the previous value and is named in .unre
   agent-queue stats --json   queue flow per local day
   fleet-bench flow --json    plan phases
   fleet-sessions stages      time per delivery stage and reason, from the shepherd's watch.log
-  ~/.notes history           board rows opened and closed
+  ~/.notes history           board rows and points opened, done, dropped, by project
+                             (`notes board --weigh` weighs each commit's rows)
   agent-usage tokens json    tokens, cost, sessions by kind and account (the nightly snapshot)
   outcomes/*.jsonl           sessions with no PR, time use (the nightly session-outcomes)
   agentctl runs.jsonl        last night's runner passes, priced from calls.jsonl, scored by
@@ -53,8 +54,8 @@ DIR = Path(ENV["DAYLOG_DIR"])
 WEEKS = DIR / "weeks"
 WINDOW = 7
 CALL_TIMEOUT = 3600   # a guard, so a hung read fails its section instead of stalling the nightly
-SHEETS = "*/projects/current/*/agent/README.md"
-ROW = re.compile(r"^\s*- \[(.)\].*<!-- id:([\w-]+)[ >]")
+# The agent sheets and the version notes a release cut rolls their closed rows into.
+SHEETS = ("*/projects/current/*/agent/README.md", "*/projects/current/*/agent/versions/*.md")
 
 
 def cmd(name):
@@ -116,8 +117,10 @@ def notes_git(*args):
 
 
 def rows_at(epoch):
-    """{row id: its checkbox} on the agent sheets at that time. Compared across all sheets at once,
-    so a row moved between sheets counts as neither opened nor closed. A row with no id is not counted."""
+    """{row id: {project, id, state, weight}} on the agent sheets at that time, weighed by notes
+    (`notes board --weigh`), so the points rule and the done/dropped split have one home.
+    Compared across all sheets at once, so a row moved between sheets counts as neither opened
+    nor closed. A row with no id is not counted."""
     when = dt.datetime.fromtimestamp(epoch, dt.timezone.utc).isoformat()
     commit = notes_git("rev-list", "-1", f"--before={when}", "HEAD")
     if commit.returncode:
@@ -125,24 +128,64 @@ def rows_at(epoch):
     head = commit.stdout.strip()
     if not head:
         return {}
-    found = notes_git("grep", "-h", "-E", "<!-- id:", head, "--", SHEETS)
+    found = notes_git("grep", "-E", "<!-- id:", head, "--", *SHEETS)
     if found.returncode > 1:
         raise OSError(found.stderr.strip())
-    return {m[2]: m[1] for m in map(ROW.match, found.stdout.splitlines()) if m}
+    try:
+        weighed = subprocess.run(cmd("DAYLOG_NOTES_CMD") + ["board", "--weigh"], input=found.stdout,
+                                 capture_output=True, text=True, timeout=CALL_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise OSError(str(e)) from e
+    if weighed.returncode:
+        raise OSError((weighed.stderr.strip().splitlines() or [f"notes board --weigh: exit {weighed.returncode}"])[-1])
+    try:
+        rows = [json.loads(line) for line in weighed.stdout.splitlines()]
+    except ValueError as e:
+        raise OSError("notes board --weigh: not JSON lines") from e
+    # One id on a sheet and a version note at once (mid-roll): the closed record wins, whatever the grep order.
+    by_id = {}
+    for r in rows:
+        if by_id.get(r["id"], {}).get("state", "open") == "open":
+            by_id[r["id"]] = r
+    return by_id
+
+
+def flow_of(opened, left, now):
+    """The board fields of one scope: rows and points opened, done, dropped and open at the end.
+    closed is done plus dropped, the sum the week line and older records read."""
+    pts = lambda rows: sum(r["weight"] for r in rows)
+    done = [r for r in left if r["state"] == "done"]
+    dropped = [r for r in left if r["state"] != "done"]
+    still = [r for r in now if r["state"] == "open"]
+    return {"opened": len(opened), "closed": len(left), "done": len(done), "dropped": len(dropped),
+            "open_end": len(still), "opened_pts": pts(opened), "done_pts": pts(done),
+            "dropped_pts": pts(dropped), "open_pts": pts(still)}
 
 
 def board_flow(start, end):
+    """The day's agent board: rows and points opened, done (closed delivered), dropped (closed
+    undelivered, or gone from every sheet while open) and open at the end, in total and by project.
+    Done is the burn; a cleanup lands in dropped, so it never reads as work done."""
     try:
         was, now = rows_at(start), rows_at(end)
     except OSError as e:
         return None, str(e)
-    is_open = lambda state: state != "x"
     if not was:  # rows have had ids since 2026-11-04: before that there is nothing to join on
-        return {"opened": None, "closed": None, "open_end": sum(map(is_open, now.values())) if now else None}, None
-    opened = [i for i in now if i not in was]
-    closed = ([i for i, s in now.items() if not is_open(s) and is_open(was.get(i, " "))]
-              + [i for i, s in was.items() if i not in now and is_open(s)])
-    return {"opened": len(opened), "closed": len(closed), "open_end": sum(map(is_open, now.values()))}, None
+        still = [r for r in now.values() if r["state"] == "open"]
+        unknown = dict.fromkeys(("opened", "closed", "done", "dropped", "opened_pts", "done_pts", "dropped_pts"))
+        return {**unknown, "open_end": len(still) if now else None,
+                "open_pts": sum(r["weight"] for r in still) if now else None}, None
+    opened = [r for i, r in now.items() if i not in was]
+    # A row leaves the open board by closing today (open at the start, or opened today) or by
+    # leaving every sheet while open, which is a drop whatever it weighed.
+    left = ([r for i, r in now.items() if r["state"] != "open" and was.get(i, {"state": "open"})["state"] == "open"]
+            + [{**r, "state": "dropped"} for i, r in was.items() if i not in now and r["state"] == "open"])
+    flow = flow_of(opened, left, list(now.values()))
+    names = sorted({r["project"] for r in [*opened, *left, *now.values()]})
+    by = [{"project": n, **flow_of([r for r in opened if r["project"] == n], [r for r in left if r["project"] == n],
+                                   [r for r in now.values() if r["project"] == n])} for n in names]
+    by = [b for b in by if b["open_end"] or b["opened"] or b["closed"]]
+    return {**flow, "by_project": sorted(by, key=lambda b: (-b["open_pts"], b["project"]))}, None
 
 
 def phase_flow(start, end):
@@ -589,7 +632,9 @@ def ci(a):
 
 SUM = {"queue.queued": "work.queue.queued", "queue.started": "work.queue.started", "queue.waiting": "work.queue.waiting",
        "queue.done": "work.queue.done", "queue.failed": "work.queue.failed", "board.opened": "work.board.opened",
-       "board.closed": "work.board.closed", "phases.ticked": "work.phases.ticked", "tokens.context": "agents.tokens.context",
+       "board.closed": "work.board.closed", "board.done": "work.board.done", "board.dropped": "work.board.dropped",
+       "board.opened_pts": "work.board.opened_pts", "board.done_pts": "work.board.done_pts",
+       "board.dropped_pts": "work.board.dropped_pts", "phases.ticked": "work.phases.ticked", "tokens.context": "agents.tokens.context",
        "merged_prs": "agents.merged_prs", "cost_usd": "agents.cost_usd", "stages.needs_min": "work.stages.stages.NEEDS.minutes",
        "stages.ask_min": "work.stages.stages.NEEDS:ask.minutes", "stages.prompt_min": "work.stages.stages.NEEDS:prompt.minutes",
        "stages.plan_approval_min": "work.stages.stages.NEEDS:plan_approval.minutes",
@@ -599,7 +644,7 @@ SUM = {"queue.queued": "work.queue.queued", "queue.started": "work.queue.started
 MEDIAN = {"queue.lead_p50_min": "work.queue.lead_minutes.p50", "queue.lead_p90_min": "work.queue.lead_minutes.p90",
           "queue.wait_p50_min": "work.queue.wait_minutes.p50", "queue.wait_p90_min": "work.queue.wait_minutes.p90",
           "stages.pr_to_merge_p50_min": "work.stages.prs.open_to_merged.p50"}
-LAST = {"board.open": "work.board.open_end", "asks.open": "agents.asks.open", "asks.age_h_max": "agents.asks.age_h_max"}
+LAST = {"board.open": "work.board.open_end", "board.open_pts": "work.board.open_pts", "asks.open": "agents.asks.open", "asks.age_h_max": "agents.asks.age_h_max"}
 CI_SUM = {"runs": "runs", "red": "red", "main_red": "main.red", "runner_hours": "cost.hours.pool", "regated": "cost.regates.gates",
           "regated_branches": "cost.regates.branches_regated", "reruns": "cost.reruns"}
 CI_MEDIAN = {"gate_wall_p50_min": "cost.gate.wall.p50", "gate_wall_p90_min": "cost.gate.wall.p90",
@@ -712,7 +757,11 @@ def line_of(week):
     parts = [f"{cell('merged')['value'] or 0:g} merged{signed(cell('merged')['delta'], plain)}"]
     if cell("queue.done")["value"] is not None:
         parts.append(f"{cell('queue.done')['value']:g} queue items done{signed(cell('queue.done')['delta'], plain)}")
-    if cell("board.opened")["value"] is not None and cell("board.closed")["value"] is not None:
+    if cell("board.opened")["value"] is not None and cell("board.done")["value"] is not None:
+        v = lambda k: f"{cell(k)['value']:g}"
+        parts.append(f"board +{v('board.opened')} ({v('board.opened_pts')} pts), {v('board.done')} done ({v('board.done_pts')} pts),"
+                     f" {v('board.dropped')} dropped ({v('board.dropped_pts')} pts)")
+    elif cell("board.opened")["value"] is not None and cell("board.closed")["value"] is not None:
         parts.append(f"board +{cell('board.opened')['value']:g}/-{cell('board.closed')['value']:g}")
     if cell("cost_usd")["value"] is not None:
         parts.append(f"{usd(cell('cost_usd')['value'])}{signed(cell('cost_usd')['delta'], usd)}")
