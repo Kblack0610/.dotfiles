@@ -124,6 +124,9 @@ fi
 #                     every test waited on that disk, shared by dozens of pods (ar-5740, the note
 #                     in tests.yml). exec because the sandboxes run their stubs from there; HOME
 #                     (/tmp/testhome, the image's) gets its own, as /tmp's hides the image's dir.
+#                     It is memory charged to the job, so each has a size: a test past it fails
+#                     on ENOSPC rather than the pod on OOM. The largest known writer is
+#                     dotfiles_deploy's copy of the tracked text tree, about 30 MB.
 tmpfs_opts=rw,exec,nosuid,nodev,mode=1777
 run_args=(
   --rm --init
@@ -131,8 +134,8 @@ run_args=(
   --user "$(id -u):$(id -g)"
   --env "USER=$(id -un)"
   --shm-size 1g
-  --tmpfs "/tmp:$tmpfs_opts"
-  --tmpfs "/tmp/testhome:$tmpfs_opts"
+  --tmpfs "/tmp:$tmpfs_opts,size=1g"
+  --tmpfs "/tmp/testhome:$tmpfs_opts,size=256m"
   --volume "$REPO:/work"
   --workdir /work
 )
