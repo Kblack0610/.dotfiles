@@ -49,6 +49,7 @@ const UNFOLD_CSS = "[data-pin][hidden], [data-in][hidden] { display: block !impo
 const DATA_ROW = "tr:has(> td):not(.tfilters)";
 const TABS = [
   { tab: "home", row: `#home tr.jr` },
+  { tab: "reports", row: `#reports tr.wr` },
   { tab: "queue", row: `#queue tr.qr` },
   { tab: "projects", row: `#p-cards tr.jr` },
   { tab: "projects", name: "projects-all", inner: "all", row: `#p-all tr.jr` },

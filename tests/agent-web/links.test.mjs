@@ -15,7 +15,7 @@ const dir = new URL("../../.local/src/agent-web/static/", import.meta.url);
 // The tabs a hash can name, current and retired (app.js TAB_NAMES and RETIRED_TABS), then `/`,
 // `?` or the closing quote: `"#queue?q="`, `` `#sessions/sessions/${id}` ``, `"#home"`. A selector
 // (`"#home .card"`) and a bare `"#" + tag` do not match.
-const TABS = "home|daily|log|queue|sessions|projects|releases|alerts|infra|schedules|costs|stack|waiting|asks|watch|shepherd|fleet|jobs|ci|machines|today|history|actions|outbox|focus|numbers|board";
+const TABS = "home|daily|reports|log|queue|sessions|projects|releases|alerts|infra|schedules|costs|stack|waiting|asks|watch|shepherd|fleet|jobs|ci|machines|today|history|actions|outbox|focus|numbers|board";
 const LINK = new RegExp(`["'\`]#(?:${TABS})(?:[/?]|["'\`])`, "g");
 
 // file -> {n: lines building a link, by: the phase that removes them, or "keeps: <why>"}.
