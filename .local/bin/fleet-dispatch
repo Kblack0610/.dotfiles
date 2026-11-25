@@ -3237,7 +3237,8 @@ provider_hold_why() {
   echo "a run on $1 ended on a provider refusal, so it takes no start until $(date -d "@$until" "+%F %H:%M")"
 }
 
-# provider_hold_scan -- once a pass: the runs of the last hold window that ended (done, or in review) on
+# provider_hold_scan -- once a pass: the runs of the last hold window that ended (done, in review, or requeued on a
+# provider end, whose end is its requeued: stamp, ar-3463) on
 # an opencode harness with a source, each classified once by item_end into PROVIDER_ENDS. A run that
 # ended `provider` holds its source until its end plus the harness's provider_hold_min
 # (DISPATCH_PROVIDER_HOLD_MIN when it names none). One ledger row a run, dropped once the run is older
@@ -3255,7 +3256,7 @@ provider_hold_scan() {
   done <"$PROVIDER_ENDS"
   while IFS= read -r it; do
     [ -n "$it" ] || continue
-    IFS=$'\t' read -r slug agent file ended sessions reason < <(jq -r '[.slug, .agent, .file // "-", .finished // "-", .sessions // "-", .end_reason // "-"] | @tsv' <<<"$it")
+    IFS=$'\t' read -r slug agent file ended sessions reason < <(jq -r '[.slug, .agent, .file // "-", (if .state == "queued" then .requeued else .finished end) // "-", .sessions // "-", .end_reason // "-"] | @tsv' <<<"$it")
     if [ "$ended" != - ]; then ended=$(date -d "$ended" +%s 2>/dev/null) || continue
     else ended=$(stat -c %Y "$file" 2>/dev/null) || continue; fi
     [ "$ended" -gt $(( now - win * 60 )) ] || continue
@@ -3269,7 +3270,8 @@ provider_hold_scan() {
     [ "$end" != provider ] || hold=$(( ended + $(jq -r --arg h "$agent" --argjson d "$DISPATCH_PROVIDER_HOLD_MIN" '.harnesses[$h].provider_hold_min // $d' "$HARNESSES") * 60 ))
     keep[$key]="$src	$hold"
     [ "$hold" = 0 ] || logline "provider hold: $slug ended on a provider refusal, so $src takes no start until $(date -d "@$hold" "+%F %H:%M")"
-  done < <({ agent-queue list --json --state done --since "$(date -d "-$win minutes" +%F)" 2>/dev/null; agent-queue list --json --state review 2>/dev/null; } |
+  done < <({ agent-queue list --json --state done --since "$(date -d "-$win minutes" +%F)" 2>/dev/null; agent-queue list --json --state review 2>/dev/null
+    agent-queue list --json --state queued 2>/dev/null | jq -c 'select(.end_reason == "provider")'; } |
     jq -c --slurpfile H "$HARNESSES" 'select(.agent != null and ($H[0].harnesses[.agent].source // null) != null and (($H[0].harnesses[.agent].launcher // "") | IN("opencode", "agy")))' 2>/dev/null)
   mkdir -p "${PROVIDER_ENDS%/*}" && for key in "${!keep[@]}"; do [ -z "${keep[$key]}" ] || printf '%s\t%s\n' "$key" "${keep[$key]}"; done >"$PROVIDER_ENDS.tmp" &&
     mv "$PROVIDER_ENDS.tmp" "$PROVIDER_ENDS"
@@ -5169,11 +5171,11 @@ item_rollout() {
 }
 
 # restart_human_item <slug> <item json> <end reason> -- the human's own requeued item keeps its start-now
-# lane (agent-queue start: add's guards, no new bypass), except after a usage limit: a hand start would
-# launch into the same limit, so a pass starts it when there is room. stdin and fd 3 are closed, so the
+# lane (agent-queue start: add's guards, no new bypass), except after a usage limit or a provider refusal: a hand
+# start would launch into the same limit, so a pass starts it when there is room. stdin and fd 3 are closed, so the
 # launch cannot read the reap loop's pipe.
 restart_human_item() {
-  [ "$3" = limit ] || [ "$(jq -r '.from // ""' <<<"$2")" != human ] || agent-queue start "$1" </dev/null 3<&- || true
+  [ "$3" = limit ] || [ "$3" = provider ] || [ "$(jq -r '.from // ""' <<<"$2")" != human ] || agent-queue start "$1" </dev/null 3<&- || true
 }
 
 # after_cleared_since <item json> <time> -> the item's after: item that closed last, when every one is done
@@ -5359,6 +5361,19 @@ settle_item() {
     # #after/ on them (agent-queue return): the queue holds only work that can start. One with no row
     # to go back to fails as below.
     [ "$why" != limit ] || { requeue_blocked "$1" "$2" "the plan's usage limit"; return 0; }
+    # A provider refusal (an opencode or agy source's quota, rate limit or outage) is the source's, not the
+    # item's: it goes back too, and provider_hold_scan holds the source until its window resets, so the
+    # next start waits. DISPATCH_FIX_TRIES bounds it, counted on provider_tries:, so a provider that refuses
+    # every run fails the item instead of starting it once a hold window for good (ar-2991 and ar-2992
+    # failed at the Go 5-hour limit, ar-3463).
+    if [ "$why" = provider ]; then
+      local ptries; ptries=$(jq -r '.provider_tries // 0' <<<"$it"); [[ "$ptries" =~ ^[0-9]+$ ]] || ptries=0
+      if [ "$ptries" -lt "$DISPATCH_FIX_TRIES" ]; then
+        agent-queue set "$1" "provider_tries=$((ptries + 1))" >/dev/null || return 0
+        requeue_blocked "$1" "$2" "a provider refusal, try $((ptries + 1)) of $DISPATCH_FIX_TRIES: its source waits out the provider hold"
+        return 0
+      fi
+    fi
     for after in $(jq -r '.after // ""' <<<"$it"); do
       case "$(item_state "$after")" in queued | running | waiting | review)
         if agent-queue return "$1" --why "session $2 ended before $after, which it waits after, closed: its row waits on it" >/dev/null 2>&1; then

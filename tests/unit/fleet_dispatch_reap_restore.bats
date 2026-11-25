@@ -267,26 +267,41 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   run cmd_reap
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-cx.md)" end_reason)" timeout
   rm -rf "$AGENT_QUEUE_DIR/done"
+  # A provider end goes back to the queue (ar-3463).
   codex_end_item th-prov '{"type":"task_complete","error":{"codex_error_info":"server_overloaded"}}'
   run cmd_reap
-  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-cx.md)" end_reason)" provider
-  rm -rf "$AGENT_QUEUE_DIR/done"
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/queued/*-cx.md)" end_reason)" provider
+  rm -rf "$AGENT_QUEUE_DIR/queued"
   # a variant that carries data is an object keyed by the variant
   codex_end_item th-obj '{"type":"task_complete","error":{"codex_error_info":{"http_connection_failed":{"http_status_code":502}}}}'
   run cmd_reap
-  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-cx.md)" end_reason)" provider
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/queued/*-cx.md)" end_reason)" provider
   run grep -F 'model-lane outcome' "$NOTES_FIXTURE/calls.log"
   # only the timeout rated: it is the run's own length; the rest are counted by their end
   assert_output $'model-lane outcome r-cx unrated --cause cut\nmodel-lane outcome r-cx failed --cause close\nmodel-lane outcome r-cx unrated --cause provider\nmodel-lane outcome r-cx unrated --cause provider'
 }
 
-@test "reap: an opencode run's last assistant row is classified: a quota end is provider, never requeued, and unrated; a key refusal is refused" {
+# ar-3463: ar-2991 and ar-2992 failed at the Go 5-hour limit on 2026-11-18, though nothing about either item was wrong.
+@test "reap: an opencode run's last assistant row is classified: a quota end is provider, unrated and requeued behind its source's hold, DISPATCH_FIX_TRIES times; a key refusal is refused" {
   oc_end_item ses_evalq 'error|provider.quota'
+  run cmd_reap
+  assert_output --partial 'requeued queue item oc (game-agent-1 ended: a provider refusal, try 1 of 2: its source waits out the provider hold)'
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/done/*/*-oc.md 2>/dev/null)" ] || fail "a provider end is not a failure"
+  f=$(ls "$AGENT_QUEUE_DIR"/queued/*-oc.md)
+  assert_equal "$(qfield "$f" end_reason) $(qfield "$f" provider_tries)" 'provider 1'
+  run grep -F 'model-lane outcome' "$NOTES_FIXTURE/calls.log"
+  assert_output 'model-lane outcome r-oc unrated --cause provider'
+  # The requeued run holds its source, so the next start waits out the window instead of meeting the same refusal.
+  provider_hold_scan
+  run provider_hold_why go
+  assert_success
+  # At the cap the same end fails: a provider that refuses every run does not loop.
+  rm -f "$f"
+  oc_end_item ses_evalq2 'error|provider.quota'
+  agent-queue set oc provider_tries=2 >/dev/null
   run cmd_reap
   f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-oc.md)
   assert_equal "$(qfield "$f" status) $(qfield "$f" end_reason)" 'failed provider'
-  run grep -F 'model-lane outcome' "$NOTES_FIXTURE/calls.log"
-  assert_output 'model-lane outcome r-oc unrated --cause provider'
   rm -rf "$AGENT_QUEUE_DIR/done"
   oc_end_item ses_evala 'error|provider.auth'
   run cmd_reap
@@ -313,11 +328,11 @@ claude_end_item() {
   claude_end_item cl-prov '{"type":"user","timestamp":"2026-11-24T09:00:00.000Z","message":{"content":"go"}}' \
     '{"type":"assistant","timestamp":"2026-11-24T09:01:00.000Z","isApiErrorMessage":true,"message":{"content":[{"type":"text","text":"API Error: 529 overloaded"}]}}'
   run cmd_reap
-  f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-cl.md)
-  assert_equal "$(qfield "$f" status) $(qfield "$f" end_reason)" 'failed provider'
+  f=$(ls "$AGENT_QUEUE_DIR"/queued/*-cl.md)
+  assert_equal "$(qfield "$f" end_reason)" provider
   run grep -F 'model-lane outcome' "$NOTES_FIXTURE/calls.log"
   assert_output 'model-lane outcome r-cl unrated --cause provider'
-  rm -rf "$AGENT_QUEUE_DIR/done"
+  rm -rf "$AGENT_QUEUE_DIR/queued"
   : > "$NOTES_FIXTURE/calls.log"
   # a later message makes the error not the last one: no cause, so no end_reason
   claude_end_item cl-fine '{"type":"assistant","timestamp":"2026-11-24T09:01:00.000Z","isApiErrorMessage":true,"message":{"content":[{"type":"text","text":"API Error: 529 overloaded"}]}}' \
