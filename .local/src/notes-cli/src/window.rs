@@ -1643,15 +1643,16 @@ pub(crate) enum Route {
     Next(V),
 }
 
-/// Route a new row `line` into `window`, the [`frozen_window`] of its project. `source` is the
-/// writer's own interrupt signal: a person at a terminal, or a human's want channel. A red or
-/// anything urgent says so on the row (`#interrupt`, `#urgent`).
+/// Route a new row `line` into `window`, the [`frozen_window`] of its project. Only the row says
+/// it is an interrupt: `#interrupt`, `#urgent`, or aimed at the open version by hand. Who files it
+/// does not: a `#high #requested` want from the human's capture joined a locked CI-and-release
+/// window that way (ucp-2807, 2026-11-20, ar-3940), so every other new row goes to the next window.
 ///
 /// A row aimed later keeps its aim, and one aimed at the open version by hand is pushed into
 /// the window, so it goes in as an interrupt the score counts. An urgent row that `waits` (it
 /// is [`waiting`] at the window's end) goes to the next window unless aimed at the open one by
 /// hand: a wait would only carry it at the cut, so it ranks in the window it can ship in (ar-3833).
-fn route(window: Option<V>, line: &str, source: bool, waits: bool) -> Route {
+fn route(window: Option<V>, line: &str, waits: bool) -> Route {
     let Some(c) = window else {
         return Route::Open;
     };
@@ -1663,18 +1664,13 @@ fn route(window: Option<V>, line: &str, source: bool, waits: bool) -> Route {
     let urgent = md::task_priority(line) == Some("#urgent");
     if urgent && waits && !aimed {
         next
-    } else if source || aimed || has_interrupt(line) || urgent {
+    } else if aimed || has_interrupt(line) || urgent {
         Route::Interrupt
     } else {
         next
     }
 }
 
-/// Is `want` (`--want`'s channel) the human's own ask? `#requested` rides on every want, so
-/// it cannot be the signal (`projects::MACHINE_WANTS`).
-pub(crate) fn human_channel(want: &str) -> bool {
-    !projects::MACHINE_WANTS.contains(&want)
-}
 /// `line` routed: tagged for the interrupt lane or aimed at the next window, where it is no
 /// interrupt ([`holds`] keeps every `#interrupt` row in the open window) and not urgent (`retag`).
 fn apply(line: &str, route: &Route) -> String {
@@ -1686,13 +1682,8 @@ fn apply(line: &str, route: &Route) -> String {
 }
 
 /// `block` as project `dir` (open version `cur`) takes it: in a frozen window each open row is
-/// tagged for the interrupt lane when `interrupt`, else aimed at the next window.
-pub(crate) fn admit(
-    dir: &Path,
-    cur: Option<V>,
-    block: Vec<String>,
-    interrupt: bool,
-) -> Vec<String> {
+/// tagged for the interrupt lane when [`route`] says so, else aimed at the next window.
+pub(crate) fn admit(dir: &Path, cur: Option<V>, block: Vec<String>) -> Vec<String> {
     let window = frozen_window(dir, cur);
     // What a row waits on, read once a filing: the window's end and the rows open on its sheets.
     let ends = window.map(|c| {
@@ -1709,7 +1700,7 @@ pub(crate) fn admit(
                 let waits = ends
                     .as_ref()
                     .is_some_and(|(today, end, open)| waiting(&l, *today, *end, open, &none));
-                apply(&l, &route(window, &l, interrupt, waits))
+                apply(&l, &route(window, &l, waits))
             } else {
                 l
             }
@@ -2528,12 +2519,12 @@ mod tests {
         let row = "- [ ] fix(ui): new bug #high #c1119 <!-- id:db-10 -->";
         // NEGATIVE CONTROL: no snapshot yet, so the window is open to every add.
         assert_eq!(
-            route(frozen_window(&dir, cur), row, false, false),
+            route(frozen_window(&dir, cur), row, false),
             Route::Open
         );
         let ix = Index::of(&dir, cur);
         record(&dir, "demo", (0, 2, 0), day("2026-11-19"), None, &ix).unwrap();
-        let next = route(frozen_window(&dir, cur), row, false, false);
+        let next = route(frozen_window(&dir, cur), row, false);
         assert_eq!(next, Route::Next((0, 2, 1)));
         assert!(
             apply(row, &next).contains("#v0.2.1"),
@@ -2541,21 +2532,17 @@ mod tests {
             apply(row, &next)
         );
         assert_eq!(
-            route(frozen_window(&dir, cur), row, true, false),
-            Route::Interrupt
-        );
-        assert_eq!(
             apply(row, &Route::Interrupt),
             "- [ ] fix(ui): new bug #high #c1119 #interrupt <!-- id:db-10 -->"
         );
         let urgent = "- [ ] fix(ui): main red #urgent";
         assert_eq!(
-            route(frozen_window(&dir, cur), urgent, false, false),
+            route(frozen_window(&dir, cur), urgent, false),
             Route::Interrupt
         );
         let tagged = "- [ ] fix(ui): red #interrupt";
         assert_eq!(
-            route(frozen_window(&dir, cur), tagged, false, false),
+            route(frozen_window(&dir, cur), tagged, false),
             Route::Interrupt
         );
         // A row aimed later and an epic keep their place; one aimed at the open version by
@@ -2565,7 +2552,6 @@ mod tests {
                 frozen_window(&dir, cur),
                 "- [ ] feat(ui): x #v0.4.0",
                 false,
-                false
             ),
             Route::Open
         );
@@ -2574,7 +2560,6 @@ mod tests {
                 frozen_window(&dir, cur),
                 "- [ ] feat(ui): x #v0.2.0",
                 false,
-                false
             ),
             Route::Interrupt
         );
@@ -2583,7 +2568,6 @@ mod tests {
                 frozen_window(&dir, cur),
                 "- [ ] epic(ui): big",
                 false,
-                false
             ),
             Route::Open
         );
@@ -2591,7 +2575,7 @@ mod tests {
         let readme = fs::read_to_string(dir.join("README.md")).unwrap();
         fs::write(dir.join("README.md"), readme.replace(" #prio/focus", "")).unwrap();
         assert_eq!(
-            route(frozen_window(&dir, cur), row, false, false),
+            route(frozen_window(&dir, cur), row, false),
             Route::Open
         );
         let _ = fs::remove_dir_all(&dir);
@@ -2628,7 +2612,7 @@ mod tests {
             format!("{} #v0.2.0", gate(30)),
             format!("{} #interrupt", gate(30)),
         ];
-        let out = admit(&dir, cur, rows, true);
+        let out = admit(&dir, cur, rows);
         // Sent on, a row is neither urgent nor an interrupt, which `holds` would keep here.
         let next = |l: &str| {
             l.contains("#v0.2.1")

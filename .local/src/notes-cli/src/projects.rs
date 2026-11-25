@@ -1411,10 +1411,6 @@ pub(crate) const WANT_CHANNELS: &[&str] = &[
     "outbox", "focus", "voice", "request", "ask", "meeting", "human",
 ];
 
-/// The [`WANT_CHANNELS`] a machine writes by, not the human: `outbox` (a session's follow-up)
-/// and `ask` (an ask sweep's row). A release window's interrupt lane takes every other one.
-pub(crate) const MACHINE_WANTS: &[&str] = &["outbox", "ask"];
-
 /// `--want`'s value, or the channels there are.
 pub(crate) fn want_channel(s: &str) -> anyhow::Result<&'static str> {
     WANT_CHANNELS

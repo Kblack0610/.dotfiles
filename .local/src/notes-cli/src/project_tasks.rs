@@ -543,10 +543,8 @@ pub(crate) fn add_via(
             );
         }
     }
-    // A frozen release window takes a new row only through its interrupt lane.
-    // A person at a terminal is the human's own new ask.
-    let interrupt = writer.person || want.is_some_and(crate::window::human_channel);
-    let block = crate::window::admit(&proj_dir, cur, block, interrupt);
+    // A frozen release window takes a new row only through its interrupt lane (window::route).
+    let block = crate::window::admit(&proj_dir, cur, block);
     let new = md::insert_under_heading(&content, sheet::TASKS, &block);
     write_sheet(&path, &new)?;
     note_ids(&proj_dir, &block)?;
@@ -1582,11 +1580,8 @@ fn file_via(
                 eprintln!("{why}");
                 return Ok(crate::gate::EXIT_GATED);
             }
-            // A frozen release window takes these rows only through its interrupt lane: the
-            // human's own words from their sheet's inbox, or a want by a human channel, are one.
-            let interrupt = (lane == Lane::Human && !md::agent_tag(&line.text))
-                || how.want.is_some_and(crate::window::human_channel);
-            let block = crate::window::admit(&dest_proj, cur, block, interrupt);
+            // A frozen release window takes these rows only through its interrupt lane (window::route).
+            let block = crate::window::admit(&dest_proj, cur, block);
             (md::insert_under_heading(&base, sheet::TASKS, &block), block)
         }
         How::Rows { .. } | How::Dup(_) => join_row(
@@ -6159,7 +6154,7 @@ mod inbox_tests {
     }
 
     #[test]
-    fn a_frozen_window_takes_a_session_add_next_time_and_a_person_add_now() {
+    fn a_frozen_window_takes_an_add_next_time_unless_the_row_says_interrupt() {
         let v = vault(
             "window",
             "",
@@ -6220,6 +6215,7 @@ mod inbox_tests {
         assert_eq!(add_as("fix(d): a red #interrupt", None, &session), 0);
         assert_eq!(add_as("fix(e): voice ask", Some("voice"), &session), 0);
         assert_eq!(add_as("fix(f): a follow-up", Some("outbox"), &session), 0);
+        assert_eq!(add_as("fix(h): voice red #interrupt", Some("voice"), &session), 0);
         let s = v.read();
         let tags = |head: &str| {
             let row = s
@@ -6228,15 +6224,17 @@ mod inbox_tests {
                 .unwrap_or_else(|| panic!("{s}"));
             (row.contains("#interrupt"), row.contains("#v0.1.1"))
         };
-        // NEGATIVE CONTROL: an agent add with no interrupt signal waits for the next window,
-        // and so does an outbox follow-up.
+        // Only the row says it is an interrupt: who files it does not (ar-3940). An agent add, an
+        // outbox follow-up, a command filing for itself (the playtest pass), the human at a
+        // terminal and a voice want all wait for the next window.
         assert_eq!(tags("fix(b): mid-window add"), (false, true), "{s}");
         assert_eq!(tags("fix(f): a follow-up"), (false, true), "{s}");
-        // and so does a command filing for itself, such as the playtest pass.
         assert_eq!(tags("fix(g): play build 12"), (false, true), "{s}");
-        assert_eq!(tags("fix(c): the human's ask"), (true, false), "{s}");
+        assert_eq!(tags("fix(c): the human's ask"), (false, true), "{s}");
+        assert_eq!(tags("fix(e): voice ask"), (false, true), "{s}");
+        // NEGATIVE CONTROL: a row that says it (#interrupt) goes in, whoever files it.
         assert_eq!(tags("fix(d): a red"), (true, false), "{s}");
-        assert_eq!(tags("fix(e): voice ask"), (true, false), "{s}");
+        assert_eq!(tags("fix(h): voice red"), (true, false), "{s}");
         assert_eq!(tags("fix(a): committed row"), (false, false), "{s}");
     }
 
