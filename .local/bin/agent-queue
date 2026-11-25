@@ -2033,7 +2033,7 @@ cmd_add() {
       [ -z "$plan_row" ] || { echo "agent-queue: its row $plan_row is left where it is: dispatch promotes it" >&2; exit "$AQ_EX_HELD"; }
       # Resolved as every add is (dotfiles -> agent-runtime): unresolved, a repo whose work counts on an
       # owner had no board, and every reap of a dotfiles plan failed and was retried each pass (ar-2787).
-      local pname="${project:-$(project_of_cwd)}" pproject ptitle="plan $(basename "$planf" .md): run its open phases"
+      local pname="${project:-$(project_of_cwd)}" pproject ptitle="$(plan_row_title "$planf")"
       [ -n "$pname" ] || die "no --project, and this directory is not a repo project-map knows"
       pproject="$(project_resolve "$pname")" || die "unknown project: $pname (no checkout for it in $AQ_MAP)"
       lock; admission_log "$from" "$pproject" "$(basename "$planf" .md)" "$ptitle" "" "" board-only; unlock

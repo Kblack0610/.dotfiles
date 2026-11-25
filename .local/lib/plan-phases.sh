@@ -275,6 +275,23 @@ plan_row_task() {
   printf "Run the open phases of the approved plan %s in order, one PR each, marking each done in the plan's ## Phases." "$1"
 }
 
+# plan_row_title <plan file> -> the title of that row: the plan's first `# ` heading, then `(plan <slug>)`,
+# the heading cut at a word so the whole fits the agent board's 80-character title (notes-cli
+# TITLE_MAX); `plan <slug>: run its open phases` for a plan with no heading. The slug stays whole:
+# ask-sweep finds a plan's row by it. `#`, `<` and `>` are dropped, or the heading would add tags or
+# a marker. Why: slugs are session names ("swirling-sprouting-knuth"), and the human could not tell
+# what a row was for (2026-11-24, ar-5348).
+plan_row_title() {
+  local slug h room
+  slug=$(basename "$1" .md)
+  h=$(sed -n 's/^# \{1,\}//p' "$1" 2>/dev/null | head -n 1 | LC_ALL=C tr -d '#<>' | LC_ALL=C tr -cd '\40-\176' | sed 's/  */ /g; s/^ //; s/ $//')
+  if [ -z "$h" ]; then printf 'plan %s: run its open phases\n' "$slug"; return 0; fi
+  room=$((80 - ${#slug} - 8))
+  [ "$room" -ge 20 ] || room=20
+  if [ "${#h}" -gt "$room" ]; then h="${h:0:room}"; h="${h% *}"; fi
+  printf '%s (plan %s)\n' "$h" "$slug"
+}
+
 # plan_row_plan <text> -> the plan a plan row's brief names (plan_row_task), whether or not that file
 # still exists (a caller that queues it checks); nothing for any other text.
 plan_row_plan() {

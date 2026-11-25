@@ -6843,6 +6843,19 @@ JSONL
   [ "$(jq -r .bucket <<<"$output")" = LANDED ]
 }
 
+@test "plan_row_title: the heading leads, cut to 80 with the slug whole; no heading keeps the old title (ar-5348)" {
+  . "$REPO_ROOT/.local/lib/plan-phases.sh"
+  printf -- '---\nx: y\n---\n# Fix #12 the <UPS> shutdown\n\n## Phases\n# not this\n' > "$SANDBOX/swirling-knuth.md"
+  [ "$(plan_row_title "$SANDBOX/swirling-knuth.md")" = "Fix 12 the UPS shutdown (plan swirling-knuth)" ]
+  printf '# %s\n' "$(printf 'word %.0s' $(seq 1 30))" > "$SANDBOX/a-long-session-slug-name.md"
+  t="$(plan_row_title "$SANDBOX/a-long-session-slug-name.md")"
+  [ "${#t}" -le 80 ]
+  [[ "$t" == "word word "*" (plan a-long-session-slug-name)" ]]
+  # NEGATIVE CONTROL: a plan with no heading keeps the title ask-sweep and older rows use.
+  printf '## Phases\n\n- [ ] x\n' > "$SANDBOX/bare.md"
+  [ "$(plan_row_title "$SANDBOX/bare.md")" = "plan bare: run its open phases" ]
+}
+
 @test "plan_pointer: a stub is short, takes a zero-padded N, and ends the path at .md" {
   . "$REPO_ROOT/.local/lib/plan-phases.sh"
   printf '# canon\n' > "$SANDBOX/canon.md"
