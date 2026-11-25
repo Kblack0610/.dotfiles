@@ -2046,13 +2046,15 @@ SH
     printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"w1","content":"Command running in background with ID: b1. Output is being written to: %s. You will be notified"}]}}\n' "$out"
   } > "$SANDBOX/t.jsonl"
   printf 'sleep 300\n' > "$SANDBOX/gate-and-land.sh"
-  # no live gate: the loop is a plain job
+  # no live gate: the loop waits on a gate that has ended, and the reason says why it never exits (ar-5157)
   run watched_gate "$SANDBOX/t.jsonl"
-  assert_output ''
+  assert_output 'ended'
   PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" PANEL_STATUS=shell PANEL_JOB=jobs PANEL_IDLE_S=$((200 * 60)) panel "$SANDBOX/wt" "$SANDBOX/plan.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
-  jq -r .reason <<<"$output" | grep -q 'not a gate or test'
+  [ "$(jq -r .open_job <<<"$output")" = "ended" ]
+  jq -r .reason <<<"$output" | grep -q 'pgrep -f matches the loop.s own shell'
+  ! jq -r .reason <<<"$output" | grep -q 'not a gate or test'
   # gate <PR>: a gate-and-land.sh of its own session (setsid: teardown kills the group and its sleep), up before it returns
   gate() {
     (exec setsid bash "$SANDBOX/gate-and-land.sh" "$1") >/dev/null 2>&1 3>&- &
@@ -2066,13 +2068,13 @@ SH
   LIVE_PIDS="${LIVE_PIDS:-} -$!"
   until tr "\0" " " < "/proc/$!/cmdline" 2>/dev/null | grep -q zz-land-2121; do kill -0 "$!" 2>/dev/null || fail "claude stub exited"; done
   run watched_gate "$SANDBOX/t.jsonl"
-  assert_output ''
+  assert_output 'ended'
   jq -cn --arg c "until ! pgrep -f zz-land-2121; do sleep 20; done" \
     '{type: "assistant", message: {content: [{type: "tool_use", id: "w1", name: "Bash", input: {command: $c}}]}}' > "$SANDBOX/t2.jsonl"
   printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"w1","content":"Output is being written to: %s. x"}]}}\n' "$out" >> "$SANDBOX/t2.jsonl"
   export FLEET_QUEUE_GATES=zz-land-2121   # a text no host process holds
   run watched_gate "$SANDBOX/t2.jsonl"
-  assert_output ''
+  assert_output 'ended'
   # the same text on a process that is not a claude is a gate
   (exec setsid bash "$SANDBOX/stub.sh" zz-land-2121 1) >/dev/null 2>&1 3>&- &
   LIVE_PIDS="${LIVE_PIDS:-} -$!"
@@ -2092,6 +2094,52 @@ SH
   printf '{"type":"user","message":{"content":"<task-notification>\\n<output-file>%s</output-file>\\n<status>completed</status>"}}\n' "$out" >> "$SANDBOX/t.jsonl"
   run watched_gate "$SANDBOX/t.jsonl"
   assert_output ''
+}
+
+@test "a bare pgrep loop counts only a gate in its own checkout, and reads ended once that gate is gone (ar-5157)" {
+  # 2026-11-24 unity-core-playground-agent-22 sat 2h in `while pgrep -f gate-and-land` after its gate exited red: the
+  # pattern matches the Bash tool's own shell, so the loop never exits, and it matches every other session's gate too.
+  mkdir -p "$SANDBOX/tasks" "$SANDBOX/wt/sub" "$SANDBOX/other"
+  git -C "$SANDBOX/wt" init -q
+  local out="$SANDBOX/tasks/b1.output"; : > "$out"
+  # loop <file> <pattern>: a transcript whose one open background task is a pgrep loop on <pattern>
+  loop() {
+    {
+      jq -cn --arg c "while pgrep -f $2 >/dev/null; do sleep 20; done; tail -n 25 /tmp/gl.log" \
+        '{type: "assistant", message: {content: [{type: "tool_use", id: "w1", name: "Bash", input: {command: $c}}]}}'
+      printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"w1","content":"Output is being written to: %s. x"}]}}\n' "$out"
+    } > "$1"
+  }
+  loop "$SANDBOX/t.jsonl" zz-gl-5157        # matches the text: the incident's spelling
+  loop "$SANDBOX/t3.jsonl" zz-gl-5157.sh    # the bare text itself
+  loop "$SANDBOX/t4.jsonl" vite             # names no gate
+  export FLEET_QUEUE_GATES='zz-gl-5157.sh|agent-land'
+  printf '#!/usr/bin/env bash\nsleep 300\n' > "$SANDBOX/zz-gl-5157.sh"
+  # gate_in <dir> <n>: a zz-gl-5157.sh running with <dir> as its cwd, up before it returns
+  gate_in() {
+    (cd "$1" && exec setsid bash "$SANDBOX/zz-gl-5157.sh" "$2") >/dev/null 2>&1 3>&- &
+    LIVE_PIDS="${LIVE_PIDS:-} -$!"
+    until tr "\0" " " < "/proc/$!/cmdline" 2>/dev/null | grep -q "zz-gl-5157.sh $2"; do kill -0 "$!" 2>/dev/null || fail "gate $2 exited"; done
+  }
+  run watched_gate "$SANDBOX/t.jsonl" "$SANDBOX/wt"
+  assert_output 'ended'
+  run watched_gate "$SANDBOX/t4.jsonl" "$SANDBOX/wt"
+  assert_output ''
+  # negative control: another session's gate (cwd elsewhere) is not this loop's wait, in either spelling
+  gate_in "$SANDBOX/other" 1
+  run watched_gate "$SANDBOX/t.jsonl" "$SANDBOX/wt"
+  assert_output 'ended'
+  run watched_gate "$SANDBOX/t3.jsonl" "$SANDBOX/wt"
+  assert_output 'ended'
+  # with no cwd to scope it, any live gate counts, as before
+  run watched_gate "$SANDBOX/t.jsonl"
+  assert_output 'queue'
+  # the session's own gate, started at its checkout's root while the session sits in a subdirectory: its wait
+  gate_in "$SANDBOX/wt" 2
+  run watched_gate "$SANDBOX/t.jsonl" "$SANDBOX/wt/sub"
+  assert_output 'queue'
+  run watched_gate "$SANDBOX/t3.jsonl" "$SANDBOX/wt/sub"
+  assert_output 'queue'
 }
 
 @test "pgrep_pattern reads the literal pattern after pgrep, and nothing for one the shell expands (ar-2121)" {
@@ -6841,6 +6889,26 @@ JSONL
   stub "Phase 3 of $SANDBOX/plan.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+}
+
+@test "plan_row_title: the heading leads, cut to 80 with the slug whole; no heading keeps the old title (ar-5348)" {
+  . "$REPO_ROOT/.local/lib/plan-phases.sh"
+  printf -- '---\n# a frontmatter comment\n---\n```sh\n# a shell comment\n```\n# Fix #12 the <UPS> shutdown\n\n## Phases\n# not this\n' > "$SANDBOX/swirling-knuth.md"
+  [ "$(plan_row_title "$SANDBOX/swirling-knuth.md")" = "Fix 12 the UPS shutdown (plan swirling-knuth)" ]
+  printf '# %s\n' "$(printf 'word %.0s' $(seq 1 30))" > "$SANDBOX/a-long-session-slug-name.md"
+  t="$(plan_row_title "$SANDBOX/a-long-session-slug-name.md")"
+  [ "${#t}" -le 80 ]
+  [[ "$t" == "word word "*" (plan a-long-session-slug-name)" ]]
+  # A cut that ends on punctuation drops it.
+  printf '# %s: more words follow here\n' "$(printf 'x%.0s' $(seq 1 47))" > "$SANDBOX/a-long-session-slug-name.md"
+  [ "$(plan_row_title "$SANDBOX/a-long-session-slug-name.md")" = "$(printf 'x%.0s' $(seq 1 47)) (plan a-long-session-slug-name)" ]
+  # A slug too long to leave room for a heading keeps it first, where no cut reaches it.
+  slug=a-pasted-request-about-the-platform-feature-iridescent-moon
+  printf '# A heading\n' > "$SANDBOX/$slug.md"
+  [ "$(plan_row_title "$SANDBOX/$slug.md")" = "plan $slug: run its open phases" ]
+  # NEGATIVE CONTROL: a plan with no heading keeps the title ask-sweep and older rows use.
+  printf '## Phases\n\n- [ ] x\n' > "$SANDBOX/bare.md"
+  [ "$(plan_row_title "$SANDBOX/bare.md")" = "plan bare: run its open phases" ]
 }
 
 @test "plan_pointer: a stub is short, takes a zero-padded N, and ends the path at .md" {
