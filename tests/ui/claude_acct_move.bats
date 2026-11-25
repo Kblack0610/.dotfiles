@@ -85,10 +85,10 @@ registered() {
 
 @test "a claude under a shell exits to it and the resume is typed there" {
   # Quarantined through 2026-12-08 and runs again by itself on 12-09 (ci.md rule 2; owner: the
-  # agent-runtime row "fix(tests): ui/claude_acct_move.bats 5 ... flakes", from ar-5813): on
-  # dotfiles#3616's run 45697873628 the resumed claude did not register on alt inside 10s, and the
-  # same diff passed on run 45692373174.
-  [[ "$(date -u +%F)" > 2026-12-08 ]] || skip "quarantined through 2026-12-08: the resume typed into the shell can fail to register on alt (ar-5813)"
+  # agent-runtime row ar-6213, "fix(tests): ui/claude_acct_move.bats flakes ..."): on dotfiles#3616's
+  # run 45697873628 the resumed claude did not register on alt inside 10s, and the same diff passed
+  # on run 45692373174.
+  [[ "$(date -u +%F)" > 2026-12-08 ]] || skip "quarantined through 2026-12-08: the resume typed into the shell can fail to register on alt (ar-6213)"
   t new-session -d -s agent-s -c "$HOME/wt" "bash --norc --noprofile"
   t send-keys -t '=agent-s:' -l 'FAKE_STATUS=shell FAKE_DIALOG=1 claude --dangerously-skip-permissions'
   t send-keys -t '=agent-s:' Enter
