@@ -4960,19 +4960,17 @@ upsert_why() {
 # of that row, its children moving under it; a twin being done, or one with no id, is left and said.
 # Leaves the counts in UPSERT_ADDED, UPSERT_EDITED, UPSERT_REOPENED and UPSERT_DROPPED and the failed
 # keys in UPSERT_FAILED, which upsert_report reports FAILED, so every caller ends with upsert_report;
-# status 1 only when the board cannot be read or the upsert lock stays held.
+# status 1 only when the board cannot be read, 2 when the upsert lock stays held (nothing is written).
 # The read of the board and the writes after it are one section under BENCH_UPSERT_LOCK: the timed
 # runner and every dispatch pass run triage, and two of them reading before either added filed the
 # same key twice, then dropped one as a dup (2026-11-25: 45 same-day dup drops of check rows, ar-6078).
-# A tripped watch or alert whose row is closed has it reopened with the trip as a detail line,
-# so the trip is history on the one row, never a row of its own.
+# A key whose row closed within the board feed's window is reopened with the red as a detail line,
+# so the trip is history on that row, not a row of its own.
 board_upsert() {
-  local board closed p text pri why have hid twin id rc added=0 edited=0 reopened=0 dropped=0 failed=() twins=() trip=() ufd
+  local board closed p text pri why have hid twin id rc added=0 edited=0 reopened=0 dropped=0 failed=() twins=() trip=()
   UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_DROPPED=0; UPSERT_FAILED=
-  mkdir -p "${BENCH_UPSERT_LOCK%/*}" 2>/dev/null
-  exec {ufd}>>"$BENCH_UPSERT_LOCK" && flock -w "$BENCH_UPSERT_LOCK_WAIT" "$ufd" \
-    || { exec {ufd}>&-; report_outcome FAILED "board upsert lock $BENCH_UPSERT_LOCK held for ${BENCH_UPSERT_LOCK_WAIT}s by another filer"; return 1; }
-  board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { exec {ufd}>&-; report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
+  upsert_lock_take || { report_outcome FAILED "$UPSERT_LOCK_WHY"; return 2; }
+  board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { upsert_lock_drop; report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
   closed=$(upsert_closed)
   while IFS=$'\t' read -r p text pri; do
     [[ "$text" == *'#size/'* ]] || text+=" #size/s"
@@ -5002,7 +5000,7 @@ board_upsert() {
     done
     id=; [ -n "$have" ] || id=$(awk -F'\t' -v p="${p,,}" 'index($2, p) == 1 { print $1; exit }' <<<"$closed")
     if [ -n "$id" ]; then
-      trip=(); case "$p" in 'check(watch): '*|'check(alert): '*) trip=(--detail "$(date -d "@$(now)" +%F) tripped again after it closed") ;; esac
+      trip=(--detail "$(date -d "@$(now)" +%F) red again after it closed")
       if $BENCH_NOTES_CMD ptask "$KPI_BOARD" reopen "$id" --why "fleet-bench: $p red again" >/dev/null; then
         if $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent edit "$id" --text "$text" "${trip[@]}" >/dev/null; then
           reopened=$((reopened + 1))
@@ -5029,10 +5027,25 @@ board_upsert() {
       fi
     fi
   done <<<"$1"
-  exec {ufd}>&-
+  upsert_lock_drop
   UPSERT_ADDED=$added; UPSERT_EDITED=$edited; UPSERT_REOPENED=$reopened; UPSERT_DROPPED=$dropped
   UPSERT_FAILED=$(IFS=';'; echo "${failed[*]}")
 }
+
+# upsert_lock_take / upsert_lock_drop: the one process-wide lock on filing rows (BENCH_UPSERT_LOCK),
+# held by board_upsert and triage_human around their read-then-add, so two triage runs (the timed
+# runner and a dispatch pass) never both find a key missing and both file it. rc 1 when the lock is
+# held past BENCH_UPSERT_LOCK_WAIT, 2 when it cannot be opened; UPSERT_LOCK_WHY says which. A caller
+# never takes it twice (flock on a second descriptor of one file would wait on itself).
+upsert_lock_take() {
+  mkdir -p "${BENCH_UPSERT_LOCK%/*}" 2>/dev/null
+  exec {UPSERT_LOCK_FD}>>"$BENCH_UPSERT_LOCK" 2>/dev/null || { UPSERT_LOCK_WHY="cannot open the board upsert lock $BENCH_UPSERT_LOCK"; return 2; }
+  flock -w "$BENCH_UPSERT_LOCK_WAIT" "$UPSERT_LOCK_FD" && return 0
+  upsert_lock_drop
+  UPSERT_LOCK_WHY="board upsert lock $BENCH_UPSERT_LOCK held for ${BENCH_UPSERT_LOCK_WAIT}s by another filer"
+  return 1
+}
+upsert_lock_drop() { [ -z "${UPSERT_LOCK_FD:-}" ] || exec {UPSERT_LOCK_FD}>&-; UPSERT_LOCK_FD=; }
 
 # upsert_closed -> "id TAB lowercased text" for each KPI_BOARD agent row of the active profile
 # (BENCH_PROFILE, else `notes config`) closed in the board feed's window (BENCH_BOARD_CMD,
@@ -5453,6 +5466,8 @@ triage_twins() {
 # (a watch that trips, clears and trips) does not page again: up to 6 pages a row on 2026-11-18.
 triage_human() {
   local key text pri route sheet have why n=0
+  grep -q $'\thuman:' <<<"$1" || { echo 0; return 0; }
+  upsert_lock_take || { say "triage: $UPSERT_LOCK_WHY: the human sheet rows wait for the next pass"; echo 0; return 0; }
   while IFS=$'\t' read -r key text pri route _; do
     case "$route" in human:?*) sheet=${route#human:} ;; *) continue ;; esac
     have=$($BENCH_NOTES_CMD ptask "$sheet" list 2>/dev/null) || continue
@@ -5463,6 +5478,7 @@ triage_human() {
     $TRIAGE_NOTIFY_CMD -t 'Needs you' -d "needs:$sheet:$key" "$sheet sheet: $key" >/dev/null 2>&1
     n=$((n + 1))
   done <<<"$1"
+  upsert_lock_drop
   echo "$n"
 }
 
@@ -6158,7 +6174,10 @@ cmd_triage() {
     return 0
   fi
   filed=$(triage_filed "$rows")
-  if [ -n "$filed" ]; then board_upsert "$(cut -f1-3 <<<"$filed")" || return 1; else UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_DROPPED=0; UPSERT_FAILED=; fi
+  # A held lock fails this pass's filing (upsert_report says so) but not the human sheet, twins or red fixes after it.
+  if [ -n "$filed" ]; then
+    board_upsert "$(cut -f1-3 <<<"$filed")" || { [ $? = 2 ] || return 1; UPSERT_FAILED="$UPSERT_LOCK_WHY"; }
+  else UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_DROPPED=0; UPSERT_FAILED=; fi
   h=$(triage_human "$rows")
   triage_twins "$rows" "$(cut -f1 <<<"$filed")"
   q=$(triage_promote "$rows")
