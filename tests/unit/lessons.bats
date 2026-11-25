@@ -483,6 +483,29 @@ $G:11	160	**$RECENT** **IFS tab read merges empty fields**, use a non-whitespace
   assert_output ""
 }
 
+@test "seen lists the lessons the sweep found at least --min times, with the enforced_by marker or a dash" {
+  cat > "$F" <<EOF
+# proj lessons
+
+- **$RECENT** **Found once.** Why: x.
+  <!-- seen:1 $RECENT -->
+- **$RECENT** **Found twice, no check.** Why: y.
+  <!-- seen:1 $RECENT -->
+  <!-- seen:2 $RECENT -->
+- **$RECENT** **Found three times, checked.** Why: z.
+  <!-- seen:3 $RECENT --> <!-- enforced_by:test:~/.dotfiles/tests/unit/x.bats::a name with spaces -->
+- **$RECENT** **Never found.** Why: w.
+EOF
+  run "$BIN" seen --min 2 "$F"
+  assert_success
+  assert_output "$F:5	2	-	**$RECENT** **Found twice, no check.** Why: y.
+$F:8	3	test:~/.dotfiles/tests/unit/x.bats::a name with spaces	**$RECENT** **Found three times, checked.** Why: z."
+  run bash -c "\"\$0\" seen \"\$1\" | wc -l" "$BIN" "$DIR"
+  assert_output 3
+  run "$BIN" seen --min x "$F"
+  assert_failure 2
+}
+
 # group_file with a Forgejo lesson long enough that a short text plus its pointer is smaller.
 long_group() {
   group_file
