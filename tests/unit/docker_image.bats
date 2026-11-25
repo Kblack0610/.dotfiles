@@ -131,21 +131,23 @@ FAKE
   done
 }
 
-# In CI the command runs by docker exec in a detached container, so the step never waits on the
-# container's exit and removal (ar-5740); outside CI it is one plain docker run.
-@test "in CI a command runs by docker exec in a detached container and keeps its exit status" {
+# In a GitHub job the command runs by docker exec in a detached container, so the step never
+# waits on the container's exit and removal (ar-5740); anywhere else, CI set or not, it is one docker run.
+@test "in a GitHub job a command runs by docker exec in a detached container and keeps its exit status" {
   touch "$BATS_TEST_TMPDIR/present"
-  CI=true EXEC_RC=3 run "$T/tests/docker.sh" --run x y
+  GITHUB_ACTIONS=true EXEC_RC=3 run "$T/tests/docker.sh" --run x y
   assert_failure 3
   run grep -E '^run -d --entrypoint sleep .* infinity$' "$LOG"
   assert_success
   run grep -cxF 'exec cid1 /usr/local/bin/test-entry x y' "$LOG"
   assert_output 1
+  run grep -c '^rm ' "$LOG"
+  assert_output 0
 }
 
-@test "outside CI a command is one docker run, with no exec" {
+@test "outside a GitHub job a command is one docker run, with no exec, even with CI set" {
   touch "$BATS_TEST_TMPDIR/present"
-  CI= run "$T/tests/docker.sh" --run x y
+  CI=true run "$T/tests/docker.sh" --run x y
   assert_success
   run grep -cE '^run .* x y$' "$LOG"
   assert_output 1
