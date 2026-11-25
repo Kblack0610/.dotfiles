@@ -136,7 +136,7 @@ pub fn page(v: &View, p: Palette, w: usize) -> Vec<Line<'static>> {
     if let Some(b) = v.brief.as_deref().filter(|b| b.note.exists) {
         out.extend(brief(b, p, w));
     }
-    // The day's refs as their count; the Reports tab lists them (agent-web only until ar-5259).
+    // The day's refs as their count; the Reports tab lists them.
     if let Some(r) = &v.reports {
         out.push(Line::raw(""));
         out.push(clip_line(

@@ -33,6 +33,7 @@ mod projtab;
 mod proptab;
 mod queuetab;
 mod releases;
+mod reportstab;
 mod schedules;
 mod stacktab;
 mod tabreq;
@@ -851,6 +852,22 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         }
         return 0;
     }
+    // Reports prints the stream, or with a word (`archive`, a date) that inner tab.
+    if tab == Some(Tab::Reports) {
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        a.reports = Some(hub_core::reports::read(
+            &hub_core::session_actions::System,
+            &today,
+        ));
+        a.reports_inner = section
+            .as_deref()
+            .map_or("today", |q| reportstab::inner_of(q, &today));
+        a.tab = Tab::Reports;
+        for l in a.page_lines(w) {
+            let _ = writeln!(out, "{}", plain(&l));
+        }
+        return 0;
+    }
     if matches!(tab, None | Some(Tab::Home)) {
         a.proposals = Some(hub_core::proposals::read(
             &hub_core::session_actions::System,
@@ -1177,6 +1194,9 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
     }
     if app.tab == Tab::Releases {
         app.read_releases();
+    }
+    if app.tab == Tab::Reports {
+        app.read_reports();
     }
     // `--tab outbox` read the outbox in open_query above.
     if app.tab == Tab::Daily && !app.daily_outbox {
