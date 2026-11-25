@@ -392,8 +392,8 @@ EOF
   run grep -E 'done|drop|move|improve [^-]' "$HOME/calls"
   assert_failure
   run awk -F'\t' 'NR > 1 { print $1, $2, $3 }' "$HOME/log.tsv"
-  assert_output "$(printf '%s\n' 'ar-30 done planned' 'ar-31 dup planned' 'ar-32 keep -' 'ar-33 improve planned' \
-    'ar-34 keep -' 'ar-35 move planned' 'ar-36 keep -' 'ar-37 keep -' 'ar-38 drop planned' 'ar-39 orphan -' \
+  assert_output "$(printf '%s\n' 'ar-35 move planned' 'ar-30 done planned' 'ar-31 dup planned' 'ar-32 keep -' 'ar-33 improve planned' \
+    'ar-34 keep -' 'ar-36 keep -' 'ar-37 keep -' 'ar-38 drop planned' 'ar-39 orphan -' \
     'ar-40 drop planned' 'ar-41 unjudged -' 'ar-42 keep -' 'ar-43 drop planned')"
   run awk -F'\t' '{ print $1": "$4 }' "$HOME/log.tsv"
   assert_output --partial "ar-34: notes improve calls it health work: stays"
@@ -412,11 +412,11 @@ EOF
   assert_success
   run grep -vE ' list$|^improve --check' "$HOME/calls"
   assert_output "$(printf '%s\n' \
+    'ptask agent-runtime --agent move ar-35 --project trader' \
     'ptask agent-runtime --agent done ar-30 --proof head-check abc123' \
     'ptask agent-runtime --agent drop ar-31 --dup ar-32' \
     'improve agent-runtime --why polish only -- feat(views): a nicer tile (was ar-33)' \
     'ptask agent-runtime --agent drop ar-33 --why moved to improvements: agent-runtime' \
-    'ptask agent-runtime --agent move ar-35 --project trader' \
     'ptask agent-runtime --agent drop ar-38 --why finish plan; plan live-plan: chain live (item live-p1)' \
     'ptask agent-runtime --agent drop ar-39 --why plan orphan-plan parked: feature work' \
     'ptask agent-runtime --agent drop ar-40 --why finish plan; plan done-plan: no open phase' \
@@ -454,7 +454,10 @@ EOF
     'ar-43 drop ok dup of ar-30, closed in this run')"
   run grep -F 'drop ar-43 --why same (dup of ar-30, closed in this run)' "$HOME/calls"
   assert_success
-  # The re-run drops ar-33 without filing its improvement again.
+  # A dry run keeps the mark, and the re-run drops ar-33 without filing its improvement again.
+  run "$RV" "${APPLY[@]}" --log "$HOME/log.tsv" "$HOME/led.tsv" "$HOME/led2.tsv"
+  run awk -F'\t' '$1 == "ar-33" { print $3 }' "$HOME/log.tsv"
+  assert_output "planned (improvement filed)"
   rm "$HOME/refuse33"
   : >"$HOME/calls"
   run "$RV" "${APPLY[@]}" --write --log "$HOME/log.tsv" "$HOME/led.tsv" "$HOME/led2.tsv"
@@ -491,6 +494,24 @@ EOF
     'ar-45 unjudged: not in any ledger' 'ar-43 keep: open children ar-45: stays until they close')"
 }
 
+@test "apply: two bookkeeping rows for one plan are no proof of each other, and a child moves after its parent" {
+  apply_fixture
+  # ar-40 now names orphan-plan too; ar-46 is a trader child of ar-35, which moves to trader.
+  sed -i 's|(plan done-plan)|(plan orphan-plan)|' "$HOME/board2.json"
+  sed -i 's|^ {"project":"agent-runtime","lane":"agent","state":"done","id":"ar-44"| {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-46","text":"fix(trader): its child #of/ar-35","tags":["of/ar-35"],"details":[]},\n&|' "$HOME/board2.json"
+  {
+    head -1 "$HOME/led.tsv"
+    printf 'ar-40\topen\t-\t-\t-\t0\t-\tdrop\tdispatch\tagent-runtime\tnone\t-\tplan-bookkeeping\tdrop\t-\t-\tfinish plan\tfeat(dispatch): Orphan again (plan orphan-plan)\t-\n'
+    printf 'ar-46\topen\tar-35\t-\t-\t0\t-\tfault\tci\ttrader\tnone\t-\twork\tkeep\t-\tt.py:9\ttrader child\tfix(trader): its child\t-\n'
+  } >"$HOME/led2.tsv"
+  run "$RV" "${APPLY[@]}" --log "$HOME/log.tsv" "$HOME/led.tsv" "$HOME/led2.tsv"
+  assert_success
+  run awk -F'\t' 'NR > 1 && NR < 4 { print $1, $2 }' "$HOME/log.tsv"
+  assert_output "$(printf '%s\n' 'ar-35 move' 'ar-46 move')"
+  run awk -F'\t' '$1 ~ /^ar-(39|40)$/ { print $1, $2": "$4 }' "$HOME/log.tsv"
+  assert_output "$(printf '%s\n' 'ar-39 orphan: plan orphan-plan: open phases and no live chain' 'ar-40 orphan: plan orphan-plan: open phases and no live chain')"
+}
+
 @test "cut-report: before and after counts, then Cut and Remains grouped by system with the rubric's line" {
   apply_fixture
   run "$RV" "${APPLY[@]}" --write --log "$HOME/log.tsv" "$HOME/led.tsv"
@@ -521,4 +542,8 @@ EOF
   run "$RV" cut-report --board "$HOME/after.json" --log "$HOME/led.tsv" "$HOME/led.tsv"
   assert_failure 1
   assert_output --partial "is not a row-value apply log"
+  printf 'id\taction\tresult\tdetail\twhy\nar-99\tdrop\tok\t-\t-\n' >"$HOME/log3.tsv"
+  run "$RV" cut-report --board "$HOME/after.json" --log "$HOME/log3.tsv" "$HOME/led.tsv"
+  assert_failure 1
+  assert_output --partial "the logs name rows no LEDGER holds: ar-99"
 }

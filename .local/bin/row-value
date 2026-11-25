@@ -492,7 +492,7 @@ APPLY_LOG = ["id", "action", "result", "detail", "why"]
 PLAN_WORD_RE = re.compile(r"\(plan ([\w.-]+)\)|\bplan ([\w.-]+): run its open phases")
 # Evidence naming a file in this repo or the private overlay: the row's fix is runtime work
 # whatever project it serves, so a move would send its session to the wrong checkout.
-DOTFILES_FIX_RE = re.compile(r"(?<![\w-])(dotfiles(-private)?:|\.dotfiles(-private)?/|\.local/(bin|lib|src)/|\.config/|\.claude/)")
+DOTFILES_FIX_RE = re.compile(r"(?<![\w-])(dotfiles(-private)?:|\.dotfiles(-private)?/|\.local/(bin|lib|src)/)")
 CLOSED = ("done", "dup", "drop", "improve", "move", "park")
 KEPT = ("red", "fault", "sot", "requested", "chain", "container")
 
@@ -504,7 +504,7 @@ def read_ledgers(paths):
         if not os.path.exists(path):
             die(f"{path}: no such ledger", 1)
         cols, rows = read_tsv(path)
-        need = {"id", "bucket", "verdict", "into", "project", "kind", "evidence", "why", "text"}
+        need = {"id", "bucket", "verdict", "into", "project", "kind", "evidence", "why", "text", "system"}
         if not need <= set(cols):
             die(f"{path} lacks {', '.join(sorted(need - set(cols)))}: write it with row-value report --tsv", 1)
         out.update((r["id"], r) for r in rows)
@@ -530,10 +530,11 @@ def open_phases(path):
     return n
 
 
-def plan_state(slug, self_id, plans, board_rows, items):
+def plan_state(slug, self_id, plans, board_rows, items, exclude=()):
     """(why the plan-bookkeeping row for SLUG can go, or None, detail): None when its plan is
     an orphan (open phases and no live chain: no active queue item and no other open row names
-    the plan) or has no file under PLANS (a wrong slug or an archived plan is not proof)."""
+    the plan) or has no file under PLANS (a wrong slug or an archived plan is not proof). A row
+    in EXCLUDE (closing in this run, or another bookkeeping row) is no proof of a live chain."""
     files = [os.path.join(d, f"{slug}.md") for d, _, fs in os.walk(plans) if f"{slug}.md" in fs]
     if not files:
         return None, f"plan {slug}: no plan file under {plans}"
@@ -545,7 +546,7 @@ def plan_state(slug, self_id, plans, board_rows, items):
         if word.search(" ".join(str(it.get(k) or "") for k in ("task", "title", "slug"))):
             return f"plan {slug}: chain live (item {it.get('slug')})", None
     for r in board_rows:
-        if r["id"] != self_id and word.search(" ".join([r.get("text") or ""] + list(r.get("details") or []))):
+        if r["id"] != self_id and r["id"] not in exclude and word.search(" ".join([r.get("text") or ""] + list(r.get("details") or []))):
             return f"plan {slug}: phase row {r['id']} open", None
     return None, f"plan {slug}: open phases and no live chain"
 
@@ -588,11 +589,13 @@ def plan_action(r, row, ctx):
             slug = plan_slug(r)
             if not slug:
                 return ctx.orphan(r, None, "plan bookkeeping that names no plan")
-            state, orphan_why = plan_state(slug, rid, ctx.plans, ctx.board_rows, ctx.items)
+            state, orphan_why = plan_state(slug, rid, ctx.plans, ctx.board_rows, ctx.items, ctx.exclude)
+            if state is None and "no plan file" in orphan_why:
+                return ctx.orphan(r, slug, orphan_why)
             if state is None:
                 # The row is the only start its plan's chain has: on its own project's board
                 # dispatch still promotes it; here the session decides keep or park.
-                if r["project"] != ctx.project and ctx.has_board(r["project"]):
+                if r["project"] != ctx.project and ctx.has_board(r["project"]) and not DOTFILES_FIX_RE.search(r["evidence"]):
                     return "move", pt + ["move", rid, "--project", r["project"]], \
                         f"{r['project']} (plan {slug}: orphan, the row starts its chain)"
                 return ctx.orphan(r, slug, orphan_why)
@@ -610,8 +613,6 @@ def plan_action(r, row, ctx):
     if bucket in KEPT and r["project"] != ctx.project:
         if bucket == "red":
             return "keep", None, f"red: a fleet watch, stays here though it serves {r['project']}"
-        if ctx.moving_parent(r):
-            return "keep", None, f"moves with its parent {r['epic']}"
         if DOTFILES_FIX_RE.search(r["evidence"]):
             return "keep", None, f"serves {r['project']}, but its fix is in dotfiles ({r['evidence'][:80]}): stays"
         if not ctx.has_board(r["project"]):
@@ -628,7 +629,7 @@ class Ctx:
         self.board_rows = [r for r in board.get("rows", []) if r.get("state") in ("open", "doing")]
         self.open_ids = {r["id"] for r in self.board_rows}
         self.items = active_items(a.queue_cmd)
-        self._boards, self._health, self.ledger = {}, {}, {}
+        self._boards, self._health, self.ledger, self.exclude = {}, {}, {}, set()
         self.decided = {}
         if a.orphans:
             cols, rows = read_tsv(a.orphans)
@@ -675,11 +676,6 @@ class Ctx:
             self._health[key] = out.returncode == 3
         return self._health[key]
 
-    def moving_parent(self, r):
-        p = self.ledger.get(r.get("epic", "-"))
-        return bool(p and p["project"] == r["project"] and p["bucket"] in KEPT and p["bucket"] != "red"
-                    and p["id"] in self.open_ids)
-
 
 def cmd_apply(a):
     board = load_board(a.board)
@@ -687,11 +683,18 @@ def cmd_apply(a):
     ctx = Ctx(a, board)
     ctx.ledger = ledger
     # Every row is decided before any write, so a die (a bad --orphans line, a failed
-    # health check) leaves the board as it was.
-    plans = []
-    for row in open_rows(board, a.project):
-        r = ledger.get(row["id"])
-        plans.append((row["id"], r) + (plan_action(r, row, ctx) if r else ("unjudged", None, "not in any ledger")))
+    # health check) leaves the board as it was. The second pass decides plan-bookkeeping rows
+    # again with every row the first pass closes, and every other bookkeeping row, set aside:
+    # neither is proof that a plan's chain is live.
+    rows = open_rows(board, a.project)
+
+    def decide():
+        return [(row["id"], ledger.get(row["id"])) + (plan_action(ledger[row["id"]], row, ctx) if row["id"] in ledger
+                                                       else ("unjudged", None, "not in any ledger")) for row in rows]
+    plans = decide()
+    ctx.exclude = {rid for rid, r, action, argv, _ in plans if r and (
+        r["kind"] == "plan-bookkeeping" or (argv and action in CLOSED))}
+    plans = decide()
     closing = {rid for rid, _, action, argv, _ in plans if argv and action in CLOSED}
     # A parent's close is refused while a child is open (only a container drops its children),
     # so a parent whose children do not all close in this run stays; repeat until nothing changes.
@@ -713,16 +716,26 @@ def cmd_apply(a):
         if action == "dup" and r["into"] in closing:
             why = f"{r['why']} (dup of {r['into']}, closed in this run)"
             plans[n] = (rid, r, "drop", argv[:-2] + ["--why", why], f"dup of {r['into']}, closed in this run")
-    plans.sort(key=lambda p: bool(kids[p[0]]))  # children before their parents
+    # Moves go first, a parent before its children (a move keeps an `of/` tag only when the
+    # target board holds the parent); then closes, the deepest child first.
+    parent = {k: p for p, ks in kids.items() for k in ks}
+
+    def height(i, seen=()):
+        return 0 if i in seen else max((1 + height(k, seen + (i,)) for k in kids[i]), default=0)
+
+    def depth(i, seen=()):
+        return 0 if i in seen or i not in parent else 1 + depth(parent[i], seen + (i,))
+    plans.sort(key=lambda p: (0, depth(p[0])) if p[2] == "move" else (1, height(p[0])))
     filed = previous_improvements(a.log)
     counts = collections.Counter()
     with open(a.log, "w") as log:
         log.write("\t".join(APPLY_LOG) + "\n")
         for rid, r, action, argv, detail in plans:
-            result = "planned" if argv else "-"
+            # A dry run keeps an earlier run's mark, so a later --write still skips the improvement.
+            result = ("planned" + (f" {IMPROVED}" if rid in filed else "")) if argv else "-"
             if argv and a.write:
                 result = run_writes(rid, argv if isinstance(argv[0], (list, tuple)) else [argv], filed)
-            counts[f"{action} {'failed' if result.startswith('failed') else result}"] += 1
+            counts[f"{action} {'failed' if result.startswith('failed') else result.split(' (')[0]}"] += 1
             log.write("\t".join(clean(str(c)) for c in [rid, action, result, detail, r["why"] if r else "-"]) + "\n")
             log.flush()
     print(f"{len(plans)} open rows -> {a.log}" + ("" if a.write else " (dry run: nothing written)"))
@@ -747,7 +760,10 @@ def run_writes(rid, cmds, filed):
     done_improve = rid in filed
     for cmd in cmds:
         if cmd[0] == "park":
-            park_plans(*cmd[1:])
+            try:
+                park_plans(*cmd[1:])
+            except OSError as e:
+                return f"failed park: {e} (the row is dropped: add the Parked line by hand or reopen it)"
             continue
         if done_improve and cmd[1] == "improve":
             continue
@@ -795,6 +811,9 @@ def cmd_cut_report(a):
         entries.update((e["id"], e) for e in rows)
     log = list(entries.values())
     ledger = read_ledgers(a.ledger)
+    missing = sorted(e["id"] for e in log if e["action"] != "unjudged" and e["id"] not in ledger)
+    if missing:
+        die(f"the logs name rows no LEDGER holds: {', '.join(missing[:10])}", 1)
     systems = system_lines(a.rubric)
     board = load_board(a.board)
     now = open_rows(board, a.project)
