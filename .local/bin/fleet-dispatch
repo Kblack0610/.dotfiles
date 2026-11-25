@@ -3297,6 +3297,7 @@ trainee_brief() {
   echo
   echo "You run in a sandbox that sees this worktree alone: no skills, agent-queue, gh, push or human. Ignore any step above that needs one."
   echo "Make the smallest change in this worktree that fully does the task, run the repo's own tests for what you changed where they run here, and stop."
+  echo "Edit only markdown files (anywhere) and shell or bats scripts (.sh, .bash, .zsh, .bats, or no extension with a shell shebang) in no directory holding a Cargo.toml or package.json: the sandbox builds nothing else, and a diff touching any other file is rejected, however right it is."
   echo "Do not commit, push or open a pull request: leave your edits in the working tree. They are checked and landed, or the task is sent back, after you stop."
   echo "If you change nothing, say why in one word on the first line of a file named .no-diff in this worktree: already-fixed when the code already does what the task asks, blocked when the task cannot be done without a decision from the human or access you lack. No file means you failed."
 }
@@ -3626,7 +3627,7 @@ EOF
 # (UTC, YYYY-MM-DDTHH:MM:SS): the cause, its row title, its count, the per-pair counts, the harnesses, and
 # one reason as written. A reject is a lane trainee run with an outcome of redo or failed. Its cause is
 # the `(end <reason>)` trainee_empty_why writes, "no diff" for "left no diff", "no reason recorded" for a
-# run with no `why`, else the reviewer's first four words; at most 40 characters, so the title fits the
+# run with no `why`, "touch a file the sandbox cannot build" for a diff trainee_diff_why refused (whatever the file), else the reviewer's first four words; at most 40 characters, so the title fits the
 # board's 80. One cause on one pair names that pair; on two or more it names no model, since a cause
 # every model hits is the harness's or the source's. The cause is the key, so a cause that spreads to a
 # second pair keeps its count and its row: a reject no newer than its cause's stamp (the last night that
@@ -3643,7 +3644,9 @@ rollup_causes() {
       | ([$w | capture("\\(end (?<e>[a-z-]+)").e] | first) as $e
       | {pair: $pair, harness: (.harness // "claude"), ts: .ts[0:19], why: (.why // "no reason recorded (outcome \(.outcome))"),
          cause: (if $e then "keep ending on end " + $e elif $w == "left no diff" then "keep leaving no diff"
-                 elif $w == "" then "end with no reason recorded" else "are rejected for " + ($w | words) end | fit)}]
+                 elif $w == "" then "end with no reason recorded"
+                 elif ($w | test("^its diff touches .* which is no markdown file")) then "touch a file the sandbox cannot build"
+                 else "are rejected for " + ($w | words) end | fit)}]
     | group_by(.cause)[]
     | . as $all | $all[0].cause as $c
     | [$all[] | select(.ts > ($stamps[$c] // ""))] as $new
