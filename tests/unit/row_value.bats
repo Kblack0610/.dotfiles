@@ -570,6 +570,17 @@ EOF
   assert_output --partial "| ar-32 |"
   refute_output --partial "| ar-36 |"
   refute_output --partial "| ar-41 |"
+  run "$RV" cut-report --board "$HOME/after.json" --scope "$HOME/nope.tsv" --log "$HOME/log.tsv" "$HOME/led.tsv"
+  assert_failure 1
+  assert_output --partial "no such scope file"
+  printf 'ar-30\n' >"$HOME/noid.tsv"
+  run "$RV" cut-report --board "$HOME/after.json" --scope "$HOME/noid.tsv" --log "$HOME/log.tsv" "$HOME/led.tsv"
+  assert_failure 1
+  assert_output --partial "no id column"
+  printf 'id\n' >"$HOME/empty.tsv"
+  run "$RV" cut-report --board "$HOME/after.json" --scope "$HOME/empty.tsv" --log "$HOME/log.tsv" "$HOME/led.tsv"
+  assert_failure 1
+  assert_output --partial "no ids"
 }
 
 # focus: a saved board and a ledger; the stub notes logs each call.
