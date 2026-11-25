@@ -2627,7 +2627,7 @@ cmd_harness_ready() {
 # a worker takes an item on the harness it has, and a sandboxed start only where srt is.
 cmd_kit() {
   local t kit=()
-  command -v claude >/dev/null 2>&1 && "$HERE/fleet-node" ready >/dev/null 2>&1 && kit+=(claude)
+  command -v claude >/dev/null 2>&1 && "$HERE/fleet-node" ready claude >/dev/null 2>&1 && kit+=(claude)
   for t in codex opencode agy; do command -v "$t" >/dev/null 2>&1 && kit+=("$t"); done
   [ -n "$(sandbox_srt_refusal)" ] || kit+=(srt)
   echo "${kit[*]}"
