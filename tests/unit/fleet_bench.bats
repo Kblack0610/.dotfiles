@@ -2518,7 +2518,7 @@ fix_item() {
   printf '#!/usr/bin/env bash\n[ "$4" = add ] && [[ "$5" == *"check(watch): links"* ]] && exit 6\nexec notes "$@"\n' > "$SANDBOX/bin/notes-capped"
   chmod +x "$SANDBOX/bin/notes-capped"
   BENCH_NOTES_CMD=notes-capped run "$SUBJECT" triage
-  assert_output --partial "check(watch): links: the board's daily cap holds this row"
+  assert_output --partial "check(watch): links tripped since: the board's daily cap holds this row; the next pass tries it again"
   assert_output --partial '1 queued as red fixes'
   # the exit 1 test above is the control: any other exit is still a failed add
   refute_output --partial 'add failed for check(watch): links'
