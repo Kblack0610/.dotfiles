@@ -733,7 +733,7 @@ pub(crate) mod tests {
             "CI RUNNERS 0 running, 0 queued, -/- runners up, 112 done 24h, 44% passed",
         );
         // An empty table is its title and why, on one line, with no header or chips.
-        assert_line(&ci, "RUNNERS no runner reports");
+        assert_line(&ci, "RUNNERS no runner is running a job");
         assert_line(&section(Some(0), "waiting"), "WAITING nothing waiting");
         assert_line(
             &section(Some(0), "local"),

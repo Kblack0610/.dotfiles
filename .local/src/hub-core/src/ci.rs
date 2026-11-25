@@ -1,5 +1,5 @@
-//! The CI runners board: every machine's slots, the job each is running and the jobs waiting,
-//! each with the runners that can take it. Both surfaces draw this one answer (the TUI's Infra
+//! The CI runners board: each runner running a job (an idle, held or off one has no row; the
+//! Machines page keeps its state) and the jobs waiting, each with the runners that can take it. Both surfaces draw this one answer (the TUI's Infra
 //! `ci` section and agent-web's), and `fleet-bench` reads `pool_match` through `hub ci`, so
 //! there is one copy of the label join. It judges from the runner-exporter series `infra`
 //! already read and asks Prometheus for nothing.
@@ -95,6 +95,11 @@ pub struct Queued {
 }
 
 impl Queued {
+    /// GitHub runs it on its own runners, so none of ours can take it and none need to.
+    pub fn hosted(&self) -> bool {
+        self.pool == HOSTED
+    }
+
     /// The red line for a job nobody can take.
     pub fn problem(&self) -> String {
         let what = if self.repo.is_empty() {
@@ -940,7 +945,7 @@ fn queue(infra: &Infra, all: &[Runner], off: &HashMap<&str, &str>) -> Vec<Queued
         .collect();
     for q in &mut out {
         // GitHub's own runners are not ours to hold: a hosted job waits on GitHub, never stuck.
-        q.stuck = q.pool != HOSTED && q.can.is_empty() && !q.needs.is_empty();
+        q.stuck = !q.hosted() && q.can.is_empty() && !q.needs.is_empty();
         if q.stuck {
             // The labels no online runner holds; empty when each is held but never together.
             q.missing = q

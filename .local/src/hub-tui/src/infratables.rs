@@ -476,7 +476,7 @@ fn runners(d: &Draw, rows: &[Slot]) -> Vec<Line<'static>> {
     d.table(
         "RUNNERS".into(),
         rows,
-        "no runner reports",
+        "no runner is running a job",
         None,
         |r| {
             vec![
@@ -534,6 +534,8 @@ fn queued(d: &Draw, rows: &[Queued]) -> Vec<Line<'static>> {
                     .join(", ")
             } else if q.needs.is_empty() {
                 "-".into()
+            } else if q.hosted() {
+                "GitHub".into()
             } else {
                 "nobody".into()
             };
