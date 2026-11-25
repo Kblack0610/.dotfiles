@@ -423,7 +423,7 @@ pub fn snapshot(date: &str, text: &str) -> Option<Snapshot> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
     Some(Snapshot {
         date: date.to_string(),
-        generated_at: v["generated_at"].as_str().and_then(epoch),
+        generated_at: v["generated_at"].as_str().and_then(crate::fleet::ts),
         tools: serde_json::from_value(v["by_tool"].clone()).unwrap_or_default(),
         unallocated_usd: v["by_tool_unallocated_usd"].as_f64(),
         parts: {
@@ -451,12 +451,6 @@ pub fn snapshot(date: &str, text: &str) -> Option<Snapshot> {
             .next()
             .map(str::to_string),
     })
-}
-
-fn epoch(t: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(t)
-        .ok()
-        .map(|t| t.timestamp())
 }
 
 /// A model id as the table shows it: Claude's without its `claude-` prefix.

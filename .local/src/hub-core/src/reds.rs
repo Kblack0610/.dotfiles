@@ -89,11 +89,6 @@ pub struct Red {
     pub links: Vec<ItemLink>,
 }
 
-fn epoch(t: Option<&str>) -> Option<i64> {
-    t.and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-        .map(|t| t.timestamp())
-}
-
 /// A queue field that is a string, a number or null, as text.
 fn text<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
     Ok(match serde_json::Value::deserialize(d)? {
@@ -138,12 +133,12 @@ impl Red {
 
     /// When the fix was queued, as epoch seconds.
     pub fn queued_at(&self) -> Option<i64> {
-        epoch(self.queued.as_deref())
+        self.queued.as_deref().and_then(crate::fleet::ts)
     }
 
     /// When the fix item finished, as epoch seconds; none while it is open.
     pub fn finished_at(&self) -> Option<i64> {
-        epoch(self.finished.as_deref())
+        self.finished.as_deref().and_then(crate::fleet::ts)
     }
 
     /// How long ago it was queued, as `display::fmt::age` words; `-` when the time does not parse.
