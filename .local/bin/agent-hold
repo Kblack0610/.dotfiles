@@ -29,7 +29,9 @@
 #                                   earlier keep; a same-kind re-set carries it, like since
 #   agent-hold lower <resource> <pid>...   CPUWeight=1 on each pid's tmux pane scope or
 #                                   agentctl unit, recorded on the hold; release restores it
-#   agent-hold release <resource>
+#   agent-hold release <resource> [--by name] [--force]   a claim only by its holder (one of its
+#                                   names, its session id, or --by the name it was claimed for);
+#                                   --force frees a claim whose holder is gone
 #   agent-hold check <resource> [--no-caller] [--for <id>...]   exit 1 (and print the hold) while
 #                                   held, 0 when free or when the caller is granted or holds the
 #                                   claim; --no-caller asks as no session, so neither counts; --for
@@ -234,7 +236,8 @@ cmd_set() {
 # claim: a hold that one session takes for its own use, so two sessions never drive the
 # same desktop at once. Unlike `set`, it never replaces someone else's hold: the file is
 # created with noclobber, so of two racing claims exactly one wins. Re-claiming your own
-# refreshes it. A claim left by a dead session is released by whoever finds it.
+# refreshes it. A claim left by a dead session is released by whoever finds it, with
+# `release --force`.
 cmd_claim() {
   local resource="${1:-}"; shift || true
   need_resource "$resource"
@@ -402,12 +405,28 @@ cmd_lower() {
 }
 
 cmd_release() {
-  local resource="${1:-}"
+  local resource="${1:-}"; shift || true
   need_resource "$resource"
+  local by="" force=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --by) [ $# -ge 2 ] || { echo "agent-hold release: --by needs a value" >&2; exit 2; }
+        by="$(oneline "$2")"; shift 2 ;;
+      --force) force=1; shift ;;
+      *) echo "agent-hold release: unknown argument $1" >&2; exit 2 ;;
+    esac
+  done
   local f="$HOLD_ROOT/$resource"
   [ -f "$f" ] || { echo "agent-hold: $resource is not held" >&2; exit 1; }
   local reason roster
   reason="$(field "$f" reason)"; roster="$(field "$f" roster)"
+  # A claim is one session's: another session's release would free a desktop still being driven
+  # (2026-11-06, a session released agent-42's mac-desktop claim, ar-751). A claim whose holder is
+  # gone is freed with --force by whoever finds it.
+  if [ "$(field "$f" kind)" = claim ] && [ -z "$force" ]; then
+    if [ -n "$by" ]; then [ "$(field "$f" by)" = "$by" ]; else owns_claim "$f" "$(callers)"; fi ||
+      { echo "agent-hold release: $resource is claimed by $(field "$f" by) since $(field "$f" since): $reason. Only its holder releases it; --force when that session is gone." >&2; exit 1; }
+  fi
   local unit failed=""
   for unit in $(field "$f" lowered | tr ',' ' '); do
     # An empty CPUWeight= drops the runtime setting. A pane closed since has no scope left.
@@ -430,7 +449,7 @@ cmd_release() {
   # A lifted hold is what held starts back: wake a kick (dispatch_wake) rather than wait for the timer.
   dispatch_wake "agent-hold release $resource"
   notify -p low -t "go: $resource" "released (was: $reason)"
-  audit_append "$(default_by)" hold.released "$resource" ok "was: $reason"
+  audit_append "$(default_by)" hold.released "$resource" ok "was: $reason${force:+ (forced)}"
   echo "released: $resource"
   # Printed so the caller can send GO to exactly the sessions that were told to stop.
   [ -n "$roster" ] && echo "roster: $roster"
