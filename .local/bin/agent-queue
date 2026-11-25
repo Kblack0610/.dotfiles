@@ -2118,8 +2118,6 @@ cmd_add() {
     # `rows:` line, add_plan), which agent-land closes with the last phase, so no phase item names it.
     local plan_row=''
     case "$from" in board:?*:?*) plan_row="${from##*:}" from=auto:plan-row ;; esac
-    # A phase session adding a line to its own plan (add_plan keeps the filed phases) files the new phase
-    # itself: through overflow_row it is a board row all the same, as a dispatched caller's add is.
     if [ -z "$dry" ] && ! pull_ok "" "$from" "$from_given" && ! own_plan_item "$planf"; then
       [ -z "$plan_row" ] || { echo "agent-queue: its row $plan_row is left where it is: dispatch promotes it" >&2; exit "$AQ_EX_HELD"; }
       # Resolved as every add is (dotfiles -> agent-runtime): unresolved, a repo whose work counts on an
@@ -2648,6 +2646,8 @@ add_plan() {
   for s in "${added[@]}"; do f="$(find_item "$s")" && [ -n "$f" ] && start_at_add "$f" "$s" "$(takes_field "$ranked" "$s" 3 "$priority")"; done
 }
 # own_plan_item <plan>: the calling session's item ($AGENT_QUEUE_ITEM) is a phase of that plan (its plan:).
+# cmd_add --plan lets such a session add a line to its own plan (add_plan keeps the filed phases) and file
+# the new phase itself: through overflow_row it is a board row all the same, as a dispatched caller's add is.
 own_plan_item() {
   local f
   [ -n "${AGENT_QUEUE_ITEM:-}" ] && f="$(find_item "$AGENT_QUEUE_ITEM")" && [ -n "$f" ] && [ -n "$(fm_get "$f" plan)" ] &&
