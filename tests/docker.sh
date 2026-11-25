@@ -126,7 +126,8 @@ fi
 #                     (/tmp/testhome, the image's) gets its own, as /tmp's hides the image's dir.
 #                     It is memory charged to the job, so each has a size: a test past it fails
 #                     on ENOSPC rather than the pod on OOM. The largest known writer is
-#                     dotfiles_deploy's copy of the tracked text tree, about 30 MB.
+#                     dotfiles_deploy's copy of the tracked text tree (about 30 MB), and the
+#                     rust job's tilecast-schema.sh npm ci, its tree in /tmp and cache in HOME.
 tmpfs_opts=rw,exec,nosuid,nodev,mode=1777
 run_args=(
   --rm --init
@@ -135,7 +136,7 @@ run_args=(
   --env "USER=$(id -un)"
   --shm-size 1g
   --tmpfs "/tmp:$tmpfs_opts,size=1g"
-  --tmpfs "/tmp/testhome:$tmpfs_opts,size=256m"
+  --tmpfs "/tmp/testhome:$tmpfs_opts,size=1g"
   --volume "$REPO:/work"
   --workdir /work
 )

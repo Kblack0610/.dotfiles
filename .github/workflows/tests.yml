@@ -90,7 +90,9 @@ jobs:
   # and the 8 on deskslim-2 at 16:04:59.4, each node's moment its dirty pages (4 and 9 GB, the
   # NVMe 100% busy) had drained; kubelet's own container starts on deskslim-2 waited to 16:05:05.
   # So a fast pod keeps its writes small: a text-only checkout, and tests/docker.sh puts the
-  # container's /tmp, where every bats sandbox lives, in memory (ar-5740).
+  # container's /tmp, where every bats sandbox lives, in memory (ar-5740). A job that runs in
+  # the test image as its job container gets the same from home-config's arc-repo-dotfiles-pods-hook
+  # template (ar-6016).
   # On 2026-11-23 the account sat at its hosted parallel-job cap (36 running, 105 queued), so a
   # shard costs queue time wherever it runs: the pool has fewer slots than hosted, and queue time
   # rising is the sign to stop adding them. unit/shard.bats checks that --matrix lists every shard
