@@ -487,7 +487,7 @@ mod tests {
     #[test]
     fn the_costs_card_publishes_the_fleet_cost_and_its_named_parts_in_whole_dollars() {
         let mut k = crate::costs::Costs::default();
-        k.fleet_cost.usd = "about $1,203".into();
+        k.fleet_cost.usd = "$1,203".into();
         k.fleet_cost.cash = "$403".into();
         k.fleet_cost.burn = "$800".into();
         let figs = figures(&[crate::cards::costs(&k)]);
