@@ -938,7 +938,7 @@ EOF
   stub ssh 'echo "ssh $*" >> "$NOTES_FIXTURE/calls.log"
 [ ! -e "$NOTES_FIXTURE/ssh.rc" ] || exit "$(cat "$NOTES_FIXTURE/ssh.rc")"
 eval "set -- ${*: -1}"
-[ "$1" != env ] || shift 2   # the probe runs as `env FLEET_PROBE_REPOS=<dirs> sh -c ...`
+[ "$1 ${2%%=*}" != "env FLEET_PROBE_REPOS" ] || shift 2   # the probe runs as `env FLEET_PROBE_REPOS=<dirs> sh -c ...`
 case "$1 ${2:-}" in "sh -c") cat "$NOTES_FIXTURE/ssh.probe"; cat "$NOTES_FIXTURE/ssh.missing" 2>/dev/null || : ;; "fleet-dispatch kit") cat "$NOTES_FIXTURE/ssh.kit" ;; *) "$@" ;; esac'
   # The worker's fleet-dispatch is this checkout's, never the one deployed on this machine's PATH.
   stub fleet-dispatch "exec '$REPO_ROOT/.local/bin/fleet-dispatch' \"\$@\""
