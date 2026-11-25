@@ -22,7 +22,8 @@
       dropped only with every child; chain: an #after/ tag; red: a ref). Each DIR/check-*.tsv line (id, bucket, evidence, why: the HEAD check of a
       row the judge bucketed fault or fixed) replaces its bucket, evidence and why; a fault or
       fixed row with no evidence fails. Writes DIR/verdicts.tsv (with a header) and prints the counts by verdict,
-      bucket, kind, target and system. Exit 1 on any finding, and nothing is written.
+      bucket, kind, target and system. Exit 1 on any finding: nothing is written, and the last
+      verdicts.tsv is removed.
   row-value report [--project P] [--tsv FILE] DIR
       the ledger from DIR/rows.tsv and DIR/verdicts.tsv as markdown on stdout: counts by bucket,
       per system, per epic and per source, then every row with its bucket and tie (epic, plan, the red it
@@ -39,6 +40,7 @@ through `notes board --json`; nothing here writes a board row.
 """
 import argparse
 import collections
+import contextlib
 import json
 import os
 import re
@@ -301,6 +303,10 @@ def read_checks(d, judged, findings):
 
 
 def cmd_merge(a):
+    # The last verdicts.tsv goes first: a merge that fails leaves none, so report never reads
+    # verdicts the current judge files no longer give.
+    with contextlib.suppress(FileNotFoundError):
+        os.remove(os.path.join(a.dir, "verdicts.tsv"))
     lists = rubric_lists(a.rubric)
     rows_path = os.path.join(a.dir, "rows.tsv")
     if not os.path.exists(rows_path):

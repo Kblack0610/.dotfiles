@@ -114,7 +114,7 @@ judge_ok() {
   git -C "$HOME/w" fetch -q origin
   run "$RV" export --board "$HOME/board.json" --scorecard "$HOME/latest.md" --reds-cmd "" --repo "$HOME/w" --chunk 5 "$D"
   assert_success
-  run grep -A3 '^ar-20 ' "$D/chunk-01.txt"
+  run grep -A4 '^ar-20 ' "$D/chunk-01.txt"
   assert_output --partial "  merged: w "
   assert_output --partial "lost item found (ar-20) (#7)"
   run grep -c '  merged:' "$D/chunk-01.txt"
