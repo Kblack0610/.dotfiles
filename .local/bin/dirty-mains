@@ -29,7 +29,8 @@ esac
 paths="$(jq -r '.paths // {} | keys[]' "$MAP" 2>/dev/null)" || {
   printf 'dirty-mains: cannot read the paths of %s\n' "$MAP" >&2; exit 2; }
 
-mtime() { stat -c %Y -- "$1" 2>/dev/null || stat -f %m -- "$1" 2>/dev/null; }
+# shellcheck source=../lib/stat.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/stat.sh"
 
 now="$(date +%s)"
 cut_change=$((now - AGE_MIN * 60))
@@ -43,7 +44,7 @@ old_entries() {
   local repo="$1" p t
   while IFS= read -r -d '' p; do
     p="${p%/}"
-    t="$(mtime "$repo/$p")"
+    t="$(stat_mtime "$repo/$p")"
     [ -d "$repo/$p" ] && [ -n "$(find "$repo/$p" -mmin -"$AGE_MIN" -print -quit 2>/dev/null)" ] && continue
     [ -z "$t" ] || [ "$t" -le "$cut_change" ] && printf '%s\n' "$p"
   done

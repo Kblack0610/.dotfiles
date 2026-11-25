@@ -119,8 +119,8 @@ attach_skills() {
   fi
 }
 
-# mtime <file> -> seconds since the epoch (GNU stat, else BSD stat)
-mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
+# shellcheck source=../lib/stat.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/stat.sh"
 
 # restart_stale <unit> <file> <what>: a running user <unit> that started before <file> last changed
 # still runs the old <what>, so restart it. One line when it restarted or failed.
@@ -131,7 +131,7 @@ restart_stale() {
   [ "$state" = active ] || return 0
   started=$(systemctl --user show "$unit" -p ActiveEnterTimestamp --value --timestamp=unix 2>/dev/null)
   started=${started#@}
-  built=$(mtime "$2")
+  built=$(stat_mtime "$2")
   [[ "$started" =~ ^[0-9]+$ && "$built" =~ ^[0-9]+$ ]] && [ "$built" -gt "$started" ] || return 0
   if systemctl --user restart "$unit" 2>/dev/null; then
     say "~: restarted $unit on the new $3"
@@ -165,13 +165,13 @@ attach_rust() {
     elif [ "$left" -le 0 ]; then
       say "~: build budget of ${BUILD_SECS}s spent, $bin not rebuilt"
     else
-      before=$(mtime "$target")
+      before=$(stat_mtime "$target")
       out=$(cd "$crate" && capped "$left" cargo build --release --quiet 2>&1)
       rc=$?
       if [ "$rc" -ne 0 ]; then
         log_report "cargo build --release ($bin)" "$rc" "$out"
         say "~: cargo build of $bin failed (exit $rc), the binary on disk stays; report in ${LOG/#"$HOME"/\~}"
-      elif [ "$(mtime "$target")" != "$before" ]; then
+      elif [ "$(stat_mtime "$target")" != "$before" ]; then
         say "~: rebuilt $bin (cargo build --release)"
       fi
     fi
