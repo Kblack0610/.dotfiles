@@ -51,20 +51,12 @@ url="$(rbw get --folder "$FOLDER" "webhook_$channel" 2>/dev/null)" ||
   die "no channel '$channel' (rbw $FOLDER/webhook_$channel); known: $(channels | paste -sd' ')"
 case "$url" in https://*/api/webhooks/*) ;; *) die "rbw $FOLDER/webhook_$channel is not a webhook URL" ;; esac
 
-work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+# shellcheck source=../lib/post-client.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/post-client.sh"
+post_begin discord-post
 printf '%s' "$payload" >"$work/payload"
 # The URL carries the webhook token, so it goes to curl on stdin, never in argv where ps shows it.
 printf 'url = "%s?wait=true"\n' "$url" >"$work/curlrc"
-
-lockdir="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
-if command -v flock >/dev/null; then
-  exec 9>"$lockdir/discord-post.lock"
-  flock 9
-fi
-
-header() { tr -d '\r' <"$work/headers" | awk -v h="$(tr 'A-Z' 'a-z' <<<"$1"):" 'tolower($1) == h { print $2 }' | tail -n1; }
-too_long() { awk -v s="$1" -v m="$MAX_WAIT" 'BEGIN { exit !(s + 0 > m + 0) }'; }
 
 attempt=1
 while :; do

@@ -63,16 +63,9 @@ handle="$(rbw get --folder "$FOLDER" --field username "$ENTRY" 2>/dev/null)" && 
 pass="$(rbw get --folder "$FOLDER" "$ENTRY" 2>/dev/null)" && [ -n "$pass" ] ||
   die "rbw $FOLDER/$ENTRY has no app password"
 
-work="$(umask 077; mktemp -d)"
-trap 'rm -rf "$work"' EXIT
-lockdir="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
-if command -v flock >/dev/null; then
-  exec 9>"$lockdir/bluesky-post.lock"
-  flock 9
-fi
-
-header() { tr -d '\r' <"$work/headers" | awk -v h="$(tr 'A-Z' 'a-z' <<<"$1"):" 'tolower($1) == h { print $2 }' | tail -n1; }
-too_long() { awk -v s="$1" -v m="$MAX_WAIT" 'BEGIN { exit !(s + 0 > m + 0) }'; }
+# shellcheck source=../lib/post-client.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/post-client.sh"
+post_begin bluesky-post
 
 # xrpc <method> <payload-file> [token]: POST it, retrying only a 429; the body lands in $work/body.
 # The password and the token go to curl in a config file, never in argv where ps shows them.
