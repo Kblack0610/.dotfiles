@@ -172,7 +172,7 @@ case "$1" in log) echo run-9 ;; classify)
   route_ready
   printf 'sk-nim\n' > "$SANDBOX/nim.key"; touch "$SANDBOX/eval-nim.json"
   harness_set --arg k "$SANDBOX/nim.key" --arg c "$SANDBOX/eval-nim.json" '.harnesses.nim = {
-    launcher: "opencode", source: "nim", headless: true, max_tier: 1, config: $c, key_file: $k, timeout_min: 180, models: {glm: "litellm/free-glm (glm-5.3-flash)"}}'
+    launcher: "opencode", source: "nim", end_classifier: "opencode", headless: true, max_tier: 1, config: $c, key_file: $k, timeout_min: 180, models: {glm: "litellm/free-glm (glm-5.3-flash)"}}'
   srcs nim:ok:0.1 codex:ok:5
   # model-lane offers nim first (a trial pick); it has room at the lowest rank.
   stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"
