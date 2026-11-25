@@ -20,15 +20,32 @@ jq -nc --arg plan "$plan" --arg project "$project" --arg cwd "$cwd" \
   --arg session "$session" --argjson epoch "$(date +%s)" \
   '{epoch: $epoch, plan: $plan, project: $project, session: $session, cwd: $cwd}' >> "$ledger"
 
+# Every notice goes out as one JSON document at exit: the hook's stdout is parsed as one.
+said=()
+say() { said+=("$1"); }
+trap '[ "${#said[@]}" -eq 0 ] || jq -nc --arg c "plan-approved: ${said[*]}" '"'"'{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $c}}'"'"'' EXIT
+here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../.."
+
+# The human approving a plan narrows each hold they set to its rows: the plan's slug goes on the
+# hold's `granted:`, and agent-queue's gate clears a #hold/ row or item whose plan it names (ar-5183).
+# Only an attended session's approval counts (a dispatched one also reads ATTENDED=1, but has an
+# item), and only a hold `by: human`: an agent's hold is lifted by its own rule, not by a plan.
+if [ "${CLAUDE_CODE_SESSION_ATTENDED:-0}" = 1 ] && [ -z "${AGENT_QUEUE_ITEM:-}" ]; then
+  slug=$(basename "$plan" .md) granted=()
+  while IFS=$'\t' read -r res _ by _; do
+    [ "$by" = human ] && timeout 10 "$here/.local/bin/agent-hold" grant "$res" "$slug" >/dev/null 2>&1 && granted+=("$res")
+  done < <(timeout 10 "$here/.local/bin/agent-hold" list 2>/dev/null)
+  [ "${#granted[@]}" -eq 0 ] || say "granted $slug on the human's hold(s) ${granted[*]}: its #hold/ rows may start while the rest stay held."
+fi
+
 # An `epic: new` line (plan_epic_new) is proposed once: `notes ptask add` files it in a hand session,
 # after its self-check, with the ids the plan reviewed on Overlap: as --checked, and sends it to the
 # outbox for inbox-triage otherwise. Its tag (plan_epic_tag) is how plan_epic_verdict finds the verdict
 # later. A filed epic's id replaces the line, so every reader sees an ordinary `epic: <id>`.
 # shellcheck source=/dev/null
-. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.local/lib/plan-phases.sh" 2>/dev/null || exit 0
+. "$here/.local/lib/plan-phases.sh" 2>/dev/null || exit 0
 title=$(plan_epic_new "$plan")
 [ -n "$title" ] || exit 0
-say() { jq -nc --arg c "plan-approved: $1" '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $c}}'; }
 case "$(plan_epic_verdict "$plan")" in
   none) ;;
   unknown) say "epic: new $title was not proposed: notes log --trace could not read whether it already was. Check notes, then file it with notes ptask <board> add."; exit 0 ;;
