@@ -2666,3 +2666,57 @@ already"
   "$AQ" cancel w3 --why "not wanted"
   grep -q 'w3' "$wake" || fail "a cancel wrote no wake"
 }
+
+# watch_fixture <slug> <tags> <title>: a running item, and a watch-companion-loop stub that logs each call,
+# in watch.log (calls.log is the fleet-dispatch stub), whether the queue lock was free then, and exits NOTES_FIXTURE/watch.rc.
+watch_fixture() {
+  mkdir -p "$AGENT_QUEUE_DIR/running"
+  printf 'slug: %s\nproject: game\npriority: urgent\nfrom: fleet-bench\ntags: %s\nqueued: 2026-11-24T10:00:00Z\nstarted: 2026-11-24T10:00:00Z\n---\n%s\n' \
+    "$1" "$2" "$3" > "$AGENT_QUEUE_DIR/running/20261124-100000-$1.md"
+  cat > "$SANDBOX/bin/watch-companion-loop" <<'EOS'
+#!/usr/bin/env bash
+held=free; flock -n "$AGENT_QUEUE_DIR/.lock" true 2>/dev/null || held=held
+printf 'watch-companion-loop %s lock=%s\n' "$*" "$held" >> "$NOTES_FIXTURE/watch.log"
+rc=$(cat "$NOTES_FIXTURE/watch.rc" 2>/dev/null || echo 0)
+[ "$rc" -eq 0 ] || echo "TRIP: board-chain 12 KPIs over"
+exit "$rc"
+EOS
+  chmod +x "$SANDBOX/bin/watch-companion-loop"
+}
+
+@test "move done ok refuses a red check(watch) item while its watch trips, outside the lock; it closes once the watch reads OK (ar-5414)" {
+  watch_fixture red-chain 'red watch' 'check(watch): board-chain tripped since 2026-11-20, expected: chain OK'
+  printf '1\n' > "$NOTES_FIXTURE/watch.rc"
+  run "$AQ" move red-chain done --status ok
+  assert_failure
+  assert_output --partial 'red-chain is a red item for watch board-chain, and done ok would say that red is gone: watch board-chain did not read OK on recheck (exit 1): TRIP: board-chain 12 KPIs over'
+  assert_output --partial 'agent-land <N>'
+  assert_output --partial 'agent-queue move red-chain review'
+  [ -f "$(item running red-chain)" ]
+  assert_equal "$(cat "$NOTES_FIXTURE/watch.log")" 'watch-companion-loop recheck board-chain lock=free'
+  # A failed or cancelled close says nothing about the red, so it reads no probe.
+  : > "$NOTES_FIXTURE/watch.log"
+  run "$AQ" move red-chain review
+  assert_success
+  [ ! -s "$NOTES_FIXTURE/watch.log" ]
+  # Once the watch reads OK, the same close goes through.
+  printf '0\n' > "$NOTES_FIXTURE/watch.rc"
+  run "$AQ" move red-chain done --status ok
+  assert_success
+  assert_equal "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-red-chain.md)" status)" ok
+  assert_equal "$(cat "$NOTES_FIXTURE/watch.log")" 'watch-companion-loop recheck board-chain lock=free'
+}
+
+@test "move done reads no probe for a non-red item, a red item for no watch, or a failed close (ar-5414)" {
+  watch_fixture plain 'infra' 'check(watch): board-chain tripped'
+  printf '1\n' > "$NOTES_FIXTURE/watch.rc"
+  run "$AQ" move plain done --status ok
+  assert_success
+  watch_fixture red-alert 'red' 'check(alert): disk full on razer'
+  run "$AQ" move red-alert done --status ok
+  assert_success
+  watch_fixture red-fail 'red watch' 'check(watch): board-chain tripped'
+  run "$AQ" move red-fail done --status failed
+  assert_success
+  [ ! -s "$NOTES_FIXTURE/watch.log" ]
+}

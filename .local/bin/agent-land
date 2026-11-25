@@ -23,7 +23,7 @@
 # checkout when this repo is ~/.dotfiles or ~/.dotfiles-private, links what it added, rebuilds the
 # Rust tools (notes through notes-bootstrap), restarts agent-web on a new binary and a persistent agentctl runner on a new script; it logs its result to autopull.log, and the landing prints a line, never a failure), item (the queue item gets pr:<owner>/<repo>#<pr>,
 # merged:<sha>, this Claude session in its sessions (unless --partial lands on an item another session owns) and "<session>=<pr>" in its landed_by, the project credited by the PR's changed
-# files (agent-queue attribute), and moves to done, status ok unless --partial keeps it open (a red watch item resolves its watch with this PR first and refuses to close ok while its probe still trips, watch_gate); a done ok item with no PR in this
+# files (agent-queue attribute), and moves to done, status ok unless --partial keeps it open (a red watch item resolves its watch with this PR first and refuses to close ok while its probe still trips, watch_gate, as agent-queue move does by hand, lib/watch-item.sh); a done ok item with no PR in this
 # PR's repo adds it to its pr: and merged: lists instead, one PR per repo; an open item's earlier PR with
 # no merge recorded takes its merge commit from gh, and one not merged refuses before the merge, settle_prior;
 # a --partial landing passes one still open and leaves merged: empty for the final landing), board (the
@@ -75,6 +75,8 @@ usage() {
 . "$(dirname "$(readlink -f "$0")")/../lib/plan-phases.sh"
 # shellcheck source=../lib/judge.sh
 . "$(dirname "$(readlink -f "$0")")/../lib/judge.sh"
+# shellcheck source=../lib/watch-item.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/watch-item.sh"
 die() {
   printf 'agent-land: %s\n' "$1" >&2
   exit 2
@@ -1223,12 +1225,9 @@ shape_gate() {
   echo "shape: grows, split owed by $id: $list"
 }
 
-# item_watch <item json> -> the watch name when the item is a `red` item for a Sentinel watch
-# (`check(watch): <name> ...`), empty otherwise.
-item_watch() {
-  jq -r 'select(((" " + (.tags // "") + " ") | contains(" red ")))
-    | (.title // ((.task // "") | split("\n")[0]))
-    | try capture("^check\\(watch\\): (?<w>[A-Za-z0-9._-]+)").w // empty' <<<"$1" 2>/dev/null
+# json_watch <item json> -> the watch of a red item for a Sentinel watch (item_watch, lib/watch-item.sh).
+json_watch() {
+  item_watch "$(jq -r '.tags // ""' <<<"$1")" "$(jq -r '.title // ((.task // "") | split("\n")[0])' <<<"$1")"
 }
 
 # watch_gate <item json>: a red item for a Sentinel watch cannot close ok while its watch's probe
@@ -1236,23 +1235,16 @@ item_watch() {
 # which records the merge as the fix watermark (a windowed probe counts only events after it, fix-red
 # step 5) and rechecks; a bare #N with no repo rechecks only. Still red means the fix did not clear
 # it, or waits on a deploy: re-running agent-land once it clears closes the item and its board row.
+# The move to done that follows rechecks it once more (agent-queue cmd_move): no flag skips that.
 # gate: al-watch-gate
 watch_gate() {
-  local w rc=0 out verb
-  w=$(item_watch "$1")
+  local w out verb
+  w=$(json_watch "$1")
   [ -n "$w" ] || return 0
-  command -v watch-companion-loop >/dev/null 2>&1 || { echo "watch: $w not checked (no watch-companion-loop on PATH)"; return 0; }
   verb=(recheck "$w")
   [[ "$pr_ref" != */* ]] || verb=(resolve "$w" --pr "$pr_ref")
-  out=$(watch-companion-loop "${verb[@]}" 2>&1) || rc=$?
-  # exit 2 is also a usage error (a loop with no resolve): only "no watch named" skips the check
-  case "$rc" in
-    0) echo "watch: $w OK" ;;
-    2) [[ "$out" == *"no watch named $w"* ]] || fail item "watch-companion-loop ${verb[0]} $w: $(lastline "$out")"
-       echo "watch: $w not known here (exit 2), skipping probe check" ;;
-    75) fail item "watch-companion-loop ${verb[0]} $w could not take the lock (exit 75); re-run" ;;
-    *) fail item "watch $w did not read OK on ${verb[0]} (exit $rc)${out:+: $(lastline "$out")}" ;;
-  esac
+  out=$(watch_probe "${verb[@]}") || fail item "$out"
+  echo "$out"
 }
 
 # unlisted_repo <store key>: the merged PR's repo is in no `schedules-sync repos` list (sync-prs exit
@@ -1465,7 +1457,7 @@ if [ "$dry" -eq 1 ]; then
     echo "board: left open until the final landing"
   else
     [ -n "$fj" ] || echo "split: gh search prs --owner <owner> --state open --match body -- \"Item: $item\"  (before anything is touched: another open PR whose first Item: line names $item refuses this full landing; land #$pr --partial)"
-    dry_watch=$(item_watch "$it")
+    dry_watch=$(json_watch "$it")
     [ -z "$dry_watch" ] || echo "watch: watch-companion-loop resolve $dry_watch --pr <owner>/<repo>#$pr  (a red item closes ok only once its probe passes)"
     echo "item: agent-queue set $item pr=$pr merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/$pr/files | agent-queue attribute $item && agent-queue move $item done --status ok"
   fi

@@ -129,6 +129,9 @@ PROJECT_MAP_FILE="$AQ_MAP"
 # so_pr_view: the one forge rule pr_state reads a pr: hold's PR by.
 # shellcheck source=../lib/session-outcomes.sh
 . "$AQ_BIN/../lib/session-outcomes.sh"
+# item_watch and watch_probe: the close-ok check of a red watch item, shared with agent-land.
+# shellcheck source=../lib/watch-item.sh
+. "$AQ_BIN/../lib/watch-item.sh"
 # A `pr:<owner>/<repo>#<N>` item waits for that PR to merge; its state is cached here.
 AQ_PR_CACHE="${AGENT_QUEUE_PR_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/agent-queue/pr}"
 AQ_PR_TTL="${AGENT_QUEUE_PR_TTL:-120}"
@@ -3598,6 +3601,21 @@ cancel_stamp() {
   [ -z "$2" ] || header_set "$1" cancel_why "$2"
 }
 
+# watch_close_check <slug>: a red item for a Sentinel watch (`check(watch): <w>`) closes ok only while
+# its watch reads OK, the check agent-land's watch_gate runs (lib/watch-item.sh), so a close by hand
+# cannot say a red is gone while it still trips (ar-2550 did, ar-5414). Run before the queue lock: a
+# probe can take a while. A PR that fixed one KPI of a many-KPI watch leaves the item in review.
+watch_close_check() {
+  local f w t out
+  f="$(find_item "$1")"; [ -n "$f" ] || return 0
+  t="$(fm_get "$f" title)"; [ -n "$t" ] || t="$(fm_body "$f" | awk 'NR==1')"
+  w="$(item_watch "$(fm_get "$f" tags)" "$t")"
+  [ -n "$w" ] || return 0
+  # gate: al-watch-gate
+  out="$(watch_probe recheck "$w")" ||
+    die "$1 is a red item for watch $w, and done ok would say that red is gone: $out. Land its fix with agent-land <N>, which resolves the watch with the PR and closes the item once it reads OK; a PR that fixed one KPI of a many-KPI watch leaves the item in review (agent-queue move $1 review) until the watch reads OK"
+}
+
 # move <slug> <state> [--status s] [--end reason] [--if <state>] -- --end records why the run ended
 # (end_reason:); --if is the compare in a compare-and-set: the
 # move happens only while the item is still in the state the caller read, so a pass that read it a
@@ -3625,6 +3643,7 @@ cmd_move() {
   fi
   if [ "$to" = done ] && [ "$status" = cancelled ]; then cancel_check "$why"
   elif [ -n "$why$ask" ]; then die "--why and --ask record a cancel: use them with move <slug> done --status cancelled"; fi
+  [ "$to" != done ] || [ "$status" != ok ] || [ -n "${AQ_LOCKED-}" ] || watch_close_check "$slug"
   [ -n "${AQ_LOCKED-}" ] || lock
   f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
   from="$(state_of "$f")"
