@@ -11,7 +11,7 @@ Denied: `git tag` creating a release tag (`v<n>.<n>...`, `<name>-v<n>.<n>...`); 
 carries one, deletes one, pushes a tag glob, or pushes `--tags`, `--follow-tags` or `--mirror`;
 `gh release create` (or an API release write) of a release tag not yet on origin; an API write to
 `git/refs` or `git/tags` naming a release tag; `gh workflow run cut.yml`, or a workflow named by id
-or by a release-like display name; a run of a cut script (`scripts/release/{ship,release,publish}.sh`,
+or by a release-like display name, and an API dispatch of a cut or release workflow or of one named by id; a run of a cut script (`scripts/release/{ship,release,publish}.sh`,
 or a repo's `scripts/release.sh`, `scripts/publish.sh`); a `gh api` or curl write to `rulesets`,
 `environments` or `keys`, and an environment's `gh secret`/`gh variable` write (the ruleset
 bypass, the environments, the deploy key); and the untested override (`RELEASE_UNTESTED=`, a
@@ -44,6 +44,7 @@ TAG_REF_WORKFLOWS = {"phone-release.yml", "ios-release.yml"}
 CUT_WORKFLOWS = {"cut.yml"}
 CUT_SCRIPTS = {("release", "ship.sh"), ("release", "release.sh"), ("release", "publish.sh"), ("scripts", "release.sh"), ("scripts", "publish.sh")}
 GUARDED_API = re.compile(r"/(rulesets|environments|keys)(?:/|$)")
+DISPATCH_API = re.compile(r"/actions/workflows/([^/]+)/dispatches$")
 TAG_API = re.compile(r"/(?:git/refs|git/tags|releases)(?:/|$)")
 BODY_TAG = re.compile(r"(?:refs/tags/|tag_name\W+|\btag\W+)([\w.+-]+)")
 RELEASE_WF_NAME = re.compile(r"cut|release|steam|ship|publish", re.I)
@@ -181,7 +182,21 @@ def gh_repo(argv, env):
     return slug
 
 
+def split_short(argv):
+    """argv with each attached short option value split off as gh's flag parser reads it: `-ftag=x`,
+    `-f=tag=x`, `-rv1.0`, `-Ro/r`. Matched only when given apart, an attached field or ref went
+    unread: `-funtested-reason=x` passed (ar-4040)."""
+    out = []
+    for a in argv:
+        if len(a) > 2 and a[0] == "-" and a[1] in "fFrR":
+            out += [a[:2], a[3:] if a[2] == "=" else a[2:]]
+        else:
+            out.append(a)
+    return out
+
+
 def check_workflow_run(argv, env, cwd):
+    argv = split_short(argv)
     i = argv.index("run", argv.index("workflow"))
     wf, fields, refs, j = None, [], [], i + 1
     while j < len(argv):
@@ -263,6 +278,11 @@ def check_api(head, argv, cwd):
     shown = "%s ... %s" % ("gh api" if head == "gh" else head, path)
     if GUARDED_API.search(path):
         return deny(shown, LOCKS)
+    wf = DISPATCH_API.search(path)
+    if wf and (wf.group(1) in CUT_WORKFLOWS | RELEASE_WORKFLOWS or not wf.group(1).endswith((".yml", ".yaml"))):
+        # the API's inputs are a JSON body: `gh workflow run` is the form whose fields this guard reads (ar-4040)
+        return deny(shown, "start %s through the API, where this guard cannot read its inputs: use "
+                    "`gh workflow run <file>.yml`" % wf.group(1))
     if not TAG_API.search(path):
         return None
     body = api_body(argv, cwd)
