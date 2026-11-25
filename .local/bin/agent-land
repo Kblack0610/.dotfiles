@@ -17,7 +17,7 @@
 # checkout; a HEAD that is origin's tip of the PR branch is a fresh push, waited on until the PR reads it), fetch (a head behind origin/<base> is merged up to it, each clean submodule checkout on its old pin moved to the merged one (submodule_follow), and pushed, before the checks and again after them if the base moved on during them; a head pushed after them waits on its own checks before it merges, and on a base without strict checks a second move lands that green head behind it, catch_up), item-line
 # (before the checks, the PR body gets the line "Item: <slug>" unless it has it, so a reader holding
 # only the PR finds its work item; a stale "Item:" line is rewritten, except on a merged PR where another queue item's line stays), review (a tier-3 item's body has a
-# "Review:" line, review_gate), shape (no function over 150 lines gets longer unless the body has a "Split: <row id>" line, shape_gate), checks (the PR's checks pass: CI, a required check; a cancelled check is no pass, waited on while a run on the head goes on, and on GitHub so is a failed one while a run of its workflow and event started after it goes on, and a cancelled matrix job of an older run of its workflow is no verdict (pr-ci.sh); a tier-3 item, or one landed with --ran-checks, needs checks that ran), validate (critical work by judge.sh judge_work_level merges only on a second agent's pass verdict on this head, validate_gate), merge (--squash, or with --merge-commit a merge commit,
+# "Review:" line, review_gate), loose (a plan phase's item filed no open agent row its plan does not take, loose_gate), shape (no function over 150 lines gets longer unless the body has a "Split: <row id>" line, shape_gate), checks (the PR's checks pass: CI, a required check; a cancelled check is no pass, waited on while a run on the head goes on, and on GitHub so is a failed one while a run of its workflow and event started after it goes on, and a cancelled matrix job of an older run of its workflow is no verdict (pr-ci.sh); a tier-3 item, or one landed with --ran-checks, needs checks that ran), validate (critical work by judge.sh judge_work_level merges only on a second agent's pass verdict on this head, validate_gate), merge (--squash, or with --merge-commit a merge commit,
 # for a landing train whose member PRs read MERGED only while their heads stay reachable; --admin adds gh's --admin, which skips a required approving review on a repo whose owner allows it, never the checks step above; --match-head-commit HEAD, then gh pr view must say MERGED), proof (the PR's merge commit is
 # on origin/<base>, by agent-merge-proof.sh), live (dotfiles-autopull --now --bg fast-forwards, in the background, the stowed
 # checkout when this repo is ~/.dotfiles or ~/.dotfiles-private, links what it added, rebuilds the
@@ -1065,6 +1065,25 @@ review_gate() {
   echo "review: present (tier 3)"
 }
 
+# loose_gate: a phase of a plan (an item with plan:, agent-queue add --plan) lands only once each open agent row
+# its item filed has a home in that plan: a found blocker is a `takes <row id>` phase line (planning.md,
+# Found work:), so the chain does the work and closes the row, never a row left loose while the plan reads done.
+# The rows are plan_loose_rows's: the ingest record says who filed a row, as the board keeps no #from/ tag.
+# A --partial landing is not checked (the final one is), nor is an item of no plan. A record or board it
+# cannot read refuses, so a broken read never passes a loose row.
+# gate: al-loose-gate
+loose_gate() {
+  [ "$partial" -eq 0 ] || return 0
+  local p own loose
+  p=$(jq -r '.plan // ""' <<<"$it")
+  [ -n "$p" ] && [ -f "$p" ] || return 0
+  own=$(jq -r '.row // ""' <<<"$it")
+  loose=$(plan_loose_rows "$p" "$item" "${own#*:}") ||
+    fail loose "could not read the rows $item filed (notes log, notes board); re-run once notes reads"
+  [ -n "$loose" ] || return 0
+  fail loose "$item filed open row(s) $(paste -sd' ' <<<"$loose") that no phase of $p takes. Two ways out: take each into the plan, a phase line \"- [ ] P<N> <what> takes <row id> (after N; needs ...)\" then agent-queue add --plan $p (or \"takes <row id>\" on this phase's own line when this PR does that work); or ask the human to drop it (agent-ask post). Then re-run agent-land; nothing was merged"
+}
+
 # stack_gate: an item whose after: names an item that has not closed ok was started on that item's open
 # PR (fleet-dispatch cmd_start, a stacked phase) and does not merge before it: this PR carries the
 # dependency's commits, so merging first would land them unreviewed. Exit 4 with the blocker named; a
@@ -1373,6 +1392,8 @@ if [ "$dry" -eq 1 ]; then
   echo "item-line: gh pr view $pr${repo:+ -R $repo} --json body, then gh pr edit $pr --body-file -  (unless it has \"Item: $item\")"
   echo "head: git rev-parse HEAD must equal the PR's headRefOid (when it is git ls-remote origin's tip of the PR branch, poll gh pr view $pr --json headRefOid until it does), else exit 1 naming the PR's checkout (git worktree list); the PR's repo must be origin's; a MERGED PR must name the item, have its head in HEAD, or be on the item${sup:+, or replace closed #$sup (--supersedes: #$sup is the item's and opened before #$pr merged; the record drops it from the item's pr:)}; an item not named by --item takes only a PR in its project's repo that it records or whose body has \"Item: $item\""
   echo "review: fleet-dispatch item-tier $item  (tier 3: the body needs a \"Review: \" line and the checks must run)"
+  [ "$partial" -eq 1 ] || [ -z "$(jq -r '.plan // ""' <<<"$it")" ] ||
+    echo "loose: plan_loose_rows $(jq -r .plan <<<"$it") $item  (notes log, then notes board --json --id: an open agent row $item filed that no phase line takes stops the landing)"
   echo "shape: shape-grow \$(git merge-base HEAD origin/<base>) HEAD  (no function over 150 lines gets longer, unless the body has a \"Split: <row id>\" line naming an open row that names each function)"
   echo "checks: gh pr checks $pr${repo:+ -R $repo} --watch --fail-fast -i $CHECKS_WATCH_INTERVAL  (must pass, or report none on a tier 1 or 2 item; a land that would refuse none, on a head with workflow files, first waits up to $CHECKS_FIRST_RUN_TRIES x ${CHECKS_QUEUED_POLL}s for its first run, AGENT_LAND_CHECKS_FIRST_RUN_TRIES)"
   echo "fetch: git fetch origin && git rev-list --count HEAD..origin/<base of #$pr>  (0 before the checks; after them git merge origin/<base> && git push, then the checks again on that head)"
@@ -1494,6 +1515,7 @@ else
   # (GitHub cannot build its merge ref), so its last, stale Checks red would read as a failure.
   stack_gate
   review_gate
+  loose_gate
   # A head behind <base> is caught up first, the same merge as after the gate: a session that
   # stopped on exit 3 here left its green PR open while main moved (six waiting on 2026-11-07).
   catch_up before || true
