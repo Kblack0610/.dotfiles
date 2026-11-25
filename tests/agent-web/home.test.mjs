@@ -526,7 +526,11 @@ test("Since last night shows only what is not ok, links each row and folds the o
   assert.match(html, /<a href="#sessions">Sessions<\/a> <span class="cchip warn">warn<\/span> Sessions line <\/div>/, "a warn row has no fix");
   assert.equal(html.match(/data-fix=/g).length, 1);
   assert.match(html, /Infra, Nightly, Delivery, Costs ok/);
-  assert.ok(html.indexOf("Needs you") < html.indexOf("Since last night") && html.indexOf("Since last night") < html.indexOf("Proposals"));
+  // A red one leads the sections; only the cards come before it.
+  assert.ok(html.indexOf("Since last night") < html.indexOf("Needs you"), "a red night leads");
+  // Negative control: a night with no red area keeps its place, after Needs you and before Proposals.
+  const warn = drawNight(night({ rows: [area("Sessions", "warn")] }));
+  assert.ok(warn.indexOf("Needs you") < warn.indexOf("Since last night") && warn.indexOf("Since last night") < warn.indexOf("Proposals"));
 });
 
 test("a failed briefing read says why instead of an all-clear", () => {
