@@ -36,11 +36,12 @@ setup() {
   KEY="none.$BATS_SUITE_TEST_NUMBER"
 }
 
-# route <name> <base-url> <model>: a gateway route whose key is the sandbox's key file.
+# route <name> <base-url> <model> [key-file [personal-safe]]: a gateway route whose key is the
+# sandbox's key file (default: the local model's).
 route() {
   printf '%s\n' 'ROUTE_DESC="test"' 'ROUTE_TRANSPORT="openai-compatible"' "ROUTE_BASE_URL=\"$2\"" \
-    "ROUTE_MODEL_RAW=\"$3\"" 'ROUTE_KEY_SOURCE="file:~/.local/state/ask-local/key"' 'ROUTE_PAYER="nobody"' \
-    'ROUTE_PERSONAL_SAFE="yes"' 'ROUTE_WORK_SAFE="no"' 'ROUTE_FALLBACK_SAFE="yes"' \
+    "ROUTE_MODEL_RAW=\"$3\"" "ROUTE_KEY_SOURCE=\"file:~/.local/state/ask-local/${4:-key}\"" 'ROUTE_PAYER="nobody"' \
+    "ROUTE_PERSONAL_SAFE=\"${5:-yes}\"" 'ROUTE_WORK_SAFE="no"' 'ROUTE_FALLBACK_SAFE="yes"' \
     "ROUTE_VERIFY_MODEL=\"$3\"" "ROUTE_VERIFY_API_BASE=\"$2\"" 'ROUTE_HARNESSES="raw"' \
     >"$AGENTCTL_ROUTES/$1.route"
 }
@@ -246,4 +247,122 @@ sent() { jq -cr "$1" "$STUB_DIR/$KEY.json"; }
   assert_equal "$(jq -r '.choices[0].message.content' <<<"$output")" "echo: hi"
   assert_equal "$(sent .body.model)" "local (qwen3.5-9b)"
   [ ! -s "$HOME/.local/state/agentctl/calls.jsonl" ]
+}
+
+# free_route <behaviour>: the --free fallback route, on its own key, as the real one is: not
+# personal-safe, so only a call declared public may use it.
+free_route() {
+  FREE_KEY="$1.$BATS_SUITE_TEST_NUMBER"
+  route gateway-free "$ASK_LOCAL_GATEWAY_URL" "free-qwen (qwen3.8-27b)" free-key no
+  printf '%s\n' "$FREE_KEY" >"$HOME/.local/state/ask-local/free-key"
+  chmod 600 "$HOME/.local/state/ask-local/free-key"
+  export ASK_LOCAL_FREE_LEDGER="$SANDBOX/free-ledger"
+}
+free_sent() { jq -cr "$1" "$STUB_DIR/$FREE_KEY.json"; }
+
+@test "--free: a down local model hands the one call to the free route as public input" {
+  key down
+  free_route good
+  run "$ASK_LOCAL" --free why is the sky blue </dev/null
+  assert_success
+  assert_output --partial "trying gateway-free"
+  assert_output --partial "echo: why is the sky blue"
+  assert_equal "$(free_sent .body.model)" "free-qwen (qwen3.8-27b)"
+  assert_equal "$(free_sent '.headers.Authorization')" "Bearer $FREE_KEY"
+  [ "$(wc -l <"$ASK_LOCAL_FREE_LEDGER")" = 1 ]
+}
+
+@test "--free: an unreachable local gateway falls back too" {
+  key good
+  route gateway-local http://127.0.0.1:9/v1 "local (qwen3.5-9b)"
+  free_route good
+  run "$ASK_LOCAL" --free hi </dev/null
+  assert_success
+  assert_output --partial "echo: hi"
+}
+
+@test "without --free a down local model fails and the free route is never called" {
+  key down
+  free_route good
+  run "$ASK_LOCAL" hi </dev/null
+  assert_failure 1
+  refute_output --partial "gateway-free"
+  [ ! -e "$STUB_DIR/$FREE_KEY.json" ]
+}
+
+@test "--free: a local model that answers never touches the free route or the ledger" {
+  key good
+  free_route good
+  run "$ASK_LOCAL" --free hi </dev/null
+  assert_success
+  assert_output "echo: hi"
+  [ ! -e "$STUB_DIR/$FREE_KEY.json" ]
+  [ ! -e "$ASK_LOCAL_FREE_LEDGER" ]
+}
+
+@test "--free: a refused key or an empty answer is not a down model, so no fallback" {
+  key wrong
+  free_route good
+  run "$ASK_LOCAL" --free hi </dev/null
+  assert_failure 1
+  [ ! -e "$STUB_DIR/$FREE_KEY.json" ]
+  key empty
+  run "$ASK_LOCAL" --free hi </dev/null
+  assert_failure 1
+  [ ! -e "$STUB_DIR/$FREE_KEY.json" ]
+}
+
+@test "--free: a prompt that does not fit one minute's tokens stays a local failure" {
+  key down
+  free_route good
+  run bash -c 'head -c 24000 /dev/zero | tr "\0" a | "$0" --free summarize' "$ASK_LOCAL"
+  assert_failure 1
+  assert_output --partial "--free skipped, the call is about"
+  [ ! -e "$STUB_DIR/$FREE_KEY.json" ]
+}
+
+@test "--free: the request and token windows are kept, and a refused call books nothing" {
+  key down
+  free_route good
+  now="$(date +%s)"
+  for _ in $(seq 14); do echo "$now 10"; done >"$ASK_LOCAL_FREE_LEDGER"
+  run "$ASK_LOCAL" --free hi </dev/null
+  assert_failure 1
+  assert_output --partial "14 calls in the last minute, the limit is 14"
+  echo "$now 6500" >"$ASK_LOCAL_FREE_LEDGER"
+  run "$ASK_LOCAL" --free hi </dev/null
+  assert_failure 1
+  assert_output --partial "6500 tokens went in the last minute"
+  [ "$(wc -l <"$ASK_LOCAL_FREE_LEDGER")" = 1 ]
+  [ ! -e "$STUB_DIR/$FREE_KEY.json" ]
+}
+
+@test "--free: the day's tokens are capped, and calls older than a day drop out of the ledger" {
+  key down
+  free_route good
+  now="$(date +%s)"
+  printf '%s\n' "$((now - 3600)) 99500" "$((now - 90000)) 50000" >"$ASK_LOCAL_FREE_LEDGER"
+  run "$ASK_LOCAL" --free hi </dev/null
+  assert_failure 1
+  assert_output --partial "99500 tokens went in the last day"
+  printf '%s\n' "$((now - 90000)) 50000" >"$ASK_LOCAL_FREE_LEDGER"
+  run "$ASK_LOCAL" --free hi </dev/null
+  assert_success
+  [ "$(wc -l <"$ASK_LOCAL_FREE_LEDGER")" = 1 ]
+}
+
+@test "the free route refuses a call that is not declared public, so --route cannot reach it with personal data" {
+  key good
+  free_route good
+  run "$ASK_LOCAL" --route gateway-free hi </dev/null
+  assert_failure 2
+  assert_output --partial "REFUSED: DATA_CLASS=personal on route 'gateway-free'"
+  [ ! -e "$STUB_DIR/$FREE_KEY.json" ]
+}
+
+@test "--free is for one-shot calls, not --chat" {
+  key good
+  run "$ASK_LOCAL" --chat --free </dev/null
+  assert_failure 2
+  assert_output --partial "--free works on one-shot calls"
 }

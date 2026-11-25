@@ -10,11 +10,21 @@
 #   ask-local --json "3 fruits as {\"fruits\": []}"  JSON object out, validated
 #   ask-local --schema s.json "extract the dates"   output held to a JSON schema
 #   ask-local --chat                                a REPL that keeps the conversation
-# Options: --system TEXT, --max-tokens N (1024), --timeout S (120), --route NAME, --raw.
+# Options: --system TEXT, --max-tokens N (1024), --timeout S (120), --route NAME, --raw, --free.
+# --free: the input is public (no personal, work or client data), so when the local model is down
+# or busy the one call is tried once on route gateway-free (Groq free-qwen, 8K tokens a minute),
+# paced by the ledger below. Without it a down model fails here and nothing leaves the LAN.
 # Exit: 0 answered, 1 the call failed (down, refused, empty or bad JSON), 2 cannot start.
 set -euo pipefail
 
-ROUTE=gateway-local MAX_TOKENS=1024 TIMEOUT=120 SYSTEM="" MODE=ask FORMAT=text SCHEMA="" RAW=0
+ROUTE=gateway-local MAX_TOKENS=1024 TIMEOUT=120 SYSTEM="" MODE=ask FORMAT=text SCHEMA="" RAW=0 FREE=0
+
+# The --free fallback route and its Groq free-plan limits (30 rpm, 8K tokens/min, 200K tokens/day
+# per model; home-config apps/litellm/config.yaml, read 2026-11-19). The gateway route holds rpm 14
+# and tpm 8000 for every caller on the key; this ledger keeps ask-local's own calls inside one
+# minute's request and token window and under half the day, so fleet trials keep the rest.
+FREE_ROUTE=gateway-free FREE_RPM=14 FREE_TPM=7000 FREE_DAY_TOKENS=100000
+FREE_LEDGER="${ASK_LOCAL_FREE_LEDGER:-${XDG_STATE_HOME:-$HOME/.local/state}/ask-local/free-ledger}"
 
 die() { echo "ask-local: $*" >&2; exit 2; }
 usage() { sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0"; }
@@ -31,6 +41,7 @@ while [ $# -gt 0 ]; do
     --timeout)    [ $# -ge 2 ] || die "--timeout needs seconds"; TIMEOUT="$2"; shift ;;
     --route)      [ $# -ge 2 ] || die "--route needs a name"; ROUTE="$2"; shift ;;
     --raw)        RAW=1 ;;
+    --free)       FREE=1 ;;
     --)           shift; prompt+=("$@"); break ;;
     -*)           die "unknown option $1 (see --help)" ;;
     *)            prompt+=("$1") ;;
@@ -59,12 +70,13 @@ case "${AGENT_QUEUE_ITEM:-}" in
   *) tags="ask-local,queue:$AGENT_QUEUE_ITEM" ;;
 esac
 
-# call <messages-json>: one chat completion through agentctl-run's raw harness, which owns the
+# call <messages-json> [route [data-class]]: one chat completion through agentctl-run's raw harness, which owns the
 # route, the key, the request and the error text (harnesses/raw.sh). The last message is the
 # input; the ones before it go in as history. Prints the answer (or the raw JSON with --raw)
 # and returns 0, or prints why on stderr and returns 1.
 call() {
-  local rc=0 content code
+  local rc=0 content code route="${2:-$ROUTE}" class_args=()
+  [ -z "${3:-}" ] || class_args=(--data-class "$3")
   jq -c '.[:-1]' <<<"$1" >"$hist"
   : >"$status"
   # What a calling agent exported (its name, model, schema) must not reach this call: it would
@@ -75,7 +87,7 @@ call() {
         AGENT_MAX_TOKENS="$MAX_TOKENS" AGENT_TEMPERATURE=0.8 RAW_TIMEOUT_S="$TIMEOUT" RAW_TAGS="$tags" \
         RAW_MESSAGES="$hist" RAW_RESPONSE_FORMAT="$response_format" RAW_STATUS_FILE="$status" \
         RAW_REPLY="$([ "$RAW" = 1 ] && echo json)" \
-        "${AGENTCTL_RUN:-agentctl-run}" --role observe --route "$ROUTE" --harness raw -p >"$out" 2>"$err" || rc=$?
+        "${AGENTCTL_RUN:-agentctl-run}" --role observe --route "$route" ${class_args[@]+"${class_args[@]}"} --harness raw -p >"$out" 2>"$err" || rc=$?
   code="$(cat "$status")"
   # Nothing was asked of the model: the route, the key or the request will not do (78, 69), or
   # the gateway turned away a call that carried no key.
@@ -84,7 +96,7 @@ call() {
   if [ "$rc" != 0 ]; then
     sed 's/^agentctl-run: raw: /ask-local: /' "$err" >&2
     if grep -q 'has no content' "$err"; then echo "ask-local: raise --max-tokens?" >&2
-    else
+    elif [ "$route" = "$ROUTE" ]; then
       case "$code" in
         ""|000|200|401|403) ;;
         *) echo "ask-local: if the route is down, check the workstation: systemctl --user status llama-server" >&2 ;;
@@ -103,10 +115,37 @@ call() {
   printf '%s\n' "$content"
 }
 
+# free_admit <tokens>: may one more call of about that many tokens go to the free route? Exit 0
+# books it in the ledger (one "epoch tokens" line per call); exit 1 says why on stderr and books
+# nothing. The check and the booking share one lock, so two ask-local runs cannot both take the
+# last slot. A refused call is never waited out: the caller gets the local failure.
+free_admit() {
+  local need="$1" now why
+  mkdir -p "$(dirname "$FREE_LEDGER")"
+  (
+    command -v flock >/dev/null && flock 9
+    now="$(date +%s)"
+    why="$(awk -v now="$now" -v need="$need" -v rpm="$FREE_RPM" -v tpm="$FREE_TPM" -v day="$FREE_DAY_TOKENS" '
+      now - $1 < 86400 { d += $2 }
+      now - $1 < 60    { n++; m += $2 }
+      END {
+        if (need > tpm)      print "the call is about " need " tokens, over the " tpm " a minute the route takes"
+        else if (n + 1 > rpm) print n " calls in the last minute, the limit is " rpm
+        else if (m + need > tpm) print m " tokens went in the last minute, with this call over " tpm
+        else if (d + need > day) print d " tokens went in the last day, with this call over " day
+      }' "$FREE_LEDGER" 2>/dev/null)"
+    [ -z "$why" ] || { echo "ask-local: --free skipped, $why" >&2; exit 1; }
+    awk -v now="$now" 'now - $1 < 86400' "$FREE_LEDGER" >"$FREE_LEDGER.new" 2>/dev/null || : >"$FREE_LEDGER.new"
+    echo "$now $need" >>"$FREE_LEDGER.new"
+    mv "$FREE_LEDGER.new" "$FREE_LEDGER"
+  ) 9>"$FREE_LEDGER.lock"
+}
+
 messages='[]'
 [ -n "$SYSTEM" ] && messages="$(jq -c --arg s "$SYSTEM" '. + [{role: "system", content: $s}]' <<<"$messages")"
 
 if [ "$MODE" = chat ]; then
+  [ "$FREE" = 0 ] || die "--free works on one-shot calls, not --chat"
   [ ${#prompt[@]} -eq 0 ] || die "--chat takes no prompt; type it at the prompt"
   echo "ask-local chat on route $ROUTE. Empty line or Ctrl-D quits, /reset clears the history." >&2
   while IFS= read -e -r -p 'you> ' line; do
@@ -136,4 +175,13 @@ if [ -p /dev/stdin ] || [ -f /dev/stdin ]; then
 fi
 [ -n "$text" ] || { usage >&2; exit 2; }
 messages="$(jq -c --arg u "$text" '. + [{role: "user", content: $u}]' <<<"$messages")"
-call "$messages"
+call "$messages" && exit 0
+[ "$FREE" = 1 ] || exit 1
+# Down or busy: no answer at all, a 429 or a 5xx. A refusal (401, 403), a bad request or an empty
+# answer would fail the same way on the free route, so those stay failures.
+case "$(cat "$status")" in 000|429|5??) ;; *) exit 1 ;; esac
+# A byte is at most one token and code runs about three bytes to one, so bytes/3 plus the reply
+# cap is a safe over-estimate of what the minute's token window sees.
+free_admit "$(( $(printf '%s' "$messages" | wc -c) / 3 + MAX_TOKENS ))" || exit 1
+echo "ask-local: the local model did not answer, trying $FREE_ROUTE (--free: the input is public)" >&2
+call "$messages" "$FREE_ROUTE" public
