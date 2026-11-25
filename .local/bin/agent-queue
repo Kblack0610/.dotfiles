@@ -1878,7 +1878,7 @@ overflow_row() {
 # ORIGIN_STORY (ingest.rs): the ingest record marks the row a story, which `notes log --steps` leaves
 # out of backlog intake; a want or a plan phase is intake, so its row keeps its own origin.
 file_story() {
-  local project text="$2" prio="$3" of="" lab code row out rc=0 id brief detail=() want=() origin=() keep="${7:-}" gates="${8:-}" g gt="" untouched="" rt=()
+  local project text="$2" prio="$3" of="" lab code row out rc=0 id brief detail=() want=() origin=() keep="${7:-}" gates="${8:-}" g gt="" untouched="" rt=() tg=()
   ! interrupt_tag "${9:-}" || gates+="${gates:+ }interrupt"
   for g in $gates; do gt+=" #$g"; done
   [ -z "${5:-}" ] || want=(--want "$5")
@@ -1925,12 +1925,15 @@ file_story() {
        # item had started takes the add's brief, priority and tags: kept as it was, the nightly
        # docs-cleanup pass of 11-22 landed on its 11-13 twin ar-2163 with the stale brief, no high and
        # no cleanup tag (ar-5138). A started twin keeps its brief, since its session already has it
-       # (as retask refuses). A tag a hashtag cannot carry (cause:, ask:) stays on the item alone.
-       if [ -n "${AQ_ADD_REPEAT-}" ] && [ -n "$untouched" ]; then
+       # (as retask refuses). A tag a hashtag cannot carry (cause:, ask:) stays on the item alone. A
+       # session's add leaves the twin as it is, as add_row_prio does: its "low" would demote the
+       # human's #urgent row, and its words would replace the human's brief (ar-2943).
+       if [ -n "${AQ_ADD_REPEAT-}" ] && [ -n "$untouched" ] && [ -z "${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}" ]; then
          [ -z "$brief" ] || notes --profile "$lab" ptask "$project" --agent edit "$id" "--brief=$brief" >/dev/null 2>&1 ||
            echo "agent-queue: the open row $id on $project kept its old brief: rewrite it with notes --profile $lab ptask $project --agent edit $id --brief=<the task>" >&2
          [ -z "$prio" ] || rt+=("$prio")
-         for g in ${9:-}; do g="${g#\#}"; [[ ! "$g" =~ ^[A-Za-z0-9][A-Za-z0-9_/-]*$ ]] || rt+=("$g"); done
+         read -ra tg <<<"${9:-}" # no glob: a tag is never a path
+         for g in "${tg[@]}"; do g="${g#\#}"; [[ ! "$g" =~ ^[A-Za-z0-9][A-Za-z0-9_/-]*$ ]] || rt+=("$g"); done
          [ "${#rt[@]}" = 0 ] || gate_row "$project:$id" "$lab" agent "${rt[@]}" ||
            echo "agent-queue: the open row $id on $project kept its old priority and tags: $GATE_HINT" >&2
        fi ;;

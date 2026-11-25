@@ -1365,6 +1365,14 @@ notes --profile work ptask level run lv-8'
   [ "$(field "$(item queued pass3)" row)" = level:lv-6 ]
   run grep -c -e '--agent edit' -e '--agent tag' "$NOTES_FIXTURE/calls.log"
   assert_output 0
+  # NEGATIVE CONTROL: a session's --repeat add leaves an untouched twin as it is, so its "low" never
+  # demotes the human's row and its words never replace the human's brief (ar-2943)
+  : > "$NOTES_FIXTURE/calls.log"
+  echo 'already open on /x/agent/README.md: - [ ] feat(menu): nightly pass <!-- id:lv-7 -->' > "$NOTES_FIXTURE/story.out"
+  CLAUDE_CODE_SESSION_ID=hand-sess "$AQ" add --project level --slug pass4 --repeat --priority low --tags cleanup -- $'feat(menu): nightly pass\ntonight: area chains' >/dev/null
+  [ "$(field "$(item queued pass4)" row)" = level:lv-7 ]
+  run grep -c -e '--agent edit' -e '--agent tag' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
 }
 
 @test "a re-queue links its last item's open row by id, whatever its words; a closed one gets a new row" {

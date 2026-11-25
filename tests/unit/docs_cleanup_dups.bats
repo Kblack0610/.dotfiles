@@ -103,7 +103,7 @@ STUB
     DUPS_JSON='{"pairs":60,"max":60,"over":0}' run "$BIN/agentctl-docs-cleanup" --dry-run
   assert_success
   assert_output --partial 'would queue docs-cleanup-pass-knowledge: '
-  assert_output --partial "on area knowledge of tonight's baseline"
+  assert_output --partial "Docs-cleanup area knowledge: run the"
   assert_output --partial ': knowledge 2. '
   run cat "$LINT_ARGS"
   assert_output --partial "--retired $AGENTCTL_INBOX/"

@@ -137,6 +137,16 @@ if [ -s "$ROWF" ]; then
     done < "$ROWF"
 fi
 
+# A pass queued before the split, under the bare slug, held every area: while it is active it still
+# does, so the first night after the split files nothing beside it.
+legacy="$(agent-queue show "$SLUG" --json 2>/dev/null | jq -r '.state // empty' 2>/dev/null)"
+case "$legacy" in
+    queued|running|waiting|review)
+        report NOOP "pass $SLUG (every area) still $legacy ($summary)"
+        echo "docs-cleanup: pass $SLUG (every area) still $legacy, not queuing another ($summary)"
+        exit 0 ;;
+esac
+
 # The skill is the one this runner's conf names, so a rename is one edit in the conf.
 skill="$(agentctl skill "$NAME" 2>/dev/null)" && [ -n "$skill" ] || fail "no SKILL= in the $NAME conf (agentctl skill $NAME)"
 # What each area came to: filed (a new pass), open (a pass still waiting or working) or bad (a
@@ -175,7 +185,9 @@ for a in $AREAS; do
         echo "docs-cleanup: pass $slug is board row $rid on $rboard, $rstate, not filing another"
         continue
     fi
-    task="Run the $skill skill on area $a of tonight's baseline in ${dir/#$HOME/\~}: ${said[$a]}. Fix it by cause in one PR and write the pass report."
+    # The area leads the row's title, so notes' twin check (the first 80 characters) never links one
+    # area's add to another area's open row, nor refuses it as a similar row.
+    task="Docs-cleanup area $a: run the $skill skill on that area of tonight's baseline in ${dir/#$HOME/\~}: ${said[$a]}. Fix it by cause in one PR and write the pass report."
     if [ "$DRY" = 1 ]; then
         echo "docs-cleanup: would queue $slug: $task"
         continue
@@ -205,7 +217,8 @@ if [ "$DRY" != 1 ]; then
 fi
 # join <part...> -> the parts as one "; "-separated line, for the outcome.
 join() { local s; s="$(printf '%s; ' "$@")"; printf '%s' "${s%; }"; }
-[ "${#bad[@]}" = 0 ] || fail "$(join "${bad[@]}") ($summary)"
+# A FAILED night still names the passes it filed, which the verdict would otherwise hide.
+[ "${#bad[@]}" = 0 ] || fail "$(join "${bad[@]}")${filed[0]:+; also $(join "${filed[@]}")} ($summary)"
 [ "$DRY" != 1 ] || exit 0
 if [ "${#filed[@]}" -gt 0 ]; then report WORKED "$(join "${filed[@]}") ($summary)"
 else report NOOP "passes still open: $(join "${open[@]}") ($summary)"; fi

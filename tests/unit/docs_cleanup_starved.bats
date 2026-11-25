@@ -17,7 +17,7 @@ setup() {
   cat > "$BIN/agent-queue" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
-  show) echo "${ITEM_JSON:-{\}}" ;;
+  show) if [ "$2" = docs-cleanup-pass ]; then echo "${LEGACY_JSON:-{\}}"; else echo "${ITEM_JSON:-{\}}"; fi ;;
   add) printf '%s\n' "$@" >> "$ADD_LOG"
        printf '%s\t%s\n' "$7" "${13}" >> "$ADD_LOG.tsv" # its slug and task
        if [ "${ADD_RC:-0}" = 5 ]; then
@@ -134,10 +134,10 @@ STUB
   run cut -f1 "$ADD_LOG.tsv"
   assert_output "$(printf 'docs-cleanup-pass-skills\ndocs-cleanup-pass-docs')"
   run cut -f2 "$ADD_LOG.tsv"
-  assert_line --index 0 --partial "on area skills of tonight's baseline"
+  assert_line --index 0 --partial "Docs-cleanup area skills: run the"
   assert_line --index 0 --partial ': skills 1. '
   refute_line --index 0 --partial 'global docs'
-  assert_line --index 1 --partial "on area docs of tonight's baseline"
+  assert_line --index 1 --partial "Docs-cleanup area docs: run the"
   assert_line --index 1 --partial ': global docs 3. '
   refute_line --index 1 --partial 'skills 1'
   run grep -c -- '--repeat' "$ADD_LOG"
@@ -165,8 +165,21 @@ STUB
   SKILLS_JSON='{"findings":[{"type":"NOCMD"}]}' ADD_RC=5 run "$BIN/agentctl-docs-cleanup"
   assert_failure 1
   assert_output --partial 'pass docs-cleanup-pass-skills starved: board row ar-9 on agent-runtime filed'
+  assert_output --partial '; also filed docs-cleanup-pass-docs as board row ar-12 on agent-runtime'
   run cut -f1 "$ADD_LOG.tsv"
   assert_output docs-cleanup-pass-docs
   run cut -f2,4 "$AGENTCTL_INBOX/row"
   assert_output "$(printf 'ar-9\tskills\nar-12\tdocs')"
+}
+
+@test "a pass still active under the bare slug from before the split holds every area that night (ar-5138)" {
+  LEGACY_JSON='{"state":"running"}' SKILLS_JSON='{"findings":[{"type":"NOCMD"}]}' ADD_RC=5 run "$BIN/agentctl-docs-cleanup"
+  assert_success
+  assert_output --partial 'pass docs-cleanup-pass (every area) still running, not queuing another'
+  [ ! -e "$ADD_LOG.tsv" ] || fail "an area was filed beside the old pass"
+  # NEGATIVE CONTROL: once it is done the areas file as usual
+  LEGACY_JSON='{"state":"done"}' SKILLS_JSON='{"findings":[{"type":"NOCMD"}]}' ADD_RC=5 run "$BIN/agentctl-docs-cleanup"
+  assert_success
+  run cut -f1 "$ADD_LOG.tsv"
+  assert_output "$(printf 'docs-cleanup-pass-skills\ndocs-cleanup-pass-docs')"
 }
