@@ -118,14 +118,27 @@ own_parent() {
   printf '%s\n' "$id"
 }
 
-# row_checked <row> <project> <epics> <line> <board json>: a model's row as route files it from <line>:
-# epic_checked, then under the line's own parent (own_parent) when it has one, whatever epic the model
-# picked. An empty row stays empty, and an `epic(` row keeps its own parent.
+# row_checked <row> <project> <epics> <line> <board json> [<rows>]: a model's row as route files it from
+# <line>: epic_checked, then under the line's own parent (own_parent) when it has one, whatever epic the
+# model picked. The line's #after/ gates go on every row, since each is part of the work that waits, and
+# its #pts/ replaces the row's own when the line files as one row (<rows>, default 1): a session's split
+# child, sized by the session that split it; the model drops both (ar-5551). A line the model splits
+# further leaves each row its own size. An empty row stays empty, and an `epic(` row keeps its own parent.
 row_checked() {
-  local r of
+  local r of t
+  local -a words
   r="$(epic_checked "$1" "$2" "$3")"
   of="$(own_parent "$4" "$2" "$5")" && [ -n "$(no_parent "$r")" ] && [[ "$r" != epic\(* ]] \
     && r="$(no_parent "$r") #of/$of"
+  if [ -n "$r" ]; then
+    read -r -a words <<<"$4"
+    for t in "${words[@]}"; do
+      case "$t" in
+        '#after/'?*) [[ " $r " == *" $t "* ]] || r="$r $t" ;;
+        '#pts/'?*) [ "${6:-1}" = 1 ] && r="$(sed -E 's/(^|[[:space:]])#pts\/[^[:space:]]*//g' <<<"$r") $t" ;;
+      esac
+    done
+  fi
   printf '%s\n' "$r"
 }
 

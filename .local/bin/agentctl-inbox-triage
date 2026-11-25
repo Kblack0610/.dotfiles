@@ -659,7 +659,7 @@ route() {
           own_plan=''; [[ " ${text,,} " == *" #plan "* ]] && own_plan=1 plan=1
           go=1; [ -n "$own_plan" ] && [[ " ${text,,} " != *" #go "* ]] && go=''
           for r in "${rowv[@]}"; do
-            r="$(row_checked "$(clean 150 <<<"$r")" "${dest:-$from}" "$epics" "$text" "$board")"
+            r="$(row_checked "$(clean 150 <<<"$r")" "${dest:-$from}" "$epics" "$text" "$board" "${#rowv[@]}")"
             if [ -n "$plan" ] && [ "${#asv[@]}" = 0 ] && [[ " $r " != *" #plan "* ]]; then r="$r #plan"; fi
             if [ -n "$go" ] && [[ " $r " == *" #plan "* && " $r " != *" #go "* ]]; then r="$r #go"; fi
             [ -n "$r" ] && asv+=("$r")
