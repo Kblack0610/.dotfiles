@@ -437,12 +437,16 @@ cmd_note_append() {
   block="${block#"${block%%[![:space:]]*}"}"
   [ -n "$block" ] || { echo "wind-down.sh note-append: no block on stdin, the note is unchanged" >&2; return 1; }
   f=$(cmd_note_path) || return 1
-  if [ -s "$f" ]; then
-    sep=$'\n'
-    [ -n "$(tail -c1 "$f")" ] && sep=$'\n\n'
-  fi
-  # Opened for append, so a block never truncates the note.
-  printf '%s%s\n' "$sep" "$block" >> "$f" || return 1
+  # Opened for append, so a block never truncates the note. The lock (flock, where the host has
+  # it) holds a second session winding down at once until this block and its separator are in.
+  {
+    if command -v flock >/dev/null 2>&1; then flock 8 || return 1; fi
+    if [ -s "$f" ]; then
+      sep=$'\n'
+      [ -n "$(tail -c1 "$f")" ] && sep=$'\n\n'
+    fi
+    printf '%s%s\n' "$sep" "$block" >&8 || return 1
+  } 8>>"$f" || return 1
   echo "$f"
 }
 

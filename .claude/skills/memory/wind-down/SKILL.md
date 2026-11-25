@@ -60,18 +60,19 @@ own memory: a session resumed within a day of its teardown is told "wind-down is
 
 The note lives on the **agent-runtime axis** (`~/.agent/`), not the `~/.notes` vault - session
 wrap-ups are agent runtime knowledge, the same axis as evals/plans/lessons (two-axis model;
-telemetry/agent records never go in the vault). Every session that day appends its own block to one note per project, so pipe your block into the executor, which resolves the path the way the hook does and only ever appends:
+telemetry/agent records never go in the vault). Every session that day appends its own block to one note per project, so lint your block alone, then pipe it into the executor, which resolves the path the way the hook does and only ever appends:
 
 ```bash
-n=$(~/.dotfiles/.local/src/tmux/wind-down.sh note-append <<'EOF'
-# Session wrap-up - <YYYY-MM-DD>
-...
+comms-lint --channel status - <<'EOF'   # fix each finding, or say why it stands
+<your whole block, in the shape below>
 EOF
-)
-# n=/home/<user>/.agent/sessions/<project>/<YYYY-MM-DD>-wind-down.md  (dir auto-created)
+~/.dotfiles/.local/src/tmux/wind-down.sh note-append <<'EOF'
+<the same block>
+EOF
+# prints /home/<user>/.agent/sessions/<project>/<YYYY-MM-DD>-wind-down.md  (dir auto-created)
 ```
 
-Never write the note with `>`, `tee`, the Write tool or a whole-file rewrite: it holds the other sessions' blocks, and a store-sync commit of the cut copy carries the cut to every machine (ar-4023). Fix a line of your own block in place (`sed -i` on that line). The block takes the status shape from the `comms-standard` skill (no frontmatter, plain markdown like the lessons and eval files):
+No path printed (exit 1, an empty block) means nothing was written: fix the block and run it again. Never write the note with `>`, `tee`, the Write tool or a whole-file rewrite: it holds the other sessions' blocks, and a store-sync commit of the cut copy carries the cut to every machine (ar-4023). Fix a line of your own block in place (`sed -i` on that line); leave other sessions' blocks alone. The block takes the status shape from the `comms-standard` skill (no frontmatter, plain markdown like the lessons and eval files):
 
 ```markdown
 # Session wrap-up - <YYYY-MM-DD>
@@ -102,7 +103,7 @@ Never write the note with `>`, `tee`, the Write tool or a whole-file rewrite: it
 - `path/to/file` - <one-line why>
 ```
 
-Lint it: `comms-lint --channel status "$n"`; fix each finding or say why it stands. The note is a memory aid, not a changelog. `~/.agent` is git-tracked, so the note becomes durable, recallable knowledge.
+The note is a memory aid, not a changelog. `~/.agent` is git-tracked, so the note becomes durable, recallable knowledge.
 
 ### 1b. Refresh the lab feed (if the project has a lab bus)
 

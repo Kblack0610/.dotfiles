@@ -161,6 +161,25 @@ wrap_up() {
   assert_equal "$(grep -c '^# Session wrap-up' <<<"$output")" 3
 }
 
+@test "a wind-down block fixed in place on the merging machine while another appended is kept once, as fixed (ar-4023)" {
+  # The merge re-adds only blocks the other side added since the base, so the other side's
+  # unchanged copy of the fixed block stays out. Merged the other way round, both copies stay.
+  peer a; peer b
+  note=$(wrap_up a 'block 0')
+  on a
+  on b
+  wrap_up a 'block a'
+  sed -i 's/^block 0$/block 0 fixed/' "$SANDBOX/b/$note"
+  on a
+  run on b
+  assert_success
+  run show "$ORIGIN" "$note"
+  assert_line 'block 0 fixed'
+  refute_line 'block 0'
+  assert_line 'block a'
+  assert_equal "$(grep -c '^# Session wrap-up' <<<"$output")" 2
+}
+
 @test "a wind-down note one machine rewrote with > loses the earlier block on every machine: the writer must append (ar-4023)" {
   # The negative control for the test above: with nothing to merge, a sync carries a cut as it
   # carries any edit, so only a writer that appends keeps the earlier block.

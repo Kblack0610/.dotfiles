@@ -300,11 +300,15 @@ cmd_merge_derived() {
 
 # cmd_merge_note <base> <ours> <theirs> <path>: the driver for a day's wind-down note, leaving the
 # result in <ours>. A clean text merge stands. Otherwise the local note stays whole and each
-# `# Session wrap-up` block of the other side's that it lacks follows, a blank line apart, so it never
-# conflicts. Every session appends a block to the day's note, and two machines' blocks appended at
-# once always clash at the end of the file; the union merge this replaces kept the lines the two
-# blocks share (`## Done`, `- Nothing.`) once and folded both under one header (70c4594d1 in the
-# store, 2026-11-24, and about one block per two-sided merge since; ar-4023).
+# `# Session wrap-up` block the other side added since the base follows, a blank line apart, so it
+# never conflicts: a block counts as added when the other side holds more copies of it than the base
+# does, so two sessions' identical blocks both stay and a base block is never re-added. A base block
+# the other side edited in place while this side appended comes back as its edited copy after this
+# side's blocks, beside the old one: a duplicate, never a loss. Every session appends a block to the
+# day's note, and two machines' blocks appended at once always clash at the end of the file; the
+# union merge this replaces kept the lines the two blocks share (`## Done`, `- Nothing.`) once and
+# folded both under one header (70c4594d1 in the store, 2026-11-24, and most two-sided merges since;
+# ar-4023).
 cmd_merge_note() {
   [ $# -eq 4 ] || die "merge-note needs <base> <ours> <theirs> <path>"
   local tmp
@@ -315,14 +319,14 @@ cmd_merge_note() {
       awk 'function flush(  k) {
              k = b; sub(/\n+$/, "\n", k)
              if (k ~ /[^[:space:]]/) {
-               if (bf == 1) have[k] = 1
-               else if (!(k in have)) { printf "\n%s", k; have[k] = 1 }
+               if (bf == 1) inbase[k]++
+               else if (++seen[k] > inbase[k]) printf "\n%s", k
              }
              b = ""
            }
            f != bf || /^# Session wrap-up/ { flush(); bf = f }
            { b = b $0 "\n" }
-           END { flush() }' f=1 "$2" f=2 "$3"
+           END { flush() }' f=1 "$1" f=2 "$3"
     } > "$tmp.out" && mv -f "$tmp.out" "$tmp" || { rm -f "$tmp" "$tmp.out"; return 1; }
   fi
   cat "$tmp" > "$2"
