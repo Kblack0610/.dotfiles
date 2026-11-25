@@ -86,6 +86,8 @@ class_rank() { awk -F'\t' -v c="$1" '$1 == c { print $2 }' <<<"$DESK_CLASSES"; }
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fmt.sh"
 # shellcheck source=../lib/audit.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/audit.sh"
+# shellcheck source=../lib/agent-units.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/agent-units.sh"   # agent_batch_unit
 # shellcheck source=../lib/dispatch-wake.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/dispatch-wake.sh"
 
@@ -354,8 +356,7 @@ unit_of() {
   local IFS=/
   for part in $path; do
     case "$part" in
-      tmux-spawn-*.scope|agent-*.scope|agentctl@*.service) batch="${batch:-$part}" ;;
-      *.scope|*.service) unit="$part" ;;
+      *.scope|*.service) if agent_batch_unit "$part"; then batch="${batch:-$part}"; else unit="$part"; fi ;;
     esac
   done
   unit="${batch:-$unit}"
@@ -384,10 +385,7 @@ cmd_lower() {
     esac
     # Only units that are batch work: a desktop terminal's or app's scope is the human's,
     # and the caller's own pane would slow the pass that has to lift the hold.
-    case "$unit" in
-      tmux-spawn-*.scope|agent-*.scope|agentctl@*.service) ;;
-      *) echo "agent-hold lower: pid $pid runs in $unit, not a tmux pane, agent session or agentctl unit; left alone" >&2; [ "$rc" -gt 1 ] || rc=1; continue ;;
-    esac
+    agent_batch_unit "$unit" || { echo "agent-hold lower: pid $pid runs in $unit, not a tmux pane, agent session or agentctl unit; left alone" >&2; [ "$rc" -gt 1 ] || rc=1; continue; }
     [ "$unit" = "$self" ] && { echo "agent-hold lower: pid $pid is in this pane ($unit); left alone" >&2; [ "$rc" -gt 1 ] || rc=1; continue; }
     if in_list "$unit" "$lowered"; then echo "lowered: $unit (pid $pid, already)"; continue; fi
     # Recorded before it is applied, so no interrupted run leaves a unit lowered that the

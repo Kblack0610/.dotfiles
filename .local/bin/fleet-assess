@@ -60,6 +60,8 @@ _fa_lib="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib"
 . "$_fa_lib/agent-merge-proof.sh"   # merge_proof_ref, the base branch_merged reads
 # shellcheck source=../lib/cpu-temp.sh
 . "$_fa_lib/cpu-temp.sh"            # read_tctl
+# shellcheck source=../lib/agent-units.sh
+. "$_fa_lib/agent-units.sh"         # AGENT_PANE_SCOPES, for CAP_PROBE
 WATCH_TRIP_FILE="${SENTINEL_STATE:-$HOME/.local/state/watch-companion}/fleet-thermal.state"
 
 # fleet_verdict <load1> <cores> <tctl|-> <mem_avail_pct> <held 0|1> [<mem_stall_pct>] -> "VERDICT reason"
@@ -456,7 +458,7 @@ busy_line() {
 # worker. EffectiveCPUs is the kernel's cpuset; AllowedCPUs is recorded even where the user
 # manager has no cpuset controller and nothing is pinned (razer-laptop, 2026-11-18). A user
 # manager it cannot reach (no user bus over ssh) exits 1, so the host reads unconfirmed.
-CAP_PROBE='set -o pipefail; units=$(systemctl --user list-units --no-legend --plain --state=active "tmux-spawn-*.scope" "agent-*.scope" app-agentctl.slice "fleet-*.service" "agent-*.service" "claude-acct-*.service" schedules-sync.service store-sync.service | awk "{print \$1}") || exit 1; for u in $units; do printf "%s %s\n" "$u" "$(systemctl --user show "$u" -p EffectiveCPUs --value)"; done'
+CAP_PROBE='set -o pipefail; units=$(systemctl --user list-units --no-legend --plain --state=active '"$(printf '"%s" ' "${AGENT_PANE_SCOPES[@]}")"'app-agentctl.slice "fleet-*.service" "agent-*.service" "claude-acct-*.service" schedules-sync.service store-sync.service | awk "{print \$1}") || exit 1; for u in $units; do printf "%s %s\n" "$u" "$(systemctl --user show "$u" -p EffectiveCPUs --value)"; done'
 
 # cap_units <cap host line> -> that host's CAP_PROBE lines; rc non-zero when it cannot be read.
 # This machine is the host named FLEET_HOST, or one the inventory reaches with ansible_connection local.
