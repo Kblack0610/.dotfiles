@@ -2234,7 +2234,7 @@ qstats_fixture() {
   run env BENCH_NOW=$T0 "$SUBJECT" models
   assert_line '| sol | codex | 7 | 4 (1 failed) | 1 | 2 | 0.67 (0.21-0.94, n 3) | 1 | 0 | 0 | $0 | - | - | - | - | - | - |'
   assert_line '| kimi | opencode-go | 0 | 0 | 1 | 0 | - | 0 | 0 | 0 | $0 | - | - | - | - | - | - |'
-  assert_line --partial 'Returned are items sent back to their board row'
+  assert_line --partial 'A check is in Done and in neither Rate nor Failed'
   # BENCH_NOPR_TYPES overrides the kinds: empty splits nothing off, a list names the types
   run env BENCH_NOW=$T0 BENCH_NOPR_TYPES= "$SUBJECT" models --json
   assert_equal "$(jq -c '.models[] | select(.model == "sol") | [.checks, .code]' <<<"$output")" '[0,7]'
@@ -2465,7 +2465,7 @@ qstats_fixture() {
   assert_success
   [ "$(cat "$ITEMS.since")" = "$(date -d "@$((T0 - 7 * 86400))" +%F)" ]
   row() { jq -c ".models[] | select(.model == \"$1\" and .harness == \"${2:-claude}\") | $3" <<<"$output"; }
-  assert_equal "$(row sonnet claude .)" '{"model":"sonnet","harness":"claude","done":2,"landed":1,"landed_rate":0.5,"landed_n":2,"landed_ci":{"lo":0.09,"hi":0.91},"failed":1,"unrated":0,"fix_none":0,"fix_small":0,"runs":3,"approved":1,"rated":2,"redo":1,"redo_rate":0.5,"reverts":1,"cost_usd":8,"priced":1,"cost_per_pr":8,"source":"list","ci_prs":0,"ci_red_per_pr":null,"first_pass_share":null,"first_pass_n":0,"first_pass_ci":null,"points":null,"points_per_pr":null}'
+  assert_equal "$(row sonnet claude .)" '{"model":"sonnet","harness":"claude","done":2,"checks":0,"checks_ok":0,"checks_failed":0,"returned":0,"code":2,"landed":1,"landed_rate":0.5,"landed_n":2,"landed_ci":{"lo":0.09,"hi":0.91},"failed":1,"unrated":0,"fix_none":0,"fix_small":0,"runs":3,"approved":1,"rated":2,"redo":1,"redo_rate":0.5,"reverts":1,"cost_usd":8,"priced":1,"cost_per_pr":8,"source":"list","ci_prs":0,"ci_red_per_pr":null,"first_pass_share":null,"first_pass_n":0,"first_pass_ci":null,"points":null,"points_per_pr":null}'
   assert_equal "$(row opus claude '[.landed_rate, .cost_per_pr, .redo_rate]')" '[1,3,null]'
   assert_equal "$(row unrecorded claude '[.done, .landed, .priced, .cost_per_pr, .source]')" '[1,1,0,null,"-"]'
   run env BENCH_NOW=$T0 "$SUBJECT" models
