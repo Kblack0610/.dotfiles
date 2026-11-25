@@ -175,8 +175,9 @@ install_gui() {
     install_catalog GUI
 }
 
-# The pacman helper Arch and Arch-on-WSL share. $SUDO is unset on Arch (sudo) and
-# empty on a root WSL shell, which has no sudo.
+# The pacman helper Arch and Arch-on-WSL share. install_wsl.sh empties SUDO on a root shell,
+# which has no sudo; set here, so an exported SUDO never changes how Arch installs.
+SUDO=sudo
 install_pacman_package() {
     local package="$1"
 
@@ -186,7 +187,7 @@ install_pacman_package() {
     fi
 
     log_info "Installing $package..."
-    if ${SUDO-sudo} pacman -S --noconfirm "$package" &>/dev/null; then
+    if $SUDO pacman -S --noconfirm "$package" &>/dev/null; then
         log_info "✓ $package installed"
     else
         log_warning "✗ Failed to install $package"

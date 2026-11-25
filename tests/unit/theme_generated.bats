@@ -180,7 +180,7 @@ is_ignored() {
     echo "  2. If generated: does anything read it that CANNOT run theme-switch," >&2
     echo "     reaching it over git rather than off this disk?" >&2
     echo "     no  -> add it to .gitignore, and to the generated cases above," >&2
-    echo "            and to THEME_TARGETS_<OS> in the installers' packages.conf." >&2
+    echo "            and to THEME_TARGETS_<OS> in the installers' shared packages.conf." >&2
     echo "     yes -> it must stay tracked or it never reaches that consumer" >&2
     echo "            (this is .termux/colors.properties and the phone). Add it" >&2
     echo "            to the expected list here and to the README, and say in" >&2

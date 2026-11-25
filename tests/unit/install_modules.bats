@@ -219,13 +219,14 @@ SH
 
 @test "install_pacman_package goes through sudo on Arch and runs pacman bare as root on WSL" {
   # The Arch and WSL copies differed only here: WSL's empty $SUDO when it runs as root with no sudo.
+  # base_functions.sh sets SUDO=sudo, so an exported SUDO cannot change the Arch path.
+  assert_equal "$SUDO" sudo
   local b="$BATS_TEST_TMPDIR/bin"
   mkdir -p "$b"
   printf '#!/bin/sh\n[ "$1" = -Q ] && exit 1\necho "pacman $*" >>"%s/calls"\n' "$BATS_TEST_TMPDIR" >"$b/pacman"
   printf '#!/bin/sh\necho "sudo $1" >>"%s/calls"\nexec "$@"\n' "$BATS_TEST_TMPDIR" >"$b/sudo"
   chmod +x "$b/pacman" "$b/sudo"
-  unset SUDO
-  PATH="$b:$PATH" run install_pacman_package one
+  SUDO=sudo PATH="$b:$PATH" run install_pacman_package one
   assert_success
   SUDO="" PATH="$b:$PATH" run install_pacman_package two
   assert_success

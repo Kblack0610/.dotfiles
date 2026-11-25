@@ -210,7 +210,7 @@ is a loop to cut.
 Because a fresh clone has none of them -- and `sketchybarrc` hard-`source`s
 `colors.sh` -- the installers call `setup_theme()` after `apply_dotfiles` to
 render them once. It passes `--only` the generated targets (`THEME_TARGETS_<OS>` in
-the installers' `packages.conf`) on purpose: the one
+the installers' shared `packages.conf`) on purpose: the one
 **tracked** target, termux, already ships correct, and re-rendering it at install
 time would hand a fresh machine a dirty tree before first login.
 
