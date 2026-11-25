@@ -151,9 +151,10 @@ impl DataTable {
         self.clamp(n);
     }
 
-    /// After a re-read: the selection on the row whose `key` is `id`, or the index kept in range.
-    pub fn reselect<T, K: PartialEq>(&mut self, rows: &[T], id: Option<K>, key: impl Fn(&T) -> K) {
-        let at = id.and_then(|id| rows.iter().position(|r| key(r) == id));
+    /// After a re-read: the selection on the first row `is` matches with `id`, or the index kept in
+    /// range.
+    pub fn reselect<T, K>(&mut self, rows: &[T], id: Option<K>, is: impl Fn(&T, &K) -> bool) {
+        let at = id.and_then(|id| rows.iter().position(|r| is(r, &id)));
         self.keep(at, rows.len());
     }
 

@@ -278,7 +278,7 @@ pub fn today(rec: Option<&Value>, p: Palette, now: i64, w: usize) -> Page {
                         let t = t.split_once('/').map_or(t, |(_, r)| r);
                         vec![
                             t.strip_suffix(":1").unwrap_or(t).to_string().into(),
-                            dash(&plan_name(s(x, "plan"))).into(),
+                            dash(plan_name(s(x, "plan"))).into(),
                             dash(s(x, "phase")).into(),
                             num(&x["working_h"]).into(),
                             num(&x["waiting_h"]).into(),
@@ -403,9 +403,7 @@ pub mod tests {
         })
     }
 
-    fn text(l: &[Line]) -> String {
-        l.iter().map(plain).collect::<Vec<_>>().join("\n")
-    }
+    use crate::fit::plain_text as text;
 
     // 2026-11-03 20:30Z
     const NOW: i64 = 1_793_737_800;

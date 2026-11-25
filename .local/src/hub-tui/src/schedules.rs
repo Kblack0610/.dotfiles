@@ -51,7 +51,7 @@ impl SchedulesView {
     /// Move the selection to the row with this id after a refresh, or keep the index in range.
     pub fn reselect(&mut self, s: &Schedules, id: Option<RowId>) {
         let rows = self.shown(s);
-        self.table.reselect(&rows, id, |r| row_id(r));
+        self.table.reselect(&rows, id, |r, id| row_id(r) == *id);
     }
 
     /// The reader's summary, then the view and how many rows it keeps.

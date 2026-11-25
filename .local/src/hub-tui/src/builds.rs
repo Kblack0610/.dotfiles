@@ -73,7 +73,7 @@ impl BuildsView {
     /// Move the selection to the run with this key after a read, or keep the index in range.
     pub fn reselect(&mut self, b: &Builds, id: Option<RunKey>) {
         let rows = self.shown(b);
-        self.table.reselect(&rows, id, |r| r.key());
+        self.table.reselect(&rows, id, |r, id| r.key() == *id);
     }
 
     /// The section's heading (`title`) with how the runs divide, the view and what stopped a

@@ -559,10 +559,7 @@ impl crate::table::Row for Running {
 
     fn val(&self, col: &str) -> crate::table::Val {
         use crate::table::Val;
-        let text = |s: Option<&str>| match s {
-            Some(s) if !s.is_empty() => Val::Text(s.to_string()),
-            _ => Val::None,
-        };
+        let text = |s: Option<&str>| s.map_or(Val::None, Val::word);
         match col {
             "item" => text(Some(&self.title)),
             "project" => text(Some(&self.project)),

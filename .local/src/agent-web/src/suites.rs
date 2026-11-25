@@ -29,7 +29,7 @@ use hub_core::table::{self, Summary, View};
 use serde::{Deserialize, Serialize};
 
 use crate::builds;
-use crate::cache::{off, ReadCache};
+use crate::cache::{failed, off, ReadCache};
 
 /// A finished run's results never change; this only bounds how long a stale `Loaded` (a failed
 /// report fixed by a re-fetch) could be kept.
@@ -176,12 +176,7 @@ fn render(r: &Read, q: &Query) -> String {
         table,
         quarantine: held(r.builds, &entries, q),
     };
-    serde_json::to_string(&out).unwrap_or_else(|e| failed(e.to_string()))
-}
-
-/// A body the section can still render when reading itself failed.
-fn failed(e: String) -> String {
-    serde_json::json!({ "rows": [], "runs": [], "errors": [e] }).to_string()
+    serde_json::to_string(&out).unwrap_or_else(|e| failed(&["rows", "runs"], e.to_string()))
 }
 
 /// The run `id` names among `repo`'s runs, else that repo's newest. No repo, or one with no runs,
@@ -264,7 +259,7 @@ pub async fn keep_newest(items: (Vec<Item>, Option<String>)) {
 pub async fn get(q: Query, items: (Vec<Item>, Option<String>)) -> String {
     let b = match builds::current(items).await {
         Ok(b) => b,
-        Err(e) => return failed(e),
+        Err(e) => return failed(&["rows", "runs"], e),
     };
     let runs = junit::pickable(&b, project_map::cached().as_deref());
     let (run, missing) = choose(&runs, &q.trepo, &q.trun);
@@ -694,11 +689,5 @@ mod tests {
         let v = body(None, Query::default());
         assert!(v["quarantine"]["lanes"].as_array().unwrap().is_empty());
         assert_eq!(v["quarantine"]["error"], serde_json::Value::Null);
-    }
-
-    #[test]
-    fn a_failed_read_still_gives_the_section_a_body() {
-        let v: serde_json::Value = serde_json::from_str(&failed("gone".into())).unwrap();
-        assert_eq!(v["errors"][0], "gone");
     }
 }

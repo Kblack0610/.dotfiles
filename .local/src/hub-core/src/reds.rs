@@ -10,7 +10,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::links::{Kind, Link};
 use crate::queue::{pr_links, ItemLink};
-use crate::session_actions::Runner;
+use crate::session_actions::{self, Runner};
 
 /// The window: fleet-bench's own default (`REDS_DAYS`), passed so the summary's "in 7d" is true.
 pub const DAYS: u32 = 7;
@@ -198,10 +198,7 @@ pub struct Reds {
 }
 
 fn argv() -> Vec<String> {
-    ["fleet-bench", "reds", "--json", "--days", &DAYS.to_string()]
-        .iter()
-        .map(|s| s.to_string())
-        .collect()
+    session_actions::argv(&["fleet-bench", "reds", "--json", "--days", &DAYS.to_string()])
 }
 
 /// `fleet-bench reds --json --days DAYS`, split. A failed run or a line that is not a row is an

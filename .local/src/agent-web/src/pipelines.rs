@@ -58,7 +58,7 @@ fn render(p: &Pipelines, q: &Query) -> String {
         errors: &p.errors,
         table,
     };
-    serde_json::to_string(&out).unwrap_or_else(|e| failed("rows", e.to_string()))
+    serde_json::to_string(&out).unwrap_or_else(|e| failed(&["rows"], e.to_string()))
 }
 
 async fn sources() -> Result<std::sync::Arc<Sources>, String> {
@@ -75,7 +75,7 @@ pub async fn get(q: Query, items: (Vec<Item>, Option<String>)) -> String {
         Ok::<_, String>(p)
     };
     read.await
-        .map_or_else(|e| failed("rows", e), |p| render(&p, &q))
+        .map_or_else(|e| failed(&["rows"], e), |p| render(&p, &q))
 }
 
 /// The pipeline `q` names, opened; the error is a request that names none.

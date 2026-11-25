@@ -10,7 +10,7 @@ use hub_core::stack::{self, Agent, Flow, Hook, Rule, RuleFile, Skill, Stack};
 use hub_core::table::{self, Row, Summary, View};
 use serde::{Deserialize, Serialize};
 
-use crate::cache::{off, ReadCache};
+use crate::cache::{failed, off, ReadCache};
 
 /// A read lists a few hundred files and runs `fleet-bench rules` (about 3 s), and the stack
 /// changes by the PR, so tabs, reloads and each keystroke of a search share one read this long.
@@ -112,18 +112,15 @@ fn render(s: &Stack, q: &Query) -> String {
         strip: &s.strip,
         errors: &s.errors,
     };
-    serde_json::to_string(&out).unwrap_or_else(|e| failed(e.to_string()))
-}
-
-/// A body the tab can still render when reading itself failed.
-fn failed(e: String) -> String {
-    serde_json::json!({ "rows": [], "errors": [e] }).to_string()
+    serde_json::to_string(&out).unwrap_or_else(|e| failed(&["rows"], e.to_string()))
 }
 
 impl Cache {
     /// The view `q` asks for, over the shared read and outside its lock.
     pub async fn get(&self, q: Query) -> String {
-        self.read().await.map_or_else(failed, |s| render(&s, &q))
+        self.read()
+            .await
+            .map_or_else(|e| failed(&["rows"], e), |s| render(&s, &q))
     }
 
     /// Flow `name`'s doc section, read from its file now so an edit shows on the next open, and
@@ -271,11 +268,5 @@ mod tests {
             v["table"].get("pager").is_none(),
             "an empty skills table is unpaged"
         );
-    }
-
-    #[test]
-    fn a_failed_read_still_gives_the_tab_a_body() {
-        let v: serde_json::Value = serde_json::from_str(&failed("gone".into())).unwrap();
-        assert_eq!(v["errors"][0], "gone");
     }
 }

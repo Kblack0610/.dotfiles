@@ -76,7 +76,7 @@ impl AlertsView {
     /// Move the selection to the row with this id after a re-read, or keep the index in range.
     pub fn reselect(&mut self, a: &Alerts, id: Option<RowId>) {
         let rows = self.shown(a);
-        self.table.reselect(&rows, id, |r| row_id(r));
+        self.table.reselect(&rows, id, |r, id| row_id(r) == *id);
     }
 
     /// The inner tab shown.
@@ -299,7 +299,6 @@ fn watch_lines(a: &Alerts, ok: bool, p: Palette, now: i64, w: usize) -> Vec<Line
     out
 }
 
-/// A project cell: its name, or `-` for a fleet-wide watch.
 fn row(r: &Alert, p: Palette, now: i64) -> Vec<Cell> {
     let sev = if matches!(r.sev.as_str(), "urgent" | "high") {
         p.bad()

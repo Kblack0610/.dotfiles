@@ -102,8 +102,12 @@ pub fn older(total: usize, shown: usize, p: Palette) -> Option<ratatui::text::Li
 }
 
 /// A blank word as `-`, the way every table shows one.
-pub fn dash(s: &str) -> String {
-    if s.is_empty() { "-" } else { s }.into()
+pub fn dash<S: AsRef<str> + Into<String>>(s: S) -> String {
+    if s.as_ref().is_empty() {
+        "-".into()
+    } else {
+        s.into()
+    }
 }
 
 /// A section's heading: the title, then `rest` dimmed. A caller that wants a gap puts it in `rest`.

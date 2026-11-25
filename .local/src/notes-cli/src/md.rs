@@ -5,6 +5,13 @@ use anyhow::{Context, Result};
 use chrono::{Datelike, Duration, NaiveDate, Weekday};
 use std::path::Path;
 
+/// An open task matching `query` (already lower-cased) by normalised text: the one predicate
+/// `done`, `start` and `rm` share in `project_tasks` and `focus`, so they never disagree about
+/// what is selectable.
+pub fn is_match(line: &str, query: &str) -> bool {
+    is_open_task(line) && task_key(line).contains(query)
+}
+
 /// A `YYYY-MM-DD` test date; panics on any other text.
 #[cfg(test)]
 pub(crate) fn date(s: &str) -> NaiveDate {

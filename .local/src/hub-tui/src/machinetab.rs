@@ -247,7 +247,7 @@ fn running(page: &MachinePage, p: Palette, w: usize) -> Vec<Line<'static>> {
                             ran.into()
                         },
                         s.usual.map_or("-".into(), |u| dur_secs(u as f64).into()),
-                        dash(&s.reference()).into(),
+                        dash(s.reference()).into(),
                     ]
                 })
                 .collect(),
@@ -395,7 +395,7 @@ fn sensors(live: &HostNow, p: Palette, w: usize) -> Vec<Line<'static>> {
                         } else {
                             hot.into()
                         },
-                        dash(&d.readings()).into(),
+                        dash(d.readings()).into(),
                         dash(&d.chip).into(),
                     ]
                 })

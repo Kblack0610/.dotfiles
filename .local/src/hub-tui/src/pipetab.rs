@@ -58,7 +58,7 @@ impl PipelinesView {
     /// After a re-read: the selection on the same pipeline, or the index kept in range.
     pub fn reselect(&mut self, p: &Pipelines, id: Option<RowId>) {
         let rows = self.shown(p);
-        self.table.reselect(&rows, id, |r| row_id(r));
+        self.table.reselect(&rows, id, |r, id| row_id(r) == *id);
     }
 
     /// The section: its head and summary, the chips, the table with the selection marked, then

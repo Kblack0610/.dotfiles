@@ -313,7 +313,7 @@ fn rrow(r: &Requirement, p: Palette) -> Vec<Cell> {
         r.applies.join(" ").into(),
         r.requirement.clone().into(),
         cell(r.says, style),
-        dash(&r.skills.join(" ")).into(),
+        dash(r.skills.join(" ")).into(),
     ]
 }
 

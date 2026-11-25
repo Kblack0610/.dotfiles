@@ -89,7 +89,7 @@ fn render(r: &Read, q: &TableQuery) -> String {
         errors: &r.errors,
         table,
     };
-    serde_json::to_string(&out).unwrap_or_else(|e| failed("rows", e.to_string()))
+    serde_json::to_string(&out).unwrap_or_else(|e| failed(&["rows"], e.to_string()))
 }
 
 impl Cache {
@@ -131,7 +131,7 @@ impl Cache {
     pub async fn table(&self, s: &Shared, q: TableQuery) -> String {
         self.read(s)
             .await
-            .map_or_else(|e| failed("rows", e), |r| render(&r, &q))
+            .map_or_else(|e| failed(&["rows"], e), |r| render(&r, &q))
     }
 
     /// One session's page, or None when nothing names `id`. The open page refreshes with the

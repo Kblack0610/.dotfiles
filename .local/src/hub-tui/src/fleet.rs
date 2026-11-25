@@ -156,7 +156,7 @@ pub fn row(x: &Value, p: Palette) -> Vec<Cell> {
         wait.into(),
         dur_min(n("idle_min")).into(),
         dur_min(n("age_min")).into(),
-        dash(&labels.join(",")).into(),
+        dash(labels.join(",")).into(),
         why.into(),
     ]
 }

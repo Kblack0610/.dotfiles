@@ -93,7 +93,7 @@ fn render(js: &Jobs, q: &JobsQuery) -> String {
         }),
         table,
     };
-    serde_json::to_string(&out).unwrap_or_else(|e| failed("jobs", e.to_string()))
+    serde_json::to_string(&out).unwrap_or_else(|e| failed(&["jobs"], e.to_string()))
 }
 
 impl Cache {
@@ -106,7 +106,7 @@ impl Cache {
         } else {
             collect(&q).await.map(Arc::new)
         };
-        js.map_or_else(|e| failed("jobs", e), |js| render(&js, &q))
+        js.map_or_else(|e| failed(&["jobs"], e), |js| render(&js, &q))
     }
 }
 

@@ -1304,8 +1304,7 @@ impl Row for Queued {
     fn val(&self, col: &str) -> Val {
         match col {
             "job" => Val::Text(self.job.clone()),
-            "pool" if self.pool.is_empty() => Val::None,
-            "pool" => Val::Text(self.pool.clone()),
+            "pool" => Val::word(&self.pool),
             "ref" => Val::Text(self.reference()),
             "n" => Val::Num(self.n as f64),
             "wait" => Val::Num(self.wait as f64),

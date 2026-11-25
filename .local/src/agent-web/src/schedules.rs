@@ -52,7 +52,7 @@ fn render(s: &Schedules, q: &Query) -> String {
         errors: &s.errors,
         table,
     };
-    serde_json::to_string(&out).unwrap_or_else(|e| failed("rows", e.to_string()))
+    serde_json::to_string(&out).unwrap_or_else(|e| failed(&["rows"], e.to_string()))
 }
 
 impl Cache {
@@ -60,7 +60,7 @@ impl Cache {
     pub async fn get(&self, alerts: &alerts::Cache, q: Query) -> String {
         self.read(alerts)
             .await
-            .map_or_else(|e| failed("rows", e), |s| render(&s, &q))
+            .map_or_else(|e| failed(&["rows"], e), |s| render(&s, &q))
     }
 
     /// The shared read, the tab's and Home's Schedules card's. The open reds come from the

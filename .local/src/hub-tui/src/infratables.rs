@@ -396,7 +396,7 @@ fn machines(d: &Draw, rows: &[Machine], now: i64) -> Vec<Line<'static>> {
                 pct(m.mem).into(),
                 temp,
                 pct(m.disk).into(),
-                dash(&m.running.join(", ")).into(),
+                dash(m.running.join(", ")).into(),
                 m.next
                     .as_ref()
                     .map_or("-".into(), |n| n.line(|s| dur_secs(s as f64)).into()),
@@ -435,7 +435,7 @@ fn pools(d: &Draw, rows: &[Pool]) -> Vec<Line<'static>> {
         |r| {
             vec![
                 r.pool.clone().into(),
-                dash(&shown(r, "weight")).into(),
+                dash(shown(r, "weight")).into(),
                 num(r.running),
                 match r.waiting {
                     Some(x) if x > 0.0 => cell(format!("{x:.0}"), p.warn()),
@@ -444,7 +444,7 @@ fn pools(d: &Draw, rows: &[Pool]) -> Vec<Line<'static>> {
                 r.oldest.map_or("-".into(), |s| dur_secs(s).into()),
                 num(r.done),
                 cell(pct(r.pass), p.pass(r.pass)),
-                dash(&shown(r, "machines")).into(),
+                dash(shown(r, "machines")).into(),
             ]
         },
         Table {
@@ -490,7 +490,11 @@ fn runners(d: &Draw, rows: &[Slot]) -> Vec<Line<'static>> {
                 },
                 secs(r.usual).into(),
                 dash(if busy { &r.job } else { &r.note }).into(),
-                dash(&if busy { r.reference() } else { String::new() }).into(),
+                if busy {
+                    dash(r.reference()).into()
+                } else {
+                    "-".into()
+                },
             ]
         },
         Table {
@@ -539,10 +543,10 @@ fn queued(d: &Draw, rows: &[Queued]) -> Vec<Line<'static>> {
             vec![
                 cell(&q.job, s),
                 dash(&q.pool).into(),
-                dash(&q.reference()).into(),
+                dash(q.reference()).into(),
                 q.n.to_string().into(),
                 dur_secs(q.wait as f64).into(),
-                dash(&q.needs.join(", ")).into(),
+                dash(q.needs.join(", ")).into(),
                 cell(can, s),
                 match q.starts {
                     None => "-".into(),

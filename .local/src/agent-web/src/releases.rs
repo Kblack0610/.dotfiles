@@ -104,7 +104,7 @@ fn render(s: &Releases, q: &Query) -> String {
         app,
         app_links: app.map(|a| hub_core::table::links(&[a]).pop().unwrap_or_default()),
     };
-    serde_json::to_string(&out).unwrap_or_else(|e| failed("rows", e.to_string()))
+    serde_json::to_string(&out).unwrap_or_else(|e| failed(&["rows"], e.to_string()))
 }
 
 /// The view `q` asks for, over a read of its own joined to the queue `items`, each app with its
@@ -123,7 +123,7 @@ pub async fn get(q: Query, (items, queue_error): (Vec<Item>, Option<String>)) ->
     };
     match tokio::task::spawn_blocking(read).await {
         Ok(s) => render(&s, &q),
-        Err(e) => failed("rows", e.to_string()),
+        Err(e) => failed(&["rows"], e.to_string()),
     }
 }
 

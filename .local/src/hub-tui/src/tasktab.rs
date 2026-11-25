@@ -124,11 +124,8 @@ impl TaskView {
     /// A new read keeps the selection on the same line when it is still open.
     pub fn reselect(&mut self, was: Option<Row>, f: &Feed) {
         let rows = shown(f, self);
-        let at = was.and_then(|w| {
-            rows.iter()
-                .position(|r| r.sheet == w.sheet && r.raw == w.raw)
-        });
-        self.table.keep(at, rows.len());
+        self.table
+            .reselect(&rows, was, |r, w| r.sheet == w.sheet && r.raw == w.raw);
     }
 
     /// The selected row when it can be written, else why not (said on the status line).

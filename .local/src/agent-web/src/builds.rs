@@ -67,7 +67,7 @@ fn render(b: &Builds, q: &Query) -> String {
         look: b.needs_look(scope),
         table,
     };
-    serde_json::to_string(&out).unwrap_or_else(|e| failed("rows", e.to_string()))
+    serde_json::to_string(&out).unwrap_or_else(|e| failed(&["rows"], e.to_string()))
 }
 
 /// The ledger's read, joined to the PR store, the queue `items` and the releases, kept a few
@@ -94,7 +94,7 @@ pub async fn current(
 pub async fn get(q: Query, items: (Vec<Item>, Option<String>)) -> String {
     current(items)
         .await
-        .map_or_else(|e| failed("rows", e), |b| render(&b, &q))
+        .map_or_else(|e| failed(&["rows"], e), |b| render(&b, &q))
 }
 
 /// A ledger append: the kept read is answered once more and refreshed behind it.

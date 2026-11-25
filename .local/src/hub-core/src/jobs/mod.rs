@@ -198,11 +198,9 @@ impl crate::table::Row for Job {
             "name" => text(&self.name),
             "started" => num(self.started),
             "took" => num(self.secs),
-            "result" if self.result.is_empty() => Val::None,
-            "result" => text(&self.result),
+            "result" => Val::word(&self.result),
             "detail" => text(&self.detail),
-            "host" if self.host.is_empty() => Val::None,
-            "host" => text(&self.host),
+            "host" => Val::word(&self.host),
             _ => Val::None,
         }
     }

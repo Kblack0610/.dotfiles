@@ -14,8 +14,7 @@
 use crate::config::{self, Profile};
 use crate::daily;
 use crate::logging::Logger;
-use crate::md;
-use crate::project_tasks::is_match;
+use crate::md::{self, is_match};
 use anyhow::{bail, Result};
 use chrono::Local;
 use std::fs;
