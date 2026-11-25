@@ -157,15 +157,21 @@ fn answer_text(a: &Value) -> Option<String> {
     }
 }
 
-/// `s` without each `<name ...>...</name>` block; an unclosed one is cut to the end.
+/// `s` without each `<name ...>...</name ...>` block; an unclosed one is cut to the end. The
+/// harness closes a paste as `</pasted_content id="...">`, with its id, so a close tag may carry
+/// attributes.
 fn strip_tag(s: &str, name: &str) -> String {
-    let (open, close) = (format!("<{name}"), format!("</{name}>"));
+    let (open, close) = (format!("<{name}"), format!("</{name}"));
     let mut out = String::new();
     let mut rest = s;
     while let Some(i) = rest.find(&open) {
         out.push_str(&rest[..i]);
-        rest = match rest[i..].find(&close) {
-            Some(j) => &rest[i + j + close.len()..],
+        let body = &rest[i..];
+        rest = match body
+            .find(&close)
+            .and_then(|j| body[j..].find('>').map(|k| j + k + 1))
+        {
+            Some(end) => &body[end..],
             None => "",
         };
     }
@@ -267,5 +273,10 @@ mod tests {
         assert_eq!(strip_tag("a <t x=1>b</t> c <t>d</t>e", "t"), "a  c e");
         assert_eq!(strip_tag("a <t>b", "t"), "a ");
         assert_eq!(strip_tag("plain", "t"), "plain");
+        // The harness's own form: the close tag repeats the id.
+        assert_eq!(
+            strip_tag("<t id=\"1\">\npaste\n</t id=\"1\">\n ok do this", "t"),
+            "\n ok do this"
+        );
     }
 }
