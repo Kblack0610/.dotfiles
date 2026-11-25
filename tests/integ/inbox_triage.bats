@@ -1948,6 +1948,19 @@ ask_about() { basename "$(grep -l "^question: .*$1" "$HOME"/.agent/asks/*/*.md)"
   assert_output --regexp 'the menu flickers #high <!-- id:sc-5 -->'
 }
 
+@test "--priority --reasons --retag high says a human row it would lower and keeps a row of another priority" {
+  export INBOX_PRIORITY_CMD=model-stub
+  sheet '' '- [ ] the menu flickers #high <!-- id:sc-5 -->\n- [ ] the save is slow #normal <!-- id:sc-4 -->\n'
+  answer '{"n": 1, "priority": "normal", "why": "fault"}' '{"n": 2, "priority": "high", "why": "runtime-fault"}'
+  run "$TRIAGE" --backlog --priority --reasons --retag high --project scratch
+  assert_success
+  assert_output --partial 'lowering a person'"'"'s row needs the person'
+  run tasks
+  assert_output --regexp 'the menu flickers #high <!-- id:sc-5 -->'
+  # NEGATIVE CONTROL: sc-4 is #normal, not the retagged #high, so its raise is refused too.
+  assert_output --regexp 'the save is slow #normal <!-- id:sc-4 -->'
+}
+
 @test "--reasons without --priority is refused and asks no model" {
   run "$TRIAGE" --backlog --reasons
   assert_failure 2
