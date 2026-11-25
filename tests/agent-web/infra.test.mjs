@@ -409,7 +409,7 @@ test("a pool has one colour in the 7-day chart, set by its history", () => {
 });
 
 // hub_core::ci::Glance as /api/infra sends it under ci.glance.
-const glance = { busy: 5, slots: 9, queued: 23, oldest: 1260, done: 759, pass: 0.91, off: ["aws-spot-1", "aws-spot-2"],
+const glance = { busy: 5, queued: 23, oldest: 1260, done: 759, pass: 0.91, off: ["aws-spot-1", "aws-spot-2"],
   booked: { cpu: 4.38, cpu_alloc: 64, mem: 2.7e9, mem_alloc: 1.6e11 }, pending: [{ kind: "arc-org-light", n: 3, cpu: 1.69, mem: 1.3e9 }], alert: "ok", up: 12, expected: 12 };
 
 test("CI RUNNING and the Runners head read hub_core's glance: jobs running, runners up, red only on a runner down", () => {
@@ -467,7 +467,7 @@ test("Space says no data before the first read and when no class series exists, 
   assert.doesNotMatch(bare, /24h/, "no jobs done, no badge");
 });
 
-test("a machine's TAKEN cell hover leads with its split by class, then each runner", () => {
+test("a machine's BOOKED cell hover leads with its split by class, then each runner", () => {
   const m = { split: ["ci 6.0 of 24 cores", "apps 1.0 cores"], runner_cores: [["ws-unity-1", 2.5]], runner_mem: [] };
   const t = run(`cpuTitle(${JSON.stringify(m)})`);
   assert.equal(t.split("\n")[0], "ci 6.0 of 24 cores");
@@ -489,6 +489,10 @@ test("a machine's BOOKED, RUNNING and NEXT read as hub_core's Machine cells, no 
   assert.match(cell, /4\.4\/32 2\.5G\/92G/);
   assert.doesNotMatch(cell, /warn/);
   assert.match(run(`MACH_CELLS.booked(${JSON.stringify({ ...m, booked: { ...booked, mem: booked.mem_alloc } })})`), /class="n warn"/, "a node with a resource fully booked is amber");
+  const lost = run(`MACH_CELLS.booked(${JSON.stringify({ ...m, booked: { cpu: 1.69, cpu_alloc: 0, mem: 1.3e9, mem_alloc: 0 } })})`).replace(/<[^>]*>/g, "");
+  assert.match(lost, /1\.7 1\.2G/, "a node with no allocatable read books bare, as Booked::cell");
+  assert.doesNotMatch(lost, /\/0/);
+  assert.equal(run("cores1(0.15)"), "0.2", "halves round up, as Rust and jq round them");
   assert.match(run(`MACH_CELLS.running(${JSON.stringify(m)})`), /\[arc-org-light\] x2, \[unity\] platform/);
   assert.match(run(`MACH_CELLS.next(${JSON.stringify(m)})`), />Checks \(web\) 5m</);
   const bare = { ...m, booked: null, running: [], next: null };

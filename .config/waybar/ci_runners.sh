@@ -87,8 +87,11 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
   def bytes: {v: ([., 0] | max), u: 0}
     | until(.v < 1024 or .u == 4; .v /= 1024 | .u += 1)
     | (if .v < 10 and .u > 0 then .v | u1 else .v | round | tostring end) + ["B", "K", "M", "G", "T"][.u];
-  # hub_core::jobpods::Booked: cell is `4.4/32 2.5G/92G`, share the fuller of its CPU and memory.
-  def bcell: if . == null then "-" else "\(.cpu | u1)/\(.cpu_alloc | u0) \(.mem | bytes)/\(.mem_alloc | bytes)" end;
+  # hub_core::jobpods::Booked: cell is `4.4/32 2.5G/92G` (bare `1.7 1.2G` with no allocatable read),
+  # share the fuller of its CPU and memory.
+  def bcell: if . == null then "-"
+    elif (.cpu_alloc // 0) <= 0 then "\(.cpu | u1) \(.mem | bytes)"
+    else "\(.cpu | u1)/\(.cpu_alloc | u0) \(.mem | bytes)/\(.mem_alloc | bytes)" end;
   def share: [(if .cpu_alloc > 0 then .cpu / .cpu_alloc else 0 end), (if .mem_alloc > 0 then .mem / .mem_alloc else 0 end)] | max;
   def bbar: if .booked == null then "" else ubar(.booked | share * BAR; BAR) end;
   # hub_core::jobpods::Pending::line, the cores as machines::weight_text: `arc-org-light x3 (1.69 cpu 1.2G each)`.

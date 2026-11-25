@@ -16,11 +16,19 @@ pub const NAMESPACE: &str = "arc-runners";
 /// its key's domain stays out of this public repo.
 pub const CI_TAINT: &str = ".+/ci";
 
-/// Each job pod starting, running or waiting for room, once per resource: its requests summed
-/// over its containers, its node (none while unscheduled), its phase and its owner.
+/// Each job pod starting, running or waiting for room: its phase, its node (none while
+/// unscheduled) and its owner. Its requests are `requests_query`, apart, so a pod that requests
+/// nothing still counts.
 pub fn pods_query() -> String {
     format!(
-        r#"sum by (pod, node, resource) (kube_pod_container_resource_requests{{namespace="{NAMESPACE}",resource=~"cpu|memory"}}) * on (pod) group_left (phase, created_by_kind, created_by_name) (max by (pod, phase) (kube_pod_status_phase{{namespace="{NAMESPACE}",phase=~"Pending|Running"}} == 1) * on (pod) group_left (created_by_kind, created_by_name) max by (pod, created_by_kind, created_by_name) (kube_pod_info{{namespace="{NAMESPACE}"}}))"#
+        r#"max by (pod, phase) (kube_pod_status_phase{{namespace="{NAMESPACE}",phase=~"Pending|Running"}} == 1) * on (pod) group_left (node, created_by_kind, created_by_name) max by (pod, node, created_by_kind, created_by_name) (kube_pod_info{{namespace="{NAMESPACE}"}})"#
+    )
+}
+
+/// Each job pod's CPU and memory requests, summed over its containers.
+pub fn requests_query() -> String {
+    format!(
+        r#"sum by (pod, resource) (kube_pod_container_resource_requests{{namespace="{NAMESPACE}",resource=~"cpu|memory"}})"#
     )
 }
 
@@ -39,6 +47,9 @@ pub struct JobPod {
     pub kind: String,
     /// Its machine (`Infra::aliases`); empty while the scheduler has found it no room.
     pub node: String,
+    /// Its containers run: a job. A placed pod still starting books its node but runs nothing.
+    /// No scale set keeps warm runners (minRunners 0), so a running pod is a job.
+    pub running: bool,
     /// Cores and bytes it requests.
     pub cpu: f64,
     pub mem: f64,
@@ -54,13 +65,18 @@ pub struct Booked {
 }
 
 impl Booked {
-    /// `5.1/32 4.0G/92G`: cores booked of allocatable, then memory.
+    /// `5.1/32 4.0G/92G`: cores booked of allocatable, then memory. A node with no allocatable
+    /// read (its CI taint gone while pods still run there) reads its booking bare: `1.7 1.2G`.
+    /// Halves round up, as agent-web and the waybar chip round them.
     pub fn cell(&self) -> String {
         let b = crate::host_now::bytes;
+        if self.cpu_alloc <= 0.0 {
+            return format!("{} {}", cores(self.cpu), b(self.mem));
+        }
         format!(
-            "{:.1}/{:.0} {}/{}",
-            self.cpu,
-            self.cpu_alloc,
+            "{}/{:.0} {}/{}",
+            cores(self.cpu),
+            self.cpu_alloc.round(),
             b(self.mem),
             b(self.mem_alloc)
         )
@@ -78,6 +94,11 @@ impl Booked {
         self.mem += o.mem;
         self.mem_alloc += o.mem_alloc;
     }
+}
+
+/// Cores to one place, halves up: `4.4`.
+pub fn cores(c: f64) -> String {
+    format!("{:.1}", (c * 10.0).round() / 10.0)
 }
 
 /// Pods waiting for room, one row per kind and size.
@@ -120,7 +141,7 @@ pub fn kind_of(owner_kind: &str, owner: &str, pod: &str) -> String {
     .to_string()
 }
 
-/// Every job pod starting, running or waiting, by name.
+/// Every job pod starting, running or waiting, by name, with its requests.
 pub fn read(infra: &Infra) -> Vec<JobPod> {
     let alias = infra.aliases();
     let mut by: BTreeMap<&str, JobPod> = BTreeMap::new();
@@ -129,14 +150,27 @@ pub fn read(infra: &Infra) -> Vec<JobPod> {
         if name.is_empty() {
             continue;
         }
-        let p = by.entry(name).or_insert_with(|| JobPod {
-            name: name.into(),
-            kind: kind_of(s.label("created_by_kind"), s.label("created_by_name"), name),
-            ..Default::default()
-        });
-        if !s.label("node").is_empty() {
-            p.node = crate::infra::host(&alias, s.label("node"));
-        }
+        let node = s.label("node");
+        by.insert(
+            name,
+            JobPod {
+                name: name.into(),
+                kind: kind_of(s.label("created_by_kind"), s.label("created_by_name"), name),
+                node: if node.is_empty() {
+                    String::new()
+                } else {
+                    crate::infra::host(&alias, node)
+                },
+                running: s.label("phase") == "Running",
+                ..Default::default()
+            },
+        );
+    }
+    // A finished pod keeps its request series; only the pods above take theirs.
+    for s in infra.get("job_requests") {
+        let Some(p) = by.get_mut(s.label("pod")) else {
+            continue;
+        };
         let v = s.value.unwrap_or(0.0);
         match s.label("resource") {
             "cpu" => p.cpu = v,
@@ -191,10 +225,10 @@ pub fn pending(pods: &[JobPod]) -> Vec<Pending> {
     out
 }
 
-/// The running pods on each node by kind, the most first: `[arc-org-light] x3`.
+/// The running pods on each node by kind: `[arc-org-light]` and its count.
 pub fn running_by_node(pods: &[JobPod]) -> BTreeMap<String, BTreeMap<String, u32>> {
     let mut by: BTreeMap<String, BTreeMap<String, u32>> = BTreeMap::new();
-    for p in pods.iter().filter(|p| !p.node.is_empty()) {
+    for p in pods.iter().filter(|p| p.running && !p.node.is_empty()) {
         *by.entry(p.node.clone())
             .or_default()
             .entry(format!("[{}]", p.kind))
@@ -209,28 +243,30 @@ pub(crate) mod tests {
     use crate::prom::Series;
     use serde_json::{json, Value};
 
+    /// One pod's `job_pods` series and its two `job_requests` series. No node is a pod waiting
+    /// for room; `phase` says whether its containers run.
     pub fn pod(
         name: &str,
         owner_kind: &str,
         owner: &str,
         node: &str,
+        phase: &str,
         cpu: &str,
         mem: &str,
-    ) -> Vec<Series> {
-        ["cpu", "memory"]
+    ) -> (Series, Vec<Series>) {
+        let mut m = json!({
+            "pod": name, "phase": phase,
+            "created_by_kind": owner_kind, "created_by_name": owner,
+        });
+        if !node.is_empty() {
+            m["node"] = Value::from(node);
+        }
+        let req = ["cpu", "memory"]
             .into_iter()
             .zip([cpu, mem])
-            .map(|(r, v)| {
-                let mut m = json!({
-                    "pod": name, "resource": r, "phase": if node.is_empty() { "Pending" } else { "Running" },
-                    "created_by_kind": owner_kind, "created_by_name": owner,
-                });
-                if !node.is_empty() {
-                    m["node"] = Value::from(node);
-                }
-                one(m, v)
-            })
-            .collect()
+            .map(|(r, v)| one(json!({"pod": name, "resource": r}), v))
+            .collect();
+        (one(m, "1"), req)
     }
 
     fn one(m: Value, v: &str) -> Series {
@@ -246,14 +282,16 @@ pub(crate) mod tests {
             .collect()
     }
 
-    /// Two light pods and a forgejo job on ms-a2, one light pod with no room, tuf-b550 idle.
+    /// Two light pods running on ms-a2, a forgejo job placed there and starting, one light pod
+    /// with no room, tuf-b550 idle.
     pub fn cluster() -> Vec<(&'static str, Vec<Series>)> {
-        let pods = [
+        let (pods, req): (Vec<_>, Vec<_>) = [
             pod(
                 "arc-org-light-runner-z5wfp",
                 "EphemeralRunner",
                 "arc-org-light-runner-z5wfp",
                 "ms-a2",
+                "Running",
                 "1.69",
                 "1300000000",
             ),
@@ -262,6 +300,7 @@ pub(crate) mod tests {
                 "EphemeralRunner",
                 "arc-org-light-runner-q8zhv",
                 "ms-a2",
+                "Running",
                 "1.69",
                 "1300000000",
             ),
@@ -270,6 +309,7 @@ pub(crate) mod tests {
                 "Job",
                 "forgejo-runner-667ts",
                 "ms-a2",
+                "Pending",
                 "1",
                 "100000000",
             ),
@@ -278,17 +318,26 @@ pub(crate) mod tests {
                 "EphemeralRunner",
                 "arc-org-light-runner-kzhmj",
                 "",
+                "Pending",
                 "1.69",
                 "1300000000",
             ),
         ]
-        .concat();
+        .into_iter()
+        .unzip();
+        // A finished pod's requests linger after its phase series is gone.
+        let mut req = req.concat();
+        req.extend(pod("gone-1", "Job", "gone", "ms-a2", "Running", "8", "1").1);
         let alloc = [
             alloc("ms-a2", "32", "98768805888"),
             alloc("tuf-b550", "32", "67290488832"),
         ]
         .concat();
-        vec![("job_pods", pods), ("ci_alloc", alloc)]
+        vec![
+            ("job_pods", pods),
+            ("job_requests", req),
+            ("ci_alloc", alloc),
+        ]
     }
 
     fn infra() -> Infra {
@@ -329,6 +378,15 @@ pub(crate) mod tests {
         );
         assert_eq!(ms.mem, 2_700_000_000.0);
         assert_eq!(ms.cell(), "4.4/32 2.5G/92G");
+        // A node with pods but no allocatable read books bare.
+        let bare = Booked {
+            cpu: 1.69,
+            mem: 1_300_000_000.0,
+            ..Default::default()
+        };
+        assert_eq!(bare.cell(), "1.7 1.2G");
+        // Halves round up, as agent-web and waybar do.
+        assert_eq!(cores(0.25), "0.3");
         // An idle CI node is a row with nothing booked, never absent.
         assert_eq!((b["tuf-b550"].cpu, b["tuf-b550"].cpu_alloc), (0.0, 32.0));
         let w = pending(&pods);
@@ -336,6 +394,7 @@ pub(crate) mod tests {
         assert_eq!(w[0].line(), "arc-org-light (1.69 cpu 1.2G)");
         let r = running_by_node(&pods);
         assert_eq!(r["ms-a2"]["[arc-org-light]"], 2);
-        assert_eq!(r["ms-a2"]["[forgejo-runner]"], 1);
+        // The forgejo pod books ms-a2 but is still starting: no job runs yet.
+        assert!(!r["ms-a2"].contains_key("[forgejo-runner]"));
     }
 }

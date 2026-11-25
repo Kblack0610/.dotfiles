@@ -258,7 +258,7 @@ impl Row for Machine {
     fn in_state(&self, s: &str) -> bool {
         match s {
             "busy" => self.busy > 0,
-            "idle" => self.slots > 0 && self.busy == 0,
+            "idle" => (self.slots > 0 || self.booked.is_some()) && self.busy == 0,
             NO_DATA => self.state == NO_DATA,
             "cloud" => self.place == "cloud",
             "governed" => self.governor.is_some() || self.power.is_some(),
@@ -506,7 +506,11 @@ pub fn build(infra: &Infra) -> (Vec<Machine>, Vec<Pool>) {
     for (h, b) in crate::jobpods::booked(infra, &infra.pods) {
         at(&mut by, h).booked = Some(b);
     }
-    for p in infra.pods.iter().filter(|p| !p.node.is_empty()) {
+    for p in infra
+        .pods
+        .iter()
+        .filter(|p| p.running && !p.node.is_empty())
+    {
         at(&mut by, p.node.clone()).busy += 1;
     }
     for (h, jobs) in crate::ci::running_by_host(infra) {

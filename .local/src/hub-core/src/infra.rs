@@ -85,10 +85,11 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // workstation's local seats and their backlog (capacity and backlog units), which the
         // Local Unity kind reads until the seats leave the governor (hc-858).
         ("governor", r#"{__name__=~"ci_governor_(up|ok|queue|admitted|decision|budget_.+|capacity_units|backlog_units)"}"#.into()),
-        // The CI job pods (ARC runners, the forgejo-runner jobs) with their requests, node and
-        // owner, and each CI node's allocatable: the machine rows' booked CPU and memory and
+        // The CI job pods (ARC runners, the forgejo-runner jobs) with their phase, node and owner,
+        // their requests, and each CI node's allocatable: the machine rows' booked CPU and memory and
         // the pods waiting for room (`jobpods`).
         ("job_pods", crate::jobpods::pods_query()),
+        ("job_requests", crate::jobpods::requests_query()),
         ("ci_alloc", crate::jobpods::alloc_query()),
         // Each job kind's weight, the share of a slot one of its jobs takes: the governor's hourly
         // p90 measurement (`measured="true"`), else 1 (`measured="false"`). The Job kinds WEIGHT.
@@ -129,6 +130,7 @@ pub const OPTIONAL: &[&str] = &[
     "disk",
     "governor",
     "job_pods",
+    "job_requests",
     "ci_alloc",
     "kind_weight",
     "job_usual",
@@ -850,6 +852,7 @@ mod tests {
                 "disk",
                 "governor",
                 "job_pods",
+                "job_requests",
                 "ci_alloc",
                 "kind_weight",
                 "job_usual",

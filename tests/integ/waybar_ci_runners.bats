@@ -94,6 +94,14 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   assert_equal "$(tip | sed -n 1p)" "<b>CI runners</b>  ███<span background='#7f7f7f'>▊</span> ██<span color='#7f7f7f'>██</span> <span background='#7f7f7f'>▌</span><span color='#7f7f7f'>███</span>"
 }
 
+@test "a node with pods but no allocatable read (its CI taint gone) books bare, never against 0" {
+  glance '{"machines": [{"host": "ms-a2", "busy": 1, "running": ["[arc-org-light]"], "next": null, "load": 0.2,
+    "booked": {"cpu": 1.69, "cpu_alloc": 0, "mem": 1300000000, "mem_alloc": 0}}]}'
+  run "$MODULE"
+  [[ "$(plain)" == *"ms-a2"*"1.7 1.2G"*"[arc-org-light]"* ]]
+  [[ "$(plain)" != *"/0 "* ]]
+}
+
 @test "a share rounds to the nearest eighth of a cell, and one that rounds up to 8 is a full cell" {
   glance '{"machines": [
     {"host": "a", "busy": 1, "running": ["x"], "next": null, "load": 0.2, "booked": {"cpu": 1, "cpu_alloc": 32, "mem": 0, "mem_alloc": 68719476736}},

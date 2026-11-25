@@ -115,8 +115,10 @@ impl Queued {
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct Ci {
     pub hosts: u32,
-    /// Each physical slot once (`slots_by_host`), summed over the machines.
+    /// Each fixed slot once (`slots_by_host`), summed over the machines. Job pods have no slot:
+    /// their jobs count in `glance.busy` and the machine rows (`jobpods`).
     pub slots: u32,
+    /// The fixed slots running a job; job pods count in `glance.busy`.
     pub busy: u32,
     pub queued: u32,
     pub oldest: i64,
@@ -347,7 +349,11 @@ impl Glance {
             s += &format!(" (oldest {})", dur(o as i64));
         }
         if let Some(b) = self.booked {
-            s += &format!(", booked {:.1}/{:.0} cpu", b.cpu, b.cpu_alloc);
+            s += &format!(
+                ", booked {}/{:.0} cpu",
+                crate::jobpods::cores(b.cpu),
+                b.cpu_alloc.round()
+            );
         }
         s += &format!(", {} runners up", self.up_line());
         if self.done > 0 {
@@ -2011,8 +2017,8 @@ mod tests {
         );
     }
 
-    /// The fleet plus the cluster (`jobpods::tests::cluster`): two light pods and a forgejo job
-    /// on ms-a2, tuf-b550 an idle CI node, one light pod with no room, and the exporter's row for
+    /// The fleet plus the cluster (`jobpods::tests::cluster`): two light pods running and a
+    /// forgejo job starting on ms-a2, tuf-b550 an idle CI node, one light pod with no room, and the exporter's row for
     /// one of the ms-a2 pods under its scale set's owner, `arc-org`.
     fn clustered() -> Infra {
         let mut i = crate::machines::tests::fleet();
@@ -2052,11 +2058,12 @@ mod tests {
         assert_eq!(
             rows,
             [
+                // The forgejo pod is placed and books its share, but starts: no job yet.
                 (
                     "ms-a2",
-                    3,
+                    2,
                     "4.4/32 2.5G/92G".into(),
-                    "[arc-org-light] x2, [forgejo-runner]".into()
+                    "[arc-org-light] x2".into()
                 ),
                 ("tuf-b550", 0, "0.0/32 0B/63G".into(), String::new()),
                 ("workstation", 1, "-".into(), "[unity]".into()),
@@ -2066,7 +2073,7 @@ mod tests {
         assert!(i.machines.iter().all(|m| m.host != "arc-org"));
         let arc = i.ci.rows.iter().find(|r| r.job == "lint").unwrap();
         assert_eq!((arc.host.as_str(), arc.pod), ("ms-a2", true));
-        assert_eq!(g.busy, 4);
+        assert_eq!(g.busy, 3);
         let b = g.booked.unwrap();
         assert_eq!(
             (format!("{:.2}", b.cpu), b.cpu_alloc),
@@ -2078,7 +2085,7 @@ mod tests {
         );
         assert_eq!(
             g.head(|s| format!("{}m", s / 60)),
-            "4 running, 2 queued (oldest 15m), booked 4.4/64 cpu, 4/4 runners up, 4 done 24h, 50% passed"
+            "3 running, 2 queued (oldest 15m), booked 4.4/64 cpu, 4/4 runners up, 4 done 24h, 50% passed"
         );
     }
 

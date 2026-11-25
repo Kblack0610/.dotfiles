@@ -48,7 +48,7 @@ const alertHue = (g) => ({ red: "var(--b-needs)", ok: "var(--b-done)" })[g && g.
 function glanceHead(g) {
   let s = `${g.busy} running, ${g.queued} queued`;
   if (g.queued > 0 && g.oldest != null) s += ` (oldest ${secs(g.oldest)})`;
-  if (g.booked) s += `, booked ${g.booked.cpu.toFixed(1)}/${Math.round(g.booked.cpu_alloc)} cpu`;
+  if (g.booked) s += `, booked ${cores1(g.booked.cpu)}/${Math.round(g.booked.cpu_alloc)} cpu`;
   s += `, ${upLine(g)} runners up`;
   if (g.done > 0) s += `, ${g.done} done 24h${g.pass != null ? `, ${pct(g.pass)} passed` : ""}`;
   return s;
@@ -122,9 +122,17 @@ function diskCell(m) {
 }
 
 // hub_core::jobpods::Booked: what job pods book of a CI node, its fuller share and `4.4/32 2.5G/92G`.
+// hub_core::jobpods::cores: one place, halves up as Rust rounds them (toFixed rounds 0.15 down).
+const cores1 = (c) => (Math.round(c * 10) / 10).toFixed(1);
 const bookedShare = (b) => Math.max(b.cpu_alloc > 0 ? b.cpu / b.cpu_alloc : 0, b.mem_alloc > 0 ? b.mem / b.mem_alloc : 0);
 // hub_core::machines::Machine::booked_cell, or - on no CI node.
-const bookedCell = (m) => (m.booked ? `${m.booked.cpu.toFixed(1)}/${Math.round(m.booked.cpu_alloc)} ${bytes(m.booked.mem)}/${bytes(m.booked.mem_alloc)}` : "-");
+// hub_core::jobpods::Booked::cell: `4.4/32 2.5G/92G`, bare `1.7 1.2G` on a node with no allocatable read.
+const bookedCell = (m) => {
+  const b = m.booked;
+  if (!b) return "-";
+  if (!(b.cpu_alloc > 0)) return `${cores1(b.cpu)} ${bytes(b.mem)}`;
+  return `${cores1(b.cpu)}/${Math.round(b.cpu_alloc)} ${bytes(b.mem)}/${bytes(b.mem_alloc)}`;
+};
 // hub_core::ci::Next::line: the oldest waiting job that fits the machine, its repo and how long it has waited.
 const nextLine = (x) => `${x.job}${x.repo ? ` (${x.repo})` : ""} ${secs(x.wait)}`;
 // A machine's hover: what its cores and memory go to (hub_core::workload, one line per class),

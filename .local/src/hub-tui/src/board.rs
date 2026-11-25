@@ -475,19 +475,18 @@ pub(crate) mod tests {
     /// The cluster: razer-laptop a CI node of 4 cores and 16G with two light job pods on it,
     /// booking 2.5 cores and 1.0G.
     fn with_pods(i: &mut Infra) {
-        let pod = |name: &str, r: &str, v: &'static str| {
-            (
-                json!({"pod": name, "node": "razer-laptop", "resource": r, "phase": "Running",
-                "created_by_kind": "EphemeralRunner", "created_by_name": name}),
-                v,
-            )
-        };
-        let mut pods = vec![];
+        let (mut pods, mut req) = (vec![], vec![]);
         for name in ["arc-org-light-runner-a1", "arc-org-light-runner-b2"] {
-            pods.push(pod(name, "cpu", "1.25"));
-            pods.push(pod(name, "memory", "536870912"));
+            pods.push((
+                json!({"pod": name, "node": "razer-laptop", "phase": "Running",
+                "created_by_kind": "EphemeralRunner", "created_by_name": name}),
+                "1",
+            ));
+            req.push((json!({"pod": name, "resource": "cpu"}), "1.25"));
+            req.push((json!({"pod": name, "resource": "memory"}), "536870912"));
         }
         i.instant.insert("job_pods", series(pods));
+        i.instant.insert("job_requests", series(req));
         let a = |r: &str, v: &'static str| (json!({"node": "razer-laptop", "resource": r}), v);
         i.instant.insert(
             "ci_alloc",
