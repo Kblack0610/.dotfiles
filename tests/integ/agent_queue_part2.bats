@@ -1606,6 +1606,18 @@ second line of the brief
   assert_called "--detail=the real wording of the task -- "
 }
 
+@test "an over-cap board pull files no second row beside the row it was promoted from" {
+  story_notes
+  export AGENT_QUEUE_CAP=1
+  "$AQ" add --project level --slug one "feat(menu): one" >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run env AGENT_QUEUE_PULL=dispatch "$AQ" add --project level --from board:level:lv-3 --slug lv-3 --title "feat(menu): pulled" "feat(menu): pulled"
+  assert_failure 5
+  assert_output --partial "row lv-3 is left un-started where it is"
+  run grep -c ' ptask level --agent add ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
 @test "an over-cap add that is #requested files its row with --want, so it ranks first on the board" {
   story_notes
   export AGENT_QUEUE_CAP=1

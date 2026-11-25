@@ -2225,7 +2225,10 @@ cmd_add() {
   fi
   if [ -n "$capped" ] && ! admit "$from" "$priority" "$tags" "$project" "$slug" "$hold_title"; then
     unlock # the board write is notes' and can be slow: the lock covers only the count
-    if [ -n "$row" ]; then echo "agent-queue: row $row is left un-started where it is: dispatch promotes it as the queue drains" >&2
+    # A board pull (promote) already has its row: an overflow row beside it is a twin that dispatch
+    # then skipped to the human sheet next to the first (TraderWatchBotBlind, 2026-11-25).
+    if [ -n "$row" ] || [[ "$from" == board:* ]]; then
+      echo "agent-queue: row ${row:-${from##*:}} is left un-started where it is: dispatch promotes it as the queue drains" >&2
     else overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "" "$slug" "$tags"; fi
     exit "$AQ_EX_HELD"
   fi
