@@ -518,7 +518,8 @@ row_types() {
 file_routed() {
   local src="$1" raw="$2" text="$3" p="$4" epic="$5" k="$6" eid='' made='' idf r rc; shift 6
   local -a rows=("${@:1:k}") as=(); shift "$k"
-  if [ -n "$epic" ]; then
+  # Only when a row would go under it (a split's rows all carry their own parent).
+  if [ -n "$epic" ] && unparented "${rows[@]}"; then
     # In this shell, not `$(...)`, so EPIC_TWIN reaches here.
     idf="$(mktemp)"
     epic_new "$p" "$(clean 150 <<<"$epic")" >"$idf" && { eid="$(<"$idf")"; [ -n "$EPIC_TWIN" ] || made="$eid"; }
@@ -647,7 +648,7 @@ route() {
           own_plan=''; [[ " ${text,,} " == *" #plan "* ]] && own_plan=1 plan=1
           go=1; [ -n "$own_plan" ] && [[ " ${text,,} " != *" #go "* ]] && go=''
           for r in "${rowv[@]}"; do
-            r="$(epic_checked "$(clean 150 <<<"$r")" "${dest:-$from}" "$epics")"
+            r="$(row_checked "$(clean 150 <<<"$r")" "${dest:-$from}" "$epics" "$text" "$board")"
             if [ -n "$plan" ] && [ "${#asv[@]}" = 0 ] && [[ " $r " != *" #plan "* ]]; then r="$r #plan"; fi
             if [ -n "$go" ] && [[ " $r " == *" #plan "* && " $r " != *" #go "* ]]; then r="$r #go"; fi
             [ -n "$r" ] && asv+=("$r")
