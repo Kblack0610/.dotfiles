@@ -2165,6 +2165,18 @@ verdict_errors() {
     '{project, lane, key, verdict: "error", reason: $r, at: $at, policy: $sig, line, judge_call: $call}' <<<"$1"
 }
 
+# human_exit <profile> <project> <body> <requested> <gated>: where a row a human rule skips goes: the
+# human sheet when it was asked for, is #high or above, or gates another row; else improvements.md.
+# Health work (a stage criterion, a missing test, a CI/perf/alert fault with a number) is no
+# nice-to-have: `notes improve --check` says so with exit 3, and a person must act on it (ar-5401).
+human_exit() {
+  local prof="$1" p="$2" body="$3" req="$4" gated="$5" rc=0
+  if [ "$req" = true ] || [ "$(prio_rank "$body")" -le 2 ] || [ -n "$gated" ]; then echo sheet; return; fi
+  body=$(sed -E 's/(^|[[:space:]])#worker\/[^[:space:]]+//g; s/^[[:space:]]+//' <<<"$body")
+  np "$prof" improve "$p" --check -- "$body" >/dev/null 2>&1 || rc=$?
+  if [ "$rc" = 3 ]; then echo sheet; else echo improve; fi
+}
+
 # skip_exits [--dry-run] -- give each open agent row whose latest verdict is a skip, still current
 # for the row's text, the exit its rule names (policy.md "Always skip"), so no skip parks a row:
 #  - plan (DISPATCH_PLAN_RULES): tag it #plan, and #go beside it on a #requested row (the judge asked
@@ -2284,10 +2296,7 @@ skip_exits() {
       [ "$dsig" != - ] || [ "$line" = - ] || continue
       e=human
     fi
-    if [ "$e" = human ]; then
-      prio=$(prio_rank "$body")
-      if [ "$req" = true ] || [ "$prio" -le 2 ] || [ -n "${gated[$id]-}" ]; then e=sheet; else e=improve; fi
-    fi
+    [ "$e" != human ] || e=$(human_exit "$prof" "$p" "$body" "$req" "${gated[$id]-}")
     if [ "$e" = plan ] && [ "$room" -le 0 ]; then
       [ -z "$dry" ] || { printf 'plan-wait\t%s\t%s\t%s\n' "$p" "$id" "$rule"; n[plan-wait]=$(( ${n[plan-wait]:-0} + 1 )); }
       continue
