@@ -7918,7 +7918,7 @@ reconcile_plans() {
 # so it neither holds the epic open nor raises the done count that would key a second verify.
 reconcile_epics() {
   [ "$DISPATCH_EPIC_VERIFY" = 1 ] || return 0
-  local landed prof project id done_ title slug out rc
+  local landed prof project id done_ title slug out rc it
   landed=$(notes projects --stats --json 2>/dev/null | jq -r '.[] | select(.automation != false) | . as $p
     | (.epics // [])[] | select(.open == 0 and .done > 0)
     | [($p.profile // ""), $p.name, .id, .done, (.title | gsub("[\t\n]"; " "))] | join("\u001f")') || return 0
@@ -7926,8 +7926,12 @@ reconcile_epics() {
   while IFS=$'\x1f' read -r prof project id done_ title; do
     slug="verify-$id-$done_"
     # One lookup per landed epic, active or done: the whole queue is seconds to read every pass. An item
-    # sent back unrun (returned: bumped at the cap, a hand return) is queued again; it links its open row.
-    [ -z "$(agent-queue show "$slug" --json 2>/dev/null | jq -c 'select(.end_reason != "returned")')" ] || continue
+    # the cap bumped unrun (make_room: returned, "made room for ...") is queued again, linking its open
+    # row; a hand return, or a show that answers but does not parse, keeps the slug spent. make_room
+    # bumps only for an urgent, red or after-pull add, and this high add bumps nothing, so no ping-pong.
+    if it=$(agent-queue show "$slug" --json 2>/dev/null); then
+      jq -e '.end_reason == "returned" and ((.cancel_why // "") | startswith("made room for "))' <<<"$it" >/dev/null 2>&1 || continue
+    fi
     out=$(epic_verify_task "$prof" "$project" "$id" "$title" | AGENT_QUEUE_PULL=dispatch AGENT_QUEUE_START=0 agent-queue add --project "$project" --slug "$slug" --epic "$id" \
       --title "check(epics): verify $id $title" --priority high --tags verify --from auto:epics 2>&1); rc=$?
     if [ "$rc" -eq 0 ]; then
