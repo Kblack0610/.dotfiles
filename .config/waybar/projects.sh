@@ -39,10 +39,13 @@ jq -e '.cards | type == "array"' <<< "$raw" > /dev/null 2>&1 || unknown "hub pro
 # late release never hides, window or not. The rest are one line of names, by stage. Names are escaped
 # here, colours come from pango.sh.
 AREAS=4
-body="$(jq -r --arg g "$C_GRN" --arg y "$C_YEL" --arg r "$C_RED" --arg d "$C_DIM" --argjson top "$AREAS" '
+# The Pango helpers every jq program below starts with: escape, paint in a colour, pad right and left.
+JQ_PANGO='
   def esc: gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;");
   def paint($c): "<span color=\"\($c)\">\(.)</span>";
   def pad($n): . + (" " * ([$n - length, 0] | max));
+  def lpad($n): (" " * ([$n - length, 0] | max)) + .;'
+body="$(jq -r --arg g "$C_GRN" --arg y "$C_YEL" --arg r "$C_RED" --arg d "$C_DIM" --argjson top "$AREAS" "$JQ_PANGO"'
   def rank: {"prod": 0, "beta": 1, "alpha": 2, "dev": 3, "draft": 4}[.stage] // 5;
   # hub_core::projects::state, painted by its state_level; flow and parked have none.
   def hue: {"ok": $g, "warn": $y, "bad": $r}[.state_level // ""] // $d;
@@ -83,8 +86,7 @@ body="$(jq -r --arg g "$C_GRN" --arg y "$C_YEL" --arg r "$C_RED" --arg d "$C_DIM
 # the project rows. The bar shows one itself after S:, `S:v0.5.4 10/15` from its card's window
 # (sprint_says implies the window), an at-risk or late one first and then amber, and +N past one
 # (only #prio/focus projects run sprints, so one is the normal case).
-sprints="$(jq -r --arg g "$C_GRN" --arg y "$C_YEL" --arg r "$C_RED" --arg d "$C_DIM" '
-  def esc: gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;");
+sprints="$(jq -r --arg g "$C_GRN" --arg y "$C_YEL" --arg r "$C_RED" --arg d "$C_DIM" "$JQ_PANGO"'
   def st: if (.state // "") == "" then "-" else .state end;
   .cards[] | select(.sprint_says != null)
   | ({"ok": $g, "warn": $y, "bad": $r}[.state_level // ""] // $d) as $h
@@ -95,11 +97,7 @@ read -r flying total running errors board grew < <(jq -r '[(.figures.projects_in
 # The Board block: the total and the fleet's 7-day flow in points (hub's `board_7d`, left out when
 # no day-log record carries points), then one row per project with rows on the board, the most
 # first, its rows and its 7-day net in points (`net7d_cell`), amber when it grew (`growing`).
-boardblock="$(jq -r --arg y "$C_YEL" '
-  def esc: gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;");
-  def paint($c): "<span color=\"\($c)\">\(.)</span>";
-  def pad($n): . + (" " * ([$n - length, 0] | max));
-  def lpad($n): (" " * ([$n - length, 0] | max)) + .;
+boardblock="$(jq -r --arg y "$C_YEL" "$JQ_PANGO"'
   "<b>Board</b>  \(.board_open // "?") rows"
     + (.board_7d | if . == null then ""
        else ", net \(.net | if . > 0 then "+\(.)" else tostring end) pts in 7d (\(.in) in, \(.done) done, \(.dropped) dropped)" end),
@@ -121,13 +119,10 @@ elif ((flying > 0)); then
   text+=" $flying"
 fi
 # The board's open rows, amber when the board grew; an unread feed is B:? in amber.
-if [ "$board" = - ]; then
-  text+="  $(paint "$(label_colour)" B:)$(paint "$C_YEL" ?)"
-elif [ "$grew" = true ]; then
-  text+="  $(paint "$(label_colour)" B:)$(paint "$C_YEL" "$board")"
-else
-  text+="  $(paint "$(label_colour)" B:)$board"
-fi
+b="$board"
+[ "$board" != - ] || b=?
+[ "$board" != - ] && [ "$grew" != true ] || b="$(paint "$C_YEL" "$b")"
+text+="  $(paint "$(label_colour)" B:)$b"
 # With no Sprints figure the bar's sprint is ? while the cards still name one.
 if [ "$running" = - ] && [ -n "$sprints" ]; then
   text+="  $(paint "$(label_colour)" S:)$(paint "$C_YEL" ?)"
