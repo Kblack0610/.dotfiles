@@ -925,7 +925,9 @@ pub enum TagKind {
 pub fn tag_kind(tag: &str) -> TagKind {
     let task = PRIORITIES.iter().any(|(t, _, _)| *t == tag)
         || matches!(tag, "requested" | "agent" | "p")
-        || ["size/", "worker/"].iter().any(|p| tag.starts_with(p))
+        || ["size/", "worker/", "why/"]
+            .iter()
+            .any(|p| tag.starts_with(p))
         || looks_like_tier(tag)
         || is_parent_tag(tag)
         || is_version_tag(tag)
@@ -2538,6 +2540,7 @@ after
             "tier3",
             "of/tr-37",
             "worker/fleet",
+            "why/upkeep",
             "requested",
             "agent",
             "p",

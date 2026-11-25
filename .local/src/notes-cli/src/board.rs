@@ -753,6 +753,9 @@ struct FeedRow {
     /// The line carries no priority tag: `priority` is the rank's default, and
     /// `agentctl-inbox-triage --backlog --priority` gives it a real one.
     untriaged: bool,
+    /// The slug of the row's `#why/<slug>`: why it has its priority, one of
+    /// `priority-reasons.tsv`. None for a row with no reason.
+    prio_why: Option<String>,
     /// The sheet section the sweep lays the row out in: `epics`, `now`, `next`, `board` (an
     /// agent-board row inside the budget), `backlog`, or `done` for a closed row
     /// ([`project_sweep::section_of`]). `None` on a Focus or playtest row, which no sheet
@@ -1144,6 +1147,7 @@ fn feed_row(
                 && !t.starts_with("worker/")
                 && !t.starts_with("size/")
                 && !t.starts_with("pts/")
+                && !t.starts_with(crate::reasons::TAG)
                 && t != "requested"
         })
         .unzip();
@@ -1181,6 +1185,7 @@ fn feed_row(
         details,
         automation: true,
         untriaged: md::task_priority(line).is_none(),
+        prio_why: crate::reasons::slug_of(line),
         section: o.sheet_row.then(|| {
             if md::is_checked(line) {
                 "done"
