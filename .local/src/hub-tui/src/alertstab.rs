@@ -1024,7 +1024,7 @@ pub(crate) mod tests {
         let (s, _) = page(&every(), &a, 160);
         assert!(s.contains("HISTORY  4 pages in 7 days"), "{s}");
         assert!(s.contains("tripped Sentinel: playground-nightly"), "{s}");
-        assert!(s.contains("  +3 older on 2 Log, Actions"), "{s}");
+        assert!(s.contains("  +3 older on 3 Log, Actions"), "{s}");
     }
 
     #[test]

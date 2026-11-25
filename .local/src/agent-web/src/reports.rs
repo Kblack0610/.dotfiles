@@ -1,5 +1,5 @@
 //! The Reports tab: what agents filed for the human, through `hub_core::reports` (the one reader;
-//! the hub TUI draws the same view once ar-5259 lands). `GET /api/reports` is the view for the
+//! the hub TUI's Reports tab draws the same view). `GET /api/reports` is the view for the
 //! local day; `POST /api/reports/read {id}` marks one report read through `notes report read`,
 //! the stamp's one writer, and answers with the view as it is after. A report's body is the Daily
 //! tab's reader (`/api/focus?t=<target>`), so this handler never touches the filesystem.

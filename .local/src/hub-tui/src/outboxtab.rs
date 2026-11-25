@@ -26,6 +26,28 @@ fn hung(lead: &str, text: &str, w: usize) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The tab's lines: the outbox (or why it did not read), with what the last action said above it.
+pub fn lines(
+    outbox: Option<&Result<View, String>>,
+    said: Option<&Result<String, String>>,
+    p: Palette,
+    w: usize,
+) -> Vec<Line<'static>> {
+    match outbox {
+        None => vec![Line::styled("Reading the outbox...", p.dim())],
+        Some(Err(e)) => vec![Line::styled(e.clone(), p.warn())],
+        Some(Ok(v)) => {
+            let mut l = match said {
+                Some(Ok(m)) => vec![Line::styled(m.clone(), p.dim())],
+                Some(Err(e)) => vec![Line::styled(e.clone(), p.warn())],
+                None => vec![],
+            };
+            l.extend(page(v, p, w));
+            l
+        }
+    }
+}
+
 pub fn page(v: &View, p: Palette, w: usize) -> Vec<Line<'static>> {
     let mut out = vec![clip_line(
         Line::from(vec![
