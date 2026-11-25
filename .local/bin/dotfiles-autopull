@@ -120,7 +120,9 @@ attach_skills() {
 }
 
 # shellcheck source=../lib/stat.sh
-. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/stat.sh"
+# The pull still runs when it fails to load: it is what repairs a broken checkout. Rebuild and restart
+# checks then read no mtime and do nothing, so the line says so.
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/stat.sh" || say "~: cannot load .local/lib/stat.sh: no rebuild or stale-unit restart this run"
 
 # restart_stale <unit> <file> <what>: a running user <unit> that started before <file> last changed
 # still runs the old <what>, so restart it. One line when it restarted or failed.

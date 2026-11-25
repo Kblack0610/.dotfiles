@@ -9,7 +9,7 @@
 # The Sentinel watch dirty-mains runs it; main-checkout-branch covers the branch; dirty-park
 # sets what it names aside without deleting it.
 #
-# Usage: dirty-mains [--quiet]    exit 0 clean, 1 something reported, 2 map unreadable
+# Usage: dirty-mains [--quiet]    exit 0 clean, 1 something reported, 2 map or stat.sh unreadable
 # Env:   DIRTY_MAINS_MAP (default ~/.config/shared-hooks/project-map.json),
 #        DIRTY_MAINS_AGE_MIN (60), DIRTY_MAINS_STASH_DAYS (30)
 set -uo pipefail
@@ -30,7 +30,7 @@ paths="$(jq -r '.paths // {} | keys[]' "$MAP" 2>/dev/null)" || {
   printf 'dirty-mains: cannot read the paths of %s\n' "$MAP" >&2; exit 2; }
 
 # shellcheck source=../lib/stat.sh
-. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/stat.sh"
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/stat.sh" || { printf 'dirty-mains: cannot load .local/lib/stat.sh\n' >&2; exit 2; }
 
 now="$(date +%s)"
 cut_change=$((now - AGE_MIN * 60))
