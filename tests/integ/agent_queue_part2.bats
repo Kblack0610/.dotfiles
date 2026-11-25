@@ -1607,8 +1607,8 @@ second line of the brief
 }
 
 @test "an over-cap board pull (promote's --from board:) files no second row: the five check rows triage re-added each pass" {
-  # ar-6187, 2026-11-25: fleet-bench triage promoted each open check row (no id marker of any new kind) at
-  # the cap; the held add filed an overflow twin with the cut title each pass, which triage then dropped as a dup.
+  # ar-6187, 2026-11-25: fleet-bench triage promoted each open check row at the cap; the held add filed an
+  # overflow twin with the cut title on every pass, which inbox-triage then dropped as a dup of the open row.
   story_notes
   export AGENT_QUEUE_CAP=1 AGENT_QUEUE_PULL=dispatch
   "$AQ" add --project level --slug one "feat(menu): one" >/dev/null
@@ -1621,13 +1621,16 @@ second line of the brief
     "check(alert): HomelabCronJobFailed trader-markets-history-bars firing, alertmanager-fleet tripped since 2026-11-25, expected: no fleet=fix alert"; do
     run "$AQ" add --project level --priority high --from "board:level:lv-$n" --slug "lv-$n" --tags "red alert cause:c$n" --title "$t" -- "$t"
     assert_failure 5
-    assert_output --partial "its row level:lv-$n is left un-started where it is"
+    assert_output --partial "its board row lv-$n on level is left un-started where it is"
     n=$((n + 1))
   done
+  # The next pass pulls the same row again and is held again, still filing nothing.
+  run "$AQ" add --project level --priority high --from board:level:lv-6109 --slug lv-6109 --tags "red alert cause:c6109" -- "check(alert): TraderLabPodUnschedulable freqtrade-league-66 firing"
+  assert_failure 5
   run grep -cE ' ptask level --agent (add|propose) ' "$NOTES_FIXTURE/calls.log"
   assert_output 0
   [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*-lv-61*.md 2>/dev/null)" ] || fail "a held board pull wrote an item"
-  [ "$(jq -r 'select(.slug | startswith("lv-61")) | .slug' "$AGENT_QUEUE_DIR/admission.jsonl" | wc -l)" -eq 5 ]
+  [ "$(jq -r 'select(.slug | startswith("lv-61")) | .slug' "$AGENT_QUEUE_DIR/admission.jsonl" | wc -l)" -eq 6 ]
   # Negative control: the same over-cap add with no board row behind it is a human's, and files its row.
   run "$AQ" add --project level --priority high --slug human-twin "check(watch): triage-coverage tripped since 2026-11-25"
   assert_failure 5
