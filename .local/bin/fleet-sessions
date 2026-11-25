@@ -106,6 +106,7 @@ set -uo pipefail
                                   # behind another PR or on its checks (a gate polls every 120s, gives up after 280m; agent-land
                                   # waits on a queued run with no limit, and ends itself): live, never idle, whatever the output age
 : "${HUNG_REASON:=background shell is waiting on itself (tail --pid of its own parent)}"
+: "${ENDED_REASON:=background shell is a pgrep loop on a gate that has ended, and pgrep -f matches the loop's own shell, so it never exits: stop it and read the gate's output}"
 : "${FLEET_DIRTY_NAMES:=3}" # a dirty-file reason names this many paths, then "+N more"
 : "${FLEET_ITEM_DAYS:=7}" # days of done queue items read to see that a session's item moved on
 : "${FLEET_OVERDUE_MIN:=60}" # the least a phase runs before it can be overdue, whatever its eta (overdue_of)
@@ -196,7 +197,7 @@ BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 #                <main_red: workflows this session's merged PR is a suspect for, or -> \
 #                <phases: - (no plan file) | missing (a recorded plan file that is nowhere) | none (no checklist) | done/total> <next phase|-> \
 #                <conflicts: yes|no|- (merging the default branch in would conflict)> \
-#                <open job: gate|queue|test|build|checkout|agent|human|jobs|none|hung|wait|- (agent-panel's open_job, or a live gate/test/build process in the worktree or under its claude: live_wait; hung: self_wait, a shell waiting on itself; wait: self_wait, a tail --pid on another process; - unknown)> \
+#                <open job: gate|queue|test|build|checkout|agent|human|jobs|none|hung|wait|ended|- (agent-panel's open_job, or a live gate/test/build process in the worktree or under its claude: live_wait; hung: self_wait, a shell waiting on itself; wait: self_wait, a tail --pid on another process; ended: watched_gate, a pgrep loop on a gate that no longer runs; - unknown)> \
 #                <dirty names: the first dirty paths, shown beside the count, or -> \
 #                <landed: this session's own PRs ("#N,#M") when its transcript names a merged one,
 #                 none open and every state known (a closed one was replaced or dropped), else
@@ -272,6 +273,10 @@ session_bucket() {
       elif [ "$5" -ge "$FLEET_IDLE_MIN" ] && [ "$job" = hung ]; then
         # 2026-11-09 agent-51 read WORKING for 100m on a shell waiting for its own parent to exit.
         note=", $HUNG_REASON"
+      elif [ "$5" -ge "$FLEET_IDLE_MIN" ] && [ "$job" = ended ]; then
+        # 2026-11-24 unity-core-playground-agent-22 sat 2h in `while pgrep -f gate-and-land` after its gate exited red; the
+        # generic note below did not tell it why, and it dismissed the nudge (ar-5157).
+        note=", $ENDED_REASON"
       elif [ "$5" -ge "$FLEET_IDLE_MIN" ] && { [ "$job" = jobs ] || [ "$job" = none ]; }; then
         # Only a gate, a test, a build, a checkout, a subagent or an event wait is work worth waiting 120m on. Anything else is a sleep
         # loop, a watch on a file or a job the transcript no longer shows; on 2026-11-03 13 of 24
@@ -397,33 +402,49 @@ pgrep_pattern() {
   printf '%s\n' "$p"
 }
 
-# watched_gate <transcript> -> queue when an open background Bash task (open_tasks) is a `pgrep` loop on one of
+# watched_gate <transcript> [<cwd>] -> queue when an open background Bash task (open_tasks) is a `pgrep` loop on one of
 # FLEET_QUEUE_GATES' texts and a process of that text is alive (queue_match, so a pgrep and a `-c` line holding the
-# loop's own text do not count), else nothing. The gate is the session's own, started apart from the loop (a
-# gate-and-land.sh before its PR exists, which the session watches for its end); time-use.conf reads the loop as `jobs`
-# because pgrep, not the text, starts the command, and live_wait finds the gate only inside this claude's tree.
-# 2026-11-12 agent-24 read "background shell is not a gate or test" while its gate-and-land.sh ran (ar-2121). A loop
-# whose target ended has ended with it, and one that matches only itself finds no live process. Not counted: a
-# `-c` line and a claude (its argv carries a dispatch prompt that names agent-land), as wait_procs skips them. The
-# loop is read from any open task, not only the one the panel calls the open job, and the process from any session,
-# narrowed by the loop's own pattern (pgrep_pattern); a loop on a bare `gate-and-land.sh` reads any live one.
+# loop's own text do not count), ended when such a loop is open and no process of its text is alive, else nothing.
+# The gate is the session's own, started apart from the loop (a gate-and-land.sh before its PR exists, which the session
+# watches for its end); time-use.conf reads the loop as `jobs` because pgrep, not the text, starts the command, and
+# live_wait finds the gate only inside this claude's tree. 2026-11-12 agent-24 read "background shell is not a gate or
+# test" while its gate-and-land.sh ran (ar-2121). A loop on a gate that has ended is still open only because pgrep -f
+# matches the shell running it (the Bash tool's `zsh -c` line holds the loop's text), so it never exits: ended
+# (2026-11-24 unity-core-playground-agent-22 sat 2h in one, ar-5157). Not counted: a `-c` line and a claude (its argv
+# carries a dispatch prompt that names agent-land), as wait_procs skips them. The loop is read from any open task, not
+# only the one the panel calls the open job. Its pattern (pgrep_pattern) names a gate when it holds the gate's text or
+# matches it. A pattern that matches the bare text (`gate-and-land`, `gate-and-land.sh`) matches every session's gate,
+# so with <cwd> it counts only a process whose cwd is in <cwd>'s checkout; a pattern with more in it
+# (`'gate-and-land.sh 2200'`) counts a process of any session.
 watched_gate() {
-  local id path cmd text line pat args=""
+  local id path cmd text line pat pid args="" ended="" own top=""
   local -a qg=(); IFS='|' read -ra qg <<<"$FLEET_QUEUE_GATES"
   grep -qF pgrep "$1" 2>/dev/null || return 0   # most transcripts have no such loop: skip the task reads
   while IFS=$'\t' read -r id path; do
     cmd="$(bash_command "$1" "$id")"
     [[ "$cmd" == *pgrep* ]] || continue
     pat="$(pgrep_pattern "$cmd")" || continue
-    [ -n "$args" ] || args="$(ps -e -o args= 2>/dev/null)"
+    [ -n "$args" ] || args="$(ps -e -o pid=,args= 2>/dev/null)"
     for text in "${qg[@]}"; do
-      [[ "$cmd" == *pgrep*"$text"* ]] || continue
-      while IFS= read -r line; do
+      [[ "$pat" == *"$text"* ]] || [[ "$text" =~ $pat ]] || continue
+      own=""
+      if [ -n "${2:-}" ] && [[ "$text" =~ $pat ]]; then
+        own=1
+        [ -n "$top" ] || top="$(git -C "$2" rev-parse --show-toplevel 2>/dev/null)" || top="$2"
+      fi
+      while read -r pid line; do
         case "$line" in *" -c "* | claude" "* | */claude" "*) continue ;; esac
-        queue_match "$line" "$text" && [[ "$line" =~ $pat ]] && { echo queue; return 0; }
+        queue_match "$line" "$text" && [[ "$line" =~ $pat ]] || continue
+        if [ -n "$own" ]; then
+          line="$(readlink "/proc/$pid/cwd" 2>/dev/null)" || continue
+          [[ "$line/" == "${top%/}/"* ]] || continue
+        fi
+        echo queue; return 0
       done <<<"$args"
+      ended=ended
     done
   done < <(open_tasks "$1")
+  [ -z "$ended" ] || echo "$ended"
 }
 
 # live_wait <cwd> [<claude pid>]: queue when such a process is a FLEET_QUEUE_GATES one (a gate waiting for its
@@ -2614,15 +2635,15 @@ collect() {
     # A gate or test running in the worktree is a wait whatever the transcript's open job says.
     live=""
     if [ "$host" = - ] && [ "$status" = shell ] && { [ "$ojob" = jobs ] || [ "$ojob" = none ] || [ "$ojob" = gate ]; }; then
-      live="$(live_wait "$cwd" "$cpid")"; [ -n "$live" ] || [ "$ojob" = gate ] || live="$(watched_gate "$transcript")"
+      live="$(live_wait "$cwd" "$cpid")"; [ -n "$live" ] || [ "$ojob" = gate ] || live="$(watched_gate "$transcript" "$cwd")"
       # watched_gate: a pgrep loop on a gate outside the claude's tree is its wait (ar-2121); a transcript job that already reads gate keeps its class: the probes only add the queue case
       [ "$ojob" != gate ] || [ "$live" = queue ] || live=""
       ojob="${live:-$ojob}"
     fi
     # A shell waiting on itself is hung whatever the transcript's open job says: its command line may
     # read as a gate. A live gate or test process found above outranks it. An event wait (a tail --pid
-    # on another process) only names a shell the transcript could not class: a gate's keeps its own.
-    if [ "$host" = - ] && [ "$status" = shell ] && [ "$ojob" != agent ] && [ -z "$live" ]; then
+    # on another process) only names a shell the transcript could not class: a gate's keeps its own; an ended loop hides none.
+    if [ "$host" = - ] && [ "$status" = shell ] && [ "$ojob" != agent ] && { [ -z "$live" ] || [ "$live" = ended ]; }; then
       live="$(self_wait "$cpid")"
       [ "$live" != wait ] || [ "$ojob" = jobs ] || [ "$ojob" = none ] || live=""
       ojob="${live:-$ojob}"
