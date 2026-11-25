@@ -1567,6 +1567,17 @@ mod tests {
     }
 
     #[test]
+    fn a_janitor_need_takes_its_id_from_the_key_and_its_text_from_the_newest_line() {
+        let mut st = state();
+        st["janitor"] = json!([{"when": "10:50", "who": "janitor",
+            "what": "node a quarantine (x3 (06:20Z, 06:50Z, 10:50Z))", "key": "node a quarantine"}]);
+        let h = build_all(Some(&st), None, None, None, NOW);
+        let n = h.needs.iter().find(|n| n.kind == Kind::Janitor).unwrap();
+        assert_eq!(n.id, "janitor:node a quarantine");
+        assert!(n.text.contains("x3 (06:20Z, 06:50Z, 10:50Z)"));
+    }
+
+    #[test]
     fn the_briefing_only_inputs_are_conditions_after_every_wait() {
         let mut st = state();
         st["budget"] =

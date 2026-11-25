@@ -113,22 +113,53 @@ pub fn janitor(md: &str) -> Vec<Value> {
     out
 }
 
-/// A janitor line's subject: its text with every parenthesized group (nested ones too) removed and
-/// runs of whitespace folded to one space. An unbalanced ")" is kept as text, and a "(" never closed
-/// leaves the whole text as the key, so two lines that differ after it stay two items.
+/// A janitor line's subject: its text without the parenthesized groups that carry a clock time
+/// (the evidence, "(HostSoftLockup x2 (06:20Z, 06:50Z), host-only)"), whitespace folded. A group
+/// with no time ("(ns-a)") names the subject and stays, so two such lines stay two items. A "(" never
+/// closed and an unbalanced ")" stay as text; a key left empty falls back to the folded text.
 fn janitor_key(what: &str) -> String {
-    let mut depth = 0usize;
+    let fold = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut kept = String::with_capacity(what.len());
+    let mut group = String::new();
+    let mut depth = 0usize;
     for c in what.chars() {
         match c {
-            '(' => depth += 1,
-            ')' if depth > 0 => depth -= 1,
-            _ if depth == 0 => kept.push(c),
-            _ => {}
+            '(' => {
+                depth += 1;
+                group.push(c);
+            }
+            ')' if depth > 0 => {
+                depth -= 1;
+                group.push(c);
+                if depth == 0 {
+                    if !has_clock(&group) {
+                        kept.push_str(&group);
+                    }
+                    group.clear();
+                }
+            }
+            _ if depth > 0 => group.push(c),
+            _ => kept.push(c),
         }
     }
-    let src = if depth == 0 { kept.as_str() } else { what };
-    src.split_whitespace().collect::<Vec<_>>().join(" ")
+    kept.push_str(&group);
+    let key = fold(&kept);
+    if key.is_empty() {
+        fold(what)
+    } else {
+        key
+    }
+}
+
+/// Whether the text holds a clock time: digits, ":", two digits ("06:20Z", "6:05").
+fn has_clock(t: &str) -> bool {
+    let b = t.as_bytes();
+    (1..b.len().saturating_sub(2)).any(|i| {
+        b[i] == b':'
+            && b[i - 1].is_ascii_digit()
+            && b[i + 1].is_ascii_digit()
+            && b[i + 2].is_ascii_digit()
+    })
 }
 
 /// A runner stopped at its day budget today: the newest outcome line of its activity.log is
@@ -321,8 +352,16 @@ mod tests {
             j[1]["key"],
             "node deskslim-1 meets quarantine but 2 nodes are already or newly quarantined - not tainted; check the trigger queries"
         );
-        // An unclosed "(" keeps the whole text as the key.
-        assert_eq!(janitor_key("disk  91% (rising"), "disk 91% (rising");
+        // A group with no clock time names the subject: two namespaces stay two items.
+        let ns = "- 06:00 [janitor] NEEDS YOU: pvc stuck (ns-a)\n- 06:10 [janitor] NEEDS YOU: pvc stuck (ns-b)\n";
+        assert_eq!(janitor(ns).len(), 2);
+        // A stray "(" stays as text and the evidence group is still dropped.
+        assert_eq!(
+            janitor_key("node x quarantine (HostSoftLockup x1 (06:20Z)) :("),
+            "node x quarantine :("
+        );
+        // A line that is all evidence keeps its folded text, never an empty key.
+        assert_eq!(janitor_key("(disk  91% at 06:20Z)"), "(disk 91% at 06:20Z)");
     }
 
     #[test]
