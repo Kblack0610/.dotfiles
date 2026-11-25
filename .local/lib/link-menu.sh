@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # link-menu.sh: the desktop note and the fuzzy wofi/rofi picker of the link launchers
 # (karakeep-menu, kblab-menu). Set MENU_TITLE (the note's title) and MENU_WIDTH (wofi's width)
 # before sourcing it.

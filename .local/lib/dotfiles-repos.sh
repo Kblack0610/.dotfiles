@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # dotfiles-repos.sh: where the two stowed dotfiles repos are, and the test that a dir is a repo
 # root. Sourced by dotfiles-deploy, dotfiles-drift, skill-deploy and skill-drift.
 

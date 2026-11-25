@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # post-client.sh: what the one-provider post clients (bluesky-post, discord-post, mastodon-post)
 # share: a private work dir for the curl config and the response, one post at a time per machine,
 # and reading the response's headers and retry waits. The caller sets MAX_WAIT.
