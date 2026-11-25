@@ -45,7 +45,7 @@ pub struct Pipeline {
     pub file: String,
     /// What started its runs, most first (`dispatch, pr`), and `cron` when it has one.
     pub trigger: String,
-    /// `on` in the night set, `held` out of it, empty when not a member.
+    /// `on` in the night step, `wide` in the step after it, `held` out of the night, empty when not a member.
     pub nightly: String,
     /// Its crons in words, or the night runner's schedule.
     pub schedule: String,
