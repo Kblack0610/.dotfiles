@@ -55,6 +55,11 @@ phased=$(awk '/^```/ {f = !f} !f && /^## Phases[ \t]*$/' <<<"$plan" | head -n1)
 # one-shot writes on every plan is not, so it may name a standing epic.
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.local/lib/plan-phases.sh" 2>/dev/null
+# The rows a plan names pick its project, so a session in one repo can plan another's work; the cwd
+# stands only when it names none (plan_project).
+target=''
+! declare -F plan_project >/dev/null || target=$(plan_project <<<"$plan")
+[ -z "$target" ] || { project=$target label=$target; }
 multi=''
 if [ -n "${_PLAN_PHASES_AWK:-}" ]; then
   # Outside code fences, so an example checklist in a fence is no phase.
@@ -113,7 +118,7 @@ epic_new_gaps() {
   if ! ids=$(project-stage-check "$board" --list --json 2>/dev/null | jq -er '.[].id' 2>/dev/null); then
     echo "epic: new: project-stage-check $board --list --json printed no system list, so epic($sys) cannot be checked"
   elif ! grep -qxF -- "$sys" <<<"$ids"; then
-    echo "epic: new names epic($sys), no system of $board: one of $(paste -sd, <<<"$ids")"
+    echo "epic: new names epic($sys), no system of $board: one of $(paste -sd, <<<"$ids")$([ -n "$target" ] || echo "; $board is this session's board, so a plan for another project names one of that project's rows on Overlap:")"
   fi
   short=$(for lane in '' --agent; do
       notes ptask "$board" $lane similar --top 5 --json -- "$t" 2>/dev/null | jq -r '.[] | "\(.percent)\t\(.id)"' 2>/dev/null

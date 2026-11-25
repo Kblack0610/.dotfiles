@@ -163,6 +163,23 @@ plan_overlap_ids() {
     on' "$@" | grep -oE '\b[a-z][a-z0-9]*-[0-9]+\b' | sort -u
 }
 
+# plan_project [<plan file>] -> the project whose rows the plan names: the id on its `epic: <id>` line,
+# else the ids on its Overlap: line, each read by its code (project_of_code, so the caller has sourced
+# project-name.sh). Nothing when it names no known id, or ids of more than one project: the caller then
+# takes the session's cwd. Why: a dotfiles session planning dodginballs work was checked on the
+# agent-runtime board (ar-5288). Reads stdin with no file.
+plan_project() {
+  [ $# -eq 0 ] || [ -f "$1" ] || return 0
+  local text ids p
+  text=$(cat "$@")
+  ids=$(awk '/^```/ { f = !f; next } !f' <<<"$text" | grep -m1 -oE '^epic:[[:space:]]*[a-z][a-z0-9]*-[0-9]+' | sed -E 's/^epic:[[:space:]]*//')
+  [ -n "$ids" ] || ids=$(plan_overlap_ids <<<"$text")
+  [ -n "$ids" ] || return 0
+  p=$(while read -r id; do project_of_code "${id%-*}"; done <<<"$ids" | grep -v '^$' | sort -u)
+  [ -n "$p" ] && [ "$(wc -l <<<"$p")" -eq 1 ] && printf '%s\n' "$p"
+  return 0
+}
+
 # plan_epic_tag <plan file> -> `#plan/<slug>`, the tag plan-approved.sh puts on a proposal and
 # plan_epic_verdict finds its verdict by.
 plan_epic_tag() { printf '#plan/%s\n' "$(basename "$1" .md)"; }
