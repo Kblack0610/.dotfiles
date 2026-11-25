@@ -1797,7 +1797,7 @@ closed_feed() {
   assert_output --partial '1 reopened'
   run grep -c -- '^ptask agent-runtime reopen ar-77 --why fleet-bench: check(watch): spend tripped since red again$' "$NLOG"
   assert_output 1
-  run grep -c -- '--agent edit check(watch): spend tripped since --text check(watch): spend tripped since ' "$NLOG"
+  run grep -c -- '--agent edit ar-77 --text check(watch): spend tripped since ' "$NLOG"
   assert_output 1
   run grep -c -- '--agent add check(watch): spend' "$NLOG"
   assert_output 0
