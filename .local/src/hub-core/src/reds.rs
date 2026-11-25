@@ -481,8 +481,8 @@ mod tests {
                 ),
                 (
                     "ci",
-                    "CI runs of Kblack0610/.dotfiles#3409".into(),
-                    Link::to(Kind::PrRuns, "Kblack0610/.dotfiles#3409").href()
+                    "CI runs of kblack0610/.dotfiles#3409".into(),
+                    Link::to(Kind::PrRuns, "kblack0610/.dotfiles#3409").href()
                 ),
             ]
         );
