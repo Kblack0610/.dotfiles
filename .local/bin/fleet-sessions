@@ -3559,7 +3559,7 @@ write_state() {
       | {schema: 2, generated_epoch: $t, generated_at: ($t | todate),
          # The machine that wrote this (fleet-hosts.sh FLEET_HOST): a row with no host runs here.
          host: (if $me == "" then null else $me end),
-         # idle_min: the idle line (FLEET_IDLE_MIN) past which a session reads idle; fleet-dispatch's waits reads it (ar-4662).
+         # idle_min: the idle line (FLEET_IDLE_MIN) past which a session reads idle; the waits rule of fleet-dispatch reads it (ar-4662).
          vocab: {buckets: ($order | split(" ")), finished: ($finished | split(" ")), in_progress: ($progress | split(" ")), idle_min: ($idle_line | tonumber? // null)},
          unreadable: ($unread | split("\n") | map(select(length > 0))),
          silent: ($silent | split("\n") | map(select(length > 0) | fromjson)),
