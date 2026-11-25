@@ -1,23 +1,24 @@
 ---
 name: fix-ci
 description: >-
-  Fix the red checks on one PR at their root cause: two attempts, then file it and stop. Use for "fix CI on this PR", "the checks are red", `/fix-ci <pr>`. Reds across runs: ci-cleanup.
+  Fix a red CI run at its root cause: one PR's checks, or a suite on main (the nightly). Two attempts, then file it and stop. Use for "fix CI on this PR", "the checks are red", "fix the nightly", "main is red", `/fix-ci <pr>`. Reds across runs: ci-cleanup.
 argument-hint: "[pr | owner/repo#N]"
 allowed-tools: [Bash, Read, Write, Edit, Glob, Grep, Task]
 metadata:
   category: ops
   tags: [ci, github, pr]
   system: [ci]
-  reviewed: "2026-11-12"
+  reviewed: "2026-11-24"
 ---
 
 # fix-ci
 
-Fix the failing checks on the current branch's PR. If the repo has a CI doc (`docs/operations/ci.md` or what its CLAUDE.md names), it wins over this file.
+Fix a red CI run: the failing checks on the current branch's PR, or a suite red on main. If the repo has a CI doc (`docs/operations/ci.md` or what its CLAUDE.md names), it wins over this file.
 
 ## Scope and triggers
 
 - One PR's red checks: `/fix-ci <pr>`, or the current branch's PR with no argument. fleet-dispatch starts a session on it for a parked PR that went red.
+- A suite red on main (unity-core-playground's `Tests (all)` nightly): the `playground-nightly` route starts this skill the hour the watch trips, or "fix the nightly", "main is red", a Nightly row on Home. Steps 2 to 6 apply to each cause; "A red on main" below adds the owner and rows.
 
 Not for reds that recur across many runs or a whole CI cleanup pass - that is `ci-cleanup`.
 
@@ -29,6 +30,15 @@ Not for reds that recur across many runs or a whole CI cleanup pass - that is `c
 4. Reproduce locally with the repo's own scripts (read `package.json`, `Makefile`, `scripts/`), fix the root cause, and rerun only what the change can affect.
 5. Push, then wait on the event: `gh pr checks <pr> --watch --fail-fast` in the background. Never a sleep loop.
 6. Two fix attempts at most. Still red: file a board row with the run URL and what you tried, and stop.
+
+## A red on main
+
+The repo's runbook owns the steps only it has: reading the run, naming the merge whose gate missed it, quarantine and the close (unity-core-playground: `docs/operations/nightly-red.md`). This skill owns the loop around them.
+
+1. **Own it, once.** Grep the board for an open "fix(nightly)" row and the queue for a `nightly-` item (`agent-queue list --state active | grep nightly-`). A live owner gets your findings and you stop. Else take the row (`notes ptask <project> --agent start <id>`) and `agent-queue add --running --priority urgent --from board:<project>:<id> --slug nightly-green-<id> "<task>"`.
+2. **One row per cause** (content, code, multiplayer, host): grep the board for the class or host and fold into the open row. One fix item per cause, pulled from its row by dispatch (`nightly-fix-<id>`; never a board-origin `agent-queue add` of it, which writes no item).
+3. **Prove each fix on its affected tests**, as the runbook says. The full proof is the next scheduled run on main: start no full run by hand (`Tests (all)`, `agentctl-playground-night`). A cause not fixed by the runbook's deadline is quarantined with an owner and an expiry.
+4. **Close the owner row** on the runbook's close item, never on a merge: `notes ptask <project> --agent done <owner row> --proof run:<id>`, then `agent-queue move nightly-green-<id> done`. A bare `agent-land <N>` closes only its own item, so the owner session lands each PR on an item of its own.
 
 ## Do NOT, to get green
 

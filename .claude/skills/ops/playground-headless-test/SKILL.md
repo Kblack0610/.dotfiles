@@ -48,7 +48,7 @@ Runs the playground's tests on the BNB runner pool, never on the workstation, wh
 - When gating and landing a playground PR.
 - When a `Tests (all)` run on main is red and you need to read it.
 
-Not for MCP-driven play in an editor: CLAUDE.md "Driving the sandbox over MCP". Not for why reds recur across many runs, or what a nightly red belongs to - that is `ci-cleanup`. Taking a red nightly to green: `playground-nightly-fix`.
+Not for MCP-driven play in an editor: CLAUDE.md "Driving the sandbox over MCP". Not for why reds recur across many runs, or what a nightly red belongs to - that is `ci-cleanup`. Taking a red nightly to green: `fix-ci`.
 
 ## Steps
 

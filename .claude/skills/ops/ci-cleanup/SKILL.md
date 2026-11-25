@@ -21,7 +21,7 @@ The doctrine (gate, tiers, budgets, speed levers, red handling, quarantine, reru
 - Cost: why CI, a gate or a dispatch takes as long as it does; choosing the next harness change to cut CI time; proving what a landed harness change saved; a long runner pool queue nobody can attribute.
 - Pass: the human asks to clean up CI, raise the pass rate, or run "CI cleanup pass N"; nightlies stay red for days and single-red triage has not moved them; a low local or gate pass rate nobody can split into tests and harness.
 
-Not for one PR's red checks (`fix-ci`), a red playground nightly end to end (`playground-nightly-fix`), agent-session ETAs (`fleet-bench`), or running tests (`playground-headless-test`).
+Not for a red CI run on a PR or on main, the nightly included (`fix-ci`), agent-session ETAs (`fleet-bench`), or running tests (`playground-headless-test`).
 
 ## Reds: why CI is red
 
