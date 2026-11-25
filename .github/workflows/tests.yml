@@ -28,7 +28,8 @@ name: shell tests
 # it runs, because a pool pod loads its image over a link shared with the whole pool: the one
 # 943 MB image ran every job out of its timeout in the cache restore on 2026-11-25 (ar-5632). A pool
 # runner pulls it from the LAN registry instead (the CI_REGISTRY variable and CI_REGISTRY_PASSWORD secret; the action
-# says when). No step installs a tool on the runner (~/.local/src/docs/ci.md, Runners; tests/unit/ci_gate.bats).
+# says when), and a pull that fails fails the step within 5 minutes: the Actions cache and a build are for a
+# runner with no registry only, since either one behind a failed pull ran the job into its guard (ar-5959). No step installs a tool on the runner (~/.local/src/docs/ci.md, Runners; tests/unit/ci_gate.bats).
 #   image  first, before every job that loads the image: makes sure the registry holds all three
 #          stages for the current tag, building and pushing them once when it does not. Without it
 #          every pod missed the registry at once when the tag changed (2026-11-25: 34 pods, 20
@@ -330,13 +331,13 @@ jobs:
         tmux: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["3.4", "3.5a", "3.6a", "3.7b", "3.8"]' || '["3.8"]') }}
     steps:
       - uses: actions/checkout@v4
-      # The test-image step loads the image (or builds it on a cache miss); bats-vendor puts
+      # The test-image step pulls the image from the registry (a pull that fails fails the job; a
+      # runner with no registry restores or builds it); bats-vendor puts
       # bats on the host, where docker.sh finds it, then the tier runs inside the container. Runners have no tty; that is fine -- new-session -d, send-keys
       # and capture-pane all work headless. Only display-popup needs an attached client, and
       # nothing here exercises one (the popup is a single .tmux.conf binding; the script is
       # the testable surface). If a future test ever needs a client, the idiom is bats-core's
       # own workflow: shell: 'script -q -e -c "bash {0}"' with TERM=linux.
-      # The image comes from the Actions cache when nothing it is built from changed.
       - uses: ./.github/actions/test-image
         with:
           registry: ${{ vars.CI_REGISTRY }}

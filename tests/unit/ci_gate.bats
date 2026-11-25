@@ -236,3 +236,50 @@ unseeded() {
   run unseeded "$BATS_TEST_TMPDIR/unseeded.yml"
   assert_output '3.6a'
 }
+
+# reg_step <action.yml>: the registry step's script, the one that pulls (or, for a seed, probes)
+reg_step() {
+  python3 -I -c 'import sys, yaml
+steps = yaml.safe_load(open(sys.argv[1]))["runs"]["steps"]
+print([s for s in steps if s.get("id") == "reg"][0]["run"])' "$1"
+}
+
+# run_reg <seed> <docker exit>: the registry step against a stub docker whose pull and manifest read exit with the code
+run_reg() {
+  local ACT="${ACTION:-$BATS_TEST_DIRNAME/../../.github/actions/test-image/action.yml}"
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  printf '%s\n' '#!/bin/bash' 'case "$1" in pull | manifest) exit "$STUB_RC" ;; *) exit 0 ;; esac' >"$BATS_TEST_TMPDIR/bin/docker"
+  chmod +x "$BATS_TEST_TMPDIR/bin/docker"
+  reg_step "$ACT" >"$BATS_TEST_TMPDIR/reg.sh"
+  [ -s "$BATS_TEST_TMPDIR/reg.sh" ] || fail "no reg step script read from $ACT"
+  : >"$BATS_TEST_TMPDIR/out"
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" GITHUB_OUTPUT="$BATS_TEST_TMPDIR/out" STUB_RC="$2" SEED="$1" \
+    TAG=cockpit-tests:t1 WEEK=2026-W48 REGISTRY=registry.invalid:5000 PASSWORD=x \
+    bash -e -o pipefail "$BATS_TEST_TMPDIR/reg.sh"
+}
+
+@test "a pool pod's load stops at a failed pull: no cache restore, no build behind it" {
+  run run_reg false 1
+  assert_failure
+  assert_output --partial "::error::registry has no registry.invalid:5000/kblab-ci/dotfiles/test-image:t1-2026-W48"
+  run grep -c '^pulled=true$' "$BATS_TEST_TMPDIR/out"
+  assert_output 0
+  # A pull that works is marked, with its seconds in the log.
+  run run_reg false 0
+  assert_success
+  assert_output --regexp 'pulled registry.invalid:5000/.* in [0-9]+ s'
+  run grep -c '^pulled=true$' "$BATS_TEST_TMPDIR/out"
+  assert_output 1
+}
+
+@test "a seed run that finds no image in the registry warns and goes on to build it" {
+  run run_reg true 1
+  assert_success
+  assert_output --partial "::warning::registry has no"
+  run grep -c '^pulled=true$' "$BATS_TEST_TMPDIR/out"
+  assert_output 0
+  # Negative control: the load-mode stop is what the first test sees, so a step whose miss never exits is caught there.
+  sed 's/; exit 1; fi$/; fi/' "$BATS_TEST_DIRNAME/../../.github/actions/test-image/action.yml" >"$BATS_TEST_TMPDIR/noexit.yml"
+  ACTION="$BATS_TEST_TMPDIR/noexit.yml" run run_reg false 1
+  assert_success
+}
