@@ -39,13 +39,14 @@ pub(super) fn last_entry(text: &str) -> Option<u64> {
 /// Python readers read too.
 const EDIT_TOOLS: &str = include_str!("../../../../../.config/agent-panel/edit-tools.conf");
 
-/// [`EDIT_TOOLS`]' names, past its comments and blank lines.
-fn edit_tools() -> Vec<&'static str> {
-    EDIT_TOOLS
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .collect()
+/// [`EDIT_TOOLS`]' names, each with the `"name":"<tool>"` needle a transcript line carries.
+fn edit_tools() -> &'static [(&'static str, String)] {
+    static TOOLS: std::sync::OnceLock<Vec<(&'static str, String)>> = std::sync::OnceLock::new();
+    TOOLS.get_or_init(|| {
+        super::conf_lines(EDIT_TOOLS)
+            .map(|t| (t, format!("\"name\":\"{t}\"")))
+            .collect()
+    })
 }
 
 /// Files the session changed with its edit tools, deduplicated, in first-edit order.
@@ -57,9 +58,7 @@ pub(super) fn edited_files(text: &str) -> Vec<String> {
         .lines()
         .filter(|l| {
             l.contains("\"tool_use\"")
-                && tools
-                    .iter()
-                    .any(|t| l.contains(&format!("\"name\":\"{t}\"")))
+                && tools.iter().any(|(_, needle)| l.contains(needle.as_str()))
         })
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         .filter(|v| v.get("type").and_then(Value::as_str) == Some("assistant"))
@@ -69,7 +68,7 @@ pub(super) fn edited_files(text: &str) -> Vec<String> {
         };
         for c in blocks {
             let name = c.get("name").and_then(Value::as_str).unwrap_or("");
-            if c.get("type").and_then(Value::as_str) != Some("tool_use") || !tools.contains(&name) {
+            if c.get("type").and_then(Value::as_str) != Some("tool_use") || !tools.iter().any(|(t, _)| *t == name) {
                 continue;
             }
             let input = c.get("input");

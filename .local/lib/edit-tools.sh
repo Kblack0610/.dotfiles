@@ -12,13 +12,17 @@
 
 : "${EDIT_TOOLS_CONF:=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.config/agent-panel/edit-tools.conf}"
 
+# Read in bash, with no grep, paste or jq fork: a Stop hook calls this on every turn.
 edit_tools() {
-  local out
-  out="$(grep -v -E '^[[:space:]]*(#|$)' "$EDIT_TOOLS_CONF" 2>/dev/null)"
-  [ -n "$out" ] || { echo "edit-tools: no tool names in $EDIT_TOOLS_CONF" >&2; return 1; }
-  printf '%s\n' "$out"
+  local l out=()
+  { while IFS= read -r l || [ -n "$l" ]; do
+    l="${l#"${l%%[![:space:]]*}"}"; l="${l%"${l##*[![:space:]]}"}"
+    case "$l" in '' | '#'*) ;; *) out+=("$l") ;; esac
+  done < "$EDIT_TOOLS_CONF"; } 2>/dev/null
+  [ "${#out[@]}" -gt 0 ] || { echo "edit-tools: no tool names in $EDIT_TOOLS_CONF" >&2; return 1; }
+  printf '%s\n' "${out[@]}"
 }
 
-edit_tools_re() { local t; t="$(edit_tools)" || return 1; paste -sd'|' <<<"$t"; }
+edit_tools_re() { local t; t="$(edit_tools)" || return 1; printf '%s' "${t//$'\n'/|}"; }
 
-edit_tools_json() { local t; t="$(edit_tools)" || return 1; jq -Rc '[., inputs]' <<<"$t"; }
+edit_tools_json() { local t; t="$(edit_tools)" || return 1; t="${t//$'\n'/\",\"}"; printf '["%s"]' "$t"; }

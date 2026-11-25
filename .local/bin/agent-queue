@@ -3732,8 +3732,8 @@ cmd_handoff() {
   [ -z "$(git -C "$dir" status --porcelain 2>/dev/null)" ] ||
     die "$dir has uncommitted changes: commit and push them first, so the next session starts from them"
   sha="$(git -C "$dir" rev-parse HEAD)"
-  trunk="$(merge_proof_ref "$dir")" && trunk="$(git -C "$dir" rev-parse -q --verify "refs/remotes/$trunk")" ||
-    die "$dir has no origin default branch (origin/HEAD, develop, main or master) to tell its work from the trunk's"
+  trunk="$(merge_proof_ref "$dir")" ||
+    die "$dir has no origin default branch (merge_proof_ref) to tell its work from the trunk's"
   # A head the trunk already holds has no work to carry: the next session starts from the trunk.
   if ! git -C "$dir" merge-base --is-ancestor "$sha" "$trunk" 2>/dev/null; then
     br="$(git -C "$dir" symbolic-ref --short -q HEAD)" || die "$dir is on a detached head: put the work on a branch and push it first"

@@ -638,7 +638,7 @@ ROOT="${REPO:+$REPO${sub:+/$sub}}"
 DOC_REF="" DOC_SUB="$sub"
 if [ -z "$LIST" ] && [ -n "$REPO" ] && [ -d "$REPO" ] && git -C "$REPO" remote get-url origin >/dev/null 2>&1; then
   DOC_REF="$(merge_proof_ref "$REPO")" && DOC_REF="$(git -C "$REPO" rev-parse --verify -q "refs/remotes/$DOC_REF")" \
-    || { DOC_REF=""; echo "project-stage-check: $REPO has an origin but no default branch fetched (origin/HEAD, develop, main or master), so docs are read from its working tree (git -C $REPO fetch origin)" >&2; }
+    || { DOC_REF=""; echo "project-stage-check: $REPO has an origin but no default branch fetched (merge_proof_ref), so docs are read from its working tree (git -C $REPO fetch origin)" >&2; }
 fi
 [ -n "$LIST" ] || [ -z "$REPO" ] || [ -d "$REPO" ] || { echo "project-stage-check: $REPO is not checked out here" >&2; exit 2; }
 [ -n "$LAB" ] || [ -n "$TYPE" ] || { echo "project-stage-check: no lab dir and no project-map type for \"$NAME\"" >&2; exit 2; }

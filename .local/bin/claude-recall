@@ -747,14 +747,20 @@ HARNESS_PREFIXES = ("This session is being continued", "Stop hook feedback",
                     "[Request interrupted", "Another Claude session sent", "Caveat:")
 
 
+def panel_conf_lines(name):
+    """The lines of .config/agent-panel/<name> beside this checkout, trimmed, past its comments
+    and blank lines."""
+    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..",
+                        ".config", "agent-panel", name)
+    with open(path, encoding="utf-8") as f:
+        return [ln.strip() for ln in f if ln.strip() and not ln.lstrip().startswith("#")]
+
+
 @functools.cache
 def typed_prefixes():
     """(kind, text) rows of .config/agent-panel/typed-prefixes.conf, the one table of prompts the
     fleet types into a session as if the human had: `task` a new request, `resume` a carry-on."""
-    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..",
-                        ".config", "agent-panel", "typed-prefixes.conf")
-    with open(path, encoding="utf-8") as f:
-        rows = [ln.split(None, 1) for ln in f if ln.strip() and not ln.lstrip().startswith("#")]
+    rows = [ln.split(None, 1) for ln in panel_conf_lines("typed-prefixes.conf")]
     return tuple((r[0], r[1].strip()) for r in rows if len(r) == 2)
 
 
@@ -1835,10 +1841,7 @@ def read_spans(name, inp, cwd):
 @functools.cache
 def edit_tools():
     """The Claude tools that write a file: .config/agent-panel/edit-tools.conf, the one list."""
-    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..",
-                        ".config", "agent-panel", "edit-tools.conf")
-    with open(path, encoding="utf-8") as f:
-        return frozenset(ln.strip() for ln in f if ln.strip() and not ln.lstrip().startswith("#"))
+    return frozenset(panel_conf_lines("edit-tools.conf"))
 
 
 def write_paths(name, inp, cwd):
