@@ -37,9 +37,11 @@ setup() {
   assert_output --partial 'cannot read'
 }
 
+# A looser pattern than NEEDS (any skip line, an -x probe, a have_ helper, bunx, nvim -c), so a guard
+# spelled a way NEEDS misses shows here; it still cannot catch a spelling both miss.
 @test "every unit or integ file that skips or fails on a missing nvim or bun is tools" {
   cd "$BATS_TEST_DIRNAME/.."
-  want=$(grep -lE 'skip.*\b(nvim|bun)\b|\b(nvim|bun) (not installed|missing)|nvim --headless|bun test' unit/*.bats integ/*.bats | grep -v '^unit/image_kind.bats$')
+  want=$(grep -lE 'skip.*\b(nvim|bun)\b|\b(nvim|bun) (not installed|missing)|-x +[^ ]*(nvim|bun)\b|have_(nvim|bun)|\bbunx\b|nvim --headless|nvim -c|bun test' unit/*.bats integ/*.bats | grep -v '^unit/image_kind.bats$')
   [ -n "$want" ] || fail "no file names nvim or bun: the pattern here is stale"
   while read -r f; do
     run "$K" "$f"

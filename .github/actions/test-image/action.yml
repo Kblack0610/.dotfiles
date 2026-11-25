@@ -4,7 +4,7 @@ description: >-
   from the LAN registry on a home-pool runner, else from the Actions cache, else build it once and
   save it, so a later tests/docker.sh finds it present and does not rebuild. The image tag ends in
   a hash of everything the image is built from (tests/docker.sh --image). The job's env
-  TEST_IMAGE_KIND (lean, rust or full) picks the Dockerfile stage, so the kind is in the tag, so in
+  TEST_IMAGE_KIND (lean, tools, rust or full) picks the Dockerfile stage, so the kind is in the tag, so in
   the registry name and the cache key. The registry is used only when both inputs registry (host:port,
   a repo variable: the address is the home LAN's and this repo is public) and registry-password
   (a repo secret) are set and the runner is self-hosted: a GitHub-hosted runner cannot reach the

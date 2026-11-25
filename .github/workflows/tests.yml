@@ -171,7 +171,7 @@ jobs:
 
   # One pod per run holds the registry's copy of the image current, so the jobs behind it only pull.
   # On a tag the registry has (every run but the first after a Dockerfile change or a new ISO week)
-  # it is three manifest reads, about 20 s with the pod's start. Its timeout is the cold build of
+  # it is four manifest reads, about 20 s with the pod's start. Its timeout is the cold build of
   # all four stages in one pod, the one place a pool pod builds; it is a hang guard like the rest.
   # A hosted runner or a fork has no registry, so there it only checks out.
   image:
