@@ -55,8 +55,9 @@
 #                                --vitals the BENCH_VITALS rows, the front page every view reads,
 #                                --at as of a past time, --trend one row a day of the 7d values,
 #                                --check exits 1 past a threshold, on the KPIs whose name matches ERE
-#   fleet-bench chain [--json|--check]
-#                                the work-chain KPIs counted now (also in kpi); --check exits 1 past a threshold
+#   fleet-bench chain [--json|--check] [--kpi <key>]
+#                                the work-chain KPIs counted now (also in kpi); --check exits 1 past a threshold;
+#                                --kpi one key, from a count up to CHAIN_SNAPSHOT_MAX_S old (its chain-<key> watch)
 #   fleet-bench prio-defaults [--json]
 #                                the open rows that rank by default (no priority tag or no #why/<reason>) by the filer
 #                                that wrote them, most first, with sample ids: the rows behind the prio_default KPI
@@ -398,6 +399,7 @@ BENCH_RECORD_TAIL=5000   # lines of the dispatch record pipeline_json reads: mor
 : "${PIPELINE_SNAPSHOT:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/pipeline/pipeline.json}"   # what the Queue tab's pipeline line reads
 : "${CHAIN_DAYS:=7}"                 # the merged PRs ledger_coverage counts
 CHAIN_SNAPSHOT_MAX_S=3300            # how old a chain count `chain --kpi` reuses: under the chain-<key> watches' 1h interval
+CHAIN_LOCK_WAIT_S=600               # how long a `chain --kpi` probe waits on another probe's count (about 3 min) before it reads unreadable
 # A Sentinel probe's fix watermark (SENTINEL_SINCE, set by watch-companion-loop resolve), an epoch, 0 for
 # none. ledger_coverage, untracked_merged_prs, wants_unstamped, reds_unfixed and bottleneck --check
 # stalled count from the later of their window start and this, so a watch's fixed red stops counting the
@@ -4351,22 +4353,27 @@ chain_json() {
   kpi_json "$1" "$(chain_counts "$1")" '{}' | jq -c --arg k "$KPI_CHAIN" '($k | split(" ")) as $ks | with_entries(select(.key | IN($ks[])))'
 }
 
-# chain_snapshot <now> -> chain_json, from $DIR/chain.json when it was counted under
-# CHAIN_SNAPSHOT_MAX_S before <now>, else counted now and written there. Each chain KPI has its own
-# watch probing one key, and one count takes about 3 min, so under the lock the first probe of an
-# hourly pass counts and the rest read its answer (ar-3966).
+# chain_snapshot <now> <key> -> chain_counts, reused from $DIR/chain.<FIX_SINCE>.counts when that was
+# counted under CHAIN_SNAPSHOT_MAX_S before <now> and read a number for <key>, else counted now and
+# written there. Each chain KPI has its own watch probing one key, and one count takes about 3 min,
+# so under the lock the first probe of an hourly pass counts and the rest read it (ar-3966). Only the
+# counts are kept: the caller grades them (kpi_json), so a thresholds edit holds at once. The file is
+# per fix watermark (FIX_SINCE, from the watch's SENTINEL_SINCE), since the counts honor it, and a key
+# whose source could not be read (`<key>=?`) is counted again rather than read as clear for an hour.
 chain_snapshot() {
-  local f="$DIR/chain.json" json
-  mkdir -p "$DIR" || return 1
+  local f="$DIR/chain.$FIX_SINCE.counts" at counts
+  command -v flock >/dev/null && mkdir -p "$DIR" || { chain_counts "$1"; return; }
   {
-    flock 8 || return 1
-    if json=$(jq -ce --argjson t "$1" --argjson max "$CHAIN_SNAPSHOT_MAX_S" \
-        'select((.at | numbers) as $at | $at <= $t and $t - $at < $max) | .kpis | objects' "$f" 2>/dev/null); then
-      printf '%s\n' "$json"; return 0
+    flock -w "$CHAIN_LOCK_WAIT_S" 8 || return 1
+    if read -r at 2>/dev/null < "$f" && [[ "$at" =~ ^[0-9]+$ ]] && [ "$at" -le "$1" ] && [ $(( $1 - at )) -lt "$CHAIN_SNAPSHOT_MAX_S" ] \
+       && grep -qE "^$2=-?[0-9.]+(e[-+]?[0-9]+)?\$" "$f"; then
+      tail -n +2 "$f"; return 0
     fi
-    json=$(chain_json "$1") || return 1
-    jq -c --argjson t "$1" '{at: $t, kpis: .}' <<<"$json" > "$f.tmp" && mv -f "$f.tmp" "$f"
-    printf '%s\n' "$json"
+    # the count's own sections must not hold the lock: a killed probe would leave them holding it
+    counts=$(chain_counts "$1" 8>&-) || return 1
+    printf '%s\n%s\n' "$1" "$counts" > "$f.tmp" && mv -f "$f.tmp" "$f"
+    find "$DIR" -maxdepth 1 -name 'chain.*.counts' -mmin +120 -delete 2>/dev/null
+    printf '%s\n' "$counts"
   } 8>"$DIR/chain.lock"
 }
 
@@ -4391,7 +4398,7 @@ cmd_chain() {
   t=$(now)
   if [ -n "$kpi" ]; then
     # "unreadable:" reads UNKNOWN to Sentinel: a count that failed says nothing about this KPI
-    json=$(chain_snapshot "$t") && json=$(jq -c --arg k "$kpi" '{($k): .[$k]}' <<<"$json") \
+    json=$(chain_snapshot "$t" "$kpi") && json=$(kpi_json "$t" "$json" '{}' | jq -c --arg k "$kpi" '{($k): .[$k]}') \
       || { echo "unreadable: the chain count failed"; return 1; }
   else
     json=$(chain_json "$t") || return 1

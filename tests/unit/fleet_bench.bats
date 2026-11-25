@@ -3639,17 +3639,30 @@ q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
   : > "$DONE"
   BENCH_NOW=$((T0 + 3299)) run "$SUBJECT" chain --check --kpi uncaused_close_share
   assert_failure 1
+  # the cache holds counts, not verdicts: a bound edited since grades the cached count at once
+  printf '%s\n' uncaused_close_share_max=0.9 >> "$KPI_THRESHOLDS"
+  BENCH_NOW=$((T0 + 3299)) run "$SUBJECT" chain --check --kpi uncaused_close_share
+  assert_success
+  printf '%s\n' uncaused_close_share_max=0.02 >> "$KPI_THRESHOLDS"
+  # a watch with a fix watermark reads its own count, never one taken without it
+  SENTINEL_SINCE=$((T0 - 60)) run "$SUBJECT" chain --check --kpi uncaused_close_share
+  assert_success
+  assert_equal "$(head -1 "$FLEET_BENCH_DIR/chain.$((T0 - 60)).counts")" "$T0"
   # past CHAIN_SNAPSHOT_MAX_S it counts again, and a count from the future is never reused
   BENCH_NOW=$((T0 + 3300)) run "$SUBJECT" chain --check --kpi uncaused_close_share
   assert_success
-  assert_equal "$(jq -r .at "$FLEET_BENCH_DIR/chain.json")" $((T0 + 3300))
+  assert_equal "$(head -1 "$FLEET_BENCH_DIR/chain.0.counts")" $((T0 + 3300))
   run "$SUBJECT" chain --check --kpi uncaused_close_share
   assert_success
-  assert_equal "$(jq -r .at "$FLEET_BENCH_DIR/chain.json")" "$T0"
-  # a source that cannot be read leaves the KPI unknown, never past
-  rm -f "$FLEET_BENCH_DIR/chain.json"
-  BENCH_DOCTOR_LAST=$BATS_TEST_TMPDIR/missing run "$SUBJECT" chain --check --kpi doctor_fail
+  assert_equal "$(head -1 "$FLEET_BENCH_DIR/chain.0.counts")" "$T0"
+  # a source that cannot be read leaves the KPI unknown, never past, and is counted again on the next probe
+  rm "$FLEET_BENCH_DIR/chain.0.counts"; mv "$BENCH_DOCTOR_LAST" "$BENCH_DOCTOR_LAST.off"
+  run "$SUBJECT" chain --check --kpi doctor_fail
   assert_success
+  printf 'FAIL  line 4: an epic belongs on the human sheet\n' > "$BENCH_DOCTOR_LAST"
+  run "$SUBJECT" chain --check --kpi doctor_fail
+  assert_failure 1
+  assert_output 'doctor_fail 1 (max 0)'
   run "$SUBJECT" chain --check --kpi not_a_kpi
   assert_failure 2
   assert_output --partial 'not_a_kpi is not a chain KPI'
