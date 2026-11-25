@@ -185,7 +185,7 @@ HEADER=$(
       if [ "${CLAUDE_CODE_SESSION_ATTENDED:-0}" = 1 ] && [ -z "${AGENT_QUEUE_ITEM:-}" ]; then
         echo "Active holds (a warning: the human opened this session; if the work asked is what a hold stops, ask before starting it):"
       else
-        echo "⛔ Active holds - do not start work on these until released (GO):"
+        echo "STOP: Active holds - do not start work on these until released (GO):"
       fi
       printf '%s\n' "${HOLD_SHOWN[@]}"
     fi
