@@ -697,9 +697,9 @@ mix_classes() { jq --argjson on "$1" '.on = $on | del(.classes[].min_live)' "$RE
   legacy second "after: first" --project game "b"
   "$AQ" move first done --status cancelled
   run bash -c "'$AQ' show second --json | jq -r .hold"
-  assert_output "after first closed cancelled, dead: it never releases (queue first again, or set after= without it); who closed it and why: agent-queue show first; a cancel by hand takes --why and --ask <an answered ask naming it>"
+  assert_output "after first closed cancelled, dead: it never releases (queue first again, or set after= without it); who closed it and why: agent-queue show first; a cancel by hand takes --why and --ask <an ask naming it, answered cancel or drop>"
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
-  assert_output "after first closed cancelled, dead: it never releases (queue first again, or set after= without it); who closed it and why: agent-queue show first; a cancel by hand takes --why and --ask <an answered ask naming it>"
+  assert_output "after first closed cancelled, dead: it never releases (queue first again, or set after= without it); who closed it and why: agent-queue show first; a cancel by hand takes --why and --ask <an ask naming it, answered cancel or drop>"
 }
 
 # ar-39: after: is a list of slugs.
@@ -3140,12 +3140,12 @@ EOF
   assert_failure; assert_output --partial "gb is work the human asked for"
   [ -n "$(item queued ga)" ] && [ -n "$(item queued gb)" ]
   ask h1 answered drop human "ga only"
-  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" return ga --why "out of focus" --ask h1=drop --drop
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" return ga --why "out of focus" --ask h1 --drop
   assert_failure; assert_output --partial "does not name gb"
   [ -n "$(item queued ga)" ]
   ask h2 answered drop human "ga gb"
   : > "$NOTES_FIXTURE/calls.log"
-  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" return ga --why "out of focus" --ask h2=drop --drop
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" return ga --why "out of focus" --ask h2 --drop
   assert_success
   [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-gb.md)" cancel_why)" = "out of focus (ask h2)" ]
   assert_called "ptask game --agent drop gm-8"
@@ -3255,7 +3255,7 @@ chain_plan() {  # <name>: a four-phase plan, each phase after the one before
   # The terminal cancel (no session env) is the human's: mkt-16 goes, and its chain is dead.
   "$AQ" cancel mkt-16 >/dev/null
   run bash -c "'$AQ' show mkt-17 --json | jq -r .hold"
-  assert_output --partial "a cancel by hand takes --why and --ask <an answered ask naming it>"
+  assert_output --partial "a cancel by hand takes --why and --ask <an ask naming it, answered cancel or drop>"
   # The replay: the dead-chain loop refuses every from: human item and the #requested one.
   for s in mkt-17 mkt-18 mkt-19 mkt-20 asked; do
     CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel "$s" --why "dead chain"
@@ -3266,40 +3266,41 @@ chain_plan() {  # <name>: a four-phase plan, each phase after the one before
   assert_failure; assert_output --partial "work the human asked for"
   # An ask nobody has answered is no decision.
   ask p1 pending
-  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask p1=drop
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask p1
   assert_failure; assert_output --partial "ask p1 is pending"
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask nope
   assert_failure; assert_output --partial "no such ask"
   [ -n "$(item queued mkt-17)" ]
-  run "$AQ" cancel mkt-17 --ask "h1;x"
-  assert_failure; assert_output --partial "--ask takes <ask id>=<option>"
+  run "$AQ" cancel mkt-17 --ask "h1=a"
+  assert_failure; assert_output --partial "--ask takes an ask id"
   # An answer about other work is not about this item.
   ask h0 answered drop human
-  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask h0=drop
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask h0
   assert_failure; assert_output --partial "ask h0 does not name mkt-17"
-  # A sibling slug is other work: grep -w read mkt-17 in mkt-17-2 (ar-2717).
+  # A sibling slug is other work: grep -w read mkt-17 in mkt-17-2, and a period ends a sentence, not mkt-17.2 (ar-2717).
   ask s1 answered drop human
-  echo "question: drop mkt-17-2? it waits on mkt-16" >> "$AGENT_ASK_ROOT/game/s1.md"
-  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask s1=drop
+  echo "question: drop mkt-17-2 and mkt-17.2? they wait on mkt-16" >> "$AGENT_ASK_ROOT/game/s1.md"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask s1
   assert_failure; assert_output --partial "ask s1 does not name mkt-17"
-  # Only the answer that means cancel authorizes it: "keep" on an ask naming the item does not.
+  # Only cancel or drop authorizes it, whatever the caller says: "keep" on an ask naming the item does not.
   ask k1 answered keep human
   echo "question: drop mkt-17? it waits on mkt-16, which you cancelled" >> "$AGENT_ASK_ROOT/game/k1.md"
-  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask k1=drop
-  assert_failure; assert_output --partial "answered keep, not drop"
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask k1
-  assert_failure; assert_output --partial "name the answers that mean cancel: --ask k1=<option>"
-  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask k1=yes
-  assert_failure; assert_output --partial "ask k1 does not offer yes"
-  # A free-text ask has no answer the guard can read as a cancel.
+  assert_failure; assert_output --partial "ask k1 is answered keep, not cancel or drop"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask k1=keep
+  assert_failure; assert_output --partial "--ask takes an ask id"
+  # A free-text ask, or one whose options do not cancel, has no answer the guard reads as a cancel.
   printf 'id: f1\nstatus: answered\nanswer: sure, drop it\nanswered_by: human\nquestion: drop mkt-17?\n' > "$AGENT_ASK_ROOT/game/f1.md"
-  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask f1=drop
-  assert_failure; assert_output --partial "ask f1 lists no options"
-  # An answer in free text on an ask with options names none of them.
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask f1
+  assert_failure; assert_output --partial "ask f1 offers no cancel or drop option"
+  printf 'id: y1\nstatus: answered\noptions: yes|no\nanswer: yes\nanswered_by: human\nquestion: drop mkt-17?\n' > "$AGENT_ASK_ROOT/game/y1.md"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask y1
+  assert_failure; assert_output --partial "ask y1 offers no cancel or drop option"
+  # A free-text answer on an ask with a drop option names none of them.
   ask t1 answered whatever human
   echo "question: drop mkt-17? it waits on mkt-16, which you cancelled" >> "$AGENT_ASK_ROOT/game/t1.md"
-  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask t1=drop
-  assert_failure; assert_output --partial "ask t1 is answered in free text that names no option"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask t1
+  assert_failure; assert_output --partial "ask t1 is answered whatever, not cancel or drop"
   [ -n "$(item queued mkt-17)" ]
   # A conditional move that no longer applies is left alone (exit 3) before the guard reads it.
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" move mkt-17 done --status cancelled --why "x" --if running
@@ -3307,24 +3308,24 @@ chain_plan() {  # <name>: a four-phase plan, each phase after the one before
   # The human's answer to an ask naming the items lets them go, and the item names the ask.
   ask h1 answered drop human
   echo "question: drop mkt-17, mkt-18? both wait on mkt-16, which you cancelled" >> "$AGENT_ASK_ROOT/game/h1.md"
-  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask h1=drop
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask h1
   assert_success
   f="$(ls "$AGENT_QUEUE_DIR"/done/*/*-mkt-17.md)"
   [ "$(field "$f" cancel_why)" = "dead chain (ask h1)" ]
   [ "$(field "$f" cancelled_by)" = sess-9 ]
-  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" move mkt-18 done --status cancelled --why "dead chain" --ask h1=drop
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" move mkt-18 done --status cancelled --why "dead chain" --ask h1
   assert_success
   [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-mkt-18.md)" cancel_why)" = "dead chain (ask h1)" ]
   # A session's own answer is no ruling, even on an ask naming the item.
   ask a1 answered drop agent
   echo "question: drop mkt-19? it waits on mkt-16, which you cancelled" >> "$AGENT_ASK_ROOT/game/a1.md"
-  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-19 --why "dead chain" --ask a1=drop
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-19 --why "dead chain" --ask a1
   assert_failure; assert_output --partial "ask a1 is answered by agent"
   [ -n "$(item queued mkt-19)" ]
   # The judge's answer to an ask naming the item lets it go the same way (ar-4765).
   ask j1 answered drop judge
   echo "question: drop mkt-19? it waits on mkt-16, which you cancelled" >> "$AGENT_ASK_ROOT/game/j1.md"
-  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-19 --why "dead chain" --ask j1=drop
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-19 --why "dead chain" --ask j1
   assert_success
   [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-mkt-19.md)" cancel_why)" = "dead chain (ask j1)" ]
   # Negative controls: other work cancels from a session with a reason, and --ask is cancel's alone.

@@ -34,7 +34,7 @@
 #       `<band>/<points>` column (`m/5`, the band alone when the row is unscored, `-` with none); --json joins
 #       only with --points, which adds `points` and the row's current `size`. Ordering items that work a row reads the
 #       board once more for those rows' priority (row_prios, ar-3011); done items and rowless ones pay no board read
-#   next [--json] | show <slug> [--json [--points]] (the board join list --points does) | cancel <slug> [--why <text>] [--ask <id>=<option>] | bump <slug> <priority>
+#   next [--json] | show <slug> [--json [--points]] (the board join list --points does) | cancel <slug> [--why <text>] [--ask <id>] | bump <slug> <priority>
 #       cancel records cancelled_by: (the session id, else the item slug the caller works) and cancel_why:;
 #       --why is required from a session or script ($CLAUDE_CODE_SESSION_ID or $AGENT_QUEUE_ITEM set)
 #       work the human asked for (from: human, or a #requested row) cancels, returns with --drop, or returns with no
@@ -148,6 +148,8 @@ AQ_DESK_START_MIN=10
 AQ_RBW="${AGENT_QUEUE_RBW:-rbw}"
 AQ_RBW_TIMEOUT_S=5
 AQ_ASK="$AQ_BIN/agent-ask"
+# The answers that cancel the human's work (cancel_guard): an ask's option of this name, answered with it.
+AQ_CANCEL_ANSWERS='cancel|drop'
 # waiting: its session needs the human (a plan, a dialog, an ask). review: its session ended or
 # stopped at an open PR, which reap closes on the merge. They are two states so "needs you" counts
 # only the first.
@@ -773,7 +775,7 @@ hold_for() {
       # list and the hub show a dead hold apart from a live one.
       *) HOLD_DEAD=1 HOLD="after $s closed $AST, dead: it never releases (queue $s again, or set after= without it); who closed it and why: agent-queue show $s"
         # The human's own work is theirs to drop: say so before a cleanup loop tries (cancel_guard).
-        [ -z "${3-}" ] || ! human_work "$(fm_get "$3" from)" "$tags" || HOLD+="; a cancel by hand takes --why and --ask <an answered ask naming it>"
+        [ -z "${3-}" ] || ! human_work "$(fm_get "$3" from)" "$tags" || HOLD+="; a cancel by hand takes --why and --ask <an ask naming it, answered cancel or drop>"
         return ;;
     esac
   done
@@ -2908,13 +2910,13 @@ close_on() {
 }
 
 cmd_cancel() {
-  local slug="${1:?usage: agent-queue cancel <slug> [--why <text>] [--ask <id>=<option>]}" f why="" ask="" by
+  local slug="${1:?usage: agent-queue cancel <slug> [--why <text>] [--ask <id>]}" f why="" ask="" by
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
       --why) why="${2:?--why needs a reason}"; shift 2 ;;
       --ask) ask="${2:?--ask needs an ask id}"; shift 2 ;;
-      *) die "usage: agent-queue cancel <slug> [--why <text>] [--ask <id>=<option>]" ;;
+      *) die "usage: agent-queue cancel <slug> [--why <text>] [--ask <id>]" ;;
     esac
   done
   cancel_check "$why"
@@ -3453,49 +3455,44 @@ cancel_check() {
 # a terminal or the Queue tab's button is not held. 2026-11-12: two cleanups cancelled 220 from: human
 # items, one by looping a dead chain.
 cancel_guard() {
-  local slug pend f by id opts opt want ans asked
+  local slug pend f by opts ans names sl
   slug="$(fm_get "$1" slug)"
   if [ -n "$2" ]; then
-    [[ "$2" =~ ^[A-Za-z0-9_-]+(=[^[:space:]]+)?$ ]] || die "--ask takes <ask id>=<option>, not $2"
-    id="${2%%=*}"
-    f="$(compgen -G "$AQ_ASKS/*/$id.md" | awk 'NR == 1')"
-    [ -n "$f" ] || die "$slug: ask $id: no such ask"
-    # The answer must be the option that cancels: a "keep it" answer authorized the cancel when any
-    # answer did (ar-2717). A free-text ask has no answer this can read, so it authorizes nothing.
-    opts="$(ask_options "$id")"
-    [ -n "$opts" ] || die "$slug: ask $id lists no options, so no answer to it reads as a cancel: post one with options (agent-ask post --options 'cancel|keep') and pass --ask <id>=cancel"
-    [[ "$2" == *=* ]] || die "$slug: ask $id offers ${opts//$'\n'/,}; name the answers that mean cancel: --ask $id=<option>[+<option>]"
-    asked="+${2#*=}+"; asked="${asked,,}"; want="$asked"
-    while IFS= read -r opt; do
-      opt="${opt%% *}"; opt="${opt%[.,;:!]}"
-      want="${want//+${opt,,}+/+}"
-    done <<<"$opts"
-    [ "$want" = + ] || die "$slug: ask $id does not offer ${want:1:-1}; it offers ${opts//$'\n'/,}"
+    [[ "$2" =~ ^[A-Za-z0-9_-]+$ ]] || die "--ask takes an ask id, not $2"
+    f="$(compgen -G "$AQ_ASKS/*/$2.md" | awk 'NR == 1')"
+    [ -n "$f" ] || die "$slug: ask $2: no such ask"
+    # Only an answer of cancel or drop authorizes it, never one the caller names: when any answer did,
+    # "keep" cancelled the item (ar-2717). The ask offers one of them, so a free-text ask authorizes nothing.
+    opts="$(ask_options "$2" | sed 's/[=[:space:]].*//; s/[.,;:!]$//' | tr '[:upper:]' '[:lower:]')"
+    grep -qxE "$AQ_CANCEL_ANSWERS" <<<"$opts" \
+      || die "$slug: ask $2 offers no cancel or drop option: post one with them (agent-ask post --options 'drop|keep')"
     pend="$(ask_pending "$2")"
     # gate: aq-cancel-guard
-    [ -z "$pend" ] || die "$slug: ask $id is $pend: --ask names an ask answered with an option that cancels"
-    # ask_pending lets a free-text answer through; here one that names no option is no cancel.
-    ans="$(sed -n '/^answer: /{s///p;q;}' "$f")"; ans="${ans%% *}"; ans="${ans%[.,;:!]}"
-    case "$asked" in
-      *"+${ans,,}+"*) ;;
-      *) [ -n "$(AGENT_ASK_ROOT="$AQ_ASKS" "$AQ_ASK" answer-names "$id" 2>/dev/null)" ] \
-        || die "$slug: ask $id is answered in free text that names no option: --ask names an ask answered with an option that cancels" ;;
-    esac
+    [ -z "$pend" ] || die "$slug: ask $2 is $pend: --ask names an ask answered cancel or drop"
+    ans="$(sed -n '/^answer: /{s///p;q;}' "$f")"; ans="${ans%% *}"; ans="${ans%[.,;:!]}"; ans="${ans,,}"
+    if ! grep -qxE "$AQ_CANCEL_ANSWERS" <<<"$ans"; then
+      # A worded answer counts when agent-ask reads exactly one option in it, and that one cancels.
+      names="$(AGENT_ASK_ROOT="$AQ_ASKS" "$AQ_ASK" answer-names "$2" 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+      grep -qxE "$AQ_CANCEL_ANSWERS" <<<"$names" && [ "$(grep -c . <<<"$names")" = 1 ] \
+        || die "$slug: ask $2 is answered ${ans:-nothing}, not cancel or drop: --ask names an ask answered cancel or drop"
+    fi
     # An empty by is legacy (before answered_by), when every answer was the human's.
     by="$(sed -n '/^answered_by: */{s///p;q;}' "$f")"
-    case "$by" in '' | human | judge) ;; *) die "$slug: ask $id is answered by $by: --ask names an ask the judge or the human answered" ;; esac
-    # The whole slug, not a word in it: grep -w took fix-ci from an ask about fix-ci-2 (ar-2717).
-    grep -qE -- "(^|[^A-Za-z0-9_-])$(printf '%s' "$slug" | sed 's/[.+]/\\&/g')([^A-Za-z0-9_-]|\$)" "$f" \
-      || die "$slug: ask $id does not name $slug: --ask names the answer about this item"
+    case "$by" in '' | human | judge) ;; *) die "$slug: ask $2 is answered by $by: --ask names an ask the judge or the human answered" ;; esac
+    # The whole slug: grep -w took fix-ci from an ask about fix-ci-2 (ar-2717). A period ends it only
+    # at a sentence end, so mkt-17.2 is not mkt-17.
+    sl="$(printf '%s' "$slug" | sed 's/[.+]/\\&/g')"
+    grep -qE -- "(^|[^A-Za-z0-9_.-])$sl([^A-Za-z0-9_.-]|\$|\.([^A-Za-z0-9_-]|\$))" "$f" \
+      || die "$slug: ask $2 does not name $slug: --ask names the answer about this item"
     return 0
   fi
   # gate: aq-cancel-guard
   [ -n "$(cancel_who)" ] || return 0
   human_work "$(fm_get "$1" from)" "$(fm_get "$1" tags)" || return 0
-  die "$slug is work the human asked for: a session or script cancels it only with --ask <id>=<option>, an ask naming it that the human or the judge answered with that option (agent-ask post), or the human cancels it from a terminal or the Queue tab"
+  die "$slug is work the human asked for: a session or script cancels it only with --ask <id>, an ask naming it that the human or the judge answered cancel or drop (agent-ask post --options 'drop|keep'), or the human cancels it from a terminal or the Queue tab"
 }
 # cancel_why <why> <ask> -> the reason with the ask that settled it, so the item names the decision.
-cancel_why() { printf '%s' "$1${2:+${1:+ }(ask ${2%%=*})}"; }
+cancel_why() { printf '%s' "$1${2:+${1:+ }(ask $2)}"; }
 # cancel_stamp <file> <why> -> cancelled_by: and cancel_why: on the item, the one record of a cancel.
 cancel_stamp() {
   local who; who="$(cancel_who)"
