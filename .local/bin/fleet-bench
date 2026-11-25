@@ -5127,8 +5127,7 @@ triage_human() {
 }
 
 # cause_tries <items> <cause> [trip] [route] -> -1 while an item stands for the cause:
-# - queued, running or waiting;
-# - closed with a PR that is not merged (it waits on a merge, and a second session would only repeat it);
+# - queued, running, waiting, or in review (its PR waits on a merge, and a second session would only repeat it);
 # - merged and closed under TRIAGE_WATCH_AFTER ago (the patience a low red gets before it is filed,
 #   given to a merge to deploy and age out of the probe's window);
 # - merged and before its proves_at, the time its fixer said the probe can first read it (a CronJob
@@ -5138,7 +5137,11 @@ triage_human() {
 # cause had: given the epoch its watch tripped at, the items queued at or after it, so each trip gets
 # its own TRIAGE_FIX_TRIES (ar-4064); else every item in the TRIAGE_FIX_DAYS window.
 # Every row triage reads is red now, so an item that closed cancelled or failed, or merged with its
-# red still here on an agent route, did not hold.
+# red still here on an agent route, did not hold. So did one closed with a PR it records no merge
+# for: a red fix merges itself (agent-land) and one parked on its PR waits in review, so nothing
+# merges a closed item's PR. Read as an owner, a stale record held a cause unowned for good
+# (playground-train-stuck: ar-3447 closed 2026-11-22 recording #3091, merged by ar-2940's landing,
+# and its next trip went 17h with no item while 44 PRs waited in landing-queue, ar-5294).
 # CAUSE_JQ: the cause's items ($c, its " cause:<id> " tag) and of those its tries ($trip, or "" for
 # the whole window), shared so cause_slugs names exactly what cause_tries counts.
 CAUSE_JQ='def cause_items: [.[] | select((" " + (.tags // "") + " ") | contains($c))];
@@ -5151,7 +5154,6 @@ cause_tries() {
     "$JQ_LIB$CAUSE_JQ"'def settles: ((.finished | ep) // 0) as $f | [$f + $after, ([(.proves_at | ep) // 0, $f + $most] | min)] | max;
     cause_items | trip_tries as $tries
     | if any(.[]; .state == "queued" or .state == "running" or .state == "review" or .state == "waiting"
-                or (.state == "done" and .pr != null and (.merged // "") == "" and .status != "cancelled")
                 or (.state == "done" and (.merged // "") != "" and settles >= $now))
          or ($owned and any($tries[]; .state == "done" and .status == "ok"))
       then -1 else ($tries | length) end' <<<"$1"
@@ -5183,8 +5185,8 @@ triage_items() {
 # watch, an alert), and only a watch's widens the red floor. Nothing for any other red.
 triage_kind() { case "$1" in 'check(watch): '*) echo ' watch' ;; 'check(alert): '*) echo ' alert' ;; esac; }
 
-# triage_promote <rows> -> how many rows triage_queues were queued as red fixes. A red fix opens its PR at
-# any hour and stops there (policy 2026-11-06), so each guard here keeps that from running away: a
+# triage_promote <rows> -> how many rows triage_queues were queued as red fixes. A red fix runs and
+# merges itself at any hour (policy.md Tier-3 gate), so each guard here keeps that from running away: a
 # dispatch hold or an unreadable queue queues nothing, TRIAGE_FIX_CAP bounds the day's other reds, an
 # item in hand stands for its cause (cause_tries), and a cause gets at most TRIAGE_FIX_TRIES items and one escalation in
 # the window, a watch's in its current trip. A tripped watch's item is tagged `watch` and is outside the cap: each watch is one cause,
@@ -5598,7 +5600,7 @@ alert_titles() {
 # fix is "fixed" only while nothing it was queued for is red now; red again with the watch's trip
 # after the merge is "came back", red the whole time is "still red", and red now with its row routed
 # to alert is "alert route" (its watch pages, and the KPI it trips on is not a merge's to clear).
-# Each red row also names its item's session, and a fix in hand (queued or fixing) its due epoch,
+# Each red row also names its item's board row id (row, the ticket) and session, and a fix in hand (queued or fixing) its due epoch,
 # which the overviews read as past its ETA (hub_core::alerts). Counted, never judged.
 reds_json() {
   local t="$1" items holds live watches='{}' f n parsed alerted
@@ -5619,10 +5621,14 @@ reds_json() {
     # each grows with the queue or the watches, past the 128 KB one argument can carry: they come in as files
     $live[0] as $live | $w[0] as $w | $holds[0] as $holds | $parsed[0] as $parsed | $alerted[0] as $alerted
     | def title: .title // .task // "";
+    # the board row the item works as, its id alone (ar-5133): its row:, else the row it was promoted from (agent-queue item_row)
+    def rowid: (.row // "") as $r | (.from // "") as $f
+        | (if $r != "" then $r elif ($f | startswith("board:")) then ($f | ltrimstr("board:")) else "" end)
+        | (split(":") | last // "") | if . == "" then null else . end;
     ([$holds[].merges[].slug]) as $went
     | ([.[] | select(tagged("red")) | title | select(startswith("fix(hold): "))]) as $held
     | ([.[] | select(tagged("cleanup") and (tagged("red") | not) and (.merged // "") != "")
-        | {slug, project: (.project // ""), red: ("cleanup " + (title[0:60])), cause: null, state, queued, finished, pr, merged,
+        | {slug, row: rowid, project: (.project // ""), red: ("cleanup " + (title[0:60])), cause: null, state, queued, finished, pr, merged,
            fix_min: null, cleanup: true,
            outcome: (.slug as $s | if $s | IN($went[]) then "went red"
                      elif any($held[]; contains(" \($s) (")) then "recovered"
@@ -5632,7 +5638,7 @@ reds_json() {
     | ((" " + (.tags // "") + " ") | capture(" cause:(?<c>[^ ]+) ").c // null) as $cause
     | ([$live[] as $k | select($t | startswith($k))] | length > 0) as $red
     | (.finished | ep) as $fin
-    | {slug, project: (.project // ""), red: (if $r.name then "\($r.area) \($r.name)" else $t[0:60] end), cause: $cause, state,
+    | {slug, row: rowid, project: (.project // ""), red: (if $r.name then "\($r.area) \($r.name)" else $t[0:60] end), cause: $cause, state,
        session, queued, finished, pr, merged,
        fix_min: (if .merged != null and $fin != null and (.queued | ep) != null then ((($fin - (.queued | ep)) / 60) | floor) else null end),
        outcome: (
