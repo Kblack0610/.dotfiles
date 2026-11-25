@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 # .github/workflows/tests.yml's gate job, the one check branch protection requires: its `needs`
 # names every job but the ones that are not gates, and its step is red on any result but success.
-# Also the one-toolchain rule: every job on the &pool runner, and no step installing a tool.
+# Also the one-toolchain rule: every job on the &pool runner (or &job-pod, which falls back to it), and
+# no step installing a tool.
 
 bats_require_minimum_version 1.5.0
 
@@ -96,23 +97,75 @@ runs_on() {
     END { if (job) print job, (r == "" ? "-" : r) }' "$1"
 }
 
-# off_pool <wf>: jobs whose runner is not the pool anchor, one a line (a literal label, a second
-# definition of the anchor, a pasted expression)
+# off_pool <wf>: jobs whose runner is not the pool or job-pod anchor, one a line (a literal label, a
+# second definition of an anchor, a pasted expression)
 off_pool() {
-  runs_on "$1" | awk '$2 == "*pool" || $2 == "-" { next } $2 == "&pool" && !seen++ { next } { print $1 }'
+  runs_on "$1" | awk '$2 == "*pool" || $2 == "*job-pod" || $2 == "-" { next }
+    $2 == "&pool" && !p++ { next } $2 == "&job-pod" && !j++ { next } { print $1 }'
 }
 
-@test "every tests.yml job runs where the one &pool anchor says" {
+@test "every tests.yml job runs where the one &pool or &job-pod anchor says" {
   run runs_on "$WF"
   assert_success
   [[ "$output" == *"&pool "* ]] || fail "no job defines the &pool anchor: $output"
+  [[ "$output" == *"&job-pod "* ]] || fail "no job defines the &job-pod anchor: $output"
   run off_pool "$WF"
   assert_success
   assert_output ''
   # Negative control: a job with a literal label is named.
-  sed '/^  lint:$/,/^  [a-z]/ s/^    runs-on: \*pool$/    runs-on: ubuntu-24.04/' "$WF" >"$BATS_TEST_TMPDIR/literal.yml"
+  sed '/^  ui:$/,/^  [a-z]/ s/^    runs-on: \*pool$/    runs-on: ubuntu-24.04/' "$WF" >"$BATS_TEST_TMPDIR/literal.yml"
   run off_pool "$BATS_TEST_TMPDIR/literal.yml"
+  assert_output 'ui'
+  # Negative control: a job pasting the job-pod expression is named.
+  jp=$(sed -nE 's/^    runs-on: &job-pod (.*)$/\1/p' "$WF")
+  awk -v jp="$jp" '/^  lint:$/ { l = 1 } l && /^    runs-on: \*job-pod$/ { print "    runs-on: " jp; l = 0; next } { print }' "$WF" >"$BATS_TEST_TMPDIR/pasted.yml"
+  run off_pool "$BATS_TEST_TMPDIR/pasted.yml"
   assert_output 'lint'
+}
+
+@test "the &job-pod anchor is the job-pod pool only when the image job names an image, else the &pool choice" {
+  local pool want
+  pool=$(sed -nE 's/^    runs-on: &pool \$\{\{ fromJSON\((.*)\) \}\}$/\1/p' "$WF")
+  [ -n "$pool" ] || fail "no expression read from the &pool anchor"
+  want="    runs-on: &job-pod \${{ fromJSON(needs.image.outputs.job-image != '' && vars.LINUX_RUNNER_JOB_POD || ($pool)) }}"
+  run grep -cxF -- "$want" "$WF"
+  assert_output 1
+  # Negative control: a fallback that drifted from the &pool choice is not the anchor's.
+  sed "/^    runs-on: &job-pod /s/ubuntu-24.04/ubuntu-22.04/" "$WF" >"$BATS_TEST_TMPDIR/drift.yml"
+  run grep -cxF -- "$want" "$BATS_TEST_TMPDIR/drift.yml"
+  assert_output 0
+}
+
+# job_pod_faults <wf>: "<job>: <fault>" for a job on the job-pod anchor with no job image, no need
+# on the image job, or a test-image step that also runs inside the image
+job_pod_faults() {
+  awk -v q="'" '
+    function done() { if (jp) { if (!img) print job ": no container *job-image"; if (!waits) print job ": does not need the image job" } }
+    /^  [A-Za-z0-9_-]+:$/ { done(); job = $1; sub(/:$/, "", job); jp = 0; img = 0; waits = 0; next }
+    /^    runs-on: [&*]job-pod( |$)/ { jp = 1 }
+    /^    container: [&*]job-image$/ { img = 1 }
+    /^    needs:.*(\[|[ ,])image([],]|$)/ { waits = 1 }
+    /^      - / { cond = "" }
+    /^(      - |        )if: / { cond = $0 }
+    jp && /uses: \.\/\.github\/actions\/test-image$/ && !index(cond, "needs.image.outputs.job-image == " q q) { print job ": loads the test image inside it" }
+    END { done() }
+  ' "$1"
+}
+
+@test "a job on the job pod runs in the image job's image and loads it only when there is none" {
+  run runs_on "$WF"
+  run awk '$2 ~ /^[&*]job-pod$/ { print $1 }' <<<"$output"
+  assert_output "$(printf '%s\n' fast lint)"
+  run job_pod_faults "$WF"
+  assert_success
+  assert_output ''
+  # Negative controls: lint without its container, and with a test-image step that always runs.
+  sed '/^  lint:$/,/^  [a-z]/{/^    container: \*job-image$/d}' "$WF" >"$BATS_TEST_TMPDIR/nocontainer.yml"
+  run job_pod_faults "$BATS_TEST_TMPDIR/nocontainer.yml"
+  assert_output 'lint: no container *job-image'
+  sed "/^  lint:\$/,/^  [a-z]/ s/^      - if: needs.image.outputs.job-image == ''\$/      - if: always()/" "$WF" >"$BATS_TEST_TMPDIR/unguarded.yml"
+  run job_pod_faults "$BATS_TEST_TMPDIR/unguarded.yml"
+  assert_output 'lint: loads the test image inside it'
 }
 
 @test "the skills call passes the anchor's runner choice, fork rule included" {
