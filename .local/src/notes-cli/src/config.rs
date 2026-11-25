@@ -1138,7 +1138,7 @@ pub fn print_comms(c: &Comms) {
 /// Run a stub a test just wrote, once, until its exec stops failing with ETXTBSY (26): another
 /// test's fork holds the stub's write fd until that child execs, an event no API reports. A test
 /// calls this before the runs it asserts on, so those start after the last writer is gone. `env`
-/// is set for this run alone, for a stub that must do nothing here.
+/// is set for this run alone, and the stub must exit at once on it: this run is waited on.
 #[cfg(test)]
 pub(crate) fn test_exec_ready(stub: &Path, env: &[(&str, &str)]) {
     const ETXTBSY: i32 = 26;
