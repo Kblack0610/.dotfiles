@@ -3926,10 +3926,8 @@ STUB
   # lv-9 has no profile, so the tag call carries none (a tab-split read once shifted the lane into it).
   run grep -x 'notes ptask level --agent tag --add after/lv-20 lv-9' "$NOTES_FIXTURE/calls.log"
   assert_success
-  # One row for the new phase and none for the plan or the phases already filed.
+  # One row, the new phase's (held mid-p4 above), and none for the plan or the phases already filed.
   run grep -c ' add ' "$NOTES_FIXTURE/calls.log"
-  assert_output 1
-  run grep -c ' add .*Phase 4 of the plan' "$NOTES_FIXTURE/calls.log"
   assert_output 1
   # Run again with that row on the board, it files nothing twice.
   board "$(jq -nc --arg p "$P" '{project: "level", profile: "bnb", lane: "agent", id: "lv-20", state: "open", tags: ["after/lv-5"], details: ["Phase 4 of the plan \($p): fix what P2 found."]}')"
