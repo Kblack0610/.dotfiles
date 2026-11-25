@@ -385,7 +385,7 @@ as_session() { mkdir -p "$SANDBOX/$1" && cd "$SANDBOX/$1"; }
   assert_output --partial 'granted: hc-952,ar-4938,pasted-content-id-9f60-we-optimized-rossum'
   run "$HOLD" grant critical 'hc-953 hc-954'
   assert_failure 2
-  assert_output --partial 'no comma or space'
+  assert_output --partial 'no comma, space or ='
   # A row id is no session: a caller is still held unless it is granted by a name of its own.
   as_session agent-1
   run "$HOLD" check critical
