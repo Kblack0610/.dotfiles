@@ -483,11 +483,12 @@ sync_one() {
     # A queue item moved here since the last commit (a move mid-fetch) is dirty at both paths, and the
     # remote changed only the old one: its new path goes in too, so the merge reads a move, not a bare
     # delete, and the item driver keeps the close (razer-laptop 2026-11-23 18:05, ar-5087). Only a
-    # path HEAD does not track is such a new path, so a tracked item of the same name stays out.
+    # path HEAD does not track (ls-tree, not the index: a path staged by a failed commit is still new) is
+    # such a new path, so a tracked item of the same name stays out.
     mapfile -t -O "${#files[@]}" files < <(awk '
       NR == FNR { if ($0 ~ /^queue\//) { n = $0; sub(/.*\//, "", n); want[n] = 1; have[$0] = 1 } next }
       /^queue\// { n = $0; sub(/.*\//, "", n); if ((n in want) && !($0 in have)) print }' \
-      <(printf '%s\n' "${files[@]}") <(comm -23 <(printf '%s\n' "$dirty") <(g ls-files -z | tr '\0' '\n' | sort -u)))
+      <(printf '%s\n' "${files[@]}") <(comm -23 <(printf '%s\n' "$dirty") <(g ls-tree -r -z --name-only HEAD | tr '\0' '\n' | sort -u)))
     if [ "${#files[@]}" -gt 0 ]; then
       commit_paths "$HOST_TAG store-sync: local edits before merging $r $(date '+%Y-%m-%d_%H:%M:%S')" "${files[@]}" || return 3
     fi
