@@ -494,6 +494,18 @@ EOF
     'ar-45 unjudged: not in any ledger' 'ar-43 keep: open children ar-45: stays until they close')"
 }
 
+@test "apply: a row an open row waits on with #after/ is not closed undelivered unless the waiter closes too" {
+  apply_fixture
+  # ar-47 (unjudged, stays) waits on ar-33 (improvement) and ar-48 on ar-30 (fixed); ar-43 (dropped) waits on ar-31 (dup).
+  sed -i 's|"id":"ar-43","text":"chore(x): a check","tags":\[\]|"id":"ar-43","text":"chore(x): a check","tags":["after/ar-31"]|' "$HOME/board2.json"
+  sed -i 's|^ {"project":"agent-runtime","lane":"agent","state":"done","id":"ar-44"| {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-47","text":"feat(views): P2 #after/ar-33","tags":["after/ar-33"],"details":[]},\n {"project":"trader","lane":"agent","state":"open","id":"tr-48","text":"fix(trader): after #after/AR-30","tags":["after/AR-30"],"details":[]},\n&|' "$HOME/board2.json"
+  run "$RV" "${APPLY[@]}" --log "$HOME/log.tsv" "$HOME/led.tsv"
+  assert_success
+  run awk -F'\t' '$1 ~ /^ar-(30|31|33|43)$/ { print $1, $2, $3": "$4 }' "$HOME/log.tsv"
+  assert_output "$(printf '%s\n' 'ar-30 done planned: abc123' 'ar-31 dup planned: dup of ar-32' \
+    'ar-33 keep -: ar-47 wait on it with #after/: stays until they close' 'ar-43 drop planned: check with no change')"
+}
+
 @test "apply: two bookkeeping rows for one plan are no proof of each other, and a child moves after its parent" {
   apply_fixture
   # ar-40 now names orphan-plan too; ar-46 is a trader child of ar-35, which moves to trader.
