@@ -99,13 +99,15 @@ finished_plan() {
   [[ -d "$ROOT/old" ]]
 }
 
-@test "an open plan untouched 14 days is listed and counted, never moved; a done, fresh or archived one is not listed" {
+@test "an open plan untouched 14 days is listed and counted, never moved; a done, fresh, archived, superseded or unchecked one is not listed" {
   finished_plan open '- [ ] P1 ship it'
   finished_plan done '- [x] P1 ship it (#1)'
   finished_plan young '- [ ] P1 ship it' "$(date -d '-3 days' +%F)"
   mkdir -p "$ROOT/_unscoped" "$ROOT/_archive/gone"
   printf '# loose\n\n## Phases\n\n- [x] P1 a (#1)\n- [ ] P2 b\n' > "$ROOT/_unscoped/loose.md"; touch -d 2020-01-01 "$ROOT/_unscoped/loose.md"
   printf '# shelved\n\n## Phases\n\n- [ ] P1 a\n' > "$ROOT/_archive/gone/shelved.md"; touch -d 2020-01-01 "$ROOT/_archive/gone/shelved.md"
+  printf '# moved\n\nSuperseded by other.md\n\n## Phases\n\n- [ ] P1 a\n' > "$ROOT/_unscoped/moved.md"; touch -d 2020-01-01 "$ROOT/_unscoped/moved.md"
+  printf '# bare\n\n## Phases\n\nnothing yet\n' > "$ROOT/_unscoped/bare.md"; touch -d 2020-01-01 "$ROOT/_unscoped/bare.md"
   run "$SCRIPT" --yes
   assert_success
   assert_output --regexp '[0-9]+d  1 open  _live/open\.md'
@@ -113,5 +115,7 @@ finished_plan() {
   assert_output --partial 'idle plans: 2'
   refute_output --partial 'young.md'
   refute_output --partial 'shelved.md'
+  refute_output --partial 'moved.md'
+  refute_output --partial 'bare.md'
   [[ -f "$LIVE/open.md" && -f "$ROOT/_unscoped/loose.md" ]]
 }

@@ -104,20 +104,6 @@ if [ -d "$LIVE_DIR" ]; then
   done 3< <(find "$LIVE_DIR" -maxdepth 1 -type f -name '*.md' -mtime +"$LIVE_DAYS" -print0 | sort -z)
 fi
 
-# 2b. Idle plans: a phase still open and untouched more than $LIVE_DAYS days, anywhere but _archive.
-# Listed, never moved: ticking a landed phase and marking the rest `[-]` with its row (planning.md,
-# Phases) is a judgment, and once every phase is done the step above archives a _live plan.
-echo "=== open plans untouched more than ${LIVE_DAYS}d (tick, mark [-] with a row, or supersede) ==="
-idle=0
-while IFS= read -r -d '' f; do
-  left=$(plan_left "$f")
-  case "$left" in -|0) continue ;; esac
-  idle=$((idle + 1))
-  echo "  $(( ($(date +%s) - $(stat -c %Y "$f")) / 86400 ))d  $left open  ${f#"$PLANS_DIR"/}"
-done < <(find "$PLANS_DIR" -path "$ARCHIVE_DIR" -prune -o -type f -name '*.md' -mtime +"$LIVE_DAYS" -print0 \
-  | xargs -0r grep -lZ '^## Phases' | sort -z)
-echo "  idle plans: $idle"
-
 # 3. Loose .md files at the root
 shopt -s nullglob
 loose=("$PLANS_DIR"/*.md)
@@ -143,5 +129,20 @@ if [ -d "$PLANS_DIR/.dotfiles" ]; then
     rmdir "$PLANS_DIR/.dotfiles" 2>/dev/null || true
   fi
 fi
+
+# 5. Idle plans: a phase still open and untouched more than $LIVE_DAYS days, anywhere but _archive.
+# Listed, never moved: ticking a landed phase and marking the rest `[-]` with its row (planning.md,
+# Phases) is a judgment, and once every phase is done step 2 archives a _live plan.
+echo "=== open plans untouched more than ${LIVE_DAYS}d (tick, mark [-] with a row, or supersede) ==="
+idle=0
+while IFS= read -r -d '' f; do
+  left=$(plan_left "$f")
+  case "$left" in -|0) continue ;; esac
+  m=$(stat -c %Y "$f" 2>/dev/null) || continue   # gone since the find
+  idle=$((idle + 1))
+  echo "  $(( ($(date +%s) - m) / 86400 ))d  $left open  ${f#"$PLANS_DIR"/}"
+done < <(find "$PLANS_DIR" -path "$ARCHIVE_DIR" -prune -o -type f -name '*.md' -mtime +"$LIVE_DAYS" -print0 \
+  | xargs -0r grep -lZ '^## Phases' | sort -z)
+echo "  idle plans: $idle"
 
 echo "=== done ==="
