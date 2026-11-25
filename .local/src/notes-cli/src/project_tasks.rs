@@ -2678,12 +2678,15 @@ fn settle_children(
     let Some((_, content)) = sheet_and_content(p, name, lane)? else {
         return Ok(());
     };
-    let Some(id) = find_open(&content, pick).and_then(|l| md::row_id(&l)) else {
+    let Some(row) = find_open(&content, pick) else {
+        return Ok(());
+    };
+    let Some(id) = md::row_id(&row) else {
         return Ok(());
     };
     let dir = projects::project_dir(p, name)?;
     let ix = crate::epics::Index::of(&dir, projects::open_version(&dir));
-    let open = ix.open_children(&id);
+    let open = ix.open_under(&id);
     if open.is_empty() {
         return Ok(());
     }
@@ -2692,6 +2695,10 @@ fn settle_children(
         !crate::epics::is_epic_check(l)
             && crate::epics::parent_of(l).is_some_and(|p| ids.contains(&p))
     };
+    // The row's own close passes edit's refusals before any child is written.
+    if how.is_some() {
+        refuse_row_edit(&row, &written(&row, close(&row)))?;
+    }
     match how {
         None => {
             // One line: agent-land reports only a failure's last line.
@@ -2727,21 +2734,25 @@ fn settle_children(
             let ids = HashSet::from([id.clone()]);
             let (from, onto) = (format!("#of/{id}"), format!("#of/{to}"));
             let why = format!("-{from} +{onto}");
-            rewrite_rows(
-                p,
-                log,
-                name,
-                "tagged",
-                &why,
-                |l| child_of(l, &ids),
-                |l| md::add_tag(&md::drop_tag(l, &from), &onto),
-            )?;
+            let moved = |l: &str| md::add_tag(&md::drop_tag(l, &from), &onto);
+            for row in open_ids.iter().filter(|l| child_of(l, &ids)) {
+                refuse_row_edit(row, &moved(row))?;
+            }
+            rewrite_rows(p, log, name, "tagged", &why, |l| child_of(l, &ids), moved)?;
         }
         Some(Children::Close) => {
             let mut ids: HashSet<String> = ix.descendants(&id).into_iter().collect();
             ids.insert(id.clone());
             for row in live_rows(p, name)?.iter().filter(|l| child_of(l, &ids)) {
+                if is_running(row) {
+                    bail!(
+                        "{} under {id} is running as a queue item, so its session closes it; \
+                         pass --children <id> to move the open children instead",
+                        md::row_id(row).unwrap_or_else(|| md::task_text(row))
+                    );
+                }
                 check(row)?;
+                refuse_row_edit(row, &written(row, close(row)))?;
             }
             rewrite_rows(p, log, name, verb, stamp, |l| child_of(l, &ids), close)?;
         }
@@ -2768,22 +2779,26 @@ fn close_spent_parents(
             break;
         }
         let ix = crate::epics::Index::of(&dir, projects::open_version(&dir));
-        let Some((done, ids)) = ix.spent(&id) else {
+        let Some(spent) = ix.spent(&id) else {
             break;
         };
         let hit = |l: &str| md::row_id(l).as_deref() == Some(id.as_str()) && !is_running(l);
-        let rows = if done == 0 {
-            let stamp = "dropped: every child was dropped";
+        let rows = if spent.done == 0 {
+            let stamp = "dropped: every child was dropped or moved";
             rewrite_rows(p, log, name, "dropped", stamp, hit, |l| {
                 md::add_marker(&closed(l), stamp)
             })?
         } else {
-            let listed = if ids.is_empty() {
-                "closed".to_string()
-            } else {
-                ids.join(" ")
+            // The proof is on the children; one closed unverified leaves the parent unverified too.
+            let ids = match spent.ids.join(" ") {
+                ids if ids.is_empty() => "closed".to_string(),
+                ids => ids,
             };
-            let stamp = format!("children: {listed}");
+            let stamp = if spent.unverified {
+                format!("unverified: its children closed, {ids}")
+            } else {
+                format!("children: {ids}")
+            };
             let on = done_token(day);
             rewrite_rows(p, log, name, "done", &stamp, hit, |l| {
                 md::add_marker(&md::add_marker(&closed(l), &on), &stamp)
@@ -3997,9 +4012,7 @@ where
     };
     let after = std::cell::RefCell::new(None);
     let write = |l: &str| {
-        // A row is written with one priority tag, whatever the edit added (nc-70), and an epic
-        // with none it already had.
-        let new = f(l).map(|n| projects::unrank_epic(l, md::one_priority(&n)));
+        let new = f(l).map(|n| written(l, n));
         after.borrow_mut().clone_from(&new);
         Some(new.unwrap_or_else(|| l.to_string()))
     };
@@ -4009,11 +4022,8 @@ where
             Ok((0, Some(matched)))
         }
         Some((new, matched)) => {
-            // No edit writes a priority word no reader knows (`tag --add p1`, `edit --text "... #p1"`).
             if let Some(line) = after.borrow().as_deref() {
-                projects::refuse_retired_priority(&matched, line)?;
-                projects::refuse_epic_priority(line)?;
-                crate::reasons::refuse_bad(&matched, line)?;
+                refuse_row_edit(&matched, line)?;
                 // Said, so a `tag --add low` on an old tagged epic does not look like it took.
                 if let Some(tag) = md::task_priority(&matched)
                     .filter(|_| crate::epics::is_epic(line) && md::task_priority(line).is_none())
@@ -4044,6 +4054,20 @@ where
             Ok((1, None))
         }
     }
+}
+
+/// `new`, the rewrite of the row `old`, as a row edit writes it: one priority tag, whatever the
+/// edit added (nc-70), and an epic with none it already had.
+fn written(old: &str, new: String) -> String {
+    projects::unrank_epic(old, md::one_priority(&new))
+}
+
+/// What every row edit refuses: a priority word no reader knows (`tag --add p1`, `edit --text
+/// "... #p1"`), a priority on an epic, a reason that is not one.
+fn refuse_row_edit(old: &str, new: &str) -> Result<()> {
+    projects::refuse_retired_priority(old, new)?;
+    projects::refuse_epic_priority(new)?;
+    crate::reasons::refuse_bad(old, new)
 }
 
 /// Refuse `writer` an edit of the first open row `pick` matches when `rewrite` would change the
@@ -7077,6 +7101,68 @@ mod inbox_tests {
         assert!(
             row_of(&v, "sc-6").starts_with("- [ ]"),
             "an epic closes on its outcome"
+        );
+    }
+
+    // From review: an open grandchild under a closed child holds the row open too, a running
+    // child is its session's to close, and a parent is no surer than its children's proof.
+    #[test]
+    fn a_close_reaches_open_grandchildren_and_leaves_a_running_child_to_its_session() {
+        let v = vault(
+            "grandkids",
+            "",
+            "- [ ] feat(ui): the menu #high <!-- id:sc-1 -->\n\
+             - [x] fix(ui): menu flicker #high #of/sc-1 <!-- id:sc-2 done:2026-11-20 pr:3 -->\n\
+             - [ ] fix(ui): menu flicker on pause #high #of/sc-2 <!-- id:sc-3 -->\n\
+             - [/] fix(ui): menu sound #high #of/sc-1 <!-- id:sc-4 run:menu-sound -->\n",
+        );
+        let one = Pick::Id("sc-1".into());
+        let go = |kids: Option<&Children>| {
+            drop(
+                &v.p,
+                &v.log,
+                "scratch",
+                &one,
+                Some("moot"),
+                None,
+                Lane::Human,
+                kids,
+            )
+        };
+        let before = v.read();
+        let err = go(None).unwrap_err().to_string();
+        assert!(err.contains("sc-3"), "{err}");
+        let err = go(Some(&Children::Close)).unwrap_err().to_string();
+        assert!(err.contains("sc-4 under sc-1 is running"), "{err}");
+        assert_eq!(v.read(), before, "a refusal writes nothing");
+    }
+
+    #[test]
+    fn a_parent_of_an_unverified_child_closes_unverified() {
+        let v = vault(
+            "unverified-kid",
+            "",
+            "- [ ] feat(ui): the menu #high <!-- id:sc-1 -->\n\
+             - [ ] fix(ui): menu flicker #high #of/sc-1 <!-- id:sc-2 -->\n",
+        );
+        let two = Pick::Id("sc-2".into());
+        done(
+            &v.p,
+            &v.log,
+            "scratch",
+            &two,
+            None,
+            Some("no artifact"),
+            None,
+            Lane::Human,
+            None,
+        )
+        .unwrap();
+        let parent = row_of(&v, "sc-1");
+        assert!(parent.starts_with("- [x]"), "{parent}");
+        assert!(
+            parent.contains("unverified: its children closed, sc-2"),
+            "{parent}"
         );
     }
 }
