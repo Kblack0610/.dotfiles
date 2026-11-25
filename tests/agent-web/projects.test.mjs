@@ -476,6 +476,26 @@ test("the board draws the page the server sends with its pager, a write names th
   assert.match(read().rows, /No row matches\./);
 });
 
+test("the epics chip lists epics with their open and done rows as a link to those rows, and the task rows keep their epic cell", async () => {
+  await onBoard("s=epics");
+  const epic = { ...rows[0], lane: "human", priority: "high", section: "epics", label: "EPICS (1)", type: "epic", area: "menu", id: "demo-1", raw: "- [ ] epic(menu): the menu", text: "epic(menu): the menu", title: "the menu", summary: "", children: { open: 12, done: 4 } };
+  const cols = ["section", "type", "area", "title", "epic", "priority", "state", "when", "project", "lane", "id", "version", "size", "pts", "tier", "since", "text", "profile", "tag", "rows"];
+  ctx.input = { rows: [epic], table: { ...tableOf("", 1, [epic]), state: "epics", columns: cols.map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })), links: [{ rows: "#projects/all?q=tag:=of/demo-1" }] } };
+  vm.runInContext(`bst.feed = { ...bst.feed, rows: input.rows, table: input.table }; bst.render();`, ctx);
+  const html = read().rows;
+  assert.match(html, /<a class="tl" href="#projects\/all\?q=tag:=of\/demo-1">12 open \/ 4 done<\/a>/, "the count opens the epic's rows");
+  assert.match(html, /<th[^>]*data-label="epic".*<th[^>]*data-label="rows".*<th[^>]*data-label="priority".*<th[^>]*data-label="project".*<th[^>]*data-label="id"/s, "the head runs epic, rows, priority, project, id");
+  assert.doesNotMatch(html, /data-label="(section|lane|when)"|no epic/, "an epic has no section, and is under none");
+  // The default chip draws tasks: a task under an epic links up to it, one under none says so.
+  const task = { ...rows[0], parent: "demo-1", epic: "the menu" };
+  ctx.input = { rows: [task, rows[1]], table: { ...tableOf("", 2, [task, rows[1]]), links: [{ epic: "#projects/all?q=id:=demo-1&s=epics" }, {}] } };
+  vm.runInContext(`bst.feed = { ...bst.feed, rows: input.rows, table: input.table }; bst.render();`, ctx);
+  const tasks = read().rows;
+  assert.match(tasks, /<a class="tl" href="#projects\/all\?q=id:=demo-1&amp;s=epics">the menu<\/a>/);
+  assert.match(tasks, /<span class="muted">no epic<\/span>/);
+  assert.doesNotMatch(tasks, /data-label="rows"/);
+});
+
 test("the strip is the list, Board and Deliverables; a count is a total once read, never amber", async () => {
   vm.runInContext(`pCount.all = null; pCount.sprints = null; pCount.deliverables = null;`, ctx);
   draw(list());
