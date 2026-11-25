@@ -812,6 +812,21 @@ claude_end_item() {
   assert_not_called 'agent-notify'
 }
 
+@test "record: a codex, opencode or agy row in a pane is no Claude conversation, so restore never resumes it as one (ar-4125)" {
+  record_setup
+  world '10 1000' "$PANE1" "$PANE2"
+  # agent-panel lists every harness; only the claude row's session id is a conversation to reopen
+  printf '%s\n' '{"pane":"hub/%1","harness":"claude","session_id":"conv-1","cwd":"/work/tree"}' \
+    '{"pane":"hub/%2","harness":"codex","session_id":"thread-9","cwd":"/plain/dir"}' > "$NOTES_FIXTURE/panel.json"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  assert_success
+  assert_equal "$(jq -c '[.panes[].claude]' "$RECORD")" '["conv-1",""]'
+  # negative control: the same pane as a claude row is recorded
+  printf '%s\n' '{"pane":"hub/%2","harness":"claude","session_id":"conv-2","cwd":"/plain/dir"}' > "$NOTES_FIXTURE/panel.json"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  assert_equal "$(jq -c '[.panes[].claude]' "$RECORD")" '["","conv-2"]'
+}
+
 @test "record keeps the last record when agent-panel fails, and still sees a server die" {
   record_setup
   world '10 1000' "$PANE1"

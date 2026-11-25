@@ -903,7 +903,7 @@ item_sessions() {
   return 0
 }
 
-# panel_lists <agent> -- agent-panel lists this agent's sessions, by Claude session id: Claude, and
+# panel_lists <agent> -- this agent's sessions are on the panel by Claude session id: Claude, and
 # a harness claude-lazer launches. Another agent's `sessions:` ids (a codex thread) are never there.
 panel_lists() { [ "$1" = claude ] || [ "$(harness_launcher "$1")" = claude-lazer ]; }
 
@@ -918,8 +918,8 @@ past_reap_grace() {
 # says the item's Claude has exited while its tmux session lives on (or, for a hub item, when none
 # of the Claude sessions that worked it is live). A tmux session alone is not a session: a shell
 # left after claude exits keeps it, and an item in a hub window has none of its own. Exit 1 (keep
-# the item) when it cannot tell: an agent that is not Claude (agent-panel lists only Claude, which
-# a harness launched by claude-lazer is), a
+# the item) when it cannot tell: an agent that is not Claude (its session ids are not a Claude's: a Codex
+# thread; a harness launched by claude-lazer is a Claude), a
 # parked pane (its claude exited on purpose), an item started in the last DISPATCH_REAP_GRACE
 # seconds (its claude may still be booting), or a panel it cannot read or that lists nobody.
 # An item that records its session ids is alive only while one of them is on the panel; the tmux
@@ -4195,7 +4195,7 @@ record_world() {
   # Tab, not \037: tmux 3.4 and 3.5a print a control byte in a -F format as octal text, and a tab raw.
   panes=$(tmux -L "$srv" list-panes -a -F $'#{pane_id}\t#{session_name}\t#{window_name}\t#{pane_current_path}' 2>/dev/null) || return 0
   jq -Rn --arg server "$srv" --arg instance "$inst" --arg at "$(date -Iseconds)" --slurpfile panel "$panel" '
-    (reduce $panel[] as $row ({}; .[$row.pane] = $row)) as $by |
+    (reduce ($panel[] | select((.harness // "claude") == "claude")) as $row ({}; .[$row.pane] = $row)) as $by |
     {server: $server, instance: $instance, at: $at, panes: [inputs | split("\t") | $by[$server + "/" + .[0]] as $c |
       {session: .[1], window: .[2], cwd: ($c.cwd // .[3]), claude: ($c.session_id // "")}]}' \
     <<<"$panes" > "$file.tmp" && mv -f "$file.tmp" "$file"
@@ -4317,6 +4317,8 @@ cmd_record() {
 }
 
 # record_here -- the pane record of every world a manifest declares on this machine, under record's lock.
+# agent-panel lists every harness, and the record's `claude` field is a Claude conversation restore reopens
+# (record_world reads only the harness claude rows), so a codex thread is never resumed as a Claude.
 record_here() {
   local f srv panel="$PANES/.panel"
   mkdir -p "$PANES"

@@ -122,16 +122,12 @@ pub fn run_jump(target: &str) -> Result<()> {
 /// A read with gaps still prints the rows it has, then names each gap on stderr and exits 3:
 /// a partial list must not pass for a whole one to a caller that reads a missing session as
 /// gone (fleet-dispatch reap, ar-916).
-pub fn run_list(json: bool, parked: bool, codex: bool) -> Result<()> {
+pub fn run_list(json: bool, parked: bool) -> Result<()> {
     let (agents, gaps) = if parked {
         agent::collect_all_read()
     } else {
         collect_read()
     };
-    let agents: Vec<Agent> = agents
-        .into_iter()
-        .filter(|a| codex || a.harness.is_empty())
-        .collect();
     if !json {
         for a in &agents {
             println!("{}\t{}\t{}\t{}", a.target, a.glyph, a.project, a.summary);

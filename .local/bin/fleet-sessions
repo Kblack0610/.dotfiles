@@ -2583,11 +2583,10 @@ collect() {
   # The local agent-panel feeds every row, parked ones included (parked_lines reads it): a failure
   # that printed nothing is "*"; exit 3 with rows is a gap, "+", like a remote one.
   # Exit 3 (a read with a gap) still prints the rows it read; they are kept, and the pass is named.
-  # AGENT_PANEL_CODEX: a codex, opencode or agy run in a pane is a row too (busy or idle by agent-panel's one
-  # activity reading, its session id as session_id, so item_of joins it by sessions: like a Claude). The env form, not --codex: a binary not yet
-  # rebuilt ignores it instead of refusing the flag and reading as every session gone.
+  # Every harness (claude, codex, opencode, agy) is a row, busy or idle by agent-panel's one activity reading,
+  # its session id as session_id, so item_of joins it by sessions: like a Claude. No harness branch here.
   local prc=0
-  panel="$(AGENT_PANEL_CODEX=1 "${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null)" || prc=$?
+  panel="$("${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null)" || prc=$?
   if [ "$prc" -ne 0 ]; then
     unreadable agent-panel
     if [ "$prc" -eq 3 ] && [ -n "$panel" ]; then echo + >> "$CACHE/blind"; else echo '*' >> "$CACHE/blind"; fi
