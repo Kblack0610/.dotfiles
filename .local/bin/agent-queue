@@ -2645,12 +2645,12 @@ add_plan() {
   local f
   for s in "${added[@]}"; do f="$(find_item "$s")" && [ -n "$f" ] && start_at_add "$f" "$s" "$(takes_field "$ranked" "$s" 3 "$priority")"; done
 }
-# own_plan_item <plan>: the calling session's item ($AGENT_QUEUE_ITEM) is a phase of that plan (its plan:).
+# own_plan_item <plan>: the calling session's item ($AGENT_QUEUE_ITEM) is running and a phase of that plan (its plan:).
 # cmd_add --plan lets such a session add a line to its own plan (add_plan keeps the filed phases) and file
 # the new phase itself: through overflow_row it is a board row all the same, as a dispatched caller's add is.
 own_plan_item() {
   local f
-  [ -n "${AGENT_QUEUE_ITEM:-}" ] && f="$(find_item "$AGENT_QUEUE_ITEM")" && [ -n "$f" ] && [ -n "$(fm_get "$f" plan)" ] &&
+  [ -n "${AGENT_QUEUE_ITEM:-}" ] && f="$(find_item "$AGENT_QUEUE_ITEM")" && [[ "$f" == */running/* ]] && [ -n "$(fm_get "$f" plan)" ] &&
     [ "$(realpath -m "$(fm_get "$f" plan)")" = "$(realpath -m "$1")" ]
 }
 # plan_gate_kept <slug> <row id> <slug>...: add_plan kept phase <slug> on its board row, below the phases
@@ -2670,8 +2670,9 @@ plan_gate_kept() {
   [ ${#tags[@]} -gt 0 ] || return 0
   if [ -n "$dry" ]; then echo "would gate row $id ($s) on ${tags[*]}"; return 0; fi
   local proj prof lane
-  IFS=$'\t' read -r proj prof lane < <(jq -r --arg id "$id" 'first(.rows[]? | select(.id == $id)
-    | [.project, (.profile // ""), (.lane // "agent")]) | @tsv' <<<"$board" 2>/dev/null) || true
+  # A unit separator, not a tab: read collapses an empty whitespace field, so no profile would shift the lane.
+  IFS=$'\x1f' read -r proj prof lane < <(jq -r --arg id "$id" 'first(.rows[]? | select(.id == $id)
+    | [.project, (.profile // ""), (.lane // "agent")]) | join("\u001f")' <<<"$board" 2>/dev/null) || true
   # gate: none
   gate_row "${proj:-?}:$id" "${prof:-}" "${lane:-agent}" "${tags[@]}" ||
     die "the phases above $s are filed, but its row $id is not gated on them: $GATE_HINT"

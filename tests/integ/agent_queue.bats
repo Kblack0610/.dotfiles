@@ -3907,7 +3907,7 @@ STUB
   "$AQ" add --running --project level --row lv-5 --slug mid-p2 "Phase 2 of the plan $P: two." >/dev/null
   "$AQ" set mid-p2 "plan=$P" phases=2 origin=run >/dev/null
   board() {
-    jq -n --arg p "$P" '{rows: ([{project: "level", profile: "bnb", lane: "agent", id: "lv-9", state: "open", tags: ["after/lv-5"],
+    jq -n --arg p "$P" '{rows: ([{project: "level", lane: "agent", id: "lv-9", state: "open", tags: ["after/lv-5"],
       details: ["Phase 3 of the plan \($p): three."]}, {project: "level", profile: "bnb", lane: "agent", id: "lv-50", state: "open", tags: [], details: ["the blocker"]}] + $ARGS.positional), done: []}' \
       --jsonargs "$@" > "$NOTES_FIXTURE/board.json"
   }
@@ -3923,7 +3923,9 @@ STUB
   assert_output --partial "held mid-p4 -> level:lv-20"
   assert_output --partial "kept mid-p3 on its board row lv-9"
   assert_line 'gated row lv-9 (mid-p3) on after/lv-20'
-  assert_called "tag --add after/lv-20 lv-9"
+  # lv-9 has no profile, so the tag call carries none (a tab-split read once shifted the lane into it).
+  run grep -x 'notes ptask level --agent tag --add after/lv-20 lv-9' "$NOTES_FIXTURE/calls.log"
+  assert_success
   # One row for the new phase and none for the plan or the phases already filed.
   run grep -c ' add ' "$NOTES_FIXTURE/calls.log"
   assert_output 1
