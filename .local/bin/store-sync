@@ -296,19 +296,25 @@ cmd_merge_derived() {
 remotes() { local r; for r in origin backup; do g remote get-url "$r" >/dev/null 2>&1 && echo "$r"; done; }
 
 # settle_closes <ref> <merge-tree output> <message>: a merge of HEAD and <ref> whose every conflict is
-# a queue item one side closed (queue/done/) and the other moved to another open state, as a rename/
-# rename no merge driver sees: a worker's session closed its item before the dispatcher's running move
-# reached it (razer-laptop, 2026-11-21, canary-flee-3be2; ar-268 and ar-1801 on 11-20, ar-3439). The
-# close wins whole, the rule merge-item applies to two closes. Prints the merge commit; rc 1, and
-# nothing written but objects, when any conflict is another kind.
+# either:
+# - a queue item one side closed (queue/done/) and the other moved to another open state, as a rename/
+#   rename no merge driver sees: a worker's session closed its item before the dispatcher's running move
+#   reached it (razer-laptop, 2026-11-21, canary-flee-3be2; ar-268 and ar-1801 on 11-20, ar-3439). The
+#   close wins whole, the rule merge-item applies to two closes.
+# - a queue item one side moved to another state (open or closed) and the other edited in place when
+#   git's rename detector missed the move (short body, <50% similarity), leaving a modify/delete
+#   conflict on the old path (ar-4101). Merged at the new path via cmd_merge_item.
+# Prints the merge commit; rc 1, and nothing written but objects, when any conflict is another kind.
 settle_closes() {
-  local ref="$1" tree p side base at idx t rc=0 paths=() keep=()
-  declare -A done_at=()
+  local ref="$1" tree p q side other base at idx t rc=0 paths=() keep=() mb="" in_head in_ref
+  local tmp blob mode mlist=()
+  declare -A done_at=() in_paths=() move_from=()
   tree=$(head -n 1 <<<"$2")
   mapfile -t paths < <(tail -n +2 <<<"$2" | sed '/^$/d')
   [ "${#paths[@]}" -gt 0 ] || return 1
   for p in "${paths[@]}"; do
     [[ "$p" =~ ^queue/(queued|running|waiting|review|done/[^/]+)/[^/]+\.md$ ]] || return 1
+    in_paths[$p]=1
     [[ "$p" = queue/done/* ]] || continue
     for side in HEAD "$ref"; do
       g cat-file -e "$side:$p" 2>/dev/null || continue
@@ -317,10 +323,26 @@ settle_closes() {
       done_at[${p##*/}]="$side $p"
     done
   done
-  for p in "${paths[@]}"; do [ -n "${done_at[${p##*/}]:-}" ] || return 1; done
+  for p in "${paths[@]}"; do
+    [ -z "${done_at[${p##*/}]:-}" ] || continue
+    [ -n "$mb" ] || mb=$(g merge-base HEAD "$ref") || return 1
+    g cat-file -e "$mb:$p" 2>/dev/null || return 1
+    in_head=0; g cat-file -e "HEAD:$p" 2>/dev/null && in_head=1
+    in_ref=0; g cat-file -e "$ref:$p" 2>/dev/null && in_ref=1
+    [ "$in_head" != "$in_ref" ] || return 1
+    if [ "$in_head" = 1 ]; then side=HEAD; other="$ref"; else side="$ref"; other=HEAD; fi
+    base=${p##*/}
+    mapfile -t mlist < <(g ls-tree -r --name-only "$other" -- queue/ |
+      awk -F/ -v b="$base" '$NF == b && /^queue\/(queued|running|waiting|review|done\/[^/]+)\/[^/]+\.md$/')
+    [ "${#mlist[@]}" -eq 1 ] || return 1
+    q=${mlist[0]}
+    [ -z "${in_paths[$q]:-}" ] || return 1
+    ! g cat-file -e "$side:$q" 2>/dev/null || return 1
+    move_from[$p]="$side $other $q"
+  done
   # A name only: read-tree writes the index, and an empty file is not one.
   idx=$(mktemp) && rm -f "$idx" || return 1
-  # Every copy of the item goes, then the closed one comes back from the side that closed it.
+  # Every copy of the item goes, then the closed or merged-moved one comes back.
   GIT_INDEX_FILE=$idx g read-tree "$tree" &&
     GIT_INDEX_FILE=$idx g update-index --force-remove -- "${paths[@]}" || rc=1
   for base in "${!done_at[@]}"; do
@@ -329,10 +351,34 @@ settle_closes() {
     keep+=("$base")
     g ls-tree "$side" -- "$p" | GIT_INDEX_FILE=$idx g update-index --index-info || rc=1
   done
+  for p in "${!move_from[@]}"; do
+    [ "$rc" = 0 ] || break
+    read -r side other q <<<"${move_from[$p]}"
+    tmp=$(mktemp -d) || { rc=1; break; }
+    g cat-file -p "$mb:$p" > "$tmp/base" 2>/dev/null || : > "$tmp/base"
+    if [ "$side" = HEAD ]; then
+      g cat-file -p "HEAD:$p" > "$tmp/ours" 2>/dev/null || rc=1
+      g cat-file -p "$ref:$q" > "$tmp/theirs" 2>/dev/null || rc=1
+    else
+      g cat-file -p "HEAD:$q" > "$tmp/ours" 2>/dev/null || rc=1
+      g cat-file -p "$ref:$p" > "$tmp/theirs" 2>/dev/null || rc=1
+    fi
+    [ "$rc" = 0 ] && cmd_merge_item "$tmp/base" "$tmp/ours" "$tmp/theirs" "$q" >/dev/null || rc=1
+    [ "$rc" = 0 ] && blob=$(g hash-object -w -- "$tmp/ours") || rc=1
+    rm -rf "$tmp"
+    [ "$rc" = 0 ] || break
+    mode=$(g ls-tree "$other" -- "$q" | awk '{print $1; exit}')
+    keep+=("${p##*/}")
+    printf '%s blob %s\t%s\n' "${mode:-100644}" "$blob" "$q" | GIT_INDEX_FILE=$idx g update-index --index-info || rc=1
+  done
   [ "$rc" = 0 ] && t=$(GIT_INDEX_FILE=$idx g write-tree) || rc=1
   rm -f "$idx"
   [ "$rc" = 0 ] || return 1
-  g commit-tree "$t" -p HEAD -p "$ref" -m "$3, the close kept for ${keep[*]}"
+  if [ "${#move_from[@]}" -eq 0 ]; then
+    g commit-tree "$t" -p HEAD -p "$ref" -m "$3, the close kept for ${keep[*]}"
+  else
+    g commit-tree "$t" -p HEAD -p "$ref" -m "$3, settled ${keep[*]}"
+  fi
 }
 
 # commit_paths <message> <path>...: stage and commit those paths (those that exist), nothing else.
