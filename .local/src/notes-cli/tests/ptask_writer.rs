@@ -1943,7 +1943,7 @@ fn a_gated_board_takes_a_hand_sessions_row_only_as_a_fault_or_the_persons_ask() 
         &h,
         &[HAND],
         &["--why", "upkeep"],
-        "test(menu): add a regression test for the menu #size/s",
+        "test(parser): add a regression test for quoted heredoc lines #size/s",
     ));
     // A person at a terminal is never gated.
     ok(&add_as(
