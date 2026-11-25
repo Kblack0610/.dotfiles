@@ -8,7 +8,7 @@ Neither mistake is free. A wrong score toward the human leaves a session waiting
 
 Name the ask's `type` first, from the list below. Then split the ask into its decisions: one entry for a plain ask, one per item when it bundles several. Score every decision on its own, and `agent-ask` takes the worst of them.
 
-For each criterion, quote the words of the ask that show it, then say whether it is met. A criterion with no quote behind it is not met. Read `context`, `option_notes` and `recommend_why` as part of the ask, and `## Past disagreements`, when the input has it, as what the human has decided before.
+For each criterion, quote the words of the ask that show it, then say whether it is met. A criterion with no quote behind it is not met. Read `context`, `option_notes` and `recommend_why` as part of the ask, and `## Past disagreements`, when the input has it, as what the human has decided before. Read `## What the human already said`, when the input has it, as facts the human has told before (mem0 and the project's lessons): a line there that states the fact the ask needs means the fact is written, so `knowledge` is not met for it; quote that line, and give the answer it states.
 
 ## The human's
 
