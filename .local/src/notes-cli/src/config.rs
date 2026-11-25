@@ -685,6 +685,12 @@ fn config_paths() -> Vec<PathBuf> {
             v.push(expand(&p));
         }
     }
+    // A unit test reads $NOTES_CONFIG alone, as CI does: with this machine's config, a fixture
+    // project named like a live one (`binks`) resolved across the live orgs, and the test ran
+    // `migrate` on the live copy (ar-4202).
+    if cfg!(test) {
+        return v;
+    }
     v.push(home().join(".config/notes/config.toml"));
     v.push(home().join(".dotfiles/.config/notes/config.toml"));
     v
@@ -1313,6 +1319,13 @@ mod tests {
         assert_eq!(expand("~/.notes"), PathBuf::from("/home/test/.notes"));
         assert_eq!(expand("/abs/path"), PathBuf::from("/abs/path"));
         assert_eq!(expand("~"), PathBuf::from("/home/test"));
+    }
+
+    #[test]
+    fn a_unit_test_reads_no_machine_config() {
+        // ar-4202: the live config's orgs leaked into fixtures that share a live project's name
+        let set = std::env::var("NOTES_CONFIG").is_ok_and(|c| !c.is_empty());
+        assert_eq!(config_paths().len(), usize::from(set));
     }
 
     #[test]
