@@ -81,8 +81,10 @@ fi
 # container is the image runs here, in the job pod the node's containerd started from it, so the
 # node keeps one copy where every dind pod loaded its own (ar-6016). The run is what `docker run`
 # below would do, in place: the image's entrypoint gives this uid a passwd entry, and CI keeps its
-# cargo registry in the checkout. Its environment is already this one, so nothing is passed through.
-if [ -n "${COCKPIT_TEST_DISPOSABLE:-}" ]; then
+# cargo registry in the checkout. The step's env and the job pod's CI_CPU_MILLI are already this
+# environment, so nothing is passed through. The image's marker alone could be exported on a real
+# host (tests/Dockerfile), so this also wants GITHUB_ACTIONS, which a docker run never gets.
+if [ -n "${COCKPIT_TEST_DISPOSABLE:-}" ] && [ -n "${GITHUB_ACTIONS:-}" ]; then
   case "${1:-}" in
     --build) exit 0 ;;
     --shell) echo "docker.sh: already in the test image" >&2; exit 2 ;;
