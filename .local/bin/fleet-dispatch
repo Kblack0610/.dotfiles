@@ -6181,20 +6181,36 @@ preempt_items() {
 }
 
 # unpark_preempted -- resume the sessions preempt_for parked (ledger why=preempt), oldest park first,
-# while their run units fit and no urgent item or fresh ask waits to preempt (preempt_items, which must read). A
+# while their run units fit beside the ones the first urgent item or fresh ask that waits to preempt
+# (preempt_items, which must read) needs. An ask the gate (account room, github) or this machine's own
+# pace (machine_why) holds keeps none, since the pass would not start it or preempt for it (cmd_run,
+# preempt_pick): any runnable ask used to hold every victim, up to DISPATCH_ASK_FRESH_H (ar-3467). A
 # budget (why=budget), agent (why=park) or human (why=human) park is never this pass's to resume. It runs before a pass picks, so a victim gets
 # its units back ahead of any new start; a dispatch hold holds it too.
 unpark_preempted() {
   [ "$DISPATCH_PREEMPT" = 1 ] || return 0
-  local ledgers f free key sess server w units out items urgent
+  local ledgers f free key sess server w units out items urgent keep=0 held first
   ledgers=$(for f in "$PARKED_DIR"/*; do
               [ -f "$f" ] && [ "$(sed -n '/^why=/{s///p;q;}' "$f")" = preempt ] || continue
               printf '%s\t%s\n' "$(sed -n '/^parked=/{s///p;q;}' "$f")" "$f"
             done | sort -n)
   [ -n "$ledgers" ] || return 0
   agent-hold check dispatch >/dev/null 2>&1 || return 0
-  urgent=$(preempt_items) && [ -z "$urgent" ] || return 0
-  free=$(( TARGET - $(live_units) ))
+  urgent=$(preempt_items) || return 0
+  if [ -n "$urgent" ]; then
+    first=$(head -n 1 <<<"$urgent")
+    # Hosts are probed later (pass_room), so gate cannot drop this machine's pace for an open worker;
+    # machine_why is read as preempt_pick reads it. An unreadable source is no hold here: a failed read
+    # keeps the units, as a gate keeps a start.
+    held=$(gate); [ -n "$held" ] || held=$(machine_why)
+    case $held in *unreadable*) held='' ;; esac
+    if [ -z "$held" ]; then keep=$(weight_units "$(jq -r '.weight // "light"' <<<"$first")")
+    else
+      held="unpark keeps no run units for $(runs_now_label "$first") $(jq -r .slug <<<"$first"): $held"
+      say "$held"; [ "$DRY" = 1 ] || logline "$held"
+    fi
+  fi
+  free=$(( TARGET - $(live_units) - keep ))
   items=$(item_sessions)
   while IFS=$'\t' read -r _ f; do
     key=${f##*/}
