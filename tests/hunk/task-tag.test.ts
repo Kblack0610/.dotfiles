@@ -93,6 +93,11 @@ describe("note_created handler", () => {
     expect(r.toasts[0]).toContain("agent-runtime board");
   });
 
+  test("a priority the note names stays on the row", async () => {
+    const r = await fire("fix this #urgent #task:agent-runtime");
+    expect(r.calls).toBe("ptask agent-runtime add fix this #urgent (src/a.ts:7)");
+  });
+
   test("bare #task with no resolvable board goes to the inbox and says why", async () => {
     const r = await fire("look at this #task");
     expect(r.calls).toBe("inbox add look at this (src/a.ts:7)");
