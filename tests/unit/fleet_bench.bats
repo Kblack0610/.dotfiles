@@ -2464,12 +2464,44 @@ fix_item() {
   run "$SUBJECT" triage
   assert_success
   [ ! -s "$BOARD.agent-runtime" ]
-  # an ask the human already closed is left as it is when its cause leaves the spent set
-  cp "$XDG_STATE_HOME/agentctl/triage-spent" "$SANDBOX/spent.keep"; : > "$ASKLOG"
+  # ar-4538: an ask the human answered stands for the cause: a try that comes back queues nothing,
+  # the ask is left as it is, its line keeps the epoch the answer was read, and reds_spent drops it
+  cp "$XDG_STATE_HOME/agentctl/triage-spent" "$SANDBOX/spent.keep"; : > "$ASKLOG"; : > "$PLOG"
   ASKSTATUS=answered TRIAGE_FIX_TRIES=3 run "$SUBJECT" triage
   assert_success
+  refute_output --partial 'queued as red fixes'
+  [ ! -s "$PLOG" ]
   run cat "$ASKLOG"
   assert_output 'show Ask123'
+  run cut -f1,3,4 "$XDG_STATE_HOME/agentctl/triage-spent"
+  assert_output "$(cause_of)"$'\t'Ask123$'\t'"$T0"
+  run "$SUBJECT" ledger
+  assert_line 'reds_spent=0'
+  # the next trip reads the answer from the line, asks nothing and still queues nothing
+  : > "$ASKLOG"
+  TRIAGE_FIX_TRIES=3 run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  [ ! -s "$ASKLOG" ]
+  # the answer ages out of TRIAGE_FIX_DAYS: agents try the cause again, and the line leaves with
+  # the ask left as the human closed it
+  cp "$XDG_STATE_HOME/agentctl/triage-spent" "$SANDBOX/spent.answered"
+  awk -F'\t' -v OFS='\t' -v at=$((T0 - 8 * 86400)) '{ $4 = at; print }' "$SANDBOX/spent.answered" > "$XDG_STATE_HOME/agentctl/triage-spent"
+  ASKSTATUS=answered TRIAGE_FIX_TRIES=3 run "$SUBJECT" triage
+  assert_success
+  run cat "$PLOG"
+  assert_output --regexp ' escalate retry:ar-1,ar-2,ar-3 --raw '
+  run cat "$ASKLOG"
+  assert_output 'show Ask123'
+  [ ! -s "$XDG_STATE_HOME/agentctl/triage-spent" ]
+  # a cause that clears keeps its answered line, so the answer owns its next trip in the window
+  cp "$SANDBOX/spent.answered" "$XDG_STATE_HOME/agentctl/triage-spent"; : > "$PLOG"; : > "$ASKLOG"
+  BENCH_NOW=$((T0 + 2 * 86400)) run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  [ ! -s "$ASKLOG" ]
+  run diff "$SANDBOX/spent.answered" "$XDG_STATE_HOME/agentctl/triage-spent"
+  assert_success
   # NEGATIVE CONTROL: one more allowed try is one more item, the escalation, and nothing is spent;
   # the cause left the spent set, so its still-pending ask is cancelled: it needs the human no longer
   cp "$SANDBOX/spent.keep" "$XDG_STATE_HOME/agentctl/triage-spent"; : > "$PLOG"; : > "$ASKLOG"
