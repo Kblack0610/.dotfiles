@@ -49,7 +49,8 @@
 #                                briefing and day-log print ("N gates added since D, K by an agent without your ask"), none when no gate
 #   fleet-bench kpi [--json] [--vitals | --at T | --trend DAYS | --check [ERE]]
 #                                KPIs over 7d and 28d of human sessions (the token ones from the
-#                                nightly token-usage snapshots, sandboxed_lane_pct from BENCH_CALLS, pool_busy_share from Prometheus),
+#                                nightly token-usage snapshots, sandboxed_lane_pct from BENCH_CALLS, pool_busy_share from Prometheus,
+#                                the churn_* rows from the notes ingest record and the dotfiles merge log),
 #                                against KPI_THRESHOLDS;
 #                                --vitals the BENCH_VITALS rows, the front page every view reads,
 #                                --at as of a past time, --trend one row a day of the 7d values,
@@ -64,6 +65,11 @@
 #                                origin, else the #from/ a triage carried in, else self-check, else the writer; below the first logged
 #                                id "pre-log"), with each source's arrivals per day over N days (INFLOW_DAYS, 14), how they ended
 #                                (closed by PR, done with no PR, dropped, dup, still open) and the age of its open rows
+#   fleet-bench churn [--days N] [--json|--check]
+#                                agent-runtime's churn a local day (N, default 7, complete days and today so far): dotfiles merges, rows
+#                                filed, closed, dropped, reopened and filed straight by a session; the rows behind the churn_* KPIs.
+#                                --check exits 1 when filed exceeded closed on each of the last CHURN_RUN_DAYS complete days (the
+#                                runtime-churn watch's probe)
 #   fleet-bench startup [--json|--check]
 #                                Claude Code start times (CLAUDE_STARTUP_LOG): medians over the last
 #                                startup_rolling_n starts; --check exits 1 past startup_ready_ms_p50_max,
@@ -372,6 +378,8 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${BENCH_SKILLS_DIR:=$HOME/.claude/skills}"   # skills: a slash command is a skill when <dir>/<name>/SKILL.md exists
 : "${PRIO_SAMPLE:=3}"   # row ids shown per origin in prio_default
 : "${INFLOW_DAYS:=14}"   # the window inflow counts arrivals over
+: "${BENCH_CHURN_MERGES_CMD:=git -C $HOME/.dotfiles log origin/main --first-parent --since=60.days.ago --format=%cd --date=format-local:%Y-%m-%d}"   # one local date per dotfiles merge (churn_merges_per_day); the CI ledger lags a day behind
+: "${CHURN_RUN_DAYS:=3}"   # complete days running that filed must exceed closed for churn --check to trip
 : "${BENCH_INGEST:=$HOME/.local/state/notes/ingest.jsonl}"   # the notes CLI's record of every row it wrote: who, from where
 : "${BENCH_PROFILE:=}"                             # the profile board_open and board_days read; empty asks `notes config`
 BOARD_SHIP_DAYS=7                                    # days of shipped weight board_days reads: the notes sweep's BUDGET_WINDOW_DAYS
@@ -3410,6 +3418,7 @@ KPI_ASKS="human_answered_per_day ask_wait_p90_min"
 KPI_STARTUP="startup_ready_ms_p50"
 KPI_SANDBOX="sandboxed_lane_pct"
 KPI_POOL="pool_busy_share"
+KPI_CHURN="churn_merges_per_day churn_filed_per_closed churn_reopens_per_day churn_followups_per_pr"
 # Each scored runner's runner_score_<name> is judge-eval's too, listed from its output and the
 # thresholds rather than here: the runner confs' SCORE= is the one list of lanes.
 
@@ -3567,8 +3576,8 @@ kpi_tokens() {
            totals: (.totals // {} | {responses, context, cache_write, tool_chars, tool_calls})}' "${f[@]}" 2>/dev/null || true
 }
 
-# kpi_live <now> -> the comms, judge, ask, startup, sandbox and pool KPIs as one object
-kpi_live() { jq -sc 'add' <(comms_kpi) <(judge_kpi) <(ask_kpi "$1") <(startup_kpi "$1") <(sandbox_kpi "$1") <(pool_kpi "$1"); }
+# kpi_live <now> -> the comms, judge, ask, startup, sandbox, pool and churn KPIs as one object
+kpi_live() { jq -sc 'add' <(comms_kpi) <(judge_kpi) <(ask_kpi "$1") <(startup_kpi "$1") <(sandbox_kpi "$1") <(pool_kpi "$1") <(churn_kpi "$1"); }
 
 # kpi_json <now> <ledger counts> [live] -> one object keyed by KPI, in table order. live is
 # kpi_live's object, read now when not given. kpi --at gives {} and no counts, so the comms and the
@@ -3580,7 +3589,7 @@ kpi_json() {
   [ -n "$cm" ] || cm=$(kpi_live "$1")
   jq -n --argjson t "$1" --slurpfile o <(outcomes_newest) --slurpfile c <(ci_claimed) --slurpfile k "$(kpi_canary)" --slurpfile tk <(kpi_tokens) \
      --argjson pit "$(kv_json <<<"$2")" --argjson lim "$lim" --arg nowkeys "$KPI_NOW" \
-     --argjson cm "$cm" --arg commskeys "$KPI_COMMS $KPI_JUDGE $KPI_ASKS $KPI_STARTUP $KPI_SANDBOX $KPI_POOL" "$KPI_DEFS"'
+     --argjson cm "$cm" --arg commskeys "$KPI_COMMS $KPI_JUDGE $KPI_ASKS $KPI_STARTUP $KPI_SANDBOX $KPI_POOL $KPI_CHURN" "$KPI_DEFS"'
     win($t; 7) as $w7 | win($t; 28) as $w28
     | [($w7 | keys_unsorted[] | {key: ., value: {"7d": $w7[.], "28d": $w28[.], now: false}}),
        ((($commskeys | split(" ")) + ([$cm, $lim | keys[] | select(startswith("runner_score_")) | sub("_(min|max)$"; "")] | unique))[]
@@ -3612,9 +3621,10 @@ kpi_now() {
 # kpi_trend <now> <days> -> one object a day, oldest first: {date, <kpi>: its 7d value as of that
 # day's end}. The outcome rows are the history, so a trend needs no store of its own.
 kpi_trend() {
-  jq -nc --argjson t "$1" --argjson n "$2" --slurpfile o <(outcomes_newest) --slurpfile c <(ci_claimed) --slurpfile k "$(kpi_canary)" --slurpfile tk <(kpi_tokens) "$KPI_DEFS"'
+  local ch; ch=$(churn_rows) || ch=null
+  jq -nc --argjson t "$1" --argjson n "$2" --argjson ch "$ch" --slurpfile o <(outcomes_newest) --slurpfile c <(ci_claimed) --slurpfile k "$(kpi_canary)" --slurpfile tk <(kpi_tokens) "$KPI_DEFS$CHURN_JQ"'
     range($n - 1; -1; -1) as $i | ($t - $i * 86400) as $at
-    | {date: ($at | strflocaltime("%Y-%m-%d"))} + win($at; 7)'
+    | {date: ($at | strflocaltime("%Y-%m-%d"))} + win($at; 7) + churn_kpis($ch; $at; 7)'
 }
 
 # kv_json -> key=value lines on stdin as one object; a value that is not a number is null
@@ -4445,6 +4455,90 @@ cmd_inflow() {
   '
 }
 
+# CHURN_JQ: the runtime churn KPIs as jq, one bucket a local day. churn_rows builds {began, merges_known, days: {<date>: {merges, filed,
+# closed, dropped, reopened, followups}}} from the ingest events (inflow_events) and the merge dates; churn_kpis reads the $d complete days
+# before the day of $at (a rate is never read from a part day), clipped to the record's first day.
+# filed: a row's first added or filed event, counted once; followups: those no runner or hand wrote, a session's own (its 8-hex id is the writer
+# and no origin); closed: done, or settled with a PR; dropped: dropped or dup, kept apart so one board cut never reads as work closed.
+CHURN_JQ='
+def churn_rows($merges):
+  . as $ev
+  | ([$ev[] | select(.action == "added" or .action == "filed")] | group_by(.id) | map(min_by(.ts))) as $arr
+  | ([($arr[] | {d: .ts[0:10], k: "filed"}),
+      ($arr[] | select((.origin // "") == "" and ((.by // "") | test("^[0-9a-f]{8}$"))) | {d: .ts[0:10], k: "followups"}),
+      ($ev[] | select(.action == "done" or (.action == "settled" and (.pr // "") != "")) | {d: .ts[0:10], k: "closed"}),
+      ($ev[] | select(.action == "dropped" or .action == "dup") | {d: .ts[0:10], k: "dropped"}),
+      ($ev[] | select(.action == "reopened") | {d: .ts[0:10], k: "reopened"}),
+      (($merges // [])[] | {d: ., k: "merges"})]
+     | group_by(.d) | map({key: .[0].d, value: (group_by(.k) | map({key: .[0].k, value: length}) | from_entries)}) | from_entries) as $days
+  | {began: ([$ev[].ts[0:10]] | min // ""), merges_known: ($merges != null), days: $days};
+def churn_dates($at; $d):
+  ($at | strflocaltime("%Y-%m-%d") + "T12:00:00Z" | fromdateiso8601) as $noon
+  | [range(1; $d + 1) | ($noon - . * 86400) | strftime("%Y-%m-%d")];
+def churn_kpis($ch; $at; $d):
+  if $ch == null then {churn_merges_per_day: null, churn_filed_per_closed: null, churn_reopens_per_day: null, churn_followups_per_pr: null}
+  else (churn_dates($at; $d) | map(select(. >= $ch.began))) as $ds
+    | ($ds | length) as $n
+    | def sum($k): [$ds[] | ($ch.days[.] // {})[$k] // 0] | add // 0;
+      {churn_merges_per_day: (if $ch.merges_known and $n > 0 then (sum("merges") / $n | round1) else null end),
+       churn_filed_per_closed: ratio(sum("filed"); sum("closed")),
+       churn_reopens_per_day: (if $n > 0 then (sum("reopened") / $n | round1) else null end),
+       churn_followups_per_pr: (if $ch.merges_known then ratio(sum("followups"); sum("merges")) else null end)}
+  end;'
+
+# churn_rows -> churn_rows of CHURN_JQ over the agent-runtime ingest events and the dotfiles merge dates; a failure when the ingest
+# record cannot be read. A merge log that cannot be read leaves the merge-based KPIs null (merges_known false), never 0.
+churn_rows() {
+  local m merges=null
+  [ -r "$BENCH_INGEST" ] || return 1
+  if m=$($BENCH_CHURN_MERGES_CMD 2>/dev/null); then
+    merges=$(jq -Rsc 'split("\n") | map(select(test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")))' <<<"$m") || merges=null
+  fi
+  inflow_events agent-runtime | jq -sc --argjson m "$merges" "$JQ_LIB$CHURN_JQ"'churn_rows($m)'
+}
+
+# churn_kpi <now> -> the churn KPI object, the same shape as comms_kpi; {} when the ingest record cannot be read
+churn_kpi() {
+  local ch
+  ch=$(churn_rows) || { echo '{}'; return 0; }
+  jq -nc --argjson t "$1" --argjson ch "$ch" "$JQ_LIB$CHURN_JQ"'
+    churn_kpis($ch; $t; 7) as $a | churn_kpis($ch; $t; 28) as $b | $a | with_entries(.value = {"7d": .value, "28d": $b[.key]})'
+}
+
+# churn [--days N] [--json|--check] -- agent-runtime's churn a local day, oldest first: N complete days and today so far.
+# --check prints nothing when it holds; when filed exceeded closed on each of the last CHURN_RUN_DAYS complete days it prints those days and exits 1.
+cmd_churn() {
+  local days=7 json=0 check=0 ch rows
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --days) days=${2:?--days needs a number}; shift ;;
+      --json) json=1 ;;
+      --check) check=1 ;;
+      *) say "usage: fleet-bench churn [--days N] [--json|--check]"; return 2 ;;
+    esac
+    shift
+  done
+  case "$days" in ""|*[!0-9]*|0) say "churn: --days is a whole number of days"; return 2 ;; esac
+  [ "$days" -ge "$CHURN_RUN_DAYS" ] || days=$CHURN_RUN_DAYS
+  ch=$(churn_rows) || { say "churn: the ingest record cannot be read ($BENCH_INGEST)"; return 1; }
+  rows=$(jq -nc --argjson t "$(now)" --argjson n "$days" --argjson ch "$ch" '
+    ($t | strflocaltime("%Y-%m-%d")) as $today
+    | [range($n; -1; -1) | ($t | strflocaltime("%Y-%m-%d") + "T12:00:00Z" | fromdateiso8601) - . * 86400 | strftime("%Y-%m-%d")]
+    | map(. as $d | ($ch.days[$d] // {}) as $r
+        | {date: $d, complete: ($d != $today), merges: (if $ch.merges_known then ($r.merges // 0) else null end),
+           filed: ($r.filed // 0), closed: ($r.closed // 0), dropped: ($r.dropped // 0), reopened: ($r.reopened // 0), followups: ($r.followups // 0)})') || return 1
+  if [ "$check" = 1 ]; then
+    # nothing when it holds, the days that tripped it when it does; fewer complete days than CHURN_RUN_DAYS is no trip
+    jq -e --argjson k "$CHURN_RUN_DAYS" '[.[] | select(.complete)] | .[-$k:] | (length < $k or any(.filed <= .closed))' <<<"$rows" >/dev/null && return 0
+    jq -r --argjson k "$CHURN_RUN_DAYS" '[.[] | select(.complete)] | .[-$k:][] | "churn \(.date): filed \(.filed), closed \(.closed)"' <<<"$rows"
+    echo "churn: filed exceeded closed $CHURN_RUN_DAYS days running"
+    return 1
+  fi
+  if [ "$json" = 1 ]; then jq -c '.[]' <<<"$rows"; return 0; fi
+  jq -r '"| date | merges | filed | closed | dropped | reopened | followups |", "|---|---|---|---|---|---|---|",
+    (.[] | "| \(.date)\(if .complete then "" else " (so far)" end) | \(.merges // "-") | \(.filed) | \(.closed) | \(.dropped) | \(.reopened) | \(.followups) |")' <<<"$rows"
+}
+
 # startup [--json|--check] -- Claude Code start times over the last startup_rolling_n (20) starts:
 # the medians of ready, process (harness boot) and hook ms, each hook phase and each MCP server's
 # spawn. The threshold and window are kpi-thresholds keys, the same startup_ready_ms_p50_max the KPI
@@ -4609,11 +4703,13 @@ improve_live_closes() {
 # board_days and board_open are never picked: a session whose job is shrinking the board would
 # delete rows the human filled on purpose. Nor is
 # systems_no_skill: it is report-only, since a system with no skill yet is a gap to read, not a red.
+# The churn_* rows are report-only too: a row filed to bring runtime merges down is itself runtime churn,
+# and the runtime-churn watch is what reports them.
 improve_pick() {
   jq -c --slurpfile e <(effect_lines) --slurpfile c <(improve_live_closes) --argjson max "$BENCH_IMPROVE_MAX" "$IMPROVE_JQ"'
     ($e | live) as $live | ($live | map(.kpi)) as $owned
     | if ($e | open_live($c) | length) >= $max then empty else
-        [to_entries[] | select(.value.status == "past" and (.key | IN("board_days", "board_open", "systems_no_skill") | not) and (.key | IN($owned[]) | not))
+        [to_entries[] | select(.value.status == "past" and (.key | IN("board_days", "board_open", "systems_no_skill") | not) and (.key | startswith("churn_") | not) and (.key | IN($owned[]) | not))
          | {kpi: .key, value: .value["7d"], threshold: .value.threshold, bound: .value.bound, gap: (.value | gap)}]
         | sort_by(-.gap) | first // empty
         | del(.gap) | . + {last: (.kpi as $k | $e | last_verdict($k))} end' <<<"$1"
@@ -7721,6 +7817,7 @@ main() {
     chain) shift; cmd_chain "$@" ;;
     prio-defaults) shift; cmd_prio_defaults "$@" ;;
     inflow) shift; cmd_inflow "$@" ;;
+    churn) shift; cmd_churn "$@" ;;
     startup) shift; cmd_startup "$@" ;;
     pipeline) shift; cmd_pipeline "$@" ;;
     bottleneck) shift; cmd_bottleneck "$@" ;;
