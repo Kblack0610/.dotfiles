@@ -30,10 +30,12 @@ wp_base() {
 }
 
 # ahead_files <dir> <base>: files the branch changed since the merge base whose content in
-# HEAD still differs from the base tip. A squash-merged branch, or a local merge commit
+# HEAD the base has not had. A squash-merged branch, or a local merge commit
 # whose content is already on origin, changed files that origin now has, so it counts 0.
 # A branch that merged main while main merged it has two merge bases (a criss-cross); a file
 # the branch only took in from the base differs from one of them, so it must differ from all.
+# A file the base took and then changed again is landed too (not_landed), as is a submodule pin the
+# base has moved past (ar-89: ucp agent-2 and agent-57 read STALLED after squash #1521 and #1580).
 ahead_files() {
   ahead_paths "$@" | grep -c . || true
 }
@@ -47,7 +49,43 @@ ahead_paths() {
     [ -n "$changed" ] || break
     changed="$(comm -12 <(git -C "$d" diff --name-only "$mb" HEAD 2>/dev/null | sort) <(printf '%s\n' "$changed"))"
   done <<<"$mbs"
-  [ -z "$changed" ] || printf '%s\n' "$changed"
+  [ -z "$changed" ] || not_landed "$d" "$base" "$changed"
+}
+
+# not_landed <dir> <base> <paths, one per line>: the paths whose HEAD content the base has not had,
+# one per line. A path is landed when a base commit the branch lacks (HEAD..base) gave it HEAD's blob
+# or pin, so a squash the base then moved past counts 0, or when HEAD pins a submodule commit that the
+# base's pin descends from (checked only where the submodule is checked out). Only the paths that
+# differ from the base tip and every merge base get here, so the walk is bounded by them.
+not_landed() {
+  local d="$1" base="$2" top p sha bpin
+  local -a ps
+  top="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" || { printf '%s\n' "$3"; return 0; }
+  mapfile -t ps <<<"$3"
+  {
+    git -C "$top" --literal-pathspecs log --no-renames --format= --raw --no-abbrev "HEAD..$base" -- "${ps[@]}" 2>/dev/null \
+      | awk -F'\t' '/^:/ { split($1, f, " "); print "S\t" f[4] "\t" $2 }'
+    git -C "$top" --literal-pathspecs ls-tree -r HEAD -- "${ps[@]}" 2>/dev/null \
+      | awk -F'\t' '{ split($1, f, " "); print "H\t" f[1] " " f[3] "\t" $2 }'
+    printf 'P\t%s\n' "${ps[@]}"
+  } | awk -F'\t' '
+    $1 == "S" { seen[$3 "\t" $2] = 1; next }
+    $1 == "H" { head[$3] = $2; next }
+    {
+      # A path HEAD lacks was deleted: git log --raw gives a deletion the all-zero blob.
+      h = ($2 in head) ? head[$2] : "000000 0000000000000000000000000000000000000000"
+      split(h, f, " ")
+      if (($2 "\t" f[2]) in seen) next
+      if (f[1] == "160000") print "G\t" f[2] "\t" $2; else print "F\t-\t" $2
+    }' \
+  | while IFS=$'\t' read -r kind sha p; do
+      if [ "$kind" = G ] && [ -e "$top/$p/.git" ] \
+        && bpin="$(git -C "$top" rev-parse -q --verify "$base:$p" 2>/dev/null)" \
+        && git -C "$top/$p" merge-base --is-ancestor "$sha" "$bpin" 2>/dev/null; then
+        continue
+      fi
+      printf '%s\n' "$p"
+    done
 }
 
 # submodule_pin <dir> [<base reader>] -> the commit the superproject's default branch pins for <dir> (when
