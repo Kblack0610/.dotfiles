@@ -12,6 +12,8 @@ setup() {
   export PATH="$BIN:$PATH" # the runner unit declares ~/.local/bin on PATH; the script no longer does
   mkdir -p "$BIN" "$HOME/.local/lib" "$HOME/.agent/lessons"
   cp "$BATS_TEST_DIRNAME/../../.local/bin/agentctl-docs-cleanup" "$BATS_TEST_DIRNAME/../../.local/bin/lessons" "$BATS_TEST_DIRNAME/../../.local/bin/docs-renamed-paths" "$BIN/"
+  # shape-grow --stock is a stub: STOCK_OUT is its answer, STOCK_RC its exit; it records its arguments.
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" > "$HOME/stock.args"\n[ -z "${STOCK_OUT-}" ] || printf "%%s\\n" "$STOCK_OUT"\nexit "${STOCK_RC:-0}"\n' > "$BIN/shape-grow"
   printf 'proof_outcome() { :; }\n' > "$HOME/.local/lib/agent-proof.sh"
   printf '#!/usr/bin/env bash\necho docs-cleanup\n' > "$BIN/agentctl"
   printf '#!/usr/bin/env bash\necho "{}"\n' > "$BIN/agent-queue"
@@ -124,4 +126,24 @@ STUB
   RETIRED_RC=1 DUPS_JSON='{"pairs":60,"max":60,"over":0}' run "$BIN/agentctl-docs-cleanup" --dry-run
   assert_failure 1
   assert_output --partial 'knowledge-retired failed'
+}
+
+@test "the copy stock is scanned over the default repos and written to stock.txt; an over line is no drift" {
+  STOCK_OUT=$'dotfiles_sites=345\nover dotfiles_sites 345 (baseline 300)' STOCK_RC=1 DUPS_JSON='{"pairs":60,"max":60,"over":0}' run "$BIN/agentctl-docs-cleanup" --dry-run
+  assert_success
+  assert_output --partial 'no drift ('
+  run grep -c '^over ' "$AGENTCTL_INBOX"/*/stock.txt
+  assert_output 1
+  assert_equal "$(cat "$HOME/stock.args")" "--stock --check $HOME/.dotfiles $HOME/.dotfiles-private"
+}
+
+@test "copy-stock-repos names the repos to scan; a scan that cannot run reads FAILED" {
+  mkdir -p "$HOME/.config/agentctl"
+  printf '# the repos\n~/dev/platform  # api\n/srv/other\n' > "$HOME/.config/agentctl/copy-stock-repos"
+  DUPS_JSON='{"pairs":60,"max":60,"over":0}' run "$BIN/agentctl-docs-cleanup" --dry-run
+  assert_success
+  assert_equal "$(cat "$HOME/stock.args")" "--stock --check $HOME/dev/platform /srv/other"
+  STOCK_RC=2 DUPS_JSON='{"pairs":60,"max":60,"over":0}' run "$BIN/agentctl-docs-cleanup" --dry-run
+  assert_failure
+  assert_output --partial 'shape-grow --stock could not run'
 }

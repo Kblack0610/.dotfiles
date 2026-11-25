@@ -148,6 +148,7 @@ Windows count human sessions by `updated_epoch` in session-outcomes; a line with
 | `version_tag_drift` (now) | projects a vX.Y.Z tag owns whose sheet is neither that tag (roll pending) nor the tag plus one patch; the chain table names them |
 | `doctor_fail` (now) | `FAIL` lines in the last `notes doctor` run (`BENCH_DOCTOR_LAST`) |
 | `dup_pairs` (now) | instructions two homes restate: `pairs` in the newest `docs-cleanup/<date>/dups.json` (`skill-drift --dups`, `BENCH_DOCS_CLEANUP_DIR`), `?` when that night has none. Bound `dup_pairs_max`, the row `skill-drift --dups --check` holds |
+| `copy_stock_over` (now) | repo copy counts above their line in `copy-stock-baseline`: the `over` lines of the newest `docs-cleanup/<date>/stock.txt` (`shape-grow --stock --check` over the repos in `copy-stock-repos`), `?` when that night has none. Bound `copy_stock_over_max`; lower a baseline line in the PR that removes copies |
 | `chain_drift` (now) | queue items the record and the queue folders place apart: at another step, held by the record but gone from the queue, or queued after the record's `items_since` with no event. Work older than `items_since` is not counted |
 | `canary_runs` | `canary.jsonl` rows in the window |
 | `canary_pass_rate` | passing canary rows / canary rows |

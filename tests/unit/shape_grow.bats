@@ -255,3 +255,70 @@ EOF
   assert_failure 1
   assert_output 'b.sh:2 copy function helper, also lib.sh:2'
 }
+
+# --- --stock: the copies already in a tree, counted with the same indexes ---------------------------
+
+# stock_repo -> one repo: a function and a constant copied across two shell files, a pasted block, and a
+# namesake function with another body (never a copy); the two files also share a 6-line block
+stock_repo() {
+  { echo '#!/usr/bin/env bash'; echo 'BASE_URL=https://example.test/api'; printf 'helper() {\n  echo one\n  echo two\n  echo three\n}\n'
+    printf 'other() {\n  echo alpha\n  echo beta\n  echo gamma\n}\n'; } >"$R/a.sh"
+  { echo '#!/usr/bin/env bash'; echo 'BASE_URL=https://example.test/api'; printf 'helper() {\n  echo one\n  echo two\n  echo three\n}\n'
+    printf 'other() {\n  grep -q zzz /dev/null\n  sed -n 1p /dev/null\n  wc -l /dev/null\n}\n'; } >"$R/b.sh"
+  commit >/dev/null
+}
+
+@test "stock: counts the function, constant and block copies already at HEAD as key=N lines" {
+  stock_repo
+  run --separate-stderr "$SG" --stock --name demo "$R"
+  assert_success
+  assert_line 'demo_functions=1'
+  assert_line 'demo_constants=1'
+  assert_line 'demo_blocks=1'
+  assert_line 'demo_sites=3'
+}
+
+@test "stock: a namesake with another body is no copy (negative control)" {
+  { echo '#!/usr/bin/env bash'; printf 'other() {\n  echo alpha\n  echo beta\n  echo gamma\n}\n'; } >"$R/a.sh"
+  { echo '#!/usr/bin/env bash'; printf 'other() {\n  grep -q zzz /dev/null\n  sed -n 1p /dev/null\n  wc -l /dev/null\n}\n'; } >"$R/b.sh"
+  commit >/dev/null
+  run --separate-stderr "$SG" --stock --name demo "$R"
+  assert_success
+  assert_line 'demo_functions=0'
+  assert_line 'demo_sites=0'
+}
+
+@test "stock: a pasted block that stands in two files is one cluster, one site to remove" {
+  { echo '#!/usr/bin/env bash'; for i in 1 2 3 4 5 6 7 8; do echo "  run_step_$i --flag"; done; } >"$R/a.sh"
+  { echo '#!/usr/bin/env bash'; echo 'x=1'; for i in 1 2 3 4 5 6 7 8; do echo "  run_step_$i --flag"; done; } >"$R/b.sh"
+  commit >/dev/null
+  run --separate-stderr "$SG" --stock --name demo "$R"
+  assert_line 'demo_blocks=1'
+  assert_line 'demo_sites=1'
+}
+
+@test "stock: --check holds the counts to the baseline: over fails, under says lower, no line fails" {
+  stock_repo
+  printf '# baseline\ndemo_functions=1\ndemo_constants=1\ndemo_blocks=1\ndemo_sites=3\n' >"$BATS_TEST_TMPDIR/base"
+  run --separate-stderr "$SG" --stock --name demo --check --baseline "$BATS_TEST_TMPDIR/base" "$R"
+  assert_success
+  refute_output --partial 'over '
+  printf 'demo_functions=1\ndemo_constants=1\ndemo_blocks=1\ndemo_sites=5\n' >"$BATS_TEST_TMPDIR/base"
+  run --separate-stderr "$SG" --stock --name demo --check --baseline "$BATS_TEST_TMPDIR/base" "$R"
+  assert_success
+  assert_line 'lower demo_sites to 3'
+  printf 'demo_functions=0\ndemo_constants=1\ndemo_blocks=1\n' >"$BATS_TEST_TMPDIR/base"
+  run --separate-stderr "$SG" --stock --name demo --check --baseline "$BATS_TEST_TMPDIR/base" "$R"
+  assert_failure 1
+  assert_line 'over demo_functions 1 (baseline 0)'
+  assert_line 'over demo_sites 3 (no baseline line)'
+}
+
+@test "stock: the repo's copy.conf names and skips apply" {
+  stock_repo
+  mkdir -p "$R/.config/shape-grow"
+  printf 'block-lines 6\nname helper BASE_URL\n' >"$R/.config/shape-grow/copy.conf"; commit >/dev/null
+  run --separate-stderr "$SG" --stock --name demo "$R"
+  assert_line 'demo_functions=0'
+  assert_line 'demo_constants=0'
+}

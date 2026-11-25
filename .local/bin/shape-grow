@@ -2,6 +2,7 @@
 """shape-grow - list the long functions a change makes longer, and the copies it adds.
 
 Usage: shape-grow [-C <dir>] [--body <file>] [--conf <file>] <base> <head>
+       shape-grow --stock [--conf <file>] [--name <repo>] [--ref <ref>] [--check [--baseline <file>]] [<dir>...]
 
 Grow: for each Python, shell or Rust file the change touches, measures every function at <base> and
 at <head> and prints `path:line name base->head` for each one that is over LIMIT lines at <head> and
@@ -35,12 +36,28 @@ grew from 34 to 269 lines across 35 sessions, each PR adding a few lines to one 
 review read the whole function; the 11-18 re-review found 9 new copies hours after a 15-phase
 cleanup (plan everything-should-wondrous-snail).
 
+Stock: --stock counts the copies already in each repo's HEAD tree (default: the current directory), with
+the same indexes the copy check uses, never a second checker. It prints `<repo>_functions=N`,
+`<repo>_constants=N`, `<repo>_blocks=N` (function names, constant pairs and block clusters that have a copy) and
+`<repo>_sites=N` (the copies to remove so one of each is left, over all three). A copy is: a function
+name another file of its language defines with a body 85% alike (2 or more body lines; Rust counts here, where a
+body that differs keeps a namesake out), a constant
+assigned the same value in another file, a run of `block-lines` significant lines that stands in another
+file (blocks also read TypeScript, JavaScript and C#, and a `function` declaration in the first two is a function). The tree is <ref> (default HEAD) and the conf is the repo's COPY_CONF there, else
+the defaults below; --conf names one. --check reads the baseline (--baseline, else $COPY_STOCK_BASELINE,
+else ~/.config/agentctl/copy-stock-baseline: `key=N` lines, `#` comments, the format of ledger-baseline)
+and prints `over <key> ...` for a count above its line or with none, and `lower <key> to N` for one
+below it; it exits 1 on any `over`. A count may only shrink: lower its baseline line in the PR that
+removes copies. Counts are heuristic (a namesake of a hand-run tool is a hit), so each phase of plan
+ar-5497 verifies a site before it edits it.
+
 Python is measured with ast. Shell and Rust end a function at the first later line that closes a
 brace at the definition's own indent (rustfmt and this repo's shell style both do that). That is
 rough, but it runs the same way on both sides, so the growth it reports holds.
 """
 import ast
 import fnmatch
+import os
 import re
 import subprocess
 import sys
@@ -62,12 +79,23 @@ CONST = {
 TRIVIAL_VALUES = {'""', "''", 'true', 'false', 'True', 'False', 'None', '()', '[]', '{}'}
 
 # Lines a block copy does not count: comments, imports, and lines with no content of their own.
-COMMENT = {'py': ('#',), 'sh': ('#',), 'rs': ('//',)}
+COMMENT = {'py': ('#',), 'sh': ('#',), 'rs': ('//',), 'x': ('//', '/*', '*')}
 IMPORT = {
     'py': re.compile(r'^(?:import|from)\s'),
     'sh': re.compile(r'^(?:source|\.)\s'),
     'rs': re.compile(r'^(?:pub\s+)?(?:use|mod|extern\s+crate)\s'),
+    'x': re.compile(r'^(?:import|using|export\s+\*)\s|^(?:const|let|var)\s.*=\s*require\('),
 }
+# TypeScript and JavaScript `function` declarations, read by --stock only (an arrow function is not).
+TS_DEF = re.compile(r'^(\s*)(?:export\s+(?:default\s+)?)?(?:async\s+)?function\s*\*?\s*(\w+)()[^{]*(\{.*)?$')
+STOCK_EXT = ('.ts', '.tsx', '.js', '.mjs', '.cs')
+# The skips a repo with no COPY_CONF gets under --stock: tests, fixtures and what a tool wrote.
+STOCK_SKIP = ['*/tests/*', 'tests/*', '*/test/*', '*.test.*', '*.spec.*', '*Tests/*', '*fixtures/*', '*vendor/*',
+              '*node_modules/*', '*.min.*', '*generated*', '*.g.cs', '*.d.ts', '*package-lock.json', '*/Library/*',
+              '*/Packages/*', '*.meta']
+STOCK_SIM = 0.85
+STOCK_CHARS = 2000  # of one body compared
+STOCK_SITES = 12  # sites of one name compared; the rest are left out, a count never grows from the cap
 TRIVIAL_LINES = {
     'done', 'esac', 'else', 'then', 'pass', 'break', 'continue', 'return', 'else:', 'try:', 'finally:',
     '} else {', 'exit 0', 'exit 1', 'return 0', 'return 1', 'set -euo pipefail', 'set -uo pipefail',
@@ -235,9 +263,9 @@ def parse_copy_conf(text):
     return conf
 
 
-def code_tree(ref, cwd, skip):
+def code_tree(ref, cwd, skip, stock=False):
     """path -> (lang, text) for every code file at <ref>, read in one `git cat-file --batch`; a blob
-    over MAX_BLOB is never read."""
+    over MAX_BLOB is never read. With stock, a TypeScript, JavaScript or C# file is read too, as lang 'x'."""
     r = git(['ls-tree', '-r', '-z', '-l', '--full-tree', ref], cwd)
     if r.returncode != 0:
         raise RuntimeError(f'git ls-tree {ref}: {r.stderr.strip()}')
@@ -265,7 +293,7 @@ def code_tree(ref, cwd, skip):
         if b'\0' in body:
             continue
         text = body.decode('utf-8', errors='replace')
-        lang = kind(path, text)
+        lang = kind(path, text) or (stock and path.endswith(STOCK_EXT) and 'x') or None
         if lang:
             out[path] = (lang, text)
     return out
@@ -464,6 +492,191 @@ def copy_hits(files, base, head, cwd, conf_text=None):
             + block_copies(files, tree, added_lines(base, head, cwd), base, cwd, conf))
 
 
+# --- stock: the copies already in a tree -------------------------------------------------------------
+
+def body_lines(lang, text, line, length):
+    """The lines of one function after its signature, comments and blanks left out, its closing brace
+    kept (a three-line wrapper has a two-line body)."""
+    out = []
+    for raw in text.split('\n')[line:line - 1 + length]:
+        s = ' '.join(raw.split())
+        if s and not s.startswith(COMMENT[lang]):
+            out.append(s)
+    return out
+
+
+def function_stock(tree, conf):
+    """(names with a copy, sites to remove so one is left): per (language, name) defined in 2+ files,
+    the sites whose body (2+ lines) is STOCK_SIM alike to an earlier one."""
+    from difflib import SequenceMatcher
+    groups = {}
+    for path, (lang, text) in sorted(tree.items()):
+        if lang == 'x' and not path.endswith(('.ts', '.tsx', '.js', '.mjs')):
+            continue
+        by_name = {}
+        for name, line, length, top in (indent_funcs(text, TS_DEF, 'x') if lang == 'x' else funcs(path, text)):
+            if top and not ignored(name, conf):
+                by_name.setdefault(name, (line, length))
+        for name, (line, length) in by_name.items():
+            body = body_lines(lang, text, line, length)
+            groups.setdefault((lang, name), []).append((len(body), '\n'.join(body)[:STOCK_CHARS]))
+    names = extra = 0
+    for sites in groups.values():
+        sites = [b for n, b in sites if n >= 2][:STOCK_SITES]
+        reps, was = [], extra
+        for b in sites:
+            for r in reps:
+                sm = SequenceMatcher(None, r, b, autojunk=False)
+                if sm.real_quick_ratio() >= STOCK_SIM and sm.quick_ratio() >= STOCK_SIM and sm.ratio() >= STOCK_SIM:
+                    extra += 1
+                    break
+            else:
+                reps.append(b)
+        names += extra > was
+    return names, extra
+
+
+def constant_stock(tree, conf):
+    """(pairs, sites to remove so one is left): a (NAME, value) assigned in 2+ files."""
+    where = {}
+    for path, (lang, text) in tree.items():
+        if lang == 'x':
+            continue
+        for (name, val) in consts(lang, text):
+            if not ignored(name, conf):
+                where.setdefault((name, val), set()).add(path)
+    multi = [len(p) - 1 for p in where.values() if len(p) > 1]
+    return len(multi), sum(multi)
+
+
+def block_stock(tree, conf):
+    """(clusters, runs to remove so one is left). A run of `block-lines` significant lines that
+    stands in 2+ files makes a window; consecutive windows of one file are one run, and runs that share
+    a window are one cluster."""
+    n = conf['block']
+    sigs = {p: block_windows(significant(lang, text), n) for p, (lang, text) in tree.items()}
+    seen = {}
+    for p, wins in sigs.items():
+        for _, w in wins:
+            seen.setdefault(hash(w), set()).add(p)
+    parent = {}
+
+    def find(x):
+        while parent.setdefault(x, x) != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    first = {}  # window hash -> a run node holding it
+    for p, wins in sigs.items():
+        prev = node = None
+        for i, w in wins:
+            h = hash(w)
+            if len(seen[h]) < 2:
+                prev = None
+                continue
+            if prev is None or prev != i - 1:
+                node = (p, i)
+            prev = i
+            if h in first:
+                parent[find(node)] = find(first[h])
+            else:
+                first[h] = node
+                find(node)
+    clusters = len({find(x) for x in parent})
+    return clusters, len(parent) - clusters
+
+
+def repo_name(cwd):
+    r = git(['remote', 'get-url', 'origin'], cwd)
+    raw = r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+    if raw is None:
+        r = git(['rev-parse', '--show-toplevel'], cwd)
+        raw = r.stdout.strip() or cwd
+    base = raw.rstrip('/').rsplit('/', 1)[-1].rsplit(':', 1)[-1]
+    base = base[:-4] if base.endswith('.git') else base
+    return re.sub(r'[^a-z0-9]+', '_', base.lower()).strip('_') or 'repo'
+
+
+def stock_counts(cwd, name, conf_text=None, ref='HEAD'):
+    """[(key, count)] for the tree at <ref> of the repo in cwd: three kinds counted as the audit did (function
+    names, constant pairs, block clusters) and `sites`, every copy to remove, which also falls when a third copy goes."""
+    text = conf_text if conf_text is not None else blob(ref, COPY_CONF, cwd)
+    conf = parse_copy_conf(text) if text else {'names': [], 'skip': list(STOCK_SKIP), 'block': 6}
+    tree = code_tree(ref, cwd, conf['skip'], stock=True)
+    (fn, fx), (cn, cx), (bn, bx) = function_stock(tree, conf), constant_stock(tree, conf), block_stock(tree, conf)
+    return [(f'{name}_functions', fn), (f'{name}_constants', cn), (f'{name}_blocks', bn), (f'{name}_sites', fx + cx + bx)]
+
+
+def read_baseline(path):
+    out = {}
+    with open(path, encoding='utf-8') as f:
+        for raw in f:
+            m = re.match(r'^([a-z0-9_]+)=(\d+)\s*$', raw.split('#', 1)[0].strip() + '\n')
+            if m:
+                out[m.group(1)] = int(m.group(2))
+    return out
+
+
+def stock_check(counts, base):
+    """(lines, failed): `over` for a count above its baseline line or with none, `lower` for one under."""
+    lines, failed = [], 0
+    for key, n in counts:
+        if key not in base:
+            lines.append(f'over {key} {n} (no baseline line)')
+            failed += 1
+        elif n > base[key]:
+            lines.append(f'over {key} {n} (baseline {base[key]})')
+            failed += 1
+        elif n < base[key]:
+            lines.append(f'lower {key} to {n}')
+    return lines, failed
+
+
+def stock_main(argv):
+    name = conf = baseline = None
+    ref, check, dirs = 'HEAD', False, []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ('--name', '--conf', '--baseline', '--ref') and i + 1 < len(argv):
+            if a == '--name':
+                name = argv[i + 1]
+            elif a == '--ref':
+                ref = argv[i + 1]
+            elif a == '--conf':
+                with open(argv[i + 1], encoding='utf-8', errors='replace') as f:
+                    conf = f.read()
+            else:
+                baseline = argv[i + 1]
+            i += 2
+        elif a == '--check':
+            check = True
+            i += 1
+        elif a.startswith('-'):
+            print(__doc__.split('\n\n')[1], file=sys.stderr)
+            return 2
+        else:
+            dirs.append(a)
+            i += 1
+    dirs = dirs or ['.']
+    if name and len(dirs) > 1:
+        print('shape-grow --stock: --name names one repo', file=sys.stderr)
+        return 2
+    counts = []
+    for d in dirs:
+        counts += stock_counts(d, name or repo_name(d), conf, ref)
+    for key, n in counts:
+        print(f'{key}={n}')
+    if not check:
+        return 0
+    base = read_baseline(baseline or os.environ.get('COPY_STOCK_BASELINE') or os.path.expanduser('~/.config/agentctl/copy-stock-baseline'))
+    lines, failed = stock_check(counts, base)
+    for line in lines:
+        print(line)
+    return 1 if failed else 0
+
+
 # --- escapes and the run -------------------------------------------------------------------------
 
 # The same grammar as agent-land's shape_gate reads, so a line one of them skips the other skips too.
@@ -481,6 +694,8 @@ def escapes(body):
 
 
 def main(argv):
+    if argv and argv[0] == '--stock':
+        return stock_main(argv[1:])
     cwd, body, conf = '.', '', None
     while argv and argv[0] in ('-C', '--body', '--conf') and len(argv) >= 2:
         if argv[0] == '-C':

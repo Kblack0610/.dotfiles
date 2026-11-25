@@ -113,6 +113,24 @@ lead_fixture() {
   assert_equal "$(jq -r '.dup_pairs["7d"]' <<<"$output")" null
 }
 
+@test "chain: copy_stock_over counts the over lines of the newest night's stock.txt; a night with none reads ?" {
+  chain_fixture
+  printf '%s\n' copy_stock_over_max=0 >> "$KPI_THRESHOLDS"
+  mkdir -p "$BENCH_DOCS_CLEANUP_DIR/20261105" "$BENCH_DOCS_CLEANUP_DIR/20261106"
+  printf 'a_sites=9\nover a_sites 9 (baseline 8)\nover b_sites 3 (no baseline line)\n' > "$BENCH_DOCS_CLEANUP_DIR/20261105/stock.txt"
+  printf 'a_sites=8\nlower b_sites to 2\n' > "$BENCH_DOCS_CLEANUP_DIR/20261106/stock.txt"
+  run "$SUBJECT" chain --check
+  assert_success
+  printf 'a_sites=9\nover a_sites 9 (baseline 8)\n' > "$BENCH_DOCS_CLEANUP_DIR/20261106/stock.txt"
+  run "$SUBJECT" chain --check
+  assert_failure
+  assert_output --partial 'copy_stock_over 1 (max 0)'
+  # a newest night with no stock.txt is a scan that stopped: ?, never the older night's count
+  mkdir -p "$BENCH_DOCS_CLEANUP_DIR/20261107"
+  run "$SUBJECT" chain --json
+  assert_equal "$(jq -r '.copy_stock_over["7d"]' <<<"$output")" null
+}
+
 @test "chain: a CI row with no repo is a PR no item names, and the other KPIs still count" {
   # NEGATIVE CONTROL: `.repo | ascii_downcase` on a repo-less row failed the whole jq program, and every chain KPI read ?
   chain_fixture
