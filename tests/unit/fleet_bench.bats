@@ -3274,6 +3274,13 @@ cleanup() {
   run "$SUBJECT" reds
   assert_success
   assert_line 'unreadable: a cleanup hold could not be read, so a fix below may read fixed while its red is live'
+  # --json keeps stdout pure JSON and exit 0 for the overviews; the line goes to stderr
+  bats_require_minimum_version 1.5.0
+  run --separate-stderr "$SUBJECT" reds --json
+  assert_success
+  jq -s . <<<"$output" >/dev/null
+  [[ "$output" != *unreadable:* ]]
+  [[ "$stderr" == *'unreadable: a cleanup hold could not be read'* ]]
 }
 
 # liveness_runner <name> <owner/repo> <command path>: a scheduled runner whose COMMAND is that path

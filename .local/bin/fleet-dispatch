@@ -11,7 +11,7 @@
 #   fleet-dispatch exits [--dry-run] give each skipped agent row its rule's exit, and move the #after/ gates on a row sent to the sheet (skip_exits; each run pass does); --dry-run lists them
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
 #   fleet-dispatch promote --project P [--profile X] [--agent] [--dispatch] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item; --dispatch makes it a capped pull like dispatch's own
-#   fleet-dispatch pull-after [--queue-only] ID  promote, and start unless low or --queue-only, the open rows gated #after/ID: agent-queue runs it when ID's item closes ok, and a pass runs it --queue-only for a row closed with no item (pull_closed_after)
+#   fleet-dispatch pull-after [--queue-only] ID  promote, and start unless normal, low or --queue-only, the open rows gated #after/ID: agent-queue runs it when ID's item closes ok, and a pass runs it --queue-only for a row closed with no item (pull_closed_after)
 #   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session; a row whose #ask/ gate was answered another way is held or dropped, one on a cancelled ask closes on its done item's merged PR, follows the ask it joined, or is asked again
 #   fleet-dispatch headroom [--json] how many more queue items could start now, and the margin under each limit
 #   fleet-dispatch idle-cap          rc 1 when live sessions are at the pace target with under DISPATCH_IDLE_CAP_PCT of them busy,
@@ -611,7 +611,9 @@ def plan_tagged: any(.tags[]?; . == "plan");
 # `clear`): an `unclear` skip of one takes no plan exit and picks reads past it (ar-5240).
 def triage_red: (.raw // .text // "") | sub("^- \\[.\\] "; "") | test("^check\\((watch|alert)\\): ");
 # red_skip($c): this verdict is an `unclear` skip of triage red row $c that an agent may take, so
-# skip_exits gives it no plan exit (a raw board row has no computed tier to read).
+# skip_exits gives it no plan exit (a raw board row has no computed tier to read). One that picks then
+# passes over (a tier above the row, size L, a hold) stays on the board under its skip with no exit:
+# a known gap, since the raw row here carries neither tier nor size to test.
 def red_skip($c): .verdict == "skip" and .rule == "unclear" and .agent_only == true and ($c | triage_red);
 # red_unclear($c): red_skip of a candidate whose tier is no higher than that of the row, a dispatch were
 # it clear, so picks starts it and suggest lists it as dispatch.
@@ -1050,6 +1052,23 @@ reap_stuck() {
   mkdir -p "${f%/*}" && printf '%s %s\n%s\n' "$first" "$filed" "$5" > "$f"
 }
 reap_unstuck() { [ ! -e "$DIR/stuck/$1" ] || rm -f "$DIR/stuck/$1"; }
+
+# reap_close_ok <slug> <item json> <session> <state> <what> -> 0 once the item closed done ok. A red
+# watch item closes ok only once its watch reads OK (agent-queue watch_close_check): until then it waits
+# in review, each pass trying the close again, and after DISPATCH_ORPHAN_HOURS one row says <what> did
+# not clear it (reap_stuck), so a fix that did not hold is not left there. 1 on any refusal.
+reap_close_ok() {
+  local err
+  if err=$(agent-queue move "$1" "done" --status ok --if "$4" 2>&1 >/dev/null); then reap_unstuck "$1"; return 0; fi
+  case "$err" in *"is a red item for watch"*) ;; *) return 1 ;; esac
+  if [ "$4" != review ]; then
+    agent-queue move "$1" review --if "$4" >/dev/null || return 1
+    note_add "$1" "$2" "session $3 ended; $5 and its watch still trips, so it stays in review until the watch reads OK"
+  fi
+  reap_stuck "$1" "$2" "$DISPATCH_ORPHAN_HOURS" "reaped $3: queue item $1 in review: $5, its watch still trips" \
+    "fix(red): $5 but the watch of red item $1 still trips after ${DISPATCH_ORPHAN_HOURS}h; fix what is still red or close the item failed"
+  return 1
+}
 
 # file_row <human|agent> <item json> <row text> -> where the row went: that side (the human sheet or
 # the agent board) of the board the item came from (a dotfiles item's row is on agent-runtime), else
@@ -5365,8 +5384,9 @@ settle_item() {
       return 0
     fi
   fi
-  # A PR read again (a merge with its commit) ends any wait reap_stuck held, so a later stall logs anew.
-  case "$state" in OPEN | CLOSED) reap_unstuck "$1" ;; MERGED) [ -z "$oid" ] || reap_unstuck "$1" ;; esac
+  # A PR read again ends any wait reap_stuck held, so a later stall logs anew; a merged one ends it at
+  # its close below, since a red item whose watch still trips stays held after the merge reads.
+  case "$state" in OPEN | CLOSED) reap_unstuck "$1" ;; esac
   # Already parked on its open PR, this pass reaps nothing: no event for every pass of the wait,
   # unless its checks finished with nobody on it (own_parked_pr).
   [ "$state:$st" != OPEN:review ] || { own_parked_pr "$1" "$2" "$it" "$head" "$ci" "$mergeable"; return 0; }
@@ -5383,7 +5403,8 @@ settle_item() {
       "chore(review): reap has not read PR $pr for ${DISPATCH_ORPHAN_HOURS}h; correct the item's pr: or close the item"
     return 0 ;;
   esac
-  dispatch_event reaped "$(jq -r '.project // empty' <<<"$it")" "session $2 gone" --item "$1" --why "item was $st"
+  # An item reap_stuck holds (a merged red item whose watch still trips) logs once, not every pass.
+  [ -e "$DIR/stuck/$1" ] || dispatch_event reaped "$(jq -r '.project // empty' <<<"$it")" "session $2 gone" --item "$1" --why "item was $st"
   if [ -n "$pr" ]; then
     case "$state" in
     MERGED)
@@ -5393,7 +5414,7 @@ settle_item() {
         return 0
       }
       agent-queue set "$1" "merged=$oid" >/dev/null || return 0
-      agent-queue move "$1" "done" --status ok --if "$st" >/dev/null || return 0
+      reap_close_ok "$1" "$it" "$2" "$st" "PR $pr merged" || return 0
       logline "reaped $2: session gone, queue item $1 done, PR $pr merged"
       close_row "$1" ;;
     OPEN)
@@ -5412,7 +5433,7 @@ settle_item() {
       echo "failed queue item $1 (PR $pr closed unmerged)" ;;
     esac
   elif [ -n "$report" ]; then
-    agent-queue move "$1" "done" --status ok --if "$st" >/dev/null || return 0
+    reap_close_ok "$1" "$it" "$2" "$st" "report $report" || return 0
     logline "reaped $2: session gone, queue item $1 done with its report $report"
   else
     set_end

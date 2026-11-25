@@ -2678,10 +2678,16 @@ watch_fixture() {
 held=free; flock -n "$AGENT_QUEUE_DIR/.lock" true 2>/dev/null || held=held
 printf 'watch-companion-loop %s lock=%s\n' "$*" "$held" >> "$NOTES_FIXTURE/watch.log"
 rc=$(cat "$NOTES_FIXTURE/watch.rc" 2>/dev/null || echo 0)
-[ "$rc" -eq 0 ] || echo "TRIP: board-chain 12 KPIs over"
+case "$rc" in 0) ;; 2) echo "no watch named $2" ;; 75) echo "lock busy" ;; *) echo "TRIP: board-chain 12 KPIs over" ;; esac
 exit "$rc"
 EOS
-  chmod +x "$SANDBOX/bin/watch-companion-loop"
+  # fleet-bench triage --route answers the route in NOTES_FIXTURE/route (an agent route, -, by default)
+  cat > "$SANDBOX/bin/fleet-bench" <<'EOS'
+#!/usr/bin/env bash
+[ "$1 $2" = "triage --route" ] || exit 2
+printf '%s\t%s\t-\t\n' "$3" "$(cat "$NOTES_FIXTURE/route" 2>/dev/null || echo -)"
+EOS
+  chmod +x "$SANDBOX/bin/watch-companion-loop" "$SANDBOX/bin/fleet-bench"
 }
 
 @test "move done ok refuses a red check(watch) item while its watch trips, outside the lock; it closes once the watch reads OK (ar-5414)" {
@@ -2719,4 +2725,25 @@ EOS
   run "$AQ" move red-fail done --status failed
   assert_success
   [ ! -s "$NOTES_FIXTURE/watch.log" ]
+  # A watch routed to alert or owned: closes ok while it trips: its job was the ask or the owner.
+  watch_fixture red-owned 'red watch' 'check(watch): board-chain tripped'
+  printf 'owned:ar-1\n' > "$NOTES_FIXTURE/route"
+  run "$AQ" move red-owned done --status ok
+  assert_success
+  [ ! -s "$NOTES_FIXTURE/watch.log" ]
+}
+
+@test "move done ok on a red watch item: a watch not known here closes and says so, a busy loop lock exits 75 for a retry (ar-5414)" {
+  bats_require_minimum_version 1.5.0
+  watch_fixture red-gone 'red watch' 'check(watch): board-chain tripped'
+  printf '2\n' > "$NOTES_FIXTURE/watch.rc"
+  run --separate-stderr "$AQ" move red-gone done --status ok
+  assert_success
+  [[ "$stderr" == *'watch: board-chain not known here (exit 2), skipping probe check'* ]]
+  watch_fixture red-busy 'red watch' 'check(watch): board-chain tripped'
+  printf '75\n' > "$NOTES_FIXTURE/watch.rc"
+  run --separate-stderr "$AQ" move red-busy done --status ok
+  assert_failure 75
+  [[ "$stderr" == *'could not take the lock (exit 75); re-run'* ]]
+  [ -f "$(item running red-busy)" ]
 }
