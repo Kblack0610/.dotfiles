@@ -33,7 +33,7 @@ inputs:
 outputs:
   ref:
     description: a seed run's registry ref when the registry holds the image (found or pushed), else empty
-    value: ${{ inputs.seed == 'true' && (steps.reg.outputs.pulled == 'true' || steps.push.outputs.pushed == 'true') && steps.reg.outputs.ref || '' }}
+    value: ${{ steps.ref.outputs.ref }}
 runs:
   using: composite
   steps:
@@ -152,6 +152,15 @@ runs:
       with:
         path: ${{ runner.temp }}/test-image.tar
         key: test-image-${{ steps.tag.outputs.tag }}-${{ steps.tag.outputs.week }}
+    # A seed run names the registry ref for the jobs behind it, here in a step so the log shows it: the
+    # same test as one `outputs.ref` expression came out empty with the image in the registry and
+    # nothing logged (ar-6186).
+    - id: ref
+      if: inputs.seed == 'true' && (steps.reg.outputs.pulled == 'true' || steps.push.outputs.pushed == 'true')
+      shell: bash
+      env:
+        REF: ${{ steps.reg.outputs.ref }}
+      run: echo "ref=$REF" | tee -a "$GITHUB_OUTPUT"
     # The login stays in the docker config of a pool pod that outlives the job's steps: drop it.
     - if: always() && steps.reg.outputs.login == 'true'
       shell: bash

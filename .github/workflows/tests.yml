@@ -181,7 +181,7 @@ jobs:
     runs-on: *pool
     timeout-minutes: 25
     outputs:
-      job-image: ${{ vars.LINUX_RUNNER_JOB_POD != '' && steps.lean.outputs.ref || '' }}
+      job-image: ${{ steps.job-image.outputs.ref }}
     steps:
       - uses: actions/checkout@v4
       # Smallest stage first: the later stages build on its layers in this pod's docker.
@@ -194,6 +194,16 @@ jobs:
           seed: true
           registry: ${{ vars.CI_REGISTRY }}
           registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
+      # A step, not a job-output expression: the runner logs an empty job output only at debug level,
+      # so an empty job-image ran fast and lint on dind with no line saying why (ar-6186).
+      - name: Name the job image
+        id: job-image
+        if: vars.LINUX_RUNNER_JOB_POD != ''
+        env:
+          REF: ${{ steps.lean.outputs.ref }}
+        run: |
+          [ -n "$REF" ] || echo "::warning::no lean registry ref, so fast and lint run on the dind pool"
+          echo "ref=$REF" | tee -a "$GITHUB_OUTPUT"
       - name: Seed the rust stage
         uses: ./.github/actions/test-image
         env:
