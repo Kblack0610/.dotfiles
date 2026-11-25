@@ -282,8 +282,12 @@ plan_heading() {
   awk 'NR == 1 && /^---[[:space:]]*$/ { fm = 1; next }
     fm { if (/^---[[:space:]]*$/) fm = 0; next }
     /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
-    !fence && /^# +[^[:space:]]/ { sub(/^# +/, ""); print; exit }' "$1" 2>/dev/null |
-    LC_ALL=C tr -d '#<>' | LC_ALL=C tr -cd '\40-\176' | sed 's/  */ /g; s/^ //; s/ $//'
+    !fence && /^# +[^[:space:]]/ { sub(/^# +/, ""); print; exit }' "$1" 2>/dev/null | title_clean
+}
+
+# title_clean < text -> one title-safe line: `#`, `<`, `>` and non-ASCII dropped, spaces squeezed.
+title_clean() {
+  LC_ALL=C tr -d '#<>' | LC_ALL=C tr -cd '\40-\176' | sed 's/  */ /g; s/^ //; s/ $//'
 }
 
 # title_cut <text> <room> -> the text cut to <room> characters at a word, trailing separators dropped.
@@ -315,7 +319,8 @@ plan_row_title() {
 # named for. <phases> is the item's `phases:` value ("2" or "2 3"). Why: rows read "<slug> P2: Intake
 # gate" and the human could not tell the plan from the slug (2026-11-24, ar-5462).
 plan_phase_title() {
-  local tag h room name="$3"
+  local tag h room name
+  name=$(title_clean <<<"$3")
   tag="P${2// /+}"
   h=$(plan_heading "$1")
   room=$((80 - ${#name} - ${#tag} - 5))

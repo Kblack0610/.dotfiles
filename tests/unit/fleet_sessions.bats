@@ -6929,6 +6929,8 @@ JSONL
   t="$(plan_phase_title "$SANDBOX/long.md" 3 "$(printf 'word %.0s' $(seq 1 30))")"
   [ "${#t}" -le 80 ]
   [[ "$t" == *" (P3)" ]]
+  # A name carrying a tag, a marker or non-ASCII is cleaned as the heading is, or notes would read it as a gate.
+  [ "$(plan_phase_title "$SANDBOX/long.md" 3 "wire #after/lv-2 <gate> $(printf '\303\251')" | cut -c1-30)" = "wire after/lv-2 gate (P3, word" ]
   # NEGATIVE CONTROL: a plan with no heading gets the name and the tag only.
   printf '## Phases\n' > "$SANDBOX/bare.md"
   [ "$(plan_phase_title "$SANDBOX/bare.md" 2 "Intake gate")" = "Intake gate (P2)" ]

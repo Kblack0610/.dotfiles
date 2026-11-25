@@ -2167,7 +2167,8 @@ cmd_add() {
   # A title naming one row (named_row) is linked at the story step, after admission, on the
   # board of the project that row's code credits; a link that fails keeps this project.
   local named='' named_project=''
-  if [ -z "$row$epic$want" ] && named="$(named_row "${title:-$(head -1 <<<"$text")}")"; then
+  # A plan phase's title leads with the phase name, so an id the name starts with is no row it works.
+  if [ -z "$row$epic$want${AQ_ITEM_PLAN:-}" ] && named="$(named_row "${title:-$(head -1 <<<"$text")}")"; then
     named_project="$(project_credit "$resolved" "$from" "$named")"
   fi
   [ -n "$weight" ] || { weight_of "$project" "$mode" "${AQ_ITEM_PHASES:-}"; weight="$WEIGHT"; }
