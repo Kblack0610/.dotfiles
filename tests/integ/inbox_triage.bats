@@ -461,6 +461,20 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   refute_line --regexp 'show the Kelly cell on /book .*#of/sc-9'
 }
 
+@test "a split line the model calls a dup of its own #of/ parent files under that parent" {
+  # ar-5549: ar-5404's split children were joined to their own parent rows as dups, so they vanished.
+  sheet '- [ ] feat(ui): the stage cells on /book #of/sc-3 #size/m #normal #agent #from/ar-5404\n' \
+    '- [ ] feat(ui): odds per stage on /book #pts/8 #size/l #normal <!-- id:sc-3 -->\n'
+  answer '{"n": 1, "action": "dup", "id": "sc-3", "why": "same as the odds row"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'names sc-3 as its own parent'
+  assert_output --partial 'filed 1, left 0, refused 0'
+  run cat "$SHEET" "$PROJ/scratch/agent/README.md"
+  assert_line --regexp '^- \[ \] feat\(ui\): the stage cells on /book .*#of/sc-3'
+  assert_output --regexp 'odds per stage on /book .*id:sc-3'
+}
+
 @test "a split line's own #of/ files no new epic and never turns an empty row into a bare tag" {
   sheet '- [ ] feat(ui): the stage cells on /book #of/sc-3 #size/m #normal #agent #from/ar-5404\n- [ ] feat(ui): the odds legend on /book #of/sc-3 #size/s #normal #agent #from/ar-5404\n' \
     '- [ ] feat(ui): odds per stage on /book #pts/8 #size/l #normal <!-- id:sc-3 -->\n'

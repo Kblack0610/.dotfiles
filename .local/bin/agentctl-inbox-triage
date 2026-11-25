@@ -616,6 +616,15 @@ route() {
       apply_proposal "$action" "$id" "$dest" "$rows" "$why" "$how" "$epics" "$board" && line_dest[$n]="$PROPOSAL_DEST"
       continue
     fi
+    # A split line is a child of the row its own #of/ names, never a repeat of it: a dup of that row
+    # files the line under it (ar-5549: ar-5404's children were merged into tr-340, tr-414, hc-888).
+    if [ "$action" = dup ] && [ -z "$of" ] && [ -n "$id" ] && [ "$(clean 40 <<<"$id")" = "$(parent_word "$text")" ]; then
+      say "line $n names $id as its own parent: filed under it, not as its dup"
+      [ -n "$dest" ] || dest="$(jq -r --arg id "$id" 'first(.rows[] | select(.id == $id) | .project) // ""' <<<"$board")"
+      [ -n "$lane" ] || { [[ " ${text,,} " == *" #agent "* ]] && lane=agent; }
+      [ -n "${rows//$'\x1e'/}" ] || rows="$text"
+      action=file id=''
+    fi
     case "$action" in
       file|dup)
         args=()
