@@ -89,10 +89,11 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
           --branch, as JSON keyed <forge>:<repo>: runs, green, pass (0..1), and the same per
           workflow. day-log reads it. Exits 1 when the ledger cannot be read
   ci hosts the same verdict over jobs: each runner group's (its name less the slot number, so
-          aws-burst-1-unity-pool) last N (default 50) jobs that completed before WHEN (default
-          now) in the job archive, GitHub-hosted left out, as JSON keyed by the group: runs,
-          green, pass (0..1). With --since, a group with no job completed since WHEN (a
-          retired host) is left out. day-log reads it. Exits 1 when the archive cannot be read
+          aws-burst-1-unity-pool; an ARC pod its scale set) last N (default 50) jobs that
+          completed before WHEN (default now) in the job archive, GitHub-hosted left out, as
+          JSON keyed by the group: runs, green, pass (0..1). With --since, a group with no job
+          completed since WHEN (a retired host) is left out. day-log reads it. Exits 1 when the
+          archive cannot be read
   cards   Home's cards as the Tilecast widget document agent-web serves at /widget.json:
           every card, one section each, with `updated_at`; --figures adds `figures`, the whole numbers by name; agent-mqtt-publish sends it
   phone   the phone widget's rows as {state, rows}: what agent-mqtt-publish sends Home Assistant
@@ -451,6 +452,9 @@ fn ci_hosts(args: &[String]) -> i32 {
             }
             _ => die(USAGE),
         }
+    }
+    if since.is_some_and(|s| s >= until) {
+        die(USAGE);
     }
     let paths = hub_core::builds::Paths::from_env();
     let text = match hub_core::builds::read_text(&paths.jobs) {

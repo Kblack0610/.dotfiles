@@ -746,8 +746,20 @@ pub fn pass_by_repo(
 /// A runner's slots as one group: its name less the slot number, so `aws-burst-1-unity-pool-3`
 /// and `-4` are `aws-burst-1-unity-pool`, judged together whatever kind of job each slot ran (one slot
 /// takes unity, light and heavy), and a host's other registrations (`-dotfiles-private-`) apart.
-/// A name with no slot number (`mac-mini-mac`) is its own group.
+/// A name with no slot number (`mac-mini-mac`) is its own group. An ARC pod
+/// (`arc-repo-dotfiles-runner-xzsf2`, a new name for every job) is its scale set's, the name less
+/// the pod's five-character suffix.
 pub fn slots_of(runner: &str) -> &str {
+    if let Some((set, pod)) = runner.rsplit_once('-') {
+        if set.ends_with("-runner")
+            && pod.len() == 5
+            && pod
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        {
+            return set;
+        }
+    }
     runner
         .trim_end_matches(|c: char| c.is_ascii_digit())
         .strip_suffix('-')
@@ -761,7 +773,8 @@ pub fn slots_of(runner: &str) -> &str {
 /// archive's self-hosted Unity jobs carry `unity`, `unity-gate` and no `self-hosted`. A line that
 /// does not parse is an error, not a skip: a window of 50 short of its jobs reads as a real rate.
 /// With `since`, a group whose newest counted job completed before it is left out: a retired host
-/// (windows-media-ci, replaced by tuf-b550 on 2026-11-20) keeps its last jobs in the archive for good.
+/// keeps its last jobs in the archive for good, and a host that is down is `runners_down`'s, not a
+/// pass rate with no job behind it.
 pub fn pass_by_runner(
     archive: &str,
     since: Option<i64>,
@@ -1825,11 +1838,24 @@ mod tests {
         );
         let kept = pass_by_runner(&text, Some(NOW - 550), NOW, 4).unwrap();
         assert_eq!(kept[pool], got[pool]);
+        // A job that completed at the since itself is inside it.
+        let at_since = pass_by_runner(&text, Some(NOW - 500), NOW, 4).unwrap();
+        assert_eq!(at_since[pool], got[pool]);
         assert_eq!(
             slots_of("razer-laptop-unity-pool-12"),
             "razer-laptop-unity-pool"
         );
         assert_eq!(slots_of("m1-playground-mac"), "m1-playground-mac");
+        // An ARC pod is its scale set's; a host slot ending in five characters is not a pod.
+        assert_eq!(
+            slots_of("arc-repo-dotfiles-runner-xzsf2"),
+            "arc-repo-dotfiles-runner"
+        );
+        assert_eq!(
+            slots_of("arc-org-light-runner-grwsn"),
+            "arc-org-light-runner"
+        );
+        assert_eq!(slots_of("deskslim-2-light-12345"), "deskslim-2-light");
         // A broken line mid-archive fails the read; a torn last line is a write in progress.
         let broken = format!("{text}\nnot json\n{}", record(3, true, vec![]));
         assert_eq!(
