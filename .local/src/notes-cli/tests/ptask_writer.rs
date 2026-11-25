@@ -2083,7 +2083,7 @@ fn a_gated_board_takes_ten_new_agent_rows_a_day_and_holds_the_eleventh() {
         &h,
         &[HAND],
         &["--want", "human"],
-        "feat(w1): a json flag the person asked for #size/s",
+        "feat(w1): a json flag the person asked for #high #size/s",
     ));
     ok(&add_as(
         &h,
@@ -2105,7 +2105,7 @@ fn a_gated_board_takes_ten_new_agent_rows_a_day_and_holds_the_eleventh() {
         &h,
         &[("AGENTCTL_NAME", "fleet-bench")],
         &[],
-        "epic(w5): a new epic #normal",
+        "epic(w5): a new epic",
     ));
     assert_eq!(ids(&h.board()).len(), 15, "{}", h.board());
     // The record counts the ten, the urgent red, and the four rows the cap turned away.
