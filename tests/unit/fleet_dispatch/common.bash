@@ -175,7 +175,7 @@ started_item() {
 # first whose key contains it. A row going to [/] with no id gets the next gm-N and the id goes
 # out on its own line, unless the fixture says the project has no code (nocode.<project>).
 # `board --json` lists each row with its #tags, an [x] one under `done` as the real board does, and
-# `--id` those rows by id;
+# `--id` those rows by id ($F/board.id.fail fails that read with its text);
 # `tag (--add|--remove <tag>)... <id>` edits the row's tags.
 stub_notes() {
   cat > "$SANDBOX/bin/notes" <<'EOF'
@@ -206,6 +206,7 @@ case "${args[0]}" in
       else printf -- '-\t-\t%s\t0\n' "$l"; fi
     done ;;
   board)
+    [[ " ${args[*]} " != *" --id "* ]] || [ ! -f "$F/board.id.fail" ] || { cat "$F/board.id.fail" >&2; exit 1; }
     # A fixture with board.sprints (one JSON array of the feed's `sprints`) adds them to the feed; without one it is [], as the real feed always carries it.
     { if [ -f "$F/board.rows" ]; then jq -sc '{rows: ., done: []}' "$F/board.rows"
     else

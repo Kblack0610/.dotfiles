@@ -982,7 +982,10 @@ requeue_item() {
   requeue_item b q1
   git -C "$SANDBOX/b" add queue && git -C "$SANDBOX/b" commit -qm 'requeue q1'
   git -C "$SANDBOX/b" fetch -q origin
-  # NEGATIVE CONTROL: with directory-rename detection on, git moves q3 into queued/ beside q1
+  # NEGATIVE CONTROL: git's default (conflict) stops the merge on q3's location, and true moves q3 into queued/ beside q1
+  run git -C "$SANDBOX/b" -c merge.directoryRenames=conflict merge-tree --write-tree --name-only HEAD origin/master
+  assert_failure
+  assert_output --partial 'CONFLICT (file location): queue/running/q3.md'
   run git -C "$SANDBOX/b" -c merge.directoryRenames=true merge-tree --write-tree --name-only HEAD origin/master
   run git -C "$SANDBOX/b" ls-tree -r --name-only "${lines[0]}"
   assert_line 'queue/queued/q3.md'

@@ -1784,6 +1784,13 @@ esac'
   row game agent gm-22 "- [x] feat(game): old drop $T <!-- id:gm-22 dropped: on the game sheet: dispatch skipped it (waits) -->"
   row game human hm-22 "- [ ] feat(game): old drop #v2.0.0 (agent row gm-22) <!-- id:hm-22 -->"
   row game agent gm-23 "- [ ] feat(game): waits on the old drop $T #after/gm-22 <!-- id:gm-23 -->"
+  # NEGATIVE CONTROL: a failed --id read moves no gate that pass, not even by the text search
+  echo 'board locked' > "$NOTES_FIXTURE/board.id.fail"
+  run follow_moved_gates
+  assert_success
+  run grep -c '#after/hm-' "$NOTES_FIXTURE/rows.game.agent"
+  assert_output 0
+  rm "$NOTES_FIXTURE/board.id.fail"
   run follow_moved_gates
   assert_success
   local agent; agent=$(cut -f2 "$NOTES_FIXTURE/rows.game.agent")
@@ -1797,6 +1804,13 @@ esac'
   np() { printf -- '- [ ] feat(game): pin bump (agent row gm-20) <!-- id:hm-20 -->\n'; }
   run file_row human '{"project": "game"}' "feat(game): pin bump (agent row gm-20)"
   assert_output 'on the game sheet as hm-20'
+  # an id on a later line the filer prints (a twin it names) is not the new row's
+  np() { printf -- '- [ ] feat(game): pin bump (agent row gm-20) <!-- id:hm-20 -->\n  twin of <!-- id:hm-9 -->\n'; }
+  run file_row human '{"project": "game"}' "feat(game): pin bump (agent row gm-20)"
+  assert_output 'on the game sheet as hm-20'
+  np() { printf -- '- [ ] feat(game): pin bump (agent row gm-20)\n  twin of <!-- id:hm-9 -->\n'; }
+  run file_row human '{"project": "game"}' "feat(game): pin bump (agent row gm-20)"
+  assert_output 'on the game sheet'
   # NEGATIVE CONTROL: a filer that prints no row names no id
   np() { :; }
   run file_row human '{"project": "game"}' "feat(game): pin bump (agent row gm-20)"

@@ -4547,29 +4547,30 @@ restore_tick() {
 item_state() { agent-queue show "$1" --json 2>/dev/null | jq -r '.state // empty'; }
 
 # item_ask <slug> <item json> -> the ask tag (agent-queue requeue --ask) of the pending ask the item
-# waits on: the newest one filed for it (`agent-ask post --task <slug>`, by created), else the newest
-# one with no task that one of its runs asked (the ask's first `claude_session:` is in the item's
-# `sessions:`) on its project, else the one its `ask:` names; nothing when no such ask is pending. An
-# untagged ask counts because a run that posts without --task is still blocked on it: ar-4229's green
-# PR was given a lander while ask yaEAMh, which an earlier run of it posted, still held the merge
-# (2026-11-23, ar-4892). The tag names every option the ask offers, since any answer the human gives
+# waits on: the newest one filed for it (`agent-ask post --task <slug>`, by created), else the one its
+# `ask:` names, else the newest one with no task that one of its runs asked (the ask's first
+# `claude_session:` is in the item's `sessions:`); nothing when no such ask is pending. An untagged ask
+# counts because a run that posts without --task is still blocked on it: ar-4229's green PR was given
+# a lander while ask yaEAMh, which an earlier run of it posted, still held the merge (2026-11-23,
+# ar-4892). The ask's project is not compared: a run files under its cwd's project (yaEAMh is
+# home-config) while a dotfiles item is agent-runtime. The tag names every option the ask offers, since any answer the human gives
 # is the decision the run stopped for. Fails when the asks cannot be read, so the caller moves nothing
 # on a guess.
 item_ask() {
-  local own sids project asks
-  IFS=$'\x1f' read -r own sids project < <(jq -r '[.ask // "", .sessions // "", .project // ""] | join("\u001f")' <<<"$2")
+  local own sids asks
+  IFS=$'\x1f' read -r own sids < <(jq -r '[.ask // "", .sessions // ""] | join("\u001f")' <<<"$2")
   # --open: a parked ask still holds its item; parking only takes it off the boards.
   asks=$(agent-ask list --all --open 2>/dev/null) || return 1
-  awk -F'\t' -v s="$1" -v own="$own" -v sids=" $sids " -v project="$project" '
+  awk -F'\t' -v s="$1" -v own="$own" -v sids=" $sids " '
     function tag(   n, o, i, t) {
       n = split($7, o, "|"); t = ""
       for (i = 1; i <= n; i++) { sub(/ .*/, "", o[i]); if (o[i] != "") t = t (t == "" ? "" : "+") o[i] }
       return $1 (t == "" ? "" : "=" t)
     }
     $8 == s && $12 >= at { id = tag(); at = $12 }
-    $8 == "" && $16 != "" && $2 == project && index(sids, " " $16 " ") && $12 >= rat { run = tag(); rat = $12 }
+    $8 == "" && $16 != "" && index(sids, " " $16 " ") && $12 >= rat { run = tag(); rat = $12 }
     $1 == own { mine = tag() }
-    END { print (id != "" ? id : (run != "" ? run : mine)) }' <<<"$asks"
+    END { print (id != "" ? id : (mine != "" ? mine : run)) }' <<<"$asks"
 }
 
 # note_add <slug> <item json> <text> -- the item's note becomes this text, with the note it had kept

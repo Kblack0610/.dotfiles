@@ -1031,21 +1031,25 @@ OUT
 
 # ar-4229 (2026-11-23): its green PR got a lander while ask yaEAMh, which an earlier run of it posted with no --task, held the merge.
 @test "reap: a green parked PR whose run posted an untagged ask gets no lander: the item goes back to its row behind that ask (ar-4892)" {
-  local h1=1111111111111111111111111111111111111111 it id
+  local h1=1111111111111111111111111111111111111111 it id x
   pr_item OPEN
   agent-queue claim fix-crash --sid run-2 >/dev/null
   run cmd_reap
   assert_output --partial 'review queue item fix-crash (PR o/game#12 open'
-  # NEGATIVE CONTROL: an untagged ask from a session that never ran it, or from its run on another project, holds nothing
-  CLAUDE_CODE_SESSION_ID=else-9 agent-ask post --project game --options 'a=yes|b=no' 'something else?' >/dev/null
-  CLAUDE_CODE_SESSION_ID=run-2 agent-ask post --project tools --options 'a=yes|b=no' 'a tools question?' >/dev/null
+  # NEGATIVE CONTROL: an untagged ask from a session that never ran it, or its run's ask filed for another task, holds nothing
+  x=$(CLAUDE_CODE_SESSION_ID=else-9 agent-ask post --project game --options 'a=yes|b=no' 'something else?')
+  CLAUDE_CODE_SESSION_ID=run-2 agent-ask post --project game --task other-x --options 'a=yes|b=no' 'about other-x?' >/dev/null
   it=$(agent-queue show fix-crash --json)
   run item_ask fix-crash "$it"
   assert_success
   assert_output ''
-  id=$(CLAUDE_CODE_SESSION_ID=run-2 agent-ask post --project game --options 'land=land it|close=close it' 'land or close o/game#12?')
+  # Its run's own untagged ask holds it, on whatever project the run filed it (yaEAMh was home-config, its item agent-runtime).
+  id=$(CLAUDE_CODE_SESSION_ID=run-2 agent-ask post --project tools --options 'land=land it|close=close it' 'land or close o/game#12?')
   run item_ask fix-crash "$it"
   assert_output "$id=land+close"
+  # An ask the item names (ask:) still comes before an untagged one.
+  run item_ask fix-crash "$(jq --arg x "$x" '.ask = $x' <<<"$it")"
+  assert_output "$x=a+b"
   fix_ended "$h1" PASS
   run cmd_reap
   assert_success
