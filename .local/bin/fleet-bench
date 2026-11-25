@@ -5410,7 +5410,7 @@ triage_rows() {
     # only the reds it was taken on: one the probe names since is filed now, as the why (ar-3916).
     unc=
     if watch_quarantine_open "$TRIAGE_WATCH_STATE" "$n" "$t"; then
-      unc=$(watch_uncovered "$TRIAGE_WATCH_STATE" "$n" | head -n 1)
+      unc=$(watch_uncovered "$TRIAGE_WATCH_STATE" "$n" | awk 'NR == 1')
       [ -n "$unc" ] || continue
       read -r _ qowner _ < "$TRIAGE_WATCH_STATE/$n.quarantine"
     fi
@@ -5423,7 +5423,7 @@ triage_rows() {
       | tr '\n' ' ' | sed -E 's/\. .*/./; s/[[:space:]]+$//' | cut -c1-100)
     # The why is the first red line of the redacted evidence (sentinel-watch.sh watch_red_lines),
     # normalized, so a new pid or timestamp in it does not edit the row every pass.
-    why=$({ [ -n "$unc" ] && printf '%s\n' "$unc" || watch_red_lines "$TRIAGE_WATCH_STATE/$n.out"; } | head -n 1 | tr -d '#' | cut -c1-100)
+    why=$({ [ -n "$unc" ] && printf '%s\n' "$unc" || watch_red_lines "$TRIAGE_WATCH_STATE/$n.out"; } | awk 'NR == 1' | tr -d '#' | cut -c1-100)
     [ -z "$unc" ] || why+=" (not covered by the quarantine $qowner holds)"
     printf 'check(watch): %s tripped since\tcheck(watch): %s tripped since %s, expected: %s%s\t%s\n' "$n" "$n" \
       "$(date -d "@$since" +%Y-%m-%d)" "${what:-no manifest}" \
