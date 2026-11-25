@@ -14,12 +14,15 @@ setup() {
   printf '#!/bin/sh\n' > "$T/tests/vendor/bats-core/bin/bats"
   chmod +x "$T/tests/vendor/bats-core/bin/bats"
   LOG="$BATS_TEST_TMPDIR/docker.log"
-  # A fake docker: logs each call; `image inspect` succeeds only when $PRESENT exists.
+  # A fake docker: logs each call; `image inspect` succeeds only when $PRESENT exists. A detached
+  # run prints a container id, and an exec exits $EXEC_RC.
   cat > "$T/bin/docker" <<FAKE
 #!/bin/sh
 echo "\$*" >> "$LOG"
 [ "\$1 \$2" = "image inspect" ] && { [ -e "$BATS_TEST_TMPDIR/present" ]; exit; }
 [ "\$1 \$2" = "image ls" ] && { cat "$BATS_TEST_TMPDIR/images" 2>/dev/null; exit 0; }
+[ "\$1 \$2" = "run -d" ] && { echo cid1; exit 0; }
+[ "\$1" = exec ] && exit "\${EXEC_RC:-0}"
 exit 0
 FAKE
   chmod +x "$T/bin/docker"
@@ -125,4 +128,26 @@ FAKE
   for kind in lean rust full; do
     grep -qE "^FROM .* AS $kind\$" "$BATS_TEST_DIRNAME/../Dockerfile" || fail "no stage named $kind in tests/Dockerfile"
   done
+}
+
+# In CI the command runs by docker exec in a detached container, so the step never waits on the
+# container's exit and removal (ar-5740); outside CI it is one plain docker run.
+@test "in CI a command runs by docker exec in a detached container and keeps its exit status" {
+  touch "$BATS_TEST_TMPDIR/present"
+  CI=true EXEC_RC=3 run "$T/tests/docker.sh" --run x y
+  assert_failure 3
+  run grep -E '^run -d --entrypoint sleep .* infinity$' "$LOG"
+  assert_success
+  run grep -cxF 'exec cid1 /usr/local/bin/test-entry x y' "$LOG"
+  assert_output 1
+}
+
+@test "outside CI a command is one docker run, with no exec" {
+  touch "$BATS_TEST_TMPDIR/present"
+  CI= run "$T/tests/docker.sh" --run x y
+  assert_success
+  run grep -cE '^run .* x y$' "$LOG"
+  assert_output 1
+  run grep -cE '^(exec|run -d) ' "$LOG"
+  assert_output 0
 }

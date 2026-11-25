@@ -413,7 +413,7 @@ world_wt_private() {
   local p
   while IFS= read -r p; do
     assert_output --partial "LINK: $p "
-  done < <(git -C "$REPO_ROOT" ls-files -- .config/hypr)
+  done < <(git -C "$REPO_ROOT" ls-files -t -- .config/hypr | sed -n 's/^[^S] //p')
 }
 
 @test "--missing: --check sees only MISSING, --apply links it and leaves a physical copy alone" {

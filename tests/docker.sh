@@ -179,14 +179,20 @@ fi
 # One command in a new container. In CI the container is started detached and the command runs in
 # it by docker exec, so the step ends when the command does. A container's exit unmounts its layer,
 # a sync of the node's disk, and --rm then deletes it: on a pool node busy with writeback that took
-# up to 6 minutes after every test had passed (run 45684648964, ar-5740). The container is never
-# stopped in the job; the runner pod's deletion discards it. Its entrypoint is sleep, so the passwd
-# entry is written once, by the exec's test-entry. A local run keeps the plain docker run.
+# up to 6 minutes after every test had passed (run 45684648964, ar-5740). So the step does not wait
+# for that: on any exit, a cancel included, a background `rm -f` (its output nowhere, so the step
+# does not wait on it) kills what is left in the container and frees its tmpfs while the job goes
+# on. Its entrypoint is sleep, so the passwd entry is written once, by the exec's test-entry. A
+# local run keeps the plain docker run.
 run_in_image() {
   [ -n "${CI:-}" ] || exec "$DOCKER" run "${run_args[@]}" "$IMAGE" "$@"
-  local cid
+  local rc=0
   cid=$("$DOCKER" run -d --entrypoint sleep "${run_args[@]}" "$IMAGE" infinity)
-  exec "$DOCKER" exec "$cid" /usr/local/bin/test-entry "$@"
+  trap '"$DOCKER" rm -f "$cid" </dev/null >/dev/null 2>&1 &' EXIT
+  trap 'exit 143' TERM INT
+  "$DOCKER" exec "$cid" /usr/local/bin/test-entry "$@" &
+  wait "$!" || rc=$?
+  exit "$rc"
 }
 
 if [ "${1:-}" = "--run" ]; then
