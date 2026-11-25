@@ -23,7 +23,7 @@ twofa: phone-google phone-steam phone-msauth mac-apple rbw-totp imap:<account> n
 gap=<owner>                    a known gap with an owner (a queue slug): printed, not counted in the exit
 
 Prints `<name> OK|LOW|EXPIRED|NO_CREDS probe=<probe> [detail=...]` per vendor, the cred-status
-contract, and never a secret: values stay in this process or go to a child on stdin or env.
+contract, then on a nonzero exit `reason: <name> <state>, ...` naming the rows of the worst state, and never a secret: values stay in this process or go to a child on stdin or env.
 LOW means the probe could not tell (network, 5xx, timeout, rbw locked). Exit 0 all OK, 1 some LOW, 2 any
 EXPIRED or NO_CREDS, 3 a registry line it cannot parse.
 """
@@ -287,7 +287,7 @@ def main(argv):
     if unknown:
         print("vendor-check: not in %s: %s" % (path, " ".join(unknown)), file=sys.stderr)
         return 3
-    worst = 0
+    worst, ranked = 0, []
     for _, row in rows:
         if names and row["name"] not in names:
             continue
@@ -296,7 +296,11 @@ def main(argv):
             detail = (detail + "; " if detail else "") + "gap: " + row["gap"]
         else:
             worst = max(worst, RANK[state])
+            ranked.append((RANK[state], row["name"] + " " + state))
         print("%s %s probe=%s%s" % (row["name"], state, row["probe"], " detail=" + shlex.quote(detail) if detail else ""))
+    if worst:
+        # Sentinel's reason line: the watch row names the worst rows, not whichever row printed last
+        print("reason: " + ", ".join(n for r, n in ranked if r == worst))
     return worst
 
 

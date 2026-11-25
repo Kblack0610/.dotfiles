@@ -46,6 +46,8 @@ vendors() { printf '%s\n' "$@" >"$VENDORS_FILE"; }
   assert_equal "$status" 2
   assert_line 'acme OK probe=listed'
   assert_line "ghost NO_CREDS probe=listed detail='not in rbw'"
+  # the reason line names the rows of the worst state, so the watch row names ghost, not the last row
+  assert_line 'reason: ghost NO_CREDS'
 }
 
 @test "totp is OK only for an entry with a seed, and the code is never printed" {

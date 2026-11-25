@@ -1619,6 +1619,19 @@ tok_fixture() {
   assert_output --partial 'expected: release-runs is healthy., why: RED steam.yml: failure on main, evidence:'
 }
 
+@test "triage: a probe's reason line is the why, not the status row it printed last" {
+  triage_setup
+  watch vendor-creds TRIP -25200 high
+  printf 'TRIP exit 2 (want 0)\nacme EXPIRED probe=http\nzeta OK probe=listed\nreason: acme EXPIRED\n' > "$TRIAGE_WATCH_STATE/vendor-creds.out"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_output --partial 'why: acme EXPIRED, evidence:'
+  # negative control: with no reason line the last line stands
+  printf 'TRIP exit 2 (want 0)\nacme EXPIRED probe=http\nzeta OK probe=listed\n' > "$TRIAGE_WATCH_STATE/vendor-creds.out"
+  run "$SUBJECT" triage --dry-run
+  assert_output --partial 'why: zeta OK probe=listed, evidence:'
+}
+
 @test "triage: a watch under a quarantine files no row until the quarantine ends" {
   triage_setup
   watch spend TRIP -25200 urgent
