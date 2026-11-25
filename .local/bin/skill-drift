@@ -179,8 +179,8 @@
 set -uo pipefail
 
 SKILLS="${CLAUDE_SKILLS:-$HOME/.claude/skills}"
-PUB="${DOTFILES:-$HOME/.dotfiles}"
-PRIV="${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}"
+# shellcheck source=../lib/dotfiles-repos.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/dotfiles-repos.sh"
 # The agentctl runbooks and runner confs (private repo): the dups pass and the KNOB table read it.
 AGENTCTL_DIR="${AGENTCTL_CONF:-$HOME/.config/agentctl}"
 COMMANDS="${CLAUDE_COMMANDS:-$HOME/.claude/commands}"

@@ -25,11 +25,6 @@ BATS      := $(VENDOR)/bats-core/bin/bats
 RUN_BATS  := $(HERE)run-bats.sh
 ARTIFACTS := $(HERE)artifacts
 
-# Pinned so a CI run and a laptop run agree.
-BATS_REF    := v1.12.0
-SUPPORT_REF := v0.3.0
-ASSERT_REF  := v2.1.0
-
 BATS_FLAGS ?= --print-output-on-failure --timing
 
 # JUNIT=1 (CI sets it) makes each bats run also write a JUnit report.xml under
@@ -68,16 +63,9 @@ help:
 	@echo "  ./docker.sh --shell   interactive shell in the test image"
 
 bootstrap: $(BATS)
+# bootstrap.sh holds the pinned refs and needs no make, so CI and docker.sh call it directly.
 $(BATS):
-	@mkdir -p $(VENDOR)
-	@echo "==> vendoring bats-core $(BATS_REF) + helpers into tests/vendor"
-	@git clone --quiet --depth 1 --branch $(BATS_REF) \
-		https://github.com/bats-core/bats-core.git      $(VENDOR)/bats-core
-	@git clone --quiet --depth 1 --branch $(SUPPORT_REF) \
-		https://github.com/bats-core/bats-support.git   $(VENDOR)/bats-support
-	@git clone --quiet --depth 1 --branch $(ASSERT_REF) \
-		https://github.com/bats-core/bats-assert.git    $(VENDOR)/bats-assert
-	@echo "==> ok: $$($(BATS) --version)"
+	@$(HERE)bootstrap.sh
 
 test: test-fast test-ui
 
@@ -98,8 +86,10 @@ test-fast: test-unit test-integ
 # its slot is granted (unit-jobs.awk, UNIT_LOADAVG: ar-3403): sized here, at parse time, it was
 # read before the wait for the slot, and suites released together all forked that many workers.
 # On CI (CI set, as GitHub Actions does) the runner is the job's own machine and its load is its
-# own setup, which gave a 4-core runner 2 jobs: it gets nproc, and run-bats.sh takes no slot.
-UNIT_JOBS ?= $(if $(CI),$(shell nproc 2>/dev/null || echo 2),auto)
+# own setup, which gave a 4-core runner 2 jobs: it gets its cpus (cpus.sh: nproc, held down to the
+# cgroup quota or the pod's CPU request, which nproc ignores: 32 jobs in a 370m pod, ar-5586), and
+# run-bats.sh takes no slot.
+UNIT_JOBS ?= $(if $(CI),$(shell $(HERE)cpus.sh),auto)
 FAST_PAR  := $(if $(shell command -v parallel 2>/dev/null),--jobs $(UNIT_JOBS))
 
 test-unit: $(BATS)

@@ -18,7 +18,7 @@ dup: only when an open row below already asks for the same thing (its id), or a 
 ask: an [outbox] line that is a task, but neither it nor its neighbours say which project, or it fits two or more about equally: projects holds the two or three it most likely is, likeliest first, and the person is asked. Never guess a project for such a line, and never ask for a line in a project's inbox.
 improvement: only for a line tagged #from/<writer>. A nice-to-have by the rule above is kept in the project's improvements.md and files no row; the person's own line is never one. project is the project the line is about (the line's own project for an inbox line).
 skip: the line is not a task (a thought, a note to self, a question that only asks for information), or you cannot tell what it asks. A question that reports a fault or asks for a change (didn't it reset?, can we have X?) is a task. A line tagged #p:<word> that is no project: pick the project the word most plainly names (a typo or a shortened name), else skip.
-A filed row that belongs to an open feature epic of its project ends with #of/<the epic's id>. Otherwise give it no #of: it goes under its system's standing epic (<system> to standard) by itself. {{> rules/epic.md}}
+A filed row that belongs to an open feature epic of its project ends with #of/<the epic's id>. A line that carries its own #of/<id> keeps it: its writer split that row, so code files every row of the line under it. Otherwise give it no #of: it goes under its system's standing epic (<system> to standard) by itself. {{> rules/epic.md}}
 
 ## Lines
 {{batch}}

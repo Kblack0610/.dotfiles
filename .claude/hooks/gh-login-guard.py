@@ -21,13 +21,12 @@ the dir pass.
 """
 import fnmatch
 import glob
-import json
 import os
 import re
 import shlex
-import sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+import hooklib
+
 AUTH_WRITES = {"login", "logout", "refresh", "switch"}
 REMOVERS = {"rm", "rmdir", "unlink", "shred", "truncate", "tee"}
 ABOVE_TOO = {"rm", "rmdir"}  # removing a dir above the gh dir removes it too
@@ -46,15 +45,6 @@ MSG = (
     "and carry on with the work that does not need gh. A test on a throwaway home sets GH_CONFIG_DIR "
     "or HOME on the gh command itself."
 )
-
-
-def _forge():
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location("forge_guard", os.path.join(HERE, "forge-guard.py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 FORGE = None  # loaded past decide's prefilter, or set by walker-guards.py: it runs on every Bash call
@@ -183,7 +173,7 @@ def decide(data):
     cmd = (data.get("tool_input") or {}).get("command") or ""
     if not (re.search(PREFILTER, cmd) or any(d in cmd for d in gh_dir_list())):
         return None
-    FORGE = FORGE or _forge()
+    FORGE = FORGE or hooklib.load("forge-guard")
     cwd = data.get("cwd") or os.getcwd()
     r = FORGE.reason(cmd, cwd, check)
     try:
@@ -193,16 +183,5 @@ def decide(data):
     return r
 
 
-def main():
-    r = decide(json.load(sys.stdin))
-    if r:
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": r}}))
-
-
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception:
-        pass
-    sys.exit(0)
+    hooklib.run(decide)

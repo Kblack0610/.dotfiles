@@ -9,17 +9,9 @@
 # cache to go stale.
 set -euo pipefail
 
-notify() { command -v notify-send >/dev/null && notify-send "karakeep" "$1"; }
-
-menu() {
-    if command -v wofi >/dev/null 2>&1; then
-        wofi --dmenu -i --matching=fuzzy -p "$1" --width 1100 --height 600
-    elif command -v rofi >/dev/null 2>&1; then
-        rofi -dmenu -i -matching fuzzy -p "$1"
-    else
-        return 1
-    fi
-}
+MENU_TITLE=karakeep MENU_WIDTH=1100
+# shellcheck source=../lib/link-menu.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/link-menu.sh"
 
 key=$(rbw get karakeep_api_key 2>/dev/null | awk 'NR==1') || { notify "rbw locked or karakeep_api_key missing"; exit 1; }
 base=$(rbw get --field uris karakeep_api_key 2>/dev/null | awk 'NR==1')
