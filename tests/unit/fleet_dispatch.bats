@@ -559,6 +559,26 @@ exits: gate 2 improve 1 plan 2 sheet 1'
   assert_failure
 }
 
+@test "skip_exits and picks: a triage red row's unclear skip takes no plan exit and still picks; a plain row's takes the plan exit (ar-5240)" {
+  echo '{"fleet": {"max_tier": 1}}' > "$DISPATCH_WORKERS"
+  project game beta "$SANDBOX/repos/game"
+  row game agent gr-1 "- [ ] check(watch): game-nightly tripped since 2026-11-24, expected: green $T <!-- id:gr-1 -->"
+  row game agent gr-2 "- [ ] fix the nightly somehow $T <!-- id:gr-2 -->"
+  : > "$NOTES_FIXTURE/board.rows"
+  board_row game agent gr-1 '[]' '[]'; board_row game agent gr-2 '[]' '[]'
+  # ar-2957 (2026-11-24): the judge read the nightly red as open-ended, and its third verdict named no area.
+  skipv gr-1 unclear 'open-ended nightly red' false; skipv gr-2 unclear 'vague' false
+  jq -c 'if .key == "gr-1" then .area = "" else . end' "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  run skip_exits --dry-run
+  assert_success
+  assert_line 'plan	game	gr-2	unclear'
+  refute_output --partial 'gr-1'
+  # negative control: the plain row's unclear skip holds it; the red row starts, as its own area
+  run picks "$(all_open)" 5
+  assert_success
+  assert_equal "$(jq -r '"\(.key)=\(.area)"' <<<"$output" | paste -sd,)" 'gr-1='
+}
+
 @test "skip_exits: a waits gate needs an open row and a verdict that otherwise fits; a planned row still skipped by a plan rule goes to the human" {
   exits_fixture
   # the reason names no open row (zz-404 is not on the board), or the row is not clear: plan

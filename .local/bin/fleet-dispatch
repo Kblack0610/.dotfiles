@@ -606,6 +606,10 @@ ROW_JQ='
 def details_json($n): (.details // []) | join("\n") | .[0:$n] | tojson;
 def planned: any(.details[]?; test("^goal:"; "i"));
 def plan_tagged: any(.tags[]?; . == "plan");
+# triage_red: a red row fleet-bench triage filed (`check(watch): `, `check(alert): `). Its route skill
+# defines its scope and the expect line of its watch its done state, so it is never unclear (policy.md
+# `clear`): an `unclear` skip of one takes no plan exit and picks reads past it (ar-5240).
+def triage_red: (.raw // .text // "") | sub("^- \\[.\\] "; "") | test("^check\\((watch|alert)\\): ");
 def holds($c): .line == $c.line and (.dsig == null or .dsig == $c.dsig);
 # usable($rs): a judged verdict (not error or failed) naming a rule the policy still defines, whatever policy it was made under
 def usable($rs): (.verdict == "dispatch" or .verdict == "skip") and (.rule as $r | $rs | index($r) != null);
@@ -2284,8 +2288,8 @@ skip_exits() {
     | $ssf[0] as $ss
     | ($kinds | to_entries | map(select(.value.enabled == false and .key != "epic") | {key, value: true}) | from_entries) as $off
     | ([.rows[]? | select(.state == "open" or .state == "doing") | .tags[]? | select(startswith("of/")) | {key: .[3:], value: true}] | from_entries) as $parents
-    | .rows[]? | select(.lane == "agent" and .state == "open" and .id != null and (plan_tagged | not))
-    | $by["\(.project)\t\(.id)"] as $d
+    | .rows[]? | select(.lane == "agent" and .state == "open" and .id != null and (plan_tagged | not)) | . as $row
+    | ($by["\(.project)\t\(.id)"] | if . != null and .rule == "unclear" and ($row | triage_red) then null else . end) as $d
     | if $d != null then
         "\(.profile)\t\(.project)\t\(.id)\t\($d.line)\t\($d.dsig // "-")\t\(details_json($n))\t\($d.rule)\t\(.requested == true)\t\(planned)\t\($d | tojson)\t\(.raw)"
       elif $off[.type // ""] and ($parents[.id] | not) and ($gone["\(.project)\t\(.id)"] | not) then
@@ -2494,10 +2498,12 @@ picks() {
       | if $c.gated == true then
           select(($d == null or $d.verdict != "failed") and ($c.tier | type) == "number" and $c.tier <= $max) | . + {area: row_area($d; $games)}
         else
-          select($d != null and $d.verdict == "dispatch" and (eff_size($d) | IN("S", "M"))
-              and $d.clear == true and $d.agent_only == true and ($d | usable($prules)) and ($d | holds($c))
+          ($c | triage_red) as $red
+          | select($d != null and ($d.verdict == "dispatch" or ($red and $d.verdict == "skip" and $d.rule == "unclear"))
+              and (eff_size($d) | IN("S", "M"))
+              and ($d.clear == true or $red) and $d.agent_only == true and ($d | usable($prules)) and ($d | holds($c))
               and ($d.tier | type) == "number" and $d.tier <= $c.tier and $c.tier <= $max
-              and ($d.area | type) == "string" and $d.area != "")
+              and ($d.area | type) == "string" and ($d.area != "" or $red))
           | . + {area: row_area($d; $games)} end)
     | map(select(.area == "" or ("\(.project | ascii_downcase)/\(.area)" as $a | $busy | index($a) | not)))
     | rank | unique_by([.project, area_key]) | rank
