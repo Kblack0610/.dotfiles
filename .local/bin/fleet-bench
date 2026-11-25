@@ -4480,19 +4480,19 @@ def churn_kpis($ch; $at; $d):
   else (churn_dates($at; $d) | map(select(. >= $ch.began))) as $ds
     | ($ds | length) as $n
     | def sum($k): [$ds[] | ($ch.days[.] // {})[$k] // 0] | add // 0;
-      {churn_merges_per_day: (if $ch.merges_known and $n > 0 then (sum("merges") / $n | round1) else null end),
+      {churn_merges_per_day: (if $ch.merges_known and $n > 0 then (sum("merges") / $n * 1000 | round / 1000) else null end),
        churn_filed_per_closed: ratio(sum("filed"); sum("closed")),
-       churn_reopens_per_day: (if $n > 0 then (sum("reopened") / $n | round1) else null end),
+       churn_reopens_per_day: (if $n > 0 then (sum("reopened") / $n * 1000 | round / 1000) else null end),
        churn_followups_per_pr: (if $ch.merges_known then ratio(sum("followups"); sum("merges")) else null end)}
   end;'
 
 # churn_rows -> churn_rows of CHURN_JQ over the agent-runtime ingest events and the dotfiles merge dates; a failure when the ingest
-# record cannot be read. A merge log that cannot be read leaves the merge-based KPIs null (merges_known false), never 0.
+# record cannot be read. A merge log that cannot be read or lists no merge leaves the merge-based KPIs null (merges_known false), never 0.
 churn_rows() {
   local m merges=null
   [ -r "$BENCH_INGEST" ] || return 1
   if m=$($BENCH_CHURN_MERGES_CMD 2>/dev/null); then
-    merges=$(jq -Rsc 'split("\n") | map(select(test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")))' <<<"$m") || merges=null
+    merges=$(jq -Rsc 'split("\n") | map(select(test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$"))) | if length == 0 then null else . end' <<<"$m") || merges=null
   fi
   inflow_events agent-runtime | jq -sc --argjson m "$merges" "$JQ_LIB$CHURN_JQ"'churn_rows($m)'
 }
@@ -4519,8 +4519,8 @@ cmd_churn() {
     shift
   done
   case "$days" in ""|*[!0-9]*|0) say "churn: --days is a whole number of days"; return 2 ;; esac
-  [ "$days" -ge "$CHURN_RUN_DAYS" ] || days=$CHURN_RUN_DAYS
-  ch=$(churn_rows) || { say "churn: the ingest record cannot be read ($BENCH_INGEST)"; return 1; }
+  [ "$check" = 0 ] || [ "$days" -ge "$CHURN_RUN_DAYS" ] || days=$CHURN_RUN_DAYS
+  ch=$(churn_rows) || { say "churn: the ingest record cannot be read ($BENCH_INGEST)"; [ "$check" = 0 ] && return 1; return 2; }
   rows=$(jq -nc --argjson t "$(now)" --argjson n "$days" --argjson ch "$ch" '
     ($t | strflocaltime("%Y-%m-%d")) as $today
     | [range($n; -1; -1) | ($t | strflocaltime("%Y-%m-%d") + "T12:00:00Z" | fromdateiso8601) - . * 86400 | strftime("%Y-%m-%d")]

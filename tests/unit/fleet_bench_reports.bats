@@ -4273,7 +4273,7 @@ churn_fixture() {
   assert_success
   # 7d is days 1 to 7: filed a1 a2 a3 a4 b1 (a1's re-file and today's x1 do not count), closed a1 a2, merges 6, one reopen, one follow-up (a2)
   run jq -c '[.churn_filed_per_closed, .churn_merges_per_day, .churn_reopens_per_day, .churn_followups_per_pr] | map(.["7d"])' <<<"$output"
-  assert_output '[2.5,0.9,0.1,0.167]'
+  assert_output '[2.5,0.857,0.143,0.167]'
   # 28d reads from the record's first day (day 10, 10 days), not 28: filed 7, closed 3, merges 7
   run "$SUBJECT" kpi --json
   run jq -c '[.churn_filed_per_closed, .churn_merges_per_day, .churn_reopens_per_day, .churn_followups_per_pr] | map(.["28d"])' <<<"$output"
@@ -4317,8 +4317,12 @@ churn_fixture() {
   assert_output '[4,false,[1,1,1]]'
   run "$SUBJECT" churn --days 3
   assert_line --partial "| $(day 2) | - | 1 | 1 | 0 | 0 | 0 |"
+  run "$SUBJECT" churn --days 1 --json
+  assert_success
+  run jq -sc 'length' <<<"$output"
+  assert_output 2   # one complete day and today so far: the floor of CHURN_RUN_DAYS belongs to --check alone
   BENCH_INGEST="$SANDBOX/none" run "$SUBJECT" churn --check
-  assert_failure 1
+  assert_failure 2
   run "$SUBJECT" churn --days 0
   assert_failure 2
 }
