@@ -24,12 +24,11 @@ settings.json deny list holds no `Bash(rm -rf /*)`: Claude reads that `*` as a w
 deny every rm -rf of an absolute path, a session's own scratch included (ucp-734).
 """
 import glob
-import json
 import os
 import re
-import sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+import hooklib
+
 ID_VARS = (b"CLAUDE_CODE_SESSION_ID=", b"CODEX_THREAD_ID=")
 RECURSIVE = re.compile(r"-[a-zA-Z]*[rR][a-zA-Z]*")
 
@@ -43,14 +42,6 @@ ROOT_MSG = (
     "expands to). Name the path below it you mean; if it really is this dir, ask the human."
 )
 
-
-def _forge():
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location("forge_guard", os.path.join(HERE, "forge-guard.py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 FORGE = None  # loaded past decide's prefilter, or set by walker-guards.py: it runs on every Bash call
@@ -196,21 +187,10 @@ def decide(data):
     cmd = (data.get("tool_input") or {}).get("command") or ""
     if not re.search(r"(?<![\w.-])rm(?![\w.-])", cmd):
         return None
-    FORGE = FORGE or _forge()
+    FORGE = FORGE or hooklib.load("forge-guard")
     STATE["me"] = data.get("session_id") or os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get("CODEX_THREAD_ID")
     return FORGE.reason(cmd, data.get("cwd") or os.getcwd(), check)
 
 
-def main():
-    r = decide(json.load(sys.stdin))
-    if r:
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": r}}))
-
-
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception:
-        pass
-    sys.exit(0)
+    hooklib.run(decide)

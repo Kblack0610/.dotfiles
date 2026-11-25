@@ -28,14 +28,13 @@ The command walker is forge-guard's (cd, bash -c, eval, subshells). Codex runs t
 (P16). Fail-open on a parse error; a tag whose presence on origin cannot be read is denied, since
 the guard cannot tell a re-send from a cut.
 """
-import json
 import os
 import re
 import shlex
 import subprocess
-import sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+import hooklib
+
 RELEASE_TAG = re.compile(r"(?:^|-)v\d+\.\d+")
 RELEASE_WORKFLOWS = {"release.yml", "phone-release.yml", "ios-release.yml", "steam.yml"}
 # Built through unity-core-playground's .github/workflows/release-game.yml, whose first step refuses any
@@ -72,14 +71,6 @@ WHY = ("No agent cuts a release: cut.yml cuts it when the sprint's window says s
        "a workflow fix on main rides the next cut. The `release` skill says how.")
 MSG = "release-guard: {what} would {does}. " + WHY
 
-
-def _forge():
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location("forge_guard", os.path.join(HERE, "forge-guard.py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 FORGE = None  # loaded past decide's prefilter, or set by walker-guards.py: it runs on every Bash call
@@ -357,20 +348,9 @@ def decide(data):
     if not any(w in cmd for w in ("tag", "push", "workflow", "release", "publish", "ship.sh", "api",
                                   "rulesets", "environments", "keys", "deploy-key", "secret", "variable", OVERRIDE_ENV)):
         return None
-    FORGE = FORGE or _forge()
+    FORGE = FORGE or hooklib.load("forge-guard")
     return FORGE.reason(cmd, data.get("cwd") or os.getcwd(), check)
 
 
-def main():
-    r = decide(json.load(sys.stdin))
-    if r:
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": r}}))
-
-
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception:
-        pass
-    sys.exit(0)
+    hooklib.run(decide)

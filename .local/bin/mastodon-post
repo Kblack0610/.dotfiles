@@ -48,8 +48,9 @@ instance="$(rbw get --folder "$FOLDER" --field uris "$ENTRY" 2>/dev/null | awk '
 instance="${instance%/}"
 [[ "$instance" =~ ^https://[^/]+$ ]] || die "rbw $FOLDER/$ENTRY has no instance URL (https://<host>)"
 
-work="$(umask 077; mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+# shellcheck source=../lib/post-client.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/post-client.sh"
+post_begin mastodon-post
 printf '%s' "$payload" >"$work/payload"
 # The token goes to curl in a config file, never in argv where ps shows it.
 { printf 'url = "%s/api/v1/statuses"\n' "$instance"
@@ -57,14 +58,6 @@ printf '%s' "$payload" >"$work/payload"
   [ -z "$key" ] || printf 'header = "Idempotency-Key: %s"\n' "$key"
 } >"$work/curlrc"
 
-lockdir="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
-if command -v flock >/dev/null; then
-  exec 9>"$lockdir/mastodon-post.lock"
-  flock 9
-fi
-
-header() { tr -d '\r' <"$work/headers" | awk -v h="$(tr 'A-Z' 'a-z' <<<"$1"):" 'tolower($1) == h { print $2 }' | tail -n1; }
-too_long() { awk -v s="$1" -v m="$MAX_WAIT" 'BEGIN { exit !(s + 0 > m + 0) }'; }
 retry() { # <why> <wait>: wait and go again, or fail once the attempts or the cap run out
   too_long "$2" && die "$1; the wait of ${2}s is over the ${MAX_WAIT}s cap"
   [ "$attempt" -lt "$MAX_ATTEMPTS" ] || die "$1, $MAX_ATTEMPTS attempts"
