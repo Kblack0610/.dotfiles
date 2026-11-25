@@ -778,7 +778,7 @@ pub fn costs(k: &crate::costs::Costs) -> Card {
         l => l,
     };
     (c.big, c.unit) = if fc.why.is_some() {
-        ("-".into(), "no data".into())
+        ("-".into(), NO_DATA.into())
     } else {
         (fc.usd.clone(), "estimated, 24h".into())
     };
