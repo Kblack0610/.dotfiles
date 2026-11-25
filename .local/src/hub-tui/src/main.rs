@@ -1195,9 +1195,6 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
     if app.tab == Tab::Releases {
         app.read_releases();
     }
-    if app.tab == Tab::Reports {
-        app.read_reports();
-    }
     // `--tab outbox` read the outbox in open_query above.
     if app.tab == Tab::Daily && !app.daily_outbox {
         app.read_focus();
