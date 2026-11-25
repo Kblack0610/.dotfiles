@@ -13,6 +13,17 @@ set -uo pipefail
 self=$(readlink -f "$0")
 bats="$(dirname "$self")/vendor/bats-core/bin/bats"
 
+# kill_session <pkill match args...>: KILL every live process the args match, and scan again until
+# a scan finds none (at most ten passes), then wait for them all to exit. One pkill misses a
+# process forked between its scan and its kill, and the pidwait after it then waits on that orphan
+# forever: five bats-exec-files held the machine's bats slot 2h on 2026-11-18 (ar-3376). -r leaves
+# zombies out, since only their parent's reap clears them.
+kill_session() {
+  local n=0
+  while pkill -KILL -r D,R,S,T,t "$@" 2>/dev/null && ((++n < 10)); do :; done
+  pidwait "$@" 2>/dev/null
+}
+
 # --lead <wrapper pid> <bats args...>: the session leader, a child of the wrapper started with a
 # parent-death TERM, with TMPDIR the owned dir. A wrapper killed past its traps (a KILL from the
 # tool or hook that ran it) reaps nothing, and the session it started ran on for hours: a parallel
@@ -22,7 +33,7 @@ bats="$(dirname "$self")/vendor/bats-core/bin/bats"
 # wrapper's reap would. It removes only a bats-run-* dir, so a hand run cannot delete a real TMPDIR.
 if [ "${1:-}" = --lead ]; then
   case "${TMPDIR:-}" in */bats-run-*) ;; *) echo "run-bats.sh: --lead is internal" >&2; exit 2 ;; esac
-  lead_reap() { pkill -KILL -A -s $$; pidwait -A -s $$; rm -rf -- "$TMPDIR"; exit 143; }
+  lead_reap() { kill_session -A -s $$; rm -rf -- "$TMPDIR"; exit 143; }
   trap lead_reap TERM HUP
   [ "$PPID" = "$2" ] || lead_reap   # the wrapper died before the parent-death signal was set
   shift 2
@@ -183,9 +194,8 @@ own=$(mktemp -d "${TMPDIR:-/tmp}/bats-run-XXXXXX") || exit 1
 reap() {
   local rc=$?
   if [ -n "$sid" ]; then
-    pkill -KILL -s "$sid" 2>/dev/null
     exec {slot_fd}>&-   # the suite is over: free the slot before waiting on the dying session (ar-3377)
-    pidwait -s "$sid" 2>/dev/null
+    kill_session -s "$sid"
   fi
   rm -rf -- "$own"
   [ -n "$rec" ] && record_end "$rc"
