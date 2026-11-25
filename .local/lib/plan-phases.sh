@@ -275,28 +275,52 @@ plan_row_task() {
   printf "Run the open phases of the approved plan %s in order, one PR each, marking each done in the plan's ## Phases." "$1"
 }
 
-# plan_row_title <plan file> -> the title of that row: the plan's first `# ` heading (outside a leading
-# `---` frontmatter block and code fences), then `(plan <slug>)`, the heading cut at a word so the
-# whole fits the agent board's 80-character title (notes-cli TITLE_MAX). A plan with no heading, or a
-# slug too long to leave 20 characters for one, gets `plan <slug>: run its open phases`, slug first:
-# ask-sweep finds a plan's row by its slug, so a cut must never reach it. `#`, `<` and `>` are
-# dropped, or the heading would add tags or a marker. Why: slugs are session names
-# ("swirling-sprouting-knuth"), and the human could not tell what a row was for (2026-11-24, ar-5348).
+# plan_heading <plan file> -> the plan's first `# ` heading (outside a leading `---` frontmatter block
+# and code fences) as one title-safe line, or nothing. `#`, `<` and `>` are dropped, or the heading
+# would add tags or a marker. The one reading of a plan's name for a board row's title.
+plan_heading() {
+  awk 'NR == 1 && /^---[[:space:]]*$/ { fm = 1; next }
+    fm { if (/^---[[:space:]]*$/) fm = 0; next }
+    /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
+    !fence && /^# +[^[:space:]]/ { sub(/^# +/, ""); print; exit }' "$1" 2>/dev/null |
+    LC_ALL=C tr -d '#<>' | LC_ALL=C tr -cd '\40-\176' | sed 's/  */ /g; s/^ //; s/ $//'
+}
+
+# title_cut <text> <room> -> the text cut to <room> characters at a word, trailing separators dropped.
+title_cut() {
+  local h="$1" room="$2"
+  [ "${#h}" -gt "$room" ] || { printf '%s\n' "$h"; return 0; }
+  if [ "${h:room:1}" = ' ' ]; then h="${h:0:room}"; else h="${h:0:room}"; h="${h% *}"; fi
+  sed 's/[ :,;-]*$//' <<<"$h"
+}
+
+# plan_row_title <plan file> -> the title of that row: the plan's heading (plan_heading), then
+# `(plan <slug>)`, the heading cut at a word so the whole fits the agent board's 80-character title
+# (notes-cli TITLE_MAX). A plan with no heading, or a slug too long to leave 20 characters for one,
+# gets `plan <slug>: run its open phases`, slug first: ask-sweep finds a plan's row by its slug, so a
+# cut must never reach it. Why: slugs are session names ("swirling-sprouting-knuth"), and the human
+# could not tell what a row was for (2026-11-24, ar-5348).
 plan_row_title() {
   local slug h room
   slug=$(basename "$1" .md)
   room=$((80 - ${#slug} - 8))
-  h=$(awk 'NR == 1 && /^---[[:space:]]*$/ { fm = 1; next }
-    fm { if (/^---[[:space:]]*$/) fm = 0; next }
-    /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
-    !fence && /^# +[^[:space:]]/ { sub(/^# +/, ""); print; exit }' "$1" 2>/dev/null |
-    LC_ALL=C tr -d '#<>' | LC_ALL=C tr -cd '\40-\176' | sed 's/  */ /g; s/^ //; s/ $//')
+  h=$(plan_heading "$1")
   if [ -z "$h" ] || [ "$room" -lt 20 ]; then printf 'plan %s: run its open phases\n' "$slug"; return 0; fi
-  if [ "${#h}" -gt "$room" ]; then
-    if [ "${h:room:1}" = ' ' ]; then h="${h:0:room}"; else h="${h:0:room}"; h="${h% *}"; fi
-    h=$(sed 's/[ :,;-]*$//' <<<"$h")
-  fi
-  printf '%s (plan %s)\n' "$h" "$slug"
+  printf '%s (plan %s)\n' "$(title_cut "$h" "$room")" "$slug"
+}
+
+# plan_phase_title <plan file> <phases> <phase name> -> the title of a phase's story row: the phase
+# name, then `(P<n>, <plan heading>)`. The name leads and the heading is cut to what is left of the 80
+# characters (dropped under 12), so the row says the work, never the session slug the plan file is
+# named for. <phases> is the item's `phases:` value ("2" or "2 3"). Why: rows read "<slug> P2: Intake
+# gate" and the human could not tell the plan from the slug (2026-11-24, ar-5462).
+plan_phase_title() {
+  local tag h room name="$3"
+  tag="P${2// /+}"
+  h=$(plan_heading "$1")
+  room=$((80 - ${#name} - ${#tag} - 5))
+  if [ -n "$h" ] && [ "$room" -ge 12 ]; then printf '%s (%s, %s)\n' "$name" "$tag" "$(title_cut "$h" "$room")"; return 0; fi
+  printf '%s (%s)\n' "$(title_cut "$name" $((80 - ${#tag} - 3)))" "$tag"
 }
 
 # plan_row_plan <text> -> the plan a plan row's brief names (plan_row_task), whether or not that file
