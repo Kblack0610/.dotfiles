@@ -45,6 +45,20 @@ setup() {
   [[ "$stderr" == *"full: git diff no-such-rev failed"* ]]
 }
 
+# A moved file's old path must reach the picker: the diff runs without rename detection (ar-5655).
+@test "a pull request's change list is read with rename detection off" {
+  # The diff is stubbed; every other git call (the picker's ls-files and grep) is the real git.
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  printf '#!/bin/sh\ncase " $* " in *" diff "*) printf "%%s\\n" "$*" >>"%s/git_args"; echo .local/bin/fleet-dispatch ;; *) exec %s "$@" ;; esac\n' \
+    "$BATS_TEST_TMPDIR" "$(command -v git)" >"$BATS_TEST_TMPDIR/bin/git"
+  chmod +x "$BATS_TEST_TMPDIR/bin/git"
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" run --separate-stderr "$SUBJECT" unit HEAD
+  assert_success
+  assert_line unit/fleet_dispatch.bats
+  run grep -c -- ' diff --no-renames --name-only HEAD HEAD$' "$BATS_TEST_TMPDIR/git_args"
+  assert_output 1
+}
+
 # A test names release-state, not the store-auth.sh it sources (ar-2508).
 @test "a changed .local/lib script picks the tests of the scripts that source it, to any depth" {
   local f
