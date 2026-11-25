@@ -721,7 +721,7 @@ bg_arm() { run env CLAUDE_CODE_SESSION_KIND=bg CLAUDE_CODE_SESSION_ID="$SID_A" C
 }
 
 @test "a claude started inside a background session never arms a stop of its parent's job" {
-  # It inherits KIND and JOB_DIR with a session id of its own: its own window closes, as any.
+  # It inherits JOB_DIR (and KIND) with a session id of its own: its own window closes, as any.
   bg_stubs; mk_job "$SID_B"
   bg_arm bash "$WIND_DOWN" arm
   assert_success

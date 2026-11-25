@@ -11,8 +11,8 @@
 #       reads it after the normal Stop pipeline runs and fires the teardown.
 #       --session widens the kill from the window to the whole tmux session, unless a world
 #       manifest declares it (tmux-close, close.sh): then only the window closes.
-#       A Claude background session (run by `claude daemon`: its CLAUDE_JOB_DIR's state.json
-#       names this session) has no tmux window of its own: arm records its daemon job instead (scope=bg), and fire
+#       A Claude background session (run by `claude daemon`; own_bg_job) has
+#       no tmux window of its own: arm records its daemon job instead (scope=bg), and fire
 #       ends the session with `claude stop <job>`. The daemon's TMUX_PANE is the pane of the
 #       foreground claude that spawned it, a different live session, so it is never killed.
 #
