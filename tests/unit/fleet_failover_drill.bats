@@ -11,7 +11,7 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init
   DRILL="$REPO_ROOT/.local/bin/fleet-failover-drill"
-  export FLEET_HOST=node1 AGENT_STORE_DIR="$HOME/.agent" RAZER_HOME="$SANDBOX/razer-home"
+  export SANDBOX FLEET_HOST=node1 AGENT_STORE_DIR="$HOME/.agent" RAZER_HOME="$SANDBOX/razer-home"
   export FLEET_INVENTORY="$SANDBOX/inventory.yml" HOLDER_FILE="$SANDBOX/holder"
   export DRILL_POLL_S=0 DRILL_LEASE_WAIT_S=3 DRILL_PASS_WAIT_S=3
   printf 'all:\n  children:\n    fleet_workers:\n      hosts:\n        razer:\n          ansible_host: 192.0.2.9\n' >"$FLEET_INVENTORY"
