@@ -21,8 +21,9 @@ ROUTE=gateway-local MAX_TOKENS=1024 TIMEOUT=120 SYSTEM="" MODE=ask FORMAT=text S
 
 # The --free fallback route and its Groq free-plan limits (30 rpm, 8K tokens/min, 200K tokens/day
 # per model; home-config apps/litellm/config.yaml, read 2026-11-19). The gateway route holds rpm 14
-# and tpm 8000 for every caller on the key; this ledger keeps ask-local's own calls inside one
-# minute's request and token window and under half the day, so fleet trials keep the rest.
+# and tpm 8000 for every caller on the key and is what stops a shared overrun. This ledger sees only
+# ask-local's own calls: it keeps them inside the route's minute window and under half the day, so
+# fleet trials keep the rest of the day.
 FREE_ROUTE=gateway-free FREE_RPM=14 FREE_TPM=7000 FREE_DAY_TOKENS=100000
 FREE_LEDGER="${ASK_LOCAL_FREE_LEDGER:-${XDG_STATE_HOME:-$HOME/.local/state}/ask-local/free-ledger}"
 
@@ -48,6 +49,7 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+[ "$FREE" = 0 ] || [ "$ROUTE" = gateway-local ] || die "--free falls back from the default local route only, not --route $ROUTE"
 case "$MAX_TOKENS" in ''|*[!0-9]*) die "--max-tokens must be a whole number" ;; esac
 MAX_TOKENS=$((10#$MAX_TOKENS))
 case "$TIMEOUT" in ''|*[!0-9]*) die "--timeout must be whole seconds" ;; esac
@@ -77,7 +79,7 @@ esac
 call() {
   local rc=0 content code route="${2:-$ROUTE}" class_args=()
   [ -z "${3:-}" ] || class_args=(--data-class "$3")
-  jq -c '.[:-1]' <<<"$1" >"$hist"
+  jq -c '.[:-1]' <<<"$1" >"$hist" || die "cannot write $hist"
   : >"$status"
   # What a calling agent exported (its name, model, schema) must not reach this call: it would
   # be recorded and budgeted as that agent's, on its model. The temperature is llama-server's
@@ -121,9 +123,10 @@ call() {
 # last slot. A refused call is never waited out: the caller gets the local failure.
 free_admit() {
   local need="$1" now why
+  command -v flock >/dev/null || { echo "ask-local: --free skipped, no flock to keep the ledger safe" >&2; return 1; }
   mkdir -p "$(dirname "$FREE_LEDGER")"
   (
-    command -v flock >/dev/null && flock 9
+    flock 9 || exit 1
     now="$(date +%s)"
     why="$(awk -v now="$now" -v need="$need" -v rpm="$FREE_RPM" -v tpm="$FREE_TPM" -v day="$FREE_DAY_TOKENS" '
       now - $1 < 86400 { d += $2 }
@@ -175,13 +178,16 @@ if [ -p /dev/stdin ] || [ -f /dev/stdin ]; then
 fi
 [ -n "$text" ] || { usage >&2; exit 2; }
 messages="$(jq -c --arg u "$text" '. + [{role: "user", content: $u}]' <<<"$messages")"
+[ "$FREE" = 1 ] || { call "$messages"; exit; }
 call "$messages" && exit 0
-[ "$FREE" = 1 ] || exit 1
 # Down or busy: no answer at all, a 429 or a 5xx. A refusal (401, 403), a bad request or an empty
 # answer would fail the same way on the free route, so those stay failures.
 case "$(cat "$status")" in 000|429|5??) ;; *) exit 1 ;; esac
-# A byte is at most one token and code runs about three bytes to one, so bytes/3 plus the reply
-# cap is a safe over-estimate of what the minute's token window sees.
-free_admit "$(( $(printf '%s' "$messages" | wc -c) / 3 + MAX_TOKENS ))" || exit 1
+# Prose runs three or four bytes to a token, dense JSON or code about two, so bytes/2 plus the
+# reply cap over-estimates prose and holds for most input; the gateway route still refuses a real overrun.
+# Resolve the route first (no tokens): a missing overlay or key must not spend a ledger slot.
+"${AGENTCTL_RUN:-agentctl-run}" --explain --role observe --route "$FREE_ROUTE" --data-class public --harness raw -p >/dev/null 2>"$err" \
+  || die "$(tr '\n' ' ' <"$err")"
+free_admit "$(( $(printf '%s' "$messages" | wc -c) / 2 + MAX_TOKENS ))" || exit 1
 echo "ask-local: the local model did not answer, trying $FREE_ROUTE (--free: the input is public)" >&2
 call "$messages" "$FREE_ROUTE" public

@@ -315,10 +315,53 @@ free_sent() { jq -cr "$1" "$STUB_DIR/$FREE_KEY.json"; }
 @test "--free: a prompt that does not fit one minute's tokens stays a local failure" {
   key down
   free_route good
-  run bash -c 'head -c 24000 /dev/zero | tr "\0" a | "$0" --free summarize' "$ASK_LOCAL"
+  run bash -c 'head -c 14000 /dev/zero | tr "\0" a | "$0" --free summarize' "$ASK_LOCAL"
   assert_failure 1
   assert_output --partial "--free skipped, the call is about"
   [ ! -e "$STUB_DIR/$FREE_KEY.json" ]
+}
+
+@test "--free: a busy local model (429) falls back too" {
+  key busy
+  free_route good
+  run "$ASK_LOCAL" --free hi </dev/null
+  assert_success
+  assert_output --partial "echo: hi"
+}
+
+@test "--free: a free route that fails fails once with its own error and no llama-server hint" {
+  key down
+  free_route wrong
+  run "$ASK_LOCAL" --free hi </dev/null
+  assert_failure 1
+  assert_output --partial "refused the key (401)"
+  refute_output --partial "systemctl"
+}
+
+@test "--free: a --max-tokens that alone passes the minute's tokens is skipped" {
+  key down
+  free_route good
+  run "$ASK_LOCAL" --free --max-tokens 7500 hi </dev/null
+  assert_failure 1
+  assert_output --partial "--free skipped, the call is about"
+  [ ! -e "$STUB_DIR/$FREE_KEY.json" ]
+}
+
+@test "--free: no route gateway-free is a setup error that books nothing" {
+  key down
+  export ASK_LOCAL_FREE_LEDGER="$SANDBOX/free-ledger"
+  run "$ASK_LOCAL" --free hi </dev/null
+  assert_failure 2
+  assert_output --partial "unknown route 'gateway-free'"
+  [ ! -e "$ASK_LOCAL_FREE_LEDGER" ]
+}
+
+@test "--free needs the default local route" {
+  key good
+  route other "$ASK_LOCAL_GATEWAY_URL" "other (m)"
+  run "$ASK_LOCAL" --free --route other hi </dev/null
+  assert_failure 2
+  assert_output --partial "--free falls back from the default local route only"
 }
 
 @test "--free: the request and token windows are kept, and a refused call books nothing" {
