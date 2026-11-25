@@ -1145,7 +1145,10 @@ pub(crate) mod tests {
         // Its withheld and lent series are read by nothing, and its slot count is no cell.
         assert_eq!(light.running, Some(3.0));
         // How long one usually runs is the exporter's median; a kind it has none for reads none.
-        assert_eq!((light.val("usual"), kind("heavy").usual), (Val::Num(240.0), None));
+        assert_eq!(
+            (light.val("usual"), kind("heavy").usual),
+            (Val::Num(240.0), None)
+        );
         let heavy = kind("heavy");
         assert_eq!(
             heavy.val("running"),

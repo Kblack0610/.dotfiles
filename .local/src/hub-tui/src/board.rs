@@ -370,7 +370,16 @@ pub(crate) mod tests {
         // windows has slots and nothing waiting: it must read 0, never vanish; and no
         // finished series, so DONE, USUAL and PASS read -, never 0.
         for (pool, slots, busy, waiting, oldest, done, ratio, usual) in [
-            ("unity", "4", "3", "3", Some("8880"), Some("72"), "0.24", "1260"),
+            (
+                "unity",
+                "4",
+                "3",
+                "3",
+                Some("8880"),
+                Some("72"),
+                "0.24",
+                "1260",
+            ),
             ("light", "2", "0", "1", Some("60"), Some("40"), "0.8", "120"),
             ("windows", "1", "0", "0", None, None, "", ""),
         ] {
@@ -893,7 +902,13 @@ pub(crate) mod tests {
         assert_line(&out, "unity 1* 3 3 2h28m 72 21m 24% razer-laptop 4");
         assert_line(&out, "light 0.66 0 1 1m 40 2m 80% -");
         assert_line(&out, "windows - 0 0 - - - - -");
-        assert!(has(&out, "usual: how long a finished job of the kind usually runs"), "{out}");
+        assert!(
+            has(
+                &out,
+                "usual: how long a finished job of the kind usually runs"
+            ),
+            "{out}"
+        );
         assert!(
             has(
                 &out,
