@@ -476,6 +476,21 @@ EOF
   assert_output --partial "is not a directory"
 }
 
+@test "apply: a row whose fix is in dotfiles does not move, and a parent with an open child stays, logged after it" {
+  apply_fixture
+  # ar-45 is a child of ar-43 filed after the ledger; ar-35's evidence now names a dotfiles file.
+  sed -i 's|^ {"project":"agent-runtime","lane":"agent","state":"done","id":"ar-44"| {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-45","text":"fix(x): a child #of/ar-43","tags":["of/ar-43"],"details":[]},\n&|' "$HOME/board2.json"
+  {
+    head -1 "$HOME/led.tsv"
+    printf 'ar-35\topen\t-\t-\t-\t0\t-\tfault\tci\ttrader\tnone\t-\twork\tkeep\t-\tdotfiles:.local/bin/fleet-dispatch:12\ttrader bug\tfix(trader): a trader fault\t-\n'
+  } >"$HOME/led2.tsv"
+  run "$RV" "${APPLY[@]}" --log "$HOME/log.tsv" "$HOME/led.tsv" "$HOME/led2.tsv"
+  assert_success
+  run awk -F'\t' '$1 ~ /^ar-(35|43|45)$/ { print $1, $2": "$4 }' "$HOME/log.tsv"
+  assert_output "$(printf '%s\n' 'ar-35 keep: serves trader, but its fix is in dotfiles (dotfiles:.local/bin/fleet-dispatch:12): stays' \
+    'ar-45 unjudged: not in any ledger' 'ar-43 keep: open children ar-45: stays until they close')"
+}
+
 @test "cut-report: before and after counts, then Cut and Remains grouped by system with the rubric's line" {
   apply_fixture
   run "$RV" "${APPLY[@]}" --write --log "$HOME/log.tsv" "$HOME/led.tsv"
@@ -490,6 +505,11 @@ EOF
   run "$RV" cut-report --board "$HOME/after.json" --log "$HOME/log.tsv" "$HOME/led.tsv"
   assert_success
   assert_output --partial "Before: 14 open rows. After: 3 open rows. Cut: 7."
+  # A re-run's log wins per row: ar-32 closed on the second pass counts as cut.
+  printf 'id\taction\tresult\tdetail\twhy\nar-32\tdone\tok\tabc\tstill there\n' >"$HOME/log2.tsv"
+  run "$RV" cut-report --board "$HOME/after.json" --log "$HOME/log.tsv" --log "$HOME/log2.tsv" "$HOME/led.tsv"
+  assert_output --partial "Before: 14 open rows. After: 3 open rows. Cut: 8."
+  run "$RV" cut-report --board "$HOME/after.json" --log "$HOME/log.tsv" "$HOME/led.tsv"
   assert_output --partial "### dispatch"
   assert_output --partial "Rows about dispatch, the queue, landing, agent-land, chains and plans."
   assert_output --partial "| ar-30 | fix(x): gone at head | closed done, proof abc123 | gone at HEAD |"

@@ -42,14 +42,17 @@
       merge `drop --dup`, an improvement `notes improve` then `drop --why` (unless improve calls it
       health work, or its project has no notes project), and a kept row serving another project
       `move --project` when that project has an agent board (a red stays: its watch is the
-      fleet's). A plan-bookkeeping drop goes only when its plan has no open phase or its chain is
+      fleet's; so does a row whose evidence names a dotfiles file, since its fix is here). A
+      parent whose open children do not all close in the run stays, and parents are written
+      after their children. A plan-bookkeeping drop goes only when its plan has no open phase or its chain is
       live (an active queue item or another open row names the plan). An orphan plan's row on
       another board moves there; here it stays until --orphans (id, decision, why, plan) keeps it
       or parks it (a `Parked:` line in the plan file, then the drop). Without --write it writes
       nothing and logs what it would do. The log has one line per open row of P: id, action,
       result, detail, why; exit 1 when a write failed.
-  row-value cut-report [--project P] [--board FILE] [--rubric FILE] --log FILE LEDGER...
-      the after-cut report as markdown: the before and after counts, then the Cut table (each row
+  row-value cut-report [--project P] [--board FILE] [--rubric FILE] --log FILE... LEDGER...
+      the after-cut report as markdown (--log repeats for a re-run, the later run winning per
+      row): the before and after counts, then the Cut table (each row
       the log shows closed or moved, and how) and the Remains table (each row open now, its
       bucket, tie and why), both grouped by system, each group opening with the rubric's line
       for that system.
@@ -487,6 +490,9 @@ APPLY_LOG = ["id", "action", "result", "detail", "why"]
 # A plan-bookkeeping row's plan, when the export found no plan path: "(plan <slug>)" in its title
 # or "plan <slug>: run its open phases".
 PLAN_WORD_RE = re.compile(r"\(plan ([\w.-]+)\)|\bplan ([\w.-]+): run its open phases")
+# Evidence naming a file in this repo or the private overlay: the row's fix is runtime work
+# whatever project it serves, so a move would send its session to the wrong checkout.
+DOTFILES_FIX_RE = re.compile(r"(?<![\w-])(dotfiles(-private)?:|\.dotfiles(-private)?/|\.local/(bin|lib|src)/|\.config/|\.claude/)")
 CLOSED = ("done", "dup", "drop", "improve", "move", "park")
 KEPT = ("red", "fault", "sot", "requested", "chain", "container")
 
@@ -606,6 +612,8 @@ def plan_action(r, row, ctx):
             return "keep", None, f"red: a fleet watch, stays here though it serves {r['project']}"
         if ctx.moving_parent(r):
             return "keep", None, f"moves with its parent {r['epic']}"
+        if DOTFILES_FIX_RE.search(r["evidence"]):
+            return "keep", None, f"serves {r['project']}, but its fix is in dotfiles ({r['evidence'][:80]}): stays"
         if not ctx.has_board(r["project"]):
             return "keep", None, f"{r['project']} has no agent board: stays until the human names one"
         return "move", pt + ["move", rid, "--project", r["project"]], r["project"]
@@ -685,10 +693,27 @@ def cmd_apply(a):
         r = ledger.get(row["id"])
         plans.append((row["id"], r) + (plan_action(r, row, ctx) if r else ("unjudged", None, "not in any ledger")))
     closing = {rid for rid, _, action, argv, _ in plans if argv and action in CLOSED}
+    # A parent's close is refused while a child is open (only a container drops its children),
+    # so a parent whose children do not all close in this run stays; repeat until nothing changes.
+    kids = collections.defaultdict(set)
+    for b in ctx.board_rows:
+        for t in b.get("tags") or []:
+            if t.startswith("of/"):
+                kids[t[3:]].add(b["id"])
+    held = True
+    while held:
+        held = False
+        for n, (rid, r, action, argv, detail) in enumerate(plans):
+            left = kids[rid] - closing
+            if rid in closing and action != "move" and r["bucket"] != "container" and left:
+                plans[n] = (rid, r, "keep", None, f"open children {', '.join(sorted(left))}: stays until they close")
+                closing.discard(rid)
+                held = True
     for n, (rid, r, action, argv, detail) in enumerate(plans):
         if action == "dup" and r["into"] in closing:
             why = f"{r['why']} (dup of {r['into']}, closed in this run)"
             plans[n] = (rid, r, "drop", argv[:-2] + ["--why", why], f"dup of {r['into']}, closed in this run")
+    plans.sort(key=lambda p: bool(kids[p[0]]))  # children before their parents
     filed = previous_improvements(a.log)
     counts = collections.Counter()
     with open(a.log, "w") as log:
@@ -762,9 +787,13 @@ def system_lines(path):
 
 
 def cmd_cut_report(a):
-    cols, log = read_tsv(a.log)
-    if cols != APPLY_LOG:
-        die(f"{a.log} is not a row-value apply log", 1)
+    entries = {}
+    for path in a.log:
+        cols, rows = read_tsv(path)
+        if cols != APPLY_LOG:
+            die(f"{path} is not a row-value apply log", 1)
+        entries.update((e["id"], e) for e in rows)
+    log = list(entries.values())
     ledger = read_ledgers(a.ledger)
     systems = system_lines(a.rubric)
     board = load_board(a.board)
@@ -922,7 +951,7 @@ def main():
     cr.add_argument("--project", default="agent-runtime")
     cr.add_argument("--board", help="a saved `notes board --json` read after the cut")
     cr.add_argument("--rubric", default=RUBRIC)
-    cr.add_argument("--log", required=True)
+    cr.add_argument("--log", required=True, action="append", help="an apply log; repeat it for a re-run, the later run winning per row")
     cr.add_argument("ledger", nargs="+")
     c = sub.add_parser("compare")
     c.add_argument("--id", default="id")
