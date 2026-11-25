@@ -10,6 +10,11 @@ setup() {
   mkdir -p "$TMPDIR"
   SIDF="$BATS_TEST_TMPDIR/sid"
   JOBS=()
+  # These tests size against nproc: run-bats.sh counts cores by tests/cpus.sh, so no pod request or
+  # cgroup quota of the host running them may lower that count.
+  unset CI_CPU_MILLI
+  echo max >"$BATS_TEST_TMPDIR/cpu.max"
+  export CGROUP_CPU_MAX="$BATS_TEST_TMPDIR/cpu.max"
   # With GNU parallel each job sets its own process group, the case that leaked: cover it.
   if command -v parallel >/dev/null; then JOBS=(--jobs 2); fi
 }

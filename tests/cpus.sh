@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# cpus.sh: the CPUs this process may use, one integer >= 1, for sizing `bats --jobs`.
+# cpus.sh: the CPUs this run may use, one integer >= 1, for sizing `bats --jobs`.
 #
-# The smallest of: nproc, the cgroup CPU quota (cpu.max, rounded up), and $CI_CPU_MILLI
+# The smallest of: nproc, the CPU quota of this cgroup (cgroup v2 cpu.max, the container's own
+# when run in one; a parent's quota and cgroup v1 are not read; rounded up), and $CI_CPU_MILLI
 # (millicores, a CI pod's own CPU request, which its spec passes in by the downward API).
 # Why: `nproc` is the host's core count inside a pod. A runner pod asks for 370m and has no CPU
 # limit, so cpu.max reads "max" and the request is only a scheduler weight: bats --jobs took
@@ -13,7 +14,7 @@ set -uo pipefail
 n=$(nproc 2>/dev/null) || n=2
 case $n in '' | *[!0-9]* | 0) n=2 ;; esac
 
-read -r quota period <"${CGROUP_CPU_MAX:-/sys/fs/cgroup/cpu.max}" 2>/dev/null || quota=max
+read -r quota period 2>/dev/null <"${CGROUP_CPU_MAX:-/sys/fs/cgroup/cpu.max}" || quota=max
 case ${quota:-max}:${period:-} in
   *[!0-9:]* | '' | :*) ;;   # "max", or no file: no quota
   *:0 | *:) ;;
