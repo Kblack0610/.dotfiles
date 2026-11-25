@@ -20,7 +20,8 @@ pub enum Kind {
     Session,
     /// An agent-queue item, by its slug.
     Queue,
-    /// A board row or an epic, by its id (`ar-1494`): Projects' Board filtered to exactly that id.
+    /// A board task, or an epic that is closed, by its id (`ar-1494`): Projects' Board filtered to
+    /// exactly that id. An open epic lists only on its own chip (`Epic`), so this finds none.
     Row,
     /// An epic, by its id: Projects' Board on its `epics` chip filtered to exactly that id, the
     /// one chip an epic row lists on (a `Row` link to it finds nothing in the default list).

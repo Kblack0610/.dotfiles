@@ -134,6 +134,9 @@ pub struct Row {
     pub summary: String,
     /// The title of the epic `parent` names, when that row is on the board; set by [`feed`].
     pub epic: Option<String>,
+    /// The epic `parent` names is an open epic row, so it lists on the `epics` chip; a closed one
+    /// is on Done. Set by [`Feed::titles`].
+    pub epic_open: bool,
     /// What hangs under an epic row, from the rows' `parent` links; set by [`Feed::titles`].
     /// None on a row that is not an epic.
     pub children: Option<Children>,
@@ -346,12 +349,19 @@ impl crate::table::Row for Row {
         format!("{}/{project}\n{}", self.profile, self.raw).to_lowercase()
     }
 
-    /// The epic cell opens the epic's row, on the epics chip; an epic's rows cell opens the rows
-    /// under it.
+    /// The epic cell opens the epic's row, on the epics chip while it is open and on the default
+    /// chip once it is closed; an epic's rows cell opens the rows under it.
     fn link(&self, col: &str) -> Option<crate::links::Link> {
         use crate::links::{Kind, Link};
         match col {
-            "epic" => self.parent.as_deref().map(|e| Link::to(Kind::Epic, e)),
+            "epic" => self.parent.as_deref().map(|e| {
+                let kind = if self.epic_open {
+                    Kind::Epic
+                } else {
+                    Kind::Row
+                };
+                Link::to(kind, e)
+            }),
             "rows" => self
                 .children
                 .and(self.id.as_deref())
@@ -789,11 +799,19 @@ impl Feed {
             .collect();
         let mut kids: std::collections::HashMap<(String, String), Children> =
             std::collections::HashMap::new();
+        let open_epics: std::collections::HashSet<(String, String)> = self
+            .rows
+            .iter()
+            .filter(|r| r.is_epic())
+            .filter_map(|r| Some((r.project.clone()?.to_lowercase(), r.id.clone()?)))
+            .collect();
+        // A sub-epic lists on the epics chip, not among the epic's rows, so it is not counted.
         for (r, closed) in self
             .rows
             .iter()
             .map(|r| (r, false))
             .chain(self.done.iter().map(|r| (r, true)))
+            .filter(|(r, _)| !r.is_epic())
         {
             if let (Some(p), Some(e)) = (r.project.as_deref(), r.parent.as_deref()) {
                 let c = kids.entry((p.to_lowercase(), e.to_string())).or_default();
@@ -808,6 +826,10 @@ impl Feed {
             r.epic = match (r.project.as_deref(), r.parent.as_deref()) {
                 (Some(p), Some(e)) => by.get(&(p.to_lowercase(), e.to_string())).cloned(),
                 _ => None,
+            };
+            r.epic_open = match (r.project.as_deref(), r.parent.as_deref()) {
+                (Some(p), Some(e)) => open_epics.contains(&(p.to_lowercase(), e.to_string())),
+                _ => false,
             };
             r.children = match (r.is_epic(), r.project.as_deref(), r.id.as_deref()) {
                 (true, Some(p), Some(id)) => Some(
@@ -1763,10 +1785,13 @@ mod tests {
     fn a_row_under_an_epic_carries_its_title_and_links_it() {
         let fake = Fake {
             out: Ok(r#"{"today":"2026-11-12","rows":[
-                {"project":"ucp","lane":"human","id":"ucp-1","type":"epic","text":"epic(net): netcode to standard"},
+                {"project":"ucp","lane":"human","id":"ucp-1","type":"epic","section":"epics","text":"epic(net): netcode to standard"},
                 {"project":"ucp","lane":"human","id":"ucp-2","type":"feat","text":"feat(net): bot mode, bots plus a client","parent":"ucp-1"},
                 {"project":"other","lane":"human","id":"ucp-3","text":"x","parent":"ucp-1"},
-                {"project":"ucp","lane":"human","id":"ucp-4","text":"y","parent":"ucp-99"}]}"#),
+                {"project":"ucp","lane":"human","id":"ucp-4","text":"y","parent":"ucp-99"},
+                {"project":"ucp","lane":"human","id":"ucp-5","text":"z","parent":"ucp-7"}],
+                "done":[
+                {"project":"ucp","lane":"human","id":"ucp-7","type":"epic","section":"done","state":"done","text":"epic(old): shipped"}]}"#),
             calls: RefCell::default(),
         };
         let f = feed(&fake).unwrap();
@@ -1789,6 +1814,11 @@ mod tests {
             "an epic is listed on the epics chip only, so the link opens that chip"
         );
         assert!(f.rows[0].link("epic").is_none());
+        assert_eq!(
+            f.rows[4].link("epic").map(|l| l.href()),
+            Some("#projects/all?q=id:=ucp-7".to_string()),
+            "a closed epic lists on the default chip with the done rows, so its link opens that"
+        );
     }
 
     #[test]
@@ -1801,14 +1831,19 @@ mod tests {
                 {"project":"ucp","lane":"agent","id":"ucp-2","section":"now","state":"doing","text":"feat(net): one","parent":"ucp-1"},
                 {"project":"ucp","lane":"agent","id":"ucp-3","section":"next","text":"feat(net): two","parent":"ucp-1"},
                 {"project":"other","lane":"agent","id":"ucp-1","section":"next","text":"x","parent":"ucp-1"},
-                {"project":"ucp","lane":"agent","id":"ucp-4","section":"next","text":"fix(ui): loose"}],
+                {"project":"ucp","lane":"agent","id":"ucp-4","section":"next","text":"fix(ui): loose"},
+                {"project":"ucp","lane":"human","id":"ucp-7","type":"epic","section":"epics","text":"epic(net): sub","parent":"ucp-1"}],
                 "done":[
                 {"project":"ucp","lane":"agent","id":"ucp-6","section":"done","state":"done","text":"feat(net): shipped","parent":"ucp-1"}]}"#),
             calls: RefCell::default(),
         };
         let f = feed(&fake).unwrap();
         let kids = |i: usize| f.rows[i].children;
-        assert_eq!(kids(0), Some(Children { open: 2, done: 1 }));
+        assert_eq!(
+            kids(0),
+            Some(Children { open: 2, done: 1 }),
+            "a sub-epic lists on the epics chip, so it is not one of the rows"
+        );
         assert_eq!(f.rows[0].val("rows"), Val::Text("2 open / 1 done".into()));
         assert_eq!(
             kids(1),
@@ -1831,7 +1866,7 @@ mod tests {
         };
         // NEGATIVE CONTROL: the default chip held both epics before this chip.
         assert_eq!(on(""), ["ucp-2", "ucp-3", "ucp-1", "ucp-4", "ucp-6"]);
-        assert_eq!(on("epics"), ["ucp-1", "ucp-5"]);
+        assert_eq!(on("epics"), ["ucp-1", "ucp-5", "ucp-7"]);
         assert_eq!(on("in progress"), ["ucp-2"]);
     }
 

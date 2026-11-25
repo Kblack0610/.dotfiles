@@ -158,7 +158,9 @@ const E_ORDER = Object.keys(E_COLS);
 const bEpics = () => bst.feed?.table?.state === "epics";
 // The table with its columns in the epics chip's order: hub-core lists `rows` last, so the head
 // and the cells below it (bEpicLine) would otherwise disagree.
-const bEpicTable = (t) => ({ ...t, columns: E_ORDER.map((k) => t.columns.find((c) => c.key === k)).filter(Boolean) });
+const bEpicTable = (t) => ({ ...t, columns: E_ORDER.map((k) => t.columns.find((c) => c.key === k)) });
+// A column the feed lacks (a hub older than this page) would shift the head over the cells: say so instead.
+const bEpicGap = (t) => E_ORDER.find((k) => !t.columns.some((c) => c.key === k));
 const bDash = (v) => esc(v == null || v === "" ? "-" : v);
 // The row's epic as a link to that row, its parent's id when that row is not on the board,
 // or "" when it is under none.
@@ -209,7 +211,9 @@ function bBody() {
     (bst.err ? `<div class="panel down">${esc(bst.err)}</div>` : "") +
     (bst.feed.errors || []).map((e) => `<div class="panel down">no forecast or queue state: ${esc(e)}</div>`).join("") +
     (rows.length
-      ? `<div class="panel scroll"><table class="tbl">${bEpics() ? tblHead(bEpicTable(t), E_COLS) + rows.map(bEpicLine).join("") : tblHead(t, B_COLS) + rows.map(bLine).join("")}</table></div>`
+      ? bEpics() && bEpicGap(t)
+        ? `<div class="panel down">The board feed has no ${esc(bEpicGap(t))} column: restart agent-web to match this page.</div>`
+        : `<div class="panel scroll"><table class="tbl">${bEpics() ? tblHead(bEpicTable(t), E_COLS) + rows.map(bEpicLine).join("") : tblHead(t, B_COLS) + rows.map(bLine).join("")}</table></div>`
       : `<div class="card muted">${t.total ? "No row matches." : "No rows."}</div>`);
 }
 
