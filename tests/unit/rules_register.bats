@@ -123,11 +123,23 @@ gh_stub() { gh_script "echo $(printf %q "$1") >&2; exit 1"; }
     run "$SUBJECT" rules --json
     assert_equal "$(jq -c '.[0] | [.state, .limited, .dead]' <<<"$output")" '["absent",true,false]'
   done
+  # Negative controls: the measure's own error, its own unclosed quote (bash says "unexpected EOF")
+  # and a local service that is down are dead, and say why.
   : > "$RULES_REGISTER"
-  row 'under ten' high "echo nope; echo 'jq: error: syntax error' >&2" 10
+  row 'under ten' high "echo warning >&2; echo nope; echo 'jq: error: syntax error' >&2" 10
   run "$SUBJECT" rules --check
   assert_failure 1
   assert_output --partial 'dead measure: rules.md: under ten (jq: error: syntax error)'
+  : > "$RULES_REGISTER"
+  row 'under ten' high "echo 'unclosed" 10
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'dead measure: rules.md: under ten (bash: -c: line'
+  : > "$RULES_REGISTER"
+  row 'under ten' high "echo 'curl: (7) Failed to connect to localhost port 9090: Connection refused' >&2" 10
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'dead measure: rules.md: under ten (curl: (7)'
 }
 
 @test "rules: a rate-limited counting measure drops its 0 and is counted as limited" {
