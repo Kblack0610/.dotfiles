@@ -35,9 +35,9 @@ waybar_dir() {
 # slot part unit binary. The first row of a slot is its default.
 parts() {
     cat <<'EOF'
+bar noctalia noctalia.service noctalia
 bar waybar-classic waybar.service waybar
 bar waybar-modern waybar.service waybar
-bar noctalia noctalia.service noctalia
 notify dunst dunst.service dunst
 notify swaync swaync.service swaync
 EOF
