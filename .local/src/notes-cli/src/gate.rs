@@ -8,9 +8,11 @@
 //! `notes improve`, never a row dispatch can pick. A plan's phases come through `agent-queue add --plan`, a direct filer, and a person's
 //! own words are never gated, so neither reaches this check.
 //!
-//! The daily cap (`intake_daily_cap`, [`cap_refusal`]) is the second test, on every row the gate
-//! admits and every writer the gate never asks: a gated board takes at most that many new agent
-//! rows a local day, whoever filed them. The person's `--want` and an urgent `#why` pass it.
+//! The daily cap (`intake_daily_cap`, [`cap_refusal`]) is a separate test, on every row the gate
+//! admits and every writer the gate never asks, and on every project's agent board, gated or not
+//! (the human, 2026-11-25: "lets make sure rows dont come in aggressively"): a board takes at most
+//! that many new agent rows a local day, whoever filed them. The person's `--want` and an urgent
+//! `#why` pass it.
 
 use crate::config::Profile;
 use crate::ingest::{self, Event};
@@ -72,6 +74,16 @@ fn refusal_in(all: &[Reason], project: &str, row: &str, wanted: bool) -> Option<
 /// cap is no ask of theirs.
 pub const CAPPED: &str = "capped";
 
+/// The board an agent-lane intake event is about: where a row was added or capped, or where triage
+/// filed it. Empty for any other event.
+fn board_of(e: &Event) -> &str {
+    match e.action.as_str() {
+        "added" | CAPPED => &e.from,
+        "filed" => &e.to,
+        _ => "",
+    }
+}
+
 /// Whether `e` is a new agent row the cap counts against `project`: a row a session, a plan or a
 /// machine filer put on the board (`added`) or inbox-triage filed from the outbox (`filed`). Left
 /// out: a story row (the board's copy of an item already started, `ingest::ORIGIN_STORY`), the
@@ -129,9 +141,6 @@ pub(crate) fn cap_refusal(
     wanted: bool,
     pending: usize,
 ) -> Result<Option<String>> {
-    if !crate::config::intake_gated().iter().any(|g| g == project) {
-        return Ok(None);
-    }
     let cap = crate::config::intake_daily_cap() as usize;
     if cap == 0 || cap_exempt(&reasons::load().unwrap_or_default(), row, wanted) {
         return Ok(None);
@@ -154,7 +163,7 @@ pub(crate) fn cap_refusal(
     Ok(why)
 }
 
-/// One local day of a gated board's intake: what the cap admitted, what it turned away, and the cap.
+/// One local day of a board's intake: what the cap admitted, what it turned away, and the cap.
 #[derive(serde::Serialize, Debug, PartialEq)]
 pub struct DayCap {
     pub date: String,
@@ -164,10 +173,27 @@ pub struct DayCap {
     pub refused: usize,
 }
 
-/// `notes ingest cap`: the last `days` local days, oldest first and today last, of every gated
-/// project: new agent rows admitted ([`counts_toward_cap`]) and rows the cap refused ([`CAPPED`]).
+/// The projects `notes ingest cap` lists: every gated one (agent-runtime always shows, even on a
+/// quiet day), and any other whose board took or was refused a row in `events`.
+fn capped_projects(events: &[Event]) -> Vec<String> {
+    let mut out = crate::config::intake_gated();
+    for e in events {
+        let board = board_of(e);
+        if !board.is_empty() && (e.action == CAPPED || counts_toward_cap(e, board)) {
+            out.push(board.to_string());
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// `notes ingest cap`: the last `days` local days, oldest first and today last, of every project
+/// with a board the cap touched: new agent rows admitted ([`counts_toward_cap`]) and rows the cap
+/// refused ([`CAPPED`]).
 pub fn cap_days(p: &Profile, days: i64) -> Vec<DayCap> {
     let events = ingest::recent(p, days.max(1));
+    let projects = capped_projects(&events);
     let today = chrono::Local::now().date_naive();
     let cap = crate::config::intake_daily_cap();
     let mut out = Vec::new();
@@ -175,7 +201,7 @@ pub fn cap_days(p: &Profile, days: i64) -> Vec<DayCap> {
         let date = (today - chrono::Duration::days(back))
             .format("%Y-%m-%d")
             .to_string();
-        for project in crate::config::intake_gated() {
+        for project in projects.iter().cloned() {
             let day: Vec<Event> = events
                 .iter()
                 .filter(|e| e.ts.starts_with(&date))
@@ -313,6 +339,26 @@ mod tests {
             ),
             1
         );
+    }
+
+    #[test]
+    fn the_cap_lists_every_board_that_took_or_was_refused_a_row_and_agent_runtime_always() {
+        let row = "- [ ] fix(views): a chip is wrong #size/s";
+        let mut story = ev("added", "story-only", "", row);
+        story.origin = Some(ingest::ORIGIN_STORY.into());
+        let events = [
+            ev("added", "unity-core-playground", "", row),
+            ev("filed", "", "demo", row),
+            ev(CAPPED, "held-board", "", row),
+            ev("dup", "dup-only", "", row),
+            story,
+        ];
+        // with no config the gated list is agent-runtime alone
+        assert_eq!(
+            capped_projects(&events),
+            ["agent-runtime", "demo", "held-board", "unity-core-playground"]
+        );
+        assert_eq!(capped_projects(&[]), ["agent-runtime"]);
     }
 
     #[test]
