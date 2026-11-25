@@ -72,7 +72,9 @@ case "$1 $2" in
 'api '*) [ ! -f "$NOTES_FIXTURE/files.fail" ] || { echo 'HTTP 502'; exit 1; }
   [ ! -f "$NOTES_FIXTURE/files.toobig" ] || { echo '{"message":"Server Error: Sorry, this diff is taking too long to generate.","errors":[{"resource":"PullRequest","field":"diff","code":"not_available"}],"status":"422"}'; echo 'gh: Server Error (HTTP 422)' >&2; exit 1; }
   cat "$NOTES_FIXTURE/files" 2>/dev/null || true ;;
-'pr merge') cp "$NOTES_FIXTURE/merged.state" "$NOTES_FIXTURE/state" ;;
+# merge.fail: gh pr merge errors and merges nothing
+'pr merge') [ ! -f "$NOTES_FIXTURE/merge.fail" ] || { echo 'GraphQL: Pull request is not mergeable' >&2; exit 1; }
+  cp "$NOTES_FIXTURE/merged.state" "$NOTES_FIXTURE/state" ;;
 # search.json: the open PRs a body search finds, as gh search prs --json prints them ([] when absent); search.fail: the call fails
 'search prs') [ ! -f "$NOTES_FIXTURE/search.fail" ] || { echo 'gh: API rate limit exceeded (HTTP 403)' >&2; exit 1; }
   cat "$NOTES_FIXTURE/search.json" 2>/dev/null || echo '[]' ;;
@@ -604,11 +606,11 @@ moved_again() {
   assert_output 0
 }
 
-@test "a --partial merge that does not read MERGED leaves no partial marker (ar-2904)" {
-  printf 'OPEN\n' >"$NOTES_FIXTURE/merged.state"
+@test "a --partial merge that fails leaves no partial marker (ar-2904)" {
+  touch "$NOTES_FIXTURE/merge.fail"
   run "$LAND" 42 --item ship --partial
   assert_failure 1
-  assert_output --partial 'merge failed: #42 reads OPEN, not MERGED'
+  assert_output --partial 'merge failed: GraphQL: Pull request is not mergeable'
   run agent-queue show ship --json
   assert_equal "$(jq -r '.partial // ""' <<<"$output")" ''
 }
