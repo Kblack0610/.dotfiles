@@ -523,6 +523,8 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   refute_output --partial 'could not start queue item fix-menu'
   assert_not_called 'wt new'
   [ -n "$(qitem queued fix-menu)" ] || fail "the item left the queue: $output"
+  # A hand start has no probe: it asks the worker (the ssh stub runs `test` here, so the repo has no .git).
+  mkdir -p "$SANDBOX/repos/game"; rm -rf "$SANDBOX/repos/game/.git"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --host razer-laptop
   assert_failure 2
   assert_output --partial "has no checkout of $SANDBOX/repos/game"
