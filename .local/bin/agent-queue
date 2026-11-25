@@ -288,6 +288,7 @@ unlock_read() { [ "${AQ_HELD-}" != shared ] || unlock; }
 LOCK_BUSY=75
 LOCK_WAIT="${AGENT_QUEUE_LOCK_WAIT:-10}"
 AQ_LOCK_MISS_LOG="$AQ_DIR/lock-miss.jsonl"
+AQ_PROC_LOCKS="${AQ_PROC_LOCKS:-/proc/locks}"
 take_lock() {
   [[ "$LOCK_WAIT" =~ ^[1-9][0-9]*$ ]] || die "AGENT_QUEUE_LOCK_WAIT is whole seconds, not '$LOCK_WAIT'"
   local gate end=$((SECONDS + LOCK_WAIT))
@@ -301,22 +302,25 @@ take_lock() {
   exec {gate}>&-
 }
 # lock_miss [-s]: one JSON line naming this taker, its caller, the kernel's locks on .gate and
-# .lock (holds or waits, READ or WRITE) and every process with either open: the holder, the
+# .lock (holds or waits, READ or WRITE, and the taker's pid) and every process with either open: the holder, the
 # waiters, and any child a holder started, since fd 8 is inherited. Called with both fds closed,
 # so the line never lists the taker itself. Best effort: it never changes the exit. Why: 108
 # dispatch starts and two runners timed out on the lock with nothing naming the holder (ar-3025).
 # The log moves to .1 past 1 MB, so a timeout storm cannot grow it without bound.
 lock_miss() {
-  local f s line path pids p
+  local f s dev line path pids p
   [ ! -f "$AQ_LOCK_MISS_LOG" ] || [ "$(stat -c %s "$AQ_LOCK_MISS_LOG")" -lt 1048576 ] ||
     mv -f "$AQ_LOCK_MISS_LOG" "$AQ_LOCK_MISS_LOG.1"
   {
+    # /proc/locks names a file <maj:min:inode> with the hex device of its mount, which is the one
+    # findmnt prints. stat's is not it on btrfs: a subvolume reports its own anonymous device (0:59
+    # for ~/.agent against 0:36 in /proc/locks), so all 195 misses of the 11-25 05:25Z storm named no
+    # holder (ar-3025).
+    dev=$(findmnt -no MAJ:MIN -T "$AQ_DIR") && dev=${dev//[[:space:]]/} && dev=$(printf '%02x:%02x' "${dev%%:*}" "${dev##*:}") || dev=''
     for f in .gate .lock; do
-      s=$(stat -c '%Hd %Ld %i' "$AQ_DIR/$f") || continue
-      # /proc/locks names a file <maj:min:inode> with a hex device, as fleet-assess lock_ids reads it.
-      # shellcheck disable=SC2086 # s is three numbers, split on purpose
-      awk -v f="$f" -v id="$(printf '%02x:%02x:%s' $s)" '{ o = ($2 == "->") } $(6 + o) == id {
-        printf "lock\t%s %s %s\n", f, (o ? "waits" : "holds"), $(4 + o) }' /proc/locks
+      [ -n "$dev" ] && s=$(stat -c %i "$AQ_DIR/$f") || continue
+      awk -v f="$f" -v id="$dev:$s" '{ o = ($2 == "->") } $(6 + o) == id {
+        printf "lock\t%s %s %s %s\n", f, (o ? "waits" : "holds"), $(4 + o), $(5 + o) }' "$AQ_PROC_LOCKS"
     done
     # One fuser scan for both files: it prints "<path>: <pid>..." per file in use, the path on
     # stderr and the pids on stdout, so the merged stream pairs them. Split at the last colon: the

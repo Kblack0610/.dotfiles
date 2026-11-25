@@ -5081,7 +5081,7 @@ already"
   log="$AGENT_QUEUE_DIR/lock-miss.jsonl"
   [ "$(wc -l < "$log")" = 2 ]
   run jq -r --argjson me "$holder" -s '.[] | [.mode, (.cmd | test("agent-queue (add|show)")),
-    (.locks | index(".lock holds WRITE") != null), (.procs | any(.pid == $me and .file == ".lock")),
+    (.locks | index(".lock holds WRITE \($me)") != null), (.procs | any(.pid == $me and .file == ".lock")),
     (.procs | all(.cmd | test("agent-queue") | not))] | map(tostring) | join(" ")' "$log"
   assert_line --index 0 "exclusive true true true true"
   assert_line --index 1 "shared true true true true"
@@ -5093,6 +5093,23 @@ already"
   assert_failure 75
   [ "$(stat -c %s "$log.1")" = 1048576 ]
   [ "$(wc -l < "$log")" = 1 ]
+}
+
+@test "a lock-miss line names the holder by its mount's device, which on btrfs is not the one stat reports (ar-3025)" {
+  "$AQ" add --project game "one item" >/dev/null
+  exec 9> "$AGENT_QUEUE_DIR/.lock"
+  flock 9
+  # A btrfs subvolume: the mount is 0:36 (00:24 in /proc/locks), stat says something else.
+  printf '#!/usr/bin/env bash\necho "  0:36"\n' > "$SANDBOX/bin/findmnt"
+  chmod +x "$SANDBOX/bin/findmnt"
+  ino=$(stat -c %i "$AGENT_QUEUE_DIR/.lock")
+  printf '1: FLOCK  ADVISORY  WRITE 4242 00:24:%s 0 EOF\n2: FLOCK  ADVISORY  WRITE 4343 %02x:%02x:%s 0 EOF\n' \
+    "$ino" "$(stat -c %Hd "$AGENT_QUEUE_DIR/.lock")" "$(stat -c %Ld "$AGENT_QUEUE_DIR/.lock")" "$((ino + 1))" > "$BATS_TEST_TMPDIR/locks"
+  AQ_PROC_LOCKS="$BATS_TEST_TMPDIR/locks" AGENT_QUEUE_LOCK_WAIT=1 run "$AQ" show one-item --json 9>&-
+  exec 9>&-
+  assert_failure 75
+  run jq -c '.locks' "$AGENT_QUEUE_DIR/lock-miss.jsonl"
+  assert_output '[".lock holds WRITE 4242"]'
 }
 
 # The row is the task's record (ar-2927), against the real notes and a sandbox vault: an item's body
