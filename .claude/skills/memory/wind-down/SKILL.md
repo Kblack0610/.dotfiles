@@ -72,7 +72,7 @@ EOF
 # prints /home/<user>/.agent/sessions/<project>/<YYYY-MM-DD>-wind-down.md  (dir auto-created)
 ```
 
-No path printed (exit 1, an empty block) means nothing was written: fix the block and run it again. Never write the note with `>`, `tee`, the Write tool or a whole-file rewrite: it holds the other sessions' blocks, and a store-sync commit of the cut copy carries the cut to every machine (ar-4023). Fix a line of your own block in place (`sed -i` on that line); leave other sessions' blocks alone. The block takes the status shape from the `comms-standard` skill (no frontmatter, plain markdown like the lessons and eval files):
+No path printed (exit 1, an empty block) means nothing was written: fix the block and run it again. Never write the note with `>`, `tee`, the Write tool or a whole-file rewrite: it holds the other sessions' blocks, and a store-sync commit of the cut copy carries the cut to every machine (ar-4023). To correct your block, append a second one the same way: `sed -i` and every in-place edit write a new file over the note, and a block another session appends at that moment goes to the old file and is lost. The block takes the status shape from the `comms-standard` skill (no frontmatter, plain markdown like the lessons and eval files):
 
 ```markdown
 # Session wrap-up - <YYYY-MM-DD>
