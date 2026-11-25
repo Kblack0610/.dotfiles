@@ -46,7 +46,7 @@ in_flight() {
   out=$(agent-queue list --json --state active 2>/dev/null) || return 1
   jq -r 'select((.from // "") | startswith("research:")) | "\(.slug) \(.from)"' <<<"$out"
   [ -f "$PICKS" ] || return 0
-  rows=$(jq -c -n '[inputs | select((.row // "" | contains(":")) and .facet != null) | {(.row): .facet}] | add // {}' "$PICKS" 2>/dev/null) || return 1
+  rows=$(jq -c -n '[inputs | select(.row // "" | contains(":")) | if .facet == null then error("a row with no facet") else {(.row): .facet} end] | add // {}' "$PICKS" 2>/dev/null) || return 1
   [ "$rows" != '{}' ] || return 0
   out=$(notes board --json 2>/dev/null) && [ -n "$out" ] || return 1
   jq -r --argjson want "$rows" '.rows[]? | ("\(.project):\(.id)") as $r | select($want | has($r))

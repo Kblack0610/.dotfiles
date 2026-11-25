@@ -2497,6 +2497,13 @@ plan_groups() {
     | def byn($k): if $k == null then null else ($all | map(select(.n == $k)) | first) end;
       (if any($all[] | select(.state == "open"); . as $o | ($all | map(select(.n == $o.n)) | length) > 1)
        then error("two phases carry the same number; label each phase once") else . end)
+    # Two open parts of one phase (P3a and P3b, no plain P3): only the last is queued, as phase 3, and
+    # nothing would order it behind the first, so the plan is refused until the earlier part is ticked.
+    | ([$all[] | select(.state == "open")] as $o
+        | [$o[] | select((.n | type) == "string") | (.name | capture("^P(?<n>[0-9]+)[a-z]([^0-9A-Za-z]|$)") | .n) as $k
+           | select(any($o[]; .n == ($k | tonumber) and (.name | test("^P" + $k + "[a-z]([^0-9A-Za-z]|$)")))) | "P" + $k]
+        | unique) as $split
+    | (if ($split | length) > 0 then error("\($split | join(" ")) has two open parts; tick the earlier part, or join them into one line") else . end)
     | reduce ($all[] | select(.state == "open" and (.n | type) == "number")) as $p ({of: {}, items: []};
         byn($p.with) as $w
         | ($p.after | join(", ")) as $al
@@ -2575,14 +2582,6 @@ add_plan() {
   local subs
   subs="$(plan_phase_list "$planf" | jq -r '[.[] | select(.state == "open" and (.n | type) == "string") | .n] | join(" ")')"
   [ -z "$subs" ] || echo "agent-queue: skipped open sub-phase(s) $subs of $planf: queue each as an item of its own" >&2
-  # Two open parts of one phase (P3a and P3b, no plain P3): the last is queued as phase 3, and nothing
-  # would order it behind the earlier one, so the plan is refused until the earlier part is ticked.
-  local split
-  split="$(plan_phase_list "$planf" | jq -r '[.[] | select(.state == "open")] as $o
-    | [$o[] | select((.n | type) == "string") | (.name | capture("^P(?<n>[0-9]+)[a-z]([^0-9A-Za-z]|$)") | .n) as $n
-       | select(any($o[]; .n == ($n | tonumber) and (.name | test("^P" + $n + "[a-z]([^0-9A-Za-z]|$)")))) | $n]
-    | unique | map("P" + .) | join(" ")')"
-  [ -z "$split" ] || die "--plan $planf: $split has two open parts: tick the earlier part, or join them into one line"
   [ "$(jq length <<<"$groups")" -gt 0 ] || die "--plan $planf: no unchecked phase in its ## Phases checklist$(plan_superseded "$planf" && echo ' (the plan is superseded: its phases are another plan'"'"'s)')"
   local prefix
   prefix="$(slugify "${slug:-$(basename "$planf" .md)}" | cut -c1-32 | sed 's/-$//')"
@@ -2765,8 +2764,9 @@ phases_resolve() {
   if [ "$now" = "?" ]; then
     echo "agent-queue: $(fm_get "$f" slug): a phase line it was filed for is gone from $plan, or written twice, so phases: $cur is kept (agent-queue set $(fm_get "$f" slug) phases=<N>)" >&2
   elif grep -q '[^0-9 ]' <<<"$now"; then
-    # A part a later part made a sub-phase (P3b, once P3c is added): an item's phases: is a whole number.
-    echo "agent-queue: $(fm_get "$f" slug): a phase line it was filed for is a sub-phase of $plan now ($now), so phases: $cur is kept" >&2
+    # A part a later part made a sub-phase (P3b, once P3c is added): an item's phases: is a whole number, so
+    # there is none to write, and the kept one now names the later part. Said on every read until fixed.
+    echo "agent-queue: $(fm_get "$f" slug): a phase line it was filed for is a sub-phase of $plan now ($now), so phases: $cur names another line: tick the earlier part or join the parts into one line" >&2
   elif [ -n "$now" ] && [ "$now" != "$cur" ]; then
     header_set "$f" phases "$now"
     echo "agent-queue: $(fm_get "$f" slug): phases: $cur -> $now, where its lines sit in $plan now" >&2

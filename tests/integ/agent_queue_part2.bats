@@ -338,6 +338,28 @@ load 'agent_queue/common'
   assert_line 'phases: 5'
 }
 
+@test "a part a later part makes a sub-phase keeps its item's phases: and says it names another line (ar-4970)" {
+  story_notes
+  printf '%s\n' '# pt' '## Phases' '- [x] P1 One (#1)' '- [x] P3a Half (#2)' '- [ ] P3b Other half' > "$SANDBOX/pt.md"
+  AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/pt.md" --project level --from shepherd --priority low >/dev/null
+  f="$(item queued pt-p3)"
+  [ "$(field "$f" phases)" = 3 ]
+  # P3c is added below the queued P3b: P3b reads as the sub-phase "3b" now, and an item's phases: is a
+  # whole number, so it keeps 3 and says that 3 now names another line.
+  printf '%s\n' '- [ ] P3c Last part' >> "$SANDBOX/pt.md"
+  run "$AQ" show pt-p3
+  assert_success
+  assert_line 'phases: 3'
+  assert_output --partial "is a sub-phase of $SANDBOX/pt.md now (3b), so phases: 3 names another line"
+  refute_output --partial 'phases: 3 -> 3b'
+  # NEGATIVE CONTROL: the same item, its line moved by a whole number, is still rewritten.
+  printf '%s\n' '# pt' '## Phases' '- [x] P1 One (#1)' '- [x] P4a Half (#2)' '- [ ] P4b Other half' > "$SANDBOX/pt.md"
+  run "$AQ" show pt-p3
+  assert_success
+  assert_line 'phases: 4'
+  assert_output --partial "pt-p3: phases: 3 -> 4"
+}
+
 @test "set review_fix= takes none or small, what a trainee's review changed before it landed the diff, and refuses anything else" {
   "$AQ" add --project game --slug rf "A trainee row" >/dev/null
   "$AQ" set rf review_fix=small >/dev/null
@@ -1000,6 +1022,20 @@ EOF
   refute_output --partial "sub-phase"
   printf '## Phases\n\n- [ ] P6 Six\n- [ ] P6b More of six\n- [ ] P7 Seven\n' > "$SANDBOX/more.md"
   [ "$(plan_phase_list "$SANDBOX/more.md" | jq -c 'map(.n)')" = '[6,"6b",7]' ]
+  # Two open parts of one phase are refused, by the add and by the marker check (ExitPlanMode's --check):
+  # the last would be queued as 3 with nothing ordering it behind the first. An open follow-up beside a
+  # plain label (P6b) is only skipped, as a 1b is.
+  printf '## Phases\n\n- [ ] P2 Two\n- [ ] P3a Half\n- [ ] P3b Other half\n- [ ] P4 Four\n' > "$SANDBOX/both.md"
+  run "$AQ" add --plan "$SANDBOX/both.md" --project game --slug both --dry-run
+  assert_failure
+  assert_output --partial "P3 has two open parts"
+  run "$AQ" add --plan "$SANDBOX/both.md" --check
+  assert_failure
+  assert_output --partial "P3 has two open parts"
+  run "$AQ" add --plan "$SANDBOX/more.md" --project game --slug more --dry-run
+  assert_success
+  assert_output --partial "skipped open sub-phase(s) 6b"
+  assert_line --regexp '^would queue more-p7	phases 7	after more-p6$'
   # NEGATIVE CONTROL: two open phases that really share a label are still refused.
   printf '## Phases\n\n- [ ] P3 One\n- [ ] P3 Two\n' > "$SANDBOX/twin.md"
   run "$AQ" add --plan "$SANDBOX/twin.md" --project game --slug twin --dry-run

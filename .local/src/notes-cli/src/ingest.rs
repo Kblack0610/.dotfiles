@@ -793,20 +793,27 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         let p = crate::config::test_profile(dir.to_str().unwrap());
         fs::create_dir_all(path(&p).parent().unwrap()).unwrap();
-        let day =
-            |h: i64| (chrono::Utc::now() - chrono::Duration::hours(h)).format("%Y-%m-%dT%H:%M:%SZ");
-        let line = |h: i64, t: &str| {
+        // This machine stamps in its own zone (-08:00 here), a worker's import in UTC: compared as
+        // text, 2026-11-25T01:00-08:00 sorts before 2026-11-25T03:00Z though it is six hours later.
+        let pst = chrono::FixedOffset::west_opt(8 * 3600).unwrap();
+        let line = |h: i64, utc: bool, t: &str| {
+            let at = chrono::Utc::now() - chrono::Duration::hours(h);
             let mut e = Event::new("filed", "outbox", "nc", t);
-            e.ts = day(h).to_string();
+            e.ts = if utc {
+                at.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+            } else {
+                at.with_timezone(&pst)
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
+            };
             serde_json::to_string(&e).unwrap()
         };
         // This machine's lines, then a worker's older block appended by import, as the record holds them.
         let text = [
-            line(3, "local a"),
-            line(2, "local b"),
-            line(1, "local c"),
-            line(30, "worker x"),
-            line(29, "worker y"),
+            line(3, false, "local a"),
+            line(2, false, "local b"),
+            line(1, false, "local c"),
+            line(5, true, "worker x"),
+            line(4, true, "worker y"),
         ]
         .join("\n")
             + "\n";
@@ -818,7 +825,8 @@ mod tests {
             .lines()
             .map(|l| serde_json::from_str::<Event>(l).unwrap().text)
             .collect();
-        // NEGATIVE CONTROL: a cut by place keeps the last three lines, local c and the worker's block.
+        // A cut by place (the code before ar-4902) kept local c and the worker's block; one by stamp text
+        // kept the worker's UTC lines over this machine's newer -08:00 ones.
         assert_eq!(
             texts,
             ["local a", "local b", "local c"],

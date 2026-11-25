@@ -125,6 +125,11 @@ repo() {
   run "$PICK" run
   assert_output --partial 'could not be read, nothing queued'
   assert_not_called 'agent-queue add'
+  # So does a picked row that names no facet: it would hold none, and the next facet would file behind it.
+  echo '{"day": 1, "row": "agent-runtime:ar-7"}' > "$RESEARCH_DIR/picks.jsonl"
+  run "$PICK" run
+  assert_output --partial 'could not be read, nothing queued'
+  assert_not_called 'agent-queue add'
 }
 @test "while a research item is in flight nothing is queued; another project's item does not count" {
   echo '{"slug": "x", "from": "research:cold"}' > "$NOTES_FIXTURE/queue.jsonl"
