@@ -57,6 +57,17 @@ load 'fleet_dispatch/common'
   [ -n "$(qitem running now-one)" ] || fail "the urgent item did not start in the unit l1 left it"
 }
 
+@test "unpark: a heavy urgent item keeps both free units, so a preempt ledger stays parked (ar-3467)" {
+  five_of_six_units
+  park_stub
+  ledger game-agent-l1 preempt
+  agent-queue add --project game --slug big-one --priority urgent --weight heavy "big one" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_not_called 'claude-acct unpark'
+  [ -n "$(qitem running big-one)" ] || fail "the heavy urgent item did not start in the 2 free units"
+}
+
 @test "unpark: an urgent item this machine's load holds keeps no run units, so a preempt ledger is resumed (ar-3467)" {
   # The same 5 of 6 units as "waits while an urgent item is runnable" above, which keeps l2 parked
   # (the negative control): here load holds the urgent item, so it could not take l2's unit.

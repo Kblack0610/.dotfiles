@@ -6193,9 +6193,16 @@ unpark_preempted() {
   urgent=$(preempt_items) || return 0
   if [ -n "$urgent" ]; then
     first=$(head -n 1 <<<"$urgent")
+    # Hosts are probed later (pass_room), so gate cannot drop this machine's pace for an open worker;
+    # machine_why is read as preempt_pick reads it. An unreadable source is no hold here: a failed read
+    # keeps the units, as a gate keeps a start.
     held=$(gate); [ -n "$held" ] || held=$(machine_why)
+    case $held in *unreadable*) held='' ;; esac
     if [ -z "$held" ]; then keep=$(weight_units "$(jq -r '.weight // "light"' <<<"$first")")
-    else say "unpark keeps no run units for $(runs_now_label "$first") $(jq -r .slug <<<"$first"): $held"; fi
+    else
+      held="unpark keeps no run units for $(runs_now_label "$first") $(jq -r .slug <<<"$first"): $held"
+      say "$held"; [ "$DRY" = 1 ] || logline "$held"
+    fi
   fi
   free=$(( TARGET - $(live_units) - keep ))
   items=$(item_sessions)
