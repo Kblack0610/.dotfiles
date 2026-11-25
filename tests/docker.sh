@@ -175,12 +175,26 @@ if [ "${1:-}" = "--shell" ]; then
   shift
   exec "$DOCKER" run -it "${run_args[@]}" "$IMAGE" bash "$@"
 fi
+
+# One command in a new container. In CI the container is started detached and the command runs in
+# it by docker exec, so the step ends when the command does. A container's exit unmounts its layer,
+# a sync of the node's disk, and --rm then deletes it: on a pool node busy with writeback that took
+# up to 6 minutes after every test had passed (run 45684648964, ar-5740). The container is never
+# stopped in the job; the runner pod's deletion discards it. Its entrypoint is sleep, so the passwd
+# entry is written once, by the exec's test-entry. A local run keeps the plain docker run.
+run_in_image() {
+  [ -n "${CI:-}" ] || exec "$DOCKER" run "${run_args[@]}" "$IMAGE" "$@"
+  local cid
+  cid=$("$DOCKER" run -d --entrypoint sleep "${run_args[@]}" "$IMAGE" infinity)
+  exec "$DOCKER" exec "$cid" /usr/local/bin/test-entry "$@"
+}
+
 if [ "${1:-}" = "--run" ]; then
   shift
   # With no command, docker would run the image's CMD: the whole container suite.
   [ $# -gt 0 ] || { echo "docker.sh: --run needs a command" >&2; exit 2; }
-  exec "$DOCKER" run "${run_args[@]}" "$IMAGE" "$@"
+  run_in_image "$@"
 fi
 
 targets=("${@:-test-container}")
-exec "$DOCKER" run "${run_args[@]}" "$IMAGE" make -C tests "${targets[@]}"
+run_in_image make -C tests "${targets[@]}"
