@@ -76,8 +76,15 @@ impl Source {
     }
 }
 
-/// What the MACHINE column says for a live session on the machine reading the table.
+/// What the MACHINE column says for a live session on the machine reading the table: relative
+/// to the reader, so a worker's own hub calls its sessions `local` too.
 pub const LOCAL_MACHINE: &str = "local";
+
+/// A live or parked row's MACHINE cell from its fleet-sessions `host`, the one place `runs_on` is
+/// derived: `host` stays empty for this machine, which the session actions read.
+fn runs_on(host: &str) -> String {
+    if host.is_empty() { LOCAL_MACHINE } else { host }.to_string()
+}
 
 /// One row of the table.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -404,11 +411,7 @@ fn live_row(s: &Value, feed: &Feed, items: &HashMap<&str, &Item>) -> SessionRow 
             |i| i.harness().to_string(),
         ),
         host: str_of(s, "host").to_string(),
-        runs_on: match str_of(s, "host") {
-            "" => LOCAL_MACHINE,
-            h => h,
-        }
-        .to_string(),
+        runs_on: runs_on(str_of(s, "host")),
         model: Some(str_of(s, "model"))
             .filter(|m| !m.is_empty())
             .or_else(|| item.and_then(|i| i.model.as_deref()).map(str::trim))
@@ -583,6 +586,7 @@ fn stray_row(a: &Agent, s: &Session, feed: &Feed) -> SessionRow {
         session_id: a.session_id.clone(),
         cost_usd: feed.cost.get(&a.session_id).copied(),
         account: a.account.clone(),
+        runs_on: runs_on(""),
         ..SessionRow::default()
     }
 }
@@ -929,6 +933,10 @@ mod tests {
         );
         assert_eq!(parked[0].target, "lab/d:9");
         assert_eq!(parked[0].task, "parked (park)");
+        assert_eq!(
+            parked[0].runs_on, LOCAL_MACHINE,
+            "a parked session is a tmux window here"
+        );
         assert!(!parked[0].unlinked, "item:none is what the header counts");
         let at = |k: &str| r.iter().position(|x| x.key == k).unwrap();
         assert!(
