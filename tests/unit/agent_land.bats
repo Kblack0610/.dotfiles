@@ -2132,6 +2132,15 @@ untouched() {
   assert_output --partial 'queue item two records #42 in o/p o/r: pass --repo <owner>/<repo>'
 }
 
+@test "a --partial landing whose proof fails after the merge keeps the partial marker (ar-2904)" {
+  touch "$NOTES_FIXTURE/not.ancestor"
+  run "$LAND" 42 --item ship --partial
+  assert_failure 1
+  assert_output --partial 'proof failed: merge_proof: REFUSING'
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '.partial // ""' <<<"$output")" yes
+}
+
 @test "a merge commit not on origin/<base> is refused: the item stays open and no row closes" {
   item fix 'board:game:fix it' human
   touch "$NOTES_FIXTURE/not.ancestor"

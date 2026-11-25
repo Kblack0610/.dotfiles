@@ -1452,6 +1452,16 @@ split_gate() {
   die "$(tr '\n' ' ' <<<"$open")is open and names $item, which a full landing would close: land #$pr --partial (agent-land $pr${repo:+ --repo $repo} --item $item --partial), then $ref with the full flags (agent-land ${ref##*#} --repo ${ref%#*} --item $item); if $ref is not $item's work, drop its \"Item: $item\" line"
 }
 [ -n "$done_as" ] || split_gate
+# mark_partial: the --partial marker follows the merge, never the attempt. Set before it, a merge that
+# failed left partial: yes on an item with nothing merged, and reap requeued it as "merged as a partial"
+# (ar-2904). Called once the PR is known merged (already MERGED, or gh/the API accepted the merge), ahead
+# of the state read, the proof and the record steps, so one that fails after the merge still leaves it.
+mark_partial() {
+  [ "$partial" -eq 1 ] || return 0
+  local out
+  out=$(aq_retry set "$item" partial=yes 2>&1) || fail item "$(lastline "$out")"
+}
+
 # Before stamp_item, so a refused run leaves the PR untouched.
 if [ "$state" = MERGED ]; then own_merged; else own_head; fi
 # Past own_merged, a merged PR is this item's: what fails from here leaves only its record (fail).
@@ -1460,6 +1470,7 @@ stamp_item
 link_task_row
 
 if [ "$state" = MERGED ]; then
+  mark_partial
   echo "merge: #$pr already MERGED, recording it"
 else
   # Before the checks too: a PR that conflicts with its base gets no pull_request run at all
@@ -1480,17 +1491,11 @@ else
   head=$(git rev-parse HEAD)
   validate_gate
   out=$(pr_merge "$head" 2>&1) || fail merge "$(lastline "$out")"
+  mark_partial
   state=$(pr_view state .state 2>&1) || fail merge "$api pr view: $(lastline "$state")"
   [ "$state" = MERGED ] || fail merge "#$pr reads $state, not MERGED"
   pr_landed=1
   echo "merge: #$pr MERGED at ${head:0:8}"
-fi
-
-# The marker follows the merge, never the attempt: set before it, a merge that failed left partial: yes
-# on an item with nothing merged, and reap requeued it as "merged as a partial" (ar-2904). Set here, before
-# the proof and record steps, so one that fails after the merge still leaves the marker for reap.
-if [ "$partial" -eq 1 ]; then
-  out=$(aq_retry set "$item" partial=yes 2>&1) || fail item "$(lastline "$out")"
 fi
 
 score_body
