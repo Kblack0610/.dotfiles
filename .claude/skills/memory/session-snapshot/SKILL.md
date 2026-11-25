@@ -40,7 +40,7 @@ session-snapshot status                  # after boot: "up: no planned reboot in
 
 ## Where the artifact lives
 
-The checklist is agent runtime state, so it goes with the session notes: `~/.agent/sessions/dotfiles/<date>-reboot-restore.md`. Never write it into `~/.notes/inbox/` (the human's own captures) or `~/.notes/journal/`. Why: restore files left in the capture folder showed up as old junk in the human's inbox for weeks (2026-11-25).
+The checklist is agent runtime state, so it goes with the session notes of dotfiles, the repo that owns this skill and the machine's provisioning: `~/.agent/sessions/dotfiles/<date>-reboot-restore.md`. Never write it into `~/.notes/inbox/` (the human's own captures) or `~/.notes/journal/`. Why: restore files left in the capture folder showed up as old junk in the human's inbox for weeks (2026-11-25).
 
 ## snapshot
 
@@ -49,6 +49,7 @@ Gather, in parallel where possible, then write the dated file:
 ```bash
 DATE=$(date +%F)                      # the skill is allowed real dates; agents pass one if sandboxed
 OUT="$HOME/.agent/sessions/dotfiles/${DATE}-reboot-restore.md"
+mkdir -p "$(dirname "$OUT")"
 
 # 1. tmux sessions/windows (cwd + live branch + foreground cmd), on EVERY live named server.
 #    The worlds (hub, lab, ...) are named sockets and a bare `tmux` reaches only one of them, so

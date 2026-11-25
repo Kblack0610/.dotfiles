@@ -146,7 +146,7 @@ pub fn run(p: &Profile, log: &Logger, cmd: Cmd) -> Result<i32> {
 /// shows there now rather than at the next sweep. The report is already written: a page that
 /// cannot be published says so and does not fail the command.
 fn refresh_inbox(p: &Profile, log: &Logger) {
-    if let Err(e) = crate::daily::publish_inbox_page(p, log) {
+    if let Err(e) = crate::daily::publish_inbox_page_kept_score(p, log) {
         eprintln!("(inbox page not refreshed: {e:#})");
     }
 }

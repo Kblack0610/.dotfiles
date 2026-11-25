@@ -55,7 +55,7 @@ impl Feed {
     pub fn guide(&self) -> Option<&'static str> {
         match self {
             Feed::Inbox => Some(
-                "filed: made a new row - joined: an open row already asked it - planned: goal, approach and checks added - added: a session put a new row on your sheet - left: not filed, so it waits in the outbox for you to rewrite or delete - refused: an intake error, its owner fixes it",
+                "filed: made a new row - joined: an open row already asked it - planned: goal, approach and checks added - added: a session put a new row on your sheet - moved: sent to a project's inbox to wait there - left: not filed, so it waits in the outbox for you to rewrite or delete - refused: intake could not write it; an outbox line shows why, the rest are in `notes log`",
             ),
             _ => None,
         }

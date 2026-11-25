@@ -1040,16 +1040,38 @@ pub(crate) fn all_project_dirs() -> Vec<(String, PathBuf)> {
 
 /// The inbox page, its score read only when the page will be published ([`inbox_present`]).
 pub(crate) fn inbox_page(p: &Profile) -> status::Page {
-    let score = inbox_present(p)
-        .then(|| triage_score(p, JUDGE_EVAL_BIN, JUDGE_EVAL_TIMEOUT))
-        .flatten();
+    inbox_page_scored(p, true)
+}
+
+/// The inbox page with the triage score read fresh from judge-eval and kept in
+/// [`score_cache`], or, when `fresh` is false, the score the last fresh read kept, so a
+/// report filed or read does not wait on judge-eval.
+fn inbox_page_scored(p: &Profile, fresh: bool) -> status::Page {
+    let cache = score_cache(p);
+    let score = match (inbox_present(p), fresh) {
+        (false, _) => None,
+        (true, true) => {
+            let s = triage_score(p, JUDGE_EVAL_BIN, JUDGE_EVAL_TIMEOUT);
+            let _ = fs::write(&cache, s.as_deref().unwrap_or_default());
+            s
+        }
+        (true, false) => fs::read_to_string(&cache)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+    };
     inbox_page_in(p, &all_project_dirs(), score.as_deref())
+}
+
+/// The triage score the last fresh inbox page read, next to the ingest record.
+fn score_cache(p: &Profile) -> PathBuf {
+    crate::ingest::path(p).with_file_name("inbox-triage-score")
 }
 
 /// The one scorer of every runner lane, inbox-triage's included (`~/.local/src/docs/judges.md`).
 const JUDGE_EVAL_BIN: &str = "judge-eval";
 /// A timeout guard: judge-eval reads in about 4s (2026-11-22), and a stuck one must not hold
-/// the page, the sweep step or `notes report add` that publishes it.
+/// the page or the sweep step; `notes report add` and `read` reuse the kept score.
 const JUDGE_EVAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// inbox-triage's 7d score as `<bin> inbox-triage --json` words it in its `score_7d`, the cell
@@ -1162,8 +1184,8 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)], score: Option<&str>) -
     // (where, text).
     let mut left_lines: std::collections::HashSet<(&str, &str)> = Default::default();
     let mut refused_lines = left_lines.clone();
-    // Why intake last left each outbox line unfiled, by the line's text.
-    let mut left_why: std::collections::HashMap<&str, &str> = Default::default();
+    // What intake last did with each outbox line it did not file, and why, by the line's text.
+    let mut outbox_why: std::collections::HashMap<&str, (&str, &str)> = Default::default();
     let mut asks_shown: std::collections::HashSet<&str> = Default::default();
     for (i, ev) in events.iter().enumerate() {
         match ev.action.as_str() {
@@ -1183,11 +1205,20 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)], score: Option<&str>) -
             "planned" => planned += 1,
             "refused" => {
                 refused_lines.insert((&ev.from, &ev.text));
+                if ev.from == "outbox" {
+                    outbox_why.insert(
+                        &ev.text,
+                        ("refused", ev.why.as_deref().unwrap_or("no reason given")),
+                    );
+                }
             }
             "left" => {
                 left_lines.insert((&ev.from, &ev.text));
                 if ev.from == "outbox" {
-                    left_why.insert(&ev.text, ev.why.as_deref().unwrap_or("no reason given"));
+                    outbox_why.insert(
+                        &ev.text,
+                        ("not filed", ev.why.as_deref().unwrap_or("no reason given")),
+                    );
                 }
             }
             "asked" => {
@@ -1211,10 +1242,15 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)], score: Option<&str>) -
     let mut waiting = crate::outbox::lines(p).unwrap_or_default();
     let mut seen = std::collections::HashSet::new();
     waiting.retain(|l| seen.insert(l.text.clone()));
-    for (i, l) in waiting.iter().enumerate() {
-        let (head, detail) = match left_why.get(l.text.as_str()) {
-            Some(why) => (
-                format!("in the outbox, not filed: {}", l.text),
+    // A line intake asked about is listed once, as the ask above.
+    for (i, l) in waiting
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| !asks_shown.contains(l.text.as_str()))
+    {
+        let (head, detail) = match outbox_why.get(l.text.as_str()) {
+            Some((verb, why)) => (
+                format!("in the outbox, {verb}: {}", l.text),
                 vec![("why".to_string(), why.to_string())],
             ),
             None => (format!("waiting in the outbox: {}", l.text), vec![]),
@@ -1247,14 +1283,16 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)], score: Option<&str>) -
             detail: vec![],
         });
     }
-    rows.push(status::Row {
-        attention: false,
-        sort: (2, String::new()),
-        head: format!(
-            "{filed} filed, {joined} joined, {planned} planned, {added} added by sessions, {moved} moved to a project inbox, {left} left, {refused} refused; each line and where it went: `notes log`"
-        ),
-        detail: vec![],
-    });
+    if filed + joined + planned + added + moved + left + refused > 0 {
+        rows.push(status::Row {
+            attention: false,
+            sort: (2, String::new()),
+            head: format!(
+                "{filed} filed, {joined} joined, {planned} planned, {added} added by sessions, {moved} moved to a project inbox, {left} left, {refused} refused; each line and where it went: `notes log`"
+            ),
+            detail: vec![],
+        });
+    }
     // Each sheet's `## Inbox` that holds lines, both lanes, by project name.
     let mut inboxes: Vec<String> = Vec::new();
     for (n, _) in dirs {
@@ -1477,6 +1515,14 @@ fn inbox_present(p: &Profile) -> bool {
 pub fn publish_inbox_page(p: &Profile, log: &Logger) -> Result<i32> {
     status::publish(&p.root, &p.daily, log, &inbox_page(p), inbox_present(p))?;
     Ok(0)
+}
+
+/// Publish the inbox page with the kept triage score, for `notes report add` and `read`:
+/// judge-eval takes seconds, and a mark-read click in agent-web waits on this.
+pub fn publish_inbox_page_kept_score(p: &Profile, log: &Logger) -> Result<()> {
+    let page = inbox_page_scored(p, false);
+    status::publish(&p.root, &p.daily, log, &page, inbox_present(p))?;
+    Ok(())
 }
 
 /// Core text of an inbox capture line, for display + dedup: strip a leading bullet or
@@ -3178,7 +3224,7 @@ mod tests {
         record(&p, &left);
         // A line left that is no longer in the outbox is intake's own: counted, never listed.
         record(&p, &Event::new("left", "outbox", "", "gone since"));
-        // An ask is listed once however many sweeps made it.
+        // An ask is listed once however many sweeps made it, and its outbox line not again.
         let mut ask = Event::new("asked", "outbox", "", "pick a colour");
         ask.why = Some("ask-12".into());
         record(&p, &ask);
@@ -3186,6 +3232,10 @@ mod tests {
         let mut refused = Event::new("refused", "demo", "", "do the thing #medium");
         refused.why = Some("retired priority #medium".into());
         record(&p, &refused);
+        // A refused outbox line still waits there, with intake's reason.
+        let mut refused_outbox = Event::new("refused", "outbox", "", "bad #medium");
+        refused_outbox.why = Some("retired priority #medium".into());
+        record(&p, &refused_outbox);
         let mut plan = Event::new("planned", "demo", "", "feat(ui): a brand kit #size/l");
         plan.id = Some("dm-5".into());
         plan.why = Some("3 plan lines, split into 2 rows".into());
@@ -3227,7 +3277,7 @@ mod tests {
         );
         std::fs::write(
             &p.outbox,
-            "# Outbox\n\n## Outbox\n- [ ] new one\n- [ ] a thought\n- [ ] a thought\n",
+            "# Outbox\n\n## Outbox\n- [ ] new one\n- [ ] a thought\n- [ ] a thought\n- [ ] pick a colour\n- [ ] bad #medium\n",
         )
         .unwrap();
         let page = inbox_page_in(
@@ -3255,9 +3305,11 @@ mod tests {
 - waiting in the outbox: new one
 - in the outbox, not filed: a thought
   - why: still not a task
+- in the outbox, refused: bad #medium
+  - why: retired priority #medium
 
 ## Handled today
-- 2 filed, 1 joined, 1 planned, 1 added by sessions, 1 moved to a project inbox, 2 left, 1 refused; each line and where it went: `notes log`
+- 2 filed, 1 joined, 1 planned, 1 added by sessions, 1 moved to a project inbox, 2 left, 2 refused; each line and where it went: `notes log`
 
 ## Waiting in project inboxes
 - [[demo/README|demo]]: 1 waiting
@@ -3269,7 +3321,7 @@ mod tests {
 "
         );
         assert!(page.stat.unwrap().ends_with(
-            ": 2 filed, 1 joined, 1 planned, 1 added by sessions, 2 left, 1 asked you, 1 refused, 2 in the outbox, 0 captured; triage score 87% untouched (7d, 7 of 8 right, 1 pending, triage-untouched)"
+            ": 2 filed, 1 joined, 1 planned, 1 added by sessions, 2 left, 1 asked you, 2 refused, 4 in the outbox, 0 captured; triage score 87% untouched (7d, 7 of 8 right, 1 pending, triage-untouched)"
         ));
         assert!(
             out.contains("\nfiled: made a new row - joined:"),
