@@ -11,7 +11,7 @@ use serde::Deserialize;
 
 use tokio::sync::broadcast;
 
-use crate::cache::{off, EventCache};
+use crate::cache::{failed, off, EventCache};
 use crate::Shared;
 
 /// The files that reach the page as a `fleet` event (main.rs `classify`): the run ledger and
@@ -110,9 +110,7 @@ fn render(mut f: Fleet, q: &FleetQuery) -> String {
         v
     });
     out.and_then(|v| serde_json::to_string(&v))
-        .unwrap_or_else(|e| {
-            serde_json::json!({"errors": [e.to_string()], "workers": [], "who": []}).to_string()
-        })
+        .unwrap_or_else(|e| failed(&["workers", "who"], e.to_string()))
 }
 
 /// How many rows each list on a runner's page draws: a glance at the runner's record, not a long

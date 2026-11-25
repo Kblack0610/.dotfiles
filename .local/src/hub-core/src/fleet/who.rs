@@ -65,22 +65,15 @@ impl Row for Who {
         &[("held", crate::vocab::Level::Bad)];
 
     fn val(&self, col: &str) -> Val {
-        let text = |t: &str| {
-            if t.is_empty() {
-                Val::None
-            } else {
-                Val::Text(t.into())
-            }
-        };
         match col {
-            "kind" => text(&self.kind),
+            "kind" => Val::word(&self.kind),
             "who" => Val::Text(self.who.clone()),
             "state" => Val::Text(self.state.clone()),
             "since" => self.since.map_or(Val::None, |t| Val::Num(t as f64)),
             "cost" => self.cost_24h.map_or(Val::None, Val::Num),
-            "for" => text(&self.purpose),
-            "doing" => text(&self.doing),
-            "under" => text(&self.under),
+            "for" => Val::word(&self.purpose),
+            "doing" => Val::word(&self.doing),
+            "under" => Val::word(&self.under),
             _ => Val::None,
         }
     }

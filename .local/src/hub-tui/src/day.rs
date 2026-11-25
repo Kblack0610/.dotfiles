@@ -8,7 +8,7 @@ use ratatui::text::{Line, Span};
 use serde_json::Value;
 
 use crate::fit::{clip_line, wrap, Cell, Table};
-use crate::fmt::Palette;
+use crate::fmt::{dash, Palette};
 
 /// Open PRs touched within this many days are listed; older ones are counted (`DAYLOG_OPEN_DAYS`).
 pub const OPEN_DAYS: i64 = 7;
@@ -23,14 +23,6 @@ fn plan_name(plan: &str) -> String {
         return String::new();
     }
     hub_core::plans::named(&hub_core::plans::path(plan))
-}
-
-fn or_dash(x: &str) -> String {
-    if x.is_empty() {
-        "-".into()
-    } else {
-        x.into()
-    }
 }
 
 fn local(ts: &str) -> Option<DateTime<Local>> {
@@ -286,8 +278,8 @@ pub fn today(rec: Option<&Value>, p: Palette, now: i64, w: usize) -> Page {
                         let t = t.split_once('/').map_or(t, |(_, r)| r);
                         vec![
                             t.strip_suffix(":1").unwrap_or(t).to_string().into(),
-                            or_dash(&plan_name(s(x, "plan"))).into(),
-                            or_dash(s(x, "phase")).into(),
+                            dash(plan_name(s(x, "plan"))).into(),
+                            dash(s(x, "phase")).into(),
                             num(&x["working_h"]).into(),
                             num(&x["waiting_h"]).into(),
                             num(&x["prs_merged"]).into(),
@@ -411,9 +403,7 @@ pub mod tests {
         })
     }
 
-    fn text(l: &[Line]) -> String {
-        l.iter().map(plain).collect::<Vec<_>>().join("\n")
-    }
+    use crate::fit::plain_text as text;
 
     // 2026-11-03 20:30Z
     const NOW: i64 = 1_793_737_800;

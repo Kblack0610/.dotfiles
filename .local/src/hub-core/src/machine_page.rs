@@ -130,10 +130,7 @@ impl Row for SlotUse {
     const GLANCE: &'static [&'static str] = &["now", "cores", "mem"];
 
     fn val(&self, col: &str) -> Val {
-        let text = |s: &str| match s {
-            "" => Val::None,
-            s => Val::Text(s.to_string()),
-        };
+        let text = Val::word;
         match col {
             "slot" => text(&self.slot),
             "takes" => text(&self.takes.join(" ")),
@@ -177,10 +174,7 @@ impl Row for RecentJob {
     const GLANCE: &'static [&'static str] = &["conclusion", "took"];
 
     fn val(&self, col: &str) -> Val {
-        let text = |s: &str| match s {
-            "" => Val::None,
-            s => Val::Text(s.to_string()),
-        };
+        let text = Val::word;
         match col {
             "started" => self.started.map(|t| t as f64).into(),
             "repo" => text(&self.repo),

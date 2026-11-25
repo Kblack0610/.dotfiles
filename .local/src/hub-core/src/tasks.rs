@@ -307,10 +307,7 @@ impl crate::table::Row for Row {
             "pts" => self.points.map_or(Val::None, |n| Val::Num(f64::from(n))),
             "tier" => self.tier.map_or(Val::None, |t| Val::Num(f64::from(t))),
             "since" => some(self.since.as_deref()),
-            "when" => match self.when() {
-                w if w.is_empty() => Val::None,
-                w => Val::Text(w),
-            },
+            "when" => Val::word(&self.when()),
             "text" => text(&self.text),
             "title" => text(&self.title),
             "type" => some(self.r#type.as_deref()),
