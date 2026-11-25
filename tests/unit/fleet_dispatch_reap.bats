@@ -986,6 +986,37 @@ OUT
   assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_human // ""] | join("|")')" "queued|"
 }
 
+# 2026-11-25: #3516, #3538 and #3576 read red with every job cancelled at ~617s on starved runners. fix-ci
+# may not rerun a timeout and found nothing to fix, so each spent two tries and sat escalated.
+@test "reap: a PR red on runner timeouts only gets its failed jobs rerun once per head, no fix try; still cut after it, fix-ci" {
+  local h1=1111111111111111111111111111111111111111 h2=2222222222222222222222222222222222222222
+  pr_item OPEN
+  run cmd_reap
+  fix_ended "$h1" INFRA MERGEABLE 101,102
+  run cmd_reap
+  assert_success
+  assert_output --partial "rerun queue item fix-crash (PR o/game#12 red at ${h1:0:12} on runner timeouts, run 101 102)"
+  assert_called "gh run rerun 101 --failed -R o/game"
+  assert_called "gh run rerun 102 --failed -R o/game"
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .rerun_tries, .fix_tries // "", .pr_owner // ""] | join("|")')" "review|1 $h1||"
+  # the rerun runs: still parked
+  fix_ended "$h1" PENDING
+  run cmd_reap
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
+  # NEGATIVE CONTROL: cut again at the same head, the code may hang, so it is fix-ci's red and no second rerun
+  fix_ended "$h1" INFRA MERGEABLE 103
+  run cmd_reap
+  assert_output --partial "fix-ci queue item fix-crash (PR o/game#12 red at ${h1:0:12}, try 1 of 2)"
+  refute_output --partial 'rerun queue item'
+  assert_equal "$(grep -c 'gh run rerun 103' "$NOTES_FIXTURE/calls.log")" 0
+  # an item already escalated at a head, as the 2026-11-25 three were, still gets that head's one rerun
+  agent-queue set fix-crash "fix_human=$h2 fix" "fix_tries=2 $h2" >/dev/null
+  fix_ended "$h2" INFRA MERGEABLE 104
+  run cmd_reap
+  assert_output --partial "rerun queue item fix-crash (PR o/game#12 red at ${h2:0:12} on runner timeouts, run 104)"
+  assert_called "gh run rerun 104 --failed -R o/game"
+}
+
 @test "reap: a spent PR whose agent board refuses the row keeps its old stamp, so the next pass files it" {
   local h1=1111111111111111111111111111111111111111
   pr_item OPEN

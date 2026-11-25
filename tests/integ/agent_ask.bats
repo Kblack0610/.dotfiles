@@ -2744,6 +2744,8 @@ audit_of() {
   local a b
   a="$(live_post sid-1 'stuck once?' 2>/dev/null)"
   run "$AGENT_ASK" show "$a"; assert_line 'judge_reason: the judge call timed out after 1s'
+  # The pass that judges it again gets a guard the judge's own writes fit in on a loaded runner:
+  # at 1s the guard ended one after `judge` and before `judge_rule` (run 45675382228).
   fake_judge "$(score ship_deploy "" "rules say fix it yourself.")"
   AGENT_ASK_JUDGE_TIMEOUT=30 "$AGENT_ASK" assume-due 2>/dev/null
   run "$AGENT_ASK" show "$a"
