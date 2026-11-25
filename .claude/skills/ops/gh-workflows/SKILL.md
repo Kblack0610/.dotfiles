@@ -115,7 +115,7 @@ gh api --paginate repos/owner/name/issues
 
 ## Safety rules
 
-- Never use `--no-gpg-sign` or a similar bypass flag unless the user explicitly asks; `skip-guard` denies `--no-verify` and a direct push to a default branch.
+- Never use `--no-gpg-sign` or a similar bypass flag unless the user explicitly asks. `skip-guard` denies `--no-verify` and a direct push to a default branch even when the user asks: the user runs that command by hand.
 - Never force push: not `--force`, not `--force-with-lease`, on any branch, and do not offer it as an option. If a branch's pushed history is wrong, open a new branch and a new PR and close the old one.
 - Prefer creating new commits over `git commit --amend` when a pre-commit hook fails - the failed commit did not happen, so `--amend` would modify the previous commit.
 - Before commenting on a PR or closing an issue, confirm with the user unless the action was explicitly requested - these are visible to others.

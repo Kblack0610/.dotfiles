@@ -51,7 +51,8 @@ each() {
 @test "a commit message, a path after --, -u, and -n on another verb are not --no-verify" {
   each allowed "$T/wt" 'git commit -m -n' 'git commit -m "--no-verify is denied"' 'git commit -uno -m x' 'git commit -am fix' \
     'git commit -- --no-verify' 'git merge -n main' 'git commit -m x --no-ver' 'git log --grep=no-verify' \
-    'echo git commit --no-verify' "rg -- '--no-verify' ."
+    'echo git commit --no-verify' "rg -- '--no-verify' ." "git rebase -x 'git commit --no-verify' main" \
+    'git merge -m --no-verify main' 'git push -o --no-verify origin feat/x' 'git cherry-pick -X --no-verify HEAD'
 }
 
 @test "core.hooksPath moved for one command or written by git config is denied" {
@@ -60,19 +61,21 @@ each() {
     'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null git commit -m x' \
     "GIT_CONFIG_PARAMETERS=\"'core.hooksPath'='/dev/null'\" git commit -m x" 'env GIT_CONFIG_KEY_0=core.hooksPath git commit -m x' \
     'git config core.hooksPath /dev/null' 'git config --local core.hooksPath x' 'git config --unset core.hooksPath' \
-    'git config set core.hooksPath x' 'git config unset core.hooksPath'
+    'git config set core.hooksPath x' 'git config unset core.hooksPath' 'git config -e' 'git config --global --edit' \
+    'GIT_CONFIG_GLOBAL=/dev/null git commit -m x' 'GIT_CONFIG_NOSYSTEM=1 git push origin feat/x' 'HOME=/tmp git commit -m x' \
+    'XDG_CONFIG_HOME=/tmp git merge main'
 }
 
 @test "reading core.hooksPath and other -c and config writes are allowed" {
   each allowed "$T/wt" 'git config core.hooksPath' 'git config --get core.hooksPath' 'git config get core.hooksPath' \
     'git config --show-origin --get core.hooksPath' 'git config user.name x' 'git -c user.name=x commit -m y' \
-    'GIT_CONFIG_KEY_0=user.name git commit -m y'
+    'GIT_CONFIG_KEY_0=user.name git commit -m y' 'HOME=/tmp git log' 'GIT_CONFIG_GLOBAL=/dev/null git status'
 }
 
 @test "a push whose destination is the default branch is denied, by refspec or from that branch" {
   each denied "$T/wt" 'git push origin HEAD:main' 'git push origin feat/x:main' 'git push origin +HEAD:refs/heads/main' \
     'git push origin main' 'git push origin :main' 'git push --all origin' 'git push origin :' 'git push --repo=origin main' \
-    "git -C '$T/wt' push -q origin HEAD:main"
+    "git -C '$T/wt' push -q origin HEAD:main" "git push '$T/origin.git' HEAD:main"
   each denied "$T/repo" 'git push' 'git push origin' 'git push origin HEAD' 'git push -u origin HEAD'
   run at "$T/wt" 'git push origin HEAD:main'
   assert_output --partial 'main, the default branch'
@@ -84,6 +87,9 @@ each() {
     'git push origin v1.0' 'git push origin refs/tags/v1' 'git push -n origin HEAD:main' 'git push --dry-run origin main' \
     'git push origin feat/x:refs/heads/feat/y'
   each allowed "$T/plain" 'git push backup main' 'git push'
+  # Another remote than origin is not the default branch's forge: a backup push passes.
+  git -C "$T/wt" remote add backup "$T/origin.git"
+  each allowed "$T/wt" 'git push backup main' 'git push backup HEAD:main'
 }
 
 @test "under push.default=upstream a bare push from a branch tracking the default branch is denied" {
@@ -91,6 +97,19 @@ each() {
   run at "$T/wt" 'git push'
   denied
   git -C "$T/wt" config push.default simple
+  run at "$T/wt" 'git push'
+  allowed
+}
+
+@test "a bare push under push.default=matching or a remote.origin.push refspec to main is denied" {
+  git -C "$T/wt" config push.default matching
+  run at "$T/wt" 'git push origin'
+  denied
+  git -C "$T/wt" config push.default simple
+  git -C "$T/wt" config remote.origin.push HEAD:refs/heads/main
+  run at "$T/wt" 'git push'
+  denied
+  git -C "$T/wt" config remote.origin.push 'refs/heads/feat/x:refs/heads/feat/x'
   run at "$T/wt" 'git push'
   allowed
 }

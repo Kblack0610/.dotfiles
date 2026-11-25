@@ -9,15 +9,20 @@ is never used", the global "if on the default branch, branch first"):
   flag cluster (`-nm msg`): they skip the committed pre-commit leak scan and the pre-push checks.
 - core.hooksPath moved: for one command (`git -c core.hooksPath=...`, `--config-env`, a
   GIT_CONFIG_PARAMETERS or GIT_CONFIG_KEY_<n> prefix) or written by `git config`, which points git
-  at a directory with no hooks. Reading it passes.
-- a `git push` whose destination is the repo's default branch (merge_proof_branch, the one reader,
-  as checkout-guard reads it): by refspec (`main`, `HEAD:main`, `+x:refs/heads/main`, `:main`),
-  `--all`/`--branches`/`--mirror`/`:`, or a bare push from that branch (from a branch tracking it
-  only under push.default=upstream). Such a push lands with no PR, so no required check runs
-  first. A dry run passes.
+  at a directory with no hooks. Reading it passes. The global config that sets it is dropped the
+  same way, so a hooked verb under a GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM, GIT_CONFIG_NOSYSTEM,
+  HOME or XDG_CONFIG_HOME prefix is denied, and so is `git config --edit`.
+- a `git push` to origin (or the remote origin/HEAD names, forgejo in home-config), by name or
+  URL, whose destination is the repo's default branch (merge_proof_branch, the one reader, as
+  checkout-guard reads it): by refspec (`main`, `HEAD:main`, `+x:refs/heads/main`, `:main`),
+  `--all`/`--branches`/`--mirror`/`:`, or a bare push that writes it (from that branch, from a
+  branch tracking it under push.default=upstream, any branch under matching, or a
+  remote.<name>.push refspec). Such a push lands with no PR, so no required check runs first. A
+  dry run and a push to another remote pass.
 
 Not covered: git calls inside a script (store-sync and fleet-lease commit to their own stores with
-`-c core.hooksPath=/dev/null`), an `export` of GIT_CONFIG_* earlier in the command, and a repo with
+`-c core.hooksPath=/dev/null`), an `export` of GIT_CONFIG_* or HOME earlier in the command, `env -i`,
+a hand edit of .git/config or ~/.gitconfig, and a repo with
 no default branch on origin (~/.notes and ~/.agent push to `backup`), which allow. The human runs a
 bypass by hand when one is meant. It walks the command with forge-guard's walker. Fail-open: any
 error allows the command.
@@ -34,8 +39,22 @@ COMMIT_SHORT_VALUE = set("mFCct")
 COMMIT_SHORT_OPTIONAL = set("uS")  # take only an attached value: `-uno` is not -n
 COMMIT_LONG_VALUE = {"--message", "--file", "--reuse-message", "--reedit-message", "--fixup", "--squash", "--author",
                      "--date", "--template", "--trailer", "--cleanup", "--pathspec-from-file"}
+# Each hooked verb's flags that take the next word as a value, so `rebase -x '--no-verify'` is a
+# command, not the flag. commit's short ones are COMMIT_SHORT_VALUE; push's are FORGE.PUSH_OPT_ARG.
+STRATEGY = {"-s", "--strategy", "-X", "--strategy-option"}
+VERB_VALUE = {
+    "commit": COMMIT_LONG_VALUE,
+    "rebase": STRATEGY | {"-x", "--exec", "--onto"},
+    "merge": STRATEGY | {"-m", "-F", "--file"},
+    "pull": STRATEGY,
+    "cherry-pick": STRATEGY | {"-m", "--mainline"},
+    "revert": STRATEGY | {"-m", "--mainline"},
+}
+# Prefixes that drop the global or system config, where the hook dispatcher's core.hooksPath lives.
+CONFIG_ENV = {"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "HOME", "XDG_CONFIG_HOME"}
 CONFIG_VALUE_OPTS = {"-f", "--file", "--blob", "--type", "--default", "--comment", "--value"}
 CONFIG_READ = {"--get", "--get-all", "--get-regexp", "--get-urlmatch", "-l", "--list"}
+CONFIG_EDIT = {"-e", "--edit", "edit"}
 CONFIG_WRITE = {"--unset", "--unset-all", "--add", "--replace-all"}
 PUSH_ALL = {"--all", "--branches", "--mirror"}
 KEY = "core.hookspath"  # git config keys are case-insensitive
@@ -47,8 +66,9 @@ VERIFY_MSG = (
 )
 HOOKSPATH_MSG = (
     "skip-guard: {what} moves core.hooksPath, so git runs none of the repo's committed hooks. The "
-    "hooks come from the one global dispatcher (`~/.config/git/hooks`, docs/operations/git-hooks.md); "
-    "fix what a hook refused instead. Only the human changes it, by hand."
+    "hooks come from the one global dispatcher (`~/.config/git/hooks`, docs/operations/git-hooks.md), "
+    "set in the global config, so a prefix that drops that config moves it too; fix what a hook "
+    "refused instead. Only the human changes it, by hand."
 )
 PUSH_MSG = (
     "skip-guard: {what} writes {branch}, the default branch of {top}, with no PR, so no required "
@@ -87,9 +107,11 @@ def option_hookspath(opts):
 
 
 def config_writes_hookspath(args):
-    """True when `git config <args>` sets or unsets core.hooksPath; a read passes."""
+    """True when `git config <args>` sets, unsets or opens an editor on the config; a read passes."""
     words, write, read, it = [], False, False, iter(args)
     for a in it:
+        if a in CONFIG_EDIT and not words:
+            return True  # an editor can set anything, core.hooksPath included
         if a in CONFIG_VALUE_OPTS:
             next(it, None)
         elif a in CONFIG_WRITE:
@@ -118,11 +140,9 @@ def skips_verify(verb, args):
             return False
         if len(a) >= len("--no-veri") and "--no-verify".startswith(a):
             return True  # git takes an unambiguous prefix; --no-ver could be --no-verbose
-        if verb != "commit":
-            continue
-        if a in COMMIT_LONG_VALUE:
+        if a in VERB_VALUE.get(verb, FORGE.PUSH_OPT_ARG if verb == "push" else ()):
             skip = True
-        elif a[:1] == "-" and a[:2] != "--":
+        elif verb == "commit" and a[:1] == "-" and a[:2] != "--":
             for j, c in enumerate(a[1:], 2):
                 if c == "n":
                     return True
@@ -134,8 +154,9 @@ def skips_verify(verb, args):
     return False
 
 
-def push_dests(top, args):
-    """The branch names a `git push <args>` writes, None for a dry run, ["*"] for every branch."""
+def push_dests(top, args, remote):
+    """The branch names a `git push <args>` to `remote` writes, None for a dry run, ["*"] for every
+    branch."""
     pos, all_, repo, i = [], False, False, 0
     while i < len(args):
         a = args[i]
@@ -159,9 +180,15 @@ def push_dests(top, args):
     specs = pos if repo else pos[1:]
     branch = FORGE.git(top, "symbolic-ref", "--short", "-q", "HEAD")
     if not specs:
+        specs = FORGE.git(top, "config", "--get-all", "remote.%s.push" % remote).split()
+    if not specs:
         # push.default simple (git's default) and current write the branch's own name; simple
-        # refuses an upstream of another name. Only upstream (or tracking) writes the upstream.
-        if branch and FORGE.git(top, "config", "--get", "push.default") in ("upstream", "tracking"):
+        # refuses an upstream of another name. upstream (or tracking) writes the upstream, and
+        # matching every branch the remote has.
+        mode = FORGE.git(top, "config", "--get", "push.default")
+        if mode == "matching":
+            return ["*"]
+        if branch and mode in ("upstream", "tracking"):
             return [FORGE.git(top, "config", "--get", "branch.%s.merge" % branch).removeprefix("refs/heads/")]
         return [branch] if branch else []
     out = []
@@ -181,6 +208,16 @@ def push_dests(top, args):
     return out
 
 
+def canonical_remote(top, target):
+    """True when a push target (a remote name or URL) is origin, or the remote origin/HEAD names."""
+    head = FORGE.git(top, "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD")
+    names = {"origin", head.split("/", 1)[0]} - {""}
+    if target in names:
+        return True
+    urls = {FORGE.git(top, "remote", "get-url", n) for n in names} - {""}
+    return target.rstrip("/").removesuffix(".git") in {u.rstrip("/").removesuffix(".git") for u in urls}
+
+
 def check(head, argv, env, cwd):
     if head != "git":
         return None
@@ -190,6 +227,9 @@ def check(head, argv, env, cwd):
     if i >= len(argv):
         return None
     verb, args = argv[i], argv[i + 1 :]
+    dropped = sorted(CONFIG_ENV & env.keys())
+    if verb in HOOKED and dropped:
+        return HOOKSPATH_MSG.format(what="`%s=... git %s`" % (dropped[0], verb))
     if verb == "config" and config_writes_hookspath(args):
         return HOOKSPATH_MSG.format(what="`git config %s`" % " ".join(args[:3]))
     if verb in HOOKED and skips_verify(verb, args):
@@ -197,7 +237,8 @@ def check(head, argv, env, cwd):
     if verb != "push" or not d or not os.path.isdir(d):
         return None
     top = FORGE.git(d, "rev-parse", "--show-toplevel")
-    dests = push_dests(top, args) if top else None
+    remote = FORGE.push_target(top, args) if top else ""
+    dests = push_dests(top, args, remote) if remote and canonical_remote(top, remote) else None
     if not dests:
         return None
     global CHECKOUT
