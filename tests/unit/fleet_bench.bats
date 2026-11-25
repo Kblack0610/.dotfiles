@@ -1799,6 +1799,9 @@ closed_feed() {
   assert_output 1
   run grep -c -- '--agent edit ar-77 --text check(watch): spend tripped since ' "$NLOG"
   assert_output 1
+  # the trip is a detail line on the reopened row (ar-6078)
+  run grep -Ec -- '--agent edit ar-77 --text .* --detail [0-9]{4}-[0-9]{2}-[0-9]{2} red again after it closed$' "$NLOG"
+  assert_output 1
   run grep -c -- '--agent add check(watch): spend' "$NLOG"
   assert_output 0
   # negative control: a row closed on another board or in another profile is not this cause's row
@@ -2571,6 +2574,32 @@ fix_item() {
   assert_success
   [ "$(grep -c 'home-config sheet: check(watch): puck' "$NOTIFY")" = 1 ]
   [ "$(grep -c . "$BOARD.home")" = 1 ]
+}
+
+@test "triage: a held filing lock defers every row, human sheet included, but still queues the red fix of a row already filed (ar-6078)" {
+  log_triage_setup
+  export BENCH_UPSERT_LOCK="$SANDBOX/upsert.lock" BENCH_UPSERT_LOCK_WAIT=0
+  watch spend TRIP -25200 high; watch puck TRIP -25200 high
+  route 'watch.: spend' alert - 'the spend watch pages on its own'
+  route 'watch.: puck' human:home-config - 'check the puck'
+  # the spend row is already on the board (an earlier pass filed it), so its red fix queues though the lock is held
+  printf 'board.md\t9\t%s\t- [ ] %s <!-- id:ar-9 -->\n' 'check(watch): spend tripped since 2026-11-01, expected: x' 'check(watch): spend tripped since 2026-11-01, expected: x' >> "$BOARD"
+  exec 8>"$BENCH_UPSERT_LOCK"; flock 8
+  run "$SUBJECT" triage
+  exec 8>&-
+  assert_failure
+  assert_output --partial 'board upsert lock'
+  assert_output --partial '1 queued as red fixes'
+  run grep -c -- '--agent add' "$NLOG"
+  assert_output 0
+  [ ! -s "$BOARD.home" ]
+  # Negative control: with the lock free the same pass files the agent row and the human sheet's row.
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c 'check(watch): spend tripped since' "$BOARD"
+  assert_output 1
+  run grep -c 'check(watch): puck.*for the human: check the puck' "$BOARD.home"
+  assert_output 1
 }
 
 # 2026-11-11/12 (ar-2111): ar-1092 and ar-1650 sat on the human's sheet while their routes were human;

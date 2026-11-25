@@ -1065,6 +1065,30 @@ check_fixture() {
   assert_output 1
 }
 
+@test "upsert: a second filer waits on the board lock, so one key never gets two rows; a held lock files nothing (ar-6078)" {
+  kpi_setup
+  export BENCH_UPSERT_LOCK="$SANDBOX/upsert.lock" BENCH_UPSERT_LOCK_WAIT=0
+  rows=$(printf '%s\t%s\t%s\n' 'check(alert): NodeDown hp-victus firing' 'check(alert): NodeDown hp-victus firing, alertmanager-fleet tripped since 2026-11-25' '#high')
+  up() { bash -c '. "$1"; board_upsert "$2" && upsert_report "$2"' _ "$SUBJECT" "$rows" 2>&1; }
+  # another filer holds the lock: this one writes nothing and says why, instead of racing it
+  exec 8>"$BENCH_UPSERT_LOCK"; flock 8
+  run up
+  assert_failure
+  assert_output --partial 'board upsert lock'
+  [ ! -s "$NLOG" ]   # not one notes call: the board is not even read
+  # Negative control: released, the same filer adds the one row, and a rerun finds it and adds nothing.
+  exec 8>&-
+  run up
+  assert_success
+  assert_output --partial '1 added'
+  run up
+  assert_success
+  run grep -c -- '--agent add check(alert): NodeDown hp-victus firing' "$NLOG"
+  assert_output 1
+  run grep -c 'NodeDown hp-victus firing' "$BOARD"
+  assert_output 1
+}
+
 @test "retro check: a flat claim ends, so improve names its KPI again with last naming it" {
   kpi_setup; kpi_fixture
   claim ar-2 interrupts_per_day 0.286 max 0.2 20
@@ -4120,6 +4144,18 @@ cancel c-old-lane --why canary: superseded by the $week set"
   run "$SUBJECT" canary matrix --harness str
   assert_failure 2
   assert_output --partial 'its str entry is no object'
+  # A capability of the map's vocabulary that a harness leaves out excludes its mode, and its stack's PR-opening
+  # kinds (a kind whose kinds.json exit is not pr, or that it does not register, stays open), as route()'s harness_needs_why refuses them.
+  echo '{"capabilities":{"lane_sandbox":{"mode":"lane-sandbox","why":"no profile"},"rust_gate":{"stack":"rust","why":"needs the gate"}},
+    "harnesses":{"bare":{"capabilities":[]},"full":{"capabilities":["lane_sandbox","rust_gate"]}}}' > "$BENCH_HARNESSES"
+  echo '{"fix":{"exit":"pr"},"ci":{"exit":"pr"},"perf":{},"docs":{"exit":"report"}}' > "$SANDBOX/kinds.json"; export BENCH_KINDS="$SANDBOX/kinds.json"
+  run "$SUBJECT" canary matrix --harness bare --json
+  assert_success
+  run jq -c '[.cells[] | select(.stack == "rust") | [.kind, .status]], [.modes[] | select(.status == "excluded") | .mode], [.cells[] | select(.kind == "fix" and .stack == "rust") | .why]' <<<"$output"
+  assert_output $'[["fix","excluded"],["docs","empty"],["ci","excluded"],["perf","excluded"]]\n["lane-sandbox"]\n["bare lacks the rust_gate capability (harnesses.json): needs the gate"]'
+  run "$SUBJECT" canary matrix --harness full --json
+  run jq -c '[.cells[] | select(.stack == "rust") | [.kind, .status]], [.modes[] | select(.status == "excluded") | .mode]' <<<"$output"
+  assert_output $'[["fix","empty"],["docs","empty"],["ci","excluded"],["perf","no work"]]\n[]'
   echo 'not json' > "$BENCH_HARNESSES"
   run "$SUBJECT" canary matrix
   assert_failure 2

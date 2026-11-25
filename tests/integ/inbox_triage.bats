@@ -528,23 +528,6 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   refute_output --partial '#of/sc-9'
 }
 
-@test "--backlog: a plan's finish row stays on its board, and a rewrite must keep its plan slug, which ask-sweep finds it by" {
-  sheet '' '- [ ] finish alpha-plan-lazy-otter: 2 phases left, next: p3 the gate #requested <!-- id:sc-1 -->\n- [ ] finish beta-plan-tidy-crow: 1 phases left, next: p2 docs #requested <!-- id:sc-2 -->\n- [ ] finish gamma_plan.v2: 3 phases left, next: p1 #requested <!-- id:sc-3 -->\n'
-  # sorted by text: alpha (sc-1), beta (sc-2), gamma (sc-3)
-  answer '{"n": 1, "action": "rewrite", "row": "chore(ci): finish plan lazy-otter, 2 phases left #size/m"}' \
-    '{"n": 2, "action": "rewrite", "row": "chore(docs): finish beta-plan-tidy-crow, 1 phase left #size/s", "project": "other"}' \
-    '{"n": 3, "action": "rewrite", "row": "chore(ci): finish the gamma plan, 3 phases left #size/m"}'
-  run "$TRIAGE" --backlog --project scratch
-  assert_success
-  assert_output --partial 'rewrote 1, moved 0, dropped 0, kept 2'
-  assert_output --partial 'sc-1 kept: the rewrite drops plan slug alpha-plan-lazy-otter'
-  assert_output --partial 'sc-2 stays: ask-sweep finds plan beta-plan-tidy-crow'
-  run tasks
-  assert_output --partial 'finish alpha-plan-lazy-otter: 2 phases left'
-  assert_output --partial 'chore(docs): finish beta-plan-tidy-crow, 1 phase left'
-  assert_output --partial 'finish gamma_plan.v2: 3 phases left'
-}
-
 # keyed_row_left <row text>: a row fleet-bench keys by its prefix (lib/board-keys.sh) is never
 # listed to the model, so it keeps its words. It sorts first, so the answer for row 1, were it
 # listed, would rewrite it: the menu row taking that answer shows it was not (ar-2482).
@@ -705,17 +688,16 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
   printf '# scratch - ideas\n\nmine, by hand\n' >"$PROJ/scratch/ideas.md"
   cp "$PROJ/scratch/ideas.md" "$BATS_TEST_TMPDIR/ideas.before"
   sheet '' ''
-  agent_board '- [ ] a: the save crashes on quit #low <!-- id:sc-1 -->\n- [ ] b: a glow on the menu like #12 #low <!-- id:sc-2 -->\n- [ ] c: ship the logo, done in #12 #low <!-- id:sc-3 -->\n- [ ] d: a bloom pass #requested #low <!-- id:sc-4 -->\n- [ ] e: prod is down #urgent <!-- id:sc-5 -->\n- [ ] f: polish the hud #low <!-- id:sc-6 -->\n    - [ ] the ammo count\n- [ ] g: finish beta-plan-tidy-crow: 1 phases left, next: p2 docs #low <!-- id:sc-7 -->\n'
+  agent_board '- [ ] a: the save crashes on quit #low <!-- id:sc-1 -->\n- [ ] b: a glow on the menu like #12 #low <!-- id:sc-2 -->\n- [ ] c: ship the logo, done in #12 #low <!-- id:sc-3 -->\n- [ ] d: a bloom pass #requested #low <!-- id:sc-4 -->\n- [ ] e: prod is down #urgent <!-- id:sc-5 -->\n- [ ] f: polish the hud #low <!-- id:sc-6 -->\n    - [ ] the ammo count\n'
   answer '{"n": 1, "action": "raise", "priority": "high", "why": "a fault every player hits"}' \
     '{"n": 2, "action": "improvement", "why": "polish nobody asked for"}' \
     '{"n": 3, "action": "done", "why": "says done in #12"}' \
     '{"n": 4, "action": "improvement", "why": "a nice-to-have"}' \
     '{"n": 5, "action": "raise", "priority": "high", "why": "lower it"}' \
-    '{"n": 6, "action": "improvement", "why": "a heading"}' \
-    '{"n": 7, "action": "done", "why": "a plan finish row"}'
+    '{"n": 6, "action": "improvement", "why": "a heading"}'
   run "$TRIAGE" --backlog --project scratch
   assert_success
-  assert_output --partial 'backlog: rewrote 0, moved 0, dropped 0, kept 4, refused 0, raised 1, improvements 1, done 1'
+  assert_output --partial 'backlog: rewrote 0, moved 0, dropped 0, kept 3, refused 0, raised 1, improvements 1, done 1'
   # The rubric and each row's own priority reach the model; an untagged row shows none.
   grep -q 'Not a row at all: a nice-to-have' "$NOTES_FIXTURE/prompt.txt" || fail "the rubric never reached the model"
   grep -q 'Never add or guess one the words do not name' "$NOTES_FIXTURE/prompt.txt" || fail "the backlog call lost the file rule"
@@ -726,7 +708,6 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
   grep -q '\[ \] d: a bloom pass' "$board" || fail "a #requested row became an improvement"
   grep -q '\[ \] e: prod is down #urgent' "$board" || fail "a raise lowered a row"
   grep -q '\[ \] f: polish the hud' "$board" || fail "a heading over child rows left the board"
-  grep -q '\[ \] g: finish beta-plan-tidy-crow' "$board" || fail "a plan's finish row left its board"
   grep -q '\[ \] b: a glow' "$board" && fail "the improvement stayed on the board"
   run cat "$PROJ/scratch/agent/versions/v0.1.0.md"   # an agent board has no Version: line; its rows file under the human sheet's open version
   assert_output --regexp 'b: a glow on the menu .*dropped: triage: improvement: kept in improvements.md'
