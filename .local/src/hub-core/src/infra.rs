@@ -11,6 +11,7 @@ use serde::Serialize;
 use crate::alertmanager::{self, Firing};
 use crate::ci::{self, Ci};
 use crate::home::{Chip, Level, ALWAYS, DOMAINS};
+use crate::jobpods::{self, JobPod};
 use crate::machines::{self, Machine, Pool};
 
 use crate::prom::{self, Series, W};
@@ -80,9 +81,16 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // jobs, for the CI runners table's USUAL column.
         ("job_usual", r#"github_job_duration_seconds{forge!="forgejo"}"#.into()),
         // The governor itself: per host its verdict and action, admitted slots and whether it
-        // acts for real; its queue and health; the AWS budget's month it reads hourly; and CI in
-        // slot units (capacity, busy, backlog by kind, drain time), the glance's units (hc-668).
-        ("governor", r#"{__name__=~"ci_governor_(up|ok|queue|admitted|decision|budget_.+|capacity_units|busy_units|backlog_units|drain_seconds)"}"#.into()),
+        // acts for real; its queue and health; the AWS budget's month it reads hourly; and the
+        // workstation's local seats and their backlog (capacity and backlog units), which the
+        // Local Unity kind reads until the seats leave the governor (hc-858).
+        ("governor", r#"{__name__=~"ci_governor_(up|ok|queue|admitted|decision|budget_.+|capacity_units|backlog_units)"}"#.into()),
+        // The CI job pods (ARC runners, the forgejo-runner jobs) with their phase, node and owner,
+        // their requests, and each CI node's allocatable: the machine rows' booked CPU and memory and
+        // the pods waiting for room (`jobpods`).
+        ("job_pods", crate::jobpods::pods_query()),
+        ("job_requests", crate::jobpods::requests_query()),
+        ("ci_alloc", crate::jobpods::alloc_query()),
         // Each job kind's weight, the share of a slot one of its jobs takes: the governor's hourly
         // p90 measurement (`measured="true"`), else 1 (`measured="false"`). The Job kinds WEIGHT.
         ("kind_weight", "ci_governor_kind_weight".into()),
@@ -121,6 +129,9 @@ pub const OPTIONAL: &[&str] = &[
     "power",
     "disk",
     "governor",
+    "job_pods",
+    "job_requests",
+    "ci_alloc",
     "kind_weight",
     "job_usual",
     "rates",
@@ -150,6 +161,9 @@ pub struct Infra {
     pub machines: Vec<Machine>,
     #[serde(skip)]
     pub pools: Vec<Pool>,
+    /// The CI job pods (`jobpods::read`), read first so a runner row can name its pod's node.
+    #[serde(skip)]
+    pub pods: Vec<JobPod>,
     /// Where the cluster's cores and memory go, built once here (`workload::build`).
     pub space: Space,
     /// What Alertmanager says is firing, asked beside the queries so it is cached with them;
@@ -248,10 +262,11 @@ pub fn judge(out: &mut Infra, mut errors: Vec<String>) {
 }
 
 impl Infra {
-    /// Build what both surfaces draw from the answers, in order: the runners down, the CI
+    /// Build what both surfaces draw from the answers, in order: the job pods, the runners down, the CI
     /// board, the machines and pools, the space over both (it counts the pools' jobs done and each
     /// machine's split), then the glance over them.
     pub fn derive(&mut self) {
+        self.pods = jobpods::read(self);
         self.down = self.runners_down().into_iter().cloned().collect();
         self.ci = ci::build(self);
         (self.machines, self.pools) = machines::build(self);
@@ -297,6 +312,20 @@ impl Infra {
             .filter(|(name, h)| h.len() == 1 && !hosts.contains(name))
             .map(|(name, h)| (name.to_string(), h[0].to_string()))
             .collect()
+    }
+
+    /// A runner's machine: the node of the job pod it runs in (an ARC runner is its pod, and
+    /// the exporter names only its scale set's owner, `arc-org`), else its `host` label.
+    pub fn runner_host(&self, alias: &HashMap<String, String>, s: &Series) -> String {
+        match self.pod(s.label("name")) {
+            Some(p) if !p.node.is_empty() => p.node.clone(),
+            _ => host(alias, s.label("host")),
+        }
+    }
+
+    /// The job pod by this name, if a runner is one.
+    pub fn pod(&self, name: &str) -> Option<&JobPod> {
+        self.pods.iter().find(|p| p.name == name)
     }
 
     /// One query's series, or none.
@@ -822,6 +851,9 @@ mod tests {
                 "power",
                 "disk",
                 "governor",
+                "job_pods",
+                "job_requests",
+                "ci_alloc",
                 "kind_weight",
                 "job_usual",
                 "rates",
