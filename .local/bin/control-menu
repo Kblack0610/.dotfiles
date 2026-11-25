@@ -192,15 +192,16 @@ action() {
 menu() {
     command -v fzf >/dev/null 2>&1 || { echo "control-menu needs fzf" >&2; exit 2; }
     # The first list is the registry alone, so the menu opens at once; the bar texts replace it
-    # when every chip has answered (fleet_pulse can take its 8s curl timeout). reload-sync keeps the
-    # first list selectable until then: plain reload cleared it, so an Enter meanwhile closed the
-    # menu and ran nothing (ui tier, control_menu.bats, 2026-11-25).
+    # when every chip has answered (fleet_pulse can take its 8s curl timeout). The live reload starts
+    # on the first list's load, once, and is reload-sync, so that list stays on screen and selectable
+    # until then: a start:reload dropped it, and an Enter meanwhile closed the menu and ran nothing
+    # (ui tier, control_menu.bats, 2026-11-25).
     rows | fzf --ansi --no-sort --layout=reverse --height=100% \
         --delimiter=$'\t' --with-nth=2 \
         --prompt='control> ' \
         --header='enter click (a dropdown opens here, esc comes back)   alt-enter right-click   ctrl-r refresh   esc close' \
         --preview="$SELF preview {1} {3}" --preview-window='right,60%,wrap' \
-        --bind="start:reload-sync($SELF rows --live)" \
+        --bind="load:unbind(load)+reload-sync($SELF rows --live)" \
         --bind="ctrl-r:reload-sync($SELF rows --live)+refresh-preview" \
         --bind="enter:transform($SELF action {1} left {3})" \
         --bind="alt-enter:transform($SELF action {1} right {3})"
