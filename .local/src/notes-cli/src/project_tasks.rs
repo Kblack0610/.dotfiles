@@ -1278,11 +1278,9 @@ fn new_rows(
     let first = code.as_ref().map(|c| next_id_n(proj_dir, c));
     let mut block = Vec::new();
     for (k, text) in texts.iter().enumerate() {
-        let mut line = md::stamp_line(
-            &md::one_priority(&format!("- [ ] {}", text.trim())),
-            today,
-            today,
-        );
+        let typed = md::one_priority(&format!("- [ ] {}", text.trim()));
+        crate::reasons::refuse_bad("", &typed)?;
+        let mut line = md::stamp_line(&typed, today, today);
         if let Some(v) = to {
             line = project_sweep::retag(&line, v, Some(v) == cur).0;
         }
@@ -2471,10 +2469,21 @@ pub(crate) fn retag(line: &str, add: &[String], remove: &[String]) -> String {
         .filter(|w| sized && w.starts_with("#pts/") && !add.iter().any(|a| a == w))
         .map(str::to_string)
         .collect();
+    // A row has one reason: a new `#why/` replaces the one it had.
+    let old_why: Vec<String> = if add.iter().any(|t| t.starts_with("#why/")) {
+        head.split_whitespace()
+            .map(|w| w.trim_end_matches(','))
+            .filter(|w| w.to_lowercase().starts_with("#why/") && !add.iter().any(|a| a == w))
+            .map(str::to_string)
+            .collect()
+    } else {
+        Vec::new()
+    };
     let mut l = old
         .into_iter()
         .map(str::to_string)
         .chain(old_pts)
+        .chain(old_why)
         .chain(remove.iter().cloned())
         .fold(line.to_string(), |l, t| md::drop_tag(&l, &t));
     if add.iter().any(|a| md::is_priority(a)) {
@@ -2778,6 +2787,7 @@ pub fn retext(
             };
             // Refused here too, before the epic is filed, for the same reason.
             projects::refuse_retired_priority(&row, t)?;
+            crate::reasons::refuse_bad(&row, t)?;
             // A row that has its parent keeps it ([`md::retext_task`]), so a standing epic
             // filed for it would have no child.
             if md::split_parent(&row).1.is_some() {
@@ -3738,6 +3748,7 @@ where
             // No edit writes a priority word no reader knows (`tag --add p1`, `edit --text "... #p1"`).
             if let Some(line) = after.borrow().as_deref() {
                 projects::refuse_retired_priority(&matched, line)?;
+                crate::reasons::refuse_bad(&matched, line)?;
             }
             write_sheet(&sheet, &new)?;
             log.info("ptask", &format!("{verb} in {} ({name})", sheet.display()));
