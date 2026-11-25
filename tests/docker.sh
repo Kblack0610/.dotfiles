@@ -144,12 +144,24 @@ fi
 #                     adds one under that name (tests/Dockerfile).
 # --rm                nothing persists but what is written into the bind mount
 # --shm-size          chromium (the phone render harness) runs out of docker's 64 MB /dev/shm
+# --tmpfs             /tmp, where every bats sandbox and HOME live, is memory, so a test's writes
+#                     and fsyncs never touch the disk. On a pool node the container start and
+#                     every test waited on that disk, shared by dozens of pods (ar-5740, the note
+#                     in tests.yml). exec because the sandboxes run their stubs from there; HOME
+#                     (/tmp/testhome, the image's) gets its own, as /tmp's hides the image's dir.
+#                     It is memory charged to the job, so each has a size: a test past it fails
+#                     on ENOSPC rather than the pod on OOM. The largest known writer is
+#                     dotfiles_deploy's copy of the tracked text tree (about 30 MB), and the
+#                     rust job's tilecast-schema.sh npm ci, its tree in /tmp and cache in HOME.
+tmpfs_opts=rw,exec,nosuid,nodev,mode=1777
 run_args=(
   --rm --init
   --network "$DOCKER_NETWORK"
   --user "$(id -u):$(id -g)"
   --env "USER=$(id -un)"
   --shm-size 1g
+  --tmpfs "/tmp:$tmpfs_opts,size=1g"
+  --tmpfs "/tmp/testhome:$tmpfs_opts,size=1g"
   --volume "$REPO:/work"
   --workdir /work
 )
@@ -188,12 +200,32 @@ if [ "${1:-}" = "--shell" ]; then
   shift
   exec "$DOCKER" run -it "${run_args[@]}" "$IMAGE" bash "$@"
 fi
+
+# One command in a new container. In CI the container is started detached and the command runs in
+# it by docker exec, so the step ends when the command does. A container's exit unmounts its layer,
+# a sync of the node's disk, and --rm then deletes it: on a pool node busy with writeback that took
+# up to 6 minutes after every test had passed (run 45684648964, ar-5740). Removed in the background
+# instead, that sync landed on the next step's container start (run 45694133205, notes bats). So
+# in a GitHub job a finished container is left running, and the runner pod's deletion discards it;
+# bats has already cleaned its /tmp. A cancel removes it in the background (its output nowhere, so
+# the step does not wait), which kills the command. Its entrypoint is sleep, so the passwd entry is
+# written once, by the exec's test-entry. Anywhere else, CI set or not, it is the plain docker run.
+run_in_image() {
+  [ -n "${GITHUB_ACTIONS:-}" ] || exec "$DOCKER" run "${run_args[@]}" "$IMAGE" "$@"
+  local rc=0
+  cid=$("$DOCKER" run -d --entrypoint sleep "${run_args[@]}" "$IMAGE" infinity)
+  trap '"$DOCKER" rm -f "$cid" </dev/null >/dev/null 2>&1 & exit 143' TERM INT
+  "$DOCKER" exec "$cid" /usr/local/bin/test-entry "$@" &
+  wait "$!" || rc=$?
+  exit "$rc"
+}
+
 if [ "${1:-}" = "--run" ]; then
   shift
   # With no command, docker would run the image's CMD: the whole container suite.
   [ $# -gt 0 ] || { echo "docker.sh: --run needs a command" >&2; exit 2; }
-  exec "$DOCKER" run "${run_args[@]}" "$IMAGE" "$@"
+  run_in_image "$@"
 fi
 
 targets=("${@:-test-container}")
-exec "$DOCKER" run "${run_args[@]}" "$IMAGE" make -C tests "${targets[@]}"
+run_in_image make -C tests "${targets[@]}"
