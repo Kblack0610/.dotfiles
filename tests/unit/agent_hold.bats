@@ -77,6 +77,8 @@ setup() {
   mkdir -p "$SANDBOX/asks"
   printf '#!/usr/bin/env bash\n[ "$1" = show ] && cat "%s/asks/$2"\n' "$SANDBOX" > "$SANDBOX/bin/agent-ask"
   chmod +x "$SANDBOX/bin/agent-ask"
+  # The sandbox points AGENT_ASK at the real agent-ask; keep reads the stub through it.
+  export AGENT_ASK="$SANDBOX/bin/agent-ask"
   ask() { printf 'question: %s\nanswer: %s\nanswered_by: %s\nanswered_at: %s\ncontext: \n' "$2" "$3" "$4" "$(date -d "-${5:-1} hours" +%Y-%m-%dT%H:%M:%S%z)" > "$SANDBOX/asks/$1"; }
   run "$HOLD" aged
   assert_failure 1
