@@ -9,7 +9,7 @@ use hub_core::releases::Level;
 use hub_core::table::{self, Summary, View};
 use serde::{Deserialize, Serialize};
 
-use crate::cache::{off, ReadCache};
+use crate::cache::{failed, off, ReadCache};
 
 /// The default list folds concurrent tabs, quick reloads and every keystroke in the search
 /// into one collection; a one-job history (`name=`) is asked for by a click and is always fresh.
@@ -93,12 +93,7 @@ fn render(js: &Jobs, q: &JobsQuery) -> String {
         }),
         table,
     };
-    serde_json::to_string(&out).unwrap_or_else(|e| failed(e.to_string()))
-}
-
-/// A body the tab can still render when collecting itself failed.
-fn failed(e: String) -> String {
-    serde_json::json!({ "jobs": [], "errors": [e] }).to_string()
+    serde_json::to_string(&out).unwrap_or_else(|e| failed(&["jobs"], e.to_string()))
 }
 
 impl Cache {
@@ -111,7 +106,7 @@ impl Cache {
         } else {
             collect(&q).await.map(Arc::new)
         };
-        js.map_or_else(failed, |js| render(&js, &q))
+        js.map_or_else(|e| failed(&["jobs"], e), |js| render(&js, &q))
     }
 }
 

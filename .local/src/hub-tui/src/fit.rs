@@ -394,9 +394,38 @@ pub fn wrap<S: AsRef<str>>(items: &[S], sep: &str, w: usize) -> Vec<String> {
     out
 }
 
+/// `text` word-wrapped to `width` under a label column `label_w` wide, the label on the first
+/// line only: one field of a detail pane.
+pub fn labelled(
+    label: &str,
+    text: &str,
+    label_w: usize,
+    width: usize,
+    dim: Style,
+) -> Vec<Line<'static>> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    wrap(&words, " ", width)
+        .into_iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let name = if i == 0 { label } else { "" };
+            Line::from(vec![
+                Span::styled(format!("  {name:<label_w$} "), dim),
+                Span::raw(l),
+            ])
+        })
+        .collect()
+}
+
 /// A line's text, styles dropped.
 pub fn plain(l: &Line) -> String {
     l.spans.iter().map(|s| s.content.as_ref()).collect()
+}
+
+/// Lines as text, one a line, styles dropped: what a test compares.
+#[cfg(test)]
+pub fn plain_text(lines: &[Line]) -> String {
+    lines.iter().map(plain).collect::<Vec<_>>().join("\n")
 }
 
 #[cfg(test)]

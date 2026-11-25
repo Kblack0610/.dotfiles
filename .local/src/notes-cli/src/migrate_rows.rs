@@ -517,9 +517,7 @@ mod tests {
 
     const CUR: Option<V> = Some((1, 13, 0));
 
-    fn day(s: &str) -> NaiveDate {
-        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
-    }
+    use crate::md::date as day;
 
     fn run_on(
         content: &str,
