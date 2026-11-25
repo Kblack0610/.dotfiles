@@ -554,14 +554,20 @@ DEFAULT_KINDS = ("slash", "skill", "agent", "intent", "prompt")
 STATS_KINDS = DEFAULT_KINDS + USE_KINDS + ("bypass", "denied")
 
 
-def hand_methods():
-    """The hook module that owns metadata.replaces, beside this script in the same checkout."""
-    import importlib.util
-    path = Path(__file__).resolve().parents[2] / ".claude" / "hooks" / "hand_methods.py"
-    spec = importlib.util.spec_from_file_location("hand_methods", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+@functools.lru_cache(maxsize=None)
+def hook_module(name):
+    """The hook <name>.py from this checkout's .claude/hooks, loaded by hooklib with that dir on sys.path
+    only for the load, so the hook's own `import hooklib` resolves as it does when the hook runs and no
+    hook file shadows a module name afterwards (hooklib stays cached in sys.modules for later loads)."""
+    hooks = str(Path(__file__).resolve().parents[2] / ".claude" / "hooks")
+    sys.path.insert(0, hooks)
+    try:
+        import hooklib
+        return hooklib.load(name)
+    finally:
+        sys.path.remove(hooks)
+
+
 # How a tool_result reads when a PreToolUse hook denied the call, so it never ran.
 DENIED = "PreToolUse:Bash hook error:"
 
@@ -897,7 +903,7 @@ def cmd_stats(a):
     names = frozenset(skill_names()) if kinds & set(USE_KINDS) else frozenset()
     hand = None
     if {"bypass", "denied"} & kinds:
-        mod = hand_methods()
+        mod = hook_module("hand_methods")  # owns metadata.replaces
         hand = (mod, mod.load_rules())
     agg = {}
     used = {}  # session -> skills and slash commands it ran, for intent coverage
@@ -1692,19 +1698,9 @@ RUNNER_COMMANDS = ("fleet-lead", "fleet-overseer")
 GUARD_DENY = re.compile(r"^PreToolUse:\w+ hook error: (?:([a-z][a-z0-9-]+): )?")
 
 
-@functools.lru_cache(maxsize=None)
-def block_poll():
-    """block-poll.py from this checkout, so the loop count and the guard agree on what a wait loop is."""
-    import importlib.util
-    hook = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", ".claude", "hooks", "block-poll.py")
-    spec = importlib.util.spec_from_file_location("block_poll", hook)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def wait_loop(cmd):
-    mod = block_poll()
+    # block-poll.py from this checkout, so the loop count and the guard agree on what a wait loop is.
+    mod = hook_module("block-poll")
     return any(mod.polls(t) for t in mod.code_texts(mod.strip_heredocs(cmd)))
 
 

@@ -26,12 +26,15 @@ unrated_json() { local s; printf -v s '"%s",' $UNRATED_ENDS; printf '[%s]' "${s%
 # back) and an UNRATED_ENDS reason (its own cause); MOVE_CAUSES are the ones only the mover knows
 # (`agent-queue move --cause`): fleet-dispatch's reap requeues a red PR to fix-ci, one in conflict to merge
 # its base, a green one to a lander (land), a branch left with no PR to a takeover, and a lost host's run;
-# trainee-reject sends a rejected diff back (reject). UNRATED_CAUSES file the run unrated: a cancel, a lost
+# trainee-reject sends a rejected diff back (reject), or a run that left no diff but said why back with that
+# word (already-fixed: the code does the task already; blocked: it needs the human or access the run lacks;
+# a no-diff run that says nothing is a failure, cause reject). UNRATED_CAUSES file the run unrated: a cancel,
+# an already-fixed or blocked no-diff run (no model's miss), a lost
 # host (the run went with the machine, as a cut does), and a land handoff: the lander merges the same green
 # diff unchanged, so nothing was redone (a headless tier-3 run's --pr-only ends there by design); a pair that
 # stops short of landing still shows as unrated/land in `model-lane report`'s causes.
-MOVE_CAUSES="fix-ci conflict land takeover lost reject"
-UNRATED_CAUSES="cancel land lost"
+MOVE_CAUSES="fix-ci conflict land takeover lost reject already-fixed blocked"
+UNRATED_CAUSES="cancel land lost already-fixed blocked"
 
 # unrated_cause <cause> -- 0 when a run with that cause is counted and never scored.
 unrated_cause() { case " $UNRATED_CAUSES " in *" ${1:-none} "*) return 0 ;; *) return 1 ;; esac; }

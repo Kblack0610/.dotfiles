@@ -1436,6 +1436,72 @@ EOF2
   assert_line --index -1 'landed #43'
 }
 
+# loose_gate: a row a phase's item filed is the plan's work (planning.md, Found work:), so the phase lands only once
+# a phase line takes it. ship files ar-77 (inbox-triage, #from/ship) and ar-78 (a direct add); ar-79 is another
+# item's, ar-80 a phase row of a chain, ar-81 closed and ar-82 the human's, so none of those holds it.
+loose_fixture() {
+  printf '%s\n' '# plan' '' '## Phases' '' '- [x] 1. first (#1)' '- [ ] 2. last' >"$PLAN"
+  "$SANDBOX/bin/agent-queue" set ship "plan=$PLAN" >/dev/null
+  jq -nc '{action: "filed", id: "ar-77", lane: "agent", by: "inbox-triage", to: "agent-runtime", text: "the blocker #from/ship #size/s"},
+    {action: "added", id: "ar-78", lane: "agent", by: "ship", to: "agent-runtime", text: "a second blocker"},
+    {action: "filed", id: "ar-79", lane: "agent", by: "inbox-triage", to: "agent-runtime", text: "not ours #from/shipper"},
+    {action: "added", id: "ar-80", lane: "agent", by: "ship", to: "agent-runtime", text: "a phase row"},
+    {action: "added", id: "ar-81", lane: "agent", by: "ship", to: "agent-runtime", text: "closed already"},
+    {action: "added", id: "ar-82", lane: "human", by: "ship", to: "agent-runtime", text: "the human'"'"'s"},
+    {action: "added", lane: "agent", by: "ship", text: "an outbox add has no id"}' >"$NOTES_FIXTURE/log.jsonl"
+  jq -n '{rows: [{project: "agent-runtime", lane: "agent", id: "ar-77", state: "open"},
+    {project: "agent-runtime", lane: "agent", id: "ar-78", state: "open"},
+    {project: "agent-runtime", lane: "agent", id: "ar-79", state: "open"},
+    {project: "agent-runtime", lane: "agent", id: "ar-80", state: "open", details: ["Phase 3 of the plan /x/other.md: three."]},
+    {project: "agent-runtime", lane: "human", id: "ar-82", state: "open"}],
+    done: [{project: "agent-runtime", lane: "agent", id: "ar-81", state: "done"}]}' >"$NOTES_FIXTURE/board.json"
+}
+
+@test "loose: a phase whose item filed open rows no phase line takes is refused before the merge, naming both ways out" {
+  loose_fixture
+  run "$LAND" 42 --item ship --plan "$PLAN" --phase "2. last"
+  assert_failure 1
+  assert_output --partial "agent-land: loose failed: ship filed open row(s) ar-77 ar-78 that no phase of $PLAN takes. Two ways out: take each into the plan"
+  assert_output --partial "or ask the human to drop it (agent-ask post)"
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+  run grep -c '^- \[x\] 2. last' "$PLAN"
+  assert_output 0
+}
+
+@test "loose: with each row taken, by a phase line or the plan's rows: line, it lands" {
+  loose_fixture
+  printf '%s\n' '# plan' 'rows: ar-78' '' '## Phases' '' '- [x] 1. first (#1)' '- [ ] 3. fix the blocker, takes ar-77 (after 1)' '- [ ] 2. last' >"$PLAN"
+  run "$LAND" 42 --item ship --plan "$PLAN" --phase "2. last"
+  assert_success
+  assert_line --index -1 'landed #42'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 1
+}
+
+@test "loose: a record it cannot read refuses rather than pass a loose row; --partial and an item of no plan are not checked" {
+  loose_fixture
+  touch "$NOTES_FIXTURE/log.fail"
+  run "$LAND" 42 --item ship --plan "$PLAN" --phase "2. last"
+  assert_failure 1
+  assert_output --partial 'loose failed: could not read the rows ship filed (notes log, notes board)'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+  run "$LAND" 42 --item ship --dry-run
+  assert_line --partial "loose: plan_loose_rows $PLAN ship"
+  run "$LAND" 42 --item ship --partial --dry-run
+  refute_line --partial 'loose: '
+}
+
+@test "loose: the plan in the item, not --plan, is what it reads: an item with no plan: lands with loose rows on the record" {
+  loose_fixture
+  item two 'board:dotfiles:two' agent
+  jq -nc '{action: "added", id: "ar-77", lane: "agent", by: "two", to: "agent-runtime", text: "two filed it too"}' >>"$NOTES_FIXTURE/log.jsonl"
+  run "$LAND" 42 --item two
+  assert_success
+  refute_output --partial 'loose'
+}
+
 @test "a row another open item still works stays open for that item's landing (ar-1793)" {
   item twin 'board:dotfiles:ship it' agent
   run "$LAND" 42 --item ship

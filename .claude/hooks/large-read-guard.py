@@ -13,11 +13,11 @@ into another command, binary files, and anything the guard cannot stat. Out of s
 dumpers (`sed p`, `tail -n +1`, `echo "$(cat f)"`) and a cwd changed by anything but a plain
 `cd <dir>` earlier in the command. Fail-open on any error.
 """
-import json
 import os
 import re
 import shlex
-import sys
+
+import hooklib
 
 MAX_LINES = 2000
 CHUNK = 1 << 16
@@ -139,13 +139,7 @@ def cat_targets(cmd, cwd):
 
 
 # gate: hook-large-read-guard
-def deny(reason):
-    print(json.dumps({"hookSpecificOutput": {
-        "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}}))
-
-
-def main():
-    data = json.load(sys.stdin)
+def decide(data):
     tool = data.get("tool_name")
     tin = data.get("tool_input") or {}
     cwd = data.get("cwd") or os.getcwd()
@@ -154,17 +148,14 @@ def main():
         if path and tin.get("limit") is None:
             lines = long_text(path)
             if lines:
-                deny(READ_MSG.format(path=path, lines=lines))
+                return READ_MSG.format(path=path, lines=lines)
     elif tool == "Bash" and not tin.get("run_in_background"):
         for arg, path in cat_targets(tin.get("command") or "", cwd):
             lines = long_text(path)
             if lines:
-                return deny(CAT_MSG.format(path=arg, lines=lines))
+                return CAT_MSG.format(path=arg, lines=lines)
+    return None
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception:
-        pass
-    sys.exit(0)
+    hooklib.run(decide)
