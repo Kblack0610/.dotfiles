@@ -30,16 +30,16 @@ the cache's one writer. `hand_methods.py --list` prints the rows; `--check <SKIL
 what is wrong with one file's rows (skill-drift's BADMETA lint).
 Fail-open: any error allows the call.
 """
-import importlib.util
 import json
 import os
 import re
 import sys
 from pathlib import Path
 
+import hooklib
+
 HOOK = "hand-methods"
 MODES = ("deny", "report")
-_HERE = Path(__file__).resolve().parent
 
 
 def skills_dir():
@@ -52,13 +52,6 @@ def cache_path(root):
     base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
     tag = hashlib.sha1(str(root).encode()).hexdigest()[:12]
     return Path(base) / "claude-hooks" / f"replaces-{tag}.json"
-
-
-def _block_poll():
-    spec = importlib.util.spec_from_file_location("block_poll", _HERE / "block-poll.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 FRONTMATTER = re.compile(r"---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|$)", re.S)
@@ -169,7 +162,7 @@ def code_texts(cmd):
     """The command as code, block-poll's strict parse plus each $(...) body."""
     global _BP
     if _BP is None:
-        _BP = _block_poll()
+        _BP = hooklib.load("block-poll")
     cmd = _BP.strip_heredocs(cmd)
     # A backslash-newline outside quotes is one command line to the shell, and so to a row.
     cmd = cmd.replace("\\\n", " ")
@@ -205,18 +198,15 @@ def reason(rule):
             f"metadata.replaces, fix it there if it is wrong).")
 
 
-def main():
-    data = json.load(sys.stdin)
+def decide(data):
     if data.get("tool_name", "Bash") != "Bash":
-        return
+        return None
     cmd = (data.get("tool_input") or {}).get("command") or ""
     for r in matches(cmd, data.get("cwd") or os.getcwd(), load_rules()):
         # gate: hook-hand-methods
         if r["mode"] == "deny":
-            print(json.dumps({"hookSpecificOutput": {
-                "hookEventName": "PreToolUse", "permissionDecision": "deny",
-                "permissionDecisionReason": reason(r)}}))
-            return
+            return reason(r)
+    return None
 
 
 def list_rows():
@@ -250,8 +240,4 @@ if __name__ == "__main__":
         for line in check_file(sys.argv[2]):
             print(line)
         sys.exit(0)
-    try:
-        main()
-    except Exception:
-        pass
-    sys.exit(0)
+    hooklib.run(decide)

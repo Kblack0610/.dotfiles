@@ -89,3 +89,21 @@ denied_by() { assert_success; assert_output --partial '"deny"'; assert_output --
   assert_output --partial 'walker-guards: checkout-guard skipped'
   [ "$(grep -c ' skipped, it raised' <<<"$output")" -eq 1 ]
 }
+
+@test "run through a stow link with no hooklib.py beside it, the guards import hooklib from the checkout" {
+  # ~/.claude/hooks holds one link per file, so a new hooklib.py is not linked there until stow runs
+  # again; Python puts the link's target dir on sys.path, which is where the import finds it.
+  mkdir "$T/linked"
+  ln -s "$(realpath "$HOOKS/walker-guards.py")" "$T/linked/walker-guards.py"
+  WALKER="$T/linked/walker-guards.py" run at "$T/dots" 'gh auth logout'
+  denied_by gh-login-guard
+}
+
+@test "with hooklib.py missing altogether the guards fail open: no deny, a non-blocking exit (negative control)" {
+  mkdir "$T/nolib"
+  cp "$HOOKS"/*.py "$T/nolib/"
+  rm "$T/nolib/hooklib.py"
+  WALKER="$T/nolib/walker-guards.py" run at "$T/dots" 'gh auth logout'
+  assert_failure 1
+  refute_output --partial '"deny"'
+}
