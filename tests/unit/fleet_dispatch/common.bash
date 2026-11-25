@@ -613,10 +613,11 @@ fj_pr() {
     > "$NOTES_FIXTURE/fj.pr"
 }
 
-# fix_ended <head> <ci> -- the fix-crash item's PR now reads OPEN at <head> with checks <ci>, and the
-# item is back in review/ with a session that is gone, as a fix-ci session leaves it when it ends.
+# fix_ended <head> <ci> [mergeable red-runs] -- the fix-crash item's PR now reads OPEN at <head> with checks
+# <ci> (and, given, PR_STATE_JQ's last two fields), and the item is back in review/ with a session that is
+# gone, as a fix-ci session leaves it when it ends.
 fix_ended() {
-  printf 'OPEN - %s %s\n' "$1" "$2" > "$NOTES_FIXTURE/pr.state"
+  printf 'OPEN - %s %s%s\n' "$1" "$2" "${3:+ $3 ${4:--}}" > "$NOTES_FIXTURE/pr.state"
   [ "$(agent-queue show fix-crash --json | jq -r .state)" = review ] && return 0
   agent-queue move fix-crash running >/dev/null
   agent-queue set fix-crash session=lab:game-agent-1 >/dev/null

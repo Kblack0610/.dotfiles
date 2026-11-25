@@ -1375,6 +1375,31 @@ notes --profile work ptask level run lv-8'
   assert_output 0
 }
 
+# ar-6158: a row the board's intake gate or daily cap refuses (notes exit 6) is no row, and an item with no row would run past the cap.
+@test "a story row the board's cap refuses queues no item; any other failed write still does (the next test)" {
+  story_notes
+  echo 6 > "$NOTES_FIXTURE/story.rc"
+  echo 'level has taken its 10 new agent rows for today (10 so far, intake_daily_cap in the notes config), so nothing was added' > "$NOTES_FIXTURE/story.out"
+  run "$AQ" add --project level --slug capped "x"
+  assert_failure 6
+  assert_output --partial "no story row filed on level: level has taken its 10 new agent rows for today"
+  assert_output --partial "capped is not queued: its board row was refused"
+  [ -z "$(item queued capped)" ]
+}
+
+@test "a plan whose first phase the cap refuses queues nothing and says to add it again tomorrow, not now" {
+  story_notes
+  echo 6 > "$NOTES_FIXTURE/story.rc"
+  echo 'level has taken its 10 new agent rows for today (10 so far, intake_daily_cap in the notes config), so nothing was added' > "$NOTES_FIXTURE/story.out"
+  printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two' > "$SANDBOX/cp.md"
+  run env AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/cp.md" --project level --slug cp
+  assert_failure
+  assert_output --partial "the board's daily cap refused cp-p1"
+  assert_output --partial "run the same add again tomorrow"
+  refute_output --partial "run the same add again to queue them"
+  [ -z "$(item queued cp-p1)" ]
+}
+
 @test "a failed story write never stops the add: the item is written with no row" {
   story_notes
   echo 1 > "$NOTES_FIXTURE/story.rc"
@@ -1604,6 +1629,37 @@ second line of the brief
   run "$AQ" add --project level --slug titled --title "feat(menu): the title" "the real wording of the task"
   assert_failure 5
   assert_called "--detail=the real wording of the task -- "
+}
+
+@test "an over-cap board pull (promote's --from board:) files no second row: the five check rows triage re-added each pass" {
+  # ar-6187 and ar-6102, 2026-11-25: fleet-bench triage promoted each open check row at the cap; the held add filed an
+  # overflow twin with the cut title on every pass, which inbox-triage then dropped as a dup of the open row.
+  story_notes
+  export AGENT_QUEUE_CAP=1 AGENT_QUEUE_PULL=dispatch
+  "$AQ" add --project level --slug one "feat(menu): one" >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  local n=6109 t
+  for t in "check(alert): TraderLabPodUnschedulable freqtrade-league-66 firing, alertmanager-fleet tripped since 2026-11-25, expected: no fleet=fix alert, evidence: watch-companion-loop list --long alertmanager-fleet" \
+    "check(alert): TraderWatchBotBlind trader-web-77fdddd486-zvcpk firing, alertmanager-fleet tripped since 2026-11-25, expected: no fleet=fix alert, evidence: watch-companion-loop list --long alertmanager-fleet" \
+    "check(watch): triage-coverage tripped since 2026-11-25, expected: Every standing watch and runner has its own triage-routes line, and every runner's SKILL= names a sk, why: watch playground-gate-budget owned:hc-N is closed" \
+    "check(watch): unity-runners-online tripped since 2026-11-25, expected: At least 1 self-hosted runner labelled \`unity\` is online in the org., why: unity_online=N" \
+    "check(alert): HomelabCronJobFailed trader-markets-history-bars firing, alertmanager-fleet tripped since 2026-11-25, expected: no fleet=fix alert"; do
+    run "$AQ" add --project level --priority high --from "board:level:lv-$n" --slug "lv-$n" --tags "red alert cause:c$n" --title "$t" -- "$t"
+    assert_failure 5
+    assert_output --partial "row lv-$n is left un-started where it is"
+    n=$((n + 1))
+  done
+  # The next pass pulls the same row again and is held again, still filing nothing.
+  run "$AQ" add --project level --priority high --from board:level:lv-6109 --slug lv-6109 --tags "red alert cause:c6109" -- "check(alert): TraderLabPodUnschedulable freqtrade-league-66 firing"
+  assert_failure 5
+  run grep -cE ' ptask level --agent (add|propose) ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*-lv-61*.md 2>/dev/null)" ] || fail "a held board pull wrote an item"
+  [ "$(jq -r 'select(.slug | startswith("lv-61")) | .slug' "$AGENT_QUEUE_DIR/admission.jsonl" | wc -l)" -eq 6 ]
+  # Negative control: the same over-cap add with no board row behind it is a human's, and files its row.
+  run "$AQ" add --project level --priority high --slug human-twin "check(watch): triage-coverage tripped since 2026-11-25"
+  assert_failure 5
+  assert_called "ptask level --agent add -- check(watch): triage-coverage tripped since 2026-11-25 #high"
 }
 
 @test "an over-cap add that is #requested files its row with --want, so it ranks first on the board" {
@@ -2067,6 +2123,20 @@ already"
   assert_output --partial "4 queue lock misses in the last 4h"
 }
 
+# ar-5560: every line read "locks":[] on btrfs, so a 14 minute hold by an add stuck on notes named no holder.
+@test "lock-miss names the pid and command holding .lock, the writer before a reader, never a waiter" {
+  mkdir -p "$AGENT_QUEUE_DIR"
+  jq -nc --arg ts "$(date -u -Is)" '{ts: $ts, cmd: "agent-queue show x", caller: "hub",
+    locks: [".gate holds WRITE 11", ".lock holds READ 9", ".lock waits READ 12", ".lock holds WRITE 13"],
+    procs: [{file: ".gate", pid: 11, cmd: "flock"}, {file: ".lock", pid: 12, cmd: "agent-queue list"},
+      {file: ".lock", pid: 9, cmd: "agent-queue show y"},
+      {file: ".gate", pid: 13, cmd: "agent-queue add --plan p"}, {file: ".lock", pid: 13, cmd: "agent-queue add --plan p"}]}' \
+    > "$AGENT_QUEUE_DIR/lock-miss.jsonl"
+  run "$AQ" lock-miss
+  assert_success
+  assert_output --partial "agent-queue show x from hub, held by 13 agent-queue add --plan p ("
+}
+
 # ar-3025: a timeout names who held the lock. NEGATIVE CONTROL: before it, nothing was written and
 # 108 dispatch starts failed with no holder on record.
 @test "a lock timeout appends one lock-miss line naming the holder, the taker and its mode" {
@@ -2088,7 +2158,7 @@ already"
   log="$AGENT_QUEUE_DIR/lock-miss.jsonl"
   [ "$(wc -l < "$log")" = 2 ]
   run jq -r --argjson me "$holder" -s '.[] | [.mode, (.cmd | test("agent-queue (add|show)")),
-    (.locks | index(".lock holds WRITE") != null), (.procs | any(.pid == $me and .file == ".lock")),
+    (.locks | index(".lock holds WRITE \($me)") != null), (.procs | any(.pid == $me and .file == ".lock")),
     (.procs | all(.cmd | test("agent-queue") | not))] | map(tostring) | join(" ")' "$log"
   assert_line --index 0 "exclusive true true true true"
   assert_line --index 1 "shared true true true true"

@@ -17,7 +17,7 @@ pub struct Event {
     pub ts: String,
     /// Intake: `split` (a list became one line per ask, `why` its size), `moved` (outbox or Focus -> an inbox), `filed`, `dup`, `planned`, `left` (waits
     /// for the human) or `refused` (a write the CLI turned down). A verb's write to a row:
-    /// `added`, `edited`, `detailed`, `tagged`, `started`, `unstarted`, `toggled` (a Focus row), `done`, `dropped`, `placed` (another
+    /// `capped` (a new agent row the daily intake cap turned away, `gate.rs`), `added`, `edited`, `detailed`, `tagged`, `started`, `unstarted`, `toggled` (a Focus row), `done`, `dropped`, `placed` (another
     /// version on the same sheet), `rehomed` (another project), `removed` (left Focus undone),
     /// `swept` or `archived`.
     pub action: String,
@@ -326,6 +326,11 @@ fn read_day(p: &Profile, day: &str) -> (Vec<Event>, Vec<Reject>) {
 /// Every event the record holds, oldest first.
 pub fn all(p: &Profile) -> Vec<Event> {
     read(p, |_| true).0
+}
+
+/// The events of the last `days` local days (today included), oldest first.
+pub fn recent(p: &Profile, days: i64) -> Vec<Event> {
+    read_since(p, days).0
 }
 
 fn read_since(p: &Profile, days: i64) -> (Vec<Event>, Vec<Reject>) {

@@ -4959,10 +4959,12 @@ row_newer_item() {
 }
 
 # PR_STATE_JSON, PR_STATE_JQ -- what one read of an item's PR asks for, and the line it prints:
-# "<state> <merge oid> <head oid> <ci> <mergeable>", - for a missing oid or mergeable, ci as CI_JQ reads
-# the checks, mergeable as gh reads it (MERGEABLE, CONFLICTING, UNKNOWN).
+# "<state> <merge oid> <head oid> <ci> <mergeable> <red runs>", - for a missing oid or mergeable, ci as
+# CI_JQ reads the checks except that a FAIL the runners caused (CI_JQ infra) reads INFRA, mergeable as gh
+# reads it (MERGEABLE, CONFLICTING, UNKNOWN), red runs as CI_JQ red_runs.
 PR_STATE_JSON=state,mergeCommit,headRefOid,statusCheckRollup,mergeable
-PR_STATE_JQ="$CI_JQ"' [.state, (.mergeCommit.oid // "-"), (.headRefOid // "-"), ci, (.mergeable // "-")] | join(" ")'
+PR_STATE_JQ="$CI_JQ"' [.state, (.mergeCommit.oid // "-"), (.headRefOid // "-"),
+  (if infra then "INFRA" else ci end), (.mergeable // "-"), red_runs] | join(" ")'
 
 # item_pr_state <slug> <item json> -> PR_STATE_JQ's line for the item's PR; fails when its forge cannot
 # be read (so_pr_view). A bare pr: names no repo and one project spans repos, so it reads from the
@@ -5215,7 +5217,7 @@ restart_human_item() {
 # there for its next start.
 # Each note is added in front of the one the session left (note_add), never over it.
 settle_item() {
-  local st it pr report info state='' oid head='' ci='' mergeable='' end=() why='' ask after; st=$(item_state "$1")
+  local st it pr report info state='' oid head='' ci='' mergeable='' reruns='' end=() why='' ask after; st=$(item_state "$1")
   # set_end -- why this run ended, asked only by the branches that record it.
   set_end() { why=$(item_end "$it"); [ -z "$why" ] || end=(--end "$why"); }
   # requeue_blocked <slug> <session> <reason> -- back to queued/, where the next start waits on what blocked
@@ -5243,7 +5245,7 @@ settle_item() {
   fi
   IFS=$'\x1f' read -r pr report oid < <(jq -r '[.pr // "", .report // "", .merged // ""] | join("\u001f")' <<<"$it")
   if [ -n "$pr" ] && [ -n "$oid" ]; then state=MERGED
-  elif [ -n "$pr" ]; then info=$(item_pr_state "$1" "$it") || info=''; read -r state oid head ci mergeable <<<"$info"; oid=${oid#-} head=${head#-}
+  elif [ -n "$pr" ]; then info=$(item_pr_state "$1" "$it") || info=''; read -r state oid head ci mergeable reruns <<<"$info"; oid=${oid#-} head=${head#-}
   fi
   # A run that filed a question for its item and stopped without `agent-queue requeue --ask` (4 of 24
   # Codex runs that asked, 2026-11-10) goes back to its board row gated #ask/<id> while its work is
@@ -5293,7 +5295,7 @@ settle_item() {
   case "$state" in OPEN | CLOSED) reap_unstuck "$1" ;; MERGED) [ -z "$oid" ] || reap_unstuck "$1" ;; esac
   # Already parked on its open PR, this pass reaps nothing: no event for every pass of the wait,
   # unless its checks finished with nobody on it (own_parked_pr).
-  [ "$state:$st" != OPEN:review ] || { own_parked_pr "$1" "$2" "$it" "$head" "$ci" "$mergeable"; return 0; }
+  [ "$state:$st" != OPEN:review ] || { own_parked_pr "$1" "$2" "$it" "$head" "$ci" "$mergeable" "$reruns"; return 0; }
   case "$st:$pr$report" in waiting: | review:)
     [ -z "$(jq -r '.note // ""' <<<"$it")" ] || return 0
     note_add "$1" "$it" "session $2 ended; $st without a PR"
@@ -5436,7 +5438,30 @@ takeover_branch() {
   echo "takeover queue item $slug (branch $name at ${sha:0:12}, try $((tries + 1)) of $DISPATCH_FIX_TRIES)"
 }
 
-# own_parked_pr <slug> <session> <item json> <head oid> <ci> [mergeable] -- a review item whose session is gone
+# infra_rerun <slug> <item json> <head> <red runs> -- own_parked_pr's one rerun of a head whose red the
+# runners caused (INFRA): `gh run rerun --failed` on each red run, stamped `rerun_tries: 1 <head>` first, so
+# a failed write never reruns twice. It takes no session and no admission slot. Returns 1, rerunning
+# nothing, when this head was rerun already or no run is named; a rerun gh refuses is logged and returns 1
+# too. Either way the red goes the FAIL way.
+infra_rerun() {
+  local pr project dir r ran=''
+  [ "${4:--}" != - ] && [ "$(jq -r '.rerun_tries // "" | split(" ")[1] // ""' <<<"$2")" != "$3" ] || return 1
+  IFS=$'\x1f' read -r pr project < <(jq -r '[(.pr // "" | split(" ")[0]), .project // ""] | join("\u001f")' <<<"$2")
+  agent-queue set "$1" "rerun_tries=1 $3" >/dev/null || return 1
+  [[ "$pr" == */*#* ]] || dir=$(repo_dir "$project") || return 1
+  for r in ${4//,/ }; do
+    if [[ "$pr" == */*#* ]]; then gh run rerun "$r" --failed -R "${pr%#*}" >/dev/null 2>&1
+    else (cd "$dir" && gh run rerun "$r" --failed >/dev/null 2>&1); fi && { ran+=" $r"; continue; }
+    logline "queue item $1: gh run rerun $r --failed refused for PR $pr"
+  done
+  [ -n "$ran" ] || return 1
+  agent-queue set "$1" "note=PR $pr red at ${3:0:12} on cancelled or timed-out jobs only; reran run${ran} once" >/dev/null
+  logline "queue item $1: PR $pr red at ${3:0:12} on cancelled or timed-out jobs only, reran run${ran} (once per head)"
+  dispatch_event rerun "$project" "PR red on runner timeouts only: reran its failed jobs once" --item "$1" --pr "$pr" --sha "$3"
+  echo "rerun queue item $1 (PR $pr red at ${3:0:12} on runner timeouts, run${ran})"
+}
+
+# own_parked_pr <slug> <session> <item json> <head oid> <ci> [mergeable] [red runs] -- a review item whose session is gone
 # gets an owner once its PR checks finish, since nothing else restarts a parked PR. Red (ci FAIL): a
 # fix-ci session (16 of 20 parked PRs were red on 2026-11-09). Green (ci PASS): a lander that lands
 # or closes it (land_brief), since a headless tier-3 run is --pr-only and fix-ci moves its
@@ -5458,6 +5483,14 @@ takeover_branch() {
 # is never read as gone here.
 own_parked_pr() {
   local slug=$1 it=$3 head=$4 owner verb color cause tries human hhead howners pr project note trn held where why='' clear=()
+  # INFRA (PR_STATE_JQ): the runners' red, not the code's. fix-ci may not rerun a timeout (its log names no
+  # fault) and finds nothing to fix, so two tries were spent and the item sat escalated until a push that
+  # never came (2026-11-25: #3516, #3538 and #3576, every job cancelled at ~617s). Its failed jobs are rerun
+  # once per head (infra_rerun); a head already rerun reads FAIL, so a job the code hangs still reaches fix-ci.
+  if [ "$5" = INFRA ]; then
+    [ "$2" = unrecorded ] || ! infra_rerun "$slug" "$it" "$head" "${7:--}" || return 0
+    set -- "$1" "$2" "$3" "$4" FAIL "${6:-}" "${7:-}"
+  fi
   # cause: the requeue's cause on the run's outcome (MOVE_CAUSES): a green PR's lander merges the run's
   # diff unchanged, so that run is filed unrated (land); a red or conflicting PR rates as redo.
   case "${6:-}:$5" in
@@ -5605,11 +5638,13 @@ other_source_start() {
 # instead of sitting in the queue whole (the cap and the queue age count every queued item). They start
 # in queue order like any item, the class mix (classes.json `cleanup`, tag `canary`) keeping their class
 # from falling behind. While a project share is full only the lanes on their own source queue (--off-claude:
-# a Claude lane's canary would wait at the cap). Skipped in a dry run, at 0, and while floor_gate is shut
-# (a red cluster with the gateway down), dispatch's hold included;
-# a failure is said once, never the end of the pass.
+# a Claude lane's canary would wait at the cap). Admission passes dispatch's canary pull, so the top-up asks
+# for at most the cap's headroom (queue_headroom), as the sprint and ask top-ups do: a canary the share
+# holds is not in `have`, but the cap counts it (queue-over-cap, ar-3659). Skipped in a dry run, at 0,
+# while floor_gate is shut (a red cluster with the gateway down), dispatch's hold included, and at the
+# cap; a failure is said once, never the end of the pass.
 canary_top_up() {
-  local live have want out rc=0 note='' FLOOR_WHY
+  local live have want qroom max out rc=0 note='' FLOOR_WHY
   [ "$DRY" = 0 ] && [ "${DISPATCH_CANARY_KEEP:-0}" -gt 0 ] 2>/dev/null || return 0
   # A canary the project share holds is not counted: it cannot start, so it keeps no lane busy.
   share_state
@@ -5619,9 +5654,12 @@ canary_top_up() {
   want=$(( DISPATCH_CANARY_KEEP - have - live ))
   [ "$want" -gt 0 ] || return 0
   floor_gate; [ -z "$FLOOR_WHY" ] || return 0   # only when canaries are missing: it reads gate and the gateway
+  qroom=$(queue_headroom)
+  [ "$qroom" -gt 0 ] || { say "canary top-up (keep $DISPATCH_CANARY_KEEP, $have queued, $want wanted): none queued, the queue is at its cap"; return 0; }
+  max=$want; [ "$max" -le "$qroom" ] || { max=$qroom; note=", $qroom under the cap"; }
   # While the share is full a Claude lane's canary would wait in queued/, so only the lanes on their own source queue (SHARE_JQ).
-  local off=(); if share_full; then off=(--off-claude); note=", a project share full: no Claude lane"; fi
-  out=$(AGENT_QUEUE_PULL=dispatch fleet-bench canary queue --max "$want" "${off[@]}" 2>&1) || rc=$?
+  local off=(); if share_full; then off=(--off-claude); note+=", a project share full: no Claude lane"; fi
+  out=$(AGENT_QUEUE_PULL=dispatch fleet-bench canary queue --max "$max" "${off[@]}" 2>&1) || rc=$?
   [ "$rc" = 0 ] || note="$note, not every lane queued"
   [ -n "$out" ] || [ "$rc" = 0 ] || out="fleet-bench exited $rc"
   [ -z "$out" ] || say "canary top-up (keep $DISPATCH_CANARY_KEEP, $have queued, $want wanted$note): ${out//$'\n'/; }"
