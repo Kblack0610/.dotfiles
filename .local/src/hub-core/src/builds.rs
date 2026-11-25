@@ -58,13 +58,12 @@ pub struct Paths {
 
 impl Paths {
     pub fn from_env() -> Paths {
-        let home = PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
         let env = |k: &str| {
             std::env::var_os(k)
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from)
         };
-        let state = env("XDG_STATE_HOME").unwrap_or_else(|| home.join(".local/state"));
+        let state = agent_core::vocab::state_home();
         let ledger = env("SCHEDULES_RUNS_LEDGER").unwrap_or_else(|| state.join("ci/runs.jsonl"));
         Paths {
             sync: ledger.with_file_name("sync.json"),

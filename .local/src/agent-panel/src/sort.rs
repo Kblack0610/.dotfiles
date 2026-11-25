@@ -195,10 +195,8 @@ fn status_rank(a: &Agent) -> u8 {
 /// `${XDG_STATE_HOME:-$HOME/.local/state}/panels/<name>`, beside the layout file
 /// `panel_layout_file` writes.
 pub(crate) fn panels_file(name: &str) -> Option<PathBuf> {
-    let state = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/state")))?;
-    Some(state.join("panels").join(name))
+    let state = agent_core::vocab::state_home();
+    (!state.as_os_str().is_empty()).then(|| state.join("panels").join(name))
 }
 
 /// The saved sort: `panels/agent-panel.sort`.

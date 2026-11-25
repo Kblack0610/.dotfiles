@@ -11,7 +11,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::datatable::{DataTable, Took};
-use crate::fit::{cell, wrap, Cell, Table};
+use crate::fit::{cell, labelled, Cell, Table};
 use crate::fmt::Palette;
 
 /// How one table fits a width: its header (`COLUMNS` in capitals, in order, so the sort mark
@@ -262,16 +262,8 @@ impl StackView {
     pub fn detail(&self, s: &Stack, p: Palette, w: usize) -> Vec<Line<'static>> {
         let width = w.saturating_sub(LABEL + 3).max(20);
         let mut out: Vec<Line<'static>> = vec![];
-        let mut part = |label: &str, text: &str| {
-            let words: Vec<&str> = text.split_whitespace().collect();
-            for (i, l) in wrap(&words, " ", width).into_iter().enumerate() {
-                let name = if i == 0 { label } else { "" };
-                out.push(Line::from(vec![
-                    Span::styled(format!("  {name:<LABEL$} "), p.dim()),
-                    Span::raw(l),
-                ]));
-            }
-        };
+        let mut part =
+            |label: &str, text: &str| out.extend(labelled(label, text, LABEL, width, p.dim()));
         match self.on() {
             "flows" => {
                 if let Some(f) = self.flows.view.apply(&s.flows).get(self.flows.sel) {
