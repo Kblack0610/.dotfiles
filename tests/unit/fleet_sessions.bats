@@ -1866,6 +1866,8 @@ SH
   assert_equal "$(jq -c '[.rows, .silent]' "$snap")" '[[],["razer-laptop"]]'
   FLEET_STATE_FILE="$SANDBOX/state.json" run "$REPO_ROOT/.local/bin/fleet-sessions" --write
   assert_equal "$(jq -c .silent "$SANDBOX/state.json")" '[{"host":"razer-laptop","why":"did not answer"}]'
+  # The document carries its own idle line, which fleet-dispatch's waits reads for a plan-mode CHAT session (ar-4662).
+  assert_equal "$(jq -r .vocab.idle_min "$SANDBOX/state.json")" 20
   assert_equal "$(jq -r '.unreadable | index("agent-panel@razer-laptop")' "$SANDBOX/state.json")" null
   # A worker whose read had a gap (exit 3) keeps the rows it read (ar-916).
   printf '#!/usr/bin/env bash\n%q "$@"\nexit 3\n' "$SANDBOX/remote-panel" > "$SANDBOX/bin/ssh"

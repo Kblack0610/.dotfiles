@@ -539,6 +539,22 @@ bats_require_minimum_version 1.5.0
   assert_equal "$(jq -r '[.total_live, .needs, .could_start] | @tsv' <<<"$output")" $'5\t0\t1'
 }
 
+# ar-4662: a CHAT session idle in plan mode waits on the human, as a NEEDS one does, and holds no pace slot.
+@test "a CHAT session idle in plan mode past the idle line holds no pace slot; one under it, one not in plan mode, or no line still counts" {
+  two_items
+  export DISPATCH_PER_PASS=0 DISPATCH_TARGET_AWAY=9
+  fleet_state 4
+  jq -c '.vocab.idle_min = 20 | .sessions += [{target: "lab/pm", bucket: "CHAT", in_plan_mode: true, idle_min: 2655},
+    {target: "lab/pm-new", bucket: "CHAT", in_plan_mode: true, idle_min: 5}, {target: "lab/chat", bucket: "CHAT", in_plan_mode: false, idle_min: 900}]' \
+    "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.total_live, .needs] | @tsv' <<<"$output")" $'6\t1'
+  # Negative control: a document without the idle line frees none of them.
+  jq -c 'del(.vocab.idle_min)' "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.total_live, .needs] | @tsv' <<<"$output")" $'7\t0'
+}
+
 @test "a runner-started session waiting on the human frees its run units too, one carrying on past its ask keeps them" {
   two_items
   five_of_six_units
