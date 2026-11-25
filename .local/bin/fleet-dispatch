@@ -1281,11 +1281,18 @@ row_asker() { asker_map; jq -r --arg k "$1" '.[$k] // empty' <<<"$ASKER_MAP"; }
 # GDUmQQ, ar-4554). A land or fix-ci requeue of an item's own PR (`pr`, `pr_owner` and its
 # `<owner>_tries` stamp, the test item_brief reads) passes too: it starts a Claude session, but a stranded
 # PR costs more than one, and DISPATCH_FIX_TRIES bounds the tries; held, share_return sent hc-857 back to
-# its row and left home-config#1406 green and unmerged (2026-11-23). The one test share_why and
-# queue_depth apply.
+# its row and left home-config#1406 green and unmerged (2026-11-23). An urgent or high chain successor
+# passes as well: an item with an `after:` key that is a plan phase or a validate item, agent-queue's
+# stack_dependent test (a `plan:` line or a phase brief, PHASE_BRIEF_RE; the `validate` tag). The cap
+# already let its chain start, and chain-lag bounds its handoff (chain_handoff_p90_max); held,
+# validate-ar-5194 waited 113m and tripped it (ar-4436, 2026-11-24). A plan's first phase, and any other
+# `--after` follow-up (high by default), still wait. The one test share_why and queue_depth apply.
 # shellcheck disable=SC2016
 SHARE_JQ="$HUMAN_ASK_JQ"'def share_held($s): (.project // "") as $p | (.agent // "claude") as $a | ($s.projects[$p].full // false)
   and (((.pr // "") != "" and (.pr_owner // "") != "" and (.[.pr_owner + "_tries"] // "") != "") | not)
+  and (((.after // "") != "" and ((.priority // "") | test("^(urgent|high)$"))
+    and ((.plan // "") != "" or ((" " + (.tags // "") + " ") | contains(" validate "))
+      or ((.task // "") | test("(^|\\s)Phases? [0-9]+( and [0-9]+)* of the plan /[^:]+\\.md:")))) | not)
   and ((.priority == "urgent" and (.from // "human") == "human") | not)
   and (((.plan // "") != "" and (.from // "human") == "human") | not)
   and ((" " + (.tags // "") + " ") | test(" #?red ") | not) and (human_ask | not)
@@ -3297,6 +3304,7 @@ trainee_brief() {
   echo
   echo "You run in a sandbox that sees this worktree alone: no skills, agent-queue, gh, push or human. Ignore any step above that needs one."
   echo "Make the smallest change in this worktree that fully does the task, run the repo's own tests for what you changed where they run here, and stop."
+  echo "Edit only markdown files (anywhere) and shell or bats scripts (.sh, .bash, .zsh, .bats, or no extension with a shell shebang) in no directory holding a Cargo.toml or package.json: the sandbox builds nothing else, and a diff touching any other file is rejected, however right it is."
   echo "Do not commit, push or open a pull request: leave your edits in the working tree. They are checked and landed, or the task is sent back, after you stop."
   echo "If you change nothing, say why in one word on the first line of a file named .no-diff in this worktree: already-fixed when the code already does what the task asks, blocked when the task cannot be done without a decision from the human or access you lack. No file means you failed."
 }
@@ -3626,7 +3634,7 @@ EOF
 # (UTC, YYYY-MM-DDTHH:MM:SS): the cause, its row title, its count, the per-pair counts, the harnesses, and
 # one reason as written. A reject is a lane trainee run with an outcome of redo or failed. Its cause is
 # the `(end <reason>)` trainee_empty_why writes, "no diff" for "left no diff", "no reason recorded" for a
-# run with no `why`, else the reviewer's first four words; at most 40 characters, so the title fits the
+# run with no `why`, "touch a file the sandbox cannot build" for a diff trainee_diff_why refused (whatever the file), else the reviewer's first four words; at most 40 characters, so the title fits the
 # board's 80. One cause on one pair names that pair; on two or more it names no model, since a cause
 # every model hits is the harness's or the source's. The cause is the key, so a cause that spreads to a
 # second pair keeps its count and its row: a reject no newer than its cause's stamp (the last night that
@@ -3643,7 +3651,9 @@ rollup_causes() {
       | ([$w | capture("\\(end (?<e>[a-z-]+)").e] | first) as $e
       | {pair: $pair, harness: (.harness // "claude"), ts: .ts[0:19], why: (.why // "no reason recorded (outcome \(.outcome))"),
          cause: (if $e then "keep ending on end " + $e elif $w == "left no diff" then "keep leaving no diff"
-                 elif $w == "" then "end with no reason recorded" else "are rejected for " + ($w | words) end | fit)}]
+                 elif $w == "" then "end with no reason recorded"
+                 elif ($w | test("^its diff touches .* which is no markdown file")) then "touch a file the sandbox cannot build"
+                 else "are rejected for " + ($w | words) end | fit)}]
     | group_by(.cause)[]
     | . as $all | $all[0].cause as $c
     | [$all[] | select(.ts > ($stamps[$c] // ""))] as $new
