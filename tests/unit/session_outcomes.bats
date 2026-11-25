@@ -1267,7 +1267,8 @@ EOF
     cp "$SO_OPENCODE_DB" "$SANDBOX/w$w/opencode.db"
     sqlite3 "$SANDBOX/w$w/opencode.db" "UPDATE session_v2 SET id = 'ses_eval$w' WHERE id = 'ses_root'; UPDATE session_v2 SET parent_id = 'ses_eval$w' WHERE parent_id = 'ses_root'; UPDATE session_message SET session_id = 'ses_eval$w' WHERE session_id = 'ses_root';"
   done
-  printf '#!/bin/sh\nprintf "w1\\nw2\\n"\n' > "$SANDBOX/bin/workers-stub"
+  # The roster warns that its fetch failed but still lists both workers: passed on, never "unread".
+  printf '#!/bin/sh\necho "fleet-hosts: fetch failed, so the roster is as last fetched" >&2\nprintf "w1\\nw2\\n"\n' > "$SANDBOX/bin/workers-stub"
   # w2 is asleep (ssh 255) until $SANDBOX/w2.awake exists.
   cat > "$SANDBOX/bin/worker-stub" <<STUB
 #!/usr/bin/env bash
@@ -1283,6 +1284,8 @@ STUB
   assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs '[.[].session_id | select(startswith("ses_"))] | sort | join(" ")')" 'ses_eval1 ses_root'
   assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs 'map(select(.session_id == "ses_eval1")) | last | [.harness, .cost_usd, .tokens_total] | join(" ")')" "opencode 1.75 175"
   assert_output --partial "w2 rows unread (rc 255): ssh: connect to host w2"
+  assert_output --partial "fleet-hosts: fetch failed, so the roster is as last fetched"
+  refute_output --partial "fleet workers unread"
   grep -qx "w1 timeout 300 agentctl-session-outcomes headless-rows" "$SANDBOX/worker.calls"
   # w2 wakes: its run, never seen, is written on the next run; w1's, already seen, is not again.
   touch "$SANDBOX/w2.awake"

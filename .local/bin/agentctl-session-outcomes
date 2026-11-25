@@ -219,17 +219,24 @@ headless_note() { printf '%s\n' "$2" >> "$1/notes"; echo "$NAME: $2" >&2; }
 # always due, so the next run that reads that worker writes them. A source the worker could not read
 # is a note naming the worker.
 worker_rows() {
-  local work=$1 w f rc line pids=()
+  local work=$1 w f rc line list lrc pids=()
   mkdir -p "$work/workers"
+  # The roster read once here, so the ssh jobs below inherit it (fleet_hosts) instead of each parsing it again.
+  [ "$WORKERS" != fleet_peers ] || fleet_hosts > /dev/null 2> "$work/workers.err"
+  list=$($WORKERS 2>> "$work/workers.err"); lrc=$?
+  # A roster that cannot be read lists no worker: a note, since every run placed on one would go unread.
+  # A warning beside a roster that still read (a failed fetch, the last one kept) is only passed on.
+  if [ -s "$work/workers.err" ]; then
+    if [ "$lrc" -ne 0 ] || [ -z "$list" ]; then headless_note "$work" "fleet workers unread: $(head -c 120 "$work/workers.err" | tr '\n' ' ')"
+    else cat "$work/workers.err" >&2; fi
+  fi
   while IFS= read -r w; do
     [[ "$w" =~ ^[A-Za-z0-9._-]+$ ]] || continue
     { $WORKER_RUN "$w" timeout "$WORKER_SECS" agentctl-session-outcomes headless-rows \
         > "$work/workers/$w.jsonl" 2> "$work/workers/$w.err"; echo $? > "$work/workers/$w.rc"; } &
     pids+=("$!")
-  done < <($WORKERS 2>"$work/workers.err")
+  done <<< "$list"
   [ "${#pids[@]}" -eq 0 ] || wait "${pids[@]}"
-  # A roster that cannot be read lists no worker; said, since every run placed on one would go unread.
-  [ ! -s "$work/workers.err" ] || headless_note "$work" "fleet workers unread: $(head -c 120 "$work/workers.err" | tr '\n' ' ')"
   for f in "$work"/workers/*.rc; do
     [ -f "$f" ] || continue
     w=$(basename "$f" .rc); rc=$(cat "$f")
