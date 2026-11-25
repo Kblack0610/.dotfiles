@@ -19,10 +19,9 @@ setup() {
   export STORE_SYNC_CONF="$SANDBOX/store.env" FLEET_KUBECONFIG_SCOPED="$SANDBOX/scoped-kubeconfig"
   # No roster unless a test writes one, so this node reads as the workstation, never a fleet worker.
   export FLEET_INVENTORY="$SANDBOX/inventory.yml" FLEET_HOST=node1
-  RBW_DB="${XDG_CACHE_HOME:-$HOME/.cache}/rbw"
 }
 
-# sign_in_all -> a token for every account, gh, the overlay, codex and rbw present.
+# sign_in_all -> a token for every account, gh, the overlay and codex present.
 sign_in_all() {
   local name dir
   mkdir -p "$CLAUDE_ACCT_TOKEN_DIR"
@@ -30,10 +29,9 @@ sign_in_all() {
     case "$name" in '' | '#'*) continue ;; esac
     printf 'sk-ant-oat01-%s' "$name" >"$CLAUDE_ACCT_TOKEN_DIR/$name"
   done <"$CLAUDE_ACCT_CONFIG"
-  mkdir -p "$HOME/.config/gh" "$HOME/.dotfiles-private/.git" "$HOME/.codex" "$RBW_DB"
+  mkdir -p "$HOME/.config/gh" "$HOME/.dotfiles-private/.git" "$HOME/.codex"
   echo 'github.com: {}' >"$HOME/.config/gh/hosts.yml"
   echo '{}' >"$HOME/.codex/auth.json"
-  echo '{}' >"$RBW_DB/vault.json"
 }
 
 # lease_ready_all -> signed in, both store remotes reachable (local bare repos), a scoped kubeconfig
@@ -49,6 +47,7 @@ lease_ready_all() {
 #!/usr/bin/env bash
 echo "KUBECONFIG=\$KUBECONFIG \$*" >>"$SANDBOX/kubectl.log"
 [ -e "$SANDBOX/kube-down" ] && { echo 'error: the server is unreachable' >&2; exit 1; }
+[ -e "$SANDBOX/kube-silent" ] && exit 7
 case "\$*" in *"list nodes"*) echo "Warning: resource 'nodes' is not namespace scoped" >&2 ;; esac
 for no in \$(cat "$SANDBOX/can-i-no" 2>/dev/null); do case "\$*" in *"\$no"*) echo no; exit 1 ;; esac; done
 echo yes
@@ -74,13 +73,15 @@ EOF
   assert_output --partial 'sign in to GitHub: gh auth login'
   assert_output --partial 'clone the private overlay'
   assert_output --partial 'sign in to codex: codex login'
-  assert_output --partial 'sign in to rbw: rbw login'
+  # rbw stays on the workstation, so neither check asks a node for it.
+  refute_output --partial 'rbw login'
   run "$FLEET_NODE" ready claude
   assert_failure
   assert_output ''
   run "$FLEET_NODE" ready
   assert_failure 1
   assert_output --partial 'sign in account main:'
+  refute_output --partial 'rbw login'
   assert_output --partial 'no store remotes in'
   assert_output --partial 'agent-web is not installed'
 }
@@ -120,7 +121,7 @@ EOF
 
 @test "ready claude asks only for the accounts; ready asks for every sign-in" {
   lease_ready_all
-  rm -rf "$HOME/.config/gh" "$HOME/.codex" "$RBW_DB"
+  rm -rf "$HOME/.config/gh" "$HOME/.codex"
   run "$FLEET_NODE" ready claude
   assert_success
   run "$FLEET_NODE" signin
@@ -129,7 +130,6 @@ EOF
   assert_failure 1
   assert_output --partial 'sign in to GitHub: gh auth login'
   assert_output --partial 'sign in to codex: codex login'
-  assert_output --partial 'sign in to rbw: rbw login'
 }
 
 @test "codex is read from CODEX_HOME when it is set" {
@@ -149,17 +149,6 @@ EOF
   run "$FLEET_NODE" signin
   assert_failure 1
   assert_output 'sign in to codex: codex login'
-}
-
-@test "rbw not installed is its own line" {
-  sign_in_all
-  rm "$SANDBOX/bin/rbw"
-  mkdir -p "$SANDBOX/nobin"
-  ln -s "$(command -v jq)" "$SANDBOX/nobin/jq"
-  if [ -x /usr/bin/rbw ] || [ -x /bin/rbw ]; then skip "rbw is installed system-wide here"; fi
-  PATH="$SANDBOX/bin:$SANDBOX/nobin:/usr/bin:/bin" run "$FLEET_NODE" signin
-  assert_failure 1
-  assert_output --partial 'install rbw and sign in'
 }
 
 @test "gh is read from GH_CONFIG_DIR when it is set" {
@@ -222,6 +211,14 @@ EOF
   assert_output "cannot ask home-k3s with the kubeconfig at $FLEET_KUBECONFIG_SCOPED: error: the server is unreachable"
 }
 
+@test "a kubectl that answers nothing says so with its exit code" {
+  lease_ready_all
+  touch "$SANDBOX/kube-silent"
+  run "$FLEET_NODE" ready
+  assert_failure 1
+  assert_output "cannot ask home-k3s with the kubeconfig at $FLEET_KUBECONFIG_SCOPED: no answer (kubectl exit 7)"
+}
+
 @test "with no scoped kubeconfig it asks with kubectl's own" {
   lease_ready_all
   rm "$FLEET_KUBECONFIG_SCOPED"
@@ -240,6 +237,12 @@ EOF
   assert_output --partial 'agent-web is not installed'
   assert_output --partial 'oauth.json'
   assert_output --partial "agent-web's unit and env file are not stowed"
+}
+
+@test "ready with an unknown argument is a usage error, not a full check" {
+  run "$FLEET_NODE" ready bogus
+  assert_failure 2
+  assert_output --partial 'usage: fleet-node ready [claude]'
 }
 
 @test "an unknown verb is a usage error" {

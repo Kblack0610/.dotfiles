@@ -7,7 +7,8 @@
 #       A native host and any image built later run this one definition.
 #   fleet-node signin
 #       what only the human can do here, one line each: each Claude account with no setup
-#       token, gh, the private overlay, codex, rbw. Prints nothing and exits 0 when none is left.
+#       token, gh, the private overlay, codex where the roster runs it. Prints nothing and exits 0
+#       when none is left.
 #   fleet-node ready
 #       whether this peer can hold the fleet lease and run every singleton lane, checked here
 #       rather than found missing at failover: one line per need it lacks (each signin line,
@@ -55,13 +56,6 @@ missing() {
   [ -d "$HOME/.dotfiles-private/.git" ] ||
     echo "clone the private overlay: gh repo clone Kblack0610/.dotfiles-private ~/.dotfiles-private, then ~/.dotfiles-private/.local/bin/restore-private-state"
   ! codex_runs_here || [ -s "${CODEX_HOME:-$HOME/.codex}/auth.json" ] || echo "sign in to codex: codex login"
-  # rbw keeps its vault copy in its cache dir once `rbw login` has run; config alone is not a sign-in.
-  local rbw_db="${XDG_CACHE_HOME:-$HOME/.cache}/rbw${RBW_PROFILE:+-$RBW_PROFILE}"
-  if ! command -v rbw >/dev/null 2>&1; then
-    echo "install rbw and sign in: install.sh --only secrets, then rbw login"
-  elif [ -z "$(ls -A "$rbw_db" 2>/dev/null)" ]; then
-    echo "sign in to rbw: rbw login"
-  fi
   return 0
 }
 
@@ -73,10 +67,14 @@ behind() {
   for repo in "$pub" "$priv"; do
     [ ! -e "$repo/.git" ] || timeout 30 git -C "$repo" fetch -q origin main >/dev/null 2>&1 || true
   done
-  { DOTFILES="$pub" DOTFILES_PRIVATE="$priv" "$here/dotfiles-drift" --json 2>/dev/null || true; } |
-    jq -r --arg pub "$pub" --arg priv "$priv" '.findings[]? | select(.type == "BEHIND")
-      | (if .repo == "public" then $pub else $priv end) as $p
-      | "\($p) is behind origin/main (\(.detail)): dotfiles-autopull --now \($p)"' 2>/dev/null || true
+  command -v jq >/dev/null 2>&1 || { echo "cannot check the dotfiles checkouts: jq is not installed"; return 0; }
+  # --json exits 1 when it finds drift, so its output, not its status, says whether it ran.
+  local drift
+  drift=$(DOTFILES="$pub" DOTFILES_PRIVATE="$priv" "$here/dotfiles-drift" --json 2>/dev/null) || true
+  jq -e '.findings' <<<"$drift" >/dev/null 2>&1 || { echo "cannot check the dotfiles checkouts: dotfiles-drift --json gave no report"; return 0; }
+  jq -r --arg pub "$pub" --arg priv "$priv" '.findings[] | select(.type == "BEHIND")
+    | (if .repo == "public" then $pub else $priv end) as $p
+    | "\($p) is behind origin/main (\(.detail)): dotfiles-autopull --now \($p)"' <<<"$drift"
 }
 
 # store_unreachable -> one line per agent store remote this peer cannot reach the way store-sync and
@@ -101,7 +99,8 @@ store_unreachable() {
 # The home-k3s calls the singleton lanes make, one of each kind, as "<can-i args>|<who makes it>".
 # home-config grants them to the scoped account (apps/github-runner-exporter/fleet-read-rbac.yaml,
 # apps/binks-api/fleet-read-rbac.yaml, apps/agents/record-rbac.yaml); a call a lane adds gets its
-# grant there and its line here.
+# grant there and its line here. Only home-k3s: rbw, the cluster login and the prod context stay on the
+# workstation, and the steps that need them (release-state's prod rows) run there.
 KUBE_NEEDS=(
   "patch endpoints/agents -n agents|agent-web-record points the agents Endpoints at the holder"
   "get configmaps/ci-runner-governor-override -n monitoring|fleet-bench triage reads the governor's pins"
@@ -122,7 +121,7 @@ kube_needs() {
   command -v kubectl >/dev/null 2>&1 || { echo "kubectl is not installed: the singleton lanes read home-k3s with it"; return 0; }
   # shellcheck source=../lib/fleet-kubeconfig.sh
   . "$here/../lib/fleet-kubeconfig.sh"
-  local kcfg need args who out err
+  local kcfg need args who out err rc reason
   kcfg=$(fleet_kubeconfig)
   [ -r "${kcfg%%:*}" ] || { echo "no kubeconfig for home-k3s at $kcfg: the home-config fleet-worker play writes the scoped one"; return 0; }
   err=$(mktemp)
@@ -130,12 +129,17 @@ kube_needs() {
     args=${need%%|*} who=${need#*|}
     # can-i answers yes or no on stdout; a warning (a cluster-scoped kind under a namespaced context,
     # with a blank line after it) or the reason it could not ask goes to stderr, so the two stay apart.
+    rc=0
     # shellcheck disable=SC2086 # args is a word list
-    out=$(KUBECONFIG="$kcfg" kubectl --context home-k3s --request-timeout=10s auth can-i $args 2>"$err")
+    out=$(KUBECONFIG="$kcfg" kubectl --context home-k3s --request-timeout=10s auth can-i $args 2>"$err") || rc=$?
     case "$out" in
       yes) ;;
       no*) echo "the kubeconfig at $kcfg may not $args: $who (home-config fleet-read-rbac.yaml)" ;;
-      *) echo "cannot ask home-k3s with the kubeconfig at $kcfg: $(grep -m 1 -v -e '^Warning:' -e '^$' "$err")"; break ;;
+      *)
+        reason=$(grep -m 1 -v -e '^Warning:' -e '^$' "$err") || true
+        echo "cannot ask home-k3s with the kubeconfig at $kcfg: ${reason:-no answer (kubectl exit $rc)}"
+        break
+        ;;
     esac
   done
   rm -f "$err"
@@ -173,10 +177,11 @@ case "${1:-}" in
     [ -z "$out" ] || { printf '%s\n' "$out"; exit 1; }
     ;;
   ready)
-    if [ "${2:-}" = claude ]; then
-      [ -z "$(unsigned_accounts)" ]
-      exit
-    fi
+    case "${2:-}" in
+      claude) [ -z "$(unsigned_accounts)" ]; exit ;;
+      '') ;;
+      *) echo "usage: fleet-node ready [claude]" >&2; exit 2 ;;
+    esac
     out=$(lease_needs)
     [ -z "$out" ] || { printf '%s\n' "$out"; exit 1; }
     ;;
