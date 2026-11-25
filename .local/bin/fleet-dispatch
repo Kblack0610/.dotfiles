@@ -8413,6 +8413,12 @@ cmd_kick() {
   exec 9>"$DIR/.lock"
   local locked=1
   if ! flock -n 9; then
+    # A kick beside a pass holds .beside while it starts, taken before the mark is read: one kick at a time,
+    # and the next pass waits on it (cmd_run), so no two starters read the same room (ar-5773 /code-review high).
+    # Its own fd: the start's record_world opens and closes fd 8.
+    local beside_fd
+    exec {beside_fd}>"$DIR/.beside"
+    flock -n "$beside_fd" || { settle NOOP "kick: another kick is starting beside the pass"; return 0; }
     pass_past_starts || { settle NOOP "kick: a pass is running, it covers this"; return 0; }
     locked=0
   fi
@@ -8483,6 +8489,11 @@ cmd_run() {
   # A NOOP that never read the gates leaves a standing hold as it is (PROOF_HELD_KEEP, agent-proof.sh).
   # A kick holds it for seconds: the pass waits out KICK_WAIT_S for it, never for another pass.
   flock -n 9 || { [ -e "$DIR/.kick" ] && flock -w "$KICK_WAIT_S" 9; } || { PROOF_HELD_KEEP=1 settle NOOP "another pass is running"; return 0; }
+  # A kick that started beside the last pass (cmd_kick) may still be starting: wait for it, as for a kick holding the lock.
+  local beside_fd
+  exec {beside_fd}>"$DIR/.beside"
+  flock -w "$KICK_WAIT_S" "$beside_fd" || { exec {beside_fd}>&-; flock -u 9; PROOF_HELD_KEEP=1 settle NOOP "a kick is still starting beside the last pass"; return 0; }
+  exec {beside_fd}>&-
   rm -f "$DIR/.past-starts"   # a killed pass's: a kick must not start beside this one's starts (pass_past_starts)
 
   [ "$DRY" = 1 ] || { cmd_reap; pass_mark reap; provider_hold_scan; pass_mark scan; }   # the scan reads the runs the reap just closed

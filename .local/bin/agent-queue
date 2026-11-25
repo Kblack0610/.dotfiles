@@ -303,7 +303,7 @@ take_lock() {
   exec {gate}>&-
 }
 # lock_miss [-s]: one JSON line naming this taker, its caller, the kernel's locks on .gate and
-# .lock (holds or waits, READ or WRITE, and the taker's pid) and every process with either open: the holder, the
+# .lock (holds or waits, READ or WRITE, and the pid the kernel files each lock under) and every process with either open: the holder, the
 # waiters, and any child a holder started, since fd 8 is inherited. Called with both fds closed,
 # so the line never lists the taker itself. Best effort: it never changes the exit. Why: 108
 # dispatch starts and two runners timed out on the lock with nothing naming the holder (ar-3025).

@@ -855,7 +855,7 @@ def utc(s):
 # What a revert word names: a quoted title (the Revert button's, `Revert "feat: x (#5)"`) or a list
 # of PR refs right after it (`Reverts #7`, `reverts PR #3 and o/r#4`). A ref later in the line is
 # context: platform #1523's "Reverts #1509: ... from #1510 is unchanged" read #1510 as reverted (ar-2636).
-REVERT_REFS_RE = r'\s*(?:"[^"\n]*"|(?:PRs?\s+)?[\w./-]*#[0-9]+(?:\s*(?:,|and|&)\s*[\w./-]*#[0-9]+)*)'
+REVERT_REFS_RE = r'[\s:]*(?:"[^"\n]*"|(?:(?i:prs?)\s+)?[\w./-]*#[0-9]+(?:\s*(?:,|and|&)\s*[\w./-]*#[0-9]+)*)'
 
 
 def revert_of(title, body):

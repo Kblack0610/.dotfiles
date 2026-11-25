@@ -997,9 +997,10 @@ pub struct Writer {
     name: Option<String>,
     /// An `--origin` this process could not vouch for, named when its row goes to the outbox.
     refused: Option<String>,
-    /// A person at a terminal: no session, queue item, runner or `--origin` names the writer. A
-    /// frozen release window takes such a writer's row through its interrupt lane; a command that
-    /// files for itself (`Writer::human`, the playtest pass) is not one.
+    /// A person at a terminal: no session, queue item, runner or `--origin` names the writer; a
+    /// command that files for itself (`Writer::human`, the playtest pass) is not one. It gates who
+    /// may move or relock an open sprint's rows (`is_person`); a frozen window routes a new row by
+    /// its tags alone (`window::route`), whoever writes it.
     person: bool,
     filers: Vec<String>,
 }
@@ -1066,7 +1067,7 @@ impl Writer {
         }
     }
 
-    /// A writer that always files on the sheet and is no interrupt: a command filing for itself
+    /// A writer that always files on the sheet and is no person: a command filing for itself
     /// (the playtest pass), not an agent write.
     pub fn human() -> Writer {
         Writer {
