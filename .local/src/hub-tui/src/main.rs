@@ -60,7 +60,7 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub bar --json
        hub ci [--json | --pool-match SECS]
        hub ci pass [--since WHEN] [--until WHEN] [--branch B]
-       hub ci hosts [--until WHEN] [--last N]
+       hub ci hosts [--since WHEN] [--until WHEN] [--last N]
        hub briefing --json | --md [--agents-md FILE] [--since WHEN]
        hub projects --json
        hub projects --page NAME | --status NAME
@@ -91,7 +91,8 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
   ci hosts the same verdict over jobs: each runner group's (its name less the slot number, so
           aws-burst-1-unity-pool) last N (default 50) jobs that completed before WHEN (default
           now) in the job archive, GitHub-hosted left out, as JSON keyed by the group: runs,
-          green, pass (0..1). day-log reads it. Exits 1 when the archive cannot be read
+          green, pass (0..1). With --since, a group with no job completed since WHEN (a
+          retired host) is left out. day-log reads it. Exits 1 when the archive cannot be read
   cards   Home's cards as the Tilecast widget document agent-web serves at /widget.json:
           every card, one section each, with `updated_at`; --figures adds `figures`, the whole numbers by name; agent-mqtt-publish sends it
   phone   the phone widget's rows as {state, rows}: what agent-mqtt-publish sends Home Assistant
@@ -434,11 +435,12 @@ fn ci_pass(args: &[String]) -> i32 {
 
 /// `hub ci hosts`: the pass rate of each runner group's last jobs, from the job archive.
 fn ci_hosts(args: &[String]) -> i32 {
-    let (mut until, mut last) = (chrono::Utc::now().timestamp(), 50);
+    let (mut since, mut until, mut last) = (None, chrono::Utc::now().timestamp(), 50);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let v = it.next().unwrap_or_else(|| die(USAGE));
         match a.as_str() {
+            "--since" => since = Some(parse_since(v).unwrap_or_else(|| die(USAGE))),
             "--until" => until = parse_since(v).unwrap_or_else(|| die(USAGE)),
             "--last" => {
                 last = v
@@ -458,7 +460,7 @@ fn ci_hosts(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let report = match hub_core::builds::pass_by_runner(&text, until, last) {
+    let report = match hub_core::builds::pass_by_runner(&text, since, until, last) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("hub ci hosts: {}: {e}", paths.jobs.display());

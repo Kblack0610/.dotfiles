@@ -760,8 +760,11 @@ pub fn slots_of(runner: &str) -> &str {
 /// Hosted is told by the runner name GitHub gives every hosted runner, not by the labels: the
 /// archive's self-hosted Unity jobs carry `unity`, `unity-gate` and no `self-hosted`. A line that
 /// does not parse is an error, not a skip: a window of 50 short of its jobs reads as a real rate.
+/// With `since`, a group whose newest counted job completed before it is left out: a retired host
+/// (windows-media-ci, replaced by tuf-b550 on 2026-11-20) keeps its last jobs in the archive for good.
 pub fn pass_by_runner(
     archive: &str,
+    since: Option<i64>,
     until: i64,
     last: usize,
 ) -> Result<BTreeMap<String, Pass>, String> {
@@ -791,13 +794,16 @@ pub fn pass_by_runner(
     }
     Ok(by
         .into_iter()
-        .map(|(group, mut jobs)| {
+        .filter_map(|(group, mut jobs)| {
             jobs.sort_unstable();
+            if since.is_some_and(|s| jobs.last().is_none_or(|&(done, _, _)| done < s)) {
+                return None;
+            }
             let mut pass = Pass::default();
             for &(_, _, green) in jobs.iter().rev().take(last) {
                 pass.count(green);
             }
-            (group.to_string(), pass)
+            Some((group.to_string(), pass))
         })
         .collect())
 }
@@ -1783,7 +1789,7 @@ mod tests {
             record(2, true, first),
         ]
         .join("\n");
-        let got = pass_by_runner(&text, NOW, 4).unwrap();
+        let got = pass_by_runner(&text, None, NOW, 4).unwrap();
         assert_eq!(
             got.keys().map(String::as_str).collect::<Vec<_>>(),
             [
@@ -1804,6 +1810,21 @@ mod tests {
         );
         assert_eq!(got["aws-burst-1-light"].pass, Some(0.0));
         assert_eq!(got["ms-a2-heavy"].pass, Some(1.0));
+        // With a since, a group whose newest counted job is older is a retired host and is left
+        // out (the pool's is NOW - 500); one job at or after it keeps the whole group, its older
+        // jobs counted too.
+        let retired = pass_by_runner(&text, Some(NOW - 450), NOW, 4).unwrap();
+        assert_eq!(
+            retired.keys().map(String::as_str).collect::<Vec<_>>(),
+            [
+                "aws-burst-1-light",
+                "deskslim-2-unity-pool",
+                "mac-mini-mac",
+                "ms-a2-heavy"
+            ]
+        );
+        let kept = pass_by_runner(&text, Some(NOW - 550), NOW, 4).unwrap();
+        assert_eq!(kept[pool], got[pool]);
         assert_eq!(
             slots_of("razer-laptop-unity-pool-12"),
             "razer-laptop-unity-pool"
@@ -1812,10 +1833,10 @@ mod tests {
         // A broken line mid-archive fails the read; a torn last line is a write in progress.
         let broken = format!("{text}\nnot json\n{}", record(3, true, vec![]));
         assert_eq!(
-            pass_by_runner(&broken, NOW, 4).unwrap_err(),
+            pass_by_runner(&broken, None, NOW, 4).unwrap_err(),
             "job archive lines that do not parse: 1"
         );
-        assert!(pass_by_runner(&format!("{text}\n{{\"forge\""), NOW, 4).is_ok());
+        assert!(pass_by_runner(&format!("{text}\n{{\"forge\""), None, NOW, 4).is_ok());
     }
 
     #[test]
