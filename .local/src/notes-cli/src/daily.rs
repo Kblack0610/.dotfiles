@@ -553,7 +553,7 @@ fn morning_section(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> St
     // The day log, as one line: its first sentence is the count of what merged.
     let (shipped, link) = refs_note(p, &today_s, SHIPPED);
     if let Ok(text) = fs::read_to_string(shipped) {
-        let first = crate::report::body_of(&text)
+        let first = crate::knowledge_gate::body(&text)
             .lines()
             .map(str::trim)
             .find(|l| !l.is_empty() && !l.starts_with('#'))

@@ -14,6 +14,7 @@
 //! the old monthly mover left; [`day_dir`] is the one resolver for both.
 
 use crate::config::Profile;
+use crate::knowledge_gate::body;
 use crate::logging::Logger;
 use crate::md;
 use anyhow::{bail, Context, Result};
@@ -234,9 +235,15 @@ fn dated_names(dir: &Path) -> Vec<PathBuf> {
 /// taking the indented lines under it. None when there is no frontmatter.
 fn frontmatter(content: &str) -> Option<BTreeMap<String, String>> {
     let rest = content.strip_prefix("---\n")?;
-    let end = rest.find("\n---")?;
+    let body = body(content);
+    if body.len() == content.len() {
+        return None;
+    }
     let mut out = BTreeMap::new();
-    let mut lines = rest[..end].lines().peekable();
+    let mut lines = rest[..rest.len() - body.len()]
+        .lines()
+        .take_while(|l| l.trim_end() != "---")
+        .peekable();
     while let Some(line) = lines.next() {
         let Some((k, v)) = line.split_once(':') else {
             continue;
@@ -264,18 +271,6 @@ fn frontmatter(content: &str) -> Option<BTreeMap<String, String>> {
         out.insert(k.trim().to_string(), value);
     }
     Some(out)
-}
-
-/// The text after the frontmatter (all of `content` when it has none).
-pub(crate) fn body_of(content: &str) -> &str {
-    content
-        .strip_prefix("---\n")
-        .and_then(|rest| {
-            let end = rest.find("\n---")?;
-            let after = &rest[end + 4..];
-            Some(after.strip_prefix('\n').unwrap_or(after))
-        })
-        .unwrap_or(content)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -390,7 +385,7 @@ fn entry(day: NaiveDate, path: &Path) -> Option<Entry> {
         Kind::Capture
     };
     let heading = || {
-        body_of(&content)
+        body(&content)
             .lines()
             .find_map(|l| l.strip_prefix("# "))
             .map(|t| t.trim().to_string())
@@ -996,7 +991,11 @@ mod tests {
         assert_eq!(fm["summary"], "one\ntwo");
         assert_eq!(fm["read"], "");
         assert_eq!(fm["plain"], "x");
-        assert_eq!(body_of("---\na: b\n---\n\n# T\n"), "\n# T\n");
-        assert_eq!(body_of("# T\n"), "# T\n");
+        assert_eq!(body("---\na: b\n---\n\n# T\n"), "\n# T\n");
+        assert_eq!(body("# T\n"), "# T\n");
+        // An empty block, and a `---` rule in the body, end where the first `---` line does.
+        assert!(frontmatter("---\n---\n# T\n").unwrap().is_empty());
+        assert_eq!(frontmatter("---\na: b\n---\nx\n---\n").unwrap().len(), 1);
+        assert!(frontmatter("# T\n").is_none());
     }
 }
