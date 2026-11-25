@@ -2567,7 +2567,7 @@ add_plan() {
     else fresh+=("$s"); fi
   done <<<"$rows"
   # gate: none
-  [ -z "${left// /}" ] && [ ${#fresh[@]} -gt 0 ] || die "the phases of $planf are already queued or filed: ${taken:-no item}${rowof[*]:+, rows ${rowof[*]}} (nothing was added)"
+  [ -z "${left// /}" ] && [ ${#fresh[@]} -gt 0 ] || die "the phases of $planf are already queued or filed: ${taken:-no item}${rowof[*]:+, rows $(printf '%s\n' "${rowof[@]}" | sort -V | paste -sd' ')} (nothing was added)"
   for s in "${fresh[@]}"; do [ -z "$(find_item "$s")" ] || die "already in the queue: $s (nothing was added)"; done
   check_after "$after"
   # Promoted from its plan row: the row goes on the plan's `rows:` line before any phase is written, so

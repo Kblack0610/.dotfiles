@@ -2952,10 +2952,10 @@ EOF
   "$AQ" add --project game --slug by-hand "Phase 2 of /home/x/.agent/plans/game/my-plan.md" >/dev/null
   AGENT_QUEUE_ITEM=mine run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --priority high
   assert_failure
-  assert_output --partial "already queued: by-hand (nothing was added)"
+  assert_output --partial "already queued or filed: by-hand (nothing was added)"
   run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --dry-run
   assert_failure
-  assert_output --regexp "already queued: (mine by-hand|by-hand mine) "
+  assert_output --regexp "already queued or filed: (mine by-hand|by-hand mine) "
   [ -z "$(ls "$AGENT_QUEUE_DIR/queued" | grep my-plan)" ]
 }
 
@@ -3903,7 +3903,7 @@ STUB
   story_notes
   echo 20 > "$NOTES_FIXTURE/story.seq"
   P="$SANDBOX/mid.md"
-  printf '# M\n\n## Phases\n\n- [x] P1 one (#1)\n- [ ] P2 two\n- [ ] P4 fix what P2 found, takes lv-50 (after 2)\n- [ ] P3 three\n' > "$P"
+  printf '# M\n\n## Phases\n\n- [x] P1 one (#1)\n- [ ] P2 two\n- [ ] P4 fix what P2 found, takes lv-50 (after 2; needs what P2 found)\n- [ ] P3 three\n' > "$P"
   "$AQ" add --running --project level --row lv-5 --slug mid-p2 "Phase 2 of the plan $P: two." >/dev/null
   "$AQ" set mid-p2 "plan=$P" phases=2 origin=run >/dev/null
   board() {
