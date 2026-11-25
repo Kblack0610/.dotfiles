@@ -54,8 +54,8 @@ gone() { ! _tm has-session 2>/dev/null; }
   screen_has "enter click (a dropdown opens here, esc comes back)"
   keep_screen open
   tmux_keys Down
-  wait_until 'screen_has "custom/bad: exit 4, no output"'
-  screen_has "prometheus down"
+  wait_until 'screen_has "prometheus down"'
+  screen_has "custom/bad: exit 4, no output"
   screen_lacks "Good hover"
   tmux_keys Escape
   wait_until gone
