@@ -999,6 +999,7 @@ mod tests {
             kind: kind.into(),
             by: by.into(),
             since: Some(NOW - age),
+            kept: None,
             reason: format!("why {resource}"),
         };
         let mut ws = ok_watches();

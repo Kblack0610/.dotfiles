@@ -2,7 +2,9 @@
 //! (`~/.agent/holds`, `AGENT_HOLD_DIR`), for Alerts (one red row each) and Home's Needs you (the
 //! ones the human set). A standing hold is a resource hold, or any hold `by: human`, set
 //! `STANDING_SECS` ago or longer; a load hold (the shepherd lifts it) and a claim (it ends with its
-//! skill) never stand. The rule is `agent-hold aged`'s, whose `hold-age` watch pages the same holds
+//! skill) never stand. A keep (`agent-hold keep`, the human's `keep` answer on an ask about it)
+//! restarts that clock: a hold the human just re-confirmed waits a day past the keep (ar-5307). The
+//! rule is `agent-hold aged`'s, whose `hold-age` watch pages the same holds
 //! (ar-4645). A hold forgotten for days kept its resource from every session and nobody saw it.
 
 use std::path::{Path, PathBuf};
@@ -25,6 +27,9 @@ pub struct Hold {
     pub by: String,
     /// When it was set, epoch seconds; none when its `since:` does not read.
     pub since: Option<i64>,
+    /// When the human last re-confirmed it (`kept:`, written by `agent-hold keep`), epoch seconds;
+    /// none when it was never kept or the value does not read.
+    pub kept: Option<i64>,
     pub reason: String,
 }
 
@@ -48,6 +53,7 @@ impl Hold {
             kind,
             by: field("by"),
             since: crate::fleet::ts(&field("since")),
+            kept: crate::fleet::ts(&field("kept")),
             reason: field("reason"),
         }
     }
@@ -57,11 +63,17 @@ impl Hold {
         self.by == HUMAN
     }
 
-    /// True when only the human ends it and it has stood `STANDING_SECS`. A since that does not
-    /// read stands: it is as old as anything, as `agent-hold aged` reads it.
+    /// True when only the human ends it and it has stood `STANDING_SECS` since it was set, or
+    /// since the human last kept it when that is later. A since that does not read stands: it is
+    /// as old as anything, as `agent-hold aged` reads it.
     pub fn standing(&self, now: i64) -> bool {
         let theirs = self.kind == "resource" || (self.kind != "claim" && self.human());
-        theirs && self.since.is_none_or(|s| now - s >= STANDING_SECS)
+        let from = match (self.since, self.kept) {
+            (Some(s), Some(k)) => Some(s.max(k)),
+            (None, Some(k)) => Some(k),
+            (s, None) => s,
+        };
+        theirs && from.is_none_or(|t| now - t >= STANDING_SECS)
     }
 
     /// Whole days since it was set, none when its since does not read.
@@ -144,8 +156,38 @@ mod tests {
             kind: kind.into(),
             by: by.into(),
             since: Some(NOW - age),
+            kept: None,
             reason: "why".into(),
         }
+    }
+
+    #[test]
+    fn a_kept_hold_stands_again_only_a_day_past_the_keep() {
+        // The human's 4-day-old lockdown, kept an hour ago: not a need until a day past the keep.
+        let kept = Hold {
+            kept: Some(NOW - 3600),
+            ..hold("resource", HUMAN, 4 * 86400)
+        };
+        assert!(!kept.standing(NOW));
+        assert!(kept.standing(NOW - 3600 + STANDING_SECS));
+        // Negative control: the same hold never kept stands.
+        assert!(hold("resource", HUMAN, 4 * 86400).standing(NOW));
+        // A keep older than since (a re-set that kept since but not the keep) changes nothing.
+        let stale = Hold {
+            kept: Some(NOW - 9 * 86400),
+            ..hold("resource", HUMAN, 4 * 86400)
+        };
+        assert!(stale.standing(NOW));
+        // A keep with no readable since still counts from the keep.
+        let unread = Hold {
+            since: None,
+            ..kept.clone()
+        };
+        assert!(!unread.standing(NOW));
+        assert_eq!(
+            Hold::parse("critical", "kind: resource\nby: human\nsince: 2026-11-20T16:10:54-0800\nkept: 2026-11-24T17:30:08-0800\nkept_ask: M0yWLL\n").kept,
+            crate::fleet::ts("2026-11-24T17:30:08-0800")
+        );
     }
 
     #[test]
