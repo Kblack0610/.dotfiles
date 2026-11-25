@@ -150,11 +150,12 @@ fi
 # CI turns a missing prerequisite (the agent-panel build session_send.bats drives) from a skip
 # into a failure, so a red cannot hide as a skip there. JUNIT=1 writes the JUnit reports CI
 # uploads (tests/Makefile). RUST_JOBS and CARGO_INCREMENTAL are the rust job's (tests/rust.sh),
-# TILECAST_READ_TOKEN the Tilecast schema check's (tests/agent-web/tilecast-schema.sh).
+# TILECAST_READ_TOKEN the Tilecast schema check's (tests/agent-web/tilecast-schema.sh). CI_CPU_MILLI
+# is the runner pod's CPU request: the container sees the host's cores, so tests/cpus.sh needs it.
 # No path goes through: the checkout is /work in here, so a path is passed as /work/...
 # Each goes by name alone, so docker reads the value from this environment and a token never
 # sits in the docker command line.
-for v in BATS_FLAGS CI JUNIT RUST_JOBS CARGO_INCREMENTAL TILECAST_READ_TOKEN; do
+for v in BATS_FLAGS CI CI_CPU_MILLI JUNIT RUST_JOBS CARGO_INCREMENTAL TILECAST_READ_TOKEN; do
   [ -n "${!v:-}" ] && export "${v?}" && run_args+=(--env "$v")
 done
 

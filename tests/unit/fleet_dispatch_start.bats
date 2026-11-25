@@ -1231,6 +1231,43 @@ trainee_start_ready() {
   done
 }
 
+@test "trainee-review: a no-diff run that declares already-fixed or blocked files its run unrated with that cause, never a reject; an unknown word, no file, or a real diff beside the file is as before" {
+  trainee_start_ready
+  stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"'
+  m="$SANDBOX/main" && git init -q "$m" && printf 'a\n' > "$m/menu.md"
+  git -C "$m" add menu.md && git -C "$m" -c user.name=t -c user.email=t@t commit -qm base
+  w="$SANDBOX/wt" && git -C "$m" worktree add -q "$w" 2>/dev/null
+  # slug|first line of .no-diff ("-" for no file)|the reject reason that results
+  for spec in "t-fixed|Already-Fixed: the title is fine|paid:glm found the task already fixed in the code (already-fixed), with no diff" \
+              "t-spc|already fixed, see menu.md|paid:glm found the task already fixed in the code (already-fixed), with no diff" \
+              "t-pre|blockedness|paid:glm left no diff" \
+              "t-block|blocked|paid:glm could not do the task without a human decision or access it lacks (blocked), with no diff" \
+              "t-word|gave up|paid:glm left no diff" \
+              "t-none|-|paid:glm left no diff"; do
+    IFS='|' read -r slug marker want <<<"$spec"
+    agent-queue add --project game --slug "$slug" --priority high --tags tier1 "Fix the $slug title #pts/1" >/dev/null
+    agent-queue set "$slug" agent=paid model=glm trainee=paid:glm "lane_run=run-$slug" >/dev/null; agent-queue move "$slug" running >/dev/null
+    rm -f "$w/.no-diff"; [ "$marker" = - ] || printf '%s\nmore\n' "$marker" > "$w/.no-diff"
+    run bash -c "cd $(printf %q "$w") && $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") trainee-review $slug"
+    assert_success
+    assert_output --partial "trainee-reject: $slug is back in the queue, on claude: $want"
+    [ ! -e "$w/.no-diff" ] || fail "$slug left its .no-diff in the worktree"
+  done
+  grep -qx 'model-lane outcome run-t-fixed unrated --why paid:glm found the task already fixed in the code (already-fixed), with no diff --cause already-fixed' "$NOTES_FIXTURE/calls.log" || fail "already-fixed filed no unrated run: $(cat "$NOTES_FIXTURE/calls.log")"
+  grep -qx 'model-lane outcome run-t-fixed unrated --cause already-fixed' "$NOTES_FIXTURE/calls.log" || fail "already-fixed's requeue filed no unrated cause"
+  grep -qx 'model-lane outcome run-t-block unrated --why paid:glm could not do the task without a human decision or access it lacks (blocked), with no diff --cause blocked' "$NOTES_FIXTURE/calls.log" || fail "blocked filed no unrated run"
+  # The negative control: the unknown word and the missing file are still rejects of the trainee's run.
+  grep -qx 'model-lane outcome run-t-word redo --why paid:glm left no diff --cause reject' "$NOTES_FIXTURE/calls.log" || fail "a no-diff run with an unknown word is no reject"
+  grep -qx 'model-lane outcome run-t-none redo --why paid:glm left no diff --cause reject' "$NOTES_FIXTURE/calls.log" || fail "a no-diff run with no file is no reject"
+  # A real diff beside the marker is reviewed as a diff: the marker is not in the patch.
+  agent-queue add --project game --slug t-diff --priority high --tags tier1 "Fix the t-diff title #pts/1" >/dev/null
+  agent-queue set t-diff agent=paid model=glm trainee=paid:glm >/dev/null; agent-queue move t-diff running >/dev/null
+  printf 'b\n' > "$w/menu.md"; printf 'blocked\n' > "$w/.no-diff"
+  run bash -c "cd $(printf %q "$w") && $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") trainee-review t-diff"
+  assert_success; assert_output --partial 'lanes.yaml names no trainee reviewer'
+  refute_output --partial 'no diff'
+}
+
 @test "trainee_waiting fetches the patch a trainee run left on its fleet worker; a run here, or a worker with no patch, fetches nothing" {
   trainee_start_ready
   worker '2.0 16 1 50'
