@@ -986,7 +986,7 @@ const TRIAGE: &str = "inbox-triage";
 /// A name is the process's, never the caller's word: `--origin <name>` counts only when it is
 /// the runner's own `AGENTCTL_NAME` (with no session in the environment) or the parent process
 /// runs a script of that basename, and `--origin plan` only when that parent is `agent-queue`
-/// filing a plan's row (`AQ_ITEM_PLAN` or `AQ_FILE_ORIGIN` set, its `file_story`).
+/// filing a plan's phase row (`AQ_ITEM_PLAN` set, its `file_story`).
 pub struct Writer {
     /// A queue item, a session or an agentctl runner is writing (the environment names one).
     automated: bool,
@@ -1011,7 +1011,7 @@ impl Writer {
     /// ids it says it checked (`ptask add --checked`).
     pub fn from_env(origin: Option<&str>, checked: Vec<String>) -> Writer {
         let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
-        let plan = env("AQ_ITEM_PLAN").is_some() || env("AQ_FILE_ORIGIN").is_some();
+        let plan = env("AQ_ITEM_PLAN").is_some();
         let (item, session) = (env("AGENT_QUEUE_ITEM"), env("CLAUDE_CODE_SESSION_ID"));
         let runner = env("AGENTCTL_NAME");
         // Only an automated writer's --origin needs vouching, so only then is the parent read.
