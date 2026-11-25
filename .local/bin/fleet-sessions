@@ -2646,8 +2646,7 @@ collect() {
     fi
     # A shell waiting on itself is hung whatever the transcript's open job says: its command line may
     # read as a gate. A live gate or test process found above outranks it. An event wait (a tail --pid
-    # on another process) only names a shell the transcript could not class: a gate's keeps its own. An ended pgrep
-    # loop is no live process, so it does not hide a hung shell beside it.
+    # on another process) only names a shell the transcript could not class: a gate's keeps its own; an ended loop hides none.
     if [ "$host" = - ] && [ "$status" = shell ] && [ "$ojob" != agent ] && { [ -z "$live" ] || [ "$live" = ended ]; }; then
       live="$(self_wait "$cpid")"
       [ "$live" != wait ] || [ "$ojob" = jobs ] || [ "$ojob" = none ] || live=""
