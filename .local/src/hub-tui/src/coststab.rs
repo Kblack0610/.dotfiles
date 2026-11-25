@@ -1818,8 +1818,9 @@ mod tests {
             evals: vec![Eval {
                 model: "opus".into(),
                 harness: "claude".into(),
-                done: 4,
+                done: 5,
                 landed: 3,
+                landed_n: 4,
                 priced: 3,
                 cost_usd: 9.0,
                 source: "list".into(),

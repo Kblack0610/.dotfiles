@@ -67,6 +67,9 @@ pub struct Eval {
     pub harness: String,
     pub done: u64,
     pub landed: u64,
+    /// What landed rate divides by: the items whose outcome was landed, no-pr or failed (an
+    /// unrated item, a cause outside the model or a check that cleared, is in done only).
+    pub landed_n: u64,
     pub redo: u64,
     pub reverts: u64,
     pub cost_usd: f64,
@@ -633,7 +636,7 @@ pub struct Line {
     pub cost: f64,
     /// Of what the filtered table sums to, 0..1.
     pub share: f64,
-    /// fleet-bench's landed over done, 0..1.
+    /// fleet-bench's landed over landed_n, 0..1.
     pub landed: Option<f64>,
     pub redo: Option<u64>,
     pub reverts: Option<u64>,
@@ -767,9 +770,9 @@ fn evaluate(l: &mut Line, evals: &[&Eval]) {
         return;
     }
     let sum = |f: fn(&Eval) -> u64| evals.iter().map(|e| f(e)).sum::<u64>();
-    let (done, landed, priced) = (sum(|e| e.done), sum(|e| e.landed), sum(|e| e.priced));
+    let (rated, landed, priced) = (sum(|e| e.landed_n), sum(|e| e.landed), sum(|e| e.priced));
     let cost: f64 = evals.iter().map(|e| e.cost_usd).sum();
-    l.landed = (done > 0).then(|| landed as f64 / done as f64);
+    l.landed = (rated > 0).then(|| landed as f64 / rated as f64);
     l.redo = Some(sum(|e| e.redo));
     l.reverts = Some(sum(|e| e.reverts));
     l.per_pr = (priced > 0).then(|| cost / priced as f64);
@@ -1506,8 +1509,9 @@ mod tests {
             evals: vec![Eval {
                 model: "opus".into(),
                 harness: "claude".into(),
-                done: 10,
+                done: 12,
                 landed: 9,
+                landed_n: 10,
                 redo: 1,
                 reverts: 0,
                 cost_usd: 45.0,

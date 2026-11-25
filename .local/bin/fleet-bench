@@ -255,8 +255,6 @@ set -uo pipefail
 : "${BENCH_TIME_DAYS:=7}"
 : "${BENCH_QUEUE_STATS_CMD:=agent-queue stats --json}"   # given --since <date>
 : "${BENCH_QUEUE_DAYS:=7}"           # what the queue line and the scorecard's queue tables cover
-: "${BENCH_KINDS:=${DISPATCH_KINDS:-$HOME/.config/fleet-dispatch/kinds.json}}"   # fleet-dispatch's kinds: the home of what a type exits with
-# BENCH_NOPR_TYPES (not defaulted here: set, even to empty, it overrides nopr_types) lists the types models counts apart from code items
 : "${BENCH_TRAINEE_CMD:=timeout 120 fleet-dispatch trainee-pool --json}"   # the trainee pool and the floor's state, as dispatch reads them
 : "${BENCH_SIZES_DAYS:=28}"          # the done items fleet-bench sizes calibrates on
 : "${BENCH_SECTIONS_DAYS:=7}"        # the merged PRs fleet-bench sections covers
@@ -3713,7 +3711,8 @@ queue_section() {
 # models_json <now> [by]: per model and harness (the item's agent, claude when unset), the queue items
 # finished in the last BENCH_QUEUE_DAYS days (the model= fleet-dispatch stamped at start) joined to
 # their sessions' outcomes (cost_usd, reverts), and model-lane's runs in the same days by the model
-# and harness they ran on (redo). Landed is done ok with a PR; a cancel counts against no pairing.
+# and harness they ran on (redo). Each item's verdict is the outcome agent-queue stamped on it at close
+# (OUTCOME_JQ there: landed, no-pr, unrated, failed, cancelled); a cancel counts against no pairing.
 # An item started before fleet-dispatch stamped model= takes the model its sessions spent most on
 # (cost_by_model), or with no cost the one their rows name most (models), as the alias an item names
 # (claude-opus-5-5 is opus); unrecorded is an item none of whose sessions has an outcomes row.
@@ -3724,26 +3723,16 @@ queue_section() {
 # have a pr-ci row: ci_red_per_pr is its red CI runs per PR, first_pass_share the
 # share of those that ran a gate with no red gate run (the KPI of that name). points are the
 # window points (source_attr) of the landed items' sessions, per pointed item: one with a known share.
-# An item whose end_reason is unrated (UNRATED_ENDS: the run ended for a cause outside the
-# model) is counted in unrated, and left out of landed_rate and failed. A run model-lane voided
+# landed_rate is landed over landed_n, the items a harness could have landed (landed, no_pr, failed);
+# an unrated item (a cause outside the model, a canary, a check or doc that opened no PR) is in done only. A run model-lane voided
 # (voids.jsonl, `model-lane void`) is left out of runs, rated and redo; it still names its item's lane.
 # by is a comma list of class and lane. lane is the model-lane lane the item's run logged under (the
 # run its lane_run= names; unrouted when it has none), so a lane's trial candidate is scored on its
 # own lane's landings; with lane alone, redo counts the runs of that lane. This is the evidence a
 # lane graduates or demotes on.
-# nopr_types: the item types whose run does not end in a PR, so models counts them apart from code items: every
-# kinds.json kind whose exit is not pr (a doc, a proof, an ask), plus check, whose exit is pr but whose clean run
-# is a verified-green item with no change to land. BENCH_NOPR_TYPES overrides; an unreadable kinds file falls back to the five.
-nopr_types() {
-  if [ "${BENCH_NOPR_TYPES+set}" = set ]; then printf '%s\n' "$BENCH_NOPR_TYPES"; return 0; fi
-  jq -r '[to_entries[] | select(.value.exit != "pr") | .key] + ["check"] | unique | join(" ")' "$BENCH_KINDS" 2>/dev/null \
-    || echo "check research design release epic"
-}
-
 models_json() {
   local since by="${2:-}"; since=$(( $1 - BENCH_QUEUE_DAYS * 86400 ))
   jq -cn --arg by "$by" --argjson days "$BENCH_QUEUE_DAYS" --argjson since "$since" \
-     --argjson nopr "$(jq -cn --arg t "$(nopr_types)" '$t | split(" ") | map(select(. != ""))')" \
      --slurpfile items <(bench_read $BENCH_DONE_ITEMS_CMD --since "$(date -d "@$since" +%F)" 2>/dev/null) \
      --slurpfile outcomes <(outcomes_latest) \
      --slurpfile runs <(jq -c 'select(.id and .ts)' "$BENCH_LANE_LOG" 2>/dev/null) \
@@ -3755,8 +3744,7 @@ models_json() {
     | ($runs | INDEX(.id)) as $rix | ($voids | INDEX(.id)) as $vix
     | ($ci | INDEX(itemkey)) as $cix | ($sa[0] // {}) as $sp |
     def sids: (.sessions // "") | split(" ") | map(select(. != ""));
-    def landed: .status == "ok" and (.pr // "") != "";
-    def check: ((.type // "") | IN($nopr[])) and ((.pr // "") == "");
+    def landed: .outcome == "landed";
     def metered: (.gateway_cost_usd // "") != "";
     def alias: capture("^claude-(?<f>[a-z]+)-").f // .;
     ($outcomes[0] // {}) as $o
@@ -3768,8 +3756,8 @@ models_json() {
           // ([$rows[] | .models // [] | .[] | select(startswith("<") | not)] | group_by(.) | max_by(length) | .[0]);
       ($items | map(. + {m: (((.model // spent_most) | if . then alias else . end) // "unrecorded"), h: (.agent // "claude"),
                c: (if $cl then cls else null end), l: (if $ln then $rix[.lane_run // ""].lane // "unrouted" else null end)})) as $all
-    | ($all | map(select(.status != "cancelled"))) as $done
-    | ($all | map(select(.status == "cancelled" and .end_reason == "returned"))) as $ret
+    | ($all | map(select(.outcome != "cancelled"))) as $done
+    | ($all | map(select(.outcome == "cancelled" and .end_reason == "returned"))) as $ret
     | ($runs | map(select(($vix[.id] | not) and (.ts | sub("\\+00:00$"; "Z") | fromdateiso8601) >= $since)
         | . + {h: (.harness // "claude"), ran: (.ran | if . then alias else . end), lane: (.lane // "unrouted")})) as $rs
     | ([($done + $ret)[] | {m, h, c, l}] + (if $cl then [] else [$rs[] | {m: .ran, h, c: null, l: (if $ln then .lane else null end)}] end) | unique_by([.m, .h, .c, .l])) as $pairs
@@ -3790,13 +3778,12 @@ models_json() {
         | ($li | map(sids[]) | unique | map($sp[.].points // empty)) as $pt
         | ($li | map(select(any(sids[]; $sp[.].points != null))) | length) as $pointed
         | ($ret | map(select(.m == $m and .h == $h and .c == $c and .l == $l)) | length) as $returned
-        | ($it | map(select(check))) as $chk
-        | ($it | map(select(check | not))) as $code
-        | ($code | map(select(unrated)) | length) as $unrated
-        | (($code | length) - $unrated) as $ln_n
+        | ($it | map(select(.outcome == "no-pr")) | length) as $no_pr
+        | ($it | map(select(.outcome == "failed")) | length) as $failed
+        | ($landed + $no_pr + $failed) as $ln_n
         | ($cr | map(select(ran_gate))) as $ran | ($ran | map(select(first_try)) | length) as $fp
-        | {model: $m, harness: $h, done: ($it | length), checks: ($chk | length), checks_ok: ($chk | map(select(.status == "ok")) | length), checks_failed: ($chk | map(select(.status == "failed")) | length), returned: $returned, code: ($code | length), landed: $landed, landed_rate: ratio($landed; $ln_n), landed_n: $ln_n, landed_ci: wilson($landed; $ln_n),
-           failed: ($code | map(select(.status == "failed" and (unrated | not))) | length), unrated: $unrated,
+        | {model: $m, harness: $h, done: ($it | length), returned: $returned, landed: $landed, no_pr: $no_pr, landed_rate: ratio($landed; $ln_n), landed_n: $ln_n, landed_ci: wilson($landed; $ln_n),
+           failed: $failed, unrated: ($it | map(select(.outcome == "unrated")) | length),
            fix_none: ($li | map(select(.review_fix == "none")) | length), fix_small: ($li | map(select(.review_fix == "small")) | length),
            runs: ($r | length), approved: ($r | map(select(.outcome == "ok")) | length), rated: $rated, redo: $redo, redo_rate: ratio($redo; $rated),
            reverts: ($sess | map(.reverted_7d // 0) | add // 0),
@@ -3817,7 +3804,7 @@ models_section() {
   local j by="${2:-}" cols="" lead=""
   echo "## Models"
   echo
-  echo "Queue items finished in the last ${BENCH_QUEUE_DAYS} days by the model and harness they started on, joined to their sessions' outcomes; redo is model-lane's runs on that pairing that were put back in the queue (\`model-lane report\`), less the runs \`model-lane void\` voided. Landed is done ok with a PR. Checks are done items of a type that ends in a report, not a PR (\`fleet-dispatch\` kinds whose exit is not a PR, and check: $(nopr_types | sed 's/ /, /g')) and no PR; a failed one shows in the cell, so Rate counts only the code items a harness could have landed; Returned are items sent back to their board row to wait on an ask, a hold or a gate (cancelled, \`end_reason: returned\`): a workflow wait, in no Done, Rate or Failed. Source says what a cost is: list is an estimate at list price, not money paid; gateway is dollars metered at the LiteLLM gateway; mixed holds both. Per PR counts only PRs with a known cost. CI red is red CI runs per landed PR with a \`pr-ci\` row, first pass the share of those green first time. Points are percent points of the pairing's sources' weekly windows its landed items' sessions used (\`fleet-bench sources\`), per PR with a known share. Counts, not a winner: pairings ran different tasks."
+  echo "Queue items finished in the last ${BENCH_QUEUE_DAYS} days by the model and harness they started on, joined to their sessions' outcomes; redo is model-lane's runs on that pairing that were put back in the queue (\`model-lane report\`), less the runs \`model-lane void\` voided. Each item is counted by the \`outcome\` agent-queue stamped at its close: Landed is done ok with a PR; No PR is done ok with no PR on a kind whose exit is a PR; Unrated is an item whose verdict says nothing of the model (a check or doc kind that opened no PR, a canary, an end outside the model); Rate is Landed over Landed, No PR and Failed; Returned are items sent back to their board row to wait on an ask, a hold or a gate (cancelled, \`end_reason: returned\`): a workflow wait, in no Done, Rate or Failed. Source says what a cost is: list is an estimate at list price, not money paid; gateway is dollars metered at the LiteLLM gateway; mixed holds both. Per PR counts only PRs with a known cost. CI red is red CI runs per landed PR with a \`pr-ci\` row, first pass the share of those green first time. Points are percent points of the pairing's sources' weekly windows its landed items' sessions used (\`fleet-bench sources\`), per PR with a known share. Counts, not a winner: pairings ran different tasks."
   echo
   j=$(models_json "$1" "$by") || { echo "- models: ? (queue or outcomes unreadable)"; return 0; }
   case ",$by," in *,class,*)
@@ -3830,23 +3817,23 @@ models_section() {
     echo
     cols="${cols}Lane | "; lead="${lead}"'\(.lane) | ' ;;
   esac
-  echo "An item that ended for a cause outside the model (\`end_reason\` ${UNRATED_ENDS// /, }: a quota end, a provider failure, a kill) counts in Done but not in Rate or Failed; \`models --json\` has it as \`unrated\`. A check is in Done and in neither Rate nor Failed."
+  echo "An item that ended for a cause outside the model (\`end_reason\` ${UNRATED_ENDS// /, }: a quota end, a provider failure, a kill) is Unrated: in Done, not in Rate or Failed."
   echo
   echo "Rate and First pass show their Wilson 95% interval and n (rated items; PRs whose CI ran a gate), so a rate on a few items reads as the range it is; CI red is a mean count per PR, so it shows its n (PRs with a \`pr-ci\` row) and no interval."
   echo
   local redo_h="Redo | " redo_c='\(.redo) | ' hdr
   case ",$by," in *,class,*) redo_h="" redo_c="" ;; esac
-  hdr="${cols}Model | Harness | Done | Checks | Returned | Landed | Rate | Failed | ${redo_h}Reverts | Cost | Per PR | Source | CI red | First pass | Points | Points per PR"
+  hdr="${cols}Model | Harness | Done | Returned | Landed | No PR | Unrated | Rate | Failed | ${redo_h}Reverts | Cost | Per PR | Source | CI red | First pass | Points | Points per PR"
   echo "| $hdr |"
   echo "|$(sed 's/[^|][^|]*/---/g' <<<"$hdr")|"
   jq -r "$JQ_LIB"'def d: if . == null then "-" else tostring end;
     .models | sort_by(.class, .lane, -.done)[]
-    | "| '"$lead"'\(.model) | \(.harness) | \(.done) | \(.checks)\(if .checks_failed > 0 then " (\(.checks_failed) failed)" else "" end) | \(.returned) | \(.landed) | \(ci_cell(.landed_rate; .landed_ci; .landed_n)) | \(.failed) | '"$redo_c"'\(.reverts) | $\(.cost_usd) | \(if .cost_per_pr == null then "-" else "$\(.cost_per_pr)" end) | \(.source) | \(if .ci_red_per_pr == null then "-" else "\(.ci_red_per_pr) (n \(.ci_prs))" end) | \(ci_cell(.first_pass_share; .first_pass_ci; .first_pass_n)) | \(.points | d) | \(.points_per_pr | d) |"' <<<"$j"
+    | "| '"$lead"'\(.model) | \(.harness) | \(.done) | \(.returned) | \(.landed) | \(.no_pr) | \(.unrated) | \(ci_cell(.landed_rate; .landed_ci; .landed_n)) | \(.failed) | '"$redo_c"'\(.reverts) | $\(.cost_usd) | \(if .cost_per_pr == null then "-" else "$\(.cost_per_pr)" end) | \(.source) | \(if .ci_red_per_pr == null then "-" else "\(.ci_red_per_pr) (n \(.ci_prs))" end) | \(ci_cell(.first_pass_share; .first_pass_ci; .first_pass_n)) | \(.points | d) | \(.points_per_pr | d) |"' <<<"$j"
 }
 
 # trainee_section <now>: the trainee ladder in the scorecard. Per pair (lane trainee in model-lane's log,
 # the models table's own join): runs, approved (the batch review's ok), rejected (redo), landed (done ok
-# with a PR). Then the pool and the floor as fleet-dispatch reads them (BENCH_TRAINEE_CMD).
+# with a PR, outcome landed). Then the pool and the floor as fleet-dispatch reads them (BENCH_TRAINEE_CMD).
 trainee_section() {
   local j p
   echo "## Trainee"
@@ -3905,22 +3892,22 @@ skills_json() {
     def sids: (.sessions // "") | split(" ") | map(select(. != ""));
     ($o[0] // {}) as $o | ($reds[0] // {}) as $r | ($ci | INDEX(itemkey)) as $cix
     | ($items | map(prkeys as $pk | (sids | map($o[.] // empty)) as $rows
-        | {status, landed: (.status == "ok" and (.pr // "") != ""), unrated: unrated, pk: $pk,
+        | {outcome, landed: (.outcome == "landed"), pk: $pk,
            skills: ([$rows[] | (.uses.skills // {} | keys[] | bare), (.uses.slash // {} | keys[] | bare | select(IN($names[])))] | unique),
            reverted: any($rows[] | .prs // [] | .[]; .reverted == true and (itemkey | IN($pk[]))),
            tried: ((.fix_tries // "") != ""), red: $r[.slug]})) as $done
     | def score($name; $it):
-        ($it | map(select(.status != "cancelled"))) as $n
+        ($it | map(select(.outcome != "cancelled"))) as $n
         | ($n | map(select(.landed))) as $l
-        | ($n | map(select(.unrated)) | length) as $unrated
+        | ($n | map(select(.outcome | IN("landed", "no-pr", "failed"))) | length) as $rated
         | [$l | map(.pk[]) | unique[] | $cix[.] // empty] as $cr
         | ($cr | map(select(ran_gate))) as $ran
         | ($n | map(select(.tried))) as $tried
         | ($n | map(select(.red == "fixed"))) as $rok
         | ($n | map(select(.red | IN("still red", "came back")))) as $rbad
         | {skill: $name, items: ($n | length), cancelled: (($it | length) - ($n | length)),
-           landed: ($l | length), rated: (($n | length) - $unrated), landed_rate: ratio($l | length; ($n | length) - $unrated),
-           failed: ($n | map(select(.status == "failed" and (.unrated | not))) | length),
+           landed: ($l | length), rated: $rated, landed_rate: ratio($l | length; $rated),
+           failed: ($n | map(select(.outcome == "failed")) | length),
            held: ($l | map(select(.reverted | not)) | length), held_rate: ratio($l | map(select(.reverted | not)) | length; $l | length),
            ci_prs: ($cr | length), ci_red_per_pr: ratio($cr | map(.ci_red // 0) | add // 0; $cr | length),
            gated: ($ran | length), first_pass: ($ran | map(select(first_try)) | length),
@@ -4003,7 +3990,7 @@ source_attr() {
           else (.account | acct) // ([$ids[] | $os[.] // empty | on // empty] | first) end
         | {src: ., why: (if . != null then null elif $a != "" then "unknown_account" elif $ids == [] then "no_session"
                          elif any($ids[]; $os[.] != null) then "no_account" else "no_outcome" end)};
-      [$items[] | select(.status == "ok" and (.pr // "") != "") | item_src] as $L
+      [$items[] | select(.outcome == "landed") | item_src] as $L
     | ($L | map(.src)) as $landed
     | ($R | map({key: .name, value: .parent}) | from_entries) as $parent
     | {days: $days, read: {sources: ($rows != null), points: ($pts != null), usd: ($usd != null)}, sessions: $sess,
@@ -4095,7 +4082,7 @@ sizes_json() {
     | [$items[0][] | select(.status != "cancelled") | ((.finished | epoch) // 0) as $fin
        | ($R[.row // ""]) as $r
        | {fin: $fin, ok: (.status == "ok"), size: ($r.size // ""), pts: $r.pts, weight: $r.weight, kind: ($r.kind // .type // "untyped" | if . == "" then "untyped" else . end),
-          landed: (.status == "ok" and (.pr // "") != ""),
+          landed: (.outcome == "landed"),
           work: (.work_min // "" | tonumber? // null),
           cycle: (if (.started | epoch) and (.finished | epoch) then (.finished | epoch) - (.started | epoch) else null end),
           lead: (if (.queued | epoch) and (.finished | epoch) then (.finished | epoch) - (.queued | epoch) else null end)}] as $read

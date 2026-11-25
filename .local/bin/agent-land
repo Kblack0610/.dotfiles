@@ -625,10 +625,10 @@ show_rc=0
 it=$(aq_retry show "$item" --json 2>/dev/null) || show_rc=$?
 [ "$show_rc" -ne "$QUEUE_BUSY" ] || die "the queue is locked by another writer: nothing merged, re-run"
 [ "$show_rc" -eq 0 ] || die "no queue item $item (agent-queue show)"
-# A done ok item takes more PRs: its `pr:` holds one <owner>/<repo>#<N> per repo, space separated,
+# A landed item (outcome landed) takes more PRs: its `pr:` holds one <owner>/<repo>#<N> per repo, space separated,
 # and `merged:` their merge commits in the same order, so a task split across repos lands each on
 # its one item. Which repo this PR is in needs gh, so once_done checks it after the PR is read.
-case "$(jq -r 'if .state == "done" and .status == "ok" and (.pr // "") != "" then "done-ok" else .state end' <<<"$it")" in
+case "$(jq -r 'if .state == "done" and .outcome == "landed" then "done-ok" else .state end' <<<"$it")" in
 running | waiting | review | queued | done-ok) ;;
 *) die "queue item $item is $(jq -r '.state + " " + (.status // "")' <<<"$it"), not open" ;;
 esac
