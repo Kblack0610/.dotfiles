@@ -2121,7 +2121,7 @@ cmd_add() {
     # `rows:` line, add_plan), which agent-land closes with the last phase, so no phase item names it.
     local plan_row=''
     case "$from" in board:?*:?*) plan_row="${from##*:}" from=auto:plan-row ;; esac
-    if [ -z "$dry" ] && ! pull_ok "" "$from" "$from_given"; then
+    if [ -z "$dry" ] && ! pull_ok "" "$from" "$from_given" && ! own_plan_item "$planf"; then
       [ -z "$plan_row" ] || { echo "agent-queue: its row $plan_row is left where it is: dispatch promotes it" >&2; exit "$AQ_EX_HELD"; }
       # Resolved as every add is (dotfiles -> agent-runtime): unresolved, a repo whose work counts on an
       # owner had no board, and every reap of a dotfiles plan failed and was retried each pass (ar-2787).
@@ -2521,11 +2521,6 @@ add_plan() {
   # Its items already active are checked against the chain below, once their slugs are known.
   local taken
   taken="$(plan_taken "$planf")" || exit $?
-  # A phase an earlier add filed on its board row behind a gate (plan_gated_rows) waits there: a second add would
-  # file it twice.
-  local filed
-  filed="$(plan_gated_rows | jq -rs --arg p "$planf" "$PLAN_ITEMS_JQ"' .[] | select(names_plan($p)) | .slug' | paste -sd' ')"
-  [ -z "$filed" ] || die "phases of $planf already wait on the board: rows $filed (nothing was added; queue a phase that is not on one with a plain add)"
   # A sub-phase line is no queue item: its number is not an integer, so no item's `phases:` can carry it.
   local subs
   subs="$(plan_phase_list "$planf" | jq -r '[.[] | select(.state == "open" and (.n | type) == "string") | .n] | join(" ")')"
@@ -2537,17 +2532,43 @@ add_plan() {
   local rows ranked
   rows="$(plan_item_rows "$prefix" "$planf" <<<"$groups")"
   ranked="$(plan_takes_rank "$rows" "$priority" "$planf")" || exit 1
+  # A phase an earlier add filed on its board row behind a gate (plan_gated_rows) waits there: a second add keeps
+  # it on that row (rowof: its slug -> row id) and files only the phases on no row and in no item, so a line
+  # added to a filed chain mid-flight is filed once. A gated row naming the plan with no phase number on it
+  # (the plan's own row) refuses the add, as the chain is not filed yet.
+  local board mid
+  local -A rowof=() rowph=()
+  board="$(notes board --json 2>/dev/null)" || board=''
+  mid="$(plan_gated_rows "$board" | jq -rs --arg p "$planf" "$PLAN_ITEMS_JQ"' .[] | select(names_plan($p)) | [.slug, (.task | gsub("[\t\n]"; " "))] | @tsv')"
+  local mid_id mid_task mid_ph re='(^|[[:space:]])Phases? ([0-9]+( and [0-9]+)*) of the plan ' plain=''
+  while IFS=$'\t' read -r mid_id mid_task; do
+    [ -n "$mid_id" ] || continue
+    if [[ "$mid_task" =~ $re ]]; then
+      mid_ph="${BASH_REMATCH[2]// and / }"
+      rowof["$prefix-p${mid_ph%% *}"]="$mid_id" rowph["$mid_id"]="$mid_ph"
+    else plain+="${plain:+ }$mid_id"; fi
+  done <<<"$mid"
+  # gate: none
+  [ -z "$plain" ] || die "phases of $planf already wait on the board: rows $plain (nothing was added; queue a phase that is not on one with a plain add)"
   # An add that stopped part way (a lock it timed out on, ar-2922) left the first items of the chain:
   # this add keeps each under the slug it would give it and queues the rest after them. An item of
-  # the plan under any other slug, or a chain already whole, refuses it.
-  local s d dep ph text prev="$after" wait left=" $taken " fresh=()
+  # the plan under any other slug, or a chain already whole, refuses it. The calling session's own
+  # item (`own`: a phase session adding a line to its plan) and the phases on their rows are kept too.
+  local s d dep ph text prev="$after" wait left=" $taken " fresh=() own=''
   while IFS=$'\t' read -r s dep ph text _; do
     if [[ " $taken " == *" $s "* ]]; then
       left="${left/ $s / }"
       [ "$(fm_get "$(find_item "$s")" phases)" = "$ph" ] || die "$s is queued with other phases than $planf gives it now (nothing was added)"
+    elif [ -n "${rowof[$s]:-}" ]; then
+      # gate: none
+      [ "${rowph[${rowof[$s]}]}" = "$ph" ] || die "row ${rowof[$s]} holds phases ${rowph[${rowof[$s]}]} of $planf, which gives $s phases $ph now (nothing was added; keep each filed phase's P<N> label)"
+    elif [ "$s" = "${AGENT_QUEUE_ITEM:-}" ] && [ -n "$(find_item "$s")" ]; then
+      [ "$(fm_get "$(find_item "$s")" phases)" = "$ph" ] || die "$s, this session's item, holds other phases than $planf gives it now (nothing was added)"
+      own="$s"
     else fresh+=("$s"); fi
   done <<<"$rows"
-  [ -z "${left// /}" ] && [ ${#fresh[@]} -gt 0 ] || die "the phases of $planf are already queued: $taken (nothing was added)"
+  # gate: none
+  [ -z "${left// /}" ] && [ ${#fresh[@]} -gt 0 ] || die "the phases of $planf are already queued or filed: ${taken:-no item}${rowof[*]:+, rows $(printf '%s\n' "${rowof[@]}" | sort -V | paste -sd' ')} (nothing was added)"
   for s in "${fresh[@]}"; do [ -z "$(find_item "$s")" ] || die "already in the queue: $s (nothing was added)"; done
   check_after "$after"
   # Promoted from its plan row: the row goes on the plan's `rows:` line before any phase is written, so
@@ -2567,7 +2588,7 @@ add_plan() {
   # twice, and the next phase still goes after it (an ok after: releases at once).
   # A phase that waits on one not yet landed is no queue item: cmd_add files it as its board row, gated
   # #after/<that phase's row> (add_gates), and each phase after it waits on that row id in turn (key).
-  local n=0 total why skipped=0 added=() out rc held=0
+  local n=0 total why skipped=0 added=() out rc held=0 pend=()
   local -A key=()
   total="$(wc -l <<<"$rows")"
   local at ptags pprio
@@ -2584,13 +2605,22 @@ add_plan() {
       echo "agent-queue: skipped $why; tick its box in $planf" >&2
       skipped=$((skipped + 1)); prev="$s"; continue
     fi
-    if [[ " $taken " == *" $s "* ]]; then
-      echo "agent-queue: kept $s, queued by an earlier add of $planf" >&2
-      ! kept_queued "$s" || added+=("$s")
+    if [ -n "${rowof[$s]:-}" ]; then
+      echo "agent-queue: kept $s on its board row ${rowof[$s]}, filed by an earlier add of $planf" >&2
+      key[$s]="${rowof[$s]}"
+      plan_gate_kept "$s" "${rowof[$s]}" "${pend[@]}"; pend=()
+      n=$((n + 1)) prev="${rowof[$s]}"; continue
+    fi
+    if [[ " $taken " == *" $s "* ]] || [ "$s" = "$own" ]; then
+      if [ "$s" = "$own" ]; then echo "agent-queue: kept $s, this session's own item" >&2
+      else echo "agent-queue: kept $s, queued by an earlier add of $planf" >&2; ! kept_queued "$s" || added+=("$s"); fi
+      [ ${#pend[@]} = 0 ] || echo "agent-queue: $s is an item, not a row, so it is not gated on ${pend[*]}: set its after: by hand if it must wait" >&2
+      pend=()
       n=$((n + 1)) prev="$s"; continue
     fi
     if [ -n "$dry" ]; then
       printf 'would queue %s\tphases %s\tafter %s%s%s\n  %s\n' "$s" "$ph" "${wait:--}" "$(takes_suffix "$ranked" "$s")" "${at:+$'\t'$at $pprio}" "$text"
+      pend+=("$s")
     else
       rc=0
       ttl="$(plan_phase_title "$planf" "$ph" "$ttl")"
@@ -2598,12 +2628,12 @@ add_plan() {
         cmd_add_one ${project:+--project "$project"} --priority "$pprio" ${ptags:+--tags "$ptags"} ${weight:+--weight "$weight"} \
           --from "$from" --agent "$agent" --slug "$s" --title "$ttl" ${wait:+--after "$wait"} ${repeat:+--repeat} -- "$text")" || rc=$?
       [ -z "$out" ] || printf '%s\n' "$out"
-      if [ "$rc" = 0 ]; then added+=("$s")
+      if [ "$rc" = 0 ]; then added+=("$s") pend+=("$s")
       elif [ "$rc" = "$AQ_EX_HELD" ] && [[ "$out" =~ (^|$'\n')"held $s -> "[^:]+:([a-z0-9]+-[0-9]+) ]]; then
-        key[$s]="${BASH_REMATCH[2]}" held=$((held + 1))
+        key[$s]="${BASH_REMATCH[2]}" held=$((held + 1)) pend+=("$s")
       elif [ "$rc" = "$LOCK_BUSY" ] && [ "$held" = 0 ]; then plan_lock_short "$n" "$total" "$planf"
       else
-        # A rerun would refuse once a phase waits on a row (the check above), so that case names the plain adds.
+        # A rerun keeps a phase held on a gated row but files one on an ungated row again, so that case names the plain adds.
         [ "$held" = 0 ] || die "queued $n of $total items from $planf ($held of them wait on their board rows); $s and the rest are not queued: add each with a plain add --after the phase before it (its slug or row id)"
         die "queued $n of $total items from $planf; $s and the rest are not queued: run the same add again to queue them"
       fi
@@ -2618,6 +2648,39 @@ add_plan() {
   ! dispatch_held "${added[*]}" || return 0
   local f
   for s in "${added[@]}"; do f="$(find_item "$s")" && [ -n "$f" ] && start_at_add "$f" "$s" "$(takes_field "$ranked" "$s" 3 "$priority")"; done
+}
+# own_plan_item <plan>: the calling session's item ($AGENT_QUEUE_ITEM) is running and a phase of that plan (its plan:).
+# cmd_add --plan lets such a session add a line to its own plan (add_plan keeps the filed phases) and file
+# the new phase itself: through overflow_row it is a board row all the same, as a dispatched caller's add is.
+own_plan_item() {
+  local f
+  [ -n "${AGENT_QUEUE_ITEM:-}" ] && f="$(find_item "$AGENT_QUEUE_ITEM")" && [[ "$f" == */running/* ]] && [ -n "$(fm_get "$f" plan)" ] &&
+    [ "$(realpath -m "$(fm_get "$f" plan)")" = "$(realpath -m "$1")" ]
+}
+# plan_gate_kept <slug> <row id> <slug>...: add_plan kept phase <slug> on its board row, below the phases
+# this add filed (the rest): a line's place in the checklist is its declaration, so the row waits on each
+# of them too, gated after/<its row> (a held phase's row id in key, a queued one's own row, item_row),
+# beside the gates it has. Reads add_plan's locals key, dry and board. A dry run prints the gate.
+plan_gate_kept() {
+  local s=$1 id=$2 k r f tags=()
+  shift 2
+  for k in "$@"; do
+    r="${key[$k]:-}"
+    if [ -z "$r" ] && f="$(find_item "$k")" && [ -n "$f" ]; then r="$(item_row "$f")" r="${r#*:}"; fi
+    [ -z "$dry" ] || r="${r:-<row of $k>}"
+    if [ -n "$r" ]; then tags+=("after/$r")
+    else echo "agent-queue: $s on row $id is not gated on $k, which has no board row: gate it by hand" >&2; fi
+  done
+  [ ${#tags[@]} -gt 0 ] || return 0
+  if [ -n "$dry" ]; then echo "would gate row $id ($s) on ${tags[*]}"; return 0; fi
+  local proj prof lane
+  # A unit separator, not a tab: read collapses an empty whitespace field, so no profile would shift the lane.
+  IFS=$'\x1f' read -r proj prof lane < <(jq -r --arg id "$id" 'first(.rows[]? | select(.id == $id)
+    | [.project, (.profile // ""), (.lane // "agent")]) | join("\u001f")' <<<"$board" 2>/dev/null) || true
+  # gate: none
+  gate_row "${proj:-?}:$id" "${prof:-}" "${lane:-agent}" "${tags[@]}" ||
+    die "the phases above $s are filed, but its row $id is not gated on them: $GATE_HINT"
+  echo "gated row $id ($s) on ${tags[*]}"
 }
 # plan_item_rows <prefix> <plan> < groups -> one TSV row per queue item of add_plan's phase groups:
 # slug, dep, phases, brief, phase name (the title is plan_phase_title's), names, at: tag (empty when the phase has no `(at ...)` marker).
