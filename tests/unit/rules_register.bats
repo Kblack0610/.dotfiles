@@ -353,6 +353,7 @@ enf_row() {
 }
 
 @test "rules --check: a rule row that names no enforced_by fails, and a mechanism row is its own enforcer" {
+  echo 'Never force push' > "$SANDBOX/hook.sh"
   enf_row null
   enf_row null "$SANDBOX/hook.sh"
   run "$SUBJECT" rules --check
@@ -453,6 +454,7 @@ enf_row() {
 @test "rules --check: a mechanism row that says review is not a prose-only rule row" {
   export RULES_PROSE_BASELINE="$SANDBOX/prose-baseline"
   echo 'review=0' > "$RULES_PROSE_BASELINE"
+  echo 'Never force push' > "$SANDBOX/hook.sh"
   enf_row '"review"' "$SANDBOX/hook.sh"
   run "$SUBJECT" rules --check
   assert_success
