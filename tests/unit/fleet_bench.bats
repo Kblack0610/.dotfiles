@@ -3575,7 +3575,7 @@ q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
   run "$SUBJECT" chain --json
   assert_success
   run jq -c 'with_entries(.value |= [.["7d"], .status])' <<<"$output"
-  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"release_overdue":[0,"ok"],"version_tag_drift":[0,"ok"],"doctor_fail":[0,"ok"],"dup_pairs":[null,"-"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"reds_spent":[null,"-"],"requested_unstarted_h":[0,"-"],"orphan_request_rows":[0,"ok"],"next_up_blocked":[0,"ok"],"stale_urgent_d":[0,"ok"],"urgent_per_board":[0,"ok"],"playtest_waiting_d":[0,"ok"],"done_inline_old":[0,"ok"],"request_to_live_h":[null,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_review":[null,"-"],"step_age_p90_waiting":[null,"-"],"queue_net_24h":[null,"-"],"estimated_token_share":[null,"-"]}'
+  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"release_overdue":[0,"ok"],"version_tag_drift":[0,"ok"],"doctor_fail":[0,"ok"],"dup_pairs":[null,"-"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"reds_spent":[null,"-"],"requested_unstarted_h":[0,"-"],"orphan_request_rows":[0,"ok"],"next_up_blocked":[0,"ok"],"stale_urgent_d":[0,"ok"],"urgent_per_board":[0,"ok"],"playtest_waiting_d":[0,"ok"],"done_inline_old":[0,"ok"],"prio_default":[4,"-"],"request_to_live_h":[null,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_review":[null,"-"],"step_age_p90_waiting":[null,"-"],"queue_net_24h":[null,"-"],"estimated_token_share":[null,"-"]}'
   # the done items are read back a day past the window (8 days before T0, a local date), so an item
   # done before its PR merged counts; the pipeline reads the last day's
   run sort -u "$DONE.calls"
@@ -3655,6 +3655,53 @@ LIB
   # an unreadable project list reads ?, never 0
   BENCH_PROJECTS_CMD=false run "$SUBJECT" chain --json
   assert_equal "$(jq -c '[.release_overdue["7d"], .version_tag_drift["7d"]]' <<<"$output")" '[null,null]'
+}
+
+@test "chain: prio_default counts the open rows with no priority or no reason, and names the filer with the most" {
+  chain_fixture
+  printf '%s\n' prio_default_max=0 >> "$KPI_THRESHOLDS"
+  # the fixture's rows all carry a priority and a reason; d-2 has a priority and no reason, d-3 no priority
+  # (both agent-queue's: its first event wins over a later one), d-4 was filed by the human, d-5 has no
+  # event; a closed row, a row of a project with automation off and a playtest check never count
+  jq -c '.rows |= map(. + {priority: "normal", prio_why: "upkeep"})' "$BJSON" > "$BJSON.reasoned"
+  jq -c '.rows += [
+    {project: "game", id: "d-2", lane: "agent", state: "open", priority: "high", tags: ["of/t-0"]},
+    {project: "game", id: "d-3", lane: "agent", state: "open", untriaged: true, prio_why: "upkeep", tags: ["of/t-0"]},
+    {project: "game", id: "d-4", lane: "human", state: "open", priority: "normal", tags: []},
+    {project: "game", id: "d-5", lane: "agent", state: "open", priority: "low", tags: ["of/t-0"]},
+    {project: "game", id: "d-6", lane: "agent", state: "done", tags: []},
+    {project: "off", id: "o-1", lane: "agent", state: "open", automation: false, tags: []},
+    {project: "game", id: "d-7", lane: "playtest", state: "open", tags: []}]' "$BJSON.reasoned" > "$BJSON"
+  {
+    jq -cn '{action: "added", id: "d-2", by: "s1", origin: "agent-queue"}'
+    jq -cn '{action: "added", id: "d-3", by: "s1", origin: "agent-queue"}'
+    jq -cn '{action: "added", id: "d-2", by: "s2", origin: "ask-sweep"}'
+    jq -cn '{action: "filed", id: "d-4", by: ""}'
+    jq -cn '{action: "added", id: "g-1", by: "s3", origin: "fleet-bench"}'
+  } > "$BENCH_INGEST"
+  run "$SUBJECT" chain
+  assert_success
+  assert_line 'prio_default: 4 open rows with no priority or no #why, by filer: agent-queue 2, human 1, unrecorded 1'
+  run "$SUBJECT" chain --check
+  assert_failure 1
+  assert_output 'prio_default 4 (max 0)'
+  run "$SUBJECT" prio-defaults
+  assert_success
+  assert_output "$(printf '%s\n' 'prio_default 4' '  agent-queue 2  d-2 d-3' '  human 1  d-4' '  unrecorded 1  d-5')"
+  run "$SUBJECT" prio-defaults --json
+  run jq -c '[.total, .origins[0].origin]' <<<"$output"
+  assert_output '[4,"agent-queue"]'
+  # the gauge names the filer, so the front page can say whose default it is
+  source "$SUBJECT"
+  run bench_prom "$T0" '{"steps": []}'
+  assert_line 'agent_bench_kpi_subject{kpi="prio_default",subject="agent-queue"} 1'
+  # negative control: every row carries a priority and a reason, so the KPI reads 0, passes and names no filer
+  cp "$BJSON.reasoned" "$BJSON"
+  run "$SUBJECT" chain --check
+  assert_success
+  assert_output ''
+  run bench_prom "$T0" '{"steps": []}'
+  refute_line --partial 'kpi="prio_default",subject='
 }
 
 @test "chain: each KPI goes past its bound on a fixture that breaks its link, and only that one" {

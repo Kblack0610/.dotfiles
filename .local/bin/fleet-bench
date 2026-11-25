@@ -54,6 +54,9 @@
 #                                --check exits 1 past a threshold, on the KPIs whose name matches ERE
 #   fleet-bench chain [--json|--check]
 #                                the work-chain KPIs counted now (also in kpi); --check exits 1 past a threshold
+#   fleet-bench prio-defaults [--json]
+#                                the open rows that rank by default (no priority tag or no #why/<reason>) by the filer
+#                                that wrote them, most first, with sample ids: the rows behind the prio_default KPI
 #   fleet-bench startup [--json|--check]
 #                                Claude Code start times (CLAUDE_STARTUP_LOG): medians over the last
 #                                startup_rolling_n starts; --check exits 1 past startup_ready_ms_p50_max,
@@ -356,6 +359,7 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${BENCH_LANE_LOG:=$HOME/.agent/model-lane/runs.jsonl}"   # model-lane log: one row per dispatched run, its outcome
 : "${BENCH_LANE_VOIDS:=${BENCH_LANE_LOG%/*}/voids.jsonl}"   # model-lane's voids beside it: runs to rate no more (`model-lane void`)
 : "${BENCH_SKILLS_DIR:=$HOME/.claude/skills}"   # skills: a slash command is a skill when <dir>/<name>/SKILL.md exists
+: "${PRIO_SAMPLE:=3}"   # row ids shown per origin in prio_default
 : "${BENCH_INGEST:=$HOME/.local/state/notes/ingest.jsonl}"   # the notes CLI's record of every row it wrote: who, from where
 : "${BENCH_PROFILE:=}"                             # the profile board_open and board_days read; empty asks `notes config`
 BOARD_SHIP_DAYS=7                                    # days of shipped weight board_days reads: the notes sweep's BUDGET_WINDOW_DAYS
@@ -1055,7 +1059,7 @@ bench_prom() {
   local t="$1" pl="$2" kpis
   kpis=$(kpi_now "$t") || kpis='{}'
   jq -rn --arg win "$BENCH_WINDOW_H" --argjson pl "$pl" --slurpfile w <(window_stats "$t") --argjson k "$kpis" \
-     --slurpfile or <(oldest_requested "$t") --arg vitals "$BENCH_VITALS" "$JQ_LIB$PROM_JQ$VITALS_JQ"'
+     --slurpfile or <(oldest_requested "$t") --slurpfile pd <(prio_defaults) --arg vitals "$BENCH_VITALS" "$JQ_LIB$PROM_JQ$VITALS_JQ"'
     def h: . / 60 * 100 | round / 100;
     gauge("agent_bench_waiting_hours"; "Hours sessions sat in NEEDS over the last \($win)h.";
         $w | group_by(.project)[] | [{project: .[0].project}, (map(.waiting_min) | add | h)]),
@@ -1068,7 +1072,8 @@ bench_prom() {
       gauge("agent_bench_kpi_past"; "1 when a KPI is past its threshold, as fleet-bench judged it.";
         $k | to_entries[] | select(.value.status != "-") | [{kpi: .key}, (if .value.status == "past" then 1 else 0 end)]),
       gauge("agent_bench_kpi_subject"; "The row behind a KPI that names one, as project:id; the value is always 1.";
-        $or[] | [{kpi: "requested_unstarted_h", subject: "\(.project):\(.id)"}, 1]),
+        ($or[] | [{kpi: "requested_unstarted_h", subject: "\(.project):\(.id)"}, 1]),
+        ($pd[] | select(.total > 0) | [{kpi: "prio_default", subject: .origins[0].origin}, 1])),
       gauge("agent_bench_vital"; "The front-page KPIs from BENCH_VITALS, by the question each answers; the value is its row. Read each one from agent_bench_kpi.";
         vitals($vitals) | to_entries[] | [{question: .value.question, kpi: .value.kpi}, .key]),
       gauge("agent_chain_wip"; "Items at each step of the work chain now, from the state files.";
@@ -2190,6 +2195,8 @@ ledger_systems() {
 # requested_unstarted_h: hours the oldest #requested agent row has sat open and unstarted.
 # orphan_request_rows, next_up_blocked, stale_urgent_d, urgent_per_board, playtest_waiting_d and done_inline_old: the
 # rows the board holds that no step will move, from board_links (which says what each counts).
+# prio_default: open agent and human rows with no priority tag or no #why/<reason> (the default rank
+# normal still applies to them), by the filer that wrote each (prio_defaults); 0 when every row has both.
 # request_to_live_h: the p50 hours from request to live (lead_time_json), ? until every
 # BENCH_LEAD_TRUST KPI holds its bound (lead_untrusted).
 # wants_unstamped: of the agent-lane rows the human's channels added over the last CHAIN_DAYS
@@ -2209,7 +2216,7 @@ ledger_systems() {
 # release_overdue and version_tag_drift are the release link (release_kpis): a project a day past its
 # target date with that version uncut, else a sheet-counter project a day past its cadence due date with
 # done rows and no cut; and a tagged project whose sheet is not its tag plus one patch.
-KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified release_overdue version_tag_drift doctor_fail dup_pairs plans_unqueued routes_unresolved reds_unfixed reds_spent requested_unstarted_h orphan_request_rows next_up_blocked stale_urgent_d urgent_per_board playtest_waiting_d done_inline_old request_to_live_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_review step_age_p90_waiting queue_net_24h estimated_token_share"
+KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified release_overdue version_tag_drift doctor_fail dup_pairs plans_unqueued routes_unresolved reds_unfixed reds_spent requested_unstarted_h orphan_request_rows next_up_blocked stale_urgent_d urgent_per_board playtest_waiting_d done_inline_old prio_default request_to_live_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_review step_age_p90_waiting queue_net_24h estimated_token_share"
 
 # wants_stats <now> -> {total, unstamped, by_project: {<from>: {total, unstamped}}} over the last
 # CHAIN_DAYS of the notes ingest record; nothing and a failure when the record cannot be read.
@@ -2379,6 +2386,7 @@ chain_notes() {
     (.urgent // empty | "stale_urgent_d: oldest is \(.project):\(.id), filed \(.since) (\(.days)d)"),
     (.urgent_boards // [] | select(. != []) | "urgent_per_board: " + (map("\(.project) \(.n)") | few)),
     (.playtest // [] | select(. != []) | "playtest_waiting_d: oldest open check per game: " + (map("\(.project) \(.game) \(.days)d") | few))' 2>/dev/null
+  prio_defaults | jq -r 'select(.total > 0) | "prio_default: \(.total) open rows with no priority or no #why, by filer: " + ([.origins[] | "\(.origin) \(.n)"] | .[0:8] | join(", "))'
   local projects
   projects=$(bench_read $BENCH_PROJECTS_CMD 2>/dev/null | jq -ce 'arrays') && release_kpis "$t" "$projects" | jq -r '
     (.overdue | select(. != []) | "release_overdue: " + (map("\(.project) \(.version) \(if .by == "target" then "targeted for" else "due since" end) \(.due_on)") | join(", "))),
@@ -2442,6 +2450,7 @@ chain_counts() {
   par_go lead lead_time_json "$t"
   par_go board chain_board "$t"
   par_go local chain_local "$t"
+  par_go prio chain_prio
   par_go plans chain_plans
   par_go routes chain_routes
   par_go queue chain_queue "$t"
@@ -2452,7 +2461,32 @@ chain_counts() {
   cat "$PAR/links" "$PAR/rel"
   if [ -n "$(lead_untrusted "$(cat "$PAR/links")")" ] || [ ! -s "$PAR/lead" ]; then echo "request_to_live_h=?"
   else jq -r '"request_to_live_h=\(.p50 // "?")"' "$PAR/lead"; fi
-  for s in board local plans routes queue reds spent pipeline; do cat "$PAR/$s"; done
+  for s in board prio local plans routes queue reds spent pipeline; do cat "$PAR/$s"; done
+}
+
+# prio_origins -> {<row id>: its filer}, the first added or filed event of each id in the ingest record; rc 1 when it cannot be read.
+# prio_defaults -> {total, origins: [{origin, n, ids}]}: the open agent and human rows that carry no
+# priority tag or no #why/<reason> (the board feed's untriaged and prio_why), grouped by the writer of the
+# row's first added or filed event in the ingest record, most first, ids sampled (PRIO_SAMPLE). An origin
+# is the event's origin, else its writer, "human" for a hand write; a row with no event is "unrecorded".
+# Nothing and rc 1 when the board feed cannot be read; an unreadable ingest record leaves every origin
+# "unrecorded", the count unchanged. Rows of a project with automation off are not counted.
+prio_origins() {
+  [ -r "$BENCH_INGEST" ] || return 1
+  { grep -hE '"action":"(added|filed)"' "$BENCH_INGEST" || :; } | jq -Rnc "$JQ_LIB"'
+    reduce (inputs | fromjson? | select((.id // "") != "")) as $e ({};
+      if has($e.id) then . else .[$e.id] = ($e | if human_writer then "human" else (.origin // .by) end) end)'
+}
+
+prio_defaults() {
+  local origins
+  origins=$(bench_read prio_origins) || origins=null
+  bench_read $BENCH_BOARD_CMD 2>/dev/null | jq -ce --argjson o "${origins:-null}" --argjson k "$PRIO_SAMPLE" '
+    select(.rows | arrays) | [.rows[] | select(.lane | IN("agent", "human")) | select(.state | IN("open", "doing"))
+        | select(.automation != false and (.untriaged == true or .prio_why == null))
+        | {id, origin: ((($o // {})[.id // ""]) // "unrecorded")}] as $r
+    | {total: ($r | length),
+       origins: ($r | group_by(.origin) | map({origin: .[0].origin, n: length, ids: (map(.id // "?") | .[0:$k])}) | sort_by(-.n))}'
 }
 
 # chain_links <now> -> the link KPIs read from the queue, the board, the projects and the CI rows
@@ -2514,6 +2548,12 @@ chain_board() {
       "playtest_waiting_d=\(.playtest | if . == null then "?" else map(.days) | max // 0 end)",
       "done_inline_old=\(.done_old // "?")"' <<<"$bl"
   else printf '%s=?\n' orphan_request_rows next_up_blocked stale_urgent_d urgent_per_board playtest_waiting_d done_inline_old; fi
+}
+
+# chain_prio -> prio_default, ? when the board cannot be read
+chain_prio() {
+  local pd
+  if pd=$(prio_defaults) && [ -n "$pd" ]; then jq -r '"prio_default=\(.total)"' <<<"$pd"; else echo "prio_default=?"; fi
 }
 
 # chain_local <now> -> doctor_fail, estimated_token_share and dup_pairs, read from local files
@@ -4197,6 +4237,17 @@ cmd_chain() {
     --check) kpi_past "$json" ;;
     *) kpi_table "$json"; chain_notes "$t" "$json" ;;
   esac
+}
+
+# prio-defaults [--json] -- the open rows that rank by default (no priority tag or no #why/<reason>), by the
+# filer that wrote them, most first, with sample ids: the rows behind the prio_default KPI.
+cmd_prio_defaults() {
+  local pd
+  case "${1:-}" in ""|--json) ;; *) say "usage: fleet-bench prio-defaults [--json]"; return 2 ;; esac
+  [ -n "${BENCH_READ_CACHE:-}" ] || { with_reads cmd_prio_defaults "$@"; return; }
+  pd=$(prio_defaults) && [ -n "$pd" ] || { say "prio-defaults: the board feed cannot be read"; return 1; }
+  if [ "${1:-}" = --json ]; then printf '%s\n' "$pd"
+  else jq -r '"prio_default \(.total)", (.origins[] | "  \(.origin) \(.n)  \(.ids | join(" "))")' <<<"$pd"; fi
 }
 
 # startup [--json|--check] -- Claude Code start times over the last startup_rolling_n (20) starts:
@@ -7457,6 +7508,7 @@ main() {
     rules) shift; cmd_rules "$@" ;;
     kpi) shift; cmd_kpi "$@" ;;
     chain) shift; cmd_chain "$@" ;;
+    prio-defaults) shift; cmd_prio_defaults "$@" ;;
     startup) shift; cmd_startup "$@" ;;
     pipeline) shift; cmd_pipeline "$@" ;;
     bottleneck) shift; cmd_bottleneck "$@" ;;
