@@ -56,11 +56,17 @@ def deployed(d):
     return None
 
 
-def default_branch(top):
-    """origin's default branch name, as merge_proof_branch reads it; "" when it cannot tell."""
-    r = subprocess.run(["bash", "-c", '. "$1" && merge_proof_branch "$2"', "checkout-guard", MERGE_PROOF_LIB, top],
+def default_ref(top):
+    """origin's default branch as <remote>/<branch>, as merge_proof_ref reads it (home-config:
+    forgejo/master); "" when it cannot tell."""
+    r = subprocess.run(["bash", "-c", '. "$1" && merge_proof_ref "$2"', "checkout-guard", MERGE_PROOF_LIB, top],
                        capture_output=True, text=True, timeout=3)
     return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def default_branch(top):
+    """origin's default branch name, as merge_proof_branch reads it; "" when it cannot tell."""
+    return default_ref(top).partition("/")[2]
 
 
 def moves_head(top, verb, args):

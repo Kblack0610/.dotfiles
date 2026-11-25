@@ -208,10 +208,10 @@ def push_dests(top, args, remote):
     return out
 
 
-def canonical_remote(top, target):
-    """True when a push target (a remote name or URL) is origin, or the remote origin/HEAD names."""
-    head = FORGE.git(top, "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD")
-    names = {"origin", head.split("/", 1)[0]} - {""}
+def canonical_remote(top, target, default_remote):
+    """True when a push target (a remote name or URL) is origin, or the remote origin's default
+    branch lives on (merge_proof_ref: forgejo in home-config)."""
+    names = {"origin", default_remote} - {""}
     if target in names:
         return True
     urls = {FORGE.git(top, "remote", "get-url", n) for n in names} - {""}
@@ -237,14 +237,12 @@ def check(head, argv, env, cwd):
     if verb != "push" or not d or not os.path.isdir(d):
         return None
     top = FORGE.git(d, "rev-parse", "--show-toplevel")
-    remote = FORGE.push_target(top, args) if top else ""
-    dests = push_dests(top, args, remote) if remote and canonical_remote(top, remote) else None
-    if not dests:
-        return None
     global CHECKOUT
     CHECKOUT = CHECKOUT or _load("checkout-guard")
-    default = CHECKOUT.default_branch(top)
-    if default and (default in dests or "*" in dests):
+    default_remote, _, default = CHECKOUT.default_ref(top).partition("/") if top else ("", "", "")
+    remote = FORGE.push_target(top, args) if default else ""
+    dests = push_dests(top, args, remote) if remote and canonical_remote(top, remote, default_remote) else None
+    if dests and (default in dests or "*" in dests):
         return PUSH_MSG.format(what="`git %s`" % " ".join(argv[i : i + 5]), branch=default, top=top)
     return None
 
