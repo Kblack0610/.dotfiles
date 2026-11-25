@@ -69,6 +69,66 @@ setup() {
   assert_output ''
 }
 
+@test "keep records the human's keep answer, so aged waits a day past it; a wrong ask writes nothing (ar-5307)" {
+  "$HOLD" set critical --kind resource --by human "lockdown"
+  sed -i "s/^since: .*/since: $(date -d '-4 days' +%Y-%m-%dT%H:%M:%S%z)/" "$AGENT_HOLD_DIR/critical"
+  "$HOLD" grant critical hc-1
+  # A stub agent-ask: each ask id is a file of `key: value` lines.
+  mkdir -p "$SANDBOX/asks"
+  printf '#!/usr/bin/env bash\n[ "$1" = show ] && cat "%s/asks/$2"\n' "$SANDBOX" > "$SANDBOX/bin/agent-ask"
+  chmod +x "$SANDBOX/bin/agent-ask"
+  # The sandbox points AGENT_ASK at the real agent-ask; keep reads the stub through it.
+  export AGENT_ASK="$SANDBOX/bin/agent-ask"
+  ask() { printf 'question: %s\nanswer: %s\nanswered_by: %s\nanswered_at: %s\ncontext: \n' "$2" "$3" "$4" "$(date -d "-${5:-1} hours" +%Y-%m-%dT%H:%M:%S%z)" > "$SANDBOX/asks/$1"; }
+  run "$HOLD" aged
+  assert_failure 1
+  # Negative controls: not answered keep, answered by an agent, or about another hold.
+  ask a1 "Keep the critical hold?" release human
+  ask a2 "Keep the critical hold?" keep agent
+  ask a3 "Keep the critical-dns hold?" keep human
+  for id in a1 a2 a3 missing; do
+    run "$HOLD" keep critical --ask "$id"
+    assert_failure 1
+  done
+  run "$HOLD" show critical
+  refute_output --partial 'kept'
+  # A keep 25 hours ago is a day past: the hold stands again.
+  ask old "Keep the critical hold?" keep human 25
+  run "$HOLD" keep critical --ask old
+  assert_success
+  run "$HOLD" aged
+  assert_failure 1
+  assert_line --index 0 --partial 'critical: held 4d'
+  ask ok "Keep the critical hold?" keep human
+  run "$HOLD" keep critical --ask ok
+  assert_success
+  assert_output --partial 'kept: critical since '
+  run "$HOLD" show critical
+  assert_line --regexp '^kept: '
+  assert_line 'kept_ask: ok'
+  assert_line 'granted: hc-1'
+  run "$HOLD" aged
+  assert_success
+  assert_output ''
+  # Replaying the older ask cannot move the keep back.
+  run "$HOLD" keep critical --ask old
+  assert_failure 1
+  run "$HOLD" show critical
+  assert_line 'kept_ask: ok'
+  # A same-kind re-set rewords it and carries the keep with since.
+  "$HOLD" set critical --kind resource --by human "lockdown, reworded"
+  run "$HOLD" show critical
+  assert_line 'kept_ask: ok'
+  run "$HOLD" aged
+  assert_success
+  # A released hold is not brought back by a keep.
+  "$HOLD" release critical
+  ask new "Keep the critical hold?" keep human 0
+  run "$HOLD" keep critical --ask new
+  assert_failure 1
+  [ ! -e "$AGENT_HOLD_DIR/critical" ]
+}
+
 @test "a hold on one resource leaves another free" {
   "$HOLD" set unity-tests --by c "hot"
   run "$HOLD" check gpu
