@@ -1778,6 +1778,12 @@ notes --profile bnb ptask game --agent run gm-9"
   "$AQ" move red queued --cause fix-ci --end limit >/dev/null
   run tail -n 1 "$NOTES_FIXTURE/calls.log"
   assert_output 'model-lane outcome r-red2 unrated --cause limit'
+  # A trainee's no-diff run that said why (already-fixed, blocked) files unrated: no model's miss.
+  for s in afx blk; do "$AQ" add --project game --running --slug "$s" "$s" >/dev/null; "$AQ" set "$s" "lane_run=r-$s" >/dev/null; done
+  "$AQ" move afx queued --cause already-fixed >/dev/null
+  "$AQ" move blk queued --cause blocked >/dev/null
+  run grep -E '^model-lane outcome r-(afx|blk) ' "$NOTES_FIXTURE/calls.log"
+  assert_output $'model-lane outcome r-afx unrated --cause already-fixed\nmodel-lane outcome r-blk unrated --cause blocked'
 }
 
 # handoff_repo: a checkout on branch feat, one commit past origin/main (pushed: main only), and a
@@ -2636,7 +2642,7 @@ EOF
   [ "$(field "$f" phases)" = 2 ]
   [ "$(field "$f" priority)" = high ]
   [ "$(field "$f" tags)" = ui ]
-  [ "$(field "$f" title)" = "my-plan P2: Second thing: details" ]
+  [ "$(field "$f" title)" = "Second thing: details (P2, A plan)" ]
   [ "$(field "$f" row)" = level:lv-2 ]
   grep -qF "Phase 2 of the plan $SANDBOX/my-plan.md: Second thing. Read the plan whole, then do ONLY this phase, to merged." "$f"
   assert_line 'held my-plan-p4 -> level:lv-3 (#after/lv-2)'
@@ -2708,7 +2714,7 @@ EOF
   assert_success
   f="$(item queued marked-p3)"
   [ "$(field "$f" after)" = "" ]
-  [ "$(field "$f" title)" = "marked P3: Third thing: runs beside 2" ]
+  [ "$(field "$f" title)" = "Third thing: runs beside 2 (P3)" ]
   [ "$(field "$(item queued marked-p8)" after)" = "" ]
   assert_line 'held marked-p4 -> level:lv-4 (#after/lv-2)'
   assert_line 'held marked-p6 -> level:lv-5 (#after/lv-4)'
@@ -2847,7 +2853,7 @@ EOF2
   AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/labelled.md" --project level
   assert_success
   [ "$(field "$(item queued labelled-p7)" phases)" = 7 ]
-  [ "$(field "$(item queued labelled-p7)" title)" = "labelled P7: Check a thing first" ]
+  [ "$(field "$(item queued labelled-p7)" title)" = "Check a thing first (P7)" ]
   assert_line 'held labelled-p8 -> level:lv-3 (#after/lv-2)'
   assert_line 'held labelled-p10 -> level:lv-4 (#after/lv-3)'
   # The ticked box and the open phase are read by the same number: p9 landed, p8 did not.
@@ -2952,10 +2958,10 @@ EOF
   "$AQ" add --project game --slug by-hand "Phase 2 of /home/x/.agent/plans/game/my-plan.md" >/dev/null
   AGENT_QUEUE_ITEM=mine run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --priority high
   assert_failure
-  assert_output --partial "already queued: by-hand (nothing was added)"
+  assert_output --partial "already queued or filed: by-hand (nothing was added)"
   run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --dry-run
   assert_failure
-  assert_output --regexp "already queued: (mine by-hand|by-hand mine) "
+  assert_output --regexp "already queued or filed: (mine by-hand|by-hand mine) "
   [ -z "$(ls "$AGENT_QUEUE_DIR/queued" | grep my-plan)" ]
 }
 
@@ -3897,6 +3903,48 @@ STUB
   chmod +x "$SANDBOX/bin/notes"
 }
 
+# A phase session finds work its plan needs and adds it as a phase line (planning.md, Found work:): the add
+# again keeps what is filed, files the new line once and gates the phase below it on that line's row.
+@test "add --plan on a filed chain, from a dispatched phase's own session: the new phase line is filed once with its takes, and the later phase's row waits on it" {
+  story_notes
+  echo 20 > "$NOTES_FIXTURE/story.seq"
+  P="$SANDBOX/mid.md"
+  printf '# M\n\n## Phases\n\n- [x] P1 one (#1)\n- [ ] P2 two\n- [ ] P4 fix what P2 found, takes lv-50 (after 2; needs what P2 found)\n- [ ] P3 three\n' > "$P"
+  "$AQ" add --running --project level --row lv-5 --slug mid-p2 "Phase 2 of the plan $P: two." >/dev/null
+  "$AQ" set mid-p2 "plan=$P" phases=2 origin=run >/dev/null
+  board() {
+    jq -n --arg p "$P" '{rows: ([{project: "level", lane: "agent", id: "lv-9", state: "open", tags: ["after/lv-5"],
+      details: ["Phase 3 of the plan \($p): three."]}, {project: "level", profile: "bnb", lane: "agent", id: "lv-50", state: "open", tags: [], details: ["the blocker"]}] + $ARGS.positional), done: []}' \
+      --jsonargs "$@" > "$NOTES_FIXTURE/board.json"
+  }
+  board
+  AGENT_QUEUE_ITEM=mid-p2 run "$AQ" add --plan "$P" --project level --priority normal --dry-run
+  assert_success
+  assert_line --partial 'would queue mid-p4	phases 4	after mid-p2	takes lv-50'
+  assert_line 'would gate row lv-9 (mid-p3) on after/<row of mid-p4>'
+  : > "$NOTES_FIXTURE/calls.log"
+  AGENT_QUEUE_ITEM=mid-p2 run "$AQ" add --plan "$P" --project level --priority normal
+  assert_success
+  assert_output --partial "kept mid-p2, this session's own item"
+  assert_output --partial "held mid-p4 -> level:lv-20"
+  assert_output --partial "kept mid-p3 on its board row lv-9"
+  assert_line 'gated row lv-9 (mid-p3) on after/lv-20'
+  # lv-9 has no profile, so the tag call carries none (a tab-split read once shifted the lane into it).
+  run grep -x 'notes ptask level --agent tag --add after/lv-20 lv-9' "$NOTES_FIXTURE/calls.log"
+  assert_success
+  # One row, the new phase's (held mid-p4 above), and none for the plan or the phases already filed.
+  run grep -c ' add ' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+  # Run again with that row on the board, it files nothing twice.
+  board "$(jq -nc --arg p "$P" '{project: "level", profile: "bnb", lane: "agent", id: "lv-20", state: "open", tags: ["after/lv-5"], details: ["Phase 4 of the plan \($p): fix what P2 found."]}')"
+  : > "$NOTES_FIXTURE/calls.log"
+  AGENT_QUEUE_ITEM=mid-p2 run "$AQ" add --plan "$P" --project level --priority normal
+  assert_failure
+  assert_output --partial "already queued or filed"
+  run grep -c ' add \| tag ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
 # queue-held-to-board (ar-3121): no writer leaves a queued item with a pending hold; each gate goes on
 # the item's board row instead. no_held fails on any queued item list --json reads a hold for.
 no_held() {
@@ -3927,9 +3975,9 @@ no_held() {
   no_held
   # Its tails wait on their rows, so the same add again refuses rather than file them twice. Negative
   # control: a row naming the plan with no gate (an un-started return) holds no phase, so the add files them.
-  printf '{"rows":[{"project":"level","id":"lv-9","state":"open","tags":["after/lv-8"],"details":["Phase 3 of the plan %s: three."]}],"done":[]}\n' "$SANDBOX/inv.md" > "$NOTES_FIXTURE/board.json"
+  printf '{"rows":[{"project":"level","id":"lv-8","state":"open","tags":["after/lv-7"],"details":["Phase 2 of the plan %s: two."]},{"project":"level","id":"lv-9","state":"open","tags":["after/lv-8"],"details":["Phase 3 of the plan %s: three."]}],"done":[]}\n' "$SANDBOX/inv.md" "$SANDBOX/inv.md" > "$NOTES_FIXTURE/board.json"
   run "$AQ" add --plan "$SANDBOX/inv.md" --project level
-  assert_failure; assert_output --partial "already wait on the board: rows lv-9"
+  assert_failure; assert_output --partial "already queued or filed: inv-p1, rows lv-8 lv-9"
   sed -i 's/"after\/lv-8"/"size\/s"/' "$NOTES_FIXTURE/board.json"
   run "$AQ" add --plan "$SANDBOX/inv.md" --project level
   assert_success; assert_output --partial "held inv-p3 -> "
@@ -4218,12 +4266,12 @@ notes --profile work ptask level run lv-8'
 @test "a plan item's story takes the plan's epic and a heavy item is sized m" {
   story_notes
   printf '%s\n' 'epic: lv-3' '## Phases' '- [ ] P1 one' > "$SANDBOX/lv.md"
-  echo 'feat(level): lv P1: one' > "$NOTES_FIXTURE/propose.out"
+  echo 'feat(level): one (P1)' > "$NOTES_FIXTURE/propose.out"
   run "$AQ" add --plan "$SANDBOX/lv.md" --project game --weight heavy --slug lvp
   assert_success
-  run grep -c -- '--agent propose -- lv P1: one$' "$NOTES_FIXTURE/calls.log"
+  run grep -c -- '--agent propose -- one (P1)$' "$NOTES_FIXTURE/calls.log"
   assert_output 1
-  run grep -c -- "--agent add --detail=Phase 1 of the plan $SANDBOX/lv.md: one\. .* -- feat(level): lv P1: one #high #of/lv-3$" "$NOTES_FIXTURE/calls.log"
+  run grep -c -- "--agent add --detail=Phase 1 of the plan $SANDBOX/lv.md: one\. .* -- feat(level): one (P1) #high #of/lv-3$" "$NOTES_FIXTURE/calls.log"
   assert_output 1
   [ "$(field "$(item queued lvp-p1)" row)" = level:lv-9 ]
 }
@@ -4725,7 +4773,7 @@ Phase 2 of the plan $SANDBOX/plan.md: the doors." >/dev/null
   # add_plan queues P1 and files P2 on its board row behind #after/, its brief the real writer's.
   run "$AQ" add --plan "$SANDBOX/pp.md" --project level --priority low --slug pp
   assert_output --partial "held pp-p2 -> level:"
-  brief=$(sed -n 's/.*--agent add --detail=\(Phase 2 of the plan .*: two\. .*\) -- pp P2: two .*/\1/p' "$NOTES_FIXTURE/calls.log")
+  brief=$(sed -n 's/.*--agent add --detail=\(Phase 2 of the plan .*: two\. .*\) -- two (P2) .*/\1/p' "$NOTES_FIXTURE/calls.log")
   [[ "$brief" == "Phase 2 of the plan $SANDBOX/pp.md: two. "* ]] || fail "no P2 brief in calls.log: $brief"
   export AGENT_QUEUE_CAP=1 AGENT_QUEUE_PULL=dispatch
   # Negative controls: the brief naming a plan file that is gone, a row that only mentions a plan,

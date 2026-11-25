@@ -16,6 +16,7 @@
 #   ./docker.sh --build             # build the image if it is missing, and exit
 #   ./docker.sh --run <cmd> [args]  # one command in the image, from the repo root (CI's cargo builds)
 #   DOCKER_NETWORK=bridge ./docker.sh test-rust   # a run that needs the network (crates, npm)
+#   TEST_IMAGE_KIND=lean ./docker.sh ...          # a smaller image: lean, rust or full (the default); see below
 #
 # The argument is a make target run INSIDE the container, so it must be an -inner
 # target. `./docker.sh test-ui` looks right and is not: the Makefile's test-ui is the
@@ -37,6 +38,20 @@ DOCKER="${DOCKER:-docker}"
 # The suite needs no network; a run that fetches crates or npm packages asks for it by name.
 DOCKER_NETWORK="${DOCKER_NETWORK:-none}"
 
+# The image comes in three sizes, the Dockerfile's stages: lean (the tmux-free tiers and lint),
+# rust (lean plus the toolchain: the notes job) and full (plus chromium, tmux and fzf: the ui and
+# rust jobs, and every local run). A CI job sets TEST_IMAGE_KIND to the smallest stage that has what
+# it runs, because each pool pod loads its image over a link shared with dozens of others
+# (ar-5632). Each kind has its own tag, so its own cache entry and its own present check.
+KIND="${TEST_IMAGE_KIND:-full}"
+case "$KIND" in
+  lean | rust | full) ;;
+  *) echo "docker.sh: TEST_IMAGE_KIND is lean, rust or full, not '$KIND'" >&2; exit 2 ;;
+esac
+# The full image's tag has no kind in it: it is the one a local run and every older note know.
+KIND_TAG="${KIND}-"
+[ "$KIND" != full ] || KIND_TAG=
+
 # One build identity: the default tag ends in a hash of everything the image is built from
 # (the Dockerfile, the context and the build args), so an image already present under that
 # tag is that build and is not built again. CI restores it from the Actions cache keyed on
@@ -52,7 +67,7 @@ build_hash() {
 if [ -n "${COCKPIT_TEST_IMAGE:-}" ]; then
   IMAGE="$COCKPIT_TEST_IMAGE"
 else
-  IMAGE="cockpit-tests:tmux${TMUX_REF}${TMUX_STOCK:+-stock}-fzf${FZF_REF}-$(build_hash)"
+  IMAGE="cockpit-tests:${KIND_TAG}tmux${TMUX_REF}${TMUX_STOCK:+-stock}-fzf${FZF_REF}-$(build_hash)"
 fi
 
 if [ "${1:-}" = "--image" ]; then
@@ -76,7 +91,7 @@ command -v "$DOCKER" >/dev/null 2>&1 || {
 if [ -z "${COCKPIT_TEST_IMAGE:-}" ] && "$DOCKER" image inspect "$IMAGE" >/dev/null 2>&1; then
   echo "==> image $IMAGE (present, not rebuilt)"
 else
-  echo "==> image $IMAGE (tmux $TMUX_REF, fzf $FZF_REF)"
+  echo "==> image $IMAGE ($KIND, tmux $TMUX_REF, fzf $FZF_REF)"
   # The context is the patch directory: the one thing the image copies.
   # --pull: a newer debian base under the same tag rebuilds every layer, apt included, so a
   # host's layer cache cannot carry last week's packages into this week's image.
@@ -86,7 +101,7 @@ else
     --build-arg "FZF_REF=$FZF_REF" \
     --build-arg "RUST_TOOLCHAIN=$RUST_TOOLCHAIN" \
     --build-arg "PLAYWRIGHT_CORE=$PLAYWRIGHT_CORE" \
-    -t "$IMAGE" -f "$HERE/Dockerfile" "$CONTEXT" >/dev/null
+    --target "$KIND" -t "$IMAGE" -f "$HERE/Dockerfile" "$CONTEXT" >/dev/null
   # A new hash leaves the old image tagged, and prune skips tagged images, so drop this
   # tmux/fzf pair's older builds here. One another run is still using stays.
   if [ -z "${COCKPIT_TEST_IMAGE:-}" ]; then
@@ -135,11 +150,12 @@ fi
 # CI turns a missing prerequisite (the agent-panel build session_send.bats drives) from a skip
 # into a failure, so a red cannot hide as a skip there. JUNIT=1 writes the JUnit reports CI
 # uploads (tests/Makefile). RUST_JOBS and CARGO_INCREMENTAL are the rust job's (tests/rust.sh),
-# TILECAST_READ_TOKEN the Tilecast schema check's (tests/agent-web/tilecast-schema.sh).
+# TILECAST_READ_TOKEN the Tilecast schema check's (tests/agent-web/tilecast-schema.sh). CI_CPU_MILLI
+# is the runner pod's CPU request: the container sees the host's cores, so tests/cpus.sh needs it.
 # No path goes through: the checkout is /work in here, so a path is passed as /work/...
 # Each goes by name alone, so docker reads the value from this environment and a token never
 # sits in the docker command line.
-for v in BATS_FLAGS CI JUNIT RUST_JOBS CARGO_INCREMENTAL TILECAST_READ_TOKEN; do
+for v in BATS_FLAGS CI CI_CPU_MILLI JUNIT RUST_JOBS CARGO_INCREMENTAL TILECAST_READ_TOKEN; do
   [ -n "${!v:-}" ] && export "${v?}" && run_args+=(--env "$v")
 done
 
