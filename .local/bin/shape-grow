@@ -214,7 +214,7 @@ def grow_hits(files, base, head, cwd):
 
 # --- copies -------------------------------------------------------------------------------------
 
-def load_conf(text):
+def parse_copy_conf(text):
     """COPY_CONF -> {'names': [glob], 'skip': [path glob], 'block': int}. A line is `name <glob>...`
     (a function or constant name every tool may define), `skip <path glob>` (never indexed) or
     `block-lines <n>`; `#` starts a comment."""
@@ -393,7 +393,7 @@ def const_copies(files, tree, base, cwd, conf):
     return hits
 
 
-def windows(sig, n):
+def block_windows(sig, n):
     """Each run of n significant lines as (start index, normalized text)."""
     return [(i, tuple(s for _, s in sig[i:i + n])) for i in range(len(sig) - n + 1)]
 
@@ -408,11 +408,11 @@ def block_copies(files, tree, added, base, cwd, conf):
         if not added.get(path):
             continue
         sig, adds = significant(*tree[path]), added[path]
-        head_w = windows(sig, n)
+        head_w = block_windows(sig, n)
         was = blob(base, was_path, cwd)
         lang = kind(was_path, was)
         before = {}
-        for _, w in windows(significant(lang, was), n) if lang else []:
+        for _, w in block_windows(significant(lang, was), n) if lang else []:
             before[w] = before.get(w, 0) + 1
         now = {}
         for _, w in head_w:
@@ -425,7 +425,7 @@ def block_copies(files, tree, added, base, cwd, conf):
     index = {}  # window -> [(path, first line, last line)]
     for p, (lang, text) in tree.items():
         sig = news[p][0] if p in news else significant(lang, text)
-        for i, w in windows(sig, n):
+        for i, w in block_windows(sig, n):
             if w in wanted:
                 index.setdefault(w, []).append((p, sig[i][0], sig[i + n - 1][0]))
     hits = []
@@ -454,7 +454,7 @@ def copy_hits(files, base, head, cwd, conf_text=None):
     text = blob(base, COPY_CONF, cwd) if conf_text is None else conf_text
     if not text:
         return []
-    conf = load_conf(text)
+    conf = parse_copy_conf(text)
     tree = code_tree(head, cwd, conf['skip'])
     files = [(w, p) for w, p in files if p in tree]
     if not files:
@@ -507,6 +507,7 @@ def main(argv):
         print(f'{line} [{kind_}: {row}]' if row else line)
         failed += not row
     if failed:
+        sys.stdout.flush()  # the list, then the hint, in a log that merges the two
         print('shape-grow: fix each line above in this change. A grown function: extract the new logic as a pure '
               'function and call it. A copy: use or extend the one it names instead of adding a second; a namesake that does another job: rename it. When that '
               'cannot be done here, the PR body names an open board row that names it: "Split: <row id> <function>..." '
