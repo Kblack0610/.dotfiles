@@ -2054,7 +2054,7 @@ SH
   assert_success
   [ "$(jq -r .open_job <<<"$output")" = "ended" ]
   jq -r .reason <<<"$output" | grep -q 'pgrep -f matches the loop.s own shell'
-  jq -r .reason <<<"$output" | grep -vq 'not a gate or test'
+  ! jq -r .reason <<<"$output" | grep -q 'not a gate or test'
   # gate <PR>: a gate-and-land.sh of its own session (setsid: teardown kills the group and its sleep), up before it returns
   gate() {
     (exec setsid bash "$SANDBOX/gate-and-land.sh" "$1") >/dev/null 2>&1 3>&- &
@@ -2096,19 +2096,26 @@ SH
   assert_output ''
 }
 
-@test "a bare pgrep loop counts only a gate in its own worktree, and reads ended once that gate is gone (ar-5157)" {
+@test "a bare pgrep loop counts only a gate in its own checkout, and reads ended once that gate is gone (ar-5157)" {
   # 2026-11-24 unity-core-playground-agent-22 sat 2h in `while pgrep -f gate-and-land` after its gate exited red: the
   # pattern matches the Bash tool's own shell, so the loop never exits, and it matches every other session's gate too.
-  mkdir -p "$SANDBOX/tasks" "$SANDBOX/wt" "$SANDBOX/other"
+  mkdir -p "$SANDBOX/tasks" "$SANDBOX/wt/sub" "$SANDBOX/other"
+  git -C "$SANDBOX/wt" init -q
   local out="$SANDBOX/tasks/b1.output"; : > "$out"
-  {
-    jq -cn --arg c "while pgrep -f zz-gl-5157 >/dev/null; do sleep 20; done; tail -n 25 /tmp/gl.log" \
-      '{type: "assistant", message: {content: [{type: "tool_use", id: "w1", name: "Bash", input: {command: $c}}]}}'
-    printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"w1","content":"Output is being written to: %s. x"}]}}\n' "$out"
-  } > "$SANDBOX/t.jsonl"
+  # loop <file> <pattern>: a transcript whose one open background task is a pgrep loop on <pattern>
+  loop() {
+    {
+      jq -cn --arg c "while pgrep -f $2 >/dev/null; do sleep 20; done; tail -n 25 /tmp/gl.log" \
+        '{type: "assistant", message: {content: [{type: "tool_use", id: "w1", name: "Bash", input: {command: $c}}]}}'
+      printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"w1","content":"Output is being written to: %s. x"}]}}\n' "$out"
+    } > "$1"
+  }
+  loop "$SANDBOX/t.jsonl" zz-gl-5157        # matches the text: the incident's spelling
+  loop "$SANDBOX/t3.jsonl" zz-gl-5157.sh    # the bare text itself
+  loop "$SANDBOX/t4.jsonl" vite             # names no gate
   export FLEET_QUEUE_GATES='zz-gl-5157.sh|agent-land'
   printf '#!/usr/bin/env bash\nsleep 300\n' > "$SANDBOX/zz-gl-5157.sh"
-  # gate_in <dir>: a zz-gl-5157.sh running with <dir> as its cwd, up before it returns
+  # gate_in <dir> <n>: a zz-gl-5157.sh running with <dir> as its cwd, up before it returns
   gate_in() {
     (cd "$1" && exec setsid bash "$SANDBOX/zz-gl-5157.sh" "$2") >/dev/null 2>&1 3>&- &
     LIVE_PIDS="${LIVE_PIDS:-} -$!"
@@ -2116,16 +2123,22 @@ SH
   }
   run watched_gate "$SANDBOX/t.jsonl" "$SANDBOX/wt"
   assert_output 'ended'
-  # negative control: another session's gate (cwd elsewhere) is not this loop's wait
+  run watched_gate "$SANDBOX/t4.jsonl" "$SANDBOX/wt"
+  assert_output ''
+  # negative control: another session's gate (cwd elsewhere) is not this loop's wait, in either spelling
   gate_in "$SANDBOX/other" 1
   run watched_gate "$SANDBOX/t.jsonl" "$SANDBOX/wt"
   assert_output 'ended'
-  # with no cwd to scope it, a bare pattern names no gate at all
+  run watched_gate "$SANDBOX/t3.jsonl" "$SANDBOX/wt"
+  assert_output 'ended'
+  # with no cwd to scope it, any live gate counts, as before
   run watched_gate "$SANDBOX/t.jsonl"
-  assert_output ''
-  # the session's own gate, in its worktree: the loop is its wait
+  assert_output 'queue'
+  # the session's own gate, started at its checkout's root while the session sits in a subdirectory: its wait
   gate_in "$SANDBOX/wt" 2
-  run watched_gate "$SANDBOX/t.jsonl" "$SANDBOX/wt"
+  run watched_gate "$SANDBOX/t.jsonl" "$SANDBOX/wt/sub"
+  assert_output 'queue'
+  run watched_gate "$SANDBOX/t3.jsonl" "$SANDBOX/wt/sub"
   assert_output 'queue'
 }
 
