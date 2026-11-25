@@ -8111,29 +8111,39 @@ repose_ask() {
 
 # reconcile_plans -- file an approved plan its session left behind on the board: one untagged row (the priority rubric judges it) naming
 # the plan (agent-queue add --plan from a filer; only the board fills the queue), which dispatch
-# pulls like any row and promote queues as the plan's chain. Once only: a plan the queue has held,
-# or one filed here before (PLANS_FILED), is not filed again, or every pass would add a row.
-# ask-sweep reads PLANS_FILED too, so it asks the human about no plan filed here. One still open
-# after that shows in plans_unqueued.
+# pulls like any row and promote queues as the plan's chain. Once per open-phase set: PLANS_FILED
+# keeps "<plan>\t<open phases>" for each filing, and a plan is filed again only when its open phases
+# differ from every set on record, so a filed row that closed with phases still open (a chain that ran
+# some of them) brings the rest back once, never once per pass (ar-5708). A phase cancelled or dropped
+# leaves the set as it was: it does not come back. A plan never filed here that a done item held is
+# its own session's, closed by it, and is not filed. While the filed row is still open, notes refuses
+# a second row of the same title. ask-sweep reads PLANS_FILED too, so it asks the human about no plan
+# filed here. One still open after that shows in plans_unqueued.
 # `- [-]` is how a human drops a phase.
 PLANS_FILED="$DIR/plans-filed"
 reconcile_plans() {
   [ "$DISPATCH_PLAN_RECONCILE" = 1 ] || return 0
-  local orphans c plan project held out rc
+  local orphans c plan project name open held filed out rc
   orphans=$(plans_orphaned) || return 0
   [ -n "$orphans" ] || return 0
   held=$(agent-queue list --json --state done --since "$(date -d "$PLAN_LEDGER_DAYS days ago" +%F)" 2>/dev/null | jq -r '.plan // empty') || return 0
-  [ ! -s "$PLANS_FILED" ] || held+=$'\n'"$(cat "$PLANS_FILED")"
   # By file name, as PLAN_ITEMS_JQ and ask-sweep match: an item names ~/.claude/plans/<f>, the
   # ledger the account's own ~/.claude-<acct>/plans/<f>.
   held=$(sed 's#.*/##' <<<"$held")
+  filed=$(sed 's#^[^\t]*/##' "$PLANS_FILED" 2>/dev/null)
   while IFS= read -r c; do
-    plan=$(jq -r .plan <<<"$c"); project=$(jq -r .project <<<"$c")
-    grep -qxF -- "${plan##*/}" <<<"$held" && continue
+    plan=$(jq -r .plan <<<"$c"); project=$(jq -r .project <<<"$c"); name=${plan##*/}
+    open=$(plan_phase_list "$plan" | jq -r '[.[] | select(.state == "open") | .n | tostring] | join(",")')
+    grep -qxF -- "$name"$'\t'"$open" <<<"$filed" && continue
+    if grep -qxF -- "$name" <<<"$filed"; then
+      # A record from before the set was kept: it covers the phases open now.
+      printf '%s\t%s\n' "$plan" "$open" >> "$PLANS_FILED"; continue
+    fi
+    cut -f1 <<<"$filed" | grep -qxF -- "$name" || ! grep -qxF -- "$name" <<<"$held" || continue
     out=$(AGENT_QUEUE_START=0 agent-queue add --plan "$plan" --project "$project" --from auto:plans 2>&1); rc=$?
     if [ "$rc" -eq 0 ] || [ "$rc" -eq "$AQ_EX_HELD" ]; then
-      mkdir -p "$DIR"; printf '%s\n' "$plan" >> "$PLANS_FILED"
-      logline "filed $(basename "$plan") to run its open phases: its session is gone"
+      mkdir -p "$DIR"; printf '%s\t%s\n' "$plan" "$open" >> "$PLANS_FILED"
+      logline "filed $(basename "$plan") to run its open phases ($open): its session is gone"
     else
       say "could not file the phases of $plan: $out"
     fi

@@ -177,6 +177,43 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
 }
 
+@test "reap files a plan again once its open phases change after its filed row closed, never twice for one set (ar-5708)" {
+  unset AGENT_QUEUE_PULL
+  stub agent-ask 'echo other-session'
+  approved_plan orphan gone-session
+  stub agent-queue 'case "$*" in
+*"--state done"*) cat "$NOTES_FIXTURE/done" 2>/dev/null ;;
+add*) echo "add $*" >> "$NOTES_FIXTURE/aq-adds"; exit 5 ;;
+esac; exit 0'
+  reconcile_plans
+  reconcile_plans
+  assert_equal "$(wc -l < "$NOTES_FIXTURE/aq-adds")" 1
+  # its chain ran phase 2, the item is done, and phase 3 was left open when the filed row closed
+  sed -i 's/- \[ \] two/- [x] two/' "$SANDBOX/orphan.md"
+  echo "{\"plan\":\"$HOME/.claude/plans/orphan.md\"}" > "$NOTES_FIXTURE/done"
+  reconcile_plans
+  reconcile_plans
+  assert_equal "$(wc -l < "$NOTES_FIXTURE/aq-adds")" 2
+  assert_equal "$(cat "$FLEET_DISPATCH_DIR/plans-filed")" "$SANDBOX/orphan.md	2,3
+$SANDBOX/orphan.md	3"
+  grep -q 'filed orphan.md to run its open phases (3)' "$FLEET_DISPATCH_DIR/log.md"
+}
+
+@test "reap reads a record from before the phase set was kept as the set open now: it files nothing for it (ar-5708)" {
+  unset AGENT_QUEUE_PULL
+  stub agent-ask 'echo other-session'
+  approved_plan orphan gone-session
+  stub agent-queue 'case "$*" in add*) echo "add $*" >> "$NOTES_FIXTURE/aq-adds"; exit 5 ;; esac; exit 0'
+  mkdir -p "$FLEET_DISPATCH_DIR"; printf "%s\n" "$SANDBOX/orphan.md" > "$FLEET_DISPATCH_DIR/plans-filed"
+  # NEGATIVE CONTROL: read as no record, every plan filed before was filed again in one pass.
+  reconcile_plans
+  [ ! -e "$NOTES_FIXTURE/aq-adds" ] || fail "a plan filed before the set was kept was filed again: $(cat "$NOTES_FIXTURE/aq-adds")"
+  assert_equal "$(tail -n 1 "$FLEET_DISPATCH_DIR/plans-filed")" "$SANDBOX/orphan.md	2,3"
+  sed -i 's/- \[ \] two/- [x] two/' "$SANDBOX/orphan.md"
+  reconcile_plans
+  assert_equal "$(wc -l < "$NOTES_FIXTURE/aq-adds")" 1
+}
+
 # epics_fixture <json> -- what `notes projects --stats --json` prints (the notes stub reads it).
 epics_fixture() { printf '%s\n' "$1" > "$NOTES_FIXTURE/stats.json"; }
 
