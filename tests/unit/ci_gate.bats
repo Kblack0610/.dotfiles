@@ -187,7 +187,8 @@ kinds() {
 # notes_bin_unlisted <wf> <tests dir>: a bats file with a case that skips without NOTES_BIN (the real
 # notes binary) that no NOTES_BIN step of <wf> names in its FILES. The fast tier skips those cases, so
 # an unlisted one runs nowhere: agent_queue.bats's end to end and credit_backfill.bats's FAIL criteria
-# case never ran in CI (ar-3030).
+# case never ran in CI (ar-3030). It checks files, not cases: a new NOTES_BIN case its step's --filter
+# drops still runs nowhere, so name it to match that filter.
 notes_bin_unlisted() {
   comm -23 <(cd "$2" && grep -lE '\|\| skip "NOTES_BIN' -- */*.bats | sort) \
     <(grep -oE 'NOTES_BIN=[^ ]+ FILES="[^"]+"' "$1" | sed -E 's/.*FILES="//; s/"$//' | tr ' ' '\n' | sort -u)
