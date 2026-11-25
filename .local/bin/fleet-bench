@@ -3826,13 +3826,22 @@ nopr_types() {
     || echo "check research design release epic"
 }
 
+# lane_runs -> model-lane's run log, one row per run id. ~/.agent merges *.jsonl by union, so a row
+# model-lane rewrote can sit beside its old copy in either order: the newest `rated` stamp wins, then a
+# rated row over an unrated one, then the later line, as model-lane's read_log folds it. A line that is
+# no JSON (a torn append) is skipped.
+lane_runs() {
+  jq -cRn '[inputs | fromjson? | objects | select(.id and .ts)] | to_entries | group_by(.value.id)
+    | map(max_by([.value.rated // "", .value.outcome != null, .key]) | .value)[]' "$BENCH_LANE_LOG" 2>/dev/null
+}
+
 models_json() {
   local since by="${2:-}"; since=$(( $1 - BENCH_QUEUE_DAYS * 86400 ))
   jq -cn --arg by "$by" --argjson days "$BENCH_QUEUE_DAYS" --argjson since "$since" \
      --argjson nopr "$(jq -cn --arg t "$(nopr_types)" '$t | split(" ") | map(select(. != ""))')" \
      --slurpfile items <(bench_read $BENCH_DONE_ITEMS_CMD --since "$(date -d "@$since" +%F)" 2>/dev/null) \
      --slurpfile outcomes <(outcomes_latest) \
-     --slurpfile runs <(jq -c 'select(.id and .ts)' "$BENCH_LANE_LOG" 2>/dev/null) \
+     --slurpfile runs <(lane_runs) \
      --slurpfile voids <([ ! -s "$BENCH_LANE_VOIDS" ] || jq -cR 'fromjson? | select(.id)' "$BENCH_LANE_VOIDS" 2>/dev/null) \
      --slurpfile ci <([ ! -s "$CI" ] || jq -c 'select(.repo and .number)' "$CI" 2>/dev/null) \
      --slurpfile sa <(source_attr "$1" | jq -c '.sessions') "$JQ_LIB"'
