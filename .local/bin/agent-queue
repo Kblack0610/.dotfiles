@@ -29,7 +29,7 @@
 #       An add over the cap (AGENT_QUEUE_CAP runnable items) is not queued: its board row is left un-started, brief and all (exit AQ_EX_HELD); see admit.
 #   add --plan <plan.md> [--dry-run | --check] [--project p] [--priority p] [--tags t] [--weight w] [--after slug[,slug...]] [--slug prefix] [--repeat]
 #       one oneshot item per unchecked `## Phases` line, each after the one before, unless its line says
-#       `(independent)` (after --after alone) or `(after N; needs <result>)` (after phase N's item; `(after N, M; needs ...)` after several), where `needs` names the output the phase consumes: a missing `needs`, a shared-file reason (`edits`, `same file`, `conflicts`) or a marker that does not parse is refused; `(with N)` joins phase N's item; `(at YYYY-MM-DD HH:MM)` holds that phase alone until then (its at: tag) at no more than high priority; an `(independent)` marker may carry a note, `(independent; why)`; `--check` only reads and validates the markers. A phase that says `takes <row-id>` (or `takes board row <row-id>`) is filed at the higher of the plan's priority and that row's, and agent-land closes the row when the phase merges; its newly filed story row carries `#takes/<id>` (docs/agent-queue.md). A line opening `P<N>` is phase N, else its place counts; a `1b.` line is a sub-phase: it takes no place and is not queued; `P3a`, `P3b` are parts: the last is phase 3, an earlier one or one beside a plain `P3` a sub-phase
+#       `(independent)` (after --after alone) or `(after N; needs <result>)` (after phase N's item; `(after N, M; needs ...)` after several), where `needs` names the output the phase consumes: a missing `needs`, a shared-file reason (`edits`, `same file`, `conflicts`) or a marker that does not parse is refused; `(with N)` joins phase N's item; `(at YYYY-MM-DD HH:MM)` holds that phase alone until then (its at: tag) at no more than high priority; an `(independent)` marker may carry a note, `(independent; why)`; `--check` only reads and validates the markers. A phase that says `takes <row-id>` (or `takes board row <row-id>`) is filed at the higher of the plan's priority and that row's, and agent-land closes the row when the phase merges; its newly filed story row carries `#takes/<id>` (docs/agent-queue.md). A line opening `P<N>` is phase N, else its place counts; a `1b.` line is a sub-phase: it takes no place and is not queued
 #   list [--json [--points]] [--state queued|running|waiting|review|done|active|all] [--date YYYY-MM-DD | --since YYYY-MM-DD|Nd|N]
 #       list joins each item's board row (`notes board --json`, one read of the whole board): the text list ends in a
 #       `<band>/<points>` column (`m/5`, the band alone when the row is unscored, `-` with none); --json joins
@@ -2497,13 +2497,6 @@ plan_groups() {
     | def byn($k): if $k == null then null else ($all | map(select(.n == $k)) | first) end;
       (if any($all[] | select(.state == "open"); . as $o | ($all | map(select(.n == $o.n)) | length) > 1)
        then error("two phases carry the same number; label each phase once") else . end)
-    # Two open parts of one phase (P3a and P3b, no plain P3): only the last is queued, as phase 3, and
-    # nothing would order it behind the first, so the plan is refused until the earlier part is ticked.
-    | ([$all[] | select(.state == "open")] as $o
-        | [$o[] | select((.n | type) == "string") | (.name | capture("^P(?<n>[0-9]+)[a-z]([^0-9A-Za-z]|$)") | .n) as $k
-           | select(any($o[]; .n == ($k | tonumber) and (.name | test("^P" + $k + "[a-z]([^0-9A-Za-z]|$)")))) | "P" + $k]
-        | unique) as $split
-    | (if ($split | length) > 0 then error("\($split | join(" ")) has two open parts; tick the earlier part, or join them into one line") else . end)
     | reduce ($all[] | select(.state == "open" and (.n | type) == "number")) as $p ({of: {}, items: []};
         byn($p.with) as $w
         | ($p.after | join(", ")) as $al
@@ -2763,10 +2756,6 @@ phases_resolve() {
     | if any(.[]; . == "?") then "?" else join(" ") end' 2>/dev/null)" || return 0
   if [ "$now" = "?" ]; then
     echo "agent-queue: $(fm_get "$f" slug): a phase line it was filed for is gone from $plan, or written twice, so phases: $cur is kept (agent-queue set $(fm_get "$f" slug) phases=<N>)" >&2
-  elif grep -q '[^0-9 ]' <<<"$now"; then
-    # A part a later part made a sub-phase (P3b, once P3c is added): an item's phases: is a whole number, so
-    # there is none to write, and the kept one now names the later part. Said on every read until fixed.
-    echo "agent-queue: $(fm_get "$f" slug): a phase line it was filed for is a sub-phase of $plan now ($now), so phases: $cur names another line: tick the earlier part or join the parts into one line" >&2
   elif [ -n "$now" ] && [ "$now" != "$cur" ]; then
     header_set "$f" phases "$now"
     echo "agent-queue: $(fm_get "$f" slug): phases: $cur -> $now, where its lines sit in $plan now" >&2
