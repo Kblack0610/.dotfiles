@@ -1364,11 +1364,11 @@ night_file() {
 
 @test "night set: config/ci/nightly.json is kept on the repo's entry, an unchanged one is a 304, a missing one is asked again a day later" {
   game_files; runs | page1
-  night_file n1 '{"_comment": "x", "night": {"test.yml": "Tests (all)"}, "held": {"multi.yml": "Multi (all)"}}'
+  night_file n1 '{"_comment": "x", "night": {"test.yml": "Tests (all)"}, "wide": {"hd.yml": "HD (all)"}, "held": {"multi.yml": "Multi (all)"}}'
   run "$SUBJECT"
   assert_success
-  run jq -c '.repos | map([.repo, .night.night, .night.held, .night.sha, .night_absent])' "$STATE"
-  assert_output '[["o/game",{"test.yml":"Tests (all)"},{"multi.yml":"Multi (all)"},"n1",null],["o/empty",null,null,null,"2025-11-06T12:00:00Z"]]'
+  run jq -c '.repos | map([.repo, .night.night, .night.wide, .night.held, .night.sha, .night_absent])' "$STATE"
+  assert_output '[["o/game",{"test.yml":"Tests (all)"},{"hd.yml":"HD (all)"},{"multi.yml":"Multi (all)"},"n1",null],["o/empty",null,null,null,null,"2025-11-06T12:00:00Z"]]'
 
   # warm: the same file is a conditional 304 and keeps its night; o/empty is not asked for a day
   : > "$GHD/calls"
