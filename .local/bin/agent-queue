@@ -2235,7 +2235,9 @@ cmd_add() {
   fi
   if [ -n "$capped" ] && ! admit "$from" "$priority" "$tags" "$project" "$slug" "$hold_title"; then
     unlock # the board write is notes' and can be slow: the lock covers only the count
-    if [ -n "$row" ]; then echo "agent-queue: row $row is left un-started where it is: dispatch promotes it as the queue drains" >&2
+    # A promote names its row by --from board:, so it is the same row as --row: filing a story for it
+    # here wrote a twin whose cut title no notes twin check matched (ar-4796: ar-5544 of ar-4494).
+    if [ -n "$row" ] || [[ "$from" == board:* ]]; then echo "agent-queue: row ${row:-${from#board:}} is left un-started where it is: dispatch promotes it as the queue drains" >&2
     else overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "" "$slug" "$tags"; fi
     exit "$AQ_EX_HELD"
   fi

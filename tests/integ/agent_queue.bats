@@ -4607,6 +4607,23 @@ second line of the brief
   assert_called "--detail=the real wording of the task -- "
 }
 
+# ar-4796: a promote over the cap filed a story for the row it promoted, a twin (ar-5544 of ar-4494)
+@test "an over-cap promote from the board files no second row: its row stays where it is" {
+  story_notes
+  export AGENT_QUEUE_CAP=1
+  "$AQ" add --project level --slug one "feat(menu): one" >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  AGENT_QUEUE_PULL=1 run "$AQ" add --project level --from board:level:lv-4 --slug lv-4 -- "check(watch): a long watch row"
+  assert_failure 5
+  assert_output --partial "row level:lv-4 is left un-started where it is"
+  run grep -c ' ptask level --agent add ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # negative control: an add not from the board still files its own row when held
+  run "$AQ" add --project level --slug own "feat(menu): own"
+  assert_failure 5
+  assert_called "ptask level --agent add"
+}
+
 @test "an over-cap add that is #requested files its row with --want, so it ranks first on the board" {
   story_notes
   export AGENT_QUEUE_CAP=1
