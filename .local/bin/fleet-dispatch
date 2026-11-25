@@ -614,20 +614,26 @@ load_gates() {
     return 0
   fi
   # A unit separator, not a tab: a tab is IFS whitespace, and read folds an empty why into the next field.
-  while IFS=$'\x1f' read -r t s w q k; do
-    [ -n "$t" ] && GATE_ST[$t]=$s GATE_WHY[$t]=$w GATE_Q[$t]=$q GATE_STACK[$t]=$k
-  done < <(jq -r '"\(.tag)\u001f\(.state)\u001f\(.why)\u001f\(.queue)\u001f\(.stack // "")"' <<<"$out")
+  # A line naming a row (a held #hold/ the hold grants that row by its row, epic or plan id) is keyed
+  # <tag>@<row id>, which gate_wait reads for that row before the tag's own state.
+  while IFS=$'\x1f' read -r t s w q k r; do
+    [ -n "$t" ] || continue
+    [ -z "$r" ] || t="$t@$r"
+    GATE_ST[$t]=$s GATE_WHY[$t]=$w GATE_Q[$t]=$q GATE_STACK[$t]=$k
+  done < <(jq -r '"\(.tag)\u001f\(.state)\u001f\(.why)\u001f\(.queue)\u001f\(.stack // "")\u001f\(.row // "")"' <<<"$out")
 }
 
-# gate_wait <gate tags> -> why the row may not start yet, one clause a gate that is not clear;
-# nothing when all are.
+# gate_wait <gate tags> [<row id>] -> why the row may not start yet, one clause a gate that is not clear;
+# nothing when all are. A gate with a line for <row id> (load_gates: a grant) is read by that line.
 gate_wait() {
-  local g out=''
+  local g k out=''
   for g in $1; do
-    case "${GATE_ST[$g]:-}" in
+    k=$g
+    [ -z "${2-}" ] || [ -z "${GATE_ST[$g@$2]+x}" ] || k="$g@$2"
+    case "${GATE_ST[$k]:-}" in
       clear) ;;
-      dead) out+="${out:+; }gate #$g never clears: ${GATE_WHY[$g]}" ;;
-      *) out+="${out:+; }waits on ${GATE_WHY[$g]:-$g}" ;;
+      dead) out+="${out:+; }gate #$g never clears: ${GATE_WHY[$k]}" ;;
+      *) out+="${out:+; }waits on ${GATE_WHY[$k]:-$g}" ;;
     esac
   done
   printf '%s' "$out"
@@ -1933,7 +1939,7 @@ cmd_candidates() {
           row_off_set "$name" "$key" "$text"; off=$OFF kind=$KIND
           [ -z "$off" ] || [ "${SUGGEST:-0}" = 1 ] || continue
           gates=${GAT["$name"$'\t'"$lane"$'\t'"$key"]:-}
-          gwait=''; [ -z "$gates" ] || gwait=$(gate_wait "$gates")
+          gwait=''; [ -z "$gates" ] || gwait=$(gate_wait "$gates" "$key")
           [ -z "$gwait" ] || [ "${SUGGEST:-0}" = 1 ] || continue
           fgates=''; [ "$lane" != agent ] || [ -n "$gwait" ] || fgates=$gates
           ! floor_pass || floor_row "$name" "$text" "$fgates" "$key" || continue
@@ -8578,7 +8584,7 @@ promote() {
         GATE_ST[$g]=clear passed+=("#$g")
       done
     fi
-    gwait=$(gate_wait "${gates[*]}")
+    gwait=$(gate_wait "${gates[*]}" "$key")
     [ -z "$gwait" ] || { say "skip $project: $key $gwait"; return 1; }
     [ "${#passed[@]}" = 0 ] || logline "human start past ${passed[*]}: $project $key"
     for g in "${gates[@]}"; do
@@ -8846,7 +8852,7 @@ t3_rows() {
         [ -z "${PLN["$name"$'\t'agent$'\t'"$key"]:-}" ] || continue
         row_off_set "$name" "$key" "$text"; [ -z "$OFF" ] || continue
         gates=${GAT["$name"$'\t'agent$'\t'"$key"]:-}
-        [ -z "$gates" ] || [ -z "$(gate_wait "$gates")" ] || continue
+        [ -z "$gates" ] || [ -z "$(gate_wait "$gates" "$key")" ] || continue
         # A gated row starts with no verdict (t3_ready), so only a #tier/3 tag makes one tier 3 here;
         # an untagged one stays with the worker path, where the board worker takes it.
         [ -z "$gates" ] || [ "$t" = 3 ] || continue
