@@ -405,7 +405,7 @@ so_agy_rows() {
                     {input: (if $u.input_tokens then $u.input_tokens - ($u.cache_read_tokens // 0) else null end), output: (($u.output_tokens // 0) + ($u.thinking_tokens // 0)),
                      cacheCreation: 0, cacheRead: ($u.cache_read_tokens // 0), total: $u.total_tokens} end),
          metrics: {prs: [], hard_errors: {api_error: ($badturns | length), denied: null,
-                                          tool_errors: ([$cmds[] | select(.exit != null and .exit != 0)] | length) + ($badtools | length)},
+                                          tool_errors: (([$cmds[] | select(.exit != null and .exit != 0)] | length) + ($badtools | length))},
                    activity: {tool_calls: (($tools | length) + ($badtools | length)), test_runs: ([$cmds[] | select(.class == "test")] | length),
                               test_failures: ([$cmds[] | select(.class == "test" and .exit != null and .exit != 0)] | length), ci_polls: ([$cmds[] | select(.class == "gate")] | length),
                               api_messages: ([$steps[] | select(.step_type == "agent_response")] | length),
