@@ -678,8 +678,8 @@ landing_rows() {
   assert_output --partial 'unpark lab:s4 waits for the wake budget'
 }
 
-# share_history <fleet> <other> -- items started and closed today: <fleet> on game (the fleet project in
-# these tests, DISPATCH_FLEET_PROJECTS=game) and <other> on app, the starts the fleet share counts.
+# share_history <capped> <other> -- items started and closed today: <capped> on game (the capped project in
+# these tests, DISPATCH_PROJECT_SHARE=game:30) and <other> on app, the starts the project share counts.
 share_history() {
   local i n; n=$(agent-queue list --json --state done 2>/dev/null | grep -c . || true)
   for i in $(seq 1 "$1"); do agent-queue add --project game --slug "h-game-$n-$i" "done game $i" >/dev/null; done
@@ -687,35 +687,35 @@ share_history() {
   agent-queue list --json 2>/dev/null | jq -r 'select(.slug | startswith("h-")) | select(.state != "done") | .slug' | while read -r s; do
     agent-queue move "$s" running >/dev/null; agent-queue move "$s" done --status ok >/dev/null
   done
-  export DISPATCH_FLEET_PROJECTS=game DISPATCH_FLEET_SHARE=30
+  export DISPATCH_PROJECT_SHARE=game:30
 }
 
-@test "fleet share: at or over DISPATCH_FLEET_SHARE a fleet project's item waits and another project's starts; 0 is off" {
+@test "project share: at or over its cap a capped project's item waits and another project's starts; an empty table is off" {
   two_items
   share_history 1 1
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
-  assert_output --partial 'fleet share: 1 of 2 items started in 24h are fleet work (game), 50% against a 30% cap: full'
+  assert_output --partial 'project share: game 1 of 2 items started in 24h, 50% against a 30% cap: full'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'started game-agent-1: app: fix-app'
-  assert_output --partial 'passed 1 item held by fleet share: 1 of the 2 items started in 24h are fleet work (game), at or over DISPATCH_FLEET_SHARE=30%'
-  [ -n "$(qitem queued fix-game)" ] || fail "the held fleet item stays queued"
+  assert_output --partial 'passed 1 item held by project share: game started 1 of the 2 items in 24h, at or over its 30% (DISPATCH_PROJECT_SHARE)'
+  [ -n "$(qitem queued fix-game)" ] || fail "the held capped item stays queued"
   # The negative control: the same queue with the cap off starts the head of it.
   agent-queue move fix-game done --status cancelled >/dev/null; agent-queue move fix-app done --status cancelled >/dev/null
   agent-queue add --project game --slug fix-game-2 --priority high "fix the game" >/dev/null
   agent-queue add --project app --slug fix-app-2 --priority low "fix the app" >/dev/null
-  DISPATCH_FLEET_SHARE=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  DISPATCH_PROJECT_SHARE='' run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'started game-agent-1: game: fix-game-2'
-  refute_output --partial 'fleet share'
+  refute_output --partial 'project share'
 }
 
-@test "fleet share: under the cap, or for an urgent or #requested item, a fleet project's item starts" {
+@test "project share: under the cap, or for an urgent or #requested item, a capped project's item starts" {
   two_items
   share_history 1 3
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started game-agent-1: game: fix-game'
-  refute_output --partial 'fleet share'
+  refute_output --partial 'project share'
   share_history 2 0   # 3 of 6 now
   for t in "--priority urgent" "--tags requested"; do
     agent-queue list --json --state active 2>/dev/null | jq -r 'select(.project == "game") | .slug' | while read -r s; do agent-queue move "$s" done --status cancelled >/dev/null; done
@@ -725,13 +725,13 @@ share_history() {
     run "$REPO_ROOT/.local/bin/fleet-dispatch" run
     assert_success
     assert_output --partial 'started game-agent-1: game: ask-'
-    refute_output --partial 'held by fleet share'
+    refute_output --partial 'held by project share'
   done
 }
 
 # ar-2550: in an open pass the human floor never runs, so the cap held the human's approved plan phases
 # 7h while the let-go started low board rows, and queued age p90 went past its bound.
-@test "fleet share: a ready phase of a plan the human approved passes the cap in an open pass" {
+@test "project share: a ready phase of a plan the human approved passes the cap in an open pass" {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
   share_history 1 1
@@ -741,10 +741,10 @@ share_history() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'started game-agent-1: game: '
-  [ -z "$(qitem queued pa-p1)" ] || fail "the approved plan phase waited at the fleet share cap"
-  # The negative control: the high fleet item with no plan, ahead of it in queue order, waits.
-  [ -n "$(qitem queued fix-game)" ] || fail "a fleet item with no plan passed the cap"
-  # A plan a session queued (not `from: human`) waits at the cap like any fleet item.
+  [ -z "$(qitem queued pa-p1)" ] || fail "the approved plan phase waited at the project share cap"
+  # The negative control: the high capped item with no plan, ahead of it in queue order, waits.
+  [ -n "$(qitem queued fix-game)" ] || fail "a capped item with no plan passed the cap"
+  # A plan a session queued (not `from: human`) waits at the cap like any capped item.
   agent-queue move fix-game done --status cancelled >/dev/null
   printf '# pb\n\n## Phases\n\n- [ ] one\n' > "$SANDBOX/pb.md"
   agent-queue add --plan "$SANDBOX/pb.md" --project game --priority high --from session >/dev/null
@@ -752,10 +752,10 @@ share_history() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'started game-agent-1: app: fix-app'
-  [ -n "$(qitem queued pb-p1)" ] || fail "a session's plan phase passed the fleet share cap"
+  [ -n "$(qitem queued pb-p1)" ] || fail "a session's plan phase passed the project share cap"
 }
 
-@test "fleet share: a canary or an agent's urgent on a fleet project waits at the cap, as the human's urgent does not" {
+@test "project share: a canary or an agent's urgent on a capped project waits at the cap, as the human's urgent does not" {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
   share_history 1 1
@@ -769,32 +769,59 @@ share_history() {
     run "$REPO_ROOT/.local/bin/fleet-dispatch" run
     assert_success
     assert_output --partial 'started game-agent-1: app: '
-    assert_output --partial 'held by fleet share'
-    [ -n "$(agent-queue list --json --state active 2>/dev/null | jq -r 'select(.project == "game" and .state == "queued") | .slug')" ] || fail "the $t fleet item started past the cap"
+    assert_output --partial 'held by project share'
+    [ -n "$(agent-queue list --json --state active 2>/dev/null | jq -r 'select(.project == "game" and .state == "queued") | .slug')" ] || fail "the $t capped item started past the cap"
   done
 }
 
-@test "fleet share: DISPATCH_FLEET_PROJECTS alone names the capped projects; a project tag moves none in, empty is off" {
+@test "project share: DISPATCH_PROJECT_SHARE alone names the capped projects; a project tag moves none in, empty is off" {
   two_items
   share_history 1 1
   # A project tag (a stale ladder word on app) puts nothing under the cap: only the conf's list does.
   printf 'app\tlow\n' > "$NOTES_FIXTURE/prios"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
-  assert_output --partial 'fleet share: 1 of 2 items started in 24h are fleet work (game), 50% against a 30% cap: full'
-  # The negative control: an empty list is off, whatever the tags say.
-  DISPATCH_FLEET_PROJECTS='' run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
-  refute_output --partial 'fleet share'
+  assert_output --partial 'project share: game 1 of 2 items started in 24h, 50% against a 30% cap: full'
+  # The negative control: an empty table is off, whatever the tags say.
+  DISPATCH_PROJECT_SHARE='' run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
+  refute_output --partial 'project share'
 }
 
-@test "fleet share: with only fleet work to start the cap lets go, and the board fills from other projects first" {
+# ar-5372: one table, each project held at its own cap. The one shared cap it replaces counted every
+# listed project together, so a project under its own share waited while another was over.
+@test "project share: each project is held at its own cap; one under its cap starts while one over its own waits" {
+  two_items
+  share_history 1 1
+  export DISPATCH_PROJECT_SHARE='game:30 app:60'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
+  assert_output --partial 'project share: game 1 of 2 items started in 24h, 50% against a 30% cap: full'
+  assert_output --partial 'project share: app 1 of 2 items started in 24h, 50% against a 60% cap'
+  refute_output --partial 'against a 60% cap: full'
+  # The negative control: at or under its own share, app is full too.
+  DISPATCH_PROJECT_SHARE='game:30 app:50' run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
+  assert_output --partial 'project share: app 1 of 2 items started in 24h, 50% against a 50% cap: full'
+  # A word that is not <project>:<percent> stops loud, never a cap read as off.
+  DISPATCH_PROJECT_SHARE='game app:60' run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
+  assert_failure 78
+  assert_output --partial 'DISPATCH_PROJECT_SHARE has "game", not a <project>:<percent> word'
+  DISPATCH_PROJECT_SHARE='game:30 app:60 game:50' run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
+  assert_failure 78
+  assert_output --partial 'DISPATCH_PROJECT_SHARE names game twice'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: app: fix-app'
+  assert_output --partial 'passed 1 item held by project share: game started 1 of the 2 items in 24h, at or over its 30%'
+  [ -n "$(qitem queued fix-game)" ] || fail "the item over its own project's cap started"
+}
+
+@test "project share: with only capped work to start the cap lets go, and the board fills from other projects first" {
   project game beta "$SANDBOX/repos/game"
   agent-queue add --project game --slug fix-game --priority high "fix the game" >/dev/null
   share_history 1 0
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'started game-agent-1: game: fix-game'
-  assert_output --partial 'the fleet share cap let it go, as nothing else could start (fleet share: '
-  # An empty queue and a board with both: the fill passes the fleet row over for the app one.
+  assert_output --partial 'the project share cap let it go, as nothing else could start (project share: '
+  # An empty queue and a board with both: the fill passes the capped row over for the app one.
   agent-queue move fix-game done --status cancelled >/dev/null
   project app beta "$SANDBOX/repos/app"
   row game human 'fix crash on load' "- [ ] fix crash on load #high $T"
@@ -804,12 +831,12 @@ share_history() {
   : > "$NOTES_FIXTURE/calls.log"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_output --partial 'the fleet share is full (2 of 2 starts in 24h, DISPATCH_FLEET_SHARE=30%), so the board fills from other projects'
+  assert_output --partial 'the project share is full for game (2 of 2 starts in 24h, cap 30%), so the board fills from other projects'
   assert_output --partial 'started game-agent-1: app: '
-  [ -z "$(agent-queue list --json --state active 2>/dev/null | jq -r 'select(.project == "game") | .slug')" ] || fail "the fill promoted the fleet row past the cap"
+  [ -z "$(agent-queue list --json --state active 2>/dev/null | jq -r 'select(.project == "game") | .slug')" ] || fail "the fill promoted the capped row past the cap"
 }
 
-@test "fleet share: a pass not under the low water that reads the board for committed rows alone never lets the cap go" {
+@test "project share: a pass not under the low water that reads the board for committed rows alone never lets the cap go" {
   # The committed-rows read (ar-2911) reaches the board on every pass; the cap lets go only for a fill.
   export DISPATCH_PER_PASS=2 DISPATCH_LOW_WATER=0
   two_items
@@ -818,13 +845,13 @@ share_history() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'started game-agent-1: app: fix-app'
-  refute_output --partial 'the fleet share cap let it go'
+  refute_output --partial 'the project share cap let it go'
   [ -n "$(qitem queued fix-game)" ] && [ -n "$(qitem queued fix-game-2)" ] || fail "a share-held item started on a committed-rows pass"
 }
 
 # 2026-11-21 (ar-4450): a pass read "fleet share full: ar-4356 (fleet share ...), ucp-1567 (load 28.28 ...
 # over the 0.99 pace ...), 22 more" and settled NOOP, a hold by design, while load held the rest.
-@test "fleet share: the share names a held pass only when load held none of its items" {
+@test "project share: the share names a held pass only when load held none of its items" {
   local fleet='{"slug":"fix-game","project":"game"}' other='{"slug":"fix-app","project":"app"}'
   # A fleet worker takes the game item and not the app one; this machine's load holds a start here.
   HOST_PROBE=([razer-laptop]=1)
@@ -834,21 +861,21 @@ share_history() {
   line_why() { :; }
   machine_why() { echo "load 28.28 on 28 cores is over the 0.99 pace"; }
   place_host() { [ "$(jq -r .project <<<"$1")" = game ] && [ "${2:-}" != first ] && echo razer-laptop; }
-  share_why() { if [ "$(jq -r .project <<<"$1")" = game ]; then echo "fleet share: 3 of 4 starts are fleet work"; fi; }
+  share_why() { if [ "$(jq -r .project <<<"$1")" = game ]; then echo "project share: game started 3 of 4 starts"; fi; }
   TARGET=4 DRY=0
   unset UNITS_FREE SHARE_LET_GO
   # Load holds the app item and the share the game item: the load names the pass.
   pick_item "$fleet"$'\n'"$other" && fail "an item was picked"
-  [[ "$PICK_WHY" == "machine pace: fix-game (fleet share: "* ]] || fail "a pass load held read: $PICK_WHY"
+  [[ "$PICK_WHY" == "machine pace: fix-game (project share: "* ]] || fail "a pass load held read: $PICK_WHY"
   assert_equal "$(grep -c 'over the 0.99 pace, and no fleet worker takes it' <<<"$PICK_WHY")" 1
   # The negative control: with the share's item alone held, the share names the pass.
-  pick_item "$fleet" && fail "the fleet item was picked"
-  [[ "$PICK_WHY" == "fleet share full: fix-game (fleet share: "* ]] || fail "a pass the share alone held read: $PICK_WHY"
+  pick_item "$fleet" && fail "the capped item was picked"
+  [[ "$PICK_WHY" == "project share full: fix-game (project share: "* ]] || fail "a pass the share alone held read: $PICK_WHY"
 }
 
 # 2026-11-23 (ar-4499): 86 of 124 fleet Claude starts in 24h went out on the let-go, a light fleet item
 # taking the one free unit each pass while other projects' heavy items waited for two.
-@test "fleet share: the cap does not let go onto the run units another project's item waits on" {
+@test "project share: the cap does not let go onto the run units another project's item waits on" {
   local fleet='{"slug":"fix-game","project":"game"}' heavy='{"slug":"build-app","project":"app","weight":"heavy"}'
   HOST_PROBE=()
   load_findings() { FIRING=''; }
@@ -856,11 +883,11 @@ share_history() {
   held_by() { :; }
   finding_hold() { :; }
   place_host() { return 1; }
-  share_why() { if [ "$(jq -r .project <<<"$1")" = game ]; then echo "fleet share: 3 of 4 starts are fleet work"; fi; }
+  share_why() { if [ "$(jq -r .project <<<"$1")" = game ]; then echo "project share: game started 3 of 4 starts"; fi; }
   TARGET=4 DRY=0 UNITS_FREE=1 SHARE_LET_GO=1
   # The heavy app item needs 2 units and 1 is free: the light game item, held by the share, waits too.
   pick_item "$heavy"$'\n'"$fleet" && fail "the let-go took the units build-app waits on: $(jq -r .slug <<<"$PICKED")"
-  [[ "$PICK_WHY" == "run units: build-app needs 2, 1 free, so the fleet share cap does not let fix-game go to them; "* ]] || fail "the wait read: $PICK_WHY"
+  [[ "$PICK_WHY" == "run units: build-app needs 2, 1 free, so the project share cap does not let fix-game go to them; "* ]] || fail "the wait read: $PICK_WHY"
   assert_equal "$PICK_FULL" 1
   # A finding holding another item names the pass, never a full fleet's NOOP.
   held_by() { [ "$(jq -r .slug <<<"$1")" != hold-app ] || echo "finding ci-red"; }
@@ -870,22 +897,22 @@ share_history() {
   held_by() { :; }
   # Off the let-go pass the share's hold names it, as before.
   SHARE_LET_GO=0 pick_item "$heavy"$'\n'"$fleet" && fail "an item was picked off the let-go pass"
-  [[ "$PICK_WHY" == "fleet share full: "* ]] || fail "a pass off the let-go read: $PICK_WHY"
+  [[ "$PICK_WHY" == "project share full: "* ]] || fail "a pass off the let-go read: $PICK_WHY"
   # A fleet worker's place the let-go still takes: it spends none of this machine's units.
   place_host() { [ "$(jq -r .project <<<"$1")" = game ] && [ "${2:-}" = first ] && echo razer-laptop; }
   pick_item "$heavy"$'\n'"$fleet" || fail "the let-go held a fleet worker's start: $PICK_WHY"
   assert_equal "$(jq -r .slug <<<"$PICKED") $PLACE_HOST" "fix-game razer-laptop"
-  # The negative control: with nothing else waiting on the units, the cap lets the fleet item go.
+  # The negative control: with nothing else waiting on the units, the cap lets the capped item go.
   place_host() { return 1; }
   pick_item "$fleet" || fail "the let-go held with nothing else waiting: $PICK_WHY"
   assert_equal "$(jq -r .slug <<<"$PICKED")" fix-game
-  [[ "$PICK_NOTE" == "; the fleet share cap let it go, as nothing else could start (fleet share: "* ]] || fail "the let-go note read: $PICK_NOTE"
+  [[ "$PICK_NOTE" == "; the project share cap let it go, as nothing else could start (project share: "* ]] || fail "the let-go note read: $PICK_NOTE"
   # A heavy item the share holds, or one too heavy for the target, keeps no units.
   pick_item '{"slug":"big-game","project":"game","weight":"heavy"}'$'\n'"$fleet" || fail "a share-held heavy item kept the units: $PICK_WHY"
   TARGET=1 pick_item "$heavy"$'\n'"$fleet" || fail "an item over the target kept the units: $PICK_WHY"
 }
 
-@test "fleet share: a full share passes a #requested fleet row through the fill, not an #urgent one" {
+@test "project share: a full share passes a #requested capped row through the fill, not an #urgent one" {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
   row game human 'fix crash on load' "- [ ] fix crash on load #high #requested $T"
@@ -896,8 +923,8 @@ share_history() {
   DISPATCH_PER_PASS=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" fill   # up to the low water, both rows
   assert_success
   refute_output --partial "so the board fills from other projects"
-  [ -n "$(agent-queue list --json --state active 2>/dev/null | jq -r 'select(.project == "game") | .slug')" ] || fail "the #requested fleet row was left out of the fill"
-  # An #urgent fleet row is no longer one: its board item would wait at the cap, so the fill leaves it out.
+  [ -n "$(agent-queue list --json --state active 2>/dev/null | jq -r 'select(.project == "game") | .slug')" ] || fail "the #requested capped row was left out of the fill"
+  # An #urgent capped row is no longer one: its board item would wait at the cap, so the fill leaves it out.
   agent-queue list --json --state active 2>/dev/null | jq -r .slug | while read -r s; do agent-queue move "$s" done --status cancelled >/dev/null; done
   : > "$NOTES_FIXTURE/rows.game.human"; : > "$NOTES_FIXTURE/rows.app.human"
   row game human 'fix crash on save' "- [ ] fix crash on save #urgent $T"
@@ -907,12 +934,12 @@ share_history() {
   DISPATCH_PER_PASS=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" fill
   assert_success
   assert_output --partial "so the board fills from other projects"
-  [ -z "$(agent-queue list --json --state active 2>/dev/null | jq -r 'select(.project == "game") | .slug')" ] || fail "the #urgent fleet row was promoted past the cap"
+  [ -z "$(agent-queue list --json --state active 2>/dev/null | jq -r 'select(.project == "game") | .slug')" ] || fail "the #urgent capped row was promoted past the cap"
 }
 
 # ar-4912: every `--want` stamps #requested, a session's wind-down leftovers included, so an item an
 # agent filed (asker=agent) counts under the cap; the human's own (asker=human) still passes it.
-@test "fleet share: a #requested item an agent filed (asker=agent) waits at the cap; the human's starts" {
+@test "project share: a #requested item an agent filed (asker=agent) waits at the cap; the human's starts" {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
   share_history 1 1
@@ -922,7 +949,7 @@ share_history() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'started game-agent-1: app: fix-app'
-  assert_output --partial 'held by fleet share'
+  assert_output --partial 'held by project share'
   [ -n "$(qitem queued follow-up)" ] || fail "the agent's #requested item started past the cap"
   # The control: the same item in the human's words passes the cap, with other work still queued.
   agent-queue move fix-app done --status cancelled >/dev/null
@@ -931,10 +958,10 @@ share_history() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'started game-agent-1: game: follow-up'
-  refute_output --partial 'held by fleet share'
+  refute_output --partial 'held by project share'
 }
 
-@test "fleet share: a full share's fill passes over a #requested fleet row an agent filed, by notes' ingest record" {
+@test "project share: a full share's fill passes over a #requested capped row an agent filed, by notes' ingest record" {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
   export DISPATCH_NOTES_INGEST="$SANDBOX/ingest.jsonl" DISPATCH_LOW_WATER=4
@@ -956,16 +983,16 @@ share_history() {
   DISPATCH_PER_PASS=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" fill
   assert_success
   assert_output --partial "so the board fills from other projects"
-  [ -z "$(grep -rl 'tidy the hook' "$AGENT_QUEUE_DIR" 2>/dev/null)" ] || fail "the agent's #requested fleet row was promoted past the cap"
+  [ -z "$(grep -rl 'tidy the hook' "$AGENT_QUEUE_DIR" 2>/dev/null)" ] || fail "the agent's #requested capped row was promoted past the cap"
   [ -z "$(grep -rl 'retry the probe' "$AGENT_QUEUE_DIR" 2>/dev/null)" ] || fail "a script's sessionless #requested row was read as the human's"
   local f; f=$(grep -rl 'fix crash on load' "$AGENT_QUEUE_DIR" 2>/dev/null | head -n1)
-  [ -n "$f" ] || fail "the human's #requested fleet row was left out of the fill: $output"
+  [ -n "$f" ] || fail "the human's #requested capped row was left out of the fill: $output"
   grep -q '^asker: human$' "$f" || fail "promote did not stamp the row's asker: $(cat "$f")"
 }
 
 # 2026-11-21 (ar-4554): five fleet rows a let-go fill promoted waited 9h in queued/ behind every other
 # project's fresh row, and the queued age p90 read 494m against its 420m bound (watch queue-age).
-@test "fleet share: a board item the cap has held DISPATCH_STARVED_MIN goes back to its row; a fresh one stays" {
+@test "project share: a board item the cap has held DISPATCH_STARVED_MIN goes back to its row; a fresh one stays" {
   project game beta "$SANDBOX/repos/game"
   row game human 'fix crash on load' "- [ ] fix crash on load #high $T"
   verdict game human 'fix crash on load' dispatch
@@ -995,7 +1022,7 @@ share_history() {
   [ -n "$(qitem queued "$old")" ] || fail "an item went back with the share off"
   share_history 1 0
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial "returned queue item $old to its board row: the fleet share: "
+  assert_output --partial "returned queue item $old to its board row: the project share: "
   [ -z "$(agent-queue list --json --state active 2>/dev/null | jq -r --arg s "$old" 'select(.slug == $s) | .slug')" ] || fail "the held item stayed in the queue"
   [ -n "$(qitem queued "$fresh")" ] || fail "the item held under DISPATCH_STARVED_MIN left the queue"
   # A sprint row is its floor's to start.
@@ -1005,7 +1032,7 @@ share_history() {
   [ -n "$(qitem queued "$land")" ] || fail "the item landing its PR left queued/"
 }
 
-@test "fleet share: while the share is full the canary top-up asks for no Claude lane" {
+@test "project share: while the share is full the canary top-up asks for no Claude lane" {
   project game beta "$SANDBOX/repos/game"
   export DISPATCH_CANARY_KEEP=2
   stub fleet-bench "[ \"\$1\" = canary ] || exit 0; echo \"\$*\" >> '$SANDBOX/bench.calls'; echo 'canary: 1 queued'"
@@ -1013,25 +1040,25 @@ share_history() {
   agent-queue add --project game --slug ca-held --tags canary "a claude canary" >/dev/null
   share_history 1 0
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'canary top-up (keep 2, 0 queued, 2 wanted, the fleet share full: no Claude lane): canary: 1 queued'
+  assert_output --partial 'canary top-up (keep 2, 0 queued, 2 wanted, a project share full: no Claude lane): canary: 1 queued'
   assert_equal "$(cat "$SANDBOX/bench.calls")" 'canary queue --max 2 --off-claude'
   # The negative control: the cap off, the same pass asks for every lane.
   rm "$SANDBOX/bench.calls"
-  DISPATCH_FLEET_SHARE=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  DISPATCH_PROJECT_SHARE='' run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_equal "$(cat "$SANDBOX/bench.calls")" 'canary queue --max 2'
 }
 
 # Ask GDUmQQ (ar-4554): a canary on a harness with its own source spends no Claude session, as a trainee start does not.
-@test "fleet share: a canary pinned to a harness with its own source passes the cap; a Claude one waits" {
+@test "project share: a canary pinned to a harness with its own source passes the cap; a Claude one waits" {
   local full sourced claude plain
   share_state() { :; }
-  SHARE_STATE='{"full":true,"fleet":2,"total":2,"projects":["game"],"sourced":["codex"]}'
+  SHARE_STATE='{"full":true,"total":2,"projects":{"game":{"cap":30,"n":2,"full":true}},"sourced":["codex"]}'
   sourced='{"slug":"ca-cx","project":"game","agent":"codex","tags":"canary"}'
   claude='{"slug":"ca-cl","project":"game","agent":"claude","tags":"canary"}'
   plain='{"slug":"fix-cx","project":"game","agent":"codex","tags":""}'
   [ -z "$(share_why "$sourced")" ] || fail "the sourced canary was held: $(share_why "$sourced")"
-  [[ "$(share_why "$claude")" == "fleet share: "* ]] || fail "the Claude canary passed the cap"
-  [[ "$(share_why "$plain")" == "fleet share: "* ]] || fail "a plain item on a sourced harness passed the cap"
+  [[ "$(share_why "$claude")" == "project share: "* ]] || fail "the Claude canary passed the cap"
+  [[ "$(share_why "$plain")" == "project share: "* ]] || fail "a plain item on a sourced harness passed the cap"
   # queue_depth applies the same test.
   runnable() { printf '%s\n' "$sourced" "$claude" "$plain"; }
   assert_equal "$(queue_depth)" 1
