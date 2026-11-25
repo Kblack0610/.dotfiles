@@ -179,7 +179,8 @@ fn capped_projects(events: &[Event]) -> Vec<String> {
     let mut out = crate::config::intake_gated();
     for e in events {
         let board = board_of(e);
-        if !board.is_empty() && (e.action == CAPPED || counts_toward_cap(e, board)) {
+        let capped = e.action == CAPPED && e.lane == "agent";
+        if !board.is_empty() && (capped || counts_toward_cap(e, board)) {
             out.push(board.to_string());
         }
     }
@@ -190,10 +191,11 @@ fn capped_projects(events: &[Event]) -> Vec<String> {
 
 /// `notes ingest cap`: the last `days` local days, oldest first and today last, of every project
 /// with a board the cap touched: new agent rows admitted ([`counts_toward_cap`]) and rows the cap
-/// refused ([`CAPPED`]).
+/// refused ([`CAPPED`]). A day an ungated board did neither has no line.
 pub fn cap_days(p: &Profile, days: i64) -> Vec<DayCap> {
     let events = ingest::recent(p, days.max(1));
     let projects = capped_projects(&events);
+    let gated = crate::config::intake_gated();
     let today = chrono::Local::now().date_naive();
     let cap = crate::config::intake_daily_cap();
     let mut out = Vec::new();
@@ -201,18 +203,24 @@ pub fn cap_days(p: &Profile, days: i64) -> Vec<DayCap> {
         let date = (today - chrono::Duration::days(back))
             .format("%Y-%m-%d")
             .to_string();
+        let day: Vec<Event> = events
+            .iter()
+            .filter(|e| e.ts.starts_with(&date))
+            .cloned()
+            .collect();
         for project in projects.iter().cloned() {
-            let day: Vec<Event> = events
+            let refused = day
                 .iter()
-                .filter(|e| e.ts.starts_with(&date))
-                .cloned()
-                .collect();
+                .filter(|e| e.action == CAPPED && e.from == project)
+                .count();
+            let admitted = admitted(&day, &project);
+            // A quiet day of an ungated board is no line; a gated one always is (agent-runtime's KPIs).
+            if refused + admitted == 0 && !gated.contains(&project) {
+                continue;
+            }
             out.push(DayCap {
-                refused: day
-                    .iter()
-                    .filter(|e| e.action == CAPPED && e.from == project)
-                    .count(),
-                admitted: admitted(&day, &project),
+                refused,
+                admitted,
                 date: date.clone(),
                 project,
                 cap,

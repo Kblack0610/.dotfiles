@@ -2151,16 +2151,10 @@ fn the_daily_cap_is_the_configs_number_and_zero_turns_it_off() {
 #[test]
 fn a_board_off_the_gate_list_is_capped_all_the_same_and_its_gate_stays_off() {
     let h = Home::new("gate-cap-free");
-    // The gate is off for demo: a session's polish row files, whatever its reason.
-    ok(&add_as(
-        &h,
-        &[HAND],
-        &[],
-        "chore(ui): tidy the menu colours #low #size/s",
-    ));
     fill_the_day(&h);
-    assert_eq!(ids(&h.board()).len(), 11, "{}", h.board());
-    // NEGATIVE CONTROL: the next machine row, plan phase and hand row are held by the cap alone.
+    assert_eq!(ids(&h.board()).len(), 10, "{}", h.board());
+    // NEGATIVE CONTROL: the next machine row, plan phase and hand row are held by the cap alone:
+    // the gate is off for demo, so a hand row with no reason is no evidence-gate refusal.
     let held = [
         add_as(
             &h,
@@ -2202,8 +2196,8 @@ fn a_board_off_the_gate_list_is_capped_all_the_same_and_its_gate_stays_off() {
         &["--why", "outage"],
         "fix(w2): the board is down #urgent #size/s",
     ));
-    assert_eq!(ids(&h.board()).len(), 13, "{}", h.board());
-    assert_eq!(h.cap_today(), (12, 3));
+    assert_eq!(ids(&h.board()).len(), 12, "{}", h.board());
+    assert_eq!(h.cap_today(), (11, 3));
 }
 
 #[test]

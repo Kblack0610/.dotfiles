@@ -379,7 +379,7 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${PRIO_SAMPLE:=3}"   # row ids shown per origin in prio_default
 : "${INFLOW_DAYS:=14}"   # the window inflow counts arrivals over
 : "${BENCH_CHURN_MERGES_CMD:=git -C $HOME/.dotfiles log origin/main --first-parent --since=60.days.ago --format=%cd --date=format-local:%Y-%m-%d}"   # one local date per dotfiles merge (churn_merges_per_day); the CI ledger lags a day behind
-: "${BENCH_INTAKE_CMD:=$BENCH_NOTES_CMD ingest cap --days 60 --json}"   # one JSON line a gated board a local day: the rows its daily cap admitted and refused (churn_admitted_per_day); notes owns the counting
+: "${BENCH_INTAKE_CMD:=$BENCH_NOTES_CMD ingest cap --days 60 --json}"   # one JSON line a board a local day: the rows the daily cap admitted and refused (churn_admitted_per_day reads agent-runtime's); notes owns the counting
 : "${CHURN_RUN_DAYS:=3}"   # complete days running that filed must exceed closed for churn --check to trip
 : "${BENCH_INGEST:=$HOME/.local/state/notes/ingest.jsonl}"   # the notes CLI's record of every row it wrote: who, from where
 : "${BENCH_PROFILE:=}"                             # the profile board_open and board_days read; empty asks `notes config`
