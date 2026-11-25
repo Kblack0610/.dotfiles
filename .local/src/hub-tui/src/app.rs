@@ -7418,16 +7418,21 @@ mod tests {
         // and the digits follow that order along the number row, 1 for the first, 0 the tenth;
         // a tab past the tenth has none, and Tab reaches it.
         let titles: Vec<&str> = Tab::ALL.iter().map(|t| t.title()).collect();
-        // Less Board: agent-web's tab for what `a` on Projects opens here.
+        // Less Reports, agent-web's alone until its TUI tab (ar-5259) lands.
         let layout: Vec<&str> = hub_core::layout::TABS
             .iter()
             .map(|t| t.title)
-            .filter(|t| *t != "Board")
+            .filter(|t| *t != "Reports")
             .collect();
         assert_eq!(titles, layout);
-        // The bar is the layout less Daily, which only agent-web shows; the digits follow it.
+        // The bar is the layout less OFF_BAR (Daily, which only agent-web shows); the digits
+        // follow it.
         let shown: Vec<&str> = Tab::SHOWN.iter().map(|t| t.title()).collect();
-        let bar: Vec<&str> = layout.iter().copied().filter(|t| *t != "Daily").collect();
+        let bar: Vec<&str> = hub_core::layout::TABS
+            .iter()
+            .filter(|t| !hub_core::layout::OFF_BAR.contains(&t.id))
+            .map(|t| t.title)
+            .collect();
         assert_eq!(shown, bar);
         for (i, t) in Tab::SHOWN.iter().enumerate() {
             let id = t.title().to_lowercase();
