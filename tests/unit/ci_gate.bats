@@ -171,6 +171,34 @@ job_pod_faults() {
   assert_output 'lint: loads the test image inside it'
 }
 
+# shard_step <wf>: the Fast tier shard step's run script
+shard_step() { awk '/^      - name: Fast tier shard$/ { s = 1 } s && /^        run: \|$/ { r = 1; next } r && !/^          / { exit } r { sub(/^          /, ""); print }' "$1"; }
+
+@test "a run step gets the pool runner's bash in a container job too, and a shard that reads no files it was given fails" {
+  # A container job falls back to sh for a run step with no shell; dash reads $(<file) as empty (ar-6186).
+  run sed -n '/^defaults:$/,/^[a-z]/p' "$WF"
+  assert_line --index 1 '  run:'
+  assert_line --index 2 '    shell: bash -e {0}'
+  run grep -nE '^ +shell: (sh|dash)( |$)' "$WF"
+  assert_failure
+  shard_step "$WF" >"$BATS_TEST_TMPDIR/shard.sh"
+  grep -q 'files=\$(<"\$RUNNER_TEMP/files")' "$BATS_TEST_TMPDIR/shard.sh" || fail "no shard script: $(cat "$BATS_TEST_TMPDIR/shard.sh")"
+  : >"$BATS_TEST_TMPDIR/files"
+  RUNNER_TEMP=$BATS_TEST_TMPDIR TAG='unit 1/24' PICKED_FILES=true run bash -e "$BATS_TEST_TMPDIR/shard.sh"
+  assert_failure 1
+  assert_output --partial '::error::the split gave unit 1/24 files'
+  # The split gave none: the one empty shard of a tier that picked nothing passes.
+  RUNNER_TEMP=$BATS_TEST_TMPDIR TAG='unit 1/24' PICKED_FILES='' run bash -e "$BATS_TEST_TMPDIR/shard.sh"
+  assert_success
+  assert_output 'nothing picked for unit 1/24'
+  # Negative control: under dash the same script reads a non-empty list as empty, so the guard trips.
+  command -v dash >/dev/null || skip 'no dash to show the sh fallback'
+  echo unit/a.bats >"$BATS_TEST_TMPDIR/files"
+  RUNNER_TEMP=$BATS_TEST_TMPDIR TAG='unit 1/24' PICKED_FILES=true run dash -e "$BATS_TEST_TMPDIR/shard.sh"
+  assert_failure 1
+  assert_output --partial '::error::'
+}
+
 @test "the skills call passes the anchor's runner choice, fork rule included" {
   local cond
   cond=$(sed -nE 's/^    runs-on: &pool \$\{\{ fromJSON\((.*) && vars\.LINUX_RUNNER_LIGHT \|\| .*$/\1/p' "$WF")

@@ -54,6 +54,13 @@ concurrency:
   group: shell-tests-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
+# The shell a run step with no `shell:` gets on the pool's own runner. A container job (the
+# &job-pod jobs) falls back to sh, where dash read `files=$(<file)` as empty and every fast shard
+# ran no test and went green (ar-6186). tests/unit/ci_gate.bats checks it.
+defaults:
+  run:
+    shell: bash -e {0}
+
 # Where every job runs: `&pool` on the first job, `*pool` on the rest. The repo variable
 # LINUX_RUNNER_LIGHT is the switch (set: the home pool; deleted: GitHub-hosted, free on this public
 # repo; the shell-test-harness skill, section 5). A fork's pull request always runs hosted, so a stranger's code
@@ -327,9 +334,14 @@ jobs:
         env:
           JUNIT: 1
           TAG: ${{ matrix.tier }} ${{ matrix.shard }}
+          PICKED_FILES: ${{ steps.pick.outputs.run }}
+        # A shard the split gave files reads them, or fails: an empty read is not "nothing picked".
         run: |
           files=$(<"$RUNNER_TEMP/files")
-          [ -n "$files" ] || { echo "nothing picked for $TAG"; exit 0; }
+          if [ -z "$files" ]; then
+            [ "$PICKED_FILES" != true ] || { echo "::error::the split gave $TAG files, but this step read none from $RUNNER_TEMP/files"; exit 1; }
+            echo "nothing picked for $TAG"; exit 0
+          fi
           start=$SECONDS rc=0
           tests/docker.sh test-files FILES="$(tr '\n' ' ' <<<"$files")" || rc=$?
           actual=$(tests/shard.sh --junit ${{ matrix.tier }} tests/artifacts/junit |
