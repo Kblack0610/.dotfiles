@@ -330,7 +330,7 @@ load 'fleet_dispatch/main'
   export AGENT_HOLD_DIR="$HOME/.agent/holds"
   # The real agent-hold over setup's always-clear stub: the copied agent-queue calls the one beside it.
   cp "$REPO_ROOT/.local/bin/agent-hold" "$SANDBOX/bin/agent-hold"
-  agent-hold set critical --kind resource --by human "lockdown" >/dev/null
+  agent-hold set critical --kind resource --by coordinator "lockdown" >/dev/null
   agent-hold grant critical ga-1 ga-50 >/dev/null
   row game agent ga-1 "- [ ] fix(game): granted by its id $T #hold/critical <!-- id:ga-1 -->"
   row game agent ga-2 "- [ ] fix(game): granted by its epic $T #hold/critical #of/ga-50 <!-- id:ga-2 -->"
