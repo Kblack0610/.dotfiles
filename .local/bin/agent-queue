@@ -2159,6 +2159,72 @@ work_machine_guard() {
   die "this is a work machine ($PROJECT_MACHINE_PROFILE): no dispatcher runs here and home runners never take work. Put the follow-up in the project's tracker (ticket), or work it in this session"
 }
 
+# add_board_hold -- cmd_add's add that waits on a gate or is not the queue's to pull (pull_ok), under the
+# lock: logged, the lock let go, and its board row filed, gated or left where it is; then exits held.
+# Like the two below, it runs inside cmd_add and reads its locals.
+add_board_hold() {
+  local bwhy=board-only
+  [ -z "$GATES" ] || bwhy=gated
+  admission_log "$from" "$project" "$slug" "$hold_title" "" "" "$bwhy"
+  unlock
+  [ -n "$GATES" ] || board_only_say
+  case "$row:$from" in
+    :board:*) [ -z "$GATES" ] || die "$slug waits on #${GATES// / #}, so row ${from#board:} stays on the board until that clears"
+      echo "agent-queue: its row ${from#board:} is left where it is: dispatch promotes it" >&2 ;;
+    :canary | :trainee) [ -z "$GATES" ] || die "a $from item waits on no gate: add it once #${GATES// / #} clears"
+      overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "" "$slug" "$tags" || exit 1 ;;
+    :*) overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "$GATES" "$slug" "$tags" || exit 1 ;;
+    *) if [ -n "$GATES" ]; then
+         local rboard rlab
+         IFS=$'\t' read -r rboard rlab _ < <(project_board "$project")
+         # shellcheck disable=SC2086 # GATES is a space-separated list of tags
+         gate_row "$rboard:$row" "$rlab" agent $GATES || die "row $row did not take its gates, so nothing was held: $GATE_HINT"
+         echo "agent-queue: row $row waits on #${GATES// / #}: dispatch promotes it once that clears" >&2
+         echo "held $slug -> $rboard:$row (#${GATES// / #})"
+       else
+         echo "agent-queue: row $row is left where it is: dispatch promotes it" >&2
+       fi ;;
+  esac
+  exit "$AQ_EX_HELD"
+}
+
+# add_cap_hold -- cmd_add's add held at the cap (admit), under the lock: exits held, its board row left
+# where it is, or filed when it has none.
+add_cap_hold() {
+  unlock # the board write is notes' and can be slow: the lock covers only the count
+  # A pull from its board row (from: board:<project>:<id>) has its row already: filing the task again
+  # relied on notes' twin check, which missed it (ar-3407: ar-2721 pulled, ar-3406 filed).
+  local held_row=''
+  case "$row:$from" in
+    :board:?*:?*) held_row="${from#board:}" ;;
+    :*) ;;
+    *) IFS=$'\t' read -r held_row _ < <(project_board "$project"); held_row="${held_row:-$project}:$row" ;;
+  esac
+  if [ -n "$held_row" ]; then
+    echo "agent-queue: row $held_row is left un-started where it is: dispatch promotes it as the queue drains" >&2
+    echo "held $slug -> $held_row"
+  else overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "" "$slug" "$tags"; fi
+  exit "$AQ_EX_HELD"
+}
+
+# add_item_text -> the item file cmd_add writes, from its locals.
+add_item_text() {
+  printf 'slug: %s\nproject: %s\nmode: %s\npriority: %s\nweight: %s\n' "$slug" "$project" "$mode" "$priority" "$weight"
+  [ -n "$title" ] && printf 'title: %s\n' "$title"
+  [ -n "$ctype" ] && printf 'type: %s\narea: %s\n' "$ctype" "$carea"
+  [ -n "$tags" ] && printf 'tags: %s\n' "$tags"
+  [ -n "$after" ] && printf 'after: %s\n' "$after"
+  [ -n "${AQ_ITEM_PLAN:-}" ] && printf 'plan: %s\nphases: %s\n' "$AQ_ITEM_PLAN" "$AQ_ITEM_PHASES"
+  [ -n "${AQ_ITEM_PLAN:-}" ] && [ -n "${AQ_ITEM_PHASE_KEYS:-}" ] && printf 'phase_keys: %s\n' "$AQ_ITEM_PHASE_KEYS"
+  printf 'from: %s\nagent: %s\nqueued: %s\n' "$from" "$agent" "$now"
+  [ -n "$running" ] && printf 'started: %s\n' "$now"
+  [ -n "$session" ] && printf 'session: %s\n' "$session"
+  [ -n "$window" ] && printf 'window: %s\n' "$window"
+  [ -n "$sid" ] && printf 'sessions: %s\naccount: %s\n' "$sid" "$(claude_account)"
+  [ -n "$story" ] && printf 'row: %s:%s\nlane: agent\nprofile: %s\n' "$sboard" "$srow" "$sprof"
+  printf -- '---\n%s\n' "$text"
+}
+
 cmd_add() {
   local project="" mode=oneshot priority=high tags="" after="" from=human agent=claude slug=""
   local running="" session="" task=() tag planf="" dry="" check="" weight="" title="" epic="" repeat="" from_given="" want="" row="" priority_given=""
@@ -2292,47 +2358,8 @@ cmd_add() {
   [ -z "${why:-}" ] || { echo "agent-queue: $why" >&2; exit "$AQ_EX_FINISHED"; }
   # Under the lock, so two filers at once cannot both pass on the same count.
   local hold_title="${title:-$(head -1 <<<"$text")}"
-  if [ -n "$GATES" ] || ! pull_ok "$running" "$from" "$from_given"; then
-    local bwhy=board-only
-    [ -z "$GATES" ] || bwhy=gated
-    admission_log "$from" "$project" "$slug" "$hold_title" "" "" "$bwhy"
-    unlock
-    [ -n "$GATES" ] || board_only_say
-    case "$row:$from" in
-      :board:*) [ -z "$GATES" ] || die "$slug waits on #${GATES// / #}, so row ${from#board:} stays on the board until that clears"
-        echo "agent-queue: its row ${from#board:} is left where it is: dispatch promotes it" >&2 ;;
-      :canary | :trainee) [ -z "$GATES" ] || die "a $from item waits on no gate: add it once #${GATES// / #} clears"
-        overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "" "$slug" "$tags" || exit 1 ;;
-      :*) overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "$GATES" "$slug" "$tags" || exit 1 ;;
-      *) if [ -n "$GATES" ]; then
-           local rboard rlab
-           IFS=$'\t' read -r rboard rlab _ < <(project_board "$project")
-           # shellcheck disable=SC2086 # GATES is a space-separated list of tags
-           gate_row "$rboard:$row" "$rlab" agent $GATES || die "row $row did not take its gates, so nothing was held: $GATE_HINT"
-           echo "agent-queue: row $row waits on #${GATES// / #}: dispatch promotes it once that clears" >&2
-           echo "held $slug -> $rboard:$row (#${GATES// / #})"
-         else
-           echo "agent-queue: row $row is left where it is: dispatch promotes it" >&2
-         fi ;;
-    esac
-    exit "$AQ_EX_HELD"
-  fi
-  if [ -n "$capped" ] && ! admit "$from" "$priority" "$tags" "$project" "$slug" "$hold_title"; then
-    unlock # the board write is notes' and can be slow: the lock covers only the count
-    # A pull from its board row (from: board:<project>:<id>) has its row already: filing the task again
-    # relied on notes' twin check, which missed it (ar-3407: ar-2721 pulled, ar-3406 filed).
-    local held_row=''
-    case "$row:$from" in
-      :board:?*:?*) held_row="${from#board:}" ;;
-      :*) ;;
-      *) IFS=$'\t' read -r held_row _ < <(project_board "$project"); held_row="${held_row:-$project}:$row" ;;
-    esac
-    if [ -n "$held_row" ]; then
-      echo "agent-queue: row $held_row is left un-started where it is: dispatch promotes it as the queue drains" >&2
-      echo "held $slug -> $held_row"
-    else overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "" "$slug" "$tags"; fi
-    exit "$AQ_EX_HELD"
-  fi
+  if [ -n "$GATES" ] || ! pull_ok "$running" "$from" "$from_given"; then add_board_hold; fi
+  [ -z "$capped" ] || admit "$from" "$priority" "$tags" "$project" "$slug" "$hold_title" || add_cap_hold
   check_after "$after" "$slug"
   local state=queued now; now="$(now_utc)"
   [ -n "$running" ] && state=running
@@ -2398,22 +2425,7 @@ cmd_add() {
   local f tmp
   f="$AQ_DIR/$state/$(date +%Y%m%d-%H%M%S)-$slug.md"
   tmp="$(mktemp "$AQ_DIR/$state/.add.XXXXXX")" || die "cannot write in $AQ_DIR/$state"
-  {
-    printf 'slug: %s\nproject: %s\nmode: %s\npriority: %s\nweight: %s\n' "$slug" "$project" "$mode" "$priority" "$weight"
-    [ -n "$title" ] && printf 'title: %s\n' "$title"
-    [ -n "$ctype" ] && printf 'type: %s\narea: %s\n' "$ctype" "$carea"
-    [ -n "$tags" ] && printf 'tags: %s\n' "$tags"
-    [ -n "$after" ] && printf 'after: %s\n' "$after"
-    [ -n "${AQ_ITEM_PLAN:-}" ] && printf 'plan: %s\nphases: %s\n' "$AQ_ITEM_PLAN" "$AQ_ITEM_PHASES"
-    [ -n "${AQ_ITEM_PLAN:-}" ] && [ -n "${AQ_ITEM_PHASE_KEYS:-}" ] && printf 'phase_keys: %s\n' "$AQ_ITEM_PHASE_KEYS"
-    printf 'from: %s\nagent: %s\nqueued: %s\n' "$from" "$agent" "$now"
-    [ -n "$running" ] && printf 'started: %s\n' "$now"
-    [ -n "$session" ] && printf 'session: %s\n' "$session"
-    [ -n "$window" ] && printf 'window: %s\n' "$window"
-    [ -n "$sid" ] && printf 'sessions: %s\naccount: %s\n' "$sid" "$(claude_account)"
-    [ -n "$story" ] && printf 'row: %s:%s\nlane: agent\nprofile: %s\n' "$sboard" "$srow" "$sprof"
-    printf -- '---\n%s\n' "$text"
-  } > "$tmp" && mv -- "$tmp" "$f" || die "could not write $f"
+  add_item_text > "$tmp" && mv -- "$tmp" "$f" || die "could not write $f"
   item_event item-added "$f" --to "$state"
   unlock # the rest writes the board (notes) or starts the item, which takes the lock itself
   echo "$state $slug -> $f"

@@ -2234,6 +2234,35 @@ human_exit() {
   if [ "$rc" = 3 ]; then echo sheet; else echo improve; fi
 }
 
+# exits_eligible -> JSON array of the projects the judge covers (cmd_candidates: a stage from dev on, not on
+# DISPATCH_OFF_PROJECTS), which skip_exits' size exit keeps to.
+exits_eligible() {
+  local elig='' ep es ec
+  for ec in $DISPATCH_PROFILES; do
+    while IFS=$'\t' read -r ep es _; do
+      [ -n "$ep" ] || continue
+      dispatchable "$(stage_of "$es")" && [ -z "$(off_project "$ep")" ] && elig+="$ep"$'\n'
+    done < <(notes --profile "$ec" projects 2>/dev/null)
+  done
+  jq -Rsc 'split("\n") | map(select(length > 0))' <<<"$elig"
+}
+
+# exits_size_state -> {"<project>\t<row>": {failed, exit}} from the raw verdicts, {} without them:
+# latest_verdicts drops a failed row's earlier lines, its recorded exit among them.
+exits_size_state() {
+  [ -f "$VERDICTS" ] && jq -cRn '[inputs | fromjson? | objects | select(.lane == "agent")] | group_by([.project, .key])
+    | map({key: "\(.[0].project)\t\(.[0].key)", value: {failed: ((last | .verdict) == "failed"),
+        exit: ((map(select(.verdict != "failed" and .verdict != "cleared")) | last // {}) | .exit)}}) | from_entries' "$VERDICTS" 2>/dev/null || echo '{}'
+}
+
+# t3_skip_verdict <workers> <raw row> <verdict json> -> the verdict with the row's reason: a skip word keeps a
+# row only where no worker takes it by tier (nobody_why). Fails when a worker does take it.
+t3_skip_verdict() {
+  nobody_why_set "$1" agent "$2"
+  [[ "$NOBODY" == "tier3 skip: "* ]] || return 1
+  jq -c --arg r "$NOBODY" '. + {reason: $r}' <<<"$3"
+}
+
 # skip_exits [--dry-run] -- give each open agent row whose latest verdict is a skip, still current
 # for the row's text, the exit its rule names (policy.md "Always skip"), so no skip parks a row:
 #  - plan (DISPATCH_PLAN_RULES): tag it #plan, and #go beside it on a #requested row (the judge asked
@@ -2289,25 +2318,11 @@ skip_exits() {
   # A row of a kind kinds.json turns off (not epic) never reaches the judge, so it has no verdict: it
   # takes the human exit as rule `kind`, its line `-` (no verdict to hold), unless it is a parent or its
   # latest verdict already carries an exit, of any rule (a drop that failed: no second copy).
-  local kinds
-  kinds=$(jq -ce 'objects' "$DISPATCH_KINDS" 2>/dev/null) ||
+  local kinds; kinds=$(jq -ce 'objects' "$DISPATCH_KINDS" 2>/dev/null) ||
     { say "skip_exits: no kind registry at $DISPATCH_KINDS: no kind exit this pass"; kinds='{}'; }
-  # The size exit reads no verdict, so it keeps to the projects the judge covers (cmd_candidates: a stage
-  # from dev on, not on DISPATCH_OFF_PROJECTS), and reads each row's exit and failure from the raw verdicts:
-  # latest_verdicts drops a failed row's earlier lines, its recorded exit among them.
-  local elig='' ss='{}' ep es ec
-  for ec in $DISPATCH_PROFILES; do
-    while IFS=$'\t' read -r ep es _; do
-      [ -n "$ep" ] || continue
-      dispatchable "$(stage_of "$es")" && [ -z "$(off_project "$ep")" ] && elig+="$ep"$'\n'
-    done < <(notes --profile "$ec" projects 2>/dev/null)
-  done
-  elig=$(jq -Rsc 'split("\n") | map(select(length > 0))' <<<"$elig")
-  if [ -f "$VERDICTS" ]; then
-    ss=$(jq -cRn '[inputs | fromjson? | objects | select(.lane == "agent")] | group_by([.project, .key])
-      | map({key: "\(.[0].project)\t\(.[0].key)", value: {failed: ((last | .verdict) == "failed"),
-          exit: ((map(select(.verdict != "failed" and .verdict != "cleared")) | last // {}) | .exit)}}) | from_entries' "$VERDICTS" 2>/dev/null) || ss='{}'
-  fi
+  # The size exit reads no verdict, so it keeps to the projects the judge covers, and reads each row's
+  # exit and failure from the raw verdicts (exits_size_state).
+  local elig ss; elig=$(exits_eligible); ss=$(exits_size_state)
   rows=$(jq -r --argjson prules "$(policy_rules)" --argjson n "$DISPATCH_DETAIL_CHARS" \
       --argjson kinds "$kinds" --argjson elig "$elig" --slurpfile ssf <(printf '%s\n' "$ss") \
       --arg at "$(date -Iseconds)" --arg sig "$(policy_sig)" --arg t3 "$DISPATCH_T3_SKIP" \
@@ -2342,12 +2357,7 @@ skip_exits() {
   wk=$(workers)
   while IFS=$'\t' read -r prof p id line dsig dj rule req planned d raw; do
     [ -n "$id" ] || continue
-    # A skip word keeps a row only where no worker takes it by tier (nobody_why); elsewhere a worker does.
-    if [ "$rule" = t3-skip ]; then
-      nobody_why_set "$wk" agent "$raw"
-      [[ "$NOBODY" == "tier3 skip: "* ]] || continue
-      d=$(jq -c --arg r "$NOBODY" '. + {reason: $r}' <<<"$d")
-    fi
+    [ "$rule" != t3-skip ] || d=$(t3_skip_verdict "$wk" "$raw" "$d") || continue
     # the verdict must still hold for the row as it reads now (ROW_JQ holds)
     [ "$line" = - ] || [ "$(row_sig "$raw")" = "$line" ] || continue
     [ "$dsig" = - ] || [ "$(detail_sig "$dj")" = "$dsig" ] || continue
@@ -5281,6 +5291,63 @@ after_cleared_since() {
   echo "$last"
 }
 
+# settle_partial <slug> <session> -- settle_item for an item merged as a partial. A partial merge proves only
+# one repo landed, and with its session gone nobody makes the final landing (ucp-162 sat in review from
+# 2026-11-08): the next start finishes it (pr_line), once. A second run that also ends without it parks in
+# review, where the human sees it, instead of looping. A parked one that waits after another item was held,
+# not failed: once its last after: item closes after it parked, it goes back for one more start (ucp-2350 sat
+# in review from 2026-11-22 01:26 behind an after: item done at 09:12, ar-5322), and a run that ends without
+# the landing again parks for good. Like the two below, it runs inside settle_item and reads its st and it,
+# and its set_end and requeue_blocked.
+settle_partial() {
+  local cleared='' v
+  # Its final landing waits on a live validate item (agent-land validate_gate), whose session lands it:
+  # a requeue starts a session with nothing to do, and a second end files a stuck row (ar-5237, ar-5334).
+  v=$(jq -r '.validate // ""' <<<"$it")
+  if [ -n "$v" ] && [[ "$(item_state "$v")" =~ ^(queued|running|waiting|review)$ ]]; then
+    [ "$st" != review ] || return 0
+    agent-queue move "$1" review --if "$st" >/dev/null || return 0
+    note_add "$1" "$it" "session $2 ended; $v lands its final landing"
+    logline "reaped $2: queue item $1 in review: $v lands its final landing"
+    return 0
+  fi
+  [ "$st" != review ] || cleared=$(after_cleared_since "$it" "$(jq -r '.review // ""' <<<"$it")") || cleared=''
+  if [ -n "$cleared" ] || [[ "$(jq -r '.note // ""' <<<"$it")" != *"ended: its final landing"* ]]; then
+    set_end; requeue_blocked "$1" "$2" "its final landing, after $(jq -r '.pr // "a PR"' <<<"$it") merged as a partial${cleared:+, now that $cleared closed}"
+    [ -z "$cleared" ] || reap_unstuck "$1"
+    return 0
+  fi
+  [ "$st" = review ] || agent-queue move "$1" review --if "$st" >/dev/null || return 0
+  reap_stuck "$1" "$it" 0 "reaped $2: queue item $1 waits for its final landing (partial, its requeued run ended without it)" \
+    "chore(land): $(jq -r '.pr // "its PR"' <<<"$it") merged as a partial and two runs ended without the final landing; land the rest or close it"
+}
+
+# settle_waiting_noask <slug> <session> -- settle_item for a waiting item with no pending ask, PR or report.
+# waiting/ is for an item whose session needs the human, and that need is a pending ask: with none, nothing
+# would ever move it, so it goes back for its next start (ar-5661). Once: a run that ends waiting again after
+# that requeue stays parked, with one row.
+settle_waiting_noask() {
+  if [[ "$(jq -r '.note // ""' <<<"$it")" == *"ended: waiting with no ask, PR or report; requeued"* ]]; then
+    reap_stuck "$1" "$it" 0 "reaped $2: queue item $1 waits again with no ask, PR or report after its requeue" \
+      "chore(review): queue item $1 twice ended waiting with no ask, PR or report; find what it waits on or close it"
+    return 0
+  fi
+  set_end; requeue_blocked "$1" "$2" "waiting with no ask, PR or report"
+}
+
+# settle_provider <slug> <session> -- settle_item for a run that ended on a provider refusal (an opencode or
+# agy source's quota, rate limit or outage): that is the source's, not the item's, so it goes back, and
+# provider_hold_scan holds the source until its window resets, so the next start waits. DISPATCH_FIX_TRIES
+# bounds it, counted on provider_tries:, so a provider that refuses every run fails the item instead of
+# starting it once a hold window for good (ar-2991 and ar-2992 failed at the Go 5-hour limit, ar-3463).
+# Fails (1) past the bound, for settle_item to fail the item; 0 when settled.
+settle_provider() {
+  local ptries; ptries=$(jq -r '.provider_tries // 0' <<<"$it"); [[ "$ptries" =~ ^[0-9]+$ ]] || ptries=0
+  [ "$ptries" -lt "$DISPATCH_FIX_TRIES" ] || return 1
+  agent-queue set "$1" "provider_tries=$((ptries + 1))" >/dev/null || return 0
+  requeue_blocked "$1" "$2" "a provider refusal, try $((ptries + 1)) of $DISPATCH_FIX_TRIES: its source waits out the provider hold"
+}
+
 # settle_item <slug> <session> -- its session is gone. Closed by the session: nothing to do.
 # Still open, it goes by its PR's state (merged: when the item has one, else item_pr_state): MERGED records merged: and is done ok (and
 # a board row still started closes on merge proof, close_row), OPEN waits in review/ for the merge
@@ -5314,35 +5381,7 @@ settle_item() {
   }
   case "$st" in running | waiting | review) ;; *) logline "reaped $2: queue item $1 ${st:-gone}"; return 0 ;; esac
   it=$(item_with_branch_pr "$1" "$2")
-  # A partial merge proves only one repo landed, and with its session gone nobody makes the final
-  # landing (ucp-162 sat in review from 2026-11-08): the next start finishes it (pr_line), once. A second
-  # run that also ends without it parks in review, where the human sees it, instead of looping. A parked
-  # one that waits after another item was held, not failed: once its last after: item closes after it
-  # parked, it goes back for one more start (ucp-2350 sat in review from 2026-11-22 01:26 behind an
-  # after: item done at 09:12, ar-5322), and a run that ends without the landing again parks for good.
-  if [ "$(jq -r '.partial // ""' <<<"$it")" = yes ]; then
-    local cleared='' v
-    # Its final landing waits on a live validate item (agent-land validate_gate), whose session lands it:
-    # a requeue starts a session with nothing to do, and a second end files a stuck row (ar-5237, ar-5334).
-    v=$(jq -r '.validate // ""' <<<"$it")
-    if [ -n "$v" ] && [[ "$(item_state "$v")" =~ ^(queued|running|waiting|review)$ ]]; then
-      [ "$st" != review ] || return 0
-      agent-queue move "$1" review --if "$st" >/dev/null || return 0
-      note_add "$1" "$it" "session $2 ended; $v lands its final landing"
-      logline "reaped $2: queue item $1 in review: $v lands its final landing"
-      return 0
-    fi
-    [ "$st" != review ] || cleared=$(after_cleared_since "$it" "$(jq -r '.review // ""' <<<"$it")") || cleared=''
-    if [ -n "$cleared" ] || [[ "$(jq -r '.note // ""' <<<"$it")" != *"ended: its final landing"* ]]; then
-      set_end; requeue_blocked "$1" "$2" "its final landing, after $(jq -r '.pr // "a PR"' <<<"$it") merged as a partial${cleared:+, now that $cleared closed}"
-      [ -z "$cleared" ] || reap_unstuck "$1"
-      return 0
-    fi
-    [ "$st" = review ] || agent-queue move "$1" review --if "$st" >/dev/null || return 0
-    reap_stuck "$1" "$it" 0 "reaped $2: queue item $1 waits for its final landing (partial, its requeued run ended without it)" \
-      "chore(land): $(jq -r '.pr // "its PR"' <<<"$it") merged as a partial and two runs ended without the final landing; land the rest or close it"
-    return 0
-  fi
+  [ "$(jq -r '.partial // ""' <<<"$it")" != yes ] || { settle_partial "$1" "$2"; return 0; }
   IFS=$'\x1f' read -r pr report oid < <(jq -r '[.pr // "", .report // "", .merged // ""] | join("\u001f")' <<<"$it")
   if [ -n "$pr" ] && [ -n "$oid" ]; then state=MERGED
   elif [ -n "$pr" ]; then info=$(item_pr_state "$1" "$it") || info=''; read -r state oid head ci mergeable <<<"$info"; oid=${oid#-} oid=${oid//,/ } head=${head#-}
@@ -5401,18 +5440,7 @@ settle_item() {
   # unless its checks finished with nobody on it (own_parked_pr).
   [ "$state:$st" != OPEN:review ] || { own_parked_pr "$1" "$2" "$it" "$head" "$ci" "$mergeable"; return 0; }
   case "$st:$pr$report" in waiting: | review:)
-    # waiting/ is for an item whose session needs the human, and that need is a pending ask (read above):
-    # with none, nothing would ever move it, so it goes back for its next start (ar-5661). Once: a run
-    # that ends waiting again after that requeue stays parked, with one row.
-    if [ "$st" = waiting ] && [ -z "$ask" ]; then
-      if [[ "$(jq -r '.note // ""' <<<"$it")" == *"ended: waiting with no ask, PR or report; requeued"* ]]; then
-        reap_stuck "$1" "$it" 0 "reaped $2: queue item $1 waits again with no ask, PR or report after its requeue" \
-          "chore(review): queue item $1 twice ended waiting with no ask, PR or report; find what it waits on or close it"
-        return 0
-      fi
-      set_end; requeue_blocked "$1" "$2" "waiting with no ask, PR or report"
-      return 0
-    fi
+    [ "$st" != waiting ] || [ -n "$ask" ] || { settle_waiting_noask "$1" "$2"; return 0; }
     [ -z "$(jq -r '.note // ""' <<<"$it")" ] || return 0
     note_add "$1" "$it" "session $2 ended; $st without a PR"
     logline "reaped $2: queue item $1 stays $st without a PR"
@@ -5467,19 +5495,7 @@ settle_item() {
     # #after/ on them (agent-queue return): the queue holds only work that can start. One with no row
     # to go back to fails as below.
     [ "$why" != limit ] || { requeue_blocked "$1" "$2" "the plan's usage limit"; return 0; }
-    # A provider refusal (an opencode or agy source's quota, rate limit or outage) is the source's, not the
-    # item's: it goes back too, and provider_hold_scan holds the source until its window resets, so the
-    # next start waits. DISPATCH_FIX_TRIES bounds it, counted on provider_tries:, so a provider that refuses
-    # every run fails the item instead of starting it once a hold window for good (ar-2991 and ar-2992
-    # failed at the Go 5-hour limit, ar-3463).
-    if [ "$why" = provider ]; then
-      local ptries; ptries=$(jq -r '.provider_tries // 0' <<<"$it"); [[ "$ptries" =~ ^[0-9]+$ ]] || ptries=0
-      if [ "$ptries" -lt "$DISPATCH_FIX_TRIES" ]; then
-        agent-queue set "$1" "provider_tries=$((ptries + 1))" >/dev/null || return 0
-        requeue_blocked "$1" "$2" "a provider refusal, try $((ptries + 1)) of $DISPATCH_FIX_TRIES: its source waits out the provider hold"
-        return 0
-      fi
-    fi
+    if [ "$why" = provider ] && settle_provider "$1" "$2"; then return 0; fi
     for after in $(jq -r '.after // ""' <<<"$it"); do
       case "$(item_state "$after")" in queued | running | waiting | review)
         if agent-queue return "$1" --why "session $2 ended before $after, which it waits after, closed: its row waits on it" >/dev/null 2>&1; then

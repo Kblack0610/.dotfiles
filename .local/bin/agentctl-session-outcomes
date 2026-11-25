@@ -110,6 +110,13 @@ SCHEDULES="${SCHEDULES_SYNC:-$LIB_DIR/../bin/schedules-sync}"
 # shellcheck source=/dev/null
 . "$LIB_DIR/fleet-hosts.sh"   # fleet_peers, fleet_host_run: worker_rows
 
+# queue_since <due.jsonl> -> the day a week before the oldest due session's last update, the SINCE
+# queue_index reads from: a session's item can close days before it ends, and a re-observation
+# (final, rework) comes weeks after. Unreadable: nothing, so the queue reads its default.
+queue_since() {
+  jq -rs --argjson now "$NOW" '(map(.updated | numbers) | min // $now) - 7 * 86400 | strftime("%Y-%m-%d")' "$1" 2>/dev/null
+}
+
 # queue_index FILE - what the queue knows of each session, {"<sid>": {agent, pr, items, iprojects, refs, landed}}: the
 # work items whose `sessions:` list it (the ledger join every reader of a row uses; a session can work
 # several), their projects (the queue's project_credit, so a session in the dotfiles checkout that ran
@@ -330,11 +337,7 @@ cmd_run() {
   fi
 
   local queue_note=""
-  # Items back to a week before the oldest due session's last update: a session's item can close days
-  # before it ends, and a re-observation (final, rework) comes weeks after.
-  local qsince
-  qsince=$(jq -rs --argjson now "$NOW" '(map(.updated | numbers) | min // $now) - 7 * 86400 | strftime("%Y-%m-%d")' "$work/due.jsonl") || qsince=""
-  queue_index "$work/queue.json" "$qsince" || queue_note="; queue unreadable, harness read as claude, items unknown"
+  queue_index "$work/queue.json" "$(queue_since "$work/due.jsonl")" || queue_note="; queue unreadable, harness read as claude, items unknown"
   roadmap_index "$work/queue.json" "$work/due.jsonl" "$work/roadmap.json"
   so_canon_init "$PROJECT_MAP" || die_stalled "could not read the Forgejo host and aliases from $PROJECT_MAP"
   local mapped
