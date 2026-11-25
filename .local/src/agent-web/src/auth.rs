@@ -19,7 +19,6 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -38,11 +37,9 @@ fn config_dir() -> PathBuf {
     base.join("agent-web")
 }
 
+/// The unix second, as the session store counts it.
 fn now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    hub_core::jobs::now().max(0) as u64
 }
 
 pub fn random_hex(bytes: usize) -> Result<String> {

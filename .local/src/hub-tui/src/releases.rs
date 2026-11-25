@@ -333,8 +333,7 @@ impl ReleasesView {
     pub fn reselect(&mut self, s: &Releases, id: Option<RowId>) {
         let id = self.want.take().or(id);
         let rows = self.shown(s);
-        let at = id.and_then(|id| rows.iter().position(|a| a.project == id));
-        self.table.keep(at, rows.len());
+        self.table.reselect(&rows, id, |a, id| a.project == *id);
     }
 
     /// The tab's question, the summary with the snapshot's age, the channels it could not read,
