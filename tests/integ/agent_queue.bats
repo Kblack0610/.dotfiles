@@ -3912,12 +3912,12 @@ STUB
       --jsonargs "$@" > "$NOTES_FIXTURE/board.json"
   }
   board
-  AGENT_QUEUE_ITEM=mid-p2 run "$AQ" add --plan "$P" --project level --dry-run
+  AGENT_QUEUE_ITEM=mid-p2 run "$AQ" add --plan "$P" --project level --priority normal --dry-run
   assert_success
   assert_line --partial 'would queue mid-p4	phases 4	after mid-p2	takes lv-50'
   assert_line 'would gate row lv-9 (mid-p3) on after/<row of mid-p4>'
   : > "$NOTES_FIXTURE/calls.log"
-  AGENT_QUEUE_ITEM=mid-p2 run "$AQ" add --plan "$P" --project level
+  AGENT_QUEUE_ITEM=mid-p2 run "$AQ" add --plan "$P" --project level --priority normal
   assert_success
   assert_output --partial "kept mid-p2, this session's own item"
   assert_output --partial "held mid-p4 -> level:lv-20"
@@ -3934,7 +3934,7 @@ STUB
   # Run again with that row on the board, it files nothing twice.
   board "$(jq -nc --arg p "$P" '{project: "level", profile: "bnb", lane: "agent", id: "lv-20", state: "open", tags: ["after/lv-5"], details: ["Phase 4 of the plan \($p): fix what P2 found."]}')"
   : > "$NOTES_FIXTURE/calls.log"
-  AGENT_QUEUE_ITEM=mid-p2 run "$AQ" add --plan "$P" --project level
+  AGENT_QUEUE_ITEM=mid-p2 run "$AQ" add --plan "$P" --project level --priority normal
   assert_failure
   assert_output --partial "already queued or filed"
   run grep -c ' add \| tag ' "$NOTES_FIXTURE/calls.log"
