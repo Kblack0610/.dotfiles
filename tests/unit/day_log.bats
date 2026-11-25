@@ -784,7 +784,7 @@ EOF
   assert_equal "$(cat "$SANDBOX/cif-args")" "--repo O/game --base trunk --days 1.000000 --until 2026-10-28T07:00:00Z --json"
   local since until; since=$(date -d '2026-10-27 00:00' +%s) until=$(date -d '2026-10-28 00:00' +%s)
   assert_equal "$(cat "$SANDBOX/hub-args")" "ci pass --since $since --until $until
-ci hosts --until $until --last 50
+ci hosts --since $((until - 7 * 86400)) --until $until --last 50
 ci pass --since $since --until $until --branch trunk"
   run cat "$SANDBOX/cost-args"
   assert_output --partial '--days 1.000000 --until 2026-10-28T07:00:00Z --json'
