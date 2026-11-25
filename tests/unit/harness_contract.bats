@@ -66,8 +66,11 @@ read_facts() {
       # end_reason: fleet-dispatch's item_agy_end on an item that claimed the run, its log the fixture's.
       mkdir -p "$w/r"
       cp "$FIX/agy-success.jsonl" "$w/r/agy_1.jsonl"
+      cp "$FIX/agy-tests.jsonl" "$w/r/agy_2.jsonl"
       local row end
-      row=$(bash -c '. "$1/.local/lib/session-outcomes.sh" && so_agy_rows "$2" "$3"' _ "$REPO_ROOT" "$w/r" "$w")
+      # agy-success has the end, tokens and effort; agy-tests, the one stream that fails a test and a tool.
+      row=$(bash -c '. "$1/.local/lib/session-outcomes.sh" && so_agy_rows "$2" "$3"' _ "$REPO_ROOT" "$w/r" "$w" |
+        jq -sc '(map(select(.session_id == "agy_1"))[0]) + (map(select(.session_id == "agy_2"))[0] | {metrics})')
       end=$(HOME="$w" DISPATCH_CONF="$REPO_ROOT/tests/fixtures/fleet-dispatch.conf" LAB_STAGES="draft dev alpha beta prod" DISPATCH_AGY_RUNS="$w/r" DISPATCH_HARNESSES="$2" \
         DISPATCH_AGY_RESULT_JQ="$REPO_ROOT/.local/lib/agy-result.jq" \
         bash -c '. "$1/.local/bin/fleet-dispatch" && item_agy_end "{\"sessions\": \"agy_1\"}" 0' _ "$REPO_ROOT")
@@ -128,8 +131,8 @@ fixture_map() {
                      why_not: {resume: "r", cost: "c", effort: "f"}},
     "claude-lazer": {end_classifier: "claude", resume: false, reports: {end_reason: true, tokens: true, cost: false, hard_errors: true, tests: true, effort: false},
                      why_not: {resume: "r", cost: "c", effort: "f"}},
-    agy: {launcher: "agy", end_classifier: "agy", resume: false, reports: {end_reason: true, tokens: true, cost: false, hard_errors: false, tests: false, effort: true},
-          why_not: {resume: "r", cost: "c", hard_errors: "h", tests: "t"}}}}' > "$SANDBOX/harnesses.json"
+    agy: {launcher: "agy", end_classifier: "agy", resume: false, reports: {end_reason: true, tokens: true, cost: false, hard_errors: true, tests: true, effort: true},
+          why_not: {resume: "r", cost: "c"}}}}' > "$SANDBOX/harnesses.json"
 }
 
 @test "the real harnesses.json keeps the contract: every fact stated, a why_not on each false, a fixture for each true" {
@@ -154,7 +157,7 @@ fixture_map() {
   # cost in thousandths: jq 1.6 prints the stored 0.042 as 0.0420000000000000026.
   assert_equal "$(reader opencode "$SANDBOX/harnesses.json" | jq -c '[.end_reason, .tokens, (.cost * 1000 | round)]')" '["stopped",480,42]'
   assert_equal "$(reader claude-lazer "$SANDBOX/harnesses.json" | jq -c '[.end_reason, .tokens, .hard_errors.tool_errors, .tests]')" '["provider",35,1,1]'
-  assert_equal "$(reader agy "$SANDBOX/harnesses.json" | jq -c '[.end_reason, .tokens, .effort]')" '["stopped",17998,"low"]'
+  assert_equal "$(reader agy "$SANDBOX/harnesses.json" | jq -c '[.end_reason, .tokens, .effort, .hard_errors.tool_errors, .hard_errors.api_error, .tests]')" '["stopped",17998,"low",2,1,1]'
 }
 
 @test "negative controls: a false with no why, a true no reader proves, an unstated fact, a stray key, a stale why, a max_tier that is no tier and launcher siblings that disagree each fail" {
