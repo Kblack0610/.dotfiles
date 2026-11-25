@@ -91,6 +91,7 @@ tmux_start() {
   # session, which is the command's own when it makes one first (notes-mobile's notes-hub), and
   # then the test steers that session instead (ar-5592).
   TM_TARGET="$(_tm new-session -d -P -F '#{pane_id}' -x "$TM_WIDTH" -y "$TM_HEIGHT" "$@" </dev/null)"
+  [ -n "$TM_TARGET" ] || { echo "tmux_start: new-session gave no pane id" >&2; return 1; }
   _tm set-option -g status off 2>/dev/null || true
 }
 
