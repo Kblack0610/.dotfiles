@@ -12,6 +12,7 @@ source "$BASE_DIR/base_functions.sh"
 
 # Load configuration
 load_config
+PKG_INSTALL=install_apt_package PKG_OS=debian
 
 # Helper: Install package with apt
 install_apt_package() {
@@ -43,41 +44,12 @@ update_system() {
     fi
 }
 
-# Override: Install basics
-install_basics() {
-    log_section "Installing basic requirements"
-    install_package_list install_apt_package debian \
-        $PACKAGES_BASIC $PACKAGES_BASIC_DEBIAN
-}
-
-# Override: Install development tools
-install_tools() {
-    log_section "Installing development tools"
-    install_package_list install_apt_package debian \
-        $PACKAGES_DEV $PACKAGES_DEV_DEBIAN
-}
-
-# Override: what an agent session runs (fleet module)
-install_fleet_packages() {
-    log_section "Installing fleet packages"
-    install_package_list install_apt_package debian \
-        $PACKAGES_FLEET $PACKAGES_FLEET_DEBIAN
-}
-
-# Override: Install terminal enhancements
-install_terminal() {
-    log_section "Installing terminal enhancements"
-    install_package_list install_apt_package debian \
-        $PACKAGES_TERMINAL $PACKAGES_TERMINAL_DEBIAN
-}
-
 # Override: Install GUI applications (Hyprland / Wayland stack)
 # Note: hyprland/wofi/waybar require a recent Debian/Ubuntu (Debian 13+, Ubuntu 24.04+).
 # On older releases install_apt_package will warn and continue.
 install_gui() {
     log_section "Installing GUI applications"
-    install_package_list install_apt_package debian \
-        $PACKAGES_GUI $PACKAGES_GUI_DEBIAN
+    install_catalog GUI
 
     # Install Flatpak apps from FLATPAK_APPS in packages.conf
     if command -v flatpak &>/dev/null && [[ -n "$FLATPAK_APPS" ]]; then
@@ -398,33 +370,6 @@ EOF
     fi
 }
 
-# Setup keyd (key remapping daemon — F12 → Super layer)
-# Note: keyd is in Ubuntu 23.10+ universe; not packaged in Debian stable. If apt
-# can't find it, the user must install from source: https://github.com/rvaiya/keyd
-setup_keyd() {
-    log_section "Setting up keyd (key remapping)"
-
-    if ! install_apt_package "keyd"; then
-        log_warning "keyd not available via apt — install from source: https://github.com/rvaiya/keyd"
-        return 0
-    fi
-
-    local src="$HOME/.dotfiles/.config/keyd/default.conf"
-    local dst="/etc/keyd/default.conf"
-
-    if [[ ! -f "$src" ]]; then
-        log_warning "keyd source config not found at $src — skipping"
-        return 0
-    fi
-
-    sudo install -Dm644 "$src" "$dst"
-    log_info "Installed keyd config to $dst"
-
-    sudo systemctl enable --now keyd
-    sudo keyd reload &>/dev/null || true
-    log_info "keyd enabled and reloaded"
-}
-
 setup_docker() {
     log_section "Setting up Docker"
 
@@ -482,11 +427,7 @@ install_all() {
     step dev        install_lazygit
     step dev        install_kitty
 
-    step fleet      install_fleet_packages
-    step fleet      install_tmux
-    step fleet      install_agent_harnesses
-    step fleet      install_rust
-    step fleet      build_fleet_tools
+    fleet_steps
     step containers setup_docker
 
     # Game streaming
@@ -506,11 +447,6 @@ install_all() {
     step dev        install_npm_packages
     step dotfiles   apply_dotfiles
     step dotfiles   setup_ai_memory
-}
-
-post_install_notes() {
-    log_section "Installation Complete!"
-    log_info "Please restart your terminal or run: source ~/.zshrc"
 }
 
 # Run if executed directly

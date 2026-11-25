@@ -133,6 +133,8 @@ OS-specific scripts        # "Subclasses" that override specific methods
 - **DRY principle** - Common logic stays in base_functions.sh
 - **Clear structure** - Each function has one purpose, easy to find and modify
 
+An OS script sets `PKG_INSTALL` (its package helper) and `PKG_OS` (its `packages.conf` tag) right after sourcing the base. The catalog steps (`install_basics`, `install_tools`, `install_terminal`, `install_gui`, `install_fleet_packages`) then need no override: each is `install_catalog <CATEGORY>`, which installs `PACKAGES_<CATEGORY>` and `PACKAGES_<CATEGORY>_<OS>`. An override that adds to a category calls `install_catalog <CATEGORY> <extra packages>`. `setup_keyd` and `setup_theme` (its targets are `THEME_TARGETS_<OS>` in `packages.conf`) live in the base too, and `fleet_steps` is the fleet module's step list every OS that runs agent sessions calls from its `install_all`.
+
 ## Function Reference
 
 Each OS script can override these base functions:
@@ -140,10 +142,10 @@ Each OS script can override these base functions:
 ```bash
 # System management
 update_system()          # Update package manager
-install_basics()         # Core system tools
-install_tools()          # Development tools
-install_terminal()       # Terminal enhancements
-install_gui()           # Desktop applications
+install_basics()         # Core system tools (install_catalog BASIC)
+install_tools()          # Development tools (install_catalog DEV)
+install_terminal()       # Terminal enhancements (install_catalog TERMINAL)
+install_gui()           # Desktop applications (install_catalog GUI)
 install_runtime()        # Language runtimes
 
 # Specific tools

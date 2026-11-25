@@ -74,7 +74,7 @@ if [ ! -x "$THEME_SWITCH" ]; then
 fi
 
 # Honour the theme this machine already chose; fall back to the daytime default
-# that theme-day.timer applies, matching setup_theme() in both installers.
+# that theme-day.timer applies, matching the installers' setup_theme().
 state="$HOME/.config/theme/current"
 theme="batman"
 [ -r "$state" ] && theme="$(cat "$state")"
