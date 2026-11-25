@@ -298,10 +298,11 @@ find_ask() {
 # answer or cancel refreshes the fleet state document (and the phone) within seconds, not at
 # the next 10-minute pass. The asks sit a directory down, where a watch on the root sees nothing.
 # drop_field <file> <key>...: remove those keys' lines in one locked rewrite, so a stale value
-# cannot outlive its verdict.
+# cannot outlive its verdict. The temp file sits beside the ask (ask_files reads only `*.md`), so
+# the mv is a rename: from /tmp, a tmpfs, it was a copy that a killed judge could leave cut short.
 drop_field() {
   local f="$1" tmp; shift
-  tmp="$(mktemp)"
+  tmp="$(mktemp "$f.XXXXXX")"
   (
     command -v flock >/dev/null 2>&1 && flock 9
     awk 'BEGIN { for (i = 1; i < ARGC - 1; i++) { k[ARGV[i]] = 1; ARGV[i] = "" } }
@@ -312,10 +313,10 @@ drop_field() {
 queue_changed() { : > "$ASKS_ROOT/.changed" 2>/dev/null || true; }
 
 # write_fields <file> <key> <value>...: those keys in one rewrite, each in place or appended. The
-# caller holds the project lock.
+# caller holds the project lock. The temp file sits beside the ask, as in drop_field.
 write_fields() {
   local f="$1" tmp; shift
-  tmp="$(mktemp)"
+  tmp="$(mktemp "$f.XXXXXX")"
   awk '
     BEGIN { for (i = 1; i < ARGC - 1; i += 2) { k[++n] = ARGV[i]; v[ARGV[i]] = ARGV[i + 1]; ARGV[i] = ARGV[i + 1] = "" } }
     { p = index($0, ": "); key = p ? substr($0, 1, p - 1) : "" }
