@@ -694,19 +694,20 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
   cmp "$PROJ/scratch/ideas.md" "$BATS_TEST_TMPDIR/ideas.before" || fail "ideas.md changed"
 }
 
-@test "--backlog: a row an open row waits on (#after/) is never dropped or made an improvement (negative control: one nobody waits on goes)" {
+@test "--backlog: a row an open row waits on (#after/) is never dropped, closed done or made an improvement (negative control: one nobody waits on goes)" {
   sheet '' ''
-  agent_board '- [ ] a: probe the api #low <!-- id:sc-1 -->\n- [ ] b: the adapter #after/sc-1 #low <!-- id:sc-2 -->\n- [ ] c: a stale idea #low <!-- id:sc-3 -->\n- [ ] d: polish the hud #low <!-- id:sc-4 -->\n- [ ] e: after the hud #after/sc-4 #low <!-- id:sc-5 -->\n'
+  agent_board '- [ ] a: probe the api #low <!-- id:sc-1 -->\n- [ ] b: the adapter #after/sc-1 #low <!-- id:sc-2 -->\n- [ ] c: a stale idea #low <!-- id:sc-3 -->\n- [ ] d: polish the hud #low <!-- id:sc-4 -->\n- [ ] e: after the hud #after/sc-4 #low <!-- id:sc-5 -->\n- [ ] f: ship the logo #low <!-- id:sc-6 -->\n- [ ] g: after the logo #after/sc-6 #low <!-- id:sc-7 -->\n'
   answer '{"n": 1, "action": "drop", "why": "stale"}' '{"n": 2, "action": "keep"}' '{"n": 3, "action": "drop", "why": "stale"}' \
-    '{"n": 4, "action": "improvement", "why": "polish"}' '{"n": 5, "action": "keep"}'
+    '{"n": 4, "action": "improvement", "why": "polish"}' '{"n": 5, "action": "keep"}' '{"n": 6, "action": "done", "why": "shipped in #12"}' '{"n": 7, "action": "keep"}'
   run "$TRIAGE" --backlog --project scratch
   assert_success
-  assert_output --partial 'dropped 1, kept 4'
-  assert_output --partial 'improvements 0'
+  assert_output --partial 'dropped 1, kept 6'
+  assert_output --partial 'improvements 0, done 0'
   assert_output --partial 'sc-1 kept: sc-2 wait on it (#after/sc-1)'
   board="$PROJ/scratch/agent/README.md"
   grep -q '\[ \] a: probe the api' "$board" || fail "a row sc-2 waits on was dropped"
   grep -q '\[ \] d: polish the hud' "$board" || fail "a row sc-5 waits on became an improvement"
+  grep -q '\[ \] f: ship the logo' "$board" || fail "a row sc-7 waits on was closed done, which reads dropped"
   grep -q '\[ \] c: a stale idea' "$board" && fail "the control row nobody waits on stayed"
   [ ! -e "$PROJ/scratch/improvements.md" ] || fail "an improvement was written for a waited-on row"
 }

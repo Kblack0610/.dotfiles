@@ -828,10 +828,10 @@ backlog_row() {
   fi
   # a heading over child rows is never closed: its children would sit under a ticked row
   [ "$nkids" -gt 0 ] && [[ $action =~ ^(drop|dup|done|improvement)$ ]] && action=keep
-  # a row an open row waits on (#after/<id>, WAITERS) is never dropped or moved to improvements.md: that
-  # gate would never clear, and queue-starved pages on it (ar-3172: the 2026-11-24 pass left 12). A done
-  # clears the gate and a dup's gate follows the fold, so both still apply.
-  if [ -n "$own" ] && [ -n "${WAITERS[$own]-}" ] && [[ $action =~ ^(drop|improvement)$ ]]; then
+  # a row an open row waits on (#after/<id>, WAITERS) is never dropped, closed done (a drop --why here)
+  # or moved to improvements.md: that gate reads dropped and never clears, and queue-starved pages on it
+  # (ar-3172: the 2026-11-24 pass left 12). A dup still applies: the gate follows the fold.
+  if [ -n "$own" ] && [ -n "${WAITERS[$own]-}" ] && [[ $action =~ ^(drop|done|improvement)$ ]]; then
     say "$p ($lane): $own kept: ${WAITERS[$own]} wait on it (#after/$own)"
     action=keep
   fi
@@ -1008,9 +1008,10 @@ backlog_pass() {
   shared_repos="$(shared_repos)"
   TYPES="$(row_types)" || return 1   # once a pass, read by every backlog_batch
   # Each row id an open row of any project waits on with #after/<id>, and those rows: backlog_row keeps it.
+  # A doing row's gate is spent, so only open rows count; tags_cased keeps the id as the row writes it.
   local w g
-  while read -r w g; do WAITERS[$g]+="${WAITERS[$g]:+ }$w"; done < <(jq -r '.rows[]? | select((.state == "open" or .state == "doing") and .id != null)
-    | .id as $w | (.tags // [])[] | select(startswith("after/")) | "\($w) \(.[6:])"' <<<"$BOARD")
+  while read -r w g; do WAITERS[$g]+="${WAITERS[$g]:+ }$w"; done < <(jq -r '.rows[]? | select(.state == "open" and .id != null)
+    | .id as $w | (.tags_cased // .tags // [])[] | select(startswith("after/") and length > 6) | "\($w) \(.[6:])"' <<<"$BOARD")
   while IFS= read -r p; do
     [ -n "$ONLY" ] && [ "$p" != "$ONLY" ] && continue
     agentctl report --name "$NAME" "item=$p" >/dev/null 2>&1 || true
