@@ -184,6 +184,28 @@ EOF
   assert_success
 }
 
+@test "a shallow one-branch dotfiles clone is not ready, and the commands it names make it ready" {
+  # ar-5157: razer-laptop's --depth 1 clone fetched only main, so every pushed agent branch had no
+  # remote-tracking ref and the shepherd's takeover read it as unpushed.
+  lease_ready_all
+  git init -q --bare "$SANDBOX/dot.git"
+  git clone -q "$SANDBOX/dot.git" "$SANDBOX/work" 2>/dev/null
+  git -C "$SANDBOX/work" -c user.email=t@t -c user.name=t commit -q --allow-empty -m one
+  git -C "$SANDBOX/work" -c user.email=t@t -c user.name=t commit -q --allow-empty -m two
+  git -C "$SANDBOX/work" push -q origin HEAD:main HEAD:agent-1
+  git clone -q --depth 1 -b main "file://$SANDBOX/dot.git" "$DOTFILES_DIR"
+  run "$FLEET_NODE" ready
+  assert_failure 1
+  assert_output --partial "$DOTFILES_DIR is a shallow or one-branch clone"
+  assert_output --partial "fetch --unshallow origin"
+  bash -c "${output##*unpushed: }"
+  run git -C "$DOTFILES_DIR" branch -r --contains origin/agent-1
+  assert_output --partial 'origin/agent-1'
+  run "$FLEET_NODE" ready
+  assert_success
+  assert_output ''
+}
+
 @test "a store remote it cannot reach is not ready, the other still counts" {
   lease_ready_all
   printf 'STORE_PRIMARY_URL=%q\nSTORE_BACKUP_URL=%q\n' "$SANDBOX/origin.git" "$SANDBOX/gone.git" >"$STORE_SYNC_CONF"
