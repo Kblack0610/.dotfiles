@@ -114,9 +114,7 @@ pub struct Day {
     pub date: String,
     /// `4 reports, 1 unread`.
     pub count: String,
-    pub unread: usize,
     pub rows: Vec<Row>,
-    pub link: Link,
 }
 
 /// A headline figure over the sections.
@@ -194,17 +192,15 @@ pub fn build(all: &[Entry], today: &str) -> View {
             _ => archive.push(Day {
                 date: e.date.clone(),
                 count: String::new(),
-                unread: 0,
                 rows: vec![Row::of(e)],
-                link: Link::to(Kind::Report, e.date.clone()),
             }),
         }
     }
     let older_days = archive.len().saturating_sub(ARCHIVE_DAYS);
     archive.truncate(ARCHIVE_DAYS);
     for d in &mut archive {
-        d.unread = d.rows.iter().filter(|r| r.unread).count();
-        d.count = with_unread(counted(d.rows.len(), "report"), d.unread);
+        let unread = d.rows.iter().filter(|r| r.unread).count();
+        d.count = with_unread(counted(d.rows.len(), "report"), unread);
     }
     let tiles = vec![
         Tile {
@@ -415,7 +411,6 @@ mod tests {
         assert_eq!(d.date, "2026-11-10");
         assert_eq!(d.count, "2 reports, 1 unread");
         assert_eq!(ids(&d.rows), ["2026-11-10-old", "2026-11-10-lost"]);
-        assert_eq!(d.link.href(), "#reports/2026-11-10");
         assert_eq!(v.older_days, 0);
     }
 

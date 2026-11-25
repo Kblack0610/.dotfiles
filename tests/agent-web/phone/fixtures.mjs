@@ -554,7 +554,7 @@ function reportRow(i, date, state, kind = "report") {
 const reportSec = (id, title, folded, rows) => ({ id, title, folded, rows });
 const reportArchive = Array.from({ length: 7 }, (_, d) => {
   const date = dayOf(1440 * (d + 1)), rows = [0, 1, 2].map((i) => reportRow(d * 3 + i, date, i ? "read" : "unread"));
-  return { date, count: "3 reports, 1 unread", unread: 1, rows, link: `#reports/${date}` };
+  return { date, count: "3 reports, 1 unread", rows };
 });
 const reports = {
   today: REPORT_TODAY,

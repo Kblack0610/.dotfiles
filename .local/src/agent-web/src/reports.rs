@@ -10,17 +10,30 @@ use hub_core::reports::{self, View};
 use hub_core::session_actions::System;
 use serde::Deserialize;
 
+use crate::cache::{off, ReadCache};
 use crate::{bad, ApiResult};
+
+/// A read lists every report file; the badge's read on each page load, the open tab's tick and
+/// each client share one for this long. A mark-read drops it, so the answer shows the stamp.
+const CACHE_SECS: u64 = 60;
+/// Kept by day, so the first read after midnight is the new day's view.
+static READ: ReadCache<View, CACHE_SECS, String> = ReadCache::new("reports");
 
 fn today() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
 pub async fn get() -> ApiResult<Json<View>> {
-    tokio::task::spawn_blocking(|| reports::read(&System, &today()))
+    let day = today();
+    let d = day.clone();
+    let read = async move {
+        off(move || reports::read(&System, &d))
+            .await
+            .and_then(|r| r)
+    };
+    READ.get(day, read)
         .await
-        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .map(Json)
+        .map(|v| Json(View::clone(&v)))
         .map_err(|e| bad(StatusCode::BAD_GATEWAY, e))
 }
 
@@ -33,13 +46,12 @@ pub struct Read {
 pub async fn read(Json(r): Json<Read>) -> ApiResult<Json<View>> {
     // A bad id is refused here, before a thread or the CLI.
     reports::read_argv(&r.id).map_err(|m| bad(StatusCode::BAD_REQUEST, m))?;
-    tokio::task::spawn_blocking(move || {
-        reports::mark_read(&System, &r.id).map_err(|e| bad(StatusCode::CONFLICT, e))?;
-        reports::read(&System, &today()).map_err(|e| bad(StatusCode::BAD_GATEWAY, e))
-    })
-    .await
-    .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    .map(Json)
+    off(move || reports::mark_read(&System, &r.id))
+        .await
+        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .map_err(|e| bad(StatusCode::CONFLICT, e))?;
+    READ.clear();
+    get().await
 }
 
 #[cfg(test)]

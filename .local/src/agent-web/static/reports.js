@@ -12,10 +12,9 @@ const REPORTS_REFRESH_MS = 60e3;
 const REPORT_DATE = /^\d{4}-\d{2}-\d{2}$/;
 // What an empty section says; a folded one with nothing in it is not drawn.
 const REPORTS_EMPTY = { needs: "Nothing needs you.", stream: "No reports today." };
-// data: the view; open: each fold's state; sel: the open report's id; body: each opened report's
-// body html (or its read error) by id; marked: the ids a read was sent for; seen: the arg openArg
-// last acted on, so a re-read never pulls the reader back to it.
-const rps = { data: null, err: null, open: {}, sel: null, body: {}, marked: new Set(), seen: "" };
+// data: the view; open: each fold's state; sel: the open report's id; body: the open report's body
+// html (or its read error) by id; marked: the ids a read was sent for.
+const rps = { data: null, err: null, open: {}, sel: null, body: {}, marked: new Set() };
 
 // The arg when it names a record (a report id or a day) rather than an inner tab.
 const reportArg = () => (INNER_TABS.reports.tabs.some((t) => t[0] === st.arg) ? "" : st.arg || "");
@@ -25,18 +24,18 @@ const allReports = (d) => [...d.sections.flatMap((s) => s.rows), ...d.archive.fl
 function reportBody(r) {
   const b = rps.body[r.id];
   const inner = !b ? `<div class="empty">reading</div>` : b.err ? readPanel(b.err) : `<div class="md">${b.html}</div>`;
-  return `<tr class="rdet"><td colspan="4">${inner}</td></tr>`;
+  return `<tr class="wdet"><td colspan="4">${inner}</td></tr>`;
 }
 
 function reportRow(r) {
   const open = r.id === rps.sel;
-  const row = `<tr class="rr${open ? " sel" : ""}${r.unread ? " unread" : ""}" id="sec-r-${esc(r.id)}" data-href="${esc(r.link)}">` +
+  const row = `<tr class="wr${open ? " sel" : ""}${r.unread ? " unread" : ""}" id="sec-r-${esc(r.id)}" data-href="${esc(r.link)}">` +
     `<td>${rec2(esc(r.title), r.title, esc(r.lead), r.summary)}</td><td class="muted">${esc(r.from || r.kind)}</td>` +
     `<td>${statePill(r.state, r.level)}</td><td class="n">${when(r.at)}</td></tr>`;
   return open ? row + reportBody(r) : row;
 }
 
-const reportTable = (rows) => `<table class="rec rrep">${rows.map(reportRow).join("")}</table>`;
+const reportTable = (rows) => `<table class="tbl rrep">${rows.map(reportRow).join("")}</table>`;
 
 // A section of Today: its head, its rows; Digests and Your notes start folded, and any fold stays
 // as the reader leaves it.
@@ -83,18 +82,21 @@ function reportsBadge() {
   $("reports-badge").innerHTML = n ? `<span class="badge">${n}</span>` : "";
 }
 
+// The URL is acted on when the tab is shown and when the first view arrives, never on a re-read,
+// so a refresh never pulls the reader back to the report it names.
 const refreshReports = coalesce(async () => {
+  const first = !rps.data;
   try { rps.data = await api("/api/reports"); rps.err = null; } catch (e) { rps.err = e.message; }
   reportsBadge();
-  if (st.tab === "reports") { openArg(); renderReports(); }
+  if (st.tab === "reports") { if (first) openArg(); renderReports(); }
 });
 
 // A report's body, read once per open: the note's sections as the Daily tab's reader splits them.
 async function readBody(r) {
   try {
     const v = await api("/api/focus?t=" + encodeURIComponent(r.target));
-    rps.body[r.id] = { html: v.sections.map((s) => (s.title ? `<h3>${esc(s.title)}</h3>` : "") + md(s.markdown, { notes: true })).join("") };
-  } catch (e) { rps.body[r.id] = { err: e.message }; }
+    rps.body = {}; rps.body[r.id] = { html: v.sections.map((s) => (s.title ? `<h3>${esc(s.title)}</h3>` : "") + md(s.markdown, { notes: true })).join("") };
+  } catch (e) { rps.body = { [r.id]: { err: e.message } }; }
   if (st.tab === "reports" && rps.sel === r.id) renderReports();
 }
 
@@ -110,9 +112,7 @@ async function markRead(r) {
 // day opens its fold on Archive, today's date is Today's top.
 function openArg() {
   const a = reportArg(), d = rps.data;
-  if (!a) rps.seen = "";
-  if (!a || !d || a === rps.seen) return;
-  rps.seen = a;
+  if (!a || !d) return;
   if (REPORT_DATE.test(a)) {
     rps.sel = null;
     if (a === d.today) { innerGo("reports", "today"); return; }
@@ -133,11 +133,11 @@ function openArg() {
 
 $("reports").addEventListener("click", (e) => {
   const t = e.target;
-  if (t.closest("a") || t.closest("summary") || t.closest("tr.rdet")) return;
-  const tr = t.closest("tr.rr");
+  if (t.closest("a") || t.closest("summary") || t.closest("tr.wdet")) return;
+  const tr = t.closest("tr.wr");
   if (!tr) return;
   // The open row shuts in place; another opens through its link, so Back returns to the list.
-  if (tr.classList.contains("sel")) { rps.sel = null; rps.seen = ""; innerGo("reports", innerOf("reports", st.arg)[0]); renderReports(); return; }
+  if (tr.classList.contains("sel")) { rps.sel = null; innerGo("reports", innerOf("reports", st.arg)[0]); renderReports(); return; }
   location.hash = tr.dataset.href;
 });
 

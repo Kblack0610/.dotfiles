@@ -36,7 +36,7 @@ const view = (unread = true) => ({
     { id: "captures", title: "Your notes", folded: true, rows: [] },
   ],
   moved: "1 unread moved to archive",
-  archive: [{ date: "2026-11-20", count: "1 report, 1 unread", unread: 1, rows: [row("2026-11-20-old-thing", "unread")], link: "#reports/2026-11-20" }],
+  archive: [{ date: "2026-11-20", count: "1 report, 1 unread", rows: [row("2026-11-20-old-thing", "unread")] }],
   older_days: 0, unread: unread ? 2 : 1,
 });
 
@@ -67,7 +67,7 @@ const open = async (arg) => {
   await new Promise((r) => setImmediate(r));
   await new Promise((r) => setImmediate(r));
 };
-const reset = () => { asked.length = 0; rps.sel = null; rps.seen = ""; rps.body = {}; rps.marked.clear(); rps.open = {}; };
+const reset = () => { asked.length = 0; rps.sel = null; rps.body = {}; rps.marked.clear(); rps.open = {}; };
 
 test("Today draws the tiles, Needs you hued, the stream, and Digests folded; Archive is its own group", async () => {
   reset();
@@ -90,7 +90,7 @@ test("opening an unread report reads its body and marks it read once, and the ba
   assert.ok(asked.some(([, u]) => u === "/api/focus?t=journal%2Frefs%2F2026-11-24%2Fboard-cleanup"));
   const posts = asked.filter(([m]) => m === "POST");
   assert.deepEqual(posts.map(([, u, b]) => [u, JSON.parse(b)]), [["/api/reports/read", { id: "2026-11-24-board-cleanup" }]]);
-  assert.match(box.innerHTML, /<tr class="rr sel"[^>]*id="sec-r-2026-11-24-board-cleanup"/);
+  assert.match(box.innerHTML, /<tr class="wr sel"[^>]*id="sec-r-2026-11-24-board-cleanup"/);
   assert.match(box.innerHTML, /Load fell 76% -&gt; 41%|Load fell 76% -> 41%/);
   assert.equal(badge.innerHTML, `<span class="badge">1</span>`);
   // A re-read never posts again or pulls the reader back.
@@ -133,10 +133,10 @@ test("a click opens a row through its link; a click on the open row shuts it", a
   reset();
   await open("");
   const tr = (cls, href) => ({ classList: { contains: (c) => cls.includes(c) }, dataset: { href } });
-  const target = (t) => ({ target: { closest: (sel) => (sel === "tr.rr" ? t : null) } });
-  fire("click", target(tr(["rr"], "#reports/2026-11-24-ups-switch")));
+  const target = (t) => ({ target: { closest: (sel) => (sel === "tr.wr" ? t : null) } });
+  fire("click", target(tr(["wr"], "#reports/2026-11-24-ups-switch")));
   assert.equal(loc.hash, "#reports/2026-11-24-ups-switch");
   rps.sel = "2026-11-24-ups-switch";
-  fire("click", target(tr(["rr", "sel"], "#reports/2026-11-24-ups-switch")));
+  fire("click", target(tr(["wr", "sel"], "#reports/2026-11-24-ups-switch")));
   assert.equal(rps.sel, null);
 });

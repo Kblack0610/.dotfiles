@@ -476,15 +476,14 @@ span.warn { color: var(--b-stalled); }
 .sched { container-type: inline-size; }
 .sdet { position: sticky; left: 10px; max-width: calc(100cqw - 20px); overflow-wrap: anywhere; }
 .flowpic { display: block; max-width: 100%; height: auto; margin-top: 8px; border-radius: 6px; }
-/* Reports (reports.js): the title cell takes what the other three leave, so a long title cuts
-   instead of widening the page; an unread title is bold, and a phone drops the From column. */
+/* Reports (reports.js), on the open-in-place rows above: the title cell takes what the other three
+   leave, so a long title cuts instead of widening the page; an unread title is bold, and a phone
+   drops the From column. */
 table.rrep { table-layout: fixed; }
 table.rrep td:nth-child(2) { width: 9em; } table.rrep td:nth-child(3) { width: 7.5em; } table.rrep td:nth-child(4) { width: 5.5em; }
 table.rrep td .c1 { max-width: none; }
-table.rrep tr.rr { cursor: pointer; } table.rrep tr.rr:hover td { background: color-mix(in srgb, var(--accent) 9%, transparent); }
-table.rrep tr.rr.unread td:first-child .c1:first-child { font-weight: 600; }
-table.rrep tr.rr.sel > td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
-table.rrep tr.rdet > td { padding: 4px 10px 12px; overflow-wrap: anywhere; }
+table.rrep tr.unread td:first-child .c1:first-child { font-weight: 600; }
+table.rrep tr.wdet > td { overflow-wrap: anywhere; }
 @media (max-width: 760px) { table.rrep td:nth-child(2) { display: none; } }
 /* Daily: the day's refs as one count line, a link to that day on Reports. */
 .dref { display: block; margin: 8px 0; text-decoration: none; color: var(--ink); }
