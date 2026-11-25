@@ -19,9 +19,23 @@
 #       cluster, so it takes seconds.
 #   fleet-node ready claude
 #       exit 0 when every Claude account has a token here: fleet-dispatch's kit check.
+#   fleet-node publish
+#       write what `ready` found to lease-ready/<host> in the store and push it (fleet-node-publish.timer,
+#       every machine), so any peer can count the others.
+#   fleet-node peers [--names]
+#       one line per machine that published: lease-ready, never holds the lease (no-lease), not ready and
+#       why, or silent for too long; then "N lease-ready of M". Exit 1 when N is under FLEET_LEASE_MIN_READY
+#       (2, the Sentinel watch fleet-lease-peers). --names prints only the lease-ready machines.
 #
 # Logins are never copied by this script (Auth-State Safety): the human pushes each token.
 set -euo pipefail
+
+: "${FLEET_LEASE_MIN_READY:=2}"   # lease-ready peers the fleet keeps, so one loss leaves a taker (N+1)
+: "${FLEET_READY_REFRESH_S:=1800}"   # publish rewrites an unchanged record after this long: its `at` is the peer's liveness
+: "${FLEET_READY_STALE_S:=5400}"   # a record older than this (3 refreshes) is a peer that stopped publishing
+STORE="${AGENT_STORE_DIR:-$HOME/.agent}"
+READY_DIR="$STORE/lease-ready"
+HOST="${FLEET_HOST:-$(uname -n | cut -d. -f1)}"
 
 here=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 dotfiles=$(cd "$here/../.." && pwd)
@@ -191,7 +205,61 @@ lease_needs() {
   web_needs
 }
 
+# publish -> this machine's record in lease-ready/<host>: whether it may hold the lease (no no-lease marker)
+# and what `ready` found lacking. Written whole, and only when it differs from the last or the last is
+# FLEET_READY_REFRESH_S old, so a steady peer costs two store commits an hour.
+publish() {
+  [[ "$HOST" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "fleet-node: this machine's name $HOST cannot name a record" >&2; return 2; }
+  command -v jq >/dev/null 2>&1 || { echo "fleet-node: jq is not installed, so nothing was published" >&2; return 2; }
+  [ -d "$STORE/.sync" ] || { echo "fleet-node: $STORE is no store peer, so nothing was published" >&2; return 2; }
+  local needs cand=true f="$READY_DIR/$HOST" now rec old
+  [ ! -e "$STORE/.sync/no-lease" ] || cand=false
+  needs=$(lease_needs)
+  now=$(date +%s)
+  rec=$(jq -cn --arg host "$HOST" --argjson cand "$cand" --arg needs "$needs" --argjson at "$now" \
+    '{host: $host, at: $at, candidate: $cand, ready: ($needs == ""), needs: ($needs | split("\n") | map(select(. != "")))}')
+  if [ -f "$f" ] && old=$(jq -c 'del(.at)' "$f" 2>/dev/null) && [ "$old" = "$(jq -c 'del(.at)' <<<"$rec")" ] &&
+    [ $((now - $(jq -r '.at // 0' "$f"))) -lt "$FLEET_READY_REFRESH_S" ]; then
+    return 0
+  fi
+  mkdir -p "$READY_DIR"
+  printf '%s\n' "$rec" >"$READY_DIR/.$HOST.tmp" && mv -f "$READY_DIR/.$HOST.tmp" "$f"
+  store-sync --now --bg || echo "fleet-node: store-sync did not start, so $f reaches the other machines on its next sync" >&2
+}
+
+# peers [--names] -> each published record read as the others see it; rc 1 under FLEET_LEASE_MIN_READY.
+peers() {
+  command -v jq >/dev/null 2>&1 || { echo "fleet-node: jq is not installed, so the peers cannot be counted" >&2; return 2; }
+  local f now line ready=0 total=0 names=()
+  now=$(date +%s)
+  for f in "$READY_DIR"/*; do
+    [ -f "$f" ] || continue
+    total=$((total + 1))
+    # "<host>|<yes or no>|<the line shown>"
+    line=$(jq -r --argjson now "$now" --argjson stale "$FLEET_READY_STALE_S" '
+      (.host // "?") as $h | (($now - (.at // 0)) | if . < 0 then 0 else . end) as $age |
+      if $age > $stale then "\($h)|no|\($h): no report for \($age / 60 | floor) minutes, so it is not counted"
+      elif (.candidate | not) then "\($h)|no|\($h): never holds the lease (its no-lease marker)"
+      elif (.ready | not) then "\($h)|no|\($h): not ready: \(.needs[0] // "no reason given")\(if (.needs | length) > 1 then " (+\((.needs | length) - 1) more)" else "" end)"
+      else "\($h)|yes|\($h): lease-ready" end' "$f" 2>/dev/null) || line="${f##*/}|no|${f##*/}: its record does not parse"
+    case "$line" in *"|yes|"*) ready=$((ready + 1)); names+=("${line%%|*}") ;; esac
+    [ "${1:-}" = --names ] || printf '%s\n' "${line#*|*|}"
+  done
+  if [ "${1:-}" = --names ]; then
+    [ "${#names[@]}" -eq 0 ] || printf '%s\n' "${names[@]}"
+  else
+    [ "$total" -gt 0 ] || echo "no machine has published lease readiness (fleet-node publish)"
+    echo "$ready lease-ready of $total peers (the fleet keeps at least $FLEET_LEASE_MIN_READY)"
+  fi
+  [ "$ready" -ge "$FLEET_LEASE_MIN_READY" ]
+}
+
 case "${1:-}" in
+  publish) publish ;;
+  peers)
+    case "${2:-}" in --names | '') ;; *) echo "usage: fleet-node peers [--names]" >&2; exit 2 ;; esac
+    peers "${2:-}"
+    ;;
   install)
     shift
     exec bash "$dotfiles/.local/src/installation_scripts/install.sh" --yes --only base,fleet,dotfiles "$@"
@@ -213,7 +281,7 @@ case "${1:-}" in
     sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0"
     ;;
   *)
-    echo "usage: fleet-node install|signin|ready [claude]" >&2
+    echo "usage: fleet-node install|signin|ready [claude]|publish|peers [--names]" >&2
     exit 2
     ;;
 esac

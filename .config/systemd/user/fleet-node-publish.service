@@ -1,0 +1,11 @@
+[Unit]
+Description=Write whether this machine can hold the fleet lease to the store (fleet-node publish)
+
+[Service]
+Type=oneshot
+# publish pushes the store with store-sync, which lives beside it in ~/.local/bin; ready asks gh, git,
+# kubectl and ssh, so the PATH is the user's, not a minimal one.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin
+ExecStart=%h/.local/bin/fleet-node publish
+# ready fetches both dotfiles checkouts, asks the store remotes and the cluster: seconds when well, bounded when not.
+TimeoutStartSec=240

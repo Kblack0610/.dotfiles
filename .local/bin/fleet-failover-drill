@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# fleet-failover-drill - prove another peer can take the fleet lease, then hand it back.
+#
+#   fleet-failover-drill [--taker HOST] [--dry-run]
+#
+# Run on the lease holder. The holder steps out with the .sync/no-lease marker (the same one the
+# fleet-worker play writes), so its renew stops and the lease lapses within the TTL; nothing running is
+# touched, because a session needs no lease. Then it checks, on the taker, that the lease is held, a
+# dispatch pass ran, the agents Endpoints name the taker, and a page leaves it. Then the taker steps out
+# the same way and this machine takes the lease back (the second failover). A marker this script wrote is
+# removed on any exit, so a failed drill leaves the lease free to be taken, never held by a peer that
+# cannot hold it. --dry-run runs the preconditions only.
+#
+# Preconditions, each a refusal: this machine holds the lease; the taker (default: the first other peer
+# `fleet-node peers --names` lists) is lease-ready and in the fleet roster; no agent-land is running.
+# Design and results: the plan how-do-we-fully-twinkling-wirth, P2; runbook docs/operations/fleet-failover.md.
+set -uo pipefail
+
+here=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+# shellcheck source=../lib/fleet-hosts.sh
+. "$here/../lib/fleet-hosts.sh"
+ME="${FLEET_HOST:-$(uname -n | cut -d. -f1)}"
+STORE="${AGENT_STORE_DIR:-$HOME/.agent}"
+MARKER="$STORE/.sync/no-lease"
+# The lease lapses TTL after the holder's last renew (fleet-lease, 300 s) and the taker's timer takes it
+# within a minute: both waits are that plus a minute of slack.
+: "${DRILL_LEASE_WAIT_S:=420}"
+# A dispatch pass runs on the dispatch timer's cadence; give it two.
+: "${DRILL_PASS_WAIT_S:=900}"
+# No event says "that peer now holds the lease", so one loop asks at this cadence, bounded by the waits.
+: "${DRILL_POLL_S:=10}"
+
+taker='' dry=0 wrote_mine=0 wrote_taker=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --taker) taker=${2:-}; shift 2 ;;
+    --dry-run) dry=1; shift ;;
+    -h | --help) sed -n '2,/^set -uo/{/^set -uo/d;s/^# \{0,1\}//;p}' "$0"; exit 0 ;;
+    *) echo "usage: fleet-failover-drill [--taker HOST] [--dry-run]" >&2; exit 2 ;;
+  esac
+done
+
+say() { printf '%s\n' "$*"; }
+fail() { say "FAIL: $*"; exit 1; }
+pass() { say "PASS: $*"; }
+on_taker() { fleet_host_run "$taker" "$@"; }
+# on_taker_sh '<script>' -> the script run by bash on the taker, so its $HOME is the taker's (fleet_host_run quotes each argument).
+on_taker_sh() { on_taker bash -c "$1"; }
+
+# holder -> who holds the lease on origin, per `fleet-lease status --json`.
+holder() { fleet-lease status --json 2>/dev/null | jq -r '[.remotes[] | select(.reached and .live) | .holder] | first // empty'; }
+
+# wait_holder <host> <secs> -> 0 once <host> holds it, 1 at the deadline.
+wait_holder() {
+  local end=$((SECONDS + $2))
+  while [ "$SECONDS" -lt "$end" ]; do
+    [ "$(holder)" = "$1" ] && return 0
+    sleep "$DRILL_POLL_S"
+  done
+  return 1
+}
+
+cleanup() {
+  [ "$wrote_taker" -eq 0 ] || { on_taker_sh 'rm -f "$HOME/.agent/.sync/no-lease"' >/dev/null 2>&1 || say "WARN: could not remove $taker's no-lease marker: remove it by hand"; }
+  [ "$wrote_mine" -eq 0 ] || rm -f "$MARKER"
+}
+trap cleanup EXIT
+
+[ "$(holder)" = "$ME" ] || fail "this machine ($ME) does not hold the lease: run the drill on the holder ($(holder))"
+[ -n "$taker" ] || taker=$(fleet-node peers --names | grep -vx "$ME" | head -n 1)
+[ -n "$taker" ] || fail "no other lease-ready peer: fleet-node peers"
+fleet-node peers --names | grep -qx "$taker" || fail "$taker is not lease-ready: fleet-node peers"
+fleet_host "$taker" >/dev/null || fail "$taker is not in the fleet roster, so the drill cannot reach it"
+! pgrep -f '(^|/)agent-land [0-9]' >/dev/null || fail "an agent-land is running: wait for the landing to finish"
+pass "preconditions: $ME holds the lease, $taker is lease-ready"
+[ "$dry" -eq 0 ] || exit 0
+
+t0=$(date +%s)
+touch "$MARKER" && wrote_mine=1
+fleet-lease renew >/dev/null 2>&1 || true
+say "step out: $ME wrote $MARKER; the lease lapses within the TTL"
+wait_holder "$taker" "$DRILL_LEASE_WAIT_S" || fail "$taker did not take the lease within ${DRILL_LEASE_WAIT_S}s (holder: $(holder))"
+pass "$taker holds the lease after $(($(date +%s) - t0))s"
+
+on_taker fleet-lease held >/dev/null || fail "$taker's own gate says it does not hold the lease"
+pass "$taker's gate agrees"
+
+end=$((SECONDS + DRILL_PASS_WAIT_S)) pass_ok=0
+while [ "$SECONDS" -lt "$end" ]; do
+  at=$(on_taker_sh 'stat -c %Y "$HOME/.local/state/agentctl/dispatch/hosts.json"' 2>/dev/null) || at=0
+  [ "${at:-0}" -lt "$t0" ] || { pass_ok=1; break; }
+  sleep "$DRILL_POLL_S"
+done
+[ "$pass_ok" -eq 1 ] || fail "no dispatch pass ran on $taker within ${DRILL_PASS_WAIT_S}s (its hosts.json is older than the step-out)"
+pass "a dispatch pass ran on $taker"
+
+ips=$(on_taker hostname -I 2>/dev/null) || ips=''
+rec=$(KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}" kubectl -n agents get endpoints agents -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null)
+[ -n "$rec" ] && grep -qw -- "$rec" <<<"$ips" || fail "the agents Endpoints name '${rec:-nothing}', not an address of $taker ($ips)"
+pass "the agents Endpoints name $taker ($rec)"
+
+on_taker agent-notify -p low -t 'Failover drill' "Test page from $taker, which holds the fleet lease for the drill. Nothing to do." >/dev/null ||
+  fail "agent-notify failed on $taker"
+pass "a test page left $taker: confirm it reached the phone"
+
+say "hand back: $taker steps out, $ME takes the lease"
+rm -f "$MARKER"; wrote_mine=0
+fleet-lease renew >/dev/null 2>&1 || true
+on_taker_sh 'touch "$HOME/.agent/.sync/no-lease"' && wrote_taker=1
+wait_holder "$ME" "$DRILL_LEASE_WAIT_S" || fail "$ME did not take the lease back within ${DRILL_LEASE_WAIT_S}s (holder: $(holder))"
+pass "$ME holds the lease again after $(($(date +%s) - t0))s in all"
+say "DONE: both failovers held; $taker may hold the lease again (its marker is removed on exit)"
