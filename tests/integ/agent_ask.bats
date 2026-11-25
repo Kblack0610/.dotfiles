@@ -1809,50 +1809,21 @@ rpost() { "$AGENT_ASK" post --project "$1" --context "About: ${*: -1}" "${@:2}";
   for id in "$fresh" "$plain" "$held" "$live" "$resumes"; do grep -qx 'status: pending' "$(ask_file "$id")"; done
 }
 
-@test "a verdict settled by a live hold the human set answers the ask by it; an agent's hold or a gone one does not" {
+@test "a hold the human set is no judge input, and a verdict naming one settles nothing" {
   export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   unset AGENT_ASK_NO_JUDGE
   human_hold release-cut human 'No playground release until epic ucp-2709 lands'
-  human_hold cpu fleet-pace 'machine over the high mark'
   local opts='tag=cut the tag now|wait=wait for the release cleanup' id
+  # A hold narrows by agent-hold grant, which the queue's gate reads, never by its reason text.
   fake_judge "$(score external wait | jq -c '.settled_by = "hold:release-cut"')"
-  run --separate-stderr "$AGENT_ASK" post --project demo --options "$opts" --recommend tag 'cut the release tag?'
-  assert_success
-  id="$output"
-  [[ "$stderr" == *"Answered by the human's release-cut hold: No playground release until epic ucp-2709 lands. Answer: wait."* ]]
+  id="$("$AGENT_ASK" post --project demo --options "$opts" --recommend tag 'cut the release tag?' 2>/dev/null)"
   run "$AGENT_ASK" show "$id"
-  assert_line 'status: answered'; assert_line 'answered_by: hold'; assert_line 'answer: wait'
-  assert_line "answer_note: the human's release-cut hold: No playground release until epic ucp-2709 lands"
-  grep -q -- '- release-cut: No playground release' "$BATS_TEST_TMPDIR/judge.calls"
-  refute grep -q -- '- cpu: ' "$BATS_TEST_TMPDIR/judge.calls"
-  # Negative controls: a hold an agent set, and one no longer held, settle nothing.
-  for by in hold:cpu hold:gone; do
-    fake_judge "$(score external wait | jq -c --arg b "$by" '.settled_by = $b')"
-    id="$("$AGENT_ASK" post --project demo --options "$opts" --recommend tag "cut the tag for $by?" 2>/dev/null)"
-    run "$AGENT_ASK" show "$id"
-    assert_line 'status: pending'
-    assert_line "judge_settled_by: $by"
-  done
-  # Nor does an answer naming no option.
-  fake_judge "$(score external 'skip it' | jq -c '.settled_by = "hold:release-cut"')"
-  id="$("$AGENT_ASK" post --project demo --options "$opts" --recommend tag 'cut the tag, skip?' 2>/dev/null)"
+  assert_line 'status: pending'
+  refute_line 'answered_by: hold'
+  refute grep -q 'release-cut' "$BATS_TEST_TMPDIR/judge.calls"
+  run "$AGENT_ASK" sweep demo
+  refute_output --partial 'hold release-cut'
   grep -qx 'status: pending' "$(ask_file "$id")"
-  # An empty answer is no pick: the recommendation is what the asker wants, and a hold can forbid exactly
-  # that (PZLBaS, 2026-11-20), so the human answers instead of the hold taking it (ar-4236).
-  fake_judge "$(score external "" | jq -c '.settled_by = "hold:release-cut"')"
-  id="$("$AGENT_ASK" post --project demo --options "$opts" --recommend tag 'cut the tag, no pick?' 2>/dev/null)"
-  grep -qx 'status: pending' "$(ask_file "$id")"
-  fake_judge "$(score external wait | jq -c '.settled_by = "hold:release-cut"')"
-  # sweep: an ask posted before the hold is answered by it there, through delivery.
-  id="$(AGENT_ASK_NO_JUDGE=1 "$AGENT_ASK" post --project other --options "$opts" --recommend tag 'tag it now?')"
-  run "$AGENT_ASK" sweep other
-  assert_line --regexp "^other	$id	hold release-cut	"
-  run "$AGENT_ASK" show "$id"
-  assert_line 'answered_by: hold'; assert_line 'delivery: queued'
-  # The human's answer after it stands beside the hold's, as after a judge answer.
-  "$AGENT_ASK" answer "$id" tag 2>/dev/null
-  run "$AGENT_ASK" show "$id"
-  assert_line 'answered_by: hold'; assert_line 'answer: wait'; assert_line 'delivery_answer: tag'
 }
 
 @test "a verdict naming an older ask on the same question joins it and cancels the new one" {
@@ -1888,26 +1859,6 @@ rpost() { "$AGENT_ASK" post --project "$1" --context "About: ${*: -1}" "${@:2}";
   run env CLAUDE_CODE_SESSION_ID=sid-d "$AGENT_ASK" post --project fourth --options "$opts" 'codex on razer again?'
   refute_output "$first"
   grep -qx 'status: pending' "$(ask_file "$output")"
-}
-
-@test "assume-due sweeps once for each new hold the human sets, never for an agent's" {
-  printf '#!/usr/bin/env bash\necho "$*" >> "%s/sweep.calls"\n' "$BATS_TEST_TMPDIR" > "$BATS_TEST_TMPDIR/sweep"
-  chmod +x "$BATS_TEST_TMPDIR/sweep"
-  export AGENT_ASK_SWEEP_CMD="$BATS_TEST_TMPDIR/sweep"
-  calls() { cat "$BATS_TEST_TMPDIR/sweep.calls" 2>/dev/null | wc -l; }
-  "$AGENT_ASK" assume-due
-  assert_equal "$(calls)" 0
-  human_hold release-cut human 'No release until ucp-2709 lands'
-  "$AGENT_ASK" assume-due
-  assert_equal "$(calls)" 1
-  assert_equal "$(cat "$BATS_TEST_TMPDIR/sweep.calls")" '--all'
-  "$AGENT_ASK" assume-due
-  human_hold cpu fleet-pace 'machine over the high mark'
-  "$AGENT_ASK" assume-due
-  assert_equal "$(calls)" 1
-  human_hold nightly-extras human 'No nightly extras'
-  "$AGENT_ASK" assume-due
-  assert_equal "$(calls)" 2
 }
 
 @test "the card says where the answer goes once the session is gone" {

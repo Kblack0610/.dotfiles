@@ -26,6 +26,7 @@ setup() {
      "$REPO_ROOT/.config/shared-hooks/project-name.sh" "$DEPLOY/"
 
   export AGENT_HOLD_DIR="$HOME/.agent/holds"
+  unset CLAUDE_CODE_SESSION_ATTENDED AGENT_QUEUE_ITEM
 }
 
 context() {
@@ -48,6 +49,19 @@ context() {
   run context
   assert_success
   assert_output --partial 'by human: lockdown (granted: hc-952,ar-4938)'
+}
+
+@test "a session the human opened reads a hold as a warning; a dispatched one, attended too, is stopped by it" {
+  "$REPO_ROOT/.local/bin/agent-hold" set unity-tests --by human "lockdown"
+  CLAUDE_CODE_SESSION_ATTENDED=1 run context
+  assert_success
+  assert_output --partial 'Active holds (a warning'
+  assert_output --partial 'unity-tests since'
+  refute_output --partial 'do not start work'
+  CLAUDE_CODE_SESSION_ATTENDED=1 AGENT_QUEUE_ITEM=ar-1 run context
+  assert_output --partial 'do not start work on these until released'
+  run context
+  assert_output --partial 'do not start work on these until released'
 }
 
 @test "no hold, no block" {
