@@ -1468,9 +1468,6 @@ fn knowledge_cmd(prof: &config::Profile, log: &logging::Logger, sub: KnowledgeCm
     })
 }
 
-/// All of stdin as text, for the commands that take their body there.
-/// `notes ptask <name> move <query> (--to vX.Y.Z | --project <dest> [--to vX.Y.Z])`.
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_arguments)]
 /// `ptask tag`: its `--add` tags plus `--why`'s reason and priority, then the retag.
 fn ptask_tag(
@@ -1486,6 +1483,9 @@ fn ptask_tag(
     project_tasks::tag(prof, log, name, pick, &add, &t.remove, lane, writer)
 }
 
+/// All of stdin as text, for the commands that take their body there.
+/// `notes ptask <name> move <query> (--to vX.Y.Z | --project <dest> [--to vX.Y.Z])`.
+#[allow(clippy::too_many_arguments)]
 fn ptask_move(
     prof: &config::Profile,
     log: &logging::Logger,
