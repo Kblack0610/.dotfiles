@@ -218,9 +218,11 @@ dot_origin() {
   lease_ready_all
   dot_origin
   git clone -q --single-branch -b main "$SANDBOX/dot.git" "$DOTFILES_DIR"
+  local q
+  q=$(printf %q "$DOTFILES_DIR") # the sandbox path has a space, so the printed commands quote it
   run "$FLEET_NODE" ready
   assert_failure 1
-  assert_output "$DOTFILES_DIR fetches only some branches, so a pushed agent branch reads as unpushed: git -C $DOTFILES_DIR remote set-branches --add origin '*' && git -C $DOTFILES_DIR fetch origin"
+  assert_output "$DOTFILES_DIR fetches only some branches, so a pushed agent branch reads as unpushed: git -C $q remote set-branches --add origin '*' && git -C $q fetch origin"
 }
 
 @test "a store remote it cannot reach is not ready, the other still counts" {
