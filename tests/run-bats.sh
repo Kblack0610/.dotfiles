@@ -194,6 +194,7 @@ own=$(mktemp -d "${TMPDIR:-/tmp}/bats-run-XXXXXX") || exit 1
 reap() {
   local rc=$?
   if [ -n "$sid" ]; then
+    pkill -KILL -s "$sid" 2>/dev/null   # one pass first, so the next suite never starts beside this one
     exec {slot_fd}>&-   # the suite is over: free the slot before waiting on the dying session (ar-3377)
     kill_session -s "$sid"
   fi
