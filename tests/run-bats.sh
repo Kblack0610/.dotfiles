@@ -50,7 +50,7 @@ fi
 slot_base=
 jobs=1 auto= granted= room=
 free_cores() {   # [floor]: the cores free by /proc/loadavg, 0 on a full box unless a floor is given
-  awk -v c="$(nproc 2>/dev/null || echo 2)" -v min="${1:-0}" -f "$(dirname "$self")/unit-jobs.awk" "${UNIT_LOADAVG:-/proc/loadavg}" 2>/dev/null || echo 2
+  awk -v c="$("$(dirname "$self")/cpus.sh")" -v min="${1:-0}" -f "$(dirname "$self")/unit-jobs.awk" "${UNIT_LOADAVG:-/proc/loadavg}" 2>/dev/null || echo 2
 }
 scan_jobs() {    # <bats args...>: this run's --jobs, in jobs; auto is set for `--jobs auto`, which needs 2
   local a prev=
