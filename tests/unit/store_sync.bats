@@ -1097,7 +1097,7 @@ lose_head_tree() {
   assert_failure 3
   assert_output --partial "no remote answered to refetch them"
   # With no reflog left, no older commit can stand in for HEAD either.
-  rm "$SANDBOX/a/.git/logs/HEAD"
+  rm "$SANDBOX/a/.git/logs/refs/heads/master"
   conf "$ORIGIN"; mv "$BACKUP.off" "$BACKUP"
   run on a
   assert_failure 3
@@ -1130,6 +1130,20 @@ empty_object() {
   assert_output --partial "removed 1 zero-byte loose object"
   assert_output --partial "moved master back to"
   assert_output --partial "COMPLETE: origin at"
+  assert_equal "$(show "$ORIGIN" queue/item.md)" "state: done"
+  run git -C "$SANDBOX/a" fsck --connectivity-only
+  assert_success
+}
+
+@test "a zero-byte blob a reboot left under an intact HEAD is dropped, so the add writes it and the push lands (ar-4193)" {
+  peer a
+  echo 'state: running' > "$SANDBOX/a/queue/item.md"
+  on a >/dev/null
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  empty_object a "$(git -C "$SANDBOX/a" hash-object queue/item.md)"
+  run on a
+  assert_success
+  assert_output --partial "removed 1 zero-byte loose object"
   assert_equal "$(show "$ORIGIN" queue/item.md)" "state: done"
   run git -C "$SANDBOX/a" fsck --connectivity-only
   assert_success

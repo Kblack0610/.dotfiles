@@ -378,14 +378,17 @@ ref_of() { g rev-parse -q --verify "refs/remotes/$1/$BRANCH" 2>/dev/null; }
 # heal_head: an unclean shutdown can lose the newest loose objects while HEAD, already on disk, still
 # names them, and every commit after it fails on "bad tree object HEAD" (the fleet home, 2026-11-20:
 # six hours stuck after a crash, ar-3439). A remote that took HEAD before the crash holds them, so a
-# full refetch puts them back; with none, the sync stops and says so. A refetch that reached a remote
-# and still left HEAD broken is not repeated for that HEAD (REFETCHED), since every write starts a sync.
+# full refetch puts them back. With none, or with HEAD's commit itself gone (no fetch runs then),
+# rollback_head moves the branch back to the newest commit that reads and keeps the files; only when
+# none reads does the sync stop for a hand repair. A refetch that reached a remote and still left HEAD
+# broken is not repeated for that HEAD (REFETCHED), since every write starts a sync. Zero-byte loose
+# objects go first, on every sync (drop_empty_objects).
 heal_head() {
+  drop_empty_objects
   g rev-parse -q --verify HEAD >/dev/null || return 0
   g ls-tree -r HEAD >/dev/null 2>&1 && { rm -f "$REFETCHED"; return 0; }
   local r head reached=0 err=""
   head=$(g rev-parse --short HEAD)
-  drop_empty_objects
   # With HEAD's commit itself gone, every fetch stops on "bad object refs/heads/<branch>", so the
   # refetch can never help: roll back now. A remote that took the commit merges back on the pull.
   if ! g cat-file -e 'HEAD^{commit}' 2>/dev/null; then
@@ -414,25 +417,32 @@ heal_head() {
 
 # drop_empty_objects: a zero-byte loose object is never a valid one (each is zlib data), yet git
 # takes it as present: `git add` of the same content writes nothing over it and fsck stays red. A
-# reboot on 2026-11-20 left four in ~/.notes, one of them the commit master named (ar-4193).
+# reboot on 2026-11-20 left four in ~/.notes, one of them the commit master named (ar-4193). Only
+# full 38-hex names match: git writes an object as tmp_obj_* and renames it once whole, so a live
+# write is never one. The scan is a stat per loose object (about 15 ms on each store, 2026-11-25).
+OBJECT_NAME=$(printf '[0-9a-f]%.0s' $(seq 38))
 drop_empty_objects() {
   local n
-  n=$(find "$STORE/.git/objects" -path '*/objects/[0-9a-f][0-9a-f]/*' -type f -size 0 -print -delete 2>/dev/null | wc -l)
+  n=$(find "$STORE/.git/objects" -path '*/objects/[0-9a-f][0-9a-f]/*' -name "$OBJECT_NAME" -type f -size 0 -print -delete 2>/dev/null | wc -l | tr -d ' ')
   [ "$n" = 0 ] || log "WARN: removed $n zero-byte loose object(s) an unclean shutdown left"
 }
 
 # rollback_head <head>: HEAD's newest commits died in the crash before any remote took them (or the
 # commit itself is gone, so no fetch runs), but their files are still in the working tree. Move the
 # branch back to the newest commit in HEAD's reflog whose tree reads, keeping the files, so the
-# commit after this records them again: the hand repair of 2026-11-20 (ar-4193). The reflog is read
-# as a file, since `git reflog` parses each commit and stops on the broken one. 1 when none reads.
+# commit after this records them again: the hand repair of 2026-11-20 (ar-4193). The branch's reflog
+# is read as a file, since `git reflog` parses each commit and stops on the broken one; a crash loses
+# only the newest objects, so the last ROLLBACK_MAX entries are enough. A candidate's parent must read
+# too, or the pull after the move stops on it. 1 when none reads.
+ROLLBACK_MAX=20
 rollback_head() {
   local c
-  for c in $(awk '{c[NR] = $2} END {for (i = NR; i > 0; i--) print c[i]}' "$STORE/.git/logs/HEAD" 2>/dev/null); do
+  for c in $(tail -n "$ROLLBACK_MAX" "$STORE/.git/logs/refs/heads/$BRANCH" 2>/dev/null | awk '{c[NR] = $2} END {for (i = NR; i > 0; i--) print c[i]}'); do
     g ls-tree -r "$c" >/dev/null 2>&1 || continue
+    g rev-list -n 2 "$c" >/dev/null 2>&1 || continue
     g reset -q "$c" 2>/dev/null || return 1
     # The reflog still names the lost commits, and fsck stays red on them until they go.
-    g reflog expire --stale-fix --expire=never --all 2>/dev/null || true
+    g reflog expire --stale-fix --expire=never HEAD "refs/heads/$BRANCH" 2>/dev/null || true
     rm -f "$REFETCHED"
     log "WARN: HEAD $1 named objects missing here that no refetch restored; moved $BRANCH back to $(g rev-parse --short HEAD), the newest commit that reads, keeping the files for the next commit"
     return 0
