@@ -406,7 +406,7 @@ broker_addr() {
         out="$(timeout "$PUB_TIMEOUT" getent ahosts "$1" 2>/dev/null)" || continue
         addrs="$(awk '$2 == "STREAM" { print $1 }' <<< "$out" | sort -u)"
         [ -n "$addrs" ] || continue
-        if [ "$(wc -l <<< "$addrs")" -eq 1 ]; then printf '%s\n' "$addrs"; else printf '%s\n' "$1"; fi
+        if [[ "$addrs" != *$'\n'* ]]; then printf '%s\n' "$addrs"; else printf '%s\n' "$1"; fi
         return 0
     done
     return 1
