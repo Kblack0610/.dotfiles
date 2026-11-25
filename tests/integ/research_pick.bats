@@ -119,6 +119,12 @@ repo() {
   run "$PICK" run
   assert_output --partial 'could not be read, nothing queued'
   assert_not_called 'agent-queue add'
+  # A picks record jq cannot read holds the lane too, rather than reading as no row on any board.
+  printf '{"facet": "cold", "day": 1, "row": "agent-runtime:ar-7"\n' > "$RESEARCH_DIR/picks.jsonl"
+  stub notes 'exit 0'
+  run "$PICK" run
+  assert_output --partial 'could not be read, nothing queued'
+  assert_not_called 'agent-queue add'
 }
 @test "while a research item is in flight nothing is queued; another project's item does not count" {
   echo '{"slug": "x", "from": "research:cold"}' > "$NOTES_FIXTURE/queue.jsonl"

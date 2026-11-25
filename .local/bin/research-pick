@@ -9,10 +9,12 @@
 # stalest facet, weighted by recent churn, becomes one agent-queue add (`from: research:<id>`)
 # that runs `/rigor /stack-review research`. A script may not queue (QUEUE.md "Admission"), so the
 # add files a board row that fleet-dispatch promotes and starts when an account has room. While a
-# research item is still queued, running or waiting, or a picked row is still on the board, nothing
-# new is queued, so at most one is ever in flight. The roster grows by rows: a project-map project
-# that no facet covers and the roster does not exclude gets one "add a facet" row on the agent-runtime
-# board, for the human to accept or exclude. A full board does not hold it.
+# research item is still queued, running or waiting, or a picked row has started on its board, nothing
+# new is filed. A picked row still open holds only its own facet, and the next stalest facet is filed
+# behind it (ar-4979): one row a night, at most one open row per facet, so the roster's size bounds how
+# many dispatch can start together. The roster grows by rows: a project-map project that no facet
+# covers and the roster does not exclude gets one "add a facet" row on the agent-runtime board, for the
+# human to accept or exclude. A full board does not hold it.
 #
 # picks.jsonl under RESEARCH_DIR is the record of what was picked, when, and the board row it went
 # to; this is its only writer.
@@ -43,8 +45,9 @@ in_flight() {
   local out rows
   out=$(agent-queue list --json --state active 2>/dev/null) || return 1
   jq -r 'select((.from // "") | startswith("research:")) | "\(.slug) \(.from)"' <<<"$out"
-  rows=$(jq -c -n '[inputs | select(.row // "" | contains(":")) | {(.row): .facet}] | add // {}' "$PICKS" 2>/dev/null)
-  [ -n "$rows" ] && [ "$rows" != '{}' ] || return 0
+  [ -f "$PICKS" ] || return 0
+  rows=$(jq -c -n '[inputs | select((.row // "" | contains(":")) and .facet != null) | {(.row): .facet}] | add // {}' "$PICKS" 2>/dev/null) || return 1
+  [ "$rows" != '{}' ] || return 0
   out=$(notes board --json 2>/dev/null) && [ -n "$out" ] || return 1
   jq -r --argjson want "$rows" '.rows[]? | ("\(.project):\(.id)") as $r | select($want | has($r))
     | if .state == "open" then "open\t\($want[$r])" else "\(.id) board row on \(.project), \(.state)" end' <<<"$out"
@@ -179,16 +182,17 @@ cmd_run() {
   jq -e '.facets | type == "array"' "$RESEARCH_FACETS" >/dev/null 2>&1 \
     || { say "roster $RESEARCH_FACETS is not {facets: [...]}"; return 1; }
   mkdir -p "$RESEARCH_DIR"
-  local flight busy held score id stale c today
+  local flight busy held ranked score id stale c today
   today=$(( $(date +%s) / 86400 ))
   if ! flight=$(in_flight); then
     say "the queue, or the board holding the last pick's row, could not be read, nothing queued"
-  elif busy=$(grep -v $'^open\t' <<<"$flight"); [ -n "$busy" ]; then
+  elif busy=$(awk -F'\t' '$1 != "open"' <<<"$flight"); [ -n "$busy" ]; then
     say "research item still in flight, nothing queued: $(head -n 1 <<<"$busy")"
   else
-    held=$(sed -n 's/^open\t//p' <<<"$flight")
-    IFS=$'\t' read -r score id stale c < <(rank | awk -F'\t' -v held="$held" 'BEGIN { n = split(held, h, "\n"); for (i = 1; i <= n; i++) skip[h[i]] = 1 } !($2 in skip)')
-    if [ -z "${id:-}" ] && [ -n "$held" ]; then
+    held=$(awk -F'\t' '$1 == "open" { print $2 }' <<<"$flight")
+    ranked=$(rank)
+    IFS=$'\t' read -r score id stale c < <(awk -F'\t' 'NR == FNR { skip[$0] = 1; next } !($2 in skip)' <(printf '%s\n' "$held") - <<<"$ranked")
+    if [ -z "${id:-}" ] && [ -n "$ranked" ]; then
       say "no facet to queue: each one on disk has a picked row still open on its board ($(paste -sd' ' <<<"$held"))"
     elif [ -z "${id:-}" ]; then
       say "no facet to queue: the roster lists none on disk"
