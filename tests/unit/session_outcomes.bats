@@ -1398,6 +1398,23 @@ STUB
   assert_equal "$(field a '.class|tojson')" '{"size":null,"kind":"fix"}'
 }
 
+@test "class: a session observed after the day its item closed still gets the item; the queue is read back a week before the oldest due session (ar-4750)" {
+  # NEGATIVE CONTROL: `list --state all` alone reads only today's done items, so before ar-4750 a
+  # session observed the day after its item closed had no item and no class (a landed trainee item
+  # read unclassed). This queue serves its items only to a list given --since.
+  export SO_QUEUE=queue-since SO_ROADMAP=false
+  printf '#!/usr/bin/env bash\ncase "$1" in\n  list) echo "$*" >> %q/list.args; [[ " $* " == *" --since "* ]] || exit 0; cat %q/items.jsonl ;;\n  set) ;;\n  *) exit 9 ;;\nesac\n' \
+    "$SANDBOX" "$SANDBOX" > "$SANDBOX/bin/queue-since"
+  chmod +x "$SANDBOX/bin/queue-since"
+  jq -cn '{slug: "closed-before", type: "fix", sessions: "sess-a"}' > "$SANDBOX/items.jsonl"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(field a '.items | join(" ")')" 'closed-before'
+  assert_equal "$(field a '.class|tojson')" '{"size":null,"kind":"fix"}'
+  run grep -c -- "^list --json --state all --since $(date -u -d "@$((STOP - 7 * 86400))" +%F)\$" "$SANDBOX/list.args"
+  assert_output 1
+}
+
 @test "the harness is what the launcher recorded: claude on a spilled item's account try, a legacy row by the item and the map" {
   queue_stub
   export SO_HARNESSES="$SANDBOX/harnesses.json"
