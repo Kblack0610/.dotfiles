@@ -2582,6 +2582,8 @@ fix_item() {
   watch spend TRIP -25200 high; watch puck TRIP -25200 high
   route 'watch.: spend' alert - 'the spend watch pages on its own'
   route 'watch.: puck' human:home-config - 'check the puck'
+  # the spend row is already on the board (an earlier pass filed it), so its red fix queues though the lock is held
+  printf 'board.md\t9\t%s\t- [ ] %s <!-- id:ar-9 -->\n' 'check(watch): spend tripped since 2026-11-01, expected: x' 'check(watch): spend tripped since 2026-11-01, expected: x' >> "$BOARD"
   exec 8>"$BENCH_UPSERT_LOCK"; flock 8
   run "$SUBJECT" triage
   exec 8>&-
