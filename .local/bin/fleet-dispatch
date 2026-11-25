@@ -1279,7 +1279,7 @@ row_asker() { asker_map; jq -r --arg k "$1" '.[$k] // empty' <<<"$ASKER_MAP"; }
 # harness with its own source ($s.sourced, harnesses.json `source`) passes, as a trainee start does: it
 # spends no Claude session, and held, the week's set never ran while the fleet sat over its share (ask
 # GDUmQQ, ar-4554). An item that already holds work passes too, as a continuation and not new intake: a PR
-# recorded on it (`pr`: a land or fix-ci requeue, which DISPATCH_FIX_TRIES bounds), a `handoff:` note, or a
+# recorded on it (`pr`: a land or fix-ci requeue included, whose tries DISPATCH_FIX_TRIES bounds), a `handoff:` note (AGENT_HANDOFF_MAX bounds them), or a
 # `requeued` stamp (agent-queue move running -> queued). Held, share_return sent hc-857 back to its row and
 # left home-config#1406 green and unmerged (2026-11-23), and sent a handed-off ar-5776, ar-5813 and ar-5605
 # back too (2026-11-25, ar-5880). A new row carries none of the three, so the cap still holds it. The one
@@ -1340,8 +1340,8 @@ share_full_names() {
     | "\(.key) (\(.value.n) of \($t) starts in \($h)h, cap \(.value.cap)%)"] | join(", ")' <<<"$SHARE_STATE"
 }
 
-# share_why <item json> -> why the project share cap holds the item, or nothing: share_held (which passes a
-# land or fix-ci requeue of the item's own PR, SHARE_JQ), outside the human and sprint floors (HUMAN_PASS), which are the human's own work and never cut off, and outside the
+# share_why <item json> -> why the project share cap holds the item, or nothing: share_held (which passes an
+# item that already holds work: a PR, a handoff or a requeue, SHARE_JQ), outside the human and sprint floors (HUMAN_PASS), which are the human's own work and never cut off, and outside the
 # trainee floor (TRAINEE_PASS), whose start runs on a free trainee key and spends no session the cap
 # guards. A Claude canary waits like any other item of its project. pick_item lets the first held item go when nothing
 # else can start, so the cap never leaves a slot idle.
