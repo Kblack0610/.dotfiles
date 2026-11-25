@@ -13,8 +13,8 @@ BRANCH=$(git branch --show-current 2>/dev/null)
 # merge_proof_branch: the one reader of a repo's default branch (fleet-states.md Owners).
 # shellcheck source=../../../.local/lib/agent-merge-proof.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../../.local/lib/agent-merge-proof.sh" || exit 0
-# A repo with no remote default branch is measured against its local main, as before.
-MAIN_BRANCH="$(merge_proof_branch "$(git rev-parse --show-toplevel)")" || MAIN_BRANCH=main
+# A repo with no remote default branch is measured against its local main.
+MAIN_BRANCH="$(merge_proof_branch .)" || MAIN_BRANCH=main
 [ "$BRANCH" = "$MAIN_BRANCH" ] && exit 0
 
 FAILED=0
