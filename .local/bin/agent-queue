@@ -496,7 +496,9 @@ admission_now() {
 # #after/ an ok close just cleared (AGENT_QUEUE_PULL=after, fleet-dispatch pull-after: held, that row
 # waited for a pass, and a pass then never took the backlog tier, retired by ar-4626; 2026-11-20, chain-after-stuck), returns
 # the last-ranked runnable item to its board row (cmd_return: lossless, the row is un-started and dispatch promotes it
-# again), so the add goes in under the cap. Never chosen: urgent or red work, the human's (human_work),
+# again), so the add goes in under the cap. Only exactly at the cap: over it, one return still leaves the count
+# at or over the cap and admit holds the add anyway (2026-11-20: ptc-q3-bulk-lift returned ar-2860 with 65
+# runnable against a cap of 50, ar-4026). Never chosen: urgent or red work, the human's (human_work),
 # an item with no row to return to, a chain's head, a plan's phase (plan_phase_item), whatever the add's
 # priority: its phases go in past the cap (a --plan, a phase pull), and a returned one waits on its row behind
 # dispatch's fill, which stops at the cap, so its chain stops there; a held urgent add's row ranks first and
@@ -513,7 +515,7 @@ make_room() {
   [ -z "$(find_item "$3")" ] || return 0
   ( cause_owner "$2" ) >/dev/null 2>&1 || return 0
   [ -n "${repeat:-}" ] || [ -z "$(finished_ok "$3" "${slug_from_text:+$text}" "${from:-}")" ] || return 0
-  now="$(admission_now)" && read -r r l <<<"$now" && [[ "$r" =~ ^[0-9]+$ ]] && [ "$r" -ge "$l" ] || return 0
+  now="$(admission_now)" && read -r r l <<<"$now" && [[ "$r" =~ ^[0-9]+$ ]] && [ "$r" -eq "$l" ] || return 0
   cands="$(collect queued | jq -r --argjson pr "$pr" --arg keep " ${AQ_ROOM_KEEP:-} " '
     ([.[] | (.after // "") | splits("[ ,]+") | select(. != "")]) as $heads
     | [.[] | select(.priority != "urgent" and (.row // "") != "")
