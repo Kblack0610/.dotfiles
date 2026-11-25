@@ -1020,6 +1020,75 @@ check_fixture() {
   assert_output 'room: board_days ?, the board feed is unreadable'
 }
 
+@test "upsert: two open rows on one key edit the first by its id and drop the twin as its dup, so the write never fails (ar-5690)" {
+  kpi_setup
+  printf 'board.md\t2\tcheck(watch): spend tripped since 2026-11-24, x\t- [/] check(watch): spend tripped since 2026-11-24, x <!-- id:ar-31 -->\nboard.md\t3\tcheck(watch): spend tripped since 2026-11-25, y\t- [ ] check(watch): spend tripped since 2026-11-25, y #low <!-- id:ar-32 -->\n' >> "$BOARD"
+  rows=$(printf '%s\t%s\t%s\n' 'check(watch): spend tripped since' 'check(watch): spend tripped since 2026-11-25, z' '#high')
+  up() { bash -c '. "$1"; board_upsert "$2" && upsert_report "$2"' _ "$SUBJECT" "$rows" 2>&1; }
+  run up
+  assert_success
+  refute_output --partial 'board write failed'
+  assert_output --partial '0 added, 1 refreshed, 1 twins dropped'
+  run grep -c -- '--agent drop ar-32 --dup ar-31$' "$NLOG"
+  assert_output 1
+  run grep -c -- '--agent edit ar-31 --text check(watch): spend tripped since 2026-11-25, z #size/s$' "$NLOG"
+  assert_output 1
+  run grep -c 'spend tripped since' "$BOARD"
+  assert_output 1
+  run grep -c 'z #size/s <!-- id:ar-31 -->' "$BOARD"
+  assert_output 1
+  # Negative control: one row on the key drops nothing, and its edit still names it by id.
+  : > "$NLOG"
+  rows=$(printf '%s\t%s\t%s\n' 'check(watch): spend tripped since' 'check(watch): spend tripped since 2026-11-25, w' '#high')
+  run up
+  assert_success
+  run grep -c -- '--agent drop' "$NLOG"
+  assert_output 0
+  run grep -c -- '--agent edit ar-31 --text ' "$NLOG"
+  assert_output 1
+  # A hand row with no id ahead of a row being done: the key's row is the first with an id (the one
+  # being done), the open twin after it is dropped as its dup, and the hand row is left.
+  : > "$NLOG"
+  printf 'board.md\t1\tcheck(watch): spend tripped since hand\t- [ ] check(watch): spend tripped since hand\nboard.md\t4\tcheck(watch): spend tripped since d\t  - [/] check(watch): spend tripped since d <!-- id:ar-33 -->\n' > "$BOARD.top"
+  cat "$BOARD" >> "$BOARD.top" && mv "$BOARD.top" "$BOARD"
+  rows=$(printf '%s\t%s\t%s\n' 'check(watch): spend tripped since' 'check(watch): spend tripped since 2026-11-25, v' '#high')
+  run up
+  assert_success
+  refute_output --partial 'board write failed'
+  run grep -c -- '--agent drop' "$NLOG"
+  assert_output 1
+  run grep -c -- '--agent drop ar-31 --dup ar-33$' "$NLOG"
+  assert_output 1
+  run grep -c -- '--agent edit ar-33 --text ' "$NLOG"
+  assert_output 1
+  run grep -c 'spend tripped since hand' "$BOARD"
+  assert_output 1
+}
+
+@test "upsert: a second filer waits on the board lock, so one key never gets two rows; a held lock files nothing (ar-6078)" {
+  kpi_setup
+  export BENCH_UPSERT_LOCK="$SANDBOX/upsert.lock" BENCH_UPSERT_LOCK_WAIT=0
+  rows=$(printf '%s\t%s\t%s\n' 'check(alert): NodeDown hp-victus firing' 'check(alert): NodeDown hp-victus firing, alertmanager-fleet tripped since 2026-11-25' '#high')
+  up() { bash -c '. "$1"; board_upsert "$2" && upsert_report "$2"' _ "$SUBJECT" "$rows" 2>&1; }
+  # another filer holds the lock: this one writes nothing and says why, instead of racing it
+  exec 8>"$BENCH_UPSERT_LOCK"; flock 8
+  run up
+  assert_failure
+  assert_output --partial 'board upsert lock'
+  [ ! -s "$NLOG" ]   # not one notes call: the board is not even read
+  # Negative control: released, the same filer adds the one row, and a rerun finds it and adds nothing.
+  exec 8>&-
+  run up
+  assert_success
+  assert_output --partial '1 added'
+  run up
+  assert_success
+  run grep -c -- '--agent add check(alert): NodeDown hp-victus firing' "$NLOG"
+  assert_output 1
+  run grep -c 'NodeDown hp-victus firing' "$BOARD"
+  assert_output 1
+}
+
 @test "retro check: a flat claim ends, so improve names its KPI again with last naming it" {
   kpi_setup; kpi_fixture
   claim ar-2 interrupts_per_day 0.286 max 0.2 20
@@ -1084,7 +1153,7 @@ check_fixture() {
   assert_output 1
   run grep 'guard ' "$BOARD"
   assert_output --partial 'recurred in 3 sessions'
-  run grep -c ' edit check(lesson): guard ' "$NLOG"
+  run grep -Ec ' edit ar-9[0-9]+ --text check\(lesson\): guard ' "$NLOG"
   assert_output 1
   refute grep -q ' add ' "$NLOG"
 }
@@ -4075,6 +4144,18 @@ cancel c-old-lane --why canary: superseded by the $week set"
   run "$SUBJECT" canary matrix --harness str
   assert_failure 2
   assert_output --partial 'its str entry is no object'
+  # A capability of the map's vocabulary that a harness leaves out excludes its mode, and its stack's PR-opening
+  # kinds (a kind whose kinds.json exit is not pr, or that it does not register, stays open), as route()'s harness_needs_why refuses them.
+  echo '{"capabilities":{"lane_sandbox":{"mode":"lane-sandbox","why":"no profile"},"rust_gate":{"stack":"rust","why":"needs the gate"}},
+    "harnesses":{"bare":{"capabilities":[]},"full":{"capabilities":["lane_sandbox","rust_gate"]}}}' > "$BENCH_HARNESSES"
+  echo '{"fix":{"exit":"pr"},"ci":{"exit":"pr"},"perf":{},"docs":{"exit":"report"}}' > "$SANDBOX/kinds.json"; export BENCH_KINDS="$SANDBOX/kinds.json"
+  run "$SUBJECT" canary matrix --harness bare --json
+  assert_success
+  run jq -c '[.cells[] | select(.stack == "rust") | [.kind, .status]], [.modes[] | select(.status == "excluded") | .mode], [.cells[] | select(.kind == "fix" and .stack == "rust") | .why]' <<<"$output"
+  assert_output $'[["fix","excluded"],["docs","empty"],["ci","excluded"],["perf","excluded"]]\n["lane-sandbox"]\n["bare lacks the rust_gate capability (harnesses.json): needs the gate"]'
+  run "$SUBJECT" canary matrix --harness full --json
+  run jq -c '[.cells[] | select(.stack == "rust") | [.kind, .status]], [.modes[] | select(.status == "excluded") | .mode]' <<<"$output"
+  assert_output $'[["fix","empty"],["docs","empty"],["ci","excluded"],["perf","no work"]]\n[]'
   echo 'not json' > "$BENCH_HARNESSES"
   run "$SUBJECT" canary matrix
   assert_failure 2

@@ -903,9 +903,14 @@ item_sessions() {
   return 0
 }
 
-# panel_lists <agent> -- agent-panel lists this agent's sessions, by Claude session id: Claude, and
-# a harness claude-lazer launches. Another agent's `sessions:` ids (a codex thread) are never there.
+# panel_lists <agent> -- this agent's sessions are on the panel by Claude session id: Claude, and
+# a harness claude-lazer launches. Another agent's `sessions:` ids (a codex thread) are on the panel
+# too, but as that harness's rows: claude_rows drops them, so only a Claude's ids are matched.
 panel_lists() { [ "$1" = claude ] || [ "$(harness_launcher "$1")" = claude-lazer ]; }
+
+# claude_rows -- stdin's `agent-panel list --json` lines that are Claude conversations (an old line has no harness).
+# The readers below treat a row as a Claude's pane or session; the other harnesses' rows are not that.
+claude_rows() { jq -c 'select((.harness // "claude") == "claude")' 2>/dev/null; }
 
 # past_reap_grace <started> -- exit 0 once an item started at least DISPATCH_REAP_GRACE seconds ago.
 past_reap_grace() {
@@ -918,8 +923,8 @@ past_reap_grace() {
 # says the item's Claude has exited while its tmux session lives on (or, for a hub item, when none
 # of the Claude sessions that worked it is live). A tmux session alone is not a session: a shell
 # left after claude exits keeps it, and an item in a hub window has none of its own. Exit 1 (keep
-# the item) when it cannot tell: an agent that is not Claude (agent-panel lists only Claude, which
-# a harness launched by claude-lazer is), a
+# the item) when it cannot tell: an agent that is not Claude (its session ids are not a Claude's: a Codex
+# thread; a harness launched by claude-lazer is a Claude), a
 # parked pane (its claude exited on purpose), an item started in the last DISPATCH_REAP_GRACE
 # seconds (its claude may still be booting), or a panel it cannot read or that lists nobody.
 # An item that records its session ids is alive only while one of them is on the panel; the tmux
@@ -936,7 +941,7 @@ claude_gone() {
     [ -n "$sids" ] || return 1
   fi
   past_reap_grace "$started" || return 1
-  [ -n "${REAP_PANEL+set}" ] || REAP_PANEL=$(agent-panel list --json 2>/dev/null) || REAP_PANEL=''
+  [ -n "${REAP_PANEL+set}" ] || { REAP_PANEL=$(agent-panel list --json 2>/dev/null) || REAP_PANEL=''; REAP_PANEL=$(claude_rows <<<"$REAP_PANEL"); }
   [ -n "$REAP_PANEL" ] || return 1
   jq -e -s --arg t "$server/$sess" --arg ids "$sids" '
     ($ids | split(" ") | map(select(. != ""))) as $ids
@@ -949,7 +954,7 @@ claude_gone() {
 # codex_gone <slug> <agent> <started> -- exit 0 when the item runs on a Codex launcher, started past
 # DISPATCH_REAP_GRACE ago, and its run is no longer live (codex_run_live). The tmux session is no
 # witness for a Codex item: wt recycles worktree lanes, so a Claude item can take the same session
-# name, and agent-panel lists that Claude, never the Codex run (ar-1087). Like claude_gone it is one
+# name, and the Claude rows of the panel never hold the Codex run (ar-1087). Like claude_gone it is one
 # witness, and reap settles on it only when the reap before also read it gone (reap_confirm).
 codex_gone() {
   [ "$(harness_launcher "$2")" = codex ] || return 1
@@ -1281,11 +1286,18 @@ row_asker() { asker_map; jq -r --arg k "$1" '.[$k] // empty' <<<"$ASKER_MAP"; }
 # GDUmQQ, ar-4554). A land or fix-ci requeue of an item's own PR (`pr`, `pr_owner` and its
 # `<owner>_tries` stamp, the test item_brief reads) passes too: it starts a Claude session, but a stranded
 # PR costs more than one, and DISPATCH_FIX_TRIES bounds the tries; held, share_return sent hc-857 back to
-# its row and left home-config#1406 green and unmerged (2026-11-23). The one test share_why and
-# queue_depth apply.
+# its row and left home-config#1406 green and unmerged (2026-11-23). An urgent or high chain successor
+# passes as well: an item with an `after:` key that is a plan phase or a validate item, agent-queue's
+# stack_dependent test (a `plan:` line or a phase brief, PHASE_BRIEF_RE; the `validate` tag). The cap
+# already let its chain start, and chain-lag bounds its handoff (chain_handoff_p90_max); held,
+# validate-ar-5194 waited 113m and tripped it (ar-4436, 2026-11-24). A plan's first phase, and any other
+# `--after` follow-up (high by default), still wait. The one test share_why and queue_depth apply.
 # shellcheck disable=SC2016
 SHARE_JQ="$HUMAN_ASK_JQ"'def share_held($s): (.project // "") as $p | (.agent // "claude") as $a | ($s.projects[$p].full // false)
   and (((.pr // "") != "" and (.pr_owner // "") != "" and (.[.pr_owner + "_tries"] // "") != "") | not)
+  and (((.after // "") != "" and ((.priority // "") | test("^(urgent|high)$"))
+    and ((.plan // "") != "" or ((" " + (.tags // "") + " ") | contains(" validate "))
+      or ((.task // "") | test("(^|\\s)Phases? [0-9]+( and [0-9]+)* of the plan /[^:]+\\.md:")))) | not)
   and ((.priority == "urgent" and (.from // "human") == "human") | not)
   and (((.plan // "") != "" and (.from // "human") == "human") | not)
   and ((" " + (.tags // "") + " ") | test(" #?red ") | not) and (human_ask | not)
@@ -3011,6 +3023,53 @@ harness_tier_why() {
   return 1
 }
 
+# kind_opens_pr <item json> [unregistered: pr|no] -> rc 0 when the item's kind opens a PR (its kind's `exit` in kinds.json
+# is pr or empty), or it has no kind. A kind kinds.json does not register opens one only when `unregistered` is pr, the
+# default (the ladder's: a title it cannot class is an ordinary row); the capability gate says no, so a verify row,
+# which only reports, needs no CI gate. The caller has run load_kinds.
+kind_opens_pr() {
+  local kind
+  kind=$(item_kind "$1")
+  [ -n "$kind" ] || return 0
+  if [ -v 'KIND_EXIT[$kind]' ]; then [ -z "${KIND_EXIT[$kind]}" ] || [ "${KIND_EXIT[$kind]}" = pr ]
+  else [ "${2:-pr}" = pr ]; fi
+}
+
+# harness_needs_why <harness> <item json> <tier> <pinned 0|1> -> why the harness lacks a capability the item needs,
+# rc 1; rc 2, failing closed, when the map or the stack list cannot say; nothing and rc 0 when it has them all.
+# The one place a harness is refused for what it cannot do, from its `capabilities` list in the map (the
+# vocabulary and each one's why are the map's top-level `capabilities`): adding a harness is a map entry, never
+# new code here. A row needs lane_sandbox under DISPATCH_SANDBOX_PROFILE, code_review when routed (not pinned) as
+# a red past the unattended ceiling (the red-fix gate), and each stack-bound capability (`stack` in the
+# vocabulary: unity_gate) when the item's project is in that stack of MATRIX and its kind opens a PR (a canary
+# replays a merged PR and opens none; kind_opens_pr). Claude, which route() takes before this, has them all.
+harness_needs_why() {
+  local h="$1" it="$2" tier="$3" pinned="$4" project cap stack why rc needs=() rows
+  [ -z "$DISPATCH_SANDBOX_PROFILE" ] || needs+=(lane_sandbox)
+  [ "$pinned" = 1 ] || [ "$tier" -le "$UNATTENDED_TIER_CEILING" ] || ! is_red "$it" || needs+=(code_review)
+  if ! is_canary "$it"; then
+    load_kinds
+    if kind_opens_pr "$it" no; then
+      rows=$(jq -r --arg h "$h" '(.harnesses[$h].capabilities // []) as $has | (.capabilities // {}) | to_entries[]
+        | select(.value.stack != null) | . as $c | select($has | index($c.key) | not) | "\($c.key)\t\($c.value.stack)"' "$HARNESSES" 2>/dev/null) ||
+        { echo "$HARNESSES is unreadable, so its capabilities are unknown"; return 2; }
+      project=$(jq -r '.project // ""' <<<"$it")
+      while IFS=$'\t' read -r cap stack; do
+        [ -n "$cap" ] || continue
+        rc=0; jq -e --arg s "$stack" --arg p "$project" '.stacks[$s].projects // [] | index([$p])' "$MATRIX" >/dev/null 2>&1 || rc=$?   # 1: not in the stack, which set -e must not take for a failure
+        [ "$rc" = 0 ] && needs+=("$cap")
+        [ "$rc" = 0 ] || [ "$rc" = 1 ] || { echo "the stack list $MATRIX is unreadable, so what $project needs is unknown"; return 2; }
+      done <<<"$rows"
+    fi
+  fi
+  for cap in "${needs[@]}"; do
+    jq -e --arg h "$h" --arg c "$cap" '.harnesses[$h].capabilities // [] | any(. == $c)' "$HARNESSES" >/dev/null 2>&1 && continue
+    why=$(jq -r --arg c "$cap" '.capabilities[$c].why // empty' "$HARNESSES" 2>/dev/null)
+    echo "it lacks the $cap capability (capabilities in $HARNESSES)${why:+: $why}"
+    return 1
+  done
+}
+
 # harness_sandbox <harness> -> the lane sandbox profile its runs are held to (its `sandbox` in the map), or nothing.
 harness_sandbox() { jq -r --arg h "$1" '.harnesses[$h].sandbox // empty' "$HARNESSES" 2>/dev/null; }
 
@@ -3065,7 +3124,7 @@ item_points() { jq -r 'first((.points | tostring | select(test("^[0-9]+$"))), ((
 # slug, so a rejected or failed row goes to claude).
 # With a share N above 0, a tier-3 row tier3_pick takes is let through too. <who> names the run.
 ladder_row_why() {
-  local it="$1" who="$2" tiers="${3:-1}" share="${4:-0}" tags tier kind prev
+  local it="$1" who="$2" tiers="${3:-1}" share="${4:-0}" tags tier prev
   tags=" $(jq -r '.tags // ""' <<<"$it") "
   ! is_canary "$it" && [[ "$tags" != *" trainee-review "* && "$tags" != *" verify "* && "$tags" != *" validate "* ]] ||
     { echo "it is a canary, verify, validate or review item"; return 1; }
@@ -3080,8 +3139,8 @@ ladder_row_why() {
     echo "it is tier $tier, and $who takes tier ${tiers// /, } only$([ "$share" -gt 0 ] && echo ", and one tier-3 cleanup row in $share")"
     return 1
   fi
-  load_kinds; kind=$(item_kind "$it")
-  [ -z "$kind" ] || [ "${KIND_EXIT[$kind]:-pr}" = pr ] || { echo "its kind $kind opens no PR"; return 1; }
+  load_kinds
+  kind_opens_pr "$it" || { echo "its kind $(item_kind "$it") opens no PR"; return 1; }
 }
 
 # tier3_pick <item json> <share> -> rc 0 when a ladder run takes the tier-3 row: share is above 0,
@@ -3297,6 +3356,7 @@ trainee_brief() {
   echo
   echo "You run in a sandbox that sees this worktree alone: no skills, agent-queue, gh, push or human. Ignore any step above that needs one."
   echo "Make the smallest change in this worktree that fully does the task, run the repo's own tests for what you changed where they run here, and stop."
+  echo "Edit only markdown files (anywhere) and shell or bats scripts (.sh, .bash, .zsh, .bats, or no extension with a shell shebang) in no directory holding a Cargo.toml or package.json: the sandbox builds nothing else, and a diff touching any other file is rejected, however right it is."
   echo "Do not commit, push or open a pull request: leave your edits in the working tree. They are checked and landed, or the task is sent back, after you stop."
   echo "If you change nothing, say why in one word on the first line of a file named .no-diff in this worktree: already-fixed when the code already does what the task asks, blocked when the task cannot be done without a decision from the human or access you lack. No file means you failed."
 }
@@ -3626,7 +3686,7 @@ EOF
 # (UTC, YYYY-MM-DDTHH:MM:SS): the cause, its row title, its count, the per-pair counts, the harnesses, and
 # one reason as written. A reject is a lane trainee run with an outcome of redo or failed. Its cause is
 # the `(end <reason>)` trainee_empty_why writes, "no diff" for "left no diff", "no reason recorded" for a
-# run with no `why`, else the reviewer's first four words; at most 40 characters, so the title fits the
+# run with no `why`, "touch a file the sandbox cannot build" for a diff trainee_diff_why refused (whatever the file), else the reviewer's first four words; at most 40 characters, so the title fits the
 # board's 80. One cause on one pair names that pair; on two or more it names no model, since a cause
 # every model hits is the harness's or the source's. The cause is the key, so a cause that spreads to a
 # second pair keeps its count and its row: a reject no newer than its cause's stamp (the last night that
@@ -3643,7 +3703,9 @@ rollup_causes() {
       | ([$w | capture("\\(end (?<e>[a-z-]+)").e] | first) as $e
       | {pair: $pair, harness: (.harness // "claude"), ts: .ts[0:19], why: (.why // "no reason recorded (outcome \(.outcome))"),
          cause: (if $e then "keep ending on end " + $e elif $w == "left no diff" then "keep leaving no diff"
-                 elif $w == "" then "end with no reason recorded" else "are rejected for " + ($w | words) end | fit)}]
+                 elif $w == "" then "end with no reason recorded"
+                 elif ($w | test("^its diff touches .* which is no markdown file")) then "touch a file the sandbox cannot build"
+                 else "are rejected for " + ($w | words) end | fit)}]
     | group_by(.cause)[]
     | . as $all | $all[0].cause as $c
     | [$all[] | select(.ts > ($stamps[$c] // ""))] as $new
@@ -4195,7 +4257,7 @@ record_world() {
   # Tab, not \037: tmux 3.4 and 3.5a print a control byte in a -F format as octal text, and a tab raw.
   panes=$(tmux -L "$srv" list-panes -a -F $'#{pane_id}\t#{session_name}\t#{window_name}\t#{pane_current_path}' 2>/dev/null) || return 0
   jq -Rn --arg server "$srv" --arg instance "$inst" --arg at "$(date -Iseconds)" --slurpfile panel "$panel" '
-    (reduce $panel[] as $row ({}; .[$row.pane] = $row)) as $by |
+    (reduce ($panel[] | select((.harness // "claude") == "claude")) as $row ({}; .[$row.pane] = $row)) as $by |
     {server: $server, instance: $instance, at: $at, panes: [inputs | split("\t") | $by[$server + "/" + .[0]] as $c |
       {session: .[1], window: .[2], cwd: ($c.cwd // .[3]), claude: ($c.session_id // "")}]}' \
     <<<"$panes" > "$file.tmp" && mv -f "$file.tmp" "$file"
@@ -4317,6 +4379,8 @@ cmd_record() {
 }
 
 # record_here -- the pane record of every world a manifest declares on this machine, under record's lock.
+# agent-panel lists every harness, and the record's `claude` field is a Claude conversation restore reopens
+# (record_world reads only the harness claude rows), so a codex thread is never resumed as a Claude.
 record_here() {
   local f srv panel="$PANES/.panel"
   mkdir -p "$PANES"
@@ -6836,8 +6900,10 @@ item_pinned() {
 # one (harness_project_why, pinned or not: ocfree carries public input only), an item no higher than
 # its `max_tier` unless a canary or a trainee row (harness_tier_why, pinned or not), only a canary or trainee item when
 # it runs in its own lane sandbox (sandbox_item_why; a trainee row offers the trainees first), and, when routed rather
-# than pinned, a tier within the unattended ceiling: only a red goes past it, and only to a harness that can run the
-# red-fix gate, or a trainee row (trainee_why: its review lands it, behind review_gate when it is tier 3). A `metered`
+# than pinned, a tier within the unattended ceiling: only a red goes past it, or a trainee row (trainee_why: its
+# review lands it, behind review_gate when it is tier 3). It also needs every capability the item calls for in
+# the harness's `capabilities` (harness_needs_why: the lane sandbox, the red-fix gate's code_review, a stack's
+# unity_gate), pinned or not except the red-fix gate. A `metered`
 # harness (pay-per-use, GLM) is overflow: routed, it takes only a class it was promoted for or its trial
 # pick, only while no account has room, and only tier-1 work, so an unscored lane never spends on spare work.
 route() {
@@ -6866,6 +6932,7 @@ route() {
     [ "$cands" != '[]' ] || { ROUTE_WHY="the trainee floor starts ${TRAINEE_HARNESS:-a trainee} as a trainee only, and it is none for this item"; return 1; }
   fi
   tier=$(item_tier "$it")
+  load_kinds   # once here: harness_needs_why runs in a subshell per candidate, which inherits it (its own load_kinds is then a no-op)
   while read -r h m; do
     if [ "$h" = claude ]; then
       [ "${CLAUDE_FULL:-0}" = 0 ] || { why+=("claude: the Claude pace target is full"); continue; }
@@ -6884,10 +6951,10 @@ route() {
     elif [ -n "$(harness_sandbox "$h")" ] && ! pwhy=$(sandbox_item_why "$it" "$h" "$m" "$verdict"); then why+=("$h: $pwhy")
     elif [ -z "$m" ]; then why+=("$h: the item names no model: for it")
     elif [ -n "${PLACE_HOST:-}" ] && ! host_runs "$PLACE_HOST" "$h"; then why+=("$h: placed on $PLACE_HOST, which does not run it (its kit and fleet_harnesses, fleet-dispatch hosts)")
-    elif [ -n "$DISPATCH_SANDBOX_PROFILE" ]; then why+=("$h: cannot hold sandbox $DISPATCH_SANDBOX_PROFILE")
     elif ! takes_plan "$h" && [ "$(jq -r .mode <<<"$it")" = plan ]; then why+=("$h: runs headless and cannot resume, and this is a plan item")
     elif [ "$hl" = 1 ] && [ "$erc" = 0 ]; then why+=("$h: runs headless, and this is $excl work (excluded in $MATRIX)")
     elif [ "$hl" = 1 ] && [ "$erc" = 2 ]; then why+=("$h: runs headless, and the exclusion list $MATRIX is unreadable or has a bad match")
+    elif ! pwhy=$(harness_needs_why "$h" "$it" "$tier" "$pinned"); then why+=("$h: $pwhy")
     elif [ "$overflow" = 1 ] && ! jq -e --arg c "$h:$m" '.trial == $c or any(.promoted[]?, .direct[]?; . == $c)' <<<"${verdict:-null}" >/dev/null 2>&1; then
       why+=("$h: pay-per-use, so it takes only a class it was promoted for or its trial pick")
     elif [ "$overflow" = 1 ] && [ "${ACCT_RC:-1}" = 0 ]; then why+=("$h: pay-per-use, and an account has room")
@@ -6895,7 +6962,6 @@ route() {
     elif [ "$pinned" = 0 ] && [ "$tier" -gt "$UNATTENDED_TIER_CEILING" ] && ! is_red "$it" &&
       ! { [ -n "$(harness_sandbox "$h")" ] && trainee_why "$it" "$h" >/dev/null; }; then
       why+=("$h: tier $tier is past the unattended ceiling")
-    elif [ "$pinned" = 0 ] && [ "$tier" -gt "$UNATTENDED_TIER_CEILING" ] && is_red "$it" && headless "$h"; then why+=("$h: runs headless, so it cannot hold the red-fix gate")
     elif pwhy=$(provider_hold_why "$src"); then why+=("$h: $pwhy")
     elif ! jq -e --arg s "$src" 'any(.sources[]?; .name == $s and .room.ok == true)' <<<"$ACCT_ROWS" >/dev/null 2>&1; then
       why+=("$h: $(jq -r --arg s "$src" '[.sources[]? | select(.name == $s) | "\($s): \(.room.why)"][0] // "no source \($s) in claude-acct room --json"' <<<"$ACCT_ROWS")")
@@ -7867,12 +7933,13 @@ repose_ask() {
   fi
 }
 
-# reconcile_plans -- file an approved plan its session left behind on the board: one untagged row (the priority rubric judges it) naming
-# the plan (agent-queue add --plan from a filer; only the board fills the queue), which dispatch
-# pulls like any row and promote queues as the plan's chain. Once only: a plan the queue has held,
-# or one filed here before (PLANS_FILED), is not filed again, or every pass would add a row.
-# ask-sweep reads PLANS_FILED too, so it asks the human about no plan filed here. One still open
-# after that shows in plans_unqueued.
+# reconcile_plans -- file an approved plan its session left behind on the board: each open phase its
+# own row, every later one gated #after/ the row before (agent-queue add --plan from a filer; only the
+# board fills the queue), which dispatch pulls in turn like any row. No row stands for the whole plan
+# (ar-5605). Once only: a plan the queue has held, or one filed here before (PLANS_FILED), is not
+# filed again, or every pass would add rows. A held exit with no `held` line filed nothing (its epic:
+# new proposal waits), so that plan is tried again next pass. One still open after that shows in
+# plans_unqueued.
 # `- [-]` is how a human drops a phase.
 PLANS_FILED="$DIR/plans-filed"
 reconcile_plans() {
@@ -7882,20 +7949,40 @@ reconcile_plans() {
   [ -n "$orphans" ] || return 0
   held=$(agent-queue list --json --state done --since "$(date -d "$PLAN_LEDGER_DAYS days ago" +%F)" 2>/dev/null | jq -r '.plan // empty') || return 0
   [ ! -s "$PLANS_FILED" ] || held+=$'\n'"$(cat "$PLANS_FILED")"
-  # By file name, as PLAN_ITEMS_JQ and ask-sweep match: an item names ~/.claude/plans/<f>, the
+  # By file name, as PLAN_ITEMS_JQ matches: an item names ~/.claude/plans/<f>, the
   # ledger the account's own ~/.claude-<acct>/plans/<f>.
   held=$(sed 's#.*/##' <<<"$held")
   while IFS= read -r c; do
     plan=$(jq -r .plan <<<"$c"); project=$(jq -r .project <<<"$c")
     grep -qxF -- "${plan##*/}" <<<"$held" && continue
     out=$(AGENT_QUEUE_START=0 agent-queue add --plan "$plan" --project "$project" --from auto:plans 2>&1); rc=$?
-    if [ "$rc" -eq 0 ] || [ "$rc" -eq "$AQ_EX_HELD" ]; then
+    if [ "$rc" -eq 0 ] || { [ "$rc" -eq "$AQ_EX_HELD" ] && grep -q '^held ' <<<"$out"; }; then
       mkdir -p "$DIR"; printf '%s\n' "$plan" >> "$PLANS_FILED"
       logline "filed $(basename "$plan") to run its open phases: its session is gone"
+    elif [ "$rc" -eq "$AQ_EX_HELD" ]; then
+      logline "left $(basename "$plan") for next pass: ${out##*$'\n'}"
+    elif plan_fix_row "$plan" "$project" "$out"; then
+      mkdir -p "$DIR"; printf '%s\n' "$plan" >> "$PLANS_FILED"
     else
       say "could not file the phases of $plan: $out"
     fi
   done <<<"$orphans"
+}
+
+# plan_fix_row <plan> <project> <agent-queue output> -- when agent-queue refused the plan's Phases
+# checklist, file one fix(plan) row on the project's board, so the plan is fixed once rather than
+# retried every pass; fails when the refusal is anything else or the row could not be filed.
+plan_fix_row() {
+  local why board rc=0
+  why="${3##*$'\n'}"; why="${why#agent-queue: }"; why="${why#--plan *: }"
+  [[ "$why" == "could not read its Phases checklist: "* ]] || return 1
+  why=$(tr -cd ' -~' <<<"${why#could not read its Phases checklist: }" | tr -d '#' | cut -c1-160)
+  board=$(PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_board "$2")
+  [ -n "$board" ] || return 1
+  notes ptask "$board" --agent add --why fault "fix(plan): $(basename "$1" .md): agent-queue refuses its Phases checklist ($why); fix it, then agent-queue add --plan $1 #size/s" \
+    >/dev/null 2>&1 || rc=$?
+  # 3: an open twin; 4: the outbox took it, where inbox-triage joins a later twin.
+  case "$rc" in 0|3|4) logline "filed a fix row for $(basename "$1"): agent-queue refuses its Phases checklist" ;; *) return 1 ;; esac
 }
 
 # reconcile_epics -- queue one verify item for each open epic whose every leaf has landed (fleet-bench's
@@ -7954,6 +8041,7 @@ epic_verify_task() {
 waiting_sessions() {
   local panel asks shared working wsids
   panel=$(agent-panel list --json 2>/dev/null) || return 1
+  panel=$(claude_rows <<<"$panel")
   # --open: a session whose ask is parked still waits on its human; parking only hides the row.
   asks=$(agent-ask list --all --open 2>/dev/null) || return 1
   shared=$(jq -r 'select(.status != "shell") | .target | sub(":[^:/]*$"; "")' <<<"$panel" 2>/dev/null | sort | uniq -d)
