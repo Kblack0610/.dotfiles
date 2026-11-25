@@ -2282,7 +2282,6 @@ mod tests {
             "raw",
             "automation",
             "untriaged",
-            "prio_why",
             "section",
             "backlog",
             "rank",

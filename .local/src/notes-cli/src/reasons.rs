@@ -140,6 +140,28 @@ fn with_reason_in(r: Reason, text: &str) -> Result<String> {
     })
 }
 
+/// The words of `ptask add`, joined, with `--why`'s reason and priority when one is given.
+pub(crate) fn add_text(words: &[String], why: Option<&str>) -> Result<String> {
+    let text = words.join(" ");
+    match why {
+        Some(slug) => with_reason(&text, slug),
+        None => Ok(text),
+    }
+}
+
+/// `ptask tag --add`'s tags plus `--why`'s `#why/<slug>`, and the reason's priority unless one
+/// of the tags already is a priority ([`refuse_bad`] then says when it is the wrong level).
+pub(crate) fn tag_adds(mut add: Vec<String>, why: Option<&str>) -> Result<Vec<String>> {
+    if let Some(slug) = why {
+        let r = lookup(slug)?;
+        add.push(format!("#{TAG}{}", r.slug));
+        if !add.iter().any(|t| md::is_priority(t)) {
+            add.push(format!("#{}", r.priority));
+        }
+    }
+    Ok(add)
+}
+
 /// Why an edit from `old` to `new` is refused: `new` names a reason the list does not have, two
 /// reasons, or a reason of another priority than the row's. Nothing is checked when the edit
 /// changes neither the row's reasons nor its priority, so a row that already breaks this can

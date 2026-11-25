@@ -663,6 +663,23 @@ enum FocusCmd {
     Sweep,
 }
 
+/// The arguments of `ptask tag`.
+#[derive(clap::Args)]
+struct TagArgs {
+    /// A tag to add (`#` optional). Repeatable
+    #[arg(long, value_name = "TAG")]
+    add: Vec<String>,
+    /// A tag to take off (`#` optional). Repeatable
+    #[arg(long, value_name = "TAG")]
+    remove: Vec<String>,
+    /// Why the row has its priority: a slug of `priority-reasons.tsv`. It writes `#why/<slug>`
+    /// (replacing the row's reason) and the reason's priority, unless `--add` names one
+    #[arg(long, value_name = "SLUG")]
+    why: Option<String>,
+    #[arg(required = true, num_args = 1..)]
+    query: Vec<String>,
+}
+
 /// `notes ptask <name> ...` verbs - the project analog of `FocusCmd`, on the sheet's `## Tasks`.
 #[derive(clap::Subcommand)]
 enum PtaskCmd {
@@ -766,20 +783,7 @@ enum PtaskCmd {
     },
     /// Add or take hashtags off the first matching open task (before its marker). A release
     /// tag is refused: move, promote and demote own it
-    Tag {
-        /// A tag to add (`#` optional). Repeatable
-        #[arg(long, value_name = "TAG")]
-        add: Vec<String>,
-        /// A tag to take off (`#` optional). Repeatable
-        #[arg(long, value_name = "TAG")]
-        remove: Vec<String>,
-        /// Why the row has its priority: a slug of `priority-reasons.tsv`. It writes `#why/<slug>`
-        /// (replacing the row's reason) and the reason's priority, unless `--add` names one
-        #[arg(long, value_name = "SLUG")]
-        why: Option<String>,
-        #[arg(required = true, num_args = 1..)]
-        query: Vec<String>,
-    },
+    Tag(TagArgs),
     /// Mark the matching task in progress (`[ ]` -> `[/]`); a started row is left as it is
     Start {
         #[arg(required = true, num_args = 1..)]
@@ -1281,6 +1285,14 @@ fn reset_sigpipe() {
 #[cfg(not(unix))]
 fn reset_sigpipe() {}
 
+/// `--game` and `--pr` belong to the playtest sheet's add; anywhere else they are refused.
+fn refuse_playtest_flags(game: Option<&String>, pr: Option<&u64>) -> Result<()> {
+    if game.is_some() || pr.is_some() {
+        bail!("--game and --pr only apply with --playtest");
+    }
+    Ok(())
+}
+
 /// The five verbs `ptask --playtest` takes. Everything else acts on releases, which playtest.md
 /// does not have, so it is refused rather than run against the sheet.
 fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
@@ -1459,6 +1471,20 @@ fn knowledge_cmd(prof: &config::Profile, log: &logging::Logger, sub: KnowledgeCm
 /// All of stdin as text, for the commands that take their body there.
 /// `notes ptask <name> move <query> (--to vX.Y.Z | --project <dest> [--to vX.Y.Z])`.
 #[allow(clippy::too_many_arguments)]
+/// `ptask tag`: its `--add` tags plus `--why`'s reason and priority, then the retag.
+fn ptask_tag(
+    prof: &config::Profile,
+    log: &logging::Logger,
+    name: &str,
+    pick: &Pick,
+    t: TagArgs,
+    lane: Lane,
+    writer: &project_tasks::Writer,
+) -> Result<i32> {
+    let add = reasons::tag_adds(t.add, t.why.as_deref())?;
+    project_tasks::tag(prof, log, name, pick, &add, &t.remove, lane, writer)
+}
+
 fn ptask_move(
     prof: &config::Profile,
     log: &logging::Logger,
@@ -1669,19 +1695,12 @@ fn main() -> Result<()> {
                     why,
                     text,
                 }) => {
-                    if game.is_some() || pr.is_some() {
-                        bail!("--game and --pr only apply with --playtest");
-                    }
-                    let text = text.join(" ");
-                    let text = match why.as_deref() {
-                        Some(slug) => reasons::with_reason(&text, slug)?,
-                        None => text,
-                    };
+                    refuse_playtest_flags(game.as_ref(), pr.as_ref())?;
                     project_tasks::add(
                         &prof,
                         &log,
                         &name,
-                        &text,
+                        &reasons::add_text(&text, why.as_deref())?,
                         &detail,
                         to.as_deref(),
                         want.as_deref(),
@@ -1778,21 +1797,8 @@ fn main() -> Result<()> {
                     };
                     project_tasks::file(&prof, &log, &name, &pick, &how, lane)?
                 }
-                Some(PtaskCmd::Tag {
-                    mut add,
-                    remove,
-                    why,
-                    query,
-                }) => {
-                    let q = pick(&query)?;
-                    if let Some(slug) = why.as_deref() {
-                        let r = reasons::lookup(slug)?;
-                        add.push(format!("#{}{}", reasons::TAG, r.slug));
-                        if !add.iter().any(|t| crate::md::is_priority(t)) {
-                            add.push(format!("#{}", r.priority));
-                        }
-                    }
-                    project_tasks::tag(&prof, &log, &name, &q, &add, &remove, lane, &writer)?
+                Some(PtaskCmd::Tag(t)) => {
+                    ptask_tag(&prof, &log, &name, &pick(&t.query)?, t, lane, &writer)?
                 }
                 Some(PtaskCmd::Drop { why, dup, query }) => project_tasks::drop(
                     &prof,
