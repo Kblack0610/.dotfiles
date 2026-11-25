@@ -4098,12 +4098,12 @@ source_attr() {
     | ($ws | map({key: .sid, value: {source: .src,
         points: (if $pts[.src] == null or ($wsum[.src] // 0) == 0 then null else $pts[.src] * .w / $wsum[.src] end)}}) | from_entries) as $sess
     | def item_src: (.agent // "claude") as $h | (.account // "") as $a
-        | ([(.sessions // "") | split(" ")[] | select(. != "")]) as $ids
+        | sids as $ids
         | if $h != "claude" then $hs[$h] // (.account | acct)
           else (.account | acct) // ([$ids[] | $os[.] // empty | on // empty] | first) end
         | {src: ., why: (if . != null then null elif $a != "" then "unknown_account" elif $ids == [] then "no_session"
                          elif any($ids[]; $os[.] != null) then "no_account" else "no_outcome" end)};
-      [$items[] | select(.status == "ok" and (.pr // "") != "") | item_src] as $L
+      [$items[] | select(landed) | item_src] as $L
     | ($L | map(.src)) as $landed
     | ($R | map({key: .name, value: .parent}) | from_entries) as $parent
     | {days: $days, read: {sources: ($rows != null), points: ($pts != null), usd: ($usd != null)}, sessions: $sess,
@@ -4187,7 +4187,7 @@ sizes_json() {
     done | jq -cs 'from_entries')
   jq -cn --argjson days "$BENCH_SIZES_DAYS" --argjson bdays "$BENCH_BANDS_DAYS" --argjson min "$BENCH_SIZES_MIN" \
      --argjson since "$since" --argjson bsince "$bands_since" \
-     --slurpfile items <(printf '%s\n' "$items") --slurpfile rows <(printf '%s\n' "$rows") '
+     --slurpfile items <(printf '%s\n' "$items") --slurpfile rows <(printf '%s\n' "$rows") "$JQ_LIB"'
     def pct($p): sort | if length == 0 then null else .[((length * $p) | ceil) - 1] end;
     def epoch: if . == null or . == "" then null else (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601) end;
     def hours: if . == null then null else (. / 3600 * 10 | round / 10) end;
@@ -4195,7 +4195,7 @@ sizes_json() {
     | [$items[0][] | select(.status != "cancelled") | ((.finished | epoch) // 0) as $fin
        | ($R[.row // ""]) as $r
        | {fin: $fin, ok: (.status == "ok"), size: ($r.size // ""), pts: $r.pts, weight: $r.weight, kind: ($r.kind // .type // "untyped" | if . == "" then "untyped" else . end),
-          landed: (.status == "ok" and (.pr // "") != ""),
+          landed: landed,
           work: (.work_min // "" | tonumber? // null),
           cycle: (if (.started | epoch) and (.finished | epoch) then (.finished | epoch) - (.started | epoch) else null end),
           lead: (if (.queued | epoch) and (.finished | epoch) then (.finished | epoch) - (.queued | epoch) else null end)}] as $read
