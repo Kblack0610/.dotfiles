@@ -34,6 +34,9 @@ msg() { printf '{"type":"%s","timestamp":"2026-11-24T09:05:00.000Z","message":{"
   err 'something broke' > "$T"
   run claude_end "$T"
   assert_output ''
+  err 'Context limit reached - start a new session' > "$T"
+  run claude_end "$T"
+  assert_output ''
   # a model that wrote the words is not the CLI's error line
   printf '{"type":"assistant","timestamp":"2026-11-24T09:01:00.000Z","message":{"content":[{"type":"text","text":"API Error: 500 in the log"}]}}\n' > "$T"
   run claude_end "$T"

@@ -4,8 +4,8 @@
 # that stopped at an idle prompt), session-outcomes.sh so_transcript_metrics (its api_error count) and
 # fleet-dispatch item_claude_end (the item's end_reason), so no one reads `isApiErrorMessage` on its own.
 # Claude Code writes its own error line as an assistant entry with isApiErrorMessage: `API Error: <code> ...`
-# is a provider fault (the CLI retried first, so the turn is over); a line with no code that names a limit
-# is the plan's usage limit. Structure and the CLI's own wording only, never a model's prose.
+# is a provider fault (the CLI retried first, so the turn is over); a line with no code that says the weekly or usage limit
+# (fleet-shepherd's LIMIT_RE wording) is the plan's usage limit, and a context or output limit is neither. Structure and the CLI's own wording only, never a model's prose.
 
 # CLAUDE_END_JQ: jq defs. is_api_error: that record is the CLI's error line (what so_transcript_metrics counts).
 # api_error_end: {reason: provider|limit, code} for such a record, else null. transcript_end: the same for the
@@ -18,7 +18,7 @@ def api_error_end:
     ([.message.content[]? | select(.type == "text") | .text] | join(" ")) as $t
     | (($t | capture("API Error: (?<c>[0-9]+)")? // {c: ""}).c) as $c
     | if $c != "" then {reason: "provider", code: $c}
-      elif ($t | test("limit"; "i")) then {reason: "limit", code: ""}
+      elif ($t | test("weekly limit|usage limit|hit your .*limit"; "i")) then {reason: "limit", code: ""}
       else null end
   else null end;
 def transcript_end:
