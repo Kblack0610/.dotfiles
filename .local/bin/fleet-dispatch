@@ -6247,7 +6247,7 @@ probe_hosts() {
     if out=$(fleet_host_run "$name" env FLEET_PROBE_REPOS="$repos" sh -c 'cut -d" " -f1 /proc/loadavg; nproc; command -v wt >/dev/null && test -f "$HOME/.agent/.sync/peer" && echo 1 || echo 0; awk '\''/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {print t ? int(a * 100 / t) : -1}'\'' /proc/meminfo; test -e "$HOME/.agent/.sync/conflict" && echo 1 || echo 0; test -e "$HOME/.notes/.git" && echo 1 || echo 0; echo kit; fleet-dispatch kit 2>/dev/null || :; echo missing; for d in $FLEET_PROBE_REPOS; do test -e "$d/.git" || echo "$d"; done; [ $# -eq 0 ] || { echo harnesses; fleet-dispatch harness-ready "$@" 2>/dev/null || :; }' _ $listed 2>/dev/null); then
       HOST_PROBE[$name]=$(sed '/^kit$/,$d' <<<"$out" | tr '\n' ' ')
       HOST_KIT[$name]=$(sed '1,/^kit$/d; /^missing$/,$d' <<<"$out" | tr '\n' ' ')
-      HOST_MISSING[$name]=$(sed '1,/^missing$/d; /^harnesses$/,$d' <<<"$out" | tr '\n' ' ')
+      HOST_MISSING[$name]=$(sed '1,/^missing$/d; /^harnesses$/,$d' <<<"$out")
       ready='' why=${bad:+"$bad: not a harness name ([a-z0-9-]), so its probe never asks"} answers=$'\n'"$(sed '1,/^harnesses$/d' <<<"$out")"$'\n'
       for h in $listed; do
         case $answers in
@@ -6327,7 +6327,7 @@ host_agent() {
 # die in the worker's wt ("not a directory"), leaving the item queued for the next pass to try again
 # (razer-laptop, unity-core-playground, 2026-11-24, ar-5245). A worker the probe could not reach lacks nothing.
 host_lacks_clone() {
-  case " ${HOST_MISSING[$1]:-} " in *" $2 "*) return 0 ;; *) return 1 ;; esac
+  case $'\n'"${HOST_MISSING[$1]:-}"$'\n' in *$'\n'"$2"$'\n'*) return 0 ;; *) return 1 ;; esac
 }
 
 # host_takers <item json> -> the roster's workers provisioned for this item, one name a line: an
@@ -6474,7 +6474,7 @@ host_rows() {
     jq -c --arg p "${HOST_PROBE[$name]:-}" --arg f "${HOST_FREE[$name]:-}" --arg w "$(host_why "$name")" --arg s "$([ -z "${1:-}" ] || stuck_on "$name" <<<"$1")" \
       --arg hr "${HOST_HARN[$name]:-}" --arg hw "${HOST_HARN_WHY[$name]:-}" --arg k "${HOST_KIT[$name]:-}" --arg ms "${HOST_MISSING[$name]:-}" \
       '{name, dest, place, max_live, free: ($f | tonumber? // null), stuck: ($s | tonumber? // null), probe: $p, kit: ($k | split(" ") | map(select(. != ""))), why: $w, repos,
-        harnesses: (.harnesses // []), harness_ready: ($hr | split(" ") | map(select(. != ""))), harness_why: $hw, missing: ($ms | split(" ") | map(select(. != "")))}' <<<"$h" || return 1
+        harnesses: (.harnesses // []), harness_ready: ($hr | split(" ") | map(select(. != ""))), harness_why: $hw, missing: ($ms | split("\n") | map(select(. != "")))}' <<<"$h" || return 1
   done < <(fleet_hosts)
 }
 
