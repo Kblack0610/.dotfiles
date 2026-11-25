@@ -392,16 +392,22 @@ snapshot() {
 # no longer in the snapshot can be deleted. Filenames are the topic with / -> %.
 tfile() { printf '%s/sent/%s' "$CACHE" "${1//\//%}"; }
 
-# broker_addr <host> -> its first stream address, looked up once a run and retried like a publish.
-# mosquitto_pub resolves -h on every call, and the broker's record lives 10s, so each of a --full run's
-# 310 calls paid a fresh lookup; at about 200ms a lookup that was 62s, past the unit's 60s (ar-2310).
-# An address passes through as itself. With no getent (macOS) each call resolves the name, as before.
+# broker_addr <host> -> the address every publish of this run connects to, looked up once (each try
+# capped at PUB_TIMEOUT, retried like a publish). mosquitto_pub resolves -h on every call, and the
+# broker's record lives 10s, so each of a --full run's 310 calls paid a fresh lookup; at about 200ms a
+# lookup that was 62s, past the unit's 60s (ar-2310). A name with more than one address stays the
+# name, so libmosquitto keeps trying each; with no getent (macOS) it stays the name too. A broker that
+# moves mid-run fails the rest of that run, and the next run looks it up again.
 broker_addr() {
     command -v getent >/dev/null 2>&1 || { printf '%s\n' "$1"; return 0; }
-    local i
+    local i out addrs
     for ((i = 0; i <= PUB_RETRIES; i++)); do
         [ "$i" -gt 0 ] && sleep $((PUB_BACKOFF << (i - 1)))
-        getent ahosts "$1" 2>/dev/null | awk '$2 == "STREAM" { print $1; ok = 1; exit } END { exit !ok }' && return 0
+        out="$(timeout "$PUB_TIMEOUT" getent ahosts "$1" 2>/dev/null)" || continue
+        addrs="$(awk '$2 == "STREAM" { print $1 }' <<< "$out" | sort -u)"
+        [ -n "$addrs" ] || continue
+        if [ "$(wc -l <<< "$addrs")" -eq 1 ]; then printf '%s\n' "$addrs"; else printf '%s\n' "$1"; fi
+        return 0
     done
     return 1
 }

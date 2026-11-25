@@ -41,6 +41,8 @@ EOF
 n=$(cat "$NOTES_FIXTURE/getent.calls" 2>/dev/null || echo 0); echo $((n + 1)) > "$NOTES_FIXTURE/getent.calls"
 [ "$n" -lt "${GETENT_STUB_MISSES:-0}" ] && exit 2
 printf '192.0.2.7       STREAM %s\n192.0.2.7       DGRAM  \n' "$2"
+[ -n "${GETENT_STUB_SECOND:-}" ] && printf '%s STREAM\n' "$GETENT_STUB_SECOND"
+exit 0
 EOF
   chmod +x "$SANDBOX/bin/getent"
 
@@ -400,6 +402,12 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   [ "$(cat "$NOTES_FIXTURE/getent.calls")" = 1 ]
   [ "$(sort -u "$NOTES_FIXTURE/mqtt.hosts")" = 192.0.2.7 ]
   [ "$(wc -l < "$NOTES_FIXTURE/mqtt.hosts")" -gt 1 ]
+}
+
+@test "broker lookup: a name with two addresses stays the name, so libmosquitto tries each" {
+  GETENT_STUB_SECOND=2001:db8::7 run "$PUB" --quiet
+  assert_success
+  [ "$(sort -u "$NOTES_FIXTURE/mqtt.hosts")" = stub ]
 }
 
 @test "broker lookup: a missed lookup is retried and the run still succeeds" {
