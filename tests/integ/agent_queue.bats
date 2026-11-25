@@ -2611,7 +2611,7 @@ EOF
 @test "add --plan: an epic: new proposal holds the chain in triage, refuses it dropped or unproposed, and is written into the plan once filed" {
   story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
   plan_fixture
-  sed -i '1a epic: new epic(ui): a lobby #low' "$SANDBOX/my-plan.md"
+  sed -i '1a epic: new epic(ui): a lobby' "$SANDBOX/my-plan.md"
   run "$AQ" add --plan "$SANDBOX/my-plan.md" --project level --dry-run
   assert_failure
   assert_output --partial 'never proposed'
@@ -2620,17 +2620,17 @@ EOF
   [ "$status" -eq 5 ]
   assert_output --partial 'could not be read'
   rm "$NOTES_FIXTURE/trace.fail"
-  echo '{"action":"added","text":"epic(ui): a lobby #low #plan/my-plan"}' > "$NOTES_FIXTURE/trace"
+  echo '{"action":"added","text":"epic(ui): a lobby #plan/my-plan"}' > "$NOTES_FIXTURE/trace"
   AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/my-plan.md" --project level
   [ "$status" -eq 5 ]
   assert_output --partial 'waits on its epic: new proposal'
   [ -z "$(ls "$AGENT_QUEUE_DIR/queued")" ]
   ! grep -qF -- '--agent add' "$NOTES_FIXTURE/calls.log"
-  echo '{"action":"dropped","text":"epic(ui): a lobby #low #plan/my-plan","why":"a fix, not a capability"}' >> "$NOTES_FIXTURE/trace"
+  echo '{"action":"dropped","text":"epic(ui): a lobby #plan/my-plan","why":"a fix, not a capability"}' >> "$NOTES_FIXTURE/trace"
   run "$AQ" add --plan "$SANDBOX/my-plan.md" --project level --dry-run
   assert_failure
   assert_output --partial 'was dropped (a fix, not a capability)'
-  echo '{"action":"dup","id":"lv-50","text":"epic(ui): a lobby #low #plan/my-plan","why":"epic proposal: joins open epic lv-50"}' >> "$NOTES_FIXTURE/trace"
+  echo '{"action":"dup","id":"lv-50","text":"epic(ui): a lobby #plan/my-plan","why":"epic proposal: joins open epic lv-50"}' >> "$NOTES_FIXTURE/trace"
   run "$AQ" add --plan "$SANDBOX/my-plan.md" --project level --dry-run
   assert_success
   grep -q '^epic: new' "$SANDBOX/my-plan.md"

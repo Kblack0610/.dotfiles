@@ -21,9 +21,7 @@ const LANES: usize = md::PRIORITIES.len();
 
 /// Lane index for an open task, else [`LANES`] (no priority tag).
 fn lane_of(line: &str) -> usize {
-    md::task_priority(line)
-        .and_then(|tag| md::PRIORITIES.iter().position(|(_, hash, _)| *hash == tag))
-        .unwrap_or(LANES)
+    md::priority_index(line).unwrap_or(LANES)
 }
 
 /// The headings a sheet's `## Tasks` is cut into, above its `---` and `### Done`
@@ -298,7 +296,10 @@ fn bucket(body: &[&str], layout: Layout, retag: bool) -> Buckets {
                     // it stays untagged: it is untriaged, and a default `#high` would hide that
                     // (human, 2026-11-09: every row gets a real priority from triage).
                     let i = cur_lane.unwrap_or(default);
-                    let tag = retag && (layout == Layout::Focus || cur_lane.is_some());
+                    // Never an epic: it ranks as its most urgent open row, not by a tag.
+                    let tag = retag
+                        && (layout == Layout::Focus || cur_lane.is_some())
+                        && !crate::epics::is_epic(l);
                     let row = if tag {
                         md::add_tag(l, md::PRIORITIES[i].1)
                     } else {
