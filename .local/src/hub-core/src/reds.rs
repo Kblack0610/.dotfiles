@@ -8,6 +8,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::links::{Kind, Link};
+use crate::queue::{pr_links, ItemLink};
 use crate::session_actions::Runner;
 
 /// The window: fleet-bench's own default (`REDS_DAYS`), passed so the summary's "in 7d" is true.
@@ -78,6 +80,13 @@ pub struct Red {
     /// Where the PR opens, when `pr` says enough to build it; filled here, never read.
     #[serde(default, skip_deserializing)]
     pub pr_url: Option<String>,
+    /// The board row the fix works as, its id alone (`ar-5133`): the ticket. None when the item
+    /// names no row.
+    #[serde(default, deserialize_with = "text")]
+    pub row: Option<String>,
+    /// What the fix names, each to its one page ([`Red::links`]); filled here, never read.
+    #[serde(default, skip_deserializing)]
+    pub links: Vec<ItemLink>,
 }
 
 fn epoch(t: Option<&str>) -> Option<i64> {
@@ -141,6 +150,35 @@ impl Red {
     pub fn age(&self, now: i64) -> String {
         self.queued_at()
             .map_or("-".into(), |t| crate::display::fmt::age(now - t))
+    }
+
+    /// What the fix names, each to its one page, in the order both surfaces list them: its board
+    /// row (the ticket), its queue item (the run), its session, then each PR and its CI runs.
+    pub fn links(&self) -> Vec<ItemLink> {
+        let mut out = vec![];
+        let mut add = |what, text: &str, link| {
+            out.push(ItemLink {
+                what,
+                text: text.to_string(),
+                link,
+            })
+        };
+        if let Some(id) = self.row.as_deref().filter(|r| !r.is_empty()) {
+            add("row", id, Link::to(Kind::Row, id));
+        }
+        if !self.slug.is_empty() {
+            add("item", &self.slug, Link::to(Kind::Queue, self.slug.clone()));
+        }
+        // A session page is found by the item it worked (`session_page::find`), live or ended.
+        if let Some(s) = self.session.as_deref().filter(|s| !s.is_empty()) {
+            add("session", s, Link::to(Kind::Session, self.slug.clone()));
+        }
+        let prs = self.pr.as_deref().unwrap_or("");
+        out.extend(pr_links(
+            prs.split(|c: char| c.is_whitespace() || c == ',')
+                .filter(|w| !w.is_empty()),
+        ));
+        out
     }
 
     fn rank(&self) -> usize {
@@ -253,6 +291,7 @@ pub fn split(rows: Vec<Red>) -> Reds {
         .into_iter()
         .map(|mut r| {
             r.pr_url = r.pr.as_deref().and_then(pr_url);
+            r.links = r.links();
             r
         })
         .partition(Red::open);
@@ -404,6 +443,56 @@ mod tests {
         assert_eq!(by("ar-2").age(at.timestamp()), "2h");
         assert_eq!(Red::default().age(0), "-");
         assert_eq!(pr_url("a/b#1 #2, c/d#3"), None, "a list is not one PR");
+    }
+
+    #[test]
+    fn a_fix_links_its_ticket_run_session_and_pr_in_that_order() {
+        let line = r#"{"slug":"red-fleet-liveness-1124","row":"ar-5133","red":"watch fleet-liveness","state":"done","session":"lab:dotfiles-agent-1","queued":"2026-11-24T15:13:08Z","pr":"Kblack0610/.dotfiles#3409","merged":"d231ad22","outcome":"fixed"}"#;
+        let r = split(vec![serde_json::from_str(line).unwrap()]);
+        let f = &r.settled[0];
+        assert_eq!(f.row.as_deref(), Some("ar-5133"));
+        let got: Vec<(&str, String, String)> = f
+            .links
+            .iter()
+            .map(|l| (l.what, l.text.clone(), l.link.href()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (
+                    "row",
+                    "ar-5133".into(),
+                    "#projects/all?q=id:=ar-5133".into()
+                ),
+                (
+                    "item",
+                    "red-fleet-liveness-1124".into(),
+                    "#queue/red-fleet-liveness-1124".into()
+                ),
+                (
+                    "session",
+                    "lab:dotfiles-agent-1".into(),
+                    Link::to(Kind::Session, "red-fleet-liveness-1124").href()
+                ),
+                (
+                    "pr",
+                    ".dotfiles#3409".into(),
+                    "https://github.com/Kblack0610/.dotfiles/pull/3409".into()
+                ),
+                (
+                    "ci",
+                    "CI runs of kblack0610/.dotfiles#3409".into(),
+                    Link::to(Kind::PrRuns, "kblack0610/.dotfiles#3409").href()
+                ),
+            ]
+        );
+        // Negative control: an item with no row, session or PR links only to its run.
+        let bare: Red =
+            serde_json::from_str(r#"{"slug":"ar-2","row":"","outcome":"queued"}"#).unwrap();
+        let bare = split(vec![bare]);
+        let w: Vec<&str> = bare.open[0].links.iter().map(|l| l.what).collect();
+        assert_eq!(w, ["item"], "no empty ticket link");
+        assert_eq!(bare.open[0].row, None);
     }
 
     #[test]

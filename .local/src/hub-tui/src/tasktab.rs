@@ -766,7 +766,7 @@ pub(crate) mod tests {
             "{s}"
         );
         assert!(
-            s.contains("all 5  in progress 0  filed today 0  urgent 1"),
+            s.contains("all 5  in progress 0  epics 0  filed today 0  urgent 1"),
             "{s}"
         );
         // Each section is named once, over its first row, then the closed rows with day and PR.

@@ -2196,19 +2196,37 @@ fix_item() {
   assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red cause:$(cause_of) "
 }
 
-@test "triage: a cause in hand is not queued again: running, or closed with its PR waiting on a merge" {
+@test "triage: a cause in hand is not queued again: running, or in review with its PR waiting on a merge" {
   log_triage_setup
   lock_route
   fix_item ar-1 running ''
   run "$SUBJECT" triage
   assert_success
   [ ! -s "$PLOG" ]
-  : > "$ITEMS"; fix_item ar-1 done ok o/r#5 ''
+  : > "$ITEMS"; fix_item ar-1 review '' o/r#5 ''
   run "$SUBJECT" triage
   assert_success
   [ ! -s "$PLOG" ]
   run grep -c 'fix(logs): alpha error' "$BOARD"   # the row still files
   assert_output 1
+}
+
+# 2026-11-24 (ar-5294): ar-3447 closed recording #3091, whose merge ar-2940's landing recorded, so it
+# had no merged:, and triage read it as an owner waiting on a merge: playground-train-stuck tripped
+# again and went 17h with no item while 44 PRs waited in landing-queue.
+@test "triage: a closed fix that records a PR with no merge is a try that did not hold, not an owner" {
+  log_triage_setup
+  lock_route
+  for row in "done ok o/r#5" "done failed o/r#5"; do
+    : > "$ITEMS"; : > "$PLOG"
+    # shellcheck disable=SC2086
+    fix_item ar-1 $row
+    run "$SUBJECT" triage
+    assert_success
+    assert_output --partial '1 queued as red fixes'
+    run cat "$PLOG"
+    assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red cause:$(cause_of) retry:ar-1 --raw "
+  done
 }
 
 @test "triage: a fix that closed cancelled, failed or merged with the red still here is queued once more, naming it" {
@@ -2941,6 +2959,28 @@ red_item() {
   run "$SUBJECT" reds --json
   assert_success
   assert_equal "$(jq -c '.project' <<<"$output")" '""'
+}
+
+@test "reds: each row names its board row id, the ticket the Alerts tab links, from row: or a board: from; none reads null" {
+  log_triage_setup
+  : > "$AGENTCTL_STATE_DIR/runs.jsonl"
+  watch fine OK -100 normal
+  red_item a done 'check(watch): fine tripped since 2026-11-01, expected: fine' -7200 -3600 r#1 sha1
+  parses 'check(watch): fine tripped since 2026-11-01, expected: fine' check watch 'fine tripped since 2026-11-01, expected: fine'
+  jq -c '. + {row: "agent-runtime:ar-5133"}' "$ITEMS" > "$ITEMS.p" && mv "$ITEMS.p" "$ITEMS"
+  run "$SUBJECT" reds --json
+  assert_success
+  assert_equal "$(jq -r '.row' <<<"$output")" ar-5133
+  jq -c 'del(.row) + {from: "board:home-config:hc-9"}' "$ITEMS" > "$ITEMS.p" && mv "$ITEMS.p" "$ITEMS"
+  run "$SUBJECT" reds --json
+  assert_success
+  assert_equal "$(jq -r '.row' <<<"$output")" hc-9
+  # negative control: an item with no row and no board: from keeps its line, with row null
+  jq -c 'del(.row) + {from: "human"}' "$ITEMS" > "$ITEMS.p" && mv "$ITEMS.p" "$ITEMS"
+  run "$SUBJECT" reds --json
+  assert_success
+  assert_equal "$(jq -c '.row' <<<"$output")" null
+  assert_equal "$(jq -r '.slug' <<<"$output")" a
 }
 
 @test "reds: a merged fix whose red is routed to alert reads alert route and is not unfixed; with no alert line it counts" {

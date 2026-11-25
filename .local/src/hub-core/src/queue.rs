@@ -577,18 +577,7 @@ impl Item {
         if let Some((_, id)) = self.board_row() {
             add("row", id, Link::to(Kind::Row, id));
         }
-        for pr in self.pr_refs() {
-            if let Some((label, Some(url))) = pr_link_of(pr) {
-                add("pr", &label, Link::Url(url));
-            }
-            // A PR's CI runs are found by `owner/repo#N` (`builds::Run::pr_refs`); a bare number has none.
-            if let Some((Some(repo), n)) =
-                pr_ref(pr).filter(|(r, _)| r.as_deref().is_some_and(|r| r.contains('/')))
-            {
-                let r = format!("{repo}#{n}");
-                add("ci", &format!("CI runs of {r}"), Link::to(Kind::PrRuns, r));
-            }
-        }
+        out.extend(pr_links(self.pr_refs()));
         out
     }
 
@@ -955,11 +944,37 @@ fn argv(args: &[&str]) -> Vec<String> {
 /// One record an item names and where it opens (`Item::links`); the web gets the link as its href.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ItemLink {
-    /// session, project, row, pr or ci.
+    /// session, project, row, item (a fix's queue item, `Red::links`), pr or ci.
     pub what: &'static str,
     pub text: String,
     #[serde(rename = "href")]
     pub link: Link,
+}
+
+/// Each PR a record names, then that PR's CI runs: the tail of `Item::links` and `Red::links`.
+pub fn pr_links<'a>(prs: impl Iterator<Item = &'a str>) -> Vec<ItemLink> {
+    let mut out = vec![];
+    for pr in prs {
+        if let Some((label, Some(url))) = pr_link_of(pr) {
+            out.push(ItemLink {
+                what: "pr",
+                text: label,
+                link: Link::Url(url),
+            });
+        }
+        // A PR's CI runs are found by `owner/repo#N` (`builds::Run::pr_refs`); a bare number has none.
+        if let Some((Some(repo), n)) =
+            pr_ref(pr).filter(|(r, _)| r.as_deref().is_some_and(|r| r.contains('/')))
+        {
+            let r = format!("{repo}#{n}");
+            out.push(ItemLink {
+                what: "ci",
+                text: format!("CI runs of {r}"),
+                link: Link::to(Kind::PrRuns, r),
+            });
+        }
+    }
+    out
 }
 
 /// One PR as the ledger writes it: the label a row prints and its page, when the repo is named.

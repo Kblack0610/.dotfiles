@@ -21,7 +21,7 @@ const LINK = new RegExp(`["'\`]#(?:${TABS})(?:[/?]|["'\`])`, "g");
 // file -> {n: lines building a link, by: the phase that removes them, or "keeps: <why>"}.
 // Every site below is the plan's P7 unless an earlier phase deletes it first.
 const ALLOW = {
-  "alerts.js": { n: 2, by: "P7" },
+  "alerts.js": { n: 1, by: "P7" },
   "app.js": { n: 1, by: "P7" },
   "board.js": { n: 1, by: "P7" },
   "ci.js": { n: 1, by: "P7" },
