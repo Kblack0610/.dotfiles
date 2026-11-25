@@ -3645,6 +3645,23 @@ picks_order() { DRY=1 JUDGE_RC='' fill_day 4 | grep -oE ': (ap|gm)-[0-9]+ \[' | 
   assert_line --index 0 --partial '/one-shot'
 }
 
+@test "item_brief: a measure-only item, by its measure tag or a headline opening with re-measure, closes on proof, never a PR (ar-1079)" {
+  project game beta "$SANDBOX/repos/game"
+  it='{"slug": "ar-793", "mode": "oneshot", "project": "agent-runtime", "title": "perf(claude): re-measure Claude Code startup after the ar-491 fix", "task": "Re-measure startup.", "type": "perf", "row": "game:ar-793", "lane": "agent"}'
+  run item_brief "$it"
+  assert_line --index 0 'Re-measure startup.'
+  assert_output --partial 'a measure row: it ends on live proof, never a PR or agent-land'
+  refute_output --partial '/one-shot'
+  refute_output --partial 'red-fix gate'
+  tagged='{"slug": "m", "mode": "oneshot", "project": "agent-runtime", "title": "perf(ci): the 24h numbers after #812", "task": "Read the window.", "type": "perf", "tags": "measure", "lane": "agent"}'
+  run item_brief "$tagged"
+  assert_line --index 0 'Read the window.'
+  assert_output --partial 'a measure row: it ends on live proof'
+  # Negative control: a perf fix that only names a measured number is still a /one-shot that lands a PR.
+  run item_brief '{"slug": "p", "mode": "oneshot", "project": "agent-runtime", "title": "perf(ci): settle burst slots on measured load", "task": "Settle slots.", "type": "perf", "lane": "agent"}'
+  assert_line --index 0 --partial '/one-shot'
+}
+
 @test "pr_line: an item with no PR names none, so its session is never told to check out PR null" {
   run pr_line '{"slug": "a", "pr": null}'
   assert_output ''

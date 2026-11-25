@@ -4611,6 +4611,13 @@ item_brief() {
   # A verify item (reconcile_epics) carries its whole method in its task: no entry skill, and it
   # closes on proof, whatever kind its title parses as.
   [[ "$tags" != *" verify "* ]] || { entry='' exit_=proof kind=verify; }
+  # So does a measure-only item: a `measure` tag, or a headline that opens with measure or re-measure
+  # after its type. Why: perf and chore exit on a PR, so ar-793's re-measure got a tier-3 PR brief
+  # with no diff to merge (ar-1079).
+  if [ "${exit_:-pr}" = pr ] && { [[ "$tags" == *" measure "* ]] ||
+    jq -e '(.title // .task // "") | split("\n")[0] | test("^[a-z]+\\([^)]*\\): *(re-?)?measure\\b"; "i")' <<<"$it" >/dev/null; }; then
+    entry='' exit_=proof kind=measure
+  fi
   # A kind that opens no PR has no PR to stop at, and no tier-3 merge gate to name.
   case "$exit_" in doc+ask | proof) nopr=1 pr_only='' ;; esac
   if headless "$harness"; then
