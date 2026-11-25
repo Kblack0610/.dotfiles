@@ -907,6 +907,7 @@ case "$1" in log) echo run-9 ;; trainee) printf "%s\n" "${TRAINEE_LANE:-}" ;; cl
 # ssh.rc, when present, is ssh's own exit (255: the worker did not answer).
 # first is its fleet_first, a YAML list such as "[canary]"; harnesses its fleet_harnesses, such as "[ocfree]";
 # kit its `fleet-dispatch kit` line, default every launcher and srt ("" is an older worker with no kit verb).
+# A test writes the dirs the worker has no checkout of, one a line, to $NOTES_FIXTURE/ssh.missing: the probe's "missing" section.
 worker() {
   export FLEET_INVENTORY="$SANDBOX/inventory.yml"
   cat > "$FLEET_INVENTORY" <<EOF
@@ -933,11 +934,12 @@ all:
               repo: game
 EOF
   printf '%s\n' "${5-claude codex opencode srt}" > "$NOTES_FIXTURE/ssh.kit"
-  { tr ' ' '\n' <<<"$1"; echo kit; cat "$NOTES_FIXTURE/ssh.kit"; } > "$NOTES_FIXTURE/ssh.probe"
+  { tr ' ' '\n' <<<"$1"; echo kit; cat "$NOTES_FIXTURE/ssh.kit"; echo missing; } > "$NOTES_FIXTURE/ssh.probe"
   stub ssh 'echo "ssh $*" >> "$NOTES_FIXTURE/calls.log"
 [ ! -e "$NOTES_FIXTURE/ssh.rc" ] || exit "$(cat "$NOTES_FIXTURE/ssh.rc")"
 eval "set -- ${*: -1}"
-case "$1 ${2:-}" in "sh -c") cat "$NOTES_FIXTURE/ssh.probe" ;; "fleet-dispatch kit") cat "$NOTES_FIXTURE/ssh.kit" ;; *) "$@" ;; esac'
+[ "$1" != env ] || shift 2   # the probe runs as `env FLEET_PROBE_REPOS=<dirs> sh -c ...`
+case "$1 ${2:-}" in "sh -c") cat "$NOTES_FIXTURE/ssh.probe"; cat "$NOTES_FIXTURE/ssh.missing" 2>/dev/null || : ;; "fleet-dispatch kit") cat "$NOTES_FIXTURE/ssh.kit" ;; *) "$@" ;; esac'
   # The worker's fleet-dispatch is this checkout's, never the one deployed on this machine's PATH.
   stub fleet-dispatch "exec '$REPO_ROOT/.local/bin/fleet-dispatch' \"\$@\""
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'

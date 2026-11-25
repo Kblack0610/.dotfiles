@@ -3762,6 +3762,8 @@ start_host_checks() {
     { say "start: $item resumes its last $harness thread, which is on this machine; start it here, without --host"; return 2; }
   jq -e --arg d "$cwd" '.repos | index($d)' <<<"$hjson" >/dev/null ||
     { say "start: $host has no clone of $cwd (fleet_repos or fleet_repos_extra); $item stays queued"; return 2; }
+  ! host_lacks_clone "$host" "$cwd" ||
+    { say "start: $host lists $cwd but has no checkout there (its probe): run the fleet-worker play for it (home-config docs/runbooks/fleet-worker.md); $item stays queued"; return 2; }
 }
 
 # dispatch_tag <host> <server> <session> <window> <pane> <label> -- tag what an agent started with @dispatch.
@@ -6224,25 +6226,28 @@ unpark_preempted() {
 # on a harness it has: HOST_PROBE[<name>] is "<load> <cores> <ready 0|1> <mem %> <conflict 0|1> <notes 0|1>", or "unreachable",
 # and HOST_KIT[<name>] the kit, empty from an older fleet-dispatch there (no kit verb). HOST_MAX[<name>] is its fleet_max_live and HOST_FREE[<name>] that less the run units its live sessions hold,
 # and start_items takes each start there off it; HOST_RUNS is the runs that count, the given ones and
-# each gateway run on a worker (live_runs --gateway). For a worker that lists fleet_harnesses, the same ssh runs
+# each gateway run on a worker (live_runs --gateway). After the kit, a "missing" line lists each roster repo (fleet_repos, fleet_repos_extra, passed as
+# FLEET_PROBE_REPOS) with no checkout on the worker: HOST_MISSING[<name>], which host_takers and start_host_checks read, so an item
+# in a repo the play has not cloned there goes elsewhere instead of failing in the worker's wt each pass (ar-5245). For a worker that lists fleet_harnesses, the same ssh runs
 # `fleet-dispatch harness-ready` on them after a "harnesses" line: HOST_HARN[<name>] is the ones it
 # runs, space-separated, and HOST_HARN_WHY[<name>] why each other one is not, "; "-joined. Read once a
 # pass, before the gates, so every gate and pick in it reads the same numbers: a gate runs in a
 # subshell and cannot write back.
 HOST_RUNS=''
-declare -gA HOST_PROBE=() HOST_FREE=() HOST_MAX=() HOST_HARN=() HOST_HARN_WHY=() HOST_KIT=()   # -g: global when a test sources this inside a function
+declare -gA HOST_PROBE=() HOST_FREE=() HOST_MAX=() HOST_HARN=() HOST_HARN_WHY=() HOST_KIT=() HOST_MISSING=()   # -g: global when a test sources this inside a function
 probe_hosts() {
-  local name place max listed bad out h ready why answers
-  HOST_PROBE=() HOST_FREE=() HOST_MAX=() HOST_HARN=() HOST_HARN_WHY=() HOST_KIT=() HOST_RUNS="$1"$'\n'"$(live_runs --gateway)"
+  local name place max listed bad repos out h ready why answers
+  HOST_PROBE=() HOST_FREE=() HOST_MAX=() HOST_HARN=() HOST_HARN_WHY=() HOST_KIT=() HOST_MISSING=() HOST_RUNS="$1"$'\n'"$(live_runs --gateway)"
   fleet_hosts >/dev/null
-  while IFS='|' read -r name place max listed bad; do
+  while IFS='|' read -r name place max listed bad repos; do
     [ "$place" = true ] || continue
     HOST_MAX[$name]=$max
     HOST_FREE[$name]=$(( max - $(units_on "$name" <<<"$HOST_RUNS") ))
     # shellcheck disable=SC2016,SC2086 # the worker's shell expands these, not this one; listed splits into names
-    if out=$(fleet_host_run "$name" sh -c 'cut -d" " -f1 /proc/loadavg; nproc; command -v wt >/dev/null && test -f "$HOME/.agent/.sync/peer" && echo 1 || echo 0; awk '\''/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {print t ? int(a * 100 / t) : -1}'\'' /proc/meminfo; test -e "$HOME/.agent/.sync/conflict" && echo 1 || echo 0; test -e "$HOME/.notes/.git" && echo 1 || echo 0; echo kit; fleet-dispatch kit 2>/dev/null || :; [ $# -eq 0 ] || { echo harnesses; fleet-dispatch harness-ready "$@" 2>/dev/null || :; }' _ $listed 2>/dev/null); then
-      HOST_PROBE[$name]=$(sed '/^kit$/,$d; /^harnesses$/,$d' <<<"$out" | tr '\n' ' ')
-      HOST_KIT[$name]=$(sed '1,/^kit$/d; /^harnesses$/,$d' <<<"$out" | tr '\n' ' ')
+    if out=$(fleet_host_run "$name" env FLEET_PROBE_REPOS="$repos" sh -c 'cut -d" " -f1 /proc/loadavg; nproc; command -v wt >/dev/null && test -f "$HOME/.agent/.sync/peer" && echo 1 || echo 0; awk '\''/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {print t ? int(a * 100 / t) : -1}'\'' /proc/meminfo; test -e "$HOME/.agent/.sync/conflict" && echo 1 || echo 0; test -e "$HOME/.notes/.git" && echo 1 || echo 0; echo kit; fleet-dispatch kit 2>/dev/null || :; echo missing; for d in $FLEET_PROBE_REPOS; do test -e "$d/.git" || echo "$d"; done; [ $# -eq 0 ] || { echo harnesses; fleet-dispatch harness-ready "$@" 2>/dev/null || :; }' _ $listed 2>/dev/null); then
+      HOST_PROBE[$name]=$(sed '/^kit$/,$d' <<<"$out" | tr '\n' ' ')
+      HOST_KIT[$name]=$(sed '1,/^kit$/d; /^missing$/,$d' <<<"$out" | tr '\n' ' ')
+      HOST_MISSING[$name]=$(sed '1,/^missing$/d; /^harnesses$/,$d' <<<"$out" | tr '\n' ' ')
       ready='' why=${bad:+"$bad: not a harness name ([a-z0-9-]), so its probe never asks"} answers=$'\n'"$(sed '1,/^harnesses$/d' <<<"$out")"$'\n'
       for h in $listed; do
         case $answers in
@@ -6256,7 +6261,7 @@ probe_hosts() {
       HOST_PROBE[$name]=unreachable
     fi
   # '|', not a tab: IFS collapses a run of tabs, so an empty listed would shift bad into it.
-  done < <(fleet_hosts | jq -r '(.harnesses // [] | map(tostring)) as $h | [.name, .place, .max_live, ($h | map(select(test("^[a-z0-9][a-z0-9-]*$"))) | join(" ")), ($h | map(select(test("^[a-z0-9][a-z0-9-]*$") | not) | gsub("[|\n]"; "?")) | join(", "))] | map(tostring) | join("|")')
+  done < <(fleet_hosts | jq -r '(.harnesses // [] | map(tostring)) as $h | [.name, .place, .max_live, ($h | map(select(test("^[a-z0-9][a-z0-9-]*$"))) | join(" ")), ($h | map(select(test("^[a-z0-9][a-z0-9-]*$") | not) | gsub("[|\n]"; "?")) | join(", ")), (.repos // [] | map(tostring | select(test("^/[^ |]+$"))) | join(" "))] | map(tostring) | join("|")')
 }
 
 # host_runs <name> <harness> -- the harness's launcher is in that worker's kit (probe_hosts), and
@@ -6317,6 +6322,14 @@ host_agent() {
   echo "$agent"
 }
 
+# host_lacks_clone <name> <dir> -- the worker's probe found no checkout at <dir> though the roster lists it
+# (fleet_repos, fleet_repos_extra): the play that clones it has not run or failed there, and a start would
+# die in the worker's wt ("not a directory"), leaving the item queued for the next pass to try again
+# (razer-laptop, unity-core-playground, 2026-11-24, ar-5245). A worker the probe could not reach lacks nothing.
+host_lacks_clone() {
+  case " ${HOST_MISSING[$1]:-} " in *" $2 "*) return 0 ;; *) return 1 ;; esac
+}
+
 # host_takers <item json> -> the roster's workers provisioned for this item, one name a line: an
 # item with no cloud route, heavy or light, plan or none (host_agent), in a repo the worker has cloned (fleet_repos,
 # fleet_repos_extra), on a harness the worker runs (host_runs: its kit, and past claude fleet_harnesses, probed ready),
@@ -6341,6 +6354,7 @@ host_takers() {
   while IFS= read -r name; do
     host_runs "$name" "$agent" || continue
     echo "$name"
+    host_lacks_clone "$name" "$dir" && continue
   done < <(fleet_hosts | jq -sr --arg d "$dir" --argjson c "$classes" --argjson n "$need" 'map(select(.repos | index($d)) | select((.max_live | tonumber? // 0) >= $n)
     | select($c == null or any(.first[]?; . as $x | $c | index($x)))) | .[].name')
 }
@@ -6458,9 +6472,9 @@ host_rows() {
     [ -n "$h" ] || continue
     name=$(jq -r .name <<<"$h")
     jq -c --arg p "${HOST_PROBE[$name]:-}" --arg f "${HOST_FREE[$name]:-}" --arg w "$(host_why "$name")" --arg s "$([ -z "${1:-}" ] || stuck_on "$name" <<<"$1")" \
-      --arg hr "${HOST_HARN[$name]:-}" --arg hw "${HOST_HARN_WHY[$name]:-}" --arg k "${HOST_KIT[$name]:-}" \
+      --arg hr "${HOST_HARN[$name]:-}" --arg hw "${HOST_HARN_WHY[$name]:-}" --arg k "${HOST_KIT[$name]:-}" --arg ms "${HOST_MISSING[$name]:-}" \
       '{name, dest, place, max_live, free: ($f | tonumber? // null), stuck: ($s | tonumber? // null), probe: $p, kit: ($k | split(" ") | map(select(. != ""))), why: $w, repos,
-        harnesses: (.harnesses // []), harness_ready: ($hr | split(" ") | map(select(. != ""))), harness_why: $hw}' <<<"$h" || return 1
+        harnesses: (.harnesses // []), harness_ready: ($hr | split(" ") | map(select(. != ""))), harness_why: $hw, missing: ($ms | split(" ") | map(select(. != "")))}' <<<"$h" || return 1
   done < <(fleet_hosts)
 }
 
@@ -6488,7 +6502,7 @@ cmd_hosts() {
   rows=$(host_rows "$queue")
   [ -n "$rows" ] || { [ "${1:-}" = --json ] || say "no fleet workers in $(fleet_inventory || echo the inventory)"; return 0; }
   if [ "${1:-}" = --json ]; then printf '%s\n' "$rows"
-  else printf '%s\n' "$rows" | jq -r '"\(.name)\t\(.dest)\t\(if .place then "placed" else "not placed" end)\t\(.free // "-")/\(.max_live) free\t\(if .why == "" then "open" else .why end)\(if (.stuck // 0) > 0 then "; \(.stuck) stuck at start (no transcript past the reap grace)" else "" end)\(if .kit != [] then "; has \(.kit | join(", "))" else "" end)\(if .harness_ready != [] then "; runs \(.harness_ready | join(", "))" else "" end)\(if .harness_why != "" then "; cannot run \(.harness_why)" else "" end)"'
+  else printf '%s\n' "$rows" | jq -r '"\(.name)\t\(.dest)\t\(if .place then "placed" else "not placed" end)\t\(.free // "-")/\(.max_live) free\t\(if .why == "" then "open" else .why end)\(if (.stuck // 0) > 0 then "; \(.stuck) stuck at start (no transcript past the reap grace)" else "" end)\(if .kit != [] then "; has \(.kit | join(", "))" else "" end)\(if .harness_ready != [] then "; runs \(.harness_ready | join(", "))" else "" end)\(if .harness_why != "" then "; cannot run \(.harness_why)" else "" end)\(if (.missing // []) != [] then "; no checkout of \(.missing | join(", "))" else "" end)"'
     unplaced <<<"$queue"; fi
 }
 
@@ -6498,7 +6512,7 @@ cmd_hosts() {
 # still takes the item later, so capacity is not a reason. stdin: the active queue as
 # `agent-queue list --json`. After probe_hosts, which host_takers reads.
 unplaced() {
-  local it agent dir why roster need
+  local it agent dir why roster need lacks
   roster=$(fleet_hosts | jq -sc .)
   while IFS= read -r it; do
     agent=$(host_agent "$it"); [ -n "$agent" ] || continue
@@ -6509,6 +6523,8 @@ unplaced() {
       why="no worker clones $dir"
     elif ! jq -e --arg d "$dir" --argjson n "$need" 'any(.[]; (.repos | index($d)) and (.max_live | tonumber? // 0) >= $n)' <<<"$roster" >/dev/null; then
       why="no worker that clones it has a fleet_max_live of $need, the run units a heavy item holds"
+    elif lacks=$(jq -r --arg d "$dir" '.[] | select(.repos | index($d)) | .name' <<<"$roster" | while read -r w; do ! host_lacks_clone "$w" "$dir" || echo "$w"; done) && [ -n "$lacks" ]; then
+      why="$(tr '\n' ' ' <<<"$lacks")lists $dir but has no checkout there (its probe); run the fleet-worker play"
     else
       why="no worker runs $agent ready"
     fi
