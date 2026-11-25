@@ -177,7 +177,10 @@ click() {
         hyprctl dispatch "hl.dsp.exec_cmd([==[$cmd]==])" >/dev/null
         return
     fi
-    setsid -f sh -c "$cmd" >/dev/null 2>&1 </dev/null
+    # nohup: this script is the pane's last process, and its exit hangs up the pane's process
+    # group; the child setsid -f forks is in that group until it calls setsid(), so a late one
+    # died with the click unrun (ar-5592).
+    nohup setsid -f sh -c "$cmd" >/dev/null 2>&1 </dev/null
 }
 
 # action <key> <left|right> [arg]: execute (come back to the list) for a click that runs in
