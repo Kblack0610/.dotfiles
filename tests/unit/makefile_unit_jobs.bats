@@ -32,8 +32,20 @@ unit_jobs() { env -u CI make -s --no-print-directory -f "$MK" "$@" --eval 'show-
 
 @test "a CI runner gets every core whatever its load (its load is its own setup)" {
   printf '%s 1.00 1.00 %s/100 1\n' "$((CORES + 10)).00" "$CORES" > "$BATS_TEST_TMPDIR/loadavg"
-  run unit_jobs CI=true UNIT_LOADAVG="$BATS_TEST_TMPDIR/loadavg"
+  echo max > "$BATS_TEST_TMPDIR/cpu.max"
+  run env -u CI_CPU_MILLI CGROUP_CPU_MAX="$BATS_TEST_TMPDIR/cpu.max" \
+    make -s --no-print-directory -f "$MK" CI=true UNIT_LOADAVG="$BATS_TEST_TMPDIR/loadavg" \
+    --eval 'show-unit-jobs: ; @echo $(UNIT_JOBS)' show-unit-jobs
   assert_output "$CORES"
+}
+
+# ar-5586: nproc is the host's cores inside a pod; a 370m runner pod ran 32 jobs on a 32-core host.
+@test "a CI runner in a pod gets the CPUs its pod asked for, not the host's cores" {
+  echo max > "$BATS_TEST_TMPDIR/cpu.max"
+  run env CI_CPU_MILLI=370 CGROUP_CPU_MAX="$BATS_TEST_TMPDIR/cpu.max" \
+    make -s --no-print-directory -f "$MK" CI=true \
+    --eval 'show-unit-jobs: ; @echo $(UNIT_JOBS)' show-unit-jobs
+  assert_output "1"
 }
 
 # dry_run <target> [make args...] -> the recipe make would run, with GNU parallel on PATH.
