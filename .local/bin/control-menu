@@ -177,7 +177,9 @@ click() {
         hyprctl dispatch "hl.dsp.exec_cmd([==[$cmd]==])" >/dev/null
         return
     fi
-    setsid -f sh -c "$cmd" >/dev/null 2>&1 </dev/null
+    # nohup: setsid -f returns before its child leaves this pane's session, and the pane closes as
+    # this returns, so the hangup could kill the click before it ran (ui tier, 2026-11-25).
+    nohup setsid -f sh -c "$cmd" >/dev/null 2>&1 </dev/null
 }
 
 # action <key> <left|right> [arg]: execute (come back to the list) for a click that runs in
