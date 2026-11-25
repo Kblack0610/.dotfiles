@@ -2984,6 +2984,8 @@ red_item() {
   ev tagged ar-12 inbox-priority '+#why/upkeep +#high' 'fix(x): a reverted fix'
   ev tagged ar-12 inbox-priority '+#why/fault' 'fix(x): a reverted fix'
   ev added ar-13 human '' 'a phase #requested'
+  # a triage file under this board can carry the id of another: it sets no first id for ar-
+  ev filed tr-1 inbox-triage '' 'a row of another board'
   claim ar-11 board_open 600 max 60 1
   mkdir -p "$BENCH_OUTCOMES_DIR/game"
   out_row game '{session_id: "s3", updated_epoch: ($t - 3600), prs: [{repo: "o/r", number: 3, reverted: true}]}'

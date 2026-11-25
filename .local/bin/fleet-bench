@@ -4004,8 +4004,10 @@ landed_json() {
     ($o[0] // {}) as $o
     | ($reds | map({key: .slug, value: .outcome}) | from_entries) as $red
     | ($ev | group_by("\(.from):\(.id)") | map({key: "\(.[0].from):\(.[0].id)", value: .}) | from_entries) as $by
-    | ($ev | map(select(.action == "added" or .action == "filed")) | group_by(.from)
-        | map({key: .[0].from, value: (map(.id | id_num | numbers) | min)}) | from_entries) as $logged
+    # the first id the record minted, per project and id prefix: a triage file can carry the id of another board
+    | def series: "\(.from):\(.id | sub("-[0-9]+$"; ""))";
+      ($ev | map(select(.action == "added" or .action == "filed")) | group_by(series)
+        | map({key: (.[0] | series), value: (map(.id | id_num | numbers) | min)}) | from_entries) as $logged
     | ([$ev[] | .ts[0:10]] | min) as $began
     | ($eff | map(select(.type == "claim"))) as $claims
     | ($eff | map(select(.type == "verdict")) | group_by([.subject, .kpi]) | map({key: "\(.[0].subject) \(.[0].kpi)", value: (sort_by(.at) | last | .verdict)}) | from_entries) as $verdict
@@ -4022,7 +4024,7 @@ landed_json() {
        | prkeys as $pk
        | {slug, row: (if $rk == "" then null else $rk end), pr, finished,
           kind: (if (.type // "") != "" then .type elif (.plan // "") != "" then "plan phase" else "untyped" end),
-          source: (if $rk == "" then "no row" else row_source($first; null; $logged[$rp] // 0; $rid) end),
+          source: (if $rk == "" then "no row" else row_source($first; null; $logged[{from: $rp, id: $rid} | series] // 0; $rid) end),
           target: (if ($kc | length) > 0 or any($tags[]; startswith("kpi/")) then "kpi"
                    elif $isred then "red"
                    elif ($tags | index("requested")) or $why == "why/requested" then "requested"
