@@ -64,6 +64,9 @@
 #       UNRATED_ENDS one is not the model's doing, so the run's model-lane outcome is filed unrated, that end its cause.
 #       --cause (a requeue) tells the run's outcome why it went back, one of MOVE_CAUSES (lib/end-reasons.sh); an
 #       UNRATED_CAUSES one (a green PR handed to a lander, a lost host) files it unrated. Every outcome carries a cause.
+#       A close stamps the item's landing verdict, outcome: landed, no-pr, unrated, failed or cancelled (OUTCOME_JQ),
+#       the one field every reader counts; a set on a done item stamps it again.
+#   backfill-outcome [--days N] [--dry-run]    stamp outcome: on the done items of the last N days (30) that lack it or disagree
 #   backfill-briefs [--dry-run | --check]    each open agent row with no brief gets the brief of the item that worked it, and an open
 #       item with no row (not canary or trainee) gets a story row with its brief: the row is the one record of a brief
 #   retask <slug> [task...]    replace a queued item's task (the brief its session gets) and its board row's brief, from args or stdin
@@ -2889,6 +2892,7 @@ cancel_close() {
   cancel_stamp "$f" "$why"
   [ -z "$cause" ] || header_set "$f" cancel_cause "$cause"
   [ -z "$end" ] || header_set "$f" end_reason "$end"
+  stamp_outcome "$f"
   dest="$(move_to "$f" "done")" || die "could not move $f"
   # A return says so in the chain record too, where the item file is no longer at hand.
   [ -z "$end" ] || why="$end: $why"
@@ -3142,6 +3146,7 @@ cmd_set() {
     header_set "$f" "${kv%%=*}" "${kv#*=}"
     set_kv+=("$kv")
   done
+  [ "$(state_of "$f")" != done ] || stamp_outcome "$f"
   item_event item-set "$f" --why "${set_kv[*]}"
   echo "$slug: $*"
   # priority= goes on the row too, as bump writes it: the order reads the row (row_prios).
@@ -3510,6 +3515,7 @@ cmd_move() {
       case "$status" in ok | cancelled) header_del "$f" end_reason; end="" ;; esac ;;
   esac
   [ -z "$end" ] || header_set "$f" end_reason "$end"
+  [ "$to" != done ] || stamp_outcome "$f"
   dest="$(move_to "$f" "$to")" || die "could not move $f"
   item_event item-moved "$dest" --to "$to" --why "$from -> $to${status:+ ($status)}${why:+: $why}"
   echo "$slug: $from -> $to"
@@ -3841,7 +3847,7 @@ cmd_reopen() {
   else
     [ "$status" = failed ] || die "$slug closed $status, not failed: that is new work under the slug (agent-queue add${status:+ --repeat})${status:+, or --unland <owner>/<repo>#<N> when it closed on a PR that was not its work}"
   fi
-  header_del "$f" status finished
+  header_del "$f" status finished outcome
   [ "$to" = running ] || header_set "$f" waiting "$(now_utc)"
   header_set "$f" note "reopened from done ($status${unland:+, unlanded $unland}${note:+: $note})${why:+: $why}"
   dest="$(move_to "$f" "$to")" || die "could not move $f"
@@ -3872,6 +3878,42 @@ cmd_reopen() {
 # place outcomes are reported. A run whose end says nothing about the model (UNRATED_ENDS, its own
 # cause), a cancel and an UNRATED_CAUSES requeue file the run unrated: counted, never scored. A
 # model-lane error never fails the move.
+# OUTCOME_JQ: the landing verdict a done item is stamped with (`outcome:`), the one every reader counts
+# (fleet-bench, agent-land, credit-backfill, fleet-dispatch, day-log, hub-core, model-lane): cancelled;
+# unrated for a canary (from: canary, scored by its oracle, not by landing) and for an UNRATED_ENDS end (a
+# cause outside the model); landed for done ok with a PR (agent-land's merge); failed; and an ok close with
+# no PR reads its kind's `exit` in kinds.json (its `type:`; none or an unknown one is pr): no-pr when that
+# kind ends in a PR, unrated when it ends in a report, a doc or a proof, so a clean check is no miss.
+# outcome($exits; $unrated): $exits maps kind to exit, $unrated is UNRATED_ENDS as a JSON array.
+OUTCOME_JQ='def outcome($exits; $unrated):
+  if .status == "cancelled" then "cancelled"
+  elif .from == "canary" then "unrated"
+  elif .status == "ok" and (.pr // "") != "" then "landed"
+  elif (.end_reason // "") | IN($unrated[]) then "unrated"
+  elif .status == "failed" then "failed"
+  elif .status != "ok" then null
+  elif ($exits[.type // ""] // "pr") == "pr" then "no-pr"
+  else "unrated" end;'
+AQ_KINDS="${DISPATCH_KINDS:-$HOME/.config/fleet-dispatch/kinds.json}"
+
+# kind_exits -> kinds.json as {kind: exit}; {} when it is unreadable, so every kind reads as ending in a PR.
+kind_exits() {
+  local x
+  x="$(jq -c 'with_entries(.value |= (.exit // "pr"))' "$AQ_KINDS" 2>/dev/null)" && [ -n "$x" ] || x='{}'
+  printf '%s\n' "$x"
+}
+
+# stamp_outcome <file> -- write the done item's outcome: (OUTCOME_JQ) from its own header. Every close calls
+# it (move done, cancel_close), and so does a set on a done item, since status, pr, type or from can change.
+stamp_outcome() {
+  local f="$1" o
+  o="$(jq -nr --arg status "$(fm_get "$f" status)" --arg pr "$(fm_get "$f" pr)" --arg from "$(fm_get "$f" from)" \
+    --arg end "$(fm_get "$f" end_reason)" --arg type "$(fm_get "$f" type)" \
+    --argjson exits "$(kind_exits)" --argjson unrated "$(unrated_json)" \
+    "$OUTCOME_JQ"' {status: $status, pr: $pr, from: $from, end_reason: $end, type: $type} | outcome($exits; $unrated) // empty')"
+  if [ -n "$o" ]; then header_set "$f" outcome "$o"; else header_del "$f" outcome; fi
+}
+
 lane_outcome() {
   local o='' c=${6:-}
   [ -n "$1" ] || return 0
@@ -4002,12 +4044,12 @@ cmd_stats() {
          | {("done_\($h)h"): ($fin | length), ("failed_\($h)h"): ($fin | map(select(.status == "failed")) | length),
             ("started_\($h)h"): ($all | since(.started) | length),
             ("added_\($h)h"): ($all | since(.queued) | length)}) | add
-         # Finished ok since local midnight, the day day-log keeps, one count per slug: shipped merged
-         # a commit, checks merged nothing (a watch or alert that cleared). queue::done_today in
+         # Finished ok since local midnight, the day day-log keeps, one count per slug: shipped is an
+         # outcome landed, checks the rest (a watch or alert that cleared). queue::done_today in
          # hub-core is the same rule for the cards; failed and cancelled count in neither.
          | ($done | map(select(.status == "ok" and (.finished // "") != ""
              and (.finished | fromdateiso8601 | strflocaltime("%F")) == (now | strflocaltime("%F"))))) as $ok
-         | ([$ok[] | select((.merged // "") != "") | .slug] | unique) as $shipped
+         | ([$ok[] | select(.outcome == "landed") | .slug] | unique) as $shipped
          | . + {shipped_today: ($shipped | length),
                 checks_today: ([$ok[].slug | select(IN($shipped[]) | not)] | unique | length)}),
        run_minutes_median: ([$done[] | mins(.started; .finished)] | median),
@@ -4090,6 +4132,37 @@ BRIEF_JQ='def norm: gsub("<!--.*?-->"; "") | gsub("<!--.*$"; "") | gsub("(^|\\s)
         and ((.tags // "") | test("(^| )canary( |$)") | not))
       | {kind: "new", key: .slug, proj: .project, slug: .slug, stamp: stamp, brief: (body | join("\n")), prio: .priority})
   | out'
+
+# backfill-outcome [--days N] [--dry-run] -- stamp outcome: (OUTCOME_JQ) on the done items of the last N days (30)
+# whose outcome is missing or no longer what their header says: the items closed before the close path
+# stamped one, or closed by a checkout that does not yet. One read of every file, one write per change.
+cmd_backfill_outcome() {
+  local days=30 dry="" since d f o n=0
+  local -a files=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --days) days="${2:?--days needs a number}"; shift 2; [[ "$days" =~ ^[0-9]+$ ]] || die "--days is a whole number of days" ;;
+      --dry-run) dry=1; shift ;;
+      *) die "usage: agent-queue backfill-outcome [--days N] [--dry-run]" ;;
+    esac
+  done
+  since="$(date -d "$days days ago" +%F)"
+  lock
+  for d in "$AQ_DIR"/done/*/; do
+    [ -d "$d" ] && [[ ! "$(basename "$d")" < "$since" ]] || continue
+    for f in "$d"*.md; do [ -e "$f" ] && files+=("$f"); done
+  done
+  while IFS=$'\t' read -r f o; do
+    [ -n "$f" ] || continue
+    n=$((n + 1))
+    if [ -n "$dry" ]; then echo "$(fm_get "$f" slug): ${o:-no outcome}"
+    elif [ -n "$o" ]; then header_set "$f" outcome "$o"
+    else header_del "$f" outcome; fi
+  done < <(items_json --rows "$OUTCOME_JQ"' map((outcome('"$(kind_exits)"'; '"$(unrated_json)"') // "") as $o
+    | select((.outcome // "") != $o) | [.file, $o])' "${files[@]}" | jq -r '.[] | @tsv')
+  unlock
+  echo "$([ -n "$dry" ] && echo would stamp || echo stamped) $n of ${#files[@]} done items since $since"
+}
 
 cmd_backfill_briefs() {
   local dry="" check="" tmp kind key prof proj text slug stamp brief prio f title lab code srow
@@ -4184,6 +4257,7 @@ case "${1:-}" in
   credit-of) shift; cmd_credit_of "$@" ;;
   ask-holds) shift; cmd_ask_holds "$@" ;;
   backfill-briefs) shift; cmd_backfill_briefs "$@" ;;
+  backfill-outcome) shift; cmd_backfill_outcome "$@" ;;
   -h | --help | '') sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
   *) die "unknown verb: $1 (try --help)" ;;
 esac
