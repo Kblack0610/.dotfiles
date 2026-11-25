@@ -7650,7 +7650,7 @@ repose_ask() {
   fi
 }
 
-# reconcile_plans -- file an approved plan its session left behind on the board: one low row naming
+# reconcile_plans -- file an approved plan its session left behind on the board: one untagged row (the priority rubric judges it) naming
 # the plan (agent-queue add --plan from a filer; only the board fills the queue), which dispatch
 # pulls like any row and promote queues as the plan's chain. Once only: a plan the queue has held,
 # or one filed here before (PLANS_FILED), is not filed again, or every pass would add a row.
@@ -7671,7 +7671,7 @@ reconcile_plans() {
   while IFS= read -r c; do
     plan=$(jq -r .plan <<<"$c"); project=$(jq -r .project <<<"$c")
     grep -qxF -- "${plan##*/}" <<<"$held" && continue
-    out=$(AGENT_QUEUE_START=0 agent-queue add --plan "$plan" --project "$project" --priority low --from auto:plans 2>&1); rc=$?
+    out=$(AGENT_QUEUE_START=0 agent-queue add --plan "$plan" --project "$project" --from auto:plans 2>&1); rc=$?
     if [ "$rc" -eq 0 ] || [ "$rc" -eq "$AQ_EX_HELD" ]; then
       mkdir -p "$DIR"; printf '%s\n' "$plan" >> "$PLANS_FILED"
       logline "filed $(basename "$plan") to run its open phases: its session is gone"
