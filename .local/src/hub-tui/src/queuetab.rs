@@ -719,7 +719,7 @@ fn candidates(
     let mut out = vec![clip_line(
         heading(
             &format!("{mark} CANDIDATES{count}"),
-            format!("  {hint}").trim_end().into(),
+            format!("  {hint}").trim_end(),
             p,
         ),
         w,

@@ -790,7 +790,7 @@ pub fn runner_page(
 
     out.push(Line::raw(""));
     out.push(clip_line(
-        heading("STATUS", "  its status file, then activity.log".into(), p),
+        heading("STATUS", "  its status file, then activity.log", p),
         w,
     ));
     if r.status.is_empty() {
@@ -821,7 +821,7 @@ pub fn runner_page(
 
     out.push(Line::raw(""));
     let floor = if r.calls.partial { "+" } else { "" };
-    out.push(clip_line(heading("CALLS", "  calls.jsonl".into(), p), w));
+    out.push(clip_line(heading("CALLS", "  calls.jsonl", p), w));
     let row = |l: &str, t: &Totals, f: &str| {
         vec![
             l.to_string().into(),
