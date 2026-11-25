@@ -164,8 +164,9 @@ impl Row for SessionRow {
         "ended today",
         "all",
     ];
-    const FACETS: &'static [&'static str] =
-        &["bucket", "project", "by", "acct", "harness", "close", "machine"];
+    const FACETS: &'static [&'static str] = &[
+        "bucket", "project", "by", "acct", "harness", "close", "machine",
+    ];
     const LEAD: &'static str = "task";
     const GLANCE: &'static [&'static str] = &["bucket", "project", "idle"];
     /// The Sessions palette paints a NEEDS badge red (agent-web `bucketColor`), so its tile does too.
@@ -811,7 +812,11 @@ mod tests {
         s[1]["host"] = json!("razer-laptop");
         let r = rows(&s, &vocab(), &feed(), &[]);
         let m = |k: &str| r.iter().find(|x| x.key == k).unwrap().val("machine");
-        assert_eq!(m("lab/d:1"), Val::Text(LOCAL_MACHINE.into()), "this machine's");
+        assert_eq!(
+            m("lab/d:1"),
+            Val::Text(LOCAL_MACHINE.into()),
+            "this machine's"
+        );
         assert_eq!(m("lab/d:2"), Val::Text("razer-laptop".into()), "a worker's");
         assert_eq!(m("ucp-394"), Val::None, "a queue row runs nowhere");
         let v = View::new::<SessionRow>("machine:razer-laptop", "", "", "");
