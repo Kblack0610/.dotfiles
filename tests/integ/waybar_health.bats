@@ -93,7 +93,7 @@ pulse() { printf "<span color='%s'>%s</span>" "$1" "$ICON"; }
   assert_line --index 1 "<tt>ci      <span color='$R'>DOWN</span>  playground nightly: nightly red 2d"
   assert_line --index 2 "queue   <span color='$Y'>warn</span>  heal flapping: flapped 4 times"
   assert_line --index 3 "spend   <span color='$Y'>warn</span>  claude account pace: aws \$1,011 ahead of pace"
-  assert_line --index 4 "               claude spend daily: last 24h: \$2954 (alert at \$2400)"
+  assert_line --index 4 "              claude spend daily: last 24h: \$2954 (alert at \$2400)"
   assert_line --index 5 "agents  <span color='$G'>up</span></tt>"
 }
 
@@ -102,8 +102,8 @@ pulse() { printf "<span color='%s'>%s</span>" "$1" "$ICON"; }
   reasons stale_rows='1 < 2 rows & more' heal_flapping=''
   run "$MODULE"
   run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
-  assert_line --index 2 "<tt>queue  <span color='$Y'>warn</span>  heal flapping: no reason recorded"
-  assert_line --index 3 "             stale rows: 1 &lt; 2 rows &amp; more</tt>"
+  assert_line --index 1 "<tt>queue  <span color='$Y'>warn</span>  heal flapping: no reason recorded"
+  assert_line --index 2 "             stale rows: 1 &lt; 2 rows &amp; more</tt>"
 }
 
 # Negative control: the hub lists no watches where they do not run, and a row then says where to
@@ -113,7 +113,7 @@ pulse() { printf "<span color='%s'>%s</span>" "$1" "$ICON"; }
   rm -f "$FX/reasons.json"
   run "$MODULE"
   run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
-  assert_line --index 2 "<tt>queue  <span color='$Y'>warn</span>  heal flapping: reason on the workstation</tt>"
+  assert_line --index 1 "<tt>queue  <span color='$Y'>warn</span>  heal flapping: reason on the workstation</tt>"
   # An answer with no watches at all is the same laptop, not a green or an empty reason.
   reasons
   run "$MODULE"
