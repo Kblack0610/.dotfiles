@@ -76,6 +76,9 @@ impl Source {
     }
 }
 
+/// What the MACHINE column says for a live session on the machine reading the table.
+pub const LOCAL_MACHINE: &str = "local";
+
 /// One row of the table.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct SessionRow {
@@ -125,6 +128,9 @@ pub struct SessionRow {
     pub harness: String,
     /// The fleet worker a live row runs on (fleet-sessions `host`), empty for this machine.
     pub host: String,
+    /// The MACHINE column: a live row's `host`, or `LOCAL_MACHINE` for this one; empty for a
+    /// queued or ended row, which runs nowhere.
+    pub runs_on: String,
     /// The model a live row runs, as fleet-bench keys it (`costs::alias`: opus, sonnet): the one its
     /// transcript names (fleet-sessions `model`), else its queue item's (a run whose log agent-panel
     /// reads no model from); empty before the first turn of a session with no item model, never guessed.
@@ -146,7 +152,7 @@ pub struct SessionRow {
 impl Row for SessionRow {
     const COLUMNS: &'static [&'static str] = &[
         "bucket", "activity", "project", "task", "by", "pr", "phases", "idle", "ctx", "cost",
-        "acct", "harness", "close", "item", "source", "session",
+        "acct", "harness", "close", "item", "source", "session", "machine",
     ];
     /// `live` first, the view the table opens on: every row not done (`in_default`). The ended
     /// rows are one chip away, and `all` last keeps every row. Spend is Costs', not this table's.
@@ -159,7 +165,7 @@ impl Row for SessionRow {
         "all",
     ];
     const FACETS: &'static [&'static str] =
-        &["bucket", "project", "by", "acct", "harness", "close"];
+        &["bucket", "project", "by", "acct", "harness", "close", "machine"];
     const LEAD: &'static str = "task";
     const GLANCE: &'static [&'static str] = &["bucket", "project", "idle"];
     /// The Sessions palette paints a NEEDS badge red (agent-web `bucketColor`), so its tile does too.
@@ -186,6 +192,7 @@ impl Row for SessionRow {
             "session" if self.target.is_empty() => Val::word(&self.session_id),
             "session" => Val::word(&self.target),
             "ctx" => self.context_pct.map_or(Val::None, |n| Val::Num(n as f64)),
+            "machine" => Val::word(&self.runs_on),
             _ => Val::None,
         }
     }
@@ -396,6 +403,11 @@ fn live_row(s: &Value, feed: &Feed, items: &HashMap<&str, &Item>) -> SessionRow 
             |i| i.harness().to_string(),
         ),
         host: str_of(s, "host").to_string(),
+        runs_on: match str_of(s, "host") {
+            "" => LOCAL_MACHINE,
+            h => h,
+        }
+        .to_string(),
         model: Some(str_of(s, "model"))
             .filter(|m| !m.is_empty())
             .or_else(|| item.and_then(|i| i.model.as_deref()).map(str::trim))
@@ -791,6 +803,20 @@ mod tests {
         let v = View::new::<SessionRow>("close:now", "", "", "");
         let kept: Vec<&str> = v.apply(&r).iter().map(|x| x.key.as_str()).collect();
         assert_eq!(kept, ["lab/d:1"]);
+    }
+
+    #[test]
+    fn a_live_row_names_its_machine_and_the_machine_facet_filters() {
+        let mut s = state();
+        s[1]["host"] = json!("razer-laptop");
+        let r = rows(&s, &vocab(), &feed(), &[]);
+        let m = |k: &str| r.iter().find(|x| x.key == k).unwrap().val("machine");
+        assert_eq!(m("lab/d:1"), Val::Text(LOCAL_MACHINE.into()), "this machine's");
+        assert_eq!(m("lab/d:2"), Val::Text("razer-laptop".into()), "a worker's");
+        assert_eq!(m("ucp-394"), Val::None, "a queue row runs nowhere");
+        let v = View::new::<SessionRow>("machine:razer-laptop", "", "", "");
+        let kept: Vec<&str> = v.apply(&r).iter().map(|x| x.key.as_str()).collect();
+        assert_eq!(kept, ["lab/d:2"]);
     }
 
     #[test]
