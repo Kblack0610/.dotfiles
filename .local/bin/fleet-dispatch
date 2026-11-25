@@ -29,7 +29,7 @@
 #   fleet-dispatch item-tier SLUG    the queue item's tier (item_tier): agent-land gates a tier-3 one
 #   fleet-dispatch trainee-pool [--json]  the board rows a trainee takes, how many each refusal turns away, and the floor open or shut
 #   fleet-dispatch trainee-review SLUG  a trainee run's tail, in its worktree: its diff to a patch that waits for a batch review
-#   fleet-dispatch trainee-reject SLUG --why TEXT  send a trainee's row back to the normal queue, on claude
+#   fleet-dispatch trainee-reject SLUG [--cause C] --why TEXT  send a trainee's row back to the normal queue, on claude
 #   fleet-dispatch validate SLUG --pr OWNER/REPO#N --head SHA --why TEXT  queue a second agent's review of an item's critical PR (agent-land)
 #   fleet-dispatch trainee-rollup [--dry]  each trainee reject cause seen DISPATCH_ROLLUP_MIN times in DISPATCH_ROLLUP_DAYS: one fix row on the board, joined night to night by its cause (nightly-measure runs it)
 #   fleet-dispatch direct-land SLUG [--rc N]  a direct run's tail, in its worktree: a clean run's diff committed, a PR opened and landed on CI
@@ -3298,7 +3298,7 @@ trainee_brief() {
   echo "You run in a sandbox that sees this worktree alone: no skills, agent-queue, gh, push or human. Ignore any step above that needs one."
   echo "Make the smallest change in this worktree that fully does the task, run the repo's own tests for what you changed where they run here, and stop."
   echo "Do not commit, push or open a pull request: leave your edits in the working tree. They are checked and landed, or the task is sent back, after you stop."
-  echo "If the task cannot be done without a decision from the human, change nothing and stop."
+  echo "If you change nothing, say why in one word on the first line of a file named .no-diff in this worktree: already-fixed when the code already does what the task asks, blocked when the task cannot be done without a decision from the human or access you lack. No file means you failed."
 }
 
 # linked_base -> HEAD of the linked worktree this runs in, rc 1 in a main checkout or none: a ladder
@@ -3314,18 +3314,26 @@ linked_base() {
 # item with a note, for the next batch review (trainee_batch_start). No diff, or no reviewer lane
 # (lanes.yaml trainee:), is a reject (cmd_trainee_reject).
 cmd_trainee_review() {
-  local slug="${1:?trainee-review: needs a slug}" it trn base patch why
+  local slug="${1:?trainee-review: needs a slug}" it trn base patch why nodiff
   it=$(agent-queue show "$slug" --json 2>/dev/null) && [ -n "$it" ] || { say "trainee-review: no queue item $slug"; return 1; }
   trn=$(jq -r '.trainee // empty' <<<"$it")
   [ -n "$trn" ] || { say "trainee-review: no trainee ran $slug"; return 2; }
   [ "$(jq -r .state <<<"$it")" = running ] || { say "trainee-review: $slug is $(jq -r .state <<<"$it"), not running"; return 2; }
   # The reset below discards what the diff saved, so it runs only in a linked worktree, never a main checkout.
   base=$(linked_base) || { say "trainee-review: $PWD is no linked worktree"; return 1; }
+  # The marker is read and removed before the diff is saved, so it never counts as the run's diff.
+  nodiff=$(trainee_no_diff_kind)
   mkdir -p "$TRAINEE_DIR" || { say "trainee-review: no $TRAINEE_DIR"; return 1; }
   patch="$TRAINEE_DIR/$slug.patch"
   git add -A && git diff --cached --binary "$base" >"$patch" && echo "$base" >"$TRAINEE_DIR/$slug.base" ||
     { say "trainee-review: could not save the diff $trn left on $slug"; return 1; }
-  [ -s "$patch" ] || { cmd_trainee_reject "$slug" --why "$(trainee_empty_why "$it" "$trn")"; return; }
+  if [ ! -s "$patch" ]; then
+    case "$nodiff" in
+      already-fixed | blocked) cmd_trainee_reject "$slug" --cause "$nodiff" --why "$(trainee_empty_why "$it" "$trn" "$nodiff")" ;;
+      *) cmd_trainee_reject "$slug" --why "$(trainee_empty_why "$it" "$trn")" ;;
+    esac
+    return
+  fi
   why=$(trainee_diff_why "$(git rev-parse --show-toplevel)" "$base") ||
     { cmd_trainee_reject "$slug" --why "$why" || return  # still running: the worktree keeps the diff
       git reset -q --hard "$base" && git clean -fdq || say "trainee-review: could not put $PWD back at $base, so wt reap leaves it"
@@ -3343,13 +3351,31 @@ cmd_trainee_review() {
   git reset -q --hard "$base" && git clean -fdq || say "trainee-review: could not put $PWD back at $base, so wt reap leaves it"
 }
 
-# trainee_empty_why <item json> <trainee> -> the reject reason for a run that left no diff: what ended its
+# trainee_no_diff_kind -> the kind of no-diff the trainee declared on the first line of .no-diff in the
+# worktree (trainee_brief): already-fixed, blocked, or nothing for any other word or no file. The file is
+# removed, so a diff never carries it. The kind is a word the run chose from the brief, never read out of
+# its message text.
+trainee_no_diff_kind() {
+  local f=.no-diff w=''
+  [ -f "$f" ] || return 0
+  # The first word of the first line, lower-case; "already fixed" and "already_fixed" read as already-fixed.
+  w=$(head -n1 "$f" | tr '[:upper:]_' '[:lower:]-' | sed -E 's/^[[:space:]]*already[[:space:]]+fixed/already-fixed/; s/^[[:space:]]*([a-z-]+).*/\1/')
+  rm -f "$f"
+  case "$w" in already-fixed | blocked) echo "$w" ;; esac
+  return 0
+}
+
+# trainee_empty_why <item json> <trainee> [already-fixed|blocked] -> the reject reason for a run that left no diff: what ended its
 # session (item_end) when that was not the model finishing its turn, else "left no diff". The review runs
 # where the run ran, so the item's host is dropped and its record is read here. 12 of 16 empty-diff
 # free-model runs on 2026-11-19 ended on a provider refusal or the timeout (agent-runtime
 # docs/canary-free-failures-2026-11-19.md), and "left no diff" read as the model giving up.
 trainee_empty_why() {
   local end
+  case "${3:-}" in
+    already-fixed) echo "$2 found the task already fixed in the code (already-fixed), with no diff"; return ;;
+    blocked) echo "$2 could not do the task without a human decision or access it lacks (blocked), with no diff"; return ;;
+  esac
   end=$(item_end "$(jq -c 'del(.host)' <<<"$1")")
   case "$end" in
     provider) echo "$2's session ended on a provider refusal or error (end provider: a rate limit, budget or provider fault), with no diff" ;;
@@ -3505,13 +3531,18 @@ You run headless: no slash commands and no human at the pane. Where a row says t
 EOF
 }
 
-# cmd_trainee_reject <slug> --why <text> -- the row goes back to the normal queue on claude (its outcome
-# a redo on the trainee's run, ladder_back), with the reason as its note; its `trainee:` stays, so no
-# trainee takes it again (trainee_why).
+# cmd_trainee_reject <slug> [--cause <c>] --why <text> -- the row goes back to the normal queue on claude
+# (its outcome a redo on the trainee's run, ladder_back), with the reason as its note; its `trainee:`
+# stays, so no trainee takes it again (trainee_why). --cause is the requeue's cause (MOVE_CAUSES, reject
+# when absent); an UNRATED_CAUSES one (already-fixed, blocked: a no-diff run that says why) files the run
+# unrated, so it is no reject for first-attempt approval or the rollup.
 cmd_trainee_reject() {
-  local slug="${1:?trainee-reject: needs a slug}" why='' it trn run
+  local slug="${1:?trainee-reject: needs a slug}" why='' it trn run cause=reject o=redo
   shift
+  [ "${1:-}" != --cause ] || { cause=${2:-}; shift 2 || true; }
   [ "${1:-}" = --why ] && [ -n "${2:-}" ] || { say "trainee-reject: needs --why \"<one line>\""; return 2; }
+  case " $MOVE_CAUSES " in *" $cause "*) ;; *) say "trainee-reject: --cause is one of $MOVE_CAUSES, not $cause"; return 2 ;; esac
+  ! unrated_cause "$cause" || o=unrated
   why=$2
   it=$(agent-queue show "$slug" --json 2>/dev/null) && [ -n "$it" ] || { say "trainee-reject: no queue item $slug"; return 1; }
   trn=$(jq -r '.trainee // empty' <<<"$it")
@@ -3519,8 +3550,8 @@ cmd_trainee_reject() {
   # The why goes on the trainee's run, the reject reason `model-lane score` prints per pair; the requeue
   # below files the same redo again, which model-lane checks no bar for twice.
   run=$(jq -r '.lane_run // empty' <<<"$it")
-  [ -z "$run" ] || model-lane outcome "$run" redo --why "$why" --cause reject >/dev/null 2>&1 || logline "model-lane outcome $run redo failed; $slug's reject reason is in its note only"
-  ladder_back "$slug" "trainee $trn rejected: $why" reject || { say "trainee-reject: could not send $slug back to the queue"; return 1; }
+  [ -z "$run" ] || model-lane outcome "$run" "$o" --why "$why" --cause "$cause" >/dev/null 2>&1 || logline "model-lane outcome $run $o failed; $slug's reject reason is in its note only"
+  ladder_back "$slug" "trainee $trn rejected: $why" "$cause" || { say "trainee-reject: could not send $slug back to the queue"; return 1; }
   rm -f "$TRAINEE_DIR/$slug.patch" "$TRAINEE_DIR/$slug.base"
   say "trainee-reject: $slug is back in the queue, on claude: $why"
 }
