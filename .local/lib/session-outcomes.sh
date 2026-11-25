@@ -546,6 +546,11 @@ so_forge_remote() {
   fi
 }
 
+# so_ledger_repo HOST/OWNER/REPO - the run ledger's name for a Forgejo repo, forgejo:OWNER/REPO
+# (`schedules-sync runs`, which keys a Forgejo repo without its host and matches any case); rc 1 for
+# any other shape. fleet-sessions branch_runs and fleet-bench pr_ci read the ledger through it.
+so_ledger_repo() { [[ "$1" == */*/* ]] || return 1; printf 'forgejo:%s\n' "${1#*/}"; }
+
 # so_forgejo_repo CHECKOUT - HOST/OWNER/REPO of so_forgejo_remote (home-config's remote is `forgejo`,
 # its origin the GitHub mirror); rc 1 when no remote is on a listed host.
 so_forgejo_repo() {

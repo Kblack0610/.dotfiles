@@ -3898,6 +3898,9 @@ empty_submodule_fixture() {
   # and its runs are origin's, not Forgejo's
   : > "$LEDGER_DIR/calls"; rm -f "$CACHE"/runs_*
   run branch_runs "$SANDBOX/wt" master
+  assert_success
+  run grep -c '^runs ' "$LEDGER_DIR/calls"
+  assert_output 1
   run grep -c '^runs forgejo:' "$LEDGER_DIR/calls"
   assert_output 0
 }
