@@ -35,7 +35,9 @@
 #   fleet-bench rules [--json|--check|--scenarios|--gates [BASE]|--changed SINCE|--new [--days N|--since T] [--until D] [--json|--line]]
 #                                the rule register (RULES_REGISTER): kinds, confidence, actions, and each
 #                                rule's number re-measured; --check fails when one moved against its
-#                                recorded confidence, its measure died, or a rule's text left its source;
+#                                recorded confidence, its measure died, or a rule's text left its source,
+#                                a rule row has no enforced_by that resolves (test:, hook:, ci: or review), the review rows outgrow
+#                                RULES_PROSE_BASELINE (or sit under it), or a lesson found twice names no enforced_by check;
 #                                --scenarios lists the hard scenarios a context trim must keep, 1 when any is stale;
 #                                --gates lists the gate markers (# gate: <id>) with no register row, a hook that denies with none, and a refusal
 #                                a diff against BASE (default origin/main) added with none: 1 when any; --check fails a gate row with no valid
@@ -57,6 +59,11 @@
 #   fleet-bench prio-defaults [--json]
 #                                the open rows that rank by default (no priority tag or no #why/<reason>) by the filer
 #                                that wrote them, most first, with sample ids: the rows behind the prio_default KPI
+#   fleet-bench inflow [--project P] [--days N] [--json]
+#                                every open agent-lane row of a project (default agent-runtime) attributed to its source (the ingest
+#                                origin, else the #from/ a triage carried in, else self-check, else the writer; below the first logged
+#                                id "pre-log"), with each source's arrivals per day over N days (INFLOW_DAYS, 14), how they ended
+#                                (closed by PR, done with no PR, dropped, dup, still open) and the age of its open rows
 #   fleet-bench startup [--json|--check]
 #                                Claude Code start times (CLAUDE_STARTUP_LOG): medians over the last
 #                                startup_rolling_n starts; --check exits 1 past startup_ready_ms_p50_max,
@@ -268,6 +275,8 @@ set -uo pipefail
 : "${LEDGER_BASELINE:=$HOME/.config/agentctl/ledger-baseline}"
 : "${LEDGER_PIPELINES:=$HOME/.config/agentctl/PIPELINES.md}"   # its "Model calls outside agentctl-run" table: the files allowed to launch a model outside agentctl-run
 : "${RULES_REGISTER:=$HOME/.config/agentctl/rules.jsonl}"
+: "${RULES_PROSE_BASELINE:=$HOME/.config/agentctl/rules-prose-baseline}"   # review=N: the most rule rows that may name no check but review; lower it when rows gain one
+: "${RULES_LESSON_SEEN:=2}"   # a lesson the dream sweep found again this many times must name its enforced_by (lessons seen)
 : "${RULES_MEASURE_TIMEOUT:=20}"      # seconds one rule's measure may run
 # rules --changed: the files a session reads as rules (instruction-homes.json kinds global, repo, skill,
 # role, shared-docs), as repo paths, and the generated copies of them that would list a change twice.
@@ -362,6 +371,7 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${BENCH_LANE_VOIDS:=${BENCH_LANE_LOG%/*}/voids.jsonl}"   # model-lane's voids beside it: runs to rate no more (`model-lane void`)
 : "${BENCH_SKILLS_DIR:=$HOME/.claude/skills}"   # skills: a slash command is a skill when <dir>/<name>/SKILL.md exists
 : "${PRIO_SAMPLE:=3}"   # row ids shown per origin in prio_default
+: "${INFLOW_DAYS:=14}"   # the window inflow counts arrivals over
 : "${BENCH_INGEST:=$HOME/.local/state/notes/ingest.jsonl}"   # the notes CLI's record of every row it wrote: who, from where
 : "${BENCH_PROFILE:=}"                             # the profile board_open and board_days read; empty asks `notes config`
 BOARD_SHIP_DAYS=7                                    # days of shipped weight board_days reads: the notes sweep's BUDGET_WINDOW_DAYS
@@ -3079,13 +3089,35 @@ cmd_ledger() {
 # situation the rule decides: the must-keep list a context trim is checked against (context-trim skill).
 # `form` says whether a row is a rule (text a session reads, a .md source) or a mechanism (a hook,
 # script or config that enforces one); the source decides it, and a row's own `form` overrides that.
+# `enforced_by` names what holds a rule row to its text: `test:<path>` (a bats file, optionally
+# `test:<path>::<test name>`; an absolute or ~ path), `hook:<path>`, `ci:<path>`, or `review` (nothing but a reader, the prose-only
+# row). A mechanism row is its own enforcer and needs none. `enforcer` is the verdict: ok, review, missing (a
+# rule row names none), bad (not that grammar) or dead (the path, or the test name in it, is not there; a
+# source on another machine is absent first, as for every row). --check fails a missing, bad or dead one, and
+# fails when the `review` rows outnumber RULES_PROSE_BASELINE (`review=N`), which may only shrink: a new
+# rule row names a check, or it is one more prose-only row and the count has to be argued for.
+
+# rules_enforcer <enforced_by> -> none (empty), review, ok, bad or dead: `<kind>:<path>[::<test name>]`
+# resolved against the disk: an absolute path or one under `~`, and the name as written in an `@test "<name>"` line.
+rules_enforcer() {
+  local v="$1" path name=""
+  [ -n "$v" ] || { echo none; return; }
+  [ "$v" != review ] || { echo review; return; }
+  case "$v" in test:*|hook:*|ci:*) ;; *) echo bad; return ;; esac
+  path="${v#*:}"
+  if [ "${v%%:*}" = test ] && [[ "$path" == *::* ]]; then name="${path#*::}" path="${path%%::*}"; [ -n "$name" ] || { echo bad; return; }; fi
+  [ -n "$path" ] || { echo bad; return; }
+  path="${path/#\~/$HOME}"
+  [[ "$path" == /* ]] || { echo bad; return; }
+  if [ -f "$path" ] && { [ -z "$name" ] || grep -qF -- "@test \"$name\"" "$path"; }; then echo ok; else echo dead; fi
+}
 
 # rules_states -> each register row, one JSON object a line, with form, anchored, value, limited, holds, moved, dead, restates, state.
 rules_states() {
   [ -s "$RULES_REGISTER" ] || return 0
-  local src anchor cmd value anchored limited err
+  local src anchor cmd enf value anchored limited err enforcer
   err=$(mktemp) || return 1
-  while IFS=$'\x1f' read -r src anchor cmd; do
+  while IFS=$'\x1f' read -r src anchor cmd enf; do
     src="${src/#\~/$HOME}"
     if [ ! -f "$src" ]; then anchored=null
     elif grep -qF -- "$anchor" "$src"; then anchored=true
@@ -3097,15 +3129,18 @@ rules_states() {
       # GitHub's 403 or 429 on a rate limit; a counting measure prints 0 then, so its number goes too.
       ! grep -qiE 'rate limit.*HTTP (403|429)' "$err" || { limited=true; value=; }
     fi
-    printf '%s\x1f%s\x1f%s\n' "$anchored" "$value" "$limited"
-  done < <(jq -r '[.source, .anchor, (.measure // "")] | map(gsub("\n"; " ")) | join("\u001f")' "$RULES_REGISTER") |
+    enforcer=$(rules_enforcer "$enf")
+    printf '%s\x1f%s\x1f%s\x1f%s\n' "$anchored" "$value" "$limited" "$enforcer"
+  done < <(jq -r '[.source, .anchor, (.measure // ""), (.enforced_by // "")] | map(gsub("\n"; " ")) | join("\u001f")' "$RULES_REGISTER") |
     jq -cRn --slurpfile rows "$RULES_REGISTER" '
       [inputs | split("\u001f")] as $seen
       | range($rows | length) as $i
-      | $rows[$i] + {anchored: ($seen[$i][0] | fromjson), value: ($seen[$i][1] | tonumber? // null), limited: ($seen[$i][2] == "true")}
+      | $rows[$i] + {anchored: ($seen[$i][0] | fromjson), value: ($seen[$i][1] | tonumber? // null), limited: ($seen[$i][2] == "true"), enforcer: $seen[$i][3]}
       | (.max != null or .min != null) as $bounded
       | (.source // "") as $raw | ($raw | sub("^~"; env.HOME)) as $src
       | .form = (.form // (if ($raw | test("\\.md$")) then "rule" else "mechanism" end))
+      | .enforcer = (if .enforcer == "none" and .form == "mechanism" then "self" else .enforcer end)
+      | .enforcer = (if .enforcer == "none" then "missing" else .enforcer end)
       | .limited = (.limited and .value == null)
       | .dead = (.measure != null and .value == null and (.limited | not))
       | ((.measure // "") | gsub("\\$\\{HOME\\}|\\$HOME"; "~") | gsub("~"; env.HOME)) as $reads
@@ -3115,7 +3150,8 @@ rules_states() {
           then ((.max == null or .value <= .max) and (.min == null or .value >= .min)) else null end)
       | .moved = (.holds != null and .holds != (.confidence != "low"))
       | .state = (if .anchored == false then "stale" elif .anchored == null or .limited then "absent"
-          elif .dead then "dead" elif .restates then "restates" elif .moved then "moved" else "ok" end)'
+          elif .dead then "dead" elif .restates then "restates" elif .moved then "moved"
+          elif .enforcer | IN("missing", "bad", "dead") then "enforcer" else "ok" end)'
   local rc=$?
   rm -f "$err"
   return "$rc"
@@ -3141,8 +3177,41 @@ rules_problems() {
       elif .state == "restates" then "restates: \($f): \(.anchor): its bound is a copy of the number its measure reads from \($f); drop max/min, the reading is the number"
       elif .state == "moved" then "moved: \($f): \(.anchor): \(.value) against \(if .max != null then "max \(.max)" else "min \(.min)" end), recorded \(.confidence)"
       else empty end,
+    (select(.enforcer | IN("missing", "bad", "dead")) | select(.anchored != null) | "enforcer: \($f): \(.anchor): " + (
+      if .enforcer == "missing" then "names no enforced_by; give test:<path>, hook:<path>, ci:<path>, or review when only a reader holds it"
+      elif .enforcer == "bad" then "enforced_by \(.enforced_by) is not review, test:<path>[::<test name>], hook:<path> or ci:<path>"
+      else "enforced_by \(.enforced_by) does not resolve: no such file, or the test name is not in it" end)),
     (select(.form | IN("rule", "mechanism") | not) | "form: \($f): \(.anchor): \(.form) is neither rule nor mechanism"),
     (select(.id != null) | rules_gate_problem)' --arg today "$(date -u +%F)" <<<"$1"
+}
+
+# rules_prose_problems <states array> -> the line --check fails on when the rule rows that name no check
+# but `review` are not exactly the RULES_PROSE_BASELINE count: more means a rule landed with no check, fewer
+# means the baseline is slack and the next prose row would hide in it, so it is lowered with the row.
+rules_prose_problems() {
+  local n base
+  n=$(jq 'map(select(.form == "rule" and .enforced_by == "review")) | length' <<<"$1")
+  base=$(sed -n 's/^review=\([0-9][0-9]*\)$/\1/p' "$RULES_PROSE_BASELINE" 2>/dev/null | tail -1)
+  if [ -z "$base" ]; then
+    [ "$n" -eq 0 ] || echo "prose-only: $n rule rows name no check but review, and $RULES_PROSE_BASELINE has no review=N line"
+  elif [ "$n" -gt "$base" ]; then
+    echo "prose-only: $n rule rows name no check but review, over the baseline $base; give the new row a test, hook or ci enforcer"
+  elif [ "$n" -lt "$base" ]; then
+    echo "prose-only: $n rule rows name no check but review, under the baseline $base; lower review= in $RULES_PROSE_BASELINE to $n"
+  fi
+}
+
+# rules_lesson_problems -> one line per lesson the dream sweep found RULES_LESSON_SEEN times or more whose
+# enforced_by marker is neither a test, hook or ci that resolves nor an explicit `review` (a lesson no check can
+# hold says so in writing, so the lesson is not silently one more prose rule). No lessons dir or CLI is no problem.
+rules_lesson_problems() {
+  local lessons="${RULES_LESSONS_CMD:-$(dirname "$0")/lessons}" at seen enf title
+  [ -d "${RULES_LESSONS_DIR:-$HOME/.agent/lessons}" ] && [ -x "$lessons" ] || return 0
+  while IFS=$'\t' read -r at seen enf title; do
+    [ "$enf" != - ] || enf=
+    [ "$(rules_enforcer "$enf")" != ok ] && [ "$enf" != review ] || continue
+    echo "lesson: ${at##*/}: seen $seen times, enforced_by ${enf:-missing}; add <!-- enforced_by:test:<path> --> (or hook:, ci:) once a check holds it: $title"
+  done < <("$lessons" seen --min "$RULES_LESSON_SEEN" "${RULES_LESSONS_DIR:-$HOME/.agent/lessons}")
 }
 
 # rules_summary <states array> -> the counts, key=value.
@@ -3153,6 +3222,7 @@ rules_summary() {
      "keep=\(n("action"; "keep"))", "rewrite=\(n("action"; "rewrite"))", "drop=\(n("action"; "drop"))",
      "measured=\(map(select(.holds != null)) | length)", "holds=\(n("holds"; true))", "past=\(n("holds"; false))",
      "mechanisms=\(n("form"; "mechanism"))",
+     "prose_only=\(map(select(.form == "rule" and .enforced_by == "review")) | length)",
      "limited=\(map(select(.limited)) | length)",
      "scenarios=\(map(select((.scenario // "") != "")) | length)"] | .[]' <<<"$1"
 }
@@ -3312,7 +3382,7 @@ cmd_rules() {
   [ "${1:-}" != --new ] || { shift; rules_new "$@"; return; }
   [ "${1:-}" != --gates ] || { rules_gates "${2:-}"; return; }
   states=$(rules_states | jq -s .)
-  problems=$(rules_problems "$states")
+  problems=$(rules_problems "$states"; rules_prose_problems "$states"; rules_lesson_problems)
   case "${1:-}" in
     --json) echo "$states" ;;
     --check) [ -z "$problems" ] || { echo "$problems"; return 1; } ;;
@@ -4270,6 +4340,103 @@ cmd_prio_defaults() {
   pd=$(prio_defaults) && [ -n "$pd" ] || { say "prio-defaults: the board feed cannot be read"; return 1; }
   if [ "${1:-}" = --json ]; then printf '%s\n' "$pd"
   else jq -r '"prio_default \(.total)", (.origins[] | "  \(.origin) \(.n)  \(.ids | join(" "))")' <<<"$pd"; fi
+}
+
+# inflow_events <project> -> the ingest record's row events of one project's agent lane that say where a row
+# came from or how it ended (added, filed, done, settled, dropped, dup, reopened), one JSON object a line.
+# rc 1 when the record cannot be read.
+inflow_events() {
+  [ -r "$BENCH_INGEST" ] || return 1
+  { grep -hE '"action":"(added|filed|done|settled|dropped|dup|reopened)"' "$BENCH_INGEST" || :; } \
+    | jq -Rc --arg p "$1" 'fromjson? | select(.from == $p and (.id // "") != "" and (.lane == "agent" or .action == "settled"))
+        | {action, id, ts, by, origin, why, pr, text}'
+}
+
+# inflow [--project P] [--days N] [--json] -- every open agent-lane row of a project attributed to the source
+# that filed it, and each source's arrivals per day, how its arrivals ended and the age of its open rows.
+cmd_inflow() {
+  local project=agent-runtime days=$INFLOW_DAYS json=0 json_flag=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --project) project=${2:?--project needs a name}; shift ;;
+      --days) days=${2:?--days needs a number}; shift ;;
+      --json) json=1; json_flag=(--json) ;;
+      *) say "usage: fleet-bench inflow [--project P] [--days N] [--json]"; return 2 ;;
+    esac
+    shift
+  done
+  case "$days" in ""|*[!0-9]*|0) say "inflow: --days is a whole number of days"; return 2 ;; esac
+  [ -n "${BENCH_READ_CACHE:-}" ] || { with_reads cmd_inflow --project "$project" --days "$days" "${json_flag[@]}"; return; }
+  bench_read $BENCH_BOARD_CMD 2>/dev/null | jq -ce 'select(.rows | arrays)' > "$BENCH_READ_CACHE/inflow.board" && [ -s "$BENCH_READ_CACHE/inflow.board" ] \
+    || { say "inflow: the board feed cannot be read"; return 1; }
+  inflow_events "$project" > "$BENCH_READ_CACHE/inflow.events" || { say "inflow: the ingest record cannot be read ($BENCH_INGEST)"; return 1; }
+  jq -rn --arg p "$project" --argjson days "$days" --argjson t "$(now)" --arg json "$json" \
+    --slurpfile e "$BENCH_READ_CACHE/inflow.events" --slurpfile f "$BENCH_READ_CACHE/inflow.board" "$JQ_LIB"'
+    def num: (capture("-(?<n>[0-9]+)$") | .n | tonumber) // null;
+    def day: .[0:10];
+    # the source of a row: the filer the ingest record names, else the #from/ its triage carried in, else
+    # a hand session'"'"'s self-check, else the writer; a row the record never saw is pre-log below its first id
+    def from_class: if . == null then null elif . == "" then "triage: no #from" elif . == "dream" or . == "ladder-scout" then "from: \(.)" else "from: item or session" end;
+    def source($first; $text; $logged; $id):
+      if $first == null then (if ($id | num) != null and ($id | num) < $logged then "pre-log" else "unrecorded" end)
+      elif ($first.origin // "") != "" then $first.origin
+      else (($first.text // $text // "") | capture("#from/(?<f>[^ ]*)") | .f | from_class) // (
+        if $first.why == "self-check" then "self-check"
+        elif ($first | human_writer) then "human"
+        elif ($first.by | test("^[0-9a-f]{8}$")) then "session"
+        else $first.by end) end;
+    # an event'"'"'s moment: ts carries the writer'"'"'s UTC offset, so strings do not order across a DST change
+    def at: sub("\\.[0-9]+"; "") | if test("Z$") then fromdateiso8601
+      else capture("^(?<d>.*)(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2})$")
+        | (.d + "Z" | fromdateiso8601) - (if .s == "-" then -1 else 1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60) end;
+    def close_kind: if (.pr // "") != "" or ((.why // "") | test("^pr:|/pull/")) then "closed by PR" else "done, no PR" end;
+    # how the row ended after its last reopen: the last closing event, else null. A settled event closes only
+    # when it carries a PR (closed on merge proof); the others un-start the row (item failed, cancelled, orphaned)
+    def ended($evs):
+      ($evs | map(select(.action != "added" and .action != "filed" and (.action != "settled" or (.pr // "") != ""))) | sort_by(.ts | at)) as $x
+      | ($x | map(.action == "reopened") | rindex(true)) as $r
+      | ($x | if $r == null then . else .[$r + 1:] end | map(select(.action != "reopened")) | last)
+      | if . == null then null elif .action == "dropped" then "dropped" elif .action == "dup" then "dup"
+        elif .action == "settled" then "closed by PR" else close_kind end;
+    ($f[0].rows | map(select(.project == $p and .lane == "agent"))) as $rows
+    | ($rows | map(select(.state == "open" or .state == "doing"))) as $open
+    | ($open | map({key: .id, value: true}) | from_entries) as $isopen
+    | ($e | group_by(.id) | map({key: .[0].id, value: .}) | from_entries) as $by
+    | ([$e[] | select(.action == "added") | .id | num | numbers] | min // 0) as $logged   # a filed event can re-file an old id
+    | ([$e[] | select(.action == "added") | .ts | day] | min) as $began_day
+    | ([$days, (if $began_day == null then 1 else ((($t - ($began_day + "T12:00:00Z" | fromdateiso8601)) / 86400 | floor) + 1) end)] | min) as $covered
+    | def first_ev($evs): ($evs // [] | map(select(.action == "added" or .action == "filed")) | sort_by(.ts | at) | first);
+      ($open | map(. as $r | first_ev($by[$r.id]) as $f
+        | {id: $r.id, source: source($f; $r.raw; $logged; $r.id), since: $r.since})) as $censused
+    | ($t - $days * 86400 | strflocaltime("%Y-%m-%d")) as $from
+    | def age: if (.since // "" | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$") | not) then null else (($t - (.since + "T12:00:00Z" | fromdateiso8601)) / 86400 | floor) end;
+      ([range(0; $days) | ($t - . * 86400) | strflocaltime("%Y-%m-%d")] | reverse) as $dates
+    | ([$by | keys[] | . as $id | first_ev($by[$id]) as $first | select($first != null and ($first.ts | day) > $from)
+        | {id: $id, day: ($first.ts | day), source: source($first; null; $logged; $id),   # a row counts once, on its first event
+           end: (if $isopen[$id] then "open" else (ended($by[$id]) // "gone") end)}]) as $arr
+    | ($censused | group_by(.source) | map({source: .[0].source, open: length,
+        age_p50: (map(age | numbers) | median), age_max: (map(age | numbers) | max)})) as $cens
+    | ($arr | group_by(.source) | map({source: .[0].source, arrived: length,
+        per_day: (length / $covered | round2),
+        daily: (. as $g | [$dates[] | . as $d | $g | map(select(.day == $d)) | length]),
+        closed_by_pr: (map(select(.end == "closed by PR")) | length), done_no_pr: (map(select(.end == "done, no PR")) | length),
+        dropped: (map(select(.end == "dropped")) | length), dup: (map(select(.end == "dup")) | length),
+        open: (map(select(.end == "open")) | length), gone: (map(select(.end == "gone")) | length)})) as $arrivals
+    | ([$cens[].source, $arrivals[].source] | unique) as $names
+    | {project: $p, days: $days, covered_days: $covered, dates: $dates, open_rows: ($open | length), attributed: ($censused | length),
+       sources: [$names[] | . as $n | ($cens | map(select(.source == $n)) | first) as $c | ($arrivals | map(select(.source == $n)) | first) as $a
+         | {source: $n, open: ($c.open // 0), open_age_p50_d: $c.age_p50, open_age_max_d: $c.age_max,
+            arrived: ($a.arrived // 0), arrived_per_day: ($a.per_day // 0), daily: ($a.daily // ([range(0; $days) | 0])),
+            closed_by_pr: ($a.closed_by_pr // 0), done_no_pr: ($a.done_no_pr // 0), dropped: ($a.dropped // 0), dup: ($a.dup // 0),
+            still_open: ($a.open // 0), gone: ($a.gone // 0)}] | sort_by(-.open, -.arrived)}
+    | if $json == "1" then . else
+      def d: if . == null then "-" else . end;
+      "inflow \(.project): \(.open_rows) open agent rows, \(.attributed) attributed to a source; arrivals over the last \(.covered_days) days" + (if .covered_days < .days then " (the record starts there, not \(.days) days ago)" else "" end),
+      "| source | open now | open age p50 d | open age max d | arrived | per day | closed by PR | done, no PR | dropped | dup | other | arrivals still open |",
+      "|---|---|---|---|---|---|---|---|---|---|---|---|",
+      (.sources[] | "| \(.source) | \(.open) | \(.open_age_p50_d | d) | \(.open_age_max_d | d) | \(.arrived) | \(.arrived_per_day) | \(.closed_by_pr) | \(.done_no_pr) | \(.dropped) | \(.dup) | \(.gone) | \(.still_open) |"),
+      "| total | \(.sources | map(.open) | add) |  |  | \(.sources | map(.arrived) | add) | \((.sources | map(.arrived_per_day) | add) | round2) | \(.sources | map(.closed_by_pr) | add) | \(.sources | map(.done_no_pr) | add) | \(.sources | map(.dropped) | add) | \(.sources | map(.dup) | add) | \(.sources | map(.gone) | add) | \(.sources | map(.still_open) | add) |" end
+  '
 }
 
 # startup [--json|--check] -- Claude Code start times over the last startup_rolling_n (20) starts:
@@ -7551,6 +7718,7 @@ main() {
     kpi) shift; cmd_kpi "$@" ;;
     chain) shift; cmd_chain "$@" ;;
     prio-defaults) shift; cmd_prio_defaults "$@" ;;
+    inflow) shift; cmd_inflow "$@" ;;
     startup) shift; cmd_startup "$@" ;;
     pipeline) shift; cmd_pipeline "$@" ;;
     bottleneck) shift; cmd_bottleneck "$@" ;;
