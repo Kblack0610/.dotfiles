@@ -3533,6 +3533,23 @@ picks_order() { DRY=1 JUDGE_RC='' fill_day 4 | grep -oE ': (ap|gm)-[0-9]+ \[' | 
   [ "$(grep -c -- --disallowedTools "$NOTES_FIXTURE/cmds.log")" -eq 1 ] || fail "a start with no list file dropped tools"
 }
 
+@test "a task keeps the dropped tools only when it names one exactly: a CI task's workflow or artifacts drops them (ar-857)" {
+  project game beta "$SANDBOX/repos/game"
+  stub wt 'printf "%s\n" "$WT_NEW_CMD" >> "$NOTES_FIXTURE/cmds.log"; echo "game-agent-1"'
+  agent-queue add --project game --slug ci "fix the tests.yml workflow and its workflow_dispatch input"
+  agent-queue add --project game --slug art "purge gh-artifacts-nas, then Artifacts older than a week"
+  agent-queue add --project game --slug wfs "list the Workflows that failed"
+  agent-queue add --project game --slug wf "run a Workflow over the PRs"
+  for s in ci art wfs wf; do cmd_start --item "$s" >/dev/null || fail "start $s"; done
+  mask_sid "$NOTES_FIXTURE/cmds.log"
+  run cat "$NOTES_FIXTURE/cmds.log"
+  assert_line --index 0 --partial "AGENT_QUEUE_ITEM=ci ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup,Artifact --session-id SID"
+  assert_line --index 1 --partial "AGENT_QUEUE_ITEM=art ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup,Artifact --session-id SID"
+  assert_line --index 2 --partial "AGENT_QUEUE_ITEM=wfs ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup,Artifact --session-id SID"
+  # Negative control: the tool named as a word keeps every tool.
+  assert_line --index 3 --partial "AGENT_QUEUE_ITEM=wf ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --model opus --session-id SID"
+}
+
 @test "with no DISPATCH_SANDBOX_PROFILE a start has no --settings and keeps the ambient GitHub token (control)" {
   sandbox_ready
   agent-queue add --project game --slug open "fix the menu"
