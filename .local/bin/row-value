@@ -708,6 +708,7 @@ def cmd_apply(a):
                 kids[t[3:]].add(b["id"])
             elif t.lower().startswith("after/"):
                 waiters[t[6:].lower()].add(b["id"])
+    moving = {rid for rid, _, action, argv, _ in plans if argv and action == "move"}
     held = True
     while held:
         held = False
@@ -715,11 +716,12 @@ def cmd_apply(a):
             if rid not in closing:
                 continue
             left = kids[rid] - closing
-            waiting = waiters[rid.lower()] - closing if action not in ("done", "move") else set()
+            # A moved waiter keeps its gate on its new board, so only a waiter that closes counts.
+            waiting = waiters[rid.lower()] - (closing - moving) if action not in ("done", "move") else set()
             if action != "move" and r["bucket"] != "container" and left:
                 plans[n] = (rid, r, "keep", None, f"open children {', '.join(sorted(left))}: stays until they close")
             elif waiting:
-                plans[n] = (rid, r, "keep", None, f"{', '.join(sorted(waiting))} wait on it with #after/: stays until they close")
+                plans[n] = (rid, r, "keep", None, f"open #after/ waiters {', '.join(sorted(waiting))}: stays until they close")
             else:
                 continue
             closing.discard(rid)
