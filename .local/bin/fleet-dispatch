@@ -2178,13 +2178,16 @@ human_exit() {
 }
 
 # skip_exits [--dry-run] -- give each open agent row whose latest verdict is a skip, still current
-# for the row's text, the exit its rule names (policy.md "Always skip"), so no skip parks a row:
+# for the row's text, the exit its rule names (policy.md "Always skip"), so no skip parks a row.
+# A check(epics) row takes none: reconcile_epics queues its verify item, the judge never needs to.
 #  - plan (DISPATCH_PLAN_RULES): tag it #plan, and #go beside it on a #requested row (the judge asked
 #    for this plan, not the person, so inbox-plan does not hold it for their review), while fewer than
 #    DISPATCH_PLAN_BACKLOG #plan rows are open, then kick inbox-plan; its plan splits or rewrites the
 #    row, so the judge reads it again with the plan. A row the rest wait behind keeps its verdict and
 #    is tagged on a later pass. A row inbox-plan already planned (a `goal:` detail) that the judge,
 #    reading that plan, still skips by such a rule takes the human exit: a second plan would not help.
+#    No rule there names a person, so that sheet row is #normal at most (an #urgent or #high one is
+#    lowered, a #requested one kept): seen on the sheet, not paged on Needs (ar-5968).
 #  - human (DISPATCH_HUMAN_RULES): an #urgent, #high, #normal, bare or #requested row is filed on the human sheet
 #    (file_row human), a #low one kept in improvements.md (`notes improve`) unless an open row gates
 #    #after/ on it (then the sheet, whose row follow_moved_gates moves that gate to in the same pass), its #worker/ tag off
@@ -2208,7 +2211,7 @@ human_exit() {
 # nothing and prints `<exit> TAB <project> TAB <id> TAB <rule>` per row (`plan-wait` for a plan row
 # past the room), then the counts. Sets PLAN_TAGGED and EXITS_TAKEN.
 skip_exits() {
-  local dry='' follow='' board rows room p prof id raw line dsig dj rule req prio planned d e body why where gate
+  local dry='' follow='' board rows room p prof id raw line dsig dj rule req prio planned d e body why where gate spent
   local -a add
   local -A ids=() n=()
   case "${1:-}" in
@@ -2259,7 +2262,8 @@ skip_exits() {
     | $ssf[0] as $ss
     | ($kinds | to_entries | map(select(.value.enabled == false and .key != "epic") | {key, value: true}) | from_entries) as $off
     | ([.rows[]? | select(.state == "open" or .state == "doing") | .tags[]? | select(startswith("of/")) | {key: .[3:], value: true}] | from_entries) as $parents
-    | .rows[]? | select(.lane == "agent" and .state == "open" and .id != null and (plan_tagged | not))
+    | .rows[]? | select(.lane == "agent" and .state == "open" and .id != null and (plan_tagged | not)
+        and (((.type // "") == "check" and (.area // "") == "epics") | not))
     | $by["\(.project)\t\(.id)"] as $d
     | if $d != null then
         "\(.profile)\t\(.project)\t\(.id)\t\($d.line)\t\($d.dsig // "-")\t\(details_json($n))\t\($d.rule)\t\(.requested == true)\t\(planned)\t\($d | tojson)\t\(.raw)"
@@ -2280,7 +2284,7 @@ skip_exits() {
     [ "$line" = - ] || [ "$(row_sig "$raw")" = "$line" ] || continue
     [ "$dsig" = - ] || [ "$(detail_sig "$dj")" = "$dsig" ] || continue
     body=${raw#- \[?\] }; body=${body%%<!--*}; body=${body%"${body##*[![:space:]]}"}
-    e='' gate=''
+    e='' gate='' spent=''
     if [ "$rule" = waits ]; then
       gate=$(waits_gate "$id" "$(jq -r '.reason // ""' <<<"$d")" "$body")
       if [ -n "$gate" ] && [[ $gate == after/* ]] && [ -z "${ids[${gate#after/}]:-}" ]; then gate=''; fi
@@ -2294,7 +2298,7 @@ skip_exits() {
       # a plan made before the verdict that dsig cannot date: the judge may not have read it yet (a
       # sized row has no verdict to read it: its plan is made and the row is still L)
       [ "$dsig" != - ] || [ "$line" = - ] || continue
-      e=human
+      e=human spent=1
     fi
     [ "$e" != human ] || e=$(human_exit "$prof" "$p" "$body" "$req" "${gated[$id]-}")
     if [ "$e" = plan ] && [ "$room" -le 0 ]; then
@@ -2319,6 +2323,10 @@ skip_exits() {
         e=$gate ;;
       sheet | improve)
         body=$(sed -E 's/(^|[[:space:]])#worker\/[^[:space:]]+//g; s/^[[:space:]]+//' <<<"$body")
+        # A spent plan exit names no person: the sheet row is seen there, not paged on Needs.
+        if [ -n "$spent" ] && [ "$req" != true ]; then
+          body=$(sed -E ':a; s/(^|[[:space:]])#(urgent|high)([[:space:]]|$)/\1#normal\3/; ta' <<<"$body")
+        fi
         if [ "$e" = sheet ]; then
           where=$(file_row human "$(jq -cn --arg pr "$prof" --arg p "$p" '{profile: $pr, project: $p}')" "$body (agent row $id)")
           case "$where" in "not filed"*) continue ;; esac
@@ -7917,8 +7925,9 @@ reconcile_epics() {
   [ -n "$landed" ] || return 0
   while IFS=$'\x1f' read -r prof project id done_ title; do
     slug="verify-$id-$done_"
-    # One lookup per landed epic, active or done: the whole queue is seconds to read every pass.
-    [ -z "$(agent-queue show "$slug" --json 2>/dev/null)" ] || continue
+    # One lookup per landed epic, active or done: the whole queue is seconds to read every pass. An item
+    # sent back unrun (returned: bumped at the cap, a hand return) is queued again; it links its open row.
+    [ -z "$(agent-queue show "$slug" --json 2>/dev/null | jq -c 'select(.end_reason != "returned")')" ] || continue
     out=$(epic_verify_task "$prof" "$project" "$id" "$title" | AGENT_QUEUE_PULL=dispatch AGENT_QUEUE_START=0 agent-queue add --project "$project" --slug "$slug" --epic "$id" \
       --title "check(epics): verify $id $title" --priority high --tags verify --from auto:epics 2>&1); rc=$?
     if [ "$rc" -eq 0 ]; then

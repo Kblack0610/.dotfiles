@@ -555,6 +555,31 @@ exits: gate 2 improve 1 plan 2 sheet 1'
   refute_output --partial 'after/'
 }
 
+@test "skip_exits: a spent plan exit files its sheet row at #normal at most, a #requested one keeps its level, a human rule keeps it, and a check(epics) row takes no exit (ar-5968)" {
+  exits_fixture
+  row game agent gp-1 "- [ ] row gp-1 #high $T <!-- id:gp-1 -->"
+  row game agent gp-2 "- [ ] row gp-2 #high #requested $T <!-- id:gp-2 -->"
+  row game agent gp-3 "- [ ] row gp-3 #high $T <!-- id:gp-3 -->"
+  row game agent gp-4 "- [ ] check(epics): verify gm-1 #high $T <!-- id:gp-4 -->"
+  for k in gp-1 gp-2 gp-3 gp-4; do board_row game agent "$k" '[]' '["goal: split it"]'; done
+  jq -c 'if .id == "gp-2" then .requested = true elif .id == "gp-4" then .type = "check" | .area = "epics" else . end' \
+    "$NOTES_FIXTURE/board.rows" > "$SANDBOX/b" && mv "$SANDBOX/b" "$NOTES_FIXTURE/board.rows"
+  # gp-1, gp-2 and gp-4 were planned and the judge read the plan (dsig) and still skips them; gp-3 by a human rule
+  skipv gp-1 unclear; skipv gp-2 unclear; skipv gp-3 design; skipv gp-4 unclear
+  jq -c --arg d "$(detail_sig '"goal: split it"')" 'if (.key | startswith("gp-")) then .dsig = $d else . end' \
+    "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  skip_exits
+  grep -qxF "notes --profile bnb ptask game add row gp-1 #normal #tier/1 (agent row gp-1) --origin fleet-dispatch" "$NOTES_FIXTURE/calls.log" ||
+    fail "gp-1 not lowered: $(grep 'gp-1' "$NOTES_FIXTURE/calls.log")"
+  grep -qxF "notes --profile bnb ptask game add row gp-2 #high #requested #tier/1 (agent row gp-2) --origin fleet-dispatch" "$NOTES_FIXTURE/calls.log" ||
+    fail "gp-2 not kept: $(grep 'gp-2' "$NOTES_FIXTURE/calls.log")"
+  grep -qxF "notes --profile bnb ptask game add row gp-3 #high #tier/1 (agent row gp-3) --origin fleet-dispatch" "$NOTES_FIXTURE/calls.log" ||
+    fail "gp-3 not kept: $(grep 'gp-3' "$NOTES_FIXTURE/calls.log")"
+  # negative control: the epic check stays on the agent lane, untouched
+  run grep -c 'gp-4' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
 @test "skip_exits: an agent row of a kind kinds.json turns off leaves the lane, #high to the human sheet and #low to improvements.md; an epic, a parent and a fix stay" {
   offkind_fixture
   : > "$NOTES_FIXTURE/calls.log"

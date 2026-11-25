@@ -209,6 +209,12 @@ epics_fixture() { printf '%s\n' "$1" > "$NOTES_FIXTURE/stats.json"; }
   epics_fixture '[{"name": "game", "profile": "bnb", "epics": [{"id": "gm-5", "title": "ranked matches", "system": "ui", "open": 0, "done": 4}]}]'
   reconcile_epics
   assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" 'verify-gm-5-4'
+  # an item sent back unrun (bumped at the queue cap) is queued again, once (ar-5968)
+  agent-queue return verify-gm-5-4 --why 'made room at the cap' >/dev/null
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
+  reconcile_epics
+  reconcile_epics
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" 'verify-gm-5-4'
 }
 
 # real_epic_board -- the built notes, and a game project whose epic gm-1 has one landed leaf (gm-2):
