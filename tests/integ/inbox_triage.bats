@@ -1356,11 +1356,12 @@ ask_stub() {
   answer '{"n": 1, "priority": "high", "why": "runtime-fault"}' '{"n": 2, "priority": "urgent", "why": "outage"}'
   run "$TRIAGE" --backlog --priority --retag high --project scratch
   assert_success
-  assert_output --partial 'priority: tagged 1, left 0'
+  assert_output --partial 'priority: tagged 2, left 0'
   refute grep -q 'logo' "$NOTES_FIXTURE/prompt.txt"
   run tasks
-  assert_output --regexp 'the save is slow #high <!-- id:sc-4 -->'
-  assert_output --regexp 'the menu flickers #urgent <!-- id:sc-5 -->'
+  # the same priority still gains its reason; the new one replaces the old
+  assert_output --regexp 'the save is slow (#high #why/runtime-fault|#why/runtime-fault #high) <!-- id:sc-4 -->'
+  assert_output --regexp 'the menu flickers (#urgent #why/outage|#why/outage #urgent) <!-- id:sc-5 -->'
   refute_output --partial 'flickers #high'
 }
 
@@ -1375,7 +1376,7 @@ ask_stub() {
   # NEGATIVE CONTROL: neither started row is asked, so the live items working them keep their rank.
   refute grep -q 'plan phase in flight\|jump is floaty' "$NOTES_FIXTURE/prompt.txt"
   run tasks
-  assert_output --regexp 'the save is slow #low <!-- id:sc-4 -->'
+  assert_output --regexp 'the save is slow (#low #why/upkeep|#why/upkeep #low) <!-- id:sc-4 -->'
   assert_output --regexp '\[/\] the plan phase in flight #high <!-- id:sc-5 -->'
   assert_output --regexp '\[/\] the jump is floaty <!-- id:sc-6 -->'
 }
@@ -1386,14 +1387,14 @@ ask_stub() {
   answer '{"n": 1, "priority": "high", "why": "access-hole"}' '{"n": 2, "priority": "low", "why": "upkeep"}'
   run "$TRIAGE" --backlog --priority --retag low --project scratch
   assert_success
-  assert_output --partial 'priority: tagged 1, left 0'
+  assert_output --partial 'priority: tagged 2, left 0'
   grep -qF '[sc-4] fix(auth): the report route trusts a client-sent admin flag' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
   grep -q 'core.hookspath' "$NOTES_FIXTURE/prompt.txt" || fail "the second #low row was not asked"
   # NEGATIVE CONTROL: the #high and #normal rows are not asked under --retag low.
   refute grep -q 'flickers\|pause menu' "$NOTES_FIXTURE/prompt.txt"
   run tasks
-  assert_output --regexp 'admin flag #high <!-- id:sc-4 -->'
-  assert_output --regexp 'core.hookspath on the other machines #low <!-- id:sc-5 -->'
+  assert_output --regexp 'admin flag (#high #why/access-hole|#why/access-hole #high) <!-- id:sc-4 -->'
+  assert_output --regexp 'core.hookspath on the other machines (#low #why/upkeep|#why/upkeep #low) <!-- id:sc-5 -->'
   # The flag it replaced is gone, so no caller keeps a second spelling; a word the scale lacks is refused.
   run "$TRIAGE" --backlog --priority --retag-high --project scratch
   assert_failure 2
