@@ -624,7 +624,8 @@ pub(crate) fn link_day_refs(p: &Profile, log: &Logger, day: NaiveDate) -> Result
         .iter()
         .any(|e| e.stem != BRIEFING && e.stem != SHIPPED);
     let content = fs::read_to_string(&note)?;
-    let updated = refs_section(&content, &p.refs_rel, day, wanted);
+    let index = wanted.then(|| crate::report::index_target(p, day));
+    let updated = refs_section(&content, &p.refs_rel, day, index.as_deref());
     if updated != content {
         md::write_atomic(&note, &updated)?;
         log.info("link-refs", "linked the refs index");
@@ -632,29 +633,41 @@ pub(crate) fn link_day_refs(p: &Profile, log: &Logger, day: NaiveDate) -> Result
     Ok(())
 }
 
-/// `content` with its `## Refs` holding `- [[<refs_rel>/<day>/_index]]` (when `wanted`) in
-/// place of the per-file links an older `link-refs` wrote for that day.
-fn refs_section(content: &str, refs_rel: &str, day: NaiveDate, wanted: bool) -> String {
-    let day = day.format("%Y-%m-%d");
-    let link = format!("- [[{refs_rel}/{day}/{}]]", crate::report::INDEX);
-    let per_file = format!("- [[{refs_rel}/{day}/");
+/// `content` with its `## Refs` holding `- [[<index>]]` (when given) in place of the links an
+/// older `link-refs` wrote for that day: a bare `- [[<refs_rel>/<day>/<stem>]]` each, or the
+/// index link itself. A link with an alias, or to another day, is the human's and stays.
+fn refs_section(content: &str, refs_rel: &str, day: NaiveDate, index: Option<&str>) -> String {
+    let prefix = format!("- [[{refs_rel}/{}/", day.format("%Y-%m-%d"));
+    let archived = format!("- [[{refs_rel}/{}/", crate::report::ARCHIVE);
+    let link = index.map(|t| format!("- [[{t}]]"));
+    let generated = |l: &str| {
+        let bare = |rest: &str| {
+            rest.strip_suffix("]]")
+                .is_some_and(|s| !s.contains(['|', '[', ']']))
+        };
+        let ours = l.strip_prefix(&prefix).is_some_and(bare);
+        let old_index = l.starts_with(&archived)
+            && l.ends_with(&format!(
+                "/{}/{}]]",
+                day.format("%Y-%m-%d"),
+                crate::report::INDEX
+            ));
+        ours || old_index
+    };
     let lines: Vec<&str> = content.lines().collect();
     let Some(span) = md::section_span(&lines, "Refs") else {
-        if !wanted {
+        let Some(link) = link else {
             return content.to_string();
-        }
+        };
         // keep Refs above any trailing footer
         return insert_before_footer(content, &format!("\n## Refs\n{link}\n"));
     };
     let mut body: Vec<&str> = lines[span.clone()]
         .iter()
         .copied()
-        .filter(|l| {
-            let l = l.trim_end();
-            *l == link || !(l.starts_with(&per_file) && l.ends_with("]]"))
-        })
+        .filter(|l| !generated(l.trim_end()))
         .collect();
-    if wanted && !body.contains(&link.as_str()) {
+    if let Some(link) = &link {
         body.insert(0, link.as_str());
     }
     let mut out: Vec<&str> = lines[..span.start].to_vec();
@@ -2757,7 +2770,7 @@ mod tests {
         let mut text = std::fs::read_to_string(&note).unwrap();
         text = insert_before_footer(
             &text,
-            "\n## Refs\n- [[journal/refs/2026-09-30/old-paste]]\n- my own line\n",
+            "\n## Refs\n- [[journal/refs/2026-09-30/old-paste]]\n- [[journal/refs/2026-09-30/old-paste|my paste]]\n- my own line\n",
         );
         std::fs::write(&note, text).unwrap();
         std::fs::write(refs.join("old-paste.md"), "pasted\n").unwrap();
@@ -2765,7 +2778,7 @@ mod tests {
         link_refs_on(&p, &log, d("2026-09-30")).unwrap();
         let out = std::fs::read_to_string(&note).unwrap();
         assert!(
-            out.contains("## Refs\n- [[journal/refs/2026-09-30/_index]]\n- my own line\n"),
+            out.contains("## Refs\n- [[journal/refs/2026-09-30/_index]]\n- [[journal/refs/2026-09-30/old-paste|my paste]]\n- my own line\n"),
             "{out}"
         );
         assert!(!out.contains("old-paste]]"), "{out}");
@@ -2781,6 +2794,18 @@ mod tests {
         assert!(
             index.contains("- [[journal/refs/2026-09-30/late|late]]"),
             "{index}"
+        );
+
+        // A day left with nothing to list loses the index link; the human's lines stay.
+        std::fs::remove_file(refs.join("late.md")).unwrap();
+        std::fs::remove_file(refs.join("old-paste.md")).unwrap();
+        link_refs_on(&p, &log, d("2026-09-30")).unwrap();
+        let out = std::fs::read_to_string(&note).unwrap();
+        assert!(
+            out.contains(
+                "## Refs\n- [[journal/refs/2026-09-30/old-paste|my paste]]\n- my own line\n"
+            ),
+            "{out}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

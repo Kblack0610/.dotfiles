@@ -134,7 +134,8 @@ function ensure_daily_note() {
     if command -v notes >/dev/null 2>&1; then
         notes today
     else
-        # Fallback to the legacy script if the binary isn't built on this machine
+        # Fallback to the legacy script if the binary isn't built on this machine. It links no
+        # refs: the day index is built by `notes`, and the next `notes today` links it.
         journal-create
     fi
 }

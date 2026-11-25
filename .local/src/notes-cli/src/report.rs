@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 /// The day index's file stem. Generated, never edited by hand.
 pub const INDEX: &str = "_index";
 /// Where the legacy monthly mover put old day folders, under the refs root.
-const ARCHIVE: &str = "archive";
+pub const ARCHIVE: &str = "archive";
 /// A summary is at most this many lines: it is what the index and the Reports tab show.
 const MAX_SUMMARY_LINES: usize = 5;
 /// An unread report stays in the stream this many days, then drops to the archive.
@@ -191,6 +191,19 @@ pub fn archived_target(p: &Profile, target: &str) -> Option<String> {
     ))
 }
 
+/// `path` as a wikilink target: refs-relative under `refs_rel`, without `.md`.
+fn refs_target(p: &Profile, path: &Path) -> String {
+    let rel = path.strip_prefix(&p.refs).unwrap_or(path);
+    let rel = rel.to_string_lossy();
+    format!("{}/{}", p.refs_rel, rel.strip_suffix(".md").unwrap_or(&rel))
+}
+
+/// The wikilink target of `day`'s index, in the folder it is written to (an archived day's
+/// index lives in the archive).
+pub fn index_target(p: &Profile, day: NaiveDate) -> String {
+    refs_target(p, &day_dir(p, day).join(INDEX))
+}
+
 /// Every day folder, live and archived, as `(day, dir)`, oldest first. A day in both places
 /// lists both: the archive half first.
 fn days(p: &Profile) -> Vec<(NaiveDate, PathBuf)> {
@@ -206,15 +219,15 @@ fn days(p: &Profile) -> Vec<(NaiveDate, PathBuf)> {
             })
             .collect()
     }
-    let mut out = Vec::new();
+    // One folder per day, the one `day_dir` picks: a live folder wins over an archived one.
+    let mut out = BTreeMap::new();
     for year in dated_names(&p.refs.join(ARCHIVE)) {
         for month in dated_names(&year) {
             out.extend(dated(&month));
         }
     }
     out.extend(dated(&p.refs));
-    out.sort_by_key(|(d, _)| *d);
-    out
+    out.into_iter().collect()
 }
 
 /// The subfolders of `dir`, any name (the archive's `YYYY` and `YYYY-MM` levels).
@@ -324,9 +337,7 @@ impl Entry {
 
     /// The wikilink target: the refs-relative path, so an archived day links where it is.
     fn target(&self, p: &Profile) -> String {
-        let rel = self.path.strip_prefix(&p.refs).unwrap_or(&self.path);
-        let rel = rel.to_string_lossy();
-        format!("{}/{}", p.refs_rel, rel.strip_suffix(".md").unwrap_or(&rel))
+        refs_target(p, &self.path)
     }
 
     fn json(&self, p: &Profile, today: NaiveDate) -> Value {
@@ -564,8 +575,8 @@ fn ascii(field: &str, text: &str) -> Result<()> {
 fn summary_lines(summary: &str) -> Result<Vec<String>> {
     let lines: Vec<String> = summary
         .lines()
-        .map(|l| l.trim_end().to_string())
-        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
         .collect();
     if lines.is_empty() {
         bail!("a report needs a --summary (1-{MAX_SUMMARY_LINES} lines)");
@@ -606,12 +617,17 @@ fn render(e: &Entry, body: &str) -> String {
     s
 }
 
-/// The body without a leading `# heading` (the title is written from `--title`). A body with
-/// frontmatter of its own is refused, since the fields come from the flags.
+/// The body without a leading `# heading` (the title is written from `--title`). A report file
+/// passed back in (a revision built from the stored report) loses its own frontmatter; any other
+/// frontmatter is refused, since the fields come from the flags.
 fn clean_body(body: &str) -> Result<String> {
-    if body.starts_with("---\n") {
-        bail!("the body has frontmatter of its own; pass its fields as flags and drop it");
-    }
+    let body = match frontmatter(body) {
+        Some(fm) if fm.get("kind").map(String::as_str) == Some("report") => self::body(body),
+        _ if body.starts_with("---\n") => {
+            bail!("the body has frontmatter of its own; pass its fields as flags and drop it")
+        }
+        _ => body,
+    };
     let trimmed = body.trim_start();
     let rest = match trimmed.lines().next() {
         Some(first) if first.starts_with("# ") => &trimmed[first.len()..],
@@ -728,16 +744,22 @@ pub fn read(p: &Profile, log: &Logger, id: &str, now: DateTime<FixedOffset>) -> 
     if e.read.is_empty() {
         let _lock = lock(p)?;
         let content = fs::read_to_string(&e.path)?;
-        let marked = content.replacen(
-            "\nread: \"\"\n",
-            &format!("\nread: {}\n", quote(&stamp(now))),
-            1,
-        );
-        if marked == content {
-            bail!("{} has no empty read: field to set", e.path.display());
+        // Another reader may have marked it since `find`: the first read time stands.
+        let still_unread = frontmatter(&content)
+            .and_then(|fm| fm.get("read").cloned())
+            .is_some_and(|r| r.is_empty());
+        if still_unread {
+            let marked = content.replacen(
+                "\nread: \"\"\n",
+                &format!("\nread: {}\n", quote(&stamp(now))),
+                1,
+            );
+            if marked == content {
+                bail!("{} has no empty read: field to set", e.path.display());
+            }
+            md::write_atomic(&e.path, &marked)?;
+            log.info("report", &format!("read {id}"));
         }
-        md::write_atomic(&e.path, &marked)?;
-        log.info("report", &format!("read {id}"));
     }
     rebuild_index(p, e.day)?;
     Ok(e.path)
@@ -784,7 +806,7 @@ mod tests {
         let (dir, p, log) = vault("cycle");
         let mut n = new(
             "Nightly flake readout",
-            "4 flaky specs\n2 quarantined",
+            "  4 flaky specs\n2 quarantined",
             "2026-11-24",
         );
         n.body = "# Old heading\n\nThe table.\n".into();
@@ -819,6 +841,22 @@ mod tests {
         assert_eq!(rows[0].updated, "2026-11-24T10:00:00-08:00");
         assert_eq!(rows[0].read, "", "a revision is unread again");
         assert_eq!(rows[0].summary, "5 flaky specs");
+
+        // The stored report passed back as the body, with a section appended: one frontmatter,
+        // one title, the old body kept.
+        n.body = format!(
+            "{}\n## Morning\n\nAll green.\n",
+            fs::read_to_string(&path).unwrap()
+        );
+        add(&p, &log, &n, at("2026-11-24T11:00:00-08:00")).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert_eq!(text.matches("kind: report").count(), 1, "{text}");
+        assert!(
+            text.ends_with(
+                "\n---\n\n# Nightly flake readout\n\nThe table.\n\n## Morning\n\nAll green.\n"
+            ),
+            "{text}"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -833,6 +871,9 @@ mod tests {
         assert!(err(&new("T", "1\n2\n3\n4\n5\n6", "2026-11-24")).contains("at most 5"));
         assert!(err(&new("Load fell \u{2014} a lot", "s", "2026-11-24")).contains("non-ASCII"));
         assert!(err(&new("", "s", "2026-11-24")).contains("--title"));
+        let mut fm = new("T", "s", "2026-11-24");
+        fm.body = "---\ntags: [x]\n---\nbody\n".into();
+        assert!(err(&fm).contains("frontmatter of its own"));
         fs::create_dir_all(dir.join("journal/refs/2026-11-24")).unwrap();
         fs::write(dir.join("journal/refs/2026-11-24/my-paste.md"), "pasted\n").unwrap();
         assert!(err(&new("My paste", "s", "2026-11-24")).contains("is not a report"));
@@ -950,6 +991,19 @@ mod tests {
             at("2026-11-24T08:00:00-08:00"),
         )
         .unwrap();
+        assert_eq!(
+            index_target(&p, d("2026-10-03")),
+            "journal/refs/archive/2026/2026-10/2026-10-03/_index"
+        );
+        // A split day (a live folder made after the archive) is one day, the live one.
+        let live = dir.join("journal/refs/2026-10-03");
+        fs::create_dir_all(&live).unwrap();
+        let split: Vec<_> = days(&p)
+            .into_iter()
+            .filter(|(day, _)| *day == d("2026-10-03"))
+            .collect();
+        assert_eq!(split, vec![(d("2026-10-03"), live.clone())]);
+        fs::remove_dir_all(&live).unwrap();
 
         assert_eq!(
             archived_target(&p, "journal/refs/2026-10-03/notes").as_deref(),
