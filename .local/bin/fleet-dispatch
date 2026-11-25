@@ -3631,13 +3631,15 @@ EOF
 # every model hits is the harness's or the source's. The cause is the key, so a cause that spreads to a
 # second pair keeps its count and its row: a reject no newer than its cause's stamp (the last night that
 # cause was filed or found open) is not counted again, and a cause whose row closed starts from nothing.
-# A line of the log that is no JSON (a torn append) is skipped.
+# A line of the log that is no JSON (a torn append) is skipped, and a run the union merge of ~/.agent
+# doubled counts once, by its newest rating (lib/lane-runs.jq).
+LANE_RUNS_JQ="$(grep -v '^#' "$HERE/../lib/lane-runs.jq")" || exit 1
 rollup_causes() {
-  jq -Rnr --arg since "$1" --argjson stamps "$2" '
+  jq -Rnr --arg since "$1" --argjson stamps "$2" "$LANE_RUNS_JQ"'
     def words: ascii_downcase | gsub("[^a-z0-9]+"; " ") | ltrimstr(" ") | rtrimstr(" ") | split(" ") | .[0:4] | join(" ");
     def fit: if length <= 40 then . else .[0:40] | sub(" [^ ]*$"; "") end;
-    [inputs | fromjson? // empty
-      | select(type == "object" and .lane == "trainee" and (.outcome == "redo" or .outcome == "failed") and ((.ts // "")[0:19] >= $since))
+    [[inputs | fromjson? // empty | objects] | lane_runs[]
+      | select(.lane == "trainee" and (.outcome == "redo" or .outcome == "failed") and ((.ts // "")[0:19] >= $since))
       | ((.harness // "claude") + ":" + (.ran // "-")) as $pair
       | ((.why // "") | ltrimstr($pair + "'"'"'s ") | ltrimstr($pair + " ")) as $w
       | ([$w | capture("\\(end (?<e>[a-z-]+)").e] | first) as $e

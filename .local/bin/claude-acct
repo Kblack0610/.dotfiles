@@ -1404,7 +1404,7 @@ cmd_status() {
     fi
     local line state rows
     rows=$(all_json)
-    printf '%-8s %-4s %-5s %-5s %-10s %-10s %-5s %-7s %-6s %-7s %-11s %-10s %-13s %s\n' \
+    printf '%-8s %-4s %-5s %-5s %-15s %-15s %-5s %-7s %-6s %-7s %-11s %-10s %-15s %s\n' \
         SOURCE 5H WEEK GONE RUNS-OUT RESETS LIVE '24H-$' BURN/H KEEPS/H ON-PACE ROOM KIND DETAIL
     while IFS= read -r line; do
         [[ -n "$line" ]] || continue
@@ -1413,7 +1413,7 @@ cmd_status() {
             printf '%-8s fetch failed (%s live)\n' "$(jq -r .name <<< "$line")" "$(jq -r .live <<< "$line")"
             continue
         fi
-        printf '%-8s %-4s %-5s %-5s %-10s %-10s %-5s %-7s %-6s %-7s %-11s %-10s %-13s %s\n' \
+        printf '%-8s %-4s %-5s %-5s %-15s %-15s %-5s %-7s %-6s %-7s %-11s %-10s %-15s %s\n' \
             "$(jq -r .name <<< "$line")" \
             "$(jq -r 'if .five_hour == null then "-" else "\(.five_hour | floor)%" end' <<< "$line")" \
             "$(jq -r 'if .week_used == null then "-" else "\(.week_used | floor)%" end' <<< "$line")" \

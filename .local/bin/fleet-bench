@@ -1818,7 +1818,8 @@ cmd_review() {
     report_outcome FAILED "cannot count $failed PRs (gh, Forgejo or the run ledger), $n counted"
     return 1
   fi
-  echo "$t" > "$DIR/review.ok"
+  # only a run over the nightly's own window moves the stamp: a narrower --days run would skip the nights it missed
+  [ -n "$days" ] || echo "$t" > "$DIR/review.ok"
   if [ "$n" -eq 0 ]; then
     report_outcome NOOP "nothing new merged in the window"
     return 0
@@ -3833,13 +3834,11 @@ nopr_types() {
     || echo "check research design release epic"
 }
 
-# lane_runs -> model-lane's run log, one row per run id. ~/.agent merges *.jsonl by union, so a row
-# model-lane rewrote can sit beside its old copy in either order: the newest `rated` stamp wins, then a
-# rated row over an unrated one, then the later line, as model-lane's read_log folds it. A line that is
-# no JSON (a torn append) is skipped.
+# lane_runs -> model-lane's run log, one row per run id, folded by lib/lane-runs.jq (the union merge of
+# ~/.agent can leave a rewritten row beside its old copy). A line that is no JSON (a torn append) is skipped.
+LANE_RUNS_JQ="$(grep -v '^#' "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/lane-runs.jq")" || exit 1
 lane_runs() {
-  jq -cRn '[inputs | fromjson? | objects | select(.id and .ts)] | to_entries | group_by(.value.id)
-    | map(max_by([.value.rated // "", .value.outcome != null, .key]) | .value)[]' "$BENCH_LANE_LOG" 2>/dev/null
+  jq -cRn "$LANE_RUNS_JQ"'[inputs | fromjson? | objects | select(.id and .ts)] | lane_runs[]' "$BENCH_LANE_LOG" 2>/dev/null
 }
 
 models_json() {

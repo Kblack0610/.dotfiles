@@ -985,6 +985,11 @@ gate_runs_of() {
   run jq -sc 'map(.number)' "$FLEET_BENCH_DIR/pr-ci.jsonl"
   assert_output '[7]'
   assert_equal "$(cat "$FLEET_BENCH_DIR/review.ok")" "$T0"
+  # a narrower --days run moves no stamp, or the next night would skip the nights before it
+  echo $((T0 - 259200)) > "$FLEET_BENCH_DIR/review.ok"
+  BENCH_NOW=$T0 run "$SUBJECT" review --days 1
+  assert_success
+  assert_equal "$(cat "$FLEET_BENCH_DIR/review.ok")" "$((T0 - 259200))"
   # negative control: a stamp 30 days old reaches back only 7, so a PR merged 8 days ago stays out
   merged_pr s2 8 35 -691200
   echo $((T0 - 2592000)) > "$FLEET_BENCH_DIR/review.ok"
