@@ -3012,6 +3012,8 @@ esac'
   # A 403 is no "not cancellable": force-cancel is for a run that ignores cancel.
   run grep -c 'force-cancel' "$HOME/gh.calls"
   assert_output 0
+  run grep -c 'DELETE' "$HOME/gh.calls"
+  assert_output 0
   run "$SH" ghost-runs
   assert_line 'ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h)'
   run grep -c 'ghost run https://github.com/o/r/actions/runs/1: cancel-failed' "$FLEET_SHEPHERD_DIR/log.md"

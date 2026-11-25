@@ -730,7 +730,7 @@ cmd_ghost_runs() {
         elif out="$(gh api -X POST "repos/$slug/actions/runs/$id/cancel" 2>&1 >/dev/null)"; then verdict=cancelled
         elif [[ "$out" != *"HTTP 409"* ]]; then verdict=cancel-failed
         elif out="$(gh api -X POST "repos/$slug/actions/runs/$id/force-cancel" 2>&1 >/dev/null)"; then verdict=force-cancelled
-        elif [[ "$out" == *"HTTP 409"* ]] && gh api -X DELETE "repos/$slug/actions/runs/$id" >/dev/null 2>&1; then verdict=deleted
+        elif [[ "$out" == *"HTTP 409"* ]] && out="$(gh api -X DELETE "repos/$slug/actions/runs/$id" 2>&1 >/dev/null)"; then verdict=deleted
         else verdict=cancel-failed
         fi ;;
       1) verdict=kept ;;
