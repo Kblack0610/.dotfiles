@@ -252,7 +252,7 @@ sent() { jq -cr "$1" "$STUB_DIR/$KEY.json"; }
 # free_route <behaviour>: the --free fallback route, on its own key, as the real one is: not
 # personal-safe, so only a call declared public may use it.
 free_route() {
-  FREE_KEY="$1.$BATS_SUITE_TEST_NUMBER"
+  FREE_KEY="$1.free$BATS_SUITE_TEST_NUMBER"
   route gateway-free "$ASK_LOCAL_GATEWAY_URL" "free-qwen (qwen3.8-27b)" free-key no
   printf '%s\n' "$FREE_KEY" >"$HOME/.local/state/ask-local/free-key"
   chmod 600 "$HOME/.local/state/ask-local/free-key"
@@ -329,13 +329,13 @@ free_sent() { jq -cr "$1" "$STUB_DIR/$FREE_KEY.json"; }
   assert_output --partial "echo: hi"
 }
 
-@test "--free: a free route that fails fails once with its own error and no llama-server hint" {
+@test "--free: a free route that fails fails once, with its own error last" {
   key down
   free_route wrong
   run "$ASK_LOCAL" --free hi </dev/null
   assert_failure 1
-  assert_output --partial "refused the key (401)"
-  refute_output --partial "systemctl"
+  assert_line --index 3 --partial "refused the key (401)"
+  [ "${#lines[@]}" = 4 ]
 }
 
 @test "--free: a --max-tokens that alone passes the minute's tokens is skipped" {
