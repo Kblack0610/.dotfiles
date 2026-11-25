@@ -829,25 +829,36 @@ row_priority() { [[ " $1 " =~ [[:space:]]#(urgent|high|normal|low)[[:space:]] ]]
 # prio_rank <priority>: the rubric's order, an untagged or unknown priority lowest.
 prio_rank() { case "$1" in urgent) echo 4 ;; high) echo 3 ;; normal) echo 2 ;; low) echo 1 ;; *) echo 0 ;; esac; }
 
-# improve_row <project> <raw> <why>: a backlog row's words (no checkbox, tags or marker) kept in the
-# project's improvements.md by `notes improve`, the one writer, which never touches ideas.md and
-# adds nothing when the line is there already, so a retry after a refused drop writes it once.
+# improve_words <raw>: a backlog row's words, no checkbox, tags or marker.
+improve_words() { sed -E 's/^[[:space:]]*- \[.\] //; s/[[:space:]]*<!--.*-->[[:space:]]*$//; s/(^|[[:space:]])#[A-Za-z][^[:space:]]*//g; s/^[[:space:]]+//' <<<"$1"; }
+
+# improve_ok <project> <raw>: whether a row's words may go to improvements.md, asked of `notes
+# improve --check` (writes nothing) before backlog_row drops the row. Exit 3 is health work, which
+# stays on the board: no failure, the row is kept.
+improve_ok() {
+  local p="$1" words rc=0
+  words="$(improve_words "$2")"
+  [ -n "$words" ] || return 1
+  notes improve "$p" --check -- "$words" >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    3) say "$p: health work, not an improvement, kept: $2" ;;
+    *) say "$p: not kept as an improvement (an old notes? notes-bootstrap --build-only): $2"
+       proof_why "notes improve --check failed"; FAILED=$((FAILED + 1)) ;;
+  esac
+  return 1
+}
+
+# improve_row <project> <raw> <why>: the words of a row backlog_row has just dropped, kept in the
+# project's improvements.md by `notes improve`, the one writer, which never touches ideas.md. It runs
+# after the drop, so a drop ptask refuses (a parent with open #of/ children, ar-5182) copies nothing.
 improve_row() {
   local p="$1" words
-  words="$(sed -E 's/^[[:space:]]*- \[.\] //; s/[[:space:]]*<!--.*-->[[:space:]]*$//; s/(^|[[:space:]])#[A-Za-z][^[:space:]]*//g; s/^[[:space:]]+//' <<<"$2")"
-  [ -n "$words" ] || return 1
-  # Exit 3 is health work, which stays on the board: no failure, the row is kept (backlog_row).
-  local rc=0
-  if [ "$DRY" = 1 ]; then
-    notes improve "$p" --check -- "$words" >/dev/null 2>&1 || rc=$?
-    [ "$rc" != 3 ] || { say "$p: health work, not an improvement, kept: $2"; return 1; }
-    printf 'would run: notes improve'; printf ' %q' "$p" --why "$3" -- "$words"; echo; return 0
-  fi
-  notes improve "$p" --why "$3" -- "$words" >/dev/null || rc=$?
-  [ "$rc" != 3 ] || { say "$p: health work, not an improvement, kept: $2"; return 1; }
-  [ "$rc" = 0 ] || {
-    say "$p: not kept as an improvement (an old notes? notes-bootstrap --build-only): $2"
-    proof_why "notes improve failed"; FAILED=$((FAILED + 1)); return 1
+  words="$(improve_words "$2")"
+  if [ "$DRY" = 1 ]; then printf 'would run: notes improve'; printf ' %q' "$p" --why "$3" -- "$words"; echo; return 0; fi
+  notes improve "$p" --why "$3" -- "$words" >/dev/null || {
+    say "$p: dropped as an improvement but not written to improvements.md: $2"
+    proof_why "notes improve failed after the drop"; FAILED=$((FAILED + 1)); return 1
   }
 }
 
@@ -954,8 +965,9 @@ backlog_row() {
       # The human's own board and a row they asked for are theirs: never an improvement.
       why="$(clean 100 <<<"$why")"
       if [ "$lane" = agent ] && [ -n "$why" ] && ! [[ " $raw " =~ [[:space:]]#requested[[:space:]] ]] &&
-        improve_row "$p" "$raw" "$why" &&
-        pt "$p" "$lane" --exact drop --why "triage: improvement: kept in improvements.md" -- "$raw"; then
+        improve_ok "$p" "$raw" &&
+        pt "$p" "$lane" --exact drop --why "triage: improvement: kept in improvements.md" -- "$raw" &&
+        improve_row "$p" "$raw" "$why"; then
         IMPROVED=$((IMPROVED + 1)) VERDICT=improvement
       else
         KEPT=$((KEPT + 1))

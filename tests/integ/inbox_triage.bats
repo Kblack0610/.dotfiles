@@ -780,6 +780,21 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
   [ ! -e "$PROJ/scratch/improvements.md" ] || fail "an improvement was written for a waited-on row"
 }
 
+@test "--backlog: an improvement whose drop ptask refuses (open #of/ children) writes nothing to improvements.md (ar-5182; negative control: a childless row goes)" {
+  sheet '' ''
+  agent_board '- [ ] a: barrel roll and a chase camera #low <!-- id:sc-1 -->\n- [ ] b: the roll camera #of/sc-1 #low <!-- id:sc-2 -->\n- [ ] c: a glow on the menu #low <!-- id:sc-3 -->\n'
+  answer '{"n": 1, "action": "improvement", "why": "polish"}' '{"n": 2, "action": "keep"}' '{"n": 3, "action": "improvement", "why": "polish"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_output --partial 'refused: --exact drop'
+  assert_output --partial 'improvements 1'
+  board="$PROJ/scratch/agent/README.md"
+  grep -q '\[ \] a: barrel roll' "$board" || fail "the parent left the board"
+  grep -q '\[ \] c: a glow' "$board" && fail "the control row stayed on the board"
+  run cat "$PROJ/scratch/improvements.md"
+  assert_output --partial '- c: a glow on the menu ('
+  refute_output --partial 'barrel roll'
+}
+
 @test "--backlog: health work is never an improvement: a stage criterion, a missing test and a CI fault with a number stay on the board, polish still leaves (ar-5401)" {
   sheet '' ''
   agent_board '- [ ] a: meet the prod stage standard #low <!-- id:sc-1 -->\n- [ ] b: add a bats case for the parser #low <!-- id:sc-2 -->\n- [ ] c: the nightly CI takes 14 min #low <!-- id:sc-3 -->\n- [ ] d: a glow on the menu #low <!-- id:sc-4 -->\n'
