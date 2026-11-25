@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use crate::links::{Kind, Link};
 use crate::release_graph::pr_ref;
-use crate::session_actions::Runner;
+use crate::session_actions::{argv, Runner};
 use crate::text::{cap, headline, TITLE_MAX};
 
 /// A queue item's priorities, as `agent-queue` takes them. A board row's are `tasks::PRIORITIES`.
@@ -934,12 +934,8 @@ pub fn done_days(items: &[Item]) -> BTreeMap<String, DayTotal> {
     by.into_iter().map(|(d, v)| (d, DayTotal::of(v))).collect()
 }
 
-fn argv(args: &[&str]) -> Vec<String> {
-    std::iter::once("agent-queue")
-        .chain(args.iter().copied())
-        .map(String::from)
-        .collect()
-}
+/// The CLI this module reads and writes through.
+const CLI: &str = "agent-queue";
 
 /// One record an item names and where it opens (`Item::links`); the web gets the link as its href.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -1024,7 +1020,7 @@ pub fn parse(jsonl: &str) -> Vec<Item> {
 
 /// One item by its slug, whatever its state.
 pub fn show(runner: &dyn Runner, slug: &str) -> Result<Item, String> {
-    parse(&runner.run(&argv(&["show", slug, "--json"]))?)
+    parse(&runner.run(&argv(&[CLI, "show", slug, "--json"]))?)
         .pop()
         .ok_or_else(|| format!("{slug}: agent-queue show printed no item"))
 }
@@ -1033,7 +1029,9 @@ pub fn show(runner: &dyn Runner, slug: &str) -> Result<Item, String> {
 /// queued time. `all` is every active item plus today's finished ones.
 pub fn list(runner: &dyn Runner, state: &str) -> Result<Vec<Item>, String> {
     runner
-        .run(&argv(&["list", "--json", "--points", "--state", state]))
+        .run(&argv(&[
+            CLI, "list", "--json", "--points", "--state", state,
+        ]))
         .map(|out| parse(&out))
 }
 
@@ -1044,7 +1042,7 @@ pub fn list_since(runner: &dyn Runner, state: &str, since: &str) -> Result<Vec<I
     }
     runner
         .run(&argv(&[
-            "list", "--json", "--points", "--state", state, "--since", since,
+            CLI, "list", "--json", "--points", "--state", state, "--since", since,
         ]))
         .map(|out| parse(&out))
 }
@@ -1093,7 +1091,7 @@ pub fn days_ago(days: i64) -> String {
 }
 
 pub fn stats(runner: &dyn Runner) -> Result<Stats, String> {
-    let out = runner.run(&argv(&["stats", "--json"]))?;
+    let out = runner.run(&argv(&[CLI, "stats", "--json"]))?;
     serde_json::from_str(&out).map_err(|e| format!("agent-queue stats: {e}"))
 }
 
@@ -1872,7 +1870,7 @@ pub fn cancel(runner: &dyn Runner, slug: &str) -> Result<String, String> {
     if !is_slug(slug) {
         return Err("bad slug".into());
     }
-    runner.run(&argv(&["cancel", slug]))
+    runner.run(&argv(&[CLI, "cancel", slug]))
 }
 
 /// `agent-queue bump <slug> <priority>`.
@@ -1883,7 +1881,7 @@ pub fn bump(runner: &dyn Runner, slug: &str, priority: &str) -> Result<String, S
     if !PRIORITIES.contains(&priority) {
         return Err("priority is urgent, high, normal or low".into());
     }
-    runner.run(&argv(&["bump", slug, priority]))
+    runner.run(&argv(&[CLI, "bump", slug, priority]))
 }
 
 /// The modes `agent-queue add` takes.
@@ -1942,7 +1940,7 @@ pub fn add_argv(a: &Add) -> Result<Vec<String>, &'static str> {
     if task.is_empty() {
         return Err("type the task");
     }
-    let mut args = argv(&["add", "--from", "human", "--project", &a.project]);
+    let mut args = argv(&[CLI, "add", "--from", "human", "--project", &a.project]);
     args.extend(["--mode", mode, "--priority", priority].map(String::from));
     if !a.tags.trim().is_empty() {
         args.extend(["--tags".into(), a.tags.trim().into()]);

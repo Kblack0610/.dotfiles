@@ -19,7 +19,7 @@ use hub_core::table::{self, Paged, Summary, View};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
-use crate::cache::{off, EventCache};
+use crate::cache::{failed, off, EventCache};
 use crate::infra;
 
 const REDS_SECS: u64 = 120;
@@ -87,7 +87,7 @@ impl Cache {
     pub async fn get(&self, infra: &infra::Cache, q: Query) -> String {
         match self.read(infra).await {
             Ok(a) => render(a, &q),
-            Err(e) => serde_json::json!({ "rows": [], "errors": [e] }).to_string(),
+            Err(e) => failed(&["rows"], e),
         }
     }
 
@@ -119,7 +119,7 @@ fn render(mut a: Alerts, q: &Query) -> String {
         history_table,
         fixes_table,
     })
-    .unwrap_or_else(|e| serde_json::json!({ "rows": [], "errors": [e.to_string()] }).to_string())
+    .unwrap_or_else(|e| failed(&["rows"], e.to_string()))
 }
 
 #[cfg(test)]

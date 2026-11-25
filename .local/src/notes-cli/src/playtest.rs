@@ -912,9 +912,7 @@ mod tests {
         }
     }
 
-    fn day(s: &str) -> NaiveDate {
-        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
-    }
+    use crate::md::date as day;
 
     #[test]
     fn lay_out_groups_open_checks_by_pr_newest_first_and_keeps_the_head() {

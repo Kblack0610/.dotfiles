@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # walker-guards.py: the Bash guards (forge, checkout, release, scratch-rm, gh-login, shared-state,
-# block-pip, block-poll, python-write-guard) run in one process, each still refusing what it refused as its own hook. Each guard's
+# block-pip, block-poll, python-write-guard, skip) run in one process, each still refusing what it refused as its own hook. Each guard's
 # own cases are in its <name>_guard.bats; this checks the dispatch. The repos, the gh dir and the
 # cache are fixtures under the test dir; the other session is a real process holding a fixture id,
 # killed in teardown.
@@ -42,9 +42,9 @@ at() { jq -nc --arg c "$2" --arg d "$1" --arg s "$ME" '{tool_name:"Bash", sessio
 denied_by() { assert_success; assert_output --partial '"deny"'; assert_output --partial "$1:"; }
 
 @test "Claude's settings.json and Codex's hooks.json run the one process on every Bash call, fail-open, and none of the nine" {
-  run jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command | select(test("walker-guards|(forge|checkout|release|scratch-rm|gh-login|shared-state|python-write)-guard|block-p(ip|oll)"))' "$ROOT/.claude/settings.json"
+  run jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command | select(test("walker-guards|(forge|checkout|release|scratch-rm|gh-login|shared-state|python-write|skip)-guard|block-p(ip|oll)"))' "$ROOT/.claude/settings.json"
   assert_output 'python3 ~/.claude/hooks/walker-guards.py || true'
-  run jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command | select(test("walker-guards|(forge|checkout|release|scratch-rm|gh-login|shared-state|python-write)-guard|block-p(ip|oll)"))' "$ROOT/.config/codex/hooks.json"
+  run jq -r '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command | select(test("walker-guards|(forge|checkout|release|scratch-rm|gh-login|shared-state|python-write|skip)-guard|block-p(ip|oll)"))' "$ROOT/.config/codex/hooks.json"
   assert_output 'python3 $HOME/.claude/hooks/walker-guards.py || true'
 }
 

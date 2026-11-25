@@ -526,11 +526,8 @@ pub fn dispatch_hosts_file() -> PathBuf {
 
 /// The JSON `fleet-bench` writes each tick for the pipeline line (its `PIPELINE_SNAPSHOT`).
 pub fn pipeline_snapshot() -> PathBuf {
-    env("PIPELINE_SNAPSHOT").unwrap_or_else(|| {
-        env("XDG_STATE_HOME")
-            .unwrap_or_else(|| home().join(".local/state"))
-            .join("agentctl/pipeline/pipeline.json")
-    })
+    env("PIPELINE_SNAPSHOT")
+        .unwrap_or_else(|| agent_core::vocab::state_home().join("agentctl/pipeline/pipeline.json"))
 }
 
 /// `day-log`'s records, one `<YYYY-MM-DD>.json` per local day (its `DAYLOG_DIR`).

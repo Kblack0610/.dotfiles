@@ -816,9 +816,7 @@ pub fn backfill(
 mod tests {
     use super::*;
 
-    fn d(s: &str) -> NaiveDate {
-        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
-    }
+    use crate::md::date as d;
 
     fn row(text: &str, day: Option<&str>) -> Block {
         Block {
