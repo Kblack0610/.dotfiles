@@ -27,7 +27,8 @@ exit 0
 FAKE
   chmod +x "$T/bin/docker"
   export DOCKER="$T/bin/docker"
-  unset COCKPIT_TEST_IMAGE TMUX_REF TMUX_STOCK FZF_REF
+  # The copy plays a host's docker.sh, so not the in-image one a job-pod job runs (ar-6016).
+  unset COCKPIT_TEST_IMAGE TMUX_REF TMUX_STOCK FZF_REF COCKPIT_TEST_DISPOSABLE GITHUB_ACTIONS
 }
 
 @test "the tag changes when the Dockerfile, the context or a build arg changes" {

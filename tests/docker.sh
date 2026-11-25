@@ -18,6 +18,8 @@
 #   DOCKER_NETWORK=bridge ./docker.sh test-rust   # a run that needs the network (crates, npm)
 #   TEST_IMAGE_KIND=lean ./docker.sh ...          # a smaller image: lean, rust or full (the default); see below
 #
+# Run inside the image (a CI job-pod job), it runs the target or --run command in place.
+#
 # The argument is a make target run INSIDE the container, so it must be an -inner
 # target. `./docker.sh test-ui` looks right and is not: the Makefile's test-ui is the
 # HOST entry point and re-invokes this script, which then fails with "docker not found"
@@ -73,6 +75,29 @@ fi
 if [ "${1:-}" = "--image" ]; then
   echo "$IMAGE"
   exit 0
+fi
+
+# Already inside the image (its ENV sets COCKPIT_TEST_DISPOSABLE): a tests.yml job whose job
+# container is the image runs here, in the job pod the node's containerd started from it, so the
+# node keeps one copy where every dind pod loaded its own (ar-6016). The run is what `docker run`
+# below would do, in place: the image's entrypoint gives this uid a passwd entry, and CI keeps its
+# cargo registry in the checkout. The step's env and the job pod's CI_CPU_MILLI are already this
+# environment, so nothing is passed through. The image's marker alone could be exported on a real
+# host (tests/Dockerfile), so this also wants GITHUB_ACTIONS, which a docker run never gets.
+if [ -n "${COCKPIT_TEST_DISPOSABLE:-}" ] && [ -n "${GITHUB_ACTIONS:-}" ]; then
+  case "${1:-}" in
+    --build) exit 0 ;;
+    --shell) echo "docker.sh: already in the test image" >&2; exit 2 ;;
+  esac
+  [ -x "$HERE/vendor/bats-core/bin/bats" ] || "$HERE/bootstrap.sh"
+  [ -z "${CI:-}" ] || export CARGO_HOME="$REPO/.cargo-ci"
+  cd "$REPO"
+  if [ "${1:-}" = "--run" ]; then
+    shift
+    [ $# -gt 0 ] || { echo "docker.sh: --run needs a command" >&2; exit 2; }
+    exec /usr/local/bin/test-entry "$@"
+  fi
+  exec /usr/local/bin/test-entry make -C tests "${@:-test-container}"
 fi
 
 command -v "$DOCKER" >/dev/null 2>&1 || {
