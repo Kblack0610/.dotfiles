@@ -2553,10 +2553,7 @@ mod tests {
         let cur = Some((0, 2, 0));
         let row = "- [ ] fix(ui): new bug #high #c1119 <!-- id:db-10 -->";
         // NEGATIVE CONTROL: no snapshot yet, so the window is open to every add.
-        assert_eq!(
-            route(frozen_window(&dir, cur), row, false),
-            Route::Open
-        );
+        assert_eq!(route(frozen_window(&dir, cur), row, false), Route::Open);
         let ix = Index::of(&dir, cur);
         record(&dir, "demo", (0, 2, 0), day("2026-11-19"), None, &ix).unwrap();
         let next = route(frozen_window(&dir, cur), row, false);
@@ -2583,36 +2580,21 @@ mod tests {
         // A row aimed later and an epic keep their place; one aimed at the open version by
         // hand goes in as an interrupt.
         assert_eq!(
-            route(
-                frozen_window(&dir, cur),
-                "- [ ] feat(ui): x #v0.4.0",
-                false,
-            ),
+            route(frozen_window(&dir, cur), "- [ ] feat(ui): x #v0.4.0", false,),
             Route::Open
         );
         assert_eq!(
-            route(
-                frozen_window(&dir, cur),
-                "- [ ] feat(ui): x #v0.2.0",
-                false,
-            ),
+            route(frozen_window(&dir, cur), "- [ ] feat(ui): x #v0.2.0", false,),
             Route::Interrupt
         );
         assert_eq!(
-            route(
-                frozen_window(&dir, cur),
-                "- [ ] epic(ui): big",
-                false,
-            ),
+            route(frozen_window(&dir, cur), "- [ ] epic(ui): big", false,),
             Route::Open
         );
         // NEGATIVE CONTROL: the same snapshot on a project that is not focus routes nothing.
         let readme = fs::read_to_string(dir.join("README.md")).unwrap();
         fs::write(dir.join("README.md"), readme.replace(" #prio/focus", "")).unwrap();
-        assert_eq!(
-            route(frozen_window(&dir, cur), row, false),
-            Route::Open
-        );
+        assert_eq!(route(frozen_window(&dir, cur), row, false), Route::Open);
         let _ = fs::remove_dir_all(&dir);
     }
 
