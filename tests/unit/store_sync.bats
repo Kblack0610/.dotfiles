@@ -976,6 +976,26 @@ requeue_item() {
   rm "$f"
 }
 
+@test "a peer's new running item stays in running/ when the other side requeued the only running item: no directory-rename move (ar-4898)" {
+  peer a; run_item a q1; peer b
+  run_item a q3
+  requeue_item b q1
+  git -C "$SANDBOX/b" add queue && git -C "$SANDBOX/b" commit -qm 'requeue q1'
+  git -C "$SANDBOX/b" fetch -q origin
+  # NEGATIVE CONTROL: with directory-rename detection on, git moves q3 into queued/ beside q1
+  run git -C "$SANDBOX/b" -c merge.directoryRenames=true merge-tree --write-tree --name-only HEAD origin/master
+  run git -C "$SANDBOX/b" ls-tree -r --name-only "${lines[0]}"
+  assert_line 'queue/queued/q3.md'
+  run on b --now
+  assert_success
+  run show "$ORIGIN" queue/running/q3.md
+  assert_success
+  run show "$ORIGIN" queue/queued/q3.md
+  assert_failure
+  run show "$ORIGIN" queue/queued/q1.md
+  assert_success
+}
+
 # route_item <machine> <slug>: the other machine records the route and a PR on the running item.
 route_item() {
   sed -i 's/^---$/routed: ocfree\npr: o#5\n---/' "$SANDBOX/$1/queue/running/$2.md"

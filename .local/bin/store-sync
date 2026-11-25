@@ -179,6 +179,10 @@ apply_merge_drivers() {
   for a in 'queue/*/*.md merge=item' 'queue/done/*/*.md merge=item'; do
     grep -qxF "$a" "$attrs" 2>/dev/null || { printf '%s\n' "$a" >> "$attrs" && rm -f "$CONFLICT" "$CONFLICT"-*; }
   done
+  # A requeue of the only running item empties running/ into queued/, which git reads as a directory
+  # rename, so a peer's new running item merged beside it was moved into queued/ with it (ar-3439,
+  # ar-4898). Queue state is the directory a file sits in: no merge here may move one.
+  [ "$(g config --get merge.directoryRenames)" = false ] || g config merge.directoryRenames false
   [ "$(g config --get merge.item.driver)" = "$me merge-item %O %A %B %P" ] ||
     { g config merge.item.driver "$me merge-item %O %A %B %P" && rm -f "$CONFLICT" "$CONFLICT"-*; }
   want="$me merge-derived %O %A %B %P"
