@@ -6926,13 +6926,14 @@ mod inbox_tests {
         assert_eq!(pick, Pick::Exact("- [ ] fix(ui): menu".into()));
     }
 
-    /// The row carrying `id` on the sheet `v` reads.
+    /// The row carrying `id` on the sheet `v` reads, or in the agent
+    /// versions note the sweep rolls a dropped row into.
     fn row_of(v: &Vault, id: &str) -> String {
-        let sheet = v.read();
-        sheet
-            .lines()
+        let note = v.root.join("projects/scratch/agent/versions/v0.1.0.md");
+        let text = v.read() + &fs::read_to_string(note).unwrap_or_default();
+        text.lines()
             .find(|l| md::row_id(l).as_deref() == Some(id))
-            .unwrap_or_else(|| panic!("no {id} in {sheet}"))
+            .unwrap_or_else(|| panic!("no {id} in {text}"))
             .to_string()
     }
 
