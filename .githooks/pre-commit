@@ -21,6 +21,7 @@ if [ -n "$hits" ]; then
   sed 's/^/    /;30q' <<<"$hits" >&2
   echo "" >&2
   echo "  → Move the file into ~/.dotfiles-private, or redact the identifier." >&2
+  echo "  A false positive (the identifier is not private): narrow its pattern in .githooks/sensitive-tokens.txt in its own PR." >&2
   exit 1
 fi
 exit 0
