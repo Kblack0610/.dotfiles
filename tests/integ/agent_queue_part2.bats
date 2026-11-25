@@ -1436,7 +1436,7 @@ notes --profile work ptask level run lv-8'
   touch "$NOTES_FIXTURE/race"
   run "$AQ" add --project level --slug raced "feat(menu): raced"
   assert_failure
-  assert_output --partial "already in the queue: raced (added while its row was written)"
+  assert_output --partial "already in the queue: raced (added while its row was written; row lv-"
   [ "$(find "$AGENT_QUEUE_DIR" -name '*-raced.md' | wc -l)" = 1 ]
   # The same goes for a cause: the item queued meanwhile owns cause:abc12345, so this add writes nothing.
   rm "$AGENT_QUEUE_DIR/queued/20260101-000000-raced.md"
@@ -2028,8 +2028,8 @@ Phase 2 of the plan $SANDBOX/plan.md: the doors." >/dev/null
   printf '# mine\n\n## Phases\n- [ ] do it all\n' > "$own"
   # The session's item names the plan it queues (one-shot step 1a); one that queues some other plan keeps its own.
   mkdir -p "$AGENT_QUEUE_DIR/running"
-  for s in sess-1 sess-3; do printf 'slug: %s\nproject: level\n---\nqueue the plan proj-plan as a chain\n' "$s" > "$AGENT_QUEUE_DIR/running/20260101-000000-$s.md"; done
-  printf 'slug: sess-4\nproject: level\n---\nfix the menu, then queue a follow-up plan\n' > "$AGENT_QUEUE_DIR/running/20260101-000000-sess-4.md"
+  for s in sess-1 sess-3; do printf 'slug: %s\nproject: level\n---\nqueue the plan proj-plan.md as a chain\n' "$s" > "$AGENT_QUEUE_DIR/running/20260101-000000-$s.md"; done
+  printf 'slug: sess-4\nproject: level\nstarted: 2099-01-01T00:00:00Z\n---\nfix the menu, then queue a follow-up plan\n' > "$AGENT_QUEUE_DIR/running/20260101-000000-sess-4.md"
   # The board path: a dispatched session files the plan as one row.
   AGENT_QUEUE_ITEM=sess-1 run "$AQ" add --plan "$SANDBOX/proj-plan.md" --project level --from auto:plans
   assert_failure 5
@@ -2056,6 +2056,13 @@ Phase 2 of the plan $SANDBOX/plan.md: the doors." >/dev/null
   refute_output --partial 'now points at'
   [ ! -e "$HOME/.claude/plans/sess-4.md.queued" ]
   grep -qxF -- '- [ ] fix the menu' "$HOME/.claude/plans/sess-4.md"
+  # A plan the session wrote after its item started is its task, named in the task or not.
+  printf 'slug: sess-5\nproject: level\nstarted: 2001-01-01T00:00:00Z\n---\nwrite and queue a plan for the menu rework\n' > "$AGENT_QUEUE_DIR/running/20260101-000000-sess-5.md"
+  printf '# mine\n\n## Phases\n- [ ] write the plan\n' > "$HOME/.claude/plans/sess-5.md"
+  printf '# N\n\n## Phases\n\n- [ ] alpha\n- [ ] beta\n' > "$SANDBOX/new-plan.md"
+  AGENT_QUEUE_ITEM=sess-5 run "$AQ" add --plan "$SANDBOX/new-plan.md" --project level --from auto:plans
+  assert_output --partial 'now points at phase 1'
+  [ -e "$HOME/.claude/plans/sess-5.md.queued" ]
 }
 
 # fleet-dispatch promote turns that row into the chain (ar-3262). NEGATIVE CONTROL: before it, --from

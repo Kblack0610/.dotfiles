@@ -270,6 +270,9 @@ load 'agent_queue/common'
   # NEGATIVE CONTROL: a phase whose item failed, and one that names another plan, did not land.
   printf 'slug: tried\nproject: level\nstatus: failed\n---\nPhase 3 of the plan %s\n' "$SANDBOX/lp.md" > "$d/20261106-000003-tried.md"
   printf 'slug: elsewhere\nproject: level\nstatus: ok\n---\nP3 of %s\n' "$SANDBOX/xlp.md" > "$d/20261106-000004-elsewhere.md"
+  # ... and so did neither a follow-up that cites P3 nor a plan of the same name in another directory.
+  printf 'slug: follow\nproject: level\nstatus: ok\n---\nfix review findings for Phase 3 of the plan %s\n' "$SANDBOX/lp.md" > "$d/20261106-000005-follow.md"
+  printf 'slug: twin\nproject: level\nplan: %s\nphases: 3\nstatus: ok\n---\nx\n' "$SANDBOX/other/lp.md" > "$d/20261106-000006-twin.md"
   run env AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/lp.md" --project level --slug lp
   assert_success
   assert_output --partial "skipped phase 1 of lp.md already landed on item by-hand"

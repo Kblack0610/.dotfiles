@@ -30,7 +30,7 @@
 #   add --plan <plan.md> [--dry-run | --check] [--project p] [--priority p] [--tags t] [--weight w] [--after slug[,slug...]] [--slug prefix] [--repeat]
 #       one oneshot item per unchecked `## Phases` line, each after the one before, unless its line says
 #       `(independent)` (after --after alone) or `(after N; needs <result>)` (after phase N's item; `(after N, M; needs ...)` after several), where `needs` names the output the phase consumes: a missing `needs`, a shared-file reason (`edits`, `same file`, `conflicts`) or a marker that does not parse is refused; `(with N)` joins phase N's item; `(at YYYY-MM-DD HH:MM)` holds that phase alone until then (its at: tag) at no more than high priority; an `(independent)` marker may carry a note, `(independent; why)`; `--check` only reads and validates the markers. A phase that says `takes <row-id>` (or `takes board row <row-id>`) is filed at the higher of the plan's priority and that row's, and agent-land closes the row when the phase merges; its newly filed story row carries `#takes/<id>` (docs/agent-queue.md). A line opening `P<N>` is phase N, else its place counts; a `1b.` line is a sub-phase: it takes no place and is not queued
-#       From a session ($AGENT_QUEUE_ITEM) whose task names this plan and whose own plan (~/.claude/plans/<item>.md) is another file with an open phase,
+#       From a session ($AGENT_QUEUE_ITEM) whose task is this plan (it names the file, or the session wrote it) and whose own plan (~/.claude/plans/<item>.md) is another file with an open phase,
 #       that file becomes a pointer stub at the plan's first open phase, its text kept as <file>.queued (own_plan_pointer).
 #   list [--json [--points]] [--state queued|running|waiting|review|done|active|all] [--date YYYY-MM-DD | --since YYYY-MM-DD|Nd|N]
 #       list joins each item's board row (`notes board --json`, one read of the whole board): the text list ends in a
@@ -472,24 +472,28 @@ finished_ok() {
 }
 
 # plan_landed <plan> -> "<phase>\t<slug>" for each phase of <plan> a done item closed ok, whatever its slug:
-# an item with a plan: field names its phases:, and one queued by hand (no --plan) names the phase in its
-# task ("P6 of <plan>", "Phase 6 of the plan <plan>", "Plan: <plan> phase P3"). finished_ok reads only
-# the chain slug, so a phase landed under another slug with its box left unticked ran again (ar-1613:
-# snuggly-hamster P6, landed by dup-flaky-p6-vocabulary in #1267, queued again by auto:plans on 2026-11-10).
+# an item with a plan: field names its phases:, and one queued by hand (no --plan) names the phase in the
+# first line of its task, opening "P6 of <plan>" or "Phase 6 of the plan <plan>", or carrying "Plan:
+# <plan> phase P3" (a follow-up that cites a phase later in its text is not that phase). The plan is the
+# same file by realpath, never by name alone. finished_ok reads only the chain slug, so a phase landed
+# under another slug with its box left unticked ran again (ar-1613: snuggly-hamster P6, landed by
+# dup-flaky-p6-vocabulary in #1267, queued again by auto:plans on 2026-11-10).
 plan_landed() {
-  local b b_re f p
-  b="$(basename "$1")"
-  b_re="${b//./\\.}"
-  grep -lF -- "/$b" "$AQ_DIR"/done/*/*.md 2>/dev/null | while IFS= read -r f; do
+  local canon f p line path ph
+  canon="$(realpath -m -- "$1")"
+  grep -lF -- "/$(basename "$1")" "$AQ_DIR"/done/*/*.md 2>/dev/null | while IFS= read -r f; do
     [ "$(fm_get "$f" status)" = ok ] || continue
-    p="$(fm_get "$f" plan)"
+    p="$(fm_get "$f" plan)" ph=''
     if [ -n "$p" ]; then
-      [ "$(basename "$p")" = "$b" ] || continue
-      fm_get "$f" phases | tr ' ,' '\n\n'
+      [ "$(realpath -m -- "$p")" = "$canon" ] && ph="$(fm_get "$f" phases)"
     else
-      fm_body "$f" | grep -oE "(\\b[Pp]hase |\\bP)[0-9]+ of (the plan )?[^ ]*/$b_re|Plan: [^ ]*/$b_re phase P?[0-9]+" |
-        sed -E 's/^[^0-9]*([0-9]+) of .*/\1/; s/.* phase P?([0-9]+)$/\1/'
-    fi | grep -E '^[0-9]+$' | sed "s/\$/\t$(fm_get "$f" slug)/"
+      line="$(fm_body "$f" | awk 'NR==1')" path=''
+      if [[ "$line" =~ ^(Phase\ |P)([0-9]+)\ of\ (the\ plan\ )?([^ ]+) ]]; then ph="${BASH_REMATCH[2]}" path="${BASH_REMATCH[4]}"
+      elif [[ "$line" =~ Plan:\ ([^ ]+)\ phase\ P?([0-9]+) ]]; then ph="${BASH_REMATCH[2]}" path="${BASH_REMATCH[1]}"; fi
+      while [[ "$path" == *[.,\;:\)] ]]; do path="${path%?}"; done
+      [ -n "$path" ] && [ "$(realpath -m -- "${path/#\~/$HOME}")" = "$canon" ] || ph=''
+    fi
+    for p in ${ph//,/ }; do [[ "$p" =~ ^[0-9]+$ ]] && printf '%s\t%s\n' "$p" "$(fm_get "$f" slug)"; done
   done
 }
 
@@ -2373,7 +2377,7 @@ cmd_add() {
     priority="$(board_row_priority "$sboard" "$srow" "$priority")"
   fi
   lock
-  [ -z "$(find_item "$slug")" ] || die "already in the queue: $slug (added while its row was written)"
+  [ -z "$(find_item "$slug")" ] || die "already in the queue: $slug (added while its row was written${story:+; row $srow on $sboard stays open})"
   cause_owner "$tags"
   if [ -n "$capped" ] && ! admit "$from" "$priority" "$tags" "$project" "$slug" "$hold_title"; then
     unlock
@@ -2763,14 +2767,17 @@ add_plan() {
 # open phases behind, so it read WORKING and shepherd never closed it (ar-5445, 2026-11-24). Its file
 # becomes a pointer stub, Phase N of <plan> (plan_pointer), N the plan's first open phase, which the
 # queued items or the plan's board row hold; the text it had is kept beside it as <file>.queued. Only
-# when the session's own task names this plan's file (one-shot step 1a: its task IS the plan); a session
-# that queues some other plan on the way keeps its own phases. Nothing when the session has no plan of its
-# own, it is this plan, it is a stub already, or it has no open phase.
+# when the queued plan is the session's task (one-shot step 1a): its task names the plan's file, or the
+# session wrote the plan after its item started. A session that queues some older plan on the way keeps
+# its own phases. Nothing when the session has no plan of its own, it is this plan, it is a stub
+# already, or it has no open phase.
 own_plan_pointer() {
-  local own="$HOME/.claude/plans/${AGENT_QUEUE_ITEM:-}.md" n name f
+  local own="$HOME/.claude/plans/${AGENT_QUEUE_ITEM:-}.md" n name f body started
   [ -n "${AGENT_QUEUE_ITEM:-}" ] && [ -f "$own" ] || return 0
   [ "$(realpath -q -- "$own")" != "$1" ] || return 0
-  f="$(find_item "$AGENT_QUEUE_ITEM")" && [ -n "$f" ] && fm_body "$f" | grep -qF -- "$(basename "$1" .md)" || return 0
+  f="$(find_item "$AGENT_QUEUE_ITEM")" && [ -n "$f" ] || return 0
+  body="$(fm_body "$f")" started="$(fm_get "$f" started)"
+  [[ "$body" == *"$(basename "$1")"* ]] || { [ -n "$started" ] && [ -n "$(find "$1" -newermt "$started" 2>/dev/null)" ]; } || return 0
   [ -z "$(plan_pointer "$own")" ] || return 0
   plan_phase_list "$own" | jq -e 'any(.[]; .state == "open")' >/dev/null 2>&1 || return 0
   IFS=$'\t' read -r n name < <(plan_phase_list "$1" | jq -r 'first(.[] | select(.state == "open" and (.n | type) == "number")) | [.n, .name] | @tsv' 2>/dev/null) || true
