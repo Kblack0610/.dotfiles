@@ -83,6 +83,7 @@
       "Edit(/etc/sudoers.d/**)",
       "Edit(**/.env)",
       "Edit(**/.env.*)",
+      "Edit(~/.agent/sessions/**/*-wind-down.md)",
       "Read(//**/.env)",
       "Read(//**/.env.*)",
       "Read(//**/id_rsa)",

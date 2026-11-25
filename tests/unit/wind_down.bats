@@ -274,23 +274,30 @@ EOF
   assert_output --partial "close.sh session 'cockpit'"
 }
 
-# ── note-path ────────────────────────────────────────────────────────────────
+# ── note ─────────────────────────────────────────────────────────────────────
 
-@test "note-path lands on the agent runtime axis, not the notes vault" {
-  # The wrap-up is agent runtime state. Writing it into ~/.notes would put an agent's
-  # own scratch into the human's journal.
-  run bash "$WIND_DOWN" note-path
+@test "note appends the draft to today's note on the agent runtime axis, never over another session's block (ar-3365)" {
+  # The wrap-up is agent runtime state: in ~/.notes it would put an agent's scratch into the
+  # human's journal. Every session of the day shares the file, so a whole-file write cut it.
+  printf '# Session wrap-up - one\n' > "$BATS_TEST_TMPDIR/a.md"
+  printf '# Session wrap-up - two\n' > "$BATS_TEST_TMPDIR/b.md"
+  run bash "$WIND_DOWN" note "$BATS_TEST_TMPDIR/a.md"
   assert_success
-  assert_output --partial "$HOME/.agent/sessions/"
-  refute_output --partial '.notes'
-  assert_output --regexp '[0-9]{4}-[0-9]{2}-[0-9]{2}-wind-down\.md$'
+  assert_output --regexp "^$HOME/\.agent/sessions/[^/]+/[0-9]{4}-[0-9]{2}-[0-9]{2}-wind-down\.md$"
+  local note="$output"
+  run bash "$WIND_DOWN" note "$BATS_TEST_TMPDIR/b.md"
+  assert_success
+  run cat "$note"
+  assert_output "$(printf '# Session wrap-up - one\n\n# Session wrap-up - two')"
 }
 
-@test "note-path creates the directory it names" {
-  run bash "$WIND_DOWN" note-path
-  assert_success
-  run test -d "$(dirname "$output")"
-  assert_success
+@test "note with no draft, or an empty one, refuses and writes nothing" {
+  : > "$BATS_TEST_TMPDIR/empty.md"
+  run bash "$WIND_DOWN" note "$BATS_TEST_TMPDIR/empty.md"
+  assert_failure 2
+  run bash "$WIND_DOWN" note
+  assert_failure 2
+  assert [ -z "$(find "$HOME/.agent/sessions" -name '*-wind-down.md' 2>/dev/null)" ]
 }
 
 # ── the worktree hand-off (wt reap) ──────────────────────────────────────────
