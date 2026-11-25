@@ -1366,7 +1366,7 @@ if [ "$dry" -eq 1 ]; then
   echo "live: dotfiles-autopull --now . --bg  (in the background, its result logged to ~/.cache/dotfiles-autopull/autopull.log: fast-forwards ~/.dotfiles or ~/.dotfiles-private when this is that repo, rebuilds the Rust tools (notes through notes-bootstrap), restarts agent-web on a new binary and a persistent agentctl runner on a new script; never fails the landing)"
   echo "prs: schedules-sync sync-prs <owner>/<repo>  (the PR store reads the merge now, not at its next poll; never fails the landing)"
   if [ "$partial" -eq 1 ]; then
-    echo "item: agent-queue set $item partial=yes before merging; record pr=$pr merged=<sha> beside earlier PRs, leave the item open"
+    echo "item: agent-queue set $item partial=yes once #$pr is merged; record pr=$pr merged=<sha> beside earlier PRs, leave the item open"
     echo "board: left open until the final landing"
   else
     [ -n "$fj" ] || echo "split: gh search prs --owner <owner> --state open --match body -- \"Item: $item\"  (before anything is touched: another open PR whose first Item: line names $item refuses this full landing; land #$pr --partial)"
@@ -1458,10 +1458,6 @@ if [ "$state" = MERGED ]; then own_merged; else own_head; fi
 [ "$state" != MERGED ] || pr_landed=1
 stamp_item
 link_task_row
-# Persist intent even on an already-merged re-run, before any later record step can fail.
-if [ "$partial" -eq 1 ]; then
-  out=$(aq_retry set "$item" partial=yes 2>&1) || fail item "$(lastline "$out")"
-fi
 
 if [ "$state" = MERGED ]; then
   echo "merge: #$pr already MERGED, recording it"
@@ -1488,6 +1484,13 @@ else
   [ "$state" = MERGED ] || fail merge "#$pr reads $state, not MERGED"
   pr_landed=1
   echo "merge: #$pr MERGED at ${head:0:8}"
+fi
+
+# The marker follows the merge, never the attempt: set before it, a merge that failed left partial: yes
+# on an item with nothing merged, and reap requeued it as "merged as a partial" (ar-2904). Set here, before
+# the proof and record steps, so one that fails after the merge still leaves the marker for reap.
+if [ "$partial" -eq 1 ]; then
+  out=$(aq_retry set "$item" partial=yes 2>&1) || fail item "$(lastline "$out")"
 fi
 
 score_body

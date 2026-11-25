@@ -604,6 +604,15 @@ moved_again() {
   assert_output 0
 }
 
+@test "a --partial merge that does not read MERGED leaves no partial marker (ar-2904)" {
+  printf 'OPEN\n' >"$NOTES_FIXTURE/merged.state"
+  run "$LAND" 42 --item ship --partial
+  assert_failure 1
+  assert_output --partial 'merge failed: #42 reads OPEN, not MERGED'
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '.partial // ""' <<<"$output")" ''
+}
+
 @test "a merge that does not read MERGED stops before the board step" {
   printf 'OPEN\n' >"$NOTES_FIXTURE/merged.state"
   run "$LAND" 42 --item ship
@@ -2543,7 +2552,7 @@ real_notes_board() {
 @test "partial dry run describes keeping the item and row open" {
   run "$LAND" 42 --item ship --partial --dry-run
   assert_success
-  assert_output --partial 'partial=yes before merging'
+  assert_output --partial 'partial=yes once #42 is merged'
   assert_output --partial 'board: left open until the final landing'
   refute_output --partial 'move ship done'
   refute_output --partial 'board: notes'
