@@ -1491,7 +1491,6 @@ fn knowledge_cmd(prof: &config::Profile, log: &logging::Logger, sub: KnowledgeCm
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 /// `ptask done` and `ptask drop`: close the row the query names, settling its open children
 /// (`--children`, and a dup's children move under the row it duplicates).
 fn ptask_close(
@@ -1540,6 +1539,7 @@ fn ptask_close(
 }
 
 /// `ptask tag`: its `--add` tags plus `--why`'s reason and priority, then the retag.
+#[allow(clippy::too_many_arguments)]
 fn ptask_tag(
     prof: &config::Profile,
     log: &logging::Logger,
