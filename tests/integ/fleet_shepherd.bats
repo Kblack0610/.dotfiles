@@ -2982,8 +2982,13 @@ esac'
   assert_output 1
   # A run cancel calls not cancellable and force-cancel refuses too names the force-cancel answer.
   unset STUB_CANCEL_DENIED
+  rm -f "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" "$FLEET_SHEPHERD_DIR/log.md"
   STUB_CANCEL_REFUSED=1 STUB_FORCE_REFUSED=1 run "$SH" ghost-runs
-  assert_line 'ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h; force-cancel: gh: Cannot force cancel this run (HTTP 409))'
+  local refused='force-cancel: gh: Cannot force cancel this run (HTTP 409)'
+  assert_line "ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h; $refused)"
+  assert_equal "$(grep runs/1 "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" | cut -f4)" "48h; $refused"
+  run grep -cF "ghost run https://github.com/o/r/actions/runs/1: cancel-failed, queued 48h with no jobs ($refused)" "$FLEET_SHEPHERD_DIR/log.md"
+  assert_output 1
   export STUB_CANCEL_DENIED=1
   # GitHub not answering writes no verdict, and one line names every run asked again.
   rm -f "$FLEET_SHEPHERD_DIR/ghost-runs.tsv"
