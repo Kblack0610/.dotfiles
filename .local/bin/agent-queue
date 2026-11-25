@@ -3883,7 +3883,8 @@ cmd_reopen() {
 # unrated for a canary (from: canary, scored by its oracle, not by landing) and for an UNRATED_ENDS end (a
 # cause outside the model); landed for done ok with a PR (agent-land's merge); failed; and an ok close with
 # no PR reads its kind's `exit` in kinds.json (its `type:`; none or an unknown one is pr): no-pr when that
-# kind ends in a PR, unrated when it ends in a report, a doc or a proof, so a clean check is no miss.
+# kind ends in a PR, unrated when it ends in a report, a doc or a proof, so a clean check is no miss; a
+# `verify` item is a proof whatever its kind, as fleet-dispatch starts it.
 # outcome($exits; $unrated): $exits maps kind to exit, $unrated is UNRATED_ENDS as a JSON array.
 OUTCOME_JQ='def outcome($exits; $unrated):
   if .status == "cancelled" then "cancelled"
@@ -3892,6 +3893,7 @@ OUTCOME_JQ='def outcome($exits; $unrated):
   elif (.end_reason // "") | IN($unrated[]) then "unrated"
   elif .status == "failed" then "failed"
   elif .status != "ok" then null
+  elif (" \(.tags // "") " | contains(" verify ")) then "unrated"
   elif ($exits[.type // ""] // "pr") == "pr" then "no-pr"
   else "unrated" end;'
 AQ_KINDS="${DISPATCH_KINDS:-$HOME/.config/fleet-dispatch/kinds.json}"
@@ -3908,9 +3910,9 @@ kind_exits() {
 stamp_outcome() {
   local f="$1" o
   o="$(jq -nr --arg status "$(fm_get "$f" status)" --arg pr "$(fm_get "$f" pr)" --arg from "$(fm_get "$f" from)" \
-    --arg end "$(fm_get "$f" end_reason)" --arg type "$(fm_get "$f" type)" \
+    --arg end "$(fm_get "$f" end_reason)" --arg type "$(fm_get "$f" type)" --arg tags "$(fm_get "$f" tags)" \
     --argjson exits "$(kind_exits)" --argjson unrated "$(unrated_json)" \
-    "$OUTCOME_JQ"' {status: $status, pr: $pr, from: $from, end_reason: $end, type: $type} | outcome($exits; $unrated) // empty')"
+    "$OUTCOME_JQ"' {status: $status, pr: $pr, from: $from, end_reason: $end, type: $type, tags: $tags} | outcome($exits; $unrated) // empty')"
   if [ -n "$o" ]; then header_set "$f" outcome "$o"; else header_del "$f" outcome; fi
 }
 

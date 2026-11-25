@@ -3666,11 +3666,45 @@ EOF
     IFS='|' read -r slug when status sha <<<"$spec"
     "$AQ" add --repeat --project game --slug "$slug" "$slug"
     "$AQ" move "$slug" done --status "$status"
-    "$AQ" set "$slug" "finished=$(at "$when")" "started=$(at "$when")" "merged=$sha"
+    "$AQ" set "$slug" "finished=$(at "$when")" "started=$(at "$when")" "merged=$sha" ${sha:+"pr=o/r#1"}
   done
   run "$AQ" stats --json --since 2000-01-01
   assert_success
   assert_equal "$(jq -c '.recent | [.shipped_today, .checks_today]' <<<"$output")" '[1,1]'
+}
+
+@test "backfill-outcome stamps done items of the last N days by the close rule, --dry-run writes nothing, and a set on a done item stamps again (ar-5433)" {
+  export DISPATCH_KINDS="$REPO_ROOT/.config/fleet-dispatch/kinds.json"
+  for s in a k v z; do "$AQ" add --project game --slug "$s" "$s"; done
+  "$AQ" set k type=check
+  "$AQ" set v type=fix tags=verify
+  for s in a k v z; do "$AQ" move "$s" done --status ok; done
+  # a fix with no PR missed; a clean check and a verify (a proof, whatever its kind) say nothing of the model
+  assert_equal "$(for s in a k v; do field "$(item 'done/*' "$s")" outcome; done | paste -sd' ')" 'no-pr unrated unrated'
+  # closed before the stamp existed; z closed outside the window
+  for s in a k v z; do sed -i '/^outcome: /d' "$(item 'done/*' "$s")"; done
+  mkdir -p "$AGENT_QUEUE_DIR/done/2000-01-01"; mv "$(item 'done/*' z)" "$AGENT_QUEUE_DIR/done/2000-01-01/"
+  run "$AQ" backfill-outcome --dry-run
+  assert_success
+  assert_line 'a: no-pr'
+  assert_line 'k: unrated'
+  assert_line 'v: unrated'
+  assert_line --partial 'would stamp 3 of 3 done items since'
+  assert_equal "$(field "$(item 'done/*' a)" outcome)" ''
+  run "$AQ" backfill-outcome
+  assert_success
+  assert_line --partial 'stamped 3 of 3 done items since'
+  assert_equal "$(for s in a k v; do field "$(item 'done/*' "$s")" outcome; done | paste -sd' ')" 'no-pr unrated unrated'
+  assert_equal "$(field "$(item 'done/*' z)" outcome)" ''
+  run "$AQ" backfill-outcome
+  assert_line --partial 'stamped 0 of 3'
+  run "$AQ" backfill-outcome --days 100000
+  assert_line --partial 'stamped 1 of 4'
+  # a PR recorded after the close (agent-land's partial path) makes it landed
+  "$AQ" set a pr=o/r#9 merged=0123456789abcdef0123456789abcdef01234567
+  assert_equal "$(field "$(item 'done/*' a)" outcome)" landed
+  run "$AQ" backfill-outcome --days x
+  assert_failure
 }
 
 @test "a slug is matched exactly, never as the tail of a longer one" {
