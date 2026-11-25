@@ -163,7 +163,7 @@ kinds() {
   assert_success
   # The cheapest stage with the tools each job runs (tests/Dockerfile): the pool's link is shared,
   # so a job that loads more than it uses can run out its timeout in the restore (ar-5632).
-  assert_output "$(printf '%s\n' 'fast lean' 'image lean,rust,full,full,full,full,full' 'lint lean' 'notes rust' 'rust full' 'ui full')"
+  assert_output "$(printf '%s\n' 'fast lean' 'image lean,tools,rust,full,full,full,full,full' 'lint lean' 'notes rust' 'rust full' 'ui full')"
   # Negative control: a job with no kind is named "-".
   sed '/TEST_IMAGE_KIND: lean   # shellcheck/d' "$WF" >"$BATS_TEST_TMPDIR/nokind.yml"
   run kinds "$BATS_TEST_TMPDIR/nokind.yml"

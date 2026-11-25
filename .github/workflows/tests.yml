@@ -24,12 +24,12 @@ name: shell tests
 #
 # Every job's tools come from one place, the tests/Dockerfile image (.github/actions/test-image
 # loads it, tests/docker.sh runs in it), so a runner needs only docker and a label. The image has
-# three stages (lean, rust, full) and a job's env TEST_IMAGE_KIND names the smallest one with what
-# it runs, because a pool pod loads its image over a link shared with the whole pool: the one
+# four stages (lean, tools, rust, full) and a job's env TEST_IMAGE_KIND names the smallest one with what
+# it runs (a fast shard sets its own from its files, tests/image-kind.sh), because a pool pod loads its image over a link shared with the whole pool: the one
 # 943 MB image ran every job out of its timeout in the cache restore on 2026-11-25 (ar-5632). A pool
 # runner pulls it from the LAN registry instead (the CI_REGISTRY variable and CI_REGISTRY_PASSWORD secret; the action
 # says when). No step installs a tool on the runner (~/.local/src/docs/ci.md, Runners; tests/unit/ci_gate.bats).
-#   image  first, before every job that loads the image: makes sure the registry holds all three
+#   image  first, before every job that loads the image: makes sure the registry holds all four
 #          stages for the current tag, building and pushing them once when it does not. Without it
 #          every pod missed the registry at once when the tag changed (2026-11-25: 34 pods, 20
 #          pushes, the registry host's link full) and the notes job cold-built the rust stage
@@ -172,7 +172,7 @@ jobs:
   # One pod per run holds the registry's copy of the image current, so the jobs behind it only pull.
   # On a tag the registry has (every run but the first after a Dockerfile change or a new ISO week)
   # it is three manifest reads, about 20 s with the pod's start. Its timeout is the cold build of
-  # all three stages in one pod, the one place a pool pod builds; it is a hang guard like the rest.
+  # all four stages in one pod, the one place a pool pod builds; it is a hang guard like the rest.
   # A hosted runner or a fork has no registry, so there it only checks out.
   image:
     name: test image in the registry
@@ -185,6 +185,14 @@ jobs:
         uses: ./.github/actions/test-image
         env:
           TEST_IMAGE_KIND: lean
+        with:
+          seed: true
+          registry: ${{ vars.CI_REGISTRY }}
+          registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
+      - name: Seed the tools stage
+        uses: ./.github/actions/test-image
+        env:
+          TEST_IMAGE_KIND: tools
         with:
           seed: true
           registry: ${{ vars.CI_REGISTRY }}
@@ -254,7 +262,7 @@ jobs:
     runs-on: *pool
     timeout-minutes: 10
     env:
-      TEST_IMAGE_KIND: lean   # the tmux-free tiers need no toolchain, chromium or tmux (tests/docker.sh)
+      TEST_IMAGE_KIND: lean   # the default; the pick step moves a shard whose files run bun or nvim to tools (tests/image-kind.sh)
     strategy:
       fail-fast: false
       matrix:
@@ -280,7 +288,14 @@ jobs:
           tests/shard.sh ${{ matrix.tier }} ${{ matrix.shard }} "$RUNNER_TEMP/picked" >"$RUNNER_TEMP/files" 2>"$RUNNER_TEMP/split" ||
             { cat "$RUNNER_TEMP/split"; exit 2; }
           cat "$RUNNER_TEMP/split"
-          [ ! -s "$RUNNER_TEMP/files" ] || echo run=true >>"$GITHUB_OUTPUT"
+          # The stage this shard's files need: lean unless one runs bun or nvim (tests/image-kind.sh), so
+          # 22 of 24 unit shards skip the 86 MB of tools. GITHUB_ENV sets it for the image step and the
+          # test step alike, since tests/docker.sh would build the tag the image step did not load.
+          if [ -s "$RUNNER_TEMP/files" ]; then
+            kind=$(tests/image-kind.sh - <"$RUNNER_TEMP/files")
+            { echo run=true; echo "kind=$kind"; } >>"$GITHUB_OUTPUT"
+            echo "TEST_IMAGE_KIND=$kind" >>"$GITHUB_ENV"
+          fi
       # The image (tests/Dockerfile), only for a shard with files to run.
       - if: steps.pick.outputs.run == 'true'
         uses: ./.github/actions/test-image

@@ -16,7 +16,7 @@
 #   ./docker.sh --build             # build the image if it is missing, and exit
 #   ./docker.sh --run <cmd> [args]  # one command in the image, from the repo root (CI's cargo builds)
 #   DOCKER_NETWORK=bridge ./docker.sh test-rust   # a run that needs the network (crates, npm)
-#   TEST_IMAGE_KIND=lean ./docker.sh ...          # a smaller image: lean, rust or full (the default); see below
+#   TEST_IMAGE_KIND=lean ./docker.sh ...          # a smaller image: lean, tools, rust or full (the default); see below
 #
 # The argument is a make target run INSIDE the container, so it must be an -inner
 # target. `./docker.sh test-ui` looks right and is not: the Makefile's test-ui is the
@@ -38,15 +38,16 @@ DOCKER="${DOCKER:-docker}"
 # The suite needs no network; a run that fetches crates or npm packages asks for it by name.
 DOCKER_NETWORK="${DOCKER_NETWORK:-none}"
 
-# The image comes in three sizes, the Dockerfile's stages: lean (the tmux-free tiers and lint),
-# rust (lean plus the toolchain: the notes job) and full (plus chromium, tmux and fzf: the ui and
+# The image comes in four sizes, the Dockerfile's stages: lean (lint and the fast shards that need
+# no bun, nvim or npm), tools (lean plus those, tests/image-kind.sh names which shard needs them),
+# rust (tools plus the toolchain: the notes job) and full (plus chromium, tmux and fzf: the ui and
 # rust jobs, and every local run). A CI job sets TEST_IMAGE_KIND to the smallest stage that has what
 # it runs, because each pool pod loads its image over a link shared with dozens of others
 # (ar-5632). Each kind has its own tag, so its own cache entry and its own present check.
 KIND="${TEST_IMAGE_KIND:-full}"
 case "$KIND" in
-  lean | rust | full) ;;
-  *) echo "docker.sh: TEST_IMAGE_KIND is lean, rust or full, not '$KIND'" >&2; exit 2 ;;
+  lean | tools | rust | full) ;;
+  *) echo "docker.sh: TEST_IMAGE_KIND is lean, tools, rust or full, not '$KIND'" >&2; exit 2 ;;
 esac
 # The full image's tag has no kind in it: it is the one a local run and every older note know.
 KIND_TAG="${KIND}-"

@@ -106,7 +106,7 @@ FAKE
 @test "a kind that is not a Dockerfile stage is refused" {
   TEST_IMAGE_KIND=slim run "$T/tests/docker.sh" --image
   assert_failure 2
-  assert_output --partial 'lean, rust or full'
+  assert_output --partial 'lean, tools, rust or full'
 }
 
 @test "a new build of one kind leaves the other kinds' images alone" {
@@ -122,7 +122,7 @@ FAKE
 }
 
 @test "tests/Dockerfile defines every stage docker.sh can target" {
-  for kind in lean rust full; do
+  for kind in lean tools rust full; do
     grep -qE "^FROM .* AS $kind\$" "$BATS_TEST_DIRNAME/../Dockerfile" || fail "no stage named $kind in tests/Dockerfile"
   done
 }

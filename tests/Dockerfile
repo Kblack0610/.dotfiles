@@ -1,4 +1,4 @@
-# The disposable machine the tests run on, and the toolchain CI has, in three stages (lean, rust, full): every tests.yml job that
+# The disposable machine the tests run on, and the toolchain CI has, in four stages (lean, tools, rust, full): every tests.yml job that
 # runs tests (fast, ui, rust, notes, lint) runs in this image through tests/docker.sh, so a runner
 # needs only docker and a label (~/.local/src/docs/ci.md). A tool a test needs goes here, never in
 # a workflow step (tests/unit/ci_gate.bats).
@@ -29,12 +29,14 @@
 #
 # Built and run by tests/docker.sh; `make -C tests test-ui` is the entry point.
 #
-# THE STAGES: lean -> rust -> full. A pool pod has its own docker daemon, so every CI job loads its
+# THE STAGES: lean -> tools -> rust -> full. A pool pod has its own docker daemon, so every CI job loads its
 # image from the Actions cache, and with dozens of pods at once that is a few MB/s each (2026-11-25:
 # 943 MB, every fast shard cancelled in the restore, ar-5632). A job loads the smallest stage that
-# has what it runs (TEST_IMAGE_KIND, tests/docker.sh): lean for the fast tier and lint, rust for the
+# has what it runs (TEST_IMAGE_KIND, tests/docker.sh): lean for lint and a fast shard none of whose
+# files needs bun, nvim or npm (tests/image-kind.sh), tools for a fast shard that does, rust for the
 # notes job, full for the ui and rust jobs and a local run. A tool goes in the earliest stage whose
-# jobs need it.
+# jobs need it. Measured 2026-11-25 (gzip of each layer): lean was 218 MB, of which bun 53 and nvim 12;
+# the npm packages the apt layer carried were the next largest piece (ar-5970).
 
 # shellcheck is pinned, and that is not fussiness: a new shellcheck release finds new
 # things, so an unpinned lint gate goes red on a repo nobody touched. Bumping it is a
@@ -55,7 +57,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 # ncurses-term supplies the xterm-256color terminfo entry the harness pins TERM to; without
 # it tmux falls back and the rendered grid differs. `column` comes from bsdextrautils on
 # trixie (it moved out of bsdmainutils), and fleet.sh shells out to it.
-# nodejs runs tab_keeper.bats (`node --test`); openssl and xxd sign release-state's store JWTs.
+# nodejs runs tab_keeper.bats (`node --test`); npm is the tools stage's, since its node-gyp tree
+# (libnode-dev, libssl-dev, webpack, babel) was most of this layer and no fast file runs it; openssl and xxd sign release-state's store JWTs.
 # lua5.4 loads the Hyprland Lua config for helpers/hypr-lua-dump.lua.
 # gcc, libevent, libncurses, bison and pkg-config are not here: only the rust stage (a linker for
 # cargo) and the full stage (tmux's build) use them, so a lean pull, the fast tier's 16 pods a run,
@@ -63,13 +66,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 # inotify-tools: agent-ask wait-delivered, the questions panel's wait for an answer to go out.
 # parallel lets the unit and integ tiers run with bats --jobs (tests/Makefile FAST_PAR).
 # sqlite3: session_outcomes.bats builds a fixture opencode DB. stow: dotfiles_deploy.bats checks
-# its links against stow itself. npm installs the phone harness's playwright-core and the
-# tilecast checker (tests/agent-web). unzip unpacks bun.
+# its links against stow itself. unzip unpacks bun (tools stage).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       bash ca-certificates coreutils curl gawk git jq less procps sed tar xz-utils unzip \
       ncurses-base ncurses-bin ncurses-term bsdextrautils \
       make \
-      python3 python3-yaml sqlite3 nodejs npm openssl xxd lua5.4 inotify-tools parallel stow \
+      python3 python3-yaml sqlite3 nodejs openssl xxd lua5.4 inotify-tools parallel stow \
       zip psmisc uuid-runtime \
     && rm -rf /var/lib/apt/lists/*
 
@@ -84,40 +86,6 @@ RUN printf 'retry = 8\nretry-delay = 15\nretry-all-errors\n' > /root/.curlrc
 # whole `sentinel_manifest` suite fails with `env: 'python3': No such file or directory`;
 # with python3 but no PyYAML it fails with the subject's own honest refusal,
 # `sentinel-manifest: PyYAML is required`. Both were red; both are fixed here.
-
-# bun runs the hunk extensions' TypeScript tests (unit/hunk_*.bats), which skip without it off CI
-# and fail without it on CI. Pinned by version and each zip's sha256 (bump all three), so a new
-# bun cannot turn the gate red on a repo nobody touched.
-ARG BUN_VERSION=1.4.5
-RUN case "$(dpkg --print-architecture)" in \
-      amd64) zip=bun-linux-x64 sha=94559b3b528995a49452f9f2404cec74f2efd7d06e0a000a8cd214b02c3666eb ;; \
-      arm64) zip=bun-linux-aarch64 sha=18656a3bf0ea5641f5796ae4213b75255579a70a0fded2f337933785568cdf84 ;; \
-      *) echo "unsupported arch" >&2; exit 1 ;; \
-    esac \
-    && curl -fsSL -o /tmp/bun.zip "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/${zip}.zip" \
-    && echo "$sha  /tmp/bun.zip" | sha256sum -c - \
-    && unzip -q /tmp/bun.zip -d /tmp && install -m 755 "/tmp/${zip}/bun" /usr/local/bin/bun \
-    && rm -rf /tmp/bun.zip "/tmp/${zip}" \
-    && bun --version
-
-# neovim runs the notes.nvim tests (integ/notes_tag_source.bats) and notes_mobile.bats, where the
-# phone launcher switches its running editor to today. The release tarball, not trixie's 0.10.4:
-# 0.10's vim.system closes stdout at process exit before reading it (neovim #30846, fixed in 0.11),
-# so one of three concurrent `notes` calls came back empty now and then (ar-5107). Pinned to the
-# version the workstation runs, by version and each tarball's sha256 (bump all three, here: like
-# BUN_VERSION it is not a tests/docker.sh build arg, since a bump needs new sha256s anyway).
-ARG NVIM_VERSION=0.12.6
-RUN case "$(dpkg --print-architecture)" in \
-      amd64) t=nvim-linux-x86_64 sha=474430d53e6264f6d6dd18db42d6dc9df3a1b56ca9e88a325bbf860e1a811d87 ;; \
-      arm64) t=nvim-linux-arm64 sha=8f1f64a0bdb97247034038c3823c6cbad5bdf9ecd5751b85494b71c3ee04c815 ;; \
-      *) echo "unsupported arch" >&2; exit 1 ;; \
-    esac \
-    && curl -fsSL -o /tmp/nvim.tar.gz "https://github.com/neovim/neovim/releases/download/v${NVIM_VERSION}/${t}.tar.gz" \
-    && echo "$sha  /tmp/nvim.tar.gz" | sha256sum -c - \
-    && tar xf /tmp/nvim.tar.gz -C /opt && mv "/opt/${t}" /opt/nvim \
-    && ln -s /opt/nvim/bin/nvim /usr/local/bin/nvim \
-    && rm -f /tmp/nvim.tar.gz \
-    && nvim --version | head -1
 
 # shellcheck, so `tests/docker.sh lint` runs the exact gate CI runs without anyone
 # having to install a linter.
@@ -153,8 +121,53 @@ RUN chmod a+w /etc/passwd /etc/group \
 ENTRYPOINT ["/usr/local/bin/test-entry"]
 CMD ["make", "-C", "tests", "test-container"]
 
+# --- tools: what only some fast shards run (bun, nvim) and the npm the rust and full jobs use ---
+# Not in lean because a fast shard loads its image over the pool registry's one link (ar-5959) and
+# 22 of the 24 unit shards a run starts have no file that needs any of this: tests/image-kind.sh
+# names the stage for a shard's files, and a shard that needs none pulls lean alone (ar-5970).
+FROM lean AS tools
+
+# npm: the phone harness's playwright-core (full) and the tilecast checker (tests/agent-web, the
+# rust job). Installed here, so lean's apt layer leaves out its node-gyp tree.
+RUN apt-get update && apt-get install -y --no-install-recommends npm \
+    && rm -rf /var/lib/apt/lists/*
+
+# bun runs the hunk extensions' TypeScript tests (unit/hunk_*.bats), which skip without it off CI
+# and fail without it on CI. Pinned by version and each zip's sha256 (bump all three), so a new
+# bun cannot turn the gate red on a repo nobody touched.
+ARG BUN_VERSION=1.4.5
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) zip=bun-linux-x64 sha=94559b3b528995a49452f9f2404cec74f2efd7d06e0a000a8cd214b02c3666eb ;; \
+      arm64) zip=bun-linux-aarch64 sha=18656a3bf0ea5641f5796ae4213b75255579a70a0fded2f337933785568cdf84 ;; \
+      *) echo "unsupported arch" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL -o /tmp/bun.zip "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/${zip}.zip" \
+    && echo "$sha  /tmp/bun.zip" | sha256sum -c - \
+    && unzip -q /tmp/bun.zip -d /tmp && install -m 755 "/tmp/${zip}/bun" /usr/local/bin/bun \
+    && rm -rf /tmp/bun.zip "/tmp/${zip}" \
+    && bun --version
+
+# neovim runs the notes.nvim tests (integ/notes_tag_source.bats) and notes_mobile.bats, where the
+# phone launcher switches its running editor to today. The release tarball, not trixie's 0.10.4:
+# 0.10's vim.system closes stdout at process exit before reading it (neovim #30846, fixed in 0.11),
+# so one of three concurrent `notes` calls came back empty now and then (ar-5107). Pinned to the
+# version the workstation runs, by version and each tarball's sha256 (bump all three, here: like
+# BUN_VERSION it is not a tests/docker.sh build arg, since a bump needs new sha256s anyway).
+ARG NVIM_VERSION=0.12.6
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) t=nvim-linux-x86_64 sha=474430d53e6264f6d6dd18db42d6dc9df3a1b56ca9e88a325bbf860e1a811d87 ;; \
+      arm64) t=nvim-linux-arm64 sha=8f1f64a0bdb97247034038c3823c6cbad5bdf9ecd5751b85494b71c3ee04c815 ;; \
+      *) echo "unsupported arch" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL -o /tmp/nvim.tar.gz "https://github.com/neovim/neovim/releases/download/v${NVIM_VERSION}/${t}.tar.gz" \
+    && echo "$sha  /tmp/nvim.tar.gz" | sha256sum -c - \
+    && tar xf /tmp/nvim.tar.gz -C /opt && mv "/opt/${t}" /opt/nvim \
+    && ln -s /opt/nvim/bin/nvim /usr/local/bin/nvim \
+    && rm -f /tmp/nvim.tar.gz \
+    && nvim --version | head -1
+
 # --- rust: the toolchain, for the notes job and (through full) the rust and ui jobs ---
-FROM lean AS rust
+FROM tools AS rust
 # tests/rust-toolchain, passed by tests/docker.sh, which hashes it into the tag. No default: the
 # build context cannot read the repo's pin.
 ARG RUST_TOOLCHAIN
