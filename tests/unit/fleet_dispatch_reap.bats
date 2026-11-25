@@ -44,6 +44,44 @@ load 'fleet_dispatch/common'
   assert_not_called 'claude-acct unpark'
 }
 
+@test "unpark: a preempt ledger is resumed when the free units fit it beside the urgent item that waits (ar-3467)" {
+  # l1 parked: h1 and h2 hold 4 of 6 units, so 2 are free, one for l1 and one for the light urgent item.
+  # The negative control, units that fit only the urgent item, is the test above: l2 stays parked.
+  five_of_six_units
+  park_stub
+  ledger game-agent-l1 preempt
+  agent-queue add --project game --slug now-one --priority urgent "now one" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_called 'claude-acct unpark game-agent-l1'
+  [ -n "$(qitem running now-one)" ] || fail "the urgent item did not start in the unit l1 left it"
+}
+
+@test "unpark: a heavy urgent item keeps both free units, so a preempt ledger stays parked (ar-3467)" {
+  five_of_six_units
+  park_stub
+  ledger game-agent-l1 preempt
+  agent-queue add --project game --slug big-one --priority urgent --weight heavy "big one" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_not_called 'claude-acct unpark'
+  [ -n "$(qitem running big-one)" ] || fail "the heavy urgent item did not start in the 2 free units"
+}
+
+@test "unpark: an urgent item this machine's load holds keeps no run units, so a preempt ledger is resumed (ar-3467)" {
+  # The same 5 of 6 units as "waits while an urgent item is runnable" above, which keeps l2 parked
+  # (the negative control): here load holds the urgent item, so it could not take l2's unit.
+  six_of_six_units
+  ledger game-agent-l2 preempt
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  agent-queue add --project game --slug now-one --priority urgent "now one" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'unpark keeps no run units for urgent now-one: '
+  assert_called 'claude-acct unpark game-agent-l2'
+  [ -n "$(qitem queued now-one)" ] || fail "the urgent item started past the load hold"
+}
+
 @test "reap files an approved plan whose session is gone as one board row, queues nothing, and files it once" {
   # dispatch's pass is not a pull: only the board fills the queue (agent-queue pull_ok)
   unset AGENT_QUEUE_PULL
