@@ -86,7 +86,7 @@ load 'fleet_dispatch/common'
   [ -n "$(qitem waiting mine)" ] || fail "the item's own Claude on a pending ask did not read waiting"
   [ -n "$(qitem running lane)" ] || fail "an item with no ids lost its lane"
   [ -n "$(qitem waiting away)" ] || fail "the flip read the lane's busy Claude, not the item's own waiting one"
-  # agent-panel lists no codex thread, so a codex item's ids say nothing and its lane still decides
+  # the panel's Claude rows hold no codex thread, so a codex item's ids say nothing and its lane still decides
   started_item cx lab:game-agent-5 '' '' human waiting
   sed -i 's/^agent: claude$/agent: codex\nsessions: thread-1/' "$AGENT_QUEUE_DIR"/waiting/*-cx.md
   printf 'game-agent-%s\n' 1 2 3 4 5 > "$NOTES_FIXTURE/tmux.sessions.lab"
@@ -798,6 +798,16 @@ claude_end_item() {
   [ -n "$(qitem running shared-2)" ] || fail "a false waiting on a shared session stayed"
   # Negative control: a shell window does not make a session shared, so its one Claude still counts.
   [ -n "$(qitem waiting alone)" ] || fail "a session with one Claude stopped reading as waiting"
+}
+
+@test "reap: a codex or opencode row beside a Claude is no second Claude, so the session is not shared (ar-4125)" {
+  started_item alone lab:game-agent-1
+  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  stub agent-panel 'printf "%s\n" "{\"target\":\"lab/game-agent-1:1\",\"harness\":\"claude\",\"status\":\"waiting\"}" "{\"target\":\"lab/game-agent-1:2\",\"harness\":\"codex\",\"status\":\"busy\"}"'
+  stub agent-ask 'exit 0'
+  run cmd_reap
+  assert_success
+  [ -n "$(qitem waiting alone)" ] || fail "a harness row beside the Claude made its session shared"
 }
 
 @test "record keeps each pane's session, window and cwd, with the conversation found under the pane" {

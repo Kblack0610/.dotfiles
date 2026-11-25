@@ -904,8 +904,13 @@ item_sessions() {
 }
 
 # panel_lists <agent> -- this agent's sessions are on the panel by Claude session id: Claude, and
-# a harness claude-lazer launches. Another agent's `sessions:` ids (a codex thread) are never there.
+# a harness claude-lazer launches. Another agent's `sessions:` ids (a codex thread) are on the panel
+# too, but as that harness's rows: claude_rows drops them, so only a Claude's ids are matched.
 panel_lists() { [ "$1" = claude ] || [ "$(harness_launcher "$1")" = claude-lazer ]; }
+
+# claude_rows -- stdin's `agent-panel list --json` lines that are Claude conversations (an old line has no harness).
+# The readers below treat a row as a Claude's pane or session; the other harnesses' rows are not that.
+claude_rows() { jq -c 'select((.harness // "claude") == "claude")' 2>/dev/null; }
 
 # past_reap_grace <started> -- exit 0 once an item started at least DISPATCH_REAP_GRACE seconds ago.
 past_reap_grace() {
@@ -936,7 +941,7 @@ claude_gone() {
     [ -n "$sids" ] || return 1
   fi
   past_reap_grace "$started" || return 1
-  [ -n "${REAP_PANEL+set}" ] || REAP_PANEL=$(agent-panel list --json 2>/dev/null) || REAP_PANEL=''
+  [ -n "${REAP_PANEL+set}" ] || { REAP_PANEL=$(agent-panel list --json 2>/dev/null) || REAP_PANEL=''; REAP_PANEL=$(claude_rows <<<"$REAP_PANEL"); }
   [ -n "$REAP_PANEL" ] || return 1
   jq -e -s --arg t "$server/$sess" --arg ids "$sids" '
     ($ids | split(" ") | map(select(. != ""))) as $ids
@@ -949,7 +954,7 @@ claude_gone() {
 # codex_gone <slug> <agent> <started> -- exit 0 when the item runs on a Codex launcher, started past
 # DISPATCH_REAP_GRACE ago, and its run is no longer live (codex_run_live). The tmux session is no
 # witness for a Codex item: wt recycles worktree lanes, so a Claude item can take the same session
-# name, and agent-panel lists that Claude, never the Codex run (ar-1087). Like claude_gone it is one
+# name, and the Claude rows of the panel never hold the Codex run (ar-1087). Like claude_gone it is one
 # witness, and reap settles on it only when the reap before also read it gone (reap_confirm).
 codex_gone() {
   [ "$(harness_launcher "$2")" = codex ] || return 1
@@ -7956,6 +7961,7 @@ epic_verify_task() {
 waiting_sessions() {
   local panel asks shared working wsids
   panel=$(agent-panel list --json 2>/dev/null) || return 1
+  panel=$(claude_rows <<<"$panel")
   # --open: a session whose ask is parked still waits on its human; parking only hides the row.
   asks=$(agent-ask list --all --open 2>/dev/null) || return 1
   shared=$(jq -r 'select(.status != "shell") | .target | sub(":[^:/]*$"; "")' <<<"$panel" 2>/dev/null | sort | uniq -d)

@@ -115,7 +115,7 @@ pub fn run_jump(target: &str) -> Result<()> {
 /// Deliberately raw fields, not the chooser's display text: that carries box-drawing
 /// header rows and alignment padding meant only for fzf.
 ///
-/// `json` prints one `agent_core::agent::ListRow` per line instead: the session and transcript
+/// `json` prints one `agent_core::agent::ListRow` per line instead, for every harness's rows: the session and transcript
 /// facts fleet-sessions buckets on and what an action on the session needs. `parked` adds the
 /// parked rows (`collect_all`).
 ///
@@ -129,7 +129,9 @@ pub fn run_list(json: bool, parked: bool) -> Result<()> {
         collect_read()
     };
     if !json {
-        for a in &agents {
+        // The TSV feeds the Claude window glyphs and the cockpit's Claude list: a harness row is
+        // no Claude window there. `--json` is the wire for every harness (it names each row's).
+        for a in agents.iter().filter(|a| a.harness.is_empty()) {
             println!("{}\t{}\t{}\t{}", a.target, a.glyph, a.project, a.summary);
         }
         return exit_on_gaps(&gaps);
