@@ -1248,7 +1248,7 @@ pub fn needs(
         let what = str_of(j, "what");
         out.push(condition(
             Kind::Janitor,
-            format!("janitor:{what}"),
+            format!("janitor:{}", j["key"].as_str().unwrap_or(what)),
             format!(
                 "Home cluster needs you: {} ({}, {}).",
                 what.trim_end_matches('.'),
@@ -1562,6 +1562,17 @@ mod tests {
             ],
             "main": [{"repo": "repo", "reason": "repo red: Tests"}],
         })
+    }
+
+    #[test]
+    fn a_janitor_need_takes_its_id_from_the_key_and_its_text_from_the_newest_line() {
+        let mut st = state();
+        st["janitor"] = json!([{"when": "10:50", "who": "janitor",
+            "what": "node a quarantine (x3 (06:20Z, 06:50Z, 10:50Z))", "key": "node a quarantine"}]);
+        let h = build_all(Some(&st), None, None, None, NOW);
+        let n = h.needs.iter().find(|n| n.kind == Kind::Janitor).unwrap();
+        assert_eq!(n.id, "janitor:node a quarantine");
+        assert!(n.text.contains("x3 (06:20Z, 06:50Z, 10:50Z)"));
     }
 
     #[test]
