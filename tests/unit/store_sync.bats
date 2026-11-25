@@ -1239,6 +1239,20 @@ lose_head_tree() {
   run git -C "$ORIGIN" ls-tree -r --name-only master -- queue/queued
   assert_output ''
 
+  # Both sides set one header key differently: the moved copy stands whole at the new path and the
+  # worker's edit is kept in lost/, never a queued header under running/.
+  peer i; short_queued i m5; peer j
+  start_short i m5; sed -i 's/^---$/sessions: s0\n---/' "$SANDBOX/i/queue/running/m5.md"
+  edit_queued j m5
+  on i --now
+  run on j --now
+  assert_success
+  run show "$ORIGIN" queue/running/m5.md
+  assert_line 'host: home'
+  assert_line 'sessions: s0'
+  run ls "$SANDBOX/j/.sync/lost"
+  assert_output --partial 'queue__running__m5.md.lost-'
+
   # Negative control: a genuine delete (not a move) while another side edits still conflicts.
   peer g; short_queued g m4; peer h
   rm "$SANDBOX/g/queue/queued/m4.md"
