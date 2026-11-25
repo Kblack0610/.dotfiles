@@ -227,31 +227,34 @@ load 'fleet_dispatch/fleet_dispatch_run_holds'
   project app beta "$SANDBOX/repos/app"
   share_history 1 1
   export DISPATCH_PER_PASS=1
-  printf '# pc\n\n## Phases\n\n- [ ] one\n- [ ] two\n' > "$SANDBOX/pc.md"
-  agent-queue add --plan "$SANDBOX/pc.md" --project game --priority high --from session >/dev/null
-  agent-queue move pc-p1 running >/dev/null; agent-queue move pc-p1 done --status ok >/dev/null
+  # The chain's phase before closed ok; the queue files no phase behind an open one (it waits on its board row).
+  agent-queue add --project game --slug pc-one --priority high --from session "pc phase one" >/dev/null
+  agent-queue move pc-one running >/dev/null; agent-queue move pc-one done --status ok >/dev/null
+  printf '# pc\n\n## Phases\n\n- [ ] two\n' > "$SANDBOX/pc.md"
+  agent-queue add --plan "$SANDBOX/pc.md" --project game --priority high --from session --after pc-one >/dev/null
   # The negative control: a plain follow-up behind the same closed item, high by default and ahead in queue order, waits.
-  agent-queue add --project game --slug follow-game --from session --after pc-p1 "a follow-up" >/dev/null
+  agent-queue add --project game --slug follow-game --from session --after pc-one "a follow-up" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_output --partial 'started game-agent-1: game: pc-p2'
+  assert_output --partial 'started game-agent-1: game: pc-p1'
   [ -n "$(qitem queued follow-game)" ] || fail "a plain --after follow-up passed the project share cap"
   # A validate item passes the same way.
-  agent-queue add --project game --slug validate-game --priority high --tags validate --from auto:validate --after pc-p1 "check(validate): pc-p1" >/dev/null
+  agent-queue add --project game --slug validate-game --priority high --tags validate --from auto:validate --after pc-one "check(validate): pc-one" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'started game-agent-1: game: validate-game'
   [ -n "$(qitem queued follow-game)" ] || fail "a plain --after follow-up passed the project share cap"
   # A low phase waits like any capped item: chain-lag bounds urgent and high only.
   agent-queue move follow-game done --status cancelled >/dev/null
-  printf '# pd\n\n## Phases\n\n- [ ] one\n- [ ] two\n' > "$SANDBOX/pd.md"
-  agent-queue add --plan "$SANDBOX/pd.md" --project game --priority low --from session >/dev/null
-  agent-queue move pd-p1 running >/dev/null; agent-queue move pd-p1 done --status ok >/dev/null
+  agent-queue add --project game --slug pd-one --priority low --from session "pd phase one" >/dev/null
+  agent-queue move pd-one running >/dev/null; agent-queue move pd-one done --status ok >/dev/null
+  printf '# pd\n\n## Phases\n\n- [ ] two\n' > "$SANDBOX/pd.md"
+  agent-queue add --plan "$SANDBOX/pd.md" --project game --priority low --from session --after pd-one >/dev/null
   agent-queue add --project app --slug fix-app --priority low "fix the app" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'started game-agent-1: app: fix-app'
-  [ -n "$(qitem queued pd-p2)" ] || fail "a low plan phase passed the project share cap"
+  [ -n "$(qitem queued pd-p1)" ] || fail "a low plan phase passed the project share cap"
 }
 
 @test "project share: a canary or an agent's urgent on a capped project waits at the cap, as the human's urgent does not" {
