@@ -1,7 +1,8 @@
 //! The priority reasons: the one list of why a row sits at its priority, and the `#why/<slug>`
 //! row tag checked against it. The list is data, `~/.config/inbox-triage/rules/priority-reasons.tsv`
-//! (slug, priority, meaning; one tab-separated reason per line), so the words the rubric lets a
-//! model answer are the words this CLI accepts. Each slug belongs to exactly one priority, so a
+//! (slug, priority, meaning; one tab-separated reason per line), read here to validate and, once
+//! the priority pass is wired to it, by the rubric too, so the words a model may answer are the
+//! words this CLI accepts. Each slug belongs to exactly one priority, so a
 //! reason also checks the row's priority word.
 
 use crate::md;
@@ -79,7 +80,10 @@ fn load() -> Result<Vec<Reason>> {
 
 /// The reason named `slug`, or the refusal listing the slugs there are.
 pub(crate) fn lookup(slug: &str) -> Result<Reason> {
-    let all = load()?;
+    lookup_in(load()?, slug)
+}
+
+fn lookup_in(all: Vec<Reason>, slug: &str) -> Result<Reason> {
     let slug = slug.trim().trim_start_matches('#').trim_start_matches(TAG);
     match all.iter().position(|r| r.slug == slug) {
         Some(i) => Ok(all.into_iter().nth(i).expect("position is in range")),
@@ -119,7 +123,10 @@ fn priority_of(line: &str) -> Option<&'static str> {
 /// The first line takes the tags, so a pasted block keeps its detail lines. A priority the text
 /// already has stays, and [`refuse_bad`] then says when it is the wrong level for the reason.
 pub(crate) fn with_reason(text: &str, slug: &str) -> Result<String> {
-    let r = lookup(slug)?;
+    with_reason_in(lookup(slug)?, text)
+}
+
+fn with_reason_in(r: Reason, text: &str) -> Result<String> {
     let (first, rest) = text
         .split_once('\n')
         .map_or((text, None), |(a, b)| (a, Some(b)));
@@ -138,7 +145,15 @@ pub(crate) fn with_reason(text: &str, slug: &str) -> Result<String> {
 /// changes neither the row's reasons nor its priority, so a row that already breaks this can
 /// still be edited, fixed or closed.
 pub(crate) fn refuse_bad(old: &str, new: &str) -> Result<()> {
-    let tags = tags_of(new);
+    if tags_of(new).is_empty() {
+        return Ok(());
+    }
+    refuse_bad_in(load()?, old, new)
+}
+
+fn refuse_bad_in(all: Vec<Reason>, old: &str, new: &str) -> Result<()> {
+    let mut tags = tags_of(new);
+    tags.dedup();
     if tags.is_empty() || (tags == tags_of(old) && priority_of(new) == priority_of(old)) {
         return Ok(());
     }
@@ -152,7 +167,7 @@ pub(crate) fn refuse_bad(old: &str, new: &str) -> Result<()> {
         );
     }
     let slug = &tags[0][TAG.len()..];
-    let r = lookup(slug)?;
+    let r = lookup_in(all, slug)?;
     match priority_of(new) {
         Some(p) if p == r.priority => Ok(()),
         Some(p) => bail!(
@@ -198,26 +213,15 @@ mod tests {
         }
     }
 
-    /// Points the list at a small fixture, once for the whole test process.
-    fn list() {
-        static ONCE: std::sync::Once = std::sync::Once::new();
-        ONCE.call_once(|| {
-            let p = std::env::temp_dir().join(format!("reasons-{}.tsv", std::process::id()));
-            std::fs::write(
-                &p,
-                "feature\tnormal\tm\nupkeep\tlow\tm\nred-main\thigh\tm\n",
-            )
-            .unwrap();
-            std::env::set_var(PATH_ENV, &p);
-        });
+    fn list() -> Vec<Reason> {
+        parse("feature\tnormal\tm\nupkeep\tlow\tm\nred-main\thigh\tm\n").unwrap()
     }
 
     #[test]
     fn a_reason_is_checked_against_the_list_and_the_rows_priority() {
-        list();
         let ok = "- [ ] fix(a): b #low #why/upkeep <!-- id:x-1 -->";
-        assert!(refuse_bad("- [ ] fix(a): b #low", ok).is_ok());
-        let e = |old: &str, new: &str| refuse_bad(old, new).unwrap_err().to_string();
+        assert!(refuse_bad_in(list(), "- [ ] fix(a): b #low", ok).is_ok());
+        let e = |old: &str, new: &str| refuse_bad_in(list(), old, new).unwrap_err().to_string();
         // NEGATIVE CONTROL: a reason of another priority, an unknown one, two, and no priority.
         assert!(e("- [ ] a #high", "- [ ] a #high #why/upkeep").contains("is a #low reason"));
         assert!(e("- [ ] a #low", "- [ ] a #low #why/nope").contains("not a priority reason"));
@@ -225,24 +229,30 @@ mod tests {
         assert!(e("- [ ] a", "- [ ] a #why/upkeep").contains("no priority"));
         // a row that already breaks it still takes an edit that touches neither
         let bad = "- [ ] a #high #why/upkeep";
-        assert!(refuse_bad(bad, "- [ ] a b #high #why/upkeep").is_ok());
-        assert!(refuse_bad(bad, "- [ ] a #low #why/upkeep").is_ok());
-        assert!(refuse_bad(bad, "- [ ] a #normal #why/upkeep").is_err());
+        assert!(refuse_bad_in(list(), bad, "- [ ] a b #high #why/upkeep").is_ok());
+        assert!(refuse_bad_in(list(), bad, "- [ ] a #low #why/upkeep").is_ok());
+        assert!(refuse_bad_in(list(), bad, "- [ ] a #normal #why/upkeep").is_err());
         // a proof marker is not a tag
-        assert!(refuse_bad("- [ ] a #low", "- [ ] a #low <!-- #why/nope -->").is_ok());
+        assert!(refuse_bad_in(list(), "- [ ] a #low", "- [ ] a #low <!-- #why/nope -->").is_ok());
     }
 
     #[test]
     fn with_reason_adds_the_level_the_row_lacks() {
-        list();
         assert_eq!(
-            with_reason("fix(a): b\n  detail", "upkeep").unwrap(),
+            with_reason_in(lookup_in(list(), "upkeep").unwrap(), "fix(a): b\n  detail").unwrap(),
             "fix(a): b #why/upkeep #low\n  detail"
         );
         assert_eq!(
-            with_reason("fix(a): b #high", "red-main").unwrap(),
+            with_reason_in(lookup_in(list(), "red-main").unwrap(), "fix(a): b #high").unwrap(),
             "fix(a): b #high #why/red-main"
         );
-        assert!(with_reason("fix(a): b", "nope").is_err());
+        assert!(lookup_in(list(), "nope").is_err());
+        // the same slug twice is one reason, not two
+        assert!(refuse_bad_in(
+            list(),
+            "- [ ] a #low",
+            "- [ ] a #low #why/upkeep #why/upkeep"
+        )
+        .is_ok());
     }
 }

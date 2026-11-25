@@ -2472,6 +2472,7 @@ pub(crate) fn retag(line: &str, add: &[String], remove: &[String]) -> String {
     // A row has one reason: a new `#why/` replaces the one it had.
     let old_why: Vec<String> = if add.iter().any(|t| t.starts_with("#why/")) {
         head.split_whitespace()
+            .map(|w| w.trim_end_matches(','))
             .filter(|w| w.to_lowercase().starts_with("#why/") && !add.iter().any(|a| a == w))
             .map(str::to_string)
             .collect()
