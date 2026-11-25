@@ -2383,7 +2383,7 @@ real_notes_board() {
   assert_line 'landed #42'
 }
 
-@test "prs: after the merge the PR store refreshes that repo; a failed refresh is said and never fails the landing, an unlisted repo is silent" {
+@test "prs: after the merge the PR store refreshes that repo; a failed refresh is said and never fails the landing, an unlisted repo is said and filed once" {
   run "$LAND" 42 --item ship
   assert_success
   run grep '^schedules-sync' "$LOG"
@@ -2394,9 +2394,14 @@ real_notes_board() {
   assert_line 'prs: o/r not refreshed (o/r: HTTP 502); its next poll reads the merge'
   assert_line 'landed #42'
   printf '3\n' >"$NOTES_FIXTURE/ss.rc"
+  : >"$LOG"
   run "$LAND" 42 --item ship
   assert_success
-  refute_output --partial 'prs:'
+  assert_line --partial 'prs: o/r is in no schedules-sync repos list'
+  assert_line 'prs: filed on the agent-runtime outbox'
+  assert_line 'landed #42'
+  run grep -c '^notes ptask agent-runtime --agent add --why runtime-fault fix(ledger): o/r is in no schedules-sync repos list' "$LOG"
+  assert_output 1
 }
 
 @test "partial landing holds after items and the board until the other repo lands" {
