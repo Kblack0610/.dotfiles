@@ -224,6 +224,11 @@ load 'fleet_dispatch/common'
   assert_output --partial 'could not mark queue item fix-app running; closed'
   assert_called 'tmux-close -L'
   [ -n "$(qitem queued fix-app)" ] || fail "fix-app stays queued"
+  # A close that fails too is said, not hidden.
+  stub tmux-close 'exit 1'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-app
+  assert_failure
+  assert_output --partial "could not mark queue item fix-app running, nor close"
   # Negative control: a move that goes through leaves the session up.
   : > "$NOTES_FIXTURE/calls.log"
   cp "$real" "$SANDBOX/bin/agent-queue"
