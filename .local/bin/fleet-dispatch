@@ -3076,7 +3076,7 @@ ladder_row_why() {
     return 1
   fi
   load_kinds; kind=$(item_kind "$it")
-  [ -z "$kind" ] || [[ " pr report " == *" ${KIND_EXIT[$kind]:-pr} "* ]] || { echo "its kind $kind opens no PR"; return 1; }
+  [ -z "$kind" ] || [[ " pr report " == *" ${KIND_EXIT[$kind]:-pr} "* ]] || { echo "its kind $kind ends in ${KIND_EXIT[$kind]}, never a PR"; return 1; }
 }
 
 # tier3_pick <item json> <share> -> rc 0 when a ladder run takes the tier-3 row: share is above 0,

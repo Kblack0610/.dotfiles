@@ -535,6 +535,9 @@ def ask_epoch: (.[0:19] + "Z" | fromdateiso8601)
 # iso_epoch: an ISO time with a Z, +HH:MM or +HHMM offset (date -Iseconds writes the colon form)
 def iso_epoch: if endswith("Z") then fromdateiso8601 else sub(":(?<m>[0-9]{2})$"; "\(.m)") | ask_epoch end;
 def ratio($a; $b): if $b == 0 then null else ($a / $b * 1000 | round) / 1000 end;   # 3 places, null over none
+# landed, rated: the stamped outcome of a done item (agent-queue OUTCOME_JQ); rated is what a landed rate is over
+def landed: .outcome == "landed";
+def rated: .outcome | IN("landed", "no-pr", "failed");
 # move($before; $after; $dir; $flat): improved or regressed when the value moved more than $flat
 # (relative) the way $dir says (-1 lower is better, 1 higher), flat inside that, - with no value
 def move($b; $a; $dir; $flat): if $b == null or $a == null or $dir == 0 then "-"
@@ -3750,7 +3753,6 @@ models_json() {
     | ($runs | INDEX(.id)) as $rix | ($voids | INDEX(.id)) as $vix
     | ($ci | INDEX(itemkey)) as $cix | ($sa[0] // {}) as $sp |
     def sids: (.sessions // "") | split(" ") | map(select(. != ""));
-    def landed: .outcome == "landed";
     def metered: (.gateway_cost_usd // "") != "";
     def alias: capture("^claude-(?<f>[a-z]+)-").f // .;
     ($outcomes[0] // {}) as $o
@@ -3898,14 +3900,14 @@ skills_json() {
     def sids: (.sessions // "") | split(" ") | map(select(. != ""));
     ($o[0] // {}) as $o | ($reds[0] // {}) as $r | ($ci | INDEX(itemkey)) as $cix
     | ($items | map(prkeys as $pk | (sids | map($o[.] // empty)) as $rows
-        | {outcome, landed: (.outcome == "landed"), pk: $pk,
+        | {outcome, landed: landed, pk: $pk,
            skills: ([$rows[] | (.uses.skills // {} | keys[] | bare), (.uses.slash // {} | keys[] | bare | select(IN($names[])))] | unique),
            reverted: any($rows[] | .prs // [] | .[]; .reverted == true and (itemkey | IN($pk[]))),
            tried: ((.fix_tries // "") != ""), red: $r[.slug]})) as $done
     | def score($name; $it):
         ($it | map(select(.outcome != "cancelled"))) as $n
         | ($n | map(select(.landed))) as $l
-        | ($n | map(select(.outcome | IN("landed", "no-pr", "failed"))) | length) as $rated
+        | ($n | map(select(rated)) | length) as $rated
         | [$l | map(.pk[]) | unique[] | $cix[.] // empty] as $cr
         | ($cr | map(select(ran_gate))) as $ran
         | ($n | map(select(.tried))) as $tried
@@ -3996,7 +3998,7 @@ source_attr() {
           else (.account | acct) // ([$ids[] | $os[.] // empty | on // empty] | first) end
         | {src: ., why: (if . != null then null elif $a != "" then "unknown_account" elif $ids == [] then "no_session"
                          elif any($ids[]; $os[.] != null) then "no_account" else "no_outcome" end)};
-      [$items[] | select(.outcome == "landed") | item_src] as $L
+      [$items[] | select(landed) | item_src] as $L
     | ($L | map(.src)) as $landed
     | ($R | map({key: .name, value: .parent}) | from_entries) as $parent
     | {days: $days, read: {sources: ($rows != null), points: ($pts != null), usd: ($usd != null)}, sessions: $sess,

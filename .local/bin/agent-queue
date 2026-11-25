@@ -3896,24 +3896,28 @@ OUTCOME_JQ='def outcome($exits; $unrated):
   elif (" \(.tags // "") " | contains(" verify ")) then "unrated"
   elif ($exits[.type // ""] // "pr") == "pr" then "no-pr"
   else "unrated" end;'
-AQ_KINDS="${DISPATCH_KINDS:-$HOME/.config/fleet-dispatch/kinds.json}"
-
-# kind_exits -> kinds.json as {kind: exit}; {} when it is unreadable, so every kind reads as ending in a PR.
+# kind_exits -> kinds.json (fleet-dispatch's DISPATCH_KINDS) as {kind: exit}; {} when it is unreadable,
+# so every kind reads as ending in a PR.
 kind_exits() {
   local x
-  x="$(jq -c 'with_entries(.value |= (.exit // "pr"))' "$AQ_KINDS" 2>/dev/null)" && [ -n "$x" ] || x='{}'
+  x="$(jq -c 'with_entries(.value |= (.exit // "pr"))' "${DISPATCH_KINDS:-$HOME/.config/fleet-dispatch/kinds.json}" 2>/dev/null)" && [ -n "$x" ] || x='{}'
   printf '%s\n' "$x"
+}
+
+# outcome_writes <file>... -> "<file> TAB <outcome> TAB <slug>" for each item whose outcome: is not the one
+# OUTCOME_JQ gives from its header ("" to delete), so an unchanged item is never rewritten.
+outcome_writes() {
+  items_json --rows "$OUTCOME_JQ"' map((outcome('"$(kind_exits)"'; '"$(unrated_json)"') // "") as $o
+    | select((.outcome // "") != $o) | [.file, $o, .slug])' "$@" | jq -r '.[] | @tsv'
 }
 
 # stamp_outcome <file> -- write the done item's outcome: (OUTCOME_JQ) from its own header. Every close calls
 # it (move done, cancel_close), and so does a set on a done item, since status, pr, type or from can change.
 stamp_outcome() {
-  local f="$1" o
-  o="$(jq -nr --arg status "$(fm_get "$f" status)" --arg pr "$(fm_get "$f" pr)" --arg from "$(fm_get "$f" from)" \
-    --arg end "$(fm_get "$f" end_reason)" --arg type "$(fm_get "$f" type)" --arg tags "$(fm_get "$f" tags)" \
-    --argjson exits "$(kind_exits)" --argjson unrated "$(unrated_json)" \
-    "$OUTCOME_JQ"' {status: $status, pr: $pr, from: $from, end_reason: $end, type: $type, tags: $tags} | outcome($exits; $unrated) // empty')"
-  if [ -n "$o" ]; then header_set "$f" outcome "$o"; else header_del "$f" outcome; fi
+  local f o
+  while IFS=$'\t' read -r f o _; do
+    if [ -n "$o" ]; then header_set "$f" outcome "$o"; else header_del "$f" outcome; fi
+  done < <(outcome_writes "$1")
 }
 
 lane_outcome() {
@@ -4139,7 +4143,7 @@ BRIEF_JQ='def norm: gsub("<!--.*?-->"; "") | gsub("<!--.*$"; "") | gsub("(^|\\s)
 # whose outcome is missing or no longer what their header says: the items closed before the close path
 # stamped one, or closed by a checkout that does not yet. One read of every file, one write per change.
 cmd_backfill_outcome() {
-  local days=30 dry="" since d f o n=0
+  local days=30 dry="" since d f o slug n=0
   local -a files=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -4154,14 +4158,12 @@ cmd_backfill_outcome() {
     [ -d "$d" ] && [[ ! "$(basename "$d")" < "$since" ]] || continue
     for f in "$d"*.md; do [ -e "$f" ] && files+=("$f"); done
   done
-  while IFS=$'\t' read -r f o; do
-    [ -n "$f" ] || continue
+  while IFS=$'\t' read -r f o slug; do
     n=$((n + 1))
-    if [ -n "$dry" ]; then echo "$(fm_get "$f" slug): ${o:-no outcome}"
+    if [ -n "$dry" ]; then echo "$slug: ${o:-no outcome}"
     elif [ -n "$o" ]; then header_set "$f" outcome "$o"
     else header_del "$f" outcome; fi
-  done < <(items_json --rows "$OUTCOME_JQ"' map((outcome('"$(kind_exits)"'; '"$(unrated_json)"') // "") as $o
-    | select((.outcome // "") != $o) | [.file, $o])' "${files[@]}" | jq -r '.[] | @tsv')
+  done < <([ ${#files[@]} -eq 0 ] || outcome_writes "${files[@]}")
   unlock
   echo "$([ -n "$dry" ] && echo would stamp || echo stamped) $n of ${#files[@]} done items since $since"
 }
