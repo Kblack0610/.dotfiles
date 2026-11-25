@@ -84,9 +84,9 @@ A fault or a feature with a named benefit is normal at least, under a "to standa
 
 A board row carries a priority word and a `#why/<slug>` from `.config/inbox-triage/rules/priority-reasons.tsv`, each slug naming one priority. A row with no reason, or no priority, is a default: `fleet-bench prio-defaults` counts them by the filer that wrote the row.
 
-- Backfill: `agentctl-inbox-triage --backlog --priority --reasons --retag high`, run from the deployed script on PATH (a worktree copy is refused: its rendered prompt is not one of the agent's PROMPT files). It stops at `MAX_CALLS_HOUR` (120 calls, about 2,100 rows an hour) with "stopped at its budget"; the next run continues over the rows still without a reason. Never raise the cap for it.
+- Backfill: `agentctl-inbox-triage --backlog --priority --reasons --retag high`, run from the deployed script on PATH (a worktree copy is refused: its rendered prompt is not one of the agent's PROMPT files). It stops at `MAX_CALLS_HOUR` (120 calls, about 2,100 rows an hour) with "stopped at its budget"; the next run asks every row still without a reason again, the said mismatches included, and with `--retag high` every high row again, so a resume spends a call per 40 of those rows before it reaches a row the last run never asked. Never raise the cap for it.
 - It keeps the priority a row has. When the model's reason belongs to another priority, the pass says so and writes nothing, so the row stays a default until `--retag` names its priority or the human changes the word. `--retag high` re-judges the agent-lane high rows and can lower one; a human row is never lowered (the pass says the lowering and the human decides).
-- The count after each run is `fleet-bench prio-defaults`; the first run's figures are in the P4 Results of `~/.agent/plans/_live/priority-reasons-default-count.md`.
+- The count after each run is `fleet-bench prio-defaults`; each run's figures are in the P4 Results of `~/.agent/plans/_live/priority-reasons-default-count.md`. A re-run lowers it because the model answers some mismatched rows with a reason of their own priority the next time; once a run leaves it flat, the rest is mismatches for `--retag` or the human.
 
 ## Where the scales fall short today
 
