@@ -556,7 +556,7 @@ LI='#beta: A license, check: `[ -f LICENSE ]`'
   # Untagged, the triager judges it; from the Enforced from date the gate blocks on its gaps, so the rollup is #high.
   : > "$NOTES_FIXTURE/calls.log"
   STAGE_GATE_TODAY=2026-11-19 run "$CHECK" shooter --file
-  assert_called 'meet the beta stage standard #of/sh-1 #size/m #high --detail'
+  assert_called 'meet the beta stage standard #of/sh-1 #size/m #high --why blocks-work --detail'
   # NEGATIVE CONTROL: an add that prints no id is an error, and nothing is folded into nothing.
   : > "$NOTES_FIXTURE/calls.log"; : > "$NOTES_FIXTURE/ptask.agent.added"
   run "$CHECK" shooter --file
@@ -821,7 +821,7 @@ $LI"
   assert_output "notes ptask shooter --agent edit sh-7 --text chore(stage): meet the beta stage standard #of/sh-1
 notes ptask shooter --agent edit sh-7 --brief $HEAD_BETA
 $CL
-notes ptask shooter --agent tag sh-7 --add high --remove low
+notes ptask shooter --agent tag sh-7 --why blocks-work --remove low
 notes ptask shooter --agent drop sh-8 --dup sh-7"
   # NEGATIVE CONTROL: a priority set by hand stays, and a rollup in progress is never folded.
   board "$(rollup sh-7 beta urgent "$CL"; rollup sh-8 dev low | sed '1s/^- \[ \]/- [\/]/')"
@@ -838,7 +838,7 @@ notes ptask shooter --agent drop sh-8 --dup sh-7"
   board "$(rollup sh-7 beta normal "$CL")"
   STAGE_GATE_TODAY=2026-11-19 run "$CHECK" shooter --file
   assert_success
-  assert_called 'notes ptask shooter --agent tag sh-7 --add high --remove normal'
+  assert_called 'notes ptask shooter --agent tag sh-7 --why blocks-work --remove normal'
   # Before the Enforced from date a retitle clears the #high the lower stage's gate set.
   board "$(rollup sh-7 alpha high "$CL")"
   : > "$NOTES_FIXTURE/calls.log"
@@ -846,7 +846,7 @@ notes ptask shooter --agent drop sh-8 --dup sh-7"
   assert_success
   assert_line --regexp '^row +sh-7 +meet the beta stage standard, retitled from #alpha$'
   assert_called 'notes ptask shooter --agent tag sh-7 --remove high'
-  assert_not_called 'tag sh-7 --add'
+  assert_not_called 'tag sh-7 --why'
   # NEGATIVE CONTROL: with no retitle, a tag the triager set stays, #high and #low alike.
   for p in high low; do
     board "$(rollup sh-7 beta "$p" "$CL")"

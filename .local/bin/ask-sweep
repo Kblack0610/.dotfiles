@@ -54,13 +54,15 @@ ascii() { tr -cd ' -~' | tr -d '#' | cut -c1-"${1:-200}"; }
 # file_row [--sheet] <board> <text>: one row within the run's cap. Returns 1 when not filed;
 # an open twin already on the board (`ptask add` exit 3) counts as filed. Every row is a want by
 # the `ask` channel, so the notes writer stamps #requested and no caller composes the tag.
+# A third argument is the priority reason (priority-reasons.tsv) for a row whose text names its own #low.
 file_row() {
-  local lane=(--agent); [ "$1" = --sheet ] && { lane=(); shift; }
+  local lane=(--agent) why=(); [ "$1" = --sheet ] && { lane=(); shift; }
   local board="$1" text="$2"
+  [ -z "${3:-}" ] || why=(--why "$3")
   if [ "$FILED" -ge "$ASK_SWEEP_MAX" ]; then OVER=$((OVER + 1)); return 1; fi
   FILED=$((FILED + 1))
   if [ "$DRY" = 1 ]; then printf 'would file [%s] %s\n' "$board" "$text"; return 0; fi
-  notes ptask "$board" "${lane[@]}" add --want ask "$text" >/dev/null 2>&1
+  notes ptask "$board" "${lane[@]}" add --want ask "${why[@]}" "$text" >/dev/null 2>&1
   local rc=$?
   [ "$rc" = 0 ] || [ "$rc" = 3 ]
 }
@@ -115,7 +117,7 @@ file_plan() {
   esac
   say "agent-queue refused the plan $planf: $why"
   rc=0
-  notes ptask "$board" --agent add "fix(plan): $slug: agent-queue refuses its Phases checklist ($(ascii 160 <<<"$why")); fix it, then agent-queue add --plan $planf #size/s #low" \
+  notes ptask "$board" --agent add --why upkeep "fix(plan): $slug: agent-queue refuses its Phases checklist ($(ascii 160 <<<"$why")); fix it, then agent-queue add --plan $planf #size/s #low" \
     >/dev/null 2>&1 || rc=$?
   # 3: an open twin; 4: the outbox took it, where inbox-triage joins a later twin.
   case "$rc" in 0|3|4) FILED=$((FILED + 1)); return 0 ;; esac
@@ -296,7 +298,7 @@ $(systems_of "$board")"
     tags="#tier/$tier #size/${size,,}"
     [ "$tier" -le 2 ] && [ "$size" = S ] && [ "$done_is" = true ] && [ "$human" != true ] && tags+=" #worker/requested"
     if [ "$human" = true ]; then
-      file_row --sheet "$board" "$row; asked $asked \"$quote\" #low"
+      file_row --sheet "$board" "$row; asked $asked \"$quote\" #low" upkeep
     else
       file_row "$board" "$row; asked $asked \"$quote\" $tags"
     fi

@@ -47,6 +47,7 @@ set -uo pipefail
 usage() { sed -n '2,/^[^#]/{/^#/s/^# \{0,1\}//p}' "$0"; exit "${1:-2}"; }
 
 NAME="" TARGET="" SYSTEMS="" ONLY="" JSON="" FILE="" LIST="" REQS="" BY_DEPT=""
+STAGE_WHY=blocks-work   # the priority reason (priority-reasons.tsv) of a rollup whose gate blocks: it holds the project at its stage
 while [ $# -gt 0 ]; do
   case "$1" in
     --stage) TARGET="${2:-}"; shift 2 || usage ;;
@@ -402,13 +403,17 @@ gap_title() { local r="${1#\#*: }"; title_of "${r%%, check: *}"; }
 # judged from flapping. #urgent stays, and so does a tag on a row the open sprint holds (stages.md,
 # Frozen rows): the cut carries it. Returns 1 only when the tag failed otherwise.
 retag_rollup() {
-  local rid="$1" rprio="$2" prio="$3" retitled="$4" terr args
+  local rid="$1" rprio="$2" prio="$3" retitled="$4" terr args rwhy rlist
   if [ -n "$prio" ]; then
     case "$rprio" in low|normal|-) ;; *) return 0 ;; esac
-    args=(--add "$prio"); [ "$rprio" = - ] || args+=(--remove "$rprio")
+    args=(--why "$STAGE_WHY"); [ "$rprio" = - ] || args+=(--remove "$rprio")
   else
     [ -n "$retitled" ] && [ "$rprio" = high ] || return 0
+    # A reason with no priority is refused, so the row's #why/ goes with its #high.
     args=(--remove high)
+    rlist="$(notes ptask "$BOARD" --agent list 2>/dev/null)" || return 1
+    rwhy="$(grep -F -- "id:$rid " <<<"$rlist" | grep -o '#why/[a-z0-9-]*' | head -n 1)"
+    [ -z "$rwhy" ] || args+=(--remove "$rwhy")
   fi
   terr="$(notes ptask "$BOARD" --agent tag "$rid" "${args[@]}" 2>&1 >/dev/null)" && return 0
   if grep -q 'sprint: the cut carries open rows' <<<"$terr"; then
@@ -497,7 +502,7 @@ file_rollup() {
       fi
       target_epic || { listed_says="0 listed"; return 0; }
       while IFS= read -r l; do args+=(--detail "$l"); done <<<"$brief"
-      out="$(notes ptask "$BOARD" --agent add "chore(stage): meet the $TARGET stage standard #of/$epic #size/m${prio:+ #$prio}" "${args[@]}" --origin project-stage-check)"; rc=$?
+      out="$(notes ptask "$BOARD" --agent add "chore(stage): meet the $TARGET stage standard #of/$epic #size/m${prio:+ #$prio}" ${prio:+--why "$STAGE_WHY"} "${args[@]}" --origin project-stage-check)"; rc=$?
       # Exit 3 is add's twin check: a concurrent run filed the rollup first, and its list stands.
       if [ "$rc" -eq 3 ]; then
         printf 'open    %-10s  meet the %s stage standard, filed by another run\n' rollup "$TARGET"

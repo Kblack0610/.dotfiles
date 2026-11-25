@@ -1325,19 +1325,20 @@ ask_stub() {
   printf '# gp\n\nVersion: v0.1.0\n\n## Tasks\n- [ ] the gig row <!-- id:gp-1 -->\n' >"$HOME/.notes/gig/projects/current/gp/README.md"
   gig_before="$(cat "$HOME/.notes/gig/projects/current/gp/README.md")"
   # rows reach the model in sheet order: sc-4, sc-5, sc-6
-  answer '{"n": 1, "priority": "normal"}' '{"n": 2, "priority": "high"}' '{"n": 3, "priority": "medium"}'
+  answer '{"n": 1, "priority": "normal", "why": "fault"}' '{"n": 2, "priority": "high", "why": "requested"}' '{"n": 3, "priority": "medium", "why": "fault"}'
   # run from a session: the record still names inbox-priority, the lane judge-eval scores these by
   CLAUDE_CODE_SESSION_ID=feedface0123 run "$TRIAGE" --backlog --priority
   assert_success
   assert_output --partial 'priority: tagged 2, left 0, refused 0'
   run notes log --json --action tagged
-  assert_equal "$(jq -sc 'map([.id, .by, .why])' <<<"$output")" '[["sc-4","inbox-priority","+#normal"],["sc-5","inbox-priority","+#high"]]'
+  assert_equal "$(jq -sc 'map([.id, .by, .why])' <<<"$output")" '[["sc-4","inbox-priority","+#why/fault +#normal"],["sc-5","inbox-priority","+#why/requested +#high"]]'
   grep -qx '2. \[sc-5\] the menu flickers #requested' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
   refute grep -q 'logo\|gig row' "$NOTES_FIXTURE/prompt.txt"
   grep -q "red on main" "$NOTES_FIXTURE/prompt.txt" || fail "the rubric lost its red-on-main clause"
-  grep -qF 'normal: real work with a named benefit' "$NOTES_FIXTURE/prompt.txt" || fail "the priority pass lost normal"
-  grep -qF 'low: upkeep, cleanup' "$NOTES_FIXTURE/prompt.txt" || fail "the priority pass lost the upkeep low"
-  grep -qF 'private data (PHI, PII, secrets, keys) readable by someone who should not see it' "$NOTES_FIXTURE/prompt.txt" || fail "the priority pass lost the security line"
+  grep -q $'^feature\tnormal\t' "$NOTES_FIXTURE/prompt.txt" || fail "the priority pass lost the normal reasons"
+  grep -q $'^upkeep\tlow\t' "$NOTES_FIXTURE/prompt.txt" || fail "the priority pass lost the upkeep low"
+  grep -qF 'private data readable by someone who should not see it' "$NOTES_FIXTURE/prompt.txt" || fail "the priority pass lost the security reason"
+  grep -qF '"why": "upkeep"' "$NOTES_FIXTURE/prompt.txt" || fail "the priority pass does not ask for a reason"
   grep -qF 'still tag it low here' "$NOTES_FIXTURE/prompt.txt" || fail "the priority pass does not say what to answer for a nice-to-have"
   # epic membership is no reason for high: every row has an epic, so it made most rows high (ar-2943)
   grep -q "Being filed under an open epic (#of/<epic id>) is not a reason" "$NOTES_FIXTURE/prompt.txt" || fail "the rubric lost its epic clause"
@@ -1352,7 +1353,7 @@ ask_stub() {
 @test "--retag high also asks the #high rows, and a new priority replaces the old one" {
   export INBOX_PRIORITY_CMD=model-stub
   sheet '' '- [ ] the save is slow #high <!-- id:sc-4 -->\n- [ ] the menu flickers #high <!-- id:sc-5 -->\n- [ ] the logo #low <!-- id:sc-7 -->\n'
-  answer '{"n": 1, "priority": "high"}' '{"n": 2, "priority": "urgent"}'
+  answer '{"n": 1, "priority": "high", "why": "runtime-fault"}' '{"n": 2, "priority": "urgent", "why": "outage"}'
   run "$TRIAGE" --backlog --priority --retag high --project scratch
   assert_success
   assert_output --partial 'priority: tagged 1, left 0'
@@ -1366,7 +1367,7 @@ ask_stub() {
 @test "--retag high leaves a started row alone, tagged or not (ar-4436)" {
   export INBOX_PRIORITY_CMD=model-stub
   sheet '' '- [ ] the save is slow #high <!-- id:sc-4 -->\n- [/] the plan phase in flight #high <!-- id:sc-5 -->\n- [/] the jump is floaty <!-- id:sc-6 -->\n'
-  answer '{"n": 1, "priority": "low"}'
+  answer '{"n": 1, "priority": "low", "why": "upkeep"}'
   run "$TRIAGE" --backlog --priority --retag high --project scratch
   assert_success
   assert_output --partial 'priority: tagged 1, left 0'
@@ -1382,7 +1383,7 @@ ask_stub() {
 @test "--retag low asks only the #low rows and lifts one the rubric puts higher; the old --retag-high and an unknown word are refused" {
   export INBOX_PRIORITY_CMD=model-stub
   sheet '' '- [ ] fix(auth): the report route trusts a client-sent admin flag #low <!-- id:sc-4 -->\n- [ ] chore(git): set core.hookspath on the other machines #low <!-- id:sc-5 -->\n- [ ] the menu flickers #high <!-- id:sc-6 -->\n- [ ] feat(ui): a pause menu #normal <!-- id:sc-7 -->\n'
-  answer '{"n": 1, "priority": "high"}' '{"n": 2, "priority": "low"}'
+  answer '{"n": 1, "priority": "high", "why": "access-hole"}' '{"n": 2, "priority": "low", "why": "upkeep"}'
   run "$TRIAGE" --backlog --priority --retag low --project scratch
   assert_success
   assert_output --partial 'priority: tagged 1, left 0'
@@ -1904,13 +1905,63 @@ ask_about() { basename "$(grep -l "^question: .*$1" "$HOME"/.agent/asks/*/*.md)"
   [ ! -e "$PROJ/scratch/improvements.md" ] || fail "a dry run wrote improvements.md"
 }
 
+@test "--priority writes the reason with the priority; an unknown reason, or one of another level, writes nothing" {
+  export INBOX_PRIORITY_CMD=model-stub
+  sheet '' '- [ ] the save is slow <!-- id:sc-4 -->\n- [ ] the menu flickers <!-- id:sc-5 -->\n- [ ] the jump is floaty <!-- id:sc-6 -->\n- [ ] the logo is off <!-- id:sc-7 -->\n'
+  answer '{"n": 1, "priority": "normal", "why": "fault"}' '{"n": 2, "priority": "high", "why": "upkeep"}' '{"n": 3, "priority": "low", "why": "nope"}' '{"n": 4, "priority": "low"}'
+  run "$TRIAGE" --backlog --priority --project scratch
+  assert_success
+  assert_output --partial 'priority: tagged 1, left 0, refused 0'
+  run tasks
+  assert_output --regexp 'the save is slow .*#why/fault.*#normal.*id:sc-4|the save is slow .*#normal.*#why/fault.*id:sc-4'
+  # NEGATIVE CONTROL: upkeep is a #low reason, so a #high answer with it, an unlisted slug and no reason are all left untagged.
+  assert_output --regexp '\[ \] the menu flickers <!-- id:sc-5 -->'
+  assert_output --regexp '\[ \] the jump is floaty <!-- id:sc-6 -->'
+  assert_output --regexp '\[ \] the logo is off <!-- id:sc-7 -->'
+}
+
+@test "--priority --reasons asks every open row with no #why/, adds the reason and keeps the row's own priority" {
+  export INBOX_PRIORITY_CMD=model-stub
+  sheet '' '- [ ] the save is slow #high <!-- id:sc-4 -->\n- [ ] the menu flickers #low #why/upkeep <!-- id:sc-5 -->\n- [/] the plan phase in flight #high <!-- id:sc-6 -->\n- [/] the jump is floaty #normal <!-- id:sc-7 -->\n- [/] the logo is off <!-- id:sc-8 -->\n'
+  answer '{"n": 1, "priority": "high", "why": "runtime-fault"}' '{"n": 2, "priority": "low", "why": "upkeep"}' '{"n": 3, "priority": "normal", "why": "fault"}' '{"n": 4, "priority": "low", "why": "upkeep"}'
+  run "$TRIAGE" --backlog --priority --reasons --project scratch
+  assert_success
+  # the reasoned open row is not asked; the started rows are
+  refute grep -q 'menu flickers' "$NOTES_FIXTURE/prompt.txt"
+  grep -qF '[sc-6] the plan phase in flight' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  run tasks
+  assert_output --regexp 'the save is slow .*#why/runtime-fault.*id:sc-4|the save is slow .*#high.*#why/runtime-fault.*id:sc-4'
+  # NEGATIVE CONTROL: no priority moves (sc-6 high -> low, untagged sc-8 low); a row whose answer matches its priority gains its reason (sc-7).
+  assert_output --regexp '\[/\] the plan phase in flight #high <!-- id:sc-6 -->'
+  assert_output --regexp 'the jump is floaty .*#normal.*#why/fault.*id:sc-7|the jump is floaty .*#why/fault.*#normal.*id:sc-7'
+  assert_output --regexp '\[/\] the logo is off <!-- id:sc-8 -->'
+}
+
+@test "--priority --reasons says an answer for another priority and writes nothing" {
+  export INBOX_PRIORITY_CMD=model-stub
+  sheet '' '- [ ] the menu flickers #high <!-- id:sc-5 -->\n'
+  answer '{"n": 1, "priority": "normal", "why": "fault"}'
+  run "$TRIAGE" --backlog --priority --reasons --project scratch
+  assert_success
+  assert_output --partial 'sc-5 would go #high -> #normal (#why/fault): --reasons keeps a row'"'"'s own priority'
+  run tasks
+  assert_output --regexp 'the menu flickers #high <!-- id:sc-5 -->'
+}
+
+@test "--reasons without --priority is refused and asks no model" {
+  run "$TRIAGE" --backlog --reasons
+  assert_failure 2
+  assert_output --partial '--reasons goes with --priority'
+  [ ! -e "$NOTES_FIXTURE/model.log" ] || fail "the model was asked"
+}
+
 @test "the priority rubric: normal is real work with a named benefit, low is upkeep, a nice-to-have is an improvement, on the route call and the priority pass alike" {
   sheet '- the gun sound is off\n' ''
   answer '{"n": 1, "action": "skip"}'
   run "$TRIAGE"
-  grep -qF 'normal: real work with a named benefit' "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost normal"
-  grep -qF 'low: upkeep, cleanup' "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost the upkeep low"
-  grep -qF 'an auth or authority check that is missing or trusted from the client' "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost the security line"
+  grep -q $'^feature\tnormal\t' "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost the normal reasons"
+  grep -q $'^upkeep\tlow\t' "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost the upkeep low"
+  grep -qF 'a missing or client-trusted auth check' "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost the security reason"
   grep -qF 'is an improvement, and it is kept in the project' "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost the improvement rule"
   grep -qF 'improvement: only for a line tagged #from/' "$NOTES_FIXTURE/prompt.txt" || fail "the improvement action is not offered"
   ! grep -qF 'including ideas, polish' "$NOTES_FIXTURE/prompt.txt" || fail "the old catch-all low is back"

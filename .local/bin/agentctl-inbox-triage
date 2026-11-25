@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # agentctl-inbox-triage: route the outbox and file every project sheet's `## Inbox`, in one sweep.
 #
-#   agentctl-inbox-triage [--dry-run] [--project <name>] [--backlog [--priority [--retag <word>] | --link | --size | --report]] [--watch]
+#   agentctl-inbox-triage [--dry-run] [--project <name>] [--backlog [--priority [--retag <word>] [--reasons] | --link | --size | --report]] [--watch]
 #   agentctl-inbox-triage --answer <ask id>
 #
 # A pass starts by splitting lists (`notes outbox split`, `notes ptask <p> split`): two or more checkboxes under a line become one line per ask.
@@ -26,7 +26,10 @@
 # boards as the inbox-backlog agent: its own budget, outcome and batch size, so a cleanup never
 # stops the intake sweep. --backlog --priority gives each open row with no priority tag one, #urgent, #high,
 # #normal or #low, from one Sonnet call per batch (the inbox-priority agent); --retag <word> also re-judges
-# the open rows tagged #<word>. A started row is never asked. --backlog --link puts each open typed row with no #of/ under an epic, one Sonnet
+# the open rows tagged #<word>. Each answer is a priority and its reason, a slug of
+# .config/inbox-triage/rules/priority-reasons.tsv, written together (`notes ptask tag --why`); --reasons also asks every open row
+# with no #why/, whatever its priority, and a started one too. It only adds the reason: an answer for another priority than the row's is said, not written, so such a row is asked again on the next --reasons run. A started row is otherwise never asked.
+# --backlog --link puts each open typed row with no #of/ under an epic, one Sonnet
 # call per batch on the same lane: the model names the row's system and, when one fits, an open
 # feature epic or a new #new one; a row with neither goes under its system's standing epic
 # (`notes ptask edit --link`). --backlog --size gives each open row with no `#pts/<n>` its
@@ -89,8 +92,9 @@ BACKLOG_PROMPT="$PROMPTS/inbox-backlog/prompt.md"    # inbox-backlog
 PRIORITY_PROMPT="$PROMPTS/inbox-priority/priority.md" # inbox-priority
 LINK_PROMPT="$PROMPTS/inbox-priority/area.md"        # inbox-priority, the --link pass
 SIZE_PROMPT="$PROMPTS/inbox-size/prompt.md"          # inbox-size
+REASONS_TSV="$PROMPTS/inbox-triage/rules/priority-reasons.tsv" # the reason list: the rubric includes it, notes reads it
 
-DRY=0; ONLY=""; BACKLOG=0; PRIORITY=0; SIZE=0; SCORED=0; RETAG=""; LINK=0; LINKED=0; STANDING=0; NEW_EPICS=0; declare -A NEW_SEEN=(); TAGGED=0; WATCH=0; WAIT=0; SUMMARY=""; FILED=0; KEPT=0; FAILED=0; ROUTED=0; OVER=0
+DRY=0; ONLY=""; BACKLOG=0; PRIORITY=0; SIZE=0; SCORED=0; RETAG=""; REASONS=0; LINK=0; LINKED=0; STANDING=0; NEW_EPICS=0; declare -A NEW_SEEN=(); TAGGED=0; WATCH=0; WAIT=0; SUMMARY=""; FILED=0; KEPT=0; FAILED=0; ROUTED=0; OVER=0
 REWROTE=0; MOVED=0; DROPPED=0; RAISED=0; CLOSED_DONE=0; REPORT=0; IMPROVED=0; CAPPED=0; BUDGET_STOP=0; ANSWERED=0; ASKED=0; VERDICT=keep; VDEST=""; VPRIO=""
 OUT=""; ANSWER_ID=""; DEFERRED='[]'; LINES_DROPPED=0
 FLAG=""; RECORD=""; OUTBOX=""
@@ -1019,33 +1023,48 @@ managed_board() { jq -c '.rows |= map(select(.automation != false)) | .projects 
 # a cached answer for one is never replayed or reported, and no row can be called its dup.
 backlog_board() { managed_board | jq -c --arg keys "$BOARD_KEY_ERE" '.rows |= map(select((.text // "") | test($keys) | not))'; }
 
-# One --priority answer line -> n, priority, split by US.
+# One --priority answer line -> n, priority, why (the reason slug), split by US.
 # shellcheck disable=SC2016 # jq source, not shell
 PRIORITY_JQ='fromjson? | select(type == "object" and (.n | type) == "number")
-  | [(.n | floor | tostring), ((.priority // "") | tostring)] | join("\u001f")'
+  | [(.n | floor | tostring), ((.priority // "") | tostring), ((.why // "") | tostring)] | join("\u001f")'
 
-# priority_batch <project> <lane> <batch json>: one call gives each row a priority, and
-# `ptask tag` writes each that differs from the row's own (a new priority replaces the old).
+# reason_priority <slug>: the priority the reason gives, or nothing for a slug the list does not have.
+reason_priority() { awk -F'\t' -v s="$1" '$1 == s && $1 !~ /^#/ { print $2; exit }' "$REASONS_TSV"; }
+
+# priority_batch <project> <lane> <batch json>: one call gives each row a priority and its reason,
+# and one `ptask tag --why` writes both (a new priority and reason replace the old). An answer whose
+# priority is not its reason's, or whose reason is not on the list, writes nothing. A started row
+# is only ever raised (ar-4436), and --reasons never changes a priority a row has: it says the answer and writes nothing.
 priority_batch() {
-  local p="$1" lane="$2" batch="$3" listing n prio
-  local -a ids cur
+  local p="$1" lane="$2" batch="$3" listing n prio why want
+  local -a ids cur curwhy st
   mapfile -t ids < <(jq -r '.[] | .id' <<<"$batch")
   mapfile -t cur < <(jq -r '.[] | if .untriaged then "" else .priority end' <<<"$batch")
+  mapfile -t curwhy < <(jq -r '.[] | .prio_why // ""' <<<"$batch")
+  mapfile -t st < <(jq -r '.[] | .state' <<<"$batch")
   listing="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.id)] \(.value.text)"' <<<"$batch" | cut -c1-300)"
   ask "$PRIORITY_PROMPT" "${#ids[@]}" "$p ($lane) priority" "$INBOX_PRIORITY_CMD" sized || return
   answered "$p ($lane) priority" || return 1
   local -a seen=()
-  while IFS=$'\x1f' read -r n prio; do
+  while IFS=$'\x1f' read -r n prio why; do
     [ "$n" -ge 1 ] 2>/dev/null && [ "$n" -le "${#ids[@]}" ] || continue
     [ -z "${seen[n]:-}" ] || continue   # one answer per row
     seen[n]=1
-    case "$prio" in urgent|high|normal|low) ;; *) continue ;; esac
-    [ "$prio" = "${cur[n - 1]}" ] && continue
+    want="$(reason_priority "$why")"
+    [ -n "$want" ] && [ "$prio" = "$want" ] || continue
+    [ "$prio" = "${cur[n - 1]}" ] && [ "$why" = "${curwhy[n - 1]}" ] && continue
+    # --reasons adds a reason and never moves a priority a row already has, whoever set it.
+    if [ "$REASONS" = 1 ] && [ -n "${cur[n - 1]}" ] && [ "$prio" != "${cur[n - 1]}" ]; then
+      say "$p ($lane): ${ids[n - 1]} would go #${cur[n - 1]} -> #$prio (#why/$why): --reasons keeps a row's own priority"
+      continue
+    fi
+    # An untagged started row ranks as normal, so a low answer would lower it too.
+    [ "${st[n - 1]}" = open ] || [ "$(prio_rank "$prio")" -ge "$(prio_rank "${cur[n - 1]:-normal}")" ] || continue
     # The ingest record names the writer inbox-priority, whoever ran the pass: judge-eval scores
     # these tags as that lane's verdicts (SCORE=priority-kept), so a session or queue item must not
     # take the credit, and the triager's own score must not count them.
     AGENTCTL_NAME=inbox-priority AGENT_QUEUE_ITEM='' CLAUDE_CODE_SESSION_ID='' \
-      pt "$p" "$lane" tag --add "$prio" "${ids[n - 1]}" && TAGGED=$((TAGGED + 1))
+      pt "$p" "$lane" tag --why "$why" "${ids[n - 1]}" && TAGGED=$((TAGGED + 1))
   done < <(sed -n '/^INBOX-TRIAGE-START$/,/^INBOX-TRIAGE-END$/p' <<<"$OUT" | sed '1d;$d' | jq -rR "$PRIORITY_JQ")
   for ((n = 1; n <= ${#ids[@]}; n++)); do [ -n "${seen[n]:-}" ] || KEPT=$((KEPT + 1)); done
   return 0
@@ -1053,16 +1072,18 @@ priority_batch() {
 
 # The --priority pass: every managed board's open rows with no priority tag (and with
 # --retag <word> its open rows tagged #<word>), in batches, the boards with the most such rows first.
-# A started row is never asked: agent-queue ranks its live item by the row's priority, and a
-# re-judge that turned a high plan phase #low queued the next phase behind every other item (ar-4436).
+# A started row is never asked unless --reasons is on: agent-queue ranks its live item by the row's priority, and a
+# re-judge that turned a high plan phase #low queued the next phase behind every other item (ar-4436), so
+# priority_batch only ever raises it. --reasons adds every open or started row with no #why/, and keeps its priority.
 priority_pass() {
   local board rows p lane total off size r rc=0
   read_board || return 1
   board="$(managed_board <<<"$BOARD")"
   # shellcheck disable=SC2016 # jq source, not shell
-  rows="$(jq -c --arg retag "$RETAG" --arg only "$ONLY" '[.rows[]
-    | select((.lane == "human" or .lane == "agent") and .id != null and .state == "open"
-             and ($only == "" or .project == $only) and (.untriaged or ($retag != "" and .priority == $retag)))]' <<<"$board")"
+  rows="$(jq -c --arg retag "$RETAG" --arg only "$ONLY" --argjson reasons "$REASONS" '[.rows[]
+    | select((.lane == "human" or .lane == "agent") and .id != null and ($only == "" or .project == $only)
+             and ((.state == "open" and (.untriaged or ($retag != "" and .priority == $retag)))
+                  or ($reasons == 1 and (.state == "open" or .state == "doing") and ((.prio_why // "") == ""))))]' <<<"$board")"
   while IFS=$'\t' read -r p lane; do
     [ -n "$p" ] || continue
     local mine; mine="$(jq -c --arg p "$p" --arg l "$lane" '[.[] | select(.project == $p and .lane == $l)] | sort_by(.line)' <<<"$rows")"
@@ -1544,6 +1565,7 @@ main() {
       --project) ONLY="${2:-}"; shift 2 ;;
       --backlog) BACKLOG=1; shift ;;
       --priority) PRIORITY=1; shift ;;
+      --reasons) REASONS=1; shift ;;
       --retag) case "${2:-}" in urgent|high|normal|low) RETAG="$2"; shift 2 ;; *) say "--retag takes urgent, high, normal or low"; return 2 ;; esac ;;
       --link) LINK=1; shift ;;
       --size) SIZE=1; shift ;;
@@ -1557,6 +1579,7 @@ main() {
   local rc=0 summary verdict cfg dir
   [ "$PRIORITY" = 0 ] || [ "$BACKLOG" = 1 ] || { say "--priority goes with --backlog"; return 2; }
   [ -z "$RETAG" ] || [ "$PRIORITY" = 1 ] || { say "--retag goes with --priority"; return 2; }
+  [ "$REASONS" = 0 ] || [ "$PRIORITY" = 1 ] || { say "--reasons goes with --priority"; return 2; }
   [ "$LINK" = 0 ] || { [ "$BACKLOG" = 1 ] && [ "$PRIORITY" = 0 ]; } || { say "--link goes with --backlog, without --priority"; return 2; }
   [ "$SIZE" = 0 ] || { [ "$BACKLOG" = 1 ] && [ "$PRIORITY" = 0 ] && [ "$LINK" = 0 ]; } || { say "--size goes with --backlog, without --priority or --link"; return 2; }
   [ "$REPORT" = 0 ] || { [ "$BACKLOG" = 1 ] && [ "$PRIORITY$LINK$SIZE" = 000 ]; } || { say "--report goes with --backlog, without --priority, --link or --size"; return 2; }

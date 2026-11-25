@@ -4397,10 +4397,13 @@ improve_claim_write() {
     '{type: "claim", at: $at, kpi, subject: $s, from: .value, bound, threshold}' <<<"$2" >> "$EFFECT"
 }
 
-# improve_add <text> <detail> -> the new row's id on the agent board; 3 when its twin is open
+# improve_add <text> <detail> [<reason>] -> the new row's id on the agent board; 3 when its twin is open.
+# A <reason> is a slug of priority-reasons.tsv for the priority the text names; with none the row is
+# filed as the text says, and the priority pass judges it.
 improve_add() {
-  local out rc=0
-  out=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$1" --detail "$2" --origin fleet-bench) || rc=$?
+  local out rc=0 why=()
+  [ -z "${3:-}" ] || why=(--why "$3")
+  out=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$1" --detail "$2" "${why[@]}" --origin fleet-bench) || rc=$?
   [ "$rc" = 0 ] || return "$rc"
   grep -oE '<!-- id:[a-z]+-[0-9]+' <<<"$out" | awk 'NR==1' | sed 's/^<!-- id://' | grep . ||
     { say "improve: the row was added but notes printed no id, so nothing claims it"; return 1; }
@@ -4499,7 +4502,7 @@ improve_check() {
       local rc=0 text
       text=$(jq -r '"fix(kpi): revert \(.pr), \(.kpi) went from \(.from) to \(.after) #kpi/\(.kpi) #high #size/s"' <<<"$line")
       id=$(improve_add "$text" "$(jq -r --argjson d "$BENCH_EFFECT_DAYS" \
-        '"check: kpi \(.kpi) from \(.after) (\(.bound) \(.threshold)), read \($d)d after the PR lands; kpi-thresholds is not edited"' <<<"$line")") || rc=$?
+        '"check: kpi \(.kpi) from \(.after) (\(.bound) \(.threshold)), read \($d)d after the PR lands; kpi-thresholds is not edited"' <<<"$line")" runtime-fault) || rc=$?
       case $rc in 0|3) ;; *) IMPROVE_FAIL="the revert row for $(jq -r .subject <<<"$line") failed"; return 1 ;; esac
     fi
     printf '%s\n' "$line" >> "$EFFECT"
@@ -4573,6 +4576,16 @@ cmd_retro() {
   upsert_report "$grows" "$IMPROVE_LINE"
 }
 
+# upsert_why <key> <priority tag> -> the priority reason (priority-reasons.tsv) of a row whose key says what
+# it is: a tripped watch, an alert, a dispatch hold or a recurring lesson at #high is a runtime fault, a
+# lesson at #low is upkeep. Any other row files without one, and the priority pass judges it.
+upsert_why() {
+  case "$1:$2" in
+    'check(watch)'*:'#high'|'check(alert)'*:'#high'|'fix(hold)'*:'#high'|'check(lesson)'*:'#high') echo runtime-fault ;;
+    'check(lesson)'*:'#low') echo upkeep ;;
+  esac
+}
+
 # board_upsert <rows: key TAB text TAB priority, one a line> keeps exactly one open agent-board
 # row per key, matched as a lowercase title prefix (each key's shape is in lib/board-keys.sh, so
 # the backlog triager leaves the row's prefix alone): a row whose text moved is edited in place, one
@@ -4587,7 +4600,7 @@ cmd_retro() {
 # which upsert_report reports FAILED, so every caller ends with upsert_report; status 1 only when the
 # board cannot be read.
 board_upsert() {
-  local board closed p text pri have id rc added=0 edited=0 reopened=0 failed=()
+  local board closed p text pri why have id rc added=0 edited=0 reopened=0 failed=()
   UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_FAILED=
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
   closed=$(upsert_closed)
@@ -4607,8 +4620,8 @@ board_upsert() {
       say "could not reopen $id for $p: filing a new row"
     fi
     if [ -z "$have" ]; then
-      rc=0
-      $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$text $pri" --origin fleet-bench >/dev/null || rc=$?
+      rc=0 why=$(upsert_why "$p" "$pri")
+      $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$text $pri" ${why:+--why "$why"} --origin fleet-bench >/dev/null || rc=$?
       case $rc in
         0) added=$((added + 1)) ;;
         3) ;;
@@ -5043,13 +5056,14 @@ triage_twins() {
 # is keyed by the row, so a row closed and filed again within agent-notify's dedupe window
 # (a watch that trips, clears and trips) does not page again: up to 6 pages a row on 2026-11-18.
 triage_human() {
-  local key text pri route sheet have n=0
+  local key text pri route sheet have why n=0
   while IFS=$'\t' read -r key text pri route _; do
     case "$route" in human:?*) sheet=${route#human:} ;; *) continue ;; esac
     have=$($BENCH_NOTES_CMD ptask "$sheet" list 2>/dev/null) || continue
     row_open "$have" "$key" && continue
     [[ $text == *'#size/'* ]] || text+=" #size/s"
-    $BENCH_NOTES_CMD ptask "$sheet" add "$text $pri" --origin fleet-bench >/dev/null 2>&1 || continue
+    why=$(upsert_why "$key" "$pri")
+    $BENCH_NOTES_CMD ptask "$sheet" add "$text $pri" ${why:+--why "$why"} --origin fleet-bench >/dev/null 2>&1 || continue
     $TRIAGE_NOTIFY_CMD -t 'Needs you' -d "needs:$sheet:$key" "$sheet sheet: $key" >/dev/null 2>&1
     n=$((n + 1))
   done <<<"$1"
