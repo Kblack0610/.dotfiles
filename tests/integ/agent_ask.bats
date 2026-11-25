@@ -2724,7 +2724,7 @@ audit_of() {
   a="$(live_post sid-1 'stuck once?' 2>/dev/null)"
   run "$AGENT_ASK" show "$a"; assert_line 'judge_reason: the judge call timed out after 1s'
   fake_judge "$(score ship_deploy "" "rules say fix it yourself.")"
-  "$AGENT_ASK" assume-due 2>/dev/null
+  AGENT_ASK_JUDGE_TIMEOUT=30 "$AGENT_ASK" assume-due 2>/dev/null
   run "$AGENT_ASK" show "$a"
   assert_line 'judge: take-recommend'; assert_line 'answered_by: judge'; assert_line 'status: answered'
   # A call that stalls again keeps the error, says so, and is not tried a third time.
