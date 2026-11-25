@@ -95,7 +95,6 @@ STOCK_SKIP = ['*/tests/*', 'tests/*', '*/test/*', '*.test.*', '*.spec.*', '*Test
               '*/Packages/*', '*.meta']
 STOCK_SIM = 0.85
 STOCK_CHARS = 2000  # of one body compared
-STOCK_SITES = 12  # sites of one name compared; the rest are left out, a count never grows from the cap
 TRIVIAL_LINES = {
     'done', 'esac', 'else', 'then', 'pass', 'break', 'continue', 'return', 'else:', 'try:', 'finally:',
     '} else {', 'exit 0', 'exit 1', 'return 0', 'return 1', 'set -euo pipefail', 'set -uo pipefail',
@@ -522,7 +521,7 @@ def function_stock(tree, conf):
             groups.setdefault((lang, name), []).append((len(body), '\n'.join(body)[:STOCK_CHARS]))
     names = extra = 0
     for sites in groups.values():
-        sites = [b for n, b in sites if n >= 2][:STOCK_SITES]
+        sites = [b for n, b in sites if n >= 2]
         reps, was = [], extra
         for b in sites:
             for r in reps:

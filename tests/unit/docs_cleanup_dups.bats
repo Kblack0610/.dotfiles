@@ -137,13 +137,23 @@ STUB
   assert_equal "$(cat "$HOME/stock.args")" "--stock --check $HOME/.dotfiles $HOME/.dotfiles-private"
 }
 
-@test "copy-stock-repos names the repos to scan; a scan that cannot run reads FAILED" {
+@test "copy-stock-repos names the repos to scan; a scan that cannot run leaves no stock.txt and the pass still runs" {
   mkdir -p "$HOME/.config/agentctl"
   printf '# the repos\n~/dev/platform  # api\n/srv/other\n' > "$HOME/.config/agentctl/copy-stock-repos"
   DUPS_JSON='{"pairs":60,"max":60,"over":0}' run "$BIN/agentctl-docs-cleanup" --dry-run
   assert_success
   assert_equal "$(cat "$HOME/stock.args")" "--stock --check $HOME/dev/platform /srv/other"
   STOCK_RC=2 DUPS_JSON='{"pairs":60,"max":60,"over":0}' run "$BIN/agentctl-docs-cleanup" --dry-run
+  assert_success
+  assert_output --partial 'no drift ('
+  run compgen -G "$AGENTCTL_INBOX/*/stock.txt"
   assert_failure
-  assert_output --partial 'shape-grow --stock could not run'
+}
+
+@test "a copy-stock-repos with only comments scans the default repos" {
+  mkdir -p "$HOME/.config/agentctl"
+  printf '# none yet\n   \n' > "$HOME/.config/agentctl/copy-stock-repos"
+  DUPS_JSON='{"pairs":60,"max":60,"over":0}' run "$BIN/agentctl-docs-cleanup" --dry-run
+  assert_success
+  assert_equal "$(cat "$HOME/stock.args")" "--stock --check $HOME/.dotfiles $HOME/.dotfiles-private"
 }
