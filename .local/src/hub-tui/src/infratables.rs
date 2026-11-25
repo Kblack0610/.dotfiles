@@ -198,6 +198,13 @@ impl InfraTables {
             0 => {
                 let mut out = machines(&d, &infra.machine_rows(), now);
                 out.extend(infra.ci.glance.off_line().map(|l| Line::styled(l, p.dim())));
+                out.extend(
+                    infra
+                        .ci
+                        .glance
+                        .pending_line()
+                        .map(|l| Line::styled(l, p.warn())),
+                );
                 out
             }
             1 => pools(&d, &infra.pools),
@@ -322,20 +329,24 @@ fn num(v: Option<f64>) -> Cell {
 
 /// `Machine::COLUMNS` in capitals.
 const MACHINE_HEAD: [&str; 14] = [
-    "MACHINE", "STATE", "TAKEN", "CPU", "6H", "LOAD", "MEM", "TEMP", "DISK", "RUNNING", "NEXT",
+    "MACHINE", "STATE", "BOOKED", "CPU", "6H", "LOAD", "MEM", "TEMP", "DISK", "RUNNING", "NEXT",
     "GOVERNOR", "POWER", "UP",
 ];
 
-/// The governor's units taken of its capacity, as a bar and the counts: `[###...] 1.5/3`, `-`
-/// with no governor row. Amber when every unit is taken.
-fn taken(m: &Machine, p: crate::fmt::Palette) -> Cell {
+/// What its job pods book of its CPU and memory, as a bar of the fuller share and the counts:
+/// `[#...] 5.1/32 4.0G/92G`, `-` on no CI node, then the runners held off. Amber once a resource
+/// is fully booked or a runner is held off.
+fn booked(m: &Machine, p: crate::fmt::Palette) -> Cell {
     const WIDTH: usize = 4;
-    let (Some(cap), Some(used)) = (m.units.filter(|c| *c > 0.0), m.units_busy) else {
-        return m.taken_cell().into();
+    let share = m.booked.map_or(0.0, |b| b.share());
+    let text = match m.booked {
+        Some(_) => {
+            let (on, off) = crate::fmt::bar(Some((share * 100.0).round() as u32), None, WIDTH);
+            format!("[{on}{off}] {}", m.booked_cell())
+        }
+        None => m.booked_cell(),
     };
-    let (on, off) = crate::fmt::bar(Some((used / cap * 100.0).round() as u32), None, WIDTH);
-    let text = format!("[{on}{off}] {}", m.taken_cell());
-    match (m.off, used >= cap) {
+    match (m.off, share >= 1.0) {
         (0, false) => text.into(),
         (0, true) => cell(text, p.warn()),
         (n, _) => cell(format!("{text} +{n} off"), p.warn()),
@@ -386,7 +397,7 @@ fn machines(d: &Draw, rows: &[Machine], now: i64) -> Vec<Line<'static>> {
             vec![
                 m.host.clone().into(),
                 cell(&m.state, state),
-                taken(m, p),
+                booked(m, p),
                 pct(m.cpu).into(),
                 pct(m.cpu6h).into(),
                 load,
@@ -617,7 +628,7 @@ mod tests {
             m.contains("[/ f s S x, c next table]"),
             "the first table has the keys: {m}"
         );
-        for h in ["MACHINE", "TAKEN", "RUNNING", "NEXT", "GOVERNOR"] {
+        for h in ["MACHINE", "BOOKED", "RUNNING", "NEXT", "GOVERNOR"] {
             assert!(m.contains(h), "{h}: {m}");
         }
         for host in i.machines.iter().map(|m| m.host.as_str()) {

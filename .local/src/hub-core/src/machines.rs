@@ -76,8 +76,9 @@ pub struct Machine {
     /// `up` with readings, `NO_DATA` without, or the governor's power state when it is not
     /// running.
     pub state: String,
-    /// CI slots, each physical slot once (`ci::slots_by_host`): a running runner, or an idle
-    /// one not withheld. `off`: its runners on the Down list
+    /// Jobs running: its busy fixed slots (`ci::slots_by_host`) plus the job pods placed on it
+    /// (`jobpods`). `slots`: its fixed slots, each once, running or idle and not withheld (the old
+    /// Unity slots until hc-954). `off`: its runners on the Down list
     /// (`Infra::runners_down`, filled by `Infra::derive`).
     pub busy: u32,
     pub slots: u32,
@@ -102,10 +103,9 @@ pub struct Machine {
     pub runner_cores: Vec<(String, f64)>,
     /// The memory each CI runner uses, bytes, by name (`cc:runner_mem_bytes`).
     pub runner_mem: Vec<(String, f64)>,
-    /// Its capacity in slot units and the units taken: the governor's `ci_governor_{capacity,busy}_units`
-    /// (`ci::host_units`). None for both when the governor has no row for it.
-    pub units: Option<f64>,
-    pub units_busy: Option<f64>,
+    /// The CPU and memory CI job pods book on it against its allocatable (`jobpods::booked`);
+    /// None for a machine that is no CI node.
+    pub booked: Option<crate::jobpods::Booked>,
     /// Each job running there by kind and repo (`ci::running_by_host`): `[unity] unity-core-playground x2`.
     pub running: Vec<String>,
     /// The oldest waiting job that fits it (`ci::next_by_host`).
@@ -120,9 +120,9 @@ pub struct Machine {
 }
 
 impl Machine {
-    /// It has a CI slot, or a slot doing something.
+    /// It is a CI node, has a fixed slot, or runs a job.
     pub fn carries_ci(&self) -> bool {
-        self.slots > 0 || !self.running.is_empty()
+        self.booked.is_some() || self.slots > 0 || !self.running.is_empty()
     }
 
     /// Memory used of its total and free disk, short: `33/123G 482G free`, `1.5T free`. A
@@ -150,12 +150,9 @@ impl Machine {
         }
     }
 
-    /// `2.5/3`, the units taken of its capacity, or `-` with no governor row.
-    pub fn taken_cell(&self) -> String {
-        match self.units {
-            None => "-".into(),
-            Some(cap) => format!("{}/{cap:.0}", crate::ci::units_of(self.units_busy)),
-        }
+    /// `5.1/32 4.0G/92G`, what its job pods book of its CPU and memory, or `-` on no CI node.
+    pub fn booked_cell(&self) -> String {
+        self.booked.map_or("-".into(), |b| b.cell())
     }
 }
 
@@ -224,20 +221,20 @@ fn text(s: &str) -> Val {
 /// The machines table on both surfaces.
 impl Row for Machine {
     const COLUMNS: &'static [&'static str] = &[
-        "machine", "state", "taken", "cpu", "6h", "load", "mem", "temp", "disk", "running", "next",
-        "governor", "power", "up",
+        "machine", "state", "booked", "cpu", "6h", "load", "mem", "temp", "disk", "running",
+        "next", "governor", "power", "up",
     ];
     const STATES: &'static [&'static str] = &["all", "busy", "idle", NO_DATA, "cloud", "governed"];
     const FACETS: &'static [&'static str] = &["state"];
     const HIDE_EMPTY: bool = true;
     const LEAD: &'static str = "machine";
-    const GLANCE: &'static [&'static str] = &["taken", "cpu", "temp"];
+    const GLANCE: &'static [&'static str] = &["booked", "cpu", "temp"];
 
     fn val(&self, col: &str) -> Val {
         match col {
             "machine" => text(&self.host),
             "state" => text(&self.state),
-            "taken" => self.units_busy.into(),
+            "booked" => self.booked.map(|b| b.share()).into(),
             "cpu" => self.cpu.into(),
             "6h" => self.cpu6h.into(),
             "load" => self.load.into(),
@@ -486,7 +483,7 @@ pub fn build(infra: &Infra) -> (Vec<Machine>, Vec<Pool>) {
     let busy_cores = infra.runner_use("cc:runner_cores_busy");
     let mem = infra.runner_use("cc:runner_mem_bytes");
     for s in infra.get("runners") {
-        let mm = at(&mut by, host(s));
+        let mm = at(&mut by, infra.runner_host(&alias, s));
         if s.label("site") == "cloud" {
             mm.place = "cloud".into();
         }
@@ -506,17 +503,17 @@ pub fn build(infra: &Infra) -> (Vec<Machine>, Vec<Pool>) {
         let mm = at(&mut by, h);
         (mm.busy, mm.slots) = (b, n);
     }
+    for (h, b) in crate::jobpods::booked(infra, &infra.pods) {
+        at(&mut by, h).booked = Some(b);
+    }
+    for p in infra.pods.iter().filter(|p| !p.node.is_empty()) {
+        at(&mut by, p.node.clone()).busy += 1;
+    }
     for (h, jobs) in crate::ci::running_by_host(infra) {
         at(&mut by, h).running = jobs;
     }
     for (h, n) in crate::ci::next_by_host(infra) {
         at(&mut by, h).next = Some(n);
-    }
-    // A host the governor reports but that has no machine row gets none made for it.
-    for (h, (cap, used)) in crate::ci::host_units(infra) {
-        if let Some(mm) = by.get_mut(&h) {
-            (mm.units, mm.units_busy) = (Some(cap), Some(used));
-        }
     }
     let mut cores: HashMap<String, Vec<(Vec<u32>, f64)>> = HashMap::new();
     for s in infra.get("cores") {
@@ -660,7 +657,7 @@ fn pools(infra: &Infra, cc: &HashMap<String, f64>, alias: &HashMap<String, Strin
         }
         // Running is the gates running now. Waiting is the governor's local backlog, published
         // only while a run waits. A machine's seats are the governor's capacity for it.
-        let units = crate::ci::host_units(infra);
+        let units = crate::ci::seat_units(infra);
         let waiting: f64 = infra
             .get("governor")
             .iter()
@@ -678,7 +675,7 @@ fn pools(infra: &Infra, cc: &HashMap<String, f64>, alias: &HashMap<String, Strin
             machines: seats(
                 local
                     .iter()
-                    .map(|h| (h, units.get(h).map_or(0, |u| u.0 as u32))),
+                    .map(|h| (h, units.get(h).map_or(0, |u| *u as u32))),
             ),
             ..Default::default()
         });

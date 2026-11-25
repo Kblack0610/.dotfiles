@@ -15,6 +15,7 @@ use serde::Serialize;
 
 use crate::home::Level;
 use crate::infra::Infra;
+use crate::jobpods::{Booked, Pending};
 use crate::links::{Kind, Link};
 use crate::prom::Series;
 use crate::table::{Row, Val};
@@ -53,6 +54,9 @@ pub struct Slot {
     pub late: bool,
     /// What the governor says of a standby host.
     pub note: String,
+    /// Its runner is a CI job pod (an ARC runner), which `jobpods` counts on its node.
+    #[serde(skip)]
+    pub pod: bool,
 }
 
 /// A host that can take a job, and whether a slot is free there now.
@@ -206,13 +210,18 @@ pub struct JobKind {
     pub weight: Option<String>,
 }
 
-/// One CI machine: its slots taken (units over its capacity), the jobs running on it by kind and
-/// repo, the oldest waiting job that fits it, and its load.
+/// One CI machine: the CPU and memory its job pods book against allocatable, its real CPU use,
+/// the jobs running on it by kind, the oldest waiting job that fits it, and its load.
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct Host {
     pub host: String,
+    /// Jobs running there (`Machine::busy`).
     pub busy: u32,
-    pub slots: u32,
+    /// What its job pods book (`Machine::booked`); None for a machine that is no CI node (an
+    /// old Unity slot host until hc-954).
+    pub booked: Option<Booked>,
+    /// Its CPU busy share (`Machine::cpu`).
+    pub cpu: Option<f64>,
     /// Each job running there by kind and repo (`Machine::running`).
     pub running: Vec<String>,
     /// The oldest waiting job that fits it (`Machine::next`).
@@ -220,11 +229,6 @@ pub struct Host {
     /// 1-minute load per core (`Machine::load` over `cores`); the chip paints the row red past
     /// its hot ratio. None when either reading is missing.
     pub load: Option<f64>,
-    /// Its capacity in slot units and the units taken: the governor's
-    /// `ci_governor_{capacity,busy}_units` (`host_units`). None for both while the governor
-    /// publishes no row for it: shown `-`, never made up from runner counts.
-    pub units: Option<f64>,
-    pub units_busy: Option<f64>,
 }
 
 /// The oldest waiting job a machine can take (`next_by_host`): the same label join that says
@@ -274,9 +278,9 @@ pub struct Part {
 }
 
 /// What CI is doing at a glance, the same on the waybar hover (`hub ci --json`), the Infra
-/// tab's CI head and agent-web's: the ci status, busy of the slots with each slot once, the
-/// queue, the last day, one row per job kind and per CI machine, the cloud hosts that are off,
-/// and the runners down.
+/// tab's CI head and agent-web's: the ci status, the jobs running, what they book of the CI
+/// nodes, the queue and the pods waiting for room, the last day, one row per job kind and per CI
+/// machine, the cloud hosts that are off, and the runners down.
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct Glance {
     /// `cc:domain_status{domain="ci"}`: the whole domain, queue waits and pass rate too. The
@@ -292,9 +296,8 @@ pub struct Glance {
     pub parts: Vec<Part>,
     /// `Infra::feed`: why runner rows may be missing.
     pub feed: Option<String>,
-    /// Jobs running now: busy slots, each once.
+    /// Jobs running now: the machine rows' `busy` summed.
     pub busy: u32,
-    pub slots: u32,
     /// The first waiting groups (`Ci::queue`, oldest first), with where and about when each
     /// starts: the hover's NEXT.
     pub next: Vec<Queued>,
@@ -305,42 +308,24 @@ pub struct Glance {
     pub done: u32,
     pub pass: Option<f64>,
     pub kinds: Vec<JobKind>,
-    /// Machines with a slot, busiest first.
+    /// Every CI node, and any other machine running a job, the most booked first.
     pub machines: Vec<Host>,
     /// Cloud hosts the governor holds off, or with nothing online: one line, not one row each.
     pub off: Vec<String>,
     pub down: Vec<Down>,
     pub long: Vec<Long>,
-    /// CI in slot units: the machine rows' `units_busy` and `units` summed, so the bar equals
-    /// its rows. The waiting jobs' summed weight and how long that
-    /// backlog takes to run are the governor's own (home-config hc-668). None while the governor
-    /// has no series: shown `-`.
-    pub units_busy: Option<f64>,
-    pub units: Option<f64>,
-    pub backlog: Option<f64>,
-    pub drain: Option<f64>,
-}
-
-/// `6.4`, or `-` with no reading.
-pub fn units_of(x: Option<f64>) -> String {
-    x.map_or("-".into(), |v| format!("{v:.1}"))
+    /// The machine rows' bookings summed, so the total equals its rows; None with no CI node read.
+    pub booked: Option<Booked>,
+    /// Job pods no node has room for, by kind and size (`jobpods::pending`).
+    pub pending: Vec<Pending>,
 }
 
 impl Glance {
-    /// `6.4/16`: busy units of the capacity, `-` for a missing side.
-    pub fn units_line(&self) -> String {
-        format!(
-            "{}/{}",
-            units_of(self.units_busy),
-            self.units.map_or("-".into(), |v| format!("{v:.0}"))
-        )
-    }
-
-    /// `~12m`, or `-` with no reading; None with nothing queued.
-    pub fn drain_line(&self, dur: impl Fn(i64) -> String) -> Option<String> {
-        (self.queued > 0).then(|| {
-            self.drain
-                .map_or("-".into(), |d| format!("~{}", dur(d as i64)))
+    /// `waiting for room: arc-org-light x3 (1.69 cpu 1.2G each)`; None when every pod has a node.
+    pub fn pending_line(&self) -> Option<String> {
+        (!self.pending.is_empty()).then(|| {
+            let p: Vec<String> = self.pending.iter().map(Pending::line).collect();
+            format!("waiting for room: {}", p.join(", "))
         })
     }
 
@@ -352,17 +337,17 @@ impl Glance {
         format!("{}/{}", self.up, self.expected)
     }
 
-    /// `4 running, 23 queued (oldest 21m), 9.2 queued ~12m, 12/12 runners up, 759 done 24h,
-    /// 91% passed`: jobs running and waiting, then runner liveness. Slot units stay in the
-    /// machine rows; a slot held back or lent is no count here, and a job it makes wait is in
-    /// queued.
+    /// `4 running, 23 queued (oldest 21m), booked 18.2/144 cpu, 12/12 runners up, 759 done 24h,
+    /// 91% passed`: jobs running and waiting, what the job pods book of every CI node's CPU,
+    /// then runner liveness. A slot held back or lent is no count here, and a job it makes wait
+    /// is in queued.
     pub fn head(&self, dur: impl Fn(i64) -> String) -> String {
         let mut s = format!("{} running, {} queued", self.busy, self.queued);
         if let Some(o) = self.oldest.filter(|_| self.queued > 0) {
             s += &format!(" (oldest {})", dur(o as i64));
         }
-        if let Some(d) = self.drain_line(&dur) {
-            s += &format!(", {} queued {d}", units_of(self.backlog));
+        if let Some(b) = self.booked {
+            s += &format!(", booked {:.1}/{:.0} cpu", b.cpu, b.cpu_alloc);
         }
         s += &format!(", {} runners up", self.up_line());
         if self.done > 0 {
@@ -425,17 +410,7 @@ pub fn glance(infra: &Infra) -> Glance {
         });
     }
     g.pass = (ran > 0.0).then(|| passed / ran);
-    // The governor's backlog and drain, summed over its kinds; None when it has no series.
-    let total = |name: &str| {
-        infra
-            .get("governor")
-            .iter()
-            .filter(|s| s.label("__name__") == name)
-            .filter_map(|s| s.value)
-            .reduce(|a, b| a + b)
-    };
-    g.backlog = total("ci_governor_backlog_units");
-    g.drain = total("ci_governor_drain_seconds");
+    g.pending = crate::jobpods::pending(&infra.pods);
     let alias = infra.aliases();
     let mut off: Vec<String> = infra
         .powered_off()
@@ -454,16 +429,22 @@ pub fn glance(infra: &Infra) -> Glance {
         .map(|r| r.host)
         .collect();
     for m in &infra.machines {
-        let idle = m.busy + m.slots == 0 && m.running.is_empty() && !held.contains(&m.host);
+        let idle = m.booked.is_none()
+            && m.busy + m.slots == 0
+            && m.running.is_empty()
+            && !held.contains(&m.host);
         if idle || off.contains(&m.host) {
             continue;
         }
         g.busy += m.busy;
-        g.slots += m.slots;
+        if let Some(b) = &m.booked {
+            g.booked.get_or_insert_with(Booked::default).add(b);
+        }
         g.machines.push(Host {
             host: m.host.clone(),
             busy: m.busy,
-            slots: m.slots,
+            booked: m.booked,
+            cpu: m.cpu,
             running: m.running.clone(),
             next: m.next.clone(),
             load: m
@@ -471,20 +452,12 @@ pub fn glance(infra: &Infra) -> Glance {
                 .zip(m.cores)
                 .filter(|(_, c)| *c > 0.0)
                 .map(|(l, c)| l / c),
-            units: m.units,
-            units_busy: m.units_busy,
         });
-        if let Some(cap) = m.units {
-            *g.units.get_or_insert(0.0) += cap;
-        }
-        if let Some(used) = m.units_busy {
-            *g.units_busy.get_or_insert(0.0) += used;
-        }
     }
+    let share = |h: &Host| h.booked.map_or(-1.0, |b| b.share());
     g.machines.sort_by(|a, b| {
-        b.units_busy
-            .unwrap_or(0.0)
-            .total_cmp(&a.units_busy.unwrap_or(0.0))
+        share(b)
+            .total_cmp(&share(a))
             .then_with(|| b.busy.cmp(&a.busy))
             .then_with(|| a.host.cmp(&b.host))
     });
@@ -532,12 +505,15 @@ pub fn glance(infra: &Infra) -> Glance {
 }
 
 /// Each machine's busy and slots, each physical slot once: a running runner, or an idle one not
-/// withheld. A local gate is no runner, so it is no slot: the governor's local seats count it, in units. The
-/// machines table and every CI header add this up.
+/// withheld. A local gate is no runner, so it is no slot: the governor's local seats count it.
+/// An ARC runner is its job pod, no slot: `jobpods` counts it on its node.
 pub fn slots_by_host(infra: &Infra) -> BTreeMap<String, (u32, u32)> {
     let off = infra.powered_off();
     let mut by: BTreeMap<String, (u32, u32)> = BTreeMap::new();
     for r in runners(infra) {
+        if infra.pod(r.s.label("name")).is_some() {
+            continue;
+        }
         let e = by.entry(r.host.clone()).or_default();
         match now_of(&r, &off) {
             "busy" => *e = (e.0 + 1, e.1 + 1),
@@ -548,36 +524,29 @@ pub fn slots_by_host(infra: &Infra) -> BTreeMap<String, (u32, u32)> {
     by
 }
 
-/// Each machine's (capacity units, busy units): the governor's
-/// `ci_governor_{capacity,busy}_units{host}`, the one writer of both for every self-hosted
-/// machine (one unit per slot, a lent slot's seats by measured weight, at most 1; a whole-slot
-/// host or a local seat at 1). A machine with no row here has no units: it reads `-`, nothing
-/// makes them up from runner counts. Empty while the governor publishes no capacity at all.
-pub(crate) fn host_units(infra: &Infra) -> HashMap<String, (f64, f64)> {
+/// Each machine's local seats: the governor's `ci_governor_capacity_units{host}`, which the
+/// Local Unity kind's MACHINES reads until the seats leave the governor (hc-858). The CI board's
+/// machine rows read the cluster (`jobpods`), never these units.
+pub(crate) fn seat_units(infra: &Infra) -> HashMap<String, f64> {
     let alias = infra.aliases();
-    let mut by: HashMap<String, (f64, f64)> = HashMap::new();
+    let mut by: HashMap<String, f64> = HashMap::new();
     for s in infra.get("governor") {
-        let (cap, used) = match s.label("__name__") {
-            "ci_governor_capacity_units" => (s.value.unwrap_or(0.0), 0.0),
-            "ci_governor_busy_units" => (0.0, s.value.unwrap_or(0.0)),
-            _ => continue,
-        };
-        let e = by
-            .entry(crate::infra::host(&alias, s.label("host")))
-            .or_default();
-        (e.0, e.1) = (e.0 + cap, e.1 + used);
+        if s.label("__name__") == "ci_governor_capacity_units" {
+            *by.entry(crate::infra::host(&alias, s.label("host")))
+                .or_default() += s.value.unwrap_or(0.0);
+        }
     }
     by
 }
 
 /// The jobs running on each machine, each by kind and repo, the most of a kind first:
-/// `[unity] unity-core-playground x2, [light] home-config`. A running runner says the kind of job it
-/// runs (`Slot::pool`, `forgejo` for a Forgejo seat), `job` when that is not known; a local gate
-/// is `[gates]`. Only running jobs: a slot held back, lent or idle
-/// says nothing, and the runners table keeps each slot's state.
+/// `[arc-org-light] x3, [unity] unity-core-playground`. A job pod is its scale set
+/// (`jobpods::running_by_node`); a running fixed slot says the kind of job it runs (`Slot::pool`),
+/// `job` when that is not known; a local gate is `[gates]`. Only running jobs: a slot held back,
+/// lent or idle says nothing, and the runners table keeps each slot's state.
 pub fn running_by_host(infra: &Infra) -> BTreeMap<String, Vec<String>> {
-    let mut by: BTreeMap<String, BTreeMap<String, u32>> = BTreeMap::new();
-    for r in infra.ci.rows.iter().filter(|r| r.state == "busy") {
+    let mut by = crate::jobpods::running_by_node(&infra.pods);
+    for r in infra.ci.rows.iter().filter(|r| r.state == "busy" && !r.pod) {
         let kind = if r.pool.is_empty() { "job" } else { &r.pool };
         let what = if r.repo.is_empty() {
             format!("[{kind}]")
@@ -690,7 +659,7 @@ fn runners(infra: &Infra) -> Vec<Runner<'_>> {
     by.into_iter()
         .map(|(n, s)| Runner {
             s,
-            host: crate::infra::host(&alias, s.label("host")),
+            host: infra.runner_host(&alias, s),
             labels: lower(s.label("labels")),
             held: held.contains(n),
             lent: lent.get(n).copied(),
@@ -880,6 +849,7 @@ pub fn build(infra: &Infra) -> Ci {
                         t > LONG_RUN_SECS || u.and_then(|u| u.1).is_some_and(|p| t > p)
                     }),
                     note: String::new(),
+                    pod: infra.pod(s.label("name")).is_some(),
                 });
             }
             _ => {
@@ -2041,88 +2011,94 @@ mod tests {
         );
     }
 
-    /// The fleet with the governor's per-host units, gates and seats included: workstation (the governor's
-    /// cachyos-x8664-main) has 2 units of capacity, 1.6 busy, mac-mini 1 and 0, and a
-    /// host with no machine row that no total may count.
-    fn governed() -> Infra {
+    /// The fleet plus the cluster (`jobpods::tests::cluster`): two light pods and a forgejo job
+    /// on ms-a2, tuf-b550 an idle CI node, one light pod with no room, and the exporter's row for
+    /// one of the ms-a2 pods under its scale set's owner, `arc-org`.
+    fn clustered() -> Infra {
         let mut i = crate::machines::tests::fleet();
-        fn unit(name: &str, host: &str, v: &'static str) -> (Value, &'static str) {
-            (json!({"__name__": name, "host": host}), v)
+        for (k, s) in crate::jobpods::tests::cluster() {
+            i.instant.insert(k, s);
         }
-        i.instant.entry("governor").or_default().extend(series(vec![
-            unit("ci_governor_capacity_units", "cachyos-x8664-main", "2"),
-            unit("ci_governor_busy_units", "cachyos-x8664-main", "1.6"),
-            unit("ci_governor_capacity_units", "mac-mini", "1"),
-            unit("ci_governor_busy_units", "mac-mini", "0"),
-            unit("ci_governor_capacity_units", "gone-host", "5"),
-            unit("ci_governor_busy_units", "gone-host", "5"),
-            (
-                json!({"__name__": "ci_governor_backlog_units", "kind": "slot"}),
-                "8",
-            ),
-            (
-                json!({"__name__": "ci_governor_backlog_units", "kind": "light"}),
-                "1.2",
-            ),
-            (json!({"__name__": "ci_governor_drain_seconds"}), "720"),
-        ]));
+        i.instant
+            .entry("runners")
+            .or_default()
+            .extend(series(vec![runner(
+                "arc-org",
+                "arc-org-light-runner-z5wfp",
+                "running",
+                "40",
+                "self-hosted,linux,light",
+                json!({"repo": "home-config", "job_name": "lint"}),
+            )]));
         i
     }
 
-    /// The human, 2026-11-19: a machine shows its fixed capacity, filled by what runs. Each row
-    /// is the governor's units plus its gate slots at 1 (workstation 0.6 + 1 gate of 1 + 1), a
-    /// row the governor does not govern is its slots at 1 each (mac-mini 0/1), the glance is
-    /// the rows' sum, and the head reads units, never runners.
+    /// ar-5304: a CI node's row is what its job pods book of its allocatable, every CI node has
+    /// one, an ARC runner is its pod on its node (no `arc-org` row, no slot, counted once), the
+    /// old Unity slot's job stays a job in its machine's row, and the pods with no room wait.
     #[test]
-    fn each_row_is_its_governor_units_plus_its_gates_and_the_glance_sums_the_rows() {
-        let mut i = governed();
+    fn each_ci_node_reads_what_its_job_pods_book_and_the_slots_jobs_share_the_rows() {
+        let mut i = clustered();
         i.derive();
         let g = &i.ci.glance;
-        let rows: Vec<(&str, Option<f64>, Option<f64>)> = g
+        let rows: Vec<(&str, u32, String, String)> = g
             .machines
             .iter()
-            .map(|h| (h.host.as_str(), h.units_busy, h.units))
+            .map(|h| {
+                let b = h.booked.map_or("-".into(), |b| b.cell());
+                (h.host.as_str(), h.busy, b, h.running.join(", "))
+            })
             .collect();
         assert_eq!(
             rows,
             [
-                ("workstation", Some(1.6), Some(2.0)),
-                ("mac-mini", Some(0.0), Some(1.0))
+                (
+                    "ms-a2",
+                    3,
+                    "4.4/32 2.5G/92G".into(),
+                    "[arc-org-light] x2, [forgejo-runner]".into()
+                ),
+                ("tuf-b550", 0, "0.0/32 0B/63G".into(), String::new()),
+                ("workstation", 1, "-".into(), "[unity]".into()),
+                ("mac-mini", 0, "-".into(), String::new()),
             ]
         );
-        assert_eq!(g.units_line(), "1.6/3");
+        assert!(i.machines.iter().all(|m| m.host != "arc-org"));
+        let arc = i.ci.rows.iter().find(|r| r.job == "lint").unwrap();
+        assert_eq!((arc.host.as_str(), arc.pod), ("ms-a2", true));
+        assert_eq!(g.busy, 4);
+        let b = g.booked.unwrap();
         assert_eq!(
-            g.drain_line(|s| format!("{}m", s / 60)).as_deref(),
-            Some("~12m")
+            (format!("{:.2}", b.cpu), b.cpu_alloc),
+            ("4.38".into(), 64.0)
+        );
+        assert_eq!(
+            g.pending_line().as_deref(),
+            Some("waiting for room: arc-org-light (1.69 cpu 1.2G)")
         );
         assert_eq!(
             g.head(|s| format!("{}m", s / 60)),
-            "1 running, 2 queued (oldest 15m), 9.2 queued ~12m, 3/3 runners up, 4 done 24h, 50% passed"
+            "4 running, 2 queued (oldest 15m), booked 4.4/64 cpu, 4/4 runners up, 4 done 24h, 50% passed"
         );
     }
 
-    /// A host whose every runner is held back still has a row, `0/0`, so it stays on the bar and
-    /// the hover; a host the governor still reports but that has no runner (gone-host) has none.
+    /// A host whose every runner is held back still has a row, so it stays on the bar and
+    /// the hover.
     #[test]
-    fn a_host_with_every_runner_held_keeps_its_row_and_a_gone_host_has_none() {
-        let mut i = governed();
+    fn a_host_with_every_runner_held_keeps_its_row() {
+        let mut i = crate::machines::tests::fleet();
         i.instant
             .entry("withheld")
             .or_default()
             .extend(series(vec![(json!({"name": "mini-1"}), "1")]));
         i.derive();
         let g = &i.ci.glance;
-        let rows: Vec<(&str, u32, u32)> = g
+        let rows: Vec<(&str, u32)> = g
             .machines
             .iter()
-            .map(|h| (h.host.as_str(), h.busy, h.slots))
+            .map(|h| (h.host.as_str(), h.busy))
             .collect();
-        assert_eq!(rows, [("workstation", 1, 1), ("mac-mini", 0, 0)]);
-        assert_eq!(
-            g.units_line(),
-            "1.6/3",
-            "the governor's units, whatever a runner is held"
-        );
+        assert_eq!(rows, [("workstation", 1), ("mac-mini", 0)]);
     }
 
     /// The CI alert is runner liveness alone: an offline Forgejo seat (lent by design) and a
@@ -2195,17 +2171,13 @@ mod tests {
         i.derive();
         let g = &i.ci.glance;
         // The fleet's withheld slot is no count: running and queued only.
-        assert_eq!((g.busy, g.slots, g.queued, g.done), (1, 2, 2, 4));
-        // No governor unit series yet: `-`, never a runner count standing in for units, so no
-        // row has units either.
+        assert_eq!((g.busy, g.queued, g.done), (1, 2, 4));
+        // No CI node read: nothing booked, and the head says nothing of it.
         assert_eq!(
             g.head(|s| format!("{}m", s / 60)),
-            "1 running, 2 queued (oldest 15m), - queued -, 3/3 runners up, 4 done 24h, 50% passed"
+            "1 running, 2 queued (oldest 15m), 3/3 runners up, 4 done 24h, 50% passed"
         );
-        assert!(g
-            .machines
-            .iter()
-            .all(|h| h.units.is_none() && h.units_busy.is_none()));
+        assert!(g.booked.is_none() && g.machines.iter().all(|h| h.booked.is_none()));
         let hosts: Vec<(&str, String)> = g
             .machines
             .iter()
@@ -2234,27 +2206,8 @@ mod tests {
         assert_eq!(
             keys(&v),
             [
-                "alert",
-                "backlog",
-                "busy",
-                "done",
-                "down",
-                "drain",
-                "expected",
-                "feed",
-                "kinds",
-                "level",
-                "long",
-                "machines",
-                "next",
-                "off",
-                "oldest",
-                "parts",
-                "pass",
-                "queued",
-                "slots",
-                "units",
-                "units_busy",
+                "alert", "booked", "busy", "done", "down", "expected", "feed", "kinds", "level",
+                "long", "machines", "next", "off", "oldest", "parts", "pass", "pending", "queued",
                 "up"
             ]
         );
@@ -2264,16 +2217,7 @@ mod tests {
         );
         assert_eq!(
             keys(&v["machines"][0]),
-            [
-                "busy",
-                "host",
-                "load",
-                "next",
-                "running",
-                "slots",
-                "units",
-                "units_busy"
-            ]
+            ["booked", "busy", "cpu", "host", "load", "next", "running"]
         );
         // No status series: the lowercase word the chip maps to "no data".
         assert_eq!(v["level"], "nodata");

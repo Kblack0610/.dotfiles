@@ -39,9 +39,8 @@ const grafanaBase = () => (ist.data && ist.data.grafana) || "";
 const gLink = (uid, text) => grafanaBase() ? `<a class="glink" href="${esc(grafanaBase())}/d/${uid}" target="_blank" rel="noopener">${esc(text)}</a>` : "";
 
 
-// hub_core::ci::Glance::head: `4 running, 23 queued (oldest 21m), 9.2 queued ~12m, 12/12 runners up,
-// 759 done 24h, 91% passed`; a unit field the governor does not publish is `-`.
-const u1 = (x) => (x == null ? "-" : x.toFixed(1));
+// hub_core::ci::Glance::head: `4 running, 23 queued (oldest 21m), booked 4.4/64 cpu, 12/12 runners up,
+// 759 done 24h, 91% passed`; the booking only once a CI node reports.
 // Glance::up_line: `12/12` runners up of the roster, `-/-` with no runner read.
 const upLine = (g) => (g.expected ? `${g.up}/${g.expected}` : "-/-");
 // Glance::alert as a tile hue: red only while a runner is down, never green with no runner read.
@@ -49,13 +48,17 @@ const alertHue = (g) => ({ red: "var(--b-needs)", ok: "var(--b-done)" })[g && g.
 function glanceHead(g) {
   let s = `${g.busy} running, ${g.queued} queued`;
   if (g.queued > 0 && g.oldest != null) s += ` (oldest ${secs(g.oldest)})`;
-  if (g.queued > 0) s += `, ${u1(g.backlog)} queued ${g.drain == null ? "-" : `~${secs(g.drain)}`}`;
+  if (g.booked) s += `, booked ${g.booked.cpu.toFixed(1)}/${Math.round(g.booked.cpu_alloc)} cpu`;
   s += `, ${upLine(g)} runners up`;
   if (g.done > 0) s += `, ${g.done} done 24h${g.pass != null ? `, ${pct(g.pass)} passed` : ""}`;
   return s;
 }
 // `cloud: 4 hosts off`, the cloud hosts the governor holds off as one line, not one row each.
 const offLine = (g) => (g.off.length ? `cloud: ${g.off.length} host${g.off.length === 1 ? "" : "s"} off` : "");
+// hub_core::ci::Glance::pending_line: `waiting for room: arc-org-light x3 (1.69 cpu 1.2G each)`.
+// The cores read as hub_core::machines::weight_text does: two places, trailing zeros dropped.
+const pendingText = (p) => `${p.kind}${p.n > 1 ? ` x${p.n}` : ""} (${+p.cpu.toFixed(2)} cpu ${bytes(p.mem)}${p.n > 1 ? " each" : ""})`;
+const pendingLine = (g) => (g && g.pending && g.pending.length ? `<div class="cline warn">waiting for room: ${esc(g.pending.map(pendingText).join(", "))}</div>` : "");
 
 // `g` is hub_core::ci::Glance: jobs running, the queue, runners up and the one CI alert.
 function kpis(cc, g) {
@@ -118,8 +121,10 @@ function diskCell(m) {
   return `<td class="n${free < 0.1 ? " bad" : free < 0.2 ? " warn" : ""}" title="${esc(`${gbOf(m.disk_avail, m.disk_size)} free`)}">${pct(free)}</td>`;
 }
 
-// hub_core::machines::Machine::taken_cell: the governor's units taken of its capacity, or - with no governor row.
-const takenCell = (m) => (m.units == null ? "-" : `${(m.units_busy ?? 0).toFixed(1)}/${Math.round(m.units)}`);
+// hub_core::jobpods::Booked: what job pods book of a CI node, its fuller share and `4.4/32 2.5G/92G`.
+const bookedShare = (b) => Math.max(b.cpu_alloc > 0 ? b.cpu / b.cpu_alloc : 0, b.mem_alloc > 0 ? b.mem / b.mem_alloc : 0);
+// hub_core::machines::Machine::booked_cell, or - on no CI node.
+const bookedCell = (m) => (m.booked ? `${m.booked.cpu.toFixed(1)}/${Math.round(m.booked.cpu_alloc)} ${bytes(m.booked.mem)}/${bytes(m.booked.mem_alloc)}` : "-");
 // hub_core::ci::Next::line: the oldest waiting job that fits the machine, its repo and how long it has waited.
 const nextLine = (x) => `${x.job}${x.repo ? ` (${x.repo})` : ""} ${secs(x.wait)}`;
 // A machine's hover: what its cores and memory go to (hub_core::workload, one line per class),
@@ -165,12 +170,12 @@ function powerCell(m) {
 // `l` is the row's links (tblLinks). A label's second field is its header's class.
 // hub_core::host_now::HOT_C, kept equal by its test: a sensor this hot or hotter shows amber.
 const HOT_C = 85;
-const MACH_COLS = { machine: ["machine"], state: ["state"], taken: ["taken", "n"], cpu: ["cpu now"], "6h": ["6h", "n"], load: ["load", "n"],
+const MACH_COLS = { machine: ["machine"], state: ["state"], booked: ["booked", "n"], cpu: ["cpu now"], "6h": ["6h", "n"], load: ["load", "n"],
   mem: ["mem"], temp: ["temp", "n"], disk: ["disk free", "n"], running: ["running"], next: ["next"], governor: ["governor"], power: ["power"], up: ["up since", "n"] };
 const MACH_CELLS = {
   machine: (m, l) => td("", tblLink(l.machine, m.host)),
   state: (m) => td(m.state === "up" ? "" : m.state === NO_DATA ? "muted" : "warn", esc(m.state)),
-  taken: (m) => `<td class="n${m.off ? " warn" : ""}"${m.split.length || m.runner_cores.length || m.runner_mem.length ? ` title="${esc(cpuTitle(m))}"` : ""}>${m.units ? `${meter((m.units_busy ?? 0) / m.units, "var(--c1)")} ` : ""}${takenCell(m)}${m.off ? ` +${m.off} off` : ""}</td>`,
+  booked: (m) => `<td class="n${m.off || (m.booked && bookedShare(m.booked) >= 1) ? " warn" : ""}"${m.split.length || m.runner_cores.length || m.runner_mem.length ? ` title="${esc(cpuTitle(m))}"` : ""}>${m.booked ? `${meter(bookedShare(m.booked), "var(--c1)")} ` : ""}${bookedCell(m)}${m.off ? ` +${m.off} off` : ""}</td>`,
   cpu: (m) => td("m", `${m.core_busy.length ? coreStrip(m.core_busy) : meter(m.cpu, m.cpu > 0.9 ? "var(--b-stalled)" : "var(--c1)")} ${pct(m.cpu)}`),
   "6h": (m) => td("n", pct(m.cpu6h)),
   load: (m) => td(`n${m.load > m.cores * 1.5 ? " warn" : ""}`, m.load == null ? "-" : `${m.load.toFixed(1)}/${m.cores ?? "?"}`),
@@ -596,7 +601,7 @@ function drawInfra() {
   const badge = w === null ? ` <span class="chip sm" style="--c:var(--b-needs)" title="${NOT_READ}">waiting on you: ${NOT_READ}</span>`
     : w && w.count > 0 ? ` <a href="${esc(w.href)}" class="chip sm" style="--c:var(--b-needs)">${w.count} waiting on you, on Home</a>` : "";
   let html = strip + `<div class="bhead"><span><span class="chip" style="--c:${color}">OVERALL ${word}</span>${badge} <span class="muted">read ${clock(t1)}</span></span>${pfold("infra-links", "Grafana", links)}</div>`;
-  html += innerWrap("infra", "machines", `${kpis(cc, d.ci.glance)}${spaceSection(d.space)}${secHead("machines", "Machines", infraN("machines"))}${INFRA_T.machines.html()}${governorLine(g)}`);
+  html += innerWrap("infra", "machines", `${kpis(cc, d.ci.glance)}${spaceSection(d.space)}${secHead("machines", "Machines", infraN("machines"))}${INFRA_T.machines.html()}${pendingLine(d.ci.glance)}${governorLine(g)}`);
   html += innerWrap("infra", "pools", secHead("pools", "Job kinds", infraN("pools")) + INFRA_T.pools.html());
   html += innerWrap("infra", "ci", runnersSection(d.ci)) + innerWrap("infra", "waiting", waitingSection()) +
     innerWrap("infra", "local", localSection(d.ci));
