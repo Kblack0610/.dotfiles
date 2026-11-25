@@ -98,15 +98,33 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
       # A pull request checks out its merge commit; depth 2 brings its first parent, the base
-      # tip, so HEAD^1..HEAD is exactly the change.
+      # tip, so HEAD^1..HEAD is exactly the change. The pick reads path names and text only, so
+      # the binaries (fonts, wallpapers, most of the tree's bytes) stay out of the fetch: on ARC
+      # pods, with a run's jobs fetching at once, the full fetch ran past this job's timeout
+      # (ar-5643). The weights step warns when the objects pass 20 MB, the sign that a new binary
+      # type needs a line here.
       - uses: actions/checkout@v4
         with:
           fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !*.ttf
+            !*.jpeg
+            !*.jpg
+            !*.png
+            !*.woff2
+            !*.webp
+            !*.wav
+            !*.pb
       - name: Weights from the newest green main run
         id: junit
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          mb=$(du -sm .git/objects | cut -f1)
+          [ "$mb" -le 20 ] || echo "::warning::the text-only checkout fetched $mb MB of objects (budget 20): a binary type is missing from its sparse list"
           d=$RUNNER_TEMP/junit table=
           id=$(gh run list -R "$GITHUB_REPOSITORY" -w tests.yml -b main -e push -s success -L 1 \
             --json databaseId --jq '.[0].databaseId // empty') || id=
