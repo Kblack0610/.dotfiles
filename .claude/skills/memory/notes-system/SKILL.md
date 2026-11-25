@@ -45,7 +45,7 @@ do not reinvent their logic.
 ├── journal/
 │   ├── daily/        # YYYY-MM-DD.md files (`notes today` target)
 │   ├── backlog.md    # tasks with no date (footer-linked); 90 days there returns one to Focus at #low
-│   ├── refs/         # per-day reference material, auto-linked into daily ## Refs
+│   ├── refs/         # per-day reports, digests, captures; generated _index.md linked from ## Refs
 │   ├── permanent/    # zettelkasten atomic notes (`notes zettel new`)
 │   ├── index/        # generated backlinks + MOC (`notes index --rebuild`)
 │   ├── summaries/    # continuous/ (rolling monthly) + monthly/ rollups
@@ -86,7 +86,8 @@ Sync is event-driven by a Forgejo push webhook -> in-cluster `notes-sync-bridge`
 |---|---|
 | `notes today` | Idempotent daily note. Carries **Priority** forward (stamped with the `#c1026` created tag); rolls unfinished **Focus** into the carryover backlog; drops checked/empty items; links refs; appends the backlog footer. The `today` alias runs this + opens nvim. |
 | `notes path` | Print today's note path (profile-aware). |
-| `notes link-refs` | Link `refs/<date>/*.md` into today's `## Refs` (idempotent). |
+| `notes link-refs` | Rebuild today's refs index and link it from `## Refs` (idempotent). |
+| `notes report add\|list\|read` | The one writer and reader of reports in `refs/<date>/` (filing one: `inbox-report`; contract: notes-cli README, Reports). |
 | `notes summarize [--date D] [--force]` | Append a day's summary to `summaries/continuous/YYYY-MM.md`. **Dedup-safe** (skips dates already logged); WARNs on missing notes instead of failing silently. Runs nightly at 01:00 (`journal-daily-summarize.timer`). |
 | `notes archive [--month M] [--dry-run] [--backfill]` | Roll a month into `summaries/monthly/` + move dailies to `daily_archive/`. Runs on the 2nd at 01:30 (`journal-monthly-archive.timer`). |
 | `notes inbox` | Triage view of the dated-capture inbox (`inbox/<date>.md`, `<date>-analysis.md`): pending captures oldest-first with age + title, stale (>=14d) flagged. No subcommand = `list`. |
@@ -183,5 +184,5 @@ not profile-aware; never prefer it when the binary exists.
 - CLI source + full docs: `~/.dotfiles/.local/src/notes-cli/README.md`.
 - Profile config: `~/.config/notes/config.toml`, machine-local and git-ignored; `~/.dotfiles/.config/notes/config.toml.example` is the tracked template.
 - Memory index: `~/.claude/projects/-home-kblack0610--dotfiles/memory/user_notes_system.md` (may or may not exist - the MEMORY.md index references it).
-- Systemd units: `~/.config/systemd/user/git-sync-notes.{service,timer}`, `journal-daily-summarize.{service,timer}`, `journal-monthly-archive.{service,timer}`, `journal-refs-archive.{service,timer}`.
+- Systemd units: `~/.config/systemd/user/git-sync-notes.{service,timer}`, `journal-daily-summarize.{service,timer}`, `journal-monthly-archive.{service,timer}`.
 - Core sync logic: `~/.local/bin/store-sync --store notes` (runbook: `~/.local/src/git/NOTES_SYNC_SETUP.md`, "The sync engine").

@@ -367,6 +367,9 @@ fleet_cost() {
   assert_output '1 PR merged across 1 repos'
   run grep -c 'game#1' "$DAYLOG_REFS_DIR/2026-10-27/shipped.md"
   assert_output 1
+  # A digest to `notes report` and the knowledge engine: generated frontmatter first.
+  run head -n 3 "$DAYLOG_REFS_DIR/2026-10-27/shipped.md"
+  assert_output $'---\ngenerated: true\n---'
 }
 
 @test "spend is the fleet cost: a row a project, the dollars no session carries, and the total with its parts" {
