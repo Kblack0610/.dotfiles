@@ -185,23 +185,28 @@ pub fn build(all: &[Entry], today: &str) -> View {
         .iter()
         .filter(|e| e.date == today && e.is_report())
         .count();
-    let mut archive: Vec<Day> = vec![];
-    for e in all.iter().filter(|e| e.is_report() && !e.stream) {
-        match archive.last_mut() {
-            Some(d) if d.date == e.date => d.rows.push(Row::of(e)),
-            _ => archive.push(Day {
-                date: e.date.clone(),
-                count: String::new(),
-                rows: vec![Row::of(e)],
-            }),
+    // Archive is every file Today does not show, by day: a past day's reports that left the
+    // stream, and its digests and captures, so the Daily Refs line's day always has its fold.
+    let mut days: Vec<Vec<&Entry>> = vec![];
+    for e in all
+        .iter()
+        .filter(|e| e.date != today && !(e.is_report() && e.stream))
+    {
+        match days.last_mut() {
+            Some(d) if d[0].date == e.date => d.push(e),
+            _ => days.push(vec![e]),
         }
     }
-    let older_days = archive.len().saturating_sub(ARCHIVE_DAYS);
-    archive.truncate(ARCHIVE_DAYS);
-    for d in &mut archive {
-        let unread = d.rows.iter().filter(|r| r.unread).count();
-        d.count = with_unread(counted(d.rows.len(), "report"), unread);
-    }
+    let older_days = days.len().saturating_sub(ARCHIVE_DAYS);
+    let archive = days
+        .iter()
+        .take(ARCHIVE_DAYS)
+        .map(|d| Day {
+            date: d[0].date.clone(),
+            count: count_of(d),
+            rows: d.iter().map(|e| Row::of(e)).collect(),
+        })
+        .collect();
     let tiles = vec![
         Tile {
             label: "unread",
@@ -268,9 +273,19 @@ pub fn day_line(runner: &dyn Runner, date: &str) -> Option<DayLine> {
 
 fn day_line_of(all: &[Entry], date: &str) -> Option<DayLine> {
     let day: Vec<&Entry> = all.iter().filter(|e| e.date == date).collect();
+    (!day.is_empty()).then(|| DayLine {
+        label: "Refs",
+        text: count_of(&day),
+        link: Link::to(Kind::Report, date),
+    })
+}
+
+/// `3 reports, 1 unread, 2 digests, 1 note`: a day's files by kind, the Daily line's and an
+/// Archive day's head.
+fn count_of(day: &[&Entry]) -> String {
     let n = |kind: &str| day.iter().filter(|e| e.kind == kind).count();
     let unread = day.iter().filter(|e| e.unread()).count();
-    let parts: Vec<String> = [
+    [
         (n("report"), "report"),
         (n("digest"), "digest"),
         (n("capture"), "note"),
@@ -281,12 +296,8 @@ fn day_line_of(all: &[Entry], date: &str) -> Option<DayLine> {
         "report" => with_unread(counted(k, unit), unread),
         _ => counted(k, unit),
     })
-    .collect();
-    (!parts.is_empty()).then(|| DayLine {
-        label: "Refs",
-        text: parts.join(", "),
-        link: Link::to(Kind::Report, date),
-    })
+    .collect::<Vec<_>>()
+    .join(", ")
 }
 
 /// What marking report `id` read runs, or why it is refused first: an id is a date and a
@@ -406,8 +417,12 @@ mod tests {
         assert_eq!(v.tiles[1].level, "warn");
         // An unread report past the week leaves the stream with a count line, never piles up.
         assert_eq!(v.moved, "1 unread moved to archive");
-        assert_eq!(v.archive.len(), 1);
-        let d = &v.archive[0];
+        // A past day's digest is archived under its day, beside the reports that left the stream.
+        assert_eq!(v.archive.len(), 2);
+        assert_eq!(v.archive[0].date, "2026-11-23");
+        assert_eq!(v.archive[0].count, "1 digest");
+        assert_eq!(ids(&v.archive[0].rows), ["2026-11-23-old-digest"]);
+        let d = &v.archive[1];
         assert_eq!(d.date, "2026-11-10");
         assert_eq!(d.count, "2 reports, 1 unread");
         assert_eq!(ids(&d.rows), ["2026-11-10-old", "2026-11-10-lost"]);

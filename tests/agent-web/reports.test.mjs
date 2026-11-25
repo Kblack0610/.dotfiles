@@ -99,6 +99,27 @@ test("opening an unread report reads its body and marks it read once, and the ba
   assert.ok(!asked.some(([m]) => m === "POST"));
 });
 
+test("a re-read sent before a mark-read never lands over its answer", async () => {
+  reset();
+  await open("");
+  let release;
+  const held = new Promise((r) => { release = r; });
+  const real = ctx.fetch;
+  ctx.fetch = async (url, opts = {}) => {
+    if (url === "/api/reports") { await held; ctx.fetch = real; }
+    return real(url, opts);
+  };
+  const stale = run("refreshReports()");
+  // The read is held, so the open goes through show() alone (refreshReports would wait on it).
+  run(`st.tab = "reports"; st.arg = "2026-11-24-board-cleanup"; TABS.reports.show()`);
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  assert.equal(badge.innerHTML, `<span class="badge">1</span>`);
+  release();
+  await stale;
+  assert.equal(rps.data.unread, 1, "the older read is dropped");
+});
+
 test("a read report opens without a post", async () => {
   reset();
   await open("2026-11-24-ups-switch");

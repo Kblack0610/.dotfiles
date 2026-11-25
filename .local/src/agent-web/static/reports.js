@@ -13,8 +13,9 @@ const REPORT_DATE = /^\d{4}-\d{2}-\d{2}$/;
 // What an empty section says; a folded one with nothing in it is not drawn.
 const REPORTS_EMPTY = { needs: "Nothing needs you.", stream: "No reports today." };
 // data: the view; open: each fold's state; sel: the open report's id; body: the open report's body
-// html (or its read error) by id; marked: the ids a read was sent for.
-const rps = { data: null, err: null, open: {}, sel: null, body: {}, marked: new Set() };
+// html (or its read error) by id; marked: the ids a read was sent for; marks: bumped by each
+// mark-read, so a re-read sent before it never lands over the answer it gave.
+const rps = { data: null, err: null, open: {}, sel: null, body: {}, marked: new Set(), marks: 0 };
 
 // The arg when it names a record (a report id or a day) rather than an inner tab.
 const reportArg = () => (INNER_TABS.reports.tabs.some((t) => t[0] === st.arg) ? "" : st.arg || "");
@@ -85,8 +86,8 @@ function reportsBadge() {
 // The URL is acted on when the tab is shown and when the first view arrives, never on a re-read,
 // so a refresh never pulls the reader back to the report it names.
 const refreshReports = coalesce(async () => {
-  const first = !rps.data;
-  try { rps.data = await api("/api/reports"); rps.err = null; } catch (e) { rps.err = e.message; }
+  const first = !rps.data, marks = rps.marks;
+  try { const d = await api("/api/reports"); if (marks === rps.marks) rps.data = d; rps.err = null; } catch (e) { rps.err = e.message; }
   reportsBadge();
   if (st.tab === "reports") { if (first) openArg(); renderReports(); }
 });
@@ -104,6 +105,7 @@ async function readBody(r) {
 async function markRead(r) {
   if (!r.unread || rps.marked.has(r.id)) return;
   rps.marked.add(r.id);
+  rps.marks++;
   try { rps.data = await post("/api/reports/read", { id: r.id }); reportsBadge(); } catch (e) { rps.err = e.message; rps.marked.delete(r.id); }
   if (st.tab === "reports") renderReports();
 }
