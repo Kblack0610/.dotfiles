@@ -1838,6 +1838,9 @@ overflow_row() {
   if [ "$kept" = inbox ]; then
     echo "agent-queue: a session's follow-up is no board row: it is in the outbox, and inbox-triage files it or joins its twin" >&2
     echo "inboxed $8 -> inbox"
+  elif [ "$kept" = gated ]; then
+    echo "agent-queue: $1's board refused $8 (the reason is above): nothing was filed or kept, so file it again tomorrow, or keep it with notes improve $1" >&2
+    return 6
   elif [ -n "$kept" ]; then
     IFS=$'\t' read -r board prof id <<<"$kept"
     if [ -n "$gates" ]; then
@@ -1853,7 +1856,8 @@ overflow_row() {
 }
 
 # file_story <project> <title> <priority> <epic> <want> <body> [<keep>] [<gates>] [<tags>] -> "<board><TAB><profile><TAB><id>" of the story row
-# the item closes on merge, or nothing. An item not promoted from the board is still a story on its
+# the item closes on merge, or nothing, or `gated` when the board's intake gate or daily cap (intake_daily_cap, QUEUE.md "Admission")
+# refused the row: a plan's phase or a follow-up past the cap files no row, and its caller files no item either. An item not promoted from the board is still a story on its
 # project's agent board, so a task shows under its feature the moment it is added: one `[/]` row
 # through `notes ptask` (the rows' one writer), `#of/<epic>` when the item names an epic of this
 # project (--epic, or its plan's `epic:` line), else the standing epic of its area's system, which
@@ -1919,6 +1923,8 @@ file_story() {
        # shellcheck disable=SC2086 # gates is a space-separated list of tags
        [ -z "$gates" ] || gate_row "$project:$id" "$lab" agent $gates ||
          { echo "agent-queue: the open row $id on $project did not take its gates, so nothing was filed: $GATE_HINT" >&2; return 0; } ;;
+    6) # The board's intake gate or its daily cap (notes EXIT_GATED): nothing was written, and the reason is the last line.
+       echo "agent-queue: no story row filed on $project: ${out##*$'\n'}" >&2; printf 'gated\n'; return 0 ;;
     *) echo "agent-queue: no story row filed on $project: ${out##*$'\n'}" >&2; return 0 ;;
   esac
   printf '%s\t%s\t%s\n' "$project" "$lab" "$id"
@@ -2211,8 +2217,8 @@ cmd_add() {
       :board:*) [ -z "$GATES" ] || die "$slug waits on #${GATES// / #}, so row ${from#board:} stays on the board until that clears"
         echo "agent-queue: its row ${from#board:} is left where it is: dispatch promotes it" >&2 ;;
       :canary | :trainee) [ -z "$GATES" ] || die "a $from item waits on no gate: add it once #${GATES// / #} clears"
-        overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "" "$slug" "$tags" || exit 1 ;;
-      :*) overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "$GATES" "$slug" "$tags" || exit 1 ;;
+        overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "" "$slug" "$tags" || exit $? ;;
+      :*) overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "$GATES" "$slug" "$tags" || exit $? ;;
       *) if [ -n "$GATES" ]; then
            local rboard rlab
            IFS=$'\t' read -r rboard rlab _ < <(project_board "$project")
@@ -2229,7 +2235,7 @@ cmd_add() {
   if [ -n "$capped" ] && ! admit "$from" "$priority" "$tags" "$project" "$slug" "$hold_title"; then
     unlock # the board write is notes' and can be slow: the lock covers only the count
     if [ -n "$row" ] || [[ "$from" == board:* ]]; then echo "agent-queue: row ${row:-${from##*:}} is left un-started where it is: dispatch promotes it as the queue drains" >&2
-    else overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "" "$slug" "$tags"; fi
+    else overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "" "$slug" "$tags" || { [ "$?" != 6 ] || exit 6; }; fi
     exit "$AQ_EX_HELD"
   fi
   check_after "$after" "$slug"
@@ -2272,7 +2278,7 @@ cmd_add() {
          [ -n "$story" ] || { story="$(file_story "$project" "${title:-$(head -1 <<<"$text")}" "$priority" "$epic" "$want" "$text" "" "" "$tags")"; priority_given=''; }
        fi ;;
   esac
-  [ -z "$story" ] || IFS=$'\t' read -r sboard sprof srow <<<"$story"
+  case "$story" in gated) echo "agent-queue: $slug is not queued: its board row was refused by the daily cap or the gate (the reason is above)" >&2; exit 6 ;; ?*) IFS=$'\t' read -r sboard sprof srow <<<"$story" ;; esac
   mkdir -p "$AQ_DIR/$state"
   local f tmp
   f="$AQ_DIR/$state/$(date +%Y%m%d-%H%M%S)-$slug.md"
@@ -2625,6 +2631,7 @@ add_plan() {
       elif [ "$rc" = "$AQ_EX_HELD" ] && [[ "$out" =~ (^|$'\n')"held $s -> "[^:]+:([a-z0-9]+-[0-9]+) ]]; then
         key[$s]="${BASH_REMATCH[2]}" held=$((held + 1)) pend+=("$s")
       elif [ "$rc" = "$LOCK_BUSY" ] && [ "$held" = 0 ]; then plan_lock_short "$n" "$total" "$planf"
+      elif [ "$rc" = 6 ]; then die "queued $n of $total items from $planf; the board's daily cap refused $s, so it and the rest are not queued: a rerun today meets the same cap, so run the same add again tomorrow (it keeps what is queued)"
       else
         # A rerun keeps a phase held on a gated row but files one on an ungated row again, so that case names the plain adds.
         [ "$held" = 0 ] || die "queued $n of $total items from $planf ($held of them wait on their board rows); $s and the rest are not queued: add each with a plain add --after the phase before it (its slug or row id)"

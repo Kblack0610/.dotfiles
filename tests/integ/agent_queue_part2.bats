@@ -1375,6 +1375,31 @@ notes --profile work ptask level run lv-8'
   assert_output 0
 }
 
+# ar-6158: a row the board's intake gate or daily cap refuses (notes exit 6) is no row, and an item with no row would run past the cap.
+@test "a story row the board's cap refuses queues no item; any other failed write still does (the next test)" {
+  story_notes
+  echo 6 > "$NOTES_FIXTURE/story.rc"
+  echo 'level has taken its 10 new agent rows for today (10 so far, intake_daily_cap in the notes config), so nothing was added' > "$NOTES_FIXTURE/story.out"
+  run "$AQ" add --project level --slug capped "x"
+  assert_failure 6
+  assert_output --partial "no story row filed on level: level has taken its 10 new agent rows for today"
+  assert_output --partial "capped is not queued: its board row was refused"
+  [ -z "$(item queued capped)" ]
+}
+
+@test "a plan whose first phase the cap refuses queues nothing and says to add it again tomorrow, not now" {
+  story_notes
+  echo 6 > "$NOTES_FIXTURE/story.rc"
+  echo 'level has taken its 10 new agent rows for today (10 so far, intake_daily_cap in the notes config), so nothing was added' > "$NOTES_FIXTURE/story.out"
+  printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two' > "$SANDBOX/cp.md"
+  run env AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/cp.md" --project level --slug cp
+  assert_failure
+  assert_output --partial "the board's daily cap refused cp-p1"
+  assert_output --partial "run the same add again tomorrow"
+  refute_output --partial "run the same add again to queue them"
+  [ -z "$(item queued cp-p1)" ]
+}
+
 @test "a failed story write never stops the add: the item is written with no row" {
   story_notes
   echo 1 > "$NOTES_FIXTURE/story.rc"

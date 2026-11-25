@@ -379,6 +379,7 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${PRIO_SAMPLE:=3}"   # row ids shown per origin in prio_default
 : "${INFLOW_DAYS:=14}"   # the window inflow counts arrivals over
 : "${BENCH_CHURN_MERGES_CMD:=git -C $HOME/.dotfiles log origin/main --first-parent --since=60.days.ago --format=%cd --date=format-local:%Y-%m-%d}"   # one local date per dotfiles merge (churn_merges_per_day); the CI ledger lags a day behind
+: "${BENCH_INTAKE_CMD:=$BENCH_NOTES_CMD ingest cap --days 60 --json}"   # one JSON line a gated board a local day: the rows its daily cap admitted and refused (churn_admitted_per_day); notes owns the counting
 : "${CHURN_RUN_DAYS:=3}"   # complete days running that filed must exceed closed for churn --check to trip
 : "${BENCH_INGEST:=$HOME/.local/state/notes/ingest.jsonl}"   # the notes CLI's record of every row it wrote: who, from where
 : "${BENCH_PROFILE:=}"                             # the profile board_open and board_days read; empty asks `notes config`
@@ -3420,7 +3421,7 @@ KPI_ASKS="human_answered_per_day ask_wait_p90_min"
 KPI_STARTUP="startup_ready_ms_p50"
 KPI_SANDBOX="sandboxed_lane_pct"
 KPI_POOL="pool_busy_share"
-KPI_CHURN="churn_merges_per_day churn_filed_per_closed churn_reopens_per_day churn_followups_per_pr"
+KPI_CHURN="churn_merges_per_day churn_filed_per_closed churn_reopens_per_day churn_followups_per_pr churn_admitted_per_day churn_refused_per_day"
 # Each scored runner's runner_score_<name> is judge-eval's too, listed from its output and the
 # thresholds rather than here: the runner confs' SCORE= is the one list of lanes.
 
@@ -4472,12 +4473,13 @@ cmd_inflow() {
 }
 
 # CHURN_JQ: the runtime churn KPIs as jq, one bucket a local day. churn_rows builds {began, merges_known, days: {<date>: {merges, filed,
-# closed, dropped, reopened, followups}}} from the ingest events (inflow_events) and the merge dates; churn_kpis reads the $d complete days
+# closed, dropped, reopened, followups, admitted, refused}}} from the ingest events (inflow_events) and the merge dates; churn_kpis reads the $d complete days
 # before the day of $at (a rate is never read from a part day), clipped to the record's first day.
 # filed: a row's first added or filed event, counted once; followups: those no runner or hand wrote, a session's own (its 8-hex id is the writer
-# and no origin); closed: done, or settled with a PR; dropped: dropped or dup, kept apart so one board cut never reads as work closed.
+# and no origin); closed: done, or settled with a PR; dropped: dropped or dup, kept apart so one board cut never reads as work closed;
+# admitted and refused: the new agent rows the board's daily cap (intake_daily_cap) let in and turned away, as `notes ingest cap` counts them.
 CHURN_JQ='
-def churn_rows($merges):
+def churn_rows($merges; $cap):
   . as $ev
   | ([$ev[] | select(.action == "added" or .action == "filed")] | group_by(.id) | map(min_by(.ts))) as $arr
   | ([($arr[] | {d: .ts[0:10], k: "filed"}),
@@ -4487,30 +4489,38 @@ def churn_rows($merges):
       ($ev[] | select(.action == "reopened") | {d: .ts[0:10], k: "reopened"}),
       (($merges // [])[] | {d: ., k: "merges"})]
      | group_by(.d) | map({key: .[0].d, value: (group_by(.k) | map({key: .[0].k, value: length}) | from_entries)}) | from_entries) as $days
-  | {began: ([$ev[].ts[0:10]] | min // ""), merges_known: ($merges != null), days: $days};
+  | ([($days | keys[]), (($cap // {}) | keys[])] | unique | map({key: ., value: (($days[.] // {}) + (($cap // {})[.] // {}))}) | from_entries) as $all
+  | {began: ([$ev[].ts[0:10]] | min // ""), merges_known: ($merges != null), cap_known: ($cap != null), days: $all};
 def churn_dates($at; $d):
   ($at | strflocaltime("%Y-%m-%d") + "T12:00:00Z" | fromdateiso8601) as $noon
   | [range(1; $d + 1) | ($noon - . * 86400) | strftime("%Y-%m-%d")];
 def churn_kpis($ch; $at; $d):
-  if $ch == null then {churn_merges_per_day: null, churn_filed_per_closed: null, churn_reopens_per_day: null, churn_followups_per_pr: null}
+  if $ch == null then {churn_merges_per_day: null, churn_filed_per_closed: null, churn_reopens_per_day: null, churn_followups_per_pr: null, churn_admitted_per_day: null, churn_refused_per_day: null}
   else (churn_dates($at; $d) | map(select(. >= $ch.began))) as $ds
     | ($ds | length) as $n
     | def sum($k): [$ds[] | ($ch.days[.] // {})[$k] // 0] | add // 0;
       {churn_merges_per_day: (if $ch.merges_known and $n > 0 then (sum("merges") / $n * 1000 | round / 1000) else null end),
        churn_filed_per_closed: ratio(sum("filed"); sum("closed")),
        churn_reopens_per_day: (if $n > 0 then (sum("reopened") / $n * 1000 | round / 1000) else null end),
-       churn_followups_per_pr: (if $ch.merges_known then ratio(sum("followups"); sum("merges")) else null end)}
+       churn_followups_per_pr: (if $ch.merges_known then ratio(sum("followups"); sum("merges")) else null end),
+       churn_admitted_per_day: (if $ch.cap_known and $n > 0 then (sum("admitted") / $n * 1000 | round / 1000) else null end),
+       churn_refused_per_day: (if $ch.cap_known and $n > 0 then (sum("refused") / $n * 1000 | round / 1000) else null end)}
   end;'
 
 # churn_rows -> churn_rows of CHURN_JQ over the agent-runtime ingest events and the dotfiles merge dates; a failure when the ingest
 # record cannot be read. A merge log that cannot be read or lists no merge leaves the merge-based KPIs null (merges_known false), never 0.
 churn_rows() {
-  local m merges=null
+  local m merges=null c cap=null
   [ -r "$BENCH_INGEST" ] || return 1
+  # The cap's day counts are notes' (one reader of the predicate); a notes that cannot give them leaves the two KPIs null, never 0.
+  if c=$($BENCH_INTAKE_CMD 2>/dev/null); then
+    cap=$(jq -sc 'map(select(type == "object" and .project == "agent-runtime")) | if length == 0 then null else (map({key: .date, value: {admitted, refused}}) | from_entries) end' <<<"$c" 2>/dev/null) || cap=null
+    [ -n "$cap" ] || cap=null
+  fi
   if m=$($BENCH_CHURN_MERGES_CMD 2>/dev/null); then
     merges=$(jq -Rsc 'split("\n") | map(select(test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$"))) | if length == 0 then null else . end' <<<"$m") || merges=null
   fi
-  inflow_events agent-runtime | jq -sc --argjson m "$merges" "$JQ_LIB$CHURN_JQ"'churn_rows($m)'
+  inflow_events agent-runtime | jq -sc --argjson m "$merges" --argjson cap "$cap" "$JQ_LIB$CHURN_JQ"'churn_rows($m; $cap)'
 }
 
 # churn_kpi <now> -> the churn KPI object, the same shape as comms_kpi; {} when the ingest record cannot be read
@@ -4542,7 +4552,8 @@ cmd_churn() {
     | [range($n; -1; -1) | ($t | strflocaltime("%Y-%m-%d") + "T12:00:00Z" | fromdateiso8601) - . * 86400 | strftime("%Y-%m-%d")]
     | map(. as $d | ($ch.days[$d] // {}) as $r
         | {date: $d, complete: ($d != $today), merges: (if $ch.merges_known then ($r.merges // 0) else null end),
-           filed: ($r.filed // 0), closed: ($r.closed // 0), dropped: ($r.dropped // 0), reopened: ($r.reopened // 0), followups: ($r.followups // 0)})') || return 1
+           filed: ($r.filed // 0), closed: ($r.closed // 0), dropped: ($r.dropped // 0), reopened: ($r.reopened // 0), followups: ($r.followups // 0),
+           admitted: (if $ch.cap_known then ($r.admitted // 0) else null end), refused: (if $ch.cap_known then ($r.refused // 0) else null end)})') || return 1
   if [ "$check" = 1 ]; then
     # nothing when it holds, the days that tripped it when it does; fewer complete days than CHURN_RUN_DAYS is no trip
     jq -e --argjson k "$CHURN_RUN_DAYS" '[.[] | select(.complete)] | .[-$k:] | (length < $k or any(.filed <= .closed))' <<<"$rows" >/dev/null && return 0
@@ -4551,8 +4562,8 @@ cmd_churn() {
     return 1
   fi
   if [ "$json" = 1 ]; then jq -c '.[]' <<<"$rows"; return 0; fi
-  jq -r '"| date | merges | filed | closed | dropped | reopened | followups |", "|---|---|---|---|---|---|---|",
-    (.[] | "| \(.date)\(if .complete then "" else " (so far)" end) | \(.merges // "-") | \(.filed) | \(.closed) | \(.dropped) | \(.reopened) | \(.followups) |")' <<<"$rows"
+  jq -r '"| date | merges | filed | closed | dropped | reopened | followups | admitted | refused |", "|---|---|---|---|---|---|---|---|---|",
+    (.[] | "| \(.date)\(if .complete then "" else " (so far)" end) | \(.merges // "-") | \(.filed) | \(.closed) | \(.dropped) | \(.reopened) | \(.followups) | \(.admitted // "-") | \(.refused // "-") |")' <<<"$rows"
 }
 
 # startup [--json|--check] -- Claude Code start times over the last startup_rolling_n (20) starts:
@@ -4953,7 +4964,8 @@ upsert_why() {
 # again is the same work (alertmanager-fleet was filed 27 times in 7 days, 2026-11-18). A row whose
 # condition cleared is triage_retire's. Every row is #size/s. A reopen that fails is said and the key
 # is filed as a new row, and a row whose add or edit fails is said and skipped, so one stuck row never
-# stops the pass (ar-4064: one failed add skipped every red fix promotion after it).
+# stops the pass (ar-4064: one failed add skipped every red fix promotion after it). An add the board's daily cap
+# refuses (exit 6) is said and tried again next pass; a red marked urgent passes the cap.
 # Each write names its row by id, since `notes ptask edit` refuses a query two open rows match: the
 # key's row is its first open row with an id marker, and only a key whose one row has none (written
 # by hand) is named by its prefix. A twin a race left open on the key (ar-5690) is dropped as a dup
@@ -5017,6 +5029,8 @@ board_upsert() {
       case $rc in
         0) added=$((added + 1)) ;;
         3) ;;
+        # The board's daily cap (intake_daily_cap, QUEUE.md "Admission"): the red waits for a later pass, and is no failure.
+        6) say "$p: the board's daily cap holds this row; the next pass tries it again" ;;
         *) say "add failed for $p"; failed+=("$p") ;;
       esac
     elif [ "$have" != "${text,,}" ]; then
