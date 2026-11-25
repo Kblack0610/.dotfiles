@@ -1258,26 +1258,34 @@ unlisted_repo() {
 # once its change is live (a migration of the live store, a restart, a re-seed). Each is added as its
 # own item on the landed item's project, so the step has an owner: #3249 left `notes projects --migrate
 # unity-core-playground` in a sentence, nobody ran it, and from 09:06 to 13:30 on 2026-11-23 no board
-# view or dispatch pass read a unity sprint (ar-4887). The slug names the PR, line and repo, so a re-run
-# of this landing adds none twice. High, since main's change is only half applied until it runs. Never
-# fails the landing: the merge stands, and a step not added is said with the add to run by hand.
+# view or dispatch pass read a unity sprint (ar-4887). A line in a code fence or a quote, and a
+# placeholder (`<command>`, none, n/a), is no step. The slug names the PR, a hash of the step and the
+# repo, so a re-run of this landing adds none twice, even after the body was edited. The add is
+# from the landed item but not run as it (AGENT_QUEUE_ITEM empty), so that item's own after: never
+# gates it. High, since main's change is only half applied until it runs. Never fails the landing:
+# the merge stands, and a step not added is said with the add to run by hand.
 deploy_steps() {
-  local text step n=0 slug project out rc steps=() repo=${pr_ref%#*}
+  local text step slug project out rc steps=() repo=${pr_ref%#*}
   text=$(pr_view body .body 2>&1) || { echo "deploy: no After deploy: step read ($api pr view: $(lastline "$text")); re-run agent-land $pr to add them" >&2; return 0; }
-  mapfile -t steps < <(tr -d '\r' <<<"$text" | sed -n 's/^After deploy:[[:space:]]*//p' | sed 's/[[:space:]]*$//' | grep . || true)
+  mapfile -t steps < <(tr -d '\r' <<<"$text" | awk '
+    /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
+    fence || !sub(/^After deploy:[[:space:]]*/, "") { next }
+    { sub(/[[:space:]]+$/, "") }
+    $0 != "" && $0 !~ /^</ && tolower($0) !~ /^(none|n\/a|nothing|-)\.?$/')
   [ "${#steps[@]}" -gt 0 ] || return 0
   project=$(jq -r '.project // empty' <<<"$it")
   for step in "${steps[@]}"; do
-    n=$((n + 1)) rc=0
-    slug="after-deploy-$pr-$n-${repo##*/}"   # the repo last: agent-queue cuts a slug at 40 characters
-    out=$(aq_retry add --project "$project" --priority high --slug "$slug" \
+    rc=0
+    # the repo last: agent-queue cuts a slug at 40 characters
+    slug="after-deploy-$pr-$(printf '%s' "$step" | sha1sum | cut -c1-7)-${repo##*/}"
+    out=$(AGENT_QUEUE_ITEM='' aq_retry add --project "$project" --priority high --from "item:$item" --slug "$slug" \
       "chore(deploy): $step (left by $pr_ref)"$'\n\n'"$pr_ref (merge ${merged:0:12}) left this step for once its change is live: $step"$'\n'"Check the change is live first (a dotfiles merge: the main checkout is at or past the merge; a service: its rollout finished), then run it and prove what it changed." 2>&1) || rc=$?
     case "$rc" in
       0) echo "deploy: added $slug: $step" ;;
       5) echo "deploy: $slug filed on the $project board, the queue takes it from there: $step" ;;
       4) echo "deploy: $slug already ran: $step" ;;
       *) if [[ "$out" == *"already in the queue"* ]]; then echo "deploy: $slug already queued: $step"
-         else echo "deploy: not added ($(lastline "$out")): agent-queue add --project $project --priority high --slug $slug 'chore(deploy): $step (left by $pr_ref)'" >&2; fi ;;
+         else echo "deploy: not added ($(lastline "$out")): agent-queue add --project $project --priority high --from item:$item --slug $slug 'chore(deploy): $step (left by $pr_ref)'" >&2; fi ;;
     esac
   done
 }

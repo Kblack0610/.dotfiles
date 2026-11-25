@@ -542,7 +542,8 @@ load 'agent_land/common'
 }
 
 # aq_add_stub: the sandbox agent-queue logs each add's argv to aq.add, one call a line, and answers as the real one
-# does for a slug it already holds ("already in the queue", exit 1) or $SANDBOX/aq.add.rc says; other verbs run for real.
+# does for a slug it already holds ("already in the queue", exit 1) or $SANDBOX/aq.add.rc says, and logs the
+# AGENT_QUEUE_ITEM each add saw to aq.env; other verbs run for real.
 aq_add_stub() {
   mv "$SANDBOX/bin/agent-queue" "$SANDBOX/bin/agent-queue.real"
   cat >"$SANDBOX/bin/agent-queue" <<EOS
@@ -551,9 +552,10 @@ if [ "\$1" = add ]; then
   slug=\$(printf '%s\n' "\$@" | grep -A1 -x -- --slug | tail -1)
   ! grep -qxF "\$slug" "$SANDBOX/aq.slugs" 2>/dev/null || { echo "agent-queue: already in the queue: \$slug" >&2; exit 1; }
   printf '%s\n' "\${*%%\$'\n'*}" >>"$SANDBOX/aq.add"
+  printf '%s\n' "\${AGENT_QUEUE_ITEM:-}" >>"$SANDBOX/aq.env"
   rc=\$(cat "$SANDBOX/aq.add.rc" 2>/dev/null || echo 0)
   [ "\$rc" -ne 0 ] || echo "\$slug" >>"$SANDBOX/aq.slugs"
-  [ "\$rc" -eq 0 ] || echo "agent-queue: store locked" >&2
+  [ "\$rc" -ne 1 ] || echo "agent-queue: store locked" >&2
   exit "\$rc"
 fi
 exec "$SANDBOX/bin/agent-queue.real" "\$@"
@@ -563,33 +565,47 @@ EOS
 
 # ar-4887: #3249 left `notes projects --migrate unity-core-playground` in a sentence for after its deploy, and nobody ran it.
 @test "deploy: each After deploy: line of the merged body is added as its own item, once; a failed add never fails the landing (ar-4887)" {
+  local s1 s2
+  s1=after-deploy-42-$(printf '%s' 'notes projects --migrate game' | sha1sum | cut -c1-7)-r
+  s2=after-deploy-42-$(printf '%s' 'systemctl --user restart notes-web' | sha1sum | cut -c1-7)-r
   aq_add_stub
-  # NEGATIVE CONTROL: a step said in a sentence, #3249's form, adds nothing
-  printf 'The change.\n\nAfter the new binary is deployed, run notes projects --migrate game.\n\nItem: ship\n' >"$NOTES_FIXTURE/body"
+  # NEGATIVE CONTROL: a step said in a sentence (#3249's form), a fenced or quoted line, and a placeholder add nothing
+  printf '%s\n' 'The change.' '' 'After the new binary is deployed, run notes projects --migrate game.' '```' 'After deploy: <command>' '```' \
+    '> After deploy: quoted' 'After deploy: <command>' 'After deploy: none' '' 'Item: ship' >"$NOTES_FIXTURE/body"
   run "$LAND" 42 --item ship
   assert_success
   refute_output --partial 'deploy:'
   [ ! -e "$SANDBOX/aq.add" ]
   printf 'The change.\n\nAfter deploy: notes projects --migrate game\r\nAfter deploy:   systemctl --user restart notes-web  \n\nItem: ship\n' >"$NOTES_FIXTURE/body"
-  run "$LAND" 42 --item ship
+  AGENT_QUEUE_ITEM=ship run "$LAND" 42
   assert_success
-  assert_line 'deploy: added after-deploy-42-1-r: notes projects --migrate game'
-  assert_line 'deploy: added after-deploy-42-2-r: systemctl --user restart notes-web'
+  assert_line "deploy: added $s1: notes projects --migrate game"
+  assert_line "deploy: added $s2: systemctl --user restart notes-web"
   assert_line 'landed #42'
   run cat "$SANDBOX/aq.add"
-  assert_line --index 0 'add --project dotfiles --priority high --slug after-deploy-42-1-r chore(deploy): notes projects --migrate game (left by o/r#42)'
-  assert_line --index 1 'add --project dotfiles --priority high --slug after-deploy-42-2-r chore(deploy): systemctl --user restart notes-web (left by o/r#42)'
-  # a re-run of the landing adds neither again
+  assert_line --index 0 "add --project dotfiles --priority high --from item:ship --slug $s1 chore(deploy): notes projects --migrate game (left by o/r#42)"
+  assert_line --index 1 "add --project dotfiles --priority high --from item:ship --slug $s2 chore(deploy): systemctl --user restart notes-web (left by o/r#42)"
+  # the add does not run as the landed item, so that item's own after: never gates it
+  run grep -c '^$' "$SANDBOX/aq.env"
+  assert_output 2
+  # a re-run of the landing adds neither again, though a step was put above them meanwhile
+  printf 'The change.\n\nAfter deploy: systemctl --user restart notes-web\nAfter deploy: notes projects --migrate game\n\nItem: ship\n' >"$NOTES_FIXTURE/body"
   run "$LAND" 42 --item ship
   assert_success
-  assert_line 'deploy: after-deploy-42-1-r already queued: notes projects --migrate game'
+  assert_line "deploy: $s1 already queued: notes projects --migrate game"
+  assert_line "deploy: $s2 already queued: systemctl --user restart notes-web"
   run grep -c . "$SANDBOX/aq.add"
   assert_output 2
+  # a full queue files the step on the board, and that is said
+  : >"$SANDBOX/aq.slugs"; echo 5 >"$SANDBOX/aq.add.rc"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "deploy: $s2 filed on the dotfiles board, the queue takes it from there: systemctl --user restart notes-web"
   # an add that fails is said with the add to run by hand, and the landing stands
   : >"$SANDBOX/aq.slugs"; echo 1 >"$SANDBOX/aq.add.rc"
   run "$LAND" 42 --item ship
   assert_success
-  assert_line --partial 'deploy: not added (agent-queue: store locked): agent-queue add --project dotfiles --priority high --slug after-deploy-42-1-r'
+  assert_line --partial "deploy: not added (agent-queue: store locked): agent-queue add --project dotfiles --priority high --from item:ship --slug $s1"
   assert_line 'landed #42'
 }
 
