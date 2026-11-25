@@ -6377,16 +6377,32 @@ Some prose left on the board.
             board.contains("- [/] fix(c): stranded earlier #v1.14.0 <!-- id:d-2 carried:3 -->"),
             "{board}"
         );
-        assert!(!board.contains("#v1.13.0") && !board.contains("#v1.12.0"), "{board}");
+        assert!(
+            !board.contains("#v1.13.0") && !board.contains("#v1.12.0"),
+            "{board}"
+        );
         // NEGATIVE CONTROLS: an untagged row follows the sheet and a later one waits, uncarried.
-        assert!(board.contains("- [ ] fix(d): untagged follows\n"), "{board}");
-        assert!(board.contains("- [ ] fix(e): aimed later #v1.15.0\n"), "{board}");
+        assert!(
+            board.contains("- [ ] fix(d): untagged follows\n"),
+            "{board}"
+        );
+        assert!(
+            board.contains("- [ ] fix(e): aimed later #v1.15.0\n"),
+            "{board}"
+        );
         let note = fs::read_to_string(dir.join("versions/v1.13.0.md")).unwrap();
         let carried = &note[note.find("Carried to v1.14.0:").expect(&note)..];
-        for t in ["feat(a): sheet open", "fix(b): board open", "fix(c): stranded earlier"] {
+        for t in [
+            "feat(a): sheet open",
+            "fix(b): board open",
+            "fix(c): stranded earlier",
+        ] {
             assert!(carried.contains(t), "{t}:\n{note}");
         }
-        assert!(!carried.contains("fix(d)") && !carried.contains("fix(e)"), "{note}");
+        assert!(
+            !carried.contains("fix(d)") && !carried.contains("fix(e)"),
+            "{note}"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
