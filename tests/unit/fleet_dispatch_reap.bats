@@ -105,7 +105,7 @@ load 'fleet_dispatch/common'
   assert_output --partial 'could not file the phases of'
   [ ! -e "$FLEET_DISPATCH_DIR/plans-filed" ] || fail "a refused plan with no fix row is marked filed"
   # with a board, the refusal files one fix(plan) row and marks the plan filed, so the next pass does not retry it (ar-5605)
-  jq '.trackers.game.lab = "game"' "$DISPATCH_PROJECT_MAP" > "$SANDBOX/map.new" && mv "$SANDBOX/map.new" "$DISPATCH_PROJECT_MAP"
+  jq -n '{trackers: {game: {lab: "game"}}, paths: {}}' > "$DISPATCH_PROJECT_MAP"
   run reconcile_plans
   assert_success
   grep -q "notes ptask game --agent add --why fault fix(plan): orphan: agent-queue refuses its Phases checklist (no  Phases); fix it, then agent-queue add --plan $SANDBOX/orphan.md" "$NOTES_FIXTURE/calls.log"
