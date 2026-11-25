@@ -4641,6 +4641,19 @@ alert_setup() {
   assert_output --partial '4 queued as red fixes'
 }
 
+@test "triage: alert rows take the trip's level, so a warning-only trip files #normal; with no level the manifest's high stands" {
+  alert_setup
+  printf normal > "$TRIAGE_WATCH_STATE/alertmanager-fleet.level"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --regexp '^check\(alert\): ConvergenceDrift deskslim-1 firing, .*#normal \(agent\)$'
+  refute_line --regexp '^check\(alert\): .*#high \(agent\)$'
+  # negative control: no level file, the manifest's severity
+  rm "$TRIAGE_WATCH_STATE/alertmanager-fleet.level"
+  run "$SUBJECT" triage --dry-run
+  assert_line --regexp '^check\(alert\): ConvergenceDrift deskslim-1 firing, .*#high \(agent\)$'
+}
+
 @test "triage: an alert a human's pin explains is intended, not a row; its old row closes" {
   alert_setup
   echo '{"data":{"deskslim-1.slots":"{\"slots\":0,\"by\":\"human: moving the deskslims\"}","razer-laptop.slots":"{\"slots\":0,\"by\":\"machine-mode open\"}"}}' > "$SANDBOX/pins.json"

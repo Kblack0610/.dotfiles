@@ -5197,8 +5197,11 @@ triage_rows() {
     # owner and expiry, so it files no row until UNTIL; then it is filed like any other red.
     watch_quarantined "$TRIAGE_WATCH_STATE" "$n" "$t" && continue
     sev=$(watch_sev "$n")
-    # The aggregate Alertmanager watch files one row a firing alert instead of its own.
-    if [ "$n" = "$TRIAGE_ALERT_WATCH" ] && triage_alert_rows "$since" "$sev"; then continue; fi
+    # The aggregate Alertmanager watch files one row a firing alert instead of its own, at the trip's
+    # level (its probe's `page:` line, kept in .level as `watch-companion-loop tripped` reads it), not
+    # the manifest's fixed high: a warning-only trip pages normal, so its rows are #normal (ar-4403).
+    if [ "$n" = "$TRIAGE_ALERT_WATCH" ] \
+      && triage_alert_rows "$since" "$(cat "$TRIAGE_WATCH_STATE/$n.level" 2>/dev/null || echo "$sev")"; then continue; fi
     # `what:` is one line or a folded block whose first sentence is the healthy state
     what=$(awk '/^what:/ { sub(/^what:[[:space:]]*(>-?|\|-?)?[[:space:]]*/, ""); on = 1; if ($0 != "") print; next }
                 on && /^[[:space:]]/ { sub(/^[[:space:]]+/, ""); print; next } on { exit }' "$TRIAGE_WATCHES/$n.yaml" 2>/dev/null \
