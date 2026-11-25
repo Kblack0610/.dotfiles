@@ -3344,6 +3344,7 @@ trainee_brief() {
   echo
   echo "You run in a sandbox that sees this worktree alone: no skills, agent-queue, gh, push or human. Ignore any step above that needs one."
   echo "Make the smallest change in this worktree that fully does the task, run the repo's own tests for what you changed where they run here, and stop."
+  echo "Edit only markdown files (anywhere) and shell or bats scripts (.sh, .bash, .zsh, .bats, or no extension with a shell shebang) in no directory holding a Cargo.toml or package.json: the sandbox builds nothing else, and a diff touching any other file is rejected, however right it is."
   echo "Do not commit, push or open a pull request: leave your edits in the working tree. They are checked and landed, or the task is sent back, after you stop."
   echo "If you change nothing, say why in one word on the first line of a file named .no-diff in this worktree: already-fixed when the code already does what the task asks, blocked when the task cannot be done without a decision from the human or access you lack. No file means you failed."
 }
@@ -3673,7 +3674,7 @@ EOF
 # (UTC, YYYY-MM-DDTHH:MM:SS): the cause, its row title, its count, the per-pair counts, the harnesses, and
 # one reason as written. A reject is a lane trainee run with an outcome of redo or failed. Its cause is
 # the `(end <reason>)` trainee_empty_why writes, "no diff" for "left no diff", "no reason recorded" for a
-# run with no `why`, else the reviewer's first four words; at most 40 characters, so the title fits the
+# run with no `why`, "touch a file the sandbox cannot build" for a diff trainee_diff_why refused (whatever the file), else the reviewer's first four words; at most 40 characters, so the title fits the
 # board's 80. One cause on one pair names that pair; on two or more it names no model, since a cause
 # every model hits is the harness's or the source's. The cause is the key, so a cause that spreads to a
 # second pair keeps its count and its row: a reject no newer than its cause's stamp (the last night that
@@ -3690,7 +3691,9 @@ rollup_causes() {
       | ([$w | capture("\\(end (?<e>[a-z-]+)").e] | first) as $e
       | {pair: $pair, harness: (.harness // "claude"), ts: .ts[0:19], why: (.why // "no reason recorded (outcome \(.outcome))"),
          cause: (if $e then "keep ending on end " + $e elif $w == "left no diff" then "keep leaving no diff"
-                 elif $w == "" then "end with no reason recorded" else "are rejected for " + ($w | words) end | fit)}]
+                 elif $w == "" then "end with no reason recorded"
+                 elif ($w | test("^its diff touches .* which is no markdown file")) then "touch a file the sandbox cannot build"
+                 else "are rejected for " + ($w | words) end | fit)}]
     | group_by(.cause)[]
     | . as $all | $all[0].cause as $c
     | [$all[] | select(.ts > ($stamps[$c] // ""))] as $new
@@ -7916,12 +7919,13 @@ repose_ask() {
   fi
 }
 
-# reconcile_plans -- file an approved plan its session left behind on the board: one untagged row (the priority rubric judges it) naming
-# the plan (agent-queue add --plan from a filer; only the board fills the queue), which dispatch
-# pulls like any row and promote queues as the plan's chain. Once only: a plan the queue has held,
-# or one filed here before (PLANS_FILED), is not filed again, or every pass would add a row.
-# ask-sweep reads PLANS_FILED too, so it asks the human about no plan filed here. One still open
-# after that shows in plans_unqueued.
+# reconcile_plans -- file an approved plan its session left behind on the board: each open phase its
+# own row, every later one gated #after/ the row before (agent-queue add --plan from a filer; only the
+# board fills the queue), which dispatch pulls in turn like any row. No row stands for the whole plan
+# (ar-5605). Once only: a plan the queue has held, or one filed here before (PLANS_FILED), is not
+# filed again, or every pass would add rows. A held exit with no `held` line filed nothing (its epic:
+# new proposal waits), so that plan is tried again next pass. One still open after that shows in
+# plans_unqueued.
 # `- [-]` is how a human drops a phase.
 PLANS_FILED="$DIR/plans-filed"
 reconcile_plans() {
@@ -7931,20 +7935,40 @@ reconcile_plans() {
   [ -n "$orphans" ] || return 0
   held=$(agent-queue list --json --state done --since "$(date -d "$PLAN_LEDGER_DAYS days ago" +%F)" 2>/dev/null | jq -r '.plan // empty') || return 0
   [ ! -s "$PLANS_FILED" ] || held+=$'\n'"$(cat "$PLANS_FILED")"
-  # By file name, as PLAN_ITEMS_JQ and ask-sweep match: an item names ~/.claude/plans/<f>, the
+  # By file name, as PLAN_ITEMS_JQ matches: an item names ~/.claude/plans/<f>, the
   # ledger the account's own ~/.claude-<acct>/plans/<f>.
   held=$(sed 's#.*/##' <<<"$held")
   while IFS= read -r c; do
     plan=$(jq -r .plan <<<"$c"); project=$(jq -r .project <<<"$c")
     grep -qxF -- "${plan##*/}" <<<"$held" && continue
     out=$(AGENT_QUEUE_START=0 agent-queue add --plan "$plan" --project "$project" --from auto:plans 2>&1); rc=$?
-    if [ "$rc" -eq 0 ] || [ "$rc" -eq "$AQ_EX_HELD" ]; then
+    if [ "$rc" -eq 0 ] || { [ "$rc" -eq "$AQ_EX_HELD" ] && grep -q '^held ' <<<"$out"; }; then
       mkdir -p "$DIR"; printf '%s\n' "$plan" >> "$PLANS_FILED"
       logline "filed $(basename "$plan") to run its open phases: its session is gone"
+    elif [ "$rc" -eq "$AQ_EX_HELD" ]; then
+      logline "left $(basename "$plan") for next pass: ${out##*$'\n'}"
+    elif plan_fix_row "$plan" "$project" "$out"; then
+      mkdir -p "$DIR"; printf '%s\n' "$plan" >> "$PLANS_FILED"
     else
       say "could not file the phases of $plan: $out"
     fi
   done <<<"$orphans"
+}
+
+# plan_fix_row <plan> <project> <agent-queue output> -- when agent-queue refused the plan's Phases
+# checklist, file one fix(plan) row on the project's board, so the plan is fixed once rather than
+# retried every pass; fails when the refusal is anything else or the row could not be filed.
+plan_fix_row() {
+  local why board rc=0
+  why="${3##*$'\n'}"; why="${why#agent-queue: }"; why="${why#--plan *: }"
+  [[ "$why" == "could not read its Phases checklist: "* ]] || return 1
+  why=$(tr -cd ' -~' <<<"${why#could not read its Phases checklist: }" | tr -d '#' | cut -c1-160)
+  board=$(PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_board "$2")
+  [ -n "$board" ] || return 1
+  notes ptask "$board" --agent add --why fault "fix(plan): $(basename "$1" .md): agent-queue refuses its Phases checklist ($why); fix it, then agent-queue add --plan $1 #size/s" \
+    >/dev/null 2>&1 || rc=$?
+  # 3: an open twin; 4: the outbox took it, where inbox-triage joins a later twin.
+  case "$rc" in 0|3|4) logline "filed a fix row for $(basename "$1"): agent-queue refuses its Phases checklist" ;; *) return 1 ;; esac
 }
 
 # reconcile_epics -- queue one verify item for each open epic whose every leaf has landed (fleet-bench's
