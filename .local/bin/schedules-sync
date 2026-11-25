@@ -602,7 +602,7 @@ def gh_row(repo, r):
             "created_at": r.get("created_at"), "started_at": r.get("run_started_at"),
             "ended_at": r.get("updated_at") if done else None,
             "queue_wait_s": wait_s(r.get("created_at"), r.get("run_started_at")),
-            "url": r.get("html_url")}
+            "url": r.get("html_url"), **({"gone": True} if r.get("gone") else {})}
 
 
 def fj_run(host, repo, n):
@@ -1292,7 +1292,8 @@ def stale_open(repo, last, fed, exporter, t):
     still listed costs nothing more; only one that left its status (or holds none) is read by id.
     A rerun's older attempt held open has ended (GitHub reruns only a finished run), but no listing
     or feed serves it again, so it is read once from its attempt, newest first, at most
-    ATTEMPT_READS a pass, and closes (ar-4126). A run GitHub no longer has is left as it is.
+    ATTEMPT_READS a pass, and closes (ar-4126); one GitHub no longer has closes as gone_attempt. A run
+    GitHub no longer has is otherwise left as it is.
     `fed` is the (id, attempt) of each run the feed served this pass."""
     edge = t - timedelta(seconds=exporter.get("window_secs") or 86400)
     mine = [r for r in last.values() if r["forge"] == "github" and r["repo"].lower() == repo.lower()]
@@ -1311,8 +1312,20 @@ def stale_open(repo, last, fed, exporter, t):
             listed.update((r["id"], r) for r in batch)
             if len(batch) < 100 or want <= listed.keys():
                 break
-    ended = [gh(f"repos/{repo}/actions/runs/{r['id']}/attempts/{r['attempt']}", missing={}) for r in superseded[:ATTEMPT_READS]]
-    return [got for r in old if (got := listed.get(r["id"]) or gh(f"repos/{repo}/actions/runs/{r['id']}", missing={}))] + [g for g in ended if g]
+    ended = [gh(f"repos/{repo}/actions/runs/{r['id']}/attempts/{r['attempt']}", missing={}) or gone_attempt(r)
+             for r in superseded[:ATTEMPT_READS]]
+    return [got for r in old if (got := listed.get(r["id"]) or gh(f"repos/{repo}/actions/runs/{r['id']}", missing={}))] + ended
+
+
+def gone_attempt(r):
+    """A rerun's older attempt GitHub no longer has (a 404): it ended, since GitHub reruns only a
+    finished run, so it closes with its conclusion unknown and `gone` set. Left open, the same gone
+    attempts would take every one of a repo's ATTEMPT_READS each pass, and the rest would never close;
+    `gone` keeps direct_jobs from asking for jobs GitHub cannot serve."""
+    return {"id": r["id"], "run_attempt": r["attempt"], "status": "completed", "conclusion": None, "gone": True,
+            "name": r.get("workflow"), "path": r.get("path"), "display_title": r.get("title"),
+            "head_branch": r.get("branch"), "event": r.get("event"), "head_sha": r.get("sha"),
+            "created_at": r.get("created_at"), "run_started_at": r.get("started_at"), "html_url": r.get("url")}
 
 
 def fetch_jobs(repo, run, budget):
@@ -1343,7 +1356,7 @@ def direct_jobs(repo, runs_last, jobs_last, exporter, budget, t):
         return []
     edge = t - timedelta(seconds=exporter.get("window_secs") or 86400)
     todo = [r for r in runs_last.values()
-            if r["forge"] == "github" and r["repo"] == repo and r.get("status") == "completed"
+            if r["forge"] == "github" and r["repo"] == repo and r.get("status") == "completed" and not r.get("gone")
             and not (jobs_last.get(("github", repo.lower(), r["id"], r["attempt"])) or {}).get("complete")
             and (when(r.get("created_at")) or t) < edge]
     out = []
