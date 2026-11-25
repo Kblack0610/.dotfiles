@@ -553,16 +553,24 @@ fn expand(
         .filter(|(_, m)| **m)
         .filter_map(|(w, _)| w.chars().next())
         .collect();
-    let mut df: HashMap<&str, usize, std::hash::BuildHasherDefault<Fx>> = HashMap::default();
+    // A count is of pages, as in `rank`: the last path a term was counted for skips a second
+    // section of the same page (`load` keeps a page's sections adjacent).
+    let mut seen: HashMap<&str, (usize, &Path), std::hash::BuildHasherDefault<Fx>> =
+        HashMap::default();
     if !firsts.is_empty() {
         for d in docs {
             for t in d.tf.keys() {
                 if t.chars().next().is_some_and(|c| firsts.contains(&c)) {
-                    *df.entry(t.as_str()).or_default() += 1;
+                    let e = seen.entry(t.as_str()).or_insert((0, Path::new("")));
+                    if e.1 != d.path.as_path() {
+                        *e = (e.0 + 1, d.path.as_path());
+                    }
                 }
             }
         }
     }
+    let df: HashMap<&str, usize, std::hash::BuildHasherDefault<Fx>> =
+        seen.into_iter().map(|(t, (c, _))| (t, c)).collect();
     words
         .iter()
         .map(|w| {
@@ -677,19 +685,14 @@ fn rank(docs: &[Doc], q: &Query, aliases: &HashMap<String, Vec<String>>, limit: 
     if q.words.is_empty() && q.tags.is_empty() {
         return Vec::new();
     }
-    // A page's sections are adjacent (`load` sorts by path, stably), so counting a path once
-    // per run makes the page the unit of document frequency: a page split in twenty does not
-    // make its own title words look common.
+    // Document frequency counts pages: a page split in twenty does not make its own title
+    // words look common.
     let pages = |has: &dyn Fn(&Doc) -> bool| {
-        let mut last: Option<&Path> = None;
-        let mut c = 0usize;
-        for d in docs.iter().filter(|d| has(d)) {
-            if last != Some(d.path.as_path()) {
-                c += 1;
-                last = Some(d.path.as_path());
-            }
-        }
-        c
+        docs.iter()
+            .filter(|d| has(d))
+            .map(|d| d.path.as_path())
+            .collect::<HashSet<_>>()
+            .len()
     };
     let n = pages(&|_| true).max(1) as f64;
     let terms = expand(&q.words, &q.joins, docs, aliases);
@@ -704,7 +707,9 @@ fn rank(docs: &[Doc], q: &Query, aliases: &HashMap<String, Vec<String>>, limit: 
         .map(|d| d.path.as_path())
         .collect();
 
-    let mut hits = Vec::new();
+    // Score each Doc; coverage and the phrase bonus are then taken per page, so a query whose
+    // words sit in different sections of one page still covers that page.
+    let mut scored: Vec<(&Doc, f64, Vec<bool>)> = Vec::new();
     for d in docs {
         if !q
             .tags
@@ -718,8 +723,8 @@ fn rank(docs: &[Doc], q: &Query, aliases: &HashMap<String, Vec<String>>, limit: 
         }
         let norm = K1 * (1.0 - B + B * d.len / avg.max(1.0));
         let mut score = 0.0;
-        let mut matched = 0usize;
-        for group in &terms {
+        let mut got = vec![false; terms.len()];
+        for (gi, group) in terms.iter().enumerate() {
             let mut best = 0.0f64;
             for (t, w) in group {
                 let Some(&tf) = d.tf.get(t) else { continue };
@@ -728,25 +733,41 @@ fn rank(docs: &[Doc], q: &Query, aliases: &HashMap<String, Vec<String>>, limit: 
                 best = best.max(w * idf * tf * (K1 + 1.0) / (tf + norm));
             }
             if best > 0.0 {
-                matched += 1;
+                got[gi] = true;
                 score += best;
             }
         }
-        let coverage = if terms.is_empty() {
-            1.0
-        } else {
-            matched as f64 / terms.len() as f64
-        };
         if terms.is_empty() {
             score = 1.0; // a tags-only query lists every tagged note
-        } else if matched == 0 {
+        } else if !got.contains(&true) {
             continue;
         }
-        score *= coverage * coverage;
-        if !q.phrases.is_empty() && {
+        scored.push((d, score, got));
+    }
+    let mut page_got: HashMap<&Path, Vec<bool>> = HashMap::new();
+    let mut phrased: HashSet<&Path> = HashSet::new();
+    for (d, _, got) in &scored {
+        let all = page_got
+            .entry(d.path.as_path())
+            .or_insert_with(|| vec![false; terms.len()]);
+        all.iter_mut().zip(got).for_each(|(a, g)| *a |= g);
+        if !q.phrases.is_empty() && !phrased.contains(d.path.as_path()) && {
             let lower = d.content.to_lowercase();
             q.phrases.iter().any(|p| lower.contains(p.as_str()))
         } {
+            phrased.insert(d.path.as_path());
+        }
+    }
+    let mut hits = Vec::new();
+    for (d, mut score, _) in scored {
+        let coverage = if terms.is_empty() {
+            1.0
+        } else {
+            let all = &page_got[d.path.as_path()];
+            all.iter().filter(|g| **g).count() as f64 / terms.len() as f64
+        };
+        score *= coverage * coverage;
+        if phrased.contains(d.path.as_path()) {
             score *= PHRASE_BOOST;
         }
         if d.knowledge {
@@ -1133,6 +1154,25 @@ mod tests {
             50,
         );
         assert!(!hits.iter().any(|h| h.path.ends_with(rel)));
+        // Words in different sections still cover the page.
+        let hits = rank(&docs, &parse_query("sd card zebra"), &HashMap::new(), 50);
+        let h = hits.iter().find(|h| h.path.ends_with(rel)).unwrap();
+        assert_eq!(h.coverage, 1.0, "coverage is the page's");
+        // A phrase found in another part of the page (here the title in the intro) boosts
+        // the section that scores best.
+        let score = |q: &str| {
+            rank(&docs, &parse_query(q), &HashMap::new(), 50)
+                .into_iter()
+                .find(|h| h.path.ends_with(rel))
+                .unwrap()
+                .score
+        };
+        let plain = score("device handbook sd card layout");
+        let quoted = score("\"device handbook\" sd card layout");
+        assert!(
+            (quoted / plain - PHRASE_BOOST).abs() < 0.01,
+            "{quoted} vs {plain}"
+        );
         // Negative control: the same page under the length threshold, or outside knowledge/,
         // is one Doc.
         let short = "# Short\n## A\nOne.\n## B\nTwo.\n";
