@@ -2196,19 +2196,37 @@ fix_item() {
   assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red cause:$(cause_of) "
 }
 
-@test "triage: a cause in hand is not queued again: running, or closed with its PR waiting on a merge" {
+@test "triage: a cause in hand is not queued again: running, or in review with its PR waiting on a merge" {
   log_triage_setup
   lock_route
   fix_item ar-1 running ''
   run "$SUBJECT" triage
   assert_success
   [ ! -s "$PLOG" ]
-  : > "$ITEMS"; fix_item ar-1 done ok o/r#5 ''
+  : > "$ITEMS"; fix_item ar-1 review '' o/r#5 ''
   run "$SUBJECT" triage
   assert_success
   [ ! -s "$PLOG" ]
   run grep -c 'fix(logs): alpha error' "$BOARD"   # the row still files
   assert_output 1
+}
+
+# 2026-11-24 (ar-5294): ar-3447 closed recording #3091, whose merge ar-2940's landing recorded, so it
+# had no merged:, and triage read it as an owner waiting on a merge: playground-train-stuck tripped
+# again and went 17h with no item while 44 PRs waited in landing-queue.
+@test "triage: a closed fix that records a PR with no merge is a try that did not hold, not an owner" {
+  log_triage_setup
+  lock_route
+  for row in "done ok o/r#5" "done failed o/r#5"; do
+    : > "$ITEMS"; : > "$PLOG"
+    # shellcheck disable=SC2086
+    fix_item ar-1 $row
+    run "$SUBJECT" triage
+    assert_success
+    assert_output --partial '1 queued as red fixes'
+    run cat "$PLOG"
+    assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red cause:$(cause_of) retry:ar-1 --raw "
+  done
 }
 
 @test "triage: a fix that closed cancelled, failed or merged with the red still here is queued once more, naming it" {
