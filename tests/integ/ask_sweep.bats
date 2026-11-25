@@ -340,6 +340,9 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_called "agent-queue add --plan $ASK_SWEEP_PLANS/good.md"
   run grep -c '^fix(plan): bad: agent-queue refuses its Phases checklist (phase 2: (after 1b) does not parse); fix it' "$NOTES_FIXTURE/rows.board"
   assert_output 1
+  # Filed untagged, so triage's priority pass judges it by the rubric (ar-5277): it ends at its size.
+  run grep -c '^fix(plan): bad: .*agent-queue add --plan .* #size/s$' "$NOTES_FIXTURE/rows.board"
+  assert_output 1
   assert_equal "$(cat "$AGENTCTL_STATE_DIR/ask-sweep/last-outcome")" WORKED
   # The open fix row names the slug, so the next run files nothing for it.
   : > "$NOTES_FIXTURE/calls.log"
