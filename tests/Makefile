@@ -86,8 +86,10 @@ test-fast: test-unit test-integ
 # its slot is granted (unit-jobs.awk, UNIT_LOADAVG: ar-3403): sized here, at parse time, it was
 # read before the wait for the slot, and suites released together all forked that many workers.
 # On CI (CI set, as GitHub Actions does) the runner is the job's own machine and its load is its
-# own setup, which gave a 4-core runner 2 jobs: it gets nproc, and run-bats.sh takes no slot.
-UNIT_JOBS ?= $(if $(CI),$(shell nproc 2>/dev/null || echo 2),auto)
+# own setup, which gave a 4-core runner 2 jobs: it gets its cpus (cpus.sh: nproc, held down to the
+# cgroup quota or the pod's CPU request, which nproc ignores: 32 jobs in a 370m pod, ar-5586), and
+# run-bats.sh takes no slot.
+UNIT_JOBS ?= $(if $(CI),$(shell $(HERE)cpus.sh),auto)
 FAST_PAR  := $(if $(shell command -v parallel 2>/dev/null),--jobs $(UNIT_JOBS))
 
 test-unit: $(BATS)
