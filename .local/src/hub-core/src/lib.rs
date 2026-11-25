@@ -36,6 +36,7 @@ pub mod host_history;
 pub mod host_now;
 pub mod infra;
 pub mod item_history;
+pub mod jobpods;
 pub mod jobs;
 pub mod junit;
 pub mod kube_proxy;

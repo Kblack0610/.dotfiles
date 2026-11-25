@@ -409,8 +409,8 @@ test("a pool has one colour in the 7-day chart, set by its history", () => {
 });
 
 // hub_core::ci::Glance as /api/infra sends it under ci.glance.
-const glance = { busy: 5, slots: 9, queued: 23, oldest: 1260, done: 759, pass: 0.91, off: ["aws-spot-1", "aws-spot-2"],
-  units_busy: 6.4, units: 16, backlog: 9.2, drain: 720, alert: "ok", up: 12, expected: 12 };
+const glance = { busy: 5, queued: 23, oldest: 1260, done: 759, pass: 0.91, off: ["aws-spot-1", "aws-spot-2"],
+  booked: { cpu: 4.38, cpu_alloc: 64, mem: 2.7e9, mem_alloc: 1.6e11 }, pending: [{ kind: "arc-org-light", n: 3, cpu: 1.69, mem: 1.3e9 }], alert: "ok", up: 12, expected: 12 };
 
 test("CI RUNNING and the Runners head read hub_core's glance: jobs running, runners up, red only on a runner down", () => {
   // A slot takes unity, light and heavy: the per-cap pools sum to 3/3 for one runner.
@@ -426,12 +426,15 @@ test("CI RUNNING and the Runners head read hub_core's glance: jobs running, runn
   assert.match(run(`kpis({})`), /CI RUNNING[\s\S]*?\?/, "no glance is unknown, never 0");
   Object.assign(ist, { open: {} });
   const s = section({ rows: [], queue: [], red: [], local: [], glance });
-  assert.match(s, /<div class="cline">5 running, 23 queued \(oldest 21m\), 9.2 queued ~12m, 12\/12 runners up, 759 done 24h, 91% passed; cloud: 2 hosts off<\/div>/);
+  assert.match(s, /<div class="cline">5 running, 23 queued \(oldest 21m\), booked 4\.4\/64 cpu, 12\/12 runners up, 759 done 24h, 91% passed; cloud: 2 hosts off<\/div>/);
   // No runner read is -/-, never 0/0.
-  const bare = section({ rows: [], queue: [], red: [], local: [], glance: { ...glance, backlog: null, drain: null, up: 0, expected: 0 } });
-  assert.match(bare, /5 running, 23 queued \(oldest 21m\), - queued -, -\/- runners up, 759 done/);
+  const bare = section({ rows: [], queue: [], red: [], local: [], glance: { ...glance, booked: null, up: 0, expected: 0 } });
+  assert.match(bare, /5 running, 23 queued \(oldest 21m\), -\/- runners up, 759 done/);
   // A stale glance with held fields still says running and queued only.
   assert.doesNotMatch(section({ rows: [], queue: [], red: [], local: [], glance: { ...glance, units_held: 2, held: 7 } }), /held|lent/);
+  // Pods no CI node has room for: one line under the machines, their kind and size.
+  assert.equal(run(`pendingLine(${JSON.stringify(glance)})`), '<div class="cline warn">waiting for room: arc-org-light x3 (1.69 cpu 1.2G each)</div>');
+  assert.equal(run(`pendingLine(${JSON.stringify({ ...glance, pending: [] })})`), "");
 });
 
 // hub_core::workload::Space as /api/infra sends it under space.
@@ -464,7 +467,7 @@ test("Space says no data before the first read and when no class series exists, 
   assert.doesNotMatch(bare, /24h/, "no jobs done, no badge");
 });
 
-test("a machine's TAKEN cell hover leads with its split by class, then each runner", () => {
+test("a machine's BOOKED cell hover leads with its split by class, then each runner", () => {
   const m = { split: ["ci 6.0 of 24 cores", "apps 1.0 cores"], runner_cores: [["ws-unity-1", 2.5]], runner_mem: [] };
   const t = run(`cpuTitle(${JSON.stringify(m)})`);
   assert.equal(t.split("\n")[0], "ci 6.0 of 24 cores");
@@ -478,15 +481,22 @@ test("a class row on the slots table shows its memory in gigabytes", () => {
   assert.doesNotMatch(run(`SLOTUSE_CELLS.mem(${JSON.stringify({ runner: false, mem: null })})`), /G</);
 });
 
-test("a machine's TAKEN, RUNNING and NEXT read as hub_core's Machine cells, no governor row as a dash", () => {
-  const m = { split: [], runner_cores: [], runner_mem: [], off: 0, units: 4, units_busy: 2.5, running: ["[unity] unity-core-playground x2", "[unity] platform"], next: { job: "Checks", repo: "web", n: 1, wait: 300 } };
-  const taken = run(`MACH_CELLS.taken(${JSON.stringify(m)})`);
-  assert.match(taken, /class="meter"/);
-  assert.match(taken, /2\.5\/4/);
-  assert.match(run(`MACH_CELLS.running(${JSON.stringify(m)})`), /\[unity\] unity-core-playground x2, \[unity\] platform/);
+test("a machine's BOOKED, RUNNING and NEXT read as hub_core's Machine cells, no CI node as a dash", () => {
+  const booked = { cpu: 4.38, cpu_alloc: 32, mem: 2.7e9, mem_alloc: 98768805888 };
+  const m = { split: [], runner_cores: [], runner_mem: [], off: 0, booked, running: ["[arc-org-light] x2", "[unity] platform"], next: { job: "Checks", repo: "web", n: 1, wait: 300 } };
+  const cell = run(`MACH_CELLS.booked(${JSON.stringify(m)})`);
+  assert.match(cell, /class="meter"/);
+  assert.match(cell, /4\.4\/32 2\.5G\/92G/);
+  assert.doesNotMatch(cell, /warn/);
+  assert.match(run(`MACH_CELLS.booked(${JSON.stringify({ ...m, booked: { ...booked, mem: booked.mem_alloc } })})`), /class="n warn"/, "a node with a resource fully booked is amber");
+  const lost = run(`MACH_CELLS.booked(${JSON.stringify({ ...m, booked: { cpu: 1.69, cpu_alloc: 0, mem: 1.3e9, mem_alloc: 0 } })})`).replace(/<[^>]*>/g, "");
+  assert.match(lost, /1\.7 1\.2G/, "a node with no allocatable read books bare, as Booked::cell");
+  assert.doesNotMatch(lost, /\/0/);
+  assert.equal(run("cores1(0.15)"), "0.2", "halves round up, as Rust and jq round them");
+  assert.match(run(`MACH_CELLS.running(${JSON.stringify(m)})`), /\[arc-org-light\] x2, \[unity\] platform/);
   assert.match(run(`MACH_CELLS.next(${JSON.stringify(m)})`), />Checks \(web\) 5m</);
-  const bare = { ...m, units: null, units_busy: null, running: [], next: null };
-  assert.equal(run(`MACH_CELLS.taken(${JSON.stringify(bare)})`).replace(/<[^>]*>/g, ""), "-");
+  const bare = { ...m, booked: null, running: [], next: null };
+  assert.equal(run(`MACH_CELLS.booked(${JSON.stringify(bare)})`).replace(/<[^>]*>/g, ""), "-");
   assert.match(run(`MACH_CELLS.running(${JSON.stringify(bare)})`), />-</);
   assert.match(run(`MACH_CELLS.next(${JSON.stringify(bare)})`), />-</);
   assert.equal(run(`"busy" in MACH_COLS || "doing" in MACH_COLS`), false);
