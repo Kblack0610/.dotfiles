@@ -1,0 +1,312 @@
+#!/usr/bin/env python3
+"""row-value - judge what each open board row improves, check the verdicts, compare two judges.
+
+  row-value export [--project P] [--chunk N] [--board FILE] [--scorecard FILE] DIR
+      the project's open agent rows (open and doing) into DIR: rows.tsv (id, state, priority,
+      epic, why, since, text), chunk-NN.txt (about N rows each, sorted by epic then id so rows
+      of one cause sit together) and context.md (the KPIs the scorecard marks past, and the reds
+      `fleet-bench reds` shows still live; --reds-cmd swaps that command, "" skips it). Each --repo
+      adds evidence a text read cannot see: a row whose id a commit subject on that repo's
+      origin/main names (last --since days) gets a `merged:` line under it. A judge
+      reads one chunk, context.md and the rubric, and writes DIR/judge-NN.tsv.
+  row-value merge [--rubric FILE] DIR
+      checks every DIR/judge-*.tsv against the rubric's lists and DIR/rows.tsv: each exported
+      id exactly once, no unknown id, each field in its list, `into` naming an exported row
+      when the verdict is merge. Writes DIR/verdicts.tsv (with a header) and prints the counts
+      by verdict, kind and target. Exit 1 on any finding, and nothing is written.
+  row-value compare [--id COL] [--verdict COL] [--mine-verdict COL] [--map FROM=TO,...] MINE THEIRS
+      agreement between two verdict files on the ids both judged: the share that agree, Cohen's
+      kappa, the confusion table, and each disagreement as `id<TAB>mine<TAB>theirs`. THEIRS may
+      use other column names (--id, --verdict, header row read) and other verdict words (--map);
+      --mine-verdict compares another column of MINE (kind, target) for a confusion table.
+
+The rubric, its lists and its rules are data: ~/.config/row-value/rubric.md. Every board read goes
+through `notes board --json`; nothing here writes a board row.
+"""
+import argparse
+import collections
+import csv
+import json
+import os
+import re
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+RUBRIC = os.path.join(HERE, "..", "..", ".config", "row-value", "rubric.md")
+SCORECARD = os.path.expanduser("~/.notes/lab/projects/current/agent-runtime/docs/bench/latest.md")
+FIELDS = ["id", "target", "ref", "kind", "verdict", "into", "why"]
+
+
+def die(msg, code=2):
+    print(f"row-value: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def clean(s):
+    return re.sub(r"\s+", " ", s or "").strip()
+
+
+def load_board(path):
+    if path:
+        with open(path) as f:
+            return json.load(f)
+    out = subprocess.run(["notes", "board", "--json"], capture_output=True, text=True)
+    if out.returncode != 0:
+        die(f"notes board --json failed: {out.stderr.strip()}", 1)
+    return json.loads(out.stdout)
+
+
+def past_kpis(path):
+    """Rows of the scorecard's tables whose status column reads past, as `name value threshold`."""
+    if not os.path.exists(path):
+        return []
+    seen, out = set(), []
+    with open(path) as f:
+        for line in f:
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if len(cells) < 4 or cells[-1] != "past":
+                continue
+            # Vitals rows lead with a question column; KPI rows lead with the name.
+            name = cells[1] if len(cells) == 6 else cells[0]
+            if name in seen:
+                continue
+            seen.add(name)
+            out.append(f"{name} {cells[-4]} ({cells[-2]})")
+    return out
+
+
+LIVE_RED = ("still red", "fixing", "came back", "needs merge", "no fix")
+
+
+def live_reds(cmd):
+    """`item red` for each red the reds table shows as not fixed, once each."""
+    if not cmd:
+        return []
+    try:
+        out = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120).stdout
+    except subprocess.TimeoutExpired:
+        return []
+    seen, reds = set(), []
+    for line in out.splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) >= 3 and cells[2] in LIVE_RED and (cells[0], cells[1]) not in seen:
+            seen.add((cells[0], cells[1]))
+            reds.append(f"{cells[0]} {cells[1]} ({cells[2]})")
+    return reds
+
+
+def merged_names(repos, since):
+    """id -> ['<repo> <sha> <subject>'] for each origin/main commit subject that names the id."""
+    named = collections.defaultdict(list)
+    for repo in repos:
+        out = subprocess.run(["git", "-C", repo, "log", "origin/main", f"--since={since} days ago",
+                              "--format=%h %s"], capture_output=True, text=True)
+        if out.returncode != 0:
+            die(f"git log in {repo} failed: {out.stderr.strip()}", 1)
+        label = os.path.basename(os.path.normpath(repo))
+        for line in out.stdout.splitlines():
+            for i in set(re.findall(r"\b([a-z]{2,4}-\d+)\b", line)):
+                named[i].append(f"{label} {line[:160]}")
+    return named
+
+
+def cmd_export(a):
+    board = load_board(a.board)
+    rows = [r for r in board.get("rows", [])
+            if r.get("project") == a.project and r.get("lane") == "agent"
+            and r.get("state") in ("open", "doing")]
+    if not rows:
+        die(f"no open agent rows on {a.project}", 1)
+
+    def num(i):
+        m = re.search(r"(\d+)$", i or "")
+        return int(m.group(1)) if m else 0
+
+    rows.sort(key=lambda r: (r.get("parent") or "~", num(r["id"])))
+    named = merged_names(a.repo, a.since)
+    os.makedirs(a.dir, exist_ok=True)
+    for old in os.listdir(a.dir):
+        if re.fullmatch(r"chunk-\d+\.txt", old):
+            os.remove(os.path.join(a.dir, old))
+    with open(os.path.join(a.dir, "rows.tsv"), "w", newline="") as f:
+        w = csv.writer(f, delimiter="\t", lineterminator="\n")
+        w.writerow(["id", "state", "priority", "epic", "why", "since", "text"])
+        for r in rows:
+            w.writerow([r["id"], r["state"], r.get("priority") or "-", r.get("parent") or "-",
+                        r.get("prio_why") or "-", r.get("since") or "-", clean(r.get("text"))])
+    n = max(1, a.chunk)
+    chunks = [rows[i:i + n] for i in range(0, len(rows), n)]
+    for k, chunk in enumerate(chunks, 1):
+        with open(os.path.join(a.dir, f"chunk-{k:02d}.txt"), "w") as f:
+            for r in chunk:
+                tags = " ".join(f"#{t}" for t in r.get("tags") or [])
+                f.write(f"{r['id']} [{r['state']}] {r.get('priority') or '-'} epic:{r.get('parent') or '-'}"
+                        f" why:{r.get('prio_why') or '-'} since:{r.get('since') or '-'}\n")
+                f.write(f"  {clean(r.get('text'))}{' ' + tags if tags else ''}\n")
+                for d in r.get("details") or []:
+                    f.write(f"  | {clean(d)[:600]}\n")
+                for m in named.get(r["id"], [])[:3]:
+                    f.write(f"  merged: {m}\n")
+                f.write("\n")
+    with open(os.path.join(a.dir, "context.md"), "w") as f:
+        f.write(f"# Context for judging {a.project}, {board.get('today', '')}\n\n")
+        f.write(f"KPIs past their threshold ({a.scorecard}):\n\n")
+        for k in past_kpis(a.scorecard) or ["(scorecard not found: no KPI counts as past)"]:
+            f.write(f"- {k}\n")
+        f.write("\nReds still live (item, red, state):\n\n")
+        for r in live_reds(a.reds_cmd) or ["(none read)"]:
+            f.write(f"- {r}\n")
+    print(f"{len(rows)} rows in {len(chunks)} chunks -> {a.dir}")
+
+
+def rubric_lists(path):
+    lists = {}
+    with open(path) as f:
+        for line in f:
+            m = re.fullmatch(r"(target|kind|verdict): ([a-z -]+)", line.strip())
+            if m:
+                lists[m.group(1)] = set(m.group(2).split())
+    missing = {"target", "kind", "verdict"} - set(lists)
+    if missing:
+        die(f"{path}: no list line for {', '.join(sorted(missing))}", 1)
+    return lists
+
+
+def cmd_merge(a):
+    lists = rubric_lists(a.rubric)
+    rows_path = os.path.join(a.dir, "rows.tsv")
+    if not os.path.exists(rows_path):
+        die(f"{rows_path} missing: run row-value export first", 1)
+    with open(rows_path, newline="") as f:
+        exported = [r["id"] for r in csv.DictReader(f, delimiter="\t")]
+    known = set(exported)
+    judged, findings = {}, []
+    files = sorted(p for p in os.listdir(a.dir) if re.fullmatch(r"judge-.*\.tsv", p))
+    if not files:
+        die(f"no judge-*.tsv in {a.dir}", 1)
+    for name in files:
+        with open(os.path.join(a.dir, name)) as f:
+            for n, line in enumerate(f, 1):
+                line = line.rstrip("\n")
+                if not line.strip():
+                    continue
+                cells = line.split("\t")
+                where = f"{name}:{n}"
+                if len(cells) != len(FIELDS):
+                    findings.append(f"{where}: {len(cells)} fields, want {len(FIELDS)}")
+                    continue
+                v = dict(zip(FIELDS, (c.strip() for c in cells)))
+                if v["id"] not in known:
+                    findings.append(f"{where}: {v['id']} is not an exported row")
+                    continue
+                if v["id"] in judged:
+                    findings.append(f"{where}: {v['id']} judged twice (first in {judged[v['id']]['_at']})")
+                    continue
+                for field in ("target", "kind", "verdict"):
+                    if v[field] not in lists[field]:
+                        findings.append(f"{where}: {field} {v[field]!r} is not in the rubric's list")
+                if v["verdict"] == "merge" and (v["into"] not in known or v["into"] == v["id"]):
+                    findings.append(f"{where}: merge into {v['into']!r}, not another exported row")
+                v["_at"] = where
+                judged[v["id"]] = v
+    unjudged = [i for i in exported if i not in judged]
+    if unjudged:
+        findings.append(f"{len(unjudged)} rows not judged: {' '.join(unjudged[:20])}")
+    if findings:
+        print("\n".join(findings), file=sys.stderr)
+        sys.exit(1)
+    with open(os.path.join(a.dir, "verdicts.tsv"), "w", newline="") as f:
+        w = csv.writer(f, delimiter="\t", lineterminator="\n")
+        w.writerow(FIELDS)
+        for i in exported:
+            w.writerow([judged[i][k] for k in FIELDS])
+    print(f"{len(exported)} rows judged -> {os.path.join(a.dir, 'verdicts.tsv')}")
+    for field in ("verdict", "kind", "target"):
+        c = collections.Counter(v[field] for v in judged.values())
+        print(f"{field}: " + ", ".join(f"{k} {n}" for k, n in c.most_common()))
+
+
+def read_verdicts(path, id_col, verdict_col, mapping):
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        cols = reader.fieldnames or []
+        for c in (id_col, verdict_col):
+            if c not in cols:
+                die(f"{path}: no column {c!r} (columns: {', '.join(cols)})", 1)
+        out = {}
+        for r in reader:
+            i, v = (r.get(id_col) or "").strip(), (r.get(verdict_col) or "").strip().lower()
+            if i:
+                out[i] = mapping.get(v, v)
+        return out
+
+
+def kappa(pairs):
+    n = len(pairs)
+    if not n:
+        return 0.0
+    po = sum(1 for m, t in pairs if m == t) / n
+    cm = collections.Counter(m for m, _ in pairs)
+    ct = collections.Counter(t for _, t in pairs)
+    pe = sum(cm[k] * ct[k] for k in set(cm) | set(ct)) / (n * n)
+    return 1.0 if pe == 1 else (po - pe) / (1 - pe)
+
+
+def cmd_compare(a):
+    mapping = {}
+    for pair in filter(None, (a.map or "").split(",")):
+        if "=" not in pair:
+            die(f"--map {pair!r}: want FROM=TO")
+        k, v = pair.split("=", 1)
+        mapping[k.strip().lower()] = v.strip().lower()
+    mine = read_verdicts(a.mine, "id", a.mine_verdict, {})
+    theirs = read_verdicts(a.theirs, a.id, a.verdict, mapping)
+    both = sorted(set(mine) & set(theirs))
+    pairs = [(mine[i], theirs[i]) for i in both]
+    agree = sum(1 for m, t in pairs if m == t)
+    print(f"mine {len(mine)}, theirs {len(theirs)}, both {len(both)}, "
+          f"only mine {len(set(mine) - set(theirs))}, only theirs {len(set(theirs) - set(mine))}")
+    if not both:
+        return
+    print(f"agree {agree}/{len(both)} ({100 * agree / len(both):.1f}%), kappa {kappa(pairs):.2f}")
+    rows, cols = sorted({m for m, _ in pairs}), sorted({t for _, t in pairs})
+    conf = collections.Counter(pairs)
+    print("\nmine \\ theirs\t" + "\t".join(cols))
+    for m in rows:
+        print(m + "\t" + "\t".join(str(conf[(m, t)]) for t in cols))
+    print("\nid\tmine\ttheirs")
+    for i in both:
+        if mine[i] != theirs[i]:
+            print(f"{i}\t{mine[i]}\t{theirs[i]}")
+
+
+def main():
+    p = argparse.ArgumentParser(prog="row-value", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+    e = sub.add_parser("export")
+    e.add_argument("--project", default="agent-runtime")
+    e.add_argument("--chunk", type=int, default=270)
+    e.add_argument("--board", help="a saved `notes board --json`, instead of calling notes")
+    e.add_argument("--scorecard", default=SCORECARD)
+    e.add_argument("--reds-cmd", default="fleet-bench reds")
+    e.add_argument("--repo", action="append", default=[], help="a git checkout whose origin/main commit subjects name rows")
+    e.add_argument("--since", type=int, default=30, help="days of commits --repo reads")
+    e.add_argument("dir")
+    m = sub.add_parser("merge")
+    m.add_argument("--rubric", default=RUBRIC)
+    m.add_argument("dir")
+    c = sub.add_parser("compare")
+    c.add_argument("--id", default="id")
+    c.add_argument("--verdict", default="verdict")
+    c.add_argument("--mine-verdict", default="verdict")
+    c.add_argument("--map")
+    c.add_argument("mine")
+    c.add_argument("theirs")
+    a = p.parse_args()
+    {"export": cmd_export, "merge": cmd_merge, "compare": cmd_compare}[a.cmd](a)
+
+
+if __name__ == "__main__":
+    main()
