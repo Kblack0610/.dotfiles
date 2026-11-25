@@ -2275,9 +2275,7 @@ cmd_add() {
          [ -n "$story" ] || { story="$(file_story "$project" "${title:-$(head -1 <<<"$text")}" "$priority" "$epic" "$want" "$text" "" "" "$tags")"; priority_given=''; }
        fi ;;
   esac
-  # The board refused the item's own row (the daily cap on a plan's phase): no row means no item, never one the cap did not count.
-  [ "$story" != gated ] || die "$slug is not queued: its board row was refused (the reason is above)"
-  [ -z "$story" ] || IFS=$'\t' read -r sboard sprof srow <<<"$story"
+  case "$story" in gated) die "$slug is not queued: its board row was refused by the daily cap or the gate (the reason is above)" ;; ?*) IFS=$'\t' read -r sboard sprof srow <<<"$story" ;; esac
   mkdir -p "$AQ_DIR/$state"
   local f tmp
   f="$AQ_DIR/$state/$(date +%Y%m%d-%H%M%S)-$slug.md"

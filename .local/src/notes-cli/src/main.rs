@@ -1092,6 +1092,20 @@ fn ingest_record(prof: &config::Profile, r: RecordArgs) -> i32 {
     0
 }
 
+/// `notes ingest <sub>`: the record, import, page and cap commands.
+fn ingest_sub(
+    prof: &config::Profile,
+    log: &logging::Logger,
+    sub: IngestCmd,
+) -> anyhow::Result<i32> {
+    Ok(match sub {
+        IngestCmd::Record(r) => ingest_record(prof, *r),
+        IngestCmd::Import => ingest_import(prof)?,
+        IngestCmd::Page => daily::publish_inbox_page(prof, log)?,
+        IngestCmd::Cap { days, json } => ingest_cap(prof, days, json)?,
+    })
+}
+
 /// `notes ingest cap`: the cap's admitted and refused rows a day ([`gate::cap_days`]).
 fn ingest_cap(prof: &config::Profile, days: i64, json: bool) -> anyhow::Result<i32> {
     if days < 1 {
@@ -2013,12 +2027,7 @@ fn main() -> Result<()> {
             ingest::log(&prof, day.as_deref(), days, &filter, json)?
         }
         Cmd::Improve(a) => improve::run(&prof, &log, a)?,
-        Cmd::Ingest { sub } => match sub {
-            IngestCmd::Record(r) => ingest_record(&prof, *r),
-            IngestCmd::Import => ingest_import(&prof)?,
-            IngestCmd::Page => daily::publish_inbox_page(&prof, &log)?,
-            IngestCmd::Cap { days, json } => ingest_cap(&prof, days, json)?,
-        },
+        Cmd::Ingest { sub } => ingest_sub(&prof, &log, sub)?,
         Cmd::Inbox { sub } => {
             match sub {
                 None | Some(InboxCmd::List) => inbox::list(&prof, &log)?,
