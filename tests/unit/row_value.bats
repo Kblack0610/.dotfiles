@@ -75,7 +75,7 @@ judge_ok() {
   printf '%s' '{"project":"agent-runtime","sources":[{"source":"from: dream","open_ids":["ar-3","ar-10"]},{"source":"pre-log","open_ids":[]}]}' > "$HOME/inflow.json"
   run "$RV" export --board "$HOME/board.json" --scorecard "$HOME/latest.md" --reds-cmd "" --inflow "$HOME/inflow.json" --chunk 2 "$D"
   assert_success
-  assert_output --partial "1 rows are not in $HOME/inflow.json"
+  assert_output --partial "1 rows are not in $HOME/inflow.json (not open on the board it was computed from)"
   run awk -F'\t' '{ print $1, $12 }' "$D/rows.tsv"
   assert_output "$(printf 'id source\nar-3 from: dream\nar-20 -\nar-10 from: dream')"
   printf '%s' '{"project":"game","sources":[]}' > "$HOME/inflow.json"

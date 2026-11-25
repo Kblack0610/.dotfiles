@@ -254,7 +254,7 @@ def cmd_export(a):
     if a.inflow:
         unsourced = sum(1 for r in rows if r["id"] not in source)
         if unsourced:
-            print(f"{unsourced} rows are not in {a.inflow} (filed or reopened after it was saved): source -")
+            print(f"{unsourced} rows are not in {a.inflow} (not open on the board it was computed from): source -")
 
 
 def rubric_lists(path):
