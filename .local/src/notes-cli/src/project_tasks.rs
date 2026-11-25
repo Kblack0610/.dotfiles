@@ -514,14 +514,22 @@ pub(crate) fn add_via(
         refuse_unknown_system(text, &canon, systems)?;
     }
     let mut checked = Vec::new();
-    if writer.self_checks() {
-        // The gate first: a row it refuses needs no shortlist review.
-        if lane == Lane::Agent {
-            if let Some(why) = crate::gate::refusal(&canon, &block[0], want.is_some())? {
-                eprintln!("{why}");
-                return Ok(crate::gate::EXIT_GATED);
-            }
+    // The gate first: a row it refuses needs no shortlist review.
+    if writer.self_checks() && lane == Lane::Agent {
+        if let Some(why) = crate::gate::refusal(&canon, &block[0], want.is_some())? {
+            eprintln!("{why}");
+            return Ok(crate::gate::EXIT_GATED);
         }
+    }
+    // The daily cap holds every writer that files a new row on a gated board, a plan's phases and
+    // the machine filers too; a twin was refused above, so only a row that would be new counts.
+    if writer.capped() && lane == Lane::Agent {
+        if let Some(why) = crate::gate::cap_refusal(p, &canon, &block[0], want.is_some(), 0)? {
+            eprintln!("{why}");
+            return Ok(crate::gate::EXIT_GATED);
+        }
+    }
+    if writer.self_checks() {
         match self_check(p, name, text, &block[0], &writer.checked)? {
             Ok(shown) => checked = shown,
             Err(rc) => return Ok(rc),
@@ -1105,6 +1113,13 @@ impl Writer {
         self.hand && !self.direct()
     }
 
+    /// Whether the daily intake cap counts this writer's agent-lane row: a hand session, a plan's
+    /// phases and a machine filer. Not a person at a terminal (the human's own words), and not
+    /// agent-queue's story row, which mirrors an item already started (`ingest::ORIGIN_STORY`).
+    fn capped(&self) -> bool {
+        !self.person && self.name.as_deref() != Some(crate::ingest::ORIGIN_STORY)
+    }
+
     /// A hand session or inbox-triage: the writers whose new epic must name a listed system. A
     /// script that files an epic (credit-backfill, project-stage-check) carries a reviewed one.
     fn checks_epic_system(&self) -> bool {
@@ -1198,6 +1213,7 @@ fn session_line(text: &str) -> bool {
 /// Why the intake gate refuses the rows `block` a filing of `line` would write on `dest`, or None.
 /// Only a session's follow-up on an agent board is gated; the person's words never are.
 fn followup_refusal(
+    p: &Profile,
     dest: &Path,
     lane: Lane,
     line: &str,
@@ -1208,8 +1224,13 @@ fn followup_refusal(
         return Ok(None);
     }
     let canon = dest.file_name().unwrap_or_default().to_string_lossy();
-    for row in block.iter().filter(|l| md::is_open_task(l)) {
+    let rows = block.iter().filter(|l| md::is_open_task(l));
+    for (i, row) in rows.enumerate() {
         if let Some(why) = crate::gate::refusal(&canon, row, how.want.is_some())? {
+            return Ok(Some(why));
+        }
+        // The rows this filing already wrote count against the day too.
+        if let Some(why) = crate::gate::cap_refusal(p, &canon, row, how.want.is_some(), i)? {
             return Ok(Some(why));
         }
     }
@@ -1578,7 +1599,8 @@ fn file_via(
                 }
             }
             // On the rows a standing link leaves: the call above re-enters here with them.
-            if let Some(why) = followup_refusal(&dest_proj, dest_lane, &line.text, &block, how)? {
+            if let Some(why) = followup_refusal(p, &dest_proj, dest_lane, &line.text, &block, how)?
+            {
                 eprintln!("{why}");
                 return Ok(crate::gate::EXIT_GATED);
             }

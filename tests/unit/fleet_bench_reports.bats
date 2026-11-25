@@ -4426,6 +4426,37 @@ churn_fixture() {
   assert_output null
 }
 
+@test "kpi: churn_admitted_per_day and churn_refused_per_day are the board cap's day counts from notes ingest cap, for agent-runtime only, null when notes gives none" {
+  churn_fixture
+  { ev added a1 "$(day 3)" s1 '{"origin": "plan"}'; ev added a2 "$(day 1)" s1 '{"origin": "plan"}'; } > "$BENCH_INGEST"
+  cap() { printf '{"date":"%s","project":"%s","cap":10,"admitted":%s,"refused":%s}\n' "$(day "$1")" "$2" "$3" "$4"; }
+  {
+    cap 3 agent-runtime 2 2
+    cap 2 agent-runtime 6 0
+    cap 1 agent-runtime 10 4
+    cap 1 other-board 99 99
+  } > "$SANDBOX/cap"
+  printf '#!/usr/bin/env bash\ncat %q\n' "$SANDBOX/cap" > "$SANDBOX/bin/intake-stub"
+  chmod +x "$SANDBOX/bin/intake-stub"
+  # 7d is the three days from the record's first day (day 3) to day 1: (2+6+10)/3 admitted, (2+0+4)/3 refused
+  BENCH_INTAKE_CMD=intake-stub run "$SUBJECT" kpi --json
+  assert_success
+  run jq -c '[.churn_admitted_per_day["7d"], .churn_refused_per_day["7d"]]' <<<"$output"
+  assert_output '[6,2]'
+  # the table: a column each, today so far with none recorded
+  BENCH_INTAKE_CMD=intake-stub run "$SUBJECT" churn --days 3 --json
+  assert_success
+  run jq -sc 'map([.admitted, .refused])' <<<"$output"
+  assert_output '[[2,2],[6,0],[10,4],[0,0]]'
+  # NEGATIVE CONTROL: a notes that gives no counts leaves both null, never 0
+  BENCH_INTAKE_CMD=false run "$SUBJECT" kpi --json
+  run jq -c '[.churn_admitted_per_day["7d"], .churn_refused_per_day["7d"]]' <<<"$output"
+  assert_output '[null,null]'
+  BENCH_INTAKE_CMD=false run "$SUBJECT" churn --days 3 --json
+  run jq -sc 'map([.admitted, .refused] | unique)' <<<"$output"
+  assert_output '[[null],[null],[null],[null]]'
+}
+
 @test "churn: --check trips only when filed exceeded closed on each of the last complete days running" {
   churn_fixture
   : > "$SANDBOX/merges"

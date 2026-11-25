@@ -168,6 +168,9 @@ plan_row() {
       n=$((n + 1)); SPLIT=$((SPLIT + 1))
     elif [ "$rc" = 3 ]; then
       say "$p $id: split row already open: $r"
+    elif [ "$rc" = 6 ]; then
+      # The board's daily cap (intake_daily_cap): the plan's goal stays on the row, and the split row is no fault.
+      say "$p $id: split row held by the board's daily cap: $r"
     else
       say "$p $id: split row not added: $r"; FAILED=$((FAILED + 1))
     fi
