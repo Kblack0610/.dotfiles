@@ -17,10 +17,14 @@ setup() {
   done
 }
 
+# The default bar is noctalia (the first row of desk's parts), so a test of waybar's
+# path records it first.
+on_waybar() { mkdir -p "$(dirname "$STATE")" && echo "bar=waybar-classic" > "$STATE"; }
+
 @test "no state file: each slot runs its first part" {
   run "$DESK" current
   assert_success
-  assert_output $'bar=waybar-classic\nnotify=dunst'
+  assert_output $'bar=noctalia\nnotify=dunst'
 }
 
 @test "use records the part and restarts its unit" {
@@ -55,17 +59,18 @@ setup() {
 @test "a part this checkout no longer knows falls back to the default" {
   mkdir -p "$(dirname "$STATE")" && echo "bar=retired-bar" > "$STATE"
   run "$DESK" get bar
-  assert_output waybar-classic
+  assert_output noctalia
 }
 
 @test "start starts every slot's unit" {
   run "$DESK" start
   assert_success
-  run grep -c -x -e 'systemctl --user start waybar.service' -e 'systemctl --user start dunst.service' "$NOTES_FIXTURE/calls.log"
+  run grep -c -x -e 'systemctl --user start noctalia.service' -e 'systemctl --user start dunst.service' "$NOTES_FIXTURE/calls.log"
   assert_output 2
 }
 
 @test "signal reads each chip's number from config.base and the pin config" {
+  on_waybar
   run "$DESK" signal custom/gungan custom/passthrough custom/machines custom/ci
   assert_success
   run cat "$FX/calls.log"
@@ -103,6 +108,7 @@ setup() {
 }
 
 @test "signal still signals the known chips when one id has no number" {
+  on_waybar
   run "$DESK" signal custom/nonexistent custom/gungan
   assert_failure 2
   assert_output --partial "no signal for 'custom/nonexistent'"
@@ -120,6 +126,7 @@ setup() {
 }
 
 @test "switching the notifier restarts the bar, so its notify chip rebinds" {
+  on_waybar
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/swaync" && chmod +x "$SANDBOX/bin/swaync"
   run "$DESK" use notify swaync
   assert_success
@@ -502,6 +509,7 @@ noctalia msg plugin dotfiles/chips:chip all letters off"
 }
 
 @test "panel under waybar exits 2 and names the bar, without calling noctalia" {
+  on_waybar
   printf '#!/usr/bin/env bash\necho "noctalia $*" >> "$FX/calls.log"\n' > "$SANDBOX/bin/noctalia" && chmod +x "$SANDBOX/bin/noctalia"
   run "$DESK" panel custom/ci
   assert_failure 2
