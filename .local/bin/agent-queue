@@ -3028,31 +3028,14 @@ cmd_cancel() {
 # when it owns one, then status, cancelled_by:, cancel_why:, cancel_cause: and, for a return, end_reason:.
 # The caller holds the lock and has checked <why>.
 cancel_close() {
-  local f="$1" why="$2" by="$3" cause="$4" end="$5" slug session server window host dest
+  local f="$1" why="$2" by="$3" cause="$4" end="$5" slug session server window host dest was origin
   slug="$(fm_get "$f" slug)"
   # `session:` is <server>:<tmux session>; a value with no server names nothing to kill.
   session="$(fm_get "$f" session)"; server="${session%%:*}"; window="$(fm_get "$f" window)"
   case "$session" in *:*) session="${session#*:}" ;; *) session='' ;; esac
   # A session on a fleet worker is closed there: here the same name is some other session.
   host="$(fm_get "$f" host)"
-  # Close what the item owns: its window when it recorded one (a hand start), its session only
-  # when fleet-dispatch made it (`origin:`), else nothing. tmux-close spares world sessions.
-  if [ -n "$session" ] && [ "$(state_of "$f")" != queued ] && [ -z "${AQ_RETURN_KEEP_SESSION-}" ]; then
-    # Never the caller's own: a session returning or cancelling its own item died mid-command, before what it
-    # chained after (2026-11-24 22:45Z: dotfiles-agent-22 died in `return`, its `add --after` never ran, and
-    # ar-5199 sat with no item for 2h, ar-5293). It winds itself down.
-    if [ -z "$host" ] && [ "$(own_session)" = "$server:$session" ]; then
-      echo "agent-queue: left $server:$session open: it is the caller's own session, which winds itself down" >&2
-    elif [ -n "$window" ]; then
-      close_on "$host" -L "$server" window "$window" 2>/dev/null && echo "closed window $window of $session" ||
-        echo "agent-queue: window $window was not open on $server" >&2
-    elif [ -n "$(fm_get "$f" origin)" ]; then
-      close_on "$host" -L "$server" session "$session" && echo "killed session $session" ||
-        echo "agent-queue: session $session was not closed on $server" >&2
-    else
-      echo "agent-queue: left $server:$session open: a hand-started item that recorded no window owns no session" >&2
-    fi
-  fi
+  was="$(state_of "$f")" origin="$(fm_get "$f" origin)"
   header_set "$f" status cancelled
   header_set "$f" finished "$(now_utc)"
   header_del "$f" end_reason
@@ -3063,6 +3046,26 @@ cancel_close() {
   # A return says so in the chain record too, where the item file is no longer at hand.
   [ -z "$end" ] || why="$end: $why"
   item_event item-cancelled "$dest" --to done ${by:+--by "$by"} ${why:+--why "$why"}
+  # Close what the item owns, after its event is written, so a close that ends the caller cannot lose
+  # the record (ar-4902: four cancels that killed their caller left no item-cancelled line). Its window
+  # when it recorded one (a hand start), its session only when fleet-dispatch made it (`origin:`), else
+  # nothing. tmux-close spares world sessions.
+  if [ -n "$session" ] && [ "$was" != queued ] && [ -z "${AQ_RETURN_KEEP_SESSION-}" ]; then
+    # Never the caller's own: a session returning or cancelling its own item died mid-command, before what it
+    # chained after (2026-11-24 22:45Z: dotfiles-agent-22 died in `return`, its `add --after` never ran, and
+    # ar-5199 sat with no item for 2h, ar-5293). It winds itself down.
+    if [ -z "$host" ] && [ "$(own_session)" = "$server:$session" ]; then
+      echo "agent-queue: left $server:$session open: it is the caller's own session, which winds itself down" >&2
+    elif [ -n "$window" ]; then
+      close_on "$host" -L "$server" window "$window" 2>/dev/null && echo "closed window $window of $session" ||
+        echo "agent-queue: window $window was not open on $server" >&2
+    elif [ -n "$origin" ]; then
+      close_on "$host" -L "$server" session "$session" && echo "killed session $session" ||
+        echo "agent-queue: session $session was not closed on $server" >&2
+    else
+      echo "agent-queue: left $server:$session open: a hand-started item that recorded no window owns no session" >&2
+    fi
+  fi
   echo "${end:-cancelled} $slug -> $dest"
 }
 

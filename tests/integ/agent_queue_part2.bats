@@ -63,6 +63,10 @@ load 'agent_queue/common'
   assert_success
   run grep -- "-L lab kill-session -t =game-agent-5" "$NOTES_FIXTURE/calls.log"
   assert_success
+  # The event is written before the kill, so a kill that ends its caller cannot lose it (ar-4902).
+  ev=$(grep -n -- "--action item-cancelled.*theirs\|theirs.*--action item-cancelled" "$NOTES_FIXTURE/calls.log" | tail -n 1 | cut -d: -f1)
+  kill=$(grep -n -- "-L lab kill-session -t =game-agent-5" "$NOTES_FIXTURE/calls.log" | cut -d: -f1)
+  [ -n "$ev" ] && [ "$ev" -lt "$kill" ]
 }
 
 # 2026-11-12: two cleanup sessions cancelled 425 items and the items said only "cancelled".
