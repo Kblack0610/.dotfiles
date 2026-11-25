@@ -80,13 +80,20 @@ theme_switch_stub() {
 }
 
 # A worktree merge ran the main checkout's theme-switch, which reloads the live Hyprland, on every
-# merge while main lacked a new render (ar-3266).
-@test "a merge outside the stowed checkout renders no theme" {
-  export DOTFILES_ROOT="$SANDBOX/elsewhere"
-  theme_switch_stub "$DOTFILES_ROOT"
-  run merge_change docs/desk.md
+# merge while main lacked a new render (ar-3266). The merge runs in a linked worktree of the stowed
+# repo, which has the theme-switch and is missing every render.
+@test "a merge in a worktree of the stowed checkout renders no theme and restarts nothing" {
+  theme_switch_stub "$REPO"
+  local wt="$SANDBOX/wt"
+  git -C "$REPO" worktree add -q -b wt-base "$wt"
+  git -C "$wt" checkout -q -b wt-change
+  echo two > "$wt/.local/share/noctalia/plugins/dotfiles-chips/chip.luau"
+  git -C "$wt" commit -qam change
+  git -C "$wt" checkout -q wt-base
+  : > "$FX/calls.log"
+  run bash -c 'cd "$1" && git merge -q --ff-only wt-change' _ "$wt"
   assert_success
   refute_output --partial 're-rendering'
-  run grep -c '^theme-switch' "$FX/calls.log"
+  run grep -cE '^theme-switch|restart noctalia' "$FX/calls.log"
   assert_output 0
 }

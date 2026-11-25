@@ -27,7 +27,7 @@
 # which reloads the live Hyprland, on every merge while main lacks a new render
 # (ar-3266).
 #
-# Costs ten [ -f ] tests on a merge that changed nothing relevant, and exits.
+# Costs one -ef test, a git diff and ten [ -f ] tests on a merge that changed nothing relevant.
 
 set -euo pipefail
 
