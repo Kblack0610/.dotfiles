@@ -28,6 +28,13 @@
 # outside this container, so the unsafe path is unreachable rather than merely discouraged.
 #
 # Built and run by tests/docker.sh; `make -C tests test-ui` is the entry point.
+#
+# THE STAGES: lean -> rust -> full. A pool pod has its own docker daemon, so every CI job loads its
+# image from the Actions cache, and with dozens of pods at once that is a few MB/s each (2026-11-25:
+# 943 MB, every fast shard cancelled in the restore, ar-5632). A job loads the smallest stage that
+# has what it runs (TEST_IMAGE_KIND, tests/docker.sh): lean for the fast tier and lint, rust for the
+# notes job, full for the ui and rust jobs and a local run. A tool goes in the earliest stage whose
+# jobs need it.
 
 # shellcheck is pinned, and that is not fussiness: a new shellcheck release finds new
 # things, so an unpinned lint gate goes red on a repo nobody touched. Bumping it is a
@@ -37,20 +44,10 @@
 # asset: that one can answer 504 for longer than any curl retry waits.
 FROM koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d AS shellcheck
 
-FROM debian:trixie-slim
+FROM debian:trixie-slim AS lean
 
 # Pinned so a CI run and a laptop run agree, and so a distro bump cannot silently change
-# what is under test. Override to sweep versions:
-#   docker build --build-arg TMUX_REF=3.4 ...
-# TMUX_STOCK=1 leaves 3.8 unpatched, for a regression test's negative control.
-ARG TMUX_REF=3.8
-ARG TMUX_STOCK=
-ARG FZF_REF=0.74.1
-# tests/rust-toolchain and the phone harness's playwright-core, passed by tests/docker.sh, which
-# hashes them into the tag. No default: the build context cannot read the repo's pin.
-ARG RUST_TOOLCHAIN
-ARG PLAYWRIGHT_CORE
-
+# what is under test. The tmux and fzf pins are the full stage's (ARG TMUX_REF, ARG FZF_REF).
 ENV DEBIAN_FRONTEND=noninteractive
 
 # ncurses-term supplies the xterm-256color terminfo entry the harness pins TERM to; without
@@ -97,71 +94,6 @@ RUN case "$(dpkg --print-architecture)" in \
     && unzip -q /tmp/bun.zip -d /tmp && install -m 755 "/tmp/${zip}/bun" /usr/local/bin/bun \
     && rm -rf /tmp/bun.zip "/tmp/${zip}" \
     && bun --version
-
-# Rust at tests/rust-toolchain, with clippy and rustfmt: the rust job, the notes job's notes build
-# and the ui tier's agent-panel build. rustup-init is pinned by version and sha256. Before tmux, so
-# a TMUX_REF sweep reuses this layer. World-writable, like the official rust image, because the
-# container runs as the host's UID; tests/docker.sh points CARGO_HOME at /work/.cargo-ci, so the
-# registry lands in the checkout where CI's cache step saves it.
-ARG RUSTUP_VERSION=1.29.3
-ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
-RUN : "${RUST_TOOLCHAIN:?build through tests/docker.sh, which passes tests/rust-toolchain}" \
-    && case "$(dpkg --print-architecture)" in \
-      amd64) t=x86_64 sha=b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55 ;; \
-      arm64) t=aarch64 sha=9f608c142e0e38a78957d0661ba1dfaf0b6fb37184cfaa4b9a0aa57af6184282 ;; \
-      *) echo "unsupported arch" >&2; exit 1 ;; \
-    esac \
-    && curl -fsSL -o /tmp/rustup-init "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${t}-unknown-linux-gnu/rustup-init" \
-    && echo "$sha  /tmp/rustup-init" | sha256sum -c - \
-    && chmod +x /tmp/rustup-init \
-    && /tmp/rustup-init -y -q --no-modify-path --profile minimal --default-toolchain "$RUST_TOOLCHAIN" -c clippy,rustfmt \
-    && rm /tmp/rustup-init \
-    && chmod -R a+w "$RUSTUP_HOME" "$CARGO_HOME" \
-    && cargo --version && cargo clippy --version && cargo fmt --version
-
-# The phone render harness (tests/agent-web/phone/render.mjs): playwright-core at the pinned
-# version and the chromium it names, with chromium's system libraries (--with-deps, as root here).
-# render.mjs finds playwright-core by PLAYWRIGHT_CORE_DIR and the browser by PLAYWRIGHT_BROWSERS_PATH.
-ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright \
-    PLAYWRIGHT_CORE_DIR=/opt/agent-web-phone/node_modules/playwright-core
-RUN : "${PLAYWRIGHT_CORE:?build through tests/docker.sh, which passes the playwright-core pin}" \
-    && npm install --silent --no-save --no-package-lock --no-audit --no-fund --prefix /opt/agent-web-phone "playwright-core@${PLAYWRIGHT_CORE}" \
-    && node "$PLAYWRIGHT_CORE_DIR/cli.js" install --with-deps chromium \
-    && rm -rf /var/lib/apt/lists/* /root/.npm
-
-# tmux and fzf go in /opt/ui/bin, which only the ui tier puts on PATH (tests/Makefile
-# test-ui-inner): the unit and integ tiers must not need either, since they drive subjects through
-# the fake tmux stub, and a test that reaches for a real binary goes red in the fast job.
-#
-# tmux from source. Debian trixie ships 3.5a, the mac-mini 3.6a (stock, like every version but
-# 3.8); the author's machine runs 3.8 with the patch in
-# .local/src/tmux/patched, which is this image's build context, so what is tested is what runs.
-# Floating panes only exist from 3.7. Release tarballs ship a generated ./configure, so no
-# autogen; `git apply` keeps the source's timestamps from asking for one.
-COPY tree-mode-self-kill.patch /tmp/tree-mode-self-kill.patch
-RUN curl -fsSL -o /tmp/tmux.tar.gz \
-      "https://github.com/tmux/tmux/releases/download/${TMUX_REF}/tmux-${TMUX_REF}.tar.gz" \
-    && tar xf /tmp/tmux.tar.gz -C /tmp \
-    && cd "/tmp/tmux-${TMUX_REF}" \
-    && if [ "$TMUX_REF" = 3.8 ] && [ -z "$TMUX_STOCK" ]; then git apply --whitespace=nowarn /tmp/tree-mode-self-kill.patch; fi \
-    && ./configure --prefix=/opt/ui \
-    && make -j"$(nproc)" && make install \
-    && rm -rf /tmp/tmux* \
-    && /opt/ui/bin/tmux -V
-
-# fzf from the pinned release binary rather than apt. The cockpit's bindings use `transform`
-# (fzf >= 0.45) and `become` (>= 0.38), and apt's version is version roulette across distros.
-RUN arch="$(dpkg --print-architecture)" \
-    && case "$arch" in \
-         amd64) fzf_arch=amd64 ;; \
-         arm64) fzf_arch=arm64 ;; \
-         *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
-       esac \
-    && curl -fsSL -o /tmp/fzf.tar.gz \
-      "https://github.com/junegunn/fzf/releases/download/v${FZF_REF}/fzf-${FZF_REF}-linux_${fzf_arch}.tar.gz" \
-    && tar xf /tmp/fzf.tar.gz -C /opt/ui/bin fzf \
-    && rm -f /tmp/fzf.tar.gz \
-    && /opt/ui/bin/fzf --version
 
 # neovim runs the notes.nvim tests (integ/notes_tag_source.bats) and notes_mobile.bats, where the
 # phone launcher switches its running editor to today. The release tarball, not trixie's 0.10.4:
@@ -215,3 +147,85 @@ RUN chmod a+w /etc/passwd /etc/group \
     && chmod 755 /usr/local/bin/test-entry
 ENTRYPOINT ["/usr/local/bin/test-entry"]
 CMD ["make", "-C", "tests", "test-container"]
+
+# --- rust: the toolchain, for the notes job and (through full) the rust and ui jobs ---
+FROM lean AS rust
+# tests/rust-toolchain, passed by tests/docker.sh, which hashes it into the tag. No default: the
+# build context cannot read the repo's pin.
+ARG RUST_TOOLCHAIN
+
+# Rust at tests/rust-toolchain, with clippy and rustfmt: the rust job, the notes job's notes build
+# and the ui tier's agent-panel build. rustup-init is pinned by version and sha256. Before tmux, so
+# a TMUX_REF sweep reuses this layer. World-writable, like the official rust image, because the
+# container runs as the host's UID; tests/docker.sh points CARGO_HOME at /work/.cargo-ci, so the
+# registry lands in the checkout where CI's cache step saves it.
+ARG RUSTUP_VERSION=1.29.3
+ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
+RUN : "${RUST_TOOLCHAIN:?build through tests/docker.sh, which passes tests/rust-toolchain}" \
+    && case "$(dpkg --print-architecture)" in \
+      amd64) t=x86_64 sha=b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55 ;; \
+      arm64) t=aarch64 sha=9f608c142e0e38a78957d0661ba1dfaf0b6fb37184cfaa4b9a0aa57af6184282 ;; \
+      *) echo "unsupported arch" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL -o /tmp/rustup-init "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${t}-unknown-linux-gnu/rustup-init" \
+    && echo "$sha  /tmp/rustup-init" | sha256sum -c - \
+    && chmod +x /tmp/rustup-init \
+    && /tmp/rustup-init -y -q --no-modify-path --profile minimal --default-toolchain "$RUST_TOOLCHAIN" -c clippy,rustfmt \
+    && rm /tmp/rustup-init \
+    && chmod -R a+w "$RUSTUP_HOME" "$CARGO_HOME" \
+    && cargo --version && cargo clippy --version && cargo fmt --version
+
+# --- full: the phone harness's chromium and tmux and fzf, for the ui and rust jobs ---
+FROM rust AS full
+# Pinned so a CI run and a laptop run agree. Override to sweep versions:
+#   docker build --build-arg TMUX_REF=3.4 ...
+# TMUX_STOCK=1 leaves 3.8 unpatched, for a regression test's negative control.
+ARG TMUX_REF=3.8
+ARG TMUX_STOCK=
+ARG FZF_REF=0.74.1
+# The phone render harness's playwright-core, passed by tests/docker.sh, which hashes it into the tag.
+ARG PLAYWRIGHT_CORE
+
+# The phone render harness (tests/agent-web/phone/render.mjs): playwright-core at the pinned
+# version and the chromium it names, with chromium's system libraries (--with-deps, as root here).
+# render.mjs finds playwright-core by PLAYWRIGHT_CORE_DIR and the browser by PLAYWRIGHT_BROWSERS_PATH.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright \
+    PLAYWRIGHT_CORE_DIR=/opt/agent-web-phone/node_modules/playwright-core
+RUN : "${PLAYWRIGHT_CORE:?build through tests/docker.sh, which passes the playwright-core pin}" \
+    && npm install --silent --no-save --no-package-lock --no-audit --no-fund --prefix /opt/agent-web-phone "playwright-core@${PLAYWRIGHT_CORE}" \
+    && node "$PLAYWRIGHT_CORE_DIR/cli.js" install --with-deps chromium \
+    && rm -rf /var/lib/apt/lists/* /root/.npm
+
+# tmux and fzf go in /opt/ui/bin, which only the ui tier puts on PATH (tests/Makefile
+# test-ui-inner): the unit and integ tiers must not need either, since they drive subjects through
+# the fake tmux stub, and a test that reaches for a real binary goes red in the fast job.
+#
+# tmux from source. Debian trixie ships 3.5a, the mac-mini 3.6a (stock, like every version but
+# 3.8); the author's machine runs 3.8 with the patch in
+# .local/src/tmux/patched, which is this image's build context, so what is tested is what runs.
+# Floating panes only exist from 3.7. Release tarballs ship a generated ./configure, so no
+# autogen; `git apply` keeps the source's timestamps from asking for one.
+COPY tree-mode-self-kill.patch /tmp/tree-mode-self-kill.patch
+RUN curl -fsSL -o /tmp/tmux.tar.gz \
+      "https://github.com/tmux/tmux/releases/download/${TMUX_REF}/tmux-${TMUX_REF}.tar.gz" \
+    && tar xf /tmp/tmux.tar.gz -C /tmp \
+    && cd "/tmp/tmux-${TMUX_REF}" \
+    && if [ "$TMUX_REF" = 3.8 ] && [ -z "$TMUX_STOCK" ]; then git apply --whitespace=nowarn /tmp/tree-mode-self-kill.patch; fi \
+    && ./configure --prefix=/opt/ui \
+    && make -j"$(nproc)" && make install \
+    && rm -rf /tmp/tmux* \
+    && /opt/ui/bin/tmux -V
+
+# fzf from the pinned release binary rather than apt. The cockpit's bindings use `transform`
+# (fzf >= 0.45) and `become` (>= 0.38), and apt's version is version roulette across distros.
+RUN arch="$(dpkg --print-architecture)" \
+    && case "$arch" in \
+         amd64) fzf_arch=amd64 ;; \
+         arm64) fzf_arch=arm64 ;; \
+         *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL -o /tmp/fzf.tar.gz \
+      "https://github.com/junegunn/fzf/releases/download/v${FZF_REF}/fzf-${FZF_REF}-linux_${fzf_arch}.tar.gz" \
+    && tar xf /tmp/fzf.tar.gz -C /opt/ui/bin fzf \
+    && rm -f /tmp/fzf.tar.gz \
+    && /opt/ui/bin/fzf --version

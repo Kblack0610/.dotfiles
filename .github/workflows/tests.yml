@@ -23,7 +23,10 @@ name: shell tests
 #   lint   shellcheck + house rules, in the pinned image.
 #
 # Every job's tools come from one place, the tests/Dockerfile image (.github/actions/test-image
-# loads it, tests/docker.sh runs in it), so a runner needs only docker and a label. No step
+# loads it, tests/docker.sh runs in it), so a runner needs only docker and a label. The image has
+# three stages (lean, rust, full) and a job's env TEST_IMAGE_KIND names the smallest one with what
+# it runs, because a pool pod loads its image over a link shared with the whole pool: the one
+# 943 MB image ran every job out of its timeout in the cache restore on 2026-11-25 (ar-5632). No step
 # installs a tool on the runner (~/.local/src/docs/ci.md, Runners; tests/unit/ci_gate.bats).
 #   gate   the one required check: red unless every gating job ran and passed.
 #   report the fast and ui tiers' JUnit, drawn on the run's Summary page: a row per file
@@ -140,6 +143,8 @@ jobs:
     needs: weights
     runs-on: *pool
     timeout-minutes: 10
+    env:
+      TEST_IMAGE_KIND: lean   # the tmux-free tiers need no toolchain, chromium or tmux (tests/docker.sh)
     strategy:
       fail-fast: false
       matrix:
@@ -197,6 +202,8 @@ jobs:
     name: ui tier (tmux ${{ matrix.tmux }}, container)
     runs-on: *pool
     timeout-minutes: 25
+    env:
+      TEST_IMAGE_KIND: full   # tmux, fzf and the agent-panel build
     strategy:
       fail-fast: false
       matrix:
@@ -309,6 +316,7 @@ jobs:
     runs-on: *pool
     timeout-minutes: 20
     env:
+      TEST_IMAGE_KIND: full  # the toolchain plus the phone harness's chromium
       CARGO_INCREMENTAL: 0   # incremental state only helps a rebuild in place, and it bloats the cache
       RUST_JOBS: 4           # crates rust.sh gates at once, the runner's vCPU count (tests/rust.sh)
       DOCKER_NETWORK: bridge # every step here fetches: crates, the Tilecast checker (tests/docker.sh)
@@ -405,6 +413,7 @@ jobs:
     runs-on: *pool
     timeout-minutes: 10
     env:
+      TEST_IMAGE_KIND: rust   # the notes build needs the toolchain, nothing else heavy
       CARGO_INCREMENTAL: 0
     steps:
       - uses: actions/checkout@v4
@@ -444,6 +453,8 @@ jobs:
     name: shellcheck + house rules
     runs-on: *pool
     timeout-minutes: 15
+    env:
+      TEST_IMAGE_KIND: lean   # shellcheck and the house rules
     steps:
       - uses: actions/checkout@v4
       # Runs in the SAME image as the ui tier, which pins shellcheck. Installing
