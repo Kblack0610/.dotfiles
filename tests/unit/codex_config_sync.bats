@@ -218,3 +218,27 @@ PY
   run jq -c . "$GEMINI_HOME/config/skills.json"
   assert_output '{"entries":[{"path":"~/mine"},{"path":"'"$CLAUDE_HOME"'/skills"}],"inherits":[{"path":"/x.json"}]}'
 }
+
+@test "agy: Claude's Bash denies land in its settings.json as command rules, with the credential files, and the human's keys stay" {
+  mkdir -p "$GEMINI_HOME/antigravity-cli"
+  echo '{"trustedWorkspaces": ["/w"], "permissions": {"ask": ["command(x)"]}}' > "$GEMINI_HOME/antigravity-cli/settings.json"
+  echo '{"permissions": {"deny": ["Bash(sudo *)", "Bash(git push --force*)", "Bash(curl * | sh)", "Read(**/.env)"]}}' > "$CLAUDE_HOME/settings.json"
+  run "$SUBJECT"
+  assert_success
+  run "$SUBJECT"
+  assert_success
+  run jq -c '[.trustedWorkspaces, .permissions.ask, (.permissions.deny | map(select(startswith("command("))))]' "$GEMINI_HOME/antigravity-cli/settings.json"
+  assert_output '[["/w"],["command(x)"],["command(git push --force)","command(sudo)"]]'
+  run jq -r '.permissions.deny[]' "$GEMINI_HOME/antigravity-cli/settings.json"
+  assert_output --partial "write_file($HOME/.ssh)"
+  refute_output --partial ".env"
+}
+
+@test "agy: a settings.json that is not JSON stays as it is and the sync still finishes" {
+  mkdir -p "$GEMINI_HOME/antigravity-cli"
+  echo 'not json' > "$GEMINI_HOME/antigravity-cli/settings.json"
+  run "$SUBJECT"
+  assert_success
+  run cat "$GEMINI_HOME/antigravity-cli/settings.json"
+  assert_output 'not json'
+}
