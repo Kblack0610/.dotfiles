@@ -592,6 +592,9 @@ def oldest_request($t): [.[] | select(.lane == "agent" and .requested and .state
   | sort_by([.since, .project, .id]) | first // empty
   | {project, id, since, h: (($t - (.since + "T00:00:00Z" | fromdate)) / 3600 | floor)};
 def claimed: (.session_id // "") != "";
+# the session ids of an item, and whether it landed (done ok with a PR): the models and skills tables share both
+def sids: (.sessions // "") | split(" ") | map(select(. != ""));
+def landed: .status == "ok" and (.pr // "") != "";
 def ran_gate: (.gate_runs // 0) > 0;
 def first_try: .gate_red == 0;
 def kind: sub("\\(.*"; "");
@@ -3840,8 +3843,6 @@ models_json() {
     ($by | split(",")) as $bys | ($bys | index("class") != null) as $cl | ($bys | index("lane") != null) as $ln
     | ($runs | INDEX(.id)) as $rix | ($voids | INDEX(.id)) as $vix
     | ($ci | INDEX(itemkey)) as $cix | ($sa[0] // {}) as $sp |
-    def sids: (.sessions // "") | split(" ") | map(select(. != ""));
-    def landed: .status == "ok" and (.pr // "") != "";
     def check: ((.type // "") | IN($nopr[])) and ((.pr // "") == "");
     def metered: (.gateway_cost_usd // "") != "";
     def alias: capture("^claude-(?<f>[a-z]+)-").f // .;
@@ -4002,10 +4003,9 @@ skills_json() {
      --slurpfile reds <(printf '%s\n' "$reds" | jq -cs 'map(select(.slug and (.cleanup | not)) | {key: .slug, value: .outcome}) | from_entries') \
      --slurpfile ci <([ ! -s "$CI" ] || jq -c 'select(.repo and .number)' "$CI" 2>/dev/null) "$JQ_LIB"'
     def bare: sub("^[^:]+:"; "");
-    def sids: (.sessions // "") | split(" ") | map(select(. != ""));
     ($o[0] // {}) as $o | ($reds[0] // {}) as $r | ($ci | INDEX(itemkey)) as $cix
     | ($items | map(prkeys as $pk | (sids | map($o[.] // empty)) as $rows
-        | {status, landed: (.status == "ok" and (.pr // "") != ""), unrated: unrated, pk: $pk,
+        | {status, landed: landed, unrated: unrated, pk: $pk,
            skills: ([$rows[] | (.uses.skills // {} | keys[] | bare), (.uses.slash // {} | keys[] | bare | select(IN($names[])))] | unique),
            reverted: any($rows[] | .prs // [] | .[]; .reverted == true and (itemkey | IN($pk[]))),
            tried: ((.fix_tries // "") != ""), red: $r[.slug]})) as $done
