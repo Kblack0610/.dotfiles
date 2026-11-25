@@ -71,7 +71,7 @@ pub(crate) fn parse(text: &str) -> Result<Vec<Reason>> {
     Ok(out)
 }
 
-fn load() -> Result<Vec<Reason>> {
+pub(crate) fn load() -> Result<Vec<Reason>> {
     let p = path();
     let text = std::fs::read_to_string(&p)
         .with_context(|| format!("the reason list {} is unreadable", p.display()))?;
