@@ -43,6 +43,90 @@ fn one_line(text: &str) -> String {
         .join(" ")
 }
 
+/// Exit code of a refusal: the text is health work, which belongs on the board.
+const HEALTH_EXIT: i32 = 3;
+
+/// Why `text` is health work, not a nice-to-have, or `None`. Health work closes a named
+/// stage-standard criterion, adds a test for shipped behaviour that has none, or fixes a CI, perf
+/// or alerting fault backed by a number; the human wants all of it done, so it never goes to
+/// `improvements.md` (2026-11-24: 100 such rows were moved there and restored by hand). A false
+/// positive keeps one row on the board; a false negative loses the work, so the lists lean wide.
+fn health(text: &str) -> Option<&'static str> {
+    // Phrases of whole words, a plural counting as the word (`test` is `tests`): `to standardize`
+    // and `testimonial` are no stage criterion and no test.
+    const STAGE: [&str; 4] = [
+        "stage standard",
+        "to standard",
+        "stage criterion",
+        "stage criteria",
+    ];
+    const TEST: [&str; 12] = [
+        "coverage",
+        "untested",
+        "no test",
+        "missing test",
+        "regression test",
+        "add test",
+        "add a test",
+        "test for",
+        "unit test",
+        "integration test",
+        "bats case",
+        "cargo test",
+    ];
+    // A fault word as written or inflected (`performance`, `timeouts`, `flakiness`, `latencies`).
+    const FAULT_STEMS: [&str; 7] = ["perf", "flak", "latenc", "slow", "alert", "timeout", "leak"];
+    const FAULT_WORDS: [&str; 4] = ["ci", "oom", "fps", "memory"];
+    // What follows a digit run to make it a measurement.
+    const UNITS: [&str; 18] = [
+        "s", "ms", "sec", "secs", "second", "seconds", "min", "mins", "minute", "minutes", "h",
+        "hr", "hours", "x", "%", "times", "mb", "gb",
+    ];
+    let low = text.to_ascii_lowercase();
+    let words: Vec<&str> = low
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let has = |phrase: &str| {
+        let p: Vec<&str> = phrase.split(' ').collect();
+        words.windows(p.len()).any(|w| {
+            w.iter()
+                .zip(&p)
+                .all(|(a, b)| a == b || a.strip_suffix('s') == Some(*b))
+        })
+    };
+    if STAGE.iter().any(|p| has(p)) {
+        return Some("closes a stage-standard criterion");
+    }
+    if TEST.iter().any(|p| has(p)) {
+        return Some("adds a test for shipped behaviour");
+    }
+    // A measured number is a digit run with a unit (`40s`, `200ms`, `12%`, `14 min`), not a bare
+    // count, a date, or the digits in an id such as `ar-5401` or a `#c1124` tag.
+    let toks: Vec<&str> = low
+        .split_whitespace()
+        .map(|t| t.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '%'))
+        .collect();
+    let fault_word =
+        |w: &str| FAULT_WORDS.contains(&w) || FAULT_STEMS.iter().any(|s| w.starts_with(s));
+    // A bare count counts when a unit or a fault word follows it (`14 min`, `3 timeouts a day`).
+    let measured = toks.iter().enumerate().any(|(i, t)| {
+        let rest = t.trim_start_matches(|c: char| c.is_ascii_digit() || c == '.');
+        rest.len() < t.len()
+            && if rest.is_empty() {
+                toks.get(i + 1)
+                    .is_some_and(|n| UNITS.contains(n) || fault_word(n))
+            } else {
+                UNITS.contains(&rest)
+            }
+    });
+    let fault = words.iter().any(|w| fault_word(w));
+    if measured && fault {
+        return Some("fixes a CI, perf or alerting fault with a number");
+    }
+    None
+}
+
 /// Append `- <text>` to `file` in `dir`, the header first when the file is new. `Ok(false)`
 /// when the line is already there, so a retried write adds nothing. Any `file` but
 /// [`IMPROVEMENTS`] is refused: the person's `ideas.md` is never written from here.
@@ -107,14 +191,34 @@ pub struct Args {
     /// Why it is an improvement, kept on its `improvement` event (`notes log` shows it)
     #[arg(long, value_name = "WHY")]
     why: Option<String>,
+    /// Write nothing: exit 3 when the text is health work, else 0 (a dry run asks this)
+    #[arg(long)]
+    check: bool,
     #[arg(required = true, num_args = 1..)]
     text: Vec<String>,
 }
 
-/// `notes improve`: print `improved <project>: <text>` and record it. Exit 1 on an empty text; a
-/// project that is not one is an error naming it.
+/// `notes improve`: print `improved <project>: <text>` and record it. Exit 1 on an empty text,
+/// exit 3 (nothing written) on health work, which stays on the board; a project that is not one
+/// is an error naming it.
 pub fn run(p: &Profile, log: &Logger, a: Args) -> Result<i32> {
-    save(p, log, &a.project, a.why.as_deref(), &a.text.join(" "))
+    let text = a.text.join(" ");
+    if a.check {
+        // Classifies the text only: no project is read, so a typo'd project is `save`'s error.
+        let text = one_line(&text);
+        if text.is_empty() {
+            return Ok(1);
+        }
+        return Ok(refuse_health(&text).unwrap_or(0));
+    }
+    save(p, log, &a.project, a.why.as_deref(), &text)
+}
+
+/// The refusal exit, said on stderr, when `text` is health work.
+fn refuse_health(text: &str) -> Option<i32> {
+    let why = health(text)?;
+    eprintln!("health work, not an improvement ({why}): it stays on the board");
+    Some(HEALTH_EXIT)
 }
 
 fn save(p: &Profile, log: &Logger, project: &str, why: Option<&str>, text: &str) -> Result<i32> {
@@ -122,6 +226,9 @@ fn save(p: &Profile, log: &Logger, project: &str, why: Option<&str>, text: &str)
     if text.is_empty() {
         eprintln!("nothing to keep: the text is empty");
         return Ok(1);
+    }
+    if let Some(rc) = refuse_health(&text) {
+        return Ok(rc);
     }
     let dir = projects::project_dir(p, project)?;
     let day = chrono::Local::now().format("%Y-%m-%d").to_string();
@@ -209,6 +316,57 @@ mod tests {
             "{rec}"
         );
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn health_work_is_refused_for_each_kind_and_a_nicety_is_kept() {
+        let (root, p, log) = project("health");
+        let f = root.join("lab/projects/current/demo").join(IMPROVEMENTS);
+        for (text, kind) in [
+            ("meet the prod stage standard", "stage"),
+            ("add a bats case for the parser", "test"),
+            ("coverage for the sweep", "test"),
+            ("CI takes 14 min on the nightly #c1124", "ci"),
+            ("alerting fires 3x a day on a clean run", "alert"),
+            ("sweep is slow, 40s a pass", "perf"),
+            ("build performance dropped 30% on the nightly", "stem"),
+            ("3 timeouts a day in the sweep", "stem"),
+            ("add tests for the parser", "plural"),
+        ] {
+            assert_eq!(
+                save(&p, &log, "demo", None, text).unwrap(),
+                HEALTH_EXIT,
+                "{kind}: {text}"
+            );
+        }
+        assert!(!f.exists(), "a refusal writes nothing");
+        let rec = fs::read_to_string(ingest::path(&p)).unwrap_or_default();
+        assert!(
+            !rec.contains("improvement"),
+            "a refusal records nothing: {rec}"
+        );
+        // NEGATIVE CONTROLS: polish, and a fault word with no measured number (an id is no number).
+        for text in [
+            "a nicer empty state",
+            "the CI badge colour, row ar-5401",
+            "slow fade on the menu",
+            "add testimonial carousel, up to standardize labels",
+            "memory icon for the 3 settings tabs",
+            "alert dialog redesign (2026-11-24)",
+        ] {
+            assert_eq!(save(&p, &log, "demo", None, text).unwrap(), 0, "{text}");
+        }
+        assert_eq!(fs::read_to_string(&f).unwrap().matches("\n- ").count(), 6);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn check_asks_without_writing() {
+        assert_eq!(
+            refuse_health("meet the prod stage standard"),
+            Some(HEALTH_EXIT)
+        );
+        assert_eq!(refuse_health("a nicer empty state"), None);
     }
 
     #[test]

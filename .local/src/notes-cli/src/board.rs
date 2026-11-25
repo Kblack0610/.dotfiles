@@ -634,6 +634,64 @@ impl VersionProject {
     }
 }
 
+/// One agent-sheet row as `notes board --weigh` prints it: its project (the directory the sheet
+/// sits in), id, state and weight by the one rule every rollup uses ([`crate::projects::size_weight`]).
+#[derive(Debug, PartialEq, serde::Serialize)]
+pub struct Weighed {
+    pub project: String,
+    pub id: String,
+    /// `open` (started or not), `done`, or `dropped` (closed undelivered: [`md::is_dropped`]).
+    pub state: &'static str,
+    pub weight: u32,
+}
+
+/// One `git grep` line of an agent sheet or a version note it rolled rows into,
+/// `[<rev>:]<dir>/<project>/agent/README.md:<line>` or `.../agent/versions/<v>.md:<line>`, as a
+/// [`Weighed`]; None for a line that is not a row with an id. A version note's rows carry no
+/// checkbox and are all closed, so a row done and rolled off in one day still reads done.
+pub fn weigh(entry: &str) -> Option<Weighed> {
+    // The path ends at the first sheet or version-note suffix: a project dir named `agent`, or
+    // `/agent/` in the row text, must not move it.
+    let at = ["/agent/README.md:", "/agent/versions/"]
+        .iter()
+        .filter_map(|s| entry.find(s))
+        .min()?;
+    let rest = &entry[at + "/agent/".len()..];
+    let (closed, line) = if let Some(line) = rest.strip_prefix("README.md:") {
+        if !md::is_task(line) {
+            return None;
+        }
+        (md::is_checked(line), line)
+    } else {
+        let (file, line) = rest.strip_prefix("versions/")?.split_once(':')?;
+        if file.contains('/') || !file.ends_with(".md") || !line.trim_start().starts_with("- ") {
+            return None;
+        }
+        (true, line)
+    };
+    let project = entry[..at].rsplit(['/', ':']).next()?.to_string();
+    let state = match (closed, md::is_dropped(line)) {
+        (false, _) => "open",
+        (true, false) => "done",
+        (true, true) => "dropped",
+    };
+    Some(Weighed {
+        project,
+        id: md::row_id(line)?,
+        state,
+        weight: crate::projects::size_weight(line),
+    })
+}
+
+/// `notes board --weigh`: `git grep` lines of agent sheets on stdin (any commit, so a reader of
+/// the notes history weighs rows as notes does), one [`Weighed`] JSON object per row on stdout.
+pub fn print_weigh(input: &str) -> Result<()> {
+    for w in input.lines().filter_map(weigh) {
+        println!("{}", serde_json::to_string(&w)?);
+    }
+    Ok(())
+}
+
 /// `notes board --version vX.Y.Z [--project N]... [--json]` - print every row aimed at that
 /// release, across every profile and both lanes: open rows first, then closed ones with their
 /// PRs. With `--json`, the same rows as `{version, projects: [VersionProject]}`, the feed the
@@ -1690,6 +1748,66 @@ pub fn run(log: &Logger) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn weigh_reads_project_state_and_weight_from_a_git_grep_line() {
+        let w = |l: &str| weigh(l).map(|w| (w.project, w.id, w.state, w.weight));
+        let at = "abc123:personal/projects/current/agent-runtime/agent/README.md:";
+        // A project dir named `agent`, and `/agent/` in the row text, leave the path split alone.
+        assert_eq!(
+            w("abc123:lab/projects/current/agent/agent/README.md:- [ ] fix: see x/agent/y <!-- id:ag-1 -->"),
+            Some(("agent".into(), "ag-1".into(), "open", 1))
+        );
+        assert_eq!(
+            w(&format!("{at}- [ ] fix(x): y #pts/5 <!-- id:ar-1 -->")),
+            Some(("agent-runtime".into(), "ar-1".into(), "open", 5))
+        );
+        assert_eq!(
+            w(&format!("{at}- [/] fix(x): y #size/s <!-- id:ar-2 -->")).map(|t| t.2),
+            Some("open")
+        );
+        assert_eq!(
+            w(&format!(
+                "{at}- [x] fix(x): y #pts/3 <!-- id:ar-3 pr:12 -->"
+            ))
+            .map(|t| (t.2, t.3)),
+            Some(("done", 3))
+        );
+        // Closed undelivered is dropped, never done: a cleanup is not burn.
+        for m in ["dropped: 2026-11-24", "dup:ar-1"] {
+            assert_eq!(
+                w(&format!("{at}- [x] fix(x): y <!-- id:ar-4 {m} -->")).map(|t| (t.2, t.3)),
+                Some(("dropped", 1))
+            );
+        }
+        // No rev prefix (a working-tree grep) reads the same project.
+        assert_eq!(
+            w("bnb/projects/current/dodginballs/agent/README.md:- [ ] a <!-- id:db-9 -->")
+                .map(|t| t.0),
+            Some("dodginballs".into())
+        );
+        // Not a task, no id, or not an agent sheet: nothing.
+        assert_eq!(w(&format!("{at}## Tasks")), None);
+        assert_eq!(w(&format!("{at}- [ ] no id")), None);
+        assert_eq!(
+            w("p/projects/current/x/README.md:- [ ] a <!-- id:xy-1 -->"),
+            None
+        );
+        // A version note's rows have no checkbox and are closed: done, or dropped by marker.
+        let v = "abc:personal/projects/current/agent-runtime/agent/versions/v0.2.0.md:";
+        assert_eq!(
+            w(&format!("{v}- fix(x): y #pts/8 <!-- id:ar-5 -->")).map(|t| (t.2, t.3)),
+            Some(("done", 8))
+        );
+        assert_eq!(
+            w(&format!(
+                "{v}- fix(x): y <!-- id:ar-6 dropped: 2026-11-20 -->"
+            ))
+            .map(|t| t.2),
+            Some("dropped")
+        );
+        assert_eq!(w(&format!("{v}## Done")), None);
+    }
 
     #[test]
     fn render_strips_the_checkbox_but_keeps_every_word() {

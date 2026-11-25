@@ -195,6 +195,14 @@ pub(crate) struct BacklogEpic {
     pub agent_moves: Vec<String>,
 }
 
+/// A parent none of whose children is open ([`Index::spent`]).
+#[derive(Debug, PartialEq)]
+pub(crate) struct Spent {
+    pub done: usize,
+    pub ids: Vec<String>,
+    pub unverified: bool,
+}
+
 /// The tree of one project: every row with an id or a parent, and each parent's children.
 #[derive(Debug, Default)]
 pub(crate) struct Index {
@@ -361,17 +369,86 @@ impl Index {
             .min()
     }
 
-    /// Where each open child of `id` is, for a refusal to close it.
-    pub(crate) fn open_children(&self, id: &str) -> Vec<String> {
-        self.children(id)
-            .iter()
-            .map(|&i| &self.nodes[i])
+    /// Where each open row under `id` is, at any depth, for a refusal to close it: an open
+    /// grandchild under a closed child holds it open as much as an open child does.
+    pub(crate) fn open_under(&self, id: &str) -> Vec<String> {
+        self.under(id)
+            .into_iter()
+            .map(|i| &self.nodes[i])
             .filter(|n| n.open)
             .map(|n| match &n.id {
                 Some(c) => format!("{c} ({})", n.at),
                 None => n.at.clone(),
             })
             .collect()
+    }
+
+    /// The ids under `id` at any depth, dropped rows left out.
+    pub(crate) fn descendants(&self, id: &str) -> Vec<String> {
+        self.under(id)
+            .into_iter()
+            .filter_map(|i| self.nodes[i].id.clone())
+            .collect()
+    }
+
+    /// The nodes under `id` at any depth, dropped rows left out, each walked once, so a loop
+    /// cannot hang a read.
+    fn under(&self, id: &str) -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        let mut stack = self.children(id).to_vec();
+        while let Some(j) = stack.pop() {
+            if !seen.insert(j) || self.nodes[j].id.as_deref() == Some(id) {
+                continue;
+            }
+            out.push(j);
+            if let Some(c) = self.nodes[j].id.as_deref() {
+                stack.extend_from_slice(self.children(c));
+            }
+        }
+        out.sort_unstable();
+        out
+    }
+
+    /// The chain `[top, .., id]` when `id` sits under `top` at any depth, read up `id`'s
+    /// parents; `None` when it does not. What a re-parent onto `id` would loop through.
+    pub(crate) fn chain(&self, top: &str, id: &str) -> Option<Vec<String>> {
+        let mut up = vec![id.to_string()];
+        let mut cur = self.node(id)?;
+        while let Some(p) = &cur.parent {
+            if up.contains(p) {
+                return None;
+            }
+            up.push(p.clone());
+            if p == top {
+                up.reverse();
+                return Some(up);
+            }
+            cur = self.node(p)?;
+        }
+        None
+    }
+
+    /// How the open row `id` stands once none of its children is open: the ids of those that
+    /// closed done, how many did (0 when every one was dropped), and whether any of them closed
+    /// `--unverified`. `None` while one is open, when `id` is no open parent, and for an epic,
+    /// which closes on proof of its outcome, never on its rows alone.
+    pub(crate) fn spent(&self, id: &str) -> Option<Spent> {
+        self.node(id).filter(|n| n.open && n.title.is_none())?;
+        let kids: Vec<&Node> = self
+            .nodes
+            .iter()
+            .filter(|n| n.parent.as_deref() == Some(id))
+            .collect();
+        if kids.is_empty() || kids.iter().any(|n| n.open) {
+            return None;
+        }
+        let done: Vec<&&Node> = kids.iter().filter(|n| !n.dropped).collect();
+        Some(Spent {
+            done: done.len(),
+            ids: done.iter().filter_map(|n| n.id.clone()).collect(),
+            unverified: done.iter().any(|n| n.proof.starts_with("unverified:")),
+        })
     }
 
     /// The leaves under node `i`, each node walked once, so a loop cannot hang a read. The
@@ -655,8 +732,8 @@ Version: v1.4.0 #alpha
                 ..EpicProgress::default()
             }]
         );
-        assert_eq!(ix.open_children("dm-2"), vec!["dm-3 (agent board line 4)"]);
-        assert!(ix.open_children("dm-3").is_empty(), "a leaf closes freely");
+        assert_eq!(ix.open_under("dm-2"), vec!["dm-3 (agent board line 4)"]);
+        assert!(ix.open_under("dm-3").is_empty(), "a leaf closes freely");
     }
 
     #[test]
@@ -807,7 +884,7 @@ Version: v1.4.0 #alpha
             "landed: its verify does not hold it open"
         );
         assert!(
-            ix.open_children("dm-1").is_empty(),
+            ix.open_under("dm-1").is_empty(),
             "the check closes the epic it verifies"
         );
         // NEGATIVE CONTROL: the same row typed as a gap under the epic is one of its open leaves.
@@ -819,7 +896,7 @@ Version: v1.4.0 #alpha
         );
         let ix = Index::of(&dir, V14);
         assert_eq!((ix.epics()[0].open, ix.epics()[0].done), (1, 1));
-        assert_eq!(ix.open_children("dm-1"), vec!["dm-3 (agent board line 5)"]);
+        assert_eq!(ix.open_under("dm-1"), vec!["dm-3 (agent board line 5)"]);
     }
 
     #[test]
