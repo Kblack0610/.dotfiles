@@ -1824,7 +1824,7 @@ board_row() { printf 'board.md\t5\t%s\t- [%s] %s\n' "${2,,}" "$1" "$2" >> "$BOAR
   # negative control: the queue cannot be read, so neither started row closes
   printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/items-stub"
   run "$SUBJECT" triage --dry-run
-  refute_line --partial 'retire: check(watch)'
+  refute_output --partial 'retire: check(watch)'
 }
 
 @test "triage: a recovered watch's row on the human sheet closes too; a still-red watch's is not retired" {
@@ -2211,8 +2211,10 @@ cause_of() { printf '%s' 'lock .* held by pid' | sha256sum | cut -c1-8; }
   assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red cause:$(cause_of) hold:x --raw - \[ \] fix\(logs\): alpha error [0-9a-f]{8}: .*fix with fix-red"
   run grep -c '#size/s' "$BOARD"
   assert_output 0
-  # started on the board: never queued twice
+  # started by the live item the promote made: never queued twice
   sed -i 's/- \[ \] fix(logs)/- [\/] fix(logs)/' "$BOARD"; : > "$PLOG"
+  id=$(grep -o 'id:ar-[0-9]*' "$BOARD"); id=${id#id:}
+  printf '{"slug":"red-lock","state":"running","row":"agent-runtime:%s"}\n' "$id" > "$ITEMS"
   run "$SUBJECT" triage
   assert_success
   [ ! -s "$PLOG" ]
@@ -2228,17 +2230,18 @@ cause_of() { printf '%s' 'lock .* held by pid' | sha256sum | cut -c1-8; }
   run "$SUBJECT" triage
   assert_success
   # started by an item that has since closed with no PR, the row naming its id
-  sed -i 's/- \[ \] \(fix(logs).*\)$/- [\/] \1 <!-- id:ar-9123 -->/' "$BOARD"
-  printf '%s\n' '{"slug":"red-lock","state":"done","status":"ok","row":"agent-runtime:ar-9123"}' > "$ITEMS"; : > "$PLOG"
+  sed -i 's/- \[ \] \(fix(logs)\)/- [\/] \1/' "$BOARD"
+  id=$(grep -o 'id:ar-[0-9]*' "$BOARD"); id=${id#id:}
+  printf '{"slug":"red-lock","state":"done","status":"ok","row":"agent-runtime:%s"}\n' "$id" > "$ITEMS"; : > "$PLOG"
   run "$SUBJECT" triage
   assert_success
   run grep -c -- '--agent unstart --exact -- - \[/\] fix(logs)' "$NLOG"
   assert_output 1
   run cat "$PLOG"
-  assert_output --regexp '--raw - \[ \] fix\(logs\): alpha error .*id:ar-9123'
+  assert_output --regexp "--raw - \\[ \\] fix\\(logs\\): alpha error .*id:$id"
   # negative control: an item still holds the row, so it is neither put back nor queued
   sed -i 's/- \[ \] \(fix(logs)\)/- [\/] \1/' "$BOARD"; : > "$PLOG"; : > "$NLOG"
-  printf '%s\n' '{"slug":"red-lock","state":"running","row":"agent-runtime:ar-9123"}' > "$ITEMS"
+  printf '{"slug":"red-lock","state":"running","row":"agent-runtime:%s"}\n' "$id" > "$ITEMS"
   run "$SUBJECT" triage
   assert_success
   run grep -c -- 'unstart' "$NLOG"
@@ -2432,7 +2435,7 @@ fix_item() {
   [ ! -s "$PLOG" ]
   [ ! -s "$BOARD.agent-runtime" ]
   [ ! -s "$NOTIFY" ]
-  run grep -c . "$ASKLOG"
+  run grep -c "^post " "$ASKLOG"
   assert_output 1
   run cat "$ASKLOG"
   assert_output --regexp '^post --project agent-runtime --context .*queued ar-1,ar-2,ar-3 for it, the last a root-cause pass on opus.* Red "fix\(logs\): alpha error .*" outlasted every fix tried: what should the next fix do\?$'
@@ -2445,7 +2448,7 @@ fix_item() {
   # the next pass keeps the ask it has and posts no second one
   run "$SUBJECT" triage
   assert_success
-  run grep -c . "$ASKLOG"
+  run grep -c "^post " "$ASKLOG"   # a pass reads the ask it has (show), never posts it again
   assert_output 1
   run cut -f3 "$XDG_STATE_HOME/agentctl/triage-spent"
   assert_output Ask123
@@ -2457,7 +2460,7 @@ fix_item() {
   run cut -f3 "$XDG_STATE_HOME/agentctl/triage-spent"
   assert_output ''
   run "$SUBJECT" triage
-  run grep -c . "$ASKLOG"
+  run grep -c "^post " "$ASKLOG"
   assert_output 1
   # a row an earlier triage wrote to the human sheet is closed as the twin it is
   grep 'fix(logs): alpha error' "$BOARD" > "$BOARD.agent-runtime"

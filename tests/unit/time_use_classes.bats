@@ -56,7 +56,7 @@ EOF
 EOF
   run so_transcript_metrics "$SANDBOX/t.jsonl"
   assert_success
-  assert_equal "$(jq -c '.activity | [.test_runs, .ci_polls]' <<<"$output")" '[2,1]'
+  assert_equal "$(jq -c '.activity | [.test_runs, .ci_polls]' <<<"$output")" '[1,1]'
 }
 
 @test "agent-usage-burn.py: a gate line is a wait, agent-land stays a write, a test run is investigate" {

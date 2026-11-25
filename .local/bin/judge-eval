@@ -263,7 +263,7 @@ JQ_EVAL="$JQ_EPOCH"'
          reason: "", at: $s.ts, answered_at: (if $t == null then null else $t.ts end), judge_call: "",
          outcome: (if ($now - $s.e) < $settle then "pending" elif $t != null then "fp" else "tp" end)}] as $priorows
    # A row a runner wrote is right when nothing edits, drops, moves or re-tags it for the settle
-   # window, writes by the planner aside, and so do the runner's own later writes (inbox-triage
+   # window, writes by the planner aside, and so do later writes by the runner itself (inbox-triage
    # re-scoping a title it filed is its pass, not someone correcting it; 150 such edits in 30 days,
    # runner_score_inbox_triage 0%, ar-3862); untouched($src) makes the verdict for the lane scored by $src.
    # Each settle-window verdict here (and the priority and defer ones) stays pending until its window
