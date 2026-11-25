@@ -151,9 +151,15 @@ roll_do() { # $1=profile $2=project $3=flags ('' | --patch | --minor | --major |
       [ -n "$since" ] || since="$(stat -c %Y "$prev" 2>/dev/null || echo 0)"
     fi
     # Its sessions are filed under the project, and under the repo it belongs to when it is
-    # part of one (`trackers.<project>.repo`: notes-cockpit -> dotfiles).
+    # part of one (`trackers.<project>.repo`: notes-cockpit -> dotfiles). An app of a monorepo
+    # (`trackers.<project>.path`: binks is apps/binks in bnb-platform) has sessions of its own,
+    # and its repo's are every other app's, so they are not folded in.
     repo="$(project_repo_name "$canon" 2>/dev/null)"
     [ "$repo" != "$canon" ] || repo=""
+    if [ -n "$repo" ] && jq -e --arg n "$canon" '.trackers[$n] | objects | .path // empty' \
+        "$(project_map_file)" >/dev/null 2>&1; then
+      repo=""
+    fi
     block="$(for cn in "$canon" ${repo:+"$repo"}; do
                agent-usage changelog "$cn" --since "${since:-0}" 2>/dev/null
              done)"
