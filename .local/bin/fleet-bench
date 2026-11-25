@@ -7405,7 +7405,7 @@ MATRIX_JQ='
     (select(tagged("night")) | "night"), (select(tagged("red")) | "red"), (select(.mode == "plan") | "plan"),
     (select((" " + (.tags // "")) | test(" ask:")) | "ask-resume"),
     (select((.salvage // "") != "") | "salvage-resume"),
-    (select((.sessions // "") | split(" ") | any(. as $s | $os[$s] | select(.harness == $h) | (.uses.subagents // {}) | length > 0)) | "fan-out"),
+    (select(sids | any(. as $s | $os[$s] | select(.harness == $h) | (.uses.subagents // {}) | length > 0)) | "fan-out"),
     (select(.project as $p | $forgejo | index($p)) | "forgejo")];
   def cell($rs): {pass: ($rs | map(select(.v == "pass")) | length), fail: ($rs | map(select(.v == "fail")) | length),
     evidence: ($rs | map(select(.v)) | sort_by(.at) | last | .ref // null)};
