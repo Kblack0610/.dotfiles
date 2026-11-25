@@ -4742,6 +4742,30 @@ Phase 2 of the plan $SANDBOX/plan.md: the doors." >/dev/null
   assert_output "n"
 }
 
+@test "an urgent add over the cap returns nothing, since one return leaves it held; exactly at the cap it returns one" {
+  # 2026-11-20 (ar-4026): urgent ptc-q3-bulk-lift returned ar-2860 with 65 runnable items against a cap
+  # of 50. Admission then refused the add anyway (64 >= 50), so the return achieved nothing.
+  "$AQ" add --project game --from shepherd --priority low --slug a "a" >/dev/null
+  "$AQ" add --project game --from shepherd --priority low --slug b "b" >/dev/null
+  "$AQ" add --project game --from shepherd --priority low --slug c "c" >/dev/null
+  for s in a b c; do "$AQ" set "$s" row="game:gm-$s" >/dev/null; done
+  export AGENT_QUEUE_CAP=2
+  # 3 queued against a cap of 2: one return would leave 2, still at the cap, so nothing goes back.
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority urgent --slug u1 "urgent one"
+  assert_failure 5
+  assert_output --partial "held by admission, nothing was queued: 3 items can start now against a cap of 2"
+  refute_output --partial "returned"
+  run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
+  assert_output "a,b,c"
+  # At the cap (2 queued): one return leaves 1, so c goes back to its row and u1 goes in.
+  "$AQ" cancel a --why "drain" >/dev/null
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority urgent --slug u1 "urgent one"
+  assert_success
+  assert_output --partial "returned c to its board row to make room for urgent u1 under the cap of 2"
+  run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
+  assert_output "b,u1"
+}
+
 @test "the cap never holds a --running, hand-started board or auto:epics verify or dispatch's canary top-up add; dispatch's own board pull it holds" {
   export AGENT_QUEUE_CAP=1
   "$AQ" add --project game --slug one "one" >/dev/null
