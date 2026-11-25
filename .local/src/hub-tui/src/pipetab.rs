@@ -9,8 +9,8 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
-use crate::fit::{cell, wrap, Cell, Table};
-use crate::fmt::{clock, Palette};
+use crate::fit::{cell, labelled, Cell, Table};
+use crate::fmt::{clock, dash, Palette};
 use hub_core::display::fmt::dur_secs;
 
 /// The columns drawn, as the web's, each the `Pipeline::COLUMNS` key it shows; `file` and
@@ -58,8 +58,7 @@ impl PipelinesView {
     /// After a re-read: the selection on the same pipeline, or the index kept in range.
     pub fn reselect(&mut self, p: &Pipelines, id: Option<RowId>) {
         let rows = self.shown(p);
-        let at = id.and_then(|id| rows.iter().position(|r| row_id(r) == id));
-        self.table.keep(at, rows.len());
+        self.table.reselect(&rows, id, |r, id| row_id(r) == *id);
     }
 
     /// The section: its head and summary, the chips, the table with the selection marked, then
@@ -143,13 +142,6 @@ fn state_style(state: &str, p: Palette) -> Style {
 }
 
 fn row(r: &Pipeline, p: Palette, now: i64) -> Vec<Cell> {
-    let or_dash = |s: &str| {
-        if s.is_empty() {
-            "-".to_string()
-        } else {
-            s.to_string()
-        }
-    };
     let secs = |v: Option<i64>| v.map_or("-".into(), |s| dur_secs(s as f64));
     let pass = match r.pass {
         Some(n) if n < 70 => cell(format!("{n}%"), p.bad()),
@@ -173,9 +165,9 @@ fn row(r: &Pipeline, p: Palette, now: i64) -> Vec<Cell> {
         cell(r.state.clone(), state_style(&r.state, p)),
         r.project.clone().into(),
         r.pipeline.clone().into(),
-        or_dash(&r.trigger).into(),
-        or_dash(&r.nightly).into(),
-        or_dash(&r.schedule).into(),
+        dash(&r.trigger).into(),
+        dash(&r.nightly).into(),
+        dash(&r.schedule).into(),
         r.next.map_or("-".into(), |t| clock(t, now)).into(),
         last,
         pass,
@@ -203,16 +195,8 @@ pub fn detail(d: &Detail, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> 
         ),
     ];
     let width = w.saturating_sub(LABEL + 3).max(20);
-    let mut part = |label: &str, text: &str| {
-        let words: Vec<&str> = text.split_whitespace().collect();
-        for (i, l) in wrap(&words, " ", width).into_iter().enumerate() {
-            let name = if i == 0 { label } else { "" };
-            out.push(Line::from(vec![
-                Span::styled(format!("  {name:<LABEL$} "), p.dim()),
-                Span::raw(l),
-            ]));
-        }
-    };
+    let mut part =
+        |label: &str, text: &str| out.extend(labelled(label, text, LABEL, width, p.dim()));
     part("File", &r.file);
     part("Purpose", d.purpose.as_deref().unwrap_or(""));
     for c in &d.crons {

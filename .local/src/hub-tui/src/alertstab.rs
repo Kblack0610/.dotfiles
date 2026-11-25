@@ -15,7 +15,7 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::{DataTable, ROW};
 use crate::fit::{cell, clip_line, wrap, Cell, Table};
-use crate::fmt::{clock, Palette};
+use crate::fmt::{clock, dash, heading, Palette};
 use crate::innertabs;
 
 /// `Alert::COLUMNS` in capitals, in its order, the sort mark placed by that index.
@@ -63,13 +63,6 @@ fn status(l: Level) -> Option<f64> {
     }
 }
 
-fn heading(title: &str, rest: String, p: Palette) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(title.to_string(), p.head()),
-        Span::styled(rest, p.dim()),
-    ])
-}
-
 impl AlertsView {
     /// The firing rows the view keeps, in its sort or the reader's order.
     pub fn shown<'a>(&self, a: &'a Alerts) -> Vec<&'a Alert> {
@@ -83,8 +76,7 @@ impl AlertsView {
     /// Move the selection to the row with this id after a re-read, or keep the index in range.
     pub fn reselect(&mut self, a: &Alerts, id: Option<RowId>) {
         let rows = self.shown(a);
-        let at = id.and_then(|id| rows.iter().position(|r| row_id(r) == id));
-        self.table.keep(at, rows.len());
+        self.table.reselect(&rows, id, |r, id| row_id(r) == *id);
     }
 
     /// The inner tab shown.
@@ -305,11 +297,6 @@ fn watch_lines(a: &Alerts, ok: bool, p: Palette, now: i64, w: usize) -> Vec<Line
         ));
     }
     out
-}
-
-/// A project cell: its name, or `-` for a fleet-wide watch.
-fn dash(project: &str) -> String {
-    if project.is_empty() { "-" } else { project }.into()
 }
 
 fn row(r: &Alert, p: Palette, now: i64) -> Vec<Cell> {
@@ -639,9 +626,7 @@ pub(crate) mod tests {
         )
     }
 
-    fn text(lines: &[Line]) -> String {
-        lines.iter().map(plain).collect::<Vec<_>>().join("\n")
-    }
+    use crate::fit::plain_text as text;
 
     /// A view drawing every inner tab, as a printed `hub --tab alerts` does.
     fn every() -> AlertsView {

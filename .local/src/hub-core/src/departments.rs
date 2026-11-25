@@ -337,17 +337,10 @@ impl Row for Product {
     ];
 
     fn val(&self, col: &str) -> Val {
-        let word = |s: &str| {
-            if s.is_empty() {
-                Val::None
-            } else {
-                Val::Text(s.to_string())
-            }
-        };
         match col {
-            "project" => word(&self.name),
-            "type" => word(&self.kind),
-            "stage" => word(&self.stage),
+            "project" => Val::word(&self.name),
+            "type" => Val::word(&self.kind),
+            "stage" => Val::word(&self.stage),
             d => self
                 .dept(d)
                 .map_or(Val::None, |d| Val::Text(d.cell.word().into())),
