@@ -2315,7 +2315,7 @@ mod tests {
         );
         assert_eq!(
             keys(&v["machines"][0]),
-            ["booked", "busy", "cpu", "host", "load", "next", "running"]
+            ["booked", "busy", "cpu", "host", "load", "next", "running", "state"]
         );
         // No status series: the lowercase word the chip maps to "no data".
         assert_eq!(v["level"], "nodata");
