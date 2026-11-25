@@ -108,7 +108,11 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
             &format!("{pending} pending, {stale} stale (≥14d) — `notes inbox`"),
         );
     } else {
-        r.add(Status::Pass, "captures backlog", &format!("{pending} pending"));
+        r.add(
+            Status::Pass,
+            "captures backlog",
+            &format!("{pending} pending"),
+        );
     }
 
     // The agent board beside its Backlog tier (the rows dispatch pulls from, and the rest), then

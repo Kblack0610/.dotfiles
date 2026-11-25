@@ -160,7 +160,11 @@ pub fn list(p: &Profile, _log: &Logger) -> Result<()> {
     }
 
     let stale = items.iter().filter(|i| i.age_days >= STALE_DAYS).count();
-    println!("captures — {} pending ({})\n", items.len(), p.captures.display());
+    println!(
+        "captures — {} pending ({})\n",
+        items.len(),
+        p.captures.display()
+    );
     for it in &items {
         let flag = if it.age_days >= STALE_DAYS { "!" } else { " " };
         let age = match it.date {
