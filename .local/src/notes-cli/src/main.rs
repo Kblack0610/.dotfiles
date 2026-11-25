@@ -23,7 +23,6 @@ mod focus_sweep;
 mod gate;
 mod improve;
 mod inbox;
-mod inbox_ack;
 mod index;
 mod ingest;
 mod knowledge;
@@ -238,8 +237,7 @@ enum Cmd {
         #[arg(long, conflicts_with_all = ["json", "agent", "version", "done_days"])]
         weigh: bool,
     },
-    /// Triage the dated-capture inbox (list / add / archive), and mark inbox page rows
-    /// reviewed (ack). No subcommand = list.
+    /// Triage the dated-capture inbox (list / add / archive). No subcommand = list.
     Inbox {
         #[command(subcommand)]
         sub: Option<InboxCmd>,
@@ -1151,14 +1149,6 @@ enum InboxCmd {
         #[arg(long)]
         before: Option<String>,
     },
-    /// Mark a Handled-today row of the inbox page reviewed (it folds into `+N reviewed`), or
-    /// take the mark back with --undo; republishes the page
-    Ack {
-        /// The row's key: the `ts` of its ingest event, as the page's `<!-- ack:... -->` holds it
-        key: String,
-        #[arg(long)]
-        undo: bool,
-    },
 }
 
 #[derive(Subcommand)]
@@ -1993,10 +1983,6 @@ fn main() -> Result<()> {
                     stale,
                     before,
                 }) => inbox::archive(&prof, &log, target.as_deref(), stale, before.as_deref())?,
-                Some(InboxCmd::Ack { key, undo }) => {
-                    inbox_ack::mark(&prof, &key, !undo)?;
-                    daily::publish_inbox_page(&prof, &log)?;
-                }
             }
             0
         }

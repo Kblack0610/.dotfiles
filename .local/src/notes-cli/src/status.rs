@@ -55,7 +55,7 @@ impl Feed {
     pub fn guide(&self) -> Option<&'static str> {
         match self {
             Feed::Inbox => Some(
-                "filed: made a new row - joined: an open row already asked it - planned: goal, approach and checks added - added: a session put a new row on your sheet - moved: in a project inbox, waiting to be filed - left: waits for you, with why - refused: the write was turned down, with why - tick a handled row once read and it folds into +N reviewed",
+                "filed: made a new row - joined: an open row already asked it - planned: goal, approach and checks added - added: a session put a new row on your sheet - left: not filed, so it waits in the outbox for you to rewrite or delete - refused: an intake error, its owner fixes it",
             ),
             _ => None,
         }
@@ -108,9 +108,9 @@ pub struct Page {
     /// Italic lead line, already carrying its own freshness stamp when the source has one.
     pub stat: Option<String>,
     pub rows: Vec<Row>,
-    /// Lines folded under one `+N reviewed` bullet closing the second bucket, each nested under
-    /// it: the rows the human marked read, kept so a mark can be taken back.
-    pub reviewed: Vec<String>,
+    /// Sections above the attention bucket, for what the human opens the page to read first
+    /// (the inbox's Reports); one with no lines is left out.
+    pub head: Vec<Section>,
     /// Sections between the attention bucket and the quiet one, for what waits on the human but
     /// is not an event of the feed; one with no lines is left out.
     pub lead: Vec<Section>,
@@ -172,6 +172,11 @@ pub fn render(root: &Path, daily_dir: &Path, page: &Page) -> String {
     rows.sort_by(|a, b| a.sort.cmp(&b.sort));
     let (attention, quiet): (Vec<&Row>, Vec<&Row>) = rows.into_iter().partition(|r| r.attention);
 
+    for sec in page.head.iter().filter(|x| !x.lines.is_empty()) {
+        push_section(&mut s, sec);
+        s.push('\n');
+    }
+
     let cap = feed.attention_cap();
     let (needs, rest) = feed.sections();
     s.push_str(&format!("## {needs}\n"));
@@ -187,17 +192,12 @@ pub fn render(root: &Path, daily_dir: &Path, page: &Page) -> String {
     }
 
     for sec in page.lead.iter().filter(|x| !x.lines.is_empty()) {
-        s.push_str(&format!("\n## {}\n", sec.heading));
-        if let Some(g) = &sec.guide {
-            s.push_str(&format!("{g}\n\n"));
-        }
-        for l in &sec.lines {
-            s.push_str(&format!("- {l}\n"));
-        }
+        s.push('\n');
+        push_section(&mut s, sec);
     }
 
     s.push_str(&format!("\n## {rest}\n"));
-    if quiet.is_empty() && page.reviewed.is_empty() {
+    if quiet.is_empty() {
         s.push_str("_Nothing._\n");
     } else {
         for r in &quiet {
@@ -205,12 +205,6 @@ pub fn render(root: &Path, daily_dir: &Path, page: &Page) -> String {
                 push_row(&mut s, r);
             } else {
                 s.push_str(&format!("- {}\n", r.head));
-            }
-        }
-        if !page.reviewed.is_empty() {
-            s.push_str(&format!("- +{} reviewed\n", page.reviewed.len()));
-            for l in &page.reviewed {
-                s.push_str(&format!("  - {l}\n"));
             }
         }
     }
@@ -236,6 +230,17 @@ pub fn render(root: &Path, daily_dir: &Path, page: &Page) -> String {
     }
     s.push_str(&format!("\n---\n{}\n", links.join(" - ")));
     s
+}
+
+/// A section's heading, its guide line and its bullets.
+fn push_section(s: &mut String, sec: &Section) {
+    s.push_str(&format!("## {}\n", sec.heading));
+    if let Some(g) = &sec.guide {
+        s.push_str(&format!("{g}\n\n"));
+    }
+    for l in &sec.lines {
+        s.push_str(&format!("- {l}\n"));
+    }
 }
 
 /// A row's bullet and its non-empty `- label: value` sub-bullets.
@@ -331,7 +336,7 @@ mod tests {
     fn render_is_byte_stable_across_runs() {
         let page = Page {
             feed: Feed::Watches,
-            reviewed: Vec::new(),
+            head: Vec::new(),
             lead: Vec::new(),
             more: Vec::new(),
             stat: Some("10 watches - 8 OK, 2 tripped".into()),
@@ -349,7 +354,7 @@ mod tests {
     fn tripped_rows_sort_above_quiet_ones() {
         let page = Page {
             feed: Feed::Watches,
-            reviewed: Vec::new(),
+            head: Vec::new(),
             lead: Vec::new(),
             more: Vec::new(),
             stat: None,
@@ -384,7 +389,7 @@ mod tests {
             more: Vec::new(),
             stat: Some("57 unread".into()),
             rows: vec![],
-            reviewed: vec![],
+            head: vec![],
         };
         let out = render(&root(), &daily(), &page);
         assert!(
@@ -403,6 +408,33 @@ mod tests {
         assert!(!out.contains("[[status/comms"), "no self-link:\n{out}");
     }
 
+    /// A head section renders above Needs attention; an empty one is left out.
+    #[test]
+    fn head_sections_lead_the_page_and_an_empty_one_is_dropped() {
+        let sec = |h: &str, lines: Vec<String>| Section {
+            heading: h.into(),
+            guide: Some("Read these.".into()),
+            lines,
+        };
+        let page = Page {
+            feed: Feed::Inbox,
+            stat: None,
+            rows: vec![row(true, 0, "a", "an ask")],
+            head: vec![
+                sec("Reports", vec!["[[r|R]]: one".into()]),
+                sec("Empty", vec![]),
+            ],
+            lead: Vec::new(),
+            more: Vec::new(),
+        };
+        let out = render(&root(), &daily(), &page);
+        assert!(
+            out.contains("## Reports\nRead these.\n\n- [[r|R]]: one\n\n## Needs you\n- an ask\n"),
+            "{out}"
+        );
+        assert!(!out.contains("## Empty"), "{out}");
+    }
+
     #[test]
     fn attention_rows_are_capped_and_the_remainder_counted() {
         let rows: Vec<Row> = (0..15)
@@ -414,7 +446,7 @@ mod tests {
             more: Vec::new(),
             stat: None,
             rows,
-            reviewed: vec![],
+            head: vec![],
         };
         let out = render(&root(), &daily(), &page);
         assert!(
@@ -451,7 +483,7 @@ mod tests {
             more: Vec::new(),
             stat: stat.map(str::to_string),
             rows,
-            reviewed: vec![],
+            head: vec![],
         }
     }
 

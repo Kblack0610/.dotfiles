@@ -1007,7 +1007,7 @@ pub(crate) fn watches_page(p: &Profile) -> status::Page {
     });
     status::Page {
         feed: status::Feed::Watches,
-        reviewed: Vec::new(),
+        head: Vec::new(),
         lead: Vec::new(),
         more: Vec::new(),
         stat,
@@ -1049,7 +1049,7 @@ pub(crate) fn inbox_page(p: &Profile) -> status::Page {
 /// The one scorer of every runner lane, inbox-triage's included (`~/.local/src/docs/judges.md`).
 const JUDGE_EVAL_BIN: &str = "judge-eval";
 /// A timeout guard: judge-eval reads in about 4s (2026-11-22), and a stuck one must not hold
-/// the page, the sweep step or `notes inbox ack` that publishes it.
+/// the page, the sweep step or `notes report add` that publishes it.
 const JUDGE_EVAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// inbox-triage's 7d score as `<bin> inbox-triage --json` words it in its `score_7d`, the cell
@@ -1117,26 +1117,25 @@ fn read_bounded(
     }
 }
 
-/// The inbox status page: what the intake sweep did today and what still waits on the human.
-/// A handled row is one short line, `HH:MM <verb> <id> <project>[ (agent board)]: <words>`,
-/// the id a link to its sheet and the words the line's first [`ROW_WORDS`]; `notes log --id`
-/// keeps the full record. The verbs are the ones `Feed::guide` explains.
+/// The inbox status page: the reports filed for the human, what waits on them, and what the
+/// intake sweep did today, counted. `notes log` keeps every line and where it went.
 ///
-/// - Needs you: each line the sweep left or a write refused (`HH:MM <verb> (<project>): <line>`
-///   with `why:`), each line still in the outbox, and today's quick-captures (the bullet lines
-///   in `inbox/<today>.md`, each with a short `(sess <id>)` suffix when it carried a session
-///   marker, so it links back via `claude -r`).
-/// - Handled today: each line filed or joined to an open row, each row the planner planned
-///   (with `added:`), each new row a session put on a human sheet (`added ... by <session>`),
-///   and each line moved to a project inbox and not filed yet. A line moved and then filed
-///   reads as one row, the filing.
+/// - Reports (first): the report stream, [`crate::report::inbox_lines`].
+/// - Needs you: each line still in the outbox, once, with intake's latest why when it left the
+///   line unfiled (`in the outbox, not filed: <line>`); each ask intake made of the human; and
+///   today's quick-captures (the bullet lines in `inbox/<today>.md`, each with a short
+///   `(sess <id>)` suffix when it carried a session marker, so it links back via `claude -r`).
+///   A line intake left that is no longer in the outbox, and a write intake refused, are
+///   intake's own, so they are counted and never listed here.
+/// - Handled today: one line counting what intake filed, joined, planned, added and moved.
 /// - Waiting in project inboxes: each sheet whose `## Inbox` holds lines, with the count.
 ///
 /// Each project is found in `dirs` (project name, dir). The stat line ends with `score`, the
 /// triage lane's score from [`triage_score`], when there is one.
 fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)], score: Option<&str>) -> status::Page {
     use crate::agent_sheet::Lane;
-    let today = Local::now().date_naive().format("%Y-%m-%d").to_string();
+    let today_date = Local::now().date_naive();
+    let today = today_date.format("%Y-%m-%d").to_string();
     // The queue, dispatch and land steps share the record but are not intake.
     let mut events = crate::ingest::on_day(p, &today);
     events.retain(crate::ingest::Event::is_intake);
@@ -1145,157 +1144,86 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)], score: Option<&str>) -
             .find(|(n, _)| n == name)
             .and_then(|(_, d)| crate::project_tasks::task_sheet(&lane.dir(d)))
     };
-    // `label` as a link to project `n`'s sheet on `lane`; as written when it has none (outbox,
-    // focus, a project not in `dirs`).
-    let to_sheet = |label: &str, n: &str, lane: &str| {
+    // Project `n` as a link to its sheet on `lane`; as written when it has none.
+    let name = |n: &str, lane: &str| {
         let lane = if lane == "agent" {
             Lane::Agent
         } else {
             Lane::Human
         };
         match sheet(n, lane) {
-            Some(s) => format!("[[{}|{label}]]", config::wikilink(&p.vault, &s)),
-            None => label.to_string(),
+            Some(s) => format!("[[{}|{n}]]", config::wikilink(&p.vault, &s)),
+            None => n.to_string(),
         }
     };
-    let name = |n: &str, lane: &str| to_sheet(n, n, lane);
-    // A row id linking its sheet, then its project: `[[<sheet>|ar-12]] demo (agent board)`.
-    let link = |id: &str, n: &str, lane: &str| {
-        let board = if lane == "agent" {
-            " (agent board)"
-        } else {
-            ""
-        };
-        format!("{} {n}{board}", to_sheet(id, n, lane))
-    };
     let mut rows: Vec<status::Row> = Vec::new();
-    let acked = crate::inbox_ack::acked(p);
-    let mut reviewed: Vec<String> = Vec::new();
-    let (mut filed, mut joined, mut planned, mut left, mut refused, mut added) = (0, 0, 0, 0, 0, 0);
-    let mut asked = 0;
+    let (mut filed, mut joined, mut planned, mut added, mut moved) = (0, 0, 0, 0, 0);
+    // A line a later sweep leaves, refuses or asks again counts once: each set holds
+    // (where, text).
+    let mut left_lines: std::collections::HashSet<(&str, &str)> = Default::default();
+    let mut refused_lines = left_lines.clone();
+    // Why intake last left each outbox line unfiled, by the line's text.
+    let mut left_why: std::collections::HashMap<&str, &str> = Default::default();
+    let mut asks_shown: std::collections::HashSet<&str> = Default::default();
     for (i, ev) in events.iter().enumerate() {
-        let at = ev.ts.get(11..16).unwrap_or("--:--");
-        let id = ev.id.as_deref().unwrap_or_default();
-        let mut detail: Vec<(String, String)> = Vec::new();
-        let (attention, head) = match ev.action.as_str() {
-            "split" => (
-                false,
-                format!(
-                    "{at} split in {} into {}: {}",
-                    name(&ev.from, ""),
-                    ev.why.as_deref().unwrap_or("lines"),
-                    few(&ev.text)
-                ),
-            ),
+        match ev.action.as_str() {
             "moved" => {
                 let filed_later = |e: &crate::ingest::Event| {
                     matches!(e.action.as_str(), "filed" | "dup")
                         && e.from == ev.to
                         && e.text == ev.text
                 };
-                if events[i + 1..].iter().any(filed_later) {
+                if !events[i + 1..].iter().any(filed_later) {
+                    moved += 1;
+                }
+            }
+            "filed" => filed += 1,
+            "dup" => joined += 1,
+            "added" if session_intake(ev) => added += 1,
+            "planned" => planned += 1,
+            "refused" => {
+                refused_lines.insert((&ev.from, &ev.text));
+            }
+            "left" => {
+                left_lines.insert((&ev.from, &ev.text));
+                if ev.from == "outbox" {
+                    left_why.insert(&ev.text, ev.why.as_deref().unwrap_or("no reason given"));
+                }
+            }
+            "asked" => {
+                if !asks_shown.insert(&ev.text) {
                     continue;
                 }
-                (
-                    false,
-                    format!(
-                        "{at} moved to {} inbox: {}",
-                        name(&ev.to, ""),
-                        few(&ev.text)
-                    ),
-                )
-            }
-            "filed" | "dup" => {
-                let verb = if ev.action == "dup" {
-                    joined += 1;
-                    "joined"
-                } else {
-                    filed += 1;
-                    "filed"
-                };
-                let words = ev.row.as_deref().unwrap_or(&ev.text);
-                (
-                    false,
-                    format!("{at} {verb} {}: {}", link(id, &ev.to, &ev.lane), few(words)),
-                )
-            }
-            "added" if session_intake(ev) => {
-                added += 1;
-                (
-                    false,
-                    format!(
-                        "{at} added {} by {}: {}",
-                        link(id, &ev.from, &ev.lane),
-                        ev.by,
-                        few(&ev.text)
-                    ),
-                )
-            }
-            "planned" => {
-                planned += 1;
-                detail.push(("added".into(), ev.why.clone().unwrap_or_default()));
-                (
-                    false,
-                    format!("{at} planned {}: {}", link(id, &ev.from, ""), few(&ev.text)),
-                )
-            }
-            action @ ("left" | "asked" | "refused") => {
-                match action {
-                    "refused" => refused += 1,
-                    "asked" => asked += 1,
-                    _ => left += 1,
-                }
-                let why = ev.why.as_deref().unwrap_or("no reason given");
-                if action == "asked" {
-                    // `why` is the ask's id: answer it there and the line files itself.
-                    detail.push(("answer".into(), format!("agent-ask card {why}")));
-                } else {
-                    detail.push(("why".into(), why.to_string()));
-                }
-                let said = if action == "asked" {
-                    "asked you"
-                } else {
-                    action
-                };
-                (
+                let at = ev.ts.get(11..16).unwrap_or("--:--");
+                // `why` is the ask's id: answer it there and the line files itself.
+                let card = format!("agent-ask card {}", ev.why.as_deref().unwrap_or_default());
+                rows.push(row(
                     true,
-                    format!("{at} {said} ({}): {}", name(&ev.from, ""), ev.text),
-                )
+                    i,
+                    format!("{at} asked you ({}): {}", name(&ev.from, ""), ev.text),
+                    vec![("answer".into(), card)],
+                ));
             }
-            _ => continue,
-        };
-        // A handled row is a task the human ticks once read (`notes inbox ack`, or its checkbox
-        // in agent-web), keyed by its event's ts; a ticked one folds into `+N reviewed`.
-        if attention {
-            rows.push(row(true, i, head, detail));
-            continue;
-        }
-        let done = acked.contains(&ev.ts);
-        let head = format!(
-            "[{}] {head} <!-- ack:{} -->",
-            if done { 'x' } else { ' ' },
-            ev.ts
-        );
-        if done {
-            reviewed.push(head);
-        } else {
-            rows.push(row(false, i, head, detail));
+            _ => {}
         }
     }
-    let waiting = crate::outbox::lines(p).unwrap_or_default();
-    let shown = |l: &crate::sheet::InboxLine| {
-        events.iter().any(|e| {
-            e.from == "outbox"
-                && e.text == l.text
-                && matches!(e.action.as_str(), "left" | "asked" | "refused")
-        })
-    };
-    for (i, l) in waiting.iter().filter(|l| !shown(l)).enumerate() {
+    let (left, refused, asked) = (left_lines.len(), refused_lines.len(), asks_shown.len());
+    let mut waiting = crate::outbox::lines(p).unwrap_or_default();
+    let mut seen = std::collections::HashSet::new();
+    waiting.retain(|l| seen.insert(l.text.clone()));
+    for (i, l) in waiting.iter().enumerate() {
+        let (head, detail) = match left_why.get(l.text.as_str()) {
+            Some(why) => (
+                format!("in the outbox, not filed: {}", l.text),
+                vec![("why".to_string(), why.to_string())],
+            ),
+            None => (format!("waiting in the outbox: {}", l.text), vec![]),
+        };
         rows.push(status::Row {
             attention: true,
             sort: (0, format!("o{i:04}")),
-            head: format!("waiting in the outbox: {}", l.text),
-            detail: vec![],
+            head,
+            detail,
         });
     }
     let captures: Vec<String> = fs::read_to_string(p.inbox.join(format!("{today}.md")))
@@ -1319,6 +1247,14 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)], score: Option<&str>) -
             detail: vec![],
         });
     }
+    rows.push(status::Row {
+        attention: false,
+        sort: (2, String::new()),
+        head: format!(
+            "{filed} filed, {joined} joined, {planned} planned, {added} added by sessions, {moved} moved to a project inbox, {left} left, {refused} refused; each line and where it went: `notes log`"
+        ),
+        detail: vec![],
+    });
     // Each sheet's `## Inbox` that holds lines, both lanes, by project name.
     let mut inboxes: Vec<String> = Vec::new();
     for (n, _) in dirs {
@@ -1342,7 +1278,14 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)], score: Option<&str>) -
             score.map(|s| format!("; triage score {s}")).unwrap_or_default()
         )),
         rows,
-        reviewed,
+        head: vec![status::Section {
+            heading: "Reports".into(),
+            guide: Some(
+                "Filed for you to read. Older ones: `notes report list`, or agent-web Today -> Reports."
+                    .into(),
+            ),
+            lines: crate::report::inbox_lines(p, today_date),
+        }],
         lead: vec![status::Section {
             heading: "Decisions for you".into(),
             guide: Some("Answer in the outbox: `<id>: <your answer>`".into()),
@@ -1427,22 +1370,8 @@ fn decisions(dirs: &[(String, PathBuf)], name: &dyn Fn(&str, &str) -> String) ->
     lines
 }
 
-/// Words a Handled today row shows of its line; the id's link opens the whole row.
-const ROW_WORDS: usize = 8;
-
-/// The first [`ROW_WORDS`] of `text` without its tags, `...` when there were more.
-fn few(text: &str) -> String {
-    let all = crate::ingest::row_words(text);
-    let words: Vec<&str> = all.split_whitespace().collect();
-    let mut out = words[..words.len().min(ROW_WORDS)].join(" ");
-    if words.len() > ROW_WORDS {
-        out.push_str(" ...");
-    }
-    out
-}
-
 /// A session's or a runner's new row on a human sheet: intake that did not come through the
-/// sweep, so the page tells it under Handled today. The human's own adds and the agent lane's
+/// sweep, so the page counts it under Handled today. The human's own adds and the agent lane's
 /// follow-ups stay under Sheet actions.
 fn session_intake(e: &crate::ingest::Event) -> bool {
     e.action == "added" && e.lane == "human" && e.id.is_some() && e.by != "human"
@@ -3244,6 +3173,16 @@ mod tests {
         let mut left = Event::new("left", "outbox", "", "a thought");
         left.why = Some("not a task".into());
         record(&p, &left);
+        // A second sweep leaves the same line again: one row, the latest why.
+        left.why = Some("still not a task".into());
+        record(&p, &left);
+        // A line left that is no longer in the outbox is intake's own: counted, never listed.
+        record(&p, &Event::new("left", "outbox", "", "gone since"));
+        // An ask is listed once however many sweeps made it.
+        let mut ask = Event::new("asked", "outbox", "", "pick a colour");
+        ask.why = Some("ask-12".into());
+        record(&p, &ask);
+        record(&p, &ask);
         let mut refused = Event::new("refused", "demo", "", "do the thing #medium");
         refused.why = Some("retired priority #medium".into());
         record(&p, &refused);
@@ -3288,25 +3227,20 @@ mod tests {
         );
         std::fs::write(
             &p.outbox,
-            "# Outbox\n\n## Outbox\n- [ ] new one\n- [ ] a thought\n",
+            "# Outbox\n\n## Outbox\n- [ ] new one\n- [ ] a thought\n- [ ] a thought\n",
         )
         .unwrap();
-        // The human read the joined row: it folds into `+1 reviewed`, still tickable.
-        crate::inbox_ack::mark(&p, &dup.ts, true).unwrap();
         let page = inbox_page_in(
             &p,
             &[("demo".into(), demo)],
             Some("87% untouched (7d, 7 of 8 right, 1 pending, triage-untouched)"),
         );
         let out = status::render(&p.root, &p.daily, &page);
-        // Every event row leads with its HH:MM and a handled one ends with its event's ts, both
-        // the test's clock: mask them.
+        // An event row leads with its HH:MM, the test's clock: mask it.
         let masked = crate::ingest::on_day(&p, &dup.ts[..10])
             .iter()
             .fold(out.clone(), |o, e| {
-                o.replace(&format!("ack:{}", e.ts), "ack:TS")
-                    .replace(&format!("- {} ", &e.ts[11..16]), "- HH:MM ")
-                    .replace(&format!("] {} ", &e.ts[11..16]), "] HH:MM ")
+                o.replace(&format!("- {} ", &e.ts[11..16]), "- HH:MM ")
             });
         let body = masked
             .split_once("## Needs you\n")
@@ -3316,21 +3250,14 @@ mod tests {
         assert_eq!(
             body,
             "\
-- HH:MM left (outbox): a thought
-  - why: not a task
-- HH:MM refused ([[demo/README|demo]]): do the thing #medium
-  - why: retired priority #medium
+- HH:MM asked you (outbox): pick a colour
+  - answer: agent-ask card ask-12
 - waiting in the outbox: new one
+- in the outbox, not filed: a thought
+  - why: still not a task
 
 ## Handled today
-- [ ] HH:MM filed [[demo/README|dm-4]] demo: feat(ui): loading screens <!-- ack:TS -->
-- [ ] HH:MM planned [[demo/README|dm-5]] demo: feat(ui): a brand kit <!-- ack:TS -->
-  - added: 3 plan lines, split into 2 rows
-- [ ] HH:MM added [[demo/README|dm-6]] demo by 5227cc0a: decide(squad): followers and a squad that join and ... <!-- ack:TS -->
-- [ ] HH:MM filed [[demo/agent/README|dm-7]] demo (agent board): test(x): a follow-up <!-- ack:TS -->
-- [ ] HH:MM moved to [[demo/README|demo]] inbox: still in the inbox <!-- ack:TS -->
-- +1 reviewed
-  - [x] HH:MM joined nc-9 nc: focus and outbox <!-- ack:TS -->
+- 2 filed, 1 joined, 1 planned, 1 added by sessions, 1 moved to a project inbox, 2 left, 1 refused; each line and where it went: `notes log`
 
 ## Waiting in project inboxes
 - [[demo/README|demo]]: 1 waiting
@@ -3342,7 +3269,7 @@ mod tests {
 "
         );
         assert!(page.stat.unwrap().ends_with(
-            ": 2 filed, 1 joined, 1 planned, 1 added by sessions, 1 left, 0 asked you, 1 refused, 2 in the outbox, 0 captured; triage score 87% untouched (7d, 7 of 8 right, 1 pending, triage-untouched)"
+            ": 2 filed, 1 joined, 1 planned, 1 added by sessions, 2 left, 1 asked you, 1 refused, 2 in the outbox, 0 captured; triage score 87% untouched (7d, 7 of 8 right, 1 pending, triage-untouched)"
         ));
         assert!(
             out.contains("\nfiled: made a new row - joined:"),
