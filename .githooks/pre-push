@@ -4,7 +4,7 @@
 # speed lever 3. CI stays the authority; an agent session cannot skip it (skip-guard).
 # Each tests.yml job is run here or named CI only; tests/unit/prepush_hook.bats checks the ids.
 #   runs:    lint  rust
-#   CI only: fast weights ui gate report notes skills
+#   CI only: fast weights image ui gate report notes skills
 # One step is no tests.yml job: the launch table check of the private repo's ledger.yml.
 # The first push per crate or toolchain builds its dependencies cold (minutes); later ones reuse the cache.
 # fast stays CI only: the unit bats took 17 s to over 120 s a push, past the 10 s budget.
