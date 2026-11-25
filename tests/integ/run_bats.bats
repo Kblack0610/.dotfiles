@@ -286,7 +286,7 @@ EOT
 fake_bats() {
   local d="$BATS_TEST_TMPDIR/fake/tests"
   mkdir -p "$d/vendor/bats-core/bin"
-  cp "$BATS_TEST_DIRNAME/../run-bats.sh" "$BATS_TEST_DIRNAME/../unit-jobs.awk" "$d/"
+  cp "$BATS_TEST_DIRNAME/../run-bats.sh" "$BATS_TEST_DIRNAME/../unit-jobs.awk" "$BATS_TEST_DIRNAME/../cpus.sh" "$d/"
   printf '#!/bin/sh\necho "ARGS $*"\n' >"$d/vendor/bats-core/bin/bats"
   chmod +x "$d/vendor/bats-core/bin/bats"
   RUN="$d/run-bats.sh"
