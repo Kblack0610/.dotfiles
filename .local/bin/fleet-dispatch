@@ -3470,7 +3470,7 @@ cmd_record_end() {
 # starting" line names one as --session, every line of which carries run=<id>. A rotated log, or a harness
 # with no run dir, prints nothing. The canary tail's score keeps them beside its log (BENCH_CANARY_RUN_LOG).
 cmd_run_log() {
-  local h=${1:-} run log
+  local h=${1:-} run log id
   [[ "$h" =~ ^[a-z0-9-]+$ ]] || { say "run-log: no harness"; return 2; }
   shift
   for id in "$@"; do [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || { say "run-log: $id is not a session id"; return 2; }; done
@@ -3480,7 +3480,7 @@ cmd_run_log() {
   awk -v ids="$*" '
     BEGIN { split(ids, want, " ") }
     function rid() { return match($0, / run=[^ ]+ /) ? substr($0, RSTART + 5, RLENGTH - 6) : "" }
-    NR == FNR { if (index($0, "message=\"cli starting\"")) for (i in want) if (index($0, "\\\"--session\\\",\\\"" want[i] "\\\"")) keep[rid()] = 1; next }
+    NR == FNR { if (index($0, "message=\"cli starting\"")) for (i in want) if (index($0, "\\\"--session\\\",\\\"" want[i] "\\\"") && rid() != "") keep[rid()] = 1; next }
     rid() in keep' "$log" "$log"
 }
 

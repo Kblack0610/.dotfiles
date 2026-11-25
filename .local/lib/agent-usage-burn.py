@@ -336,7 +336,10 @@ def wrapper_class(command, cwd, patterns):
     if not cwd:
         return best
     for seg in TIME_USE_SEGMENTS.split(unquoted(command)):
-        word = TIME_USE_WORD.match(seg).group(TIME_USE_WORD.groups)
+        m = TIME_USE_WORD.match(seg)
+        if not m:  # an empty segment: the gap in && or ||, a trailing ;
+            continue
+        word = m.group(TIME_USE_WORD.groups)
         if word.startswith("-") or not ("/" in word or word.endswith(".sh")):
             continue
         path = os.path.join(cwd, word)
@@ -849,7 +852,9 @@ def harness_rows(root):
     already has their dollars. Every file, since a session's row before a window can sit in a file last written
     before it."""
     for f in glob.glob(os.path.join(root, "*", "*.jsonl")):
-        for line in open(f, errors="ignore"):
+        with open(f, errors="ignore") as fh:
+            rows = fh.readlines()
+        for line in rows:
             try:
                 r = json.loads(line)
             except ValueError:

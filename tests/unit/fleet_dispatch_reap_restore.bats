@@ -372,6 +372,11 @@ LOG
   assert_output ''
   run cmd_run_log h ses_evala ses_evalb
   assert_equal "${#lines[@]}" 4
+  # A start line with no run= field claims no run, so lines with none are not pulled in.
+  printf '%s\n' 'level=INFO message="cli starting" args="[\"run\",\"--session\",\"ses_evalc\"]"' 'level=INFO message="no run here"' >> "$SANDBOX/oc-h/run/data/opencode/log/opencode.log"
+  run cmd_run_log h ses_evalc
+  assert_success
+  assert_output ''
   # A harness with no run dir, or no log yet, prints nothing; an id that is not one is refused.
   run cmd_run_log nope ses_evala
   assert_success
