@@ -2889,8 +2889,8 @@ STUB
 # ghost_setup: the exporter lists runs 1 (a ghost: queued 48h, no job), 2 (queued 1h by GitHub's clock)
 # and 3 (queued 48h, one job) as stuck, run 1 under two job names. gh answers a run and its jobs from
 # those facts and records every call. STUB_CANCEL_REFUSED refuses /cancel with HTTP 409 (not
-# cancellable), STUB_CANCEL_DENIED with 403 and refuses force-cancel too, and STUB_GH_DOWN fails every
-# run read.
+# cancellable), STUB_CANCEL_DENIED with 403 and refuses force-cancel too, STUB_FORCE_REFUSED refuses
+# force-cancel with HTTP 409, and STUB_GH_DOWN fails every run read.
 ghost_setup() {
   cat > "$PROM_LIB" <<'STUB'
 prom_q() {
@@ -2911,7 +2911,8 @@ case "$*" in
   "api repos/o/r/actions/runs/3/jobs "*) echo 1 ;;
   *"/cancel") [ -z "${STUB_CANCEL_DENIED:-}" ] || { echo "gh: Forbidden (HTTP 403)" >&2; exit 1; }
               [ -z "${STUB_CANCEL_REFUSED:-}" ] || { echo "gh: Cannot cancel a workflow run that is completed. (HTTP 409)" >&2; exit 1; } ;;
-  *"/force-cancel") [ -z "${STUB_CANCEL_DENIED:-}" ] ;;
+  *"/force-cancel") [ -z "${STUB_FORCE_REFUSED:-}" ] || { echo "gh: Cannot force cancel this run (HTTP 409)" >&2; exit 1; }
+                    [ -z "${STUB_CANCEL_DENIED:-}" ] ;;
 esac'
 }
 
@@ -2968,14 +2969,22 @@ esac'
   ghost_setup
   export FLEET_SHEPHERD_GHOST_CANCEL=1 STUB_CANCEL_DENIED=1
   run "$SH" ghost-runs
-  assert_line 'ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h)'
+  # GitHub's refusal is in the verdict line, the ledger and the one log line (ar-244).
+  assert_line 'ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h; gh: Forbidden (HTTP 403))'
+  assert_equal "$(cut -f2- "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" | grep runs/1)" \
+    "$(printf 'cancel-failed\thttps://github.com/o/r/actions/runs/1\t48h; gh: Forbidden (HTTP 403)')"
   # A 403 is no "not cancellable": force-cancel is for a run that ignores cancel.
   run grep -c 'force-cancel' "$HOME/gh.calls"
   assert_output 0
   run "$SH" ghost-runs
-  assert_line 'ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h)'
-  run grep -c 'ghost run https://github.com/o/r/actions/runs/1: cancel-failed' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_line 'ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h; gh: Forbidden (HTTP 403))'
+  run grep -c 'ghost run https://github.com/o/r/actions/runs/1: cancel-failed, queued 48h with no jobs (gh: Forbidden (HTTP 403))' "$FLEET_SHEPHERD_DIR/log.md"
   assert_output 1
+  # A run cancel calls not cancellable and force-cancel refuses too names the force-cancel answer.
+  unset STUB_CANCEL_DENIED
+  STUB_CANCEL_REFUSED=1 STUB_FORCE_REFUSED=1 run "$SH" ghost-runs
+  assert_line 'ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h; force-cancel: gh: Cannot force cancel this run (HTTP 409))'
+  export STUB_CANCEL_DENIED=1
   # GitHub not answering writes no verdict, and one line names every run asked again.
   rm -f "$FLEET_SHEPHERD_DIR/ghost-runs.tsv"
   STUB_GH_DOWN=1 run "$SH" ghost-runs
