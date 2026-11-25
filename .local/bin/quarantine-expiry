@@ -64,19 +64,20 @@ for ((hop = 0; hop <= DUP_HOPS && ${#want[@]}; hop++)); do
   mapfile -t want < <(jq -r --argjson asked "$asked" '[.[] | select(.state == "done") | .dup // empty | select(. as $d | $asked | index([$d]) | not)] | unique[]' <<<"$found")
 done
 # moved[<id>]: the open human row a closed, non-dup owner was sent to by skip_exits, which drops the
-# agent row and files its copy as "<text> (agent row <id>)"; one board read, only when a row needs it.
-# Its quarantine entries still name the old id, so without this they read as owned by no row
-# (ucp-215, ucp-1911 -> ucp-3659, 2026-11-24, ar-5590).
+# agent row and files its copy on the same project's sheet as "<text> (agent row <id>)"; the first
+# such row in board order when two carry the link. One board read, only when a row needs it, and an
+# unreadable board is exit 2 as the lookups are. Its quarantine entries still name the old id, so
+# without this they read as owned by no row (ucp-215, ucp-1911 -> ucp-3659, 2026-11-24, ar-5590).
 moved='{}'
-mapfile -t dropped < <(jq -r '[.[] | select(.state == "done" and .dup == null) | .id] | unique[]' <<<"$found")
-if [ "${#dropped[@]}" -gt 0 ]; then
+dropped="$(jq -c '[.[] | select(.state == "done" and .dup == null) | {id, project}] | unique_by(.id)' <<<"$found")"
+if [ "$dropped" != '[]' ]; then
   if ! board="$(notes board --json 2>&1)" || ! jq -e '.rows | type == "array"' >/dev/null 2>&1 <<<"$board"; then
     echo "unreadable: notes board --json: ${board:0:200}"
     exit 2
   fi
-  moved="$(jq -c '[.rows[] | select(.lane == "human" and .state == "open" and .id != null) as $r
-      | $ARGS.positional[] as $old | select($old != $r.id and (($r.raw // "") | contains("(agent row \($old))")))
-      | {key: $old, value: $r}] | unique_by(.key) | from_entries' --args "${dropped[@]}" <<<"$board")"
+  moved="$(jq -c --argjson d "$dropped" '[.rows[] | select(.lane == "human" and .state == "open" and .id != null) as $r
+      | $d[] | select(.id != $r.id and .project == $r.project and (($r.raw // "") | contains("(agent row \(.id))")))
+      | {key: .id, value: $r}] | unique_by(.key) | from_entries' <<<"$board")"
   found="$(jq -c --argjson m "$moved" '. + [$m[]]' <<<"$found")"
 fi
 # The row that owns $id's entries: {id, row, via, moved}, id the last one looked up, row its feed row
@@ -103,7 +104,7 @@ n_rows() { if [ "$1" = 1 ]; then echo "1 owner row"; else echo "$1 owner rows"; 
 # Tab is IFS whitespace, so `read` would merge an empty row field into the next: split on \037
 lines=() owners=()
 declare -A total=() via_ids=() via_n=() via_seen=() via_moved=() outcome=()
-VIA_SHOWN=5   # dup-closed ids a note names before it says "and N more"
+VIA_SHOWN=5   # ids closed into the owner, or sent to it, a note names before it says "and N more"
 while IFS=$'\037' read -r repo row n ends left; do
   [ -n "$repo" ] || continue
   res='{"id":"","row":null,"via":[]}'
@@ -156,7 +157,10 @@ for i in "${!lines[@]}"; do
   if [ "$via" = "$row" ] && [ "$(jq -r '.moved | join(" ")' <<<"$res")" = "$row" ]; then
     owned="; $oid owns them ($row was sent to the human sheet as it)"
   elif [ "$via" = "$row" ]; then owned="; $oid owns them ($row was closed as its dup)"
-  elif [ -n "$via" ]; then owned="; $oid owns them (closed into it: $via -> $oid)"; fi
+  elif [ -n "$via" ]; then
+    mv="$(jq -r '.moved | join(", ")' <<<"$res")"
+    owned="; $oid owns them (closed into it: $via -> $oid${mv:+; $mv went to the human sheet})"
+  fi
   key="$oid|$ends"
   if [ -n "${outcome[$key]:-}" ]; then
     case "${outcome[$key]}" in noted*) noted=$((noted + 1)) ;; would*) pending=$((pending + 1)) ;; *) failed=$((failed + 1)) ;; esac

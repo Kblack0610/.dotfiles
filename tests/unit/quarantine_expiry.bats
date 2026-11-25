@@ -13,8 +13,8 @@ setup() {
   # hub answers `quarantine soon` from $SANDBOX/soon.tsv (a missing file is a parse failure,
   # exit 2) and prints $SANDBOX/undated (ends that are not dates) to stderr with exit 1;
   # notes answers `board --json --id <id>...` with the rows of $SANDBOX/board.json those ids
-  # name (every row with no --id), logs each lookup's ids to lookups.log and each edit's arguments
-  # to notes.log
+  # name (every row with no --id, or a failure while $SANDBOX/whole-board-fails exists), logs
+  # each lookup's ids to lookups.log and each edit's arguments to notes.log
   cat > "$SANDBOX/bin/hub" <<HUB
 #!/usr/bin/env bash
 [ "\$*" = "quarantine soon" ] || exit 2
@@ -28,7 +28,10 @@ if [ "\$1" = board ]; then
   shift 2; ids=()
   while [ \$# -gt 0 ]; do [ "\$1" = --id ] && ids+=("\$2"); shift 2; done
   echo "\${ids[*]}" >> "$SANDBOX/lookups.log"
-  [ "\${#ids[@]}" -gt 0 ] || { jq -c '{today: "x", rows}' < "$SANDBOX/board.json"; exit; }
+  if [ "\${#ids[@]}" = 0 ]; then
+    [ ! -e "$SANDBOX/whole-board-fails" ] || { echo "notes: board timed out" >&2; exit 1; }
+    jq -c '{today: "x", rows}' < "$SANDBOX/board.json"; exit
+  fi
   jq -c '{today: "x", rows: [.rows[] | select(.id as \$i | \$ARGS.positional | index([\$i]))]}' --args "\${ids[@]}" < "$SANDBOX/board.json"
   exit
 fi
@@ -110,26 +113,43 @@ soon() { printf '%s\n' "$@" > "$SANDBOX/soon.tsv"; }
   # ucp-60 was dropped to the sheet as ucp-61; ucp-62 closed into ucp-63, which went to the sheet as
   # ucp-64; ucp-65 was dropped and its sheet copy is closed, so no open row owns it
   jq '.rows += [
-    {id:"ucp-60",state:"done",dup:null,lane:"agent",details:[],raw:"- [x] a <!-- id:ucp-60 dropped: sent -->"},
+    {id:"ucp-60",state:"done",dup:null,lane:"agent",project:"unity-core-playground",details:[],raw:"- [x] a <!-- id:ucp-60 dropped: sent -->"},
     {id:"ucp-61",state:"open",lane:"human",profile:"bnb",project:"unity-core-playground",details:[],
      raw:"- [ ] fix(tests): a (agent row ucp-60) <!-- id:ucp-61 -->"},
     {id:"ucp-62",state:"done",dup:"ucp-63",lane:"agent",details:[],raw:"- [x] b <!-- id:ucp-62 dup:ucp-63 -->"},
-    {id:"ucp-63",state:"done",dup:null,lane:"agent",details:[],raw:"- [x] c <!-- id:ucp-63 dropped: sent -->"},
+    {id:"ucp-63",state:"done",dup:null,lane:"agent",project:"unity-core-playground",details:[],raw:"- [x] c <!-- id:ucp-63 dropped: sent -->"},
     {id:"ucp-64",state:"open",lane:"human",profile:"bnb",project:"unity-core-playground",details:[],
      raw:"- [ ] fix(tests): c (agent row ucp-63) <!-- id:ucp-64 -->"},
-    {id:"ucp-65",state:"done",dup:null,lane:"agent",details:[],raw:"- [x] d <!-- id:ucp-65 dropped: sent -->"},
+    {id:"ucp-65",state:"done",dup:null,lane:"agent",project:"unity-core-playground",details:[],raw:"- [x] d <!-- id:ucp-65 dropped: sent -->"},
     {id:"ucp-66",state:"done",lane:"human",details:[],raw:"- [x] d (agent row ucp-65) <!-- id:ucp-66 -->"}]' \
     "$SANDBOX/board.json" > "$SANDBOX/b" && mv "$SANDBOX/b" "$SANDBOX/board.json"
   soon $'Org/play\tucp-60\t2\t2026-11-24\t3' $'Org/play\tucp-62\t1\t2026-11-24\t3' $'Org/play\tucp-65\t1\t2026-11-24\t3'
   run "$REPO_ROOT/.local/bin/quarantine-expiry"
   assert_failure 1
   assert_line --index 0 'ucp-60: 2 entries end 2026-11-24 (3d) in Org/play; ucp-61 owns them (ucp-60 was sent to the human sheet as it); noted on the row now'
-  assert_line --index 1 'ucp-62: 1 entry ends 2026-11-24 (3d) in Org/play; ucp-64 owns them (closed into it: ucp-62 -> ucp-63 -> ucp-64); noted on the row now'
+  assert_line --index 1 'ucp-62: 1 entry ends 2026-11-24 (3d) in Org/play; ucp-64 owns them (closed into it: ucp-62 -> ucp-63 -> ucp-64; ucp-63 went to the human sheet); noted on the row now'
   assert_line --index 2 'ucp-65: 1 entry ends 2026-11-24 (3d) in Org/play; the row is closed, so no open row owns them'
   run cat "$SANDBOX/notes.log"
   assert_line --partial 'quarantine ends 2026-11-24: 2 entries of this row and of the rows closed into it or sent to it from the agent board (ucp-60) stop'
   assert_line -- '- [ ] fix(tests): a (agent row ucp-60) <!-- id:ucp-61 -->'
   refute_line --partial -- '--agent'
+}
+
+@test "a moved owner's link is read only on its own project's sheet, and a board that will not read is unreadable" {
+  # ucp-70 was dropped; the only row naming it sits on another project's sheet
+  jq '.rows += [
+    {id:"ucp-70",state:"done",dup:null,lane:"agent",project:"unity-core-playground",details:[],raw:"- [x] a <!-- id:ucp-70 dropped: sent -->"},
+    {id:"apo-1",state:"open",lane:"human",profile:"bnb",project:"other",details:[],raw:"- [ ] quotes (agent row ucp-70) <!-- id:apo-1 -->"}]' \
+    "$SANDBOX/board.json" > "$SANDBOX/b" && mv "$SANDBOX/b" "$SANDBOX/board.json"
+  soon $'Org/play\tucp-70\t1\t2026-11-24\t3'
+  run "$REPO_ROOT/.local/bin/quarantine-expiry" --dry-run
+  assert_failure 1
+  assert_line --index 0 'ucp-70: 1 entry ends 2026-11-24 (3d) in Org/play; the row is closed, so no open row owns them'
+  # the --id lookups answer, the whole-board read does not: never read as all clear
+  touch "$SANDBOX/whole-board-fails"
+  run "$REPO_ROOT/.local/bin/quarantine-expiry"
+  assert_failure 2
+  assert_output 'unreadable: notes board --json: notes: board timed out'
 }
 
 @test "a dup row listed for two repos is named once, and a chain past DUP_HOPS says it was cut" {
