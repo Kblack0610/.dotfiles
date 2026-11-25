@@ -58,6 +58,11 @@ load 'agent_queue/common'
   [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ]
   run "$AQ" add --running --project game --session hub:game-agent-1 --slug client-own "own work"
   assert_success
+  # set cannot move an item into the client's project either.
+  PROJECT_MACHINE_PROFILE=personal "$AQ" add --project app --slug own-app "app work"
+  run "$AQ" set own-app project=game
+  assert_failure
+  assert_output --partial "client's work project"
   # Negative control: the same project with no client queues as before.
   jq 'del(.trackers.game.client)' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$AGENT_QUEUE_PROJECT_MAP"
   run "$AQ" add --project game --slug home-plain "plain"

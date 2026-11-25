@@ -6928,6 +6928,7 @@ start_item() {
   # A client's work project is hidden here (project_visible); agent-queue add refuses one, and this
   # catches an item queued before that guard or written by hand (ar-6083).
   local project; project=$(jq -r '.project // ""' <<<"$it")
+  [ -z "$project" ] || project=$(PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_lookup "$project") || project=$(jq -r '.project' <<<"$it")
   if [ -n "$project" ] && ! PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_visible "$project"; then
     say "queue item $slug is in $project, a client's work project hidden on this machine: never started here"; return 5
   fi

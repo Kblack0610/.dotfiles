@@ -265,6 +265,17 @@ load 'agent_land/common'
   assert_output 0
 }
 
+@test "--admin through an item with no origin is refused when the session's launch item was dispatched (ar-6083)" {
+  # ship carries no origin, as an item a session files itself with --running does.
+  item launcher
+  "$SANDBOX/bin/agent-queue" set launcher origin=run >/dev/null
+  AGENT_QUEUE_ITEM=launcher run "$LAND" 42 --item ship --admin
+  assert_failure
+  assert_output --partial "the launch item launcher is origin run"
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
 @test "without --admin the merge carries no --admin" {
   run "$LAND" 42 --item ship
   assert_success

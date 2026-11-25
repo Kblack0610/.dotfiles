@@ -636,10 +636,17 @@ esac
 # headless run, never an item dispatch or an ask started (origin run, ask). A dispatched session that
 # was refused for want of a review found --admin in --help and merged a client's PR with it
 # (ar-6083). A review the repo requires waits for the human.
+# The session's own launch item (AGENT_QUEUE_ITEM, which dispatch sets) is judged as well as --item's, so a
+# dispatched session cannot pass by landing through an item it filed itself with no origin.
+admin_origin_ok() { case "$1" in '' | hand | resume) return 0 ;; *) return 1 ;; esac; }
 if [ "${#admin[@]}" -gt 0 ]; then
-  aorigin=$(jq -r '.origin // ""' <<<"$it")
-  { [[ "${CLAUDE_CODE_ENTRYPOINT:-}" != sdk-* ]] && case "$aorigin" in '' | hand | resume) true ;; *) false ;; esac; } ||
-    die "--admin is the human's: queue item $item is ${aorigin:+origin $aorigin, }not a session the human opened${aorigin:+ (dispatch or an ask started it)}, so nothing merged. A PR waiting on a required review waits for the human: agent-ask post, then stop"
+  aorigin=$(jq -r '.origin // ""' <<<"$it") lorigin=''
+  if [ -n "${AGENT_QUEUE_ITEM:-}" ]; then
+    lorigin=$(aq_retry show "$AGENT_QUEUE_ITEM" --json 2>/dev/null | jq -r '.origin // "unknown"') || lorigin=unknown
+    [ -n "$lorigin" ] || lorigin=unknown
+  fi
+  { [[ "${CLAUDE_CODE_ENTRYPOINT:-}" != sdk-* ]] && admin_origin_ok "$aorigin" && admin_origin_ok "$lorigin"; } ||
+    die "--admin is the human's: queue item $item${aorigin:+ is origin $aorigin}${lorigin:+, the launch item ${AGENT_QUEUE_ITEM} is origin $lorigin}; only a session the human opened may skip a review, so nothing merged. A PR waiting on a required review waits for the human: agent-ask post, then stop"
 fi
 # With no --repo, the item's own pr:<owner>/<repo>#<pr> names the repo: the bare number alone would
 # be read against this checkout's repo, whatever repo the item's PR is in.
