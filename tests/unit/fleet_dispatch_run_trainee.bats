@@ -26,10 +26,10 @@ bats_require_minimum_version 1.5.0
   assert_output --partial 'start: gotrain has a projects allowlist'
 }
 
-@test "trainee floor: the fleet share cap does not hold its start, which runs on a free trainee key, not a session the cap counts" {
+@test "trainee floor: the project share cap does not hold its start, which runs on a free trainee key, not a session the cap counts" {
   trainee_ready
   srcs go:ok:0.1 codex:reserve:5
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_FLEET_PROJECTS=game DISPATCH_FLEET_SHARE=30
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PROJECT_SHARE=game:30
   fleet_state 8
   local i
   for i in 1 2; do
@@ -38,11 +38,11 @@ bats_require_minimum_version 1.5.0
   done
   agent-queue add --project game --slug t-one --priority low --tags tier1 "Fix the menu title #pts/1" >/dev/null
   run share_why "$(agent-queue show t-one --json)"
-  assert_output --partial 'fleet share: 2 of the 2 items started in 24h are fleet work (game)'
+  assert_output --partial 'project share: game started 2 of the 2 items in 24h'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --regexp 'started queue item t-one on gotrain \((glm|kimi)\), a trainee run .*, on the trainee floor'
-  refute_output --partial 'held by fleet share'
+  refute_output --partial 'held by project share'
 }
 
 # 2026-11-19: three trainee runs started on the workstation while razer-laptop sat at load 0.25.
