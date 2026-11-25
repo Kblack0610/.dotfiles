@@ -1116,8 +1116,8 @@ impl<'a> Graph<'a> {
                 }
                 for n in &v.prs {
                     match line.tags.iter().find(|t| t.prs.contains(n)) {
-                        // A row closed after its PR shipped: tags on a line are cumulative, so the
-                        // PR is in this version too (ucp-2766, ucp-1270, ucp-3000).
+                        // A row closed after its PR shipped: a PR in an earlier tag is in every
+                        // later release, this one too (ucp-2766, ucp-1270, ucp-3000).
                         Some(t) if shipped_before(&t.version, bare) => {}
                         Some(t) if t.version != bare => out.push(format!(
                             "{p} lab {}: row PR #{n} shipped in {}",
@@ -1182,18 +1182,22 @@ fn plain_version(v: &str) -> bool {
             .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// Whether tag version `shipped` (`1.3.0`, `0.5.0-shapecity3`) sorts before lab version `rolled`
-/// (`1.4.0`) by their numeric `major.minor.patch`. A version that does not parse orders nothing.
+/// Whether tag version `shipped` (`1.3.0`, `1.4.0-rc1`) sorts before lab version `rolled`
+/// (`1.4.0`): by numeric `major.minor.patch`, and a pre-release before its own release, as in
+/// semver. A version that does not parse orders nothing.
 fn shipped_before(shipped: &str, rolled: &str) -> bool {
-    let triple = |v: &str| {
-        let core = v.split('-').next()?;
-        plain_version(core).then(|| {
-            core.split('.')
-                .map(|p| p.parse::<u64>().unwrap_or(0))
-                .collect::<Vec<_>>()
-        })
+    let key = |v: &str| {
+        let (core, pre) = v.split_once('-').map_or((v, false), |(c, _)| (c, true));
+        if !plain_version(core) {
+            return None;
+        }
+        let nums = core
+            .split('.')
+            .map(|p| p.parse::<u64>().ok())
+            .collect::<Option<Vec<_>>>()?;
+        Some((nums, !pre))
     };
-    matches!((triple(shipped), triple(rolled)), (Some(s), Some(r)) if s < r)
+    matches!((key(shipped), key(rolled)), (Some(s), Some(r)) if s < r)
 }
 
 /// `2026-11-11`: the day the links are held from.
@@ -2035,6 +2039,28 @@ mod tests {
                 now
             )
             .is_empty());
+    }
+
+    #[test]
+    fn a_tag_ships_before_a_later_release_or_its_own_pre_release_and_odd_ones_order_nothing() {
+        for (shipped, rolled, before) in [
+            ("1.3.0", "1.4.0", true),
+            ("1.3.9", "1.10.0", true),
+            ("1.4.0-rc1", "1.4.0", true),
+            ("1.4.0", "1.4.0", false),
+            ("1.5.0", "1.4.0", false),
+            ("1.4.0", "1.4.0-rc1", false),
+            ("1.4.0-rc1", "1.4.0-rc2", false),
+            ("1.3", "1.4.0", false),
+            ("1.3.0", "next", false),
+            ("99999999999999999999999.0.0", "1.4.0", false),
+        ] {
+            assert_eq!(
+                shipped_before(shipped, rolled),
+                before,
+                "{shipped} < {rolled}"
+            );
+        }
     }
 
     #[test]
