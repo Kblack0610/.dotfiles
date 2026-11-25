@@ -54,6 +54,8 @@ gh2store "$REPO_ROOT/.local/bin/schedules-sync" "\$2" < "\$f"
 STUB
   chmod +x "$SANDBOX/bin/gh2store" "$SANDBOX/bin/ss-stub"
   export SCHEDULES_SYNC=ss-stub
+  # No fleet worker unless a test names one: the real roster is the workstation's.
+  export SO_WORKERS=true
   # 2026-10-20T00:00:00Z; every fixture session stopped 2026-10-19.
   export SO_NOW=1792454400
   STOP=1792368000
@@ -1254,6 +1256,43 @@ EOF
   assert_success
   assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs '[.[].session_id | select(startswith("ses_"))] | join(" ")')" ses_root
   assert_output --partial "opencode rows unread from $SANDBOX/oc-free/run/data/opencode/opencode.db"
+}
+
+@test "a run placed on a fleet worker gets its line from that worker's headless-rows; a worker that does not answer is a note, then read when it wakes" {
+  oc_db
+  # Each worker holds a lane DB of its own with one gateway run in it: w1 ses_eval1, w2 ses_eval2.
+  local w
+  for w in 1 2; do
+    mkdir -p "$SANDBOX/w$w"
+    cp "$SO_OPENCODE_DB" "$SANDBOX/w$w/opencode.db"
+    sqlite3 "$SANDBOX/w$w/opencode.db" "UPDATE session_v2 SET id = 'ses_eval$w' WHERE id = 'ses_root'; UPDATE session_v2 SET parent_id = 'ses_eval$w' WHERE parent_id = 'ses_root'; UPDATE session_message SET session_id = 'ses_eval$w' WHERE session_id = 'ses_root';"
+  done
+  # The roster warns that its fetch failed but still lists both workers: passed on, never "unread".
+  printf '#!/bin/sh\necho "fleet-hosts: fetch failed, so the roster is as last fetched" >&2\nprintf "w1\\nw2\\n"\n' > "$SANDBOX/bin/workers-stub"
+  # w2 is asleep (ssh 255) until $SANDBOX/w2.awake exists.
+  cat > "$SANDBOX/bin/worker-stub" <<STUB
+#!/usr/bin/env bash
+echo "\$*" >> "$SANDBOX/worker.calls"
+[ "\$1" = w1 ] || [ -e "$SANDBOX/\$1.awake" ] || { echo "ssh: connect to host \$1: No route to host" >&2; exit 255; }
+[ "\$2 \$4 \$5" = "timeout agentctl-session-outcomes headless-rows" ] || exit 9
+SO_OPENCODE_DB="$SANDBOX/\$1/opencode.db" SO_HARNESSES=/nonexistent SO_CODEX_SESSIONS=/nonexistent SO_AGY_RUNS=/nonexistent exec "$SUBJECT" headless-rows
+STUB
+  chmod +x "$SANDBOX/bin/workers-stub" "$SANDBOX/bin/worker-stub"
+  export SO_WORKERS=workers-stub SO_WORKER_RUN=worker-stub
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs '[.[].session_id | select(startswith("ses_"))] | sort | join(" ")')" 'ses_eval1 ses_root'
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs 'map(select(.session_id == "ses_eval1")) | last | [.harness, .cost_usd, .tokens_total] | join(" ")')" "opencode 1.75 175"
+  assert_output --partial "w2 rows unread (rc 255): ssh: connect to host w2"
+  assert_output --partial "fleet-hosts: fetch failed, so the roster is as last fetched"
+  refute_output --partial "fleet workers unread"
+  grep -qx "w1 timeout 300 agentctl-session-outcomes headless-rows" "$SANDBOX/worker.calls"
+  # w2 wakes: its run, never seen, is written on the next run; w1's, already seen, is not again.
+  touch "$SANDBOX/w2.awake"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs '[.[].session_id | select(startswith("ses_eval"))] | join(" ")')" 'ses_eval1 ses_eval2'
+  refute_output --partial "rows unread"
 }
 
 @test "an opencode session is observed once, and turns final like any other" {
