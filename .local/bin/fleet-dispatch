@@ -83,7 +83,7 @@ set -uo pipefail
 DISPATCH_CONF_KEYS=(
   DISPATCH_PROFILES DISPATCH_PER_PASS DISPATCH_LOW_WATER DISPATCH_ORPHAN_HOURS
   DISPATCH_TARGET_PRESENT DISPATCH_TARGET_AWAY DISPATCH_STATE_FRESH_MIN DISPATCH_MAX_LOAD
-  DISPATCH_HOST_MEM_MIN_PCT DISPATCH_START_LOAD DISPATCH_START_LOAD_MIN
+  DISPATCH_HOST_MEM_MIN_PCT DISPATCH_START_LOAD
   DISPATCH_RED_FLOOR DISPATCH_PLAN_LOAD_FLOOR DISPATCH_FIX_TRIES DISPATCH_TRAINEE_REVIEW_HOURS
   DISPATCH_PROJECT_SHARE DISPATCH_PROJECT_SHARE_H
   DISPATCH_ROLLUP_DAYS DISPATCH_ROLLUP_MIN DISPATCH_ROLLUP_BOARD
@@ -7403,7 +7403,7 @@ cmd_headroom() {
         (if .held then ", held: \(.held)" else "" end),
         "  pace:      \(.total_live // "?") of \(.target) live Claude sessions (\(.needs // "?") more wait on the human, not counted), the \(.target_when) target (the live ones plus the Opus sessions the Claude spend has spare at pace, at most present \(.target_present), away \(.target_away)); hand starts count toward it and are never refused",
         "  run units: \(.live_runs)/\(.max_live) used, \(.slots_free) free (heavy 2, light 1), \(.live_hand) more started by hand",
-        "  load:      \(.load // "?")\(if .cpu_busy != null then " (1-min load \(.load1), \(.cpu_busy) cores busy; the pace reads the lower)" else "" end)\(if .starting > 0 then " plus \(.load_pending) for \(.starting) started in the last '"$DISPATCH_START_LOAD_MIN"' min" else "" end) of a \(.load_cap) cap, \(.load_room // "?") room",
+        "  load:      \(.load // "?")\(if .cpu_busy != null then " (1-min load \(.load1), \(.cpu_busy) cores busy; the pace reads the lower)" else "" end)\(if .starting > 0 then " plus \(.load_pending) for \(.starting) started in the last '"$WAKE_SETTLE_MIN"' min" else "" end) of a \(.load_cap) cap, \(.load_room // "?") room",
         "  run floor: \(.floor_live) of \(.run_floor) run sessions live; under it the weekly pace of an account refused for its pace alone does not hold a start (committed burn, the reserve and the 5h window still do)",
         "  red floor: \(.red_live) of \(if .red_floor > 0 then .red_floor + .red_watch else 0 end) red sessions live (\(.red_floor), plus \(.red_watch) for tripped watches); under it the pace target, weekly pace, load and fleet-assess do not hold a red",
         (.project_share as $s | $s.projects | to_entries[] | "  project share: \(.key) \(.value.n) of \($s.total) items started in \($s.hours)h, \(.value.pct // 0)% against a \(.value.cap)% cap\(if .value.full then ": full, so only reds and work the human asked for start its items until nothing else can" else "" end)"),
@@ -7984,7 +7984,7 @@ firing_findings() {
     | select((.epoch // $now) >= $now - $fresh * 60) | {rule, scope, repos, bind}'
 }
 
-# pending_load -> "<starts> <load>": the sessions started in the last DISPATCH_START_LOAD_MIN minutes
+# pending_load -> "<starts> <load>": the sessions started in the last WAKE_SETTLE_MIN minutes (pace.conf, wake-pace.sh: the one settle window)
 # (the `started` lines the log already holds) and the load they have
 # not yet put on the 1-min average. A start's load arrives minutes late, so a loop of starts that
 # each read the load sees the same low number; counting the starts closes that. Hand starts and a
@@ -7994,7 +7994,7 @@ firing_findings() {
 pending_load() {
   local n
   [ "$DISPATCH_START_LOAD" != 0 ] || { echo "0 0.0"; return; }
-  n=$(awk -v c="$(date -d "-$DISPATCH_START_LOAD_MIN min" '+%Y-%m-%d %H:%M')" '$4 == "started" && ($2 " " $3) >= c' "$LOG" 2>/dev/null | grep -c . || true)
+  n=$(awk -v c="$(date -d "-$WAKE_SETTLE_MIN min" '+%Y-%m-%d %H:%M')" '$4 == "started" && ($2 " " $3) >= c' "$LOG" 2>/dev/null | grep -c . || true)
   [ "${DRY:-0}" != 1 ] || n=$(( ${n:-0} + ${STARTED:-0} ))
   LC_ALL=C awk -v n="${n:-0}" -v l="$DISPATCH_START_LOAD" 'BEGIN { printf "%d %.1f\n", n, n * l }'
 }
@@ -8054,7 +8054,7 @@ load_why() {
   read -r load load1 busy < <(pace_load "$cores")
   read -r starts pend < <(pending_load)
   [ "$1" = 0 ] && over_pace "$load" "$cores" "$pend" &&
-    echo "load ${load}$([ "$busy" = - ] || echo " (1-min load $load1, $busy cores busy; the pace reads the lower)")$([ "$starts" = 0 ] || echo " plus $pend for $starts started in the last ${DISPATCH_START_LOAD_MIN} min") on ${cores} cores is over the ${MAX_LOAD} pace"
+    echo "load ${load}$([ "$busy" = - ] || echo " (1-min load $load1, $busy cores busy; the pace reads the lower)")$([ "$starts" = 0 ] || echo " plus $pend for $starts started in the last ${WAKE_SETTLE_MIN} min") on ${cores} cores is over the ${MAX_LOAD} pace"
   return 0
 }
 

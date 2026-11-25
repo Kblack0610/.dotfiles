@@ -2134,7 +2134,7 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
 
 @test "headroom counts sessions started in the last few minutes against the load room, though the load has not moved" {
   two_items
-  export DISPATCH_START_LOAD=1 DISPATCH_START_LOAD_MIN=5
+  export DISPATCH_START_LOAD=1
   mkdir -p "$FLEET_DISPATCH_DIR"
   { printf -- '- %s started s1 on agents (hand) for app: queue item a\n' "$(date -d '-1 min' '+%Y-%m-%d %H:%M')"
     printf -- '- %s started s2 on agents (hand) for app: queue item b\n' "$(date -d '-2 min' '+%Y-%m-%d %H:%M')"
@@ -2146,7 +2146,7 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
 
 @test "a loop of hand starts is held once the starts not yet in the load fill the room, and an older start no longer counts" {
   two_items
-  export DISPATCH_START_LOAD="$(nproc)" DISPATCH_START_LOAD_MIN=5
+  export DISPATCH_START_LOAD="$(nproc)"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r '[.could_start, .starting] | @tsv' <<<"$output")" $'2\t0'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-app
