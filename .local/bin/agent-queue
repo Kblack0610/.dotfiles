@@ -3910,7 +3910,7 @@ dispatch_held() {
 # dispatch pass. An item with no row has nothing waiting on it there. A failed pull leaves the rows for
 # the next pass, which reads the row closed. AGENT_QUEUE_START=0 (the shepherd's idle close) still pulls:
 # fleet-dispatch pull-after --queue-only queues the rows and starts none (2026-11-21: ar-4357 sat 10h behind
-# ar-4356, which the shepherd closed with the pull skipped and the fleet share kept a pass from filling it).
+# ar-4356, which the shepherd closed with the pull skipped and the fleet share cap, now DISPATCH_PROJECT_SHARE, kept a pass from filling it).
 pull_after() {
   local row rc=0
   row="$(item_row "$2")"

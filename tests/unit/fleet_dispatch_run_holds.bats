@@ -803,6 +803,9 @@ share_history() {
   DISPATCH_PROJECT_SHARE='game app:60' run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
   assert_failure 78
   assert_output --partial 'DISPATCH_PROJECT_SHARE has "game", not a <project>:<percent> word'
+  DISPATCH_PROJECT_SHARE='game:30 app:60 game:50' run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
+  assert_failure 78
+  assert_output --partial 'DISPATCH_PROJECT_SHARE names game twice'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'started game-agent-1: app: fix-app'

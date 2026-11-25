@@ -107,13 +107,19 @@ dispatch_conf_load() {
       "$DISPATCH_CONF" "${missing[*]}" >&2
     exit 78
   fi
-  # The project share table (share_state) is <project>:<percent> words; a malformed one stops loud, as a
-  # missing key does, never a cap read as off.
-  local t
+  # The project share table (share_state) is <project>:<percent> words, one per project; a malformed or
+  # repeated one stops loud, as a missing key does, never a cap read as off.
+  local t seen=' '
   for t in $DISPATCH_PROJECT_SHARE; do
-    [[ "$t" =~ ^[^:]+:[0-9]+$ ]] && continue
-    printf 'fleet-dispatch: DISPATCH_PROJECT_SHARE has "%s", not a <project>:<percent> word\n' "$t" >&2
-    exit 78
+    if ! [[ "$t" =~ ^[^:]+:[0-9]+$ ]]; then
+      printf 'fleet-dispatch: DISPATCH_PROJECT_SHARE has "%s", not a <project>:<percent> word\n' "$t" >&2
+      exit 78
+    fi
+    if [[ "$seen" == *" ${t%%:*} "* ]]; then
+      printf 'fleet-dispatch: DISPATCH_PROJECT_SHARE names %s twice\n' "${t%%:*}" >&2
+      exit 78
+    fi
+    seen+="${t%%:*} "
   done
 }
 # The verbs a worker runs for the dispatching machine (probe_hosts, start --host, on_workers) are
@@ -1222,7 +1228,7 @@ pace_target() {
 # HUMAN_ASK_JQ: `human_ask` is an item from a #requested row whose words are the human's: dispatch
 # copies the tag onto it, and stamps `asker:` at promote from notes' ingest record (asker_map). An
 # `asker: agent` item's #requested came from an agent: a session's `--want human` follow-up, the outbox,
-# an ask sweep. notes puts #requested on every `--want`, so on 2026-11-23 the 75% fleet share passed its
+# an ask sweep. notes puts #requested on every `--want`, so on 2026-11-23 the 75% fleet share (the shared cap DISPATCH_PROJECT_SHARE replaced) passed its
 # 30% cap on a session's leftovers (plan fleet-product-work-first P3). No asker (a row the record does
 # not reach, or an item from before it) keeps the tag's word.
 # shellcheck disable=SC2016
@@ -1295,7 +1301,7 @@ share_state() {
   s=$({ agent-queue list --json --state done --since "$(( (DISPATCH_PROJECT_SHARE_H + 23) / 24 ))d" &&
     agent-queue list --json --state active; } 2>/dev/null |
     jq -sc --argjson cut "$(( $(date +%s) - DISPATCH_PROJECT_SHARE_H * 3600 ))" --arg t "$DISPATCH_PROJECT_SHARE" '
-      [$t | splits(" +") | select(. != "") | split(":") | {key: .[0], value: (.[1] | tonumber)} | select(.value > 0)] as $caps
+      [$t | splits("\\s+") | select(. != "") | split(":") | {key: .[0], value: (.[1] | tonumber)} | select(.value > 0)] as $caps
       | [.[] | select(((.started // "") | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch 0) >= $cut) | .project // ""] as $ps
       | {total: ($ps | length), projects: ($caps | map(.key as $p | .value = {cap: .value, n: ($ps | map(select(. == $p)) | length)}) | from_entries)}') &&
     [ -n "$s" ] || return 0
