@@ -5456,7 +5456,7 @@ own_parked_pr() {
 # PR or report still decides what it can (settle_item): merged or closed settles it, open parks it in
 # review/, a report is done. Anything else stays put, never failed, since no-witness is not gone, and is
 # flagged once on the item and in the log, ahead of any note it had. fleet-bench's ownerless_running
-# counts it, so the board-chain watch pages it.
+# counts it, so its chain-ownerless_running watch pages it.
 settle_sessionless() {
   local it pr note flag
   past_reap_grace "$2" || return 0

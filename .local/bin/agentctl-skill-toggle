@@ -11,7 +11,7 @@
 # change is tier 3 (.config/fleet-dispatch/policy.md), and a runner with no model cannot write the
 # Review: line agent-land requires, so once the PR is open and recorded on the item (pr:), the item
 # goes back to queued: dispatch gives it a session, whose brief names the PR and the tier-3 gate. A
-# parked item with no session was ownerless_running on board-chain for days (#1598, ar-1583).
+# parked item with no session was ownerless_running in the work chain for days (#1598, ar-1583).
 # An earlier toggle PR still open stops the run, so one change waits for the human at a time.
 # Two cases are the human's, not a session's: transcripts that do not reach back the whole window
 # (skill-drift exit 3) open nothing, and a change hiding more than SKILL_TOGGLE_HIDE_CAP skills

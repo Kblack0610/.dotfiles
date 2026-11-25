@@ -3618,6 +3618,45 @@ q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
   assert_output --partial 'uncaused_close_share 0.333 (max 0.02)'
 }
 
+@test "chain --kpi: trips on its own KPI only, reads one count an hour, and refuses a key outside the chain" {
+  chain_fixture
+  printf '%s\n' uncaused_close_share_max=0.02 >> "$KPI_THRESHOLDS"
+  at() { date -u -d "@$((T0 - $1))" +%Y-%m-%dT%H:%M:%SZ; }
+  {
+    item ok1 done high board:game:g-2 "{\"status\":\"ok\",\"finished\":\"$(at 3600)\"}"
+    item f2 done high board:game:g-4 "{\"status\":\"failed\",\"finished\":\"$(at 3600)\"}"
+  } > "$DONE"
+  run "$SUBJECT" chain --check --kpi uncaused_close_share
+  assert_failure 1
+  assert_output 'uncaused_close_share 0.5 (max 0.02)'
+  # negative control: another chain KPI's watch passes while this one is past
+  run "$SUBJECT" chain --check --kpi doctor_fail
+  assert_success
+  assert_output ''
+  run "$SUBJECT" chain --json --kpi uncaused_close_share
+  assert_equal "$(jq -r 'keys | join(" ")' <<<"$output")" uncaused_close_share
+  # the second probe of the hour reads the first one's count, not the sources
+  : > "$DONE"
+  BENCH_NOW=$((T0 + 3299)) run "$SUBJECT" chain --check --kpi uncaused_close_share
+  assert_failure 1
+  # past CHAIN_SNAPSHOT_MAX_S it counts again, and a count from the future is never reused
+  BENCH_NOW=$((T0 + 3300)) run "$SUBJECT" chain --check --kpi uncaused_close_share
+  assert_success
+  assert_equal "$(jq -r .at "$FLEET_BENCH_DIR/chain.json")" $((T0 + 3300))
+  run "$SUBJECT" chain --check --kpi uncaused_close_share
+  assert_success
+  assert_equal "$(jq -r .at "$FLEET_BENCH_DIR/chain.json")" "$T0"
+  # a source that cannot be read leaves the KPI unknown, never past
+  rm -f "$FLEET_BENCH_DIR/chain.json"
+  BENCH_DOCTOR_LAST=$BATS_TEST_TMPDIR/missing run "$SUBJECT" chain --check --kpi doctor_fail
+  assert_success
+  run "$SUBJECT" chain --check --kpi not_a_kpi
+  assert_failure 2
+  assert_output --partial 'not_a_kpi is not a chain KPI'
+  run "$SUBJECT" chain --check --kpi
+  assert_failure 2
+}
+
 @test "chain: a Forgejo row (host/owner/repo) is covered by the item that names owner/repo#N" {
   chain_fixture
   jq -c 'if .number == 7 then .repo = "git.example.test/O/R" else . end' "$FLEET_BENCH_DIR/pr-ci.jsonl" > "$SANDBOX/ci" && mv "$SANDBOX/ci" "$FLEET_BENCH_DIR/pr-ci.jsonl"

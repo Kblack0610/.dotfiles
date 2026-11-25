@@ -812,7 +812,7 @@ STUB
   run "$SUBJECT" improve --json
   assert_failure 1
   assert_output ''
-  # outside the chain, so the board-chain watch never reads it
+  # outside the chain, so no chain-<key> watch reads it
   run "$SUBJECT" chain --json
   assert_equal "$(jq -r 'has("systems_no_skill")' <<<"$output")" false
 }
