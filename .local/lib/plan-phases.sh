@@ -388,18 +388,27 @@ _epic_line() {
 # of a phase shares (agent-queue's `phases:` and item slugs, fleet-sessions): the line's own
 # `P<N>` label when it opens with one (`- [ ] P8 freellmapi ...`), else its place in the
 # checklist. A plan that files P9 above P8 is numbered by its labels, never by position.
-# A sub-phase line (`1b. ...`: a digit, a lowercase letter, a punctuation mark; or a `P3b` label)
-# is numbered by that label, a string ("1b", "3b"), and takes no place: the phases below it keep their numbers, so adding a 1b to a plan whose phases are
+# A sub-phase line (`1b. ...`: a digit, a lowercase letter, a punctuation mark) is numbered by that
+# label, a string ("1b"), and takes no place: the phases below it keep their numbers, so adding a 1b to a plan whose phases are
 # queued shifts no item (lesson 2026-11-09, `phases: 6` read as the ticked "5").
+# A part label (`P3b`: a capital P, a digit, a lowercase letter) is the sub-phase "3b" beside a plain
+# `P3` (a follow-up, as `P6b` after `P6`) or before a later part of 3; the last part of a phase with no
+# plain label is phase 3 and takes the place. So a done P3a, an open P3b and P4 queue P3b as phase 3 and
+# P4 after it; by place they were 3 and 4, and P3b collided with P4 (ar-4970).
 plan_phase_list() {
   { [ -f "$1" ] && awk -v mode=list -v sup="$(_plan_sup "$1")" "$_PLAN_PHASES_AWK" "$1"; } \
-    | jq -cRn '[inputs | split("\t") | {state: .[0], name: (.[1:] | join(" "))}]
-      | reduce .[] as $p ({pos: 0, out: []};
-          (($p.name | capture("^(?<l>[0-9]+[a-z])[.:)]") | .l)
-            // ($p.name | capture("^[Pp](?<l>[0-9]+[a-z])([^0-9A-Za-z]|$)") | .l) // null) as $sub
-          | (($p.name | capture("^[Pp](?<l>[0-9]+)([^0-9A-Za-z]|$)") | .l | tonumber) // null) as $lab
-          | if $sub != null then .out += [$p + {n: $sub}]
-            else .pos += 1 | .out += [$p + {n: ($lab // .pos)}] end)
+    | jq -cRn '[inputs | split("\t") | {state: .[0], name: (.[1:] | join(" "))}
+        | . + ((.name | capture("^P(?<pn>[0-9]+)(?<x>[a-z])([^0-9A-Za-z]|$)")) // {pn: null, x: null})]
+      | . as $all | [.[].name | capture("^[Pp](?<l>[0-9]+)([^0-9A-Za-z]|$)") | .l] as $plain
+      | reduce range(length) as $i ({pos: 0, out: []}; $all[$i] as $p
+          | (($p.name | capture("^(?<l>[0-9]+[a-z])[.:)]") | .l)
+             // (if $p.pn != null and (($plain | index($p.pn)) != null or any($all[$i + 1:][]; .pn == $p.pn))
+                 then $p.pn + $p.x else null end)) as $sub
+          | (($p.name | capture("^[Pp](?<l>[0-9]+)([^0-9A-Za-z]|$)") | .l | tonumber)
+             // ($p.pn | values | tonumber) // null) as $lab
+          | ($p | {state, name}) as $q
+          | if $sub != null then .out += [$q + {n: $sub}]
+            else .pos += 1 | .out += [$q + {n: ($lab // .pos)}] end)
       | .out'
 }
 

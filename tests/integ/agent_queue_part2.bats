@@ -984,23 +984,26 @@ EOF
   # A stub's phase N is the line numbered N, not the Nth line.
   printf 'Phase 2 of %s/my-plan.md\n' "$SANDBOX" > "$SANDBOX/stub.md"
   [ "$(plan_session_phases "$SANDBOX/stub.md" | jq -c 'map(.name)')" = '["2. Second thing: details"]' ]
-  # A `P3a`/`P3b` label is a sub-phase too (ar-4970): by position the done P3a took 3 and the open P3b took
-  # 4, beside the open P4, and the same-number check refused the whole plan.
+  # A phase split in parts (ar-4970): by place the done P3a took 3 and the open P3b 4, beside the open P4,
+  # and the same-number check refused the whole plan. The last part is phase 3, an earlier one a
+  # sub-phase, and a part beside a plain label (P6b after P6) a follow-up, as a 1b is.
   printf '## Phases\n\n- [x] P1 One\n- [ ] P2 Two\n- [x] P3a Half\n- [ ] P3b Other half\n- [ ] P4 Four\n' > "$SANDBOX/lab.md"
-  [ "$(plan_phase_list "$SANDBOX/lab.md" | jq -c 'map(.n)')" = '[1,2,"3a","3b",4]' ]
+  [ "$(plan_phase_list "$SANDBOX/lab.md" | jq -c 'map(.n)')" = '[1,2,"3a",3,4]' ]
   run "$AQ" add --plan "$SANDBOX/lab.md" --project game --slug lab --dry-run
   assert_success
-  assert_output --partial "skipped open sub-phase(s) 3b"
-  assert_line --regexp '^would queue lab-p4	phases 4	after lab-p2$'
-  refute_output --partial "same number"
+  assert_line --regexp '^would queue lab-p3	phases 3	after lab-p2$'
+  assert_line --regexp '^would queue lab-p4	phases 4	after lab-p3$'
+  refute_output --partial "sub-phase"
+  printf '## Phases\n\n- [ ] P6 Six\n- [ ] P6b More of six\n- [ ] P7 Seven\n' > "$SANDBOX/more.md"
+  [ "$(plan_phase_list "$SANDBOX/more.md" | jq -c 'map(.n)')" = '[6,"6b",7]' ]
   # NEGATIVE CONTROL: two open phases that really share a label are still refused.
   printf '## Phases\n\n- [ ] P3 One\n- [ ] P3 Two\n' > "$SANDBOX/twin.md"
   run "$AQ" add --plan "$SANDBOX/twin.md" --project game --slug twin --dry-run
   assert_failure
   assert_output --partial "two phases carry the same number"
   # Names that only look like a label are phases with a place: `P2P sync`, `3D models`, `2D. Layout`.
-  printf '## Phases\n\n- [ ] P2P sync\n- [ ] 3D models\n- [ ] 2D. Layout\n' > "$SANDBOX/look.md"
-  [ "$(plan_phase_list "$SANDBOX/look.md" | jq -c 'map(.n)')" = '[1,2,3]' ]
+  printf '## Phases\n\n- [ ] P2P sync\n- [ ] 3D models\n- [ ] 2D. Layout\n- [ ] p2p relay\n' > "$SANDBOX/look.md"
+  [ "$(plan_phase_list "$SANDBOX/look.md" | jq -c 'map(.n)')" = '[1,2,3,4]' ]
 }
 
 # A phase session finds work its plan needs and adds it as a phase line (planning.md, Found work:): the add
