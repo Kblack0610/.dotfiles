@@ -21,7 +21,7 @@ allowed() { assert_success; assert_output ''; }
   for c in 'git stash' 'git stash -u' 'git stash push' 'git stash push -u -- a.txt' 'git stash save' \
     'git stash pop' 'git stash pop stash@{1}' 'git stash apply' 'git stash apply --index' 'git stash drop' \
     'git stash drop -q' 'git stash clear' 'git stash branch tmp' 'git -C /w stash pop' \
-    "bash -c 'git stash pop'" 'cd /w && git stash' 'sudo git stash pop'; do
+    "bash -c 'git stash pop'" 'cd /w && git stash' 'sudo git stash pop' 'git stash push -u -m' 'git stash push -- -m' 'git stash -um'; do
     run at "$c"
     denied
   done
@@ -31,7 +31,7 @@ allowed() { assert_success; assert_output ''; }
 
 @test "a named push and a stash command that names its entry pass, and so do the read-only ones" {
   local c
-  for c in 'git stash push -u -m "p7-ab"' 'git stash push --message=p7-ab' 'git stash -um p7-ab' 'git stash save p7-ab' \
+  for c in 'git stash push -u -m "p7-ab"' 'git stash push --message=p7-ab' 'git stash -um p7-ab' 'git stash push -mp7-ab -- a.txt' 'git stash save p7-ab' \
     'git stash apply 3f2a9c1' 'git stash apply stash@{2}' 'git stash drop stash@{0}' 'git stash branch tmp stash@{1}' \
     'git stash list' "git stash list --format='%H %gs'" 'git stash show -p' 'git stash create' 'git stash store 3f2a9c1' \
     'git commit -m "git stash pop"' 'rg "git stash pop" docs'; do
@@ -45,7 +45,8 @@ allowed() { assert_success; assert_output ''; }
   for c in 'systemctl --user stop agentctl-comms.timer' 'systemctl stop --user agentctl@comms.service' \
     'systemctl --user disable --now agentctl-comms.timer' 'systemctl --user mask agentctl-dream.timer' \
     "systemctl --user stop 'agentctl-*.timer'" 'systemctl --user stop foo.service agentctl-comms.timer' \
-    'systemctl -q --user stop agentctl-comms.timer'; do
+    'systemctl -q --user stop agentctl-comms.timer' "systemctl --user stop 'agentctl*'" \
+    'systemctl --user kill agentctl@comms.service'; do
     run at "$c"
     denied
   done

@@ -9,10 +9,10 @@ which may be another session's (2026-11-18: a pop reached another session's
 `branch <name>`, and a push (`git stash`, `push`, `save`) with no message to find it by. Allowed:
 `list`, `show`, `create`, `store`, a named push, and an apply, drop or branch that names its entry.
 
-An agentctl runner is switched off in its conf: `systemctl --user stop`, `disable` or `mask` of an
-`agentctl-*` timer or `agentctl@*` service is undone by the next `agentctl reload` from any
+An agentctl runner is switched off in its conf: `systemctl --user stop`, `kill`, `disable` or `mask`
+of an `agentctl-*` timer, an `agentctl@*` service or an `agentctl*` pattern is undone by the next `agentctl reload` from any
 session (2026-11-10: a stopped comms timer was re-armed and work mail reached a non-work-safe
-model). Denied: those three verbs on such a unit, naming `agentctl disable|stop|pause`.
+model). Denied: those four verbs on such a unit, naming `agentctl disable|stop|pause`.
 
 The walker is forge-guard's, so `git -C`, `bash -c`, `sudo` and a chain are read as git and bash
 read them. Fail-open: walker-guards skips a guard that raises.
@@ -20,7 +20,7 @@ read them. Fail-open: walker-guards skips a guard that raises.
 import os
 
 STASH_SUBS = {"list", "show", "drop", "pop", "apply", "branch", "push", "save", "clear", "create", "store"}
-SYSTEMCTL_VERBS = {"stop", "disable", "mask"}
+SYSTEMCTL_VERBS = {"stop", "kill", "disable", "mask"}
 # systemctl's options that take the next word as their value, so it is never read as the verb.
 SYSTEMCTL_OPT_ARG = {"-t", "--type", "-s", "--signal", "-p", "--property", "-H", "--host", "-M",
                      "--machine", "-n", "--lines", "-o", "--output", "--root", "--image", "--state",
@@ -44,6 +44,22 @@ UNIT_MSG = (
 FORGE = None  # forge-guard, set by walker-guards.py before decide
 
 
+def named(args):
+    """True when a stash push's args give it a message: `-m <msg>`, `--message <msg>`,
+    `--message=<msg>`, or `-m` at the end of a short cluster (`-um <msg>`) or with its value
+    attached (`-mfoo`), all before a `--` (after it, `-m` is a pathspec)."""
+    args = args[: args.index("--")] if "--" in args else args
+    for j, a in enumerate(args):
+        if a.startswith("--message=") and len(a) > 10:
+            return True
+        short = a[:1] == "-" and a[:2] != "--" and "m" in a
+        if short and a.index("m") < len(a) - 1:
+            return True  # -mfoo: the rest of the word is the message
+        if (a == "--message" or short) and j + 1 < len(args):
+            return True
+    return False
+
+
 def stash_refusal(args):
     """Why `git stash <args>` is denied, or None. With no subcommand word git reads a push."""
     sub, rest = ("push", args)
@@ -58,8 +74,7 @@ def stash_refusal(args):
         return sub, "with no entry named takes the top one, which may be another session's"
     if sub == "branch" and len(words) < 2:
         return "branch", "with no entry named takes the top one, which may be another session's"
-    if sub == "push" and not any(a in ("-m", "--message") or a.startswith("--message=")
-                                 or (a[:1] == "-" and a[:2] != "--" and "m" in a) for a in rest):
+    if sub == "push" and not named(rest):
         return " ".join(["push"] if not args else args[:3]), "with no -m message leaves an entry no session can tell is yours"
     if sub == "save" and not words:
         return "save", "with no message leaves an entry no session can tell is yours"
@@ -67,7 +82,7 @@ def stash_refusal(args):
 
 
 def systemctl_refusal(argv):
-    """(verb, unit) when a systemctl argv stops, disables or masks an agentctl unit, else None."""
+    """(verb, unit) when a systemctl argv stops, kills, disables or masks an agentctl unit, else None."""
     i, verb = 1, None
     while i < len(argv):
         a = argv[i]
@@ -81,7 +96,7 @@ def systemctl_refusal(argv):
             verb = a
             if verb not in SYSTEMCTL_VERBS:
                 return None
-        elif a.startswith(("agentctl-", "agentctl@")):
+        elif a.startswith("agentctl"):  # also a pattern: 'agentctl*'
             return verb, a
         i += 1
     return None
