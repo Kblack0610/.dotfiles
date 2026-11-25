@@ -1307,6 +1307,7 @@ pub(crate) fn shape_findings(dir: &Path, name: &str, o: &Overlays) -> Vec<String
         }
         let today = chrono::Local::now().date_naive();
         out.extend(untriaged_finding(&content, today).map(|f| format!("{label} {f}")));
+        out.extend(unreasoned_finding(&content).map(|f| format!("{label} {f}")));
         let unlinked = if label == "agent board" {
             tree.stories_without_feature(&content)
         } else {
@@ -1639,6 +1640,28 @@ pub(crate) fn untriaged_finding(content: &str, today: chrono::NaiveDate) -> Opti
     let first = rows.first()?;
     Some(format!(
         "{} untriaged open row(s) with no #urgent, #high, #normal or #low, {old} older than a day (first: line {first}; `agentctl-inbox-triage --backlog --priority` ranks them)",
+        rows.len()
+    ))
+}
+
+/// The sheet's open rows that carry a priority and no `#why/<slug>`: a priority nobody has given
+/// a reason, which `ptask tag --why <slug>` writes and `priority-reasons.tsv` lists. An untagged
+/// row is [`untriaged_finding`]'s, not counted twice. A finding, never a write refusal.
+pub(crate) fn unreasoned_finding(content: &str) -> Option<String> {
+    let rows: Vec<usize> = content
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| {
+            l.starts_with("- [")
+                && md::is_open_task(l)
+                && md::task_priority(l).is_some()
+                && crate::reasons::slug_of(l).is_none()
+        })
+        .map(|(i, _)| i + 1)
+        .collect();
+    let first = rows.first()?;
+    Some(format!(
+        "{} open row(s) with a priority and no #why/<reason> (first: line {first}; `notes ptask <p> tag --why <slug> <row>` gives one, the slugs are in priority-reasons.tsv)",
         rows.len()
     ))
 }
@@ -6879,6 +6902,25 @@ mod move_layout_tests {
             3,
             "a human sheet's done rows are closed by hand by design"
         );
+    }
+
+    // A priority with no reason is counted beside the untriaged rows; a reasoned, an untagged,
+    // a closed and a child row are not (the negative control).
+    #[test]
+    fn unreasoned_counts_open_priorities_with_no_reason() {
+        let sheet = "## Tasks\n\
+            - [ ] reasoned #low #why/upkeep\n\
+            - [ ] bare #high #c1101\n\
+            - [/] started #normal\n\
+            - [ ] untagged #c1102\n\
+            - [x] closed #low\n\
+            \x20 - [ ] a child #high\n";
+        let f = unreasoned_finding(sheet).unwrap();
+        assert!(
+            f.starts_with("2 open row(s) with a priority and no #why/<reason> (first: line 3;"),
+            "{f}"
+        );
+        assert_eq!(unreasoned_finding("- [ ] fine #high #why/red-main\n"), None);
     }
 
     // An open row with no priority is counted, and one created before today is the overdue

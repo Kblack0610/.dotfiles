@@ -45,6 +45,7 @@ mod project_tasks;
 mod projects;
 mod propose;
 mod rank;
+mod reasons;
 mod sheet;
 mod shipped;
 mod show;
@@ -705,6 +706,10 @@ enum PtaskCmd {
         /// repeated). Its add exits 5 with the shortlist until every id shown is named here
         #[arg(long, value_name = "IDS", value_delimiter = ',')]
         checked: Vec<String>,
+        /// Why the row has its priority: a slug of `priority-reasons.tsv`. It writes `#why/<slug>`
+        /// and, when the text names no priority, the reason's own
+        #[arg(long, value_name = "SLUG")]
+        why: Option<String>,
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
@@ -768,6 +773,10 @@ enum PtaskCmd {
         /// A tag to take off (`#` optional). Repeatable
         #[arg(long, value_name = "TAG")]
         remove: Vec<String>,
+        /// Why the row has its priority: a slug of `priority-reasons.tsv`. It writes `#why/<slug>`
+        /// (replacing the row's reason) and the reason's priority, unless `--add` names one
+        #[arg(long, value_name = "SLUG")]
+        why: Option<String>,
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
@@ -1289,6 +1298,7 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
             want: None,
             origin: None,
             checked,
+            why: None,
             text,
         }) if detail.is_empty() && checked.is_empty() => playtest::Op::Add {
             game,
@@ -1656,16 +1666,22 @@ fn main() -> Result<()> {
                     want,
                     origin,
                     checked,
+                    why,
                     text,
                 }) => {
                     if game.is_some() || pr.is_some() {
                         bail!("--game and --pr only apply with --playtest");
                     }
+                    let text = text.join(" ");
+                    let text = match why.as_deref() {
+                        Some(slug) => reasons::with_reason(&text, slug)?,
+                        None => text,
+                    };
                     project_tasks::add(
                         &prof,
                         &log,
                         &name,
-                        &text.join(" "),
+                        &text,
                         &detail,
                         to.as_deref(),
                         want.as_deref(),
@@ -1762,8 +1778,20 @@ fn main() -> Result<()> {
                     };
                     project_tasks::file(&prof, &log, &name, &pick, &how, lane)?
                 }
-                Some(PtaskCmd::Tag { add, remove, query }) => {
+                Some(PtaskCmd::Tag {
+                    mut add,
+                    remove,
+                    why,
+                    query,
+                }) => {
                     let q = pick(&query)?;
+                    if let Some(slug) = why.as_deref() {
+                        let r = reasons::lookup(slug)?;
+                        add.push(format!("#{}{}", reasons::TAG, r.slug));
+                        if !add.iter().any(|t| crate::md::is_priority(t)) {
+                            add.push(format!("#{}", r.priority));
+                        }
+                    }
                     project_tasks::tag(&prof, &log, &name, &q, &add, &remove, lane, &writer)?
                 }
                 Some(PtaskCmd::Drop { why, dup, query }) => project_tasks::drop(
