@@ -901,7 +901,6 @@ claude_end_item() {
   lost_pane armed "$G" conv-armed
   lost_pane closed "$G" conv-closed
   lost_pane alive "$G" conv-alive
-  lost_pane moved "$SANDBOX/no-such-dir" conv-moved
   lost_pane shell "$G" ''
   transcript conv-plan '{"permissionMode":"bypassPermissions"}
 {"type":"permission-mode","permissionMode":"plan"}'
@@ -917,12 +916,11 @@ claude_end_item() {
   assert_called 'tmx ensure hub'
   assert_called "-n planned -c $G ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --permission-mode plan --allow-dangerously-skip-permissions --resume conv-plan"
   assert_called "-n working -c $G ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --permission-mode bypassPermissions --resume conv-work"
-  for skipped in conv-armed conv-closed conv-alive conv-other conv-moved; do assert_not_called "--resume $skipped"; done
+  for skipped in conv-armed conv-closed conv-alive conv-other; do assert_not_called "--resume $skipped"; done
   assert_output --partial 'hub:dotfiles:armed: wound down on purpose, skipped'
   assert_output --partial 'hub:dotfiles:closed: wound down on purpose, skipped'
   assert_output --partial 'hub:dotfiles:alive: already running, skipped'
   assert_output --partial 'hub:dotfiles:otheracct: already running, skipped'
-  assert_output --partial 'claude --resume conv-moved'
   assert_output --partial 'hub:dotfiles:shell: no conversation, not reopened'
   assert_output --partial 'hub: reopened 2, failed 0'
   [ -f "$FLEET_DISPATCH_DIR/panes/hub.restored.json" ] && [ ! -f "$FLEET_DISPATCH_DIR/panes/hub.lost.json" ] ||
@@ -942,12 +940,15 @@ claude_end_item() {
   assert_success
   assert_output --partial "hub:dotfiles:reaped: $W is gone, would put it back (wt revive)"
   assert_not_called 'wt revive'
-  # Negative control: a slot wt cannot put back is skipped with its reason, and nothing reopens.
+  # Negative control: a slot wt cannot put back is a failed reopen with its reason, and the record
+  # stays for the rerun.
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
-  assert_success
+  assert_failure
   assert_called "wt revive $W --branch fix/reaped"
-  assert_output --partial "hub:dotfiles:reaped: $W is gone and could not be put back (wt: nothing reaped at $W), skipped (claude --resume conv-reaped)"
+  assert_output --partial "hub:dotfiles:reaped: could not put back $W (wt: nothing reaped at $W); resume with claude --resume conv-reaped"
+  assert_output --partial 'hub: reopened 0, failed 1'
   assert_not_called '--resume conv-reaped'
+  [ -f "$FLEET_DISPATCH_DIR/panes/hub.lost.json" ] || fail "a failed put back consumed the record"
   : > "$NOTES_FIXTURE/wt.revives"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
   assert_success

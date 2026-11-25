@@ -4360,17 +4360,6 @@ restore_world() {
     if [ -z "$id" ]; then echo "$srv:$sess:$win: no conversation, not reopened ($cwd)"; continue; fi
     if wound_down "$id"; then echo "$srv:$sess:$win: wound down on purpose, skipped"; continue; fi
     if claude_pid_live "$id"; then echo "$srv:$sess:$win: already running, skipped"; continue; fi
-    # A worktree wind-down or wt done reaped since comes back first, on the branch the conversation
-    # last ran on, as agent-ask reopen puts one back: claude --resume finds a session by its directory
-    # (ar-2902). wt revive refuses a slot another session holds now, and a cwd that is no worktree.
-    if [ ! -d "$cwd" ]; then
-      if [ "$dry" = 1 ]; then echo "$srv:$sess:$win: $cwd is gone, would put it back (wt revive)"
-      elif out=$(wt revive "$cwd" --branch "$(session_branch "$id")" </dev/null 2>&1); then
-        echo "$srv:$sess:$win: ${out##*$'\n'}"
-      else
-        echo "$srv:$sess:$win: $cwd is gone and could not be put back (${out##*$'\n'}), skipped (claude --resume $id)"; continue
-      fi
-    fi
     item=$(agent-queue mine --sid "$id" --newest 2>/dev/null) || item=''
     it=''; [ -z "$item" ] || it=$(agent-queue show "$item" --json 2>/dev/null) || it=''
     mode=$(resume_mode "$id" "$(jq -r '.mode // empty' <<<"$it" 2>/dev/null)")
@@ -4378,12 +4367,25 @@ restore_world() {
     if [ "$(jq -r '[.state, .agent // "claude"] | join(" ")' <<<"$it" 2>/dev/null)" = 'running claude' ]; then
       prompt=${RESTORE_PROMPT//\%s/$item}; said=', prompted to carry on'
     fi
-    if [ "$dry" = 1 ]; then echo "$srv:$sess:$win: would reopen $id in $cwd ($mode)${item:+ for queue item $item}$said${prompt:+, in a wake batch}"; continue; fi
+    if [ "$dry" = 1 ]; then
+      [ -d "$cwd" ] || echo "$srv:$sess:$win: $cwd is gone, would put it back (wt revive)"
+      echo "$srv:$sess:$win: would reopen $id in $cwd ($mode)${item:+ for queue item $item}$said${prompt:+, in a wake batch}"; continue
+    fi
     # A prompted reopen is a wake: it reruns the session's gate, suite or Unity run. It waits on the
     # lost record for a batch (wake_take) and comes back with its prompt then, never at an empty one
     # nobody nudges.
     if [ -n "$prompt" ] && ! wake_take restore "$id"; then
       echo "$srv:$sess:$win: waits for a wake batch${item:+ (queue item $item)}"; RESTORE_OWED+=("$id"); owed=$((owed + 1)); continue
+    fi
+    # A worktree a wind-down or wt done reaped since, or wt new re-cut for another session, goes
+    # through wt revive first, as agent-ask reopen does: claude --resume finds a conversation by its
+    # directory (ar-2902). Past the wake batch, so a deferred reopen fetches nothing yet; a failed put
+    # back keeps the record for a rerun.
+    if session_tree_due "$cwd"; then
+      if ! out=$(session_tree_back "$cwd" "$id"); then
+        echo "$srv:$sess:$win: could not put back $cwd ($out); resume with claude --resume $id"; failed=$((failed + 1)); continue
+      fi
+      echo "$srv:$sess:$win: $out"
     fi
     project=$(resolve_project_name "$cwd")
     if cmd_start --project "${project:-${cwd##*/}}" --server "$srv" --session "$sess" --window "$win" \
