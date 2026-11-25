@@ -1973,6 +1973,17 @@ rollup_setup() {
   assert_not_called 'ptask agent-runtime --agent add'
 }
 
+@test "trainee-rollup: a diff refused for the file it touched is one cause whichever file it was (ar-5117)" {
+  rollup_setup
+  tail="which is no markdown file, nor a shell or bats file outside a cargo or npm tree, so the sandbox could not build it"
+  reject agy flash "agy:flash's its diff touches .local/bin/fleet-bench.py, $tail"
+  reject agy flash "agy:flash's its diff touches src/main.rs, $tail"
+  reject agy flash "agy:flash's its diff touches package.json, $tail"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  assert_success
+  assert_output --partial 'filed: fix(trainee): agy:flash runs touch a file the sandbox cannot build (3 since'
+}
+
 @test "trainee-rollup: a cause on two pairs names the harnesses, and an open row with its title is joined, not twinned" {
   rollup_setup
   why=" session ended on a provider refusal or error (end provider: a rate limit), with no diff"

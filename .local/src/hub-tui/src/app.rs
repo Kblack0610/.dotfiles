@@ -7052,7 +7052,7 @@ mod tests {
             st[1].prio = "focus".into();
         }
         a.handle(Msg::Projects(Box::new(l)));
-        let s = screen(&mut a, 140, 30);
+        let s = screen(&mut a, 160, 30);
         assert!(s.contains("v0.1.0   focus"), "{s}");
         assert!(s.lines().last().unwrap().contains("P focus"), "{s}");
         fake.0.lock().unwrap().clear();
@@ -9225,12 +9225,18 @@ mod tests {
             (on(&a), a.tv.table.view.q.as_str()),
             (Some("all"), "id:=ar-1")
         );
-        // A row's link (links::Link::tab_args, `projects all id:=<id>`) is Board searched to it.
+        // A row's link (links::Link::tab_args, `projects all id:=<id>`) is Board searched to it,
+        // on the default chip, which lists an open epic it names (hub-core `Row::PIN`).
+        a.tv.table.view.state = "epics".into();
         a.go(Tab::Home);
         a.follow(&Link::to(Kind::Row, "ar-2"));
         assert_eq!(
             (a.tab, on(&a), a.tv.table.view.q.as_str()),
             (Tab::Projects, Some("all"), "id:=ar-2")
+        );
+        assert!(
+            a.tv.table.view.state.is_empty(),
+            "the link opens the default chip"
         );
     }
 

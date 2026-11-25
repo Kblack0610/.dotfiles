@@ -2086,7 +2086,7 @@ mod tests {
         let f = &c.fleet_cost;
         assert_eq!(
             (f.why.clone(), f.usd.as_str(), f.as_of),
-            (None, "about $5.00", Some(NOW))
+            (None, "$5.00", Some(NOW))
         );
         let days: Vec<_> = c.history.rows.iter().filter(|r| r.kind == "day").collect();
         assert_eq!(

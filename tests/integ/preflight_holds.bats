@@ -44,11 +44,11 @@ context() {
 }
 
 @test "a hold's grants show beside its reason, so a granted row reads as free to run (ar-5236)" {
-  "$REPO_ROOT/.local/bin/agent-hold" set unity-tests --by human "lockdown"
+  "$REPO_ROOT/.local/bin/agent-hold" set unity-tests --by coordinator "lockdown"
   "$REPO_ROOT/.local/bin/agent-hold" grant unity-tests hc-952 ar-4938
   run context
   assert_success
-  assert_output --partial 'by human: lockdown (granted: hc-952,ar-4938)'
+  assert_output --partial 'by coordinator: lockdown (granted: hc-952,ar-4938)'
 }
 
 @test "a session the human opened reads a hold as a warning; a dispatched one, attended too, is stopped by it" {
