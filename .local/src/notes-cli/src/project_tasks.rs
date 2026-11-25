@@ -6216,7 +6216,10 @@ mod inbox_tests {
         assert_eq!(add_as("fix(d): a red #interrupt", None, &session), 0);
         assert_eq!(add_as("fix(e): voice ask", Some("voice"), &session), 0);
         assert_eq!(add_as("fix(f): a follow-up", Some("outbox"), &session), 0);
-        assert_eq!(add_as("fix(h): voice red #interrupt", Some("voice"), &session), 0);
+        assert_eq!(
+            add_as("fix(h): voice red #interrupt", Some("voice"), &session),
+            0
+        );
         let s = v.read();
         let tags = |head: &str| {
             let row = s
