@@ -62,6 +62,15 @@ bats_require_minimum_version 1.5.0
   assert_success
   assert_output --partial 'kick: a pass is running'
   [ -n "$(qitem queued mine)" ] || fail "kick started beside a pass that is not past its starts"
+  # One kick at a time beside a pass: a second stands down while the first holds .beside (ar-5773 /code-review high).
+  run flock "$FLEET_DISPATCH_DIR/.beside" flock "$FLEET_DISPATCH_DIR/.lock" bash -c 'echo $$ > "$1/.past-starts"; exec "$2" kick' _ "$FLEET_DISPATCH_DIR" "$REPO_ROOT/.local/bin/fleet-dispatch"
+  assert_success
+  assert_output --partial 'kick: another kick is starting beside the pass'
+  [ -n "$(qitem queued mine)" ] || fail "a second kick started beside the pass"
+  # The next pass waits for a kick still starting beside the last one, and stands down past KICK_WAIT_S.
+  KICK_WAIT_S=0 run flock "$FLEET_DISPATCH_DIR/.beside" "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'a kick is still starting beside the last pass'
+  [ -n "$(qitem queued mine)" ] || fail "a pass started beside a kick"
   # The holder's mark names a live fleet-dispatch: the kick itself, exec'd under the held lock.
   run flock "$FLEET_DISPATCH_DIR/.lock" bash -c 'echo $$ > "$1/.past-starts"; exec "$2" kick' _ "$FLEET_DISPATCH_DIR" "$REPO_ROOT/.local/bin/fleet-dispatch"
   assert_success
