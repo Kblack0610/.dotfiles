@@ -409,7 +409,14 @@ impl ProjView {
         if let Some((first, q)) = name.split_once(char::is_whitespace) {
             if crate::innertabs::named(projects_tab(), first) == Some(ALL) {
                 self.set_top(tv, ALL);
-                tv.table.view.q = q.trim().to_string();
+                // `state:epics id:=<epic>` (`Kind::Epic`): an epic lists on its own chip only.
+                let q = q.trim();
+                let (state, q) = match q.strip_prefix("state:epics ") {
+                    Some(rest) => ("epics", rest.trim()),
+                    None => ("", q),
+                };
+                tv.table.view.state = state.to_string();
+                tv.table.view.q = q.to_string();
                 return;
             }
         }

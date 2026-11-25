@@ -2627,7 +2627,7 @@ cmd_harness_ready() {
 # a worker takes an item on the harness it has, and a sandboxed start only where srt is.
 cmd_kit() {
   local t kit=()
-  command -v claude >/dev/null 2>&1 && "$HERE/fleet-node" ready >/dev/null 2>&1 && kit+=(claude)
+  command -v claude >/dev/null 2>&1 && "$HERE/fleet-node" ready claude >/dev/null 2>&1 && kit+=(claude)
   for t in codex opencode agy; do command -v "$t" >/dev/null 2>&1 && kit+=("$t"); done
   [ -n "$(sandbox_srt_refusal)" ] || kit+=(srt)
   echo "${kit[*]}"
@@ -3561,7 +3561,7 @@ rollup_causes() {
 # any other row, and nothing here patches anything. nightly-measure runs it, so each pass declares its
 # outcome (rollup_done): WORKED when it filed or joined a row, NOOP when no cause cleared the bar, FAILED.
 cmd_trainee_rollup() {
-  local dry=0 stamps since board lines cause title n pairs hs why hit where rc out=0 acted=0 now f="$DIR/trainee-rollup.tsv"
+  local dry=0 stamps since board lines cause title n pairs hs why hit where rc rwhy out=0 acted=0 now f="$DIR/trainee-rollup.tsv"
   [ "${1:-}" != --dry ] || dry=1
   [ -r "$LANE_RUNS" ] || { say "trainee-rollup: no run log at $LANE_RUNS"; rollup_done "$dry" FAILED "no run log at $LANE_RUNS"; return; }
   stamps=$(jq -Rsc 'split("\n") | map(select(length > 0) | split("\t") | {(.[0]): .[1]}) | add // {}' "$f" 2>/dev/null) || stamps='{}'
@@ -3582,7 +3582,11 @@ cmd_trainee_rollup() {
       if [[ "$title" == "fix(trainee): trainee runs "* ]]; then where="the harness or source ($hs): more than one model hits it"
       else where="how ${pairs% *} runs, or drop the pair (model-lane): no other model hits it"; fi
       rc=0
-      notes ptask "$DISPATCH_ROLLUP_BOARD" --agent add "$title $DISPATCH_ROLLUP_TAGS" --origin fleet-dispatch \
+      # The reason follows the priority the conf's tags name (priority-reasons.tsv); a priority with no fit here files untagged.
+      case " $DISPATCH_ROLLUP_TAGS " in
+        *' #low '*) rwhy=(--why minor-fault) ;; *' #normal '*) rwhy=(--why fault) ;; *' #high '*) rwhy=(--why runtime-fault) ;; *) rwhy=() ;;
+      esac
+      notes ptask "$DISPATCH_ROLLUP_BOARD" --agent add "${rwhy[@]}" "$title $DISPATCH_ROLLUP_TAGS" --origin fleet-dispatch \
         --detail "$n trainee rejects since ${since%T*}: $pairs. Fix it in $where." \
         --detail "e.g. $why" \
         --detail "evidence: jq -c 'select(.lane == \"trainee\" and (.outcome == \"redo\" or .outcome == \"failed\"))' ~/.agent/model-lane/runs.jsonl; filed by fleet-dispatch trainee-rollup" \

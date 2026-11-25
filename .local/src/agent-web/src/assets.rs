@@ -83,6 +83,7 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("work.js", JS, include_bytes!("../static/work.js")),
     ("actions.js", JS, include_bytes!("../static/actions.js")),
     ("fleet.js", JS, include_bytes!("../static/fleet.js")),
+    ("reports.js", JS, include_bytes!("../static/reports.js")),
     ("focus.js", JS, include_bytes!("../static/focus.js")),
     (
         "inter.woff2",
@@ -141,7 +142,7 @@ fn built() -> &'static Built {
     })
 }
 
-/// The sidebar's tabs under their group headings, from `hub_core::layout`. Three tabs carry a
+/// The sidebar's tabs under their group headings, from `hub_core::layout`. Four tabs carry a
 /// count that their own script fills in.
 fn nav_html() -> String {
     let mut html = String::new();
@@ -153,6 +154,7 @@ fn nav_html() -> String {
         }
         let badge = match t.id {
             "home" => "<span id=\"ask-badge\"></span>",
+            "reports" => "<span id=\"reports-badge\"></span>",
             "queue" => "<span id=\"queue-badge\"></span>",
             "sessions" => "<span id=\"wait-badge\"></span>",
             _ => "",
@@ -711,6 +713,7 @@ mod tests {
                 include_str!("../static/projects.js").to_string(),
             ),
             ("stack", include_str!("../static/stack.js").to_string()),
+            ("reports", include_str!("../static/reports.js").to_string()),
         ];
         for t in hub_core::layout::TABS
             .iter()

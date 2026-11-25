@@ -136,6 +136,17 @@ pub fn page(v: &View, p: Palette, w: usize) -> Vec<Line<'static>> {
     if let Some(b) = v.brief.as_deref().filter(|b| b.note.exists) {
         out.extend(brief(b, p, w));
     }
+    // The day's refs as their count; the Reports tab lists them (agent-web only until ar-5259).
+    if let Some(r) = &v.reports {
+        out.push(Line::raw(""));
+        out.push(clip_line(
+            Line::from(vec![
+                Span::styled(r.label.to_uppercase(), p.head()),
+                Span::styled(format!("  {}", r.text), p.dim()),
+            ]),
+            w,
+        ));
+    }
     let mut rest: Vec<String> = vec![];
     if !f.rollup.is_empty() {
         rest.push("Rollup".into());
@@ -247,6 +258,22 @@ mod tests {
         b.note.exists = false;
         v.brief = Some(Box::new(b));
         assert!(!text(&v, 30).iter().any(|l| l.starts_with("BRIEFING")));
+    }
+
+    #[test]
+    fn the_days_refs_are_one_count_line_after_the_lanes() {
+        let mut v = view("## Focus\n### Low\n- [ ] one\n");
+        assert!(!text(&v, 60).iter().any(|l| l.starts_with("REFS")));
+        v.reports = Some(hub_core::reports::DayLine {
+            label: "Refs",
+            text: "2 reports, 1 unread, 1 note".into(),
+            link: hub_core::links::Link::to(hub_core::links::Kind::Report, "2026-11-05"),
+        });
+        let t = text(&v, 60);
+        assert!(
+            t.contains(&"REFS  2 reports, 1 unread, 1 note".to_string()),
+            "{t:?}"
+        );
     }
 
     #[test]

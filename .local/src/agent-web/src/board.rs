@@ -326,9 +326,9 @@ mod tests {
         assert_eq!(texts(&one), ["tidy"]);
         assert_eq!(one["table"]["total"], 3, "the total is the scope's");
         assert_eq!(one["table"]["shown"], 1);
-        assert_eq!(one["table"]["states"][3]["name"], "urgent");
+        assert_eq!(one["table"]["states"][4]["name"], "urgent");
         assert_eq!(
-            one["table"]["states"][3]["n"], 0,
+            one["table"]["states"][4]["n"], 0,
             "the query narrows the chips"
         );
     }
