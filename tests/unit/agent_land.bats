@@ -205,7 +205,7 @@ load 'agent_land/common'
 
 # pick_fixture: a checkout whose tests/pick.sh answers from files, so the head's pick (mine.<tier>) and
 # the base's new files' pick (theirs.<tier>, read when PICK_CHANGED is set) are named by the case.
-# pick.fail: the picker exits 1; theirs.full: the base's pick is the whole tier ("(full: ...)" on stderr).
+# pick.fail: the picker exits 1; picked.yes: a test file the base added is picked by the head's changes; theirs.full: the base's pick is the whole tier ("(full: ...)" on stderr).
 pick_fixture() {
   local top="$SANDBOX/pickrepo" t
   mkdir -p "$top/tests"
@@ -221,7 +221,10 @@ exit 0
 EOS
   chmod +x "$top/tests/pick.sh"
   printf '%s\n' '# broad' 'unit/smoke.bats # the harness' >"$top/tests/broad.txt"
-  for t in unit integ rust; do : >"$top/tests/mine.$t"; : >"$top/tests/theirs.$t"; done
+  for t in unit integ rust ui; do : >"$top/tests/mine.$t"; : >"$top/tests/theirs.$t"; done
+  # test_picked: a base test file reaches the head's changed files when picked.yes exists
+  mkdir -p "$top/.local/lib"
+  printf '%s\n' 'test_picked() { [ -f "'"$top"'/tests/picked.yes" ]; }' >"$top/.local/lib/test-pick.sh"
   printf '%s\n' unit/a.bats >"$top/tests/mine.unit"
   printf '%s\n' "$top" >"$NOTES_FIXTURE/toplevel"
   printf '0\n1\n' >"$NOTES_FIXTURE/behind.seq"
@@ -281,6 +284,78 @@ EOS
   refute_output --partial 'none of it can affect'
   run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
   assert_output 1
+}
+
+@test "main's new files pick a integ-tier entry the head's run ran: merged up and re-run" {
+  pick_fixture
+  printf '%s\n' integ/x >"$PICKDIR/mine.integ"
+  printf '%s\n' integ/x >"$PICKDIR/theirs.integ"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'none of it can affect'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 1
+}
+
+@test "main's new files pick a rust-tier entry the head's run ran: merged up and re-run" {
+  pick_fixture
+  printf '%s\n' rust/x >"$PICKDIR/mine.rust"
+  printf '%s\n' rust/x >"$PICKDIR/theirs.rust"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'none of it can affect'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 1
+}
+
+@test "main's new files pick a ui-tier entry the head's run ran: merged up and re-run" {
+  pick_fixture
+  printf '%s\n' ui/x >"$PICKDIR/mine.ui"
+  printf '%s\n' ui/x >"$PICKDIR/theirs.ui"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'none of it can affect'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 1
+}
+
+@test "main touches the gate's own machinery (CI files, lint, the notes binary): merged up and re-run, whatever the pick says" {
+  pick_fixture
+  printf '%s\n' .local/src/notes-cli/src/main.rs >"$NOTES_FIXTURE/diff.status"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'none of it can affect'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 1
+}
+
+@test "main adds a test file the head's changed files reach: merged up and re-run, though the picker never saw the file" {
+  pick_fixture
+  printf '%s\n' tests/unit/new_thing.bats >"$NOTES_FIXTURE/diff.status"
+  : >"$PICKDIR/picked.yes"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'none of it can affect'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 1
+}
+
+@test "main adds a test file the head's changed files do not reach: the green head lands behind it" {
+  pick_fixture
+  printf '%s\n' tests/unit/new_thing.bats >"$NOTES_FIXTURE/diff.status"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'none of it can affect'
+}
+
+@test "main's new commits change no file at all: the green head lands behind them" {
+  pick_fixture
+  : >"$NOTES_FIXTURE/diff.status"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'none of it can affect'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 0
 }
 
 @test "a strict base never lands a head behind it, whatever the pick says" {
