@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """PreToolUse(Bash): the Bash guards, in one process.
 
-forge-guard, checkout-guard, release-guard, scratch-rm-guard, gh-login-guard, block-pip, block-poll
-and python-write-guard each keep their logic and their own file; this reads the payload once and
-asks each one's decide(data). One Python start per Bash call instead of eight, and forge-guard's
-walker is loaded once and shared. Every guard that refuses is named in the one deny, as when they
+forge-guard, checkout-guard, release-guard, scratch-rm-guard, gh-login-guard, shared-state-guard,
+block-pip, block-poll and python-write-guard each keep their logic and their own file; this reads
+the payload once and asks each one's decide(data). One Python start per Bash call instead of nine,
+and forge-guard's walker is loaded once and shared. Every guard that refuses is named in the one deny, as when they
 ran as separate hooks. A guard that raises is skipped, the others still run: each one fails open on
 its own, as before. block-poll's Read deny is its own hook (settings.json), since this runs on Bash.
 """
@@ -13,7 +13,7 @@ import sys
 import hooklib
 
 GUARDS = ("forge-guard", "checkout-guard", "release-guard", "scratch-rm-guard", "gh-login-guard",
-          "block-pip", "block-poll", "python-write-guard")
+          "shared-state-guard", "block-pip", "block-poll", "python-write-guard")
 
 
 def reasons(data):
