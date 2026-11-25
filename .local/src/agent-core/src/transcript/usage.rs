@@ -68,7 +68,9 @@ pub(super) fn edited_files(text: &str) -> Vec<String> {
         };
         for c in blocks {
             let name = c.get("name").and_then(Value::as_str).unwrap_or("");
-            if c.get("type").and_then(Value::as_str) != Some("tool_use") || !tools.iter().any(|(t, _)| *t == name) {
+            if c.get("type").and_then(Value::as_str) != Some("tool_use")
+                || !tools.iter().any(|(t, _)| *t == name)
+            {
                 continue;
             }
             let input = c.get("input");
