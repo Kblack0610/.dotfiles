@@ -17,6 +17,16 @@ load 'fleet_dispatch/common'
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-d.md)" status)" ok
 }
 
+@test "reap: a preempt marker past the rest window is pruned, a fresh one is kept (ar-3470)" {
+  mkdir -p "$FLEET_DISPATCH_DIR/preempted"
+  touch -d '-90 min' "$FLEET_DISPATCH_DIR/preempted/old"
+  touch -d '-10 min' "$FLEET_DISPATCH_DIR/preempted/fresh"
+  DISPATCH_PREEMPT_REST=60 run cmd_reap
+  assert_success
+  assert [ ! -e "$FLEET_DISPATCH_DIR/preempted/old" ]
+  assert [ -e "$FLEET_DISPATCH_DIR/preempted/fresh" ]
+}
+
 @test "unpark: a preempt ledger is resumed when its units are free and no urgent item waits; a budget park is not" {
   five_of_six_units
   park_stub

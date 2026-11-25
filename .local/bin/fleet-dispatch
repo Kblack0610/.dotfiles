@@ -6267,7 +6267,8 @@ preempt_for() {
     if [ "$DRY" = 1 ]; then say "would preempt $v ($server/$sess) for $kind $slug"; return 1; fi
     if out=$(claude-acct park "$server/$sess" --why preempt --for "$slug" 2>&1); then
       PREEMPTED=1
-      mkdir -p "$DIR/preempted" && : > "$DIR/preempted/$v"
+      { mkdir -p "$DIR/preempted" && : > "$DIR/preempted/$v"; } 2>/dev/null \
+        || logline "preempt marker for $v not written: $v gets no ${DISPATCH_PREEMPT_REST}m rest"
       say "preempted $v ($server/$sess) for $kind $slug"
       logline "preempted $v ($server/$sess) for $kind $slug"
       return 0
