@@ -1751,12 +1751,13 @@ notes --profile bnb ptask game --agent run gm-9"
   for s in ok fl rq cx; do "$AQ" add --project game --running --slug "$s" "$s" >/dev/null; "$AQ" set "$s" "lane_run=r-$s" >/dev/null; done
   "$AQ" add --project game --running --slug none "none" >/dev/null
   "$AQ" move ok done --status ok >/dev/null
+  "$AQ" set fl note="its PR was closed unmerged" >/dev/null   # a failed run's note is its why (ar-4263)
   "$AQ" move fl done --status failed >/dev/null
   "$AQ" move rq queued >/dev/null
   "$AQ" move cx done --status cancelled >/dev/null
   "$AQ" move none done --status ok >/dev/null
   run grep '^model-lane' "$NOTES_FIXTURE/calls.log"
-  assert_output $'model-lane outcome r-ok ok --cause close\nmodel-lane outcome r-fl failed --cause close\nmodel-lane outcome r-rq redo --cause requeue\nmodel-lane outcome r-cx unrated --cause cancel'
+  assert_output $'model-lane outcome r-ok ok --cause close\nmodel-lane outcome r-fl failed --why its PR was closed unmerged --cause close\nmodel-lane outcome r-rq redo --cause requeue\nmodel-lane outcome r-cx unrated --cause cancel'
   # The requeued item's next start logs a run of its own.
   [ -z "$(field "$(item queued rq)" lane_run)" ]
 }
@@ -1773,7 +1774,7 @@ notes --profile bnb ptask game --agent run gm-9"
   "$AQ" move tmo done --status failed --end timeout >/dev/null
   "$AQ" move stp done --status failed --end stopped >/dev/null   # negative control: a stop is the model's own end
   run grep '^model-lane' "$NOTES_FIXTURE/calls.log"
-  assert_output $'model-lane outcome r-lim unrated --cause limit\nmodel-lane outcome r-prov unrated --cause provider\nmodel-lane outcome r-cut unrated --cause cut\nmodel-lane outcome r-ref unrated --cause refused\nmodel-lane outcome r-req unrated --cause limit\nmodel-lane outcome r-tmo failed --cause close\nmodel-lane outcome r-stp failed --cause close'
+  assert_output $'model-lane outcome r-lim unrated --cause limit\nmodel-lane outcome r-prov unrated --cause provider\nmodel-lane outcome r-cut unrated --cause cut\nmodel-lane outcome r-ref unrated --cause refused\nmodel-lane outcome r-req unrated --cause limit\nmodel-lane outcome r-tmo failed --why the run ended before it closed the item (end timeout) --cause close\nmodel-lane outcome r-stp failed --why the run ended before it closed the item (end stopped) --cause close'
   [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-lim.md)" end_reason)" = limit ]
   [ "$(field "$(item queued req)" end_reason)" = limit ]
   # A new run has not ended: the reason goes when the item runs again.

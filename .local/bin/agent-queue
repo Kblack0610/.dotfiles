@@ -3677,7 +3677,7 @@ cmd_move() {
   dest="$(move_to "$f" "$to")" || die "could not move $f"
   item_event item-moved "$dest" --to "$to" --why "$from -> $to${status:+ ($status)}${why:+: $why}"
   echo "$slug: $from -> $to"
-  lane_outcome "$run" "$from" "$to" "$status" "$end" "$cause"
+  lane_outcome "$run" "$from" "$to" "$status" "$end" "$cause" "$(fm_get "$dest" note)"
   # The row's section follows the item: Now while it runs or waits on someone, Next up once back in
   # the queue. waiting and review keep the mark: the item started.
   case "$to" in running) mark_row "$dest" run ;; queued) mark_row "$dest" start ;; esac
@@ -4029,15 +4029,19 @@ cmd_reopen() {
   echo "$slug: board row ${row#*:} started again"
 }
 
-# lane_outcome <lane_run> <from> <to> <status> [end] [cause] -- the model-lane run a dispatch start logged
-# gets what became of it and why (CAUSES, lib/end-reasons.sh): done ok is ok and done failed is failed
-# (close), and a started item put back in the queue is redo, with the cause its mover passed (--cause)
-# or requeue. Every close goes through move (agent-land, the reap, a hand close), so this is the one
-# place outcomes are reported. A run whose end says nothing about the model (UNRATED_ENDS, its own
-# cause), a cancel and an UNRATED_CAUSES requeue file the run unrated: counted, never scored. A
+# lane_outcome <lane_run> <from> <to> <status> [end] [cause] [note] -- the model-lane run a dispatch start
+# logged gets what became of it and why (CAUSES, lib/end-reasons.sh): done ok is ok and done failed is
+# failed (close), and a started item put back in the queue is redo, with the cause its mover passed
+# (--cause) or requeue. Every close goes through move (agent-land, the reap, a hand close), so this is the
+# one place outcomes are reported. A run whose end says nothing about the model (UNRATED_ENDS, its own
+# cause), a cancel and an UNRATED_CAUSES requeue file the run unrated: counted, never scored. A failed run
+# carries its why: `(end <reason>)` as trainee_empty_why writes it, else the item's note, so trainee-rollup
+# files no "end with no reason recorded" row for a reaped run (ar-4263: the reap's done failed --end
+# stopped). A redo gets none here: trainee-reject filed the reviewer's, which a why would replace. A
 # model-lane error never fails the move.
 lane_outcome() {
-  local o='' c=${6:-}
+  local o='' c=${6:-} why=''
+  local -a w=()
   [ -n "$1" ] || return 0
   case "$3:$4" in
     done:ok) o=ok c=close ;;
@@ -4047,7 +4051,11 @@ lane_outcome() {
     *) return 0 ;;
   esac
   if unrated_end "${5:-}"; then o=unrated c=$5; elif unrated_cause "$c"; then o=unrated; fi
-  model-lane outcome "$1" "$o" --cause "$c" >/dev/null 2>&1 || echo "agent-queue: model-lane outcome $1 $o --cause $c failed" >&2
+  if [ "$o" = failed ]; then
+    if [ -n "${5:-}" ]; then why="the run ended before it closed the item (end $5)"; else why="${7:0:200}"; fi
+    [ -z "$why" ] || w=(--why "$why")
+  fi
+  model-lane outcome "$1" "$o" "${w[@]}" --cause "$c" >/dev/null 2>&1 || echo "agent-queue: model-lane outcome $1 $o --cause $c failed" >&2
 }
 
 # waits_on <file> <slug> -- the item's `after:` names that slug.
