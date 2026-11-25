@@ -9,6 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::display::fmt::counted;
+use crate::display::Shown;
 use crate::links::{Kind, Link};
 use crate::session_actions::Runner;
 
@@ -25,8 +26,9 @@ pub struct Entry {
     /// `report`, `digest` (a generated file) or `capture` (no frontmatter: the human's).
     pub kind: String,
     pub date: String,
-    pub title: String,
-    pub summary: String,
+    // The raw words; a Row sends them as display::Shown.
+    title: String,
+    summary: String,
     pub from: String,
     pub needs_you: bool,
     pub created: String,
@@ -53,10 +55,9 @@ pub struct Row {
     pub id: String,
     pub kind: String,
     pub date: String,
-    pub title: String,
+    pub title: Shown,
     /// The summary's first line, under the title.
-    pub lead: String,
-    pub summary: String,
+    pub summary: Shown,
     pub from: String,
     /// When it was filed (RFC 3339), the time beside the row.
     pub at: String,
@@ -84,9 +85,8 @@ impl Row {
             id: e.id.clone(),
             kind: e.kind.clone(),
             date: e.date.clone(),
-            title: e.title.clone(),
-            lead: e.summary.lines().next().unwrap_or("").trim().to_string(),
-            summary: e.summary.clone(),
+            title: Shown::title(&e.title),
+            summary: Shown::sub(e.summary.lines().next().unwrap_or("")),
             from: e.from.clone(),
             at: e.created.clone(),
             state,
@@ -367,7 +367,7 @@ mod tests {
         assert_eq!(ids(&v.sections[0].rows), ["2026-11-24-ups-switch"]);
         assert_eq!(v.sections[0].rows[0].state, "needs you");
         assert_eq!(v.sections[0].rows[0].level, "warn");
-        assert_eq!(v.sections[0].rows[0].lead, "Load fell 76% -> 41%");
+        assert_eq!(v.sections[0].rows[0].summary.text(), "Load fell 76% -> 41%");
         // Today's read one stays, marked read; yesterday's unread one is still in the stream.
         assert_eq!(
             ids(&v.sections[1].rows),
@@ -392,11 +392,13 @@ mod tests {
         for s in &v.sections[..2] {
             assert!(s.rows.iter().all(|r| r.kind == "report"), "{}", s.title);
         }
-        assert!(v
-            .archive
-            .iter()
-            .flat_map(|d| &d.rows)
-            .all(|r| r.kind == "report"));
+        assert!(
+            v.archive
+                .iter()
+                .flat_map(|d| &d.rows)
+                .all(|r| r.date != TODAY),
+            "today's capture stays in Your notes"
+        );
         // ups-switch, flakes and yday are unread in the stream; board-pass is read.
         assert_eq!(v.unread, 3);
     }
@@ -459,7 +461,8 @@ mod tests {
     fn the_daily_line_counts_one_day() {
         let all = parse(LIST).unwrap();
         let l = day_line_of(&all, TODAY).unwrap();
-        assert_eq!(l.text, "3 reports, 1 unread, 1 digest, 1 note");
+        // ups-switch and flakes are unread; board-pass is read.
+        assert_eq!(l.text, "3 reports, 2 unread, 1 digest, 1 note");
         assert_eq!(l.link.href(), "#reports/2026-11-24");
         // The 10th: two reports, one unread, and nothing else.
         assert_eq!(

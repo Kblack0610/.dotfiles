@@ -2225,7 +2225,11 @@ mod tests {
     /// The caches read on their first open, and why that is fine. Times are each tab's first open
     /// after a start, `agent-web-shot --time --every-tab`, load avg 117, 2026-11-18. Over about 1 s
     /// cold belongs in `warm`. Revisit when a tab's first open passes 1.5 s.
-    const ON_OPEN: [(&str, &str); 9] = [
+    const ON_OPEN: [(&str, &str); 10] = [
+        (
+            "reports",
+            "Reports, a `notes report list` of local files; the nav badge reads it on page load",
+        ),
         ("departments", "Projects Coverage, 1492 ms cold"),
         ("stages", "Projects Ladder, 678 ms cold"),
         (

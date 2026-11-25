@@ -20,6 +20,9 @@ const rps = { data: null, err: null, open: {}, sel: null, body: {}, marked: new 
 // The arg when it names a record (a report id or a day) rather than an inner tab.
 const reportArg = () => (INNER_TABS.reports.tabs.some((t) => t[0] === st.arg) ? "" : st.arg || "");
 
+// A display::Shown's uncut words.
+const shownFull = (s) => s.full || s.text;
+
 const allReports = (d) => [...d.sections.flatMap((s) => s.rows), ...d.archive.flatMap((a) => a.rows)];
 
 function reportBody(r) {
@@ -31,7 +34,7 @@ function reportBody(r) {
 function reportRow(r) {
   const open = r.id === rps.sel;
   const row = `<tr class="wr${open ? " sel" : ""}${r.unread ? " unread" : ""}" id="sec-r-${esc(r.id)}" data-href="${esc(r.link)}">` +
-    `<td>${rec2(esc(r.title), r.title, esc(r.lead), r.summary)}</td><td class="muted">${esc(r.from || r.kind)}</td>` +
+    `<td>${rec2(esc(r.title.text), shownFull(r.title), esc(r.summary.text), shownFull(r.summary))}</td><td class="muted">${esc(r.from || r.kind)}</td>` +
     `<td>${statePill(r.state, r.level)}</td><td class="n">${when(r.at)}</td></tr>`;
   return open ? row + reportBody(r) : row;
 }

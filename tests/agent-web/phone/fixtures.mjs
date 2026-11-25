@@ -546,7 +546,7 @@ const REPORT_TODAY = dayOf(0);
 function reportRow(i, date, state, kind = "report") {
   const slug = pick(SLUGS, i), id = `${date}-${slug}`;
   return {
-    id, kind, date, title: pick(TEXT, i), lead: pick(TEXT, i + 3), summary: pick(TEXT, i + 3), from: pick(PROJECTS, i),
+    id, kind, date, title: { role: "title", text: pick(TEXT, i) }, summary: { role: "sub", text: pick(TEXT, i + 3) }, from: pick(PROJECTS, i),
     at: iso(ago(20 + i * 35)), state, level: state === "needs you" ? "warn" : "", unread: state === "needs you" || state === "unread",
     target: `journal/refs/${date}/${slug}`, link: `#reports/${id}`,
   };

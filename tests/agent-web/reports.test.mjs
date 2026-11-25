@@ -22,7 +22,7 @@ const badge = part();
 const doc = { getElementById: (id) => (id === "reports" ? box : id === "reports-badge" ? badge : el()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, body: el(), activeElement: null };
 
 const row = (id, state, o = {}) => ({
-  id, kind: "report", date: id.slice(0, 10), title: `Title ${id}`, lead: "the lead", summary: "the lead", from: "dotfiles",
+  id, kind: "report", date: id.slice(0, 10), title: { role: "title", text: `Title ${id}` }, summary: { role: "sub", text: "the lead" }, from: "dotfiles",
   at: "2026-11-24T09:00:00-08:00", state, level: state === "needs you" ? "warn" : "", unread: state === "needs you" || state === "unread",
   target: `journal/refs/${id.slice(0, 10)}/${id.slice(11)}`, link: `#reports/${id}`, ...o,
 });
@@ -42,7 +42,12 @@ const view = (unread = true) => ({
 
 const asked = [];
 const loc = { pathname: "/", hash: "" };
-const answer = (url, opts) => (url === "/api/reports/read" ? view(false) : url.startsWith("/api/focus") ? { note: {}, sections: [{ title: "", markdown: "Load fell 76% -> 41%" }] } : view());
+// The fake server keeps the one stamp: after a mark-read, a read answers with it.
+const srv = { read: false };
+const answer = (url) => {
+  if (url === "/api/reports/read") { srv.read = true; return view(false); }
+  return url.startsWith("/api/focus") ? { note: {}, sections: [{ title: "", markdown: "Load fell 76% -> 41%" }] } : view(!srv.read);
+};
 const ctx = vm.createContext({
   console,
   document: doc,
@@ -54,7 +59,9 @@ const ctx = vm.createContext({
   history: { url: "", replaceState(a, b, u) { this.url = u; } },
   fetch: async (url, opts = {}) => {
     asked.push([opts.method || "GET", url, opts.body]);
-    return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => answer(url, opts), text: async () => "" };
+    // Answered when asked, as a server would, not when the page reads the body.
+    const body = answer(url);
+    return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => body, text: async () => "" };
   },
 });
 for (const f of ["../../web-kit/kb-ui.js", "ui.js", "md.js", "app.js", "reports.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
@@ -67,7 +74,7 @@ const open = async (arg) => {
   await new Promise((r) => setImmediate(r));
   await new Promise((r) => setImmediate(r));
 };
-const reset = () => { asked.length = 0; rps.sel = null; rps.body = {}; rps.marked.clear(); rps.open = {}; };
+const reset = () => { srv.read = false; asked.length = 0; rps.sel = null; rps.body = {}; rps.marked.clear(); rps.open = {}; };
 
 test("Today draws the tiles, Needs you hued, the stream, and Digests folded; Archive is its own group", async () => {
   reset();
