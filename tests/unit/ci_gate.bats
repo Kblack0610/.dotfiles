@@ -185,6 +185,9 @@ shard_step() { awk '/^      - name: Fast tier shard$/ { s = 1 } s && /^        r
   assert_failure
   shard_step "$WF" >"$BATS_TEST_TMPDIR/shard.sh"
   grep -q 'files=\$(<"\$RUNNER_TEMP/files")' "$BATS_TEST_TMPDIR/shard.sh" || fail "no shard script: $(cat "$BATS_TEST_TMPDIR/shard.sh")"
+  # The whole step parses: an apostrophe in a quoted ${x:-word} once unbalanced it, and every shard with files exited 2.
+  run bash -n "$BATS_TEST_TMPDIR/shard.sh"
+  assert_success
   : >"$BATS_TEST_TMPDIR/files"
   RUNNER_TEMP=$BATS_TEST_TMPDIR TAG='unit 1/24' PICKED_FILES=true run bash -e "$BATS_TEST_TMPDIR/shard.sh"
   assert_failure 1
@@ -198,7 +201,7 @@ shard_step() { awk '/^      - name: Fast tier shard$/ { s = 1 } s && /^        r
   echo unit/a.bats >"$BATS_TEST_TMPDIR/files"
   RUNNER_TEMP=$BATS_TEST_TMPDIR TAG='unit 1/24' PICKED_FILES=true run dash -e "$BATS_TEST_TMPDIR/shard.sh"
   assert_failure 1
-  assert_output --partial "(bash is not this step's shell)"
+  assert_output --partial "(shell: not bash)"
 }
 
 @test "the skills call passes the anchor's runner choice, fork rule included" {
