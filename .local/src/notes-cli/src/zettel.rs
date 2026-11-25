@@ -6,6 +6,7 @@ use crate::logging::Logger;
 use anyhow::{bail, Result};
 use chrono::{DateTime, Local};
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 
 pub fn new_note(p: &Profile, log: &Logger, title: &str) -> Result<()> {
@@ -38,10 +39,20 @@ pub(crate) fn create(
     let slug = slugify(title, fallback);
     fs::create_dir_all(dir)?;
     let file = dir.join(format!("{id}-{slug}.md"));
-    if file.exists() {
-        bail!("note already exists: {}", file.display());
-    }
-    fs::write(&file, body(&id, title, now))?;
+    // create_new, so a second note of the same title in the same minute is refused, never
+    // written over the first.
+    let mut f = match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&file)
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            bail!("note already exists: {}", file.display())
+        }
+        Err(e) => return Err(e.into()),
+    };
+    f.write_all(body(&id, title, now).as_bytes())?;
     log.info(kind, &format!("created {}", file.display()));
     println!("{}", file.display());
     Ok(())
