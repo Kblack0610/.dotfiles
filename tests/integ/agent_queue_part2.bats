@@ -2123,6 +2123,20 @@ already"
   assert_output --partial "4 queue lock misses in the last 4h"
 }
 
+# ar-5560: every line read "locks":[] on btrfs, so a 14 minute hold by an add stuck on notes named no holder.
+@test "lock-miss names the pid and command holding .lock, the writer before a reader, never a waiter" {
+  mkdir -p "$AGENT_QUEUE_DIR"
+  jq -nc --arg ts "$(date -u -Is)" '{ts: $ts, cmd: "agent-queue show x", caller: "hub",
+    locks: [".gate holds WRITE 11", ".lock holds READ 9", ".lock waits READ 12", ".lock holds WRITE 13"],
+    procs: [{file: ".gate", pid: 11, cmd: "flock"}, {file: ".lock", pid: 12, cmd: "agent-queue list"},
+      {file: ".lock", pid: 9, cmd: "agent-queue show y"},
+      {file: ".gate", pid: 13, cmd: "agent-queue add --plan p"}, {file: ".lock", pid: 13, cmd: "agent-queue add --plan p"}]}' \
+    > "$AGENT_QUEUE_DIR/lock-miss.jsonl"
+  run "$AQ" lock-miss
+  assert_success
+  assert_output --partial "agent-queue show x from hub, held by 13 agent-queue add --plan p ("
+}
+
 # ar-3025: a timeout names who held the lock. NEGATIVE CONTROL: before it, nothing was written and
 # 108 dispatch starts failed with no holder on record.
 @test "a lock timeout appends one lock-miss line naming the holder, the taker and its mode" {
@@ -2144,7 +2158,7 @@ already"
   log="$AGENT_QUEUE_DIR/lock-miss.jsonl"
   [ "$(wc -l < "$log")" = 2 ]
   run jq -r --argjson me "$holder" -s '.[] | [.mode, (.cmd | test("agent-queue (add|show)")),
-    (.locks | index(".lock holds WRITE") != null), (.procs | any(.pid == $me and .file == ".lock")),
+    (.locks | index(".lock holds WRITE \($me)") != null), (.procs | any(.pid == $me and .file == ".lock")),
     (.procs | all(.cmd | test("agent-queue") | not))] | map(tostring) | join(" ")' "$log"
   assert_line --index 0 "exclusive true true true true"
   assert_line --index 1 "shared true true true true"

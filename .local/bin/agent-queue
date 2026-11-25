@@ -312,11 +312,12 @@ lock_miss() {
     mv -f "$AQ_LOCK_MISS_LOG" "$AQ_LOCK_MISS_LOG.1"
   {
     for f in .gate .lock; do
-      s=$(stat -c '%Hd %Ld %i' "$AQ_DIR/$f") || continue
-      # /proc/locks names a file <maj:min:inode> with a hex device, as fleet-assess lock_ids reads it.
-      # shellcheck disable=SC2086 # s is three numbers, split on purpose
-      awk -v f="$f" -v id="$(printf '%02x:%02x:%s' $s)" '{ o = ($2 == "->") } $(6 + o) == id {
-        printf "lock\t%s %s %s\n", f, (o ? "waits" : "holds"), $(4 + o) }' /proc/locks
+      s=$(stat -c %i "$AQ_DIR/$f") || continue
+      # /proc/locks names a file <maj:min:inode>, matched on the inode alone: on btrfs it gives the
+      # superblock's device (00:24) where stat gives the subvolume's (00:3b), so a full match found
+      # no lock at all and every line read "locks":[] (ar-5560). The pid is the holder's or waiter's.
+      awk -v f="$f" -v ino="$s" '{ o = ($2 == "->"); n = split($(6 + o), id, ":") } n == 3 && id[3] == ino {
+        printf "lock\t%s %s %s %s\n", f, (o ? "waits" : "holds"), $(4 + o), $(5 + o) }' /proc/locks
     done
     # One fuser scan for both files: it prints "<path>: <pid>..." per file in use, the path on
     # stderr and the pids on stdout, so the merged stream pairs them. Split at the last colon: the
@@ -340,7 +341,8 @@ lock_miss() {
 
 # lock-miss [--hours H] [--max N] -> one line: the lock timeouts lock_miss logged in the last H hours
 # (AQ_LOCK_MISS_HOURS, 1) against the bound N (AQ_LOCK_MISS_MAX, 3), with the latest one's command
-# and caller; exit 1 when over the bound, 2 when the log cannot be read. The rotated .1 counts too.
+# and caller, and the pid and command holding .lock when the kernel named one (ar-5560); exit 1 when
+# over the bound, 2 when the log cannot be read. The rotated .1 counts too.
 # The watch queue-lock-miss runs it: a miss is a line in a file, no event, so the watch samples the rate.
 # lock_miss writes ts in UTC (`date -u -Is`) and the log syncs with the store, so lines from every host
 # and either side of a DST change compare as strings against a UTC cutoff; lines before 2026-11-21
@@ -358,7 +360,11 @@ cmd_lock_miss() {
   cut=$(date -u -Is -d "-$hours hours")
   # A missing log (or no .1 yet) is no misses: only a jq failure is unreadable.
   out=$({ cat "$AQ_LOCK_MISS_LOG.1" "$AQ_LOCK_MISS_LOG" 2>/dev/null || :; } | jq -nrR --arg cut "$cut" '
-    [inputs | fromjson? | objects | select((.ts // "") >= $cut)] | "\(length)\t\(last // {} | "\(.ts): \(.cmd) from \(.caller)")"') ||
+    [inputs | fromjson? | objects | select((.ts // "") >= $cut)] | (last // {}) as $l
+    | ([$l.locks[]? | select(startswith(".lock holds")) | split(" ") | {w: .[2], p: (.[3] | tonumber?)}
+      | select(.p)] | map(select(.w == "WRITE")) + map(select(.w != "WRITE")) | map(.p)) as $h
+    | (first($h[] as $p | $l.procs[]? | select(.pid == $p) | "\(.pid) \(.cmd)") // null) as $who
+    | "\(length)\t\($l.ts): \($l.cmd) from \($l.caller)\(if $who then ", held by \($who)" else "" end)"') ||
     { echo "unreadable: $AQ_LOCK_MISS_LOG"; return 2; }
   n="${out%%$'\t'*}"
   printf '%s queue lock misses in the last %sh (bound %s)' "$n" "$hours" "$max"
