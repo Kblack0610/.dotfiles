@@ -2960,6 +2960,7 @@ red_item() {
   red_item h done 'ok, no PR' -7200 -3600 - - ok night
   red_item i done 'another project' -7200 -3600 o/r#9 sha9 ok night
   red_item j done 'a bare word' -7200 -3600 o/r#10 sha10 ok night
+  red_item k done 'before the window' -1300000 -1296000 o/r#11 sha11 ok night
   jq -c '. + {project: "agent-runtime"} + ({
       a: {type: "fix", row: "agent-runtime:ar-10", cost_usd: "3"},
       b: {type: "feat", row: "agent-runtime:ar-11", cost_usd: "2"},
@@ -2967,7 +2968,8 @@ red_item() {
       d: {task: "Phase 2 of the plan /p.md: P2 a phase", plan: "/p.md", row: "agent-runtime:ar-13", cost_usd: "1"},
       e: {type: "chore", task: "chore(x): no row"},
       f: {type: "run", task: "run(notes): an old row", row: "agent-runtime:ar-2", cost_usd: "1"},
-      i: {project: "home-config", row: "home-config:hc-1"},
+      i: {project: "home-config", row: "home-config:hc-x"},
+      k: {type: "fix", row: "agent-runtime:ar-10", cost_usd: "9"},
       j: {task: "waybar: a word before a colon is no type"}}[.slug] // {})' "$ITEMS" > "$ITEMS.new"
   mv "$ITEMS.new" "$ITEMS"
   # a from the dream by triage, b from a plan, c by a hand session whose reason is retagged, d by the human
@@ -2978,8 +2980,9 @@ red_item() {
   ev filed ar-10 inbox-triage 'model: a red' '#agent #from/dream fix(x): a red'
   ev added ar-11 c7e6e068 '' 'feat(x): a KPI claim' plan
   ev added ar-12 ab12cd34 self-check 'fix(x): a reverted fix'
-  ev tagged ar-12 inbox-priority '+#why/fault +#high' 'fix(x): a reverted fix'
-  ev tagged ar-12 inbox-priority '-#why/fault +#why/upkeep' 'fix(x): a reverted fix'
+  # the newest reason wins, not the one that sorts last
+  ev tagged ar-12 inbox-priority '+#why/upkeep +#high' 'fix(x): a reverted fix'
+  ev tagged ar-12 inbox-priority '+#why/fault' 'fix(x): a reverted fix'
   ev added ar-13 human '' 'a phase #requested'
   claim ar-11 board_open 600 max 60 1
   mkdir -p "$BENCH_OUTCOMES_DIR/game"
@@ -2989,7 +2992,7 @@ red_item() {
   assert_equal "$(jq -c '[.landed, .cost_usd, .priced, .reds_read]' <<<"$output")" '[7,7.5,5,true]'
   run jq -c '.rows[] | [.slug, .kind, .source, .target, .cost_usd, .reverted, .red]' <<<"$output"
   assert_output "$(printf '%s\n' '["a","fix","from: dream","red",3,false,"fixed"]' '["b","feat","plan","kpi",2,false,null]' \
-    '["c","fix","self-check","why/upkeep",0.5,true,null]' '["d","plan phase","human","requested",1,false,null]' \
+    '["c","fix","self-check","why/fault",0.5,true,null]' '["d","plan phase","human","requested",1,false,null]' \
     '["e","chore","no row","none",null,false,null]' '["f","run","pre-log","none",1,false,null]' \
     '["j","untyped","no row","none",null,false,null]')"
   run "$SUBJECT" landed --json
@@ -3000,9 +3003,9 @@ red_item() {
   assert_success
   assert_line '| fix | 2 | 0.286 | $3.5 | 0.467 | 1/2 | - | 1 (1 fixed, 0 red again) |'
   assert_line '| plan | 1 | 0.143 | $2 | 0.267 | 1/1 | 1 (0 improved, 0 regressed, 1 pending) | - |'
-  # another project is its own: home-config holds only i
+  # another project is its own: home-config holds only i, whose row id has no number and still counts
   run "$SUBJECT" landed --project home-config --json
-  assert_equal "$(jq -c '[.landed, .rows[0].slug]' <<<"$output")" '[1,"i"]'
+  assert_equal "$(jq -c '[.landed, .rows[0].slug, .rows[0].source]' <<<"$output")" '[1,"i","unrecorded"]'
   # an unreadable reds read leaves the reds null, never 0, and the rest still scores
   printf '#!/usr/bin/env bash\nexit 3\n' > "$SANDBOX/bin/notes"
   run "$SUBJECT" landed --json
@@ -3010,6 +3013,9 @@ red_item() {
   assert_equal "$(jq -c '[.reds_read, (.by_target[] | select(.target == "red") | .reds_fixed)]' <<<"$output")" '[false,null]'
   run "$SUBJECT" landed --days 0
   assert_failure 2
+  # an unreadable queue is no landed work, never 0 items
+  BENCH_DONE_ITEMS_CMD=false run "$SUBJECT" landed
+  assert_failure 1
   rm "$BENCH_INGEST"
   run "$SUBJECT" landed
   assert_failure 1

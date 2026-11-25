@@ -563,14 +563,16 @@ def on_board($p): agent_row($p) and (.state == "open" or .state == "doing") and 
 # a runner by its conf name ($runners: {<name>: true}), else a session (its item, slug or session id)
 def human_writer: (.by // "") | IN("", "human");
 def door($runners): if human_writer then "human" elif (.by | type) == "string" and $runners[.by] then .by else "session" end;
-# the source of a board row, the one rule inflow and landed count by: given its first added or filed
+# the number at the end of a row id (ar-12 -> 12), null when it has none
+def id_num: (capture("-(?<n>[0-9]+)$") | .n | tonumber) // null;
+# the source of a board row, the one rule inflow, landed and prio-defaults count by: given its first added or filed
 # ingest event ($first, null when the record never saw the row), the ingest origin; else the #from/ its
 # triage carried in (from its text, else $text, the text of the row); else the self-check of a hand session; else
 # the human, a session (an 8-hex session id) or the writer. A row the record never saw is pre-log when
 # its id is below $logged, the first id the record minted for its project, else unrecorded.
 def row_source($first; $text; $logged; $id):
   def from_class: if . == "" then "triage: no #from" elif . == "dream" or . == "ladder-scout" then "from: \(.)" else "from: item or session" end;
-  (($id // "") | capture("-(?<n>[0-9]+)$") | .n | tonumber) as $num
+  ($id // "" | id_num) as $num
   | if $first == null then (if $num != null and $num < $logged then "pre-log" else "unrecorded" end)
     elif ($first.origin // "") != "" then $first.origin
     else (($first.text // $text // "") | capture("#from/(?<f>[^ ]*)") | .f | from_class) // (
@@ -2499,8 +2501,7 @@ prio_origins() {
   [ -r "$BENCH_INGEST" ] || return 1
   { grep -hE '"action":"(added|filed)"' "$BENCH_INGEST" || :; } | jq -Rnc "$JQ_LIB"'
     reduce (inputs | fromjson? | select((.id // "") != "")) as $e ({};
-      if has($e.id) then . else .[$e.id] = ($e | ((.origin | select(. != null and . != "")) // (if human_writer then "human" else .by end))
-        | if test("^[0-9a-f]{8}$") then "session" else . end) end)'
+      if has($e.id) then . else .[$e.id] = row_source($e; null; 0; $e.id) end)'
 }
 
 prio_defaults() {
@@ -3979,33 +3980,37 @@ landed_events() {
 # outcome row says its PR was reverted), the KPI claims and their verdicts, and the reds and how they
 # ended (`reds`; null when reds cannot be read). Counted, never judged.
 landed_json() {
-  local t="$1" p="$2" since reds read=true REDS_DAYS=$LANDED_DAYS
+  local t="$1" p="$2" since items reds read=true REDS_DAYS=$LANDED_DAYS
   since=$(( t - LANDED_DAYS * 86400 ))
-  reds=$(reds_json "$t") || read=false   # reds_json said why; the reds columns read null, the rest stands
   [ -r "$BENCH_INGEST" ] || { say "landed: the ingest record cannot be read ($BENCH_INGEST)"; return 1; }
-  jq -cn --arg p "$p" --argjson days "$LANDED_DAYS" --argjson read "$read" \
-     --slurpfile items <(bench_read $BENCH_DONE_ITEMS_CMD --since "$(date -d "@$since" +%F)" 2>/dev/null) \
+  items=$(bench_read $BENCH_DONE_ITEMS_CMD --since "$(date -d "@$since" +%F)" 2>/dev/null) \
+    || { say "landed: the queue's done items cannot be read ($BENCH_DONE_ITEMS_CMD)"; return 1; }
+  # reds_items reads the done items by the day they finished, the same days as above
+  reds=$(reds_json "$t") || read=false   # reds_json said why; the reds columns read null, the rest stands
+  jq -cn --arg p "$p" --argjson days "$LANDED_DAYS" --argjson read "$read" --argjson since "$since" --argjson t "$t" \
+     --slurpfile items <(printf '%s\n' "$items") \
      --slurpfile ev <(landed_events) \
      --slurpfile o <(outcomes_newest | jq -cs 'map({key: .session_id, value: (.prs // [])}) | from_entries') \
      --slurpfile eff <(effect_lines | jq -c 'select(.subject and .kpi)') \
      --slurpfile reds <(printf '%s\n' "$reds" | jq -c 'select(.slug and (.cleanup | not)) | {slug, outcome}') "$JQ_LIB"'
     def sids: (.sessions // "") | split(" ") | map(select(. != ""));
-    def num: (capture("-(?<n>[0-9]+)$") | .n | tonumber) // null;
     def usd: [.gateway_cost_usd, .cost_usd] | map(select(. != null and . != "") | tonumber? ) | first;
     def tagset: [scan("#(why/[a-z-]+|kpi/[a-z0-9_]+|requested)\\b") | .[0]];
+    # in the order the row took them, the newest last, so the last #why/ is the one it carries now
     def fold: reduce (sort_by(.ts)[]) as $e ([];
-      if $e.action == "tagged" then (. + ($e.why // "" | [scan("\\+#(why/[a-z-]+|kpi/[a-z0-9_]+|requested)\\b") | .[0]]))
-        - ($e.why // "" | [scan("-#(why/[a-z-]+|kpi/[a-z0-9_]+|requested)\\b") | .[0]])
-      else . + ($e.text // "" | tagset) end | unique);
+      if $e.action == "tagged" then ($e.why // "" | [scan("\\+#(why/[a-z-]+|kpi/[a-z0-9_]+|requested)\\b") | .[0]]) as $add
+        | (. - $add - ($e.why // "" | [scan("-#(why/[a-z-]+|kpi/[a-z0-9_]+|requested)\\b") | .[0]])) + $add
+      else ($e.text // "" | tagset) as $add | (. - $add) + $add end);
     ($o[0] // {}) as $o
     | ($reds | map({key: .slug, value: .outcome}) | from_entries) as $red
     | ($ev | group_by("\(.from):\(.id)") | map({key: "\(.[0].from):\(.[0].id)", value: .}) | from_entries) as $by
-    | ($ev | map(select(.action == "added")) | group_by(.from)
-        | map({key: .[0].from, value: (map(.id | num | numbers) | min)}) | from_entries) as $logged
+    | ($ev | map(select(.action == "added" or .action == "filed")) | group_by(.from)
+        | map({key: .[0].from, value: (map(.id | id_num | numbers) | min)}) | from_entries) as $logged
     | ([$ev[] | .ts[0:10]] | min) as $began
     | ($eff | map(select(.type == "claim"))) as $claims
     | ($eff | map(select(.type == "verdict")) | group_by([.subject, .kpi]) | map({key: "\(.[0].subject) \(.[0].kpi)", value: (sort_by(.at) | last | .verdict)}) | from_entries) as $verdict
     | [$items[] | select(.project == $p and .status == "ok" and (.pr // "") != "")
+       | select(.finished | ep | . != null and . >= $since and . <= $t)
        | . as $it | (rowkey // "") as $rk | ($rk | split(":")) as [$rp, $rid]
        | ($by[$rk] // []) as $evs
        | ($evs | map(select(.action == "added" or .action == "filed")) | sort_by(.ts) | first) as $first
