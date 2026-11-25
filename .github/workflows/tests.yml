@@ -469,6 +469,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_API: ${{ github.event.pull_request.url }}
         run: |
+          set -o pipefail
           curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "$PR_API" \
             | jq -r '.body // ""' >.git/pr-body || { echo "shape-grow: could not read the PR body, so no Split: or Dup: line counts"; : >.git/pr-body; }
           tests/docker.sh --run .local/bin/shape-grow --body .git/pr-body HEAD^1 HEAD

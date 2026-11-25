@@ -231,3 +231,27 @@ EOF
   assert_failure 2
   [[ "$stderr" == *"copy.conf:1: not"* ]]
 }
+
+@test "copy: a pasted block in a file whose name has a space is listed" {
+  cnf 'block-lines 6'; { echo '#!/usr/bin/env bash'; blk; } >"$R/a.sh"; a=$(commit)
+  { echo '#!/usr/bin/env bash'; blk; } >"$R/b c.sh"; b=$(commit)
+  run --separate-stderr "$SG" -C "$R" "$a" "$b"
+  assert_failure 1
+  assert_output 'b c.sh:2 copy block of 6 lines, also a.sh:2'
+}
+
+@test "copy: a namesake in another language is no copy" {
+  cnf 'block-lines 6'; printf 'def helper():\n    return 1\n' >"$R/p.py"; a=$(commit)
+  shf q.sh helper 1; b=$(commit)
+  run --separate-stderr "$SG" -C "$R" "$a" "$b"
+  assert_success
+  assert_output ''
+}
+
+@test "copy: an escape whose row id runs on (ar-5-x) covers nothing, as agent-land skips it too" {
+  cnf 'block-lines 6'; shf lib.sh helper 1; a=$(commit)
+  shf b.sh helper 1; b=$(commit)
+  run --separate-stderr "$SG" -C "$R" --body - "$a" "$b" <<<'Dup: ar-5-x helper'
+  assert_failure 1
+  assert_output 'b.sh:2 copy function helper, also lib.sh:2'
+}

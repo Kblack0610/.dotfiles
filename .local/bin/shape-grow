@@ -9,7 +9,7 @@ longer than at <base> (a new function counts from 0).
 
 Copy: only in a repo whose <base> has COPY_CONF, and over the code files of <head> (the same three
 languages, .bats left out). Prints `path:line copy <what>, also <path>:<line>` for each copy the
-change adds of code that already exists: a function name it defines that another file defines; an
+change adds of code that already exists: a function name it defines that another file of its language defines; an
 UPPER_CASE constant it assigns that another file assigns the same value; a run of `block-lines`
 significant lines it adds that exist elsewhere (blank, comment, import and keyword-only lines do
 not count). The conf is read at <base>, so a change cannot loosen its own check. --conf reads it from a file instead, to tune a repo's conf against its
@@ -236,8 +236,9 @@ def parse_copy_conf(text):
 
 
 def code_tree(ref, cwd, skip):
-    """path -> (lang, text) for every code file at <ref>, read in one `git cat-file --batch`."""
-    r = git(['ls-tree', '-r', '-z', '--full-tree', ref], cwd)
+    """path -> (lang, text) for every code file at <ref>, read in one `git cat-file --batch`; a blob
+    over MAX_BLOB is never read."""
+    r = git(['ls-tree', '-r', '-z', '-l', '--full-tree', ref], cwd)
     if r.returncode != 0:
         raise RuntimeError(f'git ls-tree {ref}: {r.stderr.strip()}')
     entries = []
@@ -245,8 +246,8 @@ def code_tree(ref, cwd, skip):
         if not rec:
             continue
         meta, path = rec.split('\t', 1)
-        mode, typ, sha = meta.split()
-        if typ == 'blob' and mode != '120000' and not any(fnmatch.fnmatchcase(path, g) for g in skip):
+        mode, typ, sha, size = meta.split()
+        if typ == 'blob' and mode != '120000' and int(size) <= MAX_BLOB and not any(fnmatch.fnmatchcase(path, g) for g in skip):
             entries.append((path, sha))
     out = {}
     if not entries:
@@ -261,7 +262,7 @@ def code_tree(ref, cwd, skip):
         size = int(data[pos:nl].split()[2])
         body = data[nl + 1:nl + 1 + size]
         pos = nl + 1 + size + 1
-        if size > MAX_BLOB or b'\0' in body:
+        if b'\0' in body:
             continue
         text = body.decode('utf-8', errors='replace')
         lang = kind(path, text)
@@ -334,7 +335,7 @@ def added_lines(base, head, cwd):
         if line.startswith('diff --git '):
             header = True
         elif header and line.startswith('+++ '):
-            path = line[4:]
+            path = line[4:].rstrip('\t')  # git ends the name with a tab when it has a space
             out.setdefault(path, set())
         elif line.startswith('@@') and path:
             header = False
@@ -368,7 +369,7 @@ def func_copies(files, tree, base, cwd, conf):
             if name in old or ignored(name, conf):
                 continue
             other = next(((p, defs[name]) for p, (lg, t) in sorted(tree.items())
-                          if p != path and name in t and name in (defs := defs_of(p, t))), None)
+                          if p != path and lg == lang and name in t and name in (defs := defs_of(p, t))), None)
             if other:
                 hits.append(('Dup', name, f'{path}:{line} copy function {name}, also {other[0]}:{other[1]}'))
     return hits
@@ -465,7 +466,8 @@ def copy_hits(files, base, head, cwd, conf_text=None):
 
 # --- escapes and the run -------------------------------------------------------------------------
 
-ESCAPE = re.compile(r'^[ \t]*(Split|Dup):[ \t]*([a-z]+-[0-9]+)\b(.*)$', re.M)
+# The same grammar as agent-land's shape_gate reads, so a line one of them skips the other skips too.
+ESCAPE = re.compile(r'^[ \t]*(Split|Dup):[ \t]*([a-z]+-[0-9]+)(?![a-z0-9-])(.*)$', re.M)
 
 
 def escapes(body):
