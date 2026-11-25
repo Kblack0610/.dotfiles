@@ -109,11 +109,12 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
       else $g.parts | map(.level as $l | "\(.name | esc) " + ($l | word | paint($colour[$l | lvl]))) end)
      + (if $g.feed then [$g.feed | esc | paint($red)] else [] end)) as $parts
   | ([$g.kinds[].kind | length] + [4] | max) as $kw
-  # RUNNING is the jobs of the kind running (hub_core::machines::Pool).
+  # RUNNING is the jobs of the kind running, USUAL how long one of them usually runs (hub_core::machines::Pool).
   | ([$g.kinds[] | ((.kind | pad($kw) | esc) + " " + (.weight // "-" | lpad(6)) + " " + (.running | num | lpad(7))
       + " " + (.waiting as $w | $w | num | lpad(7)
         | if ($w // 0) > 0 then paint($yel) else . end)
-      + " " + (.oldest | dur | lpad(6)) + " " + (.done | num | lpad(5)) + "  " + (.pass as $p | $p | pass_paint($p | pct)))]) as $kinds
+      + " " + (.oldest | dur | lpad(6)) + " " + (.done | num | lpad(5)) + " " + (.usual | dur | lpad(5))
+      + "  " + (.pass as $p | $p | pass_paint($p | pct)))]) as $kinds
   | ([$g.machines[].host | length] + [7] | max) as $mw
   | ($g.machines | map(.bcell = (.booked | bcell))) as $ms
   | ([$ms[].bcell | length] + [6] | max) as $uw
@@ -140,7 +141,7 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
   | ((("WAITING" | pad($jw)) + "  N WAITED  " + ("WHERE" | pad($ww)) + "  STARTS")) as $nhead
   | ([$nx[] | (.what | pad($jw) | esc) + " " + (.n | tostring | lpad(2)) + " " + (.wait | lpad(6)) + "  "
       + (.where | pad($ww) | esc) + "  " + .when]) as $next
-  | (("KIND" | pad($kw)) + " WEIGHT RUNNING WAITING OLDEST  DONE  PASS") as $khead
+  | (("KIND" | pad($kw)) + " WEIGHT RUNNING WAITING OLDEST  DONE USUAL  PASS") as $khead
   | (("MACHINE" | pad($mw)) + " " + ("BOOKED" | lpad($uw)) + "  " + ("" | pad(BAR)) + "  " + ("RUNNING" | pad($rw)) + "  NEXT") as $mhead
   | ([$khead] + (if ($kinds | length) > 0 then $kinds else ["no job kind reports"] end)
      + (if ([$g.kinds[] | select((.weight // "") | endswith("*"))] | length) > 0

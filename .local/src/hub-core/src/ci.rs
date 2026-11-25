@@ -220,6 +220,8 @@ pub struct JobKind {
     /// Seconds the oldest waiting job has waited.
     pub oldest: Option<f64>,
     pub done: Option<f64>,
+    /// Seconds one of its finished jobs usually runs (`Pool::usual`).
+    pub usual: Option<f64>,
     pub pass: Option<f64>,
     /// The share of a slot one of its jobs takes, as text (`Pool::weight`).
     pub weight: Option<String>,
@@ -429,6 +431,7 @@ pub fn glance(infra: &Infra) -> Glance {
             waiting: p.waiting,
             oldest: p.oldest,
             done: p.done,
+            usual: p.usual,
             pass: p.pass,
             weight: p.weight.clone(),
         });
@@ -2311,7 +2314,7 @@ mod tests {
         );
         assert_eq!(
             keys(&v["kinds"][0]),
-            ["done", "kind", "oldest", "pass", "running", "waiting", "weight"]
+            ["done", "kind", "oldest", "pass", "running", "usual", "waiting", "weight"]
         );
         assert_eq!(
             keys(&v["machines"][0]),

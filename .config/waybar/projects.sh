@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # Waybar module: the projects chip (custom/projects), every lab project's progress at a glance.
 # The bar is the icon, how many projects have work in flight (a session running or an ask
-# waiting) and S: with the running sprint, its version and delivered/committed (absent with none,
-# +N past one); the hover leads with one line per running sprint, then the projects in flight,
-# each with its running work by category, then one line naming the projects not running.
+# waiting), B: with the agent board's open rows (amber when the board grew over 7 days) and S: with
+# the running sprint, its version and delivered/committed (absent with none, +N past one); the
+# hover leads with one line per running sprint, then the projects in flight, each with its running
+# work by category, then one line naming the projects not running, then the Board: its total and
+# 7-day flow, and each project's rows on it with its 7-day net.
 #
 # It computes nothing: `hub projects --json` is hub-core's join (projects::gather), the same cards
 # the hub Projects tab, agent-web and the phone read, with the open window already scored, and
 # its `figures` are the Projects card's (in flight, the project count, sprints), which hub drops
-# on a partial read, so those then read ? and -. hub unreadable reads ? in amber.
+# on a partial read, so those then read ? and -. The board total is hub's `board_open` (the feed's
+# `totals.agent`, the Projects tab's Board count) and a project's rows its `agent_tiers.board`; an
+# unread feed reads B:? in amber. hub unreadable reads ? in amber.
 
 set -u
 here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
@@ -85,14 +89,44 @@ sprints="$(jq -r --arg g "$C_GRN" --arg y "$C_YEL" --arg r "$C_RED" --arg d "$C_
   .cards[] | select(.sprint_says != null)
   | ({"ok": $g, "warn": $y, "bad": $r}[.state_level // ""] // $d) as $h
   | "\(.name | esc)  \(.sprint_says | esc)  <span color=\"\($h)\">\(st | esc)</span>"' <<< "$raw")"
-read -r flying total running errors < <(jq -r '[(.figures.projects_in_flight // "-"), (.figures.projects_headline // "-"),
-  (.figures.projects_sprints // "-"), (.errors | length)] | @tsv' <<< "$raw")
+read -r flying total running errors board grew < <(jq -r '[(.figures.projects_in_flight // "-"), (.figures.projects_headline // "-"),
+  (.figures.projects_sprints // "-"), (.errors | length), (.board_open // "-"), ((.board_7d.net // 0) > 0)] | @tsv' <<< "$raw")
+
+# The Board block: the total and the fleet's 7-day flow in points (hub's `board_7d`, left out when
+# no day-log record carries points), then one row per project with rows on the board, the most
+# first, its rows and its 7-day net in points (`net7d_cell`), amber when it grew (`growing`).
+boardblock="$(jq -r --arg y "$C_YEL" '
+  def esc: gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;");
+  def paint($c): "<span color=\"\($c)\">\(.)</span>";
+  def pad($n): . + (" " * ([$n - length, 0] | max));
+  def lpad($n): (" " * ([$n - length, 0] | max)) + .;
+  "<b>Board</b>  \(.board_open // "?") rows"
+    + (.board_7d | if . == null then ""
+       else ", net \(.net | if . > 0 then "+\(.)" else tostring end) pts in 7d (\(.in) in, \(.done) done, \(.dropped) dropped)" end),
+  ([.cards[] | select((.agent_tiers.board // 0) > 0)] | sort_by(-.agent_tiers.board, .name)) as $b
+  | ([$b[].name | esc | length] + [7] | max) as $w
+  | ([$b[].agent_tiers.board | tostring | length] + [4] | max) as $nw
+  | ([$b[].net7d_cell // "-" | length] + [6] | max) as $cw
+  | if ($b | length) > 0 then "<tt>" + ([("  " + ("PROJECT" | pad($w)) + "  " + ("ROWS" | lpad($nw)) + "  " + ("7D NET" | lpad($cw)))]
+      + [$b[] | . as $c | (.net7d_cell // "-") as $n
+        | "  " + (.name | esc | pad($w)) + "  " + (.agent_tiers.board | tostring | lpad($nw))
+          + "  " + (" " * ($cw - ($n | length))) + ($n | if $c.growing then paint($y) else . end)] | join("\n")) + "</tt>"
+    else empty end
+' <<< "$raw")"
 head="$title  $flying in flight, $total total"
 text="$ICON"
 if [ "$flying" = - ]; then
   text+=" $(paint "$C_YEL" ?)"
 elif ((flying > 0)); then
   text+=" $flying"
+fi
+# The board's open rows, amber when the board grew; an unread feed is B:? in amber.
+if [ "$board" = - ]; then
+  text+="  $(paint "$(label_colour)" B:)$(paint "$C_YEL" ?)"
+elif [ "$grew" = true ]; then
+  text+="  $(paint "$(label_colour)" B:)$(paint "$C_YEL" "$board")"
+else
+  text+="  $(paint "$(label_colour)" B:)$board"
 fi
 # With no Sprints figure the bar's sprint is ? while the cards still name one.
 if [ "$running" = - ] && [ -n "$sprints" ]; then
@@ -113,4 +147,4 @@ if [ -n "$sprints" ]; then
 fi
 class=ok
 ((errors == 0)) || class=warn
-emit "$text" "$head"$'\n\n'"<tt>$body</tt>" "$class"
+emit "$text" "$head"$'\n\n'"<tt>$body</tt>"$'\n\n'"$boardblock" "$class"
