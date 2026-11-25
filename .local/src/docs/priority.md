@@ -80,6 +80,14 @@ The dispatch, sessions, views and notes rows are agent-runtime's own systems (it
 
 A fault or a feature with a named benefit is normal at least, under a "to standard" epic too; only the faults these tables list as low stay low (on 2026-11-24, 579 fix and 609 feat rows sat at low, filed so by their sessions). `project-stage-check --file` files its gap rows untagged for that rubric to judge, no longer `#low` by origin.
 
+## The reason on every row
+
+A board row carries a priority word and a `#why/<slug>` from `.config/inbox-triage/rules/priority-reasons.tsv`, each slug naming one priority. A row with no reason, or no priority, is a default: `fleet-bench prio-defaults` counts them by the filer that wrote the row.
+
+- Backfill: `agentctl-inbox-triage --backlog --priority --reasons --retag high`, run from the deployed script on PATH (a worktree copy is refused: its rendered prompt is not one of the agent's PROMPT files). It stops at `MAX_CALLS_HOUR` (120 calls, about 2,100 rows an hour) with "stopped at its budget"; the next run continues over the rows still without a reason. Never raise the cap for it.
+- It keeps the priority a row has. When the model's reason belongs to another priority, the pass says so and writes nothing, so the row stays a default until `--retag` names its priority or the human changes the word. `--retag high` re-judges the agent-lane high rows and can lower one; a human row is never lowered (the pass says the lowering and the human decides).
+- The count after each run is `fleet-bench prio-defaults`; the first run's figures are in the P4 Results of `~/.agent/plans/_live/priority-reasons-default-count.md`.
+
 ## Where the scales fall short today
 
 Measured 2026-11-21; each line leaves this table when its fix lands (epic ar-4346, one phase each) and the doc then says only what is true.
