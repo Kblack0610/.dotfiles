@@ -2332,7 +2332,7 @@ playtest_blame() {
 #   orphans (orphan_request_rows): open rows with an id whose #of/ parent is no open row, or that a
 #     done item with merge proof (the done items merged_open_rows reads) names as its subject while
 #     it worked another row. The subject is agent-queue named_row's, over the title, else the task's
-#     first line: its first word, or the one id in brackets. The item that worked the row itself is
+#     first line: its first word, or the one id in brackets that ends it (ar-5461). The item that worked the row itself is
 #     merged_open_rows; a merged PR reaches a row through its item. A row an active item works
 #     (BENCH_ITEMS_CMD) is that item's to move, so it is no orphan of the merged one.
 #   blocked (next_up_blocked): open agent rows the dispatch judge's latest verdict (BENCH_VERDICTS_CMD)
@@ -2352,7 +2352,7 @@ board_links() {
   blame=$(playtest_blame "$feed" | jq -Rsc 'split("\n") | map(select(. != "") | split("\t"))')
   jq -c --argjson t "$t" --slurpfile d <(printf '%s' "$done") --slurpfile v <(printf '%s' "$verdicts") \
      --slurpfile a <(printf '%s' "$active") --argjson blame "${blame:-[]}" "$JQ_LIB"'
-    def subject: [(capture("^\\s*(?<i>[a-z]{2,4}-[0-9]+)([:\\s]|$)"; "i") | .i), (scan("[(\\[]([a-z]{2,4}-[0-9]+)[)\\]]"; "i") | .[0])]
+    def subject: [(capture("^\\s*(?<i>[a-z]{2,4}-[0-9]+)([:\\s]|$)"; "i") | .i), (capture("[(\\[](?<i>[a-z]{2,4}-[0-9]+)[)\\]][\\s.]*$"; "i") | .i)]
       | map(ascii_downcase) | unique | if length == 1 then .[0] else null end;
     def live: .state == "open" or .state == "doing";
     $d[0] as $d | $v[0] as $v | ($a[0] | if . == null then null else map(rowkey | strings) | INDEX(.) end) as $worked

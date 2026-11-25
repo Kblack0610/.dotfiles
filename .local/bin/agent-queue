@@ -2006,15 +2006,16 @@ brief_to_row() {
 }
 
 # named_row <title> -> the one row id (`ucp-134`) the title names as its subject, else nothing and
-# rc 1: none, or two that differ. A subject is the first word (`ucp-134: ...`) or an id in brackets
-# (`... (ucp-134)`, `[ucp-134]`); an id in the sentence (`after ar-40 lands`) only mentions a row.
+# rc 1: none, or two that differ. A subject is the first word (`ucp-134: ...`) or one id in brackets
+# that ends the title (`... (ucp-134)`, `... [ucp-134].`); an id in the sentence (`after ar-40 lands`,
+# `beside (ar-40) and more`) only mentions a row (ar-5461). fleet-bench board_links `subject` is the same rule.
 # An item added for a row already filed then works that row (link_row, when it is open and no live
 # item has it) instead of filing a second one beside it, so the row the human reads closes when
 # the work lands (ucp-134 stayed open after its epic shipped, 2026-11-04). cmd_add_one skips it for a plan
 # phase (AQ_ITEM_PLAN): its title leads with the phase name, so an id the name starts with is no row it works.
 named_row() {
   local ids
-  ids="$({ grep -oiE '^[[:space:]]*[a-z]{2,4}-[0-9]+([:[:space:]]|$)' <<<"$1"; grep -oiE '[([][a-z]{2,4}-[0-9]+[])]' <<<"$1"; } |
+  ids="$({ grep -oiE '^[[:space:]]*[a-z]{2,4}-[0-9]+([:[:space:]]|$)' <<<"$1"; grep -oiE '[([][a-z]{2,4}-[0-9]+[])][[:space:].]*$' <<<"$1"; } |
     tr -cd 'A-Za-z0-9\n-' | tr 'A-Z' 'a-z' | sort -u)"
   [ -n "$ids" ] && [ "$(grep -c . <<<"$ids")" = 1 ] && printf '%s\n' "$ids"
 }

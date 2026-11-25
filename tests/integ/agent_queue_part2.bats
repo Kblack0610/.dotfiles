@@ -1587,6 +1587,13 @@ notes --profile work ptask level run lv-8'
   [ "$(field "$(item queued epic)" row)" = level:lv-9 ]
   run grep -c ' start lv-3' "$NOTES_FIXTURE/calls.log"
   assert_output 0
+  # A bracketed id mid-title only mentions its row; one that ends the title is its subject (ar-5461).
+  "$AQ" add --project level --slug mid "fix(menu): move (lv-6) aside and redo the layout"
+  [ "$(field "$(item queued mid)" row)" = level:lv-9 ]
+  run grep -c ' start lv-6' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  "$AQ" add --project level --slug end "fix(menu): redo the layout [lv-6]."
+  [ "$(field "$(item queued end)" row)" = level:lv-6 ]
 }
 
 @test "--row takes one row id, on one item, with no story options" {

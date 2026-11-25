@@ -3915,6 +3915,18 @@ LIB
   run "$SUBJECT" chain --check
   assert_success
   restore
+  # negative control: an id in brackets mid-title only mentions it too, as agent-queue named_row reads it (ar-5461)
+  jq -c '.rows += [{project: "game", lane: "agent", state: "open", id: "ga-3", tags: ["of/g-0"]}]' "$BJSON.ok" > "$BJSON"
+  item fin3 done high board:game:g-4 '{"title":"fix: move (ga-3) aside and more","merged":"def456"}' >> "$DONE"
+  run "$SUBJECT" chain --check
+  assert_success
+  restore
+  # and one that ends the title is its subject
+  jq -c '.rows += [{project: "game", lane: "agent", state: "open", id: "ga-3", tags: ["of/g-0"]}]' "$BJSON.ok" > "$BJSON"
+  item fin3 done high board:game:g-4 '{"title":"fix: the part [ga-3].","merged":"def456"}' >> "$DONE"
+  run "$SUBJECT" chain
+  assert_line 'orphan_request_rows: game:ga-3 (fin3 landed it)'
+  restore
   # an empty title falls through to the task's first line, as agent-queue named_row does
   jq -c '.rows += [{project: "game", lane: "agent", state: "open", id: "ga-3", tags: ["of/g-0"]}]' "$BJSON.ok" > "$BJSON"
   item fin3 done high board:game:g-4 '{"title":"","task":"ga-3: the fix\nthe rest","merged":"def456"}' >> "$DONE"
