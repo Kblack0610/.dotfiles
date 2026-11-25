@@ -20,7 +20,8 @@ name: shell tests
 #          so a crate could stop compiling and the only symptom would be a tool quietly
 #          behaving like an older version.
 #   notes  the bats cases that need a built notes binary, beside the rust job, not behind it.
-#   lint   shellcheck + house rules, in the pinned image.
+#   lint   shellcheck + house rules, in the pinned image; on a pull request also shape-grow (no long
+#          function grows, no copy is added).
 #
 # Every job's tools come from one place, the tests/Dockerfile image (.github/actions/test-image
 # loads it, tests/docker.sh runs in it), so a runner needs only docker and a label. No step
@@ -444,6 +445,9 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The copy and shape step diffs the PR merge commit against its first parent, the base tip.
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
       # Runs in the SAME image as the ui tier, which pins shellcheck. Installing
       # it from apt here instead would mean CI lints with a different shellcheck than the
       # developer does, and the first version bump would produce findings nobody can
@@ -453,3 +457,18 @@ jobs:
       - uses: ./.github/actions/bats-vendor
       - name: lint
         run: tests/docker.sh lint
+      # No long function grows and no copy is added (.local/bin/shape-grow, whose header holds the
+      # rules; .config/shape-grow/copy.conf at the base tunes the copy checks). A pull request
+      # only: it measures what the merge adds to the base tip. The body comes from the API when the
+      # step runs, not from the event, so a re-run after adding a "Split:" or "Dup:" line sees it;
+      # agent-land checks that each such row is open and names what it covers. A body that cannot
+      # be read counts as empty, so a PR with nothing to escape still passes.
+      - name: copy and shape (shape-grow)
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_API: ${{ github.event.pull_request.url }}
+        run: |
+          curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "$PR_API" \
+            | jq -r '.body // ""' >.git/pr-body || { echo "shape-grow: could not read the PR body, so no Split: or Dup: line counts"; : >.git/pr-body; }
+          tests/docker.sh --run .local/bin/shape-grow --body .git/pr-body HEAD^1 HEAD

@@ -387,7 +387,7 @@ project_lab_names() {
 # itself when it has a `lab`, else the first lab project inside it (a monorepo -> its first app with a sheet).
 lab_row() {
   # lab_row <id> -> each line on a lab sheet carrying that row id, open or closed; nothing when none
-  # does or there are no sheets. The callers filter: agent-land's Split: wants it open, plan-standard's
+  # does or there are no sheets. The callers filter: agent-land's Split: and Dup: want it open, plan-standard's
   # epic: wants an epic( row.
   # The id is a whole marker field: other fields may follow it (`filed:`, `tier:`), and ar-1 is not ar-10.
   grep -rhE --include='*.md' "[[:space:]]id:$1([[:space:]]|-->)" "$HOME/.notes/lab" 2>/dev/null || true
