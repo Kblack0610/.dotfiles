@@ -1229,6 +1229,8 @@ J
     "codex: runs headless, and this is host-ops work (excluded in $MATRIX); claude: no account has room"
   # Negative controls: near misses (product, not prod; a drain with no host or runner; systemctl status; unregister with no runner; the word null, which the
   # kind-less mode entries would match if they read as a "null" pattern), the same tag off the Unity stack, and plain work route to codex.
+  # (codex holds unity_gate here, so the Unity item reaches the exclusion list this test is about.)
+  harness_set '.harnesses.codex.capabilities = ["unity_gate"]'
   for it in '{"slug":"x","project":"game","mode":"oneshot","title":"fix the product page"}' \
     '{"slug":"x","project":"game","mode":"oneshot","title":"fix(mem0): drain lines end in a backslash"}' \
     '{"slug":"x","project":"game","mode":"oneshot","title":"show systemctl status of the runner in the panel"}' \
