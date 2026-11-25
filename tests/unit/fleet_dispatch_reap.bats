@@ -497,6 +497,30 @@ real_epic_board() {
   refute_output --partial 'flagged queue item fix-crash'
 }
 
+@test "reap: an item whose pr: names two PRs reads each one, parks while either is open and records both merges in step (ar-1431)" {
+  pr_item OPEN
+  sed -i '/^session: /d' "$AGENT_QUEUE_DIR"/running/*-fix-crash.md
+  agent-queue set fix-crash 'pr=o/game#12 o/game-private#7' >/dev/null
+  # One merged and one closed unmerged: the work did not land, so it fails.
+  started_item split ''
+  agent-queue set split 'pr=o/game#12 o/game-private#8' >/dev/null
+  printf 'CLOSED -\n' > "$NOTES_FIXTURE/pr.8"
+  # Each ref answers on its own repo: a -R holding the whole list (a space or a #) is a repo gh cannot read.
+  printf 'MERGED %s\n' "$OID" > "$NOTES_FIXTURE/pr.12"; printf 'OPEN -\n' > "$NOTES_FIXTURE/pr.7"
+  gh_script 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; case "$5" in *" "* | *"#"*) exit 1 ;; esac; cat "$NOTES_FIXTURE/pr.$3"'
+  run cmd_reap
+  assert_success
+  [ -n "$(qitem review fix-crash)" ] || fail "an open second PR did not park it in review"
+  refute_output --partial 'could not read PR'
+  grep -qF -- '-R o/game-private --json' "$NOTES_FIXTURE/calls.log" || fail "the second PR was not read on its own repo"
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-split.md)" status)" failed
+  printf 'MERGED %s\n' 0123abcd > "$NOTES_FIXTURE/pr.7"
+  run cmd_reap
+  assert_success
+  f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)
+  assert_equal "$(qfield "$f" status)|$(qfield "$f" merged)" "ok|$OID 0123abcd"
+}
+
 @test "reap: an item with no session and a report is done; a flag keeps the note it had" {
   started_item withreport '' && started_item noted ''
   agent-queue set withreport report=/tmp/r.md >/dev/null

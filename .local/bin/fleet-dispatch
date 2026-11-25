@@ -4924,10 +4924,31 @@ PR_STATE_JQ="$CI_JQ"' [.state, (.mergeCommit.oid // "-"), (.headRefOid // "-"), 
 # item_pr_state <slug> <item json> -> PR_STATE_JQ's line for the item's PR; fails when its forge cannot
 # be read (so_pr_view). A bare pr: names no repo and one project spans repos, so it reads from the
 # project's checkout and prints nothing unless a line of the PR's body is exactly the item's `Item:` stamp.
+# A pr: of several PRs (one per repo, a public and private split) reads each one: OPEN while any is open,
+# else CLOSED while any closed unmerged, else MERGED with each merge commit comma-joined in pr: order
+# (`-` when one has none), so a caller recording merged: keeps the lists in step. Read whole, the list
+# named no repo gh could read: 549 "could not read PR" lines in the dispatch log by 2026-11-25 (ar-1431).
 item_pr_state() {
-  local pr project
+  local pr project ref line st oid oids='' nooid='' pick='' state=MERGED
   IFS=$'\x1f' read -r pr project < <(jq -r '[.pr // "", .project // ""] | join("\u001f")' <<<"$2")
   [ -n "$pr" ] || return 1
+  if [[ "$pr" == *" "* ]]; then
+    for ref in $pr; do
+      [[ "$ref" == */*#* ]] || return 1
+      line=$(so_pr_view "$ref" "$(pr_repo_dir "$ref" "$project")" "$PR_STATE_JSON" "$PR_STATE_JQ") && [ -n "$line" ] || return 1
+      read -r st oid _ <<<"$line"
+      oids+="${oids:+,}$oid"; [ "$oid" != - ] || nooid=1
+      case "$state:$st" in
+        OPEN:*) ;;
+        *:OPEN | MERGED:CLOSED) state=$st pick=$line ;;
+        MERGED:MERGED) [ -n "$pick" ] || pick=$line ;;
+        MERGED:*) state=$st pick=$line ;;
+      esac
+    done
+    [ -z "$nooid" ] || oids=-
+    [ "$state" != MERGED ] || { read -r _ _ line <<<"$pick"; pick="MERGED $oids $line"; }
+    echo "$pick"; return
+  fi
   if [[ "$pr" == */*#* ]]; then so_pr_view "$pr" "$(pr_repo_dir "$pr" "$project")" "$PR_STATE_JSON" "$PR_STATE_JQ"; return; fi
   so_pr_view "$pr" "$(repo_dir "$project")" "$PR_STATE_JSON,body" \
     "select(any(.body | split(\"\n\")[] | rtrimstr(\"\r\"); . == \"Item: $1\")) | $PR_STATE_JQ"
@@ -4950,7 +4971,7 @@ land_orphan() {
   if [ -z "$oid" ]; then
     [ -n "$(jq -r '.pr // ""' <<<"$it")" ] || return 1
     info=$(item_pr_state "$1" "$it") || return 2
-    read -r state oid _ <<<"$info"; oid=${oid#-}
+    read -r state oid _ <<<"$info"; oid=${oid#-} oid=${oid//,/ }
     case "$state" in
     # From land_row, an open PR holds the row only for an item that ended ok: a failed or cancelled
     # run's PR left open is nobody's, and must not keep a held row from its ask.
@@ -5231,7 +5252,7 @@ settle_item() {
   fi
   IFS=$'\x1f' read -r pr report oid < <(jq -r '[.pr // "", .report // "", .merged // ""] | join("\u001f")' <<<"$it")
   if [ -n "$pr" ] && [ -n "$oid" ]; then state=MERGED
-  elif [ -n "$pr" ]; then info=$(item_pr_state "$1" "$it") || info=''; read -r state oid head ci mergeable <<<"$info"; oid=${oid#-} head=${head#-}
+  elif [ -n "$pr" ]; then info=$(item_pr_state "$1" "$it") || info=''; read -r state oid head ci mergeable <<<"$info"; oid=${oid#-} oid=${oid//,/ } head=${head#-}
   fi
   # A run that filed a question for its item and stopped without `agent-queue requeue --ask` (4 of 24
   # Codex runs that asked, 2026-11-10) goes back to its board row gated #ask/<id> while its work is
