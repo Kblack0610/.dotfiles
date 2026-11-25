@@ -4770,8 +4770,8 @@ a"
   assert_called "ptask level --agent add --detail=Run the open phases of the approved plan $SANDBOX/orphan.md in order"
   # A filer that names no priority files the row untagged, for the priority rubric to judge (ar-5255);
   # NEGATIVE CONTROL: the add default (high) tagged it before.
-  run grep -e '-- plan orphan: run its open phases' "$NOTES_FIXTURE/calls.log"
-  assert_output --regexp '-- plan orphan: run its open phases( #of/[a-z0-9-]+)?$'
+  run grep -e '-- P (plan orphan)' "$NOTES_FIXTURE/calls.log"
+  assert_output --regexp '-- P \(plan orphan\)( #of/[a-z0-9-]+)?$'
   refute_output --regexp '#(urgent|high|normal|low)'
   # From a session (dispatch with AGENT_QUEUE_ITEM inherited) the filer is not refused for naming none.
   CLAUDE_CODE_SESSION_ID=s1 run "$AQ" add --plan "$SANDBOX/orphan.md" --project level --from auto:plans
@@ -5176,7 +5176,7 @@ already"
   run grep -- '--agent add' "$NOTES_FIXTURE/calls.log"
   assert_output --partial " --origin plan -- "
   # A filer that does name one keeps it.
-  assert_output --partial "plan orig: run its open phases #low"
+  assert_output --partial "P (plan orig) #low"
 }
 
 # ar-3852: an after: on an item that is live with an open PR is stacked, not held.
