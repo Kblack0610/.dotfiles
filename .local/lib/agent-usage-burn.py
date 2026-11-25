@@ -789,52 +789,68 @@ def session_row(sid, measured, estimated, origin, harness, agent, account, proje
             **({"provider": provider} if provider else {})}
 
 
-def outcome_models(r):
-    """An outcomes row's dollars by model: its own split, else its whole cost on its models joined
-    (`a+b`), since there is nothing to split them by. A `<synthetic>` or other `<...>` name is no model."""
+def outcome_models(r, usd, base):
+    """What an outcomes row added by model since BASE (its session's earlier row, {} for none): its own
+    split less BASE's, else USD on its models joined (`a+b`), since there is nothing to split them by. A
+    `<synthetic>` or other `<...>` name is no model."""
     real = lambda m: m and not m.startswith("<")
-    split = {m: v for m, v in (r.get("cost_by_model") or {}).items() if real(m) and (v or 0) > 0}
+    before = base.get("cost_by_model") or {}
+    split = {m: v - (before.get(m) or 0) for m, v in (r.get("cost_by_model") or {}).items() if real(m) and v}
+    split = {m: v for m, v in split.items() if v > 0}
     if split:
         return split
     names = sorted({m for m in r.get("models") or [] if real(m)})
-    return {"+".join(names): r["cost_usd"]} if names else {}
+    return {"+".join(names): usd} if names else {}
 
 
-def other_harnesses(start, end, root):
-    """Every non-Claude harness from its session outcomes: newest row per session, tagged by its price source.
-    Sessions that went through the gateway are left out: its metered line already has their dollars. A session
-    with tokens and no price gets no row (never a $0 one) and is listed as unpriced instead."""
-    newest = {}
+def grown(r, base, k):
+    """R's K less BASE's (0 when BASE has none), None when R has none: an outcomes row is its session's
+    running total, so this is what the session added since BASE."""
+    return None if r.get(k) is None else r[k] - (base.get(k) or 0)
+
+
+def harness_rows(root):
+    """Every non-Claude outcomes row under ROOT, less those that went through the gateway: its metered line
+    already has their dollars. Every file, since a session's row before a window can sit in a file last written
+    before it."""
     for f in glob.glob(os.path.join(root, "*", "*.jsonl")):
-        try:
-            if os.path.getmtime(f) < start:
-                continue
-        except OSError:
-            continue
         for line in open(f, errors="ignore"):
             try:
                 r = json.loads(line)
             except ValueError:
                 continue
-            at = r.get("updated_epoch") or 0
-            if (not (r.get("harness") or "claude").startswith("claude") and r.get("provider") not in GATEWAY_PROVIDERS
-                    and start <= at < end and at >= (newest.get(r.get("session_id")) or {}).get("updated_epoch", 0)):
-                newest[r.get("session_id")] = r
+            if not (r.get("harness") or "claude").startswith("claude") and r.get("provider") not in GATEWAY_PROVIDERS:
+                yield r
+
+
+def other_harnesses(start, end, root):
+    """Every non-Claude harness from its session outcomes, tagged by its price source. A row is its session's
+    running total, so a session books its newest row in the window less its newest row before it: one that runs
+    across several windows counts each part once. A session that added no dollars gets no row (never a $0 one)
+    and no priced count; one that added tokens and no dollars is listed as unpriced instead."""
+    newest, before = {}, {}
+    for r in harness_rows(root):
+        at, sid = r.get("updated_epoch") or 0, r.get("session_id")
+        seen = newest if start <= at < end else before if at < start else None
+        if seen is not None and at >= (seen.get(sid) or {}).get("updated_epoch", 0):
+            seen[sid] = r
     out = defaultdict(lambda: {"usd": 0.0, "sessions": 0, "priced": 0, "sources": set()})
     rows, unpriced = [], []
     for sid, r in newest.items():
+        base = before.get(sid, {}) if sid else {}   # id-less rows are no one session's total
+        usd, tokens = grown(r, base, "cost_usd"), grown(r, base, "tokens_total")
         b = out[r["harness"]]
         b["sessions"] += 1
-        if r.get("cost_usd") is not None:
-            b["usd"] += r["cost_usd"]
+        if (usd or 0) > 0:   # priced from a table or the harness's own sum: estimated, as in total
+            b["usd"] += usd
             b["priced"] += 1
             b["sources"].add(r.get("cost_src") or "harness")
-        if sid and (r.get("cost_usd") or 0) > 0:   # priced from a table or the harness's own sum: estimated, as in total
-            rows.append(session_row(sid, 0.0, r["cost_usd"], "runner" if r.get("runner") else "interactive",
-                                    r["harness"], r.get("agent"), None, r.get("project"), r.get("title"), None,
-                                    models=outcome_models(r), tokens=r.get("tokens_total"), provider=r.get("provider")))
-        elif sid and (r.get("tokens_total") or 0) > 0:
-            unpriced.append({"sid": sid, "harness": r["harness"], "provider": r.get("provider"), "tokens": r["tokens_total"]})
+            if sid:
+                rows.append(session_row(sid, 0.0, usd, "runner" if r.get("runner") else "interactive",
+                                        r["harness"], r.get("agent"), None, r.get("project"), r.get("title"), None,
+                                        models=outcome_models(r, usd, base), tokens=tokens, provider=r.get("provider")))
+        elif sid and (tokens or 0) > 0:
+            unpriced.append({"sid": sid, "harness": r["harness"], "provider": r.get("provider"), "tokens": tokens})
     return out, rows, unpriced
 
 

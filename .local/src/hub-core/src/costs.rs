@@ -168,8 +168,8 @@ pub struct Snapshot {
 }
 
 /// Lazer use that went past the gateway, so the pool does not count it: the opencode sessions on
-/// provider `lazer` in this month's nightly days, each at its whole cost (a session from last month
-/// still running counts all of it). Nightly: whole days to the newest snapshot, never the live 24h,
+/// provider `lazer` in this month's nightly days, each day at what the session added that day (a
+/// session from last month still running counts only its days this month). Nightly: whole days to the newest snapshot, never the live 24h,
 /// which overlaps that day (as the 7D and 30D tiles). The days are local, so the month edge is the
 /// local 1st, up to the UTC offset off the pool's 00:00 UTC reset.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
@@ -192,34 +192,29 @@ fn month_first(now: i64) -> String {
     local_date(now, "%Y-%m-01")
 }
 
-/// `days` oldest first, as `spend_history::read` gives them. A session's row is its running total,
-/// so one seen on several days counts once, from its newest day: summing the days would count its
-/// early part again on every later day.
+/// A day's row is what its session added that day (agent-usage books a harness session's growth
+/// since its row before the window), so the month is the sum of its days. A session unpriced on any
+/// day counts once, however many days it ran.
 pub fn direct(days: &[crate::spend_history::Day], now: i64) -> Direct {
     let first = month_first(now);
     let lazer = |s: &&crate::spend_history::Sess| s.provider.as_deref() == Some("lazer");
-    // a session's newest day: Some(usd) priced, None unpriced
-    let mut newest: BTreeMap<&str, Option<f64>> = BTreeMap::new();
-    for d in days.iter().filter(|d| d.date >= first) {
-        for s in d.sessions.iter().filter(lazer) {
-            newest.insert(&s.sid, Some(s.usd));
-        }
-        for s in d.unpriced.iter().filter(lazer) {
-            newest.insert(&s.sid, None);
-        }
-    }
+    let month = days.iter().filter(|d| d.date >= first);
     // a fold from 0.0, not `sum`: an empty f64 sum is -0.0, which prints as $-0.00
-    let init = Direct {
+    let usd = month
+        .clone()
+        .flat_map(|d| d.sessions.iter())
+        .filter(lazer)
+        .fold(0.0, |a, s| a + s.usd);
+    let unpriced: BTreeSet<&str> = month
+        .flat_map(|d| d.unpriced.iter())
+        .filter(lazer)
+        .map(|s| s.sid.as_str())
+        .collect();
+    Direct {
+        usd,
+        unpriced: unpriced.len(),
         note: DIRECT_NOTE,
-        ..Direct::default()
-    };
-    newest.into_values().fold(init, |mut d, usd| {
-        match usd {
-            Some(c) => d.usd += c,
-            None => d.unpriced += 1,
-        }
-        d
-    })
+    }
 }
 
 /// Everything one read gathered, over the longest window. `board` cuts it for a view.
@@ -2125,7 +2120,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_lazer_counts_this_months_nightly_lazer_sessions_once_and_the_unpriced_ones() {
+    fn direct_lazer_sums_this_months_nightly_lazer_days_and_counts_each_unpriced_session_once() {
         // NOW is 2027-01-15: this month's days are from 2027-01-01
         assert_eq!(month_first(NOW), "2027-01-01");
         let days = [
@@ -2135,16 +2130,21 @@ mod tests {
                 vec![oc("a", "lazer", 0.5), oc("gw", "litellm", 4.0)],
                 vec![oc("flip", "lazer", 0.0)],
             ),
-            day("2027-01-13", vec![oc("flip", "lazer", 0.25)]),
-            // a's row is its running total: the 1.25 already holds the 0.5 of 01-12
+            day_with(
+                "2027-01-13",
+                vec![oc("flip", "lazer", 0.25)],
+                vec![oc("b", "lazer", 0.0)],
+            ),
+            // a's row is what it added on 01-14, beside its 0.5 of 01-12
             day_with(
                 "2027-01-14",
-                vec![oc("a", "lazer", 1.25)],
+                vec![oc("a", "lazer", 0.75)],
                 vec![oc("b", "lazer", 0.0), oc("cx", "codex", 0.0)],
             ),
         ];
         let d = direct(&days, NOW);
-        assert_eq!((d.usd, d.unpriced, d.note), (1.5, 1, DIRECT_NOTE));
+        // flip's 01-12 tokens had no price, so it is unpriced as well as $0.25; b counts once over two days
+        assert_eq!((d.usd, d.unpriced, d.note), (1.5, 2, DIRECT_NOTE));
         // negative control: no session on Lazer direct is $0 over none, not a missing figure
         let d = direct(&[day("2027-01-14", vec![oc("gw", "litellm", 4.0)])], NOW);
         assert_eq!((d.usd, d.unpriced), (0.0, 0));
