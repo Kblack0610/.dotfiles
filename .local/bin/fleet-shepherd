@@ -1283,11 +1283,11 @@ shared_fold() {
   line="Also red on several branches at once, $(date +%F): $reason. fleet-shepherd appended it here, as one owner per test class (ar-5285)."
   case "$o" in
     board:*) row="${o#board:}" ;;
-    *) item="$(jq -c --arg s "$o" 'select(.slug == $s)' <<<"$active" 2>/dev/null | head -1)"
+    *) item="$(jq -cn --arg s "$o" 'first(inputs | select(.slug == $s)) // empty' <<<"$active" 2>/dev/null)"
        if [ -z "$item" ]; then
          # filed this sample: the queue read before the add does not have it
          a="$(agent-queue list --json --state active 2>/dev/null)" && [ -n "$a" ] && active="$a"
-         item="$(jq -c --arg s "$o" 'select(.slug == $s)' <<<"$active" 2>/dev/null | head -1)"
+         item="$(jq -cn --arg s "$o" 'first(inputs | select(.slug == $s)) // empty' <<<"$active" 2>/dev/null)"
        fi
        if [ "$(jq -r '.state // empty' <<<"$item")" = queued ] &&
           out="$(agent-queue retask "$o" "$(jq -r '.task // empty' <<<"$item")"$'\n\n'"$line" 2>&1)"; then
