@@ -230,6 +230,12 @@ enum Cmd {
         /// the row it was folded into. READ-ONLY
         #[arg(long = "id", value_name = "ID", requires = "json", conflicts_with_all = ["agent", "version", "done_days"])]
         ids: Vec<String>,
+        /// Read `git grep` lines of agent sheets on stdin (`[<rev>:]<path>/agent/README.md:<line>`)
+        /// and print one JSON object per task row with an id: project, id, state (open, done,
+        /// dropped) and weight by the rule every rollup uses. READ-ONLY: day-log weighs the board
+        /// at a past notes commit through this, so the points rule has one home
+        #[arg(long, conflicts_with_all = ["json", "agent", "version", "done_days"])]
+        weigh: bool,
     },
     /// Triage the dated-capture inbox (list / add / archive), and mark inbox page rows
     /// reviewed (ack). No subcommand = list.
@@ -1366,6 +1372,17 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
 
 /// `notes row parse|types`. Parse reads bytes, so one line that is not UTF-8 still gets its
 /// own output line instead of failing the rest.
+/// The commands that need no profile, run before one is resolved: the row grammar (agent-queue
+/// and the triage prompts call it where none may resolve) and weighing rows from stdin (day-log
+/// runs it over the notes history).
+fn profile_free(cmd: &Cmd) -> Option<Result<()>> {
+    match cmd {
+        Cmd::Row { sub } => Some(row_cmd(sub)),
+        Cmd::Board { weigh: true, .. } => Some(read_stdin().and_then(|s| board::print_weigh(&s))),
+        _ => None,
+    }
+}
+
 fn row_cmd(sub: &RowCmd) -> Result<()> {
     use std::io::{BufRead, Write};
     let mut out = std::io::stdout().lock();
@@ -1598,10 +1615,8 @@ fn read_stdin() -> Result<String> {
 fn main() -> Result<()> {
     reset_sigpipe();
     let cli = Cli::parse();
-    // The grammar needs no profile, and its callers (agent-queue, the triage prompts) run where
-    // none may resolve.
-    if let Cmd::Row { sub } = &cli.cmd {
-        return row_cmd(sub);
+    if let Some(done) = profile_free(&cli.cmd) {
+        return done;
     }
     let prof = config::resolve(cli.profile.as_deref())?;
     let log = logging::Logger::new(prof.log_file.clone(), cli.verbose);
@@ -1908,6 +1923,7 @@ fn main() -> Result<()> {
             version,
             projects,
             ids,
+            weigh: _,
         } => {
             if let Some(v) = version {
                 board::print_version(&v, &projects, json)?
