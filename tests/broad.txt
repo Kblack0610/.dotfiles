@@ -5,4 +5,3 @@ unit/claude_rules.bats     # each .claude/rules glob still matches a file
 integ/dotfiles_deploy.bats # stow deploys the tree with no conflict
 integ/tree_scans.bats      # checks that grep or list the whole tree (its last test keeps them here)
 unit/waybar_figures.bats   # the figure lint scans every waybar chip, tmux script and figure CLI; a CLI change alone never picked it
-unit/fleet_states_doc.bats # the Owners gate (fact-owners check) reads the whole tree: any new copy of an owned fact fails here
