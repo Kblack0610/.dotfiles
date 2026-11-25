@@ -1,4 +1,4 @@
-# The disposable machine the tests run on, and the one toolchain CI has: every tests.yml job that
+# The disposable machine the tests run on, and the toolchain CI has, in three stages (lean, rust, full): every tests.yml job that
 # runs tests (fast, ui, rust, notes, lint) runs in this image through tests/docker.sh, so a runner
 # needs only docker and a label (~/.local/src/docs/ci.md). A tool a test needs goes here, never in
 # a workflow step (tests/unit/ci_gate.bats).
@@ -47,7 +47,9 @@ FROM koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571
 FROM debian:trixie-slim AS lean
 
 # Pinned so a CI run and a laptop run agree, and so a distro bump cannot silently change
-# what is under test. The tmux and fzf pins are the full stage's (ARG TMUX_REF, ARG FZF_REF).
+# what is under test. The tmux and fzf pins are the full stage's (ARG TMUX_REF, ARG FZF_REF); they
+# are still in every kind's tag, because the tag hashes one set of inputs (tests/docker.sh), so a
+# lean image named tmux3.8 has no tmux.
 ENV DEBIAN_FRONTEND=noninteractive
 
 # ncurses-term supplies the xterm-256color terminfo entry the harness pins TERM to; without
@@ -170,7 +172,7 @@ RUN : "${RUST_TOOLCHAIN:?build through tests/docker.sh, which passes tests/rust-
     && curl -fsSL -o /tmp/rustup-init "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${t}-unknown-linux-gnu/rustup-init" \
     && echo "$sha  /tmp/rustup-init" | sha256sum -c - \
     && chmod +x /tmp/rustup-init \
-    && /tmp/rustup-init -y -q --no-modify-path --profile minimal --default-toolchain "$RUST_TOOLCHAIN" -c clippy,rustfmt \
+    && HOME=/root /tmp/rustup-init -y -q --no-modify-path --profile minimal --default-toolchain "$RUST_TOOLCHAIN" -c clippy,rustfmt \
     && rm /tmp/rustup-init \
     && chmod -R a+w "$RUSTUP_HOME" "$CARGO_HOME" \
     && cargo --version && cargo clippy --version && cargo fmt --version
@@ -192,8 +194,8 @@ ARG PLAYWRIGHT_CORE
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright \
     PLAYWRIGHT_CORE_DIR=/opt/agent-web-phone/node_modules/playwright-core
 RUN : "${PLAYWRIGHT_CORE:?build through tests/docker.sh, which passes the playwright-core pin}" \
-    && npm install --silent --no-save --no-package-lock --no-audit --no-fund --prefix /opt/agent-web-phone "playwright-core@${PLAYWRIGHT_CORE}" \
-    && node "$PLAYWRIGHT_CORE_DIR/cli.js" install --with-deps chromium \
+    && HOME=/root npm install --silent --no-save --no-package-lock --no-audit --no-fund --prefix /opt/agent-web-phone "playwright-core@${PLAYWRIGHT_CORE}" \
+    && HOME=/root node "$PLAYWRIGHT_CORE_DIR/cli.js" install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/* /root/.npm
 
 # tmux and fzf go in /opt/ui/bin, which only the ui tier puts on PATH (tests/Makefile

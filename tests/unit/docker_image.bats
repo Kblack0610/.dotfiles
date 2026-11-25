@@ -120,3 +120,9 @@ FAKE
   run grep '^rmi' "$LOG"
   assert_output "rmi ${lean%-*}-0123456789ab"
 }
+
+@test "tests/Dockerfile defines every stage docker.sh can target" {
+  for kind in lean rust full; do
+    grep -qE "^FROM .* AS $kind\$" "$BATS_TEST_DIRNAME/../Dockerfile" || fail "no stage named $kind in tests/Dockerfile"
+  done
+}
