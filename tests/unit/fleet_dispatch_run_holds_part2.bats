@@ -479,7 +479,13 @@ load 'fleet_dispatch/fleet_dispatch_run_holds'
   local land=land-it
   agent-queue add --project game --slug "$land" --from board:game:gm-99 "land the crash fix" >/dev/null
   agent-queue set "$land" pr=o/game#7 pr_owner=land "land_tries=1 abc123" >/dev/null
-  sed -i 's/^queued: .*/queued: 2026-01-01T00:00:00Z/' "$(qitem queued "$old")" "$(qitem queued "$sprint")" "$(qitem queued "$land")"
+  # A handed-off item and one moved from running back to queued hold work too (ar-5880): a continuation, not new intake.
+  local hand=hand-it back=back-it
+  agent-queue add --project game --slug "$hand" --from board:game:gm-98 "finish the handed-off fix" >/dev/null
+  sed -i '0,/^queued: .*/s//&\nhandoff: 1 of 2, batch branch unpushed/' "$(qitem queued "$hand")"
+  agent-queue add --project game --slug "$back" --from board:game:gm-97 "finish the requeued fix" >/dev/null
+  agent-queue move "$back" running >/dev/null; agent-queue move "$back" queued >/dev/null
+  sed -i 's/^queued: .*/queued: 2026-01-01T00:00:00Z/' "$(qitem queued "$old")" "$(qitem queued "$sprint")" "$(qitem queued "$land")" "$(qitem queued "$hand")" "$(qitem queued "$back")"
   export DISPATCH_STARVED_MIN=60 DISPATCH_TARGET_AWAY=0
   # The negative control: with the share under its cap nothing goes back.
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
@@ -495,6 +501,11 @@ load 'fleet_dispatch/fleet_dispatch_run_holds'
   # The land requeue stayed, while old, the same age with no PR to land, went back.
   refute_output --partial "returned queue item $land"
   [ -n "$(qitem queued "$land")" ] || fail "the item landing its PR left queued/"
+  # A handoff and a running-to-queued move stayed too: the cap holds new rows, not work already started.
+  refute_output --partial "returned queue item $hand"
+  refute_output --partial "returned queue item $back"
+  [ -n "$(qitem queued "$hand")" ] || fail "the handed-off item went back to its row at the project share"
+  [ -n "$(qitem queued "$back")" ] || fail "the requeued item went back to its row at the project share"
 }
 
 @test "project share: while the share is full the canary top-up asks for no Claude lane" {
