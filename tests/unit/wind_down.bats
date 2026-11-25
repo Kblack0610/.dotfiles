@@ -293,6 +293,40 @@ EOF
   assert_success
 }
 
+# -- note-append ---------------------------------------------------------------
+#
+# Several sessions a day append to one note. A session that wrote it with `cat >` cut every
+# earlier block, and store-sync carried the cut to every peer (ar-4023).
+
+@test "note-append adds a block after the blocks already in today's note, one blank line apart" {
+  printf '# Session wrap-up - 1\n\nfirst' | bash "$WIND_DOWN" note-append
+  printf '\n\n# Session wrap-up - 2\n\nsecond\n' | bash "$WIND_DOWN" note-append
+  run bash "$WIND_DOWN" note-path
+  note="$output"
+  run cat "$note"
+  assert_output "$(printf '# Session wrap-up - 1\n\nfirst\n\n# Session wrap-up - 2\n\nsecond')"
+}
+
+@test "note-append prints the note path and creates the note on the first block of the day" {
+  run bash "$WIND_DOWN" note-path
+  note="$output"
+  [ ! -e "$note" ]
+  run bash -c 'printf "# Session wrap-up - 1\n" | bash "$1" note-append' _ "$WIND_DOWN"
+  assert_success
+  assert_output "$note"
+  assert_equal "$(cat "$note")" '# Session wrap-up - 1'
+}
+
+@test "note-append with an empty block fails and leaves the note as it was" {
+  printf '# Session wrap-up - 1\n' | bash "$WIND_DOWN" note-append
+  run bash "$WIND_DOWN" note-path
+  note="$output"
+  run bash -c 'printf "\n  \n" | bash "$1" note-append' _ "$WIND_DOWN"
+  assert_failure
+  assert_output --partial 'the note is unchanged'
+  assert_equal "$(cat "$note")" '# Session wrap-up - 1'
+}
+
 # ── the worktree hand-off (wt reap) ──────────────────────────────────────────
 #
 # One session per worktree means the worktree should go when the session does. wind-down

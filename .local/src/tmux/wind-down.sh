@@ -28,7 +28,13 @@
 #   wind-down.sh note-path
 #       Print (and ensure the dir for) the session wrap-up note path on the
 #       agent-runtime axis: ~/.agent/sessions/<project>/<date>-wind-down.md.
-#       The skill writes the wrap-up there. Project resolution matches the hook.
+#       Project resolution matches the hook.
+#
+#   wind-down.sh note-append < block
+#       Append the wrap-up block on stdin to that note, after a blank line, and print its
+#       path. The only way the skill writes the note: several sessions a day share one note,
+#       and a session that wrote it with `cat >` cut every earlier block, which the store's
+#       union merge then carried to every peer (2026-11-25: 31 blocks cut to 4; ar-4023).
 #
 #   (A dead session's scratchpad is reaped hourly by agentctl-tmp-gc, not here.)
 #
@@ -424,6 +430,22 @@ cmd_note_path() {
   echo "$dir/$(date +%Y-%m-%d)-wind-down.md"
 }
 
+cmd_note_append() {
+  local f block sep=''
+  [ -t 0 ] && { echo "wind-down.sh note-append: pipe the block on stdin" >&2; return 2; }
+  block=$(cat)
+  block="${block#"${block%%[![:space:]]*}"}"
+  [ -n "$block" ] || { echo "wind-down.sh note-append: no block on stdin, the note is unchanged" >&2; return 1; }
+  f=$(cmd_note_path) || return 1
+  if [ -s "$f" ]; then
+    sep=$'\n'
+    [ -n "$(tail -c1 "$f")" ] && sep=$'\n\n'
+  fi
+  # Opened for append, so a block never truncates the note.
+  printf '%s%s\n' "$sep" "$block" >> "$f" || return 1
+  echo "$f"
+}
+
 # Claude Code keeps each session's scratchpad at <root>/<project-slug>/<session-id>/.
 scratch_root() { echo "${CLAUDE_SCRATCH_ROOT:-/tmp/claude-$(id -u)}"; }
 
@@ -480,9 +502,10 @@ case "${1:-}" in
   fire)      shift; cmd_fire "$@" ;;
   close)     shift; cmd_close "$@" ;;
   note-path) shift; cmd_note_path "$@" ;;
+  note-append) shift; cmd_note_append "$@" ;;
   disarm)    shift; cmd_disarm "$@" ;;
   *)
-    echo "usage: wind-down.sh {arm [--session] | fire <sentinel-path> | close --server S --pane %N --sid ID | note-path | disarm}" >&2
+    echo "usage: wind-down.sh {arm [--session] | fire <sentinel-path> | close --server S --pane %N --sid ID | note-path | note-append < block | disarm}" >&2
     exit 2
     ;;
 esac

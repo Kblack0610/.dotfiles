@@ -25,7 +25,7 @@ setup() {
   : > "$seed/bench/.keep"
   printf '{\n "head": 0,\n "x": 1,\n "y": 1,\n "z": 1,\n "w": 1,\n "tail": 0\n}\n' > "$seed/daylog/d.json"
   printf '# p\n\n## Decisions\n- d1\n\n## Notes\nhand\n<!-- AUTO:START -->\ngen 0\n<!-- AUTO:END -->\n' > "$seed/anchors/p.md"
-  printf '*.jsonl merge=union\ndaylog/*.json merge=derived\nanchors/*.md merge=derived\n' > "$seed/.gitattributes"
+  printf '*.jsonl merge=union\nsessions/*/*-wind-down.md merge=union\ndaylog/*.json merge=derived\nanchors/*.md merge=derived\n' > "$seed/.gitattributes"
   printf '.sync/\n' > "$seed/.gitignore"
   git -C "$seed" add -A && git -C "$seed" commit -q -m seed
   git -C "$seed" push -q "$ORIGIN" master
@@ -126,6 +126,55 @@ show() { git -C "$1" show "master:$2"; }
   run show "$ORIGIN" queue/events.jsonl
   assert_line '{"n":"a"}'
   assert_line '{"n":"b"}'
+}
+
+# wrap_up <name> <line>: a session on that machine appends its wrap-up block with wind-down.sh,
+# as the wind-down skill does; prints the note's path inside the store.
+wrap_up() {
+  mkdir -p "$SANDBOX/home-$1" "$SANDBOX/proj"
+  ln -sfn "$SANDBOX/$1" "$SANDBOX/home-$1/.agent"
+  local f
+  f=$(printf '# Session wrap-up\n\n%s\n' "$2" | HOME="$SANDBOX/home-$1" CLAUDE_PROJECT_DIR="$SANDBOX/proj" \
+    bash "$REPO_ROOT/.local/src/tmux/wind-down.sh" note-append) || return 1
+  echo "${f#"$SANDBOX/home-$1/.agent/"}"
+}
+
+@test "two machines appending a wrap-up block to one day's wind-down note keep both, and the earlier block (ar-4023)" {
+  peer a; peer b
+  note=$(wrap_up a 'block 0')
+  on a
+  on b
+  [ "$(git -C "$SANDBOX/b" show "HEAD:$note" | grep -c '^# Session wrap-up')" = 1 ]
+  wrap_up a 'block a'
+  wrap_up b 'block b'
+  on a
+  run on b
+  assert_success
+  assert_output --partial "COMPLETE"
+  run show "$ORIGIN" "$note"
+  assert_line 'block 0'
+  assert_line 'block a'
+  assert_line 'block b'
+  refute_output --partial '<<<<<<<'
+  # The seed's tracked merge=union, the store's line before the note driver, keeps "block a" and
+  # "block b" but folds them under one header: 2 here, not 3.
+  assert_equal "$(grep -c '^# Session wrap-up' <<<"$output")" 3
+}
+
+@test "a wind-down note one machine rewrote with > loses the earlier block on every machine: the writer must append (ar-4023)" {
+  # The negative control for the test above: with nothing to merge, a sync carries a cut as it
+  # carries any edit, so only a writer that appends keeps the earlier block.
+  peer a; peer b
+  note=$(wrap_up a 'block 0')
+  on a
+  on b
+  printf '# Session wrap-up\n\nblock b\n' > "$SANDBOX/b/$note"
+  on b
+  run on a
+  assert_success
+  run cat "$SANDBOX/a/$note"
+  refute_line 'block 0'
+  assert_line 'block b'
 }
 
 @test "two machines regenerating the same snapshot both sync, and the merging machine's copy wins whole" {
