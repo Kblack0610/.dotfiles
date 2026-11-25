@@ -610,8 +610,10 @@ def plan_tagged: any(.tags[]?; . == "plan");
 # defines its scope and the expect line of its watch its done state, so it is never unclear (policy.md
 # `clear`): an `unclear` skip of one takes no plan exit and picks reads past it (ar-5240).
 def triage_red: (.raw // .text // "") | sub("^- \\[.\\] "; "") | test("^check\\((watch|alert)\\): ");
-# red_unclear($c): this verdict is an `unclear` skip of triage red row $c, which picks starts and suggest lists as dispatch.
-def red_unclear($c): .verdict == "skip" and .rule == "unclear" and ($c | triage_red);
+# red_unclear($c): this verdict is an `unclear` skip of triage red row $c that would be a dispatch were it clear
+# (agent_only, and a tier no higher than that of the row), so picks starts it and suggest lists it as dispatch.
+def red_unclear($c): .verdict == "skip" and .rule == "unclear" and .agent_only == true
+  and (.tier | type) == "number" and ($c.tier | type) == "number" and .tier <= $c.tier and ($c | triage_red);
 def holds($c): .line == $c.line and (.dsig == null or .dsig == $c.dsig);
 # usable($rs): a judged verdict (not error or failed) naming a rule the policy still defines, whatever policy it was made under
 def usable($rs): (.verdict == "dispatch" or .verdict == "skip") and (.rule as $r | $rs | index($r) != null);

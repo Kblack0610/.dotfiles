@@ -577,6 +577,17 @@ exits: gate 2 improve 1 plan 2 sheet 1'
   run picks "$(all_open)" 5
   assert_success
   assert_equal "$(jq -r '"\(.key)=\(.area)"' <<<"$output" | paste -sd,)" 'gr-1='
+  # suggest lists what picks starts: the red row as dispatch, the plain row as a judge skip
+  run cmd_suggest --json
+  assert_success
+  assert_equal "$(jq -r '"\(.key)=\(.verdict)"' <<<"$output" | sort | paste -sd,)" 'gr-1=dispatch,gr-2=skip'
+  # an unclear red row that also needs the human is not a dispatch: picks skips it and suggest says skip
+  jq -c 'if .key == "gr-1" then .agent_only = false else . end' "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  run picks "$(all_open)" 5
+  assert_success
+  assert_output ''
+  run cmd_suggest --json
+  assert_equal "$(jq -r 'select(.key == "gr-1") | .verdict' <<<"$output")" skip
 }
 
 @test "skip_exits: a waits gate needs an open row and a verdict that otherwise fits; a planned row still skipped by a plan rule goes to the human" {

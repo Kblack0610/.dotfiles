@@ -1687,7 +1687,7 @@ EOF
   printf 'HTTP/2.0 200 OK\r\nX-Oauth-Scopes: admin:org, gist, repo\r\n\r\n' >"$NOTES_FIXTURE/user.headers"
   run "$LAND" 42 --item ship
   assert_failure 1
-  assert_output --partial 'agent-land: workflow failed: #42 changes .github/workflows and this gh token'"'"'s scopes (admin:org, gist, repo) have no workflow'
+  assert_output --partial 'agent-land: workflow failed: #42 changes .github/workflows and this gh token'"'"'s scopes (admin:org,gist,repo) have no workflow'
   run grep -c 'pr checks\|pr merge' "$LOG"
   assert_output 0
   # Negative control: the same PR with a token that has the scope lands.
@@ -1701,6 +1701,15 @@ EOF
   item ship
   printf '%s\n' README.md .github/actions/x.yml >"$NOTES_FIXTURE/files"
   printf 'HTTP/2.0 200 OK\r\nX-Oauth-Scopes: repo\r\n\r\n' >"$NOTES_FIXTURE/user.headers"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'landed #42'
+}
+
+@test "a workflow PR lands when the token's scopes cannot be read: the merge itself says what it lacks (ar-5191)" {
+  item ship
+  printf '%s\n' .github/workflows/ci.yml >"$NOTES_FIXTURE/files"
+  touch "$NOTES_FIXTURE/user.fail"
   run "$LAND" 42 --item ship
   assert_success
   assert_output --partial 'landed #42'

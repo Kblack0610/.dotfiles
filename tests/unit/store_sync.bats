@@ -862,6 +862,8 @@ move_item() {
 q="$SANDBOX/a/queue"
 [ ! -e "\$q/queued/x.md" ] || { mkdir -p "\$q/done/2026-11-21"; sed 's/^k20: v20\$/k20: v20\nstatus: ok/' "\$q/queued/x.md" > "\$q/done/2026-11-21/x.md"; rm "\$q/queued/x.md"; }
 echo edited >> "\$q/done/2026-11-20/x.md"
+# staged, as a commit that failed partway leaves it: the index tracks it, HEAD does not
+git -C "$SANDBOX/a" add -- queue/done/2026-11-21/x.md
 exec git-upload-pack "\$@"
 EOF
   chmod +x "$SANDBOX/upload-pack-mid-move"

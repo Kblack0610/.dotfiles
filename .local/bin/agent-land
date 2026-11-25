@@ -1046,29 +1046,30 @@ link_task_row() {
   echo "item-row: linked $proj:$task_id from the body's Task: line"
 }
 
+# workflow_gate: GitHub refuses to merge a PR that changes .github/workflows for an OAuth token with no
+# `workflow` scope, and says so only at the merge, after the checks (platform#1672, ar-5191: this
+# workstation's gh has admin:org, gist and repo). So before the wait such a PR fails with the way out. A
+# token whose scopes GitHub does not list (fine-grained, app) passes, as do a file list or a user call
+# that cannot be read: the merge itself still says what it lacks. Forgejo has no such scope.
+workflow_gate() {
+  [ -z "$fj" ] || return 0
+  local files scopes
+  files=$(pr_files 2>/dev/null) || return 0
+  grep -q '^\.github/workflows/' <<<"$files" || return 0
+  scopes=$(gh api -i user 2>/dev/null) || return 0
+  scopes=$(tr -d '\r' <<<"$scopes" | grep -i -m 1 '^x-oauth-scopes:' | cut -d: -f2- | tr -d ' ') || return 0
+  [ -n "$scopes" ] || return 0
+  [[ ",$scopes," != *,workflow,* ]] || return 0
+  # gate: al-workflow-gate
+  fail workflow "#$pr changes .github/workflows and this gh token's scopes ($scopes) have no workflow, so GitHub would refuse its merge after the checks: run agent-land $pr${repo:+ --repo $repo}${item:+ --item $item} from a host whose gh token has the scope, or ask the human to run gh auth refresh -s workflow here and re-run it"
+}
+
 # review_gate: a tier-3 item (`fleet-dispatch item-tier`, the one beside this script: harness or tooling, promoted from a row or
 # queued by hand) merges only behind the red-fix gate, fix-red step 5: a "Review: /code-review <level>,
 # <what it found and what you did>" line in the body (n/a or empty is refused), and checks that ran
 # (wait_checks refuses "none reported" for it). The line is a claim, not proof: CI and the post-merge
 # hold check are the backstops.
 # Checked on the item, not where it was queued, so `agent-queue add` cannot skip it. An unreadable
-# workflow_gate: GitHub refuses to merge a PR that changes .github/workflows for an OAuth token with no
-# `workflow` scope, and says so only at the merge, after the checks (platform#1672, ar-5191: this
-# workstation's gh has admin:org, gist and repo). So before the wait such a PR fails with the way out. A
-# token whose scopes GitHub does not list (fine-grained, app) passes, as does a file list that cannot be
-# read: the merge itself still says what it lacks. Forgejo has no such scope.
-workflow_gate() {
-  [ -z "$fj" ] || return 0
-  local files scopes
-  files=$(pr_files 2>/dev/null) || return 0
-  grep -q '^\.github/workflows/' <<<"$files" || return 0
-  scopes=$(gh api -i user 2>/dev/null | tr -d '\r' | sed -nE 's/^x-oauth-scopes: *//Ip' | head -n 1)
-  [ -n "$scopes" ] || return 0
-  [[ ",${scopes// /}," != *,workflow,* ]] || return 0
-  # gate: none
-  fail workflow "#$pr changes .github/workflows and this gh token's scopes ($scopes) have no workflow, so GitHub would refuse its merge after the checks: merge it from a host whose gh token has the scope (gh pr merge $pr${repo:+ -R $repo} $method), then re-run agent-land $pr${repo:+ --repo $repo}${item:+ --item $item} to record it; or ask the human to run gh auth refresh -s workflow here"
-}
-
 # tier counts as 3, the side that waits.
 tier='' body=''
 # gate: al-review-gate
