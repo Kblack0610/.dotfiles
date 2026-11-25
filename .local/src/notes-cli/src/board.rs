@@ -1223,10 +1223,8 @@ fn epic_ranked(
     today: chrono::NaiveDate,
     aim: Option<&crate::rank::Aim>,
 ) -> FeedRow {
-    let Some(id) = row.id.as_deref() else {
-        return row;
-    };
-    let prio = tree.epic_priority(id);
+    // An epic with no id can have no `#of/<id>` rows under it, so it is empty.
+    let prio = row.id.as_deref().and_then(|id| tree.epic_priority(id));
     row.priority = prio.map_or(crate::epics::EMPTY, |i| md::PRIORITIES[i].0);
     row.untriaged = false;
     row.prio_why = None;

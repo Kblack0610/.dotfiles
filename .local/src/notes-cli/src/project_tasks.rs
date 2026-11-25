@@ -3752,6 +3752,14 @@ where
                 projects::refuse_retired_priority(&matched, line)?;
                 projects::refuse_epic_priority(line)?;
                 crate::reasons::refuse_bad(&matched, line)?;
+                // Said, so a `tag --add low` on an old tagged epic does not look like it took.
+                if let Some(tag) = md::task_priority(&matched)
+                    .filter(|_| crate::epics::is_epic(line) && md::task_priority(line).is_none())
+                {
+                    eprintln!(
+                        "{tag} dropped: an epic ranks as its most urgent open row, never by a tag"
+                    );
+                }
             }
             write_sheet(&sheet, &new)?;
             log.info("ptask", &format!("{verb} in {} ({name})", sheet.display()));

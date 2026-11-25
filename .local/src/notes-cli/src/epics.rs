@@ -530,7 +530,12 @@ impl Index {
                 continue;
             }
             let at = &n.at;
-            if let Some(id) = n.id.as_deref().filter(|_| n.title.is_some()) {
+            // A standing epic (`<system> to standard`) stays open with nothing under it.
+            let feature = n
+                .title
+                .as_deref()
+                .is_some_and(|t| !crate::standing::is_standing(&n.system, t));
+            if let Some(id) = n.id.as_deref().filter(|_| feature) {
                 if self.epic_priority(id).is_none() {
                     out.push(format!(
                         "{at}: epic {id} has no open row, so it ranks as {EMPTY}: close it or file its rows under it"
@@ -903,7 +908,8 @@ Version: v1.4.0 #alpha
                  - [x] feat(a): closed urgent #urgent #of/dm-1 <!-- id:dm-4 done:2026-11-05 pr:1 -->\n\
                  - [ ] epic(b): idle <!-- id:dm-5 -->\n\
                  - [ ] epic(b): a child epic #urgent #of/dm-5 <!-- id:dm-6 -->\n\
-                 - [x] feat(b): dropped #urgent #of/dm-5 <!-- id:dm-7 dropped: stale -->\n",
+                 - [x] feat(b): dropped #urgent #of/dm-5 <!-- id:dm-7 dropped: stale -->\n\
+                 - [ ] epic(c): c to standard <!-- id:dm-8 -->\n",
             )],
         );
         let ix = Index::of(&dir, V14);
@@ -918,8 +924,10 @@ Version: v1.4.0 #alpha
             f.iter().any(|l| l.contains("epic dm-5 has no open row")),
             "{f:?}"
         );
-        // NEGATIVE CONTROL: an epic with an open row is not named.
+        // NEGATIVE CONTROL: an epic with an open row is not named, nor a standing epic with none.
         assert!(!f.iter().any(|l| l.contains("epic dm-1 ")), "{f:?}");
+        assert_eq!(ix.epic_priority("dm-8"), None);
+        assert!(!f.iter().any(|l| l.contains("epic dm-8 ")), "{f:?}");
     }
 
     #[test]

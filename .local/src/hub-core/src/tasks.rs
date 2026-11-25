@@ -302,7 +302,11 @@ impl crate::table::Row for Row {
             "in progress" => self.doing(),
             "filed today" => self.filed_today,
             // Asks of work still open: a closed row is Done's, not the chip's.
-            "urgent" => self.state != "done" && self.priority == "urgent",
+            "urgent" => {
+                self.state != "done"
+                    && self.priority == "urgent"
+                    && self.r#type.as_deref() != Some("epic")
+            }
             "requested" => self.state != "done" && self.requested,
             // Every closed row, by day then project (`Feed::board_rows`), with its PR in WHEN.
             "done" => self.state == "done",
@@ -348,10 +352,12 @@ impl crate::table::Row for Row {
                 .as_deref()
                 .or(self.closed.as_deref())
                 .map_or(Val::None, |d| Val::Text(d.to_string())),
-            // Ascending sorts low first: the reverse of `PRIORITIES`, most urgent first.
+            // Ascending sorts low first: the reverse of `PRIORITIES`, most urgent first. An epic
+            // with no open row (`empty`) ranks as `low`, as the notes feed ranks it.
             "priority" => PRIORITIES
                 .iter()
                 .position(|p| *p == self.priority)
+                .or((self.priority == "empty").then_some(PRIORITIES.len() - 1))
                 .map_or(Val::None, |i| Val::Num((PRIORITIES.len() - 1 - i) as f64)),
             "size" => self
                 .size
