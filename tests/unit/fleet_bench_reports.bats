@@ -4297,6 +4297,96 @@ start_rows() {
   assert_line '| sandboxed_lane_pct | - | - | - | - |'
 }
 
+# churn_fixture: agent-runtime's ingest events over the days before T0 and the dotfiles merge dates, served by a stub
+churn_fixture() {
+  kpi_setup
+  mkdir -p "$HOME/.local/state/notes"
+  export BENCH_INGEST="$HOME/.local/state/notes/ingest.jsonl" BENCH_CHURN_MERGES_CMD=merges-stub
+  day() { date -d "@$((T0 - $1 * 86400))" +%F; }
+  ev() { jq -cn --arg a "$1" --arg id "$2" --arg day "$3" --arg by "$4" --argjson x "${5:-null}" \
+    '{action: $a, id: $id, from: "agent-runtime", lane: "agent", ts: "\($day)T10:00:00-08:00", by: $by} + ($x // {})'; }
+  printf '#!/usr/bin/env bash\ncat %q\n' "$SANDBOX/merges" > "$SANDBOX/bin/merges-stub"
+  chmod +x "$SANDBOX/bin/merges-stub"
+}
+
+@test "kpi: the churn rows are agent-runtime's filed against closed, reopens and session follow-ups over the complete days, clipped to the record" {
+  churn_fixture
+  {
+    ev added a1 "$(day 1)" s1 '{"origin": "plan"}'
+    ev added a2 "$(day 1)" 3e2471be '{}'
+    ev added a3 "$(day 1)" inbox-triage '{"origin": "inbox-triage"}'
+    ev done a1 "$(day 1)" s1 '{"pr": "o/r#1"}'
+    ev done a2 "$(day 1)" s1 '{}'
+    ev reopened a3 "$(day 1)" human '{}'
+    ev added a4 "$(day 2)" s1 '{"origin": "plan"}'
+    ev dropped a4 "$(day 1)" human '{}'
+    ev added b1 "$(day 2)" s1 '{"origin": "plan"}'
+    ev filed a1 "$(day 1)" inbox-triage '{}'
+    ev settled b1 "$(day 1)" fleet-dispatch '{"why": "row un-started: item ended failed"}'
+    ev added x1 "$(day 0)" s1 '{"origin": "plan"}'
+    ev added c1 "$(day 10)" s1 '{"origin": "plan"}'
+    ev added c2 "$(day 10)" s1 '{"origin": "plan"}'
+    ev done c1 "$(day 10)" s1 '{}'
+  } > "$BENCH_INGEST"
+  { for n in 1 1 1 1 2 2 10 0 0 0 0 0; do day $n; done; } > "$SANDBOX/merges"
+  run "$SUBJECT" kpi --json
+  assert_success
+  # 7d is days 1 to 7: filed a1 a2 a3 a4 b1 (a1's re-file and today's x1 do not count), closed a1 a2, merges 6, one reopen, one follow-up (a2)
+  run jq -c '[.churn_filed_per_closed, .churn_merges_per_day, .churn_reopens_per_day, .churn_followups_per_pr] | map(.["7d"])' <<<"$output"
+  assert_output '[2.5,0.857,0.143,0.167]'
+  # 28d reads from the record's first day (day 10, 10 days), not 28: filed 7, closed 3, merges 7
+  run "$SUBJECT" kpi --json
+  run jq -c '[.churn_filed_per_closed, .churn_merges_per_day, .churn_reopens_per_day, .churn_followups_per_pr] | map(.["28d"])' <<<"$output"
+  assert_output '[2.333,0.7,0.1,0.143]'
+  # a threshold turns the row past
+  echo churn_filed_per_closed_max=1 >> "$KPI_THRESHOLDS"
+  run "$SUBJECT" kpi --check '^churn_'
+  assert_failure 1
+  assert_output 'churn_filed_per_closed 2.5 (max 1)'
+  # the trend carries the columns, dated like the other rows
+  run "$SUBJECT" kpi --trend 2 --json
+  run jq -sc 'map(.churn_filed_per_closed)' <<<"$output"
+  assert_output '[null,2.5]'
+  # a merge log that cannot be read leaves the merge rows null and the rest as they were (negative control)
+  BENCH_CHURN_MERGES_CMD=false run "$SUBJECT" kpi --json
+  run jq -c '[.churn_merges_per_day["7d"], .churn_followups_per_pr["7d"], .churn_filed_per_closed["7d"]]' <<<"$output"
+  assert_output '[null,null,2.5]'
+  # no ingest record reads none, never 0
+  BENCH_INGEST="$SANDBOX/none" run "$SUBJECT" kpi --json
+  run jq -c '.churn_filed_per_closed["7d"]' <<<"$output"
+  assert_output null
+}
+
+@test "churn: --check trips only when filed exceeded closed on each of the last complete days running" {
+  churn_fixture
+  : > "$SANDBOX/merges"
+  { for n in 1 2 3; do ev added "r$n" "$(day $n)" s1 '{"origin": "plan"}'; done; } > "$BENCH_INGEST"
+  run "$SUBJECT" churn --check
+  assert_failure 1
+  assert_line --partial "churn $(day 3): filed 1, closed 0"
+  assert_line 'churn: filed exceeded closed 3 days running'
+  # one day that closed as much as it filed breaks the run (negative control)
+  ev done r2 "$(day 2)" s1 '{}' >> "$BENCH_INGEST"
+  run "$SUBJECT" churn --check
+  assert_success
+  assert_output ''
+  # the table and rows: a complete day each, today so far last
+  run "$SUBJECT" churn --days 3 --json
+  assert_success
+  run jq -sc '[length, .[-1].complete, (.[:3] | map(.filed))]' <<<"$output"
+  assert_output '[4,false,[1,1,1]]'
+  run "$SUBJECT" churn --days 3
+  assert_line --partial "| $(day 2) | - | 1 | 1 | 0 | 0 | 0 |"
+  run "$SUBJECT" churn --days 1 --json
+  assert_success
+  run jq -sc 'length' <<<"$output"
+  assert_output 2   # one complete day and today so far: the floor of CHURN_RUN_DAYS belongs to --check alone
+  BENCH_INGEST="$SANDBOX/none" run "$SUBJECT" churn --check
+  assert_failure 2
+  run "$SUBJECT" churn --days 0
+  assert_failure 2
+}
+
 @test "kpi: pool_busy_share is the busy share of the idle_pool pools over 7d and 28d from VictoriaMetrics; no knob reads none" {
   kpi_setup
   export BENCH_CLASSES="$SANDBOX/classes.json"
