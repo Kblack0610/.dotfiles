@@ -73,11 +73,17 @@ jobs:
   # shard or two on a runner that runs every file about 1.7x slower. In the 24 PR runs after
   # #2920 those were the runners naming an Azure region (westus, eastus...): their shards took up
   # to 373 s against at most 276 s on "Region: us" ones, with an even predicted split of 542 s of
-  # bats time per unit shard, and the gate read p90 6.3 min (ar-3036). Twelve unit shards put
+  # bats time per unit shard, and the gate read p90 6.3 min (ar-3036). Twelve unit shards then put
   # about 360 s of bats time in each, and four integ shards about 310 s, about 250 s of wall on
   # a slow runner. The fixed cost per shard (job start to the bats step: checkout, bats, cached
   # debs) was 8-9 s in run 44887277102, before the shards ran in the test image, which adds its
   # load from the Actions cache to that.
+  # Since #3519 a shard runs bats with the pod's one core (cpus.sh), not the host's 32, so its wall is
+  # its predicted seconds plus about 3 minutes of image pull and container start. The table grew
+  # from 4320 s to 5305 s: twelve unit shards read 442 s each, and in run 45616843061 on a drained
+  # pool they were cut at the 10 minute guard with half their tests done. Twenty unit and six integ
+  # shards put about 265 and 210 s in each, so a shard ends near 7 minutes and a node 1.5x slower
+  # still fits (ar-5740). The guard stays 10; a larger table needs more shards.
   # On 2026-11-23 the account sat at its hosted parallel-job cap (36 running, 105 queued), so a
   # shard costs queue time wherever it runs: the pool has fewer slots than hosted, and queue time
   # rising is the sign to stop adding them. unit/shard.bats checks that --matrix lists every shard
@@ -99,7 +105,7 @@ jobs:
       contents: read
       actions: read
     env:
-      FAST_SHARDS: unit=12 integ=4
+      FAST_SHARDS: unit=20 integ=6
       SHARD_SECONDS: 180
     outputs:
       table: ${{ steps.junit.outputs.table }}
