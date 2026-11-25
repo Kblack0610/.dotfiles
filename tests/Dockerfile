@@ -57,6 +57,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 # trixie (it moved out of bsdmainutils), and fleet.sh shells out to it.
 # nodejs runs tab_keeper.bats (`node --test`); openssl and xxd sign release-state's store JWTs.
 # lua5.4 loads the Hyprland Lua config for helpers/hypr-lua-dump.lua.
+# gcc, libevent, libncurses, bison and pkg-config are not here: only the rust stage (a linker for
+# cargo) and the full stage (tmux's build) use them, so a lean pull, the fast tier's 16 pods a run,
+# unpacks them in none of its layers (ar-5740). make stays: tests/docker.sh runs `make -C tests`.
 # inotify-tools: agent-ask wait-delivered, the questions panel's wait for an answer to go out.
 # parallel lets the unit and integ tiers run with bats --jobs (tests/Makefile FAST_PAR).
 # sqlite3: session_outcomes.bats builds a fixture opencode DB. stow: dotfiles_deploy.bats checks
@@ -65,7 +68,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       bash ca-certificates coreutils curl gawk git jq less procps sed tar xz-utils unzip \
       ncurses-base ncurses-bin ncurses-term bsdextrautils \
-      libevent-dev libncurses-dev bison pkg-config make gcc \
+      make \
       python3 python3-yaml sqlite3 nodejs npm openssl xxd lua5.4 inotify-tools parallel stow \
       zip psmisc uuid-runtime \
     && rm -rf /var/lib/apt/lists/*
@@ -155,6 +158,12 @@ FROM lean AS rust
 # tests/rust-toolchain, passed by tests/docker.sh, which hashes it into the tag. No default: the
 # build context cannot read the repo's pin.
 ARG RUST_TOOLCHAIN
+
+# The C toolchain and tmux's build libraries, which lean leaves out: cargo links with cc, and the
+# full stage builds tmux from source.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      gcc libc6-dev libevent-dev libncurses-dev bison pkg-config \
+    && rm -rf /var/lib/apt/lists/*
 
 # Rust at tests/rust-toolchain, with clippy and rustfmt: the rust job, the notes job's notes build
 # and the ui tier's agent-panel build. rustup-init is pinned by version and sha256. Before tmux, so

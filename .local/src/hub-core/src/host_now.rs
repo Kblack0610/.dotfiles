@@ -155,10 +155,7 @@ impl Row for Proc {
     const GLANCE: &'static [&'static str] = &["cpu", "mem"];
 
     fn val(&self, col: &str) -> Val {
-        let text = |s: &str| match s {
-            "" => Val::None,
-            s => Val::Text(s.to_string()),
-        };
+        let text = Val::word;
         match col {
             "name" => text(&self.name),
             "image" => text(&self.image),
@@ -198,10 +195,7 @@ impl Row for Session {
     const GLANCE: &'static [&'static str] = &["cpu", "mem"];
 
     fn val(&self, col: &str) -> Val {
-        let text = |s: &str| match s {
-            "" => Val::None,
-            s => Val::Text(s.to_string()),
-        };
+        let text = Val::word;
         match col {
             "project" => text(&self.project),
             "item" => text(&self.item),

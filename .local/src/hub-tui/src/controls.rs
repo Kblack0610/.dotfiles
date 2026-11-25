@@ -21,7 +21,7 @@ use serde_json::Value;
 use crate::datatable::DataTable;
 use crate::fit::{cell, clip_line, Cell, Table};
 use crate::fleet;
-use crate::fmt::{clock, Palette};
+use crate::fmt::{clock, dash, Palette};
 use hub_core::display::fmt::dur_secs;
 
 /// The fleet cells the detail leaves to the page's Worktree, PR and Plan parts.
@@ -523,7 +523,7 @@ impl Controls {
             None => "".into(),
         };
         let task = match x.task.as_str() {
-            "" => dash(r.live.map_or("", |(a, _)| a.plan_slug.as_str())),
+            "" => dash(r.live.map_or("", |(a, _)| a.plan_slug.as_str())).into(),
             t => t.into(),
         };
         let pr = match &x.pr {
@@ -550,19 +550,19 @@ impl Controls {
         };
         vec![
             stage,
-            dash(&x.activity),
-            dash(&x.project),
+            dash(&x.activity).into(),
+            dash(&x.project).into(),
             task,
-            dash(&x.by),
+            dash(&x.by).into(),
             pr,
             plan,
             idle,
             x.context_pct.map_or("-".into(), |c| format!("{c}%").into()),
             x.cost_usd.map_or("-".into(), |c| format!("${c:.2}").into()),
-            dash(&x.account),
-            dash(&x.harness),
-            dash(&x.close),
-            dash(&x.item),
+            dash(&x.account).into(),
+            dash(&x.harness).into(),
+            dash(&x.close).into(),
+            dash(&x.item).into(),
             x.source.name().into(),
             session.into(),
             self.eta(r, p, now),
@@ -712,10 +712,6 @@ pub(crate) fn page_field(part: &PagePart, p: Palette, w: usize) -> Line<'static>
         ]),
         w,
     )
-}
-
-pub(crate) fn dash(s: &str) -> Cell {
-    if s.is_empty() { "-" } else { s }.into()
 }
 
 fn cap(s: &str) -> String {

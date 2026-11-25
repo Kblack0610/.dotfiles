@@ -2205,9 +2205,7 @@ mod tests {
         assert!(resolve_path(&p, "root").is_some());
     }
 
-    fn d(s: &str) -> NaiveDate {
-        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
-    }
+    use crate::md::date as d;
 
     fn v(lines: &[&str]) -> Vec<String> {
         lines.iter().map(|s| s.to_string()).collect()

@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::session_actions::Runner;
+use crate::session_actions::{argv, Runner};
 use crate::text::{cap, headline, TITLE_MAX};
 
 /// The window and the list's length: a week, the twenty to look at first.
@@ -56,18 +56,16 @@ impl Ranked {
     }
 }
 
-fn argv(args: &[&str]) -> Vec<String> {
-    std::iter::once("agentctl-session-outcomes")
-        .chain(args.iter().copied())
-        .map(String::from)
-        .collect()
-}
+/// The CLI this module reads and writes through.
+const CLI: &str = "agentctl-session-outcomes";
 
 /// The sessions with friction in the last `DAYS`, worst first, at most `TOP`. A line that is not
 /// a row is skipped.
 pub fn ranked(runner: &dyn Runner) -> Result<Vec<Ranked>, String> {
     let (days, top) = (DAYS.to_string(), TOP.to_string());
-    let out = runner.run(&argv(&["worst", "--json", "--days", &days, "-n", &top]))?;
+    let out = runner.run(&argv(&[
+        CLI, "worst", "--json", "--days", &days, "-n", &top,
+    ]))?;
     Ok(out
         .lines()
         .filter_map(|l| serde_json::from_str(l).ok())
@@ -94,7 +92,7 @@ pub fn ran(
     top: usize,
 ) -> Result<BTreeMap<String, Vec<Ran>>, String> {
     let (days, top) = (days.to_string(), top.to_string());
-    let out = runner.run(&argv(&["ran", "--days", &days, "-n", &top]))?;
+    let out = runner.run(&argv(&[CLI, "ran", "--days", &days, "-n", &top]))?;
     let mut by: BTreeMap<String, Vec<Ran>> = BTreeMap::new();
     for r in out
         .lines()
@@ -117,7 +115,7 @@ pub fn card(runner: &dyn Runner, session_id: &str) -> Result<String, String> {
     if !ok {
         return Err(format!("not a session id: {}", cap(session_id, 40)));
     }
-    runner.run(&argv(&["card", session_id]))
+    runner.run(&argv(&[CLI, "card", session_id]))
 }
 
 #[cfg(test)]

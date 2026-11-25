@@ -64,6 +64,20 @@ Pick the first that fits. Each bucket allows only some verdicts, and `row-value 
 - `skills`: skills, rules, docs and prompts.
 - `other`: none of these.
 
+## Focus: one queue item per group
+
+`row-value focus` sends each kept row to the first group that fits: a bucket line by its bucket, a systems line by the row's system. Every system above is in a group.
+
+- `sot`: source-of-truth copy removal; bucket sot.
+- `dispatch`: dispatch and landing; systems dispatch.
+- `sessions`: sessions; systems sessions.
+- `telemetry`: telemetry and alerts; systems telemetry.
+- `notes`: notes; systems notes.
+- `ci`: CI; systems ci.
+- `rest`: views, skills and the rest; systems views skills other.
+
+A group's rows are worked in this order: live reds, the human's asks, faults that block landing or dispatch (high or urgent, in dispatch or ci), the remaining faults, then sot.
+
 ## Project and evidence
 
 - `project`: the project the row actually serves, by its board name. A row for trader, a unity game or another project filed on this board names that project, and the cut moves it.
