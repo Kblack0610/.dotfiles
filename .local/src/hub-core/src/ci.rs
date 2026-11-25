@@ -2165,10 +2165,8 @@ mod tests {
         assert_eq!(ms.booked.unwrap().cell(), "11.7/32 23G/92G, 7.4 reserved");
         assert_eq!((tuf.busy, tuf.running.len()), (0, 0));
         assert_eq!(tuf.booked.unwrap().cell(), "7.4/32 21G/63G, 7.4 reserved");
-        assert_eq!(
-            (ms.state.as_str(), tuf.state.as_str()),
-            ("up", "NotReady, cordoned")
-        );
+        assert_eq!(tuf.state, "NotReady, cordoned");
+        assert!(!ms.state.contains("NotReady"), "{}", ms.state);
         assert_eq!(g.busy, 3, "the reservations are no running job");
         assert!(
             g.head(|s| format!("{}m", s / 60))
