@@ -304,10 +304,11 @@ pub fn move_line(
     why: Option<&str>,
     raw: &str,
 ) -> Result<i32> {
-    let _lock = lock(p)?;
-    // The project sheet is a ptask sheet, so its write holds the ptask lock too (always taken
-    // after the outbox's: no ptask verb takes the outbox lock, so the order cannot invert).
+    // The project sheet is a ptask sheet, so its write holds the ptask lock too, taken before the
+    // outbox's as every ptask verb takes them (`ptask --agent add` appends here under its ptask
+    // lock). Taken the other way round, a triage move and an agent add deadlocked (2026-11-25).
     let _sheet = project_tasks::lock(p)?;
+    let _lock = lock(p)?;
     let content = read(p)?;
     let Some((rest, line)) = sheet::take_in(&content, HEADING, |l| l.raw == raw) else {
         eprintln!("no outbox line is '{raw}'");

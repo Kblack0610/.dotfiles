@@ -1776,6 +1776,7 @@ fn note_ids(proj_dir: &Path, lines: &[String]) -> Result<()> {
 /// The write lock every `notes ptask` writer holds from its read to its write, and around id
 /// minting: `<state_dir>/ptask.lock`. Without it two writers (a dispatch pass and a session)
 /// read the same sheet, and the second write loses the first one's row, or both mint one id.
+/// A writer that also takes the outbox lock takes this one first (`outbox::move_line`).
 pub(crate) fn lock(p: &Profile) -> Result<md::FileLock> {
     md::lock_file(&p.state_dir.join("ptask.lock"))
 }
