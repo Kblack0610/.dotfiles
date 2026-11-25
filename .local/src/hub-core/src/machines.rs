@@ -74,7 +74,8 @@ pub struct Machine {
     #[serde(rename = "where")]
     pub place: String,
     /// `up` with readings, `NO_DATA` without, or the governor's power state when it is not
-    /// running.
+    /// running; a cluster node that is not Ready, quarantined or cordoned says so instead
+    /// (`jobpods::node_states`).
     pub state: String,
     /// Jobs running: its busy fixed slots (`ci::slots_by_host`) plus the job pods placed on it
     /// (`jobpods`). `slots`: its fixed slots, each once, running or idle and not withheld (the old
@@ -257,7 +258,8 @@ impl Row for Machine {
             NO_DATA => self.state == NO_DATA,
             "cloud" => self.place == "cloud",
             "governed" => self.governor.is_some() || self.power.is_some(),
-            _ => false,
+            // A node state (`NotReady`, `quarantined`, `cordoned`), alone or joined.
+            _ => self.state.split(", ").any(|p| p == s),
         }
     }
     /// A bare word finds a machine by its name, what its slots do, jobs and the governor's words.
@@ -504,10 +506,11 @@ pub fn build(infra: &Infra) -> (Vec<Machine>, Vec<Pool>) {
     for p in infra
         .pods
         .iter()
-        .filter(|p| p.running && !p.node.is_empty())
+        .filter(|p| p.running && !p.reserved && !p.node.is_empty())
     {
         at(&mut by, p.node.clone()).busy += 1;
     }
+    let node_state = crate::jobpods::node_states(infra);
     for (h, jobs) in crate::ci::running_by_host(infra) {
         at(&mut by, h).running = jobs;
     }
@@ -570,6 +573,13 @@ pub fn build(infra: &Infra) -> (Vec<Machine>, Vec<Pool>) {
                 }
                 _ => NO_DATA.into(),
             };
+            // A governor power state (stopped, suspended) says why the node is away: it stays.
+            if let Some(n) = node_state
+                .get(&h)
+                .filter(|_| mm.power.is_none() || mm.state == "up")
+            {
+                mm.state = n.clone();
+            }
             mm
         })
         .collect();
