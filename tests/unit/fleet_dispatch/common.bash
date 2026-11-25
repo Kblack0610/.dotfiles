@@ -629,7 +629,7 @@ codex_end_item() {
   mkdir -p "$d" "$HOME/.local/lib"
   cp "$REPO_ROOT/.local/lib/codex-rollout.jq" "$HOME/.local/lib/codex-rollout.jq"
   CODEX_SESSIONS="$HOME/.codex/sessions"; CODEX_ROLLOUT_JQ="$HOME/.local/lib/codex-rollout.jq"
-  jq -n '{harnesses: {codex: {source: "codex", headless: true, resume: true, timeout_min: 120, models: {sol: "gpt-6.1-sol"}}}}' > "$SANDBOX/harnesses.json"
+  jq -n '{harnesses: {codex: {source: "codex", end_classifier: "codex", headless: true, resume: true, timeout_min: 120, models: {sol: "gpt-6.1-sol"}}}}' > "$SANDBOX/harnesses.json"
   HARNESSES="$SANDBOX/harnesses.json"
   jq -cn --argjson e "$2" --arg first "$(date -u -d @1794200000 +%FT%T.000Z)" --arg last "$(date -u -d "@$((1794200000 + ${3:-60}))" +%FT%T.000Z)" \
     '{timestamp: $first, type: "event_msg", payload: {type: "task_started"}},
@@ -661,7 +661,7 @@ oc_session() {
 # go, timeout 7200s) on a gone session with no PR, its session as oc_session writes it, and a model-lane run for it.
 oc_end_item() {
   oc_session "$@"
-  jq -n '{harnesses: {go: {launcher: "opencode", source: "go", max_tier: 1, headless: true, timeout_min: 120, models: {glm: "go (glm-5.3)"}}}}' > "$SANDBOX/harnesses.json"
+  jq -n '{harnesses: {go: {launcher: "opencode", source: "go", end_classifier: "opencode", max_tier: 1, headless: true, timeout_min: 120, models: {glm: "go (glm-5.3)"}}}}' > "$SANDBOX/harnesses.json"
   HARNESSES="$SANDBOX/harnesses.json"
   stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"'
   project game beta "$SANDBOX/repos/game"
@@ -788,9 +788,9 @@ harness_ready() {
     gateway: {url: "https://gw.test", key_file: $k},
     harnesses: {
       "claude-lazer": {source: "eval", timeout_min: 180, models: {sonnet: "sonnet"}},
-      opencode: {source: "eval", headless: true, config: $c, timeout_min: 180, models: {sonnet: "litellm/claude-sonnet-5", qwen: "litellm/code (qwen-3-coder)"}},
-      paid: {launcher: "opencode", source: "paid", headless: true, metered: true, config: $gc, key_file: $gk, timeout_min: 180, models: {glm: "litellm/reasoning (glm-5.3)"}},
-      codex: {source: "codex", headless: true, resume: true, timeout_min: 120, models: {sol: "gpt-6.1-sol"}},
+      opencode: {source: "eval", end_classifier: "opencode", headless: true, config: $c, timeout_min: 180, models: {sonnet: "litellm/claude-sonnet-5", qwen: "litellm/code (qwen-3-coder)"}},
+      paid: {launcher: "opencode", source: "paid", end_classifier: "opencode", headless: true, metered: true, config: $gc, key_file: $gk, timeout_min: 180, models: {glm: "litellm/reasoning (glm-5.3)"}},
+      codex: {source: "codex", end_classifier: "codex", headless: true, resume: true, timeout_min: 120, models: {sol: "gpt-6.1-sol"}},
       "claude-cloud": {launcher: "claude-cloud", timeout_min: 90, models: {cloud: "cloud"}}}}' > "$SANDBOX/harnesses.json"
   export DISPATCH_HARNESSES="$SANDBOX/harnesses.json"
   # The kinds route() keeps off a headless harness, at the path the script reads by default.
@@ -970,7 +970,7 @@ focus_on() {
 ocfree_ready() {
   printf 'sk-ocfree\n' > "$SANDBOX/ocfree.key"
   harness_set --arg k "$SANDBOX/ocfree.key" --arg c "$SANDBOX/eval-ocfree.json" --arg d "$SANDBOX/oc-ocfree" '.harnesses.ocfree = {
-    launcher: "opencode", source: "ocfree", headless: true, config: $c, config_dir: $d, key_file: $k, projects: ["dotfiles"], timeout_min: 180, models: {beam: "litellm/opencode-free (beam-free)"}}'
+    launcher: "opencode", source: "ocfree", end_classifier: "opencode", headless: true, config: $c, config_dir: $d, key_file: $k, projects: ["dotfiles"], timeout_min: 180, models: {beam: "litellm/opencode-free (beam-free)"}}'
   harness_sandboxed ocfree
 }
 
@@ -982,7 +982,7 @@ trainee_ready() {
   HARNESSES=$DISPATCH_HARNESSES
   printf 'sk-go\n' > "$SANDBOX/go.key"
   harness_set --arg k "$SANDBOX/go.key" --arg c "$SANDBOX/eval-go.json" --arg d "$SANDBOX/oc-go" '.harnesses.gotrain = {
-    launcher: "opencode", source: "go", headless: true, max_tier: 1, config: $c, config_dir: $d, key_file: $k, projects: ["game"], timeout_min: 60,
+    launcher: "opencode", source: "go", end_classifier: "opencode", headless: true, max_tier: 1, config: $c, config_dir: $d, key_file: $k, projects: ["game"], timeout_min: 60,
     models: {glm: "litellm/go (glm)", kimi: "litellm/go (kimi)"}}'
   harness_sandboxed gotrain
   trainee_repo "$SANDBOX/repos/game"

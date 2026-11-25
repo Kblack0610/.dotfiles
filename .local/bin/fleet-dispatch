@@ -45,6 +45,8 @@
 #   fleet-dispatch trainee-patch SLUG   the base, one line, then the patch a trainee run left here (a dispatcher fetches it from the worker)
 #   fleet-dispatch run-result SLUG      one line on what a headless run left (patch files and lines, else PR, note or state), for its replay's agent-panel row
 #   fleet-dispatch item-end H SID...   why the H run that claimed those ids ended, from this machine's record (a dispatcher asks the worker it ran on)
+#   fleet-dispatch backfill-end [DAYS]   give every item that closed failed in the last DAYS (30) with no end_reason the one its harness's record says
+#   fleet-dispatch record-end SLUG H SID...   item-end, written to the item's end_reason: the canary tail's one classification, which canary score reads
 #   (run, kick, reap, start, fill, promote, pull-after and exits do nothing on a machine that does not hold the fleet lease: lease_guard)
 #   fleet-dispatch record [--here]   keep each world's pane record, then (on the lease holder) each fleet worker's, and take their queue-item events into this chain record (worker_records); page when a world's server died
 #   fleet-dispatch restore [--server S] [--dry-run] [--here]  reopen a lost server's conversations as windows, here and (on the lease holder) on each fleet worker; one a queue item prompts wakes in a batch of the wake budget (wake-pace.sh), the rest under the `restore` hold
@@ -126,7 +128,7 @@ dispatch_conf_load() {
 # mechanism, and a worker carries no private overlay, so they load no conf. One that read a tuning key
 # would still stop loud: an unbound variable under set -u.
 case "$([ "${BASH_SOURCE[0]}" = "$0" ] && echo "${1:-} ${2:-}")" in
-  "kit "* | "harness-ready "* | "lane-sandbox "* | "harness-prep "* | "trainee-patch "* | "item-end "* | "record --here" | "restore --here") DISPATCH_WORKER_VERB=1 ;;
+  "kit "* | "harness-ready "* | "lane-sandbox "* | "harness-prep "* | "trainee-patch "* | "item-end "* | "record-end "* | "record --here" | "restore --here") DISPATCH_WORKER_VERB=1 ;;
   *) DISPATCH_WORKER_VERB=''; dispatch_conf_load ;;
 esac
 
@@ -173,6 +175,8 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/machine-mode.sh"
 # shellcheck source=../lib/end-reasons.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/end-reasons.sh"
+# shellcheck source=../lib/claude-end.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/claude-end.sh"
 # shellcheck source=../lib/wake-pace.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/wake-pace.sh"
 LEVEL=$(machine_level)
@@ -193,6 +197,7 @@ VERDICTS="$DIR/verdicts.jsonl"
 AQ_EX_FINISHED=4   # agent-queue add's exit when the slug's item already finished ok (its finished_ok)
 AQ_EX_HELD=5       # agent-queue add's exit when the cap held an add (its admit)
 LOG="$DIR/log.md"
+CLAUDE_PROJECTS="${DISPATCH_CLAUDE_PROJECTS:-$HOME/.claude*/projects}"   # every account's Claude transcripts, <dir>/*/<session id>.jsonl: where item_end reads why a Claude run ended
 CODEX_SESSIONS="${DISPATCH_CODEX_SESSIONS:-$HOME/.codex/sessions}"             # Codex's rollouts, where item_end reads why a run ended
 DISPATCH_PROC="${DISPATCH_PROC:-/proc}"                                          # where codex_run_live reads a run's environment
 CODEX_ROLLOUT_JQ="${DISPATCH_CODEX_ROLLOUT_JQ:-$HOME/.local/lib/codex-rollout.jq}"
@@ -2756,15 +2761,15 @@ replay_record() {
 # merged code. A trainee's run is followed by its review hand-off (cmd_trainee_review), which reads the
 # diff the run left whatever way the run ended; a direct run's by its landing (cmd_direct_land), given
 # the run's exit status, so a run that did not end clean lands nothing. The score is given why the
-# session ended (cmd_item_end, read here where the run ran), so a provider refusal or a timeout scores
-# not run, never a model fail.
+# session ended: the tail writes it to the item (cmd_record_end, read here where the run ran), which the score
+# reads, so a provider refusal or a timeout scores not run, never a model fail.
 sandbox_wrap() {
   local slug tmo
   slug=$(jq -r .slug <<<"$2")
   tmo="timeout $(jq -r --arg h "$1" '.harnesses[$h].timeout_min' "$HARNESSES")m"
   if is_canary "$2"; then
     cmd="fleet-bench canary start $(printf '%q' "$(jq -r .canary <<<"$2")") && { $tmo $cmd"
-    tail="BENCH_CANARY_WRAP=$(printf '%q' "$4") AGENT_QUEUE_ITEM=$(printf '%q' "$slug") fleet-bench canary score $(printf '%q' "$(jq -r .canary <<<"$2")") --end \"\$(fleet-dispatch item-end $(printf '%q' "$1") $3)\" && agent-queue move $(printf '%q' "$slug") done --status ok"
+    tail="fleet-dispatch record-end $(printf '%q' "$slug") $(printf '%q' "$1") $3; BENCH_CANARY_WRAP=$(printf '%q' "$4") AGENT_QUEUE_ITEM=$(printf '%q' "$slug") fleet-bench canary score $(printf '%q' "$(jq -r .canary <<<"$2")") && agent-queue move $(printf '%q' "$slug") done --status ok"
   else
     cmd="{ $tmo $cmd"
     tail="fleet-dispatch trainee-review $(printf '%q' "$slug")"
@@ -3411,6 +3416,34 @@ cmd_item_end() {
   shift
   for id in "$@"; do [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || { say "item-end: $id is not a session id"; return 2; }; done
   item_end "$(jq -nc --arg a "$agent" --arg s "$*" '{agent: $a, sessions: $s}')"
+}
+
+# cmd_record_end <slug> <harness> <session id>... -- cmd_item_end, written to the item's end_reason: the one record
+# of why a run ended, which the canary tail's score reads (fleet-bench canary_score). An end no record gives
+# leaves the item as it is.
+cmd_record_end() {
+  local slug=${1:-} why
+  [ -n "$slug" ] || { say "record-end: no item"; return 2; }
+  shift
+  why=$(cmd_item_end "$@") || { [ $? -ne 2 ] || return 2; }
+  [ -z "$why" ] || agent-queue set "$slug" "end_reason=$why" >/dev/null
+}
+
+# cmd_backfill_end [days] -- the items that closed failed in the last <days> (30) with no end_reason, each given the
+# one item_end reads from its harness's record, where a record is still there: the same classifier reap runs, so
+# an item closed before a harness had one (Claude's before ar-5427) holds the cause its run left. A record that
+# is gone, or that says nothing, leaves the item as it is. Prints one line per item it wrote and the count.
+cmd_backfill_end() {
+  local days=${1:-30} it slug why n=0
+  [[ "$days" =~ ^[0-9]+$ ]] || { say "backfill-end: days is a number, not $days"; return 2; }
+  while IFS= read -r it; do
+    slug=$(jq -r .slug <<<"$it")
+    why=$(item_end "$it") || true
+    [ -n "$why" ] || continue
+    agent-queue set "$slug" "end_reason=$why" >/dev/null || continue
+    echo "$slug end_reason=$why"; n=$((n + 1))
+  done < <(agent-queue list --json --state done --since "${days}d" | jq -c 'select(.status == "failed" and ((.end_reason // "") == ""))')
+  echo "backfill-end: $n item(s) of the last ${days}d given an end_reason"
 }
 
 # trainee_review_task <item json> <trainee> <base> <patch> <task key> -> one row's part of a batch
@@ -4955,19 +4988,28 @@ unstart_orphans() {
   printf '%s' "$seen" > "$DIR/orphans.tsv.new" && mv "$DIR/orphans.tsv.new" "$DIR/orphans.tsv"
 }
 
-# item_end <item json> -> why an item's run ended (end_reason), from its harness's own record: a Codex
-# rollout (codex-rollout.jq), an opencode session (opencode-session.jq) or an agy run's log (agy-result.jq),
-# the one classifier for each.
-# Nothing for an item on another launcher, or one whose record cannot be found: no evidence is not a
+# harness_end_classifier <harness> -> which classifier reads why its runs ended: its `end_classifier` in the map
+# (codex, opencode, agy or claude), nothing when it names none. claude is the baseline every bar compares
+# against, so it is not in the map (model-lane no_end_reason): its classifier is claude. harness_contract.bats
+# holds the key and `reports.end_reason` to each other.
+harness_end_classifier() {
+  if [ "$1" = claude ]; then echo claude; else jq -r --arg h "$1" '.harnesses[$h].end_classifier // empty' "$HARNESSES" 2>/dev/null || true; fi
+}
+
+# item_end <item json> -> why an item's run ended (end_reason), from its harness's own record, by the
+# classifier harnesses.json names for it: a Codex rollout (codex-rollout.jq), an opencode session
+# (opencode-session.jq), an agy run's log (agy-result.jq) or a Claude transcript (claude-end.sh), the one
+# classifier for each.
+# Nothing for an item whose harness names none, or one whose record cannot be found: no evidence is not a
 # reason, and such an end rates as before. The item's `sessions:` hold the ids its run claimed; the
 # launcher's timeout tells a timeout from a cut. A run on a fleet worker (`host:`) left its record in
-# the worker's ~/.codex or opencode.db, so the worker classifies it (cmd_item_end); a worker that does
+# the worker's ~/.codex, opencode.db or ~/.claude, so the worker classifies it (cmd_item_end); a worker that does
 # not answer, or an older one without item-end, gives nothing.
 item_end() {
-  local agent f launcher t host
+  local agent f t host classifier
   IFS=$'\t' read -r agent host < <(jq -r '[.agent // "claude", .host // ""] | @tsv' <<<"$1")
-  launcher=$(harness_launcher "$agent")
-  case "$launcher" in codex | opencode | agy) ;; *) return 0 ;; esac
+  classifier=$(harness_end_classifier "$agent")
+  [ -n "$classifier" ] || return 0
   if [ -n "$host" ]; then
     # shellcheck disable=SC2046  # the ids, one word each (cmd_item_end checks them)
     fleet_host_run "$host" fleet-dispatch item-end "$agent" $(jq -r '.sessions // ""' <<<"$1") 2>/dev/null |
@@ -4975,10 +5017,31 @@ item_end() {
     return 0
   fi
   t=$(jq -r --arg h "$agent" '(.harnesses[$h].timeout_min // 0) * 60' "$HARNESSES" 2>/dev/null) || t=0
-  if [ "$launcher" = opencode ]; then item_oc_end "$1" "${t:-0}"; return; fi
-  if [ "$launcher" = agy ]; then item_agy_end "$1" "${t:-0}"; return; fi
-  read -r _ f < <(item_rollout "$1") && [ -n "$f" ] || return 0
-  jq -rs --argjson timeout_s "${t:-0}" -f "$CODEX_ROLLOUT_JQ" "$f" 2>/dev/null
+  case "$classifier" in
+    opencode) item_oc_end "$1" "${t:-0}" ;;
+    agy) item_agy_end "$1" "${t:-0}" ;;
+    claude) item_claude_end "$1" ;;
+    codex)
+      read -r _ f < <(item_rollout "$1") && [ -n "$f" ] || return 0
+      jq -rs --argjson timeout_s "${t:-0}" -f "$CODEX_ROLLOUT_JQ" "$f" 2>/dev/null ;;
+  esac
+}
+
+# item_claude_end <item json> -> the end_reason of the newest Claude session the item claimed whose transcript
+# is on disk (any account's), when that transcript ends on the CLI's own error line (claude_end): provider for
+# an API error, limit for the plan's usage limit. Nothing for a transcript that ends any other way: an older
+# session's error is not how the run ended.
+# Only an id of one word of [A-Za-z0-9_-] passes: the id names a file.
+item_claude_end() {
+  local id t why
+  for id in $(jq -r '(.sessions // "") | split(" ") | reverse | .[]' <<<"$1"); do
+    [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || continue
+    t=$(compgen -G "$CLAUDE_PROJECTS/*/$id.jsonl" | awk 'NR == 1')
+    [ -n "$t" ] || continue
+    IFS=$'\t' read -r why _ < <(claude_end "$t") || true
+    [ -z "${why:-}" ] || echo "$why"
+    return 0
+  done
 }
 
 # item_oc_end <item json> <timeout seconds> -> the end_reason of the newest opencode session the item
@@ -9080,6 +9143,8 @@ main() {
     trainee-patch) shift; cmd_trainee_patch "$@" ;;
     run-result) shift; cmd_run_result "$@" ;;
     item-end) shift; cmd_item_end "$@" ;;
+    record-end) shift; cmd_record_end "$@" ;;
+    backfill-end) shift; cmd_backfill_end "$@" ;;
     -h | --help) sed -n '2,48p' "$0" ;;
     *) sed -n '2,20p' "$0" >&2; return 2 ;;
   esac

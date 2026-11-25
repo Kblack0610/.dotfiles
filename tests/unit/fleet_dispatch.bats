@@ -3819,7 +3819,7 @@ picks_order() { DRY=1 JUDGE_RC='' fill_day 4 | grep -oE ': (ap|gm)-[0-9]+ \[' | 
   refute_output --partial unplaceable
   # A codex item that resumes its thread here (its rollout is in this machine's ~/.codex) stays
   # here by design, so it is no gap (host_agent).
-  jq -n '{harnesses: {codex: {source: "codex", headless: true, resume: true, timeout_min: 120, models: {sol: "gpt-6.1-sol"}}}}' > "$SANDBOX/harnesses.json"
+  jq -n '{harnesses: {codex: {source: "codex", end_classifier: "codex", headless: true, resume: true, timeout_min: 120, models: {sol: "gpt-6.1-sol"}}}}' > "$SANDBOX/harnesses.json"
   export DISPATCH_HARNESSES="$SANDBOX/harnesses.json"
   codex_ran in-game th-1
   [ -f "$(qitem queued in-game)" ]

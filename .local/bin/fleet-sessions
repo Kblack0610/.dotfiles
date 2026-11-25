@@ -607,20 +607,16 @@ self_wait() {
 }
 
 # api_error_stop <transcript>: "<code>\t<timestamp to the minute>" when the transcript's last message
-# is Claude Code's own `API Error: <code>` line (an assistant entry with isApiErrorMessage; a limit notice
+# is Claude Code's own `API Error: <code>` line (claude_end: a provider end; a limit notice
 # with no code is the limit watch's), else nothing. The
 # CLI retries first, so that line means the turn is over and only a message restarts it. 2026-11-13
 # 01:46-01:51 PST a transient Cloudflare 403 stopped 10 sessions at an idle prompt; each read WORKING
 # until it tripped overdue, and three never moved without a nudge. Only the tail is read (a first
 # line cut by tail is skipped): a later message, a nudge or the human's, makes the error not last.
 api_error_stop() {
-  [ -s "${1:-}" ] || return 0
-  tail -n 100 "$1" | jq -Rr 'fromjson? | select(.type == "assistant" or .type == "user")
-      | if .isApiErrorMessage == true then
-          ([.message.content[]? | select(.type == "text") | .text] | join(" ")
-            | capture("API Error: (?<c>[0-9]+)")? // {c: ""}).c as $c
-          | if $c == "" then "" else "\($c)\t\((.timestamp // "-")[:16])" end
-        else "" end' 2>/dev/null | tail -n 1 | grep . || true
+  local why code at
+  IFS=$'\t' read -r why code at < <(claude_end "${1:-}") || true
+  [ "${why:-}" != provider ] || printf '%s\t%s\n' "$code" "$at"
 }
 
 # resume_killed_gate <transcript> -> "<kind> <text>\t<timestamp to the minute>" when the newest notice that a resume
