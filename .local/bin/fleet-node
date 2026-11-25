@@ -126,7 +126,7 @@ kube_needs() {
     case "$out" in
       yes) ;;
       no*) echo "the kubeconfig at $kcfg may not $args: $who (home-config fleet-read-rbac.yaml)" ;;
-      *) echo "cannot ask home-k3s with the kubeconfig at $kcfg: $(grep -v -e '^Warning:' -e '^$' "$err" | head -n 1)"; break ;;
+      *) echo "cannot ask home-k3s with the kubeconfig at $kcfg: $(grep -m 1 -v -e '^Warning:' -e '^$' "$err")"; break ;;
     esac
   done
   rm -f "$err"
