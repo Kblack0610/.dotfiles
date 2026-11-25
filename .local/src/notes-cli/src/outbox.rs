@@ -304,10 +304,12 @@ pub fn move_line(
     why: Option<&str>,
     raw: &str,
 ) -> Result<i32> {
-    let _lock = lock(p)?;
-    // The project sheet is a ptask sheet, so its write holds the ptask lock too (always taken
-    // after the outbox's: no ptask verb takes the outbox lock, so the order cannot invert).
+    // The project sheet is a ptask sheet, so its write holds the ptask lock too, taken BEFORE the
+    // outbox's: a ptask writer holds the ptask lock when it sends a row to the outbox
+    // (inbox_followup -> append), so outbox-then-ptask here deadlocked both, with every ptask
+    // writer and the agent-queue lock above one stuck behind them (2026-11-24, ar-5560).
     let _sheet = project_tasks::lock(p)?;
+    let _lock = lock(p)?;
     let content = read(p)?;
     let Some((rest, line)) = sheet::take_in(&content, HEADING, |l| l.raw == raw) else {
         eprintln!("no outbox line is '{raw}'");
@@ -592,6 +594,22 @@ mod tests {
         }
         // The header sits above the section, so none of its rows is an item.
         assert!(sheet::lines_in(&s, HEADING).is_empty());
+    }
+
+    #[test]
+    fn a_move_takes_the_ptask_lock_before_the_outbox_lock() {
+        // A ptask writer sends a row to the outbox while it holds the ptask lock (inbox_followup ->
+        // append), so a move that took the outbox lock first deadlocked against it (ar-5560).
+        let src = include_str!("outbox.rs");
+        let body = &src[src.find("pub fn move_line(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let sheet = body
+            .find("project_tasks::lock(p)?")
+            .expect("move_line takes the ptask lock");
+        let outbox = body
+            .find("let _lock = lock(p)?")
+            .expect("move_line takes the outbox lock");
+        assert!(sheet < outbox, "move_line must lock ptask before outbox");
     }
 
     #[test]

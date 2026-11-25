@@ -50,7 +50,8 @@ pub(crate) struct FileLock(#[allow(dead_code)] std::fs::File);
 
 /// Take an exclusive `flock` on `path`, creating it and its directory, waiting for any holder.
 /// The read-modify-write writers (`notes outbox`, `notes ptask`) hold one around each change,
-/// so two writers never interleave a read and a write and lose one of the two.
+/// so two writers never interleave a read and a write and lose one of the two. It waits without
+/// bound, so a caller that holds two takes them in one order: `ptask.lock` before `.outbox.lock`.
 pub(crate) fn lock_file(path: &Path) -> Result<FileLock> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
