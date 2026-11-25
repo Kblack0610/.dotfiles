@@ -381,21 +381,14 @@ impl crate::table::Row for Need {
 
     fn val(&self, col: &str) -> crate::table::Val {
         use crate::table::Val;
-        let text = |s: &str| {
-            if s.is_empty() {
-                Val::None
-            } else {
-                Val::Text(s.to_string())
-            }
-        };
         match col {
             "rank" => Val::Num(self.rank as f64),
-            "kind" => text(self.need.slug()),
-            "project" => text(&self.project),
+            "kind" => Val::word(self.need.slug()),
+            "project" => Val::word(&self.project),
             // Earlier is bigger, so a header's first click puts the longest wait on top.
             "waited" => self.since.map_or(Val::None, |s| Val::Num(-(s as f64))),
-            "holds" => text(&self.holds()),
-            "what" => text(&self.text),
+            "holds" => Val::word(&self.holds()),
+            "what" => Val::word(&self.text),
             _ => Val::None,
         }
     }

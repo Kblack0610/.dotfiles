@@ -189,7 +189,7 @@ fn sheet_and_content(p: &Profile, name: &str, lane: Lane) -> Result<Option<(Path
 }
 
 /// An open task matching `query` (already lower-cased) - the shared predicate for
-/// `done`/`start`/`rm`, matching `focus.rs::is_match`.
+/// `done`/`start`/`rm` here and in `focus.rs`.
 pub(crate) fn is_match(line: &str, query: &str) -> bool {
     md::is_open_task(line) && md::task_key(line).contains(query)
 }

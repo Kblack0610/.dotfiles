@@ -15,18 +15,13 @@ use crate::config::{self, Profile};
 use crate::daily;
 use crate::logging::Logger;
 use crate::md;
+use crate::project_tasks::is_match;
 use anyhow::{bail, Result};
 use chrono::Local;
 use std::fs;
 
 /// The section every verb in this module operates on.
 const FOCUS: &str = "Focus";
-
-/// An open Focus task matching `query` (already lower-cased) by normalised text. The one
-/// predicate `done` and `rm` share, so they can never disagree about what is selectable.
-fn is_match(line: &str, query: &str) -> bool {
-    md::is_open_task(line) && md::task_key(line).contains(query)
-}
 
 /// Open Focus tasks in `content` (prose, `---` rules, checked items and the empty `- [ ]`
 /// placeholder excluded). [`md::section_lines`] resolves the authored region via

@@ -1251,23 +1251,16 @@ impl Row for Slot {
     const GLANCE: &'static [&'static str] = &["state", "ran", "job"];
 
     fn val(&self, col: &str) -> Val {
-        let text = |s: &str| {
-            if s.is_empty() {
-                Val::None
-            } else {
-                Val::Text(s.to_string())
-            }
-        };
         match col {
-            "host" => text(&self.host),
-            "slot" => text(&self.slot),
-            "state" => text(&self.state),
-            "pool" => text(&self.pool),
+            "host" => Val::word(&self.host),
+            "slot" => Val::word(&self.slot),
+            "state" => Val::word(&self.state),
+            "pool" => Val::word(&self.pool),
             "ran" => opt(self.ran),
             "usual" => opt(self.usual),
-            "job" if self.state == "busy" => text(&self.job),
-            "job" => text(&self.note),
-            "ref" => text(&self.reference()),
+            "job" if self.state == "busy" => Val::word(&self.job),
+            "job" => Val::word(&self.note),
+            "ref" => Val::word(&self.reference()),
             _ => Val::None,
         }
     }

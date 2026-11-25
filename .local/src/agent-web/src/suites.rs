@@ -20,9 +20,10 @@ use hub_core::builds::{Builds, STALE_SECS};
 use hub_core::jobs;
 use hub_core::junit::{self, Case, Loaded, PickRun, Suite, Totals};
 use hub_core::layout;
-use hub_core::quarantine::{self, Entry, Lane};
+use hub_core::quarantine::{self, Entry};
 use hub_core::queue::Item;
 use hub_core::releases::Level;
+use hub_core::run_page::applied;
 use hub_core::session_actions::System;
 use hub_core::table::{self, Summary, View};
 use serde::{Deserialize, Serialize};
@@ -131,15 +132,6 @@ fn held<'a>(b: &'a Builds, entries: &'a [Entry], q: &Query) -> Held<'a> {
     }
 }
 
-/// The run's results with the failures its repo's quarantine holds marked quarantined.
-fn applied(b: &Builds, run: &PickRun, l: &Loaded) -> Loaded {
-    let lane = b
-        .quarantine
-        .iter()
-        .find(|l| l.repo.eq_ignore_ascii_case(&run.repo));
-    l.quarantined(&lane.map(Lane::held).unwrap_or_default())
-}
-
 /// What a read of the ledger and one run produced.
 struct Read<'a> {
     builds: &'a Builds,
@@ -152,7 +144,7 @@ struct Read<'a> {
 fn render(r: &Read, q: &Query) -> String {
     let view = View::new::<Suite>(&q.tq, &q.ts, &q.tsort, &q.tdir);
     let applied = match (r.run, r.loaded) {
-        (Some(run), Some(l)) => Some(applied(r.builds, run, l)),
+        (Some(run), Some(l)) => Some(applied(r.builds, &run.repo, l)),
         _ => None,
     };
     let suites: &[Suite] = applied.as_ref().map_or(&[], |l| &l.suites);
@@ -320,7 +312,7 @@ pub async fn cases(
     let run = runs.iter().find(|r| r.id == q.run).ok_or_else(|| {
         none("that run is not among the finished runs of a declared test workflow")
     })?;
-    let l = applied(&b, run, &*loaded(run, &runs).await.map_err(bad)?);
+    let l = applied(&b, &run.repo, &*loaded(run, &runs).await.map_err(bad)?);
     let view = View::new::<Case>(&q.cq, &q.cs, &q.csort, &q.cdir);
     let (mut cases, mut table) = l
         .cases(&q.tier, &q.suite, &view)
@@ -333,6 +325,7 @@ pub async fn cases(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hub_core::quarantine::Lane;
 
     fn suite(tier: &str, name: &str, results: &[&str]) -> Suite {
         let cases = results

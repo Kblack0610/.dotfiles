@@ -723,7 +723,8 @@ fn pick(reg: &Registry, r: &Run) -> PickRun {
     }
 }
 
-fn applied(b: &Builds, repo: &str, l: &Loaded) -> Loaded {
+/// The run's results with the failures `repo`'s quarantine holds marked quarantined.
+pub fn applied(b: &Builds, repo: &str, l: &Loaded) -> Loaded {
     let lane = b
         .quarantine
         .iter()

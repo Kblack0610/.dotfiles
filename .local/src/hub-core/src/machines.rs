@@ -202,19 +202,11 @@ impl Pool {
             .iter()
             .map(|s| format!("{} {}", s.host, s.slots))
             .collect();
-        text(&m.join(", "))
+        Val::word(&m.join(", "))
     }
 
     pub fn hosts(&self) -> impl Iterator<Item = &str> {
         self.machines.iter().map(|s| s.host.as_str())
-    }
-}
-
-fn text(s: &str) -> Val {
-    if s.is_empty() {
-        Val::None
-    } else {
-        Val::Text(s.to_string())
     }
 }
 
@@ -232,8 +224,8 @@ impl Row for Machine {
 
     fn val(&self, col: &str) -> Val {
         match col {
-            "machine" => text(&self.host),
-            "state" => text(&self.state),
+            "machine" => Val::word(&self.host),
+            "state" => Val::word(&self.state),
             "booked" => self.booked.map(|b| b.share()).into(),
             "cpu" => self.cpu.into(),
             "6h" => self.cpu6h.into(),
@@ -241,7 +233,7 @@ impl Row for Machine {
             "mem" => self.mem.into(),
             "temp" => self.temp.into(),
             "disk" => self.disk.into(),
-            "running" => text(&self.running.join(", ")),
+            "running" => Val::word(&self.running.join(", ")),
             "next" => self
                 .next
                 .as_ref()
@@ -250,7 +242,10 @@ impl Row for Machine {
                 .governor
                 .as_ref()
                 .map_or(Val::None, |g| Val::Text(g.says())),
-            "power" => self.power.as_ref().map_or(Val::None, |p| text(&p.state)),
+            "power" => self
+                .power
+                .as_ref()
+                .map_or(Val::None, |p| Val::word(&p.state)),
             "up" => self.boot.into(),
             _ => Val::None,
         }
@@ -307,7 +302,7 @@ impl Row for Pool {
 
     fn val(&self, col: &str) -> Val {
         match col {
-            "pool" => text(&self.pool),
+            "pool" => Val::word(&self.pool),
             "weight" => self.weight.as_deref().map_or(Val::None, text),
             "running" => self.running.into(),
             "waiting" => self.waiting.into(),
@@ -1068,9 +1063,9 @@ pub(crate) mod tests {
         let names: Vec<&str> = ps.iter().map(|p| p.pool.as_str()).collect();
         assert_eq!(names, ["unity", LOCAL_POOL, "macos"]);
         let seats = |p: &Pool| p.val("machines");
-        assert_eq!(seats(&ps[0]), text("workstation 2, aws-burst-1 0"));
+        assert_eq!(seats(&ps[0]), Val::word("workstation 2, aws-burst-1 0"));
         let local = &ps[1];
-        assert_eq!(seats(local), text("workstation 3"));
+        assert_eq!(seats(local), Val::word("workstation 3"));
         assert_eq!(
             (local.running, local.waiting, local.pass),
             (Some(1.0), Some(1.0), Some(0.5))
@@ -1135,14 +1130,17 @@ pub(crate) mod tests {
         );
         assert_eq!(
             light.val("machines"),
-            text("b 5, a 3"),
+            Val::word("b 5, a 3"),
             "online slots, most first"
         );
-        assert_eq!(kind("macos").val("machines"), text("mac-mini 1"));
+        assert_eq!(kind("macos").val("machines"), Val::word("mac-mini 1"));
         assert_eq!(kind("macos").running, Some(0.0));
         // A kind with no online runner names where its slots would be, and no count.
         let win = kind("windows");
-        assert_eq!((win.running, win.val("machines")), (None, text("win 0")));
+        assert_eq!(
+            (win.running, win.val("machines")),
+            (None, Val::word("win 0"))
+        );
         // Every machine with a runner for a kind, and none without one.
         assert!(!light.hosts().any(|h| h == "mac-mini"));
         assert_eq!(kind("macos").hosts().collect::<Vec<_>>(), ["mac-mini"]);
@@ -1172,10 +1170,10 @@ pub(crate) mod tests {
         );
         let (_, ps) = build(&i);
         let kind = |k: &str| ps.iter().find(|p| p.pool == k).unwrap();
-        assert_eq!(kind("light").val("weight"), text("0.66"));
+        assert_eq!(kind("light").val("weight"), Val::word("0.66"));
         assert_eq!(
             kind("heavy").val("weight"),
-            text("1*"),
+            Val::word("1*"),
             "1 the governor did not measure"
         );
         assert_eq!(

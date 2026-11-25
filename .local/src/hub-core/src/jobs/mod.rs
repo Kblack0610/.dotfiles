@@ -275,7 +275,7 @@ impl Paths {
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from)
         };
-        let state = env("XDG_STATE_HOME").unwrap_or_else(|| home.join(".local/state"));
+        let state = agent_core::vocab::state_home();
         let agentctl = env("AGENTCTL_STATE_DIR")
             .or_else(|| env("AGENTCTL_STATE"))
             .unwrap_or_else(|| state.join("agentctl"));

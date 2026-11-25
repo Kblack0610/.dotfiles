@@ -10,7 +10,7 @@ use hub_core::table::{Summary, View};
 use serde::{Deserialize, Serialize};
 
 use crate::alerts;
-use crate::cache::{off, ReadCache};
+use crate::cache::{failed, off, ReadCache};
 
 /// A read takes seconds (unit properties, Prometheus, CI state) and a schedule changes by the
 /// hour, so tabs, reloads and each keystroke of a search share one read for this long.
@@ -52,12 +52,7 @@ fn render(s: &Schedules, q: &Query) -> String {
         errors: &s.errors,
         table,
     };
-    serde_json::to_string(&out).unwrap_or_else(|e| failed(e.to_string()))
-}
-
-/// A body the tab can still render when reading itself failed.
-fn failed(e: String) -> String {
-    serde_json::json!({ "rows": [], "errors": [e] }).to_string()
+    serde_json::to_string(&out).unwrap_or_else(|e| failed("rows", e.to_string()))
 }
 
 impl Cache {
@@ -65,7 +60,7 @@ impl Cache {
     pub async fn get(&self, alerts: &alerts::Cache, q: Query) -> String {
         self.read(alerts)
             .await
-            .map_or_else(failed, |s| render(&s, &q))
+            .map_or_else(|e| failed("rows", e), |s| render(&s, &q))
     }
 
     /// The shared read, the tab's and Home's Schedules card's. The open reds come from the
@@ -109,11 +104,5 @@ mod tests {
         assert_eq!(v["rows"].as_array().unwrap().len(), 1);
         assert_eq!(v["rows"][0]["name"], "app / Tests");
         assert_eq!(v["table"]["total"], 2);
-    }
-
-    #[test]
-    fn a_failed_read_still_gives_the_tab_a_body() {
-        let v: serde_json::Value = serde_json::from_str(&failed("gone".into())).unwrap();
-        assert_eq!(v["errors"][0], "gone");
     }
 }

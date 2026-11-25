@@ -5,6 +5,27 @@ use anyhow::{Context, Result};
 use chrono::{Datelike, Duration, NaiveDate, Weekday};
 use std::path::Path;
 
+/// A `YYYY-MM-DD` test date; panics on any other text.
+#[cfg(test)]
+pub(crate) fn date(s: &str) -> NaiveDate {
+    NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+}
+
+/// `s` in kebab case: lowercase ASCII letters and digits, every other run one `-`, none at
+/// either end; empty when `s` has no letter or digit.
+pub fn kebab(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.truncate(out.trim_end_matches('-').len());
+    out
+}
+
 /// FNV-1a of `s` as 16 hex digits: the compare-and-swap base a page reads and sends back
 /// (`notes show` and `notes put`, `notes outbox show` and `put`). Stable across builds, so a hash
 /// a page read with one `notes` still matches after an upgrade.
@@ -2085,9 +2106,7 @@ mod tests {
         assert_eq!(without_agent_tag("- [ ] #agent fix it"), "- [ ] fix it");
     }
 
-    fn d(s: &str) -> NaiveDate {
-        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
-    }
+    use crate::md::date as d;
 
     #[test]
     fn the_legacy_ai_tag_is_matched_as_a_whole_token() {

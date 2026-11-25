@@ -317,6 +317,12 @@ where
     }
 }
 
+/// The body a table answers when its read failed: no `list` rows and the error, which the page
+/// still renders.
+pub fn failed(list: &str, e: String) -> String {
+    serde_json::json!({ list: [], "errors": [e] }).to_string()
+}
+
 /// `f` off the async workers; a panic in it comes back as its message.
 pub async fn off<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
     tokio::task::spawn_blocking(f)
@@ -327,6 +333,13 @@ pub async fn off<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_read_still_gives_the_table_a_body() {
+        let v: serde_json::Value = serde_json::from_str(&failed("rows", "gone".into())).unwrap();
+        assert_eq!(v["rows"], serde_json::json!([]));
+        assert_eq!(v["errors"][0], "gone");
+    }
     use std::sync::atomic::AtomicUsize;
     use tokio::sync::Notify;
 

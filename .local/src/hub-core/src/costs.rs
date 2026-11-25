@@ -510,22 +510,15 @@ impl Row for Slice {
     const FACETS: &'static [&'static str] = &["harness", "model", "project", "kind"];
 
     fn val(&self, col: &str) -> Val {
-        let text = |s: &str| {
-            if s.is_empty() {
-                Val::None
-            } else {
-                Val::Text(s.to_string())
-            }
-        };
         match col {
-            "session" => text(&self.session),
-            "title" => text(&self.title),
-            "project" => text(&self.project),
-            "harness" => text(&self.harness),
-            "model" => text(&self.model),
-            "runner" => text(&self.runner),
-            "kind" => text(&self.kind),
-            "account" => text(&self.account),
+            "session" => Val::word(&self.session),
+            "title" => Val::word(&self.title),
+            "project" => Val::word(&self.project),
+            "harness" => Val::word(&self.harness),
+            "model" => Val::word(&self.model),
+            "runner" => Val::word(&self.runner),
+            "kind" => Val::word(&self.kind),
+            "account" => Val::word(&self.account),
             "cost" => Val::Num(self.cost),
             "tokens" => Val::Num(self.tokens),
             _ => Val::None,
