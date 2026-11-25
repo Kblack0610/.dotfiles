@@ -652,7 +652,10 @@ pub struct Weighed {
 pub fn weigh(entry: &str) -> Option<Weighed> {
     // The path ends at the first sheet or version-note suffix: a project dir named `agent`, or
     // `/agent/` in the row text, must not move it.
-    let at = ["/agent/README.md:", "/agent/versions/"].iter().filter_map(|s| entry.find(s)).min()?;
+    let at = ["/agent/README.md:", "/agent/versions/"]
+        .iter()
+        .filter_map(|s| entry.find(s))
+        .min()?;
     let rest = &entry[at + "/agent/".len()..];
     let (closed, line) = if let Some(line) = rest.strip_prefix("README.md:") {
         if !md::is_task(line) {
@@ -1764,7 +1767,10 @@ mod tests {
             Some("open")
         );
         assert_eq!(
-            w(&format!("{at}- [x] fix(x): y #pts/3 <!-- id:ar-3 pr:12 -->")).map(|t| (t.2, t.3)),
+            w(&format!(
+                "{at}- [x] fix(x): y #pts/3 <!-- id:ar-3 pr:12 -->"
+            ))
+            .map(|t| (t.2, t.3)),
             Some(("done", 3))
         );
         // Closed undelivered is dropped, never done: a cleanup is not burn.
@@ -1776,13 +1782,17 @@ mod tests {
         }
         // No rev prefix (a working-tree grep) reads the same project.
         assert_eq!(
-            w("bnb/projects/current/dodginballs/agent/README.md:- [ ] a <!-- id:db-9 -->").map(|t| t.0),
+            w("bnb/projects/current/dodginballs/agent/README.md:- [ ] a <!-- id:db-9 -->")
+                .map(|t| t.0),
             Some("dodginballs".into())
         );
         // Not a task, no id, or not an agent sheet: nothing.
         assert_eq!(w(&format!("{at}## Tasks")), None);
         assert_eq!(w(&format!("{at}- [ ] no id")), None);
-        assert_eq!(w("p/projects/current/x/README.md:- [ ] a <!-- id:xy-1 -->"), None);
+        assert_eq!(
+            w("p/projects/current/x/README.md:- [ ] a <!-- id:xy-1 -->"),
+            None
+        );
         // A version note's rows have no checkbox and are closed: done, or dropped by marker.
         let v = "abc:personal/projects/current/agent-runtime/agent/versions/v0.2.0.md:";
         assert_eq!(
@@ -1790,7 +1800,10 @@ mod tests {
             Some(("done", 8))
         );
         assert_eq!(
-            w(&format!("{v}- fix(x): y <!-- id:ar-6 dropped: 2026-11-20 -->")).map(|t| t.2),
+            w(&format!(
+                "{v}- fix(x): y <!-- id:ar-6 dropped: 2026-11-20 -->"
+            ))
+            .map(|t| t.2),
             Some("dropped")
         );
         assert_eq!(w(&format!("{v}## Done")), None);
