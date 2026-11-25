@@ -186,6 +186,8 @@ while [ $# -gt 0 ]; do
   case "$1" in --profile) shift 2 ;; --agent) lane=agent; shift ;; --exact) exact=1; shift ;; --) shift ;; *) args+=("$1"); shift ;; esac
 done
 case "${args[0]}" in
+  improve)   # exit 3 is the real notes' refusal of health work, when $F/improve.health exists
+    [ ! -f "$F/improve.health" ] || { echo "health work, not an improvement" >&2; exit 3; } ;;
   projects)
     case " ${args[*]} " in
       *" --prios "*) cat "$F/prios" 2>/dev/null ;;
