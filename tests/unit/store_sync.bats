@@ -847,6 +847,34 @@ move_item() {
   [ ! -e "$SANDBOX/d/queue/running/y.md" ]
 }
 
+@test "a short item closed on one machine and moved open on another keeps only the close, though git saw no rename (ar-4262)" {
+  peer a
+  mkdir -p "$SANDBOX/a/queue/queued"
+  printf -- '---\nslug: s\n---\nt\n' > "$SANDBOX/a/queue/queued/s.md"
+  on a --now >/dev/null
+  peer b
+  # Each side rewrites most of the short file as it moves it, so neither move reads as a rename.
+  mkdir -p "$SANDBOX/a/queue/done/2026-11-21" "$SANDBOX/b/queue/running"
+  printf -- '---\nslug: s\nstatus: ok\nfinished: 2026-11-21T01:00:00Z\nhost: a\nsession: s1\n---\nt\n' > "$SANDBOX/a/queue/done/2026-11-21/s.md"
+  printf -- '---\nslug: s\nstarted: 2026-11-21T00:59:00Z\nhost: a\nsession: s1\nwindow: w\n---\nt\n' > "$SANDBOX/b/queue/running/s.md"
+  rm "$SANDBOX/a/queue/queued/s.md" "$SANDBOX/b/queue/queued/s.md"
+  on b --now >/dev/null
+  run on a --now
+  assert_success
+  run git -C "$ORIGIN" ls-tree -r --name-only master -- queue
+  assert_output 'queue/done/2026-11-21/s.md'
+  [ ! -e "$SANDBOX/a/queue/running/s.md" ]
+  assert_equal "$(git -C "$ORIGIN" rev-list --parents -1 master | wc -w)" 3
+  # Negative control: an open item done/ does not hold is left alone by the same merge.
+  printf -- '---\nslug: o\n---\nt\n' > "$SANDBOX/b/queue/running/o.md"
+  on b --now >/dev/null
+  printf -- '---\nslug: p\n---\nt\n' > "$SANDBOX/a/queue/queued/p.md"
+  run on a --now
+  assert_success
+  run git -C "$ORIGIN" ls-tree -r --name-only master -- queue/running
+  assert_output 'queue/running/o.md'
+}
+
 @test "an item moved to two open states, or a close beside another conflict, still conflicts" {
   peer a; queue_item a; peer b
   move_item a running 'host: a'
