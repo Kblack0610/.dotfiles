@@ -412,7 +412,7 @@ retag_rollup() {
     # A reason with no priority is refused, so the row's #why/ goes with its #high.
     args=(--remove high)
     rlist="$(notes ptask "$BOARD" --agent list 2>/dev/null)" || return 1
-    rwhy="$(grep -F -- "id:$rid " <<<"$rlist" | grep -o '#why/[a-z0-9-]*' | head -n 1)"
+    rwhy="$(grep -F -- "id:$rid " <<<"$rlist" | grep -om1 '#why/[a-z0-9-]*' )"
     [ -z "$rwhy" ] || args+=(--remove "$rwhy")
   fi
   terr="$(notes ptask "$BOARD" --agent tag "$rid" "${args[@]}" 2>&1 >/dev/null)" && return 0
