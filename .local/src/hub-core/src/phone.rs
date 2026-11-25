@@ -561,8 +561,7 @@ mod tests {
         // The line reads the glance: its jobs and pass rate set here, its runners up, down and
         // alert as the runner series derived them.
         let g = &mut inf.ci.glance;
-        (g.busy, g.slots, g.units_busy, g.units, g.pass) =
-            (6, 20, Some(6.0), Some(20.0), Some(0.8));
+        (g.busy, g.pass) = (6, Some(0.8));
         inf
     }
 
