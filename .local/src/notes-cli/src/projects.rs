@@ -4177,7 +4177,9 @@ impl TargetWork {
 
     /// `progress` (the project's, [`project_progress`]: the open version's and every shipped
     /// version's closes) plus every later version of `dir` at or below `to` that a row on either lane
-    /// is aimed at.
+    /// is aimed at. When the open version has a release window, its open and filed weight are the
+    /// window's ([`crate::window::promise`]): the committed scope, not every untagged row
+    /// (ar-3540: 4338 points on a version whose window held a fraction of that).
     fn of(
         dir: &Path,
         human: &str,
@@ -4189,6 +4191,10 @@ impl TargetWork {
     ) -> TargetWork {
         let mut w = TargetWork::default();
         w.add(progress);
+        if let Some((open, grown)) = cur.and_then(|c| crate::window::promise(dir, c, ix)) {
+            w.open_weight = open;
+            w.filed_weight_28d = grown;
+        }
         let board = read_or_empty(project_tasks::task_sheet(&agent_dir(dir)));
         for (v, _) in later_versions(human, &board, cur)
             .into_iter()
@@ -8340,6 +8346,40 @@ mod shape_tests {
         let json = serde_json::to_value(project_stats("personal", "demo", &dir)).unwrap();
         assert!(json["target_work"].is_null(), "{json}");
         assert!(json["target_backlog"].is_null(), "{json}");
+    }
+
+    /// ar-3540: with a release window open, the target's work is the window's promise (its rows
+    /// still open plus each interrupt that entered), not every untagged row of the open version.
+    #[test]
+    fn target_work_weighs_the_open_windows_rows_not_the_whole_version() {
+        let s = sandbox("target-window");
+        new_project(&s.p, &s.log, "demo", &Overlays::default()).unwrap();
+        let dir = s.p.projects.as_ref().unwrap().join("demo");
+        let today = chrono::Local::now().date_naive();
+        let head = "# demo\nVersion: v0.2.0 #dev\nTarget: v0.2.0 2026-12-15\n\n## Tasks\n";
+        let promised =
+            format!("- [ ] fix(a): promised #urgent #size/m <!-- id:dm-1 filed:{today} -->\n");
+        fs::write(dir.join("README.md"), format!("{head}{promised}")).unwrap();
+        let ix = crate::epics::Index::of(&dir, Some((0, 2, 0)));
+        crate::window::record(&dir, "demo", (0, 2, 0), today, None, &ix).unwrap();
+        fs::write(
+            dir.join("README.md"),
+            format!(
+                "{head}{promised}\
+                 - [ ] fix(b): outside the window #size/xl <!-- id:dm-2 filed:{today} -->\n\
+                 - [ ] fix(c): hotfix #interrupt #size/l <!-- id:dm-3 filed:{today} -->\n"
+            ),
+        )
+        .unwrap();
+        let json = serde_json::to_value(project_stats("personal", "demo", &dir)).unwrap();
+        // NEGATIVE CONTROL: the whole version still weighs all three rows (3 + 21 + 8), so the
+        // 21 points left out below are the window's doing.
+        assert_eq!(json["progress"]["open_weight"], 32, "{json}");
+        assert_eq!(
+            json["target_work"],
+            serde_json::json!({"open_weight": 11, "closed_weight_28d": 0, "filed_weight_28d": 8}),
+            "{json}"
+        );
     }
 
     #[test]
