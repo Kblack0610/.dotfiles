@@ -166,6 +166,8 @@
 #                                or no fix (failed with no PR); and each
 #                                merged cleanup item, its hold: holding (under HOLD_HOURS old), held,
 #                                went red (a red now names it) or recovered (a red named it, now over)
+#                                A cleanup hold it cannot read prints an unreadable: line first
+#                                (on stderr with --json, which still exits 0)
 #   fleet-bench findings [--open|--json|--run]
 #                                conclusions that want a decision, from rules over counted facts
 #                                on every machine; --run evaluates and appends (each sample does)
@@ -2230,7 +2232,7 @@ ledger_systems() {
 # routes_unresolved: standing watches, runners and the hold row no triage-routes line resolves, owned:<row> routes whose row is not open, and runners whose SKILL= names nothing (triage_coverage).
 # reds_spent: causes red now whose TRIAGE_FIX_TRIES and escalation are spent (triage_spent_write), each carried by one ask, so a red no try is left for shows on the scorecard.
 # reds_unfixed: red fixes merged in the last REDS_DAYS whose red is still or again red (reds_json),
-# leaving out a red TRIAGE_ROUTES sends to alert, which no merge can clear.
+# leaving out a red TRIAGE_ROUTES sends to alert, which no merge can clear; ? when a cleanup hold cannot be read.
 # admission_held: adds the queue cap held in the last 7 days (agent-queue admit).
 # cost_per_merged_item rides the same read but is not a link: the work ledger's spend per landed
 # item, cost_usd (the nightly outcomes pass sums it over the item's sessions) plus gateway_cost_usd,
@@ -5990,7 +5992,11 @@ cmd_reds() {
   # reds_json said why; a partial read (3) still lists its rows, and the text says what it may miss
   rows=$(reds_json "$(now)") || rc=$?
   [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || return 1
-  [ "$rc" -eq 0 ] || [ "$json" = 1 ] || echo "unreadable: a cleanup hold could not be read, so a fix below may read fixed while its red is live"
+  # --json keeps exit 0 and its rows for the overviews (a nonzero exit reads as an error there), so it says it on stderr
+  if [ "$rc" -eq 3 ]; then
+    local u="unreadable: a cleanup hold could not be read, so a fix below may read fixed while its red is live"
+    if [ "$json" = 1 ]; then echo "$u" >&2; else echo "$u"; fi
+  fi
   if [ "$json" = 1 ]; then [ -z "$rows" ] || printf '%s\n' "$rows"; return 0; fi
   [ -n "$rows" ] || { echo "no red fix queued in the last $REDS_DAYS days"; return 0; }
   jq -rs --arg d "$REDS_DAYS" '

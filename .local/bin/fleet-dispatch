@@ -610,10 +610,12 @@ def plan_tagged: any(.tags[]?; . == "plan");
 # defines its scope and the expect line of its watch its done state, so it is never unclear (policy.md
 # `clear`): an `unclear` skip of one takes no plan exit and picks reads past it (ar-5240).
 def triage_red: (.raw // .text // "") | sub("^- \\[.\\] "; "") | test("^check\\((watch|alert)\\): ");
-# red_unclear($c): this verdict is an `unclear` skip of triage red row $c that would be a dispatch were it clear
-# (agent_only, and a tier no higher than that of the row), so picks starts it and suggest lists it as dispatch.
-def red_unclear($c): .verdict == "skip" and .rule == "unclear" and .agent_only == true
-  and (.tier | type) == "number" and ($c.tier | type) == "number" and .tier <= $c.tier and ($c | triage_red);
+# red_skip($c): this verdict is an `unclear` skip of triage red row $c that an agent may take, so
+# skip_exits gives it no plan exit (a raw board row has no computed tier to read).
+def red_skip($c): .verdict == "skip" and .rule == "unclear" and .agent_only == true and ($c | triage_red);
+# red_unclear($c): red_skip of a candidate whose tier is no higher than that of the row, a dispatch were
+# it clear, so picks starts it and suggest lists it as dispatch.
+def red_unclear($c): red_skip($c) and (.tier | type) == "number" and ($c.tier | type) == "number" and .tier <= $c.tier;
 def holds($c): .line == $c.line and (.dsig == null or .dsig == $c.dsig);
 # usable($rs): a judged verdict (not error or failed) naming a rule the policy still defines, whatever policy it was made under
 def usable($rs): (.verdict == "dispatch" or .verdict == "skip") and (.rule as $r | $rs | index($r) != null);
@@ -2293,7 +2295,7 @@ skip_exits() {
     | ($kinds | to_entries | map(select(.value.enabled == false and .key != "epic") | {key, value: true}) | from_entries) as $off
     | ([.rows[]? | select(.state == "open" or .state == "doing") | .tags[]? | select(startswith("of/")) | {key: .[3:], value: true}] | from_entries) as $parents
     | .rows[]? | select(.lane == "agent" and .state == "open" and .id != null and (plan_tagged | not)) | . as $row
-    | ($by["\(.project)\t\(.id)"] | if . != null and red_unclear($row) then null else . end) as $d
+    | ($by["\(.project)\t\(.id)"] | if . != null and red_skip($row) then null else . end) as $d
     | if $d != null then
         "\(.profile)\t\(.project)\t\(.id)\t\($d.line)\t\($d.dsig // "-")\t\(details_json($n))\t\($d.rule)\t\(.requested == true)\t\(planned)\t\($d | tojson)\t\(.raw)"
       elif $off[.type // ""] and ($parents[.id] | not) and ($gone["\(.project)\t\(.id)"] | not) then
