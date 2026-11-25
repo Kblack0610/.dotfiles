@@ -658,7 +658,7 @@ fn standing_title(line: &str) -> bool {
 }
 
 /// Triage's checks, run by a hand session on its own add before it writes; the twin refusals and
-/// [`projects::row_findings`] ran already. The row carries a priority (triage's priority rubric, `~/.config/inbox-triage/rules/priority.md`
+/// [`projects::row_findings`] ran already. The row, unless it is an epic, carries a priority (triage's priority rubric, `~/.config/inbox-triage/rules/priority.md`
 /// judges which), a hand session files no standing epic, and every open row on either lane that
 /// [`similar`] lists for it is one the session named in `checked`. Ok(the ids shown) to write;
 /// Err([`EXIT_SHORTLIST`]) with the shortlist printed when one is not named.
@@ -669,7 +669,8 @@ fn self_check(
     row: &str,
     checked: &[String],
 ) -> Result<std::result::Result<Vec<String>, i32>> {
-    if md::task_priority(row).is_none() {
+    // An epic carries none: it ranks as its most urgent open row (`projects::row_findings` refuses one).
+    if md::task_priority(row).is_none() && !crate::epics::is_epic(row) {
         bail!("a row from a session carries #urgent, #high, #normal or #low, judged by triage's priority rubric (~/.config/inbox-triage/rules/priority.md), so nothing was added");
     }
     if crate::epics::is_epic(row) && standing_title(row) {
@@ -1278,11 +1279,9 @@ fn new_rows(
     let first = code.as_ref().map(|c| next_id_n(proj_dir, c));
     let mut block = Vec::new();
     for (k, text) in texts.iter().enumerate() {
-        let mut line = md::stamp_line(
-            &md::one_priority(&format!("- [ ] {}", text.trim())),
-            today,
-            today,
-        );
+        let typed = md::one_priority(&format!("- [ ] {}", text.trim()));
+        crate::reasons::refuse_bad("", &typed)?;
+        let mut line = md::stamp_line(&typed, today, today);
         if let Some(v) = to {
             line = project_sweep::retag(&line, v, Some(v) == cur).0;
         }
@@ -2471,10 +2470,21 @@ pub(crate) fn retag(line: &str, add: &[String], remove: &[String]) -> String {
         .filter(|w| sized && w.starts_with("#pts/") && !add.iter().any(|a| a == w))
         .map(str::to_string)
         .collect();
+    // A row has one reason: a new `#why/` replaces the one it had.
+    let old_why: Vec<String> = if add.iter().any(|t| t.starts_with("#why/")) {
+        head.split_whitespace()
+            .map(|w| w.trim_end_matches(','))
+            .filter(|w| w.to_lowercase().starts_with("#why/") && !add.iter().any(|a| a == w))
+            .map(str::to_string)
+            .collect()
+    } else {
+        Vec::new()
+    };
     let mut l = old
         .into_iter()
         .map(str::to_string)
         .chain(old_pts)
+        .chain(old_why)
         .chain(remove.iter().cloned())
         .fold(line.to_string(), |l, t| md::drop_tag(&l, &t));
     if add.iter().any(|a| md::is_priority(a)) {
@@ -2778,6 +2788,7 @@ pub fn retext(
             };
             // Refused here too, before the epic is filed, for the same reason.
             projects::refuse_retired_priority(&row, t)?;
+            crate::reasons::refuse_bad(&row, t)?;
             // A row that has its parent keeps it ([`md::retext_task`]), so a standing epic
             // filed for it would have no child.
             if md::split_parent(&row).1.is_some() {
@@ -3724,8 +3735,9 @@ where
     };
     let after = std::cell::RefCell::new(None);
     let write = |l: &str| {
-        // A row is written with one priority tag, whatever the edit added (nc-70).
-        let new = f(l).map(|n| md::one_priority(&n));
+        // A row is written with one priority tag, whatever the edit added (nc-70), and an epic
+        // with none it already had.
+        let new = f(l).map(|n| projects::unrank_epic(l, md::one_priority(&n)));
         after.borrow_mut().clone_from(&new);
         Some(new.unwrap_or_else(|| l.to_string()))
     };
@@ -3738,6 +3750,16 @@ where
             // No edit writes a priority word no reader knows (`tag --add p1`, `edit --text "... #p1"`).
             if let Some(line) = after.borrow().as_deref() {
                 projects::refuse_retired_priority(&matched, line)?;
+                projects::refuse_epic_priority(line)?;
+                crate::reasons::refuse_bad(&matched, line)?;
+                // Said, so a `tag --add low` on an old tagged epic does not look like it took.
+                if let Some(tag) = md::task_priority(&matched)
+                    .filter(|_| crate::epics::is_epic(line) && md::task_priority(line).is_none())
+                {
+                    eprintln!(
+                        "{tag} dropped: an epic ranks as its most urgent open row, never by a tag"
+                    );
+                }
             }
             write_sheet(&sheet, &new)?;
             log.info("ptask", &format!("{verb} in {} ({name})", sheet.display()));

@@ -122,6 +122,13 @@ impl Home {
             .env("NOTES_PROFILE", "personal")
             .env("PROJECT_MAP_FILE", self.0.join("map.json"))
             .env(
+                "NOTES_PRIORITY_REASONS",
+                concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../../.config/inbox-triage/rules/priority-reasons.tsv"
+                ),
+            )
+            .env(
                 "PATH",
                 format!(
                     "{}:{}",
@@ -161,6 +168,72 @@ impl Home {
             })
             .collect()
     }
+}
+
+/// `--why` writes a reason and its priority; an unknown reason, one of another priority and a
+/// second reason are refused with the row untouched; the board feed carries `prio_why`.
+#[test]
+fn a_reason_is_written_with_its_priority_and_a_bad_one_is_refused() {
+    let h = Home::new("reasons");
+    ok(&agent(
+        &h,
+        &[
+            "add",
+            "--why",
+            "upkeep",
+            "chore(ci): tidy the cache #size/s",
+        ],
+    ));
+    let first = h.board();
+    assert!(
+        first.contains("chore(ci): tidy the cache")
+            && first.contains("#why/upkeep")
+            && first.contains("#low"),
+        "{first}"
+    );
+    // retag to a high reason: both the reason and the priority change, one reason stays
+    ok(&agent(&h, &["tag", "--why", "red-main", "tidy the cache"]));
+    let board = h.board();
+    assert!(
+        board.contains("#high") && board.contains("#why/red-main"),
+        "{board}"
+    );
+    assert!(
+        !board.contains("#why/upkeep") && !board.contains("#low"),
+        "{board}"
+    );
+    let kept = h.board();
+    // NEGATIVE CONTROLS: nothing is written for each of these
+    for args in [
+        vec!["tag", "--why", "nope", "tidy the cache"],
+        vec!["tag", "--add", "low", "tidy the cache"],
+        vec!["tag", "--add", "why/upkeep", "tidy the cache"],
+        vec![
+            "tag",
+            "--add",
+            "high",
+            "--add",
+            "why/upkeep",
+            "tidy the cache",
+        ],
+        vec!["add", "--why", "upkeep", "chore(ci): another #high #size/s"],
+    ] {
+        let o = agent(&h, &args);
+        assert!(!o.status.success(), "{args:?} was taken");
+        assert!(
+            String::from_utf8_lossy(&o.stderr).contains("reason"),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        assert_eq!(h.board(), kept, "{args:?} wrote");
+    }
+    let feed = h.run(&["board", "--json"]);
+    ok(&feed);
+    assert!(
+        String::from_utf8_lossy(&feed.stdout).contains(r#""prio_why":"red-main""#),
+        "{}",
+        String::from_utf8_lossy(&feed.stdout)
+    );
 }
 
 fn agent(h: &Home, verb: &[&str]) -> Output {
@@ -1519,7 +1592,7 @@ fn a_hand_session_files_no_row_without_a_priority_and_no_standing_epic() {
     let o = add_as(&h, &[HAND], &[], "fix(ui): the pause menu flickers #size/s");
     assert_eq!(o.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&o.stderr).contains("rules/priority.md"));
-    let o = add_human(&h, &[HAND], "epic(ui): ui to standard #low");
+    let o = add_human(&h, &[HAND], "epic(ui): ui to standard");
     assert_eq!(o.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&o.stderr).contains("standing epic"));
     assert!(ids(&h.board()).is_empty() && ids(&h.sheet()).is_empty());
@@ -1532,8 +1605,8 @@ fn an_epic_names_a_system_of_its_project_or_is_refused() {
     let h = Home::new("hand-epic-system");
     h.systems(Some(SYSTEMS));
     for text in [
-        "epic(views): no such system #low",
-        "epic(menu): an alias, not the id #low",
+        "epic(views): no such system",
+        "epic(menu): an alias, not the id",
     ] {
         let o = add_human(&h, &[HAND], text);
         assert_eq!(o.status.code(), Some(1), "{text}");
@@ -1544,10 +1617,18 @@ fn an_epic_names_a_system_of_its_project_or_is_refused() {
         );
     }
     assert!(ids(&h.sheet()).is_empty(), "{}", h.sheet());
+    // An epic takes no priority from a session: it ranks as its most urgent open row.
+    let o = add_human(&h, &[HAND], "epic(docs): every page has an owner #low");
+    assert_eq!(o.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("ranks as its most urgent open row"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
     ok(&add_human(
         &h,
         &[HAND],
-        "epic(docs): every page has an owner #low",
+        "epic(docs): every page has an owner",
     ));
     assert!(
         h.sheet().contains("epic(docs): every page has an owner"),
@@ -1555,11 +1636,7 @@ fn an_epic_names_a_system_of_its_project_or_is_refused() {
         h.sheet()
     );
     // A queue item's epic waits in the outbox before any system is looked up.
-    let o = add_human(
-        &h,
-        &[("AGENT_QUEUE_ITEM", "ar-9")],
-        "epic(views): proposed #low",
-    );
+    let o = add_human(&h, &[("AGENT_QUEUE_ITEM", "ar-9")], "epic(views): proposed");
     assert_eq!(o.status.code(), Some(4));
 }
 

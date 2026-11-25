@@ -1914,7 +1914,7 @@ rollup_setup() {
   assert_output --partial 'filed: fix(trainee): nim:glm runs keep leaving no diff (3 since'
   run grep -c '^notes ptask agent-runtime --agent add ' "$NOTES_FIXTURE/calls.log"
   assert_output 1
-  run grep -F 'add fix(trainee): nim:glm runs keep leaving no diff #size/s #of/ar-3691 #low --origin fleet-dispatch --detail 3 trainee rejects since' "$NOTES_FIXTURE/calls.log"
+  run grep -F 'add --why minor-fault fix(trainee): nim:glm runs keep leaving no diff #size/s #of/ar-3691 #low --origin fleet-dispatch --detail 3 trainee rejects since' "$NOTES_FIXTURE/calls.log"
   assert_success
   assert_output --partial 'nim:glm 3. Fix it in how nim:glm runs, or drop the pair'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup

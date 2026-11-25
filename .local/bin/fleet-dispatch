@@ -92,7 +92,7 @@ DISPATCH_CONF_KEYS=(
   DISPATCH_REAP_GRACE DISPATCH_REAP_CONFIRM DISPATCH_HOST_DEAD DISPATCH_PREEMPT
   DISPATCH_OFF_PROJECTS DISPATCH_CLEANUP_PROJECTS
   DISPATCH_ASK_FRESH_H DISPATCH_PREEMPT_REST DISPATCH_PLAN_RECONCILE
-  DISPATCH_EPIC_VERIFY DISPATCH_LANE_FLOOR DISPATCH_CANARY_KEEP
+  DISPATCH_EPIC_VERIFY DISPATCH_LANE_FLOOR DISPATCH_CANARY_KEEP DISPATCH_LANDING_QUEUE_MAX
 )
 # dispatch_conf_load -- set each DISPATCH_* the conf names that the environment does not, then exit 78
 # (EX_CONFIG) when any of DISPATCH_CONF_KEYS is still unset
@@ -2633,7 +2633,7 @@ cmd_harness_ready() {
 # a worker takes an item on the harness it has, and a sandboxed start only where srt is.
 cmd_kit() {
   local t kit=()
-  command -v claude >/dev/null 2>&1 && "$HERE/fleet-node" ready >/dev/null 2>&1 && kit+=(claude)
+  command -v claude >/dev/null 2>&1 && "$HERE/fleet-node" ready claude >/dev/null 2>&1 && kit+=(claude)
   for t in codex opencode agy; do command -v "$t" >/dev/null 2>&1 && kit+=("$t"); done
   [ -n "$(sandbox_srt_refusal)" ] || kit+=(srt)
   echo "${kit[*]}"
@@ -3567,7 +3567,7 @@ rollup_causes() {
 # any other row, and nothing here patches anything. nightly-measure runs it, so each pass declares its
 # outcome (rollup_done): WORKED when it filed or joined a row, NOOP when no cause cleared the bar, FAILED.
 cmd_trainee_rollup() {
-  local dry=0 stamps since board lines cause title n pairs hs why hit where rc out=0 acted=0 now f="$DIR/trainee-rollup.tsv"
+  local dry=0 stamps since board lines cause title n pairs hs why hit where rc rwhy out=0 acted=0 now f="$DIR/trainee-rollup.tsv"
   [ "${1:-}" != --dry ] || dry=1
   [ -r "$LANE_RUNS" ] || { say "trainee-rollup: no run log at $LANE_RUNS"; rollup_done "$dry" FAILED "no run log at $LANE_RUNS"; return; }
   stamps=$(jq -Rsc 'split("\n") | map(select(length > 0) | split("\t") | {(.[0]): .[1]}) | add // {}' "$f" 2>/dev/null) || stamps='{}'
@@ -3588,7 +3588,11 @@ cmd_trainee_rollup() {
       if [[ "$title" == "fix(trainee): trainee runs "* ]]; then where="the harness or source ($hs): more than one model hits it"
       else where="how ${pairs% *} runs, or drop the pair (model-lane): no other model hits it"; fi
       rc=0
-      notes ptask "$DISPATCH_ROLLUP_BOARD" --agent add "$title $DISPATCH_ROLLUP_TAGS" --origin fleet-dispatch \
+      # The reason follows the priority the conf's tags name (priority-reasons.tsv); a priority with no fit here files untagged.
+      case " $DISPATCH_ROLLUP_TAGS " in
+        *' #low '*) rwhy=(--why minor-fault) ;; *' #normal '*) rwhy=(--why fault) ;; *' #high '*) rwhy=(--why runtime-fault) ;; *) rwhy=() ;;
+      esac
+      notes ptask "$DISPATCH_ROLLUP_BOARD" --agent add "${rwhy[@]}" "$title $DISPATCH_ROLLUP_TAGS" --origin fleet-dispatch \
         --detail "$n trainee rejects since ${since%T*}: $pairs. Fix it in $where." \
         --detail "e.g. $why" \
         --detail "evidence: jq -c 'select(.lane == \"trainee\" and (.outcome == \"redo\" or .outcome == \"failed\"))' ~/.agent/model-lane/runs.jsonl; filed by fleet-dispatch trainee-rollup" \
@@ -5945,10 +5949,35 @@ next_items() {
 # load_findings -- FIRING is the findings firing now, read once a pass; rc 1 when they cannot be
 # read, which holds every item.
 load_findings() {
+  landing_deep
   [ "${FIRING+set}" = set ] && return 0
   local f
   f=$(fleet-bench findings --json 2>/dev/null) && f=$(firing_findings <<<"$f") || return 1
   FIRING=$f
+}
+
+# landing_deep -- DEEP_LANDING is "<repo> <depth>" for each repo whose landing queue holds more than
+# DISPATCH_LANDING_QUEUE_MAX PRs (empty or 0 is off), read once a pass from the fleet state document: the deepest
+# landing_queue a session row of that repo carries (fleet-sessions counts the PRs labeled
+# FLEET_QUEUE_LABEL in the PR store, on each row waiting its landing turn, so a queue no live session
+# waits in reads as none). A missing or stale document names none, as freed_item reads it, since
+# pace_target already holds every start on one.
+# Why: on 2026-11-24 30 to 45 unity-core-playground PRs waited in the queue, waits passed 3h, and
+# dispatch kept starting the repo's items; the human's answer (ask xxrlO7, ar-5306) was to hold new
+# starts for a repo while its queue is over 15 PRs and resume below it.
+landing_deep() {
+  [ "${DEEP_LANDING+set}" = set ] && return 0
+  DEEP_LANDING=''
+  [[ "${DISPATCH_LANDING_QUEUE_MAX:-}" =~ ^[0-9]+$ ]] && [ "$DISPATCH_LANDING_QUEUE_MAX" -gt 0 ] || return 0
+  local p d r
+  while IFS=$'\t' read -r p d; do
+    r=$(item_repo "$p"); [ -n "$r" ] && DEEP_LANDING+="$r $d"$'\n'
+  done < <(jq -r --argjson now "$(date +%s)" --argjson fresh "$(( DISPATCH_STATE_FRESH_MIN * 60 ))" \
+      --argjson max "$DISPATCH_LANDING_QUEUE_MAX" '
+    select($now - (.generated_epoch // 0) <= $fresh)
+    | [.sessions[] | select((.landing_queue | type) == "number" and (.project // "") != "")]
+    | group_by(.project)[] | {p: .[0].project, d: (map(.landing_queue) | max)}
+    | select(.d > $max) | "\(.p)\t\(.d)"' "$FLEET_STATE_FILE" 2>/dev/null)
 }
 
 # pick_item <item json lines> -- PICKED is the first item that has a place and no firing finding
@@ -6529,8 +6558,12 @@ finding_hold() {
 # not starting, since its gate asks for a different label. On 2026-11-05 a frame sweep pinned to the
 # razer laptop held 6 unity-core-playground items for 7h with the box 80% idle.
 # Admission holds as capacity does: the admitted slots are full, so another session's gate only queues behind them (ar-3132).
+# A landing queue deeper than DISPATCH_LANDING_QUEUE_MAX (landing_deep) holds its repo's items too, all
+# but an urgent one (gate-line.py seats an urgent PR ahead of the queue, so it does not wait behind it),
+# a red one (the red on main is often why the queue backs up) and the human's own ask (human_ask), the
+# items the fleet share cap lets through too.
 held_by() {
-  local repo f rule scope out=()
+  local repo f rule scope d out=()
   repo=$(item_repo "$(jq -r .project <<<"$1")")
   while IFS= read -r f; do
     [ -n "$f" ] || continue
@@ -6541,6 +6574,12 @@ held_by() {
     esac
     out+=("$rule $scope")
   done <<<"$2"
+  if [ -n "$repo" ] && [ -n "${DEEP_LANDING:-}" ] && ! jq -e "$HUMAN_ASK_JQ"'
+      .priority == "urgent" or ((" " + (.tags // "") + " ") | contains(" red ")) or human_ask' <<<"$1" >/dev/null; then
+    # Two projects on one repo give a line each: the deepest is the repo's.
+    d=$(awk -v r="$repo" '$1 == r && $2 > m { m = $2 } END { if (m) print m }' <<<"$DEEP_LANDING")
+    [ -z "$d" ] || out+=("landing queue $repo $d PRs over $DISPATCH_LANDING_QUEUE_MAX")
+  fi
   [ ${#out[@]} -eq 0 ] || (IFS=,; echo "${out[*]}")
 }
 
@@ -7656,7 +7695,7 @@ repose_ask() {
   fi
 }
 
-# reconcile_plans -- file an approved plan its session left behind on the board: one low row naming
+# reconcile_plans -- file an approved plan its session left behind on the board: one untagged row (the priority rubric judges it) naming
 # the plan (agent-queue add --plan from a filer; only the board fills the queue), which dispatch
 # pulls like any row and promote queues as the plan's chain. Once only: a plan the queue has held,
 # or one filed here before (PLANS_FILED), is not filed again, or every pass would add a row.
@@ -7677,7 +7716,7 @@ reconcile_plans() {
   while IFS= read -r c; do
     plan=$(jq -r .plan <<<"$c"); project=$(jq -r .project <<<"$c")
     grep -qxF -- "${plan##*/}" <<<"$held" && continue
-    out=$(AGENT_QUEUE_START=0 agent-queue add --plan "$plan" --project "$project" --priority low --from auto:plans 2>&1); rc=$?
+    out=$(AGENT_QUEUE_START=0 agent-queue add --plan "$plan" --project "$project" --from auto:plans 2>&1); rc=$?
     if [ "$rc" -eq 0 ] || [ "$rc" -eq "$AQ_EX_HELD" ]; then
       mkdir -p "$DIR"; printf '%s\n' "$plan" >> "$PLANS_FILED"
       logline "filed $(basename "$plan") to run its open phases: its session is gone"

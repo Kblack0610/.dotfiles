@@ -54,6 +54,9 @@
 #                                --check exits 1 past a threshold, on the KPIs whose name matches ERE
 #   fleet-bench chain [--json|--check]
 #                                the work-chain KPIs counted now (also in kpi); --check exits 1 past a threshold
+#   fleet-bench prio-defaults [--json]
+#                                the open rows that rank by default (no priority tag or no #why/<reason>) by the filer
+#                                that wrote them, most first, with sample ids: the rows behind the prio_default KPI
 #   fleet-bench startup [--json|--check]
 #                                Claude Code start times (CLAUDE_STARTUP_LOG): medians over the last
 #                                startup_rolling_n starts; --check exits 1 past startup_ready_ms_p50_max,
@@ -356,6 +359,7 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${BENCH_LANE_LOG:=$HOME/.agent/model-lane/runs.jsonl}"   # model-lane log: one row per dispatched run, its outcome
 : "${BENCH_LANE_VOIDS:=${BENCH_LANE_LOG%/*}/voids.jsonl}"   # model-lane's voids beside it: runs to rate no more (`model-lane void`)
 : "${BENCH_SKILLS_DIR:=$HOME/.claude/skills}"   # skills: a slash command is a skill when <dir>/<name>/SKILL.md exists
+: "${PRIO_SAMPLE:=3}"   # row ids shown per origin in prio_default
 : "${BENCH_INGEST:=$HOME/.local/state/notes/ingest.jsonl}"   # the notes CLI's record of every row it wrote: who, from where
 : "${BENCH_PROFILE:=}"                             # the profile board_open and board_days read; empty asks `notes config`
 BOARD_SHIP_DAYS=7                                    # days of shipped weight board_days reads: the notes sweep's BUDGET_WINDOW_DAYS
@@ -1055,7 +1059,7 @@ bench_prom() {
   local t="$1" pl="$2" kpis
   kpis=$(kpi_now "$t") || kpis='{}'
   jq -rn --arg win "$BENCH_WINDOW_H" --argjson pl "$pl" --slurpfile w <(window_stats "$t") --argjson k "$kpis" \
-     --slurpfile or <(oldest_requested "$t") --arg vitals "$BENCH_VITALS" "$JQ_LIB$PROM_JQ$VITALS_JQ"'
+     --slurpfile or <(oldest_requested "$t") --slurpfile pd <(prio_defaults) --arg vitals "$BENCH_VITALS" "$JQ_LIB$PROM_JQ$VITALS_JQ"'
     def h: . / 60 * 100 | round / 100;
     gauge("agent_bench_waiting_hours"; "Hours sessions sat in NEEDS over the last \($win)h.";
         $w | group_by(.project)[] | [{project: .[0].project}, (map(.waiting_min) | add | h)]),
@@ -1068,7 +1072,8 @@ bench_prom() {
       gauge("agent_bench_kpi_past"; "1 when a KPI is past its threshold, as fleet-bench judged it.";
         $k | to_entries[] | select(.value.status != "-") | [{kpi: .key}, (if .value.status == "past" then 1 else 0 end)]),
       gauge("agent_bench_kpi_subject"; "The row behind a KPI that names one, as project:id; the value is always 1.";
-        $or[] | [{kpi: "requested_unstarted_h", subject: "\(.project):\(.id)"}, 1]),
+        ($or[] | [{kpi: "requested_unstarted_h", subject: "\(.project):\(.id)"}, 1]),
+        ($pd[] | ([.origins[] | select(.origin != "unrecorded")] | first) as $o | select($o != null) | [{kpi: "prio_default", subject: $o.origin}, 1])),
       gauge("agent_bench_vital"; "The front-page KPIs from BENCH_VITALS, by the question each answers; the value is its row. Read each one from agent_bench_kpi.";
         vitals($vitals) | to_entries[] | [{question: .value.question, kpi: .value.kpi}, .key]),
       gauge("agent_chain_wip"; "Items at each step of the work chain now, from the state files.";
@@ -2190,6 +2195,8 @@ ledger_systems() {
 # requested_unstarted_h: hours the oldest #requested agent row has sat open and unstarted.
 # orphan_request_rows, next_up_blocked, stale_urgent_d, urgent_per_board, playtest_waiting_d and done_inline_old: the
 # rows the board holds that no step will move, from board_links (which says what each counts).
+# prio_default: open agent and human rows with no priority tag or no #why/<reason> (the default rank
+# normal still applies to them), by the filer that wrote each (prio_defaults); 0 when every row has both.
 # request_to_live_h: the p50 hours from request to live (lead_time_json), ? until every
 # BENCH_LEAD_TRUST KPI holds its bound (lead_untrusted).
 # wants_unstamped: of the agent-lane rows the human's channels added over the last CHAIN_DAYS
@@ -2209,7 +2216,7 @@ ledger_systems() {
 # release_overdue and version_tag_drift are the release link (release_kpis): a project a day past its
 # target date with that version uncut, else a sheet-counter project a day past its cadence due date with
 # done rows and no cut; and a tagged project whose sheet is not its tag plus one patch.
-KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified release_overdue version_tag_drift doctor_fail dup_pairs plans_unqueued routes_unresolved reds_unfixed reds_spent requested_unstarted_h orphan_request_rows next_up_blocked stale_urgent_d urgent_per_board playtest_waiting_d done_inline_old request_to_live_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_review step_age_p90_waiting queue_net_24h estimated_token_share"
+KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified release_overdue version_tag_drift doctor_fail dup_pairs plans_unqueued routes_unresolved reds_unfixed reds_spent requested_unstarted_h orphan_request_rows next_up_blocked stale_urgent_d urgent_per_board playtest_waiting_d done_inline_old prio_default request_to_live_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_review step_age_p90_waiting queue_net_24h estimated_token_share"
 
 # wants_stats <now> -> {total, unstamped, by_project: {<from>: {total, unstamped}}} over the last
 # CHAIN_DAYS of the notes ingest record; nothing and a failure when the record cannot be read.
@@ -2379,6 +2386,7 @@ chain_notes() {
     (.urgent // empty | "stale_urgent_d: oldest is \(.project):\(.id), filed \(.since) (\(.days)d)"),
     (.urgent_boards // [] | select(. != []) | "urgent_per_board: " + (map("\(.project) \(.n)") | few)),
     (.playtest // [] | select(. != []) | "playtest_waiting_d: oldest open check per game: " + (map("\(.project) \(.game) \(.days)d") | few))' 2>/dev/null
+  prio_defaults | jq -r 'select(.total > 0) | "prio_default: \(.total) open rows with no priority or no #why, by filer: " + ([.origins[] | "\(.origin) \(.n)"] | .[0:8] | join(", "))'
   local projects
   projects=$(bench_read $BENCH_PROJECTS_CMD 2>/dev/null | jq -ce 'arrays') && release_kpis "$t" "$projects" | jq -r '
     (.overdue | select(. != []) | "release_overdue: " + (map("\(.project) \(.version) \(if .by == "target" then "targeted for" else "due since" end) \(.due_on)") | join(", "))),
@@ -2442,6 +2450,7 @@ chain_counts() {
   par_go lead lead_time_json "$t"
   par_go board chain_board "$t"
   par_go local chain_local "$t"
+  par_go prio chain_prio
   par_go plans chain_plans
   par_go routes chain_routes
   par_go queue chain_queue "$t"
@@ -2452,7 +2461,36 @@ chain_counts() {
   cat "$PAR/links" "$PAR/rel"
   if [ -n "$(lead_untrusted "$(cat "$PAR/links")")" ] || [ ! -s "$PAR/lead" ]; then echo "request_to_live_h=?"
   else jq -r '"request_to_live_h=\(.p50 // "?")"' "$PAR/lead"; fi
-  for s in board local plans routes queue reds spent pipeline; do cat "$PAR/$s"; done
+  for s in board prio local plans routes queue reds spent pipeline; do cat "$PAR/$s"; done
+}
+
+# prio_origins -> {<row id>: its filer}, the first added or filed event of each id in the ingest record: its
+# origin, else its writer ("human" for a hand write, "session" for a session id). A row a sweep runner filed
+# (inbox-triage, inbox-plan) names the runner, which carried the line in: the capture before it is not recorded.
+# rc 1 when the record cannot be read.
+# prio_defaults -> {total, origins: [{origin, n, ids}]}: the open agent and human rows that carry no
+# priority tag or no #why/<reason> (the board feed's untriaged and prio_why), grouped by the writer of the
+# row's first added or filed event in the ingest record, most first, ids sampled (PRIO_SAMPLE). An origin
+# is the event's origin, else its writer, "human" for a hand write; a row with no event is "unrecorded".
+# Nothing and rc 1 when the board feed cannot be read; an unreadable ingest record leaves every origin
+# "unrecorded", the count unchanged. Rows of a project with automation off are not counted.
+prio_origins() {
+  [ -r "$BENCH_INGEST" ] || return 1
+  { grep -hE '"action":"(added|filed)"' "$BENCH_INGEST" || :; } | jq -Rnc "$JQ_LIB"'
+    reduce (inputs | fromjson? | select((.id // "") != "")) as $e ({};
+      if has($e.id) then . else .[$e.id] = ($e | ((.origin | select(. != null and . != "")) // (if human_writer then "human" else .by end))
+        | if test("^[0-9a-f]{8}$") then "session" else . end) end)'
+}
+
+prio_defaults() {
+  local origins
+  origins=$(bench_read prio_origins) || origins=null
+  bench_read $BENCH_BOARD_CMD 2>/dev/null | jq -ce --argjson o "${origins:-null}" --argjson k "$PRIO_SAMPLE" '
+    select(.rows | arrays) | [.rows[] | select(.lane | IN("agent", "human")) | select(.state | IN("open", "doing"))
+        | select(.automation != false and (.untriaged == true or .prio_why == null))
+        | {id, origin: ((($o // {})[.id // ""]) // "unrecorded")}] as $r
+    | {total: ($r | length),
+       origins: ($r | group_by(.origin) | map({origin: .[0].origin, n: length, ids: (map(.id // "?") | .[0:$k])}) | sort_by(-.n))}'
 }
 
 # chain_links <now> -> the link KPIs read from the queue, the board, the projects and the CI rows
@@ -2514,6 +2552,12 @@ chain_board() {
       "playtest_waiting_d=\(.playtest | if . == null then "?" else map(.days) | max // 0 end)",
       "done_inline_old=\(.done_old // "?")"' <<<"$bl"
   else printf '%s=?\n' orphan_request_rows next_up_blocked stale_urgent_d urgent_per_board playtest_waiting_d done_inline_old; fi
+}
+
+# chain_prio -> prio_default, ? when the board cannot be read
+chain_prio() {
+  local pd
+  if pd=$(prio_defaults) && [ -n "$pd" ]; then jq -r '"prio_default=\(.total)"' <<<"$pd"; else echo "prio_default=?"; fi
 }
 
 # chain_local <now> -> doctor_fail, estimated_token_share and dup_pairs, read from local files
@@ -3356,15 +3400,16 @@ sandbox_kpi() {
 # pool_kpi <now> -> the pool KPI object, the same shape as comms_kpi. pool_busy_share: the time average
 # of cc:pool_busy over cc:pool_slots, summed over the pools fleet-dispatch's idle-pool rank term watches
 # (BENCH_CLASSES `idle_pool.pools`), sampled every 10m, the measure of that term (plan
-# can-we-wget-more-linked-pony P5; 2026-11-21 baseline about 0.2-0.25 on unity). No knob, or Prometheus
-# unread (a replay has no range answer), is no value.
+# can-we-wget-more-linked-pony P5; unity 0.592 over the 3 days before it went live, 2026-11-21). Read
+# from VictoriaMetrics (vm_map): Prometheus keeps about 52 h, so both windows read from it were the same
+# 2-day number. No knob, or VictoriaMetrics unread (a replay has no range answer), is no value.
 pool_kpi() {
   local re q w7 w28
   re=$(prom_label_re "$(jq -c '.idle_pool.pools' "$BENCH_CLASSES" 2>/dev/null)")
   [ -n "$re" ] || { echo '{}'; return 0; }
   q="(sum(cc:pool_busy{pool=~\"$re\"}) / sum(cc:pool_slots{pool=~\"$re\"}))"
-  w7=$(prom_map - "avg_over_time(${q}[7d:10m])" "$1") && [ -n "$w7" ] || w7='{}'
-  w28=$(prom_map - "avg_over_time(${q}[28d:10m])" "$1") && [ -n "$w28" ] || w28='{}'
+  w7=$(vm_map - "avg_over_time(${q}[7d:10m])" "$1") && [ -n "$w7" ] || w7='{}'
+  w28=$(vm_map - "avg_over_time(${q}[28d:10m])" "$1") && [ -n "$w28" ] || w28='{}'
   jq -nc --argjson a "$w7" --argjson b "$w28" '
     def v: .["-"] | if type == "number" and (isnan | not) and (isinfinite | not) then (. * 1000 | round) / 1000 else null end;
     {pool_busy_share: {"7d": ($a | v), "28d": ($b | v)}}' 2>/dev/null || echo '{}'
@@ -4199,6 +4244,17 @@ cmd_chain() {
   esac
 }
 
+# prio-defaults [--json] -- the open rows that rank by default (no priority tag or no #why/<reason>), by the
+# filer that wrote them, most first, with sample ids: the rows behind the prio_default KPI.
+cmd_prio_defaults() {
+  local pd
+  case "${1:-}" in ""|--json) ;; *) say "usage: fleet-bench prio-defaults [--json]"; return 2 ;; esac
+  [ -n "${BENCH_READ_CACHE:-}" ] || { with_reads cmd_prio_defaults "$@"; return; }
+  pd=$(prio_defaults) && [ -n "$pd" ] || { say "prio-defaults: the board feed cannot be read"; return 1; }
+  if [ "${1:-}" = --json ]; then printf '%s\n' "$pd"
+  else jq -r '"prio_default \(.total)", (.origins[] | "  \(.origin) \(.n)  \(.ids | join(" "))")' <<<"$pd"; fi
+}
+
 # startup [--json|--check] -- Claude Code start times over the last startup_rolling_n (20) starts:
 # the medians of ready, process (harness boot) and hook ms, each hook phase and each MCP server's
 # spawn. The threshold and window are kpi-thresholds keys, the same startup_ready_ms_p50_max the KPI
@@ -4397,10 +4453,13 @@ improve_claim_write() {
     '{type: "claim", at: $at, kpi, subject: $s, from: .value, bound, threshold}' <<<"$2" >> "$EFFECT"
 }
 
-# improve_add <text> <detail> -> the new row's id on the agent board; 3 when its twin is open
+# improve_add <text> <detail> [<reason>] -> the new row's id on the agent board; 3 when its twin is open.
+# A <reason> is a slug of priority-reasons.tsv for the priority the text names; with none the row is
+# filed as the text says, and the priority pass judges it.
 improve_add() {
-  local out rc=0
-  out=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$1" --detail "$2" --origin fleet-bench) || rc=$?
+  local out rc=0 why=()
+  [ -z "${3:-}" ] || why=(--why "$3")
+  out=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$1" --detail "$2" "${why[@]}" --origin fleet-bench) || rc=$?
   [ "$rc" = 0 ] || return "$rc"
   grep -oE '<!-- id:[a-z]+-[0-9]+' <<<"$out" | awk 'NR==1' | sed 's/^<!-- id://' | grep . ||
     { say "improve: the row was added but notes printed no id, so nothing claims it"; return 1; }
@@ -4499,7 +4558,7 @@ improve_check() {
       local rc=0 text
       text=$(jq -r '"fix(kpi): revert \(.pr), \(.kpi) went from \(.from) to \(.after) #kpi/\(.kpi) #high #size/s"' <<<"$line")
       id=$(improve_add "$text" "$(jq -r --argjson d "$BENCH_EFFECT_DAYS" \
-        '"check: kpi \(.kpi) from \(.after) (\(.bound) \(.threshold)), read \($d)d after the PR lands; kpi-thresholds is not edited"' <<<"$line")") || rc=$?
+        '"check: kpi \(.kpi) from \(.after) (\(.bound) \(.threshold)), read \($d)d after the PR lands; kpi-thresholds is not edited"' <<<"$line")" runtime-fault) || rc=$?
       case $rc in 0|3) ;; *) IMPROVE_FAIL="the revert row for $(jq -r .subject <<<"$line") failed"; return 1 ;; esac
     fi
     printf '%s\n' "$line" >> "$EFFECT"
@@ -4573,6 +4632,16 @@ cmd_retro() {
   upsert_report "$grows" "$IMPROVE_LINE"
 }
 
+# upsert_why <key> <priority tag> -> the priority reason (priority-reasons.tsv) of a row whose key says what
+# it is: a tripped watch, an alert, a dispatch hold or a recurring lesson at #high is a runtime fault, a
+# lesson at #low is upkeep. Any other row files without one, and the priority pass judges it.
+upsert_why() {
+  case "$1:$2" in
+    'check(watch)'*:'#high'|'check(alert)'*:'#high'|'fix(hold)'*:'#high'|'check(lesson)'*:'#high') echo runtime-fault ;;
+    'check(lesson)'*:'#low') echo upkeep ;;
+  esac
+}
+
 # board_upsert <rows: key TAB text TAB priority, one a line> keeps exactly one open agent-board
 # row per key, matched as a lowercase title prefix (each key's shape is in lib/board-keys.sh, so
 # the backlog triager leaves the row's prefix alone): a row whose text moved is edited in place, one
@@ -4587,7 +4656,7 @@ cmd_retro() {
 # which upsert_report reports FAILED, so every caller ends with upsert_report; status 1 only when the
 # board cannot be read.
 board_upsert() {
-  local board closed p text pri have id rc added=0 edited=0 reopened=0 failed=()
+  local board closed p text pri why have id rc added=0 edited=0 reopened=0 failed=()
   UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_FAILED=
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
   closed=$(upsert_closed)
@@ -4607,8 +4676,8 @@ board_upsert() {
       say "could not reopen $id for $p: filing a new row"
     fi
     if [ -z "$have" ]; then
-      rc=0
-      $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$text $pri" --origin fleet-bench >/dev/null || rc=$?
+      rc=0 why=$(upsert_why "$p" "$pri")
+      $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$text $pri" ${why:+--why "$why"} --origin fleet-bench >/dev/null || rc=$?
       case $rc in
         0) added=$((added + 1)) ;;
         3) ;;
@@ -5043,13 +5112,14 @@ triage_twins() {
 # is keyed by the row, so a row closed and filed again within agent-notify's dedupe window
 # (a watch that trips, clears and trips) does not page again: up to 6 pages a row on 2026-11-18.
 triage_human() {
-  local key text pri route sheet have n=0
+  local key text pri route sheet have why n=0
   while IFS=$'\t' read -r key text pri route _; do
     case "$route" in human:?*) sheet=${route#human:} ;; *) continue ;; esac
     have=$($BENCH_NOTES_CMD ptask "$sheet" list 2>/dev/null) || continue
     row_open "$have" "$key" && continue
     [[ $text == *'#size/'* ]] || text+=" #size/s"
-    $BENCH_NOTES_CMD ptask "$sheet" add "$text $pri" --origin fleet-bench >/dev/null 2>&1 || continue
+    why=$(upsert_why "$key" "$pri")
+    $BENCH_NOTES_CMD ptask "$sheet" add "$text $pri" ${why:+--why "$why"} --origin fleet-bench >/dev/null 2>&1 || continue
     $TRIAGE_NOTIFY_CMD -t 'Needs you' -d "needs:$sheet:$key" "$sheet sheet: $key" >/dev/null 2>&1
     n=$((n + 1))
   done <<<"$1"
@@ -5057,8 +5127,7 @@ triage_human() {
 }
 
 # cause_tries <items> <cause> [trip] [route] -> -1 while an item stands for the cause:
-# - queued, running or waiting;
-# - closed with a PR that is not merged (it waits on a merge, and a second session would only repeat it);
+# - queued, running, waiting, or in review (its PR waits on a merge, and a second session would only repeat it);
 # - merged and closed under TRIAGE_WATCH_AFTER ago (the patience a low red gets before it is filed,
 #   given to a merge to deploy and age out of the probe's window);
 # - merged and before its proves_at, the time its fixer said the probe can first read it (a CronJob
@@ -5068,7 +5137,11 @@ triage_human() {
 # cause had: given the epoch its watch tripped at, the items queued at or after it, so each trip gets
 # its own TRIAGE_FIX_TRIES (ar-4064); else every item in the TRIAGE_FIX_DAYS window.
 # Every row triage reads is red now, so an item that closed cancelled or failed, or merged with its
-# red still here on an agent route, did not hold.
+# red still here on an agent route, did not hold. So did one closed with a PR it records no merge
+# for: a red fix merges itself (agent-land) and one parked on its PR waits in review, so nothing
+# merges a closed item's PR. Read as an owner, a stale record held a cause unowned for good
+# (playground-train-stuck: ar-3447 closed 2026-11-22 recording #3091, merged by ar-2940's landing,
+# and its next trip went 17h with no item while 44 PRs waited in landing-queue, ar-5294).
 # CAUSE_JQ: the cause's items ($c, its " cause:<id> " tag) and of those its tries ($trip, or "" for
 # the whole window), shared so cause_slugs names exactly what cause_tries counts.
 CAUSE_JQ='def cause_items: [.[] | select((" " + (.tags // "") + " ") | contains($c))];
@@ -5081,7 +5154,6 @@ cause_tries() {
     "$JQ_LIB$CAUSE_JQ"'def settles: ((.finished | ep) // 0) as $f | [$f + $after, ([(.proves_at | ep) // 0, $f + $most] | min)] | max;
     cause_items | trip_tries as $tries
     | if any(.[]; .state == "queued" or .state == "running" or .state == "review" or .state == "waiting"
-                or (.state == "done" and .pr != null and (.merged // "") == "" and .status != "cancelled")
                 or (.state == "done" and (.merged // "") != "" and settles >= $now))
          or ($owned and any($tries[]; .state == "done" and .status == "ok"))
       then -1 else ($tries | length) end' <<<"$1"
@@ -5113,8 +5185,8 @@ triage_items() {
 # watch, an alert), and only a watch's widens the red floor. Nothing for any other red.
 triage_kind() { case "$1" in 'check(watch): '*) echo ' watch' ;; 'check(alert): '*) echo ' alert' ;; esac; }
 
-# triage_promote <rows> -> how many rows triage_queues were queued as red fixes. A red fix opens its PR at
-# any hour and stops there (policy 2026-11-06), so each guard here keeps that from running away: a
+# triage_promote <rows> -> how many rows triage_queues were queued as red fixes. A red fix runs and
+# merges itself at any hour (policy.md Tier-3 gate), so each guard here keeps that from running away: a
 # dispatch hold or an unreadable queue queues nothing, TRIAGE_FIX_CAP bounds the day's other reds, an
 # item in hand stands for its cause (cause_tries), and a cause gets at most TRIAGE_FIX_TRIES items and one escalation in
 # the window, a watch's in its current trip. A tripped watch's item is tagged `watch` and is outside the cap: each watch is one cause,
@@ -5528,7 +5600,7 @@ alert_titles() {
 # fix is "fixed" only while nothing it was queued for is red now; red again with the watch's trip
 # after the merge is "came back", red the whole time is "still red", and red now with its row routed
 # to alert is "alert route" (its watch pages, and the KPI it trips on is not a merge's to clear).
-# Each red row also names its item's session, and a fix in hand (queued or fixing) its due epoch,
+# Each red row also names its item's board row id (row, the ticket) and session, and a fix in hand (queued or fixing) its due epoch,
 # which the overviews read as past its ETA (hub_core::alerts). Counted, never judged.
 reds_json() {
   local t="$1" items holds live watches='{}' f n parsed alerted
@@ -5549,10 +5621,14 @@ reds_json() {
     # each grows with the queue or the watches, past the 128 KB one argument can carry: they come in as files
     $live[0] as $live | $w[0] as $w | $holds[0] as $holds | $parsed[0] as $parsed | $alerted[0] as $alerted
     | def title: .title // .task // "";
+    # the board row the item works as, its id alone (ar-5133): its row:, else the row it was promoted from (agent-queue item_row)
+    def rowid: (.row // "") as $r | (.from // "") as $f
+        | (if $r != "" then $r elif ($f | startswith("board:")) then ($f | ltrimstr("board:")) else "" end)
+        | (split(":") | last // "") | if . == "" then null else . end;
     ([$holds[].merges[].slug]) as $went
     | ([.[] | select(tagged("red")) | title | select(startswith("fix(hold): "))]) as $held
     | ([.[] | select(tagged("cleanup") and (tagged("red") | not) and (.merged // "") != "")
-        | {slug, project: (.project // ""), red: ("cleanup " + (title[0:60])), cause: null, state, queued, finished, pr, merged,
+        | {slug, row: rowid, project: (.project // ""), red: ("cleanup " + (title[0:60])), cause: null, state, queued, finished, pr, merged,
            fix_min: null, cleanup: true,
            outcome: (.slug as $s | if $s | IN($went[]) then "went red"
                      elif any($held[]; contains(" \($s) (")) then "recovered"
@@ -5562,7 +5638,7 @@ reds_json() {
     | ((" " + (.tags // "") + " ") | capture(" cause:(?<c>[^ ]+) ").c // null) as $cause
     | ([$live[] as $k | select($t | startswith($k))] | length > 0) as $red
     | (.finished | ep) as $fin
-    | {slug, project: (.project // ""), red: (if $r.name then "\($r.area) \($r.name)" else $t[0:60] end), cause: $cause, state,
+    | {slug, row: rowid, project: (.project // ""), red: (if $r.name then "\($r.area) \($r.name)" else $t[0:60] end), cause: $cause, state,
        session, queued, finished, pr, merged,
        fix_min: (if .merged != null and $fin != null and (.queued | ep) != null then ((($fin - (.queued | ep)) / 60) | floor) else null end),
        outcome: (
@@ -7457,6 +7533,7 @@ main() {
     rules) shift; cmd_rules "$@" ;;
     kpi) shift; cmd_kpi "$@" ;;
     chain) shift; cmd_chain "$@" ;;
+    prio-defaults) shift; cmd_prio_defaults "$@" ;;
     startup) shift; cmd_startup "$@" ;;
     pipeline) shift; cmd_pipeline "$@" ;;
     bottleneck) shift; cmd_bottleneck "$@" ;;

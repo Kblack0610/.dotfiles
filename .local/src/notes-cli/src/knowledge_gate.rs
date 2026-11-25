@@ -225,7 +225,7 @@ fn chrome_lines(text: &str) -> usize {
 }
 
 /// The text after a `---` frontmatter block, if there is one.
-fn body(text: &str) -> &str {
+pub(crate) fn body(text: &str) -> &str {
     let Some(rest) = text.strip_prefix("---\n") else {
         return text;
     };

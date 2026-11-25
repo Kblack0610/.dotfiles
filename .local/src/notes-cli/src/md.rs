@@ -925,7 +925,9 @@ pub enum TagKind {
 pub fn tag_kind(tag: &str) -> TagKind {
     let task = PRIORITIES.iter().any(|(t, _, _)| *t == tag)
         || matches!(tag, "requested" | "agent" | "p")
-        || ["size/", "worker/"].iter().any(|p| tag.starts_with(p))
+        || ["size/", "worker/", "why/"]
+            .iter()
+            .any(|p| tag.starts_with(p))
         || looks_like_tier(tag)
         || is_parent_tag(tag)
         || is_version_tag(tag)
@@ -1448,6 +1450,11 @@ pub fn strip_priority_tag(line: &str) -> String {
 /// so the Focus lane sweep buckets exactly the tags the editor colors and cycles.
 pub fn task_priority(line: &str) -> Option<&'static str> {
     split_priority(line).1
+}
+
+/// `line`'s priority tag as an index into [`PRIORITIES`], or None when it has none.
+pub(crate) fn priority_index(line: &str) -> Option<usize> {
+    task_priority(line).and_then(|t| PRIORITIES.iter().position(|(_, hash, _)| *hash == t))
 }
 
 /// A row's priority as its bare word (`urgent`, `high`, `normal`, `low`): its tag, else the default.
@@ -2538,6 +2545,7 @@ after
             "tier3",
             "of/tr-37",
             "worker/fleet",
+            "why/upkeep",
             "requested",
             "agent",
             "p",

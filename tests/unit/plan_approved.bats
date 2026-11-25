@@ -79,27 +79,27 @@ SH
   chmod +x "$BATS_TEST_TMPDIR/bin/notes"
   export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
   unset CLAUDE_CODE_SESSION_ID
-  printf '# P\n\nepic: new epic(ui): a lobby #low\n\n## Reviewed\n\n- Overlap: ag-1 and ag-2 are other work.\n- Standards: none\n' > "$HOME/plans/p.md"
+  printf '# P\n\nepic: new epic(ui): a lobby\n\n## Reviewed\n\n- Overlap: ag-1 and ag-2 are other work.\n- Standards: none\n' > "$HOME/plans/p.md"
 }
 
 @test "an approved epic: new is filed with its Overlap ids, and the plan line takes the id" {
-  proposing 0 '- [ ] epic(ui): a lobby #plan/p #low <!-- id:ag-9 -->'
+  proposing 0 '- [ ] epic(ui): a lobby #plan/p <!-- id:ag-9 -->'
   run bash "$HOOK" <<<"$(payload "$HOME/plans/p.md")"
   assert_success
   assert_output --partial 'filed as ag-9'
   run grep -F 'ptask agame add' "$CALLS"
-  assert_output 'ptask agame add --checked ag-1,ag-2 -- epic(ui): a lobby #low #plan/p [s-1]'
+  assert_output 'ptask agame add --checked ag-1,ag-2 -- epic(ui): a lobby #plan/p [s-1]'
   run grep '^epic:' "$HOME/plans/p.md"
   assert_output 'epic: ag-9'
   [ -s "$LEDGER" ] || fail "no ledger line"
 }
 
 @test "an epic: new sent to the outbox stays in the plan, pending" {
-  proposing 4 'inboxed: - [ ] #p:agame #from/x epic(ui): a lobby #low #plan/p'
+  proposing 4 'inboxed: - [ ] #p:agame #from/x epic(ui): a lobby #plan/p'
   run bash "$HOOK" <<<"$(payload "$HOME/plans/p.md")"
   assert_output --partial 'went to the outbox'
   run grep '^epic:' "$HOME/plans/p.md"
-  assert_output 'epic: new epic(ui): a lobby #low'
+  assert_output 'epic: new epic(ui): a lobby'
 }
 
 @test "a refused epic: new is reported back with what notes said" {
@@ -113,7 +113,7 @@ SH
 
 @test "an epic: new already proposed, or a plan with none, calls no add" {
   proposing 0 'unused'
-  echo '{"action":"added","text":"epic(ui): a lobby #low #plan/p"}' > "$TRACE"
+  echo '{"action":"added","text":"epic(ui): a lobby #plan/p"}' > "$TRACE"
   run bash "$HOOK" <<<"$(payload "$HOME/plans/p.md")"
   assert_output ''
   printf '# P\n\nepic: ag-1\n' > "$HOME/plans/p.md"

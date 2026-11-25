@@ -108,8 +108,8 @@ epic_new_gaps() {
   sys=${BASH_REMATCH[1]}
   grep -qiE '^epic\([^)]*\):.* to standard([[:space:]]+#[^[:space:]]+)*$' <<<"$t" &&
     echo "epic: new $t is a standing \"to standard\" title, which notes and project-stage-check file, never a plan"
-  grep -qE '(^|[[:space:]])#(urgent|high|normal|low)([[:space:]]|$)' <<<"$t" ||
-    echo "epic: new $t carries no priority: end it with #urgent, #high, #normal or #low (the rubric in ~/.config/inbox-triage/rules/priority.md)"
+  ! grep -qE '(^|[[:space:]])#(urgent|high|normal|low)([[:space:]]|$)' <<<"$t" ||
+    echo "epic: new $t carries a priority, which notes refuses on an epic: it ranks as its most urgent open row, so drop the tag"
   if ! ids=$(project-stage-check "$board" --list --json 2>/dev/null | jq -er '.[].id' 2>/dev/null); then
     echo "epic: new: project-stage-check $board --list --json printed no system list, so epic($sys) cannot be checked"
   elif ! grep -qxF -- "$sys" <<<"$ids"; then
@@ -131,11 +131,11 @@ if epic_checked; then
   if [ -n "$proposal" ]; then
     mapfile -t -O "${#gaps[@]}" gaps < <(epic_new_gaps "$proposal")
   elif [ -z "$epic" ]; then
-    gaps+=("No epic: <id> line: name the epic this plan serves, or its system's standing \"epic(<system>): <system> to standard\" row, or propose a new one as epic: new epic(<system>): <outcome> #<priority>")
+    gaps+=("No epic: <id> line: name the epic this plan serves, or its system's standing \"epic(<system>): <system> to standard\" row, or propose a new one as epic: new epic(<system>): <outcome>")
   elif [ -z "$row" ]; then
     gaps+=("epic: $epic is not an epic( row on any sheet under ~/.notes/lab")
   elif [ -n "$multi" ] && grep -qE 'epic\([^)]*\):[[:space:]]*[^[:space:]]+ to standard([[:space:]]|$)' <<<"$row"; then
-    gaps+=("epic: $epic is a standing \"to standard\" epic, and a plan with more than one phase is a feature: propose its own as epic: new epic(<system>): <outcome> #<priority>")
+    gaps+=("epic: $epic is a standing \"to standard\" epic, and a plan with more than one phase is a feature: propose its own as epic: new epic(<system>): <outcome>")
   fi
 fi
 

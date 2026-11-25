@@ -328,7 +328,7 @@ EOF
 @test "the shipped channels.toml loads and every channel is listed" {
   run "$SUBJECT" channels
   assert_success
-  for c in page briefing briefing-agents morning rundown status lab-status pr-body client-eod client-weekly board proof ask queue fleet-log ui; do
+  for c in page report briefing briefing-agents morning rundown status lab-status pr-body client-eod client-weekly board proof ask queue fleet-log ui; do
     assert_output --partial "$c"
   done
 }
