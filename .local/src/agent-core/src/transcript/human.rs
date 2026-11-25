@@ -159,24 +159,35 @@ fn answer_text(a: &Value) -> Option<String> {
 
 /// `s` without each `<name ...>...</name ...>` block; an unclosed one is cut to the end. The
 /// harness closes a paste as `</pasted_content id="...">`, with its id, so a close tag may carry
-/// attributes.
+/// attributes. A tag is its name followed by `>` or whitespace, so `<name` in prose or a longer
+/// sibling (`</names>`) is not one.
 fn strip_tag(s: &str, name: &str) -> String {
     let (open, close) = (format!("<{name}"), format!("</{name}"));
     let mut out = String::new();
     let mut rest = s;
-    while let Some(i) = rest.find(&open) {
+    while let Some(i) = find_tag(rest, &open) {
         out.push_str(&rest[..i]);
         let body = &rest[i..];
-        rest = match body
-            .find(&close)
-            .and_then(|j| body[j..].find('>').map(|k| j + k + 1))
-        {
+        rest = match find_tag(body, &close).and_then(|j| body[j..].find('>').map(|k| j + k + 1)) {
             Some(end) => &body[end..],
             None => "",
         };
     }
     out.push_str(rest);
     out
+}
+
+/// Where `prefix` starts in `s` as a whole tag name: the next char is `>` or whitespace.
+fn find_tag(s: &str, prefix: &str) -> Option<usize> {
+    let mut from = 0;
+    while let Some(k) = s[from..].find(prefix) {
+        let at = from + k;
+        match s[at + prefix.len()..].chars().next() {
+            Some(c) if c == '>' || c.is_whitespace() => return Some(at),
+            _ => from = at + prefix.len(),
+        }
+    }
+    None
 }
 
 fn tail(s: &str) -> String {
@@ -278,5 +289,19 @@ mod tests {
             strip_tag("<t id=\"1\">\npaste\n</t id=\"1\">\n ok do this", "t"),
             "\n ok do this"
         );
+        // Two such blocks, a longer sibling name, prose that names the tag, a close with no `>`.
+        assert_eq!(
+            strip_tag(
+                "a<t id=\"1\">x</t id=\"1\">b<t id=\"2\">y</t id=\"2\">c",
+                "t"
+            ),
+            "abc"
+        );
+        assert_eq!(strip_tag("a<t>x</ts>y</t>z", "t"), "az");
+        assert_eq!(
+            strip_tag("why does <tx show up", "t"),
+            "why does <tx show up"
+        );
+        assert_eq!(strip_tag("a <t>x</t id=1 words", "t"), "a ");
     }
 }
