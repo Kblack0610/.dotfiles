@@ -240,9 +240,11 @@ fn main() {
         if it.cloned().collect::<Vec<String>>() != ["--reasons", "--json"] {
             die(USAGE);
         }
+        // No watch directory (the laptop) is an answer with no watches and its cause, not a failure:
+        // a failed run is a hub that could not answer at all.
         match hub_core::alerts::watch_reasons() {
             Ok(r) => println!("{}", serde_json::json!({ "reasons": r })),
-            Err(e) => die(&format!("hub alerts: {e}")),
+            Err(e) => println!("{}", serde_json::json!({ "reasons": {}, "error": e })),
         }
         return;
     }

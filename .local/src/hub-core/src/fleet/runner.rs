@@ -146,8 +146,15 @@ impl Watch {
         let header = ["TRIP exit ", "ERROR exit ", "OK exit "]
             .iter()
             .any(|h| first.starts_with(h));
-        let line = if header { lines.next() } else { Some(first) };
-        let line = line.unwrap_or_default().trim();
+        let mut rest = lines.map(str::trim);
+        let line = if header {
+            rest.find(|l| !l.is_empty())
+        } else {
+            Some(first.trim())
+                .filter(|l| !l.is_empty())
+                .or_else(|| rest.find(|l| !l.is_empty()))
+        };
+        let line = line.unwrap_or_default();
         match line.char_indices().nth(REASON_CHARS) {
             Some((i, _)) => format!("{}...", line[..i].trim_end()),
             None => line.to_string(),

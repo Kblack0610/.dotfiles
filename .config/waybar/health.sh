@@ -6,7 +6,8 @@
 # `<watch>: <reason>`, the reason being what hub-core's alerts model holds for it
 # (`hub alerts --reasons --json`, the watch's last probe line); this script never reads the watch
 # state files. A watch with nothing past its status header says `no reason recorded`; where the hub
-# gives none (a machine with no watch state, the laptop) the line says `reason on the workstation`.
+# answers with no watches (a machine with no watch state, the laptop) the line says `reason on the
+# workstation`, and when the hub gives no answer at all (absent, too old, timed out) `hub gave no answer`.
 #
 # It computes nothing and lists no system: rows and levels come from the cc:* rules (home-config
 # apps/monitoring/prometheus-rules-command-center.yaml), so a new domain shows up by itself and
@@ -60,17 +61,22 @@ read -r -a figs < <(jq -r '[.data.result[]] as $r | ["down", "warn", "up"]
   | map(. as $l | [$r[] | select(.metric.__name__ == "mqtt_figures_health_domains_" + $l) | .value[1] | tonumber | floor]
         | unique | if length > 1 then "!" else .[0] // "-" end) | @tsv' <<< "$raw")
 
-# The watches' reasons, read from the hub only when a watch is tripped. No answer, or none at all
-# (the laptop has no watch state), reads as `reason on the workstation` below.
-reasons=''
+# The watches' reasons, read from the hub only when a watch is tripped. `hub_ok` is whether it
+# answered at all; `reasons` is empty when it answered with no watches (the laptop).
+reasons='' hub_ok=1
 if cut -f3 <<< "$rows" | grep -qx w; then
-  reasons="$(timeout "$HUB_TIMEOUT" "$HUB" alerts --reasons --json 2>/dev/null | jq -c '.reasons // empty | select(length > 0)' 2>/dev/null)"
+  if ans="$(timeout "$HUB_TIMEOUT" "$HUB" alerts --reasons --json 2>/dev/null)" && jq -e '.reasons' >/dev/null 2>&1 <<< "$ans"; then
+    reasons="$(jq -c '.reasons | select(length > 0)' <<< "$ans")"
+  else
+    hub_ok=0
+  fi
 fi
 reason_of() {
   local r
-  [ -n "$reasons" ] || { echo "reason on the workstation"; return; }
+  ((hub_ok)) || { printf '%s\n' "hub gave no answer"; return; }
+  [ -n "$reasons" ] || { printf '%s\n' "reason on the workstation"; return; }
   r="$(jq -r --arg k "${1//-/_}" '.[$k] // ""' <<< "$reasons")"
-  echo "${r:-no reason recorded}"
+  printf '%s\n' "${r:-no reason recorded}"
 }
 
 width="$(cut -f2 <<< "$rows" | wc -L)"

@@ -22,11 +22,12 @@ setup() {
 cat "$FX/prom.json"
 STUB
   chmod +x "$SANDBOX/bin/curl"
-  # The hub's alerts model: reasons.json when a test wrote one, else no answer, as on the laptop.
+  # The hub's alerts model: reasons.json when a test wrote one, else no watches, as on the laptop.
   cat > "$FX/hub" <<'STUB'
 #!/usr/bin/env bash
 [ "$*" = "alerts --reasons --json" ] || exit 2
-[ -f "$FX/reasons.json" ] || { echo "hub alerts: no such dir" >&2; exit 2; }
+[ -z "${HUB_FAIL:-}" ] || { echo "usage: hub" >&2; exit 2; }
+[ -f "$FX/reasons.json" ] || { echo '{"reasons":{},"error":"no such dir"}'; exit 0; }
 cat "$FX/reasons.json"
 STUB
   chmod +x "$FX/hub"
@@ -105,9 +106,9 @@ pulse() { printf "<span color='%s'>%s</span>" "$1" "$ICON"; }
   assert_line --index 3 "             stale rows: 1 &lt; 2 rows &amp; more</tt>"
 }
 
-# Negative control: the hub gives no answer where the watches do not run, and a row then says where
-# to look, instead of a bare name or a made-up reason.
-@test "with no hub answer the row says the reason is on the workstation" {
+# Negative control: the hub lists no watches where they do not run, and a row then says where to
+# look, instead of a bare name or a made-up reason; a hub that fails is another word.
+@test "with no watches on the machine the row says the reason is on the workstation" {
   feed o=1 d:queue=1 w:queue:heal_flapping=1
   rm -f "$FX/reasons.json"
   run "$MODULE"
@@ -118,6 +119,17 @@ pulse() { printf "<span color='%s'>%s</span>" "$1" "$ICON"; }
   run "$MODULE"
   run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
   assert_output --partial "heal flapping: reason on the workstation"
+}
+
+@test "a hub that fails or is absent says it gave no answer, never the workstation" {
+  feed o=1 d:queue=1 w:queue:heal_flapping=1
+  reasons heal_flapping='flapped 4 times'
+  HUB_FAIL=1 run "$MODULE"
+  run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
+  assert_output --partial "heal flapping: hub gave no answer"
+  HUB="$FX/missing" run "$MODULE"
+  run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
+  assert_output --partial "heal flapping: hub gave no answer"
 }
 
 @test "the hub is not asked when no watch is tripped" {

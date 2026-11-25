@@ -1082,6 +1082,11 @@ mod tests {
         // The header alone, or no output, is no reason: the hover says so.
         assert_eq!(probe("TRIP", "TRIP exit 1 (want 0)").reason(), "");
         assert_eq!(probe("OK", "").reason(), "");
+        // A blank line between the header and the output is skipped.
+        assert_eq!(
+            probe("TRIP", "TRIP exit 1 (want 0)\n\n  RED steam.yml: failure").reason(),
+            "RED steam.yml: failure"
+        );
         // Output with no header is read from its first line, and a long line is cut.
         assert_eq!(
             probe("TRIP", "aws $1,011 ahead of pace").reason(),
