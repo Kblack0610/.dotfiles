@@ -2732,6 +2732,27 @@ fn carry_agent_board(dir: &Path, cur: V, next: V) -> Result<Vec<(String, u32)>> 
     Ok(moved)
 }
 
+/// The agent board's half of a release, once the sheet's earlier tags shipped: the rows an earlier
+/// tag of the family shipped are sorted out, then on a carry the board's open rows tagged for this
+/// version go forward with the sheet's, so the frozen note lists them and the next window commits
+/// them. A retag moves no row between files, so it is written before the freeze: a failure after
+/// it leaves rows aimed where they go. Returns the rows it carried.
+fn forward_agent_board(
+    dir: &Path,
+    name: &str,
+    (cur, next): (V, V),
+    family: Option<(&crate::shipped::Family, V)>,
+    carry: bool,
+) -> Result<Vec<(String, u32)>> {
+    if let Some((f, t)) = family {
+        sort_agent_board(dir, name, cur, (t, next), f)?;
+    }
+    if !carry {
+        return Ok(Vec::new());
+    }
+    carry_agent_board(dir, cur, next)
+}
+
 /// Close a version on a project's agent board: done rows go to `agent/versions/<cur>.md`.
 /// Returns how many, or `None` when there is no board.
 ///
@@ -2928,16 +2949,11 @@ pub fn release(
     // Rows an earlier tag shipped go to that tag's version, notes first: a failure before the
     // sheet is written leaves them in both, and a re-run writes each id once.
     ship_earlier(&dir, name, &earlier, project_tasks::SHEET_DONE_ROWS)?;
-    if let Some((f, t)) = family {
-        sort_agent_board(&dir, name, cur, (t, next), f)?;
-    }
-    // The board's open rows tagged for this version go forward with the sheet's, so the frozen
-    // note lists them and the next window commits them. A retag moves no row between files, so
-    // it is written before the freeze: a failure after it leaves rows aimed where they go.
-    let mut carried = carried;
-    if carry {
-        carried.extend(carry_agent_board(&dir, cur, next)?);
-    }
+    let carried = [
+        carried,
+        forward_agent_board(&dir, name, (cur, next), family, carry)?,
+    ]
+    .concat();
     let (frozen_body, new_sheet) = rebuild_sheet(&content, cur, next);
     // A note named from its tag says so in its head too: anything scanning a frozen note for
     // its `Version:` reads the tag, and the version the rows were planned as stays on record.
