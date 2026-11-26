@@ -113,5 +113,6 @@ picked=$(
   sed -n "s#^\($tier/[^[:space:]#]*\.bats\).*#\1#p" broad.txt
 )
 picked=$(sort -u <<<"$picked" | grep . || true)
-echo "$tier: picked $(grep -c . <<<"$picked" || true) of $(wc -l <<<"$all") files for $(wc -l <<<"$changed") changed; the tier has $tests tests" >&2
+if [ "$tier" = notes ]; then scope="any pick runs the whole job, $tests tests"; else scope="the tier has $tests tests"; fi
+echo "$tier: picked $(grep -c . <<<"$picked" || true) of $(wc -l <<<"$all") files for $(wc -l <<<"$changed") changed; $scope" >&2
 printf '%s\n' "$picked" | grep . || true

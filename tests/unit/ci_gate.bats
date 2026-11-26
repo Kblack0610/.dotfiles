@@ -455,7 +455,9 @@ while todo:
         continue
     crates.append(c)
     text = re.sub(r"#.*", "", open(os.path.join(root, c, "Cargo.toml")).read())
-    todo += [os.path.join(c, p) for p in re.findall(r'path *= *"([^"]*)"', text)]
+    # A [[bin]] or [lib] path is a source file, not a crate: only a directory with a manifest is one.
+    todo += [d for p in re.findall(r'path *= *"([^"]*)"', text)
+             if os.path.isfile(os.path.join(root, d := os.path.join(c, p), "Cargo.toml"))]
 for c in crates:
     if f"'{c}/**'" not in key:
         print(f"the notes binary key misses {c}")

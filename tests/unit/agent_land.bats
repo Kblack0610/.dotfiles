@@ -221,7 +221,7 @@ exit 0
 EOS
   chmod +x "$top/tests/pick.sh"
   printf '%s\n' '# broad' 'unit/smoke.bats # the harness' >"$top/tests/broad.txt"
-  for t in unit integ rust ui; do : >"$top/tests/mine.$t"; : >"$top/tests/theirs.$t"; done
+  for t in unit integ rust ui notes; do : >"$top/tests/mine.$t"; : >"$top/tests/theirs.$t"; done
   # test_picked: a base test file reaches the head's changed files when picked.yes exists
   mkdir -p "$top/.local/lib"
   printf '%s\n' 'test_picked() { [ -f "'"$top"'/tests/picked.yes" ]; }' >"$top/.local/lib/test-pick.sh"

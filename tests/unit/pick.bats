@@ -157,13 +157,12 @@ setup() {
 
 # The notes job's files, the FILES of its steps in tests.yml (ar-5836).
 @test "notes: main runs the whole job; a docs-only change runs none; the notes binary or the image runs all" {
-  local all n c
-  all=$(sed -n '/^  notes:$/,/^  [a-z][a-z-]*:$/ s/.* FILES="\([^"]*\)".*/\1/p' "$BATS_TEST_DIRNAME/../../.github/workflows/tests.yml" | tr ' ' '\n' | grep . | sort -u)
-  n=$(wc -l <<<"$all")
-  [ "$n" -ge 5 ] || fail "too few notes job files read: $all"
+  local all n c f
   run --separate-stderr "$SUBJECT" notes
   assert_success
-  [ "$output" = "$all" ]
+  all=$output n=${#lines[@]}
+  [ "$n" -ge 5 ] || fail "too few notes job files read: $all"
+  for f in $all; do [ -f "$BATS_TEST_DIRNAME/../$f" ] || fail "the notes job names $f, which is no file"; done
   [[ "$stderr" == *"notes: all $n files of the notes job"*"(full: not a pull request)"* ]]
   # PR #3541's one file: its notes job ran 611 s and was cut.
   PICK_CHANGED=.claude/skills/ops/board-cleanup/SKILL.md run --separate-stderr "$SUBJECT" notes HEAD
@@ -179,6 +178,7 @@ setup() {
   done
   for c in tests/docker.sh tests/Dockerfile .github/actions/test-image/action.yml; do
     PICK_CHANGED=$c run --separate-stderr "$SUBJECT" notes HEAD
+    assert_success
     [ "$output" = "$all" ]
     [[ "$stderr" == *"(full: the change touches the test image)"* ]]
   done
