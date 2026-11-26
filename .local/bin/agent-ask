@@ -53,7 +53,8 @@
 #                                       (CLAUDE_CODE_SESSION_ID or AGENT_QUEUE_ITEM set) the
 #                                       default is agent and --by human is refused, except
 #                                       an attended session's relay: --by human --quote
-#                                       '<their words>' (relay_proof checks the transcript);
+#                                       '<their words>' (relay_proof checks the transcript, and on
+#                                       an ask with options that the words pick the answer);
 #                                       an agent answer to an approval, a judge human-only ask or one at
 #                                       the human floor is refused. Any answer releases what the
 #                                       ask holds (agent-queue ask_pending).
@@ -977,13 +978,37 @@ human_words() {
   printf '%s\n' "$hits"
 }
 
+# quote_picks <ask file> <options> <option> <quote>: true when the human's words pick <option>: they
+# name it, or they and its `option_notes` meaning hold one another (either may be the longer, a
+# fragment of 8+ characters), and they name no other option. Prints why on failure. Words that merely
+# follow the ask prove the human spoke, not what they chose (ask M0yWLL, 2026-11-25: 'get us down to
+# only the ones that need' was relayed as the answer keep, ar-6269).
+quote_picks() {
+  local f="$1" opts="$2" opt="$3" q="$4" names i note ql
+  names="$(named_options "$opts" "$q")"
+  if [ -n "$names" ]; then
+    [ "$names" = "$opt" ] && return 0
+    echo "they name $(paste -sd, <<<"$names" | sed 's/,/ and /g'), not $opt"; return 1
+  fi
+  local os=() ns=()
+  IFS='|' read -r -a os <<< "$opts"; IFS='|' read -r -a ns <<< "$(field "$f" option_notes)"
+  ql="$(oneline "${q,,}")"
+  for i in "${!os[@]}"; do
+    [ "${os[i]}" = "$opt" ] || continue
+    note="$(oneline "${ns[i]:-}")"; note="${note,,}"
+    [ -n "$note" ] && { [[ "$ql" == *"$note"* ]] || { [ "${#ql}" -ge 8 ] && [[ "$note" == *"$ql"* ]]; }; } && return 0
+  done
+  echo "they name no option and do not match $opt's note"; return 1
+}
+
 # relay_proof <id> <quote> <answer>: why an attended session may record the human's answer to <id>, or
 # what is missing (stderr, rc 1). The quote passes human_words since the ask was posted, and the ask's
 # id is in that entry's words or in what they were shown. The answer is one of the ask's options when
-# it has any, so the words cannot be attached to an answer they do not pick. Only a pending ask, or
-# one the judge or a hold answered, takes it.
+# it has any, and the quote picks that option (quote_picks), so the words cannot be attached to an
+# answer they do not pick. The human's whole entry must not name another option either ("don't keep
+# them, drop them" does not pick keep). Only a pending ask, or one the judge or a hold answered, takes it.
 relay_proof() {
-  local id="$1" quote="$2" answer="$3" f made hits
+  local id="$1" quote="$2" answer="$3" f made hits why
   f="$(find_ask "$id")"; [ -n "$f" ] || { echo "no ask '$id'" >&2; return 1; }
   id="$(field "$f" id)"; made="$(date -u -d "$(field "$f" created)" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
   [ -n "$made" ] || { echo "ask $id has no created time to look after" >&2; return 1; }
@@ -992,11 +1017,22 @@ relay_proof() {
     pending:*|answered:judge|answered:hold) ;;
     *) echo "ask $id is $(field "$f" status), not waiting on the human" >&2; return 1 ;;
   esac
-  local opts; opts="$(field "$f" options)"
-  if [ -n "$opts" ] && [ -z "$(named_option "$opts" "$answer")" ]; then
-    echo "the answer '$answer' names none (or more than one) of ask $id's options: $opts" >&2; return 1
+  local opts picked; opts="$(field "$f" options)"
+  if [ -n "$opts" ]; then
+    picked="$(named_option "$opts" "$answer")"
+    [ -n "$picked" ] || { echo "the answer '$answer' names none (or more than one) of ask $id's options: $opts" >&2; return 1; }
+    why="$(quote_picks "$f" "$opts" "$picked" "$quote")" || {
+      echo "the quote '$quote' does not pick '$picked': $why" >&2; return 1; }
   fi
   hits="$(human_words "$quote" "$made")" || return 1
+  if [ -n "$opts" ]; then
+    local t
+    while IFS= read -r t; do
+      why="$(quote_picks "$f" "$opts" "$picked" "$t")" && continue
+      case "$why" in "they name no option"*) continue ;; esac
+      echo "the human's whole message does not pick '$picked': $why" >&2; return 1
+    done < <(jq -r '.text | gsub("\\s+"; " ")' <<<"$hits")
+  fi
   jq -e -s --arg id "$id" '
     def n: ascii_downcase | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "");
     any(.[]; ((.shown // "" | n) | contains($id | n)) or ((.text | n) | contains($id | n)))' <<<"$hits" >/dev/null 2>&1 ||
