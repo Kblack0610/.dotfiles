@@ -2432,9 +2432,7 @@ cmd_add() {
   [ -z "$dry" ] || die "--dry-run and --check go with --plan"
   local text
   if [ "${#task[@]}" -gt 0 ]; then text="${task[*]}"; elif [ -z "$job_run" ] && [ ! -t 0 ]; then text="$(cat)"; fi
-  case "$mode" in oneshot | plan) [ -z "$job_run" ] || die "--run is the command of a --mode job item" ;; job) job_check "$job_run" "$running" ;; *) die "--mode is oneshot, plan or job, not $mode" ;; esac
-  # A job item's own words are its command, so it needs no task beside it.
-  [ "$mode" != job ] || [ -n "$(printf '%s' "${text:-}" | tr -d '[:space:]')" ] || text="job: $job_run"
+  job_admit "$mode" "$job_run" "$running"
   [ -n "$(printf '%s' "${text:-}" | tr -d '[:space:]')" ] || die "no task: pass it as arguments or on stdin"
   prio_rank "$priority" >/dev/null || die "--priority is urgent, high, normal or low, not $priority"
   case "$weight" in '' | heavy | light) ;; *) die "--weight is heavy or light, not $weight" ;; esac
@@ -2443,13 +2441,7 @@ cmd_add() {
   case "$agent" in *[!a-z0-9-]* | '') die "--agent is one word, not $agent" ;; esac
   local row_id='^[a-z0-9]+-[0-9]+$'
   [ -z "$epic" ] || [[ "$epic" =~ $row_id ]] || die "--epic is a row id, <code>-<N>, not $epic"
-  if [ -n "$row" ]; then
-    [[ "$row" =~ $row_id ]] || die "--row is a row id, <code>-<N>, not $row"
-    [ -z "$epic$want" ] || die "--epic and --want shape a new story; --row links a row already filed"
-    case "$from" in board:* | canary | trainee) die "--row is for an item not promoted from the board and not a canary or trainee review, not --from $from" ;; esac
-  fi
-  # A board row cannot carry --run, so a caller the queue turns away to the board (board_only_say) would lose its command.
-  [ "$mode" != job ] || pull_ok "$running" "$from" "$from_given" || die "--mode job goes straight into the queue only from the human (a terminal, a session they opened, the hub): a board row cannot carry --run"
+  row_guard "$row" "$epic$want" "$from"
   check_tags "$tags"
   # A hand-started session records itself and its window, in a worktree session on any world.
   local window='' host=''
@@ -2485,21 +2477,15 @@ cmd_add() {
   fi
   if [ -z "$running" ] && { [ -z "${AGENT_QUEUE_PULL:-}" ] || [[ "$from" != board:* ]]; }; then
     add_gates "$slug" "${after:-$(landing_after "${AGENT_QUEUE_ITEM:-}" "$text")}" "$tags"; after="$AFTER_ITEMS"
-    # A job item keeps its holds on the item, where the queue reads them (hold_for): a board row cannot carry --run, so
-    # filing it as a gated row would turn it into a session. Only a wait on a board row has no form there.
-    if [ "$mode" = job ] && [ -n "$GATES" ]; then
-      [[ " $GATES " != *" after/"* ]] || die "--mode job waits on queue items (--after <slug>), not on a board row (${GATES})"
-      GATES=''
-    fi
+    job_keep_gates "$mode" "$running" "$from" "$from_given"
   fi
   # Admission: every add that is not running or the board's own pull counts against the cap
   # (see admit); a queue item's session adding without --from is recorded as from the item.
   local capped=1
   case "$from" in trainee | auto:epics | auto:validate | canary) capped='' ;; esac
-  [ "$mode" != job ] || capped=''   # a job item runs no session: it holds none of the room the cap protects (only the human adds one, above)
   [ "${AGENT_QUEUE_PULL:-}" != hand ] || capped=''
   [[ "$from" != board:* ]] || ! plan_phase_task "$text" || capped=''
-  { [ -z "$running" ] && [ -z "$GATES" ] && [ -z "${AQ_ADMITTED:-}" ]; } || capped=''
+  { [ -z "$running" ] && [ -z "$GATES" ] && [ -z "${AQ_ADMITTED:-}" ] && [ "$mode" != job ]; } || capped=''   # a job item runs no session: it holds none of the room the cap protects
   [ -z "$capped" ] || [ -n "$from_given" ] || [ -z "${AGENT_QUEUE_ITEM:-}" ] || from="item:$AGENT_QUEUE_ITEM"
   [ -z "$capped" ] || ! pull_ok "$running" "$from" "$from_given" || make_room "$priority" "$tags" "$slug"
   # `type(area): title` on the first line or --title, parsed by the grammar's one home before the lock (ar-5606).
@@ -4145,6 +4131,33 @@ job_check() {
   [ "$kind" != call ] || die "--run: $name is KIND=call, started by its caller, not by a job item"
   [ "$kind" != persistent ] || die "--run: $name is KIND=persistent, which has no run end for the item to close on"
   [ "$eff" = none ] || die "--run: $name has EFFECT=${eff:-unset}, and a job item runs no model: only an EFFECT=none runner"
+}
+
+# job_admit <mode> <run> <running> -- the --mode and --run of an add must agree (die). A job item's own words are its
+# command, so it needs no task beside it: sets the caller's `text` when it has none.
+job_admit() {
+  case "$1" in oneshot | plan) [ -z "$2" ] || die "--run is the command of a --mode job item" ;; job) job_check "$2" "$3" ;; *) die "--mode is oneshot, plan or job, not $1" ;; esac
+  [ "$1" != job ] || [ -n "$(printf '%s' "${text:-}" | tr -d '[:space:]')" ] || text="job: $2"
+}
+
+# job_keep_gates <mode> <running> <from> <from_given> -- a job item keeps its holds on the item, where the queue reads them
+# (hold_for): a board row cannot carry --run, so filing it as a gated row would turn it into a session, and a caller the
+# queue turns away to the board (board_only_say) would lose its command. Clears the caller's GATES; only a wait on a
+# board row (--after a row) has no form on the item and dies.
+job_keep_gates() {
+  [ "$1" = job ] || return 0
+  pull_ok "$2" "$3" "$4" || die "--mode job goes straight into the queue only from the human (a terminal, a session they opened, the hub): a board row cannot carry --run"
+  [[ " $GATES " != *" after/"* ]] || die "--mode job waits on queue items (--after <slug>), not on a board row (${GATES})"
+  GATES=''
+}
+
+# row_guard <row> <epic and want> <from> -- --row links a row already filed, so it shapes no new story and is no board pull.
+row_guard() {
+  local row_id='^[a-z0-9]+-[0-9]+$'
+  [ -n "$1" ] || return 0
+  [[ "$1" =~ $row_id ]] || die "--row is a row id, <code>-<N>, not $1"
+  [ -z "$2" ] || die "--epic and --want shape a new story; --row links a row already filed"
+  case "$3" in board:* | canary | trainee) die "--row is for an item not promoted from the board and not a canary or trainee review, not --from $3" ;; esac
 }
 
 # check_tags <tags> [<slug>] -- die on a hold tag the queue could not read, so a gate is never silently

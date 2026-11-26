@@ -4422,18 +4422,8 @@ cmd_start() {
     say "start: give exactly one of --brief, --item or --resume"
     return 2
   fi
-  if [ -n "$resume" ]; then
-    # One writer per transcript: a second claude on a live conversation would also take its item.
-    ! claude_pid_live "$resume" || { say "start: conversation $resume is still running; end it before resuming it"; return 1; }
-    # A resume works the item that lists its conversation, so a hand resume keeps AGENT_QUEUE_ITEM too.
-    # A conversation that worked several items resumes the one updated last (ar-2676).
-    [ -n "$item" ] || item=$(agent-queue mine --sid "$resume" --newest 2>/dev/null) || item=''
-  fi
-  # A job item runs an agentctl runner, no session: no lane pick, worktree or harness (start_job).
-  if [ -n "$item" ] && [ -z "$resume" ] && [ "$(agent-queue show "$item" --json 2>/dev/null | jq -r '.mode // empty')" = job ]; then
-    [ -z "$harness$model$host$key$session" ] || { say "start: $item is a job item: --harness, --model, --host, --row and --session do not apply"; return 2; }
-    start_job_item "$item"; return
-  fi
+  [ -z "$resume" ] || resume_item || return
+  [ -z "$item" ] || [ -n "$resume" ] || [ "$(agent-queue show "$item" --json 2>/dev/null | jq -r '.mode // empty')" != job ] || { start_job_item "$item" "$harness$model$host$key$session"; return; }
   if [ -n "$item" ] && [ -z "$resume" ]; then
     [ -n "$harness" ] || [ -n "$model" ] || ! cloud_routed "$item" || harness=claude-cloud
     # Before the lock: model-lane may ask an LLM (20s timeout), and another start must not wait on it.
@@ -6761,9 +6751,19 @@ start_jobs() {
   return 0
 }
 
-# start_job_item <slug> -- `start --item` on a job item: the hand path of start_jobs, the same holds.
+# resume_item -- cmd_start's --resume: sets its `item`. One writer per transcript, a second claude on a live conversation
+# would also take its item; a resume works the item that lists its conversation, so a hand resume keeps AGENT_QUEUE_ITEM
+# too, and a conversation that worked several items resumes the one updated last (ar-2676).
+resume_item() {
+  ! claude_pid_live "$resume" || { say "start: conversation $resume is still running; end it before resuming it"; return 1; }
+  [ -n "$item" ] || item=$(agent-queue mine --sid "$resume" --newest 2>/dev/null) || item=''
+}
+
+# start_job_item <slug> <session flags> -- `start --item` on a job item, the hand path of start_jobs under the same holds. A
+# job item runs an agentctl runner, no session: no lane pick, worktree or harness, so a flag that picks one is refused.
 start_job_item() {
   local it st hold
+  [ -z "${2:-}" ] || { say "start: $1 is a job item: --harness, --model, --host, --row and --session do not apply"; return 2; }
   it=$(agent-queue show "$1" --json 2>/dev/null) || { say "start: no queue item: $1"; return 2; }
   st=$(jq -r .state <<<"$it")
   [ "$st" = queued ] || { say "start: $1 is $st, not queued"; return 1; }
