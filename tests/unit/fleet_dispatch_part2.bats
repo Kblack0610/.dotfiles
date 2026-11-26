@@ -1688,3 +1688,75 @@ J
   assert_output --partial 'is over the'
   assert_not_called 'wt new'
 }
+
+# stale_fixture -- game agent rows skipped (DISPATCH_TODAY 2026-11-26, DISPATCH_STALE_DAYS 14): sx-1 #high since
+# 11-01 (judged again 11-20 on the same text), sx-2 #low since 11-01, sx-3 #low since 11-01 that sx-7 gates
+# #after/ on, sx-4 skipped 11-01 on older text and 11-20 on this one, sx-5 #low edited since its skip, sx-6
+# #plan, sx-7 gated on sx-3, sx-8 a parent of open sx-9, sx-9 dispatched 11-01
+stale_fixture() {
+  printf '%s\n' '- (needs-person) a device run' >> "$DISPATCH_POLICY"
+  project game beta "$SANDBOX/repos/game"
+  export DISPATCH_TODAY=2026-11-26
+  row game agent sx-1 "- [ ] fix(game): crash on load #high $T <!-- id:sx-1 -->"
+  row game agent sx-2 "- [ ] chore(game): tidy the menu #low $T <!-- id:sx-2 -->"
+  row game agent sx-3 "- [ ] chore(game): rename the scene #low $T <!-- id:sx-3 -->"
+  row game agent sx-4 "- [ ] fix(game): rewritten row $T <!-- id:sx-4 -->"
+  row game agent sx-5 "- [ ] chore(game): edited row #low $T <!-- id:sx-5 -->"
+  row game agent sx-6 "- [ ] fix(game): waits on its plan #plan $T <!-- id:sx-6 -->"
+  row game agent sx-7 "- [ ] fix(game): after the rename #after/sx-3 $T <!-- id:sx-7 -->"
+  row game agent sx-8 "- [ ] feat(game): the parent $T <!-- id:sx-8 -->"
+  row game agent sx-9 "- [ ] fix(game): a child #of/sx-8 $T <!-- id:sx-9 -->"
+  local k
+  for k in sx-1 sx-2 sx-3 sx-5 sx-6 sx-7 sx-8; do skipv "$k" unclear 'which scene is meant'; done
+  skipv sx-4 needs-person 'needs a device'
+  verdict game agent sx-9 dispatch
+  jq -c '.at = (if .key == "sx-4" then "2026-11-20T09:00:00-08:00" else "2026-11-01T09:00:00-08:00" end)' \
+    "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  # sx-1 judged again on the same text, sx-4's skip on its older text first
+  jq -c 'select(.key == "sx-1") | .at = "2026-11-20T09:00:00-08:00"' "$FLEET_DISPATCH_DIR/verdicts.jsonl" >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  jq -c 'if .key == "sx-4" then .line = "oldtext" | .at = "2026-11-01T09:00:00-08:00" else empty end' "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v"
+  cat "$FLEET_DISPATCH_DIR/verdicts.jsonl" >> "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  sed -i 's/edited row/edited row, now clear/' "$NOTES_FIXTURE/rows.game.agent"
+}
+
+@test "ask_stale_skips: a skip held 14 days asks about a #high row or a #low one another row gates on, and drops a #low one" {
+  # NEGATIVE CONTROL: before ar-2933 nothing revisited a skip, so all three sat on the board for good.
+  stale_fixture
+  run ask_stale_skips --dry-run
+  assert_success
+  assert_output "$(printf 'ask\tgame\tsx-1\tunclear\t25\ndrop\tgame\tsx-2\tunclear\t25\nask\tgame\tsx-3\tunclear\t25\nstale: ask 2 drop 1')"
+  stub agent-ask 'printf "%s\n" "agent-ask $*" >> "$NOTES_FIXTURE/calls.log"; [ "$1" = post ] && echo "ask-$(grep -c "^agent-ask post" "$NOTES_FIXTURE/calls.log")"; exit 0'
+  run ask_stale_skips
+  assert_success
+  assert_line 'asked about game: sx-1 (skipped 25 days, unclear, ask ask-1)'
+  assert_line 'dropped game: sx-2 (skipped 25 days, unclear)'
+  assert_line 'asked about game: sx-3 (skipped 25 days, unclear, ask ask-2)'
+  local post; post=$(grep '^agent-ask post' "$NOTES_FIXTURE/calls.log" | head -1)
+  [[ $post == *'--kind gate --project game'* ]] || fail "not a gate for game: $post"
+  [[ $post == *"start=start the row as it reads now, past the judge's skip|drop=drop the row from the board"* ]] || fail "options: $post"
+  [[ $post == *'skipped it since 2026-11-01 (unclear: which scene is meant)'* ]] || fail "context: $post"
+  [[ $post == *'Keep board row sx-1, which dispatch has skipped for 25 days?'* ]] || fail "question: $post"
+  grep -q '#ask/ask-1/start <!-- id:sx-1 -->' "$NOTES_FIXTURE/rows.game.agent" || fail "sx-1 not gated on its ask"
+  grep -q 'ptask game --agent drop sx-2 --why dispatch skipped it (unclear: which scene is meant) for 25 days' "$NOTES_FIXTURE/calls.log" || fail "sx-2 not dropped with its why"
+  # each asked row is gated now, so a second pass asks nothing again
+  : > "$NOTES_FIXTURE/calls.log"
+  run ask_stale_skips --dry-run
+  assert_output 'stale: '
+}
+
+@test "ask_stale_skips: DISPATCH_STALE_MAX caps a pass, DISPATCH_STALE_DAYS 0 is off, and a failed gate cancels the ask" {
+  stale_fixture
+  stub agent-ask 'printf "%s\n" "agent-ask $*" >> "$NOTES_FIXTURE/calls.log"; [ "$1" = post ] && echo ask1; exit 0'
+  DISPATCH_STALE_DAYS=0 run ask_stale_skips
+  assert_output ''
+  run grep -c '^agent-ask' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  mv "$SANDBOX/bin/notes" "$SANDBOX/bin/notes-real"
+  stub notes '[[ " $* " == *" tag "* ]] && exit 1; exec notes-real "$@"'
+  DISPATCH_STALE_MAX=1 run ask_stale_skips
+  assert_success
+  assert_output --partial 'ask_stale_skips: could not gate game agent row sx-1 on ask ask1'
+  grep -q '^agent-ask cancel ask1' "$NOTES_FIXTURE/calls.log" || fail "ask not cancelled"
+  run grep -c '^agent-ask post' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+}

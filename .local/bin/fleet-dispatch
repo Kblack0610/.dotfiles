@@ -9,6 +9,7 @@
 #   fleet-dispatch report            latest verdict per row: picked or skipped, and why
 #   fleet-dispatch verdicts          the same as JSON lines, each with plan: true for a skip by a DISPATCH_PLAN_RULES rule
 #   fleet-dispatch exits [--dry-run] give each skipped agent row its rule's exit, and move the #after/ gates on a row sent to the sheet (skip_exits; each run pass does); --dry-run lists them
+#   fleet-dispatch stale [--dry-run] ask about, or drop when #low, each agent row a skip has held DISPATCH_STALE_DAYS days (ask_stale_skips; each run pass does); --dry-run lists them
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
 #   fleet-dispatch promote --project P [--profile X] [--agent] [--dispatch] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item; --dispatch makes it a capped pull like dispatch's own
 #   fleet-dispatch pull-after [--queue-only] ID  promote, and start unless normal, low or --queue-only, the open rows gated #after/ID: agent-queue runs it when ID's item closes ok, and a pass runs it --queue-only for a row closed with no item (pull_closed_after)
@@ -92,7 +93,7 @@ DISPATCH_CONF_KEYS=(
   DISPATCH_ROLLUP_TAGS DISPATCH_PROVIDER_HOLD_MIN
   DISPATCH_SPRINT_FLOOR DISPATCH_RUN_FLOOR DISPATCH_STARVED_MIN
   DISPATCH_IDLE_CAP_PCT DISPATCH_FLAP_MOVES DISPATCH_FINDING_FRESH_MIN DISPATCH_JUDGE_MAX
-  DISPATCH_DETAIL_CHARS DISPATCH_PLAN_BACKLOG DISPATCH_EXIT_MAX DISPATCH_START_WAIT
+  DISPATCH_DETAIL_CHARS DISPATCH_PLAN_BACKLOG DISPATCH_EXIT_MAX DISPATCH_STALE_DAYS DISPATCH_STALE_MAX DISPATCH_START_WAIT
   DISPATCH_REAP_GRACE DISPATCH_REAP_CONFIRM DISPATCH_HOST_DEAD DISPATCH_PREEMPT
   DISPATCH_OFF_PROJECTS DISPATCH_CLEANUP_PROJECTS
   DISPATCH_ASK_FRESH_H DISPATCH_PREEMPT_REST DISPATCH_PLAN_RECONCILE
@@ -2500,6 +2501,106 @@ waits_gate() {
     m=$(grep -oE '\b[a-z]{2,4}-[0-9]+\b' <<<"$t" | grep -vxF -- "$own" | awk 'NR==1')
     [ -z "$m" ] || { echo "after/$m"; return 0; }
   done
+}
+
+# ask_stale_skips [--dry-run] -- an open agent row whose judge skip has stood DISPATCH_STALE_DAYS days
+# (the oldest `at` of its trailing run of skip records on the row's current text, so an edit starts
+# the count again), with no gate, #plan tag or start since, reaches the human or leaves the board: an
+# exit `hold` or a skip with no exit is one nothing revisits (ar-2933: 290 of 553 rows past 14 days).
+# A #requested, #urgent, #high, #normal or bare row, or one an open row gates #after/ on, gets one
+# gate ask, start or drop, and is gated on it (#ask/<id>/start), as ask_failed_rows does: start
+# clears the gate and picks takes it as committed work, drop settles it (settle_answered_gates), and
+# any other answer holds it on #hold/row-<id>. A #low row nothing gates on is dropped, the skip as its
+# why. Its age never ranks it: priority stays ahead of age (#2232, ask Q6vMPb). An epic, a parent, a
+# check(epics) row and a triage red skip (red_skip) are left alone. At most DISPATCH_STALE_MAX rows a
+# pass (0 is no cap); DISPATCH_STALE_DAYS 0 is off. --dry-run writes nothing and prints `<ask|drop> TAB
+# <project> TAB <id> TAB <rule> TAB <days>` per row, then the counts.
+ask_stale_skips() {
+  local dry='' board rows ages today prof p id line dsig dj rule req since days tags raw text reason body g e aid n=0
+  local -A gated=() c=()
+  case "${1:-}" in
+    '') ;;
+    --dry-run) dry=1 ;;
+    *) say "usage: fleet-dispatch stale [--dry-run]"; return 2 ;;
+  esac
+  [ "$DISPATCH_STALE_DAYS" != 0 ] || return 0
+  load_gates
+  [ -z "$GATES_FAILED" ] || { say "ask_stale_skips: $GATES_FAILED: no stale skip is asked about this pass"; return 0; }
+  board=$(notes board --json 2>/dev/null) || { say "ask_stale_skips: notes board --json failed"; return 0; }
+  while IFS= read -r id; do [ -z "$id" ] || gated[$id]=1; done < <(jq -r '.rows[]? | select(.state == "open" or .state == "doing")
+    | (.tags_cased // .tags // [])[] | select(startswith("after/")) | .[6:]' <<<"$board")
+  today=${DISPATCH_TODAY:-$(date +%F)}
+  # "<project>\t<key>" -> the day its skip began: the trailing skip records (errors aside) on one line
+  ages=$( ! [ -f "$VERDICTS" ] || jq -cRn '[inputs | fromjson? | objects | select(.lane == "agent" and .verdict != "error")]
+    | group_by([.project, .key]) | map(last as $l | select($l.verdict == "skip")
+      | reverse | (map(.verdict == "skip" and .line == $l.line) | index(false) // length) as $k
+      | {key: "\($l.project)\t\($l.key)", value: (.[0:$k] | map(.at // empty | .[0:10]) | min)})
+      | map(select(.value != null)) | from_entries' "$VERDICTS") || { say "ask_stale_skips: could not read the skip ages in $VERDICTS: no stale skip is asked about this pass"; return 0; }
+  [ -n "$ages" ] || ages='{}'
+  rows=$(jq -r --argjson prules "$(policy_rules)" --argjson n "$DISPATCH_DETAIL_CHARS" --slurpfile agesf <(printf '%s\n' "$ages") \
+      --arg today "$today" --argjson days "$DISPATCH_STALE_DAYS" --slurpfile v <(latest_verdicts) "$ROW_JQ"'
+    def day0($s): "\($s)T00:00:00Z" | fromdateiso8601;
+    $agesf[0] as $ages
+    | ($v | map(select(.lane == "agent" and .verdict == "skip" and usable($prules)))
+       | map({key: "\(.project)\t\(.key)", value: .}) | from_entries) as $by
+    | ([.rows[]? | select(.state == "open" or .state == "doing") | .tags[]? | select(startswith("of/")) | {key: .[3:], value: true}] | from_entries) as $parents
+    | .rows[]? | select(.lane == "agent" and .state == "open" and .id != null and (plan_tagged | not)
+        and (.type // "") != "epic" and ($parents[.id] | not) and "\(.type)(\(.area))" != "check(epics)") | . as $row
+    | $by["\(.project)\t\(.id)"] as $d | select($d != null and (($d | red_skip($row)) | not))
+    | $ages["\(.project)\t\(.id)"] as $s | select($s != null)
+    | ((day0($today) - day0($s)) / 86400 | floor) as $age | select($age >= $days)
+    | [.profile // "-", .project, .id, ($d.line // "-"), ($d.dsig // "-"), details_json($n), $d.rule, (.requested == true), $s, $age,
+       ((.tags_cased // .tags // []) | if length > 0 then join(" ") else "-" end),
+       (($d.reason // "") | gsub("[^ -~]|[#\"]"; "") | .[0:300] | if . == "" then "-" else . end), .raw] | map(tostring) | join("\t")' <<<"$board") \
+    || { say "ask_stale_skips: could not read the board rows: no stale skip is asked about this pass"; return 0; }
+  while IFS=$'\t' read -r prof p id line dsig dj rule req since days tags reason raw; do
+    [ -n "$id" ] || continue
+    [ "$prof" != - ] || prof=''
+    # the skip must still hold for the row as it reads now, else the judge reads it afresh
+    [ "$line" = - ] || [ "$(row_sig "$raw")" = "$line" ] || continue
+    [ "$dsig" = - ] || [ "$(detail_sig "$dj")" = "$dsig" ] || continue
+    # a gate of any form (#after/, #pr/, #ask/, #hold/ ...) is something the row waits on, not a skip nobody revisits
+    for g in $tags; do [ -z "${GATE_ST[$g]+x}" ] || continue 2; done
+    [ "$DISPATCH_STALE_MAX" = 0 ] || [ "$n" -lt "$DISPATCH_STALE_MAX" ] || break
+    body=${raw#- \[?\] }; body=${body%%<!--*}; body=${body%"${body##*[![:space:]]}"}
+    e=ask
+    [ "$req" = true ] || [ "$(prio_rank "$body")" -le 2 ] || [ -n "${gated[$id]-}" ] || e=drop
+    [ "$reason" != - ] || reason='no reason recorded'
+    if [ -n "$dry" ]; then
+      printf '%s\t%s\t%s\t%s\t%s\n' "$e" "$p" "$id" "$rule" "$days"
+      c[$e]=$(( ${c[$e]:-0} + 1 )); n=$(( n + 1 ))
+      continue
+    fi
+    if [ "$e" = drop ]; then
+      if np "$prof" ptask "$p" --agent drop "$id" --why "dispatch skipped it ($rule: $reason) for $days days, and nothing revisited it" </dev/null >/dev/null 2>&1; then
+        logline "dropped $p agent row $id: skipped ($rule) since $since"
+        echo "dropped $p: $id (skipped $days days, $rule)"
+        n=$(( n + 1 ))
+      else
+        say "ask_stale_skips: could not drop $p agent row $id"
+      fi
+      continue
+    fi
+    text=$(sed -E 's/[^ -~]|[#"]//g' <<<"$body" | cut -c1-120)
+    aid=$(env -u CLAUDE_CODE_SESSION_ID -u TMUX -u TMUX_PANE -u AGENTCTL_NAME agent-ask post --kind gate --project "$p" ${prof:+--profile "$prof"} \
+        --options "start=start the row as it reads now, past the judge's skip|drop=drop the row from the board" \
+        --recommend drop --why "the dispatch judge has passed over it for $days days, and a row still wanted reads clearer rewritten, which the judge reads again" \
+        --context "$id is a row on the $p board: \"$text\". The dispatch judge has skipped it since $since ($rule: $reason), and nothing has planned, gated or started it since. Dispatch holds it until this is answered; any other answer holds it until agent-hold release row-$id." \
+        -- "Keep board row $id, which dispatch has skipped for $days days?" </dev/null 2>/dev/null | tail -n 1)
+    [[ $aid =~ ^[A-Za-z0-9_-]+$ ]] || { logline "ask_stale_skips: the ask for $p agent row $id did not post"; continue; }
+    if np "$prof" ptask "$p" --agent tag --add "ask/$aid/start" "$id" </dev/null >/dev/null 2>&1; then
+      logline "asked about $p agent row $id, skipped ($rule) since $since: ask $aid"
+      echo "asked about $p: $id (skipped $days days, $rule, ask $aid)"
+      n=$(( n + 1 ))
+    else
+      agent-ask cancel "$aid" "fleet-dispatch could not gate row $id on it" </dev/null >/dev/null 2>&1
+      say "ask_stale_skips: could not gate $p agent row $id on ask $aid"
+    fi
+  done <<<"$rows"
+  if [ -n "$dry" ]; then
+    for e in "${!c[@]}"; do printf '%s %s\n' "$e" "${c[$e]}"; done | sort | paste -sd' ' | sed 's/^/stale: /'
+  fi
+  return 0
 }
 
 # suggest [--json] -- the Candidates list: every open agent-lane row (and every row a worker takes)
@@ -8933,7 +9034,7 @@ cmd_run() {
   pass_reset
   [ "$DRY" = 1 ] || { triage_pass; pass_mark triage; }
   # Each skip takes the exit its rule names (plan, the human, a gate); a dry run only reads.
-  [ "$DRY" = 1 ] || ! agent-hold check dispatch >/dev/null 2>&1 || skip_exits
+  [ "$DRY" = 1 ] || ! agent-hold check dispatch >/dev/null 2>&1 || { skip_exits; ask_stale_skips; }
   pace_target
   [ -n "$TOTAL_LIVE" ] || { settle BLOCKED "live sessions unreadable: the fleet state document ($FLEET_STATE_FILE) is missing or older than $DISPATCH_STATE_FRESH_MIN min, so the pace target cannot be read"; return 0; }
   say "pace target: $TOTAL_LIVE of $TARGET live sessions (the human is $TARGET_WHEN: the live ones plus the Opus sessions the Claude spend has spare at pace, at most present $DISPATCH_TARGET_PRESENT, away $DISPATCH_TARGET_AWAY)$NEEDS_NOTE"
@@ -9772,6 +9873,7 @@ main() {
     report) cmd_report ;;
     verdicts) cmd_verdicts ;;
     exits) shift; skip_exits "$@" ;;
+    stale) shift; ask_stale_skips "$@" ;;
     reap) cmd_reap ;;
     starved) cmd_starved ;;
     sprint-stalled) cmd_sprint_stalled ;;
