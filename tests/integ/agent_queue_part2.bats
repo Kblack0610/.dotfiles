@@ -1314,7 +1314,7 @@ notes --profile bnb ptask level --agent start lv-4'
   "$AQ" set bystander row=level:lv-5 >/dev/null
   [ "$(field "$(item queued mover)" row)" = level:lv-9 ]
   : > "$NOTES_FIXTURE/calls.log"
-  run "$AQ" rehome lv-9 --board arena --profile work --lane human
+  run "$AQ" rehome lv-9 --from level --board arena --profile work --lane human
   assert_success; assert_output --partial "mover: row arena:lv-9"
   f="$(item queued mover)"
   [ "$(field "$f" row)" = arena:lv-9 ]
@@ -1324,21 +1324,31 @@ notes --profile bnb ptask level --agent start lv-4'
   run grep -c ' ptask ' "$NOTES_FIXTURE/calls.log"
   assert_output 0
   # Run again, or with no item on the row: nothing to do, and no error.
-  run "$AQ" rehome lv-9 --board arena
+  run "$AQ" rehome lv-9 --from level --board arena
   assert_success; assert_output ""
-  run "$AQ" rehome lv-77 --board arena
+  run "$AQ" rehome lv-77 --from level --board arena
   assert_success; assert_output ""
-  # A started item re-points the same way, and the row it was promoted from by from= too.
+  # An item on another board that carries the same id is not the moved row's: left alone.
+  run "$AQ" rehome lv-5 --from arena --board trader
+  assert_success; assert_output ""
+  [ "$(field "$(item queued bystander)" row)" = level:lv-5 ]
+  # A started item re-points the same way.
   "$AQ" move mover running >/dev/null
-  run "$AQ" rehome lv-9 --board level
+  run "$AQ" rehome lv-9 --from arena --board level
   assert_success; assert_output --partial "mover: row level:lv-9"
   [ "$(field "$(item running mover)" row)" = level:lv-9 ]
+  # A board-promoted item (no row:, only from: board:) follows its row, from: included.
+  "$AQ" add --project game --from board:level:lv-4 --slug promoted "fix(menu): promoted" >/dev/null
+  run "$AQ" rehome lv-4 --from level --board arena
+  assert_success; assert_output --partial "promoted: row arena:lv-4"
+  [ "$(field "$(item queued promoted)" row)" = arena:lv-4 ]
+  [ "$(field "$(item queued promoted)" from)" = board:arena:lv-4 ]
   # Refusals.
-  run "$AQ" rehome lv-9
-  assert_failure; assert_output --partial "needs --board"
-  run "$AQ" rehome nope --board arena
+  run "$AQ" rehome lv-9 --board arena
+  assert_failure; assert_output --partial "needs --from"
+  run "$AQ" rehome nope --from level --board arena
   assert_failure; assert_output --partial "usage: agent-queue rehome"
-  run "$AQ" rehome lv-9 --board arena --lane both
+  run "$AQ" rehome lv-9 --from level --board arena --lane both
   assert_failure; assert_output --partial "agent or human"
 }
 

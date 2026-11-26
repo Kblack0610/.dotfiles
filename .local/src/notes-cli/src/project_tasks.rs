@@ -2327,7 +2327,10 @@ pub fn move_to_project(
     println!("moved {}\n  {src} -> {dest}", moved.line.trim());
     if let Some(id) = md::row_id(&moved.line) {
         let org = projects::project_org(p, dest);
-        rehome_items(REHOME_BIN, &id, dest, org.as_deref(), lane);
+        if org.is_none() {
+            eprintln!("note: {dest} resolves to no configured profile, so a queue item's profile: is left as it was");
+        }
+        rehome_items(REHOME_BIN, &id, src, dest, org.as_deref(), lane);
     }
     if let Some(id) = &moved.unlinked {
         // Kept in the journal log, so a child moved ahead of its epic can be linked again.
@@ -2340,14 +2343,16 @@ pub fn move_to_project(
 
 const REHOME_BIN: &str = "agent-queue";
 
-/// Run `agent-queue rehome <id> --board <dest> [--profile <org>] --lane <lane>` after a move:
+/// Run `agent-queue rehome <id> --from <src> --board <dest> [--profile <org>] --lane <lane>` after a move:
 /// the row keeps its id, so an active queue item working it still names the board it left, and
 /// its close, mark and un-start acted there (ar-5938). The move already landed, so a run that
 /// fails only says so, with the command to run by hand.
-fn rehome_items(bin: &str, id: &str, dest: &str, org: Option<&str>, lane: Lane) {
+fn rehome_items(bin: &str, id: &str, src: &str, dest: &str, org: Option<&str>, lane: Lane) {
     let mut args = vec![
         "rehome".to_string(),
         id.to_string(),
+        "--from".to_string(),
+        src.to_string(),
         "--board".to_string(),
         dest.to_string(),
         "--lane".to_string(),
@@ -6014,13 +6019,20 @@ Version: v0.0.1
         );
         assert_eq!(
             fs::read_to_string(&log).unwrap().trim(),
-            "rehome ar-9 --board trader --lane agent --profile work"
+            "rehome ar-9 --from src --board trader --lane agent --profile work"
         );
         fs::remove_file(&log).unwrap();
-        rehome_items(bin.to_str().unwrap(), "ar-9", "trader", None, Lane::Human);
+        rehome_items(
+            bin.to_str().unwrap(),
+            "ar-9",
+            "src",
+            "trader",
+            None,
+            Lane::Human,
+        );
         assert_eq!(
             fs::read_to_string(&log).unwrap().trim(),
-            "rehome ar-9 --board trader --lane human"
+            "rehome ar-9 --from src --board trader --lane human"
         );
         // A missing bin and a failing one warn and return: the move already landed.
         rehome_items(
@@ -6031,7 +6043,14 @@ Version: v0.0.1
             Lane::Agent,
         );
         fs::write(&bin, "#!/bin/sh\nexit 3\n").unwrap();
-        rehome_items(bin.to_str().unwrap(), "ar-9", "trader", None, Lane::Agent);
+        rehome_items(
+            bin.to_str().unwrap(),
+            "ar-9",
+            "src",
+            "trader",
+            None,
+            Lane::Agent,
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

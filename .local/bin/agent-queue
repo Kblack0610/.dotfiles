@@ -60,8 +60,8 @@
 #   claim <slug> [--sid id]    record a Claude session as working this item (default $CLAUDE_CODE_SESSION_ID; that own claim starts a queued item)
 #   mine [--session s | --sid id] [--newest]  the slug of the running, waiting or review item this session records;
 #       exit 2 when more than one does, unless --newest: a running one before the rest, then the one whose file changed last
-#   rehome <row-id> --board <project> [--profile <p>] [--lane agent|human]
-#       re-point every active item working board row <row-id> to that board (row:, profile:, lane:): `notes ptask move --project`
+#   rehome <row-id> --from <project> --board <project> [--profile <p>] [--lane agent|human]
+#       re-point every active item working board row <row-id> on board <from> to <board> (row:, profile:, lane:): `notes ptask move --project`
 #       calls it after a move, since the row keeps its id and the item's row: would name the board it left. The old row left with
 #       the row, so nothing is un-started (set row= un-starts it). Prints one line per item; no item works the row: no output, rc 0.
 #   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled] [--end <reason>] [--cause <cause>] [--why <text>] [--ask <id>] [--if <state>]
@@ -3577,38 +3577,45 @@ repoint_row() {
   case "$(state_of "$f")" in queued) mark_row "$f" start ;; *) mark_row "$f" run ;; esac
 }
 
-# cmd_rehome <row-id> --board <project> [--profile <p>] [--lane agent|human] -- every active item working
-# board row <row-id> now works it on <project>'s board (row:, and profile:/lane: when given). `notes ptask
-# move --project` calls it after a move: the row keeps its id and its started mark, so the item's row: named
-# a board that no longer held it, and close_row_on_item, mark_row and fleet-dispatch's close_row acted on
-# that board (ar-5938; agent-land found the row by id since ar-2751). Not `set row=`: that un-starts the row
-# the item leaves, and that row left with the move. A row two items name moves them both.
+# cmd_rehome <row-id> --from <project> --board <project> [--profile <p>] [--lane agent|human] -- every
+# active item working board row <row-id> on the board <from> left now works it on <board> (row:, and
+# profile:/lane: when given; a `from: board:` naming the old row follows it). `notes ptask move --project`
+# calls it after a move: the row keeps its id and its started mark, so the item's row: named a board that
+# no longer held it, and close_row_on_item, mark_row and fleet-dispatch's close_row acted on that board
+# (ar-5938; agent-land found the row by id since ar-2751). Ids are minted per board prefix, so an item on
+# another board with the same id is left alone. Not `set row=`: that un-starts the row the item leaves,
+# and that row left with the move. The item's project: stays, it is the work's project, not the row's.
 cmd_rehome() {
-  local id="${1:-}" board="" prof="" lane="" slug f cur n=0 rows
-  [[ "$id" =~ ^[A-Za-z][A-Za-z0-9_-]*-[0-9]+$ ]] || die "usage: agent-queue rehome <row-id> --board <project> [--profile <p>] [--lane agent|human]"
+  local id="${1:-}" from="" board="" prof="" lane="" slug f rb rows n=0 old
+  [[ "$id" =~ ^[A-Za-z][A-Za-z0-9_-]*-[0-9]+$ ]] || die "usage: agent-queue rehome <row-id> --from <project> --board <project> [--profile <p>] [--lane agent|human]"
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
+      --from) from="${2:?--from needs a project}"; shift 2 ;;
       --board) board="${2:?--board needs a project}"; shift 2 ;;
-      --profile) prof="${2:-}"; shift 2 ;;
+      --profile) prof="${2:?--profile needs a name}"; shift 2 ;;
       --lane) lane="${2:?--lane needs agent or human}"; shift 2 ;;
       *) die "rehome: unknown argument: $1" ;;
     esac
   done
-  [ -n "$board" ] || die "rehome needs --board <project>"
+  [ -n "$board" ] && [ -n "$from" ] || die "rehome needs --from <project> and --board <project>"
   case "$lane" in '' | agent | human) ;; *) die "rehome --lane is agent or human, not $lane" ;; esac
   lock
   rows="$(collect_rows $ACTIVE)" || die "could not read the queue"
-  while IFS= read -r slug; do
+  while IFS=$'\t' read -r slug rb; do
     [ -n "$slug" ] || continue
+    # The same board by name, or by owner when the map folds one project's board into another's.
+    [ "${rb,,}" = "${from,,}" ] || { [ -n "$(project_resolve "$rb")" ] && [ "$(project_resolve "$rb")" = "$(project_resolve "$from")" ]; } || continue
     f="$(find_item "$slug" any)"; [ -n "$f" ] || continue
+    old="$rb:$id"
     header_set "$f" row "$board:$id"
+    [ "$(fm_get "$f" from)" != "board:$old" ] || header_set "$f" from "board:$board:$id"
     [ -z "$prof" ] || header_set "$f" profile "$prof"
     [ -z "$lane" ] || header_set "$f" lane "$lane"
     item_event item-set "$f" --why "row=$board:$id (the row moved boards)"
     echo "$slug: row $board:$id"
     n=$((n + 1))
-  done < <(jq -r --arg id "${id,,}" --arg b "${board,,}" '.[] | select((.row // "" | ascii_downcase) as $r | ($r | endswith(":" + $id)) and $r != ($b + ":" + $id)) | .slug' <<<"$rows")
+  done < <(jq -r --arg id "${id,,}" '.[] | select((.row // "" | ascii_downcase) | endswith(":" + $id)) | [.slug, (.row | sub(":[^:]*$"; ""))] | @tsv' <<<"$rows")
 }
 
 # unstart_row <row> <profile> <lane> [<why>] -- un-start that board row through notes, the rows' one
