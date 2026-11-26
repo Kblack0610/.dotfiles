@@ -916,6 +916,25 @@ STUB
   [[ "$stderr" == *'no account has room'* ]]
 }
 
+@test "status and room: a reset more than 6 days out prints its date, not a weekday" {
+  # 2026-11-26 (ar-2755): a week that just reset lands on the weekday of today, so "Thu 16:00" read
+  # as this Thursday. Exactly 6 days (144h) keeps the weekday.
+  export CLAUDE_ACCT_NOW=$NOW TZ=UTC
+  rm -rf "${CLAUDE_ACCT_PROC:?}"/*
+  week alt 97 100
+  week main 20 144
+  run "$ACCT" status
+  assert_line --regexp "^main +- +20% +[0-9]+% +- +$(date -u -d "@$((NOW + 144 * 3600))" '+%a %H:%M') "
+  week main 20 145
+  run "$ACCT" status
+  assert_line --regexp "^main +- +20% +[0-9]+% +- +$(date -u -d "@$((NOW + 145 * 3600))" '+%m-%d %H:%M') "
+  week main 96 145
+  week alt 97 145
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  [[ "$stderr" == *"lasts to its reset $(date -u -d "@$((NOW + 145 * 3600))" '+%m-%d %H:%M')" ]]
+}
+
 @test "room: with none, the line names the closest account, how far past its pace, and when it runs out" {
   # 2026-11-05 12:33: alt 15% used with 9% of its week gone, 1 point past the 5 of slack; bnb (here
   # main) at 96%, inside its reserve. "no account has room" alone read as every account full.
