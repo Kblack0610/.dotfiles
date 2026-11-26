@@ -168,6 +168,9 @@ pub struct Pool {
     /// Seconds the oldest waiting job has waited.
     pub oldest: Option<f64>,
     pub done: Option<f64>,
+    /// Seconds a finished job of the kind usually runs: the exporter's 24h median over every
+    /// workflow (`cc:pool_run_seconds_24h`). None for the local gates and before it reports.
+    pub usual: Option<f64>,
     pub pass: Option<f64>,
     /// The share of a slot one of its jobs takes (`ci_governor_kind_weight`), as every surface
     /// prints it (`weight_text`); None for the local gates and while the governor has no series.
@@ -290,17 +293,23 @@ impl Row for Machine {
 /// running, queue and last day, and the machines that take it.
 impl Row for Pool {
     const COLUMNS: &'static [&'static str] = &[
-        "pool", "weight", "running", "waiting", "oldest", "done", "pass", "machines",
+        "pool", "weight", "running", "waiting", "oldest", "done", "usual", "pass", "machines",
     ];
     const STATES: &'static [&'static str] = &["all", "waiting"];
     const FACETS: &'static [&'static str] = &[];
     const HIDE_EMPTY: bool = true;
     const LEAD: &'static str = "pool";
     const GLANCE: &'static [&'static str] = &["waiting", "oldest", "pass"];
-    const LEGEND: &'static [(&'static str, &'static str)] = &[(
-        "weight",
-        "the share of a slot one job of the kind takes, the governor's hourly p90 measurement; 1* is not measured yet, counted as a whole slot",
-    )];
+    const LEGEND: &'static [(&'static str, &'static str)] = &[
+        (
+            "weight",
+            "the share of a slot one job of the kind takes, the governor's hourly p90 measurement; 1* is not measured yet, counted as a whole slot",
+        ),
+        (
+            "usual",
+            "how long a finished job of the kind usually runs, the median over the last 24h",
+        ),
+    ];
 
     fn val(&self, col: &str) -> Val {
         match col {
@@ -310,6 +319,7 @@ impl Row for Pool {
             "waiting" => self.waiting.into(),
             "oldest" => self.oldest.into(),
             "done" => self.done.into(),
+            "usual" => self.usual.into(),
             "pass" => self.pass.into(),
             "machines" => self.machines_cell(),
             _ => Val::None,
@@ -631,6 +641,7 @@ fn pools(infra: &Infra, cc: &HashMap<String, f64>, alias: &HashMap<String, Strin
             waiting: get("cc:pool_waiting", &p),
             oldest: get("cc:pool_oldest_wait_seconds", &p),
             done: get("cc:pool_done_24h", &p),
+            usual: get("cc:pool_run_seconds_24h", &p),
             pass: get("cc:pool_pass_ratio_24h", &p),
             machines: seats(
                 hosts
@@ -1103,6 +1114,7 @@ pub(crate) mod tests {
                 cc("cc:pool_withheld", "light", "1"),
                 cc("cc:pool_lent", "light", "1"),
                 cc("cc:pool_waiting", "light", "4"),
+                cc("cc:pool_run_seconds_24h", "light", "240"),
                 // 9 slots carry heavy, 7 of them busy with unity jobs: no heavy job runs.
                 cc("cc:pool_slots", "heavy", "9"),
                 cc("cc:pool_busy", "heavy", "0"),
@@ -1138,6 +1150,11 @@ pub(crate) mod tests {
         let light = kind("light");
         // Its withheld and lent series are read by nothing, and its slot count is no cell.
         assert_eq!(light.running, Some(3.0));
+        // How long one usually runs is the exporter's median; a kind it has none for reads none.
+        assert_eq!(
+            (light.val("usual"), kind("heavy").usual),
+            (Val::Num(240.0), None)
+        );
         let heavy = kind("heavy");
         assert_eq!(
             heavy.val("running"),
