@@ -5,6 +5,7 @@
 # A subdir is "stale" if its newest *.md (recursive) is older than $STALE_DAYS. A _live plan is
 # finished when every phase of its checklist is done (plan_left, .local/lib/plan-phases.sh: deferred
 # phases and a superseded plan count as done) and it has not changed in more than $LIVE_DAYS days.
+# A plan with a phase still open and no change in $LIVE_DAYS days is only listed, with the count.
 
 set -uo pipefail
 
@@ -128,5 +129,20 @@ if [ -d "$PLANS_DIR/.dotfiles" ]; then
     rmdir "$PLANS_DIR/.dotfiles" 2>/dev/null || true
   fi
 fi
+
+# 5. Idle plans: a phase still open and untouched more than $LIVE_DAYS days, anywhere but _archive.
+# Listed, never moved: ticking a landed phase and marking the rest `[-]` with its row (planning.md,
+# Phases) is a judgment, and once every phase is done step 2 archives a _live plan.
+echo "=== open plans untouched more than ${LIVE_DAYS}d (tick, mark [-] with a row, or supersede) ==="
+idle=0
+while IFS= read -r -d '' f; do
+  left=$(plan_left "$f")
+  case "$left" in -|0) continue ;; esac
+  m=$(stat -c %Y "$f" 2>/dev/null) || continue   # gone since the find
+  idle=$((idle + 1))
+  echo "  $(( ($(date +%s) - m) / 86400 ))d  $left open  ${f#"$PLANS_DIR"/}"
+done < <(find "$PLANS_DIR" -path "$ARCHIVE_DIR" -prune -o -type f -name '*.md' -mtime +"$LIVE_DAYS" -print0 \
+  | xargs -0r grep -lZ '^## Phases' | sort -z)
+echo "  idle plans: $idle"
 
 echo "=== done ==="

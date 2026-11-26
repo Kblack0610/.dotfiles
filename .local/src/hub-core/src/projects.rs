@@ -354,6 +354,9 @@ pub struct Card {
     pub on_time: Option<OnTime>,
     /// One entry per version the open feature epics are aimed at, earliest first.
     pub versions: Vec<VersionEpics>,
+    /// The agent board's points over the last 7 days (`board_flow`); None until [`gather`] reads
+    /// the day-log records, or when none carries points.
+    pub board_7d: Option<crate::board_flow::BoardFlow>,
 }
 
 /// A targeted version against the day the work up to it closes at the net rate: what the card,
@@ -429,6 +432,12 @@ impl Card {
         !self.running.is_empty() || self.waiting > 0
     }
 
+    /// The board grew over the last 7 days: the one condition the net cell and the Growing part
+    /// are amber on.
+    pub fn growing(&self) -> bool {
+        self.board_7d.is_some_and(|b| b.growing())
+    }
+
     /// Rows closed per week: the open version's rows closed in the last 28 days, over 4. Rounded
     /// here to the one decimal a surface prints: quarters are ties, and Rust and JS break them
     /// apart, so a surface formatting the raw value would read differently from the next.
@@ -441,8 +450,8 @@ impl Card {
 /// sorted until asked. Empty words read as no value, the `-` a surface draws.
 impl crate::table::Row for Card {
     const COLUMNS: &'static [&'static str] = &[
-        "project", "state", "profile", "stage", "version", "prio", "open", "doing", "hot", "done",
-        "7d", "pts", "pts7d", "window", "due", "pace", "run", "wait", "queued", "shipped",
+        "project", "state", "profile", "stage", "version", "prio", "open", "net7d", "doing", "hot",
+        "done", "7d", "pts", "pts7d", "window", "due", "pace", "run", "wait", "queued", "shipped",
         "oldest",
     ];
     const STATES: &'static [&'static str] = &["all", "in flight", "waiting"];
@@ -461,6 +470,7 @@ impl crate::table::Row for Card {
             "version" => self.version.as_deref().map_or(Val::None, Val::word),
             "prio" => Val::word(&self.prio),
             "open" => num(Some(self.progress.open)),
+            "net7d" => self.board_7d.map_or(Val::None, |b| Val::Num(b.net as f64)),
             "doing" => Val::Num(self.doing as f64),
             "hot" => Val::Num(self.hot as f64),
             "done" => num(Some(self.progress.done)),
@@ -542,6 +552,9 @@ pub struct Projects {
     pub board_open: Option<usize>,
     /// `totals.backlog`, the agent rows still carrying the retired backlog token, shown beside it.
     pub board_backlog: Option<usize>,
+    /// The whole agent board's points over the last 7 days, from the same day-log records as the
+    /// cards' `board_7d`; None when none carries points.
+    pub board_7d: Option<crate::board_flow::BoardFlow>,
 }
 
 /// What an ETA reads when the net rate is at or below zero: rows are filed as fast as they close.
@@ -1112,18 +1125,43 @@ pub fn gather() -> Projects {
     });
     let queue = Queue::from_reads(items, Ok(Default::default()));
     match stats {
-        Ok(stats) => build(
-            &stats,
-            feed.as_ref(),
-            &state,
-            Some(&queue),
-            chrono::Utc::now(),
-        ),
+        Ok(stats) => {
+            let mut p = build(
+                &stats,
+                feed.as_ref(),
+                &state,
+                Some(&queue),
+                chrono::Utc::now(),
+            );
+            let flows = crate::board_flow::read(
+                &crate::boards::daylog_dir(),
+                chrono::Local::now().date_naive(),
+            );
+            attach_board_flow(&mut p, &flows);
+            p
+        }
         Err(e) => Projects {
             errors: vec![e],
             ..Default::default()
         },
     }
+}
+
+/// Join the 7-day board flow onto the cards and the fleet.
+pub fn attach_board_flow(p: &mut Projects, flows: &crate::board_flow::Flows) {
+    p.board_7d = flows.fleet;
+    for c in &mut p.cards {
+        c.board_7d = flows.of(&c.name);
+    }
+}
+
+/// The `net7d` cell: points filed minus done minus dropped over 7 days, signed (`+120`, `-900`,
+/// `0`), or `-` when no day-log record carries points.
+pub fn net_cell(c: &Card) -> String {
+    c.board_7d.map_or("-".into(), |b| match b.net {
+        0 => "0".into(),
+        n => format!("{n:+}"),
+    })
 }
 
 /// The cards as JSON, each with its `summary` line, `in_flight` and `pace`, so a reader prints
@@ -1189,6 +1227,8 @@ pub fn to_json(p: &Projects) -> Value {
             j["counts"] = counts(c).into();
             j["version_lines"] = c.versions.iter().map(version_words).collect();
             j["in_flight"] = c.in_flight().into();
+            j["net7d_cell"] = net_cell(c).into();
+            j["growing"] = c.growing().into();
             j["pace"] = c.pace().into();
             j["oldest"] = wait_word(c.oldest_ready_min).into();
             if !c.running.is_empty() {
@@ -2010,6 +2050,7 @@ mod tests {
         );
         today.status = Some("ok".into());
         today.merged = Some("abc123".into());
+        today.outcome = Some("landed".into());
         // Closed today too: a check (ok, no merge) and a failed run with a merge, which counts
         // in neither.
         let mut check = item("k", State::Done, "trader", None);
@@ -2017,6 +2058,7 @@ mod tests {
         let mut failed = item("f", State::Done, "trader", None);
         (failed.finished, failed.status) = (Some(ago(0)), Some("failed".into()));
         failed.merged = Some("def456".into());
+        failed.outcome = Some("failed".into());
         let mut before = item("y", State::Done, "trader", None);
         before.finished = Some(ago(48));
         let q = Queue {
@@ -2260,5 +2302,73 @@ mod tests {
             ..Projects::default()
         });
         assert_eq!(j["cards"][0]["version_lines"][1], words[1]);
+    }
+
+    #[test]
+    fn net7d_reads_the_boards_flow_signed_amber_only_above_zero_and_a_dash_when_unread() {
+        use crate::board_flow::{BoardFlow, Flows};
+        use crate::table::{Row, Val};
+        let flow = |net: i64| BoardFlow {
+            opened: net.max(0),
+            done: (-net).max(0),
+            dropped: 0,
+            net,
+        };
+        let named = |n: &str| Card {
+            name: n.into(),
+            ..Card::default()
+        };
+        let mut p = Projects {
+            cards: vec![
+                named("grew"),
+                named("shrank"),
+                named("flat"),
+                named("quiet"),
+            ],
+            ..Projects::default()
+        };
+        let flows = Flows {
+            fleet: Some(flow(30)),
+            by_project: [
+                ("grew".to_string(), flow(120)),
+                ("shrank".into(), flow(-900)),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        attach_board_flow(&mut p, &flows);
+        let cells: Vec<(String, bool)> =
+            p.cards.iter().map(|c| (net_cell(c), c.growing())).collect();
+        assert_eq!(
+            cells,
+            [
+                ("+120".to_string(), true),
+                ("-900".to_string(), false),
+                // A project with no row moving reads 0, which is not growth.
+                ("0".to_string(), false),
+                ("0".to_string(), false)
+            ]
+        );
+        assert_eq!(p.cards[1].val("net7d"), Val::Num(-900.0));
+        assert_eq!(p.board_7d, Some(flow(30)));
+        // NEGATIVE CONTROL: with no reading at all every cell is a dash, never a 0.
+        attach_board_flow(&mut p, &Flows::default());
+        assert!(p.cards.iter().all(|c| net_cell(c) == "-" && !c.growing()));
+        assert_eq!(p.cards[0].val("net7d"), Val::None);
+        let j = to_json(&Projects {
+            cards: vec![Card {
+                board_7d: Some(flow(120)),
+                ..Card::default()
+            }],
+            ..Projects::default()
+        });
+        assert_eq!(
+            (
+                j["cards"][0]["net7d_cell"].as_str(),
+                j["cards"][0]["growing"].as_bool()
+            ),
+            (Some("+120"), Some(true))
+        );
+        assert_eq!(j["cards"][0]["board_7d"]["in"], 120);
     }
 }

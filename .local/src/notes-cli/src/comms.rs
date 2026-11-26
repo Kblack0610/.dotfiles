@@ -81,7 +81,7 @@ pub(crate) fn comms_page(summary: Option<&str>, lines: &[String]) -> status::Pag
         more: Vec::new(),
         stat: summary.map(str::to_string),
         rows,
-        reviewed: vec![],
+        head: vec![],
     }
 }
 

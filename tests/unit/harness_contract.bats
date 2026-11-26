@@ -66,8 +66,11 @@ read_facts() {
       # end_reason: fleet-dispatch's item_agy_end on an item that claimed the run, its log the fixture's.
       mkdir -p "$w/r"
       cp "$FIX/agy-success.jsonl" "$w/r/agy_1.jsonl"
+      cp "$FIX/agy-tests.jsonl" "$w/r/agy_2.jsonl"
       local row end
-      row=$(bash -c '. "$1/.local/lib/session-outcomes.sh" && so_agy_rows "$2" "$3"' _ "$REPO_ROOT" "$w/r" "$w")
+      # agy-success has the end, tokens and effort; agy-tests, the one stream that fails a test and a tool.
+      row=$(bash -c '. "$1/.local/lib/session-outcomes.sh" && so_agy_rows "$2" "$3"' _ "$REPO_ROOT" "$w/r" "$w" |
+        jq -sc '(map(select(.session_id == "agy_1"))[0]) + (map(select(.session_id == "agy_2"))[0] | {metrics})')
       end=$(HOME="$w" DISPATCH_CONF="$REPO_ROOT/tests/fixtures/fleet-dispatch.conf" LAB_STAGES="draft dev alpha beta prod" DISPATCH_AGY_RUNS="$w/r" DISPATCH_HARNESSES="$2" \
         DISPATCH_AGY_RESULT_JQ="$REPO_ROOT/.local/lib/agy-result.jq" \
         bash -c '. "$1/.local/bin/fleet-dispatch" && item_agy_end "{\"sessions\": \"agy_1\"}" 0' _ "$REPO_ROOT")
@@ -107,6 +110,10 @@ problems() {
     jq -r --arg h "$h" --arg keys "$KEYS" '.harnesses[$h] as $e | (($e.reports // {}) | (keys - ($keys | split(" ")))[] | "\($h) reports.\(.): not a contract fact"),
       (($e.why_not // {}) | keys[] | select((if . == "resume" then $e.resume else $e.reports[.] end) != false) | "\($h) why_not.\(.): the fact is not false"),
       ($e | select(has("max_tier") and ([1, 2, 3] | index($e.max_tier) | not)) | "\($h) max_tier: \(.max_tier | tojson) is not 1, 2 or 3")' "$map"
+    # route() reads `capabilities` (fleet-dispatch harness_needs_why): a harness lists, from the map's vocabulary, each one it has.
+    jq -r --arg h "$h" '.harnesses[$h].capabilities as $c | (.capabilities // {}) as $voc
+      | (select($c | type != "array") | "\($h) capabilities: not a list (\($c | tojson))"),
+        (select($c | type == "array") | $c[] | select(. as $n | ($voc | has($n | tostring)) | not) | "\($h) capabilities: \(. | tojson) is not in the map'"'"'s capabilities")' "$map"
     jq -r --arg h "$h" '.harnesses[$h] as $e | ($e.end_classifier // "") as $c
       | (select(($e.reports.end_reason == true) != ($c != "")) | "\($h) end_classifier: \(if $c == "" then "none" else $c end) disagrees with reports.end_reason \($e.reports.end_reason)"),
         (select($c != "" and (["codex", "opencode", "agy", "claude"] | index($c) | not)) | "\($h) end_classifier: \($c | tojson) is not codex, opencode, agy or claude")' "$map"
@@ -119,17 +126,17 @@ problems() {
 
 # fixture_map -> a map with one harness of each reader kept, to doctor in the negative controls.
 fixture_map() {
-  jq -n '{harnesses: {
-    codex: {launcher: "codex", end_classifier: "codex", resume: true, reports: {end_reason: true, tokens: true, cost: true, hard_errors: true, tests: true, effort: true},
+  jq -n '{capabilities: {code_review: {why: "w"}, unity_gate: {stack: "unity", why: "w"}}, harnesses: {
+    codex: {launcher: "codex", capabilities: [], end_classifier: "codex", resume: true, reports: {end_reason: true, tokens: true, cost: true, hard_errors: true, tests: true, effort: true},
             prices: {"gpt-6.1-sol": {input: 2, cached_input: 0.1, output: 10}}},
-    "opencode-go": {launcher: "opencode", end_classifier: "opencode", resume: false, reports: {end_reason: true, tokens: true, cost: true, hard_errors: false, tests: false, effort: false},
+    "opencode-go": {launcher: "opencode", capabilities: [], end_classifier: "opencode", resume: false, reports: {end_reason: true, tokens: true, cost: true, hard_errors: false, tests: false, effort: false},
           why_not: {resume: "r", hard_errors: "h", tests: "t", effort: "f"}},
-    "lazer-reserve": {launcher: "claude-lazer", end_classifier: "claude", resume: false, reports: {end_reason: true, tokens: true, cost: false, hard_errors: true, tests: true, effort: false},
+    "lazer-reserve": {launcher: "claude-lazer", capabilities: ["code_review", "unity_gate"], end_classifier: "claude", resume: false, reports: {end_reason: true, tokens: true, cost: false, hard_errors: true, tests: true, effort: false},
                      why_not: {resume: "r", cost: "c", effort: "f"}},
-    "claude-lazer": {end_classifier: "claude", resume: false, reports: {end_reason: true, tokens: true, cost: false, hard_errors: true, tests: true, effort: false},
+    "claude-lazer": {capabilities: ["code_review", "unity_gate"], end_classifier: "claude", resume: false, reports: {end_reason: true, tokens: true, cost: false, hard_errors: true, tests: true, effort: false},
                      why_not: {resume: "r", cost: "c", effort: "f"}},
-    agy: {launcher: "agy", end_classifier: "agy", resume: false, reports: {end_reason: true, tokens: true, cost: false, hard_errors: false, tests: false, effort: true},
-          why_not: {resume: "r", cost: "c", hard_errors: "h", tests: "t"}}}}' > "$SANDBOX/harnesses.json"
+    agy: {launcher: "agy", capabilities: [], end_classifier: "agy", resume: false, reports: {end_reason: true, tokens: true, cost: false, hard_errors: true, tests: true, effort: true},
+          why_not: {resume: "r", cost: "c"}}}}' > "$SANDBOX/harnesses.json"
 }
 
 @test "the real harnesses.json keeps the contract: every fact stated, a why_not on each false, a fixture for each true" {
@@ -154,7 +161,7 @@ fixture_map() {
   # cost in thousandths: jq 1.6 prints the stored 0.042 as 0.0420000000000000026.
   assert_equal "$(reader opencode "$SANDBOX/harnesses.json" | jq -c '[.end_reason, .tokens, (.cost * 1000 | round)]')" '["stopped",480,42]'
   assert_equal "$(reader claude-lazer "$SANDBOX/harnesses.json" | jq -c '[.end_reason, .tokens, .hard_errors.tool_errors, .tests]')" '["provider",35,1,1]'
-  assert_equal "$(reader agy "$SANDBOX/harnesses.json" | jq -c '[.end_reason, .tokens, .effort]')" '["stopped",17998,"low"]'
+  assert_equal "$(reader agy "$SANDBOX/harnesses.json" | jq -c '[.end_reason, .tokens, .effort, .hard_errors.tool_errors, .hard_errors.api_error, .tests]')" '["stopped",17998,"low",2,1,1]'
 }
 
 @test "negative controls: a false with no why, a true no reader proves, an unstated fact, a stray key, a stale why, a max_tier that is no tier and launcher siblings that disagree each fail" {
@@ -166,7 +173,7 @@ fixture_map() {
       | .harnesses.codex.why_not = {tokens: "stale"}
       | .harnesses["lazer-reserve"].reports.cost = true | .harnesses["lazer-reserve"].why_not |= del(.cost)
       | .harnesses["opencode-go"].max_tier = "1"
-      | .harnesses.cloud = {resume: false, reports: {end_reason: false, tokens: true, cost: false, hard_errors: false, tests: false, effort: false},
+      | .harnesses.cloud = {capabilities: [], resume: false, reports: {end_reason: false, tokens: true, cost: false, hard_errors: false, tests: false, effort: false},
                             why_not: {resume: "r", end_reason: "e", cost: "c", hard_errors: "h", tests: "t", effort: "f"}}' \
     "$SANDBOX/harnesses.json" > "$SANDBOX/bad.json"
   run problems "$SANDBOX/bad.json"
@@ -180,6 +187,17 @@ fixture_map() {
   assert_line 'lazer-reserve: states other facts than claude-lazer on the same launcher'
   assert_line 'opencode-go max_tier: "1" is not 1, 2 or 3'
   assert_equal "${#lines[@]}" 9
+}
+
+@test "negative control: a capability the map's vocabulary lacks, a harness with none stated and a non-list each fail" {
+  fixture_map
+  jq '.harnesses.codex.capabilities = ["unity_gat"] | del(.harnesses.agy.capabilities) | .harnesses["opencode-go"].capabilities = "code_review"' \
+    "$SANDBOX/harnesses.json" > "$SANDBOX/bad.json"
+  run problems "$SANDBOX/bad.json"
+  assert_line 'codex capabilities: "unity_gat" is not in the map'"'"'s capabilities'
+  assert_line 'agy capabilities: not a list (null)'
+  assert_line 'opencode-go capabilities: not a list ("code_review")'
+  assert_equal "${#lines[@]}" 3
 }
 
 @test "negative control: reports.end_reason and end_classifier disagree either way, or the classifier is no reader, and each fails" {

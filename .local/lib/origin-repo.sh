@@ -48,9 +48,34 @@ origin_on_github() {
   case "$host" in ''|github.com|ssh.github.com|github.com-*) return 0 ;; *) return 1 ;; esac
 }
 
+# forge_marked <checkout> -- exit 0 when the checkout commits the mirror workflow, the marker that
+# says Forgejo is the repo's canonical forge (home-config), whether or not failover is on.
+forge_marked() { [ -n "$1" ] && { [ -f "$1/.forgejo/workflows/mirror-to-github.yaml" ] || [ -f "$1/.forgejo/workflows/mirror-to-github.yml" ]; }; }
+
+# forge_repo_name <checkout> -> the repo's name on its GitHub mirror (the key of its failover state):
+# the last path part of the first remote on github.com, else the name of the main checkout's directory,
+# so every worktree of a repo reads one state file. forge-guard.py's repo_name is the same rule.
+forge_repo_name() {
+  local rn url
+  for rn in $(git -C "$1" remote 2>/dev/null); do
+    url=$(git -C "$1" remote get-url --push "$rn" 2>/dev/null) || continue
+    case "$(url_host "$url")" in github.com|ssh.github.com|github.com-*) url_repo "$url" | sed 's#.*/##'; return 0 ;; esac
+  done
+  basename "$(dirname "$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)")"
+}
+
+# forge_failover_file <checkout> -> the path of the repo's failover state file. Its one writer is
+# forge-failover; it exists exactly while the repo lands on GitHub.
+forge_failover_file() { printf '%s/%s\n' "${FORGE_STATE_DIR:-$HOME/.local/state/forge}" "$(forge_repo_name "$1")"; }
+
+# forge_failover_on <checkout> -- exit 0 while forge-failover has the repo landing on GitHub.
+# An empty or missing state directory answers without a git call: every reader asks per checkout.
+forge_failover_on() { compgen -G "${FORGE_STATE_DIR:-$HOME/.local/state/forge}/*" >/dev/null && [ -f "$(forge_failover_file "$1")" ]; }
+
 # forge_canonical <checkout> -- exit 0 when the repo's canonical forge is Forgejo: it commits the
-# mirror workflow, the marker forge-guard.py reads (home-config).
-forge_canonical() { [ -n "$1" ] && { [ -f "$1/.forgejo/workflows/mirror-to-github.yaml" ] || [ -f "$1/.forgejo/workflows/mirror-to-github.yml" ]; }; }
+# mirror workflow, the marker forge-guard.py reads (home-config), and forge-failover is not on. With
+# failover on, every reader (agent-land, forge-guard, fleet-dispatch, project-map) sees a GitHub repo.
+forge_canonical() { forge_marked "$1" && ! forge_failover_on "$1"; }
 
 # github_over_https -- route this process's git traffic for github.com over HTTPS, so the gh
 # credential helper (its token is in ~/.config/gh/hosts.yml, readable with nobody logged in)

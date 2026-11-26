@@ -20,7 +20,7 @@ them, and a source it cannot read keeps the previous value and is named in .unre
                              judge-eval --all --json (each lane's score_7d, as the Workers cell)
   ci-failures --json         pass rate per workflow, reds on main, failure buckets
   scripts/ci/ci-cost.py --json  gates, runner-hours, re-gates, quarantine (a repo that has one)
-  hub ci hosts               each runner group's pass over its last 50 jobs, from the job archive
+  hub ci hosts               each runner group's pass over its last 50 jobs, from the job archive (a week idle: left out)
   agent-queue list --json    who did what: each merged PR's author and reviewer, each closed trainee
                              row's outcome, and the per-agent tally (work.by_agent)
 
@@ -276,9 +276,9 @@ def trainee_outcome(item, start, end, live):
         return None
     if not trainee_authored(item):
         return "sent_back"
-    if item.get("status") == "failed":
+    if item.get("status") == "failed":   # a provider or quota end too: the trainee view names it in why
         return "failed"
-    return "merged" if item.get("status") == "ok" and (item.get("pr") or item.get("merged")) else None
+    return "merged" if item.get("outcome") == "landed" else None
 
 
 def trainee_rows(items, reviewers, start, end, live):
@@ -547,12 +547,15 @@ def ci_pass(start, end, branch=None):
 
 
 HOST_JOBS = 50   # a runner group's pass is over its last 50 jobs, so a quiet host is judged as a busy one
+HOST_IDLE_DAYS = 7  # a group with no job in the week before the day ended is a retired host, not a quiet one
 
 
 def ci_hosts(end):
     """({runner group: {runs, green, pass}}, error) from `hub ci hosts`: the same verdict over each
-    runner group's last HOST_JOBS jobs that completed before the day ended, from the job archive."""
-    return run_json(cmd("DAYLOG_HUB_CMD") + ["ci", "hosts", "--until", str(end), "--last", str(HOST_JOBS)])
+    runner group's last HOST_JOBS jobs that completed before the day ended, from the job archive,
+    leaving out a group with no job in the HOST_IDLE_DAYS before it (a host the fleet retired)."""
+    return run_json(cmd("DAYLOG_HUB_CMD") + ["ci", "hosts", "--since", str(end - HOST_IDLE_DAYS * 86400),
+                                            "--until", str(end), "--last", str(HOST_JOBS)])
 
 
 def ci_cost(clone, base, day, start, end):
