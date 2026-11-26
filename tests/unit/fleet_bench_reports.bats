@@ -3550,7 +3550,7 @@ STUB
   assert_output --partial 'ascii-agent-run-contract'
 }
 
-@test "canary start and score: start moves a clean worktree to base; score lays the oracle over it, records once, puts a linked tree back at base clean with its diff kept, and a session's own edit to the oracle does not count" {
+@test "canary start and score: start moves a clean worktree to base; score lays the oracle over it, records once, puts a linked tree back on the branch start found it on (a tree start never moved: at base), clean, with its diff kept, and a session's own edit to the oracle does not count" {
   canary_fixture
   git -C "$CREPO" worktree add -q -b s1 "$SANDBOX/wt1" main
   cd "$SANDBOX/wt1"
@@ -3563,14 +3563,21 @@ STUB
   assert_success
   assert_line --index 1 'fix(greet): say hello'
   assert_equal "$(git rev-parse HEAD)" "$CBASE"
+  # A second start keeps the place the first found (s1), not the base it left (ar-5935).
+  run "$SUBJECT" canary start greet
+  assert_success
+  assert_equal "$(cat "$(git rev-parse --path-format=absolute --git-path fleet-bench-canary)")" s1
   # The session games its own copy of the oracle and leaves greet.sh alone: the merge copy scores it.
   mkdir -p tests; echo 'exit 0' > tests/check.sh
   CLAUDE_CODE_SESSION_ID=c1 AGENT_QUEUE_ITEM=canary-greet-w1 run "$SUBJECT" canary score greet
   assert_success
   assert_output --partial 'canary greet: fail (exit 1)'
-  # Scored, the tree is back at base and clean, so wt reaps it; the run's diff waits beside its log.
-  assert_equal "$(git rev-parse HEAD)" "$CBASE"
+  # Scored, the tree is back on the branch start found it on (s1, ar-5935) and clean, so wt reaps it; the
+  # run's diff waits beside its log.
+  assert_equal "$(git symbolic-ref --short HEAD)" s1
+  assert_equal "$(git rev-parse HEAD)" "$CMERGE"
   assert_equal "$(git status --porcelain)" ''
+  [ ! -e "$(git rev-parse --path-format=absolute --git-path fleet-bench-canary)" ] || fail "the restored tree kept start's record"
   # It is the session's own diff, taken before the oracle was laid over it: its gamed copy, not the PR's.
   grep -qx '+exit 0' "$FLEET_BENCH_DIR/canary/canary-greet-w1.patch" || fail "the run's diff was not kept"
   ! grep -q 'hello' "$FLEET_BENCH_DIR/canary/canary-greet-w1.patch" || fail "the oracle's overlay leaked into the run's diff"

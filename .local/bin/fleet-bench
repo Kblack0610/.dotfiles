@@ -128,7 +128,7 @@
 #                                the PR's own tests as the oracle. queue adds one canary item per task
 #                                a week (retro runs it), retire cancels an earlier week's queued ones, start puts the session's worktree at the
 #                                task's base, score lays the oracle over it, records pass or fail once
-#                                per run and puts the tree back at base, clean (its diff kept as <run>.patch); verify proves each oracle fails at base, passes at merge;
+#                                per run and puts the tree back where start found it, clean (its diff kept as <run>.patch); verify proves each oracle fails at base, passes at merge;
 #                                shepherd compares the shepherd's pass lanes (its CANARY_MODEL) by model, over the span every lane ran;
 #                                list --by sets each lane beside the claude lane on their shared tasks;
 #                                matrix is BENCH_MATRIX's kind by stack grid and run modes for one
@@ -7454,28 +7454,48 @@ canary_lane() {
 }
 
 # canary start <id>: the session's own worktree, clean, moved to the task's base (detached), tests/vendor linked in.
+# The caller's place (its branch, else its commit) is kept in the tree's own git dir (canary_mark) for score to put
+# back (ar-5935: a detached session tree lost its branch); a second start keeps the first one's. A start that fails
+# after its checkout puts the tree back there.
 # A base that leaves untracked a path HEAD tracks is refused and the tree put back: git could not remove a directory
 # that is not empty (a populated submodule at a base before it was one, muxpoon in ar-5933, or ignored files in a
 # tracked one), which score's clean would delete, and the run would start on a tree that is not base.
 canary_start() {
-  local t top base orig left
+  local t top base orig left mark
   t=$(canary_task "${1:?usage: fleet-bench canary start <id>}") || return 2
   top=$(git rev-parse --show-toplevel 2>/dev/null) || { say "canary start: not in a git worktree"; return 2; }
   base=$(jq -r .base <<<"$t")
   git -C "$top" cat-file -e "$base^{commit}" 2>/dev/null || { say "canary start: $top has no commit $base"; return 2; }
   [ -z "$(git -C "$top" status --porcelain)" ] || { say "canary start: $top has uncommitted changes"; return 2; }
-  orig=$(git -C "$top" symbolic-ref -q --short HEAD || git -C "$top" rev-parse HEAD) || return 1
+  mark=$(canary_mark "$top") || return 1
+  # A record counts only on a detached tree, the one an earlier start left; on a branch the caller is here.
+  { ! git -C "$top" symbolic-ref -q HEAD >/dev/null && [ -s "$mark" ] && orig=$(<"$mark"); } ||
+    orig=$(git -C "$top" symbolic-ref -q --short HEAD || git -C "$top" rev-parse HEAD) || return 1
   git -C "$top" checkout -q --detach "$base" || return 1
+  printf '%s\n' "$orig" >"$mark" || { canary_restore "$top" "$orig"; say "canary start: could not record $orig in $mark, so $top stays at $orig"; return 1; }
   left=$(git -C "$top" -c core.quotePath=false ls-files --others --exclude-standard --directory | while IFS= read -r p; do
            [ -z "$(git -C "$top" ls-tree --name-only "$orig" -- "${p%/}")" ] || printf '%s\n' "${p%/}"
          done | paste -sd ' ')
   if [ -n "$left" ]; then
-    git -C "$top" checkout -q "$orig" || { say "canary start: $base leaves $left untracked in $top, and $top could not be put back at $orig"; return 1; }
+    canary_restore "$top" "$orig" || { say "canary start: $base leaves $left untracked in $top, and $top could not be put back at $orig"; return 1; }
     say "canary start: $base leaves $left untracked in $top (git could not remove a tracked directory that is not empty: a submodule's copy, or ignored files in it), so $top stays at $orig"; return 2
   fi
   # Here, outside the lane sandbox, so the run can run the tests its brief names (canary_vendor).
-  canary_vendor "$top" "$base" || { say "canary start: could not link $top/tests/vendor, so the run would have no bats"; return 1; }
+  canary_vendor "$top" "$base" || {
+    canary_restore "$top" "$orig" || say "canary start: $top could not be put back at $orig"
+    say "canary start: could not link $top/tests/vendor, so the run would have no bats"; return 1; }
   printf 'canary %s: %s is at %s\n%s\n' "$1" "$top" "${base:0:10}" "$(jq -r .task <<<"$t")"
+}
+
+# canary_mark <tree> -> the file in the tree's own git dir (per worktree) that holds the place canary start found it at
+canary_mark() { git -C "$1" rev-parse --path-format=absolute --git-path fleet-bench-canary; }
+
+# canary_restore <tree> <place> -> the tree checked out at <place> (a branch it attaches, else a commit,
+# detached), and its canary_mark removed; rc 1 when the checkout fails, the mark kept
+canary_restore() {
+  if git -C "$1" show-ref --verify -q "refs/heads/$2"; then git -C "$1" checkout -q "$2" --
+  else git -C "$1" checkout -q --detach "$2" --; fi || return 1
+  rm -f "$(canary_mark "$1")"
 }
 
 # canary_keep <tree> <base> <patch> -> the run's own diff from base saved to <patch>, before the oracle
@@ -7499,7 +7519,7 @@ canary_keep() {
 CANARY_UNRUN_ENDS="$UNRATED_ENDS timeout"
 
 # canary score <id>: run the oracle over the session's tree and append one score row, then put the tree
-# back at the task's base, clean, so wt reaps it as landed (a dirty one was held forever: 23 of 134
+# back where canary start found it (its branch, canary_mark), clean, so wt reaps it as landed (a dirty one was held forever: 23 of 134
 # held trees on 2026-11-18); the run's diff stays as <run>.patch beside its log (canary_keep). A run is
 # the queue item ($AGENT_QUEUE_ITEM) or the task and week, and it scores once: a second score is refused.
 # Why the session ended is the item's end_reason, which fleet-dispatch's canary tail writes from the harness's
@@ -7508,7 +7528,7 @@ CANARY_UNRUN_ENDS="$UNRATED_ENDS timeout"
 # positive control run (canary_control) is marked control, and when it fails it says that its whole week now
 # reads instrument (canary_graded).
 canary_score() {
-  local t top run log rc=0 cfg r repos lane base reset=1 id="${1:-}" end='' pass verdict control
+  local t top run log rc=0 cfg r repos lane base reset=1 id="${1:-}" end='' pass verdict control mark orig
   t=$(canary_task "${id:?usage: fleet-bench canary score <id>}") || return 2
   [ $# -eq 1 ] || { say "usage: fleet-bench canary score <id>"; return 2; }
   top=$(git rev-parse --show-toplevel 2>/dev/null) || { say "canary score: not in a git worktree"; return 2; }
@@ -7551,7 +7571,11 @@ canary_score() {
   [ "$control" != true ] || [ "$pass" != false ] ||
     say "canary score: the positive control failed, so every run of $(jq -rn --arg r "$run" --argjson e "$(now)" "$JQ_LIB"'{run: $r, epoch: $e} | canary_batch') reads instrument, in no rate (fix the oracle or the sandbox, then rerun)"
   # The score is recorded, so a tree left dirty is said, not failed: the run's item still closes.
-  [ -n "$reset" ] || return 0
+  mark=$(canary_mark "$top") || mark=''
+  if [ -z "$reset" ]; then
+    [ -z "$mark" ] || [ ! -s "$mark" ] || say "canary score: canary start found $top at $(<"$mark"), and it stays where the run left it"
+    return 0
+  fi
   { git -C "$top" reset -q --hard "$base" && git -C "$top" clean -fdq; } ||
     { say "canary score: could not put $top back at ${base:0:10}, so wt reap leaves it"; return 0; }
   # A repo the run made (its own .git directory) goes too; a submodule's copy (.git a file, its git dir in the
@@ -7559,6 +7583,11 @@ canary_score() {
   while IFS= read -r p; do
     [[ "$p" != */ ]] || [ ! -d "$top/$p.git" ] || rm -rf -- "${top:?}/$p"
   done < <(git -C "$top" -c core.quotePath=false ls-files --others --exclude-standard --directory)
+  # Then back where canary start found it (canary_mark), so a session's tree is on its branch again (ar-5935).
+  if [ -s "$mark" ]; then
+    orig=$(<"$mark")
+    canary_restore "$top" "$orig" || say "canary score: could not put $top back on $orig, so it stays at ${base:0:10}"
+  fi
   [ -z "$(git -C "$top" status --porcelain)" ] ||
     say "canary score: $top keeps $(git -C "$top" -c core.quotePath=false status --porcelain | cut -c4- | paste -sd ' ') after its reset, so wt reap leaves it"
 }
