@@ -370,6 +370,22 @@ load 'agent_queue/common'
   [ "$(jq -r .slug <<<"$output")" = b-high ]
 }
 
+@test "list skips an item file with no slug header, names it on stderr and logs it once (ar-5848)" {
+  "$AQ" add --project game --slug a-item "a"
+  printf 'just some text, no header\n' > "$AGENT_QUEUE_DIR/queued/stray.md"
+  run bash -c "'$AQ' list --json 2>'$SANDBOX/err' | jq -r '.slug'"
+  assert_success
+  assert_output "a-item"
+  grep -q "skipping .*stray.md: no slug header" "$SANDBOX/err"
+  run "$AQ" next --json
+  assert_success
+  [ "$(jq -r .slug <<<"$output")" = a-item ]
+  "$AQ" list --json >/dev/null 2>&1
+  [ "$(grep -c 'stray.md' "$AGENT_QUEUE_DIR/headerless.log")" = 1 ]
+  # NEGATIVE CONTROL: a file whose header has its slug is listed, and is not logged.
+  [ "$(grep -c 'a-item' "$AGENT_QUEUE_DIR/headerless.log")" = 0 ]
+}
+
 @test "list fails, never prints an empty queue, when the queue cannot be read" {
   "$AQ" add --project game --slug a-item "a"
   # The one read every listing goes through (items_json) fails; every other jq is the real one.
