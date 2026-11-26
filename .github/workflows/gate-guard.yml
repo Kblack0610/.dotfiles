@@ -41,12 +41,14 @@ jobs:
         run: ci-fresh-workspace
       # The PR's head with all history for the merge base, but no old file contents: the check
       # reads trees and the few blobs it diffs. Only .github is written out unless overlay needs
-      # the whole tree.
+      # the whole tree. git fetches each blob it diffs on demand, so the checkout keeps its
+      # read-only token: in a private repo (the BNB callers) the fetch fails without it
+      # (unity-core-playground run 45784377483). Only git reads the token; no step runs the PR's code.
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           path: repo
-          persist-credentials: false
+          persist-credentials: true
           fetch-depth: 0
           filter: blob:none
           sparse-checkout-cone-mode: false
