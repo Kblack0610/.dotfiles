@@ -42,7 +42,7 @@ LOOSE = re.compile(r"^\s*continue-on-error:\s*(true|\$\{\{)")
 SHOWN = 5  # reasons printed per ratchet file; a new baseline adds hundreds
 
 
-def git(*args):
+def run_git(*args):
     r = subprocess.run(["git", *args], capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError("git %s: %s" % (" ".join(args), r.stderr.strip()))
@@ -77,7 +77,7 @@ def mode_of(path, rules):
     return None
 
 
-def jobs(text):
+def job_ids(text):
     """The job ids of a workflow file's top-level jobs: block."""
     out, indent, on = set(), None, False
     for line in (text or "").splitlines():
@@ -99,7 +99,7 @@ def jobs(text):
 def changed_lines(mb, head, path):
     """(removed, added) lines of one file, from a zero-context diff."""
     removed, added = [], []
-    for line in git("diff", "--no-color", "--no-ext-diff", "-U0", mb, head, "--", path).splitlines():
+    for line in run_git("diff", "--no-color", "--no-ext-diff", "-U0", mb, head, "--", path).splitlines():
         if line.startswith(("---", "+++")):
             continue
         if line.startswith("-"):
@@ -143,7 +143,7 @@ def holds(mb, head, rules):
         if show(mb, implicit) is not None:
             rules.insert(0, ("edit", implicit))
     out = []
-    for row in git("diff", "--no-renames", "--name-status", mb, head).splitlines():
+    for row in run_git("diff", "--no-renames", "--name-status", mb, head).splitlines():
         status, _, path = row.partition("\t")
         mode = mode_of(path, rules)
         if mode == "edit":
@@ -156,8 +156,8 @@ def holds(mb, head, rules):
             if len(found) > SHOWN:
                 out.append("%s: and %d more such lines" % (path, len(found) - SHOWN))
         if path.startswith(WORKFLOW_DIRS) and path.endswith((".yml", ".yaml")) and mode != "edit":
-            before = jobs(show(mb, path))
-            after = jobs(show(head, path)) if status != "D" else set()
+            before = job_ids(show(mb, path))
+            after = job_ids(show(head, path)) if status != "D" else set()
             out += ["%s: drops the job `%s`" % (path, j) for j in sorted(before - after)]
             if status != "D":
                 out += ["%s: adds `%s`" % (path, a.strip()) for a in changed_lines(mb, head, path)[1] if LOOSE.match(a)]
@@ -173,7 +173,7 @@ def event_labels():
     return [l.get("name", "") for l in (ev.get("pull_request") or {}).get("labels") or []]
 
 
-def check(argv):
+def check_cmd(argv):
     list_file, labels, pos, it = None, None, [], iter(argv)
     for a in it:
         if a == "--list":
@@ -187,7 +187,7 @@ def check(argv):
         return 2
     base, head = pos
     try:
-        mb = git("merge-base", base, head).strip()
+        mb = run_git("merge-base", base, head).strip()
         if list_file:
             with open(list_file) as f:
                 rules = parse_list(f.read())
@@ -219,7 +219,7 @@ def main(argv):
         print(LABEL)
         return 0
     if argv[:1] == ["check"]:
-        return check(argv[1:])
+        return check_cmd(argv[1:])
     print(__doc__.split("\n\n")[1], file=sys.stderr)
     return 2
 
