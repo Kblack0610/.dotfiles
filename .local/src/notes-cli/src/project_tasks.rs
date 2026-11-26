@@ -1079,7 +1079,8 @@ impl Writer {
     }
 
     /// A person at a terminal: the one writer that may move, reprioritize or relock an open
-    /// sprint's rows (`window::refuse_held`, `window::refuse_relock`).
+    /// sprint's rows, or move a queued one's (`window::refuse_held`, `window::refuse_queued`,
+    /// `window::refuse_relock`).
     pub(crate) fn is_person(&self) -> bool {
         self.person
     }
@@ -1938,6 +1939,7 @@ pub fn move_task(
     if Some(to) != cur {
         crate::window::refuse_held(&proj, cur, &was, writer, "moving")?;
     }
+    crate::window::refuse_queued(&proj, &was, writer, "moving")?;
     write_sheet(&path, &new)?;
     let to_s = projects::fmt_version(to);
     log.info(
@@ -2017,13 +2019,15 @@ pub fn move_to_project(
             refuse_epic_on_board(lane, &[&row])?;
         }
         let what = format!("moving to {dest}");
+        let src_proj = projects::project_dir(p, src)?;
         crate::window::refuse_held(
-            &projects::project_dir(p, src)?,
+            &src_proj,
             version_in(&src_dir, &src_content),
             &row,
             writer,
             &what,
         )?;
+        crate::window::refuse_queued(&src_proj, &row, writer, &what)?;
     }
     let held = row_ids(&projects::project_dir(p, dest)?);
     let Some(moved) = transfer(&src_sheet, &dest_sheet, pick, to, &held)? else {
@@ -2212,6 +2216,7 @@ pub fn step(
     if to != cur {
         crate::window::refuse_held(&proj, Some(cur), &line, writer, &format!("{dir_word} of"))?;
     }
+    crate::window::refuse_queued(&proj, &line, writer, &format!("{dir_word} of"))?;
 
     let (retagged, note) = project_sweep::retag(&line, to, to == cur);
     let Some((new, _)) =
@@ -4234,15 +4239,18 @@ fn refuse_rewrite(
         return Ok(());
     };
     let after = md::one_priority(&rewrite(&line));
-    if md::task_priority(&after) == md::task_priority(&line)
-        && sheet::target(&after) == sheet::target(&line)
-    {
+    let moved = sheet::target(&after) != sheet::target(&line);
+    if !moved && md::task_priority(&after) == md::task_priority(&line) {
         return Ok(());
     }
     let proj = projects::project_dir(p, name)?;
     let cur = version_in(&lane.dir(&proj), &content);
     let what = "changing the priority or version of";
-    crate::window::refuse_held(&proj, cur, &line, writer, what)
+    crate::window::refuse_held(&proj, cur, &line, writer, what)?;
+    if moved {
+        crate::window::refuse_queued(&proj, &line, writer, "changing the version of")?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -6457,6 +6465,97 @@ mod inbox_tests {
         assert!(
             s.lines()
                 .any(|l| l.contains("id:sc-1") && l.contains("#v0.1.1")),
+            "{s}"
+        );
+    }
+
+    // ar-3941 (2026-11-20): ucp-2743..2764 moved from the queued v0.5.5 to v0.5.6 kept their
+    // place in v0.5.5's snapshot. Only a person moves a queued sprint's committed row out of it.
+    #[test]
+    fn only_a_person_moves_a_row_out_of_a_queued_sprint() {
+        let v = vault(
+            "queued",
+            "",
+            "- [ ] fix(a): queued row #v0.1.1 <!-- id:sc-1 -->\n\
+             - [ ] fix(b): uncommitted row #v0.1.1 <!-- id:sc-2 -->\n",
+        );
+        let dir = v.root.join("projects/scratch");
+        fs::create_dir_all(dir.join("sprints")).unwrap();
+        fs::write(
+            crate::window::sprint_path(&dir, (0, 1, 1)),
+            "# scratch v0.1.1 sprint\n\n## Committed\n<!-- window: opened=2026-11-20 due=2026-11-21 cut=2026-11-21T04:00 start=2026-11-20T04:00 -->\n- fix(a): queued row #v0.1.1 <!-- id:sc-1 -->\n<!-- /window -->\n",
+        )
+        .unwrap();
+        assert!(crate::window::read(&dir, (0, 1, 1)).is_some());
+        let argv = vec!["/bin/zsh".to_string()];
+        let item = Writer::of(
+            Some("q1".to_string()),
+            None,
+            None,
+            None,
+            &argv,
+            false,
+            Vec::new(),
+        );
+        let person = Writer::of(None, None, None, None, &argv, false, Vec::new());
+        let id = |i: &str| Pick::Id(i.to_string());
+        let held = id("sc-1");
+        let before = v.read();
+        let refused = |r: Result<i32>| {
+            let e = r.expect_err("refused").to_string();
+            assert!(
+                e.contains("queued v0.1.1 sprint") && e.contains("relock"),
+                "{e}"
+            );
+        };
+        let mv = |pick: &Pick, to: &str, w: &Writer| {
+            move_task(&v.p, &v.log, "scratch", pick, to, Lane::Human, w)
+        };
+        refused(mv(&held, "v0.1.2", &item));
+        refused(mv(&held, "v0.1.0", &item));
+        refused(step(&v.p, &v.log, "scratch", &held, 1, Lane::Human, &item));
+        refused(step(&v.p, &v.log, "scratch", &held, -1, Lane::Human, &item));
+        let words = retext(
+            &v.p,
+            &v.log,
+            "scratch",
+            &held,
+            Some("fix(a): queued row #v0.1.2"),
+            None,
+            &[],
+            false,
+            None,
+            Lane::Human,
+            &item,
+        );
+        refused(words);
+        let other = v.root.join("projects/other");
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join("summary.md"), "# other\n").unwrap();
+        fs::write(
+            other.join("README.md"),
+            "# other\nVersion: v0.1.0\n\n## Tasks\n",
+        )
+        .unwrap();
+        refused(move_to_project(
+            &v.p,
+            &v.log,
+            "scratch",
+            "other",
+            &held,
+            None,
+            Lane::Human,
+            &item,
+        ));
+        assert_eq!(v.read(), before, "a refusal writes nothing");
+        // A row tagged for the queued version but not in its snapshot moves.
+        assert_eq!(mv(&id("sc-2"), "v0.1.2", &item).unwrap(), 0);
+        // NEGATIVE CONTROL: the person moves the committed row.
+        assert_eq!(mv(&held, "v0.1.2", &person).unwrap(), 0);
+        let s = v.read();
+        assert!(
+            s.lines()
+                .any(|l| l.contains("id:sc-1") && l.contains("#v0.1.2")),
             "{s}"
         );
     }

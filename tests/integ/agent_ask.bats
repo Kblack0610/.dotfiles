@@ -2106,8 +2106,9 @@ SH
   chmod +x "$SANDBOX/bin/hub-figure"
   assert_equal "$("$AGENT_ASK" count --all)" 17
   assert_equal "$("$AGENT_ASK" count demo)" 1
-  # Negative control: no reader, no count; never a 0.
-  rm "$SANDBOX/bin/hub-figure"
+  # Negative control: an unread figure, no count; never a 0. A reader that fails, not a removed
+  # one: removed, PATH found the workstation's own hub-figure and its live count (ar-4589).
+  printf '#!/bin/sh\nexit 1\n' >"$SANDBOX/bin/hub-figure"
   assert_equal "$("$AGENT_ASK" count --all)" '?'
 }
 
