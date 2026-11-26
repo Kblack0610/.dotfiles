@@ -5748,18 +5748,18 @@ TRIAGE_CANCEL_WHY='the red cleared or agents are trying it again (fleet-bench tr
 # An answered ask holds nothing: its answer was tried, so a red back once more is a new question.
 triage_ask_held() {
   local st at why tok
-  st=$(sed -n 's/^status: //p' <<<"$1" | head -n 1)
+  st=$(sed -n '/^status: /{s///p;q;}' <<<"$1")
   [ "$st" != pending ] || return 0
   [ "$st" = cancelled ] || return 1
-  why=$(sed -n 's/^closed_reason: //p' <<<"$1" | head -n 1)
+  why=$(sed -n '/^closed_reason: /{s///p;q;}' <<<"$1")
   [ "$why" != "$TRIAGE_CANCEL_WHY" ] || return 1
-  at=$(sed -n 's/^closed_at: //p' <<<"$1" | head -n 1)
+  at=$(sed -n '/^closed_at: /{s///p;q;}' <<<"$1")
   at=$(date -d "$at" +%s 2>/dev/null) && [ $(( $(now) - at )) -lt "$TRIAGE_ASK_HOLD_SEC" ] && return 0
   # Words shaped like a queue slug (hc-1133) are looked up in <items>; six-character words with a
   # capital or a digit (mHHGUX) are asked of agent-ask, so a plain word costs no call.
   for tok in $(grep -oE '[A-Za-z0-9]+(-[0-9]+)?' <<<"$why" | sort -u); do
     if [[ "$tok" =~ ^[a-z]+-[0-9]+$ ]]; then
-      jq -e --arg s "$tok" 'any(.[]; .slug == $s and (.state == "queued" or .state == "running" or .state == "review" or .state == "waiting"))' <<<"$2" >/dev/null 2>&1 && return 0
+      jq -e --arg s "$tok" 'any(.[]; .slug == $s and (.state | IN("queued", "running", "review", "waiting")))' <<<"$2" >/dev/null 2>&1 && return 0
     elif [[ "$tok" =~ ^[A-Za-z0-9]{6}$ && "$tok" =~ [A-Z0-9] ]]; then
       $TRIAGE_ASK_CMD show "$tok" 2>/dev/null | grep -qx 'status: pending' && return 0
     fi
