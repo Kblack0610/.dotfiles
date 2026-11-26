@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# forge-failover - move a Forgejo-canonical repo's landing to its GitHub mirror while Forgejo is down,
+# and back afterward without losing a merge (home-config docs/gitops.md "Failover").
+#
+#   forge-failover on [repo]      GitHub becomes the landing forge: write the state file, set the GitHub
+#                                 repo variable FORGE_FAILOVER=1 (the mirror's reject-pull-requests
+#                                 workflow then leaves PRs open)
+#   forge-failover off [repo]     fast-forward Forgejo's default branch to GitHub's, then clear both.
+#                                 Refuses, state kept, when Forgejo holds a commit GitHub lacks.
+#   forge-failover status [repo]  on or off, since when
+#
+# repo: a checkout directory or a project-map name (default: the current directory). The repo must commit
+# the mirror marker (forge_marked). State: one file per repo under ~/.local/state/forge/ (FORGE_STATE_DIR),
+# the only thing forge_canonical, forge-guard.py (and so agent-land, fleet-dispatch, project-map) read.
+# Nothing here forces a push: a diverged branch stops the run. FORGE_GH is the gh binary (a test seam).
+set -euo pipefail
+
+die() { echo "forge-failover: $*" >&2; exit 1; }
+lib="$(dirname "$(readlink -f "$0")")/../lib"
+# shellcheck source=../lib/origin-repo.sh
+. "$lib/origin-repo.sh"
+gh=${FORGE_GH:-gh}
+
+verb=${1:-}; shift || true
+case "$verb" in on|off|status) ;; *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;; esac
+
+arg=${1:-.}
+if [ -d "$arg" ]; then
+  dir=$arg
+else
+  map=${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}
+  dir=$(jq -r --arg n "$arg" 'first(.paths | to_entries[] | select(.value == $n) | .key) // empty' "$map" 2>/dev/null)
+  dir=${dir/#\~/$HOME}
+  [ -d "$dir" ] || die "$arg is neither a directory nor a project in $map"
+fi
+top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || die "$dir is not a git checkout"
+forge_marked "$top" || die "$top does not commit .forgejo/workflows/mirror-to-github.yaml: it is not Forgejo-canonical, so there is nothing to fail over"
+
+# rurl <remote>: the URL as configured, not as url.<base>.insteadOf rewrites it (the drill maps both to local paths).
+rurl() { git -C "$top" config --get "remote.$1.pushurl" || git -C "$top" config --get "remote.$1.url"; }
+
+# The two remotes: the one on github.com (the mirror) and the first other (Forgejo).
+ghr='' fjr=''
+for rn in $(git -C "$top" remote); do
+  case "$(url_host "$(rurl "$rn")")" in
+    github.com|ssh.github.com|github.com-*) [ -n "$ghr" ] || ghr=$rn ;;
+    *) [ -n "$fjr" ] || fjr=$rn ;;
+  esac
+done
+[ -n "$ghr" ] || die "$top has no remote on github.com"
+[ -n "$fjr" ] || die "$top has no Forgejo remote"
+slug=$(url_repo "$(rurl "$ghr")")
+state=$(forge_failover_file "$top")
+
+case "$verb" in
+  status)
+    if [ -f "$state" ]; then echo "on since $(jq -r .since "$state" 2>/dev/null || echo unknown): $slug lands on GitHub"
+    else echo "off: $slug lands on Forgejo"; fi ;;
+  on)
+    if [ -f "$state" ]; then echo "already on ($state)"; exit 0; fi
+    # The variable first: if GitHub refuses it, nothing has switched, and the failure is the answer.
+    "$gh" variable set FORGE_FAILOVER --body 1 --repo "$slug" >/dev/null || die "could not set FORGE_FAILOVER on $slug: GitHub is not usable, so landing there would stall"
+    mkdir -p "$(dirname "$state")"
+    jq -n --arg since "$(date -u +%FT%TZ)" --arg slug "$slug" --arg gh "$ghr" --arg fj "$fjr" '{since:$since, github:$slug, github_remote:$gh, forgejo_remote:$fj}' > "$state"
+    echo "on: $slug now lands on GitHub (remote $ghr). When Forgejo is back: forge-failover off $arg" ;;
+  off)
+    [ -f "$state" ] || { echo "already off"; exit 0; }
+    branch=$(git -C "$top" ls-remote --symref "$ghr" HEAD | sed -n 's#^ref: refs/heads/\([^[:space:]]*\)[[:space:]]*HEAD$#\1#p')
+    [ -n "$branch" ] || die "could not read $ghr's default branch; failover stays on"
+    git -C "$top" fetch -q "$ghr" "$branch" || die "fetch from $ghr failed; failover stays on"
+    gh_tip=$(git -C "$top" rev-parse FETCH_HEAD)
+    fj_tip=$(git -C "$top" ls-remote "$fjr" "refs/heads/$branch" | cut -f1) || die "Forgejo ($fjr) is unreachable; failover stays on"
+    if [ -n "$fj_tip" ] && [ "$fj_tip" != "$gh_tip" ]; then
+      git -C "$top" fetch -q "$fjr" "$branch" || die "fetch from $fjr failed; failover stays on"
+      git -C "$top" merge-base --is-ancestor "$fj_tip" "$gh_tip" ||
+        die "$fjr/$branch ($fj_tip) holds commits $ghr/$branch ($gh_tip) lacks: they diverged. Merge them by hand into one branch, push it to both, then run this again. Failover stays on."
+    fi
+    git -C "$top" push -q "$fjr" "$gh_tip:refs/heads/$branch" || die "push to $fjr was refused; failover stays on"
+    [ "$(git -C "$top" ls-remote "$fjr" "refs/heads/$branch" | cut -f1)" = "$gh_tip" ] || die "$fjr/$branch is not at $gh_tip after the push; failover stays on"
+    "$gh" variable delete FORGE_FAILOVER --repo "$slug" >/dev/null || die "Forgejo is caught up, but deleting FORGE_FAILOVER on $slug failed; failover stays on, run this again"
+    rm -f "$state"
+    echo "off: $fjr/$branch fast-forwarded to $gh_tip; $slug lands on Forgejo again" ;;
+esac
