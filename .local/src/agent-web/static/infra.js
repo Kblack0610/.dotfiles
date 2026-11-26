@@ -43,8 +43,6 @@ const gLink = (uid, text) => grafanaBase() ? `<a class="glink" href="${esc(grafa
 // 759 done 24h, 91% passed`; the booking only once a CI node reports.
 // Glance::up_line: `12/12` runners up of the roster, `-/-` with no runner read.
 const upLine = (g) => (g.expected ? `${g.up}/${g.expected}` : "-/-");
-// Glance::alert as a tile hue: red only while a runner is down, never green with no runner read.
-const alertHue = (g) => ({ red: "var(--b-needs)", ok: "var(--b-done)" })[g && g.alert] || "var(--c-other)";
 function glanceHead(g) {
   let s = `${g.busy} running, ${g.queued} queued`;
   if (g.queued > 0 && g.oldest != null) s += ` (oldest ${secs(g.oldest)})`;
@@ -60,19 +58,25 @@ const offLine = (g) => (g.off.length ? `cloud: ${g.off.length} host${g.off.lengt
 const pendingText = (p) => `${p.kind}${p.n > 1 ? ` x${p.n}` : ""} (${+p.cpu.toFixed(2)} cpu ${bytes(p.mem)}${p.n > 1 ? " each" : ""})`;
 const pendingLine = (g) => (g && g.pending && g.pending.length ? `<div class="cline warn">waiting for room: ${esc(g.pending.map(pendingText).join(", "))}</div>` : "");
 
-// `g` is hub_core::ci::Glance: jobs running, the queue, runners up and the one CI alert.
+// `g` is hub_core::ci::Glance: jobs running, the queue and runners up.
+// A tile's hue is the rollup's verdict on its domain (cc:domain_status, the max of the domain's
+// components and watches that cc:overall_status is the max of), so a tile never reads red under
+// an OK OVERALL or green under a RED one (ar-5013); the text keeps the count. A component alone
+// would not do: k3s/nodes, ci/pools and agents/runners stop at 1, and the red comes from the
+// domain's watches row. No domain series is no data, never a guess.
 function kpis(cc, g) {
   const one = (n) => (cc[n] || {})[""];
+  const hue = (d) => { const [w, c] = statusOf((cc["cc:domain_status"] || {})[d]); return [c, `${d} rollup ${w}`]; };
   const nodes = [one("cc:k3s_nodes_ready"), one("cc:k3s_nodes_total")];
   const beats = [one("cc:machines_up"), one("cc:machines_total")];
   const hosted = one("cc:github_hosted_running");
   const where = [g ? `${g.queued} queued, ${upLine(g)} runners up` : "", g && offLine(g), hosted > 0 ? `+${hosted} github-hosted` : ""].filter(Boolean).join(", ");
-  const ok = (a, b) => (a != null && a === b ? "var(--b-done)" : "var(--b-needs)");
+  const [hn, tn] = hue("k3s"), [hb, tb] = hue("machines"), [hc, tc] = hue("ci"), [hr, tr] = hue("agents");
   return `<div class="tiles roomy">${
-    tile("NODES", `${nodes[0] ?? "?"}/${nodes[1] ?? "?"}`, ok(nodes[0], nodes[1]))}${
-    tile("HEARTBEATS", `${beats[0] ?? "?"}/${beats[1] ?? "?"}`, ok(beats[0], beats[1]))}${
-    tile("CI RUNNING", g ? `${g.busy}` : "?", alertHue(g), where)}${
-    tile("AGENT RUNNERS", `${one("cc:runners_failed") ?? "?"} failed`, one("cc:runners_failed") ? "var(--b-needs)" : "var(--b-done)", `of ${one("cc:runners_total") ?? "?"}`)}${
+    tile("NODES", `${nodes[0] ?? "?"}/${nodes[1] ?? "?"}`, hn, tn)}${
+    tile("HEARTBEATS", `${beats[0] ?? "?"}/${beats[1] ?? "?"}`, hb, tb)}${
+    tile("CI RUNNING", g ? `${g.busy}` : "?", hc, [where, tc].filter(Boolean).join("; "))}${
+    tile("AGENT RUNNERS", `${one("cc:runners_failed") ?? "?"} failed`, hr, `of ${one("cc:runners_total") ?? "?"}; ${tr}`)}${
     tile("WATCHES", `${one("cc:watches_tripped") ?? "?"} tripped`, one("cc:watches_tripped") ? "var(--b-stalled)" : "var(--b-done)", `of ${one("cc:watches_total") ?? "?"}, ${one("cc:watches_stale") ?? 0} stale`, "#alerts/watches")}${
     tile("SPEND", "on Costs", "var(--c2)", "the LAZER pool, Claude 24h and every cut", "#costs")}${
     tile("SESSIONS", `${one("cc:sessions_working") ?? "?"}/${one("cc:sessions_total") ?? "?"}`, "var(--b-working)", `working, ${one("cc:sessions_attention") ?? 0} need you`)}</div>`;
