@@ -239,19 +239,28 @@ EOF2
   assert_line --regexp '^FAIL +dev +A doc nowhere$'
   assert_line --regexp '^FAIL +dev +A word only outside the docs$'
   assert_line --regexp '^FAIL +dev +An ignored file$'
-  refute_output --partial 'no origin/HEAD'
+  refute_output --partial 'no default branch fetched'
 }
 
-@test "doc helpers read the working tree with no origin, and warn when origin has no origin/HEAD" {
+@test "doc helpers read origin's default branch with no origin/HEAD, as merge_proof_ref finds it" {
   origin_repo
   git -C "$REPO" remote set-head origin -d
   run "$CHECK" shooter
-  assert_output --partial 'has an origin but no origin/HEAD'
+  refute_output --partial 'no default branch fetched'
+  assert_line --regexp '^PASS +dev +A doc on origin$'
+}
+
+@test "doc helpers read the working tree with no origin, and warn when origin has no default branch fetched" {
+  origin_repo
+  git -C "$REPO" remote set-head origin -d
+  git -C "$REPO" update-ref -d refs/remotes/origin/main
+  run "$CHECK" shooter
+  assert_output --partial 'has an origin but no default branch fetched'
   assert_line --regexp '^FAIL +dev +A doc on origin$'
   git -C "$REPO" remote remove origin
   docs_tree
   run "$CHECK" shooter
-  refute_output --partial 'no origin/HEAD'
+  refute_output --partial 'no default branch fetched'
   assert_line --regexp '^PASS +dev +A doc on origin$'
   assert_line --regexp '^PASS +dev +Its text on origin$'
   assert_line --regexp '^PASS +dev +Its path on origin$'

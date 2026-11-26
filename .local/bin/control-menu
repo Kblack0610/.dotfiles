@@ -177,7 +177,10 @@ click() {
         hyprctl dispatch "hl.dsp.exec_cmd([==[$cmd]==])" >/dev/null
         return
     fi
-    setsid -f sh -c "$cmd" >/dev/null 2>&1 </dev/null
+    # HUP is ignored from before the fork until after setsid(): the pane closes as this returns,
+    # and a child not yet detached would die with it, losing the click (ui control_menu.bats
+    # test 10). env restores it, since a shell cannot reset a signal ignored on entry.
+    (trap '' HUP; exec setsid -f env --default-signal=HUP sh -c "$cmd") >/dev/null 2>&1 </dev/null
 }
 
 # action <key> <left|right> [arg]: execute (come back to the list) for a click that runs in
