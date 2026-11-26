@@ -78,8 +78,8 @@ pub fn resolve_path(p: &Profile, target: &str) -> Option<PathBuf> {
         // makes a project silently resolve to "" and vanish from its bus. `?` because an org may
         // legitimately have no projects root, which is not the same as an unknown target.
         "projects" => p.projects.clone()?,
-        "inbox" => p.inbox.clone(),
-        "inbox-today" => p.inbox.join(format!(
+        "captures" => p.captures.clone(),
+        "captures-today" => p.captures.join(format!(
             "{}.md",
             Local::now().date_naive().format("%Y-%m-%d")
         )),
@@ -1145,7 +1145,7 @@ fn read_bounded(
 /// - Reports (first): the report stream, [`crate::report::inbox_lines`].
 /// - Needs you: each line still in the outbox, once, with intake's latest why when it left the
 ///   line unfiled (`in the outbox, not filed: <line>`); each ask intake made of the human; and
-///   today's quick-captures (the bullet lines in `inbox/<today>.md`, each with a short
+///   today's quick-captures (the bullet lines in `captures/<today>.md`, each with a short
 ///   `(sess <id>)` suffix when it carried a session marker, so it links back via `claude -r`).
 ///   A line intake left that is no longer in the outbox, and a write intake refused, are
 ///   intake's own, so they are counted and never listed here.
@@ -1262,7 +1262,7 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)], score: Option<&str>) -
             detail,
         });
     }
-    let captures: Vec<String> = fs::read_to_string(p.inbox.join(format!("{today}.md")))
+    let captures: Vec<String> = fs::read_to_string(p.captures.join(format!("{today}.md")))
         .unwrap_or_default()
         .lines()
         .filter(|l| l.trim_start().starts_with("- "))
@@ -1497,7 +1497,7 @@ fn refresh_inbox(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
 }
 
 fn inbox_present(p: &Profile) -> bool {
-    p.inbox.is_dir() && crate::ingest::path(p).exists()
+    p.captures.is_dir() && crate::ingest::path(p).exists()
 }
 
 /// `notes ingest page`: publish the inbox page alone, which the sweep runs after each pass so

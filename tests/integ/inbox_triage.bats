@@ -893,7 +893,7 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
 
 @test "outbox: a #p: line moves and files with no model, and the inbox page says where it went" {
   sheet '' ''
-  mkdir -p "$HOME/.notes/lab/inbox"   # the capture inbox: a machine without one publishes no page
+  mkdir -p "$HOME/.notes/lab/captures"   # the capture inbox: a machine without one publishes no page
   outbox '- [ ] chore(build): drop the old cache #low #p:scratch\n- [ ] stays for the model\n'
   answer '{"n": 1, "action": "skip", "why": "no project named"}'
   # The page's triage score is judge-eval's inbox-triage cell, read as given: never counted again.
@@ -993,7 +993,7 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
   assert_output --partial '- [ ] stays for the model'
   run "$NOTES_BIN" ingest page
   page="$(find "$HOME/.notes" -path '*status/inbox.md' | head -1)"
-  [ -n "$page" ] || { mkdir -p "$HOME/.notes/lab/inbox"; "$NOTES_BIN" ingest page; page="$(find "$HOME/.notes" -path '*status/inbox.md' | head -1)"; }
+  [ -n "$page" ] || { mkdir -p "$HOME/.notes/lab/captures"; "$NOTES_BIN" ingest page; page="$(find "$HOME/.notes" -path '*status/inbox.md' | head -1)"; }
   run cat "$page"
   assert_output --partial '- in the outbox, not filed: zz-9: yes'
   assert_output --partial 'why: no open row zz-9'
@@ -1286,7 +1286,7 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
   outbox '- [ ] chore(build): drop the old cache #p:scratch\n'
   run "$TRIAGE"
   assert_success
-  mkdir -p "$HOME/.notes/lab/inbox"
+  mkdir -p "$HOME/.notes/lab/captures"
   printf 'The table.\n' >"$BATS_TEST_TMPDIR/body.md"
   run "$NOTES_BIN" report add --title 'Board cut P9' --summary 'Cut 3 rows.' --body "$BATS_TEST_TMPDIR/body.md"
   assert_success
@@ -1319,7 +1319,7 @@ ask_stub() {
   assert_output --partial 'moved 0 from the outbox, filed 0, left 0, refused 0, answered 1'
   run cat "$HOME/.notes/outbox.md"
   refute_output --partial 'mac'
-  run cat "$HOME/.notes/lab/inbox/$(date +%F).md"
+  run cat "$HOME/.notes/lab/captures/$(date +%F).md"
   assert_output --regexp '- [0-9]{2}:[0-9]{2} ask: is my mac ok\? - Yes, the mac is fine\.'
   assert_output --partial '  up 3 days, load 0.2'
   refute_output --partial '#ask'
@@ -1344,7 +1344,7 @@ ask_stub() {
   run "$TRIAGE"
   assert_success
   assert_output --partial 'answered 1'
-  run cat "$HOME/.notes/lab/inbox/$(date +%F).md"
+  run cat "$HOME/.notes/lab/captures/$(date +%F).md"
   assert_output --regexp '- [0-9]{2}:[0-9]{2} investigate: why is the nas slow - Disk 3 is resyncing\.'
   # negative control: a #ask reply stops at 12 lines, so line 14 is the longer look's alone
   assert_output --partial '  evidence 14'
@@ -1385,7 +1385,7 @@ ask_stub() {
   assert_failure
   run cat "$HOME/.notes/outbox.md"
   assert_output --partial '#ask is my mac ok?'
-  [ ! -e "$HOME/.notes/lab/inbox/$(date +%F).md" ] || fail "an answer was written with no block"
+  [ ! -e "$HOME/.notes/lab/captures/$(date +%F).md" ] || fail "an answer was written with no block"
   [ "$(wc -l <"$NOTES_FIXTURE/ask.log")" = 1 ] || fail "asked more than once in a sweep"
   run "$TRIAGE"
   [ "$(wc -l <"$NOTES_FIXTURE/ask.log")" = 1 ] || fail "the refused question was asked again"

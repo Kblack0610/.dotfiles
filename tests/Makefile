@@ -109,7 +109,7 @@ test-files: $(BATS)
 PR_BASE ?= $(shell git -C "$(HERE)" merge-base HEAD origin/main 2>/dev/null)
 test-pr: $(BATS)
 	@[ -n "$(PR_BASE)" ] || { echo "test-pr: no merge-base with origin/main: git fetch origin, or pass PR_BASE=<rev>" >&2; exit 2; }; \
-	diff=$$(git -C "$(HERE).." diff --name-only "$(PR_BASE)") || exit 2; \
+	diff=$$(git -C "$(HERE).." diff --no-renames --name-only "$(PR_BASE)") || exit 2; \
 	new=$$(git -C "$(HERE).." ls-files --others --exclude-standard) || exit 2; \
 	changed=$$(printf '%s\n%s\n' "$$diff" "$$new" | grep . | sort -u); \
 	[ -n "$$changed" ] || { echo "test-pr: no change against $(PR_BASE)"; exit 0; }; \

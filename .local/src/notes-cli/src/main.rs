@@ -96,7 +96,7 @@ enum Cmd {
         all: bool,
     },
     /// Print a resolved profile path for editor/shell integration.
-    /// target: daily (default) | daily-dir | archive | refs | refs-today | root | backlog | scheduled | recurring | zettel | meetings | index | inbox | inbox-today
+    /// target: daily (default) | daily-dir | archive | refs | refs-today | root | backlog | scheduled | recurring | zettel | meetings | index | captures | captures-today
     Path {
         #[arg(default_value = "daily")]
         target: String,
@@ -1010,7 +1010,7 @@ enum OutboxCmd {
         raw: Vec<String>,
     },
     /// Take the `#ask` or `#investigate` line that is RAW byte for byte out of the outbox and write
-    /// it, with the answer on stdin, to today's `inbox/<date>.md` (the sweep's write path for a look)
+    /// it, with the answer on stdin, to today's `captures/<date>.md` (the sweep's write path for a look)
     Answer {
         #[arg(required = true, num_args = 1..)]
         raw: Vec<String>,
@@ -1182,13 +1182,13 @@ struct RecordArgs {
 enum InboxCmd {
     /// List pending captures, oldest-first (the triage view); this is the default
     List,
-    /// Quick-capture: append a timestamped line to today's `inbox/<date>.md`
+    /// Quick-capture: append a timestamped line to today's `captures/<date>.md`
     Add {
         /// Capture text (free-form)
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
-    /// Drain triaged captures into `inbox/_archive/` (pick one selector)
+    /// Drain triaged captures into `captures/_archive/` (pick one selector)
     Archive {
         /// A specific capture filename (or path) to archive
         target: Option<String>,
@@ -1693,7 +1693,7 @@ fn main() -> Result<()> {
             }
             None => {
                 eprintln!(
-                    "unknown path target '{target}' (want: daily, daily-dir, refs, refs-today, root, backlog, scheduled, recurring, zettel, meetings, archive, index, projects, inbox, inbox-today)"
+                    "unknown path target '{target}' (want: daily, daily-dir, refs, refs-today, root, backlog, scheduled, recurring, zettel, meetings, archive, index, projects, captures, captures-today)"
                 );
                 2
             }
