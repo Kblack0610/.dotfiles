@@ -1323,6 +1323,8 @@ EOF
 @test "a red watch item routed to its owner lands while the watch trips, and its PR still resolves the watch (ar-5414)" {
   cat >"$SANDBOX/bin/watch-companion-loop" <<'EOF'
 #!/usr/bin/env bash
+# the quarantine read (no quarantine here) is no probe, so it is not logged
+[ "$1" != quarantined ] || exit 0
 printf 'watch-companion-loop %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
 echo "TRIP: spend still over limit"
 exit 1
