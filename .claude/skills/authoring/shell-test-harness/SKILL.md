@@ -7,34 +7,68 @@ metadata:
   tags: [testing, shell, bats, dotfiles]
   system: [tests]
   reviewed: "2026-11-23"
-  # The local test runs CI replaces; hand_methods.py denies them in an agent session (a human
-  # terminal never reaches the hook). The four rows share one command-position prefix (after a
-  # separator, a shell, sudo, xargs, a loop or if keyword, or VAR=x): change all four together.
+  # The local test-suite runs CI replaces, in any repo: hand_methods.py denies them in an agent
+  # session (a human terminal never reaches the hook). Each row denies a suite and passes one named
+  # test file, so a session iterates on a file here and CI runs the rest; lint is in no row. The
+  # rows are the guard's data list: a suite runner found in another repo (plan P7) is one more row
+  # or one more name in a row's group. All rows share one command-position prefix (after a
+  # separator, a shell, sudo, xargs, a loop or if keyword, or VAR=x): change them together.
+  # `where` leaves out playtest-bot, which has no pre-merge CI, so its local run is the only one.
   replaces:
+    # make test and every test-* target but test-files, the next row; lint is not one.
     - match: |-
-        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:\S*/)?g?make(?=\s)[^;&|()`\n]{0,300}?\s(?:test(?:-[\w-]+)?|lint)(?=[\s;&|)]|$)
-      use: &ci "push the branch and let the PR's CI run it: `shell tests` runs what `tests/pick.sh` picks (`tests/pick.sh unit origin/main`, and `integ`, lists them without running; the picks are on the run's Summary page), `rust` the crates, `lint` the lint, and agent-land waits for those checks. A negative control is a pushed commit that breaks the subject, read red in CI, then reverted (shell-test-harness section 3)"
+        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-(?!n(?=\s))\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:[^\s=]*/)?g?make(?=\s)[^;&|()`\n]{0,300}?\stest(?:-(?!files(?=[\s;&|)]|$))[\w-]+)?(?=[\s;&|)]|$)
+      use: &ci "push the branch and let the PR's CI run the suite. To iterate here, name one test file, which passes, and so does lint: `bats <file>.bats`, `tests/run-bats.sh <file>.bats`, `make -C tests test-files FILES=<file>.bats` (unquoted: the guard cannot count files inside quotes), `vitest <file>.test.ts`, `pytest <file>.py`, `cargo test -p <crate> <name>`, `make -C tests lint`. In dotfiles `tests/pick.sh unit origin/main` (and `integ`, `rust`) lists what the PR's `shell tests` job will pick, and agent-land waits for those checks. A negative control is a pushed commit that breaks the subject, read red in CI, then reverted (shell-test-harness section 3)"
       mode: deny
-      where: &dotfiles '(?:^|/)(?:\.dotfiles|\.worktrees/dotfiles-(?!private-)[^/]+)(?:/|$)'
-      why: &load "agent test runs held the workstation at load 40 on 28 cores, about 500% CPU of bats in dotfiles worktrees, which holds dispatch (2026-11-23, epic ar-4846); CI runs the same files off it"
+      where: &has_ci '^(?!.*/playtest-bot(?:-[^/]*)?(?:/|$))'
+      why: &load "agent test-suite runs held the workstation at load 40 on 28 cores, about 500% CPU of bats in dotfiles worktrees, which holds dispatch (2026-11-23, epic ar-4846); CI runs the same suites off it, and one named file takes seconds of one core"
+    # test-files passes with one unquoted FILES=<file>.bats, given once.
     - match: |-
-        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:\S*/)?(?:bats|run-bats\.sh|docker\.sh|rust\.sh|rust-crates\.sh|lint\.sh|lint-files\.sh|fleet-agent-smoke\.sh)(?=[\s;&|)]|$)
+        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-(?!n(?=\s))\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:[^\s=]*/)?g?make(?=\s)(?!(?=[^;&|()`\n]*\sFILES=[^\s;&|()`\n*?'\"]*\.bats(?=[\s;&|)]|$))(?![^;&|()`\n]*\sFILES=[^;&|()`\n]*\sFILES=))[^;&|()`\n]{0,300}?\stest-files(?=[\s;&|)]|$)
       use: *ci
       mode: deny
-      where: *dotfiles
+      where: *has_ci
+      why: *load
+    # a bats or run-bats.sh run passes when every argument is a .bats file (no glob), a flag but -r, a flag's value or a redirection.
+    - match: |-
+        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-(?!n(?=\s))\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:[^\s=]*/)?(?:bats|run-bats\.sh)(?=[\s;&|)]|$)(?!(?=(?:\s+(?:(?:-f|--filter|-j|--jobs|-F|--formatter|-o|--output|--report-formatter|--filter-tags|--filter-status|--gather-test-outputs-in|--setup-suite-file|--code-quote-style|--line-reference-format)(?:\s+|=)[^\s;&|()`\n]+|(?!(?:-f|--filter|-j|--jobs|-F|--formatter|-o|--output|--report-formatter|--filter-tags|--filter-status|--gather-test-outputs-in|--setup-suite-file|--code-quote-style|--line-reference-format)(?=[\s=;&|)]|$))-(?!(?:r|-recursive)(?=[\s;&|)]|$))[^\s;&|()`\n]*|\d*[<>]+(?:&\d*|\s*[^\s;&|()`\n<>]+)|[^\s;&|()`\n*?<>]*\.bats(?=[\s;&|)]|$)))*?\s+[^\s;&|()`\n*?<>]*\.bats(?=[\s;&|)]|$))(?:\s+(?:(?:-f|--filter|-j|--jobs|-F|--formatter|-o|--output|--report-formatter|--filter-tags|--filter-status|--gather-test-outputs-in|--setup-suite-file|--code-quote-style|--line-reference-format)(?:\s+|=)[^\s;&|()`\n]+|(?!(?:-f|--filter|-j|--jobs|-F|--formatter|-o|--output|--report-formatter|--filter-tags|--filter-status|--gather-test-outputs-in|--setup-suite-file|--code-quote-style|--line-reference-format)(?=[\s=;&|)]|$))-(?!(?:r|-recursive)(?=[\s;&|)]|$))[^\s;&|()`\n]*|\d*[<>]+(?:&\d*|\s*[^\s;&|()`\n<>]+)|[^\s;&|()`\n*?<>]*\.bats(?=[\s;&|)]|$)))*\s*(?=[;&|)`\n]|$))
+      use: *ci
+      mode: deny
+      where: *has_ci
+      why: *load
+    # the dotfiles harness scripts that run suites, by a tests/ path or after a cd into tests; docker.sh lint passes.
+    - match: |-
+        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-(?!n(?=\s))\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:(?:[^\s=]*/)?tests/|cd\s+\S*tests/?\s*(?:&&|;)\s*(?:\./)?)(?:docker\.sh(?=[\s;&|)]|$)(?!\s+(?:lint|--image|--build|--shell)(?=[\s;&|)]|$))|(?:rust|rust-crates|fleet-agent-smoke)\.sh(?=[\s;&|)]|$))
+      use: *ci
+      mode: deny
+      where: *has_ci
       why: *load
     - match: |-
-        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:\S*/)?cargo(?=\s)[^;&|()`\n]{0,200}?\s(?:test|nextest)(?=[\s;&|)]|$)
+        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-(?!n(?=\s))\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:\./)?(?:docker\.sh(?=[\s;&|)]|$)(?!\s+(?:lint|--image|--build|--shell)(?=[\s;&|)]|$))|(?:rust|rust-crates|fleet-agent-smoke)\.sh(?=[\s;&|)]|$))
       use: *ci
       mode: deny
-      where: *dotfiles
+      where: '(?:^|/)tests/?$'
       why: *load
-    # From any cwd: a dotfiles tests path named in the command (`make -C ~/.dotfiles/tests`, the
-    # suite scripts by path, or a `cd` into a dotfiles checkout before the run).
+    # cargo test with no name filter, no --test target and no --no-run.
     - match: |-
-        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:(?:\S*/)?g?make(?=\s)[^;&|()`\n]{0,300}?\s-C\s*\S*(?:\.dotfiles|\.worktrees/dotfiles-(?!private-)[^/\s]+)/tests/?\s[^;&|()`\n]{0,300}?(?<=\s)(?:test(?:-[\w-]+)?|lint)(?=[\s;&|)]|$)|\S*(?:\.dotfiles|\.worktrees/dotfiles-(?!private-)[^/\s]+)/tests/(?:vendor/bats-core/bin/bats|run-bats\.sh|docker\.sh|rust\.sh|rust-crates\.sh|lint\.sh|lint-files\.sh|fleet-agent-smoke\.sh)(?=[\s;&|)]|$)|cd\s+\S*(?:\.dotfiles|\.worktrees/dotfiles-(?!private-)[^/\s]+)\S*\s*(?:&&|;)\s*(?:\S*/)?(?:g?make(?=\s)[^;&|()`\n]{0,300}?\s(?:test(?:-[\w-]+)?|lint)|(?:\S*/)?(?:bats|run-bats\.sh)|cargo(?=\s)[^;&|()`\n]{0,200}?\s(?:test|nextest))(?=[\s;&|)]|$))
+        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-(?!n(?=\s))\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:[^\s=]*/)?cargo(?:\s+[-+][^\s;&|()`\n]+)*\s+(?:test|nextest\s+run)(?=[\s;&|)]|$)(?!(?:\s+(?:(?:-p|--package|-F|--features|--manifest-path|--target|--target-dir|-j|--jobs|--color|--profile|--config|-Z|--bin|--example|--bench|--exclude|--message-format)(?:\s+|=)[^\s;&|()`\n]+|(?!(?:-p|--package|-F|--features|--manifest-path|--target|--target-dir|-j|--jobs|--color|--profile|--config|-Z|--bin|--example|--bench|--exclude|--message-format)(?=[\s=;&|)]|$))-[^\s;&|()`\n]*))*\s+(?:(?![-<>]|\d*[<>])[^\s;&|()`\n]+|--no-run(?=[\s;&|)]|$)))
       use: *ci
       mode: deny
+      where: *has_ci
+      why: *load
+    # vitest or jest passes the same way with *.test.*, *.spec.* or __tests__/ files.
+    - match: |-
+        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-(?!n(?=\s))\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:(?:pnpm|npx|yarn|bunx|(?:pnpm|npm|yarn)\s+(?:exec|dlx))\s+)?(?:[^\s=]*/)?(?:vitest|jest)(?=[\s;&|)]|$)(?!(?=(?:\s+(?:(?:-c|--config|--project|--reporter|-t|--testNamePattern|--root|-r|--dir|--environment|--pool|--shard|--selectProjects)(?:\s+|=)[^\s;&|()`\n]+|(?!(?:-c|--config|--project|--reporter|-t|--testNamePattern|--root|-r|--dir|--environment|--pool|--shard|--selectProjects)(?=[\s=;&|)]|$))-(?!(?:r|-recursive)(?=[\s;&|)]|$))[^\s;&|()`\n]*|\d*[<>]+(?:&\d*|\s*[^\s;&|()`\n<>]+)|[^\s;&|()`\n*?<>]*(?:\.(?:test|spec)\.[cm]?[jt]sx?|__tests__/[^\s;&|()`\n*?<>]+)(?=[\s;&|)]|$)|run(?=[\s;&|)]|$)))*?\s+[^\s;&|()`\n*?<>]*(?:\.(?:test|spec)\.[cm]?[jt]sx?|__tests__/[^\s;&|()`\n*?<>]+)(?=[\s;&|)]|$))(?:\s+(?:(?:-c|--config|--project|--reporter|-t|--testNamePattern|--root|-r|--dir|--environment|--pool|--shard|--selectProjects)(?:\s+|=)[^\s;&|()`\n]+|(?!(?:-c|--config|--project|--reporter|-t|--testNamePattern|--root|-r|--dir|--environment|--pool|--shard|--selectProjects)(?=[\s=;&|)]|$))-(?!(?:r|-recursive)(?=[\s;&|)]|$))[^\s;&|()`\n]*|\d*[<>]+(?:&\d*|\s*[^\s;&|()`\n<>]+)|[^\s;&|()`\n*?<>]*(?:\.(?:test|spec)\.[cm]?[jt]sx?|__tests__/[^\s;&|()`\n*?<>]+)(?=[\s;&|)]|$)|run(?=[\s;&|)]|$)))*\s*(?=[;&|)`\n]|$))
+      use: *ci
+      mode: deny
+      where: *has_ci
+      why: *load
+    # pytest passes the same way with .py files.
+    - match: |-
+        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-(?!n(?=\s))\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:(?:python3?(?:\.\d+)?|uv\s+run|poetry\s+run|pipenv\s+run)\s+(?:-m\s+)?)?(?:[^\s=]*/)?(?:pytest|py\.test)(?=[\s;&|)]|$)(?!(?=(?:\s+(?:(?:-k|-m|-p|-c|-o|-n|-W|--rootdir|--maxfail|--deselect|--ignore|--junitxml|--basetemp|--confcutdir)(?:\s+|=)[^\s;&|()`\n]+|(?!(?:-k|-m|-p|-c|-o|-n|-W|--rootdir|--maxfail|--deselect|--ignore|--junitxml|--basetemp|--confcutdir)(?=[\s=;&|)]|$))-(?!(?:r|-recursive)(?=[\s;&|)]|$))[^\s;&|()`\n]*|\d*[<>]+(?:&\d*|\s*[^\s;&|()`\n<>]+)|[^\s;&|()`\n*?<>]*\.py(?:::[^\s;&|()`\n*?<>]*)?(?=[\s;&|)]|$)))*?\s+[^\s;&|()`\n*?<>]*\.py(?:::[^\s;&|()`\n*?<>]*)?(?=[\s;&|)]|$))(?:\s+(?:(?:-k|-m|-p|-c|-o|-n|-W|--rootdir|--maxfail|--deselect|--ignore|--junitxml|--basetemp|--confcutdir)(?:\s+|=)[^\s;&|()`\n]+|(?!(?:-k|-m|-p|-c|-o|-n|-W|--rootdir|--maxfail|--deselect|--ignore|--junitxml|--basetemp|--confcutdir)(?=[\s=;&|)]|$))-(?!(?:r|-recursive)(?=[\s;&|)]|$))[^\s;&|()`\n]*|\d*[<>]+(?:&\d*|\s*[^\s;&|()`\n<>]+)|[^\s;&|()`\n*?<>]*\.py(?:::[^\s;&|()`\n*?<>]*)?(?=[\s;&|)]|$)))*\s*(?=[;&|)`\n]|$))
+      use: *ci
+      mode: deny
+      where: *has_ci
       why: *load
 ---
 
@@ -51,7 +85,7 @@ The founding incident: writing the tmux UI tests destroyed every live tmux sessi
                    container-only?                   (not optional)
 ```
 
-**CI is the gate, and the only place an agent session runs a test.** The PR's CI run of what `tests/pick.sh` picks is the test run; nothing runs on the workstation first. The forms that would run one here (`make -C tests test-*` and `lint`, `tests/run-bats.sh`, a direct `bats`, `tests/docker.sh`, `tests/rust.sh`, `cargo test`) are this skill's `metadata.replaces` rows, which `hand_methods.py` denies in an agent session inside a dotfiles checkout; a human's own terminal never reaches the hook. Why: on 2026-11-23 agent test runs held the workstation at load 40 on 28 cores (about 500% CPU of bats), which held dispatch, while CI already ran the same files (epic ar-4846). `tests/pick.sh unit origin/main` (and `integ`, `rust`) prints what the PR will pick without running it.
+**CI is the gate, and the only place an agent session runs a suite.** The PR's CI run of what `tests/pick.sh` picks is the test run. To iterate, a session may run one named test file here (`tests/run-bats.sh tests/unit/x.bats`, or `make -C tests test-files FILES=unit/x.bats`, unquoted) and the lint; every suite-level form (`make -C tests test-pr`, `test-fast`, `test-unit`, `test-integ`, `test-rust`, `test-ui`, a bats run over a directory or a glob, `tests/docker.sh` but its `lint`, `tests/rust.sh`, `cargo test` with no filter, a whole `vitest`, `jest` or `pytest` run) is one of this skill's `metadata.replaces` rows, which `hand_methods.py` denies in an agent session in any repo but those with no pre-merge CI; a human's own terminal never reaches the hook. Why: on 2026-11-23 agent test runs held the workstation at load 40 on 28 cores (about 500% CPU of bats), which held dispatch, while CI already ran the same files (epic ar-4846); one file takes seconds of one core. `tests/pick.sh unit origin/main` (and `integ`, `rust`) prints what the PR will pick without running it.
 
 ## Scope and triggers
 
@@ -111,7 +145,7 @@ The suite's entry points, which CI calls and a human may run in their own termin
 
 ```bash
 make -C tests test-pr       # the files the PR gate picks for this change
-make -C tests test-fast     # unit + integ, every file: main and the nightly run it
+make -C tests test-fast     # unit + integ, every file: a push to main and the Monday schedule run it
 make -C tests test-ui       # delegates to docker.sh; never invokes tmux on the host
 tests/docker.sh test-container   # everything, in the container
 tests/docker.sh lint            # the lint gate, same one CI runs
@@ -203,4 +237,4 @@ A guard that **fails open** deserves a test pinning its vocabulary to a literal.
 - Never `git checkout-index -a -f` to "tidy up" - it overwrites the working tree from the index and destroys unstaged work. `git reset` (mixed) unstages safely. Tar the dirty tree before any multi-step git surgery.
 - Never push or merge another session's branch to satisfy a hook. Report it instead.
 - Never claim something is verified without the CI run that shows it. If a tier could not run, say which and why.
-- Never run a test on the workstation from an agent session, a single file included: push and read CI.
+- Never run a test suite on the workstation from an agent session: one named file to iterate, then push and read CI.

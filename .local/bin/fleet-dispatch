@@ -5716,20 +5716,29 @@ own_parked_pr() {
 # settle_sessionless <slug> <started> -- a started item recording no session, tmux or Claude: nothing
 # witnesses it ending and nothing can nudge it, so PRs #909 and #910 sat open with nobody on them. Its
 # PR or report still decides what it can (settle_item): merged or closed settles it, open parks it in
-# review/, a report is done. Anything else stays put, never failed, since no-witness is not gone, and is
-# flagged once on the item and in the log, ahead of any note it had. fleet-bench's ownerless_running
+# review/, a report is done. A PR only in open_pr: (agent-land sets it before the checks, pr: on merge) is
+# recorded as pr: first, as item_with_branch_pr does (ar-4551). Anything else stays put, never failed,
+# since no-witness is not gone, and is flagged once on the item and in the log, ahead of any note it had. fleet-bench's ownerless_running
 # counts it, so the board-chain watch pages it.
 settle_sessionless() {
-  local it pr note flag
+  local it pr note flag open_only=''
   past_reap_grace "$2" || return 0
   it=$(agent-queue show "$1" --json 2>/dev/null) || return 0
   pr=$(jq -r '.pr // ""' <<<"$it")
+  if [ -z "$pr" ]; then
+    pr=$(jq -r '.open_pr // ""' <<<"$it")
+    if [ -n "$pr" ] && agent-queue set "$1" "pr=$pr" >/dev/null; then
+      logline "queue item $1 had no pr: recorded; its open_pr: $pr recorded as pr:"
+    else
+      open_only=$pr pr=''
+    fi
+  fi
   if [ -n "$pr$(jq -r '.report // ""' <<<"$it")" ]; then
     settle_item "$1" unrecorded
     settle_row "$1"
     [ "$(item_state "$1")" != "done" ] || return 0
   fi
-  flag="no session recorded${pr:+ (PR $pr)}: nothing watches this item; agent-queue claim it from a session, or close it"
+  flag="no session recorded${pr:+ (PR $pr)}${open_only:+ (open PR $open_only, not recorded)}: nothing watches this item; agent-queue claim it from a session, or close it"
   note=$(jq -r '.note // ""' <<<"$it")
   case "$note" in *"$flag"*) return 0 ;; esac
   agent-queue set "$1" "note=$flag${note:+; was: $note}" >/dev/null || return 0
