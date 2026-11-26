@@ -2,45 +2,51 @@
 # agent-hold - a fleet-wide pause on a shared resource, held as state instead of sent as
 # a message.
 #
-#   agent-hold set <resource> [--roster a,b,c] [--by name] [--kind load|resource] "<reason>"
+#   agent-hold set <resource> [--roster a,b,c] [--by name] [--kind load|resource]
+#                  [--until <time>] [--quote '<words>'] "<reason>"
 #                                   --kind: load (the default) is the fleet pacing itself, which
 #                                   the shepherd lifts once the machine reads CLEAR; resource is
 #                                   anything else (bad RAM, a maintenance pause), released by hand
 #                                   (the default for dispatch). A re-set writes the kind,
-#                                   roster and reason afresh, drops the grants and keeps since
+#                                   roster and reason afresh, drops the grants and keeps since;
+#                                   a hold by: human is re-set only --by human. --until (any time
+#                                   date -d reads, at most 24h ahead) ends the hold on its own:
+#                                   check and list read it released once it passes. --by human
+#                                   needs --until, and from an agent session --quote, the human's
+#                                   words typed in this session in the last hour (agent-ask said)
 #   agent-hold claim <resource> [--by name] [--class c] "<what>"   one session's exclusive
 #                                   use: fails while another session holds it, and the
 #                                   holder's own `check` passes (the agent machine's desktop:
 #                                   mac-desktop); --class says why it needs it (`classes`)
 #   agent-hold classes              class<TAB>rank<TAB>meaning, best first: who takes a
 #                                   claimed resource next (agent-queue desk:<class>)
-#   agent-hold grant <resource> <name>...   GO for those names while the hold stays, keeping since:
+#   agent-hold grant <resource> [--ask <id>] <name>...   GO for those names while the hold stays, keeping since:
 #                                   a session by its Claude session id (stable), or its fleet-sessions
 #                                   target (hub/dotfiles:3, or dotfiles:3) until windows renumber (a
 #                                   bare tmux session name matches only a one-window session); or a
 #                                   board row, epic or plan id (hc-952, ar-4938, a plan's slug), which
 #                                   check --for reads: agent-queue lets a granted #hold/ row and its
 #                                   item start. A human's narrowing of its own hold is a grant, not
-#                                   reason text
-#   agent-hold keep <resource> --ask <id>   the human re-confirmed the hold: records `kept:` (the
-#                                   ask's answered_at) and `kept_ask:`, keeping since and grants, so
-#                                   aged and hub count its age from the keep. The ask must name the
-#                                   resource and be answered keep by the human, after since and any
-#                                   earlier keep; a same-kind re-set carries it, like since
+#                                   reason text. On a hold by: human it needs --ask: an ask the human
+#                                   answered grant after since, naming the resource and each name;
+#                                   the id is kept beside each name on granted_ask:
 #   agent-hold lower <resource> <pid>...   CPUWeight=1 on each pid's tmux pane scope or
 #                                   agentctl unit, recorded on the hold; release restores it
-#   agent-hold release <resource>
+#   agent-hold release <resource>   ends the hold, restoring what lower slowed, and answers grant
+#                                   each open ask that asked only for a grant under it
 #   agent-hold check <resource> [--no-caller] [--for <id>...]   exit 1 (and print the hold) while
-#                                   held, 0 when free or when the caller is granted or holds the
-#                                   claim; --no-caller asks as no session, so neither counts; --for
+#                                   held, 0 when free, past its until, or when the caller is
+#                                   granted or holds the claim; --no-caller asks as no session, so neither counts; --for
 #                                   names the work asked about (its row, epic and plan ids), and a
 #                                   grant naming any passes, every granted one named on stderr
-#   agent-hold list [--kind k]      resource<TAB>since<TAB>by<TAB>reason, one per hold; --kind
-#                                   load|resource|claim keeps that kind (a hold with no kind line
-#                                   reads as the kind set would give it)
+#   agent-hold list [--kind k | --expired]   resource<TAB>since<TAB>by<TAB>reason, one per hold
+#                                   still in force; --kind load|resource|claim keeps that kind (a
+#                                   hold with no kind line reads as the kind set would give it);
+#                                   --expired lists only the holds past their until, which
+#                                   release ends (the shepherd's pace line names them)
 #   agent-hold show <resource>      print the hold file
-#   agent-hold aged [--days N]      each resource or human-set hold set or kept N days ago or longer
-#                                   (1), then `page: high`, exit 1 when any; never releases
+#   agent-hold aged [--days N]      each resource or human-set hold with no until, set N days ago
+#                                   or longer (1), then `page: high`, exit 1 when any; never releases
 #
 # One file per hold in ~/.agent/holds/ (AGENT_HOLD_DIR overrides), flat `key: value`.
 # A hold is state, not a message, because shell loops have no inbox and new sessions miss
@@ -61,6 +67,12 @@
 # -4 (2026-11-07: 583 threads reniced under 20 sessions, ni share stayed 0.4%). Nice only
 # orders tasks inside one cgroup; each tmux pane is its own systemd scope, so a CPUWeight
 # on the scope holds for every process in it, whatever its nice.
+#
+# A hold by: human takes the human's words and ends within a day. Before this, `set --by human`
+# checked nothing, so any session could write the stamp: the 2026-11-20 critical lockdown was re-set
+# 5 times as human from the CLI, and stood 5 days on a `keep` answer whose relayed words never said
+# keep (ask M0yWLL). Now the words are checked against the session's transcript, and the hold ends
+# by its until, so nothing asks the human to keep it (ar-6059).
 
 set -uo pipefail
 
@@ -68,6 +80,9 @@ HOLD_ROOT="${AGENT_HOLD_DIR:-$HOME/.agent/holds}"
 PROC_ROOT="${AGENT_HOLD_PROC:-/proc}"
 # 1 of the default 100: a held scope gets about 1% of a contended CPU, near nice 19's share.
 LOW_CPU_WEIGHT=1
+# The longest a hold may be set for by --until, and how far back the human's quoted words may be.
+HOLD_UNTIL_MAX_SECS=86400
+HUMAN_QUOTE_SECS=3600
 # Desk classes, best first: why a session needs a claimed resource, and so who takes it next
 # once it is free (agent-queue starts the best-ranked `desk:<class>` waiter). auth ranks first
 # only while the human is here, since a 2FA prompt with nobody to answer it holds the desktop
@@ -86,14 +101,10 @@ class_rank() { awk -F'\t' -v c="$1" '$1 == c { print $2 }' <<<"$DESK_CLASSES"; }
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fmt.sh"
 # shellcheck source=../lib/audit.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/audit.sh"
+# shellcheck source=../lib/agent-units.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/agent-units.sh"   # agent_batch_unit
 # shellcheck source=../lib/dispatch-wake.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/dispatch-wake.sh"
-
-# collapse a value to a single physical line (files are one key:value per line)
-oneline() { printf '%s' "$1" | tr '\n\t' '  ' | sed -E 's/  +/ /g; s/^ +//; s/ +$//'; }
-
-# field <file> <key> -> first value (text after "key: ")
-field() { sed -n "/^$2: /{s///p;q;}" "$1" 2>/dev/null; }
 
 # default_kind <resource> -> the kind a set with no --kind gets: resource for dispatch, which
 # pauses a workflow and never load, so a hand `set dispatch` does not drop fleet-assess's trip
@@ -102,6 +113,21 @@ default_kind() { if [ "$1" = dispatch ]; then printf resource; else printf load;
 
 # hold_kind <file> -> load, resource or claim; a hold set before kinds existed gets its default.
 hold_kind() { local k; k="$(field "$1" kind)"; printf '%s' "${k:-$(default_kind "${1##*/}")}"; }
+
+# names_word <word> <text>: the text has <word> as a whole word (a hyphen or underscore joins a
+# word, so hc-1 is not in hc-10), case-blind, every character literal.
+names_word() {
+  grep -qiE "(^|[^[:alnum:]_-])$(sed 's/[][\.*^$+?(){}|]/\\&/g' <<<"$1")([^[:alnum:]_-]|\$)" <<<"$2"
+}
+
+# expired <hold file>: it has an until and that time has passed. An until no date reads has passed:
+# a hold whose end cannot be read is not kept in force on that.
+expired() {
+  local u; u="$(field "$1" until)"
+  [ -n "$u" ] || return 1
+  u=$(date -d "$u" +%s 2>/dev/null) || return 0
+  [ "$(date +%s)" -ge "$u" ]
+}
 
 # A resource is one path segment. Anything else could escape HOLD_ROOT.
 valid_resource() {
@@ -177,11 +203,12 @@ set_field() {
 cmd_set() {
   local resource="${1:-}"; shift || true
   need_resource "$resource"
-  local roster="" by="" reason="" kind=""
+  local roster="" by="" reason="" kind="" until="" quote="" quoted=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --roster|--by|--kind) [ $# -ge 2 ] || { echo "agent-hold set: $1 needs a value" >&2; exit 2; }
-        case "$1" in --roster) roster="$2" ;; --by) by="$2" ;; --kind) kind="$2" ;; esac; shift 2 ;;
+      --roster|--by|--kind|--until|--quote) [ $# -ge 2 ] || { echo "agent-hold set: $1 needs a value" >&2; exit 2; }
+        case "$1" in --roster) roster="$2" ;; --by) by="$2" ;; --kind) kind="$2" ;; --until) until="$2" ;;
+          --quote) quote="$(oneline "$2")" quoted=1 ;; esac; shift 2 ;;
       --) shift; reason="$*"; break ;;
       -*) echo "agent-hold set: unknown flag $1" >&2; exit 2 ;;
       *)  reason="$*"; break ;;
@@ -193,20 +220,53 @@ cmd_set() {
   esac
   [ -n "$reason" ] || { echo "agent-hold set: say why (the reason is what every reader sees)" >&2; exit 2; }
   [ -n "$by" ] || by="$(default_by)"
+  # now is read after u, so a relative until of exactly 24h never reads one second over it.
+  local now u=""
+  if [ -n "$until" ]; then
+    u=$(date -d "$until" +%s 2>/dev/null) || { echo "agent-hold set: --until '$until' does not read as a time" >&2; exit 2; }
+  fi
+  now=$(date +%s)
+  if [ -n "$u" ]; then
+    [ "$u" -gt "$now" ] || { echo "agent-hold set: --until $until has already passed" >&2; exit 2; }
+    [ "$u" -le $((now + HOLD_UNTIL_MAX_SECS)) ] || { echo "agent-hold set: --until is at most 24h ahead; set it again when it ends" >&2; exit 2; }
+  fi
+  # The human's word is checked the way agent-ask checks a relayed answer: outside an agent session
+  # (no CLAUDE_CODE_SESSION_ID or AGENT_QUEUE_ITEM) it is the human's own shell; inside one it takes
+  # --quote, words the transcript shows the human typed here in the last hour (agent-ask said, the
+  # relay's check, shared). A dispatched session has no human at it, so it never sets one.
+  local in_agent=""
+  [ -z "${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}" ] || in_agent=1
+  if [ -n "$quoted" ] && { [ "$(oneline "$by")" != human ] || [ -z "$in_agent" ] || [ -z "$quote" ]; }; then
+    echo "agent-hold set: --quote is the human's words an attended session relays, with --by human, from inside a session" >&2; exit 2
+  fi
+  if [ "$(oneline "$by")" = human ]; then
+    [ -n "$u" ] || { echo "agent-hold set: a hold by the human ends on its own: give --until <time>, at most 24h ahead" >&2; exit 2; }
+    if [ -n "$in_agent" ]; then
+      [ -n "$quote" ] || { echo "agent-hold set: an agent session sets a hold --by human only with --quote '<their words>', typed in this session; else set it under its own name" >&2; exit 2; }
+      # The words must be about this hold, so a stray "the" or "yes" from any message cannot stand for it.
+      names_word "$resource" "$quote" || { echo "agent-hold set: the quote does not name $resource; quote the human's words that ask for this hold" >&2; exit 1; }
+      local why
+      why="$("${AGENT_ASK:-agent-ask}" said --since "@$((now - HUMAN_QUOTE_SECS))" "$quote" 2>&1)" \
+        || { echo "agent-hold set: cannot set $resource as the human's: ${why:-agent-ask said failed}" >&2; exit 1; }
+    fi
+  fi
   mkdir -p "$HOLD_ROOT" || { echo "agent-hold: cannot mkdir $HOLD_ROOT" >&2; exit 1; }
 
-  local f="$HOLD_ROOT/$resource" tmp lowered since="" kept="" kept_ask=""
+  local f="$HOLD_ROOT/$resource" tmp lowered since=""
+  # The human's hold stays theirs while it is in force: a re-set by another name would make its
+  # grants need no ask (cmd_grant), so it is refused; the hold ends by release or its until.
+  if [ "$(field "$f" by)" = human ] && ! expired "$f" && [ "$(oneline "$by")" != human ]; then
+    echo "agent-hold set: the human set $resource, so a re-set by $(oneline "$by") is refused (its grants would need no ask); ask the human, or release it on their word" >&2
+    exit 1
+  fi
   # A re-set keeps what `lower` changed, so the release that ends it still restores it, and its
   # since, while it stays the same kind of hold: it has stood since it was first set, which is what
   # hold-age ages. A new kind is a new hold (a load hold re-set as a human's lockdown, a set over a
-  # claim), and a since no date reads is repaired, not carried forward.
+  # claim, a hold past its until), and a since no date reads is repaired, not carried forward.
   lowered="$(field "$f" lowered)"
-  if [ -f "$f" ] && [ "$(hold_kind "$f")" = "$kind" ]; then
+  if [ -f "$f" ] && [ "$(hold_kind "$f")" = "$kind" ] && ! expired "$f"; then
     since="$(field "$f" since)"
     { [ -n "$since" ] && date -d "$since" +%s >/dev/null 2>&1; } || since=""
-    # The human's keep goes with since: a re-set that only rewords the hold is still the hold they
-    # re-confirmed.
-    [ -n "$since" ] && kept="$(field "$f" kept)" kept_ask="$(field "$f" kept_ask)"
   fi
   tmp="$(mktemp "$HOLD_ROOT/.${resource}.XXXXXX")" || exit 1
   {
@@ -217,7 +277,8 @@ cmd_set() {
     printf 'roster: %s\n'   "$(oneline "$roster")"
     printf 'granted: \n'
     [ -n "$lowered" ] && printf 'lowered: %s\n' "$lowered"
-    [ -n "$kept" ] && printf 'kept: %s\nkept_ask: %s\n' "$kept" "$kept_ask"
+    [ -n "$u" ] && printf 'until: %s\n' "$(date -d "@$u" +%Y-%m-%dT%H:%M:%S%z)"
+    [ -n "$quote" ] && printf 'quote: %s\n' "$(cut -c1-300 <<<"$quote")"
     printf 'reason: %s\n'   "$(oneline "$reason")"
   } > "$tmp"
   # Re-setting an existing hold replaces it (new reason, new roster, no grants, the same since),
@@ -271,6 +332,8 @@ cmd_claim() {
   if [ -n "$own" ]; then
     printf '%s\n' "$body" > "$f"; echo "claimed: $resource (refreshed)"; return 0
   fi
+  # A hold past its until is over: its release, which restores what it lowered, makes way for the claim.
+  if [ -f "$f" ] && expired "$f"; then keep_asks=1 cmd_release "$resource" >/dev/null || return 1; fi
   if ( set -o noclobber; printf '%s\n' "$body" > "$f" ) 2>/dev/null; then
     echo "claimed: $resource"; return 0
   fi
@@ -288,56 +351,77 @@ cmd_claim() {
 # in_list <name> <a,b,c>
 in_list() { case ",$2," in *",$1,"*) return 0 ;; esac; return 1; }
 
+# A grant on a hold the human set (by: human) is the human's word, so it takes --ask <id>: an ask the
+# human answered `grant` after since, naming the resource and each name granted (human_answer).
+# Without one it is refused: by 2026-11-25 the critical lockdown carried about 60 grants agent
+# sessions had written themselves, and the human had made none (ar-6046). The ask id goes beside
+# each name it granted on `granted_ask:` (name=id), so a reader sees whose words let it run. A hold
+# an agent or dispatch set grants on the caller's word, as before.
 cmd_grant() {
   local resource="${1:-}"; shift || true
   need_resource "$resource"
-  [ $# -gt 0 ] || { echo "agent-hold grant: name at least one session, row, epic or plan" >&2; exit 2; }
+  local id="" names=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --ask) [ -n "${2:-}" ] || { echo "agent-hold grant: --ask needs an ask id" >&2; exit 2; }
+        id="$2"; shift 2 ;;
+      *) names+=("$1"); shift ;;
+    esac
+  done
+  [ "${#names[@]}" -gt 0 ] || { echo "agent-hold grant: name at least one session, row, epic or plan" >&2; exit 2; }
   local f="$HOLD_ROOT/$resource"
   [ -f "$f" ] || { echo "agent-hold: $resource is not held, nothing to grant" >&2; exit 1; }
-  local granted name
-  granted="$(field "$f" granted)"
-  for name in "$@"; do
+  local granted asks name clean=()
+  for name in "${names[@]}"; do
     name="$(oneline "$name")"
     [ -n "$name" ] || continue
-    case "$name" in *,*|*' '*) echo "agent-hold grant: bad name '$name' (one session, row, epic or plan id, no comma or space)" >&2; exit 2 ;; esac
-    in_list "$name" "$granted" || granted="${granted:+$granted,}$name"
+    case "$name" in *,*|*' '*|*=*) echo "agent-hold grant: bad name '$name' (one session, row, epic or plan id, no comma, space or =)" >&2; exit 2 ;; esac
+    clean+=("$name")
   done
-  set_field "$f" granted "$granted" || exit 1
-  notify -p normal -t "go: $resource" "granted $*; the rest stay held"
-  audit_append "$(default_by)" hold.granted "$resource" ok "$*"
-  echo "granted: $resource for $granted"
+  [ "${#clean[@]}" -gt 0 ] || { echo "agent-hold grant: name at least one session, row, epic or plan" >&2; exit 2; }
+  if [ -n "$id" ]; then
+    human_answer grant "$resource" "$id" "$f" "${clean[@]}" >/dev/null || exit 1
+  elif [ "$(field "$f" by)" = human ]; then
+    echo "agent-hold grant: the human set $resource, so only the human grants on it: post an ask naming $resource and ${clean[*]} with a grant option (agent-ask post --options 'grant=...|hold=...'), then run grant $resource --ask <id> ${clean[*]} once they answer grant" >&2
+    exit 1
+  fi
+  granted="$(field "$f" granted)" asks="$(field "$f" granted_ask)"
+  # A name granted again under an ask takes that ask, so every granted name shows whose words let it run.
+  for name in "${clean[@]}"; do
+    in_list "$name" "$granted" || granted="${granted:+$granted,}$name"
+    [ -n "$id" ] || continue
+    asks="$(tr , '\n' <<<"$asks" | awk -F= -v n="$name" 'NF && $1 != n' | paste -sd,)"
+    asks="${asks:+$asks,}$name=$id"
+  done
+  set_field "$f" granted "$granted" granted_ask "$asks" || exit 1
+  notify -p normal -t "go: $resource" "granted ${clean[*]}${id:+ (ask $id)}; the rest stay held"
+  audit_append "$(default_by)" hold.granted "$resource" ok "${clean[*]}${id:+ (ask $id)}"
+  echo "granted: $resource for $granted${id:+ (ask $id)}"
 }
 
-# keep <resource> --ask <id>: the human's answer `keep` on ask <id> about this hold becomes its
-# `kept:` time, so its age (aged, hub's Needs and Alerts) runs from that answer, not from since: a
-# hold the human just re-confirmed does not stand again until it is a day past the keep (ar-5307).
-# The ask is the proof, not the caller's word: it must be answered keep by the human (an empty
-# answered_by is refused: a hold's keep needs the record), name the resource as a word in its
-# question or context (a text match: asks carry no hold field), and be newer than since and any
-# earlier keep, or nothing is written.
-cmd_keep() {
-  local resource="${1:-}"; shift || true
-  need_resource "$resource"
-  [ "${1:-}" = --ask ] && [ -n "${2:-}" ] || { echo "agent-hold keep: usage: keep <resource> --ask <id>" >&2; exit 2; }
-  local id="$2" f="$HOLD_ROOT/$resource" ask at
-  [ -f "$f" ] || { echo "agent-hold: $resource is not held, nothing to keep" >&2; exit 1; }
-  ask="$("${AGENT_ASK:-agent-ask}" show "$id" 2>/dev/null)" || { echo "agent-hold keep: no ask $id" >&2; exit 1; }
+# human_answer <verb> <resource> <id> <hold file> [<name>...]: print ask <id>'s answered_at when the
+# human answered it <verb> after the hold's since and it names the resource and each name as a word
+# in its question or context; else say why on stderr and fail. The ask is the proof, not the caller's
+# word: an empty answered_by is refused (the hold needs the record), and the names are a text match
+# (asks carry no hold field). grant takes its ask through this.
+human_answer() {
+  local verb="$1" resource="$2" id="$3" f="$4" ask at t s w text
+  shift 4
+  ask="$("${AGENT_ASK:-agent-ask}" show "$id" 2>/dev/null)" || { echo "agent-hold $verb: no ask $id" >&2; return 1; }
   askf() { sed -n "/^$1: /{s///p;q;}" <<<"$ask"; }
-  [ "$(askf answer)" = keep ] && [ "$(askf answered_by)" = human ] \
-    || { echo "agent-hold keep: ask $id is not answered keep by the human" >&2; exit 1; }
-  grep -qE "(^|[^[:alnum:]_-])$resource([^[:alnum:]_-]|\$)" <<<"$(askf question) $(askf context)" \
-    || { echo "agent-hold keep: ask $id does not name the hold $resource" >&2; exit 1; }
-  local t s k
+  [ "$(askf answer)" = "$verb" ] && [ "$(askf answered_by)" = human ] \
+    || { echo "agent-hold $verb: ask $id is not answered $verb by the human" >&2; return 1; }
+  text="$(askf question) $(askf context)"
+  for w in "$resource" "$@"; do
+    names_word "$w" "$text" \
+      || { echo "agent-hold $verb: ask $id does not name $w" >&2; return 1; }
+  done
   at="$(askf answered_at)"
-  t=$(date -d "$at" +%s 2>/dev/null) && [ -n "$at" ] || { echo "agent-hold keep: ask $id has no readable answered_at" >&2; exit 1; }
+  t=$(date -d "$at" +%s 2>/dev/null) && [ -n "$at" ] || { echo "agent-hold $verb: ask $id has no readable answered_at" >&2; return 1; }
   # An empty value is no time: date -d "" alone reads as today's midnight.
   s="$(field "$f" since)"; { [ -n "$s" ] && s=$(date -d "$s" +%s 2>/dev/null); } || s=0
-  k="$(field "$f" kept)"; { [ -n "$k" ] && k=$(date -d "$k" +%s 2>/dev/null); } || k=0
-  [ "$t" -gt "$s" ] && [ "$t" -gt "$k" ] \
-    || { echo "agent-hold keep: ask $id was answered before the hold's since or its last keep, nothing changed" >&2; exit 1; }
-  set_field "$f" kept "$at" kept_ask "$id" || { echo "agent-hold: $resource is not held, nothing to keep" >&2; exit 1; }
-  audit_append "$(default_by)" hold.kept "$resource" ok "ask $id"
-  echo "kept: $resource since $at (ask $id)"
+  [ "$t" -gt "$s" ] || { echo "agent-hold $verb: ask $id was answered before the hold's since, nothing changed" >&2; return 1; }
+  printf '%s\n' "$at"
 }
 
 # unit_of <pid|self> -> the user unit a process runs in: the tmux pane scope, agent session scope
@@ -354,8 +438,7 @@ unit_of() {
   local IFS=/
   for part in $path; do
     case "$part" in
-      tmux-spawn-*.scope|agent-*.scope|agentctl@*.service) batch="${batch:-$part}" ;;
-      *.scope|*.service) unit="$part" ;;
+      *.scope|*.service) if agent_batch_unit "$part"; then batch="${batch:-$part}"; else unit="$part"; fi ;;
     esac
   done
   unit="${batch:-$unit}"
@@ -384,10 +467,7 @@ cmd_lower() {
     esac
     # Only units that are batch work: a desktop terminal's or app's scope is the human's,
     # and the caller's own pane would slow the pass that has to lift the hold.
-    case "$unit" in
-      tmux-spawn-*.scope|agent-*.scope|agentctl@*.service) ;;
-      *) echo "agent-hold lower: pid $pid runs in $unit, not a tmux pane, agent session or agentctl unit; left alone" >&2; [ "$rc" -gt 1 ] || rc=1; continue ;;
-    esac
+    agent_batch_unit "$unit" || { echo "agent-hold lower: pid $pid runs in $unit, not a tmux pane, agent session or agentctl unit; left alone" >&2; [ "$rc" -gt 1 ] || rc=1; continue; }
     [ "$unit" = "$self" ] && { echo "agent-hold lower: pid $pid is in this pane ($unit); left alone" >&2; [ "$rc" -gt 1 ] || rc=1; continue; }
     if in_list "$unit" "$lowered"; then echo "lowered: $unit (pid $pid, already)"; continue; fi
     # Recorded before it is applied, so no interrupted run leaves a unit lowered that the
@@ -401,6 +481,43 @@ cmd_lower() {
   return "$rc"
 }
 
+# settle_grant_asks <resource>: answer `grant` to each open ask that asked only for a grant under
+# the hold just released: its options are grant plus only GRANT_ASK_HOLD_SIDE ones, and its
+# question or context names the resource and no hold still set (names_word, the match
+# human_answer applies to a grant ask). With the hold gone a grant is what the asker gets anyway,
+# and nothing else answered it: on 2026-11-25 the critical hold was released and 7 asks to grant
+# work under it stayed on Needs (ar-6045). The answer is the human's only from their own shell (a
+# terminal on stdin, no agent session); a session's or an unattended caller's (fleet-dispatch
+# releases with stdin on /dev/null) is the agent's, and one agent-ask refuses an agent (a
+# human-only ask) is cancelled instead, since what it asked about is gone. The release stands
+# either way.
+GRANT_ASK_HOLD_SIDE="hold keep"
+settle_grant_asks() {
+  local resource="$1" id text h why by=agent answered="" cancelled="" others=()
+  [ -z "${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}" ] && [ -t 0 ] && by=human
+  for h in "$HOLD_ROOT"/*; do [ -f "$h" ] && others+=("${h##*/}"); done
+  while IFS=$'\t' read -r id text; do
+    names_word "$resource" "$text" || continue
+    for h in "${others[@]}"; do names_word "$h" "$text" && continue 2; done
+    if why="$("${AGENT_ASK:-agent-ask}" answer --by "$by" "$id" grant 2>&1 </dev/null)"; then
+      answered="${answered:+$answered }$id"
+    elif "${AGENT_ASK:-agent-ask}" cancel "$id" "hold $resource released, so there is no hold left to grant under" </dev/null 2>/dev/null; then
+      cancelled="${cancelled:+$cancelled }$id"
+    else
+      echo "agent-hold release: grant ask $id stays pending: $(oneline "$why")" >&2
+    fi
+  done < <("${AGENT_ASK:-agent-ask}" list --all --open 2>/dev/null | awk -F'\t' -v side="$GRANT_ASK_HOLD_SIDE" '
+    BEGIN { split(side, s, " "); for (i in s) keep[s[i]] = 1 }
+    # list columns: 1 id, 6 question, 7 options, 20 context (agent-ask cmd_list, which only appends).
+    { n = split(tolower($7), o, "|"); g = 0; ok = 1
+      for (i = 1; i <= n; i++) { gsub(/^ +| +$/, "", o[i]); if (o[i] == "grant") g = 1; else if (!(o[i] in keep)) ok = 0 }
+      if (g && ok && $1 != "") print $1 "\t" $6 " " $20 }')
+  [ -z "$answered" ] || echo "answered grant ($by): $answered"
+  [ -z "$cancelled" ] || echo "cancelled (no hold left to grant under): $cancelled"
+}
+
+# cmd_release <resource>; keep_asks=1 is the claim path's, which takes the resource again at
+# once, so no ask about it is settled as free.
 cmd_release() {
   local resource="${1:-}"
   need_resource "$resource"
@@ -434,6 +551,7 @@ cmd_release() {
   echo "released: $resource"
   # Printed so the caller can send GO to exactly the sessions that were told to stop.
   [ -n "$roster" ] && echo "roster: $roster"
+  [ -n "${keep_asks:-}" ] || settle_grant_asks "$resource"
   return 0
 }
 
@@ -450,6 +568,10 @@ cmd_check() {
   done
   local f="$HOLD_ROOT/$resource"
   [ -f "$f" ] || return 0
+  if expired "$f"; then
+    echo "expired: $resource at $(field "$f" until), released once agent-hold release $resource runs" >&2
+    return 0
+  fi
   # --no-caller asks for a session that does not exist yet (agent-queue's hold:<resource>), so
   # no grant or claim of the asker's counts.
   local me=""
@@ -473,9 +595,10 @@ cmd_check() {
 }
 
 cmd_list() {
-  local want=""
+  local want="" ended=""
   case "${1:-}" in
     '') ;;
+    --expired) [ $# -eq 1 ] || { echo "agent-hold list: --expired takes no value" >&2; exit 2; }; ended=1 ;;
     --kind) [ $# -eq 2 ] || { echo "agent-hold list: --kind takes one value" >&2; exit 2; }; want="$2"
       case "$want" in load|resource|claim) ;; *) echo "agent-hold list: --kind is load, resource or claim, not '$want'" >&2; exit 2 ;; esac ;;
     *) echo "agent-hold list: unknown argument $1" >&2; exit 2 ;;
@@ -484,6 +607,7 @@ cmd_list() {
   local f g c
   for f in "$HOLD_ROOT"/*; do
     [ -f "$f" ] || continue
+    if [ -n "$ended" ]; then expired "$f" || continue; else ! expired "$f" || continue; fi
     [ -z "$want" ] || [ "$(hold_kind "$f")" = "$want" ] || continue
     g="$(field "$f" granted)" c="$(field "$f" class)"
     printf '%s\t%s\t%s\t%s%s%s\n' "${f##*/}" "$(field "$f" since)" "$(field "$f" by)" "${c:+[$c] }" "$(field "$f" reason)" "${g:+ (granted: $g)}"
@@ -494,11 +618,12 @@ cmd_list() {
 # age, who set it and why, then how to end it and `page: high`; exit 1 when any, 0 when none. A
 # standing hold is one only the human ends: a resource hold, or any hold `by: human`. A load hold
 # (the shepherd lifts it once the machine reads CLEAR) and a claim (it ends with its skill) are
-# exempt. It reads and never releases: a hold is the human's word, so its age is a page, never a
-# timeout (ask GwQIYE, 2026-11-21). The watch hold-age runs it at severity high, since only the human
+# exempt, and so is a hold with an until (every hold by: human has one): it ends on its own, so
+# nothing asks the human to keep it. It reads and never releases: a hold with no until ends only by
+# a release, so its age is a page, never a timeout (ask GwQIYE, 2026-11-21). The watch hold-age runs it at severity high, since only the human
 # releases one (priority.md). Event-free by necessity: a hold growing old has no event, so the watch samples.
 cmd_aged() {
-  local days="${AGENT_HOLD_AGE_DAYS:-1}" f since s k age now n=0 kind
+  local days="${AGENT_HOLD_AGE_DAYS:-1}" f since s age now n=0 kind
   case "${1:-}" in
     '') ;;
     --days) [[ "${2:-}" =~ ^[0-9]+$ ]] || { echo "agent-hold aged: --days takes a whole number" >&2; exit 2; }; days="$2" ;;
@@ -510,16 +635,12 @@ cmd_aged() {
     [ -f "$f" ] || continue
     kind="$(hold_kind "$f")"
     [ "$kind" = resource ] || { [ "$kind" != claim ] && [ "$(field "$f" by)" = human ]; } || continue
+    [ -z "$(field "$f" until)" ] || continue
     since="$(field "$f" since)"
     # A since no date reads is a hold nobody can age: it shows, since it is as old as anything. An
     # empty one too: `date -d ""` reads as today's midnight.
     { [ -n "$since" ] && s=$(date -d "$since" +%s 2>/dev/null); } || s=0
     age=$(( (now - s) / 86400 ))
-    # A keep (cmd_keep) restarts the clock: the human re-confirmed it, so it waits a day past that.
-    k="$(field "$f" kept)"
-    if [ -n "$k" ] && k=$(date -d "$k" +%s 2>/dev/null) && [ "$k" -gt "$s" ]; then
-      [ $(( (now - k) / 86400 )) -ge "$days" ] || continue
-    fi
     [ "$age" -ge "$days" ] || continue
     n=$((n + 1))
     printf '%s: held %sd, since %s by %s: %s\n' "${f##*/}" "$age" "${since:-an unreadable time}" "$(field "$f" by)" "$(field "$f" reason)"
@@ -538,7 +659,7 @@ cmd_show() {
 
 cmd_classes() { printf '%s\n' "$DESK_CLASSES"; }
 
-usage() { sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,49p' "$0" | sed 's/^# \{0,1\}//'; }
 
 verb="${1:-}"; shift || true
 case "$verb" in
@@ -546,7 +667,6 @@ case "$verb" in
   claim)   cmd_claim "$@" ;;
   grant)   cmd_grant "$@" ;;
   lower)   cmd_lower "$@" ;;
-  keep)    cmd_keep "$@" ;;
   release) cmd_release "$@" ;;
   check)   cmd_check "$@" ;;
   list)    cmd_list "$@" ;;

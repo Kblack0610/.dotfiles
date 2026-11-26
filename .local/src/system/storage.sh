@@ -451,12 +451,12 @@ cmd_pick() {
   me=$(printf '%q' "$SELF")
   cmd_list | fzf "${PANEL_FZF_OPTS[@]}" "${PANEL_FZF_TABLE[@]}" --with-nth=3 \
     --header="$(cmd_overview ansi header)" --header-first \
-    --footer="enter browse | ctrl-x reclaim | ctrl-r rescan | ctrl-d drives | esc quit" \
-    --preview="$me preview {2}" "$(panel_fzf_preview down 35)" \
+    --footer="enter browse | ctrl-x reclaim | ctrl-r rescan | ctrl-o drives | ctrl-d/u scroll | esc quit" \
+    --preview="$me preview {2}" "$(panel_fzf_preview down 35)" "--bind=$PANEL_SCROLL_BINDS" \
     --bind="enter:execute($me browse {1})" \
     --bind="ctrl-x:execute($me reclaim {2})+reload($me --list)+transform-header($me overview ansi header)" \
     --bind="ctrl-r:execute($me scan)+reload($me --list)+transform-header($me overview ansi header)" \
-    --bind="ctrl-d:execute($me drives)"
+    --bind="ctrl-o:execute($me drives)"
 }
 
 [[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0

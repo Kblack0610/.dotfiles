@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # agentctl-docs-cleanup counts restated instructions (skill-drift --dups --check) beside the skill and
 # doc drift: a count over dup_pairs_max is drift and queues the pass, a count at or under it is not,
-# knowledge lint drift (the vault, with the knowledge-retired list) queues the same one pass,
+# knowledge lint drift (the vault, with the knowledge-retired list) queues its own area's pass,
 # an open correction chain is drift too, and a lost baseline reads FAILED instead of "no drift". skill-drift is a stub that serves canned JSON.
 
 setup() {
@@ -98,12 +98,13 @@ STUB
   assert_output --partial 'skill-drift --dups --check --json gave no JSON'
 }
 
-@test "knowledge drift queues the one pass, and the lint reads the retired list the runner wrote" {
+@test "knowledge drift queues its area's pass, and the lint reads the retired list the runner wrote" {
   KNOWLEDGE_JSON='{"total":2,"classes":{"dated_slug":{"count":1},"retired_command":{"count":1}}}' \
     DUPS_JSON='{"pairs":60,"max":60,"over":0}' run "$BIN/agentctl-docs-cleanup" --dry-run
   assert_success
-  assert_output --partial 'would queue'
-  assert_output --partial 'correction chains 0, knowledge 2.'
+  assert_output --partial 'would queue docs-cleanup-pass-knowledge: '
+  assert_output --partial "Docs-cleanup area knowledge: run the"
+  assert_output --partial ': knowledge 2. '
   run cat "$LINT_ARGS"
   assert_output --partial "--retired $AGENTCTL_INBOX/"
   run cat "$AGENTCTL_INBOX"/*/retired.tsv

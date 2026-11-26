@@ -11,6 +11,7 @@
 #   desk notify close|close-all|history|dnd
 #   desk notify show <tag> <notify-send args>   one popup per tag, replaced in place; prints a --wait click
 #   desk notify drop <tag>        close that tag's popup
+#   desk notify bell              swaync's bell stream, its text the waiting pages by group
 #   desk chip <module-id> [run|stream]   a waybar chip for the Noctalia bar: how to run
 #                                 it, one run's output, or its stream kept running
 #   desk panel <custom/chip|panel-id> [context]   toggle a bar panel: a chip's dropdown or a
@@ -140,9 +141,14 @@ signal() {
 # closes it only while the same process owns the notification name. A restarted or switched
 # notifier counts from 1 again, and the old id could be someone else's page.
 # A tag is any text (agent-notify uses the page title), so a / in it is kept out of the path.
-notify_file() {
+# The app name the popup was sent with (-a, which the panel groups by) follows, for the bell.
+notify_dir() {
     local dir="${XDG_RUNTIME_DIR:?desk notify needs XDG_RUNTIME_DIR}/desk"
-    mkdir -p "$dir" && echo "$dir/notify-${1//\//%}.id"
+    mkdir -p "$dir" && echo "$dir"
+}
+notify_file() {
+    local dir
+    dir="$(notify_dir)" && echo "$dir/notify-${1//\//%}.id"
 }
 notify_owner() {
     gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
@@ -153,13 +159,19 @@ notify_owner() {
 # kept before the wait, so a drop meanwhile closes the popup and ends the wait.
 notify_show() {
     [[ -n "${1:-}" ]] || die "usage: desk notify show <tag> <notify-send args>" 2
-    local tag="$1" f id
+    local tag="$1" f id a prev="" app="" owner
     shift
+    for a in "$@"; do
+        case "$prev" in -a | --app-name) app="$a" ;; esac
+        case "$a" in --app-name=*) app="${a#*=}" ;; -a?*) app="${a#-a}" ;; esac
+        prev="$a"
+    done
     f="$(notify_file "$tag")" || exit 1
     rm -f "$f"
     {
         read -r id || return 1
-        printf '%s %s\n' "$id" "$(notify_owner)" > "$f"
+        owner="$(notify_owner)" || owner=""  # a bus that did not answer: no owner, then no app, or it reads as the owner
+        printf '%s %s%s\n' "$id" "$owner" "${owner:+${app:+ $app}}" > "$f"
         cat
     } < <(notify-send -p -h "string:x-canonical-private-synchronous:$tag" "$@")
 }
@@ -168,11 +180,74 @@ notify_drop() {
     local f id owner
     f="$(notify_file "$1")" || exit 1
     [[ -s "$f" ]] || return 0
-    read -r id owner < "$f"
+    read -r id owner _ < "$f"
     rm -f "$f"
     [[ "$id" =~ ^[0-9]+$ && "$owner" == "$(notify_owner)" ]] || return 0
     gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
         --method org.freedesktop.Notifications.CloseNotification "$id" >/dev/null 2>&1 || true
+}
+
+# The bell (custom/notify under swaync) is swaync's own stream with its text set to the waiting
+# pages by group, "3 agents, 2 health": the kept ids counted by the app name show recorded
+# (agent-notify names its pages Agents, Health or Needs you, the panel's groups). swaync hands
+# out no list over D-Bus, only a count, so the bell forgets a kept id when the notifier signals
+# NotificationClosed for it: the panel's dismiss and clear-all send it, a popup that times out
+# into the panel does not. A count of 0 forgets every kept id, which also clears one closed
+# while no bar ran, and an id from an earlier notifier process is never counted. Each bar runs
+# its own; forgetting an id twice is harmless. The bell ends when swaync's stream does, so the
+# bar starts it again (a swaync restart, or a bar that came up first).
+notify_bell() {
+    {
+        local mon
+        dbus-monitor --session "type='signal',interface='org.freedesktop.Notifications',member='NotificationClosed'" \
+            2>/dev/null > >(sed -u 's/^/D /') &
+        mon=$!
+        swaync-client -swb | sed -u 's/^/S /' || true
+        kill "$mon" 2>/dev/null || true
+    } | {
+        local kind line last="" sender=""
+        while read -r kind line; do
+            case "$kind $line" in
+                "S "*)
+                    last="$line"
+                    [[ "$(jq -r '.text // "0"' <<<"$line")" != 0 ]] || rm -f "$(notify_dir)"/notify-*.id ;;
+                # dbus-monitor prints the signal's header, then its id and reason, one per line
+                "D signal "*) [[ "$line" =~ sender=([^ ]+) ]] && sender="${BASH_REMATCH[1]}"; continue ;;
+                "D uint32 "*)
+                    [[ -n "$sender" ]] || continue
+                    notify_forget "${line#uint32 }" "('$sender',)"
+                    sender="" ;;
+                *) continue ;;
+            esac
+            [[ -z "$last" ]] || notify_bell_line "$last"
+        done
+    }
+}
+notify_forget() {  # ID OWNER: drop the kept id this notifier process closed
+    local f id owner
+    for f in "$(notify_dir)"/notify-*.id; do
+        [[ -s "$f" ]] && read -r id owner _ < "$f" && [[ "$id" == "$1" && "$owner" == "$2" ]] && rm -f "$f"
+    done
+    return 0
+}
+notify_bell_line() {  # SWAYNC_JSON: that line with the group text and a tooltip per group
+    local f id owner app now groups
+    local -A n=()
+    if [[ "$(jq -r '.text // "0"' <<<"$1")" != 0 ]]; then
+        now="$(notify_owner)"
+        for f in "$(notify_dir)"/notify-*.id; do
+            [[ -s "$f" ]] && read -r id owner app < "$f" && [[ -n "$app" && "$owner" == "$now" ]] || continue
+            n[$app]=$((${n[$app]:-0} + 1))
+        done
+    fi
+    for app in "${!n[@]}"; do groups+="${n[$app]}"$'\t'"$app"$'\n'; done
+    jq -c --arg g "${groups:-}" '
+        ($g | split("\n") | map(select(. != "") | split("\t") | {n: (.[0] | tonumber), app: .[1]})
+            | sort_by(-.n, .app)) as $gs
+        | if ($gs | length) == 0 then .text = ""
+          else .text = " " + ($gs | map("\(.n) \(.app | ascii_downcase)") | join(", "))
+             | .tooltip = ((.tooltip // "") + "\n" + ($gs | map("\(.app) \(.n)") | join(", ")))
+          end' <<<"$1"
 }
 
 notify() {
@@ -192,7 +267,8 @@ notify() {
         swaync:close-all) swaync-client --hide-all ;;
         swaync:history)   swaync-client -t -sw ;;
         swaync:dnd)       swaync-client -d -sw ;;
-        *) die "usage: desk notify close|close-all|history|dnd|show|drop" 2 ;;
+        swaync:bell)      notify_bell ;;
+        *) die "usage: desk notify close|close-all|history|dnd|bell|show|drop" 2 ;;
     esac
 }
 

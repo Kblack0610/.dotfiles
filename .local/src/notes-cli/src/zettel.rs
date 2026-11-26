@@ -10,12 +10,15 @@ use std::io::Write;
 use std::path::Path;
 
 pub fn new_note(p: &Profile, log: &Logger, title: &str) -> Result<()> {
-    create(&p.zettel, log, "zettel", "note", title, |id, title, now| {
-        format!(
-            "---\nid: {id}\ntitle: \"{title}\"\ncreated: {date}\ntags: []\nlinks: []\n---\n\n# {title}\n\n",
-            date = now.format("%Y-%m-%d")
-        )
-    })
+    create(&p.zettel, log, "zettel", "note", title, note_text)
+}
+
+fn note_text(id: &str, title: &str, now: DateTime<Local>) -> String {
+    format!(
+        "---\nid: {id}\ntitle: {q}\ncreated: {date}\ntags: []\nlinks: []\n---\n\n# {title}\n\n",
+        q = crate::md::yaml_quote(title),
+        date = now.format("%Y-%m-%d")
+    )
 }
 
 /// A note named `<timestamp id>-<slug>.md` in `dir`, its text from `body(id, title, now)`;
@@ -30,7 +33,8 @@ pub(crate) fn create(
     title: &str,
     body: impl FnOnce(&str, &str, DateTime<Local>) -> String,
 ) -> Result<()> {
-    let title = title.trim();
+    let title = one_line(title);
+    let title = title.as_str();
     if title.is_empty() {
         bail!("{kind} title must not be empty");
     }
@@ -58,6 +62,17 @@ pub(crate) fn create(
     Ok(())
 }
 
+/// The title on one line: a newline in it would split the `# {title}` heading as well.
+/// Control characters become a space; the ends are trimmed.
+fn one_line(title: &str) -> String {
+    title
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 fn slugify(s: &str, fallback: &str) -> String {
     let slug = crate::md::kebab(s);
     if slug.is_empty() {
@@ -70,6 +85,24 @@ fn slugify(s: &str, fallback: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_line_replaces_control_characters_and_keeps_spacing() {
+        assert_eq!(one_line("  a\nb\tc  "), "a b c");
+        assert_eq!(one_line("Sync  A  vs  B"), "Sync  A  vs  B");
+        assert_eq!(one_line(" \n "), "");
+    }
+
+    #[test]
+    fn note_title_survives_the_front_matter() {
+        let t = "He said \"x\" in C:\\temp";
+        let text = note_text("id", t, Local::now());
+        assert_eq!(
+            crate::md::parse_yaml_scalar(&text, "title").as_deref(),
+            Some(t)
+        );
+        assert!(text.contains("\n# He said \"x\" in C:\\temp\n"), "{text}");
+    }
 
     #[test]
     fn slugify_basic() {

@@ -16,8 +16,11 @@
 [ "${3:-0}" = 1 ] || exit 0
 top="$PWD"
 [ "$top" -ef "${DOTFILES:-$HOME/.dotfiles}" ] || exit 0
-default="$(git symbolic-ref -q --short refs/remotes/origin/HEAD)"; default="${default#origin/}"
-[ "$(git symbolic-ref -q --short HEAD)" = "${default:-main}" ] && exit 0
+# merge_proof_branch: the one reader of a repo's default branch (fleet-states.md Owners).
+# shellcheck source=../.local/lib/agent-merge-proof.sh
+. "$(dirname "$(readlink -f "$0")")/../.local/lib/agent-merge-proof.sh" || { echo "post-checkout: cannot source agent-merge-proof.sh, so the branch check did not run" >&2; exit 0; }
+default="$(merge_proof_branch "$top")" || default=main
+[ "$(git symbolic-ref -q --short HEAD)" = "$default" ] && exit 0
 
 chain="" pid=$PPID
 for _ in 1 2 3 4 5; do
@@ -30,5 +33,5 @@ actor="${CLAUDE_CODE_SESSION_ID:+session ${CLAUDE_CODE_SESSION_ID:0:8} }${AGENT_
 
 ledger="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}"
 mkdir -p "$ledger" && printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$top" "$(git rev-parse HEAD)" "$actor" >> "$ledger/checkout-moves.tsv"
-echo "post-checkout: $top is off ${default:-main}: every stowed script now runs this commit. Go back with: git -C $top switch ${default:-main}" >&2
+echo "post-checkout: $top is off $default: every stowed script now runs this commit. Go back with: git -C $top switch $default" >&2
 exit 0

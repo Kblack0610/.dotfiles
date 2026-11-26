@@ -178,6 +178,21 @@ relay_fixture() { # <kind> <text> <shown>
   assert_success
 }
 
+@test "said: the human's words in this attended session pass; other words, a dispatched session or none fail (ar-6059)" {
+  relay_fixture typed 'Hold critical till tomorrow' ''
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" said --since '-1 hour' 'hold  CRITICAL till'
+  assert_success
+  grep -q "agent-panel human $HOME/.claude/projects/p/sid-r.jsonl --since [0-9-]*T[0-9:]*Z" "$NOTES_FIXTURE/calls.log"
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" said --since '-1 hour' 'release it'
+  assert_failure 1; assert_output --partial 'contain: release it'
+  run env CLAUDE_CODE_SESSION_ID=sid-r AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" said --since '-1 hour' 'hold critical'
+  assert_failure 1; assert_output --partial 'no human at it'
+  run "$AGENT_ASK" said --since '-1 hour' 'hold critical'
+  assert_failure 1; assert_output --partial 'no CLAUDE_CODE_SESSION_ID'
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" said 'hold critical'
+  assert_failure 2
+}
+
 @test "answer --quote: refused unless the transcript proves it, and the ask stays pending" {
   local id; id="$(post demo 'park 611 rows?')"
   relay_fixture answer 'Park them' "Ask $id: park the 611 rows?"
@@ -215,6 +230,25 @@ relay_fixture() { # <kind> <text> <shown>
   relay_fixture answer 'Park them' "Ask $id: park or wait?"
   run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'park them' "$id" 'merge past red'
   assert_failure 1; assert_output --partial "names none (or more than one) of ask $id's options"
+  # Words that name neither the option nor its meaning do not pick it (ar-6269, ask M0yWLL).
+  relay_fixture answer 'get us down to only the ones that need' "Ask $id: park or wait?"
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'only the ones that need' "$id" park
+  assert_failure 1; assert_output --partial "does not pick 'park'"
+  # Words that name another option pick that one, not this.
+  relay_fixture answer 'wait for CI' "Ask $id: park or wait?"
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'wait for CI' "$id" park
+  assert_failure 1; assert_output --partial "does not pick 'park'"
+  run "$AGENT_ASK" show "$id"; assert_line 'status: pending'; refute_output --partial 'relayed'
+  # A fragment of a longer message that names the option does not pick it when the whole message names another.
+  relay_fixture answer "don't park them, wait for CI" "Ask $id: park or wait?"
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'park them' "$id" park
+  assert_failure 1; assert_output --partial "whole message does not pick 'park'"
+  # The option's meaning alone picks it, when its name is not in the words.
+  local id2; id2="$("$AGENT_ASK" post --project demo --options 'keep=leave it as is|drop=remove it' 'keep or drop?')"
+  relay_fixture answer 'Yes, leave it as is please' "Ask $id2: keep or drop?"
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'leave it as is' "$id2" keep
+  assert_success
+  relay_fixture answer 'park them' "Ask $id: park or wait?"
   run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'park them' "$id" park
   assert_success
   # An ask the human already answered takes no relay: it would rewrite their answer's provenance.
@@ -664,6 +698,54 @@ SH
   [ -n "$("$AGENT_ASK_QUEUE_CMD" show held --json | jq -r '.hold // empty')" ] || fail "the pending ask did not hold the item"
   "$AGENT_ASK" answer --by judge "$a" go 2>/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
   [ -z "$("$AGENT_ASK_QUEUE_CMD" show held --json | jq -r '.hold // empty')" ] || fail "a judge answer left the item held"
+}
+
+# ar-6242: VZtnyM's answer ran its reopen resume, which deferred to a board row held on the ask, and
+# the asker's own waiting item ar-5519 sat 11 hours unstarted until a session requeued it by hand.
+@test "answer: each waiting item the ask names goes back to the queue with the decision; a live or still-asking one stays" {
+  unset AGENT_ASK_NO_RESUME
+  export FLEET_DISPATCH_DIR="$SANDBOX/dispatch"
+  export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
+  local AQ="$AGENT_ASK_QUEUE_CMD" id task s
+  waiting_item() {
+    local slug="$1" sid; shift
+    "$AQ" add --project demo --slug "$slug" "work $slug" >/dev/null || return
+    for sid; do "$AQ" claim "$slug" --sid "$sid" >/dev/null || return; done
+    "$AQ" move "$slug" running >/dev/null && "$AQ" move "$slug" waiting >/dev/null
+  }
+  printf '#!/usr/bin/env bash\necho "{\\"session_id\\":\\"sid-6\\",\\"pane\\":\\"%%1\\"}"\n' >"$SANDBOX/bin/agent-panel"
+  chmod +x "$SANDBOX/bin/agent-panel"
+  id="$(CLAUDE_CODE_SESSION_ID=sid-8 post demo 'ship it?')"
+  task="$(CLAUDE_CODE_SESSION_ID=sid-5 "$AGENT_ASK" post --project demo --task named 'which way?')"
+  CLAUDE_CODE_SESSION_ID=sid-9 post demo 'and the docs?' >/dev/null
+  # Named by its latest session, and by the ask's task.
+  waiting_item asker sid-1 sid-8
+  waiting_item named sid-2
+  # Negative controls: one the asks do not name, one another pending ask still names, one with a live
+  # session, one the asking session worked before another, and the asker's of an ask that names a task.
+  waiting_item stranger sid-3
+  waiting_item asking sid-9 sid-8
+  waiting_item live sid-6 sid-8
+  waiting_item history sid-8 sid-4
+  waiting_item tasked sid-5
+  "$AGENT_ASK" answer "$id" go 2>/dev/null; "$AGENT_ASK" answer "$task" left 2>/dev/null
+  "$AGENT_ASK" deliver --all 2>/dev/null
+  for s in asker:"$id" named:"$task"; do
+    run "$AQ" show "${s%%:*}" --json
+    assert_equal "${s%%:*} $(jq -r .state <<<"$output")" "${s%%:*} queued"
+    [[ " $(jq -r .tags <<<"$output") " == *" ask:${s#*:} "* ]] || fail "${s%%:*} went back without the ask:${s#*:} tag its brief reads the decision from"
+  done
+  for s in stranger asking live history tasked; do
+    assert_equal "$s $("$AQ" show "$s" --json | jq -r .state)" "$s waiting"
+  done
+  # The requeued item covers its own session only: reopen leaves sid-8 to the queue, not every session.
+  run "$AGENT_ASK" reopen "$id"
+  assert_success
+  assert_output --partial "session sid-8's queue item holds it"
+  run "$AGENT_ASK" show "$id"
+  assert_line --partial 'back in the queue'
+  assert_not_called 'chore(ask)'
+  [ -s "$FLEET_DISPATCH_DIR/.wake" ] || fail "the requeue wrote no dispatch wake"
 }
 
 @test "decision: the human's answer with its meaning, and nothing before that or from the judge" {
@@ -1781,6 +1863,62 @@ rpost() { "$AGENT_ASK" post --project "$1" --context "About: ${*: -1}" "${@:2}";
   assert_line --regexp "^agent-runtime	$bare	cancel	duplicate of $other: "
 }
 
+@test "expire cancels an audit on a row whose item landed after it was posted; not a question or approval, a failed item, a later audit, a live or held one" {
+  # 2026-11-23: audit 9sW8iy of the judge's retry of tr-186 stayed pending after tr-186 landed.
+  row_map
+  mkdir -p "$HOME/.claude/sessions" "$SANDBOX/items"
+  printf '{"pid":%d,"sessionId":"sid-live"}\n' "$$" > "$HOME/.claude/sessions/$$.json"
+  # A queue stand-in: ask-holds prints the holds file, show the item's JSON as agent-queue show --json does.
+  : > "$SANDBOX/holds"
+  # The command is a word list (agent-ask splits it), so it lives outside the sandbox path, which has a space.
+  cat > "$BATS_TEST_TMPDIR/aq" <<FAKE
+#!/usr/bin/env bash
+case "\$1" in
+  ask-holds) cat "$SANDBOX/holds" ;;
+  show) cat "$SANDBOX/items/\$2.json" 2>/dev/null || { echo "agent-queue: no item: \$2" >&2; exit 1; } ;;
+esac
+FAKE
+  chmod +x "$BATS_TEST_TMPDIR/aq"
+  export AGENT_ASK_QUEUE_CMD="$BATS_TEST_TMPDIR/aq"
+  # item <slug> <outcome> <finished offset> <pr number>
+  item() { printf '{"slug":"%s","outcome":"%s","finished":"%s","pr":"o/r#%s"}\n' "$1" "$2" "$(date -u -d "$3" +%FT%TZ)" "$4" > "$SANDBOX/items/$1.json"; }
+  # aud <n> <question>: an audit of the judge's answer to it, the session id from the caller's env.
+  aud() { rpost agent-runtime --kind approval --audit-of "q$1" --options 'retry=keep|drop=override' "The judge answered \"$2\" with \"retry\"; your pick?"; }
+  local audit gone deploy live held failed later id
+  audit="$(aud 1 'Start board row ar-186 again after its last 2 runs failed?')"
+  gone="$(CLAUDE_CODE_SESSION_ID=sid-gone aud 2 'Retry ar-186?')"
+  # A question or approval on the row is about what comes after it, so the landing settles neither.
+  deploy="$(CLAUDE_CODE_SESSION_ID=sid-gone2 rpost agent-runtime --kind approval 'ar-186 is about to merge; deploy it?')"
+  live="$(CLAUDE_CODE_SESSION_ID=sid-live aud 3 'Is ar-186 still needed?')"
+  held="$(aud 4 'Close ar-186 now?')"
+  printf 'x\t%s\t\n' "$held" > "$SANDBOX/holds"
+  failed="$(aud 5 'Start board row ar-187 again after its last 2 runs failed?')"
+  later="$(aud 6 'Deploy ar-186?')"
+  for id in "$audit" "$gone" "$deploy" "$live" "$held" "$failed"; do aged "$id" '-2 hours'; done
+  aged "$later" '-30 minutes'
+  # Negative control: no item has landed yet, so nothing closes.
+  run "$AGENT_ASK" expire --dry-run
+  assert_success
+  for id in "$audit" "$gone" "$deploy" "$live" "$held" "$failed" "$later"; do refute_output --partial "$id"; done
+  item ar-186 landed '-1 hour' 1411
+  item ar-187 failed '-1 hour' 1412
+  run "$AGENT_ASK" expire --dry-run
+  assert_success
+  assert_line "agent-runtime	$audit	cancel	moot: row ar-186 landed (o/r#1411) after this was asked"
+  assert_line "agent-runtime	$gone	cancel	moot: row ar-186 landed (o/r#1411) after this was asked"
+  for id in "$deploy" "$live" "$held" "$failed" "$later"; do refute_output --partial "$id"; done
+  grep -qx 'status: pending' "$(ask_file "$audit")"
+  # A queue that cannot be read closes nothing.
+  run env AGENT_ASK_QUEUE_CMD=false "$AGENT_ASK" expire
+  refute_output --partial "$audit"
+  run "$AGENT_ASK" expire
+  assert_success
+  run "$AGENT_ASK" show "$audit"
+  assert_line 'status: cancelled'
+  assert_line 'closed_reason: moot: row ar-186 landed (o/r#1411) after this was asked'
+  for id in "$deploy" "$live" "$held" "$failed" "$later"; do grep -qx 'status: pending' "$(ask_file "$id")"; done
+}
+
 @test "expire cancels a today or tonight ask once its day is over and DATED_HOURS have passed; an undated or held one stays" {
   export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   mkdir -p "$HOME/.claude/sessions"
@@ -1900,14 +2038,19 @@ rpost() { "$AGENT_ASK" post --project "$1" --context "About: ${*: -1}" "${@:2}";
   assert_output 'sid-1'
 }
 
-@test "the card says a live session hears the answer and its resume command starts too" {
+@test "the card says a live session hears the answer and a prompt resume starts only once it has ended" {
   local id
   mkdir -p "$HOME/.claude/sessions"
   printf '{"pid":%d,"sessionId":"sid-1"}\n' "$$" > "$HOME/.claude/sessions/$$.json"
   id="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --resume '/captain resume' 'both?')"
   run "$AGENT_ASK" card "$id"
-  assert_output --partial 'the answer goes to the asking session and starts `/captain resume`'
+  assert_output --partial 'the answer goes to the asking session; `/captain resume` starts only if it has ended'
   refute_output --partial 'session gone'
+  # Negative control: a `run:` resume is the asking script's own step, so it starts beside the session.
+  "$AGENT_ASK" cancel "$id" moot 2>/dev/null
+  id="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --resume 'run: own-step' 'both again?')"
+  run "$AGENT_ASK" card "$id"
+  assert_output --partial 'the answer goes to the asking session and starts `run: own-step`'
 }
 
 @test "cancel records its reason" {
@@ -2091,8 +2234,9 @@ SH
   chmod +x "$SANDBOX/bin/hub-figure"
   assert_equal "$("$AGENT_ASK" count --all)" 17
   assert_equal "$("$AGENT_ASK" count demo)" 1
-  # Negative control: no reader, no count; never a 0.
-  rm "$SANDBOX/bin/hub-figure"
+  # Negative control: an unread figure, no count; never a 0. A reader that fails, not a removed
+  # one: removed, PATH found the workstation's own hub-figure and its live count (ar-4589).
+  printf '#!/bin/sh\nexit 1\n' >"$SANDBOX/bin/hub-figure"
   assert_equal "$("$AGENT_ASK" count --all)" '?'
 }
 
@@ -2279,6 +2423,27 @@ ASK-JUDGE-END'
   check not-reversible human reversible
   # the type is the whole ask's, so an answerable bundle names it
   check ship_deploy take-recommend engineering_design
+}
+
+@test "judge: a reply scored on the picked act derives a park or a wait answerable and an outside act human-only" {
+  # The derive layer only: the model's reading of policy.md (How to score) is checked live, by re-judging asks.
+  # act <type> <criterion> <act>: a reply scoring one decision, the act the picked answer commits to (policy, How to score)
+  act() { SCORE_TYPE=$1 score "$2" | jq -c --arg a "$3" '.decisions[0].decision = $a'; }
+  check() {
+    fake_judge "$1"
+    local id; id="$("$AGENT_ASK" post --project demo --options "$2" --recommend "${2%%=*}" "$3")"
+    "$AGENT_ASK" judge "$id"
+    run "$AGENT_ASK" show "$id"
+    assert_line "judge: $4"
+    if [ "$4" = human ]; then assert_line 'judge_human_only: true'; else refute_line --partial 'judge_human_only'; fi
+  }
+  # rBINiU: park 611 rows, each kept with its links, is not bulk
+  check "$(act cleanup_restructure cleanup_restructure 'park 611 rows, every row kept')" 'park=move them off the board, each kept|keep=leave them' 'what of the 611 old low rows?' take-recommend
+  # fPyHyd: wait for the stuck check; the merge past it is the option turned down
+  check "$(act proceed_or_hold proceed_or_hold 'wait for the queued DB job')" 'wait=wait for the job|admin=merge past it' 'wait for the stuck check or merge past it?' take-recommend
+  # negative controls: the merge past red picked, and a public post, are outside acts
+  check "$(act ship_deploy external 'merge PR 1661 past the unrun check')" 'admin=merge past it|wait=wait for the job' 'merge past the stuck check?' human
+  check "$(act other external 'post the release note publicly')" 'post=post it publicly|hold=hold it' 'post the release note?' human
 }
 
 @test "judge: its own answer wins over the recommendation, and judge_met lists what held" {
@@ -2723,8 +2888,10 @@ audit_of() {
   local a b
   a="$(live_post sid-1 'stuck once?' 2>/dev/null)"
   run "$AGENT_ASK" show "$a"; assert_line 'judge_reason: the judge call timed out after 1s'
+  # The pass that judges it again gets a guard the judge's own writes fit in on a loaded runner:
+  # at 1s the guard ended one after `judge` and before `judge_rule` (run 45675382228).
   fake_judge "$(score ship_deploy "" "rules say fix it yourself.")"
-  "$AGENT_ASK" assume-due 2>/dev/null
+  AGENT_ASK_JUDGE_TIMEOUT=30 "$AGENT_ASK" assume-due 2>/dev/null
   run "$AGENT_ASK" show "$a"
   assert_line 'judge: take-recommend'; assert_line 'answered_by: judge'; assert_line 'status: answered'
   # A call that stalls again keeps the error, says so, and is not tried a third time.

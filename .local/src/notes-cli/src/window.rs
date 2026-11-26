@@ -868,7 +868,10 @@ fn slip(cut: NaiveDate, day: NaiveDate, late: &str, ok: &str) -> String {
 }
 
 /// The score a cut writes: the counts, then the window's due day and the human's target
-/// (when one was promised for this version) against the day it was cut.
+/// (when one was promised for this version) against the day it was cut. A cut of a window that
+/// committed rows and delivered none of them, or carried more than it delivered, did not ship
+/// the promise, so its target reads `not shipped`, plus the days when it was also late (ar-3641:
+/// v0.5.3 delivered 1 of 71 and read `met`). A dropped row is a scope cut, not a carried promise.
 fn cut_line(snap: &Snapshot, t: &Tally, cut: NaiveDate, target: Option<(V, NaiveDate)>) -> String {
     let mut line = format!(
         "committed {}, delivered {}, carried {}, dropped {}, interrupted {}; opened {}",
@@ -882,10 +885,16 @@ fn cut_line(snap: &Snapshot, t: &Tally, cut: NaiveDate, target: Option<(V, Naive
         None => line.push_str(&format!(", cut {cut}")),
     }
     if let Some((v, on)) = target {
+        let day = slip(cut, on, "missed by", "met");
+        let unshipped = t.committed > 0 && (t.delivered == 0 || t.delivered < t.open);
         line.push_str(&format!(
             "; target {} {on} {}",
             projects::fmt_version(v),
-            slip(cut, on, "missed by", "met")
+            match (unshipped, day.as_str()) {
+                (false, _) => day.clone(),
+                (true, "met") => "not shipped".to_string(),
+                (true, late) => format!("not shipped, {late}"),
+            }
         ));
     }
     line
@@ -981,6 +990,41 @@ pub(crate) fn open(dir: &Path, cur: V, ix: &Index) -> Option<OpenWindow> {
         locked: snap.locked.map(|c| c.format(CUT_FORMAT).to_string()),
         tally: tally(&snap, &rows_for(dir, cur, ix, &snap)),
     })
+}
+
+/// What the open version's window promises: the weight of the rows it holds still open in the
+/// version (its committed rows and every interrupt that entered; a row re-aimed later is that
+/// version's), and the interrupt rows that entered, open or shipped, its only scope growth.
+/// `None` when it has no snapshot. What `projects::TargetWork` weighs for the open version in
+/// place of its whole sheet (ar-3540).
+pub(crate) fn promise(dir: &Path, cur: V, ix: &Index) -> Option<(u32, Vec<String>)> {
+    let snap = read(dir, cur)?;
+    let rows = rows_for(dir, cur, ix, &snap);
+    let c = Classes::of(&snap, &rows);
+    let mut weighed = HashSet::new();
+    let open = rows
+        .open
+        .iter()
+        .filter(|l| {
+            let k = key(l);
+            let held = (snap.keys.contains(&k) && c.committed(&k) == Outcome::Open)
+                || c.interrupted.contains(&k);
+            held && weighed.insert(k)
+        })
+        .map(|l| projects::size_weight(l))
+        .sum();
+    let mut seen = HashSet::new();
+    let interrupts = rows
+        .open
+        .iter()
+        .chain(rows.closed.iter().filter(|l| !md::is_dropped(l)))
+        .filter(|l| {
+            let k = key(l);
+            c.interrupted.contains(&k) && seen.insert(k)
+        })
+        .cloned()
+        .collect();
+    Some((open, interrupts))
 }
 
 /// The Sprint count of an open window: its rows still open in the version, of the rows it holds.
@@ -1620,6 +1664,38 @@ pub(crate) fn refuse_held(
     Ok(())
 }
 
+/// Refuse `writer` taking `line` out of its version (`what` names the move) when that version is
+/// a sprint queued behind project `dir`'s open one ([`is_queued`], [`queue_sprint`]) whose
+/// snapshot commits the row, and the writer is not a person at a terminal: the snapshot would
+/// still commit it after the move. A person passes with a note that only a relock drops it.
+pub(crate) fn refuse_queued(
+    dir: &Path,
+    line: &str,
+    writer: &project_tasks::Writer,
+    what: &str,
+) -> Result<()> {
+    let home = home(dir);
+    let Some(q) = sheet::target(line).filter(|&t| is_queued(&home, t)) else {
+        return Ok(());
+    };
+    if !read(&home, q).is_some_and(|s| s.keys.contains(&key(line))) {
+        return Ok(());
+    }
+    let (text, v) = (md::task_text(line), projects::fmt_version(q));
+    let project = home
+        .file_name()
+        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    let relock = format!("notes projects --commit {project} --hours <H> --queue {v}");
+    anyhow::ensure!(
+        writer.is_person(),
+        "refused: {what} '{text}', a row the queued {v} sprint commits: its snapshot would still commit it, so a human relocks {v} ({relock}): {FROZEN_RULE}"
+    );
+    eprintln!(
+        "note: the queued {v} sprint still commits '{text}'; only a relock drops it: {relock}"
+    );
+    Ok(())
+}
+
 /// Refuse `writer` relocking version `v` of project `dir` when `v` already holds a window
 /// snapshot (an open or queued sprint, or a window recorded at its cut) and the writer is not a
 /// person at a terminal: a relock replaces the rows a sprint committed to.
@@ -1643,15 +1719,16 @@ pub(crate) enum Route {
     Next(V),
 }
 
-/// Route a new row `line` into `window`, the [`frozen_window`] of its project. `source` is the
-/// writer's own interrupt signal: a person at a terminal, or a human's want channel. A red or
-/// anything urgent says so on the row (`#interrupt`, `#urgent`).
+/// Route a new row `line` into `window`, the [`frozen_window`] of its project. Only the row says
+/// it is an interrupt: `#interrupt`, `#urgent`, or aimed at the open version by hand. Who files it
+/// does not: a `#high #requested` want from the human's capture joined a locked CI-and-release
+/// window that way (ucp-2807, 2026-11-20, ar-3940), so every other new row goes to the next window.
 ///
 /// A row aimed later keeps its aim, and one aimed at the open version by hand is pushed into
 /// the window, so it goes in as an interrupt the score counts. An urgent row that `waits` (it
 /// is [`waiting`] at the window's end) goes to the next window unless aimed at the open one by
 /// hand: a wait would only carry it at the cut, so it ranks in the window it can ship in (ar-3833).
-fn route(window: Option<V>, line: &str, source: bool, waits: bool) -> Route {
+fn route(window: Option<V>, line: &str, waits: bool) -> Route {
     let Some(c) = window else {
         return Route::Open;
     };
@@ -1663,18 +1740,13 @@ fn route(window: Option<V>, line: &str, source: bool, waits: bool) -> Route {
     let urgent = md::task_priority(line) == Some("#urgent");
     if urgent && waits && !aimed {
         next
-    } else if source || aimed || has_interrupt(line) || urgent {
+    } else if aimed || has_interrupt(line) || urgent {
         Route::Interrupt
     } else {
         next
     }
 }
 
-/// Is `want` (`--want`'s channel) the human's own ask? `#requested` rides on every want, so
-/// it cannot be the signal (`projects::MACHINE_WANTS`).
-pub(crate) fn human_channel(want: &str) -> bool {
-    !projects::MACHINE_WANTS.contains(&want)
-}
 /// `line` routed: tagged for the interrupt lane or aimed at the next window, where it is no
 /// interrupt ([`holds`] keeps every `#interrupt` row in the open window) and not urgent (`retag`).
 fn apply(line: &str, route: &Route) -> String {
@@ -1686,13 +1758,8 @@ fn apply(line: &str, route: &Route) -> String {
 }
 
 /// `block` as project `dir` (open version `cur`) takes it: in a frozen window each open row is
-/// tagged for the interrupt lane when `interrupt`, else aimed at the next window.
-pub(crate) fn admit(
-    dir: &Path,
-    cur: Option<V>,
-    block: Vec<String>,
-    interrupt: bool,
-) -> Vec<String> {
+/// tagged for the interrupt lane when [`route`] says so, else aimed at the next window.
+pub(crate) fn admit(dir: &Path, cur: Option<V>, block: Vec<String>) -> Vec<String> {
     let window = frozen_window(dir, cur);
     // What a row waits on, read once a filing: the window's end and the rows open on its sheets.
     let ends = window.map(|c| {
@@ -1709,7 +1776,7 @@ pub(crate) fn admit(
                 let waits = ends
                     .as_ref()
                     .is_some_and(|(today, end, open)| waiting(&l, *today, *end, open, &none));
-                apply(&l, &route(window, &l, interrupt, waits))
+                apply(&l, &route(window, &l, waits))
             } else {
                 l
             }
@@ -2290,6 +2357,36 @@ mod tests {
         );
         let on_time = cut_line(&snap, &t, day("2026-11-26"), None);
         assert!(on_time.ends_with("cut 2026-11-26 (on time)"), "{on_time}");
+        let shipped_little = Tally {
+            committed: 71,
+            delivered: 1,
+            open: 70,
+            ..Tally::default()
+        };
+        let early = Some(((0, 2, 0), day("2026-11-27")));
+        let little = cut_line(&snap, &shipped_little, day("2026-11-26"), early);
+        assert!(
+            little.ends_with("target v0.2.0 2026-11-27 not shipped"),
+            "{little}"
+        );
+        let none = Tally {
+            committed: 3,
+            open: 3,
+            ..Tally::default()
+        };
+        let late = cut_line(&snap, &none, day("2026-11-29"), early);
+        assert!(late.ends_with("not shipped, missed by 2 days"), "{late}");
+        // Negative control: an empty window promised nothing, so only the day is scored.
+        let empty = cut_line(&snap, &Tally::default(), day("2026-11-26"), early);
+        assert!(empty.ends_with("2026-11-27 met"), "{empty}");
+        let most = Tally {
+            committed: 4,
+            delivered: 3,
+            open: 1,
+            ..Tally::default()
+        };
+        let met = cut_line(&snap, &most, day("2026-11-26"), early);
+        assert!(met.ends_with("target v0.2.0 2026-11-27 met"), "{met}");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -2527,13 +2624,10 @@ mod tests {
         let cur = Some((0, 2, 0));
         let row = "- [ ] fix(ui): new bug #high #c1119 <!-- id:db-10 -->";
         // NEGATIVE CONTROL: no snapshot yet, so the window is open to every add.
-        assert_eq!(
-            route(frozen_window(&dir, cur), row, false, false),
-            Route::Open
-        );
+        assert_eq!(route(frozen_window(&dir, cur), row, false), Route::Open);
         let ix = Index::of(&dir, cur);
         record(&dir, "demo", (0, 2, 0), day("2026-11-19"), None, &ix).unwrap();
-        let next = route(frozen_window(&dir, cur), row, false, false);
+        let next = route(frozen_window(&dir, cur), row, false);
         assert_eq!(next, Route::Next((0, 2, 1)));
         assert!(
             apply(row, &next).contains("#v0.2.1"),
@@ -2541,59 +2635,37 @@ mod tests {
             apply(row, &next)
         );
         assert_eq!(
-            route(frozen_window(&dir, cur), row, true, false),
-            Route::Interrupt
-        );
-        assert_eq!(
             apply(row, &Route::Interrupt),
             "- [ ] fix(ui): new bug #high #c1119 #interrupt <!-- id:db-10 -->"
         );
         let urgent = "- [ ] fix(ui): main red #urgent";
         assert_eq!(
-            route(frozen_window(&dir, cur), urgent, false, false),
+            route(frozen_window(&dir, cur), urgent, false),
             Route::Interrupt
         );
         let tagged = "- [ ] fix(ui): red #interrupt";
         assert_eq!(
-            route(frozen_window(&dir, cur), tagged, false, false),
+            route(frozen_window(&dir, cur), tagged, false),
             Route::Interrupt
         );
         // A row aimed later and an epic keep their place; one aimed at the open version by
         // hand goes in as an interrupt.
         assert_eq!(
-            route(
-                frozen_window(&dir, cur),
-                "- [ ] feat(ui): x #v0.4.0",
-                false,
-                false
-            ),
+            route(frozen_window(&dir, cur), "- [ ] feat(ui): x #v0.4.0", false,),
             Route::Open
         );
         assert_eq!(
-            route(
-                frozen_window(&dir, cur),
-                "- [ ] feat(ui): x #v0.2.0",
-                false,
-                false
-            ),
+            route(frozen_window(&dir, cur), "- [ ] feat(ui): x #v0.2.0", false,),
             Route::Interrupt
         );
         assert_eq!(
-            route(
-                frozen_window(&dir, cur),
-                "- [ ] epic(ui): big",
-                false,
-                false
-            ),
+            route(frozen_window(&dir, cur), "- [ ] epic(ui): big", false,),
             Route::Open
         );
         // NEGATIVE CONTROL: the same snapshot on a project that is not focus routes nothing.
         let readme = fs::read_to_string(dir.join("README.md")).unwrap();
         fs::write(dir.join("README.md"), readme.replace(" #prio/focus", "")).unwrap();
-        assert_eq!(
-            route(frozen_window(&dir, cur), row, false, false),
-            Route::Open
-        );
+        assert_eq!(route(frozen_window(&dir, cur), row, false), Route::Open);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -2628,7 +2700,7 @@ mod tests {
             format!("{} #v0.2.0", gate(30)),
             format!("{} #interrupt", gate(30)),
         ];
-        let out = admit(&dir, cur, rows, true);
+        let out = admit(&dir, cur, rows);
         // Sent on, a row is neither urgent nor an interrupt, which `holds` would keep here.
         let next = |l: &str| {
             l.contains("#v0.2.1")

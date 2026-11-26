@@ -647,6 +647,34 @@ commit_tag() {
   assert_equal "$(row web-prod | jq -c '[.pinned.provenance, .provenance]')" '["outside","outside"]'
 }
 
+@test "provenance: an image that drops the v of a build tag outside the line is held to that tag" {
+  ship "start (#2)" web-v1.0.0
+  commit_tag "cut (#4)" v1.1.0-game1 cut.yml
+  push_pin 1.1.0-game1
+  export KUBE_IMAGE=reg/web:1.1.0-game1
+  run "$RS" refresh web
+  assert_success
+  assert_equal "$(row web-prod | jq -c '[.status, .pinned.provenance, .live.provenance, .provenance]')" '["ok","flow","flow","flow"]'
+  run "$RS" check
+  refute_output --partial 'OUTSIDE web web-prod'
+  # Negative control: the same bare value of a hand-cut build tag stays outside and pages.
+  commit_tag "hand (#5)" v1.2.0-game1 "Kenneth"
+  push_pin 1.2.0-game1
+  export KUBE_IMAGE=reg/web:1.2.0-game1
+  run "$RS" refresh web
+  assert_success
+  assert_equal "$(row web-prod | jq -c '[.pinned.provenance, .provenance]')" '["outside","outside"]'
+  run "$RS" check
+  assert_output --partial 'OUTSIDE web web-prod: pinned 1.2.0-game1 live 1.2.0-game1 was not released by the flow'
+  # Negative control: a bare release value is never held to another product's root `v` tag.
+  commit_tag "other (#6)" v1.3.0 cut.yml
+  push_pin 1.3.0
+  export KUBE_IMAGE=reg/web:1.3.0
+  run "$RS" refresh web
+  assert_success
+  assert_equal "$(row web-prod | jq -c '[.pinned.provenance, .provenance]')" '["outside","outside"]'
+}
+
 @test "provenance: a started line with no cut workflow in the release-cut registry says so" {
   ship "start (#2)" web-v1.0.0
   export RELEASE_CUT_CONF="$SANDBOX/no-such.json"
