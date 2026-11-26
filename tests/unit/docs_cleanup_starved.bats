@@ -12,7 +12,7 @@ setup() {
   export PATH="$BIN:$PATH" # the runner unit declares ~/.local/bin on PATH; the script no longer does
   mkdir -p "$BIN" "$HOME/.local/lib" "$HOME/.agent/lessons"
   cp "$BATS_TEST_DIRNAME/../../.local/bin/agentctl-docs-cleanup" "$BATS_TEST_DIRNAME/../../.local/bin/lessons" "$BATS_TEST_DIRNAME/../../.local/bin/docs-renamed-paths" "$BIN/"
-  printf 'proof_outcome() { :; }\n' > "$HOME/.local/lib/agent-proof.sh"
+  printf 'proof_outcome() { printf "%%s\\n" "$2" >> "$BATS_TEST_TMPDIR/verdicts"; }\n' > "$HOME/.local/lib/agent-proof.sh" # each night's verdict, one a line
   printf '#!/usr/bin/env bash\necho docs-cleanup\n' > "$BIN/agentctl"
   cat > "$BIN/agent-queue" <<'STUB'
 #!/usr/bin/env bash
@@ -182,4 +182,26 @@ STUB
   assert_success
   run cut -f1 "$ADD_LOG.tsv"
   assert_output "$(printf 'docs-cleanup-pass-skills\ndocs-cleanup-pass-docs')"
+}
+
+@test "a pass the board's daily cap refuses (exit 6) is a NOOP night that files again next night, not FAILED" {
+  ADD_RC=6 run "$BIN/agentctl-docs-cleanup"
+  assert_success
+  assert_output --partial "docs-cleanup-pass-docs held by the board's daily cap, filed again next night"
+  run tail -n 1 "$BATS_TEST_TMPDIR/verdicts"
+  assert_output NOOP
+  [ ! -s "$AGENTCTL_INBOX/row" ] || fail "a held pass kept a row line"
+  # the next night the cap has room: the same area files its row
+  ADD_RC=5 run "$BIN/agentctl-docs-cleanup"
+  assert_success
+  run tail -n 1 "$BATS_TEST_TMPDIR/verdicts"
+  assert_output WORKED
+}
+
+@test "negative control: any other refusal of the add still fails the night" {
+  ADD_RC=1 run "$BIN/agentctl-docs-cleanup"
+  assert_failure 1
+  assert_output --partial 'could not file pass docs-cleanup-pass-docs'
+  run tail -n 1 "$BATS_TEST_TMPDIR/verdicts"
+  assert_output FAILED
 }

@@ -149,9 +149,10 @@ esac
 
 # The skill is the one this runner's conf names, so a rename is one edit in the conf.
 skill="$(agentctl skill "$NAME" 2>/dev/null)" && [ -n "$skill" ] || fail "no SKILL= in the $NAME conf (agentctl skill $NAME)"
-# What each area came to: filed (a new pass), open (a pass still waiting or working) or bad (a
-# starved pass or a failed add). A bad area does not stop the others, and the night reads FAILED.
-filed=() open=() bad=()
+# What each area came to: filed (a new pass), open (a pass still waiting or working), held (the
+# board's daily cap refused its row, so the next night files it again) or bad (a starved pass or a
+# failed add). A bad area does not stop the others, and the night reads FAILED.
+filed=() open=() held=() bad=()
 for a in $AREAS; do
     [ -n "${said[$a]:-}" ] || continue
     slug="$SLUG-$a"
@@ -206,6 +207,10 @@ for a in $AREAS; do
            [ -n "${rid:-}" ] || { bad+=("the board took pass $slug but printed no held line"); continue; }
            keep+=("$rboard"$'\t'"$rid"$'\t'"$(date +%s)"$'\t'"$a")
            filed+=("filed $slug as board row $rid on $rboard") ;;
+        # The board's intake gate or daily cap (agent-queue exit 6, QUEUE.md "Admission") wrote
+        # nothing: the drift is still there, so tomorrow's night files the pass again (ar-2940 did
+        # the same for the rollup).
+        6) held+=("$slug held by the board's daily cap, filed again next night") ;;
         *) bad+=("could not file pass $slug") ;;
     esac
 done
@@ -220,5 +225,7 @@ join() { local s; s="$(printf '%s; ' "$@")"; printf '%s' "${s%; }"; }
 # A FAILED night still names the passes it filed, which the verdict would otherwise hide.
 [ "${#bad[@]}" = 0 ] || fail "$(join "${bad[@]}")${filed[0]:+; also $(join "${filed[@]}")} ($summary)"
 [ "$DRY" != 1 ] || exit 0
-if [ "${#filed[@]}" -gt 0 ]; then report WORKED "$(join "${filed[@]}") ($summary)"
+[ "${#held[@]}" = 0 ] || printf 'docs-cleanup: %s\n' "${held[@]}"
+if [ "${#filed[@]}" -gt 0 ]; then report WORKED "$(join "${filed[@]}" "${held[@]}") ($summary)"
+elif [ "${#held[@]}" -gt 0 ]; then report NOOP "$(join "${held[@]}" "${open[@]}") ($summary)"
 else report NOOP "passes still open: $(join "${open[@]}") ($summary)"; fi
