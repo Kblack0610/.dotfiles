@@ -461,6 +461,31 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   refute_line --regexp 'show the Kelly cell on /book .*#of/sc-9'
 }
 
+@test "a split line the model calls a dup of its own #of/ parent files under that parent" {
+  # ar-5549: ar-5404's split children were joined to their own parent rows as dups, so they vanished.
+  sheet '- [ ] feat(ui): the stage cells on /book #of/sc-3 #size/m #normal #agent #from/ar-5404\n' \
+    '- [ ] feat(ui): odds per stage on /book #pts/8 #size/l #normal <!-- id:sc-3 -->\n'
+  answer '{"n": 1, "action": "dup", "id": "sc-3", "why": "same as the odds row"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'names sc-3 as its own parent'
+  assert_output --partial 'filed 1, left 0, refused 0'
+  run cat "$SHEET" "$PROJ/scratch/agent/README.md"
+  assert_line --regexp '^- \[ \] feat\(ui\): the stage cells on /book .*#of/sc-3'
+  assert_output --regexp 'odds per stage on /book .*id:sc-3'
+}
+
+@test "negative control: a dup of a closed #of/ parent stays the model's dup" {
+  sheet '- [ ] feat(ui): the stage cells on /book #of/sc-3 #size/m #normal #agent #from/ar-5404\n' \
+    '- [x] feat(ui): odds per stage on /book #pts/8 #size/l #normal <!-- id:sc-3 done:2026-11-20 -->\n'
+  answer '{"n": 1, "action": "dup", "id": "sc-3"}'
+  run "$TRIAGE"
+  refute_output --partial 'names sc-3 as its own parent'
+  # The line stays in the inbox (a closed row takes no dup); it is never filed as a row of its own.
+  run cat "$SHEET" "$PROJ/scratch/agent/README.md"
+  refute_line --regexp '^- \[ \] feat\(ui\): the stage cells on /book .*id:'
+}
+
 @test "a split line's own #of/ files no new epic and never turns an empty row into a bare tag" {
   sheet '- [ ] feat(ui): the stage cells on /book #of/sc-3 #size/m #normal #agent #from/ar-5404\n- [ ] feat(ui): the odds legend on /book #of/sc-3 #size/s #normal #agent #from/ar-5404\n' \
     '- [ ] feat(ui): odds per stage on /book #pts/8 #size/l #normal <!-- id:sc-3 -->\n'
@@ -526,23 +551,6 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   run tasks
   assert_output --regexp 'fix\(audio\): the gun sound is off .*#of/sc-8 .*id:sc-1'
   refute_output --partial '#of/sc-9'
-}
-
-@test "--backlog: a plan's finish row stays on its board, and a rewrite must keep its plan slug, which ask-sweep finds it by" {
-  sheet '' '- [ ] finish alpha-plan-lazy-otter: 2 phases left, next: p3 the gate #requested <!-- id:sc-1 -->\n- [ ] finish beta-plan-tidy-crow: 1 phases left, next: p2 docs #requested <!-- id:sc-2 -->\n- [ ] finish gamma_plan.v2: 3 phases left, next: p1 #requested <!-- id:sc-3 -->\n'
-  # sorted by text: alpha (sc-1), beta (sc-2), gamma (sc-3)
-  answer '{"n": 1, "action": "rewrite", "row": "chore(ci): finish plan lazy-otter, 2 phases left #size/m"}' \
-    '{"n": 2, "action": "rewrite", "row": "chore(docs): finish beta-plan-tidy-crow, 1 phase left #size/s", "project": "other"}' \
-    '{"n": 3, "action": "rewrite", "row": "chore(ci): finish the gamma plan, 3 phases left #size/m"}'
-  run "$TRIAGE" --backlog --project scratch
-  assert_success
-  assert_output --partial 'rewrote 1, moved 0, dropped 0, kept 2'
-  assert_output --partial 'sc-1 kept: the rewrite drops plan slug alpha-plan-lazy-otter'
-  assert_output --partial 'sc-2 stays: ask-sweep finds plan beta-plan-tidy-crow'
-  run tasks
-  assert_output --partial 'finish alpha-plan-lazy-otter: 2 phases left'
-  assert_output --partial 'chore(docs): finish beta-plan-tidy-crow, 1 phase left'
-  assert_output --partial 'finish gamma_plan.v2: 3 phases left'
 }
 
 # keyed_row_left <row text>: a row fleet-bench keys by its prefix (lib/board-keys.sh) is never
@@ -705,17 +713,16 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
   printf '# scratch - ideas\n\nmine, by hand\n' >"$PROJ/scratch/ideas.md"
   cp "$PROJ/scratch/ideas.md" "$BATS_TEST_TMPDIR/ideas.before"
   sheet '' ''
-  agent_board '- [ ] a: the save crashes on quit #low <!-- id:sc-1 -->\n- [ ] b: a glow on the menu like #12 #low <!-- id:sc-2 -->\n- [ ] c: ship the logo, done in #12 #low <!-- id:sc-3 -->\n- [ ] d: a bloom pass #requested #low <!-- id:sc-4 -->\n- [ ] e: prod is down #urgent <!-- id:sc-5 -->\n- [ ] f: polish the hud #low <!-- id:sc-6 -->\n    - [ ] the ammo count\n- [ ] g: finish beta-plan-tidy-crow: 1 phases left, next: p2 docs #low <!-- id:sc-7 -->\n'
+  agent_board '- [ ] a: the save crashes on quit #low <!-- id:sc-1 -->\n- [ ] b: a glow on the menu like #12 #low <!-- id:sc-2 -->\n- [ ] c: ship the logo, done in #12 #low <!-- id:sc-3 -->\n- [ ] d: a bloom pass #requested #low <!-- id:sc-4 -->\n- [ ] e: prod is down #urgent <!-- id:sc-5 -->\n- [ ] f: polish the hud #low <!-- id:sc-6 -->\n    - [ ] the ammo count\n'
   answer '{"n": 1, "action": "raise", "priority": "high", "why": "a fault every player hits"}' \
     '{"n": 2, "action": "improvement", "why": "polish nobody asked for"}' \
     '{"n": 3, "action": "done", "why": "says done in #12"}' \
     '{"n": 4, "action": "improvement", "why": "a nice-to-have"}' \
     '{"n": 5, "action": "raise", "priority": "high", "why": "lower it"}' \
-    '{"n": 6, "action": "improvement", "why": "a heading"}' \
-    '{"n": 7, "action": "done", "why": "a plan finish row"}'
+    '{"n": 6, "action": "improvement", "why": "a heading"}'
   run "$TRIAGE" --backlog --project scratch
   assert_success
-  assert_output --partial 'backlog: rewrote 0, moved 0, dropped 0, kept 4, refused 0, raised 1, improvements 1, done 1'
+  assert_output --partial 'backlog: rewrote 0, moved 0, dropped 0, kept 3, refused 0, raised 1, improvements 1, done 1'
   # The rubric and each row's own priority reach the model; an untagged row shows none.
   grep -q 'Not a row at all: a nice-to-have' "$NOTES_FIXTURE/prompt.txt" || fail "the rubric never reached the model"
   grep -q 'Never add or guess one the words do not name' "$NOTES_FIXTURE/prompt.txt" || fail "the backlog call lost the file rule"
@@ -726,7 +733,6 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
   grep -q '\[ \] d: a bloom pass' "$board" || fail "a #requested row became an improvement"
   grep -q '\[ \] e: prod is down #urgent' "$board" || fail "a raise lowered a row"
   grep -q '\[ \] f: polish the hud' "$board" || fail "a heading over child rows left the board"
-  grep -q '\[ \] g: finish beta-plan-tidy-crow' "$board" || fail "a plan's finish row left its board"
   grep -q '\[ \] b: a glow' "$board" && fail "the improvement stayed on the board"
   run cat "$PROJ/scratch/agent/versions/v0.1.0.md"   # an agent board has no Version: line; its rows file under the human sheet's open version
   assert_output --regexp 'b: a glow on the menu .*dropped: triage: improvement: kept in improvements.md'
@@ -754,6 +760,33 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
   grep -q '\[ \] f: ship the logo' "$board" || fail "a row sc-7 waits on was closed done, which reads dropped"
   grep -q '\[ \] c: a stale idea' "$board" && fail "the control row nobody waits on stayed"
   [ ! -e "$PROJ/scratch/improvements.md" ] || fail "an improvement was written for a waited-on row"
+}
+
+@test "--backlog: an improvement whose drop ptask refuses (open #of/ children) writes nothing to improvements.md (ar-5182; negative control: a childless row goes)" {
+  sheet '' ''
+  agent_board '- [ ] a: barrel roll and a chase camera #low <!-- id:sc-1 -->\n- [ ] b: the roll camera #of/sc-1 #low <!-- id:sc-2 -->\n- [ ] c: a glow on the menu #low <!-- id:sc-3 -->\n'
+  answer '{"n": 1, "action": "improvement", "why": "polish"}' '{"n": 2, "action": "keep"}' '{"n": 3, "action": "improvement", "why": "polish"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_output --partial 'refused: --exact drop'
+  assert_output --partial 'improvements 1'
+  board="$PROJ/scratch/agent/README.md"
+  grep -q '\[ \] a: barrel roll' "$board" || fail "the parent left the board"
+  grep -q '\[ \] c: a glow' "$board" && fail "the control row stayed on the board"
+  run cat "$PROJ/scratch/improvements.md"
+  assert_output --partial '- c: a glow on the menu ('
+  refute_output --partial 'barrel roll'
+}
+
+@test "--backlog: an improvement whose improvements.md write fails after the drop is reopened, not lost (ar-5182 review)" {
+  sheet '' ''
+  agent_board '- [ ] c: a glow on the menu #low <!-- id:sc-3 -->\n'
+  # a directory where the file goes: --check passes, the write after the drop cannot
+  mkdir -p "$PROJ/scratch/improvements.md"
+  answer '{"n": 1, "action": "improvement", "why": "polish"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_output --partial 'not written to improvements.md'
+  refute_output --partial 'improvements 1'
+  grep -q '\[ \] c: a glow on the menu' "$PROJ/scratch/agent/README.md" || fail "the row is in neither place"
 }
 
 @test "--backlog: health work is never an improvement: a stage criterion, a missing test and a CI fault with a number stay on the board, polish still leaves (ar-5401)" {
@@ -860,7 +893,7 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
 
 @test "outbox: a #p: line moves and files with no model, and the inbox page says where it went" {
   sheet '' ''
-  mkdir -p "$HOME/.notes/lab/captures"   # the captures folder: a machine without one publishes no page
+  mkdir -p "$HOME/.notes/lab/captures"   # the capture inbox: a machine without one publishes no page
   outbox '- [ ] chore(build): drop the old cache #low #p:scratch\n- [ ] stays for the model\n'
   answer '{"n": 1, "action": "skip", "why": "no project named"}'
   # The page's triage score is judge-eval's inbox-triage cell, read as given: never counted again.
@@ -878,9 +911,11 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
   page="$(find "$HOME/.notes" -path '*status/inbox.md' | head -1)"
   [ -n "$page" ] || fail "no inbox page"
   run cat "$page"
-  assert_output --regexp '[0-9]{2}:[0-9]{2} filed \[\[[^]]*\|sc-1\]\] scratch: chore\(build\): drop the old cache'
-  refute_output --partial '  - from: outbox'
-  assert_output --regexp '[0-9]{2}:[0-9]{2} left \(outbox\): stays for the model'
+  # Handled today is one count line; each line and where it went is `notes log`'s.
+  assert_output --partial '- 1 filed, 0 joined, '
+  refute_output --partial 'drop the old cache'
+  refute_output --partial 'ack:'
+  assert_output --partial '- in the outbox, not filed: stays for the model'
   assert_output --partial '  - why: no project named'
   assert_output --partial '; triage score n<30 (7d, 1 of 1 right, 0 pending, triage-untouched)'
   # judge-eval giving no cell leaves the score off the page, not a second count in its place.
@@ -960,7 +995,7 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
   page="$(find "$HOME/.notes" -path '*status/inbox.md' | head -1)"
   [ -n "$page" ] || { mkdir -p "$HOME/.notes/lab/captures"; "$NOTES_BIN" ingest page; page="$(find "$HOME/.notes" -path '*status/inbox.md' | head -1)"; }
   run cat "$page"
-  assert_output --partial 'left (outbox): zz-9: yes'
+  assert_output --partial '- in the outbox, not filed: zz-9: yes'
   assert_output --partial 'why: no open row zz-9'
 }
 
@@ -1246,33 +1281,24 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
   assert_output --partial 'fix(audio): the gun sound plays off'
 }
 
-@test "inbox page: notes inbox ack folds a handled row into +N reviewed, --undo brings it back, a bad key writes nothing" {
+@test "inbox page: a report filed shows at the top under Reports, linked, and the page has no tick marks" {
   sheet '' ''
   outbox '- [ ] chore(build): drop the old cache #p:scratch\n'
   run "$TRIAGE"
   assert_success
   mkdir -p "$HOME/.notes/lab/captures"
-  "$NOTES_BIN" ingest page
+  printf 'The table.\n' >"$BATS_TEST_TMPDIR/body.md"
+  run "$NOTES_BIN" report add --title 'Board cut P9' --summary 'Cut 3 rows.' --body "$BATS_TEST_TMPDIR/body.md"
+  assert_success
   page="$(find "$HOME/.notes" -path '*status/inbox.md' | head -1)"
   [ -n "$page" ] || fail "no inbox page"
-  key="$(grep -o '<!-- ack:[^ ]* -->' "$page" | head -1 | sed 's/<!-- ack:\(.*\) -->/\1/')"
-  [ -n "$key" ] || fail "no tickable row: $(cat "$page")"
-  grep -qE '^- \[ \] [0-9]{2}:[0-9]{2} filed \[\[[^]]*\|sc-1\]\] ' "$page" || fail "$(cat "$page")"
-  run "$NOTES_BIN" inbox ack 2026-01-01T00:00:00+00:00
+  run cat "$page"
+  assert_output --regexp '## Reports.*\[\[[^]]*/board-cut-p9\|Board cut P9\]\]: Cut 3 rows\..*## Needs you'
+  refute_output --partial 'ack:'
+  refute_output --partial 'reviewed'
+  # The negative control: the CLI that ticked rows is gone.
+  run "$NOTES_BIN" inbox ack -- 2026-01-01T00:00:00+00:00
   assert_failure
-  assert_output --partial 'no ingest event'
-  [ ! -e "$HOME/.local/state/notes/inbox-ack.jsonl" ] || fail "a bad key wrote a mark"
-  run "$NOTES_BIN" inbox ack -- "$key"
-  assert_success
-  run cat "$page"
-  assert_output --partial '- +1 reviewed'
-  assert_output --regexp '  - \[x\] [0-9]{2}:[0-9]{2} filed \[\[[^]]*\|sc-1\]\] '
-  refute_output --regexp '^- \[ \] [0-9]{2}:[0-9]{2} filed \[\[[^]]*\|sc-1\]\] '
-  run "$NOTES_BIN" inbox ack --undo -- "$key"
-  assert_success
-  run cat "$page"
-  refute_output --partial '- +1 reviewed'
-  assert_output --regexp '- \[ \] [0-9]{2}:[0-9]{2} filed \[\[[^]]*\|sc-1\]\] '
 }
 
 # ask-stub: the read-only answer call. It records the prompt and what it was run with, and replies

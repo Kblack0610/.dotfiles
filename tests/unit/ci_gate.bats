@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 # .github/workflows/tests.yml's gate job, the one check branch protection requires: its `needs`
 # names every job but the ones that are not gates, and its step is red on any result but success.
-# Also the one-toolchain rule: every job on the &pool runner, and no step installing a tool.
+# Also the one-toolchain rule: every job on the &pool runner (or &job-pod, which falls back to it), and
+# no step installing a tool.
 
 bats_require_minimum_version 1.5.0
 
@@ -96,23 +97,111 @@ runs_on() {
     END { if (job) print job, (r == "" ? "-" : r) }' "$1"
 }
 
-# off_pool <wf>: jobs whose runner is not the pool anchor, one a line (a literal label, a second
-# definition of the anchor, a pasted expression)
+# off_pool <wf>: jobs whose runner is not the pool or job-pod anchor, one a line (a literal label, a
+# second definition of an anchor, a pasted expression)
 off_pool() {
-  runs_on "$1" | awk '$2 == "*pool" || $2 == "-" { next } $2 == "&pool" && !seen++ { next } { print $1 }'
+  runs_on "$1" | awk '$2 == "*pool" || $2 == "*job-pod" || $2 == "-" { next }
+    $2 == "&pool" && !p++ { next } $2 == "&job-pod" && !j++ { next } { print $1 }'
 }
 
-@test "every tests.yml job runs where the one &pool anchor says" {
+@test "every tests.yml job runs where the one &pool or &job-pod anchor says" {
   run runs_on "$WF"
   assert_success
   [[ "$output" == *"&pool "* ]] || fail "no job defines the &pool anchor: $output"
+  [[ "$output" == *"&job-pod "* ]] || fail "no job defines the &job-pod anchor: $output"
   run off_pool "$WF"
   assert_success
   assert_output ''
   # Negative control: a job with a literal label is named.
-  sed '/^  lint:$/,/^  [a-z]/ s/^    runs-on: \*pool$/    runs-on: ubuntu-24.04/' "$WF" >"$BATS_TEST_TMPDIR/literal.yml"
+  sed '/^  ui:$/,/^  [a-z]/ s/^    runs-on: \*pool$/    runs-on: ubuntu-24.04/' "$WF" >"$BATS_TEST_TMPDIR/literal.yml"
   run off_pool "$BATS_TEST_TMPDIR/literal.yml"
+  assert_output 'ui'
+  # Negative control: a job pasting the job-pod expression is named.
+  jp=$(sed -nE 's/^    runs-on: &job-pod (.*)$/\1/p' "$WF")
+  awk -v jp="$jp" '/^  lint:$/ { l = 1 } l && /^    runs-on: \*job-pod$/ { print "    runs-on: " jp; l = 0; next } { print }' "$WF" >"$BATS_TEST_TMPDIR/pasted.yml"
+  run off_pool "$BATS_TEST_TMPDIR/pasted.yml"
   assert_output 'lint'
+}
+
+@test "the &job-pod anchor is the pool the image job names with its image, else the &pool choice" {
+  local pool want
+  pool=$(sed -nE 's/^    runs-on: &pool \$\{\{ fromJSON\((.*)\) \}\}$/\1/p' "$WF")
+  [ -n "$pool" ] || fail "no expression read from the &pool anchor"
+  want="    runs-on: &job-pod \${{ fromJSON(needs.image.outputs.job-pod != '' && needs.image.outputs.job-pod || ($pool)) }}"
+  run grep -cxF -- "$want" "$WF"
+  assert_output 1
+  # The image job names the pool only beside its image, so a --failed rerun reusing both agrees.
+  run grep -cxF -- "      job-pod: \${{ vars.LINUX_RUNNER_JOB_POD != '' && steps.lean.outputs.ref != '' && vars.LINUX_RUNNER_JOB_POD || '' }}" "$WF"
+  assert_output 1
+  # Negative control: a fallback that drifted from the &pool choice is not the anchor's.
+  sed "/^    runs-on: &job-pod /s/ubuntu-24.04/ubuntu-22.04/" "$WF" >"$BATS_TEST_TMPDIR/drift.yml"
+  run grep -cxF -- "$want" "$BATS_TEST_TMPDIR/drift.yml"
+  assert_output 0
+}
+
+# job_pod_faults <wf>: "<job>: <fault>" for a job on the job-pod anchor with no job image, no need
+# on the image job, or a test-image step that also runs inside the image
+job_pod_faults() {
+  awk -v q="'" '
+    function done() { if (jp) { if (!img) print job ": no container *job-image"; if (!waits) print job ": does not need the image job" } }
+    /^  [A-Za-z0-9_-]+:$/ { done(); job = $1; sub(/:$/, "", job); jp = 0; img = 0; waits = 0; next }
+    /^    runs-on: [&*]job-pod( |$)/ { jp = 1 }
+    /^    container: [&*]job-image$/ { img = 1 }
+    /^    needs:.*(\[|[ ,])image([],]|$)/ { waits = 1 }
+    /^      - / { cond = "" }
+    /^(      - |        )if: / { cond = $0 }
+    jp && /uses: \.\/\.github\/actions\/test-image$/ && !index(cond, "needs.image.outputs.job-image == " q q) { print job ": loads the test image inside it" }
+    END { done() }
+  ' "$1"
+}
+
+@test "a job on the job pod runs in the image job's image and loads it only when there is none" {
+  run runs_on "$WF"
+  run awk '$2 ~ /^[&*]job-pod$/ { print $1 }' <<<"$output"
+  assert_output "$(printf '%s\n' fast lint)"
+  run job_pod_faults "$WF"
+  assert_success
+  assert_output ''
+  # Negative controls: lint without its container, and with a test-image step that always runs.
+  sed '/^  lint:$/,/^  [a-z]/{/^    container: \*job-image$/d}' "$WF" >"$BATS_TEST_TMPDIR/nocontainer.yml"
+  run job_pod_faults "$BATS_TEST_TMPDIR/nocontainer.yml"
+  assert_output 'lint: no container *job-image'
+  sed "/^  lint:\$/,/^  [a-z]/ s/^      - if: needs.image.outputs.job-image == ''\$/      - if: always()/" "$WF" >"$BATS_TEST_TMPDIR/unguarded.yml"
+  run job_pod_faults "$BATS_TEST_TMPDIR/unguarded.yml"
+  assert_output 'lint: loads the test image inside it'
+}
+
+# shard_step <wf>: the Fast tier shard step's run script
+shard_step() { awk '/^      - name: Fast tier shard$/ { s = 1 } s && /^        run: \|$/ { r = 1; next } r && !/^          / { exit } r { sub(/^          /, ""); print }' "$1"; }
+
+@test "a run step gets the pool runner's bash in a container job too, and a shard that reads no files it was given fails" {
+  # A container job falls back to sh for a run step with no shell; dash reads $(<file) as empty (ar-6186).
+  run sed -n '/^defaults:$/,/^[a-z]/p' "$WF"
+  assert_line --index 1 '  run:'
+  assert_line --index 2 '    shell: bash -e {0}'
+  run grep -nE '^ +shell: (/bin/|/usr/bin/)?(sh|dash)( |$)' "$WF"
+  assert_failure
+  run grep -n '^    defaults:' "$WF"
+  assert_failure
+  shard_step "$WF" >"$BATS_TEST_TMPDIR/shard.sh"
+  grep -q 'files=\$(<"\$RUNNER_TEMP/files")' "$BATS_TEST_TMPDIR/shard.sh" || fail "no shard script: $(cat "$BATS_TEST_TMPDIR/shard.sh")"
+  # The whole step parses: an apostrophe in a quoted ${x:-word} once unbalanced it, and every shard with files exited 2.
+  run bash -n "$BATS_TEST_TMPDIR/shard.sh"
+  assert_success
+  : >"$BATS_TEST_TMPDIR/files"
+  RUNNER_TEMP=$BATS_TEST_TMPDIR TAG='unit 1/24' PICKED_FILES=true run bash -e "$BATS_TEST_TMPDIR/shard.sh"
+  assert_failure 1
+  assert_output --partial '::error::the split gave unit 1/24 files'
+  # The split gave none: the one empty shard of a tier that picked nothing passes.
+  RUNNER_TEMP=$BATS_TEST_TMPDIR TAG='unit 1/24' PICKED_FILES='' run bash -e "$BATS_TEST_TMPDIR/shard.sh"
+  assert_success
+  assert_output 'nothing picked for unit 1/24'
+  # Negative control: under dash the same script reads a non-empty list as empty, so the guard trips.
+  command -v dash >/dev/null || skip 'no dash to show the sh fallback'
+  echo unit/a.bats >"$BATS_TEST_TMPDIR/files"
+  RUNNER_TEMP=$BATS_TEST_TMPDIR TAG='unit 1/24' PICKED_FILES=true run dash -e "$BATS_TEST_TMPDIR/shard.sh"
+  assert_failure 1
+  assert_output --partial "(shell: not bash)"
 }
 
 @test "the skills call passes the anchor's runner choice, fork rule included" {
@@ -235,4 +324,82 @@ unseeded() {
   sed "/tmux: '3.6a'/d" "$WF" >"$BATS_TEST_TMPDIR/unseeded.yml"
   run unseeded "$BATS_TEST_TMPDIR/unseeded.yml"
   assert_output '3.6a'
+}
+
+# reg_step <action.yml>: the registry step's script, the one that pulls (or, for a seed, probes)
+reg_step() {
+  python3 -I -c 'import sys, yaml
+steps = yaml.safe_load(open(sys.argv[1]))["runs"]["steps"]
+print([s for s in steps if s.get("id") == "reg"][0]["run"])' "$1"
+}
+
+# run_reg <seed> <docker exit>: the registry step against a stub docker whose pull and manifest read exit with the code (login: STUB_LOGIN_RC)
+run_reg() {
+  local ACT="${ACTION:-$BATS_TEST_DIRNAME/../../.github/actions/test-image/action.yml}"
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  printf '%s\n' '#!/bin/bash' 'case "$1" in pull | manifest) exit "$STUB_RC" ;; login) exit "${STUB_LOGIN_RC:-0}" ;; *) exit 0 ;; esac' >"$BATS_TEST_TMPDIR/bin/docker"
+  chmod +x "$BATS_TEST_TMPDIR/bin/docker"
+  reg_step "$ACT" >"$BATS_TEST_TMPDIR/reg.sh"
+  [ -s "$BATS_TEST_TMPDIR/reg.sh" ] || fail "no reg step script read from $ACT"
+  : >"$BATS_TEST_TMPDIR/out"
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" STUB_LOGIN_RC="${STUB_LOGIN_RC:-0}" GITHUB_OUTPUT="$BATS_TEST_TMPDIR/out" STUB_RC="$2" SEED="$1" \
+    TAG=cockpit-tests:t1 WEEK=2026-W48 REGISTRY=registry.invalid:5000 PASSWORD=x \
+    bash -e -o pipefail "$BATS_TEST_TMPDIR/reg.sh"
+}
+
+@test "a pool pod's load stops at a failed pull: no cache restore, no build behind it" {
+  export PULL_RETRY_DELAY=0
+  run run_reg false 1
+  assert_failure
+  assert_output --partial "::error::registry did not serve registry.invalid:5000/kblab-ci/dotfiles/test-image:t1-2026-W48"
+  run grep -c '^pulled=true$' "$BATS_TEST_TMPDIR/out"
+  assert_output 0
+  # A pull that works is marked, with its seconds in the log.
+  run run_reg false 0
+  assert_success
+  assert_output --regexp 'pulled registry.invalid:5000/.* in [0-9]+ s'
+  run grep -c '^pulled=true$' "$BATS_TEST_TMPDIR/out"
+  assert_output 1
+  # Negative control: a step whose error never exits lets the job on to the cache and the build.
+  sed '/loads from the registry only/{n;d}' "$BATS_TEST_DIRNAME/../../.github/actions/test-image/action.yml" >"$BATS_TEST_TMPDIR/noexit.yml"
+  ACTION="$BATS_TEST_TMPDIR/noexit.yml" run run_reg false 1
+  assert_success
+}
+
+@test "a seed run that finds no image in the registry warns and goes on to build it" {
+  export PULL_RETRY_DELAY=0
+  run run_reg true 1
+  assert_success
+  assert_output --partial "::warning::registry has no"
+  run grep -c '^pulled=true$' "$BATS_TEST_TMPDIR/out"
+  assert_output 0
+  run grep -c '^login=true$' "$BATS_TEST_TMPDIR/out"
+  assert_output 1
+}
+
+@test "a failed registry login stops a seed run and a load alike" {
+  # The stub's login exits with STUB_LOGIN_RC.
+  for seed in true false; do
+    STUB_LOGIN_RC=1 run run_reg "$seed" 0
+    assert_failure
+    assert_output --partial "::error::registry login failed"
+  done
+}
+
+@test "nothing after the registry step can load or build the image on a pool pod, and a failed push fails the seed" {
+  ACT="$BATS_TEST_DIRNAME/../../.github/actions/test-image/action.yml"
+  step() { python3 -I -c 'import sys, yaml
+steps = yaml.safe_load(open(sys.argv[1]))["runs"]["steps"]
+s = [s for s in steps if s.get("id") == sys.argv[2]][0]
+print(s.get("if", ""), s.get("continue-on-error", ""), s.get("run", ""), sep="\n")' "$ACT" "$1"; }
+  run step reg
+  [[ "$output" != *$'\n'true$'\n'* ]] || fail "the reg step continues on error: $output"
+  # The cache restore and the build need the registry not to have served the image.
+  for id in cache build; do
+    run step "$id"
+    assert_output --partial "steps.reg.outputs.pulled != 'true'"
+  done
+  # A load run's cache restore is for a runner with no registry: the reg step ended the others.
+  run step push
+  assert_output --partial "exit 1"
 }

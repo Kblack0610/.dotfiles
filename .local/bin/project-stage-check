@@ -582,6 +582,8 @@ DOC="$STAGES_DOC"; [ -z "$SYSTEMS$LIST" ] || DOC="$SYSTEMS_DOC"
 . "${PROJECT_NAME_LIB:-$HOME/.config/shared-hooks/project-name.sh}"
 # shellcheck source=../lib/lab-feed.sh
 . "${LAB_FEED_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/lab-feed.sh}"
+# shellcheck source=../lib/agent-merge-proof.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-merge-proof.sh"   # merge_proof_ref
 # lab_roots lives in the private overlay; without it there is no lab dir and no declared stage.
 # shellcheck source=/dev/null
 [ -r "${LAB_ROOTS_LIB:-$HOME/.config/shared-hooks/lab-roots.sh}" ] && . "${LAB_ROOTS_LIB:-$HOME/.config/shared-hooks/lab-roots.sh}"
@@ -635,8 +637,8 @@ ROOT="${REPO:+$REPO${sub:+/$sub}}"
 # weeks behind it. A repo with no origin has no other copy, so it reads its working tree.
 DOC_REF="" DOC_SUB="$sub"
 if [ -z "$LIST" ] && [ -n "$REPO" ] && [ -d "$REPO" ] && git -C "$REPO" remote get-url origin >/dev/null 2>&1; then
-  DOC_REF="$(git -C "$REPO" rev-parse --verify -q refs/remotes/origin/HEAD)" \
-    || echo "project-stage-check: $REPO has an origin but no origin/HEAD, so docs are read from its working tree (git -C $REPO remote set-head origin -a)" >&2
+  DOC_REF="$(merge_proof_ref "$REPO")" && DOC_REF="$(git -C "$REPO" rev-parse --verify -q "refs/remotes/$DOC_REF")" \
+    || { DOC_REF=""; echo "project-stage-check: $REPO has an origin but no default branch fetched (merge_proof_ref), so docs are read from its working tree (git -C $REPO fetch origin)" >&2; }
 fi
 [ -n "$LIST" ] || [ -z "$REPO" ] || [ -d "$REPO" ] || { echo "project-stage-check: $REPO is not checked out here" >&2; exit 2; }
 [ -n "$LAB" ] || [ -n "$TYPE" ] || { echo "project-stage-check: no lab dir and no project-map type for \"$NAME\"" >&2; exit 2; }

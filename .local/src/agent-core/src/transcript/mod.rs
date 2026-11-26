@@ -24,6 +24,14 @@ pub use said::{said_around_at, Said};
 pub use time_use::{time_use_at, TimeUse};
 pub use usage::{context_window, uses, Uses};
 
+/// The lines of a compiled-in `.config/agent-panel/*.conf`, trimmed, past its comments and blank
+/// lines: the one parse every conf this module reads goes through.
+fn conf_lines(conf: &'static str) -> impl Iterator<Item = &'static str> {
+    conf.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+}
+
 use plan::{plan_file, plan_slug};
 use prompt::human_at;
 use read::{collapse, read, truncate, turns};
