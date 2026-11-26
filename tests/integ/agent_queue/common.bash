@@ -32,6 +32,8 @@ setup() {
 # The file is a redirect, not an operand: awk reads stdin for an empty one, which hangs a local run (ar-3455).
 field() { awk -v k="$2: " '$0 == "---" { exit } index($0, k) == 1 { print substr($0, length(k) + 1) }' <"$1"; }
 item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
+# A done item sits under its close day: the glob stays outside the quotes, since the sandbox path has a space.
+done_item() { ls "$AGENT_QUEUE_DIR"/done/*/*-"$1".md; }
 
 # The class mix (plan can-we-move-our-mellow-sphinx P3): fixture done items in and out of the window,
 # a held item, and the switch off as the negative control.

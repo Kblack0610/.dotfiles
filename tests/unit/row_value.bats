@@ -561,6 +561,26 @@ EOF
   run "$RV" cut-report --board "$HOME/after.json" --log "$HOME/log3.tsv" "$HOME/led.tsv"
   assert_failure 1
   assert_output --partial "the logs name rows no LEDGER holds: ar-99"
+  # --scope limits the counts and both tables to one pass's ids.
+  printf 'id\nar-30\nar-32\nar-35\n' >"$HOME/scope.tsv"
+  run "$RV" cut-report --board "$HOME/after.json" --scope "$HOME/scope.tsv" --log "$HOME/log.tsv" "$HOME/led.tsv"
+  assert_success
+  assert_output --partial "Before: 3 open rows. After: 1 open rows. Cut: 2."
+  assert_output --partial "| ar-30 |"
+  assert_output --partial "| ar-32 |"
+  refute_output --partial "| ar-36 |"
+  refute_output --partial "| ar-41 |"
+  run "$RV" cut-report --board "$HOME/after.json" --scope "$HOME/nope.tsv" --log "$HOME/log.tsv" "$HOME/led.tsv"
+  assert_failure 1
+  assert_output --partial "no such scope file"
+  printf 'ar-30\n' >"$HOME/noid.tsv"
+  run "$RV" cut-report --board "$HOME/after.json" --scope "$HOME/noid.tsv" --log "$HOME/log.tsv" "$HOME/led.tsv"
+  assert_failure 1
+  assert_output --partial "no id column"
+  printf 'id\n' >"$HOME/empty.tsv"
+  run "$RV" cut-report --board "$HOME/after.json" --scope "$HOME/empty.tsv" --log "$HOME/log.tsv" "$HOME/led.tsv"
+  assert_failure 1
+  assert_output --partial "no ids"
 }
 
 # focus: a saved board and a ledger; the stub notes logs each call.
