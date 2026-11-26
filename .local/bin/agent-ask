@@ -95,7 +95,8 @@
 #                                       each pass)
 #   agent-ask expire [--dry-run]        cancel each ask on a board row the human answered since it
 #                                       was posted, each today or tonight ask once its day is over
-#                                       (DATED_HOURS), and each audit older than AUDIT_HOURS; park
+#                                       (DATED_HOURS), and each audit older than AUDIT_HOURS or on a
+#                                       row whose item landed since it was posted; park
 #                                       each ask older than IDLE_DAYS no live session or queue item
 #                                       waits on (`parked_by: idle`), and cancel one back from that
 #                                       park still idle (park.conf). One line per ask it acts on
@@ -2324,6 +2325,10 @@ cmd_unpark() {
 #     posted is cancelled as a duplicate of that answer, however each is worded, when no live
 #     session waits on it. 2026-11-22: hc-820 had three asks pending, worded three ways, and the
 #     judge's same-question join never reads an approval or an audit, which all three were.
+#   - An audit whose question names a board row whose queue item landed (row_landed) after it was
+#     posted is cancelled as moot, with the same guards. 2026-11-23: audit 9sW8iy of a retry of
+#     tr-186 stayed pending after tr-186 landed, since the judge's settled_by never reads an audit.
+#     Audits only: a question or approval filed before a landing (deploy it?) is about what comes next.
 #   - An ask that says today or tonight is cancelled once that day has ended and park.conf's
 #     DATED_HOURS have passed since it was posted (96uJW2 asked for Steam keys for a playtest
 #     and was still pending two days on), unless a live session waits on it or it has a resume
@@ -2339,13 +2344,14 @@ cmd_unpark() {
 # and one with a resume command of its own is never idle: the answer starts work.
 cmd_expire() {
   local dry=0; [ "${1:-}" = --dry-run ] && dry=1
-  local audit_h idle_d dated_h now f id born age act why sid live free row dated
+  local audit_h idle_d dated_h now f id born age act why sid live free row landed dated
   audit_h="$(park_conf AUDIT_HOURS 24)"; idle_d="$(park_conf IDLE_DAYS 3)"; dated_h="$(park_conf DATED_HOURS 12)"
   [[ "$audit_h" =~ ^[1-9][0-9]*$ && "$idle_d" =~ ^[1-9][0-9]*$ && "$dated_h" =~ ^(0|[1-9][0-9]*)$ ]] ||
     { echo "agent-ask expire: AUDIT_HOURS, IDLE_DAYS and DATED_HOURS are whole numbers ($AGENT_ASK_PARK_CONF)" >&2; return 2; }
   now="$(date +%s)"
   load_queue_asks
   load_row_answers
+  declare -gA ROW_LANDED=()
   while IFS= read -r f; do
     load_ask "$f"
     [ "${ASK[status]:-}" = pending ] || continue
@@ -2357,18 +2363,22 @@ cmd_expire() {
     # row: the board row a human answer has settled since this ask was posted. dated: its today or
     # tonight is over. Either closes it only when no live session waits on it; a dated ask with a
     # resume command of its own is work the answer starts, so it stays for the idle park.
-    row="" dated=""
+    row="" landed="" dated=""
     if [ -n "$free" ] && row_named "${ASK[question]:-}" && [ "${ROW_ANS_AT[$ROW_NAMED]:-0}" -gt "$born" ]; then
       row="$ROW_NAMED"
+    elif [ -n "$free" ] && [ -n "${ASK[audit_of]:-}" ] && [ -n "$ROW_NAMED" ] && row_landed "$ROW_NAMED" "$born"; then
+      landed="$ROW_NAMED"
     elif [ -n "$free" ] && { [ -z "${ASK[resume]:-}" ] || [ "${ASK[resume]}" = "$REOPEN_RESUME" ]; } &&
       dated_due "${ASK[question]:-}" "$born" "$dated_h" && [ "$now" -ge "$DATED_DUE" ]; then
       dated=1
     fi
-    if [ -n "$row$dated" ]; then
-      while IFS= read -r sid; do session_alive "$sid" && { row="" dated=""; break; }; done < <(ask_sessions "$f")
+    if [ -n "$row$landed$dated" ]; then
+      while IFS= read -r sid; do session_alive "$sid" && { row="" landed="" dated=""; break; }; done < <(ask_sessions "$f")
     fi
     if [ -n "$row" ]; then
       act=cancel why="duplicate of ${ROW_ANS_ID[$row]}: the human answered \"${ROW_ANS_SAID[$row]}\" on row $row after this was asked"
+    elif [ -n "$landed" ]; then
+      act=cancel why="moot: row $landed landed${ROW_LANDED_PR:+ ($ROW_LANDED_PR)} after this was asked"
     elif [ -n "$dated" ]; then
       act=cancel why="expired: it asked about $DATED_WORD on $(date -d "@$born" +%F), which has passed"
     elif [ -n "${ASK[audit_of]:-}" ]; then
@@ -2442,6 +2452,18 @@ load_row_answers() {
     [ "${eps[$i]}" -gt "${ROW_ANS_AT[${rows[$i]}]:-0}" ] || continue
     ROW_ANS_AT[${rows[$i]}]="${eps[$i]}"; ROW_ANS_ID[${rows[$i]}]="${ids[$i]}"; ROW_ANS_SAID[${rows[$i]}]="${saids[$i]}"
   done
+}
+
+# row_landed <row> <posted epoch>: whether the queue item that works board row <row> (its slug is the
+# row id; `agent-queue show` reads the active one, else the newest done) landed after the ask was
+# posted: outcome landed, finished later. Sets ROW_LANDED_PR. Each row is read once per run (ROW_LANDED).
+row_landed() {
+  [ -n "${ROW_LANDED[$1]+set}" ] ||
+    ROW_LANDED[$1]="$($AGENT_ASK_QUEUE_CMD show "$1" --json 2>/dev/null |
+      jq -r 'select(.outcome == "landed") | "\(.finished // "" | try fromdateiso8601 catch 0)\t\(.pr // "")"' 2>/dev/null)"
+  local at="${ROW_LANDED[$1]%%$'\t'*}"
+  ROW_LANDED_PR="${ROW_LANDED[$1]#*$'\t'}"
+  [[ "$at" =~ ^[0-9]+$ ]] && [ "$at" -gt "$2" ]
 }
 
 # dated_due <question> <posted epoch> <hours>: whether the question says today or tonight. Sets
