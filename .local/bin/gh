@@ -21,6 +21,8 @@
 # runs in all, when it fails with HTTP 5xx on stderr, waiting GH_RETRY_BASE_S seconds and doubling up to
 # GH_RETRY_CAP_S (api-clients.md). A write is never retried: a 5xx does not say whether it landed.
 # gh does not print the response headers on an error, so a Retry-After cannot be honored here.
+# Run logs: a `run view --log` or `--log-failed` gets a private XDG_CACHE_HOME, so gh's run-log zip
+# cache, which one interrupted write poisons, is never shared (ar-3387).
 # Docs: docs/operations/github-app.md.
 set -u
 stdout_tty=0
@@ -325,8 +327,21 @@ if [ -z "$tok" ] && [ "$bucket" != env ] && defer_read "$@"; then
 fi
 
 export GH_WRAPPED=1 GH_REAL="$real"
-err="" out=""
-trap 'rm -f -- "$err" "$out"; rm -rf -- "$rtmp"' EXIT # a caller's timeout kills this mid-call
+err="" out="" lcache=""
+trap 'rm -f -- "$err" "$out"; rm -rf -- "$rtmp" "$lcache"' EXIT # a caller's timeout kills this mid-call
+# A run log read gets a gh cache of its own, removed at exit (ar-3133, ar-3387). `gh run view --log`
+# and `--log-failed` cache the whole run's log zip under XDG_CACHE_HOME/gh, write it non-atomically
+# and trust any entry that exists, so one interrupted write failed that run for every later reader
+# ("zip: not a valid zip file"). fleet-bench hold_failed, hub-core's job log and ci-failures each keep
+# their own copy of what they read, so gh's copy was never reused.
+if [ "${1:-} ${2:-}" = "run view" ]; then
+  for a in "$@"; do
+    case "$a" in --log | --log-failed)
+      lcache=$(mktemp -d "${TMPDIR:-/tmp}/gh-cache.XXXXXX") && export XDG_CACHE_HOME="$lcache"
+      break ;;
+    esac
+  done
+fi
 if [ -n "$tok" ]; then
   # A refused App token (uninstalled, revoked, a missing permission, its own limit spent) must
   # not fail the read: rerun it on the user. stderr is held so only the answer that counts shows,
