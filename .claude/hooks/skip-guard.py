@@ -124,33 +124,34 @@ def review_context():
     return _CONTEXT
 
 
-def posts_status(argv):
-    """True when a `gh api` write (any method but GET or HEAD) on a statuses path sets the context
-    field to review_context() (`-f context=review`, `-Fcontext=review`, `--raw-field=context=review`),
-    or reads its body from a file or stdin (`--input`, `-F x=@file`), which this cannot read. The
-    context is read only for a statuses path, so no other gh command needs agent-land beside it."""
-    if FORGE.gh_words(argv)[:1] != ["api"]:
+def api_write(argv, rest, path, named):
+    """True when a `gh api` argv is a write (any method but GET or HEAD) on a path holding `path`
+    whose fields name the target (named(rest), called only for such a path) or come from a file or
+    stdin (`--input`, `-F x=@file`), which this cannot read. rest is argv[2:], as the caller matches it."""
+    if FORGE.gh_words(argv)[:1] != ["api"] or not any(path in a for a in rest):
         return False
-    rest = argv[2:]
-    if not any("statuses/" in a for a in rest):
-        return False
-    field = "context=" + review_context()
-    named = any(a == field or a.endswith(("=" + field, "-f" + field, "-F" + field)) for a in rest)
     unread = "--input" in rest or any("=@" in a for a in rest)
-    return (named or unread) and FORGE.request_method("gh api", argv) not in (None, "GET", "HEAD")
+    return (unread or named(rest)) and FORGE.request_method("gh api", argv) not in (None, "GET", "HEAD")
+
+
+def posts_status(argv):
+    """True when a `gh api` write on a statuses path sets the context field to review_context()
+    (`-f context=review`, `-Fcontext=review`, `--raw-field=context=review`) or reads its body
+    unseen (api_write). The context is read only for a statuses path, so no other gh command needs
+    agent-land beside it."""
+    def named(rest):
+        field = "context=" + review_context()
+        return any(a == field or a.endswith(("=" + field, "-f" + field, "-F" + field)) for a in rest)
+    return api_write(argv, argv[2:], "statuses/", named)
 
 
 def applies_label(argv, label):
     """True when a gh argv applies label (any case: GitHub label names are case-insensitive): an
-    edit's --add-label, a create's --label or -l (also attached, `-lname`), or a `gh api` write (any
-    method but GET or HEAD) on a labels path that names it or reads its body from a file or stdin
-    (`--input`, `-F x=@file`), which this cannot read."""
+    edit's --add-label, a create's --label or -l (also attached, `-lname`), or a `gh api` write on a
+    labels path that names it or reads its body unseen (api_write)."""
     words, label = FORGE.gh_words(argv), label.casefold()
-    rest = [a.casefold() for a in argv[2:]]
     if words[:1] == ["api"]:
-        named = any(label in a for a in rest) or "--input" in rest or any("=@" in a for a in rest)
-        return (any("labels" in a for a in rest) and named
-                and FORGE.request_method("gh api", argv) not in (None, "GET", "HEAD"))
+        return api_write(argv, [a.casefold() for a in argv[2:]], "labels", lambda rest: any(label in a for a in rest))
     if words[:1] not in (["pr"], ["issue"]) or words[1:2] not in (["edit"], ["create"]):
         return False
     flags = ("--add-label",) if words[1] == "edit" else ("--label", "-l")

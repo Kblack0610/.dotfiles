@@ -475,5 +475,8 @@ vitem() {
   [ $# -eq 0 ] || fm "$s" "$@"
 }
 merges() { grep -c 'pr merge' "$LOG" || true; }
-# review_json <state> <description> -> the head's one commit status, agent-land's review context
-review_json() { jq -nc --arg s "$1" --arg d "$2" '[{state: $s, context: "review", description: $d}]' >"$NOTES_FIXTURE/review.json"; }
+# review_json <state> <description> -> the head's one commit status, in agent-land's REVIEW_CONTEXT
+review_json() {
+  jq -nc --arg s "$1" --arg d "$2" --arg c "$(sed -n 's/^REVIEW_CONTEXT=//p' "$LAND")" \
+    '[{state: $s, context: $c, description: $d}]' >"$NOTES_FIXTURE/review.json"
+}
