@@ -6013,6 +6013,7 @@ Version: v0.0.1
         rehome_items(
             bin.to_str().unwrap(),
             "ar-9",
+            "src",
             "trader",
             Some("work"),
             Lane::Agent,
@@ -6038,6 +6039,7 @@ Version: v0.0.1
         rehome_items(
             "/nonexistent/agent-queue",
             "ar-9",
+            "src",
             "trader",
             None,
             Lane::Agent,
