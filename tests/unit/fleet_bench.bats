@@ -1798,6 +1798,35 @@ board_row() { printf 'board.md\t5\t%s\t- [%s] %s\n' "${2,,}" "$1" "$2" >> "$BOAR
   assert_output WORKED
 }
 
+@test "triage: a started watch row no live item holds closes on recovery; one a live item holds stays" {
+  triage_setup
+  export TRIAGE_ITEMS_CMD=items-stub; ITEMS="$SANDBOX/items.jsonl"
+  printf '#!/usr/bin/env bash\ncat %q\n' "$ITEMS" > "$SANDBOX/bin/items-stub"; chmod +x "$SANDBOX/bin/items-stub"
+  watch drift OK -90000 normal
+  watch load OK -90000 normal
+  board_row '/' 'check(watch): drift tripped since 2026-11-01, expected: drift is healthy. <!-- id:ar-9001 -->'
+  board_row '/' 'check(watch): load tripped since 2026-11-01, expected: load is healthy. <!-- id:ar-9002 -->'
+  # ar-9001's item closed with no PR; ar-9002's is still running
+  printf '%s\n' '{"slug":"red-drift","state":"done","status":"ok","row":"agent-runtime:ar-9001"}' \
+    '{"slug":"red-load","state":"running","row":"agent-runtime:ar-9002"}' > "$ITEMS"
+  # a started row with no id, and a started row on the human sheet, are worked by hand: both stay
+  watch idle OK -90000 normal
+  watch sheet OK -90000 normal
+  board_row '/' 'check(watch): idle tripped since 2026-11-01, expected: idle is healthy.'
+  BOARD="$BOARD.agent-runtime" board_row '/' 'check(watch): sheet tripped since 2026-11-01, expected: sheet is healthy. <!-- id:ar-9003 -->'
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line 'retire: check(watch): drift tripped since'
+  refute_line 'retire: check(watch): load tripped since'
+  refute_line 'retire: check(watch): idle tripped since'
+  refute_line 'retire: check(watch): sheet tripped since'
+  # negative control: the queue cannot be read, so retire closes nothing at all
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/items-stub"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'retire: check(watch)'
+}
+
 @test "triage: a recovered watch's row on the human sheet closes too; a still-red watch's is not retired" {
   triage_setup
   watch drift OK -90000 normal

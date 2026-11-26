@@ -4,7 +4,7 @@
 #
 # Key points:
 #   - Destination is the AGENT axis ~/.agent/sessions/{project}/sessions.jsonl,
-#     never the human ~/.notes/inbox (low-noise, agent-facing by design).
+#     never the human ~/.notes/captures (low-noise, agent-facing by design).
 #   - "Meaningful" = the session actually did work: >=1 Edit/Write tool_use in
 #     the transcript, OR a dirty git worktree, OR an agentctl runner (AGENTCTL_NAME,
 #     which the agentctl runner wrapper exports): a read-only runner still spends, and its row
