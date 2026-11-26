@@ -1282,6 +1282,23 @@ validated_item() {
   validated_item running "validate-fix-wave-save-${other:0:8}" running
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+
+  # a head that only merged main in since the verdict still carries it (agent-land's covers: catch_up merges first)
+  git clone -q -b main "$SANDBOX/origin.git" "$SANDBOX/other" 2>/dev/null; main_change theirs
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t merge -q --no-edit origin/main
+  open_pr PASS
+  validated_item queued "validate-fix-wave-save-${oid:0:8}" done fail "$oid"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  validated_item running "validate-fix-wave-save-${oid:0:8}" running
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = "PR #9 waiting on validate-fix-wave-save-${oid:0:8}, a second agent's review" ]
+  # negative control: a commit of its own after the verdict is a new head the verdict never read
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m more
+  open_pr PASS
+  validated_item queued "validate-fix-wave-save-${oid:0:8}" done fail "$oid"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
 }
 
 @test "end to end: a PR riding an open landing train is WORKING waiting on the train, not CI red (ar-2160)" {
