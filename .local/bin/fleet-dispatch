@@ -7140,6 +7140,13 @@ start_item() {
   local it="$1" slug rc verdict='' cached floor='' keep=0 harness=claude
   local ACCT_ROWS='' ACCT_DIR ACCT_WHY ACCT_PAST_PACE ACCT_RC=0 SHORT_PASS=${SHORT_PASS:-0}
   slug=$(jq -r .slug <<<"$it")
+  # A client's work project is hidden here (project_visible); agent-queue add refuses one, and this
+  # catches an item queued before that guard or written by hand (ar-6083).
+  local project; project=$(jq -r '.project // ""' <<<"$it")
+  [ -z "$project" ] || project=$(PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_lookup "$project") || project=$(jq -r '.project' <<<"$it")
+  if [ -n "$project" ] && ! PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_visible "$project"; then
+    say "queue item $slug is in $project, a client's work project hidden on this machine: never started here"; return 5
+  fi
   if [ "$DRY" = 1 ]; then say "would start queue item $slug: $(jq -r '"\(.project) \(.mode) \(.priority)"' <<<"$it")"; return 0; fi
   ! short_item "$it" || SHORT_PASS=1
   # Asked again here, as launch does: the gate's answer may be minutes old. ACCT_WHY names the

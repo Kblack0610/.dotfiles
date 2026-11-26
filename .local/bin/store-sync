@@ -600,8 +600,17 @@ cmd_sync() {
   [ "$(g symbolic-ref -q --short HEAD)" = "$BRANCH" ] \
     || { log "ERROR: $STORE is on $(g symbolic-ref -q --short HEAD || echo a detached HEAD), not $BRANCH; nothing synced"; exit 1; }
   mkdir -p "$SYNC_DIR"
+  # Writes arrive faster than a --now sync runs, so --now syncs coalesce: at most one waits on the lock,
+  # and a write that finds one waiting leaves its paths to it. The waiter lets go of now-wait only once
+  # it holds the lock, before it commits, so a writer that finds now-wait held knows that commit is still
+  # ahead and carries its write. Without it 500+ waiters queued and most SKIPped at 300s (ar-3191).
+  if [ "$mode" = now ]; then
+    exec 8>"$SYNC_DIR/now-wait"
+    flock -n 8 || exit 0
+  fi
   exec 9>"$SYNC_DIR/lock"
   flock -w "$LOCK_WAIT_S" 9 || { log "SKIP: another sync held the lock past ${LOCK_WAIT_S}s; the next sync pushes this write"; exit 0; }
+  [ "$mode" = now ] && exec 8>&-
   # A merge resolved by hand (QUEUE.md, Troubleshooting), or any other git step left with unmerged
   # files, is a person's work in progress: a sync that staged its paths would record the conflicted
   # files as resolved, markers and all. Our own merges finish or abort under this lock.
