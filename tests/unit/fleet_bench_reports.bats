@@ -4012,10 +4012,8 @@ cancel c-old-lane --why canary: superseded by the $week set"
   run "$SUBJECT" canary queue --max 9
   assert_success
   assert_equal "$(ls "$CQ"/*.json | wc -l)" 3
-  # It names the top-up alone, and takes project names.
+  # It names the top-up alone.
   run "$SUBJECT" canary queue --harness codex --model sol --off-claude game
-  assert_failure 2
-  run "$SUBJECT" canary queue --max 9 --off-claude 'a b'
   assert_failure 2
 }
 

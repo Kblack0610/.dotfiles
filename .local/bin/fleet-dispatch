@@ -1373,7 +1373,7 @@ share_why() {
 # work that can start, and the fill promotes the row again once the share has room. Held in queued/, a
 # let-go fill's leftovers sat behind every other project's fresh row: ar-3412 and four more 9h on
 # 2026-11-21, the queued age p90 494m against its 420m bound (watch queue-age, ar-4554). A canary has no
-# row; canary_top_up queues no Claude lane's while the share is full. A sprint row is left to its floor
+# row; canary_top_up skips a Claude lane's task of a full project (--off-claude <projects>, ar-5406). A sprint row is left to its floor
 # (sprint_floor_start). Run after the pass, so the floors and the let-go have started what they would.
 share_return() {
   share_full || return 0

@@ -7070,7 +7070,6 @@ canary_queue() {
   [[ -z "$only_ids" || "$only_ids" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*(,[A-Za-z0-9][A-Za-z0-9_-]*)*$ ]] || { say "canary queue: --task needs task ids (letters, digits, - and _), comma-separated"; return 2; }
   [ -z "$only_ids$only_pts" ] || [ -n "$harness" ] || { say "canary queue: --task and --pts need --harness (the top-up fills every lane)"; return 2; }
   [[ -z "$max" || "$max" =~ ^[1-9][0-9]*$ ]] || { say "canary queue: --max needs a whole number above 0"; return 2; }
-  [[ -z "$off_claude" || "$off_claude" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*(,[A-Za-z0-9][A-Za-z0-9._-]*)*$ ]] || { say "canary queue: --off-claude needs project names, comma-separated"; return 2; }
   [ -z "$off_claude" ] || { [ -n "$max" ] && [ -z "$harness" ]; } || { say "canary queue: --off-claude goes with --max alone (the top-up)"; return 2; }
   why=$(canary_lane_why "$harness" "$model" "$effort") || { say "canary queue: $why"; return 2; }
   if [ -n "$max" ] && [ -z "$harness" ]; then canary_top_up "$max"; return; fi
@@ -7107,7 +7106,7 @@ canary_known() { grep -qxF -e "$1" -e "$2" <<<"$CANARY_KNOWN"; }
 # and leaves the count in CANARY_ADDED. Says its one summary line unless CANARY_QUIET is set (canary_top_up
 # says its own).
 canary_lane_queue() {
-  local tasks t id slug title week why lane="" label="" harness=$1 model=$2 effort=$3 max=$4 added=0 had=0 off=0 full=0
+  local tasks t id tproject slug title week why lane="" label="" harness=$1 model=$2 effort=$3 max=$4 added=0 had=0 off=0 full=0
   local -A seen=()
   CANARY_ADDED=0
   [ -z "$harness" ] || { lane=$(canary_lane_name "$harness" "$model" "$effort"); label="$harness${model:+/$model}${effort:+@$effort}"; }
@@ -7137,19 +7136,19 @@ canary_lane_queue() {
     [ $? != 2 ] || { say "canary: $label queues nothing: $why"; return 1; }
   fi
   while IFS= read -r t; do
-    id=$(jq -r .id <<<"$t")
+    { read -r id; read -r tproject; } < <(jq -r '.id, (.project // "")' <<<"$t")
     # A claude lane (the baseline has no harness) leaves out a task of a project whose share is full (--off-claude).
-    if [ -n "${off_claude:-}" ] && { [ -z "$harness" ] || [ "$harness" = claude ]; } && [[ ",$off_claude," == *",$(jq -r '.project // ""' <<<"$t"),"* ]]; then
+    if [ -n "${off_claude:-}" ] && { [ -z "$harness" ] || [ "$harness" = claude ]; } && [[ ",$off_claude," == *",$tproject,"* ]]; then
       full=$((full + 1)); continue
     fi
-    [ -z "$held" ] || harness_project_why "$BENCH_HARNESSES" "$harness" "$(jq -r '.project // ""' <<<"$t")" >/dev/null ||
+    [ -z "$held" ] || harness_project_why "$BENCH_HARNESSES" "$harness" "$tproject" >/dev/null ||
       { off=$((off + 1)); continue; }
     slug=$(canary_slug "$id" "$week" "$lane") || { say "canary: lane '$lane' leaves no room for $id in a 40-char slug"; return 1; }
     [ -z "${seen[$slug]:-}" ] || { say "canary: $id and ${seen[$slug]} share the slug $slug"; return 1; }
     seen[$slug]=$id
     title=$(canary_title "$id" "$week" "$label")
     if canary_known "$title" "$slug"; then had=$((had + 1)); continue; fi
-    $BENCH_CANARY_QUEUE_CMD add --project "$(jq -r .project <<<"$t")" --from canary --tags canary \
+    $BENCH_CANARY_QUEUE_CMD add --project "$tproject" --from canary --tags canary \
       --priority low --weight light ${harness:+--agent "$harness"} --slug "$slug" --title "$title" \
       -- "$(canary_brief "$t" "$slug" "$sbx")" >/dev/null || { say "canary: could not queue $slug"; return 1; }
     [ -z "$model$sbx" ] || $BENCH_CANARY_QUEUE_CMD set "$slug" ${model:+"model=$model"} ${effort:+"effort=$effort"} ${sbx:+"canary=$id"} >/dev/null ||
