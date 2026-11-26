@@ -2690,6 +2690,7 @@ harness_source() { jq -r --arg h "$1" '.harnesses[$h].source // empty' "$HARNESS
 # harness_route <harness> <model> -> the gateway's name of the model's route, whose deployment budget
 # the source's key budget does not show: an opencode id is <provider>/<gateway model>, every other
 # launcher passes the gateway's name. Nothing for a model the harness does not map.
+# Twin: fleet-bench's canary_lane_route derives the same id for the canary top-up; change both together.
 harness_route() {
   local id
   id=$(jq -r --arg h "$1" --arg m "$2" '.harnesses[$h].models[$m] // empty' "$HARNESSES" 2>/dev/null)

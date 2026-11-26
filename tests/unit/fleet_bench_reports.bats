@@ -4021,7 +4021,7 @@ cancel c-old-lane --why canary: superseded by the $week set"
   kpi_setup; kpi_fixture; canary_fixture
   week=$(date -d "@$T0" +%Gw%V)
   export BENCH_CANARY_LANES="$SANDBOX/canary-lanes" BENCH_HARNESSES="$SANDBOX/harnesses.json" BENCH_ROOM_CMD=room-stub
-  printf 'ocfree beam\ncodex sol\nghost x\n' > "$BENCH_CANARY_LANES"
+  printf 'ocfree beam\ncodex sol\ncodex nomap\nghost x\n' > "$BENCH_CANARY_LANES"
   echo '{"harnesses":{"ocfree":{"source":"ocfree","launcher":"opencode","models":{"beam":"litellm/opencode-free (beam-free)"}},"codex":{"source":"codex","models":{"sol":"gpt-6.1-sol"}},"ghost":{"source":"ghost"}}}' > "$BENCH_HARNESSES"
   # The source has room; the route of beam-free does not (its daily quota is spent).
   printf '#!/usr/bin/env bash\necho "$*" >> "%s"\n[ "$4" = "opencode-free (beam-free)" ] && { echo "the upstream refuses opencode-free (beam-free): it answers 429" >&2; exit 1; }\necho room\n' "$SANDBOX/room.log" > "$SANDBOX/bin/room-stub"
@@ -4037,6 +4037,9 @@ cancel c-old-lane --why canary: superseded by the $week set"
   assert_line '--source ocfree --model opencode-free (beam-free)'
   assert_line '--source codex --model gpt-6.1-sol'
   assert_line '--source ghost'
+  # A model the harness maps no route for asks the source alone, and says so.
+  assert_line --partial "fleet-bench: canary: codex/nomap has no route for nomap"
+  assert_line '--source codex'
 }
 
 # ar-4554, ar-5406: fleet-dispatch passes --off-claude <full projects>, which holds a Claude lane's canary of those projects only.

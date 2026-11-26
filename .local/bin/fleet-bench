@@ -7241,14 +7241,12 @@ canary_retire() {
 
 # canary_lane_route <harness> <model> -> the gateway route the lane's runs ask for, nothing when the lane names no model or
 # the map has none: harnesses.json `models[<model>]`, less its provider prefix for an opencode launcher, the same id
-# fleet-dispatch's harness_route gives `claude-acct room --source --model`. Room on the source alone says ok while that
+# fleet-dispatch's harness_route gives `claude-acct room --source --model` (its twin: change both together). Room on the source alone says ok while that
 # route answers 429 (ar-4601: beam-free past its daily quota, ocfree room ok, a canary queued into a route no pass could start).
 canary_lane_route() {
-  local id
   [ -n "$2" ] || return 0
-  id=$(jq -r --arg h "$1" --arg m "$2" '.harnesses[$h].models[$m] // empty' "$BENCH_HARNESSES" 2>/dev/null)
-  [ "$(jq -r --arg h "$1" '.harnesses[$h].launcher // $h' "$BENCH_HARNESSES" 2>/dev/null)" != opencode ] || id=${id#*/}
-  printf '%s' "$id"
+  jq -r --arg h "$1" --arg m "$2" '(.harnesses[$h] // {}) as $x | ($x.models[$m] // "") as $id
+    | if ($x.launcher // $h) == "opencode" then $id | sub("^[^/]*/"; "") else $id end' "$BENCH_HARNESSES" 2>/dev/null
 }
 
 # canary_top_up <max> -> queues at most <max> of this week's missing canary items, one task a lane a round
@@ -7280,6 +7278,7 @@ canary_top_up() {
         src=$(jq -r --arg h "$h" '.harnesses[$h].source // empty' "$BENCH_HARNESSES" 2>/dev/null)
         if [ -z "$src" ]; then say "canary: $label not queued, $h has no source in $BENCH_HARNESSES"; continue; fi
         route=$(canary_lane_route "$h" "$m")
+        [ -z "$m" ] || [ -n "$route" ] || say "canary: $label has no route for $m in $BENCH_HARNESSES, so its room is the source's alone"
         if ! why=$($BENCH_ROOM_CMD --source "$src" ${route:+--model "$route"} 2>&1); then say "canary: $label not queued, ${why:-$src has no room}"; continue; fi
       fi
       active+=("$h|$m|$e")
