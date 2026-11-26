@@ -1360,7 +1360,7 @@ deliver_one() {
   fi
   if [ -z "$beside" ] && { [ -n "$runs$took" ] || [ -z "$resume" ]; }; then start_resume "$id" "$took"; fi
   if [ -n "$runs" ]; then went+=("its resume")
-  elif [ -n "$took" ]; then went+=("not its resume: $took has the answer")
+  elif [ -n "$resume" ] && [ -n "$took" ]; then went+=("not its resume: $took has the answer")
   elif [ -n "$resume" ]; then went+=("not its resume, left unspent: the live asking session did not take the answer"); fi
   [ -z "$held" ] || went+=("$(grep -c . <<<"$held") queue item(s) held on it")
   [ -z "$requeued" ] || went+=("waiting item(s) $(paste -sd' ' <<<"$requeued" | sed 's/ /, /g') back in the queue")
