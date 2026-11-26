@@ -7461,7 +7461,7 @@ canary_lane() {
 # that is not empty (a populated submodule at a base before it was one, muxpoon in ar-5933, or ignored files in a
 # tracked one), which score's clean would delete, and the run would start on a tree that is not base.
 canary_start() {
-  local t top base orig left mark
+  local t top base orig from left mark
   t=$(canary_task "${1:?usage: fleet-bench canary start <id>}") || return 2
   top=$(git rev-parse --show-toplevel 2>/dev/null) || { say "canary start: not in a git worktree"; return 2; }
   base=$(jq -r .base <<<"$t")
@@ -7474,9 +7474,10 @@ canary_start() {
     { orig=$(git -C "$top" symbolic-ref -q HEAD) && orig=${orig#refs/heads/}; } || orig=$(git -C "$top" rev-parse HEAD) || return 1
   # Written before the checkout, so a start killed between the two still knows where to go back to.
   printf '%s\t%s\n' "$orig" "$(git -C "$top" rev-parse "$base^{commit}")" >"$mark" || { say "canary start: could not record $orig in $mark"; return 1; }
+  from=$(git -C "$top" rev-parse HEAD) || return 1
   git -C "$top" checkout -q --detach "$base" || { rm -f "$mark"; return 1; }
   left=$(git -C "$top" -c core.quotePath=false ls-files --others --exclude-standard --directory | while IFS= read -r p; do
-           [ -z "$(git -C "$top" ls-tree --name-only "$orig" -- "${p%/}")" ] || printf '%s\n' "${p%/}"
+           [ -z "$(git -C "$top" ls-tree --name-only "$from" -- "${p%/}")" ] || printf '%s\n' "${p%/}"
          done | paste -sd ' ')
   if [ -n "$left" ]; then
     canary_restore "$top" "$orig" || { say "canary start: $base leaves $left untracked in $top, and $top could not be put back at $orig"; return 1; }
