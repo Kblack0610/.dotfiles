@@ -871,6 +871,7 @@ ROW_TAGS_JQ='def row_tags: .tags_cased // .tags // [];'
 # gate_queue_tag <board tag> -> sets GQ to the queue tags that gate means (space-separated); returns 1
 # when it is no gate. after/ has none: cmd_gate reads the board for it. An ask/<id> naming no option,
 # on an ask that offers some, names them all (check_tags wants them named): any answer releases it.
+# A new kind also goes in notes-cli's GATE_KINDS (project_tasks.rs), or `ptask edit --text` drops it.
 gate_queue_tag() {
   local t="${1#\#}" rest opt
   local -a opts=()
