@@ -1465,17 +1465,21 @@ notes --profile work ptask level run lv-8'
   story_notes
   # The stub notes the call when the queue lock is held; a race file makes its row write queue the slug first.
   # The item's own event record is written under the lock by every writer (item_event), so it is not counted.
-  # lock-holders prints each process with the queue lock open, so a failure names who held it.
+  # lock-holders names who held the queue lock when the stub saw it held, so a failure says which add and which process.
   cat > "$SANDBOX/bin/lock-holders" <<'EOS'
 #!/usr/bin/env bash
+# <flock rc> <caller pid>: the caller's command line, the kernel's locks on .lock's inode and every fd open on it.
+ino=$(stat -c %i "$AGENT_QUEUE_DIR/.lock")
+printf ' rc=%s caller=[%s] locks=[%s] fds=[' "$1" "$(tr '\0' ' ' < "/proc/$2/cmdline" | cut -c1-120)" "$(grep ":$ino " /proc/locks | tr '\n' ';')"
 for fd in /proc/[0-9]*/fd/*; do
-  [ "$(readlink "$fd" 2>/dev/null)" = "$AGENT_QUEUE_DIR/.lock" ] || continue
+  [ "$(stat -L -c %i "$fd" 2>/dev/null)" = "$ino" ] || continue
   p=${fd#/proc/}; p=${p%%/*}
-  printf ' [%s %s]' "$p" "$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | cut -c1-200)"
+  printf ' %s:%s' "$p" "$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | cut -c1-120)"
 done
+printf ']'
 EOS
   chmod +x "$SANDBOX/bin/lock-holders"
-  sed -i '2i [ "$1 $2" = "ingest record" ] || flock -n -x "$AGENT_QUEUE_DIR/.lock" true || printf "locked %s:%s\\n" "$*" "$(lock-holders)" >> "$NOTES_FIXTURE/underlock.log"\ncase " $* " in *" add "*) [ ! -e "$NOTES_FIXTURE/race" ] || { mkdir -p "$AGENT_QUEUE_DIR/queued"; printf "slug: raced\\nproject: level\\ntags: red cause:abc12345\\n---\\nx\\n" > "$AGENT_QUEUE_DIR/queued/20260101-000000-raced.md"; } ;; esac' "$SANDBOX/bin/notes"
+  sed -i '2i [ "$1 $2" = "ingest record" ] || flock -n -x "$AGENT_QUEUE_DIR/.lock" true || printf "locked %s:%s\\n" "$*" "$(lock-holders $? $PPID)" >> "$NOTES_FIXTURE/underlock.log"\ncase " $* " in *" add "*) [ ! -e "$NOTES_FIXTURE/race" ] || { mkdir -p "$AGENT_QUEUE_DIR/queued"; printf "slug: raced\\nproject: level\\ntags: red cause:abc12345\\n---\\nx\\n" > "$AGENT_QUEUE_DIR/queued/20260101-000000-raced.md"; } ;; esac' "$SANDBOX/bin/notes"
   run "$AQ" add --project level --slug free "feat(menu): free"
   assert_success
   assert_line "story lv-9 on the level agent board"
