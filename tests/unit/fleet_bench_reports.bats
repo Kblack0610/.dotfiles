@@ -3962,7 +3962,7 @@ cancel c-old-lane --why canary: superseded by the $week set"
   week=$(date -d "@$T0" +%Gw%V)
   export BENCH_CANARY_LANES="$SANDBOX/canary-lanes" BENCH_HARNESSES="$SANDBOX/harnesses.json" BENCH_ROOM_CMD=room-stub
   printf '# lanes\ncodex sol\ncodex sol high\ncodex sol higher\n\nopencode-go glm\nghost x' > "$BENCH_CANARY_LANES"   # no final newline: the last lane still reads
-  echo '{"harnesses":{"codex":{"source":"codex"},"opencode-go":{"source":"go"}}}' > "$BENCH_HARNESSES"
+  echo '{"harnesses":{"codex":{"source":"codex","models":{"sol":"gpt-6.1-sol"}},"opencode-go":{"source":"go","models":{"glm":"go/go (glm-5.3)"}}}}' > "$BENCH_HARNESSES"
   printf '#!/usr/bin/env bash\necho "$2" >> "%s"\n[ "$2" = codex ] && { echo "codex: room"; exit 0; }\necho "$2: past its pace line"; exit 1\n' "$SANDBOX/room.log" > "$SANDBOX/bin/room-stub"
   chmod +x "$SANDBOX/bin/room-stub"
   run "$SUBJECT" canary queue --max 9
@@ -3991,7 +3991,7 @@ cancel c-old-lane --why canary: superseded by the $week set"
   jq '.id = "greet2" | .task = "fix(greet): say hello twice"' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/greet2.json"
   export BENCH_CANARY_LANES="$SANDBOX/canary-lanes" BENCH_HARNESSES="$SANDBOX/harnesses.json" BENCH_ROOM_CMD=room-stub
   printf 'codex sol\n' > "$BENCH_CANARY_LANES"
-  echo '{"harnesses":{"codex":{"source":"codex"}}}' > "$BENCH_HARNESSES"
+  echo '{"harnesses":{"codex":{"source":"codex","models":{"sol":"gpt-6.1-sol"}}}}' > "$BENCH_HARNESSES"
   printf '#!/usr/bin/env bash\necho room\n' > "$SANDBOX/bin/room-stub"; chmod +x "$SANDBOX/bin/room-stub"
   run "$SUBJECT" canary queue --max 2
   assert_success
@@ -4030,6 +4030,8 @@ cancel c-old-lane --why canary: superseded by the $week set"
   assert_success
   assert_line "fleet-bench: canary: ocfree/beam not queued, the upstream refuses opencode-free (beam-free): it answers 429"
   assert_line "fleet-bench: canary: 1 queued for $week (codex/sol)"
+  # A model the harness maps no route for asks the source alone, and says so.
+  assert_line --partial "fleet-bench: canary: codex/nomap has no route for nomap"
   [ ! -f "$CQ/canary-greet-$week-ocfree-beam.json" ]
   [ -f "$CQ/canary-greet-$week-codex-sol.json" ]
   # The opencode launcher's provider prefix is dropped, a codex id is passed as is, a lane whose harness maps no model asks the source alone.
@@ -4037,8 +4039,6 @@ cancel c-old-lane --why canary: superseded by the $week set"
   assert_line '--source ocfree --model opencode-free (beam-free)'
   assert_line '--source codex --model gpt-6.1-sol'
   assert_line '--source ghost'
-  # A model the harness maps no route for asks the source alone, and says so.
-  assert_line --partial "fleet-bench: canary: codex/nomap has no route for nomap"
   assert_line '--source codex'
 }
 
@@ -4048,7 +4048,7 @@ cancel c-old-lane --why canary: superseded by the $week set"
   week=$(date -d "@$T0" +%Gw%V)
   export BENCH_CANARY_LANES="$SANDBOX/canary-lanes" BENCH_HARNESSES="$SANDBOX/harnesses.json" BENCH_ROOM_CMD=room-stub
   printf 'codex sol\nclaude haiku max\n' > "$BENCH_CANARY_LANES"
-  echo '{"harnesses":{"codex":{"source":"codex"}}}' > "$BENCH_HARNESSES"
+  echo '{"harnesses":{"codex":{"source":"codex","models":{"sol":"gpt-6.1-sol"}}}}' > "$BENCH_HARNESSES"
   printf '#!/usr/bin/env bash\necho room\n' > "$SANDBOX/bin/room-stub"; chmod +x "$SANDBOX/bin/room-stub"
   run "$SUBJECT" canary queue --max 9 --off-claude game
   assert_success
