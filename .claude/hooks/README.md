@@ -96,7 +96,7 @@ A deny (PreToolUse) or block (Stop) reason starts with `<hook-name>: `. session-
 |---------|------|-----|
 | ExitPlanMode | `~/.claude/hooks/plan-approved.sh` | Record the approved plan in `~/.agent/plans/approved.jsonl`, so `fleet-dispatch reap` can queue its open phases once its session is gone, and propose its `epic: new` line: filed in a hand session with the line rewritten to the id, or sent to the outbox |
 | (every tool) | `~/.claude/hooks/long-session-handoff.sh` | In a dispatched session's main thread on a pilot repo (`AGENT_HANDOFF_REPOS`, unity-core-playground), once its transcript passes `AGENT_HANDOFF_TURNS` (150) responses or a compaction, tell it once to hand its item to a fresh session through `agent-queue handoff` (a pushed branch, a `## Handoff` note, then `/wind-down auto`); the next brief reads the note (`handoff_line`). A hand session is never told. `tests/unit/long_session_handoff.bats`. |
-| Edit\|Write\|MultiEdit\|NotebookEdit | `~/.claude/hooks/context-budget-guard.sh` | Warn when the global `CLAUDE.md` passes 20 KB or a repo root `CLAUDE.md`/`AGENTS.md` 12 KB, and when a memory, lessons or SKILL.md edit restates another home's instruction |
+| Edit\|Write\|MultiEdit\|NotebookEdit | `~/.claude/hooks/context-budget-guard.sh` | Warn when the global `CLAUDE.md`, a repo root `CLAUDE.md`/`AGENTS.md` or a `memory/MEMORY.md` passes its budget (the numbers are in the script header), and when a memory, lessons or SKILL.md edit restates another home's instruction |
 
 ## Token usage tracking
 
