@@ -683,24 +683,20 @@ fn summary_lines(summary: &str) -> Result<Vec<String>> {
     Ok(lines)
 }
 
-fn quote(s: &str) -> String {
-    serde_json::to_string(s).unwrap_or_default()
-}
-
 /// A report file: the contract's frontmatter, then `# title`, then the body.
 fn render(e: &Entry, body: &str) -> String {
     let mut s = String::from("---\nkind: report\n");
     s.push_str(&format!("id: {}\n", e.id()));
-    s.push_str(&format!("title: {}\n", quote(&e.title)));
+    s.push_str(&format!("title: {}\n", crate::md::yaml_quote(&e.title)));
     s.push_str("summary: |-\n");
     for l in e.summary.lines() {
         s.push_str(&format!("  {l}\n"));
     }
-    s.push_str(&format!("from: {}\n", quote(&e.from)));
+    s.push_str(&format!("from: {}\n", crate::md::yaml_quote(&e.from)));
     s.push_str(&format!("needs_you: {}\n", e.needs_you));
     s.push_str(&format!("created: {}\n", e.created));
     s.push_str(&format!("updated: {}\n", e.updated));
-    s.push_str(&format!("read: {}\n", quote(&e.read)));
+    s.push_str(&format!("read: {}\n", crate::md::yaml_quote(&e.read)));
     s.push_str(&format!("---\n\n# {}\n\n", e.title));
     let body = body.trim();
     if !body.is_empty() {
@@ -854,7 +850,7 @@ pub fn read(p: &Profile, log: &Logger, id: &str, now: DateTime<FixedOffset>) -> 
         if still_unread {
             let marked = content.replacen(
                 "\nread: \"\"\n",
-                &format!("\nread: {}\n", quote(&stamp(now))),
+                &format!("\nread: {}\n", crate::md::yaml_quote(&stamp(now))),
                 1,
             );
             if marked == content {

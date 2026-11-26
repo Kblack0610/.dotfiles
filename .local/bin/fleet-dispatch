@@ -8399,33 +8399,43 @@ repose_ask() {
 # reconcile_plans -- file an approved plan its session left behind on the board: each open phase its
 # own row, every later one gated #after/ the row before (agent-queue add --plan from a filer; only the
 # board fills the queue), which dispatch pulls in turn like any row. No row stands for the whole plan
-# (ar-5605). Once only: a plan the queue has held, or one filed here before (PLANS_FILED), is not
-# filed again, or every pass would add rows. A held exit with no `held` line filed nothing (its epic:
-# new proposal waits), so that plan is tried again next pass. One still open after that shows in
-# plans_unqueued.
+# (ar-5605). A plan is skipped only while something carries its open phases: an active item (plans_orphaned)
+# or an open row that names the plan file (`/<slug>.md`, as agent-queue's phase briefs do, or the older
+# `<slug> P<n>` title; an epic row only points at it). A done item that ran one phase holds none of the
+# others: 84 of the 115 orphans on 2026-11-26 sat behind that old skip (ar-4900).
+# PLANS_FILED records each filing with the phases open then ("<plan><TAB><n,n>"). A plan is filed again only
+# when a phase outside every record of it is open, so rows a human dropped stay dropped as the rest land;
+# a line with no set (written before ar-4900) covers whatever is open. A held exit with no `held` line filed nothing (its epic: new proposal waits), so that plan is
+# tried again next pass. One still open after that shows in plans_unqueued.
 # `- [-]` is how a human drops a phase.
 PLANS_FILED="$DIR/plans-filed"
 reconcile_plans() {
   [ "$DISPATCH_PLAN_RECONCILE" = 1 ] || return 0
-  local orphans c plan project held out rc
+  local orphans c plan project out rc board rows slug open
   orphans=$(plans_orphaned) || return 0
   [ -n "$orphans" ] || return 0
-  held=$(agent-queue list --json --state done --since "$(date -d "$PLAN_LEDGER_DAYS days ago" +%F)" 2>/dev/null | jq -r '.plan // empty') || return 0
-  [ ! -s "$PLANS_FILED" ] || held+=$'\n'"$(cat "$PLANS_FILED")"
-  # By file name, as PLAN_ITEMS_JQ matches: an item names ~/.claude/plans/<f>, the
-  # ledger the account's own ~/.claude-<acct>/plans/<f>.
-  held=$(sed 's#.*/##' <<<"$held")
+  # Blind when the board cannot be read: every orphan would look uncarried and be filed twice.
+  board=$(notes board --json 2>/dev/null) && [ -n "$board" ] || return 0
+  rows=$(jq -r 'if (.rows | type) != "array" then error("no rows") else .rows[] | select(.type != "epic")
+    | [.raw, ((.details // [])[] | tostring)] | join(" ") end' <<<"$board") || return 0
   while IFS= read -r c; do
     plan=$(jq -r .plan <<<"$c"); project=$(jq -r .project <<<"$c")
-    grep -qxF -- "${plan##*/}" <<<"$held" && continue
+    slug=${plan##*/}; slug=$(sed 's/[^A-Za-z0-9_-]/\\&/g' <<<"${slug%.md}")
+    grep -qE -- "/${slug}\\.md([^A-Za-z0-9_-]|$)|(^|[^A-Za-z0-9_./-])${slug} P[0-9]" <<<"$rows" && continue
+    open=$(plan_phase_list "$plan" | jq -r '[.[] | select(.state == "open") | .n | tostring] | join(",")')
+    [ -s "$PLANS_FILED" ] && awk -F'\t' -v b="${plan##*/}" -v o="$open" \
+      '{ n = $1; sub(/.*\//, "", n) } n != b { next } NF == 1 { f = 1; next }
+        { split("", r); k = split($2, t, ","); for (i = 1; i <= k; i++) r[t[i]] = 1
+          ok = 1; m = split(o, c, ","); for (i = 1; i <= m; i++) if (!(c[i] in r)) ok = 0; if (ok) f = 1 }
+        END { exit !f }' "$PLANS_FILED" && continue
     out=$(AGENT_QUEUE_START=0 agent-queue add --plan "$plan" --project "$project" --from auto:plans 2>&1); rc=$?
     if [ "$rc" -eq 0 ] || { [ "$rc" -eq "$AQ_EX_HELD" ] && grep -q '^held ' <<<"$out"; }; then
-      mkdir -p "$DIR"; printf '%s\n' "$plan" >> "$PLANS_FILED"
-      logline "filed $(basename "$plan") to run its open phases: its session is gone"
+      mkdir -p "$DIR"; printf '%s\t%s\n' "$plan" "$open" >> "$PLANS_FILED"
+      logline "filed $(basename "$plan") to run its open phases ($open): nothing carries them"
     elif [ "$rc" -eq "$AQ_EX_HELD" ]; then
       logline "left $(basename "$plan") for next pass: ${out##*$'\n'}"
     elif plan_fix_row "$plan" "$project" "$out"; then
-      mkdir -p "$DIR"; printf '%s\n' "$plan" >> "$PLANS_FILED"
+      mkdir -p "$DIR"; printf '%s\t%s\n' "$plan" "$open" >> "$PLANS_FILED"
     else
       say "could not file the phases of $plan: $out"
     fi
