@@ -4244,12 +4244,13 @@ fn refuse_rewrite(
         return Ok(());
     }
     let proj = projects::project_dir(p, name)?;
+    let cur = version_in(&lane.dir(&proj), &content);
+    let what = "changing the priority or version of";
+    crate::window::refuse_held(&proj, cur, &line, writer, what)?;
     if moved {
         crate::window::refuse_queued(&proj, &line, writer, "changing the version of")?;
     }
-    let cur = version_in(&lane.dir(&proj), &content);
-    let what = "changing the priority or version of";
-    crate::window::refuse_held(&proj, cur, &line, writer, what)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -6528,6 +6529,24 @@ mod inbox_tests {
             &item,
         );
         refused(words);
+        let other = v.root.join("projects/other");
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join("summary.md"), "# other\n").unwrap();
+        fs::write(
+            other.join("README.md"),
+            "# other\nVersion: v0.1.0\n\n## Tasks\n",
+        )
+        .unwrap();
+        refused(move_to_project(
+            &v.p,
+            &v.log,
+            "scratch",
+            "other",
+            &held,
+            None,
+            Lane::Human,
+            &item,
+        ));
         assert_eq!(v.read(), before, "a refusal writes nothing");
         // A row tagged for the queued version but not in its snapshot moves.
         assert_eq!(mv(&id("sc-2"), "v0.1.2", &item).unwrap(), 0);
