@@ -29,7 +29,7 @@ if [ -d "$arg" ]; then
   dir=$arg
 else
   map=${PROJECT_MAP_FILE:-$HOME/.config/shared-hooks/project-map.json}
-  dir=$(jq -r --arg n "$arg" '.paths | to_entries[] | select(.value == $n) | .key' "$map" 2>/dev/null | head -n1)
+  dir=$(jq -r --arg n "$arg" 'first(.paths | to_entries[] | select(.value == $n) | .key) // empty' "$map" 2>/dev/null)
   dir=${dir/#\~/$HOME}
   [ -d "$dir" ] || die "$arg is neither a directory nor a project in $map"
 fi
