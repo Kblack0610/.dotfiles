@@ -472,12 +472,13 @@ struct RawProfile {
     /// field keep working — resolve() falls back to `<root>/meetings`.
     #[serde(default)]
     meetings: Option<String>,
-    /// Dated capture drop (`/remember`, `notes inbox add`).
-    /// Defaults to `inbox` so configs predating this field keep working.
-    #[serde(default = "default_inbox")]
-    inbox: String,
+    /// Dated capture drop (`/remember`, `notes inbox add`), `captures/` by default. The key
+    /// was `inbox` until that name went to the reports inbox; a config still carrying
+    /// `inbox = ...` is ignored and falls back to this default.
+    #[serde(default = "default_captures")]
+    captures: String,
     /// Dirs `notes tags` scans for `#hashtag`/frontmatter tags. Optional — when empty,
-    /// resolve() derives a sensible default (daily, inbox, permanent, backlogs, knowledge).
+    /// resolve() derives a sensible default (daily, captures, permanent, backlogs, knowledge).
     #[serde(default)]
     tag_dirs: Vec<String>,
     /// Dirs `notes find` searches. Optional: when empty, resolve() searches the whole vault.
@@ -520,8 +521,8 @@ fn default_ideas() -> String {
     "lab/ideas/_IDEAS.md".to_string()
 }
 
-fn default_inbox() -> String {
-    "inbox".to_string()
+fn default_captures() -> String {
+    "captures".to_string()
 }
 
 // The org layout, as one place instead of once per org; `personal` overrides all of them.
@@ -638,7 +639,8 @@ pub struct Profile {
     pub ideas: PathBuf,
     /// The outbox (`notes outbox`). Cross-org, like `board`.
     pub outbox: PathBuf,
-    pub inbox: PathBuf,
+    /// Dated captures (`notes inbox add`, the outbox's `#ask` answers): `<root>/captures`.
+    pub captures: PathBuf,
     /// Dirs scanned by `notes tags` (existing dirs only; missing ones are dropped).
     pub tag_scan: Vec<PathBuf>,
     /// Dirs searched by `notes find` (existing dirs only).
@@ -744,7 +746,7 @@ fn builtin_default() -> RawConfig {
             knowledge: default_knowledge(),
             projects: None,
             meetings: None,
-            inbox: "inbox".into(),
+            captures: default_captures(),
             tag_dirs: Vec::new(),
             search_dirs: Vec::new(),
             rollup: Vec::new(),
@@ -904,9 +906,9 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
         .unwrap_or_else(|| home().join(".local/state/watch-companion"));
 
     // Dirs scanned by `notes tags`. Explicit `tag_dirs` wins; otherwise derive a
-    // sensible default from existing paths (daily, inbox, permanent, backlogs, knowledge).
+    // sensible default from existing paths (daily, captures, permanent, backlogs, knowledge).
     let mut tag_scan: Vec<PathBuf> = if rp.tag_dirs.is_empty() {
-        let mut v = vec![join(&rp.daily), join(&rp.inbox), join(&rp.zettel)];
+        let mut v = vec![join(&rp.daily), join(&rp.captures), join(&rp.zettel)];
         v.push(backlog.clone()); // the FILE: its parent is the journal or org root
         v.push(join(&rp.knowledge));
         v
@@ -973,7 +975,7 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
         board: vault.join(&raw.board),
         ideas: vault.join(&raw.ideas),
         outbox: vault.join(&raw.outbox),
-        inbox: join(&rp.inbox),
+        captures: join(&rp.captures),
         tag_scan,
         search_dirs,
         state_dir,
@@ -1225,7 +1227,7 @@ pub(crate) fn test_profile(root: &str) -> Profile {
         board: PathBuf::from(root).join("lab/projects/board.md"),
         ideas: PathBuf::from(root).join("lab/ideas/_IDEAS.md"),
         outbox: PathBuf::from(root).join("outbox.md"),
-        inbox: r.join("inbox"),
+        captures: r.join("captures"),
         tag_scan: Vec::new(),
         search_dirs: Vec::new(),
         state_dir: r.join(".state"),
@@ -1303,7 +1305,7 @@ pub fn print(p: &Profile) {
     println!("meetings    {}", p.meetings.display());
     println!("index       {}", p.index.display());
     println!("knowledge   {}", p.knowledge.display());
-    println!("inbox       {}", p.inbox.display());
+    println!("captures    {}", p.captures.display());
     println!("outbox      {}", p.outbox.display());
     println!("summaries   {}", p.summaries.display());
     println!(
@@ -1495,7 +1497,7 @@ mod tests {
         assert_eq!(raw.archive, "daily_archive");
         assert_eq!(raw.zettel, "permanent");
         assert_eq!(raw.index, "index");
-        assert_eq!(raw.inbox, "inbox");
+        assert_eq!(raw.captures, "captures");
         assert_eq!(raw.projects.as_deref(), Some("projects/current"));
     }
 

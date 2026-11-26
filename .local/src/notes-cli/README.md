@@ -34,7 +34,7 @@ daily notes inside `employment/jobs/<job>/` while a personal machine uses
 
 **A job is one line.** Every path key defaults to the org convention (`daily/`, `refs/`,
 `backlog.md`, `summaries/`, `daily_archive/`, `permanent/`, `meetings/`, `index/`,
-`knowledge/`, `inbox/`, `projects/current`), so a new org is just its `root` plus whatever genuinely
+`knowledge/`, `captures/`, `projects/current`), so a new org is just its `root` plus whatever genuinely
 differs. `personal` is the sole profile that overrides them all, because its root IS the
 vault. An org that still holds a `log/` from before the directory was renamed is migrated
 to `daily/` on the next `notes today`; a profile that explicitly pins `daily = "log"`
@@ -61,8 +61,8 @@ keeps it.
 | `notes focus done <word>` | Check off the first open `## Focus` item whose text matches `<word>` (case-insensitive). |
 | `notes focus --all` | Cross-profile cockpit: aggregate every configured profile's open `## Focus` items as TSV `profile<TAB>file<TAB>line<TAB>key<TAB>text` (for editor/jump integration). Close a row with `notes --profile <p> focus done "<key>"`. |
 | `notes inbox [list]` | Triage view of the dated-capture inbox: pending captures oldest-first with age and title, stale (14d or more) flagged. |
-| `notes inbox add "<text>"` | Quick-capture: append a timestamped bullet to today's `inbox/<date>.md`. |
-| `notes inbox archive <file>\|--stale\|--before D` | Drain triaged captures into `inbox/_archive/` (pick one selector). |
+| `notes inbox add "<text>"` | Quick-capture: append a timestamped bullet to today's `captures/<date>.md`. |
+| `notes inbox archive <file>\|--stale\|--before D` | Drain triaged captures into `captures/_archive/` (pick one selector). |
 | `notes zettel new "<title>"` | Create `permanent/<id>-<slug>.md` (id = `YYYYMMDDThhmm`). |
 | `notes index [--rebuild]` | Scan `[[wikilinks]]` across `permanent/` and `knowledge/` (a `[[...]]` inside a code block or span is code, not a link); report or rebuild `index/` backlinks + MOC (zettels by tag, then `## Knowledge` by subdir, each article with its title, summary and tags; `knowledge/_log/` is skipped). |
 | `notes find <words> [-n N] [--json]` | Ranked lookup over the whole vault (a profile's `search_dirs` narrows it), minus the machine-written `_log/`, `versions/` and `agent/` dirs. Words in any order, OR-ed and ranked (BM25 over title, tags, path, summary, headings and body, with notes holding every word first; a long knowledge page (over `SECTION_MIN_WORDS` in `src/find.rs`) is scored per `## ` section and listed once, at its best section's line); a typo or a half-typed word still matches (`secruity`, `kuber`; words under five letters get no typo match), and two words a note writes as one still do (`back up` finds `backup`). `#tag` filters on a frontmatter or inline tag or a folder on the path (`#interview` hits `interviews/`), `"a phrase"` boosts, `-word` excludes; an empty query returns nothing. Synonyms are data in `<vault>/.search/aliases.toml` (`groups = [["oauth", "sso", "oidc"]]`). Prints `path<TAB>line<TAB>score<TAB>title<TAB>snippet`, best first, the line being the note's best match. `--eval <file>` scores it against a query set (`query<TAB>path[;path]`, vault-relative, `-` for a query that should find nothing) and prints recall@1, recall@5, MRR and each miss; `notes doctor` runs `<vault>/.search/eval.tsv` and warns under the file's `# floor: recall5=<r> ms=<ms>` line. In nvim `<leader>nk`, in tmux Prefix+k. |
