@@ -1046,15 +1046,25 @@ fn similar_where<'a>(
 /// the board. With `epic` it is the [`shortlist`] `add` checks a hand session's row against, on
 /// both lanes whatever `lane` is, printed as `add` prints it ([`print_hits`]): for an epic, the
 /// open epics and live plans most like it too, which plan-standard.sh holds an `epic: new` to.
-pub fn similar_rows(
-    p: &Profile,
-    name: &str,
-    text: &str,
+/// The arguments of `ptask similar`.
+#[derive(clap::Args)]
+pub struct SimilarArgs {
+    /// How many rows at most
+    #[arg(long, default_value_t = 10)]
     top: usize,
+    /// One JSON array of `{id, percent, text, kind, lane}` instead
+    #[arg(long)]
     json: bool,
-    lane: Lane,
+    /// The shortlist `add` checks a session's row against instead: the rows of both lanes,
+    /// and for an epic the open epics and live plans most like it (kind epic or plan)
+    #[arg(long, conflicts_with = "top")]
     epic: bool,
-) -> Result<i32> {
+    #[arg(required = true, num_args = 1.., allow_hyphen_values = true)]
+    text: Vec<String>,
+}
+
+pub fn similar_rows(p: &Profile, name: &str, a: &SimilarArgs, lane: Lane) -> Result<i32> {
+    let (text, top, json, epic) = (&a.text.join(" "), a.top, a.json, a.epic);
     let hits = if epic {
         let row = format!("- [ ] {text}");
         let lanes = both_lanes(p, name)?;

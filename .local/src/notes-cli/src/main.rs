@@ -914,23 +914,10 @@ enum PtaskCmd {
         #[arg(long)]
         json: bool,
     },
-    /// The open rows closest to a text, best first (TSV `id<TAB>percent<TAB>text`), by the
-    /// scoring a near-duplicate is refused by. Reads only. The triager's shortlist of the rows
-    /// a line may repeat
-    Similar {
-        /// How many rows at most
-        #[arg(long, default_value_t = 10)]
-        top: usize,
-        /// One JSON array of `{id, percent, text, kind, lane}` instead
-        #[arg(long)]
-        json: bool,
-        /// The shortlist `add` checks a session's row against instead: the rows of both lanes,
-        /// and for an epic the open epics and live plans most like it (kind epic or plan)
-        #[arg(long, conflicts_with = "top")]
-        epic: bool,
-        #[arg(required = true, num_args = 1.., allow_hyphen_values = true)]
-        text: Vec<String>,
-    },
+    /// The open rows closest to a text, best first (TSV `id<TAB>percent<TAB>text`, with
+    /// `--epic` `id<TAB>percent<TAB>lane<TAB>text`), by the scoring a near-duplicate is refused
+    /// by. Reads only. The triager's shortlist of the rows a line may repeat
+    Similar(project_tasks::SimilarArgs),
     /// Take the first inbox line matching the query off `## Inbox` and onto the board as
     /// typed rows (`--as`, repeatable to split a pile), or into an open row it duplicates
     /// (`--dup`). The human's words stay as a `was:` detail line. The triager's write path
@@ -1890,20 +1877,7 @@ fn main() -> Result<()> {
                     println!("{}", propose::proposed_row(&text.join(" "), &name));
                     0
                 }
-                Some(PtaskCmd::Similar {
-                    top,
-                    json,
-                    epic,
-                    text,
-                }) => project_tasks::similar_rows(
-                    &prof,
-                    &name,
-                    &text.join(" "),
-                    top,
-                    json,
-                    lane,
-                    epic,
-                )?,
+                Some(PtaskCmd::Similar(a)) => project_tasks::similar_rows(&prof, &name, &a, lane)?,
                 Some(PtaskCmd::File {
                     rows,
                     dup,
