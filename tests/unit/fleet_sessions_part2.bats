@@ -2851,6 +2851,32 @@ GH
   assert_output 'LANDED PR #875 merged, tree clean, next phase: x, background shell is not a gate or test'
 }
 
+@test "self_wait reads a background gh event listen as an event wait, and a gh command that is not one as nothing (ar-5664)" {
+  # 2026-11-24 dotfiles-agent-20 waited on #3501 with a background `gh event listen` and read STALLED
+  # "background shell is not a gate or test". perl's $0 gives the stand-in gh's own command line.
+  stand_in() {
+    printf '%s\n' "perl -e '\$0 = \"$1\"; sleep 60'; :" > "$SANDBOX/$2.sh"
+    setsid bash -c 'bash "$1"; :' _ "$SANDBOX/$2.sh" >/dev/null 2>&1 3>&- &
+    SI_ROOT=$!
+    local spins=0
+    LIVE_PIDS="${LIVE_PIDS:-} -$SI_ROOT"   # teardown kills it, pass or fail
+    until pgrep -s "$SI_ROOT" -f "^$1" >/dev/null; do
+      kill -0 "$SI_ROOT" || fail "the $2 stand-in exited before it started"
+      [ $((++spins)) -lt 20000 ] || fail "the $2 stand-in never started"
+    done
+  }
+  stand_in 'gh event listen --resource PR_kwDOabc' listen
+  run self_wait "$SI_ROOT"
+  assert_output 'wait'
+  FLEET_IDLE_MIN=20 FLEET_SHELL_STALE_MIN=120
+  run b shell 0 0 0 25 1 0 0 875 OPEN PENDING 1 - 1/3 x - wait
+  assert_output 'WORKING shell'
+  # negative control: another gh command under the claude is no event wait
+  stand_in 'gh event list' other
+  run self_wait "$SI_ROOT"
+  assert_output ''
+}
+
 @test "end to end: a plan-mode copy of a queued plan under another name reads that plan's queued phases (ar-2426)" {
   # 2026-11-14 hub/dotfiles:8, :9 and :13: a planner chat's plan was plan mode's random file, its
   # phases queue items of a named copy (school-front-p*, outskirts-p1, db-soccer-p*), so the row read
