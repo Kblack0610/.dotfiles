@@ -6,6 +6,7 @@
 #       [--row <code>-<N>] [--epic <code>-<N>] [--want <channel>] [--running [--session s]] [--repeat] [task...]    the task from args, or stdin when there are none
 #       --running with no --from or --want is from item:<$AGENT_QUEUE_ITEM> in a queue item's session, from session in any
 #       other Claude session, and from human only at a terminal; a hand session records the human's own want with --want human.
+#       A --running add (or a session's own claim) from a worktree session on a machine that is not the fleet lease holder records `host:` too, so the holder's reap checks that worker's tmux (hand_host).
 #       A headless Claude run (`claude -p`, CLAUDE_CODE_ENTRYPOINT sdk-*) is never the human: its add goes to the board and
 #       never starts at add, and its --want is refused (headless).
 #       --want names the channel a human's want came in by (`notes ptask add --want`): its story row gets #requested from
@@ -218,6 +219,27 @@ hand_start() {
   session="$(agent_session)" || return 0
   window="$(own_window)" || window=''
   printf '%s\t%s\n' "$session" "$window"
+}
+# this_host -> this machine's fleet name, as fleet-hosts.sh reads it.
+this_host() { printf '%s\n' "${FLEET_HOST:-$(uname -n | cut -d. -f1)}"; }
+# hand_host <session> -- this machine's fleet name when a session was recorded here, this machine is a
+# fleet worker (in the roster) and not the lease holder; else nothing. The session hand_start records
+# lives in this machine's tmux, and the holder's fleet-dispatch reap checks a session on its own tmux
+# unless the item says `host:` (as a dispatched item on a worker does): without it a live session on a
+# worker read as gone and its item failed (ar-5957, ar-2000-prom-zsh 2026-11-23). `fleet-lease held`
+# exit 1 (another machine holds it, or this one never may) says non-holder; 2, no holder known, records
+# none. The roster test keeps a host the reap cannot reach (the workstation is no roster worker) off
+# the item, since reap reads an unlisted host as a gone session.
+hand_host() {
+  local rc=0 me
+  [ -n "${1:-}" ] || return 0
+  fleet-lease held >/dev/null 2>&1 || rc=$?
+  [ "$rc" = 1 ] || return 0
+  me="$(this_host)"
+  # shellcheck source=../lib/fleet-hosts.sh
+  declare -F fleet_host >/dev/null || . "${FLEET_HOSTS_LIB:-$AQ_BIN/../lib/fleet-hosts.sh}"
+  fleet_host "$me" >/dev/null 2>&1 || return 0
+  printf '%s\n' "$me"
 }
 # The one closer, beside this script (TMUX_CLOSE when the script runs from a copy, as in tests).
 TMUX_CLOSE="${TMUX_CLOSE:-$AQ_BIN/tmux-close}"
@@ -2303,6 +2325,7 @@ add_item_text() {
   [ -n "$running" ] && printf 'started: %s\n' "$now"
   [ -n "$session" ] && printf 'session: %s\n' "$session"
   [ -n "$window" ] && printf 'window: %s\n' "$window"
+  [ -n "$host" ] && printf 'host: %s\n' "$host"
   [ -n "$sid" ] && printf 'sessions: %s\naccount: %s\n' "$sid" "$(claude_account)"
   [ -n "$story" ] && printf 'row: %s:%s\nlane: agent\nprofile: %s\n' "$sboard" "$srow" "$sprof"
   printf -- '---\n%s\n' "$text"
@@ -2417,8 +2440,8 @@ cmd_add() {
   fi
   check_tags "$tags"
   # A hand-started session records itself and its window, in a worktree session on any world.
-  local window=''
-  [ -z "$running" ] || [ -n "$session" ] || IFS=$'\t' read -r session window < <(hand_start)
+  local window='' host=''
+  [ -z "$running" ] || [ -n "$session" ] || { IFS=$'\t' read -r session window < <(hand_start); host="$(hand_host "$session")"; }
   session="$(qualified "$session")" || exit 1
   [ -n "$project" ] || project="$(project_of_cwd)"
   [ -n "$project" ] || die "no --project, and this directory is not a repo project-map knows"
@@ -3206,6 +3229,12 @@ cmd_claim() {
   f="$(find_item "$slug")"
   [ -z "$session" ] || header_set "$f" session "$session"
   [ -z "$window" ] || header_set "$f" window "$window"
+  [ -z "$session" ] || set_hand_host "$f" "$session"
+}
+# set_hand_host <file> <session> -- host: goes with session:, so a stale one from an earlier run never pairs with this machine's session.
+set_hand_host() {
+  local host; host="$(hand_host "$2")"
+  if [ -n "$host" ]; then header_set "$1" host "$host"; else header_del "$1" host; fi
 }
 
 # close_on <host> <tmux-close args...> -- tmux-close here, or on that fleet worker over ssh.
@@ -3267,7 +3296,7 @@ cancel_close() {
     # Never the caller's own: a session returning or cancelling its own item died mid-command, before what it
     # chained after (2026-11-24 22:45Z: dotfiles-agent-22 died in `return`, its `add --after` never ran, and
     # ar-5199 sat with no item for 2h, ar-5293). It winds itself down.
-    if [ -z "$host" ] && [ "$(own_session)" = "$server:$session" ]; then
+    if { [ -z "$host" ] || [ "$host" = "$(this_host)" ]; } && [ "$(own_session)" = "$server:$session" ]; then
       echo "agent-queue: left $server:$session open: it is the caller's own session, which winds itself down" >&2
     elif [ -n "$window" ]; then
       close_on "$host" -L "$server" window "$window" 2>/dev/null && echo "closed window $window of $session" ||
