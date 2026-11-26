@@ -102,7 +102,8 @@ pub(super) fn plan_file(text: &str) -> String {
 /// Which plan references `plans_touched` keeps.
 #[derive(Clone, Copy)]
 enum Touch<'a> {
-    /// Every write: Edit, Write, MultiEdit, and the shell writes of `bash_plan_refs`.
+    /// Every write: an edit tool (`.config/agent-panel/edit-tools.conf`) and the shell writes of
+    /// `bash_plan_refs`.
     Written,
     /// What moves a session's plan off or back onto the plan-mode file named here: an
     /// `agent-land --plan`, the target of a `cp` or `mv` of it, a write of the plan-mode file
@@ -126,8 +127,8 @@ enum Ev {
     Tick,
 }
 
-/// The plans the session's own tool calls wrote, oldest first: an Edit, Write or MultiEdit
-/// file_path, or a Bash command that writes one (see `bash_plan_refs`).
+/// The plans the session's own tool calls wrote, oldest first: an edit tool's file_path
+/// (edit-tools.conf), or a Bash command that writes one (see `bash_plan_refs`).
 fn plans_written(text: &str) -> Vec<String> {
     plans_touched(text, Touch::Written)
         .into_iter()
@@ -434,6 +435,22 @@ mod tests {
             .into_iter()
             .map(|(name, _)| name)
             .collect()
+    }
+
+    #[test]
+    fn plan_writes_follow_the_edit_tool_list() {
+        let call = |tool: &str, key: &str| {
+            format!(
+                r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","name":"{tool}","input":{{"{key}":"~/.claude/plans/p.md"}}}}]}}}}"#
+            )
+        };
+        // Every name in edit-tools.conf writes the plan its file_path names, so plan.rs keeps
+        // no tool list of its own.
+        for &(tool, _) in super::super::usage::edit_tools() {
+            assert_eq!(plans_written(&call(tool, "file_path")), ["p.md"], "{tool}");
+        }
+        assert!(plans_written(&call("NotebookEdit", "notebook_path")).is_empty());
+        assert!(plans_written(&call("Read", "file_path")).is_empty());
     }
 
     #[test]

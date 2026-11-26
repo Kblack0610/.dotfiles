@@ -40,7 +40,7 @@ pub(super) fn last_entry(text: &str) -> Option<u64> {
 const EDIT_TOOLS: &str = include_str!("../../../../../.config/agent-panel/edit-tools.conf");
 
 /// [`EDIT_TOOLS`]' names, each with the `"name":"<tool>"` needle a transcript line carries.
-fn edit_tools() -> &'static [(&'static str, String)] {
+pub(super) fn edit_tools() -> &'static [(&'static str, String)] {
     static TOOLS: std::sync::OnceLock<Vec<(&'static str, String)>> = std::sync::OnceLock::new();
     TOOLS.get_or_init(|| {
         super::conf_lines(EDIT_TOOLS)

@@ -69,7 +69,7 @@ pub struct FleetInfo {
     /// Epoch seconds of the newest entry `timestamp`, None when no entry carries one.
     /// The file's mtime is not this: it moves about hourly with no new lines.
     pub last_entry: Option<u64>,
-    /// Absolute paths the session changed through Edit, Write, MultiEdit or NotebookEdit,
+    /// Absolute paths the session changed through an edit tool (edit-tools.conf),
     /// in first-edit order. fleet-sessions counts only these as its dirt in a shared checkout.
     pub edited_files: Vec<String>,
     pub time_use: TimeUse,
