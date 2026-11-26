@@ -18,9 +18,8 @@ on:
   workflow_call:
     inputs:
       runs-on:
-        description: "one runner label, or a JSON label list such as a BNB repo's LINUX_RUNNER_LIGHT; the private repo passes [\"self-hosted\",\"light\"], since GitHub bills hosted minutes there"
+        description: "one runner label, or a JSON label list such as a BNB repo's LINUX_RUNNER_LIGHT; the private repo passes [\"self-hosted\",\"light\"]. Unset, as on this repo's own pull_request_target, a same-repo PR takes vars.LINUX_RUNNER_LIGHT and only a fork PR a hosted runner, which never runs a fork's code on the LAN (ar-3017)"
         type: string
-        default: ubuntu-24.04
       overlay:
         description: "true in the private overlay: also run fact-owners and the rules register check over both dotfiles trees"
         type: boolean
@@ -33,7 +32,7 @@ jobs:
   guard:
     name: gate guard
     if: github.event.pull_request
-    runs-on: ${{ fromJSON(startsWith(inputs.runs-on || 'ubuntu-24.04', '[') && inputs.runs-on || toJSON(inputs.runs-on || 'ubuntu-24.04')) }}
+    runs-on: ${{ fromJSON(inputs.runs-on && (startsWith(inputs.runs-on, '[') && inputs.runs-on || toJSON(inputs.runs-on)) || (github.event.pull_request.head.repo.full_name == github.repository && vars.LINUX_RUNNER_LIGHT || '"ubuntu-24.04"')) }}
     timeout-minutes: 5
     steps:
       - name: Fresh workspace
