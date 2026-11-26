@@ -6125,7 +6125,19 @@ alerts_readable() {
   if [ "$s" = OK ] || { [ "$s" = TRIP ] && [ -n "$(triage_alerts)" ]; }; then echo 1; else echo 0; fi
 }
 
-# triage_retire <dry> -> closes each check(watch), fix(hold), fix(logs) or fix(unit) row nobody started whose
+# row_in_hand <items json> <raw row> -> rc 0 when a live queue item (queued, running, waiting, review)
+# holds the row its id names, when the row names no id, or when the items cannot be read. A `[/]` row
+# held by none is orphaned: its item closed (ok with no PR, cancelled) and nothing works it, so triage
+# treats it as a todo row (ar-4415, ar-4654: six such rows sat open on watches that read OK).
+row_in_hand() {
+  local rc
+  [[ $2 =~ id:([a-z]+-[0-9]+) ]] || return 0
+  jq -e --arg id "${BASH_REMATCH[1]}" 'any(.[]; (.state | IN("queued", "running", "waiting", "review"))
+    and ((.row // "") | . == $id or endswith(":" + $id)))' <<<"$1" >/dev/null 2>&1
+  rc=$?; [ "$rc" != 1 ]
+}
+
+# triage_retire <dry> -> closes each check(watch), fix(hold), fix(logs) or fix(unit) row nobody works (todo, or an agent-board row started with no live item: row_in_hand) whose
 # key left reds_live, so a recovered fault stops reading as a red; if it comes back, triage files it
 # again. Only a reading that says "not red" closes a row. These stay open: every row when the queue or the
 # board cannot be read, a watch whose probe could not run (ERROR), a log row log_recent does not read
@@ -6140,16 +6152,18 @@ triage_retire() {
   TRIAGE_RETIRED=0
   [ -d "$TRIAGE_WATCH_STATE" ] || return 0
   t=$(now)
-  items=$(reds_items "$t") || return 0
-  holds=$(hold_reds "$t" "$items") || holds_read=0
-  recent=$(log_recent) || logs_read=0
-  failed_units >/dev/null || units_read=0
-  live=$({ reds_live "$holds"; watch_keys ERROR; } | tr '[:upper:]' '[:lower:]')
+  # The board is read before the queue: a row dispatch starts between the two reads then shows its
+  # item, so row_in_hand never reads a just-started row as one no item holds.
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { say "retire: $KPI_BOARD agent board unreadable"; return 0; }
   board=$(sed 's/^/--agent\t/' <<<"$board")
   # The human sheet too: a row an earlier triage wrote there (a spent cause, a tripped watch) is closed
   # the same way once its red is gone. An unreadable sheet is skipped, never a reason to keep the agent rows.
   sheet=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" list 2>/dev/null </dev/null) && board+=$'\n'$(sed 's/^/-\t/' <<<"$sheet")
+  items=$(reds_items "$t") || return 0
+  holds=$(hold_reds "$t" "$items") || holds_read=0
+  recent=$(log_recent) || logs_read=0
+  failed_units >/dev/null || units_read=0
+  live=$({ reds_live "$holds"; watch_keys ERROR; } | tr '[:upper:]' '[:lower:]')
   slugs=$(jq -r '.[].slug' <<<"$items")
   alerts_read=$(alerts_readable)
   while IFS=$'\t' read -r scope _ _ title raw; do
@@ -6159,7 +6173,9 @@ triage_retire() {
     case $key in 'check(watch): '* | 'check(alert): '* | 'fix(hold): '* | 'fix(logs): '* | 'fix(unit): '*) ;; *) continue ;; esac
     runner=; [[ $key =~ ^fix\(logs\):\ ([^ ]+) ]] && runner=${BASH_REMATCH[1]}
     [ "$scope" != - ] || scope=
-    [[ $raw == '- [ ]'* ]] && ! grep -qxF -- "$key" <<<"$live" || continue
+    ! grep -qxF -- "$key" <<<"$live" || continue
+    # A started sheet row is the human's (or a hand session's), which no queue item tracks: it stays.
+    [[ $raw == '- [ ]'* ]] || { [ -n "$scope" ] && [[ $raw == '- [/]'* ]] && ! row_in_hand "$items" "$raw"; } || continue
     [[ $key == 'check(alert): '* ]] && [ "$alerts_read" = 0 ] && continue
     if [[ $key == 'fix(logs): '* ]]; then
       [ "$logs_read" = 1 ] && grep -qxF -- "runner $runner" <<<"$recent" && ! grep -qxF -- "$key" <<<"$recent" || continue
