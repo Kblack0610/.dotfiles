@@ -111,7 +111,7 @@ The suite's entry points, which CI calls and a human may run in their own termin
 
 ```bash
 make -C tests test-pr       # the files the PR gate picks for this change
-make -C tests test-fast     # unit + integ, every file: main and the nightly run it
+make -C tests test-fast     # unit + integ, every file: a push to main and the Monday schedule run it
 make -C tests test-ui       # delegates to docker.sh; never invokes tmux on the host
 tests/docker.sh test-container   # everything, in the container
 tests/docker.sh lint            # the lint gate, same one CI runs

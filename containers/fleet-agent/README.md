@@ -1,6 +1,6 @@
 # fleet-agent
 
-The whole agent runtime in one image, so a fleet worker runs on any Linux box with docker. The image is `fleet-node install` (the same definition a native host runs) behind sshd. CI publishes `ghcr.io/kblack0610/fleet-agent:<sha>` and `:latest` on every main merge that touches it, and nightly with the rest of main (`.github/workflows/fleet-agent.yml`). One tag pins the whole runtime. While the package is private, a box runs `docker login ghcr.io` once before `fleet-agent up`.
+The whole agent runtime in one image, so a fleet worker runs on any Linux box with docker. The image is `fleet-node install` (the same definition a native host runs) behind sshd. CI publishes `ghcr.io/kblack0610/fleet-agent:<sha>` and `:latest` on every main merge that touches it, and once a day at 10:23 UTC with the rest of main (`.github/workflows/fleet-agent.yml`). One tag pins the whole runtime. While the package is private, a box runs `docker login ghcr.io` once before `fleet-agent up`.
 
 ## Run a worker
 
