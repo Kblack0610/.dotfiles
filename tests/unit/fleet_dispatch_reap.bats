@@ -119,7 +119,7 @@ load 'fleet_dispatch/common'
   run reconcile_plans
   assert_success
   grep -q "notes ptask game --agent add --why fault fix(plan): orphan: agent-queue refuses its Phases checklist (no  Phases); fix it, then agent-queue add --plan $SANDBOX/orphan.md" "$NOTES_FIXTURE/calls.log"
-  grep -qxF "$SANDBOX/orphan.md" "$FLEET_DISPATCH_DIR/plans-filed"
+  grep -qxF "$SANDBOX/orphan.md"$'\t'"2,3" "$FLEET_DISPATCH_DIR/plans-filed"
   rm "$FLEET_DISPATCH_DIR/plans-filed"
   # with a board, agent-queue files each phase as its row (agent_queue.bats) and exits 5: filed once, then never again
   stub agent-queue 'case "$1" in add) echo "add $*" >> "$NOTES_FIXTURE/aq-adds"; echo "held orphan-p2 -> game:gm-1"; exit 5 ;; esac; exit 0'
@@ -131,19 +131,79 @@ load 'fleet_dispatch/common'
   grep -q -- "--plan $SANDBOX/orphan.md --project game --from auto:plans" "$NOTES_FIXTURE/aq-adds"
 }
 
-@test "reap files no plan a done item held under another plans directory: it matches by file name" {
+# plan_reconcile_fixture [rows json] -> an orphaned plan (phase 1 done, 2 and 3 open), a board feed of those rows,
+# and an agent-queue whose add records its call and exits 5 with a held line, as a filed plan does.
+plan_reconcile_fixture() {
   unset AGENT_QUEUE_PULL
   stub agent-ask 'echo other-session'
   approved_plan orphan gone-session
-  # the ledger names $SANDBOX/orphan.md, the done item ~/.claude/plans/orphan.md (agent-queue's copy).
-  # NEGATIVE CONTROL: matched by whole path, the plan was filed again.
+  jq -c '.[]' <<<"${1:-[]}" > "$NOTES_FIXTURE/board.rows"
+  stub agent-queue 'case "$1" in add) echo "add $*" >> "$NOTES_FIXTURE/aq-adds"; echo "held orphan-p2 -> game:gm-1"; exit 5 ;; esac; exit 0'
+}
+adds() { [ -e "$NOTES_FIXTURE/aq-adds" ] && wc -l < "$NOTES_FIXTURE/aq-adds" || echo 0; }
+
+@test "reap files a plan a done item ran one phase of: that item carries none of its open phases (ar-4900)" {
+  plan_reconcile_fixture
+  # a done item named the plan (the skip that held 84 of 115 orphans on 2026-11-26)
   stub agent-queue 'case "$1 $*" in
 *"--state done"*) echo "{\"plan\":\"$HOME/.claude/plans/orphan.md\"}" ;;
-add*) echo "add $*" >> "$NOTES_FIXTURE/aq-adds"; exit 5 ;;
+add*) echo "add $*" >> "$NOTES_FIXTURE/aq-adds"; echo "held orphan-p2 -> game:gm-1"; exit 5 ;;
 esac; exit 0'
   run reconcile_plans
   assert_success
-  [ ! -e "$NOTES_FIXTURE/aq-adds" ] || fail "a plan a done item held was filed again: $(cat "$NOTES_FIXTURE/aq-adds")"
+  assert_equal "$(adds)" 1
+}
+
+@test "reap files no plan an open row carries; an epic row that names it carries nothing (ar-4900)" {
+  plan_reconcile_fixture '[{"type": "feat", "raw": "- [ ] feat(x): orphan P2: two #after/gm-0", "details": []}]'
+  run reconcile_plans
+  assert_success
+  assert_equal "$(adds)" 0
+  # named only in a detail line, as agent-queue's phase rows name their plan
+  plan_reconcile_fixture '[{"type": "chore", "raw": "- [ ] chore(x): two", "details": ["Phase 2 of the plan /p/orphan.md: two"]}]'
+  run reconcile_plans
+  assert_equal "$(adds)" 0
+  # NEGATIVE CONTROLS: an epic row points at the plan, and a longer slug is another plan
+  plan_reconcile_fixture '[{"type": "epic", "raw": "- [ ] epic(x): outcome #plan/orphan", "details": []},
+    {"type": "feat", "raw": "- [ ] feat(x): orphan-two P1", "details": []}]'
+  run reconcile_plans
+  assert_success
+  assert_equal "$(adds)" 1
+}
+
+@test "reap files a plan again only when its open phases changed since it was filed; an old bare record holds it (ar-4900)" {
+  plan_reconcile_fixture
+  run reconcile_plans
+  run reconcile_plans
+  # its rows went (done or dropped) with the same phases open: not filed again
+  assert_equal "$(adds)" 1
+  # phase 2 ticked, 3 still open and carried by nothing: filed again, once
+  sed -i 's/^- \[ \] two/- [x] two/' "$SANDBOX/orphan.md"
+  run reconcile_plans
+  run reconcile_plans
+  assert_equal "$(adds)" 2
+  grep -qxF "$SANDBOX/orphan.md"$'\t'"3" "$FLEET_DISPATCH_DIR/plans-filed"
+  # a record written before ar-4900 names the plan alone: it covers whatever is open
+  printf '%s\n' "$HOME/.claude-x/plans/orphan.md" > "$FLEET_DISPATCH_DIR/plans-filed"
+  sed -i 's/^- \[x\] two/- [ ] two/' "$SANDBOX/orphan.md"
+  run reconcile_plans
+  assert_equal "$(adds)" 2
+}
+
+@test "reap files nothing when the board cannot be read (ar-4900)" {
+  plan_reconcile_fixture
+  stub notes 'exit 1'
+  run reconcile_plans
+  assert_success
+  stub notes 'exit 0'
+  run reconcile_plans
+  stub notes 'echo "{\"today\": \"\"}"'
+  run reconcile_plans
+  assert_equal "$(adds)" 0
+  # NEGATIVE CONTROL: an empty board that reads carries nothing, so the plan is filed
+  stub notes 'echo "{\"rows\": []}"'
+  run reconcile_plans
+  assert_equal "$(adds)" 1
 }
 
 @test "reap queues nothing for a live session, a recent transcript, a finished plan or a plan an item names" {
