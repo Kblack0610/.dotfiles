@@ -4,7 +4,7 @@
 # fleet-pulse-roster.sh - who the fleet bars count and draw.
 #
 # The roster lives in one place: the fleet_pulse group in home-config ansible/inventory.yml.
-# scripts/render-fleet-pulse.py renders it to {roster, display} and fleet-exporter serves that at
+# scripts/hosts/render-fleet-pulse.py renders it to {roster, display} and fleet-exporter serves that at
 # $GATUS_BASE/roster, so a machine joins every bar with one inventory edit and no machine keeps a
 # copy. Fetched over HTTP, not read from a checkout, because a work laptop has no home-config.
 #

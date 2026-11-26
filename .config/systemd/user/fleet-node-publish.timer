@@ -1,0 +1,13 @@
+[Unit]
+Description=Publish this machine's fleet-lease readiness every 10 minutes
+
+# Whether a peer is ready has no event to await (a token, a checkout, a cluster grant, a remote), so this
+# samples. 10 minutes keeps a peer's report inside the 90-minute silence the count allows and finds a
+# lost need well before the TTL-sized window a failover would need it in.
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=10min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

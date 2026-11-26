@@ -39,14 +39,18 @@ fn step(name: &str) -> Option<&'static str> {
     STEPS.iter().copied().find(|s| *s == name)
 }
 
-/// An intake line's subject: its words without the project tag, case and spacing folded, so
-/// the outbox line, the inbox line it moved to and the line the sweep filed are one subject.
+/// An intake line's subject: its words without any `#tag`, case and spacing folded, so the
+/// outbox line, the inbox line it moved to and the line the sweep filed are one subject. Triage
+/// tags a line as it moves it (`#of/<epic>`, a priority), so a key that kept the tags left every
+/// such outbox line open for good: 482 of them on 2026-11-25, against about 8 waiting (ar-4388).
 fn line_key(text: &str) -> Key {
-    let t = crate::md::without_look_tag(&crate::md::without_agent_tag(
-        &crate::md::without_project_tag(text),
-    ))
-    .to_lowercase();
-    Key::Line(t.split_whitespace().collect::<Vec<_>>().join(" "))
+    Key::Line(
+        text.split_whitespace()
+            .filter(|w| !w.starts_with('#'))
+            .map(str::to_lowercase)
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
 }
 
 /// The moves one event makes. The action-to-step table lives here and only here.
@@ -69,6 +73,8 @@ fn moves(e: &Event) -> Vec<Move> {
         "added" => id
             .map(|i| vec![mv(Key::Row(i), Some("backlog"), None)])
             .unwrap_or_default(),
+        // A drop with no row id is triage dropping an intake line, which leaves the inbox.
+        "dropped" if id.is_none() => vec![mv(line_key(&e.text), None, Some("inbox"))],
         "done" | "dropped" | "archived" => id
             .map(|i| vec![mv(Key::Row(i), None, Some("backlog"))])
             .unwrap_or_default(),
@@ -466,6 +472,48 @@ mod tests {
             since(&events, true).as_deref(),
             Some("2026-11-05T19:20:00Z")
         );
+    }
+
+    /// Triage tags a line as it moves it, and drops some lines with no row: both leave the inbox
+    /// (ar-4388: the tagged ones sat open for good, 482 against about 8 waiting).
+    #[test]
+    fn a_line_tagged_on_its_move_or_dropped_by_triage_leaves_the_inbox() {
+        let events = vec![
+            ev(
+                "10:00",
+                "added",
+                "outbox",
+                "",
+                "#agent #p:bk one tailwind config #pts/2",
+            ),
+            ev(
+                "10:01",
+                "moved",
+                "outbox",
+                "bk",
+                "#agent one tailwind config #of/ar-4791 #pts/2 #normal",
+            ),
+            with(
+                ev(
+                    "10:02",
+                    "filed",
+                    "bk",
+                    "bk",
+                    "#agent one tailwind config #of/ar-4791 #pts/2 #normal",
+                ),
+                Some("bk-241"),
+                None,
+                None,
+            ),
+            ev("11:00", "added", "outbox", "", "#agent close ar-1869 #p:ar"),
+            ev("11:01", "moved", "outbox", "ar", "#agent close ar-1869"),
+            ev("11:02", "dropped", "ar", "", "#agent close ar-1869"),
+            ev("12:00", "added", "outbox", "", "still waiting #p:ar"),
+        ];
+        let rows = replay(&events, now());
+        let inbox = get(&rows, "inbox");
+        assert_eq!((inbox.open, inbox.in_24h, inbox.out_24h), (1, 3, 2));
+        assert_eq!(get(&rows, "backlog").open, 1);
     }
 
     /// An item the record never saw queued still leaves the step its move names, with no dwell.

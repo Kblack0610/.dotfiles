@@ -67,9 +67,10 @@ forbid = [
 quiet = ['\bRECOVERED\b', '\brecovered\b', '\bback to normal\b', 'all clear']
 source = { kind = "ledger", path = "~/.local/state/agent-notify/log" }
 
-# An agent report's summary (`notes report add --summary`): the 1-5 lines the refs day index and
-# the Reports tab show. The body is prose, checked with de-ai-writing before it is filed. A report
-# pages only when it needs the human (comms-standard, Report shape). Read back by its own reader.
+# An agent report's summary (`notes report add --summary`): the 1-5 lines the inbox page's
+# Reports section and the Reports tab show. The body is prose, checked with de-ai-writing before
+# it is filed. A report pages only when it needs the human (comms-standard, Report shape). Read
+# back by its own reader.
 [channel.report]
 prose = true
 max_lines = 5

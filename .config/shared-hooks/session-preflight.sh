@@ -136,6 +136,12 @@ HEADER=$(
     HOLD_SHOWN=() HOLD_OTHER=0
     for hold in "$HOLD_DIR"/*; do
       [ -f "$hold" ] || continue
+      # A hold past its until is over, as agent-hold's expired reads it (an until no date reads too).
+      until_t="$(sed -n 's/^until: //p' "$hold")"
+      if [ -n "$until_t" ]; then
+        until_s=$(date -d "$until_t" +%s 2>/dev/null) || continue
+        [ "$until_s" -gt "$(date +%s)" ] || continue
+      fi
       res="${hold##*/}"
       # The default kind mirrors agent-hold's default_kind: resource for dispatch, else load.
       kind="$(sed -n 's/^kind: //p' "$hold")"

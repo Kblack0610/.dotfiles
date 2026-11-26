@@ -49,7 +49,7 @@ case "$STORE_NAME" in
     SSH_KEY="${STORE_SYNC_SSH_KEY:-$HOME/.ssh/id_agent_sync}"
     SYNC_DIR="$STORE/.sync"
     # What a write hook (--now) commits: the coordination state, never the bulk logs.
-    NOW_PATHS=(queue asks presence)
+    NOW_PATHS=(queue asks presence lease-ready)
     # A clone pushes only once `store-sync join` made it a peer of the shared store.
     NEEDS_JOIN=1 ;;
   notes)
@@ -179,6 +179,10 @@ apply_merge_drivers() {
   for a in 'queue/*/*.md merge=item' 'queue/done/*/*.md merge=item'; do
     grep -qxF "$a" "$attrs" 2>/dev/null || { printf '%s\n' "$a" >> "$attrs" && rm -f "$CONFLICT" "$CONFLICT"-*; }
   done
+  # A requeue of the only running item empties running/ into queued/, which git reads as a directory
+  # rename, so a peer's new running item merged beside it was moved into queued/ with it (ar-3439,
+  # ar-4898). Queue state is the directory a file sits in: no merge here may move one.
+  [ "$(g config --get merge.directoryRenames)" = false ] || g config merge.directoryRenames false
   [ "$(g config --get merge.item.driver)" = "$me merge-item %O %A %B %P" ] ||
     { g config merge.item.driver "$me merge-item %O %A %B %P" && rm -f "$CONFLICT" "$CONFLICT"-*; }
   want="$me merge-derived %O %A %B %P"
@@ -335,6 +339,31 @@ settle_closes() {
   g commit-tree "$t" -p HEAD -p "$ref" -m "$3, the close kept for ${keep[*]}"
 }
 
+# open_twins <tree> -> the paths in <tree> of an item open (queued, running, waiting, review) that
+# queue/done/ also holds, one a line. A close on one side and a move on the other that git does not pair
+# as renames (a short item, or one under 50% alike) merge clean as two deletes and two adds, leaving both
+# copies: the open one is a ghost agent-queue lists with no page (ar-3439 /code-review high, ar-4262).
+open_twins() {
+  g ls-tree -r --name-only "$1" -- queue | awk '
+    /^queue\/done\/[^\/]+\/[^\/]+\.md$/ { n = $0; sub(/.*\//, "", n); closed[n] = 1; next }
+    /^queue\/(queued|running|waiting|review)\/[^\/]+\.md$/ { n = $0; sub(/.*\//, "", n); open[$0] = n }
+    END { for (p in open) if (open[p] in closed) print p }'
+}
+
+# drop_twins <ref> <tree> <twins> <message>: the merge commit of HEAD and <ref> with <tree> less the
+# <twins> paths (open_twins): the close wins, as settle_closes keeps it on a conflict. Prints the commit.
+drop_twins() {
+  local idx t rc=0 paths=()
+  mapfile -t paths <<<"$3"
+  idx=$(mktemp) && rm -f "$idx" || return 1
+  GIT_INDEX_FILE=$idx g read-tree "$2" &&
+    GIT_INDEX_FILE=$idx g update-index --force-remove -- "${paths[@]}" &&
+    t=$(GIT_INDEX_FILE=$idx g write-tree) || rc=1
+  rm -f "$idx"
+  [ "$rc" = 0 ] || return 1
+  g commit-tree "$t" -p HEAD -p "$1" -m "$4, the close kept for ${paths[*]##*/}"
+}
+
 # commit_paths <message> <path>...: stage and commit those paths (those that exist), nothing else.
 commit_paths() {
   local msg="$1" p have=()
@@ -378,13 +407,24 @@ ref_of() { g rev-parse -q --verify "refs/remotes/$1/$BRANCH" 2>/dev/null; }
 # heal_head: an unclean shutdown can lose the newest loose objects while HEAD, already on disk, still
 # names them, and every commit after it fails on "bad tree object HEAD" (the fleet home, 2026-11-20:
 # six hours stuck after a crash, ar-3439). A remote that took HEAD before the crash holds them, so a
-# full refetch puts them back; with none, the sync stops and says so. A refetch that reached a remote
-# and still left HEAD broken is not repeated for that HEAD (REFETCHED), since every write starts a sync.
+# full refetch puts them back. With none, or with HEAD's commit itself gone (no fetch runs then),
+# rollback_head moves the branch back to the newest commit that reads and keeps the files; only when
+# none reads does the sync stop for a hand repair. A refetch that reached a remote and still left HEAD
+# broken is not repeated for that HEAD (REFETCHED), since every write starts a sync. Zero-byte loose
+# objects go first, on every sync (drop_empty_objects).
 heal_head() {
+  drop_empty_objects
   g rev-parse -q --verify HEAD >/dev/null || return 0
   g ls-tree -r HEAD >/dev/null 2>&1 && { rm -f "$REFETCHED"; return 0; }
   local r head reached=0 err=""
   head=$(g rev-parse --short HEAD)
+  # With HEAD's commit itself gone, every fetch stops on "bad object refs/heads/<branch>", so the
+  # refetch can never help: roll back now. A remote that took the commit merges back on the pull.
+  if ! g cat-file -e 'HEAD^{commit}' 2>/dev/null; then
+    rollback_head "$head" && return 0
+    log "ERROR: HEAD $head names a commit missing here and no commit in its reflog reads; repair $STORE by hand (QUEUE.md, Troubleshooting)"
+    exit "$EXIT_NO_COMMIT"
+  fi
   if [ "$(cat "$REFETCHED" 2>/dev/null)" != "$head" ]; then
     for r in $(remotes); do
       if ! err=$(net "$r" -C "$STORE" fetch -q --refetch "$r" "+refs/heads/$BRANCH:refs/remotes/$r/$BRANCH" 2>&1); then
@@ -399,15 +439,51 @@ heal_head() {
     [ "$reached" = 0 ] && { log "ERROR: HEAD $head names trees missing here, and no remote answered to refetch them (${err:-no remote}); the next sync tries again"; exit "$EXIT_NO_COMMIT"; }
     printf '%s\n' "$head" > "$REFETCHED"
   fi
-  log "ERROR: HEAD $head names trees missing here and no remote has them; repair $STORE by hand (QUEUE.md, Troubleshooting)"
+  rollback_head "$head" && return 0
+  log "ERROR: HEAD $head names trees missing here, no remote has them and no commit in its reflog reads; repair $STORE by hand (QUEUE.md, Troubleshooting)"
   exit "$EXIT_NO_COMMIT"
+}
+
+# drop_empty_objects: a zero-byte loose object is never a valid one (each is zlib data), yet git
+# takes it as present: `git add` of the same content writes nothing over it and fsck stays red. A
+# reboot on 2026-11-20 left four in ~/.notes, one of them the commit master named (ar-4193). Only
+# full 38-hex names match: git writes an object as tmp_obj_* and renames it once whole, so a live
+# write is never one. The scan is a stat per loose object (about 15 ms on each store, 2026-11-25).
+OBJECT_NAME=$(printf '[0-9a-f]%.0s' $(seq 38))
+drop_empty_objects() {
+  local n
+  n=$(find "$STORE/.git/objects" -path '*/objects/[0-9a-f][0-9a-f]/*' -name "$OBJECT_NAME" -type f -size 0 -print -delete 2>/dev/null | wc -l | tr -d ' ')
+  [ "$n" = 0 ] || log "WARN: removed $n zero-byte loose object(s) an unclean shutdown left"
+}
+
+# rollback_head <head>: HEAD's newest commits died in the crash before any remote took them (or the
+# commit itself is gone, so no fetch runs), but their files are still in the working tree. Move the
+# branch back to the newest commit in HEAD's reflog whose tree reads, keeping the files, so the
+# commit after this records them again: the hand repair of 2026-11-20 (ar-4193). The branch's reflog
+# is read as a file, since `git reflog` parses each commit and stops on the broken one; a crash loses
+# only the newest objects, so the last ROLLBACK_MAX entries are enough. A candidate's parent must read
+# too, or the pull after the move stops on it. 1 when none reads.
+ROLLBACK_MAX=20
+rollback_head() {
+  local c
+  for c in $(tail -n "$ROLLBACK_MAX" "$STORE/.git/logs/refs/heads/$BRANCH" 2>/dev/null | awk '{c[NR] = $2} END {for (i = NR; i > 0; i--) print c[i]}'); do
+    g ls-tree -r "$c" >/dev/null 2>&1 || continue
+    g rev-list -n 2 "$c" >/dev/null 2>&1 || continue
+    g reset -q "$c" 2>/dev/null || return 1
+    # The reflog still names the lost commits, and fsck stays red on them until they go.
+    g reflog expire --stale-fix --expire=never HEAD "refs/heads/$BRANCH" 2>/dev/null || true
+    rm -f "$REFETCHED"
+    log "WARN: HEAD $1 named objects missing here that no refetch restored; moved $BRANCH back to $(g rev-parse --short HEAD), the newest commit that reads, keeping the files for the next commit"
+    return 0
+  done
+  return 1
 }
 
 
 # This machine's own state in the store's tree: written here, read here, never shared. A shared copy
 # is rewritten by every wake, so two peers' commits of it conflict and stop the sync (the panes file,
 # ar-3327). They go in this clone's info/exclude, as the merge attributes go in info/attributes.
-LOCAL_ONLY=(dispatch/.wake dispatch/.kick)
+LOCAL_ONLY=(dispatch/.wake dispatch/.kick dispatch/.past-starts dispatch/.beside dispatch/.reap dispatch/after-pending)
 apply_local_excludes() {
   local ex a
   [ "$STORE_NAME" = agent ] || return 0
@@ -448,9 +524,18 @@ sync_one() {
   if [ -n "$ref" ] && ! g merge-base --is-ancestor "$ref" HEAD; then
     # Every file the remote changed since the merge base that is dirty here goes into a commit
     # first, so the merge sees both sides instead of refusing to touch the working tree.
-    mapfile -t files < <(comm -12 \
-      <(g diff -z --no-renames --name-only "HEAD...$ref" | tr '\0' '\n' | sort -u) \
-      <(g status -z --porcelain=v1 -uall --no-renames | tr '\0' '\n' | cut -c4- | sort -u))
+    local dirty
+    dirty=$(g status -z --porcelain=v1 -uall --no-renames | tr '\0' '\n' | cut -c4- | sort -u)
+    mapfile -t files < <(comm -12 <(g diff -z --no-renames --name-only "HEAD...$ref" | tr '\0' '\n' | sort -u) <(printf '%s\n' "$dirty"))
+    # A queue item moved here since the last commit (a move mid-fetch) is dirty at both paths, and the
+    # remote changed only the old one: its new path goes in too, so the merge reads a move, not a bare
+    # delete, and the item driver keeps the close (razer-laptop 2026-11-23 18:05, ar-5087). Only a
+    # path HEAD does not track (ls-tree, not the index: a path staged by a failed commit is still new) is
+    # such a new path, so a tracked item of the same name stays out.
+    mapfile -t -O "${#files[@]}" files < <(awk '
+      NR == FNR { if ($0 ~ /^queue\//) { n = $0; sub(/.*\//, "", n); want[n] = 1; have[$0] = 1 } next }
+      /^queue\// { n = $0; sub(/.*\//, "", n); if ((n in want) && !($0 in have)) print }' \
+      <(printf '%s\n' "${files[@]}") <(comm -23 <(printf '%s\n' "$dirty") <(g ls-tree -r -z --name-only HEAD | tr '\0' '\n' | sort -u)))
     if [ "${#files[@]}" -gt 0 ]; then
       commit_paths "$HOST_TAG store-sync: local edits before merging $r $(date '+%Y-%m-%d_%H:%M:%S')" "${files[@]}" || return 3
     fi
@@ -464,10 +549,12 @@ sync_one() {
       # never touches the working tree. A conflicted `git merge` had to be aborted, and a queue
       # write landing on a file it brought in made the abort fail and left MERGE_HEAD behind, which
       # every later sync read as a person's merge (razer-laptop, 2026-11-20, ar-3439).
-      local tree trc merged msg
+      local tree trc merged msg twins=''
       msg="$HOST_TAG store-sync: merge $r $(date '+%Y-%m-%d_%H:%M:%S')"
       tree=$(g merge-tree --write-tree --name-only --no-messages HEAD "$ref" 2>/dev/null); trc=$?
-      if [ "$trc" = 1 ] && merged=$(settle_closes "$ref" "$tree" "$msg"); then
+      [ "$trc" != 0 ] || twins=$(open_twins "$(head -n 1 <<<"$tree")")
+      if { [ "$trc" = 1 ] && merged=$(settle_closes "$ref" "$tree" "$msg"); } ||
+        { [ -n "$twins" ] && merged=$(drop_twins "$ref" "$(head -n 1 <<<"$tree")" "$twins" "$msg"); }; then
         # HEAD is its first parent, so a fast-forward takes it; a write here on a path it changes
         # refuses it, and the next round commits that write and settles again.
         if ! err=$(g -c core.hooksPath=/dev/null merge -q --ff-only "$merged" 2>&1); then
@@ -553,8 +640,17 @@ cmd_sync() {
   [ "$(g symbolic-ref -q --short HEAD)" = "$BRANCH" ] \
     || { log "ERROR: $STORE is on $(g symbolic-ref -q --short HEAD || echo a detached HEAD), not $BRANCH; nothing synced"; exit 1; }
   mkdir -p "$SYNC_DIR"
+  # Writes arrive faster than a --now sync runs, so --now syncs coalesce: at most one waits on the lock,
+  # and a write that finds one waiting leaves its paths to it. The waiter lets go of now-wait only once
+  # it holds the lock, before it commits, so a writer that finds now-wait held knows that commit is still
+  # ahead and carries its write. Without it 500+ waiters queued and most SKIPped at 300s (ar-3191).
+  if [ "$mode" = now ]; then
+    exec 8>"$SYNC_DIR/now-wait"
+    flock -n 8 || exit 0
+  fi
   exec 9>"$SYNC_DIR/lock"
   flock -w "$LOCK_WAIT_S" 9 || { log "SKIP: another sync held the lock past ${LOCK_WAIT_S}s; the next sync pushes this write"; exit 0; }
+  [ "$mode" = now ] && exec 8>&-
   # A merge resolved by hand (QUEUE.md, Troubleshooting), or any other git step left with unmerged
   # files, is a person's work in progress: a sync that staged its paths would record the conflicted
   # files as resolved, markers and all. Our own merges finish or abort under this lock.

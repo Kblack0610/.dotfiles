@@ -37,6 +37,9 @@ const rowTarget = (r) => ({ profile: r.profile, project: r.project, lane: r.lane
 // fleet those overlap and would hold the mark off forever. A first read takes it off; setTab
 // (drawnReset) takes it off and forgets what was heard, and the stream's open checks again.
 const drawnWait = new Set(), drawnHeard = new Set();
+// Tabs whose layout is not done though their reads are (cards.js packCards: a grid drawn while
+// hidden, packed once it shows); the shown tab's mark waits for it.
+const drawnHold = new Set();
 let drawnGone = false; // signed out: the page is reloading to sign in, and never draws
 function drawnCheck() {
   if (typeof requestAnimationFrame !== "function") return; // a test's vm context without frames
@@ -45,7 +48,7 @@ function drawnCheck() {
   // drawnAt is the page's own clock (performance.now) at that frame, so agent-web-shot --time reads
   // when the tab drew, not when its poll next looked.
   requestAnimationFrame(() => {
-    if (drawnWait.size || !conn.open || drawnGone) return;
+    if (drawnWait.size || drawnHold.has(st.tab) || !conn.open || drawnGone) return;
     const m = $("main");
     if (m.dataset.drawn !== st.tab) m.dataset.drawnAt = Math.round(performance.now());
     m.dataset.drawn = st.tab;
