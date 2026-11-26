@@ -404,6 +404,10 @@ cmd_due() {
     [ -z "$fleet" ] || out+="${out:+$'\n'}$fleet"
   fi
   holds="$(agent-hold list --kind load 2>/dev/null | cut -f1 | paste -sd, -)"
+  # A hold past its --until (every hold by: human has one) is over whatever the verdict: check and
+  # list already read it free, and its release restores what it lowered and removes the file.
+  local ended; ended="$(agent-hold list --expired 2>/dev/null | cut -f1 | paste -sd, -)"
+  [ -z "$ended" ] || out+="${out:+$'\n'}pace: ended hold $ended (past its until); then: agent-hold release each"
   # `restore` is fleet-dispatch restore's own: it wakes its next batch on CLEAR and lifts the hold
   # itself once none waits, so a CLEAR under it is that pacer's turn, not a go for this pass.
   local lift; lift="$(tr , '\n' <<<"$holds" | grep -vx restore | paste -sd, -)"
