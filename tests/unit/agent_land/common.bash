@@ -169,6 +169,8 @@ merge-base) if [ "$2" != --is-ancestor ]; then echo 5eedbase5eedbase; elif [ "${
 merge) [ "$2" = --abort ] || [ ! -f "$NOTES_FIXTURE/merge.conflicts" ] || { echo 'CONFLICT (content)'; exit 1; } ;;
 # tree.conflicts: a trial merge of the base (merge-tree) conflicts, and the real merge does too from then on
 merge-tree) [ ! -f "$NOTES_FIXTURE/tree.conflicts" ] || { : >"$NOTES_FIXTURE/merge.conflicts"; exit 1; } ;;
+# after-merge: the base's .agent-land/after-merge (none when absent); any other show prints nothing
+show) case "$2" in *:.agent-land/after-merge) cat "$NOTES_FIXTURE/after-merge" 2>/dev/null || exit 128 ;; esac ;;
 # diff.status: what `git diff --name-status` prints (nothing when absent)
 diff) cat "$NOTES_FIXTURE/diff.status" 2>/dev/null || true ;;
 # no.workflows: the head has no Actions workflow dir (it has .github/workflows by default)
