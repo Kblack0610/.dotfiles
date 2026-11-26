@@ -85,20 +85,24 @@ unlanded_files() {
   echo "$ahead"
 }
 
-# dirty_paths <dir> <edited files, one absolute path per line>: the session's dirty files,
+# dirty_paths <dir> <edited files, one absolute path per line> [<foreign>]: the session's dirty files,
 # one repo-relative path per line. In its own worktree (under ~/.worktrees/) every dirty file
 # is its own. A repo's main checkout is shared with the human and other sessions, so there
 # only the files this session edited count: the human's half-done config is not this
-# session's to land. -z: no quoting of odd names; --no-renames: one record per path.
+# session's to land. <foreign> (1) marks a worktree the session edited that is not its own
+# cwd (edited_work_blockers): there a submodule pointer is another writer's (foreign_pin).
+# -z: no quoting of odd names; --no-renames: one record per path.
 dirty_paths() {
-  local d="$1" edited="$2" top
+  local d="$1" edited="$2" foreign="${3:-}" top
   # Recursive status across many worktrees multiplies index reader and preload threads.
   # Keep these scans serial without changing the repo config or hiding submodule dirt. A read takes
   # no optional index.lock: a pass killed mid-scan would leave one and fail the repo's next commit.
   case "$d/" in
     "$HOME/.worktrees/"*)
       git --no-optional-locks -C "$d" -c index.threads=1 -c core.preloadIndex=false status --porcelain -z --no-renames 2>/dev/null \
-        | while IFS= read -r -d '' e; do submodule_noise "$d" "$e" || printf '%s\n' "${e:3}"; done; return ;;
+        | while IFS= read -r -d '' e; do
+            submodule_noise "$d" "$e" || { [ -n "$foreign" ] && foreign_pin "$d" "${e:3}" "$edited"; } || printf '%s\n' "${e:3}"
+          done; return ;;
   esac
   [ -n "$edited" ] || return 0
   top="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" || return 0
@@ -114,6 +118,24 @@ dirty_paths() {
 submodule_noise() {
   local d="$1" e="$2"
   empty_submodule "$d" "${e:3}" || { [ "${e:0:2}" = " M" ] && moved_pin "$d" "${e:3}"; }
+}
+
+# foreign_pin <dir> <path> <edited files>: a submodule pointer in a worktree the session edited but
+# does not sit in, with no edited path at or inside that submodule. The session that owns that tree,
+# or a canary cut at an old commit, moved or staged the pin (a staged pin moved_pin keeps), so it is
+# not this session's to land (ar-5937). Only a bare pointer: a working or untracked file inside the
+# submodule, or a commit there no remote ref holds, is work a Bash edit (not in edited_files) may have
+# made, so it stays dirt. -z and literal pathspecs: odd names match as status -z prints them.
+foreign_pin() {
+  local d="$1" path="$2" edited="$3" sub f
+  [ -e "$d/$path/.git" ] || return 1
+  [ "$(git --literal-pathspecs -C "$d" ls-files -s -z -- "$path" 2>/dev/null | head -c 7)" = "160000 " ] || return 1
+  sub="$(realpath -m -- "$d/$path")"
+  while IFS= read -r f; do
+    [[ "$f" == "$sub" || "$f" == "$sub"/* ]] && return 1
+  done < <(printf '%s\n' "$edited" | xargs -r -d '\n' realpath -m -- 2>/dev/null)
+  [ -z "$(git -C "$d/$path" rev-list -1 HEAD --not --remotes 2>/dev/null)" ] || return 1
+  [ -z "$(git --no-optional-locks -C "$d/$path" -c index.threads=1 -c core.preloadIndex=false status --porcelain --ignore-submodules=none 2>/dev/null)" ]
 }
 
 # moved_pin <dir> <path>: a submodule whose checkout sits at another commit than the index pin

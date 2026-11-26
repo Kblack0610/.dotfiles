@@ -2038,14 +2038,14 @@ store_landed() {
 
 # edited_work_blockers <cwd> <edited paths>: unlanded work in other repositories this
 # session edited. Never scan unrelated sibling worktrees or count their work as ours, nor a
-# store store-sync lands (store_landed).
+# store store-sync lands (store_landed), nor a submodule pointer there it did not move (foreign_pin).
 edited_work_blockers() {
   local cwd="$1" edited="$2" top path dir g dirty ahead pr state ci inpr branch behind conflicts fork oid names why bucket red health workflows kind=WORKING out=""
   [ -n "$edited" ] || return 0
   top="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)"
   while IFS= read -r dir; do
     [ -n "$dir" ] && [ "$dir" != "$top" ] && ! store_landed "$dir" || continue
-    read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names < <(git_facts "$dir" "$edited")
+    read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names < <(git_facts "$dir" "$edited" - "" 1)
     red=-
     if [ "$state" = MERGED ]; then
       IFS=$'\t' read -r health _ < <(main_health "$dir")
@@ -2218,16 +2218,17 @@ merged_inpr() {
 # One session's facts as the session_bucket arguments after status/plan/asks/heavy/idle,
 # plus branch, sync, the PR head and the dirty names (last: they may hold spaces):
 # "git dirty ahead pr state ci in_pr branch behind conflicts fork oid names". <shell job> is the
-# open job of the session's background shell, for gate_ci (- when it has none); <chain> is chain_hold's answer.
+# open job of the session's background shell, for gate_ci (- when it has none); <chain> is chain_hold's answer;
+# <foreign> (1) marks a repo the session edited that is not its cwd (dirty_paths).
 git_facts() {
-  local d="$1" edited="${2:-}" shell="${3:--}" chain="${4:-}" branch dirty=0 paths ahead base prb pr state ci oid red inpr=1 head
+  local d="$1" edited="${2:-}" shell="${3:--}" chain="${4:-}" foreign="${5:-}" branch dirty=0 paths ahead base prb pr state ci oid red inpr=1 head
   [ -d "$d" ] || { echo "gone 0 0 - - - 1 - - - - - -"; return; }
   git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || { echo "0 0 0 - - - 1 - - - - - -"; return; }
   branch="$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)"
   # A session working in a store reads other writers' files and store-sync's unpushed commit there (ar-3883).
   store_landed "$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" && { echo "1 0 0 - - - 1 ${branch:--} 0 no - - -"; return; }
   fetch_once "$d"
-  paths="$(dirty_paths "$d" "$edited")"
+  paths="$(dirty_paths "$d" "$edited" "$foreign")"
   [ -n "$paths" ] && dirty="$(wc -l <<<"$paths")"
   base="$(default_base "$d")"
   ahead="$(unlanded_files "$d" "$base" pass_base)"

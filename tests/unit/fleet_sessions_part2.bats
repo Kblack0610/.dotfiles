@@ -2034,6 +2034,50 @@ GH
   assert_output ''
 }
 
+@test "close --self: a submodule pointer in a worktree the session edited, not its own, is not its dirt (ar-5937)" {
+  local g=(git -c user.email=t@t -c user.name=t -c protocol.file.allow=always) d="$HOME/.worktrees/other" sub="$SANDBOX/fsub"
+  CACHE="$SANDBOX/cache"; mkdir -p "$CACHE" "$sub" "$HOME/.worktrees"
+  git init -q "$sub"; "${g[@]}" -C "$sub" commit -q --allow-empty -m one
+  git init -q --bare "$SANDBOX/other.git"; git clone -q "$SANDBOX/other.git" "$d" 2>/dev/null
+  "${g[@]}" -C "$d" submodule add -q "$sub" module 2>/dev/null
+  echo original > "$d/tracked"; git -C "$d" add tracked; "${g[@]}" -C "$d" commit -qm init
+  "${g[@]}" -C "$d" push -q origin HEAD:main 2>/dev/null; git -C "$d" fetch -q origin
+  # Another writer stages a pin bump: moved_pin keeps a staged pin, so the tree reads one dirty pointer.
+  "${g[@]}" -C "$sub" commit -q --allow-empty -m two
+  git -C "$d/module" fetch -q origin; git -C "$d/module" checkout -q --detach origin/HEAD; git -C "$d" add module
+  [ "$(git -C "$d" status --porcelain)" = 'M  module' ]
+  run dirty_paths "$d" "$d/tracked"; assert_output 'module'          # its own tree: every entry is its own
+  run dirty_paths "$d" "$d/tracked" 1; assert_output ''              # foreign: the pointer is another writer's
+  # An edit at or inside that submodule makes the pointer the session's.
+  run dirty_paths "$d" "$d/module/inside" 1; assert_output 'module'
+  run dirty_paths "$d" "$d/module" 1; assert_output 'module'
+  # Work inside the submodule a Bash edit may have made stays dirt: a working file, a commit no remote holds.
+  echo new > "$d/module/new"
+  run dirty_paths "$d" "$d/tracked" 1; assert_output 'module'
+  rm "$d/module/new"
+  "${g[@]}" -C "$d/module" commit -q --allow-empty -m unpushed
+  run dirty_paths "$d" "$d/tracked" 1; assert_output 'module'
+  git -C "$d/module" reset -q --hard HEAD~1
+  # An unstaged pin moved to an unpushed commit, the other shape moved_pin keeps, stays dirt too.
+  git -C "$d" reset -q module; "${g[@]}" -C "$d/module" commit -q --allow-empty -m unpushed
+  [ "$(git -C "$d" status --porcelain)" = ' M module' ]
+  run dirty_paths "$d" "$d/tracked" 1; assert_output 'module'
+  git -C "$d/module" reset -q --hard HEAD~1; git -C "$d" add module
+  # A plain file beside it is still dirt in a foreign tree.
+  echo x > "$d/tracked"
+  run dirty_paths "$d" "$d/tracked" 1; assert_output 'tracked'
+  # The close read, from another cwd: the pointer alone holds nothing, the edited file still does.
+  gh_script 'exit 1'; MAIN_CACHE="$SANDBOX/main"; touch "$LEDGER_DIR/prs.tsv"
+  git init -q "$SANDBOX/own"
+  run edited_work_blockers "$SANDBOX/own" "$d/tracked"
+  assert_output --partial "unlanded work in $d: 1 dirty file(s) (tracked)"
+  git -C "$d" checkout -q tracked
+  run edited_work_blockers "$SANDBOX/own" "$d/tracked"; assert_output ''
+  # An edit inside the submodule keeps the pointer on the close read.
+  run edited_work_blockers "$SANDBOX/own" "$(printf '%s\n' "$d/tracked" "$d/module/inside")"
+  assert_output --partial "unlanded work in $d: 1 dirty file(s) (module)"
+}
+
 @test "close verdict: each step of the fleet-states.md close flow, first match wins" {
   # Not ours to judge while work is left here; with nothing left it closes like any row, on the park's age (a parked row has no claude start, so age_min is null).
   [ "$(verdict '{bucket: "PARKED", blockers: ["PR #9 open, CI PASS"]}')" = "keep: parked: its claude is gone, work is left here" ]
