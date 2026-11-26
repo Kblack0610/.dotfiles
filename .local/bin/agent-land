@@ -14,7 +14,7 @@
 #
 # Steps, stopping at the first failure: head (HEAD must be the PR's head commit, before the body is
 # touched; else the merge would be refused as "Head branch was modified": run from the PR's own
-# checkout; a HEAD that is origin's tip of the PR branch is a fresh push, waited on until the PR reads it), fetch (a head behind origin/<base> is merged up to it, each clean submodule checkout on its old pin moved to the merged one (submodule_follow), and pushed, before the checks and again after them if the base moved on during them; a head pushed after them waits on its own checks before it merges, and on a base without strict checks a second move lands that green head behind it, catch_up), item-line
+# checkout; a HEAD that is origin's tip of the PR branch is a fresh push, waited on until the PR reads it), fetch (a head behind origin/<base> is merged up to it, each clean submodule checkout on its old pin moved to the merged one (submodule_follow), and pushed, before the checks and again after them if the base moved on during them; a head pushed after them waits on its own checks before it merges, and on a base without strict checks a second move, or a first that can affect no test the head's run ran (moved_misses_pick), lands that green head behind it, catch_up), item-line
 # (before the checks, the PR body gets the line "Item: <slug>" unless it has it, so a reader holding
 # only the PR finds its work item; a stale "Item:" line is rewritten, except on a merged PR where another queue item's line stays), review (a tier-3 item's body has a
 # "Review:" line, review_gate), loose (a plan phase's item filed no open agent row its plan does not take, loose_gate), shape (no function over 150 lines gets longer unless the body has a "Split: <row id>" line, shape_gate), checks (the PR's checks pass: CI, a required check; a cancelled check is no pass, waited on while a run on the head goes on, and on GitHub so is a failed one while a run of its workflow and event started after it goes on, and a cancelled matrix job of an older run of its workflow is no verdict (pr-ci.sh); a tier-3 item, or one landed with --ran-checks, needs checks that ran), validate (critical work by judge.sh judge_work_level merges only on a second agent's pass verdict on this head, validate_gate), merge (--squash, or with --merge-commit a merge commit,
@@ -522,6 +522,57 @@ checks_policy() {
 strict_checks() { checks_policy && [ "$strict" = yes ]; }
 required_checks() { checks_policy && [ "$required" = yes ]; }
 
+# moved_misses_pick: what <base> gained since the head last had it (HEAD...<base>) can affect nothing
+# the head's own run ran, so a green run of the head stands for the merge. The repo's tests/pick.sh
+# answers both ways, over the tiers the gate runs (unit, integ, rust, ui): the tests the head's changes
+# pick (all of ui, and the files its notes job names, which run on every head), and the tests the
+# base's new files pick (its PICK_CHANGED seam). The broad set is on every head's list, so its lines do
+# not count as shared. Not a miss, so the head is merged up and re-run as before: no picker, a picker
+# that fails or answers the whole tier (the harness), a base change to the gate's own machinery (CI
+# files, lint, the notes binary), a base test file the head's changed files can reach (it is absent
+# from the head's tree, so the picker never sees it), and skills changed on both sides (skill lint
+# reads the whole listing). Why: a green run that outlived main's next merge was re-run until a
+# saturated pool cut it (ar-6019: #3546 went green twice and never landed).
+moved_misses_pick() {
+  local top mb moved own tier mine theirs picked errf f text moved_tests
+  top=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
+  [ -x "$top/tests/pick.sh" ] || return 1
+  mb=$(git merge-base HEAD "$remote/$base" 2>/dev/null) || return 1
+  moved=$(git diff --name-only --no-renames "HEAD...$remote/$base" 2>/dev/null) || return 1
+  [ -n "$moved" ] || return 0
+  ! grep -qE '^(\.github/|tests/(lint|skill-lint|Dockerfile|docker\.sh|unit-jobs)|\.local/src/notes-cli/)' <<<"$moved" || return 1
+  own=$(git diff --name-only --no-renames "$mb" HEAD 2>/dev/null) || return 1
+  ! { grep -q '^\.claude/skills/' <<<"$moved" && grep -q '^\.claude/skills/' <<<"$own"; } || return 1
+  mine=$(grep -oE 'FILES="[^"]*"' "$top/.github/workflows/tests.yml" 2>/dev/null | sed 's/^FILES="//; s/"$//' | tr ' ' '\n') || mine=''
+  theirs=''
+  errf=$(mktemp) || return 1
+  for tier in unit integ rust ui; do
+    if [ "$tier" = ui ]; then picked=$(cd "$top" && tests/pick.sh ui 2>/dev/null) || { rm -f "$errf"; return 1; }
+    else picked=$(cd "$top" && tests/pick.sh "$tier" "$mb" 2>/dev/null) || { rm -f "$errf"; return 1; }
+    fi
+    mine+=$'\n'"$picked"
+    picked=$(cd "$top" && PICK_CHANGED=$moved tests/pick.sh "$tier" "$mb" 2>"$errf") || { rm -f "$errf"; return 1; }
+    # "(full: <why>)" is the picker falling back to the whole tier, which a base change to the harness does
+    ! grep -q '(full:' "$errf" || { rm -f "$errf"; return 1; }
+    theirs+=$'\n'"$picked"
+  done
+  rm -f "$errf"
+  # A test file base added or changed runs against the head's changed files in the merged tree.
+  moved_tests=$(grep -E '^tests/(unit|integ|ui)/[^/]+\.bats$' <<<"$moved" || true)
+  if [ -n "$moved_tests" ]; then
+    (
+      # shellcheck source=../lib/test-pick.sh
+      . "$top/.local/lib/test-pick.sh" 2>/dev/null || exit 1
+      while read -r f; do
+        text=$(git show "$remote/$base:$f" 2>/dev/null) || continue
+        ! test_picked "$own" "$f" <<<"$text" || exit 1
+      done <<<"$moved_tests"
+    ) || return 1
+  fi
+  theirs=$(grep -vxFf <(sed -n 's#^\([a-z]*/[^[:space:]#]*\.bats\).*#\1#p' "$top/tests/broad.txt" 2>/dev/null; echo) <<<"$theirs" | grep . || true)
+  [ -z "$theirs" ] || ! grep -qxFf <(printf '%s\n' "$theirs") <<<"$mine" || return 1
+}
+
 # catch_up: a base the head is behind is merged in and pushed, before the gate and again after it if
 # the base moved on during the checks. A merge of <base> does not keep the checks green: a pushed head
 # is a new tree, and merging one before its checks ran shipped a broken one (dotfiles #1504; #1731
@@ -532,7 +583,8 @@ required_checks() { checks_policy && [ "$required" = yes ]; }
 # head lands behind it, which such a base allows, unless merging the base would conflict (then the
 # merge below runs and exits 3, since GitHub would refuse that head anyway): a base that merges faster than its checks run would otherwise loop it forever
 # (dotfiles #1059 went green 9 times in an hour), and exiting 3 sent the caller round its own gate,
-# which a busy base outruns every time (#916). A strict base has no bound, since it refuses a head
+# which a busy base outruns every time (#916). Before that bound, a head whose base's new files can
+# affect no test its own run picked (moved_misses_pick) lands behind it at once, with no re-run. A strict base has no bound, since it refuses a head
 # that is behind (2026-11-05: unity-core-playground #1837 was refused twice). A conflict is aborted
 # and exits 3.
 CATCHUP_WAITS=1
@@ -544,9 +596,17 @@ catch_up() {
     [ "${1:-}" = before ] || echo "fetch: current with $remote/$base"
     return 0
   fi
-  if [ "${1:-}" = after ] && [ "${2:-0}" -ge "$CATCHUP_WAITS" ] && ! strict_checks &&
+  local why=''
+  if [ "${1:-}" = after ]; then
+    if [ "${2:-0}" -ge "$CATCHUP_WAITS" ]; then
+      why='during the checks on the merged-up head'
+    elif moved_misses_pick; then
+      why="and none of it can affect a test the head's own run picked"
+    fi
+  fi
+  if [ -n "$why" ] && ! strict_checks &&
     git merge-tree --write-tree --quiet HEAD "$remote/$base" >/dev/null 2>&1; then
-    echo "fetch: $remote/$base moved on by $behind during the checks on the merged-up head; landing that green head behind it (no strict checks on $base)"
+    echo "fetch: $remote/$base moved on by $behind $why; landing that green head behind it (no strict checks on $base)"
     return 0
   fi
   # Before the merge, so a refusal leaves the checkout as it was. A fork head is not origin's branch.
@@ -625,10 +685,10 @@ show_rc=0
 it=$(aq_retry show "$item" --json 2>/dev/null) || show_rc=$?
 [ "$show_rc" -ne "$QUEUE_BUSY" ] || die "the queue is locked by another writer: nothing merged, re-run"
 [ "$show_rc" -eq 0 ] || die "no queue item $item (agent-queue show)"
-# A done ok item takes more PRs: its `pr:` holds one <owner>/<repo>#<N> per repo, space separated,
+# A landed item (outcome landed) takes more PRs: its `pr:` holds one <owner>/<repo>#<N> per repo, space separated,
 # and `merged:` their merge commits in the same order, so a task split across repos lands each on
 # its one item. Which repo this PR is in needs gh, so once_done checks it after the PR is read.
-case "$(jq -r 'if .state == "done" and .status == "ok" and (.pr // "") != "" then "done-ok" else .state end' <<<"$it")" in
+case "$(jq -r 'if .state == "done" and .outcome == "landed" then "done-ok" else .state end' <<<"$it")" in
 running | waiting | review | queued | done-ok) ;;
 *) die "queue item $item is $(jq -r '.state + " " + (.status // "")' <<<"$it"), not open" ;;
 esac
