@@ -3574,13 +3574,18 @@ STUB
   # It is the session's own diff, taken before the oracle was laid over it: its gamed copy, not the PR's.
   grep -qx '+exit 0' "$FLEET_BENCH_DIR/canary/canary-greet-w1.patch" || fail "the run's diff was not kept"
   ! grep -q 'hello' "$FLEET_BENCH_DIR/canary/canary-greet-w1.patch" || fail "the oracle's overlay leaked into the run's diff"
-  # A second session does the work and passes; a repo it made inside the tree goes too.
+  # A second session does the work and passes; a repo it made inside the tree goes too, but a submodule's
+  # copy (its .git a file) stays, said, since what it holds is in no patch (ar-5933: muxpoon's was deleted).
   git -C "$CREPO" worktree add -q --detach "$SANDBOX/wt2" "$CBASE"
   cd "$SANDBOX/wt2"; echo 'echo hello' > greet.sh; git init -q nested; git -C nested -c user.email=t@t -c user.name=t commit -q --allow-empty -m n
+  git init -q --separate-git-dir "$SANDBOX/modgit" mod; echo keep > mod/work; git -C mod add work; git -C mod -c user.email=t@t -c user.name=t commit -q -m m
   CLAUDE_CODE_SESSION_ID=c2 AGENT_QUEUE_ITEM=canary-greet-w2 run "$SUBJECT" canary score greet
   assert_success
   assert_output --partial 'canary greet: pass (exit 0)'
-  assert_equal "$(git status --porcelain)" ''
+  assert_output --partial 'keeps mod/ after its reset, so wt reap leaves it'
+  assert_equal "$(git status --porcelain)" '?? mod/'
+  assert_equal "$(cat mod/work)" keep
+  rm -rf mod
   grep -qx '+echo hello' "$FLEET_BENCH_DIR/canary/canary-greet-w2.patch" || fail "the run's diff was not kept"
   echo 'echo hello' > greet.sh
   CLAUDE_CODE_SESSION_ID=c2 AGENT_QUEUE_ITEM=canary-greet-w2 run "$SUBJECT" canary score greet
@@ -3620,6 +3625,28 @@ STUB
   assert_success
   assert_output --partial 'is on a branch, not detached by canary start, so it stays as the run left it'
   assert_equal "$(git rev-parse b6)" "$head"
+}
+
+@test "canary start: a base that leaves a directory untracked (a submodule's copy at a base before it was one, ar-5933) is refused, and the tree is put back as it was" {
+  canary_fixture
+  git -C "$CREPO" worktree add -q -b s1 "$SANDBOX/wt1" main
+  cd "$SANDBOX/wt1"
+  git init -q mod; echo keep > mod/work; git -C mod add work; git -C mod -c user.email=t@t -c user.name=t commit -q -m m
+  git add mod 2>/dev/null; git -c user.email=t@t -c user.name=t commit -qm 'mod as a submodule'; head=$(git rev-parse HEAD)
+  run "$SUBJECT" canary start greet
+  assert_failure 2
+  assert_output --partial 'leaves mod untracked'
+  assert_equal "$(git symbolic-ref --short HEAD)" s1
+  assert_equal "$(git rev-parse HEAD)" "$head"
+  assert_equal "$(git status --porcelain)" ''
+  assert_equal "$(cat mod/work)" keep
+  # Negative control: the same tree without the copy starts, and a file HEAD only ignores (base has no rule for
+  # it) is no tracked directory, so it does not hold the start.
+  git rm -q --cached mod; rm -rf mod; echo scratch > .gitignore; git add .gitignore
+  git -c user.email=t@t -c user.name=t commit -qm 'no mod'; echo x > scratch
+  run "$SUBJECT" canary start greet
+  assert_success
+  assert_equal "$(git rev-parse HEAD)" "$CBASE"
 }
 
 @test "canary vendor: start links the main checkout's tests/vendor in; the oracle replaces one the run made, so it can neither hide nor fake bats; no bats to carry is an oracle that could not run" {
