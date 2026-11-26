@@ -3205,7 +3205,7 @@ cmd_set() {
     k="${kv%%=*}"
     [ "$k" != "$kv" ] || die "not key=value: $kv"
     case "$SETTABLE" in *" $k "*) ;; *) die "not a settable field: $k" ;; esac
-    [ "$k" != tags ] || check_tags "${kv#*=}" "$slug"
+    [ "$k" != tags ] || OWN_PR_SET="$(for a in "$@"; do case "$a" in pr=* | open_pr=*) printf '%s ' "${a#*=}" ;; esac; done)" check_tags "${kv#*=}" "$slug"
     [ "$k" != priority ] || prio_rank "${kv#*=}" >/dev/null || die "priority is urgent, high, normal or low, not ${kv#*=}"
     [ "$k" != after ] || check_after "$(word_list "${kv#*=}")" "$slug"
     # phases: the plan checklist numbers the item holds, as add --plan writes them (ar-2905).
@@ -3373,7 +3373,10 @@ pending_gates() {
   for t in $3; do
     # A return strips a gate on the item's own PR: its row would wait on the merge of the work it is
     # about to restart, and never start (ar-4042).
-    [[ "$t" != pr:?* ]] || ! own_pr "$slug" "${t#pr:}" || continue
+    if [[ "$t" == pr:?* ]] && own_pr "$slug" "${t#pr:}"; then
+      echo "agent-queue: $slug: dropped $t from the gates, it is the item's own PR" >&2
+      continue
+    fi
     case "$t" in
       ask:?*) ;;
       # Not a gate: the rank its hold: gives it among the desk's waiters (desk_wait), which promote puts back.
@@ -3716,12 +3719,12 @@ check_after() {
 }
 
 # own_pr <slug> <owner/repo#N> -- succeeds when that PR is one the item <slug> itself recorded (its pr:
-# or open_pr:; the forge names are case-blind). A pr: gate on it waits for the item's own work to merge,
+# or open_pr:, or one the same `set` writes: OWN_PR_SET; the forge names are case-blind). A pr: gate on it waits for the item's own work to merge,
 # so it never releases (ar-4042).
 own_pr() {
-  local f ref
-  f="$(find_item "$1")" && [ -n "$f" ] || return 1
-  for ref in $(fm_get "$f" open_pr | tr ',' ' ') $(fm_get "$f" pr | tr ',' ' '); do
+  local f ref refs="${OWN_PR_SET-}"
+  f="$(find_item "$1")" && [ -n "$f" ] && refs+=" $(fm_get "$f" open_pr) $(fm_get "$f" pr)"
+  for ref in ${refs//,/ }; do
     [ "${ref,,}" != "${2,,}" ] || return 0
   done
   return 1

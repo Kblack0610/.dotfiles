@@ -1271,11 +1271,22 @@ load 'agent_queue/common'
   # NEGATIVE CONTROL: another PR is no own PR.
   run "$AQ" set own tags="pr:Org/game#6"
   assert_success
+  # A PR recorded in open_pr:, one in a list, and one the same set records all count.
+  "$AQ" set own open_pr=Org/game#8 >/dev/null
+  run "$AQ" set own tags="pr:Org/game#8"
+  assert_failure
+  "$AQ" set own pr="Org/game#5 Org/game#9" >/dev/null
+  run "$AQ" set own tags="pr:Org/game#9"
+  assert_failure
+  "$AQ" add --project game --running --from shepherd --slug fresh "fresh" >/dev/null
+  run "$AQ" set fresh pr=Org/game#12 tags=pr:Org/game#12
+  assert_failure
   # A gate written past the check (an older item, a hand edit) is dropped on the return, the other kept.
   sed -i 's|^tags: .*|tags: pr:Org/game#5 pr:Org/game#6|' "$(item running own)"
   : > "$NOTES_FIXTURE/calls.log"
   run "$AQ" return own --why "back"
   assert_success
+  assert_output --partial "dropped pr:Org/game#5"
   assert_called "ptask game --agent tag --add pr/Org/game/6 gm-3"
   refute grep -q 'pr/Org/game/5' "$NOTES_FIXTURE/calls.log"
 }
