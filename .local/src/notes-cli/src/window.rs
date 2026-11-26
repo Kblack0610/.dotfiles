@@ -868,7 +868,10 @@ fn slip(cut: NaiveDate, day: NaiveDate, late: &str, ok: &str) -> String {
 }
 
 /// The score a cut writes: the counts, then the window's due day and the human's target
-/// (when one was promised for this version) against the day it was cut.
+/// (when one was promised for this version) against the day it was cut. A cut of a window that
+/// committed rows and delivered none of them, or carried more than it delivered, did not ship
+/// the promise, so its target reads `not shipped`, plus the days when it was also late (ar-3641:
+/// v0.5.3 delivered 1 of 71 and read `met`). A dropped row is a scope cut, not a carried promise.
 fn cut_line(snap: &Snapshot, t: &Tally, cut: NaiveDate, target: Option<(V, NaiveDate)>) -> String {
     let mut line = format!(
         "committed {}, delivered {}, carried {}, dropped {}, interrupted {}; opened {}",
@@ -882,10 +885,16 @@ fn cut_line(snap: &Snapshot, t: &Tally, cut: NaiveDate, target: Option<(V, Naive
         None => line.push_str(&format!(", cut {cut}")),
     }
     if let Some((v, on)) = target {
+        let day = slip(cut, on, "missed by", "met");
+        let unshipped = t.committed > 0 && (t.delivered == 0 || t.delivered < t.open);
         line.push_str(&format!(
             "; target {} {on} {}",
             projects::fmt_version(v),
-            slip(cut, on, "missed by", "met")
+            match (unshipped, day.as_str()) {
+                (false, _) => day.clone(),
+                (true, "met") => "not shipped".to_string(),
+                (true, late) => format!("not shipped, {late}"),
+            }
         ));
     }
     line
@@ -981,6 +990,41 @@ pub(crate) fn open(dir: &Path, cur: V, ix: &Index) -> Option<OpenWindow> {
         locked: snap.locked.map(|c| c.format(CUT_FORMAT).to_string()),
         tally: tally(&snap, &rows_for(dir, cur, ix, &snap)),
     })
+}
+
+/// What the open version's window promises: the weight of the rows it holds still open in the
+/// version (its committed rows and every interrupt that entered; a row re-aimed later is that
+/// version's), and the interrupt rows that entered, open or shipped, its only scope growth.
+/// `None` when it has no snapshot. What `projects::TargetWork` weighs for the open version in
+/// place of its whole sheet (ar-3540).
+pub(crate) fn promise(dir: &Path, cur: V, ix: &Index) -> Option<(u32, Vec<String>)> {
+    let snap = read(dir, cur)?;
+    let rows = rows_for(dir, cur, ix, &snap);
+    let c = Classes::of(&snap, &rows);
+    let mut weighed = HashSet::new();
+    let open = rows
+        .open
+        .iter()
+        .filter(|l| {
+            let k = key(l);
+            let held = (snap.keys.contains(&k) && c.committed(&k) == Outcome::Open)
+                || c.interrupted.contains(&k);
+            held && weighed.insert(k)
+        })
+        .map(|l| projects::size_weight(l))
+        .sum();
+    let mut seen = HashSet::new();
+    let interrupts = rows
+        .open
+        .iter()
+        .chain(rows.closed.iter().filter(|l| !md::is_dropped(l)))
+        .filter(|l| {
+            let k = key(l);
+            c.interrupted.contains(&k) && seen.insert(k)
+        })
+        .cloned()
+        .collect();
+    Some((open, interrupts))
 }
 
 /// The Sprint count of an open window: its rows still open in the version, of the rows it holds.
@@ -2290,6 +2334,36 @@ mod tests {
         );
         let on_time = cut_line(&snap, &t, day("2026-11-26"), None);
         assert!(on_time.ends_with("cut 2026-11-26 (on time)"), "{on_time}");
+        let shipped_little = Tally {
+            committed: 71,
+            delivered: 1,
+            open: 70,
+            ..Tally::default()
+        };
+        let early = Some(((0, 2, 0), day("2026-11-27")));
+        let little = cut_line(&snap, &shipped_little, day("2026-11-26"), early);
+        assert!(
+            little.ends_with("target v0.2.0 2026-11-27 not shipped"),
+            "{little}"
+        );
+        let none = Tally {
+            committed: 3,
+            open: 3,
+            ..Tally::default()
+        };
+        let late = cut_line(&snap, &none, day("2026-11-29"), early);
+        assert!(late.ends_with("not shipped, missed by 2 days"), "{late}");
+        // Negative control: an empty window promised nothing, so only the day is scored.
+        let empty = cut_line(&snap, &Tally::default(), day("2026-11-26"), early);
+        assert!(empty.ends_with("2026-11-27 met"), "{empty}");
+        let most = Tally {
+            committed: 4,
+            delivered: 3,
+            open: 1,
+            ..Tally::default()
+        };
+        let met = cut_line(&snap, &most, day("2026-11-26"), early);
+        assert!(met.ends_with("target v0.2.0 2026-11-27 met"), "{met}");
         let _ = fs::remove_dir_all(&dir);
     }
 

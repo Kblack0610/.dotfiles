@@ -79,9 +79,16 @@ def scratch_firefox(tool, width=1400, height=900, prefs=None, script_timeout_ms=
     ff = None
     try:
         port = free_port()
+        # The toolbars' min-width holds even a headless window at 500 CSS px or more, so a phone width
+        # needs them unclamped; Firefox reads userChrome.css only with the legacy stylesheets pref.
+        os.makedirs(f"{prof}/chrome")
+        with open(f"{prof}/chrome/userChrome.css", "w") as f:
+            f.write("#main-window, #navigator-toolbox, toolbar, #nav-bar, #TabsToolbar, #urlbar-container, #urlbar"
+                    " { min-width: 0 !important; }\n")
         with open(f"{prof}/user.js", "w") as f:
             base = {"marionette.port": port, "browser.shell.checkDefaultBrowser": False,
-                    "datareporting.policy.dataSubmissionEnabled": False, "browser.aboutwelcome.enabled": False}
+                    "datareporting.policy.dataSubmissionEnabled": False, "browser.aboutwelcome.enabled": False,
+                    "toolkit.legacyUserProfileCustomizations.stylesheets": True}
             for k, v in {**base, **(prefs or {})}.items():
                 f.write(f'user_pref("{k}", {json.dumps(v)});\n')
         with open(f"{prof}/firefox.log", "w") as log:
@@ -93,6 +100,11 @@ def scratch_firefox(tool, width=1400, height=900, prefs=None, script_timeout_ms=
         m.cmd("WebDriver:NewSession", capabilities={})
         m.cmd("WebDriver:SetTimeouts", script=script_timeout_ms)
         m.cmd("WebDriver:SetWindowRect", width=width, height=height)
+        # A clamped window draws every shot at the wrong width with no error, so check it once here.
+        m.cmd("WebDriver:Navigate", url="about:blank")
+        drawn = m.cmd("WebDriver:ExecuteScript", script="return window.innerWidth", args=[])["value"]
+        if drawn != width:
+            raise SystemExit(f"{tool}: asked for a {width} px window, Firefox draws {drawn}")
         yield m
     finally:
         if ff:
