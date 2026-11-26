@@ -163,29 +163,35 @@ esac; exit 0'
   plan_reconcile_fixture '[{"type": "chore", "raw": "- [ ] chore(x): two", "details": ["Phase 2 of the plan /p/orphan.md: two"]}]'
   run reconcile_plans
   assert_equal "$(adds)" 0
-  # NEGATIVE CONTROLS: an epic row points at the plan, and a longer slug is another plan
+  # NEGATIVE CONTROLS: an epic row points at the plan, a longer slug is another plan, and the slug as a
+  # plain word or a directory names no plan file
   plan_reconcile_fixture '[{"type": "epic", "raw": "- [ ] epic(x): outcome #plan/orphan", "details": []},
-    {"type": "feat", "raw": "- [ ] feat(x): orphan-two P1", "details": []}]'
+    {"type": "feat", "raw": "- [ ] feat(x): orphan-two P1", "details": ["Phase 1 of the plan /p/orphan-two.md: one"]},
+    {"type": "fix", "raw": "- [ ] fix(x): orphan handling", "details": ["see /x/orphan/y and orphan.mdx"]}]'
   run reconcile_plans
   assert_success
   assert_equal "$(adds)" 1
 }
 
-@test "reap files a plan again only when its open phases changed since it was filed; an old bare record holds it (ar-4900)" {
+@test "reap files a plan again only when a phase it did not file is open; an old bare record holds it (ar-4900)" {
   plan_reconcile_fixture
   run reconcile_plans
   run reconcile_plans
   # its rows went (done or dropped) with the same phases open: not filed again
   assert_equal "$(adds)" 1
-  # phase 2 ticked, 3 still open and carried by nothing: filed again, once
+  # phase 2 landed and the human dropped phase 3's row: 3 was filed once, so it stays dropped
   sed -i 's/^- \[ \] two/- [x] two/' "$SANDBOX/orphan.md"
+  run reconcile_plans
+  assert_equal "$(adds)" 1
+  # a phase added since the filing is open and carried by nothing: filed again, once
+  printf -- '- [ ] four\n' >> "$SANDBOX/orphan.md"
   run reconcile_plans
   run reconcile_plans
   assert_equal "$(adds)" 2
-  grep -qxF "$SANDBOX/orphan.md"$'\t'"3" "$FLEET_DISPATCH_DIR/plans-filed"
+  grep -qxF "$SANDBOX/orphan.md"$'\t'"3,4" "$FLEET_DISPATCH_DIR/plans-filed"
   # a record written before ar-4900 names the plan alone: it covers whatever is open
   printf '%s\n' "$HOME/.claude-x/plans/orphan.md" > "$FLEET_DISPATCH_DIR/plans-filed"
-  sed -i 's/^- \[x\] two/- [ ] two/' "$SANDBOX/orphan.md"
+  printf -- '- [ ] five\n' >> "$SANDBOX/orphan.md"
   run reconcile_plans
   assert_equal "$(adds)" 2
 }
