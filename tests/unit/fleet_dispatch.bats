@@ -861,6 +861,28 @@ exits: hold 1'
   assert_output --regexp '^exits: *$'
 }
 
+@test "skip_exits: a row inbox-plan planned that is sized L later is held, whatever verdict or rehome came after its plan (ar-5230)" {
+  sized_fixture
+  stub systemctl 'echo "$*" >> "$NOTES_FIXTURE/systemctl.log"'
+  # gs-1 was sent to plan in another project (a rehome keeps the id), and a judge's dispatch verdict here
+  # since carries no exit; gs-6 has a goal a person wrote and no plan exit on record
+  jq -cn '{project: "old", lane: "agent", key: "gs-1", verdict: "skip", rule: "unclear", exit: "plan"}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  verdict game agent gs-1 dispatch M
+  jq -c 'if .id == "gs-1" then .details = ["goal: the plan inbox-plan wrote"] else . end' "$NOTES_FIXTURE/board.rows" > "$SANDBOX/b" && mv "$SANDBOX/b" "$NOTES_FIXTURE/board.rows"
+  run skip_exits --dry-run
+  assert_success
+  assert_line 'hold	game	gs-1	too-big'
+  assert_line 'plan	game	gs-6	too-big'
+  : > "$NOTES_FIXTURE/calls.log"
+  skip_exits
+  run grep -c 'tag --add plan gs-1' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # negative control: with no plan exit on record for gs-1, its goal reads as a person's, so it plans
+  jq -c 'select(.exit != "plan" and .exit != "hold")' "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  run skip_exits --dry-run
+  assert_line 'plan	game	gs-1	too-big'
+}
+
 @test "skip_exits: plan tags stop at DISPATCH_PLAN_BACKLOG open #plan rows, and the other exits go on" {
   plan_fixture
   DISPATCH_PLAN_BACKLOG=0 skip_exits
