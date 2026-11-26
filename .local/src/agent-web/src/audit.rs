@@ -139,20 +139,6 @@ pub const ROUTES: &[Route] = &[
         &[],
     ),
     own("POST", "/api/board", crate::board::audit_entry),
-    route(
-        "POST",
-        "/api/inbox/ack",
-        |f| {
-            if f.get("ack") == Some(&Value::Bool(false)) {
-                "inbox.unacked"
-            } else {
-                "inbox.acked"
-            }
-            .into()
-        },
-        &["key"],
-        &[],
-    ),
     route("PUT", "/api/focus", |_| "note.saved".into(), &["t"], &[]),
     route(
         "POST",

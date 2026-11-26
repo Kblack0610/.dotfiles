@@ -510,11 +510,12 @@ pub struct CiRepo {
 }
 
 /// `config/ci/nightly.json` on a repo's base: workflow file name to the run title the nightly starts
-/// (`night`) or holds back (`held`).
+/// first (`night`), starts once that step finished (`wide`), or holds back (`held`).
 #[derive(Deserialize, Default, Debug, Clone, PartialEq)]
 #[serde(default)]
 pub struct NightSet {
     pub night: BTreeMap<String, String>,
+    pub wide: BTreeMap<String, String>,
     pub held: BTreeMap<String, String>,
     pub sha: String,
     /// Why the file did not read as a night set.

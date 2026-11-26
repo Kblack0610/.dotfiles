@@ -1267,7 +1267,7 @@ asks_order() { bash -c '. "$1"; ask_rows | jq -r "map(.id) | join(\" \")"' _ "$S
   run "$SUBJECT" kpi --json
   assert_success
   run jq -c 'with_entries(select(.value.now | not) | .value |= [.["7d"], .["28d"]])' <<<"$output"
-  assert_output '{"sessions":[1,2],"merged_prs":[2,3],"revert_rate":[0.25,0.2],"interrupts_per_day":[0.286,0.071],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"first_pass_share":[null,null],"plan_gate_deny_rate":[0.25,0.5],"canary_runs":[0,0],"canary_pass_rate":[null,null],"canary_cost_per_task":[null,null],"canary_min_per_task":[null,null],"canary_turns_per_task":[null,null],"responses_per_merged_pr":[null,null],"context_per_merged_pr":[null,null],"tool_chars_per_call":[null,null],"locate_read_share":[null,null],"reread_share":[null,null],"cache_write_share":[null,null],"start_share":[null,null],"start_context_median":[null,null],"compactions_per_session":[null,null],"rework_candidate_7d":[null,null],"rework_verified_30d":[null,null],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"pages_held_per_day":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_answered_pct":[null,null],"ask_unclear_pct":[null,null],"judge_human_only_live_pct":[null,null],"ask_human_only_pct":[null,null],"dispatch_false_defer_pct":[null,null],"human_answered_per_day":[0,0],"ask_wait_p90_min":[null,null],"startup_ready_ms_p50":[null,null],"sandboxed_lane_pct":[null,null],"pool_busy_share":[null,null],"churn_merges_per_day":[null,null],"churn_filed_per_closed":[null,null],"churn_reopens_per_day":[null,null],"churn_followups_per_pr":[null,null]}'
+  assert_output '{"sessions":[1,2],"merged_prs":[2,3],"revert_rate":[0.25,0.2],"interrupts_per_day":[0.286,0.071],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"first_pass_share":[null,null],"plan_gate_deny_rate":[0.25,0.5],"canary_runs":[0,0],"canary_pass_rate":[null,null],"canary_cost_per_task":[null,null],"canary_min_per_task":[null,null],"canary_turns_per_task":[null,null],"responses_per_merged_pr":[null,null],"context_per_merged_pr":[null,null],"tool_chars_per_call":[null,null],"locate_read_share":[null,null],"reread_share":[null,null],"cache_write_share":[null,null],"start_share":[null,null],"start_context_median":[null,null],"compactions_per_session":[null,null],"rework_candidate_7d":[null,null],"rework_verified_30d":[null,null],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"pages_held_per_day":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_answered_pct":[null,null],"ask_unclear_pct":[null,null],"judge_human_only_live_pct":[null,null],"ask_human_only_pct":[null,null],"dispatch_false_defer_pct":[null,null],"human_answered_per_day":[0,0],"ask_wait_p90_min":[null,null],"startup_ready_ms_p50":[null,null],"sandboxed_lane_pct":[null,null],"pool_busy_share":[null,null],"churn_merges_per_day":[null,null],"churn_filed_per_closed":[null,null],"churn_reopens_per_day":[null,null],"churn_followups_per_pr":[null,null],"churn_admitted_per_day":[null,null],"churn_refused_per_day":[null,null]}'
   run "$SUBJECT" kpi
   assert_line '| revert_rate | 0.25 | 0.2 | max 0.1 | past |'
   assert_line '| interrupts_per_day | 0.286 | 0.071 | max 0.2 | past |'
@@ -1425,7 +1425,7 @@ ask_row() {
   run jq -sc '[map(.sessions), (map(.date) | unique | length)]' <<<"$output"
   assert_output '[[0,1,1],3]'
   run "$SUBJECT" kpi --trend 3
-  assert_line '| date | sessions | merged_prs | revert_rate | interrupts_per_day | cost_per_pr | ci_red_per_pr | first_pass_share | plan_gate_deny_rate | canary_runs | canary_pass_rate | canary_cost_per_task | canary_min_per_task | canary_turns_per_task | responses_per_merged_pr | context_per_merged_pr | tool_chars_per_call | locate_read_share | reread_share | cache_write_share | start_share | start_context_median | compactions_per_session | rework_candidate_7d | rework_verified_30d | churn_merges_per_day | churn_filed_per_closed | churn_reopens_per_day | churn_followups_per_pr |'
+  assert_line '| date | sessions | merged_prs | revert_rate | interrupts_per_day | cost_per_pr | ci_red_per_pr | first_pass_share | plan_gate_deny_rate | canary_runs | canary_pass_rate | canary_cost_per_task | canary_min_per_task | canary_turns_per_task | responses_per_merged_pr | context_per_merged_pr | tool_chars_per_call | locate_read_share | reread_share | cache_write_share | start_share | start_context_median | compactions_per_session | rework_candidate_7d | rework_verified_30d | churn_merges_per_day | churn_filed_per_closed | churn_reopens_per_day | churn_followups_per_pr | churn_admitted_per_day | churn_refused_per_day |'
   run "$SUBJECT" kpi --trend 0
   assert_failure 2
   run "$SUBJECT" kpi --at 'not a time'
@@ -1797,7 +1797,10 @@ closed_feed() {
   assert_output --partial '1 reopened'
   run grep -c -- '^ptask agent-runtime reopen ar-77 --why fleet-bench: check(watch): spend tripped since red again$' "$NLOG"
   assert_output 1
-  run grep -c -- '--agent edit check(watch): spend tripped since --text check(watch): spend tripped since ' "$NLOG"
+  run grep -c -- '--agent edit ar-77 --text check(watch): spend tripped since ' "$NLOG"
+  assert_output 1
+  # the trip is a detail line on the reopened row (ar-6078)
+  run grep -Ec -- '--agent edit ar-77 --text .* --detail [0-9]{4}-[0-9]{2}-[0-9]{2} red again after it closed$' "$NLOG"
   assert_output 1
   run grep -c -- '--agent add check(watch): spend' "$NLOG"
   assert_output 0
@@ -2506,6 +2509,23 @@ fix_item() {
   assert_output --partial FAILED
 }
 
+# ar-6158: the board's daily cap turns a check row away with exit 6, which is a held row, not a failed one.
+@test "triage: a check row the board's daily cap refuses is said and left for the next pass, no failure" {
+  log_triage_setup
+  lock_route
+  watch links TRIP -25200 high
+  route 'watch.: (links) tripped' agent fix-red 'fix the links'
+  printf '#!/usr/bin/env bash\n[ "$4" = add ] && [[ "$5" == *"check(watch): links"* ]] && exit 6\nexec notes "$@"\n' > "$SANDBOX/bin/notes-capped"
+  chmod +x "$SANDBOX/bin/notes-capped"
+  BENCH_NOTES_CMD=notes-capped run "$SUBJECT" triage
+  assert_output --partial "check(watch): links tripped since: the board's daily cap holds this row; the next pass tries it again"
+  assert_output --partial '1 queued as red fixes'
+  # the exit 1 test above is the control: any other exit is still a failed add
+  refute_output --partial 'add failed for check(watch): links'
+  run outcome
+  refute_output --partial FAILED
+}
+
 @test "triage: a dispatch hold or an unreadable queue queues nothing, and the row still files" {
   log_triage_setup
   lock_route
@@ -2571,6 +2591,32 @@ fix_item() {
   assert_success
   [ "$(grep -c 'home-config sheet: check(watch): puck' "$NOTIFY")" = 1 ]
   [ "$(grep -c . "$BOARD.home")" = 1 ]
+}
+
+@test "triage: a held filing lock defers every row, human sheet included, but still queues the red fix of a row already filed (ar-6078)" {
+  log_triage_setup
+  export BENCH_UPSERT_LOCK="$SANDBOX/upsert.lock" BENCH_UPSERT_LOCK_WAIT=0
+  watch spend TRIP -25200 high; watch puck TRIP -25200 high
+  route 'watch.: spend' alert - 'the spend watch pages on its own'
+  route 'watch.: puck' human:home-config - 'check the puck'
+  # the spend row is already on the board (an earlier pass filed it), so its red fix queues though the lock is held
+  printf 'board.md\t9\t%s\t- [ ] %s <!-- id:ar-9 -->\n' 'check(watch): spend tripped since 2026-11-01, expected: x' 'check(watch): spend tripped since 2026-11-01, expected: x' >> "$BOARD"
+  exec 8>"$BENCH_UPSERT_LOCK"; flock 8
+  run "$SUBJECT" triage
+  exec 8>&-
+  assert_failure
+  assert_output --partial 'board upsert lock'
+  assert_output --partial '1 queued as red fixes'
+  run grep -c -- '--agent add' "$NLOG"
+  assert_output 0
+  [ ! -s "$BOARD.home" ]
+  # Negative control: with the lock free the same pass files the agent row and the human sheet's row.
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c 'check(watch): spend tripped since' "$BOARD"
+  assert_output 1
+  run grep -c 'check(watch): puck.*for the human: check the puck' "$BOARD.home"
+  assert_output 1
 }
 
 # 2026-11-11/12 (ar-2111): ar-1092 and ar-1650 sat on the human's sheet while their routes were human;
@@ -2837,7 +2883,10 @@ red_item() {
   jq -cn --arg s "$1" --arg st "$2" --arg t "$3" --argjson q "$(iso "$4")" --argjson f "$(iso "$5")" \
     --arg pr "$6" --arg m "$7" --arg ok "${8:-ok}" --arg tags "${9:-red cause:$1}" \
     '{slug: $s, state: $st, title: $t, queued: $q, finished: $f, pr: (if $pr == "-" then null else $pr end),
-      merged: (if $m == "-" then null else $m end), status: $ok, tags: $tags}' >> "$ITEMS"
+      merged: (if $m == "-" then null else $m end), status: $ok, tags: $tags}
+      # the outcome agent-queue stamps at close, which fleet-bench counts
+      + if $st != "done" then {} elif $ok == "cancelled" then {outcome: "cancelled"} elif $ok == "failed" then {outcome: "failed"}
+        elif $pr != "-" then {outcome: "landed"} else {outcome: "no-pr"} end' >> "$ITEMS"
 }
 
 @test "reds: each red fix's outcome is read against what is red now, and the unfixed merges are a KPI" {
@@ -3569,10 +3618,10 @@ q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
 @test "kpi: points_per_pr is Claude points over Claude landed PRs; other kinds and unread points stay out" {
   kpi_setup; sources_fixture
   {
-    echo '{"slug":"a","account":"main","status":"ok","pr":"o/r#1"}'
-    echo '{"slug":"b","account":".claude-bnb","status":"ok","pr":"o/r#2"}'
-    echo '{"slug":"c","status":"ok","pr":"o/r#3","sessions":"s1"}'
-    echo '{"slug":"d","agent":"lazer-reserve","status":"ok","pr":"o/r#4"}'
+    echo '{"slug":"a","account":"main","status":"ok","pr":"o/r#1","outcome":"landed"}'
+    echo '{"slug":"b","account":".claude-bnb","status":"ok","pr":"o/r#2","outcome":"landed"}'
+    echo '{"slug":"c","status":"ok","pr":"o/r#3","sessions":"s1","outcome":"landed"}'
+    echo '{"slug":"d","agent":"lazer-reserve","status":"ok","pr":"o/r#4","outcome":"landed"}'
   } > "$ITEMS"
   run "$SUBJECT" kpi --json
   assert_equal "$(jq -c '.points_per_pr["7d"]' <<<"$output")" 4.67
