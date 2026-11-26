@@ -42,6 +42,34 @@ load 'agent_queue/common'
   assert_output --partial "queued home-plain"
 }
 
+@test "a client's work project is refused on any other machine: plain and --plan adds, by name or from its checkout (ar-6083)" {
+  jq '. + {clients: {acme: {profile: "acmework"}}} | .trackers.game = ((.trackers.game // {}) + {client: "acme"})' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$AGENT_QUEUE_PROJECT_MAP"
+  printf '# P\n\n## Phases\n\n- [ ] one\n' > "$SANDBOX/plan.md"
+  export PROJECT_MACHINE_PROFILE=personal
+  run "$AQ" add --project game --slug client-plain "plain"
+  assert_failure
+  assert_output --partial "game is a client's work project, hidden on this machine (personal)"
+  run "$AQ" add --project game --plan "$SANDBOX/plan.md"
+  assert_failure
+  assert_output --partial "client's work project"
+  run bash -c 'cd "$1" && "$2" add --slug client-cwd "from its checkout"' _ "$REPO" "$AQ"
+  assert_failure
+  assert_output --partial "client's work project"
+  [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ]
+  run "$AQ" add --running --project game --session hub:game-agent-1 --slug client-own "own work"
+  assert_success
+  # set cannot move an item into the client's project either.
+  PROJECT_MACHINE_PROFILE=personal "$AQ" add --project app --slug own-app "app work"
+  run "$AQ" set own-app project=game
+  assert_failure
+  assert_output --partial "client's work project"
+  # Negative control: the same project with no client queues as before.
+  jq 'del(.trackers.game.client)' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$AGENT_QUEUE_PROJECT_MAP"
+  run "$AQ" add --project game --slug home-plain "plain"
+  assert_success
+  assert_output --partial "queued home-plain"
+}
+
 @test "add sets weight: light by default, heavy for a Unity checkout or a plan item, and --weight wins" {
   "$AQ" add --project game --slug plain "plain"
   [ "$(field "$(item queued plain)" weight)" = light ]

@@ -2116,6 +2116,34 @@ work_machine_guard() {
   die "this is a work machine ($PROJECT_MACHINE_PROFILE): no dispatcher runs here and home runners never take work. Put the follow-up in the project's tracker (ticket), or work it in this session"
 }
 
+# client_guard <add args...> -- a client's work project (its tracker names a `client`) is hidden on every
+# machine but that client's (project_visible), and no add here files work for one: a sweep of stale plans
+# re-queued a client repo's plan on the personal box, and its run pushed and admin-merged a PR in the
+# client's repo overnight (ar-6083). A --running record is a hand session's own record and passes.
+client_guard() {
+  add_writes_work "$@" || return 0
+  local project="" key
+  while [ $# -gt 0 ]; do
+    case "$1" in --) break ;; --project) project="${2-}"; shift 2 || break ;; *) shift ;; esac
+  done
+  [ -n "$project" ] || project="$(project_of_cwd)"
+  [ -n "$project" ] || return 0
+  key="$(project_lookup "$project")" || key="$project"
+  client_refuse "$key"
+}
+client_refuse() {
+  project_visible "$1" && return 0
+  die "$1 is a client's work project, hidden on this machine ($PROJECT_MACHINE_PROFILE): no agent here queues or runs work in it. Work it on that client's machine, or by hand"
+}
+# client_set_guard <set args...> -- `set <slug> project=<p>` moves an item into a project: refused for a
+# client's project as an add is (client_guard).
+client_set_guard() {
+  local a key
+  for a in "$@"; do
+    case "$a" in project=?*) key="$(project_lookup "${a#project=}")" || key="${a#project=}"; client_refuse "$key" ;; esac
+  done
+}
+
 # cmd_add: an add over the admission cap that already has its row (--row, or a board pull from
 # promote) leaves that row where it is. Only one with no row gets an overflow row: a board pull's
 # overflow row was a twin that dispatch skipped to the human sheet beside the first (2026-11-25).
@@ -4356,8 +4384,9 @@ cmd_backfill_briefs() {
   trap 'AGENT_STORE_HOOK=1 store-sync --now --bg 8>&- 2>/dev/null' EXIT
 command -v jq >/dev/null || die "jq not on PATH"
 case "${1:-}" in
-  add) shift; work_machine_guard "$@"; cmd_add "$@" ;;
-  list | next | show | mine | claim | cancel | return | bump | set | retask | attribute | move | requeue | handoff | start | reopen | stats | admission | mix | gate) v="$1"; shift; "cmd_$v" "$@" ;;
+  add) shift; work_machine_guard "$@"; client_guard "$@"; cmd_add "$@" ;;
+  set) shift; client_set_guard "$@"; cmd_set "$@" ;;
+  list | next | show | mine | claim | cancel | return | bump | retask | attribute | move | requeue | handoff | start | reopen | stats | admission | mix | gate) v="$1"; shift; "cmd_$v" "$@" ;;
   lock-miss) shift; cmd_lock_miss "$@" ;;
   credit-of) shift; cmd_credit_of "$@" ;;
   ask-holds) shift; cmd_ask_holds "$@" ;;

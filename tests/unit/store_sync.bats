@@ -447,6 +447,29 @@ EOF
   assert_success
 }
 
+@test "a --now sync that finds another one waiting leaves its write to that one (ar-3191)" {
+  # The waiter commits only once it holds the lock, so it carries this write; a second waiter would
+  # only queue behind it, and 500+ of them SKIPped at 300s.
+  peer a
+  local before; before=$(tip "$ORIGIN")
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  mkdir -p "$SANDBOX/a/.sync"
+  exec 7>"$SANDBOX/a/.sync/lock" 6>"$SANDBOX/a/.sync/now-wait"
+  flock 7
+  flock 6
+  run on a --now
+  assert_success
+  assert_equal "$(tip "$ORIGIN")" "$before"
+  # Negative control: with no sync waiting or running, the same write goes out at once and leaves
+  # now-wait free for the next writer.
+  exec 6>&- 7>&-
+  run on a --now
+  assert_success
+  assert_equal "$(show "$ORIGIN" queue/item.md)" 'state: done'
+  run flock -n "$SANDBOX/a/.sync/now-wait" true
+  assert_success
+}
+
 @test "the deploy key goes to ssh as one word, even from a path with a space" {
   mkdir -p "$SANDBOX/bin"
   printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s"\nexit 255\n' "$SANDBOX/ssh.args" > "$SANDBOX/bin/ssh"
