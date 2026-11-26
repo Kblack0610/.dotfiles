@@ -75,6 +75,9 @@ test("a job kind's RUNNING and MACHINES read as hub_core's Pool cells, a machine
   assert.match(wt("0.66"), />0\.66</, "the weight as hub_core formatted it");
   assert.match(wt("1*"), />1\*</, "a weight the governor has not measured keeps its star");
   assert.match(wt(null), />-</, "no series reads a dash, never 0 or 1");
+  const usual = (u) => run(`POOL_CELLS.usual(${JSON.stringify({ usual: u })})`);
+  assert.match(usual(1260), />21m</, "how long one usually runs, as the runners' USUAL reads");
+  assert.match(usual(null), />-</, "no median yet reads a dash");
   const seats = run(`poolSeats(${JSON.stringify(p)})`);
   assert.equal(seats, '<a class="tl" href="#infra/machines/deskslim-2">deskslim-2</a> 5, <a class="tl" href="#infra/machines/aws-spot-1">aws-spot-1</a> 0');
   assert.equal(run(`poolSeats({ machines: [] })`), "-");
