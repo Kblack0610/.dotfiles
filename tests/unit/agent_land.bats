@@ -612,7 +612,9 @@ git grep -qF shape-grow HEAD -- .github/workflows
 git merge-base HEAD origin/main
 shape-grow --body - 5eedbase5eedbase HEAD
 gh pr checks 42 --watch --fail-fast -i 30
-gh pr checks 42 --json name,bucket,workflow -q map(select(.bucket == "cancel"))
+gh pr checks 42 --json name,bucket,workflow
+git rev-parse HEAD
+gh run list --commit 0123456789abcdef --json status,conclusion,workflowName,attempt
 git fetch -q origin
 git rev-list --count HEAD..origin/main
 git rev-parse HEAD
@@ -1137,7 +1139,7 @@ RERUN_GAP='[{"name":"shard weights","bucket":"pass","workflow":"shell tests"},{"
   fake_sleep
   run "$LAND" 42 --item ship
   assert_success
-  assert_line 'checks: green so far, but a re-run of their workflow is still open on the head with no check for its jobs yet; waiting on it'
+  assert_line 'checks: green so far, but a run on the head has no check for its jobs yet (a re-run, or a workflow with none listed); waiting on it'
   assert_line 'landed #42'
   run grep -c 'pr checks 42 --watch' "$LOG"
   assert_output 2
@@ -1146,10 +1148,22 @@ RERUN_GAP='[{"name":"shard weights","bucket":"pass","workflow":"shell tests"},{"
   [ "$(grep -n 'pr checks 42 --watch' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'gh pr merge 42' "$LOG" | cut -d: -f1)" ]
 }
 
-@test "a green watch beside another workflow's re-run, or a first attempt of its own, lands at once; a failed runs read is never green (ar-6084)" {
+@test "a green watch while a run of a workflow no check lists is pending: it waits, then lands (ar-6084)" {
+  printf '%s\n' '[{"name":"gate guard","bucket":"pass","workflow":"gate guard"}]' >"$NOTES_FIXTURE/checks.cancelled"
+  printf '%s\n' '[{"status":"pending","workflowName":"shell tests","attempt":1},{"status":"completed","conclusion":"success","workflowName":"gate guard","attempt":1}]' >"$NOTES_FIXTURE/runs.open"
+  fake_sleep
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: green so far, but a run on the head has no check for its jobs yet (a re-run, or a workflow with none listed); waiting on it'
+  assert_line 'landed #42'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 2
+}
+
+@test "a green watch beside a first attempt of its own workflow or a run waiting on approval lands at once; a failed runs read is never green (ar-6084)" {
   printf '%s\n' "$RERUN_GAP" >"$NOTES_FIXTURE/checks.cancelled"
-  # a re-run of another workflow, a push run of its own held by concurrency, and its own completed re-run
-  printf '%s\n' '[{"status":"queued","workflowName":"Deploy","attempt":2},{"status":"pending","workflowName":"shell tests","attempt":1},{"status":"completed","conclusion":"success","workflowName":"shell tests","attempt":2}]' >"$NOTES_FIXTURE/runs.open"
+  # a push run of its own held by concurrency, another workflow's run waiting on an environment, its own completed re-run
+  printf '%s\n' '[{"status":"pending","workflowName":"shell tests","attempt":1},{"status":"waiting","workflowName":"Deploy","attempt":1},{"status":"completed","conclusion":"success","workflowName":"shell tests","attempt":2}]' >"$NOTES_FIXTURE/runs.open"
   fake_sleep
   run "$LAND" 42 --item ship
   assert_success
