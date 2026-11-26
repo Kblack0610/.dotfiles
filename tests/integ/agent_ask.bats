@@ -2038,14 +2038,19 @@ FAKE
   assert_output 'sid-1'
 }
 
-@test "the card says a live session hears the answer and its resume command starts too" {
+@test "the card says a live session hears the answer and a prompt resume starts only once it has ended" {
   local id
   mkdir -p "$HOME/.claude/sessions"
   printf '{"pid":%d,"sessionId":"sid-1"}\n' "$$" > "$HOME/.claude/sessions/$$.json"
   id="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --resume '/captain resume' 'both?')"
   run "$AGENT_ASK" card "$id"
-  assert_output --partial 'the answer goes to the asking session and starts `/captain resume`'
+  assert_output --partial 'the answer goes to the asking session; `/captain resume` starts only if it has ended'
   refute_output --partial 'session gone'
+  # Negative control: a `run:` resume is the asking script's own step, so it starts beside the session.
+  "$AGENT_ASK" cancel "$id" moot 2>/dev/null
+  id="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --resume 'run: own-step' 'both again?')"
+  run "$AGENT_ASK" card "$id"
+  assert_output --partial 'the answer goes to the asking session and starts `run: own-step`'
 }
 
 @test "cancel records its reason" {
