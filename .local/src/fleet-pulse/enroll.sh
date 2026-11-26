@@ -367,7 +367,7 @@ printf '\n\033[32mEnrolled as %s_%s\033[0m -> %s\n' "$GROUP" "$NAME" "$GATUS"
 if [ "$OS" = termux ]; then
     # A phone sleeps (Doze pauses cron), so rostering it would pin the desktop glyph
     # amber forever. It shows on the board with last-seen instead. See docs/mobile-fleet.md.
-    printf 'Phone enrolled: it shows on the board with last-seen. Declare "%s" in fleet_pulse_devices in home-config ansible/inventory.yml with roster: false (it sleeps), then run scripts/render-fleet-pulse.py.\n' "$NAME"
+    printf 'Phone enrolled: it shows on the board with last-seen. Declare "%s" in fleet_pulse_devices in home-config ansible/inventory.yml with roster: false (it sleeps), then run scripts/hosts/render-fleet-pulse.py.\n' "$NAME"
 else
-    printf 'Add "%s" to the fleet_pulse group in home-config ansible/inventory.yml and run scripts/render-fleet-pulse.py, or it will not be counted.\n' "$NAME"
+    printf 'Add "%s" to the fleet_pulse group in home-config ansible/inventory.yml and run scripts/hosts/render-fleet-pulse.py, or it will not be counted.\n' "$NAME"
 fi
