@@ -609,6 +609,38 @@ EOS
   assert_line 'landed #42'
 }
 
+# ar-5861: home-config merged 23 ansible role changes that reached no host until ConvergenceDrift fired on five.
+@test "after-merge: a step the repo's after-merge file names for a changed path is added once; one still queued carries the next merge (ar-5861)" {
+  local step='apply ansible to the drifted hosts' sha s
+  sha=$(printf '%s' "$step" | sha1sum | cut -c1-7)
+  s=after-merge-$sha-42-r
+  printf '%s\n' '# a comment' '' "ansible/roles/,ansible/inventory.yml $step" 'docs/ never this one' 'lonely/' >"$NOTES_FIXTURE/after-merge"
+  aq_add_stub
+  # NEGATIVE CONTROL: a file outside every named path, or only a name's prefix, adds nothing
+  printf '%s\n' ansible/README.md ansible/inventory.yml.bak apps/x.yaml >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'after-merge: added'
+  [ ! -e "$SANDBOX/aq.add" ]
+  printf '%s\n' apps/x.yaml ansible/roles/ci-host/tasks/main.yml ansible/inventory.yml >"$NOTES_FIXTURE/files"
+  # another project's queued item for the same step text does not carry this repo's merge
+  "$SANDBOX/bin/agent-queue.real" add --project other --slug "after-merge-$sha-40-other" 'chore(after-merge): theirs' >/dev/null
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "after-merge: added $s: $step"
+  assert_line "after-merge: .agent-land/after-merge line 'lonely/' names no step, skipped"
+  assert_line 'landed #42'
+  run cat "$SANDBOX/aq.add"
+  assert_output "add --project r --priority high --from item:ship --slug $s chore(after-merge): $step (left by o/r#42)"
+  # a step whose item from an earlier merge is still queued is not added again: it applies the base it starts on
+  "$SANDBOX/bin/agent-queue.real" add --project r --slug "after-merge-$sha-41-r" 'chore(after-merge): earlier' >/dev/null
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "after-merge: after-merge-$sha-41-r is still queued and carries #42 too: $step"
+  run grep -c . "$SANDBOX/aq.add"
+  assert_output 1
+}
+
 @test "partial landing holds after items and the board until the other repo lands" {
   legacy next "after: ship" --project dotfiles 'next phase'
   : >"$LOG"
