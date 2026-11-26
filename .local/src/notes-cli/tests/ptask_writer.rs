@@ -1955,6 +1955,251 @@ fn a_gated_board_takes_a_hand_sessions_row_only_as_a_fault_or_the_persons_ask() 
     assert_eq!(ids(&h.board()).len(), 5, "{}", h.board());
 }
 
+impl Home {
+    /// Set `intake_daily_cap` (a top-level key, so it goes before the profile table).
+    fn daily_cap(&self, n: u32) {
+        let path = self.0.join("config.toml");
+        let cfg = fs::read_to_string(&path).unwrap();
+        fs::write(&path, format!("intake_daily_cap = {n}\n{cfg}")).unwrap();
+    }
+
+    /// `notes ingest cap --json` for today's `demo` line: (admitted, refused).
+    fn cap_today(&self) -> (u64, u64) {
+        let out = self.run(&["ingest", "cap", "--days", "1", "--json"]);
+        let line = String::from_utf8_lossy(&out.stdout).into_owned();
+        let v: serde_json::Value = line
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+            .find(|v| v["project"] == "demo")
+            .expect("demo is listed");
+        (
+            v["admitted"].as_u64().unwrap(),
+            v["refused"].as_u64().unwrap(),
+        )
+    }
+}
+
+/// Ten distinct rows from the machine filer `fleet-bench`, so none twins another or needs a shortlist.
+fn fill_the_day(h: &Home) {
+    for (i, w) in [
+        "the export stalls",
+        "menus flicker",
+        "saves truncate",
+        "audio pops",
+        "tabs reorder",
+        "logins expire",
+        "fonts blur",
+        "maps lag",
+        "chat drops",
+        "sync loops",
+    ]
+    .iter()
+    .enumerate()
+    {
+        ok(&add_as(
+            h,
+            &[("AGENTCTL_NAME", "fleet-bench")],
+            &[],
+            &format!("fix(a{i}): {w} #size/s"),
+        ));
+    }
+}
+
+#[test]
+fn a_gated_board_takes_ten_new_agent_rows_a_day_and_holds_the_eleventh() {
+    let h = Home::new("gate-cap");
+    h.gate();
+    fill_the_day(&h);
+    assert_eq!(ids(&h.board()).len(), 10, "{}", h.board());
+    // NEGATIVE CONTROL: the eleventh row of a machine filer, a plan's phase and a hand session's
+    // evidenced fault are all held, with the cap named and nothing written.
+    let held = [
+        add_as(
+            &h,
+            &[("AGENTCTL_NAME", "fleet-bench")],
+            &[],
+            "fix(z1): the eleventh breaks #size/s",
+        ),
+        add_from(
+            &h,
+            "agent-queue",
+            &[
+                ("AGENT_QUEUE_ITEM", "ar-9"),
+                ("AQ_ITEM_PLAN", "/tmp/plan.md"),
+            ],
+            &["--agent"],
+            &["--origin", "plan"],
+            "feat(z2): a plan phase past the cap #size/s",
+        ),
+        add_as(
+            &h,
+            &[HAND],
+            &["--why", "runtime-fault"],
+            "fix(z3): a session's evidenced fault #size/s",
+        ),
+        // a high reason is a fault, not an urgent red
+        add_as(
+            &h,
+            &[("AGENTCTL_NAME", "fleet-bench")],
+            &["--why", "red-main"],
+            "check(z4): main is red #high #size/s",
+        ),
+    ];
+    for o in &held {
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(6), "{err}");
+        assert!(
+            err.contains("10 new agent rows") && err.contains("intake_daily_cap"),
+            "{err}"
+        );
+    }
+    assert_eq!(
+        ids(&h.board()).len(),
+        10,
+        "nothing more filed: {}",
+        h.board()
+    );
+    // A retry of the same row (fleet-bench tries its red every pass) is held again, and the record
+    // keeps one refusal for it.
+    let again = add_as(
+        &h,
+        &[("AGENTCTL_NAME", "fleet-bench")],
+        &[],
+        "fix(z1): the eleventh breaks #size/s",
+    );
+    assert_eq!(again.status.code(), Some(6));
+    // A row that twins an open one joins it (exit 3): it is no new row, so the cap is not asked.
+    let twin = add_as(
+        &h,
+        &[("AGENTCTL_NAME", "fleet-bench")],
+        &[],
+        "fix(a0): the export stalls #size/s",
+    );
+    assert_eq!(
+        twin.status.code(),
+        Some(3),
+        "{}",
+        String::from_utf8_lossy(&twin.stderr)
+    );
+    // The person's own words and an urgent red are admitted on the full day, and so is a story
+    // row, the board's copy of an item already started.
+    ok(&add_as(
+        &h,
+        &[HAND],
+        &["--want", "human"],
+        "feat(w1): a json flag the person asked for #high #size/s",
+    ));
+    ok(&add_as(
+        &h,
+        &[("AGENTCTL_NAME", "fleet-bench")],
+        &["--why", "outage"],
+        "fix(w2): the board is down #urgent #size/s",
+    ));
+    ok(&add_from(
+        &h,
+        "agent-queue",
+        &[("AGENT_QUEUE_ITEM", "ar-9")],
+        &["--agent"],
+        &["--origin", "agent-queue"],
+        "chore(w3): a story row of an item already started #size/s",
+    ));
+    ok(&add_as(&h, &[], &[], "docs(w4): typed by a person #size/s"));
+    assert_eq!(ids(&h.board()).len(), 14, "{}", h.board());
+    // The record counts the ten, the urgent red, and the four rows the cap turned away.
+    assert_eq!(h.cap_today(), (11, 4));
+}
+
+#[test]
+fn the_daily_cap_is_the_configs_number_and_zero_turns_it_off() {
+    let h = Home::new("gate-cap-conf");
+    h.gate();
+    h.daily_cap(2);
+    for (i, w) in ["the export stalls", "menus flicker"].iter().enumerate() {
+        ok(&add_as(
+            &h,
+            &[("AGENTCTL_NAME", "fleet-bench")],
+            &[],
+            &format!("fix(a{i}): {w} #size/s"),
+        ));
+    }
+    let o = add_as(
+        &h,
+        &[("AGENTCTL_NAME", "fleet-bench")],
+        &[],
+        "fix(a9): saves truncate #size/s",
+    );
+    assert_eq!(
+        o.status.code(),
+        Some(6),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(String::from_utf8_lossy(&o.stderr).contains("2 new agent rows"));
+    // NEGATIVE CONTROL: 0 is no cap.
+    let off = Home::new("gate-cap-off");
+    off.gate();
+    off.daily_cap(0);
+    fill_the_day(&off);
+    ok(&add_as(
+        &off,
+        &[("AGENTCTL_NAME", "fleet-bench")],
+        &[],
+        "fix(z1): the eleventh breaks #size/s",
+    ));
+}
+
+#[test]
+fn a_board_off_the_gate_list_is_capped_all_the_same_and_its_gate_stays_off() {
+    let h = Home::new("gate-cap-free");
+    fill_the_day(&h);
+    assert_eq!(ids(&h.board()).len(), 10, "{}", h.board());
+    // NEGATIVE CONTROL: the next machine row, plan phase and hand row are held by the cap alone:
+    // the gate is off for demo, so a hand row with no reason is no evidence-gate refusal.
+    let held = [
+        add_as(
+            &h,
+            &[("AGENTCTL_NAME", "fleet-bench")],
+            &[],
+            "fix(z1): the twelfth breaks #size/s",
+        ),
+        add_from(
+            &h,
+            "agent-queue",
+            &[
+                ("AGENT_QUEUE_ITEM", "ar-9"),
+                ("AQ_ITEM_PLAN", "/tmp/plan.md"),
+            ],
+            &["--agent"],
+            &["--origin", "plan"],
+            "feat(z2): a plan phase past the cap #size/s",
+        ),
+        add_as(&h, &[HAND], &[], "chore(z3): more polish #low #size/s"),
+    ];
+    for o in &held {
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(6), "{err}");
+        assert!(
+            err.contains("10 new agent rows") && !err.contains("evidenced fault"),
+            "{err}"
+        );
+    }
+    // The person's want and an urgent red pass, and `notes ingest cap` lists the board.
+    ok(&add_as(
+        &h,
+        &[HAND],
+        &["--want", "human"],
+        "feat(w1): a json flag the person asked for #high #size/s",
+    ));
+    ok(&add_as(
+        &h,
+        &[("AGENTCTL_NAME", "fleet-bench")],
+        &["--why", "outage"],
+        "fix(w2): the board is down #urgent #size/s",
+    ));
+    assert_eq!(ids(&h.board()).len(), 12, "{}", h.board());
+    assert_eq!(h.cap_today(), (11, 3));
+}
+
 #[test]
 fn a_gated_board_files_a_sessions_follow_up_only_as_a_fault_and_the_persons_line_always() {
     let h = Home::new("gate-file");
