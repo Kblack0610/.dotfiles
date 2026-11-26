@@ -274,14 +274,25 @@ wt_branch_name() {
 # its remotes. That is a stale pointer, not work -- `submodule update` fixes it and loses
 # nothing. Counting it pinned 17 of 29 unity-core-playground slots, every one dirty only
 # because the trunk bumped External/unity-core underneath it, so `new` ratcheted to agent-31.
+#
+# A status that FAILS is not a clean tree: rc 1, printing git's first error line. Counting its
+# empty output as 0 let a razer-laptop slot whose submodule .git a canary run had overwritten
+# with a bare sha read clean and landed, so dispatch picked it to recycle on every pass and
+# `git switch` refused on the files the run left (ar-6220).
 wt_dirty_count() {
-  local n=0 kind xy sub p
+  local n=0 kind xy sub p st
+  if ! st=$(git -C "$1" status --porcelain=v2 2>/dev/null); then
+    st=$(git -C "$1" status --porcelain=v2 2>&1 >/dev/null)
+    printf '%s\n' "${st%%$'\n'*}"
+    return 1
+  fi
   while read -r kind xy sub _ _ _ _ _ p; do
+    [ -n "$kind" ] || continue
     if [ "$kind $xy $sub" = '1 .M SC..' ] && wt_submodule_pushed "$1/$p"; then
       continue
     fi
     n=$((n + 1))
-  done < <(git -C "$1" status --porcelain=v2 2>/dev/null)
+  done <<<"$st"
   printf '%s\n' "$n"
 }
 
@@ -661,7 +672,10 @@ wt_work_reason() {
     return 2
   }
 
-  dirty=$(wt_dirty_count "$path")
+  dirty=$(wt_dirty_count "$path") || {
+    printf 'git status fails: %s\n' "$dirty"
+    return 1
+  }
   [ "$dirty" -eq 0 ] || {
     printf 'dirty (%s uncommitted)\n' "$dirty"
     return 1
@@ -868,9 +882,11 @@ wt_row() {
   local name dirty state glyph note
 
   name="$(basename "$path")"
-  dirty=$(wt_dirty_count "$path")
-
-  if [ "$dirty" -gt 0 ]; then
+  if ! dirty=$(wt_dirty_count "$path"); then
+    state=dirty
+    glyph="$G_ATTN"
+    note="git status fails"
+  elif [ "$dirty" -gt 0 ]; then
     state=dirty
     glyph="$G_ATTN"
     note="$dirty uncommitted"
@@ -1393,12 +1409,12 @@ cmd_reap() {
   # The policy passed above, so wt_hold's lock comes off here, and a refusal puts it back: the
   # tree is staying. A tree that never had one fails the unlock harmlessly. Another tool's lock
   # stays on even if it appeared after the policy check, so git refuses the removal below.
-  local out
+  local out dirty
   wt_foreign_lock "$path" >/dev/null || git -C "$main" worktree unlock "$path" 2>/dev/null || :
   if ! out=$(git -C "$main" worktree remove "$path" 2>&1); then
     case "$out" in
     *'containing submodules'*)
-      [ "$(wt_dirty_count "$path")" -eq 0 ] &&
+      dirty=$(wt_dirty_count "$path") && [ "$dirty" -eq 0 ] &&
         out=$(git -C "$main" worktree remove --force "$path" 2>&1) && out=''
       ;;
     esac

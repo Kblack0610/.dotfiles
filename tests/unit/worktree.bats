@@ -429,6 +429,27 @@ make_drifted_submodule() {
   assert_output 'dirty (1 uncommitted)'
 }
 
+@test "a worktree whose git status FAILS is held, never recycled or listed reapable" {
+  # Refusal first. A canary run on razer-laptop left a submodule .git holding a bare sha, so
+  # every status there died; read as zero lines, the tree was idle and dispatch tried to
+  # recycle it every pass, and the switch refused on the run's files (ar-6220).
+  make_drifted_submodule
+  git -C "$WT" submodule update --quiet
+  printf '%s\n' "$C1" >"$WT/sub/.git"
+  run git -C "$WT" status --porcelain=v2
+  assert_failure # the fixture really is in the broken state
+  run wt_dirty_count "$WT"
+  assert_failure
+  assert_output --partial 'invalid gitfile format'
+  run wt_reap_reason "$WT"
+  assert_failure
+  assert_output --partial 'git status fails: '
+  run wt_next_slot platform "$MAIN"
+  assert_output "2${PANEL_TAB}fresh"
+  run wt_row "$WT" agent-1 origin/main ''
+  assert_output --regexp $'\tdirty\t'
+}
+
 @test "a STAGED submodule pointer is somebody's intent, not drift" {
   make_drifted_submodule
   git -C "$WT" add sub
