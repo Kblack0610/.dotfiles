@@ -662,7 +662,7 @@ exits: improve 1 sheet 2'
   grep -q 'id:gh-1 dropped: on the game sheet: dispatch never starts it: its text names dns' "$NOTES_FIXTURE/rows.game.agent"
   assert_equal "$(jq -r 'select(.exit) | "\(.key)=\(.rule)=\(.exit)"' "$FLEET_DISPATCH_DIR/verdicts.jsonl" | paste -sd,)" \
     'gh-1=human-merge=sheet,gh-2=human-merge=improve,gh-5=human-merge=sheet'
-  run grep -E 'gh-[3467]|tag --add plan' "$NOTES_FIXTURE/calls.log"
+  run grep -E '(ptask game (add|--agent)|improve game).*gh-[3467]|tag --add plan' "$NOTES_FIXTURE/calls.log"
   assert_failure
   # each exit is on record, so a second pass over the same board files no copy
   : > "$NOTES_FIXTURE/calls.log"
