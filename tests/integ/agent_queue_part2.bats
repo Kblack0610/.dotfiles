@@ -1502,7 +1502,7 @@ EOS
   assert_output --partial "cause:abc12345 is already owned by raced"
   [ -z "$(find "$AGENT_QUEUE_DIR" -name '*-owner2.md')" ]
   # NEGATIVE CONTROL: the stub does see a held lock.
-  flock -x "$AGENT_QUEUE_DIR/.lock" "$SANDBOX/bin/notes" ptask level --agent list >/dev/null
+  flock -x "$AGENT_QUEUE_DIR/.lock" "$SANDBOX/bin/notes" ptask level --agent board >/dev/null
   [ "$(grep -c '^locked ' "$NOTES_FIXTURE/underlock.log")" = 1 ]
 }
 
