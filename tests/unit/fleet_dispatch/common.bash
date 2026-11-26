@@ -234,7 +234,7 @@ case "${args[0]}" in
     else cat; fi ;;
   ptask)
     p="${args[1]}"; f="$F/rows.$p.$lane"
-    [ "${args[2]}" != add ] || [ ! -f "$F/refuse.$p" ] || exit 1   # a sheet that refuses the row: touch $F/refuse.<project>
+    [ "${args[2]}" != add ] || [ ! -f "$F/refuse.$p" ] || exit "$(grep -m1 . "$F/refuse.$p" || echo 1)"   # a sheet that refuses the row: touch $F/refuse.<project>, or write notes' exit code in it (6: the daily cap)
     [ -f "$f" ] || exit 0
     case "${args[2]}" in
       list) awk -F'\t' -v f="$f" '$2 ~ /^- \[[ \/]\]/ { print f "\t" NR "\t" $1 "\t" $2 }' "$f" ;;
