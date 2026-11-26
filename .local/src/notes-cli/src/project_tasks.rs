@@ -7323,6 +7323,51 @@ mod inbox_tests {
         );
     }
 
+    // ar-5834: a parent with work of its own stays open when its last child closes: a human's
+    // `#requested` row, a `#plan` row, and rows naming a plan's open phases in title or brief.
+    #[test]
+    fn a_parent_with_work_of_its_own_stays_open_when_its_last_child_closes() {
+        let v = vault(
+            "own-work",
+            "",
+            "- [ ] chore(ci): finish the plan (6 phases left) #requested #high <!-- id:sc-1 -->\n\
+             - [ ] fix(ci): step 0 #high #of/sc-1 <!-- id:sc-2 -->\n\
+             - [ ] fix(ui): a stuck session (plan wren) #normal <!-- id:sc-3 -->\n\
+             - [ ] fix(ui): phase 2 #normal #of/sc-3 <!-- id:sc-4 -->\n\
+             - [ ] fix(ui): the pause screen #normal <!-- id:sc-5 -->\n\
+             \x20 Run the open phases of the approved plan in order.\n\
+             - [ ] fix(ui): pause blinks #normal #of/sc-5 <!-- id:sc-6 -->\n\
+             - [ ] fix(ui): the menu #plan #normal <!-- id:sc-7 -->\n\
+             - [ ] fix(ui): menu flicker #normal #of/sc-7 <!-- id:sc-8 -->\n\
+             - [ ] feat(ui): the sound #normal <!-- id:sc-9 -->\n\
+             \x20 goal: a quiet menu\n\
+             - [ ] fix(ui): menu sound #normal #of/sc-9 <!-- id:sc-10 -->\n",
+        );
+        for kid in ["sc-2", "sc-4", "sc-6", "sc-8", "sc-10"] {
+            done(
+                &v.p,
+                &v.log,
+                "scratch",
+                &Pick::Id(kid.to_string()),
+                Some("pr:7"),
+                None,
+                None,
+                Lane::Human,
+                None,
+            )
+            .unwrap();
+        }
+        for parent in ["sc-1", "sc-3", "sc-5", "sc-7"] {
+            let row = row_of(&v, parent);
+            assert!(row.starts_with("- [ ]"), "{parent} closed: {row}");
+        }
+        let plain = row_of(&v, "sc-9");
+        assert!(
+            plain.starts_with("- [x]") && plain.contains("children: sc-10"),
+            "a goal line alone is no work of its own: {plain}"
+        );
+    }
+
     // From review: an open grandchild under a closed child holds the row open too, a running
     // child is its session's to close, and a parent is no surer than its children's proof.
     #[test]

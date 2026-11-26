@@ -57,6 +57,33 @@ pub(crate) fn parent_of(line: &str) -> Option<String> {
     md::split_parent(head).1
 }
 
+/// Does this open row carry work of its own beside its children, so closing the last child must
+/// not close it: a human's `#requested` row (it closes on proof of every clause, never on its
+/// rows), a `#plan` row, or a row whose title or brief names a plan's open phases (`6 phases
+/// left`, `(plan <slug>)`, `open phases of ... plans/<slug>.md`). `details` are the lines
+/// under the row. Why: ar-3849 (4 open plan phases) and ar-718 (`#requested`, 6 phases left)
+/// closed when one child did, ar-5834.
+pub(crate) fn has_own_work(line: &str, details: &[String]) -> bool {
+    if md::find_hashtags(line)
+        .iter()
+        .any(|t| t == "#requested" || t == "#plan")
+    {
+        return true;
+    }
+    let head = line
+        .find("<!--")
+        .map_or(line, |i| &line[..i])
+        .to_lowercase();
+    std::iter::once(head)
+        .chain(details.iter().map(|d| d.to_lowercase()))
+        .any(|t| {
+            t.contains("phases left")
+                || t.contains("open phases")
+                || t.contains("(plan ")
+                || t.contains(".agent/plans/")
+        })
+}
+
 /// What an open epic with no open child shows as in `notes board --json`'s `priority`
 /// ([`Index::epic_priority`]); it ranks as `#low`, the last level.
 pub(crate) const EMPTY: &str = "empty";
@@ -149,6 +176,9 @@ struct Node {
     title: Option<String>,
     /// An epic's system, the area in `epic(<system>):`; empty on any other row.
     system: String,
+    /// The row carries work of its own beside its children ([`has_own_work`]), so its last
+    /// child closing does not close it.
+    own_work: bool,
     /// What closed the row, empty while open.
     proof: String,
     /// Where the row is, for a doctor line: `sheet line 12`.
@@ -275,6 +305,11 @@ impl Index {
                 || md::row_id(l).is_some_and(|id| named.contains(&id))
         };
         for (t, note, label) in &texts {
+            let all: Vec<&str> = if note.is_none() {
+                t.lines().collect()
+            } else {
+                Vec::new()
+            };
             let rows: Vec<(usize, &str)> = match note {
                 None => md::section_numbered(t, sheet::TASKS),
                 Some(_) => t.lines().enumerate().map(|(i, l)| (i + 1, l)).collect(),
@@ -286,7 +321,12 @@ impl Index {
                             .then(|| sheet::version_of(l, cur))
                             .flatten()
                     });
-                    ix.add(l, v, note.is_none(), format!("{label} line {n}"));
+                    // Only an open live row reads its brief: a closed one has no children left to wait on.
+                    let own = note.is_none()
+                        && md::is_open_task(l)
+                        && md::row_id(l).is_some_and(|id| named.contains(&id))
+                        && has_own_work(l, &md::row_details(&all, n - 1));
+                    ix.add(l, v, note.is_none(), format!("{label} line {n}"), own);
                 }
             }
         }
@@ -301,7 +341,7 @@ impl Index {
     /// Record one row. A row with no id can be nobody's parent, so it is kept only when it
     /// names one, and only from a live sheet: a note copy of an id-less row cannot be told
     /// from the live one.
-    fn add(&mut self, line: &str, version: Option<V>, live: bool, at: String) {
+    fn add(&mut self, line: &str, version: Option<V>, live: bool, at: String, own_work: bool) {
         let id = md::row_id(line);
         let parent = parent_of(line).filter(|_| !is_epic_check(line));
         match &id {
@@ -328,6 +368,7 @@ impl Index {
             } else {
                 String::new()
             },
+            own_work,
             proof: proof_of(line),
             at,
             prio: md::priority_index(line).unwrap_or(md::DEFAULT_PRIORITY),
@@ -431,10 +472,12 @@ impl Index {
 
     /// How the open row `id` stands once none of its children is open: the ids of those that
     /// closed done, how many did (0 when every one was dropped), and whether any of them closed
-    /// `--unverified`. `None` while one is open, when `id` is no open parent, and for an epic,
-    /// which closes on proof of its outcome, never on its rows alone.
+    /// `--unverified`. `None` while one is open, when `id` is no open parent, for a row with
+    /// work of its own ([`has_own_work`]), and for an epic, which closes on proof of its outcome,
+    /// never on its rows alone.
     pub(crate) fn spent(&self, id: &str) -> Option<Spent> {
-        self.node(id).filter(|n| n.open && n.title.is_none())?;
+        self.node(id)
+            .filter(|n| n.open && n.title.is_none() && !n.own_work)?;
         let kids: Vec<&Node> = self
             .nodes
             .iter()
