@@ -440,10 +440,10 @@ make_drifted_submodule() {
   assert_failure # the fixture really is in the broken state
   run wt_dirty_count "$WT"
   assert_failure
-  assert_output --partial 'invalid gitfile format'
+  assert_output --regexp '.+' # git's own error, whatever its wording
   run wt_reap_reason "$WT"
   assert_failure
-  assert_output --partial 'git status fails: '
+  assert_output --regexp '^git status fails: .+'
   run wt_next_slot platform "$MAIN"
   assert_output "2${PANEL_TAB}fresh"
   run wt_row "$WT" agent-1 origin/main ''

@@ -281,13 +281,14 @@ wt_branch_name() {
 # `git switch` refused on the files the run left (ar-6220).
 wt_dirty_count() {
   local n=0 kind xy sub p st
-  if ! st=$(git -C "$1" status --porcelain=v2 2>/dev/null); then
-    st=$(git -C "$1" status --porcelain=v2 2>&1 >/dev/null)
+  # One run, stderr kept: a second run to read the error could pass and leave no reason.
+  # Only entry lines count, so a warning on a status that passed is not work.
+  if ! st=$(git -C "$1" status --porcelain=v2 2>&1); then
     printf '%s\n' "${st%%$'\n'*}"
     return 1
   fi
   while read -r kind xy sub _ _ _ _ _ p; do
-    [ -n "$kind" ] || continue
+    case "$kind" in 1 | 2 | u | '?') ;; *) continue ;; esac
     if [ "$kind $xy $sub" = '1 .M SC..' ] && wt_submodule_pushed "$1/$p"; then
       continue
     fi
@@ -882,10 +883,12 @@ wt_row() {
   local name dirty state glyph note
 
   name="$(basename "$path")"
-  if ! dirty=$(wt_dirty_count "$path"); then
+  # A gone directory has no status to fail; it reads as not landed, as before.
+  dirty=0
+  if [ -d "$path" ] && ! dirty=$(wt_dirty_count "$path"); then
     state=dirty
     glyph="$G_ATTN"
-    note="git status fails"
+    note="git status fails: $dirty"
   elif [ "$dirty" -gt 0 ]; then
     state=dirty
     glyph="$G_ATTN"
@@ -1414,8 +1417,11 @@ cmd_reap() {
   if ! out=$(git -C "$main" worktree remove "$path" 2>&1); then
     case "$out" in
     *'containing submodules'*)
-      dirty=$(wt_dirty_count "$path") && [ "$dirty" -eq 0 ] &&
+      if ! dirty=$(wt_dirty_count "$path"); then
+        out="git status fails: $dirty"
+      elif [ "$dirty" -eq 0 ]; then
         out=$(git -C "$main" worktree remove --force "$path" 2>&1) && out=''
+      fi
       ;;
     esac
     if [ -n "$out" ]; then
