@@ -96,7 +96,12 @@ case "$verb" in
   has-session) grep -qxF -- "${target#=}" "$FIX/sessions.$server" 2>/dev/null; exit ;;
   list-panes) t="${target#=}"; cat "$FIX/panes.$server.${t%:}" 2>/dev/null ;;
   list-windows) t="${target#=}"; awk 'NF > 2 { print $3, $4 }' "$FIX/panes.$server.${t%:}" 2>/dev/null ;;
-  capture-pane) cat "$FIX/screen" 2>/dev/null; exit 0 ;;
+  # $FIX/exit-lag N: after its answer the claude lives N more captures, its dialog still drawn
+  capture-pane) cat "$FIX/screen" 2>/dev/null
+    if [ -f "$FIX/exiting" ]; then
+      n=$(cat "$FIX/exiting"); if [ "$n" -le 1 ]; then rm -f "$FIX/exiting"; end_claude; else echo $((n - 1)) > "$FIX/exiting"; fi
+    fi
+    exit 0 ;;
   display-message)
     if [ "$last" = '#{pane_in_mode}' ]; then [ -f "$FIX/mode" ] && echo 1 || echo 0; fi
     if [ "$last" = '#{window_index} #{window_name}' ]; then cat "$FIX/window.$target" 2>/dev/null; exit 0; fi   # a test's renumbered window
@@ -131,7 +136,9 @@ case "$verb" in
       Down) touch "$FIX/down"
         grep -qF 'Yes, I trust this folder' "$FIX/screen" 2>/dev/null &&
           printf ' Quick safety check: Is this a project you created or one you trust?\n   No, exit\n \xe2\x9d\xaf Yes, I trust this folder\n' > "$FIX/screen" ;;
-      [0-9]) [ "$last" = "$(cat "$FIX/bg-option" 2>/dev/null)" ] && end_claude ;;
+      [0-9]) if [ "$last" = "$(cat "$FIX/bg-option" 2>/dev/null)" ]; then
+               if [ -f "$FIX/exit-lag" ]; then cp "$FIX/exit-lag" "$FIX/exiting"; else end_claude; fi
+             fi ;;
     esac ;;
   # copy-mode -q leaves any mode, unless the test made it stick
   copy-mode) [ "$1" = -q ] && [ ! -f "$FIX/mode-stuck" ] && rm -f "$FIX/mode"; exit 0 ;;
@@ -259,6 +266,17 @@ parked_files() { ls -A "$HOME/.agent/parked" | grep -v "^\.lock\." || true; }
   refute_line 'tmux -L lab send-keys -t %9 2'
   run cat "$FIX/started"
   assert_output --partial 'The\ move\ stopped\ your\ background\ shells'
+}
+
+@test "--stop-shells answers the dialog once, though the claude takes polls to exit (ar-5592)" {
+  # A second answer would reach the shell once claude is gone and run ahead of the typed resume.
+  session lab agent-3 %9 300 301 shell ""
+  printf '  1. Exit and stop tasks\n  2. Move to background and exit\n' > "$FIX/dialog"
+  echo 1 > "$FIX/bg-option"
+  echo 3 > "$FIX/exit-lag"
+  run "$ACCT" move agent-3 --server lab --stop-shells
+  assert_success
+  [ "$(grep -cx 'tmux -L lab send-keys -t %9 1' "$FIX/calls.log")" -eq 1 ]
 }
 
 @test "a claude that never exits is reported, its dialog closed, and a held pane released" {

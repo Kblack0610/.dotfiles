@@ -122,6 +122,34 @@ no_leftovers() {
   no_leftovers
 }
 
+# The 2h orphans (ar-3376): one pkill then pidwait waited forever on a process forked between the
+# scan and the kill. The stub's first scan kills nothing, as one whose every match forked before
+# its kill; the reap must scan again and kill the straggler. The timeout bounds a reap that waits
+# on it forever, the failure this guards.
+@test "the reap scans again until nothing of the session is alive, then waits" {
+  mkdir "$BATS_TEST_TMPDIR/stub"
+  real=$(command -v pkill)
+  cat >"$BATS_TEST_TMPDIR/stub/pkill" <<EOT
+#!/bin/sh
+echo "\$*" >>"$BATS_TEST_TMPDIR/pkill.log"
+[ "\$(wc -l <"$BATS_TEST_TMPDIR/pkill.log")" -gt 1 ] || exit 0
+exec $real "\$@"
+EOT
+  chmod +x "$BATS_TEST_TMPDIR/stub/pkill"
+  fixture done "true"
+  PATH="$BATS_TEST_TMPDIR/stub:$PATH" inner "$BATS_TEST_TMPDIR/done.bats" >"$BATS_TEST_TMPDIR/out" 2>&1 &
+  wrapper=$!
+  echo "$wrapper" >"$BATS_TEST_TMPDIR/wrapper.pid"
+  rc=0
+  timeout 60 pidwait -F "$BATS_TEST_TMPDIR/wrapper.pid" || rc=$?
+  [ "$rc" -ne 124 ] || fail "the reap still waits on the session: $(cat "$BATS_TEST_TMPDIR/pkill.log")"
+  wait "$wrapper"
+  no_leftovers
+  # the no-op scan, the one that killed, and one that found nothing alive
+  run grep -c -- '-s ' "$BATS_TEST_TMPDIR/pkill.log"
+  assert_output 3
+}
+
 @test "a run is seen while it runs and leaves one ledger row (ar-3291)" {
   live="$BATS_TEST_TMPDIR/local-tests" ledger="$BATS_TEST_TMPDIR/state/local-tests/runs.tsv"
   mkfifo "$BATS_TEST_TMPDIR/up" "$BATS_TEST_TMPDIR/go"

@@ -228,11 +228,14 @@ EOF
 
 @test "pane_of: a process's pane as agent-panel names it, <server>/<pane id>, from its tmux env" {
   # Real processes with known environments: pane_of reads /proc/<pid>/environ. Each prints its
-  # own pid ($$ survives the exec) once it runs under its env, so the read never races the exec.
+  # own pid once it runs under its env, with no exec after: `sh -c 'echo $$; exec sleep'` printed
+  # before its exec, and a read inside the exec found an empty environ on a loaded runner (main run
+  # 45636735383, PR #3592 run 45638823349).
   local in out got_in got_out
-  exec 5< <(env TMUX="$BATS_TEST_TMPDIR/tmux-1000/lab,123,0" TMUX_PANE=%8 sh -c 'echo $$; exec sleep 30' 3>&-)
+  local hold='import os, time; print(os.getpid(), flush=True); time.sleep(30)'
+  exec 5< <(env TMUX="$BATS_TEST_TMPDIR/tmux-1000/lab,123,0" TMUX_PANE=%8 python3 -c "$hold" 3>&-)
   read -r in <&5
-  exec 6< <(env -u TMUX -u TMUX_PANE sh -c 'echo $$; exec sleep 30' 3>&-)
+  exec 6< <(env -u TMUX -u TMUX_PANE python3 -c "$hold" 3>&-)
   read -r out <&6
   got_in="$(pane_of "$in")"; got_out="$(pane_of "$out")"
   kill "$in" "$out"; exec 5<&- 6<&-
@@ -623,6 +626,40 @@ SH
   rm "$GH_CALLS_DIR/$(date +%F).tsv"
   run gh_callers
   assert_output ''
+}
+
+@test "gh_callers_report: deferred rows by caller and grants by ancestor, old 6-column rows counted apart" {
+  local now; now="$(date +%s)"
+  export GH_CALLS_DIR="$SANDBOX/calls"; mkdir -p "$GH_CALLS_DIR"
+  {
+    printf '%s\tuser\t0\tzsh\t-\trun view 1\n' "$now"
+    printf '%s\tuser:deferred\t75\tred-causes.py\t-\trun view 1\n' "$now"
+    printf '%s\tuser:deferred\t75\tred-causes.py\t-\trun view 2\n' "$now"
+    printf '%s\tuser:deferred\t75\tzsh\t-\trun view 3\n' "$now"
+  } > "$GH_CALLS_DIR/2026-11-24.tsv"
+  {
+    printf '%s\tuser\t0\tbash\t-\trun view 4\t-\n' "$now"
+    printf '%s\tuser\t0\tbash\t-\trun view 5\tagent-land\n' "$now"
+    printf '%s\tuser\t0\ttimeout\t-\trun view 6\tagent-land\n' "$now"
+    printf '%s\tuser\t0\tbash\t-\trun view 7\tci-gate.sh\n' "$now"
+    printf '%s\tuser:deferred\t75\tred-causes.py\t-\trun view 8\t-\n' "$now"
+    printf '%s\tapp:acme\t0\tbash\t-\trun view 9\t-\n' "$now"
+    printf '%s\tuser\t0\tzsh\t-\trun view 10\t-\n' "$(( now - 5000 ))"
+  } > "$GH_CALLS_DIR/2026-11-25.tsv"
+  run gh_callers_report "$(( now - 100 ))"
+  assert_success
+  assert_line 'user:deferred (waited for the reset): 4'
+  assert_line --index 1 $'  3\tred-causes.py'
+  assert_line --index 2 $'  1\tzsh'
+  assert_line 'reserve-granted reads: 3 (granting ancestor via parent)'
+  assert_line $'  1\tci-gate.sh via bash'
+  assert_line $'  1\tagent-land via timeout'
+  assert_line $'  1\tagent-land via bash'
+  # the 4 rows of the first file have no granting column; the 5000 s old row is outside the window
+  assert_line 'user rows without the granting column (logged before the column, ar-3009): 4'
+  rm "$GH_CALLS_DIR"/*.tsv
+  run gh_callers_report
+  assert_output "no gh call log in $GH_CALLS_DIR"
 }
 
 @test "--github prints the budget line and samples nothing else" {
