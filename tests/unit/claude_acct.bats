@@ -1169,7 +1169,7 @@ scope_env() {
   mkdir -p "$XDG_RUNTIME_DIR/systemd" "$SANDBOX/repo/unity-core-playground"
   rm -f "$XDG_RUNTIME_DIR/systemd/private"
   export BUS_LOG="$SANDBOX/bus.log"; : > "$BUS_LOG"
-  python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$XDG_RUNTIME_DIR/systemd/private"
+  unix_sock "$XDG_RUNTIME_DIR/systemd/private"
   cat > "$SANDBOX/bin/busctl" <<'STUB'
 #!/bin/sh
 for a; do echo "bus: $a"; done >> "$BUS_LOG"
