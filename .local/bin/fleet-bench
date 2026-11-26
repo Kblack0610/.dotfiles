@@ -558,6 +558,8 @@ def iso_epoch: if endswith("Z") then fromdateiso8601 else sub(":(?<m>[0-9]{2})$"
 def ratio($a; $b): if $b == 0 then null else ($a / $b * 1000 | round) / 1000 end;   # 3 places, null over none
 # landed, rated: the stamped outcome of a done item (agent-queue OUTCOME_JQ); rated is what a landed rate is over
 def landed: .outcome == "landed";
+# sids: the session ids of an item; the models, skills, sources and matrix tables share it
+def sids: (.sessions // "") | split(" ") | map(select(. != ""));
 def rated: .outcome | IN("landed", "no-pr", "failed");
 # move($before; $after; $dir; $flat): improved or regressed when the value moved more than $flat
 # (relative) the way $dir says (-1 lower is better, 1 higher), flat inside that, - with no value
@@ -3871,7 +3873,6 @@ models_json() {
     ($by | split(",")) as $bys | ($bys | index("class") != null) as $cl | ($bys | index("lane") != null) as $ln
     | ($runs | INDEX(.id)) as $rix | ($voids | INDEX(.id)) as $vix
     | ($ci | INDEX(itemkey)) as $cix | ($sa[0] // {}) as $sp |
-    def sids: (.sessions // "") | split(" ") | map(select(. != ""));
     def metered: (.gateway_cost_usd // "") != "";
     def alias: capture("^claude-(?<f>[a-z]+)-").f // .;
     def canary: (.from // "") == "canary" or ((.tags // "") | test("(^| )canary( |$)"));
@@ -4030,7 +4031,6 @@ skills_json() {
      --slurpfile reds <(printf '%s\n' "$reds" | jq -cs 'map(select(.slug and (.cleanup | not)) | {key: .slug, value: .outcome}) | from_entries') \
      --slurpfile ci <([ ! -s "$CI" ] || jq -c 'select(.repo and .number)' "$CI" 2>/dev/null) "$JQ_LIB"'
     def bare: sub("^[^:]+:"; "");
-    def sids: (.sessions // "") | split(" ") | map(select(. != ""));
     ($o[0] // {}) as $o | ($reds[0] // {}) as $r | ($ci | INDEX(itemkey)) as $cix
     | ($items | map(prkeys as $pk | (sids | map($o[.] // empty)) as $rows
         | {outcome, landed: landed, pk: $pk,
@@ -4126,7 +4126,7 @@ source_attr() {
     | ($ws | map({key: .sid, value: {source: .src,
         points: (if $pts[.src] == null or ($wsum[.src] // 0) == 0 then null else $pts[.src] * .w / $wsum[.src] end)}}) | from_entries) as $sess
     | def item_src: (.agent // "claude") as $h | (.account // "") as $a
-        | ([(.sessions // "") | split(" ")[] | select(. != "")]) as $ids
+        | sids as $ids
         | if $h != "claude" then $hs[$h] // (.account | acct)
           else (.account | acct) // ([$ids[] | $os[.] // empty | on // empty] | first) end
         | {src: ., why: (if . != null then null elif $a != "" then "unknown_account" elif $ids == [] then "no_session"
@@ -4215,7 +4215,7 @@ sizes_json() {
     done | jq -cs 'from_entries')
   jq -cn --argjson days "$BENCH_SIZES_DAYS" --argjson bdays "$BENCH_BANDS_DAYS" --argjson min "$BENCH_SIZES_MIN" \
      --argjson since "$since" --argjson bsince "$bands_since" \
-     --slurpfile items <(printf '%s\n' "$items") --slurpfile rows <(printf '%s\n' "$rows") '
+     --slurpfile items <(printf '%s\n' "$items") --slurpfile rows <(printf '%s\n' "$rows") "$JQ_LIB"'
     def pct($p): sort | if length == 0 then null else .[((length * $p) | ceil) - 1] end;
     def epoch: if . == null or . == "" then null else (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601) end;
     def hours: if . == null then null else (. / 3600 * 10 | round / 10) end;
@@ -4223,7 +4223,7 @@ sizes_json() {
     | [$items[0][] | select(.status != "cancelled") | ((.finished | epoch) // 0) as $fin
        | ($R[.row // ""]) as $r
        | {fin: $fin, ok: (.status == "ok"), size: ($r.size // ""), pts: $r.pts, weight: $r.weight, kind: ($r.kind // .type // "untyped" | if . == "" then "untyped" else . end),
-          landed: (.outcome == "landed"),
+          landed: landed,
           work: (.work_min // "" | tonumber? // null),
           cycle: (if (.started | epoch) and (.finished | epoch) then (.finished | epoch) - (.started | epoch) else null end),
           lead: (if (.queued | epoch) and (.finished | epoch) then (.finished | epoch) - (.queued | epoch) else null end)}] as $read
@@ -7521,7 +7521,7 @@ MATRIX_JQ='
     (select(tagged("night")) | "night"), (select(tagged("red")) | "red"), (select(.mode == "plan") | "plan"),
     (select((" " + (.tags // "")) | test(" ask:")) | "ask-resume"),
     (select((.salvage // "") != "") | "salvage-resume"),
-    (select((.sessions // "") | split(" ") | any(. as $s | $os[$s] | select(.harness == $h) | (.uses.subagents // {}) | length > 0)) | "fan-out"),
+    (select(sids | any(. as $s | $os[$s] | select(.harness == $h) | (.uses.subagents // {}) | length > 0)) | "fan-out"),
     (select(.project as $p | $forgejo | index($p)) | "forgejo")];
   def cell($rs): {pass: ($rs | map(select(.v == "pass")) | length), fail: ($rs | map(select(.v == "fail")) | length),
     evidence: ($rs | map(select(.v)) | sort_by(.at) | last | .ref // null)};
