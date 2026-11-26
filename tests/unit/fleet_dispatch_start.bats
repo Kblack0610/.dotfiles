@@ -2077,6 +2077,34 @@ rollup_setup() {
   [ "$(cat "$out")" = FAILED ] || fail "unread board: $(cat "$out")"
 }
 
+@test "rollup: a row the board's daily cap holds (notes exit 6) is no FAILED pass and is filed again the next night (ar-2940)" {
+  rollup_setup
+  export AGENTCTL_NAME=rollup
+  out="$AGENTCTL_STATE_DIR/rollup/last-outcome"
+  for i in 1 2 3; do reject nim glm 'nim:glm left no diff'; done
+  echo 6 > "$NOTES_FIXTURE/refuse.agent-runtime"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
+  assert_success
+  assert_output --partial "held by the agent-runtime board's daily cap, filed again next night: fix(trainee): nim:glm runs keep leaving no diff"
+  [ "$(cat "$out")" = NOOP ] || fail "capped pass: $(cat "$out")"
+  run grep -c 'keep leaving no diff' "$FLEET_DISPATCH_DIR/rollup.tsv"
+  assert_output 0
+  # the next night the cap has room: the same cause files its row
+  rm -f "$NOTES_FIXTURE/refuse.agent-runtime"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
+  assert_success
+  assert_output --partial 'filed: fix(trainee): nim:glm runs keep leaving no diff (3 since'
+  [ "$(cat "$out")" = WORKED ] || fail "filing pass: $(cat "$out")"
+  # any other refusal still fails the pass
+  rollup_setup; rm -f "$FLEET_DISPATCH_DIR/rollup.tsv"
+  for i in 1 2 3; do reject nim beam 'nim:beam left no diff'; done
+  touch "$NOTES_FIXTURE/refuse.agent-runtime"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
+  assert_failure
+  assert_output --partial 'board refused fix(trainee): nim:beam runs keep leaving no diff (notes exit 1)'
+  [ "$(cat "$out")" = FAILED ] || fail "refused pass: $(cat "$out")"
+}
+
 # lane_event <lane> <event> <class> <candidate> [days ago] -- one line of model-lane's demotions.jsonl
 lane_event() {
   jq -nc --arg l "$1" --arg e "$2" --arg c "$3" --arg h "$4" --arg t "$(date -u -d "${5:-0} days ago" +%FT%T+00:00)" \
