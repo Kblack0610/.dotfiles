@@ -244,30 +244,30 @@ load 'fleet_dispatch/fleet_dispatch_run_holds'
   assert_success
   assert_output --partial 'started game-agent-1: game: validate-game'
   [ -n "$(qitem queued follow-game)" ] || fail "a plain --after follow-up passed the project share cap"
-  # A low phase passes too (ar-6060): a phase handed on along a chain is never held by the cap, whatever its
-  # priority or who queued the plan. The negative control: a low plain --after follow-up, with no plan, waits.
+  # A low phase waits like any capped item: chain-lag bounds urgent and high only.
   agent-queue move follow-game done --status cancelled >/dev/null
   agent-queue add --project game --slug pd-one --priority low --from session "pd phase one" >/dev/null
   agent-queue move pd-one running >/dev/null; agent-queue move pd-one done --status ok >/dev/null
   printf '# pd\n\n## Phases\n\n- [ ] two\n' > "$SANDBOX/pd.md"
   agent-queue add --plan "$SANDBOX/pd.md" --project game --priority low --from session --after pd-one >/dev/null
-  agent-queue add --project game --slug low-follow --priority low --from session --after pd-one "a low follow-up" >/dev/null
   agent-queue add --project app --slug fix-app --priority low "fix the app" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_output --partial 'started game-agent-1: game: pd-p1'
-  [ -n "$(qitem queued low-follow)" ] || fail "a low plain --after follow-up passed the project share cap"
+  assert_output --partial 'started game-agent-1: app: fix-app'
+  [ -n "$(qitem queued pd-p1)" ] || fail "a low plan phase passed the project share cap"
 }
 
 # ar-6060: a human ask deduped into a chain left its phases without #requested; the cap then held every ready
 # phase 8h (2026-11-25) and share_return sent them back to their rows.
-@test "project share: a ready chain phase has no share_why and share_return leaves it; a plan-less item of the project is held" {
-  local phase plain
+@test "project share: a phase behind the previous phase of its own plan has no share_why at any priority; the first phase of a session's plan and a plan-less item are held" {
+  local phase first plain
   share_state() { :; }
   SHARE_STATE='{"full":true,"total":2,"projects":{"game":{"cap":30,"n":2,"full":true}},"sourced":[]}'
   phase='{"slug":"pe-p2","project":"game","priority":"low","from":"board:ar-1","plan":"/p/pe.md","after":"pe-p1"}'
+  first='{"slug":"pf-p1","project":"game","priority":"low","from":"session","plan":"/p/pf.md","after":"pe-one"}'
   plain='{"slug":"pe-x","project":"game","priority":"low","from":"board:ar-1","after":"pe-p1"}'
   [ -z "$(share_why "$phase")" ] || fail "the chain phase was held: $(share_why "$phase")"
+  [[ "$(share_why "$first")" == "project share: "* ]] || fail "a session plan's first phase passed the cap"
   [[ "$(share_why "$plain")" == "project share: "* ]] || fail "a plan-less item passed the cap"
 }
 

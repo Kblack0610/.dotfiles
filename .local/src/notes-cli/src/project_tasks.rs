@@ -478,10 +478,12 @@ pub(crate) fn add_via(
         return Ok(0);
     }
     if refuse_twin(&path, &content, text) {
-        // A human's want that joins an open row must still mark it: the twin was the only place the
-        // ask could land, and dropped here the row counted against the project share (ar-6060).
-        if want.is_some() && lane == Lane::Agent {
-            stamp_twin_requested(&path, &content, text)?;
+        // A human's want that joins an open row must still mark it, and the ingest record must say whose
+        // words it is: dropped here the row counted against the project share (ar-6060).
+        if want.is_some_and(crate::window::human_channel) && lane == Lane::Agent {
+            if let Err(e) = stamp_twin_requested(p, &path, &content, text, name, lane, want) {
+                eprintln!("could not mark the open row #requested: {e}");
+            }
         }
         return Ok(3);
     }
@@ -580,31 +582,44 @@ fn twin_id(content: &str, text: &str) -> Option<String> {
 }
 
 /// Put `#requested` on the open row of `content` that `text` twins (the row [`refuse_twin`] just
-/// named), so a `--want` that joins it is not lost. No-op when the row has no id or is marked.
-fn stamp_twin_requested(path: &Path, content: &str, text: &str) -> Result<()> {
+/// named), so a `--want` that joins it is not lost, and record the join as a `dup` event carrying the
+/// channel, as `--dup` does: dispatch reads whose words the mark is from that record (`asker_map`).
+/// No-op when the row has no id. Callers treat a failure as a warning: the add still exits 3.
+fn stamp_twin_requested(
+    p: &Profile,
+    path: &Path,
+    content: &str,
+    text: &str,
+    name: &str,
+    lane: Lane,
+    want: Option<&str>,
+) -> Result<()> {
     let Some(id) = twin_id(content, text) else {
         return Ok(());
     };
-    let mut changed = false;
+    let mut twin = None;
     let new: String = content
         .split_inclusive('\n')
         .map(|raw| {
             let line = raw.trim_end_matches('\n');
             let open =
                 line.trim_start().starts_with("- [ ]") || line.trim_start().starts_with("- [/]");
-            if !changed && open && md::row_id(line).as_deref() == Some(id.as_str()) {
-                let tagged = md::add_tag(line, WANT_TAG);
-                if tagged != line {
-                    changed = true;
-                    return format!("{tagged}{}", &raw[line.len()..]);
-                }
+            if twin.is_none() && open && md::row_id(line).as_deref() == Some(id.as_str()) {
+                twin = Some(line.to_string());
+                return format!("{}{}", md::add_tag(line, WANT_TAG), &raw[line.len()..]);
             }
             raw.to_string()
         })
         .collect();
-    if changed {
+    let Some(twin) = twin else {
+        return Ok(());
+    };
+    if new != content {
         write_sheet(path, &new)?;
     }
+    let mut ev = crate::ingest::Event::row("dup", name, "", lane.name(), &twin);
+    ev.want = want.map(str::to_string);
+    crate::ingest::record(p, &ev);
     Ok(())
 }
 
@@ -6760,6 +6775,11 @@ mod inbox_tests {
         assert_eq!(add_as("fix(audio): the gun sound is off", Some("human")), 3);
         let s = agent();
         assert_eq!(s.matches("#requested").count(), 1, "{s}");
+        let ing = fs::read_to_string(crate::ingest::path(&v.p)).unwrap_or_default();
+        assert!(
+            ing.contains(r#""action":"dup""#) && ing.contains(r#""id":"sc-1""#),
+            "{ing}"
+        );
         assert!(
             s.lines()
                 .any(|l| l.contains("sc-1") && l.contains("#requested")),
