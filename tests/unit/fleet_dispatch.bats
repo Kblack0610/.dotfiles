@@ -630,6 +630,60 @@ exits: improve 1 sheet 1'
   refute_output --partial 'gd-1'
 }
 
+@test "skip_exits: a row no worker takes for a DISPATCH_T3_SKIP word leaves the lane, before a judge's skip and a size exit; a row a worker takes, a plain tier-3 row, a row whose gate waits and a draft project's stay (ar-4527)" {
+  project game beta "$SANDBOX/repos/game"
+  project pre draft "$SANDBOX/repos/pre"
+  row game agent gh-1 "- [ ] fix(game): move the dns record #tier/3 <!-- id:gh-1 -->"
+  row game agent gh-2 "- [ ] chore(game): rotate the sudo rules #tier/3 #low <!-- id:gh-2 -->"
+  row game agent gh-3 "- [ ] fix(game): the dns row a worker takes $T <!-- id:gh-3 -->"
+  row game agent gh-4 "- [ ] ci(game): the runner pool #tier/3 <!-- id:gh-4 -->"
+  row game agent gh-5 "- [ ] feat(game): the whole dns move #size/l #tier/3 <!-- id:gh-5 -->"
+  row game agent gh-6 "- [ ] fix(game): dns once the pool is in #tier/3 #after/gh-4 <!-- id:gh-6 -->"
+  row pre agent gh-7 "- [ ] fix(pre): the dns record #tier/3 <!-- id:gh-7 -->"
+  : > "$NOTES_FIXTURE/board.rows"
+  for k in gh-1 gh-2 gh-3 gh-4 gh-5; do board_row game agent "$k" '[]' '[]'; done
+  board_row game agent gh-6 '["after/gh-4"]' '[]'; board_row pre agent gh-7 '[]' '[]'
+  jq -c 'if .id == "gh-5" then .size = "l" else . end' "$NOTES_FIXTURE/board.rows" > "$SANDBOX/b" && mv "$SANDBOX/b" "$NOTES_FIXTURE/board.rows"
+  # a judge's skip no worker could act on (it may predate the word) does not take the row to a plan
+  printf '%s\n' '- (unclear) an unclear row' >> "$DISPATCH_POLICY"
+  skipv gh-1 unclear r false
+  stub systemctl 'echo "$*" >> "$NOTES_FIXTURE/systemctl.log"'
+  run skip_exits --dry-run
+  assert_success
+  assert_output 'sheet	game	gh-1	human-merge
+improve	game	gh-2	human-merge
+sheet	game	gh-5	human-merge
+exits: improve 1 sheet 2'
+  : > "$NOTES_FIXTURE/calls.log"
+  skip_exits
+  assert_equal "$EXITS_TAKEN" 3
+  grep -qxF 'notes --profile bnb ptask game add fix(game): move the dns record #tier/3 (agent row gh-1) --origin fleet-dispatch' "$NOTES_FIXTURE/calls.log"
+  grep -qxF 'notes --profile bnb improve game --why dispatch never starts it: its text names sudo, on the human-merge list (DISPATCH_T3_SKIP) -- chore(game): rotate the sudo rules #tier/3 #low' "$NOTES_FIXTURE/calls.log"
+  grep -q 'id:gh-1 dropped: on the game sheet: dispatch never starts it: its text names dns' "$NOTES_FIXTURE/rows.game.agent"
+  assert_equal "$(jq -r 'select(.exit) | "\(.key)=\(.rule)=\(.exit)"' "$FLEET_DISPATCH_DIR/verdicts.jsonl" | paste -sd,)" \
+    'gh-1=human-merge=sheet,gh-2=human-merge=improve,gh-5=human-merge=sheet'
+  run grep -E '(ptask game (add|--agent)|improve game).*gh-[3467]|tag --add plan' "$NOTES_FIXTURE/calls.log"
+  assert_failure
+  # each exit is on record, so a second pass over the same board files no copy
+  : > "$NOTES_FIXTURE/calls.log"
+  skip_exits
+  assert_equal "$EXITS_TAKEN" 0
+  # negative control: with no worker table every row reads as one no worker takes, so no row takes this exit
+  rm "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  echo '{}' > "$DISPATCH_WORKERS"
+  run skip_exits --dry-run
+  assert_line --partial 'no human-merge exit this pass'
+  refute_output --partial 'human-merge	'
+  assert_line 'plan	game	gh-5	too-big'
+  # a gate that has cleared, still on the row, holds nothing: the row takes the exit
+  echo '{"fleet": {"max_tier": 1}}' > "$DISPATCH_WORKERS"
+  load_gates
+  GATE_ST[after/gh-4]=clear
+  run skip_exits --dry-run
+  assert_line 'sheet	game	gh-6	human-merge'
+  refute_output --partial 'gh-7'
+}
+
 @test "skip_exits: every skip rule in the shipped policy has exactly one exit" {
   one_exit() {
     local r n bad=''

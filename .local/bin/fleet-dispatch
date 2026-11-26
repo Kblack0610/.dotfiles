@@ -2187,6 +2187,32 @@ human_exit() {
   if [ "$rc" = 3 ]; then echo sheet; else echo improve; fi
 }
 
+# human_merge_set <board json> -> sets HM to {"<project> TAB <id>": <word>}, the DISPATCH_T3_SKIP word, for
+# each open agent row no worker takes because of that word (nobody_why, the reason suggest gives), read with
+# the regex t3_rows uses: skip_exits' human-merge rows. A row with a gate of any form (load_gates,
+# agent-queue's list) not yet clear (gate_wait) waits on it, as sprint-stalled reads it. With no worker table (every row would read as
+# one no worker takes) or no gate read, HM is {} and says why.
+human_merge_set() {
+  local table hm='' p id tags raw body g gs
+  HM='{}'
+  table=$(workers)
+  load_gates
+  if [ -z "$table" ]; then say "skip_exits: no workers in $DISPATCH_WORKERS: no human-merge exit this pass"; return 0; fi
+  if [ -n "${GATES_FAILED:-}" ]; then say "skip_exits: $GATES_FAILED: no human-merge exit this pass"; return 0; fi
+  while IFS=$'\t' read -r p id tags raw; do
+    [ -n "$id" ] || continue
+    body=${raw#- \[?\] }
+    re_icase "${body%%<!--*}" "$DISPATCH_T3_SKIP" || continue
+    gs=''; for g in $tags; do [ -z "${GATE_ST[$g]+x}" ] || gs+=" $g"; done
+    [ -z "$gs" ] || [ -z "$(gate_wait "$gs" "$id")" ] || continue
+    ! row_worker "$table" agent "$raw" || continue
+    nobody_why_set "$table" agent "$raw"
+    [[ $NOBODY == "tier3 skip: "* ]] && hm+="$p"$'\t'"$id"$'\t'"${NOBODY#tier3 skip: }"$'\n'
+  done < <(jq -r '.rows[]? | select(.lane == "agent" and .state == "open" and .id != null)
+    | "\(.project)\t\(.id)\t\((.tags_cased // .tags // []) | if length > 0 then join(" ") else "-" end)\t\(.raw)"' <<<"$1")
+  HM=$(jq -Rsc 'split("\n") | map(select(length > 0) | split("\t") | {key: "\(.[0])\t\(.[1])", value: .[2]}) | from_entries' <<<"$hm")
+}
+
 # skip_exits [--dry-run] -- give each open agent row whose latest verdict is a skip, still current
 # for the row's text, the exit its rule names (policy.md "Always skip"), so no skip parks a row.
 # A check(epics) row takes none: reconcile_epics queues its verify item, the judge never needs to.
@@ -2218,6 +2244,14 @@ human_exit() {
 #    #after/ or #pr/, one whose session failed, one in a project the judge does not cover, or one whose
 #    verdict already carries another exit. A sized
 #    row inbox-plan planned that is still L takes the human exit, as a planned too-big skip does.
+#  - human-merge: a row no worker takes whose text names a DISPATCH_T3_SKIP word (nobody_why's "tier3
+#    skip") is never judged, since t3_rows leaves it out, so with no verdict it takes the human exit as rule
+#    `human-merge`: the human-merge list never starts unattended, and on the agent lane such a row stalled
+#    its sprint for good (ar-4527: ucp-2700 on "dns"). Not an epic, a parent, a failed row, one in a
+#    project the judge does not cover, one with an exit on record but a spent plan, or one with a gate not
+#    yet clear (it waits on that). It goes first: before a judge's skip, which no worker could act on and
+#    which may predate the word, and before the size exit, so a sized row with such a word reaches the person. With no worker table (every row would read as one no worker takes) or no gate
+#    read, that pass gives no such exit.
 # Each exit taken appends the verdict again with `exit` (and `exit_at`) to verdicts.jsonl, so counting
 # exits is a jq query, and that latest verdict, carrying its exit, is not taken again. At most
 # DISPATCH_EXIT_MAX exits a pass (0 is no cap), so a backlog of skips drains over passes, not in one. A
@@ -2225,7 +2259,7 @@ human_exit() {
 # nothing and prints `<exit> TAB <project> TAB <id> TAB <rule>` per row (`plan-wait` for a plan row
 # past the room), then the counts. Sets PLAN_TAGGED, EXITS_TAKEN and EXITS_HELD.
 skip_exits() {
-  local dry='' follow='' board rows room p prof id raw line dsig dj rule req prio planned d e body why where gate
+  local dry='' follow='' board rows room p prof id raw line dsig dj rule req prio planned d e body why where gate hm
   local -a add
   local -A ids=() n=()
   case "${1:-}" in
@@ -2235,6 +2269,7 @@ skip_exits() {
   esac
   PLAN_TAGGED=0 EXITS_TAKEN=0 EXITS_HELD=0
   board=$(notes board --json 2>/dev/null) || { say "skip_exits: notes board --json failed"; return 0; }
+  human_merge_set "$board"; hm=$HM
   room=$(jq -r "$ROW_JQ"'[.rows[]? | select(plan_tagged)] | length' <<<"$board")
   room=$(( DISPATCH_PLAN_BACKLOG - ${room:-0} ))
   while IFS= read -r id; do [ -z "$id" ] || ids[$id]=1; done < <(jq -r '.rows[]? | select(.id != null) | .id' <<<"$board")
@@ -2266,7 +2301,7 @@ skip_exits() {
           exit: ((map(select(.verdict != "failed" and .verdict != "cleared")) | last // {}) | .exit)}}) | from_entries' "$VERDICTS" 2>/dev/null) || ss='{}'
   fi
   rows=$(jq -r --argjson prules "$(policy_rules)" --argjson n "$DISPATCH_DETAIL_CHARS" \
-      --argjson kinds "$kinds" --argjson elig "$elig" --slurpfile ssf <(printf '%s\n' "$ss") \
+      --argjson kinds "$kinds" --argjson elig "$elig" --argjson hm "$hm" --slurpfile ssf <(printf '%s\n' "$ss") \
       --arg at "$(date -Iseconds)" --arg sig "$(policy_sig)" \
       --slurpfile v <(latest_verdicts) "$ROW_JQ"'
     ($v | map(select(.lane == "agent" and .verdict == "skip" and .exit == null and usable($prules)))
@@ -2278,7 +2313,12 @@ skip_exits() {
     | ([.rows[]? | select(.state == "open" or .state == "doing") | .tags[]? | select(startswith("of/")) | {key: .[3:], value: true}] | from_entries) as $parents
     | .rows[]? | select(.lane == "agent" and .state == "open" and .id != null and (plan_tagged | not) and "\(.type)(\(.area))" != "check(epics)")
     | $by["\(.project)\t\(.id)"] as $d
-    | if $d != null then
+    | if $hm["\(.project)\t\(.id)"] != null and (.type // "") != "epic" and ($parents[.id] | not)
+          and (.project as $pj | $elig | index($pj)) != null
+          and (($ss["\(.project)\t\(.id)"].failed // false) | not)
+          and ($ss["\(.project)\t\(.id)"].exit | IN(null, "plan")) then
+        "\(.profile)\t\(.project)\t\(.id)\t-\t-\t\(details_json($n))\thuman-merge\t\(.requested == true)\tfalse\t\({project, lane: "agent", key: .id, verdict: "skip", rule: "human-merge", reason: "its text names \($hm["\(.project)\t\(.id)"]), on the human-merge list (DISPATCH_T3_SKIP)", at: $at, policy: $sig} | tojson)\t\(.raw)"
+      elif $d != null then
         "\(.profile)\t\(.project)\t\(.id)\t\($d.line)\t\($d.dsig // "-")\t\(details_json($n))\t\($d.rule)\t\(.requested == true)\t\(planned)\t\($d | tojson)\t\(.raw)"
       elif $off[.type // ""] and ($parents[.id] | not) and ($gone["\(.project)\t\(.id)"] | not) then
         "\(.profile)\t\(.project)\t\(.id)\t-\t-\t\(details_json($n))\tkind\t\(.requested == true)\tfalse\t\({project, lane: "agent", key: .id, verdict: "skip", rule: "kind", reason: "kind \(.type) is off", at: $at, policy: $sig} | tojson)\t\(.raw)"
@@ -2314,6 +2354,7 @@ skip_exits() {
       [ "$DISPATCH_EXIT_MAX" = 0 ] || [ "$EXITS_TAKEN" -lt "$DISPATCH_EXIT_MAX" ] || break
     fi
     if [ "$rule" = kind ]; then why="dispatch never starts it: $(jq -r '.reason // ""' <<<"$d") (kinds.json)"
+    elif [ "$rule" = human-merge ]; then why="dispatch never starts it: $(jq -r '.reason // ""' <<<"$d")"
     else why="dispatch skipped it ($rule): $(jq -r '.reason // ""' <<<"$d")"; fi
     case "$e" in
       plan)
@@ -2378,7 +2419,7 @@ skip_exit_pick() {
     [ -n "$gate" ] && jq -e '(.size | IN("S", "M")) and .clear == true and .agent_only == true and ((.area // "") != "")' <<<"$d" >/dev/null || gate=''
     if [ -n "$gate" ]; then e=gate; else e=plan; fi
   elif [[ " $DISPATCH_PLAN_RULES " == *" $rule "* ]]; then e=plan
-  elif [ "$rule" = kind ]; then e=human
+  elif [ "$rule" = kind ] || [ "$rule" = human-merge ]; then e=human
   elif [[ " $DISPATCH_HUMAN_RULES " == *" $rule "* ]]; then
     if [ "$(jq -r '.agent_only // false' <<<"$d")" = true ]; then e=plan; else e=human; fi
   fi
