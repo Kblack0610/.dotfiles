@@ -22,7 +22,8 @@ eval "probe=$probe_word"
 
 image=${1:?usage: fleet-agent-smoke.sh <image> | --probe}
 run=smoke-$$
-work=$(mktemp -d)
+# Under RUNNER_TEMP on CI: a dind pod's docker sees the job's work volume, never its /tmp, and the key is bind-mounted.
+work=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/fleet-agent-smoke.XXXXXX")
 port=${SMOKE_PORT:-2299}
 
 cleanup() {
