@@ -13,7 +13,7 @@
 //! job starts a pod, and GitHub lists that pod's runner with no labels, so a pool's labels come
 //! from the exporter's `ci_runner_pool` row (`Pool`) and it holds them like a runner (ar-5477).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde::Serialize;
 
@@ -710,11 +710,7 @@ fn pools(infra: &Infra) -> Vec<Pool<'_>> {
 /// rollout.
 fn runners(infra: &Infra) -> Vec<Runner<'_>> {
     let alias = infra.aliases();
-    let held: HashSet<&str> = infra
-        .get("withheld")
-        .iter()
-        .map(|s| s.label("name"))
-        .collect();
+    let held = infra.withheld();
     let lent = infra.lent();
     let kinds = infra.job_kinds();
     let mut by: BTreeMap<&str, &Series> = BTreeMap::new();
