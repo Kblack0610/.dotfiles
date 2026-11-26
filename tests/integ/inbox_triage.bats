@@ -481,7 +481,7 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   answer '{"n": 1, "action": "dup", "id": "sc-3"}'
   run "$TRIAGE"
   refute_output --partial 'names sc-3 as its own parent'
-  # A join to a closed row is refused, so the line waits in the inbox; it is never filed as a row.
+  # The line stays in the inbox (a closed row takes no dup); it is never filed as a row of its own.
   run cat "$SHEET" "$PROJ/scratch/agent/README.md"
   refute_line --regexp '^- \[ \] feat\(ui\): the stage cells on /book .*id:'
 }
