@@ -258,7 +258,7 @@ want_channel() { if [ "$1" = outbox ]; then echo outbox; else echo human; fi; }
 # file_line <project> <raw> <text> <args...>: one `ptask file`, counted, FILED_ID set to the id of
 # the first row it wrote (the CLI prints the rows on stdout). A refusal is recorded with the CLI's reason,
 # except the intake gate's (exit GATE_RC: a session's row a gated board takes only as an evidenced
-# fault, QUEUE.md "Admission"), which records nothing and returns GATE_RC for the caller to keep the
+# fault, or any board's row past its daily cap, QUEUE.md "Admission"), which records nothing and returns GATE_RC for the caller to keep the
 # line as an improvement.
 GATE_RC=6
 file_line() {

@@ -1046,6 +1046,18 @@ enum IngestCmd {
     Import,
     /// Publish the inbox status page from the record and the outbox (the sweep runs it)
     Page,
+    /// The daily intake cap (`intake_daily_cap`, QUEUE.md "Admission"): per local day and project
+    /// (every gated board, and any other the cap touched), the new agent rows admitted and the rows
+    /// the cap refused, oldest first and today last
+    /// (`--json`: one `{date, project, cap, admitted, refused}` object a line), the one reader
+    /// fleet-bench's churn KPIs use
+    Cap {
+        /// How many local days, today included
+        #[arg(long, default_value_t = 7)]
+        days: i64,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// `notes ingest record`: one chain event a shell writer made, appended to the record.
@@ -1078,6 +1090,43 @@ fn ingest_record(prof: &config::Profile, r: RecordArgs) -> i32 {
     ev.near = set(near);
     ingest::record(prof, &ev);
     0
+}
+
+/// `notes ingest <sub>`: the record, import, page and cap commands.
+fn ingest_sub(
+    prof: &config::Profile,
+    log: &logging::Logger,
+    sub: IngestCmd,
+) -> anyhow::Result<i32> {
+    Ok(match sub {
+        IngestCmd::Record(r) => ingest_record(prof, *r),
+        IngestCmd::Import => ingest_import(prof)?,
+        IngestCmd::Page => daily::publish_inbox_page(prof, log)?,
+        IngestCmd::Cap { days, json } => ingest_cap(prof, days, json)?,
+    })
+}
+
+/// `notes ingest cap`: the cap's admitted and refused rows a day ([`gate::cap_days`]).
+fn ingest_cap(prof: &config::Profile, days: i64, json: bool) -> anyhow::Result<i32> {
+    if days < 1 {
+        anyhow::bail!("--days is a whole number of days, at least 1");
+    }
+    for d in gate::cap_days(prof, days) {
+        if json {
+            println!("{}", serde_json::to_string(&d)?);
+        } else {
+            let cap = if d.cap == 0 {
+                "no cap".to_string()
+            } else {
+                format!("cap {}", d.cap)
+            };
+            println!(
+                "{} {}: {} admitted, {} refused ({cap})",
+                d.date, d.project, d.admitted, d.refused
+            );
+        }
+    }
+    Ok(0)
 }
 
 /// `notes ingest import`: a worker's record on stdin; prints where its next read starts.
@@ -1970,11 +2019,7 @@ fn main() -> Result<()> {
             ingest::log(&prof, day.as_deref(), days, &filter, json)?
         }
         Cmd::Improve(a) => improve::run(&prof, &log, a)?,
-        Cmd::Ingest { sub } => match sub {
-            IngestCmd::Record(r) => ingest_record(&prof, *r),
-            IngestCmd::Import => ingest_import(&prof)?,
-            IngestCmd::Page => daily::publish_inbox_page(&prof, &log)?,
-        },
+        Cmd::Ingest { sub } => ingest_sub(&prof, &log, sub)?,
         Cmd::Inbox { sub } => {
             match sub {
                 None | Some(InboxCmd::List) => inbox::list(&prof, &log)?,

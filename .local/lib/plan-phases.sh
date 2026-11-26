@@ -163,6 +163,24 @@ plan_overlap_ids() {
     on' "$@" | grep -oE '\b[a-z][a-z0-9]*-[0-9]+\b' | sort -u
 }
 
+# plan_project [<plan file>] -> the project whose rows the plan names: the id on its `epic: <id>` line,
+# else, for an `epic: new` proposal, the ids on its Overlap: line, each read by its code (project_of_code,
+# so the caller has sourced project-name.sh). Overlap counts only there, because elsewhere it lists other
+# work. Nothing when it names no known id, or ids of more than one project: the caller then takes the
+# session's cwd. Why: a dotfiles session planning dodginballs work was checked on the agent-runtime
+# board (ar-5288). Reads stdin with no file.
+plan_project() {
+  [ $# -eq 0 ] || [ -f "$1" ] || return 0
+  local text ids p
+  text=$(cat "$@")
+  ids=$(_epic_line epic <<<"$text")
+  [ -n "$ids" ] || [ -z "$(plan_epic_new <<<"$text")" ] || ids=$(plan_overlap_ids <<<"$text")
+  [ -n "$ids" ] || return 0
+  p=$(while read -r id; do project_of_code "${id%-*}"; done <<<"$ids" | grep -v '^$' | sort -u)
+  [ -n "$p" ] && [ "$(wc -l <<<"$p")" -eq 1 ] && printf '%s\n' "$p"
+  return 0
+}
+
 # plan_epic_tag <plan file> -> `#plan/<slug>`, the tag plan-approved.sh puts on a proposal and
 # plan_epic_verdict finds its verdict by.
 plan_epic_tag() { printf '#plan/%s\n' "$(basename "$1" .md)"; }
@@ -362,9 +380,13 @@ plan_row_plan() {
 # brief_epic <brief file> -> the `<code>-<N>` of the brief's `Epic:` head line, or nothing.
 brief_epic() { _epic_line Epic "$1"; }
 
-# _epic_line <key> <file>: the one parse of an epic id after `<key>:`
+# _epic_line <key> [<file>]: the one parse of an epic id after `<key>:`, outside code fences, so an
+# example in a fence is no epic. Reads stdin with no file: plan-standard.sh holds the plan as text.
 _epic_line() {
-  [ -f "$2" ] && sed -nE "/^$1: *([a-z0-9]+-[0-9]+)([^0-9].*)?\$/{s//\\1/p;q;}" "$2"
+  [ $# -lt 2 ] || [ -f "$2" ] || return 1
+  awk -v k="$1" '/^```/ { f = !f; next } f { next }
+    $0 ~ "^" k ":[ \t]*[a-z0-9]+-[0-9]+([^0-9]|$)" {
+      sub("^" k ":[ \t]*", ""); match($0, /^[a-z0-9]+-[0-9]+/); print substr($0, 1, RLENGTH); exit }' "${@:2}"
 }
 
 # plan_phase_list <plan file> -> one compact JSON array [{state, name, n}] in file order, [] when

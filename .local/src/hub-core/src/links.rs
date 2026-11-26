@@ -20,12 +20,9 @@ pub enum Kind {
     Session,
     /// An agent-queue item, by its slug.
     Queue,
-    /// A board task, or an epic that is closed, by its id (`ar-1494`): Projects' Board filtered to
-    /// exactly that id. An open epic lists only on its own chip (`Epic`), so this finds none.
+    /// A board row, task or epic, by its id (`ar-1494`): Projects' Board filtered to exactly that
+    /// id. The default chip lists the row it names, an open epic too (`tasks::Row`'s `PIN`).
     Row,
-    /// An epic, by its id: Projects' Board on its `epics` chip filtered to exactly that id, the
-    /// one chip an epic row lists on (a `Row` link to it finds nothing in the default list).
-    Epic,
     /// The rows under an epic, by the epic's id: Projects' Board filtered to its `of/<id>` tag.
     Children,
     /// An agentctl runner's page, on Sessions' Runners (`#sessions/runners/<name>`).
@@ -199,7 +196,6 @@ impl Link {
             Kind::Queue => format!("#queue/{seg}"),
             // `id:ar-1` alone would match `ar-10`.
             Kind::Row => format!("#projects/all?q=id:={seg}"),
-            Kind::Epic => format!("#projects/all?q=id:={seg}&s=epics"),
             Kind::Children => format!("#projects/all?q=tag:=of/{seg}"),
             Kind::Alert => format!("#alerts/{seg}"),
             // ci.js's runs table keys its view with `b` (`bq`); `pr:=` is exact, so #1 is not #10.
@@ -249,8 +245,6 @@ impl Link {
             Kind::Project => ("projects", id.clone()),
             Kind::Queue => ("queue", id.clone()),
             Kind::Row => ("projects", format!("all id:={id}")),
-            // The hub's Board reads a leading `state:epics ` as its chip (hub-tui projtab).
-            Kind::Epic => ("projects", format!("all state:epics id:={id}")),
             Kind::Children => ("projects", format!("all tag:=of/{id}")),
             Kind::Alert => ("alerts", String::new()),
             Kind::PrRuns => ("infra", format!("runs pr:={id}")),
@@ -365,13 +359,6 @@ mod tests {
             (
                 "#projects/all?q=id:=ar-455".into(),
                 a("projects", "all id:=ar-455")
-            )
-        );
-        assert_eq!(
-            both(Kind::Epic, "ar-1282"),
-            (
-                "#projects/all?q=id:=ar-1282&s=epics".into(),
-                a("projects", "all state:epics id:=ar-1282")
             )
         );
         assert_eq!(
@@ -511,7 +498,6 @@ mod tests {
             Kind::Session,
             Kind::Queue,
             Kind::Row,
-            Kind::Epic,
             Kind::Children,
             Kind::Schedule,
         ] {

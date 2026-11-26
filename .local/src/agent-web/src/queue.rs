@@ -602,9 +602,9 @@ mod tests {
     #[test]
     fn a_row_view_adds_cost_pr_flag_and_the_days_total() {
         let items = hub_queue::parse(concat!(
-            r#"{"slug":"a","state":"done","status":"ok","pr":"o/r#7","merged":"abc","cost_usd":"6.1","started":"2026-11-06T11:00:00Z","finished":"2026-11-06T12:00:00Z","task":"t"}"#,
+            r#"{"slug":"a","state":"done","status":"ok","outcome":"landed","pr":"o/r#7","merged":"abc","cost_usd":"6.1","started":"2026-11-06T11:00:00Z","finished":"2026-11-06T12:00:00Z","task":"t"}"#,
             "\n",
-            r#"{"slug":"b","state":"done","status":"ok","cost_usd":"0","finished":"2026-11-06T12:05:00Z","task":"t"}"#,
+            r#"{"slug":"b","state":"done","status":"ok","outcome":"no-pr","cost_usd":"0","finished":"2026-11-06T12:05:00Z","task":"t"}"#,
             "\n",
             r#"{"slug":"c","state":"queued","agent":"codex","model":"sol","task":"t"}"#,
             "\n",

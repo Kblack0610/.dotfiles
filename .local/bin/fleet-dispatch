@@ -2190,13 +2190,16 @@ human_exit() {
 }
 
 # skip_exits [--dry-run] -- give each open agent row whose latest verdict is a skip, still current
-# for the row's text, the exit its rule names (policy.md "Always skip"), so no skip parks a row:
+# for the row's text, the exit its rule names (policy.md "Always skip"), so no skip parks a row.
+# A check(epics) row takes none: reconcile_epics queues its verify item, the judge never needs to.
 #  - plan (DISPATCH_PLAN_RULES): tag it #plan, and #go beside it on a #requested row (the judge asked
 #    for this plan, not the person, so inbox-plan does not hold it for their review), while fewer than
 #    DISPATCH_PLAN_BACKLOG #plan rows are open, then kick inbox-plan; its plan splits or rewrites the
 #    row, so the judge reads it again with the plan. A row the rest wait behind keeps its verdict and
 #    is tagged on a later pass. A row inbox-plan already planned (a `goal:` detail) that the judge,
 #    reading that plan, still skips by such a rule takes the human exit: a second plan would not help.
+#    No rule there names a person, so that sheet row is #normal at most (an #urgent or #high one is
+#    lowered, a #requested one kept): seen on the sheet, not paged on Needs (ar-5968).
 #  - human (DISPATCH_HUMAN_RULES): an #urgent, #high, #normal, bare or #requested row is filed on the human sheet
 #    (file_row human), a #low one kept in improvements.md (`notes improve`) unless an open row gates
 #    #after/ on it (then the sheet, whose row follow_moved_gates moves that gate to in the same pass), its #worker/ tag off
@@ -2220,7 +2223,7 @@ human_exit() {
 # nothing and prints `<exit> TAB <project> TAB <id> TAB <rule>` per row (`plan-wait` for a plan row
 # past the room), then the counts. Sets PLAN_TAGGED and EXITS_TAKEN.
 skip_exits() {
-  local dry='' follow='' board rows room p prof id raw line dsig dj rule req prio planned d e body why where gate
+  local dry='' follow='' board rows room p prof id raw line dsig dj rule req prio planned d e body why where gate spent
   local -a add
   local -A ids=() n=()
   case "${1:-}" in
@@ -2271,7 +2274,7 @@ skip_exits() {
     | $ssf[0] as $ss
     | ($kinds | to_entries | map(select(.value.enabled == false and .key != "epic") | {key, value: true}) | from_entries) as $off
     | ([.rows[]? | select(.state == "open" or .state == "doing") | .tags[]? | select(startswith("of/")) | {key: .[3:], value: true}] | from_entries) as $parents
-    | .rows[]? | select(.lane == "agent" and .state == "open" and .id != null and (plan_tagged | not))
+    | .rows[]? | select(.lane == "agent" and .state == "open" and .id != null and (plan_tagged | not) and "\(.type)(\(.area))" != "check(epics)")
     | $by["\(.project)\t\(.id)"] as $d
     | if $d != null then
         "\(.profile)\t\(.project)\t\(.id)\t\($d.line)\t\($d.dsig // "-")\t\(details_json($n))\t\($d.rule)\t\(.requested == true)\t\(planned)\t\($d | tojson)\t\(.raw)"
@@ -2292,7 +2295,7 @@ skip_exits() {
     [ "$line" = - ] || [ "$(row_sig "$raw")" = "$line" ] || continue
     [ "$dsig" = - ] || [ "$(detail_sig "$dj")" = "$dsig" ] || continue
     body=${raw#- \[?\] }; body=${body%%<!--*}; body=${body%"${body##*[![:space:]]}"}
-    e='' gate=''
+    e='' gate='' spent=''
     if [ "$rule" = waits ]; then
       gate=$(waits_gate "$id" "$(jq -r '.reason // ""' <<<"$d")" "$body")
       if [ -n "$gate" ] && [[ $gate == after/* ]] && [ -z "${ids[${gate#after/}]:-}" ]; then gate=''; fi
@@ -2306,7 +2309,7 @@ skip_exits() {
       # a plan made before the verdict that dsig cannot date: the judge may not have read it yet (a
       # sized row has no verdict to read it: its plan is made and the row is still L)
       [ "$dsig" != - ] || [ "$line" = - ] || continue
-      e=human
+      e=human spent=1
     fi
     [ "$e" != human ] || e=$(human_exit "$prof" "$p" "$body" "$req" "${gated[$id]-}")
     if [ "$e" = plan ] && [ "$room" -le 0 ]; then
@@ -2330,7 +2333,7 @@ skip_exits() {
         np "$prof" ptask "$p" --agent tag --add "$gate" "$id" >/dev/null 2>&1 || { say "skip_exits: could not gate $p $id #$gate"; continue; }
         e=$gate ;;
       sheet | improve)
-        body=$(sed -E 's/(^|[[:space:]])#worker\/[^[:space:]]+//g; s/^[[:space:]]+//' <<<"$body")
+        body=$(sheet_body "$body" "$([ -z "$spent" ] || [ "$req" = true ] || echo lower)")
         if [ "$e" = sheet ]; then
           where=$(file_row human "$(jq -cn --arg pr "$prof" --arg p "$p" '{profile: $pr, project: $p}')" "$body (agent row $id)")
           case "$where" in "not filed"*) continue ;; esac
@@ -2365,6 +2368,19 @@ skip_exits() {
   [ "$PLAN_TAGGED" = 0 ] && return 0
   say "tagged $PLAN_TAGGED for a plan"
   "$HERE/agentctl-inbox-plan" --kick || say "skip_exits: could not start inbox-plan"
+}
+
+# sheet_body <body> [lower] -> the row's text for the sheet or improvements.md: its #worker/ tag off, so
+# no worker takes it there. With `lower` (a spent plan exit, not #requested) an #urgent or #high is
+# #normal: no rule names a person, so the row is seen on the sheet, not paged on Needs; its #why/
+# reason goes with the level it argued for (notes refuses a #high reason on a #normal row).
+sheet_body() {
+  local b
+  b=$(sed -E 's/(^|[[:space:]])#worker\/[^[:space:]]+//g; s/^[[:space:]]+//' <<<"$1")
+  if [ -n "${2:-}" ] && grep -qE '(^|[[:space:]])#(urgent|high)([[:space:]]|$)' <<<"$b"; then
+    b=$(sed -E ':a; s/(^|[[:space:]])#(urgent|high)([[:space:]]|$)/\1#normal\3/; ta; s/(^|[[:space:]])#why\/[^[:space:]]+//g' <<<"$b")
+  fi
+  printf '%s\n' "$b"
 }
 
 # waits_gate <own id> <text>... -> the gate a waits skip waits behind: `pr/<owner>/<repo>/<N>` for the
@@ -3140,7 +3156,7 @@ ladder_row_why() {
     return 1
   fi
   load_kinds
-  kind_opens_pr "$it" || { echo "its kind $(item_kind "$it") opens no PR"; return 1; }
+  kind_opens_pr "$it" || [ "${KIND_EXIT[$(item_kind "$it")]:-}" = report ] || { echo "its kind $(item_kind "$it") opens no PR"; return 1; }
 }
 
 # tier3_pick <item json> <share> -> rc 0 when a ladder run takes the tier-3 row: share is above 0,
@@ -4959,10 +4975,12 @@ row_newer_item() {
 }
 
 # PR_STATE_JSON, PR_STATE_JQ -- what one read of an item's PR asks for, and the line it prints:
-# "<state> <merge oid> <head oid> <ci> <mergeable>", - for a missing oid or mergeable, ci as CI_JQ reads
-# the checks, mergeable as gh reads it (MERGEABLE, CONFLICTING, UNKNOWN).
+# "<state> <merge oid> <head oid> <ci> <mergeable> <red runs>", - for a missing oid or mergeable, ci as
+# CI_JQ reads the checks except that a FAIL the runners caused (CI_JQ infra) reads INFRA, mergeable as gh
+# reads it (MERGEABLE, CONFLICTING, UNKNOWN), red runs as CI_JQ red_runs.
 PR_STATE_JSON=state,mergeCommit,headRefOid,statusCheckRollup,mergeable
-PR_STATE_JQ="$CI_JQ"' [.state, (.mergeCommit.oid // "-"), (.headRefOid // "-"), ci, (.mergeable // "-")] | join(" ")'
+PR_STATE_JQ="$CI_JQ"' [.state, (.mergeCommit.oid // "-"), (.headRefOid // "-"),
+  (if infra then "INFRA" else ci end), (.mergeable // "-"), red_runs] | join(" ")'
 
 # item_pr_state <slug> <item json> -> PR_STATE_JQ's line for the item's PR; fails when its forge cannot
 # be read (so_pr_view). A bare pr: names no repo and one project spans repos, so it reads from the
@@ -4997,7 +5015,7 @@ land_orphan() {
     case "$state" in
     # From land_row, an open PR holds the row only for an item that ended ok: a failed or cancelled
     # run's PR left open is nobody's, and must not keep a held row from its ask.
-    OPEN) [ -z "${3:-}" ] || [ "$(jq -r '.status // ""' <<<"$it")" = ok ] || return 1; return 0 ;;
+    OPEN) [ -z "${3:-}" ] || [ "$(jq -r '.outcome // ""' <<<"$it")" = landed ] || return 1; return 0 ;;
     MERGED) [ -n "$oid" ] || return 1
       ! own_record "$1" "$it" || agent-queue set "$1" "merged=$oid" >/dev/null || return 1
       it=$(jq -c --arg m "$oid" '.merged = $m' <<<"$it") ;;
@@ -5033,8 +5051,8 @@ row_done_items() {
 }
 
 # unstart_orphans -- a row started with no active queue item naming it (its `row`, on its lane) is an
-# orphan: its session never filed an item, or died before reap could see one. If an item done ok
-# in the last DISPATCH_ORPHAN_HOURS plus a day names it, its PR decides first (land_orphan); a PR open
+# orphan: its session never filed an item, or died before reap could see one. If an item landed
+# (outcome landed) in the last DISPATCH_ORPHAN_HOURS plus a day names it, its PR decides first (land_orphan); a PR open
 # longer than that falls to the timer. A row seen orphaned on every pass for DISPATCH_ORPHAN_HOURS is un-started and given a failed verdict, as
 # settle_row does, so it is judged again (an agent row is also held and asked about at DISPATCH_FIX_TRIES
 # failures, ask_failed_rows); the grace keeps a
@@ -5051,7 +5069,7 @@ unstart_orphans() {
   # item or a gated board row names that plan (PLAN_ITEMS_JQ). agent-land closes it with the last phase.
   chains=$({ printf '%s\n' "$items"; plan_gated_rows "$feed"; } | jq -cs .) || chains='[]'
   landed=$(agent-queue list --json --state done --since "$(date -d "-$((DISPATCH_ORPHAN_HOURS / 24 + 1)) days" +%F)" 2>/dev/null) || return 0
-  landed=$(jq -rs 'map(select(.status == "ok" and (.row // "") != "")) | sort_by(.finished)
+  landed=$(jq -rs 'map(select(.outcome == "landed" and (.row // "") != "")) | sort_by(.finished)
     | .[] | "\(.lane // "agent")\t\(.row | sub(":"; "\t"))\t\(.slug)"' <<<"$landed")
   mkdir -p "$DIR"
   linked=$(jq -r 'select(.state != "done" and (.row // "") != "") | "\(.lane // "agent")\t\(.row | sub(":"; "\t"))"' <<<"$items")
@@ -5215,7 +5233,7 @@ restart_human_item() {
 # there for its next start.
 # Each note is added in front of the one the session left (note_add), never over it.
 settle_item() {
-  local st it pr report info state='' oid head='' ci='' mergeable='' end=() why='' ask after; st=$(item_state "$1")
+  local st it pr report info state='' oid head='' ci='' mergeable='' reruns='' end=() why='' ask after; st=$(item_state "$1")
   # set_end -- why this run ended, asked only by the branches that record it.
   set_end() { why=$(item_end "$it"); [ -z "$why" ] || end=(--end "$why"); }
   # requeue_blocked <slug> <session> <reason> -- back to queued/, where the next start waits on what blocked
@@ -5243,7 +5261,7 @@ settle_item() {
   fi
   IFS=$'\x1f' read -r pr report oid < <(jq -r '[.pr // "", .report // "", .merged // ""] | join("\u001f")' <<<"$it")
   if [ -n "$pr" ] && [ -n "$oid" ]; then state=MERGED
-  elif [ -n "$pr" ]; then info=$(item_pr_state "$1" "$it") || info=''; read -r state oid head ci mergeable <<<"$info"; oid=${oid#-} head=${head#-}
+  elif [ -n "$pr" ]; then info=$(item_pr_state "$1" "$it") || info=''; read -r state oid head ci mergeable reruns <<<"$info"; oid=${oid#-} head=${head#-}
   fi
   # A run that filed a question for its item and stopped without `agent-queue requeue --ask` (4 of 24
   # Codex runs that asked, 2026-11-10) goes back to its board row gated #ask/<id> while its work is
@@ -5293,7 +5311,7 @@ settle_item() {
   case "$state" in OPEN | CLOSED) reap_unstuck "$1" ;; MERGED) [ -z "$oid" ] || reap_unstuck "$1" ;; esac
   # Already parked on its open PR, this pass reaps nothing: no event for every pass of the wait,
   # unless its checks finished with nobody on it (own_parked_pr).
-  [ "$state:$st" != OPEN:review ] || { own_parked_pr "$1" "$2" "$it" "$head" "$ci" "$mergeable"; return 0; }
+  [ "$state:$st" != OPEN:review ] || { own_parked_pr "$1" "$2" "$it" "$head" "$ci" "$mergeable" "$reruns"; return 0; }
   case "$st:$pr$report" in waiting: | review:)
     [ -z "$(jq -r '.note // ""' <<<"$it")" ] || return 0
     note_add "$1" "$it" "session $2 ended; $st without a PR"
@@ -5436,7 +5454,30 @@ takeover_branch() {
   echo "takeover queue item $slug (branch $name at ${sha:0:12}, try $((tries + 1)) of $DISPATCH_FIX_TRIES)"
 }
 
-# own_parked_pr <slug> <session> <item json> <head oid> <ci> [mergeable] -- a review item whose session is gone
+# infra_rerun <slug> <item json> <head> <red runs> -- own_parked_pr's one rerun of a head whose red the
+# runners caused (INFRA): `gh run rerun --failed` on each red run, stamped `rerun_tries: 1 <head>` first, so
+# a failed write never reruns twice. It takes no session and no admission slot. Returns 1, rerunning
+# nothing, when this head was rerun already or no run is named; a rerun gh refuses is logged and returns 1
+# too. Either way the red goes the FAIL way.
+infra_rerun() {
+  local pr project dir r ran=''
+  [ "${4:--}" != - ] && [ "$(jq -r '.rerun_tries // "" | split(" ")[1] // ""' <<<"$2")" != "$3" ] || return 1
+  IFS=$'\x1f' read -r pr project < <(jq -r '[(.pr // "" | split(" ")[0]), .project // ""] | join("\u001f")' <<<"$2")
+  agent-queue set "$1" "rerun_tries=1 $3" >/dev/null || return 1
+  [[ "$pr" == */*#* ]] || dir=$(repo_dir "$project") || return 1
+  for r in ${4//,/ }; do
+    if [[ "$pr" == */*#* ]]; then gh run rerun "$r" --failed -R "${pr%#*}" >/dev/null 2>&1
+    else (cd "$dir" && gh run rerun "$r" --failed >/dev/null 2>&1); fi && { ran+=" $r"; continue; }
+    logline "queue item $1: gh run rerun $r --failed refused for PR $pr"
+  done
+  [ -n "$ran" ] || return 1
+  agent-queue set "$1" "note=PR $pr red at ${3:0:12} on cancelled or timed-out jobs only; reran run${ran} once" >/dev/null
+  logline "queue item $1: PR $pr red at ${3:0:12} on cancelled or timed-out jobs only, reran run${ran} (once per head)"
+  dispatch_event rerun "$project" "PR red on runner timeouts only: reran its failed jobs once" --item "$1" --pr "$pr" --sha "$3"
+  echo "rerun queue item $1 (PR $pr red at ${3:0:12} on runner timeouts, run${ran})"
+}
+
+# own_parked_pr <slug> <session> <item json> <head oid> <ci> [mergeable] [red runs] -- a review item whose session is gone
 # gets an owner once its PR checks finish, since nothing else restarts a parked PR. Red (ci FAIL): a
 # fix-ci session (16 of 20 parked PRs were red on 2026-11-09). Green (ci PASS): a lander that lands
 # or closes it (land_brief), since a headless tier-3 run is --pr-only and fix-ci moves its
@@ -5458,6 +5499,14 @@ takeover_branch() {
 # is never read as gone here.
 own_parked_pr() {
   local slug=$1 it=$3 head=$4 owner verb color cause tries human hhead howners pr project note trn held where why='' clear=()
+  # INFRA (PR_STATE_JQ): the runners' red, not the code's. fix-ci may not rerun a timeout (its log names no
+  # fault) and finds nothing to fix, so two tries were spent and the item sat escalated until a push that
+  # never came (2026-11-25: #3516, #3538 and #3576, every job cancelled at ~617s). Its failed jobs are rerun
+  # once per head (infra_rerun); a head already rerun reads FAIL, so a job the code hangs still reaches fix-ci.
+  if [ "$5" = INFRA ]; then
+    [ "$2" = unrecorded ] || ! infra_rerun "$slug" "$it" "$head" "${7:--}" || return 0
+    set -- "$1" "$2" "$3" "$4" FAIL "${6:-}" "${7:-}"
+  fi
   # cause: the requeue's cause on the run's outcome (MOVE_CAUSES): a green PR's lander merges the run's
   # diff unchanged, so that run is filed unrated (land); a red or conflicting PR rates as redo.
   case "${6:-}:$5" in
@@ -8002,15 +8051,20 @@ plan_fix_row() {
 # so it neither holds the epic open nor raises the done count that would key a second verify.
 reconcile_epics() {
   [ "$DISPATCH_EPIC_VERIFY" = 1 ] || return 0
-  local landed prof project id done_ title slug out rc
+  local landed prof project id done_ title slug out rc it
   landed=$(notes projects --stats --json 2>/dev/null | jq -r '.[] | select(.automation != false) | . as $p
     | (.epics // [])[] | select(.open == 0 and .done > 0)
     | [($p.profile // ""), $p.name, .id, .done, (.title | gsub("[\t\n]"; " "))] | join("\u001f")') || return 0
   [ -n "$landed" ] || return 0
   while IFS=$'\x1f' read -r prof project id done_ title; do
     slug="verify-$id-$done_"
-    # One lookup per landed epic, active or done: the whole queue is seconds to read every pass.
-    [ -z "$(agent-queue show "$slug" --json 2>/dev/null)" ] || continue
+    # One lookup per landed epic, active or done: the whole queue is seconds to read every pass. An item
+    # the cap bumped unrun (make_room: returned, "made room for ...") is queued again, linking its open
+    # row; a hand return, or a show that answers but does not parse, keeps the slug spent. make_room
+    # bumps only for an urgent, red or after-pull add, and this high add bumps nothing, so no ping-pong.
+    if it=$(agent-queue show "$slug" --json 2>/dev/null); then
+      jq -e '.end_reason == "returned" and ((.cancel_why // "") | startswith("made room for "))' <<<"$it" >/dev/null 2>&1 || continue
+    fi
     out=$(epic_verify_task "$prof" "$project" "$id" "$title" | AGENT_QUEUE_PULL=dispatch AGENT_QUEUE_START=0 agent-queue add --project "$project" --slug "$slug" --epic "$id" \
       --title "check(epics): verify $id $title" --priority high --tags verify --from auto:epics 2>&1); rc=$?
     if [ "$rc" -eq 0 ]; then

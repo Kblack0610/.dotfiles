@@ -21,6 +21,7 @@ What lives in this repo's `docs/` tree. Cross-repo rules (CI, plans, skills, UI,
 - [operations/claude-acct-usage.md](operations/claude-acct-usage.md): adding a `claude-acct` usage source, such as a LiteLLM route plus a `litellm-key` row.
 - [operations/deploy.md](operations/deploy.md): deploying the cockpit and agent-runtime.
 - [operations/event-catalogue.md](operations/event-catalogue.md): the list of events each product sends.
+- [operations/fleet-failover.md](operations/fleet-failover.md): which peers can take the fleet lease, losing a machine, and the failover drill.
 - [operations/git-hooks.md](operations/git-hooks.md): the global git hook dispatcher.
 - [operations/github-app.md](operations/github-app.md): the GitHub App behind the fleet's `gh` reads.
 - [operations/local-llm.md](operations/local-llm.md): the local Qwen model on the workstation.
