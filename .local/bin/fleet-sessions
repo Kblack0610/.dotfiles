@@ -23,7 +23,8 @@
 #   fleet-sessions tick               --write after a fetch, plus the stage changes since the
 #                                     last tick appended to watch.log (fleet-state.service, every
 #                                     minute and on each ask change); the hub Sessions tab. Only
-#                                     the fleet lease holder ticks; elsewhere it skips, exit 0
+#                                     the fleet lease holder ticks; elsewhere it skips, exit 0.
+#                                     A write that lowers the live count wakes a fleet-dispatch kick
 #   fleet-sessions explain <who>      one session from the state document: its task, plan, PRs,
 #                                     where its time went, and what it is doing
 #   fleet-sessions close [--json]     the close analysis from the state document: each session's
@@ -59,6 +60,10 @@ set -uo pipefail
 EDIT_TOOLS_RE="$(edit_tools_re)"
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh"
+# shellcheck source=/dev/null
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-live.sh"   # fleet_live_count: write_state wakes a kick when it drops
+# shellcheck source=/dev/null
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/dispatch-wake.sh"   # dispatch_wake
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/main-state.sh"
 # shellcheck source=/dev/null
@@ -3643,7 +3648,21 @@ write_state() {
   flock -w 30 8 || { rm -f "$tmp"; echo "fleet-sessions: $dir/.lock busy" >&2; return 1; }
   prev="$(jq -r '.generated_epoch // 0' "$STATE_FILE" 2>/dev/null)"
   if [ "${prev:-0}" -gt "$t" ] 2>/dev/null; then rm -f "$tmp"; return 0; fi
+  # The document counts a session as live until a write drops it, so the wake an item's close writes (agent-queue)
+  # can reach a kick that still sees it live and starts nothing. The write that lowers the count is the event: wake
+  # a kick once the new document is in place, so it reads the lower count (ar-5046). Here, not in tick, so a hand
+  # or shepherd --write that lowers the count wakes it too. A stale old document can add one harmless extra kick.
+  local was now_live
+  was="$(fleet_live_count "$STATE_FILE")"
   mv -f "$tmp" "$STATE_FILE" || return 1
+  now_live="$(fleet_live_count "$STATE_FILE")"
+  if [[ "$now_live" =~ ^[0-9]+$ ]]; then
+    if [[ "$was" =~ ^[0-9]+$ ]] && [ "$now_live" -lt "$was" ]; then
+      dispatch_wake "fleet-sessions: live sessions $was -> $now_live"
+    fi
+  else
+    echo "fleet-sessions: could not read the live count from $STATE_FILE, so no kick is woken for a drop" >&2
+  fi
   # Only the fleet-lease holder publishes: a hand --write on another host, or a pass that outlived
   # its lease, would write the copy fleet-lease renew just removed there (ar-4375).
   if lease_held; then
