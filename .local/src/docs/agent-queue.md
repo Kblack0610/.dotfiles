@@ -34,5 +34,5 @@ Work the human asked for (`from: human`, or a `requested` tag from a #requested 
 - Once `--ask` is given it is checked on every item, human work or not. The ask joins `cancel_why:` as `(ask <id>)`.
 - A caller with neither variable set is not held: the human at a terminal, and the Queue tab's button while the hub or agent-web was started outside a Claude session. A slug with no file left, closed in the chain record only, is not guarded.
 
-A slug is matched by the item's `slug:` header, never by file name alone. Timestamps are UTC (`2026-11-03T18:40:00Z`), so jq can do the arithmetic. `AGENT_QUEUE_DIR` overrides the store's default directory, `~/.agent/queue/`; a bare session name in `session:` is on the world `tmux-world agents` names (`lab`).
+A slug is matched by the item's `slug:` header, never by file name alone. Timestamps are UTC (`2026-11-03T18:40:00Z`), so jq can do the arithmetic. `AGENT_QUEUE_DIR` overrides the store's default directory, `~/.agent/queue/`; `AGENT_QUEUE_AGE_STEP` (minutes, default 120, 0 off) is how long a queued item waits before the queue order ranks it one tier higher, never above high, without rewriting its `priority:` (QUEUE.md "Order and tags", ar-4554); a bare session name in `session:` is on the world `tmux-world agents` names (`lab`).
 
