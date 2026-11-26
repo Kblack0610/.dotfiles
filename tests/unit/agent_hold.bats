@@ -33,7 +33,7 @@ setup() {
   run "$HOLD" aged
   assert_success
   back() { sed -i "s/^since: .*/since: $(date -d "-$2 days" +%Y-%m-%dT%H:%M:%S%z)/" "$AGENT_HOLD_DIR/$1"; }
-  "$HOLD" set fresh --by human "new"
+  "$HOLD" set fresh --by human --until '+12 hours' "new"
   "$HOLD" set old --kind resource --by fleet-dispatch "kept on purpose"
   back old 2
   run "$HOLD" aged
@@ -46,8 +46,12 @@ setup() {
   assert_failure 1
   run "$HOLD" aged --days 3
   assert_success
-  # A load hold set by the human is the human's to end, so it pages too.
+  # A human hold ends by its until, so its age never pages (ar-6059); one with no until line (a
+  # file from before until) is the human's to end, so it pages.
   back fresh 2
+  run "$HOLD" aged --days 1
+  refute_output --partial 'fresh'
+  sed -i '/^until: /d' "$AGENT_HOLD_DIR/fresh"
   run "$HOLD" aged
   assert_failure 1
   assert_line --index 0 --partial 'fresh: held 2d'
@@ -69,68 +73,110 @@ setup() {
   assert_output ''
 }
 
-@test "keep records the human's keep answer, so aged waits a day past it; a wrong ask writes nothing (ar-5307)" {
-  "$HOLD" set critical --kind resource --by human "lockdown"
-  sed -i "s/^since: .*/since: $(date -d '-4 days' +%Y-%m-%dT%H:%M:%S%z)/" "$AGENT_HOLD_DIR/critical"
-  sed -i "s/^granted: .*/granted: hc-1/" "$AGENT_HOLD_DIR/critical"
-  # A stub agent-ask: each ask id is a file of `key: value` lines.
-  mkdir -p "$SANDBOX/asks"
-  printf '#!/usr/bin/env bash\n[ "$1" = show ] && cat "%s/asks/$2"\n' "$SANDBOX" > "$SANDBOX/bin/agent-ask"
-  chmod +x "$SANDBOX/bin/agent-ask"
-  # The sandbox points AGENT_ASK at the real agent-ask; keep reads the stub through it.
-  export AGENT_ASK="$SANDBOX/bin/agent-ask"
-  ask() { printf 'question: %s\nanswer: %s\nanswered_by: %s\nanswered_at: %s\ncontext: \n' "$2" "$3" "$4" "$(date -d "-${5:-1} hours" +%Y-%m-%dT%H:%M:%S%z)" > "$SANDBOX/asks/$1"; }
-  run "$HOLD" aged
-  assert_failure 1
-  # Negative controls: not answered keep, answered by an agent, or about another hold.
-  ask a1 "Keep the critical hold?" release human
-  ask a2 "Keep the critical hold?" keep agent
-  ask a3 "Keep the critical-dns hold?" keep human
-  for id in a1 a2 a3 missing; do
-    run "$HOLD" keep critical --ask "$id"
-    assert_failure 1
+@test "set --by human needs --until at most 24h; past it check and list read it released and list --expired names it (ar-6059)" {
+  run "$HOLD" set critical --kind resource --by human "lockdown"
+  assert_failure 2
+  assert_output --partial 'give --until'
+  for u in '+25 hours' '-1 hour' 'not a time'; do
+    run "$HOLD" set critical --kind resource --by human --until "$u" "lockdown"
+    assert_failure 2
   done
-  run "$HOLD" show critical
-  refute_output --partial 'kept'
-  # A keep 25 hours ago is a day past: the hold stands again.
-  ask old "Keep the critical hold?" keep human 25
-  run "$HOLD" keep critical --ask old
-  assert_success
-  run "$HOLD" aged
-  assert_failure 1
-  assert_line --index 0 --partial 'critical: held 4d'
-  ask ok "Keep the critical hold?" keep human
-  run "$HOLD" keep critical --ask ok
-  assert_success
-  assert_output --partial 'kept: critical since '
-  run "$HOLD" show critical
-  assert_line --regexp '^kept: '
-  assert_line 'kept_ask: ok'
-  assert_line 'granted: hc-1'
-  run "$HOLD" aged
-  assert_success
-  assert_output ''
-  # Replaying the older ask cannot move the keep back.
-  run "$HOLD" keep critical --ask old
-  assert_failure 1
-  run "$HOLD" show critical
-  assert_line 'kept_ask: ok'
-  # A same-kind re-set rewords it and carries the keep with since.
-  "$HOLD" set critical --kind resource --by human "lockdown, reworded"
-  run "$HOLD" show critical
-  assert_line 'kept_ask: ok'
-  run "$HOLD" aged
-  assert_success
-  # A released hold is not brought back by a keep.
-  "$HOLD" release critical
-  ask new "Keep the critical hold?" keep human 0
-  run "$HOLD" keep critical --ask new
-  assert_failure 1
   [ ! -e "$AGENT_HOLD_DIR/critical" ]
+  run "$HOLD" set critical --kind resource --by human --until '+23 hours' "lockdown"
+  assert_success
+  run "$HOLD" show critical
+  assert_line --regexp '^until: [0-9]{4}-'
+  run "$HOLD" check critical --no-caller
+  assert_failure 1
+  run "$HOLD" list
+  assert_output --partial 'critical'
+  run "$HOLD" list --expired
+  assert_output ''
+  # An agent's hold may end on its own too.
+  "$HOLD" set unity --by fleet-pace --until '+1 hour' "hot"
+  # Past its until it reads released; the file stays for the release that restores what it lowered.
+  sed -i "s/^until: .*/until: $(date -d '-1 minute' +%Y-%m-%dT%H:%M:%S%z)/" "$AGENT_HOLD_DIR/critical"
+  run "$HOLD" check critical --no-caller
+  assert_success
+  assert_output --partial 'expired: critical'
+  run "$HOLD" list
+  refute_output --partial 'critical'
+  assert_output --partial 'unity'
+  run "$HOLD" list --kind resource
+  assert_output ''
+  run "$HOLD" list --expired
+  assert_output --regexp '^critical	'
+  refute_output --partial 'unity'
+  # An until no date reads has passed.
+  sed -i 's/^until: .*/until: soon/' "$AGENT_HOLD_DIR/unity"
+  run "$HOLD" check unity --no-caller
+  assert_success
+  # An expired human hold is over: an agent may set the resource afresh, with its own since.
+  sed -i 's/^since: .*/since: 2026-11-01T00:00:00-0800/' "$AGENT_HOLD_DIR/critical"
+  run "$HOLD" set critical --kind resource --by coordinator "maintenance"
+  assert_success
+  run "$HOLD" show critical
+  assert_line 'by: coordinator'
+  refute_output --partial 'since: 2026-11-01'
+  refute_output --partial 'until:'
+  "$HOLD" release critical
+  [ ! -e "$AGENT_HOLD_DIR/critical" ]
+  # keep is gone: the until replaces it.
+  run "$HOLD" keep critical --ask x
+  assert_failure 2
+}
+
+@test "from an agent session, set --by human takes the human's words agent-ask said finds in the transcript (ar-6059)" {
+  # A stub agent-ask: said passes only for the words in $SANDBOX/said, and logs its arguments.
+  cat > "$SANDBOX/bin/agent-ask" <<STUB
+#!/usr/bin/env bash
+echo "\$*" >> "$SANDBOX/said.log"
+[ "\$1" = said ] || exit 2
+[ "\$4" = "\$(cat "$SANDBOX/said")" ] || { echo "no words of the human's contain: \$4" >&2; exit 1; }
+STUB
+  chmod +x "$SANDBOX/bin/agent-ask"
+  export AGENT_ASK="$SANDBOX/bin/agent-ask"
+  echo 'hold critical till tomorrow' > "$SANDBOX/said"
+  # No quote from a session: refused, and nothing is written.
+  run env CLAUDE_CODE_SESSION_ID=sid-1 "$HOLD" set critical --by human --until '+12 hours' "lockdown"
+  assert_failure 2
+  assert_output --partial "--quote '<their words>'"
+  # Words the human did not type: refused.
+  run env CLAUDE_CODE_SESSION_ID=sid-1 "$HOLD" set critical --by human --until '+12 hours' --quote 'lock critical down' "lockdown"
+  assert_failure 1
+  assert_output --partial 'no words of the human'
+  [ ! -e "$AGENT_HOLD_DIR/critical" ]
+  # --quote needs --by human, from inside a session.
+  run env CLAUDE_CODE_SESSION_ID=sid-1 "$HOLD" set critical --by agent-7 --quote 'hold critical till tomorrow' "lockdown"
+  assert_failure 2
+  run "$HOLD" set critical --by human --until '+12 hours' --quote 'hold critical till tomorrow' "lockdown"
+  assert_failure 2
+  # Words the human did type, but not about this hold: refused before the transcript is read.
+  echo 'yes, the critical-path one' > "$SANDBOX/said"
+  : > "$SANDBOX/said.log"
+  run env CLAUDE_CODE_SESSION_ID=sid-1 "$HOLD" set critical --by human --until '+12 hours' --quote 'yes, the critical-path one' "lockdown"
+  assert_failure 1
+  assert_output --partial 'does not name critical'
+  [ ! -s "$SANDBOX/said.log" ]
+  echo 'hold critical till tomorrow' > "$SANDBOX/said"
+  [ ! -e "$AGENT_HOLD_DIR/critical" ]
+  # Their words: set, with the words on the hold, checked over the last hour.
+  run env CLAUDE_CODE_SESSION_ID=sid-1 "$HOLD" set critical --by human --until '+12 hours' --quote 'hold critical till tomorrow' "lockdown"
+  assert_success
+  run "$HOLD" show critical
+  assert_line 'by: human'
+  assert_line 'quote: hold critical till tomorrow'
+  grep -q '^said --since @[0-9]* hold critical till tomorrow$' "$SANDBOX/said.log"
+  # A re-set needs words that pass again; refused, the hold stays as it was.
+  echo 'other words' > "$SANDBOX/said"
+  run env AGENT_QUEUE_ITEM=ar-1 "$HOLD" set critical --by human --until '+12 hours' --quote 'hold critical till tomorrow' "lockdown, longer"
+  assert_failure 1
+  run "$HOLD" show critical
+  assert_line 'reason: lockdown'
 }
 
 @test "grant on the human's hold takes the human's grant answer naming the hold and each name, recorded beside it; an agent's hold grants as before (ar-6046)" {
-  "$HOLD" set critical --kind resource --by human "lockdown"
+  "$HOLD" set critical --kind resource --by human --until '+23 hours' "lockdown"
   sed -i "s/^since: .*/since: $(date -d '-4 days' +%Y-%m-%dT%H:%M:%S%z)/" "$AGENT_HOLD_DIR/critical"
   mkdir -p "$SANDBOX/asks"
   printf '#!/usr/bin/env bash\n[ "$1" = show ] && cat "%s/asks/$2"\n' "$SANDBOX" > "$SANDBOX/bin/agent-ask"
@@ -182,7 +228,7 @@ setup() {
   run "$HOLD" show critical
   assert_line 'by: human'
   # A re-set drops the grants and the asks with them.
-  "$HOLD" set critical --kind resource --by human "lockdown, reworded"
+  "$HOLD" set critical --kind resource --by human --until '+23 hours' "lockdown, reworded"
   run "$HOLD" show critical
   assert_line 'granted: '
   refute_output --partial 'granted_ask'
@@ -339,10 +385,10 @@ as_session() { mkdir -p "$SANDBOX/$1" && cd "$SANDBOX/$1"; }
 }
 
 @test "a re-set keeps since, so hold-age ages the hold from its first set; a release starts it afresh (ar-5236)" {
-  "$HOLD" set critical --kind resource --by human "lockdown"
+  "$HOLD" set critical --kind resource --by coordinator "lockdown"
   first="$(date -d '-3 days' +%Y-%m-%dT%H:%M:%S%z)"
   sed -i "s/^since: .*/since: $first/" "$AGENT_HOLD_DIR/critical"
-  "$HOLD" set critical --kind resource --by human "lockdown, reworded"
+  "$HOLD" set critical --kind resource --by coordinator "lockdown, reworded"
   run "$HOLD" show critical
   assert_output --partial "since: $first"
   assert_output --partial 'reason: lockdown, reworded'
@@ -350,7 +396,7 @@ as_session() { mkdir -p "$SANDBOX/$1" && cd "$SANDBOX/$1"; }
   assert_failure 1
   assert_output --partial 'critical: held'
   "$HOLD" release critical
-  "$HOLD" set critical --kind resource --by human "lockdown again"
+  "$HOLD" set critical --kind resource --by coordinator "lockdown again"
   run "$HOLD" show critical
   refute_output --partial "since: $first"
 }
@@ -358,11 +404,11 @@ as_session() { mkdir -p "$SANDBOX/$1" && cd "$SANDBOX/$1"; }
 @test "a re-set as another kind, or over a since no date reads, starts since afresh" {
   "$HOLD" set unity --by fleet-pace "hot"
   sed -i 's/^since: .*/since: 2026-11-01T00:00:00-0800/' "$AGENT_HOLD_DIR/unity"
-  "$HOLD" set unity --kind resource --by human "maintenance"
+  "$HOLD" set unity --kind resource --by human --until '+23 hours' "maintenance"
   run "$HOLD" show unity
   refute_output --partial 'since: 2026-11-01T00:00:00-0800'
   sed -i 's/^since: .*/since: /' "$AGENT_HOLD_DIR/unity"
-  "$HOLD" set unity --kind resource --by human "maintenance, longer"
+  "$HOLD" set unity --kind resource --by human --until '+23 hours' "maintenance, longer"
   run "$HOLD" show unity
   assert_output --regexp 'since: [0-9]{4}-'
 }
@@ -370,7 +416,7 @@ as_session() { mkdir -p "$SANDBOX/$1" && cd "$SANDBOX/$1"; }
 @test "a set over a claim starts its own since, not the claim's" {
   "$HOLD" claim mac-desktop --by agent-1 "store forms"
   sed -i 's/^since: .*/since: 2026-11-01T00:00:00-0800/' "$AGENT_HOLD_DIR/mac-desktop"
-  "$HOLD" set mac-desktop --kind resource --by human "maintenance"
+  "$HOLD" set mac-desktop --kind resource --by human --until '+23 hours' "maintenance"
   run "$HOLD" show mac-desktop
   refute_output --partial 'since: 2026-11-01T00:00:00-0800'
 }
@@ -575,6 +621,17 @@ STUB
   "$HOLD" set unity-tests --by binks "hot"
   run "$HOLD" claim unity-tests --by agent-6 "mine"
   assert_failure 1
+  # Past its until the hold is over: the claim releases it, then takes the resource.
+  "$HOLD" set unity-tests --by binks --until '+1 hour' "hot"
+  sed -i "s/^until: .*/until: $(date -d '-1 minute' +%Y-%m-%dT%H:%M:%S%z)/" "$AGENT_HOLD_DIR/unity-tests"
+  run "$HOLD" claim unity-tests --by agent-6 "mine"
+  assert_success
+  assert_output 'claimed: unity-tests'
+  run "$HOLD" show unity-tests
+  assert_line 'kind: claim'
+  assert_line 'by: agent-6'
+  "$HOLD" release unity-tests
+  "$HOLD" set unity-tests --by binks "hot"
   run env TMUX= bash -c "cd \"\$(mktemp -d)\" && mkdir binks && cd binks && \"$HOLD\" check unity-tests"
   assert_failure 1
 }
