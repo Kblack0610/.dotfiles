@@ -845,10 +845,9 @@ bucket_facts() {
 # landable. Once the item moved on and nothing here is outside the PR, the item's next run owns the fix (one-shot
 # step 6, "validate failed") and the session is DONE; while the item still runs here, the fix is this session's.
 validate_failed_bucket() {
-  local s="${3#*:}"; s="${s%% *}"
   if validate_failed_done "$3" "$4" "$5"; then echo "DONE PR #$1 failed validation ($2), its item went back to the queue with the findings"
   elif [[ "$3" == moved:* ]]; then echo "STALLED PR #$1 failed validation ($2), its item went back to the queue, and work here is outside the PR"
-  else echo "STALLED PR #$1 failed validation ($2): fix its findings (agent-queue show ${s%%,*}) and push"; fi
+  else local s="${3#*:}"; s="${s%% *}"; echo "STALLED PR #$1 failed validation ($2): fix its findings (agent-queue show ${s%%,*}) and push"; fi
 }
 
 # validate_failed_done <item> <dirty> <in_pr>: validate_failed_bucket reads DONE.
@@ -2482,6 +2481,7 @@ refused_wait() {
 # else nothing. agent-land merges critical work only on a pass, so neither PR is the session's to land: 2026-11-24 #3435
 # read STALLED green, not merged after validate-ar-5194-3edd08df failed it, and the shepherd nudged agent-13 to land it.
 # A head that only merged the base in since the verdict (agent-land covers) reads no verdict here, so it reads as before.
+# The live states and the head match follow validate_gate's; change them together.
 validate_hold() {
   [ "${2:--}" != - ] && [ "${3:--}" != - ] || return 0
   jq -rn --arg s "$2" --arg h "$3" '[inputs] as $all
@@ -2490,7 +2490,7 @@ validate_hold() {
     | ($vi.verdict // "") as $vd | ($vi.verdict_head // "") as $vh
     | if $vd == "fail" and $vh != "" and (($h | startswith($vh)) or ($vh | startswith($h))) then "failed \($v)"
       elif $vd == "" and ($vi.state | IN("queued", "running", "waiting", "review")) and ($v | endswith("-" + $h[:8]))
-      then "\($v), a second agent'"'"'s review"
+      then "\($v), a second agent\u0027s review"
       else empty end' <<<"$1" 2>/dev/null
 }
 
@@ -2511,8 +2511,8 @@ pr_wait() {
     elif [ "$ci" = PENDING ] && h="$(refused_wait "$gd" "$pr")" && [ -n "$h" ]; then land="slot holder #$h"; fi
   fi
   w="$land"
-  if [ -z "$w" ] && [ -n "$chain" ]; then case "$ci" in FAIL | PENDING | NOSTART) ;; *) w="after: $chain" ;; esac; fi
-  if [ -z "$w" ]; then case "$ci" in FAIL | PENDING | NOSTART) ;; *) w="$(validate_hold "${9:-}" "${10:--}" "$oid")" ;; esac; fi
+  if [ -z "$w" ]; then case "$ci" in FAIL | PENDING | NOSTART) ;; *)
+    if [ -n "$chain" ]; then w="after: $chain"; else w="$(validate_hold "${9:-}" "${10:--}" "$oid")"; fi ;; esac; fi
   printf '%s\n%s\n' "$land" "$w"
 }
 
