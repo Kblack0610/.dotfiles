@@ -18,9 +18,10 @@ setup() {
 printf '%s|%s\n' "${GH_TOKEN:-none}" "$*" >> "$BATS_TEST_TMPDIR/real.log"
 case "$*" in *--body-file\ -*) cat >> "$BATS_TEST_TMPDIR/stdin.log" ;; esac
 case "$*" in 'api rate_limit'*) [ -f "$BATS_TEST_TMPDIR/rate" ] && cat "$BATS_TEST_TMPDIR/rate"; exit 0 ;; esac
-# FAIL5=<n>: the first n calls fail like a GitHub 5xx, body on stdout and status on stderr.
+# FAIL5=<n>: the first n calls fail like a GitHub 5xx, body on stdout and status on stderr
+# (FAIL5_ERR replaces that stderr line).
 if [ -n "${FAIL5:-}" ] && [ "$(grep -vc '^[^|]*|api rate_limit' "$BATS_TEST_TMPDIR/real.log")" -le "$FAIL5" ]; then
-  echo '{"message":"Server Error"}'; echo "gh: Server Error (HTTP ${FAIL5_CODE:-504})" >&2; exit 1
+  echo '{"message":"Server Error"}'; echo "${FAIL5_ERR:-gh: Server Error (HTTP ${FAIL5_CODE:-504})}" >&2; exit 1
 fi
 # A refusal: `gh api` prints the error body on stdout, unterminated, and the status on stderr.
 if [ -n "${DENY:-}" ] && [ "${GH_TOKEN:-}" = tok-acme ]; then
@@ -457,6 +458,24 @@ calls() { grep -vc '^[^|]*|api rate_limit' "$BATS_TEST_TMPDIR/real.log" || true;
   assert_success
   assert_output ok
   assert_equal "$(calls)" 2
+}
+
+# ar-4283: gh reports an empty or cut-off reply with no status; day-log's annotations read failed on one.
+@test "retry: a read whose reply gh could not parse is run again; a 404 is not" {
+  FAIL5=1 FAIL5_ERR='unexpected end of JSON input' REAL_OUT=ok run --separate-stderr "$WRAP" api repos/other/x/check-runs/9/annotations
+  assert_success
+  assert_output ok
+  assert_equal "$(calls)" 2
+  : > "$BATS_TEST_TMPDIR/real.log"
+  FAIL5=99 FAIL5_ERR='unexpected end of JSON input' GH_RETRY_TRIES=2 run --separate-stderr "$WRAP" api repos/other/x/check-runs/9/annotations
+  assert_failure 1
+  assert_equal "$(calls)" 2
+  [[ "$stderr" == *"still failing after 2 runs (a 5xx or an unparseable reply)"* ]]
+  : > "$BATS_TEST_TMPDIR/real.log"
+  FAIL5=99 FAIL5_ERR='gh: Not Found (HTTP 404)' run --separate-stderr "$WRAP" api repos/other/x/check-runs/9/annotations
+  assert_failure 1
+  assert_equal "$(calls)" 1
+  [[ "$stderr" != *"still failing"* ]]
 }
 
 @test "retry: it is bounded by GH_RETRY_TRIES and then fails with gh's own status, body and message once" {

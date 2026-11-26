@@ -2235,6 +2235,12 @@ STUB
     'http://langfuse.test/api/public/scores/so:sess-p1:reverted_7d')"
   report | grep -q '3 deleted'
   [ -n "$(mark)" ]
+  # 202 is Langfuse's real answer ("Score deletion queued successfully"), a deletion like 204 (ar-4283)
+  : > "$BATS_TEST_TMPDIR/lf.deleted"
+  LF_DEL_CODE=202 run "$SUBJECT" langfuse --all
+  assert_success
+  assert_output --partial '3 deleted'
+  refute_output --partial 'FAILED'
   # 404 is treated as already absent
   : > "$BATS_TEST_TMPDIR/lf.deleted"
   LF_DEL_CODE=404 run "$SUBJECT" langfuse --all

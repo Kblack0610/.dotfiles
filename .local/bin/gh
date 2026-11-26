@@ -34,6 +34,7 @@ stdout_tty=0
 : "${GH_BUDGET_RESERVE:=1000}"  # calls left under which a read waits for the reset
 : "${GH_BUDGET_STALE_S:=30}"    # age of the shared reading before one rate_limit call renews it
 : "${GH_RETRY_TRIES:=4}"        # runs of a read that keeps failing with a 5xx; 1 turns the retry off
+: "${GH_RETRY_ERR:=HTTP 5[0-9][0-9]|unexpected end of JSON input}" # gh's stderr on a 5xx, or on an empty or cut-off reply
 : "${GH_RETRY_BASE_S:=2}"       # seconds before the first rerun, whole seconds
 : "${GH_RETRY_CAP_S:=10}"       # the longest single wait
 # The programs whose reads spend the reserve: a gate, a merge, the night. A read with one of them
@@ -290,7 +291,8 @@ exec_once() {
   if [ -n "$t" ]; then GH_TOKEN="$t" "$real" "$@"; else "$real" "$@"; fi
 }
 
-# exec_retry <token or ""> <gh args>: exec_once, and for a retryable read, again after a 5xx. The failed
+# exec_retry <token or ""> <gh args>: exec_once, and for a retryable read, again after a 5xx or an
+# unparseable reply (ar-4283: an annotations read answered "unexpected end of JSON input"). The failed
 # run's output is dropped, so a caller sees one answer, never a failure body followed by the retry's.
 rtmp=""
 exec_retry() {
@@ -301,7 +303,7 @@ exec_retry() {
   while :; do
     exec_once "$t" "$@" >"$rtmp/out" 2>"$rtmp/err"
     r=$?
-    [ "$r" -ne 0 ] && [ "$n" -lt "$GH_RETRY_TRIES" ] && grep -qE 'HTTP 5[0-9]{2}' "$rtmp/err" || break
+    [ "$r" -ne 0 ] && [ "$n" -lt "$GH_RETRY_TRIES" ] && grep -qE "$GH_RETRY_ERR" "$rtmp/err" || break
     sleep "$pause"
     pause=$((pause * 2 > GH_RETRY_CAP_S ? GH_RETRY_CAP_S : pause * 2))
     n=$((n + 1))
@@ -309,7 +311,7 @@ exec_retry() {
   cat "$rtmp/out"
   cat "$rtmp/err" >&2
   # said only when it still failed: a notice on a recovered read would break `gh api ... 2>&1 | jq`
-  [ "$n" -eq 1 ] || [ "$r" -eq 0 ] || echo "gh: HTTP 5xx on a read, still failing after $n runs" >&2
+  [ "$n" -eq 1 ] || [ "$r" -eq 0 ] || echo "gh: a read still failing after $n runs (a 5xx or an unparseable reply)" >&2
   return "$r"
 }
 
