@@ -2494,15 +2494,15 @@ validate_hold() {
       else empty end' <<<"$1" 2>/dev/null
 }
 
-# pr_wait <git> <pr state> <sibling repo> <clone> <ci> <pr> <head oid> <chain> [<validate>] -> two lines: the landing-slot wait, then
+# pr_wait <git> <pr state> <sibling repo> <clone> <ci> <pr> <head oid> <chain> [<all items> <item slug>] -> two lines: the landing-slot wait, then
 # the wait the bucket reads (empty when none). A PR of this clone's repo riding an open landing train waits on that
 # train's gate, one queued for the landing slot waits its turn, and one the slot holder refused waits on that holder
 # (slot_refuser), unless its own Checks are red past the slot's refusal (git_facts left ci FAIL). A green or unknown-CI PR whose item is `after:` an item that is not done (<chain>,
 # chain_hold) waits on it, not STALLED green, not merged (ar-4420); its red gate line is open_pr_ci's. Past those, a green
-# or unknown-CI PR carries its validate verdict (<validate>, validate_hold): a live validate item on its head is a wait, and a
+# or unknown-CI PR carries its item's validate verdict (validate_hold): a live validate item on its head is a wait, and a
 # fail on its head is "failed <slug>", never landable (ar-5286).
 pr_wait() {
-  local g="$1" state="$2" xr="$3" gd="$4" ci="$5" pr="$6" oid="$7" chain="$8" vhold="${9:-}" tn="" land="" w h
+  local g="$1" state="$2" xr="$3" gd="$4" ci="$5" pr="$6" oid="$7" chain="$8" tn="" land="" w h
   [ "$g" = 1 ] && [ "$state" = OPEN ] && [ "$xr" = - ] || { printf '\n\n'; return 0; }
   if [ "$gd" != - ]; then
     [ "$oid" = - ] || tn="$(train_of "$gd" "$pr" "$oid")"
@@ -2512,7 +2512,7 @@ pr_wait() {
   fi
   w="$land"
   if [ -z "$w" ] && [ -n "$chain" ]; then case "$ci" in FAIL | PENDING | NOSTART) ;; *) w="after: $chain" ;; esac; fi
-  if [ -z "$w" ] && [ -n "$vhold" ]; then case "$ci" in FAIL | PENDING | NOSTART) ;; *) w="$vhold" ;; esac; fi
+  if [ -z "$w" ]; then case "$ci" in FAIL | PENDING | NOSTART) ;; *) w="$(validate_hold "${9:-}" "${10:--}" "$oid")" ;; esac; fi
   printf '%s\n%s\n' "$land" "$w"
 }
 
@@ -2873,8 +2873,7 @@ collect() {
     act="$(activity_line "${status:--}" "$ojob" "$doing" "$act_dir" "$branch" "$act_sha" "$now")"
     # What an open PR waits on (pr_wait); only a landing-slot wait carries the slot's wait, depth and critical path.
     local wait_on="" land_wait=""
-    local vhold=; [ "$state" != OPEN ] || vhold="$(validate_hold "$qall" "$islug" "$oid")"
-    { IFS= read -r land_wait; IFS= read -r wait_on; } < <(pr_wait "$g" "$state" "$xr" "$gd" "$ci" "$pr" "$oid" "$chain" "$vhold")
+    { IFS= read -r land_wait; IFS= read -r wait_on; } < <(pr_wait "$g" "$state" "$xr" "$gd" "$ci" "$pr" "$oid" "$chain" "$qall" "$islug")
     # A session waiting its landing turn carries how long its gate has waited and how deep its repo's
     # landing queue is, so the shepherd names a multi-hour wait on its own line (ar-2525).
     local qwait=- qdepth=- qrepo=- qpr=-
