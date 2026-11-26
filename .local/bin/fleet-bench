@@ -7049,9 +7049,9 @@ canary_lane_why() {
   [ "$1" != claude ] || [ -z "$2" ] || [ -n "$3" ] || { echo "a claude lane needs --effort, which keeps its scores out of the claude baseline"; return 1; }
 }
 
-# canary_queue [--harness h [--model m [--effort e]]] [--max N] [--task id[,id]] [--pts n[,n]] [--off-claude]: the CLI. With a lane it queues that lane's
+# canary_queue [--harness h [--model m [--effort e]]] [--max N] [--task id[,id]] [--pts n[,n]] [--off-claude p[,p]]: the CLI. With a lane it queues that lane's
 # missing tasks (at most N when given; only the named ids and sizes when --task or --pts is given); with --max alone it tops up across the claude lane and every lane
-# in BENCH_CANARY_LANES (canary_top_up), one task a lane a round, so a few canaries run across lanes together. --off-claude (fleet-dispatch, while a project share is full) leaves the claude lanes out.
+# in BENCH_CANARY_LANES (canary_top_up), one task a lane a round, so a few canaries run across lanes together. --off-claude (fleet-dispatch) names the projects whose share is full: a claude lane leaves out the tasks of those projects only (a Claude canary there would wait at the cap), every other task and lane queues.
 canary_queue() {
   local why harness="" model="" effort="" max="" only_ids="" only_pts="" off_claude=""   # only_*: read by canary_lane_queue, off_claude by canary_top_up (dynamic scope)
   while [ $# -gt 0 ]; do
@@ -7062,14 +7062,15 @@ canary_queue() {
       --max) max="${2:?canary queue: --max needs a number}"; shift 2 ;;
       --task) only_ids="${2:?canary queue: --task needs task ids, comma-separated}"; shift 2 ;;
       --pts) only_pts="${2:?canary queue: --pts needs sizes, comma-separated}"; shift 2 ;;
-      --off-claude) off_claude=1; shift ;;
-      *) say "usage: fleet-bench canary queue [--harness h [--model m [--effort e]]] [--max N] [--task id[,id]] [--pts n[,n]] [--off-claude]"; return 2 ;;
+      --off-claude) off_claude="${2:?canary queue: --off-claude needs projects, comma-separated}"; shift 2 ;;
+      *) say "usage: fleet-bench canary queue [--harness h [--model m [--effort e]]] [--max N] [--task id[,id]] [--pts n[,n]] [--off-claude p[,p]]"; return 2 ;;
     esac
   done
   [[ -z "$only_pts" || "$only_pts" =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ ]] || { say "canary queue: --pts needs whole sizes, comma-separated"; return 2; }
   [[ -z "$only_ids" || "$only_ids" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*(,[A-Za-z0-9][A-Za-z0-9_-]*)*$ ]] || { say "canary queue: --task needs task ids (letters, digits, - and _), comma-separated"; return 2; }
   [ -z "$only_ids$only_pts" ] || [ -n "$harness" ] || { say "canary queue: --task and --pts need --harness (the top-up fills every lane)"; return 2; }
   [[ -z "$max" || "$max" =~ ^[1-9][0-9]*$ ]] || { say "canary queue: --max needs a whole number above 0"; return 2; }
+  [[ -z "$off_claude" || "$off_claude" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*(,[A-Za-z0-9][A-Za-z0-9._-]*)*$ ]] || { say "canary queue: --off-claude needs project names, comma-separated"; return 2; }
   [ -z "$off_claude" ] || { [ -n "$max" ] && [ -z "$harness" ]; } || { say "canary queue: --off-claude goes with --max alone (the top-up)"; return 2; }
   why=$(canary_lane_why "$harness" "$model" "$effort") || { say "canary queue: $why"; return 2; }
   if [ -n "$max" ] && [ -z "$harness" ]; then canary_top_up "$max"; return; fi
@@ -7106,7 +7107,7 @@ canary_known() { grep -qxF -e "$1" -e "$2" <<<"$CANARY_KNOWN"; }
 # and leaves the count in CANARY_ADDED. Says its one summary line unless CANARY_QUIET is set (canary_top_up
 # says its own).
 canary_lane_queue() {
-  local tasks t id slug title week why lane="" label="" harness=$1 model=$2 effort=$3 max=$4 added=0 had=0 off=0
+  local tasks t id slug title week why lane="" label="" harness=$1 model=$2 effort=$3 max=$4 added=0 had=0 off=0 full=0
   local -A seen=()
   CANARY_ADDED=0
   [ -z "$harness" ] || { lane=$(canary_lane_name "$harness" "$model" "$effort"); label="$harness${model:+/$model}${effort:+@$effort}"; }
@@ -7137,6 +7138,10 @@ canary_lane_queue() {
   fi
   while IFS= read -r t; do
     id=$(jq -r .id <<<"$t")
+    # A claude lane (the baseline has no harness) leaves out a task of a project whose share is full (--off-claude).
+    if [ -n "${off_claude:-}" ] && { [ -z "$harness" ] || [ "$harness" = claude ]; } && [[ ",$off_claude," == *",$(jq -r '.project // ""' <<<"$t"),"* ]]; then
+      full=$((full + 1)); continue
+    fi
     [ -z "$held" ] || harness_project_why "$BENCH_HARNESSES" "$harness" "$(jq -r '.project // ""' <<<"$t")" >/dev/null ||
       { off=$((off + 1)); continue; }
     slug=$(canary_slug "$id" "$week" "$lane") || { say "canary: lane '$lane' leaves no room for $id in a 40-char slug"; return 1; }
@@ -7155,6 +7160,7 @@ canary_lane_queue() {
     [ "$max" = 0 ] || [ "$added" -lt "$max" ] || break
   done <<<"$tasks"
   local note=''; [ "$off" = 0 ] || note=", $off outside $harness's projects"
+  [ "$full" = 0 ] || note+=", $full in a project whose share is full"
   [ -n "${CANARY_QUIET:-}" ] || say "canary: $added queued, $had already queued$note for $week${label:+ ($label)}"
 }
 
@@ -7188,7 +7194,6 @@ canary_top_up() {
   local left=$1 h m e src why label lane entry got rc=0 round
   local -A lanes=() queued=() dead=()
   local -a active=("||")
-  [ -z "${off_claude:-}" ] || active=()   # the claude baseline lane is the one with no harness
   # An earlier week's queued items go first: they hold floor slots for lanes that no longer replay them.
   canary_retire || say "canary: could not retire every earlier week's run"
   # Every title of the week's window in one read, held for the whole pass.
@@ -7201,7 +7206,6 @@ canary_top_up() {
       if [ -n "${lanes[$lane]:-}" ]; then say "canary: $label not queued, its slug is ${lanes[$lane]}'s"; continue; fi
       lanes[$lane]=$label
       if ! why=$(canary_lane_why "$h" "$m" "$e"); then say "canary: $label not queued, $why"; rc=1; continue; fi
-      [ "$h" != claude ] || [ -z "${off_claude:-}" ] || continue
       if [ "$h" = claude ]; then
         if ! why=$($BENCH_ROOM_CMD 2>&1); then say "canary: $label not queued, no Claude account has room${why:+: $why}"; continue; fi
       else

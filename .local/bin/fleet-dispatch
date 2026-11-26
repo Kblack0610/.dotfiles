@@ -5748,8 +5748,9 @@ other_source_start() {
 # agent-queue takes them), one task a lane a round, so a week's set trickles in as each one finishes
 # instead of sitting in the queue whole (the cap and the queue age count every queued item). They start
 # in queue order like any item, the class mix (classes.json `cleanup`, tag `canary`) keeping their class
-# from falling behind. While a project share is full only the lanes on their own source queue (--off-claude:
-# a Claude lane's canary would wait at the cap). Admission passes dispatch's canary pull, so the top-up asks
+# from falling behind. A Claude lane's canary of a project whose share is full would wait at the cap, so
+# the full projects go to the top-up as --off-claude <projects>: the Claude lanes skip those projects' tasks only
+# (the cap holds an item by its own project, share_held), and every other task and lane queues (ar-5406). Admission passes dispatch's canary pull, so the top-up asks
 # for at most the cap's headroom (queue_headroom), as the sprint and ask top-ups do: a canary the share
 # holds is not in `have`, but the cap counts it (queue-over-cap, ar-3659). Skipped in a dry run, at 0,
 # while floor_gate is shut (a red cluster with the gateway down), dispatch's hold included, and at the
@@ -5768,8 +5769,9 @@ canary_top_up() {
   qroom=$(queue_headroom)
   [ "$qroom" -gt 0 ] || { say "canary top-up (keep $DISPATCH_CANARY_KEEP, $have queued, $want wanted): none queued, the queue is at its cap"; return 0; }
   max=$want; [ "$max" -le "$qroom" ] || { max=$qroom; note=", $qroom under the cap"; }
-  # While the share is full a Claude lane's canary would wait in queued/, so only the lanes on their own source queue (SHARE_JQ).
-  local off=(); if share_full; then off=(--off-claude); note+=", a project share full: no Claude lane"; fi
+  # A Claude lane's canary of a project whose share is full would wait in queued/ (SHARE_JQ), so the top-up leaves those projects out of its Claude lanes.
+  local off=() full; full=$(jq -r '[.projects // {} | to_entries[] | select(.value.full) | .key] | join(",")' <<<"$SHARE_STATE" 2>/dev/null) || full=
+  if [ -n "$full" ]; then off=(--off-claude "$full"); note+=", Claude lanes skip the full share of $full"; fi
   out=$(AGENT_QUEUE_PULL=dispatch fleet-bench canary queue --max "$max" "${off[@]}" 2>&1) || rc=$?
   [ "$rc" = 0 ] || note="$note, not every lane queued"
   [ -n "$out" ] || [ "$rc" = 0 ] || out="fleet-bench exited $rc"

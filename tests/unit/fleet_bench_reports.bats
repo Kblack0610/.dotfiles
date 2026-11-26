@@ -3990,24 +3990,32 @@ cancel c-old-lane --why canary: superseded by the $week set"
   assert_failure 2
 }
 
-# ar-4554: fleet-dispatch passes --off-claude while a project share is full, which holds a Claude lane's canary.
-@test "canary top-up: --off-claude queues only the lanes on their own source, never the claude baseline or a claude lane" {
+# ar-4554, ar-5406: fleet-dispatch passes --off-claude <full projects>, which holds a Claude lane's canary of those projects only.
+@test "canary top-up: --off-claude <project> leaves a claude lane out of that project alone, never another project or a lane on its own source" {
   kpi_setup; kpi_fixture; canary_fixture
   week=$(date -d "@$T0" +%Gw%V)
   export BENCH_CANARY_LANES="$SANDBOX/canary-lanes" BENCH_HARNESSES="$SANDBOX/harnesses.json" BENCH_ROOM_CMD=room-stub
   printf 'codex sol\nclaude haiku max\n' > "$BENCH_CANARY_LANES"
   echo '{"harnesses":{"codex":{"source":"codex"}}}' > "$BENCH_HARNESSES"
   printf '#!/usr/bin/env bash\necho room\n' > "$SANDBOX/bin/room-stub"; chmod +x "$SANDBOX/bin/room-stub"
-  run "$SUBJECT" canary queue --max 9 --off-claude
+  run "$SUBJECT" canary queue --max 9 --off-claude game
   assert_success
   assert_output "fleet-bench: canary: 1 queued for $week (codex/sol)"
   assert_equal "$(ls "$CQ"/*.json)" "$CQ/canary-greet-$week-codex-sol.json"
+  # The negative control: a full share of another project leaves the claude baseline and the claude lane queued (ar-5406).
+  rm "$CQ"/*.json
+  run "$SUBJECT" canary queue --max 9 --off-claude other,elsewhere
+  assert_success
+  assert_equal "$(ls "$CQ"/*.json | wc -l)" 3
   # The positive control: without it the claude baseline and the claude lane queue too.
+  rm "$CQ"/*.json
   run "$SUBJECT" canary queue --max 9
   assert_success
   assert_equal "$(ls "$CQ"/*.json | wc -l)" 3
-  # It names the top-up alone.
-  run "$SUBJECT" canary queue --harness codex --model sol --off-claude
+  # It names the top-up alone, and takes project names.
+  run "$SUBJECT" canary queue --harness codex --model sol --off-claude game
+  assert_failure 2
+  run "$SUBJECT" canary queue --max 9 --off-claude 'a b'
   assert_failure 2
 }
 
