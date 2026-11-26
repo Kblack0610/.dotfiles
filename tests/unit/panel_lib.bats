@@ -332,6 +332,14 @@ scroll_bind='--bind=ctrl-d:preview-half-page-down,ctrl-u:preview-half-page-up,pa
   assert_output 'change-preview-window(down,60%,border-top,wrap,hidden)'
 }
 
+@test "panel-layout.sh scroll prints the shared scroll keys alone, one --bind for a float with its own preview" {
+  run "$REPO_ROOT/.local/src/tmux/panel-layout.sh" scroll
+  assert_success
+  assert_output "$scroll_bind"
+  # Negative control: no layout comes with it, so the float keeps its own preview window.
+  refute_output --partial 'preview-window'
+}
+
 # ── tmux ─────────────────────────────────────────────────────────────────────
 
 @test "panel_in_tmux reflects TMUX, and tolerates it being unset under set -u" {

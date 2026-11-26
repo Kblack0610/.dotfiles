@@ -1498,8 +1498,28 @@ SH
   assert_line "cc:pool_match_busy	unity	1"
   assert_line "cc:pool_match_runners	unity	4"
   assert_line "cc:pool_match_labels	unity/linux,self-hosted,unity-full	1"
+  refute_line --partial cc:pool_match_unread
   run cat "$SANDBOX/ci-match.args"
   assert_output "wait=3600"
+  # ar-4653: a hub that cannot read Prometheus is one unread row, never an empty answer that reads
+  # as a match of nothing; the read above printed no such row.
+  printf '#!/bin/bash\necho "hub ci: did not answer" >&2\nexit 1\n' > "$SANDBOX/bin/ci-match-stub"
+  run prom_match_rows
+  assert_success
+  assert_output "cc:pool_match_unread	-	1"
+}
+
+@test "findings: a starved pool whose label match went unread says so, and falls back to the pool's slots" {
+  use_fixture
+  { cat "$FX/prom.tsv"; printf 'cc:pool_match_unread\t-\t%s\t1\n' "$(clock 09:30)"; } > "$SANDBOX/prom.tsv"
+  BENCH_PROM_TSV="$SANDBOX/prom.tsv" eval_at 09:30
+  run jq -r 'select(.scope == "pool:unity") | "\(.evidence.numbers.match_unread) \(.conclusion)"' "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_output "1 oldest job waited 1.1h with 5/6 slots busy (the slots matching its labels unread): demand is over the pool's capacity"
+  # Negative control: read and matching nothing is not unread.
+  rm "$FLEET_BENCH_DIR/findings.jsonl"
+  eval_at 09:30
+  run jq -r 'select(.scope == "pool:unity") | .conclusion' "$FLEET_BENCH_DIR/findings.jsonl"
+  refute_output --partial unread
 }
 
 @test "findings: starved goes to the human once it has lasted the hour, and keeps its fact" {
@@ -2962,6 +2982,28 @@ epics_fixture() {
   BENCH_NOW=$T0 run "$SUBJECT" epics --json
   run jq -c --argjson t "$T0" '.projects[0].epics[0].eta | [.p50 - $t, .unscheduled]' <<<"$output"
   assert_output '[7200,1]'
+}
+
+@test "epics --project reads only that project's roadmap, and a project not listed fails naming it" {
+  epics_fixture
+  jq -cn --arg d "$SANDBOX/lab/game" '[{name: "game", profile: "lab", dir: $d}, {name: "other", profile: "lab", dir: $d}]' > "$SANDBOX/projects.json"
+  printf '#!/usr/bin/env bash\necho "$1" >> "%s"\n[ "$1 $2" = "game --json" ] && cat "%s"\n' "$SANDBOX/roadmap.calls" "$RM" > "$SANDBOX/bin/roadmap-stub"
+  row a lab/game-agent-1:1 0 1 > "$SNAP"; sample_at 0
+  : > "$SANDBOX/roadmap.calls"
+  BENCH_NOW=$((T0 + 600)) run "$SUBJECT" epics --json --project game
+  assert_success
+  run jq -c '[.projects[] | {project, epics: (.epics | length)}]' <<<"$output"
+  assert_output '[{"project":"game","epics":3}]'
+  run cat "$SANDBOX/roadmap.calls"
+  assert_output 'game'
+  # negative control: with no --project every listed project's roadmap is read
+  : > "$SANDBOX/roadmap.calls"
+  BENCH_NOW=$((T0 + 600)) run "$SUBJECT" epics --json
+  run cat "$SANDBOX/roadmap.calls"
+  assert_output $'game\nother'
+  BENCH_NOW=$((T0 + 600)) run "$SUBJECT" epics --json --project nosuch
+  assert_failure
+  assert_output --partial 'no project nosuch: not listed, or its roadmap could not be read'
 }
 
 @test "a sample freezes an epic's ETA when first seen and on a scope change, and scores it once when its rows land" {

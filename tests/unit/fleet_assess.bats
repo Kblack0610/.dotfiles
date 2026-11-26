@@ -228,11 +228,14 @@ EOF
 
 @test "pane_of: a process's pane as agent-panel names it, <server>/<pane id>, from its tmux env" {
   # Real processes with known environments: pane_of reads /proc/<pid>/environ. Each prints its
-  # own pid ($$ survives the exec) once it runs under its env, so the read never races the exec.
+  # own pid once it runs under its env, with no exec after: `sh -c 'echo $$; exec sleep'` printed
+  # before its exec, and a read inside the exec found an empty environ on a loaded runner (main run
+  # 45636735383, PR #3592 run 45638823349).
   local in out got_in got_out
-  exec 5< <(env TMUX="$BATS_TEST_TMPDIR/tmux-1000/lab,123,0" TMUX_PANE=%8 sh -c 'echo $$; exec sleep 30' 3>&-)
+  local hold='import os, time; print(os.getpid(), flush=True); time.sleep(30)'
+  exec 5< <(env TMUX="$BATS_TEST_TMPDIR/tmux-1000/lab,123,0" TMUX_PANE=%8 python3 -c "$hold" 3>&-)
   read -r in <&5
-  exec 6< <(env -u TMUX -u TMUX_PANE sh -c 'echo $$; exec sleep 30' 3>&-)
+  exec 6< <(env -u TMUX -u TMUX_PANE python3 -c "$hold" 3>&-)
   read -r out <&6
   got_in="$(pane_of "$in")"; got_out="$(pane_of "$out")"
   kill "$in" "$out"; exec 5<&- 6<&-
