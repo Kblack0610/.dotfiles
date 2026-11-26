@@ -1110,16 +1110,19 @@ close_sample() {
     | select(all(.session_id, .target, .pane; type == "string" and . != "" and (test("[\t\n]") | not)))
     | [.session_id, .target, .pane, $close, ((.fact // "-") | tostring | gsub("[\t\n]"; " ")),
        ([(.blockers // [])[] | strings | capture("^open ask (?<id>[A-Za-z0-9_-]+)$").id] | join(",") | if . == "" then "-" else . end),
-       ((.own_asks // 0) | floor), (if .in_manual_mode then 1 else 0 end)]
+       ((.asks // 0) | floor), (if .in_manual_mode then 1 else 0 end)]
     | @tsv' "$STATE_FILE" 2>/dev/null)
   [ -z "$acted" ] || fleet-sessions --write >/dev/null || true
 }
 
-# reopen_own_asks <sid> <ids|-> <own_asks>: set each of the session's open asks (comma separated) to
+# reopen_own_asks <sid> <ids|-> <asks>: set each of the session's open asks (comma separated) to
 # reopen it on the answer, as the closing session itself would (CLAUDE_CODE_SESSION_ID names it to
-# agent-ask). Fails when fewer ids were read than the row's own_asks counts, so an ask the blockers
+# agent-ask). Fails when fewer ids were read than the row's `asks` counts, so an ask the blockers
 # do not name is never left without its session, and on the first that cannot be set: answered
 # meanwhile or no session named. An ask with its own resume counts as set: the answer runs it.
+# `asks`, not `own_asks`: an ask a queue item holds (its ask:<id> tag) is in own_asks but not in the
+# blockers, and needs no reopen: the queue restarts that item on the answer, so no `reopen:` line is
+# written for it (ar-4271: lab/dotfiles-agent-4 refused its close every pass on ask poGHJB).
 reopen_own_asks() {
   local id ids=()
   [ "$2" = - ] || IFS=, read -ra ids <<<"$2"
