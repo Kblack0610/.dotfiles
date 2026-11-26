@@ -49,6 +49,7 @@ SUITES=(
   'tests/docker.sh test-container' 'tests/docker.sh' 'bash tests/docker.sh test-fast' 'tests/rust.sh'
   'sh -x tests/rust.sh' 'tests/fleet-agent-smoke.sh img' '~/.dotfiles/tests/docker.sh'
   'cd tests && ./rust.sh' 'cd tests && ./docker.sh test-container' 'cd tests && ./fleet-agent-smoke.sh' 'tests/rust-crates.sh' 'cd tests && ./rust-crates.sh'
+  'tests/ci-uncovered.sh' 'bash tests/ci-uncovered.sh' 'cd tests && ./ci-uncovered.sh'
   'cargo test' 'cargo test --release' 'cargo +stable test' 'cargo test -p hub-core' 'cargo test --workspace'
   'cargo test -- --nocapture' 'cargo nextest run' 'cargo test 2>&1 | tail' 'cargo test --lib'
   'cd .local/src/notes-cli && cargo test --release'
@@ -79,7 +80,7 @@ LINT_AND_OTHER=(
   'echo make test' 'git commit -m "make -C tests test-pr is denied"' $'cat <<EOF\nbats tests/unit\nEOF'
   'gh pr checks 12' 'cat ~/.dotfiles/tests/run-bats.sh' 'rg bats ~/.dotfiles/tests'
   'f=tests/run-bats.sh; cp x $f' 'x=~/.dotfiles/tests/vendor/bats-core/bin/bats' 'bash -n tests/run-bats.sh'
-  'cd tests && ./lint.sh' 'cd tests && ./docker.sh lint'
+  'cd tests && ./lint.sh' 'cd tests && ./docker.sh lint' 'tests/ci-uncovered.sh --list' 'bash tests/ci-uncovered.sh --list' 'cd tests && ./ci-uncovered.sh --list'
 )
 
 @test "the rows parse with no lint problem" {
@@ -145,9 +146,11 @@ ONE_PER_ROW=('make -C tests test-pr' 'make test-files' 'bats tests/unit' 'tests/
 }
 
 @test "the harness scripts run from inside a tests dir are denied there and nowhere else" {
-  run expect deny /home/u/.dotfiles/tests './docker.sh test-container' './rust.sh' 'bash docker.sh'
+  run expect deny /home/u/.dotfiles/tests './docker.sh test-container' './rust.sh' 'bash docker.sh' './ci-uncovered.sh'
   assert_success
-  run expect allow /home/u/src/app './docker.sh test-container' './rust.sh' 'bash docker.sh'
+  run expect allow /home/u/src/app './docker.sh test-container' './rust.sh' 'bash docker.sh' './ci-uncovered.sh'
+  assert_success
+  run expect allow /home/u/.dotfiles/tests './ci-uncovered.sh --list'
   assert_success
 }
 

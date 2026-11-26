@@ -72,6 +72,15 @@ A page draws these through `kbUi` and never hand-builds the markup (ui.md rules 
 - **agent-web** (this repo) embeds the files with `include_bytes!` and serves them flat under `/static/`. A change here ships with the next agent-web build.
 - **trader** (`freqtrade_trading_attempt`) pins a dotfiles commit and a sha256 per file in `web/kit.lock`. A change reaches it only when that lock is bumped.
 
+A pinned site's `kit.lock` is JSON: `repo`, `commit`, `path` (this directory) and `files`, a sha256 per kit file it serves. Its image build fetches `fetch-kit.py` at the pinned commit and runs it, so a file whose hash is not the lock's fails the build before any file is written:
+
+```dockerfile
+ADD --checksum=sha256:<sha256 of fetch-kit.py> https://raw.githubusercontent.com/Kblack0610/.dotfiles/<commit>/.local/src/web-kit/fetch-kit.py /tmp/fetch-kit.py
+RUN python3 /tmp/fetch-kit.py web/kit.lock web/static/kit
+```
+
+`kit-lock bump <site kit.lock> [<commit>]` moves a site to a kit commit (default `origin/main`): it rewrites the lock's commit and every hash, and the Dockerfile's `ADD` line, so the bump is one commit in the site's repo. To give a site a new kit file, add its name to `files` with any hash and bump. `kit-lock status` lists each site in `~/.config/web-kit/sites` with its pin, the kit commits since, and whether this README changed in between; it exits 1 when one did, since that site then needs a look before its bump. `tests/unit/kit_lock.bats` covers both and the fetch.
+
 A change that breaks the markup contract updates every site in the list above: agent-web in the same PR, and every pinned site's lock in its own PR.
 
 ## Checks
