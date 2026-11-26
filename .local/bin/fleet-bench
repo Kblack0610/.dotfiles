@@ -5720,15 +5720,16 @@ triage_promote() {
 # while that still holds it (triage_ask_held), else one posted now; nothing when the post failed, so the
 # next pass posts it. An ask the human closed is not posted again while the cause stays: its answer went
 # to a board row, its owner. A cause that clears leaves the file, so its next spell of red is asked
-# again, unless its ask was cancelled under TRIAGE_ASK_HOLD_SEC ago or names work still open: on
-# 2026-11-25 RrN599 was cancelled as not a human call (owned by hc-1133, mHHGUX, aRMp2v), the cause
-# left the set for a pass, and triage posted it again as dom9vg within the hour (ar-6233).
+# again, unless its last ask still holds it (ar-6233). An ask agent-ask cannot show is kept, never
+# posted twice.
 triage_spent_ask() {
-  local id
+  local id ask
   id=$(awk -F'\t' -v c="$1" '$1 == c && $3 != "" { print $3; exit }' "$TRIAGE_SPENT_FILE" 2>/dev/null)
   if [ -z "$id" ]; then
     id=$(awk -F'\t' -v c="$1" '$1 == c && $2 != "" { print $2; exit }' "$TRIAGE_HELD_FILE" 2>/dev/null)
-    [ -z "$id" ] || triage_ask_held "$($TRIAGE_ASK_CMD show "$id" 2>/dev/null)" "$4" || id=''
+    if [ -n "$id" ] && ask=$($TRIAGE_ASK_CMD show "$id" 2>/dev/null) && [ -n "$ask" ]; then
+      triage_ask_held "$ask" "$4" || id=''
+    fi
   fi
   if [ -z "$id" ]; then
     # No session owns it: a triage run by hand from a session would otherwise tie it to that session.
@@ -5747,22 +5748,25 @@ TRIAGE_CANCEL_WHY='the red cleared or agents are trying it again (fleet-bench tr
 # TRIAGE_ASK_HOLD_SEC ago or while a queue item in <items> or an ask its reason names is still open.
 # An answered ask holds nothing: its answer was tried, so a red back once more is a new question.
 triage_ask_held() {
-  local st at why tok
+  local st at why tok words
   st=$(sed -n '/^status: /{s///p;q;}' <<<"$1")
   [ "$st" != pending ] || return 0
   [ "$st" = cancelled ] || return 1
   why=$(sed -n '/^closed_reason: /{s///p;q;}' <<<"$1")
   [ "$why" != "$TRIAGE_CANCEL_WHY" ] || return 1
   at=$(sed -n '/^closed_at: /{s///p;q;}' <<<"$1")
-  at=$(date -d "$at" +%s 2>/dev/null) && [ $(( $(now) - at )) -lt "$TRIAGE_ASK_HOLD_SEC" ] && return 0
-  # Words shaped like a queue slug (hc-1133) are looked up in <items>; six-character words with a
-  # capital or a digit (mHHGUX) are asked of agent-ask, so a plain word costs no call.
-  for tok in $(grep -oE '[A-Za-z0-9]+(-[0-9]+)?' <<<"$why" | sort -u); do
-    if [[ "$tok" =~ ^[a-z]+-[0-9]+$ ]]; then
-      jq -e --arg s "$tok" 'any(.[]; .slug == $s and (.state | IN("queued", "running", "review", "waiting")))' <<<"$2" >/dev/null 2>&1 && return 0
-    elif [[ "$tok" =~ ^[A-Za-z0-9]{6}$ && "$tok" =~ [A-Z0-9] ]]; then
-      $TRIAGE_ASK_CMD show "$tok" 2>/dev/null | grep -qx 'status: pending' && return 0
-    fi
+  # date -d '' reads as today's midnight, so a cancel with no stamp gets only the hold of its reason.
+  [ -n "$at" ] && at=$(date -d "$at" +%s 2>/dev/null) && [ $(( $(now) - at )) -lt "$TRIAGE_ASK_HOLD_SEC" ] && return 0
+  # A word with a hyphen (hc-1133, fix-ci-runner) is looked up as a slug in <items>, in one jq call; a
+  # six-character word with a capital or a digit (mHHGUX) is asked of agent-ask, so a plain word costs
+  # no call. A word missed here shortens the hold to TRIAGE_ASK_HOLD_SEC, never posts at once.
+  words=$(grep -oE '[A-Za-z0-9]+(-[A-Za-z0-9]+)*' <<<"$why" | sort -u)
+  jq -e --arg w "$words" '($w | split("\n") | map(select(contains("-")))) as $s
+    | any(.[]; (.slug | IN($s[])) and (.state | IN("queued", "running", "review", "waiting")))' <<<"$2" >/dev/null 2>&1 && return 0
+  for tok in $words; do
+    [[ "$tok" =~ ^[A-Za-z0-9]{6}$ && "$tok" =~ [A-Z0-9] ]] || continue
+    at=$($TRIAGE_ASK_CMD show "$tok" 2>/dev/null) || continue
+    grep -qx 'status: pending' <<<"$at" && return 0
   done
   return 1
 }

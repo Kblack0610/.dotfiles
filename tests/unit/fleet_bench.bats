@@ -2477,6 +2477,7 @@ fix_item() {
   jq -cn '{slug: "hc-9", tags: "", state: "running", queued: "2020-01-01T00:00:00Z"}' >> "$ITEMS"
   local t=${BENCH_NOW:-$(date +%s)} held="$XDG_STATE_HOME/agentctl/triage-held"
   run "$SUBJECT" triage
+  assert_success
   run grep -c '^post ' "$ASKLOG"
   assert_output 1
   # the cause leaves the spent set: its pending ask is cancelled by triage and kept as held
@@ -2496,22 +2497,36 @@ fix_item() {
   [ ! -s "$held" ]
   # two days on, the item its reason names is still running, so it still holds
   TRIAGE_FIX_TRIES=3 run "$SUBJECT" triage
+  assert_success
   ASKCLOSED=$(date -d "@$((t - 2 * 86400))" +%FT%T%z); : > "$ASKLOG"
   run "$SUBJECT" triage
+  assert_success
   run grep -c '^post ' "$ASKLOG"
   assert_output 0
   # NEGATIVE CONTROL: that item closed, so the red is asked again
   TRIAGE_FIX_TRIES=3 run "$SUBJECT" triage
+  assert_success
   sed -i 's/"state":"running"/"state":"done"/' "$ITEMS"; : > "$ASKLOG"
   run "$SUBJECT" triage
+  assert_success
   run grep -c '^post ' "$ASKLOG"
   assert_output 1
   # an ask triage cancelled itself (its red cleared) holds nothing: the next spell is asked
   TRIAGE_FIX_TRIES=3 run "$SUBJECT" triage
+  assert_success
   ASKWHY='the red cleared or agents are trying it again (fleet-bench triage)'; ASKCLOSED=$(date -d "@$((t - 60))" +%FT%T%z); : > "$ASKLOG"
   run "$SUBJECT" triage
+  assert_success
   run grep -c '^post ' "$ASKLOG"
   assert_output 1
+  # a held line older than TRIAGE_FIX_DAYS goes, so the file keeps only causes that left lately
+  TRIAGE_FIX_TRIES=3 run "$SUBJECT" triage
+  assert_success
+  [ -s "$held" ]
+  awk -F'\t' -v OFS='\t' '{ $3 = 0; print }' "$held" > "$held.old" && mv "$held.old" "$held"
+  TRIAGE_FIX_TRIES=3 run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$held" ]
 }
 
 # 2026-11-11 (ar-1587): playground-release-ready's alert item closed ok with the watch still red,
