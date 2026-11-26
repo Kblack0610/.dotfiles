@@ -472,14 +472,23 @@ install_agent_harnesses() {
         # pipefail: a failed curl would otherwise feed bash an empty script that exits 0
         (set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash) || { log_error "claude install failed"; return 1; }
     fi
-    local entry bin pkg
+    local entry bin pkg try out got failed=0
     for entry in codex:@openai/codex opencode:opencode-ai; do
         bin="${entry%%:*}" pkg="${entry#*:}"
         if command -v "$bin" &>/dev/null; then
             log_info "$bin already installed"
         elif command -v npm &>/dev/null; then
-            npm install -g --prefix "$HOME/.local" "$pkg" &>/dev/null && log_info "$bin installed" ||
-                log_warning "$bin install failed (npm $pkg)"
+            # Three tries with a growing backoff, then a failed step: the registry drops a fetch now
+            # and then, and a warning let the fleet-agent image build on, to fail its smoke 3 min
+            # later (runs 45294263315 and 45294498605, ar-5027).
+            got=0
+            for try in 1 2 3; do
+                if out=$(npm install -g --prefix "$HOME/.local" "$pkg" 2>&1); then got=1; break; fi
+                [[ $try -eq 3 ]] || { log_warning "$bin install failed (npm $pkg), try $try of 3"; sleep $((try * ${HARNESS_NPM_BACKOFF_S:-15})); }
+            done
+            # The others still install: the failure is the step's return, after agy.
+            [[ $got -eq 1 ]] || { log_error "$bin install failed (npm $pkg): $(tail -n 3 <<<"$out")"; failed=1; continue; }
+            log_info "$bin installed"
         else
             log_warning "npm not found, skipping $bin"
         fi
@@ -492,7 +501,7 @@ install_agent_harnesses() {
     if [[ -x "$bin/agy" ]]; then
         "$bin/agy" update &>/dev/null && log_info "agy up to date ($("$bin/agy" --version 2>/dev/null))" ||
             log_warning "agy update failed"
-        return 0
+        return "$failed"
     fi
     # An if, not a bare command: under the installer's set -e a failed download would end the run.
     local scratch
@@ -504,6 +513,7 @@ install_agent_harnesses() {
         log_warning "agy install failed"
     fi
     rm -rf "$scratch"
+    return "$failed"
 }
 
 # What a session's host reads its sessions and serves its pages with.
