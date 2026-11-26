@@ -692,6 +692,18 @@ case "$(jq -r 'if .state == "done" and .outcome == "landed" then "done-ok" else 
 running | waiting | review | queued | done-ok) ;;
 *) die "queue item $item is $(jq -r '.state + " " + (.status // "")' <<<"$it"), not open" ;;
 esac
+# With no --repo, the item's own pr:<owner>/<repo>#<pr> names the repo: the bare number alone would
+# be read against this checkout's repo, whatever repo the item's PR is in.
+if [ -z "$repo" ]; then
+  mapfile -t hits < <(jq -r --arg n "$pr" '(.pr // "") | split(" ")[] | select(test("^[^/]+/[^/#]+#" + $n + "$")) | sub("#[0-9]+$"; "")' <<<"$it" | sort -fu)
+  case ${#hits[@]} in
+  0) ;;
+  1) repo=${hits[0]} repo_from="the item's pr:" ;;
+  *) die "queue item $item records #$pr in ${hits[*]}: pass --repo <owner>/<repo>" ;;
+  esac
+fi
+R=()
+[ -z "$repo" ] || R=(-R "$repo")
 # --admin skips a required approving review, so only a session the human opened may ask for it: never a
 # headless run, never an item dispatch or an ask started (origin run, ask). A dispatched session that
 # was refused for want of a review found --admin in --help and merged a client's PR with it
@@ -708,18 +720,6 @@ if [ "${#admin[@]}" -gt 0 ]; then
   { [[ "${CLAUDE_CODE_ENTRYPOINT:-}" != sdk-* ]] && admin_origin_ok "$aorigin" && admin_origin_ok "$lorigin"; } ||
     die "--admin is the human's: queue item $item${aorigin:+ is origin $aorigin}${lorigin:+, the launch item ${AGENT_QUEUE_ITEM} is origin $lorigin}; only a session the human opened may skip a review, so nothing merged. A PR waiting on a required review waits for the human: agent-ask post, then stop"
 fi
-# With no --repo, the item's own pr:<owner>/<repo>#<pr> names the repo: the bare number alone would
-# be read against this checkout's repo, whatever repo the item's PR is in.
-if [ -z "$repo" ]; then
-  mapfile -t hits < <(jq -r --arg n "$pr" '(.pr // "") | split(" ")[] | select(test("^[^/]+/[^/#]+#" + $n + "$")) | sub("#[0-9]+$"; "")' <<<"$it" | sort -fu)
-  case ${#hits[@]} in
-  0) ;;
-  1) repo=${hits[0]} repo_from="the item's pr:" ;;
-  *) die "queue item $item records #$pr in ${hits[*]}: pass --repo <owner>/<repo>" ;;
-  esac
-fi
-R=()
-[ -z "$repo" ] || R=(-R "$repo")
 # Every real step reads this checkout (head, forge remote, merge proof); --repo only redirects gh.
 # Outside a checkout a merged PR got through repo, merge and body, then failed proof (ar-2371).
 # A dry run reads no PR and stays the way to preview from anywhere.
