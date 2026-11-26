@@ -10,11 +10,6 @@ setup() {
   mkdir -p "$TMPDIR"
   SIDF="$BATS_TEST_TMPDIR/sid"
   JOBS=()
-  # These tests size against nproc: run-bats.sh counts cores by tests/cpus.sh, so no pod request or
-  # cgroup quota of the host running them may lower that count.
-  unset CI_CPU_MILLI
-  echo max >"$BATS_TEST_TMPDIR/cpu.max"
-  export CGROUP_CPU_MAX="$BATS_TEST_TMPDIR/cpu.max"
   # With GNU parallel each job sets its own process group, the case that leaked: cover it.
   if command -v parallel >/dev/null; then JOBS=(--jobs 2); fi
 }
@@ -34,14 +29,9 @@ teardown() {
 # inner <bats args...>: run-bats.sh in a clean environment, since the outer run's exported BATS_*
 # variables break a nested bats. It execs, so a backgrounded inner is the wrapper itself, and it
 # restores SIGINT, which a background job starts with ignored, as a Ctrl-C from a terminal finds it.
-# Its bats slots and its run records are this test's own, so it never waits on a real suite or
-# writes the real ledger; UNIT_LOADAVG, SLOT_POLL_S and CLAIM_S pass through.
+# Its run records are this test's own, so it never writes the real ledger.
 inner() {
-  local keep=()
-  [ -z "${UNIT_LOADAVG:-}" ] || keep+=(UNIT_LOADAVG="$UNIT_LOADAVG")
-  [ -z "${SLOT_POLL_S:-}" ] || keep+=(SLOT_POLL_S="$SLOT_POLL_S")
-  [ -z "${CLAIM_S:-}" ] || keep+=(CLAIM_S="$CLAIM_S")
-  exec env -i --default-signal=INT PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" XDG_RUNTIME_DIR="$BATS_TEST_TMPDIR" XDG_STATE_HOME="$BATS_TEST_TMPDIR/state" "${keep[@]}" "$RUN" "${JOBS[@]}" "$@"
+  exec env -i --default-signal=INT PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" XDG_RUNTIME_DIR="$BATS_TEST_TMPDIR" XDG_STATE_HOME="$BATS_TEST_TMPDIR/state" "$RUN" "${JOBS[@]}" "$@"
 }
 
 # fixture <name> <last line of the test>: a test file whose test records its session id, leaves a
@@ -132,107 +122,6 @@ no_leftovers() {
   no_leftovers
 }
 
-# hold_slot <k> <jobs> <epoch>: fd 8 holds slot k the way a live run does, its claim in the file.
-hold_slot() {
-  exec 8>>"$BATS_TEST_TMPDIR/run-bats.slot.$1"
-  flock -n 8
-  printf '1 %s %s\n' "$2" "$3" >"$BATS_TEST_TMPDIR/run-bats.slot.$1"
-}
-
-# set_load <1-min load> [running now]: the load source the slots read, in /proc/loadavg's format.
-set_load() { printf '%s 1.00 1.00 %s/100 1\n' "$1" "${2:-1}" >"$BATS_TEST_TMPDIR/loadavg"; }
-
-@test "a second run waits while the held slots leave it no cores, then runs once one frees" {
-  JOBS=()
-  fixture second "true"
-  hold_slot 0 1 0
-  set_load "$(( $(nproc) + 50 ))"
-  # Held open read-write, the fifo never SIGPIPEs the wrapper after the one line read here.
-  mkfifo "$BATS_TEST_TMPDIR/err"
-  exec 7<>"$BATS_TEST_TMPDIR/err"
-  UNIT_LOADAVG="$BATS_TEST_TMPDIR/loadavg" SLOT_POLL_S=1 CLAIM_S=600 \
-    inner "$BATS_TEST_TMPDIR/second.bats" > "$BATS_TEST_TMPDIR/out" 2>&7 8>&- &
-  wrapper=$!
-  # The wrapper is waiting once it says so; the timeout only bounds a run that never does.
-  read -r -t 60 line <&7
-  [[ "$line" == *waiting* ]]
-  # Still blocked: alive, and its test has not started.
-  kill -0 "$wrapper"
-  [ ! -s "$SIDF" ]
-  flock -u 8
-  wait "$wrapper"
-  run cat "$BATS_TEST_TMPDIR/out"
-  assert_output --partial "ok 1 second"
-  no_leftovers
-}
-
-@test "a second run starts beside a held slot when the cores free fit its --jobs" {
-  JOBS=()
-  fixture second "true"
-  hold_slot 0 1 0
-  set_load 0
-  UNIT_LOADAVG="$BATS_TEST_TMPDIR/loadavg" inner "$BATS_TEST_TMPDIR/second.bats" 8>&- >"$BATS_TEST_TMPDIR/out" 2>"$BATS_TEST_TMPDIR/err" &
-  wrapper=$!
-  wait "$wrapper"
-  run cat "$BATS_TEST_TMPDIR/out"
-  assert_output --partial "ok 1 second"
-  run cat "$BATS_TEST_TMPDIR/err"
-  refute_output --partial waiting
-  no_leftovers
-}
-
-@test "a run admitted a moment ago counts at its --jobs before its workers show in the load" {
-  JOBS=()
-  fixture second "true"
-  hold_slot 0 "$(nproc)" "$(date +%s)"
-  set_load 0
-  mkfifo "$BATS_TEST_TMPDIR/err"
-  exec 7<>"$BATS_TEST_TMPDIR/err"
-  UNIT_LOADAVG="$BATS_TEST_TMPDIR/loadavg" SLOT_POLL_S=1 CLAIM_S=600 \
-    inner "$BATS_TEST_TMPDIR/second.bats" > "$BATS_TEST_TMPDIR/out" 2>&7 8>&- &
-  wrapper=$!
-  read -r -t 60 line <&7
-  [[ "$line" == *waiting* ]]
-  [ ! -s "$SIDF" ]
-  kill -TERM "$wrapper"
-  wait "$wrapper" || true
-}
-
-# --jobs=N and -jN are bats' other spellings: a run must be counted at its real --jobs.
-@test "a --jobs=N run is sized at N, so one wider than the free cores waits" {
-  JOBS=()
-  fixture second "true"
-  hold_slot 0 1 0
-  set_load 0
-  mkfifo "$BATS_TEST_TMPDIR/err"
-  exec 7<>"$BATS_TEST_TMPDIR/err"
-  UNIT_LOADAVG="$BATS_TEST_TMPDIR/loadavg" SLOT_POLL_S=1 CLAIM_S=600 \
-    inner --jobs=$(( $(nproc) + 1 )) "$BATS_TEST_TMPDIR/second.bats" > "$BATS_TEST_TMPDIR/out" 2>&7 8>&- &
-  wrapper=$!
-  read -r -t 60 line <&7
-  [[ "$line" == *"--jobs $(( $(nproc) + 1 )) does not fit"* ]]
-  kill -TERM "$wrapper"
-  wait "$wrapper" || true
-}
-
-# The 2h13m hold (ar-3377): the reap waited on a session whose leaked workers kept respawning
-# while the wrapper still held the slot fd. The slot must be free by the time reap waits.
-@test "the slot is free before the reap waits on the session" {
-  mkdir "$BATS_TEST_TMPDIR/stub"
-  real=$(command -v pidwait)
-  cat >"$BATS_TEST_TMPDIR/stub/pidwait" <<EOT
-#!/bin/sh
-if flock -n "$BATS_TEST_TMPDIR/run-bats.slot.0" true; then echo free; else echo held; fi >>"$BATS_TEST_TMPDIR/pidwait.log"
-exec $real "\$@"
-EOT
-  chmod +x "$BATS_TEST_TMPDIR/stub/pidwait"
-  fixture done "true"
-  PATH="$BATS_TEST_TMPDIR/stub:$PATH" run inner "$BATS_TEST_TMPDIR/done.bats"
-  assert_success
-  run cat "$BATS_TEST_TMPDIR/pidwait.log"
-  assert_output "free"
-}
-
 # The 2h orphans (ar-3376): one pkill then pidwait waited forever on a process forked between the
 # scan and the kill. The stub's first scan kills nothing, as one whose every match forked before
 # its kill; the reap must scan again and kill the straggler. The timeout bounds a reap that waits
@@ -261,32 +150,29 @@ EOT
   assert_output 3
 }
 
-@test "a run is seen while it waits for the slot and leaves one ledger row with its wait (ar-3291)" {
-  fixture rec "true"
+@test "a run is seen while it runs and leaves one ledger row (ar-3291)" {
   live="$BATS_TEST_TMPDIR/local-tests" ledger="$BATS_TEST_TMPDIR/state/local-tests/runs.tsv"
-  JOBS=()
-  hold_slot 0 1 0
-  set_load "$(( $(nproc) + 50 ))"
-  mkfifo "$BATS_TEST_TMPDIR/err"
-  exec 7<>"$BATS_TEST_TMPDIR/err"
-  UNIT_LOADAVG="$BATS_TEST_TMPDIR/loadavg" SLOT_POLL_S=1 inner "$BATS_TEST_TMPDIR/rec.bats" > /dev/null 2>&7 8>&- &
+  mkfifo "$BATS_TEST_TMPDIR/up" "$BATS_TEST_TMPDIR/go"
+  fixture rec "echo up > $(printf %q "$BATS_TEST_TMPDIR/up"); read -r _ < $(printf %q "$BATS_TEST_TMPDIR/go")"
+  inner "$BATS_TEST_TMPDIR/rec.bats" > /dev/null 2>&1 &
   wrapper=$!
-  read -r -t 60 line <&7
-  [[ "$line" == *waiting* ]]
-  # The live line is written before the wait, so it is there once the wrapper says it waits.
+  # The test is running once it writes the fifo; the timeouts only bound a run that never starts
+  # or never reads its go.
+  timeout 60 bash -c 'read -r _ < "$1"' _ "$BATS_TEST_TMPDIR/up"
+  # The live line is written before bats starts, so it is there once the test runs.
   run cut -f2,3,7 "$live/$wrapper"
-  assert_output "$(printf 'waiting\tbats\trec.bats')"
-  flock -u 8
+  assert_output "$(printf 'running\tbats\trec.bats')"
+  timeout 60 bash -c 'echo go > "$1"' _ "$BATS_TEST_TMPDIR/go"
   wait "$wrapper"
   [ ! -e "$live/$wrapper" ]
-  run cut -f3,4,9 "$ledger"
-  assert_output "$(printf 'pass\tbats\trec.bats')"
+  run cut -f3,4,8,9 "$ledger"
+  assert_output "$(printf 'pass\tbats\t0\trec.bats')"
   # cut, not read: IFS collapses a run of tabs, and a detached HEAD (CI) leaves branch empty.
-  read -r end start waited < <(cut -f1,2,8 --output-delimiter=' ' "$ledger")
-  [ "$end" -ge "$start" ] && [ "$waited" -ge 0 ]
+  read -r end start < <(cut -f1,2 --output-delimiter=' ' "$ledger")
+  [ "$end" -ge "$start" ]
 }
 
-@test "a failing run is a fail row, and a CI run takes no slot and writes no row (ar-3291)" {
+@test "a failing run is a fail row, and a CI run writes no row (ar-3291)" {
   fixture red "false"
   ledger="$BATS_TEST_TMPDIR/state/local-tests/runs.tsv"
   run inner "$BATS_TEST_TMPDIR/red.bats"
@@ -307,64 +193,4 @@ EOT
   assert_success
   run cut -f3,9 "$BATS_TEST_TMPDIR/state/local-tests/runs.tsv"
   assert_output "$(printf 'pass\tsuite')"
-}
-
-# fake_bats: a copy of run-bats.sh whose bats prints the arguments it got, so a test reads the
-# --jobs the wrapper settled on. RUN points at the copy.
-fake_bats() {
-  local d="$BATS_TEST_TMPDIR/fake/tests"
-  mkdir -p "$d/vendor/bats-core/bin"
-  cp "$BATS_TEST_DIRNAME/../run-bats.sh" "$BATS_TEST_DIRNAME/../unit-jobs.awk" "$BATS_TEST_DIRNAME/../cpus.sh" "$d/"
-  printf '#!/bin/sh\necho "ARGS $*"\n' >"$d/vendor/bats-core/bin/bats"
-  chmod +x "$d/vendor/bats-core/bin/bats"
-  RUN="$d/run-bats.sh"
-  JOBS=()
-}
-
-# --jobs auto is sized once the slot is granted (ar-3403): the load read before the wait is not the
-# load when the run starts.
-@test "--jobs auto gets the cores free when the slot is granted, not when the run was asked for" {
-  fake_bats
-  hold_slot 0 1 0
-  set_load "$(( $(nproc) + 50 ))"
-  mkfifo "$BATS_TEST_TMPDIR/err"
-  exec 7<>"$BATS_TEST_TMPDIR/err"
-  UNIT_LOADAVG="$BATS_TEST_TMPDIR/loadavg" SLOT_POLL_S=1 CLAIM_S=600 \
-    inner --jobs auto "$BATS_TEST_TMPDIR/x.bats" > "$BATS_TEST_TMPDIR/out" 2>&7 8>&- &
-  wrapper=$!
-  read -r -t 60 line <&7
-  [[ "$line" == *"--jobs 2 (auto) does not fit"* ]]
-  set_load 0
-  flock -u 8
-  wait "$wrapper"
-  run cat "$BATS_TEST_TMPDIR/out"
-  assert_output --partial "ARGS --jobs $(nproc) "
-}
-
-@test "--jobs auto leaves out the cores a run admitted a moment ago has claimed" {
-  [ "$(nproc)" -ge 6 ] || skip "needs 6 cores"
-  fake_bats
-  hold_slot 0 4 "$(date +%s)"
-  set_load 0
-  (UNIT_LOADAVG="$BATS_TEST_TMPDIR/loadavg" CLAIM_S=600 inner --jobs=auto "$BATS_TEST_TMPDIR/x.bats" 8>&- >"$BATS_TEST_TMPDIR/out" 2>/dev/null)
-  run cat "$BATS_TEST_TMPDIR/out"
-  assert_output --partial "ARGS --jobs=$(( $(nproc) - 4 )) "
-}
-
-@test "--jobs auto on a full box is the floor of 2" {
-  fake_bats
-  set_load "$(( $(nproc) + 10 ))"
-  (UNIT_LOADAVG="$BATS_TEST_TMPDIR/loadavg" inner -j auto "$BATS_TEST_TMPDIR/x.bats" >"$BATS_TEST_TMPDIR/out" 2>/dev/null)
-  run cat "$BATS_TEST_TMPDIR/out"
-  assert_output --partial "ARGS -j 2 "
-}
-
-@test "a nested --jobs auto run takes no slot and is sized from the load as it is" {
-  [ "$(nproc)" -ge 5 ] || skip "needs 5 cores"
-  fake_bats
-  set_load "$(( $(nproc) - 3 ))"
-  env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" RUN_BATS_SLOT=nested UNIT_LOADAVG="$BATS_TEST_TMPDIR/loadavg" \
-    "$RUN" --jobs auto "$BATS_TEST_TMPDIR/x.bats" >"$BATS_TEST_TMPDIR/out" 2>/dev/null
-  run cat "$BATS_TEST_TMPDIR/out"
-  assert_output --partial "ARGS --jobs 3 "
 }
