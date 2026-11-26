@@ -226,7 +226,7 @@ JQ_EVAL="$JQ_EPOCH"'
    # re-tag. The -#of/<id> of a re-tag moves the row away from <id>, so it splits nothing from it (ar-5230:
    # 26 of 46 inbox-plan misses in a week were a session re-parenting a child of the planned row to an epic).
    ($ev | map(select(.action == "added" or .action == "tagged")
-        | ([((.text // "") | capture("(^|\\s)#of/(?<p>[A-Za-z0-9_-]+)").p),
+        | ([(if .action == "added" then (.text // "") else "" end | capture("(^|\\s)#of/(?<p>[A-Za-z0-9_-]+)").p),
             ((.why // "") | capture("(^|\\s)\\+#of/(?<p>[A-Za-z0-9_-]+)").p)] | first) as $p
         | select($p != null) | {p: $p, id, e})
       | bykey(.p)) as $kids

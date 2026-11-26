@@ -565,7 +565,7 @@ cell() {
     ev planned p-idle "$p"
     # ar-5230: a child re-parented away (-#of/) splits nothing from the row; one linked before the plan
     # is no re-split of it; one a session adopts under it (+#of/) after the plan still is
-    ev planned p-moved "$p"; ev tagged c-moved "$(ago '-1 day')" 'why=-#of/p-moved +#of/ep-1' by=ab12cd34
+    ev planned p-moved "$p"; ev tagged c-moved "$(ago '-1 day')" 'why=-#of/p-moved +#of/ep-1' 'text=child #of/p-moved' by=ab12cd34
     ev tagged c-early "$(ago '-3 days')" 'why=+#of/p-early -#of/ep-1' by=ab12cd34; ev planned p-early "$p"
     ev planned p-adopt "$p"; ev tagged c-adopt "$(ago '-1 day')" 'why=+#of/p-adopt -#of/ep-2' by=ab12cd34
   } > "$INGEST"
