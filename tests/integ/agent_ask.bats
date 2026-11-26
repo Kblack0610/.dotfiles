@@ -178,6 +178,21 @@ relay_fixture() { # <kind> <text> <shown>
   assert_success
 }
 
+@test "said: the human's words in this attended session pass; other words, a dispatched session or none fail (ar-6059)" {
+  relay_fixture typed 'Hold critical till tomorrow' ''
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" said --since '-1 hour' 'hold  CRITICAL till'
+  assert_success
+  grep -q "agent-panel human $HOME/.claude/projects/p/sid-r.jsonl --since [0-9-]*T[0-9:]*Z" "$NOTES_FIXTURE/calls.log"
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" said --since '-1 hour' 'release it'
+  assert_failure 1; assert_output --partial 'contain: release it'
+  run env CLAUDE_CODE_SESSION_ID=sid-r AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" said --since '-1 hour' 'hold critical'
+  assert_failure 1; assert_output --partial 'no human at it'
+  run "$AGENT_ASK" said --since '-1 hour' 'hold critical'
+  assert_failure 1; assert_output --partial 'no CLAUDE_CODE_SESSION_ID'
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" said 'hold critical'
+  assert_failure 2
+}
+
 @test "answer --quote: refused unless the transcript proves it, and the ask stays pending" {
   local id; id="$(post demo 'park 611 rows?')"
   relay_fixture answer 'Park them' "Ask $id: park the 611 rows?"
@@ -2282,6 +2297,27 @@ ASK-JUDGE-END'
   check ship_deploy take-recommend engineering_design
 }
 
+@test "judge: a reply scored on the picked act derives a park or a wait answerable and an outside act human-only" {
+  # The derive layer only: the model's reading of policy.md (How to score) is checked live, by re-judging asks.
+  # act <type> <criterion> <act>: a reply scoring one decision, the act the picked answer commits to (policy, How to score)
+  act() { SCORE_TYPE=$1 score "$2" | jq -c --arg a "$3" '.decisions[0].decision = $a'; }
+  check() {
+    fake_judge "$1"
+    local id; id="$("$AGENT_ASK" post --project demo --options "$2" --recommend "${2%%=*}" "$3")"
+    "$AGENT_ASK" judge "$id"
+    run "$AGENT_ASK" show "$id"
+    assert_line "judge: $4"
+    if [ "$4" = human ]; then assert_line 'judge_human_only: true'; else refute_line --partial 'judge_human_only'; fi
+  }
+  # rBINiU: park 611 rows, each kept with its links, is not bulk
+  check "$(act cleanup_restructure cleanup_restructure 'park 611 rows, every row kept')" 'park=move them off the board, each kept|keep=leave them' 'what of the 611 old low rows?' take-recommend
+  # fPyHyd: wait for the stuck check; the merge past it is the option turned down
+  check "$(act proceed_or_hold proceed_or_hold 'wait for the queued DB job')" 'wait=wait for the job|admin=merge past it' 'wait for the stuck check or merge past it?' take-recommend
+  # negative controls: the merge past red picked, and a public post, are outside acts
+  check "$(act ship_deploy external 'merge PR 1661 past the unrun check')" 'admin=merge past it|wait=wait for the job' 'merge past the stuck check?' human
+  check "$(act other external 'post the release note publicly')" 'post=post it publicly|hold=hold it' 'post the release note?' human
+}
+
 @test "judge: its own answer wins over the recommendation, and judge_met lists what held" {
   fake_judge "$(score engineering_design no)"
   local id; id="$("$AGENT_ASK" post --project demo --options 'yes=do it|no=leave it' --recommend yes 'which?')"
@@ -2724,8 +2760,10 @@ audit_of() {
   local a b
   a="$(live_post sid-1 'stuck once?' 2>/dev/null)"
   run "$AGENT_ASK" show "$a"; assert_line 'judge_reason: the judge call timed out after 1s'
+  # The pass that judges it again gets a guard the judge's own writes fit in on a loaded runner:
+  # at 1s the guard ended one after `judge` and before `judge_rule` (run 45675382228).
   fake_judge "$(score ship_deploy "" "rules say fix it yourself.")"
-  "$AGENT_ASK" assume-due 2>/dev/null
+  AGENT_ASK_JUDGE_TIMEOUT=30 "$AGENT_ASK" assume-due 2>/dev/null
   run "$AGENT_ASK" show "$a"
   assert_line 'judge: take-recommend'; assert_line 'answered_by: judge'; assert_line 'status: answered'
   # A call that stalls again keeps the error, says so, and is not tried a third time.
