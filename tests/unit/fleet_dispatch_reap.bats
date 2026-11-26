@@ -552,6 +552,15 @@ real_epic_board() {
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)" status)" failed
 }
 
+@test "reap: an open_pr: never replaces the pr: an item already records (ar-4551)" {
+  pr_item OPEN
+  sed -i '/^session: /d' "$AGENT_QUEUE_DIR"/running/*-fix-crash.md
+  agent-queue set fix-crash open_pr=o/game#99 >/dev/null
+  run cmd_reap
+  assert_success
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .pr, .open_pr] | join("|")')" "review|o/game#12|o/game#99"
+}
+
 @test "reap: an item with no session and a report is done; a flag keeps the note it had" {
   started_item withreport '' && started_item noted ''
   agent-queue set withreport report=/tmp/r.md >/dev/null
