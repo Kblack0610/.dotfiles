@@ -1734,6 +1734,27 @@ tok_fixture() {
   assert_output 1
 }
 
+@test "triage: a hand systemd-run service left failed is reset, not filed; a scope or named unit is filed" {
+  triage_setup
+  printf '%s\n' 'run-p2794638-i409215738.service exit-code loaded' 'run-u77.service exit-code loaded' \
+    'run-p1-i2.scope resources loaded' 'run-me.service exit-code loaded' > "$SANDBOX/failed"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line 'fleet-bench: reset: run-p2794638-i409215738.service failed: exit-code, a hand systemd-run with no --collect; dry run, not reset'
+  assert_line 'fleet-bench: reset: run-u77.service failed: exit-code, a hand systemd-run with no --collect; dry run, not reset'
+  refute_line --partial 'fix(unit): run-p2794638'
+  refute_line --partial 'fix(unit): run-u77'
+  # a scope is a fleet caller's own (store-sync, fleet-dispatch), and a named unit is not a hand one
+  assert_line 'fix(unit): run-p1-i2.scope failed: resources #high'
+  assert_line 'fix(unit): run-me.service failed: exit-code #high'
+  run "$SUBJECT" triage
+  assert_success
+  run cut -d' ' -f1 "$SANDBOX/failed"
+  assert_output "$(printf '%s\n' run-p1-i2.scope run-me.service)"
+  run grep -c 'fix(unit): run-p2794638\|fix(unit): run-u77' "$BOARD"
+  assert_output 0
+}
+
 @test "triage: a gone unit reset with nothing else at fault is WORKED, and its old row closes" {
   triage_setup
   echo 'gone.service exit-code not-found' > "$SANDBOX/failed"
