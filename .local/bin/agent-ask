@@ -130,7 +130,8 @@
 #
 # ANSWERING IS STARTING. `answer` records the decision (no page: only the human answers) and
 # queues its delivery, which `deliver` runs in the background (agent-ask-deliver.path): it types
-# the answer into a live session, and hands the id to `ask-resume`, which runs the ask's `resume`
+# the answer into a live session, puts each waiting queue item the ask names whose session ended back
+# in the queue with the decision in its next brief, and hands the id to `ask-resume`, which runs the ask's `resume`
 # command (detached, through agentctl-run) and exits silently for an ask that has none. Every
 # surface that answers - agent-web, fleet.sh, a bare CLI call - gets that for free, so no surface
 # can record an answer that silently goes nowhere. `resumable` + `mark-resumed` remain
@@ -1170,6 +1171,41 @@ released_by() {
   queue_holders "$1" | awk -F'\t' -v a="${pick,,}" '$2 == "" || index("+" tolower($2) "+", "+" a "+") { print $1 }'
 }
 
+# requeue_waiting <file>: each waiting queue item the answer names goes back to the queue with an
+# `ask:<id>` tag, so its next brief carries the decision (fleet-dispatch ask_decisions); prints its slug.
+# The ask names an item by its `task:`, or by a session waiting on it that the item's `sessions:` lists.
+# Left as it is: an item with a live session (the answer was typed into it, and reap moves it on), and
+# one another pending ask names, which still waits on that one. Why (ar-6242): VZtnyM's answer went to
+# its resume, `reopen` deferred to the board row held on it, and ar-5519 sat waiting 11h unstarted.
+requeue_waiting() {
+  local f="$1" id task sids items others o slug tags isids s
+  id="$(field "$f" id)" task="$(field "$f" task)"
+  sids=" $(ask_sessions "$f" | tr '\n' ' ')"
+  items="$($AGENT_ASK_QUEUE_CMD list --json --state waiting 2>/dev/null)" || return 0
+  [ -n "$items" ] || return 0
+  others=" "
+  while IFS= read -r o; do
+    [ "$o" != "$f" ] || continue
+    others+="$(sed -n 's/^task: \(..*\)$/\1/p; s/^claude_session: \(..*\)$/\1/p' "$o" | tr '\n' ' ')"
+  done < <(ask_files --all | xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null)
+  while IFS=$'\x1f' read -r slug tags isids; do
+    [ -n "$slug" ] || continue
+    [[ "$others" != *" $slug "* ]] || continue
+    for s in $isids; do
+      [[ "$others" != *" $s "* ]] && [ -z "$(live_row "$s")" ] || continue 2
+    done
+    case " $tags " in *" ask:$id "* | *" ask:$id="*) ;; *) tags="${tags:+$tags }ask:$id" ;; esac
+    if $AGENT_ASK_QUEUE_CMD set "$slug" "tags=$tags" >/dev/null 2>&1 &&
+      $AGENT_ASK_QUEUE_CMD move "$slug" queued --if waiting >/dev/null 2>&1; then
+      printf '%s\n' "$slug"
+    else
+      echo "agent-ask: $id names waiting item $slug, which did not go back to the queue: agent-queue move $slug queued" >&2
+    fi
+  done < <(jq -r --arg t "$task" --arg s "$sids" '
+    select(.slug == $t or any((.sessions // "") | splits(" +") | select(. != ""); . as $x | $s | contains(" " + $x + " ")))
+    | [.slug, (.tags // ""), (.sessions // "")] | join("\u001f")' <<<"$items")
+}
+
 # start_held: the answer released the queue items held on its ask, and a fleet-dispatch kick starts them
 # now (dispatch_wake), behind every gate a pass holds a start to (room, load, run units), not at the
 # timer's next fire. The wake file coalesces: a kick or pass already running takes the items itself.
@@ -1219,7 +1255,7 @@ cmd_deliver() {
 # board row when no resume or queue item takes it, then its resume and the held items' start.
 # Fails, doing nothing, when there is no delivery to claim.
 deliver_one() {
-  local f="$1" stamp lock id answer by beside="" row said held="" note=""
+  local f="$1" stamp lock id answer by beside="" row said held="" requeued="" note=""
   lock="$(dirname "$f")/.lock"; stamp="$(now_iso)"
   (
     command -v flock >/dev/null 2>&1 && flock 9
@@ -1251,6 +1287,9 @@ deliver_one() {
   # no row: the row was a second copy of work the queue already holds. An answer they do not wait for
   # releases nothing and still files one. Any answer releases (agent-queue ask_pending).
   held="$(released_by "$id" "$answer")"
+  # A waiting item it names whose session ended goes back to the queue the same way (requeue_waiting),
+  # before the resume runs, so `reopen` reads it as a holder and does not start that session as well.
+  [ -n "$beside" ] || requeued="$(requeue_waiting "$f")"
   # went: where the answer went, each place named only when it was used.
   local went=() resume="" why
   [ -n "$beside" ] || resume="$(field "$f" resume)"
@@ -1262,20 +1301,22 @@ deliver_one() {
     # Typed into none of them, and no resume or held item takes it: left there, the answer waits
     # only on a board's "not sent" while the session never reads it (2026-11-20: fVKDIo sat unsent
     # in a prompt until its window closed), so it is filed as work, as an answer with no session is.
-    if [ "$unsent" = "${#rows[@]}" ] && { [ -n "$beside" ] || { [ -z "$resume" ] && [ -z "$held" ]; }; }; then
+    if [ "$unsent" = "${#rows[@]}" ] && { [ -n "$beside" ] || [ -z "$resume$held$requeued" ]; }; then
       if why="$(answer_row "$f" "$answer" "$by")"; then note+="; a board row carries it"; else note+="; $why"; fi
     fi
     if [ "${#rows[@]}" -gt 1 ]; then went+=("typed into the ${#rows[@]} live sessions waiting on its blocker")
     elif [ "$(jq -r .session_id <<< "$row")" = "$(field "$f" claude_session)" ]; then
       went+=("typed into $(field "$f" session)$(jq -r '.host // empty | " on " + .' <<< "$row")")
     else went+=("typed into $(jq -r '(.target // .session_id) + (.host // "" | if . == "" then "" else " on " + . end)' <<< "$row"), waiting on its blocker"); fi
-  elif [ -n "$beside" ] || { [ -z "$resume" ] && [ -z "$held" ]; }; then
+  elif [ -n "$beside" ] || [ -z "$resume$held$requeued" ]; then
     if why="$(answer_row "$f" "$answer" "$by")"; then went+=("a board row: no live session, resume or held item takes it")
     else note+="no live session, resume or held item takes it, and $why"; fi
   fi
   [ -n "$beside" ] || start_resume "$id"
   [ -z "$resume" ] || went+=("its resume")
-  [ -z "$held" ] || { start_held; went+=("$(grep -c . <<<"$held") queue item(s) held on it"); }
+  [ -z "$held" ] || went+=("$(grep -c . <<<"$held") queue item(s) held on it")
+  [ -z "$requeued" ] || went+=("waiting item(s) $(paste -sd' ' <<<"$requeued" | sed 's/ /, /g') back in the queue")
+  [ -z "$held$requeued" ] || start_held
 
   # Ends the claim it made only: an answer given meanwhile queued a new delivery, and that one stays.
   (
