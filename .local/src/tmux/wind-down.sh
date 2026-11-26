@@ -81,6 +81,8 @@ cmd_arm() {
 
   if [ -z "${TMUX:-}" ]; then
     echo "wind-down: not inside tmux — nothing to spin down. (Note still written; no kill armed.)" >&2
+    # A job dir whose state does not name this session is the other reason no stop armed.
+    [ -n "${CLAUDE_JOB_DIR:-}" ] && echo "wind-down: CLAUDE_JOB_DIR=$CLAUDE_JOB_DIR is set, but its state.json does not name session '${CLAUDE_CODE_SESSION_ID:-}'." >&2
     return 1
   fi
 

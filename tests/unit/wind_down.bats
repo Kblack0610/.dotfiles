@@ -714,6 +714,7 @@ bg_arm() { run env CLAUDE_CODE_SESSION_KIND=bg CLAUDE_CODE_SESSION_ID="$SID_A" C
   run env -u CLAUDE_CODE_SESSION_KIND CLAUDE_CODE_SESSION_ID="$SID_A" CLAUDE_JOB_DIR="$JOB" TMUX="" TMUX_PANE="" bash "$WIND_DOWN" arm
   assert_failure
   assert_output --partial 'not inside tmux'
+  assert_output --partial 'does not name session'
 }
 
 @test "arm in a background session that inherited TMUX still arms the stop, never the pane" {
@@ -738,6 +739,17 @@ bg_arm() { run env CLAUDE_CODE_SESSION_KIND=bg CLAUDE_CODE_SESSION_ID="$SID_A" C
   bg_arm TMUX="" TMUX_PANE="" bash "$WIND_DOWN" arm
   assert_failure
   assert_output --partial 'not inside tmux'
+}
+
+@test "a claude started inside a background session with KIND unset closes its own window, never the parent's job" {
+  # KIND is not part of the guard (ar-4749): the parent job's state names another session.
+  bg_stubs; mk_job "$SID_B"
+  run env -u CLAUDE_CODE_SESSION_KIND CLAUDE_CODE_SESSION_ID="$SID_A" CLAUDE_JOB_DIR="$JOB" bash "$WIND_DOWN" arm
+  assert_success
+  run grep -E '^scope=' "$SPIN_DIR/$SID_A.request"
+  assert_output 'scope=window'
+  run grep '^claude stop' "$NOTES_FIXTURE/calls.log"
+  assert_failure
 }
 
 @test "arm in a background session records the worktree it runs in" {
