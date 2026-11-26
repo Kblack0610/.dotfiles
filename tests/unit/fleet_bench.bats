@@ -1809,11 +1809,18 @@ board_row() { printf 'board.md\t5\t%s\t- [%s] %s\n' "${2,,}" "$1" "$2" >> "$BOAR
   # ar-9001's item closed with no PR; ar-9002's is still running
   printf '%s\n' '{"slug":"red-drift","state":"done","status":"ok","row":"agent-runtime:ar-9001"}' \
     '{"slug":"red-load","state":"running","row":"agent-runtime:ar-9002"}' > "$ITEMS"
+  # a started row with no id, and a started row on the human sheet, are worked by hand: both stay
+  watch idle OK -90000 normal
+  watch sheet OK -90000 normal
+  board_row '/' 'check(watch): idle tripped since 2026-11-01, expected: idle is healthy.'
+  BOARD="$BOARD.agent-runtime" board_row '/' 'check(watch): sheet tripped since 2026-11-01, expected: sheet is healthy. <!-- id:ar-9003 -->'
   run "$SUBJECT" triage --dry-run
   assert_success
   assert_line 'retire: check(watch): drift tripped since'
   refute_line 'retire: check(watch): load tripped since'
-  # negative control: the queue cannot be read, so neither started row closes
+  refute_line 'retire: check(watch): idle tripped since'
+  refute_line 'retire: check(watch): sheet tripped since'
+  # negative control: the queue cannot be read, so retire closes nothing at all
   printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/items-stub"
   run "$SUBJECT" triage --dry-run
   refute_line --partial 'retire: check(watch)'
