@@ -293,6 +293,7 @@ unlock_read() { [ "${AQ_HELD-}" != shared ] || unlock; }
 LOCK_BUSY=75
 LOCK_WAIT="${AGENT_QUEUE_LOCK_WAIT:-10}"
 AQ_LOCK_MISS_LOG="$AQ_DIR/lock-miss.jsonl"
+AQ_HEADERLESS_LOG="$AQ_DIR/headerless.log"
 take_lock() {
   [[ "$LOCK_WAIT" =~ ^[1-9][0-9]*$ ]] || die "AGENT_QUEUE_LOCK_WAIT is whole seconds, not '$LOCK_WAIT'"
   local gate end=$((SECONDS + LOCK_WAIT))
@@ -1378,21 +1379,39 @@ index_rows() { # <queue_index output>
   done <<<"$1"
 }
 
+# SKIP_AWK: skip_headerless(f), the one answer for an item file with no `slug:` header (a stray file,
+# a truncated write): item_recs leaves it out of every read, so a listing never shows it as a queued
+# item with slug null at priority high for dispatch to start (ar-5848). It says so on stderr at every
+# read, and appends "<utc time>\t<file>\tno slug header" to AQ_HEADERLESS_LOG once per file (dispatch
+# reads with stderr dropped, so the log is the record a human finds); it is never deleted or moved.
+# The append goes through cat so an unwritable log is silent, never an awk abort that truncates the listing.
+# Two concurrent readers can both miss a new file and both append: a duplicate line is harmless.
+# Only an active item is skipped: a done file with no slug keeps listing, as stats and outcomes read it.
+SKIP_AWK='function skip_headerless(f,  lg, line, seen, now, a, cmd) {
+  print "agent-queue: skipping " f ": no slug header (not listed; see " ENVIRON["AQ_HEADERLESS_LOG"] ")" > "/dev/stderr"
+  lg = ENVIRON["AQ_HEADERLESS_LOG"]
+  while ((getline line < lg) > 0) { split(line, a, "\t"); if (a[2] == f) seen = 1 }
+  close(lg)
+  if (seen) return
+  cmd = "date -u +%Y-%m-%dT%H:%M:%SZ"; cmd | getline now; close(cmd)
+  cmd = "cat >> \"$AQ_HEADERLESS_LOG\" 2>/dev/null"; printf "%s\t%s\tno slug header\n", now, f | cmd; close(cmd) }'
+
 # item_recs <file>... -> one record per item file for ITEM_JQ, all read by one awk: state, file,
 # task and the first weight in its header, then its header keys and values; fields end in \x1f and
 # the record in \x1e. Header keys by HDR_AWK; the object keeps the last of a repeated key and the
 # rules (after, tags, weight) read the first.
 item_recs() {
-  printf '%s\n' "$@" | AQ_DONE="$AQ_DIR/done/" awk "$HDR_AWK"'{
-    f = $0; task = ""; body = 0; w = ""; sw = 0; kv = ""
+  printf '%s\n' "$@" | AQ_DONE="$AQ_DIR/done/" AQ_HEADERLESS_LOG="$AQ_HEADERLESS_LOG" awk "$HDR_AWK$SKIP_AWK"'{
+    f = $0; task = ""; body = 0; w = ""; sw = 0; kv = ""; hs = 0
     while ((getline line < f) > 0) {
       if (body) { task = task line "\n"; continue }
       if (line == "---") { body = 1; continue }
-      if (hdr(line)) { kv = kv HK "\037" HV "\037"; if (HK == "weight" && !sw++) w = HV }
+      if (hdr(line)) { kv = kv HK "\037" HV "\037"; if (HK == "weight" && !sw++) w = HV; if (HK == "slug" && HV != "") hs = 1 }
     }
     close(f)
-    sub(/\n+$/, "", task)
     if (index(f, ENVIRON["AQ_DONE"]) == 1) st = "done"; else { st = f; sub(/\/[^\/]*$/, "", st); sub(/.*\//, "", st) }
+    if (!hs && st != "done") { skip_headerless(f); next }
+    sub(/\n+$/, "", task)
     printf "%s\037%s\037%s\037%s\037%s\036", st, f, task, w, kv }'
 }
 
@@ -1496,6 +1515,7 @@ item_json() {
   done
   recs="$(item_recs "$1")"
   unlock_read
+  [ -n "$recs" ] || return 1 # no slug header: item_recs named it on stderr, and an empty answer is not an item
   { item_side "$1" "$a" "$tags" "$w" "$project" "$mode" "$phases" "$afin"; printf '\x1d%s' "$recs"; } |
     jq -Rsc "$ITEM_JQ | .[]"
 }
@@ -2872,7 +2892,7 @@ cmd_show() {
   lock_read
   f="$(find_item "$slug" any)"; [ -n "$f" ] || die "no item: $slug"
   if [ "${2:-}" = --json ] && [ "${3:-}" = --points ]; then sizing_join "[$(item_json "$f")]" | jq -c '.[0]'; return 0; fi
-  if [ "${2:-}" = --json ]; then item_json "$f"; return 0; fi
+  if [ "${2:-}" = --json ]; then item_json "$f"; return; fi
   printf 'state: %s\nfile: %s\n' "$(state_of "$f")" "$f"
   cat -- "$f"
 }
