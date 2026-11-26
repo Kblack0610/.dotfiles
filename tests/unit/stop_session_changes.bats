@@ -2,7 +2,7 @@
 # stop-session-changes.py -- the paths this session changed, judged from its session-start snapshot.
 #
 # The Stop gate picks its shell tests from this list. A checkout or reset that moves HEAD back (a canary start,
-# a bisect, a reset to an older commit) rewrites files the session never edited. Before the fix each
+# a bisect, a reset to an older commit) or a checkout onto another branch rewrites files the session never edited. Before the fix each
 # of them counted as the session's, and one harness path in the list picked every test file.
 #
 # git is a subprocess, not the subject: a throwaway repo under $BATS_TEST_TMPDIR, with a remote
@@ -145,4 +145,29 @@ PY
   run changed
   assert_success
   assert_output ""
+}
+
+@test "a recorded tip that no longer exists does not drop the filter" {
+  other_branch
+  snapshot
+  python3 - "$BATS_TEST_TMPDIR/cache"/claude-stop-hook/session-start-*.json <<'PY'
+import json, sys
+for p in sys.argv[1:]:
+    d = json.load(open(p))
+    d["\0refs"].append("0" * 40)
+    json.dump(d, open(p, "w"))
+PY
+  git -C "$REPO" checkout -q other
+  run changed
+  assert_success
+  assert_output ""
+}
+
+@test "a branch made after the snapshot counts: nothing records that it predates the session" {
+  snapshot
+  other_branch
+  git -C "$REPO" checkout -q other
+  run changed
+  assert_success
+  assert_output "b.txt"
 }

@@ -111,7 +111,7 @@ def head_now(root):
 
 def ref_tips(root):
     """Every ref's commit id: the history that existed before the session began."""
-    out = git(root, "for-each-ref", "--format=%(objectname)").decode()
+    out = git(root, "for-each-ref", "--format=%(objectname)", "refs/heads", "refs/remotes").decode()
     return sorted(set(out.split()))
 
 
@@ -125,7 +125,11 @@ def own_work(root, head, tips):
     """
     names = git(root, "diff", "--no-renames", "--name-only", "-z", "HEAD")
     names += git(root, "ls-files", "--others", "--exclude-standard", "-z")
-    rows = "".join(f"^{t}\n" for t in {head, *tips})
+    # A tip gc has since pruned would fail the walk and drop the whole refinement: leave it out.
+    wanted = sorted({head, *tips})
+    checked = subprocess.run(["git", "-C", str(root), "cat-file", "--batch-check"], input="".join(f"{t}\n" for t in wanted).encode(),
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True).stdout.decode().splitlines()
+    rows = "".join(f"^{t}\n" for t, line in zip(wanted, checked) if not line.endswith(" missing"))
     names += subprocess.run(
         ["git", "-C", str(root), "log", "--stdin", "--first-parent", "-m", "--no-renames", "--name-only", "--format=", "-z"],
         input=("HEAD\n" + rows).encode(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True).stdout
