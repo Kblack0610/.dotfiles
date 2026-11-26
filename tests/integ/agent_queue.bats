@@ -377,9 +377,9 @@ load 'agent_queue/common'
   assert_success
   assert_output "a-item"
   grep -q "skipping .*stray.md: no slug header" "$SANDBOX/err"
-  run "$AQ" next --json
+  run bash -c "'$AQ' next --json 2>/dev/null | jq -r .slug"
   assert_success
-  [ "$(jq -r .slug <<<"$output")" = a-item ]
+  assert_output "a-item"
   "$AQ" list --json >/dev/null 2>&1
   [ "$(grep -c 'stray.md' "$AGENT_QUEUE_DIR/headerless.log")" = 1 ]
   # NEGATIVE CONTROL: a file whose header has its slug is listed, and is not logged.
