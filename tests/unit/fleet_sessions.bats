@@ -776,6 +776,7 @@ load 'fleet_sessions/common'
 @test "live_wait reads the platform's background preview-gate.sh as a gate, by the repo's own time-use.conf (ar-5160)" {
   # 2026-11-24 platform-agent-4 (pmp-169, PR #1666) read "background shell is not a gate or test" while its shell ran the
   # release gate (deploy wait, smoke, ~520 Playwright tests). Reads the shipped conf, so dropping the line fails here.
+  # The sourced preview_gate_run form is seen only from the transcript (open_job), pinned by tests/fixtures/time-use-commands.tsv.
   mkdir -p "$SANDBOX/wt" "$SANDBOX/plat/scripts"
   printf 'sleep 60\n' > "$SANDBOX/plat/scripts/preview-gate.sh"
   export FLEET_TIME_USE_CONF="$BATS_TEST_DIRNAME/../../.config/agent-panel/time-use.conf"
