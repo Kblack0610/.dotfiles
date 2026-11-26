@@ -68,11 +68,15 @@ move() {
 
 panel() {
     command -v fzf >/dev/null 2>&1 || { echo "timebox-panel needs fzf" >&2; exit 2; }
+    # The scroll keys every panel shares; none (the helper missing) still opens the menu.
+    local scroll
+    mapfile -t scroll < <("$(dirname "$SELF")/../src/tmux/panel-layout.sh" scroll 2>/dev/null)
     local r="reload($SELF rows)+refresh-preview"
     rows | fzf --no-sort --layout=reverse --height=100% --header-lines=1 --disabled \
         --prompt='timebox> ' \
-        --header=$'a add  d done  r remove  J/K move\nenter go  p pause  l load preset\nx clear all  q close' \
+        --header=$'a add  d done  r remove  J/K move\nenter go  p pause  l load preset\nx clear all  ^d/^u scroll  q close' \
         --preview="$TIMEBOX status" --preview-window='right,45%,wrap' \
+        "${scroll[@]}" \
         --bind="a:execute($SELF act add)+$r" \
         --bind="d:execute-silent($SELF act done)+$r" \
         --bind="r:execute-silent($SELF act rm {1})+$r" \
