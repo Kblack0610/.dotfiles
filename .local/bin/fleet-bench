@@ -6301,8 +6301,12 @@ finding_limits() {
 # matched while mac-studio slots sat idle). The join is hub_core::ci, the one copy the hub and agent-web
 # draw too; this only asks it. Empty when nothing waits long or it is unread: the rule then falls back
 # to the pool's own totals. It reads Prometheus now, which is the newest sample the one reader of this asks for.
+# A failed ask is the row cc:pool_match_unread, so the finding says its match is unread instead of
+# reading as one that matched nothing (2026-11-25: hub ci failed while Prometheus restarted, ar-4653).
 prom_match_rows() {
-  $BENCH_CI_MATCH_CMD "$(finding_limits | jq -r .finding_pool_wait_s)" 2>/dev/null
+  local out
+  out=$($BENCH_CI_MATCH_CMD "$(finding_limits | jq -r .finding_pool_wait_s)" 2>/dev/null) || { printf 'cc:pool_match_unread\t-\t1\n'; return 0; }
+  [ -z "$out" ] || printf '%s\n' "$out"
 }
 
 # prom_rows <epoch> [match] -> metric, label, value (tab-separated) at that moment; rc 1 when unreadable.
@@ -6407,6 +6411,7 @@ finding_rows() {
             # the pool may lack their labels, so its total busy/slots says nothing about those jobs.
             | ($a["cc:pool_match_slots"][$pool]) as $ms | ($a["cc:pool_match_busy"][$pool]) as $mu | ($a["cc:pool_match_runners"][$pool]) as $mr
             | ([($a["cc:pool_match_labels"] // {}) | keys[] | select(startswith($pool + "/")) | ltrimstr($pool + "/")] | first) as $want
+            | ($ms == null and $a["cc:pool_match_unread"] != null) as $unread
             # No labels read: the slots the governor counts across the fleet, taken against capacity. A kind runs
             # fewer jobs than slots it holds when another kind fills them, so cc:pool_busy would read labels (ar-3729).
             | (if $ms != null and $mu != null then {u: $mu, s: $ms} else $fu end) as $k
@@ -6425,8 +6430,9 @@ finding_rows() {
             | ($pool == "other" and $ms != null and $ms > 0 and $mu >= $ms
                and (($want // "") | split(" | ") | length > 0 and all(.[]; test("(^|,)host-")))) as $pinned
             | row("starved"; "pool:\($pool)"; "shepherd"; {waiting: $n, busy: $k.u, slots: $k.s, oldest_s: $w}
-                + (if $ms != null then {fleet_taken: $fu.u, fleet_units: $fu.s, labels: $want, runners: $mr} else {} end); "now"; "cc:pool_*";
+                + (if $ms != null then {fleet_taken: $fu.u, fleet_units: $fu.s, labels: $want, runners: $mr} elif $unread then {match_unread: 1} else {} end); "now"; "cc:pool_*";
                 "oldest job waited \($w | dur) with \($k.u | units)/\($k.s | units) slots busy"
+                + (if $unread then " (the slots matching its labels unread)" else "" end)
                 + (if $ms != null then " among those matching its labels (\($want // "?")), \($fu.u | units)/\($fu.s | units) in the fleet" else "" end) + ": "
                 + (if $pinned then "the jobs are pinned to a host, so the slots of the pin bind, not the pool" elif $bind == "labels" then "admission or labels bind, not capacity" elif $bind == "admission" then "only \($ms) of the \($mr) runners with its labels are admitted, the rest withheld, parked or offline: admission or host health binds, not demand" else "demand is over the \(if $ms != null then "matching slots'"'"'" else "pool'"'"'s" end) capacity" end);
                 "\($n) jobs waiting") + {repos: $repos, bind: $bind} ),
