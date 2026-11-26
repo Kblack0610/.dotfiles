@@ -81,11 +81,16 @@ pin_lines() { awk -F'\037' -v c="$1" '{ n = split($c, p, "`"); for (i = 2; i <= 
 
 check_pinned() { rows "$1" | pin_lines 4 | pins_missing; } # <doc>
 
-check_shepherd() { # <doc> <fleet-shepherd>
-  local b bad=0 body
+# A due function reads a bucket by its quoted name, or, for a finished one (fleet-sessions'
+# BUCKET_FINISHED, the state document's vocab.finished), through FIN_JQ's `finished`.
+check_shepherd() { # <doc> <fleet-shepherd> <fleet-sessions>
+  local b bad=0 body fin
   body="$(awk '/^[a-z_]*due\(\) \{/,/^}/' "$2")"
+  fin=" $(sed -n 's/^BUCKET_FINISHED="\(.*\)"$/\1/p' "$3") "
   while IFS= read -r b; do
-    grep -qF "\"$b\"" <<<"$body" || { echo "$b: its actor is the shepherd, but no due function reads it"; bad=1; }
+    grep -qF "\"$b\"" <<<"$body" && continue
+    [[ "$fin" == *" $b "* ]] && grep -qw finished <<<"$body" && continue
+    echo "$b: its actor is the shepherd, but no due function reads it"; bad=1
   done < <(rows "$1" | awk -F'\037' 'tolower($2) ~ /shepherd/ {print $1}')
   return "$bad"
 }
@@ -147,11 +152,11 @@ check_owner_copies() { # <doc> <file>...
 }
 
 @test "every bucket the shepherd acts on is read by one of its due functions" {
-  run check_shepherd "$DOC" "$SHEPHERD"
+  run check_shepherd "$DOC" "$SHEPHERD" "$SESSIONS"
   assert_success
 }
 
-@test "negative controls: a stray bucket word, a missing row, an empty cell, a dead test name and an unread bucket all fail" {
+@test "negative controls: a stray bucket word, a missing row, an empty cell, a dead test name, an unread bucket and an unread finished set all fail" {
   local t="$BATS_TEST_TMPDIR"
   { cat "$SESSIONS"; echo '  echo "UNCLEAR stray"'; } > "$t/sessions"
   run check_words "$DOC" "$t/sessions"
@@ -170,9 +175,13 @@ check_owner_copies() { # <doc> <file>...
   assert_failure
   assert_output --partial 'CHAT: no @test "a CHAT row gets a pass line'
   sed -E 's/"CHAT"/"CHATTY"/g' "$SHEPHERD" > "$t/shepherd"
-  run check_shepherd "$DOC" "$t/shepherd"
+  run check_shepherd "$DOC" "$t/shepherd" "$SESSIONS"
   assert_failure
   assert_output 'CHAT: its actor is the shepherd, but no due function reads it'
+  sed -E 's/\(finished or /(false or /' "$SHEPHERD" > "$t/no-finished"
+  run check_shepherd "$DOC" "$t/no-finished" "$SESSIONS"
+  assert_failure
+  assert_output --partial 'DONE: its actor is the shepherd, but no due function reads it'
 }
 
 @test "the close table's step ids and verdicts, in order, are the tagged branches of close_verdict" {
