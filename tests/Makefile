@@ -48,7 +48,7 @@ help:
 	@echo ""
 	@echo "host-safe (no tmux server started):"
 	@echo "  make test-pr      the files the PR gate picks for this change (PR_BASE=<rev>, default the merge-base with origin/main)"
-	@echo "  make test-fast    unit + integ, every file (main and the nightly run it; CI shards it: shard.sh)"
+	@echo "  make test-fast    unit + integ, every file (a push to main and the Monday schedule run it; CI shards it: shard.sh)"
 	@echo "  make test-files   FILES=... only these (CI's shards call it)"
 	@echo "  make test-unit    sourced-function tests"
 	@echo "  make test-integ   --verb contract tests"
