@@ -17,7 +17,7 @@
 # checkout; a HEAD that is origin's tip of the PR branch is a fresh push, waited on until the PR reads it), fetch (a head behind origin/<base> is merged up to it, each clean submodule checkout on its old pin moved to the merged one (submodule_follow), and pushed, before the checks and again after them if the base moved on during them; a head pushed after them waits on its own checks before it merges, and on a base without strict checks a second move, or a first that can affect no test the head's run ran (moved_misses_pick), lands that green head behind it, catch_up), item-line
 # (before the checks, the PR body gets the line "Item: <slug>" unless it has it, so a reader holding
 # only the PR finds its work item; a stale "Item:" line is rewritten, except on a merged PR where another queue item's line stays), review (a tier-3 item's body has a
-# "Review:" line, review_gate), loose (a plan phase's item filed no open agent row its plan does not take, loose_gate), shape (no function over 150 lines gets longer and no copy is added, shape-grow, run by CI where a workflow names it and here otherwise; each "Split:" or "Dup:" escape line names an open row that names what it covers, shape_gate), checks (the PR's checks pass: CI, a required check; a cancelled check is no pass, waited on while a run on the head goes on, and on GitHub so is a failed one while a run of its workflow and event started after it goes on, and a cancelled matrix job of an older run of its workflow is no verdict (pr-ci.sh); a tier-3 item, or one landed with --ran-checks, needs checks that ran), validate (critical work by judge.sh judge_work_level merges only on a second agent's pass verdict on this head, validate_gate), merge (--squash, or with --merge-commit a merge commit,
+# "Review:" line, review_gate), loose (a plan phase's item filed no open agent row its plan does not take, loose_gate), shape (no function over 150 lines gets longer and no copy is added, shape-grow, run by CI where a workflow names it and here otherwise; each "Split:" or "Dup:" escape line names an open row that names what it covers, shape_gate), checks (the PR's checks pass: CI, a required check; a cancelled check is no pass, waited on while a run on the head goes on, and on GitHub so is a failed one while a run of its workflow and event started after it goes on, and a cancelled matrix job of an older run of its workflow is no verdict (pr-ci.sh); a green watch waits while a run of a listed check's workflow is open on the head, a re-run whose jobs have no check yet (rerun_pending); a tier-3 item, or one landed with --ran-checks, needs checks that ran), validate (critical work by judge.sh judge_work_level merges only on a second agent's pass verdict on this head, validate_gate), merge (--squash, or with --merge-commit a merge commit,
 # for a landing train whose member PRs read MERGED only while their heads stay reachable; --admin adds gh's --admin, which skips a required approving review on a repo whose owner allows it, from a session the human opened only (refused from a dispatched or headless one), never the checks step above; --match-head-commit HEAD, then gh pr view must say MERGED), proof (the PR's merge commit is
 # on origin/<base>, by agent-merge-proof.sh), live (dotfiles-autopull --now --bg fast-forwards, in the background, the stowed
 # checkout when this repo is ~/.dotfiles or ~/.dotfiles-private, links what it added, rebuilds the
@@ -186,6 +186,25 @@ newer_runs() {
         (((.event // "") == "" or .event == $r.event) and (([$r.createdAt, $r.startedAt] | map(. // "") | max) > (.completedAt // "~")
           or (run_id > 0 and ($r.databaseId // 0) > run_id))))))] | length' <<<"$runs"
 }
+# rerun_pending <checks json>: whether a green watch waits, on a run of a listed check's workflow
+# still open on HEAD. `gh run rerun --failed` drops the failed jobs' checks until the re-run
+# registers new ones, so a watch started seconds later lists only the passed jobs and exits green,
+# and GitHub refuses the merge BLOCKED (dotfiles#3546, run 45643023619, 2026-11-25, ar-6084). Not
+# read after a timed-out watch: a check left IN_PROGRESS keeps its run open (checks_by_conclusion).
+# Status 0 after its wait (an open run, or a read that lost its connection), 1 when none is open.
+rerun_pending() {
+  local open
+  jq -e 'any(.[]; (.workflow // "") != "")' <<<"$1" >/dev/null 2>&1 || return 1
+  open=$(newer_runs "$1") || {
+    net_error "$open" || fail checks "reading the runs on the head: $(lastline "$open")"
+    net_retry "$open"
+    return 0
+  }
+  [[ $open =~ ^[0-9]+$ ]] || fail checks "reading the runs on the head: not a count: $open"
+  [ "$open" -ne 0 ] || return 1
+  echo "checks: green so far, but a run of their workflow is still open on the head (a re-run whose jobs have no check yet); waiting on it"
+  sleep "$CHECKS_QUEUED_POLL"
+}
 # gh_read <var> <gh args...>: gh's stdout in <var> and its stderr in gh_err, so a warning gh prints
 # beside an answer is never part of it; returns gh's status.
 gh_err=''
@@ -246,7 +265,7 @@ checks_by_conclusion() {
 had_checks=''
 wait_checks() {
   [ -z "$fj" ] || { fj_wait_checks; return; }
-  local try out rc left failed cancelled names queued rollup read_err stale skipping deadline=$((SECONDS + CHECKS_WAIT_TIMEOUT))
+  local try out rc left failed listed cancelled names queued rollup read_err stale skipping deadline=$((SECONDS + CHECKS_WAIT_TIMEOUT))
   for ((try = 1; ; try++)); do
     left=$((deadline - SECONDS))
     [ "$left" -gt 0 ] || fail checks "timed out waiting for checks after ${CHECKS_WAIT_TIMEOUT}s"
@@ -258,12 +277,17 @@ wait_checks() {
       # refuses the merge (unity-core-playground#2166). An open run of its workflow on HEAD is that
       # newer run: wait on it at the queued cadence. With none, GitHub may not have registered the
       # replacement yet, so it is read CHECKS_TRIES times before the cancelled check is the verdict.
-      cancelled=$(gh pr checks "$pr" "${R[@]}" --json name,bucket,workflow -q 'map(select(.bucket == "cancel"))' 2>&1) || {
-        net_error "$cancelled" || fail checks "reading the cancelled checks: $(lastline "$cancelled")"
-        net_retry "$cancelled"
+      listed=$(gh pr checks "$pr" "${R[@]}" --json name,bucket,workflow 2>&1) || {
+        net_error "$listed" || fail checks "reading the cancelled checks: $(lastline "$listed")"
+        net_retry "$listed"
         continue
       }
+      cancelled=$(jq -c 'map(select(.bucket == "cancel"))' <<<"$listed" 2>/dev/null) || fail checks "reading the cancelled checks: not a check list: $(lastline "$listed")"
       if [ "$cancelled" = '[]' ]; then
+        if rerun_pending "$listed"; then
+          try=0
+          continue
+        fi
         echo "checks: green"
         had_checks=yes
         return 0

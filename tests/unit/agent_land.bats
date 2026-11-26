@@ -1127,6 +1127,46 @@ EOF
   assert_output 'sleep 0'
 }
 
+# gh run rerun --failed, then agent-land a second later: the watch listed only the passed jobs, read
+# green, and GitHub refused the merge BLOCKED (dotfiles#3546, run 45643023619, 2026-11-25, ar-6084).
+RERUN_GAP='[{"name":"shard weights","bucket":"pass","workflow":"shell tests"},{"name":"ui tier","bucket":"pass","workflow":"shell tests"}]'
+
+@test "a green watch while a re-run of its workflow has no check yet: it waits, then lands on the re-run's green (ar-6084)" {
+  printf '%s\n' "$RERUN_GAP" >"$NOTES_FIXTURE/checks.cancelled"
+  printf '%s\n' '[{"status":"queued","workflowName":"shell tests"}]' >"$NOTES_FIXTURE/runs.open"
+  fake_sleep
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: green so far, but a run of their workflow is still open on the head (a re-run whose jobs have no check yet); waiting on it'
+  assert_line 'landed #42'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 2
+  run grep '^sleep' "$LOG"
+  assert_output 'sleep 60'
+  [ "$(grep -n 'pr checks 42 --watch' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'gh pr merge 42' "$LOG" | cut -d: -f1)" ]
+}
+
+@test "a green watch with only another workflow's run open lands at once; a failed runs read is never green (ar-6084)" {
+  printf '%s\n' "$RERUN_GAP" >"$NOTES_FIXTURE/checks.cancelled"
+  printf '%s\n' '[{"status":"queued","workflowName":"Deploy"},{"status":"completed","conclusion":"success","workflowName":"shell tests"}]' >"$NOTES_FIXTURE/runs.open"
+  fake_sleep
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'green so far'
+  assert_line 'landed #42'
+  run grep -c '^sleep' "$LOG"
+  assert_output 0
+  : >"$LOG"
+  printf 'OPEN\n' >"$NOTES_FIXTURE/state"
+  printf '%s\n' "$RERUN_GAP" >"$NOTES_FIXTURE/checks.cancelled"
+  printf '%s\n' 'ERR gh: API rate limit exceeded (HTTP 403)' >"$NOTES_FIXTURE/runs.open"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: reading the runs on the head: gh: API rate limit exceeded (HTTP 403)'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
 @test "a cancelled check of an older run of its workflow on the head is no verdict: it lands on the newer run's green (ar-3095)" {
   printf '%s\n' "$TWIN_CANCELLED" >"$NOTES_FIXTURE/checks.cancelled"
   twin_rollup "$TWIN_TEMPLATE" "$TWIN_OLD_GATE" "$TWIN_NEW_GATE" "$TWIN_NEW_FAST"
