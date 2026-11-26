@@ -2058,7 +2058,7 @@ EOF
 
 @test "headroom counts sessions started in the last few minutes against the load room, though the load has not moved" {
   two_items
-  export DISPATCH_START_LOAD=1 DISPATCH_START_LOAD_MIN=5
+  export DISPATCH_START_LOAD=1
   mkdir -p "$FLEET_DISPATCH_DIR"
   { printf -- '- %s started s1 on agents (hand) for app: queue item a\n' "$(date -d '-1 min' '+%Y-%m-%d %H:%M')"
     printf -- '- %s started s2 on agents (hand) for app: queue item b\n' "$(date -d '-2 min' '+%Y-%m-%d %H:%M')"
@@ -2068,9 +2068,21 @@ EOF
   assert_equal "$(jq -r '[.starting, .load_pending, .load_room] | @tsv' <<<"$output")" "$(printf '2\t2.0\t%s' "$(awk -v c="$(nproc)" 'BEGIN { printf "%g", c * 0.7 - 0.1 - 2 }')")"
 }
 
+@test "a settle window that is not whole minutes stops dispatch with 78 before it counts a start (ar-3653)" {
+  two_items
+  grep -v '^WAKE_SETTLE_MIN=' "$REPO_ROOT/.config/claude-acct/pace.conf" > "$BATS_TEST_TMPDIR/pace.conf"
+  echo 'WAKE_SETTLE_MIN=5.5' >> "$BATS_TEST_TMPDIR/pace.conf"
+  CLAUDE_ACCT_PACE_CONF="$BATS_TEST_TMPDIR/pace.conf" run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$status" 78
+  assert_output --partial 'WAKE_SETTLE_MIN is not a whole number'
+  grep -v '^WAKE_SETTLE_MIN=' "$REPO_ROOT/.config/claude-acct/pace.conf" > "$BATS_TEST_TMPDIR/pace.conf"
+  CLAUDE_ACCT_PACE_CONF="$BATS_TEST_TMPDIR/pace.conf" run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$status" 78
+}
+
 @test "a loop of hand starts is held once the starts not yet in the load fill the room, and an older start no longer counts" {
   two_items
-  export DISPATCH_START_LOAD="$(nproc)" DISPATCH_START_LOAD_MIN=5
+  export DISPATCH_START_LOAD="$(nproc)"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r '[.could_start, .starting] | @tsv' <<<"$output")" $'2\t0'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-app
