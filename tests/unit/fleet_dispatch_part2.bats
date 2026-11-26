@@ -1719,7 +1719,7 @@ stale_fixture() {
   stub agent-ask 'printf "%s\n" "agent-ask $*" >> "$NOTES_FIXTURE/calls.log"; [ "$1" = post ] && echo "ask-$(grep -c "^agent-ask post" "$NOTES_FIXTURE/calls.log")"; exit 0'
 }
 
-@test "ask_stale_skips: a skip held 14 days asks about a #high row or a #low one another row gates on, and drops a #low one" {
+@test "ask_stale_skips: a skip held 14 days asks about a #high row or a #low one another row gates on, and keeps a #low one in improvements.md and drops it" {
   # NEGATIVE CONTROL: before ar-2933 nothing revisited a skip, so all three sat on the board for good.
   stale_fixture
   run ask_stale_skips --dry-run
@@ -1728,7 +1728,7 @@ stale_fixture() {
   run ask_stale_skips
   assert_success
   assert_line 'asked about game: sx-1 (skipped 25 days, unclear, ask ask-1)'
-  assert_line 'dropped game: sx-2 (skipped 25 days, unclear)'
+  assert_line 'dropped game: sx-2 to improvements.md (skipped 25 days, unclear)'
   assert_line 'asked about game: sx-3 (skipped 25 days, unclear, ask ask-2)'
   local post; post=$(grep '^agent-ask post' "$NOTES_FIXTURE/calls.log" | head -1)
   [[ $post == *'--kind gate --project game'* ]] || fail "not a gate for game: $post"
@@ -1736,13 +1736,14 @@ stale_fixture() {
   [[ $post == *'skipped it since 2026-11-01 (unclear: which scene is meant)'* ]] || fail "context: $post"
   [[ $post == *'Keep board row sx-1, which dispatch has skipped for 25 days?'* ]] || fail "question: $post"
   grep -q '#ask/ask-1/start <!-- id:sx-1 -->' "$NOTES_FIXTURE/rows.game.agent" || fail "sx-1 not gated on its ask"
-  grep -q 'ptask game --agent drop sx-2 --why dispatch skipped it (unclear: which scene is meant) for 25 days' "$NOTES_FIXTURE/calls.log" || fail "sx-2 not dropped with its why"
+  grep -q 'improve game --why dispatch skipped it (unclear: which scene is meant) for 25 days.* -- chore(game): tidy the menu #low' "$NOTES_FIXTURE/calls.log" || fail "sx-2 not kept in improvements.md"
+  grep -q 'ptask game --agent drop sx-2 --why kept in game improvements.md: dispatch skipped it' "$NOTES_FIXTURE/calls.log" || fail "sx-2 not dropped with its why"
   # each asked row is gated now, so a second pass asks nothing again
   run ask_stale_skips --dry-run
   assert_output 'stale: '
 }
 
-@test "ask_stale_skips: DISPATCH_STALE_MAX caps a pass, DISPATCH_STALE_DAYS 0 is off, and a failed gate cancels the ask" {
+@test "ask_stale_skips: DISPATCH_STALE_MAX caps a day, DISPATCH_STALE_DAYS 0 is off, and a failed gate cancels the ask" {
   stale_fixture
   DISPATCH_STALE_DAYS=0 run ask_stale_skips
   assert_output ''
@@ -1754,6 +1755,11 @@ stale_fixture() {
   assert_success
   assert_output --partial 'ask_stale_skips: could not gate game agent row sx-1 on ask ask-1'
   grep -q '^agent-ask cancel ask-1' "$NOTES_FIXTURE/calls.log" || fail "ask not cancelled"
+  run grep -c '^agent-ask post' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+  # the cap is the day's: the failed try counted, so a second pass today tries nothing
+  DISPATCH_STALE_MAX=1 run ask_stale_skips
+  assert_output ''
   run grep -c '^agent-ask post' "$NOTES_FIXTURE/calls.log"
   assert_output 1
 }

@@ -9,7 +9,7 @@
 #   fleet-dispatch report            latest verdict per row: picked or skipped, and why
 #   fleet-dispatch verdicts          the same as JSON lines, each with plan: true for a skip by a DISPATCH_PLAN_RULES rule
 #   fleet-dispatch exits [--dry-run] give each skipped agent row its rule's exit, and move the #after/ gates on a row sent to the sheet (skip_exits; each run pass does); --dry-run lists them
-#   fleet-dispatch stale [--dry-run] ask about, or drop when #low, each agent row a skip has held DISPATCH_STALE_DAYS days (ask_stale_skips; each run pass does); --dry-run lists them
+#   fleet-dispatch stale [--dry-run] ask about, or keep in improvements.md and drop when #low, each agent row a skip has held DISPATCH_STALE_DAYS days (ask_stale_skips; each run pass does); --dry-run lists them
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
 #   fleet-dispatch promote --project P [--profile X] [--agent] [--dispatch] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item; --dispatch makes it a capped pull like dispatch's own
 #   fleet-dispatch pull-after [--queue-only] ID  promote, and start unless normal, low or --queue-only, the open rows gated #after/ID: agent-queue runs it when ID's item closes ok, and a pass runs it --queue-only for a row closed with no item (pull_closed_after)
@@ -2510,13 +2510,13 @@ waits_gate() {
 # A row human_exit sends to the sheet (#requested, #normal or above, one an open row gates #after/ on, or health work) gets one
 # gate ask, start or drop, and is gated on it (#ask/<id>/start), as ask_failed_rows does: start
 # clears the gate and picks takes it as committed work, drop settles it (settle_answered_gates), and
-# any other answer holds it on #hold/row-<id>. Any other row (#low) is dropped, the skip as its
+# any other answer holds it on #hold/row-<id>. Any other row (#low) is kept in improvements.md and dropped, the skip as its
 # why. Its age never ranks it: priority stays ahead of age (#2232, ask Q6vMPb). An epic, a parent, a
 # check(epics) row and a triage red skip (red_skip) are left alone. At most DISPATCH_STALE_MAX rows a
-# pass (0 is no cap); DISPATCH_STALE_DAYS 0 is off. --dry-run writes nothing and prints `<ask|drop> TAB
+# day, each try a `stale:` line in the log (0 is no cap); DISPATCH_STALE_DAYS 0 is off. --dry-run writes nothing and prints `<ask|drop> TAB
 # <project> TAB <id> TAB <rule> TAB <days>` per row, then the counts.
 ask_stale_skips() {
-  local dry='' board rows ages today prof p id line dsig dj rule req since days tags raw text reason body g e aid n=0
+  local dry='' board rows ages today prof p id line dsig dj rule req since days tags raw text reason body g e aid why n=0
   local -A gated=() c=()
   case "${1:-}" in
     '') ;;
@@ -2524,6 +2524,8 @@ ask_stale_skips() {
     *) say "usage: fleet-dispatch stale [--dry-run]"; return 2 ;;
   esac
   [ "$DISPATCH_STALE_DAYS" != 0 ] || return 0
+  # the cap is a day's: the `stale:` lines logged today, so a backlog drains over days, not in a morning of asks
+  [ "$DISPATCH_STALE_MAX" = 0 ] || [ ! -f "$LOG" ] || n=$(grep -c "^- $(date +%F) [0-9:]* stale: " "$LOG")
   load_gates
   [ -z "$GATES_FAILED" ] || { say "ask_stale_skips: $GATES_FAILED: no stale skip is asked about this pass"; return 0; }
   board=$(notes board --json 2>/dev/null) || { say "ask_stale_skips: notes board --json failed"; return 0; }
@@ -2571,13 +2573,20 @@ ask_stale_skips() {
       c[$e]=$(( ${c[$e]:-0} + 1 )); n=$(( n + 1 ))
       continue
     fi
+    # every attempt, done or failed, is a `stale:` log line and counts toward the day's cap, so a row
+    # that keeps failing cannot post and cancel an ask on every pass
+    n=$(( n + 1 ))
+    why="dispatch skipped it ($rule: $reason) for $days days, and nothing revisited it"
     if [ "$e" = drop ]; then
-      if np "$prof" ptask "$p" --agent drop "$id" --why "dispatch skipped it ($rule: $reason) for $days days, and nothing revisited it" </dev/null >/dev/null 2>&1; then
-        logline "dropped $p agent row $id: skipped ($rule) since $since"
-        echo "dropped $p: $id (skipped $days days, $rule)"
-        n=$(( n + 1 ))
+      # as skip_exits' improve exit: kept in improvements.md first, so the drop loses no text
+      if ! np "$prof" improve "$p" --why "$why" -- "$(sheet_body "$body")" </dev/null >/dev/null 2>&1; then
+        logline "stale: notes improve refused $p agent row $id"; say "ask_stale_skips: notes improve refused $p agent row $id"
+      elif np "$prof" ptask "$p" --agent drop "$id" --why "kept in $p improvements.md: $why" </dev/null >/dev/null 2>&1; then
+        logline "stale: dropped $p agent row $id to improvements.md, skipped ($rule) since $since"
+        echo "dropped $p: $id to improvements.md (skipped $days days, $rule)"
       else
-        say "ask_stale_skips: could not drop $p agent row $id"
+        logline "stale: $p agent row $id is in improvements.md but would not drop"
+        say "ask_stale_skips: $p $id is kept in $p improvements.md, but the agent row would not drop: drop it by hand"
       fi
       continue
     fi
@@ -2587,13 +2596,13 @@ ask_stale_skips() {
         --recommend drop --why "the dispatch judge has passed over it for $days days, and a row still wanted reads clearer rewritten, which the judge reads again" \
         --context "$id is a row on the $p board: \"$text\". The dispatch judge has skipped it since $since ($rule: $reason), and nothing has planned, gated or started it since. Dispatch holds it until this is answered; any other answer holds it until agent-hold release row-$id." \
         -- "Keep board row $id, which dispatch has skipped for $days days?" </dev/null 2>/dev/null | tail -n 1)
-    [[ $aid =~ ^[A-Za-z0-9_-]+$ ]] || { logline "ask_stale_skips: the ask for $p agent row $id did not post"; continue; }
+    [[ $aid =~ ^[A-Za-z0-9_-]+$ ]] || { logline "stale: the ask for $p agent row $id did not post"; continue; }
     if np "$prof" ptask "$p" --agent tag --add "ask/$aid/start" "$id" </dev/null >/dev/null 2>&1; then
-      logline "asked about $p agent row $id, skipped ($rule) since $since: ask $aid"
+      logline "stale: asked about $p agent row $id, skipped ($rule) since $since: ask $aid"
       echo "asked about $p: $id (skipped $days days, $rule, ask $aid)"
-      n=$(( n + 1 ))
     else
       agent-ask cancel "$aid" "fleet-dispatch could not gate row $id on it" </dev/null >/dev/null 2>&1
+      logline "stale: could not gate $p agent row $id on ask $aid"
       say "ask_stale_skips: could not gate $p agent row $id on ask $aid"
     fi
   done <<<"$rows"
