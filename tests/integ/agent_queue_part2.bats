@@ -723,11 +723,52 @@ EOF
     IFS='|' read -r slug when status sha <<<"$spec"
     "$AQ" add --repeat --project game --slug "$slug" "$slug"
     "$AQ" move "$slug" done --status "$status"
-    "$AQ" set "$slug" "finished=$(at "$when")" "started=$(at "$when")" "merged=$sha"
+    "$AQ" set "$slug" "finished=$(at "$when")" "started=$(at "$when")" "merged=$sha" ${sha:+"pr=o/r#1"}
   done
   run "$AQ" stats --json --since 2000-01-01
   assert_success
   assert_equal "$(jq -c '.recent | [.shipped_today, .checks_today]' <<<"$output")" '[1,1]'
+}
+
+@test "backfill-outcome stamps done items of the last N days by the close rule, --dry-run writes nothing, and a set on a done item stamps again (ar-5433)" {
+  export DISPATCH_KINDS="$REPO_ROOT/.config/fleet-dispatch/kinds.json"
+  for s in a k v z; do "$AQ" add --project game --slug "$s" "$s"; done
+  "$AQ" set k type=check
+  "$AQ" set v type=fix tags=verify
+  for s in a k v z; do "$AQ" move "$s" done --status ok; done
+  # a fix with no PR missed; a clean check and a verify (a proof, whatever its kind) say nothing of the model
+  assert_equal "$(for s in a k v; do field "$(done_item "$s")" outcome; done | paste -sd' ')" 'no-pr unrated unrated'
+  # closed before the stamp existed; z closed outside the window
+  for s in a k v z; do sed -i '/^outcome: /d' "$(done_item "$s")"; done
+  mkdir -p "$AGENT_QUEUE_DIR/done/2000-01-01"; mv "$(done_item z)" "$AGENT_QUEUE_DIR/done/2000-01-01/"
+  run "$AQ" backfill-outcome --dry-run
+  assert_success
+  assert_line 'a: no-pr'
+  assert_line 'k: unrated'
+  assert_line 'v: unrated'
+  assert_line --partial 'would stamp 3 of 3 done items since'
+  assert_equal "$(field "$(done_item a)" outcome)" ''
+  run "$AQ" backfill-outcome
+  assert_success
+  assert_line --partial 'stamped 3 of 3 done items since'
+  assert_equal "$(for s in a k v; do field "$(done_item "$s")" outcome; done | paste -sd' ')" 'no-pr unrated unrated'
+  assert_equal "$(field "$(done_item z)" outcome)" ''
+  run "$AQ" backfill-outcome
+  assert_line --partial 'stamped 0 of 3'
+  run "$AQ" backfill-outcome --days 100000
+  assert_line --partial 'stamped 1 of 4'
+  # a PR recorded after the close (agent-land's partial path) makes it landed
+  "$AQ" set a pr=o/r#9 merged=0123456789abcdef0123456789abcdef01234567
+  assert_equal "$(field "$(done_item a)" outcome)" landed
+  # An outcome the rule no longer gives goes. NEGATIVE CONTROL: tab-split, the empty outcome collapsed
+  # and the slug was written as k's outcome.
+  sed -i '/^status: /d' "$(done_item k)"
+  run "$AQ" backfill-outcome --dry-run
+  assert_line 'k: no outcome'
+  "$AQ" backfill-outcome
+  assert_equal "$(grep -c '^outcome:' "$(done_item k)")" 0
+  run "$AQ" backfill-outcome --days x
+  assert_failure
 }
 
 @test "a slug is matched exactly, never as the tail of a longer one" {
@@ -1375,6 +1416,31 @@ notes --profile work ptask level run lv-8'
   assert_output 0
 }
 
+# ar-6158: a row the board's intake gate or daily cap refuses (notes exit 6) is no row, and an item with no row would run past the cap.
+@test "a story row the board's cap refuses queues no item; any other failed write still does (the next test)" {
+  story_notes
+  echo 6 > "$NOTES_FIXTURE/story.rc"
+  echo 'level has taken its 10 new agent rows for today (10 so far, intake_daily_cap in the notes config), so nothing was added' > "$NOTES_FIXTURE/story.out"
+  run "$AQ" add --project level --slug capped "x"
+  assert_failure 6
+  assert_output --partial "no story row filed on level: level has taken its 10 new agent rows for today"
+  assert_output --partial "capped is not queued: its board row was refused"
+  [ -z "$(item queued capped)" ]
+}
+
+@test "a plan whose first phase the cap refuses queues nothing and says to add it again tomorrow, not now" {
+  story_notes
+  echo 6 > "$NOTES_FIXTURE/story.rc"
+  echo 'level has taken its 10 new agent rows for today (10 so far, intake_daily_cap in the notes config), so nothing was added' > "$NOTES_FIXTURE/story.out"
+  printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two' > "$SANDBOX/cp.md"
+  run env AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/cp.md" --project level --slug cp
+  assert_failure
+  assert_output --partial "the board's daily cap refused cp-p1"
+  assert_output --partial "run the same add again tomorrow"
+  refute_output --partial "run the same add again to queue them"
+  [ -z "$(item queued cp-p1)" ]
+}
+
 @test "a failed story write never stops the add: the item is written with no row" {
   story_notes
   echo 1 > "$NOTES_FIXTURE/story.rc"
@@ -1606,6 +1672,37 @@ second line of the brief
   assert_called "--detail=the real wording of the task -- "
 }
 
+@test "an over-cap board pull (promote's --from board:) files no second row: the five check rows triage re-added each pass" {
+  # ar-6187 and ar-6102, 2026-11-25: fleet-bench triage promoted each open check row at the cap; the held add filed an
+  # overflow twin with the cut title on every pass, which inbox-triage then dropped as a dup of the open row.
+  story_notes
+  export AGENT_QUEUE_CAP=1 AGENT_QUEUE_PULL=dispatch
+  "$AQ" add --project level --slug one "feat(menu): one" >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  local n=6109 t
+  for t in "check(alert): TraderLabPodUnschedulable freqtrade-league-66 firing, alertmanager-fleet tripped since 2026-11-25, expected: no fleet=fix alert, evidence: watch-companion-loop list --long alertmanager-fleet" \
+    "check(alert): TraderWatchBotBlind trader-web-77fdddd486-zvcpk firing, alertmanager-fleet tripped since 2026-11-25, expected: no fleet=fix alert, evidence: watch-companion-loop list --long alertmanager-fleet" \
+    "check(watch): triage-coverage tripped since 2026-11-25, expected: Every standing watch and runner has its own triage-routes line, and every runner's SKILL= names a sk, why: watch playground-gate-budget owned:hc-N is closed" \
+    "check(watch): unity-runners-online tripped since 2026-11-25, expected: At least 1 self-hosted runner labelled \`unity\` is online in the org., why: unity_online=N" \
+    "check(alert): HomelabCronJobFailed trader-markets-history-bars firing, alertmanager-fleet tripped since 2026-11-25, expected: no fleet=fix alert"; do
+    run "$AQ" add --project level --priority high --from "board:level:lv-$n" --slug "lv-$n" --tags "red alert cause:c$n" --title "$t" -- "$t"
+    assert_failure 5
+    assert_output --partial "row lv-$n is left un-started where it is"
+    n=$((n + 1))
+  done
+  # The next pass pulls the same row again and is held again, still filing nothing.
+  run "$AQ" add --project level --priority high --from board:level:lv-6109 --slug lv-6109 --tags "red alert cause:c6109" -- "check(alert): TraderLabPodUnschedulable freqtrade-league-66 firing"
+  assert_failure 5
+  run grep -cE ' ptask level --agent (add|propose) ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*-lv-61*.md 2>/dev/null)" ] || fail "a held board pull wrote an item"
+  [ "$(jq -r 'select(.slug | startswith("lv-61")) | .slug' "$AGENT_QUEUE_DIR/admission.jsonl" | wc -l)" -eq 6 ]
+  # Negative control: the same over-cap add with no board row behind it is a human's, and files its row.
+  run "$AQ" add --project level --priority high --slug human-twin "check(watch): triage-coverage tripped since 2026-11-25"
+  assert_failure 5
+  assert_called "ptask level --agent add -- check(watch): triage-coverage tripped since 2026-11-25 #high"
+}
+
 @test "an over-cap add that is #requested files its row with --want, so it ranks first on the board" {
   story_notes
   export AGENT_QUEUE_CAP=1
@@ -1835,19 +1932,27 @@ Phase 2 of the plan $SANDBOX/plan.md: the doors." >/dev/null
   assert_output --partial "game has no board row to file this on"
 }
 
-@test "a filer's --plan goes to the board as one row that runs its open phases; nothing is queued" {
+# ar-5605: a filer's plan used to go to the board as one "run the open phases of plan X" row, which sat
+# beside the phase rows or for plans nobody ran (97 rows, 93 dropped). NEGATIVE CONTROL: that row's
+# brief, "Run the open phases of the approved plan", is filed no more.
+@test "a filer's --plan files each open phase as its own board row, the later one #after/ the first; no plan row, nothing queued" {
   story_notes
   unset AGENT_QUEUE_PULL
+  echo 20 > "$NOTES_FIXTURE/story.seq"
   printf '# P\n\n## Phases\n\n- [ ] one\n- [ ] two\n' > "$SANDBOX/orphan.md"
   run "$AQ" add --plan "$SANDBOX/orphan.md" --project level --from auto:plans
   assert_failure 5
   assert_output --partial "only the board fills the queue"
-  assert_called "ptask level --agent add --detail=Run the open phases of the approved plan $SANDBOX/orphan.md in order"
-  # A filer that names no priority files the row untagged, for the priority rubric to judge (ar-5255);
-  # NEGATIVE CONTROL: the add default (high) tagged it before.
-  run grep -e '-- P (plan orphan)' "$NOTES_FIXTURE/calls.log"
-  assert_output --regexp '-- P \(plan orphan\)( #of/[a-z0-9-]+)?$'
-  refute_output --regexp '#(urgent|high|normal|low)'
+  assert_output --partial "held orphan-p1 -> level:lv-20"
+  assert_output --partial "held orphan-p2 -> level:lv-21 (#after/lv-20)"
+  assert_called "ptask level --agent add --detail=Phase 1 of the plan $SANDBOX/orphan.md: one."
+  assert_called "ptask level --agent add --detail=Phase 2 of the plan $SANDBOX/orphan.md: two."
+  assert_not_called "Run the open phases"
+  # A filer that names no priority files its phases at normal; NEGATIVE CONTROL: the add default (high) tagged them before.
+  run grep -e '-- one (P1, P)' "$NOTES_FIXTURE/calls.log"
+  assert_output --partial '#normal'
+  refute_output --regexp '#(urgent|high|low)'
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*orphan* 2>/dev/null)" ] || fail "a filer's plan queued a phase"
   # From a session (dispatch with AGENT_QUEUE_ITEM inherited) the filer is not refused for naming none.
   CLAUDE_CODE_SESSION_ID=s1 run "$AQ" add --plan "$SANDBOX/orphan.md" --project level --from auto:plans
   assert_failure 5
@@ -1895,14 +2000,14 @@ Phase 2 of the plan $SANDBOX/plan.md: the doors." >/dev/null
 # The project is resolved as every add resolves it: a repo whose work counts on its owner (tools ->
 # cockpit, as dotfiles -> agent-runtime) files on the owner's board. NEGATIVE CONTROL: unresolved,
 # tools had no board, the add failed, and reap retried every dotfiles plan each pass (ar-2787).
-@test "a filer's --plan for a repo with an owner files its row on the owner's board" {
+@test "a filer's --plan for a repo with an owner files its phase rows on the owner's board" {
   story_notes
   jq '.trackers.cockpit.lab = "bnb" | .trackers.cockpit.code = "ck"' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m.json" && mv "$SANDBOX/m.json" "$AGENT_QUEUE_PROJECT_MAP"
   unset AGENT_QUEUE_PULL
   printf '# P\n\n## Phases\n\n- [ ] one\n' > "$SANDBOX/owned.md"
   run "$AQ" add --plan "$SANDBOX/owned.md" --project tools --from auto:plans --priority low
   assert_failure 5
-  assert_called "ptask cockpit --agent add --detail=Run the open phases of the approved plan $SANDBOX/owned.md in order"
+  assert_called "ptask cockpit --agent add --detail=Phase 1 of the plan $SANDBOX/owned.md: one."
 }
 
 @test "every queued item counts against the cap, one held to a time of day or a date too" {
@@ -2059,6 +2164,20 @@ already"
   assert_output --partial "4 queue lock misses in the last 4h"
 }
 
+# ar-5560: every line read "locks":[] on btrfs, so a 14 minute hold by an add stuck on notes named no holder.
+@test "lock-miss names the pid and command holding .lock, the writer before a reader, never a waiter" {
+  mkdir -p "$AGENT_QUEUE_DIR"
+  jq -nc --arg ts "$(date -u -Is)" '{ts: $ts, cmd: "agent-queue show x", caller: "hub",
+    locks: [".gate holds WRITE 11", ".lock holds READ 9", ".lock waits READ 12", ".lock holds WRITE 13"],
+    procs: [{file: ".gate", pid: 11, cmd: "flock"}, {file: ".lock", pid: 12, cmd: "agent-queue list"},
+      {file: ".lock", pid: 9, cmd: "agent-queue show y"},
+      {file: ".gate", pid: 13, cmd: "agent-queue add --plan p"}, {file: ".lock", pid: 13, cmd: "agent-queue add --plan p"}]}' \
+    > "$AGENT_QUEUE_DIR/lock-miss.jsonl"
+  run "$AQ" lock-miss
+  assert_success
+  assert_output --partial "agent-queue show x from hub, held by 13 agent-queue add --plan p ("
+}
+
 # ar-3025: a timeout names who held the lock. NEGATIVE CONTROL: before it, nothing was written and
 # 108 dispatch starts failed with no holder on record.
 @test "a lock timeout appends one lock-miss line naming the holder, the taker and its mode" {
@@ -2080,7 +2199,7 @@ already"
   log="$AGENT_QUEUE_DIR/lock-miss.jsonl"
   [ "$(wc -l < "$log")" = 2 ]
   run jq -r --argjson me "$holder" -s '.[] | [.mode, (.cmd | test("agent-queue (add|show)")),
-    (.locks | index(".lock holds WRITE") != null), (.procs | any(.pid == $me and .file == ".lock")),
+    (.locks | index(".lock holds WRITE \($me)") != null), (.procs | any(.pid == $me and .file == ".lock")),
     (.procs | all(.cmd | test("agent-queue") | not))] | map(tostring) | join(" ")' "$log"
   assert_line --index 0 "exclusive true true true true"
   assert_line --index 1 "shared true true true true"
@@ -2097,10 +2216,12 @@ already"
 # The row is the task's record (ar-2927), against the real notes and a sandbox vault: an item's body
 # is its row's brief, so a return loses nothing, the next promote briefs the new item from the row,
 # and a retask rewrites the row first. NEGATIVE CONTROL: before ar-2927 the re-promoted body was the
-# row line alone. The CI rust job builds notes and sets NOTES_BIN.
+# row line alone. CI's notes bats job builds notes and sets NOTES_BIN (ci_gate.bats checks it is listed).
 @test "end to end: a returned item's brief comes back from its row on the next promote, and retask rewrites the row" {
   [ -n "${NOTES_BIN:-}" ] || skip "NOTES_BIN names no built notes"
   ln -sf "$NOTES_BIN" "$SANDBOX/bin/notes"
+  # fleet-dispatch promote reads gates through `agent-queue` on PATH; CI has no stowed copy.
+  ln -sf "$AQ" "$SANDBOX/bin/agent-queue"
   dir="$HOME/.notes/lab/projects/current/game"
   mkdir -p "$dir" "$HOME/.config/notes"
   : >"$dir/summary.md"
@@ -2251,7 +2372,7 @@ already"
   run grep -- '--agent add' "$NOTES_FIXTURE/calls.log"
   assert_output --partial " --origin plan -- "
   # A filer that does name one keeps it.
-  assert_output --partial "P (plan orig) #low"
+  assert_output --partial "one (P1, P) #low"
 }
 
 @test "a plan phase after a live item with an open PR is stacked: no hold, stacked_on names the PR; closed unmerged it is a dead hold (ar-3852)" {
