@@ -977,10 +977,29 @@ human_words() {
   printf '%s\n' "$hits"
 }
 
+# quote_picks <ask file> <options> <option> <quote>: true when the human's words pick <option>: they
+# name it, or they hold its `option_notes` meaning, and they do not name another option instead.
+# Words that merely follow the ask prove the human spoke, not what they chose (ask M0yWLL, 2026-11-25:
+# 'get us down to only the ones that need' was relayed as the answer keep, ar-6269).
+quote_picks() {
+  local f="$1" opts="$2" opt="$3" q="$4" names i note
+  names="$(named_options "$opts" "$q")"
+  [ -z "$names" ] || { [ "$names" = "$opt" ]; return; }
+  local os=() ns=()
+  IFS='|' read -r -a os <<< "$opts"; IFS='|' read -r -a ns <<< "$(field "$f" option_notes)"
+  for i in "${!os[@]}"; do
+    [ "${os[i]}" = "$opt" ] || continue
+    note="$(oneline "${ns[i]:-}")"; note="${note,,}"
+    [ -n "$note" ] && [[ "$(oneline "${q,,}")" == *"$note"* ]]; return
+  done
+  return 1
+}
+
 # relay_proof <id> <quote> <answer>: why an attended session may record the human's answer to <id>, or
 # what is missing (stderr, rc 1). The quote passes human_words since the ask was posted, and the ask's
 # id is in that entry's words or in what they were shown. The answer is one of the ask's options when
-# it has any, so the words cannot be attached to an answer they do not pick. Only a pending ask, or
+# it has any, and the quote picks that option (quote_picks), so the words cannot be attached to an
+# answer they do not pick. Only a pending ask, or
 # one the judge or a hold answered, takes it.
 relay_proof() {
   local id="$1" quote="$2" answer="$3" f made hits
@@ -992,9 +1011,12 @@ relay_proof() {
     pending:*|answered:judge|answered:hold) ;;
     *) echo "ask $id is $(field "$f" status), not waiting on the human" >&2; return 1 ;;
   esac
-  local opts; opts="$(field "$f" options)"
-  if [ -n "$opts" ] && [ -z "$(named_option "$opts" "$answer")" ]; then
-    echo "the answer '$answer' names none (or more than one) of ask $id's options: $opts" >&2; return 1
+  local opts picked; opts="$(field "$f" options)"
+  if [ -n "$opts" ]; then
+    picked="$(named_option "$opts" "$answer")"
+    [ -n "$picked" ] || { echo "the answer '$answer' names none (or more than one) of ask $id's options: $opts" >&2; return 1; }
+    quote_picks "$f" "$opts" "$picked" "$quote" || {
+      echo "the quote '$quote' does not pick '$picked': it names neither that option nor its note, so those words answer something else" >&2; return 1; }
   fi
   hits="$(human_words "$quote" "$made")" || return 1
   jq -e -s --arg id "$id" '

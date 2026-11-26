@@ -230,6 +230,21 @@ relay_fixture() { # <kind> <text> <shown>
   relay_fixture answer 'Park them' "Ask $id: park or wait?"
   run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'park them' "$id" 'merge past red'
   assert_failure 1; assert_output --partial "names none (or more than one) of ask $id's options"
+  # Words that name neither the option nor its meaning do not pick it (ar-6269, ask M0yWLL).
+  relay_fixture answer 'get us down to only the ones that need' "Ask $id: park or wait?"
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'only the ones that need' "$id" park
+  assert_failure 1; assert_output --partial "does not pick 'park'"
+  # Words that name another option pick that one, not this.
+  relay_fixture answer 'wait for CI' "Ask $id: park or wait?"
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'wait for CI' "$id" park
+  assert_failure 1; assert_output --partial "does not pick 'park'"
+  run "$AGENT_ASK" show "$id"; assert_line 'status: pending'; refute_output --partial 'relayed'
+  # The option's meaning alone picks it, when its name is not in the words.
+  local id2; id2="$("$AGENT_ASK" post --project demo --options 'keep=leave it as is|drop=remove it' 'keep or drop?')"
+  relay_fixture answer 'Yes, leave it as is please' "Ask $id2: keep or drop?"
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'leave it as is' "$id2" keep
+  assert_success
+  relay_fixture answer 'park them' "Ask $id: park or wait?"
   run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'park them' "$id" park
   assert_success
   # An ask the human already answered takes no relay: it would rewrite their answer's provenance.
