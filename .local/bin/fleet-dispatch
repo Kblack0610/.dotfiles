@@ -5716,7 +5716,9 @@ own_parked_pr() {
 # settle_sessionless <slug> <started> -- a started item recording no session, tmux or Claude: nothing
 # witnesses it ending and nothing can nudge it, so PRs #909 and #910 sat open with nobody on them. Its
 # PR or report still decides what it can (settle_item): merged or closed settles it, open parks it in
-# review/, a report is done. Anything else stays put, never failed, since no-witness is not gone, and is
+# review/, a report is done. A PR agent-land recorded only as open_pr: (it sets that before the checks, so
+# a landing that ends unmerged leaves no pr:) is recorded as pr: first, as item_with_branch_pr does for a
+# branch's PR, and settles the same way (ar-4551; land-train-3102 sat running after its train closed). Anything else stays put, never failed, since no-witness is not gone, and is
 # flagged once on the item and in the log, ahead of any note it had. fleet-bench's ownerless_running
 # counts it, so the board-chain watch pages it.
 settle_sessionless() {
@@ -5724,6 +5726,13 @@ settle_sessionless() {
   past_reap_grace "$2" || return 0
   it=$(agent-queue show "$1" --json 2>/dev/null) || return 0
   pr=$(jq -r '.pr // ""' <<<"$it")
+  if [ -z "$pr" ] && pr=$(jq -r '.open_pr // ""' <<<"$it") && [ -n "$pr" ]; then
+    if agent-queue set "$1" "pr=$pr" >/dev/null; then
+      logline "queue item $1: no pr: recorded; its open_pr: $pr recorded as pr:"
+    else
+      pr=''
+    fi
+  fi
   if [ -n "$pr$(jq -r '.report // ""' <<<"$it")" ]; then
     settle_item "$1" unrecorded
     settle_row "$1"

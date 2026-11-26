@@ -537,6 +537,21 @@ real_epic_board() {
   refute_output --partial 'flagged queue item fix-crash'
 }
 
+# ar-4551: agent-land records open_pr: before its checks and pr: only on a merge, so a landing that ends unmerged
+# leaves a sessionless item with open_pr: alone. NEGATIVE CONTROL: reading only pr:, it is flagged and stays running.
+@test "reap: an item with no session and only open_pr: settles by that PR (ar-4551)" {
+  pr_item OPEN
+  sed -i '/^session: /d; s/^pr: /open_pr: /' "$AGENT_QUEUE_DIR"/running/*-fix-crash.md
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.pr // "", .open_pr // ""] | join("|")')" "|o/game#12"
+  run cmd_reap
+  assert_success
+  [ -n "$(qitem review fix-crash)" ] || fail "an open_pr: alone did not park it in review"
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .pr)" "o/game#12"
+  printf 'CLOSED \n' > "$NOTES_FIXTURE/pr.state"
+  run cmd_reap
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)" status)" failed
+}
+
 @test "reap: an item with no session and a report is done; a flag keeps the note it had" {
   started_item withreport '' && started_item noted ''
   agent-queue set withreport report=/tmp/r.md >/dev/null
