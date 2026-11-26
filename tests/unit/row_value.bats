@@ -503,7 +503,11 @@ EOF
  {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-52","text":"fix(x): asked","prio_why":"requested","tags":[],"details":[]},
  {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-53","text":"feat(x): a chain phase","prio_why":"feature","tags":[],"details":[]},
  {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-54","text":"fix(x): already tagged","prio_why":"runtime-fault","tags":[],"details":[]},
- {"project":"agent-runtime","lane":"agent","state":"doing","id":"ar-55","text":"fix(x): live item","tags":[],"details":[]}
+ {"project":"agent-runtime","lane":"agent","state":"doing","id":"ar-55","text":"fix(x): live item","tags":[],"details":[]},
+ {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-56","text":"fix(x): tagged asked","prio_why":"upkeep","tags":["requested"],"details":[]},
+ {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-57","text":"feat(x): high chain phase","priority":"high","prio_why":"feature","tags":[],"details":[]},
+ {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-58","text":"check(x): a watch","tags":[],"details":[]},
+ {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-59","text":"fix(x): high fault","priority":"high","prio_why":"feature","tags":[],"details":[]}
 ]}
 EOF
   {
@@ -514,6 +518,10 @@ EOF
     led ar-53 chain dispatch agent-runtime work keep - - "phase" "feat(x): a chain phase"
     led ar-54 fault dispatch agent-runtime work keep - "y.py:2" "still there" "fix(x): already tagged"
     led ar-55 fault dispatch agent-runtime work keep - "z.py:3" "doing" "fix(x): live item"
+    led ar-56 fault dispatch agent-runtime work keep - "y.py:2" "asked by tag" "fix(x): tagged asked"
+    led ar-57 chain dispatch agent-runtime work keep - - "phase" "feat(x): high chain phase"
+    led ar-58 red dispatch agent-runtime check keep - - "watch" "check(x): a watch"
+    led ar-59 fault dispatch agent-runtime work keep - "y.py:2" "still there" "fix(x): high fault"
   } >"$HOME/led3.tsv"
   # Without --retag a kept row is left as it is.
   run "$RV" "${APPLY[@]}" --board "$HOME/board3.json" --write --log "$HOME/log.tsv" "$HOME/led3.tsv"
@@ -524,9 +532,11 @@ EOF
   assert_success
   run grep ' tag ' "$HOME/calls"
   assert_output "$(printf '%s\n' 'ptask agent-runtime --agent tag --why runtime-fault ar-50' \
-    'ptask agent-runtime --agent tag --why sot ar-51' 'ptask agent-runtime --agent tag --why epic-turn ar-53')"
+    'ptask agent-runtime --agent tag --why sot ar-51' 'ptask agent-runtime --agent tag --why epic-turn ar-53' \
+    'ptask agent-runtime --agent tag --why runtime-fault ar-59')"
   run awk -F'\t' 'NR > 1 { print $1, $2, $3 }' "$HOME/log.tsv"
-  assert_output "$(printf '%s\n' 'ar-50 retag ok' 'ar-51 retag ok' 'ar-52 keep -' 'ar-53 retag ok' 'ar-54 keep -' 'ar-55 keep -')"
+  assert_output "$(printf '%s\n' 'ar-50 retag ok' 'ar-51 retag ok' 'ar-52 keep -' 'ar-53 retag ok' 'ar-54 keep -' 'ar-55 keep -' \
+    'ar-56 keep -' 'ar-57 keep -' 'ar-58 keep -' 'ar-59 retag ok')"
 }
 
 @test "apply: a row an open row waits on with #after/ is not closed undelivered unless the waiter closes too" {
