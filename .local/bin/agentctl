@@ -557,7 +557,9 @@ cmd_list_md() {
             elif [ -n "$sched" ]; then trigger="\`$sched\`"
             else trigger='started by another runner'; fi
             [ "$(kv_get ENABLED <<<"$conf")" = no ] && trigger="$trigger (disabled)"
-            if [ "$effect" = none ]; then model=-
+            # A model shows only where one runs: EFFECT=none runs none, and a conf with no ROLE
+            # launches none (load_agent's PRIORITY rule), even one that acts (lfs-store).
+            if [ "$effect" = none ] || [ -z "$role" ]; then model=-
             elif [ -z "$model" ]; then model='not in conf'; fi
             [ -n "$route" ] && model="$model via $route"
             printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s |\n' "$name" "$lane" "$trigger" \
