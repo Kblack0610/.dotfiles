@@ -196,7 +196,7 @@ SH
   assert_not_called 'agentctl-run'
   run "$AGENT_ASK" show "$id"
   assert_line 'answered_by: judge'
-  refute_line 'resumed_at: '
+  assert_line --regexp '^resumed_at: [0-9]'
   run "$AGENT_ASK" resumable alpha
   assert_output ''
   # Negative control: a script with no session reads no answer, so its resume runs.
@@ -212,14 +212,19 @@ SH
   assert_called "agent-panel send --pane %1 Answer to ask $id: approve"
   assert_not_called 'agentctl-run'
   run "$AGENT_ASK" show "$id"
-  assert_line --partial 'not its resume: the live session on the ask has the answer'
-  refute_line 'resumed_at: '
-  # The answer did not go in (another send held the pane): a board row carries it, never a headless run.
+  assert_line --partial 'not its resume: the asking session has the answer'
+  assert_line --regexp '^resumed_at: [0-9]'
+  run "$AGENT_ASK" resumable alpha
+  assert_output ''
+  # The answer did not go in (another send held the pane): a board row carries it, never a headless
+  # run, and the resume stays unspent for `ask-resume --all`.
   touch "$NOTES_FIXTURE/agent-panel.busy"
   id="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project alpha --resume '/captain alpha again' 'Cut it again?')"
   "$AGENT_ASK" answer "$id" yes 2>/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
   assert_not_called 'agentctl-run'
   assert_called 'notes ptask'
+  run "$AGENT_ASK" resumable alpha
+  assert_output --partial "$id"
   rm "$NOTES_FIXTURE/agent-panel.busy"
   # Negative control: a `run:` resume is the asking script's own step, so it runs beside the session.
   printf '#!/usr/bin/env bash\nprintf "own-step %%s\\n" "$*" >> "$NOTES_FIXTURE/calls.log"\n' > "$SANDBOX/bin/own-step"
@@ -227,6 +232,16 @@ SH
   id="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project alpha --resume 'run: own-step' 'Step on?')"
   "$AGENT_ASK" answer "$id" yes 2>/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
   assert_called "own-step $id"
+}
+
+@test "a live session a shared blocker attached does not hold back the ended asker's resume" {
+  unset AGENT_ASK_NO_RESUME
+  local id; id="$(CLAUDE_CODE_SESSION_ID=sid-1 gate alpha)"
+  sed -i '/^claude_session: sid-1$/a claude_session: sid-2' "$(find "$HOME/.agent/asks" -name "$id.md")"
+  printf '{"session_id":"sid-2","pane":"%%2","status":"idle"}\n' > "$NOTES_FIXTURE/agent-panel.list"
+  "$AGENT_ASK" answer "$id" approve 2>/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
+  assert_called "agent-panel send --pane %2 Answer to ask $id: approve"
+  assert_called 'agentctl-run --agent ask-resume -p /captain alpha go'
 }
 
 # -- running --

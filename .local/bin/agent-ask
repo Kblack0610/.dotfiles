@@ -1322,20 +1322,28 @@ deliver_one() {
   # A waiting item it names whose session ended goes back to the queue the same way (requeue_waiting),
   # before the resume runs, so `reopen` reads it as a holder and does not start that session as well.
   [ -n "$beside" ] || requeued="$(requeue_waiting "$f")"
+  # A live asker carries its own work on, so a prompt resume does not run beside it (start_resume); a
+  # `run:` one is a script's step and does. took: the asker has the answer (read at post, or typed in),
+  # so the resume is spent. A live asker the answer did not reach leaves it unspent, and a row carries it.
+  # A session a shared blocker attached is not the asker: the resume is not its work.
   # went: where the answer went, each place named only when it was used.
-  local went=() resume="" why took="" runs
+  local went=() resume="" why took="" asker live_asker="" runs
   [ -n "$beside" ] || resume="$(field "$f" resume)"
-  # A live session on the ask, or the asker who read the judge's answer at post, carries the work on,
-  # so a prompt resume does not run beside it (start_resume); a `run:` one is a script's step and does.
+  asker="$(field "$f" claude_session)"
   [ -z "$skip" ] || took="the asking session"
-  [ -z "$row" ] || took="the live session on the ask"
-  runs="$resume"
-  [ -z "$took" ] || [[ "$resume" == run:* ]] || runs=""
   if [ -n "$row" ]; then
     local n unsent=0
     for r in "${rows[@]}"; do
       n="$(deliver_to_session "$f" "$said" "$r")"; [ -z "$n" ] || { note+="${note:+; }$n"; unsent=$((unsent + 1)); }
+      if [ "$(jq -r .session_id <<< "$r")" = "$asker" ]; then
+        live_asker=1
+        [ -n "$n" ] || took="the asking session"
+      fi
     done
+  fi
+  runs="$resume"
+  [ -z "$took$live_asker" ] || [[ "$resume" == run:* ]] || runs=""
+  if [ -n "$row" ]; then
     # Typed into none of them, and no resume or held item takes it: left there, the answer waits
     # only on a board's "not sent" while the session never reads it (2026-11-20: fVKDIo sat unsent
     # in a prompt until its window closed), so it is filed as work, as an answer with no session is.
@@ -1350,9 +1358,10 @@ deliver_one() {
     if why="$(answer_row "$f" "$answer" "$by")"; then went+=("a board row: no live session, resume or held item takes it")
     else note+="no live session, resume or held item takes it, and $why"; fi
   fi
-  [ -n "$beside" ] || start_resume "$id" "$took"
+  if [ -z "$beside" ] && { [ -n "$runs$took" ] || [ -z "$resume" ]; }; then start_resume "$id" "$took"; fi
   if [ -n "$runs" ]; then went+=("its resume")
-  elif [ -n "$resume" ]; then went+=("not its resume: $took has the answer"); fi
+  elif [ -n "$took" ]; then went+=("not its resume: $took has the answer")
+  elif [ -n "$resume" ]; then went+=("not its resume, left unspent: the live asking session did not take the answer"); fi
   [ -z "$held" ] || went+=("$(grep -c . <<<"$held") queue item(s) held on it")
   [ -z "$requeued" ] || went+=("waiting item(s) $(paste -sd' ' <<<"$requeued" | sed 's/ /, /g') back in the queue")
   [ -z "$held$requeued" ] || start_held
