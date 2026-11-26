@@ -35,6 +35,7 @@ mod knowledge_registry;
 mod knowledge_repo;
 mod knowledge_retired;
 mod lab_refresh;
+mod live_plans;
 mod logging;
 mod md;
 mod meeting;
@@ -920,9 +921,13 @@ enum PtaskCmd {
         /// How many rows at most
         #[arg(long, default_value_t = 10)]
         top: usize,
-        /// One JSON array of `{id, percent, text}` instead
+        /// One JSON array of `{id, percent, text, kind, lane}` instead
         #[arg(long)]
         json: bool,
+        /// The shortlist `add` checks a session's row against instead: the rows of both lanes,
+        /// and for an epic the open epics and live plans most like it (kind epic or plan)
+        #[arg(long, conflicts_with = "top")]
+        epic: bool,
         #[arg(required = true, num_args = 1.., allow_hyphen_values = true)]
         text: Vec<String>,
     },
@@ -1830,9 +1835,20 @@ fn main() -> Result<()> {
                     println!("{}", propose::proposed_row(&text.join(" "), &name));
                     0
                 }
-                Some(PtaskCmd::Similar { top, json, text }) => {
-                    project_tasks::similar_rows(&prof, &name, &text.join(" "), top, json, lane)?
-                }
+                Some(PtaskCmd::Similar {
+                    top,
+                    json,
+                    epic,
+                    text,
+                }) => project_tasks::similar_rows(
+                    &prof,
+                    &name,
+                    &text.join(" "),
+                    top,
+                    json,
+                    lane,
+                    epic,
+                )?,
                 Some(PtaskCmd::File {
                     rows,
                     dup,
