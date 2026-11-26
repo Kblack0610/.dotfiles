@@ -2274,6 +2274,28 @@ pub(crate) fn project_dir(p: &Profile, name: &str) -> Result<PathBuf> {
     choose_project_dir(name, with_sheet)
 }
 
+/// The org (profile) whose project `name` resolves to, as [`project_dir`] picks it; None when it
+/// resolves nowhere or the org is not a configured profile. The queue item working a moved row
+/// records it (`agent-queue rehome --profile`).
+pub(crate) fn project_org(p: &Profile, name: &str) -> Option<String> {
+    let dir = project_dir(p, name).ok()?;
+    let want = project_map::canonical(name.trim()).to_lowercase();
+    if project_dir_in(p, &want).as_ref() == Some(&dir) {
+        return Some(p.name.clone());
+    }
+    config::all_profile_names()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|org| *org != p.name)
+        .find(|org| {
+            config::resolve(Some(org))
+                .ok()
+                .and_then(|op| project_dir_in(&op, &want))
+                .as_ref()
+                == Some(&dir)
+        })
+}
+
 /// Pick between orgs that all hold the same project name. Split out from the directory walk so
 /// the POLICY is testable without a config file or a vault on disk — the walk is I/O, this is
 /// the decision, and the decision is the part that has been wrong before.
