@@ -88,7 +88,6 @@ FMT_DEF='def usd: if . == null then "-" else "$\(. * 100 | round / 100)" end;'
 LF_URL="${SO_LF_URL:-}"   # set by the private runner conf; this repo is public
 LF_ENTRY="${SO_LF_ENTRY:-langfuse-api}"
 LF_TTL_DAYS=90    # Langfuse keeps traces 90 days; a score on a session older than that has nothing to point at
-SO_ASKS="${AGENT_ASK_ROOT:-$HOME/.agent/asks}"  # the ask judge's verdicts
 SO_VERDICTS="${SO_VERDICTS:-$HOME/.agent/dispatch/verdicts.jsonl}"  # the dispatch judge's
 NAME=session-outcomes
 
@@ -97,6 +96,9 @@ SCHEDULES="${SCHEDULES_SYNC:-$LIB_DIR/../bin/schedules-sync}"
 
 # shellcheck source=/dev/null
 . "$LIB_DIR/agent-proof.sh"
+# shellcheck source=/dev/null
+. "$LIB_DIR/ask-store.sh"
+SO_ASKS="$(ask_root)"  # the ask judge's verdicts
 # shellcheck source=/dev/null
 . "$LIB_DIR/langfuse.sh"
 # shellcheck source=/dev/null
