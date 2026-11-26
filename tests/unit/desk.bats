@@ -520,10 +520,18 @@ bell_fixture() {
 @test "notify bell counts the waiting pages by group and forgets the one its notifier closed (ar-3668)" {
   bell_fixture 8
   # NotificationClosed as dbus-monitor prints it: id 12 from this notifier, id 21 from another.
+  # The bell stops dbus-monitor once swaync's stream ends, so swaync's stub holds its stream open
+  # on a fifo until dbus-monitor's stub has printed both signals; without it the stream could end
+  # first and the close of 12 never be read (run 45761164937: 3 agents).
+  export CLOSED_FIFO="$SANDBOX/closed.fifo"
+  mkfifo "$CLOSED_FIFO"
+  # read-write open never blocks, so the 10 s guard holds even if dbus-monitor never starts
+  printf 'exec 3<>"$CLOSED_FIFO"; read -r -t 10 _ <&3\n' >> "$SANDBOX/bin/swaync-client"
   cat > "$SANDBOX/bin/dbus-monitor" <<'EOF'
 #!/usr/bin/env bash
 printf 'signal time=1.0 sender=:1.7 -> destination=(null destination) serial=9 path=/org/freedesktop/Notifications; interface=org.freedesktop.Notifications; member=NotificationClosed\n   uint32 12\n   uint32 2\n'
 printf 'signal time=1.1 sender=:1.3 -> destination=(null destination) serial=4 path=/org/freedesktop/Notifications; interface=org.freedesktop.Notifications; member=NotificationClosed\n   uint32 21\n   uint32 2\n'
+echo printed > "$CLOSED_FIFO"
 EOF
   chmod +x "$SANDBOX/bin/dbus-monitor"
   run "$DESK" notify bell
