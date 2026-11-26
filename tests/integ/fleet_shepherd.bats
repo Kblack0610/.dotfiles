@@ -916,7 +916,7 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
 @test "check closes the window of a NEEDS row that turned down its close, setting its own asks to reopen it first" {
   stub agent-ask 'echo "$CLAUDE_CODE_SESSION_ID $*" >> "$HOME/ask.calls"; [ -z "${STUB_ASK_FAIL:-}" ]'
   nudged_ago 30 3
-  doc "[$(crow 3 NEEDS now '{"nudged":true,"close_sent":true,"own_asks":2,"idle_min":2000,"blockers":["open ask Ab12","open ask Cd34"]}')]"
+  doc "[$(crow 3 NEEDS now '{"nudged":true,"close_sent":true,"own_asks":2,"asks":2,"idle_min":2000,"blockers":["open ask Ab12","open ask Cd34"]}')]"
   # Negative control: an ask that cannot be set to reopen it keeps the window, logged once.
   STUB_ASK_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   STUB_ASK_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
@@ -935,11 +935,24 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
 @test "check keeps the window of a row whose blockers name fewer asks than it holds" {
   stub agent-ask 'echo "$CLAUDE_CODE_SESSION_ID $*" >> "$HOME/ask.calls"'
   nudged_ago 30 3
-  doc "[$(crow 3 NEEDS now '{"nudged":true,"close_sent":true,"own_asks":2,"idle_min":2000,"blockers":["open ask Ab12"]}')]"
+  doc "[$(crow 3 NEEDS now '{"nudged":true,"close_sent":true,"own_asks":2,"asks":2,"idle_min":2000,"blockers":["open ask Ab12"]}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   [ -z "$(closes)" ]
   [ ! -s "$HOME/ask.calls" ]
   grep -q 'close: lab/3:1: its asks (Ab12) could not be set to reopen it' "$FLEET_SHEPHERD_DIR/log.md"
+}
+
+@test "check closes the window of a row whose only ask a queue item holds, setting no reopen (ar-4271)" {
+  # lab/dotfiles-agent-4 (2026-11-26): item ar-3447 held ask poGHJB, so the row read own_asks 1, asks 0,
+  # no ask blocker, and every check refused its close with "its asks (-) could not be set to reopen it".
+  stub agent-ask 'echo "$CLAUDE_CODE_SESSION_ID $*" >> "$HOME/ask.calls"'
+  nudged_ago 30 3
+  doc "[$(crow 3 DONE now '{"nudged":true,"close_sent":true,"own_asks":1,"asks":0,"idle_min":2000,"blockers":[]}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ ! -s "$HOME/ask.calls" ]
+  run grep -q 'could not be set to reopen it' "$FLEET_SHEPHERD_DIR/log.md"; assert_failure
+  run closes
+  assert_line 'close --server lab --pane %3 --sid 3'
 }
 
 @test "check closes no window for a row not yet nudged, nudged under an hour ago, manual, not now, shown or mid-turn" {
