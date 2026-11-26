@@ -48,11 +48,13 @@ keeps it.
 | `notes path` | Print today's note path (for `nvim "$(notes path)"`). |
 | `notes show [<target>] [--json]` | Print one note: `daily` (today, the default), `daily:YYYY-MM-DD`, or a `[[wikilink]]` target (`outbox`, `status/inbox`), resolved as the editor's `gf` does (before any `\|` or `#`; `<target>.md` under the profile root, then the vault). The file must resolve inside one of those two, so `../` or a symlink out is refused. `--json` adds the path, title, `hash` (the base `notes put` takes), day neighbours (`prev`, `next`) and each link with whether it resolves; a missing note is `exists: false` there and exit 1 without it. agent-web's and the hub's Focus tab read it through `hub_core::focus`. |
 | `notes put <target> --base <hash>` | Replace a note with stdin, only when its hash is still the `hash` that `show --json` gave, so a page that read it before an editor, a sweep or a sync wrote it never overwrites them. A stale base exits 3 with the note as it is now on stdout and nothing written. Finds the note as `show` does, and refuses a note that does not exist and the outbox (its editor is `notes outbox put`). agent-web's Focus tab saves through it. |
-| `notes link-refs` | Rebuild today's refs index (`refs/<date>/_index.md`) and link it from the note's `## Refs`. |
-| `notes report add --title <t> --summary <s> --body <file\|-> [--date D] [--slug S] [--needs-you] [--from F]` | File or revise a report in `refs/<date>/`, the one writer of reports (contract under Reports below). Prints `id<TAB>path`. |
-| `notes report list [--json] [--since D] [--unread\|--all]` | Reports, newest day first. `--json` is one object per line; `--all` adds digests and captures. |
+| `notes link-refs` | Rebuild today's refs index (`refs/<date>/_index.md`, digests and captures) and link it from the note's `## Refs`. |
+| `notes report add --title <t> --summary <s> --body <file\|-> [--date D] [--slug S] [--needs-you] [--from F]` | File or revise a report in `inbox/<date>/`, the one writer of reports (contract under Reports below). Prints `id<TAB>path`. |
+| `notes report list [--json] [--since D] [--unread\|--all]` | Reports, newest day first. `--json` is one object per line; `--all` adds the refs digests and captures. |
+| `notes report archive [--dry-run]` | Run `migrate`, then move inbox days before today to `inbox/archive/YYYY-MM/<date>/` and refs days over 7 days old to `refs/archive/YYYY/YYYY-MM/<date>/`. `notes summarize` runs it nightly. |
+| `notes report migrate` | Move every report an older writer left in `refs/` (live and archived days) into the inbox, drop identical twins, rebuild the refs index, then archive. A different twin is left and named (exit 1). With none left it moves nothing; the nightly `archive` runs it first, so a vault converts itself at the first run after deploy. |
 | `notes report read <id>` | Mark a report read and print its path. |
-| `notes summarize [--date D] [--force]` | Append a day's summary to the continuous monthly log. **Dedup-safe**; WARNs on gaps/empty extraction. |
+| `notes summarize [--date D] [--force]` | Append a day's summary to the continuous monthly log, then run `notes report archive`. **Dedup-safe**; WARNs on gaps/empty extraction. |
 | `notes archive [--month M] [--dry-run] [--backfill]` | Roll a month into the monthly summary + move dailies to the archive tree. |
 | `notes backlog [backlog\|scheduled\|recurring]` | Open a standing list (default: the backlog, `backlog.md` beside the daily dir) and print its path. `backlog`/`scheduled` are tidied (sweep checked to `## Done`, restamp day counts); `recurring` is only ensured (never swept: its masters aren't checked off). |
 | `notes backlog --add` | File the task lines on stdin (each with the lines indented under it) into the backlog, stamped `#bYYMMDD`; refuses input holding prose, so nvim's `<leader>tb` deletes nothing it did not file. `notes today` returns a task stamped 90+ days ago to Focus at `#low`; an unstamped one is stamped on first sight. |
@@ -337,15 +339,15 @@ A note written by an older build has its `## Watches`, `## Comms`, `## Inbox` an
 
 ## Reports
 
-A file in `refs/<date>/` is one of three kinds. A **report** has `kind: report` in its frontmatter and is written only by `notes report add`. A **digest** has `generated: true` (the briefing, `agents.md`, `shipped.md`). Anything else is a **capture** the human or a tool dropped there.
+A **report** lives in `inbox/<date>/<slug>.md` (reports only; no index file) and has `kind: report` in its frontmatter, written only by `notes report add`. A file in `refs/<date>/` is one of two kinds: a **digest** has `generated: true` (the briefing, `agents.md`, `shipped.md`), anything else is a **capture** the human or a tool dropped there.
 
 Report frontmatter, YAML-compatible: `kind: report`, `id: <date>-<slug>`, `title` (JSON-quoted), `summary: |-` with one to five indented lines, `from` (default `$AGENT_QUEUE_ITEM`), `needs_you`, `created`, `updated` and `read` (empty until read). The title, summary and body must be ASCII, and the body carries no frontmatter of its own, except that a stored report passed back as `--body` (a revision that appends to it) loses its frontmatter and title. The same slug on the same day revises the report in place: `created` is kept, `updated` moves, and `read` is cleared so it shows as unread again. `notes report read` sets `read` once.
 
 A report is in the stream while it is today's or unread and under 7 days old; everything else is archive. `notes report list --json` carries a `stream` field so readers need not re-derive it.
 
-`refs/<date>/_index.md` is generated (`generated: true`) and overwritten on every report write and every `notes link-refs`: `## Needs you` (unread reports with `needs_you`), `## Reports` (newest first, each with its summary's first line), `## Digests`, `## Your notes`, each left out when empty. The daily note's `## Refs` holds one link to it, added once the day has anything besides the briefing and `shipped.md` and removed when it no longer does. The bare per-file links an older build wrote there are dropped; a link with an alias, or any other line the human typed, stays.
+`refs/<date>/_index.md` is generated (`generated: true`) and overwritten on every `notes link-refs`: `## Digests` and `## Your notes`, each left out when empty. It lists no report: the inbox page's `## Reports` (newest first, `(needs you)` marked) is the one list. The daily note's `## Refs` holds one link to it, added once the day has anything besides the briefing and `shipped.md` and removed when it no longer does. The bare per-file links an older build wrote there are dropped; a link with an alias, or any other line the human typed, stays.
 
-Ref folders moved by the retired `archive-refs` sit under `refs/archive/YYYY/YYYY-MM/<date>/`. `notes report` reads them, and `notes show` resolves an old `[[refs/<date>/...]]` link to that path.
+Past days archive nightly (`notes report archive`, run by `notes summarize`): an inbox day under `inbox/archive/YYYY-MM/<date>/`, a refs day older than 7 days under `refs/archive/YYYY/YYYY-MM/<date>/`. `notes report` reads both, and `notes show` resolves an old `[[journal/refs/<date>/...]]` link to the refs archive or to where the report moved. `notes path inbox` prints the folder.
 
 ## What runs, and when
 
@@ -363,9 +365,9 @@ Everything that reads or writes the vault on its own, and what sets it off. Chan
 | 06:45 and 18:45 | `agentctl@briefing` | `journal/refs/<date>/briefing.md`, which Morning shows, and `agents.md`, the agent-system detail; the evening asks page |
 | 23:00 | `agentctl@nightly-sync` | Reads recent notes into mem0; writes nothing in the vault |
 | 00:30 | `agentctl@knowledge-engine` | Compiles the daily notes into `~/.notes/knowledge/` |
-| 01:00 | `journal-daily-summarize` | `notes summarize`: yesterday's note gets its summary |
+| 01:00 | `journal-daily-summarize` | `notes summarize`: yesterday's note gets its summary, then `notes report archive` moves past inbox days and old refs days to their archives |
 | 01:15 | `journal-index-rebuild` | `notes index --rebuild`: backlinks and the Map of Content |
-| The 2nd of the month, 01:30 | `journal-monthly-archive` | `notes archive` moves old daily notes to `daily_archive/`. Ref folders stay where they are; the day index is how a day is read |
+| The 2nd of the month, 01:30 | `journal-monthly-archive` | `notes archive` moves old daily notes to `daily_archive/`. Ref folders are not touched here: the 01:00 `notes report archive` moves the ones over 7 days old, and the day index is how a day is read |
 
 To see them live: `agentctl list` for the agentctl runners, `systemctl --user list-timers` for the clock rows, and `status/inbox.md` for what the Focus sweep and the triager did with each line today. The shell aliases (`.commonrc`) `today`, `backlog`, `co`, `zk` and `ndoctor` call the binary; the legacy `journal-create` and its two Python scripts are deprecated fallbacks.
 

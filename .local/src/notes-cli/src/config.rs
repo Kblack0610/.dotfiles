@@ -521,6 +521,10 @@ fn default_ideas() -> String {
     "lab/ideas/_IDEAS.md".to_string()
 }
 
+/// The reports inbox, under every profile's root (`notes report`, reports only). Fixed, not a
+/// config key: the old `inbox` key named the capture folder.
+pub const INBOX_DIR: &str = "inbox";
+
 fn default_captures() -> String {
     "captures".to_string()
 }
@@ -647,6 +651,13 @@ pub struct Profile {
     pub search_dirs: Vec<PathBuf>,
     pub state_dir: PathBuf,
     pub log_file: PathBuf,
+}
+
+impl Profile {
+    /// The reports agents file for the human: `<root>/inbox`.
+    pub fn inbox(&self) -> PathBuf {
+        self.root.join(INBOX_DIR)
+    }
 }
 
 /// One resolved comms account (email mailbox) with defaults filled in.
@@ -1306,6 +1317,7 @@ pub fn print(p: &Profile) {
     println!("index       {}", p.index.display());
     println!("knowledge   {}", p.knowledge.display());
     println!("captures    {}", p.captures.display());
+    println!("inbox       {}", p.inbox().display());
     println!("outbox      {}", p.outbox.display());
     println!("summaries   {}", p.summaries.display());
     println!(
