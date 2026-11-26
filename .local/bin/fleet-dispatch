@@ -3934,9 +3934,11 @@ rollup_events() {
 # (cause TAB UTC time; a stamp older than the window is dropped), so the next night counts only newer events.
 # fleet-dispatch is a direct filer, so the row goes on the board; it goes through the queue and review like
 # any other row, and nothing here patches anything. nightly-measure runs it, so each pass declares its
-# outcome (rollup_done): WORKED when it filed or joined a row, NOOP when no cause cleared the bar, FAILED.
+# outcome (rollup_done): WORKED when it filed or joined a row, NOOP when no cause cleared the bar or the
+# board's daily cap held every row, FAILED. A row the cap holds (notes exit 6, EXIT_GATED) is not stamped,
+# so the next night files it again, as fleet-bench's triage does.
 cmd_rollup() {
-  local dry=0 stamps since board lines cause title n pairs hs why kind min hit where what evidence rc rwhy out=0 acted=0 now f="$DIR/rollup.tsv" part
+  local dry=0 stamps since board lines cause title n pairs hs why kind min hit where what evidence rc rwhy out=0 acted=0 held=0 now f="$DIR/rollup.tsv" part
   [ "${1:-}" != --dry ] || dry=1
   stamps=$(jq -Rsc 'split("\n") | map(select(length > 0) | split("\t") | {(.[0]): .[1]}) | add // {}' "$f" 2>/dev/null) || stamps='{}'
   now=$(date -u +%FT%T)
@@ -3993,6 +3995,7 @@ cmd_rollup() {
       case "$rc" in
         0|4) echo "filed: $title ($n since ${since%T*}: $pairs)"; logline "rollup: filed $title ($n: $pairs)" ;;
         3) echo "joined its twin, which notes refused it as: $title" ;;
+        6) echo "held by the $DISPATCH_ROLLUP_BOARD board's daily cap, filed again next night: $title"; logline "rollup: held by the daily cap $title ($n: $pairs)"; held=$((held + 1)); continue ;;
         *) say "rollup: the $DISPATCH_ROLLUP_BOARD board refused $title (notes exit $rc)"; out=1; continue ;;
       esac
     fi
@@ -4003,7 +4006,8 @@ cmd_rollup() {
   { mkdir -p "$DIR" && jq -r --arg s "$since" 'to_entries[] | select(.value >= $s) | [.key, .value] | @tsv' <<<"$stamps" > "$f.tmp" && mv -f "$f.tmp" "$f"; } ||
     { say "rollup: could not write $f"; out=1; }
   if [ "$out" != 0 ]; then rollup_done 0 FAILED "the $DISPATCH_ROLLUP_BOARD board refused a row, or $f was not written"
-  elif [ "$acted" -gt 0 ]; then rollup_done 0 WORKED "$acted cause(s) filed or joined"
+  elif [ "$acted" -gt 0 ]; then rollup_done 0 WORKED "$acted cause(s) filed or joined$([ "$held" = 0 ] || echo ", $held held by the board's daily cap")"
+  elif [ "$held" -gt 0 ]; then rollup_done 0 NOOP "$held cause(s) held by the board's daily cap, filed again next night"
   else rollup_done 0 NOOP "no cause reached $DISPATCH_ROLLUP_MIN events"; fi
 }
 
