@@ -99,16 +99,20 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
     // `schedule.md` and renamed aside, so checking it reported a healthy vault as broken.
     file_check(&mut r, "schedule", &p.schedule);
 
-    // Inbox backlog — pending captures awaiting triage; warn if any are stale
+    // Captures backlog — pending captures awaiting triage; warn if any are stale
     let (pending, stale) = crate::inbox::backlog_counts(p);
     if stale > 0 {
         r.add(
             Status::Warn,
-            "inbox backlog",
+            "captures backlog",
             &format!("{pending} pending, {stale} stale (≥14d) — `notes inbox`"),
         );
     } else {
-        r.add(Status::Pass, "inbox backlog", &format!("{pending} pending"));
+        r.add(
+            Status::Pass,
+            "captures backlog",
+            &format!("{pending} pending"),
+        );
     }
 
     // The agent board beside its Backlog tier (the rows dispatch pulls from, and the rest), then

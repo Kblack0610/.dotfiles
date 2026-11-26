@@ -1500,7 +1500,7 @@ fn fleet_head(f: &FleetCost, p: Palette, now: i64) -> Line<'static> {
     };
     Line::from(vec![
         title,
-        Span::raw(format!("{}  ", f.usd)),
+        Span::raw(format!("about {}  ", f.usd)),
         Span::styled(
             format!("API cash {}  sub burn {}  ", f.cash, f.burn),
             p.dim(),
@@ -1818,8 +1818,9 @@ mod tests {
             evals: vec![Eval {
                 model: "opus".into(),
                 harness: "claude".into(),
-                done: 4,
+                done: 5,
                 landed: 3,
+                landed_n: 4,
                 priced: 3,
                 cost_usd: 9.0,
                 source: "list".into(),
@@ -1904,7 +1905,7 @@ mod tests {
 
     fn fleet_block() -> FleetCost {
         FleetCost {
-            usd: "about $849".into(),
+            usd: "$849".into(),
             cash: "$310".into(),
             burn: "$538".into(),
             as_of: Some(1_000_000),

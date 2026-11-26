@@ -151,7 +151,7 @@ function bRow(r, i) {
 // row's (bRow), so the table fits the screen. Cells run in hub-core's COLUMNS order, as tblHead draws.
 const B_COLS = { section: ["section"], type: ["type"], area: ["area"], title: ["title"], epic: ["epic"], priority: ["priority"], state: ["state"], when: ["when"], project: ["project"], lane: ["lane"], id: ["id"], pts: ["pts", "n"] };
 const B_SPAN = Object.keys(B_COLS).length;
-// The epics chip lists epics only (hub-core `Row::in_default` keeps them out of every other chip),
+// The epics chip lists epics only (hub-core `Row::in_default` keeps them out of every other chip but an `id:=` link's),
 // each with what hangs under it: the epic, its rows (a count that opens them), priority, project, id.
 const E_COLS = { title: ["epic"], rows: ["rows", "n"], priority: ["priority"], project: ["project"], id: ["id"] };
 const E_ORDER = Object.keys(E_COLS);

@@ -32,9 +32,10 @@ function reportBody(r) {
 }
 
 function reportRow(r) {
-  const open = r.id === rps.sel;
+  // A report names its filer, or nothing; a digest or a capture has no filer, so its kind says what it is.
+  const open = r.id === rps.sel, from = r.from || (r.kind === "report" ? "" : r.kind);
   const row = `<tr class="wr${open ? " sel" : ""}${r.unread ? " unread" : ""}" id="sec-r-${esc(r.id)}" data-href="${esc(r.link)}">` +
-    `<td>${rec2(esc(r.title.text), shownFull(r.title), esc(r.summary.text), shownFull(r.summary))}</td><td class="muted">${esc(r.from || r.kind)}</td>` +
+    `<td>${rec2(esc(r.title.text), shownFull(r.title), esc(r.summary.text), shownFull(r.summary))}</td><td class="muted rfrom" title="${esc(from)}">${esc(from)}</td>` +
     `<td>${statePill(r.state, r.level)}</td><td class="n">${when(r.at)}</td></tr>`;
   return open ? row + reportBody(r) : row;
 }
@@ -64,12 +65,13 @@ function reportsToday(d) {
     innerWrap("reports", "digests", sec("digests")) + innerWrap("reports", "captures", sec("captures"));
 }
 
-// Archive: a fold per day, shut unless the reader opened it or a link names it.
+// Archive: a fold per day, shut unless the reader opened it or a link names it. A day is a record
+// (`data-rec`), where a link lands, so the sidebar outline lists Archive and never each day.
 function reportsArchive(d) {
   let html = secHead("archive", "Archive", d.archive.length);
   if (!d.archive.length) return html + `<div class="empty">No older reports.</div>`;
   html += d.archive.map((a) => fold("sec-d", `<b>${esc(a.date)}</b> <span class="muted">${esc(a.count)}</span>`, reportTable(a.rows),
-    { k: "day:" + a.date, id: `sec-day-${a.date}`, open: rps.open["day:" + a.date] ?? false })).join("");
+    { k: "day:" + a.date, id: `sec-day-${a.date}`, attrs: " data-rec", open: rps.open["day:" + a.date] ?? false })).join("");
   if (d.older_days) html += `<div class="muted more">+${d.older_days} older days</div>`;
   return html;
 }

@@ -192,9 +192,16 @@ pub struct RepoDocs {
 /// text over a newer one.
 pub(crate) const EXPORT_DIR: &str = ".repos";
 
-/// The tree the exports read: the remote default branch as the checkout last fetched it, the
-/// ref `project-stage-check` reads for its doc rows (a clone can sit hundreds of commits behind).
-const DEFAULT_REF: &str = "refs/remotes/origin/HEAD";
+/// The refs the exports may read, in order: the remote default branch as the checkout last fetched
+/// it (a clone can sit hundreds of commits behind), found the way `agent-merge-proof.sh`
+/// `merge_proof_ref` finds it (fleet-states.md Owners, "A repo's default branch"): origin/HEAD
+/// while its branch is there, else origin's develop, main or master.
+const DEFAULT_REFS: [&str; 4] = [
+    "refs/remotes/origin/HEAD",
+    "refs/remotes/origin/develop",
+    "refs/remotes/origin/main",
+    "refs/remotes/origin/master",
+];
 
 /// A game's repo docs by the playground convention, as `(slot, file suffix)`: the design doc
 /// `docs/games/<id>.md`, and the optional `<id>-story.md` and `<id>-look.md`.
@@ -298,7 +305,7 @@ pub fn repo_docs(reg: &project_map::Registry, project: &str, vault: &Path) -> Op
     }
 }
 
-/// Export one repo path (a file or a directory) of the default branch ([`DEFAULT_REF`]) to
+/// Export one repo path (a file or a directory) of the default branch ([`DEFAULT_REFS`]) to
 /// `root/<path>`, read-only so an edit there is refused rather than lost on the next export. As
 /// fresh as the checkout's last fetch: a sheet render never touches the network.
 ///
@@ -324,12 +331,15 @@ fn export_path(checkout: &Path, root: &Path, path: &str) -> bool {
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     };
     // No default branch fetched is a fault to leave visible, not a reason to delete an export.
-    if rev(&format!("{DEFAULT_REF}^{{commit}}")).is_none() {
+    let Some(default_ref) = DEFAULT_REFS
+        .iter()
+        .find(|r| rev(&format!("{r}^{{commit}}")).is_some())
+    else {
         return false;
-    }
+    };
     let dest = root.join(path);
     let stamp = root.join(".stamps").join(path.replace('/', "%"));
-    let Some(id) = rev(&format!("{DEFAULT_REF}:{path}")) else {
+    let Some(id) = rev(&format!("{default_ref}:{path}")) else {
         let _ = fs::remove_dir_all(&dest);
         let _ = fs::remove_file(&dest);
         let _ = fs::remove_file(&stamp);
@@ -1124,6 +1134,7 @@ mod tests {
         // NEGATIVE CONTROL: with no default branch an earlier export stays, and a project never
         // exported gets no links from the working tree, where apps/late/docs/new.md exists.
         git(&["update-ref", "-d", "refs/remotes/origin/HEAD"]);
+        git(&["update-ref", "-d", "refs/remotes/origin/develop"]);
         git(&["rm", "-q", "-f", "-r", "apps/other"]);
         git(&["commit", "-qm", "gone"]);
         let other = repo_docs(&reg, "other", &vault).unwrap();
