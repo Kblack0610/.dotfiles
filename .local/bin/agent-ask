@@ -499,8 +499,7 @@ cmd_post() {
   done
   [ -n "$question" ] || { echo "agent-ask post: no question given" >&2; return 2; }
   question="$(oneline "$question")"
-  question_form_ok "$question" || return 2
-  resume_form_ok "$resume" || return 2
+  { question_form_ok "$question" && resume_form_ok "$resume"; } || return 2
   # `slug=meaning` options: the slugs alone stay in `options:`, the meanings go pipe-aligned
   # into `option_notes:`.
   local option_notes="" o bare=""
