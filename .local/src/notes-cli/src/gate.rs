@@ -12,7 +12,7 @@
 //! admits and every writer the gate never asks, and on every project's agent board, gated or not
 //! (the human, 2026-11-25: "lets make sure rows dont come in aggressively"): a board takes at most
 //! that many new agent rows a local day, whoever filed them. The person's `--want` and an urgent
-//! `#why` pass it.
+//! `#why` pass it, except `quick-fault`, which ranks a row already on the board.
 
 use crate::config::Profile;
 use crate::ingest::{self, Event};
@@ -28,6 +28,11 @@ const ADMITS: [&str; 2] = ["urgent", "high"];
 
 /// The reason a wanted row carries, which a session may not give itself.
 const ASKED: &str = "requested";
+
+/// The urgent reason a verify pass gives a row already on the board (a fault pulled forward because
+/// it blocks landing or dispatch, answers a live red, or is a small fix; ar-6307), so it is no red
+/// or outage and passes no cap.
+const RANKED: &str = "quick-fault";
 
 /// The reasons that admit a row at any level: the human's scope for the runtime board, source-of-truth
 /// and efficiency work (delightful-leaf P4, ar-5605).
@@ -112,12 +117,14 @@ fn admitted(events: &[Event], project: &str) -> usize {
 }
 
 /// Whether the cap lets `row` through whatever the day's count: the person's want, or a row whose
-/// `#why` is an urgent reason (a red, an outage). `requested` is no reason a session may give itself.
+/// `#why` is an urgent reason (a red, an outage). `requested` is no reason a session may give itself,
+/// and [`RANKED`] ranks a row already on the board, so neither lets a new one past the cap.
 fn cap_exempt(all: &[Reason], row: &str, wanted: bool) -> bool {
     wanted
         || reasons::slug_of(row).is_some_and(|s| {
-            all.iter()
-                .any(|r| r.slug == s && r.slug != ASKED && r.priority == "urgent")
+            all.iter().any(|r| {
+                r.slug == s && r.slug != ASKED && r.slug != RANKED && r.priority == "urgent"
+            })
         })
 }
 
@@ -125,7 +132,7 @@ fn cap_exempt(all: &[Reason], row: &str, wanted: bool) -> bool {
 fn cap_why(project: &str, taken: usize, cap: usize) -> Option<String> {
     (taken >= cap).then(|| {
         format!(
-            "{project} has taken its {cap} new agent rows for today ({taken} so far, intake_daily_cap in the notes config, QUEUE.md \"Admission\"): the person's words (--want) and an urgent red (--why with an urgent reason) are never held, so keep this one with `notes improve {project} -- \"<text>\"` or file it again tomorrow, and nothing was added"
+            "{project} has taken its {cap} new agent rows for today ({taken} so far, intake_daily_cap in the notes config, QUEUE.md \"Admission\"): the person's words (--want) and an urgent red (--why outage or live-exposure) are never held, so keep this one with `notes improve {project} -- \"<text>\"` or file it again tomorrow, and nothing was added"
         )
     })
 }
@@ -387,6 +394,7 @@ mod tests {
             "- [ ] fix(a): b #why/red-main",
             "- [ ] fix(a): b #why/runtime-fault",
             "- [ ] fix(a): b #why/requested",
+            "- [ ] fix(a): b #urgent #why/quick-fault",
             "- [ ] fix(a): b #urgent",
             "- [ ] fix(a): b",
         ] {
