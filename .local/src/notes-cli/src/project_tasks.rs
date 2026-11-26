@@ -720,32 +720,201 @@ fn self_check(
     if crate::epics::is_epic(row) && standing_title(row) {
         bail!("a standing epic (`<system> to standard`) is filed by notes and project-stage-check, never by a session, so nothing was added");
     }
-    let mut hits = Vec::new();
-    for l in [Lane::Human, Lane::Agent] {
-        let content = sheet_and_content(p, name, l)?
-            .map(|(_, c)| c)
-            .unwrap_or_default();
-        hits.extend(
-            similar(&content, text, SHORTLIST_TOP)
-                .into_iter()
-                .map(|(pct, r)| (pct, l, md::row_id(r), md::task_text(r))),
-        );
+    let lanes = both_lanes(p, name)?;
+    let plans = epic_plans(p, name, row, &lanes)?;
+    let hits = shortlist(&lanes, &plans, text);
+    let mut shown: Vec<String> = Vec::new();
+    for id in hits.iter().filter_map(|h| h.id.clone()) {
+        if !shown.contains(&id) {
+            shown.push(id);
+        }
     }
-    hits.sort_by_key(|h| std::cmp::Reverse(h.0));
-    hits.truncate(SHORTLIST_TOP);
-    let shown: Vec<String> = hits.iter().filter_map(|h| h.2.clone()).collect();
     let missing: Vec<&String> = shown.iter().filter(|id| !checked.contains(id)).collect();
     if missing.is_empty() {
         return Ok(Ok(shown));
     }
+    let what = if crate::epics::is_epic(row) {
+        "the open rows, epics and live plans most like it"
+    } else {
+        "similar open rows"
+    };
     eprintln!(
-        "similar open rows on {name}: read each, then join the one that is this work, or rerun with --checked {} when none is",
+        "{what} on {name}: read each, then join the one that is this work, or rerun with --checked {} when none is",
         shown.join(",")
     );
-    for (pct, l, id, t) in &hits {
-        println!("{}\t{pct}\t{}\t{t}", id.as_deref().unwrap_or("-"), l.name());
-    }
+    print_hits(&hits);
     Ok(Err(EXIT_SHORTLIST))
+}
+
+/// Each lane's sheet text, human first (empty with no sheet): what [`shortlist`] reads.
+fn both_lanes(p: &Profile, name: &str) -> Result<Vec<(Lane, String)>> {
+    [Lane::Human, Lane::Agent]
+        .into_iter()
+        .map(|l| {
+            let c = sheet_and_content(p, name, l)?.map(|(_, c)| c);
+            Ok((l, c.unwrap_or_default()))
+        })
+        .collect()
+}
+
+/// The live plans an epic `row`'s shortlist reads: [`crate::live_plans::read`] for the board's
+/// own name, of the plans serving one of its open feature epics ([`feature_epic`]); none for any
+/// other row.
+fn epic_plans(
+    p: &Profile,
+    name: &str,
+    row: &str,
+    lanes: &[(Lane, String)],
+) -> Result<Vec<crate::live_plans::LivePlan>> {
+    if !crate::epics::is_epic(row) {
+        return Ok(Vec::new());
+    }
+    let dir = projects::project_dir(p, name)?;
+    let board = dir.file_name().map_or(name.into(), |n| n.to_string_lossy());
+    let epics: HashSet<String> = lanes
+        .iter()
+        .flat_map(|(_, c)| c.lines())
+        .filter(|r| md::is_open_task(r) && feature_epic(r))
+        .filter_map(md::row_id)
+        .collect();
+    Ok(crate::live_plans::read(
+        &crate::live_plans::root(),
+        &board,
+        &epics,
+        &crate::live_plans::lib(),
+    ))
+}
+
+/// An epic that is a feature, not a system's standing (`... to standard`) catch-all: what an
+/// epic's shortlist slots list, since a standing epic is never a feature's twin.
+fn feature_epic(line: &str) -> bool {
+    crate::epics::is_epic(line) && !standing_title(line)
+}
+
+/// How many open epics, and how many live plans, an epic's shortlist adds beside its
+/// [`SHORTLIST_TOP`] rows: slots of their own, so ordinary rows cannot crowd out a twin epic
+/// (2026-11-24: ar-5349 copied ar-4724, and its shortlist of rows never showed ar-4724).
+const EPIC_SHORTLIST_TOP: usize = 3;
+
+/// What a shortlist entry is: an open row, an open epic in an epic's own slots, or a live plan.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Kind {
+    Row,
+    Epic,
+    Plan,
+}
+
+impl Kind {
+    fn name(self) -> &'static str {
+        match self {
+            Kind::Row => "row",
+            Kind::Epic => "epic",
+            Kind::Plan => "plan",
+        }
+    }
+}
+
+/// One shortlist entry: its [`share`] with the text, what it is, the lane of its row (a plan's:
+/// its epic's), the id a session names on `--checked` (a plan's: its epic's) and its text.
+struct Hit {
+    pct: usize,
+    kind: Kind,
+    lane: Lane,
+    id: Option<String>,
+    text: String,
+}
+
+impl Hit {
+    fn of(pct: usize, kind: Kind, lane: Lane, line: &str) -> Hit {
+        Hit {
+            pct,
+            kind,
+            lane,
+            id: md::row_id(line),
+            text: md::task_text(line),
+        }
+    }
+}
+
+/// The shortlist a hand session's add of `text` is checked against, from each lane's sheet text:
+/// the [`SHORTLIST_TOP`] open rows of both lanes most like it, best first. An epic gets slots of
+/// its own after them, which rows cannot crowd out: the [`EPIC_SHORTLIST_TOP`] open epics most
+/// like it that the rows did not list, then as many of `plans` that serve an open epic, ranked by
+/// their title. A standing (`... to standard`) epic is a system's catch-all, never a feature's
+/// twin, so neither slot lists one.
+fn shortlist(
+    lanes: &[(Lane, String)],
+    plans: &[crate::live_plans::LivePlan],
+    text: &str,
+) -> Vec<Hit> {
+    let best = |mut v: Vec<Hit>, top: usize| {
+        v.sort_by_key(|h| std::cmp::Reverse(h.pct));
+        v.truncate(top);
+        v
+    };
+    let rows = lanes
+        .iter()
+        .flat_map(|(l, c)| {
+            similar(c, text, SHORTLIST_TOP)
+                .into_iter()
+                .map(|(pct, r)| Hit::of(pct, Kind::Row, *l, r))
+        })
+        .collect();
+    let mut hits = best(rows, SHORTLIST_TOP);
+    if !crate::epics::is_epic(&format!("- [ ] {text}")) {
+        return hits;
+    }
+    let feature = feature_epic;
+    let listed: HashSet<String> = hits.iter().filter_map(|h| h.id.clone()).collect();
+    let epics = lanes
+        .iter()
+        .flat_map(|(l, c)| {
+            similar_where(c, text, usize::MAX, EPIC_MIN_SIMILAR, feature)
+                .into_iter()
+                .map(|(pct, r)| Hit::of(pct, Kind::Epic, *l, r))
+        })
+        .filter(|h| h.id.as_ref().is_none_or(|id| !listed.contains(id)))
+        .collect();
+    hits.extend(best(epics, EPIC_SHORTLIST_TOP));
+    let open: std::collections::HashMap<String, Lane> = lanes
+        .iter()
+        .flat_map(|(l, c)| {
+            c.lines()
+                .filter(|r| md::is_open_task(r) && feature(r))
+                .filter_map(|r| md::row_id(r).map(|id| (id, *l)))
+        })
+        .collect();
+    let want = title_words(&format!("- [ ] {text}")).1;
+    let served = plans
+        .iter()
+        .filter_map(|p| {
+            let lane = *open.get(&p.epic)?;
+            let pct = share(&want, &title_words(&format!("- [ ] {}", p.title)).1);
+            (pct >= EPIC_MIN_SIMILAR).then(|| Hit {
+                pct,
+                kind: Kind::Plan,
+                lane,
+                id: Some(p.epic.clone()),
+                text: format!("plan {} serves {}: {}", p.file, p.epic, p.title),
+            })
+        })
+        .collect();
+    hits.extend(best(served, EPIC_SHORTLIST_TOP));
+    hits
+}
+
+/// The shortlist as `add` prints it on exit 5: `id<TAB>percent<TAB>lane<TAB>text`, `-` for a row
+/// with no id yet.
+fn print_hits(hits: &[Hit]) {
+    for h in hits {
+        println!(
+            "{}\t{}\t{}\t{}",
+            h.id.as_deref().unwrap_or("-"),
+            h.pct,
+            h.lane.name(),
+            h.text
+        );
+    }
 }
 
 /// The open row on `content` that `text` would duplicate: same [`md::task_key`], the key
@@ -846,14 +1015,25 @@ fn share(a: &Words, b: &Words) -> usize {
 /// every row the writer would refuse is listed; the writer also needs the same [`names`], and only
 /// this tie-break reads the area.
 fn similar<'a>(content: &'a str, text: &str, top: usize) -> Vec<(usize, &'a str)> {
+    similar_where(content, text, top, MIN_SIMILAR, |_| true)
+}
+
+/// [`similar`] over only the open rows `keep` takes, at or above `floor`.
+fn similar_where<'a>(
+    content: &'a str,
+    text: &str,
+    top: usize,
+    floor: usize,
+    keep: impl Fn(&str) -> bool,
+) -> Vec<(usize, &'a str)> {
     let (kind, want) = title_words(&format!("- [ ] {text}"));
     let mut hits: Vec<(usize, bool, &str)> = content
         .lines()
-        .filter(|l| md::is_open_task(l))
+        .filter(|l| md::is_open_task(l) && keep(l))
         .filter_map(|l| {
             let (k, have) = title_words(l);
             let pct = share(&want, &have);
-            (pct >= MIN_SIMILAR).then_some((pct, k == kind, l))
+            (pct >= floor).then_some((pct, k == kind, l))
         })
         .collect();
     hits.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
@@ -862,39 +1042,63 @@ fn similar<'a>(content: &'a str, text: &str, top: usize) -> Vec<(usize, &'a str)
 
 /// `notes ptask <name> similar <text> [--top N] [--json]`: the open rows closest to `text`, TSV
 /// `id<TAB>percent<TAB>row text` (`-` for a row with no id yet), or one JSON array of
-/// `{id, percent, text}`. Reads only: the triager shows a model these few rows, not the board.
-pub fn similar_rows(
-    p: &Profile,
-    name: &str,
-    text: &str,
+/// `{id, percent, text, kind, lane}`. Reads only: the triager shows a model these few rows, not
+/// the board. With `epic` it is the [`shortlist`] `add` checks a hand session's row against, on
+/// both lanes whatever `lane` is, printed as `add` prints it ([`print_hits`]): for an epic, the
+/// open epics and live plans most like it too, which plan-standard.sh holds an `epic: new` to.
+/// The arguments of `ptask similar`.
+#[derive(clap::Args)]
+pub struct SimilarArgs {
+    /// How many rows at most
+    #[arg(long, default_value_t = 10)]
     top: usize,
+    /// One JSON array of `{id, percent, text, kind, lane}` instead
+    #[arg(long)]
     json: bool,
-    lane: Lane,
-) -> Result<i32> {
-    let content = sheet_and_content(p, name, lane)?
-        .map(|(_, c)| c)
-        .unwrap_or_default();
-    let rows = similar(&content, text, top);
+    /// The shortlist `add` checks a session's row against instead: the rows of both lanes,
+    /// and for an epic the open epics and live plans most like it (kind epic or plan)
+    #[arg(long, conflicts_with = "top")]
+    epic: bool,
+    #[arg(required = true, num_args = 1.., allow_hyphen_values = true)]
+    text: Vec<String>,
+}
+
+pub fn similar_rows(p: &Profile, name: &str, a: &SimilarArgs, lane: Lane) -> Result<i32> {
+    let (text, top, json, epic) = (&a.text.join(" "), a.top, a.json, a.epic);
+    let hits = if epic {
+        let row = format!("- [ ] {text}");
+        let lanes = both_lanes(p, name)?;
+        let plans = epic_plans(p, name, &row, &lanes)?;
+        shortlist(&lanes, &plans, text)
+    } else {
+        let content = sheet_and_content(p, name, lane)?
+            .map(|(_, c)| c)
+            .unwrap_or_default();
+        similar(&content, text, top)
+            .into_iter()
+            .map(|(pct, l)| Hit::of(pct, Kind::Row, lane, l))
+            .collect()
+    };
     if json {
-        let out: Vec<serde_json::Value> = rows
+        let out: Vec<serde_json::Value> = hits
             .iter()
-            .map(|(pct, l)| {
+            .map(|h| {
                 serde_json::json!({
-                    "id": md::row_id(l).unwrap_or_default(),
-                    "percent": pct,
-                    "text": md::task_text(l),
+                    "id": h.id.clone().unwrap_or_default(),
+                    "percent": h.pct,
+                    "text": h.text,
+                    "kind": h.kind.name(),
+                    "lane": h.lane.name(),
                 })
             })
             .collect();
         println!("{}", serde_json::Value::Array(out));
-        return Ok(0);
-    }
-    for (pct, l) in rows {
-        println!(
-            "{}\t{pct}\t{}",
-            md::row_id(l).unwrap_or_else(|| "-".into()),
-            md::task_text(l)
-        );
+    } else if epic {
+        print_hits(&hits);
+    } else {
+        for h in hits {
+            println!("{}\t{}\t{}", h.id.as_deref().unwrap_or("-"), h.pct, h.text);
+        }
     }
     Ok(0)
 }
@@ -902,6 +1106,11 @@ pub fn similar_rows(
 /// The least share, in percent, at which [`similar`] lists a row. Provisional: revisit when a
 /// session line's real twin is missing from the rows it is shown.
 const MIN_SIMILAR: usize = 20;
+
+/// The least share at which an epic's own slots list an epic or a plan, half [`MIN_SIMILAR`]: a
+/// twin epic is worded as a new outcome. Provisional: ar-5349's title shared 14 with the title of
+/// ar-4724's live plan and under 10 with the epic's own.
+const EPIC_MIN_SIMILAR: usize = 10;
 
 /// The share of title words, in percent of both titles' words, that makes a near-duplicate.
 const NEAR_DUP: usize = 80;
@@ -6799,6 +7008,110 @@ mod inbox_tests {
         assert!(similar(board, "chore(x): zzz", 10).is_empty());
         // a row the writer refuses as a near-duplicate is one it ranks
         assert!(near_twin(board, "fix(ui): pause menu flickers on resume").is_some());
+    }
+
+    /// A board where six ordinary rows outrank an open epic on [`similar`], with a standing epic,
+    /// a closed one, and an agent lane; and the live plans that read it.
+    fn crowded() -> (Vec<(Lane, String)>, Vec<crate::live_plans::LivePlan>) {
+        let mut human = String::from("## Tasks\n");
+        for (n, w) in ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"]
+            .iter()
+            .enumerate()
+        {
+            human.push_str(&format!(
+                "- [ ] feat(ui): a lobby the player can open with friends {w} #low <!-- id:lb-{} -->\n",
+                n + 1
+            ));
+        }
+        human.push_str("- [ ] epic(ui): friends gather in one lobby <!-- id:lb-9 -->\n");
+        human.push_str("- [ ] epic(ui): lobby player to standard <!-- id:lb-10 -->\n");
+        human.push_str("- [x] epic(ui): the player lobby with friends <!-- id:lb-11 -->\n");
+        let agent =
+            "## Tasks\n- [ ] fix(ui): the lobby player list is empty #low <!-- id:lb-20 -->\n";
+        let plan = |file: &str, title: &str, epic: &str| crate::live_plans::LivePlan {
+            file: file.into(),
+            title: title.into(),
+            epic: epic.into(),
+        };
+        let plans = vec![
+            plan(
+                "_live/a.md",
+                "Lobby screens the player opens with friends",
+                "lb-9",
+            ),
+            plan("_live/b.md", "The player lobby with friends, done", "lb-11"),
+            plan(
+                "_live/c.md",
+                "Lobby the player can open with friends",
+                "lb-1",
+            ),
+            plan("lb/d.md", "Lobby the player can open with friends", "zz-4"),
+        ];
+        (
+            vec![(Lane::Human, human), (Lane::Agent, agent.into())],
+            plans,
+        )
+    }
+
+    fn kinds(hits: &[Hit]) -> Vec<(String, Kind)> {
+        hits.iter()
+            .map(|h| (h.id.clone().unwrap_or_default(), h.kind))
+            .collect()
+    }
+
+    #[test]
+    fn an_epic_shortlist_shows_an_open_epic_that_five_rows_outrank_and_the_plan_serving_it() {
+        let (lanes, plans) = crowded();
+        let text = "epic(ui): a lobby the player can open with friends";
+        let hits = shortlist(&lanes, &plans, text);
+        let got = kinds(&hits);
+        // five rows fill the row slots, so lb-9 ranks below them and shows in its own slot
+        assert_eq!(
+            got.iter().filter(|g| g.1 == Kind::Row).count(),
+            SHORTLIST_TOP
+        );
+        assert!(got.contains(&("lb-9".into(), Kind::Epic)), "{got:?}");
+        // the live plan serving lb-9 names it; a closed epic's plan, a story's and another
+        // board's do not show, and neither does a standing epic
+        assert!(got.contains(&("lb-9".into(), Kind::Plan)), "{got:?}");
+        assert_eq!(
+            got.iter().filter(|g| g.1 == Kind::Plan).count(),
+            1,
+            "{got:?}"
+        );
+        for id in ["lb-10", "lb-11", "zz-4"] {
+            assert!(got.iter().all(|g| g.0 != id), "{id}: {got:?}");
+        }
+        let plan = hits.iter().find(|h| h.kind == Kind::Plan).unwrap();
+        assert!(
+            plan.text.starts_with("plan _live/a.md serves lb-9: "),
+            "{}",
+            plan.text
+        );
+        assert!(plan.lane == Lane::Human);
+        // with no plans, the epic still shows
+        assert!(kinds(&shortlist(&lanes, &[], text)).contains(&("lb-9".into(), Kind::Epic)));
+    }
+
+    #[test]
+    fn a_shortlist_for_a_row_that_is_no_epic_is_the_top_rows_of_both_lanes_as_before() {
+        let (lanes, plans) = crowded();
+        let text = "feat(ui): a lobby the player can open with friends";
+        let hits = shortlist(&lanes, &plans, text);
+        // what self_check listed before epics had slots: each lane's top rows, merged best first
+        let mut before: Vec<(usize, String)> = lanes
+            .iter()
+            .flat_map(|(_, c)| similar(c, text, SHORTLIST_TOP))
+            .map(|(pct, r)| (pct, md::row_id(r).unwrap()))
+            .collect();
+        before.sort_by_key(|h| std::cmp::Reverse(h.0));
+        before.truncate(SHORTLIST_TOP);
+        let got: Vec<(usize, String)> = hits
+            .iter()
+            .map(|h| (h.pct, h.id.clone().unwrap()))
+            .collect();
+        assert_eq!(got, before);
+        assert!(hits.iter().all(|h| h.kind == Kind::Row));
     }
 
     #[test]
