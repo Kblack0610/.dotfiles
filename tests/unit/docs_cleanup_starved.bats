@@ -20,12 +20,16 @@ case "$1" in
   show) if [ "$2" = docs-cleanup-pass ]; then echo "${LEGACY_JSON:-{\}}"; else echo "${ITEM_JSON:-{\}}"; fi ;;
   add) printf '%s\n' "$@" >> "$ADD_LOG"
        printf '%s\t%s\n' "$7" "${13}" >> "$ADD_LOG.tsv" # its slug and task
-       if [ "${ADD_RC:-0}" = 5 ]; then
+       rc="${ADD_RC:-0}"; case "$7" in *-skills) rc="${ADD_RC_SKILLS:-$rc}" ;; esac # ADD_RC_SKILLS: the skills area's own code
+       if [ "$rc" = 6 ]; then # notes' refusal: the daily cap unless GATE_REFUSAL says the gate
+         echo "agent-queue: no story row filed on agent-runtime: ${GATE_REFUSAL:-agent-runtime has taken its 10 new agent rows for today (10 so far, intake_daily_cap in the notes config)}" >&2
+       fi
+       if [ "$rc" = 5 ]; then
          n=$(cat "$ROW_SEQ" 2>/dev/null || echo 9); echo $((n + 1)) > "$ROW_SEQ"
          echo "agent-queue: only the board fills the queue: an agent or a script files a board row and dispatch pulls it (QUEUE.md \"Admission\")" >&2
          echo "held $7 -> agent-runtime:${ROW_ID:-ar-$n}"
        fi
-       exit "${ADD_RC:-0}" ;;
+       exit "$rc" ;;
 esac
 STUB
   cat > "$BIN/notes" <<'STUB'
@@ -204,4 +208,31 @@ STUB
   assert_output --partial 'could not file pass docs-cleanup-pass-docs'
   run tail -n 1 "$BATS_TEST_TMPDIR/verdicts"
   assert_output FAILED
+}
+
+@test "a cap that holds the pass every night past the limit is a starved night, FAILED" {
+  mkdir -p "$AGENTCTL_INBOX"; date -d '3 days ago' +%s > "$AGENTCTL_INBOX/held"
+  ADD_RC=6 run "$BIN/agentctl-docs-cleanup"
+  assert_failure 1
+  assert_output --partial "held by the board's daily cap every night since"
+  # a night the pass files clears the streak
+  ADD_RC=5 run "$BIN/agentctl-docs-cleanup"
+  assert_success
+  [ ! -e "$AGENTCTL_INBOX/held" ] || fail "the held streak outlived a filed night"
+}
+
+@test "an intake gate refusal (exit 6 that is not the cap) still fails the night" {
+  GATE_REFUSAL='the agent-runtime board is gated' ADD_RC=6 run "$BIN/agentctl-docs-cleanup"
+  assert_failure 1
+  assert_output --partial "the board's intake gate refused pass docs-cleanup-pass-docs"
+}
+
+@test "one area filed and one held by the cap is a WORKED night naming both" {
+  SKILLS_JSON='{"findings":[{"type":"NOCMD"}]}' ADD_RC=5 ADD_RC_SKILLS=6 run "$BIN/agentctl-docs-cleanup"
+  assert_success
+  assert_output --partial "docs-cleanup-pass-skills held by the board's daily cap"
+  run tail -n 1 "$BATS_TEST_TMPDIR/verdicts"
+  assert_output WORKED
+  run cut -f4 "$AGENTCTL_INBOX/row"
+  assert_output docs
 }
