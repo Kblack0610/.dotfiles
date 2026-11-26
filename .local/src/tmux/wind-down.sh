@@ -25,10 +25,12 @@
 #       The same teardown for a session that was told to close and did not, run by
 #       fleet-shepherd (close_refused): writes the sentinel as .fired and fires it.
 #
-#   wind-down.sh note-path
-#       Print (and ensure the dir for) the session wrap-up note path on the
-#       agent-runtime axis: ~/.agent/sessions/<project>/<date>-wind-down.md.
-#       The skill writes the wrap-up there. Project resolution matches the hook.
+#   wind-down.sh note <draft>
+#       Append the drafted wrap-up to today's note on the agent-runtime axis,
+#       ~/.agent/sessions/<project>/<date>-wind-down.md, and print its path. Every
+#       session of the day shares that file, so it is only ever appended to: a
+#       session that wrote it whole cut 943 lines to 113 (ar-3365). Project
+#       resolution matches the hook.
 #
 #   (A dead session's scratchpad is reaped hourly by agentctl-tmp-gc, not here.)
 #
@@ -57,6 +59,8 @@ SPIN_DIR="$HOME/.agent/spin-down"
 # Canonical project name (matches the Stop-hook's resolution).
 # shellcheck source=../../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../../.config/shared-hooks/project-name.sh}"
+# shellcheck source=../../lib/ask-store.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../lib/ask-store.sh"   # reopen_asks
 
 cmd_arm() {
   local scope="window"
@@ -411,17 +415,20 @@ reopen_asks() {
     while IFS= read -r af; do
       err="$(CLAUDE_CODE_SESSION_ID="$1" "$SCRIPT_DIR/../../bin/agent-ask" reopen-on-answer "$(basename "$af" .md)" 2>&1 >/dev/null)" ||
         printf '[%s] fire: ask %s not set to reopen: %s\n' "$(date '+%F %T' 2>/dev/null)" "$(basename "$af" .md)" "${err##*$'\n'}" >> "$2" 2>/dev/null || true
-    done < <(grep -lxF "claude_session: $1" "${AGENT_ASK_ROOT:-$HOME/.agent/asks}"/*/*.md 2>/dev/null |
-      xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null)
+    done < <(grep -lxF "claude_session: $1" "$(ask_root)"/*/*.md 2>/dev/null | ask_open_files)
   fi
 }
 
-cmd_note_path() {
-  local proj dir
-  proj=$(resolve_project "${CLAUDE_PROJECT_DIR:-$PWD}")
-  dir="$HOME/.agent/sessions/${proj}"
+cmd_note() {
+  local draft="${1:-}" dir note
+  [ -s "$draft" ] || { echo "wind-down.sh note: name the drafted wrap-up file; it is appended to today's note" >&2; return 2; }
+  dir="$HOME/.agent/sessions/$(resolve_project "${CLAUDE_PROJECT_DIR:-$PWD}")"
   mkdir -p "$dir"
-  echo "$dir/$(date +%Y-%m-%d)-wind-down.md"
+  note="$dir/$(date +%Y-%m-%d)-wind-down.md"
+  # Two sessions winding down at once each add a whole block, never interleaved lines.
+  # A draft with no final newline gets one, so the next block starts on its own line.
+  ( flock 9; [ -s "$note" ] && echo; cat "$draft"; [ -z "$(tail -c1 "$draft")" ] || echo ) 9>>"$note" >>"$note"
+  echo "$note"
 }
 
 # Claude Code keeps each session's scratchpad at <root>/<project-slug>/<session-id>/.
@@ -479,10 +486,10 @@ case "${1:-}" in
   arm)       shift; cmd_arm "$@" ;;
   fire)      shift; cmd_fire "$@" ;;
   close)     shift; cmd_close "$@" ;;
-  note-path) shift; cmd_note_path "$@" ;;
+  note)      shift; cmd_note "$@" ;;
   disarm)    shift; cmd_disarm "$@" ;;
   *)
-    echo "usage: wind-down.sh {arm [--session] | fire <sentinel-path> | close --server S --pane %N --sid ID | note-path | disarm}" >&2
+    echo "usage: wind-down.sh {arm [--session] | fire <sentinel-path> | close --server S --pane %N --sid ID | note <draft> | disarm}" >&2
     exit 2
     ;;
 esac

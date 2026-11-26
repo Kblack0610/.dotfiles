@@ -190,14 +190,18 @@ fleet_state() {
 
 teardown() {
   [ -z "${HOP_PID:-}" ] || kill "$HOP_PID" 2>/dev/null || true
+  exec 7<&- || true
 }
 
 # hop_client <token> -- the client that pressed the key was hopped here: a live process whose
 # environment carries the token, as the `tmux attach` cmd_land starts does.
+# It prints its own pid once it runs under the token, with no exec after: a pid read off `env ...
+# sleep &` could be read before or during the exec, from an environ without the token, which a
+# loaded runner hit (PR #3592 run 45638823349).
 hop_client() {
   HOP_DIR="$SANDBOX/hop"
-  env "TMX_HOP_TOKEN=$1" sleep 30 &
-  HOP_PID=$!
+  exec 7< <(env "TMX_HOP_TOKEN=$1" python3 -c 'import os, time; print(os.getpid(), flush=True); time.sleep(30)' 3>&-)
+  read -r HOP_PID <&7
   export STUB_CLIENT_PID=$HOP_PID STUB_CLIENT_TTY=/dev/pts/9
 }
 

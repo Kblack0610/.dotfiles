@@ -162,7 +162,7 @@ cmd_propose() {
 pr_num() { sed -nE "s#^(${2//\//\\/}\#|\#)?([0-9]+)\$#\2#p" <<<"$1"; }
 
 # The items: a credit move for each whose PR names another project, and a closed story for each
-# done one with a PR and no row whose plan is not backfilled as an epic here (propose_plans files those).
+# landed one (outcome landed) with no row whose plan is not backfilled as an epic here (propose_plans files those).
 propose_items() {
   local slug="$1" s p pr plan merged title n win w touches facts size epic to pf
   while IFS=$'\t' read -r s p pr plan merged title; do
@@ -184,7 +184,7 @@ propose_items() {
       [ -n "$epic" ] || [ "$(plan_phase_list "$pf" | jq length)" -lt 2 ] || continue
     fi
     row story "${epic:--}" "$to" - "$size" done "pr:$n${merged:+ commit:${merged:0:12}}" "$s" "$(words "$title")"
-  done < <(jq -r '.[] | select(.state == "done" and .status == "ok" and (.pr // "") != "" and (.row // "") == "")
+  done < <(jq -r '.[] | select(.state == "done" and .outcome == "landed" and (.row // "") == "")
       | .pr |= (tostring | split(" ")[0]) | .merged |= (. // "" | tostring | split(" ")[0])
       | [.slug, .project, .pr, .plan, .merged, (.title // .task // .slug | split("\n")[0])] | map(. // "" | if . == "" then "-" else . end) | @tsv' <<<"$2")
 }
