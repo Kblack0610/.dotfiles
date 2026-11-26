@@ -1423,7 +1423,8 @@ notes --profile work ptask level run lv-8'
 @test "add writes its story row with the queue lock free, and a slug or a cause owner queued meanwhile stops it (ar-5606)" {
   story_notes
   # The stub notes the call when the queue lock is held; a race file makes its row write queue the slug first.
-  sed -i '2i flock -n -x "$AGENT_QUEUE_DIR/.lock" true || printf "locked %s\\n" "$*" >> "$NOTES_FIXTURE/underlock.log"\ncase " $* " in *" add "*) [ ! -e "$NOTES_FIXTURE/race" ] || { mkdir -p "$AGENT_QUEUE_DIR/queued"; printf "slug: raced\\nproject: level\\ntags: red cause:abc12345\\n---\\nx\\n" > "$AGENT_QUEUE_DIR/queued/20260101-000000-raced.md"; } ;; esac' "$SANDBOX/bin/notes"
+  # The item's own event record is written under the lock by every writer (item_event), so it is not counted.
+  sed -i '2i [ "$1 $2" = "ingest record" ] || flock -n -x "$AGENT_QUEUE_DIR/.lock" true || printf "locked %s\\n" "$*" >> "$NOTES_FIXTURE/underlock.log"\ncase " $* " in *" add "*) [ ! -e "$NOTES_FIXTURE/race" ] || { mkdir -p "$AGENT_QUEUE_DIR/queued"; printf "slug: raced\\nproject: level\\ntags: red cause:abc12345\\n---\\nx\\n" > "$AGENT_QUEUE_DIR/queued/20260101-000000-raced.md"; } ;; esac' "$SANDBOX/bin/notes"
   run "$AQ" add --project level --slug free "feat(menu): free"
   assert_success
   assert_line "story lv-9 on the level agent board"

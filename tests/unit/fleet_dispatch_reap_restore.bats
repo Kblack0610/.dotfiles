@@ -255,7 +255,7 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-cx.md)
   assert_equal "$(qfield "$f" status) $(qfield "$f" end_reason)" 'failed stopped'
   run grep -F 'model-lane outcome' "$NOTES_FIXTURE/calls.log"
-  assert_output 'model-lane outcome r-cx failed --cause close'
+  assert_output 'model-lane outcome r-cx failed --why the run ended before it closed the item (end stopped) --cause close'
 }
 
 @test "reap: a Codex rollout cut mid-turn is a cut, or a timeout once the launcher's timeout has run; a provider error is provider; neither rates the model" {
@@ -278,7 +278,7 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/queued/*-cx.md)" end_reason)" provider
   run grep -F 'model-lane outcome' "$NOTES_FIXTURE/calls.log"
   # only the timeout rated: it is the run's own length; the rest are counted by their end
-  assert_output $'model-lane outcome r-cx unrated --cause cut\nmodel-lane outcome r-cx failed --cause close\nmodel-lane outcome r-cx unrated --cause provider\nmodel-lane outcome r-cx unrated --cause provider'
+  assert_output $'model-lane outcome r-cx unrated --cause cut\nmodel-lane outcome r-cx failed --why the run ended before it closed the item (end timeout) --cause close\nmodel-lane outcome r-cx unrated --cause provider\nmodel-lane outcome r-cx unrated --cause provider'
 }
 
 # ar-3463: ar-2991 and ar-2992 failed at the Go 5-hour limit on 2026-11-18, though nothing about either item was wrong.
@@ -425,7 +425,7 @@ claude_end_item() {
   f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-oc.md)
   assert_equal "$(qfield "$f" status) $(qfield "$f" end_reason)" 'failed stopped'
   run grep -F 'model-lane outcome' "$NOTES_FIXTURE/calls.log"
-  assert_output 'model-lane outcome r-oc failed --cause close'
+  assert_output 'model-lane outcome r-oc failed --why the run ended before it closed the item (end stopped) --cause close'
 }
 
 @test "reap: an opencode run killed mid-work is a cut, or a timeout once the launcher's timeout has run; a provider fault is provider; a request the provider rejects is stopped" {
@@ -435,7 +435,8 @@ claude_end_item() {
     rm -rf "$AGENT_QUEUE_DIR/done" "$AGENT_QUEUE_DIR/queued"
     oc_end_item ses_evalk "$finish|$etype" "$secs"
     run cmd_reap
-    assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-oc.md)" end_reason)" "$reason"
+    # A provider refusal goes back to the queue behind its source's hold (settle_provider, ar-3463); the rest fail.
+    assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-oc.md "$AGENT_QUEUE_DIR"/queued/*-oc.md 2>/dev/null)" end_reason)" "$reason"
   done
 }
 
@@ -1282,7 +1283,8 @@ case "${@: -1}" in *awk*) eval "${@: -1}" ;; *) echo "did its own" ;; esac'
   run cmd_reap
   refute_output --partial 'requeued queue item fix-crash'
   assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
-  agent-queue cancel gate --why test >/dev/null
+  # Only an ok close releases an after: hold (hold_for): a cancelled one would return the item to its row.
+  agent-queue move gate done --status ok >/dev/null
   run cmd_reap
   assert_output --partial 'requeued queue item fix-crash (game-agent-1 ended: its final landing, after o/game#12 merged as a partial, now that gate closed)'
   assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .partial] | join(" ")')" 'queued yes'

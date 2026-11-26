@@ -852,6 +852,8 @@ real_epic_board() {
   # Its requeued run ends waiting again: it stays parked, with one row, and is not requeued a second time.
   agent-queue move idle running >/dev/null
   agent-queue move idle waiting >/dev/null
+  # The requeue dropped its session: (cmd_move), and its next run records it again.
+  agent-queue set idle session=lab:game-agent-2 >/dev/null
   : > "$NOTES_FIXTURE/calls.log"
   run cmd_reap
   assert_success

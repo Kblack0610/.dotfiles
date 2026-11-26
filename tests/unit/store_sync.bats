@@ -867,7 +867,8 @@ git -C "$SANDBOX/a" add -- queue/done/2026-11-21/x.md
 exec git-upload-pack "\$@"
 EOF
   chmod +x "$SANDBOX/upload-pack-mid-move"
-  git -C "$SANDBOX/a" config remote.origin.uploadpack "$SANDBOX/upload-pack-mid-move"
+  # git runs uploadpack through the shell, and the sandbox path has a space in it.
+  git -C "$SANDBOX/a" config remote.origin.uploadpack "$(printf %q "$SANDBOX/upload-pack-mid-move")"
   # A local write, so --now fetches: a clean tree at origin's head exits before the fetch.
   echo '{"n":"a"}' >> "$SANDBOX/a/queue/events.jsonl"
   run on a --now

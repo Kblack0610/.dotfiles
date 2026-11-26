@@ -5276,15 +5276,15 @@ restart_human_item() {
   [ "$3" = limit ] || [ "$3" = provider ] || [ "$(jq -r '.from // ""' <<<"$2")" != human ] || agent-queue start "$1" </dev/null 3<&- || true
 }
 
-# after_cleared_since <item json> <time> -> the item's after: item that closed last, when every one is done
+# after_cleared_since <item json> <time> -> the item's after: item that closed last, when every one closed ok (a cancelled one holds it, hold_for)
 # and that one finished after <time> (both UTC ISO stamps, so they compare as text); fails otherwise,
 # and on an after: item the queue no longer finds.
 after_cleared_since() {
   local a j st fin last='' lastfin=''
   for a in $(jq -r '.after // ""' <<<"$1"); do
     j=$(agent-queue show "$a" --json 2>/dev/null) || return 1
-    IFS=$'\x1f' read -r st fin < <(jq -r '[.state // "", .finished // ""] | join("\u001f")' <<<"$j")
-    [ "$st" = done ] || return 1
+    IFS=$'\x1f' read -r st fin < <(jq -r '[(.state // "") + "/" + (.status // ""), .finished // ""] | join("\u001f")' <<<"$j")
+    [ "$st" = done/ok ] || return 1
     [[ ! "$fin" > "$lastfin" ]] || last=$a lastfin=$fin
   done
   [ -n "$last" ] && [ -n "$2" ] && [[ "$lastfin" > "$2" ]] || return 1
@@ -8151,12 +8151,12 @@ reconcile_plans() {
     plan=$(jq -r .plan <<<"$c"); project=$(jq -r .project <<<"$c"); name=${plan##*/}
     open=$(plan_phase_list "$plan" | jq -r '[.[] | select(.state == "open") | .n | tostring] | join(",")')
     grep -qxF -- "$name"$'\t'"$open" <<<"$filed" && continue
-    if grep -qxF -- "$name" <<<"$filed"; then
-      # A record from before the set was kept: it covers the phases open now.
+    if [ "$(awk -F'\t' -v n="$name" '$1 == n' <<<"$filed" | tail -n 1)" = "$name" ]; then
+      # Its newest record is from before the set was kept: it covers the phases open now.
       printf '%s\t%s\n' "$plan" "$open" >> "$PLANS_FILED"; continue
     fi
     cut -f1 <<<"$filed" | grep -qxF -- "$name" || ! grep -qxF -- "$name" <<<"$held" || continue
-    out=$(AGENT_QUEUE_START=0 agent-queue add --plan "$plan" --project "$project" --from auto:plans 2>&1); rc=$?
+    rc=0; out=$(AGENT_QUEUE_START=0 agent-queue add --plan "$plan" --project "$project" --from auto:plans 2>&1) || rc=$?
     if [ "$rc" -eq 0 ] || [ "$rc" -eq "$AQ_EX_HELD" ]; then
       mkdir -p "$DIR"; printf '%s\t%s\n' "$plan" "$open" >> "$PLANS_FILED"
       logline "filed $(basename "$plan") to run its open phases ($open): its session is gone"
