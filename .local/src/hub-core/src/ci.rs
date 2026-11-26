@@ -303,7 +303,8 @@ pub struct Part {
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct Glance {
     /// `cc:domain_status{domain="ci"}`: the whole domain, queue waits and pass rate too. The
-    /// System health strip reads it; the CI card surfaces read `alert`.
+    /// System health strip and agent-web's CI RUNNING tile read it (ar-5013); the phone's CI row
+    /// reads `alert`.
     pub level: Level,
     /// The one CI alert: Red while a runner is down (`Infra::runners_down`) or a queued job has
     /// no online runner that can take it (`Ci::red`), Nodata with no runner read, else Ok. Queue
