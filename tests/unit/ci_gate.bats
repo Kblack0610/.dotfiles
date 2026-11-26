@@ -423,3 +423,61 @@ print(s.get("if", ""), s.get("continue-on-error", ""), s.get("run", ""), sep="\n
   run step push
   assert_output --partial "exit 1"
 }
+
+# notes_faults <wf>: what breaks the notes job's budget (ar-5836), one fault a line: its guard is
+# not 10 minutes, a step after the pick runs whatever the pick says, the shared restore or the
+# build runs on a binary cache hit, or the binary key misses a crate the binary is built from (its
+# path dependencies in Cargo.toml, at any depth).
+notes_faults() {
+  python3 -I - "$1" "$BATS_TEST_DIRNAME/../.." <<'PY'
+import os, re, sys, yaml
+job = yaml.safe_load(open(sys.argv[1]))["jobs"]["notes"]
+root = sys.argv[2]
+if job.get("timeout-minutes") != 10:
+    print(f"timeout-minutes is {job.get('timeout-minutes')}, not 10")
+steps = job["steps"]
+ids = [s.get("id") for s in steps]
+if "pick" not in ids or "tests/pick.sh notes" not in steps[ids.index("pick")].get("run", ""):
+    print("no pick step running tests/pick.sh notes")
+    sys.exit()
+name = lambda s: s.get("name") or s.get("uses")
+for s in steps[ids.index("pick") + 1:]:
+    cond = s.get("if", "")
+    if "steps.pick.outputs.run == 'true'" not in cond:
+        print(f"{name(s)}: not gated on the pick")
+    if name(s) in ("Restore cargo", "Build notes", "Save the notes binary") and "steps.bin.outputs.cache-hit != 'true'" not in cond:
+        print(f"{name(s)}: runs on a binary cache hit")
+key = next((s["with"]["key"] for s in steps if s.get("id") == "bin"), "")
+crates, todo = [], [".local/src/notes-cli"]
+while todo:
+    c = os.path.normpath(todo.pop())
+    if c in crates:
+        continue
+    crates.append(c)
+    text = re.sub(r"#.*", "", open(os.path.join(root, c, "Cargo.toml")).read())
+    todo += [os.path.join(c, p) for p in re.findall(r'path *= *"([^"]*)"', text)]
+for c in crates:
+    if f"'{c}/**'" not in key:
+        print(f"the notes binary key misses {c}")
+PY
+}
+
+@test "the notes job runs only what tests/pick.sh notes picks, and the binary cache skips the shared restore" {
+  run notes_faults "$WF"
+  assert_success
+  assert_output ''
+  # Negative controls: one bats step ungated, the build run on a hit, a path dependency left out of
+  # the key, and a raised guard.
+  sed '/^      - name: Inbox triager and planner/{n;d}' "$WF" >"$BATS_TEST_TMPDIR/ungated.yml"
+  run notes_faults "$BATS_TEST_TMPDIR/ungated.yml"
+  assert_output 'Inbox triager and planner, on the real notes: not gated on the pick'
+  sed "/^      - name: Build notes\$/{n;s/ && steps.bin.outputs.cache-hit != 'true'//}" "$WF" >"$BATS_TEST_TMPDIR/hit.yml"
+  run notes_faults "$BATS_TEST_TMPDIR/hit.yml"
+  assert_output 'Build notes: runs on a binary cache hit'
+  sed "s#, '.local/src/project-map/\*\*'##" "$WF" >"$BATS_TEST_TMPDIR/key.yml"
+  run notes_faults "$BATS_TEST_TMPDIR/key.yml"
+  assert_output 'the notes binary key misses .local/src/project-map'
+  sed '/^  notes:$/,/^  [a-z]/ s/^    timeout-minutes: 10$/    timeout-minutes: 15/' "$WF" >"$BATS_TEST_TMPDIR/guard.yml"
+  run notes_faults "$BATS_TEST_TMPDIR/guard.yml"
+  assert_output 'timeout-minutes is 15, not 10'
+}

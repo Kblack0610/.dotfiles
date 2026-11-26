@@ -19,7 +19,8 @@ name: shell tests
 #          installer treats a failed build as non-fatal and keeps the OLD binary on PATH --
 #          so a crate could stop compiling and the only symptom would be a tool quietly
 #          behaving like an older version.
-#   notes  the bats cases that need a built notes binary, beside the rust job, not behind it.
+#   notes  the bats cases that need a built notes binary, beside the rust job, not behind it. On a
+#          pull request only when tests/pick.sh notes picks one of its files.
 #   lint   shellcheck + house rules, in the pinned image.
 #
 # Every job's tools come from one place, the tests/Dockerfile image (.github/actions/test-image
@@ -577,6 +578,14 @@ jobs:
   # Its own job, because they need only the restored notes-cli build and not the Rust gate's output:
   # behind the gate they added 42 s to the rust job, the critical path of most pull requests
   # (274-296 s of a 5.0-6.0 min run, 2026-11-19), and here they run beside it.
+  # Budget: p90 under 5 minutes, so a runner 2x slower still ends inside the 10-minute guard, which
+  # stays a hang guard and never a lever. Before ar-5836, 64 green jobs (2026-11-25/26) read p50
+  # 285 s, p90 420 s, max 537 s, and slow runners cut it at 616 s: Restore cargo (the shared 921 MB
+  # cache, p50 113 s, p90 175 s) and Build notes (p50 13 s, p90 54 s) were most of what was not a
+  # test. So the job runs only for what tests/pick.sh notes picks, every step gated on it
+  # (tests/unit/ci_gate.bats), and the built binary has a cache of its own keyed on the sources it is
+  # built from: a run whose notes-cli and project-map match main's restores that one file and skips
+  # the shared restore and the build. The shared key stays the rust job's (ci_gate.bats).
   notes:
     name: notes bats (real notes binary)
     needs: image
@@ -587,12 +596,35 @@ jobs:
       CARGO_INCREMENTAL: 0
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/test-image
+        with:
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
+      # Its line ("picked N of M files" or "full: <why>") goes on the Summary page; an empty pick
+      # leaves the job green with every later step skipped.
+      - name: Pick the notes files
+        id: pick
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
+        run: |
+          files=$(tests/pick.sh notes $BASE 2>"$RUNNER_TEMP/why") || { cat "$RUNNER_TEMP/why"; exit 1; }
+          tee -a "$GITHUB_STEP_SUMMARY" <"$RUNNER_TEMP/why"
+          [ -z "$files" ] || echo run=true >>"$GITHUB_OUTPUT"
+      - if: steps.pick.outputs.run == 'true'
+        uses: ./.github/actions/test-image
         with:
           registry: ${{ vars.CI_REGISTRY }}
           registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
+      # The binary alone, keyed on the image and the crates it is built from (notes-cli and its path
+      # dependencies; ci_gate.bats checks that list against Cargo.toml). Only main saves it.
+      - name: Restore the notes binary
+        id: bin
+        if: steps.pick.outputs.run == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: .local/src/notes-cli/target/debug/notes
+          key: notes-bin-${{ runner.os }}-${{ hashFiles('tests/rust-toolchain', 'tests/Dockerfile') }}-${{ hashFiles('.local/src/notes-cli/**', '.local/src/project-map/**', '!.local/src/*/target/**') }}
       # The rust job's key: main saves one cache, and this job only restores it.
       - name: Restore cargo
+        if: steps.pick.outputs.run == 'true' && steps.bin.outputs.cache-hit != 'true'
         uses: actions/cache/restore@v4
         with:
           path: |
@@ -601,25 +633,40 @@ jobs:
             .local/src/*/target
           key: cargo-target-${{ runner.os }}-${{ hashFiles('tests/rust-toolchain') }}-${{ hashFiles('.local/src/*/Cargo.lock') }}
           restore-keys: cargo-target-${{ runner.os }}-${{ hashFiles('tests/rust-toolchain') }}-
-      - uses: ./.github/actions/bats-vendor
+      - if: steps.pick.outputs.run == 'true'
+        uses: ./.github/actions/bats-vendor
       # The build and every run in the image; NOTES_BIN is the binary's path in there (/work).
       - name: Build notes
+        if: steps.pick.outputs.run == 'true' && steps.bin.outputs.cache-hit != 'true'
         env:
           DOCKER_NETWORK: bridge
         run: tests/docker.sh --run cargo build --locked --manifest-path .local/src/notes-cli/Cargo.toml
+      # Right after the build, so a red test still leaves the next run a binary.
+      - name: Save the notes binary
+        if: steps.pick.outputs.run == 'true' && steps.bin.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        uses: actions/cache/save@v4
+        with:
+          path: .local/src/notes-cli/target/debug/notes
+          key: ${{ steps.bin.outputs.cache-primary-key }}
       - name: Board to queue join, on the real notes
+        if: steps.pick.outputs.run == 'true'
         run: tests/docker.sh test-files NOTES_BIN=/work/.local/src/notes-cli/target/debug/notes FILES="unit/agent_land.bats unit/fleet_dispatch_reap.bats integ/research_pick.bats integ/agent_queue_part2.bats" BATS_FLAGS="--print-output-on-failure --filter 'end to end'"
       - name: Inbox triager and planner, on the real notes
+        if: steps.pick.outputs.run == 'true'
         run: tests/docker.sh test-files NOTES_BIN=/work/.local/src/notes-cli/target/debug/notes FILES="integ/inbox_triage.bats integ/inbox_plan.bats" BATS_FLAGS="--print-output-on-failure"
       # The pre-push hook's negative control needs the pinned toolchain, which the fast tier's lean
       # image lacks (it skips there), so it runs here, in the rust image.
       - name: Pre-push hook, rust fmt and clippy refusals
+        if: steps.pick.outputs.run == 'true'
         run: tests/docker.sh test-files FILES="unit/prepush_hook.bats" BATS_FLAGS="--print-output-on-failure --filter 'clippy sort_by'"
       - name: Brief backfill, on the real notes
+        if: steps.pick.outputs.run == 'true'
         run: tests/docker.sh test-files NOTES_BIN=/work/.local/src/notes-cli/target/debug/notes FILES="integ/agent_queue_backfill.bats" BATS_FLAGS="--print-output-on-failure"
       - name: Credit propose, on the real notes
+        if: steps.pick.outputs.run == 'true'
         run: tests/docker.sh test-files NOTES_BIN=/work/.local/src/notes-cli/target/debug/notes FILES="integ/credit_backfill.bats" BATS_FLAGS="--print-output-on-failure --filter 'FAIL criteria'"
       - name: Day-log board flow, on the real notes weigh
+        if: steps.pick.outputs.run == 'true'
         run: tests/docker.sh test-files NOTES_BIN=/work/.local/src/notes-cli/target/debug/notes FILES="unit/day_log.bats" BATS_FLAGS="--print-output-on-failure --filter 'board:'"
 
   skills:
