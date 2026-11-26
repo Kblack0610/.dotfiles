@@ -467,8 +467,15 @@ calls() { grep -vc '^[^|]*|api rate_limit' "$BATS_TEST_TMPDIR/real.log" || true;
   assert_output ok
   assert_equal "$(calls)" 2
   : > "$BATS_TEST_TMPDIR/real.log"
-  FAIL5=99 FAIL5_ERR='gh: Not Found (HTTP 404)' run "$WRAP" api repos/other/x/check-runs/9/annotations
+  FAIL5=99 FAIL5_ERR='unexpected end of JSON input' GH_RETRY_TRIES=2 run --separate-stderr "$WRAP" api repos/other/x/check-runs/9/annotations
+  assert_failure 1
+  assert_equal "$(calls)" 2
+  [[ "$stderr" == *"still failing after 2 runs (a 5xx or an unparseable reply)"* ]]
+  : > "$BATS_TEST_TMPDIR/real.log"
+  FAIL5=99 FAIL5_ERR='gh: Not Found (HTTP 404)' run --separate-stderr "$WRAP" api repos/other/x/check-runs/9/annotations
+  assert_failure 1
   assert_equal "$(calls)" 1
+  [[ "$stderr" != *"still failing"* ]]
 }
 
 @test "retry: it is bounded by GH_RETRY_TRIES and then fails with gh's own status, body and message once" {
