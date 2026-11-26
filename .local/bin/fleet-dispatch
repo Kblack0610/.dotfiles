@@ -1292,8 +1292,10 @@ row_asker() { asker_map; jq -r --arg k "$1" '.[$k] // empty' <<<"$ASKER_MAP"; }
 # An urgent or high chain successor passes as well: an item with an `after:` key that is a plan phase or a validate item, agent-queue's
 # stack_dependent test (a `plan:` line or a phase brief, PHASE_BRIEF_RE; the `validate` tag). The cap
 # already let its chain start, and chain-lag bounds its handoff (chain_handoff_p90_max); held,
-# validate-ar-5194 waited 113m and tripped it (ar-4436, 2026-11-24). A plan's first phase, and any other
-# `--after` follow-up (high by default), still wait.
+# validate-ar-5194 waited 113m and tripped it (ar-4436, 2026-11-24). A plan phase with an `after:` passes at
+# any priority: a human ask deduped into a chain left its phases without #requested, and the cap held them
+# 8h (2026-11-25, ar-6060). A plan's first phase of a session's plan, and any other `--after` follow-up
+# (high by default), still wait.
 # The one test share_why and queue_depth apply.
 # shellcheck disable=SC2016
 SHARE_JQ="$HUMAN_ASK_JQ"'def share_held($s): (.project // "") as $p | (.agent // "claude") as $a | ($s.projects[$p].full // false)
@@ -1302,7 +1304,7 @@ SHARE_JQ="$HUMAN_ASK_JQ"'def share_held($s): (.project // "") as $p | (.agent //
     and ((.plan // "") != "" or ((" " + (.tags // "") + " ") | contains(" validate "))
       or ((.task // "") | test("(^|\\s)Phases? [0-9]+( and [0-9]+)* of the plan /[^:]+\\.md:")))) | not)
   and ((.priority == "urgent" and (.from // "human") == "human") | not)
-  and (((.plan // "") != "" and (.from // "human") == "human") | not)
+  and (((.plan // "") != "" and ((.after // "") != "" or (.from // "human") == "human")) | not)
   and ((" " + (.tags // "") + " ") | test(" #?red ") | not) and (human_ask | not)
   and (((" " + (.tags // "") + " ") | contains(" canary ")) and any(($s.sourced // [])[]; . == $a) | not);'
 

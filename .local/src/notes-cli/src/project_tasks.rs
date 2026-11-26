@@ -478,6 +478,11 @@ pub(crate) fn add_via(
         return Ok(0);
     }
     if refuse_twin(&path, &content, text) {
+        // A human's want that joins an open row must still mark it: the twin was the only place the
+        // ask could land, and dropped here the row counted against the project share (ar-6060).
+        if want.is_some() && lane == Lane::Agent {
+            stamp_twin_requested(&path, &content, text)?;
+        }
         return Ok(3);
     }
     let mut block = new_rows(
@@ -572,6 +577,35 @@ fn twin_id(content: &str, text: &str) -> Option<String> {
         .and_then(md::row_id)
         .or_else(|| near_twin(content, text).and_then(md::row_id))
         .or_else(|| pr_twin(content, text).and_then(|(l, _)| md::row_id(l)))
+}
+
+/// Put `#requested` on the open row of `content` that `text` twins (the row [`refuse_twin`] just
+/// named), so a `--want` that joins it is not lost. No-op when the row has no id or is marked.
+fn stamp_twin_requested(path: &Path, content: &str, text: &str) -> Result<()> {
+    let Some(id) = twin_id(content, text) else {
+        return Ok(());
+    };
+    let mut changed = false;
+    let new: String = content
+        .split_inclusive('\n')
+        .map(|raw| {
+            let line = raw.trim_end_matches('\n');
+            let open =
+                line.trim_start().starts_with("- [ ]") || line.trim_start().starts_with("- [/]");
+            if !changed && open && md::row_id(line).as_deref() == Some(id.as_str()) {
+                let tagged = md::add_tag(line, WANT_TAG);
+                if tagged != line {
+                    changed = true;
+                    return format!("{tagged}{}", &raw[line.len()..]);
+                }
+            }
+            raw.to_string()
+        })
+        .collect();
+    if changed {
+        write_sheet(path, &new)?;
+    }
+    Ok(())
 }
 
 /// Does `text` twin an open row of `content` (the sheet at `path`): the same words, a near twin, or a
@@ -6690,6 +6724,47 @@ mod inbox_tests {
         )
         .unwrap();
         assert_eq!(open_rows(&v.read()), 2, "{}", v.read());
+    }
+
+    #[test]
+    fn a_want_that_joins_an_open_twin_marks_the_twin_requested() {
+        let v = vault("wanttwin", "", "");
+        fs::create_dir_all(v.root.join("projects/scratch/agent")).unwrap();
+        fs::write(
+            v.root.join("projects/scratch/agent/README.md"),
+            "# scratch\n\n## Tasks\n- [ ] fix(audio): the gun sound is off #size/s <!-- id:sc-1 -->\n",
+        )
+        .unwrap();
+        let agent = || {
+            fs::read_to_string(task_sheet(&v.root.join("projects/scratch/agent")).unwrap()).unwrap()
+        };
+        let add_as = |text: &str, want: Option<&str>| {
+            add(
+                &v.p,
+                &v.log,
+                "scratch",
+                text,
+                &[],
+                None,
+                want,
+                Lane::Agent,
+                &Writer::human(),
+            )
+            .unwrap()
+        };
+        // No channel: the twin is refused and left as it is.
+        assert_eq!(add_as("fix(audio): the gun sound is off", None), 3);
+        assert!(!agent().contains("#requested"), "{}", agent());
+        // A want: still refused (exit 3), and the open row now carries the human's mark, once.
+        assert_eq!(add_as("fix(audio): the gun sound is off", Some("human")), 3);
+        assert_eq!(add_as("fix(audio): the gun sound is off", Some("human")), 3);
+        let s = agent();
+        assert_eq!(s.matches("#requested").count(), 1, "{s}");
+        assert!(
+            s.lines()
+                .any(|l| l.contains("sc-1") && l.contains("#requested")),
+            "{s}"
+        );
     }
 
     #[test]
