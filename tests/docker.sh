@@ -18,6 +18,8 @@
 #   DOCKER_NETWORK=bridge ./docker.sh test-rust   # a run that needs the network (crates, npm)
 #   TEST_IMAGE_KIND=lean ./docker.sh ...          # a smaller image: lean, rust or full (the default); see below
 #
+# Run inside the image (a CI job-pod job), it runs the target or --run command in place.
+#
 # The argument is a make target run INSIDE the container, so it must be an -inner
 # target. `./docker.sh test-ui` looks right and is not: the Makefile's test-ui is the
 # HOST entry point and re-invokes this script, which then fails with "docker not found"
@@ -75,6 +77,29 @@ if [ "${1:-}" = "--image" ]; then
   exit 0
 fi
 
+# Already inside the image (its ENV sets COCKPIT_TEST_DISPOSABLE): a tests.yml job whose job
+# container is the image runs here, in the job pod the node's containerd started from it, so the
+# node keeps one copy where every dind pod loaded its own (ar-6016). The run is what `docker run`
+# below would do, in place: the image's entrypoint gives this uid a passwd entry, and CI keeps its
+# cargo registry in the checkout. The step's env and the job pod's CI_CPU_MILLI are already this
+# environment, so nothing is passed through. The image's marker alone could be exported on a real
+# host (tests/Dockerfile), so this also wants GITHUB_ACTIONS, which a docker run never gets.
+if [ -n "${COCKPIT_TEST_DISPOSABLE:-}" ] && [ -n "${GITHUB_ACTIONS:-}" ]; then
+  case "${1:-}" in
+    --build) exit 0 ;;
+    --shell) echo "docker.sh: already in the test image" >&2; exit 2 ;;
+  esac
+  [ -x "$HERE/vendor/bats-core/bin/bats" ] || "$HERE/bootstrap.sh"
+  [ -z "${CI:-}" ] || export CARGO_HOME="$REPO/.cargo-ci"
+  cd "$REPO"
+  if [ "${1:-}" = "--run" ]; then
+    shift
+    [ $# -gt 0 ] || { echo "docker.sh: --run needs a command" >&2; exit 2; }
+    exec /usr/local/bin/test-entry "$@"
+  fi
+  exec /usr/local/bin/test-entry make -C tests "${@:-test-container}"
+fi
+
 command -v "$DOCKER" >/dev/null 2>&1 || {
   echo "docker not found. Install it, or run only the tmux-free tiers: make -C tests test-fast" >&2
   exit 1
@@ -119,12 +144,24 @@ fi
 #                     adds one under that name (tests/Dockerfile).
 # --rm                nothing persists but what is written into the bind mount
 # --shm-size          chromium (the phone render harness) runs out of docker's 64 MB /dev/shm
+# --tmpfs             /tmp, where every bats sandbox and HOME live, is memory, so a test's writes
+#                     and fsyncs never touch the disk. On a pool node the container start and
+#                     every test waited on that disk, shared by dozens of pods (ar-5740, the note
+#                     in tests.yml). exec because the sandboxes run their stubs from there; HOME
+#                     (/tmp/testhome, the image's) gets its own, as /tmp's hides the image's dir.
+#                     It is memory charged to the job, so each has a size: a test past it fails
+#                     on ENOSPC rather than the pod on OOM. The largest known writer is
+#                     dotfiles_deploy's copy of the tracked text tree (about 30 MB), and the
+#                     rust job's tilecast-schema.sh npm ci, its tree in /tmp and cache in HOME.
+tmpfs_opts=rw,exec,nosuid,nodev,mode=1777
 run_args=(
   --rm --init
   --network "$DOCKER_NETWORK"
   --user "$(id -u):$(id -g)"
   --env "USER=$(id -un)"
   --shm-size 1g
+  --tmpfs "/tmp:$tmpfs_opts,size=1g"
+  --tmpfs "/tmp/testhome:$tmpfs_opts,size=1g"
   --volume "$REPO:/work"
   --workdir /work
 )
@@ -163,12 +200,32 @@ if [ "${1:-}" = "--shell" ]; then
   shift
   exec "$DOCKER" run -it "${run_args[@]}" "$IMAGE" bash "$@"
 fi
+
+# One command in a new container. In CI the container is started detached and the command runs in
+# it by docker exec, so the step ends when the command does. A container's exit unmounts its layer,
+# a sync of the node's disk, and --rm then deletes it: on a pool node busy with writeback that took
+# up to 6 minutes after every test had passed (run 45684648964, ar-5740). Removed in the background
+# instead, that sync landed on the next step's container start (run 45694133205, notes bats). So
+# in a GitHub job a finished container is left running, and the runner pod's deletion discards it;
+# bats has already cleaned its /tmp. A cancel removes it in the background (its output nowhere, so
+# the step does not wait), which kills the command. Its entrypoint is sleep, so the passwd entry is
+# written once, by the exec's test-entry. Anywhere else, CI set or not, it is the plain docker run.
+run_in_image() {
+  [ -n "${GITHUB_ACTIONS:-}" ] || exec "$DOCKER" run "${run_args[@]}" "$IMAGE" "$@"
+  local rc=0
+  cid=$("$DOCKER" run -d --entrypoint sleep "${run_args[@]}" "$IMAGE" infinity)
+  trap '"$DOCKER" rm -f "$cid" </dev/null >/dev/null 2>&1 & exit 143' TERM INT
+  "$DOCKER" exec "$cid" /usr/local/bin/test-entry "$@" &
+  wait "$!" || rc=$?
+  exit "$rc"
+}
+
 if [ "${1:-}" = "--run" ]; then
   shift
   # With no command, docker would run the image's CMD: the whole container suite.
   [ $# -gt 0 ] || { echo "docker.sh: --run needs a command" >&2; exit 2; }
-  exec "$DOCKER" run "${run_args[@]}" "$IMAGE" "$@"
+  run_in_image "$@"
 fi
 
 targets=("${@:-test-container}")
-exec "$DOCKER" run "${run_args[@]}" "$IMAGE" make -C tests "${targets[@]}"
+run_in_image make -C tests "${targets[@]}"

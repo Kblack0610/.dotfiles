@@ -35,6 +35,10 @@ inputs:
   registry-password:
     description: the registry login's password (tests.yml passes secrets.CI_REGISTRY_PASSWORD); empty turns the registry off
     default: ''
+outputs:
+  ref:
+    description: a seed run's registry ref when the registry holds the image (found or pushed), else empty
+    value: ${{ inputs.seed == 'true' && (steps.reg.outputs.pulled == 'true' || steps.push.outputs.pushed == 'true') && steps.reg.outputs.ref || '' }}
 runs:
   using: composite
   steps:
