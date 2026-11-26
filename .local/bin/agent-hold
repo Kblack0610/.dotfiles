@@ -32,7 +32,8 @@
 #                                   the id is kept beside each name on granted_ask:
 #   agent-hold lower <resource> <pid>...   CPUWeight=1 on each pid's tmux pane scope or
 #                                   agentctl unit, recorded on the hold; release restores it
-#   agent-hold release <resource>
+#   agent-hold release <resource>   ends the hold, restoring what lower slowed, and answers grant
+#                                   each open ask that asked only for a grant under it
 #   agent-hold check <resource> [--no-caller] [--for <id>...]   exit 1 (and print the hold) while
 #                                   held, 0 when free, past its until, or when the caller is
 #                                   granted or holds the claim; --no-caller asks as no session, so neither counts; --for
@@ -332,7 +333,7 @@ cmd_claim() {
     printf '%s\n' "$body" > "$f"; echo "claimed: $resource (refreshed)"; return 0
   fi
   # A hold past its until is over: its release, which restores what it lowered, makes way for the claim.
-  if [ -f "$f" ] && expired "$f"; then cmd_release "$resource" >/dev/null || return 1; fi
+  if [ -f "$f" ] && expired "$f"; then keep_asks=1 cmd_release "$resource" >/dev/null || return 1; fi
   if ( set -o noclobber; printf '%s\n' "$body" > "$f" ) 2>/dev/null; then
     echo "claimed: $resource"; return 0
   fi
@@ -480,6 +481,43 @@ cmd_lower() {
   return "$rc"
 }
 
+# settle_grant_asks <resource>: answer `grant` to each open ask that asked only for a grant under
+# the hold just released: its options are grant plus only GRANT_ASK_HOLD_SIDE ones, and its
+# question or context names the resource and no hold still set (names_word, the match
+# human_answer applies to a grant ask). With the hold gone a grant is what the asker gets anyway,
+# and nothing else answered it: on 2026-11-25 the critical hold was released and 7 asks to grant
+# work under it stayed on Needs (ar-6045). The answer is the human's only from their own shell (a
+# terminal on stdin, no agent session); a session's or an unattended caller's (fleet-dispatch
+# releases with stdin on /dev/null) is the agent's, and one agent-ask refuses an agent (a
+# human-only ask) is cancelled instead, since what it asked about is gone. The release stands
+# either way.
+GRANT_ASK_HOLD_SIDE="hold keep"
+settle_grant_asks() {
+  local resource="$1" id text h why by=agent answered="" cancelled="" others=()
+  [ -z "${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}" ] && [ -t 0 ] && by=human
+  for h in "$HOLD_ROOT"/*; do [ -f "$h" ] && others+=("${h##*/}"); done
+  while IFS=$'\t' read -r id text; do
+    names_word "$resource" "$text" || continue
+    for h in "${others[@]}"; do names_word "$h" "$text" && continue 2; done
+    if why="$("${AGENT_ASK:-agent-ask}" answer --by "$by" "$id" grant 2>&1 </dev/null)"; then
+      answered="${answered:+$answered }$id"
+    elif "${AGENT_ASK:-agent-ask}" cancel "$id" "hold $resource released, so there is no hold left to grant under" </dev/null 2>/dev/null; then
+      cancelled="${cancelled:+$cancelled }$id"
+    else
+      echo "agent-hold release: grant ask $id stays pending: $(oneline "$why")" >&2
+    fi
+  done < <("${AGENT_ASK:-agent-ask}" list --all --open 2>/dev/null | awk -F'\t' -v side="$GRANT_ASK_HOLD_SIDE" '
+    BEGIN { split(side, s, " "); for (i in s) keep[s[i]] = 1 }
+    # list columns: 1 id, 6 question, 7 options, 20 context (agent-ask cmd_list, which only appends).
+    { n = split(tolower($7), o, "|"); g = 0; ok = 1
+      for (i = 1; i <= n; i++) { gsub(/^ +| +$/, "", o[i]); if (o[i] == "grant") g = 1; else if (!(o[i] in keep)) ok = 0 }
+      if (g && ok && $1 != "") print $1 "\t" $6 " " $20 }')
+  [ -z "$answered" ] || echo "answered grant ($by): $answered"
+  [ -z "$cancelled" ] || echo "cancelled (no hold left to grant under): $cancelled"
+}
+
+# cmd_release <resource>; keep_asks=1 is the claim path's, which takes the resource again at
+# once, so no ask about it is settled as free.
 cmd_release() {
   local resource="${1:-}"
   need_resource "$resource"
@@ -513,6 +551,7 @@ cmd_release() {
   echo "released: $resource"
   # Printed so the caller can send GO to exactly the sessions that were told to stop.
   [ -n "$roster" ] && echo "roster: $roster"
+  [ -n "${keep_asks:-}" ] || settle_grant_asks "$resource"
   return 0
 }
 
@@ -620,7 +659,7 @@ cmd_show() {
 
 cmd_classes() { printf '%s\n' "$DESK_CLASSES"; }
 
-usage() { sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,49p' "$0" | sed 's/^# \{0,1\}//'; }
 
 verb="${1:-}"; shift || true
 case "$verb" in
