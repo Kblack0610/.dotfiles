@@ -57,7 +57,8 @@
 #                                --at as of a past time, --trend one row a day of the 7d values,
 #                                --check exits 1 past a threshold, on the KPIs whose name matches ERE
 #   fleet-bench chain [--json|--check] [--kpi <key>]
-#                                the work-chain KPIs counted now (also in kpi); --check exits 1 past a threshold;
+#                                the work-chain KPIs counted now (also in kpi); --check exits 1 past a threshold,
+#                                2 with an unreadable: line for a KPI it could not count;
 #                                --kpi one key, from a count up to CHAIN_SNAPSHOT_MAX_S old (its chain-<key> watch)
 #   fleet-bench prio-defaults [--json]
 #                                the open rows that rank by default (no priority tag or no #why/<reason>) by the filer
@@ -2565,7 +2566,9 @@ chain_links() {
   links=$(jq -rn --argjson t "$t" --argjson days "$CHAIN_DAYS" --slurpfile a <(printf '%s' "$active") --slurpfile d <(printf '%s' "$done") \
      --slurpfile b <(printf '%s' "$board") --slurpfile p <(printf '%s' "$projects") \
      --slurpfile c <(printf '%s' "$ci") "$JQ_LIB"'
+    # ? is a source it could not read; - is a share over nothing (an empty window), read but empty
     def n($v): if $v == null then "?" else $v end;
+    def share($a; $b): ratio($a; $b) // "-";
     $a[0] as $a | $d[0] as $d | $b[0] as $b | $p[0] as $p | $c[0] as $c
     | (if $a == null or $d == null or $c == null then null
        else (($a + $d) | map(prkeys[]) | INDEX(.)) as $refs
@@ -2574,7 +2577,7 @@ chain_links() {
     | ($b // [] | map(select(.lane == "agent"))) as $agent
     | ($b // [] | map("\(.project):\(.id)") | INDEX(.)) as $open
     | ($agent | map(select(.automation != false and .type != "epic"))) as $linkable
-    | "ledger_coverage=\(n(if $cov == null then null else ratio($cov.hit; $cov.total) end))",
+    | "ledger_coverage=\(n(if $cov == null then null else share($cov.hit; $cov.total) end))",
       "untracked_merged_prs=\(n(if $cov == null then null else $cov.total - $cov.hit end))",
       "board_orphan_started=\(n(if $a == null or $b == null then null else ($a | map(rowkey | strings) | INDEX(.)) as $live
         | $agent | map(select(.state == "doing" and ($live["\(.project):\(.id)"] | not))) | length end))",
@@ -2583,11 +2586,11 @@ chain_links() {
       "ownerless_running=\(n(if $a == null then null
         else $a | map(ownerless) | length end))",
       "epic_linked_share=\(n(if $b == null or $p == null then null
-        else ratio($linkable | map(select(.tags | any(startswith("of/")))) | length; $linkable | length) end))",
+        else share($linkable | map(select(.tags | any(startswith("of/")))) | length; $linkable | length) end))",
       "landed_unverified=\(n(if $p == null then null else [$p[] | (.epics // [])[] | select(leaves_landed)] | length end))",
       "uncaused_close_share=\(n(if $d == null then null
         else [$d[] | select((.finished // "" | fromdateiso8601? // 0) > $t - $days * 86400)] as $w
-          | ratio($w | map(select(.status == "failed" and ((.end_reason // "") == ""))) | length; $w | length) end))",
+          | share($w | map(select(.status == "failed" and ((.end_reason // "") == ""))) | length; $w | length) end))",
       "requested_unstarted_h=\(n(if $b == null then null else [$b | oldest_request($t) | .h] | first // 0 end))",
       "cost_per_merged_item=\(n(if $d == null then null else [$d[] | select(.merged and (.finished // "" | fromdateiso8601? // 0) > $t - $days * 86400)
         | [.cost_usd, .gateway_cost_usd] | map(tonumber? // empty) | select(length > 0) | add]
@@ -4379,9 +4382,10 @@ cmd_kpi() {
   elif [ "$json" = 1 ]; then jq -c . <<<"$t"; else kpi_table "$t"; fi
 }
 
-# chain_json <now> -> the KPI_CHAIN rows of the KPI table, counted then
+# chain_json <now> <counts> [<key>] -> the KPI_CHAIN rows of the KPI table graded from chain_counts
+# output, or only <key>'s
 chain_json() {
-  kpi_json "$1" "$(chain_counts "$1")" '{}' | jq -c --arg k "$KPI_CHAIN" '($k | split(" ")) as $ks | with_entries(select(.key | IN($ks[])))'
+  kpi_json "$1" "$2" '{}' | jq -c --arg k "${3:-$KPI_CHAIN}" '($k | split(" ")) as $ks | with_entries(select(.key | IN($ks[])))'
 }
 
 # chain_snapshot <now> <key> -> chain_counts, reused from $DIR/chain.<FIX_SINCE>.counts when that was
@@ -4397,7 +4401,7 @@ chain_snapshot() {
   {
     flock -w "$CHAIN_LOCK_WAIT_S" 8 || return 1
     if read -r at 2>/dev/null < "$f" && [[ "$at" =~ ^[0-9]+$ ]] && [ "$at" -le "$1" ] && [ $(( $1 - at )) -lt "$CHAIN_SNAPSHOT_MAX_S" ] \
-       && grep -qE "^$2=-?[0-9.]+(e[-+]?[0-9]+)?\$" "$f"; then
+       && grep -qE "^$2=(-?[0-9.]+(e[-+]?[0-9]+)?|-)\$" "$f"; then
       tail -n +2 "$f"; return 0
     fi
     # the count's own sections must not hold the lock: a killed probe would leave them holding it
@@ -4408,13 +4412,26 @@ chain_snapshot() {
   } 8>"$DIR/chain.lock"
 }
 
+# chain_check <json> <counts> -> kpi_past, then an `unreadable:` line naming each bounded KPI of
+# <json> whose source could not be read (`<key>=?` in <counts>), exit 2: a KPI that could not be
+# counted is not one under its bound, and Sentinel reads the line as UNKNOWN (ar-5413). A KPI past
+# its bound still exits 1 first. A ratio with nothing to divide reads null too, but as a number
+# source, so it is no unreadable one.
+chain_check() {
+  local unread
+  kpi_past "$1" || return 1
+  unread=$(jq -r --arg c "$2" '($c | split("\n") | map(select(endswith("=?")) | rtrimstr("=?"))) as $q
+    | [to_entries[] | select(.value.bound != null and (.key | IN($q[]))) | .key] | join(" ")' <<<"$1") || unread='?'
+  [ -z "$unread" ] || { echo "unreadable: $unread could not be counted"; return 2; }
+}
+
 # chain [--json|--check] [--kpi <key>] -- the KPI_CHAIN rows of the KPI table, counted now. --check
 # prints one line per chain KPI past its threshold and exits 1 when any is. --kpi narrows it to one
 # KPI_CHAIN key, read from chain_snapshot: `chain --check --kpi <key>` is the probe of that KPI's
 # chain-<key> Sentinel watch, so a new trip shows while other chain KPIs stay red. An unknown key
-# exits 2.
+# exits 2, and so does --check on a count that failed or a bounded KPI it could not read (chain_check).
 cmd_chain() {
-  local t json mode='' kpi='' args=("$@") usage="usage: fleet-bench chain [--json|--check] [--kpi <key>]"
+  local t json counts mode='' kpi='' args=("$@") usage="usage: fleet-bench chain [--json|--check] [--kpi <key>]"
   while [ $# -gt 0 ]; do
     case "$1" in
       --json|--check) [ -z "$mode" ] || { say "$usage"; return 2; }; mode=$1 ;;
@@ -4429,14 +4446,13 @@ cmd_chain() {
   t=$(now)
   if [ -n "$kpi" ]; then
     # "unreadable:" reads UNKNOWN to Sentinel: a count that failed says nothing about this KPI
-    json=$(chain_snapshot "$t" "$kpi") && json=$(kpi_json "$t" "$json" '{}' | jq -c --arg k "$kpi" '{($k): .[$k]}') \
-      || { echo "unreadable: the chain count failed"; return 1; }
+    counts=$(chain_snapshot "$t" "$kpi")
   else
-    json=$(chain_json "$t") || return 1
-  fi
+    counts=$(chain_counts "$t")
+  fi && json=$(chain_json "$t" "$counts" "$kpi") || { echo "unreadable: the chain count failed"; return 2; }
   case "$mode" in
     --json) printf '%s\n' "$json" ;;
-    --check) kpi_past "$json" ;;
+    --check) chain_check "$json" "$counts" ;;
     *) kpi_table "$json"; [ -n "$kpi" ] || chain_notes "$t" "$json" ;;
   esac
 }

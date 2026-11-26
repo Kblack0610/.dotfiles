@@ -3826,10 +3826,21 @@ q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
   run "$SUBJECT" chain --check --kpi uncaused_close_share
   assert_success
   assert_equal "$(head -1 "$FLEET_BENCH_DIR/chain.0.counts")" "$T0"
-  # a source that cannot be read leaves the KPI unknown, never past, and is counted again on the next probe
+  # a source that cannot be read leaves the KPI unknown, never past and never clear (ar-5413), and is
+  # counted again on the next probe
   rm "$FLEET_BENCH_DIR/chain.0.counts"; mv "$BENCH_DOCTOR_LAST" "$BENCH_DOCTOR_LAST.off"
   run "$SUBJECT" chain --check --kpi doctor_fail
+  assert_failure 2
+  assert_output 'unreadable: doctor_fail could not be counted'
+  # the whole chain says the same, after any KPI past its bound, which still exits 1
+  run "$SUBJECT" chain --check
+  assert_failure 1
+  assert_output --partial 'untracked_merged_prs 1 (max 0)'
+  refute_output --partial 'unreadable:'
+  # an empty window is a share over nothing, read: it neither trips nor reads unreadable
+  run "$SUBJECT" chain --check --kpi uncaused_close_share
   assert_success
+  grep -qx 'uncaused_close_share=-' "$FLEET_BENCH_DIR/chain.0.counts" || fail "$(cat "$FLEET_BENCH_DIR/chain.0.counts")"
   printf 'FAIL  line 4: an epic belongs on the human sheet\n' > "$BENCH_DOCTOR_LAST"
   run "$SUBJECT" chain --check --kpi doctor_fail
   assert_failure 1
