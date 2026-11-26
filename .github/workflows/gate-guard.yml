@@ -1,0 +1,87 @@
+name: gate guard
+
+# A pull request that loosens a gate waits for the human: it edits a file the repo's
+# .github/gate-files lists, raises a baseline or threshold, drops a CI job, or adds
+# continue-on-error. Such a PR fails here until the human applies the gate-change label;
+# skip-guard denies an agent session applying it. The rules are .local/bin/gate-guard's header.
+#
+# The one definition. This repo runs it on its own pull requests; the private overlay and the
+# BNB repos call it from a thin .github/workflows/gate-guard.yml of their own. Every caller
+# triggers on pull_request_target, so the workflow, the caller and the checker all run from the
+# base branch and main: a PR cannot loosen the check that judges it. No step runs the PR's code;
+# the checkout of its head is read with git alone. overlay: true (the private repo) adds the two
+# checks that need both dotfiles trees at once: fact-owners over the private bin, and the rules
+# register's enforcer and prose-count check. Plan everything-should-wondrous-snail P3.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  workflow_call:
+    inputs:
+      runs-on:
+        description: "one runner label, or a JSON label list such as a BNB repo's LINUX_RUNNER_LIGHT; the private repo passes [\"self-hosted\",\"light\"], since GitHub bills hosted minutes there"
+        type: string
+        default: ubuntu-24.04
+      overlay:
+        description: "true in the private overlay: also run fact-owners and the rules register check over both dotfiles trees"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: gate guard
+    if: github.event.pull_request
+    runs-on: ${{ fromJSON(startsWith(inputs.runs-on || 'ubuntu-24.04', '[') && inputs.runs-on || toJSON(inputs.runs-on || 'ubuntu-24.04')) }}
+    timeout-minutes: 5
+    steps:
+      - name: Fresh workspace
+        if: runner.environment == 'self-hosted'
+        run: ci-fresh-workspace
+      # The PR's head with all history for the merge base, but no old file contents: the check
+      # reads trees and the few blobs it diffs. Only .github is written out unless overlay needs
+      # the whole tree.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: repo
+          persist-credentials: false
+          fetch-depth: 0
+          filter: blob:none
+          sparse-checkout-cone-mode: false
+          sparse-checkout: ${{ inputs.overlay && '/*' || '/.github/' }}
+      # The checker from dotfiles main, never the PR's copy.
+      - uses: actions/checkout@v4
+        with:
+          repository: Kblack0610/.dotfiles
+          ref: main
+          path: guard
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: ${{ inputs.overlay && '/*' || '/.local/bin/gate-guard' }}
+      - name: Gate files, ratchets and jobs
+        working-directory: repo
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+        run: python3 ../guard/.local/bin/gate-guard check "origin/$BASE_REF" HEAD
+      # overlay: the public CI cannot see the private bin, so a copy there of a fact the Owners
+      # table homes is found here (or-mutable-biscuit item 1). HOME is empty, so the board-row
+      # checks, which read ~/.notes, are skipped as in public CI.
+      - name: Owners table over both trees (fact-owners)
+        if: inputs.overlay
+        run: |
+          HOME=$(mktemp -d) DOTFILES_PRIVATE="$PWD/repo" guard/.local/bin/fact-owners check
+      # overlay: every register row names a check that parses, and the review-only rows match
+      # rules-prose-baseline, which may only shrink (or-mutable-biscuit item 6). HOME is empty, so
+      # a row's source, which lives on the workstation, is not re-read. Each row's `measure` is a
+      # shell command the PR may have written, and --check runs it, so the register is checked with
+      # every measure stripped: no step here runs the PR's code.
+      - name: Rules register (fleet-bench rules --check)
+        if: inputs.overlay
+        run: |
+          reg=$(mktemp) && jq -c 'del(.measure)' repo/.config/agentctl/rules.jsonl > "$reg"
+          HOME=$(mktemp -d) BENCH_LIB_DIR="$PWD/guard/.local/lib" \
+            RULES_REGISTER="$reg" \
+            RULES_PROSE_BASELINE="$PWD/repo/.config/agentctl/rules-prose-baseline" \
+            guard/.local/bin/fleet-bench rules --check
