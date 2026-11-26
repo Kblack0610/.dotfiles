@@ -25,7 +25,6 @@
 #                                    for DISPATCH_STARVED_MIN (watch sprint-stalled); rc 2 when a read fails
 #   fleet-dispatch stopped [--json]  rc 1 and one line when a hold has stopped every pass for DISPATCH_STARVED_MIN:
 #                                    how long, why, what clears it (hub Home, the briefing, queue-starved)
-#   fleet-dispatch live [FILE]       the sessions that hold a pace slot in the fleet state document, as pace_target counts them
 #                                    (nothing when it is missing or stale): fleet-sessions wakes a kick when the count drops
 #   fleet-dispatch stats             one JSON object: runnable work, starts and reaps in the last hour, flapping items
 #   fleet-dispatch item-tier SLUG    the queue item's tier (item_tier): agent-land gates a tier-3 one
@@ -181,6 +180,8 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/claude-end.sh"
 # shellcheck source=../lib/wake-pace.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/wake-pace.sh"
+# shellcheck source=../lib/fleet-live.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fleet-live.sh"   # WAITS_JQ, LIVE_JQ: what pace_target counts as live
 LEVEL=$(machine_level)
 [ -n "$DISPATCH_WORKER_VERB" ] || read -r PER_PASS MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH_PER_PASS" DISPATCH_MAX_LOAD "$DISPATCH_MAX_LOAD")
 # Tier-3 rows fill never promotes, whatever the judge says (decide rows and the release kind are off in
@@ -1164,18 +1165,6 @@ restoring() {
 # claude exited on purpose, so reap keeps it and it holds no run unit and adds no load.
 parked() { [ -e "$PARKED_DIR/$1" ] || compgen -G "$PARKED_DIR/$1:*" >/dev/null; }
 
-# WAITS_JQ -- jq defs. waits: a session waiting on the human, which holds no slot: NEEDS whose reason does not end in
-# `carrying on` (fleet-sessions' own test: one carrying on past its ask is busy). frees: waits, or waiting its
-# landing turn behind another PR (open_job queue): neither counts as a live session in pace_target nor holds a run
-# unit (freed_item), so the two read one rule. A CHAT session in plan mode idle past the document's own idle line
-# (vocab.idle_min, fleet-sessions FLEET_IDLE_MIN) waits on the human too: it holds no slot, and nothing closes it
-# (the 2026-11-06 plan-mode decision). A document without the line frees none. Why: lab/triage-2258 sat 2655m in
-# plan mode and held a pace slot while a NEEDS session did not (ar-4662). The defs read the document as input.
-WAITS_JQ='(.vocab.idle_min // null) as $idle_line
-  | def waits: (.bucket == "NEEDS" and ((.reason // "") | endswith("carrying on") | not))
-      or (.bucket == "CHAT" and .in_plan_mode == true and $idle_line != null and (.idle_min // 0) >= $idle_line);
-    def frees: waits or .open_job == "queue";'
-
 # freed_item <slug> -- exit 0 when the fleet state document shows the queue item's session as freed (WAITS_JQ frees).
 # fleet-sessions writes `.item` as {slug, is, row, also}: the slugs are slug and also while the item runs or waits
 # there (is own or here), never one that moved on to another session; a bare string is read too. A document older
@@ -1227,24 +1216,6 @@ units_on() {
 # live_units -> the run units the runner's live sessions hold on this machine, out of TARGET.
 live_units() { live_runs | units_on ''; }
 
-# live_facts [<state document>] -> {live, needs, working, idle} from the fleet state document, nothing when it is
-# missing, unreadable or older than DISPATCH_STATE_FRESH_MIN. The one reading of which sessions hold a pace slot:
-# pace_target counts from it, and `fleet-dispatch live` hands the count to fleet-sessions, which wakes a kick when it drops.
-live_facts() {
-  jq -c --argjson now "$(date +%s)" --argjson fresh "$(( DISPATCH_STATE_FRESH_MIN * 60 ))" '
-    select($now - (.generated_epoch // 0) <= $fresh) | (.vocab.finished // []) as $done
-    | '"$WAITS_JQ"'
-    [.sessions[] | select(.bucket != "PARKED" and (.bucket | IN($done[]) | not) and ((.labels // []) | index("shepherd") | not)
-        and ((.account // "") | IN("codex", "opencode") | not))]
-    | (map(select(frees | not))) as $live
-    | {live: ($live | length),
-       needs: map(select(.open_job != "queue" and waits)) | length,
-       working: ($live | map(select(.bucket == "WORKING" or .bucket == "NEEDS")) | length),
-       idle: ($live | map(select(.bucket != "WORKING" and .bucket != "NEEDS")
-         | "\(.target) \(.bucket)\(if (.reason // "") != "" then ": \(.reason)" else "" end)"))}' \
-    "${1:-$FLEET_STATE_FILE}" 2>/dev/null
-}
-
 # pace_target -- TARGET is the live Claude sessions the fleet fills to now, TARGET_WHEN which cap:
 # the live count plus what the Claude accounts' spend has spare at their weekly pace (claude-acct's
 # fleet.spare, from ACCT_ROWS when the caller already read it: the working Opus sessions more that
@@ -1276,7 +1247,9 @@ pace_target() {
   else TARGET=$DISPATCH_TARGET_AWAY TARGET_WHEN=away; fi
   local spare live
   spare=$(jq -r '.fleet.spare // empty' <<<"${ACCT_ROWS:-$(claude-acct room --json 2>/dev/null)}" 2>/dev/null)
-  live=$(live_facts)
+  live=$(jq -c --argjson now "$(date +%s)" --argjson fresh "$(( DISPATCH_STATE_FRESH_MIN * 60 ))" \
+    'select($now - (.generated_epoch // 0) <= $fresh) | '"$LIVE_JQ" \
+    "$FLEET_STATE_FILE" 2>/dev/null)
   TOTAL_LIVE=$(jq -r '.live // empty' <<<"$live" 2>/dev/null)
   NEEDS_LIVE=$(jq -r '.needs // empty' <<<"$live" 2>/dev/null)
   WORKING_LIVE=$(jq -r '.working // empty' <<<"$live" 2>/dev/null)
@@ -9726,7 +9699,6 @@ main() {
     sprint-stalled) cmd_sprint_stalled ;;
     stats) cmd_stats ;;
     stopped) shift; cmd_stopped "$@" ;;
-    live) shift; jq -r '.live // empty' <<<"$(live_facts "$@")" ;;
     start) shift; PULL=$(start_pull) cmd_start "$@" ;;
     record) shift; cmd_record "$@" ;;
     restore) shift; cmd_restore "$@" ;;
