@@ -173,28 +173,21 @@ online() {
   assert_equal "$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); print(d['partial'], d['partial_why'])" "$output")" "True gh run view -R o/r --job 1061 --log-failed: HTTP 502: Bad Gateway"
 }
 
-@test "a poisoned run-log zip in gh's shared cache is never read: gh gets a private cache, removed at exit, and no temp entry is left" {
-  # gh as it behaves: an entry under XDG_CACHE_HOME/gh that exists is trusted, and a 0-byte one fails every read
-  mkdir -p "$SANDBOX/xdg/gh"
-  : > "$SANDBOX/xdg/gh/run-log-1061-1.zip"
+# gh's own run-log cache is kept private by the wrapper (gh_wrapper.bats, ar-3387); this cache is the script's.
+@test "a job log read is cached whole, and no temp entry is left" {
   gh_script <<'SH'
 if [ "$1 $2" = "run view" ]; then
-  echo "$XDG_CACHE_HOME" >> "$GH_FIXTURE/cache-dirs"
-  [ -e "$XDG_CACHE_HOME/gh/run-log-1061-1.zip" ] && { echo "failed to get run log: opening cache entry: zip: not a valid zip file" >&2; exit 1; }
   printf 'Unit tests\tRun\t2026-11-03T10:00:00.0000000Z killed by the stub\n'
   exit 0
 fi
 echo "[]"
 SH
   rm -f "$CACHE/log-1061.txt"
-  XDG_CACHE_HOME="$SANDBOX/xdg" run --separate-stderr python3 "$SCRIPT" --repo o/r --cache "$CACHE" --until 2026-11-04T00:00:00Z --days 3 --json
+  run --separate-stderr python3 "$SCRIPT" --repo o/r --cache "$CACHE" --until 2026-11-04T00:00:00Z --days 3 --json
   assert_success
   assert_equal "$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['partial'])" "$output")" "False"
   grep -q 'killed by the stub' "$CACHE/log-1061.txt"
-  [ -s "$GH_FIXTURE/cache-dirs" ]
-  run grep -cxF "$SANDBOX/xdg" "$GH_FIXTURE/cache-dirs"   # no gh call saw the shared cache
-  assert_output 0
-  assert_equal "$(find "$CACHE" -maxdepth 1 \( -name '.gh-*' -o -name '*.tmp' \) | wc -l)" "0"
+  assert_equal "$(find "$CACHE" -maxdepth 1 -name '*.tmp' | wc -l)" "0"
 }
 
 @test "a full read has no partial_why" {

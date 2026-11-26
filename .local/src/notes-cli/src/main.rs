@@ -23,7 +23,6 @@ mod focus_sweep;
 mod gate;
 mod improve;
 mod inbox;
-mod inbox_ack;
 mod index;
 mod ingest;
 mod knowledge;
@@ -98,7 +97,7 @@ enum Cmd {
         all: bool,
     },
     /// Print a resolved profile path for editor/shell integration.
-    /// target: daily (default) | daily-dir | archive | refs | refs-today | root | backlog | scheduled | recurring | zettel | meetings | index | inbox | inbox-today
+    /// target: daily (default) | daily-dir | archive | refs | refs-today | root | backlog | scheduled | recurring | zettel | meetings | index | captures | captures-today | inbox
     Path {
         #[arg(default_value = "daily")]
         target: String,
@@ -121,13 +120,14 @@ enum Cmd {
     },
     /// Rebuild today's refs index and point today's note's `## Refs` at it
     LinkRefs,
-    /// Agent reports for the human, one per file in the day's refs folder: add (or revise),
-    /// list across days, mark read
+    /// Agent reports for the human, one per file in `inbox/<date>/`: add (or revise), list
+    /// across days, mark read, archive past days
     Report {
         #[command(subcommand)]
         sub: report::Cmd,
     },
-    /// Summarize a day's note into the continuous monthly log (dedup-safe)
+    /// Summarize a day's note into the continuous monthly log (dedup-safe), then archive past
+    /// report days (`notes report archive`)
     Summarize {
         /// Date to summarize (YYYY-MM-DD); defaults to yesterday
         #[arg(long)]
@@ -239,8 +239,7 @@ enum Cmd {
         #[arg(long, conflicts_with_all = ["json", "agent", "version", "done_days"])]
         weigh: bool,
     },
-    /// Triage the dated-capture inbox (list / add / archive), and mark inbox page rows
-    /// reviewed (ack). No subcommand = list.
+    /// Triage the dated-capture inbox (list / add / archive). No subcommand = list.
     Inbox {
         #[command(subcommand)]
         sub: Option<InboxCmd>,
@@ -794,7 +793,7 @@ enum PtaskCmd {
     /// off the marker. A row already archived moves back onto its sheet. The id finds the row in
     /// either lane, so `--agent` is not needed
     Reopen {
-        /// What made the close false (the log keeps it)
+        /// What made the close false: `notes log --id <id>` shows it on the `reopened` event (the record keeps about 30 days); the row keeps no trace of it
         #[arg(long, value_name = "WHY")]
         why: String,
         /// The row's id, as `ar-142`
@@ -822,7 +821,8 @@ enum PtaskCmd {
     /// Close the first matching open task undelivered: the row stays, ticked, with the
     /// reason in its marker. Needs --why or --dup
     Drop {
-        /// Why it will not be delivered: stale, superseded, or where it moved ("moved: ideas.md")
+        /// Why it will not be delivered: stale, superseded, or where it moved ("moved: ideas.md").
+        /// Each open row gated #after/ on it is named on stderr, with the command that frees it
         #[arg(long, value_name = "WHY")]
         why: Option<String>,
         /// It duplicates this row (its id, like ar-142); its open children move under that row
@@ -1016,7 +1016,7 @@ enum OutboxCmd {
         raw: Vec<String>,
     },
     /// Take the `#ask` or `#investigate` line that is RAW byte for byte out of the outbox and write
-    /// it, with the answer on stdin, to today's `inbox/<date>.md` (the sweep's write path for a look)
+    /// it, with the answer on stdin, to today's `captures/<date>.md` (the sweep's write path for a look)
     Answer {
         #[arg(required = true, num_args = 1..)]
         raw: Vec<String>,
@@ -1052,6 +1052,18 @@ enum IngestCmd {
     Import,
     /// Publish the inbox status page from the record and the outbox (the sweep runs it)
     Page,
+    /// The daily intake cap (`intake_daily_cap`, QUEUE.md "Admission"): per local day and project
+    /// (every gated board, and any other the cap touched), the new agent rows admitted and the rows
+    /// the cap refused, oldest first and today last
+    /// (`--json`: one `{date, project, cap, admitted, refused}` object a line), the one reader
+    /// fleet-bench's churn KPIs use
+    Cap {
+        /// How many local days, today included
+        #[arg(long, default_value_t = 7)]
+        days: i64,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// `notes ingest record`: one chain event a shell writer made, appended to the record.
@@ -1084,6 +1096,43 @@ fn ingest_record(prof: &config::Profile, r: RecordArgs) -> i32 {
     ev.near = set(near);
     ingest::record(prof, &ev);
     0
+}
+
+/// `notes ingest <sub>`: the record, import, page and cap commands.
+fn ingest_sub(
+    prof: &config::Profile,
+    log: &logging::Logger,
+    sub: IngestCmd,
+) -> anyhow::Result<i32> {
+    Ok(match sub {
+        IngestCmd::Record(r) => ingest_record(prof, *r),
+        IngestCmd::Import => ingest_import(prof)?,
+        IngestCmd::Page => daily::publish_inbox_page(prof, log)?,
+        IngestCmd::Cap { days, json } => ingest_cap(prof, days, json)?,
+    })
+}
+
+/// `notes ingest cap`: the cap's admitted and refused rows a day ([`gate::cap_days`]).
+fn ingest_cap(prof: &config::Profile, days: i64, json: bool) -> anyhow::Result<i32> {
+    if days < 1 {
+        anyhow::bail!("--days is a whole number of days, at least 1");
+    }
+    for d in gate::cap_days(prof, days) {
+        if json {
+            println!("{}", serde_json::to_string(&d)?);
+        } else {
+            let cap = if d.cap == 0 {
+                "no cap".to_string()
+            } else {
+                format!("cap {}", d.cap)
+            };
+            println!(
+                "{} {}: {} admitted, {} refused ({cap})",
+                d.date, d.project, d.admitted, d.refused
+            );
+        }
+    }
+    Ok(0)
 }
 
 /// `notes ingest import`: a worker's record on stdin; prints where its next read starts.
@@ -1139,13 +1188,13 @@ struct RecordArgs {
 enum InboxCmd {
     /// List pending captures, oldest-first (the triage view); this is the default
     List,
-    /// Quick-capture: append a timestamped line to today's `inbox/<date>.md`
+    /// Quick-capture: append a timestamped line to today's `captures/<date>.md`
     Add {
         /// Capture text (free-form)
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
-    /// Drain triaged captures into `inbox/_archive/` (pick one selector)
+    /// Drain triaged captures into `captures/_archive/` (pick one selector)
     Archive {
         /// A specific capture filename (or path) to archive
         target: Option<String>,
@@ -1155,14 +1204,6 @@ enum InboxCmd {
         /// Archive every dated capture before YYYY-MM-DD
         #[arg(long)]
         before: Option<String>,
-    },
-    /// Mark a Handled-today row of the inbox page reviewed (it folds into `+N reviewed`), or
-    /// take the mark back with --undo; republishes the page
-    Ack {
-        /// The row's key: the `ts` of its ingest event, as the page's `<!-- ack:... -->` holds it
-        key: String,
-        #[arg(long)]
-        undo: bool,
     },
 }
 
@@ -1618,6 +1659,20 @@ fn read_stdin() -> Result<String> {
     Ok(text)
 }
 
+/// The nightly `notes summarize`: the day's summary, then the report archive (no new timer).
+/// Both run, so a day with no note to summarize still archives.
+fn summarize_nightly(
+    prof: &config::Profile,
+    log: &logging::Logger,
+    date: Option<&str>,
+    force: bool,
+) -> Result<()> {
+    let summarized = summarize::run(prof, log, date, force);
+    let archived = report::archive_today(prof, log, false);
+    summarized?;
+    archived.map(|_| ())
+}
+
 fn main() -> Result<()> {
     reset_sigpipe();
     let cli = Cli::parse();
@@ -1658,7 +1713,7 @@ fn main() -> Result<()> {
             }
             None => {
                 eprintln!(
-                    "unknown path target '{target}' (want: daily, daily-dir, refs, refs-today, root, backlog, scheduled, recurring, zettel, meetings, archive, index, projects, inbox, inbox-today)"
+                    "unknown path target '{target}' (want: daily, daily-dir, refs, refs-today, root, backlog, scheduled, recurring, zettel, meetings, archive, index, projects, captures, captures-today, inbox)"
                 );
                 2
             }
@@ -1669,7 +1724,7 @@ fn main() -> Result<()> {
         }
         Cmd::Report { sub } => report::run(&prof, &log, sub)?,
         Cmd::Summarize { date, force } => {
-            summarize::run(&prof, &log, date.as_deref(), force)?;
+            summarize_nightly(&prof, &log, date.as_deref(), force)?;
             0
         }
         Cmd::Archive {
@@ -1995,11 +2050,7 @@ fn main() -> Result<()> {
             ingest::log(&prof, day.as_deref(), days, &filter, json)?
         }
         Cmd::Improve(a) => improve::run(&prof, &log, a)?,
-        Cmd::Ingest { sub } => match sub {
-            IngestCmd::Record(r) => ingest_record(&prof, *r),
-            IngestCmd::Import => ingest_import(&prof)?,
-            IngestCmd::Page => daily::publish_inbox_page(&prof, &log)?,
-        },
+        Cmd::Ingest { sub } => ingest_sub(&prof, &log, sub)?,
         Cmd::Inbox { sub } => {
             match sub {
                 None | Some(InboxCmd::List) => inbox::list(&prof, &log)?,
@@ -2009,10 +2060,6 @@ fn main() -> Result<()> {
                     stale,
                     before,
                 }) => inbox::archive(&prof, &log, target.as_deref(), stale, before.as_deref())?,
-                Some(InboxCmd::Ack { key, undo }) => {
-                    inbox_ack::mark(&prof, &key, !undo)?;
-                    daily::publish_inbox_page(&prof, &log)?;
-                }
             }
             0
         }

@@ -21,11 +21,14 @@ gate_ask() {
 # item_tags <slug> -> the queue item's tags: line
 item_tags() { sed -n 's/^tags: //p' "$AGENT_QUEUE_DIR"/*/*-"$1".md; }
 
-# skipv <key> <rule> [reason] [clear] -- a skip verdict on a game agent row, under the current policy
+# skipv <key> <rule> [reason] [clear] -- a skip verdict on a game agent row, under the current policy; a human
+# rule's judge said a person is needed (agent_only false), any other rule's that none is, unless SKIPV_AO says
 skipv() {
+  local ao=true
+  [[ " design needs-person release prod-write compliance personal " != *" $2 "* ]] || ao=false
   verdict game agent "$1" skip
-  jq -c --arg k "$1" --arg r "$2" --arg why "${3:-r}" --argjson c "${4:-true}" \
-    'if .key == $k then .rule = $r | .reason = $why | .clear = $c else . end' \
+  jq -c --arg k "$1" --arg r "$2" --arg why "${3:-r}" --argjson c "${4:-true}" --argjson ao "${SKIPV_AO:-$ao}" \
+    'if .key == $k then .rule = $r | .reason = $why | .clear = $c | .agent_only = $ao else . end' \
     "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
 }
 
@@ -93,7 +96,7 @@ sized_fixture() {
     | if .id == "gs-6" then .details = ["goal: a person wrote this"] else . end' "$NOTES_FIXTURE/board.rows" > "$SANDBOX/b"
   mv "$SANDBOX/b" "$NOTES_FIXTURE/board.rows"
   verdict game agent gs-5 skip
-  jq -c 'if .key == "gs-5" then .rule = "needs-person" | .size = "L" else . end' "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" \
+  jq -c 'if .key == "gs-5" then .rule = "needs-person" | .size = "L" | .agent_only = false else . end' "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" \
     && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
   # one failed record: latest_verdicts drops it, so only the raw file says the session failed
   jq -cn '{project: "game", lane: "agent", key: "gs-12", verdict: "failed", at: "2026-11-23T00:00:00-0800"}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"

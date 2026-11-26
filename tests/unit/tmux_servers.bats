@@ -15,7 +15,7 @@ setup() {
   mkdir -p "$DIR"
 }
 
-sock() { python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$DIR/$1"; }
+sock() { unix_sock "$DIR/$1"; }
 
 @test "tmux_socket_dir is the dir tmux -L resolves against, read at call time" {
   assert_equal "$(tmux_socket_dir)" "$TMUX_TMPDIR/tmux-$(id -u)"

@@ -80,10 +80,12 @@ denied_by() { assert_success; assert_output --partial '"deny"'; assert_output --
 }
 
 @test "a guard that raises is skipped and the others still run (each fails open on its own)" {
-  mkdir "$T/hooks"
-  cp "$HOOKS"/*.py "$T/hooks/"
-  printf 'def decide(data):\n    raise RuntimeError("broken")\n' > "$T/hooks/checkout-guard.py"
-  WALKER="$T/hooks/walker-guards.py" run at "$T/dots" 'git checkout -b feat/x && gh auth logout'
+  # The copy keeps a checkout's layout: skip-guard reads its label from .local/bin/gate-guard beside the hooks.
+  mkdir -p "$T/co/.claude/hooks" "$T/co/.local/bin"
+  cp "$HOOKS"/*.py "$T/co/.claude/hooks/"
+  cp "$ROOT/.local/bin/gate-guard" "$T/co/.local/bin/"
+  printf 'def decide(data):\n    raise RuntimeError("broken")\n' > "$T/co/.claude/hooks/checkout-guard.py"
+  WALKER="$T/co/.claude/hooks/walker-guards.py" run at "$T/dots" 'git checkout -b feat/x && gh auth logout'
   denied_by gh-login-guard
   refute_output --partial 'checkout-guard:'
   assert_output --partial 'walker-guards: checkout-guard skipped'

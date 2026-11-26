@@ -276,9 +276,9 @@ def trainee_outcome(item, start, end, live):
         return None
     if not trainee_authored(item):
         return "sent_back"
-    if item.get("status") == "failed":
+    if item.get("status") == "failed":   # a provider or quota end too: the trainee view names it in why
         return "failed"
-    return "merged" if item.get("status") == "ok" and (item.get("pr") or item.get("merged")) else None
+    return "merged" if item.get("outcome") == "landed" else None
 
 
 def trainee_rows(items, reviewers, start, end, live):

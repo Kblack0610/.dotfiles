@@ -115,8 +115,8 @@ load 'agent_land/common'
   item tidy 'board:dotfiles:tidy it' agent
   run "$LAND" 42 --item tidy --dry-run
   assert_success
-  assert_line --index 13 'item: agent-queue set tidy pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute tidy && agent-queue move tidy done --status ok'
-  assert_line --index 14 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
+  assert_line --index 14 'item: agent-queue set tidy pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute tidy && agent-queue move tidy done --status ok'
+  assert_line --index 15 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
   run agent-queue show tidy --json
   assert_equal "$(jq -r .state <<<"$output")" running
 }
@@ -459,9 +459,9 @@ load 'agent_land/common'
   assert_line 'item: huge done with pr:o/r#42, credited to arena (touches arena)'
   assert_line 'landed #42'
   run grep -c '^git fetch -q origin 5eedbase5eedbase 0123456789abcdef$' "$LOG"
-  assert_output 1
+  assert_output 2  # workflow_gate, then validate_gate after the catch-up
   run grep -c '^git diff --name-status -M 5eedbase5eedbase...0123456789abcdef$' "$LOG"
-  assert_output 1
+  assert_output 2
 }
 
 @test "files that cannot be read leave the item's project and never fail the landing" {
@@ -538,6 +538,74 @@ load 'agent_land/common'
   run "$LAND" 42 --item ship
   assert_success
   assert_line 'prs: could not file it on agent-runtime (board locked)'
+  assert_line 'landed #42'
+}
+
+# aq_add_stub: the sandbox agent-queue logs each add's argv to aq.add, one call a line, and answers as the real one
+# does for a slug it already holds ("already in the queue", exit 1) or $SANDBOX/aq.add.rc says, and logs the
+# AGENT_QUEUE_ITEM each add saw to aq.env; other verbs run for real.
+aq_add_stub() {
+  mv "$SANDBOX/bin/agent-queue" "$SANDBOX/bin/agent-queue.real"
+  cat >"$SANDBOX/bin/agent-queue" <<EOS
+#!/usr/bin/env bash
+if [ "\$1" = add ]; then
+  slug=\$(printf '%s\n' "\$@" | grep -A1 -x -- --slug | tail -1)
+  ! grep -qxF "\$slug" "$SANDBOX/aq.slugs" 2>/dev/null || { echo "agent-queue: already in the queue: \$slug" >&2; exit 1; }
+  printf '%s\n' "\${*%%\$'\n'*}" >>"$SANDBOX/aq.add"
+  printf '%s\n' "\${AGENT_QUEUE_ITEM:-}" >>"$SANDBOX/aq.env"
+  rc=\$(cat "$SANDBOX/aq.add.rc" 2>/dev/null || echo 0)
+  [ "\$rc" -ne 0 ] || echo "\$slug" >>"$SANDBOX/aq.slugs"
+  [ "\$rc" -ne 1 ] || echo "agent-queue: store locked" >&2
+  exit "\$rc"
+fi
+exec "$SANDBOX/bin/agent-queue.real" "\$@"
+EOS
+  chmod +x "$SANDBOX/bin/agent-queue"
+}
+
+# ar-4887: #3249 left `notes projects --migrate unity-core-playground` in a sentence for after its deploy, and nobody ran it.
+@test "deploy: each After deploy: line of the merged body is added as its own item, once; a failed add never fails the landing (ar-4887)" {
+  local s1 s2
+  s1=after-deploy-42-$(printf '%s' 'notes projects --migrate game' | sha1sum | cut -c1-7)-r
+  s2=after-deploy-42-$(printf '%s' 'systemctl --user restart notes-web' | sha1sum | cut -c1-7)-r
+  aq_add_stub
+  # NEGATIVE CONTROL: a step said in a sentence (#3249's form), a fenced or quoted line, and a placeholder add nothing
+  printf '%s\n' 'The change.' '' 'After the new binary is deployed, run notes projects --migrate game.' '```' 'After deploy: <command>' '```' \
+    '> After deploy: quoted' 'After deploy: <command>' 'After deploy: none' '' 'Item: ship' >"$NOTES_FIXTURE/body"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'deploy:'
+  [ ! -e "$SANDBOX/aq.add" ]
+  printf 'The change.\n\nAfter deploy: notes projects --migrate game\r\nAfter deploy:   systemctl --user restart notes-web  \n\nItem: ship\n' >"$NOTES_FIXTURE/body"
+  AGENT_QUEUE_ITEM=ship run "$LAND" 42
+  assert_success
+  assert_line "deploy: added $s1: notes projects --migrate game"
+  assert_line "deploy: added $s2: systemctl --user restart notes-web"
+  assert_line 'landed #42'
+  run cat "$SANDBOX/aq.add"
+  assert_line --index 0 "add --project dotfiles --priority high --from item:ship --slug $s1 chore(deploy): notes projects --migrate game (left by o/r#42)"
+  assert_line --index 1 "add --project dotfiles --priority high --from item:ship --slug $s2 chore(deploy): systemctl --user restart notes-web (left by o/r#42)"
+  # the add does not run as the landed item, so that item's own after: never gates it
+  run grep -c '^$' "$SANDBOX/aq.env"
+  assert_output 2
+  # a re-run of the landing adds neither again, though a step was put above them meanwhile
+  printf 'The change.\n\nAfter deploy: systemctl --user restart notes-web\nAfter deploy: notes projects --migrate game\n\nItem: ship\n' >"$NOTES_FIXTURE/body"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "deploy: $s1 already queued: notes projects --migrate game"
+  assert_line "deploy: $s2 already queued: systemctl --user restart notes-web"
+  run grep -c . "$SANDBOX/aq.add"
+  assert_output 2
+  # a full queue files the step on the board, and that is said
+  : >"$SANDBOX/aq.slugs"; echo 5 >"$SANDBOX/aq.add.rc"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "deploy: $s2 filed on the dotfiles board, the queue takes it from there: systemctl --user restart notes-web"
+  # an add that fails is said with the add to run by hand, and the landing stands
+  : >"$SANDBOX/aq.slugs"; echo 1 >"$SANDBOX/aq.add.rc"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line --partial "deploy: not added (agent-queue: store locked): agent-queue add --project dotfiles --priority high --from item:ship --slug $s1"
   assert_line 'landed #42'
 }
 
@@ -1220,6 +1288,46 @@ EOF
   assert_equal "$(jq -r '[.state, .status] | join("|")' <<<"$output")" 'done|ok'
 }
 
+@test "a red watch item routed to its owner lands while the watch trips, and its PR still resolves the watch (ar-5414)" {
+  cat >"$SANDBOX/bin/watch-companion-loop" <<'EOF'
+#!/usr/bin/env bash
+printf 'watch-companion-loop %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
+echo "TRIP: spend still over limit"
+exit 1
+EOF
+  cat >"$SANDBOX/bin/fleet-bench" <<'EOF'
+#!/usr/bin/env bash
+[ "$1 $2" = "triage --route" ] || exit 2
+printf '%s\towned:ar-1\t-\t\n' "$3"
+EOF
+  chmod +x "$SANDBOX/bin/watch-companion-loop" "$SANDBOX/bin/fleet-bench"
+
+  cat >"$AGENT_QUEUE_DIR/running/20261103-100000-red-spend.md" <<'EOF'
+slug: red-spend
+project: dotfiles
+mode: oneshot
+priority: urgent
+from: fleet-bench
+agent: claude
+tags: red watch cause:ab12
+row: dotfiles:ship red
+queued: 2026-11-03T10:00:00Z
+started: 2026-11-03T10:00:00Z
+---
+check(watch): spend tripped since 2026-11-20, expected: spend under cap
+EOF
+
+  run "$LAND" 42 --item red-spend
+  assert_success
+  assert_line 'watch spend routes to owned:ar-1, so its close is not probed'
+  assert_line 'landed #42'
+  # The merge is recorded as the fix watermark, and nothing else probes the watch.
+  [ "$(grep -c '^watch-companion-loop ' "$LOG")" -eq 1 ]
+  grep -q '^watch-companion-loop resolve spend --pr o/r#42$' "$LOG"
+  run agent-queue show red-spend --json
+  assert_equal "$(jq -r '[.state, .status] | join("|")' <<<"$output")" 'done|ok'
+}
+
 @test "a red watch item with --partial skips the probe check, and a non-red item with check(watch) in its task skips it too (ar-1605)" {
   cat >"$SANDBOX/bin/watch-companion-loop" <<'EOF'
 #!/usr/bin/env bash
@@ -1609,4 +1717,40 @@ EOF
   assert_failure 1
   assert_output --partial 'was worked by session s-hand, which also worked crit'
   assert_equal "$(merges)" 0
+}
+
+# GitHub refuses to merge a PR that changes .github/workflows for an OAuth token with no workflow scope,
+# and says so only at the merge, after the checks (platform#1672, ar-5191).
+@test "a PR that changes .github/workflows fails before the checks when the token lacks the workflow scope, and lands once it has it (ar-5191)" {
+  item ship
+  printf '%s\n' README.md .github/workflows/ci.yml >"$NOTES_FIXTURE/files"
+  printf 'HTTP/2.0 200 OK\r\nX-Oauth-Scopes: admin:org, gist, repo\r\n\r\n' >"$NOTES_FIXTURE/user.headers"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'agent-land: workflow failed: #42 changes .github/workflows and this gh token'"'"'s scopes (admin:org,gist,repo) have no workflow'
+  run grep -c 'pr checks\|pr merge' "$LOG"
+  assert_output 0
+  # Negative control: the same PR with a token that has the scope lands.
+  printf 'HTTP/2.0 200 OK\r\nX-Oauth-Scopes: gist, repo, workflow\r\n\r\n' >"$NOTES_FIXTURE/user.headers"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'landed #42'
+}
+
+@test "a token whose scopes lack workflow lands a PR that changes no workflow file (ar-5191)" {
+  item ship
+  printf '%s\n' README.md .github/actions/x.yml >"$NOTES_FIXTURE/files"
+  printf 'HTTP/2.0 200 OK\r\nX-Oauth-Scopes: repo\r\n\r\n' >"$NOTES_FIXTURE/user.headers"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'landed #42'
+}
+
+@test "a workflow PR lands when the token's scopes cannot be read: the merge itself says what it lacks (ar-5191)" {
+  item ship
+  printf '%s\n' .github/workflows/ci.yml >"$NOTES_FIXTURE/files"
+  touch "$NOTES_FIXTURE/user.fail"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'landed #42'
 }

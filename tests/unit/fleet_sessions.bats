@@ -232,6 +232,17 @@ load 'fleet_sessions/common'
   assert_output 'WORKING PR #9 CI running'
 }
 
+@test "a green PR a second agent failed is never green-unmerged: DONE once its item moved on, else the fix is here (ar-5286)" {
+  run b idle 0 0 0 30 1 0 1 9 OPEN PASS 1 - - - - - - - 'moved:s moved on (queued)' 'failed validate-s-abc'
+  assert_output 'DONE PR #9 failed validation (validate-s-abc), its item went back to the queue with the findings'
+  run b idle 0 0 0 30 1 2 1 9 OPEN PASS 1 - - - - - - - 'moved:s moved on (queued)' 'failed validate-s-abc'
+  assert_output 'STALLED PR #9 failed validation (validate-s-abc), its item went back to the queue, and work here is outside the PR'
+  run b idle 0 0 0 30 1 0 1 9 OPEN PASS 1 - - - - - - - 'own:s,t' 'failed validate-s-abc'
+  assert_output 'STALLED PR #9 failed validation (validate-s-abc): fix its findings (agent-queue show s) and push'
+  run b idle 0 0 0 30 1 0 1 9 OPEN PASS 1 - - - - - - - 'own:s' "validate-s-abc, a second agent's review"
+  assert_output "WORKING PR #9 waiting on validate-s-abc, a second agent's review"
+}
+
 @test "no PR: dirty or ahead is STALLED, clean is CHAT, a closed PR is STALLED unless one of its own merged" {
   run b idle 0 0 0 30 1 4 0 - - - 1
   assert_output 'STALLED 4 dirty file(s), no PR'
@@ -1733,6 +1744,8 @@ SH
   assert_equal "$(jq -c '[.rows, .silent]' "$snap")" '[[],["razer-laptop"]]'
   FLEET_STATE_FILE="$SANDBOX/state.json" run "$REPO_ROOT/.local/bin/fleet-sessions" --write
   assert_equal "$(jq -c .silent "$SANDBOX/state.json")" '[{"host":"razer-laptop","why":"did not answer"}]'
+  # The document carries its own idle line, which fleet-dispatch's waits reads for a plan-mode CHAT session (ar-4662).
+  assert_equal "$(jq -r .vocab.idle_min "$SANDBOX/state.json")" 20
   assert_equal "$(jq -r '.unreadable | index("agent-panel@razer-laptop")' "$SANDBOX/state.json")" null
   # A worker whose read had a gap (exit 3) keeps the rows it read (ar-916).
   printf '#!/usr/bin/env bash\n%q "$@"\nexit 3\n' "$SANDBOX/remote-panel" > "$SANDBOX/bin/ssh"
@@ -2563,12 +2576,11 @@ SH
   [ "$(jq -r .dispatch <<<"$output")" = 'apociseum: fix-wave-save' ]
 }
 
-@test "a Codex run's row (AGENT_PANEL_CODEX) reads WORKING busy and joins its queue item by thread id" {
+@test "a Codex run's row reads WORKING busy and joins its queue item by thread id" {
   landed_fixture
   local row
   row="{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"busy\",\"plan_mode\":false,\"session_id\":\"th-1\",\"cwd\":\"$SANDBOX/wt\",\"idle_since\":$(date +%s),\"context_tokens\":0,\"plan_file\":\"\",\"transcript\":\"\",\"edited_files\":[],\"account\":\"codex\",\"harness\":\"codex\"}"
-  # agent-panel lists a Codex run only when asked, as the real one does
-  printf '#!/usr/bin/env bash\n[ "${AGENT_PANEL_CODEX:-}" = 1 ] && echo %q\nexit 0\n' "$row" > "$SANDBOX/bin/agent-panel"
+  printf '#!/usr/bin/env bash\necho %q\nexit 0\n' "$row" > "$SANDBOX/bin/agent-panel"
   mkdir -p "$HOME/.agent/queue/running"
   printf 'slug: cx-1\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: board:apociseum:ar-7\norigin: run\nagent: codex\nqueued: 2026-11-03T10:00:00Z\nsession: lab:s1\nsessions: th-0 th-1\n---\nfix it\n' \
     > "$HOME/.agent/queue/running/20261103-100000-cx-1.md"
@@ -2580,6 +2592,30 @@ SH
   printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/agent-panel"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_output ''
+}
+
+@test "an idle row reads the same bucket whatever its harness (ar-4125)" {
+  # agent-panel gives every harness one busy/idle reading (agent-core activity_status), so
+  # fleet-sessions buckets the row on status and idle_since alone, never on the harness name.
+  landed_fixture
+  local h row old=$(( $(date +%s) - 7200 )) want='' got
+  for h in claude codex opencode agy; do
+    row="{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"idle\",\"plan_mode\":false,\"session_id\":\"s-$h\",\"cwd\":\"$SANDBOX/wt\",\"idle_since\":$old,\"context_tokens\":0,\"plan_file\":\"\",\"transcript\":\"\",\"edited_files\":[],\"account\":\"$h\",\"harness\":\"$h\"}"
+    printf '#!/usr/bin/env bash\necho %q\nexit 0\n' "$row" > "$SANDBOX/bin/agent-panel"
+    run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+    assert_success
+    got=$(jq -r .bucket <<<"$output")
+    [ -n "$got" ] && [ "$got" != null ]
+    [ -n "$want" ] || want=$got
+    [ "$got" = "$want" ] || { echo "$h read $got, claude read $want"; return 1; }
+  done
+  # negative control: the same (agy) row busy reads WORKING, so the bucket follows the status
+  row="${row/\"status\":\"idle\"/\"status\":\"busy\"}"
+  row="${row/\"idle_since\":$old/\"idle_since\":$(date +%s)}"
+  printf '#!/usr/bin/env bash\necho %q\nexit 0\n' "$row" > "$SANDBOX/bin/agent-panel"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  [ "$want" != WORKING ]
 }
 
 @test "a session's row names its queue item, the board row and who started it (by), by the same join as its bucket" {
@@ -3094,6 +3130,23 @@ SH
   [ "$(jq -r .bucket <<<"$output")" = DONE ]
   # Negative control: the same row with no gate is an un-started return, not this plan's queued phase.
   sed -i 's|"after/apo-6"|"size/s"|' "$NOTES_FIXTURE/board.json"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+}
+
+@test "end to end: a session whose plan add --plan filed as one board row reads DONE while that row waits for dispatch (ar-5445)" {
+  # A dispatched session's add --plan files the whole plan as one row (plan_row_task's brief) that
+  # dispatch later turns into its chain. Until then the row holds every open phase.
+  landed_fixture
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout' '- [ ] Phase 3: docs'
+  panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  printf '{"rows":[{"project":"apociseum","id":"apo-8","state":"open","tags":["size/m"],"details":["Run the open phases of the approved plan %s in order, one PR each, marking each done in the plan ## Phases."]}],"done":[]}\n' \
+    "$SANDBOX/plan.md" > "$NOTES_FIXTURE/board.json"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: apo-8' ]
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  # Negative control: the row closed (promoted or dropped), nothing holds Phase 2.
+  sed -i 's|"state":"open"|"state":"done"|' "$NOTES_FIXTURE/board.json"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = LANDED ]
 }
@@ -3855,4 +3908,59 @@ SH
   assert_line --regexp '^[0-9-]+ [0-9:]+  s1:1  quality - -> simplifying$'
   "$REPO_ROOT/.local/bin/fleet-sessions" tick
   [ "$(wc -l < "$FLEET_SHEPHERD_DIR/watch.log")" -eq 1 ]
+}
+
+# The state document counts a session as live until a write drops it, so the wake an item's close writes can reach
+# a kick that still sees it (ar-5046). seed_live <n>: the previous tick's document, n sessions live in it.
+seed_live() {
+  mkdir -p "$XDG_STATE_HOME/fleet"
+  jq -cn --argjson n "$1" '{generated_epoch: 1, vocab: {finished: ["DONE", "LANDED"]},
+    sessions: [range($n) | {target: "old/s:\(.)", bucket: "WORKING"}]}' > "$XDG_STATE_HOME/fleet/state.json"
+}
+
+@test "a state write wakes a fleet-dispatch kick when it lowers the live count, tick and --write alike, and only then (ar-5046)" {
+  export FLEET_DISPATCH_DIR="$SANDBOX/dispatch"
+  local wake="$FLEET_DISPATCH_DIR/.wake"
+  landed_fixture   # one LANDED session: finished, so the document counts none live
+
+  # no document before: nothing to compare, nothing to wake
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [ ! -e "$wake" ] || fail "the first tick woke a kick: $(cat "$wake")"
+
+  # the same count as the last tick: no wake
+  seed_live 0
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [ ! -e "$wake" ] || fail "an unchanged count woke a kick: $(cat "$wake")"
+
+  # two live before, none now: the wake names the drop, and the document it points at already holds the new count
+  seed_live 2
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [ -s "$wake" ] || fail "a drop from 2 to 0 woke no kick"
+  grep -qF 'fleet-sessions: live sessions 2 -> 0' "$wake"
+  [ "$(fleet_live_count "$XDG_STATE_HOME/fleet/state.json")" = 0 ]
+
+  # a hand --write that lowers the count wakes it too, so the next tick's baseline is not a swallowed drop
+  rm -f "$wake"
+  seed_live 3
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_success
+  grep -qF 'fleet-sessions: live sessions 3 -> 0' "$wake"
+
+  # NEGATIVE CONTROLS: one STALLED session now. The same count is no event, and neither is a rise
+  rm -f "$wake"
+  panel "$SANDBOX/wt"; rm "$LEDGER_DIR/prs.tsv"   # clean_fixture past its landed_fixture, which this test ran already
+  queue_item running lab:s1
+  seed_live 1
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [ "$(fleet_live_count "$XDG_STATE_HOME/fleet/state.json")" = 1 ]
+  [ ! -e "$wake" ] || fail "an equal nonzero count woke a kick: $(cat "$wake")"
+  seed_live 0
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [ "$(fleet_live_count "$XDG_STATE_HOME/fleet/state.json")" = 1 ]
+  [ ! -e "$wake" ] || fail "a rise in the live count woke a kick: $(cat "$wake")"
 }

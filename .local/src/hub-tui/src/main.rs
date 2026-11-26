@@ -58,6 +58,7 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub needs --json | --page
        hub ui-text --json
        hub bar --json
+       hub alerts --reasons --json
        hub ci [--json | --pool-match SECS]
        hub ci pass [--since WHEN] [--until WHEN] [--branch B]
        hub ci hosts [--since WHEN] [--until WHEN] [--last N]
@@ -233,6 +234,19 @@ fn main() {
     if it.peek().map(|a| a.as_str()) == Some("ui-text") {
         it.next();
         std::process::exit(ui_text(it.cloned().collect()));
+    }
+    if it.peek().map(|a| a.as_str()) == Some("alerts") {
+        it.next();
+        if it.cloned().collect::<Vec<String>>() != ["--reasons", "--json"] {
+            die(USAGE);
+        }
+        // No watch directory (the laptop) is an answer with no watches and its cause, not a failure:
+        // a failed run is a hub that could not answer at all.
+        match hub_core::alerts::watch_reasons() {
+            Ok(r) => println!("{}", serde_json::json!({ "reasons": r })),
+            Err(e) => println!("{}", serde_json::json!({ "reasons": {}, "error": e })),
+        }
+        return;
     }
     if it.peek().map(|a| a.as_str()) == Some("bar") {
         it.next();
@@ -804,6 +818,18 @@ fn print_releases(a: &mut App, section: Option<String>, w: usize, out: &mut impl
     i32::from(!errors.is_empty())
 }
 
+/// The Projects tab's task feed over the queue `print_once` already read: `feed` would read the
+/// queue a second time, about 4s of every Prefix+p preview move (ar-1140).
+fn projects_feed(
+    sys: &dyn hub_core::session_actions::Runner,
+    queue: Option<&hub_core::queue::Queue>,
+) -> Result<hub_core::tasks::Feed, String> {
+    match queue {
+        Some(q) => hub_core::sheet_view::feed_with(sys, q),
+        None => hub_core::sheet_view::feed(sys),
+    }
+}
+
 /// The pages as plain text, for tests, capture-pane and a quick look over ssh.
 fn print_once(req: Option<tabreq::Req>) -> i32 {
     let section = req.as_ref().and_then(|r| r.1.clone());
@@ -910,7 +936,7 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     if tab == Some(Tab::Projects) {
         let sys = hub_core::session_actions::System;
         a.boards = Some(app::Boards::read(&a.files, None));
-        a.tasks = Some(hub_core::sheet_view::feed(&sys));
+        a.tasks = Some(projects_feed(&sys, a.queue.as_ref()));
         a.projects = Some(projtab::load(&sys));
         a.tab = Tab::Projects;
         // `--tab 'projects <name>'` prints that project's opened card, its page read here, over

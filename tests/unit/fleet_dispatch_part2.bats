@@ -688,6 +688,18 @@ J
   assert_failure
   assert_output --partial 'stuck-red (high, red'
   rm "$AGENT_QUEUE_DIR"/queued/*-stuck-red.md
+  fleet_state 3
+  # A fresh ask behind a full fleet starves too: it may preempt like an urgent item (runs_now, ar-3468).
+  queued_item stuck-ask high "$old" requested
+  sed -i "s/^queued: /asked: $(date +%F)\nqueued: /" "$AGENT_QUEUE_DIR"/queued/*-stuck-ask.md
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'stuck-ask (high, ask'
+  # Negative control: asked before DISPATCH_ASK_FRESH_H, it is a high item and the full fleet holds it.
+  sed -i "s/^asked: .*/asked: $(date -d '-3 days' +%F)/" "$AGENT_QUEUE_DIR"/queued/*-stuck-ask.md
+  run cmd_starved
+  assert_success
+  rm "$AGENT_QUEUE_DIR"/queued/*-stuck-ask.md
   # A standing hold still trips at a full fleet, led by its Stopped line.
   fleet_state 3
   hold_for 125 'no account has room; main is the closest, 5 points over its weekly pace, queue item stuck waits'
@@ -972,6 +984,10 @@ J
   run cmd_stats
   assert_equal "$(jq -c '[.runnable_urgent, .runnable_high, .oldest_urgent_s]' <<<"$output")" '[0,2,null]'
   jq -e '.oldest_high_s >= 10790' <<<"$output"
+  # A fresh ask counts as urgent and not as high, since it runs now as one does (runs_now, ar-3468).
+  sed -i "s/^queued: /asked: $(date +%F)\ntags: requested\nqueued: /" "$AGENT_QUEUE_DIR"/queued/*-high-a.md
+  run cmd_stats
+  assert_equal "$(jq -c '[.runnable_urgent, .runnable_high]' <<<"$output")" '[1,1]'
 }
 
 @test "promote: the promoted row leaves the candidates snapshot at once, every other row stays" {
@@ -1039,6 +1055,23 @@ J
   run cmd_start --item gone
   assert_output --partial 'claude-telemetry.sh is missing, so this start drops no tools'
   [ "$(grep -c -- --disallowedTools "$NOTES_FIXTURE/cmds.log")" -eq 1 ] || fail "a start with no list file dropped tools"
+}
+
+@test "a task keeps the dropped tools only when it names one exactly: a CI task's workflow or artifacts drops them (ar-857)" {
+  project game beta "$SANDBOX/repos/game"
+  stub wt 'printf "%s\n" "$WT_NEW_CMD" >> "$NOTES_FIXTURE/cmds.log"; echo "game-agent-1"'
+  agent-queue add --project game --slug ci "fix the tests.yml workflow and its workflow_dispatch input"
+  agent-queue add --project game --slug art "purge gh-artifacts-nas, then Artifacts older than a week"
+  agent-queue add --project game --slug wfs "list the Workflows that failed"
+  agent-queue add --project game --slug wf "run a Workflow over the PRs"
+  for s in ci art wfs wf; do cmd_start --item "$s" >/dev/null || fail "start $s"; done
+  mask_sid "$NOTES_FIXTURE/cmds.log"
+  run cat "$NOTES_FIXTURE/cmds.log"
+  assert_line --index 0 --partial "AGENT_QUEUE_ITEM=ci ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup,Artifact --session-id SID"
+  assert_line --index 1 --partial "AGENT_QUEUE_ITEM=art ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup,Artifact --session-id SID"
+  assert_line --index 2 --partial "AGENT_QUEUE_ITEM=wfs ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup,Artifact --session-id SID"
+  # Negative control: the tool named as a word keeps every tool.
+  assert_line --index 3 --partial "AGENT_QUEUE_ITEM=wf ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --model opus --session-id SID"
 }
 
 @test "with no DISPATCH_SANDBOX_PROFILE a start has no --settings and keeps the ambient GitHub token (control)" {
@@ -1136,6 +1169,23 @@ J
   assert_line --index 0 --partial '/one-shot'
 }
 
+@test "item_brief: a measure-only item, by its measure tag or a headline opening with re-measure, closes on proof, never a PR (ar-1079)" {
+  project game beta "$SANDBOX/repos/game"
+  it='{"slug": "ar-793", "mode": "oneshot", "project": "agent-runtime", "title": "perf(claude): re-measure Claude Code startup after the ar-491 fix", "task": "Re-measure startup.", "type": "perf", "row": "game:ar-793", "lane": "agent"}'
+  run item_brief "$it"
+  assert_line --index 0 'Re-measure startup.'
+  assert_output --partial 'a measure row: it ends on live proof, never a PR or agent-land'
+  refute_output --partial '/one-shot'
+  refute_output --partial 'red-fix gate'
+  tagged='{"slug": "m", "mode": "oneshot", "project": "agent-runtime", "title": "perf(ci): the 24h numbers after #812", "task": "Read the window.", "type": "perf", "tags": "measure", "lane": "agent"}'
+  run item_brief "$tagged"
+  assert_line --index 0 'Read the window.'
+  assert_output --partial 'a measure row: it ends on live proof'
+  # Negative control: a perf fix that only names a measured number is still a /one-shot that lands a PR.
+  run item_brief '{"slug": "p", "mode": "oneshot", "project": "agent-runtime", "title": "perf(ci): settle burst slots on measured load", "task": "Settle slots.", "type": "perf", "lane": "agent"}'
+  assert_line --index 0 --partial '/one-shot'
+}
+
 @test "pr_line: an item with no PR names none, so its session is never told to check out PR null" {
   run pr_line '{"slug": "a", "pr": null}'
   assert_output ''
@@ -1229,6 +1279,8 @@ J
     "codex: runs headless, and this is host-ops work (excluded in $MATRIX); claude: no account has room"
   # Negative controls: near misses (product, not prod; a drain with no host or runner; systemctl status; unregister with no runner; the word null, which the
   # kind-less mode entries would match if they read as a "null" pattern), the same tag off the Unity stack, and plain work route to codex.
+  # (codex holds unity_gate here, so the Unity item reaches the exclusion list this test is about.)
+  harness_set '.harnesses.codex.capabilities = ["unity_gate"]'
   for it in '{"slug":"x","project":"game","mode":"oneshot","title":"fix the product page"}' \
     '{"slug":"x","project":"game","mode":"oneshot","title":"fix(mem0): drain lines end in a backslash"}' \
     '{"slug":"x","project":"game","mode":"oneshot","title":"show systemctl status of the runner in the panel"}' \
@@ -1271,7 +1323,43 @@ J
   assert_equal "$ROUTE_WHY" 'codex: placed on razer-laptop, which does not run it (its kit and fleet_harnesses, fleet-dispatch hosts); claude: placed on razer-laptop, which does not run it (fleet-dispatch hosts)'
   PLACE_HOST='' DISPATCH_SANDBOX_PROFILE=lane
   ! route "$it" "$v" || fail "a sandboxed item routed to $ROUTE_HARNESS"
-  assert_equal "$ROUTE_WHY" 'codex: cannot hold sandbox lane; claude: no account has room'
+  assert_equal "$ROUTE_WHY" "codex: it lacks the lane_sandbox capability (capabilities in $HARNESSES): no launcher applies a lane profile; claude: no account has room"
+}
+
+# A capability the map declares gates what route() hands a harness: a stack-bound one (unity_gate) gates the
+# PR-opening kinds of that stack's projects, so a harness lacking it is refused and one listing it is not;
+# adding a harness or a capability is a map entry, never code.
+@test "route refuses a PR item of a capability's stack to a harness that lacks it, and takes it once the map lists it" {
+  route_ready
+  HARNESSES=$DISPATCH_HARNESSES   # the sourced script read it before route_ready set it
+  local it='{"slug":"x","project":"arena","mode":"oneshot","title":"fix the arena menu"}' v ACCT_RC=1 ACCT_DIR='' DISPATCH_SANDBOX_PROFILE='' PLACE_HOST=''
+  v='{"candidates":[{"harness":"codex","model":"sol","fit":0},{"harness":"lazer-reserve","model":"sonnet","fit":1}]}'
+  ACCT_ROWS='{"accounts":[],"sources":[{"name":"codex","rank":1,"room":{"ok":true,"why":"it has room"}},{"name":"reserve","rank":2,"room":{"ok":true,"why":"it has room"}}]}'
+  route "$it" "$v" || fail "lazer-reserve lists unity_gate and was refused ($ROUTE_WHY)"
+  assert_equal "$ROUTE_HARNESS" lazer-reserve
+  # codex lists none: it is refused with the map's why, and lazer-reserve takes it.
+  assert_equal "$(harness_needs_why codex "$it" 1 0 || true)" "it lacks the unity_gate capability (capabilities in $HARNESSES): a unity PR needs the CI gate line"
+  # A harness map entry is all it takes: listing it there lets codex take the item.
+  harness_set '.harnesses.codex.capabilities = ["unity_gate"]'
+  route "$it" "$v" || fail "codex lists unity_gate and was refused ($ROUTE_WHY)"
+  assert_equal "$ROUTE_HARNESS" codex
+  # A project outside the stack needs nothing.
+  harness_set '.harnesses.codex.capabilities = []'
+  harness_needs_why codex '{"slug":"x","project":"game","mode":"oneshot","title":"fix the menu"}' 1 0
+  # A verify row only reports (kinds.json does not register it), so it needs no gate either.
+  harness_needs_why codex '{"slug":"x","project":"arena","type":"verify","mode":"oneshot","title":"verify the arena menu"}' 1 0
+  # A canary replays a merged PR and opens none, so it needs no gate.
+  harness_needs_why codex '{"slug":"x","project":"arena","mode":"oneshot","title":"canary","tags":"canary","canary":"c1"}' 1 0
+}
+
+@test "an unreadable stack list fails the capability check closed" {
+  route_ready
+  HARNESSES=$DISPATCH_HARNESSES
+  local it='{"slug":"x","project":"arena","mode":"oneshot","title":"fix the arena menu"}' rc=0 out
+  printf 'not json\n' > "$HOME/.config/fleet-bench/matrix.json"
+  out=$(harness_needs_why codex "$it" 1 0) || rc=$?
+  assert_equal "$rc" 2
+  assert_equal "$out" "the stack list $MATRIX is unreadable, so what arena needs is unknown"
 }
 
 @test "a metered harness is overflow: only a promoted class or its trial pick, only with no account room, only tier 1" {

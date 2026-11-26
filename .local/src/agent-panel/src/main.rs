@@ -39,12 +39,6 @@ enum Cmd {
         /// hub-core `session_actions` acts on.
         #[arg(long)]
         parked: bool,
-        /// Add a row per run on another harness in a pane (`"harness": "codex"`, `"opencode"` or `"agy"`,
-        /// busy, or done for a headless run's replay): fleet-sessions.
-        /// Left out by default, since the other readers take every row for a Claude conversation.
-        /// fleet-sessions sets the env form, which a binary older than the flag ignores.
-        #[arg(long, env = "AGENT_PANEL_CODEX", value_parser = clap::builder::FalseyValueParser::new())]
-        codex: bool,
     },
     /// Exit 0 when the transcript's last word asks the human something (a question, a step for
     /// them to take, or an open dialog), else 1. The Stop check that makes a session file its ask.
@@ -169,11 +163,7 @@ fn main() -> anyhow::Result<()> {
     match cli.cmd {
         None => chooser::run_interactive(cli.query.as_deref()),
         Some(Cmd::Next) => chooser::run_next(),
-        Some(Cmd::List {
-            json,
-            parked,
-            codex,
-        }) => chooser::run_list(json, parked, codex),
+        Some(Cmd::List { json, parked }) => chooser::run_list(json, parked),
         Some(Cmd::AsksHuman { transcript }) => {
             std::process::exit(if agent_core::transcript::asks_human_at(&transcript) {
                 0
