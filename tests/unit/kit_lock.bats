@@ -33,7 +33,7 @@ setup() {
 }
 
 kit_commit() { git -C "$KIT_REPO" add -A && git -C "$KIT_REPO" commit -q -m "$1"; }
-blob_sha() { git -C "$KIT_REPO" show "$1:.local/src/web-kit/$2" | sha256sum | cut -d' ' -f1; }
+kit_file_sha() { git -C "$KIT_REPO" show "$1:.local/src/web-kit/$2" | sha256sum | cut -d' ' -f1; }
 
 # serve <commit> -> a file:// tree of that kit commit; echoes the --url template for fetch-kit.py.
 serve() {
@@ -47,9 +47,9 @@ serve() {
   assert_success
   assert_output --partial '2 files, 2 changed'
   assert_equal "$(jq -r .commit "$SITE/web/kit.lock")" "$PIN1"
-  assert_equal "$(jq -r '.files["a.css"]' "$SITE/web/kit.lock")" "$(blob_sha "$PIN1" a.css)"
-  assert_equal "$(jq -r '.files["f.woff2"]' "$SITE/web/kit.lock")" "$(blob_sha "$PIN1" f.woff2)"
-  run grep -c "ADD --checksum=sha256:$(blob_sha "$PIN1" fetch-kit.py) https://raw.githubusercontent.com/o/kit/$PIN1/.local/src/web-kit/fetch-kit.py /fetch-kit.py" "$SITE/Dockerfile"
+  assert_equal "$(jq -r '.files["a.css"]' "$SITE/web/kit.lock")" "$(kit_file_sha "$PIN1" a.css)"
+  assert_equal "$(jq -r '.files["f.woff2"]' "$SITE/web/kit.lock")" "$(kit_file_sha "$PIN1" f.woff2)"
+  run grep -c "ADD --checksum=sha256:$(kit_file_sha "$PIN1" fetch-kit.py) https://raw.githubusercontent.com/o/kit/$PIN1/.local/src/web-kit/fetch-kit.py /fetch-kit.py" "$SITE/Dockerfile"
   assert_output 1
 
   cp "$SITE/web/kit.lock" "$SANDBOX/lock.1" && cp "$SITE/Dockerfile" "$SANDBOX/df.1"

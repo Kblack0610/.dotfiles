@@ -29,7 +29,7 @@ commit_of() { kit rev-parse -q --verify "$1^{commit}" || die "no commit '$1' in 
 blob_sha() { kit cat-file blob "$1:$2" 2>/dev/null | sha256sum | cut -d' ' -f1; }
 has_blob() { kit cat-file -e "$1:$2" 2>/dev/null; }
 
-bump() {
+lock_bump() {
   local lock="" want="" df="" df_given=0
   while [ $# -gt 0 ]; do
     case $1 in
@@ -71,7 +71,7 @@ bump() {
   fi
 }
 
-status() {
+sites_status() {
   [ -f "$KIT_SITES" ] || die "no sites file at $KIT_SITES (one '<repo dir> <lock path in it>' a line)"
   local tip rc=0 line dir lock site pin path behind contract
   tip=$(commit_of "$KIT_REF")
@@ -97,7 +97,7 @@ status() {
 }
 
 case ${1-} in
-  bump) shift; bump "$@" ;;
-  status) shift; [ $# -eq 0 ] || usage; status ;;
+  bump) shift; lock_bump "$@" ;;
+  status) shift; [ $# -eq 0 ] || usage; sites_status ;;
   *) usage ;;
 esac
