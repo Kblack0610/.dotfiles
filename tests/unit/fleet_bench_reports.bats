@@ -1498,8 +1498,28 @@ SH
   assert_line "cc:pool_match_busy	unity	1"
   assert_line "cc:pool_match_runners	unity	4"
   assert_line "cc:pool_match_labels	unity/linux,self-hosted,unity-full	1"
+  refute_line --partial cc:pool_match_unread
   run cat "$SANDBOX/ci-match.args"
   assert_output "wait=3600"
+  # ar-4653: a hub that cannot read Prometheus is one unread row, never an empty answer that reads
+  # as a match of nothing; the read above printed no such row.
+  printf '#!/bin/bash\necho "hub ci: did not answer" >&2\nexit 1\n' > "$SANDBOX/bin/ci-match-stub"
+  run prom_match_rows
+  assert_success
+  assert_output "cc:pool_match_unread	-	1"
+}
+
+@test "findings: a starved pool whose label match went unread says so, and falls back to the pool's slots" {
+  use_fixture
+  { cat "$FX/prom.tsv"; printf 'cc:pool_match_unread\t-\t%s\t1\n' "$(clock 09:30)"; } > "$SANDBOX/prom.tsv"
+  BENCH_PROM_TSV="$SANDBOX/prom.tsv" eval_at 09:30
+  run jq -r 'select(.scope == "pool:unity") | "\(.evidence.numbers.match_unread) \(.conclusion)"' "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_output "1 oldest job waited 1.1h with 5/6 slots busy (the slots matching its labels unread): demand is over the pool's capacity"
+  # Negative control: read and matching nothing is not unread.
+  rm "$FLEET_BENCH_DIR/findings.jsonl"
+  eval_at 09:30
+  run jq -r 'select(.scope == "pool:unity") | .conclusion' "$FLEET_BENCH_DIR/findings.jsonl"
+  refute_output --partial unread
 }
 
 @test "findings: starved goes to the human once it has lasted the hour, and keeps its fact" {
@@ -3990,24 +4010,30 @@ cancel c-old-lane --why canary: superseded by the $week set"
   assert_failure 2
 }
 
-# ar-4554: fleet-dispatch passes --off-claude while a project share is full, which holds a Claude lane's canary.
-@test "canary top-up: --off-claude queues only the lanes on their own source, never the claude baseline or a claude lane" {
+# ar-4554, ar-5406: fleet-dispatch passes --off-claude <full projects>, which holds a Claude lane's canary of those projects only.
+@test "canary top-up: --off-claude <project> leaves a claude lane out of that project alone, never another project or a lane on its own source" {
   kpi_setup; kpi_fixture; canary_fixture
   week=$(date -d "@$T0" +%Gw%V)
   export BENCH_CANARY_LANES="$SANDBOX/canary-lanes" BENCH_HARNESSES="$SANDBOX/harnesses.json" BENCH_ROOM_CMD=room-stub
   printf 'codex sol\nclaude haiku max\n' > "$BENCH_CANARY_LANES"
   echo '{"harnesses":{"codex":{"source":"codex"}}}' > "$BENCH_HARNESSES"
   printf '#!/usr/bin/env bash\necho room\n' > "$SANDBOX/bin/room-stub"; chmod +x "$SANDBOX/bin/room-stub"
-  run "$SUBJECT" canary queue --max 9 --off-claude
+  run "$SUBJECT" canary queue --max 9 --off-claude game
   assert_success
   assert_output "fleet-bench: canary: 1 queued for $week (codex/sol)"
   assert_equal "$(ls "$CQ"/*.json)" "$CQ/canary-greet-$week-codex-sol.json"
+  # The negative control: a full share of another project leaves the claude baseline and the claude lane queued (ar-5406).
+  rm "$CQ"/*.json
+  run "$SUBJECT" canary queue --max 9 --off-claude other,elsewhere
+  assert_success
+  assert_equal "$(ls "$CQ"/*.json | wc -l)" 3
   # The positive control: without it the claude baseline and the claude lane queue too.
+  rm "$CQ"/*.json
   run "$SUBJECT" canary queue --max 9
   assert_success
   assert_equal "$(ls "$CQ"/*.json | wc -l)" 3
   # It names the top-up alone.
-  run "$SUBJECT" canary queue --harness codex --model sol --off-claude
+  run "$SUBJECT" canary queue --harness codex --model sol --off-claude game
   assert_failure 2
 }
 
