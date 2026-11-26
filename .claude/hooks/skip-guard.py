@@ -124,16 +124,17 @@ def review_context():
     return _CONTEXT
 
 
-def posts_status(argv, context):
+def posts_status(argv):
     """True when a `gh api` write (any method but GET or HEAD) on a statuses path sets the context
-    field to context (`-f context=review`, `-Fcontext=review`, `--raw-field=context=review`), or reads
-    its body from a file or stdin (`--input`, `-F x=@file`), which this cannot read."""
+    field to review_context() (`-f context=review`, `-Fcontext=review`, `--raw-field=context=review`),
+    or reads its body from a file or stdin (`--input`, `-F x=@file`), which this cannot read. The
+    context is read only for a statuses path, so no other gh command needs agent-land beside it."""
     if FORGE.gh_words(argv)[:1] != ["api"]:
         return False
     rest = argv[2:]
     if not any("statuses/" in a for a in rest):
         return False
-    field = "context=" + context
+    field = "context=" + review_context()
     named = any(a == field or a.endswith(("=" + field, "-f" + field, "-F" + field)) for a in rest)
     unread = "--input" in rest or any("=@" in a for a in rest)
     return (named or unread) and FORGE.request_method("gh api", argv) not in (None, "GET", "HEAD")
@@ -304,9 +305,8 @@ def check(head, argv, env, cwd):
         label = gate_label()
         if applies_label(argv, label):
             return LABEL_MSG.format(what="`%s`" % " ".join(argv[:4]), label=label)
-        context = review_context()
-        if posts_status(argv, context):
-            return STATUS_MSG.format(what="`%s`" % " ".join(argv[:3]), context=context)
+        if posts_status(argv):
+            return STATUS_MSG.format(what="`%s`" % " ".join(argv[:3]), context=review_context())
         return None
     if head != "git":
         return None
