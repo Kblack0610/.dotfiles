@@ -6,6 +6,7 @@
 #   fleet-assess --thermal-probe the same, and a tripped `fleet-thermal` counts as a hold (that watch's probe); a HOLD adds a
 #                                `page:` line, urgent at FLEET_EXTREME_LOAD_X
 #   fleet-assess --github        one line: the GitHub budget, with LOW when it is
+#   fleet-assess --gh-callers [SINCE_EPOCH] gh call log: user:deferred rows by caller, reserve-granted reads by granting ancestor
 #   fleet-assess --gate          one line: slots busy and queued, recent results, branches the gate keeps re-running unmerged
 #   fleet-assess --fleet         every host's busy share and whether each agent host's CPU cap is live, over Prometheus and ssh
 #                                (so only on this flag); exit 1 on OVER or NOT live
@@ -627,6 +628,7 @@ main() {
     return
   fi
   if [ "${1:-}" = --gh-callers ]; then
+    [[ "${2:-0}" =~ ^[0-9]+$ ]] || { echo "fleet-assess --gh-callers: SINCE_EPOCH must be digits, got '$2'" >&2; return 2; }
     gh_callers_report "${2:-0}"
     return
   fi
@@ -705,7 +707,7 @@ gh_callers_report() {
       printf "reserve-granted reads: %d (granting ancestor via parent)\n", ng; fflush()
       for (c in g) printf "  %d\t%s\n", g[c], c | "sort -rn"
       close("sort -rn")
-      if (old) printf "user rows without the granting column (logged before ar-3009): %d\n", old
+      if (old) printf "user rows without the granting column (logged before the column, ar-3009): %d\n", old
     }'
 }
 

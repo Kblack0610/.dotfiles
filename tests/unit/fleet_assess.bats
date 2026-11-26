@@ -656,7 +656,7 @@ SH
   assert_line $'  1\tagent-land via timeout'
   assert_line $'  1\tagent-land via bash'
   # the 4 rows of the first file have no granting column; the 5000 s old row is outside the window
-  assert_line 'user rows without the granting column (logged before ar-3009): 4'
+  assert_line 'user rows without the granting column (logged before the column, ar-3009): 4'
   rm "$GH_CALLS_DIR"/*.tsv
   run gh_callers_report
   assert_output "no gh call log in $GH_CALLS_DIR"

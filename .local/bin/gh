@@ -12,7 +12,8 @@
 # Log: GH_CALLS_DIR/<day>.tsv, epoch, bucket (user | app:<owner> | user:app-error |
 # user:app-denied | env), rc, caller script, $AGENT_QUEUE_ITEM, the command with values
 # redacted, and last the GH_RESERVE_CALLERS ancestor that let the read through under the reserve
-# ('-' when no reserve check ran or none granted; rows before ar-3009 have 6 columns).
+# ('-' when no reserve check ran or none granted, so a deferred row and an above-reserve row both read
+# '-': tell them apart by bucket; rows before ar-3009 have 6 columns).
 # fleet-assess gh_callers reads it. Kept 7 days, readable by you only.
 # Budget: every account spends the user's one REST budget, so the wrapper keeps one shared reading of
 # it (GH_CALLS_DIR/budget, from the free rate_limit call, at most GH_BUDGET_STALE_S old) and, below
@@ -196,6 +197,7 @@ log_call() {
     mkdir -p "$dir" && find "$dir" -name '*.tsv' -mtime +7 -delete
   fi
   what=$(redact "$@")
+  what=${what//[$'\t\n']/ } # a tab in an argument would add a field to the row
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${EPOCHSECONDS:-$(date +%s)}" "$bucket" "$rc" "$(caller)" \
     "${AGENT_QUEUE_ITEM:--}" "${what:0:160}" "$reserve_by" >> "$f"
 }
