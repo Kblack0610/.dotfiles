@@ -818,7 +818,7 @@ cmd_start() {
     if [ "${#args[@]}" -gt 0 ]; then
         local f="$STATE_DIR/$name/args" a
         for a in "${args[@]}"; do case "$a" in *$'\n'*) die "an argument holds a line break: $a" ;; esac; done
-        case "$(unit_state "$name")" in active | activating | reloading) die "$name is running: a start with arguments waits for its run to end" ;; esac
+        case "$(unit_state "$name")" in active | activating | reloading | deactivating) die "$name is running: a start with arguments waits for its run to end" ;; esac
         if [ -e "$f" ] && [ $(( $(date +%s) - $(stat -c %Y "$f" 2>/dev/null || echo 0) )) -lt "$ARGS_PENDING_S" ]; then
             die "$name has a start's arguments not yet read (under ${ARGS_PENDING_S}s old): a start with arguments waits for it"
         fi

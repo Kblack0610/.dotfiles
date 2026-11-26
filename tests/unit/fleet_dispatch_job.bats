@@ -16,7 +16,7 @@ job_fixture() {
   stub claude 'echo "claude $*" >> "$NOTES_FIXTURE/calls.log"'
   stub systemctl 'cat "$NOTES_FIXTURE/unit.state" 2>/dev/null || echo inactive'
   stub agent-hold '[ ! -e "$NOTES_FIXTURE/dispatch.held" ] || [ "$2" != dispatch ] || exit 1
-if [ "$1 $2" = "check unity" ]; then echo "held: unity (since 11:00 by unity-agent-1: a build)"; exit 1; fi; exit 0'
+if [ "$1 $2" = "check unity" ] && [ ! -e "$NOTES_FIXTURE/unity.free" ]; then echo "held: unity (since 11:00 by unity-agent-1: a build)"; exit 1; fi; exit 0'
 }
 
 # job_add <slug> [tags]: the item the human queues, as agent-queue add --mode job.
@@ -88,6 +88,31 @@ job_running() {
   assert_output --partial "stays queued"
   [ -n "$(qitem queued busy)" ] || fail "a refused start did not requeue the item"
   [ -z "$(qitem running busy)" ]
+}
+
+@test "a runner mid-run is a wait decided before the claim: the item stays queued, agentctl is not asked" {
+  job_fixture
+  job_add waits "at:01:00"
+  for st in active deactivating; do
+    echo "$st" > "$NOTES_FIXTURE/unit.state"
+    run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+    assert_success
+    assert_output --partial "game-build is running, so it stays queued"
+    [ -n "$(qitem queued waits)" ] || fail "a $st runner claimed the item"
+  done
+  assert_not_called "agentctl start"
+}
+
+@test "a refused start keeps the item's hold: tag, which the claim strips" {
+  job_fixture
+  job_add held "at:01:00 hold:unity"
+  touch "$NOTES_FIXTURE/unity.free" "$NOTES_FIXTURE/agentctl.refuse"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_called "agentctl start game-build"
+  [ -n "$(qitem queued held)" ] || fail "a refused start did not requeue the item"
+  run agent-queue list --json --state queued
+  assert_output --partial "hold:unity"
 }
 
 @test "a job item whose runner conf is gone is closed failed, not left to retry" {

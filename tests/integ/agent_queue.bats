@@ -3150,6 +3150,10 @@ job_runner_conf() { # <name> [KIND] [EFFECT]
   run "$AQ" add --project game --mode job --run "thinker x" --slug j-model
   assert_failure
   assert_output --partial "EFFECT=acts"
+  job_runner_conf daemon persistent
+  run "$AQ" add --project game --mode job --run "daemon x" --slug j-daemon
+  assert_failure
+  assert_output --partial "KIND=persistent"
   [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ]
 }
 

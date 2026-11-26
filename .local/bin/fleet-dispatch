@@ -6706,9 +6706,9 @@ job_ledger() {
     "$d/runs.jsonl" 2>/dev/null || :   # no ledger yet (jq exits 2) is no finished run
 }
 
-# job_unit_live <runner> -- the runner's unit is active or starting.
+# job_unit_live <runner> -- the runner's unit is active, starting or stopping (its stop report still runs).
 job_unit_live() {
-  case "$(systemctl --user show -p ActiveState --value "agentctl@$1.service" 2>/dev/null)" in active | activating | reloading) return 0 ;; *) return 1 ;; esac
+  case "$(systemctl --user show -p ActiveState --value "agentctl@$1.service" 2>/dev/null)" in active | activating | reloading | deactivating) return 0 ;; *) return 1 ;; esac
 }
 
 # job_close <slug> <ok|failed> <note> -- close a job item with its words; the note is what a reader sees first.
@@ -6721,7 +6721,7 @@ job_close() {
 # start_job <item json> -- start one queued job item: rc 0 when it started or waits for the next pass (the reason said),
 # the item closed failed when its run: can never start (no runner by that name, a runner a caller starts).
 start_job() {
-  local it=$1 slug run name conf out
+  local it=$1 slug run name conf out tags
   local -a w
   slug=$(jq -r .slug <<<"$it"); run=$(jq -r '.run // ""' <<<"$it")
   read -ra w <<<"$run"; name=${w[0]:-}
@@ -6731,7 +6731,12 @@ start_job() {
     return 0
   fi
   if [ "$DRY" = 1 ]; then say "would start job $slug: agentctl start $name -- ${w[*]:1}"; return 0; fi
-  # The claim is the one start: a second pass or a hand start finds it running and stops (--if queued).
+  # A runner mid-run is a wait, decided before the claim: a claimed item's ledger window opens at the claim, so it would
+  # never see the run in flight, and each pass would flip it running and back (events, board marks).
+  if job_unit_live "$name"; then say "job $slug: $name is running, so it stays queued"; return 0; fi
+  # The claim is the one start: a second pass or a hand start finds it running and stops (--if queued). The move strips
+  # its hold: tags (a requeue would hold it behind its own claim); a start that races a run puts them back.
+  tags=$(jq -r '.tags // ""' <<<"$it")
   agent-queue move "$slug" running --if queued >/dev/null 2>&1 || { say "job $slug: no longer queued, another start took it"; return 0; }
   if out=$(agentctl start "$name" --no-block -- "${w[@]:1}" 2>&1); then
     logline "job $slug: agentctl start $name${w[1]:+ ${w[*]:1}} (no model session)"
@@ -6740,6 +6745,7 @@ start_job() {
   fi
   # A runner already running, or holding an earlier start's arguments, is a wait: the item goes back, as it was.
   agent-queue move "$slug" queued --if running >/dev/null 2>&1
+  [ -z "$tags" ] || agent-queue set "$slug" "tags=$tags" >/dev/null 2>&1
   say "job $slug: agentctl start $name did not start it, so it stays queued: ${out//$'\n'/ }"
   logline "job $slug: agentctl start $name refused, stays queued: ${out//$'\n'/ }"
   return 0

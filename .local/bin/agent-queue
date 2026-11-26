@@ -4133,7 +4133,7 @@ own_pr() {
 
 # job_check <run> <running> -- a --mode job add's command is one agentctl runner and its arguments, which
 # `agentctl start <runner> -- <args>` takes word for word (no shell reads it). Dies on no command, a runner with
-# no conf, a KIND=call runner (its caller starts it) or one that may run a model (EFFECT is not none: a job
+# no conf, a KIND=call runner (its caller starts it), a KIND=persistent one (no run ends) or one that may run a model (EFFECT is not none: a job
 # item runs no model session), and on --running, since dispatch starts a job item and nothing works it.
 job_check() {
   local name="${1%% *}" conf="${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/${1%% *}.conf" eff kind
@@ -4143,6 +4143,7 @@ job_check() {
   [ -f "$conf" ] || die "--run names no agentctl runner: $name has no $conf"
   eff="$(sed -n 's/^EFFECT=//p' "$conf" | tail -1 | tr -d "\"'")" kind="$(sed -n 's/^KIND=//p' "$conf" | tail -1 | tr -d "\"'")"
   [ "$kind" != call ] || die "--run: $name is KIND=call, started by its caller, not by a job item"
+  [ "$kind" != persistent ] || die "--run: $name is KIND=persistent, which has no run end for the item to close on"
   [ "$eff" = none ] || die "--run: $name has EFFECT=${eff:-unset}, and a job item runs no model: only an EFFECT=none runner"
 }
 
