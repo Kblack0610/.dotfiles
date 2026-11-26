@@ -55,6 +55,8 @@ set -uo pipefail
 # The board counts a session's PRs the way the nightly outcomes do (so_transcript_metrics).
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/session-outcomes.sh"
+# session-outcomes.sh brings edit-tools.sh. activity_line's "editing": a busy pane in one of these tools.
+EDIT_TOOLS_RE="$(edit_tools_re)"
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh"
 # shellcheck source=/dev/null
@@ -165,7 +167,9 @@ TEST_FAILURES="${UNITY_TEST_FAILURES:-${XDG_STATE_HOME:-$HOME/.local/state}/unit
 POOL_FAILURES="${UNITY_POOL_FAILURES:-${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/pool-failures.tsv}"
 LEDGER="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}"
 STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
-ASK_ROOT="${AGENT_ASK_ROOT:-$HOME/.agent/asks}"
+# shellcheck source=../lib/ask-store.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/ask-store.sh"
+ASK_ROOT="$(ask_root)"
 # The agent store: store-sync commits and pushes it every 15 minutes, so a file a session wrote
 # there (a lesson, a plan, its wind-down note) is never unlanded work. Counting it held finished
 # sessions STALLED and kept them on the pace target (2026-11-19).
@@ -2301,7 +2305,7 @@ activity_line() {
   [ "$status" = parked ] && { echo parked; return; }
   [ "$ojob" = test ] && { echo testing; return; }
   [ "$ojob" = build ] && { echo building; return; }
-  if [ "$status" = busy ] && [[ "$doing" =~ ^(Edit|Write|MultiEdit|NotebookEdit)(:|$) ]]; then echo editing; return; fi
+  if [ "$status" = busy ] && [ -n "$EDIT_TOOLS_RE" ] && [[ "$doing" =~ ^($EDIT_TOOLS_RE)(:|$) ]]; then echo editing; return; fi
   if [ "$d" != - ]; then
     [ "$head" != - ] || head="$(git -C "$d" rev-parse -q --verify HEAD 2>/dev/null || echo -)"
     if [ "$head" != - ] && runs="$(branch_runs "$d" "$br")"; then
@@ -2586,11 +2590,10 @@ collect() {
   # The local agent-panel feeds every row, parked ones included (parked_lines reads it): a failure
   # that printed nothing is "*"; exit 3 with rows is a gap, "+", like a remote one.
   # Exit 3 (a read with a gap) still prints the rows it read; they are kept, and the pass is named.
-  # AGENT_PANEL_CODEX: a codex, opencode or agy run in a pane is a row too (busy, its session id as session_id, so
-  # item_of joins it by sessions: like a Claude). The env form, not --codex: a binary not yet
-  # rebuilt ignores it instead of refusing the flag and reading as every session gone.
+  # Every harness (claude, codex, opencode, agy) is a row, busy or idle by agent-panel's one activity reading,
+  # its session id as session_id, so item_of joins it by sessions: like a Claude. No harness branch here.
   local prc=0
-  panel="$(AGENT_PANEL_CODEX=1 "${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null)" || prc=$?
+  panel="$("${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null)" || prc=$?
   if [ "$prc" -ne 0 ]; then
     unreadable agent-panel
     if [ "$prc" -eq 3 ] && [ -n "$panel" ]; then echo + >> "$CACHE/blind"; else echo '*' >> "$CACHE/blind"; fi
@@ -3675,7 +3678,7 @@ list_view() {
   echo "state document $((age / 60))m old$where; \`fleet-sessions --fresh\` runs a full pass"
   # Fields join on the unit separator, not @tsv, which would double a backslash in a reason. A row's
   # target sorts as the full pass sorts it (server prefix first) and prints without that prefix.
-  jq -r '(.vocab.buckets // ["NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED"]) as $order
+  jq -r --arg order "$BUCKET_ORDER" '(.vocab.buckets // ($order | split(" "))) as $order
     | def s: if . == null then "" else tostring | gsub("[\t\n\u001f]"; " ") end;
     [(.main // [] | .[] | [((.fact // "NIGHTLY") | split(" ")[0]), .repo, "-", "-", 0, .reason, .nudged, "-", "-"]),
        (.shared // [] | .[] | ["SHARED", .test, "-", "-", 0, .reason, .nudged, "-", "-"]),

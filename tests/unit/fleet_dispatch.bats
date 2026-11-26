@@ -330,7 +330,7 @@ load 'fleet_dispatch/main'
   export AGENT_HOLD_DIR="$HOME/.agent/holds"
   # The real agent-hold over setup's always-clear stub: the copied agent-queue calls the one beside it.
   cp "$REPO_ROOT/.local/bin/agent-hold" "$SANDBOX/bin/agent-hold"
-  agent-hold set critical --kind resource --by human "lockdown" >/dev/null
+  agent-hold set critical --kind resource --by coordinator "lockdown" >/dev/null
   agent-hold grant critical ga-1 ga-50 >/dev/null
   row game agent ga-1 "- [ ] fix(game): granted by its id $T #hold/critical <!-- id:ga-1 -->"
   row game agent ga-2 "- [ ] fix(game): granted by its epic $T #hold/critical #of/ga-50 <!-- id:ga-2 -->"
@@ -590,7 +590,7 @@ exits: gate 2 improve 1 plan 2 sheet 1'
   assert_equal "$(jq -r 'select(.key == "gr-1") | .verdict' <<<"$output")" skip
 }
 
-@test "skip_exits: a waits gate needs an open row and a verdict that otherwise fits; a planned row still skipped by a plan rule goes to the human" {
+@test "skip_exits: a waits gate needs an open row and a verdict that otherwise fits; a planned row still skipped by a plan rule is held on the agent board" {
   exits_fixture
   # the reason names no open row (zz-404 is not on the board), or the row is not clear: plan
   skipv gx-4 waits 'waits on zz-404'; skipv gx-6 waits 'waits on gx-9' false
@@ -600,11 +600,56 @@ exits: gate 2 improve 1 plan 2 sheet 1'
   jq -c --arg d "$(detail_sig '"goal: split it"')" 'if .key == "gx-1" then .dsig = $d else . end' \
     "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
   run skip_exits --dry-run
-  assert_output --partial 'sheet	game	gx-1	unclear'
+  assert_output --partial 'hold	game	gx-1	unclear'
   assert_output --partial 'plan	game	gx-4	waits'
   assert_output --partial 'plan	game	gx-6	waits'
   refute_output --partial 'gx-5'
   refute_output --partial 'after/'
+}
+
+@test "skip_exits: no person is needed for a spent plan exit or a human rule marked agent_only true, so it is held on the agent board; a person's rule keeps its level on the sheet; a check(epics) row takes no exit (ar-5968)" {
+  exits_fixture
+  row game agent gp-1 "- [ ] row gp-1 #high #why/red-main $T <!-- id:gp-1 -->"
+  row game agent gp-2 "- [ ] row gp-2 #high #requested $T <!-- id:gp-2 -->"
+  row game agent gp-3 "- [ ] row gp-3 #high $T <!-- id:gp-3 -->"
+  row game agent gp-4 "- [ ] check(epics): verify gm-1 #high $T <!-- id:gp-4 -->"
+  row game agent gp-5 "- [ ] row gp-5 #high $T <!-- id:gp-5 -->"
+  row game agent gp-6 "- [ ] row gp-6 #high $T <!-- id:gp-6 -->"
+  for k in gp-1 gp-2 gp-3 gp-4 gp-6; do board_row game agent "$k" '[]' '["goal: split it"]'; done
+  board_row game agent gp-5 '[]' '[]'
+  jq -c 'if .id == "gp-2" then .requested = true elif .id == "gp-4" then .type = "check" | .area = "epics" else . end' \
+    "$NOTES_FIXTURE/board.rows" > "$SANDBOX/b" && mv "$SANDBOX/b" "$NOTES_FIXTURE/board.rows"
+  # gp-1, gp-2 and gp-4 were planned and the judge read the plan (dsig) and still skips them; gp-3 by a rule that names
+  # a person; gp-5 is a design skip the judge marked agent_only (not yet planned), gp-6 the same, planned
+  skipv gp-1 unclear; skipv gp-2 unclear; skipv gp-3 design; skipv gp-4 unclear
+  SKIPV_AO=true skipv gp-5 design; SKIPV_AO=true skipv gp-6 design
+  jq -c --arg d "$(detail_sig '"goal: split it"')" 'if (.key | IN("gp-1", "gp-2", "gp-3", "gp-4", "gp-6")) then .dsig = $d else . end' \
+    "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  : > "$NOTES_FIXTURE/calls.log"
+  run skip_exits --dry-run
+  assert_output --partial 'hold	game	gp-1	unclear'
+  assert_output --partial 'hold	game	gp-6	design'
+  assert_output --partial 'plan	game	gp-5	design'
+  skip_exits
+  # a person's rule files its sheet row at the level it had
+  grep -qxF "notes --profile bnb ptask game add row gp-3 #high #tier/1 (agent row gp-3) --origin fleet-dispatch" "$NOTES_FIXTURE/calls.log" ||
+    fail "gp-3 not kept: $(grep 'gp-3' "$NOTES_FIXTURE/calls.log")"
+  # NEGATIVE CONTROL: no held row files a sheet row, drops its agent row or reaches improvements.md
+  run grep -E 'ptask game add row gp-[1256]|drop gp-[1256]|improve game.*gp-[1256]' "$NOTES_FIXTURE/calls.log"
+  assert_failure
+  # gp-5 is tagged for its plan first, the epic check is untouched
+  grep -qE 'tag --add plan gp-5' "$NOTES_FIXTURE/calls.log" || fail "gp-5 not planned"
+  run grep -c 'gp-4' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # the hold is on record, costs no exit, and a second pass takes nothing again
+  assert_equal "$(jq -r 'select(.key | startswith("gp-")) | select(.exit) | "\(.key)=\(.exit)"' "$FLEET_DISPATCH_DIR/verdicts.jsonl" | sort | paste -sd,)" \
+    'gp-1=hold,gp-2=hold,gp-3=sheet,gp-5=plan,gp-6=hold'
+  assert_equal "$EXITS_HELD" 3
+  : > "$NOTES_FIXTURE/calls.log"
+  skip_exits
+  assert_equal "$EXITS_HELD" 0
+  run grep -E 'gp-[1236]' "$NOTES_FIXTURE/calls.log"
+  assert_failure
 }
 
 @test "skip_exits: an agent row of a kind kinds.json turns off leaves the lane, #high to the human sheet and #low to improvements.md; an epic, a parent and a fix stay" {
@@ -755,7 +800,7 @@ ptask game --agent tag --add plan --add go ga-7'
   assert_output 1
 }
 
-@test "skip_exits: a row sized L or XL takes the plan exit with no verdict; an epic, a parent, a gated row, a failed one, a draft project's and a human skip keep theirs, and a planned one still L goes to the human" {
+@test "skip_exits: a row sized L or XL takes the plan exit with no verdict; an epic, a parent, a gated row, a failed one, a draft project's and a human skip keep theirs, and a planned one still L is held on the agent board" {
   printf '%s\n' '- (needs-person) a device run' >> "$DISPATCH_POLICY"
   sized_fixture
   stub systemctl 'echo "$*" >> "$NOTES_FIXTURE/systemctl.log"'
@@ -777,14 +822,17 @@ tag --add plan gs-6'
   jq -c 'if .id == "gs-6" then .details = [] else . end' "$NOTES_FIXTURE/board.rows" > "$SANDBOX/b" && mv "$SANDBOX/b" "$NOTES_FIXTURE/board.rows"
   run skip_exits --dry-run
   assert_output --regexp '^exits: *$'
-  # inbox-plan planned gs-1 and left it L: the recorded plan exit now sends it to the human, once
+  # inbox-plan planned gs-1 and left it L: no person is needed to split it, so the recorded plan exit holds it, once
   : > "$NOTES_FIXTURE/board.rows"
   board_row game agent gs-1 '[]' '["goal: split it"]'
   jq -c '.size = "l" | .type = "feat"' "$NOTES_FIXTURE/board.rows" > "$SANDBOX/b" && mv "$SANDBOX/b" "$NOTES_FIXTURE/board.rows"
   run skip_exits --dry-run
-  assert_output 'sheet	game	gs-1	too-big
-exits: sheet 1'
+  assert_output 'hold	game	gs-1	too-big
+exits: hold 1'
+  : > "$NOTES_FIXTURE/calls.log"
   skip_exits
+  run grep -E 'ptask game add|drop gs-1' "$NOTES_FIXTURE/calls.log"
+  assert_failure
   run skip_exits --dry-run
   assert_output --regexp '^exits: *$'
 }

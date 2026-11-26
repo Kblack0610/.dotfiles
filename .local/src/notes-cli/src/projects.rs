@@ -2429,12 +2429,30 @@ fn carry_open(
         .into_iter()
         .map(|(n, _)| n - 1)
         .collect();
+    carry_rows(content, &rows, next)
+}
+
+/// The agent board's side of [`carry_open`]: every open board row tagged for `cur` or an earlier
+/// release, aimed at `next` the same way. An untagged board row follows the sheet's version by
+/// staying where it is, so only a tag strands a row; `<= cur` also carries a row an earlier cut
+/// left on its closed version, so the next cut clears what was stranded before this fix (ar-5321).
+fn carry_board(content: &str, cur: V, next: V) -> (String, Vec<(String, u32)>) {
+    let rows: Vec<usize> = sheet::open_rows(content)
+        .into_iter()
+        .filter(|(_, l)| sheet::target(l).is_some_and(|t| t <= cur))
+        .map(|(n, _)| n - 1)
+        .collect();
+    carry_rows(content, &rows, next)
+}
+
+/// `content` with each of `rows` (0-based) retagged `#<next>` and its carry counter bumped.
+fn carry_rows(content: &str, rows: &[usize], next: V) -> (String, Vec<(String, u32)>) {
     if rows.is_empty() {
         return (content.to_string(), Vec::new());
     }
     let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
     let mut moved: Vec<(String, u32)> = Vec::new();
-    for i in rows {
+    for &i in rows {
         // `next` becomes the open version on this release, so #urgent is still legal there.
         let (retagged, _) = crate::project_sweep::retag(lines[i].trim_end(), next, true);
         let (line, n) = bump_carried(&retagged);
@@ -2696,12 +2714,48 @@ fn agent_closed_rows(dir: &Path, cur: V) -> Vec<String> {
         .collect()
 }
 
+/// [`carry_board`] on the project's agent board, written when it moved a row. Nothing when there
+/// is no board.
+fn carry_agent_board(dir: &Path, cur: V, next: V) -> Result<Vec<(String, u32)>> {
+    let board = crate::agent_sheet::sheet_path(dir);
+    let Ok(content) = fs::read_to_string(&board) else {
+        return Ok(Vec::new());
+    };
+    let (out, moved) = carry_board(&content, cur, next);
+    if !moved.is_empty() {
+        md::write_atomic(&board, &out)?;
+    }
+    Ok(moved)
+}
+
+/// The agent board's half of a release, once the sheet's earlier tags shipped: the rows an earlier
+/// tag of the family shipped are sorted out, then on a carry the board's open rows tagged for this
+/// version go forward with the sheet's, so the frozen note lists them and the next window commits
+/// them. A retag moves no row between files, so it is written before the freeze: a failure after
+/// it leaves rows aimed where they go. Returns the rows it carried.
+fn forward_agent_board(
+    dir: &Path,
+    name: &str,
+    (cur, next): (V, V),
+    family: Option<(&crate::shipped::Family, V)>,
+    carry: bool,
+) -> Result<Vec<(String, u32)>> {
+    if let Some((f, t)) = family {
+        sort_agent_board(dir, name, cur, (t, next), f)?;
+    }
+    if !carry {
+        return Ok(Vec::new());
+    }
+    carry_agent_board(dir, cur, next)
+}
+
 /// Close a version on a project's agent board: done rows go to `agent/versions/<cur>.md`.
 /// Returns how many, or `None` when there is no board.
 ///
 /// No gate: board rows are the agents' subtasks under the human queue, and the sheet's gate
-/// already decided the version is closed. The board carries no `Version:` line, so its open
-/// rows move on with the sheet by staying where they are.
+/// already decided the version is closed. The board carries no `Version:` line, so its untagged
+/// open rows move on with the sheet by staying where they are; a carry already aimed its tagged
+/// ones at the next version ([`carry_agent_board`]).
 fn release_agent_board(dir: &Path, name: &str, cur: V) -> Result<Option<usize>> {
     let board = crate::agent_sheet::sheet_path(dir);
     let Ok(content) = fs::read_to_string(&board) else {
@@ -2891,9 +2945,8 @@ pub fn release(
     // Rows an earlier tag shipped go to that tag's version, notes first: a failure before the
     // sheet is written leaves them in both, and a re-run writes each id once.
     ship_earlier(&dir, name, &earlier, project_tasks::SHEET_DONE_ROWS)?;
-    if let Some((f, t)) = family {
-        sort_agent_board(&dir, name, cur, (t, next), f)?;
-    }
+    let forwarded = forward_agent_board(&dir, name, (cur, next), family, carry)?;
+    let carried = [carried, forwarded].concat();
     let (frozen_body, new_sheet) = rebuild_sheet(&content, cur, next);
     // A note named from its tag says so in its head too: anything scanning a frozen note for
     // its `Version:` reads the tag, and the version the rows were planned as stays on record.
@@ -6286,6 +6339,93 @@ Some prose left on the board.
         assert!(!board.contains("fix(d)"), "{board}");
         let sheet = fs::read_to_string(dir.join("README.md")).unwrap();
         assert!(sheet.contains("feat(c): early"), "{sheet}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ar-5321: a carry release aimed the sheet's open rows forward but left the board's on the
+    // closed version, so no later window committed them. A row an earlier cut stranded goes too.
+    #[test]
+    fn a_carry_release_carries_the_boards_tagged_open_rows() {
+        let root = board_scratch("release-carry-board");
+        let mut p = crate::config::test_profile(&root.to_string_lossy());
+        let projects = root.join("lab/projects/current");
+        let dir = projects.join("demo");
+        fs::create_dir_all(dir.join("agent")).unwrap();
+        let index = root.join("lab/projects/index.md");
+        fs::write(
+            &index,
+            "## Current\n- [[lab/projects/current/demo/summary|demo]]\n",
+        )
+        .unwrap();
+        fs::write(dir.join("summary.md"), "# demo\n").unwrap();
+        fs::write(
+            dir.join("README.md"),
+            "# demo\nVersion: v1.13.0\n\n## Tasks\n- [ ] feat(a): sheet open\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("agent/README.md"),
+            "# demo - agent board\n\n## Tasks\n\
+             - [ ] fix(b): board open #v1.13.0 <!-- id:d-1 -->\n\
+             - [/] fix(c): stranded earlier #v1.12.0 <!-- id:d-2 carried:2 -->\n\
+             - [ ] fix(d): untagged follows\n\
+             - [ ] fix(e): aimed later #v1.15.0\n\
+             - [x] fix(f): closed #v1.13.0 <!-- pr:4 -->\n",
+        )
+        .unwrap();
+        p.projects = Some(projects);
+        p.project_index = Some(index);
+        let log = Logger::new(root.join(".state/log"), false);
+
+        release(
+            &p,
+            &log,
+            "demo",
+            Some(Bump::Minor),
+            false,
+            true,
+            None,
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let board = fs::read_to_string(dir.join("agent/README.md")).unwrap();
+        assert!(
+            board.contains("- [ ] fix(b): board open #v1.14.0 <!-- id:d-1 carried:1 -->"),
+            "{board}"
+        );
+        assert!(
+            board.contains("- [/] fix(c): stranded earlier #v1.14.0 <!-- id:d-2 carried:3 -->"),
+            "{board}"
+        );
+        assert!(
+            !board.contains("#v1.13.0") && !board.contains("#v1.12.0"),
+            "{board}"
+        );
+        // NEGATIVE CONTROLS: an untagged row follows the sheet and a later one waits, uncarried.
+        assert!(
+            board.contains("- [ ] fix(d): untagged follows\n"),
+            "{board}"
+        );
+        assert!(
+            board.contains("- [ ] fix(e): aimed later #v1.15.0\n"),
+            "{board}"
+        );
+        let note = fs::read_to_string(dir.join("versions/v1.13.0.md")).unwrap();
+        let carried = &note[note.find("Carried to v1.14.0:").expect(&note)..];
+        for t in [
+            "feat(a): sheet open",
+            "fix(b): board open",
+            "fix(c): stranded earlier",
+        ] {
+            assert!(carried.contains(t), "{t}:\n{note}");
+        }
+        assert!(
+            !carried.contains("fix(d)") && !carried.contains("fix(e)"),
+            "{note}"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 

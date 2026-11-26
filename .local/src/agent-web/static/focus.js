@@ -10,9 +10,6 @@
 // the page read (`notes put --base`), so a note that changed since (nvim, a sweep, a sync) is
 // never overwritten: a 409 shows it as it is now beside yours, and you choose. The edit is kept
 // in localStorage until saved or discarded, so a phone that drops the tab loses nothing.
-// On `status/inbox` a Handled-today row's checkbox is live: ticking it is one POST /api/inbox/ack
-// (`notes inbox ack`, the mark's one writer), and the page comes back with the row folded into
-// `+N reviewed`, where unticking it brings it back.
 // On a day note each task row is live: its box ticks or unticks it, `-` removes it (with Undo),
 // and each named lane but Done has a `+` line that adds a task tagged with the lane. Each is the
 // one line changed in the note as read, saved like Edit's Save (`notes put --base`), so a note
@@ -156,7 +153,7 @@ function dayNav() {
 
 // A note's markdown; only the inbox page's handled rows get live checkboxes.
 // On a day note a titled section's task rows are live too.
-const noteMd = (text, rows) => md(text, { notes: true, ack: !!fcs.data && fcs.data.note.rel === "status/inbox", rows });
+const noteMd = (text, rows) => md(text, { notes: true, rows });
 
 function sectionFold(s, open) {
   const k = "sec:" + (s.title || "top");
@@ -382,20 +379,9 @@ $("d-note").addEventListener("click", (e) => {
     navigator.clipboard.writeText(fcs.data.note.markdown).then(() => { fcs.copied = true; renderFocus(); }, (err) => { fcs.err = "copy: " + err.message; renderFocus(); });
   }
 });
-// A tick or untick on the inbox page. The box is locked until the answer redraws the page; a
-// refusal says why and the redraw puts the box back as the page has it.
-async function ackRow(box) {
-  box.disabled = true;
-  try {
-    fcs.data = await post("/api/inbox/ack", { key: box.dataset.ack, ack: box.checked });
-    fcs.err = null;
-  } catch (err) { fcs.err = err.message; }
-  renderFocus();
-}
 $("d-note").addEventListener("change", (ev) => {
   const b = ev.target;
-  if (b && b.dataset && b.dataset.ack && !fcs.edit) ackRow(b);
-  else if (b && b.dataset && b.dataset.ln) tickRow(b);
+  if (b && b.dataset && b.dataset.ln) tickRow(b);
 });
 $("d-note").addEventListener("submit", (ev) => {
   const form = ev.target.closest("form.tadd");

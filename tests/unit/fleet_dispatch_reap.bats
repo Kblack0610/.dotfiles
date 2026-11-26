@@ -82,7 +82,7 @@ load 'fleet_dispatch/common'
   [ -n "$(qitem queued now-one)" ] || fail "the urgent item started past the load hold"
 }
 
-@test "reap files an approved plan whose session is gone as one board row, queues nothing, and files it once" {
+@test "reap files an approved plan whose session is gone as its phase rows, queues nothing, and files it once" {
   # dispatch's pass is not a pull: only the board fills the queue (agent-queue pull_ok)
   unset AGENT_QUEUE_PULL
   stub agent-ask 'echo other-session'
@@ -93,8 +93,26 @@ load 'fleet_dispatch/common'
   assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
   assert_output --partial 'could not file the phases of'
   [ ! -e "$FLEET_DISPATCH_DIR/plans-filed" ] || fail "a plan nothing was filed for is marked filed"
-  # with a board, agent-queue files the row (agent_queue.bats) and exits 5: filed once, then never again
-  stub agent-queue 'case "$1" in add) echo "add $*" >> "$NOTES_FIXTURE/aq-adds"; exit 5 ;; esac; exit 0'
+  # held with nothing filed (its epic: new proposal waits): not marked filed, so the next pass tries again (ar-5605)
+  stub agent-queue 'case "$1" in add) echo "agent-queue: x.md waits on its epic: new proposal in inbox-triage; nothing filed" >&2; exit 5 ;; esac; exit 0'
+  run reconcile_plans
+  assert_success
+  [ ! -e "$FLEET_DISPATCH_DIR/plans-filed" ] || fail "a plan whose add filed nothing is marked filed"
+  grep -q 'left orphan.md for next pass: .*nothing filed' "$FLEET_DISPATCH_DIR/log.md"
+  # a checklist agent-queue refuses, on a project with no board: nothing to file it on, so it is said and not marked
+  stub agent-queue 'case "$1" in add) echo "agent-queue: --plan x.md: could not read its Phases checklist: no ## Phases" >&2; exit 1 ;; esac; exit 0'
+  run reconcile_plans
+  assert_output --partial 'could not file the phases of'
+  [ ! -e "$FLEET_DISPATCH_DIR/plans-filed" ] || fail "a refused plan with no fix row is marked filed"
+  # with a board, the refusal files one fix(plan) row and marks the plan filed, so the next pass does not retry it (ar-5605)
+  jq -n '{trackers: {game: {lab: "game"}}, paths: {}}' > "$DISPATCH_PROJECT_MAP"
+  run reconcile_plans
+  assert_success
+  grep -q "notes ptask game --agent add --why fault fix(plan): orphan: agent-queue refuses its Phases checklist (no  Phases); fix it, then agent-queue add --plan $SANDBOX/orphan.md" "$NOTES_FIXTURE/calls.log"
+  grep -qxF "$SANDBOX/orphan.md" "$FLEET_DISPATCH_DIR/plans-filed"
+  rm "$FLEET_DISPATCH_DIR/plans-filed"
+  # with a board, agent-queue files each phase as its row (agent_queue.bats) and exits 5: filed once, then never again
+  stub agent-queue 'case "$1" in add) echo "add $*" >> "$NOTES_FIXTURE/aq-adds"; echo "held orphan-p2 -> game:gm-1"; exit 5 ;; esac; exit 0'
   run reconcile_plans
   assert_success
   grep -q 'filed orphan.md to run its open phases' "$FLEET_DISPATCH_DIR/log.md"
@@ -177,43 +195,6 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
 }
 
-@test "reap files a plan again once its open phases change after its filed row closed, never twice for one set (ar-5708)" {
-  unset AGENT_QUEUE_PULL
-  stub agent-ask 'echo other-session'
-  approved_plan orphan gone-session
-  stub agent-queue 'case "$*" in
-*"--state done"*) cat "$NOTES_FIXTURE/done" 2>/dev/null ;;
-add*) echo "add $*" >> "$NOTES_FIXTURE/aq-adds"; exit 5 ;;
-esac; exit 0'
-  reconcile_plans
-  reconcile_plans
-  assert_equal "$(wc -l < "$NOTES_FIXTURE/aq-adds")" 1
-  # its chain ran phase 2, the item is done, and phase 3 was left open when the filed row closed
-  sed -i 's/- \[ \] two/- [x] two/' "$SANDBOX/orphan.md"
-  echo "{\"plan\":\"$HOME/.claude/plans/orphan.md\"}" > "$NOTES_FIXTURE/done"
-  reconcile_plans
-  reconcile_plans
-  assert_equal "$(wc -l < "$NOTES_FIXTURE/aq-adds")" 2
-  assert_equal "$(cat "$FLEET_DISPATCH_DIR/plans-filed")" "$SANDBOX/orphan.md	2,3
-$SANDBOX/orphan.md	3"
-  grep -q 'filed orphan.md to run its open phases (3)' "$FLEET_DISPATCH_DIR/log.md"
-}
-
-@test "reap reads a record from before the phase set was kept as the set open now: it files nothing for it (ar-5708)" {
-  unset AGENT_QUEUE_PULL
-  stub agent-ask 'echo other-session'
-  approved_plan orphan gone-session
-  stub agent-queue 'case "$*" in add*) echo "add $*" >> "$NOTES_FIXTURE/aq-adds"; exit 5 ;; esac; exit 0'
-  mkdir -p "$FLEET_DISPATCH_DIR"; printf "%s\n" "$SANDBOX/orphan.md" > "$FLEET_DISPATCH_DIR/plans-filed"
-  # NEGATIVE CONTROL: read as no record, every plan filed before was filed again in one pass.
-  reconcile_plans
-  [ ! -e "$NOTES_FIXTURE/aq-adds" ] || fail "a plan filed before the set was kept was filed again: $(cat "$NOTES_FIXTURE/aq-adds")"
-  assert_equal "$(tail -n 1 "$FLEET_DISPATCH_DIR/plans-filed")" "$SANDBOX/orphan.md	2,3"
-  sed -i 's/- \[ \] two/- [x] two/' "$SANDBOX/orphan.md"
-  reconcile_plans
-  assert_equal "$(wc -l < "$NOTES_FIXTURE/aq-adds")" 1
-}
-
 # epics_fixture <json> -- what `notes projects --stats --json` prints (the notes stub reads it).
 epics_fixture() { printf '%s\n' "$1" > "$NOTES_FIXTURE/stats.json"; }
 
@@ -246,6 +227,18 @@ epics_fixture() { printf '%s\n' "$1" > "$NOTES_FIXTURE/stats.json"; }
   epics_fixture '[{"name": "game", "profile": "bnb", "epics": [{"id": "gm-5", "title": "ranked matches", "system": "ui", "open": 0, "done": 4}]}]'
   reconcile_epics
   assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" 'verify-gm-5-4'
+  # a hand return keeps the slug spent (negative control); an item the queue cap bumped unrun is
+  # queued again, once (ar-5968)
+  agent-queue return verify-gm-5-4 --why 'not now' >/dev/null
+  reconcile_epics
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
+  epics_fixture '[{"name": "game", "profile": "bnb", "epics": [{"id": "gm-5", "title": "ranked matches", "system": "ui", "open": 0, "done": 5}]}]'
+  reconcile_epics
+  agent-queue return verify-gm-5-5 --why 'made room for high x: the queue is at its cap of 30' >/dev/null
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
+  reconcile_epics
+  reconcile_epics
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" 'verify-gm-5-5'
 }
 
 # real_epic_board -- the built notes, and a game project whose epic gm-1 has one landed leaf (gm-2):
@@ -1063,6 +1056,37 @@ OUT
   run cmd_reap
   assert_output --partial 'try 1 of 2'
   assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_human // ""] | join("|")')" "queued|"
+}
+
+# 2026-11-25: #3516, #3538 and #3576 read red with every job cancelled at ~617s on starved runners. fix-ci
+# may not rerun a timeout and found nothing to fix, so each spent two tries and sat escalated.
+@test "reap: a PR red on runner timeouts only gets its failed jobs rerun once per head, no fix try; still cut after it, fix-ci" {
+  local h1=1111111111111111111111111111111111111111 h2=2222222222222222222222222222222222222222
+  pr_item OPEN
+  run cmd_reap
+  fix_ended "$h1" INFRA MERGEABLE 101,102
+  run cmd_reap
+  assert_success
+  assert_output --partial "rerun queue item fix-crash (PR o/game#12 red at ${h1:0:12} on runner timeouts, run 101 102)"
+  assert_called "gh run rerun 101 --failed -R o/game"
+  assert_called "gh run rerun 102 --failed -R o/game"
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .rerun_tries, .fix_tries // "", .pr_owner // ""] | join("|")')" "review|1 $h1||"
+  # the rerun runs: still parked
+  fix_ended "$h1" PENDING
+  run cmd_reap
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
+  # NEGATIVE CONTROL: cut again at the same head, the code may hang, so it is fix-ci's red and no second rerun
+  fix_ended "$h1" INFRA MERGEABLE 103
+  run cmd_reap
+  assert_output --partial "fix-ci queue item fix-crash (PR o/game#12 red at ${h1:0:12}, try 1 of 2)"
+  refute_output --partial 'rerun queue item'
+  assert_equal "$(grep -c 'gh run rerun 103' "$NOTES_FIXTURE/calls.log")" 0
+  # an item already escalated at a head, as the 2026-11-25 three were, still gets that head's one rerun
+  agent-queue set fix-crash "fix_human=$h2 fix" "fix_tries=2 $h2" >/dev/null
+  fix_ended "$h2" INFRA MERGEABLE 104
+  run cmd_reap
+  assert_output --partial "rerun queue item fix-crash (PR o/game#12 red at ${h2:0:12} on runner timeouts, run 104)"
+  assert_called "gh run rerun 104 --failed -R o/game"
 }
 
 @test "reap: a spent PR whose agent board refuses the row keeps its old stamp, so the next pass files it" {

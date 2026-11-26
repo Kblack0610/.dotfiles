@@ -1279,6 +1279,8 @@ J
     "codex: runs headless, and this is host-ops work (excluded in $MATRIX); claude: no account has room"
   # Negative controls: near misses (product, not prod; a drain with no host or runner; systemctl status; unregister with no runner; the word null, which the
   # kind-less mode entries would match if they read as a "null" pattern), the same tag off the Unity stack, and plain work route to codex.
+  # (codex holds unity_gate here, so the Unity item reaches the exclusion list this test is about.)
+  harness_set '.harnesses.codex.capabilities = ["unity_gate"]'
   for it in '{"slug":"x","project":"game","mode":"oneshot","title":"fix the product page"}' \
     '{"slug":"x","project":"game","mode":"oneshot","title":"fix(mem0): drain lines end in a backslash"}' \
     '{"slug":"x","project":"game","mode":"oneshot","title":"show systemctl status of the runner in the panel"}' \
@@ -1321,7 +1323,43 @@ J
   assert_equal "$ROUTE_WHY" 'codex: placed on razer-laptop, which does not run it (its kit and fleet_harnesses, fleet-dispatch hosts); claude: placed on razer-laptop, which does not run it (fleet-dispatch hosts)'
   PLACE_HOST='' DISPATCH_SANDBOX_PROFILE=lane
   ! route "$it" "$v" || fail "a sandboxed item routed to $ROUTE_HARNESS"
-  assert_equal "$ROUTE_WHY" 'codex: cannot hold sandbox lane; claude: no account has room'
+  assert_equal "$ROUTE_WHY" "codex: it lacks the lane_sandbox capability (capabilities in $HARNESSES): no launcher applies a lane profile; claude: no account has room"
+}
+
+# A capability the map declares gates what route() hands a harness: a stack-bound one (unity_gate) gates the
+# PR-opening kinds of that stack's projects, so a harness lacking it is refused and one listing it is not;
+# adding a harness or a capability is a map entry, never code.
+@test "route refuses a PR item of a capability's stack to a harness that lacks it, and takes it once the map lists it" {
+  route_ready
+  HARNESSES=$DISPATCH_HARNESSES   # the sourced script read it before route_ready set it
+  local it='{"slug":"x","project":"arena","mode":"oneshot","title":"fix the arena menu"}' v ACCT_RC=1 ACCT_DIR='' DISPATCH_SANDBOX_PROFILE='' PLACE_HOST=''
+  v='{"candidates":[{"harness":"codex","model":"sol","fit":0},{"harness":"lazer-reserve","model":"sonnet","fit":1}]}'
+  ACCT_ROWS='{"accounts":[],"sources":[{"name":"codex","rank":1,"room":{"ok":true,"why":"it has room"}},{"name":"reserve","rank":2,"room":{"ok":true,"why":"it has room"}}]}'
+  route "$it" "$v" || fail "lazer-reserve lists unity_gate and was refused ($ROUTE_WHY)"
+  assert_equal "$ROUTE_HARNESS" lazer-reserve
+  # codex lists none: it is refused with the map's why, and lazer-reserve takes it.
+  assert_equal "$(harness_needs_why codex "$it" 1 0 || true)" "it lacks the unity_gate capability (capabilities in $HARNESSES): a unity PR needs the CI gate line"
+  # A harness map entry is all it takes: listing it there lets codex take the item.
+  harness_set '.harnesses.codex.capabilities = ["unity_gate"]'
+  route "$it" "$v" || fail "codex lists unity_gate and was refused ($ROUTE_WHY)"
+  assert_equal "$ROUTE_HARNESS" codex
+  # A project outside the stack needs nothing.
+  harness_set '.harnesses.codex.capabilities = []'
+  harness_needs_why codex '{"slug":"x","project":"game","mode":"oneshot","title":"fix the menu"}' 1 0
+  # A verify row only reports (kinds.json does not register it), so it needs no gate either.
+  harness_needs_why codex '{"slug":"x","project":"arena","type":"verify","mode":"oneshot","title":"verify the arena menu"}' 1 0
+  # A canary replays a merged PR and opens none, so it needs no gate.
+  harness_needs_why codex '{"slug":"x","project":"arena","mode":"oneshot","title":"canary","tags":"canary","canary":"c1"}' 1 0
+}
+
+@test "an unreadable stack list fails the capability check closed" {
+  route_ready
+  HARNESSES=$DISPATCH_HARNESSES
+  local it='{"slug":"x","project":"arena","mode":"oneshot","title":"fix the arena menu"}' rc=0 out
+  printf 'not json\n' > "$HOME/.config/fleet-bench/matrix.json"
+  out=$(harness_needs_why codex "$it" 1 0) || rc=$?
+  assert_equal "$rc" 2
+  assert_equal "$out" "the stack list $MATRIX is unreadable, so what arena needs is unknown"
 }
 
 @test "a metered harness is overflow: only a promoted class or its trial pick, only with no account room, only tier 1" {

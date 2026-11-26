@@ -86,7 +86,7 @@ load 'fleet_dispatch/common'
   [ -n "$(qitem waiting mine)" ] || fail "the item's own Claude on a pending ask did not read waiting"
   [ -n "$(qitem running lane)" ] || fail "an item with no ids lost its lane"
   [ -n "$(qitem waiting away)" ] || fail "the flip read the lane's busy Claude, not the item's own waiting one"
-  # agent-panel lists no codex thread, so a codex item's ids say nothing and its lane still decides
+  # the panel's Claude rows hold no codex thread, so a codex item's ids say nothing and its lane still decides
   started_item cx lab:game-agent-5 '' '' human waiting
   sed -i 's/^agent: claude$/agent: codex\nsessions: thread-1/' "$AGENT_QUEUE_DIR"/waiting/*-cx.md
   printf 'game-agent-%s\n' 1 2 3 4 5 > "$NOTES_FIXTURE/tmux.sessions.lab"
@@ -842,6 +842,16 @@ claude_end_item() {
   [ -n "$(qitem waiting alone)" ] || fail "a session with one Claude stopped reading as waiting"
 }
 
+@test "reap: a codex or opencode row beside a Claude is no second Claude, so the session is not shared (ar-4125)" {
+  started_item alone lab:game-agent-1
+  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  stub agent-panel 'printf "%s\n" "{\"target\":\"lab/game-agent-1:1\",\"harness\":\"claude\",\"status\":\"waiting\"}" "{\"target\":\"lab/game-agent-1:2\",\"harness\":\"codex\",\"status\":\"busy\"}"'
+  stub agent-ask 'exit 0'
+  run cmd_reap
+  assert_success
+  [ -n "$(qitem waiting alone)" ] || fail "a harness row beside the Claude made its session shared"
+}
+
 @test "record keeps each pane's session, window and cwd, with the conversation found under the pane" {
   record_setup
   world '10 1000' "$PANE1" "$PANE2"
@@ -852,6 +862,21 @@ claude_end_item() {
   assert_equal "$(jq -c '.panes[0]' "$RECORD")" '{"session":"dotfiles","window":"crash","cwd":"/work/tree","claude":"conv-1"}'
   assert_equal "$(jq -c '.panes[1]' "$RECORD")" '{"session":"dotfiles","window":"zsh","cwd":"/plain/dir","claude":""}'
   assert_not_called 'agent-notify'
+}
+
+@test "record: a codex, opencode or agy row in a pane is no Claude conversation, so restore never resumes it as one (ar-4125)" {
+  record_setup
+  world '10 1000' "$PANE1" "$PANE2"
+  # agent-panel lists every harness; only the claude row's session id is a conversation to reopen
+  printf '%s\n' '{"pane":"hub/%1","harness":"claude","session_id":"conv-1","cwd":"/work/tree"}' \
+    '{"pane":"hub/%2","harness":"codex","session_id":"thread-9","cwd":"/plain/dir"}' > "$NOTES_FIXTURE/panel.json"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  assert_success
+  assert_equal "$(jq -c '[.panes[].claude]' "$RECORD")" '["conv-1",""]'
+  # negative control: the same pane as a claude row is recorded
+  printf '%s\n' '{"pane":"hub/%2","harness":"claude","session_id":"conv-2","cwd":"/plain/dir"}' > "$NOTES_FIXTURE/panel.json"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" record
+  assert_equal "$(jq -c '[.panes[].claude]' "$RECORD")" '["","conv-2"]'
 }
 
 @test "record keeps the last record when agent-panel fails, and still sees a server die" {
@@ -1876,7 +1901,7 @@ esac'
 # finished after the landed one, so agent-queue show reads it, not the item that landed.
 rerun_item() {
   local f; f=$(grep -rl '^slug: fix-crash' "$AGENT_QUEUE_DIR/done" | head -1)
-  sed -e 's/^status: .*/status: '"$1"'/' -e '/^pr: /d' -e '/^merged: /d' -e 's/^finished: .*/finished: 2099-01-01T00:00:00Z/' "$f" > "${f%/*}/20991231-000000-fix-crash.md"
+  sed -e 's/^status: .*/status: '"$1"'/' -e '/^pr: /d' -e '/^merged: /d' -e 's/^outcome: .*/outcome: '"$1"'/' -e 's/^finished: .*/finished: 2099-01-01T00:00:00Z/' "$f" > "${f%/*}/20991231-000000-fix-crash.md"
   assert_equal "$(agent-queue show fix-crash --json | jq -r '[.status, .pr // ""] | join("|")')" "$1|"
 }
 

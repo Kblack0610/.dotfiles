@@ -220,6 +220,43 @@ load 'fleet_dispatch/fleet_dispatch_run_holds'
   [ -n "$(qitem queued pb-p1)" ] || fail "a session's plan phase passed the project share cap"
 }
 
+# ar-4436: validate-ar-5194 waited 113m at the share cap (2026-11-24), the review of a PR whose chain
+# the cap had already let start, and tripped chain-lag.
+@test "project share: a high plan phase or validate item behind a closed after: passes the cap; a plain --after follow-up and a low phase wait" {
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  share_history 1 1
+  export DISPATCH_PER_PASS=1
+  # The chain's phase before closed ok; the queue files no phase behind an open one (it waits on its board row).
+  agent-queue add --project game --slug pc-one --priority high --from session "pc phase one" >/dev/null
+  agent-queue move pc-one running >/dev/null; agent-queue move pc-one done --status ok >/dev/null
+  printf '# pc\n\n## Phases\n\n- [ ] two\n' > "$SANDBOX/pc.md"
+  agent-queue add --plan "$SANDBOX/pc.md" --project game --priority high --from session --after pc-one >/dev/null
+  # The negative control: a plain follow-up behind the same closed item, high by default and ahead in queue order, waits.
+  agent-queue add --project game --slug follow-game --from session --after pc-one "a follow-up" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: game: pc-p1'
+  [ -n "$(qitem queued follow-game)" ] || fail "a plain --after follow-up passed the project share cap"
+  # A validate item passes the same way.
+  agent-queue add --project game --slug validate-game --priority high --tags validate --from auto:validate --after pc-one "check(validate): pc-one" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: game: validate-game'
+  [ -n "$(qitem queued follow-game)" ] || fail "a plain --after follow-up passed the project share cap"
+  # A low phase waits like any capped item: chain-lag bounds urgent and high only.
+  agent-queue move follow-game done --status cancelled >/dev/null
+  agent-queue add --project game --slug pd-one --priority low --from session "pd phase one" >/dev/null
+  agent-queue move pd-one running >/dev/null; agent-queue move pd-one done --status ok >/dev/null
+  printf '# pd\n\n## Phases\n\n- [ ] two\n' > "$SANDBOX/pd.md"
+  agent-queue add --plan "$SANDBOX/pd.md" --project game --priority low --from session --after pd-one >/dev/null
+  agent-queue add --project app --slug fix-app --priority low "fix the app" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: app: fix-app'
+  [ -n "$(qitem queued pd-p1)" ] || fail "a low plan phase passed the project share cap"
+}
+
 @test "project share: a canary or an agent's urgent on a capped project waits at the cap, as the human's urgent does not" {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
@@ -479,7 +516,13 @@ load 'fleet_dispatch/fleet_dispatch_run_holds'
   local land=land-it
   agent-queue add --project game --slug "$land" --from board:game:gm-99 "land the crash fix" >/dev/null
   agent-queue set "$land" pr=o/game#7 pr_owner=land "land_tries=1 abc123" >/dev/null
-  sed -i 's/^queued: .*/queued: 2026-01-01T00:00:00Z/' "$(qitem queued "$old")" "$(qitem queued "$sprint")" "$(qitem queued "$land")"
+  # A handed-off item and one moved from running back to queued hold work too (ar-5880): a continuation, not new intake.
+  local hand=hand-it back=back-it
+  agent-queue add --project game --slug "$hand" --from board:game:gm-98 "finish the handed-off fix" >/dev/null
+  sed -i '0,/^queued: .*/s//&\nhandoff: 1 of 2, batch branch unpushed/' "$(qitem queued "$hand")"
+  agent-queue add --project game --slug "$back" --from board:game:gm-97 "finish the requeued fix" >/dev/null
+  agent-queue move "$back" running >/dev/null; agent-queue move "$back" queued >/dev/null
+  sed -i 's/^queued: .*/queued: 2026-01-01T00:00:00Z/' "$(qitem queued "$old")" "$(qitem queued "$sprint")" "$(qitem queued "$land")" "$(qitem queued "$hand")" "$(qitem queued "$back")"
   export DISPATCH_STARVED_MIN=60 DISPATCH_TARGET_AWAY=0
   # The negative control: with the share under its cap nothing goes back.
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
@@ -495,6 +538,11 @@ load 'fleet_dispatch/fleet_dispatch_run_holds'
   # The land requeue stayed, while old, the same age with no PR to land, went back.
   refute_output --partial "returned queue item $land"
   [ -n "$(qitem queued "$land")" ] || fail "the item landing its PR left queued/"
+  # A handoff and a running-to-queued move stayed too: the cap holds new rows, not work already started.
+  refute_output --partial "returned queue item $hand"
+  refute_output --partial "returned queue item $back"
+  [ -n "$(qitem queued "$hand")" ] || fail "the handed-off item went back to its row at the project share"
+  [ -n "$(qitem queued "$back")" ] || fail "the requeued item went back to its row at the project share"
 }
 
 @test "project share: while a share is full the canary top-up names that project, so no Claude lane queues its canaries (ar-5406)" {

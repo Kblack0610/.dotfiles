@@ -777,12 +777,11 @@ pub fn costs(k: &crate::costs::Costs) -> Card {
         Level::Ok | Level::Nodata if !k.budget.needs.is_empty() => Level::Warn,
         l => l,
     };
-    c.big = if fc.why.is_some() {
-        "-".into()
+    (c.big, c.unit) = if fc.why.is_some() {
+        ("-".into(), NO_DATA.into())
     } else {
-        fc.usd.clone()
+        (fc.usd.clone(), "estimated, 24h".into())
     };
-    c.unit = "in 24h".into();
     c = c
         .part("Month", &k.budget.spent, Level::Ok)
         .part(
@@ -2242,6 +2241,8 @@ mod tests {
         k.budget.needs = vec!["projected over cap".into()];
         let c = costs(&k);
         assert_eq!((c.big.as_str(), c.level), ("$573", Level::Warn));
+        // The big is the figure alone, so the 4x2 tile shows it whole; the unit says estimate.
+        assert_eq!(c.unit, "estimated, 24h");
         // Negative control: a cost that could not be read must not paint green, and a partial
         // read never reads as all clear.
         k.fleet_cost.why = Some("file missing".into());

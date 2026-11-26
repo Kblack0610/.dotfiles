@@ -42,6 +42,34 @@ load 'agent_queue/common'
   assert_output --partial "queued home-plain"
 }
 
+@test "a client's work project is refused on any other machine: plain and --plan adds, by name or from its checkout (ar-6083)" {
+  jq '. + {clients: {acme: {profile: "acmework"}}} | .trackers.game = ((.trackers.game // {}) + {client: "acme"})' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$AGENT_QUEUE_PROJECT_MAP"
+  printf '# P\n\n## Phases\n\n- [ ] one\n' > "$SANDBOX/plan.md"
+  export PROJECT_MACHINE_PROFILE=personal
+  run "$AQ" add --project game --slug client-plain "plain"
+  assert_failure
+  assert_output --partial "game is a client's work project, hidden on this machine (personal)"
+  run "$AQ" add --project game --plan "$SANDBOX/plan.md"
+  assert_failure
+  assert_output --partial "client's work project"
+  run bash -c 'cd "$1" && "$2" add --slug client-cwd "from its checkout"' _ "$REPO" "$AQ"
+  assert_failure
+  assert_output --partial "client's work project"
+  [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ]
+  run "$AQ" add --running --project game --session hub:game-agent-1 --slug client-own "own work"
+  assert_success
+  # set cannot move an item into the client's project either.
+  PROJECT_MACHINE_PROFILE=personal "$AQ" add --project app --slug own-app "app work"
+  run "$AQ" set own-app project=game
+  assert_failure
+  assert_output --partial "client's work project"
+  # Negative control: the same project with no client queues as before.
+  jq 'del(.trackers.game.client)' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$AGENT_QUEUE_PROJECT_MAP"
+  run "$AQ" add --project game --slug home-plain "plain"
+  assert_success
+  assert_output --partial "queued home-plain"
+}
+
 @test "add sets weight: light by default, heavy for a Unity checkout or a plan item, and --weight wins" {
   "$AQ" add --project game --slug plain "plain"
   [ "$(field "$(item queued plain)" weight)" = light ]
@@ -324,6 +352,37 @@ load 'agent_queue/common'
   run "$AQ" next --json
   assert_success
   [ "$(jq -r .slug <<<"$output")" = d-urgent ]
+}
+
+@test "a queued item ranks one tier higher per AGENT_QUEUE_AGE_STEP it waits, never above high (ar-4554)" {
+  "$AQ" add --project game --slug l-old --priority low "l-old"
+  "$AQ" add --project game --slug l-mid --priority low "l-mid"
+  "$AQ" add --project game --slug n-new --priority normal "n-new"
+  "$AQ" add --project game --slug h-new --priority high "h-new"
+  "$AQ" add --project game --slug l-held --priority low "l-held"
+  printf '\n## Blocked on the key\n' >> "$(item queued l-held)"
+  for s in l-old=00:00 l-held=00:01 l-mid=01:30 n-new=03:00 h-new=03:59; do
+    sed -i "s/^queued: .*/queued: 2026-11-10T${s#*=}:00Z/" "$(item queued "${s%%=*}")"
+  done
+  export AGENT_QUEUE_NOW="$(date -d 2026-11-10T04:00:00Z +%Y-%m-%dT%H:%M)"
+  # The sandbox turns aging off (sandbox.bash); this test sets agent-queue's default step back.
+  export AGENT_QUEUE_AGE_STEP=120
+  # At 04:00 with a 120m step: l-old waited 240m (two steps, low -> high, and no further), l-mid
+  # 150m (one step, low -> normal), n-new 60m (none). Ties in a tier go by queued time. l-held has no
+  # ready while its body holds it, so it has not aged: it ages from when the hold lifts.
+  run bash -c "'$AQ' list --json | jq -r 'select(.state == \"queued\") | .slug'"
+  assert_output $'l-old\nh-new\nl-mid\nn-new\nl-held'
+  [ "$("$AQ" next --json | jq -r .slug)" = l-old ]
+  # The order ranks it; its priority line is not rewritten.
+  [ "$(field "$(item queued l-old)" priority)" = low ]
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"l-old\") | .priority'"
+  assert_output low
+  # NEGATIVE CONTROL: 0 turns aging off, and the tiers are strict again.
+  run bash -c "AGENT_QUEUE_AGE_STEP=0 '$AQ' list --json | jq -r 'select(.state == \"queued\") | .slug'"
+  assert_output $'h-new\nn-new\nl-old\nl-held\nl-mid'
+  # A step that is not whole minutes is refused, never read as some default.
+  run env AGENT_QUEUE_AGE_STEP=2h "$AQ" next --json
+  assert_failure; assert_output --partial "AGENT_QUEUE_AGE_STEP must be whole minutes"
 }
 
 @test "list orders an item with no priority line as high, and the rest of the queue still reads" {
@@ -1123,7 +1182,7 @@ load 'agent_queue/common'
 @test "gate --all clears each #hold/ row whose id, epic or plan is granted, and the tag and an ungranted row stay held (ar-5237)" {
   gate_rbw
   export AGENT_HOLD_DIR="$SANDBOX/holds"
-  "$REPO_ROOT/.local/bin/agent-hold" set critical --kind resource --by human "lockdown" >/dev/null
+  "$REPO_ROOT/.local/bin/agent-hold" set critical --kind resource --by coordinator "lockdown" >/dev/null
   "$REPO_ROOT/.local/bin/agent-hold" grant critical ar-1 ar-50 plan-x >/dev/null
   jq -n '{rows: [{id: "ar-1", state: "open", text: "fix(a): one", tags: ["hold/critical"]},
                  {id: "ar-2", state: "open", text: "fix(b): two", tags: ["hold/critical", "of/ar-50"]},
@@ -1139,7 +1198,7 @@ load 'agent_queue/common'
   run "$AQ" gate --all
   assert_output --partial "(row ar-1)"
   "$REPO_ROOT/.local/bin/agent-hold" release critical >/dev/null
-  "$REPO_ROOT/.local/bin/agent-hold" set critical --kind resource --by human "lockdown" >/dev/null
+  "$REPO_ROOT/.local/bin/agent-hold" set critical --kind resource --by coordinator "lockdown" >/dev/null
   run "$AQ" gate --json --all
   [ "$(jq -sr 'map(select(.row != null)) | length' <<<"$output")" = 0 ]
 }
@@ -1148,7 +1207,7 @@ load 'agent_queue/common'
   export AGENT_HOLD_DIR="$SANDBOX/holds"
   legacy forms "tags: hold:critical" --project game "fill the store forms"
   legacy other "tags: hold:critical" --project game "other work"
-  "$REPO_ROOT/.local/bin/agent-hold" set critical --kind resource --by human "lockdown" >/dev/null
+  "$REPO_ROOT/.local/bin/agent-hold" set critical --kind resource --by coordinator "lockdown" >/dev/null
   run "$AQ" next --json
   assert_failure
   "$REPO_ROOT/.local/bin/agent-hold" grant critical forms >/dev/null
@@ -2408,7 +2467,7 @@ notes --profile bnb ptask game --agent run gm-9"
   run "$AQ" add --project game --mode plan --priority urgent --slug up "plan, urgent"
   assert_called 'fleet-dispatch start --item up'
   # 2026-11-12: an urgent plan item started under the human's dispatch hold.
-  "$REPO_ROOT/.local/bin/agent-hold" set dispatch --by human "next queue" >/dev/null
+  "$REPO_ROOT/.local/bin/agent-hold" set dispatch --by human --until "+12 hours" "next queue" >/dev/null
   run "$AQ" add --project game --mode plan --priority urgent --slug held "plan, held"
   assert_success
   assert_output --partial 'so held stays queued for the next dispatch pass'
