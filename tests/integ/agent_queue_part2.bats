@@ -1473,7 +1473,7 @@ notes --profile work ptask level run lv-8'
   assert_success
   grep -q -- '--agent add' "$NOTES_FIXTURE/calls.log"
   grep -q -- '--agent run lv-9' "$NOTES_FIXTURE/calls.log"
-  [ ! -s "$NOTES_FIXTURE/underlock.log" ]
+  [ ! -s "$NOTES_FIXTURE/underlock.log" ] || fail "notes ran with the queue lock held: $(cat "$NOTES_FIXTURE/underlock.log")"
   # Back under the lock, the add finds the slug the other add queued and writes no second item.
   touch "$NOTES_FIXTURE/race"
   run "$AQ" add --project level --slug raced "feat(menu): raced"
@@ -1859,7 +1859,7 @@ second line of the brief
     "check(alert): HomelabCronJobFailed trader-markets-history-bars firing, alertmanager-fleet tripped since 2026-11-25, expected: no fleet=fix alert"; do
     run "$AQ" add --project level --priority high --from "board:level:lv-$n" --slug "lv-$n" --tags "red alert cause:c$n" --title "$t" -- "$t"
     assert_failure 5
-    assert_output --partial "row lv-$n is left un-started where it is"
+    assert_output --partial "row level:lv-$n is left un-started where it is"
     n=$((n + 1))
   done
   # The next pass pulls the same row again and is held again, still filing nothing.
