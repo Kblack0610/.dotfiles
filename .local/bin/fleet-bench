@@ -7334,7 +7334,8 @@ canary_score() {
   mkdir -p "$DIR/canary"; log="$DIR/canary/$run.log"; : >"$log"
   # The harness's own log of the run, kept before its shared log rotates it away: why a run with no diff ended.
   if [ -n "$BENCH_CANARY_RUN_LOG" ]; then
-    bash -c "$BENCH_CANARY_RUN_LOG" >"$DIR/canary/$run.harness.log" 2>>"$log" || true
+    timeout "$BENCH_CANARY_TIMEOUT" bash -c "$BENCH_CANARY_RUN_LOG" >"$DIR/canary/$run.harness.log" 2>>"$log" ||
+      echo "canary score: the harness log command exited $?" >>"$log"
     [ -s "$DIR/canary/$run.harness.log" ] || rm -f "$DIR/canary/$run.harness.log"
   fi
   base=$(jq -r .base <<<"$t")
