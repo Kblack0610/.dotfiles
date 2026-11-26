@@ -2295,6 +2295,30 @@ notes --profile bnb ptask game --agent run gm-9"
   [ -z "$(field "$(item running nowhere)" session)" ]
 }
 
+# 2026-11-23: ar-2000-prom-zsh and ar-2000-probe-missing failed while their session was live on razer-laptop (ar-5957).
+@test "--running records host: on a machine that is not the lease holder, and only with a session; the holder and an unknown holder record none" {
+  printf 'dotfiles-agent-9\n' > "$NOTES_FIXTURE/tmux.session"
+  export FLEET_HOST=razer-laptop TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0"
+  export FLEET_HOSTS_JSON='{"name":"razer-laptop","dest":"u@razer","port":22}'
+  FLEET_LEASE_STUB_RC=1 run "$AQ" add --project game --running --slug worker "on a worker"
+  assert_success
+  [ "$(field "$(item running worker)" session)" = lab:dotfiles-agent-9 ]
+  [ "$(field "$(item running worker)" host)" = razer-laptop ]
+  # negative controls: the holder, a holder not known, a session given by name, and no worktree session
+  run "$AQ" add --project game --running --slug holder "on the holder"
+  [ -z "$(field "$(item running holder)" host)" ]
+  FLEET_LEASE_STUB_RC=2 run "$AQ" add --project game --running --slug unknown "no holder known"
+  [ -z "$(field "$(item running unknown)" host)" ]
+  # a non-holder the roster does not list (the workstation) records none: reap reads an unlisted host as gone
+  FLEET_HOSTS_JSON='{"name":"other-laptop","dest":"u@o","port":22}' FLEET_LEASE_STUB_RC=1 run "$AQ" add --project game --running --slug unlisted "not in the roster"
+  [ -z "$(field "$(item running unlisted)" host)" ]
+  FLEET_LEASE_STUB_RC=1 run "$AQ" add --project game --running --session given --slug given "given"
+  [ -z "$(field "$(item running given)" host)" ]
+  printf 'tools\n' > "$NOTES_FIXTURE/tmux.session"
+  FLEET_LEASE_STUB_RC=1 run "$AQ" add --project game --running --slug nosess "a checkout session"
+  [ -z "$(field "$(item running nosess)" host)" ]
+}
+
 @test "a bare session is refused when no world declares @agents, and cancel kills nothing on a value with no server" {
   rm "$HOME/.config/tmux-servers/lab.conf"
   run "$AQ" add --project game --running --session given --slug given "given"
@@ -2453,6 +2477,38 @@ notes --profile bnb ptask game --agent run gm-9"
   assert_output --partial 'area menu on game is already held by first (running in lab:peer)'
   refute_output --partial 'held by later'
   [ -n "$(item running later)" ] || fail "a claim on a held area was refused"
+}
+
+@test "a session's own claim records host: on a machine that is not the lease holder (ar-5957)" {
+  "$AQ" add --project game --slug onworker "queued for a worker"
+  printf 'dotfiles-agent-9\n' > "$NOTES_FIXTURE/tmux.session"
+  export FLEET_HOSTS_JSON='{"name":"razer-laptop","dest":"u@razer","port":22}'
+  FLEET_HOST=razer-laptop FLEET_LEASE_STUB_RC=1 TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0" CLAUDE_CODE_SESSION_ID=sid-w run "$AQ" claim onworker
+  assert_success
+  [ "$(field "$(item running onworker)" host)" = razer-laptop ]
+  "$AQ" add --project game --slug onholder "queued for the holder"
+  TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0" CLAUDE_CODE_SESSION_ID=sid-h run "$AQ" claim onholder
+  assert_success
+  [ -z "$(field "$(item running onholder)" host)" ]
+  # a stale host: from an earlier run does not outlive the claim that rewrites session:
+  "$AQ" add --project game --slug stale "queued with an old host"
+  "$AQ" set stale host=old-worker
+  TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0" CLAUDE_CODE_SESSION_ID=sid-s run "$AQ" claim stale
+  assert_success
+  [ -z "$(field "$(item running stale)" host)" ]
+}
+
+# ar-5957 review: with host: on a worker's hand item, its own cancel must still spare its own session (ar-4902, ar-5293).
+@test "cancel from a worker hand item's own session leaves that session up even though host: names this machine" {
+  printf 'dotfiles-agent-4\n' > "$NOTES_FIXTURE/tmux.session"
+  export FLEET_HOST=razer-laptop FLEET_HOSTS_JSON='{"name":"razer-laptop","dest":"u@razer","port":22}'
+  TMUX="$SANDBOX/tmp/tmux-1000/lab,1,0" FLEET_LEASE_STUB_RC=1 AGENT_QUEUE_ITEM=mine run "$AQ" add --project game --running --slug mine "mine"
+  assert_success
+  "$AQ" set mine origin=hand
+  [ "$(field "$(item running mine)" host)" = razer-laptop ]
+  TMUX="$SANDBOX/tmp/tmux-1000/lab,1,0" AGENT_QUEUE_ITEM=mine run "$AQ" cancel mine --why "done another way"
+  assert_success
+  assert_output --partial "left lab:dotfiles-agent-4 open: it is the caller's own session"
 }
 
 @test "a session that takes or lands an item by hand records its account; a --sid claim and a queued add do not" {
