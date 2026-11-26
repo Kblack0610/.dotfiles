@@ -1248,7 +1248,7 @@ asker_map() {
   # shellcheck disable=SC2016
   ASKER_MAP=$({ grep -E '"action":"(added|filed)"|"want":"|"by":"human"' "$NOTES_INGEST" || true; } | jq -sc '
     def human_words: (.want // "") as $w | ((.session_id // "") == "" and ((.by // "") | IN("", "human"))) as $hand
-      | ($w | IN("focus", "voice", "request", "meeting")) or ($w == "human" and .action == "added" and $hand)
+      | ($w | IN("focus", "voice", "request", "meeting")) or ($w == "human" and (.action | IN("added", "dup")) and $hand)
         or ((.by // "") == "human" and $hand and ((.text // .row // .why // "") | test("#requested")));
     [.[] | select((.id // "") != "")] | group_by(.id)
     | map({key: .[0].id, value: (if any(.[]; human_words) then "human"
@@ -1279,8 +1279,10 @@ row_asker() { asker_map; jq -r --arg k "$1" '.[$k] // empty' <<<"$ASKER_MAP"; }
 # An urgent or high chain successor passes as well: an item with an `after:` key that is a plan phase or a validate item, agent-queue's
 # stack_dependent test (a `plan:` line or a phase brief, PHASE_BRIEF_RE; the `validate` tag). The cap
 # already let its chain start, and chain-lag bounds its handoff (chain_handoff_p90_max); held,
-# validate-ar-5194 waited 113m and tripped it (ar-4436, 2026-11-24). A plan's first phase, and any other
-# `--after` follow-up (high by default), still wait.
+# validate-ar-5194 waited 113m and tripped it (ar-4436, 2026-11-24). A phase whose `after:` is the previous
+# phase of its own plan (`<plan>-pN` behind `<plan>-pM`) passes at any priority and from whoever queued the plan: a human
+# ask deduped into a chain left its phases without #requested, and the cap held them 8h (2026-11-25,
+# ar-6060). A session plan's first phase, and any other `--after` follow-up (high by default), still wait.
 # The one test share_why and queue_depth apply.
 # shellcheck disable=SC2016
 SHARE_JQ="$HUMAN_ASK_JQ"'def share_held($s): (.project // "") as $p | (.agent // "claude") as $a | ($s.projects[$p].full // false)
@@ -1289,6 +1291,8 @@ SHARE_JQ="$HUMAN_ASK_JQ"'def share_held($s): (.project // "") as $p | (.agent //
     and ((.plan // "") != "" or ((" " + (.tags // "") + " ") | contains(" validate "))
       or ((.task // "") | test("(^|\\s)Phases? [0-9]+( and [0-9]+)* of the plan /[^:]+\\.md:")))) | not)
   and ((.priority == "urgent" and (.from // "human") == "human") | not)
+  and ((((.slug // "") | sub("-p[0-9]+$"; "")) as $pl | (.plan // "") != ""
+    and any(((.after // "") | split(" "))[]; test("^" + $pl + "-p[0-9]+$"))) | not)
   and (((.plan // "") != "" and (.from // "human") == "human") | not)
   and ((" " + (.tags // "") + " ") | test(" #?red ") | not) and (human_ask | not)
   and (((" " + (.tags // "") + " ") | contains(" canary ")) and any(($s.sourced // [])[]; . == $a) | not);'
@@ -3469,12 +3473,11 @@ trainee_empty_why() {
 }
 
 # trainee_waiting -> the rows whose diff waits for a batch review, as item JSON lines: in review, a
-# trainee's, their patch in TRAINEE_DIR, no PR yet (an approved row whose PR has not merged is no new
-# diff), and no per-diff review-<slug> item (the old hand-off) open. A run on a fleet worker left its
-# patch in the worker's TRAINEE_DIR, so it is fetched here first (trainee_fetch).
+# trainee's, their patch in TRAINEE_DIR, and no PR yet (an approved row whose PR has not merged is no
+# new diff). A run on a fleet worker left its patch in the worker's TRAINEE_DIR, so it is fetched here
+# first (trainee_fetch).
 trainee_waiting() {
-  agent-queue list --json --state active 2>/dev/null | jq -sc '(map(.slug) | map({key: ., value: 1}) | from_entries) as $s
-    | .[] | select(.state == "review" and (.trainee // "") != "" and ((.pr // "") == "") and ($s["review-" + .slug] | not))' |
+  agent-queue list --json --state active 2>/dev/null | jq -c 'select(.state == "review" and (.trainee // "") != "" and ((.pr // "") == ""))' |
     while IFS= read -r it; do
       [ -s "$TRAINEE_DIR/$(jq -r .slug <<<"$it").patch" ] || trainee_fetch "$it" || continue
       echo "$it"

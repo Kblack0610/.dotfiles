@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # questions.sh - every question an agent is waiting on you for, answered from one screen
-# (Prefix y): the list, the selected card beside it (ctrl-/ moves it under, then hides it),
+# (Prefix y): the list, the selected card beside it (ctrl-/ hides it, then moves it under),
 # and the answer right there: a number then enter sends that option, t types an answer,
 # d then enter drops it, p then enter parks it until its revisit date (or puts a parked one back),
 # g goes to the asking session (reopening it when it has ended), P shows or hides the parked
