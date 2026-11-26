@@ -3,9 +3,9 @@
 #
 #   . fleet-live.sh; fleet_live_count <state document>
 #
-# fleet-dispatch's pace_target counts live sessions against the pace target, and fleet-sessions' tick wakes a
-# kick when that count drops (ar-5046): both read this one rule, so a session the pace target stopped counting
-# is one the tick sees leave.
+# fleet-dispatch's pace_target counts live sessions against the pace target, and fleet-sessions' write_state wakes
+# a kick when that count drops (ar-5046): both read this one rule, so a session the pace target stopped counting
+# is one the write sees leave.
 
 # WAITS_JQ -- jq defs. waits: a session waiting on the human, which holds no slot: NEEDS whose reason does not end in
 # `carrying on` (fleet-sessions' own test: one carrying on past its ask is busy). frees: waits, or waiting its
@@ -26,7 +26,8 @@ LIVE_JQ='(.vocab.finished // []) as $done
        idle: ($live | map(select(.bucket != "WORKING" and .bucket != "NEEDS")
          | "\(.target) \(.bucket)\(if (.reason // "") != "" then ": \(.reason)" else "" end)"))}'
 
-# fleet_live_count <state document> -- the live count, or nothing when the document is missing or unreadable.
+# fleet_live_count <state document> -- the live count, or nothing when the document is missing or unreadable (jq's
+# error is dropped; the caller names a count it cannot read).
 # No freshness check: the caller says how old a document it will trust.
 fleet_live_count() {
   jq -r "$LIVE_JQ | .live" "$1" 2>/dev/null

@@ -3880,7 +3880,7 @@ SH
   [ "$(wc -l < "$FLEET_SHEPHERD_DIR/watch.log")" -eq 1 ]
 }
 
-# The state document counts a session as live until a tick drops it, so the wake an item's close writes can reach
+# The state document counts a session as live until a write drops it, so the wake an item's close writes can reach
 # a kick that still sees it (ar-5046). seed_live <n>: the previous tick's document, n sessions live in it.
 seed_live() {
   mkdir -p "$XDG_STATE_HOME/fleet"
@@ -3888,7 +3888,7 @@ seed_live() {
     sessions: [range($n) | {target: "old/s:\(.)", bucket: "WORKING"}]}' > "$XDG_STATE_HOME/fleet/state.json"
 }
 
-@test "tick wakes a fleet-dispatch kick when the live count drops since the last tick, and only then (ar-5046)" {
+@test "a state write wakes a fleet-dispatch kick when it lowers the live count, tick and --write alike, and only then (ar-5046)" {
   export FLEET_DISPATCH_DIR="$SANDBOX/dispatch"
   local wake="$FLEET_DISPATCH_DIR/.wake"
   landed_fixture   # one LANDED session: finished, so the document counts none live
@@ -3909,13 +3909,25 @@ seed_live() {
   run "$REPO_ROOT/.local/bin/fleet-sessions" tick
   assert_success
   [ -s "$wake" ] || fail "a drop from 2 to 0 woke no kick"
-  grep -qF 'fleet-sessions tick: live sessions 2 -> 0' "$wake"
+  grep -qF 'fleet-sessions: live sessions 2 -> 0' "$wake"
   [ "$(fleet_live_count "$XDG_STATE_HOME/fleet/state.json")" = 0 ]
 
-  # NEGATIVE CONTROL: a rise (0 live before, one STALLED session now) is no event
+  # a hand --write that lowers the count wakes it too, so the next tick's baseline is not a swallowed drop
+  rm -f "$wake"
+  seed_live 3
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_success
+  grep -qF 'fleet-sessions: live sessions 3 -> 0' "$wake"
+
+  # NEGATIVE CONTROLS: one STALLED session now. The same count is no event, and neither is a rise
   rm -f "$wake"
   clean_fixture
   queue_item running lab:s1
+  seed_live 1
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [ "$(fleet_live_count "$XDG_STATE_HOME/fleet/state.json")" = 1 ]
+  [ ! -e "$wake" ] || fail "an equal nonzero count woke a kick: $(cat "$wake")"
   seed_live 0
   run "$REPO_ROOT/.local/bin/fleet-sessions" tick
   assert_success
