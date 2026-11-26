@@ -220,7 +220,7 @@ hand_start() {
   window="$(own_window)" || window=''
   printf '%s\t%s\n' "$session" "$window"
 }
-# hand_host -- this machine's fleet name when it is not the lease holder, else nothing. The session
+# hand_host <session> -- this machine's fleet name when a session was recorded here and this machine is not the lease holder, else nothing. The session
 # hand_start records lives in this machine's tmux, and the lease holder's fleet-dispatch reap checks a
 # session on its own tmux unless the item says `host:` (as a dispatched item on a worker does): without
 # it a live session on a worker read as gone and its item failed (ar-5957, ar-2000-prom-zsh 2026-11-23).
@@ -228,6 +228,7 @@ hand_start() {
 # known, records none, since the host would be a guess.
 hand_host() {
   local rc=0
+  [ -n "${1:-}" ] || return 0
   fleet-lease held >/dev/null 2>&1 || rc=$?
   [ "$rc" = 1 ] || return 0
   printf '%s\n' "${FLEET_HOST:-$(uname -n | cut -d. -f1)}"
@@ -2432,10 +2433,7 @@ cmd_add() {
   check_tags "$tags"
   # A hand-started session records itself and its window, in a worktree session on any world.
   local window='' host=''
-  if [ -n "$running" ] && [ -z "$session" ]; then
-    IFS=$'\t' read -r session window < <(hand_start)
-    [ -z "$session" ] || host="$(hand_host)"
-  fi
+  [ -z "$running" ] || [ -n "$session" ] || { IFS=$'\t' read -r session window < <(hand_start); host="$(hand_host "$session")"; }
   session="$(qualified "$session")" || exit 1
   [ -n "$project" ] || project="$(project_of_cwd)"
   [ -n "$project" ] || die "no --project, and this directory is not a repo project-map knows"
@@ -3223,7 +3221,7 @@ cmd_claim() {
   f="$(find_item "$slug")"
   [ -z "$session" ] || header_set "$f" session "$session"
   [ -z "$window" ] || header_set "$f" window "$window"
-  [ -z "$session" ] || [ -n "$(fm_get "$f" host)" ] || { local host; host="$(hand_host)"; [ -z "$host" ] || header_set "$f" host "$host"; }
+  [ -n "$(fm_get "$f" host)" ] || { local host; host="$(hand_host "$session")"; [ -z "$host" ] || header_set "$f" host "$host"; }
 }
 
 # close_on <host> <tmux-close args...> -- tmux-close here, or on that fleet worker over ssh.
