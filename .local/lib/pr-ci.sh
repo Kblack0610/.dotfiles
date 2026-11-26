@@ -26,10 +26,17 @@
 # #3538 and #3576 read red with every job cancelled at ~617s on starved ARC runners, spent two fix-ci
 # tries each and sat escalated with nothing to fix (fleet-dispatch own_parked_pr reruns them now).
 # red_runs -> the Actions run ids of the red checks, comma-separated, - for none (what a rerun reruns).
+# PR_CI_NO_VERDICT: an ERE over workflow names whose checks say nothing about the PR's own branch, left
+# out of ci and red; empty: off. unity-core-playground's Drop closed gates runs on a PR's close or
+# unlabel event and runs Checks again on the PRs the landing slot refused. Its jobs attach to the PR's
+# head, and its concurrency group cancels the older run still queued, so PR #2870 (Checks SUCCESS
+# @bcdee033) read CI FAIL and drew a false nudge (2026-11-18, ar-3499). CI_JQ reads it as $ENV.
+export PR_CI_NO_VERDICT="${PR_CI_NO_VERDICT-^Drop closed gates\$}"
 # shellcheck disable=SC2034  # read by the scripts that source it
 CI_JQ='def red_re: "FAIL|ERROR|CANCEL|TIMED_OUT|ACTION_REQUIRED";
   def run_of: (.detailsUrl // "") | ((capture("/actions/runs/(?<r>[0-9]+)") | .r | tonumber) // null);
-  def checks: .statusCheckRollup // [] | map(. + {_run: run_of})
+  def checks: ($ENV.PR_CI_NO_VERDICT // "") as $nv | .statusCheckRollup // []
+    | map(select($nv == "" or ((.workflowName // "") | test($nv) | not)) | . + {_run: run_of})
     | (map(select(._run != null)) | group_by([.workflowName // "", .name // ""])
        | map(map(._run) as $r | .[] | select(._run == ($r | max))))
       + map(select(._run == null))
