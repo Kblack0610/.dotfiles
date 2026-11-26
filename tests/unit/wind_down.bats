@@ -701,6 +701,22 @@ bg_arm() { run env CLAUDE_CODE_SESSION_KIND=bg CLAUDE_CODE_SESSION_ID="$SID_A" C
   assert_failure
 }
 
+@test "arm in a background session with CLAUDE_CODE_SESSION_KIND unset still arms the stop (ar-4749)" {
+  # 2026-11-23 job 72e3cb7a ran with KIND unset and JOB_DIR set: its own job state is the proof.
+  bg_stubs; mk_job "$SID_A"
+  run env -u CLAUDE_CODE_SESSION_KIND CLAUDE_CODE_SESSION_ID="$SID_A" CLAUDE_JOB_DIR="$JOB" TMUX="" TMUX_PANE="" bash "$WIND_DOWN" arm
+  assert_success
+  assert_output --partial "background session '72e3cb7a' will stop"
+  run grep -E '^(scope|target)=' "$SPIN_DIR/$SID_A.request"
+  assert_output "$(printf 'scope=bg\ntarget=72e3cb7a')"
+  # Negative control: a job whose state names another session is not this one's, KIND unset or not.
+  rm -f "$SPIN_DIR/$SID_A.request"; mk_job "$SID_B"
+  run env -u CLAUDE_CODE_SESSION_KIND CLAUDE_CODE_SESSION_ID="$SID_A" CLAUDE_JOB_DIR="$JOB" TMUX="" TMUX_PANE="" bash "$WIND_DOWN" arm
+  assert_failure
+  assert_output --partial 'not inside tmux'
+  assert_output --partial 'does not name session'
+}
+
 @test "arm in a background session that inherited TMUX still arms the stop, never the pane" {
   # The daemon can carry the TMUX and TMUX_PANE of the foreground claude that spawned it.
   bg_stubs; mk_job "$SID_A"
@@ -714,7 +730,7 @@ bg_arm() { run env CLAUDE_CODE_SESSION_KIND=bg CLAUDE_CODE_SESSION_ID="$SID_A" C
 }
 
 @test "a claude started inside a background session never arms a stop of its parent's job" {
-  # It inherits KIND and JOB_DIR with a session id of its own: its own window closes, as any.
+  # It inherits JOB_DIR (and KIND) with a session id of its own: its own window closes, as any.
   bg_stubs; mk_job "$SID_B"
   bg_arm bash "$WIND_DOWN" arm
   assert_success
@@ -723,6 +739,17 @@ bg_arm() { run env CLAUDE_CODE_SESSION_KIND=bg CLAUDE_CODE_SESSION_ID="$SID_A" C
   bg_arm TMUX="" TMUX_PANE="" bash "$WIND_DOWN" arm
   assert_failure
   assert_output --partial 'not inside tmux'
+}
+
+@test "a claude started inside a background session with KIND unset closes its own window, never the parent's job" {
+  # KIND is not part of the guard (ar-4749): the parent job's state names another session.
+  bg_stubs; mk_job "$SID_B"
+  run env -u CLAUDE_CODE_SESSION_KIND CLAUDE_CODE_SESSION_ID="$SID_A" CLAUDE_JOB_DIR="$JOB" bash "$WIND_DOWN" arm
+  assert_success
+  run grep -E '^scope=' "$SPIN_DIR/$SID_A.request"
+  assert_output 'scope=window'
+  run grep '^claude stop' "$NOTES_FIXTURE/calls.log"
+  assert_failure
 }
 
 @test "arm in a background session records the worktree it runs in" {
