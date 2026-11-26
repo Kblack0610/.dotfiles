@@ -2325,6 +2325,10 @@ pub fn move_to_project(
         &crate::ingest::Event::row("rehomed", src, dest, lane.name(), &moved.line),
     );
     println!("moved {}\n  {src} -> {dest}", moved.line.trim());
+    if let Some(id) = md::row_id(&moved.line) {
+        let org = projects::project_org(p, dest);
+        rehome_items(REHOME_BIN, &id, dest, org.as_deref(), lane);
+    }
     if let Some(id) = &moved.unlinked {
         // Kept in the journal log, so a child moved ahead of its epic can be linked again.
         let why = format!("dropped #of/{id}: it names no row in {dest}");
@@ -2332,6 +2336,43 @@ pub fn move_to_project(
         println!("  {why}");
     }
     Ok(0)
+}
+
+const REHOME_BIN: &str = "agent-queue";
+
+/// Run `agent-queue rehome <id> --board <dest> [--profile <org>] --lane <lane>` after a move:
+/// the row keeps its id, so an active queue item working it still names the board it left, and
+/// its close, mark and un-start acted there (ar-5938). The move already landed, so a run that
+/// fails only says so, with the command to run by hand.
+fn rehome_items(bin: &str, id: &str, dest: &str, org: Option<&str>, lane: Lane) {
+    let mut args = vec![
+        "rehome".to_string(),
+        id.to_string(),
+        "--board".to_string(),
+        dest.to_string(),
+        "--lane".to_string(),
+        lane.name().to_string(),
+    ];
+    if let Some(org) = org {
+        args.extend(["--profile".to_string(), org.to_string()]);
+    }
+    match std::process::Command::new(bin).args(&args).output() {
+        Ok(o) if o.status.success() => {
+            for line in String::from_utf8_lossy(&o.stdout).lines() {
+                println!("  {line}");
+            }
+        }
+        Ok(o) => eprintln!(
+            "queue item not re-pointed ({bin} rehome exited {}: {}); run: {bin} {}",
+            o.status,
+            String::from_utf8_lossy(&o.stderr).trim(),
+            args.join(" ")
+        ),
+        Err(e) => eprintln!(
+            "queue item not re-pointed ({bin}: {e}); run: {bin} {}",
+            args.join(" ")
+        ),
+    }
 }
 
 /// The ids of every row a project holds: its human sheet, its agent board and both lanes'
@@ -5948,6 +5989,50 @@ Version: v0.0.1
             "text is not an id"
         );
         assert!(matches!(w("inotify"), Pick::Words(_)));
+    }
+
+    /// ar-5938: a moved row's queue item is re-pointed by `agent-queue rehome`, handed the id,
+    /// the board, the lane and the org; a bin that fails or is missing only warns.
+    #[test]
+    fn a_move_hands_the_row_id_and_its_new_board_to_agent_queue_rehome() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("rehome-bin-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let (bin, log) = (dir.join("fake-aq"), dir.join("args"));
+        let script = format!(
+            "#!/bin/sh\necho \"$*\" > {}\necho \"i-1: row x\"\n",
+            log.display()
+        );
+        fs::write(&bin, script).unwrap();
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+        rehome_items(
+            bin.to_str().unwrap(),
+            "ar-9",
+            "trader",
+            Some("work"),
+            Lane::Agent,
+        );
+        assert_eq!(
+            fs::read_to_string(&log).unwrap().trim(),
+            "rehome ar-9 --board trader --lane agent --profile work"
+        );
+        fs::remove_file(&log).unwrap();
+        rehome_items(bin.to_str().unwrap(), "ar-9", "trader", None, Lane::Human);
+        assert_eq!(
+            fs::read_to_string(&log).unwrap().trim(),
+            "rehome ar-9 --board trader --lane human"
+        );
+        // A missing bin and a failing one warn and return: the move already landed.
+        rehome_items(
+            "/nonexistent/agent-queue",
+            "ar-9",
+            "trader",
+            None,
+            Lane::Agent,
+        );
+        fs::write(&bin, "#!/bin/sh\nexit 3\n").unwrap();
+        rehome_items(bin.to_str().unwrap(), "ar-9", "trader", None, Lane::Agent);
+        let _ = fs::remove_dir_all(&dir);
     }
 }
 

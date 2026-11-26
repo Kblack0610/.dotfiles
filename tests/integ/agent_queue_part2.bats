@@ -1305,6 +1305,43 @@ notes --profile bnb ptask level --agent start lv-9'
 notes --profile bnb ptask level --agent start lv-4'
 }
 
+# ar-5938: `notes ptask move --project` calls rehome; the row keeps its id, so the item's row: followed
+# it to the new board, and nothing is un-started or re-marked (the row carried its started mark).
+@test "rehome re-points every active item working the row id to the new board, and touches no other" {
+  story_notes
+  "$AQ" add --project game --epic lv-3 --slug mover "feat(menu): mover" >/dev/null
+  "$AQ" add --project game --epic lv-3 --slug bystander "feat(menu): bystander" >/dev/null
+  "$AQ" set bystander row=level:lv-5 >/dev/null
+  [ "$(field "$(item queued mover)" row)" = level:lv-9 ]
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" rehome lv-9 --board arena --profile work --lane human
+  assert_success; assert_output --partial "mover: row arena:lv-9"
+  f="$(item queued mover)"
+  [ "$(field "$f" row)" = arena:lv-9 ]
+  [ "$(field "$f" profile)" = work ]
+  [ "$(field "$f" lane)" = human ]
+  [ "$(field "$(item queued bystander)" row)" = level:lv-5 ]
+  run grep -c ' ptask ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # Run again, or with no item on the row: nothing to do, and no error.
+  run "$AQ" rehome lv-9 --board arena
+  assert_success; assert_output ""
+  run "$AQ" rehome lv-77 --board arena
+  assert_success; assert_output ""
+  # A started item re-points the same way, and the row it was promoted from by from= too.
+  "$AQ" move mover running >/dev/null
+  run "$AQ" rehome lv-9 --board level
+  assert_success; assert_output --partial "mover: row level:lv-9"
+  [ "$(field "$(item running mover)" row)" = level:lv-9 ]
+  # Refusals.
+  run "$AQ" rehome lv-9
+  assert_failure; assert_output --partial "needs --board"
+  run "$AQ" rehome nope --board arena
+  assert_failure; assert_output --partial "usage: agent-queue rehome"
+  run "$AQ" rehome lv-9 --board arena --lane both
+  assert_failure; assert_output --partial "agent or human"
+}
+
 # ar-1597: an item re-pointed with set row= left its first row started with no item, which read as
 # board_orphan_started until the orphan pass.
 @test "set row= or from=board: un-starts the row the item leaves and marks the one it works now" {
