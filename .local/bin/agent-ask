@@ -132,7 +132,8 @@
 # queues its delivery, which `deliver` runs in the background (agent-ask-deliver.path): it types
 # the answer into a live session, puts each waiting queue item the ask names whose session ended back
 # in the queue with the decision in its next brief, and hands the id to `ask-resume`, which runs the ask's `resume`
-# command (detached, through agentctl-run) and exits silently for an ask that has none. Every
+# command (detached, through agentctl-run) and exits silently for an ask that has none. A prompt
+# `resume` runs only when no live session has the answer (start_resume): a live asker carries on. Every
 # surface that answers - agent-web, fleet.sh, a bare CLI call - gets that for free, so no surface
 # can record an answer that silently goes nowhere. `resumable` + `mark-resumed` remain
 # the queue behind it: `ask-resume --all` drains it by hand as a backstop for an answer
@@ -1167,9 +1168,21 @@ record_answer() {
   queue_changed
 }
 
-# start_resume <id>: answering IS starting (see header). ask-resume marks before it runs and
-# detaches the long work, so this returns promptly; its failure must not fail the answer.
+# start_resume <id> [<who has it>]: answering IS starting (see header). ask-resume marks before it runs
+# and detaches the long work, so this returns promptly; its failure must not fail the answer. A prompt
+# resume carries on the asker's work, so when a live session has the answer (<who has it>: typed into it,
+# or read at post) that session carries on and the resume is only marked consumed. Why (ar-5961): ask
+# MFLKKY's judge answer ran its resume headless beside the live asker tr-181, which committed that
+# session's uncommitted diff and opened trader PR #232 as a second copy. A `run:` resume is the asking
+# script's own step, and runs either way.
 start_resume() {
+  local f r
+  if [ -n "${2:-}" ] && f="$(find_ask "$1")" && [ -n "$f" ] && r="$(field "$f" resume)" &&
+    [ -n "$r" ] && [[ "$r" != run:* ]] && [ -z "$(field "$f" resumed_at)" ]; then
+    [ -n "${AGENT_ASK_NO_RESUME:-}" ] || set_field "$f" resumed_at "$(now_iso)"
+    echo "agent-ask: $1's resume did not start: $2 has the answer and carries on with it" >&2
+    return 0
+  fi
   if [ -z "${AGENT_ASK_NO_RESUME:-}" ] && command -v ask-resume >/dev/null 2>&1; then
     ask-resume "$1" >&2 || true
   fi
@@ -1310,8 +1323,14 @@ deliver_one() {
   # before the resume runs, so `reopen` reads it as a holder and does not start that session as well.
   [ -n "$beside" ] || requeued="$(requeue_waiting "$f")"
   # went: where the answer went, each place named only when it was used.
-  local went=() resume="" why
+  local went=() resume="" why took="" runs
   [ -n "$beside" ] || resume="$(field "$f" resume)"
+  # A live session on the ask, or the asker who read the judge's answer at post, carries the work on,
+  # so a prompt resume does not run beside it (start_resume); a `run:` one is a script's step and does.
+  [ -z "$skip" ] || took="the asking session"
+  [ -z "$row" ] || took="the live session on the ask"
+  runs="$resume"
+  [ -z "$took" ] || [[ "$resume" == run:* ]] || runs=""
   if [ -n "$row" ]; then
     local n unsent=0
     for r in "${rows[@]}"; do
@@ -1320,7 +1339,7 @@ deliver_one() {
     # Typed into none of them, and no resume or held item takes it: left there, the answer waits
     # only on a board's "not sent" while the session never reads it (2026-11-20: fVKDIo sat unsent
     # in a prompt until its window closed), so it is filed as work, as an answer with no session is.
-    if [ "$unsent" = "${#rows[@]}" ] && { [ -n "$beside" ] || [ -z "$resume$held$requeued" ]; }; then
+    if [ "$unsent" = "${#rows[@]}" ] && { [ -n "$beside" ] || [ -z "$runs$held$requeued" ]; }; then
       if why="$(answer_row "$f" "$answer" "$by")"; then note+="; a board row carries it"; else note+="; $why"; fi
     fi
     if [ "${#rows[@]}" -gt 1 ]; then went+=("typed into the ${#rows[@]} live sessions waiting on its blocker")
@@ -1331,8 +1350,9 @@ deliver_one() {
     if why="$(answer_row "$f" "$answer" "$by")"; then went+=("a board row: no live session, resume or held item takes it")
     else note+="no live session, resume or held item takes it, and $why"; fi
   fi
-  [ -n "$beside" ] || start_resume "$id"
-  [ -z "$resume" ] || went+=("its resume")
+  [ -n "$beside" ] || start_resume "$id" "$took"
+  if [ -n "$runs" ]; then went+=("its resume")
+  elif [ -n "$resume" ]; then went+=("not its resume: $took has the answer"); fi
   [ -z "$held" ] || went+=("$(grep -c . <<<"$held") queue item(s) held on it")
   [ -z "$requeued" ] || went+=("waiting item(s) $(paste -sd' ' <<<"$requeued" | sed 's/ /, /g') back in the queue")
   [ -z "$held$requeued" ] || start_held
@@ -1516,7 +1536,10 @@ told_at_post() {
     set_field "$f" delivery queued delivery_at "$(now_iso)" delivery_skip "$(field "$f" claude_session)"
     delivery_changed
   fi
-  start_resume "$(field "$f" id)"
+  # An asker with a session is reading this line now, so it carries on; a script with none has its resume.
+  local who=""
+  [ -z "$(field "$f" claude_session)" ] || who="the asking session"
+  start_resume "$(field "$f" id)" "$who"
 }
 
 # judge_guarded <file> <reason>: judge the ask behind AGENT_ASK_JUDGE_TIMEOUT. A call the guard
@@ -1977,7 +2000,9 @@ answer_route() {
     if [ -n "$alive" ]; then echo "  the answer goes to the asking session"
     else echo "  ${who}the answer reopens the session with it"; fi
   elif [ -n "${ASK[resume]:-}" ]; then
-    if [ -n "$alive" ]; then
+    if [ -n "$alive" ] && [[ "${ASK[resume]}" != run:* ]]; then
+      echo "  the answer goes to the asking session; \`${ASK[resume]}\` starts only if it has ended"
+    elif [ -n "$alive" ]; then
       echo "  the answer goes to the asking session and starts \`${ASK[resume]:-}\`"
     else
       echo "  ${who}the answer starts \`${ASK[resume]:-}\`"

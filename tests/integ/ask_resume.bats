@@ -169,6 +169,66 @@ calls() { cat "$NOTES_FIXTURE/calls.log" 2>/dev/null; }
   assert_output $'answered\ndone'
 }
 
+# -- a live asker carries on --
+# ar-5961: ask MFLKKY's judge answer at post ran its prompt resume headless beside the live asker
+# tr-181, which committed that session's uncommitted diff and opened trader PR #232 as a second copy.
+
+# live_judge: post's judge answers a ship_deploy ask at once with `approve`.
+live_judge() {
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0 AGENT_ASK_JUDGE_CMD="$BATS_TEST_TMPDIR/judge"
+  unset AGENT_ASK_NO_JUDGE
+  cat > "$BATS_TEST_TMPDIR/judge" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' '{"type":"ship_deploy","decisions":[{"decision":"d","impact":{"evidence":"q impact","level":"self"},"knowledge":{"evidence":"","met":false},"external":{"evidence":"","met":false},"taste":{"evidence":"","met":false},"unclear-ask":{"evidence":"","met":false},"against-precedent":{"evidence":"","met":false},"reversible":{"evidence":"q reversible","met":true},"grounded":{"evidence":"q grounded","met":true}}],"reason":"rules say go","answer":"approve"}'
+SH
+  chmod +x "$BATS_TEST_TMPDIR/judge"
+}
+
+@test "a judge answer at post goes to the asking session, and its prompt resume does not start" {
+  bats_require_minimum_version 1.5.0
+  unset AGENT_ASK_NO_RESUME
+  live_judge
+  local opts=(--project alpha --options 'approve=go ahead|hold=wait' --recommend approve --resume '/captain alpha go')
+  run --separate-stderr env CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post "${opts[@]}" 'Cut the branch?'
+  assert_success
+  local id="$output"
+  [[ "$stderr" == *"resume did not start: the asking session has the answer"* ]]
+  assert_not_called 'agentctl-run'
+  run "$AGENT_ASK" show "$id"
+  assert_line 'answered_by: judge'
+  refute_line 'resumed_at: '
+  run "$AGENT_ASK" resumable alpha
+  assert_output ''
+  # Negative control: a script with no session reads no answer, so its resume runs.
+  env -u CLAUDE_CODE_SESSION_ID "$AGENT_ASK" post "${opts[@]}" 'Cut the other branch?' >/dev/null 2>&1
+  assert_called 'agentctl-run --agent ask-resume -p /captain alpha go'
+}
+
+@test "an answer typed into the live asker starts no prompt resume; a run: resume still runs" {
+  unset AGENT_ASK_NO_RESUME
+  printf '{"session_id":"sid-1","pane":"%%1","status":"idle"}\n' > "$NOTES_FIXTURE/agent-panel.list"
+  local id; id="$(CLAUDE_CODE_SESSION_ID=sid-1 gate alpha)"
+  "$AGENT_ASK" answer "$id" approve 2>/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
+  assert_called "agent-panel send --pane %1 Answer to ask $id: approve"
+  assert_not_called 'agentctl-run'
+  run "$AGENT_ASK" show "$id"
+  assert_line --partial 'not its resume: the live session on the ask has the answer'
+  refute_line 'resumed_at: '
+  # The answer did not go in (another send held the pane): a board row carries it, never a headless run.
+  touch "$NOTES_FIXTURE/agent-panel.busy"
+  id="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project alpha --resume '/captain alpha again' 'Cut it again?')"
+  "$AGENT_ASK" answer "$id" yes 2>/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
+  assert_not_called 'agentctl-run'
+  assert_called 'notes ptask'
+  rm "$NOTES_FIXTURE/agent-panel.busy"
+  # Negative control: a `run:` resume is the asking script's own step, so it runs beside the session.
+  printf '#!/usr/bin/env bash\nprintf "own-step %%s\\n" "$*" >> "$NOTES_FIXTURE/calls.log"\n' > "$SANDBOX/bin/own-step"
+  chmod +x "$SANDBOX/bin/own-step"
+  id="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project alpha --resume 'run: own-step' 'Step on?')"
+  "$AGENT_ASK" answer "$id" yes 2>/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
+  assert_called "own-step $id"
+}
+
 # -- running --
 
 @test "a resume runs headless as the ask-resume agent, with a turn cap" {
