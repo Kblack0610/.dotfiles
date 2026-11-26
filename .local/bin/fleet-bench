@@ -7239,15 +7239,27 @@ canary_retire() {
   return "$rc"
 }
 
+# canary_lane_route <harness> <model> -> the gateway route the lane's runs ask for, nothing when the lane names no model or
+# the map has none: harnesses.json `models[<model>]`, less its provider prefix for an opencode launcher, the same id
+# fleet-dispatch's harness_route gives `claude-acct room --source --model`. Room on the source alone says ok while that
+# route answers 429 (ar-4601: beam-free past its daily quota, ocfree room ok, a canary queued into a route no pass could start).
+canary_lane_route() {
+  local id
+  [ -n "$2" ] || return 0
+  id=$(jq -r --arg h "$1" --arg m "$2" '.harnesses[$h].models[$m] // empty' "$BENCH_HARNESSES" 2>/dev/null)
+  [ "$(jq -r --arg h "$1" '.harnesses[$h].launcher // $h' "$BENCH_HARNESSES" 2>/dev/null)" != opencode ] || id=${id#*/}
+  printf '%s' "$id"
+}
+
 # canary_top_up <max> -> queues at most <max> of this week's missing canary items, one task a lane a round
 # across the claude baseline lane and each lane in BENCH_CANARY_LANES (`harness model [effort]` a line, #
 # comments) that has room, so the few queued at once run across lanes together instead of one lane's whole
 # set first. A lane has room when the source its harness spends from (harnesses.json `source`) does by
-# BENCH_ROOM_CMD, as a claude lane does when any Claude account does; a lane with none, no source or a
+# BENCH_ROOM_CMD, and so does the route of its model (--model, canary_lane_route), as a claude lane does when any Claude account does; a lane with none, no source or a
 # repeated slug is said and skipped. fleet-dispatch calls it (canary_top_up) to keep DISPATCH_CANARY_KEEP canaries queued; the
 # weekly retro queues none. Says one line a lane that queued, and returns 1 when a lane could not be queued.
 canary_top_up() {
-  local left=$1 h m e src why label lane entry got rc=0 round
+  local left=$1 h m e src why label lane entry got rc=0 round route
   local -A lanes=() queued=() dead=()
   local -a active=("||")
   # An earlier week's queued items go first: they hold floor slots for lanes that no longer replay them.
@@ -7267,7 +7279,8 @@ canary_top_up() {
       else
         src=$(jq -r --arg h "$h" '.harnesses[$h].source // empty' "$BENCH_HARNESSES" 2>/dev/null)
         if [ -z "$src" ]; then say "canary: $label not queued, $h has no source in $BENCH_HARNESSES"; continue; fi
-        if ! why=$($BENCH_ROOM_CMD --source "$src" 2>&1); then say "canary: $label not queued, ${why:-$src has no room}"; continue; fi
+        route=$(canary_lane_route "$h" "$m")
+        if ! why=$($BENCH_ROOM_CMD --source "$src" ${route:+--model "$route"} 2>&1); then say "canary: $label not queued, ${why:-$src has no room}"; continue; fi
       fi
       active+=("$h|$m|$e")
     done 3<"$BENCH_CANARY_LANES"
