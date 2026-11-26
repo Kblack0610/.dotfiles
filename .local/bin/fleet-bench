@@ -409,7 +409,7 @@ BENCH_RECORD_TAIL=5000   # lines of the dispatch record pipeline_json reads: mor
 : "${PIPELINE_SNAPSHOT:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/pipeline/pipeline.json}"   # what the Queue tab's pipeline line reads
 : "${CHAIN_DAYS:=7}"                 # the merged PRs ledger_coverage counts
 CHAIN_SNAPSHOT_MAX_S=3300            # how old a chain count `chain --kpi` reuses: under the chain-<key> watches' 1h interval
-CHAIN_LOCK_WAIT_S=600               # how long a `chain --kpi` probe waits on another probe's count (about 3 min) before it reads unreadable
+CHAIN_LOCK_WAIT_S=${CHAIN_LOCK_WAIT_S:-600}   # how long a `chain --kpi` probe waits on another probe's count (about 3 min) before it reads unreadable
 # A Sentinel probe's fix watermark (SENTINEL_SINCE, set by watch-companion-loop resolve), an epoch, 0 for
 # none. ledger_coverage, untracked_merged_prs, wants_unstamped, reds_unfixed and bottleneck --check
 # stalled count from the later of their window start and this, so a watch's fixed red stops counting the
@@ -2336,11 +2336,12 @@ lead_time_json() {
 # lead_untrusted <key=value lines> -> one "<kpi> <value> (min <bound>)" line per BENCH_LEAD_TRUST
 # KPI that is unread, has no min in kpi-thresholds, or sits under it; nothing when all hold, and
 # request_to_live_h reads its value only then (a lead time over a ledger that misses half the
-# merges is not one).
+# merges is not one). A share over nothing (`-`, an empty window) holds: it misses no merge.
 lead_untrusted() {
   local kv=$1 k v min
   for k in $BENCH_LEAD_TRUST; do
     v=$(sed -n "s/^$k=//p" <<<"$kv" | tail -1)
+    [ "$v" != - ] || continue
     min=$(sed -n "s/^${k}_min=//p" "$KPI_THRESHOLDS" 2>/dev/null | tail -1)
     if [ -z "$min" ]; then echo "$k ${v:-?} (no min)"
     elif ! awk -v v="$v" -v m="$min" 'BEGIN { exit !(v ~ /^[0-9.]+$/ && v + 0 >= m + 0) }'; then echo "$k ${v:-?} (min $min)"; fi
@@ -2520,7 +2521,7 @@ chain_counts() {
   par_wait
   cat "$PAR/links" "$PAR/rel"
   if [ -n "$(lead_untrusted "$(cat "$PAR/links")")" ] || [ ! -s "$PAR/lead" ]; then echo "request_to_live_h=?"
-  else jq -r '"request_to_live_h=\(.p50 // "?")"' "$PAR/lead"; fi
+  else jq -r '"request_to_live_h=\(.p50 // "-")"' "$PAR/lead"; fi
   for s in board prio local plans routes queue reds spent pipeline; do cat "$PAR/$s"; done
 }
 
@@ -4413,15 +4414,15 @@ chain_snapshot() {
 }
 
 # chain_check <json> <counts> -> kpi_past, then an `unreadable:` line naming each bounded KPI of
-# <json> whose source could not be read (`<key>=?` in <counts>), exit 2: a KPI that could not be
-# counted is not one under its bound, and Sentinel reads the line as UNKNOWN (ar-5413). A KPI past
-# its bound still exits 1 first. A ratio with nothing to divide reads null too, but as a number
-# source, so it is no unreadable one.
+# <json> that <counts> holds no reading of (`<key>=?`, or no `<key>=` line), exit 2: a KPI that
+# could not be counted is not one under its bound, and Sentinel reads the line as UNKNOWN (ar-5413).
+# A KPI past its bound still exits 1 first. A share over nothing (`<key>=-`) is null in <json> too,
+# but read, so it is no unreadable one.
 chain_check() {
   local unread
   kpi_past "$1" || return 1
-  unread=$(jq -r --arg c "$2" '($c | split("\n") | map(select(endswith("=?")) | rtrimstr("=?"))) as $q
-    | [to_entries[] | select(.value.bound != null and (.key | IN($q[]))) | .key] | join(" ")' <<<"$1") || unread='?'
+  unread=$(jq -r --arg c "$2" '($c | split("\n") | map(select(test("^[a-z0-9_]+=") and (endswith("=?") | not)) | sub("=.*"; ""))) as $read
+    | [to_entries[] | select(.value.bound != null and (.key | IN($read[]) | not)) | .key] | join(" ")' <<<"$1") || unread='?'
   [ -z "$unread" ] || { echo "unreadable: $unread could not be counted"; return 2; }
 }
 
@@ -4449,7 +4450,10 @@ cmd_chain() {
     counts=$(chain_snapshot "$t" "$kpi")
   else
     counts=$(chain_counts "$t")
-  fi && json=$(chain_json "$t" "$counts" "$kpi") || { echo "unreadable: the chain count failed"; return 2; }
+  fi && json=$(chain_json "$t" "$counts" "$kpi") || {
+    [ "$mode" = --check ] || { say "chain: the chain count failed"; return 1; }
+    echo "unreadable: the chain count failed"; return 2
+  }
   case "$mode" in
     --json) printf '%s\n' "$json" ;;
     --check) chain_check "$json" "$counts" ;;

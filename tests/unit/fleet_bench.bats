@@ -3832,11 +3832,34 @@ q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
   run "$SUBJECT" chain --check --kpi doctor_fail
   assert_failure 2
   assert_output 'unreadable: doctor_fail could not be counted'
-  # the whole chain says the same, after any KPI past its bound, which still exits 1
+  # the whole chain exits 1 while any KPI is past its bound, and names the unreadable one only after
   run "$SUBJECT" chain --check
   assert_failure 1
   assert_output --partial 'untracked_merged_prs 1 (max 0)'
   refute_output --partial 'unreadable:'
+  # with every chain KPI bounded and none past, it names each one the count could not read (this
+  # fixture has no source for several), and only those
+  cp "$KPI_THRESHOLDS" "$SANDBOX/thresholds"
+  sed -n 's/^KPI_CHAIN="\(.*\)"$/\1/p' "$SUBJECT" | tr ' ' '\n' > "$SANDBOX/chain.keys"
+  sed 's/$/_max=1000000/' "$SANDBOX/chain.keys" > "$KPI_THRESHOLDS"
+  printf '%s\n' ledger_coverage_min=0 epic_linked_share_min=0 >> "$KPI_THRESHOLDS"
+  run "$SUBJECT" chain --check
+  assert_failure 2
+  [[ "$output" =~ ^unreadable:\ (.*)\ could\ not\ be\ counted$ ]] || fail "$output"
+  assert_equal "$(tr ' ' '\n' <<<"${BASH_REMATCH[1]}" | sort)" "$(sed -n 's/=?$//p' "$FLEET_BENCH_DIR/chain.0.counts" | grep -xFf "$SANDBOX/chain.keys" | sort)"
+  [[ " ${BASH_REMATCH[1]} " == *" doctor_fail "* ]] || fail "$output"
+  mv "$SANDBOX/thresholds" "$KPI_THRESHOLDS"
+  # a count that cannot run (another probe holds the lock past the wait) is unreadable to a probe, and
+  # a plain error to the table
+  rm -f "$FLEET_BENCH_DIR/chain.0.counts"
+  exec 9>"$FLEET_BENCH_DIR/chain.lock"; flock 9
+  CHAIN_LOCK_WAIT_S=0 run "$SUBJECT" chain --check --kpi doctor_fail
+  assert_failure 2
+  assert_output 'unreadable: the chain count failed'
+  CHAIN_LOCK_WAIT_S=0 run "$SUBJECT" chain --kpi doctor_fail
+  assert_failure 1
+  refute_output --partial 'unreadable:'
+  exec 9>&-
   # an empty window is a share over nothing, read: it neither trips nor reads unreadable
   run "$SUBJECT" chain --check --kpi uncaused_close_share
   assert_success
