@@ -36,8 +36,11 @@ LIST = ".github/gate-files"
 CALLER = ".github/workflows/gate-guard.yml"
 WORKFLOW_DIRS = (".github/workflows/", ".forgejo/workflows/")
 MODES = ("edit", "down", "up")
-NUM = re.compile(r"-?\d+(?:\.\d+)?")
-JOB = re.compile(r"^( +)([A-Za-z_][A-Za-z0-9_-]*):")
+# A number is a standalone token: digits inside a name (`foo_2`, `ar-500`, `max-lines-300`) or a date
+# stay text, so changing them makes a new line, never a lowered number.
+NUM = re.compile(r"(?<![\w.-])-?\d+(?:\.\d+)?(?![\w.-]*\w)")
+JOBS = re.compile(r"^jobs:\s*(#.*)?$")
+JOB = re.compile(r"^( +)([\"']?)([A-Za-z_][A-Za-z0-9_-]*)\2:")
 LOOSE = re.compile(r"^\s*continue-on-error:\s*(true|\$\{\{)")
 SHOWN = 5  # reasons printed per ratchet file; a new baseline adds hundreds
 
@@ -81,8 +84,9 @@ def job_ids(text):
     """The job ids of a workflow file's top-level jobs: block."""
     out, indent, on = set(), None, False
     for line in (text or "").splitlines():
+        line = line.rstrip("\r")
         if not on:
-            on = line.rstrip() == "jobs:"
+            on = bool(JOBS.match(line.rstrip()))
             continue
         if not line.strip() or line.lstrip().startswith("#"):
             continue
@@ -92,16 +96,17 @@ def job_ids(text):
         if m and indent is None:
             indent = len(m.group(1))
         if m and len(m.group(1)) == indent:
-            out.add(m.group(2))
+            out.add(m.group(3))
     return out
 
 
 def changed_lines(mb, head, path):
     """(removed, added) lines of one file, from a zero-context diff."""
-    removed, added = [], []
+    removed, added, hunk = [], [], False
     for line in run_git("diff", "--no-color", "--no-ext-diff", "-U0", mb, head, "--", path).splitlines():
-        if line.startswith(("---", "+++")):
-            continue
+        hunk = hunk or line.startswith("@@")
+        if not hunk or line.startswith("@@"):
+            continue  # the file header, whose ---/+++ lines a removed `-- x` would look like
         if line.startswith("-"):
             removed.append(line[1:])
         elif line.startswith("+"):
@@ -143,8 +148,8 @@ def holds(mb, head, rules):
         if show(mb, implicit) is not None:
             rules.insert(0, ("edit", implicit))
     out = []
-    for row in run_git("diff", "--no-renames", "--name-status", mb, head).splitlines():
-        status, _, path = row.partition("\t")
+    fields = run_git("diff", "--no-renames", "--name-status", "-z", mb, head).split("\0")
+    for status, path in zip(fields[0::2], fields[1::2]):
         mode = mode_of(path, rules)
         if mode == "edit":
             out.append("%s %s, a listed gate file" % ("deletes" if status == "D" else "edits", path))
@@ -165,12 +170,21 @@ def holds(mb, head, rules):
 
 
 def event_labels():
+    """The PR's labels, counted only on the event of the human applying LABEL: that run judges the
+    head the human saw. Any later run (a push, a reopen, another label) gets none, so a commit pushed
+    after the label is held again until the human re-applies it."""
     p = os.environ.get("GITHUB_EVENT_PATH")
     if not p or not os.path.isfile(p):
         return []
     with open(p) as f:
         ev = json.load(f)
-    return [l.get("name", "") for l in (ev.get("pull_request") or {}).get("labels") or []]
+    labels = [l.get("name", "") for l in (ev.get("pull_request") or {}).get("labels") or []]
+    if ev.get("action") == "labeled" and (ev.get("label") or {}).get("name") == LABEL:
+        return labels
+    if LABEL in labels:
+        print("gate-guard: the `%s` label was applied before this head; it counts only on the run "
+              "its applying starts, so the human removes and re-applies it to pass this head" % LABEL)
+    return [l for l in labels if l != LABEL]
 
 
 def check_cmd(argv):

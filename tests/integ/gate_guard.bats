@@ -121,11 +121,19 @@ check() { python3 "$GG" check "$@" main HEAD; }
   assert_output --partial 'edits .github/workflows/gate-guard.yml'
 }
 
-@test "labels come from the pull_request event; --list overrides the base's list; bad usage exits 2" {
+@test "the label counts only on the run its applying starts; --list overrides the base's list; bad usage exits 2" {
   echo 'exit 0' >> tools/check.sh && commit loosen
-  printf '{"pull_request":{"labels":[{"name":"%s"}]}}' "$(python3 "$GG" label)" > "$BATS_TEST_TMPDIR/event.json"
+  local label; label=$(python3 "$GG" label)
+  printf '{"action":"labeled","label":{"name":"%s"},"pull_request":{"labels":[{"name":"%s"}]}}' "$label" "$label" > "$BATS_TEST_TMPDIR/event.json"
   GITHUB_EVENT_PATH="$BATS_TEST_TMPDIR/event.json" run check
   assert_success
+  printf '{"action":"synchronize","pull_request":{"labels":[{"name":"%s"}]}}' "$label" > "$BATS_TEST_TMPDIR/event.json"
+  GITHUB_EVENT_PATH="$BATS_TEST_TMPDIR/event.json" run check
+  assert_failure 1
+  assert_output --partial 'applied before this head'
+  printf '{"action":"labeled","label":{"name":"bug"},"pull_request":{"labels":[{"name":"%s"},{"name":"bug"}]}}' "$label" > "$BATS_TEST_TMPDIR/event.json"
+  GITHUB_EVENT_PATH="$BATS_TEST_TMPDIR/event.json" run check
+  assert_failure 1
   printf '%s\n' 'README.md' > "$BATS_TEST_TMPDIR/list"
   run check --list "$BATS_TEST_TMPDIR/list" --labels ''
   assert_success
@@ -133,4 +141,28 @@ check() { python3 "$GG" check "$@" main HEAD; }
   assert_failure 2
   run python3 "$GG" check --list /nonexistent main HEAD
   assert_failure 2
+}
+
+@test "digits inside a name or a date are text, so changing them is a new line; a removed line starting -- still counts" {
+  printf '%s\n' 'skip tests/foo_2.bats' 'ar-500' '--no-foo' >> tests/baseline.txt
+  printf '%s\n' '--strict' >> tests/floor.txt && commit seed
+  git checkout -q main && git merge -q --ff-only pr && git checkout -q -b pr2
+  sed -i -e 's/foo_2/foo_1/' -e 's/ar-500/ar-100/' tests/baseline.txt && commit swap
+  run check --labels ''
+  assert_failure 1
+  assert_output --partial 'adds the line `skip tests/foo_1.bats`'
+  assert_output --partial 'adds the line `ar-100`'
+  git reset -q --hard main && sed -i '/^--strict$/d' tests/floor.txt && commit drop
+  run check --labels ''
+  assert_failure 1
+  assert_output --partial 'drops the line `--strict` (an up file)'
+}
+
+@test "a jobs: block with a comment, CRLF or quoted ids still shows a dropped job" {
+  printf 'name: w\r\njobs: # required\r\n  "build":\r\n    runs-on: x\r\n  test:\r\n    runs-on: x\r\n' > .github/workflows/w.yml && commit seed
+  git checkout -q main && git merge -q --ff-only pr && git checkout -q -b pr2
+  printf 'name: w\r\njobs: # required\r\n  test:\r\n    runs-on: x\r\n' > .github/workflows/w.yml && commit drop
+  run check --labels ''
+  assert_failure 1
+  assert_output --partial '.github/workflows/w.yml: drops the job `build`'
 }

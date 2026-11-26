@@ -6,7 +6,6 @@
 .claude/hooks/skip-guard.py
 .claude/hooks/walker-guards.py
 .githooks/pre-commit
-.githooks/pre-push
 # The copy and shape gate (P1) and its tuning.
 .local/bin/shape-grow
 .config/shape-grow/*

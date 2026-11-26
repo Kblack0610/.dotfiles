@@ -25,9 +25,8 @@ is never used", the global "if on the default branch, branch first"):
 
 Not covered: git calls inside a script (store-sync and fleet-lease commit to their own stores with
 `-c core.hooksPath=/dev/null`), an `export` of GIT_CONFIG_* or HOME earlier in the command, `env -i`,
-a hand edit of .git/config or ~/.gitconfig, a label applied by id (a GraphQL mutation) or by
-curl, and a repo with
-no default branch on origin (~/.notes and ~/.agent push to `backup`), which allow. The human runs a
+a hand edit of .git/config or ~/.gitconfig, a label applied by id (a GraphQL mutation), by curl or
+by a variable the shell expands, and a repo with no default branch on origin (~/.notes and ~/.agent push to `backup`), which allow. The human runs a
 bypass by hand when one is meant. It walks the command with forge-guard's walker. Fail-open: any
 error allows the command.
 """
@@ -105,11 +104,15 @@ def gate_label():
 
 
 def applies_label(argv, label):
-    """True when a gh argv applies label: an edit's --add-label, a create's --label or -l, or a
-    `gh api` write (any method but GET or HEAD) on a labels path whose arguments name it."""
-    words = FORGE.gh_words(argv)
+    """True when a gh argv applies label (any case: GitHub label names are case-insensitive): an
+    edit's --add-label, a create's --label or -l (also attached, `-lname`), or a `gh api` write (any
+    method but GET or HEAD) on a labels path that names it or reads its body from a file or stdin
+    (`--input`, `-F x=@file`), which this cannot read."""
+    words, label = FORGE.gh_words(argv), label.casefold()
+    rest = [a.casefold() for a in argv[2:]]
     if words[:1] == ["api"]:
-        return (any("labels" in a for a in argv[2:]) and any(label in a for a in argv[2:])
+        named = any(label in a for a in rest) or "--input" in rest or any("=@" in a for a in rest)
+        return (any("labels" in a for a in rest) and named
                 and FORGE.request_method("gh api", argv) not in (None, "GET", "HEAD"))
     if words[:1] not in (["pr"], ["issue"]) or words[1:2] not in (["edit"], ["create"]):
         return False
@@ -120,9 +123,11 @@ def applies_label(argv, label):
             value = next(it, "")
         elif a.startswith(tuple(f + "=" for f in flags)):
             value = a.split("=", 1)[1]
+        elif "-l" in flags and a.startswith("-l") and not a.startswith("--"):
+            value = a[2:]
         else:
             continue
-        if label in (v.strip() for v in value.split(",")):
+        if label in (v.strip().casefold() for v in value.split(",")):
             return True
     return False
 

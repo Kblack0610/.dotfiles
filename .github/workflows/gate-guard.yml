@@ -46,6 +46,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           path: repo
+          persist-credentials: false
           fetch-depth: 0
           filter: blob:none
           sparse-checkout-cone-mode: false
@@ -73,11 +74,14 @@ jobs:
           HOME=$(mktemp -d) DOTFILES_PRIVATE="$PWD/repo" guard/.local/bin/fact-owners check
       # overlay: every register row names a check that parses, and the review-only rows match
       # rules-prose-baseline, which may only shrink (or-mutable-biscuit item 6). HOME is empty, so
-      # a row's source and measure, which live on the workstation, are not re-read here.
+      # a row's source, which lives on the workstation, is not re-read. Each row's `measure` is a
+      # shell command the PR may have written, and --check runs it, so the register is checked with
+      # every measure stripped: no step here runs the PR's code.
       - name: Rules register (fleet-bench rules --check)
         if: inputs.overlay
         run: |
+          reg=$(mktemp) && jq -c 'del(.measure)' repo/.config/agentctl/rules.jsonl > "$reg"
           HOME=$(mktemp -d) BENCH_LIB_DIR="$PWD/guard/.local/lib" \
-            RULES_REGISTER="$PWD/repo/.config/agentctl/rules.jsonl" \
+            RULES_REGISTER="$reg" \
             RULES_PROSE_BASELINE="$PWD/repo/.config/agentctl/rules-prose-baseline" \
             guard/.local/bin/fleet-bench rules --check
