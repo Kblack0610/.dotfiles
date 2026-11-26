@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # agent-units.sh - which systemd user units are agent batch work: one list for agent-hold (unit_of,
 # lower), fleet-assess CAP_PROBE and worktree.sh wt_closed_pane_scopes. A pane scope is a tmux
 # pane's (tmux-spawn-*) or one `claude-acct scope` moved an agent session into (agent-*); an
