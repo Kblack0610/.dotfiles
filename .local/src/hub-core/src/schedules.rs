@@ -19,6 +19,7 @@ use crate::reading::JobState;
 use crate::reds::{self, Red, Route};
 use crate::session_actions::Runner;
 use crate::table::{Row, Val};
+use crate::tasks;
 use crate::vocab::Level;
 
 /// How far back a streak looks; agentctl's ledger and the journal both hold a week.
@@ -966,13 +967,61 @@ fn red_keys(row: &Schedule, mine: &[&Watch]) -> Vec<String> {
     keys
 }
 
+/// What `nightly:<repo>` holds keep back. Held work is a board row carrying its gate as
+/// `#nightly/<repo>`, or `#nightly/<repo>/<day>` for the night of that day (agent-queue
+/// `gate_board_tag`); a promoted row is a queued item that keeps the gate as its `nightly:<repo>`
+/// tag, which agent-queue judges again on each new day. Repos are lower-cased, as the board's tags.
+#[derive(Debug, Default)]
+struct Held {
+    /// Queued items, by repo.
+    queued: HashMap<String, usize>,
+    /// Open, unstarted board rows: (repo, day), the day empty for an undated gate.
+    rows: Vec<(String, String)>,
+}
+
+impl Held {
+    fn read(queued: &[queue::Item], board: Option<&tasks::Feed>) -> Held {
+        let mut held = Held::default();
+        for t in queued.iter().flat_map(|i| i.tag_list()) {
+            if let Some(repo) = t.strip_prefix("nightly:") {
+                *held.queued.entry(repo.to_lowercase()).or_default() += 1;
+            }
+        }
+        let rows = board.map_or(&[][..], |f| &f.rows[..]);
+        for gate in rows
+            .iter()
+            .filter(|r| !r.doing())
+            .flat_map(|r| &r.tags)
+            .filter_map(|t| t.strip_prefix("nightly/"))
+        {
+            let (repo, day) = gate.split_once('/').unwrap_or((gate, ""));
+            held.rows.push((repo.to_lowercase(), day.to_string()));
+        }
+        held
+    }
+
+    /// The items `nightly:<repo>`'s run on local day `night` (`YYYY-MM-DD`) releases: the queued
+    /// ones, the undated rows, and the rows dated that day. A row dated earlier is already clear,
+    /// one dated later waits for its own night.
+    fn count(&self, repo: &str, night: &str) -> usize {
+        let repo = repo.to_lowercase();
+        let rows = self
+            .rows
+            .iter()
+            .filter(|(r, d)| *r == repo && (d.is_empty() || d == night))
+            .count();
+        self.queued.get(&repo).copied().unwrap_or(0) + rows
+    }
+}
+
 /// Fill what depends on the rest of the fleet: the triage word, the open reds, and After.
 fn join(
     row: &mut Schedule,
     mine: &[&Watch],
     routes: &HashMap<String, Route>,
     reds: &[Red],
-    held: &HashMap<String, usize>,
+    held: &Held,
+    night: &str,
 ) {
     let keys = red_keys(row, mine);
     let open: Vec<&Red> = reds.iter().filter(|r| keys.contains(&r.red)).collect();
@@ -1000,7 +1049,7 @@ fn join(
             .split_whitespace()
             .filter(|t| t.starts_with("nightly:"))
         {
-            let n = held.get(t).copied().unwrap_or(0);
+            let n = held.count(&t["nightly:".len()..], night);
             row.after.push(format!("{t} releases {n} held items"));
         }
     }
@@ -1287,11 +1336,12 @@ pub fn read_with(
     let mut errors = vec![];
     let mut rows = vec![];
 
-    let (timers, k8s, reds, queued, live) = std::thread::scope(|s| {
+    let (timers, k8s, reds, queued, board, live) = std::thread::scope(|s| {
         let timers = s.spawn(|| read_timers(runner, at, &home));
         let k8s = s.spawn(|| read_k8s(at, off));
         let reds = s.spawn(|| open_reds(reds, runner));
         let queued = s.spawn(|| queue::list(runner, "queued"));
+        let board = s.spawn(|| tasks::feed(runner));
         let live = s.spawn(|| {
             runner
                 .output(&["agentctl", "liveness"].map(String::from))
@@ -1305,6 +1355,7 @@ pub fn read_with(
             k8s.join().unwrap_or_else(|_| (vec![], vec![gone()])),
             reds.join().unwrap_or_else(|_| Err(gone())),
             queued.join().unwrap_or_else(|_| Err(gone())),
+            board.join().unwrap_or_else(|_| Err(gone())),
             live.join().unwrap_or_else(|_| Err(gone())),
         )
     });
@@ -1357,19 +1408,20 @@ pub fn read_with(
         vec![]
     });
     let queued = noted(queued, "queue", &mut errors);
-    let mut held: HashMap<String, usize> = HashMap::new();
-    for t in queued.iter().flat_map(|i| i.tag_list()) {
-        if t.starts_with("nightly:") {
-            *held.entry(t.to_string()).or_default() += 1;
-        }
-    }
+    let board = board.map_err(|e| errors.push(format!("board: {e}"))).ok();
+    let held = Held::read(&queued, board.as_ref());
+    let today = local(at, off, "%Y-%m-%d");
 
     for (row, m) in rows.iter_mut().zip(&mine) {
         row.judge(at);
         if let Some(why) = live.get(&row.name).filter(|_| row.kind == AGENTCTL) {
             row.fault(why);
         }
-        join(row, m, &routes, &reds, &held);
+        // The night a held item waits for: the day of the row's next run, else today.
+        let night = row
+            .next
+            .map_or_else(|| today.clone(), |t| local(t, off, "%Y-%m-%d"));
+        join(row, m, &routes, &reds, &held, &night);
         row.status = status(row, at, off);
         row.streak_word = row.streak_text();
     }
@@ -1905,7 +1957,10 @@ Id=bare.service\nDescription=bare.service\nResult=exit-code\nExecStart=\n";
             "watch nightly\tagent\tnightly-fix\t#size/m nightly:app\nother\t-\t-\t\n",
         );
         assert_eq!(routes.len(), 1, "a dash is no route");
-        let held = HashMap::from([("nightly:app".to_string(), 2)]);
+        let held = Held {
+            queued: HashMap::from([("app".to_string(), 2)]),
+            ..Default::default()
+        };
         let reds = [
             red("ar-1", "watch nightly", "no fix"),
             red("ar-2", "watch elsewhere", "still red"),
@@ -1914,7 +1969,7 @@ Id=bare.service\nDescription=bare.service\nResult=exit-code\nExecStart=\n";
             kind: CI.into(),
             ..Default::default()
         };
-        join(&mut row, &[&w], &routes, &reds, &held);
+        join(&mut row, &[&w], &routes, &reds, &held, "2026-11-25");
         assert_eq!(row.triage, "no fix ar-1");
         assert_eq!(row.open, ["ar-1 (no fix)"]);
         assert_eq!(
@@ -1925,10 +1980,49 @@ Id=bare.service\nDescription=bare.service\nResult=exit-code\nExecStart=\n";
                 "nightly:app releases 2 held items",
             ]
         );
-        join(&mut row, &[&w], &routes, &[], &held);
+        join(&mut row, &[&w], &routes, &[], &held, "2026-11-25");
         assert_eq!(
             row.triage, "agent nightly-fix",
             "no item: the route it would take"
+        );
+    }
+
+    #[test]
+    fn a_nightly_hold_counts_its_queued_items_and_the_board_rows_due_that_night() {
+        let row = |state: &str, tags: &[&str]| tasks::Row {
+            state: state.into(),
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            ..Default::default()
+        };
+        let f = tasks::Feed {
+            rows: vec![
+                row("open", &["nightly/app", "of/ar-1"]),
+                row("doing", &["nightly/app"]),
+                row("open", &["nightly/app/2026-11-24"]),
+                row("open", &["nightly/app/2026-11-25"]),
+                row("open", &["nightly/app/2026-11-26"]),
+                row("open", &["nightly/web"]),
+                row("open", &["size/m"]),
+            ],
+            ..Default::default()
+        };
+        let item = |tags: &str| queue::Item {
+            tags: tags.into(),
+            ..Default::default()
+        };
+        let held = Held::read(&[item("nightly:App size/s"), item("after:x")], Some(&f));
+        assert_eq!(
+            held.count("app", "2026-11-25"),
+            3,
+            "the queued item, the undated row and tonight's row; not a started row, \
+             a row whose night has passed or one for a later night"
+        );
+        assert_eq!(held.count("App", "2026-11-26"), 3, "tomorrow's row instead");
+        assert_eq!(held.count("web", "2026-11-25"), 1);
+        assert_eq!(
+            Held::read(&[], None).count("app", "2026-11-25"),
+            0,
+            "an unread board holds nothing"
         );
     }
 
@@ -1941,16 +2035,16 @@ Id=bare.service\nDescription=bare.service\nResult=exit-code\nExecStart=\n";
             unit: "agentctl@dream.service".into(),
             ..Default::default()
         };
-        join(&mut row, &[], &routes, &[], &HashMap::new());
+        join(&mut row, &[], &routes, &[], &Held::default(), "");
         assert_eq!(row.triage, "alert");
         let reds = [red("ar-3", "unit agentctl@dream.service", "fixing")];
-        join(&mut row, &[], &routes, &reds, &HashMap::new());
+        join(&mut row, &[], &routes, &reds, &Held::default(), "");
         assert_eq!(row.triage, "fixing ar-3");
         let mut none = Schedule {
             kind: K8S.into(),
             ..Default::default()
         };
-        join(&mut none, &[], &routes, &[], &HashMap::new());
+        join(&mut none, &[], &routes, &[], &Held::default(), "");
         assert_eq!(none.triage, "-", "no watch and no route says so");
     }
 
