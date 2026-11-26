@@ -3995,7 +3995,7 @@ cmd_rollup() {
       case "$rc" in
         0|4) echo "filed: $title ($n since ${since%T*}: $pairs)"; logline "rollup: filed $title ($n: $pairs)" ;;
         3) echo "joined its twin, which notes refused it as: $title" ;;
-        6) echo "held by the $DISPATCH_ROLLUP_BOARD board's daily cap, filed again next night: $title"; held=$((held + 1)); continue ;;
+        6) echo "held by the $DISPATCH_ROLLUP_BOARD board's daily cap, filed again next night: $title"; logline "rollup: held by the daily cap $title ($n: $pairs)"; held=$((held + 1)); continue ;;
         *) say "rollup: the $DISPATCH_ROLLUP_BOARD board refused $title (notes exit $rc)"; out=1; continue ;;
       esac
     fi
