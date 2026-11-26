@@ -47,7 +47,7 @@ do not reinvent their logic.
 │   ├── daily/        # YYYY-MM-DD.md files (`notes today` target)
 │   ├── backlog.md    # tasks with no date (footer-linked); 90 days there returns one to Focus at #low
 │   ├── refs/         # per-day digests and captures; generated _index.md linked from ## Refs; past 7 days under archive/
-│   ├── permanent/    # zettelkasten atomic notes (`notes zettel new`)
+│   ├── permanent/    # zettels, human-written only (`notes zettel new`); no job writes here, see the notes-cli README "One home per fact"
 │   ├── index/        # generated backlinks + MOC (`notes index --rebuild`)
 │   ├── summaries/    # continuous/ (rolling monthly) + monthly/ rollups
 │   └── daily_archive/# archived dailies (YYYY/YYYY-MM/)
@@ -95,7 +95,7 @@ Sync is event-driven by a Forgejo push webhook -> in-cluster `notes-sync-bridge`
 | `notes inbox add "<text>"` | Quick-capture from the terminal - append a timestamped bullet to today's `captures/<date>.md` (creates it with a header if new). |
 | `notes inbox archive <file> \| --stale \| --before D` | Drain triaged captures into `captures/_archive/` so the active view only shows what still needs processing. Pick exactly one selector. |
 | `notes backlog [--add]` | Tidy the backlog (sweep `- [x]` -> `## Done`, restamp day counts), print its path; `--add` files stdin task lines there (nvim `<leader>tb`). Shell alias `backlog` opens it in nvim. |
-| `notes zettel new "<title>"` | Create `permanent/<YYYYMMDDThhmm>-<slug>.md` with frontmatter. Alias: `zk`. |
+| `notes zettel new "<title>"` | Create `permanent/<YYYYMMDDThhmm>-<slug>.md` with frontmatter. Alias: `zk`. Human only: nothing else writes `permanent/` (README "One home per fact"). |
 | `notes index [--rebuild]` | Scan `[[wikilinks]]`; report or regenerate `index/backlinks.md` + `index/moc.md`. |
 | `notes find <words>` | Ranked lookup across the whole vault: words in any order, typos ok, `#tag` filter, `"phrase"`, `-word`. Keys: `<leader>nk` (nvim), Prefix+k (tmux). Syntax and eval: CLI README. |
 | `notes knowledge init\|due\|gate\|pending\|trace\|apply\|lint\|mv\|domain add` | The compiled knowledge base: `init` writes `knowledge/SCHEMA.md`, `due` lists articles to review, `gate` gives each night's source a kind (note, transcript, todo, generated), `pending` lists the days the engine owes, `trace <day\|path>` says where a source went (the log's `## Dispositions`), `apply <ops.json>` is the engine's only writer (guards + per-date log), `lint [--json]` counts drift per class, `mv` moves a page (or retires one merged into another) and rewrites every link to it, `domain add` registers a domain in `knowledge/domains.toml`. `init`, `apply` and `domain add` regenerate `knowledge/README.md`, the hub's front door; read it first. Once a registry exists, `apply` refuses a new page outside it; the rules: notes-cli README. Hand edits to articles are fine; an engine update loses to an edit made during its run. |
