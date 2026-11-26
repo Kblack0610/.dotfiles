@@ -200,6 +200,23 @@ write_binds() {
   [ ! -e "$FX/opened" ]
 }
 
+@test "ctrl-d and ctrl-u scroll the chip's hover on the keys every panel shares" {
+  # A stub fzf records every --bind the menu hands it.
+  cat > "$SANDBOX/bin/fzf" <<'EOF'
+#!/usr/bin/env bash
+for a in "$@"; do
+  case "$a" in --bind=*) printf '%s\n' "${a#--bind=}" >> "$FX/binds" ;; esac
+done
+EOF
+  chmod +x "$SANDBOX/bin/fzf"
+  run "$MENU" menu
+  assert_success
+  run cat "$FX/binds"
+  assert_line 'ctrl-d:preview-half-page-down,ctrl-u:preview-half-page-up,page-down:preview-page-down,page-up:preview-page-up'
+  # Negative control: the menu's own keys are still there beside them.
+  assert_line --partial 'ctrl-r:reload('
+}
+
 @test "pango_ansi: a close restores the tag still open; NO_COLOR strips; entities decode" {
   . "$W/pango.sh"
   run pango_ansi <<< "<b>a <span alpha='60%'>b</span> c</b> &lt;x&gt;"
