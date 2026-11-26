@@ -93,9 +93,10 @@
 #                                       call post's guard ended; run `expire`; put an agent-answered ask
 #                                       something still holds back to pending (fleet-state.service,
 #                                       each pass)
-#   agent-ask expire [--dry-run]        cancel each ask on a board row the human answered or whose
-#                                       item landed since it was posted, each today or tonight ask once its day is over
-#                                       (DATED_HOURS), and each audit older than AUDIT_HOURS; park
+#   agent-ask expire [--dry-run]        cancel each ask on a board row the human answered since it
+#                                       was posted, each today or tonight ask once its day is over
+#                                       (DATED_HOURS), and each audit older than AUDIT_HOURS or on a
+#                                       row whose item landed since it was posted; park
 #                                       each ask older than IDLE_DAYS no live session or queue item
 #                                       waits on (`parked_by: idle`), and cancel one back from that
 #                                       park still idle (park.conf). One line per ask it acts on
@@ -2324,9 +2325,10 @@ cmd_unpark() {
 #     posted is cancelled as a duplicate of that answer, however each is worded, when no live
 #     session waits on it. 2026-11-22: hc-820 had three asks pending, worded three ways, and the
 #     judge's same-question join never reads an approval or an audit, which all three were.
-#   - An ask whose question names a board row whose queue item landed (row_landed) after it was
+#   - An audit whose question names a board row whose queue item landed (row_landed) after it was
 #     posted is cancelled as moot, with the same guards. 2026-11-23: audit 9sW8iy of a retry of
 #     tr-186 stayed pending after tr-186 landed, since the judge's settled_by never reads an audit.
+#     Audits only: a question or approval filed before a landing (deploy it?) is about what comes next.
 #   - An ask that says today or tonight is cancelled once that day has ended and park.conf's
 #     DATED_HOURS have passed since it was posted (96uJW2 asked for Steam keys for a playtest
 #     and was still pending two days on), unless a live session waits on it or it has a resume
@@ -2364,7 +2366,7 @@ cmd_expire() {
     row="" landed="" dated=""
     if [ -n "$free" ] && row_named "${ASK[question]:-}" && [ "${ROW_ANS_AT[$ROW_NAMED]:-0}" -gt "$born" ]; then
       row="$ROW_NAMED"
-    elif [ -n "$free" ] && [ -n "$ROW_NAMED" ] && row_landed "$ROW_NAMED" "$born"; then
+    elif [ -n "$free" ] && [ -n "${ASK[audit_of]:-}" ] && [ -n "$ROW_NAMED" ] && row_landed "$ROW_NAMED" "$born"; then
       landed="$ROW_NAMED"
     elif [ -n "$free" ] && { [ -z "${ASK[resume]:-}" ] || [ "${ASK[resume]}" = "$REOPEN_RESUME" ]; } &&
       dated_due "${ASK[question]:-}" "$born" "$dated_h" && [ "$now" -ge "$DATED_DUE" ]; then

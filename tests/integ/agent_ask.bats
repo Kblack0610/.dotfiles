@@ -1796,7 +1796,7 @@ rpost() { "$AGENT_ASK" post --project "$1" --context "About: ${*: -1}" "${@:2}";
   assert_line --regexp "^agent-runtime	$bare	cancel	duplicate of $other: "
 }
 
-@test "expire cancels an ask on a row whose item landed after it was posted, an audit too; not a failed item, a later ask, a live or held one" {
+@test "expire cancels an audit on a row whose item landed after it was posted; not a question or approval, a failed item, a later audit, a live or held one" {
   # 2026-11-23: audit 9sW8iy of the judge's retry of tr-186 stayed pending after tr-186 landed.
   row_map
   mkdir -p "$HOME/.claude/sessions" "$SANDBOX/items"
@@ -1815,27 +1815,31 @@ FAKE
   export AGENT_ASK_QUEUE_CMD="$BATS_TEST_TMPDIR/aq"
   # item <slug> <outcome> <finished offset> <pr number>
   item() { printf '{"slug":"%s","outcome":"%s","finished":"%s","pr":"o/r#%s"}\n' "$1" "$2" "$(date -u -d "$3" +%FT%TZ)" "$4" > "$SANDBOX/items/$1.json"; }
-  local audit retry live held failed later id
-  audit="$(rpost agent-runtime --kind approval --audit-of q1 --options 'retry=keep|drop=override' 'The judge answered "Start board row ar-186 again after its last 2 runs failed?" with "retry"; your pick?')"
-  retry="$(CLAUDE_CODE_SESSION_ID=sid-gone rpost agent-runtime 'Start board row ar-186 again after its last 2 runs failed?')"
-  live="$(CLAUDE_CODE_SESSION_ID=sid-live rpost agent-runtime 'Is ar-186 still needed?')"
-  held="$(rpost agent-runtime 'Close ar-186 now?')"
+  # aud <n> <question>: an audit of the judge's answer to it, the session id from the caller's env.
+  aud() { rpost agent-runtime --kind approval --audit-of "q$1" --options 'retry=keep|drop=override' "The judge answered \"$2\" with \"retry\"; your pick?"; }
+  local audit gone deploy live held failed later id
+  audit="$(aud 1 'Start board row ar-186 again after its last 2 runs failed?')"
+  gone="$(CLAUDE_CODE_SESSION_ID=sid-gone aud 2 'Retry ar-186?')"
+  # A question or approval on the row is about what comes after it, so the landing settles neither.
+  deploy="$(CLAUDE_CODE_SESSION_ID=sid-gone2 rpost agent-runtime --kind approval 'ar-186 is about to merge; deploy it?')"
+  live="$(CLAUDE_CODE_SESSION_ID=sid-live aud 3 'Is ar-186 still needed?')"
+  held="$(aud 4 'Close ar-186 now?')"
   printf 'x\t%s\t\n' "$held" > "$SANDBOX/holds"
-  failed="$(rpost agent-runtime 'Start board row ar-187 again after its last 2 runs failed?')"
-  later="$(rpost agent-runtime 'ar-186 landed; deploy it?')"
-  for id in "$audit" "$retry" "$live" "$held" "$failed"; do aged "$id" '-2 hours'; done
+  failed="$(aud 5 'Start board row ar-187 again after its last 2 runs failed?')"
+  later="$(aud 6 'Deploy ar-186?')"
+  for id in "$audit" "$gone" "$deploy" "$live" "$held" "$failed"; do aged "$id" '-2 hours'; done
   aged "$later" '-30 minutes'
   # Negative control: no item has landed yet, so nothing closes.
   run "$AGENT_ASK" expire --dry-run
   assert_success
-  for id in "$audit" "$retry" "$live" "$held" "$failed" "$later"; do refute_output --partial "$id"; done
+  for id in "$audit" "$gone" "$deploy" "$live" "$held" "$failed" "$later"; do refute_output --partial "$id"; done
   item ar-186 landed '-1 hour' 1411
   item ar-187 failed '-1 hour' 1412
   run "$AGENT_ASK" expire --dry-run
   assert_success
   assert_line "agent-runtime	$audit	cancel	moot: row ar-186 landed (o/r#1411) after this was asked"
-  assert_line "agent-runtime	$retry	cancel	moot: row ar-186 landed (o/r#1411) after this was asked"
-  for id in "$live" "$held" "$failed" "$later"; do refute_output --partial "$id"; done
+  assert_line "agent-runtime	$gone	cancel	moot: row ar-186 landed (o/r#1411) after this was asked"
+  for id in "$deploy" "$live" "$held" "$failed" "$later"; do refute_output --partial "$id"; done
   grep -qx 'status: pending' "$(ask_file "$audit")"
   # A queue that cannot be read closes nothing.
   run env AGENT_ASK_QUEUE_CMD=false "$AGENT_ASK" expire
@@ -1845,7 +1849,7 @@ FAKE
   run "$AGENT_ASK" show "$audit"
   assert_line 'status: cancelled'
   assert_line 'closed_reason: moot: row ar-186 landed (o/r#1411) after this was asked'
-  for id in "$live" "$held" "$failed" "$later"; do grep -qx 'status: pending' "$(ask_file "$id")"; done
+  for id in "$deploy" "$live" "$held" "$failed" "$later"; do grep -qx 'status: pending' "$(ask_file "$id")"; done
 }
 
 @test "expire cancels a today or tonight ask once its day is over and DATED_HOURS have passed; an undated or held one stays" {
