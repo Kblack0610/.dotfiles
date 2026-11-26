@@ -2299,8 +2299,9 @@ skip_exits() {
     [ "$line" = - ] || [ "$(row_sig "$raw")" = "$line" ] || continue
     [ "$dsig" = - ] || [ "$(detail_sig "$dj")" = "$dsig" ] || continue
     body=${raw#- \[?\] }; body=${body%%<!--*}; body=${body%"${body##*[![:space:]]}"}
-    IFS=$'\t' read -r e gate < <(skip_exit_pick ids "$rule" "$id" "$body" "$d" "$planned" "$dsig" "$line")
+    e=$(skip_exit_pick ids "$rule" "$id" "$body" "$d" "$planned" "$dsig" "$line")
     [ -n "$e" ] || continue
+    gate=${e#*$'\t'}; e=${e%%$'\t'*}
     [ "$e" != human ] || e=$(human_exit "$prof" "$p" "$body" "$req" "${gated[$id]-}")
     if [ "$e" = plan ] && [ "$room" -le 0 ]; then
       [ -z "$dry" ] || { printf 'plan-wait\t%s\t%s\t%s\n' "$p" "$id" "$rule"; n[plan-wait]=$(( ${n[plan-wait]:-0} + 1 )); }
