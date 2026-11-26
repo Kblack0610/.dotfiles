@@ -483,6 +483,8 @@ span.warn { color: var(--b-stalled); }
 table.rrep { table-layout: fixed; }
 table.rrep tr > :nth-child(2) { width: 9em; } table.rrep tr > :nth-child(3) { width: 7.5em; } table.rrep tr > :nth-child(4) { width: 5.5em; }
 table.rrep td .c1 { max-width: none; }
+/* A long From (a queue slug) ends in ... inside its column, its whole text on hover. */
+table.rrep tr > td:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 table.rrep tr.unread td:first-child .c1:first-child { font-weight: 600; }
 table.rrep tr.wdet > td { overflow-wrap: anywhere; }
 /* Daily: the day's refs as one count line, a link to that day on Reports. */

@@ -113,6 +113,12 @@ impl Shown {
         Shown::fit(Role::Title, &t.title, &one_line(&whole))
     }
 
+    /// A name its author wrote to be read whole (a report's title): cleaned as any text is, cut
+    /// only at the role's caps, never at a clause break as a board row's [`Shown::title`] is.
+    pub fn name(raw: &str) -> Shown {
+        Shown::plain(Role::Title, raw)
+    }
+
     pub fn sub(raw: &str) -> Shown {
         Shown::plain(Role::Sub, raw)
     }

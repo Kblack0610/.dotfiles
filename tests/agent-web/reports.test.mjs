@@ -31,7 +31,7 @@ const view = (unread = true) => ({
   tiles: [{ label: "unread", n: unread ? 2 : 1, level: "" }, { label: "needs you", n: 1, level: "warn" }, { label: "today", n: 2, level: "" }, { label: "digests", n: 1, level: "" }],
   sections: [
     { id: "needs", title: "Needs you", folded: false, rows: [row("2026-11-24-ups-switch", "needs you")] },
-    { id: "stream", title: "Today", folded: false, rows: [row("2026-11-24-board-cleanup", unread ? "unread" : "read", { unread })] },
+    { id: "stream", title: "Today", folded: false, rows: [row("2026-11-24-board-cleanup", unread ? "unread" : "read", { unread, from: "" })] },
     { id: "digests", title: "Digests", folded: true, rows: [row("2026-11-24-briefing", "digest", { kind: "digest" })] },
     { id: "captures", title: "Your notes", folded: true, rows: [] },
   ],
@@ -87,6 +87,9 @@ test("Today draws the tiles, Needs you hued, the stream, and Digests folded; Arc
   assert.ok(!/Your notes/.test(html), "an empty folded section is not drawn");
   assert.match(html, /<div data-in="archive" hidden>/, "Archive waits behind its strip button");
   assert.match(html, /1 unread moved to archive/);
+  assert.match(html, /<td class="muted" title="dotfiles">dotfiles<\/td>/, "From is the filer, whole on hover");
+  assert.ok(!/>report<\/td>/.test(html), "an empty From is blank, never the row's kind");
+  assert.match(html, /id="sec-day-2026-11-20" data-rec>/, "an Archive day is a record, so the outline skips it");
   assert.equal(badge.innerHTML, `<span class="badge">2</span>`);
   assert.ok(!asked.some(([m]) => m === "POST"), "nothing is marked read before it is opened");
 });
