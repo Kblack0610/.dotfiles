@@ -1384,7 +1384,9 @@ index_rows() { # <queue_index output>
 # item with slug null at priority high for dispatch to start (ar-5848). It says so on stderr at every
 # read, and appends "<utc time>\t<file>\tno slug header" to AQ_HEADERLESS_LOG once per file (dispatch
 # reads with stderr dropped, so the log is the record a human finds); it is never deleted or moved.
-# The append goes through cat so an unwritable log is silent, never an awk abort that truncates the listing.
+# The append goes through a shell so an unwritable log is silent, never an awk abort that truncates the listing:
+# when the redirect fails, the second cat drains awk's line, since a shell that exited first left awk a closed
+# pipe, and gawk dies on that write (Broken pipe), a race CI lost on a loaded pool (ar-5815).
 # Two concurrent readers can both miss a new file and both append: a duplicate line is harmless.
 # Only an active item is skipped: a done file with no slug keeps listing, as stats and outcomes read it.
 SKIP_AWK='function skip_headerless(f,  lg, line, seen, now, a, cmd) {
@@ -1394,7 +1396,7 @@ SKIP_AWK='function skip_headerless(f,  lg, line, seen, now, a, cmd) {
   close(lg)
   if (seen) return
   cmd = "date -u +%Y-%m-%dT%H:%M:%SZ"; cmd | getline now; close(cmd)
-  cmd = "cat >> \"$AQ_HEADERLESS_LOG\" 2>/dev/null"; printf "%s\t%s\tno slug header\n", now, f | cmd; close(cmd) }'
+  cmd = "{ cat >> \"$AQ_HEADERLESS_LOG\"; } 2>/dev/null || cat >/dev/null"; printf "%s\t%s\tno slug header\n", now, f | cmd; close(cmd) }'
 
 # item_recs <file>... -> one record per item file for ITEM_JQ, all read by one awk: state, file,
 # task and the first weight in its header, then its header keys and values; fields end in \x1f and
