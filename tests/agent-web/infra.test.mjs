@@ -422,17 +422,37 @@ test("a pool has one colour in the 7-day chart, set by its history", () => {
 const glance = { busy: 5, queued: 23, oldest: 1260, done: 759, pass: 0.91, off: ["aws-spot-1", "aws-spot-2"],
   booked: { cpu: 4.38, cpu_alloc: 64, mem: 2.7e9, mem_alloc: 1.6e11 }, pending: [{ kind: "arc-org-light", n: 3, cpu: 1.69, mem: 1.3e9 }], alert: "ok", up: 12, expected: 12 };
 
-test("CI RUNNING and the Runners head read hub_core's glance: jobs running, runners up, red only on a runner down", () => {
+// ar-5013: each machinery tile takes its hue from the cc:component_status the OVERALL rollup is
+// built from, so 6 of 122 agentctl runners failed under a rollup that tolerates them is not a red
+// tile under an OK verdict; the count stays on the tile.
+test("NODES, HEARTBEATS and AGENT RUNNERS agree with the rollup's components, not their own thresholds", () => {
+  const cc = (comp) => ({ "cc:runners_failed": { "": 6 }, "cc:runners_total": { "": 122 }, "cc:k3s_nodes_ready": { "": 13 },
+    "cc:k3s_nodes_total": { "": 14 }, "cc:machines_up": { "": 22 }, "cc:machines_total": { "": 22 }, "cc:component_status": comp });
+  const hue = (comp, name) => run(`kpis(${JSON.stringify(cc(comp))})`).match(new RegExp(`--c:var\\((--[a-z0-9-]+)\\)"><span class="tl">${name}`))?.[1];
+  const ok = { "agents/runners": 0, "k3s/nodes": 0, "machines/heartbeats": 0 };
+  assert.equal(hue(ok, "AGENT RUNNERS"), "--b-done", "6 failed under an OK component is not red");
+  assert.match(run(`kpis(${JSON.stringify(cc(ok))})`), /AGENT RUNNERS<\/span><span class="tv">6 failed<\/span><span class="ts1">of 122; rollup OK/);
+  assert.equal(hue(ok, "NODES"), "--b-done");
+  // negative control: the same counts under a red component are red, and a warn one amber
+  assert.equal(hue({ ...ok, "agents/runners": 2 }, "AGENT RUNNERS"), "--b-needs");
+  assert.equal(hue({ ...ok, "k3s/nodes": 1 }, "NODES"), "--b-stalled");
+  assert.equal(hue({ ...ok, "machines/heartbeats": 2 }, "HEARTBEATS"), "--b-needs");
+  assert.equal(hue({}, "AGENT RUNNERS"), "--c-other");
+});
+
+test("CI RUNNING and the Runners head read hub_core's glance: jobs running, runners up; the tile's hue is the rollup's", () => {
   // A slot takes unity, light and heavy: the per-cap pools sum to 3/3 for one runner.
   const cc = { "cc:pool_slots": { unity: 1, light: 1, heavy: 1 }, "cc:pool_busy": { unity: 1, light: 1, heavy: 1 } };
   const h = run(`kpis(${JSON.stringify(cc)}, ${JSON.stringify(glance)})`);
   assert.match(h, /CI RUNNING[\s\S]*?>5<[\s\S]*?23 queued, 12\/12 runners up, cloud: 2 hosts off/);
   assert.doesNotMatch(h, /CI RUNNING[\s\S]*?(6\.4\/16|3\/3)/);
   assert.match(h, /AGENT RUNNERS/, "the agentctl runners tile says whose runners it counts");
-  const hue = (g) => run(`kpis({}, ${JSON.stringify(g)})`).match(/--c:var\((--[a-z0-9-]+)\)"><span class="tl">CI RUNNING/)?.[1];
-  assert.equal(hue(glance), "--b-done");
-  assert.equal(hue({ ...glance, alert: "red", up: 11 }), "--b-needs");
-  assert.equal(hue({ ...glance, alert: "nodata", up: 0, expected: 0 }), "--c-other");
+  const hue = (comp, name) => run(`kpis(${JSON.stringify({ "cc:component_status": comp })}, ${JSON.stringify(glance)})`)
+    .match(new RegExp(`--c:var\\((--[a-z0-9-]+)\\)"><span class="tl">${name}`))?.[1];
+  assert.equal(hue({ "ci/pools": 0 }, "CI RUNNING"), "--b-done");
+  assert.equal(hue({ "ci/pools": 2 }, "CI RUNNING"), "--b-needs");
+  assert.equal(hue({}, "CI RUNNING"), "--c-other", "no component series is no data, never green");
+  assert.match(run(`kpis(${JSON.stringify({ "cc:component_status": { "ci/pools": 1 } })}, ${JSON.stringify(glance)})`), /CI RUNNING[\s\S]*?runners up, cloud: 2 hosts off; rollup WARN/);
   assert.match(run(`kpis({})`), /CI RUNNING[\s\S]*?\?/, "no glance is unknown, never 0");
   Object.assign(ist, { open: {} });
   const s = section({ rows: [], queue: [], red: [], local: [], glance });
