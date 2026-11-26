@@ -239,6 +239,10 @@ relay_fixture() { # <kind> <text> <shown>
   run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'wait for CI' "$id" park
   assert_failure 1; assert_output --partial "does not pick 'park'"
   run "$AGENT_ASK" show "$id"; assert_line 'status: pending'; refute_output --partial 'relayed'
+  # A fragment of a longer message that names the option does not pick it when the whole message names another.
+  relay_fixture answer "don't park them, wait for CI" "Ask $id: park or wait?"
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'park them' "$id" park
+  assert_failure 1; assert_output --partial "whole message does not pick 'park'"
   # The option's meaning alone picks it, when its name is not in the words.
   local id2; id2="$("$AGENT_ASK" post --project demo --options 'keep=leave it as is|drop=remove it' 'keep or drop?')"
   relay_fixture answer 'Yes, leave it as is please' "Ask $id2: keep or drop?"
