@@ -358,6 +358,8 @@ plan_fixture() {
     "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"; }
   rule agent ga-1 unclear; rule agent ga-2 design; rule agent ga-3 unclear; rule agent ga-5 unclear
   rule agent ga-7 bundle; rule human gh-1 unclear
+  # ga-2 is a design skip the judge says needs a person, so it keeps the human exit
+  jq -c 'if .key == "ga-2" then .agent_only = false else . end' "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
   verdict game agent ga-4 dispatch
   # ga-5 was edited after its verdict
   sed -i 's/row ga-5/row ga-5 now longer/' "$NOTES_FIXTURE/rows.game.agent"
