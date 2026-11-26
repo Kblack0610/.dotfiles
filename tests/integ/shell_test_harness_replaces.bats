@@ -48,6 +48,7 @@ SUITES=(
   '! bats x' 'bash -x tests/run-bats.sh tests/unit' 'bash -c "bats tests/unit"' 'bash -c "make -C tests test-pr"' 'bats $(ls tests/unit/*.bats)'
   'tests/docker.sh test-container' 'tests/docker.sh' 'bash tests/docker.sh test-fast' 'tests/rust.sh'
   'sh -x tests/rust.sh' 'tests/fleet-agent-smoke.sh img' '~/.dotfiles/tests/docker.sh'
+  'cd tests && ./rust.sh' 'cd tests && ./docker.sh test-container' 'cd tests && ./fleet-agent-smoke.sh'
   'cargo test' 'cargo test --release' 'cargo +stable test' 'cargo test -p hub-core' 'cargo test --workspace'
   'cargo test -- --nocapture' 'cargo nextest run' 'cargo test 2>&1 | tail' 'cargo test --lib'
   'cd .local/src/notes-cli && cargo test --release'
@@ -78,6 +79,7 @@ LINT_AND_OTHER=(
   'echo make test' 'git commit -m "make -C tests test-pr is denied"' $'cat <<EOF\nbats tests/unit\nEOF'
   'gh pr checks 12' 'cat ~/.dotfiles/tests/run-bats.sh' 'rg bats ~/.dotfiles/tests'
   'f=tests/run-bats.sh; cp x $f' 'x=~/.dotfiles/tests/vendor/bats-core/bin/bats' 'bash -n tests/run-bats.sh'
+  'cd tests && ./lint.sh' 'cd tests && ./docker.sh lint'
 )
 
 @test "the rows parse with no lint problem" {

@@ -75,6 +75,7 @@ if [ -z "${RUN_BATS_OUTER:-}" ] && [ -z "${CI:-}" ]; then
   mkdir -p "$live" 2>/dev/null
   for f in "$live"/*; do [ -e "$f" ] && ! is_run "${f##*/}" && rm -f -- "$f"; done  # dead runs
   record_live
+  trap 'rm -f -- "$live/$$"' EXIT
 fi
 # Made just before the reap is armed: a signal before here leaves no dir, and the next run's sweep
 # of dead runs takes a live file it left.

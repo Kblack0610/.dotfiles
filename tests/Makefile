@@ -81,10 +81,11 @@ test-fast: test-unit test-integ
 # per-test path. Three wall-clock budgets (agent_ask, questions_panel, agentctl_report) run at
 # one job per core, so they share a core no more than serially. A test that shares a fixed
 # path, a port or setup_file state with another breaks that, and goes red here first.
-# Jobs are the CPUs the run may use: a suite runs on a CI runner, the job's own machine, never on
-# the workstation. cpus.sh is nproc held down to the cgroup quota or the pod's CPU request, which
-# nproc ignores (32 jobs in a 370m pod, ar-5586).
-UNIT_JOBS ?= $(shell $(HERE)cpus.sh)
+# On CI (CI set) jobs are the CPUs the run may use, the job's own machine: cpus.sh is nproc held
+# down to the cgroup quota or the pod's CPU request, which nproc ignores (32 jobs in a 370m pod,
+# ar-5586). Off CI it is 2: a session runs one named file there, and several sessions at
+# --jobs nproc each held the box (ar-885, ar-3277).
+UNIT_JOBS ?= $(if $(CI),$(shell $(HERE)cpus.sh),2)
 FAST_PAR  := $(if $(shell command -v parallel 2>/dev/null),--jobs $(UNIT_JOBS))
 
 test-unit: $(BATS)
