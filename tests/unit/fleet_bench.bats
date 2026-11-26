@@ -2585,6 +2585,8 @@ fix_item() {
   assert_failure
   assert_output --partial 'add failed for check(watch): links'
   assert_output --partial '1 queued as red fixes'
+  # the failed write is the last line, which fleet-dispatch names a failed triage by (ar-5583)
+  assert_equal "${lines[-1]}" 'fleet-bench: board write failed for check(watch): links tripped since'
   run grep -c 'fix(logs): alpha error' "$BOARD"
   assert_output 1
   run cat "$PLOG"
@@ -3407,7 +3409,7 @@ cleanup() {
   assert_output --partial 'unit/tool.bats'
 }
 
-@test "hold: a cancelled merge run still dates the merge, and an unreadable repo is said, not green" {
+@test "hold: a cancelled merge run still dates the merge, and an unreadable repo is said, not green, and reads reds_unfixed ?" {
   hold_setup
   cleanup a -3590 5 aaa11111 .local/bin/tool
   echo 'run tool' > "$GHD/tool.bats"
@@ -3415,11 +3417,26 @@ cleanup() {
   failed 3 unit/tool.bats
   run "$SUBJECT" triage --dry-run
   assert_output --partial 'cleanup merge a (PR 5 at aaa11111)'
+  run "$SUBJECT" ledger
+  assert_line --regexp '^reds_unfixed=[0-9]+$'
   touch "$GHD/down"
   run "$SUBJECT" triage --dry-run
   assert_success
   assert_output --partial 'hold: cannot read the runs on o/r main'
   refute_output --partial 'fix(hold)'
+  # what is red now is partly unread, so reds_unfixed reads ? and the reds list says what it may miss (ar-5413)
+  run "$SUBJECT" ledger
+  assert_line 'reds_unfixed=?'
+  run "$SUBJECT" reds
+  assert_success
+  assert_line 'unreadable: a cleanup hold could not be read, so a fix below may read fixed while its red is live'
+  # --json keeps stdout pure JSON and exit 0 for the overviews; the line goes to stderr
+  bats_require_minimum_version 1.5.0
+  run --separate-stderr "$SUBJECT" reds --json
+  assert_success
+  jq -s . <<<"$output" >/dev/null
+  [[ "$output" != *unreadable:* ]]
+  [[ "$stderr" == *'unreadable: a cleanup hold could not be read'* ]]
 }
 
 # liveness_runner <name> <owner/repo> <command path>: a scheduled runner whose COMMAND is that path
@@ -4051,6 +4068,18 @@ LIB
   item fin3 done high board:game:g-4 '{"title":"fix: the part after ga-3","merged":"def456"}' >> "$DONE"
   run "$SUBJECT" chain --check
   assert_success
+  restore
+  # negative control: an id in brackets mid-title only mentions it too, as agent-queue named_row reads it (ar-5461)
+  jq -c '.rows += [{project: "game", lane: "agent", state: "open", id: "ga-3", tags: ["of/g-0"]}]' "$BJSON.ok" > "$BJSON"
+  item fin3 done high board:game:g-4 '{"title":"fix: move (ga-3) aside and more","merged":"def456"}' >> "$DONE"
+  run "$SUBJECT" chain --check
+  assert_success
+  restore
+  # and one that ends the title is its subject
+  jq -c '.rows += [{project: "game", lane: "agent", state: "open", id: "ga-3", tags: ["of/g-0"]}]' "$BJSON.ok" > "$BJSON"
+  item fin3 done high board:game:g-4 '{"title":"fix: the part [ga-3].","merged":"def456"}' >> "$DONE"
+  run "$SUBJECT" chain
+  assert_line 'orphan_request_rows: game:ga-3 (fin3 landed it)'
   restore
   # an empty title falls through to the task's first line, as agent-queue named_row does
   jq -c '.rows += [{project: "game", lane: "agent", state: "open", id: "ga-3", tags: ["of/g-0"]}]' "$BJSON.ok" > "$BJSON"

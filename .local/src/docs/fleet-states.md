@@ -112,8 +112,9 @@ shared[]          {test, id, reason, fact, nudged, escalated, owners[]}: a test 
                   with the live sessions in those worktrees; `fact` keys the owner item, the nudge and the escalation
 asks[]            pending asks: {id, project, kind, question (160 chars), task, created, session}
 counts            {bucket: n} over sessions[], every bucket named, an empty one as 0
-vocab             {buckets[], finished[], in_progress[]}: the one bucket order (what needs the human first),
-                  the buckets whose work is done, and the ones at work, so no reader keeps a list
+vocab             {buckets[], finished[], in_progress[], idle_min}: the one bucket order (what needs the human first),
+                  the buckets whose work is done, the ones at work, so no reader keeps a list, and the idle line
+                  (FLEET_IDLE_MIN) a reader compares idle_min to (fleet-dispatch: a CHAT row in plan mode past it waits)
 ```
 
 Each session object also carries `project`, the canonical name `resolve_project_name` (`.config/shared-hooks/project-name.sh`) gives its cwd: a session in `freqtrade_trading_attempt-agent-1` is `trader`. Every reader takes the project from the row, and none strips `-agent-N` off a name itself. The same value is the last cell of the `watch.log` lines (`project - -> trader` when a session first appears), which is how `fleet-sessions stages` and `day-log` name a project for a session that has ended.

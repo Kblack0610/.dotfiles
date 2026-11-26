@@ -23,7 +23,7 @@
 # checkout when this repo is ~/.dotfiles or ~/.dotfiles-private, links what it added, rebuilds the
 # Rust tools (notes through notes-bootstrap), restarts agent-web on a new binary and a persistent agentctl runner on a new script; it logs its result to autopull.log, and the landing prints a line, never a failure), item (the queue item gets pr:<owner>/<repo>#<pr>,
 # merged:<sha>, this Claude session in its sessions (unless --partial lands on an item another session owns) and "<session>=<pr>" in its landed_by, the project credited by the PR's changed
-# files (agent-queue attribute), and moves to done, status ok unless --partial keeps it open (a red watch item resolves its watch with this PR first and refuses to close ok while its probe still trips, watch_gate); a done ok item with no PR in this
+# files (agent-queue attribute), and moves to done, status ok unless --partial keeps it open (a red watch item resolves its watch with this PR first and refuses to close ok while its probe still trips, watch_gate, as agent-queue move does by hand, lib/watch-item.sh); a done ok item with no PR in this
 # PR's repo adds it to its pr: and merged: lists instead, one PR per repo; an open item's earlier PR with
 # no merge recorded takes its merge commit from gh, and one not merged refuses before the merge, settle_prior;
 # a --partial landing passes one still open and leaves merged: empty for the final landing), board (the
@@ -32,7 +32,8 @@
 # line becomes "- [x] <phase> (#<pr>)"; when that leaves no open phase, each row on the plan's `rows:` line
 # closes with the same proof). A row another open queue item names stays open for that item's landing (row_worker). After the merge, one "body:" line scores the PR body
 # against comms-standard (comms-lint --channel pr-body); it never fails the landing. Before that, a *.md or *.txt
-# file at the top of ~/.cache whose text is the merged body (the --body-file a session wrote) is deleted. One line per step.
+# file at the top of ~/.cache whose text is the merged body (the --body-file a session wrote) is deleted. Each "After deploy: <step>"
+# line of the body, a step that can run only once the change is live, is added as its own item (deploy_steps). One line per step.
 # The item is --item, else $AGENT_QUEUE_ITEM (set in a session fleet-dispatch started), else the
 # one this session added or claimed (`agent-queue mine`). No item, no landing: every merged PR
 # is a unit of work on the work ledger, so add one first (`agent-queue add --running`). An item
@@ -74,6 +75,8 @@ usage() {
 . "$(dirname "$(readlink -f "$0")")/../lib/plan-phases.sh"
 # shellcheck source=../lib/judge.sh
 . "$(dirname "$(readlink -f "$0")")/../lib/judge.sh"
+# shellcheck source=../lib/watch-item.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/watch-item.sh"
 # shellcheck source=../lib/ask-store.sh
 . "$(dirname "$(readlink -f "$0")")/../lib/ask-store.sh"
 die() {
@@ -1122,6 +1125,24 @@ link_task_row() {
   echo "item-row: linked $proj:$task_id from the body's Task: line"
 }
 
+# workflow_gate: GitHub refuses to merge a PR that changes .github/workflows for an OAuth token with no
+# `workflow` scope, and says so only at the merge, after the checks (platform#1672, ar-5191: this
+# workstation's gh has admin:org, gist and repo). So before the wait such a PR fails with the way out. A
+# token whose scopes GitHub does not list (fine-grained, app) passes, as do a file list or a user call
+# that cannot be read: the merge itself still says what it lacks. Forgejo has no such scope.
+workflow_gate() {
+  [ -z "$fj" ] || return 0
+  local files scopes
+  files=$(pr_files 2>/dev/null) || return 0
+  grep -q '^\.github/workflows/' <<<"$files" || return 0
+  scopes=$(gh api -i user 2>/dev/null) || return 0
+  scopes=$(tr -d '\r' <<<"$scopes" | grep -i -m 1 '^x-oauth-scopes:' | cut -d: -f2- | tr -d ' ') || return 0
+  [ -n "$scopes" ] || return 0
+  [[ ",$scopes," != *,workflow,* ]] || return 0
+  # gate: al-workflow-gate
+  fail workflow "#$pr changes .github/workflows and this gh token's scopes ($scopes) have no workflow, so GitHub would refuse its merge after the checks: run agent-land $pr${repo:+ --repo $repo}${item:+ --item $item} from a host whose gh token has the scope, or ask the human to run gh auth refresh -s workflow here and re-run it"
+}
+
 # review_gate: a tier-3 item (`fleet-dispatch item-tier`, the one beside this script: harness or tooling, promoted from a row or
 # queued by hand) merges only behind the red-fix gate, fix-red step 5: a "Review: /code-review <level>,
 # <what it found and what you did>" line in the body (n/a or empty is refused), and checks that ran
@@ -1285,12 +1306,9 @@ shape_gate() {
   esac
 }
 
-# item_watch <item json> -> the watch name when the item is a `red` item for a Sentinel watch
-# (`check(watch): <name> ...`), empty otherwise.
-item_watch() {
-  jq -r 'select(((" " + (.tags // "") + " ") | contains(" red ")))
-    | (.title // ((.task // "") | split("\n")[0]))
-    | try capture("^check\\(watch\\): (?<w>[A-Za-z0-9._-]+)").w // empty' <<<"$1" 2>/dev/null
+# json_watch <item json> -> the watch of a red item for a Sentinel watch (item_watch, lib/watch-item.sh).
+json_watch() {
+  item_watch "$(jq -r '.tags // ""' <<<"$1")" "$(jq -r '.title // ((.task // "") | split("\n")[0])' <<<"$1")"
 }
 
 # watch_gate <item json>: a red item for a Sentinel watch cannot close ok while its watch's probe
@@ -1298,23 +1316,24 @@ item_watch() {
 # which records the merge as the fix watermark (a windowed probe counts only events after it, fix-red
 # step 5) and rechecks; a bare #N with no repo rechecks only. Still red means the fix did not clear
 # it, or waits on a deploy: re-running agent-land once it clears closes the item and its board row.
+# The move to done that follows rechecks it once more (agent-queue cmd_move): no flag skips that. A
+# watch routed to alert or owned: is the ask's or owner's job, so neither check refuses on it; its PR
+# still resolves the watch.
 # gate: al-watch-gate
 watch_gate() {
-  local w rc=0 out verb
-  w=$(item_watch "$1")
+  local w out verb route
+  w=$(json_watch "$1")
   [ -n "$w" ] || return 0
-  command -v watch-companion-loop >/dev/null 2>&1 || { echo "watch: $w not checked (no watch-companion-loop on PATH)"; return 0; }
+  if route=$(watch_route_owned "$w"); then
+    # Only the refusal is the owner's: the merge is still the fix watermark, so a windowed probe counts from it.
+    [[ "$pr_ref" != */* ]] || out="$(watch_probe resolve "$w" --pr "$pr_ref")" || echo "agent-land: the fix watermark for $w: $out" >&2
+    echo "watch $w routes to $route, so its close is not probed"
+    return 0
+  fi
   verb=(recheck "$w")
   [[ "$pr_ref" != */* ]] || verb=(resolve "$w" --pr "$pr_ref")
-  out=$(watch-companion-loop "${verb[@]}" 2>&1) || rc=$?
-  # exit 2 is also a usage error (a loop with no resolve): only "no watch named" skips the check
-  case "$rc" in
-    0) echo "watch: $w OK" ;;
-    2) [[ "$out" == *"no watch named $w"* ]] || fail item "watch-companion-loop ${verb[0]} $w: $(lastline "$out")"
-       echo "watch: $w not known here (exit 2), skipping probe check" ;;
-    75) fail item "watch-companion-loop ${verb[0]} $w could not take the lock (exit 75); re-run" ;;
-    *) fail item "watch $w did not read OK on ${verb[0]} (exit $rc)${out:+: $(lastline "$out")}" ;;
-  esac
+  out=$(watch_probe "${verb[@]}") || fail item "$out"
+  echo "$out"
 }
 
 # unlisted_repo <store key>: the merged PR's repo is in no `schedules-sync repos` list (sync-prs exit
@@ -1332,6 +1351,42 @@ unlisted_repo() {
     5) echo "prs: not filed, notes wants its shortlist read first: notes ptask $board --agent add --why runtime-fault --checked <ids> '$row'" >&2 ;;
     *) echo "prs: could not file it on $board ($(lastline "$out"))" >&2 ;;
   esac
+}
+
+# deploy_steps: each "After deploy: <step>" line of the merged PR's body is a step the PR leaves for
+# once its change is live (a migration of the live store, a restart, a re-seed). Each is added as its
+# own item on the landed item's project, so the step has an owner: #3249 left `notes projects --migrate
+# unity-core-playground` in a sentence, nobody ran it, and from 09:06 to 13:30 on 2026-11-23 no board
+# view or dispatch pass read a unity sprint (ar-4887). A line in a code fence or a quote, and a
+# placeholder (`<command>`, none, n/a), is no step. The slug names the PR, a hash of the step and the
+# repo, so a re-run of this landing adds none twice, even after the body was edited. The add is
+# from the landed item but not run as it (AGENT_QUEUE_ITEM empty), so that item's own after: never
+# gates it. High, since main's change is only half applied until it runs. Never fails the landing:
+# the merge stands, and a step not added is said with the add to run by hand.
+deploy_steps() {
+  local text step slug project out rc steps=() repo=${pr_ref%#*}
+  text=$(pr_view body .body 2>&1) || { echo "deploy: no After deploy: step read ($api pr view: $(lastline "$text")); re-run agent-land $pr to add them" >&2; return 0; }
+  mapfile -t steps < <(tr -d '\r' <<<"$text" | awk '
+    /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
+    fence || !sub(/^After deploy:[[:space:]]*/, "") { next }
+    { sub(/[[:space:]]+$/, "") }
+    $0 != "" && $0 !~ /^</ && tolower($0) !~ /^(none|n\/a|nothing|-)\.?$/')
+  [ "${#steps[@]}" -gt 0 ] || return 0
+  project=$(jq -r '.project // empty' <<<"$it")
+  for step in "${steps[@]}"; do
+    rc=0
+    # the repo last: agent-queue cuts a slug at 40 characters
+    slug="after-deploy-$pr-$(printf '%s' "$step" | sha1sum | cut -c1-7)-${repo##*/}"
+    out=$(AGENT_QUEUE_ITEM='' aq_retry add --project "$project" --priority high --from "item:$item" --slug "$slug" \
+      "chore(deploy): $step (left by $pr_ref)"$'\n\n'"$pr_ref (merge ${merged:0:12}) left this step for once its change is live: $step"$'\n'"Check the change is live first (a dotfiles merge: the main checkout is at or past the merge; a service: its rollout finished), then run it and prove what it changed." 2>&1) || rc=$?
+    case "$rc" in
+      0) echo "deploy: added $slug: $step" ;;
+      5) echo "deploy: $slug filed on the $project board, the queue takes it from there: $step" ;;
+      4) echo "deploy: $slug already ran: $step" ;;
+      *) if [[ "$out" == *"already in the queue"* ]]; then echo "deploy: $slug already queued: $step"
+         else echo "deploy: not added ($(lastline "$out")): agent-queue add --project $project --priority high --from item:$item --slug $slug 'chore(deploy): $step (left by $pr_ref)'" >&2; fi ;;
+    esac
+  done
 }
 
 # credit -> ", <what agent-queue attribute recorded>" for the item line: the PR's changed files
@@ -1476,6 +1531,7 @@ if [ "$dry" -eq 1 ]; then
   echo "review: fleet-dispatch item-tier $item  (tier 3: the body needs a \"Review: \" line and the checks must run)"
   [ "$partial" -eq 1 ] || [ -z "$(jq -r '.plan // ""' <<<"$it")" ] ||
     echo "loose: plan_loose_rows $(jq -r .plan <<<"$it") $item  (notes log, then notes board --json --id: an open agent row $item filed that no phase line takes stops the landing)"
+  [ -n "$fj" ] || echo "workflow: gh api repos/<owner>/<repo>/pulls/$pr/files, then gh api -i user  (a PR that changes .github/workflows stops here when the token's X-OAuth-Scopes lack workflow)"
   echo "shape: shape-grow --body - \$(git merge-base HEAD origin/<base>) HEAD, unless a workflow at HEAD runs it  (no long function grows and no copy is added; each \"Split:\" or \"Dup: <row id> <name>...\" line names an open row that names each one)"
   echo "checks: gh pr checks $pr${repo:+ -R $repo} --watch --fail-fast -i $CHECKS_WATCH_INTERVAL  (must pass, or report none on a tier 1 or 2 item; a land that would refuse none, on a head with workflow files, first waits up to $CHECKS_FIRST_RUN_TRIES x ${CHECKS_QUEUED_POLL}s for its first run, AGENT_LAND_CHECKS_FIRST_RUN_TRIES)"
   echo "fetch: git fetch origin && git rev-list --count HEAD..origin/<base of #$pr>  (0 before the checks; after them git merge origin/<base> && git push, then the checks again on that head)"
@@ -1490,7 +1546,7 @@ if [ "$dry" -eq 1 ]; then
     echo "board: left open until the final landing"
   else
     [ -n "$fj" ] || echo "split: gh search prs --owner <owner> --state open --match body -- \"Item: $item\"  (before anything is touched: another open PR whose first Item: line names $item refuses this full landing; land #$pr --partial)"
-    dry_watch=$(item_watch "$it")
+    dry_watch=$(json_watch "$it")
     [ -z "$dry_watch" ] || echo "watch: watch-companion-loop resolve $dry_watch --pr <owner>/<repo>#$pr  (a red item closes ok only once its probe passes)"
     echo "item: agent-queue set $item pr=$pr merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/$pr/files | agent-queue attribute $item && agent-queue move $item done --status ok"
   fi
@@ -1598,6 +1654,7 @@ else
   stack_gate
   review_gate
   loose_gate
+  workflow_gate
   # A head behind <base> is caught up first, the same merge as after the gate: a session that
   # stopped on exit 3 here left its green PR open while main moved (six waiting on 2026-11-07).
   catch_up before || true
@@ -1654,6 +1711,7 @@ if [[ "$pr_ref" == */*#* ]]; then
 fi
 chain_event land merged "$(jq -r .project <<<"$it")" "$(jq -r '.title // ((.task // "") | split("\n")[0])' <<<"$it")" \
   --item "$item" --id "$(jq -r '(.row // "") | sub("^[^:]*:"; "")' <<<"$it")" --pr "$pr_ref" --sha "$merged"
+deploy_steps
 
 case "$done_as" in
 '')

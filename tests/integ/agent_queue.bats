@@ -287,6 +287,34 @@ load 'agent_queue/common'
   assert_line "held rq-p2 -> level:lv-9 (#after/lv-9)"
 }
 
+@test "add --plan skips a phase another item landed under its own slug, named in its task or its plan: field (ar-1613)" {
+  story_notes
+  printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two' '- [ ] P3 three' > "$SANDBOX/lp.md"
+  local d="$AGENT_QUEUE_DIR/done/2026-11-06"
+  mkdir -p "$d"
+  # P1 was queued by hand (no --plan) and P2 by another plan add: each closed ok with its box unticked.
+  printf 'slug: by-hand\nproject: level\nstatus: ok\n---\nP1 of %s. Read it first.\n' "$SANDBOX/lp.md" > "$d/20261106-000001-by-hand.md"
+  printf 'slug: other-p2\nproject: level\nplan: %s\nphases: 2\nstatus: ok\n---\nx\n' "$SANDBOX/lp.md" > "$d/20261106-000002-other-p2.md"
+  # NEGATIVE CONTROL: a phase whose item failed, and one that names another plan, did not land.
+  printf 'slug: tried\nproject: level\nstatus: failed\n---\nPhase 3 of the plan %s\n' "$SANDBOX/lp.md" > "$d/20261106-000003-tried.md"
+  printf 'slug: elsewhere\nproject: level\nstatus: ok\n---\nP3 of %s\n' "$SANDBOX/xlp.md" > "$d/20261106-000004-elsewhere.md"
+  # ... and so did neither a follow-up that cites P3 nor a plan of the same name in another directory.
+  printf 'slug: follow\nproject: level\nstatus: ok\n---\nfix review findings for Phase 3 of the plan %s\n' "$SANDBOX/lp.md" > "$d/20261106-000005-follow.md"
+  printf 'slug: twin\nproject: level\nplan: %s\nphases: 3\nstatus: ok\n---\nx\n' "$SANDBOX/other/lp.md" > "$d/20261106-000006-twin.md"
+  run env AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/lp.md" --project level --slug lp
+  assert_success
+  assert_output --partial "skipped phase 1 of lp.md already landed on item by-hand"
+  assert_output --partial "skipped phase 2 of lp.md already landed on item other-p2"
+  [ -z "$(item queued lp-p1)" ] && [ -z "$(item queued lp-p2)" ] || fail "a phase landed under another slug was queued again"
+  # P3 waits on the item that landed P2, which releases it at once.
+  [ "$(field "$(item queued lp-p3)" after)" = other-p2 ] || fail "p3 does not go after the item that landed p2"
+  # --repeat queues every phase as new work.
+  "$AQ" move lp-p3 done --status failed >/dev/null
+  run env AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/lp.md" --project level --slug lp --repeat
+  assert_success
+  [ -n "$(item queued lp-p1)" ]
+}
+
 @test "a project inside a repo is runnable; a notes-only one is refused, as dispatch would" {
   run "$AQ" add --project level --slug in-repo "x"
   assert_success
@@ -1798,12 +1826,13 @@ notes --profile bnb ptask game --agent run gm-9"
   for s in ok fl rq cx; do "$AQ" add --project game --running --slug "$s" "$s" >/dev/null; "$AQ" set "$s" "lane_run=r-$s" >/dev/null; done
   "$AQ" add --project game --running --slug none "none" >/dev/null
   "$AQ" move ok done --status ok >/dev/null
+  "$AQ" set fl note="its PR was closed unmerged" >/dev/null   # a failed run's note is its why (ar-4263)
   "$AQ" move fl done --status failed >/dev/null
   "$AQ" move rq queued >/dev/null
   "$AQ" move cx done --status cancelled >/dev/null
   "$AQ" move none done --status ok >/dev/null
   run grep '^model-lane' "$NOTES_FIXTURE/calls.log"
-  assert_output $'model-lane outcome r-ok ok --cause close\nmodel-lane outcome r-fl failed --cause close\nmodel-lane outcome r-rq redo --cause requeue\nmodel-lane outcome r-cx unrated --cause cancel'
+  assert_output $'model-lane outcome r-ok ok --cause close\nmodel-lane outcome r-fl failed --why its PR was closed unmerged --cause close\nmodel-lane outcome r-rq redo --cause requeue\nmodel-lane outcome r-cx unrated --cause cancel'
   # The requeued item's next start logs a run of its own.
   [ -z "$(field "$(item queued rq)" lane_run)" ]
 }
@@ -1820,7 +1849,7 @@ notes --profile bnb ptask game --agent run gm-9"
   "$AQ" move tmo done --status failed --end timeout >/dev/null
   "$AQ" move stp done --status failed --end stopped >/dev/null   # negative control: a stop is the model's own end
   run grep '^model-lane' "$NOTES_FIXTURE/calls.log"
-  assert_output $'model-lane outcome r-lim unrated --cause limit\nmodel-lane outcome r-prov unrated --cause provider\nmodel-lane outcome r-cut unrated --cause cut\nmodel-lane outcome r-ref unrated --cause refused\nmodel-lane outcome r-req unrated --cause limit\nmodel-lane outcome r-tmo failed --cause close\nmodel-lane outcome r-stp failed --cause close'
+  assert_output $'model-lane outcome r-lim unrated --cause limit\nmodel-lane outcome r-prov unrated --cause provider\nmodel-lane outcome r-cut unrated --cause cut\nmodel-lane outcome r-ref unrated --cause refused\nmodel-lane outcome r-req unrated --cause limit\nmodel-lane outcome r-tmo failed --why the run ended before it closed the item (end timeout) --cause close\nmodel-lane outcome r-stp failed --why the run ended before it closed the item (end stopped) --cause close'
   [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-lim.md)" end_reason)" = limit ]
   [ "$(field "$(item queued req)" end_reason)" = limit ]
   # A new run has not ended: the reason goes when the item runs again.
@@ -2037,6 +2066,21 @@ notes --profile bnb ptask game --agent run gm-9"
   # Two PRs against one sha would put the lists out of step for reopen --unland: dropped.
   "$AQ" set d "pr=o/game#2 o/game#3" >/dev/null
   [ -z "$(field "$f" merged)" ]
+}
+
+# ar-1228: release-lane-reserve's five PRs, written comma-separated, read as one ref (2026-11-09).
+@test "pr= written comma-separated is stored as the space list agent-land and reap split, once per PR" {
+  "$AQ" add --project game --running --slug cs "cs" >/dev/null
+  "$AQ" set cs "pr=o/game#1,o/web#2, o/game#1" >/dev/null
+  [ "$(field "$(item running cs)" pr)" = 'o/game#1 o/web#2' ]
+  # NEGATIVE CONTROL: a space list is stored as written.
+  "$AQ" set cs "pr=o/web#2 o/game#1" >/dev/null
+  [ "$(field "$(item running cs)" pr)" = 'o/web#2 o/game#1' ]
+  # The same list in either shape is no new pr:, so a done ok item keeps its merged: list.
+  "$AQ" set cs merged="aaa111 bbb222" >/dev/null
+  "$AQ" move cs done --status ok >/dev/null
+  "$AQ" set cs "pr=o/web#2,o/game#1" >/dev/null
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-cs.md)" merged)" = 'aaa111 bbb222' ]
 }
 
 @test "a failed done item still drops merged: on a new pr:, and a title naming merged= does not skip the drop" {

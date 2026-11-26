@@ -1412,8 +1412,14 @@ pub(crate) const WANT_CHANNELS: &[&str] = &[
 ];
 
 /// The [`WANT_CHANNELS`] a machine writes by, not the human: `outbox` (a session's follow-up)
-/// and `ask` (an ask sweep's row). A release window's interrupt lane takes every other one.
+/// and `ask` (an ask sweep's row).
 pub(crate) const MACHINE_WANTS: &[&str] = &["outbox", "ask"];
+
+/// Is `want` (`--want`'s channel) the human's own ask? `#requested` rides on every want, so it
+/// cannot be the signal. A human's want that joins an open twin marks that row (ar-6060).
+pub(crate) fn human_channel(want: &str) -> bool {
+    !MACHINE_WANTS.contains(&want)
+}
 
 /// `--want`'s value, or the channels there are.
 pub(crate) fn want_channel(s: &str) -> anyhow::Result<&'static str> {

@@ -65,6 +65,9 @@ case "$1 $2" in
   [ ! -f "$NOTES_FIXTURE/protection.err" ] || { cat "$NOTES_FIXTURE/protection.err" >&2; exit 1; }
   [ -f "$NOTES_FIXTURE/protection.json" ] || { echo '{"message":"Branch not protected","status":"404"}'; echo 'gh: Branch not protected (HTTP 404)' >&2; exit 1; }
   cat "$NOTES_FIXTURE/protection.json" ;;
+# user.headers: gh api -i user's response head, whose X-OAuth-Scopes the workflow gate reads (none when absent); user.fail: the call fails
+'api -i') [ ! -f "$NOTES_FIXTURE/user.fail" ] || { echo 'gh: API rate limit exceeded (HTTP 403)' >&2; exit 1; }
+  cat "$NOTES_FIXTURE/user.headers" 2>/dev/null || true ;;
 # files: the PR's changed paths, one a line (none when absent); files.fail: the call fails;
 # files.toobig: GitHub cannot render the diff (422 not_available, its body on stdout)
 'api '*) [ ! -f "$NOTES_FIXTURE/files.fail" ] || { echo 'HTTP 502'; exit 1; }

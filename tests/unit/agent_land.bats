@@ -605,6 +605,7 @@ git rev-parse HEAD
 gh pr view 42 --json body -q .body
 gh pr edit 42 --body-file -
 notes ingest record --stage queue --action item-set --from dotfiles --item ship --id ship it --pr  --sha  --why open_pr=o/r#42 -- ship
+gh api repos/o/r/pulls/42/files --paginate --jq .[] | .filename, (.previous_filename // empty)
 git fetch -q origin
 git rev-list --count HEAD..origin/main
 git grep -qF shape-grow HEAD -- .github/workflows
@@ -630,6 +631,7 @@ git -C . rev-parse --short fedcba9876543210fedcba9876543210fedcba98
 dotfiles-autopull --now . --bg
 schedules-sync sync-prs o/r
 notes ingest record --stage land --action merged --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 -- ship
+gh pr view 42 --json body -q .body
 notes ingest record --stage queue --action item-set --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --why pr=o/r#42 merged=fedcba9876543210fedcba9876543210fedcba98 partial= open_pr= closing_pr=o/r#42 -- ship
 notes ingest record --stage queue --action item-moved --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --to done --why running -> done (ok) -- ship
 notes ptask dotfiles --agent done ship it --proof pr:o/r#42 commit:fedcba987654
@@ -1518,19 +1520,20 @@ EOF2
   assert_line --index 0 --partial 'item-line: gh pr view 42 --json body, then gh pr edit 42 --body-file -'
   assert_line --index 1 --partial 'head: git rev-parse HEAD must equal the PR'
   assert_line --index 2 --partial 'review: fleet-dispatch item-tier ship'
-  assert_line --index 3 --partial 'shape: shape-grow --body - $(git merge-base HEAD origin/<base>) HEAD, unless a workflow at HEAD runs it'
-  assert_line --index 4 --partial 'checks: gh pr checks 42 --watch'
-  assert_line --index 5 --partial 'fetch: git fetch origin'
-  assert_line --index 6 --partial 'validate: gh api repos/<owner>/<repo>/pulls/42/files | judge_work_level'
-  assert_line --index 7 --partial 'merge: gh pr merge 42 --squash --match-head-commit'
-  assert_line --index 8 --partial 'body: gh pr view 42 --json body | comms-lint --channel pr-body -'
-  assert_line --index 9 --partial 'proof: gh pr view 42 --json mergeCommit'
-  assert_line --index 10 --partial 'live: dotfiles-autopull --now .'
-  assert_line --index 11 --partial 'prs: schedules-sync sync-prs <owner>/<repo>'
-  assert_line --index 12 --partial 'split: gh search prs --owner <owner> --state open --match body -- "Item: ship"'
-  assert_line --index 13 'item: agent-queue set ship pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute ship && agent-queue move ship done --status ok'
-  assert_line --index 14 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
-  assert_line --index 15 --partial 'plan: tick'
+  assert_line --index 3 --partial 'workflow: gh api repos/<owner>/<repo>/pulls/42/files, then gh api -i user'
+  assert_line --index 4 --partial 'shape: shape-grow --body - $(git merge-base HEAD origin/<base>) HEAD, unless a workflow at HEAD runs it'
+  assert_line --index 5 --partial 'checks: gh pr checks 42 --watch'
+  assert_line --index 6 --partial 'fetch: git fetch origin'
+  assert_line --index 7 --partial 'validate: gh api repos/<owner>/<repo>/pulls/42/files | judge_work_level'
+  assert_line --index 8 --partial 'merge: gh pr merge 42 --squash --match-head-commit'
+  assert_line --index 9 --partial 'body: gh pr view 42 --json body | comms-lint --channel pr-body -'
+  assert_line --index 10 --partial 'proof: gh pr view 42 --json mergeCommit'
+  assert_line --index 11 --partial 'live: dotfiles-autopull --now .'
+  assert_line --index 12 --partial 'prs: schedules-sync sync-prs <owner>/<repo>'
+  assert_line --index 13 --partial 'split: gh search prs --owner <owner> --state open --match body -- "Item: ship"'
+  assert_line --index 14 'item: agent-queue set ship pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute ship && agent-queue move ship done --status ok'
+  assert_line --index 15 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
+  assert_line --index 16 --partial 'plan: tick'
   run ran
   assert_output ''
   run grep -c '^- \[x\] 6' "$PLAN"
@@ -1796,6 +1799,8 @@ EOF2
   assert_success
   grep -qE -- '^- \[/\] fix\(menu\): the back button .*id:gm-2' "$dir/agent/README.md" ||
     fail "the row was not started: $(cat "$dir/agent/README.md")"
+  # the item's task is on the row as a detail line, so a plain return would keep it (ar-3159)
+  grep -qF 'work the filed row' "$dir/agent/README.md" || fail "the task is not on the row: $(cat "$dir/agent/README.md")"
   run "$LAND" 42 --item back
   assert_success
   assert_output --partial 'board: closed "gm-2" with pr:o/r#42'
@@ -1818,7 +1823,9 @@ EOF2
   run agent-queue add --running --project game --slug back "gm-2: fix the back button"
   assert_success
   assert_output --partial 'back works row gm-2, which its title names'
-  [ "$(grep -c 'back button' "$dir/agent/README.md")" = 1 ] || fail "a second row was filed: $(cat "$dir/agent/README.md")"
+  # rows only: the item's task goes on the row as a detail line (brief_to_row, ar-3159), and it names the button too
+  [ "$(grep -c '^- \[.\] .*back button' "$dir/agent/README.md")" = 1 ] || fail "a second row was filed: $(cat "$dir/agent/README.md")"
+  grep -qxF '  gm-2: fix the back button' "$dir/agent/README.md" || fail "the task is not on the row: $(cat "$dir/agent/README.md")"
   printf '%s\n' '# plan' 'rows: gm-9' '' '## Phases' '' '- [ ] 1. the back button' >"$PLAN"
   run "$LAND" 42 --item back --plan "$PLAN" --phase "1. the back button"
   assert_success

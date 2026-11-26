@@ -403,6 +403,27 @@ load 'fleet_dispatch/main'
   [ -z "$(agent-queue list --state queued --json | jq -r 'select(.slug == "ga-6") | .slug')" ]
 }
 
+@test "a pass pulls the rows after a row closed with no queue item, as an ok close does, and only once (ar-4129)" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent ga-1 "- [/] feat(game): the map first <!-- id:ga-1 -->"
+  row game agent ga-2 "- [ ] feat(game): then its doors $T #low #after/ga-1 <!-- id:ga-2 -->"
+  row game agent ga-8 "- [/] feat(game): the walls <!-- id:ga-8 -->"
+  row game agent ga-9 "- [ ] feat(game): then its roof $T #low #after/ga-8 <!-- id:ga-9 -->"
+  mkdir -p "$FLEET_DISPATCH_DIR"
+  # The first pass records what waits; nothing has cleared, so nothing is pulled.
+  GATES_LOADED=''; load_gates; pull_closed_after
+  assert_equal "$(sort "$AFTER_PENDING" | paste -sd,)" "ga-1,ga-8"
+  [ -z "$(agent-queue list --state queued --json)" ]
+  # ga-1 is closed by hand (no item ran pull_after); ga-8 is still open: the negative control.
+  notes ptask game --agent done ga-1
+  GATES_LOADED=''; load_gates; pull_closed_after
+  assert_equal "$(agent-queue list --state queued --json | jq -r .slug | paste -sd,)" "ga-2"
+  assert_equal "$(cat "$AFTER_PENDING")" "ga-8"
+  # The next pass does not pull ga-1 again.
+  GATES_LOADED=''; load_gates; run pull_closed_after
+  refute_output --partial "pull-after ga-1"
+}
+
 @test "pull-after --queue-only queues the rows gated on the closed row and starts none" {
   project game beta "$SANDBOX/repos/game"
   row game agent ga-1 "- [/] feat(game): the map first <!-- id:ga-1 -->"
@@ -536,6 +557,37 @@ exits: gate 2 improve 1 plan 2 sheet 1'
   cmp "$FLEET_DISPATCH_DIR/verdicts.jsonl" "$SANDBOX/before"
   run grep -E 'tag --add|improve game --why|ptask game add|drop' "$NOTES_FIXTURE/calls.log"
   assert_failure
+}
+
+@test "skip_exits and picks: a triage red row's unclear skip takes no plan exit and still picks; a plain row's takes the plan exit (ar-5240)" {
+  echo '{"fleet": {"max_tier": 1}}' > "$DISPATCH_WORKERS"
+  project game beta "$SANDBOX/repos/game"
+  row game agent gr-1 "- [ ] check(watch): game-nightly tripped since 2026-11-24, expected: green $T <!-- id:gr-1 -->"
+  row game agent gr-2 "- [ ] fix the nightly somehow $T <!-- id:gr-2 -->"
+  : > "$NOTES_FIXTURE/board.rows"
+  board_row game agent gr-1 '[]' '[]'; board_row game agent gr-2 '[]' '[]'
+  # ar-2957 (2026-11-24): the judge read the nightly red as open-ended, and its third verdict named no area.
+  skipv gr-1 unclear 'open-ended nightly red' false; skipv gr-2 unclear 'vague' false
+  jq -c 'if .key == "gr-1" then .area = "" else . end' "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  run skip_exits --dry-run
+  assert_success
+  assert_line 'plan	game	gr-2	unclear'
+  refute_output --partial 'gr-1'
+  # negative control: the plain row's unclear skip holds it; the red row starts, as its own area
+  run picks "$(all_open)" 5
+  assert_success
+  assert_equal "$(jq -r '"\(.key)=\(.area)"' <<<"$output" | paste -sd,)" 'gr-1='
+  # suggest lists what picks starts: the red row as dispatch, the plain row as a judge skip
+  run cmd_suggest --json
+  assert_success
+  assert_equal "$(jq -r '"\(.key)=\(.verdict)"' <<<"$output" | sort | paste -sd,)" 'gr-1=dispatch,gr-2=skip'
+  # an unclear red row that also needs the human is not a dispatch: picks skips it and suggest says skip
+  jq -c 'if .key == "gr-1" then .agent_only = false else . end' "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  run picks "$(all_open)" 5
+  assert_success
+  assert_output ''
+  run cmd_suggest --json
+  assert_equal "$(jq -r 'select(.key == "gr-1") | .verdict' <<<"$output")" skip
 }
 
 @test "skip_exits: a waits gate needs an open row and a verdict that otherwise fits; a planned row still skipped by a plan rule is held on the agent board" {

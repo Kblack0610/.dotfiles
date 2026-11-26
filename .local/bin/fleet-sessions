@@ -2842,9 +2842,9 @@ collect() {
       # phases were queued under the other) matches either.
       # A pointer stub ("Phase N of <plan>.md") reads through to that plan: its open phases are the
       # canonical plan's phase N on, and the items name the canonical file (2026-11-14).
-      # A phase add --plan filed on its board row behind a gate holds it as an item does (plan_gated_rows), read
-      # once a run.
-      [ -f "$CACHE/plan_gated" ] || { plan_gated_rows "$(board_feed)" > "$CACHE/plan_gated.$$" && mv -f "$CACHE/plan_gated.$$" "$CACHE/plan_gated"; }
+      # A phase add --plan filed on its board row behind a gate holds it as an item does (plan_gated_rows), and
+      # a whole plan filed as one row holds all its phases (plan_whole_rows, ar-5445), read once a run.
+      [ -f "$CACHE/plan_gated" ] || { local bf; bf="$(board_feed)"; { plan_gated_rows "$bf"; plan_whole_rows "$bf"; } > "$CACHE/plan_gated.$$" && mv -f "$CACHE/plan_gated.$$" "$CACHE/plan_gated"; }
       local canon ptgt pbase=1 pn
       canon="$(realpath -q -- "$plist" 2>/dev/null)" || canon="$plist"
       IFS=$'\t' read -r ptgt pn < <(plan_pointer "$plist")
@@ -3611,7 +3611,7 @@ write_state() {
   printf '%s' "$json" > "$CACHE/rows" && printf '%s' "$asks" > "$CACHE/asks" || return 1
   overdue_of "$t" "$CACHE/rows" "$CACHE/eta.json" > "$CACHE/overdue" || { unreadable "overdue verdicts"; echo '{}' > "$CACHE/overdue"; }
   if ! jq -n --argjson t "$t" --arg me "${FLEET_HOST:-}" --arg unread "$(sort -u "$CACHE/unreadable" 2>/dev/null)" --arg silent "$(sort -u "$CACHE/silent" 2>/dev/null)" \
-       --arg order "$BUCKET_ORDER" --arg finished "$BUCKET_FINISHED" --arg progress "$BUCKET_IN_PROGRESS" \
+       --arg order "$BUCKET_ORDER" --arg finished "$BUCKET_FINISHED" --arg progress "$BUCKET_IN_PROGRESS" --arg idle_line "$FLEET_IDLE_MIN" \
        --rawfile asks "$CACHE/asks" --rawfile rows "$CACHE/rows" --arg stopped "$stopped" --rawfile eta "$CACHE/eta" --slurpfile od "$CACHE/overdue" '
       ($rows | split("\n") | map(select(length > 0) | fromjson)) as $r
       | ($eta | split("\n") | map(select(length > 0) | split("\t") | {key: .[0], value: {eta: .[1], at: (.[2] // "" | tonumber? // null)}})
@@ -3619,7 +3619,8 @@ write_state() {
       | {schema: 2, generated_epoch: $t, generated_at: ($t | todate),
          # The machine that wrote this (fleet-hosts.sh FLEET_HOST): a row with no host runs here.
          host: (if $me == "" then null else $me end),
-         vocab: {buckets: ($order | split(" ")), finished: ($finished | split(" ")), in_progress: ($progress | split(" "))},
+         # idle_min: the idle line (FLEET_IDLE_MIN) past which a session reads idle; the waits rule of fleet-dispatch reads it (ar-4662).
+         vocab: {buckets: ($order | split(" ")), finished: ($finished | split(" ")), in_progress: ($progress | split(" ")), idle_min: ($idle_line | tonumber? // null)},
          unreadable: ($unread | split("\n") | map(select(length > 0))),
          silent: ($silent | split("\n") | map(select(length > 0) | fromjson)),
          sessions: ($r | map(select(.bucket | IN("NIGHTLY", "CHECKOUT", "SHARED") | not)

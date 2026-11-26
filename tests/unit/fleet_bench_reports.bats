@@ -3985,6 +3985,28 @@ cancel c-old-lane --why canary: superseded by the $week set"
   [ -f "$CQ/canary-greet-$week.json" ]
 }
 
+@test "canary lanes: a lane's room check names its model's gateway route, so a spent route queues nothing though its source has room (ar-4601)" {
+  kpi_setup; kpi_fixture; canary_fixture
+  week=$(date -d "@$T0" +%Gw%V)
+  export BENCH_CANARY_LANES="$SANDBOX/canary-lanes" BENCH_HARNESSES="$SANDBOX/harnesses.json" BENCH_ROOM_CMD=room-stub
+  printf 'ocfree beam
+opencode-go glm
+' > "$BENCH_CANARY_LANES"
+  echo '{"harnesses":{"ocfree":{"source":"ocfree","launcher":"opencode","models":{"beam":"litellm/beam-free"}},"opencode-go":{"source":"go","launcher":"opencode","models":{"glm":"litellm/glm-go"}}}}' > "$BENCH_HARNESSES"
+  printf '#!/usr/bin/env bash
+echo "$*" >> "%s"
+[ "${4:-}" = beam-free ] && { echo "ocfree: route beam-free answers 429"; exit 1; }
+echo "$2: room"; exit 0
+' "$SANDBOX/room.log" > "$SANDBOX/bin/room-stub"
+  chmod +x "$SANDBOX/bin/room-stub"
+  run "$SUBJECT" canary queue --max 9
+  assert_success
+  assert_line "fleet-bench: canary: ocfree/beam not queued, ocfree: route beam-free answers 429"
+  [ ! -f "$CQ/canary-greet-$week-ocfree-beam.json" ]
+  [ -f "$CQ/canary-greet-$week-opencode-go-glm.json" ]
+  assert_equal "$(tr '\n' '|' < "$SANDBOX/room.log")" '--source ocfree --model beam-free|--source go --model glm-go|'
+}
+
 @test "canary top-up: --max N queues at most N, one task a lane a round, so lanes run together; a rerun queues the rest and a full week queues nothing" {
   kpi_setup; kpi_fixture; canary_fixture
   week=$(date -d "@$T0" +%Gw%V)

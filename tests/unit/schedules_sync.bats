@@ -1472,7 +1472,20 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
   run grep -c 'o/game/pulls.*(conditional)' "$GHD/calls"
   assert_output 0
   run jq -c '.repos["o/game"].row' "$PRS/sync.json"
-  assert_output 2
+  assert_output 3
+}
+
+@test "PR store: a revert names only the PRs right after its word or in its quoted title, not a ref later in the line (ar-2636)" {
+  prs_page o/game "$(gh_pr 9 closed 2025-11-06T11:00:00Z restore 'chore: restore burst-3' $'Reverts #1509: burst-3 goes back. The volume from #1510 is unchanged.')" \
+    "$(gh_pr 8 closed 2025-11-06T10:00:00Z revert-y 'Revert "feat: y (#6)"')" \
+    "$(gh_pr 7 closed 2025-11-06T09:00:00Z pair fix $'This reverts PR #3 and o/r#4; see #2 for why.')" \
+    "$(gh_pr 5 closed 2025-11-06T08:00:00Z colon 'Revert: pr #1 (#5)')" \
+    "$(gh_pr 4 closed 2025-11-06T07:00:00Z squash 'revert: fix x (#4)')"
+  run "$SUBJECT"
+  assert_success
+  # A colon and a lower-case pr read as the revert word's; a squash title's own (#N) is not a ref.
+  run jq -sc 'map([.number, .revert.prs])' "$PRS/o__game.jsonl"
+  assert_output '[[9,[1509]],[8,[6]],[7,[3,4]],[5,[1]],[4,[]]]'
 }
 
 @test "PR store, forgejo: a merged PR keeps the branch the store had once head.ref reads refs/pull/N/head" {

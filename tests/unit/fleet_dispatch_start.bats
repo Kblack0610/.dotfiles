@@ -1841,6 +1841,11 @@ trainee_start_ready() {
   touch "$NOTES_FIXTURE/agy.hang"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready agy
   assert_output 'agy: agy /usage did not answer in 20s: not signed in here? (agy, as the human)'
+  # An srt on PATH that cannot start fails the harness with srt's own error (ar-3897, 2026-11-19).
+  stub srt '[ "$1" = --settings ] && [ -s "$2" ] && [ "$3 $4" = "-- true" ] || exit 2
+echo "node: error while loading shared libraries: libsimdjson.so.36" >&2; exit 127'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready paid
+  assert_output "paid: lane sandbox 'pub' cannot hold paid: srt cannot start here (rc 127): node: error while loading shared libraries: libsimdjson.so.36"
 }
 
 @test "start: a hand start takes the account room names, not the one pick would (ar-275)" {
@@ -2143,6 +2148,27 @@ lane_event() {
   assert_output --partial 'An earlier run of this item handed it to this fresh session to keep context small (agent-queue handoff): read /home/u/.claude/plans/fix-menu.md first.'
   assert_output --partial 'left its unfinished work on branch feat/menu at abc123 on origin'
   [[ "$output" == *"read /home/u/.claude/plans/fix-menu.md first"*"left its unfinished work on branch feat/menu"* ]] || fail "the note is not named before the salvage branch"
+}
+
+# ar-5334: ar-5237's validate session landed #3444 with no --plan/--phase, so the author's plan box stayed open.
+@test "a validate brief lands an author holding one open plan phase with that phase's --plan and --phase" {
+  started_item fix-crash lab:game-agent-9 run
+  cat > "$SANDBOX/plan.md" <<'EOF'
+# p
+
+## Phases
+
+- [x] P1 first
+- [ ] P2 the user's fix (after 1)
+- [ ] P3 last
+EOF
+  agent-queue set fix-crash "plan=$SANDBOX/plan.md" phases=2 >/dev/null
+  run validate_task validate-fix-crash-01234567 fix-crash o/game#12 0123456789ab critical
+  assert_output --partial "agent-land 12 --repo o/game --item fix-crash --plan $SANDBOX/plan.md --phase 'P2 the user'\\''s fix (after 1)'"
+  # NEGATIVE CONTROL: an author holding two phases, or none, gets the bare landing.
+  agent-queue set fix-crash phases='2 3' >/dev/null
+  run validate_task validate-fix-crash-01234567 fix-crash o/game#12 0123456789ab critical
+  assert_output --partial 'agent-land 12 --repo o/game --item fix-crash` from this worktree'
 }
 
 @test "start never runs a validate item as its author: no author item, itself, the author's conversation or session (ar-1689)" {
