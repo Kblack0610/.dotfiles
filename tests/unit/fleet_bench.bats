@@ -1050,6 +1050,20 @@ gate_runs_of() {
   assert_output '[[7,"s1"],[8,""]]'
   run "$SUBJECT" stats --json
   refute_output --partial '"session_id":""'
+  # an unclaimed PR left for later holds the cursor at its own merge, and counts with no session
+  merged_pr s1 9 10 -1800
+  head -n 1 "$HOME/.agent/outcomes/game/2026-10.jsonl" > "$SANDBOX/o" && mv "$SANDBOX/o" "$HOME/.agent/outcomes/game/2026-10.jsonl"
+  echo '[{"number":7},{"number":8},{"number":9}]' > "$GHD/repo-prs.json"
+  docs_prs 9
+  touch "$GHD/later"
+  BENCH_NOW=$((T0 + 60)) run "$SUBJECT" review
+  assert_success
+  [ "$(cat "$FLEET_BENCH_DIR/review.last")" -eq $((T0 - 1800)) ]
+  rm "$GHD/later"
+  BENCH_NOW=$((T0 + 2 * 86400)) run "$SUBJECT" review
+  assert_success
+  run jq -sc 'sort_by(.number) | map([.number, .session_id])' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  assert_output '[[7,"s1"],[8,""],[9,""]]'
 }
 
 @test "a PR no session claims stays out of the KPIs" {

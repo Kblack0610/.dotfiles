@@ -1681,7 +1681,7 @@ section_cfg() {
   jq -c '[.trackers[] | objects | .sections // empty] | INDEX(.repo)' "$BENCH_PROJECT_MAP"
 }
 
-# merged_new <since> <cfg> -> repo, number, session_id and merge epoch (tab-separated) for every PR to count:
+# merged_new <since> <cfg> -> repo, number, merge epoch and session_id (tab-separated, the one that may be empty last, since read folds two tabs into one) for every PR to count:
 # what session-outcomes says merged since then, plus on a repo with sections whatever merged
 # there, since about a third of those no session claims. A PR is counted once, except that a row
 # from before its repo had sections or from before a session claimed it counts again, and
@@ -1710,7 +1710,7 @@ merged_new() {
     | unique_by(key)
     | map(if claimed then . else .session_id = ($old[key].session_id // "") end)
     | map(. as $pr | $have[key] as $row | select($row == null or (($row | claimed | not) and ($pr | claimed))))
-    | .[] | [.repo, .number, .session_id, .merged] | @tsv'
+    | .[] | [.repo, .number, .merged, .session_id] | @tsv'
 }
 
 # ci_keep_newest -> the newest line per PR stays, so a recount replaces its row
@@ -1812,7 +1812,7 @@ cmd_review() {
   new=$(merged_new "$since" "$cfg") || { report_outcome FAILED "merged PRs unreadable"; return 1; }
   # a recount leaves two lines for a PR until this runs, so it runs however the loop ends
   [ -z "$new" ] || { trap ci_keep_newest EXIT; trap 'exit 143' TERM INT HUP; }
-  while IFS=$'\t' read -r repo num sid merged; do
+  while IFS=$'\t' read -r repo num merged sid; do
     [ -n "$repo" ] || continue
     # a repo the ledger does not sync is learnt once per review, not paid a gh call per PR
     case "$off" in *" $repo "*) unsynced=$((unsynced + 1)); continue ;; esac
