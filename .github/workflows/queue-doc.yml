@@ -1,0 +1,43 @@
+name: queue doc
+
+# The one CI run of tests/unit/queue_doc.bats: QUEUE.md (its Intake channels table above all) lives
+# in the private overlay, which this repo's CI cannot see, so every case skips here. The private
+# repo calls this workflow on its PRs, its pushes to main and a daily schedule; the daily run
+# catches an intake caller that landed in this repo (ar-4243). A case that skips fails the run.
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: "one runner label, or a JSON label list; the private repo passes [\"self-hosted\",\"light\"]"
+        type: string
+        default: ubuntu-24.04
+
+permissions:
+  contents: read
+
+jobs:
+  queue-doc:
+    name: queue doc
+    runs-on: ${{ fromJSON(startsWith(inputs.runs-on, '[') && inputs.runs-on || toJSON(inputs.runs-on)) }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: private
+          persist-credentials: false
+      # The test and the code it reads come from the public repo at main, where this is called from.
+      - uses: actions/checkout@v4
+        with:
+          repository: Kblack0610/.dotfiles
+          ref: main
+          path: public
+          persist-credentials: false
+      - name: Bats at the pinned refs
+        working-directory: public
+        run: tests/bootstrap.sh
+      - name: QUEUE.md against both checkouts
+        run: |
+          rc=0; QUEUE_DOC_PRIVATE_REPO="$PWD/private" public/tests/vendor/bats-core/bin/bats --tap public/tests/unit/queue_doc.bats > "$RUNNER_TEMP/tap" || rc=$?
+          cat "$RUNNER_TEMP/tap"
+          if grep -q '# skip' "$RUNNER_TEMP/tap"; then echo "::error::a queue_doc.bats case skipped: the private checkout is not where QUEUE_DOC_PRIVATE_REPO points"; exit 1; fi
+          exit "$rc"

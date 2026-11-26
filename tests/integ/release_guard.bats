@@ -60,10 +60,37 @@ allowed() { assert_success; assert_output ''; }
            'cd scripts/release && ./ship.sh all' \
            'RELEASE_UNTESTED="red Multi" scripts/release/release-gate.sh v0.5.2' 'export RELEASE_UNTESTED=x' 'env RELEASE_UNTESTED=x make' \
            'gh workflow run release.yml -f tag=v0.5.2 -f untested-reason="Multi red"' 'gh workflow run 12345' \
-           'gh workflow run Cut -f version=0.5.5' 'gh workflow run "Release (tag)"' 'gh workflow run cut.yml --ref main -f version=0.0.0-test'; do
+           'gh workflow run Cut -f version=0.5.5' 'gh workflow run "Release (tag)"' 'gh workflow run cut.yml --ref main -f version=0.0.0-test' \
+           'gh workflow run release.yml -ftag=v0.5.2 -funtested-reason=x' 'gh workflow run release.yml -f tag=v0.5.2 -f=untested-reason=x' \
+           'gh workflow run release.yml -ftag=v9.9.9' 'gh workflow run release.yml -rv9.9.9 -f tag=v0.5.2' 'gh workflow run phone-release.yml -f tag=v0.5.2 -rmain'; do
     run at "$T/game" "$c"
     denied
   done
+}
+
+@test "an API dispatch of a cut or release workflow, or one named by id, is denied; an ordinary one passes (ar-4040)" {
+  local c
+  # a cut has no allowed form, whatever spelling of the file GitHub may resolve
+  for c in 'gh api -X POST repos/o/r/actions/workflows/cut.yml/dispatches -f ref=main' \
+           'gh api -X POST repos/o/r/actions/workflows/CUT.yml/dispatches -f ref=main' \
+           'gh api -X POST repos/o/r/actions/workflows/cut%2Eyml/dispatches -f ref=main'; do
+    run at "$T/game" "$c"
+    denied
+    assert_output --partial 'cut a release'
+    refute_output --partial 'gh workflow run <file>.yml'
+  done
+  for c in 'gh api repos/o/r/actions/workflows/release.yml/dispatches -f ref=v0.5.2 -f inputs[tag]=v0.5.2' \
+           'gh api repos/o/r/actions/workflows/Release.YML/dispatches -f ref=v0.5.2' \
+           'gh api --method POST repos/o/r/actions/workflows/12345/dispatches -f ref=main' \
+           'curl -X POST https://api.github.com/repos/o/r/actions/workflows/steam.yml/dispatches -d @in.json'; do
+    run at "$T/game" "$c"
+    denied
+    assert_output --partial 'gh workflow run <file>.yml'
+  done
+  run at "$T/game" 'gh api -X POST repos/o/r/actions/workflows/checks.yml/dispatches -f ref=main'
+  allowed
+  run at "$T/game" 'gh api repos/o/r/actions/workflows/cut.yml'
+  allowed
 }
 
 @test "a release workflow is allowed only as a re-send of a tag already on origin" {
@@ -115,6 +142,9 @@ allowed() { assert_success; assert_output ''; }
   allowed
   # gh takes the last --ref
   run at "$T/game" 'gh workflow run phone-release.yml --ref main --ref v0.5.2 -f tag=v0.5.2'
+  allowed
+  # attached short flags read as gh reads them (ar-4040)
+  run at "$T/game" 'gh workflow run phone-release.yml -rv0.5.2 -ftag=v0.5.2 -fgame=dodginballs'
   allowed
 }
 

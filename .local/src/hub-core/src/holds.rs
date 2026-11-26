@@ -2,9 +2,8 @@
 //! (`~/.agent/holds`, `AGENT_HOLD_DIR`), for Alerts (one red row each) and Home's Needs you (the
 //! ones the human set). A standing hold is a resource hold, or any hold `by: human`, set
 //! `STANDING_SECS` ago or longer; a load hold (the shepherd lifts it) and a claim (it ends with its
-//! skill) never stand. A keep (`agent-hold keep`, the human's `keep` answer on an ask about it)
-//! restarts that clock: a hold the human just re-confirmed waits a day past the keep (ar-5307). The
-//! rule is `agent-hold aged`'s, whose `hold-age` watch pages the same holds
+//! skill) never stand, and nor does a hold with an `until:` (every hold by: human has one since
+//! ar-6059): it ends on its own, so it never waits on the human. The rule is `agent-hold aged`'s, whose `hold-age` watch pages the same holds
 //! (ar-4645). A hold forgotten for days kept its resource from every session and nobody saw it.
 
 use std::path::{Path, PathBuf};
@@ -27,9 +26,9 @@ pub struct Hold {
     pub by: String,
     /// When it was set, epoch seconds; none when its `since:` does not read.
     pub since: Option<i64>,
-    /// When the human last re-confirmed it (`kept:`, written by `agent-hold keep`), epoch seconds;
-    /// none when it was never kept or the value does not read.
-    pub kept: Option<i64>,
+    /// It has an `until:` (`agent-hold set --until`), so it ends on its own; read or not, since
+    /// agent-hold reads an until no date reads as passed.
+    pub ends: bool,
     pub reason: String,
 }
 
@@ -53,7 +52,7 @@ impl Hold {
             kind,
             by: field("by"),
             since: crate::fleet::ts(&field("since")),
-            kept: crate::fleet::ts(&field("kept")),
+            ends: !field("until").is_empty(),
             reason: field("reason"),
         }
     }
@@ -63,17 +62,12 @@ impl Hold {
         self.by == HUMAN
     }
 
-    /// True when only the human ends it and it has stood `STANDING_SECS` since it was set, or
-    /// since the human last kept it when that is later. A since that does not read stands: it is
-    /// as old as anything, as `agent-hold aged` reads it.
+    /// True when only the human ends it, it has no until, and it has stood `STANDING_SECS` since
+    /// it was set. A since that does not read stands: it is as old as anything, as `agent-hold
+    /// aged` reads it.
     pub fn standing(&self, now: i64) -> bool {
         let theirs = self.kind == "resource" || (self.kind != "claim" && self.human());
-        let from = match (self.since, self.kept) {
-            (Some(s), Some(k)) => Some(s.max(k)),
-            (None, Some(k)) => Some(k),
-            (s, None) => s,
-        };
-        theirs && from.is_none_or(|t| now - t >= STANDING_SECS)
+        theirs && !self.ends && self.since.is_none_or(|t| now - t >= STANDING_SECS)
     }
 
     /// Whole days since it was set, none when its since does not read.
@@ -86,18 +80,11 @@ impl Hold {
         format!("agent-hold show {}", self.resource)
     }
 
-    /// "held 3d by <who>", or "held since an unreadable time by <who>", plus ", kept 1d ago" when
-    /// the human re-confirmed it since it was set, so a reader sees the keep took.
+    /// "held 3d by <who>", or "held since an unreadable time by <who>".
     pub fn held(&self, now: i64) -> String {
-        let held = match self.days(now) {
+        match self.days(now) {
             Some(d) => format!("held {d}d by {}", self.by),
             None => format!("held since an unreadable time by {}", self.by),
-        };
-        match self.kept {
-            Some(k) if self.since.is_none_or(|s| k > s) => {
-                format!("{held}, kept {}d ago", (now - k).max(0) / 86400)
-            }
-            _ => held,
         }
     }
 
@@ -106,7 +93,6 @@ impl Hold {
         json!({
             "resource": self.resource,
             "since": self.since,
-            "kept": self.kept,
             "held": self.held(now),
             "reason": self.reason,
         })
@@ -164,40 +150,32 @@ mod tests {
             kind: kind.into(),
             by: by.into(),
             since: Some(NOW - age),
-            kept: None,
+            ends: false,
             reason: "why".into(),
         }
     }
 
     #[test]
-    fn a_kept_hold_stands_again_only_a_day_past_the_keep() {
-        // The human's 4-day-old lockdown, kept an hour ago: not a need until a day past the keep.
-        let kept = Hold {
-            kept: Some(NOW - 3600),
+    fn a_hold_with_an_until_never_stands_since_it_ends_on_its_own() {
+        // The human's 4-day-old lockdown with an until: it ends by itself, so it waits on nobody.
+        let ends = Hold {
+            ends: true,
             ..hold("resource", HUMAN, 4 * 86400)
         };
-        assert!(!kept.standing(NOW));
-        assert!(kept.standing(NOW - 3600 + STANDING_SECS));
-        // Negative control: the same hold never kept stands.
+        assert!(!ends.standing(NOW));
+        // Negative control: the same hold with no until stands.
         assert!(hold("resource", HUMAN, 4 * 86400).standing(NOW));
-        // A keep older than since (a file written by hand) changes nothing.
-        let stale = Hold {
-            kept: Some(NOW - 9 * 86400),
-            ..hold("resource", HUMAN, 4 * 86400)
+        let parse = |t: &str| {
+            Hold::parse(
+                "critical",
+                &format!("kind: resource\nby: human\nsince: 2026-11-20T16:10:54-0800\n{t}"),
+            )
         };
-        assert!(stale.standing(NOW));
-        // A keep with no readable since still counts from the keep.
-        let unread = Hold {
-            since: None,
-            ..kept.clone()
-        };
-        assert!(!unread.standing(NOW));
-        assert_eq!(kept.held(NOW), "held 4d by human, kept 0d ago");
-        assert_eq!(stale.held(NOW), "held 4d by human");
-        assert_eq!(
-            Hold::parse("critical", "kind: resource\nby: human\nsince: 2026-11-20T16:10:54-0800\nkept: 2026-11-24T17:30:08-0800\nkept_ask: M0yWLL\n").kept,
-            crate::fleet::ts("2026-11-24T17:30:08-0800")
-        );
+        assert!(parse("until: 2026-11-21T10:00:00-0800\n").ends);
+        // An until no date reads still ends it, as agent-hold reads it passed.
+        assert!(parse("until: soon\n").ends);
+        assert!(!parse("").ends);
+        assert!(!parse("until: \n").ends);
     }
 
     #[test]
