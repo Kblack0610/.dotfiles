@@ -120,7 +120,11 @@ epic_new_gaps() {
   elif ! grep -qxF -- "$sys" <<<"$ids"; then
     echo "epic: new names epic($sys), no system of $board: one of $(paste -sd, <<<"$ids")$([ -n "$target" ] || echo "; $board is this session's board, so a plan for another project names only that project's rows on Overlap:")"
   fi
-  short=$(notes ptask "$board" similar --epic --json -- "$t" 2>/dev/null | jq -r '.[].id | select(. != "")' 2>/dev/null | awk '!seen[$0]++')
+  if ! short=$(notes ptask "$board" similar --epic --json -- "$t" 2>/dev/null) || [ -z "$short" ] ||
+    ! short=$(jq -r 'if type == "array" then .[].id | select(. != "") else error("no list") end' <<<"$short" 2>/dev/null); then
+    echo "epic: new: notes ptask $board similar --epic --json printed no shortlist, so Overlap: cannot be checked against it"; return
+  fi
+  short=$(awk '!seen[$0]++' <<<"$short")
   missing=$(comm -23 <(sort -u <<<"$short" | awk 'NF') <(plan_overlap_ids <<<"$plan"))
   [ -z "$missing" ] ||
     echo "epic: new: the open rows, epics and live plans most like it on $board name $(paste -sd' ' <<<"$short"), and Overlap: does not name $(paste -sd' ' <<<"$missing"): read each (notes ptask $board similar --epic -- \"$t\"), then put its id on Overlap: with why it is other work, or name the one that is this work on the epic: line instead"

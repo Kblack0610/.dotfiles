@@ -721,7 +721,7 @@ fn self_check(
         bail!("a standing epic (`<system> to standard`) is filed by notes and project-stage-check, never by a session, so nothing was added");
     }
     let lanes = both_lanes(p, name)?;
-    let plans = epic_plans(p, name, row)?;
+    let plans = epic_plans(p, name, row, &lanes)?;
     let hits = shortlist(&lanes, &plans, text);
     let mut shown: Vec<String> = Vec::new();
     for id in hits.iter().filter_map(|h| h.id.clone()) {
@@ -757,15 +757,38 @@ fn both_lanes(p: &Profile, name: &str) -> Result<Vec<(Lane, String)>> {
         .collect()
 }
 
-/// The live plans an epic `row`'s shortlist reads ([`crate::live_plans::read`] for the board's
-/// own name); none for any other row.
-fn epic_plans(p: &Profile, name: &str, row: &str) -> Result<Vec<crate::live_plans::LivePlan>> {
+/// The live plans an epic `row`'s shortlist reads: [`crate::live_plans::read`] for the board's
+/// own name, of the plans serving one of its open feature epics ([`feature_epic`]); none for any
+/// other row.
+fn epic_plans(
+    p: &Profile,
+    name: &str,
+    row: &str,
+    lanes: &[(Lane, String)],
+) -> Result<Vec<crate::live_plans::LivePlan>> {
     if !crate::epics::is_epic(row) {
         return Ok(Vec::new());
     }
     let dir = projects::project_dir(p, name)?;
     let board = dir.file_name().map_or(name.into(), |n| n.to_string_lossy());
-    Ok(crate::live_plans::read(&crate::live_plans::root(), &board))
+    let epics: HashSet<String> = lanes
+        .iter()
+        .flat_map(|(_, c)| c.lines())
+        .filter(|r| md::is_open_task(r) && feature_epic(r))
+        .filter_map(md::row_id)
+        .collect();
+    Ok(crate::live_plans::read(
+        &crate::live_plans::root(),
+        &board,
+        &epics,
+        &crate::live_plans::lib(),
+    ))
+}
+
+/// An epic that is a feature, not a system's standing (`... to standard`) catch-all: what an
+/// epic's shortlist slots list, since a standing epic is never a feature's twin.
+fn feature_epic(line: &str) -> bool {
+    crate::epics::is_epic(line) && !standing_title(line)
 }
 
 /// How many open epics, and how many live plans, an epic's shortlist adds beside its
@@ -841,7 +864,7 @@ fn shortlist(
     if !crate::epics::is_epic(&format!("- [ ] {text}")) {
         return hits;
     }
-    let feature = |l: &str| crate::epics::is_epic(l) && !standing_title(l);
+    let feature = feature_epic;
     let listed: HashSet<String> = hits.iter().filter_map(|h| h.id.clone()).collect();
     let epics = lanes
         .iter()
@@ -1034,7 +1057,9 @@ pub fn similar_rows(
 ) -> Result<i32> {
     let hits = if epic {
         let row = format!("- [ ] {text}");
-        shortlist(&both_lanes(p, name)?, &epic_plans(p, name, &row)?, text)
+        let lanes = both_lanes(p, name)?;
+        let plans = epic_plans(p, name, &row, &lanes)?;
+        shortlist(&lanes, &plans, text)
     } else {
         let content = sheet_and_content(p, name, lane)?
             .map(|(_, c)| c)

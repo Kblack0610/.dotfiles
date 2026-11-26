@@ -249,6 +249,7 @@ epic_new() {
   printf '%s\n' "$1" > "$BATS_TEST_TMPDIR/sim.json"
   cat > "$BATS_TEST_TMPDIR/bin/notes" <<SH
 #!/usr/bin/env bash
+[ -z "\${NO_SIMILAR:-}" ] || exit 1
 case " \$* " in *" similar --epic --json "*) cat "$BATS_TEST_TMPDIR/sim.json" ;; esac
 SH
   chmod +x "$BATS_TEST_TMPDIR/bin/notes"
@@ -296,6 +297,8 @@ proposal() {
   assert_output --partial 'is no epic(<system>): <outcome>'
   NO_SYSTEMS=1 run gate labbed "$(proposal 'epic(ui): a lobby the player can open' 'none.')"
   assert_output --partial 'printed no system list'
+  NO_SIMILAR=1 run gate labbed "$(proposal 'epic(ui): a lobby the player can open' 'none.')"
+  assert_output --partial 'printed no shortlist'
 }
 
 # other: a second board, code ot, whose sheet holds epic ot-1 and story ot-2, and whose one system is
@@ -354,6 +357,9 @@ crowded_board() {
   jq '.trackers.labbed.code = "lb"' "$HOME/.config/shared-hooks/project-map.json" > "$BATS_TEST_TMPDIR/m.json"
   mv "$BATS_TEST_TMPDIR/m.json" "$HOME/.config/shared-hooks/project-map.json"
   ln -sf "$NOTES_BIN" "$BATS_TEST_TMPDIR/bin/notes"
+  # the live plans notes reads are the stowed plan reader's
+  mkdir -p "$HOME/.local/lib"
+  ln -sf "$(cd "$ROOT" && pwd)/.local/lib/plan-phases.sh" "$HOME/.local/lib/plan-phases.sh"
   local proj="$HOME/.notes/lab/projects/current/labbed" w n=10
   : > "$proj/summary.md"
   {
