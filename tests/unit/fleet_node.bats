@@ -296,3 +296,132 @@ dot_origin() {
   run grep -c '"\$HERE/fleet-node" ready claude' "$REPO_ROOT/.local/bin/fleet-dispatch"
   assert_output 1
 }
+
+# peer_record <host> <candidate> <ready> <age secs> [need...] -> that peer's lease-ready record, as publish writes it.
+peer_record() {
+  local host=$1 cand=$2 ready=$3 age=$4; shift 4
+  mkdir -p "$HOME/.agent/lease-ready"
+  jq -cn --arg h "$host" --argjson c "$cand" --argjson r "$ready" --argjson at "$(($(date +%s) - age))" '$ARGS.positional as $n |
+    {host: $h, at: $at, candidate: $c, ready: $r, needs: $n}' --args "$@" >"$HOME/.agent/lease-ready/$host"
+}
+
+# a store-sync that logs its calls
+stub_store_sync() {
+  printf '#!/bin/sh\necho "$*" >>"%s/store-sync.log"\n' "$SANDBOX" >"$SANDBOX/bin/store-sync"
+  chmod +x "$SANDBOX/bin/store-sync"
+}
+
+@test "publish writes a ready record for a node with every need, and pushes it" {
+  lease_ready_all
+  stub_store_sync
+  mkdir -p "$HOME/.agent/.sync" && touch "$HOME/.agent/.sync/peer"
+  run "$FLEET_NODE" publish
+  assert_success
+  run jq -c '[.host, .candidate, .ready, .needs]' "$HOME/.agent/lease-ready/node1"
+  assert_output '["node1",true,true,[]]'
+  run cat "$SANDBOX/store-sync.log"
+  assert_output '--now --bg'
+}
+
+@test "publish records each need, and a no-lease marker as not a candidate" {
+  stub_store_sync
+  mkdir -p "$HOME/.agent/.sync"
+  touch "$HOME/.agent/.sync/no-lease"
+  run "$FLEET_NODE" publish
+  assert_success
+  run jq -c '[.candidate, .ready, (.needs | length > 1), (.needs | any(test("sign in to GitHub")))]' "$HOME/.agent/lease-ready/node1"
+  assert_output '[false,false,true,true]'
+}
+
+@test "publish leaves an unchanged record alone, rewrites a changed one or an old one" {
+  lease_ready_all
+  stub_store_sync
+  mkdir -p "$HOME/.agent/.sync" && touch "$HOME/.agent/.sync/peer"
+  "$FLEET_NODE" publish
+  first=$(jq -r .at "$HOME/.agent/lease-ready/node1")
+  # Age the record by a minute: unchanged content inside the refresh window is not rewritten.
+  jq -c '.at -= 60' "$HOME/.agent/lease-ready/node1" >"$SANDBOX/aged" && mv "$SANDBOX/aged" "$HOME/.agent/lease-ready/node1"
+  "$FLEET_NODE" publish
+  assert_equal "$(jq -r .at "$HOME/.agent/lease-ready/node1")" "$((first - 60))"
+  assert_equal "$(wc -l <"$SANDBOX/store-sync.log")" 1
+  # Past the refresh window it is rewritten with a new time.
+  FLEET_READY_REFRESH_S=30 "$FLEET_NODE" publish
+  [ "$(jq -r .at "$HOME/.agent/lease-ready/node1")" -ge "$first" ]
+  assert_equal "$(wc -l <"$SANDBOX/store-sync.log")" 2
+  # A need that appears is rewritten at once.
+  rm "$HOME/.config/gh/hosts.yml"
+  "$FLEET_NODE" publish
+  run jq -r .ready "$HOME/.agent/lease-ready/node1"
+  assert_output false
+  assert_equal "$(wc -l <"$SANDBOX/store-sync.log")" 3
+}
+
+@test "publish records a clone that never joined the store as not a candidate" {
+  lease_ready_all
+  stub_store_sync
+  mkdir -p "$HOME/.agent/.sync"
+  run "$FLEET_NODE" publish
+  assert_success
+  run jq -r .candidate "$HOME/.agent/lease-ready/node1"
+  assert_output false
+}
+
+@test "publish on a machine with no store says so and writes nothing" {
+  run "$FLEET_NODE" publish
+  assert_failure 2
+  assert_output --partial 'no store peer'
+}
+
+@test "peers counts two lease-ready machines as enough" {
+  peer_record node1 true true 100
+  peer_record razer true true 600
+  run "$FLEET_NODE" peers
+  assert_success
+  assert_line 'node1: lease-ready'
+  assert_line 'razer: lease-ready'
+  assert_line --partial '2 lease-ready of 2 peers'
+  run "$FLEET_NODE" peers --names
+  assert_success
+  assert_output $'node1\nrazer'
+}
+
+@test "peers trips when a peer's ready check fails, and says why (the negative control)" {
+  peer_record node1 true true 100
+  peer_record razer true false 100 'sign in to codex: codex login' 'agent-web is not installed'
+  run "$FLEET_NODE" peers
+  assert_failure 1
+  assert_line 'razer: not ready: sign in to codex: codex login (+1 more)'
+  assert_line --partial '1 lease-ready of 2 peers'
+  run "$FLEET_NODE" peers --names
+  assert_failure 1
+  assert_output node1
+}
+
+@test "peers does not count a silent peer or one that never holds the lease" {
+  peer_record node1 true true 100
+  peer_record razer true true 7000
+  peer_record asus false true 100
+  run "$FLEET_NODE" peers
+  assert_failure 1
+  assert_line 'razer: no report for 116 minutes, so it is not counted'
+  assert_line 'asus: never holds the lease (its no-lease marker)'
+  assert_line --partial '1 lease-ready of 3 peers'
+}
+
+@test "peers with nothing published trips, and FLEET_LEASE_MIN_READY moves the line" {
+  run "$FLEET_NODE" peers
+  assert_failure 1
+  assert_line 'no machine has published lease readiness (fleet-node publish)'
+  assert_line --partial '0 lease-ready of 0 peers'
+  peer_record node1 true true 10
+  FLEET_LEASE_MIN_READY=1 run "$FLEET_NODE" peers
+  assert_success
+}
+
+@test "peers reads a record that does not parse as not ready, not as a crash" {
+  peer_record node1 true true 10
+  mkdir -p "$HOME/.agent/lease-ready"; echo 'not json' >"$HOME/.agent/lease-ready/bad"
+  run "$FLEET_NODE" peers
+  assert_failure 1
+  assert_line 'bad: its record does not parse'
+}

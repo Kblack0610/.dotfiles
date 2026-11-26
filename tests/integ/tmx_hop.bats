@@ -64,7 +64,7 @@ at() {
 @test "a running server with no manifest still hops" {
   export TMUX_TMPDIR="$SANDBOX/sockets"
   mkdir -p "$TMUX_TMPDIR/tmux-$(id -u)"
-  python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TMUX_TMPDIR/tmux-$(id -u)/stranded"
+  unix_sock "$TMUX_TMPDIR/tmux-$(id -u)/stranded"
   at hub daily 0
   run "$TMX" stranded
   assert_success

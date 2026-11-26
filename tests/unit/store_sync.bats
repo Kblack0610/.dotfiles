@@ -447,6 +447,29 @@ EOF
   assert_success
 }
 
+@test "a --now sync that finds another one waiting leaves its write to that one (ar-3191)" {
+  # The waiter commits only once it holds the lock, so it carries this write; a second waiter would
+  # only queue behind it, and 500+ of them SKIPped at 300s.
+  peer a
+  local before; before=$(tip "$ORIGIN")
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  mkdir -p "$SANDBOX/a/.sync"
+  exec 7>"$SANDBOX/a/.sync/lock" 6>"$SANDBOX/a/.sync/now-wait"
+  flock 7
+  flock 6
+  run on a --now
+  assert_success
+  assert_equal "$(tip "$ORIGIN")" "$before"
+  # Negative control: with no sync waiting or running, the same write goes out at once and leaves
+  # now-wait free for the next writer.
+  exec 6>&- 7>&-
+  run on a --now
+  assert_success
+  assert_equal "$(show "$ORIGIN" queue/item.md)" 'state: done'
+  run flock -n "$SANDBOX/a/.sync/now-wait" true
+  assert_success
+}
+
 @test "the deploy key goes to ssh as one word, even from a path with a space" {
   mkdir -p "$SANDBOX/bin"
   printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s"\nexit 255\n' "$SANDBOX/ssh.args" > "$SANDBOX/bin/ssh"
@@ -847,6 +870,72 @@ move_item() {
   [ ! -e "$SANDBOX/d/queue/running/y.md" ]
 }
 
+# razer-laptop 2026-11-23 18:05: an item closed between the pass's commit and its fetch went into the
+# pre-merge commit as a bare delete of its queued path, and the merge stopped on a modify/delete (ar-5087).
+@test "an item moved while the fetch runs goes into the pre-merge commit at both paths, so the merge keeps the close (ar-5087)" {
+  peer a; queue_item a
+  # Negative control: a tracked item of the same name, edited in the same window, is not a moved one.
+  mkdir -p "$SANDBOX/a/queue/done/2026-11-20"; printf -- '---\nslug: x\n---\nold\n' > "$SANDBOX/a/queue/done/2026-11-20/x.md"
+  on a --now >/dev/null; peer b
+  sed -i 's/^k5: v5$/k5: b/' "$SANDBOX/b/queue/queued/x.md"
+  on b --now >/dev/null
+  # The move lands while a's fetch runs: after its own commit, before the merge looks at the tree.
+  cat > "$SANDBOX/upload-pack-mid-move" <<EOF
+#!/usr/bin/env bash
+q="$SANDBOX/a/queue"
+[ ! -e "\$q/queued/x.md" ] || { mkdir -p "\$q/done/2026-11-21"; sed 's/^k20: v20\$/k20: v20\nstatus: ok/' "\$q/queued/x.md" > "\$q/done/2026-11-21/x.md"; rm "\$q/queued/x.md"; }
+echo edited >> "\$q/done/2026-11-20/x.md"
+# staged, as a commit that failed partway leaves it: the index tracks it, HEAD does not
+git -C "$SANDBOX/a" add -- queue/done/2026-11-21/x.md
+exec git-upload-pack "\$@"
+EOF
+  chmod +x "$SANDBOX/upload-pack-mid-move"
+  # git runs uploadpack through the shell, and the sandbox path has a space in it.
+  git -C "$SANDBOX/a" config remote.origin.uploadpack "$(printf %q "$SANDBOX/upload-pack-mid-move")"
+  # A local write, so --now fetches: a clean tree at origin's head exits before the fetch.
+  echo '{"n":"a"}' >> "$SANDBOX/a/queue/events.jsonl"
+  run on a --now
+  assert_success
+  refute_output --partial CONFLICT
+  # The move came mid-fetch (the pass's own commit did not hold it), and the pre-merge commit holds both paths.
+  run git -C "$SANDBOX/a" log --format=%s --name-status --no-renames --grep='local edits before merging origin' master
+  assert_line --regexp '^D	queue/queued/x.md$'
+  assert_line --regexp '^A	queue/done/2026-11-21/x.md$'
+  refute_line --partial 'queue/done/2026-11-20/x.md'
+  run show "$ORIGIN" queue/done/2026-11-21/x.md
+  assert_line 'status: ok'
+  run git -C "$ORIGIN" ls-tree -r --name-only master -- queue/queued
+  assert_output ''
+}
+
+@test "a short item closed on one machine and moved open on another keeps only the close, though git saw no rename (ar-4262)" {
+  peer a
+  mkdir -p "$SANDBOX/a/queue/queued"
+  printf -- '---\nslug: s\n---\nt\n' > "$SANDBOX/a/queue/queued/s.md"
+  on a --now >/dev/null
+  peer b
+  # Each side rewrites most of the short file as it moves it, so neither move reads as a rename.
+  mkdir -p "$SANDBOX/a/queue/done/2026-11-21" "$SANDBOX/b/queue/running"
+  printf -- '---\nslug: s\nstatus: ok\nfinished: 2026-11-21T01:00:00Z\nhost: a\nsession: s1\n---\nt\n' > "$SANDBOX/a/queue/done/2026-11-21/s.md"
+  printf -- '---\nslug: s\nstarted: 2026-11-21T00:59:00Z\nhost: a\nsession: s1\nwindow: w\n---\nt\n' > "$SANDBOX/b/queue/running/s.md"
+  rm "$SANDBOX/a/queue/queued/s.md" "$SANDBOX/b/queue/queued/s.md"
+  on b --now >/dev/null
+  run on a --now
+  assert_success
+  run git -C "$ORIGIN" ls-tree -r --name-only master -- queue/queued queue/running queue/done
+  assert_output 'queue/done/2026-11-21/s.md'
+  [ ! -e "$SANDBOX/a/queue/running/s.md" ]
+  assert_equal "$(git -C "$ORIGIN" rev-list --parents -1 master | wc -w)" 3
+  # Negative control: an open item done/ does not hold is left alone by the same merge.
+  printf -- '---\nslug: o\n---\nt\n' > "$SANDBOX/b/queue/running/o.md"
+  on b --now >/dev/null
+  printf -- '---\nslug: p\n---\nt\n' > "$SANDBOX/a/queue/queued/p.md"
+  run on a --now
+  assert_success
+  run git -C "$ORIGIN" ls-tree -r --name-only master -- queue/running
+  assert_output 'queue/running/o.md'
+}
+
 @test "an item moved to two open states, or a close beside another conflict, still conflicts" {
   peer a; queue_item a; peer b
   move_item a running 'host: a'
@@ -946,6 +1035,29 @@ requeue_item() {
   sed -e '/^\(session\|origin\|host\|started\|lane_run\): /d' -e 's/^agent: .*/agent: claude/' \
     -e 's/^model: .*/model: /' -e 's/^---$/routed: \nrequeued: 2026-11-23T21:40:16Z\n---/' "$f" > "$SANDBOX/$1/queue/queued/$2.md"
   rm "$f"
+}
+
+@test "a peer's new running item stays in running/ when the other side requeued the only running item: no directory-rename move (ar-4898)" {
+  peer a; run_item a q1; peer b
+  run_item a q3
+  requeue_item b q1
+  git -C "$SANDBOX/b" add queue && git -C "$SANDBOX/b" commit -qm 'requeue q1'
+  git -C "$SANDBOX/b" fetch -q origin
+  # NEGATIVE CONTROL: git's default (conflict) stops the merge on q3's location, and true moves q3 into queued/ beside q1
+  run git -C "$SANDBOX/b" -c merge.directoryRenames=conflict merge-tree --write-tree --name-only HEAD origin/master
+  assert_failure
+  assert_output --partial 'CONFLICT (file location): queue/running/q3.md'
+  run git -C "$SANDBOX/b" -c merge.directoryRenames=true merge-tree --write-tree --name-only HEAD origin/master
+  run git -C "$SANDBOX/b" ls-tree -r --name-only "${lines[0]}"
+  assert_line 'queue/queued/q3.md'
+  run on b --now
+  assert_success
+  run show "$ORIGIN" queue/running/q3.md
+  assert_success
+  run show "$ORIGIN" queue/queued/q3.md
+  assert_failure
+  run show "$ORIGIN" queue/queued/q1.md
+  assert_success
 }
 
 # route_item <machine> <slug>: the other machine records the route and a PR on the running item.
@@ -1096,10 +1208,12 @@ lose_head_tree() {
   run on a
   assert_failure 3
   assert_output --partial "no remote answered to refetch them"
+  # With no reflog left, no older commit can stand in for HEAD either.
+  rm "$SANDBOX/a/.git/logs/refs/heads/master"
   conf "$ORIGIN"; mv "$BACKUP.off" "$BACKUP"
   run on a
   assert_failure 3
-  assert_output --partial "names trees missing here and no remote has them"
+  assert_output --partial "no remote has them and no commit in its reflog reads"
   refute_output --partial "could not commit"
   # The refetch that reached a remote is not repeated for this HEAD: an unreachable origin now
   # changes nothing, since no fetch runs.
@@ -1108,6 +1222,57 @@ lose_head_tree() {
   assert_failure 3
   assert_output --partial "no remote has them"
   refute_output --partial "no remote answered"
+}
+
+# empty_object <machine> <oid>: a reboot mid-commit leaves the object's file at zero bytes (ar-4193).
+empty_object() {
+  mkdir -p "$SANDBOX/$1/.git/objects/${2:0:2}"
+  rm -f "$SANDBOX/$1/.git/objects/${2:0:2}/${2:2}"
+  : > "$SANDBOX/$1/.git/objects/${2:0:2}/${2:2}"
+}
+
+@test "an unpushed HEAD commit a reboot left empty is dropped, the branch moves back to the newest commit that reads, and the files land (ar-4193)" {
+  peer a
+  echo 'state: running' > "$SANDBOX/a/queue/item.md"
+  on a >/dev/null
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  git -C "$SANDBOX/a" commit -q -am local
+  empty_object a "$(git -C "$SANDBOX/a" rev-parse HEAD)"
+  run on a
+  assert_success
+  assert_output --partial "removed 1 zero-byte loose object"
+  assert_output --partial "moved master back to"
+  assert_output --partial "COMPLETE: origin at"
+  assert_equal "$(show "$ORIGIN" queue/item.md)" "state: done"
+  run git -C "$SANDBOX/a" fsck --connectivity-only
+  assert_success
+}
+
+@test "a zero-byte blob a reboot left under an intact HEAD is dropped, so the add writes it and the push lands (ar-4193)" {
+  peer a
+  echo 'state: running' > "$SANDBOX/a/queue/item.md"
+  on a >/dev/null
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  empty_object a "$(git -C "$SANDBOX/a" hash-object queue/item.md)"
+  run on a
+  assert_success
+  assert_output --partial "removed 1 zero-byte loose object"
+  assert_equal "$(show "$ORIGIN" queue/item.md)" "state: done"
+  run git -C "$SANDBOX/a" fsck --connectivity-only
+  assert_success
+}
+
+@test "an unpushed HEAD whose tree no remote holds moves back to the newest commit that reads, and the files land (ar-4193)" {
+  peer a
+  echo 'state: running' > "$SANDBOX/a/queue/item.md"
+  on a >/dev/null
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  git -C "$SANDBOX/a" commit -q -am local
+  lose_head_tree a
+  run on a
+  assert_success
+  assert_output --partial "no refetch restored; moved master back to"
+  assert_equal "$(show "$ORIGIN" queue/item.md)" "state: done"
 }
 
 @test "a store with no commit yet makes its first one, with no refetch (ar-3439)" {

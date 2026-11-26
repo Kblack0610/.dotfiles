@@ -164,6 +164,29 @@ whole() {
   [[ $stderr == *'cannot read the weights table'* ]]
 }
 
+@test "a file the table does not list weighs the seconds it declares, and the table wins once it lists it (ar-5740)" {
+  for f in a b c d; do fixture "unit/$f.bats" "t$f"; done
+  printf '#!/usr/bin/env bats\n# half of a\n# shard-seconds: 20 (measured)\n\n@test "td" {\n  true\n}\n' > "$SHARD_DIR/unit/d.bats"
+  printf '8\tunit/a.bats\n2\tunit/b.bats\n1\tunit/c.bats\n' > "$SHARD_WEIGHTS"
+  # d declares 20, over the median 2: it goes first, alone against a+b+c (11)
+  run --separate-stderr "$SUBJECT" unit 1/2
+  assert_success
+  assert_output 'unit/d.bats'
+  [[ $stderr == *'unit/d.bats is not in the table; it weighs its declared 20s'* ]]
+  # a declaration below the first 15 lines is prose, not a weight: d weighs the median again
+  printf '#!/usr/bin/env bats\n%s\n# shard-seconds: 9\n@test "td" {\n  true\n}\n' "$(seq 1 16 | sed 's/^/# /')" > "$SHARD_DIR/unit/d.bats"
+  run --separate-stderr "$SUBJECT" unit 2/2
+  assert_success
+  [[ $stderr == *'unit/d.bats is not in the table; it weighs the median, 2s'* ]]
+  # the table lists it now: its seconds count, and the run says to delete the line
+  printf '#!/usr/bin/env bats\n# shard-seconds: 9\n@test "td" {\n  true\n}\n' > "$SHARD_DIR/unit/d.bats"
+  printf '3\tunit/d.bats\n' >> "$SHARD_WEIGHTS"
+  run --separate-stderr "$SUBJECT" unit 1/2
+  assert_success
+  [[ $stderr == *'unit/d.bats declares shard-seconds and the table lists it: delete the declaration'* ]]
+  [[ $stderr == *'predicted 8s of 14s'* ]]
+}
+
 @test "a bad spec, an unknown tier and an empty shard fail instead of running nothing" {
   fixture unit/a.bats ta
   : > "$SHARD_WEIGHTS"
