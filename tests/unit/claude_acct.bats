@@ -916,6 +916,16 @@ STUB
   [[ "$stderr" == *'no account has room'* ]]
 }
 
+@test "status: RESETS shows the date, not the weekday, for a reset more than 6 days out" {
+  # 2026-11-26 (ar-2755): a gateway team resetting 2026-11-30 read as "Mon 16:00", this Monday
+  export CLAUDE_ACCT_NOW=$NOW TZ=UTC
+  week main 20 140
+  week alt 20 150
+  run "$ACCT" status
+  assert_line --regexp "^main +.* +$(date -u -d "@$((NOW + 140 * 3600))" '+%a %H:%M') "
+  assert_line --regexp "^alt +.* +$(date -u -d "@$((NOW + 150 * 3600))" '+%m-%d %H:%M') "
+}
+
 @test "room: with none, the line names the closest account, how far past its pace, and when it runs out" {
   # 2026-11-05 12:33: alt 15% used with 9% of its week gone, 1 point past the 5 of slack; bnb (here
   # main) at 96%, inside its reserve. "no account has room" alone read as every account full.

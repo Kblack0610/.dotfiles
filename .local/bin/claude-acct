@@ -1314,8 +1314,14 @@ all_json() {
           else . end'
 }
 
-# day_time <epoch> -> "Thu 19:00", or - when there is none
-day_time() { if [[ -n "$1" && "$1" != null ]]; then date -d "@$1" '+%a %H:%M'; else printf -- -; fi; }
+# day_time <epoch> -> "Thu 19:00", "11-30 16:00" when it is more than 6 days out (a weekday would
+# read as this coming one), or - when there is none
+day_time() {
+    local now="${CLAUDE_ACCT_NOW:-$(date +%s)}"
+    if [[ -z "$1" || "$1" == null ]]; then printf -- -
+    elif (( $1 - now > 6 * 86400 )); then date -d "@$1" '+%m-%d %H:%M'
+    else date -d "@$1" '+%a %H:%M'; fi
+}
 
 # cmd_run [--acct <name>] [claude args]: exec claude on the account cmd_pick chooses. Main is the
 # unset dir, so an alt account inherited from a parent session is dropped, not passed on. The
@@ -1398,7 +1404,7 @@ cmd_status() {
     fi
     local line state rows
     rows=$(all_json)
-    printf '%-8s %-4s %-5s %-5s %-10s %-10s %-5s %-7s %-6s %-7s %-11s %-10s %-13s %s\n' \
+    printf '%-8s %-4s %-5s %-5s %-11s %-11s %-5s %-7s %-6s %-7s %-11s %-10s %-13s %s\n' \
         SOURCE 5H WEEK GONE RUNS-OUT RESETS LIVE '24H-$' BURN/H KEEPS/H ON-PACE ROOM KIND DETAIL
     while IFS= read -r line; do
         [[ -n "$line" ]] || continue
@@ -1407,7 +1413,7 @@ cmd_status() {
             printf '%-8s fetch failed (%s live)\n' "$(jq -r .name <<< "$line")" "$(jq -r .live <<< "$line")"
             continue
         fi
-        printf '%-8s %-4s %-5s %-5s %-10s %-10s %-5s %-7s %-6s %-7s %-11s %-10s %-13s %s\n' \
+        printf '%-8s %-4s %-5s %-5s %-11s %-11s %-5s %-7s %-6s %-7s %-11s %-10s %-13s %s\n' \
             "$(jq -r .name <<< "$line")" \
             "$(jq -r 'if .five_hour == null then "-" else "\(.five_hour | floor)%" end' <<< "$line")" \
             "$(jq -r 'if .week_used == null then "-" else "\(.week_used | floor)%" end' <<< "$line")" \
