@@ -478,6 +478,13 @@ pub(crate) fn add_via(
         return Ok(0);
     }
     if refuse_twin(&path, &content, text) {
+        // A human's want that joins an open row must still mark it, and the ingest record must say whose
+        // words it is: dropped here the row counted against the project share (ar-6060).
+        if want.is_some_and(crate::window::human_channel) && lane == Lane::Agent {
+            if let Err(e) = stamp_twin_requested(p, &path, &content, text, name, lane, want) {
+                eprintln!("could not mark the open row #requested: {e}");
+            }
+        }
         return Ok(3);
     }
     let mut block = new_rows(
@@ -572,6 +579,48 @@ fn twin_id(content: &str, text: &str) -> Option<String> {
         .and_then(md::row_id)
         .or_else(|| near_twin(content, text).and_then(md::row_id))
         .or_else(|| pr_twin(content, text).and_then(|(l, _)| md::row_id(l)))
+}
+
+/// Put `#requested` on the open row of `content` that `text` twins (the row [`refuse_twin`] just
+/// named), so a `--want` that joins it is not lost, and record the join as a `dup` event carrying the
+/// channel, as `--dup` does: dispatch reads whose words the mark is from that record (`asker_map`).
+/// No-op when the row has no id. Callers treat a failure as a warning: the add still exits 3.
+fn stamp_twin_requested(
+    p: &Profile,
+    path: &Path,
+    content: &str,
+    text: &str,
+    name: &str,
+    lane: Lane,
+    want: Option<&str>,
+) -> Result<()> {
+    let Some(id) = twin_id(content, text) else {
+        return Ok(());
+    };
+    let mut twin = None;
+    let new: String = content
+        .split_inclusive('\n')
+        .map(|raw| {
+            let line = raw.trim_end_matches('\n');
+            let open =
+                line.trim_start().starts_with("- [ ]") || line.trim_start().starts_with("- [/]");
+            if twin.is_none() && open && md::row_id(line).as_deref() == Some(id.as_str()) {
+                twin = Some(line.to_string());
+                return format!("{}{}", md::add_tag(line, WANT_TAG), &raw[line.len()..]);
+            }
+            raw.to_string()
+        })
+        .collect();
+    let Some(twin) = twin else {
+        return Ok(());
+    };
+    if new != content {
+        write_sheet(path, &new)?;
+    }
+    let mut ev = crate::ingest::Event::row("dup", name, "", lane.name(), &twin);
+    ev.want = want.map(str::to_string);
+    crate::ingest::record(p, &ev);
+    Ok(())
 }
 
 /// Does `text` twin an open row of `content` (the sheet at `path`): the same words, a near twin, or a
@@ -1079,7 +1128,8 @@ impl Writer {
     }
 
     /// A person at a terminal: the one writer that may move, reprioritize or relock an open
-    /// sprint's rows (`window::refuse_held`, `window::refuse_relock`).
+    /// sprint's rows, or move a queued one's (`window::refuse_held`, `window::refuse_queued`,
+    /// `window::refuse_relock`).
     pub(crate) fn is_person(&self) -> bool {
         self.person
     }
@@ -1938,6 +1988,7 @@ pub fn move_task(
     if Some(to) != cur {
         crate::window::refuse_held(&proj, cur, &was, writer, "moving")?;
     }
+    crate::window::refuse_queued(&proj, &was, writer, "moving")?;
     write_sheet(&path, &new)?;
     let to_s = projects::fmt_version(to);
     log.info(
@@ -2017,13 +2068,15 @@ pub fn move_to_project(
             refuse_epic_on_board(lane, &[&row])?;
         }
         let what = format!("moving to {dest}");
+        let src_proj = projects::project_dir(p, src)?;
         crate::window::refuse_held(
-            &projects::project_dir(p, src)?,
+            &src_proj,
             version_in(&src_dir, &src_content),
             &row,
             writer,
             &what,
         )?;
+        crate::window::refuse_queued(&src_proj, &row, writer, &what)?;
     }
     let held = row_ids(&projects::project_dir(p, dest)?);
     let Some(moved) = transfer(&src_sheet, &dest_sheet, pick, to, &held)? else {
@@ -2212,6 +2265,7 @@ pub fn step(
     if to != cur {
         crate::window::refuse_held(&proj, Some(cur), &line, writer, &format!("{dir_word} of"))?;
     }
+    crate::window::refuse_queued(&proj, &line, writer, &format!("{dir_word} of"))?;
 
     let (retagged, note) = project_sweep::retag(&line, to, to == cur);
     let Some((new, _)) =
@@ -2399,7 +2453,8 @@ pub fn reopen(
                 "ptask",
                 &format!("{verb} {id} in {} ({name}): {why}", from.display()),
             );
-            let ev = crate::ingest::Event::row("reopened", name, "", lane.name(), row);
+            let mut ev = crate::ingest::Event::row("reopened", name, "", lane.name(), row);
+            ev.why = crate::ingest::set(Some(why));
             crate::ingest::record(p, &ev);
             println!("reopened {}", row.trim());
         };
@@ -4233,15 +4288,18 @@ fn refuse_rewrite(
         return Ok(());
     };
     let after = md::one_priority(&rewrite(&line));
-    if md::task_priority(&after) == md::task_priority(&line)
-        && sheet::target(&after) == sheet::target(&line)
-    {
+    let moved = sheet::target(&after) != sheet::target(&line);
+    if !moved && md::task_priority(&after) == md::task_priority(&line) {
         return Ok(());
     }
     let proj = projects::project_dir(p, name)?;
     let cur = version_in(&lane.dir(&proj), &content);
     let what = "changing the priority or version of";
-    crate::window::refuse_held(&proj, cur, &line, writer, what)
+    crate::window::refuse_held(&proj, cur, &line, writer, what)?;
+    if moved {
+        crate::window::refuse_queued(&proj, &line, writer, "changing the version of")?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -5539,6 +5597,13 @@ Version: v0.0.1
             0,
             "an archived row reopens on its own lane"
         );
+        let events = fs::read_to_string(crate::ingest::path(&p)).unwrap_or_default();
+        assert!(
+            events.lines().any(|l| l.contains("\"reopened\"")
+                && l.contains("\"dm-2\"")
+                && l.contains("\"why\":\"wrong PR\"")),
+            "the reopen event keeps its why for `notes log --id`: {events}"
+        );
         let board = fs::read_to_string(dir.join("agent/README.md")).unwrap();
         assert_eq!(
             board,
@@ -6453,6 +6518,97 @@ mod inbox_tests {
         );
     }
 
+    // ar-3941 (2026-11-20): ucp-2743..2764 moved from the queued v0.5.5 to v0.5.6 kept their
+    // place in v0.5.5's snapshot. Only a person moves a queued sprint's committed row out of it.
+    #[test]
+    fn only_a_person_moves_a_row_out_of_a_queued_sprint() {
+        let v = vault(
+            "queued",
+            "",
+            "- [ ] fix(a): queued row #v0.1.1 <!-- id:sc-1 -->\n\
+             - [ ] fix(b): uncommitted row #v0.1.1 <!-- id:sc-2 -->\n",
+        );
+        let dir = v.root.join("projects/scratch");
+        fs::create_dir_all(dir.join("sprints")).unwrap();
+        fs::write(
+            crate::window::sprint_path(&dir, (0, 1, 1)),
+            "# scratch v0.1.1 sprint\n\n## Committed\n<!-- window: opened=2026-11-20 due=2026-11-21 cut=2026-11-21T04:00 start=2026-11-20T04:00 -->\n- fix(a): queued row #v0.1.1 <!-- id:sc-1 -->\n<!-- /window -->\n",
+        )
+        .unwrap();
+        assert!(crate::window::read(&dir, (0, 1, 1)).is_some());
+        let argv = vec!["/bin/zsh".to_string()];
+        let item = Writer::of(
+            Some("q1".to_string()),
+            None,
+            None,
+            None,
+            &argv,
+            false,
+            Vec::new(),
+        );
+        let person = Writer::of(None, None, None, None, &argv, false, Vec::new());
+        let id = |i: &str| Pick::Id(i.to_string());
+        let held = id("sc-1");
+        let before = v.read();
+        let refused = |r: Result<i32>| {
+            let e = r.expect_err("refused").to_string();
+            assert!(
+                e.contains("queued v0.1.1 sprint") && e.contains("relock"),
+                "{e}"
+            );
+        };
+        let mv = |pick: &Pick, to: &str, w: &Writer| {
+            move_task(&v.p, &v.log, "scratch", pick, to, Lane::Human, w)
+        };
+        refused(mv(&held, "v0.1.2", &item));
+        refused(mv(&held, "v0.1.0", &item));
+        refused(step(&v.p, &v.log, "scratch", &held, 1, Lane::Human, &item));
+        refused(step(&v.p, &v.log, "scratch", &held, -1, Lane::Human, &item));
+        let words = retext(
+            &v.p,
+            &v.log,
+            "scratch",
+            &held,
+            Some("fix(a): queued row #v0.1.2"),
+            None,
+            &[],
+            false,
+            None,
+            Lane::Human,
+            &item,
+        );
+        refused(words);
+        let other = v.root.join("projects/other");
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join("summary.md"), "# other\n").unwrap();
+        fs::write(
+            other.join("README.md"),
+            "# other\nVersion: v0.1.0\n\n## Tasks\n",
+        )
+        .unwrap();
+        refused(move_to_project(
+            &v.p,
+            &v.log,
+            "scratch",
+            "other",
+            &held,
+            None,
+            Lane::Human,
+            &item,
+        ));
+        assert_eq!(v.read(), before, "a refusal writes nothing");
+        // A row tagged for the queued version but not in its snapshot moves.
+        assert_eq!(mv(&id("sc-2"), "v0.1.2", &item).unwrap(), 0);
+        // NEGATIVE CONTROL: the person moves the committed row.
+        assert_eq!(mv(&held, "v0.1.2", &person).unwrap(), 0);
+        let s = v.read();
+        assert!(
+            s.lines()
+                .any(|l| l.contains("id:sc-1") && l.contains("#v0.1.2")),
+            "{s}"
+        );
+    }
+
     #[test]
     fn filing_moves_the_line_to_a_typed_row_that_keeps_the_human_words() {
         let v = vault(
@@ -6682,6 +6838,52 @@ mod inbox_tests {
         )
         .unwrap();
         assert_eq!(open_rows(&v.read()), 2, "{}", v.read());
+    }
+
+    #[test]
+    fn a_want_that_joins_an_open_twin_marks_the_twin_requested() {
+        let v = vault("wanttwin", "", "");
+        fs::create_dir_all(v.root.join("projects/scratch/agent")).unwrap();
+        fs::write(
+            v.root.join("projects/scratch/agent/README.md"),
+            "# scratch\n\n## Tasks\n- [ ] fix(audio): the gun sound is off #size/s <!-- id:sc-1 -->\n",
+        )
+        .unwrap();
+        let agent = || {
+            fs::read_to_string(task_sheet(&v.root.join("projects/scratch/agent")).unwrap()).unwrap()
+        };
+        let add_as = |text: &str, want: Option<&str>| {
+            add(
+                &v.p,
+                &v.log,
+                "scratch",
+                text,
+                &[],
+                None,
+                want,
+                Lane::Agent,
+                &Writer::human(),
+            )
+            .unwrap()
+        };
+        // No channel: the twin is refused and left as it is.
+        assert_eq!(add_as("fix(audio): the gun sound is off", None), 3);
+        assert!(!agent().contains("#requested"), "{}", agent());
+        // A want: still refused (exit 3), and the open row now carries the human's mark, once.
+        assert_eq!(add_as("fix(audio): the gun sound is off", Some("human")), 3);
+        assert_eq!(add_as("fix(audio): the gun sound is off", Some("human")), 3);
+        let s = agent();
+        assert_eq!(s.matches("#requested").count(), 1, "{s}");
+        let ing = fs::read_to_string(crate::ingest::path(&v.p)).unwrap_or_default();
+        assert!(
+            ing.contains(r#""action":"dup""#) && ing.contains(r#""id":"sc-1""#),
+            "{ing}"
+        );
+        assert!(
+            s.lines()
+                .any(|l| l.contains("sc-1") && l.contains("#requested")),
+            "{s}"
+        );
     }
 
     #[test]
@@ -7313,6 +7515,56 @@ mod inbox_tests {
             row_of(&v, "sc-6").starts_with("- [ ]"),
             "an epic closes on its outcome"
         );
+    }
+
+    // ar-5834: a parent with work of its own stays open when its last child closes: a human's
+    // `#requested` row, and rows naming a plan's open phases in title or brief (a brief's
+    // paragraph break included). Prose that merely says "plan" is no such row.
+    #[test]
+    fn a_parent_with_work_of_its_own_stays_open_when_its_last_child_closes() {
+        let v = vault(
+            "own-work",
+            "",
+            "- [ ] chore(ci): finish the plan (6 phases left) #requested #high <!-- id:sc-1 -->\n\
+             - [ ] fix(ci): step 0 #high #of/sc-1 <!-- id:sc-2 -->\n\
+             - [ ] fix(ui): a stuck session (plan wren) #normal <!-- id:sc-3 -->\n\
+             - [ ] fix(ui): phase 2 #normal #of/sc-3 <!-- id:sc-4 -->\n\
+             - [ ] fix(ui): the pause screen #normal <!-- id:sc-5 -->\n\
+             \x20 goal: a calm pause\n\
+             \n\
+             \x20 Run the open phases of the approved plan in order.\n\
+             - [ ] fix(ui): pause blinks #normal #of/sc-5 <!-- id:sc-6 -->\n\
+             - [ ] fix(ui): drop the flag (plan to delete in v2) #normal <!-- id:sc-7 -->\n\
+             - [ ] fix(ui): menu flicker #normal #of/sc-7 <!-- id:sc-8 -->\n\
+             - [ ] feat(ui): the sound #normal <!-- id:sc-9 -->\n\
+             \x20 goal: a quiet menu\n\
+             - [ ] fix(ui): menu sound #normal #of/sc-9 <!-- id:sc-10 -->\n",
+        );
+        for kid in ["sc-2", "sc-4", "sc-6", "sc-8", "sc-10"] {
+            done(
+                &v.p,
+                &v.log,
+                "scratch",
+                &Pick::Id(kid.to_string()),
+                Some("pr:7"),
+                None,
+                None,
+                Lane::Human,
+                None,
+            )
+            .unwrap();
+        }
+        for parent in ["sc-1", "sc-3", "sc-5"] {
+            let row = row_of(&v, parent);
+            assert!(row.starts_with("- [ ]"), "{parent} closed: {row}");
+        }
+        for (parent, kid) in [("sc-7", "sc-8"), ("sc-9", "sc-10")] {
+            let row = row_of(&v, parent);
+            assert!(
+                row.starts_with("- [x]") && row.contains(&format!("children: {kid}")),
+                "{parent} is no row with work of its own: {row}"
+            );
+        }
     }
 
     // From review: an open grandchild under a closed child holds the row open too, a running

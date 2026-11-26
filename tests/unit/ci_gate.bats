@@ -275,6 +275,26 @@ kinds() {
   assert_output "1"
 }
 
+# notes_bin_unlisted <wf> <tests dir>: a bats file with a case that skips without NOTES_BIN (the real
+# notes binary) that no NOTES_BIN step of <wf> names in its FILES. The fast tier skips those cases, so
+# an unlisted one runs nowhere: agent_queue_part2.bats's end to end and credit_backfill.bats's FAIL criteria
+# case never ran in CI (ar-3030). It checks files, not cases: a new NOTES_BIN case its step's --filter
+# drops still runs nowhere, so name it to match that filter.
+notes_bin_unlisted() {
+  comm -23 <(cd "$2" && grep -lE '\|\| skip "NOTES_BIN' -- */*.bats | sort) \
+    <(grep -oE 'NOTES_BIN=[^ ]+ FILES="[^"]+"' "$1" | sed -E 's/.*FILES="//; s/"$//' | tr ' ' '\n' | sort -u)
+}
+
+@test "every bats file with a case that needs the real notes is run by a NOTES_BIN step" {
+  run notes_bin_unlisted "$WF" "$BATS_TEST_DIRNAME/.."
+  assert_success
+  assert_output ''
+  # Negative control: a NOTES_BIN file dropped from its step is named.
+  sed 's# integ/agent_queue_part2.bats##' "$WF" >"$BATS_TEST_TMPDIR/drop.yml"
+  run notes_bin_unlisted "$BATS_TEST_TMPDIR/drop.yml" "$BATS_TEST_DIRNAME/.."
+  assert_output 'integ/agent_queue_part2.bats'
+}
+
 # waits_for_image <wf>: jobs that load the test image without needing the image job (the image job itself excluded)
 waits_for_image() {
   awk '
