@@ -217,7 +217,7 @@ BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 #                 review:<slug> pr <n|-> parked here in review (<n>, the item's PR, is handed off), or ->
 #                [<landing wait: "train #T", the open landing train the OPEN PR rides (train_of), "the landing queue" (queued_in),
 #                 "slot holder #H", the PR whose slot refused it (slot_refuser), "lapsed train #T" when nothing lands
-#                 that train (train_landing), or ->]
+#                 that train (train_landing), the item's validate wait or "failed <validate slug>" (validate_hold), or ->]
 #                [<cron: yes when a recurring cron the session scheduled is still live (wake_facts), or ->]
 #                [<merged PRs: work_blockers' 23rd, - here>]
 #                [<carried: the live items its own running items filed (carried_by), comma-separated, or ->]
@@ -821,6 +821,7 @@ bucket_facts() {
       case "$wait_on" in
         -) ;;
         "lapsed "*) echo "STALLED PR #$pr rides ${wait_on#lapsed } with nobody landing it: run its gate again"; return ;;
+        "failed "*) validate_failed_bucket "$pr" "${wait_on#failed }" "$item" "$dirty" "$inpr"; return ;;
         *) echo "WORKING PR #$pr waiting on $wait_on"; return ;;
       esac
       case "$ci" in
@@ -841,6 +842,19 @@ bucket_facts() {
       else plan_bucket "clean, nothing on the branch" "$phases" "$next" 0 "$item" "$cron" "$carried"; fi ;;
   esac
 }
+
+# validate_failed_bucket <pr> <validate slug> <item> <dirty> <in_pr> -> the bucket of an open PR whose head a second
+# agent failed (validate_hold): agent-land sent its item back to the queue with the findings, so nothing here is
+# landable. Once the item moved on and nothing here is outside the PR, the item's next run owns the fix (one-shot
+# step 6, "validate failed") and the session is DONE; while the item still runs here, the fix is this session's.
+validate_failed_bucket() {
+  if validate_failed_done "$3" "$4" "$5"; then echo "DONE PR #$1 failed validation ($2), its item went back to the queue with the findings"
+  elif [[ "$3" == moved:* ]]; then echo "STALLED PR #$1 failed validation ($2), its item went back to the queue, and work here is outside the PR"
+  else local s="${3#*:}"; s="${s%% *}"; echo "STALLED PR #$1 failed validation ($2): fix its findings (agent-queue show ${s%%,*}) and push"; fi
+}
+
+# validate_failed_done <item> <dirty> <in_pr>: validate_failed_bucket reads DONE.
+validate_failed_done() { [[ "$1" == moved:* ]] && [ "$2" = 0 ] && [ "$3" = 1 ]; }
 
 # handed_off <item> <pr> <dirty> <in_pr> [<job>] -> exit 0 when this session's open PR is its parked
 # item's (item_of's "review:<slug> pr <n>", the item's own pr:) and nothing here is outside it: no
@@ -919,7 +933,7 @@ session_finished() {
 work_blockers() {
   local ids="$1"; shift
   local asks="$3" git="$6" dirty="$7" ahead="$8" pr="$9" state="${10}" ci="${11}" inpr="${12}" \
-        red="${13:--}" phases="${14:--}" next="${15:--}" b=() id merged=0 out="" nm="" mwhy="nothing merged"
+        red="${13:--}" phases="${14:--}" next="${15:--}" b=() id merged=0 vfail=0 out="" nm="" mwhy="nothing merged"
   [ "${18:--}" = - ] || nm=" (${18})"
   # A PR of the session's own merged while another is open or unread: landed stays - (nothing is landed
   # until every PR settles), but "nothing merged" would deny the PR the transcript and `prs` name (ar-165).
@@ -938,6 +952,9 @@ work_blockers() {
       [ "$dirty" -gt 0 ] && b+=("$dirty dirty file(s)$nm")
       [ "$inpr" != 1 ] && b+=("commits after merged PR #$pr") ;;
     OPEN) if handed_off "${20:--}" "$pr" "$dirty" "$inpr" "${17:--}"; then merged=1
+          elif [[ "${21:--}" == "failed "* ]]; then
+            if validate_failed_done "${20:--}" "$dirty" "$inpr"; then merged=1 vfail=1
+            else b+=("PR #$pr failed validation (${21#failed })"); fi
           elif [[ "${21:--}" == "lapsed "* ]]; then b+=("PR #$pr open, ${21#lapsed } has nobody landing it")
           elif [ "${21:--}" != - ]; then b+=("PR #$pr open, waiting on ${21}")
           else b+=("PR #$pr open, CI ${ci:--}"); fi ;;
@@ -946,6 +963,8 @@ work_blockers() {
       [ "$dirty" -gt 0 ] && b+=("$dirty dirty file(s)$nm, no PR")
       [ "$ahead" -gt 0 ] && b+=("$ahead file(s) not on the default branch, no PR") ;;
   esac
+  # A failed validation sent the item and its phase back to the queue (validate_failed_bucket): no phase is left here.
+  [ "$vfail" = 1 ] ||
   case "$phases" in
     # An item that moved on took the work with it: nothing here is left to finish.
     -) [ "$merged" = 1 ] || [[ "${20:--}" == moved:* ]] || b+=("no plan file and $mwhy") ;;
@@ -2459,11 +2478,43 @@ refused_wait() {
   awk -F'\t' -v p="$2" '$1 == p { h = $2 } END { if (h != "") print h }' "$key.refused"
 }
 
-# pr_wait <git> <pr state> <sibling repo> <clone> <ci> <pr> <head oid> <chain> -> two lines: the landing-slot wait, then
+# validate_hold <all items, jsonl> <the row's item slugs, comma list> <PR head oid> <clone|-> -> what agent-land's validate_gate
+# would say of this head: "failed <validate slug>" when an item's validate item (its `validate:`) records a fail verdict that
+# covers it, "<validate slug>, a second agent's review" while that item is live on it (queued, running, waiting or review,
+# filed as validate-<item>-<head8>) and has not landed it, a pass included, else nothing. agent-land merges critical work only
+# on a pass, so neither PR is the session's to land: 2026-11-24 #3435 read STALLED green, not merged after
+# validate-ar-5194-3edd08df failed it, and the shepherd nudged agent-13 to land it (ar-5286). The live states follow
+# validate_gate's; change them together.
+validate_hold() {
+  local v vd vh st
+  [ "${2:--}" != - ] && [ "${3:--}" != - ] || return 0
+  IFS=$'\t' read -r v vd vh st < <(jq -rn --arg s ",$2," '[inputs] as $all
+    | first($all[] | select(.slug as $x | $s | contains("," + $x + ",")) | .validate // "" | select(. != "")) as $v
+    | first($all[] | select(.slug == $v)) | [$v, (.verdict // "-"), (.verdict_head // "-"), .state] | @tsv' <<<"$1" 2>/dev/null)
+  [ -n "${v:-}" ] || return 0
+  if [ "$vd" = fail ] && head_covers "${4:--}" "$3" "$vh"; then echo "failed $v"
+  elif [[ "$st" =~ ^(queued|running|waiting|review)$ ]] && [ "$vd" != fail ] && head_covers "${4:--}" "$3" "${v##*-}"; then
+    echo "$v, a second agent's review"
+  fi
+}
+
+# head_covers <clone|-> <PR head oid> <sha> -> exit 0 when the PR head is <sha>, or adds to it nothing but merges of the base
+# (agent-land's covers: its catch_up merges <base> in before validate_gate reads the verdict). A clone that lacks either
+# commit, or no clone, covers only the head itself.
+head_covers() {
+  [ -n "$3" ] && [ "$3" != - ] || return 1
+  [[ "$2" == "$3"* ]] && return 0
+  [ "$1" != - ] && git -C "$1" merge-base --is-ancestor "$3" "$2" 2>/dev/null &&
+    [ "$(git -C "$1" rev-list --count --no-merges "$2" "^$3" "^$(default_base "$1")" 2>/dev/null)" = 0 ]
+}
+
+# pr_wait <git> <pr state> <sibling repo> <clone> <ci> <pr> <head oid> <chain> [<all items> <item slugs>] -> two lines: the landing-slot wait, then
 # the wait the bucket reads (empty when none). A PR of this clone's repo riding an open landing train waits on that
 # train's gate, one queued for the landing slot waits its turn, and one the slot holder refused waits on that holder
 # (slot_refuser), unless its own Checks are red past the slot's refusal (git_facts left ci FAIL). A green or unknown-CI PR whose item is `after:` an item that is not done (<chain>,
-# chain_hold) waits on it, not STALLED green, not merged (ar-4420); its red gate line is open_pr_ci's.
+# chain_hold) waits on it, not STALLED green, not merged (ar-4420); its red gate line is open_pr_ci's. Past those, a green
+# or unknown-CI PR carries its item's validate verdict (validate_hold): a live validate item on its head is a wait, and a
+# fail on its head is "failed <slug>", never landable (ar-5286).
 pr_wait() {
   local g="$1" state="$2" xr="$3" gd="$4" ci="$5" pr="$6" oid="$7" chain="$8" tn="" land="" w h
   [ "$g" = 1 ] && [ "$state" = OPEN ] && [ "$xr" = - ] || { printf '\n\n'; return 0; }
@@ -2474,7 +2525,8 @@ pr_wait() {
     elif [ "$ci" = PENDING ] && h="$(refused_wait "$gd" "$pr")" && [ -n "$h" ]; then land="slot holder #$h"; fi
   fi
   w="$land"
-  if [ -z "$w" ] && [ -n "$chain" ]; then case "$ci" in FAIL | PENDING | NOSTART) ;; *) w="after: $chain" ;; esac; fi
+  if [ -z "$w" ]; then case "$ci" in FAIL | PENDING | NOSTART) ;; *)
+    if [ -n "$chain" ]; then w="after: $chain"; else w="$(validate_hold "${9:-}" "${10:--}" "$oid" "$gd")"; fi ;; esac; fi
   printf '%s\n%s\n' "$land" "$w"
 }
 
@@ -2835,7 +2887,7 @@ collect() {
     act="$(activity_line "${status:--}" "$ojob" "$doing" "$act_dir" "$branch" "$act_sha" "$now")"
     # What an open PR waits on (pr_wait); only a landing-slot wait carries the slot's wait, depth and critical path.
     local wait_on="" land_wait=""
-    { IFS= read -r land_wait; IFS= read -r wait_on; } < <(pr_wait "$g" "$state" "$xr" "$gd" "$ci" "$pr" "$oid" "$chain")
+    { IFS= read -r land_wait; IFS= read -r wait_on; } < <(pr_wait "$g" "$state" "$xr" "$gd" "$ci" "$pr" "$oid" "$chain" "$qall" "$islugs")
     # A session waiting its landing turn carries how long its gate has waited and how deep its repo's
     # landing queue is, so the shepherd names a multi-hour wait on its own line (ar-2525).
     local qwait=- qdepth=- qrepo=- qpr=-
@@ -2852,7 +2904,7 @@ collect() {
     bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$bidle" "$g" "$dirty" "$ahead" \
               "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" "$cron" - "$carried")"
     fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$bidle" "$g" "$dirty" "$ahead" \
-             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" && fin=1
+             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" && fin=1
     # An idle session whose transcript ends on its own stop line is stopped (stopped_bucket); a finished one is left to DONE.
     local stopped="" stopat=""
     if [ "$host" = - ] && [ "$status" = idle ] && [ "$hv" = 0 ] && [ "$ojob" != agent ] && [ "$fin" = 0 ] \

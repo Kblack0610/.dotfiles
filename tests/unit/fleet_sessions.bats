@@ -232,6 +232,17 @@ load 'fleet_sessions/common'
   assert_output 'WORKING PR #9 CI running'
 }
 
+@test "a green PR a second agent failed is never green-unmerged: DONE once its item moved on, else the fix is here (ar-5286)" {
+  run b idle 0 0 0 30 1 0 1 9 OPEN PASS 1 - - - - - - - 'moved:s moved on (queued)' 'failed validate-s-abc'
+  assert_output 'DONE PR #9 failed validation (validate-s-abc), its item went back to the queue with the findings'
+  run b idle 0 0 0 30 1 2 1 9 OPEN PASS 1 - - - - - - - 'moved:s moved on (queued)' 'failed validate-s-abc'
+  assert_output 'STALLED PR #9 failed validation (validate-s-abc), its item went back to the queue, and work here is outside the PR'
+  run b idle 0 0 0 30 1 0 1 9 OPEN PASS 1 - - - - - - - 'own:s,t' 'failed validate-s-abc'
+  assert_output 'STALLED PR #9 failed validation (validate-s-abc): fix its findings (agent-queue show s) and push'
+  run b idle 0 0 0 30 1 0 1 9 OPEN PASS 1 - - - - - - - 'own:s' "validate-s-abc, a second agent's review"
+  assert_output "WORKING PR #9 waiting on validate-s-abc, a second agent's review"
+}
+
 @test "no PR: dirty or ahead is STALLED, clean is CHAT, a closed PR is STALLED unless one of its own merged" {
   run b idle 0 0 0 30 1 4 0 - - - 1
   assert_output 'STALLED 4 dirty file(s), no PR'
