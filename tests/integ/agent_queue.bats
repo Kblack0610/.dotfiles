@@ -1258,6 +1258,28 @@ load 'agent_queue/common'
   refute grep -q ' tag ' "$NOTES_FIXTURE/calls.log"
 }
 
+# ar-4042: an item gated on the PR it opened waits for its own merge and never starts again.
+@test "a pr: gate on the item's own PR is refused by set and stripped by return, another PR's gate stays (ar-4042)" {
+  story_notes
+  export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
+  gh_script 'echo OPEN'
+  "$AQ" add --project game --running --from shepherd --slug own "own work" >/dev/null
+  "$AQ" set own row=game:gm-3 pr=Org/game#5 >/dev/null
+  run "$AQ" set own tags="pr:org/game#5"
+  assert_failure
+  assert_output --partial "pr:org/game#5 is the PR own opened itself"
+  # NEGATIVE CONTROL: another PR is no own PR.
+  run "$AQ" set own tags="pr:Org/game#6"
+  assert_success
+  # A gate written past the check (an older item, a hand edit) is dropped on the return, the other kept.
+  sed -i 's|^tags: .*|tags: pr:Org/game#5 pr:Org/game#6|' "$(item running own)"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" return own --why "back"
+  assert_success
+  assert_called "ptask game --agent tag --add pr/Org/game/6 gm-3"
+  refute grep -q 'pr/Org/game/5' "$NOTES_FIXTURE/calls.log"
+}
+
 @test "return leaves a row started, exit 1, when it did not take its gates" {
   gate_rbw
   legacy gx "tags: rbw:infra/y" --project game --from shepherd "x"
