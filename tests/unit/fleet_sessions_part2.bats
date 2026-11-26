@@ -2872,6 +2872,10 @@ GH
   run b shell 0 0 0 25 1 0 0 875 OPEN PENDING 1 - 1/3 x - wait
   assert_output 'WORKING shell'
   # negative control: another gh command under the claude is no event wait
+  # a global flag before the subcommand is the same wait
+  stand_in 'gh -R o/r event listen --resource PR_kwDOabc' flagged
+  run self_wait "$SI_ROOT"
+  assert_output 'wait'
   stand_in 'gh event list' other
   run self_wait "$SI_ROOT"
   assert_output ''

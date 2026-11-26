@@ -618,7 +618,7 @@ self_wait() {
         while (x > 1 && x != r && (x in up) && n++ < 64) x = up[x]
         if (x != r) continue
         k = split(args[p], a, " ")
-        if (a[1] ~ /(^|\/)gh$/ && a[2] == "event" && a[3] == "listen") { ev = 1; continue }
+        if (a[1] ~ /(^|\/)gh$/) { for (i = 2; i < k; i++) if (a[i] == "event" && a[i + 1] == "listen") ev = 1; continue }   # past a global flag: gh -R o/r event listen
         if (a[1] !~ /(^|\/)tail$/) continue
         for (i = 2; i <= k; i++) {
           w = ""
