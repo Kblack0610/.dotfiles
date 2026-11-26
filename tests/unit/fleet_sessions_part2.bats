@@ -1238,6 +1238,69 @@ PROM
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
 }
 
+# validated_item <author state> <validate slug> <validate item state> [<verdict> <verdict head>]: session s1's item
+# fix-wave-save naming its validate item, and that item, as agent-land's validate_gate leaves them (ar-5286).
+validated_item() {
+  local d="$HOME/.agent/queue/$3" v=""
+  rm -rf "$HOME/.agent/queue"; mkdir -p "$HOME/.agent/queue/$1"
+  [ "$3" = done ] && d="$d/$(date +%F)"; mkdir -p "$d"
+  [ -z "${4:-}" ] || v="verdict: $4\nverdict_head: $5\nfinished: $(date -u +%FT%TZ)\n"
+  printf 'slug: fix-wave-save\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsession: lab:s1\nvalidate: %s\n---\nfix wave save\n' \
+    "$2" > "$HOME/.agent/queue/$1/20261103-100000-fix-wave-save.md"
+  printf "slug: %s\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T11:00:00Z\nsession: lab:s2\n${v}---\ncheck(validate): fix-wave-save\n" \
+    "$2" > "$d/20261103-110000-$2.md"
+}
+
+@test "end to end: a green PR is landable only on its validate verdict: pending waits, a fail on its head is DONE (ar-5286)" {
+  # 2026-11-24 #3435 read STALLED green, not merged after validate-ar-5194-3edd08df failed it, and the shepherd
+  # nudged agent-13 to land a PR agent-land refuses.
+  landed_fixture
+  local oid other=0123456789abcdef0123456789abcdef01234567; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
+  export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache"
+  ledger feat/x '[]'; open_pr PASS
+  validated_item running "validate-fix-wave-save-${oid:0:8}" queued
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  [ "$(jq -r .reason <<<"$output")" = "PR #9 waiting on validate-fix-wave-save-${oid:0:8}, a second agent's review" ]
+
+  # the validate session failed this head: agent-land sent the item back to the queue, so nothing here lands
+  validated_item queued "validate-fix-wave-save-${oid:0:8}" done fail "$oid"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r .reason <<<"$output")" = "PR #9 failed validation (validate-fix-wave-save-${oid:0:8}), its item went back to the queue with the findings" ]
+  [ "$(jq -r .finished <<<"$output")" = true ]
+  [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
+
+  # negative controls: a pass, a fail on another head, a live validate item filed for another head
+  validated_item running "validate-fix-wave-save-${oid:0:8}" done pass "$oid"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+  validated_item running "validate-fix-wave-save-${other:0:8}" done fail "$other"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+  validated_item running "validate-fix-wave-save-${other:0:8}" running
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+
+  # a head that only merged main in since the verdict still carries it (agent-land's covers: catch_up merges first)
+  git clone -q -b main "$SANDBOX/origin.git" "$SANDBOX/other" 2>/dev/null; main_change theirs
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t merge -q --no-edit origin/main
+  open_pr PASS
+  validated_item queued "validate-fix-wave-save-${oid:0:8}" done fail "$oid"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  validated_item running "validate-fix-wave-save-${oid:0:8}" running
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = "PR #9 waiting on validate-fix-wave-save-${oid:0:8}, a second agent's review" ]
+  # negative control: a commit of its own after the verdict is a new head the verdict never read
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m more
+  open_pr PASS
+  validated_item queued "validate-fix-wave-save-${oid:0:8}" done fail "$oid"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+}
+
 @test "end to end: a PR riding an open landing train is WORKING waiting on the train, not CI red (ar-2160)" {
   # 2026-11-13 agent-7 #2415, agent-28 #2417 and agent-31 #2444 read STALLED CI red and were nudged:
   # each rode train #2467 (train.py), whose PlayMode shard sat queued on a full unity pool, and each
@@ -2867,6 +2930,36 @@ GH
   # negative control: a shell the transcript could not class, with no such tail, is still not a wait
   run b shell 0 0 0 25 1 0 0 875 MERGED PASS 1 - 2/3 x - jobs
   assert_output 'LANDED PR #875 merged, tree clean, next phase: x, background shell is not a gate or test'
+}
+
+@test "self_wait reads a background gh event listen as an event wait, and a gh command that is not one as nothing (ar-5664)" {
+  # 2026-11-24 dotfiles-agent-20 waited on #3501 with a background `gh event listen` and read STALLED
+  # "background shell is not a gate or test". perl's $0 gives the stand-in gh's own command line.
+  stand_in() {
+    printf '%s\n' "perl -e '\$0 = \"$1\"; sleep 60'; :" > "$SANDBOX/$2.sh"
+    setsid bash -c 'bash "$1"; :' _ "$SANDBOX/$2.sh" >/dev/null 2>&1 3>&- &
+    SI_ROOT=$!
+    local spins=0
+    LIVE_PIDS="${LIVE_PIDS:-} -$SI_ROOT"   # teardown kills it, pass or fail
+    until pgrep -s "$SI_ROOT" -f "^$1" >/dev/null; do
+      kill -0 "$SI_ROOT" || fail "the $2 stand-in exited before it started"
+      [ $((++spins)) -lt 20000 ] || fail "the $2 stand-in never started"
+    done
+  }
+  stand_in 'gh event listen --resource PR_kwDOabc' listen
+  run self_wait "$SI_ROOT"
+  assert_output 'wait'
+  FLEET_IDLE_MIN=20 FLEET_SHELL_STALE_MIN=120
+  run b shell 0 0 0 25 1 0 0 875 OPEN PENDING 1 - 1/3 x - wait
+  assert_output 'WORKING shell'
+  # a global flag before the subcommand is the same wait
+  stand_in 'gh -R o/r event listen --resource PR_kwDOabc' flagged
+  run self_wait "$SI_ROOT"
+  assert_output 'wait'
+  # negative control: another gh command under the claude is no event wait
+  stand_in 'gh event list' other
+  run self_wait "$SI_ROOT"
+  assert_output ''
 }
 
 @test "end to end: a plan-mode copy of a queued plan under another name reads that plan's queued phases (ar-2426)" {
