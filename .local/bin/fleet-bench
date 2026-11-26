@@ -7453,15 +7453,26 @@ canary_lane() {
                     // ($it.sessions // "" | split(" ") | map(select(length > 0)) | last))}'
 }
 
-# canary start <id>: the session's own worktree, clean, moved to the task's base (detached), tests/vendor linked in
+# canary start <id>: the session's own worktree, clean, moved to the task's base (detached), tests/vendor linked in.
+# A base that leaves untracked a path HEAD tracks is refused and the tree put back: git could not remove a directory
+# that is not empty (a populated submodule at a base before it was one, muxpoon in ar-5933, or ignored files in a
+# tracked one), which score's clean would delete, and the run would start on a tree that is not base.
 canary_start() {
-  local t top base
+  local t top base orig left
   t=$(canary_task "${1:?usage: fleet-bench canary start <id>}") || return 2
   top=$(git rev-parse --show-toplevel 2>/dev/null) || { say "canary start: not in a git worktree"; return 2; }
   base=$(jq -r .base <<<"$t")
   git -C "$top" cat-file -e "$base^{commit}" 2>/dev/null || { say "canary start: $top has no commit $base"; return 2; }
   [ -z "$(git -C "$top" status --porcelain)" ] || { say "canary start: $top has uncommitted changes"; return 2; }
+  orig=$(git -C "$top" symbolic-ref -q --short HEAD || git -C "$top" rev-parse HEAD) || return 1
   git -C "$top" checkout -q --detach "$base" || return 1
+  left=$(git -C "$top" -c core.quotePath=false ls-files --others --exclude-standard --directory | while IFS= read -r p; do
+           [ -z "$(git -C "$top" ls-tree --name-only "$orig" -- "${p%/}")" ] || printf '%s\n' "${p%/}"
+         done | paste -sd ' ')
+  if [ -n "$left" ]; then
+    git -C "$top" checkout -q "$orig" || { say "canary start: $base leaves $left untracked in $top, and $top could not be put back at $orig"; return 1; }
+    say "canary start: $base leaves $left untracked in $top (git could not remove a tracked directory that is not empty: a submodule's copy, or ignored files in it), so $top stays at $orig"; return 2
+  fi
   # Here, outside the lane sandbox, so the run can run the tests its brief names (canary_vendor).
   canary_vendor "$top" "$base" || { say "canary start: could not link $top/tests/vendor, so the run would have no bats"; return 1; }
   printf 'canary %s: %s is at %s\n%s\n' "$1" "$top" "${base:0:10}" "$(jq -r .task <<<"$t")"
@@ -7540,8 +7551,16 @@ canary_score() {
   [ "$control" != true ] || [ "$pass" != false ] ||
     say "canary score: the positive control failed, so every run of $(jq -rn --arg r "$run" --argjson e "$(now)" "$JQ_LIB"'{run: $r, epoch: $e} | canary_batch') reads instrument, in no rate (fix the oracle or the sandbox, then rerun)"
   # The score is recorded, so a tree left dirty is said, not failed: the run's item still closes.
-  [ -z "$reset" ] || { git -C "$top" reset -q --hard "$base" && git -C "$top" clean -ffdq; } ||
-    say "canary score: could not put $top back at ${base:0:10}, so wt reap leaves it"
+  [ -n "$reset" ] || return 0
+  { git -C "$top" reset -q --hard "$base" && git -C "$top" clean -fdq; } ||
+    { say "canary score: could not put $top back at ${base:0:10}, so wt reap leaves it"; return 0; }
+  # A repo the run made (its own .git directory) goes too; a submodule's copy (.git a file, its git dir in the
+  # checkout's) stays, since what it holds is in no patch (ar-5933: clean -ff deleted muxpoon's).
+  while IFS= read -r p; do
+    [[ "$p" != */ ]] || [ ! -d "$top/$p.git" ] || rm -rf -- "${top:?}/$p"
+  done < <(git -C "$top" -c core.quotePath=false ls-files --others --exclude-standard --directory)
+  [ -z "$(git -C "$top" status --porcelain)" ] ||
+    say "canary score: $top keeps $(git -C "$top" -c core.quotePath=false status --porcelain | cut -c4- | paste -sd ' ') after its reset, so wt reap leaves it"
 }
 
 # canary verify [id...]: each oracle must fail at base and pass at merge (a task with no merge: with its
