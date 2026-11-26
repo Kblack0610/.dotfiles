@@ -32,7 +32,7 @@ mk_sentinel() { SENTINEL="$BATS_TEST_TMPDIR/s.request"; cat > "$SENTINEL"; }
 @test "sourcing defines the functions without dispatching a verb" {
   # The guard this file's existence depends on. Without it, `source` reaches the case
   # statement with $1 unset and exits 2.
-  run bash -c 'source "$1"; declare -F cmd_arm cmd_fire cmd_note_path >/dev/null && echo DEFINED' _ "$WIND_DOWN"
+  run bash -c 'source "$1"; declare -F cmd_arm cmd_fire cmd_note >/dev/null && echo DEFINED' _ "$WIND_DOWN"
   assert_success
   assert_output 'DEFINED'
 }
