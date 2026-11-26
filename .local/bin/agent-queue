@@ -2441,7 +2441,6 @@ cmd_add() {
   # (QUEUE.md "Admission"). A --running record is already started, so it files no gate: an --after it
   # names must already have closed ok, or the add is refused (ar-3260). Dispatch's pull of a board row
   # (promote) judged that row's gates clear the moment before, so none is read twice.
-  # AQ_ADD_REPEAT tells file_story this add is --repeat, so an open twin it links takes the add's brief.
   local GATES='' AFTER_ITEMS='' AQ_ADD_STACKS="$(add_stacks "$text" "$tags")" AQ_ADD_REPEAT="$repeat"
   if [ -n "$running" ] && [ -n "$after" ]; then
     check_after "$after" "$slug"
