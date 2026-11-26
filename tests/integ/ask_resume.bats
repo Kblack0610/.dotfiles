@@ -32,7 +32,8 @@ printf 'agent-queue %s | sid=%s item=%s\n' "$*" "${CLAUDE_CODE_SESSION_ID:-}" "$
 case "$1" in
   add) [ -z "${AQ_REFUSE:-}" ] || { echo "agent-queue: unknown project" >&2; exit 1; }
        while [ "$1" != --slug ]; do shift; done; echo "running $(tr A-Z a-z <<<"$2") -> /q/running/x.md" ;;
-  show) printf '{"state":"running","pr":"%s"}\n' "${AQ_PR:-}" ;;
+  show) printf '{"state":"%s","row":"%s","pr":"%s"}\n' "${AQ_STATE:-running}" "${AQ_ROW:-}" "${AQ_PR:-}" ;;
+  list) [ -z "${AQ_LIVE:-}" ] || printf '{"slug":"%s","state":"queued","row":"%s"}\n' "$AQ_LIVE" "${AQ_LIVE_ROW:-}" ;;
   move) [ -z "${AQ_MOVE_FAIL:-}" ] || exit 1 ;;
 esac
 EOF
@@ -382,4 +383,62 @@ EOF
   ask-resume "$id"
   run grep '^agent-queue add' "$NOTES_FIXTURE/calls.log"
   assert_failure
+}
+
+# -- a start of an item (ar-6089: ask VmlrxU's resume named ar-5588, cancelled when its park requeued it) --
+
+fleet_dispatch_stub() {
+  printf '#!/usr/bin/env bash\nprintf "fleet-dispatch %%s\\n" "$*" >> "$NOTES_FIXTURE/calls.log"\n' >"$SANDBOX/bin/fleet-dispatch"
+  chmod +x "$SANDBOX/bin/fleet-dispatch"
+}
+
+start_ask() { # $1=resume
+  local id; id="$("$AGENT_ASK" post --project alpha --kind gate --options 'a=yes|b=no' --resume "$1" 'Grant it?')" || return 1
+  "$AGENT_ASK" answer "$id" a >/dev/null 2>&1
+  : > "$NOTES_FIXTURE/calls.log"
+  printf '%s\n' "$id"
+}
+
+@test "post refuses a --resume that opens with a fleet command and no run: prefix" {
+  run "$AGENT_ASK" post --project alpha --kind gate --options 'a=yes|b=no' \
+    --resume 'fleet-dispatch start --item ar-1' 'Grant it?'
+  assert_failure 2
+  assert_output --partial "Write it 'run: fleet-dispatch start --item ar-1'"
+}
+
+@test "post takes a prose resume that starts with an ordinary word, a slash command, and a run: command" {
+  local r
+  for r in 'continue the work' '/captain alpha go' 'run: fleet-dispatch start --item ar-1'; do
+    run "$AGENT_ASK" post --project alpha --kind gate --options 'a=yes|b=no' --resume "$r" 'Grant it?'
+    assert_success
+  done
+}
+
+@test "a run: start of a live item runs as written" {
+  fleet_dispatch_stub
+  local id; id="$(start_ask 'run: fleet-dispatch start --item ar-1')"
+  AQ_STATE=queued ask-resume "$id"
+  run calls
+  assert_output --partial 'fleet-dispatch start --item ar-1'
+}
+
+@test "a run: start of an ended item names the live item on its row" {
+  fleet_dispatch_stub
+  local id; id="$(start_ask 'run: fleet-dispatch start --item ar-1')"
+  AQ_STATE=done AQ_ROW=p:ar-1 AQ_LIVE=ar-1b AQ_LIVE_ROW=p:ar-1 ask-resume "$id"
+  run calls
+  assert_output --partial 'fleet-dispatch start --item ar-1b'
+  refute_output --partial 'start --item ar-1$'
+}
+
+@test "a run: start of an ended item with no live item on its row starts nothing and marks the ask resumed" {
+  fleet_dispatch_stub
+  local id; id="$(start_ask 'run: fleet-dispatch start --item ar-1')"
+  AQ_STATE=done AQ_ROW=p:ar-1 AQ_LIVE=other AQ_LIVE_ROW=p:other run ask-resume "$id"
+  assert_success
+  assert_output --partial 'nothing runs'
+  run calls
+  refute_output --partial 'fleet-dispatch'
+  run "$AGENT_ASK" resumable alpha
+  assert_output ''
 }

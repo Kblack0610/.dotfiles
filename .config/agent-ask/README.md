@@ -79,7 +79,7 @@ agent-ask post [opts] "question"          create a pending ask; print its id
   --recommend O   the option you would pick; must be one of --options
   --why TEXT      why you recommend it, one sentence (the card's because: line); needs --recommend
   --blocker R:C   <owner/repo>:<cause> outside the session; a pending ask on it takes this session instead (One ask per blocker)
-  --resume CMD    hint: the command that consumes the answer (e.g. /bug-bash resume)
+  --resume CMD    the command that consumes the answer: a prompt for the ask-resume agent (e.g. /bug-bash resume) or `run: <command>`; a bare fleet command is refused
   --wait          SECONDARY: block until answered, print the answer to stdout
 
 agent-ask list [project|--all] [--pending|--parked|--open|--answered] [--undelivered]  TSV: id project profile status kind question options task answered_at resumed_at recommend created session closed_at closed_reason claude_session judge answered_by option_notes context recommend_why judge_rule judge_reason answer_note assume_at resume parked_until (parked_until is filled only while the ask is parked; new columns only ever go at the end; option_notes is the `--options` meanings joined by `|`)
