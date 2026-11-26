@@ -1238,6 +1238,69 @@ PROM
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
 }
 
+# validated_item <author state> <validate slug> <validate item state> [<verdict> <verdict head>]: session s1's item
+# fix-wave-save naming its validate item, and that item, as agent-land's validate_gate leaves them (ar-5286).
+validated_item() {
+  local d="$HOME/.agent/queue/$3" v=""
+  rm -rf "$HOME/.agent/queue"; mkdir -p "$HOME/.agent/queue/$1"
+  [ "$3" = done ] && d="$d/$(date +%F)"; mkdir -p "$d"
+  [ -z "${4:-}" ] || v="verdict: $4\nverdict_head: $5\nfinished: $(date -u +%FT%TZ)\n"
+  printf 'slug: fix-wave-save\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsession: lab:s1\nvalidate: %s\n---\nfix wave save\n' \
+    "$2" > "$HOME/.agent/queue/$1/20261103-100000-fix-wave-save.md"
+  printf "slug: %s\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T11:00:00Z\nsession: lab:s2\n${v}---\ncheck(validate): fix-wave-save\n" \
+    "$2" > "$d/20261103-110000-$2.md"
+}
+
+@test "end to end: a green PR is landable only on its validate verdict: pending waits, a fail on its head is DONE (ar-5286)" {
+  # 2026-11-24 #3435 read STALLED green, not merged after validate-ar-5194-3edd08df failed it, and the shepherd
+  # nudged agent-13 to land a PR agent-land refuses.
+  landed_fixture
+  local oid other=0123456789abcdef0123456789abcdef01234567; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
+  export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache"
+  ledger feat/x '[]'; open_pr PASS
+  validated_item running "validate-fix-wave-save-${oid:0:8}" queued
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  [ "$(jq -r .reason <<<"$output")" = "PR #9 waiting on validate-fix-wave-save-${oid:0:8}, a second agent's review" ]
+
+  # the validate session failed this head: agent-land sent the item back to the queue, so nothing here lands
+  validated_item queued "validate-fix-wave-save-${oid:0:8}" done fail "$oid"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r .reason <<<"$output")" = "PR #9 failed validation (validate-fix-wave-save-${oid:0:8}), its item went back to the queue with the findings" ]
+  [ "$(jq -r .finished <<<"$output")" = true ]
+  [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
+
+  # negative controls: a pass, a fail on another head, a live validate item filed for another head
+  validated_item running "validate-fix-wave-save-${oid:0:8}" done pass "$oid"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+  validated_item running "validate-fix-wave-save-${other:0:8}" done fail "$other"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+  validated_item running "validate-fix-wave-save-${other:0:8}" running
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+
+  # a head that only merged main in since the verdict still carries it (agent-land's covers: catch_up merges first)
+  git clone -q -b main "$SANDBOX/origin.git" "$SANDBOX/other" 2>/dev/null; main_change theirs
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t merge -q --no-edit origin/main
+  open_pr PASS
+  validated_item queued "validate-fix-wave-save-${oid:0:8}" done fail "$oid"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  validated_item running "validate-fix-wave-save-${oid:0:8}" running
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = "PR #9 waiting on validate-fix-wave-save-${oid:0:8}, a second agent's review" ]
+  # negative control: a commit of its own after the verdict is a new head the verdict never read
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m more
+  open_pr PASS
+  validated_item queued "validate-fix-wave-save-${oid:0:8}" done fail "$oid"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+}
+
 @test "end to end: a PR riding an open landing train is WORKING waiting on the train, not CI red (ar-2160)" {
   # 2026-11-13 agent-7 #2415, agent-28 #2417 and agent-31 #2444 read STALLED CI red and were nudged:
   # each rode train #2467 (train.py), whose PlayMode shard sat queued on a full unity pool, and each
@@ -2815,6 +2878,24 @@ GH
   view "$(check 'fast (${{ matrix.n }})' CI CANCELLED 2026-11-14T17:26:46Z 41 40)" "$(check 'fast (1)' CI SUCCESS 2026-11-14T17:27:29Z 31 30)"
   run sibling_pr "$SANDBOX/one" "$prs"
   assert_output "$(printf 'o/three\t3\tFAIL\tabc123')"
+}
+
+@test "CI_JQ: a check of a PR_CI_NO_VERDICT workflow is neither red nor pending (ar-3499)" {
+  # 2026-11-18 ucp#2870: Checks passed, and Drop closed gates' "Run Checks the slot refused", which
+  # acts on other PRs, was cancelled by its concurrency group on this PR's head: the PR read CI FAIL.
+  check() { printf '{"name":"%s","workflowName":"%s","conclusion":"%s","status":"%s","detailsUrl":"https://github.com/o/r/actions/runs/%s/job/%s"}' "$1" "$2" "$3" "${4:-COMPLETED}" "$5" "$5"; }
+  local view
+  for c in CANCELLED FAILURE ''; do
+    view=$(printf '{"statusCheckRollup":[%s,%s]}' "$(check Checks Checks SUCCESS COMPLETED 1)" \
+      "$(check 'Run Checks the slot refused' 'Drop closed gates' "$c" "$([ -n "$c" ] && echo COMPLETED || echo QUEUED)" 2)")
+    [ "$(jq -r "$CI_JQ"' ci' <<<"$view")" = PASS ]
+    [ "$(jq -r "$CI_JQ"' red' <<<"$view")" = - ]
+    # negative control: with the list off, the same check counts
+    [ "$(PR_CI_NO_VERDICT='' jq -r "$CI_JQ"' ci' <<<"$view")" = "$([ -n "$c" ] && echo FAIL || echo PENDING)" ]
+  done
+  # a workflow the list does not name is still read
+  view=$(printf '{"statusCheckRollup":[%s,%s]}' "$(check Checks Checks SUCCESS COMPLETED 1)" "$(check Lint 'Drop closed gates x' CANCELLED COMPLETED 2)")
+  [ "$(jq -r "$CI_JQ"' ci' <<<"$view")" = FAIL ]
 }
 
 @test "self_wait reads a tail --pid on another process as an event wait, and the row stays WORKING (ar-2426)" {
