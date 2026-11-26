@@ -11,6 +11,7 @@ pub mod areas;
 pub mod artifact_store;
 pub mod audit;
 pub mod bar;
+pub mod board_flow;
 pub mod boards;
 pub mod briefing;
 pub mod budget;

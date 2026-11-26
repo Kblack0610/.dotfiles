@@ -50,13 +50,7 @@ Missing a frame deadline by even 1 ms causes a stale frame (reprojection). Stale
 
 ## metavr Setup
 
-Perfetto tracing is powered by the metavr CLI - install the standalone binary on your PATH (see the `metavr-cli` skill), or invoke via `npx` with no install:
-
-```bash
-metavr --version
-```
-
-Examples below use the bare `metavr` command; if you use the npm distribution, prefix with `npx -y`. Connect your Meta VR device via USB with developer mode enabled before capturing traces.
+Perfetto tracing runs on the metavr CLI. Install, the `npx -y` form and connecting the device are in the `metavr-cli` skill; examples below use the bare `metavr` command.
 
 ## Quick Start Workflow
 

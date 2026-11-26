@@ -102,6 +102,8 @@ set -uo pipefail
 
 # shellcheck source=../lib/dotfiles-repos.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/dotfiles-repos.sh"
+# shellcheck source=../lib/stat.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/stat.sh"
 # Anchored to $HOME, deliberately NOT to $XDG_STATE_HOME. This tool's whole subject is one
 # particular $HOME, so its backups have to land in the same one it is rewriting. Honouring
 # XDG_STATE_HOME would let a run pointed at $HOME=X drop the only surviving copy of X's
@@ -366,11 +368,6 @@ first_link() {
     if [ "$rest" = "$comp" ]; then rest=""; else rest="${rest#*/}"; fi
   done
   return 0
-}
-
-# dev_of <path> - the device number of <path>, GNU stat then BSD stat.
-dev_of() {
-  stat -c %d -- "$1" 2>/dev/null || stat -f %d -- "$1" 2>/dev/null
 }
 
 # find_folds - fill FOLD_REPO: each directory link $HOME/<dir> -> <repo>/<dir> on the way to a
@@ -659,11 +656,6 @@ attach() {
   FAILED=$((FAILED + 1)); return 1
 }
 
-# mode_of <path> - the permission bits of <path>, GNU stat then BSD stat.
-mode_of() {
-  stat -c %a -- "$1" 2>/dev/null || stat -f %Lp -- "$1" 2>/dev/null
-}
-
 # UNFOLD_OTHER maps each deploy path of the other repo under the directory being unfolded to
 # that repo's dir; other_under <entry> says whether any of them sits below <entry>.
 declare -A UNFOLD_OTHER=()
@@ -751,12 +743,12 @@ unfold() {
     FAILED=$((FAILED + 1)); return 1
   fi
   # Same filesystem, or every move below is a copy and the swap is not a rename.
-  if [ "$(dev_of "$repo/$lp")" != "$(dev_of "$(dirname -- "$HOME/$lp")")" ]; then
+  if [ "$(stat_dev "$repo/$lp")" != "$(stat_dev "$(dirname -- "$HOME/$lp")")" ]; then
     printf '  SKIP  %s - the checkout and $HOME are on different filesystems\n' "$lp" >&2
     FAILED=$((FAILED + 1)); return 1
   fi
 
-  mkdir -m "$(mode_of "$repo/$lp")" -- "$new" || { FAILED=$((FAILED + 1)); return 1; }
+  mkdir -m "$(stat_mode "$repo/$lp")" -- "$new" || { FAILED=$((FAILED + 1)); return 1; }
   for rec in "${links[@]}"; do
     IFS="$SEP" read -r path dir <<< "$rec"
     c="$new/${path#"$lp"/}"
@@ -834,7 +826,7 @@ move_runtime() {
     printf '  SKIP  %s - it holds an untracked path git does not ignore, or a clone\n' "$lp" >&2
     FAILED=$((FAILED + 1)); return 1
   fi
-  if [ "$(dev_of "$repo/$lp")" != "$(dev_of "$(dirname -- "$HOME/$lp")")" ]; then
+  if [ "$(stat_dev "$repo/$lp")" != "$(stat_dev "$(dirname -- "$HOME/$lp")")" ]; then
     printf '  SKIP  %s - the checkout and $HOME are on different filesystems\n' "$lp" >&2
     FAILED=$((FAILED + 1)); return 1
   fi

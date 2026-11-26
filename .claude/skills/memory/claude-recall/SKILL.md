@@ -120,7 +120,7 @@ gitBranch), `--since YYYY-MM-DD`, `--role user|assistant`, `--regex`, `-i`,
 
 Every session that did real work registers itself, so it can be found and reopened later; `sessions` is the read side.
 
-- **Registry:** `~/.agent/sessions/{project}/sessions.jsonl`, one JSON line per session: `{session_id, project, transcript, resume, first_prompt, edits, head_commit, updated}`, plus `agentctl` (the runner name) on a runner's row and the cost fields when telemetry answered. Upserted by `session_id`; dead-transcript lines self-prune. It is the agent axis, never `~/.notes/inbox`.
+- **Registry:** `~/.agent/sessions/{project}/sessions.jsonl`, one JSON line per session: `{session_id, project, transcript, resume, first_prompt, edits, head_commit, updated}`, plus `agentctl` (the runner name) on a runner's row and the cost fields when telemetry answered. Upserted by `session_id`; dead-transcript lines self-prune. It is the agent axis, never `~/.notes/captures`.
 - **Captured** by `~/.claude/hooks/stop-post.d/80-session-register.sh` when a session made at least one file edit or left a dirty git tree, and for every agentctl runner session (`AGENTCTL_NAME` set), read-only or not, because a runner still spends. A read-only session by hand is not captured, on purpose.
 
 ```
