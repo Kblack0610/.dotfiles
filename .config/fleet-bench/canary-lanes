@@ -5,7 +5,8 @@
 # A harness with a `projects` allowlist replays only those projects' tasks (ocfree: public input only).
 # A canary is the score that can lift a harness's `max_tier` (harnesses.json): go, nim, ocfree and agy take tier-1
 # work only until their canaries score beside the claude lane's. agy runs the Gemini models its `agy` source meters
-# (claude-acct reads the gemini bucket only), hydrogen for sonnet-class work and flash for haiku-class.
+# (the gemini buckets), hydrogen for sonnet-class work and flash for haiku-class; agy-claude runs Claude Sonnet and
+# Opus on the `agy-3p` source (the 3p buckets), so it scores the same model as the claude lane through another harness.
 codex sol medium
 codex sol high
 claude haiku max
@@ -17,3 +18,5 @@ opencode-go haiku
 nim nemotron
 agy hydrogen
 agy flash
+agy-claude sonnet
+agy-claude opus

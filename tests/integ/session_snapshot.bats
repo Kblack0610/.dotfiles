@@ -56,7 +56,7 @@ stub() {
 }
 
 @test "a hold and a pause that were already up stay up after up" {
-  "$REPO_ROOT/.local/bin/agent-hold" set dispatch --by human "hot hour" >/dev/null
+  "$REPO_ROOT/.local/bin/agent-hold" set dispatch --by human --until "+12 hours" "hot hour" >/dev/null
   agentctl pause "hot hour"
   "$SNAP" down
   run cat "$AGENT_MAINTENANCE"
@@ -75,7 +75,7 @@ stub() {
 }
 
 @test "negative control: with no marker, up touches nothing" {
-  "$REPO_ROOT/.local/bin/agent-hold" set dispatch --by human "hot hour" >/dev/null
+  "$REPO_ROOT/.local/bin/agent-hold" set dispatch --by human --until "+12 hours" "hot hour" >/dev/null
   : > "$CALLS"
   run "$SNAP" up
   assert_success

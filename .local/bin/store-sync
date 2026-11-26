@@ -49,7 +49,7 @@ case "$STORE_NAME" in
     SSH_KEY="${STORE_SYNC_SSH_KEY:-$HOME/.ssh/id_agent_sync}"
     SYNC_DIR="$STORE/.sync"
     # What a write hook (--now) commits: the coordination state, never the bulk logs.
-    NOW_PATHS=(queue asks presence)
+    NOW_PATHS=(queue asks presence lease-ready)
     # A clone pushes only once `store-sync join` made it a peer of the shared store.
     NEEDS_JOIN=1 ;;
   notes)

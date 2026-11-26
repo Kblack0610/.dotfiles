@@ -64,6 +64,9 @@
 #       UNRATED_ENDS one is not the model's doing, so the run's model-lane outcome is filed unrated, that end its cause.
 #       --cause (a requeue) tells the run's outcome why it went back, one of MOVE_CAUSES (lib/end-reasons.sh); an
 #       UNRATED_CAUSES one (a green PR handed to a lander, a lost host) files it unrated. Every outcome carries a cause.
+#       A close stamps the item's landing verdict, outcome: landed, no-pr, unrated, failed or cancelled (OUTCOME_JQ),
+#       the one field every reader counts; a set on a done item stamps it again.
+#   backfill-outcome [--days N] [--dry-run]    stamp outcome: on the done items of the last N days (30) that lack it or disagree
 #   backfill-briefs [--dry-run | --check]    each open agent row with no brief gets the brief of the item that worked it, and an open
 #       item with no row (not canary or trainee) gets a story row with its brief: the row is the one record of a brief
 #   retask <slug> [task...]    replace a queued item's task (the brief its session gets) and its board row's brief, from args or stdin
@@ -312,11 +315,12 @@ lock_miss() {
     mv -f "$AQ_LOCK_MISS_LOG" "$AQ_LOCK_MISS_LOG.1"
   {
     for f in .gate .lock; do
-      s=$(stat -c '%Hd %Ld %i' "$AQ_DIR/$f") || continue
-      # /proc/locks names a file <maj:min:inode> with a hex device, as fleet-assess lock_ids reads it.
-      # shellcheck disable=SC2086 # s is three numbers, split on purpose
-      awk -v f="$f" -v id="$(printf '%02x:%02x:%s' $s)" '{ o = ($2 == "->") } $(6 + o) == id {
-        printf "lock\t%s %s %s\n", f, (o ? "waits" : "holds"), $(4 + o) }' /proc/locks
+      s=$(stat -c %i "$AQ_DIR/$f") || continue
+      # /proc/locks names a file <maj:min:inode>, matched on the inode alone: on btrfs it gives the
+      # superblock's device (00:24) where stat gives the subvolume's (00:3b), so a full match found
+      # no lock at all and every line read "locks":[] (ar-5560). The pid is the holder's or waiter's.
+      awk -v f="$f" -v ino="$s" '{ o = ($2 == "->"); n = split($(6 + o), id, ":") } n == 3 && id[3] == ino {
+        printf "lock\t%s %s %s %s\n", f, (o ? "waits" : "holds"), $(4 + o), $(5 + o) }' /proc/locks
     done
     # One fuser scan for both files: it prints "<path>: <pid>..." per file in use, the path on
     # stderr and the pids on stdout, so the merged stream pairs them. Split at the last colon: the
@@ -340,7 +344,8 @@ lock_miss() {
 
 # lock-miss [--hours H] [--max N] -> one line: the lock timeouts lock_miss logged in the last H hours
 # (AQ_LOCK_MISS_HOURS, 1) against the bound N (AQ_LOCK_MISS_MAX, 3), with the latest one's command
-# and caller; exit 1 when over the bound, 2 when the log cannot be read. The rotated .1 counts too.
+# and caller, and the pid and command holding .lock when the kernel named one (ar-5560); exit 1 when
+# over the bound, 2 when the log cannot be read. The rotated .1 counts too.
 # The watch queue-lock-miss runs it: a miss is a line in a file, no event, so the watch samples the rate.
 # lock_miss writes ts in UTC (`date -u -Is`) and the log syncs with the store, so lines from every host
 # and either side of a DST change compare as strings against a UTC cutoff; lines before 2026-11-21
@@ -358,7 +363,11 @@ cmd_lock_miss() {
   cut=$(date -u -Is -d "-$hours hours")
   # A missing log (or no .1 yet) is no misses: only a jq failure is unreadable.
   out=$({ cat "$AQ_LOCK_MISS_LOG.1" "$AQ_LOCK_MISS_LOG" 2>/dev/null || :; } | jq -nrR --arg cut "$cut" '
-    [inputs | fromjson? | objects | select((.ts // "") >= $cut)] | "\(length)\t\(last // {} | "\(.ts): \(.cmd) from \(.caller)")"') ||
+    [inputs | fromjson? | objects | select((.ts // "") >= $cut)] | (last // {}) as $l
+    | ([$l.locks[]? | select(startswith(".lock holds")) | split(" ") | {w: .[2], p: (.[3] | tonumber?)}
+      | select(.p)] | map(select(.w == "WRITE")) + map(select(.w != "WRITE")) | map(.p)) as $h
+    | (first($h[] as $p | $l.procs[]? | select(.pid == $p) | "\(.pid) \(.cmd)") // null) as $who
+    | "\(length)\t\($l.ts): \($l.cmd) from \($l.caller)\(if $who then ", held by \($who)" else "" end)"') ||
     { echo "unreadable: $AQ_LOCK_MISS_LOG"; return 2; }
   n="${out%%$'\t'*}"
   printf '%s queue lock misses in the last %sh (bound %s)' "$n" "$hours" "$max"
@@ -481,6 +490,19 @@ finished_ok() {
 # Revisit when queued age p90 stays over it at the cap.
 AQ_EX_HELD=5
 AQ_CAP="${AGENT_QUEUE_CAP:-30}"
+# Minutes a queued item waits before it ranks one tier higher (ORDER's tier, ar-4554); 0 turns it off.
+# Provisional, confidence low (rules.jsonl): 120 takes a low item to high at 240m, inside the 420m
+# step_age_p90_queued_max with the 7m dwell p50 of the high tier to spare. Revisit when queued age p90
+# stays over its bound with aging on.
+AQ_AGE_STEP="${AGENT_QUEUE_AGE_STEP:-120}"
+[[ "$AQ_AGE_STEP" =~ ^[0-9]+$ ]] || { echo "agent-queue: AGENT_QUEUE_AGE_STEP must be whole minutes (0 turns aging off): $AQ_AGE_STEP" >&2; exit 1; }
+# The clock aging reads (order_filter): AGENT_QUEUE_NOW when it is a whole YYYY-MM-DDTHH:MM (local time, as
+# hold_for reads it), else the wall clock at each read. The HH:MM form pins only the hour holds read, so
+# items a test adds seconds before do not age by the gap to that hour.
+AQ_AGE_NOW=""
+if [[ "${AGENT_QUEUE_NOW-}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}$ ]]; then
+  AQ_AGE_NOW="$(date -d "$AGENT_QUEUE_NOW" +%s)" || { echo "agent-queue: AGENT_QUEUE_NOW cannot be read as a local time: $AGENT_QUEUE_NOW" >&2; exit 1; }
+fi
 AQ_HELD_DAYS=7
 AQ_ADMISSION_LOG="$AQ_DIR/admission.jsonl"
 
@@ -1481,21 +1503,30 @@ item_json() {
 # class mix (MIX_JQ) when AQ_CLASSES is on; then queued time. No project rank: the order comes from the
 # item and its row, and a project's share of starts is fleet-dispatch's DISPATCH_PROJECT_SHARE cap.
 # The one queue order: every reader (next, list, fleet-dispatch next_items) takes it as is, so a lower
-# tier starts only when no item of a higher one can: a pass takes the first it can place.
+# tier (after aging, below) starts only when no item of a higher one can: a pass takes the first it can place.
 # `after` and other tags hold, not reorder. Cleanup gets its turns from the mix's cleanup share.
 # An item that works an open board row ranks by that row's priority (row_prio, from row_prios), so a
 # retag re-ranks it and the item's own line is only the fallback when notes cannot answer (ar-3011).
 # Two keep their own: a red, whose priority its filer set, and a cleanup item on a #low row, which
 # dispatch promotes at high (fleet-dispatch row_priority) and so still ranks high.
 # A red outranks urgent on purpose: the human's rule is that anything broken goes first.
+# A queued item ages (ar-4554): it ranks one tier higher for each AQ_AGE_STEP minutes since its `ready`
+# (a held item has none, so it ages from when its hold lifts), never above high, so a low item ranks with the highs after two steps. Its priority line is not
+# rewritten. Why: strict tiers let highs that arrive all day hold a low item without bound (2026-11-25:
+# 8 low items queued 13-15h, queued age p90 765m against step_age_p90_queued_max 420m, while the
+# queue moved 594 items in 24h with a dwell p50 of 7m).
 ORDER='def untagged($t): ((.tags // "") | if type == "array" then join(" ") else tostring end
     | [splits("\\s+")] | index([$t])) == null;
+  def tier: ({"urgent":0,"high":1,"normal":2,"low":3}[.priority] // 1) as $p
+    | if $p <= 1 or $agestep <= 0 or .state != "queued" then $p
+      else ((.ready // "") | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch null) as $r
+        | if $r == null then $p else [[$p - (($agenow - $r) / 60 / $agestep | floor), $p] | min, 1] | max end end;
   def row_prio: ($rowprio[.row // ""]) as $r
     | if $r == null or (untagged("red") | not) then .
       elif $r == "low" and (untagged("cleanup") | not) then .priority = "high"
       else .priority = $r end;
   def bucket: [untagged("red"), (.priority != "urgent"), untagged("sprint"),
-    ({"urgent":0,"high":1,"normal":2,"low":3}[.priority] // 1)];
+    tier];
   (if $rowprio == null then . else map(row_prio) end)
   | if $mix == null then sort_by(bucket, .queued) else mix($mix; bucket) end'
 
@@ -1626,13 +1657,16 @@ cmd_mix() {
     (if (.starved | length) > 0 then "starved: \(.starved | join(", ")) (runnable, none started in \(.starve_days)d)" else "starved: none" end)' <<<"$out"
 }
 
-# order_filter <states...> -> ORDER with $rowprio (row_prios) bound. A listing with queued items binds
-# $mix (mix_json); any other orders without it, so a read of running or done items pays no read of done/.
+# order_filter <states...> -> ORDER with $rowprio (row_prios), $agestep and $agenow bound. A listing with
+# queued items binds $mix (mix_json); any other orders without it, so a read of running or done items pays
+# no read of done/. $agenow is AQ_AGE_NOW, else the wall clock.
 order_filter() {
-  local mix=null rows
+  local mix=null rows agenow="$AQ_AGE_NOW"
   [[ " $* " != *" queued "* ]] || mix="$(mix_json)"
   rows="$(row_prios "$@")"
-  printf '%s %s %s as $mix | %s as $rowprio | %s' "$CLASS_JQ" "$MIX_JQ" "${mix:-null}" "${rows:-null}" "$ORDER"
+  [ -n "$agenow" ] || printf -v agenow '%(%s)T' -1
+  printf '%s %s %s as $mix | %s as $rowprio | %s as $agestep | %s as $agenow | %s' \
+    "$CLASS_JQ" "$MIX_JQ" "${mix:-null}" "${rows:-null}" "$AQ_AGE_STEP" "$agenow" "$ORDER"
 }
 
 # row_prios <states...> -> {"<board>:<id>": priority} of each open board row an item in those states
@@ -1838,6 +1872,9 @@ overflow_row() {
   if [ "$kept" = inbox ]; then
     echo "agent-queue: a session's follow-up is no board row: it is in the outbox, and inbox-triage files it or joins its twin" >&2
     echo "inboxed $8 -> inbox"
+  elif [ "$kept" = gated ]; then
+    echo "agent-queue: $1's board refused $8 (the reason is above): nothing was filed or kept, so file it again tomorrow, or keep it with notes improve $1" >&2
+    return 6
   elif [ -n "$kept" ]; then
     IFS=$'\t' read -r board prof id <<<"$kept"
     if [ -n "$gates" ]; then
@@ -1853,7 +1890,8 @@ overflow_row() {
 }
 
 # file_story <project> <title> <priority> <epic> <want> <body> [<keep>] [<gates>] [<tags>] -> "<board><TAB><profile><TAB><id>" of the story row
-# the item closes on merge, or nothing. An item not promoted from the board is still a story on its
+# the item closes on merge, or nothing, or `gated` when the board's intake gate or daily cap (intake_daily_cap, QUEUE.md "Admission")
+# refused the row: a plan's phase or a follow-up past the cap files no row, and its caller files no item either. An item not promoted from the board is still a story on its
 # project's agent board, so a task shows under its feature the moment it is added: one `[/]` row
 # through `notes ptask` (the rows' one writer), `#of/<epic>` when the item names an epic of this
 # project (--epic, or its plan's `epic:` line), else the standing epic of its area's system, which
@@ -1869,8 +1907,8 @@ overflow_row() {
 # <keep> non-empty files the row un-started (an add over the cap, see overflow_row). <gates>, board gate
 # tags with no #, go on the row it files, and onto an open twin it links (gate_row). <tags>, the item's,
 # add `interrupt` to those when they hold it (interrupt_tag), so an open twin joins too.
-# Who files it, for `notes ptask add --origin`: a plan's phases (AQ_ITEM_PLAN, or AQ_FILE_ORIGIN=plan
-# for the plan's own row) file directly, and so does the row of an item being worked (<keep> empty:
+# Who files it, for `notes ptask add --origin`: a plan's phases (AQ_ITEM_PLAN) file directly,
+# and so does the row of an item being worked (<keep> empty:
 # its own record, not a follow-up). A kept row from a queue item or runner is its follow-up: notes sends
 # it to the outbox (exit 4), and this prints `inbox` instead of a row; from a session the human opened,
 # notes checks it first and a shortlist of similar rows (exit 5) is reported on stderr, with no row. `--origin agent-queue` is notes-cli's
@@ -1882,7 +1920,7 @@ file_story() {
   for g in $gates; do gt+=" #$g"; done
   [ -z "${5:-}" ] || want=(--want "$5")
   if [ -n "${5:-}" ]; then :
-  elif [ -n "${AQ_ITEM_PLAN:-}${AQ_FILE_ORIGIN:-}" ]; then origin=(--origin plan)
+  elif [ -n "${AQ_ITEM_PLAN:-}" ]; then origin=(--origin plan)
   elif [ -z "$keep" ]; then origin=(--origin agent-queue); fi
   [ -f "$AQ_MAP" ] || return 0
   IFS=$'\t' read -r project lab code < <(project_board "$1")
@@ -1919,6 +1957,8 @@ file_story() {
        # shellcheck disable=SC2086 # gates is a space-separated list of tags
        [ -z "$gates" ] || gate_row "$project:$id" "$lab" agent $gates ||
          { echo "agent-queue: the open row $id on $project did not take its gates, so nothing was filed: $GATE_HINT" >&2; return 0; } ;;
+    6) # The board's intake gate or its daily cap (notes EXIT_GATED): nothing was written, and the reason is the last line.
+       echo "agent-queue: no story row filed on $project: ${out##*$'\n'}" >&2; printf 'gated\n'; return 0 ;;
     *) echo "agent-queue: no story row filed on $project: ${out##*$'\n'}" >&2; return 0 ;;
   esac
   printf '%s\t%s\t%s\n' "$project" "$lab" "$id"
@@ -2001,13 +2041,6 @@ prior_story() {
 }
 
 # --- verbs ---
-# plan_row_priority <from> <priority named> <priority> -> the tag a plan's board row is filed with. A machine
-# filer (auto:*) that names none files it untagged (empty), for `agentctl-inbox-triage --backlog --priority`
-# to judge by the rubric; the add default (high) is the human's, not a filer's.
-plan_row_priority() {
-  case "$1" in auto:?*) [ -n "$2" ] || return 0 ;; esac
-  echo "$3"
-}
 # add_priority <priority> <named> <plan> <tags> <from> -> the priority an add files at. <named> is
 # non-empty when the caller named one (or adds --running, --want, --dry-run, --check). The high default
 # is the human's add by hand. A session decides: high is for what blocks a release or a red on main,
@@ -2018,8 +2051,8 @@ plan_row_priority() {
 # session plan phases that inherited urgent (ar-4349).
 add_priority() {
   local session="${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}"
-  # A machine filer's plan (--from auto:*) names none: its board row is filed untagged (cmd_add), so a session that
-  # runs the filer, or a dispatch pass that inherited AGENT_QUEUE_ITEM, is not refused for it.
+  # A machine filer's plan (--from auto:*) names none: its phases go at normal, so a session that runs
+  # the filer, or a dispatch pass that inherited AGENT_QUEUE_ITEM, is not refused for it.
   local filer_plan=''
   [ -z "$3" ] || [[ "$5" != auto:?* ]] || filer_plan=1
   [ -n "$2" ] || [ -z "$session" ] || [ -n "$filer_plan" ] ||
@@ -2081,6 +2114,9 @@ work_machine_guard() {
   die "this is a work machine ($PROJECT_MACHINE_PROFILE): no dispatcher runs here and home runners never take work. Put the follow-up in the project's tracker (ticket), or work it in this session"
 }
 
+# cmd_add: an add over the admission cap that already has its row (--row, or a board pull from
+# promote) leaves that row where it is. Only one with no row gets an overflow row: a board pull's
+# overflow row was a twin that dispatch skipped to the human sheet beside the first (2026-11-25).
 cmd_add() {
   local project="" mode=oneshot priority=high tags="" after="" from=human agent=claude slug=""
   local running="" session="" task=() tag planf="" dry="" check="" weight="" title="" epic="" repeat="" from_given="" want="" row="" priority_given=""
@@ -2117,22 +2153,19 @@ cmd_add() {
     [ -z "$row" ] || die "--row links one item; a plan's phases each file a story under its epic: line"
     [ "$mode" = oneshot ] && [ -z "$running" ] || die "--plan items are queued oneshot items: no --mode plan or --running"
     plan_check_markers "$planf" "$check"
-    # --from board:<project>:<id> is dispatch's promote of the row below: that row is the plan's (its
-    # `rows:` line, add_plan), which agent-land closes with the last phase, so no phase item names it.
+    # --from board:<project>:<id> is dispatch's promote of a plan row filed before ar-5605 (its brief is
+    # plan_row_task's): that row goes on the plan's `rows:` line (add_plan), which agent-land closes with
+    # the last phase, so no phase item names it.
     local plan_row=''
     case "$from" in board:?*:?*) plan_row="${from##*:}" from=auto:plan-row ;; esac
     if [ -z "$dry" ] && ! pull_ok "" "$from" "$from_given" && ! own_plan_item "$planf"; then
       [ -z "$plan_row" ] || { echo "agent-queue: its row $plan_row is left where it is: dispatch promotes it" >&2; exit "$AQ_EX_HELD"; }
-      # Resolved as every add is (dotfiles -> agent-runtime): unresolved, a repo whose work counts on an
-      # owner had no board, and every reap of a dotfiles plan failed and was retried each pass (ar-2787).
-      local pname="${project:-$(project_of_cwd)}" pproject ptitle="$(plan_row_title "$planf")"
-      [ -n "$pname" ] || die "no --project, and this directory is not a repo project-map knows"
-      pproject="$(project_resolve "$pname")" || die "unknown project: $pname (no checkout for it in $AQ_MAP)"
-      lock; admission_log "$from" "$pproject" "$(basename "$planf" .md)" "$ptitle" "" "" board-only; unlock
-      board_only_say
-      # The row's brief names the plan by its absolute path, which dispatch's promote reads back to queue
-      # the chain (plan_row_plan).
-      AQ_FILE_ORIGIN=plan overflow_row "$pproject" "$ptitle" "$(plan_row_priority "$from" "$priority_given" "$priority")" "" "" "$(plan_row_task "$(realpath "$planf")")" "" "$(basename "$planf" .md)" || exit 1
+      # A caller that may not queue (a dispatched session, reap's reconcile_plans) files the chain itself
+      # on the board: each open phase its own row, every later one gated #after/ the row before (add_plan
+      # reads each phase's `held` line), which dispatch promotes in turn. No row stands for the whole
+      # plan. Why: 97 "run the open phases of plan X" rows sat beside their phase rows or for plans
+      # nobody ran, and the ledger dropped 93 of them (ar-5605, plan delightful-leaf P4).
+      AQ_ADMITTED=1 plan_add_waiting
       exit "$AQ_EX_HELD"
     fi
     AQ_ADMITTED=1 plan_add_waiting; return
@@ -2218,8 +2251,8 @@ cmd_add() {
       :board:*) [ -z "$GATES" ] || die "$slug waits on #${GATES// / #}, so row ${from#board:} stays on the board until that clears"
         echo "agent-queue: its row ${from#board:} is left where it is: dispatch promotes it" >&2 ;;
       :canary | :trainee) [ -z "$GATES" ] || die "a $from item waits on no gate: add it once #${GATES// / #} clears"
-        overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "" "$slug" "$tags" || exit 1 ;;
-      :*) overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "$GATES" "$slug" "$tags" || exit 1 ;;
+        overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "" "$slug" "$tags" || exit $? ;;
+      :*) overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "$GATES" "$slug" "$tags" || exit $? ;;
       *) if [ -n "$GATES" ]; then
            local rboard rlab
            IFS=$'\t' read -r rboard rlab _ < <(project_board "$project")
@@ -2235,10 +2268,8 @@ cmd_add() {
   fi
   if [ -n "$capped" ] && ! admit "$from" "$priority" "$tags" "$project" "$slug" "$hold_title"; then
     unlock # the board write is notes' and can be slow: the lock covers only the count
-    # A promote names its row by --from board:, so it is the same row as --row: filing a story for it
-    # here wrote a twin whose cut title no notes twin check matched (ar-4796: ar-5544 of ar-4494).
-    if [ -n "$row" ] || [[ "$from" == board:* ]]; then echo "agent-queue: row ${row:-${from#board:}} is left un-started where it is: dispatch promotes it as the queue drains" >&2
-    else overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "" "$slug" "$tags"; fi
+    if [ -n "$row" ] || [[ "$from" == board:* ]]; then echo "agent-queue: row ${row:-${from##*:}} is left un-started where it is: dispatch promotes it as the queue drains" >&2
+    else overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" "" "$slug" "$tags" || { [ "$?" != 6 ] || exit 6; }; fi
     exit "$AQ_EX_HELD"
   fi
   check_after "$after" "$slug"
@@ -2281,7 +2312,7 @@ cmd_add() {
          [ -n "$story" ] || { story="$(file_story "$project" "${title:-$(head -1 <<<"$text")}" "$priority" "$epic" "$want" "$text" "" "" "$tags")"; priority_given=''; }
        fi ;;
   esac
-  [ -z "$story" ] || IFS=$'\t' read -r sboard sprof srow <<<"$story"
+  case "$story" in gated) echo "agent-queue: $slug is not queued: its board row was refused by the daily cap or the gate (the reason is above)" >&2; exit 6 ;; ?*) IFS=$'\t' read -r sboard sprof srow <<<"$story" ;; esac
   mkdir -p "$AQ_DIR/$state"
   local f tmp
   f="$AQ_DIR/$state/$(date +%Y%m%d-%H%M%S)-$slug.md"
@@ -2634,6 +2665,7 @@ add_plan() {
       elif [ "$rc" = "$AQ_EX_HELD" ] && [[ "$out" =~ (^|$'\n')"held $s -> "[^:]+:([a-z0-9]+-[0-9]+) ]]; then
         key[$s]="${BASH_REMATCH[2]}" held=$((held + 1)) pend+=("$s")
       elif [ "$rc" = "$LOCK_BUSY" ] && [ "$held" = 0 ]; then plan_lock_short "$n" "$total" "$planf"
+      elif [ "$rc" = 6 ]; then die "queued $n of $total items from $planf; the board's daily cap refused $s, so it and the rest are not queued: a rerun today meets the same cap, so run the same add again tomorrow (it keeps what is queued)"
       else
         # A rerun keeps a phase held on a gated row but files one on an ungated row again, so that case names the plain adds.
         [ "$held" = 0 ] || die "queued $n of $total items from $planf ($held of them wait on their board rows); $s and the rest are not queued: add each with a plain add --after the phase before it (its slug or row id)"
@@ -2958,6 +2990,7 @@ cancel_close() {
   cancel_stamp "$f" "$why"
   [ -z "$cause" ] || header_set "$f" cancel_cause "$cause"
   [ -z "$end" ] || header_set "$f" end_reason "$end"
+  stamp_outcome "$f"
   dest="$(move_to "$f" "done")" || die "could not move $f"
   # A return says so in the chain record too, where the item file is no longer at hand.
   [ -z "$end" ] || why="$end: $why"
@@ -3129,7 +3162,7 @@ cmd_bump() {
 # settable: they are what the item is. `from` is, so a project rename can move a board origin, and
 # `title` is, so an item whose plan changed stops showing its old title (one line, as add --title
 # writes it). The board row's own words are its sheet's: `notes ptask edit`.
-SETTABLE=" asked asker title project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage branch lost plan phases pr open_pr merged landed_by partial closing_pr fix_tries land_tries takeover_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary trainee direct review_fix proves_at validate verdict verdict_head "
+SETTABLE=" asked asker title project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage branch lost plan phases pr open_pr merged landed_by partial closing_pr fix_tries land_tries takeover_tries rerun_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary trainee direct review_fix proves_at validate verdict verdict_head "
 
 # One landed_by pair, <session id>=<owner>/<repo>#<N> (cmd_set).
 LANDED_PAIR='[^= ]+=[^# ]+/[^# ]+#[0-9]+'
@@ -3211,6 +3244,7 @@ cmd_set() {
     header_set "$f" "${kv%%=*}" "${kv#*=}"
     set_kv+=("$kv")
   done
+  [ "$(state_of "$f")" != done ] || stamp_outcome "$f"
   item_event item-set "$f" --why "${set_kv[*]}"
   echo "$slug: $*"
   # priority= goes on the row too, as bump writes it: the order reads the row (row_prios).
@@ -3579,6 +3613,7 @@ cmd_move() {
       case "$status" in ok | cancelled) header_del "$f" end_reason; end="" ;; esac ;;
   esac
   [ -z "$end" ] || header_set "$f" end_reason "$end"
+  [ "$to" != done ] || stamp_outcome "$f"
   dest="$(move_to "$f" "$to")" || die "could not move $f"
   item_event item-moved "$dest" --to "$to" --why "$from -> $to${status:+ ($status)}${why:+: $why}"
   echo "$slug: $from -> $to"
@@ -3910,7 +3945,7 @@ cmd_reopen() {
   else
     [ "$status" = failed ] || die "$slug closed $status, not failed: that is new work under the slug (agent-queue add${status:+ --repeat})${status:+, or --unland <owner>/<repo>#<N> when it closed on a PR that was not its work}"
   fi
-  header_del "$f" status finished
+  header_del "$f" status finished outcome
   [ "$to" = running ] || header_set "$f" waiting "$(now_utc)"
   header_set "$f" note "reopened from done ($status${unland:+, unlanded $unland}${note:+: $note})${why:+: $why}"
   dest="$(move_to "$f" "$to")" || die "could not move $f"
@@ -3941,6 +3976,49 @@ cmd_reopen() {
 # place outcomes are reported. A run whose end says nothing about the model (UNRATED_ENDS, its own
 # cause), a cancel and an UNRATED_CAUSES requeue file the run unrated: counted, never scored. A
 # model-lane error never fails the move.
+# OUTCOME_JQ: the landing verdict a done item is stamped with (`outcome:`), the one every reader counts
+# (fleet-bench, agent-land, credit-backfill, fleet-dispatch, day-log, hub-core, model-lane): cancelled;
+# unrated for a canary (from: canary, scored by its oracle, not by landing) and for an UNRATED_ENDS end (a
+# cause outside the model); landed for done ok with a PR (agent-land's merge); failed; and an ok close with
+# no PR reads its kind's `exit` in kinds.json (its `type:`; none or an unknown one is pr): no-pr when that
+# kind ends in a PR, unrated when it ends in a report, a doc or a proof, so a clean check is no miss; a
+# `verify` item is a proof whatever its kind, as fleet-dispatch starts it.
+# outcome($exits; $unrated): $exits maps kind to exit, $unrated is UNRATED_ENDS as a JSON array.
+OUTCOME_JQ='def outcome($exits; $unrated):
+  if .status == "cancelled" then "cancelled"
+  elif .from == "canary" then "unrated"
+  elif .status == "ok" and (.pr // "") != "" then "landed"
+  elif (.end_reason // "") | IN($unrated[]) then "unrated"
+  elif .status == "failed" then "failed"
+  elif .status != "ok" then null
+  elif (" \(.tags // "") " | contains(" verify ")) then "unrated"
+  elif ($exits[.type // ""] // "pr") == "pr" then "no-pr"
+  else "unrated" end;'
+# kind_exits -> kinds.json (fleet-dispatch's DISPATCH_KINDS) as {kind: exit}; {} when it is unreadable,
+# so every kind reads as ending in a PR.
+kind_exits() {
+  local x
+  x="$(jq -c 'with_entries(.value |= (.exit // "pr"))' "${DISPATCH_KINDS:-$HOME/.config/fleet-dispatch/kinds.json}" 2>/dev/null)" && [ -n "$x" ] || x='{}'
+  printf '%s\n' "$x"
+}
+
+# outcome_writes <file>... -> "<file> US <outcome> US <slug>" for each item whose outcome: is not the one
+# OUTCOME_JQ gives from its header ("" to delete), so an unchanged item is never rewritten. US (\x1f), not
+# a tab: read collapses an empty field between tabs, which would read the slug as the outcome.
+outcome_writes() {
+  items_json --rows "$OUTCOME_JQ"' map((outcome('"$(kind_exits)"'; '"$(unrated_json)"') // "") as $o
+    | select((.outcome // "") != $o) | [.file, $o, .slug // ""] | join("\u001f"))' "$@" | jq -r '.[]'
+}
+
+# stamp_outcome <file> -- write the done item's outcome: (OUTCOME_JQ) from its own header. Every close calls
+# it (move done, cancel_close), and so does a set on a done item, since status, pr, type or from can change.
+stamp_outcome() {
+  local f o
+  while IFS=$'\x1f' read -r f o _; do
+    if [ -n "$o" ]; then header_set "$f" outcome "$o"; else header_del "$f" outcome; fi
+  done < <(outcome_writes "$1")
+}
+
 lane_outcome() {
   local o='' c=${6:-}
   [ -n "$1" ] || return 0
@@ -4071,12 +4149,12 @@ cmd_stats() {
          | {("done_\($h)h"): ($fin | length), ("failed_\($h)h"): ($fin | map(select(.status == "failed")) | length),
             ("started_\($h)h"): ($all | since(.started) | length),
             ("added_\($h)h"): ($all | since(.queued) | length)}) | add
-         # Finished ok since local midnight, the day day-log keeps, one count per slug: shipped merged
-         # a commit, checks merged nothing (a watch or alert that cleared). queue::done_today in
+         # Finished ok since local midnight, the day day-log keeps, one count per slug: shipped is an
+         # outcome landed, checks the rest (a watch or alert that cleared). queue::done_today in
          # hub-core is the same rule for the cards; failed and cancelled count in neither.
          | ($done | map(select(.status == "ok" and (.finished // "") != ""
              and (.finished | fromdateiso8601 | strflocaltime("%F")) == (now | strflocaltime("%F"))))) as $ok
-         | ([$ok[] | select((.merged // "") != "") | .slug] | unique) as $shipped
+         | ([$ok[] | select(.outcome == "landed") | .slug] | unique) as $shipped
          | . + {shipped_today: ($shipped | length),
                 checks_today: ([$ok[].slug | select(IN($shipped[]) | not)] | unique | length)}),
        run_minutes_median: ([$done[] | mins(.started; .finished)] | median),
@@ -4159,6 +4237,35 @@ BRIEF_JQ='def norm: gsub("<!--.*?-->"; "") | gsub("<!--.*$"; "") | gsub("(^|\\s)
         and ((.tags // "") | test("(^| )canary( |$)") | not))
       | {kind: "new", key: .slug, proj: .project, slug: .slug, stamp: stamp, brief: (body | join("\n")), prio: .priority})
   | out'
+
+# backfill-outcome [--days N] [--dry-run] -- stamp outcome: (OUTCOME_JQ) on the done items of the last N days (30)
+# whose outcome is missing or no longer what their header says: the items closed before the close path
+# stamped one, or closed by a checkout that does not yet. One read of every file, one write per change.
+cmd_backfill_outcome() {
+  local days=30 dry="" since d f o slug n=0
+  local -a files=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --days) days="${2:?--days needs a number}"; shift 2; [[ "$days" =~ ^[0-9]+$ ]] || die "--days is a whole number of days" ;;
+      --dry-run) dry=1; shift ;;
+      *) die "usage: agent-queue backfill-outcome [--days N] [--dry-run]" ;;
+    esac
+  done
+  since="$(date -d "$days days ago" +%F)"
+  lock
+  for d in "$AQ_DIR"/done/*/; do
+    [ -d "$d" ] && [[ ! "$(basename "$d")" < "$since" ]] || continue
+    for f in "$d"*.md; do [ -e "$f" ] && files+=("$f"); done
+  done
+  while IFS=$'\x1f' read -r f o slug; do
+    n=$((n + 1))
+    if [ -n "$dry" ]; then echo "$slug: ${o:-no outcome}"
+    elif [ -n "$o" ]; then header_set "$f" outcome "$o"
+    else header_del "$f" outcome; fi
+  done < <([ ${#files[@]} -eq 0 ] || outcome_writes "${files[@]}")
+  unlock
+  echo "$([ -n "$dry" ] && echo would stamp || echo stamped) $n of ${#files[@]} done items since $since"
+}
 
 cmd_backfill_briefs() {
   local dry="" check="" tmp kind key prof proj text slug stamp brief prio f title lab code srow
@@ -4253,6 +4360,7 @@ case "${1:-}" in
   credit-of) shift; cmd_credit_of "$@" ;;
   ask-holds) shift; cmd_ask_holds "$@" ;;
   backfill-briefs) shift; cmd_backfill_briefs "$@" ;;
+  backfill-outcome) shift; cmd_backfill_outcome "$@" ;;
   -h | --help | '') sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
   *) die "unknown verb: $1 (try --help)" ;;
 esac

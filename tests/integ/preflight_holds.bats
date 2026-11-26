@@ -44,15 +44,15 @@ context() {
 }
 
 @test "a hold's grants show beside its reason, so a granted row reads as free to run (ar-5236)" {
-  "$REPO_ROOT/.local/bin/agent-hold" set unity-tests --by human "lockdown"
+  "$REPO_ROOT/.local/bin/agent-hold" set unity-tests --by coordinator "lockdown"
   "$REPO_ROOT/.local/bin/agent-hold" grant unity-tests hc-952 ar-4938
   run context
   assert_success
-  assert_output --partial 'by human: lockdown (granted: hc-952,ar-4938)'
+  assert_output --partial 'by coordinator: lockdown (granted: hc-952,ar-4938)'
 }
 
 @test "a session the human opened reads a hold as a warning; a dispatched one, attended too, is stopped by it" {
-  "$REPO_ROOT/.local/bin/agent-hold" set unity-tests --by human "lockdown"
+  "$REPO_ROOT/.local/bin/agent-hold" set unity-tests --by human --until "+12 hours" "lockdown"
   CLAUDE_CODE_SESSION_ATTENDED=1 run context
   assert_success
   assert_output --partial 'Active holds (a warning'
@@ -62,6 +62,16 @@ context() {
   assert_output --partial 'do not start work on these until released'
   run context
   assert_output --partial 'do not start work on these until released'
+}
+
+@test "a hold past its until is over, so it shows no more; one still in force does (ar-6059)" {
+  "$REPO_ROOT/.local/bin/agent-hold" set unity-tests --by human --until "+12 hours" "lockdown"
+  run context
+  assert_output --partial 'unity-tests since'
+  sed -i "s/^until: .*/until: $(date -d '-1 minute' +%Y-%m-%dT%H:%M:%S%z)/" "$AGENT_HOLD_DIR/unity-tests"
+  run context
+  assert_success
+  refute_output --partial 'Active holds'
 }
 
 @test "no hold, no block" {
