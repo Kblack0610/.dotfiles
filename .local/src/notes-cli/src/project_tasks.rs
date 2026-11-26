@@ -1201,7 +1201,7 @@ fn session_line(text: &str) -> bool {
 /// The intake gate's verdict on the one agent row `add_via` is about to write: Some(exit code) when
 /// it refuses (printing why), None when the row goes on to the shortlist check. The evidence gate
 /// comes first, for the writers that self-check (a row it refuses needs no shortlist review). The
-/// daily cap holds every writer that files a new row on a gated board, a plan's phases and the
+/// daily cap holds every writer that files a new row on any agent board, a plan's phases and the
 /// machine filers too; a twin was refused earlier, so only a row that would be new counts.
 fn intake_refusal(
     p: &Profile,

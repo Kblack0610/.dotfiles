@@ -143,7 +143,7 @@ item_stub() { # <title>
   hold() { "$REPO_ROOT/.local/bin/agent-hold" set "$@"; }
   hold unity-tests --by cap "96 C, 16 editors"
   hold row-x-1 --kind resource --by fleet-dispatch "keep the console step held (otherproj)"
-  hold toolrepo-freeze --kind resource --by human "no merges to toolrepo until the human says"
+  hold toolrepo-freeze --kind resource --by human --until "+12 hours" "no merges to toolrepo until the human says"
   sed -i "s/^since: .*/since: $(date -d '-2 days' +%Y-%m-%dT%H:%M:%S%z)/" "$AGENT_HOLD_DIR/toolrepo-freeze"
   run context
   assert_success
@@ -157,7 +157,7 @@ item_stub() { # <title>
 }
 
 @test "a hold naming one of the repo's lab projects prints" {
-  "$REPO_ROOT/.local/bin/agent-hold" set pause-it --kind resource --by human "pause the toolboard lanes"
+  "$REPO_ROOT/.local/bin/agent-hold" set pause-it --kind resource --by human --until "+12 hours" "pause the toolboard lanes"
   run context
   assert_output --partial 'pause-it since'
 }
@@ -171,7 +171,7 @@ item_stub() { # <title>
 
 @test "a long hold reason is one line, cut at its first sentence end" {
   long="Stop the playloop until the playground is stable, as the human decided on the 19th. $(printf 'more detail %.0s' $(seq 1 30))"
-  "$REPO_ROOT/.local/bin/agent-hold" set unity-slow --by human "$long"
+  "$REPO_ROOT/.local/bin/agent-hold" set unity-slow --by human --until "+12 hours" "$long"
   run context
   line=$(grep -F 'unity-slow since' <<<"$output")
   [[ $line == *'on the 19th.' ]]
@@ -180,7 +180,7 @@ item_stub() { # <title>
 
 @test "a resource hold naming no project prints (a workflow pause), a claim does not" {
   hold() { "$REPO_ROOT/.local/bin/agent-hold" set "$@"; }
-  hold dispatch --by human "paused while the cluster is rebuilt"
+  hold dispatch --by human --until "+12 hours" "paused while the cluster is rebuilt"
   printf 'resource: row-z-3\nkind: claim\nsince: now\nby: fleet-dispatch\nreason: claimed for a session\n' > "$AGENT_HOLD_DIR/row-z-3"
   run context
   assert_output --partial 'dispatch since'
