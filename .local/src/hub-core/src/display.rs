@@ -113,8 +113,10 @@ impl Shown {
         Shown::fit(Role::Title, &t.title, &one_line(&whole))
     }
 
-    /// A name its author wrote to be read whole (a report's title): cleaned as any text is, cut
-    /// only at the role's caps, never at a clause break as a board row's [`Shown::title`] is.
+    /// A name its author wrote to be read whole (a report's title): cleaned as any text is (ids,
+    /// tags and a `type(area):` head go), cut only at the role's caps. A board row's
+    /// [`Shown::title`] also cuts at the first clause break and reads the legacy `<plan> P4:`
+    /// shape; neither applies to free text an author titled.
     pub fn name(raw: &str) -> Shown {
         Shown::plain(Role::Title, raw)
     }

@@ -32,9 +32,10 @@ function reportBody(r) {
 }
 
 function reportRow(r) {
-  const open = r.id === rps.sel;
+  // A report names its filer, or nothing; a digest or a capture has no filer, so its kind says what it is.
+  const open = r.id === rps.sel, from = r.from || (r.kind === "report" ? "" : r.kind);
   const row = `<tr class="wr${open ? " sel" : ""}${r.unread ? " unread" : ""}" id="sec-r-${esc(r.id)}" data-href="${esc(r.link)}">` +
-    `<td>${rec2(esc(r.title.text), shownFull(r.title), esc(r.summary.text), shownFull(r.summary))}</td><td class="muted" title="${esc(r.from)}">${esc(r.from)}</td>` +
+    `<td>${rec2(esc(r.title.text), shownFull(r.title), esc(r.summary.text), shownFull(r.summary))}</td><td class="muted rfrom" title="${esc(from)}">${esc(from)}</td>` +
     `<td>${statePill(r.state, r.level)}</td><td class="n">${when(r.at)}</td></tr>`;
   return open ? row + reportBody(r) : row;
 }
