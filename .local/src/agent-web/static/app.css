@@ -481,8 +481,8 @@ span.warn { color: var(--b-stalled); }
    leave, so a long title cuts instead of widening the page; an unread title is bold, and a phone
    drops the From column. */
 table.rrep { table-layout: fixed; }
-table.rrep tr > :nth-child(2) { width: 9em; } table.rrep tr > :nth-child(3) { width: 7.5em; } table.rrep tr > :nth-child(4) { width: 8em; white-space: nowrap; }
-/* When holds at most "11-20 19:25" (ui.js when), 11 mono characters: 5.5em let a past day's time run off the table at 1280. */
+table.rrep tr > :nth-child(2) { width: 9em; } table.rrep tr > :nth-child(3) { width: 7.5em; } table.rrep tr > :nth-child(4) { width: 8em; }
+/* When fits the longest ui.js when() output, MM-DD HH:MM, which a locale's short weekday plus a clock does not pass. */
 table.rrep td .c1 { max-width: none; }
 /* A long From (a queue slug) ends in ... inside its column, its whole text on hover. */
 table.rrep td.rfrom { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
