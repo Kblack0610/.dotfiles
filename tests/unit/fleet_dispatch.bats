@@ -630,7 +630,7 @@ exits: improve 1 sheet 1'
   refute_output --partial 'gd-1'
 }
 
-@test "skip_exits: a row no worker takes for a DISPATCH_T3_SKIP word leaves the lane, before a size exit; a row a worker takes, a plain tier-3 row, a gated row and a draft project's stay (ar-4527)" {
+@test "skip_exits: a row no worker takes for a DISPATCH_T3_SKIP word leaves the lane, before a judge's skip and a size exit; a row a worker takes, a plain tier-3 row, a row whose gate waits and a draft project's stay (ar-4527)" {
   project game beta "$SANDBOX/repos/game"
   project pre draft "$SANDBOX/repos/pre"
   row game agent gh-1 "- [ ] fix(game): move the dns record #tier/3 <!-- id:gh-1 -->"
@@ -644,6 +644,9 @@ exits: improve 1 sheet 1'
   for k in gh-1 gh-2 gh-3 gh-4 gh-5; do board_row game agent "$k" '[]' '[]'; done
   board_row game agent gh-6 '["after/gh-4"]' '[]'; board_row pre agent gh-7 '[]' '[]'
   jq -c 'if .id == "gh-5" then .size = "l" else . end' "$NOTES_FIXTURE/board.rows" > "$SANDBOX/b" && mv "$SANDBOX/b" "$NOTES_FIXTURE/board.rows"
+  # a judge's skip no worker could act on (it may predate the word) does not take the row to a plan
+  printf '%s\n' '- (unclear) an unclear row' >> "$DISPATCH_POLICY"
+  skipv gh-1 unclear r false
   stub systemctl 'echo "$*" >> "$NOTES_FIXTURE/systemctl.log"'
   run skip_exits --dry-run
   assert_success
@@ -672,6 +675,13 @@ exits: improve 1 sheet 2'
   assert_line --partial 'no human-merge exit this pass'
   refute_output --partial 'human-merge	'
   assert_line 'plan	game	gh-5	too-big'
+  # a gate that has cleared, still on the row, holds nothing: the row takes the exit
+  echo '{"fleet": {"max_tier": 1}}' > "$DISPATCH_WORKERS"
+  load_gates
+  GATE_ST[after/gh-4]=clear
+  run skip_exits --dry-run
+  assert_line 'sheet	game	gh-6	human-merge'
+  refute_output --partial 'gh-7'
 }
 
 @test "skip_exits: every skip rule in the shipped policy has exactly one exit" {

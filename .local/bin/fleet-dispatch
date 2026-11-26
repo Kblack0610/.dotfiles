@@ -2185,11 +2185,11 @@ human_exit() {
 
 # human_merge_set <board json> -> sets HM to {"<project> TAB <id>": <word>}, the DISPATCH_T3_SKIP word, for
 # each open agent row no worker takes because of that word (nobody_why, the reason suggest gives), read with
-# the regex t3_rows uses: skip_exits' human-merge rows. A row with a gate tag of any form (load_gates,
-# agent-queue's list) waits on it, as sprint-stalled reads it. With no worker table (every row would read as
+# the regex t3_rows uses: skip_exits' human-merge rows. A row with a gate of any form (load_gates,
+# agent-queue's list) not yet clear (gate_wait) waits on it, as sprint-stalled reads it. With no worker table (every row would read as
 # one no worker takes) or no gate read, HM is {} and says why.
 human_merge_set() {
-  local table hm='' p id tags raw body g
+  local table hm='' p id tags raw body g gs
   HM='{}'
   table=$(workers)
   load_gates
@@ -2199,7 +2199,8 @@ human_merge_set() {
     [ -n "$id" ] || continue
     body=${raw#- \[?\] }
     re_icase "${body%%<!--*}" "$DISPATCH_T3_SKIP" || continue
-    for g in $tags; do [ -z "${GATE_ST[$g]+x}" ] || continue 2; done
+    gs=''; for g in $tags; do [ -z "${GATE_ST[$g]+x}" ] || gs+=" $g"; done
+    [ -z "$gs" ] || [ -z "$(gate_wait "$gs" "$id")" ] || continue
     ! row_worker "$table" agent "$raw" || continue
     nobody_why_set "$table" agent "$raw"
     [[ $NOBODY == "tier3 skip: "* ]] && hm+="$p"$'\t'"$id"$'\t'"${NOBODY#tier3 skip: }"$'\n'
@@ -2243,9 +2244,9 @@ human_merge_set() {
 #    skip") is never judged, since t3_rows leaves it out, so with no verdict it takes the human exit as rule
 #    `human-merge`: the human-merge list never starts unattended, and on the agent lane such a row stalled
 #    its sprint for good (ar-4527: ucp-2700 on "dns"). Not an epic, a parent, a failed row, one in a
-#    project the judge does not cover, one with an exit on record but a spent plan, or one with a gate tag
-#    of any form (it waits on that). It goes before the size exit, so a sized row with such a word reaches
-#    the person, not a plan. With no worker table (every row would read as one no worker takes) or no gate
+#    project the judge does not cover, one with an exit on record but a spent plan, or one with a gate not
+#    yet clear (it waits on that). It goes first: before a judge's skip, which no worker could act on and
+#    which may predate the word, and before the size exit, so a sized row with such a word reaches the person. With no worker table (every row would read as one no worker takes) or no gate
 #    read, that pass gives no such exit.
 # Each exit taken appends the verdict again with `exit` (and `exit_at`) to verdicts.jsonl, so counting
 # exits is a jq query, and that latest verdict, carrying its exit, is not taken again. At most
@@ -2308,15 +2309,15 @@ skip_exits() {
     | ([.rows[]? | select(.state == "open" or .state == "doing") | .tags[]? | select(startswith("of/")) | {key: .[3:], value: true}] | from_entries) as $parents
     | .rows[]? | select(.lane == "agent" and .state == "open" and .id != null and (plan_tagged | not) and "\(.type)(\(.area))" != "check(epics)")
     | $by["\(.project)\t\(.id)"] as $d
-    | if $d != null then
-        "\(.profile)\t\(.project)\t\(.id)\t\($d.line)\t\($d.dsig // "-")\t\(details_json($n))\t\($d.rule)\t\(.requested == true)\t\(planned)\t\($d | tojson)\t\(.raw)"
-      elif $off[.type // ""] and ($parents[.id] | not) and ($gone["\(.project)\t\(.id)"] | not) then
-        "\(.profile)\t\(.project)\t\(.id)\t-\t-\t\(details_json($n))\tkind\t\(.requested == true)\tfalse\t\({project, lane: "agent", key: .id, verdict: "skip", rule: "kind", reason: "kind \(.type) is off", at: $at, policy: $sig} | tojson)\t\(.raw)"
-      elif $hm["\(.project)\t\(.id)"] != null and (.type // "") != "epic" and ($parents[.id] | not)
+    | if $hm["\(.project)\t\(.id)"] != null and (.type // "") != "epic" and ($parents[.id] | not)
           and (.project as $pj | $elig | index($pj)) != null
           and (($ss["\(.project)\t\(.id)"].failed // false) | not)
           and ($ss["\(.project)\t\(.id)"].exit | IN(null, "plan")) then
         "\(.profile)\t\(.project)\t\(.id)\t-\t-\t\(details_json($n))\thuman-merge\t\(.requested == true)\tfalse\t\({project, lane: "agent", key: .id, verdict: "skip", rule: "human-merge", reason: "its text names \($hm["\(.project)\t\(.id)"]), on the human-merge list (DISPATCH_T3_SKIP)", at: $at, policy: $sig} | tojson)\t\(.raw)"
+      elif $d != null then
+        "\(.profile)\t\(.project)\t\(.id)\t\($d.line)\t\($d.dsig // "-")\t\(details_json($n))\t\($d.rule)\t\(.requested == true)\t\(planned)\t\($d | tojson)\t\(.raw)"
+      elif $off[.type // ""] and ($parents[.id] | not) and ($gone["\(.project)\t\(.id)"] | not) then
+        "\(.profile)\t\(.project)\t\(.id)\t-\t-\t\(details_json($n))\tkind\t\(.requested == true)\tfalse\t\({project, lane: "agent", key: .id, verdict: "skip", rule: "kind", reason: "kind \(.type) is off", at: $at, policy: $sig} | tojson)\t\(.raw)"
       elif ((.size // "") | ascii_downcase | IN("l", "xl")) and (.type // "") != "epic" and ($parents[.id] | not)
           and (.project as $pj | $elig | index($pj)) != null
           and (($ss["\(.project)\t\(.id)"].failed // false) | not)
