@@ -14,10 +14,10 @@ setup() {
   export FX="$BATS_TEST_TMPDIR"
   export LOAD_LOADAVG="$FX/loadavg"
   echo "12.00 10.00 9.00 3/900 1234" > "$LOAD_LOADAVG"
-  # Since the saved sample: 1000 ticks passed, 500 of them idle or iowait.
-  export LOAD_STAT="$FX/stat" LOAD_CPU_STATE="$FX/cpu-state"
+  # Since the saved sample, taken 40 s ago: 1000 ticks passed, 500 of them idle or iowait.
+  export LOAD_STAT="$FX/stat" LOAD_CPU_STATE="$FX/cpu-state" LOAD_NOW=5000
   echo "cpu  500 0 100 1200 200 0 0 0 0 0" > "$LOAD_STAT"
-  echo "1000 900" > "$LOAD_CPU_STATE"
+  echo "4960 1000 900 20%" > "$LOAD_CPU_STATE"
   cat > "$SANDBOX/bin/curl" <<'STUB'
 #!/usr/bin/env bash
 [ -n "${CURL_FAIL:-}" ] && exit 7
@@ -61,8 +61,32 @@ tip() { jq -r .tooltip <<< "$output"; }
   assert_equal "$(jq -r .text <<< "$output")" "CPU - L 12.0"
   # 100 more ticks, 25 of them idle: 75% since the run above, nowhere near the since-boot 30%.
   echo "cpu  575 0 100 1225 200 0 0 0 0 0" > "$LOAD_STAT"
-  run "$MODULE"
+  LOAD_NOW=5015 run "$MODULE"
   assert_equal "$(jq -r .text <<< "$output")" "CPU 75% L 12.0"
+}
+
+@test "a second bar inside the window shows the same CPU and keeps the sample (ar-2626)" {
+  run "$MODULE"
+  assert_equal "$(jq -r .text <<< "$output")" "CPU 50% L 12.0"
+  saved="$(cat "$LOAD_CPU_STATE")"
+  # Another bar 2 s later: 10 ticks, all busy. Measured, that sliver would read 100%.
+  echo "cpu  510 0 100 1200 200 0 0 0 0 0" > "$LOAD_STAT"
+  LOAD_NOW=5002 run "$MODULE"
+  assert_equal "$(jq -r .text <<< "$output")" "CPU 50% L 12.0"
+  assert_equal "$(cat "$LOAD_CPU_STATE")" "$saved"
+  # Past the window, the next run measures from the kept sample: 10 of 10 ticks busy.
+  LOAD_NOW=5010 run "$MODULE"
+  assert_equal "$(jq -r .text <<< "$output")" "CPU 100% L 12.0"
+}
+
+@test "a sample in the old two-field form, a damaged one or one past CPU_MAX_AGE reads as none" {
+  for saved in "1000 900" "abc 1000 900 20%" "4000 1000 900 20%"; do
+    echo "$saved" > "$LOAD_CPU_STATE"
+    run "$MODULE"
+    assert_success
+    assert_equal "$(jq -r .text <<< "$output")" "CPU - L 12.0"
+    assert_equal "$(cat "$LOAD_CPU_STATE")" "5000 2000 1400 -"
+  done
 }
 
 @test "iowait counts as idle" {

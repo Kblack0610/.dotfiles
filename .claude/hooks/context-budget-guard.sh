@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # context-budget-guard.sh - PostToolUse guard for Edit/Write on a file that loads into
-# every session: the global CLAUDE.md or a repo root CLAUDE.md or AGENTS.md, whose size is
-# paid on every turn. Memory indexes and lessons files have no size branch (`lessons fat`
+# every session: the global CLAUDE.md or a repo root CLAUDE.md or AGENTS.md, or an
+# auto-memory index (`memory/MEMORY.md`), whose size is paid on every turn. This file holds the budget
+# numbers; every other mention links here. Lessons files have no size branch (`lessons fat`
 # and dream cover them).
 #
 # A memory file, lessons file or SKILL.md also gets a restated-instruction check (only when
@@ -10,7 +11,8 @@
 # names the scorer (default: skill-drift on PATH, else this repo's).
 #
 # WARNS, does not block: exit 2 feeds stderr back to the writer.
-# Budgets (bytes): CONTEXT_BUDGET_GLOBAL (20480), CONTEXT_BUDGET_REPO (12288);
+# Budgets (bytes): CONTEXT_BUDGET_GLOBAL (20480), CONTEXT_BUDGET_REPO (12288),
+# CONTEXT_BUDGET_MEMORY (8192).
 # CONTEXT_BUDGET_GLOBAL_FILE names the global file (default ~/.claude/CLAUDE.md).
 
 set -uo pipefail
@@ -33,6 +35,9 @@ elif [[ ${path##*/} == CLAUDE.md || ${path##*/} == AGENTS.md ]] &&
   [[ $(git -C "$(dirname "$real")" rev-parse --show-toplevel 2>/dev/null) == "$(dirname "$real")" ]]; then
   kind="repo root ${path##*/}"
   max_bytes="${CONTEXT_BUDGET_REPO:-12288}"
+elif [[ $path == */memory/MEMORY.md ]]; then
+  kind="memory index MEMORY.md"
+  max_bytes="${CONTEXT_BUDGET_MEMORY:-8192}"
 else
   [[ $path == */memory/*.md || ${path##*/} == SKILL.md || ( ${path%/*} == */.agent/lessons && $path == *.md ) ]] || exit 0
   kind=""

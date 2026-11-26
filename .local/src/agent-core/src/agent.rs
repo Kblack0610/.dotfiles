@@ -61,9 +61,12 @@ pub struct Agent {
     /// writes, which dates its last activity.
     pub harness: &'static str,
     pub rollout: Option<PathBuf>,
-    /// Epoch seconds of its last activity: the transcript's (or rollout's) last write, else the
-    /// process start. Filled by `write_rows` for the recent sort; display only, like `stage`.
+    /// Epoch seconds of its last activity: the transcript's (or rollout's) last write or, for a
+    /// harness row, its pane's last output, whichever is later; else the process start. Filled by `write_rows` for the recent sort; display only, like `stage`.
     pub last_active: Option<u64>,
+    /// Epoch seconds of a harness row's pane output (`tmux::Pane::activity`); 0 for a Claude row,
+    /// which its transcript dates, and for a parked row.
+    pub activity: u64,
 }
 
 impl Agent {
@@ -179,6 +182,8 @@ fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> (Vec<Agent>
             harness: "",
             rollout: None,
             last_active: None,
+            // Its transcript dates a Claude, never the pane (a sibling split, or a redraw).
+            activity: 0,
         });
     }
     // Side by side, since each transcript is read whole (par_map).
@@ -192,9 +197,10 @@ fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> (Vec<Agent>
         a.plan_slug = info.plan_slug;
     }
     // After every Claude pane, so a window with a Claude in one split stays that Claude's row.
+    let now = crate::now_secs();
     for (pane, target, xpid, harness) in others {
         if !seen.contains(&target) {
-            if let Some(a) = harness_agent(&pane, target, xpid, harness, &proc_root) {
+            if let Some(a) = harness_agent(&pane, target, xpid, harness, &proc_root, now) {
                 seen.insert(a.target.clone());
                 agents.push(a);
             }
@@ -208,8 +214,9 @@ fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> (Vec<Agent>
 /// item fleet-dispatch launched it for (`AGENT_QUEUE_ITEM` in its environment) and its session id,
 /// the one claimed on that item: a Codex run's thread (its open rollout file, claimed by agent-codex),
 /// an opencode's `--session` argument (claimed by fleet-dispatch), an agy's `--conversation`
-/// argument. It reads as busy, which is all a running harness can be; its transcript is not
-/// Claude's, so `jsonl` stays empty.
+/// argument. It keeps no status file, so its status is the one reading any harness gets
+/// (`activity_status`): busy while it wrote its rollout or drew in its pane within
+/// `HARNESS_IDLE_SECS` before `now`, idle after. Its transcript is not Claude's, so `jsonl` stays empty.
 /// An opencode with no `run` argument is a headless run's replay, its TUI on the finished run's
 /// transcript (fleet-dispatch gateway_launch), so it reads as done. The summary names the run's pair
 /// (`AGENT_RUN_PAIR`, harness:model, else the harness) and, once it ended, what it left
@@ -222,6 +229,7 @@ fn harness_agent(
     xpid: u32,
     harness: &'static str,
     proc_root: &Path,
+    now: u64,
 ) -> Option<Agent> {
     let item = account::env_of(proc_root, xpid, "AGENT_QUEUE_ITEM");
     if harness == "opencode" && item.is_empty() {
@@ -238,7 +246,7 @@ fn harness_agent(
     let status = if harness == "opencode" && has_arg(proc_root, xpid, "run") == Some(false) {
         "done"
     } else {
-        "busy"
+        activity_status(last_write(rollout.as_deref(), pane.activity), now)
     };
     let pair = account::env_of(proc_root, xpid, "AGENT_RUN_PAIR");
     let label = if pair.is_empty() {
@@ -280,9 +288,33 @@ fn harness_agent(
         harness,
         rollout,
         started_at: proc_started(proc_root, xpid),
+        activity: pane.activity,
         target,
         ..Agent::default()
     })
+}
+
+/// How long a harness may go without writing before it reads idle. A working harness redraws
+/// its pane (a spinner or an elapsed-time counter) every second or so, and a Codex run appends
+/// to its rollout, so a minute of neither is a run at its prompt.
+pub const HARNESS_IDLE_SECS: u64 = 60;
+
+/// The busy or idle of a session that reports no status of its own, whatever its harness:
+/// `busy` while its last write (`last_write`) is under `HARNESS_IDLE_SECS` old, else `idle`.
+/// A write never read (0: no rollout, and a tmux without `pane_last_output_time`) reads busy, as
+/// every harness row did before this reading, so a missing reading never parks a working run.
+fn activity_status(last_write: u64, now: u64) -> &'static str {
+    if last_write == 0 || now.saturating_sub(last_write) < HARNESS_IDLE_SECS {
+        "busy"
+    } else {
+        "idle"
+    }
+}
+
+/// A session's last write: its transcript or rollout file's mtime, or its pane's last output,
+/// whichever is later; 0 when neither was read.
+fn last_write(file: Option<&Path>, activity: u64) -> u64 {
+    mtime_secs(file).max(activity)
 }
 
 /// Epoch seconds process `pid` started: its start in clock ticks after boot (`/proc/<pid>/stat`
@@ -486,10 +518,10 @@ pub struct ListRow<'a> {
 /// the reads cost their sum; side by side they cost about the largest one.
 pub fn list_rows(agents: &[Agent]) -> Vec<ListRow<'_>> {
     let facts = par_map(agents, |a| match &a.jsonl {
-        Some(p) => (transcript::fleet_info(p), mtime_secs(Some(p))),
+        Some(p) => (transcript::fleet_info(p), last_write(Some(p), a.activity)),
         None => (
             transcript::fleet_info(Path::new("")),
-            mtime_secs(a.rollout.as_deref()),
+            last_write(a.rollout.as_deref(), a.activity),
         ),
     });
     agents
@@ -548,7 +580,7 @@ fn list_row(a: &Agent, info: transcript::FleetInfo, mtime: u64) -> ListRow<'_> {
 /// Date each row's last activity for the recent sort: one stat of its transcript (or rollout).
 pub fn with_last_active(agents: &mut [Agent]) {
     for a in agents {
-        let mtime = mtime_secs(a.jsonl.as_deref().or(a.rollout.as_deref()));
+        let mtime = last_write(a.jsonl.as_deref().or(a.rollout.as_deref()), a.activity);
         a.last_active = Some(idle_since(None, mtime, a.started_at)).filter(|&t| t > 0);
     }
 }
@@ -617,10 +649,27 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_harness_row_is_read_from_its_process_item_and_session() {
-        let root = std::env::temp_dir().join(format!("agent-core-codex-{}", std::process::id()));
+    /// A scratch /proc root and a pane in a hub session, for the harness rows below.
+    fn harness_fixture(tag: &str) -> (PathBuf, tmux::Pane) {
+        let root = std::env::temp_dir().join(format!("agent-core-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let pane = tmux::Pane {
+            server: "hub".into(),
+            session: "dotfiles-agent-37".into(),
+            window_index: "1".into(),
+            current_path: "/home/u/.worktrees/dotfiles-agent-37".into(),
+            pid: 200,
+            pane_id: "%7".into(),
+            ..tmux::Pane::default()
+        };
+        (root, pane)
+    }
+
+    #[test]
+    fn a_codex_row_is_read_from_its_process_item_and_session() {
+        let (root, mut pane) = harness_fixture("codex");
+        let now = crate::now_secs();
         let fd = root.join("300").join("fd");
         fs::create_dir_all(&fd).unwrap();
         fs::write(
@@ -633,18 +682,17 @@ mod tests {
         fs::write(&rollout, "").unwrap();
         std::os::unix::fs::symlink("/dev/null", fd.join("0")).unwrap();
         std::os::unix::fs::symlink(&rollout, fd.join("5")).unwrap();
-        let pane = tmux::Pane {
-            server: "hub".into(),
-            session: "dotfiles-agent-37".into(),
-            window_index: "1".into(),
-            current_path: "/home/u/.worktrees/dotfiles-agent-37".into(),
-            pid: 200,
-            pane_id: "%7".into(),
-            ..tmux::Pane::default()
-        };
-        let a =
-            harness_agent(&pane, "hub/dotfiles-agent-37:1".into(), 300, "codex", &root).unwrap();
+        let a = harness_agent(
+            &pane,
+            "hub/dotfiles-agent-37:1".into(),
+            300,
+            "codex",
+            &root,
+            now,
+        )
+        .unwrap();
         assert_eq!(a.harness, "codex");
+        // Busy by its rollout, written just now, though its pane drew nothing.
         assert_eq!(a.status, "busy");
         assert_eq!(a.session_id, "01a1c3ac-40c2-7282-bafa-0adf7d5ff0a0");
         assert_eq!(a.summary, "codex: codex-parity-p6");
@@ -655,9 +703,41 @@ mod tests {
         assert_eq!(a.rollout.as_deref(), Some(rollout.as_path()));
         assert!(a.jsonl.is_none() && !a.needs_attention());
         // No fds to read (macOS, or a process gone): still a row, with no thread id.
-        let b =
-            harness_agent(&pane, "hub/dotfiles-agent-37:1".into(), 301, "codex", &root).unwrap();
+        let b = harness_agent(
+            &pane,
+            "hub/dotfiles-agent-37:1".into(),
+            301,
+            "codex",
+            &root,
+            now,
+        )
+        .unwrap();
         assert_eq!((b.session_id.as_str(), b.summary.as_str()), ("", "codex"));
+        // No rollout and no pane reading: no evidence either way, so it stays busy.
+        assert_eq!(b.status, "busy");
+        // A pane quiet past the idle window, and no rollout: idle, as a Claude at its prompt.
+        pane.activity = now - HARNESS_IDLE_SECS;
+        let quiet = harness_agent(
+            &pane,
+            "hub/dotfiles-agent-37:1".into(),
+            301,
+            "codex",
+            &root,
+            now,
+        )
+        .unwrap();
+        assert_eq!(
+            (quiet.status.as_str(), quiet.glyph),
+            ("idle", session::glyph("idle"))
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_opencode_row_is_read_from_its_process_item_and_session() {
+        let (root, mut pane) = harness_fixture("opencode");
+        let now = crate::now_secs();
+        pane.activity = now;
         // An opencode harness: its session id is its --session argument, and it has no rollout.
         let oc = root.join("400");
         fs::create_dir_all(&oc).unwrap();
@@ -679,6 +759,7 @@ mod tests {
             400,
             "opencode",
             &root,
+            now,
         )
         .unwrap();
         assert_eq!(o.started_at, Some(1795000000 + 123));
@@ -697,6 +778,11 @@ mod tests {
             )
         );
         assert!(o.rollout.is_none() && o.status == "busy");
+        // The same opencode with its pane quiet past the idle window reads idle too.
+        pane.activity = now - HARNESS_IDLE_SECS;
+        let quiet = harness_agent(&pane, "lab/x:1".into(), 400, "opencode", &root, now).unwrap();
+        assert_eq!(quiet.status, "idle");
+        pane.activity = now;
         // A run that names its pair reads as it; its replay (no `run` argument) reads done, with its result.
         let rp = root.join("402");
         fs::create_dir_all(&rp).unwrap();
@@ -710,7 +796,7 @@ mod tests {
             b"opencode\0run\0--standalone\0--session\0ses_eval18\0",
         )
         .unwrap();
-        let r = harness_agent(&pane, "lab/x:1".into(), 402, "opencode", &root).unwrap();
+        let r = harness_agent(&pane, "lab/x:1".into(), 402, "opencode", &root, now).unwrap();
         assert_eq!(
             (r.status.as_str(), r.summary.as_str()),
             ("busy", "opencode-go:glm: t-one")
@@ -725,7 +811,7 @@ mod tests {
             b"opencode\0--standalone\0--session\0ses_eval18\0",
         )
         .unwrap();
-        let r = harness_agent(&pane, "lab/x:1".into(), 402, "opencode", &root).unwrap();
+        let r = harness_agent(&pane, "lab/x:1".into(), 402, "opencode", &root, now).unwrap();
         assert_eq!(
             (
                 r.status.as_str(),
@@ -742,23 +828,49 @@ mod tests {
         );
         // No cmdline to read (macOS): a run is never taken for its replay.
         fs::remove_file(rp.join("cmdline")).unwrap();
-        let r = harness_agent(&pane, "lab/x:1".into(), 402, "opencode", &root).unwrap();
+        let r = harness_agent(&pane, "lab/x:1".into(), 402, "opencode", &root, now).unwrap();
         assert_eq!(r.status, "busy");
         // The human's own opencode (no queue item in its environment) is no fleet row.
         fs::create_dir_all(root.join("401")).unwrap();
         fs::write(root.join("401").join("environ"), b"TERM=x\0").unwrap();
-        assert!(harness_agent(&pane, "lab/x:1".into(), 401, "opencode", &root).is_none());
+        assert!(harness_agent(&pane, "lab/x:1".into(), 401, "opencode", &root, now).is_none());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_agy_row_is_read_from_its_conversation_argument() {
+        let (root, mut pane) = harness_fixture("agy");
+        let now = crate::now_secs();
+        pane.activity = now;
         // An agy, the human's own included: a row, its session id the --conversation argument.
         let ag = root.join("500");
         fs::create_dir_all(&ag).unwrap();
         fs::write(ag.join("environ"), b"TERM=x\0").unwrap();
         fs::write(ag.join("cmdline"), b"agy\0--conversation\0conv-42\0").unwrap();
-        let g = harness_agent(&pane, "lab/x:1".into(), 500, "agy", &root).unwrap();
+        let g = harness_agent(&pane, "lab/x:1".into(), 500, "agy", &root, now).unwrap();
         assert_eq!(
             (g.harness, g.session_id.as_str(), g.summary.as_str()),
             ("agy", "conv-42", "agy")
         );
+        assert_eq!(g.status, "busy");
+        // The same agy with its pane quiet past the idle window reads idle, as every harness does.
+        pane.activity = now - HARNESS_IDLE_SECS;
+        let quiet = harness_agent(&pane, "lab/x:1".into(), 500, "agy", &root, now).unwrap();
+        assert_eq!(quiet.status, "idle");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn activity_reads_busy_inside_the_idle_window_or_unread_and_idle_past_it() {
+        let now = 1_800_000_000;
+        assert_eq!(activity_status(now, now), "busy");
+        assert_eq!(activity_status(now - HARNESS_IDLE_SECS + 1, now), "busy");
+        assert_eq!(activity_status(now - HARNESS_IDLE_SECS, now), "idle");
+        assert_eq!(activity_status(0, now), "busy");
+        // A clock behind the write (another host's mtime) is still a fresh write.
+        assert_eq!(activity_status(now + 5, now), "busy");
+        assert_eq!(last_write(None, 7), 7);
+        assert_eq!(last_write(Some(Path::new("/nonexistent/x")), 0), 0);
     }
 
     #[test]

@@ -54,6 +54,22 @@ setup() {
   assert_output 'feat(ui): show the cells'
 }
 
+@test "row_checked keeps the line's #after/ on every row and its #pts/ on a one-row filing (ar-5551)" {
+  local line='feat(ui): the stage cells #of/gm-3 #pts/5 #after/gm-9 #agent'
+  run row_checked 'feat(ui): show the cells #size/m #pts/3' game "$EPICS" "$line" "$BOARD"
+  assert_output 'feat(ui): show the cells #size/m #of/gm-3 #pts/5 #after/gm-9'
+  run row_checked 'feat(ui): show the cells #size/m' game "$EPICS" "$line" "$BOARD" 1
+  assert_output 'feat(ui): show the cells #size/m #of/gm-3 #pts/5 #after/gm-9'
+  # a line split into two rows: each waits, each keeps its own size
+  run row_checked 'feat(ui): show the legend #pts/2' game "$EPICS" "$line" "$BOARD" 2
+  assert_output 'feat(ui): show the legend #pts/2 #of/gm-3 #after/gm-9'
+  # negative controls: a gate the row already has is not doubled, and an empty row stays empty
+  run row_checked 'feat(ui): show the cells #after/gm-9' game "$EPICS" "$line" "$BOARD" 2
+  assert_output 'feat(ui): show the cells #after/gm-9 #of/gm-3'
+  run row_checked '' game "$EPICS" "$line" "$BOARD"
+  assert_output ''
+}
+
 @test "unparented: a new epic is for a row with no parent" {
   run unparented 'fix(ui): a #of/gm-3' 'fix(ui): b'
   assert_success

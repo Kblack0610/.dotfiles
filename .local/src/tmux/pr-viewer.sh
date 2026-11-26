@@ -19,6 +19,9 @@
 
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 . "${SELF%/*}/panel-lib.sh" || exit 1
+# CI_JQ: the one reading of a PR's checks (a superseded run's red is dropped), shared with
+# fleet-sessions and agent-land.
+. "${SELF%/*}/../../lib/pr-ci.sh" || exit 1
 
 # Every tunable is ${VAR:-default} right here. The old absolute
 # "$HOME/.dotfiles/.local/src/tmux/pr-repos.conf" broke the moment the repo moved and made
@@ -63,6 +66,7 @@ _repo_rows() {
     --json number,title,createdAt,isDraft,reviewDecision,statusCheckRollup,url \
     --limit "$PR_LIMIT" --state open 2>/dev/null)" || return 0
   [ -n "$json" ] && [ "$json" != "[]" ] || return 0
+  json="$(jq -c "$CI_JQ"' map(. + {ci: ci})' <<<"$json")" || { panel_warn "could not read CI for $repo"; return 0; }
 
   PR_JSON="$json" python3 - "$repo" "$PR_TITLE_WIDTH" \
     "$C_SEL" "$C_DIM" "$C_OFF" "$G_ATTN" "$G_BUSY" "$G_OK" "$G_IDLE" <<'PYTHON'
@@ -85,14 +89,9 @@ def age(iso):
             return f'{int(s / div)}{unit}'
     return f'{int(s / 2592000)}mo'
 
-def ci_glyph(checks):
-    if not checks:
-        return g_idle
-    if any(c.get('conclusion') in ('FAILURE', 'ERROR') for c in checks):
-        return g_attn
-    if any(c.get('status') in ('PENDING', 'QUEUED', 'IN_PROGRESS') for c in checks):
-        return g_busy
-    return g_ok
+# ci is pr-ci.sh's reading: NONE, PENDING, FAIL (once every check finished) or PASS.
+def ci_glyph(ci):
+    return {'FAIL': g_attn, 'PENDING': g_busy, 'PASS': g_ok}.get(ci, g_idle)
 
 def review_glyph(decision):
     return {'APPROVED': g_ok, 'CHANGES_REQUESTED': g_attn,
@@ -108,7 +107,7 @@ def combined(ci, rev):
 
 rows = []
 for pr in prs:
-    ci = ci_glyph(pr.get('statusCheckRollup') or [])
+    ci = ci_glyph(pr.get('ci') or '')
     rev = review_glyph(pr.get('reviewDecision') or '')
     draft = f' {c_dim}[draft]{c_off}' if pr.get('isDraft') else ''
     display = '  %s #%-5s %-*s %5s  [%s CI][%s Rev]%s' % (
@@ -129,6 +128,7 @@ PYTHON
 
 cmd_list() {
   panel_need gh
+  panel_need jq
   panel_need python3
 
   # `gh auth status` was checked while `gh` itself never was, so a machine without gh

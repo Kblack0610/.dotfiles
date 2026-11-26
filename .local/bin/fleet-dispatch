@@ -31,7 +31,7 @@
 #   fleet-dispatch trainee-review SLUG  a trainee run's tail, in its worktree: its diff to a patch that waits for a batch review
 #   fleet-dispatch trainee-reject SLUG [--cause C] --why TEXT  send a trainee's row back to the normal queue, on claude
 #   fleet-dispatch validate SLUG --pr OWNER/REPO#N --head SHA --why TEXT  queue a second agent's review of an item's critical PR (agent-land)
-#   fleet-dispatch trainee-rollup [--dry]  each trainee reject cause seen DISPATCH_ROLLUP_MIN times in DISPATCH_ROLLUP_DAYS: one fix row on the board, joined night to night by its cause (nightly-measure runs it)
+#   fleet-dispatch rollup [--dry]  each cause of a run that did not land (a trainee reject, a failed or no-PR item, a model-lane demote or retire) seen DISPATCH_ROLLUP_MIN times in DISPATCH_ROLLUP_DAYS: one fix row on the board, joined night to night by its cause (nightly-measure runs it)
 #   fleet-dispatch direct-land SLUG [--rc N]  a direct run's tail, in its worktree: a clean run's diff committed, a PR opened and landed on CI
 #   fleet-dispatch start --project P [--profile X] [--agent] [--model M] [--harness H]
 #       (--item SLUG | --brief FILE --row KEY [--mode plan] [--now] [--cwd REPO]
@@ -179,6 +179,8 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/claude-end.sh"
 # shellcheck source=../lib/wake-pace.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/wake-pace.sh"
+# shellcheck source=../lib/fleet-live.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fleet-live.sh"   # WAITS_JQ, LIVE_JQ: what pace_target counts as live
 LEVEL=$(machine_level)
 [ -n "$DISPATCH_WORKER_VERB" ] || read -r PER_PASS MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH_PER_PASS" DISPATCH_MAX_LOAD "$DISPATCH_MAX_LOAD")
 # Tier-3 rows fill never promotes, whatever the judge says (decide rows and the release kind are off in
@@ -204,7 +206,8 @@ CODEX_ROLLOUT_JQ="${DISPATCH_CODEX_ROLLOUT_JQ:-$HOME/.local/lib/codex-rollout.jq
 OC_SESSION_JQ="${DISPATCH_OPENCODE_SESSION_JQ:-$HOME/.local/lib/opencode-session.jq}"
 OC_DB="${DISPATCH_OPENCODE_DB:-$HOME/.local/share/opencode/opencode.db}"   # the shared opencode.db, where item_end reads why a go or nim run ended
 NOTES_INGEST="${DISPATCH_NOTES_INGEST:-$HOME/.local/state/notes/ingest.jsonl}"   # notes' record of every row write, who and by which channel: where asker_map reads whose words a #requested row is
-LANE_RUNS="${DISPATCH_LANE_RUNS:-$HOME/.agent/model-lane/runs.jsonl}"   # model-lane's run log: trainee_load reads which slugs a ladder run took, trainee-rollup its trainee reject reasons
+LANE_RUNS="${DISPATCH_LANE_RUNS:-$HOME/.agent/model-lane/runs.jsonl}"   # model-lane's run log: trainee_load reads which slugs a ladder run took, rollup its trainee reject reasons
+LANE_EVENTS="${DISPATCH_LANE_EVENTS:-$HOME/.agent/model-lane/demotions.jsonl}"   # model-lane's demote, promote and retire events: rollup files a row for each demote or retire left standing
 AGY_RUNS="${DISPATCH_AGY_RUNS:-$HOME/.agent/agy/runs}"   # each agy run's log (agent-agy), srt settings and tmp: where item_end reads why it ended
 AGY_RESULT_JQ="${DISPATCH_AGY_RESULT_JQ:-$HOME/.local/lib/agy-result.jq}"
 HARNESSES="${DISPATCH_HARNESSES:-$HOME/.config/agentctl/harnesses.json}"   # the gateway harnesses: model map, timeout, key files
@@ -903,9 +906,14 @@ item_sessions() {
   return 0
 }
 
-# panel_lists <agent> -- agent-panel lists this agent's sessions, by Claude session id: Claude, and
-# a harness claude-lazer launches. Another agent's `sessions:` ids (a codex thread) are never there.
+# panel_lists <agent> -- this agent's sessions are on the panel by Claude session id: Claude, and
+# a harness claude-lazer launches. Another agent's `sessions:` ids (a codex thread) are on the panel
+# too, but as that harness's rows: claude_rows drops them, so only a Claude's ids are matched.
 panel_lists() { [ "$1" = claude ] || [ "$(harness_launcher "$1")" = claude-lazer ]; }
+
+# claude_rows -- stdin's `agent-panel list --json` lines that are Claude conversations (an old line has no harness).
+# The readers below treat a row as a Claude's pane or session; the other harnesses' rows are not that.
+claude_rows() { jq -c 'select((.harness // "claude") == "claude")' 2>/dev/null; }
 
 # past_reap_grace <started> -- exit 0 once an item started at least DISPATCH_REAP_GRACE seconds ago.
 past_reap_grace() {
@@ -918,8 +926,8 @@ past_reap_grace() {
 # says the item's Claude has exited while its tmux session lives on (or, for a hub item, when none
 # of the Claude sessions that worked it is live). A tmux session alone is not a session: a shell
 # left after claude exits keeps it, and an item in a hub window has none of its own. Exit 1 (keep
-# the item) when it cannot tell: an agent that is not Claude (agent-panel lists only Claude, which
-# a harness launched by claude-lazer is), a
+# the item) when it cannot tell: an agent that is not Claude (its session ids are not a Claude's: a Codex
+# thread; a harness launched by claude-lazer is a Claude), a
 # parked pane (its claude exited on purpose), an item started in the last DISPATCH_REAP_GRACE
 # seconds (its claude may still be booting), or a panel it cannot read or that lists nobody.
 # An item that records its session ids is alive only while one of them is on the panel; the tmux
@@ -936,7 +944,7 @@ claude_gone() {
     [ -n "$sids" ] || return 1
   fi
   past_reap_grace "$started" || return 1
-  [ -n "${REAP_PANEL+set}" ] || REAP_PANEL=$(agent-panel list --json 2>/dev/null) || REAP_PANEL=''
+  [ -n "${REAP_PANEL+set}" ] || { REAP_PANEL=$(agent-panel list --json 2>/dev/null) || REAP_PANEL=''; REAP_PANEL=$(claude_rows <<<"$REAP_PANEL"); }
   [ -n "$REAP_PANEL" ] || return 1
   jq -e -s --arg t "$server/$sess" --arg ids "$sids" '
     ($ids | split(" ") | map(select(. != ""))) as $ids
@@ -949,7 +957,7 @@ claude_gone() {
 # codex_gone <slug> <agent> <started> -- exit 0 when the item runs on a Codex launcher, started past
 # DISPATCH_REAP_GRACE ago, and its run is no longer live (codex_run_live). The tmux session is no
 # witness for a Codex item: wt recycles worktree lanes, so a Claude item can take the same session
-# name, and agent-panel lists that Claude, never the Codex run (ar-1087). Like claude_gone it is one
+# name, and the Claude rows of the panel never hold the Codex run (ar-1087). Like claude_gone it is one
 # witness, and reap settles on it only when the reap before also read it gone (reap_confirm).
 codex_gone() {
   [ "$(harness_launcher "$2")" = codex ] || return 1
@@ -1116,12 +1124,6 @@ restoring() {
 # claude exited on purpose, so reap keeps it and it holds no run unit and adds no load.
 parked() { [ -e "$PARKED_DIR/$1" ] || compgen -G "$PARKED_DIR/$1:*" >/dev/null; }
 
-# WAITS_JQ -- jq defs. waits: a session waiting on the human, which holds no slot: NEEDS whose reason does not end in
-# `carrying on` (fleet-sessions' own test: one carrying on past its ask is busy). frees: waits, or waiting its
-# landing turn behind another PR (open_job queue): neither counts as a live session in pace_target nor holds a run
-# unit (freed_item), so the two read one rule.
-WAITS_JQ='def waits: .bucket == "NEEDS" and ((.reason // "") | endswith("carrying on") | not); def frees: waits or .open_job == "queue";'
-
 # freed_item <slug> -- exit 0 when the fleet state document shows the queue item's session as freed (WAITS_JQ frees).
 # fleet-sessions writes `.item` as {slug, is, row, also}: the slugs are slug and also while the item runs or waits
 # there (is own or here), never one that moved on to another session; a bare string is read too. A document older
@@ -1204,17 +1206,8 @@ pace_target() {
   else TARGET=$DISPATCH_TARGET_AWAY TARGET_WHEN=away; fi
   local spare live
   spare=$(jq -r '.fleet.spare // empty' <<<"${ACCT_ROWS:-$(claude-acct room --json 2>/dev/null)}" 2>/dev/null)
-  live=$(jq -c --argjson now "$(date +%s)" --argjson fresh "$(( DISPATCH_STATE_FRESH_MIN * 60 ))" '
-    select($now - (.generated_epoch // 0) <= $fresh) | (.vocab.finished // []) as $done
-    | '"$WAITS_JQ"'
-    [.sessions[] | select(.bucket != "PARKED" and (.bucket | IN($done[]) | not) and ((.labels // []) | index("shepherd") | not)
-        and ((.account // "") | IN("codex", "opencode") | not))]
-    | (map(select(frees | not))) as $live
-    | {live: ($live | length),
-       needs: map(select(.open_job != "queue" and waits)) | length,
-       working: ($live | map(select(.bucket == "WORKING" or .bucket == "NEEDS")) | length),
-       idle: ($live | map(select(.bucket != "WORKING" and .bucket != "NEEDS")
-         | "\(.target) \(.bucket)\(if (.reason // "") != "" then ": \(.reason)" else "" end)"))}' \
+  live=$(jq -c --argjson now "$(date +%s)" --argjson fresh "$(( DISPATCH_STATE_FRESH_MIN * 60 ))" \
+    'select($now - (.generated_epoch // 0) <= $fresh) | '"$LIVE_JQ" \
     "$FLEET_STATE_FILE" 2>/dev/null)
   TOTAL_LIVE=$(jq -r '.live // empty' <<<"$live" 2>/dev/null)
   NEEDS_LIVE=$(jq -r '.needs // empty' <<<"$live" 2>/dev/null)
@@ -1255,7 +1248,7 @@ asker_map() {
   # shellcheck disable=SC2016
   ASKER_MAP=$({ grep -E '"action":"(added|filed)"|"want":"|"by":"human"' "$NOTES_INGEST" || true; } | jq -sc '
     def human_words: (.want // "") as $w | ((.session_id // "") == "" and ((.by // "") | IN("", "human"))) as $hand
-      | ($w | IN("focus", "voice", "request", "meeting")) or ($w == "human" and .action == "added" and $hand)
+      | ($w | IN("focus", "voice", "request", "meeting")) or ($w == "human" and (.action | IN("added", "dup")) and $hand)
         or ((.by // "") == "human" and $hand and ((.text // .row // .why // "") | test("#requested")));
     [.[] | select((.id // "") != "")] | group_by(.id)
     | map({key: .[0].id, value: (if any(.[]; human_words) then "human"
@@ -1278,15 +1271,28 @@ row_asker() { asker_map; jq -r --arg k "$1" '.[$k] // empty' <<<"$ASKER_MAP"; }
 # way while the fleet held 79% of them (plan swhow-me-asll-data-modular-otter P3). A canary pinned to a
 # harness with its own source ($s.sourced, harnesses.json `source`) passes, as a trainee start does: it
 # spends no Claude session, and held, the week's set never ran while the fleet sat over its share (ask
-# GDUmQQ, ar-4554). A land or fix-ci requeue of an item's own PR (`pr`, `pr_owner` and its
-# `<owner>_tries` stamp, the test item_brief reads) passes too: it starts a Claude session, but a stranded
-# PR costs more than one, and DISPATCH_FIX_TRIES bounds the tries; held, share_return sent hc-857 back to
-# its row and left home-config#1406 green and unmerged (2026-11-23). The one test share_why and
-# queue_depth apply.
+# GDUmQQ, ar-4554). An item that already holds work passes too, as a continuation and not new intake: a PR
+# recorded on it (`pr`: a land or fix-ci requeue included, whose tries DISPATCH_FIX_TRIES bounds), a `handoff:` note (AGENT_HANDOFF_MAX bounds them), or a
+# `requeued` stamp (agent-queue move running -> queued). Held, share_return sent hc-857 back to its row and
+# left home-config#1406 green and unmerged (2026-11-23), and sent a handed-off ar-5776, ar-5813 and ar-5605
+# back too (2026-11-25, ar-5880). A new row carries none of the three, so the cap still holds it.
+# An urgent or high chain successor passes as well: an item with an `after:` key that is a plan phase or a validate item, agent-queue's
+# stack_dependent test (a `plan:` line or a phase brief, PHASE_BRIEF_RE; the `validate` tag). The cap
+# already let its chain start, and chain-lag bounds its handoff (chain_handoff_p90_max); held,
+# validate-ar-5194 waited 113m and tripped it (ar-4436, 2026-11-24). A phase whose `after:` is the previous
+# phase of its own plan (`<plan>-pN` behind `<plan>-pM`) passes at any priority and from whoever queued the plan: a human
+# ask deduped into a chain left its phases without #requested, and the cap held them 8h (2026-11-25,
+# ar-6060). A session plan's first phase, and any other `--after` follow-up (high by default), still wait.
+# The one test share_why and queue_depth apply.
 # shellcheck disable=SC2016
 SHARE_JQ="$HUMAN_ASK_JQ"'def share_held($s): (.project // "") as $p | (.agent // "claude") as $a | ($s.projects[$p].full // false)
-  and (((.pr // "") != "" and (.pr_owner // "") != "" and (.[.pr_owner + "_tries"] // "") != "") | not)
+  and (((.pr // "") != "" or (.handoff // "") != "" or (.requeued // "") != "") | not)
+  and (((.after // "") != "" and ((.priority // "") | test("^(urgent|high)$"))
+    and ((.plan // "") != "" or ((" " + (.tags // "") + " ") | contains(" validate "))
+      or ((.task // "") | test("(^|\\s)Phases? [0-9]+( and [0-9]+)* of the plan /[^:]+\\.md:")))) | not)
   and ((.priority == "urgent" and (.from // "human") == "human") | not)
+  and ((((.slug // "") | sub("-p[0-9]+$"; "")) as $pl | (.plan // "") != ""
+    and any(((.after // "") | split(" "))[]; test("^" + $pl + "-p[0-9]+$"))) | not)
   and (((.plan // "") != "" and (.from // "human") == "human") | not)
   and ((" " + (.tags // "") + " ") | test(" #?red ") | not) and (human_ask | not)
   and (((" " + (.tags // "") + " ") | contains(" canary ")) and any(($s.sourced // [])[]; . == $a) | not);'
@@ -1339,8 +1345,8 @@ share_full_names() {
     | "\(.key) (\(.value.n) of \($t) starts in \($h)h, cap \(.value.cap)%)"] | join(", ")' <<<"$SHARE_STATE"
 }
 
-# share_why <item json> -> why the project share cap holds the item, or nothing: share_held (which passes a
-# land or fix-ci requeue of the item's own PR, SHARE_JQ), outside the human and sprint floors (HUMAN_PASS), which are the human's own work and never cut off, and outside the
+# share_why <item json> -> why the project share cap holds the item, or nothing: share_held (which passes an
+# item that already holds work: a PR, a handoff or a requeue, SHARE_JQ), outside the human and sprint floors (HUMAN_PASS), which are the human's own work and never cut off, and outside the
 # trainee floor (TRAINEE_PASS), whose start runs on a free trainee key and spends no session the cap
 # guards. A Claude canary waits like any other item of its project. pick_item lets the first held item go when nothing
 # else can start, so the cap never leaves a slot idle.
@@ -1358,7 +1364,7 @@ share_why() {
 # work that can start, and the fill promotes the row again once the share has room. Held in queued/, a
 # let-go fill's leftovers sat behind every other project's fresh row: ar-3412 and four more 9h on
 # 2026-11-21, the queued age p90 494m against its 420m bound (watch queue-age, ar-4554). A canary has no
-# row; canary_top_up queues no Claude lane's while the share is full. A sprint row is left to its floor
+# row; canary_top_up skips a Claude lane's task of a full project (--off-claude <projects>, ar-5406). A sprint row is left to its floor
 # (sprint_floor_start). Run after the pass, so the floors and the let-go have started what they would.
 share_return() {
   share_full || return 0
@@ -2172,23 +2178,30 @@ verdict_errors() {
 human_exit() {
   local prof="$1" p="$2" body="$3" req="$4" gated="$5" rc=0
   if [ "$req" = true ] || [ "$(prio_rank "$body")" -le 2 ] || [ -n "$gated" ]; then echo sheet; return; fi
-  body=$(sed -E 's/(^|[[:space:]])#worker\/[^[:space:]]+//g; s/^[[:space:]]+//' <<<"$body")
+  body=$(sheet_body "$body")
   np "$prof" improve "$p" --check -- "$body" >/dev/null 2>&1 || rc=$?
   if [ "$rc" = 3 ]; then echo sheet; else echo improve; fi
 }
 
 # skip_exits [--dry-run] -- give each open agent row whose latest verdict is a skip, still current
-# for the row's text, the exit its rule names (policy.md "Always skip"), so no skip parks a row:
+# for the row's text, the exit its rule names (policy.md "Always skip"), so no skip parks a row.
+# A check(epics) row takes none: reconcile_epics queues its verify item, the judge never needs to.
 #  - plan (DISPATCH_PLAN_RULES): tag it #plan, and #go beside it on a #requested row (the judge asked
 #    for this plan, not the person, so inbox-plan does not hold it for their review), while fewer than
 #    DISPATCH_PLAN_BACKLOG #plan rows are open, then kick inbox-plan; its plan splits or rewrites the
 #    row, so the judge reads it again with the plan. A row the rest wait behind keeps its verdict and
 #    is tagged on a later pass. A row inbox-plan already planned (a `goal:` detail) that the judge,
-#    reading that plan, still skips by such a rule takes the human exit: a second plan would not help.
-#  - human (DISPATCH_HUMAN_RULES): an #urgent, #high, #normal, bare or #requested row is filed on the human sheet
+#    reading that plan, still skips by such a rule is held (below): a second plan would not help.
+#  - human (DISPATCH_HUMAN_RULES): a rule names a person only when the judge also set agent_only false;
+#    a skip it marked agent_only true takes the plan exit instead, then is held. An #urgent, #high,
+#    #normal, bare or #requested row a person is needed for is filed on the human sheet
 #    (file_row human), a #low one kept in improvements.md (`notes improve`) unless an open row gates
 #    #after/ on it (then the sheet, whose row follow_moved_gates moves that gate to in the same pass), its #worker/ tag off
 #    so no worker takes it there; then the agent row is dropped with a --why naming where it went.
+#  - hold: a row no person is needed for (a plan or waits skip with its plan made, or a human rule the
+#    judge marked agent_only true) never reaches the human sheet or improvements.md. It stays on the
+#    agent board with its exit recorded as `hold`, so a pass does not take it again; a text edit or a new
+#    policy judges it afresh (ar-5968: "rows do not come in aggressively", 2026-11-25).
 #  - waits: gated #after/<row> on the first open row its verdict's reason, else its text, names (its
 #    own id and #of/ links aside) or #pr/<owner>/<repo>/<N> on a PR named so, when the judge read the
 #    rest of it as one it would start (S or M, clear, agent-only, one area): a cleared gate starts a
@@ -2206,7 +2219,7 @@ human_exit() {
 # DISPATCH_EXIT_MAX exits a pass (0 is no cap), so a backlog of skips drains over passes, not in one. A
 # row already started is left alone. --dry-run writes
 # nothing and prints `<exit> TAB <project> TAB <id> TAB <rule>` per row (`plan-wait` for a plan row
-# past the room), then the counts. Sets PLAN_TAGGED and EXITS_TAKEN.
+# past the room), then the counts. Sets PLAN_TAGGED, EXITS_TAKEN and EXITS_HELD.
 skip_exits() {
   local dry='' follow='' board rows room p prof id raw line dsig dj rule req prio planned d e body why where gate
   local -a add
@@ -2216,7 +2229,7 @@ skip_exits() {
     --dry-run) dry=1 ;;
     *) say "usage: fleet-dispatch exits [--dry-run]"; return 2 ;;
   esac
-  PLAN_TAGGED=0 EXITS_TAKEN=0
+  PLAN_TAGGED=0 EXITS_TAKEN=0 EXITS_HELD=0
   board=$(notes board --json 2>/dev/null) || { say "skip_exits: notes board --json failed"; return 0; }
   room=$(jq -r "$ROW_JQ"'[.rows[]? | select(plan_tagged)] | length' <<<"$board")
   room=$(( DISPATCH_PLAN_BACKLOG - ${room:-0} ))
@@ -2259,7 +2272,7 @@ skip_exits() {
     | $ssf[0] as $ss
     | ($kinds | to_entries | map(select(.value.enabled == false and .key != "epic") | {key, value: true}) | from_entries) as $off
     | ([.rows[]? | select(.state == "open" or .state == "doing") | .tags[]? | select(startswith("of/")) | {key: .[3:], value: true}] | from_entries) as $parents
-    | .rows[]? | select(.lane == "agent" and .state == "open" and .id != null and (plan_tagged | not))
+    | .rows[]? | select(.lane == "agent" and .state == "open" and .id != null and (plan_tagged | not) and "\(.type)(\(.area))" != "check(epics)")
     | $by["\(.project)\t\(.id)"] as $d
     | if $d != null then
         "\(.profile)\t\(.project)\t\(.id)\t\($d.line)\t\($d.dsig // "-")\t\(details_json($n))\t\($d.rule)\t\(.requested == true)\t\(planned)\t\($d | tojson)\t\(.raw)"
@@ -2280,22 +2293,9 @@ skip_exits() {
     [ "$line" = - ] || [ "$(row_sig "$raw")" = "$line" ] || continue
     [ "$dsig" = - ] || [ "$(detail_sig "$dj")" = "$dsig" ] || continue
     body=${raw#- \[?\] }; body=${body%%<!--*}; body=${body%"${body##*[![:space:]]}"}
-    e='' gate=''
-    if [ "$rule" = waits ]; then
-      gate=$(waits_gate "$id" "$(jq -r '.reason // ""' <<<"$d")" "$body")
-      if [ -n "$gate" ] && [[ $gate == after/* ]] && [ -z "${ids[${gate#after/}]:-}" ]; then gate=''; fi
-      [ -n "$gate" ] && jq -e '(.size | IN("S", "M")) and .clear == true and .agent_only == true and ((.area // "") != "")' <<<"$d" >/dev/null || gate=''
-      if [ -n "$gate" ]; then e=gate; else e=plan; fi
-    elif [[ " $DISPATCH_PLAN_RULES " == *" $rule "* ]]; then e=plan
-    elif [[ " $DISPATCH_HUMAN_RULES " == *" $rule "* ]] || [ "$rule" = kind ]; then e=human
-    fi
+    e=$(skip_exit_pick ids "$rule" "$id" "$body" "$d" "$planned" "$dsig" "$line")
     [ -n "$e" ] || continue
-    if [ "$e" = plan ] && [ "$planned" = true ]; then
-      # a plan made before the verdict that dsig cannot date: the judge may not have read it yet (a
-      # sized row has no verdict to read it: its plan is made and the row is still L)
-      [ "$dsig" != - ] || [ "$line" = - ] || continue
-      e=human
-    fi
+    gate=${e#*$'\t'}; e=${e%%$'\t'*}
     [ "$e" != human ] || e=$(human_exit "$prof" "$p" "$body" "$req" "${gated[$id]-}")
     if [ "$e" = plan ] && [ "$room" -le 0 ]; then
       [ -z "$dry" ] || { printf 'plan-wait\t%s\t%s\t%s\n' "$p" "$id" "$rule"; n[plan-wait]=$(( ${n[plan-wait]:-0} + 1 )); }
@@ -2306,7 +2306,9 @@ skip_exits() {
       n[$e]=$(( ${n[$e]:-0} + 1 )); [ "$e" != plan ] || room=$(( room - 1 ))
       continue
     fi
-    [ "$DISPATCH_EXIT_MAX" = 0 ] || [ "$EXITS_TAKEN" -lt "$DISPATCH_EXIT_MAX" ] || break
+    if [ "$e" != hold ]; then
+      [ "$DISPATCH_EXIT_MAX" = 0 ] || [ "$EXITS_TAKEN" -lt "$DISPATCH_EXIT_MAX" ] || break
+    fi
     if [ "$rule" = kind ]; then why="dispatch never starts it: $(jq -r '.reason // ""' <<<"$d") (kinds.json)"
     else why="dispatch skipped it ($rule): $(jq -r '.reason // ""' <<<"$d")"; fi
     case "$e" in
@@ -2317,8 +2319,9 @@ skip_exits() {
       gate)
         np "$prof" ptask "$p" --agent tag --add "$gate" "$id" >/dev/null 2>&1 || { say "skip_exits: could not gate $p $id #$gate"; continue; }
         e=$gate ;;
+      hold) EXITS_HELD=$(( EXITS_HELD + 1 )) ;;
       sheet | improve)
-        body=$(sed -E 's/(^|[[:space:]])#worker\/[^[:space:]]+//g; s/^[[:space:]]+//' <<<"$body")
+        body=$(sheet_body "$body")
         if [ "$e" = sheet ]; then
           where=$(file_row human "$(jq -cn --arg pr "$prof" --arg p "$p" '{profile: $pr, project: $p}')" "$body (agent row $id)")
           case "$where" in "not filed"*) continue ;; esac
@@ -2334,7 +2337,7 @@ skip_exits() {
           say "skip_exits: $p $id is $where, but the agent row would not drop: drop it by hand"
         fi ;;
     esac
-    EXITS_TAKEN=$(( EXITS_TAKEN + 1 ))
+    [ "$e" = hold ] || EXITS_TAKEN=$(( EXITS_TAKEN + 1 ))
     mkdir -p "$DIR"   # a kind exit can be the first verdict on record
     # a sized row's verdict holds for the row as it reads now, as a judge's does
     [ "$rule" != too-big ] || [ "$line" != - ] || d=$(jq -c --arg l "$(row_sig "$raw")" '. + {line: $l}' <<<"$d")
@@ -2345,6 +2348,7 @@ skip_exits() {
     return 0
   fi
   [ "$EXITS_TAKEN" = 0 ] || say "gave $EXITS_TAKEN skipped row(s) their exit"
+  [ "$EXITS_HELD" = 0 ] || say "held $EXITS_HELD skipped row(s) on the agent board: no person is needed for them"
   # The reap's follow_moved_gates ran before this, so a gate on a row sent to the sheet here would read
   # dead until the next pass, and queue-starved trips on it (ar-3172: ucp-3100 on ucp-3099, 2026-11-23).
   # It reads the gates again in a subshell: the pass's copy predates the drop, and a failed read there
@@ -2354,6 +2358,39 @@ skip_exits() {
   say "tagged $PLAN_TAGGED for a plan"
   "$HERE/agentctl-inbox-plan" --kick || say "skip_exits: could not start inbox-plan"
 }
+
+# skip_exit_pick <ids array name> <rule> <id> <body> <verdict json> <planned> <dsig> <line> -> "<exit> TAB <gate>"
+# for the exit a skip takes, or nothing when it takes none this pass. A waits skip gates on what it names
+# when that is safe, else takes the plan exit; a plan rule takes it; a human rule is a person only when the
+# judge also set agent_only false (agent_only true is its word that none is needed), so it takes the plan
+# exit instead. A plan exit already spent on the row is `hold`: a second plan would not help, and the row
+# stays on the agent board.
+skip_exit_pick() {
+  local -n _ids=$1
+  local rule=$2 id=$3 body=$4 d=$5 planned=$6 dsig=$7 line=$8 e='' gate=''
+  if [ "$rule" = waits ]; then
+    gate=$(waits_gate "$id" "$(jq -r '.reason // ""' <<<"$d")" "$body")
+    if [ -n "$gate" ] && [[ $gate == after/* ]] && [ -z "${_ids[${gate#after/}]:-}" ]; then gate=''; fi
+    [ -n "$gate" ] && jq -e '(.size | IN("S", "M")) and .clear == true and .agent_only == true and ((.area // "") != "")' <<<"$d" >/dev/null || gate=''
+    if [ -n "$gate" ]; then e=gate; else e=plan; fi
+  elif [[ " $DISPATCH_PLAN_RULES " == *" $rule "* ]]; then e=plan
+  elif [ "$rule" = kind ]; then e=human
+  elif [[ " $DISPATCH_HUMAN_RULES " == *" $rule "* ]]; then
+    if [ "$(jq -r '.agent_only // false' <<<"$d")" = true ]; then e=plan; else e=human; fi
+  fi
+  [ -n "$e" ] || return 0
+  if [ "$e" = plan ] && [ "$planned" = true ]; then
+    # a plan made before the verdict that dsig cannot date: the judge may not have read it yet (a
+    # sized row has no verdict to read it: its plan is made and the row is still L)
+    [ "$dsig" != - ] || [ "$line" = - ] || return 0
+    e=hold
+  fi
+  printf '%s\t%s\n' "$e" "$gate"
+}
+
+# sheet_body <body> -> the row's text for the sheet or improvements.md: its #worker/ tag off, so no
+# worker takes it there.
+sheet_body() { sed -E 's/(^|[[:space:]])#worker\/[^[:space:]]+//g; s/^[[:space:]]+//' <<<"$1"; }
 
 # waits_gate <own id> <text>... -> the gate a waits skip waits behind: `pr/<owner>/<repo>/<N>` for the
 # first `<owner>/<repo>#<N>`, else `after/<id>` for the first row id (not <own id>, not an #of/ or
@@ -3011,6 +3048,53 @@ harness_tier_why() {
   return 1
 }
 
+# kind_opens_pr <item json> [unregistered: pr|no] -> rc 0 when the item's kind opens a PR (its kind's `exit` in kinds.json
+# is pr or empty), or it has no kind. A kind kinds.json does not register opens one only when `unregistered` is pr, the
+# default (the ladder's: a title it cannot class is an ordinary row); the capability gate says no, so a verify row,
+# which only reports, needs no CI gate. The caller has run load_kinds.
+kind_opens_pr() {
+  local kind
+  kind=$(item_kind "$1")
+  [ -n "$kind" ] || return 0
+  if [ -v 'KIND_EXIT[$kind]' ]; then [ -z "${KIND_EXIT[$kind]}" ] || [ "${KIND_EXIT[$kind]}" = pr ]
+  else [ "${2:-pr}" = pr ]; fi
+}
+
+# harness_needs_why <harness> <item json> <tier> <pinned 0|1> -> why the harness lacks a capability the item needs,
+# rc 1; rc 2, failing closed, when the map or the stack list cannot say; nothing and rc 0 when it has them all.
+# The one place a harness is refused for what it cannot do, from its `capabilities` list in the map (the
+# vocabulary and each one's why are the map's top-level `capabilities`): adding a harness is a map entry, never
+# new code here. A row needs lane_sandbox under DISPATCH_SANDBOX_PROFILE, code_review when routed (not pinned) as
+# a red past the unattended ceiling (the red-fix gate), and each stack-bound capability (`stack` in the
+# vocabulary: unity_gate) when the item's project is in that stack of MATRIX and its kind opens a PR (a canary
+# replays a merged PR and opens none; kind_opens_pr). Claude, which route() takes before this, has them all.
+harness_needs_why() {
+  local h="$1" it="$2" tier="$3" pinned="$4" project cap stack why rc needs=() rows
+  [ -z "$DISPATCH_SANDBOX_PROFILE" ] || needs+=(lane_sandbox)
+  [ "$pinned" = 1 ] || [ "$tier" -le "$UNATTENDED_TIER_CEILING" ] || ! is_red "$it" || needs+=(code_review)
+  if ! is_canary "$it"; then
+    load_kinds
+    if kind_opens_pr "$it" no; then
+      rows=$(jq -r --arg h "$h" '(.harnesses[$h].capabilities // []) as $has | (.capabilities // {}) | to_entries[]
+        | select(.value.stack != null) | . as $c | select($has | index($c.key) | not) | "\($c.key)\t\($c.value.stack)"' "$HARNESSES" 2>/dev/null) ||
+        { echo "$HARNESSES is unreadable, so its capabilities are unknown"; return 2; }
+      project=$(jq -r '.project // ""' <<<"$it")
+      while IFS=$'\t' read -r cap stack; do
+        [ -n "$cap" ] || continue
+        rc=0; jq -e --arg s "$stack" --arg p "$project" '.stacks[$s].projects // [] | index([$p])' "$MATRIX" >/dev/null 2>&1 || rc=$?   # 1: not in the stack, which set -e must not take for a failure
+        [ "$rc" = 0 ] && needs+=("$cap")
+        [ "$rc" = 0 ] || [ "$rc" = 1 ] || { echo "the stack list $MATRIX is unreadable, so what $project needs is unknown"; return 2; }
+      done <<<"$rows"
+    fi
+  fi
+  for cap in "${needs[@]}"; do
+    jq -e --arg h "$h" --arg c "$cap" '.harnesses[$h].capabilities // [] | any(. == $c)' "$HARNESSES" >/dev/null 2>&1 && continue
+    why=$(jq -r --arg c "$cap" '.capabilities[$c].why // empty' "$HARNESSES" 2>/dev/null)
+    echo "it lacks the $cap capability (capabilities in $HARNESSES)${why:+: $why}"
+    return 1
+  done
+}
+
 # harness_sandbox <harness> -> the lane sandbox profile its runs are held to (its `sandbox` in the map), or nothing.
 harness_sandbox() { jq -r --arg h "$1" '.harnesses[$h].sandbox // empty' "$HARNESSES" 2>/dev/null; }
 
@@ -3065,7 +3149,7 @@ item_points() { jq -r 'first((.points | tostring | select(test("^[0-9]+$"))), ((
 # slug, so a rejected or failed row goes to claude).
 # With a share N above 0, a tier-3 row tier3_pick takes is let through too. <who> names the run.
 ladder_row_why() {
-  local it="$1" who="$2" tiers="${3:-1}" share="${4:-0}" tags tier kind prev
+  local it="$1" who="$2" tiers="${3:-1}" share="${4:-0}" tags tier prev
   tags=" $(jq -r '.tags // ""' <<<"$it") "
   ! is_canary "$it" && [[ "$tags" != *" trainee-review "* && "$tags" != *" verify "* && "$tags" != *" validate "* ]] ||
     { echo "it is a canary, verify, validate or review item"; return 1; }
@@ -3080,8 +3164,8 @@ ladder_row_why() {
     echo "it is tier $tier, and $who takes tier ${tiers// /, } only$([ "$share" -gt 0 ] && echo ", and one tier-3 cleanup row in $share")"
     return 1
   fi
-  load_kinds; kind=$(item_kind "$it")
-  [ -z "$kind" ] || [ "${KIND_EXIT[$kind]:-pr}" = pr ] || { echo "its kind $kind opens no PR"; return 1; }
+  load_kinds
+  kind_opens_pr "$it" || [ "${KIND_EXIT[$(item_kind "$it")]:-}" = report ] || { echo "its kind $(item_kind "$it") opens no PR"; return 1; }
 }
 
 # tier3_pick <item json> <share> -> rc 0 when a ladder run takes the tier-3 row: share is above 0,
@@ -3297,6 +3381,7 @@ trainee_brief() {
   echo
   echo "You run in a sandbox that sees this worktree alone: no skills, agent-queue, gh, push or human. Ignore any step above that needs one."
   echo "Make the smallest change in this worktree that fully does the task, run the repo's own tests for what you changed where they run here, and stop."
+  echo "Edit only markdown files (anywhere) and shell or bats scripts (.sh, .bash, .zsh, .bats, or no extension with a shell shebang) in no directory holding a Cargo.toml or package.json: the sandbox builds nothing else, and a diff touching any other file is rejected, however right it is."
   echo "Do not commit, push or open a pull request: leave your edits in the working tree. They are checked and landed, or the task is sent back, after you stop."
   echo "If you change nothing, say why in one word on the first line of a file named .no-diff in this worktree: already-fixed when the code already does what the task asks, blocked when the task cannot be done without a decision from the human or access you lack. No file means you failed."
 }
@@ -3388,12 +3473,11 @@ trainee_empty_why() {
 }
 
 # trainee_waiting -> the rows whose diff waits for a batch review, as item JSON lines: in review, a
-# trainee's, their patch in TRAINEE_DIR, no PR yet (an approved row whose PR has not merged is no new
-# diff), and no per-diff review-<slug> item (the old hand-off) open. A run on a fleet worker left its
-# patch in the worker's TRAINEE_DIR, so it is fetched here first (trainee_fetch).
+# trainee's, their patch in TRAINEE_DIR, and no PR yet (an approved row whose PR has not merged is no
+# new diff). A run on a fleet worker left its patch in the worker's TRAINEE_DIR, so it is fetched here
+# first (trainee_fetch).
 trainee_waiting() {
-  agent-queue list --json --state active 2>/dev/null | jq -sc '(map(.slug) | map({key: ., value: 1}) | from_entries) as $s
-    | .[] | select(.state == "review" and (.trainee // "") != "" and ((.pr // "") == "") and ($s["review-" + .slug] | not))' |
+  agent-queue list --json --state active 2>/dev/null | jq -c 'select(.state == "review" and (.trainee // "") != "" and ((.pr // "") == ""))' |
     while IFS= read -r it; do
       [ -s "$TRAINEE_DIR/$(jq -r .slug <<<"$it").patch" ] || trainee_fetch "$it" || continue
       echo "$it"
@@ -3622,16 +3706,20 @@ This is agent-queue item $1: a review by a second agent of PR $3, the work of qu
 EOF
 }
 
-# rollup_causes <since> <stamps json> -> one TSV line per trainee reject cause in LANE_RUNS since <since>
-# (UTC, YYYY-MM-DDTHH:MM:SS): the cause, its row title, its count, the per-pair counts, the harnesses, and
-# one reason as written. A reject is a lane trainee run with an outcome of redo or failed. Its cause is
-# the `(end <reason>)` trainee_empty_why writes, "no diff" for "left no diff", "no reason recorded" for a
-# run with no `why`, else the reviewer's first four words; at most 40 characters, so the title fits the
-# board's 80. One cause on one pair names that pair; on two or more it names no model, since a cause
-# every model hits is the harness's or the source's. The cause is the key, so a cause that spreads to a
-# second pair keeps its count and its row: a reject no newer than its cause's stamp (the last night that
-# cause was filed or found open) is not counted again, and a cause whose row closed starts from nothing.
-# A line of the log that is no JSON (a torn append) is skipped.
+# The rollup reads three inputs, each a TSV line per cause: the cause (its stamp key), the row title, the
+# count of its new events, the per-pair counts, the harnesses, one reason as written, and its kind
+# (trainee, runs or lane, which picks the row's title family and wording). <since> is UTC,
+# YYYY-MM-DDTHH:MM:SS, and <stamps json> maps a cause to the last night it was filed or found open: an
+# event no newer than its cause's stamp is not counted again, and a cause whose row closed starts from
+# nothing. One cause on one pair names that pair; on two or more it names no model, since a cause every
+# model hits is the harness's or the source's.
+
+# rollup_causes <since> <stamps json> -> the trainee rejects in LANE_RUNS since <since>. A reject is a lane
+# trainee run with an outcome of redo or failed. Its cause is the `(end <reason>)` trainee_empty_why writes,
+# "no diff" for "left no diff", "no reason recorded" for a run with no `why`, "touch a file the sandbox
+# cannot build" for a diff trainee_diff_why refused (whatever the file), else the reviewer's first four
+# words; at most 40 characters, so the title fits the board's 80. A line of the log that is no JSON (a torn
+# append) is skipped.
 rollup_causes() {
   jq -Rnr --arg since "$1" --argjson stamps "$2" '
     def words: ascii_downcase | gsub("[^a-z0-9]+"; " ") | ltrimstr(" ") | rtrimstr(" ") | split(" ") | .[0:4] | join(" ");
@@ -3643,61 +3731,136 @@ rollup_causes() {
       | ([$w | capture("\\(end (?<e>[a-z-]+)").e] | first) as $e
       | {pair: $pair, harness: (.harness // "claude"), ts: .ts[0:19], why: (.why // "no reason recorded (outcome \(.outcome))"),
          cause: (if $e then "keep ending on end " + $e elif $w == "left no diff" then "keep leaving no diff"
-                 elif $w == "" then "end with no reason recorded" else "are rejected for " + ($w | words) end | fit)}]
+                 elif $w == "" then "end with no reason recorded"
+                 elif ($w | test("^its diff touches .* which is no markdown file")) then "touch a file the sandbox cannot build"
+                 else "are rejected for " + ($w | words) end | fit)}]
     | group_by(.cause)[]
     | . as $all | $all[0].cause as $c
     | [$all[] | select(.ts > ($stamps[$c] // ""))] as $new
     | select($new | length > 0)
     | ($all | map(.pair) | unique) as $pairs
-    | [$c, "fix(trainee): " + (if ($pairs | length) == 1 then $pairs[0] else "trainee" end) + " runs " + $c,
+    | ["trainee", $c, "fix(trainee): " + (if ($pairs | length) == 1 then $pairs[0] else "trainee" end) + " runs " + $c,
        ($new | length), ($new | group_by(.pair) | map("\(.[0].pair) \(length)") | join(", ")),
        ($new | map(.harness) | unique | join(", ")), ($new | last | .why)] | @tsv' "$LANE_RUNS"
 }
 
-# cmd_trainee_rollup [--dry] -- each recurring cause of trainee rejects made one fix row, so the ladder
-# stops paying for the same failure night after night (why-are-more-trainees-twinkling P4): rollup_causes
-# over the last DISPATCH_ROLLUP_DAYS, and a cause seen DISPATCH_ROLLUP_MIN times or more files one row on
-# the DISPATCH_ROLLUP_BOARD agent board, or joins the open fix(trainee) row there whose title ends in that
-# cause, whichever pair it names. Each cause filed or joined is stamped in $DIR/trainee-rollup.tsv (cause
-# TAB UTC time; a stamp older than the window is dropped), so the next night counts only newer rejects.
+# rollup_ends <since> <stamps json> -> the non-landings of any harness and account, Claude included: a done
+# item whose agent-queue `outcome` is failed or no-pr, grouped by the `end_reason` it ended on (a failed item
+# with none reads "fail with no reason recorded", a no-pr one "close with no PR"). An unrated or cancelled
+# item says nothing about the work, so it is no non-landing. Returns agent-queue's status when it cannot list.
+rollup_ends() {
+  local items
+  items=$(agent-queue list --json --state done --since "${1%%T*}" 2>/dev/null) || return 1
+  jq -sr --arg since "$1" --argjson stamps "$2" '
+    def fit: if length <= 40 then . else .[0:40] | sub(" [^ ]*$"; "") end;
+    [.[] | select((.outcome == "failed" or .outcome == "no-pr") and ((.finished // "")[0:19] >= $since))
+      | {pair: ((.agent // "claude") + ":" + (.model // "-")), harness: (.agent // "claude"), ts: .finished[0:19],
+         why: ((.slug) + " " + (.outcome) + " on " + (.account // "no account") + (if (.end_reason // "") != "" then " (end " + .end_reason + ")" else "" end)),
+         cause: (if (.end_reason // "") != "" then "end on " + .end_reason
+                 elif .outcome == "failed" then "fail with no reason recorded" else "close with no PR" end | fit)}]
+    | group_by(.cause)[]
+    | . as $all | $all[0].cause as $c
+    | [$all[] | select(.ts > ($stamps[$c] // ""))] as $new
+    | select($new | length > 0)
+    | ($all | map(.pair) | unique) as $pairs
+    | ["runs", $c, "fix(runs): " + (if ($pairs | length) == 1 then $pairs[0] else "fleet" end) + " runs " + $c,
+       ($new | length), ($new | group_by(.pair) | map("\(.[0].pair) \(length)") | join(", ")),
+       ($new | map(.harness) | unique | join(", ")), ($new | last | .why)] | @tsv' <<<"$items"
+}
+
+# rollup_events <since> <stamps json> -> the model-lane demotes and retirements since <since> that no later
+# promote undid: its demotions.jsonl, whose newest event per (lane, class, candidate) is demoted or retired.
+# A trainee-lane demote (a promoted class sent back to review) is no row: it is only a page, and its undo would
+# restore the direct landing it lost. Each is one cause with one event, and its why carries the command that undoes it. model-lane pages when it
+# records one and files no row itself; this is the row.
+rollup_events() {
+  [ -r "$LANE_EVENTS" ] || return 0
+  jq -Rnr --arg since "$1" --argjson stamps "$2" '
+    [inputs | fromjson? // empty | select(type == "object" and (.event // "") != "")]
+    | group_by([.lane, (.class // ""), (.candidate // "")])[] | last
+    | select((.event == "demoted" or .event == "retired") and ((.ts // "")[0:19] >= $since) and (.lane != "trainee" or .event == "retired"))
+    | (.candidate // ("lane " + .lane)) as $who
+    | (if .event == "retired" then "left the trainee roster"
+       elif (.class // "") == "" then "went back to opus"
+       elif .class == "*" then "left lane " + .lane
+       else "left lane " + .lane + " for " + .class end) as $what
+    | ("model-lane promote " + (if .event == "retired" then "trainee --class - --candidate " + .candidate
+        else .lane + (if (.class // "") != "" then " --class \u0027" + .class + "\u0027" else "" end) + (if (.candidate // "") != "" then " --candidate " + .candidate else "" end) end)) as $undo
+    | select((.ts[0:19]) > ($stamps[$who + " " + $what] // ""))
+    | ["lane", $who + " " + $what, ("fix(model-lane): " + $who + " " + $what)[0:72], 1, $who + " 1", ((.candidate // .lane) | split(":")[0]),
+       (.why + ". Undo: " + $undo)] | @tsv' "$LANE_EVENTS"
+}
+
+# cmd_rollup [--dry] -- each recurring cause of a run that did not land made one fix row, so the fleet
+# stops paying for the same failure night after night (why-are-more-trainees-twinkling P4, widened by
+# are-teher-nay-acount-effervescent-thompson P11): the rollup_* inputs over the last DISPATCH_ROLLUP_DAYS, and
+# a cause seen DISPATCH_ROLLUP_MIN times or more (a model-lane demote or retire, which already cleared its own
+# bar, once) files one row on the DISPATCH_ROLLUP_BOARD agent board, or joins the open row there with its
+# title, whichever pair it names. A trainee or runs row's title ends in its cause, so a cause that spreads to
+# a second pair joins the row the first pair opened. Each cause filed or joined is stamped in $DIR/rollup.tsv
+# (cause TAB UTC time; a stamp older than the window is dropped), so the next night counts only newer events.
 # fleet-dispatch is a direct filer, so the row goes on the board; it goes through the queue and review like
 # any other row, and nothing here patches anything. nightly-measure runs it, so each pass declares its
 # outcome (rollup_done): WORKED when it filed or joined a row, NOOP when no cause cleared the bar, FAILED.
-cmd_trainee_rollup() {
-  local dry=0 stamps since board lines cause title n pairs hs why hit where rc rwhy out=0 acted=0 now f="$DIR/trainee-rollup.tsv"
+cmd_rollup() {
+  local dry=0 stamps since board lines cause title n pairs hs why kind min hit where what evidence rc rwhy out=0 acted=0 now f="$DIR/rollup.tsv" part
   [ "${1:-}" != --dry ] || dry=1
-  [ -r "$LANE_RUNS" ] || { say "trainee-rollup: no run log at $LANE_RUNS"; rollup_done "$dry" FAILED "no run log at $LANE_RUNS"; return; }
   stamps=$(jq -Rsc 'split("\n") | map(select(length > 0) | split("\t") | {(.[0]): .[1]}) | add // {}' "$f" 2>/dev/null) || stamps='{}'
   now=$(date -u +%FT%T)
   since=$(date -u -d "@$(( $(date +%s) - DISPATCH_ROLLUP_DAYS * 86400 ))" +%FT%T)
-  lines=$(rollup_causes "$since" "$stamps") || { say "trainee-rollup: could not read $LANE_RUNS"; rollup_done "$dry" FAILED "could not read $LANE_RUNS"; return; }
-  [ -n "$lines" ] || { echo "trainee-rollup: no new trainee rejects since ${since%T*}"; rollup_done "$dry" NOOP "no new trainee rejects"; return; }
-  board=$(notes ptask "$DISPATCH_ROLLUP_BOARD" --agent list 2>/dev/null) || { say "trainee-rollup: cannot read the $DISPATCH_ROLLUP_BOARD board, so no row is filed"; rollup_done "$dry" FAILED "cannot read the $DISPATCH_ROLLUP_BOARD board"; return; }
-  while IFS=$'\t' read -r cause title n pairs hs why; do
-    if [ "$n" -lt "$DISPATCH_ROLLUP_MIN" ]; then echo "under the bar ($n of $DISPATCH_ROLLUP_MIN): $title ($pairs)"; continue; fi
+  lines=
+  # a source it cannot read is skipped and fails the pass at the end: the others still file their rows
+  for part in rollup_causes rollup_ends rollup_events; do
+    if lines+=$("$part" "$since" "$stamps"); then lines+=$'\n'; else say "rollup: $part could not read its input"; out=1; fi
+  done
+  lines=$(grep . <<<"$lines" || true)
+  if [ -z "$lines" ]; then
+    echo "rollup: no new cause since ${since%T*}"
+    if [ "$out" != 0 ]; then rollup_done "$dry" FAILED "an input could not be read"; else rollup_done "$dry" NOOP "no new cause"; fi
+    return
+  fi
+  board=$(notes ptask "$DISPATCH_ROLLUP_BOARD" --agent list 2>/dev/null) || { say "rollup: cannot read the $DISPATCH_ROLLUP_BOARD board, so no row is filed"; rollup_done "$dry" FAILED "cannot read the $DISPATCH_ROLLUP_BOARD board"; return; }
+  while IFS=$'\t' read -r kind cause title n pairs hs why; do
+    min=$DISPATCH_ROLLUP_MIN; [ "$kind" != lane ] || min=1
+    if [ "$n" -lt "$min" ]; then echo "under the bar ($n of $min): $title ($pairs)"; continue; fi
     # the whole cause, up to the row's tags or marker: a longer title that starts the same is another cause
-    hit=$(cut -f4 <<<"$board" | grep -iE -m1 -- "^- \[[ /]\] fix\(trainee\): [^ ]+ runs $cause( #| <!--|$)")
+    if [ "$kind" = lane ]; then hit=$(cut -f4 <<<"$board" | grep -F -m1 -e "- [ ] $title #" -e "- [ ] $title <!--" -e "- [/] $title #" -e "- [/] $title <!--")
+    else hit=$(cut -f4 <<<"$board" | grep -iE -m1 -- "^- \[[ /]\] fix\($kind\): [^ ]+ runs $cause( #| <!--|$)"); fi
     if [ -n "$hit" ]; then
       echo "joined $(sed -n 's/.*<!-- id:\([^ ]*\).*/\1/p' <<<"$hit" | grep . || echo 'its open row'): $title ($n since ${since%T*}: $pairs)"
     elif [ "$dry" = 1 ]; then
       echo "would file: $title ($n since ${since%T*}: $pairs)"; continue
     else
-      if [[ "$title" == "fix(trainee): trainee runs "* ]]; then where="the harness or source ($hs): more than one model hits it"
-      else where="how ${pairs% *} runs, or drop the pair (model-lane): no other model hits it"; fi
+      case "$kind" in
+        trainee)
+          what="trainee rejects"
+          evidence="jq -c 'select(.lane == \"trainee\" and (.outcome == \"redo\" or .outcome == \"failed\"))' ~/.agent/model-lane/runs.jsonl"
+          if [[ "$title" == "fix(trainee): trainee runs "* ]]; then where="the harness or source ($hs): more than one model hits it"
+          else where="how ${pairs% *} runs, or drop the pair (model-lane): no other model hits it"; fi ;;
+        runs)
+          what="runs that did not land"
+          evidence="agent-queue list --json --state done --since ${DISPATCH_ROLLUP_DAYS}d | jq -c 'select(.outcome == \"failed\" or .outcome == \"no-pr\")'"
+          if [[ "$title" == "fix(runs): fleet runs "* ]]; then where="the harness or source ($hs): more than one model hits it"
+          else where="why ${pairs% *} ends this way, in its brief, its harness or its source"; fi ;;
+        *)
+          what="model-lane demote or retire"
+          evidence="model-lane demoted"
+          where="why the pair failed its bar: read \`model-lane report 7d\`, then undo it only once that is fixed" ;;
+      esac
       rc=0
       # The reason follows the priority the conf's tags name (priority-reasons.tsv); a priority with no fit here files untagged.
       case " $DISPATCH_ROLLUP_TAGS " in
         *' #low '*) rwhy=(--why minor-fault) ;; *' #normal '*) rwhy=(--why fault) ;; *' #high '*) rwhy=(--why runtime-fault) ;; *) rwhy=() ;;
       esac
       notes ptask "$DISPATCH_ROLLUP_BOARD" --agent add "${rwhy[@]}" "$title $DISPATCH_ROLLUP_TAGS" --origin fleet-dispatch \
-        --detail "$n trainee rejects since ${since%T*}: $pairs. Fix it in $where." \
+        --detail "$n $what since ${since%T*}: $pairs. Fix it in $where." \
         --detail "e.g. $why" \
-        --detail "evidence: jq -c 'select(.lane == \"trainee\" and (.outcome == \"redo\" or .outcome == \"failed\"))' ~/.agent/model-lane/runs.jsonl; filed by fleet-dispatch trainee-rollup" \
+        --detail "evidence: $evidence; filed by fleet-dispatch rollup" \
         >/dev/null 2>&1 || rc=$?
       case "$rc" in
-        0|4) echo "filed: $title ($n since ${since%T*}: $pairs)"; logline "trainee-rollup: filed $title ($n: $pairs)" ;;
+        0|4) echo "filed: $title ($n since ${since%T*}: $pairs)"; logline "rollup: filed $title ($n: $pairs)" ;;
         3) echo "joined its twin, which notes refused it as: $title" ;;
-        *) say "trainee-rollup: the $DISPATCH_ROLLUP_BOARD board refused $title (notes exit $rc)"; out=1; continue ;;
+        *) say "rollup: the $DISPATCH_ROLLUP_BOARD board refused $title (notes exit $rc)"; out=1; continue ;;
       esac
     fi
     stamps=$(jq -c --arg c "$cause" --arg n "$now" '.[$c] = $n' <<<"$stamps")
@@ -3705,13 +3868,13 @@ cmd_trainee_rollup() {
   done <<<"$lines"
   [ "$dry" = 1 ] && return "$out"
   { mkdir -p "$DIR" && jq -r --arg s "$since" 'to_entries[] | select(.value >= $s) | [.key, .value] | @tsv' <<<"$stamps" > "$f.tmp" && mv -f "$f.tmp" "$f"; } ||
-    { say "trainee-rollup: could not write $f"; out=1; }
+    { say "rollup: could not write $f"; out=1; }
   if [ "$out" != 0 ]; then rollup_done 0 FAILED "the $DISPATCH_ROLLUP_BOARD board refused a row, or $f was not written"
   elif [ "$acted" -gt 0 ]; then rollup_done 0 WORKED "$acted cause(s) filed or joined"
-  else rollup_done 0 NOOP "no cause reached $DISPATCH_ROLLUP_MIN rejects"; fi
+  else rollup_done 0 NOOP "no cause reached $DISPATCH_ROLLUP_MIN events"; fi
 }
 
-# rollup_done <dry> <verdict> <words> -- a trainee-rollup pass's outcome under agentctl, which reads a step
+# rollup_done <dry> <verdict> <words> -- a rollup pass's outcome under agentctl, which reads a step
 # that declares none as STALLED (agentctl-steps), and its status: 1 for FAILED, else 0. --dry declares nothing.
 rollup_done() {
   if [ "$1" = 0 ]; then
@@ -4195,7 +4358,7 @@ record_world() {
   # Tab, not \037: tmux 3.4 and 3.5a print a control byte in a -F format as octal text, and a tab raw.
   panes=$(tmux -L "$srv" list-panes -a -F $'#{pane_id}\t#{session_name}\t#{window_name}\t#{pane_current_path}' 2>/dev/null) || return 0
   jq -Rn --arg server "$srv" --arg instance "$inst" --arg at "$(date -Iseconds)" --slurpfile panel "$panel" '
-    (reduce $panel[] as $row ({}; .[$row.pane] = $row)) as $by |
+    (reduce ($panel[] | select((.harness // "claude") == "claude")) as $row ({}; .[$row.pane] = $row)) as $by |
     {server: $server, instance: $instance, at: $at, panes: [inputs | split("\t") | $by[$server + "/" + .[0]] as $c |
       {session: .[1], window: .[2], cwd: ($c.cwd // .[3]), claude: ($c.session_id // "")}]}' \
     <<<"$panes" > "$file.tmp" && mv -f "$file.tmp" "$file"
@@ -4317,6 +4480,8 @@ cmd_record() {
 }
 
 # record_here -- the pane record of every world a manifest declares on this machine, under record's lock.
+# agent-panel lists every harness, and the record's `claude` field is a Claude conversation restore reopens
+# (record_world reads only the harness claude rows), so a codex thread is never resumed as a Claude.
 record_here() {
   local f srv panel="$PANES/.panel"
   mkdir -p "$PANES"
@@ -4895,10 +5060,12 @@ row_newer_item() {
 }
 
 # PR_STATE_JSON, PR_STATE_JQ -- what one read of an item's PR asks for, and the line it prints:
-# "<state> <merge oid> <head oid> <ci> <mergeable>", - for a missing oid or mergeable, ci as CI_JQ reads
-# the checks, mergeable as gh reads it (MERGEABLE, CONFLICTING, UNKNOWN).
+# "<state> <merge oid> <head oid> <ci> <mergeable> <red runs>", - for a missing oid or mergeable, ci as
+# CI_JQ reads the checks except that a FAIL the runners caused (CI_JQ infra) reads INFRA, mergeable as gh
+# reads it (MERGEABLE, CONFLICTING, UNKNOWN), red runs as CI_JQ red_runs.
 PR_STATE_JSON=state,mergeCommit,headRefOid,statusCheckRollup,mergeable
-PR_STATE_JQ="$CI_JQ"' [.state, (.mergeCommit.oid // "-"), (.headRefOid // "-"), ci, (.mergeable // "-")] | join(" ")'
+PR_STATE_JQ="$CI_JQ"' [.state, (.mergeCommit.oid // "-"), (.headRefOid // "-"),
+  (if infra then "INFRA" else ci end), (.mergeable // "-"), red_runs] | join(" ")'
 
 # item_pr_state <slug> <item json> -> PR_STATE_JQ's line for the item's PR; fails when its forge cannot
 # be read (so_pr_view). A bare pr: names no repo and one project spans repos, so it reads from the
@@ -4933,7 +5100,7 @@ land_orphan() {
     case "$state" in
     # From land_row, an open PR holds the row only for an item that ended ok: a failed or cancelled
     # run's PR left open is nobody's, and must not keep a held row from its ask.
-    OPEN) [ -z "${3:-}" ] || [ "$(jq -r '.status // ""' <<<"$it")" = ok ] || return 1; return 0 ;;
+    OPEN) [ -z "${3:-}" ] || [ "$(jq -r '.outcome // ""' <<<"$it")" = landed ] || return 1; return 0 ;;
     MERGED) [ -n "$oid" ] || return 1
       ! own_record "$1" "$it" || agent-queue set "$1" "merged=$oid" >/dev/null || return 1
       it=$(jq -c --arg m "$oid" '.merged = $m' <<<"$it") ;;
@@ -4969,8 +5136,8 @@ row_done_items() {
 }
 
 # unstart_orphans -- a row started with no active queue item naming it (its `row`, on its lane) is an
-# orphan: its session never filed an item, or died before reap could see one. If an item done ok
-# in the last DISPATCH_ORPHAN_HOURS plus a day names it, its PR decides first (land_orphan); a PR open
+# orphan: its session never filed an item, or died before reap could see one. If an item landed
+# (outcome landed) in the last DISPATCH_ORPHAN_HOURS plus a day names it, its PR decides first (land_orphan); a PR open
 # longer than that falls to the timer. A row seen orphaned on every pass for DISPATCH_ORPHAN_HOURS is un-started and given a failed verdict, as
 # settle_row does, so it is judged again (an agent row is also held and asked about at DISPATCH_FIX_TRIES
 # failures, ask_failed_rows); the grace keeps a
@@ -4987,7 +5154,7 @@ unstart_orphans() {
   # item or a gated board row names that plan (PLAN_ITEMS_JQ). agent-land closes it with the last phase.
   chains=$({ printf '%s\n' "$items"; plan_gated_rows "$feed"; } | jq -cs .) || chains='[]'
   landed=$(agent-queue list --json --state done --since "$(date -d "-$((DISPATCH_ORPHAN_HOURS / 24 + 1)) days" +%F)" 2>/dev/null) || return 0
-  landed=$(jq -rs 'map(select(.status == "ok" and (.row // "") != "")) | sort_by(.finished)
+  landed=$(jq -rs 'map(select(.outcome == "landed" and (.row // "") != "")) | sort_by(.finished)
     | .[] | "\(.lane // "agent")\t\(.row | sub(":"; "\t"))\t\(.slug)"' <<<"$landed")
   mkdir -p "$DIR"
   linked=$(jq -r 'select(.state != "done" and (.row // "") != "") | "\(.lane // "agent")\t\(.row | sub(":"; "\t"))"' <<<"$items")
@@ -5151,7 +5318,7 @@ restart_human_item() {
 # there for its next start.
 # Each note is added in front of the one the session left (note_add), never over it.
 settle_item() {
-  local st it pr report info state='' oid head='' ci='' mergeable='' end=() why='' ask after; st=$(item_state "$1")
+  local st it pr report info state='' oid head='' ci='' mergeable='' reruns='' end=() why='' ask after; st=$(item_state "$1")
   # set_end -- why this run ended, asked only by the branches that record it.
   set_end() { why=$(item_end "$it"); [ -z "$why" ] || end=(--end "$why"); }
   # requeue_blocked <slug> <session> <reason> -- back to queued/, where the next start waits on what blocked
@@ -5179,7 +5346,7 @@ settle_item() {
   fi
   IFS=$'\x1f' read -r pr report oid < <(jq -r '[.pr // "", .report // "", .merged // ""] | join("\u001f")' <<<"$it")
   if [ -n "$pr" ] && [ -n "$oid" ]; then state=MERGED
-  elif [ -n "$pr" ]; then info=$(item_pr_state "$1" "$it") || info=''; read -r state oid head ci mergeable <<<"$info"; oid=${oid#-} head=${head#-}
+  elif [ -n "$pr" ]; then info=$(item_pr_state "$1" "$it") || info=''; read -r state oid head ci mergeable reruns <<<"$info"; oid=${oid#-} head=${head#-}
   fi
   # A run that filed a question for its item and stopped without `agent-queue requeue --ask` (4 of 24
   # Codex runs that asked, 2026-11-10) goes back to its board row gated #ask/<id> while its work is
@@ -5229,7 +5396,7 @@ settle_item() {
   case "$state" in OPEN | CLOSED) reap_unstuck "$1" ;; MERGED) [ -z "$oid" ] || reap_unstuck "$1" ;; esac
   # Already parked on its open PR, this pass reaps nothing: no event for every pass of the wait,
   # unless its checks finished with nobody on it (own_parked_pr).
-  [ "$state:$st" != OPEN:review ] || { own_parked_pr "$1" "$2" "$it" "$head" "$ci" "$mergeable"; return 0; }
+  [ "$state:$st" != OPEN:review ] || { own_parked_pr "$1" "$2" "$it" "$head" "$ci" "$mergeable" "$reruns"; return 0; }
   case "$st:$pr$report" in waiting: | review:)
     [ -z "$(jq -r '.note // ""' <<<"$it")" ] || return 0
     note_add "$1" "$it" "session $2 ended; $st without a PR"
@@ -5372,7 +5539,30 @@ takeover_branch() {
   echo "takeover queue item $slug (branch $name at ${sha:0:12}, try $((tries + 1)) of $DISPATCH_FIX_TRIES)"
 }
 
-# own_parked_pr <slug> <session> <item json> <head oid> <ci> [mergeable] -- a review item whose session is gone
+# infra_rerun <slug> <item json> <head> <red runs> -- own_parked_pr's one rerun of a head whose red the
+# runners caused (INFRA): `gh run rerun --failed` on each red run, stamped `rerun_tries: 1 <head>` first, so
+# a failed write never reruns twice. It takes no session and no admission slot. Returns 1, rerunning
+# nothing, when this head was rerun already or no run is named; a rerun gh refuses is logged and returns 1
+# too. Either way the red goes the FAIL way.
+infra_rerun() {
+  local pr project dir r ran=''
+  [ "${4:--}" != - ] && [ "$(jq -r '.rerun_tries // "" | split(" ")[1] // ""' <<<"$2")" != "$3" ] || return 1
+  IFS=$'\x1f' read -r pr project < <(jq -r '[(.pr // "" | split(" ")[0]), .project // ""] | join("\u001f")' <<<"$2")
+  agent-queue set "$1" "rerun_tries=1 $3" >/dev/null || return 1
+  [[ "$pr" == */*#* ]] || dir=$(repo_dir "$project") || return 1
+  for r in ${4//,/ }; do
+    if [[ "$pr" == */*#* ]]; then gh run rerun "$r" --failed -R "${pr%#*}" >/dev/null 2>&1
+    else (cd "$dir" && gh run rerun "$r" --failed >/dev/null 2>&1); fi && { ran+=" $r"; continue; }
+    logline "queue item $1: gh run rerun $r --failed refused for PR $pr"
+  done
+  [ -n "$ran" ] || return 1
+  agent-queue set "$1" "note=PR $pr red at ${3:0:12} on cancelled or timed-out jobs only; reran run${ran} once" >/dev/null
+  logline "queue item $1: PR $pr red at ${3:0:12} on cancelled or timed-out jobs only, reran run${ran} (once per head)"
+  dispatch_event rerun "$project" "PR red on runner timeouts only: reran its failed jobs once" --item "$1" --pr "$pr" --sha "$3"
+  echo "rerun queue item $1 (PR $pr red at ${3:0:12} on runner timeouts, run${ran})"
+}
+
+# own_parked_pr <slug> <session> <item json> <head oid> <ci> [mergeable] [red runs] -- a review item whose session is gone
 # gets an owner once its PR checks finish, since nothing else restarts a parked PR. Red (ci FAIL): a
 # fix-ci session (16 of 20 parked PRs were red on 2026-11-09). Green (ci PASS): a lander that lands
 # or closes it (land_brief), since a headless tier-3 run is --pr-only and fix-ci moves its
@@ -5394,6 +5584,14 @@ takeover_branch() {
 # is never read as gone here.
 own_parked_pr() {
   local slug=$1 it=$3 head=$4 owner verb color cause tries human hhead howners pr project note trn held where why='' clear=()
+  # INFRA (PR_STATE_JQ): the runners' red, not the code's. fix-ci may not rerun a timeout (its log names no
+  # fault) and finds nothing to fix, so two tries were spent and the item sat escalated until a push that
+  # never came (2026-11-25: #3516, #3538 and #3576, every job cancelled at ~617s). Its failed jobs are rerun
+  # once per head (infra_rerun); a head already rerun reads FAIL, so a job the code hangs still reaches fix-ci.
+  if [ "$5" = INFRA ]; then
+    [ "$2" = unrecorded ] || ! infra_rerun "$slug" "$it" "$head" "${7:--}" || return 0
+    set -- "$1" "$2" "$3" "$4" FAIL "${6:-}" "${7:-}"
+  fi
   # cause: the requeue's cause on the run's outcome (MOVE_CAUSES): a green PR's lander merges the run's
   # diff unchanged, so that run is filed unrated (land); a red or conflicting PR rates as redo.
   case "${6:-}:$5" in
@@ -5540,12 +5738,15 @@ other_source_start() {
 # agent-queue takes them), one task a lane a round, so a week's set trickles in as each one finishes
 # instead of sitting in the queue whole (the cap and the queue age count every queued item). They start
 # in queue order like any item, the class mix (classes.json `cleanup`, tag `canary`) keeping their class
-# from falling behind. While a project share is full only the lanes on their own source queue (--off-claude:
-# a Claude lane's canary would wait at the cap). Skipped in a dry run, at 0, and while floor_gate is shut
-# (a red cluster with the gateway down), dispatch's hold included;
-# a failure is said once, never the end of the pass.
+# from falling behind. A Claude lane's canary of a project whose share is full would wait at the cap, so
+# the full projects go to the top-up as --off-claude <projects>: the Claude lanes skip those projects' tasks only
+# (the cap holds an item by its own project, share_held), and every other task and lane queues (ar-5406). Admission passes dispatch's canary pull, so the top-up asks
+# for at most the cap's headroom (queue_headroom), as the sprint and ask top-ups do: a canary the share
+# holds is not in `have`, but the cap counts it (queue-over-cap, ar-3659). Skipped in a dry run, at 0,
+# while floor_gate is shut (a red cluster with the gateway down), dispatch's hold included, and at the
+# cap; a failure is said once, never the end of the pass.
 canary_top_up() {
-  local live have want out rc=0 note='' FLOOR_WHY
+  local live have want qroom max out rc=0 note='' FLOOR_WHY
   [ "$DRY" = 0 ] && [ "${DISPATCH_CANARY_KEEP:-0}" -gt 0 ] 2>/dev/null || return 0
   # A canary the project share holds is not counted: it cannot start, so it keeps no lane busy.
   share_state
@@ -5555,9 +5756,13 @@ canary_top_up() {
   want=$(( DISPATCH_CANARY_KEEP - have - live ))
   [ "$want" -gt 0 ] || return 0
   floor_gate; [ -z "$FLOOR_WHY" ] || return 0   # only when canaries are missing: it reads gate and the gateway
-  # While the share is full a Claude lane's canary would wait in queued/, so only the lanes on their own source queue (SHARE_JQ).
-  local off=(); if share_full; then off=(--off-claude); note=", a project share full: no Claude lane"; fi
-  out=$(AGENT_QUEUE_PULL=dispatch fleet-bench canary queue --max "$want" "${off[@]}" 2>&1) || rc=$?
+  qroom=$(queue_headroom)
+  [ "$qroom" -gt 0 ] || { say "canary top-up (keep $DISPATCH_CANARY_KEEP, $have queued, $want wanted): none queued, the queue is at its cap"; return 0; }
+  max=$want; [ "$max" -le "$qroom" ] || { max=$qroom; note=", $qroom under the cap"; }
+  # A Claude lane's canary of a project whose share is full would wait in queued/ (SHARE_JQ), so the top-up leaves those projects out of its Claude lanes.
+  local off=() full; full=$(jq -r '[.projects // {} | to_entries[] | select(.value.full) | .key] | join(",")' <<<"$SHARE_STATE" 2>/dev/null) || full=
+  if [ -n "$full" ]; then off=(--off-claude "$full"); note+=", Claude lanes skip the full share of $full"; fi
+  out=$(AGENT_QUEUE_PULL=dispatch fleet-bench canary queue --max "$max" "${off[@]}" 2>&1) || rc=$?
   [ "$rc" = 0 ] || note="$note, not every lane queued"
   [ -n "$out" ] || [ "$rc" = 0 ] || out="fleet-bench exited $rc"
   [ -z "$out" ] || say "canary top-up (keep $DISPATCH_CANARY_KEEP, $have queued, $want wanted$note): ${out//$'\n'/; }"
@@ -6836,8 +7041,10 @@ item_pinned() {
 # one (harness_project_why, pinned or not: ocfree carries public input only), an item no higher than
 # its `max_tier` unless a canary or a trainee row (harness_tier_why, pinned or not), only a canary or trainee item when
 # it runs in its own lane sandbox (sandbox_item_why; a trainee row offers the trainees first), and, when routed rather
-# than pinned, a tier within the unattended ceiling: only a red goes past it, and only to a harness that can run the
-# red-fix gate, or a trainee row (trainee_why: its review lands it, behind review_gate when it is tier 3). A `metered`
+# than pinned, a tier within the unattended ceiling: only a red goes past it, or a trainee row (trainee_why: its
+# review lands it, behind review_gate when it is tier 3). It also needs every capability the item calls for in
+# the harness's `capabilities` (harness_needs_why: the lane sandbox, the red-fix gate's code_review, a stack's
+# unity_gate), pinned or not except the red-fix gate. A `metered`
 # harness (pay-per-use, GLM) is overflow: routed, it takes only a class it was promoted for or its trial
 # pick, only while no account has room, and only tier-1 work, so an unscored lane never spends on spare work.
 route() {
@@ -6866,6 +7073,7 @@ route() {
     [ "$cands" != '[]' ] || { ROUTE_WHY="the trainee floor starts ${TRAINEE_HARNESS:-a trainee} as a trainee only, and it is none for this item"; return 1; }
   fi
   tier=$(item_tier "$it")
+  load_kinds   # once here: harness_needs_why runs in a subshell per candidate, which inherits it (its own load_kinds is then a no-op)
   while read -r h m; do
     if [ "$h" = claude ]; then
       [ "${CLAUDE_FULL:-0}" = 0 ] || { why+=("claude: the Claude pace target is full"); continue; }
@@ -6884,10 +7092,10 @@ route() {
     elif [ -n "$(harness_sandbox "$h")" ] && ! pwhy=$(sandbox_item_why "$it" "$h" "$m" "$verdict"); then why+=("$h: $pwhy")
     elif [ -z "$m" ]; then why+=("$h: the item names no model: for it")
     elif [ -n "${PLACE_HOST:-}" ] && ! host_runs "$PLACE_HOST" "$h"; then why+=("$h: placed on $PLACE_HOST, which does not run it (its kit and fleet_harnesses, fleet-dispatch hosts)")
-    elif [ -n "$DISPATCH_SANDBOX_PROFILE" ]; then why+=("$h: cannot hold sandbox $DISPATCH_SANDBOX_PROFILE")
     elif ! takes_plan "$h" && [ "$(jq -r .mode <<<"$it")" = plan ]; then why+=("$h: runs headless and cannot resume, and this is a plan item")
     elif [ "$hl" = 1 ] && [ "$erc" = 0 ]; then why+=("$h: runs headless, and this is $excl work (excluded in $MATRIX)")
     elif [ "$hl" = 1 ] && [ "$erc" = 2 ]; then why+=("$h: runs headless, and the exclusion list $MATRIX is unreadable or has a bad match")
+    elif ! pwhy=$(harness_needs_why "$h" "$it" "$tier" "$pinned"); then why+=("$h: $pwhy")
     elif [ "$overflow" = 1 ] && ! jq -e --arg c "$h:$m" '.trial == $c or any(.promoted[]?, .direct[]?; . == $c)' <<<"${verdict:-null}" >/dev/null 2>&1; then
       why+=("$h: pay-per-use, so it takes only a class it was promoted for or its trial pick")
     elif [ "$overflow" = 1 ] && [ "${ACCT_RC:-1}" = 0 ]; then why+=("$h: pay-per-use, and an account has room")
@@ -6895,7 +7103,6 @@ route() {
     elif [ "$pinned" = 0 ] && [ "$tier" -gt "$UNATTENDED_TIER_CEILING" ] && ! is_red "$it" &&
       ! { [ -n "$(harness_sandbox "$h")" ] && trainee_why "$it" "$h" >/dev/null; }; then
       why+=("$h: tier $tier is past the unattended ceiling")
-    elif [ "$pinned" = 0 ] && [ "$tier" -gt "$UNATTENDED_TIER_CEILING" ] && is_red "$it" && headless "$h"; then why+=("$h: runs headless, so it cannot hold the red-fix gate")
     elif pwhy=$(provider_hold_why "$src"); then why+=("$h: $pwhy")
     elif ! jq -e --arg s "$src" 'any(.sources[]?; .name == $s and .room.ok == true)' <<<"$ACCT_ROWS" >/dev/null 2>&1; then
       why+=("$h: $(jq -r --arg s "$src" '[.sources[]? | select(.name == $s) | "\($s): \(.room.why)"][0] // "no source \($s) in claude-acct room --json"' <<<"$ACCT_ROWS")")
@@ -6925,6 +7132,13 @@ start_item() {
   local it="$1" slug rc verdict='' cached floor='' keep=0 harness=claude
   local ACCT_ROWS='' ACCT_DIR ACCT_WHY ACCT_PAST_PACE ACCT_RC=0 SHORT_PASS=${SHORT_PASS:-0}
   slug=$(jq -r .slug <<<"$it")
+  # A client's work project is hidden here (project_visible); agent-queue add refuses one, and this
+  # catches an item queued before that guard or written by hand (ar-6083).
+  local project; project=$(jq -r '.project // ""' <<<"$it")
+  [ -z "$project" ] || project=$(PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_lookup "$project") || project=$(jq -r '.project' <<<"$it")
+  if [ -n "$project" ] && ! PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_visible "$project"; then
+    say "queue item $slug is in $project, a client's work project hidden on this machine: never started here"; return 5
+  fi
   if [ "$DRY" = 1 ]; then say "would start queue item $slug: $(jq -r '"\(.project) \(.mode) \(.priority)"' <<<"$it")"; return 0; fi
   ! short_item "$it" || SHORT_PASS=1
   # Asked again here, as launch does: the gate's answer may be minutes old. ACCT_WHY names the
@@ -7867,12 +8081,13 @@ repose_ask() {
   fi
 }
 
-# reconcile_plans -- file an approved plan its session left behind on the board: one untagged row (the priority rubric judges it) naming
-# the plan (agent-queue add --plan from a filer; only the board fills the queue), which dispatch
-# pulls like any row and promote queues as the plan's chain. Once only: a plan the queue has held,
-# or one filed here before (PLANS_FILED), is not filed again, or every pass would add a row.
-# ask-sweep reads PLANS_FILED too, so it asks the human about no plan filed here. One still open
-# after that shows in plans_unqueued.
+# reconcile_plans -- file an approved plan its session left behind on the board: each open phase its
+# own row, every later one gated #after/ the row before (agent-queue add --plan from a filer; only the
+# board fills the queue), which dispatch pulls in turn like any row. No row stands for the whole plan
+# (ar-5605). Once only: a plan the queue has held, or one filed here before (PLANS_FILED), is not
+# filed again, or every pass would add rows. A held exit with no `held` line filed nothing (its epic:
+# new proposal waits), so that plan is tried again next pass. One still open after that shows in
+# plans_unqueued.
 # `- [-]` is how a human drops a phase.
 PLANS_FILED="$DIR/plans-filed"
 reconcile_plans() {
@@ -7882,20 +8097,40 @@ reconcile_plans() {
   [ -n "$orphans" ] || return 0
   held=$(agent-queue list --json --state done --since "$(date -d "$PLAN_LEDGER_DAYS days ago" +%F)" 2>/dev/null | jq -r '.plan // empty') || return 0
   [ ! -s "$PLANS_FILED" ] || held+=$'\n'"$(cat "$PLANS_FILED")"
-  # By file name, as PLAN_ITEMS_JQ and ask-sweep match: an item names ~/.claude/plans/<f>, the
+  # By file name, as PLAN_ITEMS_JQ matches: an item names ~/.claude/plans/<f>, the
   # ledger the account's own ~/.claude-<acct>/plans/<f>.
   held=$(sed 's#.*/##' <<<"$held")
   while IFS= read -r c; do
     plan=$(jq -r .plan <<<"$c"); project=$(jq -r .project <<<"$c")
     grep -qxF -- "${plan##*/}" <<<"$held" && continue
     out=$(AGENT_QUEUE_START=0 agent-queue add --plan "$plan" --project "$project" --from auto:plans 2>&1); rc=$?
-    if [ "$rc" -eq 0 ] || [ "$rc" -eq "$AQ_EX_HELD" ]; then
+    if [ "$rc" -eq 0 ] || { [ "$rc" -eq "$AQ_EX_HELD" ] && grep -q '^held ' <<<"$out"; }; then
       mkdir -p "$DIR"; printf '%s\n' "$plan" >> "$PLANS_FILED"
       logline "filed $(basename "$plan") to run its open phases: its session is gone"
+    elif [ "$rc" -eq "$AQ_EX_HELD" ]; then
+      logline "left $(basename "$plan") for next pass: ${out##*$'\n'}"
+    elif plan_fix_row "$plan" "$project" "$out"; then
+      mkdir -p "$DIR"; printf '%s\n' "$plan" >> "$PLANS_FILED"
     else
       say "could not file the phases of $plan: $out"
     fi
   done <<<"$orphans"
+}
+
+# plan_fix_row <plan> <project> <agent-queue output> -- when agent-queue refused the plan's Phases
+# checklist, file one fix(plan) row on the project's board, so the plan is fixed once rather than
+# retried every pass; fails when the refusal is anything else or the row could not be filed.
+plan_fix_row() {
+  local why board rc=0
+  why="${3##*$'\n'}"; why="${why#agent-queue: }"; why="${why#--plan *: }"
+  [[ "$why" == "could not read its Phases checklist: "* ]] || return 1
+  why=$(tr -cd ' -~' <<<"${why#could not read its Phases checklist: }" | tr -d '#' | cut -c1-160)
+  board=$(PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_board "$2")
+  [ -n "$board" ] || return 1
+  notes ptask "$board" --agent add --why fault "fix(plan): $(basename "$1" .md): agent-queue refuses its Phases checklist ($why); fix it, then agent-queue add --plan $1 #size/s" \
+    >/dev/null 2>&1 || rc=$?
+  # 3: an open twin; 4: the outbox took it, where inbox-triage joins a later twin.
+  case "$rc" in 0|3|4) logline "filed a fix row for $(basename "$1"): agent-queue refuses its Phases checklist" ;; *) return 1 ;; esac
 }
 
 # reconcile_epics -- queue one verify item for each open epic whose every leaf has landed (fleet-bench's
@@ -7910,15 +8145,20 @@ reconcile_plans() {
 # so it neither holds the epic open nor raises the done count that would key a second verify.
 reconcile_epics() {
   [ "$DISPATCH_EPIC_VERIFY" = 1 ] || return 0
-  local landed prof project id done_ title slug out rc
+  local landed prof project id done_ title slug out rc it
   landed=$(notes projects --stats --json 2>/dev/null | jq -r '.[] | select(.automation != false) | . as $p
     | (.epics // [])[] | select(.open == 0 and .done > 0)
     | [($p.profile // ""), $p.name, .id, .done, (.title | gsub("[\t\n]"; " "))] | join("\u001f")') || return 0
   [ -n "$landed" ] || return 0
   while IFS=$'\x1f' read -r prof project id done_ title; do
     slug="verify-$id-$done_"
-    # One lookup per landed epic, active or done: the whole queue is seconds to read every pass.
-    [ -z "$(agent-queue show "$slug" --json 2>/dev/null)" ] || continue
+    # One lookup per landed epic, active or done: the whole queue is seconds to read every pass. An item
+    # the cap bumped unrun (make_room: returned, "made room for ...") is queued again, linking its open
+    # row; a hand return, or a show that answers but does not parse, keeps the slug spent. make_room
+    # bumps only for an urgent, red or after-pull add, and this high add bumps nothing, so no ping-pong.
+    if it=$(agent-queue show "$slug" --json 2>/dev/null); then
+      jq -e '.end_reason == "returned" and ((.cancel_why // "") | startswith("made room for "))' <<<"$it" >/dev/null 2>&1 || continue
+    fi
     out=$(epic_verify_task "$prof" "$project" "$id" "$title" | AGENT_QUEUE_PULL=dispatch AGENT_QUEUE_START=0 agent-queue add --project "$project" --slug "$slug" --epic "$id" \
       --title "check(epics): verify $id $title" --priority high --tags verify --from auto:epics 2>&1); rc=$?
     if [ "$rc" -eq 0 ]; then
@@ -7954,6 +8194,7 @@ epic_verify_task() {
 waiting_sessions() {
   local panel asks shared working wsids
   panel=$(agent-panel list --json 2>/dev/null) || return 1
+  panel=$(claude_rows <<<"$panel")
   # --open: a session whose ask is parked still waits on its human; parking only hides the row.
   asks=$(agent-ask list --all --open 2>/dev/null) || return 1
   shared=$(jq -r 'select(.status != "shell") | .target | sub(":[^:/]*$"; "")' <<<"$panel" 2>/dev/null | sort | uniq -d)
@@ -9173,7 +9414,7 @@ main() {
     trainee-review) shift; cmd_trainee_review "$@" ;;
     trainee-reject) shift; cmd_trainee_reject "$@" ;;
     validate) shift; cmd_validate "$@" ;;
-    trainee-rollup) shift; cmd_trainee_rollup "$@" ;;
+    rollup) shift; cmd_rollup "$@" ;;
     direct-land) shift; cmd_direct_land "$@" ;;
     hosts) shift; cmd_hosts "$@" ;;
     harness-ready) shift; cmd_harness_ready "$@" ;;
