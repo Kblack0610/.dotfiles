@@ -514,8 +514,8 @@ jobs:
         uses: ./.github/actions/bats-vendor
       # The registry (tests/docker.sh's CARGO_HOME, .cargo-ci in the checkout) and every crate's
       # target/ in one cache. Cold, the Rust gate compiled six crates and their dependencies from
-      # scratch: 248 s of a 292 s job (43014231625). Keyed on the toolchain and the lockfiles
-      # (rust.sh passes --locked), and a fresh checkout's mtimes make cargo rebuild this repo's own
+      # scratch: 248 s of a 292 s job (43014231625). Keyed on the toolchain, the lockfiles
+      # (rust.sh passes --locked) and tests/cargo-prune.sh (what a save keeps), and a fresh checkout's mtimes make cargo rebuild this repo's own
       # crates, so a cache never serves stale code. Only main saves it; a pull request restores
       # main's. The notes job restores the same key (tests/unit/ci_gate.bats).
       - name: Restore cargo
@@ -527,8 +527,8 @@ jobs:
             .cargo-ci/registry
             .cargo-ci/git
             .local/src/*/target
-          key: cargo-target-${{ runner.os }}-${{ hashFiles('tests/rust-toolchain') }}-${{ hashFiles('.local/src/*/Cargo.lock') }}
-          restore-keys: cargo-target-${{ runner.os }}-${{ hashFiles('tests/rust-toolchain') }}-
+          key: cargo-target-${{ runner.os }}-${{ hashFiles('tests/rust-toolchain', 'tests/cargo-prune.sh') }}-${{ hashFiles('.local/src/*/Cargo.lock') }}
+          restore-keys: cargo-target-${{ runner.os }}-${{ hashFiles('tests/rust-toolchain', 'tests/cargo-prune.sh') }}-
       # Clippy runs on every run, pull requests included: a lint that only main checked reached main
       # red first (2026-11-13 #2086, 2026-11-20 sort_by_key and WAITING_JS).
       - name: Rust gate
@@ -564,7 +564,11 @@ jobs:
           retention-days: 7
       # Right after the gate and on a red too: a red main must not leave every later run cold.
       # Only main pushes, the schedule and a manual run save; a pull request never queues its own
-      # copy of a GB-sized cache.
+      # copy of a GB-sized cache. Before the save, our own crates' artifacts (every run rebuilds them)
+      # and the unpacked registry sources leave it, so a pull request restores less (ar-4235).
+      - name: Prune cargo
+        if: ${{ !cancelled() && github.event_name != 'pull_request' && steps.cargo.outcome == 'success' && steps.cargo.outputs.cache-hit != 'true' }}
+        run: tests/cargo-prune.sh | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Save cargo
         if: ${{ !cancelled() && github.event_name != 'pull_request' && steps.cargo.outcome == 'success' && steps.cargo.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
@@ -632,8 +636,8 @@ jobs:
             .cargo-ci/registry
             .cargo-ci/git
             .local/src/*/target
-          key: cargo-target-${{ runner.os }}-${{ hashFiles('tests/rust-toolchain') }}-${{ hashFiles('.local/src/*/Cargo.lock') }}
-          restore-keys: cargo-target-${{ runner.os }}-${{ hashFiles('tests/rust-toolchain') }}-
+          key: cargo-target-${{ runner.os }}-${{ hashFiles('tests/rust-toolchain', 'tests/cargo-prune.sh') }}-${{ hashFiles('.local/src/*/Cargo.lock') }}
+          restore-keys: cargo-target-${{ runner.os }}-${{ hashFiles('tests/rust-toolchain', 'tests/cargo-prune.sh') }}-
       - if: steps.pick.outputs.run == 'true'
         uses: ./.github/actions/bats-vendor
       # The build and every run in the image; NOTES_BIN is the binary's path in there (/work).
