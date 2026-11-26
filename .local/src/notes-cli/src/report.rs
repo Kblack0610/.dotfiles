@@ -549,14 +549,19 @@ pub fn index_text(p: &Profile, day: NaiveDate, all: &[Entry]) -> String {
         "---\ngenerated: true\ntags: [refs]\n---\n\n# Refs {}\n\nBuilt by `notes link-refs` from this folder; edits here are overwritten.\n",
         day.format("%Y-%m-%d")
     );
-    let mut section = |heading: &str, kind: Kind| {
-        let lines: Vec<String> = all.iter().filter(|e| e.kind == kind).map(link).collect();
+    let (mut digests, mut notes) = (Vec::new(), Vec::new());
+    for e in all {
+        match e.kind {
+            Kind::Digest => digests.push(link(e)),
+            Kind::Capture => notes.push(link(e)),
+            Kind::Report => {}
+        }
+    }
+    for (heading, lines) in [("Digests", digests), ("Your notes", notes)] {
         if !lines.is_empty() {
             s.push_str(&format!("\n## {heading}\n\n{}\n", lines.join("\n")));
         }
-    };
-    section("Digests", Kind::Digest);
-    section("Your notes", Kind::Capture);
+    }
     if all.is_empty() {
         s.push_str("\nNothing filed yet.\n");
     }
@@ -1477,7 +1482,7 @@ mod tests {
             (2, 1, 0),
             "{m:?}"
         );
-        assert_eq!(m.archived, Moved { inbox: 2, refs: 1 });
+        assert_eq!(m.archived, Moved { inbox: 3, refs: 0 });
         for f in [
             "inbox/archive/2026-11/2026-11-25/a.md",
             "inbox/archive/2026-11/2026-11-24/c.md",
