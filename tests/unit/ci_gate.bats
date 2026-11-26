@@ -139,6 +139,18 @@ off_pool() {
   assert_output 0
 }
 
+@test "fleet-agent.yml's image job runs where the &pool anchor says" {
+  local pool fa="$BATS_TEST_DIRNAME/../../.github/workflows/fleet-agent.yml"
+  pool=$(sed -nE 's/^    runs-on: &pool (\$\{\{ fromJSON\(.*\) \}\})$/\1/p' "$WF")
+  [ -n "$pool" ] || fail "no expression read from the &pool anchor"
+  run grep -cxF -- "    runs-on: $pool" "$fa"
+  assert_output 1
+  # Negative control: a copy whose fork test drifted is not the anchor's.
+  sed "/^    runs-on: /s/head.repo.full_name == github.repository/head.repo.fork == false/" "$fa" >"$BATS_TEST_TMPDIR/drift.yml"
+  run grep -cxF -- "    runs-on: $pool" "$BATS_TEST_TMPDIR/drift.yml"
+  assert_output 0
+}
+
 # job_pod_faults <wf>: "<job>: <fault>" for a job on the job-pod anchor with no job image, no need
 # on the image job, or a test-image step that also runs inside the image
 job_pod_faults() {
