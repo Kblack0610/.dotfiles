@@ -34,6 +34,10 @@ spawn() {  # spawn <cmd...>: background a process this test owns; its pid in $SP
   "$@" >/dev/null 2>&1 </dev/null 3>&- &
   SPAWNED=$!
   PIDS+=("$SPAWNED")
+  # $! is the fork, still bats' bash until it execs, and pgrep and pin.sh read what it execs: wait
+  # for its comm to turn to the command's name. No event marks an exec; CI run 45763805237 lost
+  # the race (pgrep found nothing).
+  timeout 10 bash -c 'until [ "$(cat "/proc/$1/comm" 2>/dev/null)" = "$2" ]; do :; done' _ "$SPAWNED" "${1##*/}" || fail "spawn: $1 never started"
 }
 
 @test "toggle on a live pin kills it by its recorded pid and releases the handoff; a shell naming the pin lives" {

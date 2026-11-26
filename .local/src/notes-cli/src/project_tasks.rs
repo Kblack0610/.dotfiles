@@ -1376,26 +1376,50 @@ fn carry_tags(old: &str, new: &str) -> String {
     md::find_hashtags(old)
         .into_iter()
         .filter(|t| t.starts_with(|c: char| c.is_ascii_lowercase()) && !set.contains(&name(t)))
+        // A gate's id is cased (`#ask/dU3Ev0`), and this list is lowercased: carry_sizing carries it.
+        .filter(|t| gate_kind(t).is_none())
         .fold(new.trim().to_string(), |out, t| {
             md::add_tag(&out, &format!("#{t}"))
         })
 }
 
-/// `new` plus the `#size/x` and `#pts/N` of `old` when `new` types neither: the sizing is the
-/// row's estimate, not words, so a retext keeps it. Every other tag is exactly what `--text`
-/// types, so leaving `#plan` out clears it. A `new` that types either sizing tag sets the
-/// sizing itself.
+/// The board gate kinds: the tags `agent-queue gate` reads on a row (its `gate_queue_tag` arms,
+/// plus `after/`, which `cmd_gate` reads itself), and `desk/`, the class `requeue --hold` puts
+/// beside a hold. Each is dispatch state, not words. A kind added there is added here.
+const GATE_KINDS: [&str; 8] = [
+    "at/", "after/", "ask/", "hold/", "rbw/", "pr/", "nightly/", "desk/",
+];
+
+/// The [`GATE_KINDS`] prefix of a lowercased tag, if it is a gate.
+fn gate_kind(tag: &str) -> Option<&'static str> {
+    GATE_KINDS.iter().copied().find(|k| tag.starts_with(k))
+}
+
+/// `new` plus the `#size/x` and `#pts/N` of `old` when `new` types neither, and each gate tag of
+/// `old` ([`GATE_KINDS`]) as it was cased, for each kind `new` types none of: the sizing is the
+/// row's estimate and a gate is what the row waits on, neither is words, so a retext keeps both.
+/// Every other tag is exactly what `--text` types, so leaving `#plan` out clears it. A `new` that
+/// types a sizing tag sets the sizing, and one that types a gate of a kind sets that kind's gates;
+/// a gate comes off with `ptask tag --remove`. Why: fleet-bench's reopen of a red retexts its row,
+/// which dropped `#ask/<id>` and restarted a row still waiting on the human (ar-3624, 2026-11-25).
 fn carry_sizing(old: &str, new: &str) -> String {
     let sizing = |t: &String| t.starts_with("size/") || t.starts_with("pts/");
-    if md::find_hashtags(new).iter().any(sizing) {
-        return new.trim().to_string();
-    }
-    md::find_hashtags(old)
+    let typed = md::find_hashtags(new);
+    let out = if typed.iter().any(sizing) {
+        new.trim().to_string()
+    } else {
+        md::find_hashtags(old)
+            .into_iter()
+            .filter(sizing)
+            .fold(new.trim().to_string(), |out, t| {
+                md::add_tag(&out, &format!("#{t}"))
+            })
+    };
+    let set: Vec<&str> = typed.iter().filter_map(|t| gate_kind(t)).collect();
+    md::find_hashtags_cased(old)
         .into_iter()
-        .filter(sizing)
-        .fold(new.trim().to_string(), |out, t| {
-            md::add_tag(&out, &format!("#{t}"))
-        })
+        .filter(|t| gate_kind(&t.to_lowercase()).is_some_and(|k| !set.contains(&k)))
+        .fold(out, |out, t| md::add_tag(&out, &format!("#{t}")))
 }
 
 /// The stamped rows for `texts` on `name`'s board, each followed by `details`: created tag,
@@ -3172,7 +3196,8 @@ pub fn rebrief(
 /// text in place: replace it, or add `append` to the end of it. Its place on the sheet, its
 /// checkbox state and its tags stay as they were ([`md::retext_task`]); the one exception is
 /// text-borne tags such as `#plan`, which `--text` drops when it leaves them out, while the
-/// sizing (`#size/x`, `#pts/N`) is kept unless `--text` types its own ([`carry_sizing`]).
+/// sizing (`#size/x`, `#pts/N`) is kept unless `--text` types its own, and a gate tag
+/// (`#ask/<id>`, `#after/<row>`, `#hold/<res>`) is always kept ([`carry_sizing`]).
 /// A `#c` stamp or `#of/` link typed in `--text` is dropped when the row has one; a typed `#of/`
 /// naming another parent is refused (re-parent with `ptask tag`).
 ///
@@ -4805,6 +4830,36 @@ Version: v1.13.0
             .contains("move"));
         assert!(tag_token("two words").is_err());
         assert!(tag_token("#").is_err());
+    }
+
+    #[test]
+    fn a_text_edit_keeps_the_rows_gate_tags_as_cased_and_drops_its_other_words_tags() {
+        let old = "check(watch): x tripped #size/s #plan #ask/dU3Ev0/a/b #after/ar-12 #hold/Unity";
+        assert_eq!(
+            carry_sizing(old, "check(watch): x tripped, why: y"),
+            "check(watch): x tripped, why: y #size/s #ask/dU3Ev0/a/b #after/ar-12 #hold/Unity",
+            "sizing and every gate ride over, #plan is words and goes"
+        );
+        assert_eq!(
+            carry_sizing(old, "check(watch): x #size/m #ask/dU3Ev0/a/b"),
+            "check(watch): x #size/m #ask/dU3Ev0/a/b #after/ar-12 #hold/Unity",
+            "a typed sizing and a typed gate are not doubled"
+        );
+        assert_eq!(
+            carry_sizing(old, "check(watch): x #hold/Android"),
+            "check(watch): x #hold/Android #size/s #ask/dU3Ev0/a/b #after/ar-12",
+            "a typed gate replaces the old gates of its kind, never joins them"
+        );
+        assert_eq!(
+            carry_sizing(old, &carry_tags(old, "fix(x): y")),
+            "fix(x): y #size/s #plan #ask/dU3Ev0/a/b #after/ar-12 #hold/Unity",
+            "the --was path keeps each gate as cased"
+        );
+        // NEGATIVE CONTROL: a row with no gate gets none.
+        assert_eq!(
+            carry_sizing("fix(x): a #size/s", "fix(x): b"),
+            "fix(x): b #size/s"
+        );
     }
 
     #[test]
@@ -7078,6 +7133,37 @@ mod inbox_tests {
             v.read(),
             s,
             "a rewrite to the row's own words wrote nothing"
+        );
+    }
+
+    #[test]
+    fn a_text_edit_of_a_gated_row_keeps_its_ask_gate() {
+        // `edit --text` is the path fleet-bench's reopen of a red takes (ar-3624).
+        let v = vault(
+            "gatekeep",
+            "",
+            "- [ ] check(watch): x tripped #size/s #c1119 #high #ask/dU3Ev0/a/b <!-- id:sc-7 -->\n",
+        );
+        let rc = retext(
+            &v.p,
+            &v.log,
+            "scratch",
+            &Pick::new("sc-7", false).unwrap(),
+            Some("check(watch): x tripped, why: y #size/s"),
+            None,
+            &[],
+            false,
+            None,
+            Lane::Human,
+            &Writer::of(None, None, None, None, &[], false, Vec::new()),
+        )
+        .unwrap();
+        assert_eq!(rc, 0);
+        let s = v.read();
+        let row = s.lines().find(|l| l.contains("id:sc-7")).unwrap();
+        assert!(
+            row.contains("why: y") && row.contains("#ask/dU3Ev0/a/b") && row.contains("#high"),
+            "{row}"
         );
     }
 
