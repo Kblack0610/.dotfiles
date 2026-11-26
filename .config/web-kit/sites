@@ -1,0 +1,3 @@
+# Sites that pin the web-kit, read by `kit-lock status`: one `<repo dir> <kit.lock path in it>` a line.
+# A site added here is listed with its pin, the kit commits since, and whether README.md changed.
+~/dev/crypto/freqtrade_trading_attempt web/kit.lock
