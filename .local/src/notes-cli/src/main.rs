@@ -96,7 +96,7 @@ enum Cmd {
         all: bool,
     },
     /// Print a resolved profile path for editor/shell integration.
-    /// target: daily (default) | daily-dir | archive | refs | refs-today | root | backlog | scheduled | recurring | zettel | meetings | index | captures | captures-today
+    /// target: daily (default) | daily-dir | archive | refs | refs-today | root | backlog | scheduled | recurring | zettel | meetings | index | captures | captures-today | inbox
     Path {
         #[arg(default_value = "daily")]
         target: String,
@@ -119,13 +119,14 @@ enum Cmd {
     },
     /// Rebuild today's refs index and point today's note's `## Refs` at it
     LinkRefs,
-    /// Agent reports for the human, one per file in the day's refs folder: add (or revise),
-    /// list across days, mark read
+    /// Agent reports for the human, one per file in `inbox/<date>/`: add (or revise), list
+    /// across days, mark read, archive past days
     Report {
         #[command(subcommand)]
         sub: report::Cmd,
     },
-    /// Summarize a day's note into the continuous monthly log (dedup-safe)
+    /// Summarize a day's note into the continuous monthly log (dedup-safe), then archive past
+    /// report days (`notes report archive`)
     Summarize {
         /// Date to summarize (YYYY-MM-DD); defaults to yesterday
         #[arg(long)]
@@ -1653,6 +1654,20 @@ fn read_stdin() -> Result<String> {
     Ok(text)
 }
 
+/// The nightly `notes summarize`: the day's summary, then the report archive (no new timer).
+/// Both run, so a day with no note to summarize still archives.
+fn summarize_nightly(
+    prof: &config::Profile,
+    log: &logging::Logger,
+    date: Option<&str>,
+    force: bool,
+) -> Result<()> {
+    let summarized = summarize::run(prof, log, date, force);
+    let archived = report::archive_today(prof, log, false);
+    summarized?;
+    archived.map(|_| ())
+}
+
 fn main() -> Result<()> {
     reset_sigpipe();
     let cli = Cli::parse();
@@ -1693,7 +1708,7 @@ fn main() -> Result<()> {
             }
             None => {
                 eprintln!(
-                    "unknown path target '{target}' (want: daily, daily-dir, refs, refs-today, root, backlog, scheduled, recurring, zettel, meetings, archive, index, projects, captures, captures-today)"
+                    "unknown path target '{target}' (want: daily, daily-dir, refs, refs-today, root, backlog, scheduled, recurring, zettel, meetings, archive, index, projects, captures, captures-today, inbox)"
                 );
                 2
             }
@@ -1704,7 +1719,7 @@ fn main() -> Result<()> {
         }
         Cmd::Report { sub } => report::run(&prof, &log, sub)?,
         Cmd::Summarize { date, force } => {
-            summarize::run(&prof, &log, date.as_deref(), force)?;
+            summarize_nightly(&prof, &log, date.as_deref(), force)?;
             0
         }
         Cmd::Archive {

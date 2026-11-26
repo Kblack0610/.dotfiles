@@ -1,7 +1,7 @@
-//! The Reports tab's reader, for both hub surfaces: every file in the refs day folders, as
-//! `notes report list --json --all` prints them (notes-cli `report.rs` owns the contract, the
-//! kinds and the stream rule), shaped into the tab's sections. Today holds the reports that need
-//! the human, then the stream (today's reports and unread ones under a week old, the `stream`
+//! The Reports tab's reader, for both hub surfaces: every file in the inbox day folders (reports)
+//! and the refs day folders (digests and captures), as `notes report list --json --all` prints
+//! them (notes-cli `report.rs` owns the contract, the kinds and the stream rule), shaped into
+//! the tab's sections. Today holds the reports that need the human, then the stream (today's reports and unread ones under a week old, the `stream`
 //! flag the CLI sets), then today's digests and the human's own captures; Archive holds every
 //! other report by day. The one writer is `notes report read`, which agent-web calls when a
 //! report is opened ([`read_argv`]); this reader never changes a file.
