@@ -447,6 +447,29 @@ EOF
   assert_success
 }
 
+@test "a --now sync that finds another one waiting leaves its write to that one (ar-3191)" {
+  # The waiter commits only once it holds the lock, so it carries this write; a second waiter would
+  # only queue behind it, and 500+ of them SKIPped at 300s.
+  peer a
+  local before; before=$(tip "$ORIGIN")
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  mkdir -p "$SANDBOX/a/.sync"
+  exec 7>"$SANDBOX/a/.sync/lock" 6>"$SANDBOX/a/.sync/now-wait"
+  flock 7
+  flock 6
+  run on a --now
+  assert_success
+  assert_equal "$(tip "$ORIGIN")" "$before"
+  # Negative control: with no sync waiting or running, the same write goes out at once and leaves
+  # now-wait free for the next writer.
+  exec 6>&- 7>&-
+  run on a --now
+  assert_success
+  assert_equal "$(show "$ORIGIN" queue/item.md)" 'state: done'
+  run flock -n "$SANDBOX/a/.sync/now-wait" true
+  assert_success
+}
+
 @test "the deploy key goes to ssh as one word, even from a path with a space" {
   mkdir -p "$SANDBOX/bin"
   printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s"\nexit 255\n' "$SANDBOX/ssh.args" > "$SANDBOX/bin/ssh"
@@ -1096,10 +1119,12 @@ lose_head_tree() {
   run on a
   assert_failure 3
   assert_output --partial "no remote answered to refetch them"
+  # With no reflog left, no older commit can stand in for HEAD either.
+  rm "$SANDBOX/a/.git/logs/refs/heads/master"
   conf "$ORIGIN"; mv "$BACKUP.off" "$BACKUP"
   run on a
   assert_failure 3
-  assert_output --partial "names trees missing here and no remote has them"
+  assert_output --partial "no remote has them and no commit in its reflog reads"
   refute_output --partial "could not commit"
   # The refetch that reached a remote is not repeated for this HEAD: an unreachable origin now
   # changes nothing, since no fetch runs.
@@ -1108,6 +1133,57 @@ lose_head_tree() {
   assert_failure 3
   assert_output --partial "no remote has them"
   refute_output --partial "no remote answered"
+}
+
+# empty_object <machine> <oid>: a reboot mid-commit leaves the object's file at zero bytes (ar-4193).
+empty_object() {
+  mkdir -p "$SANDBOX/$1/.git/objects/${2:0:2}"
+  rm -f "$SANDBOX/$1/.git/objects/${2:0:2}/${2:2}"
+  : > "$SANDBOX/$1/.git/objects/${2:0:2}/${2:2}"
+}
+
+@test "an unpushed HEAD commit a reboot left empty is dropped, the branch moves back to the newest commit that reads, and the files land (ar-4193)" {
+  peer a
+  echo 'state: running' > "$SANDBOX/a/queue/item.md"
+  on a >/dev/null
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  git -C "$SANDBOX/a" commit -q -am local
+  empty_object a "$(git -C "$SANDBOX/a" rev-parse HEAD)"
+  run on a
+  assert_success
+  assert_output --partial "removed 1 zero-byte loose object"
+  assert_output --partial "moved master back to"
+  assert_output --partial "COMPLETE: origin at"
+  assert_equal "$(show "$ORIGIN" queue/item.md)" "state: done"
+  run git -C "$SANDBOX/a" fsck --connectivity-only
+  assert_success
+}
+
+@test "a zero-byte blob a reboot left under an intact HEAD is dropped, so the add writes it and the push lands (ar-4193)" {
+  peer a
+  echo 'state: running' > "$SANDBOX/a/queue/item.md"
+  on a >/dev/null
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  empty_object a "$(git -C "$SANDBOX/a" hash-object queue/item.md)"
+  run on a
+  assert_success
+  assert_output --partial "removed 1 zero-byte loose object"
+  assert_equal "$(show "$ORIGIN" queue/item.md)" "state: done"
+  run git -C "$SANDBOX/a" fsck --connectivity-only
+  assert_success
+}
+
+@test "an unpushed HEAD whose tree no remote holds moves back to the newest commit that reads, and the files land (ar-4193)" {
+  peer a
+  echo 'state: running' > "$SANDBOX/a/queue/item.md"
+  on a >/dev/null
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  git -C "$SANDBOX/a" commit -q -am local
+  lose_head_tree a
+  run on a
+  assert_success
+  assert_output --partial "no refetch restored; moved master back to"
+  assert_equal "$(show "$ORIGIN" queue/item.md)" "state: done"
 }
 
 @test "a store with no commit yet makes its first one, with no refetch (ar-3439)" {

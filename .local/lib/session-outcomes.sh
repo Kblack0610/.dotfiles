@@ -16,6 +16,8 @@
 # shellcheck source=origin-repo.sh
 SO_LIB="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 . "$SO_LIB/origin-repo.sh" || return 1
+# shellcheck source=edit-tools.sh
+. "$SO_LIB/edit-tools.sh" || return 1
 # shellcheck source=claude-end.sh
 . "$SO_LIB/claude-end.sh" || return 1
 
@@ -63,8 +65,10 @@ SO_TIME_USE_LINES="$(jq -Rsc '[splits("\n") | gsub("^\\s+|\\s+$"; "") | capture(
   "${TIME_USE_CONF:-$SO_LIB/../../.config/agent-panel/time-use.conf}" 2>/dev/null)" || SO_TIME_USE_LINES='[]'
 [ "$SO_TIME_USE_LINES" != '[]' ] ||
   echo "session-outcomes: no gate or test line in ${TIME_USE_CONF:-time-use.conf}; every command counts as jobs" >&2
+# edit_tools: the tools that write a file (edit-tools.conf), for the since-edit and lesson counts.
 SO_PR_JQ="$SO_PR_JQ
-  def time_use_lines: ${SO_TIME_USE_LINES:-[]};"'
+  def time_use_lines: ${SO_TIME_USE_LINES:-[]};
+  def edit_tools: $(edit_tools_json || echo '[]');"'
   def time_use_unquoted:
     gsub("(?<!<)<<(?!<)-?[ \\t]*(?<q>[\u0027\"]?)(?<w>[A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_])\\k<q>(?<rest>[^\\n]*)(?:\\n[^\\n]*)*?\\n[ \\t]*\\k<w>[ \\t]*(?![^\\n])"; "\(.rest)")
     | gsub("(?:^|(?<=[\\s;&|(`/]))(?<sh>(?:ba|z)?sh(?:\\s+-\\S+)*?\\s+-[a-z]*c\\s+)(?:\u0027(?<sq>[^\u0027]*)\u0027|\"(?<dq>(?:\\\\.|[^\"\\\\])*)\")"; "\(.sh)\n\(.sq // .dq)\n")
@@ -176,7 +180,7 @@ so_transcript_metrics() {
                elif $u.name == "Skill" and ($u.input.skill | type) == "string" then
                  .uses.skills[$u.input.skill] += 1
                else . end)
-            | (if (["Edit", "Write", "MultiEdit", "NotebookEdit"] | index($u.name)) != null
+            | (if (edit_tools | index($u.name)) != null
                   and (($u.input.file_path // $u.input.notebook_path // "") | test("/\\.agent/|/\\.claude/(plans|projects)/") | not) then
                  .since_edit = {}
                else . end)
@@ -196,7 +200,7 @@ so_transcript_metrics() {
                     elif ($c | test("--proof")) then .done_ids[$u.id] = "proof"
                     else . end)
                  else . end)
-            elif (["Edit", "Write", "MultiEdit"] | index($u.name)) != null
+            elif (edit_tools | index($u.name)) != null
                  and (($u.input.file_path // "") | test("/\\.agent/lessons/")) then
               .lesson_ids[$u.id] = true
             else . end)
@@ -369,7 +373,11 @@ so_codex_rows() {
 # are the result's usage; agy counts the cached part inside input, so input here is what was not
 # cached, as the codex rows read. agy reports no cost and AI Pro publishes no token price, so
 # cost_usd is null. effort is the model id's suffix (agy's ids are per effort). Commands are its
-# run_command steps, tests among them by time_use_class; edits count its file-writing tool steps.
+# run_command steps, tests among them by time_use_class; edits count its file-writing tool steps. A
+# failed command is a DONE step whose output says `Command exited with code N` (N != 0), a tool the
+# stream ends in state ERROR is a tool error too, and an agent_response in ERROR is an API error, as the
+# codex rows count them; a command with no code (a background one) is neither. 86 real streams
+# (2026-11-25) carry no cost, price or credit key.
 # A sandboxed run reaches no forge, so prs is empty: its PR comes from the tail and the item.
 so_agy_rows() {
   local dir="$1" work="$2" f
@@ -385,19 +393,25 @@ so_agy_rows() {
       | ($ev | map(select(.event == "exit")) | last | .at) as $t1
       | [$ev[] | .step_update // empty | select(.state == "DONE")] as $steps
       | [$steps[] | select(.step_type == "tool")] as $tools
-      | [$tools[] | select(.tool_name == "run_command") | .tool_info.parameters.CommandLine // "" | {cmd: ., class: time_use_class}] as $cmds
+      | [$ev[] | .step_update // empty | select(.state == "ERROR" and .step_type == "tool")] as $badtools
+      | [$ev[] | .step_update // empty | select(.state == "ERROR" and .step_type == "agent_response")] as $badturns
+      | [$tools[] | select(.tool_name == "run_command")
+         | {cmd: (.tool_info.parameters.CommandLine // ""),
+            exit: ((.tool_info.output | strings // "") | first((capture("Command exited with code (?<c>-?[0-9]+)").c | tonumber), null))}
+         | .class = (.cmd | time_use_class)] as $cmds
       | $r.usage as $u
       | {session_id: $id, harness: "agy", cwd: $i.init.cwd, title: "",
          updated: ($t1 // $mtime), duration_s: (if $t0 != null and $t1 != null then $t1 - $t0 else ($r.duration_seconds // 0 | floor) end),
-         edits: ([$tools[] | select(.tool_name | IN("write_to_file", "replace_file_content", "multi_replace_file_content", "sed_file"))] | length),
+         edits: ([$tools[] | select(.tool_name | IN("write_file", "edit_file", "write_to_file", "replace_file_content", "multi_replace_file_content", "sed_file"))] | length),
          cost_usd: null, models: [$i.init.model // empty],
          effort: ($i.init.model // "" | capture("-(?<e>low|medium|high|xhigh|max)$").e // null),
          tokens: (if $u == null then null else
                     {input: (if $u.input_tokens then $u.input_tokens - ($u.cache_read_tokens // 0) else null end), output: (($u.output_tokens // 0) + ($u.thinking_tokens // 0)),
                      cacheCreation: 0, cacheRead: ($u.cache_read_tokens // 0), total: $u.total_tokens} end),
-         metrics: {prs: [], hard_errors: {api_error: null, denied: null, tool_errors: null},
-                   activity: {tool_calls: ($tools | length), test_runs: ([$cmds[] | select(.class == "test")] | length),
-                              test_failures: null, ci_polls: ([$cmds[] | select(.class == "gate")] | length),
+         metrics: {prs: [], hard_errors: {api_error: ($badturns | length), denied: null,
+                                          tool_errors: (([$cmds[] | select(.exit != null and .exit != 0)] | length) + ($badtools | length))},
+                   activity: {tool_calls: (($tools | length) + ($badtools | length)), test_runs: ([$cmds[] | select(.class == "test")] | length),
+                              test_failures: ([$cmds[] | select(.class == "test" and .exit != null and .exit != 0)] | length), ci_polls: ([$cmds[] | select(.class == "gate")] | length),
                               api_messages: ([$steps[] | select(.step_type == "agent_response")] | length),
                               tokens: $u.total_tokens, tokens_after_last_edit: null, compactions: null},
                    time_use: {work_min: null, gate_min: null, test_min: null, jobs_min: null, human_min: null, parked_min: null}},

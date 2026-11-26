@@ -8,7 +8,7 @@ use hub_core::outbox::clock;
 use hub_core::reports::{Row, Section, View};
 use ratatui::text::{Line, Span};
 
-use crate::fit::clip_line;
+use crate::fit::{clip_line, len};
 use crate::fmt::Palette;
 
 /// Reports' layout entry: its sections and its Today and Archive inner tabs.
@@ -104,13 +104,12 @@ fn first(r: &Row, indent: &str, p: Palette, w: usize) -> Line<'static> {
         "unread" => String::new(),
         s => format!("  {s}"),
     };
-    clip_line(
-        Line::from(vec![
-            Span::styled(format!("{indent}{}", r.title.text()), style),
-            Span::styled(format!("  {}{state}", clock(&r.at)), p.dim()),
-        ]),
-        w,
-    )
+    // A report's title is read whole, so a long one gives way first: the time and state stay.
+    let tail = format!("  {}{state}", clock(&r.at));
+    let title = Line::from(Span::styled(format!("{indent}{}", r.title.text()), style));
+    let mut spans = clip_line(title, w.saturating_sub(len(&tail)).max(1)).spans;
+    spans.push(Span::styled(tail, p.dim()));
+    clip_line(Line::from(spans), w)
 }
 
 fn section(s: &Section, p: Palette, w: usize) -> Vec<Line<'static>> {
@@ -205,6 +204,22 @@ mod tests {
 
     fn text(lines: &[Line]) -> Vec<String> {
         lines.iter().map(crate::fit::plain).collect()
+    }
+
+    #[test]
+    fn a_long_title_gives_way_to_the_time_and_state_on_a_narrow_pane() {
+        let list = LIST.replace(
+            r#""title":"UPS switch""#,
+            r#""title":"UPS switch: did moving the CI boxes cut the load?""#,
+        );
+        let v = build(&parse(&list).unwrap(), "2026-11-24");
+        let t = text(&page(&v, "today", Palette { no_color: true }, 40));
+        let row = t
+            .iter()
+            .find(|l| l.contains("UPS switch"))
+            .expect("the row");
+        assert!(row.ends_with("15:40  needs you"), "{row:?}");
+        assert!(len(row) <= 40, "{row:?}");
     }
 
     #[test]

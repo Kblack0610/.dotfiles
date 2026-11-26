@@ -50,13 +50,7 @@ Simpleperf's hardware counters reveal bottlenecks invisible to software tracing.
 
 ## metavr Setup
 
-Simpleperf profiling is powered by the metavr CLI - install the standalone binary on your PATH (see the `metavr-cli` skill), or invoke via `npx` with no install:
-
-```bash
-metavr --version
-```
-
-Examples below use the bare `metavr` command; if you use the npm distribution, prefix with `npx -y`. Connect your Meta VR device via USB with developer mode enabled.
+Simpleperf profiling runs on the metavr CLI: setup is in the `metavr-cli` skill, and examples below use the bare `metavr` command.
 
 ## Quick Start Workflow
 
