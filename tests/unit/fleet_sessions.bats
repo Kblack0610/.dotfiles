@@ -3921,7 +3921,7 @@ seed_live() {
 
   # NEGATIVE CONTROLS: one STALLED session now. The same count is no event, and neither is a rise
   rm -f "$wake"
-  clean_fixture
+  panel "$SANDBOX/wt"; rm "$LEDGER_DIR/prs.tsv"   # clean_fixture past its landed_fixture, which this test ran already
   queue_item running lab:s1
   seed_live 1
   run "$REPO_ROOT/.local/bin/fleet-sessions" tick
