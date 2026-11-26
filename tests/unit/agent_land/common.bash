@@ -475,8 +475,8 @@ vitem() {
   [ $# -eq 0 ] || fm "$s" "$@"
 }
 merges() { grep -c 'pr merge' "$LOG" || true; }
-# review_json <state> <description> -> the head's one commit status, in agent-land's REVIEW_CONTEXT
+# review_json <state> <description> -> the head's one commit status, in pr-ci.sh's REVIEW_CONTEXT
 review_json() {
-  jq -nc --arg s "$1" --arg d "$2" --arg c "$(sed -n 's/^REVIEW_CONTEXT=//p' "$LAND")" \
+  jq -nc --arg s "$1" --arg d "$2" --arg c "$(sed -n 's/^export REVIEW_CONTEXT=//p' "$REPO_ROOT/.local/lib/pr-ci.sh")" \
     '[{state: $s, context: $c, description: $d}]' >"$NOTES_FIXTURE/review.json"
 }

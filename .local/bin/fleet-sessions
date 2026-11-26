@@ -2484,10 +2484,11 @@ refused_wait() {
 }
 
 # validate_hold <all items, jsonl> <the row's item slugs, comma list> <PR head oid> <clone|-> -> what agent-land's validate_gate
-# would say of this head: "failed <validate slug>" when an item's validate item (its `validate:`) records a fail verdict that
+# would say of this head (it reads the item's record; the gate reads the `review` status agent-land --verdict posts beside it):
+# "failed <validate slug>" when an item's validate item (its `validate:`) records a fail verdict that
 # covers it, "<validate slug>, a second agent's review" while that item is live on it (queued, running, waiting or review,
-# filed as validate-<item>-<head8>) and has not landed it, a pass included, else nothing. agent-land merges critical work only
-# on a pass, so neither PR is the session's to land: 2026-11-24 #3435 read STALLED green, not merged after
+# filed as validate-<item>-<head8>) and has not landed it, a pass included, else nothing. agent-land merges critical work (and a
+# gate-change PR or a sampled tier-3 item) only on a pass, so neither PR is the session's to land: 2026-11-24 #3435 read STALLED green, not merged after
 # validate-ar-5194-3edd08df failed it, and the shepherd nudged agent-13 to land it (ar-5286). The live states follow
 # validate_gate's; change them together.
 validate_hold() {
@@ -2519,8 +2520,7 @@ head_covers() {
 # (slot_refuser), unless its own Checks are red past the slot's refusal (git_facts left ci FAIL). A green or unknown-CI PR whose item is `after:` an item that is not done (<chain>,
 # chain_hold) waits on it, not STALLED green, not merged (ar-4420); its red gate line is open_pr_ci's. Past those, a green
 # or unknown-CI PR carries its item's validate verdict (validate_hold): a live validate item on its head is a wait, and a
-# fail on its head is "failed <slug>", never landable (ar-5286), red Checks included, since agent-land posts that fail
-# as a failure `review` status (ar-5450).
+# fail on its head is "failed <slug>", never landable (ar-5286). The fail's `review` status is no CI (pr-ci.sh).
 pr_wait() {
   local g="$1" state="$2" xr="$3" gd="$4" ci="$5" pr="$6" oid="$7" chain="$8" tn="" land="" w h
   [ "$g" = 1 ] && [ "$state" = OPEN ] && [ "$xr" = - ] || { printf '\n\n'; return 0; }
@@ -2531,12 +2531,8 @@ pr_wait() {
     elif [ "$ci" = PENDING ] && h="$(refused_wait "$gd" "$pr")" && [ -n "$h" ]; then land="slot holder #$h"; fi
   fi
   w="$land"
-  if [ -z "$w" ]; then case "$ci" in
-    # A fail verdict is also a failure review status, which reads as red Checks: it stays "failed <slug>".
-    FAIL) w="$(validate_hold "${9:-}" "${10:--}" "$oid" "$gd")"; [[ "$w" == "failed "* ]] || w="" ;;
-    PENDING | NOSTART) ;;
-    *) if [ -n "$chain" ]; then w="after: $chain"; else w="$(validate_hold "${9:-}" "${10:--}" "$oid" "$gd")"; fi ;;
-  esac; fi
+  if [ -z "$w" ]; then case "$ci" in FAIL | PENDING | NOSTART) ;; *)
+    if [ -n "$chain" ]; then w="after: $chain"; else w="$(validate_hold "${9:-}" "${10:--}" "$oid" "$gd")"; fi ;; esac; fi
   printf '%s\n%s\n' "$land" "$w"
 }
 

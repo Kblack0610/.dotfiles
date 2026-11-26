@@ -1204,7 +1204,6 @@ stack_gate() {
 # work" (ar-1689); a status on the commit, not a line the author writes, is the proof (ar-5450).
 VALIDATE_WAIT=5
 REVIEW_SHARE=10
-REVIEW_CONTEXT=review
 validate_gate() {
   local files lv ev why vslug vhead vit vsha st desc vses s out cov=0
   files=$(pr_files 2>&1) || fail validate "could not read #$pr's changed files ($(lastline "$files")), so whether its work is critical is unknown; re-run"
@@ -1300,11 +1299,15 @@ review_verdict() {
   vslug=$(jq -r '.validate // ""' <<<"$it")
   [ -n "$vslug" ] && [ "${AGENT_QUEUE_ITEM:-}" = "$vslug" ] ||
     die "--verdict comes from the session of $item's validate item (${vslug:-none filed}), not ${AGENT_QUEUE_ITEM:-a session with no queue item}"
-  [ -z "${CLAUDE_CODE_SESSION_ID:-}" ] || ! worked_item "$CLAUDE_CODE_SESSION_ID" >/dev/null ||
+  # A verdict names its session, so validate_gate can tell it from the author's; with none it could be anyone's.
+  [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] || die "--verdict needs CLAUDE_CODE_SESSION_ID: the verdict must come from a session other than $item's"
+  ! worked_item "$CLAUDE_CODE_SESSION_ID" >/dev/null ||
     die "session $CLAUDE_CODE_SESSION_ID also worked $item: the verdict must come from another agent"
   sha=$(git rev-parse HEAD)
   [[ "$sha" == "${vslug##*-}"* ]] || die "$vslug reviews ${vslug##*-}, but HEAD is ${sha:0:8}: review the head it names"
   state=success; [ "$verdict" = pass ] || state=failure
+  # GitHub keeps 140 characters of a description, and validate_gate matches its "<vslug>: " prefix.
+  [ $((${#vslug} + 3)) -le 140 ] || die "$vslug is too long for the $REVIEW_CONTEXT status's 140-character description"
   desc="$vslug: $vnote"; desc=${desc:0:140}
   if [ -n "$fj" ]; then
     out=$(fj_send POST "statuses/$sha" "$(jq -nc --arg s "$state" --arg c "$REVIEW_CONTEXT" --arg d "$desc" '{state: $s, context: $c, description: $d}')" 2>&1)

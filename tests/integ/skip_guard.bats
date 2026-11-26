@@ -123,7 +123,7 @@ each() {
 
 @test "posting agent-land's review status by hand is denied; a read, another context and agent-land --verdict are allowed" {
   local c
-  c=$(sed -n 's/^REVIEW_CONTEXT=//p' "$ROOT/.local/bin/agent-land")
+  c=$(sed -n 's/^export REVIEW_CONTEXT=//p' "$ROOT/.local/lib/pr-ci.sh")
   [ -n "$c" ]
   each denied "$T/wt" "gh api repos/o/r/statuses/abc -f state=success -f context=$c -f description=x" \
     "gh api -X POST repos/o/r/statuses/abc -f context=$c -f state=success" "gh api --method POST repos/o/r/statuses/abc -F context=$c" \

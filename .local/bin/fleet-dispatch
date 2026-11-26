@@ -3668,7 +3668,7 @@ cmd_validate() {
     --project "$(jq -r .project <<<"$it")" --slug "$vslug" --after "$slug" --priority high --tags validate --from auto:validate \
     --title "check(validate): $slug, ${ref##*/}" 2>&1) || rc=$?
   [ "$rc" -eq 0 ] || { say "validate: could not queue $vslug: ${out##*$'\n'}"; return 1; }
-  logline "queued $vslug: $ref is critical ($why)"
+  logline "queued $vslug: $ref needs a second agent ($why)"
   say "validate: queued $vslug"
 }
 
@@ -3931,10 +3931,10 @@ cmd_direct_land() {
   local lrc=0
   agent-land "$pr" --item "$slug" --ran-checks || lrc=$?
   [ "$lrc" != 0 ] || { say "direct-land: $slug landed as #$pr, by $drc with no review"; return 0; }
-  # Exit 5: critical work waits on its validate item, whose session lands it; the PR stays open.
+  # Exit 5: the PR waits on its validate item (critical, gate-change or a sampled tier-3 item), whose session lands it; the PR stays open.
   if [ "$lrc" = 5 ]; then
     agent-queue move "$slug" review >/dev/null || say "direct-land: could not park $slug in review; it stays running"
-    say "direct-land: #$pr is critical, so it waits on a second agent's review; $slug is in review"; return 0
+    say "direct-land: #$pr waits on a second agent's review; $slug is in review"; return 0
   fi
   # agent-land can fail after its merge (the record, the row); the work is in, so nothing is redone.
   [ "$(gh pr view "$pr" --json state -q .state 2>/dev/null)" != MERGED ] ||

@@ -1574,7 +1574,7 @@ EOF
   assert_equal "$(merges)" 0
 }
 
-@test "validate: --verdict is refused from the wrong item, the author's session, another head, or without --note" {
+@test "validate: --verdict is refused from the wrong item, the author's session, no session, another head, or without --note" {
   item crit
   fm crit 'sessions: s-author' 'validate: validate-crit-01234567'
   vitem validate-crit-01234567 crit 'sessions: s-validator'
@@ -1585,6 +1585,10 @@ EOF
   CLAUDE_CODE_SESSION_ID=s-author AGENT_QUEUE_ITEM=validate-crit-01234567 run "$LAND" 42 --item crit --verdict pass --note ok
   assert_failure 2
   assert_output --partial 'session s-author also worked crit: the verdict must come from another agent'
+  # no session id: validate_gate could not tell the verdict's session from the author's
+  CLAUDE_CODE_SESSION_ID='' AGENT_QUEUE_ITEM=validate-crit-01234567 run "$LAND" 42 --item crit --verdict pass --note ok
+  assert_failure 2
+  assert_output --partial '--verdict needs CLAUDE_CODE_SESSION_ID'
   run "$LAND" 42 --item crit --verdict pass
   assert_failure 2
   assert_output --partial '--verdict takes pass or fail, with --note'

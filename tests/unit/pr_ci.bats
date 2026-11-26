@@ -54,3 +54,14 @@ verdict() { jq -sc '{statusCheckRollup: .}' <<<"$(printf '%s\n' "$@")" | jq -r "
     '{"__typename": "CheckRun", "name": "gate", "workflowName": "shell tests", "status": "IN_PROGRESS", "conclusion": "", "detailsUrl": "https://github.com/o/r/actions/runs/7/job/2"}'
   assert_output 'PENDING false 7'
 }
+
+@test "a second agent's review status is no CI: a failure verdict leaves ci green, any other status still counts (ar-5450)" {
+  # agent-land --verdict fail posts a failure REVIEW_CONTEXT status; read as red Checks it drew fix-ci to a PR with nothing to fix
+  run verdict "$(job lint SUCCESS 7 2026-11-25T15:54:24Z 2026-11-25T15:55:00Z)" \
+    "{\"__typename\": \"StatusContext\", \"context\": \"$REVIEW_CONTEXT\", \"state\": \"FAILURE\"}"
+  assert_output 'PASS false -'
+  # NEGATIVE CONTROL: another status context failing is still a red
+  run verdict "$(job lint SUCCESS 7 2026-11-25T15:54:24Z 2026-11-25T15:55:00Z)" \
+    "{\"__typename\": \"StatusContext\", \"context\": \"${REVIEW_CONTEXT}er\", \"state\": \"FAILURE\"}"
+  assert_output 'FAIL false -'
+}

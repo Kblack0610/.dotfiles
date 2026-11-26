@@ -22,7 +22,7 @@ is never used", the global "if on the default branch, branch first"):
 - applying gate-guard's human-only label (`gate-guard label`, P3): `gh pr|issue edit --add-label`,
   `gh pr|issue create --label`/`-l`, or a `gh api` call on a labels path that names it. The label
   lets a PR that loosens a gate pass the gate-guard check, so only the human applies it.
-- posting agent-land's `review` commit status (REVIEW_CONTEXT, P4): a `gh api` write on a statuses
+- posting agent-land's `review` commit status (REVIEW_CONTEXT in pr-ci.sh, P4): a `gh api` write on a statuses
   path whose context field is it, or whose body comes from a file or stdin. That status is the
   second agent's verdict agent-land merges on, so only `agent-land --verdict`, run by the validate
   item's session, posts it.
@@ -115,12 +115,12 @@ def gate_label():
 
 
 def review_context():
-    """The status context's one home, REVIEW_CONTEXT in .local/bin/agent-land beside this repo's hooks."""
+    """The status context's one home, REVIEW_CONTEXT in .local/lib/pr-ci.sh beside this repo's hooks."""
     global _CONTEXT
     if _CONTEXT is None:
         here = os.path.dirname(os.path.realpath(__file__))
-        with open(os.path.join(here, "..", "..", ".local", "bin", "agent-land")) as f:
-            _CONTEXT = next(line.split("=", 1)[1].strip() for line in f if line.startswith("REVIEW_CONTEXT="))
+        with open(os.path.join(here, "..", "..", ".local", "lib", "pr-ci.sh")) as f:
+            _CONTEXT = next(line.split("=", 1)[1].strip() for line in f if line.startswith("export REVIEW_CONTEXT="))
     return _CONTEXT
 
 
@@ -135,14 +135,14 @@ def api_write(argv, rest, path, named):
 
 
 def posts_status(argv):
-    """True when a `gh api` write on a statuses path sets the context field to review_context()
+    """True when a `gh api` write on a statuses path sets the context field to review_context(), in any case
     (`-f context=review`, `-Fcontext=review`, `--raw-field=context=review`) or reads its body
     unseen (api_write). The context is read only for a statuses path, so no other gh command needs
-    agent-land beside it."""
+    pr-ci.sh beside it."""
     def named(rest):
-        field = "context=" + review_context()
-        return any(a == field or a.endswith(("=" + field, "-f" + field, "-F" + field)) for a in rest)
-    return api_write(argv, argv[2:], "statuses/", named)
+        field = "context=" + review_context().casefold()
+        return any(a == field or a.endswith(("=" + field, "-f" + field)) for a in rest)  # -F casefolds to -f
+    return api_write(argv, [a.casefold() for a in argv[2:]], "statuses/", named)
 
 
 def applies_label(argv, label):
@@ -303,11 +303,11 @@ def canonical_remote(top, target, default_remote):
 
 def check(head, argv, env, cwd):
     if head == "gh":
+        if posts_status(argv):
+            return STATUS_MSG.format(what="`%s`" % " ".join(argv[:3]), context=review_context())
         label = gate_label()
         if applies_label(argv, label):
             return LABEL_MSG.format(what="`%s`" % " ".join(argv[:4]), label=label)
-        if posts_status(argv):
-            return STATUS_MSG.format(what="`%s`" % " ".join(argv[:3]), context=review_context())
         return None
     if head != "git":
         return None
