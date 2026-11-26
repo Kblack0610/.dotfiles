@@ -868,7 +868,10 @@ fn slip(cut: NaiveDate, day: NaiveDate, late: &str, ok: &str) -> String {
 }
 
 /// The score a cut writes: the counts, then the window's due day and the human's target
-/// (when one was promised for this version) against the day it was cut.
+/// (when one was promised for this version) against the day it was cut. A cut of a window that
+/// committed rows and delivered none of them, or carried more than it delivered, did not ship
+/// the promise, so its target reads `not shipped`, plus the days when it was also late (ar-3641:
+/// v0.5.3 delivered 1 of 71 and read `met`). A dropped row is a scope cut, not a carried promise.
 fn cut_line(snap: &Snapshot, t: &Tally, cut: NaiveDate, target: Option<(V, NaiveDate)>) -> String {
     let mut line = format!(
         "committed {}, delivered {}, carried {}, dropped {}, interrupted {}; opened {}",
@@ -882,10 +885,16 @@ fn cut_line(snap: &Snapshot, t: &Tally, cut: NaiveDate, target: Option<(V, Naive
         None => line.push_str(&format!(", cut {cut}")),
     }
     if let Some((v, on)) = target {
+        let day = slip(cut, on, "missed by", "met");
+        let unshipped = t.committed > 0 && (t.delivered == 0 || t.delivered < t.open);
         line.push_str(&format!(
             "; target {} {on} {}",
             projects::fmt_version(v),
-            slip(cut, on, "missed by", "met")
+            match (unshipped, day.as_str()) {
+                (false, _) => day.clone(),
+                (true, "met") => "not shipped".to_string(),
+                (true, late) => format!("not shipped, {late}"),
+            }
         ));
     }
     line
@@ -1655,6 +1664,38 @@ pub(crate) fn refuse_held(
     Ok(())
 }
 
+/// Refuse `writer` taking `line` out of its version (`what` names the move) when that version is
+/// a sprint queued behind project `dir`'s open one ([`is_queued`], [`queue_sprint`]) whose
+/// snapshot commits the row, and the writer is not a person at a terminal: the snapshot would
+/// still commit it after the move. A person passes with a note that only a relock drops it.
+pub(crate) fn refuse_queued(
+    dir: &Path,
+    line: &str,
+    writer: &project_tasks::Writer,
+    what: &str,
+) -> Result<()> {
+    let home = home(dir);
+    let Some(q) = sheet::target(line).filter(|&t| is_queued(&home, t)) else {
+        return Ok(());
+    };
+    if !read(&home, q).is_some_and(|s| s.keys.contains(&key(line))) {
+        return Ok(());
+    }
+    let (text, v) = (md::task_text(line), projects::fmt_version(q));
+    let project = home
+        .file_name()
+        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    let relock = format!("notes projects --commit {project} --hours <H> --queue {v}");
+    anyhow::ensure!(
+        writer.is_person(),
+        "refused: {what} '{text}', a row the queued {v} sprint commits: its snapshot would still commit it, so a human relocks {v} ({relock}): {FROZEN_RULE}"
+    );
+    eprintln!(
+        "note: the queued {v} sprint still commits '{text}'; only a relock drops it: {relock}"
+    );
+    Ok(())
+}
+
 /// Refuse `writer` relocking version `v` of project `dir` when `v` already holds a window
 /// snapshot (an open or queued sprint, or a window recorded at its cut) and the writer is not a
 /// person at a terminal: a relock replaces the rows a sprint committed to.
@@ -2325,6 +2366,36 @@ mod tests {
         );
         let on_time = cut_line(&snap, &t, day("2026-11-26"), None);
         assert!(on_time.ends_with("cut 2026-11-26 (on time)"), "{on_time}");
+        let shipped_little = Tally {
+            committed: 71,
+            delivered: 1,
+            open: 70,
+            ..Tally::default()
+        };
+        let early = Some(((0, 2, 0), day("2026-11-27")));
+        let little = cut_line(&snap, &shipped_little, day("2026-11-26"), early);
+        assert!(
+            little.ends_with("target v0.2.0 2026-11-27 not shipped"),
+            "{little}"
+        );
+        let none = Tally {
+            committed: 3,
+            open: 3,
+            ..Tally::default()
+        };
+        let late = cut_line(&snap, &none, day("2026-11-29"), early);
+        assert!(late.ends_with("not shipped, missed by 2 days"), "{late}");
+        // Negative control: an empty window promised nothing, so only the day is scored.
+        let empty = cut_line(&snap, &Tally::default(), day("2026-11-26"), early);
+        assert!(empty.ends_with("2026-11-27 met"), "{empty}");
+        let most = Tally {
+            committed: 4,
+            delivered: 3,
+            open: 1,
+            ..Tally::default()
+        };
+        let met = cut_line(&snap, &most, day("2026-11-26"), early);
+        assert!(met.ends_with("target v0.2.0 2026-11-27 met"), "{met}");
         let _ = fs::remove_dir_all(&dir);
     }
 

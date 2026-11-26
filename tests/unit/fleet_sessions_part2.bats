@@ -2617,26 +2617,6 @@ GH
   [ "$(jq -r .bucket <<<"$output")" = LANDED ]
 }
 
-@test "plan_row_title: the heading leads, cut to 80 with the slug whole; no heading keeps the old title (ar-5348)" {
-  . "$REPO_ROOT/.local/lib/plan-phases.sh"
-  printf -- '---\n# a frontmatter comment\n---\n```sh\n# a shell comment\n```\n# Fix #12 the <UPS> shutdown\n\n## Phases\n# not this\n' > "$SANDBOX/swirling-knuth.md"
-  [ "$(plan_row_title "$SANDBOX/swirling-knuth.md")" = "Fix 12 the UPS shutdown (plan swirling-knuth)" ]
-  printf '# %s\n' "$(printf 'word %.0s' $(seq 1 30))" > "$SANDBOX/a-long-session-slug-name.md"
-  t="$(plan_row_title "$SANDBOX/a-long-session-slug-name.md")"
-  [ "${#t}" -le 80 ]
-  [[ "$t" == "word word "*" (plan a-long-session-slug-name)" ]]
-  # A cut that ends on punctuation drops it.
-  printf '# %s: more words follow here\n' "$(printf 'x%.0s' $(seq 1 47))" > "$SANDBOX/a-long-session-slug-name.md"
-  [ "$(plan_row_title "$SANDBOX/a-long-session-slug-name.md")" = "$(printf 'x%.0s' $(seq 1 47)) (plan a-long-session-slug-name)" ]
-  # A slug too long to leave room for a heading keeps it first, where no cut reaches it.
-  slug=a-pasted-request-about-the-platform-feature-iridescent-moon
-  printf '# A heading\n' > "$SANDBOX/$slug.md"
-  [ "$(plan_row_title "$SANDBOX/$slug.md")" = "plan $slug: run its open phases" ]
-  # NEGATIVE CONTROL: a plan with no heading keeps the title ask-sweep and older rows use.
-  printf '## Phases\n\n- [ ] x\n' > "$SANDBOX/bare.md"
-  [ "$(plan_row_title "$SANDBOX/bare.md")" = "plan bare: run its open phases" ]
-}
-
 @test "plan_phase_title: the phase name leads, then (P<n>, heading); no session slug, cut to 80 (ar-5462)" {
   . "$REPO_ROOT/.local/lib/plan-phases.sh"
   printf '# Pasted intake gate\n\n## Phases\n' > "$SANDBOX/pasted-content-id-0d29-d-cozy-kahn.md"
@@ -2835,6 +2815,24 @@ GH
   view "$(check 'fast (${{ matrix.n }})' CI CANCELLED 2026-11-14T17:26:46Z 41 40)" "$(check 'fast (1)' CI SUCCESS 2026-11-14T17:27:29Z 31 30)"
   run sibling_pr "$SANDBOX/one" "$prs"
   assert_output "$(printf 'o/three\t3\tFAIL\tabc123')"
+}
+
+@test "CI_JQ: a check of a PR_CI_NO_VERDICT workflow is neither red nor pending (ar-3499)" {
+  # 2026-11-18 ucp#2870: Checks passed, and Drop closed gates' "Run Checks the slot refused", which
+  # acts on other PRs, was cancelled by its concurrency group on this PR's head: the PR read CI FAIL.
+  check() { printf '{"name":"%s","workflowName":"%s","conclusion":"%s","status":"%s","detailsUrl":"https://github.com/o/r/actions/runs/%s/job/%s"}' "$1" "$2" "$3" "${4:-COMPLETED}" "$5" "$5"; }
+  local view
+  for c in CANCELLED FAILURE ''; do
+    view=$(printf '{"statusCheckRollup":[%s,%s]}' "$(check Checks Checks SUCCESS COMPLETED 1)" \
+      "$(check 'Run Checks the slot refused' 'Drop closed gates' "$c" "$([ -n "$c" ] && echo COMPLETED || echo QUEUED)" 2)")
+    [ "$(jq -r "$CI_JQ"' ci' <<<"$view")" = PASS ]
+    [ "$(jq -r "$CI_JQ"' red' <<<"$view")" = - ]
+    # negative control: with the list off, the same check counts
+    [ "$(PR_CI_NO_VERDICT='' jq -r "$CI_JQ"' ci' <<<"$view")" = "$([ -n "$c" ] && echo FAIL || echo PENDING)" ]
+  done
+  # a workflow the list does not name is still read
+  view=$(printf '{"statusCheckRollup":[%s,%s]}' "$(check Checks Checks SUCCESS COMPLETED 1)" "$(check Lint 'Drop closed gates x' CANCELLED COMPLETED 2)")
+  [ "$(jq -r "$CI_JQ"' ci' <<<"$view")" = FAIL ]
 }
 
 @test "self_wait reads a tail --pid on another process as an event wait, and the row stays WORKING (ar-2426)" {

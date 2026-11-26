@@ -88,7 +88,6 @@ FMT_DEF='def usd: if . == null then "-" else "$\(. * 100 | round / 100)" end;'
 LF_URL="${SO_LF_URL:-}"   # set by the private runner conf; this repo is public
 LF_ENTRY="${SO_LF_ENTRY:-langfuse-api}"
 LF_TTL_DAYS=90    # Langfuse keeps traces 90 days; a score on a session older than that has nothing to point at
-SO_ASKS="${AGENT_ASK_ROOT:-$HOME/.agent/asks}"  # the ask judge's verdicts
 SO_VERDICTS="${SO_VERDICTS:-$HOME/.agent/dispatch/verdicts.jsonl}"  # the dispatch judge's
 NAME=session-outcomes
 
@@ -97,6 +96,9 @@ SCHEDULES="${SCHEDULES_SYNC:-$LIB_DIR/../bin/schedules-sync}"
 
 # shellcheck source=/dev/null
 . "$LIB_DIR/agent-proof.sh"
+# shellcheck source=/dev/null
+. "$LIB_DIR/ask-store.sh"
+SO_ASKS="$(ask_root)"  # the ask judge's verdicts
 # shellcheck source=/dev/null
 . "$LIB_DIR/langfuse.sh"
 # shellcheck source=/dev/null
@@ -116,7 +118,9 @@ SCHEDULES="${SCHEDULES_SYNC:-$LIB_DIR/../bin/schedules-sync}"
 # an agent-runtime item counts for agent-runtime), the harness it ran on, for a headless harness
 # (opencode, codex), the PR the brief set, and `landed`, the item PRs it landed: its agent-land
 # `landed_by:` pairs, or every PR of an item it is the only session on when the item has no landed_by
-# (one landed before ar-2779). A transcript that ran agent-land in the background, or cut the PR URL
+# (one landed before ar-2779), or, for an item a trainee ran, its last trainee session (the one before the batch review's, which is last): the trainee run left the
+# diff and the reviewer session landed it, so with no landed_by neither was credited (ar-4750: 1 landed of 36
+# approved diffs). A transcript that ran agent-land in the background, or cut the PR URL
 # with `| tail`, names no PR (SO_PR_JQ), so before this its merge went uncredited.
 # An unreadable queue writes {} and returns 1.
 queue_index() {
@@ -128,6 +132,7 @@ queue_index() {
                    landed: ((.[$x.s].landed // []) + (($x.s + "=") as $k
                      | if ($x.i.landed_by // "") != "" then [$x.i.landed_by | split(" ")[] | select(startswith($k)) | ltrimstr($k)]
                        elif ($x.i.sessions | split(" ") | unique | length) == 1 then ($x.i.pr // "" | tostring | split(" "))
+                       elif ($x.i.trainee // "") != "" and $x.s == ($x.i.sessions | split(" ") | .[-2]) then ($x.i.pr // "" | tostring | split(" "))
                        else [] end))})' > "$1" && return 0
   printf '{}' > "$1"
   return 1
