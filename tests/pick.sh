@@ -52,7 +52,9 @@ full() {
 if [ -n "${PICK_CHANGED+x}" ]; then
   changed=$PICK_CHANGED
 else
-  changed=$(git -C "$DIR" diff --name-only "$base" HEAD) || full "git diff $base failed"
+  # --no-renames: a moved file lists both paths, so the tests of the old one are picked too, and a
+  # partial clone fetches no blobs to pair them (ar-5655).
+  changed=$(git -C "$DIR" diff --no-renames --name-only "$base" HEAD) || full "git diff $base failed"
 fi
 [ -n "$changed" ] || full "no change against $base"
 
