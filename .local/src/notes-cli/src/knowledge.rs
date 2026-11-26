@@ -56,12 +56,22 @@ const REPO_COPY_MIN: usize = 40;
 /// Excerpt length kept per source in the log.
 const EXCERPT_MAX: usize = 1500;
 
+/// A JSON null in an optional batch field reads as the field left out: the model writes
+/// `"why": null` for "not applicable", and a refused batch stalls the nightly compile.
+fn null_as_default<'de, D, T>(d: D) -> std::result::Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
+}
+
 #[derive(Deserialize)]
 pub struct Batch {
     pub date: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub sources: Vec<Source>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub ops: Vec<Op>,
 }
 
@@ -69,10 +79,10 @@ pub struct Batch {
 pub struct Source {
     pub id: String,
     pub path: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub excerpt: String,
     /// For a source no op uses: why nothing in it was kept. The log's Dispositions show it.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub why: String,
 }
 
@@ -81,23 +91,23 @@ pub struct Op {
     /// `create`, `update`, or `domain` (register a domain: `id`, `is`, `aliases`, `canonical`)
     pub op: String,
     /// vault-relative, e.g. `knowledge/software/infra/litellm-gateway.md`
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub path: String,
     /// the whole new file, frontmatter included
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub content: String,
     /// a `domain` op's id, `is` line, aliases and canonical docs (`knowledge_registry::Domain`)
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub is: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub aliases: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub canonical: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub reason: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub sources: Vec<String>,
     /// why a large shrink is intended (a split or a merge); absent = shrink guard applies
     #[serde(default)]
@@ -1600,6 +1610,28 @@ mod tests {
             &article("llm", "MLX runs on the Mac Studio.\nA new fact."),
         );
         assert_eq!(day("2026-10-15", &[more]).updated, 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_null_optional_field_reads_as_left_out() {
+        // The 2026-11-25 nightly stalled on `"why": null` for a cited source (ar-5725).
+        let root = vault("null");
+        let json = format!(
+            r#"{{"date":"2026-10-13","sources":[{{"id":"s1","path":"journal/daily/2026-10-13.md","excerpt":null,"why":null}}],"ops":[{{"op":"create","path":"knowledge/software/gw.md","content":{},"reason":"r","sources":["s1"],"aliases":null,"canonical":null,"allow_shrink":null}}]}}"#,
+            serde_json_string(&article("gw", "body"))
+        );
+        let out = apply(
+            &profile(&root),
+            &logger(&root),
+            &batch(&root, &json),
+            None,
+            false,
+            None,
+            &List::default(),
+        )
+        .unwrap();
+        assert_eq!((out.created, out.rejected), (1, 0));
         let _ = fs::remove_dir_all(&root);
     }
 
