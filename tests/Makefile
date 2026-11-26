@@ -6,7 +6,8 @@
 #   ui     driven through a real tmux server               ~1-2min  CONTAINER ONLY
 #
 # The first two tiers never start a tmux server, so they run anywhere -- they are CI's `fast`
-# job (an agent session runs none of this on the workstation). The ui tier starts real servers and sends real keys, so it runs ONLY
+# job (an agent session runs one named file of them at most on the workstation). The ui tier starts
+# real servers and sends real keys, so it runs ONLY
 # inside the disposable container (see Dockerfile for the full why: env-var isolation in
 # tmux fails silently, and a stray kill-server on a real machine takes out live sessions).
 # `make test-ui` therefore delegates to docker.sh rather than running bats directly.
@@ -80,16 +81,11 @@ test-fast: test-unit test-integ
 # per-test path. Three wall-clock budgets (agent_ask, questions_panel, agentctl_report) run at
 # one job per core, so they share a core no more than serially. A test that shares a fixed
 # path, a port or setup_file state with another breaks that, and goes red here first.
-# Jobs are the cores free now, not every core: on 2026-11-07 three local gates at --jobs 24
-# each held a 24-core box at 54% sys and 8% idle, which shut the dispatcher's idle gate for
-# every other session (ar-885). Locally that number is `auto`, and run-bats.sh sizes it once
-# its slot is granted (unit-jobs.awk, UNIT_LOADAVG: ar-3403): sized here, at parse time, it was
-# read before the wait for the slot, and suites released together all forked that many workers.
-# On CI (CI set, as GitHub Actions does) the runner is the job's own machine and its load is its
-# own setup, which gave a 4-core runner 2 jobs: it gets its cpus (cpus.sh: nproc, held down to the
-# cgroup quota or the pod's CPU request, which nproc ignores: 32 jobs in a 370m pod, ar-5586), and
-# run-bats.sh takes no slot.
-UNIT_JOBS ?= $(if $(CI),$(shell $(HERE)cpus.sh),auto)
+# On CI (CI set) jobs are the CPUs the run may use, the job's own machine: cpus.sh is nproc held
+# down to the cgroup quota or the pod's CPU request, which nproc ignores (32 jobs in a 370m pod,
+# ar-5586). Off CI it is 2: a session runs one named file there, and several sessions at
+# --jobs nproc each held the box (ar-885, ar-3277).
+UNIT_JOBS ?= $(if $(CI),$(shell $(HERE)cpus.sh),2)
 FAST_PAR  := $(if $(shell command -v parallel 2>/dev/null),--jobs $(UNIT_JOBS))
 
 test-unit: $(BATS)
