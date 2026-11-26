@@ -1928,7 +1928,7 @@ stacked_pair() {
   [ -n "$(qitem queued second)" ] || fail "second left the queue"
 }
 
-# --- trainee-rollup ---------------------------------------------------------------------------
+# --- rollup ---------------------------------------------------------------------------
 
 # reject <harness> <model> <why> [days ago] -- one lane trainee run in model-lane's log that a review sent back
 reject() {
@@ -1939,134 +1939,197 @@ reject() {
 rollup_setup() {
   export DISPATCH_LANE_RUNS="$SANDBOX/runs.jsonl"
   : > "$DISPATCH_LANE_RUNS"
+  export DISPATCH_LANE_EVENTS="$SANDBOX/demotions.jsonl"
+  : > "$DISPATCH_LANE_EVENTS"
   : > "$NOTES_FIXTURE/rows.agent-runtime.agent"
 }
 
-@test "trainee-rollup: three 'left no diff' rejects on one pair file one row naming the pair; the next night files none" {
+@test "rollup: three 'left no diff' rejects on one pair file one row naming the pair; the next night files none" {
   rollup_setup
   for i in 1 2 3; do reject nim glm 'nim:glm left no diff'; done
   # an approved run and another lane's reject are no rejects of a trainee
   jq -nc '{ts: "2099-01-01T00:00:00+00:00", lane: "trainee", ran: "glm", harness: "nim", outcome: "ok"}' >> "$DISPATCH_LANE_RUNS"
   jq -nc '{ts: "2099-01-01T00:00:00+00:00", lane: "sonnet", ran: "sonnet", outcome: "redo", why: "x left no diff"}' >> "$DISPATCH_LANE_RUNS"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
   assert_success
   assert_output --partial 'filed: fix(trainee): nim:glm runs keep leaving no diff (3 since'
   run grep -c '^notes ptask agent-runtime --agent add ' "$NOTES_FIXTURE/calls.log"
   assert_output 1
-  run grep -F 'add --why minor-fault fix(trainee): nim:glm runs keep leaving no diff #size/s #of/ar-3691 #low --origin fleet-dispatch --detail 3 trainee rejects since' "$NOTES_FIXTURE/calls.log"
+  run grep -F 'add --why minor-fault fix(trainee): nim:glm runs keep leaving no diff #size/s #of/ar-4724 #low --origin fleet-dispatch --detail 3 trainee rejects since' "$NOTES_FIXTURE/calls.log"
   assert_success
   assert_output --partial 'nim:glm 3. Fix it in how nim:glm runs, or drop the pair'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
   assert_success
-  assert_output 'trainee-rollup: no new trainee rejects since '"$(date -u -d '7 days ago' +%F)"
+  assert_output 'rollup: no new cause since '"$(date -u -d '7 days ago' +%F)"
   run grep -c '^notes ptask agent-runtime --agent add ' "$NOTES_FIXTURE/calls.log"
   assert_output 1
 }
 
-@test "trainee-rollup: two rejects of a cause, or three older than the window, file nothing" {
+@test "rollup: two rejects of a cause, or three older than the window, file nothing" {
   rollup_setup
   for i in 1 2; do reject nim minimax "nim:minimax's session ended on a provider refusal or error (end provider: a rate limit), with no diff"; done
   for i in 1 2 3; do reject agy flash 'agy:flash left no diff' 9; done
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
   assert_success
   assert_output 'under the bar (2 of 3): fix(trainee): nim:minimax runs keep ending on end provider (nim:minimax 2)'
   assert_not_called 'ptask agent-runtime --agent add'
 }
 
-@test "trainee-rollup: a diff refused for the file it touched is one cause whichever file it was (ar-5117)" {
+@test "rollup: a diff refused for the file it touched is one cause whichever file it was (ar-5117)" {
   rollup_setup
   tail="which is no markdown file, nor a shell or bats file outside a cargo or npm tree, so the sandbox could not build it"
   reject agy flash "agy:flash's its diff touches .local/bin/fleet-bench.py, $tail"
   reject agy flash "agy:flash's its diff touches src/main.rs, $tail"
   reject agy flash "agy:flash's its diff touches package.json, $tail"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
   assert_success
   assert_output --partial 'filed: fix(trainee): agy:flash runs touch a file the sandbox cannot build (3 since'
 }
 
-@test "trainee-rollup: a cause on two pairs names the harnesses, and an open row with its title is joined, not twinned" {
+@test "rollup: a cause on two pairs names the harnesses, and an open row with its title is joined, not twinned" {
   rollup_setup
   why=" session ended on a provider refusal or error (end provider: a rate limit), with no diff"
   reject nim minimax "nim:minimax's$why"; reject nim minimax "nim:minimax's$why"; reject ocfree beam "ocfree:beam's$why"
   row agent-runtime agent ar-9 '- [ ] fix(trainee): trainee runs keep ending on end provider #low <!-- id:ar-9 -->'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
   assert_success
   assert_output --partial 'joined ar-9: fix(trainee): trainee runs keep ending on end provider (3 since'
   assert_output --partial 'nim:minimax 2, ocfree:beam 1)'
   assert_not_called 'ptask agent-runtime --agent add'
   # with no open row it files one, and says which harnesses to look in
-  : > "$NOTES_FIXTURE/rows.agent-runtime.agent"; rm -f "$FLEET_DISPATCH_DIR/trainee-rollup.tsv"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  : > "$NOTES_FIXTURE/rows.agent-runtime.agent"; rm -f "$FLEET_DISPATCH_DIR/rollup.tsv"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
   assert_output --partial 'filed: fix(trainee): trainee runs keep ending on end provider'
   run grep -F 'Fix it in the harness or source (nim, ocfree): more than one model hits it.' "$NOTES_FIXTURE/calls.log"
   assert_success
 }
 
-@test "trainee-rollup: a board it cannot read files nothing and fails; --dry files nothing and stamps nothing" {
+@test "rollup: a board it cannot read files nothing and fails; --dry files nothing and stamps nothing" {
   rollup_setup
   for i in 1 2 3; do reject nim glm 'nim:glm left no diff'; done
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup --dry
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup --dry
   assert_success
   assert_output --partial 'would file: fix(trainee): nim:glm runs keep leaving no diff (3 since'
-  [ ! -e "$FLEET_DISPATCH_DIR/trainee-rollup.tsv" ] || fail "--dry stamped a title"
+  [ ! -e "$FLEET_DISPATCH_DIR/rollup.tsv" ] || fail "--dry stamped a title"
   stub notes 'exit 1'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
   assert_failure
   assert_output --partial 'cannot read the agent-runtime board, so no row is filed'
 }
 
-@test "trainee-rollup: a cause that spreads keeps its pair's row; a run with no reason counts; a torn line is skipped" {
+@test "rollup: a cause that spreads keeps its pair's row; a run with no reason counts; a torn line is skipped" {
   rollup_setup
   for i in 1 2 3; do reject nim glm 'nim:glm left no diff'; done
   printf '{"ts": "2099-01-01T00:00:00+00:00", "lane": "trai\n' >> "$DISPATCH_LANE_RUNS"
   for i in 1 2 3; do
     jq -nc --arg t "$(date -u +%FT%T+00:00)" '{ts: $t, lane: "trainee", ran: "minimax", harness: "nim", outcome: "failed"}' >> "$DISPATCH_LANE_RUNS"
   done
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
   assert_success
   assert_output --partial 'filed: fix(trainee): nim:glm runs keep leaving no diff (3 since'
   assert_output --partial 'filed: fix(trainee): nim:minimax runs end with no reason recorded (3 since'
   run grep -F -- '--detail e.g. no reason recorded (outcome failed)' "$NOTES_FIXTURE/calls.log"
   assert_success
-  run cut -f1 "$FLEET_DISPATCH_DIR/trainee-rollup.tsv"
+  run cut -f1 "$FLEET_DISPATCH_DIR/rollup.tsv"
   assert_output --partial 'keep leaving no diff'
   # the no-diff cause spreads to a second pair: the open row naming nim:glm is joined, not twinned by a "trainee runs" one, and a longer title that starts the same is another cause
   row agent-runtime agent ar-8 '- [ ] fix(trainee): nim:glm runs keep leaving no diff behind a lock #low <!-- id:ar-8 -->'
   row agent-runtime agent ar-7 '- [ ] fix(trainee): nim:glm runs keep leaving no diff #low <!-- id:ar-7 -->'
   for i in 1 2 3; do reject agy flash "agy:flash left no diff" -1; done   # dated tomorrow: newer than the stamp, whatever second it lands in
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
   assert_success
   assert_output 'joined ar-7: fix(trainee): trainee runs keep leaving no diff (3 since '"$(date -u -d '7 days ago' +%F)"': agy:flash 3)'
   run grep -c '^notes ptask agent-runtime --agent add ' "$NOTES_FIXTURE/calls.log"
   assert_output 2
 }
 
-@test "trainee-rollup: under agentctl each pass declares its outcome (WORKED filed, NOOP quiet, FAILED unread board); --dry declares none" {
+@test "rollup: under agentctl each pass declares its outcome (WORKED filed, NOOP quiet, FAILED unread board); --dry declares none" {
   rollup_setup
-  export AGENTCTL_NAME=trainee-rollup
-  out="$AGENTCTL_STATE_DIR/trainee-rollup/last-outcome"
+  export AGENTCTL_NAME=rollup
+  out="$AGENTCTL_STATE_DIR/rollup/last-outcome"
   for i in 1 2 3; do reject nim glm 'nim:glm left no diff'; done
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup --dry
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup --dry
   assert_success
   [ ! -e "$out" ] || fail "--dry declared $(cat "$out")"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
   assert_success
   [ "$(cat "$out")" = WORKED ] || fail "filing pass: $(cat "$out")"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
   assert_success
   [ "$(cat "$out")" = NOOP ] || fail "quiet pass: $(cat "$out")"
   # a fresh log, so these rejects are not read as counted by the stamp written in the same second
-  rollup_setup; rm -f "$FLEET_DISPATCH_DIR/trainee-rollup.tsv"
+  rollup_setup; rm -f "$FLEET_DISPATCH_DIR/rollup.tsv"
   for i in 1 2; do reject nim beam 'nim:beam left no diff'; done
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
   assert_success
   assert_output --partial 'under the bar (2 of 3)'
   [ "$(cat "$out")" = NOOP ] || fail "under the bar: $(cat "$out")"
   reject nim beam 'nim:beam left no diff'
   stub notes 'exit 1'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
   assert_failure
   [ "$(cat "$out")" = FAILED ] || fail "unread board: $(cat "$out")"
+}
+
+# lane_event <lane> <event> <class> <candidate> [days ago] -- one line of model-lane's demotions.jsonl
+lane_event() {
+  jq -nc --arg l "$1" --arg e "$2" --arg c "$3" --arg h "$4" --arg t "$(date -u -d "${5:-0} days ago" +%FT%T+00:00)" \
+    '{lane: $l, event: $e, ts: $t, why: "run abc: 2 of 4 rated items redo or failed, past 25%"} + (if $h == "" then {} else {class: $c, candidate: $h} end)' >> "$DISPATCH_LANE_EVENTS"
+}
+
+@test "rollup: three failed items on any harness, Claude included, file one fix(runs) row under the plan epic; a landed, unrated or cancelled one is no non-landing" {
+  rollup_setup
+  for i in 1 2 3; do
+    agent-queue add --project agent-runtime --slug nl-$i "non-landing $i" >/dev/null
+    agent-queue move nl-$i done --status failed --end stopped >/dev/null
+  done
+  agent-queue add --project agent-runtime --slug lim-1 "limit" >/dev/null
+  agent-queue move lim-1 done --status failed --end limit >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
+  assert_success
+  assert_output --partial 'filed: fix(runs): claude:'
+  assert_output --partial 'runs end on stopped (3 since'
+  refute_output --partial 'end on limit'
+  run grep -F 'fix(runs): ' "$NOTES_FIXTURE/calls.log"
+  assert_output --partial '#size/s #of/ar-4724 #low'
+  assert_output --partial 'Fix it in why claude:'
+  run grep -c '^notes ptask agent-runtime --agent add ' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
+  assert_output 'rollup: no new cause since '"$(date -u -d '7 days ago' +%F)"
+}
+
+@test "rollup: a model-lane demote or retire files one row on its first night, joins the open row after, and a promote after it files none" {
+  rollup_setup
+  lane_event opus demoted fix/m claude:sonnet 1
+  lane_event trainee retired - nim:glm 1
+  lane_event opus demoted chore/s claude:sonnet 3; lane_event opus promoted chore/s claude:sonnet 2
+  lane_event trainee retired - nim:old 3; lane_event trainee retrial - nim:old 2   # back on the roster
+  lane_event trainee demoted feat/s nim:back 1   # a promoted class sent back to review: a page, no row
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
+  assert_success
+  assert_output --partial 'filed: fix(model-lane): claude:sonnet left lane opus for fix/m (1 since'
+  assert_output --partial 'filed: fix(model-lane): nim:glm left the trainee roster (1 since'
+  refute_output --partial 'chore/s'
+  refute_output --partial 'nim:old'
+  refute_output --partial 'nim:back'
+  run grep -F "Undo: model-lane promote opus --class 'fix/m' --candidate claude:sonnet" "$NOTES_FIXTURE/calls.log"
+  assert_success
+  run grep -F 'Undo: model-lane promote trainee --class - --candidate nim:glm' "$NOTES_FIXTURE/calls.log"
+  assert_success
+  run grep -c '^notes ptask agent-runtime --agent add ' "$NOTES_FIXTURE/calls.log"
+  assert_output 2
+  # the next night, and a later event while the row is open: joined, not twinned
+  row agent-runtime agent ar-5 '- [x] fix(model-lane): nim:glm left the trainee roster #low <!-- id:ar-5 -->'
+  row agent-runtime agent ar-6 '- [ ] fix(model-lane): claude:sonnet left lane opus for fix/m #low <!-- id:ar-6 -->'
+  lane_event trainee retired - nim:glm -1   # retired again after its row closed: a new row, not a join of the closed one
+  lane_event opus demoted fix/m claude:sonnet -1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
+  assert_success
+  assert_output --partial 'joined ar-6: fix(model-lane): claude:sonnet left lane opus for fix/m'
+  assert_output --partial 'filed: fix(model-lane): nim:glm left the trainee roster'
+  run grep -c '^notes ptask agent-runtime --agent add ' "$NOTES_FIXTURE/calls.log"
+  assert_output 3
 }
 
 @test "the brief of an item a run handed off names its note first, then its salvage branch; one never handed off names none (ar-2777)" {

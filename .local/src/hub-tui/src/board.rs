@@ -368,11 +368,20 @@ pub(crate) mod tests {
             "0.03",
         ));
         // windows has slots and nothing waiting: it must read 0, never vanish; and no
-        // finished series, so DONE and PASS read -, never 0.
-        for (pool, slots, busy, waiting, oldest, done, ratio) in [
-            ("unity", "4", "3", "3", Some("8880"), Some("72"), "0.24"),
-            ("light", "2", "0", "1", Some("60"), Some("40"), "0.8"),
-            ("windows", "1", "0", "0", None, None, ""),
+        // finished series, so DONE, USUAL and PASS read -, never 0.
+        for (pool, slots, busy, waiting, oldest, done, ratio, usual) in [
+            (
+                "unity",
+                "4",
+                "3",
+                "3",
+                Some("8880"),
+                Some("72"),
+                "0.24",
+                "1260",
+            ),
+            ("light", "2", "0", "1", Some("60"), Some("40"), "0.8", "120"),
+            ("windows", "1", "0", "0", None, None, "", ""),
         ] {
             cc.push((json!({"__name__": "cc:pool_slots", "pool": pool}), slots));
             cc.push((json!({"__name__": "cc:pool_busy", "pool": pool}), busy));
@@ -391,6 +400,10 @@ pub(crate) mod tests {
                 cc.push((
                     json!({"__name__": "cc:pool_pass_ratio_24h", "pool": pool}),
                     ratio,
+                ));
+                cc.push((
+                    json!({"__name__": "cc:pool_run_seconds_24h", "pool": pool}),
+                    usual,
                 ));
             }
         }
@@ -872,7 +885,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn queues_show_waiting_oldest_done_pass_longest_queue_first() {
+    fn queues_show_waiting_oldest_done_usual_pass_longest_queue_first() {
         let mut i = fixture();
         i.instant.insert(
             "kind_weight",
@@ -884,10 +897,18 @@ pub(crate) mod tests {
         let out = tab(&i, "pools", 160);
         assert!(out.starts_with("JOB KINDS  all 3  waiting 2\n"), "{out}");
         // Each kind's weight (1* for one the governor has not measured, a dash with no series),
-        // jobs running, waiting and the machines that take it; no runner for it reads as a dash.
-        assert_line(&out, "unity 1* 3 3 2h28m 72 24% razer-laptop 4");
-        assert_line(&out, "light 0.66 0 1 1m 40 80% -");
-        assert_line(&out, "windows - 0 0 - - - -");
+        // jobs running, waiting, how long one usually runs and the machines that take it; no
+        // runner for it reads as a dash.
+        assert_line(&out, "unity 1* 3 3 2h28m 72 21m 24% razer-laptop 4");
+        assert_line(&out, "light 0.66 0 1 1m 40 2m 80% -");
+        assert_line(&out, "windows - 0 0 - - - - -");
+        assert!(
+            has(
+                &out,
+                "usual: how long a finished job of the kind usually runs"
+            ),
+            "{out}"
+        );
         assert!(
             has(
                 &out,
@@ -895,9 +916,11 @@ pub(crate) mod tests {
             ),
             "{out}"
         );
+        // The rows under the header, however many lines the legend wraps to.
         let order: Vec<&str> = out
             .lines()
-            .skip(3)
+            .skip_while(|l| !l.starts_with("KIND"))
+            .skip(1)
             .map(|l| l.split_whitespace().next().unwrap())
             .collect();
         assert_eq!(order, ["unity", "light", "windows"]);
@@ -1237,7 +1260,7 @@ pub(crate) mod tests {
             ),
             "{out}"
         );
-        assert_line(&out, "gates - 2 1 - 14 50% workstation 4");
+        assert_line(&out, "gates - 2 1 - 14 - 50% workstation 4");
         assert!(has(&out, "waiting 5"));
     }
 
