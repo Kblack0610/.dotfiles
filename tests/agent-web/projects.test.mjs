@@ -488,10 +488,10 @@ test("the epics chip lists epics with their open and done rows as a link to thos
   assert.doesNotMatch(html, /data-label="(section|lane|when)"|no epic/, "an epic has no section, and is under none");
   // The default chip draws tasks: a task under an epic links up to it, one under none says so.
   const task = { ...rows[0], parent: "demo-1", epic: "the menu" };
-  ctx.input = { rows: [task, rows[1]], table: { ...tableOf("", 2, [task, rows[1]]), links: [{ epic: "#projects/all?q=id:=demo-1&s=epics" }, {}] } };
+  ctx.input = { rows: [task, rows[1]], table: { ...tableOf("", 2, [task, rows[1]]), links: [{ epic: "#projects/all?q=id:=demo-1" }, {}] } };
   vm.runInContext(`bst.feed = { ...bst.feed, rows: input.rows, table: input.table }; bst.render();`, ctx);
   const tasks = read().rows;
-  assert.match(tasks, /<a class="tl" href="#projects\/all\?q=id:=demo-1&amp;s=epics">the menu<\/a>/);
+  assert.match(tasks, /<a class="tl" href="#projects\/all\?q=id:=demo-1">the menu<\/a>/);
   assert.match(tasks, /<span class="muted">no epic<\/span>/);
   assert.doesNotMatch(tasks, /data-label="rows"/);
 });

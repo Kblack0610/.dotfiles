@@ -77,6 +77,10 @@ struct RawConfig {
     /// list here replaces it whole, and an empty one turns the gate off.
     #[serde(default)]
     intake_gated: Option<Vec<String>>,
+    /// The most new agent rows any project's board takes in a local day ([`intake_daily_cap`],
+    /// `gate.rs`), gated or not. Absent = [`DAILY_CAP`]; 0 turns the cap off.
+    #[serde(default)]
+    intake_daily_cap: Option<u32>,
 }
 
 /// One `[project_type.<type>]` table. Both keys are optional.
@@ -170,6 +174,22 @@ pub fn intake_gated() -> Vec<String> {
         .ok()
         .and_then(|(raw, _)| raw.intake_gated)
         .unwrap_or_else(|| GATED.iter().map(|s| s.to_string()).collect())
+}
+
+/// The new agent rows each project's board takes a local day: the human's 2026-11-25 words, "cap it
+/// very low, i really want to get through our current work before any more comes in", and "lets
+/// make sure rows dont come in aggressively" (every board, not only the gated one). Provisional,
+/// one `rules.jsonl` row (anchor `const DAILY_CAP`).
+const DAILY_CAP: u32 = 10;
+
+/// `intake_daily_cap`: the most new agent rows any project's board takes in a local day
+/// (`gate.rs`), gated or not; the human's own words and urgent reds are never counted against it. The config's
+/// own number when it has one (0 = no cap), else [`DAILY_CAP`].
+pub fn intake_daily_cap() -> u32 {
+    load_raw()
+        .ok()
+        .and_then(|(raw, _)| raw.intake_daily_cap)
+        .unwrap_or(DAILY_CAP)
 }
 
 /// `[release]`: a project's release cadence by stage (`stages.md`, "Versions"). The defaults
@@ -740,6 +760,7 @@ fn builtin_default() -> RawConfig {
         project_type: HashMap::new(),
         agent_direct_filers: None,
         intake_gated: None,
+        intake_daily_cap: None,
     }
 }
 

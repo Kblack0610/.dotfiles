@@ -57,6 +57,10 @@
 #                                       an agent answer to an approval, a judge human-only ask or one at
 #                                       the human floor is refused. Any answer releases what the
 #                                       ask holds (agent-queue ask_pending).
+#   agent-ask said --since <time> <words...>
+#                                       exit 0 when the human typed those words in this attended
+#                                       session since <time> (the relay's transcript check, for
+#                                       agent-hold set --by human), else say what is missing, exit 1
 #   agent-ask deliver <id> | --all      deliver a recorded answer: typed into its live session,
 #                                       else a board row, then its `resume` (via ask-resume).
 #                                       agent-ask-deliver.path runs --all on each answer
@@ -160,7 +164,7 @@
 # (it scores as silence), and parks, then on its return cancels, an ask no session or queue item waits on. The
 # judge reads the older pending asks, and its `settled_by` joins an ask to an older one on the same
 # question, its sessions moved there; each premise is checked again before it acts. A hold the human
-# set is no input: it narrows by `agent-hold grant`, which the queue's gate reads, never by its reason.
+# set is no input: it narrows by `agent-hold grant --ask`, which the queue's gate reads, never by its reason.
 #
 # THE ANSWER JUDGE. `post` runs `judge <id>` in the foreground behind AGENT_ASK_JUDGE_TIMEOUT:
 # one call to the registered agent `ask-judge` (its conf sets role, model, schema and the policy
@@ -294,10 +298,11 @@ find_ask() {
 # answer or cancel refreshes the fleet state document (and the phone) within seconds, not at
 # the next 10-minute pass. The asks sit a directory down, where a watch on the root sees nothing.
 # drop_field <file> <key>...: remove those keys' lines in one locked rewrite, so a stale value
-# cannot outlive its verdict.
+# cannot outlive its verdict. The temp file sits beside the ask (ask_files reads only `*.md`), so
+# the mv is a rename: from /tmp, a tmpfs, it was a copy that a killed judge could leave cut short.
 drop_field() {
   local f="$1" tmp; shift
-  tmp="$(mktemp)"
+  tmp="$(mktemp "$f.XXXXXX")"
   (
     command -v flock >/dev/null 2>&1 && flock 9
     awk 'BEGIN { for (i = 1; i < ARGC - 1; i++) { k[ARGV[i]] = 1; ARGV[i] = "" } }
@@ -308,10 +313,10 @@ drop_field() {
 queue_changed() { : > "$ASKS_ROOT/.changed" 2>/dev/null || true; }
 
 # write_fields <file> <key> <value>...: those keys in one rewrite, each in place or appended. The
-# caller holds the project lock.
+# caller holds the project lock. The temp file sits beside the ask, as in drop_field.
 write_fields() {
   local f="$1" tmp; shift
-  tmp="$(mktemp)"
+  tmp="$(mktemp "$f.XXXXXX")"
   awk '
     BEGIN { for (i = 1; i < ARGC - 1; i += 2) { k[++n] = ARGV[i]; v[ARGV[i]] = ARGV[i + 1]; ARGV[i] = ARGV[i + 1] = "" } }
     { p = index($0, ": "); key = p ? substr($0, 1, p - 1) : "" }
@@ -948,19 +953,36 @@ answer_row() {
   file_board_row "$1" "$(field "$1" question) -> answered: $2$how${4:+; $4}"
 }
 
-# relay_proof <id> <quote> <answer>: why an attended session may record the human's answer to <id>, or
-# what is missing (stderr, rc 1). The quote must be in one entry of the session's own transcript
-# newer than the ask (`agent-panel human`: a typed prompt or a dialog answer, never a paste or
-# what the fleet typed), and the ask's id in that entry's words or in what they were shown. The
-# transcript is the harness's record, so an agent's own "the human said yes" proves nothing. The
-# quote is 3+ characters unless it is the whole entry, so a stray "a" cannot stand for a message,
-# and the answer is one of the ask's options when it has any, so the words cannot be attached to
-# an answer they do not pick. Only a pending ask, or one the judge or a hold answered, takes it.
-relay_proof() {
-  local id="$1" quote="$2" answer="$3" f sid t made said opts
+# human_words <quote> <since>: the human's own entries in this session's transcript newer than <since>
+# whose words contain <quote>, one JSON line each (`agent-panel human`: a typed prompt or a dialog
+# answer, never a paste or what the fleet typed), or what is missing (stderr, rc 1). The transcript
+# is the harness's record, so an agent's own "the human said yes" proves nothing. The quote is 3+
+# characters unless it is the whole entry, so a stray "a" cannot stand for a message. A dispatched
+# session has no human at it. relay_proof and `said` (agent-hold set --by human) both check through it.
+human_words() {
+  local quote="$1" since="$2" sid t said hits
   [ -z "${AGENT_QUEUE_ITEM:-}" ] || { echo "a dispatched session (AGENT_QUEUE_ITEM set) has no human at it" >&2; return 1; }
   sid="${CLAUDE_CODE_SESSION_ID:-}"
   [ -n "$sid" ] || { echo "no CLAUDE_CODE_SESSION_ID to find the transcript by" >&2; return 1; }
+  t="$(session_transcript "$sid")"
+  [ -n "$t" ] || { echo "no transcript for session $sid" >&2; return 1; }
+  command -v agent-panel >/dev/null 2>&1 || { echo "agent-panel is not installed" >&2; return 1; }
+  said="$(agent-panel human "$t" --since "$since")" || { echo "agent-panel human failed on $t" >&2; return 1; }
+  hits="$(jq -c -s --arg q "$quote" '
+    def n: ascii_downcase | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "");
+    ($q | n) as $qn | ($qn | length) as $ql
+    | .[] | select(((.text | n) | contains($qn)) and ($ql >= 3 or (.text | n) == $qn))' <<<"$said" 2>/dev/null)"
+  [ -n "$hits" ] || { echo "no words of the human's in this session since $since contain: $quote" >&2; return 1; }
+  printf '%s\n' "$hits"
+}
+
+# relay_proof <id> <quote> <answer>: why an attended session may record the human's answer to <id>, or
+# what is missing (stderr, rc 1). The quote passes human_words since the ask was posted, and the ask's
+# id is in that entry's words or in what they were shown. The answer is one of the ask's options when
+# it has any, so the words cannot be attached to an answer they do not pick. Only a pending ask, or
+# one the judge or a hold answered, takes it.
+relay_proof() {
+  local id="$1" quote="$2" answer="$3" f made hits
   f="$(find_ask "$id")"; [ -n "$f" ] || { echo "no ask '$id'" >&2; return 1; }
   id="$(field "$f" id)"; made="$(date -u -d "$(field "$f" created)" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
   [ -n "$made" ] || { echo "ask $id has no created time to look after" >&2; return 1; }
@@ -969,23 +991,27 @@ relay_proof() {
     pending:*|answered:judge|answered:hold) ;;
     *) echo "ask $id is $(field "$f" status), not waiting on the human" >&2; return 1 ;;
   esac
-  opts="$(field "$f" options)"
+  local opts; opts="$(field "$f" options)"
   if [ -n "$opts" ] && [ -z "$(named_option "$opts" "$answer")" ]; then
     echo "the answer '$answer' names none (or more than one) of ask $id's options: $opts" >&2; return 1
   fi
-  t="$(session_transcript "$sid")"
-  [ -n "$t" ] || { echo "no transcript for session $sid" >&2; return 1; }
-  command -v agent-panel >/dev/null 2>&1 || { echo "agent-panel is not installed" >&2; return 1; }
-  said="$(agent-panel human "$t" --since "$made")" || { echo "agent-panel human failed on $t" >&2; return 1; }
-  jq -e -s --arg q "$quote" '
+  hits="$(human_words "$quote" "$made")" || return 1
+  jq -e -s --arg id "$id" '
     def n: ascii_downcase | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "");
-    any(.[]; ((.text | n) | contains($q | n)) and (($q | n | length) >= 3 or (.text | n) == ($q | n)))' <<<"$said" >/dev/null 2>&1 ||
-    { echo "no words of the human's in this session since the ask was posted contain: $quote" >&2; return 1; }
-  jq -e -s --arg q "$quote" --arg id "$id" '
-    def n: ascii_downcase | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "");
-    any(.[]; ((.text | n) | contains($q | n)) and (($q | n | length) >= 3 or (.text | n) == ($q | n)) and
-             (((.shown | n) | contains($id | n)) or ((.text | n) | contains($id | n))))' <<<"$said" >/dev/null 2>&1 ||
+    any(.[]; ((.shown // "" | n) | contains($id | n)) or ((.text | n) | contains($id | n)))' <<<"$hits" >/dev/null 2>&1 ||
     { echo "the quote is in the transcript, but ask $id is in neither what the human was shown nor their words there" >&2; return 1; }
+}
+
+# cmd_said --since <time> <words...>: exit 0 when the human typed those words in this attended
+# session since <time> (human_words), else say what is missing and exit 1. A command that takes the
+# human's word for something no ask carries (agent-hold set --by human) checks the quote here.
+cmd_said() {
+  local since=""
+  [ "${1:-}" = --since ] && { since="${2:-}"; shift 2 2>/dev/null || shift $#; }
+  local quote; quote="$(oneline "$*")"
+  [ -n "$since" ] && [ -n "$quote" ] || { echo "usage: agent-ask said --since <time> <the human's words>" >&2; return 2; }
+  since="$(date -u -d "$since" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" || { echo "agent-ask said: --since does not read as a time" >&2; return 2; }
+  human_words "$quote" "$since" >/dev/null
 }
 
 # cmd_answer_cli [--by who] [--quote words] <id> <answer...>: the `answer` subcommand. `human` needs
@@ -2613,9 +2639,8 @@ Return the verdict in the structured output."
     else rule=grounded   # nothing to take: no recommendation and no answer of its own
     fi
   fi
-  set_field "$f" judge_type "$(jq -r .type <<<"$verdict")"
-  set_field "$f" judge_met "$(jq -r .met <<<"$verdict")"
-  set_field "$f" judge_evidence "$(oneline "$(jq -r .evidence <<<"$verdict")")"
+  local fields=(judge_type "$(jq -r .type <<<"$verdict")" judge_met "$(jq -r .met <<<"$verdict")"
+    judge_evidence "$(oneline "$(jq -r .evidence <<<"$verdict")")")
   # The level: the judge's widest rating, raised to fleet by a policy floor name.
   # judge_level_raised says a floor raised it, which judge-eval counts per cell. judge_human_only
   # is the human-stop flag beside it (external, or not reversible), never a level.
@@ -2627,10 +2652,10 @@ Return the verdict in the structured output."
   fi
   [ "$(jq -r .human_only <<<"$verdict")" = true ] &&
     ho=(judge_human_only true judge_human_only_evidence "$(oneline "$(jq -r .human_only_evidence <<<"$verdict")")")
-  set_field "$f" judge_level "$level" judge_level_evidence "$(oneline "$lev_ev")" judge_level_raised "$raised" "${ho[@]}"
+  fields+=(judge_level "$level" judge_level_evidence "$(oneline "$lev_ev")" judge_level_raised "$raised" "${ho[@]}")
   settled=$(jq -r .settled_by <<<"$verdict")
-  [ -z "$settled" ] || set_field "$f" judge_settled_by "$(oneline "$settled")"
-  judge_record "$f" "$call" "$rule" "$(jq -r .reason <<<"$verdict")" "$cid"
+  [ -z "$settled" ] || fields+=(judge_settled_by "$(oneline "$settled")")
+  judge_record "$f" "$call" "$rule" "$(jq -r .reason <<<"$verdict")" "$cid" "${fields[@]}"
 }
 
 # older_asks <file>: the pending asks posted before this one that another can join (settle_by_verdict),
@@ -2712,13 +2737,16 @@ ask_text() {
   local k; for k in task question context options option_notes recommend_why; do printf '%s ' "$(field "$1" "$k")"; done
 }
 
-# judge_record <file> <judge> <rule> <reason> <call id>: the verdict's fields on the ask.
+# judge_record <file> <judge> <rule> <reason> <call id> [<key> <value>...]: the verdict's fields
+# on the ask, with any more of the verdict's pairs ahead of them, in one write. A judge the guard
+# (judge_guarded) ends between writes left `judge` set with no `judge_rule`, which the guard reads
+# as a verdict and nothing answers (agent_ask.bats, run 45675382228).
 judge_record() {
-  set_field "$1" judge "$2"
-  [ -n "$3" ] && set_field "$1" judge_rule "$3"
-  set_field "$1" judge_reason "$(oneline "$4")"
-  [ -n "$5" ] && set_field "$1" judge_call "$5"
-  set_field "$1" judged_at "$(now_iso)"
+  local f="$1" kv=("${@:6}" judge "$2")
+  [ -n "$3" ] && kv+=(judge_rule "$3")
+  kv+=(judge_reason "$(oneline "$4")")
+  [ -n "$5" ] && kv+=(judge_call "$5")
+  set_field "$f" "${kv[@]}" judged_at "$(now_iso)"
   queue_changed
 }
 
@@ -2836,6 +2864,7 @@ case "$sub" in
   live-sessions) live_sessions ;;
   titles) session_titles ;;
   answer) cmd_answer_cli "$@" ;;
+  said)   cmd_said "$@" ;;
   cancel) cmd_cancel "$@" ;;
   park)   cmd_park "$@" ;;
   unpark) cmd_unpark "$@" ;;

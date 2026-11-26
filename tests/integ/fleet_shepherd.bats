@@ -18,7 +18,7 @@ setup() {
   mkdir -p "$FLEET_SHEPHERD_DIR"
   stub fleet-sessions 'echo "$*" >> "$HOME/sessions.calls"'
   stub fleet-assess 'if [ "${1:-}" = --blocked ]; then printf "%b" "${STUB_BLOCKED:-}"; elif [ "${1:-}" = --fleet ]; then printf "%b" "${STUB_FLEET:-}"; ! printf "%b" "${STUB_FLEET:-}" | grep -qE "^fleet: OVER|NOT live"; else echo "verdict: ${STUB_VERDICT:-CLEAR} load 0.5x"; fi'
-  stub agent-hold 'printf "%s" "${STUB_HOLDS:-}"'
+  stub agent-hold 'case "$*" in *--expired*) printf "%s" "${STUB_EXPIRED:-}" ;; *) printf "%s" "${STUB_HOLDS:-}" ;; esac'
   # a pass's measured cost (pass_cost); unset is a session with none
   stub agent-usage '[ "$1 $3" = "session --json" ] || exit 2
 if [ -n "${STUB_USAGE:-}" ]; then printf "%s" "$STUB_USAGE"; else printf "{\"session_id\":\"%s\",\"usage_source\":\"none\"}" "$2"; fi'
@@ -635,6 +635,14 @@ esac'
   assert_line 'pace: machine reads HOLD with no hold set'
   STUB_VERDICT=HOLD STUB_HOLDS=$'unity\tx' run "$SH" due
   assert_failure
+}
+
+@test "a hold past its until is a pace line whatever the verdict, and only then (ar-6059)" {
+  doc "[]"
+  STUB_VERDICT=HOLD STUB_HOLDS=$'unity\tx' STUB_EXPIRED=$'critical\t2026\thuman\tlockdown' run "$SH" due
+  assert_line 'pace: ended hold critical (past its until); then: agent-hold release each'
+  STUB_VERDICT=HOLD STUB_HOLDS=$'unity\tx' run "$SH" due
+  refute_output --partial 'ended hold'
 }
 
 @test "a host over its busy mark, or an agent host with a unit outside its CPU cap, is a pace line; a fine fleet is none" {

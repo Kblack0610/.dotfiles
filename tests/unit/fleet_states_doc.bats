@@ -429,7 +429,7 @@ check_owner_copies() { # <doc> <file>...
   local t="$BATS_TEST_TMPDIR" n
   n=$(DOTFILES_PRIVATE="$PRIVATE" "$REPO_ROOT/.local/bin/fact-owners" count --debt)
   # a debt entry dropped without lowering the pin
-  sed '/^| `kinds`/ s/`.local\/bin\/fleet-bench` (ar-5455); //' "$DOC" > "$t/dropped.md"
+  sed '/^| `kinds`/ s/`.local\/src\/hub-core\/src\/home.rs` (ar-5455); //' "$DOC" > "$t/dropped.md"
   run FACT_OWNERS check --doc "$t/dropped.md" --debt
   assert_failure
   assert_output --partial "are below Debt pinned"

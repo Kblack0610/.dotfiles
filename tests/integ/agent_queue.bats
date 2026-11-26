@@ -1095,7 +1095,7 @@ load 'agent_queue/common'
 @test "gate --all clears each #hold/ row whose id, epic or plan is granted, and the tag and an ungranted row stay held (ar-5237)" {
   gate_rbw
   export AGENT_HOLD_DIR="$SANDBOX/holds"
-  "$REPO_ROOT/.local/bin/agent-hold" set critical --kind resource --by human "lockdown" >/dev/null
+  "$REPO_ROOT/.local/bin/agent-hold" set critical --kind resource --by coordinator "lockdown" >/dev/null
   "$REPO_ROOT/.local/bin/agent-hold" grant critical ar-1 ar-50 plan-x >/dev/null
   jq -n '{rows: [{id: "ar-1", state: "open", text: "fix(a): one", tags: ["hold/critical"]},
                  {id: "ar-2", state: "open", text: "fix(b): two", tags: ["hold/critical", "of/ar-50"]},
@@ -1111,7 +1111,7 @@ load 'agent_queue/common'
   run "$AQ" gate --all
   assert_output --partial "(row ar-1)"
   "$REPO_ROOT/.local/bin/agent-hold" release critical >/dev/null
-  "$REPO_ROOT/.local/bin/agent-hold" set critical --kind resource --by human "lockdown" >/dev/null
+  "$REPO_ROOT/.local/bin/agent-hold" set critical --kind resource --by coordinator "lockdown" >/dev/null
   run "$AQ" gate --json --all
   [ "$(jq -sr 'map(select(.row != null)) | length' <<<"$output")" = 0 ]
 }
@@ -1120,7 +1120,7 @@ load 'agent_queue/common'
   export AGENT_HOLD_DIR="$SANDBOX/holds"
   legacy forms "tags: hold:critical" --project game "fill the store forms"
   legacy other "tags: hold:critical" --project game "other work"
-  "$REPO_ROOT/.local/bin/agent-hold" set critical --kind resource --by human "lockdown" >/dev/null
+  "$REPO_ROOT/.local/bin/agent-hold" set critical --kind resource --by coordinator "lockdown" >/dev/null
   run "$AQ" next --json
   assert_failure
   "$REPO_ROOT/.local/bin/agent-hold" grant critical forms >/dev/null
@@ -2338,7 +2338,7 @@ notes --profile bnb ptask game --agent run gm-9"
   run "$AQ" add --project game --mode plan --priority urgent --slug up "plan, urgent"
   assert_called 'fleet-dispatch start --item up'
   # 2026-11-12: an urgent plan item started under the human's dispatch hold.
-  "$REPO_ROOT/.local/bin/agent-hold" set dispatch --by human "next queue" >/dev/null
+  "$REPO_ROOT/.local/bin/agent-hold" set dispatch --by human --until "+12 hours" "next queue" >/dev/null
   run "$AQ" add --project game --mode plan --priority urgent --slug held "plan, held"
   assert_success
   assert_output --partial 'so held stays queued for the next dispatch pass'
