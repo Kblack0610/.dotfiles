@@ -3,7 +3,7 @@ name: fleet-agent image
 # Builds the fleet-agent image (containers/fleet-agent) and proves it is a worker: fleet-agent up
 # starts it on throwaway volumes, then probe_hosts' own readiness probe runs in it over ssh
 # (tests/fleet-agent-smoke.sh). A PR or merge runs it when it touches the image or what the smoke
-# drives; the image snapshots the whole tree, so the nightly run republishes :latest with every
+# drives; the image snapshots the whole tree, so the daily `schedule` run below republishes :latest with every
 # other change main took that day. Only main runs push, tagged with the commit sha and latest.
 on:
   pull_request:
