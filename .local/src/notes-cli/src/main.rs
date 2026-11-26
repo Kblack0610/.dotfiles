@@ -23,7 +23,6 @@ mod focus_sweep;
 mod gate;
 mod improve;
 mod inbox;
-mod inbox_ack;
 mod index;
 mod ingest;
 mod knowledge;
@@ -238,8 +237,7 @@ enum Cmd {
         #[arg(long, conflicts_with_all = ["json", "agent", "version", "done_days"])]
         weigh: bool,
     },
-    /// Triage the dated-capture inbox (list / add / archive), and mark inbox page rows
-    /// reviewed (ack). No subcommand = list.
+    /// Triage the dated-capture inbox (list / add / archive). No subcommand = list.
     Inbox {
         #[command(subcommand)]
         sub: Option<InboxCmd>,
@@ -821,7 +819,8 @@ enum PtaskCmd {
     /// Close the first matching open task undelivered: the row stays, ticked, with the
     /// reason in its marker. Needs --why or --dup
     Drop {
-        /// Why it will not be delivered: stale, superseded, or where it moved ("moved: ideas.md")
+        /// Why it will not be delivered: stale, superseded, or where it moved ("moved: ideas.md").
+        /// Each open row gated #after/ on it is named on stderr, with the command that frees it
         #[arg(long, value_name = "WHY")]
         why: Option<String>,
         /// It duplicates this row (its id, like ar-142); its open children move under that row
@@ -1047,6 +1046,18 @@ enum IngestCmd {
     Import,
     /// Publish the inbox status page from the record and the outbox (the sweep runs it)
     Page,
+    /// The daily intake cap (`intake_daily_cap`, QUEUE.md "Admission"): per local day and project
+    /// (every gated board, and any other the cap touched), the new agent rows admitted and the rows
+    /// the cap refused, oldest first and today last
+    /// (`--json`: one `{date, project, cap, admitted, refused}` object a line), the one reader
+    /// fleet-bench's churn KPIs use
+    Cap {
+        /// How many local days, today included
+        #[arg(long, default_value_t = 7)]
+        days: i64,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// `notes ingest record`: one chain event a shell writer made, appended to the record.
@@ -1079,6 +1090,43 @@ fn ingest_record(prof: &config::Profile, r: RecordArgs) -> i32 {
     ev.near = set(near);
     ingest::record(prof, &ev);
     0
+}
+
+/// `notes ingest <sub>`: the record, import, page and cap commands.
+fn ingest_sub(
+    prof: &config::Profile,
+    log: &logging::Logger,
+    sub: IngestCmd,
+) -> anyhow::Result<i32> {
+    Ok(match sub {
+        IngestCmd::Record(r) => ingest_record(prof, *r),
+        IngestCmd::Import => ingest_import(prof)?,
+        IngestCmd::Page => daily::publish_inbox_page(prof, log)?,
+        IngestCmd::Cap { days, json } => ingest_cap(prof, days, json)?,
+    })
+}
+
+/// `notes ingest cap`: the cap's admitted and refused rows a day ([`gate::cap_days`]).
+fn ingest_cap(prof: &config::Profile, days: i64, json: bool) -> anyhow::Result<i32> {
+    if days < 1 {
+        anyhow::bail!("--days is a whole number of days, at least 1");
+    }
+    for d in gate::cap_days(prof, days) {
+        if json {
+            println!("{}", serde_json::to_string(&d)?);
+        } else {
+            let cap = if d.cap == 0 {
+                "no cap".to_string()
+            } else {
+                format!("cap {}", d.cap)
+            };
+            println!(
+                "{} {}: {} admitted, {} refused ({cap})",
+                d.date, d.project, d.admitted, d.refused
+            );
+        }
+    }
+    Ok(0)
 }
 
 /// `notes ingest import`: a worker's record on stdin; prints where its next read starts.
@@ -1150,14 +1198,6 @@ enum InboxCmd {
         /// Archive every dated capture before YYYY-MM-DD
         #[arg(long)]
         before: Option<String>,
-    },
-    /// Mark a Handled-today row of the inbox page reviewed (it folds into `+N reviewed`), or
-    /// take the mark back with --undo; republishes the page
-    Ack {
-        /// The row's key: the `ts` of its ingest event, as the page's `<!-- ack:... -->` holds it
-        key: String,
-        #[arg(long)]
-        undo: bool,
     },
 }
 
@@ -1979,11 +2019,7 @@ fn main() -> Result<()> {
             ingest::log(&prof, day.as_deref(), days, &filter, json)?
         }
         Cmd::Improve(a) => improve::run(&prof, &log, a)?,
-        Cmd::Ingest { sub } => match sub {
-            IngestCmd::Record(r) => ingest_record(&prof, *r),
-            IngestCmd::Import => ingest_import(&prof)?,
-            IngestCmd::Page => daily::publish_inbox_page(&prof, &log)?,
-        },
+        Cmd::Ingest { sub } => ingest_sub(&prof, &log, sub)?,
         Cmd::Inbox { sub } => {
             match sub {
                 None | Some(InboxCmd::List) => inbox::list(&prof, &log)?,
@@ -1993,10 +2029,6 @@ fn main() -> Result<()> {
                     stale,
                     before,
                 }) => inbox::archive(&prof, &log, target.as_deref(), stale, before.as_deref())?,
-                Some(InboxCmd::Ack { key, undo }) => {
-                    inbox_ack::mark(&prof, &key, !undo)?;
-                    daily::publish_inbox_page(&prof, &log)?;
-                }
             }
             0
         }

@@ -3,6 +3,7 @@
 # crate source names an outside path (include_str!, include_bytes!, CARGO_MANIFEST_DIR) not listed.
 .local/src/agent-core  .config/agent-panel/time-use.conf
 .local/src/agent-core  .config/agent-panel/typed-prefixes.conf
+.local/src/agent-core  .config/agent-panel/edit-tools.conf
 .local/src/agent-core  tests/fixtures/typed-prompts.tsv
 .local/src/agent-core  tests/fixtures/time-use-commands.tsv
 .local/src/agent-core  .local/bin/claude-recall

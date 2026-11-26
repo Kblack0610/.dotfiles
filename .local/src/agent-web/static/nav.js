@@ -14,7 +14,8 @@ function headingOf(e) {
 
 function drawOutline() {
   // A hidden pane of a record's page (a product's Legal) is reached by its strip tab, not here.
-  const items = tabAnchors().filter((e) => !e.closest?.("[data-pin][hidden]"))
+  // A record's anchor (`data-rec`: an Archive day of Reports) is where a link lands, not a section.
+  const items = tabAnchors().filter((e) => !e.closest?.("[data-pin][hidden]") && !("rec" in (e.dataset || {})))
     .map((e) => [e.id.slice(4), headingOf(e)]).filter((x) => x[1]);
   const shown = items.length >= 2 ? items : [];
   const key = st.tab + JSON.stringify(shown);

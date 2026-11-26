@@ -6246,6 +6246,14 @@ mod tests {
         let wl: Vec<&str> = wide.lines().collect();
         assert!(wl[4].contains("ACCOUNT  HARNESS  CLOSE"), "{wide}");
         assert!(wl[4].contains("IDLE  CTX"), "CTX sits beside IDLE: {wide}");
+        assert!(
+            wl[4].contains("MACHINE  ETA"),
+            "MACHINE sits after SESSION: {wide}"
+        );
+        assert!(
+            wl[5].contains("local"),
+            "a session here runs on local: {wide}"
+        );
         assert!(wl[5].contains("bnb      claude"), "{wide}");
 
         // The stages join by target: the NEEDS row is the live session, and it sorts first.
@@ -9217,12 +9225,18 @@ mod tests {
             (on(&a), a.tv.table.view.q.as_str()),
             (Some("all"), "id:=ar-1")
         );
-        // A row's link (links::Link::tab_args, `projects all id:=<id>`) is Board searched to it.
+        // A row's link (links::Link::tab_args, `projects all id:=<id>`) is Board searched to it,
+        // on the default chip, which lists an open epic it names (hub-core `Row::PIN`).
+        a.tv.table.view.state = "epics".into();
         a.go(Tab::Home);
         a.follow(&Link::to(Kind::Row, "ar-2"));
         assert_eq!(
             (a.tab, on(&a), a.tv.table.view.q.as_str()),
             (Tab::Projects, Some("all"), "id:=ar-2")
+        );
+        assert!(
+            a.tv.table.view.state.is_empty(),
+            "the link opens the default chip"
         );
     }
 

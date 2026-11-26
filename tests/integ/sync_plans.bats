@@ -183,6 +183,43 @@ landed_count() { landed | grep -c . || true; }
   assert_output 'acct.md'
 }
 
+@test "a plan the transcript names by its store path (~/.agent/plans/_live) lands (ar-3571)" {
+  plan stored >/dev/null
+  plan other >/dev/null
+  printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"%s/stored.md"}}]}}\n' "$LIVE" >> "$TRANSCRIPT"
+  run run_hook
+  assert_success
+  run landed
+  assert_output 'stored.md'
+}
+
+# post_write <path>: the hook as PostToolUse(Write|Edit|MultiEdit) sees it, with no Stop to come.
+post_write() {
+  printf '{"session_id":"s1","transcript_path":"%s","tool_name":"Write","tool_input":{"file_path":"%s"}}\n' "$TRANSCRIPT" "$1" \
+    | bash "$HOOK"
+}
+
+@test "as PostToolUse a plan lands when it is written, though the transcript names it nowhere (ar-3571)" {
+  # A turn that ends on an interrupt (a rejected ExitPlanMode) gets no Stop, so the write is the
+  # last chance to link it.
+  plan written >/dev/null
+  plan other >/dev/null
+  names other
+  run post_write "$SRC/written.md"
+  assert_success
+  run landed
+  assert_output 'written.md'
+}
+
+@test "as PostToolUse a write outside the plans dirs links nothing" {
+  plan bystander >/dev/null
+  names bystander
+  run post_write "$SANDBOX/repo/docs/plans/bystander.md"
+  assert_success
+  run landed
+  assert_output ''
+}
+
 @test "a name's regex characters match only themselves" {
   plan 'a.b' >/dev/null
   plan axb >/dev/null
@@ -294,6 +331,30 @@ epic_map() {
   assert [ -f "$HOME/.agent/plans/beta/gamey.md" ]
   run landed_count
   assert_output '0'
+}
+
+@test "an epic: line written after the plan's first write moves this session's link to the epic's project" {
+  # PostToolUse links at the first write, before the plan names its epic; first writer wins must
+  # not then hold it under the session's project. Negative control: another project's link stays.
+  epic_map
+  f=$(plan late)
+  run post_write "$f"
+  run landed
+  assert_output 'late.md'
+  printf 'epic: bt-12\n' >> "$f"
+  run post_write "$f"
+  assert_success
+  run readlink "$HOME/.agent/plans/beta/late.md"
+  assert_output '../_live/late.md'
+  run landed_count
+  assert_output '0'
+  f=$(plan held)
+  printf 'epic: bt-12\n' >> "$f"
+  mkdir -p "$HOME/.agent/plans/gamma"
+  ln -s ../_live/held.md "$HOME/.agent/plans/gamma/held.md"
+  run post_write "$f"
+  assert [ -L "$HOME/.agent/plans/gamma/held.md" ]
+  assert [ ! -e "$HOME/.agent/plans/beta/held.md" ]
 }
 
 @test "an epic: line with a code the registry does not know files the plan as before" {

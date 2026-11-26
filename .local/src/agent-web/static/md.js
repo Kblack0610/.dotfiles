@@ -3,8 +3,7 @@
 // escaped before any markup is added, so text can never become HTML; links are http(s) only,
 // plus, with md(text, { notes: true }) for a note on the Daily tab, `[[target|label]]` as an
 // in-app `#daily/<target>` link and `#p:<name>` as `#projects/<name>` and any other `#tag` as a tag chip, with HTML comments dropped.
-// With { notes: true, ack: true } (the inbox page only), a task item ending `<!-- ack:<key> -->`
-// gets a live checkbox carrying `data-ack="<key>"`. With { notes: true, rows: [<n>, ...] } (a block
+// With { notes: true, rows: [<n>, ...] } (a block
 // of the Daily note whose line i is the note's line rows[i], hub-core focus `lines`), every task
 // row carries `data-ln`, its line in the note, on a live checkbox and on a remove button; every
 // other checkbox stays disabled.
@@ -25,10 +24,7 @@ const md = (() => {
   const TABLE_SEP = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
 
   // Set for the length of one md(text, { notes: true }) call.
-  let notes = false, acks = false, rows = null;
-  // A tickable inbox row's key, kept through the comment strip: the ts of its ingest event.
-  const ACK_KEY = "<!-- ack:([0-9T:.+Z-]{1,40}) -->";
-  const ACK = new RegExp(`\\s*${ACK_KEY}\\s*$`), ACK_ONLY = new RegExp(`^${ACK_KEY}$`);
+  let notes = false, rows = null;
   // A vault-relative target as a URL fragment: each segment encoded, the slashes kept readable.
   const frag = (t) => t.trim().split("/").map(encodeURIComponent).join("/");
   const wikilink = (target, label) => `<a href="#daily/${escape(frag(target))}" class="wl">${escape((label || target).trim())}</a>`;
@@ -84,13 +80,11 @@ const md = (() => {
         open.push({ indent, tag });
         html += `<${tag}${ordered && start !== 1 ? ` start="${start}"` : ""}>`;
       }
-      const key = ACK.exec(raw), text = key ? raw.slice(0, key.index) : raw;
-      const task = /^\[([ xX/])\]\s+(.*)$/.exec(text);
-      const ack = acks && key && task && task[1] !== "/" ? key[1] : null;
+      const task = /^\[([ xX/])\]\s+(.*)$/.exec(raw);
       const row = task && rows && Number.isInteger(rows[ln]) ? rows[ln] : null;
-      const box = ack ? ` data-ack="${escape(ack)}"` : row != null ? ` data-ln="${row}"` : " disabled";
+      const box = row != null ? ` data-ln="${row}"` : " disabled";
       const rm = row != null ? `<button class="trm" data-rm="${row}" title="Remove this row" aria-label="Remove this row">-</button>` : "";
-      html += !task ? `<li>${inline(text)}`
+      html += !task ? `<li>${inline(raw)}`
         : task[1] === "/" ? `<li class="task doing">${rm}<input type="checkbox"${box}> <span class="cchip running">doing</span> ${inline(task[2])}`
         : `<li class="task${task[1] === " " ? "" : " done"}">${rm}<input type="checkbox"${box}${task[1] === " " ? "" : " checked"}> ${inline(task[2])}`;
     }
@@ -160,14 +154,13 @@ const md = (() => {
 
   return (text, opts) => {
     notes = !!(opts && opts.notes);
-    acks = notes && !!opts.ack;
     rows = notes && Array.isArray(opts.rows) ? opts.rows : null;
     try {
       let t = String(text == null ? "" : text).replace(/\r\n?/g, "\n");
       // A dropped comment keeps its newlines, so every line after it keeps its number.
-      if (notes) t = t.replace(/<!--[\s\S]*?-->/g, (c) => (acks && ACK_ONLY.test(c) ? c : c.replace(/[^\n]/g, "")));
+      if (notes) t = t.replace(/<!--[\s\S]*?-->/g, (c) => c.replace(/[^\n]/g, ""));
       return blocks(t.split("\n"));
-    } finally { notes = false; acks = false; rows = null; }
+    } finally { notes = false; rows = null; }
   };
 })();
 

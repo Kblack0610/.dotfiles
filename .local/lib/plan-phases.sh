@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # This file is SOURCED, never executed. One reader for a plan's `## Phases` checklist, used by
-# fleet-sessions (live sessions), ask-sweep (plans whose session has gone) and regen-anchor (Active plans).
+# fleet-sessions (live sessions), fleet-dispatch (plans whose session has gone) and regen-anchor (Active plans).
 
 # The one parse of the checklist: `- [x]` landed and `- [-]` deferred count as done, `- [ ]`
 # does not. Only unindented items are phases; an indented item is a step inside one.
@@ -163,6 +163,24 @@ plan_overlap_ids() {
     on' "$@" | grep -oE '\b[a-z][a-z0-9]*-[0-9]+\b' | sort -u
 }
 
+# plan_project [<plan file>] -> the project whose rows the plan names: the id on its `epic: <id>` line,
+# else, for an `epic: new` proposal, the ids on its Overlap: line, each read by its code (project_of_code,
+# so the caller has sourced project-name.sh). Overlap counts only there, because elsewhere it lists other
+# work. Nothing when it names no known id, or ids of more than one project: the caller then takes the
+# session's cwd. Why: a dotfiles session planning dodginballs work was checked on the agent-runtime
+# board (ar-5288). Reads stdin with no file.
+plan_project() {
+  [ $# -eq 0 ] || [ -f "$1" ] || return 0
+  local text ids p
+  text=$(cat "$@")
+  ids=$(_epic_line epic <<<"$text")
+  [ -n "$ids" ] || [ -z "$(plan_epic_new <<<"$text")" ] || ids=$(plan_overlap_ids <<<"$text")
+  [ -n "$ids" ] || return 0
+  p=$(while read -r id; do project_of_code "${id%-*}"; done <<<"$ids" | grep -v '^$' | sort -u)
+  [ -n "$p" ] && [ "$(wc -l <<<"$p")" -eq 1 ] && printf '%s\n' "$p"
+  return 0
+}
+
 # plan_epic_tag <plan file> -> `#plan/<slug>`, the tag plan-approved.sh puts on a proposal and
 # plan_epic_verdict finds its verdict by.
 plan_epic_tag() { printf '#plan/%s\n' "$(basename "$1" .md)"; }
@@ -240,8 +258,7 @@ plan_rows() {
 
 # phase_takes <phase text> -> each board row the phase line says it takes (`takes ucp-2701`, `takes board
 # row ucp-2701`, `takes row ucp-2701`), lowercase, one a line. The one reader of that marker: agent-queue
-# add --plan ranks the phase by those rows, agent-land closes them when the phase merges, and ask-sweep
-# files no plan row while each open phase takes a row still open (plan_rows_hold). A bare
+# add --plan ranks the phase by those rows, and agent-land closes them when the phase merges. A bare
 # `takes <row-id>` in prose names no row (an id needs digits), so a plan that documents the marker is safe.
 phase_takes() {
   printf '%s\n' "$1" | { grep -oiE '(^|[^a-z])takes (board )?(row )?[a-z]{2,4}-[0-9]+' || true; } |
@@ -308,9 +325,9 @@ plan_rows_add() {
   printf '%s\n' "$out" > "$1"
 }
 
-# plan_row_task <plan file> -> the brief of the one board row `agent-queue add --plan` files when it
-# may not queue (a dispatched session, a filer): the plan's absolute path in one fixed sentence,
-# which fleet-dispatch's promote reads back (plan_row_plan) to file the plan's chain on that row.
+# plan_row_task <plan file> -> the brief of the one board row `agent-queue add --plan` filed, before
+# ar-5605, when it might not queue: the plan's absolute path in one fixed sentence, which
+# fleet-dispatch's promote still reads back (plan_row_plan) to file the chain of a row left open.
 plan_row_task() {
   printf "Run the open phases of the approved plan %s in order, one PR each, marking each done in the plan's ## Phases." "$1"
 }
@@ -338,21 +355,6 @@ title_cut() {
   sed 's/[ :,;-]*$//' <<<"$h"
 }
 
-# plan_row_title <plan file> -> the title of that row: the plan's heading (plan_heading), then
-# `(plan <slug>)`, the heading cut at a word so the whole fits the agent board's 80-character title
-# (notes-cli TITLE_MAX). A plan with no heading, or a slug too long to leave 20 characters for one,
-# gets `plan <slug>: run its open phases`, slug first: ask-sweep finds a plan's row by its slug, so a
-# cut must never reach it. Why: slugs are session names ("swirling-sprouting-knuth"), and the human
-# could not tell what a row was for (2026-11-24, ar-5348).
-plan_row_title() {
-  local slug h room
-  slug=$(basename "$1" .md)
-  room=$((80 - ${#slug} - 8))
-  h=$(plan_heading "$1")
-  if [ -z "$h" ] || [ "$room" -lt 20 ]; then printf 'plan %s: run its open phases\n' "$slug"; return 0; fi
-  printf '%s (plan %s)\n' "$(title_cut "$h" "$room")" "$slug"
-}
-
 # plan_phase_title <plan file> <phases> <phase name> -> the title of a phase's story row: the phase
 # name, then `(P<n>, <plan heading>)`. The name leads and the heading is cut to what is left of the 80
 # characters (dropped under 12), so the row says the work, never the session slug the plan file is
@@ -378,9 +380,13 @@ plan_row_plan() {
 # brief_epic <brief file> -> the `<code>-<N>` of the brief's `Epic:` head line, or nothing.
 brief_epic() { _epic_line Epic "$1"; }
 
-# _epic_line <key> <file>: the one parse of an epic id after `<key>:`
+# _epic_line <key> [<file>]: the one parse of an epic id after `<key>:`, outside code fences, so an
+# example in a fence is no epic. Reads stdin with no file: plan-standard.sh holds the plan as text.
 _epic_line() {
-  [ -f "$2" ] && sed -nE "/^$1: *([a-z0-9]+-[0-9]+)([^0-9].*)?\$/{s//\\1/p;q;}" "$2"
+  [ $# -lt 2 ] || [ -f "$2" ] || return 1
+  awk -v k="$1" '/^```/ { f = !f; next } f { next }
+    $0 ~ "^" k ":[ \t]*[a-z0-9]+-[0-9]+([^0-9]|$)" {
+      sub("^" k ":[ \t]*", ""); match($0, /^[a-z0-9]+-[0-9]+/); print substr($0, 1, RLENGTH); exit }' "${@:2}"
 }
 
 # plan_phase_list <plan file> -> one compact JSON array [{state, name, n}] in file order, [] when
