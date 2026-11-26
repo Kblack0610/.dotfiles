@@ -23,7 +23,8 @@
 #   fleet-sessions tick               --write after a fetch, plus the stage changes since the
 #                                     last tick appended to watch.log (fleet-state.service, every
 #                                     minute and on each ask change); the hub Sessions tab. Only
-#                                     the fleet lease holder ticks; elsewhere it skips, exit 0
+#                                     the fleet lease holder ticks; elsewhere it skips, exit 0.
+#                                     A write that lowers the live count wakes a fleet-dispatch kick
 #   fleet-sessions explain <who>      one session from the state document: its task, plan, PRs,
 #                                     where its time went, and what it is doing
 #   fleet-sessions close [--json]     the close analysis from the state document: each session's
@@ -59,6 +60,10 @@ set -uo pipefail
 EDIT_TOOLS_RE="$(edit_tools_re)"
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh"
+# shellcheck source=/dev/null
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-live.sh"   # fleet_live_count: write_state wakes a kick when it drops
+# shellcheck source=/dev/null
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/dispatch-wake.sh"   # dispatch_wake
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/main-state.sh"
 # shellcheck source=/dev/null
@@ -201,7 +206,7 @@ BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 #                <main_red: workflows this session's merged PR is a suspect for, or -> \
 #                <phases: - (no plan file) | missing (a recorded plan file that is nowhere) | none (no checklist) | done/total> <next phase|-> \
 #                <conflicts: yes|no|- (merging the default branch in would conflict)> \
-#                <open job: gate|queue|test|build|checkout|agent|human|jobs|none|hung|wait|ended|- (agent-panel's open_job, or a live gate/test/build process in the worktree or under its claude: live_wait; hung: self_wait, a shell waiting on itself; wait: self_wait, a tail --pid on another process; ended: watched_gate, a pgrep loop on a gate that no longer runs; - unknown)> \
+#                <open job: gate|queue|test|build|checkout|agent|human|jobs|none|hung|wait|ended|- (agent-panel's open_job, or a live gate/test/build process in the worktree or under its claude: live_wait; hung: self_wait, a shell waiting on itself; wait: self_wait, a tail --pid on another process or a gh event listen; ended: watched_gate, a pgrep loop on a gate that no longer runs; - unknown)> \
 #                <dirty names: the first dirty paths, shown beside the count, or -> \
 #                <landed: this session's own PRs ("#N,#M") when its transcript names a merged one,
 #                 none open and every state known (a closed one was replaced or dropped), else
@@ -598,13 +603,15 @@ wait_procs() {
 
 # self_wait <claude pid>: `hung` when a process under that claude is a `tail --pid=N` whose N is one of its
 # own ancestors below the claude (or itself, when bash exec-ed tail in its place), `wait` when one waits on any other
-# pid but the claude's, else nothing. In the hung case the parent waits for tail to end and tail
+# pid but the claude's or is a `gh event listen`, else nothing. In the hung case the parent waits for tail to end and tail
 # waits for the parent to end, so nothing ever moves. Not checked: that the
 # parent is blocked on the tail, so a `tail --pid=$$ -f log &` beside real work also reads hung once
 # its row is idle past FLEET_IDLE_MIN with no live gate or test; the session is the one to say so. 2026-11-09 agent-51's `pgrep -f 'agent-land 2089'` matched its own shell and
 # sat in that wait for 100m while the row read WORKING. A tail that watches any other pid is an event
 # wait, the one the rules ask for over a sleep loop, and ends with that process: 2026-11-14 it read
-# "background shell is not a gate or test". No event names a deadlock, so this reads one `ps`.
+# "background shell is not a gate or test". A `gh event listen` (gh 2.105's wait on a PR's state change) is an
+# event wait too, and ends with that event: 2026-11-24 dotfiles-agent-20 read STALLED on one over #3501 (ar-5664).
+# No event names a deadlock, so this reads one `ps`.
 self_wait() {
   local root="${1:-0}"
   [[ "$root" =~ ^[0-9]+$ ]] && [ "$root" -gt 1 ] || return 0
@@ -616,6 +623,7 @@ self_wait() {
         while (x > 1 && x != r && (x in up) && n++ < 64) x = up[x]
         if (x != r) continue
         k = split(args[p], a, " ")
+        if (a[1] ~ /(^|\/)gh$/) { for (i = 2; i < k; i++) if (a[i] == "event" && a[i + 1] == "listen") ev = 1; continue }   # past a global flag: gh -R o/r event listen
         if (a[1] !~ /(^|\/)tail$/) continue
         for (i = 2; i <= k; i++) {
           w = ""
@@ -2696,7 +2704,7 @@ collect() {
       ojob="${live:-$ojob}"
     fi
     # A shell waiting on itself is hung whatever the transcript's open job says: its command line may
-    # read as a gate. A live gate or test process found above outranks it. An event wait (a tail --pid
+    # read as a gate. A live gate or test process found above outranks it. An event wait (a tail --pid or a gh event listen
     # on another process) only names a shell the transcript could not class: a gate's keeps its own; an ended loop hides none.
     if [ "$host" = - ] && [ "$status" = shell ] && [ "$ojob" != agent ] && { [ -z "$live" ] || [ "$live" = ended ]; }; then
       live="$(self_wait "$cpid")"
@@ -3643,7 +3651,21 @@ write_state() {
   flock -w 30 8 || { rm -f "$tmp"; echo "fleet-sessions: $dir/.lock busy" >&2; return 1; }
   prev="$(jq -r '.generated_epoch // 0' "$STATE_FILE" 2>/dev/null)"
   if [ "${prev:-0}" -gt "$t" ] 2>/dev/null; then rm -f "$tmp"; return 0; fi
+  # The document counts a session as live until a write drops it, so the wake an item's close writes (agent-queue)
+  # can reach a kick that still sees it live and starts nothing. The write that lowers the count is the event: wake
+  # a kick once the new document is in place, so it reads the lower count (ar-5046). Here, not in tick, so a hand
+  # or shepherd --write that lowers the count wakes it too. A stale old document can add one harmless extra kick.
+  local was now_live
+  was="$(fleet_live_count "$STATE_FILE")"
   mv -f "$tmp" "$STATE_FILE" || return 1
+  now_live="$(fleet_live_count "$STATE_FILE")"
+  if [[ "$now_live" =~ ^[0-9]+$ ]]; then
+    if [[ "$was" =~ ^[0-9]+$ ]] && [ "$now_live" -lt "$was" ]; then
+      dispatch_wake "fleet-sessions: live sessions $was -> $now_live"
+    fi
+  else
+    echo "fleet-sessions: could not read the live count from $STATE_FILE, so no kick is woken for a drop" >&2
+  fi
   # Only the fleet-lease holder publishes: a hand --write on another host, or a pass that outlived
   # its lease, would write the copy fleet-lease renew just removed there (ar-4375).
   if lease_held; then

@@ -179,6 +179,8 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/claude-end.sh"
 # shellcheck source=../lib/wake-pace.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/wake-pace.sh"
+# shellcheck source=../lib/fleet-live.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fleet-live.sh"   # WAITS_JQ, LIVE_JQ: what pace_target counts as live
 LEVEL=$(machine_level)
 [ -n "$DISPATCH_WORKER_VERB" ] || read -r PER_PASS MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH_PER_PASS" DISPATCH_MAX_LOAD "$DISPATCH_MAX_LOAD")
 # Tier-3 rows fill never promotes, whatever the judge says (decide rows and the release kind are off in
@@ -1122,12 +1124,6 @@ restoring() {
 # claude exited on purpose, so reap keeps it and it holds no run unit and adds no load.
 parked() { [ -e "$PARKED_DIR/$1" ] || compgen -G "$PARKED_DIR/$1:*" >/dev/null; }
 
-# WAITS_JQ -- jq defs. waits: a session waiting on the human, which holds no slot: NEEDS whose reason does not end in
-# `carrying on` (fleet-sessions' own test: one carrying on past its ask is busy). frees: waits, or waiting its
-# landing turn behind another PR (open_job queue): neither counts as a live session in pace_target nor holds a run
-# unit (freed_item), so the two read one rule.
-WAITS_JQ='def waits: .bucket == "NEEDS" and ((.reason // "") | endswith("carrying on") | not); def frees: waits or .open_job == "queue";'
-
 # freed_item <slug> -- exit 0 when the fleet state document shows the queue item's session as freed (WAITS_JQ frees).
 # fleet-sessions writes `.item` as {slug, is, row, also}: the slugs are slug and also while the item runs or waits
 # there (is own or here), never one that moved on to another session; a bare string is read too. A document older
@@ -1210,17 +1206,8 @@ pace_target() {
   else TARGET=$DISPATCH_TARGET_AWAY TARGET_WHEN=away; fi
   local spare live
   spare=$(jq -r '.fleet.spare // empty' <<<"${ACCT_ROWS:-$(claude-acct room --json 2>/dev/null)}" 2>/dev/null)
-  live=$(jq -c --argjson now "$(date +%s)" --argjson fresh "$(( DISPATCH_STATE_FRESH_MIN * 60 ))" '
-    select($now - (.generated_epoch // 0) <= $fresh) | (.vocab.finished // []) as $done
-    | '"$WAITS_JQ"'
-    [.sessions[] | select(.bucket != "PARKED" and (.bucket | IN($done[]) | not) and ((.labels // []) | index("shepherd") | not)
-        and ((.account // "") | IN("codex", "opencode") | not))]
-    | (map(select(frees | not))) as $live
-    | {live: ($live | length),
-       needs: map(select(.open_job != "queue" and waits)) | length,
-       working: ($live | map(select(.bucket == "WORKING" or .bucket == "NEEDS")) | length),
-       idle: ($live | map(select(.bucket != "WORKING" and .bucket != "NEEDS")
-         | "\(.target) \(.bucket)\(if (.reason // "") != "" then ": \(.reason)" else "" end)"))}' \
+  live=$(jq -c --argjson now "$(date +%s)" --argjson fresh "$(( DISPATCH_STATE_FRESH_MIN * 60 ))" \
+    'select($now - (.generated_epoch // 0) <= $fresh) | '"$LIVE_JQ" \
     "$FLEET_STATE_FILE" 2>/dev/null)
   TOTAL_LIVE=$(jq -r '.live // empty' <<<"$live" 2>/dev/null)
   NEEDS_LIVE=$(jq -r '.needs // empty' <<<"$live" 2>/dev/null)
