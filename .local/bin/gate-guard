@@ -8,14 +8,16 @@
 - edits a file its `.github/gate-files` list names (mode `edit`: any change, a deletion too);
 - raises a number in, or adds a line to, a `down` file (a baseline, a threshold, a skip list);
 - lowers a number in, or drops a line from, an `up` file (a coverage floor, a pattern list);
+- raises a number in a `max` file, whose lines may come and go (a JSON of budgets, where a new
+  key is a new budget);
 - drops a job from a workflow under .github/workflows or .forgejo/workflows, deletes a
   workflow, or adds `continue-on-error: true` to one;
 - edits the list itself or the repo's gate-guard caller (.github/workflows/gate-guard.yml).
 
 A held PR fails unless it carries LABEL, which only the human applies: skip-guard denies an agent
 session adding it. The list is read at the merge base, so a PR cannot unlist a file and edit it in
-one step. Its format: one `[edit|down|up] <glob>` a line, edit when no mode is given, `#` starts a
-comment; the first matching line decides, and `*` matches across `/`. A down or up file pairs each
+one step. Its format: one `[edit|down|up|max] <glob>` a line, edit when no mode is given, `#` starts a
+comment; the first matching line decides, and `*` matches across `/`. A down, up or max file pairs each
 added line with a removed line of the same text once its numbers and a trailing comma are masked, and compares their
 numbers in order; a line with no such pair is an added or dropped line. --list reads the list from
 FILE instead (a test, or a count over past merges); --labels replaces the PR's labels, which come
@@ -35,7 +37,7 @@ LABEL = "gate-change"
 LIST = ".github/gate-files"
 CALLER = ".github/workflows/gate-guard.yml"
 WORKFLOW_DIRS = (".github/workflows/", ".forgejo/workflows/")
-MODES = ("edit", "down", "up")
+MODES = ("edit", "down", "up", "max")
 # A number is a standalone token: digits inside a name (`foo_2`, `ar-500`, `max-lines-300`) or a date
 # stay text, so changing them makes a new line, never a lowered number.
 NUM = re.compile(r"(?<![\w.-])-?\d+(?:\.\d+)?(?![\w.-]*\w)")
@@ -128,17 +130,18 @@ def ratchet(mode, removed, added):
     """Reasons a down or up file's change loosens it: a line with no counterpart, or a number that
     moved the wrong way."""
     out = []
-    grow, shrink = (added, removed) if mode == "down" else (removed, added)
+    grow, shrink = (removed, added) if mode == "up" else (added, removed)
     pool = list(shrink)
     for line in grow:
         twin = next((p for p in pool if skeleton(p) == skeleton(line)), None)
         if twin is None:
-            out.append("%s the line `%s`" % ("adds" if mode == "down" else "drops", line.strip()[:120]))
+            if mode != "max":
+                out.append("%s the line `%s`" % ("drops" if mode == "up" else "adds", line.strip()[:120]))
             continue
         pool.remove(twin)
-        new, old = (line, twin) if mode == "down" else (twin, line)
-        if any((n > o) if mode == "down" else (n < o) for n, o in zip(numbers(new), numbers(old))):
-            verb = "raises" if mode == "down" else "lowers"
+        new, old = (twin, line) if mode == "up" else (line, twin)
+        if any((n < o) if mode == "up" else (n > o) for n, o in zip(numbers(new), numbers(old))):
+            verb = "lowers" if mode == "up" else "raises"
             out.append("%s `%s` to `%s`" % (verb, old.strip()[:80], new.strip()[:80]))
     return out
 
@@ -159,7 +162,7 @@ def holds(mb, head, rules):
             out.append("deletes %s, a listed %s file" % (path, mode))
         elif mode:
             found = ratchet(mode, *changed_lines(mb, head, path))
-            out += ["%s: %s (%s file)" % (path, r, "an up" if mode == "up" else "a down") for r in found[:SHOWN]]
+            out += ["%s: %s (%s %s file)" % (path, r, "an" if mode == "up" else "a", mode) for r in found[:SHOWN]]
             if len(found) > SHOWN:
                 out.append("%s: and %d more such lines" % (path, len(found) - SHOWN))
         if path.startswith(WORKFLOW_DIRS) and path.endswith((".yml", ".yaml")) and mode != "edit":

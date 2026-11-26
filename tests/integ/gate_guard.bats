@@ -158,6 +158,19 @@ check() { python3 "$GG" check "$@" main HEAD; }
   assert_output --partial 'drops the line `--strict` (an up file)'
 }
 
+@test "a max file passes a new key and a lowered number, and holds a raised one" {
+  printf '%s\n' 'max tests/budgets.json' >> .github/gate-files
+  printf '%s\n' '{' '  "linux": 1850,' '  "mac": 1900' '}' > tests/budgets.json && commit seed
+  git checkout -q main && git merge -q --ff-only pr && git checkout -q -b pr2
+  printf '%s\n' '{' '  "linux": 1800,' '  "mac": 1900,' '  "server": 950' '}' > tests/budgets.json && commit tighten
+  run check --labels ''
+  assert_success
+  git reset -q --hard main && sed -i 's/1850/2050/' tests/budgets.json && commit raise
+  run check --labels ''
+  assert_failure 1
+  assert_output --partial 'raises `"linux": 1850,` to `"linux": 2050,` (a max file)'
+}
+
 @test "a JSON baseline that drops its last entry passes, though the comma moves off the line before" {
   printf '%s\n' '[' '  "a",' '  "b"' ']' > tests/baseline.txt && commit seed
   git checkout -q main && git merge -q --ff-only pr && git checkout -q -b pr2
