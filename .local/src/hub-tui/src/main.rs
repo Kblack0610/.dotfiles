@@ -924,7 +924,10 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     if tab == Some(Tab::Projects) {
         let sys = hub_core::session_actions::System;
         a.boards = Some(app::Boards::read(&a.files, None));
-        a.tasks = Some(hub_core::sheet_view::feed(&sys));
+        // The feed joins the queue read above; `feed` would read the queue a second time, about
+        // 4s of every Prefix+p preview move (ar-1140).
+        let q = a.queue.as_ref().expect("read above for Projects");
+        a.tasks = Some(hub_core::sheet_view::feed_with(&sys, q));
         a.projects = Some(projtab::load(&sys));
         a.tab = Tab::Projects;
         // `--tab 'projects <name>'` prints that project's opened card, its page read here, over

@@ -7697,11 +7697,12 @@ cmd_canary() {
 # usage: the verb list at the top of this file, through the line before its State note
 usage() { awk 'NR > 1 { if (/^# State is/) exit; print }' "$0"; }
 
-# epic_projects -> one JSON line per project with its roadmap: {name, profile, dir, rm, ideas,
-# briefs}. A project whose roadmap cannot be read is left out and named on stderr.
+# epic_projects [project] -> one JSON line per project with its roadmap: {name, profile, dir, rm,
+# ideas, briefs}, only the named one when given. A project whose roadmap cannot be read is left out
+# and named on stderr.
 epic_projects() {
   local stats name profile dir ideas briefs
-  stats=$(bench_read $BENCH_PROJECTS_CMD 2>/dev/null | jq -ce 'arrays') || return 1
+  stats=$(bench_read $BENCH_PROJECTS_CMD 2>/dev/null | jq -ce --arg p "${1:-}" 'arrays | if $p == "" then . else map(select(.name == $p)) end') || return 1
   while IFS=$'\t' read -r name profile dir; do
     ideas=$(grep -c '^- \[ \]' "$dir/ideas.md" 2>/dev/null) || ideas=0
     briefs=$(for f in "$dir"/docs/briefs/*.md; do
@@ -7721,7 +7722,7 @@ epic_scores() {
   for f in "$BENCH_OUTCOMES_DIR"/*/epics/scores.jsonl; do [ -s "$f" ] && cat "$f"; done
 }
 
-# epics_json <now> -> one object: per project its flow counts, unlinked lists, ETA accuracy and
+# epics_json <now> [project] -> one object: per project (only the named one when given) its flow counts, unlinked lists, ETA accuracy and
 # epics; per epic its brief, plans and phases, leaf rows, items, PRs, the derived step, an ETA
 # for open work, the newest frozen baseline, on track or behind, and its score once landed.
 # An open leaf whose item is on the forecast takes that item's end; the rest (the open leaves
@@ -7729,8 +7730,9 @@ epic_scores() {
 # after another, after the agent queue drains, at the repo's calibrated phase pace.
 epics_json() {
   local t="$1" pj items active plans fc=null map=/dev/null
-  pj=$(epic_projects | jq -cs .) || return 1
-  [ "$pj" != "[]" ] || { say "epics: no project could be read"; return 1; }
+  pj=$(epic_projects "${2:-}" | jq -cs .) || return 1
+  # one project asked for and not listed is an empty chain list, which the caller names
+  [ "$pj" != "[]" ] || [ -n "${2:-}" ] || { say "epics: no project could be read"; return 1; }
   items=$($BENCH_ALL_ITEMS_CMD 2>/dev/null | jq -cs .) || { say "epics: the agent queue could not be read"; items='[]'; }
   active=$(jq -c '.[] | select(.state != "done")' <<<"$items")
   plans=$(epic_plans | jq -cs .)
@@ -7871,8 +7873,7 @@ cmd_epics() {
       *) say "usage: fleet-bench epics [--json] [--project P]"; return 2 ;;
     esac
   done
-  ej=$(epics_json "$(now)") || return 1
-  [ -z "$proj" ] || ej=$(jq -c --arg p "$proj" '.projects |= map(select(.project == $p))' <<<"$ej")
+  ej=$(epics_json "$(now)" "$proj") || return 1
   if [ "$json" = 1 ]; then printf '%s\n' "$ej"; return 0; fi
   jq -r "$JQ_LIB"'
     def cut($n): if length > $n then .[:$n - 3] + "..." else . end;
