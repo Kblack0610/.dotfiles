@@ -328,9 +328,13 @@ _fh_ssh() {
   # ServerAlive ends a link that went half-open mid-command (a laptop asleep) in about two timeouts.
   # LANG: a tmux client with no UTF-8 locale prints a -F format's tabs as `_`, so agent-panel parsed
   # no pane and the worker panel read razer-laptop as empty, and an attach draws every glyph as `_`.
+  # Forward queue ownership through the same quoting as command arguments.
+  local identity=()
+  [ -z "${CLAUDE_CODE_SESSION_ID:-}" ] || identity+=("CLAUDE_CODE_SESSION_ID=$CLAUDE_CODE_SESSION_ID")
+  [ -z "${AGENT_QUEUE_ITEM:-}" ] || identity+=("AGENT_QUEUE_ITEM=$AGENT_QUEUE_ITEM")
   # shellcheck disable=SC2016 # $HOME, $PATH and $LANG are the remote shell's
   ssh $n $tty -o BatchMode=yes -o ConnectTimeout="$FLEET_SSH_TIMEOUT" -o ServerAliveInterval="$FLEET_SSH_TIMEOUT" -o ServerAliveCountMax=2 "${opts[@]}" "$dest" \
-    'PATH="$HOME/.local/bin:$PATH" LANG="${LANG:-C.UTF-8}" exec env' "$(_fh_sq "$@")"
+    'PATH="$HOME/.local/bin:$PATH" LANG="${LANG:-C.UTF-8}" exec env' "$(_fh_sq "${identity[@]}" "$@")"
 }
 
 # _fh_sq <args...> -> each argument in POSIX single quotes, space-separated, which sh, bash and zsh
