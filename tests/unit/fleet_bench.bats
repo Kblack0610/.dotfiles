@@ -2644,6 +2644,27 @@ fix_item() {
   assert_output 0
 }
 
+# 2026-11-25 (ar-6265): dispatch moved the board-chain check row to the sheet for a person; board_upsert left
+# it there, but triage_twins read the key as filed and dropped the sheet row, so the next pass filed it again.
+@test "triage: a red whose row dispatch moved to the sheet keeps that row, with no agent row filed and no sheet drop (ar-6265)" {
+  log_triage_setup
+  watch spend TRIP -25200 high
+  route 'watch.: spend' alert - 'the spend watch pages on its own'
+  printf 'board.md\t9\t%s\t- [ ] %s (agent row ar-77)\n' 'check(watch): spend tripped since 2026-11-01, expected: x' 'check(watch): spend tripped since 2026-11-01, expected: x' > "$BOARD.agent-runtime"
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial 'open on the human sheet, left there'
+  # the pass files other causes (the alpha log errors), so only this key's writes are counted
+  run grep -c -- '--agent add check(watch): spend' "$NLOG"
+  assert_output 0
+  run grep -c ' drop check(watch): spend' "$NLOG"
+  assert_output 0
+  run grep -c 'spend tripped since' "$BOARD.agent-runtime"
+  assert_output 1
+  run grep -c 'spend tripped since' "$BOARD"
+  assert_output 0
+}
+
 @test "triage: a watch whose route moved to the human's sheet drops its agent-board row and files one on the sheet" {
   log_triage_setup
   watch puck TRIP -25200 high
