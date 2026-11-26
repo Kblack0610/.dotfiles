@@ -2399,7 +2399,8 @@ pub fn reopen(
                 "ptask",
                 &format!("{verb} {id} in {} ({name}): {why}", from.display()),
             );
-            let ev = crate::ingest::Event::row("reopened", name, "", lane.name(), row);
+            let mut ev = crate::ingest::Event::row("reopened", name, "", lane.name(), row);
+            ev.why = Some(why.to_string());
             crate::ingest::record(p, &ev);
             println!("reopened {}", row.trim());
         };
@@ -5538,6 +5539,13 @@ Version: v0.0.1
             reopen(&p, &log, "demo", "dm-4", "wrong PR", Lane::Agent).unwrap(),
             0,
             "an archived row reopens on its own lane"
+        );
+        let events = fs::read_to_string(crate::ingest::path(&p)).unwrap_or_default();
+        assert!(
+            events.lines().any(|l| l.contains("\"reopened\"")
+                && l.contains("\"dm-2\"")
+                && l.contains("\"why\":\"wrong PR\"")),
+            "the reopen event keeps its why for `notes log --id`: {events}"
         );
         let board = fs::read_to_string(dir.join("agent/README.md")).unwrap();
         assert_eq!(
