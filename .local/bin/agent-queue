@@ -3832,7 +3832,7 @@ cancel_stamp() {
 # its watch reads OK, the check agent-land's watch_gate runs (lib/watch-item.sh), so a close by hand
 # cannot say a red is gone while it still trips (ar-2550 did, ar-5414). Run before the queue lock: a
 # probe can take a while. A PR that fixed one KPI of a many-KPI watch leaves the item in review. A
-# watch routed to alert or owned: is exempt (watch_route_owned); the exemption and a skipped probe (no
+# watch routed to alert or owned: is exempt (watch_route_owned), before any probe; one quarantined under an owner is probed, and watch_probe says the trip is quarantined and lets the close through, though cause_tries still reads that close as a try, not the owner's. The exemption and a skipped probe (no
 # loop here, a watch not known here) are said on stderr. A busy loop lock exits LOCK_BUSY, and a
 # watch that still trips exits AQ_EX_WATCH_OPEN, which fleet-dispatch reap reads by its code.
 AQ_EX_WATCH_OPEN=6
