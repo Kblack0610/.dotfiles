@@ -785,6 +785,44 @@ impl<'a> Graph<'a> {
         h
     }
 
+    /// Each Deployment recorded since `since` that names a run of a repo the ledger holds and the
+    /// ledger lacks.
+    fn unrecorded_runs(&self, runs: &[Run], since: i64) -> Vec<String> {
+        let mut out = vec![];
+        let ran: HashSet<(String, u64)> = runs.iter().map(|r| (repo_key(&r.repo), r.id)).collect();
+        let repos: HashSet<&str> = ran.iter().map(|(r, _)| r.as_str()).collect();
+        // The ledger keeps a run by when it was created, and a Deployment can be recorded
+        // long after its run (a backfill). A run older than the oldest its repo's ledger
+        // holds has aged out, not gone missing, but only while that oldest run sits at the
+        // window's edge: a ledger that starts later was truncated or never synced, a gap.
+        // Run ids rise with time within a repo on either forge (a Forgejo id is per repo).
+        let mut oldest: HashMap<String, (u64, i64)> = HashMap::new();
+        for r in runs {
+            let at = crate::fleet::ts(&r.created_at).unwrap_or(i64::MAX);
+            let o = oldest.entry(repo_key(&r.repo)).or_insert((r.id, at));
+            if r.id < o.0 {
+                *o = (r.id, at);
+            }
+        }
+        for r in self.i.channels {
+            for d in r.deploys.history.iter().filter(|d| d.at >= since) {
+                let Some(run) = d.url.as_deref().and_then(run_of) else {
+                    continue;
+                };
+                let aged = oldest
+                    .get(&run.0)
+                    .is_some_and(|&(id, at)| run.1 < id && at - since <= EDGE_SECS);
+                if repos.contains(run.0.as_str()) && !ran.contains(&run) && !aged {
+                    out.push(format!(
+                        "{} {}: deploy {} names run {}#{} the runs ledger lacks",
+                        r.project, r.id, d.version, run.0, run.1
+                    ));
+                }
+            }
+        }
+        out
+    }
+
     /// Where the stores disagree, one line each, sorted: what `hub releases check` prints.
     /// Inside the ledger's window: a PR an item or a tag names that the store lacks (in a repo
     /// the store holds), and a Deployment naming a run of a repo the ledger holds that the
@@ -892,38 +930,7 @@ impl<'a> Graph<'a> {
             }
         }
         if let Some(runs) = f.runs {
-            let ran: HashSet<(String, u64)> =
-                runs.iter().map(|r| (repo_key(&r.repo), r.id)).collect();
-            let repos: HashSet<&str> = ran.iter().map(|(r, _)| r.as_str()).collect();
-            // The ledger keeps a run by when it was created, and a Deployment can be recorded
-            // long after its run (a backfill). A run older than the oldest its repo's ledger
-            // holds has aged out, not gone missing, but only while that oldest run sits at the
-            // window's edge: a ledger that starts later was truncated or never synced, a gap.
-            // Run ids rise with time within a repo on either forge (a Forgejo id is per repo).
-            let mut oldest: HashMap<String, (u64, i64)> = HashMap::new();
-            for r in runs {
-                let at = crate::fleet::ts(&r.created_at).unwrap_or(i64::MAX);
-                let o = oldest.entry(repo_key(&r.repo)).or_insert((r.id, at));
-                if r.id < o.0 {
-                    *o = (r.id, at);
-                }
-            }
-            for r in self.i.channels {
-                for d in r.deploys.history.iter().filter(|d| d.at >= since) {
-                    let Some(run) = d.url.as_deref().and_then(run_of) else {
-                        continue;
-                    };
-                    let aged = oldest
-                        .get(&run.0)
-                        .is_some_and(|&(id, at)| run.1 < id && at - since <= EDGE_SECS);
-                    if repos.contains(run.0.as_str()) && !ran.contains(&run) && !aged {
-                        out.push(format!(
-                            "{} {}: deploy {} names run {}#{} the runs ledger lacks",
-                            r.project, r.id, d.version, run.0, run.1
-                        ));
-                    }
-                }
-            }
+            out.extend(self.unrecorded_runs(runs, since));
         }
         if let Some(links) = f.links {
             out.extend(self.check_links(links, f, now));
