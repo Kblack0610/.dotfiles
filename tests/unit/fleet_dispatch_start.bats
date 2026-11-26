@@ -1371,7 +1371,7 @@ trainee_start_ready() {
   w="$SANDBOX/wt4" && git -C "$m" worktree add -q -b game-c "$w" 2>/dev/null; printf 'k\n' > "$w/menu.txt"
   : > "$NOTES_FIXTURE/calls.log"
   LAND_RC=5 land d-crit
-  assert_success; assert_output --partial 'direct-land: #77 is critical, so it waits on a second agent'"'"'s review; d-crit is in review'
+  assert_success; assert_output --partial 'direct-land: #77 waits on a second agent'"'"'s review; d-crit is in review'
   assert_not_called 'gh pr close'
   assert_equal "$(jq -r .state <<<"$(agent-queue show d-crit --json)")" review
   # A row no direct run took, and one not running, are no run's tail.

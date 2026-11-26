@@ -1472,7 +1472,7 @@ EOF
   printf '%s\n' README.md .local/lib/judge.sh >"$NOTES_FIXTURE/files"
   run "$LAND" 42 --item crit
   assert_failure 5
-  assert_output --partial 'is critical (the diff touches .local/lib/judge.sh, a Judge authority name in'
+  assert_output --partial 'review (critical: the diff touches .local/lib/judge.sh, a Judge authority name in'
   assert_output --partial 'queued validate-crit-01234567'
   assert_equal "$(merges)" 0
   run agent-queue show validate-crit-01234567 --json
