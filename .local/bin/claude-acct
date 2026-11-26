@@ -1730,9 +1730,10 @@ cmd_room() {
     # ranks behind every paced one, so naming the closest alone hid why a mostly unused week was
     # refused. Only a committed one carries the week clock, which is what refuses it. \x1f, not a
     # tab: read collapses a run of tabs, so an empty field would shift the rest.
-    IFS=$'\x1f' read -r pick pdir pline unread closest cwhy within < <(jq -r '
-        def tail: if .run_out != null then ", runs out \(.run_out | strflocaltime("%a %H:%M")) at this rate"
-                  elif .resets != null then ", lasts to its reset \(.resets | strflocaltime("%a %H:%M"))" else "" end;
+    IFS=$'\x1f' read -r pick pdir pline unread closest cwhy within < <(jq -r --argjson now "${CLAUDE_ACCT_NOW:-$(date +%s)}" '
+        def at: if . - $now > 518400 then strflocaltime("%m-%d %H:%M") else strflocaltime("%a %H:%M") end;
+        def tail: if .run_out != null then ", runs out \(.run_out | at) at this rate"
+                  elif .resets != null then ", lasts to its reset \(.resets | at)" else "" end;
         ([.[] | select(.room.ok)] | sort_by(.rank) | first) as $p
         | ([.[] | select(.state != "unread")] | sort_by(.rank) | first) as $c
         | [($p.name // ""), ($p.dir // ""),
