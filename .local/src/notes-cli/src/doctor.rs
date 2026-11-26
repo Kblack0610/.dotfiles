@@ -327,7 +327,7 @@ fn file_check(r: &mut Report, label: &str, path: &Path) {
 }
 
 /// A "gap" is a daily note for a date strictly before yesterday that has no
-/// `### date` entry in its month's continuous log. This is the class of bug that
+/// `### date` entry in its month's continuous log, though `summarize` would write one. This is the class of bug that
 /// produced "last month didn't summarize correctly".
 fn check_gaps(r: &mut Report, p: &Profile) {
     if !p.daily.is_dir() {
@@ -358,7 +358,11 @@ fn check_gaps(r: &mut Report, p: &Profile) {
         let logged = fs::read_to_string(&log_path)
             .map(|c| c.contains(&format!("### {stem}")))
             .unwrap_or(false);
-        if !logged {
+        // A day with nothing to record (only carried open tasks) has no entry by design.
+        let has_content = fs::read_to_string(&path)
+            .map(|c| crate::summarize::build_summary(&c, &stem).is_some())
+            .unwrap_or(false);
+        if !logged && has_content {
             gaps.push(stem);
         }
     }
