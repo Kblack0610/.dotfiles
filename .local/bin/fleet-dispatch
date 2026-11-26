@@ -2530,7 +2530,7 @@ ask_stale_skips() {
   while IFS= read -r id; do [ -z "$id" ] || gated[$id]=1; done < <(jq -r '.rows[]? | select(.state == "open" or .state == "doing")
     | (.tags_cased // .tags // [])[] | select(startswith("after/")) | .[6:]' <<<"$board")
   today=${DISPATCH_TODAY:-$(date +%F)}
-  # "<project>\t<key>" -> the day its skip began: the trailing skip records (errors aside) on one line
+  # "<project>\t<key>" -> the day its skip began: the trailing skip records (errors aside) on one line and details
   ages=$( ! [ -f "$VERDICTS" ] || jq -cRn '[inputs | fromjson? | objects | select(.lane == "agent" and .verdict != "error")]
     | group_by([.project, .key]) | map(last as $l | select($l.verdict == "skip")
       | reverse | (map(.verdict == "skip" and .line == $l.line and .dsig == $l.dsig) | index(false) // length) as $k
