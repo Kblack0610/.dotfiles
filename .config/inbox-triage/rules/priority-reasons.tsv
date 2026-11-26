@@ -1,5 +1,6 @@
 outage	urgent	it breaks or blocks the person or production now
 live-exposure	urgent	a security hole or private-data exposure that is live in production now
+quick-fault	urgent	an agent-runtime fault a verify pass found present at main that blocks landing or dispatch, answers a live red, or whose fix is under about 30 lines; only a verify pass gives it, to a row already on the board (notes ptask tag --why): the intake gate refuses it on a new row, which files as runtime-fault
 release-needs	high	the project's next release needs it
 red-main	high	a test or check is red on main, which holds every change's gate
 requested	high	the person asked for it (#requested)
