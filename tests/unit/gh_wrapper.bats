@@ -173,7 +173,7 @@ bucket() { tail -n 1 "$GH_CALLS_DIR"/*.tsv | cut -f2; }
   assert_failure 3
   assert_equal "$(cat "$BATS_TEST_TMPDIR/stdin.log")" body
   run cut -f2- "$GH_CALLS_DIR/$(date +%F).tsv"
-  assert_output $'user\t3\tland-thing\tship\tpr edit 5 -R acme/x --body-file -'
+  assert_output $'user\t3\tland-thing\tship\tpr edit 5 -R acme/x --body-file -\t-'
 }
 
 @test "with GH_REAL unset it runs the next gh on PATH, skipping itself" {
@@ -337,6 +337,38 @@ gh_calls() { { grep -vc '^none|api rate_limit' "$BATS_TEST_TMPDIR/real.log" || t
   run bash -o pipefail "$BATS_TEST_TMPDIR/ci-cost.sh" </dev/null
   assert_equal "$(gh_calls)" 1
   assert_equal "$(bucket)" user:deferred
+}
+
+granted() { tail -n 1 "$GH_CALLS_DIR"/*.tsv | cut -f7; }
+parent() { tail -n 1 "$GH_CALLS_DIR"/*.tsv | cut -f4; }
+
+@test "budget: a read the reserve lets through logs the ancestor that granted it, its parent column unchanged" {
+  echo "40 $(( $(date +%s) + 1800 ))" > "$BATS_TEST_TMPDIR/rate"
+  printf '#!/usr/bin/env bash\ntimeout 10 bash -c '\''"$0" run view 5 -R other/x --json status; :'\'' "%s"\n' "$WRAP" \
+    > "$BATS_TEST_TMPDIR/agent-land"
+  run bash "$BATS_TEST_TMPDIR/agent-land" </dev/null
+  assert_success
+  assert_equal "$(bucket)" user
+  assert_equal "$(granted)" agent-land
+  assert_equal "$(parent)" bash
+  # NEGATIVE CONTROL: the same chain under a script no list names logs a wait, with no granter
+  cp "$BATS_TEST_TMPDIR/agent-land" "$BATS_TEST_TMPDIR/ci-cost.sh"
+  run bash "$BATS_TEST_TMPDIR/ci-cost.sh" </dev/null
+  assert_equal "$(bucket)" user:deferred
+  assert_equal "$(granted)" -
+}
+
+@test "budget: a deferred read and a read above the reserve both log - as the granting ancestor" {
+  echo "40 $(( $(date +%s) + 1800 ))" > "$BATS_TEST_TMPDIR/rate"
+  run -75 as_caller ci-cost.py run view 5 -R other/x --json status
+  assert_equal "$(bucket)" user:deferred
+  assert_equal "$(granted)" -
+  echo "4000 $(( $(date +%s) + 1800 ))" > "$BATS_TEST_TMPDIR/rate"
+  rm -f "$GH_CALLS_DIR/budget" # the shared reading would hold the old 40 for 30 s
+  run as_caller agent-land run view 5 -R other/x --json status
+  assert_success
+  assert_equal "$(bucket)" user
+  assert_equal "$(granted)" -
 }
 
 @test "budget: the human at a terminal never waits" {

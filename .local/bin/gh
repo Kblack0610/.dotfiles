@@ -11,7 +11,10 @@
 # A read the App's token is refused for reruns on the user's.
 # Log: GH_CALLS_DIR/<day>.tsv, epoch, bucket (user | app:<owner> | user:app-error |
 # user:app-denied | env), rc, caller script, $AGENT_QUEUE_ITEM, the command with values
-# redacted. fleet-assess gh_callers reads it. Kept 7 days, readable by you only.
+# redacted, and last the GH_RESERVE_CALLERS ancestor that let the read through under the reserve
+# ('-' when no reserve check ran or none granted, so a deferred row and an above-reserve row both read
+# '-': tell them apart by bucket; rows before ar-3009 have 6 columns).
+# fleet-assess gh_callers reads it. Kept 7 days, readable by you only.
 # Budget: every account spends the user's one REST budget, so the wrapper keeps one shared reading of
 # it (GH_CALLS_DIR/budget, from the free rate_limit call, at most GH_BUDGET_STALE_S old) and, below
 # GH_BUDGET_RESERVE calls left, refuses every read (exit 75, bucket user:deferred) but the human's at
@@ -155,13 +158,15 @@ prog_of() {
 
 caller() { prog_of "$PPID"; }
 
-# reserve_caller: exit 0 when a GH_RESERVE_CALLERS program is above this gh, 1 when none is. Reads
-# /proc, or ps where there is none (macOS, where a script shows as its interpreter, so it waits).
+# reserve_caller: exit 0 when a GH_RESERVE_CALLERS program is above this gh, 1 when none is. The
+# nearest one's name is left in $reserve_by for the call log. Reads /proc, or ps where there is none
+# (macOS, where a script shows as its interpreter, so it waits).
+reserve_by="-"
 reserve_caller() {
   local pid="$PPID" name stat hops=0
   while [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && [ "$hops" -lt 64 ]; do
     name=$(prog_of "$pid")
-    case " $GH_RESERVE_CALLERS " in *" $name "*) return 0 ;; esac
+    case " $GH_RESERVE_CALLERS " in *" $name "*) reserve_by="$name"; return 0 ;; esac
     if [ -r "/proc/$pid/stat" ]; then
       read -r stat <"/proc/$pid/stat" || return 1
       stat="${stat##*) }" # the program name in (...) may hold spaces; the fields after it do not
@@ -200,8 +205,9 @@ log_call() {
     mkdir -p "$dir" && find "$dir" -name '*.tsv' -mtime +7 -delete
   fi
   what=$(redact "$@")
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${EPOCHSECONDS:-$(date +%s)}" "$bucket" "$rc" "$(caller)" \
-    "${AGENT_QUEUE_ITEM:--}" "${what:0:160}" >> "$f"
+  what=${what//[$'\t\n']/ } # a tab in an argument would add a field to the row
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${EPOCHSECONDS:-$(date +%s)}" "$bucket" "$rc" "$(caller)" \
+    "${AGENT_QUEUE_ITEM:--}" "${what:0:160}" "$reserve_by" >> "$f"
 }
 
 # is_read <gh args>: the call only reads (the routable reads, `repo view`, and a GET `gh api`).
