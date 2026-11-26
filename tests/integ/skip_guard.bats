@@ -120,3 +120,18 @@ each() {
   run bash -c "jq -nc '{tool_name:\"Read\", tool_input:{command:\"git commit -n\"}}' | python3 '$GUARD'"
   allowed
 }
+
+@test "applying gate-guard's human-only label, in any case or from a file, is denied; another label, a read and creating the label are allowed" {
+  local label
+  label=$(python3 "$ROOT/.local/bin/gate-guard" label)
+  each denied "$T/wt" "gh pr edit 5 --add-label $label" "gh pr edit 5 --add-label bug,$label" "gh -R o/r pr edit 5 --add-label=$label" \
+    "gh issue edit 5 --add-label $label" "gh pr create --title t --body b --label $label" "gh pr create -l $label -t t -b b" \
+    "gh api repos/o/r/issues/5/labels -f labels[]=$label" "gh api --method POST repos/o/r/issues/5/labels -f \"labels[]=$label\"" \
+    "cd '$T/wt' && gh pr edit 5 --add-label $label" "gh pr edit 5 --add-label ${label^^}" "gh pr create -t t -b b -l$label" \
+    "gh api repos/o/r/issues/5/labels --input /tmp/l.json" "gh api -X POST repos/o/r/issues/5/labels -F labels[]=@f"
+  run at "$T/wt" "gh pr edit 5 --add-label $label"
+  assert_output --partial 'the label only the human applies'
+  each allowed "$T/wt" 'gh pr edit 5 --add-label bug' "gh pr edit 5 --remove-label $label" "gh label create $label --color B60205" \
+    "gh api repos/o/r/issues/5/labels --jq '.[].name'" "gh pr view 5 --json labels" "echo gh pr edit 5 --add-label $label" \
+    'gh pr create -t t -b b -lbug' "gh pr list --label $label"
+}

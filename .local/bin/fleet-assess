@@ -6,6 +6,7 @@
 #   fleet-assess --thermal-probe the same, and a tripped `fleet-thermal` counts as a hold (that watch's probe); a HOLD adds a
 #                                `page:` line, urgent at FLEET_EXTREME_LOAD_X
 #   fleet-assess --github        one line: the GitHub budget, with LOW when it is
+#   fleet-assess --gh-callers [SINCE_EPOCH] gh call log: user:deferred rows by caller, reserve-granted reads by granting ancestor
 #   fleet-assess --gate          one line: slots busy and queued, recent results, branches the gate keeps re-running unmerged
 #   fleet-assess --fleet         every host's busy share and whether each agent host's CPU cap is live, over Prometheus and ssh
 #                                (so only on this flag); exit 1 on OVER or NOT live
@@ -626,6 +627,11 @@ main() {
     gh_budget
     return
   fi
+  if [ "${1:-}" = --gh-callers ]; then
+    [[ "${2:-0}" =~ ^[0-9]+$ ]] || { echo "fleet-assess --gh-callers: SINCE_EPOCH must be digits, got '$2'" >&2; return 2; }
+    gh_callers_report "${2:-0}"
+    return
+  fi
   if [ "${1:-}" = --fleet ]; then
     fleet_lines
     return
@@ -680,6 +686,29 @@ gh_callers() {
   tail -n 20000 "$dir/$(date +%F).tsv" | awk -F'\t' -v since=$(( $(date +%s) - GH_CALLERS_WINDOW_S )) \
     '$1 >= since && $2 ~ /^user/ { n[$4]++ } END { for (c in n) print n[c], c }' |
     sort -rn | awk 'NR <= 3 { printf "%s%s x%s", (NR > 1 ? ", " : ""), $2, $1 }'
+}
+
+# gh_callers_report [since epoch] -> who waited and who spent the reserve, over every day file in the
+# gh wrapper's call log (kept 7 days). Waits: user:deferred rows by caller. Grants: rows the reserve let
+# through, by the GH_RESERVE_CALLERS ancestor that granted it (column 7) and the parent that ran gh.
+# Rows from before the column (6 fields) are counted apart: their granter is unknown, not "-".
+gh_callers_report() {
+  local dir="${GH_CALLS_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/gh-calls}" since="${1:-0}"
+  compgen -G "$dir/*.tsv" >/dev/null || { echo "no gh call log in $dir"; return 0; }
+  cat "$dir"/*.tsv | awk -F'\t' -v since="$since" '
+    $1 < since || $2 !~ /^user/ { next }
+    $2 == "user:deferred" { d[$4]++; nd++ }
+    NF < 7 { old++; next }
+    $7 != "-" { g[$7 " via " $4]++; ng++ }
+    END {
+      printf "user:deferred (waited for the reset): %d\n", nd; fflush()
+      for (c in d) printf "  %d\t%s\n", d[c], c | "sort -rn"
+      close("sort -rn")
+      printf "reserve-granted reads: %d (granting ancestor via parent)\n", ng; fflush()
+      for (c in g) printf "  %d\t%s\n", g[c], c | "sort -rn"
+      close("sort -rn")
+      if (old) printf "user rows without the granting column (logged before the column, ar-3009): %d\n", old
+    }'
 }
 
 # wf_bucket -> "<remaining> <reset epoch>" of the actions/workflows bucket, or nothing when unreadable.
