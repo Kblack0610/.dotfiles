@@ -102,6 +102,19 @@ setup() {
   assert_output '5'
 }
 
+# A landing verdict is the outcome agent-queue stamps at each close (OUTCOME_JQ): a reader that judges
+# "ok with a PR" itself drifts from it (canary items, kind exits, unrated ends), and each of
+# fleet-bench, agent-land, credit-backfill and day-log once did (ar-5433).
+@test "no reader outside agent-queue judges landed by its own ok-with-a-PR predicate" {
+  local pat='status"?\)? *== *"ok"[^|;]{0,40}[."(]pr\b|\.pr\b[^|;]{0,40}status *== *"ok"|get\("status"\) *== *"ok".{0,40}"pr"'
+  run git -C "$REPO_ROOT" grep -nIE "$pat" -- .local/bin .local/lib .local/src ':!.local/bin/agent-queue'
+  assert_failure 1
+  assert_output ''
+  # NEGATIVE CONTROL: the pattern finds the one rule it allows
+  run grep -cE "$pat" "$REPO_ROOT/.local/bin/agent-queue"
+  assert_output 1
+}
+
 # The picker reads a test's dependencies from the names in it, and a directory only as
 # `<dir>/`. A recursive grep, find, rg, git grep or git ls-files over $REPO_ROOT that names no
 # such directory depends on files the picker cannot see, so it belongs in this file.

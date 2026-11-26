@@ -478,6 +478,13 @@ pub(crate) fn add_via(
         return Ok(0);
     }
     if refuse_twin(&path, &content, text) {
+        // A human's want that joins an open row must still mark it, and the ingest record must say whose
+        // words it is: dropped here the row counted against the project share (ar-6060).
+        if want.is_some_and(crate::window::human_channel) && lane == Lane::Agent {
+            if let Err(e) = stamp_twin_requested(p, &path, &content, text, name, lane, want) {
+                eprintln!("could not mark the open row #requested: {e}");
+            }
+        }
         return Ok(3);
     }
     let mut block = new_rows(
@@ -514,14 +521,10 @@ pub(crate) fn add_via(
         refuse_unknown_system(text, &canon, systems)?;
     }
     let mut checked = Vec::new();
+    if let Some(rc) = intake_refusal(p, &canon, &block[0], writer, lane, want.is_some())? {
+        return Ok(rc);
+    }
     if writer.self_checks() {
-        // The gate first: a row it refuses needs no shortlist review.
-        if lane == Lane::Agent {
-            if let Some(why) = crate::gate::refusal(&canon, &block[0], want.is_some())? {
-                eprintln!("{why}");
-                return Ok(crate::gate::EXIT_GATED);
-            }
-        }
         match self_check(p, name, text, &block[0], &writer.checked)? {
             Ok(shown) => checked = shown,
             Err(rc) => return Ok(rc),
@@ -576,6 +579,48 @@ fn twin_id(content: &str, text: &str) -> Option<String> {
         .and_then(md::row_id)
         .or_else(|| near_twin(content, text).and_then(md::row_id))
         .or_else(|| pr_twin(content, text).and_then(|(l, _)| md::row_id(l)))
+}
+
+/// Put `#requested` on the open row of `content` that `text` twins (the row [`refuse_twin`] just
+/// named), so a `--want` that joins it is not lost, and record the join as a `dup` event carrying the
+/// channel, as `--dup` does: dispatch reads whose words the mark is from that record (`asker_map`).
+/// No-op when the row has no id. Callers treat a failure as a warning: the add still exits 3.
+fn stamp_twin_requested(
+    p: &Profile,
+    path: &Path,
+    content: &str,
+    text: &str,
+    name: &str,
+    lane: Lane,
+    want: Option<&str>,
+) -> Result<()> {
+    let Some(id) = twin_id(content, text) else {
+        return Ok(());
+    };
+    let mut twin = None;
+    let new: String = content
+        .split_inclusive('\n')
+        .map(|raw| {
+            let line = raw.trim_end_matches('\n');
+            let open =
+                line.trim_start().starts_with("- [ ]") || line.trim_start().starts_with("- [/]");
+            if twin.is_none() && open && md::row_id(line).as_deref() == Some(id.as_str()) {
+                twin = Some(line.to_string());
+                return format!("{}{}", md::add_tag(line, WANT_TAG), &raw[line.len()..]);
+            }
+            raw.to_string()
+        })
+        .collect();
+    let Some(twin) = twin else {
+        return Ok(());
+    };
+    if new != content {
+        write_sheet(path, &new)?;
+    }
+    let mut ev = crate::ingest::Event::row("dup", name, "", lane.name(), &twin);
+    ev.want = want.map(str::to_string);
+    crate::ingest::record(p, &ev);
+    Ok(())
 }
 
 /// Does `text` twin an open row of `content` (the sheet at `path`): the same words, a near twin, or a
@@ -986,7 +1031,7 @@ const TRIAGE: &str = "inbox-triage";
 /// A name is the process's, never the caller's word: `--origin <name>` counts only when it is
 /// the runner's own `AGENTCTL_NAME` (with no session in the environment) or the parent process
 /// runs a script of that basename, and `--origin plan` only when that parent is `agent-queue`
-/// filing a plan's row (`AQ_ITEM_PLAN` or `AQ_FILE_ORIGIN` set, its `file_story`).
+/// filing a plan's phase row (`AQ_ITEM_PLAN` set, its `file_story`).
 pub struct Writer {
     /// A queue item, a session or an agentctl runner is writing (the environment names one).
     automated: bool,
@@ -1011,7 +1056,7 @@ impl Writer {
     /// ids it says it checked (`ptask add --checked`).
     pub fn from_env(origin: Option<&str>, checked: Vec<String>) -> Writer {
         let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
-        let plan = env("AQ_ITEM_PLAN").is_some() || env("AQ_FILE_ORIGIN").is_some();
+        let plan = env("AQ_ITEM_PLAN").is_some();
         let (item, session) = (env("AGENT_QUEUE_ITEM"), env("CLAUDE_CODE_SESSION_ID"));
         let runner = env("AGENTCTL_NAME");
         // Only an automated writer's --origin needs vouching, so only then is the parent read.
@@ -1083,7 +1128,8 @@ impl Writer {
     }
 
     /// A person at a terminal: the one writer that may move, reprioritize or relock an open
-    /// sprint's rows (`window::refuse_held`, `window::refuse_relock`).
+    /// sprint's rows, or move a queued one's (`window::refuse_held`, `window::refuse_queued`,
+    /// `window::refuse_relock`).
     pub(crate) fn is_person(&self) -> bool {
         self.person
     }
@@ -1103,6 +1149,13 @@ impl Writer {
     /// A hand session that is no direct filer: it runs [`self_check`] before it writes.
     fn self_checks(&self) -> bool {
         self.hand && !self.direct()
+    }
+
+    /// Whether the daily intake cap counts this writer's agent-lane row: a hand session, a plan's
+    /// phases and a machine filer. Not a person at a terminal (the human's own words), and not
+    /// agent-queue's story row, which mirrors an item already started (`ingest::ORIGIN_STORY`).
+    fn capped(&self) -> bool {
+        !self.person && self.name.as_deref() != Some(crate::ingest::ORIGIN_STORY)
     }
 
     /// A hand session or inbox-triage: the writers whose new epic must name a listed system. A
@@ -1195,21 +1248,59 @@ fn session_line(text: &str) -> bool {
         .any(|t| t.starts_with("from/"))
 }
 
+/// The intake gate's verdict on the one agent row `add_via` is about to write: Some(exit code) when
+/// it refuses (printing why), None when the row goes on to the shortlist check. The evidence gate
+/// comes first, for the writers that self-check (a row it refuses needs no shortlist review). The
+/// daily cap holds every writer that files a new row on any agent board, a plan's phases and the
+/// machine filers too; a twin was refused earlier, so only a row that would be new counts.
+fn intake_refusal(
+    p: &Profile,
+    canon: &str,
+    row: &str,
+    writer: &Writer,
+    lane: Lane,
+    want: bool,
+) -> Result<Option<i32>> {
+    if lane != Lane::Agent {
+        return Ok(None);
+    }
+    let gate = if writer.self_checks() {
+        crate::gate::refusal(canon, row, want)?
+    } else {
+        None
+    };
+    let why = match gate {
+        Some(why) => Some(why),
+        None if writer.capped() => crate::gate::cap_refusal(p, canon, row, want, 0)?,
+        None => None,
+    };
+    Ok(why.map(|why| {
+        eprintln!("{why}");
+        crate::gate::EXIT_GATED
+    }))
+}
+
 /// Why the intake gate refuses the rows `block` a filing of `line` would write on `dest`, or None.
 /// Only a session's follow-up on an agent board is gated; the person's words never are.
 fn followup_refusal(
+    p: &Profile,
     dest: &Path,
     lane: Lane,
-    line: &str,
+    line: &sheet::InboxLine,
     block: &[String],
     how: &Filing,
 ) -> Result<Option<String>> {
-    if lane != Lane::Agent || !session_line(line) {
+    if lane != Lane::Agent || !session_line(&line.text) {
         return Ok(None);
     }
     let canon = dest.file_name().unwrap_or_default().to_string_lossy();
-    for row in block.iter().filter(|l| md::is_open_task(l)) {
+    let rows = block.iter().filter(|l| md::is_open_task(l));
+    for (i, row) in rows.enumerate() {
         if let Some(why) = crate::gate::refusal(&canon, row, how.want.is_some())? {
+            return Ok(Some(why));
+        }
+        // The rows this filing already wrote count against the day too.
+        if let Some(why) = crate::gate::cap_refusal(p, &canon, row, how.want.is_some(), i)? {
             return Ok(Some(why));
         }
     }
@@ -1578,7 +1669,7 @@ fn file_via(
                 }
             }
             // On the rows a standing link leaves: the call above re-enters here with them.
-            if let Some(why) = followup_refusal(&dest_proj, dest_lane, &line.text, &block, how)? {
+            if let Some(why) = followup_refusal(p, &dest_proj, dest_lane, &line, &block, how)? {
                 eprintln!("{why}");
                 return Ok(crate::gate::EXIT_GATED);
             }
@@ -1619,7 +1710,7 @@ fn file_via(
     let mut ev = crate::ingest::Event::new(
         if dup_id.is_some() { "dup" } else { "filed" },
         name,
-        dest_name,
+        &dest_proj.file_name().unwrap_or_default().to_string_lossy(),
         &line.text,
     );
     ev.lane = dest_lane.name().into();
@@ -1897,6 +1988,7 @@ pub fn move_task(
     if Some(to) != cur {
         crate::window::refuse_held(&proj, cur, &was, writer, "moving")?;
     }
+    crate::window::refuse_queued(&proj, &was, writer, "moving")?;
     write_sheet(&path, &new)?;
     let to_s = projects::fmt_version(to);
     log.info(
@@ -1976,13 +2068,15 @@ pub fn move_to_project(
             refuse_epic_on_board(lane, &[&row])?;
         }
         let what = format!("moving to {dest}");
+        let src_proj = projects::project_dir(p, src)?;
         crate::window::refuse_held(
-            &projects::project_dir(p, src)?,
+            &src_proj,
             version_in(&src_dir, &src_content),
             &row,
             writer,
             &what,
         )?;
+        crate::window::refuse_queued(&src_proj, &row, writer, &what)?;
     }
     let held = row_ids(&projects::project_dir(p, dest)?);
     let Some(moved) = transfer(&src_sheet, &dest_sheet, pick, to, &held)? else {
@@ -2171,6 +2265,7 @@ pub fn step(
     if to != cur {
         crate::window::refuse_held(&proj, Some(cur), &line, writer, &format!("{dir_word} of"))?;
     }
+    crate::window::refuse_queued(&proj, &line, writer, &format!("{dir_word} of"))?;
 
     let (retagged, note) = project_sweep::retag(&line, to, to == cur);
     let Some((new, _)) =
@@ -2358,7 +2453,8 @@ pub fn reopen(
                 "ptask",
                 &format!("{verb} {id} in {} ({name}): {why}", from.display()),
             );
-            let ev = crate::ingest::Event::row("reopened", name, "", lane.name(), row);
+            let mut ev = crate::ingest::Event::row("reopened", name, "", lane.name(), row);
+            ev.why = crate::ingest::set(Some(why));
             crate::ingest::record(p, &ev);
             println!("reopened {}", row.trim());
         };
@@ -2609,6 +2705,16 @@ pub fn drop(
     children: Option<&Children>,
 ) -> Result<i32> {
     let stamp = drop_stamp(why, dup)?;
+    // Read before any write, so the report cannot fail once the row is closed.
+    let waiters = match (dup, sheet_and_content(p, name, lane)?) {
+        (None, Some((_, content))) => {
+            match find_open(&content, pick).and_then(|r| md::row_id(&r)) {
+                Some(id) => waiter_notes(name, &id, &live_rows_with_lane(p, name)?),
+                None => Vec::new(),
+            }
+        }
+        _ => Vec::new(),
+    };
     // A dup's children carry on under the row it duplicates, unless --children says otherwise.
     let onto = dup.map(|d| Children::Onto(d.trim().to_lowercase()));
     let close = |l: &str| md::add_marker(&closed(l), &stamp);
@@ -2626,6 +2732,11 @@ pub fn drop(
     let (code, matched) = edit(p, log, name, pick, "dropped", Some(&stamp), lane, |l| {
         Some(close(l))
     })?;
+    if matched.is_some() {
+        for w in &waiters {
+            eprintln!("{w}");
+        }
+    }
     let day = chrono::Local::now().date_naive();
     close_spent_parents(
         p,
@@ -2635,6 +2746,43 @@ pub fn drop(
         day,
     )?;
     Ok(code)
+}
+
+/// Every open row on the project's live sheets ([`live_sheets`]), with the lane of its sheet.
+fn live_rows_with_lane(p: &Profile, name: &str) -> Result<Vec<(String, Lane)>> {
+    let mut out = Vec::new();
+    for (path, _, lane) in live_sheets(p, name)? {
+        let content = fs::read_to_string(&path)?;
+        out.extend(
+            md::section_numbered(&content, sheet::TASKS)
+                .into_iter()
+                .filter(|(_, l)| md::is_open_task(l))
+                .map(|(_, l)| (l.to_string(), lane)),
+        );
+    }
+    Ok(out)
+}
+
+/// One line per open row in `rows` gated `#after/<id>`, for a `--why` drop of `id`: a dropped row
+/// never closes done, so that gate never clears, and only a person knows whether the waiter's work
+/// still stands. Each line names the command that frees it on its own lane. A dup needs none:
+/// `agent-queue gate` follows a dup-closed row to the row it was folded into. Why: ar-2856 was
+/// dropped on 2026-11-25 while ar-3032 waited on it, and queue-starved paged on the dead gate
+/// (ar-5747).
+fn waiter_notes(name: &str, id: &str, rows: &[(String, Lane)]) -> Vec<String> {
+    let gate = format!("after/{id}");
+    rows.iter()
+        .filter(|(l, _)| md::row_id(l).as_deref() != Some(id))
+        .filter(|(l, _)| md::find_hashtags(l).contains(&gate))
+        .map(|(l, lane)| {
+            let wid = md::row_id(l).unwrap_or_else(|| md::task_text(l));
+            let flag = if *lane == Lane::Agent { " --agent" } else { "" };
+            format!(
+                "{wid} waits on {id} with #{gate}, which never clears now that {id} is dropped: \
+                 notes ptask {name}{flag} tag --remove {gate} {wid}, or drop {wid} if its work went with {id}"
+            )
+        })
+        .collect()
 }
 
 /// Refuse an epic written to the agent board: the human owns epics, and dispatch would start
@@ -4140,15 +4288,18 @@ fn refuse_rewrite(
         return Ok(());
     };
     let after = md::one_priority(&rewrite(&line));
-    if md::task_priority(&after) == md::task_priority(&line)
-        && sheet::target(&after) == sheet::target(&line)
-    {
+    let moved = sheet::target(&after) != sheet::target(&line);
+    if !moved && md::task_priority(&after) == md::task_priority(&line) {
         return Ok(());
     }
     let proj = projects::project_dir(p, name)?;
     let cur = version_in(&lane.dir(&proj), &content);
     let what = "changing the priority or version of";
-    crate::window::refuse_held(&proj, cur, &line, writer, what)
+    crate::window::refuse_held(&proj, cur, &line, writer, what)?;
+    if moved {
+        crate::window::refuse_queued(&proj, &line, writer, "changing the version of")?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -5446,6 +5597,13 @@ Version: v0.0.1
             0,
             "an archived row reopens on its own lane"
         );
+        let events = fs::read_to_string(crate::ingest::path(&p)).unwrap_or_default();
+        assert!(
+            events.lines().any(|l| l.contains("\"reopened\"")
+                && l.contains("\"dm-2\"")
+                && l.contains("\"why\":\"wrong PR\"")),
+            "the reopen event keeps its why for `notes log --id`: {events}"
+        );
         let board = fs::read_to_string(dir.join("agent/README.md")).unwrap();
         assert_eq!(
             board,
@@ -6360,6 +6518,97 @@ mod inbox_tests {
         );
     }
 
+    // ar-3941 (2026-11-20): ucp-2743..2764 moved from the queued v0.5.5 to v0.5.6 kept their
+    // place in v0.5.5's snapshot. Only a person moves a queued sprint's committed row out of it.
+    #[test]
+    fn only_a_person_moves_a_row_out_of_a_queued_sprint() {
+        let v = vault(
+            "queued",
+            "",
+            "- [ ] fix(a): queued row #v0.1.1 <!-- id:sc-1 -->\n\
+             - [ ] fix(b): uncommitted row #v0.1.1 <!-- id:sc-2 -->\n",
+        );
+        let dir = v.root.join("projects/scratch");
+        fs::create_dir_all(dir.join("sprints")).unwrap();
+        fs::write(
+            crate::window::sprint_path(&dir, (0, 1, 1)),
+            "# scratch v0.1.1 sprint\n\n## Committed\n<!-- window: opened=2026-11-20 due=2026-11-21 cut=2026-11-21T04:00 start=2026-11-20T04:00 -->\n- fix(a): queued row #v0.1.1 <!-- id:sc-1 -->\n<!-- /window -->\n",
+        )
+        .unwrap();
+        assert!(crate::window::read(&dir, (0, 1, 1)).is_some());
+        let argv = vec!["/bin/zsh".to_string()];
+        let item = Writer::of(
+            Some("q1".to_string()),
+            None,
+            None,
+            None,
+            &argv,
+            false,
+            Vec::new(),
+        );
+        let person = Writer::of(None, None, None, None, &argv, false, Vec::new());
+        let id = |i: &str| Pick::Id(i.to_string());
+        let held = id("sc-1");
+        let before = v.read();
+        let refused = |r: Result<i32>| {
+            let e = r.expect_err("refused").to_string();
+            assert!(
+                e.contains("queued v0.1.1 sprint") && e.contains("relock"),
+                "{e}"
+            );
+        };
+        let mv = |pick: &Pick, to: &str, w: &Writer| {
+            move_task(&v.p, &v.log, "scratch", pick, to, Lane::Human, w)
+        };
+        refused(mv(&held, "v0.1.2", &item));
+        refused(mv(&held, "v0.1.0", &item));
+        refused(step(&v.p, &v.log, "scratch", &held, 1, Lane::Human, &item));
+        refused(step(&v.p, &v.log, "scratch", &held, -1, Lane::Human, &item));
+        let words = retext(
+            &v.p,
+            &v.log,
+            "scratch",
+            &held,
+            Some("fix(a): queued row #v0.1.2"),
+            None,
+            &[],
+            false,
+            None,
+            Lane::Human,
+            &item,
+        );
+        refused(words);
+        let other = v.root.join("projects/other");
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join("summary.md"), "# other\n").unwrap();
+        fs::write(
+            other.join("README.md"),
+            "# other\nVersion: v0.1.0\n\n## Tasks\n",
+        )
+        .unwrap();
+        refused(move_to_project(
+            &v.p,
+            &v.log,
+            "scratch",
+            "other",
+            &held,
+            None,
+            Lane::Human,
+            &item,
+        ));
+        assert_eq!(v.read(), before, "a refusal writes nothing");
+        // A row tagged for the queued version but not in its snapshot moves.
+        assert_eq!(mv(&id("sc-2"), "v0.1.2", &item).unwrap(), 0);
+        // NEGATIVE CONTROL: the person moves the committed row.
+        assert_eq!(mv(&held, "v0.1.2", &person).unwrap(), 0);
+        let s = v.read();
+        assert!(
+            s.lines()
+                .any(|l| l.contains("id:sc-1") && l.contains("#v0.1.2")),
+            "{s}"
+        );
+    }
+
     #[test]
     fn filing_moves_the_line_to_a_typed_row_that_keeps_the_human_words() {
         let v = vault(
@@ -6589,6 +6838,52 @@ mod inbox_tests {
         )
         .unwrap();
         assert_eq!(open_rows(&v.read()), 2, "{}", v.read());
+    }
+
+    #[test]
+    fn a_want_that_joins_an_open_twin_marks_the_twin_requested() {
+        let v = vault("wanttwin", "", "");
+        fs::create_dir_all(v.root.join("projects/scratch/agent")).unwrap();
+        fs::write(
+            v.root.join("projects/scratch/agent/README.md"),
+            "# scratch\n\n## Tasks\n- [ ] fix(audio): the gun sound is off #size/s <!-- id:sc-1 -->\n",
+        )
+        .unwrap();
+        let agent = || {
+            fs::read_to_string(task_sheet(&v.root.join("projects/scratch/agent")).unwrap()).unwrap()
+        };
+        let add_as = |text: &str, want: Option<&str>| {
+            add(
+                &v.p,
+                &v.log,
+                "scratch",
+                text,
+                &[],
+                None,
+                want,
+                Lane::Agent,
+                &Writer::human(),
+            )
+            .unwrap()
+        };
+        // No channel: the twin is refused and left as it is.
+        assert_eq!(add_as("fix(audio): the gun sound is off", None), 3);
+        assert!(!agent().contains("#requested"), "{}", agent());
+        // A want: still refused (exit 3), and the open row now carries the human's mark, once.
+        assert_eq!(add_as("fix(audio): the gun sound is off", Some("human")), 3);
+        assert_eq!(add_as("fix(audio): the gun sound is off", Some("human")), 3);
+        let s = agent();
+        assert_eq!(s.matches("#requested").count(), 1, "{s}");
+        let ing = fs::read_to_string(crate::ingest::path(&v.p)).unwrap_or_default();
+        assert!(
+            ing.contains(r#""action":"dup""#) && ing.contains(r#""id":"sc-1""#),
+            "{ing}"
+        );
+        assert!(
+            s.lines()
+                .any(|l| l.contains("sc-1") && l.contains("#requested")),
+            "{s}"
+        );
     }
 
     #[test]
@@ -7031,6 +7326,73 @@ mod inbox_tests {
         );
     }
 
+    // ar-5747: a dropped row never closes done, so a row gated #after/ on it waits for good. A
+    // --why drop names each waiter with its own lane's command, and leaves every row as it was.
+    #[test]
+    fn a_why_drop_names_each_waiter_with_its_lanes_command() {
+        let rows = |r: &[(&str, Lane)]| -> Vec<(String, Lane)> {
+            r.iter().map(|(l, lane)| (l.to_string(), *lane)).collect()
+        };
+        let notes = waiter_notes(
+            "scratch",
+            "sc-1",
+            &rows(&[
+                (
+                    "- [ ] feat(ui): the menu #after/sc-9 <!-- id:sc-1 -->",
+                    Lane::Agent,
+                ),
+                (
+                    "- [ ] fix(ui): flicker #high #after/SC-1 <!-- id:sc-2 -->",
+                    Lane::Agent,
+                ),
+                (
+                    "- [ ] fix(ui): sound #after/sc-1 <!-- id:sc-3 -->",
+                    Lane::Human,
+                ),
+                (
+                    "- [ ] fix(ui): other #after/sc-10 <!-- id:sc-4 -->",
+                    Lane::Agent,
+                ),
+            ]),
+        );
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert!(
+            notes[0].starts_with("sc-2 waits on sc-1")
+                && notes[0].contains("notes ptask scratch --agent tag --remove after/sc-1 sc-2"),
+            "{}",
+            notes[0]
+        );
+        assert!(
+            notes[1].contains("notes ptask scratch tag --remove after/sc-1 sc-3"),
+            "{}",
+            notes[1]
+        );
+
+        let v = vault(
+            "why-waiters",
+            "",
+            "- [ ] feat(ui): the menu #high <!-- id:sc-1 -->\n\
+             - [ ] fix(ui): menu sound #high #after/sc-1 <!-- id:sc-5 -->\n",
+        );
+        let pick = Pick::Id("sc-1".into());
+        let go = drop(
+            &v.p,
+            &v.log,
+            "scratch",
+            &pick,
+            Some("stale"),
+            None,
+            Lane::Human,
+            None,
+        );
+        assert_eq!(go.unwrap(), 0);
+        assert!(row_of(&v, "sc-1").contains("dropped: stale"));
+        assert!(
+            row_of(&v, "sc-5").contains("#after/sc-1"),
+            "no row is retagged"
+        );
+    }
+
     // NEGATIVE CONTROL: a bare close over open children is refused, naming both ways out.
     #[test]
     fn a_close_over_open_children_names_both_flags_and_drop_closes_every_one() {
@@ -7153,6 +7515,56 @@ mod inbox_tests {
             row_of(&v, "sc-6").starts_with("- [ ]"),
             "an epic closes on its outcome"
         );
+    }
+
+    // ar-5834: a parent with work of its own stays open when its last child closes: a human's
+    // `#requested` row, and rows naming a plan's open phases in title or brief (a brief's
+    // paragraph break included). Prose that merely says "plan" is no such row.
+    #[test]
+    fn a_parent_with_work_of_its_own_stays_open_when_its_last_child_closes() {
+        let v = vault(
+            "own-work",
+            "",
+            "- [ ] chore(ci): finish the plan (6 phases left) #requested #high <!-- id:sc-1 -->\n\
+             - [ ] fix(ci): step 0 #high #of/sc-1 <!-- id:sc-2 -->\n\
+             - [ ] fix(ui): a stuck session (plan wren) #normal <!-- id:sc-3 -->\n\
+             - [ ] fix(ui): phase 2 #normal #of/sc-3 <!-- id:sc-4 -->\n\
+             - [ ] fix(ui): the pause screen #normal <!-- id:sc-5 -->\n\
+             \x20 goal: a calm pause\n\
+             \n\
+             \x20 Run the open phases of the approved plan in order.\n\
+             - [ ] fix(ui): pause blinks #normal #of/sc-5 <!-- id:sc-6 -->\n\
+             - [ ] fix(ui): drop the flag (plan to delete in v2) #normal <!-- id:sc-7 -->\n\
+             - [ ] fix(ui): menu flicker #normal #of/sc-7 <!-- id:sc-8 -->\n\
+             - [ ] feat(ui): the sound #normal <!-- id:sc-9 -->\n\
+             \x20 goal: a quiet menu\n\
+             - [ ] fix(ui): menu sound #normal #of/sc-9 <!-- id:sc-10 -->\n",
+        );
+        for kid in ["sc-2", "sc-4", "sc-6", "sc-8", "sc-10"] {
+            done(
+                &v.p,
+                &v.log,
+                "scratch",
+                &Pick::Id(kid.to_string()),
+                Some("pr:7"),
+                None,
+                None,
+                Lane::Human,
+                None,
+            )
+            .unwrap();
+        }
+        for parent in ["sc-1", "sc-3", "sc-5"] {
+            let row = row_of(&v, parent);
+            assert!(row.starts_with("- [ ]"), "{parent} closed: {row}");
+        }
+        for (parent, kid) in [("sc-7", "sc-8"), ("sc-9", "sc-10")] {
+            let row = row_of(&v, parent);
+            assert!(
+                row.starts_with("- [x]") && row.contains(&format!("children: {kid}")),
+                "{parent} is no row with work of its own: {row}"
+            );
+        }
     }
 
     // From review: an open grandchild under a closed child holds the row open too, a running
