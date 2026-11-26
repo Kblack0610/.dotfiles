@@ -8,6 +8,7 @@
 //!
 //! Config file is read from (first that exists):
 //!   `$NOTES_CONFIG`, `~/.config/notes/config.toml`, `~/.dotfiles/.config/notes/config.toml`.
+//! A unit-test build reads `$NOTES_CONFIG` alone (`config_paths`, ar-4202).
 //! If none exist, a built-in `personal` default is used so the tool works out of the box.
 
 use anyhow::{anyhow, Context, Result};
@@ -77,6 +78,10 @@ struct RawConfig {
     /// list here replaces it whole, and an empty one turns the gate off.
     #[serde(default)]
     intake_gated: Option<Vec<String>>,
+    /// The most new agent rows any project's board takes in a local day ([`intake_daily_cap`],
+    /// `gate.rs`), gated or not. Absent = [`DAILY_CAP`]; 0 turns the cap off.
+    #[serde(default)]
+    intake_daily_cap: Option<u32>,
 }
 
 /// One `[project_type.<type>]` table. Both keys are optional.
@@ -170,6 +175,22 @@ pub fn intake_gated() -> Vec<String> {
         .ok()
         .and_then(|(raw, _)| raw.intake_gated)
         .unwrap_or_else(|| GATED.iter().map(|s| s.to_string()).collect())
+}
+
+/// The new agent rows each project's board takes a local day: the human's 2026-11-25 words, "cap it
+/// very low, i really want to get through our current work before any more comes in", and "lets
+/// make sure rows dont come in aggressively" (every board, not only the gated one). Provisional,
+/// one `rules.jsonl` row (anchor `const DAILY_CAP`).
+const DAILY_CAP: u32 = 10;
+
+/// `intake_daily_cap`: the most new agent rows any project's board takes in a local day
+/// (`gate.rs`), gated or not; the human's own words and urgent reds are never counted against it. The config's
+/// own number when it has one (0 = no cap), else [`DAILY_CAP`].
+pub fn intake_daily_cap() -> u32 {
+    load_raw()
+        .ok()
+        .and_then(|(raw, _)| raw.intake_daily_cap)
+        .unwrap_or(DAILY_CAP)
 }
 
 /// `[release]`: a project's release cadence by stage (`stages.md`, "Versions"). The defaults
@@ -685,6 +706,12 @@ fn config_paths() -> Vec<PathBuf> {
             v.push(expand(&p));
         }
     }
+    // A unit test reads $NOTES_CONFIG alone, as CI does: with this machine's config, a fixture
+    // project named like a live one (`binks`) resolved across the live orgs, and the test ran
+    // `migrate` on the live copy (ar-4202).
+    if cfg!(test) {
+        return v;
+    }
     v.push(home().join(".config/notes/config.toml"));
     v.push(home().join(".dotfiles/.config/notes/config.toml"));
     v
@@ -740,6 +767,7 @@ fn builtin_default() -> RawConfig {
         project_type: HashMap::new(),
         agent_direct_filers: None,
         intake_gated: None,
+        intake_daily_cap: None,
     }
 }
 
@@ -1313,6 +1341,13 @@ mod tests {
         assert_eq!(expand("~/.notes"), PathBuf::from("/home/test/.notes"));
         assert_eq!(expand("/abs/path"), PathBuf::from("/abs/path"));
         assert_eq!(expand("~"), PathBuf::from("/home/test"));
+    }
+
+    #[test]
+    fn a_unit_test_reads_no_machine_config() {
+        // ar-4202: the live config's orgs leaked into fixtures that share a live project's name
+        let set = std::env::var("NOTES_CONFIG").is_ok_and(|c| !c.is_empty());
+        assert_eq!(config_paths().len(), usize::from(set));
     }
 
     #[test]

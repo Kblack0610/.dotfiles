@@ -40,6 +40,7 @@ fn shown(p: &Projects, q: &TableQuery) -> Value {
         errors: p.errors.clone(),
         board_open: p.board_open,
         board_backlog: p.board_backlog,
+        board_7d: p.board_7d,
     });
     out["table"] = json!(table);
     out["focus"] = projects::focus_json(&p.cards);
@@ -123,6 +124,7 @@ mod tests {
             errors: vec!["notes projects failed".into()],
             board_open: Some(7),
             board_backlog: Some(4),
+            board_7d: None,
         }
     }
 

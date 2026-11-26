@@ -397,13 +397,15 @@ world_wt_private() {
 
 # The real tree, not a fixture: one tracked absolute symlink anywhere (a systemd enablement link)
 # aborts the whole `stow --no-folding .` apply_dotfiles runs, so stow deploys nothing at all.
-# Only TRACKED files are copied, so a clone's untracked runtime links cannot fail it.
+# Only TRACKED files are copied, so a clone's untracked runtime links cannot fail it. A sparse
+# checkout's skipped files (S in ls-files -t: CI's fast job leaves the binaries out) are not there.
 @test "stow deploys the real tracked tree with no conflict, .config/hypr included" {
   command -v stow >/dev/null || skip 'stow not installed'
   local src="$BATS_TEST_TMPDIR/tree" dst="$BATS_TEST_TMPDIR/target"
   mkdir -p "$src" "$dst"
   ( set -o pipefail
-    git -C "$REPO_ROOT" ls-files -z | tar -C "$REPO_ROOT" --null --no-recursion -T - -cf - \
+    git -C "$REPO_ROOT" ls-files -z -t | sed -z -n 's/^[^S] //p' \
+      | tar -C "$REPO_ROOT" --null --no-recursion -T - -cf - \
       | tar -xf - -C "$src" ) || fail 'copying the tracked tree failed'
   run stow --no-folding -n -v -d "$src" -t "$dst" .
   assert_success
@@ -411,7 +413,7 @@ world_wt_private() {
   local p
   while IFS= read -r p; do
     assert_output --partial "LINK: $p "
-  done < <(git -C "$REPO_ROOT" ls-files -- .config/hypr)
+  done < <(git -C "$REPO_ROOT" ls-files -t -- .config/hypr | sed -n 's/^[^S] //p')
 }
 
 @test "--missing: --check sees only MISSING, --apply links it and leaves a physical copy alone" {

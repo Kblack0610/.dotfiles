@@ -80,6 +80,46 @@ JSON
   refute_output --partial '!'
 }
 
+@test "a failed run a newer run of the same check superseded reads green (pr-ci.sh, ar-2594)" {
+  # platform#1551: a pull_request edit started a second run on the same head; the old failed
+  # `Task line` stayed in the rollup beside the passing one and the board read red.
+  cat > "$NOTES_FIXTURE/prs.acme-widget" <<'JSON'
+[
+  {"number": 44, "title": "rerun one", "createdAt": "2020-01-01T00:00:00Z",
+   "isDraft": false, "reviewDecision": "APPROVED", "url": "https://x/44",
+   "statusCheckRollup": [
+     {"workflowName": "ci", "name": "Task line", "conclusion": "FAILURE", "status": "COMPLETED",
+      "detailsUrl": "https://github.com/acme/widget/actions/runs/100/job/1"},
+     {"workflowName": "ci", "name": "Task line", "conclusion": "SUCCESS", "status": "COMPLETED",
+      "detailsUrl": "https://github.com/acme/widget/actions/runs/101/job/2"}]}
+]
+JSON
+  run bash -c "'$PR_VIEWER' --list | grep -F 'rerun one'"
+  assert_success
+  . "$REPO_ROOT/.local/src/tmux/panel-palette.sh"
+  assert_output --partial "[$G_OK CI]"
+  refute_output --partial "$G_ATTN"
+}
+
+@test "a failed check reads pending while another check of the PR is still queued (pr-ci.sh)" {
+  # CI_JQ calls a PR red only once every check finished, so a rerun whose jobs have not
+  # expanded yet never flashes red; the cost is that a check stuck QUEUED hides the red.
+  cat > "$NOTES_FIXTURE/prs.acme-widget" <<'JSON'
+[
+  {"number": 45, "title": "half done", "createdAt": "2020-01-01T00:00:00Z",
+   "isDraft": false, "reviewDecision": "APPROVED", "url": "https://x/45",
+   "statusCheckRollup": [
+     {"workflowName": "ci", "name": "lint", "conclusion": "FAILURE", "status": "COMPLETED"},
+     {"workflowName": "ci", "name": "test", "conclusion": null, "status": "QUEUED"}]}
+]
+JSON
+  run bash -c "'$PR_VIEWER' --list | grep -F 'half done'"
+  assert_success
+  . "$REPO_ROOT/.local/src/tmux/panel-palette.sh"
+  assert_output --partial "[$G_BUSY CI]"
+  refute_output --partial "$G_ATTN"
+}
+
 @test "a draft PR is marked as one" {
   run bash -c "'$PR_VIEWER' --list | grep -F 'pending one'"
   assert_output --partial '[draft]'
