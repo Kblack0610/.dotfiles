@@ -4169,7 +4169,11 @@ cmd_stats() {
     # Chain handoff: an item with an after: key goes from the finish of its predecessor (ready) to its start.
     # 0 is a real answer (the next phase started at once), so unlike waits it is counted.
     # An item gated by an event too (ask, pr, nightly, rbw, hold) is left out: its ready time is not recorded.
-    def handoffs: [.[] | select((.after // "") != "" and ((.tags // "") | test("(^| )(ask|pr|nightly|rbw|hold):") | not)) | {p: (.priority // "high"), m: mins(.ready; .started), at: .started}
+    # So is a restart (a `requeued` stamp): its first start, the handoff, is gone, and its wait since the
+    # requeue is a retry, which waits counts. Counted, a land retry of a phase whose chain had moved on 17h
+    # before read 78m and tripped chain-lag (pasted-content-id-4fbe-no-jazzy-p6, ar-4436, 2026-11-26).
+    def handoffs: [.[] | select((.after // "") != "" and (.requeued // "") == ""
+        and ((.tags // "") | test("(^| )(ask|pr|nightly|rbw|hold):") | not)) | {p: (.priority // "high"), m: mins(.ready; .started), at: .started}
       | select(.m != null)];
     def by_priority: group_by(.p) | map({key: .[0].p, value: ([.[].m] | spread)}) | from_entries;
     def stage($name; f): [.[] | select((f // "") != "") | {day: (f | fromdateiso8601 | strflocaltime("%F")), stage: $name, item: .}];
