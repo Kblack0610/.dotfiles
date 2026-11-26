@@ -19,6 +19,13 @@
 # ci -> NONE, PENDING, FAIL or PASS: red only once every check has finished.
 # red -> the red checks' Actions job ids, comma-separated, - for one that is not a job (fleet-sessions'
 # gate_ci reads their steps for a gate-line-only red).
+# infra -> true for a FAIL that is the runners' and not the code's: every red check concluded CANCELLED
+# or TIMED_OUT (a job cut at its timeout-minutes on a starved node), apart from a FAILURE that started
+# only after every such check of its own run had finished, which is an aggregate reading its cancelled
+# needs (dotfiles `gate`, needs: all). One other red beside them is a code red. On 2026-11-25 #3516,
+# #3538 and #3576 read red with every job cancelled at ~617s on starved ARC runners, spent two fix-ci
+# tries each and sat escalated with nothing to fix (fleet-dispatch own_parked_pr reruns them now).
+# red_runs -> the Actions run ids of the red checks, comma-separated, - for none (what a rerun reruns).
 # shellcheck disable=SC2034  # read by the scripts that source it
 CI_JQ='def red_re: "FAIL|ERROR|CANCEL|TIMED_OUT|ACTION_REQUIRED";
   def run_of: (.detailsUrl // "") | ((capture("/actions/runs/(?<r>[0-9]+)") | .r | tonumber) // null);
@@ -40,4 +47,12 @@ CI_JQ='def red_re: "FAIL|ERROR|CANCEL|TIMED_OUT|ACTION_REQUIRED";
     else "PASS" end;
   def red: [checks | .[] | select((.conclusion // .state // "") | test(red_re))
             | ((.detailsUrl // "") | capture("/job/(?<j>[0-9]+)") | .j) // "-"]
-          | if length == 0 then "-" else join(",") end;'
+          | if length == 0 then "-" else join(",") end;
+  def infra: ci == "FAIL" and ([checks[] | . + {_run: run_of, _c: (.conclusion // .state // "")} | select(._c | test(red_re))] as $r
+    | ($r | map(select(._c | test("CANCEL|TIMED_OUT")))) as $cut
+    | ($cut | length) > 0
+      and all($r[] | select(._c | test("CANCEL|TIMED_OUT") | not); . as $f
+        | ($cut | map(select($f._run != null and ._run == $f._run))) as $mine
+        | ($mine | length) > 0 and ($f.startedAt // "") >= ($mine | map(.completedAt // "~") | max)));
+  def red_runs: [checks[] | select((.conclusion // .state // "") | test(red_re)) | run_of | select(. != null) | tostring]
+          | unique | if length == 0 then "-" else join(",") end;'

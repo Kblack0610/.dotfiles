@@ -98,6 +98,8 @@ pub fn load(path: &Path) -> Result<File, String> {
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct FleetCost {
     pub why: Option<String>,
+    /// The total as a figure alone (`$1,533`): a list-price estimate, so each surface says so in
+    /// its label or unit, never in the figure, which a small tile shows whole.
     pub usd: String,
     /// The two parts by who bills them, `-` when the file has no split.
     pub cash: String,
@@ -116,7 +118,7 @@ pub fn build(f: &File, now: i64) -> FleetCost {
     let c = &f.coverage;
     FleetCost {
         why: None,
-        usd: format!("about {}", usd_est(t.usd)),
+        usd: usd_est(t.usd),
         cash: t.cash.map_or_else(|| "-".into(), usd_est),
         burn: t.burn.map_or_else(|| "-".into(), usd_est),
         as_of: Some(f.as_of_epoch),
@@ -180,7 +182,7 @@ mod tests {
         let b = build(&f, NOW);
         assert_eq!(
             (b.usd.as_str(), b.cash.as_str(), b.burn.as_str()),
-            ("about $200", "$30", "$170")
+            ("$200", "$30", "$170")
         );
         assert_eq!(f.figure(), (200.0, 110.0));
         assert_eq!(f.by_session[0].sid, "s1");
