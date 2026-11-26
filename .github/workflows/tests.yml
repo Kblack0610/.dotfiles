@@ -515,9 +515,10 @@ jobs:
       # The registry (tests/docker.sh's CARGO_HOME, .cargo-ci in the checkout) and every crate's
       # target/ in one cache. Cold, the Rust gate compiled six crates and their dependencies from
       # scratch: 248 s of a 292 s job (43014231625). Keyed on the toolchain, the lockfiles
-      # (rust.sh passes --locked) and tests/cargo-prune.sh (what a save keeps), and a fresh checkout's mtimes make cargo rebuild this repo's own
-      # crates, so a cache never serves stale code. Only main saves it; a pull request restores
-      # main's. The notes job restores the same key (tests/unit/ci_gate.bats).
+      # (rust.sh passes --locked) and tests/cargo-prune.sh (what a save keeps), and a fresh
+      # checkout's mtimes make cargo rebuild this repo's own crates, so a cache never serves stale
+      # code. Only main saves it; a pull request restores main's. The notes job restores the same
+      # key (tests/unit/ci_gate.bats). A change to the prune means one cold main run, about 5 min.
       - name: Restore cargo
         id: cargo
         if: steps.pick.outputs.run == 'true'
@@ -568,6 +569,7 @@ jobs:
       # and the unpacked registry sources leave it, so a pull request restores less (ar-4235).
       - name: Prune cargo
         if: ${{ !cancelled() && github.event_name != 'pull_request' && steps.cargo.outcome == 'success' && steps.cargo.outputs.cache-hit != 'true' }}
+        shell: bash -eo pipefail {0}  # a failed prune fails the step, so no unpruned cache is saved
         run: tests/cargo-prune.sh | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Save cargo
         if: ${{ !cancelled() && github.event_name != 'pull_request' && steps.cargo.outcome == 'success' && steps.cargo.outputs.cache-hit != 'true' }}

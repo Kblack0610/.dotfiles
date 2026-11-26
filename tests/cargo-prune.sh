@@ -15,18 +15,22 @@ set -euo pipefail
 shopt -s nullglob
 
 cd "${1:-.}"
-size() { du -sm .cargo-ci .local/src/*/target 2>/dev/null | awk '{ s += $1 } END { print s + 0 }'; }
+# Best effort: the sizes are only the log line, so a du error never stops the prune.
+size() { { du -sm .cargo-ci .local/src/*/target 2>/dev/null || true; } | awk '{ s += $1 } END { print s + 0 }'; }
 before=$(size)
 
-# Every name cargo gives an artifact of ours: each package (workspace members included, timebox's
-# crates/*), each [[bin]] and [[test]] target, and each tests/*.rs and src/bin/*.rs file, which
-# cargo names after the file. A dependency that shares one only gets rebuilt: cargo rebuilds an
-# artifact whose output is gone.
+# Every name cargo gives an artifact of ours: each package and each [lib], [[bin]], [[test]],
+# [[bench]] and [[example]] target, in a crate root or a workspace member (timebox's crates/*), and
+# each tests/*.rs and src/bin/*.rs file there, which cargo names after the file. Only those
+# directories are read, so a fixture manifest deeper down names nothing. A dependency that shares
+# a name only gets rebuilt: cargo rebuilds an artifact whose output is gone.
+manifests=(.local/src/*/Cargo.toml .local/src/*/crates/*/Cargo.toml)
+targets=(.local/src/*/{,crates/*/}{tests,src/bin}/*.rs)
 mapfile -t names < <({
-  find .local/src -name Cargo.toml -not -path '*/target/*' -print0 |
-    xargs -0 awk '/^\[/ { sec = $0 } sec ~ /^\[(package|\[bin\]|\[test\])\]/ && match($0, /^name *= *"[^"]+"/) {
-      v = substr($0, RSTART, RLENGTH); sub(/^name *= *"/, "", v); sub(/"$/, "", v); print v }'
-  find .local/src \( -path '*/tests/*.rs' -o -path '*/src/bin/*.rs' \) -not -path '*/target/*' -printf '%f\n' | sed 's/\.rs$//'
+  [ "${#manifests[@]}" -eq 0 ] || awk '/^\[/ { sec = $0 }
+    sec ~ /^\[(package|lib|\[(bin|test|bench|example)\])\]/ && match($0, /^name *= *"[^"]+"/) {
+      v = substr($0, RSTART, RLENGTH); sub(/^name *= *"/, "", v); sub(/"$/, "", v); print v }' "${manifests[@]}"
+  for f in "${targets[@]}"; do f=${f##*/}; echo "${f%.rs}"; done
 } | sort -u)
 [ "${#names[@]}" -gt 0 ] || { echo "cargo-prune: no crate found under .local/src" >&2; exit 1; }
 
