@@ -11,11 +11,7 @@ item_watch() {
   printf '%s\n' "${BASH_REMATCH[1]}"
 }
 
-# watch_quarantine <watch>: prints "<owner> <until>" and returns 0 while a quarantine on the watch is
-# in force (`watch-companion-loop quarantined` lists only those: name, until, owner, why). Its owner
-# took the red on, so a PR that fixed a side fault does not say the red is gone, and the owner or the
-# quarantine's lapse ends it. 1 when none, when the owner is `-`, and when the loop cannot say, so the
-# probe's red stands.
+# watch_quarantine <watch>: prints "<owner> <until>" and returns 0 while a quarantine on the watch is in force (`watch-companion-loop quarantined` lists only those: name, until, owner, why). Its owner took the red on, so a PR that fixed a side fault does not say the red is gone, and the owner or the quarantine's lapse ends it. 1 when none, when the owner is `-`, and when the loop cannot say, so the probe's red stands. It reads no `.covers` file: a red beyond the quarantined one is the rollup's and triage's to count red and file its own item, and this close is only the item whose own red is the quarantined one.
 watch_quarantine() {
   local line
   line=$(watch-companion-loop quarantined 2>/dev/null | awk -F'\t' -v w="$1" '$1 == w && $3 != "" && $3 != "-" { print $3, $2; exit }') || return 1
@@ -23,12 +19,7 @@ watch_quarantine() {
   printf '%s\n' "$line"
 }
 
-# watch_probe <verb> <watch> [args...]: runs `watch-companion-loop <verb> <watch> [args...]` and prints
-# one line. Returns 0 when the watch reads OK, is not known here (exit 2 with "no watch named"), or no
-# loop is on PATH, the line saying which; 0 too when it still trips (exit 1) but a quarantine holds it
-# under an owner (watch_quarantine), the line naming owner and expiry, so a close says it; 75 when the loop could not take its lock (a caller retries);
-# 1 when it still trips or the call failed, the line saying why. Exit 2 is also a usage error (a loop
-# with no resolve), so only "no watch named" skips the check.
+# watch_probe <verb> <watch> [args...]: runs `watch-companion-loop <verb> <watch> [args...]` and prints one line. Returns 0 when the watch reads OK, is not known here (exit 2 with "no watch named"), or no loop is on PATH, the line saying which; 0 too when it trips (exit 1 with TRIP or ERROR in its output) but a quarantine holds it under an owner (watch_quarantine), the line naming owner and expiry, so a close says it; 75 when the loop could not take its lock (a caller retries); 1 when it still trips or the call failed, the line saying why. Exit 2 is also a usage error (a loop with no resolve), so only "no watch named" skips the check.
 watch_probe() {
   local verb=$1 w=$2 out rc=0 q
   command -v watch-companion-loop >/dev/null 2>&1 || { echo "watch: $w not checked (no watch-companion-loop on PATH)"; return 0; }
@@ -38,7 +29,7 @@ watch_probe() {
     2) [[ "$out" == *"no watch named $w"* ]] || { echo "watch-companion-loop $verb $w: $(printf '%s' "$out" | tail -n 1)"; return 1; }
        echo "watch: $w not known here (exit 2), skipping probe check" ;;
     75) echo "watch-companion-loop $verb $w could not take the lock (exit 75); re-run"; return 75 ;;
-    *) if [ "$rc" = 1 ] && q=$(watch_quarantine "$w"); then
+    *) if [ "$rc" = 1 ] && [[ "$out" =~ (TRIP|ERROR) ]] && q=$(watch_quarantine "$w"); then
          echo "watch: $w still trips on $verb, quarantined under ${q% *} until ${q##* }, so its close is not probed"; return 0
        fi
        echo "watch $w did not read OK on $verb (exit $rc)${out:+: $(printf '%s' "$out" | tail -n 1)}"; return 1 ;;
