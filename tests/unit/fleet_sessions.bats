@@ -773,6 +773,29 @@ load 'fleet_sessions/common'
   pkill -KILL -s "$root" || true; wait "$root" 2>/dev/null || true
 }
 
+@test "live_wait reads the platform's background preview-gate.sh as a gate, by the repo's own time-use.conf (ar-5160)" {
+  # 2026-11-24 platform-agent-4 (pmp-169, PR #1666) read "background shell is not a gate or test" while its shell ran the
+  # release gate (deploy wait, smoke, ~520 Playwright tests). Reads the shipped conf, so dropping the line fails here.
+  # The sourced preview_gate_run form is seen only from the transcript (open_job), pinned by tests/fixtures/time-use-commands.tsv.
+  mkdir -p "$SANDBOX/wt" "$SANDBOX/plat/scripts"
+  printf 'sleep 60\n' > "$SANDBOX/plat/scripts/preview-gate.sh"
+  export FLEET_TIME_USE_CONF="$BATS_TEST_DIRNAME/../../.config/agent-panel/time-use.conf"
+  # root stands in for the session's claude; the gate sits below it, outside the session's worktree
+  (cd "$SANDBOX/plat" && exec setsid bash -c 'bash scripts/preview-gate.sh --no-e2e; :') >/dev/null 2>&1 3>&- &
+  local root=$!; LIVE_PIDS="-$root"
+  # the process is the event: wait until /proc shows the script's own exec (the anchor skips the wrapper's `bash -c`)
+  until pgrep -s "$root" -f '^bash scripts/preview-gate\.sh' >/dev/null; do
+    kill -0 "$root" 2>/dev/null || fail "the gate stand-in exited before it started"
+  done
+  run live_wait "$SANDBOX/wt" "$root"
+  assert_output 'gate'
+  # negative control: a conf without the line reads nothing
+  printf 'gate agent-land\ntest bats\n' > "$SANDBOX/other.conf"
+  FLEET_TIME_USE_CONF="$SANDBOX/other.conf" run live_wait "$SANDBOX/wt" "$root"
+  assert_output ''
+  pkill -KILL -s "$root" || true; wait "$root" 2>/dev/null || true
+}
+
 @test "live_wait finds a gate or test process running in the session worktree, and only there" {
   # 2026-11-07 unity-core-playground-agent-30: a gate detached with & left only its until-loop in the
   # transcript (open job jobs), so a Tests run in progress read STALLED.
