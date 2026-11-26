@@ -2949,11 +2949,8 @@ pub fn release(
     // Rows an earlier tag shipped go to that tag's version, notes first: a failure before the
     // sheet is written leaves them in both, and a re-run writes each id once.
     ship_earlier(&dir, name, &earlier, project_tasks::SHEET_DONE_ROWS)?;
-    let carried = [
-        carried,
-        forward_agent_board(&dir, name, (cur, next), family, carry)?,
-    ]
-    .concat();
+    let forwarded = forward_agent_board(&dir, name, (cur, next), family, carry)?;
+    let carried = [carried, forwarded].concat();
     let (frozen_body, new_sheet) = rebuild_sheet(&content, cur, next);
     // A note named from its tag says so in its head too: anything scanning a frozen note for
     // its `Version:` reads the tag, and the version the rows were planned as stays on record.
