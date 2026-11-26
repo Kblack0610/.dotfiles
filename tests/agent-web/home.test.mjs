@@ -526,7 +526,19 @@ test("Since last night shows only what is not ok, links each row and folds the o
   assert.match(html, /<a href="#sessions">Sessions<\/a> <span class="cchip warn">warn<\/span> Sessions line <\/div>/, "a warn row has no fix");
   assert.equal(html.match(/data-fix=/g).length, 1);
   assert.match(html, /Infra, Nightly, Delivery, Costs ok/);
-  assert.ok(html.indexOf("Needs you") < html.indexOf("Since last night") && html.indexOf("Since last night") < html.indexOf("Proposals"));
+  // A red one leads the sections after Needs you, ahead of Parked; the cards, Vitals and the Needs
+  // you head stay above it, inside the first phone screen.
+  ctx.list = cards();
+  vm.runInContext("hst.cards = list; hst.cardsErr = null; st.parked = [{ id: 'p1', project: 'dotfiles', parked_until: '2026-12-01', title: 'later' }]", ctx);
+  drawNight(night({ rows: [area("Workers overnight", "bad")] }));
+  const red = draw(home({ vitals: vitals() }));
+  const at = (t) => red.indexOf(t);
+  assert.ok(at('<div class="kgrid">') > -1 && at('<div class="kgrid">') < at('data-pf="home-vitals"') && at('data-pf="home-vitals"') < at('id="home-need-head"'), "the cards, then Vitals, then Needs you");
+  assert.ok(at('id="home-need-head"') < at('id="sec-night"') && at('id="sec-night"') < at("Parked <span"), "a red night comes after Needs you and before Parked");
+  // Negative control: a night with no red area keeps its place, after Parked and before Proposals.
+  const warn = drawNight(night({ rows: [area("Sessions", "warn")] }));
+  assert.ok(warn.indexOf("Parked <span") > -1 && warn.indexOf("Parked <span") < warn.indexOf("Since last night") && warn.indexOf("Since last night") < warn.indexOf("Proposals"), "a warn night stays after Parked");
+  vm.runInContext("st.parked = []", ctx);
 });
 
 test("a failed briefing read says why instead of an all-clear", () => {

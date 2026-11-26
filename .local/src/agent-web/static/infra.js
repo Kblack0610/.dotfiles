@@ -48,7 +48,7 @@ const alertHue = (g) => ({ red: "var(--b-needs)", ok: "var(--b-done)" })[g && g.
 function glanceHead(g) {
   let s = `${g.busy} running, ${g.queued} queued`;
   if (g.queued > 0 && g.oldest != null) s += ` (oldest ${secs(g.oldest)})`;
-  if (g.booked) s += `, booked ${cores1(g.booked.cpu)}/${Math.round(g.booked.cpu_alloc)} cpu`;
+  if (g.booked) s += `, booked ${cores1(g.booked.cpu)}/${Math.round(g.booked.cpu_alloc)} cpu${g.booked.reserved > 0 ? ` (${cores1(g.booked.reserved)} reserved)` : ""}`;
   s += `, ${upLine(g)} runners up`;
   if (g.done > 0) s += `, ${g.done} done 24h${g.pass != null ? `, ${pct(g.pass)} passed` : ""}`;
   return s;
@@ -126,12 +126,13 @@ function diskCell(m) {
 const cores1 = (c) => (Math.round(c * 10) / 10).toFixed(1);
 const bookedShare = (b) => Math.max(b.cpu_alloc > 0 ? b.cpu / b.cpu_alloc : 0, b.mem_alloc > 0 ? b.mem / b.mem_alloc : 0);
 // hub_core::machines::Machine::booked_cell, or - on no CI node.
-// hub_core::jobpods::Booked::cell: `4.4/32 2.5G/92G`, bare `1.7 1.2G` on a node with no allocatable read.
+// hub_core::jobpods::Booked::cell: `4.4/32 2.5G/92G`, bare `1.7 1.2G` on a node with no allocatable read, `, 7.4 reserved` for a reservation pod's CPU.
 const bookedCell = (m) => {
   const b = m.booked;
   if (!b) return "-";
-  if (!(b.cpu_alloc > 0)) return `${cores1(b.cpu)} ${bytes(b.mem)}`;
-  return `${cores1(b.cpu)}/${Math.round(b.cpu_alloc)} ${bytes(b.mem)}/${bytes(b.mem_alloc)}`;
+  const rsv = b.reserved > 0 ? `, ${cores1(b.reserved)} reserved` : "";
+  if (!(b.cpu_alloc > 0)) return `${cores1(b.cpu)} ${bytes(b.mem)}${rsv}`;
+  return `${cores1(b.cpu)}/${Math.round(b.cpu_alloc)} ${bytes(b.mem)}/${bytes(b.mem_alloc)}${rsv}`;
 };
 // hub_core::ci::Next::line: the oldest waiting job that fits the machine, its repo and how long it has waited.
 const nextLine = (x) => `${x.job}${x.repo ? ` (${x.repo})` : ""} ${secs(x.wait)}`;
@@ -198,7 +199,7 @@ const MACH_CELLS = {
 };
 
 // One row per job kind: its jobs running and waiting, and the machines that take it.
-const POOL_COLS = { pool: ["kind"], weight: ["weight", "n"], running: ["running", "n"], waiting: ["waiting", "n"], oldest: ["oldest", "n"], done: ["done 24h", "n"], pass: ["pass", "n"], machines: ["machines"] };
+const POOL_COLS = { pool: ["kind"], weight: ["weight", "n"], running: ["running", "n"], waiting: ["waiting", "n"], oldest: ["oldest", "n"], done: ["done 24h", "n"], usual: ["usual", "n"], pass: ["pass", "n"], machines: ["machines"] };
 const num = (v) => v ?? "-";
 // hub_core::machines::Pool::machines_cell: each machine a link to its page, with its online slots.
 const poolSeats = (p) => p.machines.map((s) => tblLink(s.href, s.host) + ` ${s.slots}`).join(", ") || "-";
@@ -210,6 +211,7 @@ const POOL_CELLS = {
   waiting: (p) => td(`n${p.waiting ? " warn" : ""}`, num(p.waiting)),
   oldest: (p) => td("n", secs(p.oldest)),
   done: (p) => td("n", num(p.done)),
+  usual: (p) => td("n muted", secs(p.usual)),
   pass: (p) => td(`n ${passCls(p.pass)}`, pct(p.pass)),
   machines: (p) => td("wrap", poolSeats(p)),
 };

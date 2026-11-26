@@ -294,6 +294,45 @@ proposal() {
   assert_output --partial 'printed no system list'
 }
 
+# other: a second board, code ot, whose sheet holds epic ot-1 and story ot-2, and whose one system is
+# gameplay (labbed's, code lb, are ci and ui); the stub lists each board's own.
+other() {
+  epic_new '[]' '[]'
+  jq '.trackers.other = {"lab": "personal", "code": "ot"} | .trackers.labbed.code = "lb"' "$HOME/.config/shared-hooks/project-map.json" > "$BATS_TEST_TMPDIR/m.json"
+  mv "$BATS_TEST_TMPDIR/m.json" "$HOME/.config/shared-hooks/project-map.json"
+  mkdir -p "$HOME/.notes/lab/projects/current/other"
+  printf -- '- [ ] epic(gameplay): school days <!-- id:ot-1 -->\n- [ ] fix(gameplay): a story #of/ot-1 <!-- id:ot-2 -->\n' > "$HOME/.notes/lab/projects/current/other/README.md"
+  cat > "$BATS_TEST_TMPDIR/bin/project-stage-check" <<'SH'
+#!/usr/bin/env bash
+case "$1" in other) echo '[{"id":"gameplay"}]' ;; *) echo '[{"id":"ci"},{"id":"ui"}]' ;; esac
+SH
+}
+
+@test "a plan naming another project's epic is checked for that project, not the session's cwd (ar-5288)" {
+  other
+  run gate untyped "$(printf 'epic: ot-2\n\n'; base)"
+  assert_output --partial 'gap(s) for other'
+  assert_output --partial 'epic: ot-2 is not an epic( row'
+  run gate untyped "$(printf 'epic: ot-1\n\n'; base)"
+  assert_output ''
+  # A fenced example above the real line is no epic: the real one is checked.
+  run gate untyped "$(printf '```\nepic: ot-2\n```\nepic: ot-1\n\n'; base)"
+  assert_output ''
+  # Overlap lists other work, so with no epic: line it does not move an exempt project onto a board.
+  run gate untyped "$(base | sed 's|^- Overlap: .*|- Overlap: ot-1 checked, unrelated.|')"
+  assert_output ''
+}
+
+@test "an epic: new whose Overlap rows are another project's is checked on that board, else on the cwd's (ar-5288)" {
+  other
+  run gate labbed "$(proposal 'epic(gameplay): a lobby the player can open' 'ot-1 is the epic it grows.')"
+  assert_output ''
+  run gate labbed "$(proposal 'epic(gameplay): a lobby the player can open' 'none.')"
+  assert_output --partial "no system of labbed: one of ci,ui; labbed is this session's board"
+  run gate labbed "$(proposal 'epic(gameplay): a lobby the player can open' 'ot-1 and lb-2 are other work.')"
+  assert_output --partial 'no system of labbed'
+}
+
 @test "an epic: new line inside a code fence is no proposal" {
   epic_new '[]' '[]'
   run gate labbed "$(printf '```\nepic: new epic(ui): a lobby\n```\n\n'; base)"
