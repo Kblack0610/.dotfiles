@@ -480,7 +480,7 @@ pub(crate) fn add_via(
     if refuse_twin(&path, &content, text) {
         // A human's want that joins an open row must still mark it, and the ingest record must say whose
         // words it is: dropped here the row counted against the project share (ar-6060).
-        if want.is_some_and(crate::window::human_channel) && lane == Lane::Agent {
+        if want.is_some_and(crate::projects::human_channel) && lane == Lane::Agent {
             if let Err(e) = stamp_twin_requested(p, &path, &content, text, name, lane, want) {
                 eprintln!("could not mark the open row #requested: {e}");
             }
