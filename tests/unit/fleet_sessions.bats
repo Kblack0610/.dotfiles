@@ -2872,8 +2872,10 @@ SH
   mv "$HOME/.agent/queue/queued/20261103-100000-rollout.md" "$HOME/.agent/queue/running/"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .finished <<<"$output")" = true ]
-  # the ask is still the session's own, so the shepherd leaves the window alone (2026-11-07)
+  # the ask still counts in own_asks (2026-11-07)
   [ "$(jq -r .own_asks <<<"$output")" = 1 ]
+  # but not one it holds itself: the shepherd's window close sets no reopen for it (ar-4271)
+  [ "$(jq -r .asks <<<"$output")" = 0 ]
   [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
 }
 

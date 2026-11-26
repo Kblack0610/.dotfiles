@@ -1121,8 +1121,8 @@ close_sample() {
 # do not name is never left without its session, and on the first that cannot be set: answered
 # meanwhile or no session named. An ask with its own resume counts as set: the answer runs it.
 # `asks`, not `own_asks`: an ask a queue item holds (its ask:<id> tag) is in own_asks but not in the
-# blockers, and needs no reopen, since `agent-ask reopen` skips it and the queue restarts the item
-# on the answer (ar-4271: lab/dotfiles-agent-4 refused its close every pass on ask poGHJB).
+# blockers, and needs no reopen: the queue restarts that item on the answer, so no `reopen:` line is
+# written for it (ar-4271: lab/dotfiles-agent-4 refused its close every pass on ask poGHJB).
 reopen_own_asks() {
   local id ids=()
   [ "$2" = - ] || IFS=, read -ra ids <<<"$2"

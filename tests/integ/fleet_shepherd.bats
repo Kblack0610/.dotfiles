@@ -950,7 +950,7 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
   doc "[$(crow 3 DONE now '{"nudged":true,"close_sent":true,"own_asks":1,"asks":0,"idle_min":2000,"blockers":[]}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   [ ! -s "$HOME/ask.calls" ]
-  run grep -q 'could not be set to reopen it' "$FLEET_SHEPHERD_DIR/log.md"; assert_failure
+  run grep -q 'could not be set to reopen it' "$FLEET_SHEPHERD_DIR/log.md"; assert_failure 1
   run closes
   assert_line 'close --server lab --pane %3 --sid 3'
 }
