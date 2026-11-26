@@ -494,6 +494,41 @@ EOF
     'ar-45 unjudged: not in any ledger' 'ar-43 keep: open children ar-45: stays until they close')"
 }
 
+@test "apply --retag: a kept row with no reason gets its bucket's #why, a row with a real one keeps it" {
+  apply_fixture
+  cat >"$HOME/board3.json" <<'EOF'
+{"today":"2026-11-25","rows":[
+ {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-50","text":"fix(x): bare fault","tags":[],"details":[]},
+ {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-51","text":"fix(x): upkeep sot","prio_why":"upkeep","tags":[],"details":[]},
+ {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-52","text":"fix(x): asked","prio_why":"requested","tags":[],"details":[]},
+ {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-53","text":"feat(x): a chain phase","prio_why":"feature","tags":[],"details":[]},
+ {"project":"agent-runtime","lane":"agent","state":"open","id":"ar-54","text":"fix(x): already tagged","prio_why":"runtime-fault","tags":[],"details":[]},
+ {"project":"agent-runtime","lane":"agent","state":"doing","id":"ar-55","text":"fix(x): live item","tags":[],"details":[]}
+]}
+EOF
+  {
+    head -1 "$HOME/led.tsv"
+    led ar-50 fault dispatch agent-runtime work keep - "x.py:1" "still there" "fix(x): bare fault"
+    led ar-51 sot dispatch agent-runtime work keep - - "one reader" "fix(x): upkeep sot"
+    led ar-52 requested dispatch agent-runtime work keep - - "asked" "fix(x): asked"
+    led ar-53 chain dispatch agent-runtime work keep - - "phase" "feat(x): a chain phase"
+    led ar-54 fault dispatch agent-runtime work keep - "y.py:2" "still there" "fix(x): already tagged"
+    led ar-55 fault dispatch agent-runtime work keep - "z.py:3" "doing" "fix(x): live item"
+  } >"$HOME/led3.tsv"
+  # Without --retag a kept row is left as it is.
+  run "$RV" "${APPLY[@]}" --board "$HOME/board3.json" --write --log "$HOME/log.tsv" "$HOME/led3.tsv"
+  assert_success
+  run grep ' tag ' "$HOME/calls"
+  assert_failure
+  run "$RV" "${APPLY[@]}" --board "$HOME/board3.json" --retag --write --log "$HOME/log.tsv" "$HOME/led3.tsv"
+  assert_success
+  run grep ' tag ' "$HOME/calls"
+  assert_output "$(printf '%s\n' 'ptask agent-runtime --agent tag --why runtime-fault ar-50' \
+    'ptask agent-runtime --agent tag --why sot ar-51' 'ptask agent-runtime --agent tag --why epic-turn ar-53')"
+  run awk -F'\t' 'NR > 1 { print $1, $2, $3 }' "$HOME/log.tsv"
+  assert_output "$(printf '%s\n' 'ar-50 retag ok' 'ar-51 retag ok' 'ar-52 keep -' 'ar-53 retag ok' 'ar-54 keep -' 'ar-55 keep -')"
+}
+
 @test "apply: a row an open row waits on with #after/ is not closed undelivered unless the waiter closes too" {
   apply_fixture
   # ar-47 (unjudged, stays) waits on ar-33 (improvement) and ar-48 on ar-30 (fixed); ar-43 (dropped) waits on ar-31 (dup);

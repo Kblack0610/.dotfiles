@@ -36,7 +36,7 @@
       use other column names (--id, --verdict, header row read) and other verdict words (--map);
       --mine-verdict compares another column of MINE (kind, target) for a confusion table.
 
-  row-value apply [--project P] [--board FILE] [--plans DIR] [--orphans FILE] [--write] --log FILE LEDGER...
+  row-value apply [--project P] [--board FILE] [--plans DIR] [--orphans FILE] [--retag] [--write] --log FILE LEDGER...
       the cut, from each LEDGER (`report --tsv`, a later one winning): for every row still open
       (a doing row is left alone), `fixed` is `notes ptask done --proof`, a drop `drop --why` or a
       merge `drop --dup`, an improvement `notes improve` then `drop --why` (unless improve calls it
@@ -49,7 +49,10 @@
       live (an active queue item or another open row names the plan). An orphan plan's row on
       another board moves there; here it stays until --orphans (id, decision, why, plan) keeps it
       or parks it (a `Parked:` line in the plan file, then the drop). Without --write it writes
-      nothing and logs what it would do. The log has one line per open row of P: id, action,
+      nothing and logs what it would do. --retag also gives each kept row whose reason is
+      none, upkeep or feature the #why of its bucket (`notes ptask tag --why`: runtime-fault for
+      a red or fault, sot, requested, epic-turn for a chain phase or parent; the log action is
+      `retag`); a row with any other reason keeps it. The log has one line per open row of P: id, action,
       result, detail, why; exit 1 when a write failed.
   row-value cut-report [--project P] [--board FILE] [--rubric FILE] [--scope FILE] --log FILE... LEDGER...
       the after-cut report as markdown (--log repeats for a re-run, the later run winning per
@@ -512,6 +515,11 @@ PLAN_WORD_RE = re.compile(r"\(plan ([\w.-]+)\)|\bplan ([\w.-]+): run its open ph
 DOTFILES_FIX_RE = re.compile(r"(?<![\w-])(dotfiles(-private)?:|\.dotfiles(-private)?/|\.local/(bin|lib|src)/)")
 CLOSED = ("done", "dup", "drop", "improve", "move", "park")
 KEPT = ("red", "fault", "sot", "requested", "chain", "container")
+# --retag: the real #why a kept row with no reason (none, upkeep or feature) gets, by bucket. A red
+# or a fault is a runtime fault; a chain phase or a parent is epic work in its turn.
+RETAG = {"red": "runtime-fault", "fault": "runtime-fault", "sot": "sot", "requested": "requested",
+         "chain": "epic-turn", "container": "epic-turn"}
+NO_REASON = ("", "upkeep", "feature")
 
 
 def read_ledgers(paths):
@@ -588,6 +596,14 @@ def proof_of(evidence):
     return "head-check " + clean(evidence).replace("-->", "->")[:160]
 
 
+def kept(r, row, ctx, detail):
+    """A row that stays on this board: with --retag, a reasonless one gets its bucket's #why."""
+    slug = RETAG.get(r["bucket"])
+    if ctx.retag and slug and (row.get("prio_why") or "") in NO_REASON:
+        return "retag", [ctx.notes, "ptask", ctx.project, "--agent", "tag", "--why", slug, r["id"]], f"{detail}; #why/{slug}"
+    return "keep", None, detail
+
+
 def plan_action(r, row, ctx):
     """(action, argv or None, detail) for one ledger row still open on the board."""
     rid, bucket, verdict = r["id"], r["bucket"], r["verdict"]
@@ -629,18 +645,19 @@ def plan_action(r, row, ctx):
                            pt + ["drop", rid, "--why", f"moved to improvements: {r['project']}"]], r["project"]
     if bucket in KEPT and r["project"] != ctx.project:
         if bucket == "red":
-            return "keep", None, f"red: a fleet watch, stays here though it serves {r['project']}"
+            return kept(r, row, ctx, f"red: a fleet watch, stays here though it serves {r['project']}")
         if DOTFILES_FIX_RE.search(r["evidence"]):
-            return "keep", None, f"serves {r['project']}, but its fix is in dotfiles ({r['evidence'][:80]}): stays"
+            return kept(r, row, ctx, f"serves {r['project']}, but its fix is in dotfiles ({r['evidence'][:80]}): stays")
         if not ctx.has_board(r["project"]):
-            return "keep", None, f"{r['project']} has no agent board: stays until the human names one"
+            return kept(r, row, ctx, f"{r['project']} has no agent board: stays until the human names one")
         return "move", pt + ["move", rid, "--project", r["project"]], r["project"]
-    return "keep", None, bucket
+    return kept(r, row, ctx, bucket)
 
 
 class Ctx:
     def __init__(self, a, board):
         self.notes, self.project, self.plans = a.notes, a.project, os.path.expanduser(a.plans)
+        self.retag = a.retag
         if not os.path.isdir(self.plans):
             die(f"--plans {self.plans} is not a directory", 1)
         self.board_rows = [r for r in board.get("rows", []) if r.get("state") in ("open", "doing")]
@@ -1108,6 +1125,7 @@ def main():
     ap.add_argument("--queue-cmd", default="agent-queue list --json --state active",
                     help="prints the active queue items, one JSON object a line")
     ap.add_argument("--notes", default="notes", help="the notes binary")
+    ap.add_argument("--retag", action="store_true", help="a kept row with no reason (none, upkeep or feature) gets its bucket's #why through notes ptask tag --why")
     ap.add_argument("--orphans", help="a headed TSV (id, decision keep|park, why, and plan when the row names none) settling orphan plan rows")
     ap.add_argument("--write", action="store_true", help="run the writes; without it, a dry run")
     ap.add_argument("--log", required=True)
