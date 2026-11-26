@@ -1654,6 +1654,20 @@ fn read_stdin() -> Result<String> {
     Ok(text)
 }
 
+/// The nightly `notes summarize`: the day's summary, then the report archive (no new timer).
+/// Both run, so a day with no note to summarize still archives.
+fn summarize_nightly(
+    prof: &config::Profile,
+    log: &logging::Logger,
+    date: Option<&str>,
+    force: bool,
+) -> Result<()> {
+    let summarized = summarize::run(prof, log, date, force);
+    let archived = report::archive_today(prof, log, false);
+    summarized?;
+    archived.map(|_| ())
+}
+
 fn main() -> Result<()> {
     reset_sigpipe();
     let cli = Cli::parse();
@@ -1705,12 +1719,7 @@ fn main() -> Result<()> {
         }
         Cmd::Report { sub } => report::run(&prof, &log, sub)?,
         Cmd::Summarize { date, force } => {
-            // The nightly's second job (no new timer): past report days to the archive. Both
-            // run, so a day with no note to summarize still archives.
-            let summarized = summarize::run(&prof, &log, date.as_deref(), force);
-            let archived = report::archive_today(&prof, &log, false);
-            summarized?;
-            archived?;
+            summarize_nightly(&prof, &log, date.as_deref(), force)?;
             0
         }
         Cmd::Archive {

@@ -17,7 +17,7 @@
 //! lives in `refs/<date>/`, or in `refs/archive/YYYY/YYYY-MM/<date>/` once [`archive_past`]
 //! moved it; [`refs_day_dir`] and [`inbox_day_dir`] are the resolvers.
 
-use crate::config::Profile;
+use crate::config::{Profile, INBOX_DIR};
 use crate::knowledge_gate::body;
 use crate::logging::Logger;
 use crate::md;
@@ -193,11 +193,11 @@ fn day_name(day: NaiveDate) -> String {
 }
 
 fn inbox_live(p: &Profile, day: NaiveDate) -> PathBuf {
-    p.inbox.join(day_name(day))
+    p.inbox().join(day_name(day))
 }
 
 fn inbox_archived(p: &Profile, day: NaiveDate) -> PathBuf {
-    p.inbox
+    p.inbox()
         .join(ARCHIVE)
         .join(day.format("%Y-%m").to_string())
         .join(day_name(day))
@@ -255,8 +255,8 @@ pub fn moved_targets(p: &Profile, target: &str) -> Vec<String> {
     let (year, month) = (day.format("%Y"), day.format("%Y-%m"));
     vec![
         format!("{}/{ARCHIVE}/{year}/{month}/{date}/{tail}", p.refs_rel),
-        format!("{}/{date}/{tail}", p.inbox_rel),
-        format!("{}/{ARCHIVE}/{month}/{date}/{tail}", p.inbox_rel),
+        format!("{INBOX_DIR}/{date}/{tail}"),
+        format!("{INBOX_DIR}/{ARCHIVE}/{month}/{date}/{tail}"),
     ]
 }
 
@@ -411,7 +411,7 @@ impl Entry {
     /// The wikilink target: the root-relative path, so an archived day links where it is.
     fn target(&self, p: &Profile) -> String {
         match self.kind {
-            Kind::Report => rooted_target(&p.inbox, &p.inbox_rel, &self.path),
+            Kind::Report => rooted_target(&p.inbox(), INBOX_DIR, &self.path),
             Kind::Digest | Kind::Capture => rooted_target(&p.refs, &p.refs_rel, &self.path),
         }
     }
@@ -796,7 +796,7 @@ pub fn add(
 /// and captures.
 pub fn list(p: &Profile, since: Option<NaiveDate>, unread: bool, all: bool) -> Vec<Entry> {
     let keep = |d: &NaiveDate| since.is_none_or(|s| *d >= s);
-    let mut out: Vec<Entry> = days_in(&p.inbox, 1)
+    let mut out: Vec<Entry> = days_in(&p.inbox(), 1)
         .into_iter()
         .filter(|(d, _)| keep(d))
         .flat_map(|(d, dir)| dir_entries(d, &dir))
@@ -825,7 +825,7 @@ fn find(p: &Profile, id: &str) -> Result<Entry> {
     if !valid_slug(slug) || id.as_bytes()[10] != b'-' {
         bail!("'{id}' is not a report id (<date>-<slug>)");
     }
-    let found = days_in(&p.inbox, 1)
+    let found = days_in(&p.inbox(), 1)
         .into_iter()
         .filter(|(d, _)| *d == day)
         .find_map(|(_, dir)| entry(day, &dir.join(format!("{slug}.md"))));
@@ -927,7 +927,7 @@ fn settle_day(log: &Logger, dir: &Path, to: &Path) -> bool {
 pub fn archive_past(p: &Profile, log: &Logger, today: NaiveDate, dry_run: bool) -> Result<Moved> {
     let _lock = lock(p)?;
     let mut moved = Moved::default();
-    for (day, dir) in dated(&p.inbox).into_iter().filter(|(d, _)| *d < today) {
+    for (day, dir) in dated(&p.inbox()).into_iter().filter(|(d, _)| *d < today) {
         if dry_run || settle_day(log, &dir, &inbox_archived(p, day)) {
             moved.inbox += 1;
         }
@@ -1331,7 +1331,7 @@ mod tests {
         // A split day (a live folder made after the archive) is read from both folders.
         let live = dir.join("inbox/2026-10-03");
         fs::create_dir_all(&live).unwrap();
-        let split: Vec<_> = days_in(&p.inbox, 1)
+        let split: Vec<_> = days_in(&p.inbox(), 1)
             .into_iter()
             .filter(|(day, _)| *day == d("2026-10-03"))
             .collect();

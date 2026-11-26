@@ -79,7 +79,7 @@ pub fn resolve_path(p: &Profile, target: &str) -> Option<PathBuf> {
         // legitimately have no projects root, which is not the same as an unknown target.
         "projects" => p.projects.clone()?,
         "captures" => p.captures.clone(),
-        "inbox" => p.inbox.clone(),
+        "inbox" => p.inbox(),
         "captures-today" => p.captures.join(format!(
             "{}.md",
             Local::now().date_naive().format("%Y-%m-%d")
