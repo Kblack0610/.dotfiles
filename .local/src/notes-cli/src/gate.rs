@@ -29,9 +29,9 @@ const ADMITS: [&str; 2] = ["urgent", "high"];
 /// The reason a wanted row carries, which a session may not give itself.
 const ASKED: &str = "requested";
 
-/// The urgent reason a verify pass gives a row already on the board (a fault pulled forward because
-/// it blocks landing or dispatch, answers a live red, or is a small fix; ar-6307), so it is no red
-/// or outage and passes no cap.
+/// The urgent reason a verify pass gives a row already on the board with `ptask tag --why` (a fault
+/// pulled forward because it blocks landing or dispatch, answers a live red, or is a small fix;
+/// ar-6307). It is no red or outage: a new row carrying it is refused, and it passes no cap.
 const RANKED: &str = "quick-fault";
 
 /// The reasons that admit a row at any level: the human's scope for the runtime board, source-of-truth
@@ -55,7 +55,7 @@ fn refusal_in(all: &[Reason], project: &str, row: &str, wanted: bool) -> Option<
         return None;
     }
     let evidence = |r: &&Reason| {
-        (ADMITS.contains(&r.priority.as_str()) && r.slug != ASKED)
+        (ADMITS.contains(&r.priority.as_str()) && r.slug != ASKED && r.slug != RANKED)
             || SCOPE.contains(&r.slug.as_str())
     };
     let admitting: Vec<&str> = all
@@ -132,7 +132,7 @@ fn cap_exempt(all: &[Reason], row: &str, wanted: bool) -> bool {
 fn cap_why(project: &str, taken: usize, cap: usize) -> Option<String> {
     (taken >= cap).then(|| {
         format!(
-            "{project} has taken its {cap} new agent rows for today ({taken} so far, intake_daily_cap in the notes config, QUEUE.md \"Admission\"): the person's words (--want) and an urgent red (--why outage or live-exposure) are never held, so keep this one with `notes improve {project} -- \"<text>\"` or file it again tomorrow, and nothing was added"
+            "{project} has taken its {cap} new agent rows for today ({taken} so far, intake_daily_cap in the notes config, QUEUE.md \"Admission\"): the person's words (--want) and an urgent red (--why with an urgent reason other than quick-fault) are never held, so keep this one with `notes improve {project} -- \"<text>\"` or file it again tomorrow, and nothing was added"
         )
     })
 }
@@ -286,6 +286,8 @@ mod tests {
             "- [ ] feat(sessions): a new watch on idle panes #high",
             "- [ ] feat(views): a chip it tagged itself #high #requested",
             "- [ ] feat(views): a chip nobody asked for #high #why/requested",
+            // a verify pass's rank for a row already on the board, never a new row's evidence
+            "- [ ] fix(dispatch): a reaped item restarts #urgent #why/quick-fault",
         ] {
             let e = r(refused).unwrap_or_else(|| panic!("admitted: {refused}"));
             assert!(
