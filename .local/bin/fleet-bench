@@ -5253,19 +5253,27 @@ failed_units() {
   done
 }
 
+# unit_reset_why <unit> <LoadState> -> why a failed unit has nothing left to fix but its failed state,
+# rc 1 when it has a cause to fix (triage_reset_gone)
+unit_reset_why() {
+  if [ "$2" = not-found ]; then echo 'the unit file is gone'
+  elif [[ $1 =~ ^run-(u[0-9]+|p[0-9]+-i[0-9]+)\.service$ ]]; then echo 'a hand systemd-run with no --collect'
+  else return 1; fi
+}
+
 # triage_reset_gone <dry> -> each failed user unit with nothing left to fix that it ran reset-failed
 # on, or would on a dry run, one a line: one whose unit file is gone (LoadState not-found: retired
 # while failed), or a hand `systemd-run` service left failed (auto-named run-u<N> or run-p<pid>-i<id>:
 # every fleet caller passes --collect, a --unit name or --scope, so only a one-off command typed by
-# a session or the human gets that name and keeps its failed state; its exit went to whoever ran it).
-# Only the failed state systemd keeps is left, so triage clears it rather than filing a row; a reset
-# that fails is not printed, so triage_rows files it. Each reset is said with its Result and why.
+# a session or the human gets that name and keeps its failed state). A detached hand job's failure
+# is dropped on purpose: its owner reads it in the journal, which reset-failed keeps
+# (`journalctl --user -u <unit>`). Only the failed state systemd keeps is left, so triage clears it
+# rather than filing a row; a reset that fails is not printed, so triage_rows files it, with
+# unit_reset_why as its suffix. Each reset is said with its Result and why.
 triage_reset_gone() {
   local u res load why
   failed_units | while IFS=$'\t' read -r u res load; do
-    if [ "$load" = not-found ]; then why='the unit file is gone'
-    elif [[ $u =~ ^run-(u[0-9]+|p[0-9]+-i[0-9]+)\.service$ ]]; then why='a hand systemd-run with no --collect'
-    else continue; fi
+    why=$(unit_reset_why "$u" "$load") || continue
     if [ "$1" = 1 ] || $TRIAGE_SYSTEMCTL --user reset-failed "$u" >/dev/null 2>&1; then
       say "reset: $u failed: ${res:-unknown}, $why$([ "$1" = 1 ] && echo '; dry run, not reset')"
       printf '%s\n' "$u"
@@ -5343,7 +5351,7 @@ triage_rows() {
     # a unit triage_reset_gone cleared (or, on a dry run, would) is no fault
     grep -qxF -- "$u" <<<"${TRIAGE_GONE:-}" && continue
     printf 'fix(unit): %s failed\tfix(unit): %s failed: %s%s\t#high\n' "$u" "$u" "${res:-unknown}" \
-      "$([ "$load" = not-found ] && echo ', the unit file is gone')"
+      "$(why=$(unit_reset_why "$u" "$load") && echo ", $why")"
   done
   for f in "$TRIAGE_WATCH_STATE"/*.state; do
     [ -e "$f" ] || continue
@@ -6376,7 +6384,7 @@ cmd_triage() {
     return 0
   fi
   triage_retire 0
-  did=$(printf '%s' "$([ "$TRIAGE_RETIRED" -gt 0 ] && echo "$TRIAGE_RETIRED recovered rows closed")$([ "$gone" -gt 0 ] && echo " $gone gone units reset")" | sed 's/^ //')
+  did=$(printf '%s' "$([ "$TRIAGE_RETIRED" -gt 0 ] && echo "$TRIAGE_RETIRED recovered rows closed")$([ "$gone" -gt 0 ] && echo " $gone failed units reset")" | sed 's/^ //')
   if [ -z "$rows" ]; then
     triage_spent_write ''
     say "no runner, unit, watch or log error at fault"

@@ -1769,7 +1769,7 @@ tok_fixture() {
   assert_output 1
   run outcome
   assert_output WORKED
-  run grep -c "outcome=WORKED 2 recovered rows closed 1 gone units reset" "$AGENTCTL_STATE_DIR/fleet-bench/activity.log"
+  run grep -c "outcome=WORKED 2 recovered rows closed 1 failed units reset" "$AGENTCTL_STATE_DIR/fleet-bench/activity.log"
   assert_output 1
 }
 
