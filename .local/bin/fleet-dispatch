@@ -47,6 +47,7 @@
 #   fleet-dispatch item-end H SID...   why the H run that claimed those ids ended, from this machine's record (a dispatcher asks the worker it ran on)
 #   fleet-dispatch backfill-end [DAYS]   give every item that closed failed in the last DAYS (30) with no end_reason the one its harness's record says
 #   fleet-dispatch record-end SLUG H SID...   item-end, written to the item's end_reason: the canary tail's one classification, which canary score reads
+#   fleet-dispatch run-log H SID...   the lines of this machine's H opencode log that the run claiming those ids wrote (canary score keeps them beside its log)
 #   (run, kick, reap, start, fill, promote, pull-after and exits do nothing on a machine that does not hold the fleet lease: lease_guard)
 #   fleet-dispatch record [--here]   keep each world's pane record, then (on the lease holder) each fleet worker's, and take their queue-item events into this chain record (worker_records); page when a world's server died
 #   fleet-dispatch restore [--server S] [--dry-run] [--here]  reopen a lost server's conversations as windows, here and (on the lease holder) on each fleet worker; one a queue item prompts wakes in a batch of the wake budget (wake-pace.sh), the rest under the `restore` hold
@@ -128,7 +129,7 @@ dispatch_conf_load() {
 # mechanism, and a worker carries no private overlay, so they load no conf. One that read a tuning key
 # would still stop loud: an unbound variable under set -u.
 case "$([ "${BASH_SOURCE[0]}" = "$0" ] && echo "${1:-} ${2:-}")" in
-  "kit "* | "harness-ready "* | "lane-sandbox "* | "harness-prep "* | "trainee-patch "* | "item-end "* | "record-end "* | "record --here" | "restore --here") DISPATCH_WORKER_VERB=1 ;;
+  "kit "* | "harness-ready "* | "lane-sandbox "* | "harness-prep "* | "trainee-patch "* | "item-end "* | "record-end "* | "run-log "* | "record --here" | "restore --here") DISPATCH_WORKER_VERB=1 ;;
   *) DISPATCH_WORKER_VERB=''; dispatch_conf_load ;;
 esac
 
@@ -2811,7 +2812,7 @@ sandbox_wrap() {
   tmo="timeout $(jq -r --arg h "$1" '.harnesses[$h].timeout_min' "$HARNESSES")m"
   if is_canary "$2"; then
     cmd="fleet-bench canary start $(printf '%q' "$(jq -r .canary <<<"$2")") && { $tmo $cmd"
-    tail="fleet-dispatch record-end $(printf '%q' "$slug") $(printf '%q' "$1") $3; BENCH_CANARY_WRAP=$(printf '%q' "$4") AGENT_QUEUE_ITEM=$(printf '%q' "$slug") fleet-bench canary score $(printf '%q' "$(jq -r .canary <<<"$2")") && agent-queue move $(printf '%q' "$slug") done --status ok"
+    tail="fleet-dispatch record-end $(printf '%q' "$slug") $(printf '%q' "$1") $3; BENCH_CANARY_WRAP=$(printf '%q' "$4") AGENT_QUEUE_ITEM=$(printf '%q' "$slug") BENCH_CANARY_RUN_LOG=$(printf '%q' "fleet-dispatch run-log $(printf '%q' "$1") $3") fleet-bench canary score $(printf '%q' "$(jq -r .canary <<<"$2")") && agent-queue move $(printf '%q' "$slug") done --status ok"
   else
     cmd="{ $tmo $cmd"
     tail="fleet-dispatch trainee-review $(printf '%q' "$slug")"
@@ -3543,6 +3544,25 @@ cmd_record_end() {
   shift
   why=$(cmd_item_end "$@") || { [ $? -ne 2 ] || return 2; }
   [ -z "$why" ] || agent-queue set "$slug" "end_reason=$why" >/dev/null
+}
+
+# cmd_run_log <harness> <session id>... -- the lines of the harness's opencode log (its run dir's, one file
+# every run appends to and opencode rotates) that the run claiming those ids wrote: the runs whose "cli
+# starting" line names one as --session, every line of which carries run=<id>. A rotated log, or a harness
+# with no run dir, prints nothing. The canary tail's score keeps them beside its log (BENCH_CANARY_RUN_LOG).
+cmd_run_log() {
+  local h=${1:-} run log id
+  [[ "$h" =~ ^[a-z0-9-]+$ ]] || { say "run-log: no harness"; return 2; }
+  shift
+  for id in "$@"; do [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || { say "run-log: $id is not a session id"; return 2; }; done
+  run=$(harness_run_dir "$HARNESSES" "$h") && [ -n "$run" ] || return 0
+  log="$run/data/opencode/log/opencode.log"
+  [ -r "$log" ] || return 0
+  awk -v ids="$*" '
+    BEGIN { split(ids, want, " ") }
+    function rid() { return match($0, / run=[^ ]+ /) ? substr($0, RSTART + 5, RLENGTH - 6) : "" }
+    NR == FNR { if (index($0, "message=\"cli starting\"")) for (i in want) if (index($0, "\\\"--session\\\",\\\"" want[i] "\\\"") && rid() != "") keep[rid()] = 1; next }
+    rid() in keep' "$log" "$log"
 }
 
 # cmd_backfill_end [days] -- the items that closed failed in the last <days> (30) with no end_reason, each given the
@@ -9422,6 +9442,7 @@ main() {
     run-result) shift; cmd_run_result "$@" ;;
     item-end) shift; cmd_item_end "$@" ;;
     record-end) shift; cmd_record_end "$@" ;;
+    run-log) shift; cmd_run_log "$@" ;;
     backfill-end) shift; cmd_backfill_end "$@" ;;
     -h | --help) sed -n '2,48p' "$0" ;;
     *) sed -n '2,20p' "$0" >&2; return 2 ;;
