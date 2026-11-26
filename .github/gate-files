@@ -1,0 +1,15 @@
+# gate-guard's list for this repo: a PR that changes one of these waits for the human's gate-change
+# label. Format and modes: .local/bin/gate-guard. The list itself, the caller workflow, a dropped job
+# and an added continue-on-error are held without a line here.
+# The guard and the checks no agent may loosen in its own PR.
+.local/bin/gate-guard
+.claude/hooks/skip-guard.py
+.claude/hooks/walker-guards.py
+.githooks/pre-commit
+.githooks/pre-push
+# The copy and shape gate (P1) and its tuning.
+.local/bin/shape-grow
+.config/shape-grow/*
+# Ratchets: a line may go and a number fall (down), or a line may be added (up).
+down tests/skill-lint.baseline
+up .githooks/sensitive-tokens.txt

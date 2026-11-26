@@ -1,0 +1,228 @@
+#!/usr/bin/env python3
+"""gate-guard - a pull request that loosens a gate waits for the human's label.
+
+  gate-guard check [--list FILE] [--labels A,B] BASE HEAD    run in the repo's checkout
+  gate-guard label                                          the label's name
+
+`check` diffs HEAD against its merge base with BASE and holds the PR when it:
+- edits a file its `.github/gate-files` list names (mode `edit`: any change, a deletion too);
+- raises a number in, or adds a line to, a `down` file (a baseline, a threshold, a skip list);
+- lowers a number in, or drops a line from, an `up` file (a coverage floor, a pattern list);
+- drops a job from a workflow under .github/workflows or .forgejo/workflows, deletes a
+  workflow, or adds `continue-on-error: true` to one;
+- edits the list itself or the repo's gate-guard caller (.github/workflows/gate-guard.yml).
+
+A held PR fails unless it carries LABEL, which only the human applies: skip-guard denies an agent
+session adding it. The list is read at the merge base, so a PR cannot unlist a file and edit it in
+one step. Its format: one `[edit|down|up] <glob>` a line, edit when no mode is given, `#` starts a
+comment; the first matching line decides, and `*` matches across `/`. A down or up file pairs each
+added line with a removed line of the same text once its numbers are masked, and compares their
+numbers in order; a line with no such pair is an added or dropped line. --list reads the list from
+FILE instead (a test, or a count over past merges); --labels replaces the PR's labels, which come
+from $GITHUB_EVENT_PATH otherwise. Exit 0 pass (held but labelled passes too, with a notice), 1
+held, 2 usage or a git failure. The workflow is .github/workflows/gate-guard.yml; the plan is
+everything-should-wondrous-snail P3. Why: an agent could raise a baseline or drop a CI job in the
+same PR that needed it, and every merge gate trusted the PR it judged.
+"""
+import fnmatch
+import json
+import os
+import re
+import subprocess
+import sys
+
+LABEL = "gate-change"
+LIST = ".github/gate-files"
+CALLER = ".github/workflows/gate-guard.yml"
+WORKFLOW_DIRS = (".github/workflows/", ".forgejo/workflows/")
+MODES = ("edit", "down", "up")
+NUM = re.compile(r"-?\d+(?:\.\d+)?")
+JOB = re.compile(r"^( +)([A-Za-z_][A-Za-z0-9_-]*):")
+LOOSE = re.compile(r"^\s*continue-on-error:\s*(true|\$\{\{)")
+SHOWN = 5  # reasons printed per ratchet file; a new baseline adds hundreds
+
+
+def git(*args):
+    r = subprocess.run(["git", *args], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError("git %s: %s" % (" ".join(args), r.stderr.strip()))
+    return r.stdout
+
+
+def show(rev, path):
+    """The file at rev, or None when rev has no such file."""
+    r = subprocess.run(["git", "show", "%s:%s" % (rev, path)], capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else None
+
+
+def parse_list(text):
+    """[(mode, glob)] from a gate-files list."""
+    out = []
+    for raw in (text or "").splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        mode, _, glob = line.partition(" ")
+        if mode in MODES and glob.strip():
+            out.append((mode, glob.strip()))
+        else:
+            out.append(("edit", line))
+    return out
+
+
+def mode_of(path, rules):
+    for mode, glob in rules:
+        if fnmatch.fnmatchcase(path, glob):
+            return mode
+    return None
+
+
+def jobs(text):
+    """The job ids of a workflow file's top-level jobs: block."""
+    out, indent, on = set(), None, False
+    for line in (text or "").splitlines():
+        if not on:
+            on = line.rstrip() == "jobs:"
+            continue
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line.startswith(" "):
+            break
+        m = JOB.match(line)
+        if m and indent is None:
+            indent = len(m.group(1))
+        if m and len(m.group(1)) == indent:
+            out.add(m.group(2))
+    return out
+
+
+def changed_lines(mb, head, path):
+    """(removed, added) lines of one file, from a zero-context diff."""
+    removed, added = [], []
+    for line in git("diff", "--no-color", "--no-ext-diff", "-U0", mb, head, "--", path).splitlines():
+        if line.startswith(("---", "+++")):
+            continue
+        if line.startswith("-"):
+            removed.append(line[1:])
+        elif line.startswith("+"):
+            added.append(line[1:])
+    return removed, added
+
+
+def skeleton(line):
+    return NUM.sub("#", line.strip())
+
+
+def numbers(line):
+    return [float(n) for n in NUM.findall(line)]
+
+
+def ratchet(mode, removed, added):
+    """Reasons a down or up file's change loosens it: a line with no counterpart, or a number that
+    moved the wrong way."""
+    out = []
+    grow, shrink = (added, removed) if mode == "down" else (removed, added)
+    pool = list(shrink)
+    for line in grow:
+        twin = next((p for p in pool if skeleton(p) == skeleton(line)), None)
+        if twin is None:
+            out.append("%s the line `%s`" % ("adds" if mode == "down" else "drops", line.strip()[:120]))
+            continue
+        pool.remove(twin)
+        new, old = (line, twin) if mode == "down" else (twin, line)
+        if any((n > o) if mode == "down" else (n < o) for n, o in zip(numbers(new), numbers(old))):
+            verb = "raises" if mode == "down" else "lowers"
+            out.append("%s `%s` to `%s`" % (verb, old.strip()[:80], new.strip()[:80]))
+    return out
+
+
+def holds(mb, head, rules):
+    """Every reason the change from mb to head loosens a gate."""
+    rules = list(rules)
+    for implicit in (LIST, CALLER):
+        if show(mb, implicit) is not None:
+            rules.insert(0, ("edit", implicit))
+    out = []
+    for row in git("diff", "--no-renames", "--name-status", mb, head).splitlines():
+        status, _, path = row.partition("\t")
+        mode = mode_of(path, rules)
+        if mode == "edit":
+            out.append("%s %s, a listed gate file" % ("deletes" if status == "D" else "edits", path))
+        elif mode and status == "D":
+            out.append("deletes %s, a listed %s file" % (path, mode))
+        elif mode:
+            found = ratchet(mode, *changed_lines(mb, head, path))
+            out += ["%s: %s (%s file)" % (path, r, "an up" if mode == "up" else "a down") for r in found[:SHOWN]]
+            if len(found) > SHOWN:
+                out.append("%s: and %d more such lines" % (path, len(found) - SHOWN))
+        if path.startswith(WORKFLOW_DIRS) and path.endswith((".yml", ".yaml")) and mode != "edit":
+            before = jobs(show(mb, path))
+            after = jobs(show(head, path)) if status != "D" else set()
+            out += ["%s: drops the job `%s`" % (path, j) for j in sorted(before - after)]
+            if status != "D":
+                out += ["%s: adds `%s`" % (path, a.strip()) for a in changed_lines(mb, head, path)[1] if LOOSE.match(a)]
+    return out
+
+
+def event_labels():
+    p = os.environ.get("GITHUB_EVENT_PATH")
+    if not p or not os.path.isfile(p):
+        return []
+    with open(p) as f:
+        ev = json.load(f)
+    return [l.get("name", "") for l in (ev.get("pull_request") or {}).get("labels") or []]
+
+
+def check(argv):
+    list_file, labels, pos, it = None, None, [], iter(argv)
+    for a in it:
+        if a == "--list":
+            list_file = next(it, None)
+        elif a == "--labels":
+            labels = [l.strip() for l in (next(it, "") or "").split(",") if l.strip()]
+        else:
+            pos.append(a)
+    if len(pos) != 2 or (list_file is not None and not os.path.isfile(list_file)):
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        return 2
+    base, head = pos
+    try:
+        mb = git("merge-base", base, head).strip()
+        if list_file:
+            with open(list_file) as f:
+                rules = parse_list(f.read())
+        else:
+            rules = parse_list(show(mb, LIST))
+        found = holds(mb, head, rules)
+    except RuntimeError as e:
+        print("gate-guard: %s" % e, file=sys.stderr)
+        return 2
+    if not found:
+        print("gate-guard: no gate loosened (%d listed patterns, base %s)" % (len(rules), mb[:9]))
+        return 0
+    labelled = LABEL in (event_labels() if labels is None else labels)
+    tag = "::notice::" if labelled else "::error::"
+    for r in found:
+        print("%sgate-guard: %s" % (tag, r))
+    if labelled:
+        print("gate-guard: %d gate change(s), passed by the `%s` label the human applied" % (len(found), LABEL))
+        return 0
+    # gate: ci-gate-guard
+    print("gate-guard: this PR loosens a gate (%d change(s) above). The human reviews it and applies the "
+          "`%s` label, which re-runs this check; an agent cannot apply it. To avoid the wait, keep the "
+          "gate as it was and fix what it refuses instead." % (len(found), LABEL))
+    return 1
+
+
+def main(argv):
+    if argv[:1] == ["label"]:
+        print(LABEL)
+        return 0
+    if argv[:1] == ["check"]:
+        return check(argv[1:])
+    print(__doc__.split("\n\n")[1], file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
