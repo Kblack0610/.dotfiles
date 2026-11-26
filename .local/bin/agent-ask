@@ -459,6 +459,17 @@ question_form_ok() {
   fi
 }
 
+# resume_form_ok <resume>: a `--resume` is a prompt for the ask-resume agent or `run: <command>`. One that
+# opens with a fleet command (fleet-*, agent-*, ask-*: a sibling of this script) and no `run:` would reach the model as a
+# prompt and never run the command (ar-6089, ask VmlrxU: `fleet-dispatch start --item ar-5588`).
+resume_form_ok() {
+  local first="${1%%[[:space:]]*}"
+  [[ "$1" == run:* || -z "$first" || "$first" == */* ]] && return 0
+  [[ "$first" =~ ^(fleet|agent|ask)- ]] && [ -f "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/$first" ] || return 0
+  echo "agent-ask post: --resume '$1' is a command, so ask-resume would hand it to a model as a prompt. Write it 'run: $1' to run it as one. A queue item that waits on this ask restarts when it is answered, with no resume; a 'start --item <slug>' of a requeued item is pointed at the live item of its row when it runs." >&2
+  return 1
+}
+
 cmd_post() {
   local project="" profile="" session="" agent="" task="" kind="question" \
         options="" recommend="" why="" resume="" wait=0 question="" context="" audit_of="" previews="" blocker=""
@@ -488,7 +499,7 @@ cmd_post() {
   done
   [ -n "$question" ] || { echo "agent-ask post: no question given" >&2; return 2; }
   question="$(oneline "$question")"
-  question_form_ok "$question" || return 2
+  { question_form_ok "$question" && resume_form_ok "$resume"; } || return 2
   # `slug=meaning` options: the slugs alone stay in `options:`, the meanings go pipe-aligned
   # into `option_notes:`.
   local option_notes="" o bare=""

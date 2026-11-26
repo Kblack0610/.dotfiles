@@ -12,6 +12,9 @@
 # A `resume` is a prompt for the ask-resume agent, or `run: <command>`: a script that posts an
 # ask and consumes its own answer, which runs as `<command> <id>` with no model call (the inbox
 # sweep's "which project is this line about?" asks).
+# A `run:` that starts a queue item (`fleet-dispatch start --item <slug>`) is pointed at the item live on
+# that slug's board row when the slug has ended, as a park leaves it (live_start_item); `agent-ask post`
+# refuses a bare fleet command, which would reach the model as a prompt.
 #
 # `agent-ask answer` calls it with an id, so answering IS starting from any surface.
 # `--all` is the manual backstop for an answer recorded with AGENT_ASK_NO_RESUME or
@@ -51,7 +54,18 @@ command -v agent-ask >/dev/null 2>&1 || { echo "ask-resume: agent-ask not on PAT
 # agent-queue refuses leaves the ask resumable for `--all`; when the run ends with the item still
 # running, its exit closes it. A `run:` command is the asking script's own step, not a session.
 run_resume() { # $1=id $2=project $3=command
-  local id="$1" project="$2" cmd="$3" slug="ask-resume-$1" sid=''
+  local id="$1" project="$2" cmd="$3" slug="ask-resume-$1" sid='' live
+  local start=0 rc=0
+  if [[ "$cmd" == run:* ]]; then
+    live="$(live_start_item "$cmd")" || rc=$?
+    case "$rc" in
+      0) cmd="$live"; [[ "$cmd" =~ $START_RE ]] && start=1 ;;
+      3) [ "$DRY" = 1 ] || agent-ask mark-resumed "$id" >/dev/null 2>&1
+         echo "ask-resume: $id: its start target has ended and no queued item holds its row; the answer's release starts the row's next item, so nothing runs" >&2
+         return 0 ;;
+      *) echo "ask-resume: $id: the queue could not be read for its start target; ask-resume --all retries it" >&2; return 1 ;;
+    esac
+  fi
   if [ "$DRY" = 1 ]; then
     if [[ "$cmd" == run:* ]]; then echo "would run: ${cmd#run:} $id   (ask $id)"; else echo "would run: agentctl-run --agent ask-resume -p '$cmd'   (ask $id, item $slug)"; fi
     return 0
@@ -80,7 +94,9 @@ run_resume() { # $1=id $2=project $3=command
   [ -z "${INVOCATION_ID:-}" ] || detach=(systemd-run --user --scope --quiet setsid -f)
   if [[ "$cmd" == run:* ]]; then
     # shellcheck disable=SC2016 # $0 and $1 are the inner shell's: the label and the ask id
-    "${detach[@]}" bash -c "${cmd#run:}"' "$1"' ask-resume "$id" >>"$log/${project}.log" 2>&1 </dev/null
+    # A start is a whole command: fleet-dispatch start refuses the ask id the other run: commands take as $1.
+    if [ "$start" = 1 ]; then "${detach[@]}" bash -c "${cmd#run:}" ask-resume >>"$log/${project}.log" 2>&1 </dev/null
+    else "${detach[@]}" bash -c "${cmd#run:}"' "$1"' ask-resume "$id" >>"$log/${project}.log" 2>&1 </dev/null; fi
     return 0
   fi
   # A run that opened a PR and did not land it leaves the item in review, where reap settles it by
@@ -100,6 +116,28 @@ run_resume() { # $1=id $2=project $3=command
     else close done --status failed; fi
     exit "$rc"' ask-resume "$cmd" "${ASK_RESUME_MAX_TURNS:-60}" "$slug" "$sid" \
     >>"$log/${project}.log" 2>&1 </dev/null
+}
+
+# live_start_item <run: command>: the command with its `fleet-dispatch start --item <slug>` pointed at the
+# item that is live now. A park requeues its item behind the ask (agent-queue requeue cancels it and the
+# row waits), so by the answer the slug the poster knew is done and a start of it can only fail (ar-6089,
+# ask VmlrxU: ar-5588). The live item is the one now on the same board row. Prints the command, unchanged
+# when it names no start or its item is live; prints nothing when the item ended and no live one has its
+# row, which the caller reads as "nothing to start".
+START_RE='fleet-dispatch[[:space:]]+start[[:space:]]([^;&|]*[[:space:]])?--item[[:space:]]+([A-Za-z0-9._-]+)'
+live_start_item() { # $1=command
+  local cmd="$1" slug it state row live
+  [[ "$cmd" =~ $START_RE ]] || { printf '%s\n' "$cmd"; return 0; }
+  slug="${BASH_REMATCH[2]}"
+  it="$(agent-queue show "$slug" --json 2>/dev/null)" || { printf '%s\n' "$cmd"; return 0; }
+  state="$(jq -r '.state // empty' <<<"$it")"
+  case "$state" in queued | running | waiting | review | '') printf '%s\n' "$cmd"; return 0 ;; esac
+  row="$(jq -r '.row // empty' <<<"$it")"
+  # Only a queued item is started: a running or waiting one is already on its way (a waiting one restarts on the answer).
+  [ -n "$row" ] && live="$(agent-queue list --json --state queued)" || return 3
+  live="$(jq -r --arg r "$row" --arg x "$slug" 'first(select(.slug != $x and (.row // "") == $r) | .slug)' <<<"$live")"
+  [ -n "$live" ] || return 3
+  printf '%s\n' "${cmd/--item $slug/--item $live}"
 }
 
 # --- one id -----------------------------------------------------------------
