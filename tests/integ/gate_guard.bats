@@ -158,6 +158,14 @@ check() { python3 "$GG" check "$@" main HEAD; }
   assert_output --partial 'drops the line `--strict` (an up file)'
 }
 
+@test "a JSON baseline that drops its last entry passes, though the comma moves off the line before" {
+  printf '%s\n' '[' '  "a",' '  "b"' ']' > tests/baseline.txt && commit seed
+  git checkout -q main && git merge -q --ff-only pr && git checkout -q -b pr2
+  printf '%s\n' '[' '  "a"' ']' > tests/baseline.txt && commit drop
+  run check --labels ''
+  assert_success
+}
+
 @test "a jobs: block with a comment, CRLF or quoted ids still shows a dropped job" {
   printf 'name: w\r\njobs: # required\r\n  "build":\r\n    runs-on: x\r\n  test:\r\n    runs-on: x\r\n' > .github/workflows/w.yml && commit seed
   git checkout -q main && git merge -q --ff-only pr && git checkout -q -b pr2

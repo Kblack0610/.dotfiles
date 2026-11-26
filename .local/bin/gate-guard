@@ -16,7 +16,7 @@ A held PR fails unless it carries LABEL, which only the human applies: skip-guar
 session adding it. The list is read at the merge base, so a PR cannot unlist a file and edit it in
 one step. Its format: one `[edit|down|up] <glob>` a line, edit when no mode is given, `#` starts a
 comment; the first matching line decides, and `*` matches across `/`. A down or up file pairs each
-added line with a removed line of the same text once its numbers are masked, and compares their
+added line with a removed line of the same text once its numbers and a trailing comma are masked, and compares their
 numbers in order; a line with no such pair is an added or dropped line. --list reads the list from
 FILE instead (a test, or a count over past merges); --labels replaces the PR's labels, which come
 from $GITHUB_EVENT_PATH otherwise. Exit 0 pass (held but labelled passes too, with a notice), 1
@@ -115,7 +115,9 @@ def changed_lines(mb, head, path):
 
 
 def skeleton(line):
-    return NUM.sub("#", line.strip())
+    """The line with its numbers masked and a trailing comma dropped: in a JSON list, removing the
+    last entry moves the comma off the line before it, which is no new line."""
+    return NUM.sub("#", line.strip().rstrip(",").rstrip())
 
 
 def numbers(line):
