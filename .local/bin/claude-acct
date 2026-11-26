@@ -2063,13 +2063,19 @@ await() {
 }
 
 # exited <server> <pane> <pid> <stop shells 0|1> -- the claude is gone; with --stop-shells
-# it answers the background-shell dialog on the way with "Exit and stop tasks".
+# it answers the background-shell dialog on the way with "Exit and stop tasks", once per claude:
+# the dialog stays on screen until claude is gone, and a second answer would be typed into the
+# pane's shell ahead of the resume (ar-5592). A dialog that closes and comes back is answered
+# again; an answer lost while it stays drawn is not resent, and the move times out on it.
+# EXIT_ANSWERED lives across polls only because await runs exited in this shell, never a subshell.
+EXIT_ANSWERED=""
 exited() {
     [[ -d "$PROC/$3" ]] || return 0
     [[ "$4" == 1 ]] || return 1
     local n
     n=$(dialog_choice "$(tmux -L "$1" capture-pane -p -t "$2" 2>/dev/null)")
-    [[ -n "$n" ]] && tmux -L "$1" send-keys -t "$2" "$n"
+    [[ -n "$n" ]] || { EXIT_ANSWERED=""; return 1; }
+    [[ "$EXIT_ANSWERED" != "$3" ]] && tmux -L "$1" send-keys -t "$2" "$n" && EXIT_ANSWERED=$3
     return 1
 }
 

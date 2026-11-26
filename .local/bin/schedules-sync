@@ -6,8 +6,8 @@ timeout (the longest `needs:` path of job timeouts, GitHub's 360 min where a job
 none), its purpose (the comment block right above `on:`, else the file's first comment
 block), its job graph, and its last SCHEDULES_RUNS scheduled runs (id, url, status,
 conclusion, start, end, failed jobs). It also records the repo's night set, config/ci/nightly.json
-on the base (keys are workflow files: `night` the ones the nightly runs, `held` the ones it
-holds back), as `night: {night, held, sha, etag}`, read through the contents API conditional on
+on the base (keys are workflow files: `night` the ones the nightly starts first, `wide` the ones
+it starts once those finished, `held` the ones it holds back), as `night: {night, wide, held, sha, etag}`, read through the contents API conditional on
 its ETag and decoded only when its sha moves; a file that is not a JSON object keeps its sha
 with `error` set. A repo without the file has `night_absent` (when it was found missing)
 instead and is asked again a day later. It writes them to one file, SCHEDULES_STATE
@@ -122,7 +122,8 @@ the cursor, epoch, repos and last error are in sync.json's "exporter", and a new
 covered by asking GitHub. The feed's `runs` (each of its repos' runs each time its state moves)
 go to the run ledger, and are the only GitHub run source: a pass lists a repo's actions/runs only
 by status (queued, in_progress), and only for the runs the ledger holds open since before the
-feed's window (each run's newest attempt); one no longer in its status's list is read by id. Their
+feed's window (each run's newest attempt); one no longer in its status's list is read by id, and a
+rerun's older attempt still held open is read from actions/runs/<id>/attempts/<n>. Their
 scheduled runs for the state file are the feed's `event: schedule` runs, and their freshness is
 the feed's: while it fails, each such repo keeps what the feed served before failing, with
 `error` set. Job detail for a run older than the feed's window is read per attempt from actions/runs/<id>/attempts/<n>/jobs, every page, newest run
@@ -211,7 +212,7 @@ QUARANTINE_FILES = ("quarantine.py", "quarantine.txt")
 # repo-root path), cached when the base has them; an older quarantine.py needs neither.
 QUARANTINE_WITH = ("flake_patterns.py", "flake-causes.json")
 QUARANTINE_RECHECK = timedelta(days=1)  # how often a repo with no quarantine is asked again
-NIGHT_FILE = "config/ci/nightly.json"  # the repo's night set: which workflows the nightly runs or holds
+NIGHT_FILE = "config/ci/nightly.json"  # the repo's night set: which workflows the nightly runs (night, then wide) or holds
 # The nightly: the full run's title (playground scripts/test/last-nightly.py TITLES), its joined
 # summary, uploaded only when every shard reported (test.yml playmode-report), and each job's
 # suite output, where results.py names a quarantined test that passed.
@@ -232,6 +233,7 @@ FEED_PAGES = 50  # a cold 24h window is ~1,500 runs; this bounds one pass at 5,0
 # any repo, apart so a cold 30-day ledger never starves a live run.
 BACKFILL_CALLS = int(os.environ.get("SCHEDULES_BACKFILL_CALLS", "20"))
 LIST_PAGES = 10  # a repo's runs in one open status, 100 a page; one still unseen is read by id
+ATTEMPT_READS = 50  # a repo's superseded attempts read a pass: the first pass after ar-4126 met about 200 in one repo
 JOB_KEYS = ("id", "name", "conclusion", "runner_name", "labels", "created_at", "started_at", "completed_at")
 STEP_KEYS = ("number", "name", "conclusion", "started_at", "completed_at")
 CURL = os.environ.get("SCHEDULES_CURL", "curl")
@@ -600,7 +602,7 @@ def gh_row(repo, r):
             "created_at": r.get("created_at"), "started_at": r.get("run_started_at"),
             "ended_at": r.get("updated_at") if done else None,
             "queue_wait_s": wait_s(r.get("created_at"), r.get("run_started_at")),
-            "url": r.get("html_url")}
+            "url": r.get("html_url"), **({"gone": True} if r.get("gone") else {})}
 
 
 def fj_run(host, repo, n):
@@ -824,8 +826,9 @@ PRS_ONLY = "prs-only"  # a tracker with prsOnly: the PR store reads the repo, no
 PRS_SYNC = os.path.join(PRS_DIR, "sync.json")
 PR_PAGES = int(os.environ.get("SCHEDULES_PR_PAGES", "100"))  # a cold read of a repo's whole PR history
 # The shape of a PR row. A store whose sync entry names another reads its whole history once more,
-# so a field added to pr_row reaches the rows of PRs that will never update again.
-PR_ROW = 2
+# so a field added to pr_row reaches the rows of PRs that will never update again. 3: revert prs
+# reparsed (ar-2636).
+PR_ROW = 3
 PR_STATES = ("open", "merged", "closed", "all")
 PR_OPTS = {"--state", "--since", "--branch"}
 RED = FAILED + ("cancelled", "action_required", "startup_failure")  # pr-ci.sh's red_re
@@ -851,10 +854,16 @@ def utc(s):
     return iso(t.astimezone(timezone.utc)) if t else None
 
 
+# What a revert word names: a quoted title (the Revert button's, `Revert "feat: x (#5)"`) or a list
+# of PR refs right after it (`Reverts #7`, `reverts PR #3 and o/r#4`). A ref later in the line is
+# context: platform #1523's "Reverts #1509: ... from #1510 is unchanged" read #1510 as reverted (ar-2636).
+REVERT_REFS_RE = r'[\s:]*(?:"[^"\n]*"|(?:(?i:prs?)\s+)?[\w./-]*#[0-9]+(?:\s*(?:,|and|&)\s*[\w./-]*#[0-9]+)*)'
+
+
 def revert_of(title, body):
     """What a PR's title and body say it reverts, parsed once here for so_pr_index: {title (the
-    `Revert "<title>"` button's), prs (each `#N` after a revert word on its line), shas ("This
-    reverts commit <sha>")}, or None when no revert word appears."""
+    `Revert "<title>"` button's), prs (each `#N` that directly follows a revert word, REVERT_REFS_RE),
+    shas ("This reverts commit <sha>")}, or None when no revert word appears."""
     text = f"{title or ''}\n{body or ''}"
     if not re.search(REVERT_RE, text):
         return None
@@ -862,8 +871,9 @@ def revert_of(title, body):
     refs = []
     for line in text.split("\n"):
         hit = re.search(REVERT_RE + r"(?P<rest>.*)", line)
-        if hit:
-            refs += [int(n) for n in re.findall(r"#([0-9]+)\b", hit.group("rest"))]
+        lead = hit and re.match(REVERT_REFS_RE, hit.group("rest"))
+        if lead:
+            refs += [int(n) for n in re.findall(r"#([0-9]+)\b", lead.group(0))]
     return {"title": m.group(1) if m else None, "prs": refs,
             "shas": re.findall(r"(?i)this reverts commit ([0-9a-f]{7,40})", text)}
 
@@ -1288,11 +1298,19 @@ def stale_open(repo, last, fed, exporter, t):
     newest attempt counts (a rerun's older one is history), and the reads are batched per repo: one
     actions/runs?status=<s> listing per status those runs hold, paged until it has them all. A run
     still listed costs nothing more; only one that left its status (or holds none) is read by id.
-    A run GitHub no longer has is left as it is."""
+    A rerun's older attempt held open has ended (GitHub reruns only a finished run), but no listing
+    or feed serves it again, so it is read once from its attempt, newest first, at most
+    ATTEMPT_READS a pass, and closes (ar-4126); one GitHub no longer has closes as gone_attempt. A run
+    GitHub no longer has is otherwise left as it is.
+    `fed` is the (id, attempt) of each run the feed served this pass."""
     edge = t - timedelta(seconds=exporter.get("window_secs") or 86400)
-    newest = newest_attempts(r for r in last.values() if r["forge"] == "github" and r["repo"].lower() == repo.lower())
-    old = [r for r in newest.values() if r.get("status") != "completed" and r["id"] not in fed
+    mine = [r for r in last.values() if r["forge"] == "github" and r["repo"].lower() == repo.lower()]
+    newest = newest_attempts(mine)
+    fed_ids = {i for i, _ in fed}
+    old = [r for r in newest.values() if r.get("status") != "completed" and r["id"] not in fed_ids
            and (when(r.get("created_at")) or t) < edge]
+    superseded = sorted((r for r in mine if r.get("status") != "completed" and r is not newest[r["id"]]
+                         and (r["id"], r["attempt"]) not in fed), key=lambda r: (r.get("created_at") or "", r["id"]), reverse=True)
     listed = {}
     for status in sorted({r["status"] for r in old if r.get("status")}):
         want = {r["id"] for r in old if r.get("status") == status}
@@ -1302,7 +1320,20 @@ def stale_open(repo, last, fed, exporter, t):
             listed.update((r["id"], r) for r in batch)
             if len(batch) < 100 or want <= listed.keys():
                 break
-    return [got for r in old if (got := listed.get(r["id"]) or gh(f"repos/{repo}/actions/runs/{r['id']}", missing={}))]
+    ended = [gh(f"repos/{repo}/actions/runs/{r['id']}/attempts/{r['attempt']}", missing={}) or gone_attempt(r)
+             for r in superseded[:ATTEMPT_READS]]
+    return [got for r in old if (got := listed.get(r["id"]) or gh(f"repos/{repo}/actions/runs/{r['id']}", missing={}))] + ended
+
+
+def gone_attempt(r):
+    """A rerun's older attempt GitHub no longer has (a 404): it ended, since GitHub reruns only a
+    finished run, so it closes with its conclusion unknown and `gone` set. Left open, the same gone
+    attempts would take every one of a repo's ATTEMPT_READS each pass, and the rest would never close;
+    `gone` keeps direct_jobs from asking for jobs GitHub cannot serve."""
+    return {"id": r["id"], "run_attempt": r["attempt"], "status": "completed", "conclusion": None, "gone": True,
+            "name": r.get("workflow"), "path": r.get("path"), "display_title": r.get("title"),
+            "head_branch": r.get("branch"), "event": r.get("event"), "head_sha": r.get("sha"),
+            "created_at": r.get("created_at"), "run_started_at": r.get("started_at"), "html_url": r.get("url")}
 
 
 def fetch_jobs(repo, run, budget):
@@ -1333,7 +1364,7 @@ def direct_jobs(repo, runs_last, jobs_last, exporter, budget, t):
         return []
     edge = t - timedelta(seconds=exporter.get("window_secs") or 86400)
     todo = [r for r in runs_last.values()
-            if r["forge"] == "github" and r["repo"] == repo and r.get("status") == "completed"
+            if r["forge"] == "github" and r["repo"] == repo and r.get("status") == "completed" and not r.get("gone")
             and not (jobs_last.get(("github", repo.lower(), r["id"], r["attempt"])) or {}).get("complete")
             and (when(r.get("created_at")) or t) < edge]
     out = []
@@ -1588,9 +1619,9 @@ def night_set(repo, base, prev, t):
     except ValueError:
         doc = None
     if doc is None:  # a broken file is shown as one, never read as an empty night
-        return {"night": {"night": {}, "held": {}, "sha": got["sha"], "etag": etag, "error": f"{NIGHT_FILE}: not a JSON object"}}
+        return {"night": {"night": {}, "wide": {}, "held": {}, "sha": got["sha"], "etag": etag, "error": f"{NIGHT_FILE}: not a JSON object"}}
     pick = lambda k: {f: str(n) for f, n in (doc.get(k) or {}).items()} if isinstance(doc.get(k), dict) else {}
-    return {"night": {"night": pick("night"), "held": pick("held"), "sha": got["sha"], "etag": etag}}
+    return {"night": {"night": pick("night"), "wide": pick("wide"), "held": pick("held"), "sha": got["sha"], "etag": etag}}
 
 
 def sync_repo(repo, base, prev, t, sched, jobs_last):
@@ -1981,7 +2012,7 @@ def main(argv):
                 jn = write_ledger(jlast, jn, jtorn, new_jobs(jlast, recs), t, JOBS_LEDGER, job_key, JOBS_KEEP)
             elif forge == "github":
                 got = fed_runs.get(repo.lower(), [])
-                got = got + stale_open(repo, last, {r["id"] for r in got}, exporter, t)
+                got = got + stale_open(repo, last, {(r["id"], r.get("run_attempt", 1)) for r in got}, exporter, t)
                 rows.extend(gh_row(repo, r) for r in got)
                 seen = {**last, **{run_key(r): r for r in rows}}  # the ledger with this pass's runs
                 jn = write_ledger(jlast, jn, jtorn, new_jobs(jlast, direct_jobs(repo, seen, jlast, exporter, budget, t)), t,

@@ -1169,7 +1169,7 @@ scope_env() {
   mkdir -p "$XDG_RUNTIME_DIR/systemd" "$SANDBOX/repo/unity-core-playground"
   rm -f "$XDG_RUNTIME_DIR/systemd/private"
   export BUS_LOG="$SANDBOX/bus.log"; : > "$BUS_LOG"
-  python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$XDG_RUNTIME_DIR/systemd/private"
+  unix_sock "$XDG_RUNTIME_DIR/systemd/private"
   cat > "$SANDBOX/bin/busctl" <<'STUB'
 #!/bin/sh
 for a; do echo "bus: $a"; done >> "$BUS_LOG"
@@ -1802,6 +1802,31 @@ agy_usage() {
     "$SANDBOX/agy.json" > "$SANDBOX/agy.3p" && mv "$SANDBOX/agy.3p" "$SANDBOX/agy.json"
   rm -f "$XDG_CACHE_HOME/claude-acct/agy.json"
   run --separate-stderr "$ACCT" status --json
+  [ "$(field agy .room.ok <<<"$output")" = true ]
+}
+
+@test "sources: agy-3p reads the Claude and GPT group, and each agy source is gated on its own week alone (ar-3990)" {
+  agy_setup
+  echo "agy-3p  agy           3p          reserve=5 max_live=2" >> "$CLAUDE_ACCT_SOURCES"
+  agy_usage 0.7 0.94 84
+  jq --arg wr "$(date -u -d "@$((NOW + 84 * 3600))" +%FT%TZ)" \
+    '.command.data.groups |= map(.buckets |= map(if .id == "3p-weekly" then .remaining_fraction = 0.8 | .reset_time = $wr else . end))' \
+    "$SANDBOX/agy.json" > "$SANDBOX/agy.x" && mv "$SANDBOX/agy.x" "$SANDBOX/agy.json"
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field agy-3p .kind <<<"$output")" = agy ]
+  [ "$(field agy-3p .state <<<"$output")" = ok ]
+  [ "$(field agy-3p .week_used <<<"$output")" = 20 ]
+  [ "$(field agy .week_used <<<"$output")" = 30 ]
+  [ "$(field agy-3p .room.ok <<<"$output")" = true ]
+  # a spent 3p week refuses the 3p source only: the gemini source keeps its room
+  jq '.command.data.groups |= map(.buckets |= map(if .id == "3p-weekly" then .remaining_fraction = 0 else . end))' \
+    "$SANDBOX/agy.json" > "$SANDBOX/agy.x" && mv "$SANDBOX/agy.x" "$SANDBOX/agy.json"
+  rm -f "$XDG_CACHE_HOME/claude-acct/agy.json" "$XDG_CACHE_HOME/claude-acct/agy-3p.json"
+  run --separate-stderr "$ACCT" room --source agy-3p
+  assert_failure 1
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field agy-3p .room.reason <<<"$output")" = capped ]
   [ "$(field agy .room.ok <<<"$output")" = true ]
 }
 

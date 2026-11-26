@@ -173,7 +173,7 @@ bucket() { tail -n 1 "$GH_CALLS_DIR"/*.tsv | cut -f2; }
   assert_failure 3
   assert_equal "$(cat "$BATS_TEST_TMPDIR/stdin.log")" body
   run cut -f2- "$GH_CALLS_DIR/$(date +%F).tsv"
-  assert_output $'user\t3\tland-thing\tship\tpr edit 5 -R acme/x --body-file -'
+  assert_output $'user\t3\tland-thing\tship\tpr edit 5 -R acme/x --body-file -\t-'
 }
 
 @test "with GH_REAL unset it runs the next gh on PATH, skipping itself" {
@@ -184,8 +184,34 @@ bucket() { tail -n 1 "$GH_CALLS_DIR"/*.tsv | cut -f2; }
   PATH="$BATS_TEST_TMPDIR/wrap:$BATS_TEST_TMPDIR/real:$PATH" run gh run view 5 -R acme/x
   assert_success
   assert_equal "$(tail -n 1 "$BATS_TEST_TMPDIR/real.log")" 'tok-acme|run view 5 -R acme/x'
-  PATH="$BATS_TEST_TMPDIR/wrap:/usr/bin/nonexistent" run -127 "$BASH" "$BATS_TEST_TMPDIR/wrap/gh" --version
+  # A PATH with no gh on it but the wrapper: only the tools it needs to get that far, so the skip is
+  # what is tested, not a missing grep.
+  local t tools="$BATS_TEST_TMPDIR/tools"
+  mkdir -p "$tools"
+  for t in readlink head grep id cut getent; do ln -s "$(command -v "$t")" "$tools/$t"; done
+  PATH="$BATS_TEST_TMPDIR/wrap:$tools" run -127 "$BASH" "$BATS_TEST_TMPDIR/wrap/gh" --version
   assert_output --partial 'no gh on PATH besides this wrapper'
+  # A second copy of the wrapper (a worktree's .local/bin ahead of ~/.local/bin) is skipped too, so neither
+  # execs the other forever (ar-4949); `timeout` turns that loop into a failure here.
+  local to; to=$(command -v timeout)
+  mkdir -p "$BATS_TEST_TMPDIR/copy"
+  cp "$WRAP" "$BATS_TEST_TMPDIR/copy/gh"
+  : >"$BATS_TEST_TMPDIR/real.log"
+  PATH="$BATS_TEST_TMPDIR/copy:$BATS_TEST_TMPDIR/wrap:$BATS_TEST_TMPDIR/real:$PATH" run "$to" 10 gh run view 6 -R acme/x
+  assert_success
+  assert_equal "$(tail -n 1 "$BATS_TEST_TMPDIR/real.log")" 'tok-acme|run view 6 -R acme/x'
+  # NEGATIVE CONTROL: the two copies with no real gh after them find none rather than running each other
+  PATH="$BATS_TEST_TMPDIR/copy:$BATS_TEST_TMPDIR/wrap:$tools" run -127 "$to" 10 "$BASH" "$BATS_TEST_TMPDIR/copy/gh" --version
+  assert_output --partial 'no gh on PATH besides this wrapper'
+  # An older copy, already past its own check, hands GH_REAL this one with GH_WRAPPED set: refused, not exec'd
+  GH_WRAPPED=1 GH_REAL="$BATS_TEST_TMPDIR/copy/gh" run -127 "$to" 10 "$WRAP" --version
+  assert_output --partial "GH_REAL ($BATS_TEST_TMPDIR/copy/gh) is a copy of this wrapper"
+  # ... while a real GH_REAL under GH_WRAPPED still runs
+  GH_WRAPPED=1 GH_REAL="$BATS_TEST_TMPDIR/real/gh" run "$to" 10 "$WRAP" run view 7 -R acme/x
+  assert_success
+  assert_equal "$(tail -n 1 "$BATS_TEST_TMPDIR/real.log")" 'none|run view 7 -R acme/x'
+  # The copy check reads line 2's opening, which every copy shares: a rewrite of it here breaks the check.
+  assert_equal "$(sed -n 2p "$WRAP" | cut -c1-22)" "# gh - the fleet's gh:"
 }
 
 # gh-app against a stub curl: the JWT is signed with a throwaway key, and the stub answers by URL.
@@ -311,6 +337,38 @@ gh_calls() { { grep -vc '^none|api rate_limit' "$BATS_TEST_TMPDIR/real.log" || t
   run bash -o pipefail "$BATS_TEST_TMPDIR/ci-cost.sh" </dev/null
   assert_equal "$(gh_calls)" 1
   assert_equal "$(bucket)" user:deferred
+}
+
+granted() { tail -n 1 "$GH_CALLS_DIR"/*.tsv | cut -f7; }
+parent() { tail -n 1 "$GH_CALLS_DIR"/*.tsv | cut -f4; }
+
+@test "budget: a read the reserve lets through logs the ancestor that granted it, its parent column unchanged" {
+  echo "40 $(( $(date +%s) + 1800 ))" > "$BATS_TEST_TMPDIR/rate"
+  printf '#!/usr/bin/env bash\ntimeout 10 bash -c '\''"$0" run view 5 -R other/x --json status; :'\'' "%s"\n' "$WRAP" \
+    > "$BATS_TEST_TMPDIR/agent-land"
+  run bash "$BATS_TEST_TMPDIR/agent-land" </dev/null
+  assert_success
+  assert_equal "$(bucket)" user
+  assert_equal "$(granted)" agent-land
+  assert_equal "$(parent)" bash
+  # NEGATIVE CONTROL: the same chain under a script no list names logs a wait, with no granter
+  cp "$BATS_TEST_TMPDIR/agent-land" "$BATS_TEST_TMPDIR/ci-cost.sh"
+  run bash "$BATS_TEST_TMPDIR/ci-cost.sh" </dev/null
+  assert_equal "$(bucket)" user:deferred
+  assert_equal "$(granted)" -
+}
+
+@test "budget: a deferred read and a read above the reserve both log - as the granting ancestor" {
+  echo "40 $(( $(date +%s) + 1800 ))" > "$BATS_TEST_TMPDIR/rate"
+  run -75 as_caller ci-cost.py run view 5 -R other/x --json status
+  assert_equal "$(bucket)" user:deferred
+  assert_equal "$(granted)" -
+  echo "4000 $(( $(date +%s) + 1800 ))" > "$BATS_TEST_TMPDIR/rate"
+  rm -f "$GH_CALLS_DIR/budget" # the shared reading would hold the old 40 for 30 s
+  run as_caller agent-land run view 5 -R other/x --json status
+  assert_success
+  assert_equal "$(bucket)" user
+  assert_equal "$(granted)" -
 }
 
 @test "budget: the human at a terminal never waits" {
@@ -454,4 +512,35 @@ calls() { grep -vc '^[^|]*|api rate_limit' "$BATS_TEST_TMPDIR/real.log" || true;
   mkdir -p "$TMPDIR"
   FAIL5=99 run "$WRAP" api repos/acme/x/pulls
   assert_equal "$(ls "$TMPDIR" | wc -l)" 0
+}
+
+# gh trusts any run-log zip in XDG_CACHE_HOME/gh and writes it non-atomically, so one interrupted
+# write failed that run for every reader (ar-3133, ar-3387). The stub is gh as it behaves.
+@test "a run log read gets a private gh cache, removed at exit; a poisoned shared entry is never read" {
+  cat > "$STUB/cache-gh" <<'SH'
+#!/usr/bin/env bash
+case "$*" in 'api rate_limit'*) exit 0 ;; esac
+echo "${XDG_CACHE_HOME:-unset}" >> "$BATS_TEST_TMPDIR/cache-dirs"
+case "$*" in *--log*) ;; *) exit 0 ;; esac
+[ -e "$XDG_CACHE_HOME/gh/run-log-7-1.zip" ] && { echo "failed to get run log: opening cache entry: zip: not a valid zip file" >&2; exit 1; }
+mkdir -p "$XDG_CACHE_HOME/gh" && echo zip > "$XDG_CACHE_HOME/gh/run-log-7-1.zip"
+echo "the log"
+SH
+  chmod +x "$STUB/cache-gh"
+  export GH_REAL="$STUB/cache-gh" TMPDIR="$BATS_TEST_TMPDIR/tmp" XDG_CACHE_HOME="$BATS_TEST_TMPDIR/xdg"
+  mkdir -p "$TMPDIR" "$XDG_CACHE_HOME/gh"
+  : > "$XDG_CACHE_HOME/gh/run-log-7-1.zip"
+  local flag
+  for flag in --log-failed --log; do
+    run "$WRAP" run view 7 -R other/x "$flag"
+    assert_success
+    assert_output "the log"
+  done
+  run grep -c "^$XDG_CACHE_HOME\$" "$BATS_TEST_TMPDIR/cache-dirs"
+  assert_output 0
+  assert_equal "$(ls "$TMPDIR" | wc -l)" 0
+  # Negative control: any other read keeps the caller's cache.
+  run "$WRAP" run view 7 -R other/x --json status
+  assert_success
+  assert_equal "$(tail -n 1 "$BATS_TEST_TMPDIR/cache-dirs")" "$XDG_CACHE_HOME"
 }

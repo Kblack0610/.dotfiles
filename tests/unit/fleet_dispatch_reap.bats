@@ -17,6 +17,16 @@ load 'fleet_dispatch/common'
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-d.md)" status)" ok
 }
 
+@test "reap: a preempt marker past the rest window is pruned, a fresh one is kept (ar-3470)" {
+  mkdir -p "$FLEET_DISPATCH_DIR/preempted"
+  touch -d '-90 min' "$FLEET_DISPATCH_DIR/preempted/old"
+  touch -d '-10 min' "$FLEET_DISPATCH_DIR/preempted/fresh"
+  DISPATCH_PREEMPT_REST=60 run cmd_reap
+  assert_success
+  assert [ ! -e "$FLEET_DISPATCH_DIR/preempted/old" ]
+  assert [ -e "$FLEET_DISPATCH_DIR/preempted/fresh" ]
+}
+
 @test "unpark: a preempt ledger is resumed when its units are free and no urgent item waits; a budget park is not" {
   five_of_six_units
   park_stub
@@ -82,7 +92,7 @@ load 'fleet_dispatch/common'
   [ -n "$(qitem queued now-one)" ] || fail "the urgent item started past the load hold"
 }
 
-@test "reap files an approved plan whose session is gone as one board row, queues nothing, and files it once" {
+@test "reap files an approved plan whose session is gone as its phase rows, queues nothing, and files it once" {
   # dispatch's pass is not a pull: only the board fills the queue (agent-queue pull_ok)
   unset AGENT_QUEUE_PULL
   stub agent-ask 'echo other-session'
@@ -93,8 +103,26 @@ load 'fleet_dispatch/common'
   assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
   assert_output --partial 'could not file the phases of'
   [ ! -e "$FLEET_DISPATCH_DIR/plans-filed" ] || fail "a plan nothing was filed for is marked filed"
-  # with a board, agent-queue files the row (agent_queue.bats) and exits 5: filed once, then never again
-  stub agent-queue 'case "$1" in add) echo "add $*" >> "$NOTES_FIXTURE/aq-adds"; exit 5 ;; esac; exit 0'
+  # held with nothing filed (its epic: new proposal waits): not marked filed, so the next pass tries again (ar-5605)
+  stub agent-queue 'case "$1" in add) echo "agent-queue: x.md waits on its epic: new proposal in inbox-triage; nothing filed" >&2; exit 5 ;; esac; exit 0'
+  run reconcile_plans
+  assert_success
+  [ ! -e "$FLEET_DISPATCH_DIR/plans-filed" ] || fail "a plan whose add filed nothing is marked filed"
+  grep -q 'left orphan.md for next pass: .*nothing filed' "$FLEET_DISPATCH_DIR/log.md"
+  # a checklist agent-queue refuses, on a project with no board: nothing to file it on, so it is said and not marked
+  stub agent-queue 'case "$1" in add) echo "agent-queue: --plan x.md: could not read its Phases checklist: no ## Phases" >&2; exit 1 ;; esac; exit 0'
+  run reconcile_plans
+  assert_output --partial 'could not file the phases of'
+  [ ! -e "$FLEET_DISPATCH_DIR/plans-filed" ] || fail "a refused plan with no fix row is marked filed"
+  # with a board, the refusal files one fix(plan) row and marks the plan filed, so the next pass does not retry it (ar-5605)
+  jq -n '{trackers: {game: {lab: "game"}}, paths: {}}' > "$DISPATCH_PROJECT_MAP"
+  run reconcile_plans
+  assert_success
+  grep -q "notes ptask game --agent add --why fault fix(plan): orphan: agent-queue refuses its Phases checklist (no  Phases); fix it, then agent-queue add --plan $SANDBOX/orphan.md" "$NOTES_FIXTURE/calls.log"
+  grep -qxF "$SANDBOX/orphan.md" "$FLEET_DISPATCH_DIR/plans-filed"
+  rm "$FLEET_DISPATCH_DIR/plans-filed"
+  # with a board, agent-queue files each phase as its row (agent_queue.bats) and exits 5: filed once, then never again
+  stub agent-queue 'case "$1" in add) echo "add $*" >> "$NOTES_FIXTURE/aq-adds"; echo "held orphan-p2 -> game:gm-1"; exit 5 ;; esac; exit 0'
   run reconcile_plans
   assert_success
   grep -q 'filed orphan.md to run its open phases' "$FLEET_DISPATCH_DIR/log.md"
@@ -209,6 +237,18 @@ epics_fixture() { printf '%s\n' "$1" > "$NOTES_FIXTURE/stats.json"; }
   epics_fixture '[{"name": "game", "profile": "bnb", "epics": [{"id": "gm-5", "title": "ranked matches", "system": "ui", "open": 0, "done": 4}]}]'
   reconcile_epics
   assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" 'verify-gm-5-4'
+  # a hand return keeps the slug spent (negative control); an item the queue cap bumped unrun is
+  # queued again, once (ar-5968)
+  agent-queue return verify-gm-5-4 --why 'not now' >/dev/null
+  reconcile_epics
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
+  epics_fixture '[{"name": "game", "profile": "bnb", "epics": [{"id": "gm-5", "title": "ranked matches", "system": "ui", "open": 0, "done": 5}]}]'
+  reconcile_epics
+  agent-queue return verify-gm-5-5 --why 'made room for high x: the queue is at its cap of 30' >/dev/null
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
+  reconcile_epics
+  reconcile_epics
+  assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" 'verify-gm-5-5'
 }
 
 # real_epic_board -- the built notes, and a game project whose epic gm-1 has one landed leaf (gm-2):
@@ -497,6 +537,54 @@ real_epic_board() {
   refute_output --partial 'flagged queue item fix-crash'
 }
 
+# ar-4551: agent-land records open_pr: before its checks and pr: only on a merge, so a landing that ends unmerged
+# leaves a sessionless item with open_pr: alone. NEGATIVE CONTROL: reading only pr:, it is flagged and stays running.
+@test "reap: an item with no session and only open_pr: settles by that PR (ar-4551)" {
+  pr_item OPEN
+  sed -i '/^session: /d; s/^pr: /open_pr: /' "$AGENT_QUEUE_DIR"/running/*-fix-crash.md
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.pr // "", .open_pr // ""] | join("|")')" "|o/game#12"
+  run cmd_reap
+  assert_success
+  [ -n "$(qitem review fix-crash)" ] || fail "an open_pr: alone did not park it in review"
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .pr)" "o/game#12"
+  printf 'CLOSED \n' > "$NOTES_FIXTURE/pr.state"
+  run cmd_reap
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)" status)" failed
+}
+
+@test "reap: an open_pr: never replaces the pr: an item already records (ar-4551)" {
+  pr_item OPEN
+  sed -i '/^session: /d' "$AGENT_QUEUE_DIR"/running/*-fix-crash.md
+  agent-queue set fix-crash open_pr=o/game#99 >/dev/null
+  run cmd_reap
+  assert_success
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .pr, .open_pr] | join("|")')" "review|o/game#12|o/game#99"
+}
+
+@test "reap: an item whose pr: names two PRs reads each one, parks while either is open and records both merges in step (ar-1431)" {
+  pr_item OPEN
+  sed -i '/^session: /d' "$AGENT_QUEUE_DIR"/running/*-fix-crash.md
+  agent-queue set fix-crash 'pr=o/game#12 o/game-private#7' >/dev/null
+  # One merged and one closed unmerged: the work did not land, so it fails.
+  started_item split ''
+  agent-queue set split 'pr=o/game#12 o/game-private#8' >/dev/null
+  printf 'CLOSED -\n' > "$NOTES_FIXTURE/pr.8"
+  # Each ref answers on its own repo: a -R holding the whole list (a space or a #) is a repo gh cannot read.
+  printf 'MERGED %s\n' "$OID" > "$NOTES_FIXTURE/pr.12"; printf 'OPEN -\n' > "$NOTES_FIXTURE/pr.7"
+  gh_script 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; case "$5" in *" "* | *"#"*) exit 1 ;; esac; cat "$NOTES_FIXTURE/pr.$3"'
+  run cmd_reap
+  assert_success
+  [ -n "$(qitem review fix-crash)" ] || fail "an open second PR did not park it in review"
+  refute_output --partial 'could not read PR'
+  grep -qF -- '-R o/game-private --json' "$NOTES_FIXTURE/calls.log" || fail "the second PR was not read on its own repo"
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-split.md)" status)" failed
+  printf 'MERGED %s\n' 0123abcd > "$NOTES_FIXTURE/pr.7"
+  run cmd_reap
+  assert_success
+  f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)
+  assert_equal "$(qfield "$f" status)|$(qfield "$f" merged)" "ok|$OID 0123abcd"
+}
+
 @test "reap: an item with no session and a report is done; a flag keeps the note it had" {
   started_item withreport '' && started_item noted ''
   agent-queue set withreport report=/tmp/r.md >/dev/null
@@ -742,31 +830,46 @@ real_epic_board() {
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-b.md)" status)" failed
 }
 
-@test "reap: a waiting item without a PR stays waiting with a note after its session ends" {
+@test "reap: a waiting item with no ask, PR or report goes back to queued once; one with an ask, or in review, stays parked (ar-5661)" {
   project game beta "$SANDBOX/repos/game"
+  started_item idle lab:game-agent-2 run '' auto:epics waiting
   started_item blocked lab:game-agent-1 run '' human waiting
-  started_item no-note lab:game-agent-2 run '' human waiting
-  agent-queue set blocked 'note=waiting for the human to answer ask abc' lane_run=trial-1 >/dev/null
+  started_item parked lab:game-agent-3 run '' human review
+  id=$(agent-ask post --project game --task blocked --options 'a=keep it|b=drop it' 'which API?')
+  agent-queue set blocked "note=waiting for the human to answer ask $id" lane_run=trial-1 >/dev/null
   stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"'
 
   run cmd_reap
   assert_success
   refute_output --partial 'failed queue item'
+  assert_output --partial 'requeued queue item idle (game-agent-2 ended: waiting with no ask, PR or report)'
+  [ -n "$(qitem queued idle)" ] || fail "a waiting item with no ask was not requeued"
+  assert_equal "$(qfield "$(qitem queued idle)" note)" 'session game-agent-2 ended: waiting with no ask, PR or report; requeued'
+  grep -q 'reaped game-agent-2: session gone, queue item idle requeued: waiting with no ask, PR or report' "$FLEET_DISPATCH_DIR/log.md"
+  # NEGATIVE CONTROLS: a pending ask with no row keeps the item waiting and its note; a review item with no PR stays in review.
   assert_equal "$(agent-queue show blocked --json | jq -r .state)" waiting
-  assert_equal "$(qfield "$(qitem waiting blocked)" note)" 'waiting for the human to answer ask abc'
-  assert_equal "$(agent-queue show no-note --json | jq -r .state)" waiting
-  assert_equal "$(qfield "$(qitem waiting no-note)" note)" 'session game-agent-2 ended; waiting without a PR'
+  assert_equal "$(qfield "$(qitem waiting blocked)" note)" "waiting for the human to answer ask $id"
+  assert_equal "$(agent-queue show parked --json | jq -r .state)" review
+  assert_equal "$(qfield "$(qitem review parked)" note)" 'session game-agent-3 ended; review without a PR'
   assert_not_called 'model-lane'
   mtime=$(stat -c %y "$(qitem waiting blocked)")
   dispatch_event() { echo "$*" >> "$NOTES_FIXTURE/events.log"; }
 
+  # Its requeued run ends waiting again: it stays parked, with one row, and is not requeued a second time.
+  agent-queue move idle running >/dev/null
+  agent-queue move idle waiting >/dev/null
+  # The requeue dropped its session: (cmd_move), and its next run records it again.
+  agent-queue set idle session=lab:game-agent-2 >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
   run cmd_reap
   assert_success
+  run cmd_reap
+  assert_success
+  assert_equal "$(agent-queue show idle --json | jq -r .state)" waiting
+  assert_equal "$(grep -c 'twice ended waiting with no ask, PR or report' "$NOTES_FIXTURE/calls.log")" 1
   assert [ ! -e "$NOTES_FIXTURE/events.log" ]
   assert_equal "$(stat -c %y "$(qitem waiting blocked)")" "$mtime"
-  assert_equal "$(agent-queue show blocked --json | jq -r .state)" waiting
-  assert_equal "$(agent-queue show no-note --json | jq -r .state)" waiting
-  assert_not_called 'model-lane'
+  assert_equal "$(agent-queue show parked --json | jq -r .state)" review
 }
 
 # 2026-11-13 (ar-2267): consoles-p3 was closed status:failed while queued on an unanswered ask (OBAJTo);
@@ -968,6 +1071,37 @@ OUT
   assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_human // ""] | join("|")')" "queued|"
 }
 
+# 2026-11-25: #3516, #3538 and #3576 read red with every job cancelled at ~617s on starved runners. fix-ci
+# may not rerun a timeout and found nothing to fix, so each spent two tries and sat escalated.
+@test "reap: a PR red on runner timeouts only gets its failed jobs rerun once per head, no fix try; still cut after it, fix-ci" {
+  local h1=1111111111111111111111111111111111111111 h2=2222222222222222222222222222222222222222
+  pr_item OPEN
+  run cmd_reap
+  fix_ended "$h1" INFRA MERGEABLE 101,102
+  run cmd_reap
+  assert_success
+  assert_output --partial "rerun queue item fix-crash (PR o/game#12 red at ${h1:0:12} on runner timeouts, run 101 102)"
+  assert_called "gh run rerun 101 --failed -R o/game"
+  assert_called "gh run rerun 102 --failed -R o/game"
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .rerun_tries, .fix_tries // "", .pr_owner // ""] | join("|")')" "review|1 $h1||"
+  # the rerun runs: still parked
+  fix_ended "$h1" PENDING
+  run cmd_reap
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
+  # NEGATIVE CONTROL: cut again at the same head, the code may hang, so it is fix-ci's red and no second rerun
+  fix_ended "$h1" INFRA MERGEABLE 103
+  run cmd_reap
+  assert_output --partial "fix-ci queue item fix-crash (PR o/game#12 red at ${h1:0:12}, try 1 of 2)"
+  refute_output --partial 'rerun queue item'
+  assert_equal "$(grep -c 'gh run rerun 103' "$NOTES_FIXTURE/calls.log")" 0
+  # an item already escalated at a head, as the 2026-11-25 three were, still gets that head's one rerun
+  agent-queue set fix-crash "fix_human=$h2 fix" "fix_tries=2 $h2" >/dev/null
+  fix_ended "$h2" INFRA MERGEABLE 104
+  run cmd_reap
+  assert_output --partial "rerun queue item fix-crash (PR o/game#12 red at ${h2:0:12} on runner timeouts, run 104)"
+  assert_called "gh run rerun 104 --failed -R o/game"
+}
+
 @test "reap: a spent PR whose agent board refuses the row keeps its old stamp, so the next pass files it" {
   local h1=1111111111111111111111111111111111111111
   pr_item OPEN
@@ -982,6 +1116,36 @@ OUT
   assert_equal "$(agent-queue show fix-crash --json | jq -r .fix_human)" "$h1 fix"
   fix_ended "$h1" FAIL; run cmd_reap
   refute_output --partial 'fix-crash'
+}
+
+# ar-4229 (2026-11-23): its green PR got a lander while ask yaEAMh, which an earlier run of it posted with no --task, held the merge.
+@test "reap: a green parked PR whose run posted an untagged ask gets no lander: the item goes back to its row behind that ask (ar-4892)" {
+  local h1=1111111111111111111111111111111111111111 it id x
+  pr_item OPEN
+  agent-queue claim fix-crash --sid run-2 >/dev/null
+  run cmd_reap
+  assert_output --partial 'review queue item fix-crash (PR o/game#12 open'
+  # NEGATIVE CONTROL: an untagged ask from a session that never ran it, or its run's ask filed for another task, holds nothing
+  x=$(CLAUDE_CODE_SESSION_ID=else-9 agent-ask post --project game --options 'a=yes|b=no' 'something else?')
+  o=$(CLAUDE_CODE_SESSION_ID=run-2 agent-ask post --project game --task other-x --options 'a=yes|b=no' 'about other-x?')
+  it=$(agent-queue show fix-crash --json)
+  run item_ask fix-crash "$it"
+  assert_success
+  assert_output ''
+  # One open question per session (#990): the other-x ask closes before the run asks its own.
+  agent-ask cancel "$o" superseded >/dev/null
+  # Its run's own untagged ask holds it, on whatever project the run filed it (yaEAMh was home-config, its item agent-runtime).
+  id=$(CLAUDE_CODE_SESSION_ID=run-2 agent-ask post --project tools --options 'land=land it|close=close it' 'land or close o/game#12?')
+  run item_ask fix-crash "$it"
+  assert_output "$id=land+close"
+  # An ask the item names (ask:) still comes before an untagged one.
+  run item_ask fix-crash "$(jq --arg x "$x" '.ask = $x' <<<"$it")"
+  assert_output "$x=a+b"
+  fix_ended "$h1" PASS
+  run cmd_reap
+  assert_success
+  assert_output --partial "returned queue item fix-crash to its board row behind ask $id"
+  refute_output --partial 'land queue item fix-crash'
 }
 
 # ar-2589: #2182's fix-ci tries were spent on a superseded red at 4bbda5c; that head read green and sat in review, ownerless.
