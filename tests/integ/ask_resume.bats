@@ -428,7 +428,9 @@ start_ask() { # $1=resume
   AQ_STATE=done AQ_ROW=p:ar-1 AQ_LIVE=ar-1b AQ_LIVE_ROW=p:ar-1 ask-resume "$id"
   run calls
   assert_output --partial 'fleet-dispatch start --item ar-1b'
-  refute_output --partial 'start --item ar-1$'
+  # a start is a whole command: no ask id after it
+  assert_output --regexp 'start --item ar-1b$'
+  refute_output --regexp 'start --item ar-1( |$)'
 }
 
 @test "a run: start of an ended item with no live item on its row starts nothing and marks the ask resumed" {
