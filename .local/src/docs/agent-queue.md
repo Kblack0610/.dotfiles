@@ -27,12 +27,13 @@
 
 ## Cancelling the human's work
 
-Work the human asked for (`from: human`, or a `requested` tag from a #requested row) is refused to `cancel`, `move ... done --status cancelled`, `return --drop` and a `return` of an item with no board row from a session or script (`$CLAUDE_CODE_SESSION_ID` or `$AGENT_QUEUE_ITEM` set) unless `--ask <id>` names an answered ask, so a cleanup hands the human's work back as an ask instead of dropping it (`tests/integ/agent_queue.bats`, the `--ask` cases). What the guard checks, exactly:
+Work the human asked for (`from: human`, or a `requested` tag from a #requested row) is refused to `cancel`, `move ... done --status cancelled`, `return --drop` and a `return` of an item with no board row from a session or script (`$CLAUDE_CODE_SESSION_ID` or `$AGENT_QUEUE_ITEM` set) unless `--ask <id>` names an ask answered cancel or drop, so a cleanup hands the human's work back as an ask instead of dropping it (`tests/integ/agent_queue.bats`, the `--ask` cases). What the guard checks, exactly:
 
-- The ask is `answered`, and its `answered_by` is `human` or empty (a legacy answer); a judge or shepherd answer is refused.
-- The ask file contains the slug as a whole word (`grep -w`, so a hyphenated sibling such as `<slug>-2` also matches). It does not read which option the human picked: any answer counts, so post the ask as a question about cancelling that item.
+- The ask offers a `cancel` or `drop` option (`agent-ask post --options 'drop|keep'`), and its answer is that option: the answer's first word, or the one option `agent-ask answer-names` reads in it. The caller never names the option, so a "keep" answer, a free-text answer and a free-text ask authorize nothing (ar-2717); an ask answered that way before needs a new ask.
+- The ask is `answered`, and its `answered_by` is `human`, `judge` or empty (a legacy answer); a shepherd or other agent answer is refused.
+- The ask file names the whole slug: `<slug>-2` and `<slug>.2` do not match `<slug>`, and a sentence's closing period does.
 - Once `--ask` is given it is checked on every item, human work or not. The ask joins `cancel_why:` as `(ask <id>)`.
-- A caller with neither variable set is not held: the human at a terminal, and the Queue tab's button while the hub or agent-web was started outside a Claude session. A slug with no file left, closed in the chain record only, is not guarded.
+- A caller with neither variable set is not held: the human at a terminal, and the Queue tab's button, since the hub and agent-web drop both variables from every action they run (`hub-core` `session_actions::System`). A slug with no file left, closed in the chain record only, is not guarded.
 
 A slug is matched by the item's `slug:` header, never by file name alone. Timestamps are UTC (`2026-11-03T18:40:00Z`), so jq can do the arithmetic. `AGENT_QUEUE_DIR` overrides the store's default directory, `~/.agent/queue/`; `AGENT_QUEUE_AGE_STEP` (minutes, default 120, 0 off) is how long a queued item waits before the queue order ranks it one tier higher, never above high, without rewriting its `priority:` (QUEUE.md "Order and tags", ar-4554); a bare session name in `session:` is on the world `tmux-world agents` names (`lab`).
 
