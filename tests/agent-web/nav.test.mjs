@@ -52,6 +52,13 @@ test("a fold is listed by its heading's title, without the count beside it", () 
   assert.match(outline.innerHTML, /data-sec="candidates">Candidates</);
 });
 
+test("a record's anchor (an Archive day) is not listed, only the sections around it", () => {
+  const day = Object.assign(anchor("sec-day-2026-11-20", "2026-11-20", "DETAILS"), { dataset: { rec: "" } });
+  show("reports", [anchor("sec-needs", "Needs you"), anchor("sec-archive", "Archive"), day]);
+  assert.match(outline.innerHTML, /data-sec="archive">Archive</);
+  assert.doesNotMatch(outline.innerHTML, /2026-11-20/);
+});
+
 test("a wrapper div is not listed, even with a heading inside it", () => {
   const wrap = Object.assign(anchor("sec-history", "Merges by hour", "DIV"), { querySelector: () => ({ firstChild: { textContent: "Merges by hour" } }) });
   show("log", [anchor("sec-actions", "Actions", "DETAILS"), anchor("sec-changes", "Changes", "DETAILS"), wrap]);

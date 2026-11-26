@@ -9,11 +9,12 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-/// `$AGENT_ASK_ROOT`, else `~/.agent/asks`, as fleet-sessions resolves it.
+/// `$AGENT_ASK_ROOT` when set and not empty, else `~/.agent/asks`: the Rust twin of
+/// `.local/lib/ask-store.sh` `ask_root`, which every shell reader calls.
 pub fn root() -> PathBuf {
     std::env::var_os("AGENT_ASK_ROOT")
+        .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| crate::session::home().join(".agent").join("asks"))
 }
@@ -46,9 +47,7 @@ fn parked(text: &str, now: u64) -> bool {
 /// Every pending, unparked ask under `root` as (its id, the Claude sessions it names): the `id:` line,
 /// else the file name.
 fn pending(root: &Path) -> Vec<(String, Vec<String>)> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
+    let now = crate::now_secs();
     let mut out = Vec::new();
     let Ok(projects) = fs::read_dir(root) else {
         return out;

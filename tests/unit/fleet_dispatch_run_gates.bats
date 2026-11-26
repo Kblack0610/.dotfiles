@@ -134,6 +134,18 @@ load 'fleet_dispatch/common'
   agent-queue show ga-2 >/dev/null 2>&1 || fail "the timed check row (negative control) was not promoted"
 }
 
+@test "an item already queued in a client's work project is never started on another machine; the next item is (ar-6083)" {
+  two_items
+  jq '. + {clients: {acme: {profile: "acmework"}}} | .trackers.game.client = "acme"' "$DISPATCH_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$DISPATCH_PROJECT_MAP"
+  export PROJECT_MACHINE_PROFILE=personal
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_success
+  assert_output --partial "queue item fix-game is in game, a client's work project hidden on this machine: never started here"
+  refute_output --partial 'would start queue item fix-game'
+  assert_output --partial 'would start queue item fix-app: app oneshot low'
+  assert_not_called 'wt new'
+}
+
 @test "run --dry-run names each held item and the one that would start while a pool its head feeds is starved" {
   two_items
   findings "$(finding starved pool:unity '["game"]')"
@@ -381,4 +393,24 @@ load 'fleet_dispatch/common'
   # Positive control: the same pass with dispatch free and no dry run asks for the one missing.
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_equal "$(cat "$SANDBOX/bench.calls")" 'pull=dispatch canary queue --max 1'
+}
+
+# 2026-11-25: admission passes dispatch's canary pull, and five canaries on a full queue held queue-over-cap red (ar-3659).
+@test "canary top-up: it asks for no more than the admission cap's headroom, and none at the cap" {
+  project game beta "$SANDBOX/repos/game"
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PER_PASS=3 DISPATCH_CANARY_KEEP=3 AGENT_QUEUE_CAP=2
+  fleet_state 8
+  stub fleet-bench "[ \"\$1\" = canary ] || exit 0; echo \"pull=\$AGENT_QUEUE_PULL \$*\" >> '$SANDBOX/bench.calls'; echo 'canary: 1 queued for 2026w47'"
+  agent-queue add --project game --slug ca1 --priority high --tags canary "check(canary): a 2026w47" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_equal "$(cat "$SANDBOX/bench.calls")" 'pull=dispatch canary queue --max 1'
+  assert_output --partial 'canary top-up (keep 3, 1 queued, 2 wanted, 1 under the cap): canary: 1 queued for 2026w47'
+  # At the cap: still one canary missing, and nothing is asked for.
+  rm "$SANDBOX/bench.calls"
+  agent-queue add --project game --slug ca2 --priority high --tags canary "check(canary): b 2026w47" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  [ ! -e "$SANDBOX/bench.calls" ] || fail "a full queue asked: $(cat "$SANDBOX/bench.calls")"
+  assert_output --partial 'canary top-up (keep 3, 2 queued, 1 wanted): none queued, the queue is at its cap'
 }

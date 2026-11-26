@@ -45,7 +45,7 @@ pub struct Pipeline {
     pub file: String,
     /// What started its runs, most first (`dispatch, pr`), and `cron` when it has one.
     pub trigger: String,
-    /// `on` in the night set, `held` out of it, empty when not a member.
+    /// `on` in the night step, `wide` in the step after it, `held` out of the night, empty when not a member.
     pub nightly: String,
     /// Its crons in words, or the night runner's schedule.
     pub schedule: String,
@@ -327,7 +327,8 @@ fn files_of<'a>(repo: &'a CiRepo, errors: &mut Vec<String>) -> Vec<File<'a>> {
     if let Some(e) = &n.error {
         errors.push(format!("{}: {e}", repo.repo));
     }
-    let sets = [("on", &n.night), ("held", &n.held)];
+    // A `wide` member runs in the same night once the `night` step finished (`step_end`).
+    let sets = [("on", &n.night), ("wide", &n.wide), ("held", &n.held)];
     for (word, set) in sets {
         for (name, title) in set {
             match out.iter_mut().find(|f| base_name(f.path) == name) {
@@ -362,17 +363,24 @@ fn built<'a>(s: &'a Sources, runs: &'a [Run], errors: &mut Vec<String>) -> Vec<B
             .iter()
             .filter(|r| r.repo.eq_ignore_ascii_case(&repo.repo))
             .collect();
-        for f in files_of(repo, errors) {
-            let of: Vec<&Run> = mine
-                .iter()
-                .copied()
-                .filter(|r| r.path == f.path)
-                .filter(|r| {
-                    f.night
-                        .is_none_or(|(_, t)| builds::timed_as(&r.workflow, &r.path) == t)
-                })
-                .collect();
-            out.push(one(s, &repo.repo, base_of(repo), f, of));
+        let files: Vec<(File, Vec<&Run>)> = files_of(repo, errors)
+            .into_iter()
+            .map(|f| {
+                let of: Vec<&Run> = mine
+                    .iter()
+                    .copied()
+                    .filter(|r| r.path == f.path)
+                    .filter(|r| {
+                        f.night
+                            .is_none_or(|(_, t)| builds::timed_as(&r.workflow, &r.path) == t)
+                    })
+                    .collect();
+                (f, of)
+            })
+            .collect();
+        let end = step_end(s, &repo.repo, base_of(repo), &files);
+        for (f, of) in files {
+            out.push(one(s, &repo.repo, base_of(repo), f, of, end));
         }
     }
     // A repo state.json does not read (a Forgejo one) is what the ledger ran: its base is the
@@ -416,20 +424,49 @@ fn built<'a>(s: &'a Sources, runs: &'a [Run], errors: &mut Vec<String>) -> Vec<B
             wf: None,
             night: None,
         };
-        let mut b = one(s, repo, base, f, of);
+        let mut b = one(s, repo, base, f, of, None);
         b.row.forge = forge.to_string();
         out.push(b);
     }
     out
 }
 
+/// When repo `slug`'s `night` step finished on its runner's last start: the last end of its `on`
+/// members' dispatch runs on `base` since then. None while one of them still runs or none
+/// started, so a `wide` member, which starts only after that step, is not due yet.
+fn step_end(s: &Sources, slug: &str, base: &str, files: &[(File, Vec<&Run>)]) -> Option<i64> {
+    let fired = s
+        .runners
+        .get(slug)
+        .and_then(|n| s.starts.iter().find(|st| &st.name == n))
+        .and_then(|st| st.fired)?;
+    let step: Vec<&Run> = files
+        .iter()
+        .filter(|(f, _)| f.night.is_some_and(|(w, _)| w == "on"))
+        .flat_map(|(_, of)| of.iter().copied())
+        .filter(|r| r.started >= fired && r.event == "workflow_dispatch" && r.branch == base)
+        .collect();
+    if step.iter().any(|r| !r.done()) {
+        return None;
+    }
+    step.iter().map(|r| r.started + r.took.unwrap_or(0)).max()
+}
+
 /// One file's row from its runs. Its state, first that holds: `off` held from the night (and no
 /// cron of its own); `red` its newest finished run on the base failed; `amber` a start it was
-/// due (a cron slot, the night runner's last start) is `LATE_SECS` past with no run since, or
+/// due (a cron slot, the night runner's last start; for a `wide` member, the end of the night step,
+/// `step_end`) is `LATE_SECS` past with no run since, or
 /// its newest base run stopped before a verdict (cancelled), or it is scheduled and nothing
 /// finished on the base in the window; `ok` its newest base run passed, or it runs only on
 /// branches; `off` nothing ran it.
-fn one<'a>(s: &Sources, slug: &str, base: &str, f: File<'a>, mut runs: Vec<&'a Run>) -> Built<'a> {
+fn one<'a>(
+    s: &Sources,
+    slug: &str,
+    base: &str,
+    f: File<'a>,
+    mut runs: Vec<&'a Run>,
+    step_end: Option<i64>,
+) -> Built<'a> {
     runs.sort_by(|a, b| b.started.cmp(&a.started).then(b.attempt.cmp(&a.attempt)));
     let crons: &[String] = f.wf.map_or(&[], |w| &w.crons);
     let short = slug.rsplit('/').next().unwrap_or(slug);
@@ -466,7 +503,8 @@ fn one<'a>(s: &Sources, slug: &str, base: &str, f: File<'a>, mut runs: Vec<&'a R
     row.trigger = trigger.join(", ");
 
     // When it is due: a night member by its runner, anything else by its crons.
-    let on = f.night.is_some_and(|(w, _)| w == "on");
+    let wide = f.night.is_some_and(|(w, _)| w == "wide");
+    let on = wide || f.night.is_some_and(|(w, _)| w == "on");
     let start = on
         .then(|| s.runners.get(slug))
         .flatten()
@@ -483,7 +521,11 @@ fn one<'a>(s: &Sources, slug: &str, base: &str, f: File<'a>, mut runs: Vec<&'a R
         row.schedule = st.schedule.clone();
         row.next = st.next;
         row.next_row = st.name.clone();
-        due = st.fired.filter(|t| *t <= s.at - LATE_SECS);
+        // A `wide` member is due `LATE_SECS` after the night step finished, not after the start.
+        let from = if wide { step_end } else { st.fired };
+        due = st
+            .fired
+            .filter(|_| from.is_some_and(|t| t <= s.at - LATE_SECS));
     } else if !crons.is_empty() {
         row.schedule = crons
             .iter()
@@ -993,6 +1035,73 @@ mod tests {
             p.errors,
             ["Org/game: config/ci/nightly.json names gone.yml, which is not a workflow on main"]
         );
+    }
+
+    #[test]
+    fn a_wide_member_is_in_the_night_as_its_own_step() {
+        let repo: CiRepo = serde_json::from_value(json!({
+            "repo": "Org/game", "base": "main",
+            "unscheduled": {".github/workflows/test.yml": "s1", ".github/workflows/hd.yml": "s2",
+                            ".github/workflows/soak.yml": "s3"},
+            "night": {"night": {"test.yml": "Tests (all)"}, "wide": {"hd.yml": "HD (all)"},
+                      "held": {"soak.yml": "Soak (all)"}, "sha": "n1"}
+        }))
+        .unwrap();
+        let mut errors = vec![];
+        let night: Vec<_> = files_of(&repo, &mut errors)
+            .iter()
+            .map(|f| (base_name(f.path), f.night))
+            .collect();
+        assert_eq!(
+            night,
+            [
+                ("hd.yml", Some(("wide", "HD (all)"))),
+                ("soak.yml", Some(("held", "Soak (all)"))),
+                ("test.yml", Some(("on", "Tests (all)"))),
+            ]
+        );
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn a_wide_member_is_due_after_the_night_step_finished_not_after_the_start() {
+        let mut s = sources(NOW - 6 * H);
+        s.ci.repos[0].night.as_mut().unwrap().wide =
+            BTreeMap::from([("hd.yml".to_string(), "HD (all)".to_string())]);
+        // The night step's one run, `age` ago: it ends 10 minutes later unless it still runs.
+        let core = |age: i64, done: bool| {
+            let t = ".github/workflows/test.yml";
+            let text = run(
+                "Org/game",
+                1,
+                [t, "Tests (all)", "workflow_dispatch", "main", "success"],
+                age,
+            );
+            let mut v: serde_json::Value = serde_json::from_str(&text).unwrap();
+            if !done {
+                v["status"] = json!("in_progress");
+                v["conclusion"] = serde_json::Value::Null;
+                v["ended_at"] = serde_json::Value::Null;
+            }
+            v.to_string()
+        };
+        let hd = |text: &str| {
+            let p = pipelines(&s, &builds::parse(text, NOW).0);
+            let r = row(&p, "HD (all)");
+            (r.nightly.clone(), r.runner.clone(), r.why.clone())
+        };
+        // The step ended 3h10 ago: past LATE_SECS with no HD run, so it is late.
+        let (word, runner, why) = hd(&core(3 * H + 1200, true));
+        assert_eq!(
+            (word.as_str(), runner.as_deref()),
+            ("wide", Some("game-night"))
+        );
+        assert!(why.starts_with("no run since the start due"), "{why}");
+        // Negative controls: the step ended 2h50 ago, still runs 4h in, or never started.
+        for text in [core(3 * H, true), core(4 * H, false), String::new()] {
+            let (_, _, why) = hd(&text);
+            assert!(!why.starts_with("no run since"), "{why}");
+        }
     }
 
     #[test]

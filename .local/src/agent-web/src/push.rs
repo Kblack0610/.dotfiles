@@ -253,6 +253,21 @@ impl Backoff {
     fn reset(&mut self) {
         self.strikes = 0;
     }
+
+    /// The wait before the next card read: `GAP` after a read whose cards had not changed (`None`),
+    /// else the throttle's hold or `GAP` after a send. The card read runs every tab's reader and a
+    /// Home build, and the poke comes from hooks many times a minute, so an unchanged read waits
+    /// `GAP` like a send.
+    fn next_read(&mut self, sent: Option<&Sent>) -> Duration {
+        match sent {
+            Some(s) if s.throttled => self.throttled(s.retry_after).max(GAP),
+            Some(_) => {
+                self.reset();
+                GAP
+            }
+            None => GAP,
+        }
+    }
 }
 
 /// What a distributor's answer means for its endpoint.
@@ -372,16 +387,16 @@ async fn send_all() -> Sent {
     sent
 }
 
-/// The sender, for the life of the server: waits for a poke, keeps `GAP` since the last send
-/// (longer while a distributor throttles, see `Backoff`), then sends when the cards draw
+/// The sender, for the life of the server: waits for a poke, keeps `GAP` since the last card
+/// read (longer while a distributor throttles, see `Backoff`), then sends when the cards draw
 /// something new.
 pub async fn run(s: Shared) {
     let mut last_key: Option<String> = None;
-    let mut next_send: Option<Instant> = None;
+    let mut next_read: Option<Instant> = None;
     let mut backoff = Backoff::default();
     loop {
         s.push.poke.notified().await;
-        if let Some(t) = next_send {
+        if let Some(t) = next_read {
             // A rate limit, not a wait for a signal: pokes that come meanwhile fold into this one.
             tokio::time::sleep_until(t).await;
         }
@@ -392,16 +407,12 @@ pub async fn run(s: Shared) {
         let cards = crate::cards::read(&s).await;
         let key = hub_core::widget_doc::document(&cards, &[], 0, None).content_key();
         if last_key.as_deref() == Some(key.as_str()) {
+            next_read = Some(Instant::now() + backoff.next_read(None));
             continue;
         }
         let mut sent = send_all().await;
-        let wait = if sent.throttled {
-            backoff.throttled(sent.retry_after).max(GAP)
-        } else {
-            backoff.reset();
-            GAP
-        };
-        next_send = Some(Instant::now() + wait);
+        let wait = backoff.next_read(Some(&sent));
+        next_read = Some(Instant::now() + wait);
         if sent.throttled {
             sent.next_at = Some(sent.at + wait.as_secs() as i64);
         }
@@ -537,6 +548,29 @@ mod tests {
         assert_eq!(b.throttled(None), BACKOFF_MAX);
         b.reset();
         assert_eq!(b.throttled(None), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn an_unchanged_read_waits_the_gap_and_keeps_the_backoff() {
+        let mut b = Backoff::default();
+        let throttled = Sent {
+            throttled: true,
+            ..Sent::default()
+        };
+        assert_eq!(b.next_read(Some(&throttled)), Duration::from_secs(60));
+        // An unchanged read waits GAP and leaves the strikes, so the next throttle doubles.
+        assert_eq!(b.next_read(None), GAP);
+        assert_eq!(b.next_read(Some(&throttled)), Duration::from_secs(120));
+        // A send no distributor throttled resets it.
+        assert_eq!(b.next_read(Some(&Sent::default())), GAP);
+        assert_eq!(b.next_read(Some(&throttled)), Duration::from_secs(60));
+        // A short Retry-After still waits at least GAP.
+        let short = Sent {
+            throttled: true,
+            retry_after: Some(5),
+            ..Sent::default()
+        };
+        assert_eq!(b.next_read(Some(&short)), GAP);
     }
 
     #[test]
