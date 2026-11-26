@@ -927,11 +927,13 @@ mod tests {
         q.items[1].project = "agent-runtime".into();
         let mut shipped = done_item("a", "agent-runtime", NOW);
         shipped.merged = Some("abc123".into());
+        shipped.outcome = Some("landed".into());
         q.items.push(shipped);
         q.items.push(done_item("b", "agent-runtime", NOW));
         // An item whose project is no lab project still counts: one figure for the whole queue.
         let mut stray = done_item("c", "scratch", NOW);
         stray.merged = Some("def456".into());
+        stray.outcome = Some("landed".into());
         q.items.push(stray);
         let (inf, alerts, _) = reds();
         let stats: Vec<crate::projects::Stats> = ["agent-runtime", "unity-core-playground"]
@@ -1151,6 +1153,7 @@ mod tests {
         // a and c merged (shipped); b merged nothing (a check), and so did a's second run.
         let merged = |mut x: Item| {
             x.merged = Some("abc123".into());
+            x.outcome = Some("landed".into());
             x
         };
         q.items.push(merged(done_item("a", "agent-runtime", NOW)));
@@ -1162,6 +1165,7 @@ mod tests {
         // Negative control: a failed run with a merge counts in neither.
         let mut failed = merged(done_item("bad", "agent-runtime", NOW));
         failed.status = Some("failed".into());
+        failed.outcome = Some("failed".into());
         q.items.push(failed);
         let p = phone(&state(), Some(&q), Some(&infra(vec![])));
         assert_eq!(
@@ -1515,8 +1519,10 @@ mod tests {
         let mut q = queue_of(vec![]);
         let mut a = done_item("a", "agent-runtime", NOW);
         a.merged = Some("abc123".into());
+        a.outcome = Some("landed".into());
         let mut c = done_item("c", ".dotfiles", NOW);
         c.merged = Some("def456".into());
+        c.outcome = Some("landed".into());
         q.items.extend([a, done_item("b", "agent-runtime", NOW), c]);
         q
     }

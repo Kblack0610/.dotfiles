@@ -8,7 +8,7 @@
   "chore": {"rank": 1, "cleanup": true, "entry": "/one-shot", "rung": "build", "exit": "pr", "enabled": true},
   "ci": {"rank": 1, "entry": "/one-shot", "rung": "build", "exit": "pr", "enabled": true},
   "run": {"rank": 1, "entry": "/one-shot", "rung": "build", "exit": "pr", "enabled": true},
-  "check": {"rank": 1, "entry": "/one-shot", "rung": "build", "exit": "pr", "enabled": true},
+  "check": {"rank": 1, "entry": "/one-shot", "rung": "build", "exit": "report", "enabled": true},
   "release": {"rank": 1, "entry": "/release", "rung": "build", "exit": "proof", "enabled": false},
   "research": {"rank": 1, "entry": "/deep-research-code", "rung": "propose", "exit": "doc+ask", "enabled": true},
   "design": {"rank": 1, "entry": "/one-pager", "rung": "propose", "exit": "doc+ask", "enabled": false},

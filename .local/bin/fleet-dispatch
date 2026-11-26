@@ -3158,7 +3158,7 @@ ladder_row_why() {
     return 1
   fi
   load_kinds
-  kind_opens_pr "$it" || { echo "its kind $(item_kind "$it") opens no PR"; return 1; }
+  kind_opens_pr "$it" || [ "${KIND_EXIT[$(item_kind "$it")]:-}" = report ] || { echo "its kind $(item_kind "$it") opens no PR"; return 1; }
 }
 
 # tier3_pick <item json> <share> -> rc 0 when a ladder run takes the tier-3 row: share is above 0,
@@ -5017,7 +5017,7 @@ land_orphan() {
     case "$state" in
     # From land_row, an open PR holds the row only for an item that ended ok: a failed or cancelled
     # run's PR left open is nobody's, and must not keep a held row from its ask.
-    OPEN) [ -z "${3:-}" ] || [ "$(jq -r '.status // ""' <<<"$it")" = ok ] || return 1; return 0 ;;
+    OPEN) [ -z "${3:-}" ] || [ "$(jq -r '.outcome // ""' <<<"$it")" = landed ] || return 1; return 0 ;;
     MERGED) [ -n "$oid" ] || return 1
       ! own_record "$1" "$it" || agent-queue set "$1" "merged=$oid" >/dev/null || return 1
       it=$(jq -c --arg m "$oid" '.merged = $m' <<<"$it") ;;
@@ -5053,8 +5053,8 @@ row_done_items() {
 }
 
 # unstart_orphans -- a row started with no active queue item naming it (its `row`, on its lane) is an
-# orphan: its session never filed an item, or died before reap could see one. If an item done ok
-# in the last DISPATCH_ORPHAN_HOURS plus a day names it, its PR decides first (land_orphan); a PR open
+# orphan: its session never filed an item, or died before reap could see one. If an item landed
+# (outcome landed) in the last DISPATCH_ORPHAN_HOURS plus a day names it, its PR decides first (land_orphan); a PR open
 # longer than that falls to the timer. A row seen orphaned on every pass for DISPATCH_ORPHAN_HOURS is un-started and given a failed verdict, as
 # settle_row does, so it is judged again (an agent row is also held and asked about at DISPATCH_FIX_TRIES
 # failures, ask_failed_rows); the grace keeps a
@@ -5071,7 +5071,7 @@ unstart_orphans() {
   # item or a gated board row names that plan (PLAN_ITEMS_JQ). agent-land closes it with the last phase.
   chains=$({ printf '%s\n' "$items"; plan_gated_rows "$feed"; } | jq -cs .) || chains='[]'
   landed=$(agent-queue list --json --state done --since "$(date -d "-$((DISPATCH_ORPHAN_HOURS / 24 + 1)) days" +%F)" 2>/dev/null) || return 0
-  landed=$(jq -rs 'map(select(.status == "ok" and (.row // "") != "")) | sort_by(.finished)
+  landed=$(jq -rs 'map(select(.outcome == "landed" and (.row // "") != "")) | sort_by(.finished)
     | .[] | "\(.lane // "agent")\t\(.row | sub(":"; "\t"))\t\(.slug)"' <<<"$landed")
   mkdir -p "$DIR"
   linked=$(jq -r 'select(.state != "done" and (.row // "") != "") | "\(.lane // "agent")\t\(.row | sub(":"; "\t"))"' <<<"$items")

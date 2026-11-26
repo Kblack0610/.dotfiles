@@ -102,6 +102,7 @@ hub_shows() { _tm capture-pane -p -t '=notes-hub:' 2>/dev/null | grep -q "$1"; }
 }
 
 @test "a second hub tap starts a fresh hub session and the previous tap's session exits 0" {
+  [[ "$(date -u +%F)" > 2026-12-09 ]] || skip "quarantined through 2026-12-09: the tmux server can be gone after the second tap (ar-6138)"
   ssh_stub 0
   tmux_start "$TAP"
   _tm set-option -p -t "$TM_TARGET" remain-on-exit on

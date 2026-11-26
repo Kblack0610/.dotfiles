@@ -2903,7 +2903,10 @@ red_item() {
   jq -cn --arg s "$1" --arg st "$2" --arg t "$3" --argjson q "$(iso "$4")" --argjson f "$(iso "$5")" \
     --arg pr "$6" --arg m "$7" --arg ok "${8:-ok}" --arg tags "${9:-red cause:$1}" \
     '{slug: $s, state: $st, title: $t, queued: $q, finished: $f, pr: (if $pr == "-" then null else $pr end),
-      merged: (if $m == "-" then null else $m end), status: $ok, tags: $tags}' >> "$ITEMS"
+      merged: (if $m == "-" then null else $m end), status: $ok, tags: $tags}
+      # the outcome agent-queue stamps at close, which fleet-bench counts
+      + if $st != "done" then {} elif $ok == "cancelled" then {outcome: "cancelled"} elif $ok == "failed" then {outcome: "failed"}
+        elif $pr != "-" then {outcome: "landed"} else {outcome: "no-pr"} end' >> "$ITEMS"
 }
 
 @test "reds: each red fix's outcome is read against what is red now, and the unfixed merges are a KPI" {
@@ -3635,10 +3638,10 @@ q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
 @test "kpi: points_per_pr is Claude points over Claude landed PRs; other kinds and unread points stay out" {
   kpi_setup; sources_fixture
   {
-    echo '{"slug":"a","account":"main","status":"ok","pr":"o/r#1"}'
-    echo '{"slug":"b","account":".claude-bnb","status":"ok","pr":"o/r#2"}'
-    echo '{"slug":"c","status":"ok","pr":"o/r#3","sessions":"s1"}'
-    echo '{"slug":"d","agent":"lazer-reserve","status":"ok","pr":"o/r#4"}'
+    echo '{"slug":"a","account":"main","status":"ok","pr":"o/r#1","outcome":"landed"}'
+    echo '{"slug":"b","account":".claude-bnb","status":"ok","pr":"o/r#2","outcome":"landed"}'
+    echo '{"slug":"c","status":"ok","pr":"o/r#3","sessions":"s1","outcome":"landed"}'
+    echo '{"slug":"d","agent":"lazer-reserve","status":"ok","pr":"o/r#4","outcome":"landed"}'
   } > "$ITEMS"
   run "$SUBJECT" kpi --json
   assert_equal "$(jq -c '.points_per_pr["7d"]' <<<"$output")" 4.67
