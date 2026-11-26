@@ -80,7 +80,7 @@ LINT_AND_OTHER=(
   'echo make test' 'git commit -m "make -C tests test-pr is denied"' $'cat <<EOF\nbats tests/unit\nEOF'
   'gh pr checks 12' 'cat ~/.dotfiles/tests/run-bats.sh' 'rg bats ~/.dotfiles/tests'
   'f=tests/run-bats.sh; cp x $f' 'x=~/.dotfiles/tests/vendor/bats-core/bin/bats' 'bash -n tests/run-bats.sh'
-  'cd tests && ./lint.sh' 'cd tests && ./docker.sh lint' 'tests/ci-uncovered.sh --list' 'bash tests/ci-uncovered.sh --list'
+  'cd tests && ./lint.sh' 'cd tests && ./docker.sh lint' 'tests/ci-uncovered.sh --list' 'bash tests/ci-uncovered.sh --list' 'cd tests && ./ci-uncovered.sh --list'
 )
 
 @test "the rows parse with no lint problem" {
@@ -146,9 +146,11 @@ ONE_PER_ROW=('make -C tests test-pr' 'make test-files' 'bats tests/unit' 'tests/
 }
 
 @test "the harness scripts run from inside a tests dir are denied there and nowhere else" {
-  run expect deny /home/u/.dotfiles/tests './docker.sh test-container' './rust.sh' 'bash docker.sh'
+  run expect deny /home/u/.dotfiles/tests './docker.sh test-container' './rust.sh' 'bash docker.sh' './ci-uncovered.sh'
   assert_success
-  run expect allow /home/u/src/app './docker.sh test-container' './rust.sh' 'bash docker.sh'
+  run expect allow /home/u/src/app './docker.sh test-container' './rust.sh' 'bash docker.sh' './ci-uncovered.sh'
+  assert_success
+  run expect allow /home/u/.dotfiles/tests './ci-uncovered.sh --list'
   assert_success
 }
 
