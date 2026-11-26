@@ -33,10 +33,7 @@ const TYPED_PREFIXES: &str = include_str!("../../../../../.config/agent-panel/ty
 
 /// The table's `<kind> <text>` lines.
 fn typed_entries() -> impl Iterator<Item = (&'static str, &'static str)> {
-    TYPED_PREFIXES
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+    super::conf_lines(TYPED_PREFIXES)
         .filter_map(|l| l.split_once(char::is_whitespace))
         .map(|(kind, text)| (kind, text.trim()))
 }

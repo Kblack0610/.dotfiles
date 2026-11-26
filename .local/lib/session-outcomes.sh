@@ -16,6 +16,8 @@
 # shellcheck source=origin-repo.sh
 SO_LIB="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 . "$SO_LIB/origin-repo.sh" || return 1
+# shellcheck source=edit-tools.sh
+. "$SO_LIB/edit-tools.sh" || return 1
 # shellcheck source=claude-end.sh
 . "$SO_LIB/claude-end.sh" || return 1
 
@@ -63,8 +65,10 @@ SO_TIME_USE_LINES="$(jq -Rsc '[splits("\n") | gsub("^\\s+|\\s+$"; "") | capture(
   "${TIME_USE_CONF:-$SO_LIB/../../.config/agent-panel/time-use.conf}" 2>/dev/null)" || SO_TIME_USE_LINES='[]'
 [ "$SO_TIME_USE_LINES" != '[]' ] ||
   echo "session-outcomes: no gate or test line in ${TIME_USE_CONF:-time-use.conf}; every command counts as jobs" >&2
+# edit_tools: the tools that write a file (edit-tools.conf), for the since-edit and lesson counts.
 SO_PR_JQ="$SO_PR_JQ
-  def time_use_lines: ${SO_TIME_USE_LINES:-[]};"'
+  def time_use_lines: ${SO_TIME_USE_LINES:-[]};
+  def edit_tools: $(edit_tools_json || echo '[]');"'
   def time_use_unquoted:
     gsub("(?<!<)<<(?!<)-?[ \\t]*(?<q>[\u0027\"]?)(?<w>[A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_])\\k<q>(?<rest>[^\\n]*)(?:\\n[^\\n]*)*?\\n[ \\t]*\\k<w>[ \\t]*(?![^\\n])"; "\(.rest)")
     | gsub("(?:^|(?<=[\\s;&|(`/]))(?<sh>(?:ba|z)?sh(?:\\s+-\\S+)*?\\s+-[a-z]*c\\s+)(?:\u0027(?<sq>[^\u0027]*)\u0027|\"(?<dq>(?:\\\\.|[^\"\\\\])*)\")"; "\(.sh)\n\(.sq // .dq)\n")
@@ -176,7 +180,7 @@ so_transcript_metrics() {
                elif $u.name == "Skill" and ($u.input.skill | type) == "string" then
                  .uses.skills[$u.input.skill] += 1
                else . end)
-            | (if (["Edit", "Write", "MultiEdit", "NotebookEdit"] | index($u.name)) != null
+            | (if (edit_tools | index($u.name)) != null
                   and (($u.input.file_path // $u.input.notebook_path // "") | test("/\\.agent/|/\\.claude/(plans|projects)/") | not) then
                  .since_edit = {}
                else . end)
@@ -196,7 +200,7 @@ so_transcript_metrics() {
                     elif ($c | test("--proof")) then .done_ids[$u.id] = "proof"
                     else . end)
                  else . end)
-            elif (["Edit", "Write", "MultiEdit"] | index($u.name)) != null
+            elif (edit_tools | index($u.name)) != null
                  and (($u.input.file_path // "") | test("/\\.agent/lessons/")) then
               .lesson_ids[$u.id] = true
             else . end)

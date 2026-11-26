@@ -57,6 +57,8 @@ SPIN_DIR="$HOME/.agent/spin-down"
 # Canonical project name (matches the Stop-hook's resolution).
 # shellcheck source=../../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../../.config/shared-hooks/project-name.sh}"
+# shellcheck source=../../lib/ask-store.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../lib/ask-store.sh"   # reopen_asks
 
 cmd_arm() {
   local scope="window"
@@ -411,8 +413,7 @@ reopen_asks() {
     while IFS= read -r af; do
       err="$(CLAUDE_CODE_SESSION_ID="$1" "$SCRIPT_DIR/../../bin/agent-ask" reopen-on-answer "$(basename "$af" .md)" 2>&1 >/dev/null)" ||
         printf '[%s] fire: ask %s not set to reopen: %s\n' "$(date '+%F %T' 2>/dev/null)" "$(basename "$af" .md)" "${err##*$'\n'}" >> "$2" 2>/dev/null || true
-    done < <(grep -lxF "claude_session: $1" "${AGENT_ASK_ROOT:-$HOME/.agent/asks}"/*/*.md 2>/dev/null |
-      xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null)
+    done < <(grep -lxF "claude_session: $1" "$(ask_root)"/*/*.md 2>/dev/null | ask_open_files)
   fi
 }
 
