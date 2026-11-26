@@ -18,8 +18,9 @@
 #                                runs and reds (session-outcomes joins it into its row)
 #   fleet-bench review [--days N]
 #                                count failed CI runs (any workflow) before merge on PRs merged in the
-#                                window, and on a repo with section roots each PR's sections and gate
-#                                runs; --days widens the window and recounts rows that lack them
+#                                window (24h, or back to the last pass, review.last, at most BENCH_REVIEW_MAX_DAYS), and
+#                                on a repo with section roots each PR's sections and gate runs; --days sets the window and
+#                                recounts rows that lack them
 #   fleet-bench sections [--days N] [--json]
 #                                per section of a repo: PRs, first-try share, gate reds and minutes,
 #                                greens lost, and the claiming session's cost and tokens per PR
@@ -263,7 +264,8 @@ set -uo pipefail
 : "${BENCH_CI_MATCH_CMD:=hub ci --pool-match}"   # given the wait (s) a job must have waited; hub_core::ci's pool match rows
 : "${BENCH_NEEDS_CMD:=hub needs --json}"   # hub Home's ranked NEEDS YOU (hub_core::home::needs)
 : "${BENCH_ASKS_ALL_CMD:=agent-ask list --all}"   # every ask, for the ask KPIs
-: "${BENCH_WINDOW_H:=24}"            # what a scorecard and the headline cover
+: "${BENCH_WINDOW_H:=24}"            # what a scorecard and the headline cover, and review's first window
+: "${BENCH_REVIEW_MAX_DAYS:=7}"      # review: how far back a held cursor reaches, so a PR that never counts drops out
 : "${BENCH_GAP_CAP_MIN:=20}"         # two sampler cadences: a longer gap is a sampler outage, not time spent
 : "${BENCH_SCORECARD_DIR:=$HOME/.notes/lab/projects/current/agent-runtime/docs/bench}"
 : "${BENCH_OUTCOMES_DIR:=$HOME/.agent/outcomes}"
@@ -442,6 +444,7 @@ FORECASTS="$DIR/forecasts.jsonl"
 FORECAST_SCORES="$DIR/forecast-scores.jsonl"
 EPIC_BASELINES="$DIR/epic-baselines.jsonl"   # an open epic's ETA, frozen when first seen and on each scope change
 FINDINGS_PASS="$DIR/findings.last"   # epoch of the last evaluation: a healthy pass writes no findings row
+REVIEW_PASS="$DIR/review.last"   # review: the epoch before which every merge is counted or left out for good; the next window starts there
 STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"   # fleet-sessions --write
 RUNDOWNS="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}/rundowns"   # the newest one is the last summary
 SHEPHERD_PASSES="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}/passes.tsv"   # one scored pass a row, fleet-shepherd the writer
@@ -1680,7 +1683,7 @@ section_cfg() {
   jq -c '[.trackers[] | objects | .sections // empty] | INDEX(.repo)' "$BENCH_PROJECT_MAP"
 }
 
-# merged_new <since> <cfg> -> repo, number and session_id (tab-separated) for every PR to count:
+# merged_new <since> <cfg> -> repo, number, merge epoch and session_id (tab-separated, the one that may be empty last, since read folds two tabs into one) for every PR to count:
 # what session-outcomes says merged since then, plus on a repo with sections whatever merged
 # there, since about a third of those no session claims. A PR is counted once, except that a row
 # from before its repo had sections or from before a session claimed it counts again, and
@@ -1696,19 +1699,20 @@ merged_new() {
     "$SCHEDULES_SYNC" sync-prs --wait "$repo" >&2 || true
     prs=$("$SCHEDULES_SYNC" prs "$repo" --state merged --since "$(date -u -d "@$1" +%FT%TZ)") || return 1
     listed=$(jq -c --argjson l "$listed" --arg r "$repo" --argjson since "$1" \
-      '$l + map(select(.merged_at and (.merged_at | fromdateiso8601) >= $since) | {repo: $r, number, session_id: ""})' <<<"$prs") || return 1
+      '$l + map(select(.merged_at and (.merged_at | fromdateiso8601) >= $since)
+                | {repo: $r, number, session_id: "", merged: (.merged_at | fromdateiso8601 | floor)})' <<<"$prs") || return 1
   done
   outcomes_newest | jq -rs --argjson since "$1" --argjson cfg "$2" --argjson listed "$listed" --slurpfile c "$(ci_file)" "$JQ_LIB"'
     ($c | INDEX(key)) as $old
     | ($c | map(select($cfg[.repo] == null or .sections != null)) | INDEX(key)) as $have
     | [.[] | .session_id as $sid | (.prs // [])[]
        | select(.state == "MERGED" and .merged_at != null)
-       | select((.merged_at | fromdateiso8601) >= $since)
-       | {repo, number, session_id: $sid}] + $listed
+       | (.merged_at | fromdateiso8601 | floor) as $m | select($m >= $since)
+       | {repo, number, session_id: $sid, merged: $m}] + $listed
     | unique_by(key)
     | map(if claimed then . else .session_id = ($old[key].session_id // "") end)
     | map(. as $pr | $have[key] as $row | select($row == null or (($row | claimed | not) and ($pr | claimed))))
-    | .[] | [.repo, .number, .session_id] | @tsv'
+    | .[] | [.repo, .number, .merged, .session_id] | @tsv'
 }
 
 # ci_keep_newest -> the newest line per PR stays, so a recount replaces its row
@@ -1780,8 +1784,23 @@ forgejo_ready() {
   so_forgejo_auth "$1" || { say "$SO_FORGEJO_ERR"; return 1; }
 }
 
+# review_start <now> -> where the next window starts: BENCH_WINDOW_H back, or further back to the
+# cursor review.last when that is older, though never more than BENCH_REVIEW_MAX_DAYS
+review_start() {
+  local c s=$(( $1 - BENCH_WINDOW_H * 3600 )) floor=$(( $1 - BENCH_REVIEW_MAX_DAYS * 86400 ))
+  c=$(sed -n '1{/^[0-9][0-9]*$/p}' "$REVIEW_PASS" 2>/dev/null)
+  [ -n "$c" ] || { echo "$s"; return 0; }
+  [ "$c" -ge "$floor" ] || c=$floor
+  [ "$c" -lt "$s" ] || c=$s
+  echo "$c"
+}
+
+# cmd_review: the window reaches back to the last pass, so a failed or missed night is counted by
+# the next one (ar-2852). A pass moves the cursor to its own start time, held back to the oldest PR
+# it left for later (ledger not synced past it) or could not count; a PR in a repo the ledger does
+# not sync is out for good and holds nothing. A --days window moves it only when it reached the start.
 cmd_review() {
-  local t since cfg new repo num sid row rc n=0 red=0 failed=0 unsynced=0 later=0 msg days='' off=' '
+  local t since start cfg new repo num sid merged row rc n=0 red=0 failed=0 unsynced=0 later=0 msg days='' off=' ' hold
   case "${1:-}" in
     '') ;;
     --days) days=${2:-}; [[ "$days" =~ ^[1-9][0-9]*$ ]] || { say "usage: fleet-bench review [--days N]"; return 2; } ;;
@@ -1789,12 +1808,13 @@ cmd_review() {
   esac
   mkdir -p "$DIR"
   t=$(now)
-  since=$(( t - BENCH_WINDOW_H * 3600 )); [ -z "$days" ] || since=$(( t - days * 86400 ))
+  start=$(review_start "$t"); since=$start hold=$t
+  [ -z "$days" ] || since=$(( t - days * 86400 ))
   cfg=$(section_cfg) || { report_outcome FAILED "project map unreadable"; return 1; }
   new=$(merged_new "$since" "$cfg") || { report_outcome FAILED "merged PRs unreadable"; return 1; }
   # a recount leaves two lines for a PR until this runs, so it runs however the loop ends
   [ -z "$new" ] || { trap ci_keep_newest EXIT; trap 'exit 143' TERM INT HUP; }
-  while IFS=$'\t' read -r repo num sid; do
+  while IFS=$'\t' read -r repo num merged sid; do
     [ -n "$repo" ] || continue
     # a repo the ledger does not sync is learnt once per review, not paid a gh call per PR
     case "$off" in *" $repo "*) unsynced=$((unsynced + 1)); continue ;; esac
@@ -1804,8 +1824,8 @@ cmd_review() {
     case $rc in
       0) ;;
       3) unsynced=$((unsynced + 1)); off+="$repo "; continue ;;
-      4) later=$((later + 1)); continue ;;
-      *) say "cannot count $repo#$num"; failed=$((failed + 1)); continue ;;
+      4) later=$((later + 1)); [ "$merged" -ge "$hold" ] || hold=$merged; continue ;;
+      *) say "cannot count $repo#$num"; failed=$((failed + 1)); [ "$merged" -ge "$hold" ] || hold=$merged; continue ;;
     esac
     printf '%s\n' "$row" >> "$CI"
     n=$((n + 1)); red=$((red + $(jq .ci_red <<<"$row")))
@@ -1815,6 +1835,7 @@ cmd_review() {
   [ "$unsynced" -eq 0 ] || say "$unsynced PRs left out: their repos are not in the run ledger (schedules-sync repos)"
   # a PR merged after the ledger's last sync is counted by the next review, once its runs are in
   [ "$later" -eq 0 ] || say "$later PRs merged after the run ledger's last sync, left for the next review"
+  [ "$since" -gt "$start" ] || printf '%s\n' "$hold" > "$REVIEW_PASS"
   if [ "$failed" -gt 0 ]; then
     report_outcome FAILED "cannot count $failed PRs (gh, Forgejo or the run ledger), $n counted"
     return 1
@@ -7071,9 +7092,9 @@ canary_lane_why() {
   [ "$1" != claude ] || [ -z "$2" ] || [ -n "$3" ] || { echo "a claude lane needs --effort, which keeps its scores out of the claude baseline"; return 1; }
 }
 
-# canary_queue [--harness h [--model m [--effort e]]] [--max N] [--task id[,id]] [--pts n[,n]] [--off-claude <project>[,<project>]]: the CLI. With a lane it queues that lane's
+# canary_queue [--harness h [--model m [--effort e]]] [--max N] [--task id[,id]] [--pts n[,n]] [--off-claude p[,p]]: the CLI. With a lane it queues that lane's
 # missing tasks (at most N when given; only the named ids and sizes when --task or --pts is given); with --max alone it tops up across the claude lane and every lane
-# in BENCH_CANARY_LANES (canary_top_up), one task a lane a round, so a few canaries run across lanes together. --off-claude (fleet-dispatch: the projects whose share is full) leaves out each claude lane's task that counts on one of them (canary_share_full), where it would wait at the cap.
+# in BENCH_CANARY_LANES (canary_top_up), one task a lane a round, so a few canaries run across lanes together. --off-claude (fleet-dispatch) names the projects whose share is full: a claude lane leaves out the tasks of those projects only (a Claude canary there would wait at the cap), every other task and lane queues.
 canary_queue() {
   local why harness="" model="" effort="" max="" only_ids="" only_pts="" off_claude=""   # only_*: read by canary_lane_queue, off_claude by canary_top_up (dynamic scope)
   while [ $# -gt 0 ]; do
@@ -7084,8 +7105,8 @@ canary_queue() {
       --max) max="${2:?canary queue: --max needs a number}"; shift 2 ;;
       --task) only_ids="${2:?canary queue: --task needs task ids, comma-separated}"; shift 2 ;;
       --pts) only_pts="${2:?canary queue: --pts needs sizes, comma-separated}"; shift 2 ;;
-      --off-claude) off_claude="${2:?canary queue: --off-claude needs the projects whose share is full, comma-separated}"; shift 2 ;;
-      *) say "usage: fleet-bench canary queue [--harness h [--model m [--effort e]]] [--max N] [--task id[,id]] [--pts n[,n]] [--off-claude <project>[,<project>]]"; return 2 ;;
+      --off-claude) off_claude="${2:?canary queue: --off-claude needs projects, comma-separated}"; shift 2 ;;
+      *) say "usage: fleet-bench canary queue [--harness h [--model m [--effort e]]] [--max N] [--task id[,id]] [--pts n[,n]] [--off-claude p[,p]]"; return 2 ;;
     esac
   done
   [[ -z "$only_pts" || "$only_pts" =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ ]] || { say "canary queue: --pts needs whole sizes, comma-separated"; return 2; }
@@ -7128,7 +7149,7 @@ canary_known() { grep -qxF -e "$1" -e "$2" <<<"$CANARY_KNOWN"; }
 # and leaves the count in CANARY_ADDED. Says its one summary line unless CANARY_QUIET is set (canary_top_up
 # says its own).
 canary_lane_queue() {
-  local tasks t id slug title week why lane="" label="" harness=$1 model=$2 effort=$3 max=$4 added=0 had=0 off=0 full=0
+  local tasks t id tproject slug title week why lane="" label="" harness=$1 model=$2 effort=$3 max=$4 added=0 had=0 off=0
   local -A seen=()
   CANARY_ADDED=0
   [ -z "$harness" ] || { lane=$(canary_lane_name "$harness" "$model" "$effort"); label="$harness${model:+/$model}${effort:+@$effort}"; }
@@ -7158,18 +7179,19 @@ canary_lane_queue() {
     [ $? != 2 ] || { say "canary: $label queues nothing: $why"; return 1; }
   fi
   while IFS= read -r t; do
-    id=$(jq -r .id <<<"$t")
-    [ -z "$held" ] || harness_project_why "$BENCH_HARNESSES" "$harness" "$(jq -r '.project // ""' <<<"$t")" >/dev/null ||
+    { read -r id; read -r tproject; } < <(jq -r '.id, (.project // "")' <<<"$t")
+    # A claude lane (the baseline has no harness) leaves out a task of a project whose share is full (--off-claude).
+    if [ -n "${off_claude:-}" ] && { [ -z "$harness" ] || [ "$harness" = claude ]; } && [[ ",$off_claude," == *",$tproject,"* ]]; then
+      continue
+    fi
+    [ -z "$held" ] || harness_project_why "$BENCH_HARNESSES" "$harness" "$tproject" >/dev/null ||
       { off=$((off + 1)); continue; }
-    # A claude lane's task (the baseline has no harness) in a project whose share is full would wait at the cap.
-    if [ -n "${off_claude:-}" ] && { [ -z "$harness" ] || [ "$harness" = claude ]; } &&
-      canary_share_full "$(jq -r '.project // ""' <<<"$t")"; then full=$((full + 1)); continue; fi
     slug=$(canary_slug "$id" "$week" "$lane") || { say "canary: lane '$lane' leaves no room for $id in a 40-char slug"; return 1; }
     [ -z "${seen[$slug]:-}" ] || { say "canary: $id and ${seen[$slug]} share the slug $slug"; return 1; }
     seen[$slug]=$id
     title=$(canary_title "$id" "$week" "$label")
     if canary_known "$title" "$slug"; then had=$((had + 1)); continue; fi
-    $BENCH_CANARY_QUEUE_CMD add --project "$(jq -r .project <<<"$t")" --from canary --tags canary \
+    $BENCH_CANARY_QUEUE_CMD add --project "$tproject" --from canary --tags canary \
       --priority low --weight light ${harness:+--agent "$harness"} --slug "$slug" --title "$title" \
       -- "$(canary_brief "$t" "$slug" "$sbx")" >/dev/null || { say "canary: could not queue $slug"; return 1; }
     [ -z "$model$sbx" ] || $BENCH_CANARY_QUEUE_CMD set "$slug" ${model:+"model=$model"} ${effort:+"effort=$effort"} ${sbx:+"canary=$id"} >/dev/null ||
@@ -7180,16 +7202,7 @@ canary_lane_queue() {
     [ "$max" = 0 ] || [ "$added" -lt "$max" ] || break
   done <<<"$tasks"
   local note=''; [ "$off" = 0 ] || note=", $off outside $harness's projects"
-  [ "$full" = 0 ] || note+=", $full in a project whose share is full"
   [ -n "${CANARY_QUIET:-}" ] || say "canary: $added queued, $had already queued$note for $week${label:+ ($label)}"
-}
-
-# canary_share_full <task project> -> succeeds when the queue project its item counts on (its `owner`, as
-# agent-queue add's project_resolve takes it: dotfiles -> agent-runtime) is on --off-claude's list
-# (off_claude, dynamic scope).
-canary_share_full() {
-  local c o; c=$(project_canonical "$1"); o=$(project_field "$c" owner)
-  [[ ",$off_claude," == *",${o:-$c},"* ]]
 }
 
 # canary_retire -- cancel the queued canary items of an earlier week than canary_week: a week's set

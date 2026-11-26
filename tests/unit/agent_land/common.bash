@@ -173,6 +173,8 @@ merge-tree) [ ! -f "$NOTES_FIXTURE/tree.conflicts" ] || { : >"$NOTES_FIXTURE/mer
 diff) cat "$NOTES_FIXTURE/diff.status" 2>/dev/null || true ;;
 # no.workflows: the head has no Actions workflow dir (it has .github/workflows by default)
 ls-tree) [ -f "$NOTES_FIXTURE/no.workflows" ] || echo .github/workflows ;;
+# ci.shape: a workflow at HEAD runs shape-grow (none does by default, so agent-land runs it)
+grep) [ -f "$NOTES_FIXTURE/ci.shape" ] ;;
 esac
 EOF
   # comms-lint: keeps what it was given in linted.txt, prints lint.out and exits lint.rc (0 by default)
@@ -208,10 +210,12 @@ EOF
   chmod +x "$SANDBOX/bin/schedules-sync"
   export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync"
 
-  # shape-grow: logs its call, prints shape.out and exits shape.rc (0, nothing grew, by default)
+  # shape-grow: logs its call, keeps its stdin (the body) in shape.body, prints shape.out and exits
+  # shape.rc (0, nothing grew, by default)
   cat >"$SANDBOX/bin/shape-grow" <<'EOF'
 #!/usr/bin/env bash
 printf 'shape-grow %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
+cat >"$NOTES_FIXTURE/shape.body"
 cat "$NOTES_FIXTURE/shape.out" 2>/dev/null
 exit "$(cat "$NOTES_FIXTURE/shape.rc" 2>/dev/null || echo 0)"
 EOF

@@ -545,7 +545,7 @@ load 'fleet_dispatch/fleet_dispatch_run_holds'
   [ -n "$(qitem queued "$back")" ] || fail "the requeued item went back to its row at the project share"
 }
 
-@test "project share: while a share is full the canary top-up names that project, so no Claude lane queues its canaries (ar-5406)" {
+@test "project share: the canary top-up names the full projects, so a Claude lane skips those alone" {
   project game beta "$SANDBOX/repos/game"
   export DISPATCH_CANARY_KEEP=2
   stub fleet-bench "[ \"\$1\" = canary ] || exit 0; echo \"\$*\" >> '$SANDBOX/bench.calls'; echo 'canary: 1 queued'"
@@ -553,7 +553,7 @@ load 'fleet_dispatch/fleet_dispatch_run_holds'
   agent-queue add --project game --slug ca-held --tags canary "a claude canary" >/dev/null
   share_history 1 0
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'canary top-up (keep 2, 0 queued, 2 wanted, share full on game: no Claude lane there): canary: 1 queued'
+  assert_output --partial 'canary top-up (keep 2, 0 queued, 2 wanted, Claude lanes skip the full share of game): canary: 1 queued'
   assert_equal "$(cat "$SANDBOX/bench.calls")" 'canary queue --max 2 --off-claude game'
   # The negative control: the cap off, the same pass asks for every lane.
   rm "$SANDBOX/bench.calls"

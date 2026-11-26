@@ -608,8 +608,9 @@ notes ingest record --stage queue --action item-set --from dotfiles --item ship 
 gh api repos/o/r/pulls/42/files --paginate --jq .[] | .filename, (.previous_filename // empty)
 git fetch -q origin
 git rev-list --count HEAD..origin/main
+git grep -qF shape-grow HEAD -- .github/workflows
 git merge-base HEAD origin/main
-shape-grow 5eedbase5eedbase HEAD
+shape-grow --body - 5eedbase5eedbase HEAD
 gh pr checks 42 --watch --fail-fast -i 30
 gh pr checks 42 --json name,bucket,workflow -q map(select(.bucket == "cancel"))
 git fetch -q origin
@@ -959,55 +960,63 @@ EOF
   assert_output --partial 'merge: #42 MERGED'
 }
 
-@test "shape: a clean change prints shape: clean and measures from the merge-base" {
+@test "shape: a clean change prints shape: clean, measured from the merge-base with the body on stdin" {
   run "$LAND" 42 --item ship
   assert_success
   assert_output --partial 'shape: clean'
-  run grep -c "^shape-grow 5eedbase5eedbase HEAD$" "$LOG"
+  run grep -c "^shape-grow --body - 5eedbase5eedbase HEAD$" "$LOG"
   assert_output 1
+  run cat "$NOTES_FIXTURE/shape.body"
+  assert_output --partial 'The change and why.'
 }
 
-@test "shape: a long function that got longer stops the landing before the checks, naming it" {
-  printf 'a.py:10 decide 247->269\nb.sh:3 run 0->151\n' >"$NOTES_FIXTURE/shape.out"
-  printf '1\n' >"$NOTES_FIXTURE/shape.rc"
-  run "$LAND" 42 --item ship
-  assert_failure 1
-  assert_output --partial 'shape failed: long functions got longer: a.py:10 decide 247->269; b.sh:3 run 0->151. Extract the new logic as a pure function (inputs in, result out)'
-  run grep -c 'pr checks\|pr merge' "$LOG"
-  assert_output 0
-  # A Split: line naming no row id is not one.
-  printf 'The change.\n\nSplit: later\n' >"$NOTES_FIXTURE/body"
-  run "$LAND" 42 --item ship
-  assert_failure 1
-  assert_output --partial 'shape failed:'
-}
-
-@test "shape: a Split: line naming an open row that names each function lets it land" {
-  printf 'a.py:10 Gov.decide 247->269\nb.rs:4 handle#2 160->170\n' >"$NOTES_FIXTURE/shape.out"
-  printf '1\n' >"$NOTES_FIXTURE/shape.rc"
-  mkdir -p "$HOME/.notes/lab/projects/current/x"
-  printf -- '- [ ] refactor(gov): split decide and handle #of/hc-1 <!-- id:hc-1204 filed:2026-11-18 tier:backlog -->\n' >"$HOME/.notes/lab/projects/current/x/README.md"
-  printf 'The change.\n\nSplit: hc-1204\n' >"$NOTES_FIXTURE/body"
+@test "shape: a repo whose CI runs shape-grow leaves it to the checks and does not run it" {
+  : >"$NOTES_FIXTURE/ci.shape"
   run "$LAND" 42 --item ship
   assert_success
-  assert_output --partial 'shape: grows, split owed by hc-1204: a.py:10 Gov.decide 247->269; b.rs:4 handle#2 160->170'
+  assert_output --partial 'shape: CI runs shape-grow, so the checks carry its verdict'
+  run grep -c '^shape-grow' "$LOG"
+  assert_output 0
+}
+
+@test "shape: a grown function or a copy stops the landing before the checks, naming it" {
+  printf 'a.py:10 decide 247->269\nb.sh:3 copy function run_it, also c.sh:9\nshape-grow: fix each line above in this change.\n' >"$NOTES_FIXTURE/shape.out"
+  printf '1\n' >"$NOTES_FIXTURE/shape.rc"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'shape failed: a.py:10 decide 247->269; b.sh:3 copy function run_it, also c.sh:9. fix each line above in this change.'
+  run grep -c 'pr checks\|pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "shape: Split: and Dup: lines naming open rows that name what they list let it land" {
+  printf 'a.py:10 Gov.decide 247->269 [Split: hc-1204]\nb.sh:3 copy function run_it, also c.sh:9 [Dup: hc-1205]\n' >"$NOTES_FIXTURE/shape.out"
+  mkdir -p "$HOME/.notes/lab/projects/current/x"
+  printf -- '- [ ] refactor(gov): split decide and handle #of/hc-1 <!-- id:hc-1204 filed:2026-11-18 tier:backlog -->\n- [ ] fold run_it into c.sh <!-- id:hc-1205 -->\n' >"$HOME/.notes/lab/projects/current/x/README.md"
+  printf 'The change.\n\nSplit: hc-1204 decide handle\nDup: hc-1205 run_it\n' >"$NOTES_FIXTURE/body"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'shape: clean, covered: a.py:10 Gov.decide 247->269 [Split: hc-1204]; b.sh:3 copy function run_it, also c.sh:9 [Dup: hc-1205]'
   assert_output --partial 'merge: #42 MERGED'
 }
 
-@test "shape: a Split: id that is no row, a done row, or a row missing a function is refused" {
-  printf 'a.py:10 decide 247->269\nb.sh:3 run 0->151\n' >"$NOTES_FIXTURE/shape.out"
-  printf '1\n' >"$NOTES_FIXTURE/shape.rc"
+@test "shape: an escape row that is no row, a done row, lists nothing or misses a name is refused, whoever runs shape-grow" {
+  : >"$NOTES_FIXTURE/ci.shape"
   mkdir -p "$HOME/.notes/lab/projects/current/x"
   printf -- '- [x] refactor: split decide and run <!-- id:hc-7 -->\n- [ ] refactor: split decide, rerun later <!-- id:hc-8 -->\n- [ ] refactor: split decide and run <!-- id:ar-10 -->\n' >"$HOME/.notes/lab/projects/current/x/README.md"
-  printf 'The change.\n\nSplit: ar-1\n' >"$NOTES_FIXTURE/body"
+  printf 'The change.\n\nSplit: ar-1 decide\n' >"$NOTES_FIXTURE/body"
   run "$LAND" 42 --item ship
   assert_failure 1
   assert_output --partial 'shape failed: Split: ar-1 is not an open row on any sheet under ~/.notes/lab'
-  printf 'The change.\n\nSplit: hc-7\n' >"$NOTES_FIXTURE/body"
+  printf 'The change.\n\nDup: hc-7 decide\n' >"$NOTES_FIXTURE/body"
   run "$LAND" 42 --item ship
   assert_failure 1
-  assert_output --partial 'shape failed: Split: hc-7 is not an open row'
+  assert_output --partial 'shape failed: Dup: hc-7 is not an open row'
   printf 'The change.\n\nSplit: hc-8\n' >"$NOTES_FIXTURE/body"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'shape failed: Split: hc-8 lists nothing it covers'
+  printf 'The change.\n\nSplit: hc-8 decide run\n' >"$NOTES_FIXTURE/body"
   run "$LAND" 42 --item ship
   assert_failure 1
   assert_output --partial 'shape failed: Split: hc-8 does not name run:'
@@ -1512,7 +1521,7 @@ EOF2
   assert_line --index 1 --partial 'head: git rev-parse HEAD must equal the PR'
   assert_line --index 2 --partial 'review: fleet-dispatch item-tier ship'
   assert_line --index 3 --partial 'workflow: gh api repos/<owner>/<repo>/pulls/42/files, then gh api -i user'
-  assert_line --index 4 --partial 'shape: shape-grow $(git merge-base HEAD origin/<base>) HEAD'
+  assert_line --index 4 --partial 'shape: shape-grow --body - $(git merge-base HEAD origin/<base>) HEAD, unless a workflow at HEAD runs it'
   assert_line --index 5 --partial 'checks: gh pr checks 42 --watch'
   assert_line --index 6 --partial 'fetch: git fetch origin'
   assert_line --index 7 --partial 'validate: gh api repos/<owner>/<repo>/pulls/42/files | judge_work_level'
