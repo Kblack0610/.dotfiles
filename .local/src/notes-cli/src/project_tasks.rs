@@ -1327,24 +1327,32 @@ fn carry_tags(old: &str, new: &str) -> String {
     md::find_hashtags(old)
         .into_iter()
         .filter(|t| t.starts_with(|c: char| c.is_ascii_lowercase()) && !set.contains(&name(t)))
+        // A gate's id is cased (`#ask/dU3Ev0`), and this list is lowercased: carry_sizing carries it.
+        .filter(|t| gate_kind(t).is_none())
         .fold(new.trim().to_string(), |out, t| {
             md::add_tag(&out, &format!("#{t}"))
         })
 }
 
-/// The board gate kinds: what `agent-queue gate` reads on a row (`gate_queue_tag`, plus `after/`
-/// and the `desk/` class a hold carries). A gate is dispatch state, not words.
+/// The board gate kinds: the tags `agent-queue gate` reads on a row (its `gate_queue_tag` arms,
+/// plus `after/`, which `cmd_gate` reads itself), and `desk/`, the class `requeue --hold` puts
+/// beside a hold. Each is dispatch state, not words. A kind added there is added here.
 const GATE_KINDS: [&str; 8] = [
     "at/", "after/", "ask/", "hold/", "rbw/", "pr/", "nightly/", "desk/",
 ];
 
+/// The [`GATE_KINDS`] prefix of a lowercased tag, if it is a gate.
+fn gate_kind(tag: &str) -> Option<&'static str> {
+    GATE_KINDS.iter().copied().find(|k| tag.starts_with(k))
+}
+
 /// `new` plus the `#size/x` and `#pts/N` of `old` when `new` types neither, and each gate tag of
-/// `old` ([`GATE_KINDS`]) as it was cased: the sizing is the row's estimate and a gate is what
-/// the row waits on, neither is words, so a retext keeps both. Every other tag is exactly what
-/// `--text` types, so leaving `#plan` out clears it. A `new` that types either sizing tag sets
-/// the sizing itself; a gate comes off with `ptask tag --remove`. Why: fleet-bench's reopen of a
-/// red retexts its row, which dropped `#ask/<id>` and restarted a row still waiting on the human
-/// (ar-3624, 2026-11-25).
+/// `old` ([`GATE_KINDS`]) as it was cased, for each kind `new` types none of: the sizing is the
+/// row's estimate and a gate is what the row waits on, neither is words, so a retext keeps both.
+/// Every other tag is exactly what `--text` types, so leaving `#plan` out clears it. A `new` that
+/// types a sizing tag sets the sizing, and one that types a gate of a kind sets that kind's gates;
+/// a gate comes off with `ptask tag --remove`. Why: fleet-bench's reopen of a red retexts its row,
+/// which dropped `#ask/<id>` and restarted a row still waiting on the human (ar-3624, 2026-11-25).
 fn carry_sizing(old: &str, new: &str) -> String {
     let sizing = |t: &String| t.starts_with("size/") || t.starts_with("pts/");
     let typed = md::find_hashtags(new);
@@ -1358,10 +1366,10 @@ fn carry_sizing(old: &str, new: &str) -> String {
                 md::add_tag(&out, &format!("#{t}"))
             })
     };
+    let set: Vec<&str> = typed.iter().filter_map(|t| gate_kind(t)).collect();
     md::find_hashtags_cased(old)
         .into_iter()
-        .filter(|t| GATE_KINDS.iter().any(|k| t.to_lowercase().starts_with(k)))
-        .filter(|t| !typed.contains(&t.to_lowercase()))
+        .filter(|t| gate_kind(&t.to_lowercase()).is_some_and(|k| !set.contains(&k)))
         .fold(out, |out, t| md::add_tag(&out, &format!("#{t}")))
 }
 
@@ -4787,6 +4795,16 @@ Version: v1.13.0
             carry_sizing(old, "check(watch): x #size/m #ask/dU3Ev0/a/b"),
             "check(watch): x #size/m #ask/dU3Ev0/a/b #after/ar-12 #hold/Unity",
             "a typed sizing and a typed gate are not doubled"
+        );
+        assert_eq!(
+            carry_sizing(old, "check(watch): x #hold/Android"),
+            "check(watch): x #hold/Android #size/s #ask/dU3Ev0/a/b #after/ar-12",
+            "a typed gate replaces the old gates of its kind, never joins them"
+        );
+        assert_eq!(
+            carry_sizing(old, &carry_tags(old, "fix(x): y")),
+            "fix(x): y #size/s #plan #ask/dU3Ev0/a/b #after/ar-12 #hold/Unity",
+            "the --was path keeps each gate as cased"
         );
         // NEGATIVE CONTROL: a row with no gate gets none.
         assert_eq!(
