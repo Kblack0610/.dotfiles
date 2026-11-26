@@ -12,7 +12,8 @@ use std::path::Path;
 pub fn new_note(p: &Profile, log: &Logger, title: &str) -> Result<()> {
     create(&p.zettel, log, "zettel", "note", title, |id, title, now| {
         format!(
-            "---\nid: {id}\ntitle: \"{title}\"\ncreated: {date}\ntags: []\nlinks: []\n---\n\n# {title}\n\n",
+            "---\nid: {id}\ntitle: {q}\ncreated: {date}\ntags: []\nlinks: []\n---\n\n# {title}\n\n",
+            q = yaml_quote(title),
             date = now.format("%Y-%m-%d")
         )
     })
@@ -30,7 +31,9 @@ pub(crate) fn create(
     title: &str,
     body: impl FnOnce(&str, &str, DateTime<Local>) -> String,
 ) -> Result<()> {
-    let title = title.trim();
+    // One line: a newline in a title would split the `# {title}` heading as well.
+    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    let title = title.as_str();
     if title.is_empty() {
         bail!("{kind} title must not be empty");
     }
@@ -58,6 +61,26 @@ pub(crate) fn create(
     Ok(())
 }
 
+/// `s` as a YAML double-quoted scalar, quotes included: `\\`, `"` and control characters are
+/// escaped, so no title can end the value early or break the front matter.
+pub(crate) fn yaml_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 fn slugify(s: &str, fallback: &str) -> String {
     let slug = crate::md::kebab(s);
     if slug.is_empty() {
@@ -70,6 +93,42 @@ fn slugify(s: &str, fallback: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn yaml_quote_escapes_what_ends_a_double_quoted_scalar() {
+        assert_eq!(yaml_quote("plain"), "\"plain\"");
+        assert_eq!(yaml_quote(r#"say "hi""#), r#""say \"hi\"""#);
+        assert_eq!(yaml_quote(r"a\b"), r#""a\\b""#);
+        assert_eq!(yaml_quote("a\nb\tc"), r#""a\nb\tc""#);
+        assert_eq!(yaml_quote("a\u{7}b"), r#""a\u0007b""#);
+    }
+
+    #[test]
+    fn create_writes_a_one_line_escaped_title() {
+        let dir = std::env::temp_dir().join(format!("zettel-title-{}", std::process::id()));
+        let log = Logger::new(dir.join("log"), false);
+        create(
+            &dir,
+            &log,
+            "zettel",
+            "note",
+            "He said \"x\"\\\nnext",
+            |id, t, _| format!("id: {id}\ntitle: {}\n# {t}\n", yaml_quote(t)),
+        )
+        .unwrap();
+        let f = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .find(|p| p.extension().is_some_and(|e| e == "md"))
+            .unwrap();
+        let text = fs::read_to_string(&f).unwrap();
+        assert!(
+            text.contains("title: \"He said \\\"x\\\"\\\\ next\"\n"),
+            "{text}"
+        );
+        assert!(text.contains("# He said \"x\"\\ next\n"), "{text}");
+        fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn slugify_basic() {

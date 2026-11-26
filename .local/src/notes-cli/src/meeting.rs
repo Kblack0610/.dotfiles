@@ -14,7 +14,8 @@ pub fn new_note(p: &Profile, log: &Logger, title: &str) -> Result<()> {
         title,
         |id, title, now| {
             format!(
-            "---\nid: {id}\ntitle: \"{title}\"\ndate: {date}\ntype: meeting\ntags: [meeting]\nattendees: []\nlinks: []\n---\n\n# {title}\n\n- **When:** {when}\n- **Attendees:**\n\n## Agenda\n\n## Notes\n\n## Decisions\n\n## Action Items\n- [ ]\n",
+            "---\nid: {id}\ntitle: {q}\ndate: {date}\ntype: meeting\ntags: [meeting]\nattendees: []\nlinks: []\n---\n\n# {title}\n\n- **When:** {when}\n- **Attendees:**\n\n## Agenda\n\n## Notes\n\n## Decisions\n\n## Action Items\n- [ ]\n",
+            q = crate::zettel::yaml_quote(title),
             date = now.format("%Y-%m-%d"),
             when = now.format("%Y-%m-%d %H:%M"),
         )
