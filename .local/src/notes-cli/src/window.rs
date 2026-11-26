@@ -1664,6 +1664,38 @@ pub(crate) fn refuse_held(
     Ok(())
 }
 
+/// Refuse `writer` taking `line` out of its version (`what` names the move) when that version is
+/// a sprint queued behind project `dir`'s open one ([`is_queued`], [`queue_sprint`]) whose
+/// snapshot commits the row, and the writer is not a person at a terminal: the snapshot would
+/// still commit it after the move. A person passes with a note that only a relock drops it.
+pub(crate) fn refuse_queued(
+    dir: &Path,
+    line: &str,
+    writer: &project_tasks::Writer,
+    what: &str,
+) -> Result<()> {
+    let home = home(dir);
+    let Some(q) = sheet::target(line).filter(|&t| is_queued(&home, t)) else {
+        return Ok(());
+    };
+    if !read(&home, q).is_some_and(|s| s.keys.contains(&key(line))) {
+        return Ok(());
+    }
+    let (text, v) = (md::task_text(line), projects::fmt_version(q));
+    let project = home
+        .file_name()
+        .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    let relock = format!("notes projects --commit {project} --hours <H> --queue {v}");
+    anyhow::ensure!(
+        writer.is_person(),
+        "refused: {what} '{text}', a row the queued {v} sprint commits: its snapshot would still commit it, so a human relocks {v} ({relock}): {FROZEN_RULE}"
+    );
+    eprintln!(
+        "note: the queued {v} sprint still commits '{text}'; only a relock drops it: {relock}"
+    );
+    Ok(())
+}
+
 /// Refuse `writer` relocking version `v` of project `dir` when `v` already holds a window
 /// snapshot (an open or queued sprint, or a window recorded at its cut) and the writer is not a
 /// person at a terminal: a relock replaces the rows a sprint committed to.

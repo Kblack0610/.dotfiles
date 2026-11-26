@@ -6,7 +6,8 @@
 # one section's enumerable facts (a state, a source, a verb, a default, a lane) and the code that
 # implements it, from the files as text, so the section cannot drift from agent-queue,
 # fleet-dispatch or fleet-lease unseen. Change the code and its section together.
-# Skipped where the private overlay is absent (public CI); it runs in the Stop fast tier.
+# Skipped where the private overlay is absent (this repo's CI); the private repo runs it through
+# .github/workflows/queue-doc.yml, on its PRs and pushes and daily, where no case may skip (ar-4243).
 
 setup() {
   load '../vendor/bats-support/load'
