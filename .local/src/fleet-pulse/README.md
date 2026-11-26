@@ -20,7 +20,7 @@ awake - an off machine just goes amber on the others.
 ### The roster is load-bearing
 
 The roster is the list of machines that SHOULD be reporting. It has one home, the
-`fleet_pulse` group in home-config `ansible/inventory.yml`: `scripts/render-fleet-pulse.py`
+`fleet_pulse` group in home-config `ansible/inventory.yml`: `scripts/hosts/render-fleet-pulse.py`
 renders it, with the bar's display tokens, to `apps/fleet-exporter/roster.json`, which
 fleet-exporter serves at `$GATUS_BASE/roster`. The bars fetch it through
 `~/.local/lib/fleet-pulse-roster.sh` (at most every `FLEET_ROSTER_TTL_MIN`, default 10
@@ -57,7 +57,7 @@ default.
 
 | Piece | Path | Repo |
 |-------|------|------|
-| Roster, endpoints and display tokens | `ansible/inventory.yml` group `fleet_pulse`, rendered by `scripts/render-fleet-pulse.py` | home-config |
+| Roster, endpoints and display tokens | `ansible/inventory.yml` group `fleet_pulse`, rendered by `scripts/hosts/render-fleet-pulse.py` | home-config |
 | Cluster: fleet endpoints (rendered) | `apps/gatus-fleet/config.yaml` | home-config |
 | Cluster: roster at `$GATUS_BASE/roster` (rendered) | `apps/fleet-exporter/roster.json` | home-config |
 | Cluster: shared token secret | `apps/gatus-fleet/fleet-token-secret.sops.yaml` -> deployment env `FLEET_TOKEN` | home-config |
