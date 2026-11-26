@@ -1173,12 +1173,14 @@ released_by() {
 
 # requeue_waiting <file>: each waiting queue item the answer names goes back to the queue with an
 # `ask:<id>` tag, so its next brief carries the decision (fleet-dispatch ask_decisions); prints its slug.
-# The ask names an item by its `task:`, or by a session waiting on it that the item's `sessions:` lists.
+# The ask names an item by its `task:`, or, with none, by the item's latest session (the last of its
+# `sessions:`, the one that left it waiting) being a session on the ask: earlier ones are history.
 # Left as it is: an item with a live session (the answer was typed into it, and reap moves it on), and
-# one another pending ask names, which still waits on that one. Why (ar-6242): VZtnyM's answer went to
-# its resume, `reopen` deferred to the board row held on it, and ar-5519 sat waiting 11h unstarted.
+# one another pending ask names, which still waits on that one. Any answer requeues, as any answer
+# releases a held item (agent-queue ask_pending). Why (ar-6242): VZtnyM's answer went to its resume,
+# `reopen` deferred to the board row held on it, and ar-5519 sat waiting 11h unstarted.
 requeue_waiting() {
-  local f="$1" id task sids items others o slug tags isids s
+  local f="$1" id task sids items others o slug tags want isids s
   id="$(field "$f" id)" task="$(field "$f" task)"
   sids=" $(ask_sessions "$f" | tr '\n' ' ')"
   items="$($AGENT_ASK_QUEUE_CMD list --json --state waiting 2>/dev/null)" || return 0
@@ -1186,7 +1188,7 @@ requeue_waiting() {
   others=" "
   while IFS= read -r o; do
     [ "$o" != "$f" ] || continue
-    others+="$(sed -n 's/^task: \(..*\)$/\1/p; s/^claude_session: \(..*\)$/\1/p' "$o" | tr '\n' ' ')"
+    others+="$(field "$o" task) $(ask_sessions "$o" | tr '\n' ' ') "
   done < <(ask_files --all | xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null)
   while IFS=$'\x1f' read -r slug tags isids; do
     [ -n "$slug" ] || continue
@@ -1194,15 +1196,21 @@ requeue_waiting() {
     for s in $isids; do
       [[ "$others" != *" $s "* ]] && [ -z "$(live_row "$s")" ] || continue 2
     done
-    case " $tags " in *" ask:$id "* | *" ask:$id="*) ;; *) tags="${tags:+$tags }ask:$id" ;; esac
-    if $AGENT_ASK_QUEUE_CMD set "$slug" "tags=$tags" >/dev/null 2>&1 &&
+    want="$tags"
+    case " $tags " in *" ask:$id "* | *" ask:$id="*) ;; *) want="${tags:+$tags }ask:$id" ;; esac
+    if $AGENT_ASK_QUEUE_CMD set "$slug" "tags=$want" >/dev/null 2>&1 &&
       $AGENT_ASK_QUEUE_CMD move "$slug" queued --if waiting >/dev/null 2>&1; then
       printf '%s\n' "$slug"
-    else
-      echo "agent-ask: $id names waiting item $slug, which did not go back to the queue: agent-queue move $slug queued" >&2
+      continue
     fi
+    # Not moved (it left waiting meanwhile): the tag comes off, or its brief would carry a decision it
+    # was never released by.
+    [ "$want" = "$tags" ] || $AGENT_ASK_QUEUE_CMD set "$slug" "tags=$tags" >/dev/null 2>&1 ||
+      echo "agent-ask: $slug keeps a stray ask:$id tag: agent-queue set $slug tags=$tags" >&2
+    echo "agent-ask: $id names waiting item $slug, which did not go back to the queue: agent-queue move $slug queued" >&2
   done < <(jq -r --arg t "$task" --arg s "$sids" '
-    select(.slug == $t or any((.sessions // "") | splits(" +") | select(. != ""); . as $x | $s | contains(" " + $x + " ")))
+    select(if $t != "" then .slug == $t
+      else ([(.sessions // "") | splits(" +") | select(. != "")] | last) as $x | $x != null and ($s | contains(" " + $x + " ")) end)
     | [.slug, (.tags // ""), (.sessions // "")] | join("\u001f")' <<<"$items")
 }
 
@@ -1763,12 +1771,22 @@ cmd_reopen() {
   load_ask "$f"
   [ "${ASK[status]:-}" = answered ] || { echo "agent-ask: $id is not answered" >&2; return 1; }
   answer="${ASK[answer]:-}" by="${ASK[answered_by]:-}"
-  [ -z "$(queue_holders "$id")" ] || { echo "$id: a queue item holds it; the queue restarts that" >&2; return 0; }
+  # A queue item or board row that holds the ask is the queue's to restart. One that records the sessions
+  # that worked it (a waiting item the answer requeued, requeue_waiting) covers only those; one with none
+  # (a board row, a next phase) is the asker's continuation, so no session reopens.
+  local h hs covered=" "
+  while IFS= read -r h; do
+    [ -n "$h" ] || continue
+    hs="$($AGENT_ASK_QUEUE_CMD show "$h" --json 2>/dev/null | jq -r '.sessions // empty' 2>/dev/null)"
+    [ -n "$hs" ] || { echo "$id: a queue item holds it; the queue restarts that" >&2; return 0; }
+    covered+="$hs "
+  done < <(queue_holders "$id" | cut -f1)
   # Each session that closed over it (one, unless a shared blocker attached others); a failed
   # reopen files one row naming every conversation left to resume.
   local failed=()
   while IFS= read -r sid; do
     [ -n "$sid" ] || continue
+    [[ "$covered" != *" $sid "* ]] || { echo "$id: session $sid's queue item holds it; the queue restarts that" >&2; continue; }
     [ -z "$(live_row "$sid")" ] || { echo "$id: session $sid is live; the answer went to it" >&2; continue; }
     session_resumable "$sid" && reopen_session "$f" "$sid" "Answer to ask $id: $(answer_said "$f" "$answer" "$by")" && continue
     failed+=("$sid")
