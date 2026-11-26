@@ -7731,8 +7731,11 @@ epic_scores() {
 epics_json() {
   local t="$1" pj items active plans fc=null map=/dev/null
   pj=$(epic_projects "${2:-}" | jq -cs .) || return 1
-  # one project asked for and not listed is an empty chain list, which the caller names
-  [ "$pj" != "[]" ] || [ -n "${2:-}" ] || { say "epics: no project could be read"; return 1; }
+  if [ "$pj" = "[]" ]; then
+    if [ -n "${2:-}" ]; then say "epics: no project $2: not listed, or its roadmap could not be read"
+    else say "epics: no project could be read"; fi
+    return 1
+  fi
   items=$($BENCH_ALL_ITEMS_CMD 2>/dev/null | jq -cs .) || { say "epics: the agent queue could not be read"; items='[]'; }
   active=$(jq -c '.[] | select(.state != "done")' <<<"$items")
   plans=$(epic_plans | jq -cs .)

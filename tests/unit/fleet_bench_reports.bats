@@ -2964,7 +2964,7 @@ epics_fixture() {
   assert_output '[7200,1]'
 }
 
-@test "epics --project reads only that project's roadmap, and a project not listed is an empty list" {
+@test "epics --project reads only that project's roadmap, and a project not listed fails naming it" {
   epics_fixture
   jq -cn --arg d "$SANDBOX/lab/game" '[{name: "game", profile: "lab", dir: $d}, {name: "other", profile: "lab", dir: $d}]' > "$SANDBOX/projects.json"
   printf '#!/usr/bin/env bash\necho "$1" >> "%s"\n[ "$1 $2" = "game --json" ] && cat "%s"\n' "$SANDBOX/roadmap.calls" "$RM" > "$SANDBOX/bin/roadmap-stub"
@@ -2982,9 +2982,8 @@ epics_fixture() {
   run cat "$SANDBOX/roadmap.calls"
   assert_output $'game\nother'
   BENCH_NOW=$((T0 + 600)) run "$SUBJECT" epics --json --project nosuch
-  assert_success
-  run jq -c '.projects' <<<"$output"
-  assert_output '[]'
+  assert_failure
+  assert_output --partial 'no project nosuch: not listed, or its roadmap could not be read'
 }
 
 @test "a sample freezes an epic's ETA when first seen and on a scope change, and scores it once when its rows land" {
