@@ -76,6 +76,16 @@ impl Source {
     }
 }
 
+/// What the MACHINE column says for a live session on the machine reading the table: relative
+/// to the reader, so a worker's own hub calls its sessions `local` too.
+pub const LOCAL_MACHINE: &str = "local";
+
+/// A live or parked row's MACHINE cell from its fleet-sessions `host`, the one place `runs_on` is
+/// derived: `host` stays empty for this machine, which the session actions read.
+fn runs_on(host: &str) -> String {
+    if host.is_empty() { LOCAL_MACHINE } else { host }.to_string()
+}
+
 /// One row of the table.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct SessionRow {
@@ -123,6 +133,17 @@ pub struct SessionRow {
     /// The harness it ran on (`harness_of`): the item's or outcome row's, claude-lazer on the gateway
     /// account and claude on any other.
     pub harness: String,
+    /// The fleet worker a live row runs on (fleet-sessions `host`), empty for this machine.
+    pub host: String,
+    /// The MACHINE column: a live row's `host`, or `LOCAL_MACHINE` for this one; empty for a
+    /// queued or ended row, which runs nowhere.
+    pub runs_on: String,
+    /// The model a live row runs, as fleet-bench keys it (`costs::alias`: opus, sonnet): the one its
+    /// transcript names (fleet-sessions `model`), else its queue item's (a run whose log agent-panel
+    /// reads no model from); empty before the first turn of a session with no item model, never guessed.
+    pub model: String,
+    /// A live row's queue item was started as a trainee run (its `trainee:` header, harness:model).
+    pub trainee: bool,
     /// A live row's close verdict word (`fleet-sessions` `.close.verdict`: now, after or keep).
     pub close: String,
     pub source: Source,
@@ -135,22 +156,24 @@ pub struct SessionRow {
     pub machine: bool,
 }
 
-/// What the given rows cost, summed: the overview's spend for the rows a view shows. A row with
-/// no cost adds nothing.
-pub fn spend<'a>(rows: impl IntoIterator<Item = &'a SessionRow>) -> f64 {
-    rows.into_iter().filter_map(|r| r.cost_usd).sum()
-}
-
 impl Row for SessionRow {
     const COLUMNS: &'static [&'static str] = &[
         "bucket", "activity", "project", "task", "by", "pr", "phases", "idle", "ctx", "cost",
-        "acct", "harness", "close", "item", "source", "session",
+        "acct", "harness", "close", "item", "source", "session", "machine",
     ];
-    /// `all` comes first because the first chip keeps every row.
-    const STATES: &'static [&'static str] =
-        &["all", "running", "needs you", "stalled", "ended today"];
-    const FACETS: &'static [&'static str] =
-        &["bucket", "project", "by", "acct", "harness", "close"];
+    /// `live` first, the view the table opens on: every row not done (`in_default`). The ended
+    /// rows are one chip away, and `all` last keeps every row. Spend is Costs', not this table's.
+    const STATES: &'static [&'static str] = &[
+        "live",
+        "running",
+        "needs you",
+        "stalled",
+        "ended today",
+        "all",
+    ];
+    const FACETS: &'static [&'static str] = &[
+        "bucket", "project", "by", "acct", "harness", "close", "machine",
+    ];
     const LEAD: &'static str = "task";
     const GLANCE: &'static [&'static str] = &["bucket", "project", "idle"];
     /// The Sessions palette paints a NEEDS badge red (agent-web `bucketColor`), so its tile does too.
@@ -158,38 +181,37 @@ impl Row for SessionRow {
         &[("needs you", crate::vocab::Level::Bad)];
 
     fn val(&self, col: &str) -> Val {
-        let text = |s: &str| {
-            if s.is_empty() {
-                Val::None
-            } else {
-                Val::Text(s.to_string())
-            }
-        };
         match col {
-            "bucket" => text(&self.bucket),
-            "activity" => text(&self.activity),
-            "project" => text(&self.project),
-            "task" => text(&self.task),
-            "by" => text(&self.by),
-            "pr" => text(&self.pr_state),
+            "bucket" => Val::word(&self.bucket),
+            "activity" => Val::word(&self.activity),
+            "project" => Val::word(&self.project),
+            "task" => Val::word(&self.task),
+            "by" => Val::word(&self.by),
+            "pr" => Val::word(&self.pr_state),
             "phases" => self.phases_done.map_or(Val::None, |n| Val::Num(n as f64)),
             "idle" => self.idle_min.map_or(Val::None, |n| Val::Num(n as f64)),
             "cost" => self.cost_usd.map_or(Val::None, Val::Num),
-            "acct" => text(&self.account),
-            "harness" => text(&self.harness),
-            "close" => text(&self.close),
+            "acct" => Val::word(&self.account),
+            "harness" => Val::word(&self.harness),
+            "close" => Val::word(&self.close),
             "item" if self.unlinked => Val::Text("none".into()),
-            "item" => text(&self.item),
+            "item" => Val::word(&self.item),
             "source" => Val::Text(self.source.name().into()),
-            "session" if self.target.is_empty() => text(&self.session_id),
-            "session" => text(&self.target),
+            "session" if self.target.is_empty() => Val::word(&self.session_id),
+            "session" => Val::word(&self.target),
             "ctx" => self.context_pct.map_or(Val::None, |n| Val::Num(n as f64)),
+            "machine" => Val::word(&self.runs_on),
             _ => Val::None,
         }
     }
 
+    fn in_default(&self) -> bool {
+        !self.done
+    }
+
     fn in_state(&self, s: &str) -> bool {
         match s {
+            "all" => true,
             "running" => {
                 self.source == Source::Live
                     && !self.done
@@ -214,8 +236,9 @@ pub struct Ended {
     pub harness: Option<String>,
     pub cost_usd: Option<f64>,
     pub updated_epoch: Option<i64>,
-    pub prs_merged: i64,
-    pub prs_open: i64,
+    /// None when the transcript was pruned and nothing else names its PRs.
+    pub prs_merged: Option<i64>,
+    pub prs_open: Option<i64>,
 }
 
 /// What the table reads beyond the state document.
@@ -382,7 +405,19 @@ fn live_row(s: &Value, feed: &Feed, items: &HashMap<&str, &Item>) -> SessionRow 
             item_cost(i, &sids, feed)
         }),
         account: str_of(s, "account").to_string(),
-        harness: item.map_or_else(String::new, |i| i.harness().to_string()),
+        // The item's harness, else the one agent-panel found running (a session with no item).
+        harness: item.map_or_else(
+            || str_of(s, "harness").to_string(),
+            |i| i.harness().to_string(),
+        ),
+        host: str_of(s, "host").to_string(),
+        runs_on: runs_on(str_of(s, "host")),
+        model: Some(str_of(s, "model"))
+            .filter(|m| !m.is_empty())
+            .or_else(|| item.and_then(|i| i.model.as_deref()).map(str::trim))
+            .map(crate::costs::alias)
+            .unwrap_or_default(),
+        trainee: item.is_some_and(|i| !extra_str(i, "trainee").trim().is_empty()),
         close: s["close"]["verdict"].as_str().unwrap_or("").to_string(),
         unlinked: is_live(s) && is_unlinked(s),
         machine: is_machine(s),
@@ -395,13 +430,9 @@ fn pr_number(pr: &str) -> String {
     pr.rsplit('#').next().unwrap_or(pr).to_string()
 }
 
-/// The item's `sessions:` ids; the field holds one or a comma-separated list.
+/// The item's `sessions:` ids (`Item::session_ids`).
 fn item_sessions(i: &Item) -> Vec<String> {
-    extra_str(i, "sessions")
-        .split([',', ' '])
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .collect()
+    i.session_ids().map(String::from).collect()
 }
 
 fn extra_str(i: &Item, k: &str) -> String {
@@ -468,9 +499,9 @@ fn outcome_row(e: &Ended) -> SessionRow {
         task: headline(&e.title).0,
         session_id: e.session_id.clone(),
         pr_state: match (e.prs_merged, e.prs_open) {
-            (0, 0) => String::new(),
-            (0, _) => "open".into(),
-            _ => "merged".into(),
+            (Some(m), _) if m > 0 => "merged".into(),
+            (_, Some(o)) if o > 0 => "open".into(),
+            _ => String::new(),
         },
         ended: "ended".into(),
         finished: e.updated_epoch,
@@ -555,6 +586,7 @@ fn stray_row(a: &Agent, s: &Session, feed: &Feed) -> SessionRow {
         session_id: a.session_id.clone(),
         cost_usd: feed.cost.get(&a.session_id).copied(),
         account: a.account.clone(),
+        runs_on: runs_on(""),
         ..SessionRow::default()
     }
 }
@@ -628,7 +660,7 @@ mod tests {
                     title: "a hand session\nmore".into(),
                     cost_usd: Some(2.5),
                     updated_epoch: Some(1_794_000_000),
-                    prs_merged: 1,
+                    prs_merged: Some(1),
                     ..Ended::default()
                 },
             ],
@@ -779,6 +811,24 @@ mod tests {
     }
 
     #[test]
+    fn a_live_row_names_its_machine_and_the_machine_facet_filters() {
+        let mut s = state();
+        s[1]["host"] = json!("razer-laptop");
+        let r = rows(&s, &vocab(), &feed(), &[]);
+        let m = |k: &str| r.iter().find(|x| x.key == k).unwrap().val("machine");
+        assert_eq!(
+            m("lab/d:1"),
+            Val::Text(LOCAL_MACHINE.into()),
+            "this machine's"
+        );
+        assert_eq!(m("lab/d:2"), Val::Text("razer-laptop".into()), "a worker's");
+        assert_eq!(m("ucp-394"), Val::None, "a queue row runs nowhere");
+        let v = View::new::<SessionRow>("machine:razer-laptop", "", "", "");
+        let kept: Vec<&str> = v.apply(&r).iter().map(|x| x.key.as_str()).collect();
+        assert_eq!(kept, ["lab/d:2"]);
+    }
+
+    #[test]
     fn every_row_names_its_harness_and_the_harness_facet_filters() {
         let mut s = state();
         s[1]["account"] = json!(GATEWAY);
@@ -883,6 +933,10 @@ mod tests {
         );
         assert_eq!(parked[0].target, "lab/d:9");
         assert_eq!(parked[0].task, "parked (park)");
+        assert_eq!(
+            parked[0].runs_on, LOCAL_MACHINE,
+            "a parked session is a tmux window here"
+        );
         assert!(!parked[0].unlinked, "item:none is what the header counts");
         let at = |k: &str| r.iter().position(|x| x.key == k).unwrap();
         assert!(
@@ -912,19 +966,6 @@ mod tests {
     }
 
     #[test]
-    fn spend_sums_only_the_rows_the_view_shows() {
-        let row = |project: &str, cost| SessionRow {
-            project: project.into(),
-            cost_usd: cost,
-            ..Default::default()
-        };
-        let r = vec![row("a", Some(1.5)), row("b", Some(2.0)), row("a", None)];
-        assert_eq!(spend(&r), 3.5);
-        let v = View::new::<SessionRow>("project:a", "", "", "");
-        assert_eq!(spend(v.apply(&r)), 1.5);
-    }
-
-    #[test]
     fn the_chips_split_the_rows() {
         let r = rows(&state(), &vocab(), &feed(), &[]);
         let v = View::new::<SessionRow>("", "", "", "");
@@ -932,11 +973,12 @@ mod tests {
         assert_eq!(
             n,
             [
-                ("all", 6),
+                ("live", 3),
                 ("running", 2),
                 ("needs you", 1),
                 ("stalled", 0),
-                ("ended today", 3)
+                ("ended today", 3),
+                ("all", 6)
             ]
         );
         let tone = |name| v.states(&r).iter().find(|c| c.name == name).map(|c| c.tone);
@@ -987,6 +1029,23 @@ mod tests {
     }
 
     #[test]
+    fn an_ended_rows_pr_state_reads_null_counts_as_none_and_an_open_pr_as_open() {
+        let ended = |l: &str| outcome_row(&serde_json::from_str::<Ended>(l).unwrap()).pr_state;
+        assert_eq!(
+            ended(r#"{"session_id":"p","prs_merged":null,"prs_open":null}"#),
+            ""
+        );
+        assert_eq!(
+            ended(r#"{"session_id":"o","prs_merged":0,"prs_open":1}"#),
+            "open"
+        );
+        assert_eq!(
+            ended(r#"{"session_id":"m","prs_merged":2,"prs_open":1}"#),
+            "merged"
+        );
+    }
+
+    #[test]
     fn the_query_finds_unlinked_sessions_open_prs_and_sources() {
         let r = rows(&state(), &vocab(), &feed(), &[]);
         let keys = |q: &str| -> Vec<String> {
@@ -998,7 +1057,11 @@ mod tests {
         };
         assert_eq!(keys("item:none"), ["lab/d:2"]);
         assert_eq!(keys("pr:open project:dotfiles"), ["lab/d:2"]);
-        assert_eq!(keys("source:outcome"), ["h1"]);
+        // An ended row is under `all`; the opening view is the live rows.
+        let all = View::new::<SessionRow>("source:outcome", "all", "", "");
+        let ended: Vec<_> = all.apply(&r).iter().map(|x| x.key.clone()).collect();
+        assert_eq!(ended, ["h1"]);
+        assert!(keys("source:outcome").is_empty());
         assert_eq!(keys("item:own"), ["lab/d:1"]);
     }
 

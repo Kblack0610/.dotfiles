@@ -12,7 +12,7 @@
 use crate::agent_sheet::Lane;
 use crate::config::Profile;
 use crate::logging::Logger;
-use crate::md;
+use crate::md::{self, is_match};
 use crate::project_sweep;
 use crate::projects;
 use crate::sheet::{self, V};
@@ -186,12 +186,6 @@ fn sheet_and_content(p: &Profile, name: &str, lane: Lane) -> Result<Option<(Path
     };
     let content = fs::read_to_string(&sheet)?;
     Ok(Some((sheet, content)))
-}
-
-/// An open task matching `query` (already lower-cased) - the shared predicate for
-/// `done`/`start`/`rm`, matching `focus.rs::is_match`.
-pub(crate) fn is_match(line: &str, query: &str) -> bool {
-    md::is_open_task(line) && md::task_key(line).contains(query)
 }
 
 /// Which row a verb acts on: the first open task whose text contains some words, the open
@@ -520,6 +514,9 @@ pub(crate) fn add_via(
         refuse_unknown_system(text, &canon, systems)?;
     }
     let mut checked = Vec::new();
+    if let Some(rc) = intake_refusal(p, &canon, &block[0], writer, lane, want.is_some())? {
+        return Ok(rc);
+    }
     if writer.self_checks() {
         match self_check(p, name, text, &block[0], &writer.checked)? {
             Ok(shown) => checked = shown,
@@ -562,6 +559,19 @@ pub(crate) fn add_via(
         println!("{l}");
     }
     Ok(0)
+}
+
+/// The id of the open row on `content` that `text` twins (the same words, a near twin, or the
+/// row that already lands the PR it names): what [`refuse_twin`] refuses, as the row to join.
+/// None for an epic (`epic_new` has its own twin check); a twin with no id yet is skipped for the next kind.
+fn twin_id(content: &str, text: &str) -> Option<String> {
+    if text.trim_start().starts_with("epic(") {
+        return None;
+    }
+    open_twin(content, text)
+        .and_then(md::row_id)
+        .or_else(|| near_twin(content, text).and_then(md::row_id))
+        .or_else(|| pr_twin(content, text).and_then(|(l, _)| md::row_id(l)))
 }
 
 /// Does `text` twin an open row of `content` (the sheet at `path`): the same words, a near twin, or a
@@ -645,7 +655,7 @@ fn standing_title(line: &str) -> bool {
 }
 
 /// Triage's checks, run by a hand session on its own add before it writes; the twin refusals and
-/// [`projects::row_findings`] ran already. The row carries a priority (triage's priority rubric, `~/.config/inbox-triage/rules/priority.md`
+/// [`projects::row_findings`] ran already. The row, unless it is an epic, carries a priority (triage's priority rubric, `~/.config/inbox-triage/rules/priority.md`
 /// judges which), a hand session files no standing epic, and every open row on either lane that
 /// [`similar`] lists for it is one the session named in `checked`. Ok(the ids shown) to write;
 /// Err([`EXIT_SHORTLIST`]) with the shortlist printed when one is not named.
@@ -656,8 +666,9 @@ fn self_check(
     row: &str,
     checked: &[String],
 ) -> Result<std::result::Result<Vec<String>, i32>> {
-    if md::task_priority(row).is_none() {
-        bail!("a row from a session carries #urgent, #high or #low, judged by triage's priority rubric (~/.config/inbox-triage/rules/priority.md), so nothing was added");
+    // An epic carries none: it ranks as its most urgent open row (`projects::row_findings` refuses one).
+    if md::task_priority(row).is_none() && !crate::epics::is_epic(row) {
+        bail!("a row from a session carries #urgent, #high, #normal or #low, judged by triage's priority rubric (~/.config/inbox-triage/rules/priority.md), so nothing was added");
     }
     if crate::epics::is_epic(row) && standing_title(row) {
         bail!("a standing epic (`<system> to standard`) is filed by notes and project-stage-check, never by a session, so nothing was added");
@@ -971,7 +982,7 @@ const TRIAGE: &str = "inbox-triage";
 /// A name is the process's, never the caller's word: `--origin <name>` counts only when it is
 /// the runner's own `AGENTCTL_NAME` (with no session in the environment) or the parent process
 /// runs a script of that basename, and `--origin plan` only when that parent is `agent-queue`
-/// filing a plan's row (`AQ_ITEM_PLAN` or `AQ_FILE_ORIGIN` set, its `file_story`).
+/// filing a plan's phase row (`AQ_ITEM_PLAN` set, its `file_story`).
 pub struct Writer {
     /// A queue item, a session or an agentctl runner is writing (the environment names one).
     automated: bool,
@@ -996,7 +1007,7 @@ impl Writer {
     /// ids it says it checked (`ptask add --checked`).
     pub fn from_env(origin: Option<&str>, checked: Vec<String>) -> Writer {
         let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
-        let plan = env("AQ_ITEM_PLAN").is_some() || env("AQ_FILE_ORIGIN").is_some();
+        let plan = env("AQ_ITEM_PLAN").is_some();
         let (item, session) = (env("AGENT_QUEUE_ITEM"), env("CLAUDE_CODE_SESSION_ID"));
         let runner = env("AGENTCTL_NAME");
         // Only an automated writer's --origin needs vouching, so only then is the parent read.
@@ -1090,6 +1101,13 @@ impl Writer {
         self.hand && !self.direct()
     }
 
+    /// Whether the daily intake cap counts this writer's agent-lane row: a hand session, a plan's
+    /// phases and a machine filer. Not a person at a terminal (the human's own words), and not
+    /// agent-queue's story row, which mirrors an item already started (`ingest::ORIGIN_STORY`).
+    fn capped(&self) -> bool {
+        !self.person && self.name.as_deref() != Some(crate::ingest::ORIGIN_STORY)
+    }
+
     /// A hand session or inbox-triage: the writers whose new epic must name a listed system. A
     /// script that files an epic (credit-backfill, project-stage-check) carries a reviewed one.
     fn checks_epic_system(&self) -> bool {
@@ -1170,6 +1188,100 @@ fn parent_script(argv: &[String]) -> Option<&str> {
         }
     }
     None
+}
+
+/// Is `text` a session's follow-up: an outbox line its writer tagged `#from/<writer>`
+/// ([`inbox_followup`]), as `agentctl-inbox-triage`'s `is_session` reads it.
+fn session_line(text: &str) -> bool {
+    md::find_hashtags(text)
+        .iter()
+        .any(|t| t.starts_with("from/"))
+}
+
+/// The intake gate's verdict on the one agent row `add_via` is about to write: Some(exit code) when
+/// it refuses (printing why), None when the row goes on to the shortlist check. The evidence gate
+/// comes first, for the writers that self-check (a row it refuses needs no shortlist review). The
+/// daily cap holds every writer that files a new row on any agent board, a plan's phases and the
+/// machine filers too; a twin was refused earlier, so only a row that would be new counts.
+fn intake_refusal(
+    p: &Profile,
+    canon: &str,
+    row: &str,
+    writer: &Writer,
+    lane: Lane,
+    want: bool,
+) -> Result<Option<i32>> {
+    if lane != Lane::Agent {
+        return Ok(None);
+    }
+    let gate = if writer.self_checks() {
+        crate::gate::refusal(canon, row, want)?
+    } else {
+        None
+    };
+    let why = match gate {
+        Some(why) => Some(why),
+        None if writer.capped() => crate::gate::cap_refusal(p, canon, row, want, 0)?,
+        None => None,
+    };
+    Ok(why.map(|why| {
+        eprintln!("{why}");
+        crate::gate::EXIT_GATED
+    }))
+}
+
+/// Why the intake gate refuses the rows `block` a filing of `line` would write on `dest`, or None.
+/// Only a session's follow-up on an agent board is gated; the person's words never are.
+fn followup_refusal(
+    p: &Profile,
+    dest: &Path,
+    lane: Lane,
+    line: &sheet::InboxLine,
+    block: &[String],
+    how: &Filing,
+) -> Result<Option<String>> {
+    if lane != Lane::Agent || !session_line(&line.text) {
+        return Ok(None);
+    }
+    let canon = dest.file_name().unwrap_or_default().to_string_lossy();
+    let rows = block.iter().filter(|l| md::is_open_task(l));
+    for (i, row) in rows.enumerate() {
+        if let Some(why) = crate::gate::refusal(&canon, row, how.want.is_some())? {
+            return Ok(Some(why));
+        }
+        // The rows this filing already wrote count against the day too.
+        if let Some(why) = crate::gate::cap_refusal(p, &canon, row, how.want.is_some(), i)? {
+            return Ok(Some(why));
+        }
+    }
+    Ok(None)
+}
+
+/// The row texts a filing writes: a standing link's rows, the line itself when it is filed as
+/// written, else the model's `--as` texts; `#agent` dropped, each one typed or nothing is filed.
+fn filing_texts(
+    linked: Option<&[String]>,
+    as_is: bool,
+    line: &str,
+    texts: &[String],
+) -> Result<Vec<String>> {
+    let own;
+    let texts: &[String] = match linked {
+        Some(l) => l,
+        None if as_is => {
+            if !projects::is_typed(line) {
+                bail!("'{line}' is not typed yet, so file needs --as \"<type(area): title>\" or --dup <id>");
+            }
+            own = [line.to_string()];
+            &own
+        }
+        None => texts,
+    };
+    let texts: Vec<String> = texts.iter().map(|t| md::without_agent_tag(t)).collect();
+    if let Some(bad) = texts.iter().find(|t| !projects::is_typed(t)) {
+        bail!("'{bad}' is not `type(area): title` (README \"The task row\"), so nothing was filed");
+    }
+    Ok(texts)
 }
 
 /// A session's row as an outbox line: `#agent #p:<project> #from/<writer> <text>` plus its
@@ -1265,11 +1377,9 @@ fn new_rows(
     let first = code.as_ref().map(|c| next_id_n(proj_dir, c));
     let mut block = Vec::new();
     for (k, text) in texts.iter().enumerate() {
-        let mut line = md::stamp_line(
-            &md::one_priority(&format!("- [ ] {}", text.trim())),
-            today,
-            today,
-        );
+        let typed = md::one_priority(&format!("- [ ] {}", text.trim()));
+        crate::reasons::refuse_bad("", &typed)?;
+        let mut line = md::stamp_line(&typed, today, today);
         if let Some(v) = to {
             line = project_sweep::retag(&line, v, Some(v) == cur).0;
         }
@@ -1459,26 +1569,22 @@ fn file_via(
     } else {
         fs::read_to_string(&dest)?
     };
+    // A model-written row that twins an open row of the board joins that row, as `--dup` does.
+    let joined = match &how.how {
+        How::Rows { texts, .. } if !as_is && linked.is_none() => joined_twin(&base, texts),
+        _ => None,
+    };
+    let dup_id = match &how.how {
+        How::Dup(id) => Some(id.as_str()),
+        _ => joined.as_deref(),
+    };
     let (new_dest, written) = match &how.how {
         How::Rows {
             texts,
             to,
             details: extra,
-        } => {
-            let texts: Vec<String> = if let Some(l) = &linked {
-                l.clone()
-            } else if as_is {
-                if !projects::is_typed(&line.text) {
-                    bail!("'{}' is not typed yet, so file needs --as \"<type(area): title>\" or --dup <id>", line.text);
-                }
-                vec![line.text.clone()]
-            } else {
-                texts.clone()
-            };
-            let texts: Vec<String> = texts.iter().map(|t| md::without_agent_tag(t)).collect();
-            if let Some(bad) = texts.iter().find(|t| !projects::is_typed(t)) {
-                bail!("'{bad}' is not `type(area): title` (README \"The task row\"), so nothing was filed");
-            }
+        } if dup_id.is_none() => {
+            let texts = filing_texts(linked.as_deref(), as_is, &line.text, texts)?;
             let to = to.as_deref().map(parse_to).transpose()?;
             let cur = version_in(&dest_dir, &base);
             if let Some(v) = to {
@@ -1512,6 +1618,11 @@ fn file_via(
                     return file_via(p, log, name, pick, how, lane, None, Some(l));
                 }
             }
+            // On the rows a standing link leaves: the call above re-enters here with them.
+            if let Some(why) = followup_refusal(p, &dest_proj, dest_lane, &line, &block, how)? {
+                eprintln!("{why}");
+                return Ok(crate::gate::EXIT_GATED);
+            }
             // A frozen release window takes these rows only through its interrupt lane: the
             // human's own words from their sheet's inbox, or a want by a human channel, are one.
             let interrupt = (lane == Lane::Human && !md::agent_tag(&line.text))
@@ -1519,20 +1630,12 @@ fn file_via(
             let block = crate::window::admit(&dest_proj, cur, block, interrupt);
             (md::insert_under_heading(&base, sheet::TASKS, &block), block)
         }
-        How::Dup(id) => {
-            if !md::is_row_id(id) {
-                bail!("--dup takes the id of an open row (like ar-142), not '{id}'");
-            }
-            let hit = Pick::Id(id.clone());
-            let Some(new) = md::append_details(&base, sheet::TASKS, |l| hit.hits(l), &details)
-            else {
-                bail!(
-                    "no open row {id} on {}, so nothing was filed",
-                    dest.display()
-                );
-            };
-            (new, details.iter().map(|d| format!("  {d}")).collect())
-        }
+        How::Rows { .. } | How::Dup(_) => join_row(
+            &base,
+            &dest,
+            dup_id.expect("a row arm without a dup id was taken above"),
+            &details,
+        )?,
         How::Skip => unreachable!("a skip returns before a destination is chosen"),
     };
     write_sheet(&dest, &new_dest)?;
@@ -1555,38 +1658,78 @@ fn file_via(
         ),
     );
     let mut ev = crate::ingest::Event::new(
-        if matches!(how.how, How::Dup(_)) {
-            "dup"
-        } else {
-            "filed"
-        },
+        if dup_id.is_some() { "dup" } else { "filed" },
         name,
-        dest_name,
+        &dest_proj.file_name().unwrap_or_default().to_string_lossy(),
         &line.text,
     );
     ev.lane = dest_lane.name().into();
     ev.want = how.want.map(str::to_string);
     ev.why = crate::ingest::set(how.why.as_deref());
-    ev.id = match &how.how {
-        How::Dup(id) => Some(id.clone()),
-        How::Skip => None,
-        How::Rows { .. } => written
-            .iter()
-            .find_map(|l| md::marker_token(l, "id:"))
-            .map(str::to_string),
-    };
-    if matches!(how.how, How::Rows { .. }) {
-        ev.row = written
-            .iter()
-            .find(|l| md::row_id(l).is_some())
-            .map(|l| crate::ingest::row_words(l));
-    }
+    record_filed(&mut ev, dup_id, &written);
     crate::ingest::record(p, &ev);
     println!("filed {}", line.text);
+    if joined.is_some() {
+        // The row the line joined, for a caller (the triager) whose later line repeats this one.
+        println!("  twin of open row {}", dup_id.unwrap_or_default());
+    }
     for l in &written {
         println!("  {l}");
     }
     Ok(0)
+}
+
+/// The open row every text of a model-written filing twins ([`twin_id`]), when it is one and the
+/// same row: a mixed line files as the model wrote it, so no row's words are dropped with no row
+/// to hold them.
+fn joined_twin(base: &str, texts: &[String]) -> Option<String> {
+    let twins: Vec<Option<String>> = texts
+        .iter()
+        .map(|t| twin_id(base, &md::without_agent_tag(t)))
+        .collect();
+    twins
+        .first()
+        .cloned()
+        .flatten()
+        .filter(|first| twins.iter().all(|t| t.as_deref() == Some(first.as_str())))
+}
+
+/// `base` with `details` added under the open row `id` (the `--dup` write), and those detail
+/// lines as written. Refuses a bad id or a row that is not open on `dest`, before any write.
+fn join_row(
+    base: &str,
+    dest: &Path,
+    id: &str,
+    details: &[String],
+) -> Result<(String, Vec<String>)> {
+    if !md::is_row_id(id) {
+        bail!("--dup takes the id of an open row (like ar-142), not '{id}'");
+    }
+    let hit = Pick::Id(id.to_string());
+    let Some(new) = md::append_details(base, sheet::TASKS, |l| hit.hits(l), details) else {
+        bail!(
+            "no open row {id} on {}, so nothing was filed",
+            dest.display()
+        );
+    };
+    Ok((new, details.iter().map(|d| format!("  {d}")).collect()))
+}
+
+/// What the filing's event names: the row it joined (`dup_id`), else the first id and the words of
+/// the rows it wrote.
+fn record_filed(ev: &mut crate::ingest::Event, dup_id: Option<&str>, written: &[String]) {
+    if let Some(id) = dup_id {
+        ev.id = Some(id.to_string());
+        return;
+    }
+    ev.id = written
+        .iter()
+        .find_map(|l| md::marker_token(l, "id:"))
+        .map(str::to_string);
+    ev.row = written
+        .iter()
+        .find(|l| md::row_id(l).is_some())
+        .map(|l| crate::ingest::row_words(l));
 }
 
 /// `texts` with each leaf that has no `#of/`, and whose area is one of `name`'s systems
@@ -1723,6 +1866,7 @@ fn note_ids(proj_dir: &Path, lines: &[String]) -> Result<()> {
 /// The write lock every `notes ptask` writer holds from its read to its write, and around id
 /// minting: `<state_dir>/ptask.lock`. Without it two writers (a dispatch pass and a session)
 /// read the same sheet, and the second write loses the first one's row, or both mint one id.
+/// A writer that also takes the outbox lock takes this one first (`outbox::move_line`).
 pub(crate) fn lock(p: &Profile) -> Result<md::FileLock> {
     md::lock_file(&p.state_dir.join("ptask.lock"))
 }
@@ -2118,19 +2262,39 @@ pub fn done(
     unverified: Option<&str>,
     on: Option<&str>,
     lane: Lane,
+    children: Option<&Children>,
 ) -> Result<i32> {
     let stamp = proof_stamp(proof, unverified)?;
     let day = close_day(on)?;
-    refuse_open_children(p, name, pick, lane, "finish")?;
     if proof.is_some() {
         refuse_landed_as_proof(p, name, pick, lane, &stamp)?;
     }
     let on = done_token(day);
-    Ok(edit(p, log, name, pick, "done", Some(&stamp), lane, |l| {
-        let ticked = md::add_marker(&closed(l), &on);
-        Some(md::add_marker(&ticked, &stamp))
-    })?
-    .0)
+    let close = |l: &str| md::add_marker(&md::add_marker(&closed(l), &on), &stamp);
+    let check = |row: &str| match proof {
+        Some(_) => check_epic_proof(row, &stamp),
+        None => Ok(()),
+    };
+    settle_children(
+        p,
+        log,
+        name,
+        pick,
+        lane,
+        children,
+        ("done", &stamp, &close, &check),
+    )?;
+    let (code, matched) = edit(p, log, name, pick, "done", Some(&stamp), lane, |l| {
+        Some(close(l))
+    })?;
+    close_spent_parents(
+        p,
+        log,
+        name,
+        matched.as_deref().and_then(crate::epics::parent_of),
+        day,
+    )?;
+    Ok(code)
 }
 
 /// The day a close is stamped with: `--on <day>`, else today. A future day is refused: a close
@@ -2235,7 +2399,8 @@ pub fn reopen(
                 "ptask",
                 &format!("{verb} {id} in {} ({name}): {why}", from.display()),
             );
-            let ev = crate::ingest::Event::row("reopened", name, "", lane.name(), row);
+            let mut ev = crate::ingest::Event::row("reopened", name, "", lane.name(), row);
+            ev.why = crate::ingest::set(Some(why));
             crate::ingest::record(p, &ev);
             println!("reopened {}", row.trim());
         };
@@ -2388,7 +2553,7 @@ pub(crate) fn tag_token(t: &str) -> Result<String> {
 }
 
 /// `line` with `remove` dropped and `add` added. A row has one size and one priority, so
-/// adding a `#size/<s>` or a `#urgent`/`#high`/`#low` replaces the one it had. It has one
+/// adding a `#size/<s>` or a `#urgent`/`#high`/`#normal`/`#low` replaces the one it had. It has one
 /// estimate too: adding a `#pts/<n>` replaces its old points and sets its `#size/` to the
 /// band they fall in ([`crate::epics::POINTS`]), over any `#size/` added beside them; adding a
 /// bare `#size/<s>` drops the points, which no longer hold. So the two never disagree. It has one
@@ -2417,10 +2582,21 @@ pub(crate) fn retag(line: &str, add: &[String], remove: &[String]) -> String {
         .filter(|w| sized && w.starts_with("#pts/") && !add.iter().any(|a| a == w))
         .map(str::to_string)
         .collect();
+    // A row has one reason: a new `#why/` replaces the one it had.
+    let old_why: Vec<String> = if add.iter().any(|t| t.starts_with("#why/")) {
+        head.split_whitespace()
+            .map(|w| w.trim_end_matches(','))
+            .filter(|w| w.to_lowercase().starts_with("#why/") && !add.iter().any(|a| a == w))
+            .map(str::to_string)
+            .collect()
+    } else {
+        Vec::new()
+    };
     let mut l = old
         .into_iter()
         .map(str::to_string)
         .chain(old_pts)
+        .chain(old_why)
         .chain(remove.iter().cloned())
         .fold(line.to_string(), |l, t| md::drop_tag(&l, &t));
     if add.iter().any(|a| md::is_priority(a)) {
@@ -2463,6 +2639,7 @@ pub(crate) fn proof_stamp(proof: Option<&str>, unverified: Option<&str>) -> Resu
 /// task undelivered. The row stays, ticked, with `dropped: <why>` or `dup:<id>` in its
 /// marker, so its id is never reused, its detail lines stay under it, and the sweep and roll
 /// treat it as any closed row. There is no delete.
+#[allow(clippy::too_many_arguments)]
 pub fn drop(
     p: &Profile,
     log: &Logger,
@@ -2471,15 +2648,87 @@ pub fn drop(
     why: Option<&str>,
     dup: Option<&str>,
     lane: Lane,
+    children: Option<&Children>,
 ) -> Result<i32> {
     let stamp = drop_stamp(why, dup)?;
-    refuse_open_children(p, name, pick, lane, "finish or drop")?;
-    Ok(
-        edit(p, log, name, pick, "dropped", Some(&stamp), lane, |l| {
-            Some(md::add_marker(&closed(l), &stamp))
-        })?
-        .0,
-    )
+    // Read before any write, so the report cannot fail once the row is closed.
+    let waiters = match (dup, sheet_and_content(p, name, lane)?) {
+        (None, Some((_, content))) => {
+            match find_open(&content, pick).and_then(|r| md::row_id(&r)) {
+                Some(id) => waiter_notes(name, &id, &live_rows_with_lane(p, name)?),
+                None => Vec::new(),
+            }
+        }
+        _ => Vec::new(),
+    };
+    // A dup's children carry on under the row it duplicates, unless --children says otherwise.
+    let onto = dup.map(|d| Children::Onto(d.trim().to_lowercase()));
+    let close = |l: &str| md::add_marker(&closed(l), &stamp);
+    let check = |_: &str| Ok(());
+    let how = children.or(onto.as_ref());
+    settle_children(
+        p,
+        log,
+        name,
+        pick,
+        lane,
+        how,
+        ("dropped", &stamp, &close, &check),
+    )?;
+    let (code, matched) = edit(p, log, name, pick, "dropped", Some(&stamp), lane, |l| {
+        Some(close(l))
+    })?;
+    if matched.is_some() {
+        for w in &waiters {
+            eprintln!("{w}");
+        }
+    }
+    let day = chrono::Local::now().date_naive();
+    close_spent_parents(
+        p,
+        log,
+        name,
+        matched.as_deref().and_then(crate::epics::parent_of),
+        day,
+    )?;
+    Ok(code)
+}
+
+/// Every open row on the project's live sheets ([`live_sheets`]), with the lane of its sheet.
+fn live_rows_with_lane(p: &Profile, name: &str) -> Result<Vec<(String, Lane)>> {
+    let mut out = Vec::new();
+    for (path, _, lane) in live_sheets(p, name)? {
+        let content = fs::read_to_string(&path)?;
+        out.extend(
+            md::section_numbered(&content, sheet::TASKS)
+                .into_iter()
+                .filter(|(_, l)| md::is_open_task(l))
+                .map(|(_, l)| (l.to_string(), lane)),
+        );
+    }
+    Ok(out)
+}
+
+/// One line per open row in `rows` gated `#after/<id>`, for a `--why` drop of `id`: a dropped row
+/// never closes done, so that gate never clears, and only a person knows whether the waiter's work
+/// still stands. Each line names the command that frees it on its own lane. A dup needs none:
+/// `agent-queue gate` follows a dup-closed row to the row it was folded into. Why: ar-2856 was
+/// dropped on 2026-11-25 while ar-3032 waited on it, and queue-starved paged on the dead gate
+/// (ar-5747).
+fn waiter_notes(name: &str, id: &str, rows: &[(String, Lane)]) -> Vec<String> {
+    let gate = format!("after/{id}");
+    rows.iter()
+        .filter(|(l, _)| md::row_id(l).as_deref() != Some(id))
+        .filter(|(l, _)| md::find_hashtags(l).contains(&gate))
+        .map(|(l, lane)| {
+            let wid = md::row_id(l).unwrap_or_else(|| md::task_text(l));
+            let flag = if *lane == Lane::Agent { " --agent" } else { "" };
+            format!(
+                "{wid} waits on {id} with #{gate}, which never clears now that {id} is dropped: \
+                 notes ptask {name}{flag} tag --remove {gate} {wid}, or drop {wid} if its work went with {id}"
+            )
+        })
+        .collect()
 }
 
 /// Refuse an epic written to the agent board: the human owns epics, and dispatch would start
@@ -2523,34 +2772,270 @@ fn check_epic_proof(row: &str, stamp: &str) -> Result<()> {
     Ok(())
 }
 
-/// Refuse to close the row `pick` names while a child of it (`#of/<its id>`) is open: a
-/// parent weighs what its children weigh, so closing it first would report open work as
-/// done. Checked before the edit, so a refusal writes nothing.
-fn refuse_open_children(
+/// What `--children` does with the open children of a row that closes.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Children {
+    /// `--children drop`: close every open row under it, at any depth, with its own stamp.
+    Close,
+    /// `--children <id>`: move each open child under that row.
+    Onto(String),
+}
+
+impl Children {
+    pub(crate) fn parse(raw: &str) -> Result<Children> {
+        let r = raw.trim().to_lowercase();
+        if r == "drop" {
+            return Ok(Children::Close);
+        }
+        if md::is_row_id(&r) {
+            return Ok(Children::Onto(r));
+        }
+        bail!(
+            "--children takes drop (close them with this row) or the id of the row to move them under (like ar-142), not '{raw}'"
+        )
+    }
+}
+
+/// How a closing row closes a child: its verb, its stamp, the rewrite, and a check each child
+/// must pass first.
+type Closer<'a> = (
+    &'a str,
+    &'a str,
+    &'a dyn Fn(&str) -> String,
+    &'a dyn Fn(&str) -> Result<()>,
+);
+
+/// Settle the open children (`#of/<its id>`) of the row `pick` names before it closes: a parent
+/// weighs what its children weigh, so closing it over them would report open work as done.
+/// `how` says what happens to them: [`Children::Close`] closes every open row under it with
+/// `closer`, [`Children::Onto`] moves each open child under that row. With no `how`, open
+/// children are refused, naming both. Every refusal comes before any write.
+fn settle_children(
     p: &Profile,
+    log: &Logger,
     name: &str,
     pick: &Pick,
     lane: Lane,
-    verb: &str,
+    how: Option<&Children>,
+    closer: Closer,
 ) -> Result<()> {
     let Some((_, content)) = sheet_and_content(p, name, lane)? else {
         return Ok(());
     };
-    let Some(id) = find_open(&content, pick).and_then(|l| md::row_id(&l)) else {
+    let Some(row) = find_open(&content, pick) else {
+        return Ok(());
+    };
+    let Some(id) = md::row_id(&row) else {
         return Ok(());
     };
     let dir = projects::project_dir(p, name)?;
-    let open = crate::epics::Index::of(&dir, projects::open_version(&dir)).open_children(&id);
-    if !open.is_empty() {
-        // One line: agent-land reports only a failure's last line.
-        bail!(
-            "{id} has {} open child row(s) ({}); {verb} them first, or re-parent them with \
-             `ptask tag <id> --remove of/{id} --add of/<other>`",
-            open.len(),
-            open.join(", ")
-        );
+    let ix = crate::epics::Index::of(&dir, projects::open_version(&dir));
+    let open = ix.open_under(&id);
+    if open.is_empty() {
+        return Ok(());
+    }
+    let (verb, stamp, close, check) = closer;
+    let child_of = |l: &str, ids: &HashSet<String>| {
+        !crate::epics::is_epic_check(l)
+            && crate::epics::parent_of(l).is_some_and(|p| ids.contains(&p))
+    };
+    // The row's own close passes edit's refusals before any child is written.
+    if how.is_some() {
+        refuse_row_edit(&row, &written(&row, close(&row)))?;
+    }
+    match how {
+        None => {
+            // One line: agent-land reports only a failure's last line.
+            bail!(
+                "{id} has {} open child row(s) ({}); pass --children drop to close them with it, \
+                 or --children <id> to move them under another row",
+                open.len(),
+                open.join(", ")
+            );
+        }
+        Some(Children::Onto(to)) => {
+            if *to == id {
+                bail!("{id} cannot take its own children: name another row for them");
+            }
+            if let Some(chain) = ix.chain(&id, to) {
+                bail!(
+                    "{to} is under {id} ({}), so moving {id}'s children onto it would make a loop; \
+                     pass --children drop, or --children <id> naming a row outside {id}",
+                    chain.join(" -> ")
+                );
+            }
+            let open_ids = live_rows(p, name)?;
+            if !open_ids
+                .iter()
+                .any(|l| md::row_id(l).as_deref() == Some(to.as_str()))
+            {
+                bail!(
+                    "{to} is no open row of {name}, so {id}'s {} open child row(s) have nowhere \
+                     to go; pass --children drop, or --children <id> naming an open row",
+                    open.len()
+                );
+            }
+            let ids = HashSet::from([id.clone()]);
+            let (from, onto) = (format!("#of/{id}"), format!("#of/{to}"));
+            let why = format!("-{from} +{onto}");
+            let moved = |l: &str| md::add_tag(&md::drop_tag(l, &from), &onto);
+            for row in open_ids.iter().filter(|l| child_of(l, &ids)) {
+                refuse_row_edit(row, &moved(row))?;
+            }
+            rewrite_rows(p, log, name, "tagged", &why, |l| child_of(l, &ids), moved)?;
+        }
+        Some(Children::Close) => {
+            let mut ids: HashSet<String> = ix.descendants(&id).into_iter().collect();
+            ids.insert(id.clone());
+            for row in live_rows(p, name)?.iter().filter(|l| child_of(l, &ids)) {
+                if is_running(row) {
+                    bail!(
+                        "{} under {id} is running as a queue item, so its session closes it; \
+                         pass --children <id> to move the open children instead",
+                        md::row_id(row).unwrap_or_else(|| md::task_text(row))
+                    );
+                }
+                check(row)?;
+                refuse_row_edit(row, &written(row, close(row)))?;
+            }
+            rewrite_rows(p, log, name, verb, stamp, |l| child_of(l, &ids), close)?;
+        }
     }
     Ok(())
+}
+
+/// Close each open parent, from `parent` up, whose last open child just closed: a parent whose
+/// children carry its work is done when they are, so it is never the reason a finished or
+/// unneeded row stays open. Done (`children: <ids>`) when any child was done, dropped when every
+/// one was. An epic never closes this way ([`crate::epics::Index::spent`]), nor does a row a
+/// queue item is running (its session closes it).
+fn close_spent_parents(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    mut parent: Option<String>,
+    day: chrono::NaiveDate,
+) -> Result<()> {
+    let dir = projects::project_dir(p, name)?;
+    let mut seen = HashSet::new();
+    while let Some(id) = parent.take() {
+        if !seen.insert(id.clone()) {
+            break;
+        }
+        let ix = crate::epics::Index::of(&dir, projects::open_version(&dir));
+        let Some(spent) = ix.spent(&id) else {
+            break;
+        };
+        let hit = |l: &str| md::row_id(l).as_deref() == Some(id.as_str()) && !is_running(l);
+        let rows = if spent.done == 0 {
+            let stamp = "dropped: every child was dropped or moved";
+            rewrite_rows(p, log, name, "dropped", stamp, hit, |l| {
+                md::add_marker(&closed(l), stamp)
+            })?
+        } else {
+            // The proof is on the children; one closed unverified leaves the parent unverified too.
+            let ids = match spent.ids.join(" ") {
+                ids if ids.is_empty() => "closed".to_string(),
+                ids => ids,
+            };
+            let stamp = if spent.unverified {
+                format!("unverified: its children closed, {ids}")
+            } else {
+                format!("children: {ids}")
+            };
+            let on = done_token(day);
+            rewrite_rows(p, log, name, "done", &stamp, hit, |l| {
+                md::add_marker(&md::add_marker(&closed(l), &on), &stamp)
+            })?
+        };
+        parent = rows.first().and_then(|l| crate::epics::parent_of(l));
+    }
+    Ok(())
+}
+
+/// The live sheets a project's tree is read from ([`crate::epics::Index::of`]): its two lanes,
+/// then those of the projects it versions, each as (sheet, project, lane).
+fn live_sheets(p: &Profile, name: &str) -> Result<Vec<(PathBuf, String, Lane)>> {
+    let dir = projects::project_dir(p, name)?;
+    let mut dirs = vec![(dir.clone(), name.to_string())];
+    dirs.extend(projects::version_child_dirs(&dir).into_iter().map(|c| {
+        let n = c
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        (c, n)
+    }));
+    let mut out = Vec::new();
+    for (d, n) in dirs {
+        for lane in [Lane::Human, Lane::Agent] {
+            if let Some(sheet) = task_sheet(&lane.dir(&d)) {
+                out.push((sheet, n.clone(), lane));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Every open row on the project's live sheets ([`live_sheets`]).
+fn live_rows(p: &Profile, name: &str) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for (path, ..) in live_sheets(p, name)? {
+        let content = fs::read_to_string(&path)?;
+        out.extend(
+            md::section_numbered(&content, sheet::TASKS)
+                .into_iter()
+                .filter(|(_, l)| md::is_open_task(l))
+                .map(|(_, l)| l.to_string()),
+        );
+    }
+    Ok(out)
+}
+
+/// Rewrite with `f` every open row on the project's live sheets that `hit` names, each sheet
+/// written once and each row recorded as `verb` with `why`. The rows as written, sheet order.
+fn rewrite_rows(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    verb: &str,
+    why: &str,
+    hit: impl Fn(&str) -> bool,
+    f: impl Fn(&str) -> String,
+) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for (path, proj, lane) in live_sheets(p, name)? {
+        let content = fs::read_to_string(&path)?;
+        let rows: Vec<usize> = md::section_numbered(&content, sheet::TASKS)
+            .into_iter()
+            .filter(|(_, l)| md::is_open_task(l) && hit(l))
+            .map(|(n, _)| n - 1)
+            .collect();
+        if rows.is_empty() {
+            continue;
+        }
+        let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
+        let mut changed = Vec::new();
+        for i in rows {
+            let new = f(&lines[i]);
+            changed.push((std::mem::replace(&mut lines[i], new.clone()), new));
+        }
+        let mut joined = lines.join("\n");
+        if content.ends_with('\n') {
+            joined.push('\n');
+        }
+        write_sheet(&path, &joined)?;
+        log.info("ptask", &format!("{verb} in {} ({proj})", path.display()));
+        for (old, new) in changed {
+            let mut ev = crate::ingest::Event::row(verb, &proj, "", lane.name(), &old);
+            if verb == "done" {
+                ev = ev.proof(why);
+            }
+            ev.why = Some(why.to_string());
+            crate::ingest::record(p, &ev);
+            println!("{verb} {}", new.trim());
+            out.push(new);
+        }
+    }
+    Ok(out)
 }
 
 /// The marker a `drop` stamps, or the error saying it needs a reason.
@@ -2724,6 +3209,7 @@ pub fn retext(
             };
             // Refused here too, before the epic is filed, for the same reason.
             projects::refuse_retired_priority(&row, t)?;
+            crate::reasons::refuse_bad(&row, t)?;
             // A row that has its parent keeps it ([`md::retext_task`]), so a standing epic
             // filed for it would have no child.
             if md::split_parent(&row).1.is_some() {
@@ -3670,8 +4156,7 @@ where
     };
     let after = std::cell::RefCell::new(None);
     let write = |l: &str| {
-        // A row is written with one priority tag, whatever the edit added (nc-70).
-        let new = f(l).map(|n| md::one_priority(&n));
+        let new = f(l).map(|n| written(l, n));
         after.borrow_mut().clone_from(&new);
         Some(new.unwrap_or_else(|| l.to_string()))
     };
@@ -3681,9 +4166,16 @@ where
             Ok((0, Some(matched)))
         }
         Some((new, matched)) => {
-            // No edit writes a priority word no reader knows (`tag --add p1`, `edit --text "... #p1"`).
             if let Some(line) = after.borrow().as_deref() {
-                projects::refuse_retired_priority(&matched, line)?;
+                refuse_row_edit(&matched, line)?;
+                // Said, so a `tag --add low` on an old tagged epic does not look like it took.
+                if let Some(tag) = md::task_priority(&matched)
+                    .filter(|_| crate::epics::is_epic(line) && md::task_priority(line).is_none())
+                {
+                    eprintln!(
+                        "{tag} dropped: an epic ranks as its most urgent open row, never by a tag"
+                    );
+                }
             }
             write_sheet(&sheet, &new)?;
             log.info("ptask", &format!("{verb} in {} ({name})", sheet.display()));
@@ -3692,11 +4184,13 @@ where
                 ev = ev.proof(why.unwrap_or_default());
             }
             ev.why = why.map(str::to_string);
+            let after_line = after.into_inner().unwrap_or_default();
             if verb == "edited" {
-                ev.row = after.into_inner().map(|l| md::task_text(&l));
+                ev.row = Some(md::task_text(&after_line));
             }
             crate::ingest::record(p, &ev);
-            println!("{verb} {}", matched.trim());
+            // The row as written, so a `tag` shows the parent it has now, never the one it had.
+            println!("{verb} {}", after_line.trim());
             Ok((0, Some(matched)))
         }
         None => {
@@ -3704,6 +4198,20 @@ where
             Ok((1, None))
         }
     }
+}
+
+/// `new`, the rewrite of the row `old`, as a row edit writes it: one priority tag, whatever the
+/// edit added (nc-70), and an epic with none it already had.
+fn written(old: &str, new: String) -> String {
+    projects::unrank_epic(old, md::one_priority(&new))
+}
+
+/// What every row edit refuses: a priority word no reader knows (`tag --add p1`, `edit --text
+/// "... #p1"`), a priority on an epic, a reason that is not one.
+fn refuse_row_edit(old: &str, new: &str) -> Result<()> {
+    projects::refuse_retired_priority(old, new)?;
+    projects::refuse_epic_priority(new)?;
+    crate::reasons::refuse_bad(old, new)
 }
 
 /// Refuse `writer` an edit of the first open row `pick` matches when `rewrite` would change the
@@ -5032,6 +5540,13 @@ Version: v0.0.1
             0,
             "an archived row reopens on its own lane"
         );
+        let events = fs::read_to_string(crate::ingest::path(&p)).unwrap_or_default();
+        assert!(
+            events.lines().any(|l| l.contains("\"reopened\"")
+                && l.contains("\"dm-2\"")
+                && l.contains("\"why\":\"wrong PR\"")),
+            "the reopen event keeps its why for `notes log --id`: {events}"
+        );
         let board = fs::read_to_string(dir.join("agent/README.md")).unwrap();
         assert_eq!(
             board,
@@ -5228,6 +5743,7 @@ mod inbox_tests {
             None,
             None,
             Lane::Human,
+            None,
         )
         .unwrap();
         let two = Pick::Id("sc-2".into());
@@ -5239,6 +5755,7 @@ mod inbox_tests {
             Some("stale"),
             None,
             Lane::Human,
+            None,
         )
         .unwrap();
         let ev = crate::ingest::all(&v.p);
@@ -5329,6 +5846,7 @@ mod inbox_tests {
             None,
             Some("2026-10-03"),
             Lane::Human,
+            None,
         )
         .unwrap();
         let n = fs::read_to_string(&note).unwrap();
@@ -5372,6 +5890,7 @@ mod inbox_tests {
             None,
             Some("2026-10-03"),
             Lane::Human,
+            None,
         )
         .unwrap();
         done(
@@ -5383,6 +5902,7 @@ mod inbox_tests {
             None,
             None,
             Lane::Human,
+            None,
         )
         .unwrap();
         // A close older than the Done window rolls off the sheet into the agent note.
@@ -5503,7 +6023,8 @@ mod inbox_tests {
                 &Pick::Id("sc-2".into()),
                 Some("moot"),
                 None,
-                Lane::Human
+                Lane::Human,
+                None,
             )
             .unwrap(),
             0
@@ -5622,6 +6143,12 @@ mod inbox_tests {
         // NEGATIVE CONTROL: the row that already had #p1 still takes a tag.
         assert_eq!(tag_as(&id("sc-2"), "size/s").unwrap(), 0);
         assert!(v.read().contains("#size/s"));
+        // #normal is a priority again (ar-4884): an edit writing it is accepted, and it
+        // replaces the row's #low rather than joining it.
+        assert_eq!(tag_as(&id("sc-1"), "normal").unwrap(), 0);
+        let after = v.read();
+        let row = after.lines().find(|l| l.contains("id:sc-1")).unwrap();
+        assert!(row.contains("#normal") && !row.contains("#low"), "{row}");
     }
 
     #[test]
@@ -5744,7 +6271,10 @@ mod inbox_tests {
         let s = fs::read_to_string(&sheet).unwrap();
         fs::write(
             &sheet,
-            s.replace("Version: v0.1.0", "Version: v0.1.0 #prio/focus"),
+            s.replace(
+                "Version: v0.1.0",
+                "Version: v0.1.0 #prio/focus\nFocus until: 2099-01-01 00:00 +0000",
+            ),
         )
         .unwrap();
         let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 18).unwrap();
@@ -5823,7 +6353,10 @@ mod inbox_tests {
         let s = fs::read_to_string(v.sheet()).unwrap();
         fs::write(
             v.sheet(),
-            s.replace("Version: v0.1.0", "Version: v0.1.0 #prio/focus"),
+            s.replace(
+                "Version: v0.1.0",
+                "Version: v0.1.0 #prio/focus\nFocus until: 2099-01-01 00:00 +0000",
+            ),
         )
         .unwrap();
         let (open, next) = ((0, 1, 0), (0, 1, 1));
@@ -6102,6 +6635,61 @@ mod inbox_tests {
             "{s}"
         );
         assert!(!s.split("## Tasks").next().unwrap().contains("gun"), "{s}");
+    }
+
+    #[test]
+    fn a_filed_row_that_twins_an_open_row_joins_it_and_files_nothing() {
+        let open_rows = |s: &str| {
+            s.lines()
+                .filter(|l| l.starts_with("- [ ] ") && l.trim_end() != "- [ ]")
+                .count()
+        };
+        let v = vault(
+            "twinfile",
+            "- the gun sound plays late #from/s1\n- a pause menu is wanted\n",
+            "- [ ] fix(audio): the gun sound plays late on the second shot <!-- id:sc-4 -->\n",
+        );
+        let pick = Pick::new("gun sound", false).unwrap();
+        // The model's reworded row: same type, nearly the same title words.
+        let rc = file(
+            &v.p,
+            &v.log,
+            "scratch",
+            &pick,
+            &rows(&["fix(audio): gun sound plays late on the second shot #low"]),
+            Lane::Human,
+        )
+        .unwrap();
+        assert_eq!(rc, 0);
+        let s = v.read();
+        assert_eq!(open_rows(&s), 1, "no second row:\n{s}");
+        assert!(
+            s.contains("<!-- id:sc-4 -->\n  was: the gun sound plays late #from/s1\n"),
+            "the words joined the open row:\n{s}"
+        );
+        assert!(!s.split("## Tasks").next().unwrap().contains("gun"), "{s}");
+        let today = chrono::Local::now()
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string();
+        let ev = crate::ingest::on_day(&v.p, &today);
+        assert_eq!(
+            (ev[0].action.as_str(), ev[0].id.as_deref()),
+            ("dup", Some("sc-4"))
+        );
+
+        // A row that twins nothing is still filed, next to the twin that was not.
+        let pick = Pick::new("pause menu", false).unwrap();
+        file(
+            &v.p,
+            &v.log,
+            "scratch",
+            &pick,
+            &rows(&["feat(ui): a pause menu with resume and quit #low"]),
+            Lane::Human,
+        )
+        .unwrap();
+        assert_eq!(open_rows(&v.read()), 2, "{}", v.read());
     }
 
     #[test]
@@ -6487,5 +7075,313 @@ mod inbox_tests {
             .resolve_in(&v.sheet())
             .unwrap();
         assert_eq!(pick, Pick::Exact("- [ ] fix(ui): menu".into()));
+    }
+
+    /// The row carrying `id` on the sheet `v` reads, or in the agent
+    /// versions note the sweep rolls a dropped row into.
+    fn row_of(v: &Vault, id: &str) -> String {
+        let note = v.root.join("projects/scratch/agent/versions/v0.1.0.md");
+        let text = v.read() + &fs::read_to_string(note).unwrap_or_default();
+        text.lines()
+            .find(|l| md::row_id(l).as_deref() == Some(id))
+            .unwrap_or_else(|| panic!("no {id} in {text}"))
+            .to_string()
+    }
+
+    const TREE: &str = "- [ ] feat(ui): the menu #high <!-- id:sc-1 -->\n\
+         - [ ] fix(ui): menu flicker #high #of/sc-1 <!-- id:sc-2 -->\n\
+         - [ ] fix(ui): menu flicker on pause #high #of/sc-2 <!-- id:sc-3 -->\n\
+         - [ ] feat(ui): the menu again #high <!-- id:sc-4 -->\n";
+
+    // ar-5374: a dup's children carry its work, so they move to the row it duplicates; a dup of
+    // its own descendant is the loop the cut made of ucp-2654 and ucp-652, refused by name.
+    #[test]
+    fn a_dup_moves_its_open_children_onto_the_kept_row_and_refuses_a_loop() {
+        let v = vault("dup-kids", "", TREE);
+        let one = Pick::Id("sc-1".into());
+        let go = |dup: &str, kids: Option<&Children>| {
+            drop(
+                &v.p,
+                &v.log,
+                "scratch",
+                &one,
+                None,
+                Some(dup),
+                Lane::Human,
+                kids,
+            )
+        };
+        let before = v.read();
+        let err = go("sc-3", None).unwrap_err().to_string();
+        assert!(err.contains("sc-1 -> sc-2 -> sc-3"), "{err}");
+        let err = go("sc-9", None).unwrap_err().to_string();
+        assert!(err.contains("sc-9 is no open row"), "{err}");
+        assert_eq!(v.read(), before, "a refusal writes nothing");
+
+        assert_eq!(go("sc-4", None).unwrap(), 0);
+        assert!(row_of(&v, "sc-1").contains("dup:sc-4"), "{}", v.read());
+        let kid = row_of(&v, "sc-2");
+        assert!(
+            kid.starts_with("- [ ]") && kid.contains("#of/sc-4"),
+            "{kid}"
+        );
+        assert!(!kid.contains("#of/sc-1"), "{kid}");
+        assert!(
+            row_of(&v, "sc-3").contains("#of/sc-2"),
+            "a grandchild keeps its parent"
+        );
+    }
+
+    // ar-5747: a dropped row never closes done, so a row gated #after/ on it waits for good. A
+    // --why drop names each waiter with its own lane's command, and leaves every row as it was.
+    #[test]
+    fn a_why_drop_names_each_waiter_with_its_lanes_command() {
+        let rows = |r: &[(&str, Lane)]| -> Vec<(String, Lane)> {
+            r.iter().map(|(l, lane)| (l.to_string(), *lane)).collect()
+        };
+        let notes = waiter_notes(
+            "scratch",
+            "sc-1",
+            &rows(&[
+                (
+                    "- [ ] feat(ui): the menu #after/sc-9 <!-- id:sc-1 -->",
+                    Lane::Agent,
+                ),
+                (
+                    "- [ ] fix(ui): flicker #high #after/SC-1 <!-- id:sc-2 -->",
+                    Lane::Agent,
+                ),
+                (
+                    "- [ ] fix(ui): sound #after/sc-1 <!-- id:sc-3 -->",
+                    Lane::Human,
+                ),
+                (
+                    "- [ ] fix(ui): other #after/sc-10 <!-- id:sc-4 -->",
+                    Lane::Agent,
+                ),
+            ]),
+        );
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert!(
+            notes[0].starts_with("sc-2 waits on sc-1")
+                && notes[0].contains("notes ptask scratch --agent tag --remove after/sc-1 sc-2"),
+            "{}",
+            notes[0]
+        );
+        assert!(
+            notes[1].contains("notes ptask scratch tag --remove after/sc-1 sc-3"),
+            "{}",
+            notes[1]
+        );
+
+        let v = vault(
+            "why-waiters",
+            "",
+            "- [ ] feat(ui): the menu #high <!-- id:sc-1 -->\n\
+             - [ ] fix(ui): menu sound #high #after/sc-1 <!-- id:sc-5 -->\n",
+        );
+        let pick = Pick::Id("sc-1".into());
+        let go = drop(
+            &v.p,
+            &v.log,
+            "scratch",
+            &pick,
+            Some("stale"),
+            None,
+            Lane::Human,
+            None,
+        );
+        assert_eq!(go.unwrap(), 0);
+        assert!(row_of(&v, "sc-1").contains("dropped: stale"));
+        assert!(
+            row_of(&v, "sc-5").contains("#after/sc-1"),
+            "no row is retagged"
+        );
+    }
+
+    // NEGATIVE CONTROL: a bare close over open children is refused, naming both ways out.
+    #[test]
+    fn a_close_over_open_children_names_both_flags_and_drop_closes_every_one() {
+        let v = vault("done-kids", "", TREE);
+        let one = Pick::Id("sc-1".into());
+        let go = |kids: Option<&Children>| {
+            done(
+                &v.p,
+                &v.log,
+                "scratch",
+                &one,
+                Some("pr:7"),
+                None,
+                None,
+                Lane::Human,
+                kids,
+            )
+        };
+        let before = v.read();
+        let err = go(None).unwrap_err().to_string();
+        assert!(
+            err.contains("--children drop") && err.contains("--children <id>"),
+            "{err}"
+        );
+        assert_eq!(v.read(), before, "a refusal writes nothing");
+
+        assert_eq!(go(Some(&Children::Close)).unwrap(), 0);
+        for id in ["sc-1", "sc-2", "sc-3"] {
+            let row = row_of(&v, id);
+            assert!(row.starts_with("- [x]") && row.contains("pr:7"), "{row}");
+        }
+        assert!(row_of(&v, "sc-4").starts_with("- [ ]"));
+    }
+
+    #[test]
+    fn a_drop_moves_its_children_where_children_names() {
+        let v = vault("drop-kids", "", TREE);
+        let one = Pick::Id("sc-1".into());
+        let onto = Children::parse("SC-4").unwrap();
+        assert!(Children::parse("later").is_err());
+        assert_eq!(
+            drop(
+                &v.p,
+                &v.log,
+                "scratch",
+                &one,
+                Some("superseded"),
+                None,
+                Lane::Human,
+                Some(&onto)
+            )
+            .unwrap(),
+            0
+        );
+        assert!(row_of(&v, "sc-1").contains("dropped: superseded"));
+        assert!(row_of(&v, "sc-2").contains("#of/sc-4"), "{}", v.read());
+    }
+
+    // ar-5374: a parent whose children carry its work is done when they are, and an epic is not.
+    #[test]
+    fn a_parent_closes_itself_when_its_last_open_child_closes() {
+        let v = vault(
+            "spent",
+            "",
+            "- [ ] feat(ui): the menu #high <!-- id:sc-1 -->\n\
+             - [ ] fix(ui): menu flicker #high #of/sc-1 <!-- id:sc-2 -->\n\
+             - [ ] fix(ui): menu sound #high #of/sc-1 <!-- id:sc-3 -->\n\
+             - [ ] feat(ui): the pause screen #high <!-- id:sc-4 -->\n\
+             - [ ] fix(ui): pause blinks #high #of/sc-4 <!-- id:sc-5 -->\n\
+             - [ ] epic(ui): a calm menu <!-- id:sc-6 -->\n\
+             - [ ] fix(ui): menu fades #high #of/sc-6 <!-- id:sc-7 -->\n",
+        );
+        let id = |i: &str| Pick::Id(i.to_string());
+        let close = |i: &str| {
+            done(
+                &v.p,
+                &v.log,
+                "scratch",
+                &id(i),
+                Some("pr:7"),
+                None,
+                None,
+                Lane::Human,
+                None,
+            )
+            .unwrap()
+        };
+        let cut = |i: &str| {
+            drop(
+                &v.p,
+                &v.log,
+                "scratch",
+                &id(i),
+                Some("moot"),
+                None,
+                Lane::Human,
+                None,
+            )
+            .unwrap()
+        };
+        close("sc-2");
+        assert!(
+            row_of(&v, "sc-1").starts_with("- [ ]"),
+            "a child is still open"
+        );
+        cut("sc-3");
+        let parent = row_of(&v, "sc-1");
+        assert!(
+            parent.starts_with("- [x]") && parent.contains("children: sc-2"),
+            "{parent}"
+        );
+        cut("sc-5");
+        let parent = row_of(&v, "sc-4");
+        assert!(
+            parent.starts_with("- [x]") && md::is_dropped(&parent),
+            "{parent}"
+        );
+        close("sc-7");
+        assert!(
+            row_of(&v, "sc-6").starts_with("- [ ]"),
+            "an epic closes on its outcome"
+        );
+    }
+
+    // From review: an open grandchild under a closed child holds the row open too, a running
+    // child is its session's to close, and a parent is no surer than its children's proof.
+    #[test]
+    fn a_close_reaches_open_grandchildren_and_leaves_a_running_child_to_its_session() {
+        let v = vault(
+            "grandkids",
+            "",
+            "- [ ] feat(ui): the menu #high <!-- id:sc-1 -->\n\
+             - [x] fix(ui): menu flicker #high #of/sc-1 <!-- id:sc-2 done:2026-11-20 pr:3 -->\n\
+             - [ ] fix(ui): menu flicker on pause #high #of/sc-2 <!-- id:sc-3 -->\n\
+             - [/] fix(ui): menu sound #high #of/sc-1 <!-- id:sc-4 run:menu-sound -->\n",
+        );
+        let one = Pick::Id("sc-1".into());
+        let go = |kids: Option<&Children>| {
+            drop(
+                &v.p,
+                &v.log,
+                "scratch",
+                &one,
+                Some("moot"),
+                None,
+                Lane::Human,
+                kids,
+            )
+        };
+        let before = v.read();
+        let err = go(None).unwrap_err().to_string();
+        assert!(err.contains("sc-3"), "{err}");
+        let err = go(Some(&Children::Close)).unwrap_err().to_string();
+        assert!(err.contains("sc-4 under sc-1 is running"), "{err}");
+        assert_eq!(v.read(), before, "a refusal writes nothing");
+    }
+
+    #[test]
+    fn a_parent_of_an_unverified_child_closes_unverified() {
+        let v = vault(
+            "unverified-kid",
+            "",
+            "- [ ] feat(ui): the menu #high <!-- id:sc-1 -->\n\
+             - [ ] fix(ui): menu flicker #high #of/sc-1 <!-- id:sc-2 -->\n",
+        );
+        let two = Pick::Id("sc-2".into());
+        done(
+            &v.p,
+            &v.log,
+            "scratch",
+            &two,
+            None,
+            Some("no artifact"),
+            None,
+            Lane::Human,
+            None,
+        )
+        .unwrap();
+        let parent = row_of(&v, "sc-1");
+        assert!(parent.starts_with("- [x]"), "{parent}");
+        assert!(
+            parent.contains("unverified: its children closed, sc-2"),
+            "{parent}"
+        );
     }
 }

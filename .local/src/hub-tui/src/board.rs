@@ -368,11 +368,20 @@ pub(crate) mod tests {
             "0.03",
         ));
         // windows has slots and nothing waiting: it must read 0, never vanish; and no
-        // finished series, so DONE and PASS read -, never 0.
-        for (pool, slots, busy, waiting, oldest, done, ratio) in [
-            ("unity", "4", "3", "3", Some("8880"), Some("72"), "0.24"),
-            ("light", "2", "0", "1", Some("60"), Some("40"), "0.8"),
-            ("windows", "1", "0", "0", None, None, ""),
+        // finished series, so DONE, USUAL and PASS read -, never 0.
+        for (pool, slots, busy, waiting, oldest, done, ratio, usual) in [
+            (
+                "unity",
+                "4",
+                "3",
+                "3",
+                Some("8880"),
+                Some("72"),
+                "0.24",
+                "1260",
+            ),
+            ("light", "2", "0", "1", Some("60"), Some("40"), "0.8", "120"),
+            ("windows", "1", "0", "0", None, None, "", ""),
         ] {
             cc.push((json!({"__name__": "cc:pool_slots", "pool": pool}), slots));
             cc.push((json!({"__name__": "cc:pool_busy", "pool": pool}), busy));
@@ -391,6 +400,10 @@ pub(crate) mod tests {
                 cc.push((
                     json!({"__name__": "cc:pool_pass_ratio_24h", "pool": pool}),
                     ratio,
+                ));
+                cc.push((
+                    json!({"__name__": "cc:pool_run_seconds_24h", "pool": pool}),
+                    usual,
                 ));
             }
         }
@@ -472,17 +485,25 @@ pub(crate) mod tests {
         i
     }
 
-    /// The governor's units: razer-laptop takes 2.5 of 4, mac-mini none of 1.
-    fn with_units(i: &mut Infra) {
-        let u = |n: &str, h: &str, v: &'static str| (json!({"__name__": n, "host": h}), v);
+    /// The cluster: razer-laptop a CI node of 4 cores and 16G with two light job pods on it,
+    /// booking 2.5 cores and 1.0G.
+    fn with_pods(i: &mut Infra) {
+        let (mut pods, mut req) = (vec![], vec![]);
+        for name in ["arc-org-light-runner-a1", "arc-org-light-runner-b2"] {
+            pods.push((
+                json!({"pod": name, "node": "razer-laptop", "phase": "Running",
+                "created_by_kind": "EphemeralRunner", "created_by_name": name}),
+                "1",
+            ));
+            req.push((json!({"pod": name, "resource": "cpu"}), "1.25"));
+            req.push((json!({"pod": name, "resource": "memory"}), "536870912"));
+        }
+        i.instant.insert("job_pods", series(pods));
+        i.instant.insert("job_requests", series(req));
+        let a = |r: &str, v: &'static str| (json!({"node": "razer-laptop", "resource": r}), v);
         i.instant.insert(
-            "governor",
-            series(vec![
-                u("ci_governor_capacity_units", "razer-laptop", "4"),
-                u("ci_governor_busy_units", "razer-laptop", "2.5"),
-                u("ci_governor_capacity_units", "mac-mini", "1"),
-                u("ci_governor_busy_units", "mac-mini", "0"),
-            ]),
+            "ci_alloc",
+            series(vec![a("cpu", "4"), a("memory", "17179869184")]),
         );
     }
 
@@ -630,11 +651,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_ci_runners_section_lists_each_slot_with_its_job_time_and_the_queue_beside_it() {
+    fn the_ci_runners_section_lists_each_running_job_with_its_time_and_the_queue_beside_it() {
         let i = fixture();
         let ci = tab(&i, "ci", 160);
         assert!(
-            ci.starts_with("CI RUNNERS  3 running, 4 queued (oldest 2h28m), - queued -, 4/5 runners up, 112 done 24h, 44% passed  failed 24h 2 (Runs, red)\n\nRUNNERS  all 5  busy 3  idle 1  off 1  late 1\nHOST"),
+            ci.starts_with("CI RUNNERS  3 running, 4 queued (oldest 2h28m), 4/5 runners up, 112 done 24h, 44% passed  failed 24h 2 (Runs, red)\n\nRUNNERS  all 3  busy 3  late 1\nHOST"),
             "{ci}"
         );
         // A late job carries the bang; each slot names its pool, job and ref.
@@ -646,10 +667,10 @@ pub(crate) mod tests {
             &ci,
             "razer-laptop 1 busy unity 36m - PlayMode 2 unity-core-playground#412",
         );
-        // No PR shows the branch; an idle slot and an offline host say so.
+        // No PR shows the branch; a runner with no job has no row.
         assert_line(&ci, "razer-laptop 2 busy unity 5m - E2E develop");
-        assert_line(&ci, "razer-laptop 3 idle unity - - - -");
-        assert_line(&ci, "mac-mini 1 off macos - - - -");
+        assert!(!has(&ci, "razer-laptop 3 idle"), "{ci}");
+        assert!(!has(&ci, "mac-mini 1 off"), "{ci}");
         // The queue, its own section, names each job's wait, what it needs and who can take it.
         assert_line(
             &tab(&i, "waiting", 160),
@@ -725,7 +746,7 @@ pub(crate) mod tests {
             "CI RUNNERS 0 running, 0 queued, -/- runners up, 112 done 24h, 44% passed",
         );
         // An empty table is its title and why, on one line, with no header or chips.
-        assert_line(&ci, "RUNNERS no runner reports");
+        assert_line(&ci, "RUNNERS no runner is running a job");
         assert_line(&section(Some(0), "waiting"), "WAITING nothing waiting");
         assert_line(
             &section(Some(0), "local"),
@@ -811,7 +832,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_withheld_runner_is_no_slot_and_says_nothing_on_its_row() {
+    fn a_withheld_runner_is_no_slot_and_has_no_row_anywhere() {
         let mut i = fixture();
         i.instant.insert(
             "withheld",
@@ -828,26 +849,27 @@ pub(crate) mod tests {
             ),
             "a held slot is no job on its row: {out}"
         );
-        assert_line(
-            &out,
-            "razer-laptop 3 withheld unity - - the governor holds it back -",
+        assert!(
+            !has(&out, "razer-laptop 3 withheld"),
+            "no job, no runners row: {out}"
         );
     }
 
     #[test]
-    fn a_machines_row_carries_taken_load_6h_cpu_what_runs_and_what_is_next() {
+    fn a_machines_row_carries_booked_load_6h_cpu_what_runs_and_what_is_next() {
         let mut i = fixture();
-        with_units(&mut i);
+        with_pods(&mut i);
         with_cloud(&mut i, "0");
         let out = tab(&i, "machines", 200);
         assert_line(
             &out,
-            "MACHINE STATE TAKEN CPU 6H LOAD MEM TEMP DISK RUNNING NEXT GOVERNOR POWER UP",
+            "MACHINE STATE BOOKED CPU 6H LOAD MEM TEMP DISK RUNNING NEXT GOVERNOR POWER UP",
         );
+        // RUNNING keeps its cap however wide the terminal; the pods' kind leads it.
         assert!(
             has(
                 &out,
-                "razer-laptop up [###.] 2.5/4 91% 31% 9.8/16 60% 84C - [unity] unity-core-playground x2, [unity] platform - - - -"
+                "razer-laptop up [###.] 2.5/4 1.0G/16G 91% 31% 9.8/16 60% 84C - [arc-org-light] x2, [unity] unity-core-playground x2, [~ - - - -"
             ),
             "{out}"
         );
@@ -856,17 +878,14 @@ pub(crate) mod tests {
                 &out,
                 "aws-burst-1 no data - - - - - - - [unity] unity-core-playground - - - -"
             ),
-            "a machine with no governor row reads - for TAKEN, never a runner count: {out}"
+            "a machine on no CI node reads - for BOOKED, never a runner count: {out}"
         );
         // A host with one reading is up; its other columns read -, never 0.
-        assert_line(
-            &out,
-            "mac-mini up [....] 0.0/1 +1 off 3% - - - - - - - - - -",
-        );
+        assert_line(&out, "mac-mini up - +1 off 3% - - - - - - - - - -");
     }
 
     #[test]
-    fn queues_show_waiting_oldest_done_pass_longest_queue_first() {
+    fn queues_show_waiting_oldest_done_usual_pass_longest_queue_first() {
         let mut i = fixture();
         i.instant.insert(
             "kind_weight",
@@ -878,10 +897,18 @@ pub(crate) mod tests {
         let out = tab(&i, "pools", 160);
         assert!(out.starts_with("JOB KINDS  all 3  waiting 2\n"), "{out}");
         // Each kind's weight (1* for one the governor has not measured, a dash with no series),
-        // jobs running, waiting and the machines that take it; no runner for it reads as a dash.
-        assert_line(&out, "unity 1* 3 3 2h28m 72 24% razer-laptop 4");
-        assert_line(&out, "light 0.66 0 1 1m 40 80% -");
-        assert_line(&out, "windows - 0 0 - - - -");
+        // jobs running, waiting, how long one usually runs and the machines that take it; no
+        // runner for it reads as a dash.
+        assert_line(&out, "unity 1* 3 3 2h28m 72 21m 24% razer-laptop 4");
+        assert_line(&out, "light 0.66 0 1 1m 40 2m 80% -");
+        assert_line(&out, "windows - 0 0 - - - - -");
+        assert!(
+            has(
+                &out,
+                "usual: how long a finished job of the kind usually runs"
+            ),
+            "{out}"
+        );
         assert!(
             has(
                 &out,
@@ -889,9 +916,11 @@ pub(crate) mod tests {
             ),
             "{out}"
         );
+        // The rows under the header, however many lines the legend wraps to.
         let order: Vec<&str> = out
             .lines()
-            .skip(3)
+            .skip_while(|l| !l.starts_with("KIND"))
+            .skip(1)
             .map(|l| l.split_whitespace().next().unwrap())
             .collect();
         assert_eq!(order, ["unity", "light", "windows"]);
@@ -1056,7 +1085,7 @@ pub(crate) mod tests {
             "nodes ",
             "heartbeats ",
             "ci 3 running, waiting 4",
-            "spend: 0 Costs",
+            "spend: Costs",
         ] {
             assert!(joined.contains(item), "{item} lost: {narrow:?}");
         }
@@ -1080,21 +1109,24 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn narrowing_the_machines_keeps_taken_cpu_running_and_state_longest() {
+    fn narrowing_the_machines_keeps_booked_cpu_running_and_state_longest() {
         let mut i = fixture();
-        with_units(&mut i);
+        with_pods(&mut i);
         let row = |w| tab(&i, "machines", w);
         assert!(has(
             &row(200),
-            "razer-laptop up [###.] 2.5/4 91% 31% 9.8/16 60% 84C - [unity] unity-core-playground x2, [unity] platform"
+            "razer-laptop up [###.] 2.5/4 1.0G/16G 91% 31% 9.8/16 60% 84C - [arc-org-light] x2, [unity] unity-core-playground x2, [~"
         ));
-        // Narrower, what it runs takes the room left; at the narrowest it drops the bar for it.
+        // Narrower, what it runs takes the room left; below that it drops the booking for it.
         assert_line(
             &row(60),
-            "razer-laptop [###.] 2.5/4 [unity] unity-core-playg~",
+            "razer-laptop [###.] 2.5/4 1.0G/16G [arc-org-light] x2, [u~",
         );
-        assert_line(&row(50), "razer-laptop [###.] 2.5/4 [unity] unity-~");
-        assert_line(&row(40), "razer-laptop [unity] unity-core-playgr~");
+        assert_line(
+            &row(50),
+            "razer-laptop [arc-org-light] x2, [unity] unity-c~",
+        );
+        assert_line(&row(40), "razer-laptop [arc-org-light] x2, [unit~");
     }
 
     #[test]
@@ -1224,11 +1256,11 @@ pub(crate) mod tests {
         assert!(
             has(
                 &out,
-                "workstation no data [....] 0.0/4 - - - - - - [gates] unity-core-playground, [gates] unity-core-playg~"
+                "workstation no data - - - - - - - [gates] unity-core-playground, [gates] unity-core-playg~"
             ),
             "{out}"
         );
-        assert_line(&out, "gates - 2 1 - 14 50% workstation 4");
+        assert_line(&out, "gates - 2 1 - 14 - 50% workstation 4");
         assert!(has(&out, "waiting 5"));
     }
 

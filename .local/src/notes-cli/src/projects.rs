@@ -275,12 +275,17 @@ pub fn stages() {
     println!("{}", STAGES.join(" "));
 }
 
-/// A project's priority, the human's call on which projects agents should work first.
-/// Unset is normal. `fleet-dispatch` and `agent-queue` rank a project's work by it, focus
-/// first, then high, normal, low, and start a lower tier only when no higher one can; nothing
-/// is held back. The `prio/` prefix keeps it apart from a row's
-/// `#high` / `#low` priority words.
-pub(crate) const PRIOS: [&str; 3] = ["prio/focus", "prio/high", "prio/low"];
+/// The one project tag left of the retired project priority ladder: `#prio/focus` turns a
+/// project's release windows into sprints (`window::runs_sprints`) for as long as its
+/// `Focus until:` says. It ranks nothing: what starts next is the row's own priority
+/// (`priority.md`), and a project's share of starts is the dispatch conf's
+/// `DISPATCH_PROJECT_SHARE`. The `prio/` prefix keeps it apart from a row's priority words.
+pub(crate) const PRIOS: [&str; 1] = ["prio/focus"];
+
+/// What a `--prio` write strips from the head: the focus, and the retired ladder's words, so a
+/// page still carrying `#prio/high` or `#prio/low` loses it on its next set, and `--set normal`
+/// clears one. Nothing reads them.
+const PRIO_STRIP: [&str; 4] = ["prio/focus", "prio/high", "prio/normal", "prio/low"];
 
 // -- stage and group: hashtags on the project's front page --------------------
 //
@@ -315,8 +320,27 @@ fn head_tag(content: &str, vocab: &[&str]) -> Option<String> {
 
 /// The file a project declares itself on: its working sheet, else its summary. A
 /// summary-only project (a prose brief, an archived stub) still gets to carry a tag.
+/// `notes projects --front-page` prints it, so the shell's head-tag readers never keep a copy.
 pub(crate) fn front_page(dir: &Path) -> PathBuf {
     editable_sheet(dir).unwrap_or_else(|| dir.join("summary.md"))
+}
+
+/// `notes projects --stages` or `--front-page <dir>`, the reads that print one answer and end the
+/// command; false when neither was asked. The dir is made absolute first, so `.` or a trailing
+/// slash still names the project dir the registry looks up by name.
+pub fn ladder_read(stages: bool, front: Option<&Path>) -> Result<bool> {
+    if stages {
+        self::stages();
+        return Ok(true);
+    }
+    let Some(d) = front else {
+        return Ok(false);
+    };
+    let Ok(dir) = fs::canonicalize(d) else {
+        bail!("--front-page: no project dir {}", d.display());
+    };
+    println!("{}", front_page(&dir).display());
+    Ok(true)
 }
 
 /// A project's declared maturity, or `None` when it has not declared one.
@@ -520,34 +544,113 @@ pub fn group(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Resu
     tag_verb(p, log, name, &refs, value)
 }
 
-/// `notes projects --prio <name> [--set focus|high|low|normal]`: read or set a project's
-/// priority. `normal` clears the tag. Reading prints the bare word, empty for normal.
-pub fn prio(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Result<()> {
+/// The head line a focus ends on: `Focus until: YYYY-MM-DD HH:MM +ZZZZ`, local time with its
+/// offset, so a host in another zone reading the synced vault sees the same end.
+const FOCUS_UNTIL: &str = "Focus until:";
+/// How long a focus lasts when `--hours` is not given, and the most it may be set for. A focus
+/// is a short push, never a standing state: past its end the project is off focus.
+const FOCUS_HOURS: f64 = 4.0;
+const FOCUS_MAX_HOURS: f64 = 24.0;
+const FOCUS_FMT: &str = "%Y-%m-%d %H:%M %z";
+
+/// When the head's focus ends; `None` with no line or a malformed one, which reads as ended.
+fn focus_until_of(content: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    head_field(content, FOCUS_UNTIL)
+        .and_then(|t| chrono::DateTime::parse_from_str(t, FOCUS_FMT).ok())
+        .map(|t| t.with_timezone(&chrono::Utc))
+}
+
+/// `end` as a `Focus until:` value, in this host's zone.
+fn fmt_focus(end: chrono::DateTime<chrono::Utc>) -> String {
+    end.with_timezone(&chrono::Local)
+        .format(FOCUS_FMT)
+        .to_string()
+}
+
+/// A locked sprint on a focus project keeps the focus at least to its cut: a sprint is a time box
+/// the human set, and its row freeze reads the focus (`window::runs_sprints`). A project whose tag
+/// is not focus is left alone; the caller warns that it runs no sprint.
+fn extend_focus(dir: &Path, cut: chrono::NaiveDateTime) -> Result<()> {
+    let page = front_page(dir);
+    let content = fs::read_to_string(&page)?;
+    let Some(cut) = cut.and_local_timezone(chrono::Local).earliest() else {
+        return Ok(());
+    };
+    let cut = cut.with_timezone(&chrono::Utc);
+    if head_tag(&content, &PRIOS).as_deref() != Some("prio/focus")
+        || focus_until_of(&content).is_some_and(|end| end >= cut)
+    {
+        return Ok(());
+    }
+    md::write_atomic(
+        &page,
+        &set_head_line(&content, FOCUS_UNTIL, Some(fmt_focus(cut)))?,
+    )?;
+    Ok(())
+}
+
+/// `notes projects --prio <name> [--set focus|normal] [--hours H]`: read, set or clear a
+/// project's focus. `normal` clears the tag and its `Focus until:` line. Focus lasts `--hours`
+/// (default [`FOCUS_HOURS`], at most [`FOCUS_MAX_HOURS`]) and records its end on that head
+/// line. Reading prints `focus` while it is live, empty otherwise.
+pub fn prio(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    value: Option<&str>,
+    hours: Option<f64>,
+) -> Result<()> {
     let dir = project_dir(p, name)?;
     let page = front_page(&dir);
     let content =
         fs::read_to_string(&page).map_err(|e| anyhow::anyhow!("{}: {e}", page.display()))?;
     let Some(v) = value else {
+        if hours.is_some() {
+            bail!("--hours goes with --set focus only");
+        }
         println!("{}", prio_of_str(&content));
         return Ok(());
     };
     let tag = match v {
-        "focus" | "high" | "low" => Some(format!("prio/{v}")),
+        "focus" => Some("prio/focus".to_string()),
         "normal" => None,
-        _ => bail!("unknown priority '{v}' (want: focus, high, low, normal)"),
+        "high" | "low" => bail!(
+            "project priority '{v}' is retired: a row's own priority orders work (priority.md), \
+             and a project's share of starts is the dispatch conf's DISPATCH_PROJECT_SHARE (want: focus, normal)"
+        ),
+        _ => bail!("unknown value '{v}' (want: focus, normal)"),
     };
-    let updated = replace_head_tag(&content, &PRIOS, tag.as_deref())?;
+    let until = if v == "focus" {
+        let h = hours.unwrap_or(FOCUS_HOURS);
+        let minutes = (h * 60.0).round();
+        if !(minutes >= 1.0 && h <= FOCUS_MAX_HOURS) {
+            bail!("a focus lasts at least a minute and at most {FOCUS_MAX_HOURS} hours, not {h}");
+        }
+        Some(fmt_focus(
+            chrono::Utc::now() + chrono::Duration::minutes(minutes as i64),
+        ))
+    } else {
+        if hours.is_some() {
+            bail!("--hours goes with --set focus only");
+        }
+        None
+    };
+    let tagged = replace_head_tag(&content, &PRIO_STRIP, tag.as_deref())?;
+    let updated = set_head_line(&tagged, FOCUS_UNTIL, until.clone())?;
     if updated != content {
-        fs::write(&page, &updated)?;
+        md::write_atomic(&page, &updated)?;
         log.info("projects", &format!("{name}: prio {v}"));
     }
-    println!("{} prio {v}", page.display());
+    match until {
+        Some(u) => println!("{} prio focus until {u}", page.display()),
+        None => println!("{} prio {v}", page.display()),
+    }
     Ok(())
 }
 
-/// `notes projects --prios`: every profile's indexed projects that declare a priority, as
-/// `name<TAB>prio`, one a line. The cheap read `agent-queue` takes on every listing: it reads
-/// only each front page's head, where `--stats` counts every sheet.
+/// `notes projects --prios`: every profile's indexed projects on a live focus, as
+/// `name<TAB>focus`, one a line. The cheap read `fleet-dispatch` takes for its focus line: it
+/// reads only each front page's head, where `--stats` counts every sheet.
 pub fn prios() -> Result<()> {
     for profile in config::all_profile_names()? {
         let Ok(p) = config::resolve(Some(&profile)) else {
@@ -566,14 +669,32 @@ pub fn prios() -> Result<()> {
     Ok(())
 }
 
-/// The priority word a head declares (`focus`, `high`, `low`), empty for normal.
+/// `focus` while the head's focus is live, else empty. A focus whose `Focus until:` has
+/// passed, or that has none, reads empty: focus never stays on by itself.
 fn prio_of_str(content: &str) -> String {
-    head_tag(content, &PRIOS)
-        .and_then(|t| t.strip_prefix("prio/").map(str::to_string))
-        .unwrap_or_default()
+    prio_at(content, chrono::Utc::now())
 }
 
-/// A project's declared priority word, empty for normal.
+fn prio_at(content: &str, now: chrono::DateTime<chrono::Utc>) -> String {
+    let word = head_tag(content, &PRIOS)
+        .and_then(|t| t.strip_prefix("prio/").map(str::to_string))
+        .unwrap_or_default();
+    if word == "focus" && focus_until_of(content).is_none_or(|end| end <= now) {
+        return String::new();
+    }
+    word
+}
+
+/// When a live focus ends (`YYYY-MM-DD HH:MM +ZZZZ`, this host's zone), `None` when the
+/// project is not on focus now.
+pub(crate) fn focus_until(dir: &Path) -> Option<String> {
+    let content = fs::read_to_string(front_page(dir)).ok()?;
+    (prio_of_str(&content) == "focus")
+        .then(|| focus_until_of(&content).map(fmt_focus))
+        .flatten()
+}
+
+/// `focus` while the project's focus is live, else empty.
 pub(crate) fn prio_of(dir: &Path) -> String {
     fs::read_to_string(front_page(dir))
         .map(|c| prio_of_str(&c))
@@ -630,36 +751,37 @@ pub(crate) fn target_of(content: &str) -> Option<Target> {
 /// Replace the head's `Target:` line with `target`, or drop it for `None`. It goes directly
 /// under `Version:`, so a sheet never carries two and the promise sits beside the version.
 fn set_target_line(content: &str, target: Option<Target>) -> Result<String> {
+    set_head_line(content, TARGET, target.map(fmt_target))
+}
+
+/// Replace the head line that starts with `key` with `key value`, or drop it for `None`. A new
+/// line goes directly under `Version:`, else under the title; one already set keeps its slot.
+fn set_head_line(content: &str, key: &str, value: Option<String>) -> Result<String> {
     let head_len = head_lines(content).count();
-    let is_target = |i: usize, l: &str| i < head_len && l.trim_start().starts_with(TARGET);
+    let is_key = |i: usize, l: &str| i < head_len && l.trim_start().starts_with(key);
     // A line already set keeps its slot: the board's `Agents:` and `Docs:` lines also go
     // under `Version:` (`agent_sheet::with_head`), so re-inserting at `Version:`+1 would
     // swap the two writers' lines on every call.
-    let kept = content
-        .lines()
-        .enumerate()
-        .position(|(i, l)| is_target(i, l));
+    let kept = content.lines().enumerate().position(|(i, l)| is_key(i, l));
     let mut lines: Vec<String> = content
         .lines()
         .enumerate()
-        .filter(|(i, l)| !is_target(*i, l))
+        .filter(|(i, l)| !is_key(*i, l))
         .map(|(_, l)| l.to_string())
         .collect();
-    if let Some(t) = target {
+    if let Some(v) = value {
         let at = match kept {
             Some(at) => at,
             None => {
-                let Some(v) = lines
+                lines
                     .iter()
                     .take(head_len)
                     .position(|l| l.trim_start().starts_with("Version:"))
-                else {
-                    bail!("no `Version:` line in the sheet's head to set a target beside");
-                };
-                v + 1
+                    .unwrap_or(0)
+                    + 1
             }
         };
-        lines.insert(at, format!("{TARGET} {}", fmt_target(t)));
+        lines.insert(at, format!("{key} {v}"));
     }
     let mut out = lines.join("\n");
     if content.ends_with('\n') {
@@ -1185,6 +1307,7 @@ pub(crate) fn shape_findings(dir: &Path, name: &str, o: &Overlays) -> Vec<String
         }
         let today = chrono::Local::now().date_naive();
         out.extend(untriaged_finding(&content, today).map(|f| format!("{label} {f}")));
+        out.extend(unreasoned_finding(&content).map(|f| format!("{label} {f}")));
         let unlinked = if label == "agent board" {
             tree.stories_without_feature(&content)
         } else {
@@ -1246,9 +1369,9 @@ fn summary_findings(content: &str) -> Vec<String> {
     out
 }
 
-/// Priority words no reader knows. A row carrying one sorts as untagged (high), so the
+/// Priority words no reader knows. A row carrying one sorts as untagged (normal), so the
 /// word looks meaningful and is not.
-const RETIRED_PRIORITIES: &[&str] = &["normal", "medium", "p0", "p1", "p2", "p3"];
+const RETIRED_PRIORITIES: &[&str] = &["medium", "p0", "p1", "p2", "p3"];
 
 /// Why an edit from `old` to `new` is refused: `new` carries a [`RETIRED_PRIORITIES`] word,
 /// before its marker, that `old` did not. A row that already had one still takes an edit, so
@@ -1264,7 +1387,7 @@ pub(crate) fn refuse_retired_priority(old: &str, new: &str) -> anyhow::Result<()
     let had = retired(old);
     match retired(new).into_iter().find(|t| !had.contains(t)) {
         Some(t) => anyhow::bail!(
-            "#{t} is not a priority (urgent, high or low; quote it in backticks to mean the word), so nothing was written"
+            "#{t} is not a priority (urgent, high, normal or low; quote it in backticks to mean the word), so nothing was written"
         ),
         None => Ok(()),
     }
@@ -1389,7 +1512,7 @@ pub(crate) fn filer_types() -> impl Iterator<Item = &'static str> {
 
 /// The row grammar the board feed parses, per top-level row: a retired priority word, two
 /// priorities, two created stamps on an open row, a retired tag or `since:` stamp, a malformed tier, `#size/xl` on a row that
-/// is not an epic, an epic on the agent board, and on the agent board a
+/// is not an epic, an epic on the agent board or with a priority tag, and on the agent board a
 /// done row with no proof marker (`ptask done` refuses one, so it was closed by hand).
 /// Human sheet rows are closed by hand by design. On the agent board the open rows are also
 /// held to `type(area): title` with a title of [`TITLE_MAX`] or fewer and to carrying an id,
@@ -1398,6 +1521,7 @@ pub(crate) fn filer_types() -> impl Iterator<Item = &'static str> {
 pub(crate) fn row_findings(content: &str, agent: bool) -> Vec<String> {
     let mut out = Vec::new();
     let (mut unprefixed, mut long, mut no_id) = (Vec::new(), Vec::new(), Vec::new());
+    let mut epic_tagged = Vec::new();
     for (i, line) in content.lines().enumerate() {
         if !line.starts_with("- [") {
             continue;
@@ -1408,7 +1532,7 @@ pub(crate) fn row_findings(content: &str, agent: bool) -> Vec<String> {
         for t in &tags {
             if RETIRED_PRIORITIES.contains(&t.as_str()) {
                 out.push(format!(
-                    "line {n}: #{t} is not a priority (urgent, high or low)"
+                    "line {n}: #{t} is not a priority (urgent, high, normal or low)"
                 ));
             } else if RETIRED_TAGS.contains(&t.as_str()) {
                 out.push(format!("line {n}: #{t} is retired (nothing reads it)"));
@@ -1456,6 +1580,9 @@ pub(crate) fn row_findings(content: &str, agent: bool) -> Vec<String> {
                     "line {n}: an epic belongs on the human sheet, not the agent board"
                 ));
             }
+            if epic && !prios.is_empty() {
+                epic_tagged.push(n);
+            }
             if !epic && project_tasks::size_tag(line) == Some("#size/xl") {
                 out.push(format!(
                     "line {n}: #size/xl is an epic's size; split the row or size it l"
@@ -1497,7 +1624,40 @@ pub(crate) fn row_findings(content: &str, agent: bool) -> Vec<String> {
             no_id.len()
         ));
     }
+    if let Some(first) = epic_tagged.first() {
+        out.push(format!(
+            "{} open epic(s) with a priority tag, which nothing reads: {EPIC_RANKS} (first: line {first}; `notes ptask <p> sweep` drops it)",
+            epic_tagged.len()
+        ));
+    }
     out
+}
+
+/// Why an epic takes no priority tag, in every refusal and finding that names one.
+const EPIC_RANKS: &str =
+    "an epic ranks as its most urgent open row (`notes board --json` priority), never by a tag of its own";
+
+/// Why a write of `new` is refused: it is an epic with a priority tag ([`EPIC_RANKS`]). The
+/// edit writer runs [`unrank_epic`] first, so only a tag the edit added is left to refuse.
+pub(crate) fn refuse_epic_priority(new: &str) -> anyhow::Result<()> {
+    match md::task_priority(new) {
+        Some(tag) if crate::epics::is_epic(new) => {
+            anyhow::bail!("{tag} on an epic: {EPIC_RANKS}, so nothing was written")
+        }
+        _ => Ok(()),
+    }
+}
+
+/// `new`, the edit of `old`, with the priority tag dropped when it is an epic's and `old`
+/// already had it: a tag left from before epics ranked by their rows goes on the next write,
+/// and only a new one is refused ([`refuse_epic_priority`]).
+pub(crate) fn unrank_epic(old: &str, new: String) -> String {
+    match md::task_priority(&new) {
+        Some(tag) if crate::epics::is_epic(&new) && md::task_priority(old) == Some(tag) => {
+            md::strip_priority_tag(&new)
+        }
+        _ => new,
+    }
 }
 
 /// The sheet's open rows with no priority. No writer defaults one, so an untagged row is one
@@ -1506,7 +1666,12 @@ pub(crate) fn row_findings(content: &str, agent: bool) -> Vec<String> {
 pub(crate) fn untriaged_finding(content: &str, today: chrono::NaiveDate) -> Option<String> {
     let (mut rows, mut old) = (Vec::new(), 0);
     for (i, line) in content.lines().enumerate() {
-        if line.starts_with("- [") && md::is_open_task(line) && md::task_priority(line).is_none() {
+        // An epic is never untriaged: it ranks as its most urgent open row.
+        if line.starts_with("- [")
+            && md::is_open_task(line)
+            && md::task_priority(line).is_none()
+            && !crate::epics::is_epic(line)
+        {
             rows.push(i + 1);
             // A row with no created stamp predates the stamps, so it is old by definition.
             if md::find_created(line, today).is_none_or(|c| c < today) {
@@ -1516,7 +1681,29 @@ pub(crate) fn untriaged_finding(content: &str, today: chrono::NaiveDate) -> Opti
     }
     let first = rows.first()?;
     Some(format!(
-        "{} untriaged open row(s) with no #urgent, #high or #low, {old} older than a day (first: line {first}; `agentctl-inbox-triage --backlog --priority` ranks them)",
+        "{} untriaged open row(s) with no #urgent, #high, #normal or #low, {old} older than a day (first: line {first}; `agentctl-inbox-triage --backlog --priority` ranks them)",
+        rows.len()
+    ))
+}
+
+/// The sheet's open rows that carry a priority and no `#why/<slug>`: a priority nobody has given
+/// a reason, which `ptask tag --why <slug>` writes and `priority-reasons.tsv` lists. An untagged
+/// row is [`untriaged_finding`]'s, not counted twice. A finding, never a write refusal.
+pub(crate) fn unreasoned_finding(content: &str) -> Option<String> {
+    let rows: Vec<usize> = content
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| {
+            l.starts_with("- [")
+                && md::is_open_task(l)
+                && md::task_priority(l).is_some()
+                && crate::reasons::slug_of(l).is_none()
+        })
+        .map(|(i, _)| i + 1)
+        .collect();
+    let first = rows.first()?;
+    Some(format!(
+        "{} open row(s) with a priority and no #why/<reason> (first: line {first}; `notes ptask <p> tag --why <slug> <row>` gives one, the slugs are in priority-reasons.tsv)",
         rows.len()
     ))
 }
@@ -2246,12 +2433,30 @@ fn carry_open(
         .into_iter()
         .map(|(n, _)| n - 1)
         .collect();
+    carry_rows(content, &rows, next)
+}
+
+/// The agent board's side of [`carry_open`]: every open board row tagged for `cur` or an earlier
+/// release, aimed at `next` the same way. An untagged board row follows the sheet's version by
+/// staying where it is, so only a tag strands a row; `<= cur` also carries a row an earlier cut
+/// left on its closed version, so the next cut clears what was stranded before this fix (ar-5321).
+fn carry_board(content: &str, cur: V, next: V) -> (String, Vec<(String, u32)>) {
+    let rows: Vec<usize> = sheet::open_rows(content)
+        .into_iter()
+        .filter(|(_, l)| sheet::target(l).is_some_and(|t| t <= cur))
+        .map(|(n, _)| n - 1)
+        .collect();
+    carry_rows(content, &rows, next)
+}
+
+/// `content` with each of `rows` (0-based) retagged `#<next>` and its carry counter bumped.
+fn carry_rows(content: &str, rows: &[usize], next: V) -> (String, Vec<(String, u32)>) {
     if rows.is_empty() {
         return (content.to_string(), Vec::new());
     }
     let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
     let mut moved: Vec<(String, u32)> = Vec::new();
-    for i in rows {
+    for &i in rows {
         // `next` becomes the open version on this release, so #urgent is still legal there.
         let (retagged, _) = crate::project_sweep::retag(lines[i].trim_end(), next, true);
         let (line, n) = bump_carried(&retagged);
@@ -2513,12 +2718,48 @@ fn agent_closed_rows(dir: &Path, cur: V) -> Vec<String> {
         .collect()
 }
 
+/// [`carry_board`] on the project's agent board, written when it moved a row. Nothing when there
+/// is no board.
+fn carry_agent_board(dir: &Path, cur: V, next: V) -> Result<Vec<(String, u32)>> {
+    let board = crate::agent_sheet::sheet_path(dir);
+    let Ok(content) = fs::read_to_string(&board) else {
+        return Ok(Vec::new());
+    };
+    let (out, moved) = carry_board(&content, cur, next);
+    if !moved.is_empty() {
+        md::write_atomic(&board, &out)?;
+    }
+    Ok(moved)
+}
+
+/// The agent board's half of a release, once the sheet's earlier tags shipped: the rows an earlier
+/// tag of the family shipped are sorted out, then on a carry the board's open rows tagged for this
+/// version go forward with the sheet's, so the frozen note lists them and the next window commits
+/// them. A retag moves no row between files, so it is written before the freeze: a failure after
+/// it leaves rows aimed where they go. Returns the rows it carried.
+fn forward_agent_board(
+    dir: &Path,
+    name: &str,
+    (cur, next): (V, V),
+    family: Option<(&crate::shipped::Family, V)>,
+    carry: bool,
+) -> Result<Vec<(String, u32)>> {
+    if let Some((f, t)) = family {
+        sort_agent_board(dir, name, cur, (t, next), f)?;
+    }
+    if !carry {
+        return Ok(Vec::new());
+    }
+    carry_agent_board(dir, cur, next)
+}
+
 /// Close a version on a project's agent board: done rows go to `agent/versions/<cur>.md`.
 /// Returns how many, or `None` when there is no board.
 ///
 /// No gate: board rows are the agents' subtasks under the human queue, and the sheet's gate
-/// already decided the version is closed. The board carries no `Version:` line, so its open
-/// rows move on with the sheet by staying where they are.
+/// already decided the version is closed. The board carries no `Version:` line, so its untagged
+/// open rows move on with the sheet by staying where they are; a carry already aimed its tagged
+/// ones at the next version ([`carry_agent_board`]).
 fn release_agent_board(dir: &Path, name: &str, cur: V) -> Result<Option<usize>> {
     let board = crate::agent_sheet::sheet_path(dir);
     let Ok(content) = fs::read_to_string(&board) else {
@@ -2708,9 +2949,8 @@ pub fn release(
     // Rows an earlier tag shipped go to that tag's version, notes first: a failure before the
     // sheet is written leaves them in both, and a re-run writes each id once.
     ship_earlier(&dir, name, &earlier, project_tasks::SHEET_DONE_ROWS)?;
-    if let Some((f, t)) = family {
-        sort_agent_board(&dir, name, cur, (t, next), f)?;
-    }
+    let forwarded = forward_agent_board(&dir, name, (cur, next), family, carry)?;
+    let carried = [carried, forwarded].concat();
     let (frozen_body, new_sheet) = rebuild_sheet(&content, cur, next);
     // A note named from its tag says so in its head too: anything scanning a frozen note for
     // its `Version:` reads the tag, and the version the rows were planned as stays on record.
@@ -2931,9 +3171,10 @@ pub fn commit_window(
         );
         log.info("projects", &msg);
         println!("{msg}");
+        extend_focus(&dir, l.cut)?;
         if !crate::window::runs_sprints(&dir) {
             let w = format!(
-                "{name} is not #prio/focus, so the board shows no sprint for it; \
+                "{name} is not on focus now, so the board shows no sprint for it; \
                  `notes projects --prio {name} --set focus` makes it one"
             );
             log.warn("projects", &w);
@@ -3573,6 +3814,28 @@ fn later_versions(human: &str, board: &str, cur: Option<V>) -> Vec<(V, &'static 
     later
 }
 
+/// The versions before `cur` with a frozen note on either lane, newest first.
+fn shipped_versions(dir: &Path, cur: V) -> Vec<V> {
+    let mut shipped: Vec<V> = version_notes(&dir.join("versions"))
+        .into_iter()
+        .chain(version_notes(&agent_dir(dir).join("versions")))
+        .map(|(v, _)| v)
+        .filter(|&v| v < cur)
+        .collect();
+    shipped.sort_unstable_by(|a, b| b.cmp(a));
+    shipped.dedup();
+    shipped
+}
+
+/// A shipped version's frozen notes: the human lane's, then the agent lane's.
+fn shipped_notes(dir: &Path, v: V) -> [String; 2] {
+    let name = format!("{}.md", fmt_version(v));
+    [
+        read_or_empty(Some(dir.join("versions").join(&name))),
+        read_or_empty(Some(agent_dir(dir).join("versions").join(&name))),
+    ]
+}
+
 /// A project's releases: the open version, every later version an open row on either lane is
 /// aimed at, then the shipped ones, newest first.
 fn roadmap(dir: &Path, today: chrono::NaiveDate) -> Vec<Release> {
@@ -3584,14 +3847,6 @@ fn roadmap(dir: &Path, today: chrono::NaiveDate) -> Vec<Release> {
     };
     let ix = crate::epics::Index::of(dir, cur);
     let later = later_versions(&human, &board, cur);
-    let mut shipped: Vec<V> = version_notes(&dir.join("versions"))
-        .into_iter()
-        .chain(version_notes(&agent_dir(dir).join("versions")))
-        .map(|(v, _)| v)
-        .filter(|&v| v < c)
-        .collect();
-    shipped.sort_unstable_by(|a, b| b.cmp(a));
-    shipped.dedup();
     std::iter::once((c, "current"))
         .chain(later)
         .map(|(v, state)| {
@@ -3603,12 +3858,8 @@ fn roadmap(dir: &Path, today: chrono::NaiveDate) -> Vec<Release> {
             let progress = progress_of(dir, cur, Some(v), &ix, today);
             Release::new(v, state, goal, progress, &ix, c)
         })
-        .chain(shipped.into_iter().map(|v| {
-            let name = format!("{}.md", fmt_version(v));
-            let notes = [
-                read_or_empty(Some(dir.join("versions").join(&name))),
-                read_or_empty(Some(agent_dir(dir).join("versions").join(&name))),
-            ];
+        .chain(shipped_versions(dir, c).into_iter().map(|v| {
+            let notes = shipped_notes(dir, v);
             let progress = shipped_progress(&notes, &ix, today);
             Release::new(v, "shipped", goal_line(&notes[0]), progress, &ix, c)
         }))
@@ -3648,20 +3899,41 @@ pub fn show_roadmap(p: &Profile, name: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
-/// `notes projects --sprints <name> [--json]`: the project's scored windows, oldest cut first, as
-/// TSV `version<TAB>opened<TAB>cut<TAB>committed<TAB>delivered<TAB>carried<TAB>dropped<TAB>
-/// interrupted<TAB>timing` (`-` for a missing day or timing); with `json`, one array of
-/// [`crate::window::Past`], adding each score line.
 /// Print the one read-only view `--stats` or `--sprints` asks for; false when neither is set.
-pub fn print_view(p: &Profile, stats_: bool, sprints: Option<&str>, json: bool) -> Result<bool> {
+pub fn print_view(
+    p: &Profile,
+    stats_: bool,
+    sprints: Option<&str>,
+    version: Option<&str>,
+    json: bool,
+) -> Result<bool> {
     match (sprints, stats_) {
-        (Some(n), _) => show_sprints(p, n, json)?,
+        (Some(n), _) => match version {
+            Some(v) => show_sprint_page(p, n, v, json)?,
+            None => show_sprints(p, n, json)?,
+        },
         (None, true) => stats(json)?,
         (None, false) => return Ok(false),
     }
     Ok(true)
 }
 
+/// `notes projects --sprints <name> --version <v> --json`: one sprint's page.
+pub fn show_sprint_page(p: &Profile, name: &str, version: &str, json: bool) -> Result<()> {
+    if !json {
+        anyhow::bail!("--sprints with --version goes with --json");
+    }
+    let v = parse_version(version.trim())
+        .ok_or_else(|| anyhow::anyhow!("not a version: '{version}' (want vX.Y.Z)"))?;
+    let page = crate::window::page(&project_dir(p, name)?, v)?;
+    println!("{}", serde_json::to_string(&page)?);
+    Ok(())
+}
+
+/// `notes projects --sprints <name> [--json]`: the project's scored windows, oldest cut first, as
+/// TSV `version<TAB>opened<TAB>cut<TAB>committed<TAB>delivered<TAB>carried<TAB>dropped<TAB>
+/// interrupted<TAB>timing` (`-` for a missing day or timing); with `json`, one array of
+/// [`crate::window::Past`], adding each score line.
 pub fn show_sprints(p: &Profile, name: &str, json: bool) -> Result<()> {
     let past = crate::window::history(&project_dir(p, name)?);
     if json {
@@ -3695,6 +3967,7 @@ struct SheetCounts {
     done: usize,
     urgent: usize,
     high: usize,
+    normal: usize,
     low: usize,
     planned: usize,
 }
@@ -3716,6 +3989,7 @@ fn sheet_counts(content: &str, cur: Option<V>) -> SheetCounts {
             match md::task_priority(l) {
                 Some("#urgent") => c.urgent += 1,
                 Some("#high") => c.high += 1,
+                Some("#normal") => c.normal += 1,
                 Some("#low") => c.low += 1,
                 _ => {}
             }
@@ -3736,9 +4010,11 @@ struct ProjectStats {
     automation: bool,
     dir: PathBuf,
     stage: String,
-    /// The head's `#prio/<word>` (`focus`, `high`, `low`), empty for normal. JSON only: the
-    /// TSV keeps its columns, which several scripts read by position.
+    /// `focus` while the head's `#prio/focus` is live, else empty. JSON only: the TSV keeps
+    /// its columns, which several scripts read by position.
     prio: String,
+    /// When the focus ends (`YYYY-MM-DD HH:MM`, local), while `prio` is focus; null otherwise.
+    focus_until: Option<String>,
     version: String,
     /// The project whose open version this is, for a game with no number of its own
     /// ([`version_parent_dir`]); null otherwise. JSON only: `project_version_owner` reads it.
@@ -3747,6 +4023,8 @@ struct ProjectStats {
     done: usize,
     urgent: usize,
     high: usize,
+    /// JSON only: the TSV keeps its columns.
+    normal: usize,
     low: usize,
     planned: usize,
     agent: usize,
@@ -3950,8 +4228,12 @@ impl TargetWork {
         self.filed_weight_28d += p.filed_weight_28d;
     }
 
-    /// `progress` (the open version's) plus every later version of `dir` at or below `to`
-    /// that a row on either lane is aimed at.
+    /// `progress` (the project's, [`project_progress`]: the open version's and every shipped
+    /// version's closes) plus every later version of `dir` at or below `to` that a row on either lane
+    /// is aimed at. When the open version has a release window, its share of the open and filed
+    /// weight is the window's ([`crate::window::promise`]): the committed scope and the interrupts
+    /// filed into it in 28 days, not every untagged row (ar-3540: 4338 points on a version whose
+    /// window held a fraction of that). Rows the window did not commit are outside the promise.
     fn of(
         dir: &Path,
         human: &str,
@@ -3963,6 +4245,17 @@ impl TargetWork {
     ) -> TargetWork {
         let mut w = TargetWork::default();
         w.add(progress);
+        if let Some((open, interrupts)) = cur.and_then(|c| crate::window::promise(dir, c, ix)) {
+            // Swap only the open version's share: the shipped versions' filings stay.
+            let mut grown = Progress::default();
+            for l in &interrupts {
+                grown.filed(l, size_weight(l), today);
+            }
+            let own = progress_of(dir, cur, cur, ix, today);
+            w.open_weight = open;
+            w.filed_weight_28d =
+                w.filed_weight_28d.saturating_sub(own.filed_weight_28d) + grown.filed_weight_28d;
+        }
         let board = read_or_empty(project_tasks::task_sheet(&agent_dir(dir)));
         for (v, _) in later_versions(human, &board, cur)
             .into_iter()
@@ -4021,6 +4314,7 @@ pub(crate) struct KindCount {
     /// Open rows per priority tag; a row with none counts in no bucket.
     pub urgent: usize,
     pub high: usize,
+    pub normal: usize,
     pub low: usize,
     pub done: usize,
     pub closed_28d: usize,
@@ -4089,6 +4383,25 @@ fn in_version(line: &str, cur: Option<V>, ver: Option<V>) -> bool {
 }
 
 impl Progress {
+    /// Add `other`'s closes and filings to the rates and the newest close day; its row counts
+    /// (`done`, `open`) stay out, so a rate may exceed the counts of the rows it sits beside.
+    fn add_closes(&mut self, other: &Progress) {
+        self.filed_weight_28d += other.filed_weight_28d;
+        self.closed_7d += other.closed_7d;
+        self.closed_28d += other.closed_28d;
+        self.closed_weight_7d += other.closed_weight_7d;
+        self.closed_weight_28d += other.closed_weight_28d;
+        if other.last_closed > self.last_closed {
+            self.last_closed.clone_from(&other.last_closed);
+        }
+        for (kind, k) in &other.by_kind {
+            let mine = self.kind(kind);
+            mine.closed_28d += k.closed_28d;
+            mine.closed_weight_28d += k.closed_weight_28d;
+            mine.filed_28d += k.filed_28d;
+        }
+    }
+
     fn kind(&mut self, kind: &str) -> &mut KindCount {
         self.by_kind.entry(kind.to_string()).or_default()
     }
@@ -4163,6 +4476,7 @@ impl Progress {
             match prio {
                 Some("#urgent") => k.urgent += 1,
                 Some("#high") => k.high += 1,
+                Some("#normal") => k.normal += 1,
                 Some("#low") => k.low += 1,
                 _ => {}
             }
@@ -4206,6 +4520,11 @@ impl Progress {
     fn note(&mut self, content: &str, ix: &crate::epics::Index, today: chrono::NaiveDate) {
         let done = project_tasks::note_done_rows(content);
         self.closed(done.iter().map(String::as_str), ix, today);
+        self.proof(content, ix, today);
+    }
+
+    /// Date the closes of a note's frozen `## Proof` table, which predate the `done:` stamp.
+    fn proof(&mut self, content: &str, ix: &crate::epics::Index, today: chrono::NaiveDate) {
         let lines: Vec<&str> = content.lines().collect();
         let Some(span) = md::section_span(&lines, "Proof") else {
             return;
@@ -4265,7 +4584,25 @@ pub(crate) fn progress_of(
     pr
 }
 
-/// The closed rows of a shipped version, from its frozen notes. A row in both counts once.
+/// The project's [`Progress`]: the open version's, plus the closes and filings of every shipped
+/// version's frozen notes. A cut moves its closed rows there, and without them every rate would
+/// fall each time the project cuts. The one close set that `--stats`, [`TargetWork`] and the
+/// hub's pace, forecast and state read; a per-release view reads [`progress_of`].
+fn project_progress(
+    dir: &Path,
+    cur: Option<V>,
+    ix: &crate::epics::Index,
+    today: chrono::NaiveDate,
+) -> Progress {
+    let mut pr = progress_of(dir, cur, cur, ix, today);
+    for v in cur.map(|c| shipped_versions(dir, c)).unwrap_or_default() {
+        pr.add_closes(&shipped_progress(&shipped_notes(dir, v), ix, today));
+    }
+    pr
+}
+
+/// The closed rows of a shipped version, from its frozen notes, with their `## Proof` dates.
+/// A row in both counts once.
 fn shipped_progress(
     notes: &[String],
     ix: &crate::epics::Index,
@@ -4282,6 +4619,9 @@ fn shipped_progress(
         ix,
         today,
     );
+    for n in notes {
+        pr.proof(n, ix, today);
+    }
     pr
 }
 
@@ -4301,7 +4641,7 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
     let (status_date, status) = split_status_date(&note.headline);
     let today = chrono::Local::now().date_naive();
     let stage = stage_of(dir).unwrap_or_default();
-    let progress = progress_of(dir, cur, cur, &ix, today);
+    let progress = project_progress(dir, cur, &ix, today);
     let cadence = cadence_for_dir(dir, &stage);
     let release = release_due(dir, cadence, progress.done, &ix, cur, today);
     let target = target_of(&content);
@@ -4312,6 +4652,7 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
         dir: dir.to_path_buf(),
         stage,
         prio: prio_of(dir),
+        focus_until: focus_until(dir),
         version: version_str(dir),
         version_parent: version_parent_dir(dir)
             .and_then(|p| Some(p.file_name()?.to_str()?.to_string())),
@@ -4319,6 +4660,7 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
         done: c.done,
         urgent: c.urgent,
         high: c.high,
+        normal: c.normal,
         low: c.low,
         planned: c.planned,
         agent: sheet_counts(
@@ -5082,10 +5424,18 @@ mod stage_tag_tests {
             one.contains("Version: v1.0.0 #alpha #tooling #prio/focus\n"),
             "{one}"
         );
-        assert_eq!(prio_of_str(&one), "focus");
-        let two = replace_head_tag(&one, &PRIOS, Some("prio/low")).unwrap();
+        assert_eq!(head_tag(&one, &PRIOS).as_deref(), Some("prio/focus"));
+        assert_eq!(prio_of_str(&one), "", "a focus with no end reads as none");
+        let two = replace_head_tag(&one, &PRIOS, Some("prio/focus")).unwrap();
         assert_eq!(two.matches("#prio/").count(), 1, "{two}");
-        assert_eq!(prio_of_str(&two), "low");
+        // a retired ladder word is not the project's focus
+        let retired = s.replace("#tooling", "#tooling #prio/high");
+        assert_eq!(head_tag(&retired, &PRIOS), None);
+        assert_eq!(prio_of_str(&retired), "");
+        // a write strips it: a set leaves the focus alone, a clear leaves the sheet as it was
+        let refocus = replace_head_tag(&retired, &PRIO_STRIP, Some("prio/focus")).unwrap();
+        assert_eq!(refocus, one, "{refocus}");
+        assert_eq!(replace_head_tag(&retired, &PRIO_STRIP, None).unwrap(), s);
         let cleared = replace_head_tag(&two, &PRIOS, None).unwrap();
         assert_eq!(cleared, s, "clearing must restore the sheet byte for byte");
         assert_eq!(prio_of_str(&cleared), "");
@@ -5468,6 +5818,7 @@ Version: v0.2.0
                 open_weight: 4,
                 urgent: 1,
                 high: 0,
+                normal: 0,
                 low: 1,
                 done: 1,
                 closed_28d: 1,
@@ -5992,6 +6343,93 @@ Some prose left on the board.
         assert!(!board.contains("fix(d)"), "{board}");
         let sheet = fs::read_to_string(dir.join("README.md")).unwrap();
         assert!(sheet.contains("feat(c): early"), "{sheet}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // ar-5321: a carry release aimed the sheet's open rows forward but left the board's on the
+    // closed version, so no later window committed them. A row an earlier cut stranded goes too.
+    #[test]
+    fn a_carry_release_carries_the_boards_tagged_open_rows() {
+        let root = board_scratch("release-carry-board");
+        let mut p = crate::config::test_profile(&root.to_string_lossy());
+        let projects = root.join("lab/projects/current");
+        let dir = projects.join("demo");
+        fs::create_dir_all(dir.join("agent")).unwrap();
+        let index = root.join("lab/projects/index.md");
+        fs::write(
+            &index,
+            "## Current\n- [[lab/projects/current/demo/summary|demo]]\n",
+        )
+        .unwrap();
+        fs::write(dir.join("summary.md"), "# demo\n").unwrap();
+        fs::write(
+            dir.join("README.md"),
+            "# demo\nVersion: v1.13.0\n\n## Tasks\n- [ ] feat(a): sheet open\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("agent/README.md"),
+            "# demo - agent board\n\n## Tasks\n\
+             - [ ] fix(b): board open #v1.13.0 <!-- id:d-1 -->\n\
+             - [/] fix(c): stranded earlier #v1.12.0 <!-- id:d-2 carried:2 -->\n\
+             - [ ] fix(d): untagged follows\n\
+             - [ ] fix(e): aimed later #v1.15.0\n\
+             - [x] fix(f): closed #v1.13.0 <!-- pr:4 -->\n",
+        )
+        .unwrap();
+        p.projects = Some(projects);
+        p.project_index = Some(index);
+        let log = Logger::new(root.join(".state/log"), false);
+
+        release(
+            &p,
+            &log,
+            "demo",
+            Some(Bump::Minor),
+            false,
+            true,
+            None,
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let board = fs::read_to_string(dir.join("agent/README.md")).unwrap();
+        assert!(
+            board.contains("- [ ] fix(b): board open #v1.14.0 <!-- id:d-1 carried:1 -->"),
+            "{board}"
+        );
+        assert!(
+            board.contains("- [/] fix(c): stranded earlier #v1.14.0 <!-- id:d-2 carried:3 -->"),
+            "{board}"
+        );
+        assert!(
+            !board.contains("#v1.13.0") && !board.contains("#v1.12.0"),
+            "{board}"
+        );
+        // NEGATIVE CONTROLS: an untagged row follows the sheet and a later one waits, uncarried.
+        assert!(
+            board.contains("- [ ] fix(d): untagged follows\n"),
+            "{board}"
+        );
+        assert!(
+            board.contains("- [ ] fix(e): aimed later #v1.15.0\n"),
+            "{board}"
+        );
+        let note = fs::read_to_string(dir.join("versions/v1.13.0.md")).unwrap();
+        let carried = &note[note.find("Carried to v1.14.0:").expect(&note)..];
+        for t in [
+            "feat(a): sheet open",
+            "fix(b): board open",
+            "fix(c): stranded earlier",
+        ] {
+            assert!(carried.contains(t), "{t}:\n{note}");
+        }
+        assert!(
+            !carried.contains("fix(d)") && !carried.contains("fix(e)"),
+            "{note}"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -6634,7 +7072,8 @@ mod move_layout_tests {
     fn row_lint_flags_retired_priorities_bad_tiers_and_unproven_agent_done_rows() {
         let sheet = "## Tasks\n\
             - [ ] fine #urgent #tier/3 #tierlist\n\
-            - [ ] old word #normal\n\
+            - [ ] old word #medium\n\
+            - [ ] four levels #normal\n\
             - [ ] squashed #tier3\n\
             - [ ] too high #tier/4\n\
             - [x] closed by hand <!-- carried:2 -->\n\
@@ -6646,12 +7085,12 @@ mod move_layout_tests {
         assert_eq!(
             got,
             [
-                "line 3: #normal is not a priority (urgent, high or low)",
-                "line 4: #tier3 is not a tier (#tier/1, 2 or 3)",
-                "line 5: #tier/4 is not a tier (#tier/1, 2 or 3)",
-                "line 6: done with no proof marker (<!-- pr:N -->)",
-                "4 open row(s) not in `type(area): title` form (first: line 2; `notes doctor --projects --untyped` proposes each)",
-                "4 open row(s) with no id (<!-- id:<code>-<n> -->; `ptask add` stamps one) (first: line 2)",
+                "line 3: #medium is not a priority (urgent, high, normal or low)",
+                "line 5: #tier3 is not a tier (#tier/1, 2 or 3)",
+                "line 6: #tier/4 is not a tier (#tier/1, 2 or 3)",
+                "line 7: done with no proof marker (<!-- pr:N -->)",
+                "5 open row(s) not in `type(area): title` form (first: line 2; `notes doctor --projects --untyped` proposes each)",
+                "5 open row(s) with no id (<!-- id:<code>-<n> -->; `ptask add` stamps one) (first: line 2)",
             ]
         );
         assert_eq!(
@@ -6659,6 +7098,25 @@ mod move_layout_tests {
             3,
             "a human sheet's done rows are closed by hand by design"
         );
+    }
+
+    // A priority with no reason is counted beside the untriaged rows; a reasoned, an untagged,
+    // a closed and a child row are not (the negative control).
+    #[test]
+    fn unreasoned_counts_open_priorities_with_no_reason() {
+        let sheet = "## Tasks\n\
+            - [ ] reasoned #low #why/upkeep\n\
+            - [ ] bare #high #c1101\n\
+            - [/] started #normal\n\
+            - [ ] untagged #c1102\n\
+            - [x] closed #low\n\
+            \x20 - [ ] a child #high\n";
+        let f = unreasoned_finding(sheet).unwrap();
+        assert!(
+            f.starts_with("2 open row(s) with a priority and no #why/<reason> (first: line 3;"),
+            "{f}"
+        );
+        assert_eq!(unreasoned_finding("- [ ] fine #high #why/red-main\n"), None);
     }
 
     // An open row with no priority is counted, and one created before today is the overdue
@@ -6676,7 +7134,7 @@ mod move_layout_tests {
             \x20 - [ ] a child row is not a row\n";
         assert_eq!(
             untriaged_finding(sheet, today).unwrap(),
-            "3 untriaged open row(s) with no #urgent, #high or #low, 2 older than a day (first: line 3; `agentctl-inbox-triage --backlog --priority` ranks them)"
+            "3 untriaged open row(s) with no #urgent, #high, #normal or #low, 2 older than a day (first: line 3; `agentctl-inbox-triage --backlog --priority` ranks them)"
         );
         assert_eq!(untriaged_finding("- [ ] fine #high\n", today), None);
     }
@@ -6727,6 +7185,37 @@ mod move_layout_tests {
             row_findings("- [x] fix(a): b #low <!-- id:xy-4 -->\n", true),
             ["line 1: done with no proof marker (<!-- pr:N -->)"]
         );
+    }
+
+    // An epic ranks as its most urgent open row, so a tag of its own is flagged, an edit that
+    // keeps an old one drops it, and only a tag the edit adds is refused.
+    #[test]
+    fn an_epic_carries_no_priority_tag() {
+        let sheet = "- [ ] epic(ui): menus #low <!-- id:xy-1 -->\n\
+            - [ ] epic(ui): hud #high <!-- id:xy-2 -->\n\
+            - [ ] epic(ui): lobby <!-- id:xy-3 -->\n\
+            - [x] epic(ui): done one #low <!-- id:xy-4 pr:1 -->\n";
+        let got = row_findings(sheet, false);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert!(
+            got[0].starts_with("2 open epic(s) with a priority tag"),
+            "{got:?}"
+        );
+        assert!(got[0].contains("first: line 1"), "{got:?}");
+        let old = "- [ ] epic(ui): menus #low <!-- id:xy-1 -->";
+        let kept = unrank_epic(
+            old,
+            "- [ ] epic(ui): menus redo #low <!-- id:xy-1 -->".into(),
+        );
+        assert_eq!(kept, "- [ ] epic(ui): menus redo <!-- id:xy-1 -->");
+        assert!(refuse_epic_priority(&kept).is_ok());
+        let raised = unrank_epic(old, "- [ ] epic(ui): menus #high <!-- id:xy-1 -->".into());
+        let err = refuse_epic_priority(&raised).unwrap_err().to_string();
+        assert!(err.contains("#high on an epic"), "{err}");
+        // NEGATIVE CONTROL: a row that is no epic keeps its tag and is never refused one.
+        let row = "- [ ] fix(ui): a fault #high <!-- id:xy-5 -->";
+        assert_eq!(unrank_epic("- [ ] fix(ui): a fault #high", row.into()), row);
+        assert!(refuse_epic_priority(row).is_ok());
     }
 
     #[test]
@@ -6916,6 +7405,7 @@ mod stats_tests {
                 done: 1,
                 urgent: 1,
                 high: 1,
+                normal: 0,
                 low: 1,
                 planned: 2,
             }
@@ -7790,6 +8280,60 @@ mod shape_tests {
     }
 
     #[test]
+    fn a_focus_reads_by_its_end_in_any_zone_and_only_from_the_head() {
+        let at = |s: &str| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .unwrap()
+                .with_timezone(&chrono::Utc)
+        };
+        let page = "# demo\nVersion: v0.1.0 #prio/focus\nFocus until: 2026-11-23 18:00 -0800\n\n## Tasks\n";
+        // 18:00 at -0800 is 02:00 UTC the next day, whatever zone reads it.
+        assert_eq!(prio_at(page, at("2026-11-24T01:59:00Z")), "focus");
+        assert_eq!(prio_at(page, at("2026-11-24T02:00:00Z")), "");
+        // NEGATIVE CONTROLS: no end, an end with no zone, and a tag below the head.
+        let bare = "# demo\nVersion: v0.1.0 #prio/focus\n\n## Tasks\n";
+        assert_eq!(prio_at(bare, at("2000-01-01T00:00:00Z")), "");
+        let naive = page.replace(" -0800", "");
+        assert_eq!(prio_at(&naive, at("2000-01-01T00:00:00Z")), "");
+        let row = "# demo\nVersion: v0.1.0\n\n## Tasks\n- [ ] says #prio/focus\n";
+        assert_eq!(prio_at(row, at("2000-01-01T00:00:00Z")), "");
+        // A head with no Version: line takes the end under its title.
+        let titled = set_head_line(
+            "# demo #prio/focus\nGoal: g\n\n## Tasks\n",
+            FOCUS_UNTIL,
+            Some("x".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            titled,
+            "# demo #prio/focus\nFocus until: x\nGoal: g\n\n## Tasks\n"
+        );
+    }
+
+    #[test]
+    fn a_sprint_keeps_its_focus_to_the_cut_and_never_starts_one() {
+        let dir = std::env::temp_dir().join(format!("focus-sprint-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let readme = dir.join("README.md");
+        let cut = chrono::NaiveDate::from_ymd_opt(2099, 6, 1)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        fs::write(&readme, "# demo\nVersion: v0.1.0 #prio/focus\nFocus until: 2000-01-01 00:00 +0000\n\n## Tasks\n").unwrap();
+        extend_focus(&dir, cut).unwrap();
+        let s = fs::read_to_string(&readme).unwrap();
+        assert!(s.contains("Focus until: 2099-06-01 12:00 "), "{s}");
+        assert_eq!(s.matches("Focus until:").count(), 1, "{s}");
+        // NEGATIVE CONTROL: a project not on focus gets no focus from a sprint.
+        fs::write(&readme, "# demo\nVersion: v0.1.0\n\n## Tasks\n").unwrap();
+        extend_focus(&dir, cut).unwrap();
+        assert!(!fs::read_to_string(&readme)
+            .unwrap()
+            .contains("Focus until:"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_target_line_is_set_under_version_replaced_and_cleared_byte_for_byte() {
         let s = "# demo\nVersion: v0.2.0 #alpha\nGoal: it boots\n\n## Tasks\n- [ ] a row\n";
         let on = chrono::NaiveDate::from_ymd_opt(2026, 12, 15).unwrap();
@@ -7912,13 +8456,34 @@ mod shape_tests {
             ),
         )
         .unwrap();
+        // A cut moved these closes into v0.1.0's frozen note, one dated by its Proof table:
+        // still closes of the last 28 days.
+        let old = today - chrono::Duration::days(40);
+        fs::create_dir_all(dir.join("agent/versions")).unwrap();
+        fs::write(
+            dir.join("agent/versions/v0.1.0.md"),
+            format!(
+                "# v0.1.0\n\n## Proof\n| task | proof | when |\n|---|---|---|\n\
+                 | fix(f): closed before done stamps #size/m | pr:2 | {today} |\n\n\
+                 ## Done rows\n\n\
+                 - [x] fix(d): closed before the cut #size/m <!-- filed:{old} done:{today} -->\n\
+                 - [x] fix(e): closed long ago #size/xl <!-- filed:{old} done:{old} -->\n\
+                 - [x] fix(g): filed and closed this month #size/m <!-- filed:{today} done:{today} -->\n"
+            ),
+        )
+        .unwrap();
         let json = serde_json::to_value(project_stats("personal", "demo", &dir)).unwrap();
-        // NEGATIVE CONTROL: the v0.4.0 row (21 points) is past the target, so it is in neither sum.
+        // NEGATIVE CONTROL: the v0.4.0 row (21 points) is past the target, so it is in neither
+        // sum, and fix(e) closed 40 days ago adds nothing to the 28-day rates.
         assert_eq!(
             json["target_work"],
-            serde_json::json!({"open_weight": 6, "closed_weight_28d": 8, "filed_weight_28d": 6})
+            serde_json::json!({"open_weight": 6, "closed_weight_28d": 17, "filed_weight_28d": 9})
         );
         assert_eq!(json["progress"]["open_weight"], 3, "the open version alone");
+        assert_eq!(
+            json["progress"]["closed_weight_28d"], 17,
+            "the open version's rate holds the shipped closes too: the one close rate"
+        );
         assert_eq!(
             json["target_backlog"],
             serde_json::json!([]),
@@ -7929,6 +8494,60 @@ mod shape_tests {
         let json = serde_json::to_value(project_stats("personal", "demo", &dir)).unwrap();
         assert!(json["target_work"].is_null(), "{json}");
         assert!(json["target_backlog"].is_null(), "{json}");
+    }
+
+    /// ar-3540: with a release window open, the open version's share of the target's work is the
+    /// window's promise (its rows still open plus each interrupt filed into it), not every untagged
+    /// row; the shipped versions' filings and the later versions' rows stay as they were.
+    #[test]
+    fn target_work_weighs_the_open_windows_rows_not_the_whole_version() {
+        let s = sandbox("target-window");
+        new_project(&s.p, &s.log, "demo", &Overlays::default()).unwrap();
+        let dir = s.p.projects.as_ref().unwrap().join("demo");
+        let today = chrono::Local::now().date_naive();
+        let head = "# demo\nVersion: v0.2.0 #dev\nTarget: v0.3.0 2026-12-15\n\n## Tasks\n";
+        let promised =
+            format!("- [ ] fix(a): promised #urgent #size/m <!-- id:dm-1 filed:{today} -->\n");
+        fs::write(
+            dir.join("README.md"),
+            format!(
+                "{head}{promised}\
+                 - [ ] fix(d): re-aimed later #urgent #size/s <!-- id:dm-4 filed:{today} -->\n"
+            ),
+        )
+        .unwrap();
+        let ix = crate::epics::Index::of(&dir, Some((0, 2, 0)));
+        crate::window::record(&dir, "demo", (0, 2, 0), today, None, &ix).unwrap();
+        fs::write(
+            dir.join("README.md"),
+            format!(
+                "{head}{promised}\
+                 - [ ] fix(d): re-aimed later #urgent #v0.3.0 #size/s <!-- id:dm-4 filed:{today} -->\n\
+                 - [ ] fix(b): outside the window #size/xl <!-- id:dm-2 filed:{today} -->\n\
+                 - [ ] fix(c): hotfix #interrupt #size/l <!-- id:dm-3 filed:{today} -->\n"
+            ),
+        )
+        .unwrap();
+        fs::create_dir_all(dir.join("agent/versions")).unwrap();
+        fs::write(
+            dir.join("agent/versions/v0.1.0.md"),
+            format!(
+                "# v0.1.0\n\n## Done rows\n\n\
+                 - [x] fix(g): filed and shipped this month #size/m <!-- filed:{today} done:{today} -->\n"
+            ),
+        )
+        .unwrap();
+        let json = serde_json::to_value(project_stats("personal", "demo", &dir)).unwrap();
+        // NEGATIVE CONTROL: the whole open version still weighs fix(a), fix(b) and fix(c)
+        // (3 + 21 + 8), so the 21 points left out below are the window's doing.
+        assert_eq!(json["progress"]["open_weight"], 32, "{json}");
+        // open: fix(a) 3 + the interrupt 8 + v0.3.0's re-aimed fix(d) 1, counted once.
+        // filed: v0.1.0's shipped fix(g) 3 + the interrupt 8 + fix(d) 1 in v0.3.0.
+        assert_eq!(
+            json["target_work"],
+            serde_json::json!({"open_weight": 12, "closed_weight_28d": 3, "filed_weight_28d": 12}),
+            "{json}"
+        );
     }
 
     #[test]
@@ -7975,22 +8594,7 @@ mod shape_tests {
         .unwrap();
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&gate, fs::Permissions::from_mode(0o755)).unwrap();
-        // Another test's fork can hold our write fd until its child execs, and exec then fails
-        // with ETXTBSY (26). Run the stub once, retrying on that error alone, so the runs the
-        // test cares about start after the last writer is gone.
-        const ETXTBSY: i32 = 26;
-        loop {
-            match std::process::Command::new(&gate)
-                .env("GATE_PROBE", "1")
-                .status()
-            {
-                Err(e) if e.raw_os_error() == Some(ETXTBSY) => std::thread::yield_now(),
-                r => {
-                    r.unwrap();
-                    break;
-                }
-            };
-        }
+        crate::config::test_exec_ready(&gate, &[("GATE_PROBE", "1")]);
         let gate = gate.display().to_string();
         (s, sheet, gate)
     }

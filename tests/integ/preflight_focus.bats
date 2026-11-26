@@ -108,7 +108,7 @@ EOF
   seed_tracker_map
   # The hold scoping joins through project_lab_names, the other reader of the registry.
   export AGENT_HOLD_DIR="$HOME/.agent/holds"
-  "$REPO_ROOT/.local/bin/agent-hold" set pause --kind resource --by human "pause the agent-runtime lanes"
+  "$REPO_ROOT/.local/bin/agent-hold" set pause --kind resource --by human --until "+12 hours" "pause the agent-runtime lanes"
 
   run context
   assert_success

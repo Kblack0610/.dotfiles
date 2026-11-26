@@ -3,7 +3,7 @@
 # whatever the user added. Drives notes.harpoon.lab_slots in a real headless nvim against
 # fixture `notes projects --stats` rows; harpoon itself is not needed.
 #
-# Skips where nvim is absent (the CI fast tier installs none by design); run it locally.
+# Skips where nvim is absent; the test image pins it (tests/Dockerfile, NVIM_VERSION).
 
 setup() {
   load '../vendor/bats-support/load'

@@ -51,9 +51,9 @@ pub fn budget() -> PathBuf {
     fleet_state().with_file_name("budget.json")
 }
 
-/// agent-ask's store, one `<project>/<id>.md` per ask, by the variable agent-ask resolves.
+/// agent-ask's store, one `<project>/<id>.md` per ask: agent-core's `asks::root`.
 pub fn asks_dir() -> PathBuf {
-    env("AGENT_ASK_ROOT").unwrap_or_else(|| home().join(".agent/asks"))
+    agent_core::asks::root()
 }
 
 /// agent-propose's store.
@@ -111,6 +111,17 @@ pub fn state_with(
         Some(asks) => state["asks"] = asks,
         None => {
             state["asks"] = json!([]);
+            unreadable(&mut state, "agent-ask");
+        }
+    }
+    // The answered ones, so an item an answer released leaves NEEDS YOU before its resume moves it.
+    match ask_list(r, AskSet::Answered)
+        .ok()
+        .and_then(|asks| serde_json::to_value(asks).ok())
+    {
+        Some(asks) => state["answered_asks"] = asks,
+        None => {
+            state["answered_asks"] = json!([]);
             unreadable(&mut state, "agent-ask");
         }
     }
@@ -221,6 +232,12 @@ pub struct Ask {
     pub judge: String,
     /// When it was filed, unix seconds.
     pub created: Option<i64>,
+    /// When it was answered, unix seconds; None while it waits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_at: Option<i64>,
+    /// Where its answer's delivery stands: queued, delivering, done or failed; empty while pending.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub delivery: String,
     /// The question's first sentence, and the question after it (`text::headline`). A first
     /// sentence too long for headline's cap makes the whole question the title (a TSV row is one
     /// line): a card wraps, so it never shows a cut title over the same question again.
@@ -330,6 +347,8 @@ pub fn parse_asks(tsv: &str) -> Vec<Ask> {
                 task: col(7),
                 recommend: col(10),
                 created: crate::fleet::ts(at(11)),
+                answered_at: crate::fleet::ts(at(8)),
+                delivery: col(27),
                 session: col(12),
                 claude_session: col(15),
                 judge: col(16),
@@ -366,7 +385,15 @@ pub enum AskSet {
     Parked,
     /// Every ask, closed ones too: a session's page counts what it filed.
     All,
+    /// The asks answered in the last `ANSWERED_DAYS`: the queue items they held are no longer the
+    /// human's (`home::needs`).
+    Answered,
 }
+
+/// How far back `AskSet::Answered` reads, in days (agent-ask cuts by calendar day, so a day either
+/// way). An item still waiting longer than this after its answer is a stuck resume, and shows again
+/// as the human's.
+pub const ANSWERED_DAYS: u32 = 14;
 
 /// The asks of `set`, read through `agent-ask list`: the one reader of the store.
 pub fn ask_list(r: &dyn Runner, set: AskSet) -> Result<Vec<Ask>, String> {
@@ -375,6 +402,11 @@ pub fn ask_list(r: &dyn Runner, set: AskSet) -> Result<Vec<Ask>, String> {
         AskSet::Pending => argv.push("--pending".into()),
         AskSet::Parked => argv.push("--parked".into()),
         AskSet::All => {}
+        AskSet::Answered => argv.extend([
+            "--answered".into(),
+            "--since".into(),
+            format!("{ANSWERED_DAYS}d"),
+        ]),
     }
     r.run(&argv).map(|tsv| parse_asks(&tsv))
 }
@@ -486,13 +518,16 @@ pub fn candidates_file() -> PathBuf {
     dispatch_state_dir().join("candidates.jsonl")
 }
 
+/// The workers' slots `fleet-dispatch` writes after each real pass (`hosts_write`), which the bar's
+/// Machines roll-up reads.
+pub fn dispatch_hosts_file() -> PathBuf {
+    dispatch_state_dir().join("hosts.json")
+}
+
 /// The JSON `fleet-bench` writes each tick for the pipeline line (its `PIPELINE_SNAPSHOT`).
 pub fn pipeline_snapshot() -> PathBuf {
-    env("PIPELINE_SNAPSHOT").unwrap_or_else(|| {
-        env("XDG_STATE_HOME")
-            .unwrap_or_else(|| home().join(".local/state"))
-            .join("agentctl/pipeline/pipeline.json")
-    })
+    env("PIPELINE_SNAPSHOT")
+        .unwrap_or_else(|| agent_core::vocab::state_home().join("agentctl/pipeline/pipeline.json"))
 }
 
 /// `day-log`'s records, one `<YYYY-MM-DD>.json` per local day (its `DAYLOG_DIR`).
@@ -572,7 +607,7 @@ pub struct DayRow {
     pub date: String,
     pub live: bool,
     pub merged: usize,
-    /// Merged PRs per `area`, the coarse grouping `~/.config/day-log/groups` assigns.
+    /// Merged PRs per `area`, the coarse grouping `~/.config/areas/groups` assigns.
     pub areas: std::collections::BTreeMap<String, usize>,
     pub repos: usize,
     /// The `TOTAL` row of `usage`, when the day has one.
@@ -1573,8 +1608,14 @@ mod tests {
             if argv[0] == "notes" {
                 return Ok("/nonexistent".into());
             }
-            assert_eq!(argv.join(" "), "agent-ask list --all --pending");
-            self.0.clone()
+            match argv.join(" ").as_str() {
+                "agent-ask list --all --pending" => self.0.clone(),
+                // The answered read: the same failure, else none answered.
+                "agent-ask list --all --answered --since 14d" => {
+                    self.0.clone().map(|_| String::new())
+                }
+                other => panic!("unexpected command: {other}"),
+            }
         }
     }
 
@@ -1626,9 +1667,15 @@ mod tests {
         assert_eq!(s["asks"][0]["task"], "");
         assert_eq!(s["asks"][0]["recommend"], "a");
         assert_eq!(s["asks"][0]["judge"], "take-recommend");
+        assert_eq!(s["answered_asks"], json!([]));
         let s = state(&f, &Fixed(Err("agent-ask: not found".into())));
         assert_eq!(s["asks"], json!([]));
-        assert_eq!(s["unreadable"], json!(["agent-ask"]));
+        assert_eq!(s["answered_asks"], json!([]));
+        assert_eq!(
+            s["unreadable"],
+            json!(["agent-ask"]),
+            "named once for both reads"
+        );
         std::fs::write(
             &f,
             r#"{"sessions":[{"target":"hub/a:1","bucket":"NEEDS"}]}"#,
@@ -1886,7 +1933,12 @@ mod tests {
             }
         }
         let r = Seen(Default::default());
-        for set in [AskSet::Pending, AskSet::Parked, AskSet::All] {
+        for set in [
+            AskSet::Pending,
+            AskSet::Parked,
+            AskSet::All,
+            AskSet::Answered,
+        ] {
             assert!(ask_list(&r, set).is_err());
         }
         assert_eq!(
@@ -1894,7 +1946,8 @@ mod tests {
             [
                 "agent-ask list --all --pending",
                 "agent-ask list --all --parked",
-                "agent-ask list --all"
+                "agent-ask list --all",
+                "agent-ask list --all --answered --since 14d"
             ]
         );
     }

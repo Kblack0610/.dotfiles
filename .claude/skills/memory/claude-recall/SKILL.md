@@ -17,7 +17,7 @@ those files directly. No database, no embeddings, no daemon, nothing uploaded.
 
 ## Scope and triggers
 
-On-demand pull-recall over the RAW verbatim Claude Code session transcripts (~/.claude/projects/**/*.jsonl) via the `claude-recall` CLI. Use when you need to retrieve something that was actually SAID in a past session but was never distilled into a lesson / wind-down / mem0 / anchor - "what did we decide about X", "find the session where we debugged Y", "what was that command/path/error from last week", "show me that earlier conversation". This is the lossless raw layer BELOW the curated recall stack: lessons/dreams/mem0/anchors are push-based distilled signal injected at SessionStart; this is pull-based verbatim search you invoke on demand. Local-only, no index, no cloud - reads the .jsonl on each call (full scan ~0.3s). The skill-and-script equivalent of local-claude-chat-history-mcp, reached via Bash instead of a standing MCP so it costs zero session context until used. Do NOT use for curated/summarized recall (that's mem0-ops / lessons / the anchor) or for searching the current live conversation (you already have that in context).
+On-demand pull-recall over the RAW verbatim Claude Code session transcripts (~/.claude/projects/**/*.jsonl) via the `claude-recall` CLI. Use when you need to retrieve something that was actually SAID in a past session but was never distilled into a lesson / wind-down / mem0 / anchor - "what did we decide about X", "find the session where we debugged Y", "what was that command/path/error from last week", "show me that earlier conversation". This is the lossless raw layer BELOW the curated recall stack: lessons/dreams/mem0/anchors are push-based distilled signal injected at SessionStart; this is pull-based verbatim search you invoke on demand. Local-only, no index, no cloud - reads the .jsonl on each call, newest files first. The skill-and-script equivalent of local-claude-chat-history-mcp, reached via Bash instead of a standing MCP so it costs zero session context until used. Do NOT use for curated/summarized recall (that's mem0-ops / lessons / the anchor) or for searching the current live conversation (you already have that in context).
 
 ## When to reach for it
 
@@ -47,7 +47,7 @@ curated layer first; drop to raw recall when the distilled note doesn't have it.
 ## Commands
 
 ```bash
-# Full-text / regex search across all transcripts (rg-prefiltered, ~0.3s full scan)
+# Full-text / regex search across all transcripts (rg-prefiltered, newest files first)
 claude-recall search "privacy overlay" --project dotfiles --since 2026-07-01
 claude-recall search "TODO|FIXME"  --regex --role assistant --limit 20
 claude-recall search "cred expire" -i --context 160        # case-insensitive, wider snippet
@@ -77,7 +77,8 @@ claude-recall answer-lag --days 3 --over 5
 Search filters: `--project` (substring on cwd basename), `--branch` (exact
 gitBranch), `--since YYYY-MM-DD`, `--role user|assistant`, `--regex`, `-i`,
 `--thinking` (include thinking blocks; excluded by default), `--context N`
-(snippet width, default 120), `--limit N` (`0` = all).
+(snippet width, default 120), `--limit N` (default 20, newest first; `0` = all),
+`--all-files` (no mtime skip, no early stop).
 
 ## stats: counting what recurs
 
@@ -135,11 +136,15 @@ sessions compact <id|--pick>        # headless claude -p writes ~/.agent/session
 
 ## Notes
 
-- Reads `~/.claude/projects` and `~/.claude-work/projects`, plus Claude Cowork's `local-agent-mode-sessions`
-  on macOS when that directory exists.
+- Reads `<dir>/projects` of every account in claude-acct's accounts file (`~/.config/claude-acct/accounts`; `claude-acct link` points each at `~/.claude/projects`, so one dir usually holds them all) and of any other `~/.claude*` config dir, any `.pre-share-<date>/projects` copy that link parked (a session also in an earlier dir is read once), and Claude Cowork's `local-agent-mode-sessions` on macOS when that directory exists. `claude-recall roots` prints each dir with its session count.
+- Transcripts are per machine: a session that ran on another fleet machine is only in that machine's dirs, so search it there (`ssh <host> claude-recall search ...`). A session missing here is most often that, not a broken reader.
 - Filenames ARE session ids; `show` accepts a unique prefix.
 - No index means results are always current - a session you closed a minute ago
-  is already searchable. Cost is a fresh read each call; that's ~0.3s over the
-  whole corpus, so no caching is needed.
+  is already searchable. Cost is a fresh read each call. `search` reads files newest
+  first and skips what cannot match: a file last written before `--since`, and, once
+  `--limit` hits are kept, every file older than the oldest of them. A rare term costs
+  about 1s over the whole corpus; a common one with `--since` and a small `--limit` stays
+  under 5s (21k transcripts, 25 GB). `--all-files` reads every candidate (a restored
+  backup whose mtimes are older than its records).
 - Script: `~/.dotfiles/.local/bin/claude-recall` (generic, public repo). It
   reads only the local transcript files and never writes them.

@@ -55,6 +55,11 @@ phased=$(awk '/^```/ {f = !f} !f && /^## Phases[ \t]*$/' <<<"$plan" | head -n1)
 # one-shot writes on every plan is not, so it may name a standing epic.
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.local/lib/plan-phases.sh" 2>/dev/null
+# The rows a plan names pick its project, so a session in one repo can plan another's work; the cwd
+# stands only when it names none (plan_project).
+target=''
+! declare -F plan_project >/dev/null || target=$(plan_project <<<"$plan")
+[ -z "$target" ] || { project=$target label=$target; }
 multi=''
 if [ -n "${_PLAN_PHASES_AWK:-}" ]; then
   # Outside code fences, so an example checklist in a fence is no phase.
@@ -108,12 +113,12 @@ epic_new_gaps() {
   sys=${BASH_REMATCH[1]}
   grep -qiE '^epic\([^)]*\):.* to standard([[:space:]]+#[^[:space:]]+)*$' <<<"$t" &&
     echo "epic: new $t is a standing \"to standard\" title, which notes and project-stage-check file, never a plan"
-  grep -qE '(^|[[:space:]])#(urgent|high|low)([[:space:]]|$)' <<<"$t" ||
-    echo "epic: new $t carries no priority: end it with #urgent, #high or #low (the rubric in ~/.config/inbox-triage/rules/priority.md)"
+  ! grep -qE '(^|[[:space:]])#(urgent|high|normal|low)([[:space:]]|$)' <<<"$t" ||
+    echo "epic: new $t carries a priority, which notes refuses on an epic: it ranks as its most urgent open row, so drop the tag"
   if ! ids=$(project-stage-check "$board" --list --json 2>/dev/null | jq -er '.[].id' 2>/dev/null); then
     echo "epic: new: project-stage-check $board --list --json printed no system list, so epic($sys) cannot be checked"
   elif ! grep -qxF -- "$sys" <<<"$ids"; then
-    echo "epic: new names epic($sys), no system of $board: one of $(paste -sd, <<<"$ids")"
+    echo "epic: new names epic($sys), no system of $board: one of $(paste -sd, <<<"$ids")$([ -n "$target" ] || echo "; $board is this session's board, so a plan for another project names only that project's rows on Overlap:")"
   fi
   short=$(for lane in '' --agent; do
       notes ptask "$board" $lane similar --top 5 --json -- "$t" 2>/dev/null | jq -r '.[] | "\(.percent)\t\(.id)"' 2>/dev/null
@@ -124,18 +129,18 @@ epic_new_gaps() {
 }
 
 if epic_checked; then
-  epic=$(awk '/^```/ {f = !f; next} !f' <<<"$plan" | grep -m1 -oE '^epic:[[:space:]]*[a-z]+-[0-9]+' | sed -E 's/^epic:[[:space:]]*//')
+  epic=$(_epic_line epic <<<"$plan")
   row='' proposal=''
   [ -z "$epic" ] || row=$(lab_row "$epic" | grep -m1 'epic(')
   [ -n "$epic" ] || proposal=$(plan_epic_new <<<"$plan")
   if [ -n "$proposal" ]; then
     mapfile -t -O "${#gaps[@]}" gaps < <(epic_new_gaps "$proposal")
   elif [ -z "$epic" ]; then
-    gaps+=("No epic: <id> line: name the epic this plan serves, or its system's standing \"epic(<system>): <system> to standard\" row, or propose a new one as epic: new epic(<system>): <outcome> #<priority>")
+    gaps+=("No epic: <id> line: name the epic this plan serves, or its system's standing \"epic(<system>): <system> to standard\" row, or propose a new one as epic: new epic(<system>): <outcome>")
   elif [ -z "$row" ]; then
     gaps+=("epic: $epic is not an epic( row on any sheet under ~/.notes/lab")
   elif [ -n "$multi" ] && grep -qE 'epic\([^)]*\):[[:space:]]*[^[:space:]]+ to standard([[:space:]]|$)' <<<"$row"; then
-    gaps+=("epic: $epic is a standing \"to standard\" epic, and a plan with more than one phase is a feature: propose its own as epic: new epic(<system>): <outcome> #<priority>")
+    gaps+=("epic: $epic is a standing \"to standard\" epic, and a plan with more than one phase is a feature: propose its own as epic: new epic(<system>): <outcome>")
   fi
 fi
 

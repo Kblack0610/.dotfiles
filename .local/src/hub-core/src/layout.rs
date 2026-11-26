@@ -27,14 +27,14 @@ pub struct Tab {
     pub inner: &'static [Inner],
 }
 
-pub const TABS: [Tab; 12] = [
+pub const TABS: [Tab; 13] = [
     // The landing page: every action that waits on the human, then the summary lines.
     Tab {
         id: "home",
         group: "Today",
         title: "Home",
         question: "What needs me, and is everything OK?",
-        sections: &["needs", "proposals", "running", "spend", "vitals", "health"],
+        sections: &["needs", "proposals", "spend", "vitals", "health"],
         inner: &[],
     },
     // The daily note behind its nav (the places, Daily first, then the note's parts); the outbox
@@ -47,6 +47,28 @@ pub const TABS: [Tab; 12] = [
         question: "What is my day?",
         sections: &["nav", "lanes", "briefing", "rollup", "sections", "outbox"],
         inner: &[],
+    },
+    // Every report an agent filed for the human (`hub_core::reports`, from `notes report list`):
+    // Today is what needs the human, then today's and the week's unread, then the day's digests and
+    // the human's own captures; Archive is every other report by day.
+    Tab {
+        id: "reports",
+        group: "Today",
+        title: "Reports",
+        question: "What did agents report to me?",
+        sections: &["needs", "stream", "digests", "captures", "archive"],
+        inner: &[
+            Inner {
+                id: "today",
+                title: "Today",
+                sections: &["needs", "stream", "digests", "captures"],
+            },
+            Inner {
+                id: "archive",
+                title: "Archive",
+                sections: &["archive"],
+            },
+        ],
     },
     Tab {
         id: "log",
@@ -103,7 +125,15 @@ pub const TABS: [Tab; 12] = [
         group: "Agents",
         title: "Queue",
         question: "What will agents do next?",
-        sections: &["flow", "table", "candidates"],
+        sections: &[
+            "flow",
+            "needs",
+            "stuck",
+            "running",
+            "pr",
+            "next",
+            "candidates",
+        ],
         inner: &[],
     },
     // Every agent at work: the sessions (one row each, an opened one's page), the runners that
@@ -324,6 +354,8 @@ pub const TABS: [Tab; 12] = [
             "spend",
             "table",
             "burn",
+            "allowance",
+            "pace",
             "consumers",
             "tokens",
             "langfuse",
@@ -343,7 +375,7 @@ pub const TABS: [Tab; 12] = [
             Inner {
                 id: "limits",
                 title: "Limits",
-                sections: &["burn", "consumers"],
+                sections: &["burn", "allowance", "pace", "consumers"],
             },
             Inner {
                 id: "models",
@@ -415,9 +447,10 @@ pub const FOLD_ROWS: usize = 50;
 ///   paged here: at 20 each the fixture drew 2,707 px (2026-11-18), so 18.
 /// - Stack's rule text wraps to two lines on a phone: 120 rules drew 6,944 px (2026-11-18).
 /// - Board's 30 rows drew 1,824 px (2026-11-12); Sessions' 342 live rows measured 2,180 px at 20.
-/// - Queue's two-line items measured 2,683 px at 30 of 637 (2026-11-12), too close to 2,700 to
-///   survive a wrapped dispatch line, so its `table` pages at 25. Candidates page at the TUI
-///   fold, `queue::CANDIDATES_SHOWN` (30).
+/// - Queue's two-line items measured 2,683 px at 30 of 637 (2026-11-12). The tab is now five
+///   sections: Needs you and Stuck page at 8 and Running, On a PR and Up next at 6, so the fixture's
+///   36 rows (6, 5, 9, 8, 8) draw under the 2,700 px budget (10 and 8 drew 2,781 px, 2026-11-24) and
+///   a live queue's first screen holds Needs you and Stuck. Candidates page at the TUI fold, `queue::CANDIDATES_SHOWN` (30).
 /// - Jobs' rows are one line and Unity gates alone finish about a thousand runs a day: 200.
 /// - Infra's CI runs, a run's suites and the quarantine are one line a row: 100; an opened
 ///   suite's tests page as its suites.
@@ -432,7 +465,11 @@ pub const PAGE_ROWS: &[(&str, usize)] = &[
     ("rules", 30),
     ("board", 30),
     ("sessions/sessions", 20),
-    ("queue/table", 25),
+    ("queue/needs", 8),
+    ("queue/stuck", 8),
+    ("queue/running", 6),
+    ("queue/pr", 6),
+    ("queue/next", 6),
     ("candidates", 30),
     ("jobs", 200),
     ("runs", 100),
@@ -510,6 +547,17 @@ pub const MOVED: &[(&str, &str, &str, &str)] = &[
     // better-release-data-need-polished-dragonfly.md).
     ("releases", "builds", "infra", "runs"),
     ("releases", "tests", "infra", "tests"),
+    // Home's Running list: the Queue tab's Running section holds every running item, with its
+    // session (2026-11-23, p1 of waht-noise-would-you-jolly-cosmos.md; the section is q2 of
+    // abundant-diffie, 2026-11-24).
+    ("home", "running", "queue", "running"),
+    // The Queue's one table became a section per state (2026-11-24, q2 of abundant-diffie):
+    // `table` opens the first, an old state id its own, and Done left for Log.
+    ("queue", "table", "queue", "needs"),
+    ("queue", "waiting", "queue", "needs"),
+    ("queue", "review", "queue", "pr"),
+    ("queue", "queued", "queue", "next"),
+    ("queue", "done", "log", "work"),
 ];
 
 /// A moved name that opens its new table under a state chip, on both surfaces: (tab, old
@@ -657,10 +705,13 @@ pub const PROJECT_DEPTS: [Inner; 9] = [
 ];
 
 /// Retired project-page inner ids and where they went (an inner id, or `departments/<dept>` for a
-/// chip), so an old `#projects/<p>/build` or `#projects/<p>/legal` still lands. Keep a name here
+/// chip), so an old `#projects/<p>/build`, `#projects/<p>/legal` or `#projects/<p>/past` (the
+/// Sprint tab's folds, now a sprint's own page) still lands. Keep a name here
 /// for good once it has shipped.
 pub const PROJECT_RETIRED: &[(&str, &str)] = &[
     ("build", "deliverables"),
+    ("sprints", "sprint"),
+    ("past", "sprint"),
     ("product", "departments/product"),
     ("engineering", "departments/engineering"),
     ("ops", "departments/ops"),
@@ -955,6 +1006,11 @@ mod tests {
             );
         }
         assert_eq!(moved("infra", "machines"), None, "machines stayed");
+        assert_eq!(
+            moved("home", "running").map(|(t, s)| (t.id, s)),
+            Some(("queue", "running")),
+            "Home's Running list is the Queue's Running section"
+        );
         for old in ["governor", "cloud"] {
             assert_eq!(
                 moved("infra", old).map(|(t, s)| (t.id, s)),
@@ -1017,11 +1073,11 @@ mod tests {
         assert_eq!(at(Some("history")), Some("history"));
         assert_eq!(section("fixes"), None, "a new section is no retired name");
         // The tenth tab on the number row is 0.
-        assert_eq!(bar_digit("schedules"), Some(9));
-        assert_eq!(bar_digit("costs"), Some(0));
-        assert_eq!(bar_digit("alerts"), Some(7));
+        assert_eq!(bar_digit("infra"), Some(9));
+        assert_eq!(bar_digit("schedules"), Some(0));
+        assert_eq!(bar_digit("alerts"), Some(8));
         assert_eq!(
-            bar_digit("stack"),
+            bar_digit("costs"),
             None,
             "the eleventh bar tab has no digit"
         );
@@ -1041,7 +1097,7 @@ mod tests {
         assert_eq!(
             groups,
             [
-                ("Today", vec!["home", "daily", "log"]),
+                ("Today", vec!["home", "daily", "reports", "log"]),
                 ("Agents", vec!["queue", "sessions"]),
                 ("Projects", vec!["projects", "releases"]),
                 (
@@ -1050,10 +1106,12 @@ mod tests {
                 ),
             ]
         );
-        // The number row: Home 1, Log 2, Queue 3, Sessions 4, Projects 5, Releases 6, Alerts 7,
-        // Infra 8, Schedules 9, Costs 0 (Fleet, 5 until 2026-11-12, is Sessions' Runners).
+        // The number row: Home 1, Reports 2, Log 3, Queue 4, Sessions 5, Projects 6, Releases 7,
+        // Alerts 8, Infra 9, Schedules 0 (Fleet, 5 until 2026-11-12, is Sessions' Runners); Costs
+        // and Stack are past the tenth, so Tab reaches them.
         let ids = [
             "home",
+            "reports",
             "log",
             "queue",
             "sessions",
@@ -1063,6 +1121,7 @@ mod tests {
             "infra",
             "schedules",
             "costs",
+            "stack",
         ];
         let digits: Vec<Option<usize>> = ids.iter().map(|id| bar_digit(id)).collect();
         assert_eq!(
@@ -1077,16 +1136,19 @@ mod tests {
                 Some(7),
                 Some(8),
                 Some(9),
-                Some(0)
+                Some(0),
+                None,
+                None
             ]
         );
     }
 
     #[test]
     fn a_bar_label_is_the_digit_and_title_or_the_title_alone() {
-        assert_eq!(bar_label("sessions"), "4 Sessions");
-        assert_eq!(bar_label("alerts"), "7 Alerts");
-        assert_eq!(bar_label("costs"), "0 Costs", "the tenth is 0");
+        assert_eq!(bar_label("sessions"), "5 Sessions");
+        assert_eq!(bar_label("alerts"), "8 Alerts");
+        assert_eq!(bar_label("schedules"), "0 Schedules", "the tenth is 0");
+        assert_eq!(bar_label("costs"), "Costs", "past the tenth");
         assert_eq!(bar_label("daily"), "Daily", "off the bar");
     }
 
@@ -1219,6 +1281,9 @@ mod tests {
         let at = |w: &str| project_target(w).map(|(i, c)| (i.id, c));
         assert_eq!(at("build"), Some(("deliverables", None)));
         assert_eq!(at("p-build"), Some(("deliverables", None)));
+        for old in ["sprints", "past", "p-sprint-past"] {
+            assert_eq!(at(old), Some(("sprint", None)), "{old}");
+        }
         assert_eq!(at("departments"), Some(("departments", None)));
         assert_eq!(
             at("departments/legal"),
@@ -1387,7 +1452,21 @@ mod tests {
         let (tab, sec) = moved("fleet", "tokens").unwrap();
         assert_eq!(inner_tab(tab, Some(sec)).map(|i| i.id), Some("models"));
         // a tab with no inner tabs has none
-        assert_eq!(inner_tab(resolve("queue").unwrap(), Some("table")), None);
+        assert_eq!(inner_tab(resolve("queue").unwrap(), Some("needs")), None);
+        // the Queue's old table and state ids still land on a section
+        for (old, tab, sec) in [
+            ("table", "queue", "needs"),
+            ("waiting", "queue", "needs"),
+            ("review", "queue", "pr"),
+            ("queued", "queue", "next"),
+            ("done", "log", "work"),
+        ] {
+            assert_eq!(
+                moved("queue", old).map(|(t, s)| (t.id, s)),
+                Some((tab, sec)),
+                "{old}"
+            );
+        }
         // Releases: the apps and an opened one, then Release runs, then Flow.
         let rel = resolve("releases").unwrap();
         let at = |w: Option<&str>| inner_tab(rel, w).map(|i| i.id);

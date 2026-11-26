@@ -51,10 +51,6 @@ const table = (n) => ({ q: "", state: "", sort: "", dir: "desc", total: n, shown
 const COLS = ["rank", "kind", "project", "waited", "holds", "what"];
 const ntable = (needs, o) => ({ q: "", state: "", sort: "", dir: "desc", total: needs.length, shown: needs.length,
   states: [{ name: "all", n: needs.length }], columns: COLS.map((key) => ({ key, sort: null, next_sort: key, next_dir: "desc" })), facets: [], ...o });
-// Running's (`rtable`) over its rows, the columns hub_core::home::Running names.
-const RCOLS = ["item", "project", "row", "epic", "phase", "eta", "pr", "ci", "since"];
-const rtable = (rows, o) => ({ q: "", state: "", sort: "", dir: "desc", total: rows.length, shown: rows.length,
-  states: [{ name: "all", n: rows.length }, { name: "CI failing", n: 0 }], columns: RCOLS.map((key) => ({ key, sort: null, next_sort: key, next_dir: "desc" })), facets: [], ...o });
 // Rows as the server ranks and words them (hub_core::home `NeedRow`): the kind's label, what the
 // row holds, the band's "holds ..." line, what a kind of row is, and an ask row's whole record.
 // The page draws these; the words themselves are tested in Rust.
@@ -65,9 +61,14 @@ const ranked = (needs) => needs.map((n, i) => {
   return { rank: i + 1, label: LABELS[n.need], holds, holds_line: n.score && n.score.holds ? `holds ${n.score.holds}` : holds, what: WHAT[n.need] || "",
     ...(n.kind === "ask" ? { ask: { ...shipIt, id: n.id, title: n.text, question: n.text } } : {}), ...n };
 });
+// The one row per stream the server sends (hub_core::proposals::by_stream), from the fixture's rows.
+const streamsOf = (rows) => [...new Set(rows.map((p) => p.stream))].map((stream) => {
+  const of = rows.filter((p) => p.stream === stream);
+  return { stream, project: of[0].project, count: of.length, newest: now() - 600, oldest: now() - 86400 };
+});
 const home = (o = {}) => {
   const needs = ranked(o.needs || []);
-  return { proposals: [], proposals_head: "", proposals_table: table(0), running: [], sessions: "", health: [], errors: [], ...o, needs, table: ntable(needs, o.table), running_table: rtable(o.running || [], o.running_table) };
+  return { proposals: [], proposals_head: "", proposals_table: table(0), streams: streamsOf(o.proposals || []), health: [], errors: [], ...o, needs, table: ntable(needs, o.table) };
 };
 const live = (target, kind) => ({ target, short: target, session: target, project: "p", summary: target, items: [], actions: [], question: { kind, text: "Run it?" } });
 const shipIt = { id: "a1", project: "p", kind: "question", question: "Ship it?", title: "Ship it?", body: "", options: ["yes", "no"], recommend: "yes", session: "x", claude_session: "", judge: "", judge_line: "", created: now() - 120 };
@@ -260,45 +261,15 @@ test("a reply being typed in an open card survives a refresh", () => {
   assert.match(box.innerHTML, /data-id="a1"/, "the opened row is still open after the repaint");
 });
 
-test("Running is the shared table: its own bar and keys, and each row opens the item and links its records", () => {
+test("what could not be read is drawn as hub-core worded it", () => {
+  const html = draw(home({ errors: ["Prometheus: down"] }));
+  assert.match(html, /^<div class="cline warn">Prometheus: down<\/div>/);
+});
+
+test("an overdue verdict, not a past ETA, is what etaText draws late", () => {
   const due = now() - 7200;
-  const html = draw(home({
-    running: [
-      { slug: "ar-1", title: "Queue cards", project: "agent-runtime", target: "lab/dotfiles-agent-2:1", started: "2026-11-11T10:00:00Z",
-        phases: { done: 3, total: 4, shown: "3/4", next: "docs", eta_epoch: due, overdue: { phase: "phase 4/4", age_min: 125, expected_min: 40 } }, overdue: true, row: "ar-1494", epic: "ar-1292",
-        pr: "#1871", pr_url: "https://github.com/o/r/pull/1871", pr_state: "open", ci: "fail", ci_url: "https://github.com/o/r/pull/1871/checks" },
-      { slug: "q-2", title: "No session yet", project: "trader" },
-    ],
-    // hub_core::links beside the rows (`Running::link`): the page draws these, it builds none.
-    running_table: { states: [{ name: "all", n: 2 }, { name: "CI failing", n: 1 }], links: [
-      { item: "#sessions/lab%2Fdotfiles-agent-2%3A1", project: "#projects/agent-runtime", row: "#projects/all?q=id:=ar-1494", epic: "#projects/all?q=id:=ar-1292",
-        pr: "https://github.com/o/r/pull/1871", ci: "https://github.com/o/r/pull/1871/checks" },
-      { item: "#queue/q-2", project: "#projects/trader" },
-    ] },
-  }));
-  assert.match(html, /<div data-tbl="r"><div id="home-run-head"><h2 class="sec" id="sec-running">Running <span class="n">2<\/span><\/h2><\/div>/);
-  assert.match(html, /<\/table><div class="cline muted"><a href="#sessions\?s=running">all running in Sessions<\/a><\/div><\/div>/, "the filtered link is the table's last line");
-  assert.match(html, /id="home-run-q" data-tsearch placeholder="search, or project:dotfiles ci:fail epic:ar-1292"/);
-  assert.match(html, /data-ts="CI failing"><span class="tl">CI FAILING<\/span><span class="tv">1</);
-  assert.match(html, /data-tsort="eta"[^>]*>eta<\/button>/);
-  const row = /<tr class="jr" data-slug="ar-1" data-target="lab\/dotfiles-agent-2:1"[^>]*>(.*?)<\/tr>/.exec(html);
-  assert.ok(row, html);
-  const cells = row[1];
-  assert.match(cells, /<a class="tl" href="#sessions\/lab%2Fdotfiles-agent-2%3A1">Queue cards<\/a><div class="muted">next: docs<\/div>/);
-  assert.match(cells, /<a class="tl" href="#projects\/agent-runtime">agent-runtime<\/a>/);
-  assert.match(cells, /<a class="tl" href="#projects\/all\?q=id:=ar-1494">ar-1494<\/a>/);
-  assert.match(cells, /<a class="tl" href="#projects\/all\?q=id:=ar-1292">ar-1292<\/a>/);
-  assert.match(cells, /<td class="n">3\/4<\/td><td class="n"><span class="qlate"[^>]*>overdue 2h/);
-  assert.match(cells, /<a class="tl" href="https:\/\/github.com\/o\/r\/pull\/1871" target="_blank" rel="noopener">#1871<\/a>/);
-  assert.match(cells, /<a class="tl ci fail" href="https:\/\/github.com\/o\/r\/pull\/1871\/checks"[^>]*>fail<\/a>/);
-  // No session: the row has no target to open and empty cells say so.
-  assert.match(html, /<tr class="jr" data-slug="q-2" title="q-2"><td class="wrap"><a class="tl" href="#queue\/q-2">No session yet<\/a><\/td><td><a class="tl" href="#projects\/trader">trader<\/a><\/td><td>-<\/td><td>-<\/td><td class="n">-<\/td><td class="n">-<\/td><td>-<\/td><td>-<\/td><td class="n">-<\/td><\/tr>/);
-  assert.doesNotMatch(html, /cchip running/, "no running cards: a card is only an opened record");
-  assert.match(draw(home()), /Nothing running from the queue\./);
   // fleet-sessions' verdict decides overdue, the one the Overdue chip counts by: a past ETA it did
   // not call overdue is drawn as an ETA, not late, on every page that draws one (etaText).
-  const calm = draw(home({ running: [{ slug: "ar-3", title: "t", project: "p", phases: { done: 1, total: 2, eta_epoch: due } }] }));
-  assert.doesNotMatch(calm, /qlate/, calm);
   ctx.input = { done: 1, total: 2, eta_epoch: due };
   assert.doesNotMatch(vm.runInContext("etaText(input)", ctx), /qlate/, "no page clock of its own");
   ctx.input.overdue = { phase: "phase 2/2", age_min: 90, expected_min: 40 };
@@ -307,46 +278,32 @@ test("Running is the shared table: its own bar and keys, and each row opens the 
   // running another plan's phase) says so instead of a dash.
   ctx.input = { overdue: { phase: "phase 2/3", age_min: 70, expected_min: 30 } };
   assert.match(vm.runInContext("etaText(input)", ctx), />overdue 1h<\/span>$/);
-  const runner = draw(home({ running: [{ slug: "ar-4", title: "t", project: "p", overdue: true }] }));
-  assert.match(runner, /<td class="n">-<\/td><td class="n"><span class="qlate"[^>]*>overdue<\/span><\/td>/, runner);
 });
 
-test("a Running row click opens its session, else its queue item; a link in it goes where it points", () => {
-  draw(home({ running: [{ slug: "ar-1", title: "t", project: "p", target: "lab/x:1" }, { slug: "q-2", title: "u", project: "p" }] }));
-  const went = [];
-  ctx.went = went;
-  vm.runInContext(`setTab = (t, a, q, p) => went.push(t + "/" + (p || a))`, ctx);
-  const tr = (data) => ({ dataset: data });
-  const click = (target) => on.click.forEach((f) => f({ target, preventDefault() {} }));
-  const cell = (row, link) => ({ dataset: {}, closest: (sel) => (sel === "a" ? link : sel.startsWith("tr.jr[data-slug]") ? row : null) });
-  click(cell(tr({ slug: "ar-1", target: "lab/x:1" }), null));
-  click(cell(tr({ slug: "q-2" }), null));
-  click(cell(tr({ slug: "q-2" }), {}));
-  assert.deepEqual(went, ["sessions/sessions/lab/x:1", "queue/q-2"]);
+test("Home has no Running section and no zero-count filler", () => {
+  const html = draw(home());
+  assert.doesNotMatch(html, /Running|Nothing running|home-run/);
 });
 
-test("Running reads its own r-prefixed keys beside Needs you's and Proposals'", async () => {
-  reads.length = 0;
-  vm.runInContext(`st.views.home = "q=x&nq=kind:ask&rq=project:trader&rs=CI+failing"`, ctx);
-  await vm.runInContext("refreshHome()", ctx);
-  const r = reads.find((p) => p.startsWith("/api/home?"));
-  assert.ok(r, reads.join(" "));
-  const p = new URLSearchParams(r.split("?")[1]);
-  assert.deepEqual([p.get("q"), p.get("nq"), p.get("rq"), p.get("rs")], ["x", "kind:ask", "project:trader", "CI failing"]);
-  vm.runInContext(`st.views.home = ""`, ctx);
-});
-
-test("what could not be read is drawn as hub-core worded it", () => {
-  const html = draw(home({ errors: ["Prometheus: down"] }));
-  assert.match(html, /^<div class="cline warn">Prometheus: down<\/div>/);
-});
-
-test("Home has no Numbers heading: the session counts close Running", () => {
-  const html = draw(home({ sessions: "3 working, 1 need you, 0 stalled" }));
-  assert.doesNotMatch(html, /Numbers/);
-  assert.match(html, />Running <span class="n">0<\/span><\/h2>/);
-  assert.match(html, /<div class="empty">Nothing running from the queue.<\/div><div class="cline muted"><b>Sessions<\/b> 3 working, 1 need you, 0 stalled <a href="#sessions\?s=running">all running in Sessions<\/a><\/div>/);
-  assert.doesNotMatch(draw(home()), /<b>Sessions/, "the control: no counts, no line for them");
+test("Proposals is one row per stream with its count and ages; a click searches that stream", () => {
+  const rows = [prop("a1"), prop("a2"), prop("b1", { stream: "analysis" })];
+  const html = draw(home({ proposals: rows, proposals_head: "3 from 2 streams", proposals_table: table(3) }));
+  assert.equal((html.match(/<tr class="jr pstream/g) || []).length, 2, "two streams, two rows");
+  assert.match(html, /<tr class="jr pstream" data-stream="dream"><td>dream<\/td><td>dotfiles<\/td><td class="n">10m<\/td><td class="n">24h<\/td><td class="n">2<\/td><\/tr>/);
+  assert.doesNotMatch(html, /data-accept=/, "the records open from a row, not before");
+  assert.doesNotMatch(html, /home-prop-q/, "no search bar until one is asked for");
+  const open = draw(home({ proposals: rows, proposals_head: "3 from 2 streams", proposals_table: { ...table(3), q: "stream:=dream" } }));
+  assert.match(open, /<tr class="jr pstream sel" data-stream="dream">/);
+  assert.match(open, /data-accept="a1"/);
+  // The row's click puts its stream in the search; a second click clears it.
+  const views = [];
+  ctx.views = views;
+  vm.runInContext("propT.view = (v) => views.push(v)", ctx);
+  const row = { dataset: { stream: "dream" } };
+  const click = (q) => { vm.runInContext(`hst.data.proposals_table.q = ${JSON.stringify(q)}`, ctx); on.click.forEach((f) => f({ target: { dataset: {}, closest: (sel) => (sel === "tr.pstream" ? row : null) }, preventDefault() {} })); };
+  click("");
+  click("stream:=dream");
+  assert.deepEqual(JSON.parse(JSON.stringify(views)), [{ q: "stream:=dream", s: "" }, { q: "", s: "" }]);
 });
 
 const vitals = (o = {}) => ({ head: "1 of 2 off target", line: "1 of 2 off target: Outcome", all_ok: false, rows: [
@@ -378,8 +335,8 @@ test("Vitals folds to its head when all are on target, and shows nothing until i
 // Cards as hub_core::cards serializes them: a link is its href.
 const card = (tab, o = {}) => ({ tab, title: tab[0].toUpperCase() + tab.slice(1), big: "3", unit: "live", level: "ok", bar: [{ level: "ok", n: 2 }, { level: "red", n: 1 }],
   parts: [{ label: "Working", value: "2", level: "ok" }], lists: [], counted: `counted on ${tab}`, error: null, link: `#${tab}`, ...o });
-// The grid's order, read from hub-core (hub_core::cards::ORDER after its two widget-led cards), so the page draws what the widgets and the TUI draw.
-const TABS = [...readFileSync(new URL("../../.local/src/hub-core/src/cards.rs", import.meta.url), "utf8").match(/pub const ORDER: &\[&str\] = &\[([^\]]*)\]/)[1].matchAll(/"(\w+)"/g)].map((m) => m[1]).slice(2);
+// The page's cards, read from hub-core (hub_core::cards::ORDER, Needs you first, without Main red: agent-web cards.rs PAGE_SKIPS).
+const TABS = [...readFileSync(new URL("../../.local/src/hub-core/src/cards.rs", import.meta.url), "utf8").match(/pub const ORDER: &\[&str\] = &\[([^\]]*)\]/)[1].matchAll(/"(\w+)"/g)].map((m) => m[1]).filter((t) => t !== "red");
 const cards = () => TABS.map((t) => card(t));
 function drawCards(list, o = {}) {
   ctx.list = list;
@@ -469,13 +426,6 @@ test("a Home read names the open Needs you rows, which the server keeps on the p
   vm.runInContext(`st.views.home = ""`, ctx);
 });
 
-test("Running past SHOWN ends in a link to all of it on Queue; within it, no link", () => {
-  const running = Array.from({ length: 6 }, (_, i) => ({ slug: `ar-${i}`, title: `t${i}`, project: "p" }));
-  const html = draw(home({ running, running_table: { total: 9, shown: 9 } }));
-  assert.match(html, /<\/table><div class="cline muted"><a href="#queue\?s=running">all 9 on Queue<\/a><\/div><div class="cline muted"><a href="#sessions\?s=running">/);
-  assert.doesNotMatch(draw(home({ running })), /#queue\?s=running/);
-});
-
 test("a retired tab name lands on its new tab, and anything unknown on the landing tab, Home", () => {
   const of = (n) => vm.runInContext(`tabOf(${JSON.stringify(n)})`, ctx);
   assert.equal(of("waiting"), "home");
@@ -488,16 +438,16 @@ test("a retired tab name lands on its new tab, and anything unknown on the landi
   assert.equal(of("nope"), "home");
 });
 
-test("Proposals is one line when empty and sits between Needs you and Running", () => {
+test("Proposals is one line when empty and follows Needs you", () => {
   const html = draw(home());
   assert.match(html, /Nothing proposed\./);
-  assert.ok(html.indexOf("Needs you") < html.indexOf("Proposals") && html.indexOf("Proposals") < html.indexOf("Running"), html);
+  assert.ok(html.indexOf("Needs you") < html.indexOf("Proposals") && html.indexOf("Proposals") !== -1, html);
   assert.doesNotMatch(html, /home-prop-q/);
 });
 
 test("a proposal row carries both actions; past one page the server's pager follows", () => {
   const rows = Array.from({ length: 6 }, (_, i) => prop(`p${i}`));
-  const html = draw(home({ proposals: rows, proposals_head: "10 from 1 stream", proposals_table: { ...table(10), pager: { page: 1, pages: 2, per: 6 } } }));
+  const html = draw(home({ proposals: rows, proposals_head: "10 from 1 stream", proposals_table: { ...table(10), q: "stream:=dream", pager: { page: 1, pages: 2, per: 6 } } }));
   assert.match(html, /<div id="home-prop-head"><h2 class="sec" id="sec-proposals">Proposals <span class="n">10<\/span><\/h2><\/div>/);
   assert.match(html, /data-accept="p0".*data-reject="p0"/s);
   assert.equal((html.match(/data-accept=/g) || []).length, 6);
@@ -509,7 +459,7 @@ test("an opened proposal says why and exactly what accept runs, and escapes it",
   const p = prop("aa", { why: "<b>why</b>", evidence: "https://x.test/r", error: "boom" });
   ctx.input = p.id;
   vm.runInContext("hst.prop.open = input", ctx);
-  const html = draw(home({ proposals: [p], proposals_head: "1 from 1 stream", proposals_table: table(1) }));
+  const html = draw(home({ proposals: [p], proposals_head: "1 from 1 stream", proposals_table: { ...table(1), q: "stream:=dream" } }));
   vm.runInContext("hst.prop.open = null", ctx);
   assert.match(html, /Accept runs.*agent-queue add --project dotfiles -- x/s);
   assert.match(html, /&lt;b&gt;why&lt;\/b&gt;/);
@@ -521,7 +471,7 @@ test("evidence that is not a web link is text, never an href", () => {
   const p = prop("aa", { evidence: "javascript:alert(1)" });
   ctx.input = p.id;
   vm.runInContext("hst.prop.open = input", ctx);
-  const html = draw(home({ proposals: [p], proposals_head: "1 from 1 stream", proposals_table: table(1) }));
+  const html = draw(home({ proposals: [p], proposals_head: "1 from 1 stream", proposals_table: { ...table(1), q: "stream:=dream" } }));
   vm.runInContext("hst.prop.open = null", ctx);
   assert.doesNotMatch(html, /href="javascript/);
 });
@@ -576,7 +526,19 @@ test("Since last night shows only what is not ok, links each row and folds the o
   assert.match(html, /<a href="#sessions">Sessions<\/a> <span class="cchip warn">warn<\/span> Sessions line <\/div>/, "a warn row has no fix");
   assert.equal(html.match(/data-fix=/g).length, 1);
   assert.match(html, /Infra, Nightly, Delivery, Costs ok/);
-  assert.ok(html.indexOf("Needs you") < html.indexOf("Since last night") && html.indexOf("Since last night") < html.indexOf("Proposals"));
+  // A red one leads the sections after Needs you, ahead of Parked; the cards, Vitals and the Needs
+  // you head stay above it, inside the first phone screen.
+  ctx.list = cards();
+  vm.runInContext("hst.cards = list; hst.cardsErr = null; st.parked = [{ id: 'p1', project: 'dotfiles', parked_until: '2026-12-01', title: 'later' }]", ctx);
+  drawNight(night({ rows: [area("Workers overnight", "bad")] }));
+  const red = draw(home({ vitals: vitals() }));
+  const at = (t) => red.indexOf(t);
+  assert.ok(at('<div class="kgrid">') > -1 && at('<div class="kgrid">') < at('data-pf="home-vitals"') && at('data-pf="home-vitals"') < at('id="home-need-head"'), "the cards, then Vitals, then Needs you");
+  assert.ok(at('id="home-need-head"') < at('id="sec-night"') && at('id="sec-night"') < at("Parked <span"), "a red night comes after Needs you and before Parked");
+  // Negative control: a night with no red area keeps its place, after Parked and before Proposals.
+  const warn = drawNight(night({ rows: [area("Sessions", "warn")] }));
+  assert.ok(warn.indexOf("Parked <span") > -1 && warn.indexOf("Parked <span") < warn.indexOf("Since last night") && warn.indexOf("Since last night") < warn.indexOf("Proposals"), "a warn night stays after Parked");
+  vm.runInContext("st.parked = []", ctx);
 });
 
 test("a failed briefing read says why instead of an all-clear", () => {

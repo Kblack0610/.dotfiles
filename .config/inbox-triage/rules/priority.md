@@ -1,5 +1,4 @@
-urgent: it breaks or blocks the person or production now.
-high: the project's next release needs it, a test or check is red on main (a red main holds every change's gate), or the person asked for it (#requested). Being filed under an open epic (#of/<epic id>) is not a reason: nearly every row is.
-low: real work with a named benefit (what gets better, for whom) that nothing waits on now: a fault that is not blocking anyone, a cleanup with a stated cost it removes, epic work in its turn.
-Not a row at all: a nice-to-have, polish nobody asked for, a "could also", an idea with no named benefit. That is an improvement, and it is kept in the project's improvements.md, never at any priority.
-When unsure between two priorities, pick the lower.
+A row's priority is urgent, high, normal or low, and it has one reason: the first of these that fits it (slug, the priority it gives, what it means; tab separated, most urgent first):
+{{> priority-reasons.tsv}}
+Normal is the default for real work: real work with a named benefit (what gets better, for whom) is never below normal. A fault or a feature with a named benefit is normal at least, under a "to standard" epic too; only the faults the list calls minor-fault stay low. Being filed under an open epic (#of/<epic id>) is not a reason: nearly every row is.
+Not a row at all: a nice-to-have, polish nobody asked for, a "could also", an idea with no named benefit. That is an improvement, and it is kept in the project's improvements.md, never at any priority. Health work is never an improvement: a row that closes a named stage-standard criterion ("meet the prod stage standard"), adds a test for shipped behaviour that has none, or fixes a CI, perf or alerting fault backed by a number is real work, so file or keep it as a row. `notes improve` refuses it anyway (exit 3), and the row stays.

@@ -1,11 +1,13 @@
-//! The Home tab for both surfaces: what needs the human, what is running
-//! (with the session counts), the vitals and the health chips the briefing reads; the status
+//! The Home tab for both surfaces: what needs the human, the vitals and the health chips the
+//! briefing reads; the running items are `running`, the Queue's and a project's In flight; the status
 //! grid over it is `cards`, one card per tab. It joins what the other readers already read (fleet-sessions'
 //! `state.json`, `queue::Queue`, `infra::Infra`, read by `gather`), and `build` reads nothing
 //! itself, so it is pure and both surfaces get the same rows in the same order.
 //!
 //! One row per thing that waits: a session with a pending ask shows the ask, not the session as
-//! well, and a queue item waiting on a session already shown adds nothing. Sessions are matched
+//! well, and a queue item waiting on a session already shown adds nothing. A waiting item an ask
+//! holds (its `ask:<id>` tag, or the ask's Claude session last in its `sessions`) shows on the ask's row
+//! after that session ends, and one whose last session's ask was answered leaves the list. Sessions are matched
 //! to a queue item by their tmux session name, the one name an item and a state row carry; an ask
 //! finds its session by `claude_session` alone (the state row's `session_id`), never by name.
 //!
@@ -14,7 +16,7 @@
 //! from facts (who can act, whether it stops running work, what it holds, how long it waited, a
 //! sheet row's own priority), never a model's number.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -25,7 +27,7 @@ use crate::infra::Infra;
 use crate::proposals::Proposal;
 use crate::queue::{Item, Queue, State};
 use crate::reading::State as Reading;
-use crate::tasks::{Feed, Row};
+use crate::tasks::{self, Feed, Row};
 
 /// The health chips, in the order the strip shows them (the `cc:domain_status` domains).
 pub const DOMAINS: [&str; 12] = [
@@ -35,7 +37,10 @@ pub const DOMAINS: [&str; 12] = [
 /// The row types only the human can do (notes-cli README, "The task row": `run decide check`).
 /// A human-sheet row of another type is work an agent can take, so it never needs the human.
 pub const HUMAN_TYPES: [&str; 3] = ["run", "decide", "check"];
-/// The priorities a human-sheet row needs before it joins NEEDS YOU; a `#low` row waits on the sheet.
+/// The priorities a human-sheet row needs before it joins NEEDS YOU; a `#normal`, untagged
+/// (notes-cli `md::DEFAULT_PRIORITY`) or `#low` row waits on the sheet. A row that truly blocks
+/// the human is triaged to `#high`. Why: `#normal` is the default for new work, so counting it
+/// floods NEEDS YOU with to-dos that block nothing.
 pub const SHEET_PRIORITIES: [&str; 2] = ["urgent", "high"];
 /// The domains shown even when Prometheus has no status for them, so a missing one reads as no data:
 /// k3s and ci are the platform, and projects holds the playground and dotfiles CI watches that left ci.
@@ -376,21 +381,14 @@ impl crate::table::Row for Need {
 
     fn val(&self, col: &str) -> crate::table::Val {
         use crate::table::Val;
-        let text = |s: &str| {
-            if s.is_empty() {
-                Val::None
-            } else {
-                Val::Text(s.to_string())
-            }
-        };
         match col {
             "rank" => Val::Num(self.rank as f64),
-            "kind" => text(self.need.slug()),
-            "project" => text(&self.project),
+            "kind" => Val::word(self.need.slug()),
+            "project" => Val::word(&self.project),
             // Earlier is bigger, so a header's first click puts the longest wait on top.
             "waited" => self.since.map_or(Val::None, |s| Val::Num(-(s as f64))),
-            "holds" => text(&self.holds()),
-            "what" => text(&self.text),
+            "holds" => Val::word(&self.holds()),
+            "what" => Val::word(&self.text),
             _ => Val::None,
         }
     }
@@ -431,9 +429,10 @@ pub struct Score {
     pub value: i64,
     /// What it holds, in words: "session, 3 phases, 2 queued", empty when nothing.
     pub holds: String,
-    /// A sheet row's priority (`urgent` or `high`). Every sheet row ranks after every live wait
-    /// with the same `human`, since a live wait stops work already running and a to-do does not;
-    /// among sheet rows, `high` follows `urgent`. A live wait has none.
+    /// A sheet row's priority (`urgent` or `high`, `SHEET_PRIORITIES`). Every sheet row ranks
+    /// after every live wait with the same `human`, since a live wait stops work already running
+    /// and a to-do does not; among sheet rows, `high` follows `urgent`. A live
+    /// wait has none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<String>,
 }
@@ -465,14 +464,23 @@ impl Score {
         }
     }
 
+    /// Name the waiting queue item an ask holds first in `holds`, so the item shows once, on its ask's row.
+    pub fn holding(&mut self, slug: &str) {
+        self.holds = if self.holds.is_empty() {
+            slug.to_string()
+        } else {
+            format!("{slug}, {}", self.holds)
+        };
+    }
+
     /// Where the row ranks among the human's: 0 a live wait (an ask, a session, a queue item),
-    /// which stops running work; 1 an `urgent` sheet to-do; 2 a `high` one.
+    /// which stops running work; then a sheet to-do by its priority, `urgent` 1, `high` 2
+    /// (`tasks::PRIORITIES` order).
     fn tier(&self) -> u8 {
-        match self.priority.as_deref() {
-            None => 0,
-            Some("high") => 2,
-            Some(_) => 1,
-        }
+        self.priority.as_deref().map_or(0, |p| {
+            let i = tasks::PRIORITIES.iter().position(|w| *w == p);
+            1 + i.unwrap_or(tasks::PRIORITIES.len()) as u8
+        })
     }
 }
 
@@ -503,6 +511,10 @@ pub struct Running {
     /// The epic the row's `#of/` names, when the board feed was read and has the row.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub epic: Option<String>,
+    /// That epic's system, the area of its `epic(<system>):` row (`dispatch`, `views`): the
+    /// category the Projects chip groups running work by.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub area: Option<String>,
     /// The PR as a row prints it (`#1871`) and its page: the session's, else the item's own.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pr: Option<String>,
@@ -547,10 +559,7 @@ impl crate::table::Row for Running {
 
     fn val(&self, col: &str) -> crate::table::Val {
         use crate::table::Val;
-        let text = |s: Option<&str>| match s {
-            Some(s) if !s.is_empty() => Val::Text(s.to_string()),
-            _ => Val::None,
-        };
+        let text = |s: Option<&str>| s.map_or(Val::None, Val::word);
         match col {
             "item" => text(Some(&self.title)),
             "project" => text(Some(&self.project)),
@@ -680,10 +689,6 @@ pub struct Home {
     pub proposals_failed: bool,
     /// No read has answered yet, so nothing can be said about what is open.
     pub proposals_unread: bool,
-    pub running: Vec<Running>,
-    /// The session counts that head Running (`12 working, 2 need you, 2 stalled`); empty when
-    /// fleet-sessions' state has no counts.
-    pub sessions: String,
     /// The fleet's front page, one row per question; None when Prometheus did not answer.
     pub vitals: Option<crate::vitals::Vitals>,
     /// The `cc:domain_status` chips: the briefing's overnight line reads them; the pages show
@@ -860,7 +865,7 @@ fn said_lower(live: Option<&Value>, k: &str) -> Option<String> {
 }
 
 /// The running queue items, each with its session's plan progress when it has a checklist and
-/// the links a row opens: Home's running section and each Projects card's in-flight list. `board`
+/// the links a row opens: the Queue's running state and each Projects card's in-flight list. `board`
 /// gives each row's epic; without it the epic is left blank, never guessed.
 pub fn running(state: &Value, q: &Queue, board: Option<&Feed>) -> Vec<Running> {
     let sessions: Vec<&Value> = state["sessions"]
@@ -882,6 +887,10 @@ pub fn running(state: &Value, q: &Queue, board: Option<&Feed>) -> Vec<Running> {
             let epic = board_row
                 .zip(board)
                 .and_then(|((p, id), f)| f.row(p, id)?.parent.clone());
+            let area = board_row
+                .zip(board)
+                .zip(epic.as_deref())
+                .and_then(|(((p, _), f), e)| f.row(p, e)?.area.clone());
             let (pr, pr_url) = pr_of(live, i).map_or((None, None), |(l, u)| (Some(l), u));
             let ci = said_lower(live, "ci").filter(|_| pr.is_some());
             Running {
@@ -894,6 +903,7 @@ pub fn running(state: &Value, q: &Queue, board: Option<&Feed>) -> Vec<Running> {
                 target,
                 row: board_row.map(|(_, id)| id.to_string()),
                 epic,
+                area,
                 ci_url: ci
                     .as_ref()
                     .and(pr_url.as_deref())
@@ -907,8 +917,18 @@ pub fn running(state: &Value, q: &Queue, board: Option<&Feed>) -> Vec<Running> {
         .collect()
 }
 
-/// One pending ask's row: its record rides along as `ask`, the card's source.
-fn ask_need(a: &Value, target: Option<String>, since: Option<i64>, score: Score) -> Need {
+/// One pending ask's row: its record rides along as `ask`, the card's source. The waiting queue
+/// item it holds (`item`) shows here, first in `holds`, and nowhere else.
+fn ask_need(
+    a: &Value,
+    item: Option<&Item>,
+    target: Option<String>,
+    since: Option<i64>,
+    mut score: Score,
+) -> Need {
+    if let Some(i) = item.filter(|i| i.state == State::Waiting) {
+        score.holding(&i.slug);
+    }
     let recommend = str_of(a, "recommend");
     Need {
         kind: Kind::Ask,
@@ -923,6 +943,59 @@ fn ask_need(a: &Value, target: Option<String>, since: Option<i64>, score: Score)
         target,
         since,
     }
+}
+
+/// The waiting item ask `a` holds once its session is gone: the one tagged `ask:<id>`, or the one
+/// whose last session is the ask's `claude_session`, unless an ask before it took that item (`asked`).
+fn held_item<'a>(items: &[&'a Item], a: &Value, asked: &HashSet<String>) -> Option<&'a Item> {
+    let (id, owner) = (str_of(a, "id"), str_of(a, "claude_session"));
+    items.iter().copied().find(|i| {
+        i.state == State::Waiting
+            && !asked.contains(&i.slug)
+            && (i.held_on(id) || (!owner.is_empty() && i.last_session() == Some(owner)))
+    })
+}
+
+/// Each Claude session's latest answer time, from the state's `answered_asks`. An answer whose
+/// delivery failed decides nothing yet: a board shows the failed delivery.
+fn answered_by_session(state: &Value) -> HashMap<&str, i64> {
+    let mut by: HashMap<&str, i64> = HashMap::new();
+    for a in state["answered_asks"].as_array().into_iter().flatten() {
+        let sid = str_of(a, "claude_session");
+        let failed = str_of(a, "delivery") == "failed";
+        if let Some(at) = a["answered_at"]
+            .as_i64()
+            .filter(|_| !sid.is_empty() && !failed)
+        {
+            by.entry(sid)
+                .and_modify(|e| *e = (*e).max(at))
+                .or_insert(at);
+        }
+    }
+    by
+}
+
+/// The waiting items that have had their decision: each one's last session's ask was answered
+/// after its wait began (its `waiting:` stamp, else `started:`), so the resume moves it, not the
+/// human. One with no wait start at all is not taken as decided.
+fn decided(state: &Value, items: &[&Item]) -> HashSet<String> {
+    let answered = answered_by_session(state);
+    items
+        .iter()
+        .filter(|i| i.state == State::Waiting)
+        .filter(|i| {
+            i.last_session()
+                .and_then(|sid| answered.get(sid))
+                .is_some_and(|&at| {
+                    i.waiting
+                        .as_deref()
+                        .or(i.started.as_deref())
+                        .and_then(ts)
+                        .is_some_and(|w| w <= at)
+                })
+        })
+        .map(|i| i.slug.clone())
+        .collect()
 }
 
 /// NEEDS YOU from fleet-sessions' `state.json` (null when missing), the queue, the board feed and
@@ -974,8 +1047,9 @@ pub fn needs(
     };
     let mut out = hold_needs(state); // the first conditions: the sort keeps their push order
     let mut shown: HashSet<String> = HashSet::new();
-    // The slugs of the queue items an ask already stands for, by its live owner or its `task`.
-    let mut asked: HashSet<String> = HashSet::new();
+    // The slugs of the queue items an ask already stands for: an answered one (`decided`), or a
+    // pending one by its live owner, its `task` or its hold (`held_item`).
+    let mut asked: HashSet<String> = decided(state, &items);
     // The board rows (`<project>:<id>`) an ask, session or queue row above already stands for.
     let mut worked: HashSet<String> = HashSet::new();
     fn work(worked: &mut HashSet<String>, i: Option<&Item>) {
@@ -1018,14 +1092,13 @@ pub fn needs(
         if !task.is_empty() {
             worked.insert(format!("{}:{task}", str_of(a, "project")));
         }
-        // Its queue item: the live owner's, else the one its `task` names, so an ask whose owner
-        // died still stands for the item waiting on it.
-        let by_task = items
-            .iter()
-            .copied()
-            .find(|i| !task.is_empty() && i.slug == task);
+        // Its queue item: the live owner's, else the one its `task` names, else the waiting one it
+        // holds (`held_item`), so an ask whose owner died still stands for it: one decision, one row.
+        let by_task = items.iter().copied().find(|i| i.slug == task);
         work(&mut worked, by_task);
-        let item = item_of(session).or(by_task);
+        let item = item_of(session)
+            .or(by_task)
+            .or_else(|| held_item(&items, a, &asked));
         work(&mut worked, item);
         asked.extend(item.map(|i| i.slug.clone()));
         let score = Score::new(
@@ -1035,7 +1108,7 @@ pub fn needs(
             dependents(item.map(|i| i.slug.as_str())),
             age_min(since),
         );
-        out.push(ask_need(a, target, since, score));
+        out.push(ask_need(a, item, target, since, score));
     }
     for s in &sessions {
         let target = str_of(s, "target");
@@ -1175,7 +1248,7 @@ pub fn needs(
         let what = str_of(j, "what");
         out.push(condition(
             Kind::Janitor,
-            format!("janitor:{what}"),
+            format!("janitor:{}", j["key"].as_str().unwrap_or(what)),
             format!(
                 "Home cluster needs you: {} ({}, {}).",
                 what.trim_end_matches('.'),
@@ -1336,7 +1409,7 @@ fn hold_needs(state: &Value) -> Vec<Need> {
 }
 
 /// Home from fleet-sessions' `state.json` (null when missing), the queue, the board feed,
-/// and infra: NEEDS YOU in `needs` order, the running items, the session counts, the vitals and the chips.
+/// and infra: NEEDS YOU in `needs` order, the vitals and the chips.
 pub fn build(
     state: Option<&Value>,
     queue: Option<&Queue>,
@@ -1386,16 +1459,6 @@ pub fn build(
     ));
     if let Some(q) = queue {
         h.errors.extend(q.errors.iter().cloned());
-        h.running = running(state, q, board.and_then(|b| b.as_ref().ok()));
-    }
-    if let Some(c) = state["counts"].as_object() {
-        let n = |k: &str| c.get(k).and_then(Value::as_u64).unwrap_or(0);
-        h.sessions = format!(
-            "{} working, {} need you, {} stalled",
-            n("WORKING"),
-            n("NEEDS"),
-            n("STALLED")
-        );
     }
 
     match infra {
@@ -1419,7 +1482,7 @@ mod tests {
 
     #[test]
     fn an_ask_row_keeps_the_state_documents_audit_of_for_the_pager() {
-        let row = |a: Value| ask_need(&a, None, None, Score::new(true, true, 0, 0, 120));
+        let row = |a: Value| ask_need(&a, None, None, None, Score::new(true, true, 0, 0, 120));
         let audit = row(json!({"id": "au", "project": "p", "question": "q?", "audit_of": "q1"}));
         assert_eq!(audit.ask.unwrap().audit_of, "q1");
         let plain = row(json!({"id": "a1", "project": "p", "question": "q?"}));
@@ -1499,6 +1562,17 @@ mod tests {
             ],
             "main": [{"repo": "repo", "reason": "repo red: Tests"}],
         })
+    }
+
+    #[test]
+    fn a_janitor_need_takes_its_id_from_the_key_and_its_text_from_the_newest_line() {
+        let mut st = state();
+        st["janitor"] = json!([{"when": "10:50", "who": "janitor",
+            "what": "node a quarantine (x3 (06:20Z, 06:50Z, 10:50Z))", "key": "node a quarantine"}]);
+        let h = build_all(Some(&st), None, None, None, NOW);
+        let n = h.needs.iter().find(|n| n.kind == Kind::Janitor).unwrap();
+        assert_eq!(n.id, "janitor:node a quarantine");
+        assert!(n.text.contains("x3 (06:20Z, 06:50Z, 10:50Z)"));
     }
 
     #[test]
@@ -1599,6 +1673,103 @@ mod tests {
             ]
         );
         assert!(!h.errors.iter().any(|e| e.contains("something-else")));
+    }
+
+    #[test]
+    fn a_waiting_item_an_ask_holds_shows_once_under_the_ask() {
+        // The asker ended: no live owner and no `task`, as an ask filed from a dispatched session.
+        let mut st = state();
+        st["asks"][0]["claude_session"] = json!("sid-gone");
+        let mut by_session = item("held", State::Waiting, Some("lab:repo-agent-9"));
+        by_session
+            .extra
+            .insert("sessions".into(), json!("sid-old sid-gone"));
+        let q = Queue {
+            items: vec![by_session.clone()],
+            ..Default::default()
+        };
+        let h = build(Some(&st), Some(&q), None, None, NOW);
+        assert!(!h.needs.iter().any(|n| n.kind == Kind::Queue));
+        let ask = h.needs.iter().find(|n| n.id == "a1").unwrap();
+        assert_eq!(ask.holds_line(), "holds held");
+        // Its `ask:<id>=<options>` tag holds it the same way, whatever sessions it ran in.
+        let mut by_tag = item("held", State::Waiting, None);
+        by_tag.tags = "tier2 ask:a1=retry".into();
+        let q = Queue {
+            items: vec![by_tag],
+            ..Default::default()
+        };
+        let h = build(Some(&st), Some(&q), None, None, NOW);
+        assert!(!h.needs.iter().any(|n| n.kind == Kind::Queue));
+        // Negative controls: an item resumed in a later session waits on that one, not the ask,
+        let mut resumed = by_session.clone();
+        resumed
+            .extra
+            .insert("sessions".into(), json!("sid-gone sid-later"));
+        let q = Queue {
+            items: vec![resumed],
+            ..Default::default()
+        };
+        let h = build(Some(&st), Some(&q), None, None, NOW);
+        assert!(h
+            .needs
+            .iter()
+            .any(|n| n.kind == Kind::Queue && n.id == "held"));
+        // and an item another session ran in is its own row.
+        by_session
+            .extra
+            .insert("sessions".into(), json!("sid-other"));
+        let q = Queue {
+            items: vec![by_session],
+            ..Default::default()
+        };
+        let h = build(Some(&st), Some(&q), None, None, NOW);
+        assert!(h
+            .needs
+            .iter()
+            .any(|n| n.kind == Kind::Queue && n.id == "held"));
+        assert_eq!(
+            h.needs.iter().find(|n| n.id == "a1").unwrap().holds_line(),
+            ""
+        );
+    }
+
+    #[test]
+    fn an_answered_asks_waiting_item_leaves_needs_you() {
+        let mut st = state();
+        st["asks"] = json!([]);
+        st["answered_asks"] =
+            json!([{"id": "x", "claude_session": "sid-x", "answered_at": NOW - 600}]);
+        let mut done = item("decided", State::Waiting, Some("lab:repo-agent-9"));
+        done.extra.insert("sessions".into(), json!("sid-x"));
+        // No `waiting:` stamp: it waits since it started, before the answer.
+        done.started = Some("2026-11-05T16:00:00Z".into()); // NOW - 3600
+        let shown = |q: Item, st: &Value| {
+            let q = Queue {
+                items: vec![q],
+                ..Default::default()
+            };
+            build(Some(st), Some(&q), None, None, NOW)
+                .needs
+                .iter()
+                .any(|n| n.id == "decided")
+        };
+        assert!(!shown(done.clone(), &st));
+        // Negative controls: an answer whose delivery failed decides nothing yet,
+        let mut failed = st.clone();
+        failed["answered_asks"][0]["delivery"] = json!("failed");
+        assert!(shown(done.clone(), &failed));
+        // and an item with no wait start at all is not taken as decided.
+        let mut unknown = done.clone();
+        unknown.started = None;
+        assert!(shown(unknown, &st));
+        // Negative control: it began waiting again after the answer, so it waits on something new.
+        let mut again = done.clone();
+        again.waiting = Some("2026-11-05T16:55:00Z".into()); // NOW - 300
+        assert!(shown(again, &st));
+        // And an answer to an earlier session of it decides nothing for the last one.
+        done.extra.insert("sessions".into(), json!("sid-x sid-y"));
+        assert!(shown(done, &st));
     }
 
     #[test]
@@ -1756,11 +1927,10 @@ mod tests {
         // The session row takes its queue item's words, and its age from the idle minutes.
         assert_eq!(h.needs[1].text, "Do dialog");
         assert_eq!(h.needs[1].since, Some(NOW - 180));
-        assert_eq!(h.running.len(), 1);
-        let p = h.running[0].phases.as_ref().unwrap();
+        let run = running(&state(), &q, None);
+        assert_eq!(run.len(), 1);
+        let p = run[0].phases.as_ref().unwrap();
         assert_eq!((p.done, p.total), (2, 4));
-        // The session counts head Running.
-        assert_eq!(h.sessions, "2 working, 2 need you, 0 stalled");
         assert_eq!(h.errors, ["Prometheus: reading"]);
     }
 
@@ -1786,9 +1956,18 @@ mod tests {
             ..Default::default()
         };
         let mut feed = board().unwrap();
-        feed.rows[6].parent = Some("tr-1".into());
-        let h = build(Some(&st), Some(&q), Some(&Ok(feed)), None, NOW);
-        let r = &h.running[0];
+        feed.rows
+            .iter_mut()
+            .find(|r| r.id.as_deref() == Some("tr-9"))
+            .unwrap()
+            .parent = Some("tr-1".into());
+        // The epic's own row names its system, the area the chip groups running work by.
+        let mut epic = sheet("tr-1", "agent", "epic", "high", "2026-11-01");
+        epic.area = Some("data".into());
+        feed.rows.push(epic);
+        let run = running(&st, &q, Some(&feed));
+        let r = &run[0];
+        assert_eq!(r.area.as_deref(), Some("data"));
         assert_eq!(
             (
                 r.row.as_deref(),
@@ -1817,8 +1996,12 @@ mod tests {
                 true
             )
         );
-        let l = &h.running[1];
-        assert_eq!((l.row.as_deref(), l.epic.as_deref()), (Some("tr-50"), None));
+        let l = &run[1];
+        assert_eq!(
+            (l.row.as_deref(), l.epic.as_deref(), l.area.as_deref()),
+            (Some("tr-50"), None, None),
+            "a row under no epic has no area, never its own scope"
+        );
         assert_eq!(
             (l.pr.as_deref(), l.ci.as_deref(), l.ci_url.as_deref()),
             (Some("#3"), None, None)
@@ -1827,8 +2010,12 @@ mod tests {
         // Without the board the epic is blank, never guessed; the rest still joins.
         let bare = running(&st, &q, None);
         assert_eq!(
-            (bare[0].epic.as_deref(), bare[0].row.as_deref()),
-            (None, Some("tr-9"))
+            (
+                bare[0].epic.as_deref(),
+                bare[0].area.as_deref(),
+                bare[0].row.as_deref()
+            ),
+            (None, None, Some("tr-9"))
         );
         // Overdue is fleet-sessions' verdict, never a past ETA against a clock of Home's own.
         let mut calm = st.clone();
@@ -1850,7 +2037,7 @@ mod tests {
         );
         let shown = |q: &str, s: &str| -> Vec<String> {
             crate::table::View::new::<Running>(q, s, "", "")
-                .apply(&h.running)
+                .apply(&run)
                 .iter()
                 .map(|r| r.slug.clone())
                 .collect()
@@ -1861,7 +2048,7 @@ mod tests {
         assert_eq!(shown("epic:tr-1", ""), ["busy"]);
         assert_eq!(shown("tr-50", ""), ["lone"]);
         // Each cell that names a record links its one page (hub_core::links), sent beside the rows.
-        let (_, t) = crate::table::View::default().summary(&h.running);
+        let (_, t) = crate::table::View::default().summary(&run);
         let at = |i: usize, c: &str| t.links[i].get(c).map(String::as_str);
         assert_eq!(
             (at(0, "item"), at(0, "project"), at(0, "row"), at(0, "epic")),
@@ -2140,6 +2327,9 @@ mod tests {
         Ok(Feed {
             rows: vec![
                 sheet("tr-117", "human", "run", "high", "2026-11-01"),
+                // A #normal row and an untagged one wait on the sheet, like a #low one.
+                sheet("tr-120", "human", "run", "normal", "2026-10-20"),
+                sheet("tr-121", "human", "run", "", "2026-10-20"),
                 sheet("tr-50", "human", "run", "urgent", "2026-11-04"),
                 // Worked by the queue item behind ask a1, so the ask stands for it.
                 sheet("tr-51", "human", "decide", "urgent", "2026-11-04"),
@@ -2165,8 +2355,8 @@ mod tests {
         let h = build_all(Some(&state()), Some(&q), Some(&board()), None, NOW);
         let rows: Vec<(Kind, &str)> = h.needs.iter().map(|n| (n.kind, n.id.as_str())).collect();
         // The #urgent row has waited longer than the ask, but every live wait leads: it stops
-        // running work and a to-do does not. The #high row follows the #urgent one; conditions
-        // stay last.
+        // running work and a to-do does not. The #high row follows the #urgent one; the older
+        // normal one waits on the sheet; conditions stay last.
         assert_eq!(
             rows,
             [
@@ -2222,18 +2412,6 @@ mod tests {
             .iter()
             .any(|e| e.starts_with("notes board --json: boom")));
         assert!(h.needs.iter().all(|n| n.kind != Kind::Sheet));
-    }
-
-    #[test]
-    fn no_state_reads_as_no_session_counts() {
-        let none = build(
-            Some(&Value::Null),
-            None,
-            None,
-            Some(&infra(vec![], &[])),
-            NOW,
-        );
-        assert_eq!(none.sessions, "", "no state, no counts");
     }
 
     #[test]

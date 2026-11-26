@@ -2,7 +2,7 @@
 # notes.nvim `notes.tag_source`: the dropdown of known tags on `#`. These run the real module in
 # a headless nvim with a stub `notes` on PATH; the menu itself needs a real editor.
 #
-# Skips where nvim is absent (the CI fast tier installs none by design); run it locally.
+# Skips where nvim is absent; the test image pins it (tests/Dockerfile, NVIM_VERSION).
 
 setup() {
   load '../vendor/bats-support/load'

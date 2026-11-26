@@ -112,6 +112,83 @@ if [ "$gemini_rules" = 1 ]; then
 fi
 cp "$stage_dir/AGENTS.md" "$OPENCODE_HOME/AGENTS.md"
 
+# agy (Google's Antigravity CLI) has no rulesync target and reads neither ~/.gemini/GEMINI.md nor
+# ~/.claude: its global customization root is ~/.gemini/config/ (rules/*.md, skills.json). The
+# rules are the same staged AGENTS.md Codex and opencode get; the skills are one declared path to
+# the Claude corpus, so a skill added or removed there needs no sync. Other skills.json entries
+# (the human's own) stay.
+AGY_CONFIG_DIR="$GEMINI_HOME/config"
+mkdir -p "$AGY_CONFIG_DIR/rules"
+{ printf -- '---\ntrigger: always_on\n---\n\n'; cat "$stage_dir/AGENTS.md"; } > "$AGY_CONFIG_DIR/rules/fleet.md"
+python3 - "$AGY_CONFIG_DIR/skills.json" "$CLAUDE_HOME/skills" <<'PY'
+import json, os, sys
+path, corpus = sys.argv[1], sys.argv[2]
+try:
+    cur = json.load(open(path)) if os.path.getsize(path) else {}
+except FileNotFoundError:
+    cur = {}
+except ValueError as e:
+    sys.exit(f"agy: {path} is not JSON ({e}); left as it is, fix it by hand")
+if not isinstance(cur, dict) or not isinstance(cur.get("entries", []), list):
+    sys.exit(f"agy: {path} has no entries list; left as it is, fix it by hand")
+keep = [e for e in cur.get("entries", []) if not (isinstance(e, dict) and e.get("path") == corpus)]
+cur["entries"] = keep + [{"path": corpus}]
+with open(path + ".tmp", "w") as f:
+    json.dump(cur, f, indent=2)
+    f.write("\n")
+os.replace(path + ".tmp", path)
+PY
+
+# agy hand sessions have no guard hook, and a fleet run's srt jail does not cover `agy` started by hand,
+# so the destructive Bash denies Claude keeps in settings.json are mirrored into agy's own
+# `permissions.deny` (ar-4967): one `command(<binary and subcommand>)` per whole-word prefix, plus the
+# credential files an agent must not read or write. agy's rules are prefixes with no globs, so an entry
+# with a glob in the middle or a shell metacharacter is skipped, as sync-codex-home.sh's deny_rules does.
+# The key is the one agy's settings struct declares (permissions.allow, .deny, .ask), read from the
+# binary 2026-11-25, not yet exercised by a live deny. A rule the human added by hand stays: the sync adds to the list. The hook form (hooks.json) is a follow-up.
+AGY_SETTINGS="${AGY_SETTINGS:-$GEMINI_HOME/antigravity-cli/settings.json}"
+AGY_DENY_COUNT=$(python3 - "$AGY_SETTINGS" "$CLAUDE_HOME/settings.json" "$HOME" <<'PY'
+import json, os, re, sys
+path, claude, home = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    deny = json.load(open(claude)).get("permissions", {}).get("deny", [])
+except (FileNotFoundError, ValueError):
+    deny = []
+rules = set()
+for entry in deny:
+    m = re.fullmatch(r"Bash\((.*)\)", entry) if isinstance(entry, str) else None
+    if not m:
+        continue
+    pat = re.sub(r"[ ]?\*$", "", m.group(1)).strip()
+    if not pat or re.search(r"[*|<>$~;&`\"'()]", pat):
+        continue
+    rules.add("command(" + " ".join(pat.split()) + ")")
+claude_home = os.path.dirname(claude)
+for cred in (os.path.join(home, ".ssh"), os.path.join(home, ".config/gh"), os.path.join(claude_home, ".credentials.json"),
+             os.path.join(home, ".claude/.credentials.json"), os.path.join(home, ".codex/auth.json")):
+    for kind in ("read_file", "write_file"):
+        rules.add(f"{kind}({cred})")
+try:
+    cur = json.load(open(path)) if os.path.getsize(path) else {}
+except FileNotFoundError:
+    cur = {}
+except ValueError as e:
+    sys.exit(f"agy: {path} is not JSON ({e}); left as it is, fix it by hand")
+if not isinstance(cur, dict) or not isinstance(cur.get("permissions") or {}, dict):
+    sys.exit(f"agy: {path} has no permissions object; left as it is, fix it by hand")
+perms = cur.get("permissions") or {}
+have = [r for r in perms.get("deny", []) if isinstance(r, str)] if isinstance(perms.get("deny", []), list) else []
+perms["deny"] = sorted(rules | set(have))
+cur["permissions"] = perms
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(path + ".tmp", "w") as f:
+    json.dump(cur, f, indent=2)
+    f.write("\n")
+os.replace(path + ".tmp", path)
+print(len(perms["deny"]))
+PY
+) || AGY_DENY_COUNT="not written"
+
 {
     echo "$START_MARKER"
     # rulesync writes each server's `type` and `description`, which Codex does not know: it lists
@@ -245,8 +322,8 @@ def agy_server(server: dict) -> dict | None:
     return out
 
 
-# agy (Google's Antigravity CLI) has no rulesync target, so its servers come from the rulesync
-# source itself. A server the human added there (`agy mcp add`, unityMCP) stays: the names this
+# agy has no rulesync target, so its servers come from the rulesync source itself (its rules and
+# skills are written above). A server the human added there (`agy mcp add`, unityMCP) stays: the names this
 # sync wrote last time sit in <file>.managed, so only a server dropped from the shared set goes.
 agy_path = Path(os.environ["AGY_MCP_PATH"])
 agy_stage_path = os.environ["AGY_STAGE_PATH"]
@@ -301,7 +378,7 @@ if [ "$gemini_rules" = 1 ] || [ "$gemini_mcp" = 1 ]; then
 else
     echo "  Gemini: skipped (rulesync target 'geminicli' emitted nothing)"
 fi
-echo "  agy:    $AGY_MCP_PATH"
+echo "  agy:    $AGY_CONFIG_DIR/rules/fleet.md, $AGY_CONFIG_DIR/skills.json, $AGY_MCP_PATH and $AGY_SETTINGS ($AGY_DENY_COUNT deny rules)"
 echo "  OpenCode: $OPENCODE_HOME/AGENTS.md and $OPENCODE_HOME/opencode.json"
 
 # Unlike Claude's CLAUDE.md (hand-written, never touched above), OpenCode's AGENTS.md is both

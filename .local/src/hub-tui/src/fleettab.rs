@@ -13,16 +13,9 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
 use crate::fit::{cell, clip_line, len, wrap, Table};
-use crate::fmt::{clock, older, pct, Palette};
+use crate::fmt::{clock, heading, older, pct, Palette};
 use hub_core::display::fmt::{dur_secs, tokens, usd_opt};
 use hub_core::layout::FOLD_ROWS;
-
-fn heading(title: &str, rest: String, p: Palette) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(title.to_string(), p.head()),
-        Span::styled(rest, p.dim()),
-    ])
-}
 
 /// The rows as shown: the table's query, state and sort applied. j/k step through these and
 /// Enter opens the one selected.
@@ -646,7 +639,8 @@ const PAGE_KEYS: &str = "[ ] runner  Esc all runners";
 
 /// One runner's page (`hub tab 'sessions runners <runner>'`, Enter on a Runners row): summary first, then 14
 /// days of runs, its status and activity, 24h and 7d calls, the registry, the lane's extras block
-/// (`DETAIL=` in its conf) and the conf, as agent-web's `#sessions/runners/<runner>`.
+/// (`DETAIL=` in its conf), the conf and, for a lane, its instructions (`judge-eval prompts`), as
+/// agent-web's `#sessions/runners/<runner>`. The instructions come last: they run to hundreds of lines.
 pub fn runner_page(
     name: &str,
     r: Option<&Result<Runner, String>>,
@@ -796,7 +790,7 @@ pub fn runner_page(
 
     out.push(Line::raw(""));
     out.push(clip_line(
-        heading("STATUS", "  its status file, then activity.log".into(), p),
+        heading("STATUS", "  its status file, then activity.log", p),
         w,
     ));
     if r.status.is_empty() {
@@ -827,7 +821,7 @@ pub fn runner_page(
 
     out.push(Line::raw(""));
     let floor = if r.calls.partial { "+" } else { "" };
-    out.push(clip_line(heading("CALLS", "  calls.jsonl".into(), p), w));
+    out.push(clip_line(heading("CALLS", "  calls.jsonl", p), w));
     let row = |l: &str, t: &Totals, f: &str| {
         vec![
             l.to_string().into(),
@@ -861,7 +855,14 @@ pub fn runner_page(
     out.extend(registry(&r.registry, p, now, w));
     out.extend(extras(&r.extras, p, now, w));
 
-    out.push(Line::raw(""));
+    out.extend(conf(r, p, w));
+    out.extend(instructions(r, p, w));
+    out
+}
+
+/// The runner's conf as agentctl sources it, one `KEY=value` a line.
+fn conf(r: &Runner, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let mut out = vec![Line::raw("")];
     out.push(clip_line(
         heading(
             "CONF",
@@ -876,6 +877,35 @@ pub fn runner_page(
                 Span::raw(format!("  {}=", c.key)),
                 Span::styled(c.value.clone(), p.dim()),
             ]),
+            w,
+        ));
+    }
+    out
+}
+
+/// A lane's instructions (`judge-eval prompts`) under their heading, each line wrapped to the pane;
+/// nothing for any other runner.
+fn instructions(r: &Runner, p: Palette, w: usize) -> Vec<Line<'static>> {
+    if r.instructions.is_empty() {
+        return vec![];
+    }
+    let mut out = vec![
+        Line::raw(""),
+        clip_line(
+            heading(
+                "INSTRUCTIONS",
+                format!("  judge-eval prompts {}", r.name),
+                p,
+            ),
+            w,
+        ),
+    ];
+    for l in r.instructions.lines() {
+        out.extend(crate::projtab::wrapped(
+            "  ",
+            l,
+            ratatui::style::Style::default(),
+            p,
             w,
         ));
     }
@@ -1191,7 +1221,7 @@ pub mod tests {
         let s = text(&fixture(), 160);
         for want in [
             "dispatch: unreadable",
-            "RUNNERS  3 of 3 rows, spend: 0 Costs",
+            "RUNNERS  3 of 3 rows, spend: Costs",
             "all 3  lead 1  deliver 0  observe 2  learn 0  maintain 0",
             "KIND",
             "FOR",
@@ -1511,6 +1541,28 @@ pub mod tests {
     }
 
     #[test]
+    fn a_lanes_instructions_come_last_wrapped_to_the_pane_and_another_runner_has_none() {
+        let s = page_text(Some(&Ok(runner_fixture())), 60).join("\n");
+        assert!(!s.contains("INSTRUCTIONS"), "{s}");
+        let long = "word ".repeat(30);
+        let r = Runner {
+            instructions: format!("=== dream ===\nmodel: sonnet\n\n{long}\n"),
+            ..runner_fixture()
+        };
+        let lines = page_text(Some(&Ok(r)), 60);
+        let at = lines
+            .iter()
+            .position(|l| l.starts_with("INSTRUCTIONS  judge-eval prompts dream"))
+            .unwrap_or_else(|| panic!("{}", lines.join("\n")));
+        assert!(at > lines.iter().position(|l| l.starts_with("CONF")).unwrap());
+        let body = &lines[at + 1..];
+        assert_eq!(body[..3], ["  === dream ===", "  model: sonnet", "  "]);
+        assert!(body.iter().all(|l| l.chars().count() <= 60), "{body:?}");
+        let words: usize = body[3..].iter().map(|l| l.matches("word").count()).sum();
+        assert_eq!(words, 30, "a long line wraps, never clips: {body:?}");
+    }
+
+    #[test]
     fn a_runner_page_puts_its_summary_first_then_runs_status_calls_registry_extras_and_conf() {
         let lines = page_text(Some(&Ok(runner_fixture())), 160);
         let s = lines.join("\n");
@@ -1620,7 +1672,7 @@ pub mod tests {
         r.extras = Extras::sentinel(vec![watch("TRIP"), watch("OK")]);
         let lines = page_text(Some(&Ok(r)), 120);
         assert!(
-            lines.contains(&"WATCHES  2 watches, 1 tripped: 7 Alerts, Watches".to_string()),
+            lines.contains(&"WATCHES  2 watches, 1 tripped: 8 Alerts, Watches".to_string()),
             "{lines:?}"
         );
         assert!(!lines.iter().any(|l| l.contains("LAST RUN")), "{lines:?}");

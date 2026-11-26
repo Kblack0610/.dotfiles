@@ -11,8 +11,8 @@ setup() {
     printf '#!/usr/bin/env bash\necho "%s $*" >> "$CALLS"\n[ -z "${STUB_FAIL:-}" ] || { echo boom; exit 1; }\necho done\n' "$c" > "$BATS_TEST_TMPDIR/bin/$c"
     chmod +x "$BATS_TEST_TMPDIR/bin/$c"
   done
-  # agent-ask: post logs its argv and prints an id (or fails on STUB_ASK_FAIL); answer-names prints STUB_ANSWER
-  printf '#!/usr/bin/env bash\necho "agent-ask $*" >> "$CALLS"\ncase "$1" in post) [ -z "${STUB_ASK_FAIL:-}" ] || exit 2; echo ASK1 ;; answer-names) printf "%%s\\n" "${STUB_ANSWER:-}" ;; esac\n' > "$BATS_TEST_TMPDIR/bin/agent-ask"
+  # agent-ask: post logs its argv and prints an id (or fails on STUB_ASK_FAIL); answer-names prints STUB_ANSWER, show STUB_BY as answered_by
+  printf '#!/usr/bin/env bash\necho "agent-ask $*" >> "$CALLS"\ncase "$1" in post) [ -z "${STUB_ASK_FAIL:-}" ] || exit 2; echo ASK1 ;; answer-names) printf "%%s\\n" "${STUB_ANSWER:-}" ;; show) printf "answered_by: %%s\\n" "${STUB_BY:-human}" ;; esac\n' > "$BATS_TEST_TMPDIR/bin/agent-ask"
   chmod +x "$BATS_TEST_TMPDIR/bin/agent-ask"
   PATH="$BATS_TEST_TMPDIR/bin:$PATH"
   AP="$BATS_TEST_DIRNAME/../../.local/bin/agent-propose"
@@ -70,7 +70,7 @@ past_due() { jq -c '.expires = "2020-01-01T00:00:00Z"' "$AGENT_PROPOSE_DIR/$1.js
   run add_queue other
   assert_success
   assert_equal "$(jq -r '.status + " " + .ask' "$AGENT_PROPOSE_DIR/$id.json")" "asked ASK1"
-  run grep -c '^agent-ask post --kind approval --project dotfiles --options accept=agent-queue add --project dotfiles --priority high -- fix it|reject=' "$CALLS"
+  run grep -c '^agent-ask post --kind gate --project dotfiles --options accept=agent-queue add --project dotfiles --priority high -- fix it|reject=' "$CALLS"
   assert_output 1
   run grep -c -- "--resume run: agent-propose answered -- An unread proposal expires today: Cap gh polling?" "$CALLS"
   assert_output 1
@@ -114,8 +114,15 @@ past_due() { jq -c '.expires = "2020-01-01T00:00:00Z"' "$AGENT_PROPOSE_DIR/$1.js
   other="$(add_queue other)"
   past_due "$other"
   "$AP" expire
-  STUB_ANSWER=reject run "$AP" answered ASK1
+  # NEGATIVE CONTROL: a session's own answer is no ruling, so the proposal stays asked
+  STUB_ANSWER=reject STUB_BY=agent run "$AP" answered ASK1
+  assert_failure
+  assert_output --partial "ask ASK1 was answered by agent; $other stays asked"
+  assert_equal "$(jq -r .status "$AGENT_PROPOSE_DIR/$other.json")" asked
+  STUB_ANSWER=reject STUB_BY=judge run "$AP" answered ASK1
   assert_output "$other rejected"
+  # the judge decides a gate as the human would, and the record names it (ar-4765)
+  assert_equal "$(jq -r .decided_by "$AGENT_PROPOSE_DIR/$other.json")" judge
   run grep -c '^agent-queue' "$CALLS"
   assert_output 1
 }
@@ -284,4 +291,67 @@ add_mem0() { "$AP" add --stream dream --project dotfiles --verb mem0 --arg "Pref
   assert_output --partial "no mem0 config"
   assert_equal "$(jq -r '.status' "$AGENT_PROPOSE_DIR/$id.json")" open
   grep -c curl "$CALLS" | grep -qx 1
+}
+
+# aged <id> <days>: the record was filed that many days ago.
+aged() { jq -c --arg c "$(date -u -d "-$2 days" +%Y-%m-%dT%H:%M:%SZ)" '.created = $c' "$AGENT_PROPOSE_DIR/$1.json" > "$BATS_TEST_TMPDIR/r" && cp "$BATS_TEST_TMPDIR/r" "$AGENT_PROPOSE_DIR/$1.json"; }
+add_ci() { "$AP" add --stream ci-failures --project p --verb row --arg "ci(infra): run ${1:-1}" "run ${1:-1}"; }
+
+@test "a ci-failures proposal past its window reads expired before any sweep, and the sweep closes it unasked (ar-4966)" {
+  old="$(add_ci 1)"; fresh="$(add_ci 2)"
+  other="$("$AP" add --stream dream --project p --verb none "same age, no window")"
+  aged "$old" 4; aged "$fresh" 1; aged "$other" 4
+  assert_equal "$("$AP" list --json | jq -r '[.[].id] | sort | join(" ")')" "$(printf '%s\n' "$fresh" "$other" | sort | paste -sd' ')"
+  assert_equal "$("$AP" count)" 2
+  assert_equal "$("$AP" list --json --status expired | jq -r '.[].id')" "$old"
+  run "$AP" accept "$old"
+  assert_failure
+  assert_output --partial "already expired"
+  run "$AP" expire
+  assert_output "0 asked"
+  [ ! -e "$CALLS" ]
+  assert_equal "$(jq -r '.status + " " + .decided_by + " " + .result' "$AGENT_PROPOSE_DIR/$old.json")" "expired window past the ci-failures window of 3 days"
+  assert_equal "$(jq -r .status "$AGENT_PROPOSE_DIR/$fresh.json")" open
+  # an expired key may come back, filed fresh
+  assert_equal "$(add_ci 1)" "$old"
+  assert_equal "$(jq -r .status "$AGENT_PROPOSE_DIR/$old.json")" open
+}
+
+@test "expire with an id closes a proposal a merged fix answered: no verb, no ask (ar-4966)" {
+  id="$(add_ci 3)"
+  run "$AP" expire --by pr:42 "$id"
+  assert_success
+  assert_output "$id expired"
+  [ ! -e "$CALLS" ]
+  assert_equal "$(jq -r '.status + " " + .decided_by' "$AGENT_PROPOSE_DIR/$id.json")" "expired pr:42"
+  run "$AP" expire --by pr:42
+  assert_failure
+  assert_output --partial "give its id"
+  # one already past its window, not yet swept, still records its fix
+  old="$(add_ci 4)"; aged "$old" 4
+  run "$AP" expire --by pr:43 "$old"
+  assert_success
+  assert_equal "$(jq -r '.status + " " + .decided_by' "$AGENT_PROPOSE_DIR/$old.json")" "expired pr:43"
+  # an asked one waits on its ask's answer
+  asked="$(add_queue)"; past_due "$asked"; "$AP" expire
+  run "$AP" expire --by pr:44 "$asked"
+  assert_failure
+  assert_output --partial "already asked"
+}
+
+@test "a window that is not stream=days, or not above 0 days, is refused" {
+  AGENT_PROPOSE_WINDOWS="ci-failures" run "$AP" count
+  assert_failure
+  assert_output --partial "AGENT_PROPOSE_WINDOWS is not stream=days"
+  AGENT_PROPOSE_WINDOWS="ci-failures=0" run "$AP" count
+  assert_failure
+  assert_output --partial "0 days"
+}
+
+@test "a record with no stream does not break list or count" {
+  id="$(add_ci 5)"
+  jq -c 'del(.stream)' "$AGENT_PROPOSE_DIR/$id.json" > "$BATS_TEST_TMPDIR/r" && cp "$BATS_TEST_TMPDIR/r" "$AGENT_PROPOSE_DIR/$id.json"
+  assert_equal "$("$AP" count)" 1
+  run "$AP" list --json
+  assert_success
 }

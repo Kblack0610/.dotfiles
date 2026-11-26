@@ -38,7 +38,7 @@
 #                     otherwise. There is no --force.
 #   revive <path> [--branch <b>]
 #                     put a reaped worktree back at <path> (directly under $WT_ROOT), on <b>
-#                     when it is still here or on origin, else on a new branch off the trunk,
+#                     when it is still here, on its trunk remote or on origin, else on a new branch off the trunk,
 #                     so a conversation that ran there can `claude --resume` (agent-ask reopen).
 #                     Refuses a path or session name another tree holds now.
 #   revive <file.bundle>
@@ -160,9 +160,25 @@ wt_main_repo() {
 # why each half matters.
 wt_repo_name() { panel_session_name "$1"; }
 
+# wt_trunk_remote <repo> -- the remote this repo lands on: its Forgejo remote when it is
+# Forgejo-canonical (so_forge_remote, the rule agent-land and fleet-sessions' forge_of use), else
+# origin. home-config's origin is the GitHub mirror, which lags the forge, and razer-laptop's clone
+# has no origin at all: `fetch origin` failed every dispatch start there and cut each session off
+# a local master 414 commits behind forgejo/master (ar-3218, 2026-11-24).
+wt_trunk_remote() {
+  local r rc=0
+  r=$(so_forge_remote "$1" 2>/dev/null) || rc=$?
+  case "$rc" in
+  0) ;;
+  2) panel_warn "$1 is Forgejo-canonical but no remote is on SO_FORGEJO_HOSTS; using origin"; r=origin ;;
+  *) r=origin ;;
+  esac
+  printf '%s\n' "${r%% *}"
+}
+
 # wt_default_branch <main-repo> -- what this repo calls its trunk.
 #
-# `git config wt.trunk <branch>` wins over origin's default (merge_proof_branch), for a repo whose GitHub default is
+# `git config wt.trunk <branch>` wins over the trunk remote's default (merge_proof_branch), for a repo whose GitHub default is
 # not where work lands. bnb/platform defaults to `main` (production manifests) but merges
 # into `develop`: cutting from main put every agent on a stale base, and judging reap against
 # main kept any worktree whose work had landed on develop but not been released yet.
@@ -172,7 +188,7 @@ wt_default_branch() {
     printf '%s\n' "$ref"
     return 0
   fi
-  if ref=$(MERGE_PROOF_REMOTE=origin merge_proof_branch "$1"); then
+  if ref=$(MERGE_PROOF_REMOTE=$(wt_trunk_remote "$1") merge_proof_branch "$1"); then
     printf '%s\n' "$ref"
     return 0
   fi
@@ -185,11 +201,13 @@ wt_default_branch() {
   return 1
 }
 
-# wt_base_ref <main-repo> <branch> -- prefer origin/<branch>; fall back to the local branch
+# wt_base_ref <main-repo> <branch> -- prefer <trunk remote>/<branch>; fall back to the local branch
 # so this still works offline, or in a fixture repo with no remote.
 wt_base_ref() {
-  if git -C "$1" rev-parse --verify --quiet "origin/$2" >/dev/null 2>&1; then
-    printf 'origin/%s\n' "$2"
+  local remote
+  remote=$(wt_trunk_remote "$1")
+  if git -C "$1" rev-parse --verify --quiet "$remote/$2" >/dev/null 2>&1; then
+    printf '%s/%s\n' "$remote" "$2"
   elif git -C "$1" rev-parse --verify --quiet "$2" >/dev/null 2>&1; then
     printf '%s\n' "$2"
   else
@@ -232,17 +250,18 @@ wt_is_husk() {
 wt_branch_of() { git -C "$1" branch --show-current 2>/dev/null; }
 
 # wt_branch_name <main-repo> <n> -- the branch a cut of slot <n> starts on:
-# `agent-<n>-<UTC yymmdd-HHMMSS>`, a name no earlier cut used, local or on origin (a counter
+# `agent-<n>-<UTC yymmdd-HHMMSS>`, a name no earlier cut used, local or on a remote (a counter
 # follows when one did, as two cuts of a slot in one second do). The slot number is reused; a
 # branch name never is. GitHub keeps a PR's head after the PR merges or closes, so a reused
 # `agent-N` met an old origin/agent-N: the push was rejected non-fast-forward and
 # `gh pr create` opened a PR on the stale head (dotfiles #1546, #1579, #1650, #1661, #1666;
 # ar-1121).
 wt_branch_name() {
-  local stem b i=1
+  local stem b i=1 remote
+  remote=$(wt_trunk_remote "$1")
   stem="agent-$2-$(date -u +%y%m%d-%H%M%S)"
   b="$stem"
-  while git -C "$1" show-ref --quiet "refs/heads/$b" "refs/remotes/origin/$b"; do
+  while git -C "$1" show-ref --quiet "refs/heads/$b" "refs/remotes/origin/$b" "refs/remotes/$remote/$b"; do
     i=$((i + 1))
     b="$stem-$i"
   done
@@ -255,14 +274,26 @@ wt_branch_name() {
 # its remotes. That is a stale pointer, not work -- `submodule update` fixes it and loses
 # nothing. Counting it pinned 17 of 29 unity-core-playground slots, every one dirty only
 # because the trunk bumped External/unity-core underneath it, so `new` ratcheted to agent-31.
+#
+# A status that FAILS is not a clean tree: rc 1, printing git's first error line. Counting its
+# empty output as 0 let a razer-laptop slot whose submodule .git a canary run had overwritten
+# with a bare sha read clean and landed, so dispatch picked it to recycle on every pass and
+# `git switch` refused on the files the run left (ar-6220).
 wt_dirty_count() {
-  local n=0 kind xy sub p
+  local n=0 kind xy sub p st
+  # One run, stderr kept: a second run to read the error could pass and leave no reason.
+  # Only entry lines count, so a warning on a status that passed is not work.
+  if ! st=$(git -C "$1" status --porcelain=v2 2>&1); then
+    printf '%s\n' "${st%%$'\n'*}"
+    return 1
+  fi
   while read -r kind xy sub _ _ _ _ _ p; do
+    case "$kind" in 1 | 2 | u | '?') ;; *) continue ;; esac
     if [ "$kind $xy $sub" = '1 .M SC..' ] && wt_submodule_pushed "$1/$p"; then
       continue
     fi
     n=$((n + 1))
-  done < <(git -C "$1" status --porcelain=v2 2>/dev/null)
+  done <<<"$st"
   printf '%s\n' "$n"
 }
 
@@ -642,7 +673,10 @@ wt_work_reason() {
     return 2
   }
 
-  dirty=$(wt_dirty_count "$path")
+  dirty=$(wt_dirty_count "$path") || {
+    printf 'git status fails: %s\n' "$dirty"
+    return 1
+  }
   [ "$dirty" -eq 0 ] || {
     printf 'dirty (%s uncommitted)\n' "$dirty"
     return 1
@@ -849,9 +883,13 @@ wt_row() {
   local name dirty state glyph note
 
   name="$(basename "$path")"
-  dirty=$(wt_dirty_count "$path")
-
-  if [ "$dirty" -gt 0 ]; then
+  # A gone directory has no status to fail; it reads as not landed, as before.
+  dirty=0
+  if [ -d "$path" ] && ! dirty=$(wt_dirty_count "$path"); then
+    state=dirty
+    glyph="$G_ATTN"
+    note="git status fails: $dirty"
+  elif [ "$dirty" -gt 0 ]; then
     state=dirty
     glyph="$G_ATTN"
     note="$dirty uncommitted"
@@ -965,7 +1003,9 @@ wt_next_slot() {
       #
       # With no session, a hold that outlived its directory is dropped here: `rm -rf` or a husk
       # reap leaves the entry, and `prune` skips a locked one, so it would pin the slot for good.
-      { git -C "$main" worktree unlock "$path" && git -C "$main" worktree remove "$path"; } 2>/dev/null || :
+      # An unlocked entry (a reap killed after its unlock) is dropped too: unlock fails on it, so
+      # it must not gate the remove, or `git worktree add` refuses the path (ar-5133).
+      { git -C "$main" worktree unlock "$path"; git -C "$main" worktree remove "$path"; } 2>/dev/null || :
       fresh="$n"
     fi
     n=$((n + 1))
@@ -1248,7 +1288,7 @@ wt_hold() {
 wt_prepare() {
   local main="$1" path="$2" n="$3" kind="$4" pin="${5:-}" def base
   # Best-effort: an offline machine still gets a worktree, just off the last-known trunk.
-  git -C "$main" fetch origin --quiet || panel_warn "fetch failed; cutting off the local trunk"
+  git -C "$main" fetch "$(wt_trunk_remote "$main")" --quiet || panel_warn "fetch failed; cutting off the local trunk"
   if [ -n "$pin" ]; then
     base=$(git -C "$main" rev-parse --verify --quiet "$pin^{commit}") ||
       panel_fail "--base $pin is no commit in $main after the fetch" || return 1
@@ -1372,13 +1412,16 @@ cmd_reap() {
   # The policy passed above, so wt_hold's lock comes off here, and a refusal puts it back: the
   # tree is staying. A tree that never had one fails the unlock harmlessly. Another tool's lock
   # stays on even if it appeared after the policy check, so git refuses the removal below.
-  local out
+  local out dirty
   wt_foreign_lock "$path" >/dev/null || git -C "$main" worktree unlock "$path" 2>/dev/null || :
   if ! out=$(git -C "$main" worktree remove "$path" 2>&1); then
     case "$out" in
     *'containing submodules'*)
-      [ "$(wt_dirty_count "$path")" -eq 0 ] &&
+      if ! dirty=$(wt_dirty_count "$path"); then
+        out="git status fails: $dirty"
+      elif [ "$dirty" -eq 0 ]; then
         out=$(git -C "$main" worktree remove --force "$path" 2>&1) && out=''
+      fi
       ;;
     esac
     if [ -n "$out" ]; then
@@ -1421,12 +1464,12 @@ wt_repo_of_name() {
 # cmd_revive <path> [--branch <b>] -- put a reaped worktree back at <path>, for a conversation
 # that has to resume there: `claude --resume` finds a session by the directory it ran in, and a
 # session that closed over its own ask had its clean tree reaped by wind-down (agent-ask reopen).
-# On <b> when that branch is still here or on origin, else on a new branch off the trunk, as
+# On <b> when that branch is still here, on its trunk remote or on origin, else on a new branch off the trunk, as
 # `new` cuts one; held like any tree `new` makes. Under `new`'s lock, so a cut cannot take the
 # slot mid-add. A tree already at <path> on <b> is left as it is; anything else there, or a
 # live session under the name, is another session's slot now, and is refused.
 cmd_revive() {
-  local path='' branch='' name main repo n def base lock
+  local path='' branch='' name main repo n def base lock remote
   while [ $# -gt 0 ]; do
     case "$1" in
     --branch) branch="${2:-}"; shift 2 || panel_die "--branch needs a value" ;;
@@ -1461,7 +1504,8 @@ cmd_revive() {
   wt_lock "$lock" || panel_die "already preparing a worktree for $repo"
   # shellcheck disable=SC2064 # expand $lock now: it is local, and gone by the time EXIT fires
   trap "rm -f $(printf '%q' "$lock")" EXIT
-  git -C "$main" fetch origin --quiet || panel_warn "fetch failed; reviving off the local refs"
+  remote=$(wt_trunk_remote "$main")
+  git -C "$main" fetch "$remote" --quiet || panel_warn "fetch failed; reviving off the local refs"
   # A registration that outlived its directory (`rm -rf` past wt_hold) would make git refuse the
   # add: wt's own hold comes off and prune drops it. Another tool's lock stays, and the add fails.
   local held
@@ -1474,6 +1518,8 @@ cmd_revive() {
   mkdir -p "$WT_ROOT" || panel_die "cannot create $WT_ROOT"
   if [ -n "$branch" ] && git -C "$main" show-ref --verify --quiet "refs/heads/$branch"; then
     git -C "$main" worktree add --quiet "$path" "$branch" >&2 || panel_die "git worktree add failed: $path"
+  elif [ -n "$branch" ] && git -C "$main" show-ref --verify --quiet "refs/remotes/$remote/$branch"; then
+    git -C "$main" worktree add --quiet "$path" -b "$branch" "$remote/$branch" >&2 || panel_die "git worktree add failed: $path"
   elif [ -n "$branch" ] && git -C "$main" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
     git -C "$main" worktree add --quiet "$path" -b "$branch" "origin/$branch" >&2 || panel_die "git worktree add failed: $path"
   else
@@ -1715,7 +1761,7 @@ wt_other_claude() {
   [ -z "${TMUX_PANE:-}" ] || me="$(wt_current_server)/$TMUX_PANE"
   rows=$(agent-panel list --json 2>/dev/null) || return 2
   jq -r --arg s "$srv" --arg t "$1" --arg me "$me" \
-    'select(.server == $s and .tmux_session == $t and .pane != $me) | "\(.target | split(":")[-1]) \(.pane | split("/")[-1])"' <<<"$rows"
+    'select((.harness // "claude") == "claude" and .server == $s and .tmux_session == $t and .pane != $me) | "\(.target | split(":")[-1]) \(.pane | split("/")[-1])"' <<<"$rows"
 }
 
 # wt_done_arm <path> <name> -- arm the wind-down teardown for the Claude session `done` was
@@ -1985,15 +2031,17 @@ wt_live_panes() {
 }
 
 # wt_closed_pane_scopes -- "<unit> <cgroup>" for each pane scope whose pane is gone. tmux puts each
-# pane in a scope described "tmux child pane <pid> launched by process <server pid>", and what the
-# pane started stays in it after the pane closes, whatever it is: a test run, a build, a browser.
+# pane in a scope described "tmux child pane <pid> launched by process <server pid>", and so does
+# `claude-acct scope` for an agent session it moves out of one ("tmux child pane <pid> runs ...
+# launched by process <server pid>"); what the pane started stays in it after the pane closes,
+# whatever it is: a test run, a build, a browser.
 # A scope is closed when its server answered without that pane, or its server has exited; one whose
 # server is alive but did not answer is skipped, and so is the scope this process runs in. Scopes are
 # listed before panes, so a pane opened in between is live, not closed. No systemctl (macOS): none.
 wt_closed_pane_scopes() {
   local proc="${WT_PROC_ROOT:-/proc}" scopes live own unit pane spid cg
   command -v "$WT_SYSTEMCTL" >/dev/null 2>&1 || return 0
-  scopes=$("$WT_SYSTEMCTL" --user show --property=Id,Description,ControlGroup "tmux-spawn-*.scope" 2>/dev/null |
+  scopes=$("$WT_SYSTEMCTL" --user show --property=Id,Description,ControlGroup "tmux-spawn-*.scope" "agent-*.scope" 2>/dev/null |
     awk -F= '$1 == "Id" { id = $2 } $1 == "ControlGroup" { cg = $2 }
       $1 == "Description" { n = split($2, w, " "); if (w[1] == "tmux" && w[3] == "pane") { pane = w[4]; spid = w[n] } }
       /^$/ { if (pane != "") print id, pane, spid, cg; id = cg = pane = spid = "" }
@@ -2012,15 +2060,29 @@ wt_closed_pane_scopes() {
 }
 
 # wt_scope_leftovers <cgroup> -- the live pids in a closed pane's scope, but for WT_ORPHAN_KEEP. A
-# zombie is already dead, waiting on its parent, so it is not one.
+# zombie is already dead, waiting on its parent, so it is not one. Nor is a descendant of a tmux
+# server in the scope: a server started from a pane lives in that pane's scope, and so does every
+# `run-shell` job it runs, which belongs to the live server, not the closed pane. Why: wind-down's
+# `run-shell -b` reap ran in the lab server's scope, and orphan-gc killed it inside `git worktree
+# remove`, leaving a registered worktree with no directory that held dispatch FAILED (ar-5133).
 wt_scope_leftovers() {
-  local proc="${WT_PROC_ROOT:-/proc}" pid comm stat
+  local proc="${WT_PROC_ROOT:-/proc}" procs="${WT_CGROUP_ROOT:-/sys/fs/cgroup}$1/cgroup.procs" pid comm stat p d servers=' '
+  while read -r pid; do
+    [ "$(cat "$proc/$pid/comm" 2>/dev/null)" != 'tmux: server' ] || servers+="$pid "
+  done 2>/dev/null < "$procs"
   while read -r pid; do
     comm=$(cat "$proc/$pid/comm" 2>/dev/null) stat=$(cat "$proc/$pid/stat" 2>/dev/null)
     [[ "$comm" =~ ^($WT_ORPHAN_KEEP)$ ]] && continue
     [[ "${stat##*) }" == Z* ]] && continue
+    if [ "$servers" != ' ' ]; then
+      p=$pid d=0
+      while [ "${p:-0}" -gt 1 ] && [ "$d" -lt 64 ]; do
+        p=$(awk '$1 == "PPid:" { print $2; exit }' "$proc/$p/status" 2>/dev/null) d=$((d + 1))
+        [[ "$servers" == *" $p "* ]] && continue 2
+      done
+    fi
     printf '%s\n' "$pid"
-  done 2>/dev/null < "${WT_CGROUP_ROOT:-/sys/fs/cgroup}$1/cgroup.procs"
+  done 2>/dev/null < "$procs"
 }
 
 # wt_scope_keeps <cgroup> -- true when the scope holds a process WT_ORPHAN_KEEP spares, so

@@ -130,10 +130,7 @@ impl Row for SlotUse {
     const GLANCE: &'static [&'static str] = &["now", "cores", "mem"];
 
     fn val(&self, col: &str) -> Val {
-        let text = |s: &str| match s {
-            "" => Val::None,
-            s => Val::Text(s.to_string()),
-        };
+        let text = Val::word;
         match col {
             "slot" => text(&self.slot),
             "takes" => text(&self.takes.join(" ")),
@@ -177,10 +174,7 @@ impl Row for RecentJob {
     const GLANCE: &'static [&'static str] = &["conclusion", "took"];
 
     fn val(&self, col: &str) -> Val {
-        let text = |s: &str| match s {
-            "" => Val::None,
-            s => Val::Text(s.to_string()),
-        };
+        let text = Val::word;
         match col {
             "started" => self.started.map(|t| t as f64).into(),
             "repo" => text(&self.repo),
@@ -371,7 +365,7 @@ fn why_no_reading(m: &Machine) -> String {
     }
 }
 
-/// Its row as labelled parts: Now, Slots, Governor, Power, Up since, Grafana.
+/// Its row as labelled parts: Now, CI, Governor, Power, Up since, Grafana.
 fn parts(m: &Machine, split: Option<&HostSplit>, grafana: Option<&str>, at: u64) -> Vec<Part> {
     let mut out = vec![];
     let now = match m.cpu {
@@ -395,7 +389,10 @@ fn parts(m: &Machine, split: Option<&HostSplit>, grafana: Option<&str>, at: u64)
     out.push(now);
     out.extend(space(m, split));
     if m.carries_ci() || m.off > 0 {
-        let mut t = format!("{} taken", m.taken_cell());
+        let mut t = match m.booked {
+            Some(b) => format!("{} booked, {} running", b.cell(), m.busy),
+            None => format!("{} running", m.busy),
+        };
         if !m.running.is_empty() {
             t = format!("{t}: {}", m.running.join(", "));
         }
@@ -405,7 +402,7 @@ fn parts(m: &Machine, split: Option<&HostSplit>, grafana: Option<&str>, at: u64)
         if m.off > 0 {
             t = format!("{t}; {} off", m.off);
         }
-        out.push(Part::new("Slots", t).warn(m.off > 0));
+        out.push(Part::new("CI", t).warn(m.off > 0));
     }
     if let Some(g) = &m.governor {
         let mut t = g.says();

@@ -113,6 +113,14 @@ impl Shown {
         Shown::fit(Role::Title, &t.title, &one_line(&whole))
     }
 
+    /// A name its author wrote to be read whole (a report's title): cleaned as any text is (ids,
+    /// tags and a `type(area):` head go), cut only at the role's caps. A board row's
+    /// [`Shown::title`] also cuts at the first clause break and reads the legacy `<plan> P4:`
+    /// shape; neither applies to free text an author titled.
+    pub fn name(raw: &str) -> Shown {
+        Shown::plain(Role::Title, raw)
+    }
+
     pub fn sub(raw: &str) -> Shown {
         Shown::plain(Role::Sub, raw)
     }
@@ -566,7 +574,7 @@ mod tests {
             ..Default::default()
         };
         let home = crate::home::Home {
-            running: vec![crate::home::Running {
+            proposals: vec![crate::proposals::Proposal {
                 title: Shown::title(PHASE_ROW).text().into(),
                 ..Default::default()
             }],

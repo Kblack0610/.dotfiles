@@ -15,7 +15,7 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::{DataTable, Took};
 use crate::fit::{cell, clip_line, Cell, Table};
-use crate::fmt::{clock, pct, Palette};
+use crate::fmt::{clock, dash, pct, Palette};
 use hub_core::display::fmt::dur_secs;
 
 /// The tables in `hub_core::layout` section order; an index here is a table's view.
@@ -198,6 +198,13 @@ impl InfraTables {
             0 => {
                 let mut out = machines(&d, &infra.machine_rows(), now);
                 out.extend(infra.ci.glance.off_line().map(|l| Line::styled(l, p.dim())));
+                out.extend(
+                    infra
+                        .ci
+                        .glance
+                        .pending_line()
+                        .map(|l| Line::styled(l, p.warn())),
+                );
                 out
             }
             1 => pools(&d, &infra.pools),
@@ -308,34 +315,30 @@ impl Draw<'_> {
     }
 }
 
-fn or_dash(s: String) -> Cell {
-    if s.is_empty() {
-        "-".into()
-    } else {
-        s.into()
-    }
-}
-
 fn num(v: Option<f64>) -> Cell {
     v.map_or("-".into(), |x| format!("{x:.0}").into())
 }
 
 /// `Machine::COLUMNS` in capitals.
 const MACHINE_HEAD: [&str; 14] = [
-    "MACHINE", "STATE", "TAKEN", "CPU", "6H", "LOAD", "MEM", "TEMP", "DISK", "RUNNING", "NEXT",
+    "MACHINE", "STATE", "BOOKED", "CPU", "6H", "LOAD", "MEM", "TEMP", "DISK", "RUNNING", "NEXT",
     "GOVERNOR", "POWER", "UP",
 ];
 
-/// The governor's units taken of its capacity, as a bar and the counts: `[###...] 1.5/3`, `-`
-/// with no governor row. Amber when every unit is taken.
-fn taken(m: &Machine, p: crate::fmt::Palette) -> Cell {
+/// What its job pods book of its CPU and memory, as a bar of the fuller share and the counts:
+/// `[#...] 5.1/32 4.0G/92G`, `-` on no CI node, then the runners held off. Amber once a resource
+/// is fully booked or a runner is held off.
+fn booked(m: &Machine, p: crate::fmt::Palette) -> Cell {
     const WIDTH: usize = 4;
-    let (Some(cap), Some(used)) = (m.units.filter(|c| *c > 0.0), m.units_busy) else {
-        return m.taken_cell().into();
+    let share = m.booked.map_or(0.0, |b| b.share());
+    let text = match m.booked {
+        Some(_) => {
+            let (on, off) = crate::fmt::bar(Some((share * 100.0).round() as u32), None, WIDTH);
+            format!("[{on}{off}] {}", m.booked_cell())
+        }
+        None => m.booked_cell(),
     };
-    let (on, off) = crate::fmt::bar(Some((used / cap * 100.0).round() as u32), None, WIDTH);
-    let text = format!("[{on}{off}] {}", m.taken_cell());
-    match (m.off, used >= cap) {
+    match (m.off, share >= 1.0) {
         (0, false) => text.into(),
         (0, true) => cell(text, p.warn()),
         (n, _) => cell(format!("{text} +{n} off"), p.warn()),
@@ -386,14 +389,14 @@ fn machines(d: &Draw, rows: &[Machine], now: i64) -> Vec<Line<'static>> {
             vec![
                 m.host.clone().into(),
                 cell(&m.state, state),
-                taken(m, p),
+                booked(m, p),
                 pct(m.cpu).into(),
                 pct(m.cpu6h).into(),
                 load,
                 pct(m.mem).into(),
                 temp,
                 pct(m.disk).into(),
-                or_dash(m.running.join(", ")),
+                dash(m.running.join(", ")).into(),
                 m.next
                     .as_ref()
                     .map_or("-".into(), |n| n.line(|s| dur_secs(s as f64)).into()),
@@ -415,12 +418,12 @@ fn machines(d: &Draw, rows: &[Machine], now: i64) -> Vec<Line<'static>> {
     )
 }
 
-const POOL_HEAD: [&str; 8] = [
-    "KIND", "WEIGHT", "RUNNING", "WAITING", "OLDEST", "DONE 24H", "PASS", "MACHINES",
+const POOL_HEAD: [&str; 9] = [
+    "KIND", "WEIGHT", "RUNNING", "WAITING", "OLDEST", "DONE 24H", "USUAL", "PASS", "MACHINES",
 ];
 
-/// One row per job kind, the longest queue first: its jobs running, waiting and the machines
-/// that take it (`Pool::machines_cell`).
+/// One row per job kind, the longest queue first: its jobs running, waiting, how long one usually
+/// runs and the machines that take it (`Pool::machines_cell`).
 fn pools(d: &Draw, rows: &[Pool]) -> Vec<Line<'static>> {
     let p = d.p;
     let shown = |r: &Pool, col: &str| r.val(col).shown().unwrap_or_default();
@@ -432,7 +435,7 @@ fn pools(d: &Draw, rows: &[Pool]) -> Vec<Line<'static>> {
         |r| {
             vec![
                 r.pool.clone().into(),
-                or_dash(shown(r, "weight")),
+                dash(shown(r, "weight")).into(),
                 num(r.running),
                 match r.waiting {
                     Some(x) if x > 0.0 => cell(format!("{x:.0}"), p.warn()),
@@ -440,15 +443,16 @@ fn pools(d: &Draw, rows: &[Pool]) -> Vec<Line<'static>> {
                 },
                 r.oldest.map_or("-".into(), |s| dur_secs(s).into()),
                 num(r.done),
+                r.usual.map_or("-".into(), |s| dur_secs(s).into()),
                 cell(pct(r.pass), p.pass(r.pass)),
-                or_dash(shown(r, "machines")),
+                dash(shown(r, "machines")).into(),
             ]
         },
         Table {
             header: POOL_HEAD.to_vec(),
-            keep: vec![0, 3, 2, 4, 6, 7, 5, 1],
-            right: vec![1, 2, 3, 4, 5, 6],
-            cap: vec![(7, 100)],
+            keep: vec![0, 3, 2, 4, 7, 8, 5, 6, 1],
+            right: vec![1, 2, 3, 4, 5, 6, 7],
+            cap: vec![(8, 100)],
             ..Default::default()
         },
     )
@@ -458,36 +462,29 @@ const SLOT_HEAD: [&str; 8] = [
     "HOST", "SLOT", "STATE", "POOL", "RAN", "USUAL", "JOB", "REF",
 ];
 
-/// Every CI slot with the job it runs and how long against its usual; a late job is amber.
+/// Every CI runner with a job, how long it has run against its usual; a late job is amber.
 fn runners(d: &Draw, rows: &[Slot]) -> Vec<Line<'static>> {
     let p = d.p;
     let secs = |v: Option<i64>| v.map_or("-".to_string(), |s| dur_secs(s as f64));
     d.table(
         "RUNNERS".into(),
         rows,
-        "no runner reports",
+        "no runner is running a job",
         None,
         |r| {
-            let state = match r.state.as_str() {
-                "busy" => Style::default(),
-                "withheld" => p.warn(),
-                "off" => p.bad(),
-                _ => p.dim(),
-            };
-            let busy = r.state == "busy";
             vec![
                 r.host.clone().into(),
                 r.slot.clone().into(),
-                cell(&r.state, state),
-                or_dash(r.pool.clone()),
+                cell(&r.state, Style::default()),
+                dash(&r.pool).into(),
                 if r.late {
                     cell(format!("{}!", secs(r.ran)), p.warn())
                 } else {
                     secs(r.ran).into()
                 },
                 secs(r.usual).into(),
-                or_dash(if busy { r.job.clone() } else { r.note.clone() }),
-                or_dash(if busy { r.reference() } else { String::new() }),
+                dash(&r.job).into(),
+                dash(r.reference()).into(),
             ]
         },
         Table {
@@ -530,16 +527,18 @@ fn queued(d: &Draw, rows: &[Queued]) -> Vec<Line<'static>> {
                     .join(", ")
             } else if q.needs.is_empty() {
                 "-".into()
+            } else if q.hosted() {
+                "GitHub".into()
             } else {
                 "nobody".into()
             };
             vec![
                 cell(&q.job, s),
-                or_dash(q.pool.clone()),
-                or_dash(q.reference()),
+                dash(&q.pool).into(),
+                dash(q.reference()).into(),
                 q.n.to_string().into(),
                 dur_secs(q.wait as f64).into(),
-                or_dash(q.needs.join(", ")),
+                dash(q.needs.join(", ")).into(),
                 cell(can, s),
                 match q.starts {
                     None => "-".into(),
@@ -617,7 +616,7 @@ mod tests {
             m.contains("[/ f s S x, c next table]"),
             "the first table has the keys: {m}"
         );
-        for h in ["MACHINE", "TAKEN", "RUNNING", "NEXT", "GOVERNOR"] {
+        for h in ["MACHINE", "BOOKED", "RUNNING", "NEXT", "GOVERNOR"] {
             assert!(m.contains(h), "{h}: {m}");
         }
         for host in i.machines.iter().map(|m| m.host.as_str()) {

@@ -18,7 +18,7 @@ setup() {
   mkdir -p "$FLEET_SHEPHERD_DIR"
   stub fleet-sessions 'echo "$*" >> "$HOME/sessions.calls"'
   stub fleet-assess 'if [ "${1:-}" = --blocked ]; then printf "%b" "${STUB_BLOCKED:-}"; elif [ "${1:-}" = --fleet ]; then printf "%b" "${STUB_FLEET:-}"; ! printf "%b" "${STUB_FLEET:-}" | grep -qE "^fleet: OVER|NOT live"; else echo "verdict: ${STUB_VERDICT:-CLEAR} load 0.5x"; fi'
-  stub agent-hold 'printf "%s" "${STUB_HOLDS:-}"'
+  stub agent-hold 'case "$*" in *--expired*) printf "%s" "${STUB_EXPIRED:-}" ;; *) printf "%s" "${STUB_HOLDS:-}" ;; esac'
   # a pass's measured cost (pass_cost); unset is a session with none
   stub agent-usage '[ "$1 $3" = "session --json" ] || exit 2
 if [ -n "${STUB_USAGE:-}" ]; then printf "%s" "$STUB_USAGE"; else printf "{\"session_id\":\"%s\",\"usage_source\":\"none\"}" "$2"; fi'
@@ -59,7 +59,7 @@ esac'
   cat > "$PROM_LIB" <<'STUB'
 prom_q() {
   [ -z "${STUB_PROM_FAIL:-}" ] || return 1
-  printf '{"status":"success","data":{"result":%s}}' "${STUB_K3S:-[{\"value\":[0,\"0\"]\}]}"
+  printf '{"status":"success","data":{"result":%s}}' "${STUB_K3S:-[{\"metric\":{\"component\":\"nodes\"\},\"value\":[0,\"0\"]\}]}"
 }
 STUB
   # What a pass's launcher execs: it records its arguments and environment, not a model run.
@@ -70,8 +70,12 @@ stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "
 # The real fleet-sessions, by path: the one on PATH is a stub here.
 fleet-sessions-real() { "$REPO_ROOT/.local/bin/fleet-sessions" "$@"; }
 
-# doc <sessions-json> [main-json]
-doc() { jq -n --argjson s "$1" --argjson m "${2:-[]}" '{schema:1, sessions:$s, main:$m}' > "$FLEET_STATE_FILE"; }
+# doc <sessions-json> [main-json]: with the vocab fleet-sessions writes, whose `finished` the shepherd reads
+doc() {
+  jq -n --argjson s "$1" --argjson m "${2:-[]}" \
+    '{schema:1, vocab:{buckets:["NEEDS","STALLED","DONE","LANDED","CHAT","WORKING","PARKED"], finished:["DONE","LANDED"],
+      in_progress:["WORKING","NEEDS","STALLED"]}, sessions:$s, main:$m}' > "$FLEET_STATE_FILE"
+}
 
 row() { # target bucket nudged escalated [labels-json] [close verdict: default now for DONE, else keep]
   jq -n --arg t "$1" --arg b "$2" --argjson n "$3" --argjson e "$4" --argjson l "${5:-[]}" --arg v "${6:-}" \
@@ -150,10 +154,31 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   run "$SH" due
   assert_output ''
   refute_output --partial 'nudge'
-  # One typed its close (close_sent, read as nudged) whose verdict held goes to the human once.
-  doc "[$(row e NEEDS true false '[]' now | jq -c '. + {own_asks: 1, close_sent: true}')]"
+  # One typed its close (close_sent, read as nudged) whose verdict held is close_sample's window close
+  # (close_refused); its ask is the human's on the asks board, so the pass gets no line either (ar-2763).
+  doc "[$(row e NEEDS true false '[]' now | jq -c '. + {own_asks: 1, close_sent: true, reason: "1 pending ask(s)"}')]"
   run "$SH" due
-  assert_output 'escalate NEEDS: e r-e; then: fleet-sessions escalate e "f-e"'
+  assert_failure 1
+  assert_output ''
+}
+
+@test "due escalates no NEEDS row on its own pending ask: the asks board holds it, the shepherd cannot clear it (ar-2763)" {
+  doc "[$(row a NEEDS false false | jq -c '. + {own_asks: 1, activity: "idle", idle_min: 5, reason: "1 pending ask(s)"}'),
+        $(row b NEEDS false false | jq -c '. + {own_asks: 2, activity: "busy", reason: "2 pending ask(s), carrying on"}'),
+        $(row c NEEDS false false),
+        $(row d NEEDS false false | jq -c '. + {own_asks: 1, activity: "waiting", reason: "waiting on a prompt or permission"}')]"
+  run "$SH" due
+  assert_success
+  # c waits on a dialog or plan approval, which has no other home, so it still goes to the human; so does d,
+  # in a dialog while it also holds an ask: the reason decides, not the ask count.
+  assert_line 'escalate NEEDS: c r-c; then: fleet-sessions escalate c "f-c"'
+  assert_line 'escalate NEEDS: d waiting on a prompt or permission; then: fleet-sessions escalate d "f-d"'
+  assert_equal "$(grep -c . <<<"$output")" 2
+  # Only ask rows due: nothing for a pass, so the check counts nothing and starts none.
+  doc "[$(row a NEEDS false false | jq -c '. + {own_asks: 1, activity: "idle", idle_min: 5, reason: "1 pending ask(s)"}')]"
+  run "$SH" due
+  assert_failure 1
+  assert_output ''
 }
 
 @test "due sends a DONE row no message, close-now or keep, and none escalates once its fact survived" {
@@ -182,6 +207,56 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   doc "[$(crow 1 LANDED keep "$(jq -c '. + {nudged: true}' <<<"$held")")]"
   run "$SH" due
   assert_output ''
+}
+
+@test "due holds a nudge line while the human typed into the session in the lease window or it was sent a nudge in the gap (ar-1576)" {
+  export FLEET_SHEPHERD_LEASE_MIN=30 FLEET_SHEPHERD_NUDGE_GAP_MIN=60
+  doc "[$(row a STALLED false false), $(row b STALLED false false), $(row c STALLED false false), $(row d STALLED false false)]"
+  said a human "$(ago 10)" "still here"
+  said a assistant "$(ago 5)" "ok"
+  said b human "$(ago 90)" "long ago"
+  jq -nc --arg at "$(date -d '20 minutes ago' -Iseconds)" '{at:$at, sid:"c", kind:"nudge", fact:"x"}' > "$FLEET_SHEPHERD_DIR/nudges.jsonl"
+  jq -nc --arg at "$(date -d '3 hours ago' -Iseconds)" '{at:$at, sid:"d", kind:"nudge", fact:"x"}' >> "$FLEET_SHEPHERD_DIR/nudges.jsonl"
+  run "$SH" due
+  assert_success
+  # the human's turn 10m ago (a) and a nudge 20m ago (c) hold their lines; an old turn (b) and an old nudge (d) do not
+  refute_output --partial 'nudge STALLED: a '
+  refute_output --partial 'nudge STALLED: c '
+  assert_line 'nudge STALLED: b f-b'
+  assert_line 'nudge STALLED: d f-d'
+}
+
+@test "due nudges a NEEDS row once its session sat idle FLEET_SHEPHERD_NEEDS_NUDGE_MIN on its own ask, and no dialog, busy or nudged one (bd-35)" {
+  export FLEET_SHEPHERD_NEEDS_NUDGE_MIN=120 FLEET_SHEPHERD_LEASE_MIN=30 FLEET_SHEPHERD_NUDGE_GAP_MIN=60
+  needs() { row "$1" NEEDS "$2" true | jq -c --argjson x "$3" '. + {own_asks: 1, activity: "idle", idle_min: 300} + $x'; }
+  doc "[$(needs a false '{}'), $(needs b false '{"idle_min": 60}'), $(needs c false '{"activity": "busy"}'),
+        $(needs d false '{"own_asks": 0}'), $(needs e true '{}'), $(needs f false '{"labels": ["manual"]}'),
+        $(row g NEEDS false false | jq -c '. + {own_asks: 1, activity: "idle", idle_min: 300, reason: "1 pending ask(s)"}'), $(needs h false '{}'),
+        $(needs i false '{}'), $(needs j false '{"reason": "1 pending ask(s), carrying on"}')]"
+  said h human "$(ago 10)" "still here"
+  jq -nc --arg at "$(date -d '20 minutes ago' -Iseconds)" '{at:$at, sid:"i", kind:"nudge", fact:"x"}' > "$FLEET_SHEPHERD_DIR/nudges.jsonl"
+  run "$SH" due
+  assert_success
+  # a: idle 5h on its own ask. b: under the threshold; c: carrying on; d: a dialog, no ask of its own;
+  # e: already nudged for this fact; f: the human's; g: never escalated, which an ask row
+  # never is (ar-2763), so it is nudged the same; h: the human just typed; i: nudged 20m ago, inside the gap;
+  # j: carrying on, which overdue_due owns.
+  assert_line 'nudge NEEDS: a f-a'
+  assert_line 'nudge NEEDS: g f-g'
+  assert_equal "$(grep -c '^nudge NEEDS' <<<"$output")" 2
+  refute_output --partial 'escalate NEEDS: g'
+}
+
+@test "due holds a held DONE or LANDED row's nudge for a hand-started session whose only human turn is its first, and frees it once the lease passes (ar-1576)" {
+  export FLEET_SHEPHERD_LEASE_MIN=30
+  held='{"close":{"verdict":"keep","why":"work left here: its item s is running here","left":"its item s is running here"}}'
+  doc "[$(crow 1 LANDED keep "$held"), $(crow 2 DONE keep "$held")]"
+  said 1 human "$(ago 5)" "my first prompt"
+  said 2 human "$(ago 45)" "my first prompt"
+  run "$SH" due
+  assert_success
+  refute_output --partial 'lab/1:1'
+  assert_line 'nudge DONE: lab/2:1 [%2] DONE f-2'
 }
 
 @test "due lists an unescalated shared red with no owner item with the escalate call that answers it" {
@@ -253,7 +328,7 @@ exit 0'
   refute_output --partial FooTests
 }
 
-@test "an item that names only the test's class, or is low priority, is no owner, so check files one that is (ar-2448)" {
+@test "an item that is no fix item and names only the test's class, or is low priority, is no owner, so check files one that is (ar-2448)" {
   # 2026-11-14: NetProtocolTests went to gate-spread-lumping, a low gate-spread item citing it as evidence
   stub agent-queue 'echo "$*" >> "$HOME/aq.calls"
 case "$1" in
@@ -374,6 +449,126 @@ esac'
   assert_output 2
 }
 
+# class_doc <test>...: one shared red on three branches per test, each with sid-1 in it
+class_doc() {
+  printf '%s\n' "$@" | jq -Rn '{schema: 1, sessions: [], main: [], shared: [inputs | {test: ., id: ("shared-" + .),
+    reason: (. + " red on 3 branches in 2h: a, b, c"), fact: ("SHARED " + . + " @100"), nudged: false, escalated: false, owners: ["sid-1"]}]}' > "$FLEET_STATE_FILE"
+}
+# class_stubs: a queue whose add is board-only (each add files the next board row, ucp-71, ucp-72, ...) and a
+# notes that serves that board and records its row edits
+class_stubs() {
+  stub agent-queue 'echo "$*" >> "$HOME/aq.calls"
+case "$1" in
+  list) if [ -n "${STUB_ACTIVE:-}" ]; then printf "%s\n" "$STUB_ACTIVE"; else echo "{\"slug\":\"other\",\"task\":\"x\"}"; fi ;;
+  add) t=""; while [ $# -gt 0 ]; do [ "$1" = --title ] && t="$2"; shift; done
+       n=$(( $(grep -c "^add " "$HOME/aq.calls") + 70 ))
+       jq --arg id "ucp-$n" --arg t "$t" ".rows += [{project: \"unity-core-playground\", id: \$id, profile: \"bnb\", lane: \"agent\", type: \"fix\", priority: \"high\", text: \$t}]" \
+         "$HOME/board.json" > "$HOME/board.tmp" && mv "$HOME/board.tmp" "$HOME/board.json"
+       echo "held shared-red -> unity-core-playground:ucp-$n"; exit 5 ;;
+esac'
+  stub notes 'case "$*" in "board --json") cat "$HOME/board.json" ;; *" edit "*) printf "%s\n" "$*" >> "$HOME/notes.calls" ;; *) exit 2 ;; esac'
+  echo '{"rows":[]}' > "$HOME/board.json"
+}
+
+@test "two methods of one class red on several branches file one owner, and the second's evidence is appended to it (ar-5285)" {
+  # 2026-11-24: DodgeballCourtPlayTests got one item per red method in the same minute (ucp-3390, ucp-3391)
+  class_stubs
+  class_doc 'P.Tests.FooTests.Bar("x")' 'P.Tests.FooTests.Qux'
+  run checked
+  assert_success
+  assert_line --partial 'nudge SHARED: P.Tests.FooTests.Bar("x") is owned by board row ucp-71 on unity-core-playground'
+  assert_line --partial 'nudge SHARED: P.Tests.FooTests.Qux is owned by board row ucp-71 on unity-core-playground'
+  refute_output --partial 'shared red:'
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 1
+  run cat "$HOME/notes.calls"
+  assert_output --partial '--profile bnb ptask unity-core-playground --agent edit ucp-71 --detail Also red on several branches at once'
+  assert_output --partial 'P.Tests.FooTests.Qux red on 3 branches in 2h: a, b, c'
+  grep -q 'appended to board row ucp-71 on unity-core-playground, which owns a red in FooTests' "$FLEET_SHEPHERD_DIR/log.md"
+  # the next check keeps both episodes on that row: nothing filed, nothing appended twice
+  run checked
+  assert_line --partial 'nudge SHARED: P.Tests.FooTests.Qux is owned by board row ucp-71'
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 1
+  run grep -c ' edit ' "$HOME/notes.calls"
+  assert_output 1
+  # dispatch starts the row: the item made of it, naming only Bar, keeps Qux's episode too
+  STUB_ACTIVE='{"slug":"ucp-71","type":"fix","state":"running","priority":"high","title":"fix(test): FooTests.Bar red on several branches at once","row":"unity-core-playground:ucp-71"}' run checked
+  assert_line --partial 'nudge SHARED: P.Tests.FooTests.Qux is owned by queue item ucp-71'
+  refute grep -q 'Qux is no longer owned' "$FLEET_SHEPHERD_DIR/log.md"
+  # negative control: a method of another class gets its own owner
+  class_doc 'P.Tests.FooTests.Bar("x")' 'P.Tests.FooTests.Qux' 'P.Tests.BazTests.Bar'
+  STUB_ACTIVE='{"slug":"ucp-71","type":"fix","state":"running","priority":"high","title":"fix(test): FooTests.Bar red on several branches at once","row":"unity-core-playground:ucp-71"}' run checked
+  assert_line --partial 'nudge SHARED: P.Tests.BazTests.Bar is owned by board row ucp-72 on unity-core-playground'
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 2
+}
+
+@test "a live fix item or open fix row whose title names the test's class owns a shared red, and gets its evidence (ar-5285)" {
+  # 2026-11-23: ShapeCityTiersPlayTests got a shared-red item (ucp-3180) beside its class's running fix item (ucp-3170)
+  class_stubs
+  echo '{"rows":[{"project":"unity-core-playground","id":"ucp-5","profile":"bnb","lane":"agent","type":"fix","priority":"high","text":"fix(tests): FooTests tier gate fails on main"}]}' > "$HOME/board.json"
+  class_doc 'P.Tests.FooTests.Bar("x")'
+  # class_round <active-json>: the red checked fresh against that queue
+  class_round() { : > "$FLEET_SHEPHERD_DIR/.shared"; : > "$HOME/aq.calls"; : > "$HOME/notes.calls"; STUB_ACTIVE="$1" run checked; }
+  # a queued item is retasked: its brief and its row get the evidence
+  class_round '{"slug":"fix-foo","type":"fix","state":"queued","priority":"high","title":"fix(tests): FooTests tier gate fails on main","task":"the gate brief","row":"unity-core-playground:ucp-5"}'
+  assert_line --partial 'nudge SHARED: P.Tests.FooTests.Bar("x") is owned by queue item fix-foo'
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 0
+  run grep -A2 '^retask fix-foo the gate brief' "$HOME/aq.calls"
+  assert_output --partial 'Also red on several branches at once'
+  assert_output --partial 'P.Tests.FooTests.Bar("x") red on 3 branches in 2h: a, b, c'
+  # a started item already has its brief: the evidence goes on its row
+  class_round '{"slug":"fix-foo","type":"fix","state":"running","priority":"high","title":"fix(tests): FooTests tier gate fails on main","task":"the gate brief","row":"unity-core-playground:ucp-5"}'
+  assert_line --partial 'is owned by queue item fix-foo'
+  refute grep -q '^retask' "$HOME/aq.calls"
+  run cat "$HOME/notes.calls"
+  assert_output --partial '--agent edit ucp-5 --detail Also red on several branches at once'
+  # an open fix row no live item works owns it as a row
+  class_round '{"slug":"other","task":"x"}'
+  assert_line --partial 'is owned by board row ucp-5 on unity-core-playground'
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 0
+  # negative controls: a human-lane fix row (shared_fold edits the agent lane), a low fix item, a fix item
+  # citing the class only in its brief, an item that is no fix, and one naming a longer class own nothing,
+  # so one owner is filed
+  echo '{"rows":[{"project":"unity-core-playground","id":"ucp-6","profile":"bnb","lane":"human","type":"fix","priority":"high","text":"fix(tests): FooTests tier gate"}]}' > "$HOME/board.json"
+  class_round "$(printf '%s\n' '{"slug":"low","type":"fix","state":"queued","priority":"low","title":"fix(tests): FooTests flake"}' \
+    '{"slug":"brief","type":"fix","state":"queued","priority":"high","title":"fix(ci): PR 9 is red","task":"see FooTests"}' \
+    '{"slug":"check","type":"check","state":"queued","priority":"high","title":"check(tests): FooTests runs slow"}' \
+    '{"slug":"longer","type":"fix","state":"queued","priority":"high","title":"fix(tests): FooTestsMore red"}')"
+  assert_line --partial 'is owned by board row ucp-71 on unity-core-playground'
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 1
+  refute grep -q '^retask' "$HOME/aq.calls"
+}
+
+@test "a red folded into the item that owns its sibling method outright stays there, appended once (ar-5285)" {
+  # the item names FooTests.Bar in its brief, not the class in its title: the keep loop must take the
+  # sibling route the fold took, or it drops Qux each sample and appends it again
+  class_stubs
+  echo '{"rows":[{"project":"unity-core-playground","id":"ucp-8","profile":"bnb","lane":"agent","type":"fix","priority":"high","text":"fix(gameplay): court flake"}]}' > "$HOME/board.json"
+  export STUB_ACTIVE='{"slug":"court","type":"fix","state":"running","priority":"high","title":"fix(gameplay): court flake","task":"red on FooTests.Bar","row":"unity-core-playground:ucp-8"}'
+  class_doc 'P.Tests.FooTests.Bar("x")' 'P.Tests.FooTests.Qux'
+  run checked
+  assert_line --partial 'nudge SHARED: P.Tests.FooTests.Bar("x") is owned by queue item court'
+  assert_line --partial 'nudge SHARED: P.Tests.FooTests.Qux is owned by queue item court'
+  run checked
+  run checked
+  assert_line --partial 'nudge SHARED: P.Tests.FooTests.Qux is owned by queue item court'
+  refute grep -q 'Qux is no longer owned' "$FLEET_SHEPHERD_DIR/log.md"
+  run grep -c ' edit ucp-8 ' "$HOME/notes.calls"
+  assert_output 1
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 0
+  # negative control: once the item stops naming Bar, it owns neither, and one owner is filed for the class
+  STUB_ACTIVE='{"slug":"court","type":"fix","state":"running","priority":"high","title":"fix(gameplay): court flake","task":"x","row":"unity-core-playground:ucp-8"}' run checked
+  grep -q 'Qux is no longer owned by queue item court' "$FLEET_SHEPHERD_DIR/log.md"
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 1
+}
+
 @test "an owner item that landed, or no longer names the test, is dropped and the episode gets a live owner (ar-2448)" {
   # 2026-11-14: NoFlakePatternCountIsAboveItsBaseline stayed owned by fix-red-trains-2627 after it landed
   stub agent-queue 'echo "$*" >> "$HOME/aq.calls"
@@ -425,8 +620,8 @@ esac'
   [ ! -s "$FLEET_SHEPHERD_DIR/.shared" ]
 }
 
-@test "a manual row is never due, and an all-quiet document exits 1" {
-  doc "[$(row a STALLED false false '["manual"]'), $(row b WORKING false false)]"
+@test "a manual or stay row is never due, and an all-quiet document exits 1" {
+  doc "[$(row a STALLED false false '["manual"]'), $(row c STALLED false false '["stay"]'), $(row b WORKING false false)]"
   run "$SH" due
   assert_failure
   assert_output ''
@@ -440,6 +635,14 @@ esac'
   assert_line 'pace: machine reads HOLD with no hold set'
   STUB_VERDICT=HOLD STUB_HOLDS=$'unity\tx' run "$SH" due
   assert_failure
+}
+
+@test "a hold past its until is a pace line whatever the verdict, and only then (ar-6059)" {
+  doc "[]"
+  STUB_VERDICT=HOLD STUB_HOLDS=$'unity\tx' STUB_EXPIRED=$'critical\t2026\thuman\tlockdown' run "$SH" due
+  assert_line 'pace: ended hold critical (past its until); then: agent-hold release each'
+  STUB_VERDICT=HOLD STUB_HOLDS=$'unity\tx' run "$SH" due
+  refute_output --partial 'ended hold'
 }
 
 @test "a host over its busy mark, or an agent host with a unit outside its CPU cap, is a pace line; a fine fleet is none" {
@@ -638,8 +841,9 @@ typed() { cat "$HOME/panel.calls" 2>/dev/null; }
         $(crow 4 CHAT after), $(crow 5 LANDED after), $(crow 6 NEEDS after '{"own_asks":1}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   [ -z "$(typed)" ]
-  # A manual row the close flow reads now (quiet FLEET_CHAT_CLOSE_H, ar-4041) is typed its close like any row.
-  doc "[$(crow 8 DONE now '{"labels":["manual"]}')]"
+  # A stay row the close flow reads now (quiet FLEET_CHAT_CLOSE_H, ar-4041) is typed its close like any row;
+  # a manual row never reads now (ar-4124, fleet_sessions.bats close verdict).
+  doc "[$(crow 8 DONE now '{"labels":["stay"]}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   run typed
   assert_line 'send --wait 0 --pane lab/%8 /wind-down auto'
@@ -757,10 +961,10 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
   # Unshown and between turns, it is closed whatever its prompt holds.
   STUB_PANE="${IDLE/$'\xc2\xa0'/$'\xc2\xa0'half a thought}" "$SH" check >/dev/null || true
   [ -n "$(closes)" ]
-  # A manual row quiet past FLEET_CHAT_CLOSE_H reads now and is closed like any other (ar-4041).
+  # A stay row quiet past FLEET_CHAT_CLOSE_H reads now and is closed like any other (ar-4041).
   : > "$HOME/wind-down.calls"
   nudged_ago 30 11
-  doc "[$(crow 11 DONE now '{"nudged":true,"close_sent":true,"idle_min":2000,"labels":["manual"]}')]"
+  doc "[$(crow 11 DONE now '{"nudged":true,"close_sent":true,"idle_min":2000,"labels":["stay"]}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   [ -n "$(closes)" ]
 }
@@ -881,9 +1085,9 @@ nudge_ago() { printf 'fact: STALLED f-%s\nat: %s\n' "$2" "$(date -Iseconds -d "$
   assert_equal "$("$SH" stats | jq -c '[.takeovers_24h, .takeovers_failed_24h]')" '[0,0]'
 }
 
-@test "takeover leaves a row alone that is not its to move: manual, plan mode, another host, an ask, not yet old enough, a draft in the prompt" {
+@test "takeover leaves a row alone that is not its to move: manual, stay, plan mode, an ask, not yet old enough, a draft in the prompt" {
   takeover_checkout "$HOME/wt"; nudge_ago 120 1; nudge_ago 120 2; nudge_ago 120 3; nudge_ago 120 4; nudge_ago 30 5; nudge_ago 120 6
-  doc "[$(trow 1 '{"labels":["manual"]}'), $(trow 2 '{"in_plan_mode":true}'), $(trow 3 '{"host":"razer"}'), $(trow 4 '{"own_asks":1}'),
+  doc "[$(trow 1 '{"labels":["manual"]}'), $(trow 2 '{"in_plan_mode":true}'), $(trow 3 '{"labels":["stay"]}'), $(trow 4 '{"own_asks":1}'),
         $(trow 5), $(trow 6 '{"idle_min":20}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   [ -z "$(closes)" ]
@@ -894,6 +1098,38 @@ nudge_ago() { printf 'fact: STALLED f-%s\nat: %s\n' "$2" "$(date -Iseconds -d "$
   STUB_PANE=$'───────────── name ─\n\xe2\x9d\xaf\xc2\xa0half a sentence\n─────────────' "$SH" check >/dev/null || true
   [ -z "$(closes)" ]
   run grep -q 'not taken over' "$HOME/pages"; assert_failure
+}
+
+@test "takeover reaches a fleet worker's STALLED row over ssh, closing it with the worker's wind-down.sh, and an ssh failure neither closes nor pages (ar-4973)" {
+  # fleet_host_run stand-in: logs the host, runs the command here; a call matching STUB_SSH_FAIL exits 255 as ssh does.
+  printf '%s\n' 'fleet_hosts() { :; }' 'fleet_host_run() { local h="$1"; shift; echo "$h $*" >> "$HOME/ssh.calls"' \
+    '  [ -n "${STUB_SSH_FAIL:-}" ] && [[ "$*" =~ $STUB_SSH_FAIL ]] && return 255; "$@"; }' > "$SANDBOX/fleet-hosts.sh"
+  export FLEET_HOSTS_LIB="$SANDBOX/fleet-hosts.sh"
+  mkdir -p "$HOME/.local/src/tmux"
+  printf '#!/usr/bin/env bash\necho "worker $*" >> "$HOME/wind-down.calls"\n' > "$HOME/.local/src/tmux/wind-down.sh"
+  chmod +x "$HOME/.local/src/tmux/wind-down.sh"
+  takeover_checkout "$HOME/wt"; nudge_ago 120 7
+  doc "[$(trow 7 '{"target":"razer@lab/7:1","host":"razer"}')]"
+  # The worker does not answer, at the checkout read and then at the close: nothing closed, nothing paged, no try counted.
+  STUB_SSH_FAIL=rev-parse STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  STUB_SSH_FAIL=wind-down STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  run grep -q 'not taken over' "$HOME/pages"; assert_failure
+  run grep -c '^close' "$FLEET_SHEPHERD_DIR/.takeover"; assert_output 0
+  # It answers: its checkout is read there and its own wind-down.sh closes the window.
+  : > "$HOME/ssh.calls"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  run closes
+  assert_output 'worker close --server lab --pane %7 --sid 7'
+  grep -q "^razer git -C $HOME/wt branch -r --contains HEAD" "$HOME/ssh.calls"
+  grep -q '^razer tmux -L lab capture-pane' "$HOME/ssh.calls"
+  grep -q 'takeover: razer@lab/7:1: closed its window, quiet 400m past its nudge; item it-1 takes branch agent-9-x over (try 1 of 2)' "$FLEET_SHEPHERD_DIR/log.md"
+  # A worker's checkout with unpushed commits is paged, not closed, like a local one.
+  rm -rf "$HOME/wt" "$HOME/remote.git" "$HOME/wind-down.calls"; takeover_checkout "$HOME/wt" unpushed; nudge_ago 120 8
+  doc "[$(trow 8 '{"target":"razer@lab/8:1","host":"razer"}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  grep -q 'razer@lab/8:1 has sat STALLED 400m past its nudge and no fresh agent can take it over: its commits are not pushed' "$HOME/pages"
 }
 
 @test "takeover pages once, and closes nothing, for a row no agent can take over, naming why" {
@@ -1248,7 +1484,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   STUB_HOLDS=$'unity\t2026\tme\twhy' run "$SH" run
   run prompt
   assert_line 'Roles due: fleet-pace'
-  STUB_K3S='[{"value":[0,"2"]}]' run "$SH" run
+  STUB_K3S='[{"metric":{"component":"nodes"},"value":[0,"1"]}]' run "$SH" run
   run prompt
   assert_line 'Roles due: none'
   # A starved queue loads fleet-dispatch for its self-heal; any other watch stays fleet-lead's own.
@@ -1732,21 +1968,34 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
   assert_failure 1
 }
 
-@test "infra reads the k3s domain live: red, unreadable and missing report, green and amber do not" {
+@test "infra reads the k3s components live: a red node, unreadable and missing report; green and a watch-only red do not (ar-1608)" {
   run "$SH" infra
   assert_failure
   assert_output ''
-  STUB_K3S='[{"value":[0,"1"]}]' run "$SH" infra
+  # 2026-11: a trivy-criticals or cluster-janitor watch alone held cluster work as "k3s domain red"
+  STUB_K3S='[{"metric":{"component":"watches"},"value":[0,"2"]},{"metric":{"component":"nodes"},"value":[0,"0"]}]' run "$SH" infra
   assert_failure
-  STUB_K3S='[{"value":[0,"2"]}]' run "$SH" infra
+  assert_output ''
+  STUB_K3S='[{"metric":{"component":"watches"},"value":[0,"2"]},{"metric":{"component":"nodes"},"value":[0,"1"]}]' run "$SH" infra
   assert_success
-  assert_output 'infra: k3s domain red'
+  assert_output 'infra: k3s nodes red'
+  # any other component holds only when down (2), not on a warn (1)
+  STUB_K3S='[{"metric":{"component":"nodes"},"value":[0,"0"]},{"metric":{"component":"etcd"},"value":[0,"1"]}]' run "$SH" infra
+  assert_failure
+  assert_output ''
+  STUB_K3S='[{"metric":{"component":"nodes"},"value":[0,"1"]},{"metric":{"component":"etcd"},"value":[0,"2"]}]' run "$SH" infra
+  assert_success
+  assert_output 'infra: k3s etcd, nodes red'
   STUB_PROM_FAIL=1 run "$SH" infra
   assert_success
   assert_output 'infra: Prometheus not answering'
   STUB_K3S='[]' run "$SH" infra
   assert_success
-  assert_output 'infra: no k3s status series'
+  assert_output 'infra: no k3s component series'
+  # only the watches series answering is no node reading either
+  STUB_K3S='[{"metric":{"component":"watches"},"value":[0,"0"]}]' run "$SH" infra
+  assert_success
+  assert_output 'infra: no k3s component series'
 }
 
 @test "a watch with a live red item raises no line; a tag that only contains red still does" {
@@ -1780,9 +2029,9 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
 
 @test "a high or urgent trip and a red cluster lead the due lines, ahead of sessions" {
   doc "[$(row a STALLED false false)]"
-  export STUB_TRIPPED='home-k3s-node-disk\turgent\nqueue-starved\thigh\n' STUB_K3S='[{"value":[0,"2"]}]'
+  export STUB_TRIPPED='home-k3s-node-disk\turgent\nqueue-starved\thigh\n' STUB_K3S='[{"metric":{"component":"nodes"},"value":[0,"1"]}]'
   run "$SH" run
-  assert_output --partial $': due\ninfra: k3s domain red\nwatch: home-k3s-node-disk tripped (urgent)\nwatch: queue-starved tripped (high)\nnudge STALLED: a'
+  assert_output --partial $': due\ninfra: k3s nodes red\nwatch: home-k3s-node-disk tripped (urgent)\nwatch: queue-starved tripped (high)\nnudge STALLED: a'
   refute_output --partial 'unbound variable'
   grep -q 'watch: queue-starved tripped (high)' "$FLEET_SHEPHERD_DIR/.pass.sh"
 }
@@ -2647,6 +2896,119 @@ STUB
   run "$SH" sweep-cancel 'host-overload host:a @1700000000'
   assert_failure 2
   [ ! -e "$HOME/gh.calls" ]
+}
+
+# ghost_setup: the exporter lists runs 1 (a ghost: queued 48h, no job), 2 (queued 1h by GitHub's clock)
+# and 3 (queued 48h, one job) as stuck, run 1 under two job names. gh answers a run and its jobs from
+# those facts and records every call. STUB_CANCEL_REFUSED refuses /cancel with HTTP 409 (not
+# cancellable), STUB_CANCEL_DENIED with 403 and refuses force-cancel too, and STUB_GH_DOWN fails every
+# run read.
+ghost_setup() {
+  cat > "$PROM_LIB" <<'STUB'
+prom_q() {
+  [ -z "${STUB_PROM_FAIL:-}" ] || return 1
+  echo "$1" >> "$HOME/prom.calls"
+  local u='https://github.com/o/r/actions/runs/'
+  printf '{"status":"success","data":{"result":[%s]}}' \
+    "{\"metric\":{\"url\":\"${u}1\",\"job_name\":\"a\"}},{\"metric\":{\"url\":\"${u}1\",\"job_name\":\"b\"}},{\"metric\":{\"url\":\"${u}2\"}},{\"metric\":{\"url\":\"${u}3\"}}"
+}
+STUB
+  gh_script 'echo "$*" >> "$HOME/gh.calls"
+old="$(date -u -d "48 hours ago" +%FT%TZ)" new="$(date -u -d "1 hour ago" +%FT%TZ)"
+[ -z "${STUB_GH_DOWN:-}" ] || { echo "gh: HTTP 502" >&2; exit 1; }
+case "$*" in
+  "api repos/o/r/actions/runs/1 "*|"api repos/o/r/actions/runs/3 "*) printf "queued\t%s\n" "$old" ;;
+  "api repos/o/r/actions/runs/2 "*) printf "queued\t%s\n" "$new" ;;
+  "api repos/o/r/actions/runs/1/jobs "*|"api repos/o/r/actions/runs/2/jobs "*) echo 0 ;;
+  "api repos/o/r/actions/runs/3/jobs "*) echo 1 ;;
+  *"/cancel") [ -z "${STUB_CANCEL_DENIED:-}" ] || { echo "gh: Forbidden (HTTP 403)" >&2; exit 1; }
+              [ -z "${STUB_CANCEL_REFUSED:-}" ] || { echo "gh: Cannot cancel a workflow run that is completed. (HTTP 409)" >&2; exit 1; } ;;
+  *"/force-cancel") [ -z "${STUB_CANCEL_DENIED:-}" ] ;;
+esac'
+}
+
+@test "ghost-runs: a dry run logs the ghost it would cancel, keeps a young run and one with a job, and asks once" {
+  ghost_setup
+  run "$SH" ghost-runs
+  assert_success
+  assert_line 'ghost-runs: would-cancel https://github.com/o/r/actions/runs/1 (48h)'
+  # Negative controls: queued an hour, and queued two days with a job, are no ghosts.
+  assert_line 'ghost-runs: kept https://github.com/o/r/actions/runs/2 (queued 1h)'
+  assert_line 'ghost-runs: kept https://github.com/o/r/actions/runs/3 (1 jobs)'
+  assert_equal "$(grep -c . <<<"$output")" 3
+  run grep -c 'stuck="true",forge="github"} >= 86400' "$HOME/prom.calls"
+  assert_output 1
+  run grep -c 'cancel' "$HOME/gh.calls"
+  assert_output 0
+  # A verdict is no act: the rundown gets nothing from a dry run.
+  [ ! -e "$FLEET_SHEPHERD_DIR/log.md" ] || ! grep -q 'ghost run' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_equal "$(cut -f2,3 "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" | sort | tr '\t\n' ' |')" \
+    'kept https://github.com/o/r/actions/runs/2|kept https://github.com/o/r/actions/runs/3|would-cancel https://github.com/o/r/actions/runs/1|'
+  # Judged runs are not asked about again inside the age.
+  rm -f "$HOME/gh.calls"
+  run "$SH" ghost-runs
+  assert_success
+  assert_output ''
+  [ ! -e "$HOME/gh.calls" ]
+}
+
+@test "ghost-runs: with cancels on, the dry run's ghost is cancelled, force-cancelled when cancel is refused, and kept runs stay" {
+  ghost_setup
+  run "$SH" ghost-runs
+  export FLEET_SHEPHERD_GHOST_CANCEL=1
+  rm -f "$HOME/gh.calls"
+  run "$SH" ghost-runs
+  assert_success
+  assert_output 'ghost-runs: cancelled https://github.com/o/r/actions/runs/1 (48h)'
+  run grep -x 'api -X POST repos/o/r/actions/runs/1/cancel' "$HOME/gh.calls"
+  assert_success
+  run grep -c 'ghost run https://github.com/o/r/actions/runs/1: cancelled, queued 48h with no jobs' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_output 1
+  run grep -c 'runs/[23]' "$HOME/gh.calls"
+  assert_output 0
+  # A run cancel refuses gets force-cancel.
+  rm -f "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" "$HOME/gh.calls"
+  STUB_CANCEL_REFUSED=1 run "$SH" ghost-runs
+  assert_line 'ghost-runs: force-cancelled https://github.com/o/r/actions/runs/1 (48h)'
+  run grep -x 'api -X POST repos/o/r/actions/runs/1/force-cancel' "$HOME/gh.calls"
+  assert_success
+  run grep -c 'runs/[23]/.*cancel' "$HOME/gh.calls"
+  assert_output 0
+}
+
+@test "ghost-runs: a cancel refused for another reason is cancel-failed, logged once and tried again; GitHub down judges nothing" {
+  ghost_setup
+  export FLEET_SHEPHERD_GHOST_CANCEL=1 STUB_CANCEL_DENIED=1
+  run "$SH" ghost-runs
+  assert_line 'ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h)'
+  # A 403 is no "not cancellable": force-cancel is for a run that ignores cancel.
+  run grep -c 'force-cancel' "$HOME/gh.calls"
+  assert_output 0
+  run "$SH" ghost-runs
+  assert_line 'ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h)'
+  run grep -c 'ghost run https://github.com/o/r/actions/runs/1: cancel-failed' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_output 1
+  # GitHub not answering writes no verdict, and one line names every run asked again.
+  rm -f "$FLEET_SHEPHERD_DIR/ghost-runs.tsv"
+  STUB_GH_DOWN=1 run "$SH" ghost-runs
+  assert_success
+  assert_output 'ghost-runs: GitHub did not answer, asked again next run: https://github.com/o/r/actions/runs/1 (run unreadable) https://github.com/o/r/actions/runs/2 (run unreadable) https://github.com/o/r/actions/runs/3 (run unreadable)'
+  [ ! -s "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" ]
+  # A value that is not 0 or 1 says so and runs dry.
+  FLEET_SHEPHERD_GHOST_CANCEL=yes run "$SH" ghost-runs
+  assert_line "ghost-runs: FLEET_SHEPHERD_GHOST_CANCEL is 'yes', not 0 or 1, so this is a dry run"
+  assert_line 'ghost-runs: would-cancel https://github.com/o/r/actions/runs/1 (48h)'
+}
+
+@test "ghost-runs: an unreadable exporter judges nothing, and every shepherd run calls it" {
+  ghost_setup
+  STUB_PROM_FAIL=1 run "$SH" ghost-runs
+  assert_failure 1
+  assert_output 'ghost-runs: the runner exporter is unreadable, so no run was judged'
+  [ ! -e "$HOME/gh.calls" ]
+  doc '[]'
+  run "$SH" run
+  assert_line 'ghost-runs: would-cancel https://github.com/o/r/actions/runs/1 (48h)'
 }
 
 # --- session budgets: checkpoints, not walls ---------------------------------------------------

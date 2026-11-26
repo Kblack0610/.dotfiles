@@ -13,7 +13,7 @@ fleet-agent down        # remove the container; volumes and logins stay
 
 Each Claude account signs in with its setup token, pushed from a machine with rbw unlocked: `claude-acct token push <host>`, where `<host>` is an ssh alias for the container's port. No `/login` runs in the container.
 
-Then add the box to `fleet_workers` in home-config's inventory with `ansible_port: 2223`. `fleet-dispatch hosts` reads it ready once `wt` is on PATH and `~/.agent` is a peer store (`store-sync join`) and `~/.notes` is a clone (`notes-sync-bootstrap.sh`), and lists `claude` in its kit once `fleet-node ready` passes inside.
+Then add the box to `fleet_workers` in home-config's inventory with `ansible_port: 2223`. `fleet-dispatch hosts` reads it ready once `wt` is on PATH and `~/.agent` is a peer store (`store-sync join`) and `~/.notes` is a clone (`notes-sync-bootstrap.sh`), and lists `claude` in its kit once `fleet-node ready claude` passes inside.
 
 ## Build and test it
 

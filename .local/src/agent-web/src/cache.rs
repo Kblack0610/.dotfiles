@@ -247,7 +247,8 @@ pub struct EventCache<T, const TTL_SECS: u64, K = ()> {
     last: ReadCache<T, TTL_SECS, K>,
 }
 
-/// Whether anything queued says a ledger changed; a missed event might have. A `ready` is a
+/// Whether anything queued says a ledger changed; a missed event might have, so a lag or a
+/// `resync` (the file watcher started late) counts as a change to every ledger. A `ready` is a
 /// cache landing, not a ledger change: no kind list names it, so no cache refreshes on another's
 /// landing, and a read built from several caches joins them per request instead of caching them.
 fn written(events: &mut broadcast::Receiver<String>, kinds: &[&str]) -> bool {
@@ -256,7 +257,9 @@ fn written(events: &mut broadcast::Receiver<String>, kinds: &[&str]) -> bool {
         match events.try_recv() {
             Ok(m) => {
                 let v: Value = serde_json::from_str(&m).unwrap_or_default();
-                any |= v["kind"].as_str().is_some_and(|k| kinds.contains(&k));
+                any |= v["kind"]
+                    .as_str()
+                    .is_some_and(|k| k == "resync" || kinds.contains(&k));
             }
             Err(TryRecvError::Lagged(_)) => any = true,
             Err(_) => return any,
@@ -314,6 +317,17 @@ where
     }
 }
 
+/// The body a table answers when its read failed: each of `lists` empty and the error, which
+/// the page still renders.
+pub fn failed(lists: &[&str], e: String) -> String {
+    let mut body: serde_json::Map<String, serde_json::Value> = lists
+        .iter()
+        .map(|l| (l.to_string(), serde_json::json!([])))
+        .collect();
+    body.insert("errors".into(), serde_json::json!([e]));
+    serde_json::Value::Object(body).to_string()
+}
+
 /// `f` off the async workers; a panic in it comes back as its message.
 pub async fn off<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
     tokio::task::spawn_blocking(f)
@@ -324,8 +338,27 @@ pub async fn off<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_read_still_gives_the_table_a_body() {
+        let v: serde_json::Value =
+            serde_json::from_str(&failed(&["rows", "runs"], "gone".into())).unwrap();
+        assert_eq!(v["rows"], serde_json::json!([]));
+        assert_eq!(v["runs"], serde_json::json!([]));
+        assert_eq!(v["errors"][0], "gone");
+    }
     use std::sync::atomic::AtomicUsize;
     use tokio::sync::Notify;
+
+    /// A `resync` outdates every cache, whatever its kinds; any other kind only its own.
+    #[test]
+    fn a_resync_counts_as_a_write_to_every_ledger() {
+        let (tx, mut rx) = broadcast::channel(4);
+        tx.send(r#"{"kind":"asks"}"#.to_string()).unwrap();
+        assert!(!written(&mut rx, &["queue"]));
+        tx.send(r#"{"kind":"resync"}"#.to_string()).unwrap();
+        assert!(written(&mut rx, &["queue"]));
+    }
 
     fn counter() -> Arc<AtomicUsize> {
         Arc::new(AtomicUsize::new(0))

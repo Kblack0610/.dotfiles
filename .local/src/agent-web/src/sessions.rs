@@ -13,7 +13,7 @@ use hub_core::table::{self, Summary, View};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::cache::{off, ReadCache};
+use crate::cache::{failed, off, ReadCache};
 use crate::Shared;
 
 /// Folds concurrent tabs, quick reloads and every keystroke in the search into one read.
@@ -52,8 +52,6 @@ struct Shown<'a> {
     buckets: &'a [String],
     errors: &'a [String],
     table: Summary,
-    /// What the view's rows cost over every page (`session_table::spend`), for the overview row.
-    spend_usd: f64,
 }
 
 pub struct Cache {
@@ -73,11 +71,10 @@ impl Default for Cache {
     }
 }
 
-/// One page of the rows the view keeps (`layout`'s `sessions` size); the spend is the whole view's.
+/// One page of the rows the view keeps (`layout`'s `sessions` size).
 fn render(r: &Read, q: &TableQuery) -> String {
     let view = View::new::<SessionRow>(&q.q, &q.s, &q.sort, &q.dir);
     let (mut rows, mut table) = view.summary(&r.rows);
-    let spend_usd = session_table::spend(rows.iter().copied());
     let per = layout::page_rows("sessions/sessions");
     let page = q.pg.parse().unwrap_or_else(|_| {
         let at = rows.iter().position(|r| {
@@ -87,18 +84,12 @@ fn render(r: &Read, q: &TableQuery) -> String {
     });
     table::page(&mut rows, &mut table, page, per);
     let out = Shown {
-        spend_usd,
         rows,
         buckets: &r.buckets,
         errors: &r.errors,
         table,
     };
-    serde_json::to_string(&out).unwrap_or_else(|e| failed(e.to_string()))
-}
-
-/// A body the tab can still render when reading itself failed.
-fn failed(e: String) -> String {
-    serde_json::json!({ "rows": [], "errors": [e] }).to_string()
+    serde_json::to_string(&out).unwrap_or_else(|e| failed(&["rows"], e.to_string()))
 }
 
 impl Cache {
@@ -138,7 +129,9 @@ impl Cache {
 
     /// The view `q` asks for; every view is applied to the shared read outside the lock.
     pub async fn table(&self, s: &Shared, q: TableQuery) -> String {
-        self.read(s).await.map_or_else(failed, |r| render(&r, &q))
+        self.read(s)
+            .await
+            .map_or_else(|e| failed(&["rows"], e), |r| render(&r, &q))
     }
 
     /// One session's page, or None when nothing names `id`. The open page refreshes with the
@@ -231,7 +224,6 @@ mod tests {
         assert_eq!(v["rows"][0]["key"], format!("k{per}"));
         assert_eq!(v["table"]["pager"]["page"], 2);
         assert_eq!(v["table"]["shown"], per + 3);
-        assert_eq!(v["spend_usd"], (per + 3) as f64);
         let sel = |sel: &str, pg: &str| TableQuery {
             sel: sel.into(),
             pg: pg.into(),

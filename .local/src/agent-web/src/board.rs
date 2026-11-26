@@ -155,7 +155,7 @@ fn to_write(b: WriteBody) -> Result<Write, &'static str> {
         "add" => Verb::Add {
             text: b.text,
             priority: if b.priority.is_empty() {
-                "high".into()
+                tasks::DEFAULT_PRIORITY.into()
             } else {
                 b.priority
             },
@@ -326,9 +326,9 @@ mod tests {
         assert_eq!(texts(&one), ["tidy"]);
         assert_eq!(one["table"]["total"], 3, "the total is the scope's");
         assert_eq!(one["table"]["shown"], 1);
-        assert_eq!(one["table"]["states"][3]["name"], "urgent");
+        assert_eq!(one["table"]["states"][4]["name"], "urgent");
         assert_eq!(
-            one["table"]["states"][3]["n"], 0,
+            one["table"]["states"][4]["n"], 0,
             "the query narrows the chips"
         );
     }
@@ -369,7 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn an_add_defaults_to_high_and_blank_fields_are_absent() {
+    fn an_add_defaults_to_normal_and_blank_fields_are_absent() {
         let w = to_write(body(
             r#"{"verb":"add","profile":"bnb","project":"demo","lane":"human","text":"x","to":" ","game":""}"#,
         ))
@@ -378,7 +378,7 @@ mod tests {
             w.verb,
             Verb::Add {
                 text: "x".into(),
-                priority: "high".into(),
+                priority: "normal".into(),
                 to: None,
                 game: None
             }

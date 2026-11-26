@@ -75,19 +75,19 @@ function alertsHead(d) {
   return html + innerWrap("alerts", "health", alertsFold("health", "Health", chips.length || null, worst, alertsHealthChips(d)));
 }
 
-// Every domain with its hue, the not-green ones first, then why: each component that is not green.
+// Every domain with its hue, the not-green ones first, on one line: it says what is not green, so
+// no row per component repeats it.
 function alertsHealthChips(d) {
   const chips = d.health || [], read = `<div class="cline"><b>read</b> ${d.at ? clock(d.at * 1e3) : "-"}</div>`;
   if (!chips.length) return `<div class="panel muted">No health: Prometheus did not answer.${read}</div>`;
   const rank = { red: 0, warn: 1, nodata: 2, ok: 3 };
   const line = [...chips].sort((a, b) => rank[a.level] - rank[b.level]).map((c) => cchip(ALERT_HUE[c.level], `${esc(c.name)} ${HEALTH_WORD[c.level]}`)).join(" ");
-  const why = (d.components || []).map((c) => `<div>${cchip(ALERT_HUE[c.level], HEALTH_WORD[c.level])} ${esc(c.domain)}/${esc(c.name)}</div>`).join("");
-  return `<div class="panel"><div class="cline">${line}</div>${why}${read}</div>`;
+  return `<div class="panel"><div class="cline">${line}</div>${read}</div>`;
 }
 
 function alertRow(a) {
   const open = alertKey(a) === alst.sel;
-  const owner = a.slug ? `<a href="${esc("#queue?q=" + encodeURIComponent(a.slug))}">${esc(a.owner)}</a>` : esc(a.owner);
+  const owner = a.owner_href ? `<a href="${esc(a.owner_href)}">${esc(a.owner)}</a>` : esc(a.owner);
   const row = `<tr class="jr${open ? " sel" : ""}" data-key="${esc(alertKey(a))}">` +
     `<td class="${a.sev === "urgent" || a.sev === "high" ? "bad" : "muted"}">${esc(a.sev || "-")}</td><td class="wrap">${esc(a.what)}${alertCount(a)}</td>` +
     `<td class="muted">${esc(a.project || "-")}</td><td class="muted">${esc(a.source)}</td><td class="n">${a.since ? ago(a.since) : "-"}</td><td class="wrap">${owner}</td>` +
@@ -133,10 +133,15 @@ function alertPages(a) {
 // Fixes: each red the triage queued as a fix in the window, open worst first; the settled fold to a count.
 const ALERTS_FIX_COLOR = { "came back": "var(--b-needs)", "still red": "var(--b-needs)", "no fix": "var(--b-needs)", "needs merge": "var(--b-stalled)",
   fixing: "var(--b-working)", queued: "var(--b-working)", fixed: "var(--b-done)", cleared: "var(--b-done)" };
+// A fix's row leads with its ticket (the board row id), then the run, session, PR and CI pages
+// hub-core's `Red::links` names.
 function alertsFixRow(r) {
-  const pr = !r.pr ? "" : r.pr_url ? `<a href="${esc(r.pr_url)}" target="_blank" rel="noopener">PR ${esc(r.pr)}</a>` : `<span class="by">PR ${esc(r.pr)}</span>`;
+  const links = r.links || [], ticket = links.find((l) => l.what === "row");
+  const rest = links.filter((l) => l !== ticket).map((l) => `<span class="by">${l.what === "ci" ? "" : esc(l.what) + " "}${tblLink(l.href, l.text)}</span>`).join("");
+  // Each PR that names no repo (a bare number) has no page, so it stays as its label.
+  const bare = (r.pr || "").split(/[\s,]+/).filter((t) => t && !/^https?:/.test(t) && !t.includes("/")).map((t) => `<span class="by">PR ${esc(t)}</span>`).join("");
   return `<div class="pr"><span class="chip sm" style="--c:${ALERTS_FIX_COLOR[r.outcome] || "var(--c-other)"}">${esc(r.outcome.toUpperCase())}</span>` +
-    `<span class="pt">${esc(r.red)}</span>${r.project ? `<span class="by">${esc(r.project)}</span>` : ""}<span class="by">${esc(r.slug)}</span>${pr}<span class="by">${r.queued ? ago(r.queued) : "-"}</span></div>`;
+    `${ticket ? `<span class="by">${tblLink(ticket.href, ticket.text)}</span>` : ""}<span class="pt">${esc(r.red)}</span>${r.project ? `<span class="by">${esc(r.project)}</span>` : ""}${rest}${bare}<span class="by">${r.queued ? ago(r.queued) : "-"}</span></div>`;
 }
 
 function alertsFixes(d) {

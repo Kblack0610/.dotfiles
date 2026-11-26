@@ -117,7 +117,7 @@ pub(crate) const DUE_LATER: u8 = 3;
 pub(crate) struct Rank {
     /// 0 overdue, 1 due today, 2 due within [`DUE_SOON_DAYS`], [`DUE_LATER`] later or no due date.
     pub due: u8,
-    /// Index into [`md::PRIORITIES`]: 0 `#urgent`, 1 `#high`, 2 `#low`; untagged is
+    /// Index into [`md::PRIORITIES`]: 0 `#urgent`, 1 `#high`, 2 `#normal`, 3 `#low`; untagged is
     /// [`md::DEFAULT_PRIORITY`].
     pub prio: u8,
     /// 0 when the human asked for it.
@@ -161,9 +161,7 @@ pub(crate) fn aimed(line: &str, today: NaiveDate, aim: Option<&Aim>) -> Rank {
         Some(n) if n <= DUE_SOON_DAYS => 2,
         _ => DUE_LATER,
     };
-    let prio = md::task_priority(line)
-        .and_then(|t| md::PRIORITIES.iter().position(|(_, hash, _)| *hash == t))
-        .unwrap_or(md::DEFAULT_PRIORITY) as u8;
+    let prio = md::priority_index(line).unwrap_or(md::DEFAULT_PRIORITY) as u8;
     let head = line.split("<!--").next().unwrap_or(line);
     let req = u8::from(!head.split_whitespace().any(|t| t == REQUESTED));
     let created = md::find_created(line, today).unwrap_or(today);
@@ -179,9 +177,7 @@ pub(crate) fn aimed(line: &str, today: NaiveDate, aim: Option<&Aim>) -> Rank {
 mod tests {
     use super::*;
 
-    fn d(s: &str) -> NaiveDate {
-        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
-    }
+    use crate::md::date as d;
 
     const TODAY: &str = "2026-11-09";
 
@@ -222,8 +218,22 @@ mod tests {
     fn an_untagged_row_ranks_as_the_default_priority() {
         assert_eq!(
             of("- [ ] bare", d(TODAY)).prio,
-            of("- [ ] tagged #high", d(TODAY)).prio
+            of("- [ ] tagged #normal", d(TODAY)).prio
         );
+    }
+
+    #[test]
+    fn an_untagged_row_ranks_after_high_and_before_low() {
+        // Negative control: on the three-level table (bare row ranked as #high) the first
+        // assertion fails.
+        let out = sorted(&[
+            "- [ ] low #low #c1001",
+            "- [ ] bare #c1001",
+            "- [ ] high #high #c1001",
+            "- [ ] normal #normal #c1002",
+            "- [ ] fire #urgent #c1001",
+        ]);
+        assert_eq!(out, ["fire", "high", "bare", "normal", "low"]);
     }
 
     #[test]

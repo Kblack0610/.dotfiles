@@ -57,6 +57,10 @@ pub(crate) fn parent_of(line: &str) -> Option<String> {
     md::split_parent(head).1
 }
 
+/// What an open epic with no open child shows as in `notes board --json`'s `priority`
+/// ([`Index::epic_priority`]); it ranks as `#low`, the last level.
+pub(crate) const EMPTY: &str = "empty";
+
 /// Is this row an epic: typed `epic(area): <outcome>`.
 pub(crate) fn is_epic(line: &str) -> bool {
     line.contains("epic(") && projects::row_type_area(line).is_some_and(|(t, _)| t == "epic")
@@ -149,6 +153,9 @@ struct Node {
     proof: String,
     /// Where the row is, for a doctor line: `sheet line 12`.
     at: String,
+    /// The row's priority as an index into [`md::PRIORITIES`], untagged as
+    /// [`md::DEFAULT_PRIORITY`]: what an epic over it ranks as ([`Index::epic_priority`]).
+    prio: usize,
 }
 
 /// One open epic's rollup over its leaves, in every version.
@@ -186,6 +193,14 @@ pub(crate) struct BacklogEpic {
     pub moves: Vec<String>,
     /// Agent-board ids counted past the target, aimed with `ptask --agent move`.
     pub agent_moves: Vec<String>,
+}
+
+/// A parent none of whose children is open ([`Index::spent`]).
+#[derive(Debug, PartialEq)]
+pub(crate) struct Spent {
+    pub done: usize,
+    pub ids: Vec<String>,
+    pub unverified: bool,
 }
 
 /// The tree of one project: every row with an id or a parent, and each parent's children.
@@ -315,6 +330,7 @@ impl Index {
             },
             proof: proof_of(line),
             at,
+            prio: md::priority_index(line).unwrap_or(md::DEFAULT_PRIORITY),
         });
     }
 
@@ -340,17 +356,99 @@ impl Index {
         in_some_version(line)
     }
 
-    /// Where each open child of `id` is, for a refusal to close it.
-    pub(crate) fn open_children(&self, id: &str) -> Vec<String> {
+    /// What the open epic `id` ranks as: the most urgent of its open children that are not
+    /// epics themselves, as an index into [`md::PRIORITIES`]; `None` when it has no open child
+    /// ([`EMPTY`]). The one rule for an epic's priority: an epic row carries no tag of its own
+    /// (`projects::row_findings` refuses one), so it is derived here, never stored.
+    pub(crate) fn epic_priority(&self, id: &str) -> Option<usize> {
         self.children(id)
             .iter()
             .map(|&i| &self.nodes[i])
+            .filter(|n| n.open && n.title.is_none())
+            .map(|n| n.prio)
+            .min()
+    }
+
+    /// Where each open row under `id` is, at any depth, for a refusal to close it: an open
+    /// grandchild under a closed child holds it open as much as an open child does.
+    pub(crate) fn open_under(&self, id: &str) -> Vec<String> {
+        self.under(id)
+            .into_iter()
+            .map(|i| &self.nodes[i])
             .filter(|n| n.open)
             .map(|n| match &n.id {
                 Some(c) => format!("{c} ({})", n.at),
                 None => n.at.clone(),
             })
             .collect()
+    }
+
+    /// The ids under `id` at any depth, dropped rows left out.
+    pub(crate) fn descendants(&self, id: &str) -> Vec<String> {
+        self.under(id)
+            .into_iter()
+            .filter_map(|i| self.nodes[i].id.clone())
+            .collect()
+    }
+
+    /// The nodes under `id` at any depth, dropped rows left out, each walked once, so a loop
+    /// cannot hang a read.
+    fn under(&self, id: &str) -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        let mut stack = self.children(id).to_vec();
+        while let Some(j) = stack.pop() {
+            if !seen.insert(j) || self.nodes[j].id.as_deref() == Some(id) {
+                continue;
+            }
+            out.push(j);
+            if let Some(c) = self.nodes[j].id.as_deref() {
+                stack.extend_from_slice(self.children(c));
+            }
+        }
+        out.sort_unstable();
+        out
+    }
+
+    /// The chain `[top, .., id]` when `id` sits under `top` at any depth, read up `id`'s
+    /// parents; `None` when it does not. What a re-parent onto `id` would loop through.
+    pub(crate) fn chain(&self, top: &str, id: &str) -> Option<Vec<String>> {
+        let mut up = vec![id.to_string()];
+        let mut cur = self.node(id)?;
+        while let Some(p) = &cur.parent {
+            if up.contains(p) {
+                return None;
+            }
+            up.push(p.clone());
+            if p == top {
+                up.reverse();
+                return Some(up);
+            }
+            cur = self.node(p)?;
+        }
+        None
+    }
+
+    /// How the open row `id` stands once none of its children is open: the ids of those that
+    /// closed done, how many did (0 when every one was dropped), and whether any of them closed
+    /// `--unverified`. `None` while one is open, when `id` is no open parent, and for an epic,
+    /// which closes on proof of its outcome, never on its rows alone.
+    pub(crate) fn spent(&self, id: &str) -> Option<Spent> {
+        self.node(id).filter(|n| n.open && n.title.is_none())?;
+        let kids: Vec<&Node> = self
+            .nodes
+            .iter()
+            .filter(|n| n.parent.as_deref() == Some(id))
+            .collect();
+        if kids.is_empty() || kids.iter().any(|n| n.open) {
+            return None;
+        }
+        let done: Vec<&&Node> = kids.iter().filter(|n| !n.dropped).collect();
+        Some(Spent {
+            done: done.len(),
+            ids: done.iter().filter_map(|n| n.id.clone()).collect(),
+            unverified: done.iter().any(|n| n.proof.starts_with("unverified:")),
+        })
     }
 
     /// The leaves under node `i`, each node walked once, so a loop cannot hang a read. The
@@ -509,6 +607,18 @@ impl Index {
                 continue;
             }
             let at = &n.at;
+            // A standing epic (`<system> to standard`) stays open with nothing under it.
+            let feature = n
+                .title
+                .as_deref()
+                .is_some_and(|t| !crate::standing::is_standing(&n.system, t));
+            if let Some(id) = n.id.as_deref().filter(|_| feature) {
+                if self.epic_priority(id).is_none() {
+                    out.push(format!(
+                        "{at}: epic {id} has no open row, so it ranks as {EMPTY}: close it or file its rows under it"
+                    ));
+                }
+            }
             let Some(p) = n.parent.as_deref() else {
                 continue;
             };
@@ -622,8 +732,8 @@ Version: v1.4.0 #alpha
                 ..EpicProgress::default()
             }]
         );
-        assert_eq!(ix.open_children("dm-2"), vec!["dm-3 (agent board line 4)"]);
-        assert!(ix.open_children("dm-3").is_empty(), "a leaf closes freely");
+        assert_eq!(ix.open_under("dm-2"), vec!["dm-3 (agent board line 4)"]);
+        assert!(ix.open_under("dm-3").is_empty(), "a leaf closes freely");
     }
 
     #[test]
@@ -774,7 +884,7 @@ Version: v1.4.0 #alpha
             "landed: its verify does not hold it open"
         );
         assert!(
-            ix.open_children("dm-1").is_empty(),
+            ix.open_under("dm-1").is_empty(),
             "the check closes the epic it verifies"
         );
         // NEGATIVE CONTROL: the same row typed as a gap under the epic is one of its open leaves.
@@ -786,7 +896,7 @@ Version: v1.4.0 #alpha
         );
         let ix = Index::of(&dir, V14);
         assert_eq!((ix.epics()[0].open, ix.epics()[0].done), (1, 1));
-        assert_eq!(ix.open_children("dm-1"), vec!["dm-3 (agent board line 5)"]);
+        assert_eq!(ix.open_under("dm-1"), vec!["dm-3 (agent board line 5)"]);
     }
 
     #[test]
@@ -851,12 +961,50 @@ Version: v1.4.0 #alpha
         let want = [
             "sheet line 5: #of/dm-99 names no row in this project",
             "sheet line 7: open under dm-2, which is done",
+            "sheet line 8: epic dm-4 has no open row, so it ranks as empty: close it or file its rows under it",
             "sheet line 8: an epic takes no #of/ (it is the top of its tree)",
             "sheet line 10: #of/ loops back to this row",
             "sheet line 11: #of/ loops back to this row",
             "sheet line 14: 4 levels deep (epic, story, subtask is the most)",
         ];
         assert_eq!(f, want);
+    }
+
+    // An epic's priority is its most urgent open child's, a child epic, a closed row and a
+    // dropped one aside; with none open it has no priority and doctor names it.
+    #[test]
+    fn an_epic_takes_its_most_urgent_open_childs_priority() {
+        let dir = project(
+            "epicprio",
+            &[(
+                "README.md",
+                "# demo\nVersion: v1.4.0\n\n## Tasks\n\
+                 - [ ] epic(a): busy #low <!-- id:dm-1 -->\n\
+                 - [ ] feat(a): high one #high #of/dm-1 <!-- id:dm-2 -->\n\
+                 - [ ] feat(a): untagged #of/dm-1 <!-- id:dm-3 -->\n\
+                 - [x] feat(a): closed urgent #urgent #of/dm-1 <!-- id:dm-4 done:2026-11-05 pr:1 -->\n\
+                 - [ ] epic(b): idle <!-- id:dm-5 -->\n\
+                 - [ ] epic(b): a child epic #urgent #of/dm-5 <!-- id:dm-6 -->\n\
+                 - [x] feat(b): dropped #urgent #of/dm-5 <!-- id:dm-7 dropped: stale -->\n\
+                 - [ ] epic(c): c to standard <!-- id:dm-8 -->\n",
+            )],
+        );
+        let ix = Index::of(&dir, V14);
+        assert_eq!(
+            ix.epic_priority("dm-1"),
+            Some(1),
+            "#high, not the epic's own #low"
+        );
+        assert_eq!(ix.epic_priority("dm-5"), None);
+        let f = ix.findings();
+        assert!(
+            f.iter().any(|l| l.contains("epic dm-5 has no open row")),
+            "{f:?}"
+        );
+        // NEGATIVE CONTROL: an epic with an open row is not named, nor a standing epic with none.
+        assert!(!f.iter().any(|l| l.contains("epic dm-1 ")), "{f:?}");
+        assert_eq!(ix.epic_priority("dm-8"), None);
+        assert!(!f.iter().any(|l| l.contains("epic dm-8 ")), "{f:?}");
     }
 
     #[test]

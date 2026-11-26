@@ -83,7 +83,7 @@ while IFS= read -r l; do tip+=$'\n'"$l"; done < <(bar_detail item)
 # Up next: the ready count and its priorities, the card's rows in start order, then the cleared board
 # rows dispatch would promote after them.
 rest="$(p queue.Urgent) urgent, $(p queue.High) high"
-[ -z "${PV[queue.Focus first]:-}" ] || rest+="; $(paint "$C_YEL" "$(p 'queue.Focus first') focus project(s) first")"
+[ -z "${PV[queue.On focus]:-}" ] || rest+="; $(paint "$C_YEL" "$(p 'queue.On focus') project(s) on focus, running sprints")"
 tip+=$'\n\n'"<b>Up next</b>  $(p 'queue.On deck') ready ($rest)"
 # The card's rows, as many as the bar channel's line cap leaves after what is above them and the lines
 # below: +N more, the board, In flight, Today and its blank, Room, the as-of line and one spare.

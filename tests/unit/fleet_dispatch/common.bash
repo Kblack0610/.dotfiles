@@ -94,8 +94,10 @@ setup() {
   # runner's own /proc/stat would otherwise decide the load cases.
   export DISPATCH_CPU_SAMPLES="$SANDBOX/cpu.samples" DISPATCH_PROC_STAT="$SANDBOX/stat"
   echo 'cpu  0 0 0 0 0 0 0 0 0 0' > "$DISPATCH_PROC_STAT"
+  # This machine's MemAvailable for its free share (local_share): 90% free unless a test is about it.
+  export DISPATCH_PROC_MEMINFO="$SANDBOX/meminfo"
+  printf 'MemTotal: 1000 kB\nMemAvailable: 900 kB\n' > "$DISPATCH_PROC_MEMINFO"
   export DISPATCH_CANARY_KEEP=0   # off unless a test is about it ("canary top-up:"), so no pass asks fleet-bench for canaries
-  export DISPATCH_FLEET_SHARE=0   # off unless a test is about it ("fleet share:"), so a fleet project's item starts in queue order
   export DISPATCH_START_LOAD=0   # a start adds no pending load unless a test is about it, whatever the runner's cores
   export DISPATCH_PER_PASS=1   # one start a pass unless a test is about it; the shipped default, 0, is no cap
   printf '%s\n' 'policy' '- (fits) dispatch' '- (unclear) not clear' > "$DISPATCH_POLICY"
@@ -136,13 +138,15 @@ setup() {
   source "$REPO_ROOT/.local/bin/fleet-dispatch"
 }
 
-# class_floors <requested min_live> <cleanup min_live> -> a classes.json mix with those minimums: the board
-# top-up above the low water reads them (class_gap). A case that never calls it has no mix, so no floor.
+# class_floors <requested min_live> <cleanup min_live> [game min_live] -> a classes.json mix with those
+# minimums: the board top-up above the low water reads them (class_gap, and project_gaps for the third, a
+# `game` project class). A case that never calls it has no mix, so no floor.
 class_floors() {
   export AGENT_QUEUE_CLASSES="$SANDBOX/classes.json"
-  jq -n --argjson r "$1" --argjson c "$2" '{on: true, window_days: 7, classes: [
+  jq -n --argjson r "$1" --argjson c "$2" --argjson g "${3:-null}" '{on: true, window_days: 7, classes: [
     {name: "requested", share: 60, tags: ["requested"], min_live: $r},
     {name: "cleanup", share: 10, tags: ["cleanup"], min_live: $c},
+    (if $g == null then empty else {name: "game", share: 10, projects: ["game"], min_live: $g} end),
     {name: "rest", share: 30, default: true}]}' > "$AGENT_QUEUE_CLASSES"
 }
 
@@ -182,10 +186,17 @@ while [ $# -gt 0 ]; do
   case "$1" in --profile) shift 2 ;; --agent) lane=agent; shift ;; --exact) exact=1; shift ;; --) shift ;; *) args+=("$1"); shift ;; esac
 done
 case "${args[0]}" in
+  improve)   # exit 3 is the real notes' refusal of health work, when $F/improve.health exists
+    [ ! -f "$F/improve.health" ] || { echo "health work, not an improvement" >&2; exit 3; } ;;
   projects)
     case " ${args[*]} " in
       *" --prios "*) cat "$F/prios" 2>/dev/null ;;
       *" --stats "*) [ -f "$F/stats.json" ] && cat "$F/stats.json" || echo '[]' ;;
+      # `--front-page <dir>`: the sheet cases of projects.rs::sheet_path, else summary.md, as the shared stub answers
+      *" --front-page "*) d="${args[2]%/}"
+        if grep -q '^Version:' "$d/README.md" 2>/dev/null; then echo "$d/README.md"
+        elif [ -f "$d/tasks.md" ]; then echo "$d/tasks.md"
+        else echo "$d/summary.md"; fi ;;
       *) cat "$F/projects" 2>/dev/null ;;
     esac ;;
   row)   # `row parse`: a stand-in for the grammar's home (notes-cli), enough for these fixtures: type(area): with a type in kinds.json
@@ -201,8 +212,9 @@ case "${args[0]}" in
       for f in "$F"/rows.*.*; do
         [ -f "$f" ] || continue
         p=${f#"$F/rows."}; lane=${p##*.}; p=${p%.*}
-        jq -Rn --arg p "$p" --arg l "$lane" '
-          inputs | split("\t") | {profile: "bnb", project: $p, lane: $l, id: ((.[1] | capture("<!-- id:(?<i>[^ ]+)") | .i) // .[0]), raw: .[1],
+        # profile.<project> names the project's profile (bnb when there is none)
+        jq -Rn --arg p "$p" --arg l "$lane" --arg pf "$(cat "$F/profile.$p" 2>/dev/null || echo bnb)" '
+          inputs | split("\t") | {profile: $pf, project: $p, lane: $l, id: ((.[1] | capture("<!-- id:(?<i>[^ ]+)") | .i) // .[0]), raw: .[1],
             # As notes gives them: tags lower-cased for grouping, tags_cased as written (a gate value is data).
             tags_cased: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0]],
             tags: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0] | ascii_downcase],
@@ -346,6 +358,8 @@ plan_fixture() {
     "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"; }
   rule agent ga-1 unclear; rule agent ga-2 design; rule agent ga-3 unclear; rule agent ga-5 unclear
   rule agent ga-7 bundle; rule human gh-1 unclear
+  # ga-2 is a design skip the judge says needs a person, so it keeps the human exit
+  jq -c 'if .key == "ga-2" then .agent_only = false else . end' "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
   verdict game agent ga-4 dispatch
   # ga-5 was edited after its verdict
   sed -i 's/row ga-5/row ga-5 now longer/' "$NOTES_FIXTURE/rows.game.agent"
@@ -601,10 +615,11 @@ fj_pr() {
     > "$NOTES_FIXTURE/fj.pr"
 }
 
-# fix_ended <head> <ci> -- the fix-crash item's PR now reads OPEN at <head> with checks <ci>, and the
-# item is back in review/ with a session that is gone, as a fix-ci session leaves it when it ends.
+# fix_ended <head> <ci> [mergeable red-runs] -- the fix-crash item's PR now reads OPEN at <head> with checks
+# <ci> (and, given, PR_STATE_JQ's last two fields), and the item is back in review/ with a session that is
+# gone, as a fix-ci session leaves it when it ends.
 fix_ended() {
-  printf 'OPEN - %s %s\n' "$1" "$2" > "$NOTES_FIXTURE/pr.state"
+  printf 'OPEN - %s %s%s\n' "$1" "$2" "${3:+ $3 ${4:--}}" > "$NOTES_FIXTURE/pr.state"
   [ "$(agent-queue show fix-crash --json | jq -r .state)" = review ] && return 0
   agent-queue move fix-crash running >/dev/null
   agent-queue set fix-crash session=lab:game-agent-1 >/dev/null
@@ -619,7 +634,7 @@ codex_end_item() {
   mkdir -p "$d" "$HOME/.local/lib"
   cp "$REPO_ROOT/.local/lib/codex-rollout.jq" "$HOME/.local/lib/codex-rollout.jq"
   CODEX_SESSIONS="$HOME/.codex/sessions"; CODEX_ROLLOUT_JQ="$HOME/.local/lib/codex-rollout.jq"
-  jq -n '{harnesses: {codex: {source: "codex", headless: true, resume: true, timeout_min: 120, models: {sol: "gpt-6.1-sol"}}}}' > "$SANDBOX/harnesses.json"
+  jq -n '{harnesses: {codex: {source: "codex", end_classifier: "codex", headless: true, resume: true, timeout_min: 120, models: {sol: "gpt-6.1-sol"}}}}' > "$SANDBOX/harnesses.json"
   HARNESSES="$SANDBOX/harnesses.json"
   jq -cn --argjson e "$2" --arg first "$(date -u -d @1794200000 +%FT%T.000Z)" --arg last "$(date -u -d "@$((1794200000 + ${3:-60}))" +%FT%T.000Z)" \
     '{timestamp: $first, type: "event_msg", payload: {type: "task_started"}},
@@ -651,7 +666,7 @@ oc_session() {
 # go, timeout 7200s) on a gone session with no PR, its session as oc_session writes it, and a model-lane run for it.
 oc_end_item() {
   oc_session "$@"
-  jq -n '{harnesses: {go: {launcher: "opencode", source: "go", max_tier: 1, headless: true, timeout_min: 120, models: {glm: "go (glm-5.3)"}}}}' > "$SANDBOX/harnesses.json"
+  jq -n '{harnesses: {go: {launcher: "opencode", source: "go", end_classifier: "opencode", max_tier: 1, headless: true, timeout_min: 120, models: {glm: "go (glm-5.3)"}}}}' > "$SANDBOX/harnesses.json"
   HARNESSES="$SANDBOX/harnesses.json"
   stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"'
   project game beta "$SANDBOX/repos/game"
@@ -776,12 +791,14 @@ harness_ready() {
   printf 'sk-paid\n' > "$SANDBOX/paid.key"
   jq -n --arg k "$SANDBOX/eval.key" --arg c "$SANDBOX/eval.json" --arg gk "$SANDBOX/paid.key" --arg gc "$SANDBOX/eval-paid.json" '{
     gateway: {url: "https://gw.test", key_file: $k},
+    capabilities: {code_review: {why: "the red-fix gate needs /code-review"}, lane_sandbox: {mode: "lane-sandbox", why: "no launcher applies a lane profile"},
+      unity_gate: {stack: "unity", why: "a unity PR needs the CI gate line"}},
     harnesses: {
-      "claude-lazer": {source: "eval", timeout_min: 180, models: {sonnet: "sonnet"}},
-      opencode: {source: "eval", headless: true, config: $c, timeout_min: 180, models: {sonnet: "litellm/claude-sonnet-5", qwen: "litellm/code (qwen-3-coder)"}},
-      paid: {launcher: "opencode", source: "paid", headless: true, metered: true, config: $gc, key_file: $gk, timeout_min: 180, models: {glm: "litellm/reasoning (glm-5.3)"}},
-      codex: {source: "codex", headless: true, resume: true, timeout_min: 120, models: {sol: "gpt-6.1-sol"}},
-      "claude-cloud": {launcher: "claude-cloud", timeout_min: 90, models: {cloud: "cloud"}}}}' > "$SANDBOX/harnesses.json"
+      "claude-lazer": {source: "eval", capabilities: ["code_review", "unity_gate"], timeout_min: 180, models: {sonnet: "sonnet"}},
+      opencode: {source: "eval", end_classifier: "opencode", headless: true, config: $c, timeout_min: 180, models: {sonnet: "litellm/claude-sonnet-5", qwen: "litellm/code (qwen-3-coder)"}},
+      paid: {launcher: "opencode", source: "paid", end_classifier: "opencode", headless: true, metered: true, config: $gc, key_file: $gk, timeout_min: 180, models: {glm: "litellm/reasoning (glm-5.3)"}},
+      codex: {source: "codex", end_classifier: "codex", headless: true, resume: true, timeout_min: 120, models: {sol: "gpt-6.1-sol"}},
+      "claude-cloud": {launcher: "claude-cloud", capabilities: ["code_review"], timeout_min: 90, models: {cloud: "cloud"}}}}' > "$SANDBOX/harnesses.json"
   export DISPATCH_HARNESSES="$SANDBOX/harnesses.json"
   # The kinds route() keeps off a headless harness, at the path the script reads by default.
   mkdir -p "$HOME/.config/fleet-bench"
@@ -791,8 +808,7 @@ harness_ready() {
       {kind: "prod", match: "\\b(prod|production)\\b", why: "prod"},
       {kind: "unity-editor", stack: "unity", match: "(^|[[:space:]])#requested\\b|\\b(editor|play ?mode)\\b", why: "needs the editor"},
       {kind: "host-ops", match: "\\b(drain(s|ed|ing)?\\b.*\\b(runners?|hosts?)|(runners?|hosts?)\\b.*\\bdrain(s|ed|ing)?|(de|un)-?regist(er|ers|ered|ering|ration)\\b.*\\brunners?|runners?\\b.*\\b(de|un)-?regist(er|ers|ered|ering|ration)|runners? (registration|token)s?|regist(er|ers|ered|ering|ration) (of )?(the |a |its |their )?(self-hosted |org |github )?runners?|systemctl( +-[^ ]+)* +(stop|disable|mask|kill|restart|reboot|poweroff|halt))\\b", why: "live host ops"},
-      {mode: "fleet-worker", why: "no match, so never read by route"},
-      {mode: "lane-sandbox", why: "no match, so never read by route"}]}' > "$HOME/.config/fleet-bench/matrix.json"
+      {mode: "fleet-worker", why: "no match, so never read by route"}]}' > "$HOME/.config/fleet-bench/matrix.json"
   stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; [ "$1" != log ] || echo run-9'
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
   tmux_script 'exit 0'
@@ -872,7 +888,7 @@ codex_ran() {
 route_ready() {
   harness_ready
   printf 'sk-reserve\n' > "$SANDBOX/reserve.key"
-  harness_set --arg k "$SANDBOX/reserve.key" '.harnesses["lazer-reserve"] = {launcher: "claude-lazer", source: "reserve", key_file: $k, timeout_min: 180, models: {sonnet: "sonnet"}}'
+  harness_set --arg k "$SANDBOX/reserve.key" '.harnesses["lazer-reserve"] = {launcher: "claude-lazer", source: "reserve", capabilities: ["code_review", "unity_gate"], key_file: $k, timeout_min: 180, models: {sonnet: "sonnet"}}'
   acct "alt:pace:/home/u/.claude-personal:4 points over its weekly pace"
   srcs
   sonnet_lane
@@ -896,6 +912,7 @@ case "$1" in log) echo run-9 ;; trainee) printf "%s\n" "${TRAINEE_LANE:-}" ;; cl
 # ssh.rc, when present, is ssh's own exit (255: the worker did not answer).
 # first is its fleet_first, a YAML list such as "[canary]"; harnesses its fleet_harnesses, such as "[ocfree]";
 # kit its `fleet-dispatch kit` line, default every launcher and srt ("" is an older worker with no kit verb).
+# A test writes the dirs the worker has no checkout of, one a line, to $NOTES_FIXTURE/ssh.missing: the probe's "missing" section.
 worker() {
   export FLEET_INVENTORY="$SANDBOX/inventory.yml"
   cat > "$FLEET_INVENTORY" <<EOF
@@ -911,7 +928,7 @@ all:
           ansible_user: kb
     fleet_workers:
       vars:
-        fleet_max_live: 1
+        fleet_max_live: ${WORKER_MAX_LIVE:-1}
         fleet_place: ${2:-true}
       hosts:
         razer-laptop:
@@ -922,11 +939,12 @@ all:
               repo: game
 EOF
   printf '%s\n' "${5-claude codex opencode srt}" > "$NOTES_FIXTURE/ssh.kit"
-  { tr ' ' '\n' <<<"$1"; echo kit; cat "$NOTES_FIXTURE/ssh.kit"; } > "$NOTES_FIXTURE/ssh.probe"
+  { tr ' ' '\n' <<<"$1"; echo kit; cat "$NOTES_FIXTURE/ssh.kit"; echo missing; } > "$NOTES_FIXTURE/ssh.probe"
   stub ssh 'echo "ssh $*" >> "$NOTES_FIXTURE/calls.log"
 [ ! -e "$NOTES_FIXTURE/ssh.rc" ] || exit "$(cat "$NOTES_FIXTURE/ssh.rc")"
 eval "set -- ${*: -1}"
-case "$1 ${2:-}" in "sh -c") cat "$NOTES_FIXTURE/ssh.probe" ;; "fleet-dispatch kit") cat "$NOTES_FIXTURE/ssh.kit" ;; *) "$@" ;; esac'
+[ "$1 ${2%%=*}" != "env FLEET_PROBE_REPOS" ] || shift 2   # the probe runs as `env FLEET_PROBE_REPOS=<dirs> sh -c ...`
+case "$1 ${2:-}" in "sh -c") cat "$NOTES_FIXTURE/ssh.probe"; cat "$NOTES_FIXTURE/ssh.missing" 2>/dev/null || : ;; "fleet-dispatch kit") cat "$NOTES_FIXTURE/ssh.kit" ;; *) "$@" ;; esac'
   # The worker's fleet-dispatch is this checkout's, never the one deployed on this machine's PATH.
   stub fleet-dispatch "exec '$REPO_ROOT/.local/bin/fleet-dispatch' \"\$@\""
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
@@ -945,13 +963,12 @@ remote_item() {
 
 # --- focus: #prio/focus ------------------------------------------------------------------
 
-# focus_on <project>... -- the human put each on `#prio/focus`: the `notes projects --prios` line agent-queue
-# and fleet-dispatch read, and the front-page head tag prio_of reads (the one store both come from).
+# focus_on <project>... -- the human put each on `#prio/focus`: the `notes projects --prios` line fleet-dispatch
+# reads for its headroom and stats (notes is the one reader of the front-page tag, and of its expiry).
 focus_on() {
   local p
   for p; do
     printf '%s\tfocus\n' "$p" >> "$NOTES_FIXTURE/prios"
-    sed -i '1s/$/ #prio\/focus/' "$SANDBOX/sheets/$p/README.md"
   done
 }
 
@@ -959,7 +976,7 @@ focus_on() {
 ocfree_ready() {
   printf 'sk-ocfree\n' > "$SANDBOX/ocfree.key"
   harness_set --arg k "$SANDBOX/ocfree.key" --arg c "$SANDBOX/eval-ocfree.json" --arg d "$SANDBOX/oc-ocfree" '.harnesses.ocfree = {
-    launcher: "opencode", source: "ocfree", headless: true, config: $c, config_dir: $d, key_file: $k, projects: ["dotfiles"], timeout_min: 180, models: {beam: "litellm/opencode-free (beam-free)"}}'
+    launcher: "opencode", source: "ocfree", end_classifier: "opencode", headless: true, config: $c, config_dir: $d, key_file: $k, projects: ["dotfiles"], timeout_min: 180, models: {beam: "litellm/opencode-free (beam-free)"}}'
   harness_sandboxed ocfree
 }
 
@@ -971,7 +988,7 @@ trainee_ready() {
   HARNESSES=$DISPATCH_HARNESSES
   printf 'sk-go\n' > "$SANDBOX/go.key"
   harness_set --arg k "$SANDBOX/go.key" --arg c "$SANDBOX/eval-go.json" --arg d "$SANDBOX/oc-go" '.harnesses.gotrain = {
-    launcher: "opencode", source: "go", headless: true, max_tier: 1, config: $c, config_dir: $d, key_file: $k, projects: ["game"], timeout_min: 60,
+    launcher: "opencode", source: "go", end_classifier: "opencode", headless: true, max_tier: 1, config: $c, config_dir: $d, key_file: $k, projects: ["game"], timeout_min: 60,
     models: {glm: "litellm/go (glm)", kimi: "litellm/go (kimi)"}}'
   harness_sandboxed gotrain
   trainee_repo "$SANDBOX/repos/game"

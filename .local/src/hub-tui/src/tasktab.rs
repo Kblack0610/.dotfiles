@@ -21,7 +21,7 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
 use crate::fit::{cell, clip_line, wrap, Cell, Table};
-use crate::fmt::Palette;
+use crate::fmt::{heading, Palette};
 
 /// What a key on the rows asks the app to do.
 #[derive(Debug, PartialEq)]
@@ -59,9 +59,9 @@ pub struct Prompt {
 
 /// The table's columns, in `tasks::Row`'s COLUMNS order so the sort mark lands on its header.
 /// The row's whole text is the preview's, under the rows.
-const HEADER: [&str; 13] = [
-    "SECTION", "TITLE", "EPIC", "PRIORITY", "STATE", "WHEN", "PROJECT", "LANE", "ID", "VERSION",
-    "SIZE", "TIER", "SINCE",
+const HEADER: [&str; 16] = [
+    "SECTION", "TYPE", "AREA", "TITLE", "EPIC", "PRIORITY", "STATE", "WHEN", "PROJECT", "LANE",
+    "ID", "VERSION", "SIZE", "PTS", "TIER", "SINCE",
 ];
 
 #[derive(Debug, Default)]
@@ -124,11 +124,8 @@ impl TaskView {
     /// A new read keeps the selection on the same line when it is still open.
     pub fn reselect(&mut self, was: Option<Row>, f: &Feed) {
         let rows = shown(f, self);
-        let at = was.and_then(|w| {
-            rows.iter()
-                .position(|r| r.sheet == w.sheet && r.raw == w.raw)
-        });
-        self.table.keep(at, rows.len());
+        self.table
+            .reselect(&rows, was, |r, w| r.sheet == w.sheet && r.raw == w.raw);
     }
 
     /// The selected row when it can be written, else why not (said on the status line).
@@ -169,7 +166,7 @@ impl TaskView {
                 format!("add to {at} ({})", r.lane),
                 Verb::Add {
                     text: p.text,
-                    priority: "high".into(),
+                    priority: tasks::DEFAULT_PRIORITY.into(),
                     to: None,
                     game: r.game.clone().filter(|_| r.lane == "playtest"),
                 },
@@ -374,14 +371,9 @@ impl TaskView {
 }
 
 /// Sprint windows as a table (`hub_core::tasks::SprintRow`, the same columns as the web's; LEFT
-/// reads `queued`, dim); with `tasks`, each window's tasks follow it. Board shows rows only: the
-/// windows are Projects' Sprints tab's and an opened project's Sprint tab's (projtab.rs).
-pub fn sprint_lines(
-    rows: &[tasks::SprintRow],
-    with_tasks: bool,
-    p: Palette,
-    w: usize,
-) -> Vec<Line<'static>> {
+/// reads `queued`, dim). A window's rows are its page's (`hub_core::sprint_page`), opened from
+/// Projects' Sprint tab (projtab.rs), not folded under it.
+pub fn sprint_lines(rows: &[tasks::SprintRow], p: Palette, w: usize) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     let warn_if = |t: &str, bad: bool| {
         cell(
@@ -431,55 +423,7 @@ pub fn sprint_lines(
         }
         .fit(w, p.head()),
     );
-    if with_tasks {
-        for r in rows {
-            let cells = r
-                .tasks
-                .iter()
-                .map(|t| {
-                    let st = t.shown_state();
-                    let text = if t.interrupt {
-                        format!("{} (interrupt)", t.title)
-                    } else {
-                        t.title.clone()
-                    };
-                    vec![
-                        t.id.clone().unwrap_or_else(|| "-".into()).into(),
-                        text.into(),
-                        cell(t.priority.clone(), prio_style(&t.priority, p)),
-                        cell(
-                            st.to_string(),
-                            if matches!(st, "running" | "doing") {
-                                p.head()
-                            } else {
-                                ratatui::style::Style::new()
-                            },
-                        ),
-                    ]
-                })
-                .collect();
-            out.extend(
-                Table {
-                    header: vec!["ID", "TASK", "PRIORITY", "STATE"],
-                    rows: cells,
-                    keep: vec![1, 3, 2, 0],
-                    flex: Some(1),
-                    flexmin: 12,
-                    flexkeep: true,
-                    ..Default::default()
-                }
-                .fit(w, p.head()),
-            );
-        }
-    }
     out
-}
-
-fn heading(title: &str, rest: String, p: Palette) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(title.to_string(), p.head()),
-        Span::styled(rest, p.dim()),
-    ])
 }
 
 fn prio_style(priority: &str, p: Palette) -> ratatui::style::Style {
@@ -505,6 +449,8 @@ fn row(r: &Row, section: String, p: Palette) -> Vec<Cell> {
     let when = r.when();
     vec![
         cell(section, p.head()),
+        or_dash(r.r#type.as_deref()),
+        or_dash(r.area.as_deref()),
         title.into(),
         or_dash(r.epic.as_deref().or(r.parent.as_deref())),
         cell(r.priority.clone(), prio),
@@ -515,6 +461,7 @@ fn row(r: &Row, section: String, p: Palette) -> Vec<Cell> {
         or_dash(r.id.as_deref()),
         or_dash(r.release()),
         or_dash(r.size.as_deref()),
+        r.points.map_or("-".to_string(), |n| n.to_string()).into(),
         r.tier.map_or("-".to_string(), |t| t.to_string()).into(),
         or_dash(r.since.as_deref().map(|d| d.get(5..).unwrap_or(d))),
     ]
@@ -578,11 +525,12 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
             ))
             .map(|(r, s)| row(r, s, p))
             .collect(),
-        keep: vec![0, 3, 4, 2, 5, 6, 8, 7, 9, 10, 12, 11],
-        flex: Some(1),
+        // Indices are HEADER's: the area stays with the title, the type and points drop first.
+        keep: vec![0, 2, 5, 6, 4, 7, 8, 10, 9, 1, 13, 11, 12, 15, 14],
+        flex: Some(3),
         flexmin: 20,
         flexkeep: true,
-        cap: vec![(2, 24), (5, 18), (9, 16)],
+        cap: vec![(2, 16), (4, 24), (7, 18), (11, 16)],
         mark: v.table.mark::<Row>(),
         ..Default::default()
     }
@@ -675,7 +623,7 @@ fn status_line(v: &TaskView, p: Palette, w: usize) -> Line<'static> {
     let l = if let Some(pr) = &v.prompt {
         let what = match pr.kind {
             Kind::Add => format!(
-                "Add to {} ({}), #urgent or #low to set it: ",
+                "Add to {} ({}), #urgent, #high, #normal or #low to set it: ",
                 group(&pr.row),
                 pr.row.lane
             ),
@@ -808,7 +756,7 @@ pub(crate) mod tests {
             "{s}"
         );
         assert!(
-            s.contains("all 5  in progress 0  filed today 0  urgent 1"),
+            s.contains("all 5  in progress 0  epics 0  filed today 0  urgent 1"),
             "{s}"
         );
         // Each section is named once, over its first row, then the closed rows with day and PR.
@@ -819,7 +767,10 @@ pub(crate) mod tests {
             at("SECTION") < at("TITLE") && at("TITLE") < at("EPIC") && at("PROJECT") < at("LANE"),
             "{s}"
         );
-        assert!(s.contains("v0.1.0") && s.contains("demo"), "{s}");
+        assert!(s.contains("demo"), "{s}");
+        // The type, area and points outrank the version, which a wider screen shows.
+        assert!(at("TITLE") > at("AREA") && at("AREA") > at("TYPE"), "{s}");
+        assert!(text(&f, &v, 160).contains("v0.1.0"));
         // j/k follow the page's order, not the feed's.
         let order: Vec<&str> = shown(&f, &v).iter().map(|r| r.text.as_str()).collect();
         assert_eq!(
@@ -883,6 +834,10 @@ pub(crate) mod tests {
             assert!(!["profile", "tag"].contains(&v.table.view.sort.as_str()));
         }
         assert_eq!(v.table.view.sort, "section", "c comes back round");
+        v.key(key('c'), Some(&f), 10);
+        assert_eq!(v.table.view.sort, "type");
+        v.key(key('c'), Some(&f), 10);
+        assert_eq!(v.table.view.sort, "area");
         v.key(key('c'), Some(&f), 10);
         assert_eq!(v.table.view.sort, "title");
         v.key(key('c'), Some(&f), 10);

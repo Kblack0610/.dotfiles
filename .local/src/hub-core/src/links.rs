@@ -20,8 +20,11 @@ pub enum Kind {
     Session,
     /// An agent-queue item, by its slug.
     Queue,
-    /// A board row or an epic, by its id (`ar-1494`): Projects' Board filtered to exactly that id.
+    /// A board row, task or epic, by its id (`ar-1494`): Projects' Board filtered to exactly that
+    /// id. The default chip lists the row it names, an open epic too (`tasks::Row`'s `PIN`).
     Row,
+    /// The rows under an epic, by the epic's id: Projects' Board filtered to its `of/<id>` tag.
+    Children,
     /// An agentctl runner's page, on Sessions' Runners (`#sessions/runners/<name>`).
     Runner,
     /// A watch or a Prometheus red, by its alert id.
@@ -47,6 +50,13 @@ pub enum Kind {
     Needs,
     /// One pending ask on Home, opened on its answer card (`#home/ask/<id>`, home.js `takeAskArg`).
     Ask,
+    /// One sprint's page (`hub_core::sprint_page`), by `<profile>/<project>/<version>`: the
+    /// project's Sprint inner tab opened on that window. Not in `PAGES`: its word sits after the
+    /// project, not after the tab.
+    Sprint,
+    /// A report on the Reports tab, by its id (`<date>-<slug>`), or one day of them by its date:
+    /// the tab opens with that report unfolded, or that day's reports.
+    Report,
 }
 
 /// An entity page that sits inside a tab's inner tab: its kind, the tab, the `#tab/<word>/<id>`
@@ -186,6 +196,7 @@ impl Link {
             Kind::Queue => format!("#queue/{seg}"),
             // `id:ar-1` alone would match `ar-10`.
             Kind::Row => format!("#projects/all?q=id:={seg}"),
+            Kind::Children => format!("#projects/all?q=tag:=of/{seg}"),
             Kind::Alert => format!("#alerts/{seg}"),
             // ci.js's runs table keys its view with `b` (`bq`); `pr:=` is exact, so #1 is not #10.
             Kind::PrRuns => format!("#infra/runs?bq=pr:={seg}"),
@@ -198,6 +209,11 @@ impl Link {
             // home.js keys Needs you's view with `n`: `ns` is the state its tiles set.
             Kind::Needs => format!("#home?ns={seg}"),
             Kind::Ask => format!("#home/ask/{seg}"),
+            Kind::Report => format!("#reports/{seg}"),
+            Kind::Sprint => {
+                let (key, version) = id.rsplit_once('/').unwrap_or((id, ""));
+                format!("#projects/{}/sprint/{}", component(key), component(version))
+            }
             Kind::Machine
             | Kind::Pool
             | Kind::CiRun
@@ -229,6 +245,7 @@ impl Link {
             Kind::Project => ("projects", id.clone()),
             Kind::Queue => ("queue", id.clone()),
             Kind::Row => ("projects", format!("all id:={id}")),
+            Kind::Children => ("projects", format!("all tag:=of/{id}")),
             Kind::Alert => ("alerts", String::new()),
             Kind::PrRuns => ("infra", format!("runs pr:={id}")),
             // The hub's Schedules tab takes no word (hub-tui main.rs), so it opens unfiltered.
@@ -236,6 +253,12 @@ impl Link {
             Kind::Skill => ("stack", format!("skills skill:={id}")),
             // The hub's Home takes no filter word, so it opens the whole list.
             Kind::Needs | Kind::Ask => ("home", String::new()),
+            Kind::Report => ("reports", id.clone()),
+            // The project's key, then `sprint/<version>`, as the web's hash after the project.
+            Kind::Sprint => {
+                let (key, version) = id.rsplit_once('/').unwrap_or((id, ""));
+                ("projects", format!("{key}/sprint/{version}"))
+            }
             Kind::Machine
             | Kind::Pool
             | Kind::CiRun
@@ -339,6 +362,13 @@ mod tests {
             )
         );
         assert_eq!(
+            both(Kind::Children, "ar-1282"),
+            (
+                "#projects/all?q=tag:=of/ar-1282".into(),
+                a("projects", "all tag:=of/ar-1282")
+            )
+        );
+        assert_eq!(
             both(Kind::Runner, "inbox-triage"),
             (
                 "#sessions/runners/inbox-triage".into(),
@@ -404,6 +434,20 @@ mod tests {
             ("#home/ask/KKuNfh".into(), a("home", ""))
         );
         assert_eq!(
+            both(Kind::Report, "2026-11-24-ups-switch"),
+            (
+                "#reports/2026-11-24-ups-switch".into(),
+                a("reports", "2026-11-24-ups-switch")
+            )
+        );
+        assert_eq!(
+            both(Kind::Sprint, "bnb/unity/v0.5.5"),
+            (
+                "#projects/bnb%2Funity/sprint/v0.5.5".into(),
+                a("projects", "bnb/unity/sprint/v0.5.5")
+            )
+        );
+        assert_eq!(
             both(Kind::Schedule, "playground-night"),
             (
                 "#schedules?q=name:=playground-night".into(),
@@ -454,6 +498,7 @@ mod tests {
             Kind::Session,
             Kind::Queue,
             Kind::Row,
+            Kind::Children,
             Kind::Schedule,
         ] {
             let (tab, _) = Link::to(k, "x").tab_args().unwrap();

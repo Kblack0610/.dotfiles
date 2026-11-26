@@ -319,17 +319,19 @@ $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlK
 
 // hub_core::layout's tabs, in its order (its `TABS`); agent-web's
 // tab_names_are_the_layout test fails when this drifts. RETIRED_TABS is layout::RETIRED: an old `#name` still lands.
-const TAB_NAMES = ["home", "daily", "log", "queue", "sessions", "projects", "releases", "alerts", "infra", "schedules", "costs", "stack"];
+const TAB_NAMES = ["home", "daily", "reports", "log", "queue", "sessions", "projects", "releases", "alerts", "infra", "schedules", "costs", "stack"];
 const RETIRED_TABS = { "waiting": "home", "asks": "home", "watch": "sessions", "shepherd": "sessions", "fleet": "sessions", "jobs": "infra", "ci": "infra", "machines": "infra", "today": "log", "history": "log", "actions": "log", "outbox": "daily", "focus": "daily", "numbers": "home", "board": "projects" };
 // layout::MOVED: a section that left its tab (`#fleet/tokens`) opens on its new tab at that section,
 // and a third field is the view it opens with (`#infra/cloud` is Machines under its cloud chip).
 const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "tokens"], "fleet/langfuse": ["costs", "langfuse"], "fleet/workers": ["sessions", "fleet"],
   "infra/health": ["alerts", "health"], "infra/red": ["alerts", "firing"], "infra/fixes": ["alerts", "fixes"], "infra/reds": ["alerts", "fixes"],
   "infra/governor": ["infra", "machines", "ms=governed"], "infra/cloud": ["infra", "machines", "ms=cloud"],
-  "releases/builds": ["infra", "runs"], "releases/tests": ["infra", "tests"] };
+  "releases/builds": ["infra", "runs"], "releases/tests": ["infra", "tests"],
+  "home/running": ["queue", "running"],
+  "queue/table": ["queue", "needs"], "queue/waiting": ["queue", "needs"], "queue/review": ["queue", "pr"], "queue/queued": ["queue", "next"], "queue/done": ["log", "work"] };
 // hub_core::layout's inner tabs: a strip of sub-views inside one tab, each a group of its sections.
 // assets.rs `inner_tabs_are_the_layout` fails when this line drifts.
-const INNER_TABS = {"log":{"tabs":[["work","Work",["work"]],["day","Day",["day","history"]],["actions","Actions",["actions"]],["changes","Changes",["changes"]],["rundowns","Rundowns",["rundowns"]],["judges","Judges",["verdicts"]],["ranked","Ranked",["ranked","forecast"]]]},"sessions":{"tabs":[["sessions","Sessions",["sessions","detail"]],["runners","Runners",["fleet"]],["shepherd","Shepherd",["shepherd"]]]},"projects":{"tabs":[["list","Projects",["cards"]],["all","Board",["board"]],["sprints","Sprints",["sprints"]],["deliverables","Deliverables",["deliverables"]],["coverage","Coverage",["coverage"]],["ladder","Ladder",["stages","requirements"]]]},"releases":{"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]],["flow","Flow",["swimlanes"]]]},"alerts":{"tabs":[["firing","Firing",["health","firing"]],["fixes","Fixes",["fixes"]],["watches","Watches",["watches"]],["history","History",["history"]]]},"infra":{"tabs":[["machines","Machines",["machines","pools"]],["runners","Runners",["ci","waiting","local"]],["runs","Runs",["runs"]],["pipelines","Pipelines",["pipelines"]],["tests","Tests",["tests","quarantine"]],["jobs","Jobs",["jobs"]]]},"costs":{"tabs":[["spend","Spend",["totals","sessions","spend","table"]],["limits","Limits",["burn","consumers"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"stack":{"tabs":[["flows","Flows",["flows"]],["skills","Skills",["skills"]],["agents","Agents",["agents"]],["hooks","Hooks",["hooks"]],["rules","Rules",["rules"]]]}};
+const INNER_TABS = {"reports":{"tabs":[["today","Today",["needs","stream","digests","captures"]],["archive","Archive",["archive"]]]},"log":{"tabs":[["work","Work",["work"]],["day","Day",["day","history"]],["actions","Actions",["actions"]],["changes","Changes",["changes"]],["rundowns","Rundowns",["rundowns"]],["judges","Judges",["verdicts"]],["ranked","Ranked",["ranked","forecast"]]]},"sessions":{"tabs":[["sessions","Sessions",["sessions","detail"]],["runners","Runners",["fleet"]],["shepherd","Shepherd",["shepherd"]]]},"projects":{"tabs":[["list","Projects",["cards"]],["all","Board",["board"]],["sprints","Sprints",["sprints"]],["deliverables","Deliverables",["deliverables"]],["coverage","Coverage",["coverage"]],["ladder","Ladder",["stages","requirements"]]]},"releases":{"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]],["flow","Flow",["swimlanes"]]]},"alerts":{"tabs":[["firing","Firing",["health","firing"]],["fixes","Fixes",["fixes"]],["watches","Watches",["watches"]],["history","History",["history"]]]},"infra":{"tabs":[["machines","Machines",["machines","pools"]],["runners","Runners",["ci","waiting","local"]],["runs","Runs",["runs"]],["pipelines","Pipelines",["pipelines"]],["tests","Tests",["tests","quarantine"]],["jobs","Jobs",["jobs"]]]},"costs":{"tabs":[["spend","Spend",["totals","sessions","spend","table"]],["limits","Limits",["burn","allowance","pace","consumers"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"stack":{"tabs":[["flows","Flows",["flows"]],["skills","Skills",["skills"]],["agents","Agents",["agents"]],["hooks","Hooks",["hooks"]],["rules","Rules",["rules"]]]}};
 // hub_core::layout::PROJECT_PAGE: an opened project's inner tabs (`#projects/<profile>/<name>/<id>`),
 // Overview first. assets.rs `project_page_is_the_layout` fails when this line drifts.
 const PROJECT_PAGE = [["overview","Overview",["p-needs","p-flight","p-systems"]],["sprint","Sprint",["p-sprint","p-sprint-queued","p-sprint-past"]],["rows","Rows",["p-rows"]],["deliverables","Deliverables",["p-build"]],["releases","Releases",["p-versions","p-apps","p-legacy"]],["stage","Stage",["p-stage"]],["activity","Activity",["p-shipped","p-timeline","p-note"]],["departments","Departments",["p-departments"]]];
@@ -337,7 +339,7 @@ const PROJECT_PAGE = [["overview","Overview",["p-needs","p-flight","p-systems"]]
 // (a retired department tab lands on `departments/<dept>`) on its new one.
 // assets.rs `project_page_is_the_layout` fails when these lines drift.
 const PROJECT_DEPTS = [["product","Product",["p-product-needs","p-product-numbers","p-product-pipes"]],["engineering","Engineering",["p-engineering-needs","p-engineering-numbers","p-engineering-pipes"]],["ops","Ops",["p-ops-needs","p-ops-numbers","p-ops-pipes"]],["design","Design",["p-design-needs","p-design-numbers","p-design-pipes"]],["analytics","Analytics",["p-analytics-needs","p-analytics-numbers","p-analytics-pipes"]],["marketing","Marketing",["p-marketing-needs","p-marketing-outbound","p-marketing-numbers","p-marketing-pipes"]],["legal","Legal",["p-legal-needs","p-legal-checks","p-legal-numbers","p-legal-pipes"]],["support","Support",["p-support-needs","p-support-numbers","p-support-pipes"]],["money","Money",["p-money-needs","p-money-numbers","p-money-pipes"]]];
-const PROJECT_RETIRED = {"analytics":"departments/analytics","build":"deliverables","design":"departments/design","engineering":"departments/engineering","legal":"departments/legal","marketing":"departments/marketing","money":"departments/money","ops":"departments/ops","product":"departments/product","support":"departments/support"};
+const PROJECT_RETIRED = {"analytics":"departments/analytics","build":"deliverables","design":"departments/design","engineering":"departments/engineering","legal":"departments/legal","marketing":"departments/marketing","money":"departments/money","ops":"departments/ops","past":"sprint","product":"departments/product","sprints":"sprint","support":"departments/support"};
 // hub_core::links::PAGES and RETIRED_PAGES: a record's page inside an inner tab, by its
 // `#tab/<word>/<id>` word (`ci` is a run page's old word), and the inner tab it opens on.
 // assets.rs `entity_pages_are_the_links` fails when this line drifts.
@@ -368,9 +370,10 @@ function innerOf(tab, name) {
 const homeOf = (tab, section) => (INNER_TABS[tab] ? INNER_TABS[tab].tabs.find((t) => t[2].includes(section)) : undefined);
 // The inner tab each tab last showed, so a tab button brings it back as it was.
 const lastInner = {};
-// A tab whose arg also names a record (`#projects/<profile>/<name>`) keeps an arg that is not
-// one of its inner tabs: the record's page is under its first inner tab (projects.js).
-const RECORD_ARGS = ["projects"];
+// A tab whose arg also names a record (`#projects/<profile>/<name>`, `#reports/<id or date>`) keeps
+// an arg that is not one of its inner tabs: projects.js draws the record's page under its first
+// inner tab, reports.js opens the report or the day.
+const RECORD_ARGS = ["projects", "reports"];
 // A record page an older link named with no word (`#sessions/<id>`, before a session's page sat
 // under `sessions/` so an id named like an inner tab still opens): any other arg is its id.
 const BARE_PAGES = { sessions: "sessions" };

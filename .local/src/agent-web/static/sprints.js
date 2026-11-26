@@ -3,16 +3,73 @@
 // and hub_core::project_sprints for the scored past), on two surfaces that share this table:
 // Projects' Sprints inner tab (every project's open and queued windows, then each project's last
 // score) and an opened project's Sprint inner tab (its open window, the ones queued behind it,
-// its Past sprints). Both were once Board's Sprints table. A window opens to its tasks, most
-// urgent first; a task leads with its title over what the title leaves out, as its Board row does
-// (hub_core::tasks::row_title), and opens in place to its whole line and, when it has one, the
-// link to its Board row. Read only while shown, on resync and on a queue change.
+// its Past sprints). A version in either table links to that window's own page (/api/sprints/page,
+// hub_core::sprint_page): its dates and score, a By area rollup and every row with its outcome on
+// the shared table, shown in place of the list while `pst.sprint` names it. Read only while
+// shown, on resync and on a queue change.
 
-const sprShown = () => st.tab === "projects" && (pst.open ? pst.inner === "sprint" : pTab() === "sprints");
+const sprShown = () => st.tab === "projects" && (pst.open ? pst.inner === "sprint" && !pst.sprint : pTab() === "sprints");
 const sprScope = () => pst.open || "";
-const sprst = { data: null, err: null, scope: null, spr: null, stask: null, past: null };
+const sprst = { data: null, err: null, scope: null };
+
+// One window's page: its view keys carry the `sp` prefix, so they never read the Rows tab's.
+const spgShown = () => st.tab === "projects" && !!pst.open && pst.inner === "sprint" && !!pst.sprint;
+const SPG_COLS = {
+  id: ["ID", "", false], type: ["TYPE", "", false], scope: ["SCOPE", "", false], group: ["AREA", "", false], title: ["TITLE", "", false],
+  pts: ["PTS", "n", false], outcome: ["OUTCOME", "", false], state: ["STATE", "", false], interrupt: ["INTERRUPT", "", false],
+};
+const SPG_CELL = { type: "kind" };
+const spg = tblTab({
+  tab: "projects", id: "spg", el: "p-spg", on: "projects", pre: "sp", api: "/api/sprints/page", hint: "search, or group:engineering outcome:carried -type:chore",
+  shown: spgShown, wait: "Reading the sprint...",
+  table: (t) => (t.data && t.data.asked === pst.sprint ? t.data.table : null),
+  params: (p) => { const [profile, project] = pst.open.split("/"); p.set("profile", profile); p.set("project", project); p.set("version", pst.sprint); },
+  wrap: (html) => `<div data-tbl="sp">${html}</div>`,
+  head: (t) => spgHead(t.data), body: (t) => spgRows(t.data),
+});
+
+// The By area columns the phone row shows: the area leads, three counts glance, the rest wait in the row.
+const AREA_ROLE = { group: "lead", rows: "glance", delivered: "glance", pts: "glance" };
+
+// The version page's top: the way back and to the neighbours, its dates and score, then the By area
+// rollup; a row of it narrows the rows below to that group (a click on the bar's clear gives them back).
+function spgHead(d) {
+  const g = d.page, heads = d.area_heads, keys = Object.keys(heads);
+  const near = (href, text) => (href ? tblLink(href, text) : `<span class="muted">${esc(text)}</span>`);
+  const quote = (v) => (/\s/.test(v) ? `"${v}"` : v);
+  const area = (a) => `<tr class="jr" data-tqc="${esc("group:" + quote(a.group))}" title="rows of ${esc(a.group)}">${keys.map((k) => `<td${k === "group" ? "" : ` class="n"`}>${esc(a[k])}</td>`).join("")}</tr>`;
+  return `<nav class="crumb" aria-label="breadcrumb"><a href="#" id="spg-back">All sprints</a> <span class="muted">&gt;</span> <b>${esc(g.version)}</b>` +
+    ` ${near(g.prev, "previous")} ${near(g.next, "next")}</nav>` +
+    secHead("p-sprint-page", `Sprint ${g.version}`, null) +
+    `<div class="card">${g.head.map((l) => `<div class="cline">${esc(l)}</div>`).join("")}</div>` +
+    (g.errors || []).map((e) => `<div class="panel down">${esc(e)}</div>`).join("") +
+    secHead("p-sprint-areas", "By area", g.by_area.length) +
+    (g.by_area.length
+      ? `<div class="panel scroll" data-tbl="sp"><table class="tbl"><tr>${keys.map((k) => `<th${k === "group" ? "" : ` class="n"`}${AREA_ROLE[k] ? ` data-role="${AREA_ROLE[k]}" data-named` : ""}>${esc(heads[k])}</th>`).join("")}</tr>${g.by_area.map(area).join("")}</table></div>`
+      : `<div class="card muted">No row in this window.</div>`) +
+    secHead("p-sprint-rows", "Rows", d.table.total);
+}
+
+function spgRows(d) {
+  const t = d.table, cols = t.columns.filter((c) => SPG_COLS[c.key]);
+  const cell = (r, i, k) => {
+    if (k === "pts") return `<td class="n">${r.pts}</td>`;
+    if (k === "interrupt") return `<td>${r.interrupt ? `<span class="qtag">interrupt</span>` : "-"}</td>`;
+    if (k === "title") return `<td class="wrap">${esc(r.title)}</td>`;
+    if (k === "outcome") return `<td${r.outcome === "dropped" ? ` class="warn"` : ""}>${pDash(r.outcome)}</td>`;
+    const v = r[SPG_CELL[k] || k];
+    return `<td>${k === "id" ? tblLink(tblLinks(t, i).id, v) : pDash(v)}</td>`;
+  };
+  return d.rows.length
+    ? `<div class="panel scroll"><table class="tbl">${tblHead(t, SPG_COLS)}${d.rows.map((r, i) => `<tr>${cols.map((c) => cell(r, i, c.key)).join("")}</tr>`).join("")}</table></div>`
+    : `<div class="card muted">${t.total ? "No row matches." : "No row in this window."}</div>`;
+}
+
+// The page shows in place of the list; the way back drops the version from the URL.
+function sprBack() { if (pst.open) pInner("sprint"); }
 
 const refreshSprints = coalesce(async () => {
+  if (spgShown()) { await spg.refresh(); return; }
   if (!sprShown()) return;
   const scope = sprScope();
   try {
@@ -28,43 +85,21 @@ const refreshSprints = coalesce(async () => {
 // What the pane draws is the read for its own scope; another's is stale and waits for the next.
 const sprData = () => (sprst.data && sprst.scope === sprScope() ? sprst.data : null);
 
-const sprKey = (s) => `${s.profile}/${s.project}/${s.version}`;
-const sprTaskKey = (s, t) => `${sprKey(s)}/${t.id || t.text}`;
-const SPR_TASK_COLS = [["id", "ID", "lead"], ["title", "TASK", ""], ["priority", "PRIORITY", "glance"], ["state", "STATE", "glance"]];
-const sprTask = (t) => `<div class="card qitem brow"><div class="q">${esc(t.text)}</div>` +
-  (t.href ? `<div class="opts"><a class="btn sm" href="${esc(t.href)}">Open its Board row</a></div>` : "") + `</div>`;
-
-function sprTasks(s) {
-  if (!s.tasks.length) return `<div class="muted">No task in this window.</div>`;
-  return `<table class="tbl"><tr>${SPR_TASK_COLS.map(([, h, r]) => `<th data-role="${r}" data-label="${h}">${h}</th>`).join("")}</tr>` +
-    s.tasks.map((t) => {
-      const state = t.queue || t.state, k = sprTaskKey(s, t), open = sprst.stask === k;
-      const sum = t.summary ? `<div class="bsum muted">${esc(t.summary)}</div>` : "";
-      const line = `<tr class="jr${open ? " sel" : ""}" data-stask="${esc(k)}"><td><code>${pDash(t.id)}</code></td>` +
-        `<td class="btitle"><div class="bt">${esc(t.title)}${t.interrupt ? ` <span class="qtag">interrupt</span>` : ""}</div>${sum}</td>` +
-        `<td><span class="qprio ${esc(t.priority)}">${esc(t.priority)}</span></td>` +
-        `<td>${state === "running" || state === "doing" ? `<b>${esc(state)}</b>` : esc(state)}</td></tr>`;
-      return open ? line + `<tr class="bopen"><td colspan="${SPR_TASK_COLS.length}">${sprTask(t)}</td></tr>` : line;
-    }).join("") + `</table>`;
-}
-
-// The windows `rows` as one table; `all` opens every row to its tasks (one project's), else a click does.
-function sprTable(d, rows, all) {
+// The windows `rows` as one table; a version is the link to its page.
+function sprTable(d, rows) {
   const keys = d.table.columns.map((c) => c.key);
   const role = Object.fromEntries(d.table.columns.map((c) => [c.key, c.role || ""]));
   const th = (k) => `<th data-role="${role[k] || ""}" data-label="${esc(d.heads[k] || k)}">${esc(d.heads[k] || k)}</th>`;
-  const cell = (s, k) => {
+  const cell = (s, i, k) => {
+    if (k === "version") return `<td>${tblLink(tblLinks(d.table, i).version, s.version)}</td>`;
     if (k === "finish" && s.late) return `<td class="warn">${esc(s.finish)} late</td>`;
     if (k === "left" && s.left === "over") return `<td class="warn">over</td>`;
     // The next version's sprint, locked while the open one runs: STARTED is the open one's cut.
     if (k === "left" && s.left === "queued") return `<td class="muted">queued</td>`;
     return `<td>${pDash(k === "build" && s.build === "none" ? "" : s[k])}</td>`;
   };
-  const body = rows.map((s) => {
-    const open = all || sprst.spr === sprKey(s);
-    const line = `<tr class="jr${open ? " sel" : ""}" data-spr="${esc(sprKey(s))}">${keys.map((k) => cell(s, k)).join("")}</tr>`;
-    return open ? line + `<tr class="bopen"><td colspan="${keys.length}">${sprTasks(s)}</td></tr>` : line;
-  }).join("");
+  const at = new Map(d.rows.map((s, i) => [s, i]));
+  const body = rows.map((s) => `<tr>${keys.map((k) => cell(s, at.get(s), k)).join("")}</tr>`).join("");
   return `<div class="panel scroll"><table class="tbl"><tr>${keys.map(th).join("")}</tr>${body}</table></div>`;
 }
 
@@ -72,7 +107,7 @@ function sprTable(d, rows, all) {
 function sprAll(d) {
   const last = d.last || [];
   return secHead("sprints", "Sprints", d.rows.length) +
-    (d.rows.length ? sprTable(d, d.rows, false) : `<div class="card muted">No window is open or queued.</div>`) +
+    (d.rows.length ? sprTable(d, d.rows) : `<div class="card muted">No window is open or queued.</div>`) +
     secHead("", "Last score", last.length) +
     (last.length ? `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">PROJECT</th><th>VERSION</th><th>SCORE</th></tr>` +
       last.map((l) => `<tr><td>${esc(l.project)}</td><td>${esc(l.version)}</td><td class="wrap muted">${esc(l.line)}</td></tr>`).join("") + `</table></div>`
@@ -81,27 +116,14 @@ function sprAll(d) {
 
 const SPR_PAST = [["version", "VERSION", "lead"], ["opened", "OPENED", ""], ["cut", "CUT", ""], ["committed", "COMMITTED", ""],
   ["delivered", "DELIVERED", "glance"], ["carried", "CARRIED", ""], ["dropped", "DROPPED", ""], ["interrupted", "INTERRUPTED", ""], ["timing", "TIMING", "glance"]];
-// The scored windows, newest first; a row opens to its score line and the sprint file it is in.
+// The scored windows, newest first; the version links to its page.
 function sprPast(past) {
   if (!past.length) return `<div class="card muted">No window has been cut with a score yet.</div>`;
-  const body = past.map((p) => {
-    const open = sprst.past === p.version;
-    const line = `<tr class="jr${open ? " sel" : ""}" data-past="${esc(p.version)}">${SPR_PAST.map(([k]) =>
-      `<td${p.timing && p.timing !== "on time" && k === "timing" ? ` class="warn"` : ""}>${pDash(p[k])}</td>`).join("")}</tr>`;
-    return open ? line + `<tr class="bopen"><td colspan="${SPR_PAST.length}"><div class="card qitem brow"><div class="q">${esc(p.line)}</div>` +
-      `<div class="muted"><code>sprints/${esc(p.version)}.md</code> in the project's lab directory</div></div></td></tr>` : line;
-  }).join("");
+  const body = past.map((p) => `<tr>${SPR_PAST.map(([k]) => k === "version" ? `<td>${tblLink(p.link, p.version)}</td>` :
+    `<td${p.timing && p.timing !== "on time" && k === "timing" ? ` class="warn"` : ""}>${pDash(p[k])}</td>`).join("")}</tr>`).join("");
   return `<div class="panel scroll"><table class="tbl"><tr>${SPR_PAST.map(([, h, r]) => `<th data-role="${r}" data-label="${h}">${h}</th>`).join("")}</tr>${body}</table></div>`;
 }
 
 $("projects").addEventListener("click", (e) => {
-  const t = e.target;
-  if (t.closest("a")) return;
-  const toggle = (key, sel) => { sprst[key] = sprst[key] === sel ? null : sel; renderProjects(); };
-  const task = t.closest("tr[data-stask]");
-  if (task) return toggle("stask", task.dataset.stask);
-  const spr = t.closest("tr[data-spr]");
-  if (spr) return toggle("spr", spr.dataset.spr);
-  const past = t.closest("tr[data-past]");
-  if (past) toggle("past", past.dataset.past);
+  if (e.target.closest("#spg-back")) { e.preventDefault(); sprBack(); }
 });

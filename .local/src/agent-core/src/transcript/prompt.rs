@@ -5,7 +5,7 @@ use serde_json::Value;
 use super::read::iso_epoch;
 
 /// The newest timestamp of a prompt the human typed: a `typed_prompt` that is not one our own
-/// tooling types into the pane (`fleet_typed`).
+/// tooling types into the pane (`fleet_typed`), or a message they sent mid-turn (`queued_prompt`).
 pub(super) fn human_at(text: &str) -> Option<u64> {
     text.lines()
         .rev()
@@ -21,8 +21,8 @@ pub(super) fn human_at(text: &str) -> Option<u64> {
 
 /// A typed prompt the human sent, not one our tooling typed into the pane (a resume is no typed
 /// prompt at all, a task is one but not the human's).
-fn human_typed(line: &str) -> bool {
-    typed_prompt(line).is_some_and(|p| !fleet_typed(&p))
+pub(super) fn human_typed(line: &str) -> bool {
+    typed_prompt(line).is_some_and(|p| !fleet_typed(&p)) || queued_prompt(line).is_some()
 }
 
 /// The one table of prompts the fleet types as if the human had (the shepherd's close, a
@@ -33,10 +33,7 @@ const TYPED_PREFIXES: &str = include_str!("../../../../../.config/agent-panel/ty
 
 /// The table's `<kind> <text>` lines.
 fn typed_entries() -> impl Iterator<Item = (&'static str, &'static str)> {
-    TYPED_PREFIXES
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+    super::conf_lines(TYPED_PREFIXES)
         .filter_map(|l| l.split_once(char::is_whitespace))
         .map(|(kind, text)| (kind, text.trim()))
 }
@@ -59,6 +56,29 @@ fn typed_kind(prompt: &str) -> Option<&'static str> {
 
 fn fleet_typed(prompt: &str) -> bool {
     typed_kind(prompt).is_some()
+}
+
+/// The words of a message the human sent while the session worked. The harness queues it and
+/// delivers it mid-turn as a `queued_command` attachment, never as a user entry, so read only as
+/// a user entry an answer typed mid-turn was refused (ar-5269: 'ok yes' in session dde1b8cd). A
+/// task notice or a peer's message queued the same way names another origin and is not theirs.
+pub(super) fn queued_prompt(line: &str) -> Option<String> {
+    if !line.contains("\"queued_command\"") {
+        return None;
+    }
+    let v = serde_json::from_str::<Value>(line).ok()?;
+    let a = v.get("attachment")?;
+    if v.get("type").and_then(Value::as_str) != Some("attachment")
+        || v.get("isSidechain").and_then(Value::as_bool) == Some(true)
+        || a.get("type").and_then(Value::as_str) != Some("queued_command")
+        || a.get("commandMode").and_then(Value::as_str) != Some("prompt")
+        || a.pointer("/origin/kind").and_then(Value::as_str) != Some("human")
+    {
+        return None;
+    }
+    let s = a.get("prompt")?.as_str()?.trim();
+    (!s.is_empty() && !HARNESS.iter().any(|h| s.starts_with(h)) && !fleet_typed(s))
+        .then(|| s.to_string())
 }
 
 /// The text of a prompt the human typed, for a main-thread user entry that is one: a string,
@@ -199,6 +219,19 @@ mod tests {
         assert_eq!(
             human_at(&[lines.join("\n"), quote].join("\n")),
             Some(base + 32 * 60)
+        );
+        // And so does a message the human sent mid-turn; a peer's queued the same way does not.
+        let queued = |min, kind| {
+            at(
+                min,
+                &format!(
+                    r#""type":"attachment","attachment":{{"type":"queued_command","prompt":"ok yes","commandMode":"prompt","origin":{{"kind":"{kind}"}}}}"#
+                ),
+            )
+        };
+        assert_eq!(
+            human_at(&[lines.join("\n"), queued(33, "human"), queued(34, "peer")].join("\n")),
+            Some(base + 33 * 60)
         );
         assert_eq!(human_at(&lines[2..].join("\n")), None);
     }

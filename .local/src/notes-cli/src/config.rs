@@ -73,6 +73,14 @@ struct RawConfig {
     /// Absent = [`DIRECT_FILERS`]; a list here replaces it whole.
     #[serde(default)]
     agent_direct_filers: Option<Vec<String>>,
+    /// The projects whose intake is gated ([`intake_gated`], `gate.rs`). Absent = [`GATED`]; a
+    /// list here replaces it whole, and an empty one turns the gate off.
+    #[serde(default)]
+    intake_gated: Option<Vec<String>>,
+    /// The most new agent rows any project's board takes in a local day ([`intake_daily_cap`],
+    /// `gate.rs`), gated or not. Absent = [`DAILY_CAP`]; 0 turns the cap off.
+    #[serde(default)]
+    intake_daily_cap: Option<u32>,
 }
 
 /// One `[project_type.<type>]` table. Both keys are optional.
@@ -153,6 +161,35 @@ pub fn agent_direct_filers() -> Vec<String> {
         .ok()
         .and_then(|(raw, _)| raw.agent_direct_filers)
         .unwrap_or_else(|| DIRECT_FILERS.iter().map(|s| s.to_string()).collect())
+}
+
+/// The projects a fresh install gates: agent-runtime, which filed about twice what it closed while
+/// its sessions filed their own follow-ups (plan cozy-kahn, 2026-11-24).
+const GATED: [&str; 1] = ["agent-runtime"];
+
+/// `intake_gated`: the projects whose board takes a session's row only as an evidenced fault, a
+/// plan phase or the person's ask (`gate.rs`). The config's own list when it has one, else [`GATED`].
+pub fn intake_gated() -> Vec<String> {
+    load_raw()
+        .ok()
+        .and_then(|(raw, _)| raw.intake_gated)
+        .unwrap_or_else(|| GATED.iter().map(|s| s.to_string()).collect())
+}
+
+/// The new agent rows each project's board takes a local day: the human's 2026-11-25 words, "cap it
+/// very low, i really want to get through our current work before any more comes in", and "lets
+/// make sure rows dont come in aggressively" (every board, not only the gated one). Provisional,
+/// one `rules.jsonl` row (anchor `const DAILY_CAP`).
+const DAILY_CAP: u32 = 10;
+
+/// `intake_daily_cap`: the most new agent rows any project's board takes in a local day
+/// (`gate.rs`), gated or not; the human's own words and urgent reds are never counted against it. The config's
+/// own number when it has one (0 = no cap), else [`DAILY_CAP`].
+pub fn intake_daily_cap() -> u32 {
+    load_raw()
+        .ok()
+        .and_then(|(raw, _)| raw.intake_daily_cap)
+        .unwrap_or(DAILY_CAP)
 }
 
 /// `[release]`: a project's release cadence by stage (`stages.md`, "Versions"). The defaults
@@ -722,6 +759,8 @@ fn builtin_default() -> RawConfig {
         projects: ProjectsShape::default(),
         project_type: HashMap::new(),
         agent_direct_filers: None,
+        intake_gated: None,
+        intake_daily_cap: None,
     }
 }
 
@@ -1114,6 +1153,29 @@ pub fn print_comms(c: &Comms) {
             "comms-acct  {}{} -> {} (rbw: {})",
             a.name, addr, a.surface_profile, a.rbw_entry
         );
+    }
+}
+
+/// Run a stub a test just wrote, once, until its exec stops failing with ETXTBSY (26): another
+/// test's fork holds the stub's write fd until that child execs, an event no API reports. A test
+/// calls this before the runs it asserts on, so those start after the last writer is gone. `env`
+/// is set for this run alone, and the stub must exit at once on it: this run is waited on.
+#[cfg(test)]
+pub(crate) fn test_exec_ready(stub: &Path, env: &[(&str, &str)]) {
+    const ETXTBSY: i32 = 26;
+    loop {
+        match std::process::Command::new(stub)
+            .envs(env.iter().copied())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+        {
+            Err(e) if e.raw_os_error() == Some(ETXTBSY) => std::thread::yield_now(),
+            r => {
+                r.unwrap();
+                return;
+            }
+        }
     }
 }
 

@@ -68,6 +68,10 @@ pub struct Window {
     pub committed: u32,
     pub delivered: u32,
     pub open: u32,
+    /// The `open` rows' `#size/` weight, 1 unsized: what [`state`] holds against the net rate.
+    /// Never below `open`, since a row weighs at least 1; [`Window::open_weight()`] floors it there
+    /// for a notes that sends none.
+    pub open_weight: u32,
     /// Committed rows closed as dropped or duplicate, or gone from both lanes.
     pub dropped: u32,
     /// Rows tagged `#interrupt` that entered after the snapshot.
@@ -79,6 +83,14 @@ pub struct Window {
     /// from notes.
     #[serde(skip_deserializing)]
     pub days_left: Option<i64>,
+}
+
+impl Window {
+    /// The open rows' weight, at least one per open row: a notes older than `open_weight` sends
+    /// none, and the row count is the weight's true floor, never a guess above it.
+    pub fn open_weight(&self) -> u32 {
+        self.open_weight.max(self.open)
+    }
 }
 
 /// The last cut's window score, the `## Score` line of its `sprints/` file (`window::LastWindow`).
@@ -96,8 +108,11 @@ pub struct Stats {
     pub profile: String,
     pub name: String,
     pub stage: String,
-    /// `focus`, `high`, `low`, empty for normal: the sheet's `#prio/<word>`.
+    /// `focus` while the sheet's `#prio/focus` is live, else empty: the sprint switch, the one
+    /// project tag left (a row's own priority orders work, `priority.md`).
     pub prio: String,
+    /// When the focus ends (`YYYY-MM-DD HH:MM`), while `prio` is focus; past it notes reads empty.
+    pub focus_until: Option<String>,
     pub version: Option<String>,
     pub goal: String,
     pub progress: Progress,
@@ -137,13 +152,12 @@ pub struct EpicRollup {
     pub done_weight: u32,
 }
 
-/// The priority after `cur` in the cycle a key steps through: normal, focus, high, low, normal.
+/// The value a key writes for a project at `cur`: focus toggles, on and off (`normal`).
 pub fn next_prio(cur: &str) -> &'static str {
-    match cur {
-        "" => "focus",
-        "focus" => "high",
-        "high" => "low",
-        _ => "normal",
+    if cur == "focus" {
+        "normal"
+    } else {
+        "focus"
     }
 }
 
@@ -224,29 +238,38 @@ pub fn note_says(c: &Card) -> String {
     }
 }
 
-/// `notes projects --prio <name> --profile <profile> --set <value>`: the one writer.
+/// `notes projects --prio <name> --profile <profile> --set <value> [--hours H]`: the one
+/// writer. `hours` is how long a focus lasts; `None` takes notes' default.
 pub fn set_prio(
     runner: &dyn Runner,
     profile: &str,
     name: &str,
     value: &str,
+    hours: Option<u32>,
 ) -> Result<String, String> {
     if !safe_name(profile)
         || !safe_name(name)
-        || !["focus", "high", "low", "normal"].contains(&value)
+        || !["focus", "normal"].contains(&value)
+        || (hours.is_some() && value != "focus")
     {
         return Err(format!("refusing prio {value} for {profile}/{name}"));
     }
-    runner.run(&[
-        "notes".into(),
-        "projects".into(),
-        "--prio".into(),
-        name.into(),
-        "--profile".into(),
-        profile.into(),
-        "--set".into(),
-        value.into(),
-    ])
+    let mut argv: Vec<String> = [
+        "notes",
+        "projects",
+        "--prio",
+        name,
+        "--profile",
+        profile,
+        "--set",
+        value,
+    ]
+    .map(String::from)
+    .to_vec();
+    if let Some(h) = hours {
+        argv.extend(["--hours".into(), h.to_string()]);
+    }
+    runner.run(&argv)
 }
 
 pub fn stats(runner: &dyn Runner) -> Result<Vec<Stats>, String> {
@@ -292,6 +315,7 @@ pub struct Card {
     pub name: String,
     pub stage: String,
     pub prio: String,
+    pub focus_until: Option<String>,
     pub version: Option<String>,
     pub goal: String,
     pub progress: Progress,
@@ -330,6 +354,9 @@ pub struct Card {
     pub on_time: Option<OnTime>,
     /// One entry per version the open feature epics are aimed at, earliest first.
     pub versions: Vec<VersionEpics>,
+    /// The agent board's points over the last 7 days (`board_flow`); None until [`gather`] reads
+    /// the day-log records, or when none carries points.
+    pub board_7d: Option<crate::board_flow::BoardFlow>,
 }
 
 /// A targeted version against the day the work up to it closes at the net rate: what the card,
@@ -374,6 +401,7 @@ impl Card {
             name: s.name.clone(),
             stage: s.stage.clone(),
             prio: s.prio.clone(),
+            focus_until: s.focus_until.clone(),
             version: s.version.clone(),
             goal: s.goal.clone(),
             progress: s.progress.clone(),
@@ -404,6 +432,12 @@ impl Card {
         !self.running.is_empty() || self.waiting > 0
     }
 
+    /// The board grew over the last 7 days: the one condition the net cell and the Growing part
+    /// are amber on.
+    pub fn growing(&self) -> bool {
+        self.board_7d.is_some_and(|b| b.growing())
+    }
+
     /// Rows closed per week: the open version's rows closed in the last 28 days, over 4. Rounded
     /// here to the one decimal a surface prints: quarters are ties, and Rust and JS break them
     /// apart, so a surface formatting the raw value would read differently from the next.
@@ -416,8 +450,8 @@ impl Card {
 /// sorted until asked. Empty words read as no value, the `-` a surface draws.
 impl crate::table::Row for Card {
     const COLUMNS: &'static [&'static str] = &[
-        "project", "state", "profile", "stage", "version", "prio", "open", "doing", "hot", "done",
-        "7d", "pts", "pts7d", "window", "due", "pace", "run", "wait", "queued", "shipped",
+        "project", "state", "profile", "stage", "version", "prio", "open", "net7d", "doing", "hot",
+        "done", "7d", "pts", "pts7d", "window", "due", "pace", "run", "wait", "queued", "shipped",
         "oldest",
     ];
     const STATES: &'static [&'static str] = &["all", "in flight", "waiting"];
@@ -427,22 +461,16 @@ impl crate::table::Row for Card {
     const TONES: &'static [(&'static str, Level)] = STATE_TONES;
 
     fn val(&self, col: &str) -> Val {
-        let word = |s: &str| {
-            if s.is_empty() {
-                Val::None
-            } else {
-                Val::Text(s.to_string())
-            }
-        };
         let num = |n: Option<u32>| n.map_or(Val::None, |n| Val::Num(f64::from(n)));
         match col {
-            "project" => word(&self.name),
-            "state" => word(self.state),
-            "profile" => word(&self.profile),
-            "stage" => word(&self.stage),
-            "version" => self.version.as_deref().map_or(Val::None, word),
-            "prio" => word(&self.prio),
+            "project" => Val::word(&self.name),
+            "state" => Val::word(self.state),
+            "profile" => Val::word(&self.profile),
+            "stage" => Val::word(&self.stage),
+            "version" => self.version.as_deref().map_or(Val::None, Val::word),
+            "prio" => Val::word(&self.prio),
             "open" => num(Some(self.progress.open)),
+            "net7d" => self.board_7d.map_or(Val::None, |b| Val::Num(b.net as f64)),
             "doing" => Val::Num(self.doing as f64),
             "hot" => Val::Num(self.hot as f64),
             "done" => num(Some(self.progress.done)),
@@ -489,7 +517,7 @@ impl crate::table::Row for Card {
     fn rank(&self, col: &str) -> Val {
         match col {
             // `next_prio`'s words, normal being blank, lowest first.
-            "prio" => ["low", "", "high", "focus"]
+            "prio" => ["", "focus"]
                 .iter()
                 .position(|p| *p == self.prio)
                 .map_or(Val::None, |i| Val::Num(i as f64)),
@@ -524,13 +552,15 @@ pub struct Projects {
     pub board_open: Option<usize>,
     /// `totals.backlog`, the agent rows still carrying the retired backlog token, shown beside it.
     pub board_backlog: Option<usize>,
+    /// The whole agent board's points over the last 7 days, from the same day-log records as the
+    /// cards' `board_7d`; None when none carries points.
+    pub board_7d: Option<crate::board_flow::BoardFlow>,
 }
 
 /// What an ETA reads when the net rate is at or below zero: rows are filed as fast as they close.
 pub const NEVER: &str = "never at this rate";
 
-/// What a card with no window snapshot says, in place of any number; also the state of an active
-/// project without one.
+/// What a card with no window snapshot says in its window cell, in place of any number.
 pub const NO_WINDOW: &str = "no window";
 
 pub const LATE: &str = "late";
@@ -538,18 +568,19 @@ pub const AT_RISK: &str = "at risk";
 pub const ON_TRACK: &str = "on track";
 pub const IDLE: &str = "idle";
 pub const PARKED: &str = "parked";
+/// An active project with no window: its rows flow as they close. Not a warning, so no hue.
+pub const FLOW: &str = "flow";
 
 /// The project states in the order [`state`] tries them, first match wins. The rule table's one
 /// home is `docs/stages.md`, "Project state"; `state_words_are_the_stages_md_table` holds the two
 /// to the same words in the same order.
-pub const STATES: [&str; 6] = [LATE, AT_RISK, ON_TRACK, NO_WINDOW, IDLE, PARKED];
+pub const STATES: [&str; 6] = [LATE, AT_RISK, ON_TRACK, FLOW, IDLE, PARKED];
 
-/// Each state's hue (dashboards.md rule 5); `parked` is in none, so it draws grey.
+/// Each state's hue (dashboards.md rule 5); `flow` and `parked` are in none, so they draw plain.
 pub const STATE_TONES: &[(&str, Level)] = &[
     (LATE, Level::Bad),
     (AT_RISK, Level::Warn),
     (ON_TRACK, Level::Ok),
-    (NO_WINDOW, Level::Warn),
     (IDLE, Level::Warn),
 ];
 
@@ -558,12 +589,16 @@ pub fn state_level(state: &str) -> Option<Level> {
     crate::vocab::tone(STATE_TONES, state)
 }
 
-/// The state, then the window unless that repeats it (`no window`): what the phone row and the
-/// anchor's Lab line say, `state_says` in `--json`. A card [`build`] has not stated is its window.
+/// The state, then the window: what the phone row and the anchor's Lab line say, `state_says` in
+/// `--json`. A quiet or flowing state with no window is said alone (`flow`, `idle`, `parked`);
+/// `late` and `at risk` keep `no window`, the cause to close. A card [`build`] has not stated is
+/// its window.
 pub fn state_says(c: &Card) -> String {
     let window = window_short(c);
-    if c.state.is_empty() || c.state == window {
+    if c.state.is_empty() {
         window
+    } else if c.window.is_none() && ![LATE, AT_RISK].contains(&c.state) {
+        c.state.to_string()
     } else {
         format!("{}, {window}", c.state)
     }
@@ -571,8 +606,8 @@ pub fn state_says(c: &Card) -> String {
 
 /// Where `c`'s current release is on `today`, by the rule table in `docs/stages.md`, "Project
 /// state": the first of [`STATES`] whose rule matches. Every input is counted: the window and
-/// its due day, the 28-day close rate, the target's on-time check, the newest close, and the
-/// queue's running and waiting items.
+/// its due day, the net weight rate ([`net_rate`]), the target's on-time check, the newest close,
+/// and the queue's running and waiting items.
 pub fn state(c: &Card, today: chrono::NaiveDate) -> &'static str {
     let day = |d: &str| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok();
     let target_past = c
@@ -586,10 +621,11 @@ pub fn state(c: &Card, today: chrono::NaiveDate) -> &'static str {
     if !delivered && (target_past || w.and_then(|w| w.days_left).is_some_and(|d| d < 0)) {
         return LATE;
     }
-    // The rows the 28-day close rate closes in the days left, against the committed rows open.
+    // The weight the net rate closes in the days left, against the committed rows' open weight.
+    let net = net_rate(c.progress.closed_weight_28d, c.progress.filed_weight_28d).unwrap_or(0);
     let short = w.is_some_and(|w| {
         w.days_left
-            .is_some_and(|d| i64::from(c.progress.closed_28d) * d.max(0) / 28 < i64::from(w.open))
+            .is_some_and(|d| i64::from(net) * d.max(0) / 28 < i64::from(w.open_weight()))
     });
     let miss = c
         .on_time
@@ -608,7 +644,7 @@ pub fn state(c: &Card, today: chrono::NaiveDate) -> &'static str {
         .and_then(day)
         .is_some_and(|d| (today - d).num_days() < c.idle_days);
     if closed_lately || c.in_flight() {
-        NO_WINDOW
+        FLOW
     } else if c.stage == "draft" {
         PARKED
     } else {
@@ -800,33 +836,36 @@ fn net_eta(open: u32, closed_28d: u32, filed_28d: u32) -> Option<u32> {
     if open == 0 {
         return Some(0);
     }
-    let net = closed_28d.checked_sub(filed_28d).filter(|n| *n > 0)?;
-    Some(days_at(open, net))
+    Some(days_at(open, net_rate(closed_28d, filed_28d)?))
+}
+
+/// The net weight rate, weight closed minus weight filed per 28 days; None at or below zero. The
+/// one arithmetic the version ETA ([`net_eta`]) and its room ([`net_room`]) apply to the target's
+/// work, and the row forecast ([`forecast`]) and the project state ([`state`]) to the project's
+/// [`Progress`], so a project filing as fast as it closes reads never on each of them.
+fn net_rate(closed_28d: u32, filed_28d: u32) -> Option<u32> {
+    closed_28d.checked_sub(filed_28d).filter(|n| *n > 0)
 }
 
 /// The weight the net rate closes in `days_left` days (none when past), less what `w` already
 /// has open, rounded down; None when the net rate is at or below zero, as [`net_eta`] reads it.
 fn net_room(w: &TargetWork, days_left: i64) -> Option<i64> {
-    let net = w
-        .closed_weight_28d
-        .checked_sub(w.filed_weight_28d)
-        .filter(|n| *n > 0)?;
+    let net = net_rate(w.closed_weight_28d, w.filed_weight_28d)?;
     Some(i64::from(net) * days_left.max(0) / 28 - i64::from(w.open_weight))
 }
 
-/// Days to close `weight` at `closed_weight_28d` per 28 days, rounded up. A row's forecast uses
-/// the close rate alone: its day assumes nothing new is filed ahead of it, where the version
-/// ETA ([`net_eta`]) nets out everything filed into the version. `closed_weight_28d` is above 0.
-fn days_at(weight: u32, closed_weight_28d: u32) -> u32 {
-    (weight * 28).div_ceil(closed_weight_28d)
+/// Days to close `weight` at `rate` weight per 28 days, rounded up. `rate` is above 0.
+fn days_at(weight: u32, rate: u32) -> u32 {
+    (weight * 28).div_ceil(rate)
 }
 
 /// Put a forecast day on each open leaf row of the projects `stats` covers: the day it should
-/// close at the project's 28-day close rate (`days_at`), after every row ranked ahead of
-/// it, in the sheet's order (section, then rank). `ceil(weight ahead and its own * 28 /
-/// closed_weight_28d)` days from `today`. An epic or a row another row names in `#of/` weighs
-/// what its children weigh, so it adds nothing and gets no day; a playtest check is no work
-/// item. A project with no closes in 28 days gets no day, never a guess.
+/// close at the project's net weight rate ([`net_rate`] over its [`Progress`]), after every row
+/// ranked ahead of it, in the sheet's order (section, then rank): the weight ahead and its own,
+/// times 28, over the net rate, rounded up, in days from `today`. An epic or a row another row
+/// names in `#of/` weighs what its children weigh, so it adds nothing and gets no day; a playtest
+/// check is no work item. A project whose net rate is at or below zero gets no day, never a
+/// guess.
 pub fn forecast(feed: &mut Feed, stats: &[Stats], today: chrono::NaiveDate) {
     let parents: std::collections::HashSet<String> =
         feed.rows.iter().filter_map(|r| r.parent.clone()).collect();
@@ -849,8 +888,7 @@ pub fn forecast(feed: &mut Feed, stats: &[Stats], today: chrono::NaiveDate) {
         let Some(rate) = stats
             .iter()
             .find(|s| s.name == project && s.profile == r.profile)
-            .map(|s| s.progress.closed_weight_28d)
-            .filter(|w| *w > 0)
+            .and_then(|s| net_rate(s.progress.closed_weight_28d, s.progress.filed_weight_28d))
         else {
             continue;
         };
@@ -1009,7 +1047,30 @@ fn queue(c: &Card) -> String {
     )
 }
 
-/// The card's In flight as Home's Running table draws it, scoped to the project: the same
+/// What a running item under no epic counts as in [`running_areas`].
+pub const NO_EPIC: &str = "no epic";
+
+/// The card's running items counted by their epic's system (`Running::area`), most first, ties
+/// by name, and the items under no epic last as [`NO_EPIC`]: `running_areas` in `--json`, the
+/// categories the projects chip lists under each project.
+pub fn running_areas(c: &Card) -> Vec<(String, usize)> {
+    let mut by: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    let mut none = 0;
+    for r in &c.running {
+        match r.area.as_deref() {
+            Some(a) => *by.entry(a).or_default() += 1,
+            None => none += 1,
+        }
+    }
+    let mut v: Vec<(String, usize)> = by.into_iter().map(|(a, n)| (a.to_string(), n)).collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    if none > 0 {
+        v.push((NO_EPIC.to_string(), none));
+    }
+    v
+}
+
+/// The card's In flight as the Running table draws it, scoped to the project: the same
 /// [`Running`] row type, so the same columns and each cell's links. It is a fixed list on the
 /// project page (no query, sort or filter to give), so it sends no facets or state chips.
 pub fn running_table(c: &Card) -> crate::table::Summary {
@@ -1064,13 +1125,21 @@ pub fn gather() -> Projects {
     });
     let queue = Queue::from_reads(items, Ok(Default::default()));
     match stats {
-        Ok(stats) => build(
-            &stats,
-            feed.as_ref(),
-            &state,
-            Some(&queue),
-            chrono::Utc::now(),
-        ),
+        Ok(stats) => {
+            let mut p = build(
+                &stats,
+                feed.as_ref(),
+                &state,
+                Some(&queue),
+                chrono::Utc::now(),
+            );
+            let flows = crate::board_flow::read(
+                &crate::boards::daylog_dir(),
+                chrono::Local::now().date_naive(),
+            );
+            attach_board_flow(&mut p, &flows);
+            p
+        }
         Err(e) => Projects {
             errors: vec![e],
             ..Default::default()
@@ -1078,10 +1147,70 @@ pub fn gather() -> Projects {
     }
 }
 
+/// Join the 7-day board flow onto the cards and the fleet.
+pub fn attach_board_flow(p: &mut Projects, flows: &crate::board_flow::Flows) {
+    p.board_7d = flows.fleet;
+    for c in &mut p.cards {
+        c.board_7d = flows.of(&c.name);
+    }
+}
+
+/// The `net7d` cell: points filed minus done minus dropped over 7 days, signed (`+120`, `-900`,
+/// `0`), or `-` when no day-log record carries points.
+pub fn net_cell(c: &Card) -> String {
+    c.board_7d.map_or("-".into(), |b| match b.net {
+        0 => "0".into(),
+        n => format!("{n:+}"),
+    })
+}
+
 /// The cards as JSON, each with its `summary` line, `in_flight` and `pace`, so a reader prints
 /// the same words the TUI does and computes nothing, and `figures`, the Projects card's whole
 /// numbers by name (`widget_doc::figures`, absent with any read error), the counts the waybar
 /// projects chip shows.
+/// The lengths a surface offers a focus besides notes' own default (no `--hours`), which is
+/// notes' alone, as its cap is: notes refuses what it does not take.
+pub const FOCUS_HOURS: [u32; 3] = [2, 8, 24];
+
+/// The Focus strip over every card, never a view's: the projects on focus now with when each
+/// ends, the line that names them, and every project a focus may be set on (one on focus again
+/// re-sets its end, which is how a focus is extended).
+pub fn focus_json(cards: &[Card]) -> Value {
+    let on: Vec<&Card> = cards.iter().filter(|c| c.prio == "focus").collect();
+    // `YYYY-MM-DD HH:MM +ZZZZ` as `MM-DD HH:MM`: a focus lasts at most a day, and the stamp
+    // is in the zone of the host that served it.
+    let ends = |c: &Card| {
+        c.focus_until
+            .as_deref()
+            .map(|u| u.get(5..16).unwrap_or(u).to_string())
+            .unwrap_or_default()
+    };
+    let says = if on.is_empty() {
+        "No project is on focus, so none runs sprints.".to_string()
+    } else {
+        let named: Vec<String> = on
+            .iter()
+            .map(|c| {
+                format!("{} until {}", c.name, ends(c))
+                    .trim_end_matches(" until ")
+                    .to_string()
+            })
+            .collect();
+        format!(
+            "On focus: {}. Its release windows run as sprints until its end.",
+            named.join(", ")
+        )
+    };
+    let who =
+        |c: &Card| serde_json::json!({"profile": c.profile, "name": c.name, "until": ends(c)});
+    serde_json::json!({
+        "says": says,
+        "on": on.iter().map(|c| who(c)).collect::<Vec<_>>(),
+        "all": cards.iter().map(who).collect::<Vec<_>>(),
+        "hours": FOCUS_HOURS,
+    })
+}
+
 pub fn to_json(p: &Projects) -> Value {
     let mut v = serde_json::to_value(p).unwrap_or_default();
     v["figures"] = serde_json::json!(crate::widget_doc::figures(&[crate::cards::projects(p)]));
@@ -1098,11 +1227,17 @@ pub fn to_json(p: &Projects) -> Value {
             j["counts"] = counts(c).into();
             j["version_lines"] = c.versions.iter().map(version_words).collect();
             j["in_flight"] = c.in_flight().into();
+            j["net7d_cell"] = net_cell(c).into();
+            j["growing"] = c.growing().into();
             j["pace"] = c.pace().into();
             j["oldest"] = wait_word(c.oldest_ready_min).into();
             if !c.running.is_empty() {
                 j["running_table"] = serde_json::to_value(running_table(c)).unwrap_or_default();
             }
+            j["running_areas"] = running_areas(c)
+                .into_iter()
+                .map(|(area, n)| serde_json::json!({"area": area, "n": n}))
+                .collect();
         }
     }
     v
@@ -1210,7 +1345,7 @@ mod tests {
         assert_eq!(
             names("", "", "prio", ""),
             ["focus", "normal", "bare", "low"],
-            "focus outranks normal outranks low, not the alphabet"
+            "focus outranks no focus; a retired ladder word (low) has no rank and sorts last"
         );
         assert_eq!(
             names("stage:alpha", "", "version", ""),
@@ -1218,6 +1353,41 @@ mod tests {
             "v0.10.0 is newer than v0.2.0"
         );
         assert_eq!(names("", "", "pace", "")[0], "low");
+    }
+
+    #[test]
+    fn running_areas_count_by_epic_system_most_first_and_no_epic_last() {
+        let run = |area: Option<&str>| Running {
+            area: area.map(Into::into),
+            ..Default::default()
+        };
+        let c = Card {
+            running: vec![
+                run(None),
+                run(Some("views")),
+                run(Some("dispatch")),
+                run(None),
+                run(Some("dispatch")),
+                run(Some("ci")),
+                run(None),
+            ],
+            ..Default::default()
+        };
+        // NEGATIVE CONTROL: 3 items under no epic outnumber every system, and still go last.
+        let wire = to_json(&Projects {
+            cards: vec![c],
+            ..Default::default()
+        });
+        assert_eq!(
+            wire["cards"][0]["running_areas"],
+            json!([{"area": "dispatch", "n": 2}, {"area": "ci", "n": 1},
+                   {"area": "views", "n": 1}, {"area": "no epic", "n": 3}])
+        );
+        let idle = to_json(&Projects {
+            cards: vec![Card::default()],
+            ..Default::default()
+        });
+        assert_eq!(idle["cards"][0]["running_areas"], json!([]));
     }
 
     #[test]
@@ -1327,11 +1497,9 @@ mod tests {
     #[test]
     fn the_prio_key_cycles_and_writes_through_the_cli_only() {
         assert_eq!(next_prio(""), "focus");
-        assert_eq!(next_prio("focus"), "high");
-        assert_eq!(next_prio("high"), "low");
-        assert_eq!(next_prio("low"), "normal");
+        assert_eq!(next_prio("focus"), "normal");
         let r = Argv(Default::default());
-        set_prio(&r, "bnb", "shape-city", "focus").unwrap();
+        set_prio(&r, "bnb", "shape-city", "focus", None).unwrap();
         assert_eq!(
             *r.0.borrow(),
             [
@@ -1347,9 +1515,51 @@ mod tests {
         );
         // nothing that could read as a flag, and no value outside the vocabulary, reaches argv
         r.0.borrow_mut().clear();
-        assert!(set_prio(&r, "bnb", "--all", "focus").is_err());
-        assert!(set_prio(&r, "bnb", "demo", "urgent").is_err());
-        assert!(r.0.borrow().is_empty());
+        assert!(set_prio(&r, "bnb", "--all", "focus", None).is_err());
+        assert!(set_prio(&r, "bnb", "demo", "urgent", None).is_err());
+        // the retired ladder's words are refused: focus is the one project tag left
+        assert!(set_prio(&r, "bnb", "demo", "high", None).is_err());
+        assert!(set_prio(&r, "bnb", "demo", "low", None).is_err());
+        // hours go with a focus only; their range is notes' to refuse
+        assert!(set_prio(&r, "bnb", "demo", "normal", Some(2)).is_err());
+        assert!(r.0.borrow().is_empty(), "a refused write runs nothing");
+        set_prio(&r, "bnb", "demo", "focus", Some(2)).unwrap();
+        assert_eq!(r.0.borrow()[8..], ["--hours", "2"]);
+    }
+
+    #[test]
+    fn the_focus_strip_names_each_focus_and_its_end_and_offers_every_project() {
+        let card = |name: &str, prio: &str, until: Option<&str>| Card {
+            profile: "bnb".into(),
+            name: name.into(),
+            prio: prio.into(),
+            focus_until: until.map(str::to_string),
+            ..Default::default()
+        };
+        let f = focus_json(&[
+            card("a", "focus", Some("2026-11-23 18:00 -0800")),
+            card("b", "high", None),
+        ]);
+        assert_eq!(f["on"][0]["until"], "11-23 18:00");
+        assert!(
+            f["says"]
+                .as_str()
+                .unwrap()
+                .starts_with("On focus: a until 11-23 18:00."),
+            "{f}"
+        );
+        // A project on focus stays in the picker, so its end can be set again.
+        assert_eq!(f["all"].as_array().unwrap().len(), 2);
+        // NEGATIVE CONTROL: no focus says so, and offers every project.
+        let f = focus_json(&[card("b", "high", None)]);
+        assert!(f["on"].as_array().unwrap().is_empty());
+        assert!(
+            f["says"]
+                .as_str()
+                .unwrap()
+                .starts_with("No project is on focus"),
+            "{f}"
+        );
     }
 
     #[test]
@@ -1461,6 +1671,7 @@ mod tests {
             committed: 20,
             delivered: 20 - open,
             open,
+            open_weight: open,
             ..Window::default()
         }
     }
@@ -1505,7 +1716,7 @@ mod tests {
             280,
             TEN_DAYS_AGO,
         );
-        // 28 closes in 28 days close 3 rows in the 3 days left: 4 open is at risk, 3 is not.
+        // 28 weight closed in 28 days closes 3 in the 3 days left: 4 open is at risk, 3 is not.
         let short = state_card(
             "alpha",
             Some(state_window("2026-11-22", 4)),
@@ -1541,7 +1752,7 @@ mod tests {
         .collect();
         assert_eq!(
             got,
-            [LATE, LATE, AT_RISK, AT_RISK, ON_TRACK, NO_WINDOW, NO_WINDOW, IDLE, PARKED],
+            [LATE, LATE, AT_RISK, AT_RISK, ON_TRACK, FLOW, FLOW, IDLE, PARKED],
             "the last close 28 days back is idle; a waiting item is in flight"
         );
         let mut zero = idle.clone();
@@ -1551,12 +1762,52 @@ mod tests {
             IDLE,
             "idle_days 0 reads every quiet project idle"
         );
+        // The rate is net of filings: 14 of the 28 refilled closes 1 in 3 days, short of 3.
+        let mut filing = on_track.clone();
+        filing.progress.filed_weight_28d = 14;
+        assert_eq!(state(&filing, today), AT_RISK, "filings slow the rate");
+        filing.progress.filed_weight_28d = 28;
+        assert_eq!(
+            state(&filing, today),
+            AT_RISK,
+            "filing as fast as closing closes none"
+        );
+        // It is weight against weight: one open row of 8 points outweighs the 3 that 3 days close.
+        let mut heavy = state_card(
+            "alpha",
+            Some(state_window("2026-11-22", 1)),
+            28,
+            TEN_DAYS_AGO,
+        );
+        assert_eq!(
+            state(&heavy, today),
+            ON_TRACK,
+            "NEGATIVE CONTROL: one unsized row fits"
+        );
+        heavy.window.as_mut().unwrap().open_weight = 8;
+        assert_eq!(state(&heavy, today), AT_RISK, "an 8-point row does not");
+        // A notes that sends no open_weight still reads at risk: each open row weighs at least 1.
+        let mut unweighed = short.clone();
+        unweighed.window.as_mut().unwrap().open_weight = 0;
+        assert_eq!(
+            state(&unweighed, today),
+            AT_RISK,
+            "the row count floors the weight"
+        );
         assert_eq!(state_level(PARKED), None, "parked draws grey");
+        assert_eq!(state_level(FLOW), None, "flow is no warning");
         let short = Card {
             state: AT_RISK,
             ..short
         };
         assert_eq!(state_says(&short), "at risk, 16/20 due 11-22");
+        // A target past with no window keeps the cause; a flowing card says its state alone.
+        let late = Card {
+            state: LATE,
+            window: None,
+            ..short
+        };
+        assert_eq!(state_says(&late), "late, no window");
     }
 
     #[test]
@@ -1608,9 +1859,10 @@ mod tests {
     }
 
     #[test]
-    fn the_backlog_sets_no_state_and_no_window_is_said_once() {
+    fn the_backlog_sets_no_state_and_a_flowing_card_says_flow_alone() {
         // NEGATIVE CONTROL: 990 open and 30 done set no state of their own; the card with no
-        // window that closed lately is `no window`, and its JSON carries no percent.
+        // window that closed lately is `flow`, uncoloured, its JSON carries no percent, and its
+        // window cell still says `no window`.
         let no_window = state_card("alpha", None, 0, TEN_DAYS_AGO);
         let j = to_json(&Projects {
             cards: vec![Card {
@@ -1625,9 +1877,10 @@ mod tests {
                 &j["cards"][0]["state_level"],
                 &j["cards"][0]["state_says"]
             ),
-            (&json!("no window"), &json!("warn"), &json!("no window")),
-            "`no window` is said once"
+            (&json!("flow"), &Value::Null, &json!("flow")),
+            "`flow` is said alone, in no hue"
         );
+        assert_eq!(j["cards"][0]["window_cell"], "no window");
         assert!(!j.to_string().contains("percent"), "{j}");
     }
 
@@ -1653,14 +1906,21 @@ mod tests {
         let s: Vec<Stats> = serde_json::from_value(json!([{
             "name": "trader",
             "window": {"version": "v0.1.3", "opened": "2026-11-18", "due": "2026-11-22",
-                       "committed": 105, "delivered": 2, "open": 103, "dropped": 0, "interrupted": 1},
+                       "committed": 105, "delivered": 2, "open": 103, "open_weight": 160,
+                       "dropped": 0, "interrupted": 1},
             "last_window": {"version": "v0.1.2", "line": "delivered 3 of 4"}
         }, {"name": "bare", "window": null, "last_window": null}]))
         .unwrap();
         let w = s[0].window.as_ref().unwrap();
         assert_eq!(
-            (w.committed, w.delivered, w.open, w.interrupted),
-            (105, 2, 103, 1)
+            (
+                w.committed,
+                w.delivered,
+                w.open,
+                w.open_weight,
+                w.interrupted
+            ),
+            (105, 2, 103, 160, 1)
         );
         assert_eq!(w.days_left, None, "the card dates it, notes does not");
         assert_eq!(s[0].last_window.as_ref().unwrap().line, "delivered 3 of 4");
@@ -1790,6 +2050,7 @@ mod tests {
         );
         today.status = Some("ok".into());
         today.merged = Some("abc123".into());
+        today.outcome = Some("landed".into());
         // Closed today too: a check (ok, no merge) and a failed run with a merge, which counts
         // in neither.
         let mut check = item("k", State::Done, "trader", None);
@@ -1797,6 +2058,7 @@ mod tests {
         let mut failed = item("f", State::Done, "trader", None);
         (failed.finished, failed.status) = (Some(ago(0)), Some("failed".into()));
         failed.merged = Some("def456".into());
+        failed.outcome = Some("failed".into());
         let mut before = item("y", State::Done, "trader", None);
         before.finished = Some(ago(48));
         let q = Queue {
@@ -2040,5 +2302,73 @@ mod tests {
             ..Projects::default()
         });
         assert_eq!(j["cards"][0]["version_lines"][1], words[1]);
+    }
+
+    #[test]
+    fn net7d_reads_the_boards_flow_signed_amber_only_above_zero_and_a_dash_when_unread() {
+        use crate::board_flow::{BoardFlow, Flows};
+        use crate::table::{Row, Val};
+        let flow = |net: i64| BoardFlow {
+            opened: net.max(0),
+            done: (-net).max(0),
+            dropped: 0,
+            net,
+        };
+        let named = |n: &str| Card {
+            name: n.into(),
+            ..Card::default()
+        };
+        let mut p = Projects {
+            cards: vec![
+                named("grew"),
+                named("shrank"),
+                named("flat"),
+                named("quiet"),
+            ],
+            ..Projects::default()
+        };
+        let flows = Flows {
+            fleet: Some(flow(30)),
+            by_project: [
+                ("grew".to_string(), flow(120)),
+                ("shrank".into(), flow(-900)),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        attach_board_flow(&mut p, &flows);
+        let cells: Vec<(String, bool)> =
+            p.cards.iter().map(|c| (net_cell(c), c.growing())).collect();
+        assert_eq!(
+            cells,
+            [
+                ("+120".to_string(), true),
+                ("-900".to_string(), false),
+                // A project with no row moving reads 0, which is not growth.
+                ("0".to_string(), false),
+                ("0".to_string(), false)
+            ]
+        );
+        assert_eq!(p.cards[1].val("net7d"), Val::Num(-900.0));
+        assert_eq!(p.board_7d, Some(flow(30)));
+        // NEGATIVE CONTROL: with no reading at all every cell is a dash, never a 0.
+        attach_board_flow(&mut p, &Flows::default());
+        assert!(p.cards.iter().all(|c| net_cell(c) == "-" && !c.growing()));
+        assert_eq!(p.cards[0].val("net7d"), Val::None);
+        let j = to_json(&Projects {
+            cards: vec![Card {
+                board_7d: Some(flow(120)),
+                ..Card::default()
+            }],
+            ..Projects::default()
+        });
+        assert_eq!(
+            (
+                j["cards"][0]["net7d_cell"].as_str(),
+                j["cards"][0]["growing"].as_bool()
+            ),
+            (Some("+120"), Some(true))
+        );
+        assert_eq!(j["cards"][0]["board_7d"]["in"], 120);
     }
 }

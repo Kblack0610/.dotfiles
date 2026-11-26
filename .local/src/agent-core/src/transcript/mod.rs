@@ -7,6 +7,7 @@ use std::path::Path;
 use serde_json::Value;
 
 mod ask;
+mod human;
 mod plan;
 mod prompt;
 mod read;
@@ -17,10 +18,19 @@ mod time_use;
 mod usage;
 
 pub use ask::{asks_human_at, open_dialog_at, open_plan_at, open_question_at, Question};
+pub use human::{human_said_at, HumanSaid};
 pub use read::{clip, iso_epoch, str_of, tool_input};
 pub use said::{said_around_at, Said};
 pub use time_use::{time_use_at, TimeUse};
 pub use usage::{context_window, uses, Uses};
+
+/// The lines of a compiled-in `.config/agent-panel/*.conf`, trimmed, past its comments and blank
+/// lines: the one parse every conf this module reads goes through.
+fn conf_lines(conf: &'static str) -> impl Iterator<Item = &'static str> {
+    conf.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+}
 
 use plan::{plan_file, plan_slug};
 use prompt::human_at;

@@ -11,8 +11,13 @@
 # Hosts: the ones the governor keeps running, as home-config's CiHostRunnersOffline reads them:
 # an owned host (ci_governor_rate_usd_per_hour{basis="owned"}) or a cloud host it has powered on
 # (ci_governor_power_state{state="running"}). A host it has powered off, or is starting or
-# stopping, is skipped. A withheld or lent runner is still online on GitHub, so a held host is
-# never dark. Dark: at least one registered GitHub runner now, and no online runner
+# stopping, is skipped. So is a host its "<host>.slots" key pinned to 0 at any reading in the
+# window (machine-mode's pin, ci_governor_effective_slots source "slots"): machine-mode stops the
+# runner units over its count, so that host is dark on purpose, and once the pin lifts its units
+# get the window to come back. A withheld or lent runner, or a release reservation's 0 (source
+# "reserve"), is still online on GitHub, so a held host is never dark.
+#
+# Dark: at least one registered GitHub runner now, and no online runner
 # (github_runner_pool_online) at any exporter reading across the window. A reading the exporter
 # did not give (GitHub unanswered: it then emits no pool counts) counts as nothing, never as
 # offline, and the window must hold readings from its first minute. --at replays a past moment.
@@ -28,10 +33,21 @@ STEP=60
 # read as last known over this long: it drops its series on a pass it cannot read GitHub, which is
 # what a runner outage looks like (2026-11-22 22:45-23:30Z: 39 runners offline and no
 # ci_governor_rate_usd_per_hour), so a read of now goes blind then. While it reports, now wins, so a
-# host it dropped or powered back on is read as it is.
+# host it dropped or powered back on is read as it is. Last known is each series as it read at or
+# after the governor's last report: a series it stopped emitting before then (a host it dropped, a
+# slots pin that lifted) is gone, never its last value. 2026-11-25 14:03Z: a 2-minute gap read
+# tuf-b550, powered off since 10:21Z, as still under a pin lifted 14h before, and the workstation,
+# dropped at 02:24Z, as still governed; the OK lifted the watch's quarantine.
 KNOWN=1d
+# The governor's last report, as an epoch. timestamp() gives a sample's own time only on a bare
+# selector (on `x == 1` it gives the evaluation step), so the value is filtered with `and`.
+LAST_OK="max(last_over_time((timestamp(ci_governor_ok) and ci_governor_ok == 1)[$KNOWN:${STEP}s]))"
+# at_last <bare selector> -> per host, the last value over $KNOWN of each of its series still read at
+# or after the governor's last report. Every governor series comes from one scrape and shares its
+# timestamp, so the 1s slack only absorbs float error: a series dropped one pass earlier is 60s short.
+at_last() { echo "(max by (host) (last_over_time($1[$KNOWN]) and (last_over_time(timestamp($1)[$KNOWN:${STEP}s]) - on () group_left () $LAST_OK >= -1)))"; }
 # known <selector> -> the governor's reading per host now, or its last known one while it is not reporting.
-known() { echo "(max by (host) ($1) or (max by (host) (last_over_time($1[$KNOWN])) unless on () (max(ci_governor_ok) == 1)))"; }
+known() { echo "(max by (host) ($1) or ($(at_last "$1") unless on () (max(ci_governor_ok) == 1)))"; }
 
 usage() { sed -n '5p' "$0" | sed 's/^# *//' >&2; exit 2; }
 
@@ -61,8 +77,11 @@ gov=$(prom_q "$(known 'ci_governor_rate_usd_per_hour{basis="owned"}') or $(known
   || { echo "unreadable: Prometheus did not answer the governor's hosts"; exit 1; }
 stop=$(prom_q "$(known 'ci_governor_power_state{state!="running"}') == 1" "$end") \
   || { echo "unreadable: Prometheus did not answer the governor's power states"; exit 1; }
+slots='ci_governor_effective_slots{source="slots"}'
+pin=$(prom_q "max by (host) (min_over_time(${slots}[$win])) == 0 or ($(at_last "$slots") == 0 unless on () (max(ci_governor_ok) == 1))" "$end") \
+  || { echo "unreadable: Prometheus did not answer the governor's slot pins"; exit 1; }
 
-out=$(jq -rn --argjson r "$online" --argjson reg "$reg" --argjson gov "$gov" --argjson stop "$stop" \
+out=$(jq -rn --argjson r "$online" --argjson reg "$reg" --argjson gov "$gov" --argjson stop "$stop" --argjson pin "$pin" \
   --argjson start "$start" --argjson end "$end" --argjson step "$STEP" --arg win "$win" --arg known "$KNOWN" '
   def by_host($j): [$j.data.result[] | {key: .metric.host, value: (.value[1] | tonumber)}] | from_entries;
   [$r.data.result[].values[][0]] as $ts
@@ -70,11 +89,12 @@ out=$(jq -rn --argjson r "$online" --argjson reg "$reg" --argjson gov "$gov" --a
   | if ($hosts | length) == 0 then "unreadable: the governor reported no host in the last \($known) (ci_governor_rate_usd_per_hour)"
     elif ($ts | length) == 0 or ($ts | max) < $end - $step then "unreadable: the runner exporter gave no online count (github_runner_pool_online) now"
     else
-      by_host($reg) as $regd | by_host($stop) as $off | ($ts | min) as $first | ($ts | max) as $last
+      by_host($reg) as $regd | by_host($stop) as $off | by_host($pin) as $pinned | ($ts | min) as $first | ($ts | max) as $last
       # Each host'"'"'s last reading with a runner online, null when none in the window.
       | ($r.data.result | map({key: .metric.host, value: ([.values[] | select((.[1] | tonumber) > 0)] | last)}) | from_entries) as $up
       | [$hosts[] as $h | ($regd[$h] // 0) as $n | $up[$h] as $u
          | if $off[$h] then "skip: \($h) is powered off by the governor"
+           elif $pinned | has($h) then "skip: \($h) is pinned to 0 slots by its \($h).slots key (machine-mode)"
            elif $n == 0 then "skip: \($h) has no registered runner"
            elif $u != null and $u[0] >= $last then "ok: \($h) \($u[1]) of \($n) online"
            elif $u != null then "ok: \($h) all \($n) offline, for under \($win)"

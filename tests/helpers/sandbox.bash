@@ -114,8 +114,8 @@ sandbox_tool_files() {
   # agentctl reads the lanes a conf's LANE= may name from lanes.tsv (private, so absent in CI).
   export AGENTCTL_LANES_FILE="$SANDBOX/lanes.tsv"
   cp "$TESTS_DIR/fixtures/lanes.tsv" "$AGENTCTL_LANES_FILE"
-  # hub-figure (a repo bin on PATH) keeps its cache in XDG_RUNTIME_DIR, which is the host's,
-  # and asks the host's `hub` when it is stale: a test with no hub-figure stub read the workstation's
+  # hub-figure (a repo bin on PATH) keeps its cache in XDG_RUNTIME_DIR (the sandbox's by now:
+  # sandbox_detach_env ran first) and asks the host's `hub` when it is stale: a test with no hub-figure stub read the workstation's
   # live figure (agent_ask.bats count --all printed 31, not ?). Point both inside the sandbox; a
   # hub-figure test sets its own after sandbox_init, and a `hub` stub in $SANDBOX/bin is the one it asks.
   export HUB_FIGURE_CACHE="$SANDBOX/tmp/hub-figure.json" HUB_FIGURE_HUB="$SANDBOX/bin/hub"
@@ -124,6 +124,8 @@ sandbox_tool_files() {
 # sandbox_home -> $HOME, the XDG homes and TMPDIR inside $SANDBOX
 sandbox_home() {
   export HOME="$SANDBOX/home"
+  # `notes ptask add|tag --why` reads the reason list from $HOME; the sandbox has none, so it reads the repo's.
+  export NOTES_PRIORITY_REASONS="$REPO_ROOT/.config/inbox-triage/rules/priority-reasons.tsv"
   # HOME isolates ~/.gitconfig but not /etc/gitconfig. GitHub's runners ship one with
   # `filter.lfs.process`, which outranks a test's stubbed `filter.lfs.smudge`: the LFS
   # recycle fixture's submodule update failed there and the test passed by accident.
@@ -204,6 +206,17 @@ sandbox_detach_env() {
   # that as "detach through systemd-run", which would start a real transient scope.
   unset INVOCATION_ID
 
+  # The host's XDG_RUNTIME_DIR holds its live user manager's socket, and `claude-acct scope` (every
+  # claude launch) starts a real transient scope there when it finds one. The sandbox's has none, so a
+  # launch runs unscoped; claude_acct.bats gives one a socket, with busctl stubbed.
+  export XDG_RUNTIME_DIR="$SANDBOX/run"
+  mkdir -p "$XDG_RUNTIME_DIR"
+
+  # agent-queue's order ages a queued item from its ready time to the wall clock (AGENT_QUEUE_AGE_STEP),
+  # and fixtures carry fixed past dates, so the date a suite runs would decide their order. Off for
+  # every test; agent_queue.bats "ranks one tier higher" sets a step and a whole AGENT_QUEUE_NOW.
+  export AGENT_QUEUE_AGE_STEP=0
+
   # A runner shell that exports NO_COLOR or PANEL_NO_COLOR would blank every palette the
   # colour fixtures assert on (md_render, panel_lib, questions_panel). A test that wants no
   # colour sets it itself, after sandbox_init.
@@ -217,11 +230,6 @@ sandbox_detach_env() {
   # `agent-ask post` starts the answer judge, a real model call through agentctl-run. Off for
   # every test; agent_ask.bats turns it on with a fake judge command.
   export AGENT_ASK_NO_JUDGE=1
-
-  # A live judge answer posts an audit ask every Nth time per level, and a level ask-judge.conf
-  # does not rate is audited every time. Off in effect for every test (1 in a million);
-  # agent_ask.bats sets the rates it tests.
-  export AGENT_ASK_AUDIT_RATES='self=1000000 repo=1000000 fleet=1000000'
 
   # Detach from every real notification channel. agent-notify is stubbed below, but a few
   # subjects send on their own (watch-companion-loop curls NTFY_URL directly), and a Claude

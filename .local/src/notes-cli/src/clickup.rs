@@ -56,18 +56,17 @@ struct Ticket {
 
 /// Map a ClickUp priority word to the note's priority hashtag.
 ///
-/// ClickUp's default is `normal`, and ours is `#high` (`md::DEFAULT_PRIORITY`), so `normal`
-/// maps to the default rather than to no tag. The two defaults have to agree: ClickUp is by
-/// far the biggest producer of tickets nobody has prioritized, and mapping them to nothing
-/// would leave the note's largest population of tasks outside the ordering the default exists
-/// to give them.
+/// The four words are ours too, and ClickUp's default `normal` is ours (`md::DEFAULT_PRIORITY`).
+/// A word ClickUp leaves empty or we do not know maps to the default rather than to no tag:
+/// ClickUp is by far the biggest producer of tickets nobody has prioritized, and mapping them
+/// to nothing would leave the note's largest population of tasks outside the ordering the
+/// default exists to give them.
 fn priority_tag(word: &str) -> &'static str {
-    match word.trim().to_lowercase().as_str() {
-        "urgent" => "#urgent",
-        "high" => "#high",
-        "low" => "#low",
-        _ => md::default_priority(), // "normal" / "none" / unknown
-    }
+    let word = word.trim().to_lowercase();
+    md::PRIORITIES
+        .iter()
+        .find(|(w, _, _)| *w == word)
+        .map_or(md::default_priority(), |(_, tag, _)| tag)
 }
 
 /// Parse the TSV cache. Phase 2 format is 4-col `id<TAB>priority<TAB>status<TAB>title`; a
@@ -378,9 +377,7 @@ pub fn push(p: &Profile, log: &Logger) -> Result<i32> {
 mod tests {
     use super::*;
 
-    fn d(s: &str) -> chrono::NaiveDate {
-        chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
-    }
+    use crate::md::date as d;
 
     #[test]
     fn parse_cache_reads_4col_and_legacy_3col() {
@@ -464,12 +461,12 @@ mod tests {
         assert_eq!(priority_tag("High"), "#high");
         // ClickUp's default and ours have to agree, or the biggest population of
         // unprioritized tickets lands outside the ordering the default exists to give them.
-        assert_eq!(priority_tag("normal"), "#high");
-        assert_eq!(priority_tag("none"), "#high");
+        assert_eq!(priority_tag("normal"), md::default_priority());
+        assert_eq!(priority_tag("none"), "#normal");
         assert_eq!(priority_tag("low"), "#low");
         // an absent priority is the same case: unknown means unprioritized means default
-        assert_eq!(priority_tag(""), "#high");
-        assert_eq!(priority_tag("bogus"), "#high");
+        assert_eq!(priority_tag(""), "#normal");
+        assert_eq!(priority_tag("bogus"), "#normal");
     }
 
     #[test]
@@ -506,7 +503,7 @@ mod tests {
             title: "loose task".into(),
         };
         let line = new_focus_line(&t, d("2026-07-22"));
-        assert_eq!(line, "- [/] loose task #c0722 #high <!-- cu:z9 -->");
-        assert_eq!(md::task_priority(&line), Some("#high"));
+        assert_eq!(line, "- [/] loose task #c0722 #normal <!-- cu:z9 -->");
+        assert_eq!(md::task_priority(&line), Some("#normal"));
     }
 }

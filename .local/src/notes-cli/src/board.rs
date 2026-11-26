@@ -634,6 +634,64 @@ impl VersionProject {
     }
 }
 
+/// One agent-sheet row as `notes board --weigh` prints it: its project (the directory the sheet
+/// sits in), id, state and weight by the one rule every rollup uses ([`crate::projects::size_weight`]).
+#[derive(Debug, PartialEq, serde::Serialize)]
+pub struct Weighed {
+    pub project: String,
+    pub id: String,
+    /// `open` (started or not), `done`, or `dropped` (closed undelivered: [`md::is_dropped`]).
+    pub state: &'static str,
+    pub weight: u32,
+}
+
+/// One `git grep` line of an agent sheet or a version note it rolled rows into,
+/// `[<rev>:]<dir>/<project>/agent/README.md:<line>` or `.../agent/versions/<v>.md:<line>`, as a
+/// [`Weighed`]; None for a line that is not a row with an id. A version note's rows carry no
+/// checkbox and are all closed, so a row done and rolled off in one day still reads done.
+pub fn weigh(entry: &str) -> Option<Weighed> {
+    // The path ends at the first sheet or version-note suffix: a project dir named `agent`, or
+    // `/agent/` in the row text, must not move it.
+    let at = ["/agent/README.md:", "/agent/versions/"]
+        .iter()
+        .filter_map(|s| entry.find(s))
+        .min()?;
+    let rest = &entry[at + "/agent/".len()..];
+    let (closed, line) = if let Some(line) = rest.strip_prefix("README.md:") {
+        if !md::is_task(line) {
+            return None;
+        }
+        (md::is_checked(line), line)
+    } else {
+        let (file, line) = rest.strip_prefix("versions/")?.split_once(':')?;
+        if file.contains('/') || !file.ends_with(".md") || !line.trim_start().starts_with("- ") {
+            return None;
+        }
+        (true, line)
+    };
+    let project = entry[..at].rsplit(['/', ':']).next()?.to_string();
+    let state = match (closed, md::is_dropped(line)) {
+        (false, _) => "open",
+        (true, false) => "done",
+        (true, true) => "dropped",
+    };
+    Some(Weighed {
+        project,
+        id: md::row_id(line)?,
+        state,
+        weight: crate::projects::size_weight(line),
+    })
+}
+
+/// `notes board --weigh`: `git grep` lines of agent sheets on stdin (any commit, so a reader of
+/// the notes history weighs rows as notes does), one [`Weighed`] JSON object per row on stdout.
+pub fn print_weigh(input: &str) -> Result<()> {
+    for w in input.lines().filter_map(weigh) {
+        println!("{}", serde_json::to_string(&w)?);
+    }
+    Ok(())
+}
+
 /// `notes board --version vX.Y.Z [--project N]... [--json]` - print every row aimed at that
 /// release, across every profile and both lanes: open rows first, then closed ones with their
 /// PRs. With `--json`, the same rows as `{version, projects: [VersionProject]}`, the feed the
@@ -714,6 +772,8 @@ struct FeedRow {
     version: Option<String>,
     game: Option<String>,
     state: &'static str,
+    /// The row's tag as its word; an epic's is its most urgent open row's, or `empty` with none
+    /// ([`epic_ranked`]).
     priority: &'static str,
     /// `#tier/N`: how hard the row is, which `fleet-dispatch` matches against a worker's max.
     tier: Option<u8>,
@@ -751,8 +811,12 @@ struct FeedRow {
     /// triage) skips it, and the UIs still show it.
     automation: bool,
     /// The line carries no priority tag: `priority` is the rank's default, and
-    /// `agentctl-inbox-triage --backlog --priority` gives it a real one.
+    /// `agentctl-inbox-triage --backlog --priority` gives it a real one. Never an epic, whose
+    /// priority is derived ([`epic_ranked`]).
     untriaged: bool,
+    /// The slug of the row's `#why/<slug>`: why it has its priority, one of
+    /// `priority-reasons.tsv`. None for a row with no reason.
+    prio_why: Option<String>,
     /// The sheet section the sweep lays the row out in: `epics`, `now`, `next`, `board` (an
     /// agent-board row inside the budget), `backlog`, or `done` for a closed row
     /// ([`project_sweep::section_of`]). `None` on a Focus or playtest row, which no sheet
@@ -1144,6 +1208,7 @@ fn feed_row(
                 && !t.starts_with("worker/")
                 && !t.starts_with("size/")
                 && !t.starts_with("pts/")
+                && !t.starts_with(crate::reasons::TAG)
                 && t != "requested"
         })
         .unzip();
@@ -1181,6 +1246,7 @@ fn feed_row(
         details,
         automation: true,
         untriaged: md::task_priority(line).is_none(),
+        prio_why: crate::reasons::slug_of(line),
         section: o.sheet_row.then(|| {
             if md::is_checked(line) {
                 "done"
@@ -1205,6 +1271,27 @@ fn feed_row(
     }
 }
 
+/// An epic `row` as the feed prints it: it ranks and shows as its most urgent open row
+/// ([`crate::epics::Index::epic_priority`]), or as [`crate::epics::EMPTY`], ranked `#low`, with
+/// none. Never by a tag of its own, and never untriaged, so triage never tags one.
+fn epic_ranked(
+    mut row: FeedRow,
+    line: &str,
+    tree: &crate::epics::Index,
+    today: chrono::NaiveDate,
+    aim: Option<&crate::rank::Aim>,
+) -> FeedRow {
+    // An epic with no id can have no `#of/<id>` rows under it, so it is empty.
+    let prio = row.id.as_deref().and_then(|id| tree.epic_priority(id));
+    row.priority = prio.map_or(crate::epics::EMPTY, |i| md::PRIORITIES[i].0);
+    row.untriaged = false;
+    row.prio_why = None;
+    let mut rank = crate::rank::aimed(line, today, aim);
+    rank.prio = prio.unwrap_or(md::PRIORITIES.len() - 1) as u8;
+    row.rank = rank.key();
+    row
+}
+
 /// Every open row of one project dir: its sheet's open version, its agent sheet's, and its
 /// playtest checks, in that order. Split from [`print_json`] to test without a vault.
 fn feed_for_dir(
@@ -1220,6 +1307,8 @@ fn feed_for_dir(
     let mut agent_backlog = 0;
     let mut done_old = 0;
     let aim = crate::rank::Aim::of(dir);
+    // Built on the first epic row only: most projects have none.
+    let tree = std::cell::OnceCell::new();
     for (i, (lane, name)) in [(Lane::Human, "human"), (Lane::Agent, "agent")]
         .into_iter()
         .enumerate()
@@ -1250,7 +1339,14 @@ fn feed_for_dir(
             aim: aim.as_ref(),
         };
         for r in w.rows {
-            rows.push(feed_row(&o, (r.line, &r.text), r.details, today));
+            let row = feed_row(&o, (r.line, &r.text), r.details, today);
+            if row.r#type.as_deref() != Some("epic") {
+                rows.push(row);
+                continue;
+            }
+            let tree = tree
+                .get_or_init(|| crate::epics::Index::of(dir, crate::projects::open_version(dir)));
+            rows.push(epic_ranked(row, &r.text, tree, today, o.aim));
         }
     }
     let file = crate::playtest::path(dir);
@@ -1654,6 +1750,66 @@ mod tests {
     use super::*;
 
     #[test]
+    fn weigh_reads_project_state_and_weight_from_a_git_grep_line() {
+        let w = |l: &str| weigh(l).map(|w| (w.project, w.id, w.state, w.weight));
+        let at = "abc123:personal/projects/current/agent-runtime/agent/README.md:";
+        // A project dir named `agent`, and `/agent/` in the row text, leave the path split alone.
+        assert_eq!(
+            w("abc123:lab/projects/current/agent/agent/README.md:- [ ] fix: see x/agent/y <!-- id:ag-1 -->"),
+            Some(("agent".into(), "ag-1".into(), "open", 1))
+        );
+        assert_eq!(
+            w(&format!("{at}- [ ] fix(x): y #pts/5 <!-- id:ar-1 -->")),
+            Some(("agent-runtime".into(), "ar-1".into(), "open", 5))
+        );
+        assert_eq!(
+            w(&format!("{at}- [/] fix(x): y #size/s <!-- id:ar-2 -->")).map(|t| t.2),
+            Some("open")
+        );
+        assert_eq!(
+            w(&format!(
+                "{at}- [x] fix(x): y #pts/3 <!-- id:ar-3 pr:12 -->"
+            ))
+            .map(|t| (t.2, t.3)),
+            Some(("done", 3))
+        );
+        // Closed undelivered is dropped, never done: a cleanup is not burn.
+        for m in ["dropped: 2026-11-24", "dup:ar-1"] {
+            assert_eq!(
+                w(&format!("{at}- [x] fix(x): y <!-- id:ar-4 {m} -->")).map(|t| (t.2, t.3)),
+                Some(("dropped", 1))
+            );
+        }
+        // No rev prefix (a working-tree grep) reads the same project.
+        assert_eq!(
+            w("bnb/projects/current/dodginballs/agent/README.md:- [ ] a <!-- id:db-9 -->")
+                .map(|t| t.0),
+            Some("dodginballs".into())
+        );
+        // Not a task, no id, or not an agent sheet: nothing.
+        assert_eq!(w(&format!("{at}## Tasks")), None);
+        assert_eq!(w(&format!("{at}- [ ] no id")), None);
+        assert_eq!(
+            w("p/projects/current/x/README.md:- [ ] a <!-- id:xy-1 -->"),
+            None
+        );
+        // A version note's rows have no checkbox and are closed: done, or dropped by marker.
+        let v = "abc:personal/projects/current/agent-runtime/agent/versions/v0.2.0.md:";
+        assert_eq!(
+            w(&format!("{v}- fix(x): y #pts/8 <!-- id:ar-5 -->")).map(|t| (t.2, t.3)),
+            Some(("done", 8))
+        );
+        assert_eq!(
+            w(&format!(
+                "{v}- fix(x): y <!-- id:ar-6 dropped: 2026-11-20 -->"
+            ))
+            .map(|t| t.2),
+            Some("dropped")
+        );
+        assert_eq!(w(&format!("{v}## Done")), None);
+    }
+
+    #[test]
     fn render_strips_the_checkbox_but_keeps_every_word() {
         assert_eq!(
             render("- [ ] agentctl roles (0d) <!-- since:2026-08-05 -->"),
@@ -1789,7 +1945,7 @@ mod tests {
     /// focus stay on disk but show nowhere on the board.
     #[test]
     fn only_a_focus_project_shows_sprints() {
-        let focus = "# demo\nVersion: v0.2.0 #alpha #prio/focus\n\n## Tasks\n";
+        let focus = "# demo\nVersion: v0.2.0 #alpha #prio/focus\nFocus until: 2099-01-01 00:00 +0000\n\n## Tasks\n";
         let dir = sheet("feed-sprints-focus", focus);
         // The shipped row today gives the lock its capacity ([`crate::window::capacity`]).
         let today = chrono::Local::now().date_naive();
@@ -2219,8 +2375,8 @@ mod tests {
         let r = &rows[1];
         assert_eq!(
             (r.state, r.priority),
-            ("doing", "high"),
-            "untagged means high"
+            ("doing", "normal"),
+            "untagged means normal"
         );
 
         let r = &rows[2];
@@ -2327,6 +2483,58 @@ mod tests {
             "due tomorrow and #urgent rank ahead of a plain #low"
         );
         assert_eq!(child.rank, crate::rank::of(&child.raw, today).key());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // An epic ranks and shows as its most urgent open row, read across both lanes, whatever tag
+    // it carries; a closed or dropped row and a child epic do not count, and an epic with no open
+    // row is `empty`, ranked as `#low`. No epic is untriaged, so triage never tags one.
+    #[test]
+    fn an_epic_ranks_as_its_most_urgent_open_row() {
+        let dir = sheet(
+            "feedepicrank",
+            "# demo\nVersion: v0.3.0\n\n## Tasks\n\
+             - [ ] epic(a): hot one #low <!-- id:dm-1 -->\n\
+             - [ ] epic(b): calm one <!-- id:dm-2 -->\n\
+             - [ ] epic(c): nothing open <!-- id:dm-3 -->\n\
+             - [ ] epic(d): under an epic only #of/dm-3 <!-- id:dm-4 -->\n\
+             - [x] feat(c): closed one #urgent #of/dm-3 <!-- id:dm-5 done:2026-11-08 pr:1 -->\n\
+             - [x] feat(c): dropped one #urgent #of/dm-3 <!-- id:dm-6 dropped: stale -->\n",
+        );
+        let agent = crate::projects::agent_dir(&dir);
+        std::fs::create_dir_all(&agent).unwrap();
+        std::fs::write(
+            agent.join("README.md"),
+            "# demo agent\n\n## Tasks\n\
+             - [ ] fix(a): the fault #urgent #of/dm-1 <!-- id:dm-7 -->\n\
+             - [ ] chore(a): tidy #low #of/dm-1 <!-- id:dm-8 -->\n\
+             - [/] chore(b): sweep #low #of/dm-2 <!-- id:dm-9 -->\n\
+             - [ ] chore(b): untagged #of/dm-2 <!-- id:dm-10 -->\n",
+        )
+        .unwrap();
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 9).unwrap();
+        let (_, rows) = feed_for_dir("bnb", "demo", &dir, today);
+        let row = |id: &str| rows.iter().find(|r| r.id.as_deref() == Some(id)).unwrap();
+        let got: Vec<(&str, bool)> = ["dm-1", "dm-2", "dm-3"]
+            .iter()
+            .map(|id| (row(id).priority, row(id).untriaged))
+            .collect();
+        assert_eq!(
+            got,
+            [("urgent", false), ("normal", false), ("empty", false)]
+        );
+        assert!(row("dm-1").rank < row("dm-2").rank, "urgent child first");
+        assert!(row("dm-2").rank < row("dm-3").rank, "empty sinks");
+        let low = row("dm-8");
+        assert_eq!(
+            row("dm-3").rank / 1_000_000,
+            low.rank / 1_000_000,
+            "empty ranks as #low"
+        );
+        // NEGATIVE CONTROL: a leaf keeps its own tag's word and rank.
+        assert_eq!((low.priority, low.untriaged), ("low", false));
+        assert_eq!(low.rank, crate::rank::of(&low.raw, today).key());
+        assert!(row("dm-10").untriaged);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

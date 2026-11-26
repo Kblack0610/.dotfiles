@@ -364,7 +364,7 @@ fn queue(i: &Inputs) -> Vec<Row> {
 }
 
 /// One card as the widget says it: "agent-runtime at risk, 21/84 due 11-22, 4 running", its
-/// state first (`projects::state`), the window after it unless it repeats `no window`. Past
+/// state first (`projects::state`), the window after it when there is one. Past
 /// `LINE_MAX` the counts shorten to "11 run, 1 wait", and then only the name is capped, so the
 /// state, window and counts always show.
 fn project(c: &Card) -> String {
@@ -561,8 +561,7 @@ mod tests {
         // The line reads the glance: its jobs and pass rate set here, its runners up, down and
         // alert as the runner series derived them.
         let g = &mut inf.ci.glance;
-        (g.busy, g.slots, g.units_busy, g.units, g.pass) =
-            (6, 20, Some(6.0), Some(20.0), Some(0.8));
+        (g.busy, g.pass) = (6, Some(0.8));
         inf
     }
 
@@ -898,7 +897,7 @@ mod tests {
     /// fleet-bench reads).
     fn read_costs() -> crate::costs::Costs {
         let mut costs = crate::costs::Costs::default();
-        costs.fleet_cost.usd = "about $1,203".into();
+        costs.fleet_cost.usd = "$1,203".into();
         costs.fleet_cost.cash = "$403".into();
         costs.fleet_cost.burn = "$800".into();
         costs
@@ -928,11 +927,13 @@ mod tests {
         q.items[1].project = "agent-runtime".into();
         let mut shipped = done_item("a", "agent-runtime", NOW);
         shipped.merged = Some("abc123".into());
+        shipped.outcome = Some("landed".into());
         q.items.push(shipped);
         q.items.push(done_item("b", "agent-runtime", NOW));
         // An item whose project is no lab project still counts: one figure for the whole queue.
         let mut stray = done_item("c", "scratch", NOW);
         stray.merged = Some("def456".into());
+        stray.outcome = Some("landed".into());
         q.items.push(stray);
         let (inf, alerts, _) = reds();
         let stats: Vec<crate::projects::Stats> = ["agent-runtime", "unity-core-playground"]
@@ -1152,6 +1153,7 @@ mod tests {
         // a and c merged (shipped); b merged nothing (a check), and so did a's second run.
         let merged = |mut x: Item| {
             x.merged = Some("abc123".into());
+            x.outcome = Some("landed".into());
             x
         };
         q.items.push(merged(done_item("a", "agent-runtime", NOW)));
@@ -1163,6 +1165,7 @@ mod tests {
         // Negative control: a failed run with a merge counts in neither.
         let mut failed = merged(done_item("bad", "agent-runtime", NOW));
         failed.status = Some("failed".into());
+        failed.outcome = Some("failed".into());
         q.items.push(failed);
         let p = phone(&state(), Some(&q), Some(&infra(vec![])));
         assert_eq!(
@@ -1516,8 +1519,10 @@ mod tests {
         let mut q = queue_of(vec![]);
         let mut a = done_item("a", "agent-runtime", NOW);
         a.merged = Some("abc123".into());
+        a.outcome = Some("landed".into());
         let mut c = done_item("c", ".dotfiles", NOW);
         c.merged = Some("def456".into());
+        c.outcome = Some("landed".into());
         q.items.extend([a, done_item("b", "agent-runtime", NOW), c]);
         q
     }

@@ -48,29 +48,29 @@ const card = (o) => ({
   progress: { open: 2, done: 1, open_weight: 3, done_weight: 1, closed_7d: 1, closed_weight_7d: 1 },
   window: { version: "v0.1.0", opened: "2026-11-15", due: "2026-11-22", committed: 4, delivered: 1, open: 3, dropped: 0, interrupted: 0, days_left: 4 }, window_says: "1/4 due 11-22", window_share: 25, window_cell: "1/4", due_cell: "4d",
   requested: 1, inbox: 2, running: [], waiting: 0, queued: 0, status: { headline: null, rows: [] }, status_date: "",
-  doing: 0, hot: 0, today: { shipped: 0, checks: 0 }, oldest: "-",
+  doing: 0, hot: 0, net7d_cell: "-", growing: false, today: { shipped: 0, checks: 0 }, oldest: "-",
   summary: "v0.1.0 window 1/4 rows, due 11-22 (4 days left), closed 1 in 7d, 1 in 28d", in_flight: false, pace: 0.3, ...o,
 });
 // The Summary hub_core::table sends beside the cards the view kept out of `total`.
 const listTable = (kept, total = kept.length, o = {}) => ({
   q: "", state: "", sort: "", dir: "desc", total, shown: kept.length,
   states: [{ name: "all", n: kept.length }, { name: "in flight", n: kept.filter((c) => c.in_flight).length }, { name: "waiting", n: kept.filter((c) => c.waiting).length }],
-  columns: ["project", "state", "profile", "stage", "version", "prio", "open", "doing", "hot", "done", "7d", "pts", "pts7d", "window", "due", "pace", "run", "wait", "queued", "shipped", "oldest"]
+  columns: ["project", "state", "profile", "stage", "version", "prio", "open", "net7d", "doing", "hot", "done", "7d", "pts", "pts7d", "window", "due", "pace", "run", "wait", "queued", "shipped", "oldest"]
     .map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })),
-  facets: [{ key: "stage", on: [], clear: "", values: [{ value: "alpha", n: kept.length, on: false, q: "stage:alpha" }] }], ...o,
+  facets: [{ key: "stage", on: [], clear: "", values: [{ value: "alpha", n: kept.length, pct: 50, on: false, q: "stage:alpha" }] }], ...o,
 });
 const list = (cards = [card()], o = {}) => ({ cards, unlinked: [], errors: [], table: listTable(cards), ...o });
 const rows = [
-  { profile: "bnb", project: "demo", lane: "agent", state: "open", priority: "high", section: "next", label: "NEXT UP (1)", when: "", text: "fix(ui): fix the menu, so back returns", title: "fix the menu", summary: "so back returns", area: "ui", epic: "ui to standard", raw: "- [ ] fix(ui): fix the menu, so back returns", sheet: "a.md", tags: [] },
+  { profile: "bnb", project: "demo", lane: "agent", state: "open", priority: "high", section: "next", label: "NEXT UP (1)", when: "", text: "fix(ui): fix the menu, so back returns", title: "fix the menu", summary: "so back returns", type: "fix", area: "ui", points: 3, epic: "ui to standard", raw: "- [ ] fix(ui): fix the menu, so back returns", sheet: "a.md", tags: [] },
   { profile: "personal", project: "garden", lane: "human", state: "open", priority: "low", section: "backlog", label: "BACKLOG (1)", when: "queued  ~11-12", text: "water the beds", title: "water the beds", summary: "", raw: "- [ ] water the beds", sheet: "b.md", tags: [] },
 ];
 // The Summary hub_core::table sends beside the rows, for these rows.
 const tableOf = (q, total, kept) => ({
   q, state: "", sort: "", dir: "desc", total, shown: kept.length,
   states: [{ name: "all", n: kept.length }, { name: "urgent", n: 0 }],
-  columns: ["section", "title", "epic", "priority", "state", "when", "project", "lane", "id", "version", "size", "tier", "since", "text", "profile", "tag"]
+  columns: ["section", "type", "area", "title", "epic", "priority", "state", "when", "project", "lane", "id", "version", "size", "pts", "tier", "since", "text", "profile", "tag"]
     .map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })),
-  facets: [{ key: "lane", on: [], clear: "", values: [{ value: "agent", n: 1, on: false, q: "lane:agent" }] }],
+  facets: [{ key: "lane", on: [], clear: "", values: [{ value: "agent", n: 1, pct: 50, on: false, q: "lane:agent" }] }],
 });
 const projects = [{ profile: "bnb", project: "demo", inbox: 0 }, { profile: "personal", project: "garden", inbox: 0 }];
 const focus = [{ profile: "personal", open: 3 }, { profile: "bnb", open: 1 }];
@@ -112,7 +112,7 @@ function click(id, dataset, row) {
 
 test("the list is one table row per project with its counts, and the card's words stay on the card", () => {
   const running = [{ slug: "s1", title: "wire the bar", project: "demo", phases: { done: 1, total: 3, next: "web" } }];
-  const { cards } = draw(list([card({ running, state: "at risk", state_level: "warn", queued: 2, waiting: 1, in_flight: true, prio: "focus", status: NOTE, status_date: "2026-11-05", pace: 4.3, doing: 1, hot: 1, today: { shipped: 3, checks: 1 }, oldest: "30h" }), card({ profile: "personal", name: "garden", state: "parked", state_level: null, stage: "", version: null, window: null, window_share: null, window_says: "no window", window_cell: "no window", due_cell: "-", summary: "no version no rows", oldest: "" })], { unlinked: ["dotfiles: tidy"] }));
+  const { cards } = draw(list([card({ running, state: "at risk", state_level: "warn", queued: 2, waiting: 1, in_flight: true, prio: "focus", net7d_cell: "+120", growing: true, status: NOTE, status_date: "2026-11-05", pace: 4.3, doing: 1, hot: 1, today: { shipped: 3, checks: 1 }, oldest: "30h" }), card({ profile: "personal", name: "garden", state: "parked", state_level: null, stage: "", version: null, window: null, window_share: null, window_says: "no window", window_cell: "no window", due_cell: "-", summary: "no version no rows", oldest: "" })], { unlinked: ["dotfiles: tidy"] }));
   assert.match(cards, /<h2 class="sec" id="sec-cards">Projects <span class="n">2<\/span><\/h2>/);
   assert.doesNotMatch(cards, /qstats|progress is the open version/, "the in-flight count is its state chip");
   assert.doesNotMatch(cards, /Board/, "every project's rows are the Board inner tab");
@@ -120,7 +120,7 @@ test("the list is one table row per project with its counts, and the card's word
   assert.match(cards, />IN FLIGHT<.*>WAITING</s);
   assert.doesNotMatch(cards, />ALL</, "no tile is every row");
   assert.match(cards, /data-tsort="project".*data-tsort="pace"[^>]*>pace\/wk<.*data-tsort="queued"/s);
-  assert.match(cards, /<tr class="jr" tabindex="0" data-open="bnb\/demo"><td>demo<\/td><td><span class="cchip state warn">At risk<\/span><\/td><td>bnb<\/td><td>alpha<\/td><td>v0\.1\.0<\/td><td>focus<\/td><td class="n">2<\/td><td class="n">1<\/td><td class="n warn">1<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">1\/4<\/td><td class="n">4d<\/td><td class="n">4\.3<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">2<\/td><td class="n">3<\/td><td class="n">30h<\/td><\/tr>/);
+  assert.match(cards, /<tr class="jr" tabindex="0" data-open="bnb\/demo"><td>demo<\/td><td><span class="cchip state warn">At risk<\/span><\/td><td>bnb<\/td><td>alpha<\/td><td>v0\.1\.0<\/td><td>focus<\/td><td class="n">2<\/td><td class="n warn">\+120<\/td><td class="n">1<\/td><td class="n warn">1<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">1\/4<\/td><td class="n">4d<\/td><td class="n">4\.3<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">2<\/td><td class="n">3<\/td><td class="n">30h<\/td><\/tr>/);
   assert.match(cards, /<tr class="jr" tabindex="0" data-open="personal\/garden"><td>garden<\/td><td><span class="cchip state">Parked<\/span><\/td><td>personal<\/td><td>-<\/td><td>-<\/td><td>-<\/td>.*<td class="n">no window<\/td><td class="n">-<\/td><td class="n">0\.3<\/td>.*<td class="n">0<\/td><td class="n">-<\/td><\/tr>/, "no hot row is not lit, and an empty oldest is a dash");
   for (const moved of ["ship the menu", "wire the bar", "landed it", "#requested", "class=\"card qitem"]) {
     assert.doesNotMatch(cards, new RegExp(moved), `${moved} is the opened card's`);
@@ -265,7 +265,7 @@ test("an inner tab is in the URL, a deep link opens on it, and a system opens De
     assert.equal(vm.runInContext(`pst.open + "|" + pst.inner`, ctx), "bnb/demo|rows", arg);
   }
   // NEGATIVE CONTROL: an unknown tail is no inner tab, and no project matches it.
-  assert.deepEqual(JSON.parse(vm.runInContext(`JSON.stringify(pSplit("bnb/demo/nope"))`, ctx)), { key: "bnb/demo/nope", inner: "overview", dept: "" });
+  assert.deepEqual(JSON.parse(vm.runInContext(`JSON.stringify(pSplit("bnb/demo/nope"))`, ctx)), { key: "bnb/demo/nope", inner: "overview", dept: "", sprint: "" });
   vm.runInContext(`pInner("overview"); st.views.projects = "";`, ctx);
   ctx.sent = [];
   ctx.answers["/api/deliverables?dq=sys%3Aui&scope=bnb%2Fdemo"] = deliv();
@@ -297,10 +297,12 @@ test("opening a card asks for its rows alone and draws them as the shared table"
   assert.ok(ctx.sent.some((s) => s.u === "/api/board?scope=bnb%2Fdemo"), "the server scopes the rows");
   assert.match(head, /^<nav class="crumb"[^>]*><a href="#projects" id="p-back">Projects<\/a> <span class="muted">&gt;<\/span> <b>demo<\/b><\/nav>.*v0\.1\.0 window 1\/4/s, "the breadcrumb, then the card");
   assert.match(shown, /1 of 1 rows; Today 1 \| Backlog 2 \| Epics 1 \| Epic backlog 0/, "the project's agent board, backlog and epics, the hub's words");
-  assert.match(shown, /data-tsort="section".*data-tsort="title".*data-tsort="epic".*data-tsort="priority".*data-tsort="when"/s);
+  assert.match(shown, /data-tsort="section".*data-tsort="type".*data-tsort="area".*data-tsort="title".*data-tsort="epic".*data-tsort="priority".*data-tsort="when".*data-tsort="id".*data-tsort="pts"/s);
   assert.doesNotMatch(shown, /data-tsort="(profile|tag|text|version|since)"/, "a query key or a field the opened row holds is not a column");
-  // The row leads with its area and title, the whole line under it, then the epic it serves.
-  assert.match(shown, /<tr class="jr" data-row="0"><td><b>NEXT UP \(1\)<\/b><\/td><td class="btitle"><div class="bt"><span class="qtag">ui<\/span> fix the menu<\/div><div class="bsum muted">so back returns<\/div><\/td><td class="bepic">ui to standard<\/td><td><span class="qprio high">high<\/span><\/td>/);
+  // The row leads with its type and area, each its own column, then its title, the whole line
+  // under it, then the epic it serves; its points close the line.
+  assert.match(shown, /<tr class="jr" data-row="0"><td><b>NEXT UP \(1\)<\/b><\/td><td>fix<\/td><td>ui<\/td><td class="btitle"><div class="bt">fix the menu<\/div><div class="bsum muted">so back returns<\/div><\/td><td class="bepic">ui to standard<\/td><td><span class="qprio high">high<\/span><\/td>/);
+  assert.match(shown, /<code>-<\/code><\/td><td class="n">3<\/td><\/tr>/, "the row's #pts is its own cell");
   assert.doesNotMatch(shown, /water the beds/, "another project's row is not sent");
   assert.doesNotMatch(shown, /href="#daily"/, "one project's rows have no Daily count");
   assert.match(read().rows, /id="board-tiles".*id="board-q"/s);
@@ -309,7 +311,7 @@ test("opening a card asks for its rows alone and draws them as the shared table"
 test("a row opens under itself with its actions, and a second click shuts it", async () => {
   await drawn(list(), "bnb/demo");
   click("b-root", {}, "0");
-  assert.match(read().rows, /<tr class="jr sel" data-row="0">.*<tr class="bopen"><td colspan="9">.*data-tag="0">Tags\.\.\./s);
+  assert.match(read().rows, /<tr class="jr sel" data-row="0">.*<tr class="bopen"><td colspan="12">.*data-tag="0">Tags\.\.\./s);
   click("b-root", {}, "0");
   assert.doesNotMatch(read().rows, /bopen/);
 });
@@ -330,10 +332,9 @@ test("a row action after the server filtered names the row on screen, not its pl
 // hub_core::tasks::SprintRow as /api/sprints sends it: the columns and heads of one table, a row per window.
 const SPR_COLS = ["project", "version", "started", "cut", "left", "done", "finish", "build"].map((key) => ({ key, role: key === "project" ? "lead" : "" }));
 const SPR_HEADS = { project: "PROJECT", version: "VERSION", started: "STARTED", cut: "CUT", left: "LEFT", done: "DONE", finish: "FINISH (7d rate)", build: "BUILD" };
-const sprRow = (o) => ({ profile: "bnb", project: "demo", version: "v0.3.0", queued: false, started: "11-19 14:25", cut: "11-19 15:59", left: "49m", done: "0/2", finish: "~15:40", late: false, build: "none", tasks: [{ id: "de-1", text: "feat(ui): demo-plan P2: <b>fix</b> it, then ship #size/s", title: "<b>fix</b> it", summary: "Demo plan P2", state: "open", queue: "running", interrupt: false, priority: "urgent", href: "#projects/all?q=id:=de-1" }, { id: null, text: "ship it", title: "ship", summary: "", state: "done", queue: null, interrupt: true, priority: "low", href: null }], ...o });
-const sprQueued = () => sprRow({ version: "v0.3.1", queued: true, started: "11-19 15:59", cut: "11-20 15:59", left: "queued", done: "0/1", tasks: [{ id: "de-9", text: "later", title: "later", summary: "", state: "open", queue: null, interrupt: false, priority: "high" }] });
-const sprAnswer = (rows, o = {}) => ({ rows, table: { columns: SPR_COLS }, heads: SPR_HEADS, ...o });
-const sprClick = (sel, dataset) => { for (const f of box("projects").on.click) f({ type: "click", target: { id: "", dataset: {}, closest: (q) => (q === sel ? { dataset } : null) } }); };
+const sprRow = (o) => ({ profile: "bnb", project: "demo", version: "v0.3.0", queued: false, started: "11-19 14:25", cut: "11-19 15:59", left: "49m", done: "0/2", finish: "~15:40", late: false, build: "none", ...o });
+const sprQueued = () => sprRow({ version: "v0.3.1", queued: true, started: "11-19 15:59", cut: "11-20 15:59", left: "queued", done: "0/1" });
+const sprAnswer = (rows, o = {}) => ({ rows, table: { columns: SPR_COLS, links: rows.map((r) => ({ version: `#projects/bnb%2F${r.project}/sprint/${r.version}` })) }, heads: SPR_HEADS, ...o });
 
 test("Board shows rows only: the windows are the Sprints tab's", async () => {
   await onBoard("q=water");
@@ -341,36 +342,19 @@ test("Board shows rows only: the windows are the Sprints tab's", async () => {
   assert.doesNotMatch(read().rows, /Sprints|v0\.3\.0|de-1/, "a window is not a row");
 });
 
-test("Projects > Sprints is one row per window, opens to its tasks, then each project's last score", async () => {
+test("Projects > Sprints is one row per window, its version a link to its page, then each project's last score", async () => {
   ctx.answers = { "/api/projects": list(), "/api/sprints": sprAnswer([sprRow({}), sprRow({ project: "late", left: "over", finish: "~11-20 09:00", late: true }), sprQueued()], { last: [{ profile: "bnb", project: "demo", version: "v0.2.0", line: "delivered 3 of 4" }] }) };
   vm.runInContext(`sprst.data = null; st.tab = "projects"; st.arg = "sprints"; st.views.projects = ""; pst.open = null; TABS.projects.show();`, ctx);
   await settle(); await settle();
   const html = box("p-sprints").innerHTML;
   assert.match(html, /<h2 class="sec" id="sec-sprints">Sprints <span class="n">3<\/span><\/h2>/);
-  assert.match(html, /<td>v0\.3\.1<\/td><td>11-19 15:59<\/td><td>11-20 15:59<\/td><td class="muted">queued<\/td>/, "a queued sprint starts at the open one's cut");
+  assert.match(html, /<td><a class="tl" href="#projects\/bnb%2Fdemo\/sprint\/v0\.3\.1">v0\.3\.1<\/a><\/td><td>11-19 15:59<\/td><td>11-20 15:59<\/td><td class="muted">queued<\/td>/, "a queued sprint starts at the open one's cut");
   assert.match(html, />FINISH \(7d rate\)</);
   assert.match(html, /<td>11-19 14:25<\/td><td>11-19 15:59<\/td><td>49m<\/td><td>0\/2<\/td><td>~15:40<\/td><td>-<\/td>/);
   assert.match(html, /<td class="warn">over<\/td>.*<td class="warn">~11-20 09:00 late<\/td>/s, "a finish after the cut is marked late");
   assert.match(html, /Last score <span class="n">1<\/span>.*<td>demo<\/td><td>v0\.2\.0<\/td><td class="wrap muted">delivered 3 of 4<\/td>/s);
-  assert.doesNotMatch(html, /de-1/, "every project's windows start shut");
-  sprClick("tr[data-spr]", { spr: "bnb/demo/v0.3.0" });
-  const open = box("p-sprints").innerHTML;
-  assert.match(open, /data-spr="bnb\/demo\/v0\.3\.0">.*<tr class="bopen">.*<tr class="jr" data-stask="bnb\/demo\/v0\.3\.0\/de-1"><td><code>de-1<\/code><\/td><td class="btitle"><div class="bt">&lt;b&gt;fix&lt;\/b&gt; it<\/div><div class="bsum muted">Demo plan P2<\/div><\/td><td><span class="qprio urgent">urgent<\/span><\/td><td><b>running<\/b><\/td>/s, "the queue's word wins, escaped; a task leads with its title over its plan and phase, as its Board row does");
-  assert.match(open, /<td class="btitle"><div class="bt">ship <span class="qtag">interrupt<\/span><\/div><\/td><td><span class="qprio low">low<\/span><\/td><td>done<\/td>/, "a task with no id; no summary, no second line");
-  assert.doesNotMatch(open, /de-9/, "the same project's queued sprint stays shut: each row opens on its own");
-  assert.doesNotMatch(open, /class="q"|Open its Board row/, "a task starts shut: its whole line is the opened task's");
-  // A click opens the task in place, with and without a Board row to link to, and never navigates away.
-  ctx.location = { hash: "" };
-  sprClick("tr[data-stask]", { stask: "bnb/demo/v0.3.0/de-1" });
-  const task = box("p-sprints").innerHTML;
-  assert.match(task, /data-stask="bnb\/demo\/v0\.3\.0\/de-1">.*?<\/tr><tr class="bopen"><td colspan="4"><div class="card qitem brow"><div class="q">feat\(ui\): demo-plan P2: &lt;b&gt;fix&lt;\/b&gt; it, then ship #size\/s<\/div><div class="opts"><a class="btn sm" href="#projects\/all\?q=id:=de-1">Open its Board row<\/a><\/div><\/div>/s, "the opened task has its whole line and the link to its Board row");
-  assert.equal(ctx.location.hash, "", "a click on a task opens it in place");
-  sprClick("tr[data-stask]", { stask: "bnb/demo/v0.3.0/ship it" });
-  const bare = box("p-sprints").innerHTML;
-  assert.match(bare, /<div class="q">ship it<\/div><\/div>/, "a task with no Board row opens to its line alone");
-  assert.doesNotMatch(bare, /Open its Board row|then ship/, "one task opens at a time; no link where there is no row");
-  sprClick("tr[data-spr]", { spr: "bnb/demo/v0.3.0" });
-  assert.doesNotMatch(box("p-sprints").innerHTML, /de-1/, "a second click shuts the window");
+  assert.match(html, /<a class="tl" href="#projects\/bnb%2Fdemo\/sprint\/v0\.3\.0">v0\.3\.0<\/a>/, "a version links to its sprint page");
+  assert.doesNotMatch(html, /data-spr|data-stask|de-1/, "no window folds open to its tasks");
   // The control: no window at all is a line, never an empty table.
   ctx.answers["/api/sprints"] = sprAnswer([], { last: [] });
   vm.runInContext(`sprst.data = null; refreshSprints();`, ctx);
@@ -378,8 +362,8 @@ test("Projects > Sprints is one row per window, opens to its tasks, then each pr
   assert.match(box("p-sprints").innerHTML, /No window is open or queued\..*No project has a scored window\./s);
 });
 
-test("a project's Sprint tab has its open window with its tasks, the queued one, and the scored past newest first", async () => {
-  const past = [{ version: "v0.2.0", opened: "11-10", cut: "11-17", committed: 5, delivered: 4, carried: 1, dropped: 0, interrupted: 2, timing: "1d late", line: "delivered 4 of 5" }, { version: "v0.1.0", opened: null, cut: null, committed: 3, delivered: 3, carried: 0, dropped: 0, interrupted: 0, timing: null, line: "delivered 3 of 3" }];
+test("a project's Sprint tab has its open window, the queued one, and the scored past newest first, each version a link", async () => {
+  const past = [{ version: "v0.2.0", link: "#projects/bnb%2Fdemo/sprint/v0.2.0", opened: "11-10", cut: "11-17", committed: 5, delivered: 4, carried: 1, dropped: 0, interrupted: 2, timing: "1d late", line: "delivered 4 of 5" }, { version: "v0.1.0", link: "#projects/bnb%2Fdemo/sprint/v0.1.0", opened: null, cut: null, committed: 3, delivered: 3, carried: 0, dropped: 0, interrupted: 0, timing: null, line: "delivered 3 of 3" }];
   ctx.answers = { "/api/projects/demo/page": { ...page, sprint_past: past }, "/api/sprints?scope=bnb%2Fdemo": sprAnswer([sprRow({}), sprQueued()]) };
   vm.runInContext("sprst.data = null", ctx);
   draw(list([card({})]), "bnb/demo");
@@ -390,19 +374,29 @@ test("a project's Sprint tab has its open window with its tasks, the queued one,
   const at = (re) => sprint.search(re);
   const [open, queued, pastAt] = [at(/id="sec-p-sprint">Sprint <span class="n">1</), at(/id="sec-p-sprint-queued">Queued <span class="n">1</), at(/id="sec-p-sprint-past">Past <span class="n">2</)];
   assert.ok(open >= 0 && open < queued && queued < pastAt, sprint);
-  assert.match(sprint.slice(open, queued), /v0\.3\.0.*de-1.*ship/s, "the open window opens to its tasks");
+  assert.match(sprint.slice(open, queued), /<a class="tl" href="#projects\/bnb%2Fdemo\/sprint\/v0\.3\.0">v0\.3\.0<\/a>/, "the open window's version links to its page");
   assert.doesNotMatch(sprint.slice(open, queued), /v0\.3\.1/, "the queued window is not the open one");
-  assert.match(sprint.slice(queued, pastAt), /v0\.3\.1.*queued.*de-9/s);
+  assert.match(sprint.slice(queued, pastAt), /v0\.3\.1.*queued/s);
   const pastHtml = sprint.slice(pastAt);
   assert.ok(pastHtml.indexOf("v0.2.0") >= 0 && pastHtml.indexOf("v0.2.0") < pastHtml.indexOf("v0.1.0"), "newest first");
   assert.match(pastHtml, /<td class="warn">1d late<\/td>/, "a late cut is marked");
-  assert.doesNotMatch(pastHtml, /delivered 4 of 5/, "a past row starts shut");
-  sprClick("tr[data-past]", { past: "v0.2.0" });
-  const opened = pinOf(read().pane, "sprint");
-  assert.match(opened, /<div class="q">delivered 4 of 5<\/div>.*<code>sprints\/v0\.2\.0\.md<\/code>/s, "a past row opens to its score and its file");
-  sprClick("tr[data-past]", { past: "v0.2.0" });
-  assert.doesNotMatch(pinOf(read().pane, "sprint"), /delivered 4 of 5/, "a second click shuts it");
+  assert.match(pastHtml, /<a class="tl" href="#projects\/bnb%2Fdemo\/sprint\/v0\.2\.0">v0\.2\.0<\/a>/, "a scored version links to its page");
+  assert.doesNotMatch(pastHtml, /delivered 4 of 5|data-past/, "no past row folds open");
   assert.ok(ctx.sent.some((x) => x.u === "/api/sprints?scope=bnb%2Fdemo"), "the project's windows are read under its scope");
+});
+
+test("a sprint page's deep link splits off its version, and its By area rows narrow the rows below", () => {
+  const sp = JSON.parse(vm.runInContext(`JSON.stringify(pSplit("bnb/demo/sprint/v0.3.0"))`, ctx));
+  assert.deepEqual(sp, { key: "bnb/demo", inner: "sprint", dept: "", sprint: "v0.3.0" });
+  const d = { page: { version: "v0.3.0", prev: "#projects/bnb%2Fdemo/sprint/v0.2.0", next: null, head: ["11-19 to 11-20", "delivered 2 of 3"], errors: [], by_area: [{ group: "Engine", rows: 2 }, { group: "Look and UI", rows: 1 }] }, area_heads: { group: "AREA", rows: "ROWS", delivered: "DELIVERED", pending: "OPEN", dropped: "DROPPED", pts: "PTS" }, table: { total: 3 }, rows: [] };
+  const html = vm.runInContext(`spgHead(${JSON.stringify(d)})`, ctx);
+  assert.match(html, /<a class="tl" href="#projects\/bnb%2Fdemo\/sprint\/v0\.2\.0">previous<\/a> <span class="muted">next<\/span>/, "prev and next are links where there is a neighbour");
+  assert.match(html, /<tr class="jr" data-tqc="group:Engine"/);
+  assert.match(html, /data-tqc="group:&quot;Look and UI&quot;"/, "a group with spaces is quoted into the query");
+  const head = html.match(/<tr><th.*?<\/tr>/)[0];
+  assert.equal((head.match(/data-role="lead"/g) || []).length, 1, "the By area header leads with the area");
+  assert.ok((head.match(/data-role="glance"/g) || []).length <= 3, "and glances at no more than 3");
+  assert.match(html, /<div class="panel scroll" data-tbl="sp">/, "the rollup sits inside the table's own block, so the table's click handler hears it");
 });
 
 test("Enter on a row opens its project, and Back shows no list read under the old view", async () => {
@@ -471,7 +465,7 @@ test("the board draws the page the server sends with its pager, a write names th
   await onBoard();
   ctx.input = Array.from({ length: 5 }, (_, i) => ({ ...rows[0], raw: "- [ ] r" + (30 + i), text: "r" + (30 + i), title: "r" + (30 + i), summary: "" }));
   vm.runInContext(`bst.feed = { ...bst.feed, rows: input, table: { ...bst.feed.table, shown: 35, total: 35, pager: { page: 2, pages: 2, per: 30 } } }; bst.render();`, ctx);
-  assert.match(read().rows, /<span class="qtag">ui<\/span> r34</);
+  assert.match(read().rows, /<td>ui<\/td><td class="btitle"><div class="bt">r34</);
   assert.match(read().rows, /<span class="muted" aria-live="polite">rows 31-35 of 35<\/span>/);
   assert.doesNotMatch(read().rows, /data-all|\+\d+ more/);
   ctx.sent = [];
@@ -480,6 +474,26 @@ test("the board draws the page the server sends with its pager, a write names th
   assert.ok(ctx.sent.some((s) => s.u === "/api/board" && JSON.parse(s.body).raw === "- [ ] r34"), "the action index is into the page sent");
   vm.runInContext(`bst.feed = { ...bst.feed, rows: [], table: { ...bst.feed.table, shown: 0 } }; bst.render();`, ctx);
   assert.match(read().rows, /No row matches\./);
+});
+
+test("the epics chip lists epics with their open and done rows as a link to those rows, and the task rows keep their epic cell", async () => {
+  await onBoard("s=epics");
+  const epic = { ...rows[0], lane: "human", priority: "high", section: "epics", label: "EPICS (1)", type: "epic", area: "menu", id: "demo-1", raw: "- [ ] epic(menu): the menu", text: "epic(menu): the menu", title: "the menu", summary: "", children: { open: 12, done: 4 } };
+  const cols = ["section", "type", "area", "title", "epic", "priority", "state", "when", "project", "lane", "id", "version", "size", "pts", "tier", "since", "text", "profile", "tag", "rows"];
+  ctx.input = { rows: [epic], table: { ...tableOf("", 1, [epic]), state: "epics", columns: cols.map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })), links: [{ rows: "#projects/all?q=tag:=of/demo-1" }] } };
+  vm.runInContext(`bst.feed = { ...bst.feed, rows: input.rows, table: input.table }; bst.render();`, ctx);
+  const html = read().rows;
+  assert.match(html, /<a class="tl" href="#projects\/all\?q=tag:=of\/demo-1">12 open \/ 4 done<\/a>/, "the count opens the epic's rows");
+  assert.match(html, /<th[^>]*data-label="epic".*<th[^>]*data-label="rows".*<th[^>]*data-label="priority".*<th[^>]*data-label="project".*<th[^>]*data-label="id"/s, "the head runs epic, rows, priority, project, id");
+  assert.doesNotMatch(html, /data-label="(section|lane|when)"|no epic/, "an epic has no section, and is under none");
+  // The default chip draws tasks: a task under an epic links up to it, one under none says so.
+  const task = { ...rows[0], parent: "demo-1", epic: "the menu" };
+  ctx.input = { rows: [task, rows[1]], table: { ...tableOf("", 2, [task, rows[1]]), links: [{ epic: "#projects/all?q=id:=demo-1" }, {}] } };
+  vm.runInContext(`bst.feed = { ...bst.feed, rows: input.rows, table: input.table }; bst.render();`, ctx);
+  const tasks = read().rows;
+  assert.match(tasks, /<a class="tl" href="#projects\/all\?q=id:=demo-1">the menu<\/a>/);
+  assert.match(tasks, /<span class="muted">no epic<\/span>/);
+  assert.doesNotMatch(tasks, /data-label="rows"/);
 });
 
 test("the strip is the list, Board and Deliverables; a count is a total once read, never amber", async () => {
@@ -602,7 +616,7 @@ const deliv = (o = {}) => {
       q: "", state: "", sort: "", dir: "desc", total: 2, shown: 2,
       states: [{ name: "all", n: 2 }, { name: "behind", n: 1 }, { name: "on track", n: 0 }, { name: "verify", n: 1 }],
       columns: ["project", "epic", "sys", "done", "eta", "track"].map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })),
-      facets: [{ key: "sys", on: [], clear: "", values: [{ value: "ui", n: 1, on: false, q: "sys:ui" }] }],
+      facets: [{ key: "sys", on: [], clear: "", values: [{ value: "ui", n: 1, pct: 50, on: false, q: "sys:ui" }] }],
     },
     ...o,
   };
@@ -792,7 +806,7 @@ test("a project's page has the work tabs, then one Departments tab with a chip p
   // The retired inner id lands on Deliverables, in the URL too.
   vm.runInContext(`pInner("build")`, ctx);
   assert.equal(vm.runInContext(`pst.inner + "|" + st.arg`, ctx), "deliverables|bnb/demo/deliverables");
-  assert.deepEqual(JSON.parse(vm.runInContext(`JSON.stringify(pSplit("bnb/demo/build"))`, ctx)), { key: "bnb/demo", inner: "deliverables", dept: "" });
+  assert.deepEqual(JSON.parse(vm.runInContext(`JSON.stringify(pSplit("bnb/demo/build"))`, ctx)), { key: "bnb/demo", inner: "deliverables", dept: "", sprint: "" });
   // A chip is in the URL; an old department id lands on Departments under that chip, a chip the card lacks on its first.
   vm.runInContext(`pInner("departments/legal")`, ctx);
   assert.equal(vm.runInContext(`pst.inner + "|" + pst.dept + "|" + st.arg`, ctx), "departments|legal|bnb/demo/departments/legal");
@@ -800,7 +814,7 @@ test("a project's page has the work tabs, then one Departments tab with a chip p
   assert.equal(vm.runInContext(`pst.inner + "|" + pst.dept`, ctx), "departments|marketing");
   vm.runInContext(`pInner("departments/design")`, ctx);
   assert.equal(vm.runInContext(`pst.dept`, ctx), "analytics", "design is not this card's: its first chip");
-  for (const [arg, want] of [["bnb/demo/departments/legal", { key: "bnb/demo", inner: "departments", dept: "legal" }], ["bnb/demo/legal", { key: "bnb/demo", inner: "departments", dept: "legal" }], ["bnb/demo/departments", { key: "bnb/demo", inner: "departments", dept: "" }]]) {
+  for (const [arg, want] of [["bnb/demo/departments/legal", { key: "bnb/demo", inner: "departments", dept: "legal", sprint: "" }], ["bnb/demo/legal", { key: "bnb/demo", inner: "departments", dept: "legal", sprint: "" }], ["bnb/demo/departments", { key: "bnb/demo", inner: "departments", dept: "", sprint: "" }]]) {
     assert.deepEqual(JSON.parse(vm.runInContext(`JSON.stringify(pSplit(${JSON.stringify(arg)}))`, ctx)), want, arg);
   }
   vm.runInContext(`pGo(null);`, ctx);

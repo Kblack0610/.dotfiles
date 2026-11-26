@@ -136,6 +136,12 @@ HEADER=$(
     HOLD_SHOWN=() HOLD_OTHER=0
     for hold in "$HOLD_DIR"/*; do
       [ -f "$hold" ] || continue
+      # A hold past its until is over, as agent-hold's expired reads it (an until no date reads too).
+      until_t="$(sed -n 's/^until: //p' "$hold")"
+      if [ -n "$until_t" ]; then
+        until_s=$(date -d "$until_t" +%s 2>/dev/null) || continue
+        [ "$until_s" -gt "$(date +%s)" ] || continue
+      fi
       res="${hold##*/}"
       # The default kind mirrors agent-hold's default_kind: resource for dispatch, else load.
       kind="$(sed -n 's/^kind: //p' "$hold")"
@@ -169,14 +175,24 @@ HEADER=$(
           if [ "$held_s" -lt 0 ]; then age=""
           elif [ "$held_s" -ge 86400 ]; then age=" (held $((held_s / 86400))d)"; else age=" (held $((held_s / 3600))h)"; fi
         fi
-        HOLD_SHOWN+=("$(printf '  %s since %s%s by %s: %s' "$res" "$since" "$age" \
-          "$(sed -n 's/^by: //p' "$hold")" "$reason")")
+        # Its grants, as `agent-hold list` shows them: a session, row, epic or plan named there
+        # may run while the hold stays (a human's narrowing is a grant, not reason text).
+        granted="$(sed -n 's/^granted: //p' "$hold")"
+        HOLD_SHOWN+=("$(printf '  %s since %s%s by %s: %s%s' "$res" "$since" "$age" \
+          "$(sed -n 's/^by: //p' "$hold")" "$reason" "${granted:+ (granted: $granted)}")")
       else
         HOLD_OTHER=$((HOLD_OTHER + 1))
       fi
     done
     if [ "${#HOLD_SHOWN[@]}" -gt 0 ]; then
-      echo "⛔ Active holds - do not start work on these until released (GO):"
+      # A session the human opened (attended, no queue item: a dispatched one reads ATTENDED=1 too)
+      # works on the human's own word, so a hold is a warning there; the gate that stops work is
+      # dispatch's, which a hold's grants narrow. Everyone else is under it from turn 1.
+      if [ "${CLAUDE_CODE_SESSION_ATTENDED:-0}" = 1 ] && [ -z "${AGENT_QUEUE_ITEM:-}" ]; then
+        echo "Active holds (a warning: the human opened this session; if the work asked is what a hold stops, ask before starting it):"
+      else
+        echo "STOP: Active holds - do not start work on these until released (GO):"
+      fi
       printf '%s\n' "${HOLD_SHOWN[@]}"
     fi
     if [ "$HOLD_OTHER" -gt 0 ]; then

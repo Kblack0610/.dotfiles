@@ -1,6 +1,6 @@
 //! The Daily tab's reader: one note from `notes show --json` (the CLI resolves the target and
 //! keeps it inside the notes), split so both hub surfaces draw the same thing. The daily note's
-//! `## Focus` comes apart into its lanes (`### Urgent`, `### High`, `### Low`, `### Done`; the
+//! `## Focus` comes apart into its lanes (`### Urgent`, `### High`, `### Normal`, `### Low`, `### Done`; the
 //! lines above them read as Low, where the sweep files them), the rollup block another profile's Focus is mirrored into
 //! comes out on its own, and every other `##` section, plus the link footer, is a section to
 //! fold. A note that is not a daily note has no Focus and is all sections.
@@ -98,6 +98,9 @@ pub struct View {
     /// The links the web nav lists as places: a day note's own, else today's note's; None when
     /// today's could not be read, so the nav keeps the ones it has.
     pub places: Option<Vec<Link>>,
+    /// A day note's refs as one count line linking to that day on the Reports tab; None when the
+    /// day has none or `notes report list` cannot be read, and then `## Refs` keeps its index link.
+    pub reports: Option<crate::reports::DayLine>,
 }
 
 fn show(runner: &dyn Runner, target: &str) -> Result<String, String> {
@@ -116,18 +119,45 @@ pub fn view_of(runner: &dyn Runner, json: &str) -> Result<View, String> {
     Ok(around(runner, parse(json)?))
 }
 
-/// A view with its briefing and places read: the day's briefing under a day note, and the nav's
-/// places (a day note's own links, else today's). A briefing or a today that cannot be read is
-/// left out (None), never an error: the note itself was read.
+/// A view with its briefing, refs line and places read: the day's briefing and refs count under
+/// a day note, and the nav's places (a day note's own links, else today's). A briefing, refs or a
+/// today that cannot be read is left out (None), never an error: the note itself was read.
 fn around(runner: &dyn Runner, mut v: View) -> View {
     let read_bare = |t: &str| show(runner, t).and_then(|j| parse(&j)).ok();
-    if v.note.date.is_some() {
+    if let Some(date) = v.note.date.clone() {
         v.places = Some(v.note.links.clone());
         v.brief = v.note.brief.as_deref().and_then(read_bare).map(Box::new);
+        v.reports = crate::reports::day_line(runner, &date);
+        if v.reports.is_some() {
+            drop_index_link(&mut v.sections, &date);
+        }
     } else {
         v.places = read_bare("daily").map(|d| d.note.links);
     }
     v
+}
+
+/// `## Refs` without the generated `- [[<refs>/<date>/_index]]` line `notes link-refs` writes,
+/// which the refs count line stands in for; a Refs left empty goes. The lines the human added stay.
+fn drop_index_link(sections: &mut Vec<Section>, date: &str) {
+    let end = format!("/{date}/_index]]");
+    let index = |l: &str| {
+        let l = l.trim();
+        l.starts_with("- [[") && l.ends_with(&end)
+    };
+    for s in sections.iter_mut().filter(|s| s.title == "Refs") {
+        let kept: Vec<Ln> = s
+            .lines
+            .iter()
+            .copied()
+            .zip(s.markdown.lines())
+            .filter(|l| !index(l.1))
+            .collect();
+        let (markdown, lines) = block(&kept);
+        s.markdown = markdown;
+        s.lines = lines;
+    }
+    sections.retain(|s| !(s.title == "Refs" && s.markdown.is_empty()));
 }
 
 /// The view of one `notes show --json` object, the shape `notes put` prints too.
@@ -493,9 +523,15 @@ mod tests {
     }
 
     /// `notes show --json` for each target it knows; any other target is the CLI's error.
+    /// `notes report list` answers the `"report list"` entry, else fails as a CLI without it.
     struct Fake(Vec<(&'static str, &'static str)>);
     impl Runner for Fake {
         fn run(&self, argv: &[String]) -> Result<String, String> {
+            if argv[..3] == ["notes", "report", "list"] {
+                assert_eq!(&argv[3..], ["--json", "--all", "--since", "2026-11-05"]);
+                let found = self.0.iter().find(|(k, _)| *k == "report list");
+                return found.map(|(_, j)| j.to_string()).ok_or("no report".into());
+            }
             assert_eq!(&argv[..4], ["notes", "show", "--json", "--"]);
             let t = argv[4].as_str();
             let found = self.0.iter().find(|(k, _)| *k == t);
@@ -535,6 +571,34 @@ mod tests {
         // A briefing that cannot be read is left out; the day still reads.
         let v = read(&Fake(vec![("daily", DAY)]), "daily").unwrap();
         assert!(v.brief.is_none());
+    }
+
+    #[test]
+    fn a_day_with_reports_has_their_count_line_in_place_of_the_index_link() {
+        let day = r##"{"rel":"journal/daily/2026-11-05","date":"2026-11-05","exists":true,"markdown":"# Thu\n\n## Notes\nx\n\n## Refs\n- [[journal/refs/2026-11-05/_index]]\n- [[lab/mine]]\n"}"##;
+        let list = concat!(
+            r#"{"id":"2026-11-05-ups","kind":"report","date":"2026-11-05","slug":"ups","title":"UPS","stream":true}"#,
+            "\n",
+            r#"{"id":"2026-11-05-briefing","kind":"digest","date":"2026-11-05","slug":"briefing","title":"Briefing","read":"2026-11-05T09:00:00-08:00","stream":true}"#,
+        );
+        let v = read(&Fake(vec![("daily", day), ("report list", list)]), "daily").unwrap();
+        let r = v.reports.expect("the refs line");
+        assert_eq!(r.text, "1 report, 1 unread, 1 digest");
+        assert_eq!(r.link.href(), "#reports/2026-11-05");
+        let refs = v.sections.iter().find(|s| s.title == "Refs").unwrap();
+        assert_eq!(refs.markdown, "- [[lab/mine]]", "the human's line stays");
+        assert_eq!(refs.lines, [7], "and keeps its note line");
+        // Only the index link: Refs goes, the count line stands in for it.
+        let only = r##"{"rel":"journal/daily/2026-11-05","date":"2026-11-05","exists":true,"markdown":"# Thu\n\n## Refs\n- [[journal/refs/2026-11-05/_index]]\n"}"##;
+        let v = read(&Fake(vec![("daily", only), ("report list", list)]), "daily").unwrap();
+        assert!(!v.sections.iter().any(|s| s.title == "Refs"));
+        // No report list: the index link stays the way in.
+        let v = read(&Fake(vec![("daily", day)]), "daily").unwrap();
+        assert!(v.reports.is_none());
+        let refs = v.sections.iter().find(|s| s.title == "Refs").unwrap();
+        assert!(refs
+            .markdown
+            .starts_with("- [[journal/refs/2026-11-05/_index]]"));
     }
 
     #[test]

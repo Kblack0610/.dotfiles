@@ -6,9 +6,15 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::queue::PRIORITIES;
 use crate::session_actions::Runner;
 use crate::table::Val;
+
+/// A board row's priorities, most urgent first: notes-cli `md::PRIORITIES`, whose default is
+/// `normal`, so an untagged row reads normal in the feed. A queue item's are `queue::PRIORITIES`.
+pub const PRIORITIES: [&str; 4] = ["urgent", "high", "normal", "low"];
+
+/// The priority an untagged row reads as (notes-cli `md::DEFAULT_PRIORITY`).
+pub const DEFAULT_PRIORITY: &str = "normal";
 
 /// The lanes a board can write. The feed's `focus` rows are counted into `Feed::focus` and
 /// left out of `rows`: a profile's Focus is the Daily tab's (`crate::focus`), and a board shows
@@ -63,6 +69,20 @@ impl Project {
     }
 }
 
+/// The rows under an epic: open ones and closed ones, counted over the whole feed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Children {
+    pub open: usize,
+    pub done: usize,
+}
+
+impl Children {
+    /// The ROWS cell: `12 open / 4 done`.
+    pub fn words(&self) -> String {
+        format!("{} open / {} done", self.open, self.done)
+    }
+}
+
 /// One open row. `raw` is the line as it stands, what a write passes back.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -83,6 +103,8 @@ pub struct Row {
     pub worker: Option<String>,
     /// The row's `#size/<s|m|l>`, without the prefix.
     pub size: Option<String>,
+    /// The row's `#pts/<n>` estimate, None when unscored.
+    pub points: Option<u32>,
     pub requested: bool,
     /// The row's `<code>-<n>` id, when its project has a code.
     pub id: Option<String>,
@@ -112,13 +134,16 @@ pub struct Row {
     pub summary: String,
     /// The title of the epic `parent` names, when that row is on the board; set by [`feed`].
     pub epic: Option<String>,
+    /// What hangs under an epic row, from the rows' `parent` links; set by [`Feed::titles`].
+    /// None on a row that is not an epic.
+    pub children: Option<Children>,
     /// The `#size/` weight, 1 unsized.
     pub weight: u32,
     /// The day a closed row closed.
     pub closed: Option<String>,
     /// The PRs its marker names.
     pub prs: Vec<String>,
-    /// `YYYY-MM-DD` the row should close at the project's 28-day close rate, after every row
+    /// `YYYY-MM-DD` the row should close at the project's net weight rate, after every row
     /// ranked ahead of it (`projects::forecast`). Never in the sheet.
     pub forecast: Option<String>,
     /// The state of the queue item whose `row:` names it (`queued`, `running`, `waiting`,
@@ -215,14 +240,21 @@ impl Row {
         words.join("  ")
     }
 
+    /// An epic: a row the sweep lays out in the `epics` section. It lists on its own chip, never
+    /// among the tasks, unless an `id:=` term names it (`PIN`).
+    pub fn is_epic(&self) -> bool {
+        self.section.as_deref() == Some("epics")
+    }
+
     /// Started (`[/]`).
     pub fn doing(&self) -> bool {
         self.state == "doing"
     }
 
-    /// Tagged `#urgent` or `#high`.
+    /// Tagged `#urgent` or `#high`. Never an epic: its priority is its most urgent open row's
+    /// (notes-cli `epics::Index::epic_priority`), so counting it would count that row twice.
     pub fn hot(&self) -> bool {
-        matches!(self.priority.as_str(), "urgent" | "high")
+        !self.is_epic() && matches!(self.priority.as_str(), "urgent" | "high")
     }
 
     /// What it ships in: a playtest check's game, any other row's version.
@@ -239,19 +271,23 @@ impl Row {
 /// are query keys, not drawn; `tag:` takes any of a row's tags.
 impl crate::table::Row for Row {
     const COLUMNS: &'static [&'static str] = &[
-        "section", "title", "epic", "priority", "state", "when", "project", "lane", "id",
-        "version", "size", "tier", "since", "text", "profile", "tag",
+        "section", "type", "area", "title", "epic", "priority", "state", "when", "project", "lane",
+        "id", "version", "size", "pts", "tier", "since", "text", "profile", "tag", "rows",
     ];
     const STATES: &'static [&'static str] = &[
         "all",
         "in progress",
+        "epics",
         "filed today",
         "urgent",
         "requested",
         "done",
     ];
-    const FACETS: &'static [&'static str] =
-        &["section", "epic", "project", "lane", "priority", "state"];
+    const FACETS: &'static [&'static str] = &[
+        "section", "type", "area", "epic", "project", "lane", "priority", "state",
+    ];
+    // A row link (`links::Kind::Row`, `id:=<id>`) opens the row on the default chip, open epic or not.
+    const PIN: &'static str = "id";
     const LEAD: &'static str = "title";
     const GLANCE: &'static [&'static str] = &["epic", "priority", "state"];
 
@@ -267,29 +303,37 @@ impl crate::table::Row for Row {
             "id" => some(self.id.as_deref()),
             "version" => some(self.release()),
             "size" => some(self.size.as_deref()),
+            "pts" => self.points.map_or(Val::None, |n| Val::Num(f64::from(n))),
             "tier" => self.tier.map_or(Val::None, |t| Val::Num(f64::from(t))),
             "since" => some(self.since.as_deref()),
-            "when" => match self.when() {
-                w if w.is_empty() => Val::None,
-                w => Val::Text(w),
-            },
+            "when" => Val::word(&self.when()),
             "text" => text(&self.text),
             "title" => text(&self.title),
+            "type" => some(self.r#type.as_deref()),
+            "area" => some(self.area.as_deref()),
             "epic" => some(self.epic.as_deref()),
             "profile" => text(&self.profile),
             "tag" if self.tags.is_empty() => Val::None,
             "tag" => Val::Text(self.tags.join(" ")),
+            "rows" => self.children.map_or(Val::None, |c| Val::Text(c.words())),
             _ => Val::None,
         }
     }
 
+    /// Every chip but `epics` lists tasks: an epic is a deliverable, listed on its own chip with
+    /// what hangs under it. An `id:=` term still finds one on the default chip (`PIN`).
+    fn in_default(&self) -> bool {
+        !self.is_epic()
+    }
+
     fn in_state(&self, s: &str) -> bool {
         match s {
-            "in progress" => self.doing(),
-            "filed today" => self.filed_today,
+            "epics" => self.is_epic(),
+            "in progress" => self.doing() && !self.is_epic(),
+            "filed today" => self.filed_today && !self.is_epic(),
             // Asks of work still open: a closed row is Done's, not the chip's.
-            "urgent" => self.state != "done" && self.priority == "urgent",
-            "requested" => self.state != "done" && self.requested,
+            "urgent" => self.state != "done" && self.priority == "urgent" && !self.is_epic(),
+            "requested" => self.state != "done" && self.requested && !self.is_epic(),
             // Every closed row, by day then project (`Feed::board_rows`), with its PR in WHEN.
             "done" => self.state == "done",
             _ => false,
@@ -302,11 +346,15 @@ impl crate::table::Row for Row {
         format!("{}/{project}\n{}", self.profile, self.raw).to_lowercase()
     }
 
-    /// The epic cell opens the epic's row.
+    /// The epic cell opens the epic's row; an epic's rows cell opens the rows under it.
     fn link(&self, col: &str) -> Option<crate::links::Link> {
         use crate::links::{Kind, Link};
         match col {
             "epic" => self.parent.as_deref().map(|e| Link::to(Kind::Row, e)),
+            "rows" => self
+                .children
+                .and(self.id.as_deref())
+                .map(|id| Link::to(Kind::Children, id)),
             _ => None,
         }
     }
@@ -334,7 +382,13 @@ impl crate::table::Row for Row {
                 .as_deref()
                 .or(self.closed.as_deref())
                 .map_or(Val::None, |d| Val::Text(d.to_string())),
-            "priority" => at(&["low", "high", "urgent"], &self.priority),
+            // Ascending sorts low first: the reverse of `PRIORITIES`, most urgent first. An epic
+            // with no open row (`empty`) ranks as `low`, as the notes feed ranks it.
+            "priority" => PRIORITIES
+                .iter()
+                .position(|p| *p == self.priority)
+                .or((self.priority == "empty").then_some(PRIORITIES.len() - 1))
+                .map_or(Val::None, |i| Val::Num((PRIORITIES.len() - 1 - i) as f64)),
             "size" => self
                 .size
                 .as_deref()
@@ -342,6 +396,8 @@ impl crate::table::Row for Row {
             "version" => self
                 .release()
                 .map_or(Val::None, |v| Val::Text(release_order(v))),
+            // Most open rows first under a descending sort, not the words' alphabet.
+            "rows" => self.children.map_or(Val::None, |c| Val::Num(c.open as f64)),
             _ => self.val(col),
         }
     }
@@ -449,43 +505,10 @@ pub struct SprintLine {
     pub queued: bool,
     /// When a queued sprint starts, `YYYY-MM-DDTHH:MM`: the cut of the window before it.
     pub start: Option<String>,
-    pub tasks: Vec<SprintTask>,
     /// The weight of the tasks still open or in progress.
     pub remaining_weight: u32,
     /// The project's shipped weight per hour over the last 7 days; 0.0 with no history.
     pub rate_per_hour: f64,
-}
-
-/// One row a release window holds (notes-cli `window::Task`).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct SprintTask {
-    pub id: Option<String>,
-    /// The row's whole line, as the opened task shows it.
-    pub text: String,
-    /// What a reader leads the task with, as the Board titles its row; set by `Feed::titles`.
-    pub title: String,
-    /// What the title leaves out, the muted second line; set by `Feed::titles`.
-    pub summary: String,
-    /// `open`, `doing`, `done`, `dropped`, `deferred` or `gone`.
-    pub state: String,
-    pub weight: u32,
-    /// It entered after the window opened.
-    pub interrupt: bool,
-    /// The active queue item working it (`queued`, `running`, `waiting`, `review`), set by
-    /// `queue_states`.
-    pub queue: Option<String>,
-    /// `urgent`, `high` or `low`, as the board reads the row.
-    pub priority: String,
-    /// Its row on the Board (`Kind::Row`), set by [`Feed::sprint_rows`]; none for a row with no id.
-    pub href: Option<String>,
-}
-
-impl SprintTask {
-    /// The state a reader shows: the queue's word while an item works it, else the row's.
-    pub fn shown_state(&self) -> &str {
-        self.queue.as_deref().unwrap_or(&self.state)
-    }
 }
 
 /// A sprint row's times, in the words every surface shows ([`SprintLine::times`]).
@@ -506,8 +529,8 @@ pub struct SprintTimes {
     pub late: bool,
 }
 
-/// One row of the Sprints table: a release window with its times worked out at one moment, and
-/// the tasks it opens to. Built by [`Feed::sprint_rows`]; both surfaces draw it as it is.
+/// One row of the Sprints table: a release window with its times worked out at one moment, its
+/// version linking to the window's page. Built by [`Feed::sprint_rows`]; both surfaces draw it as it is.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct SprintRow {
     pub profile: String,
@@ -521,7 +544,6 @@ pub struct SprintRow {
     pub build: String,
     /// The next version's sprint, locked while the open one runs: it has not started.
     pub queued: bool,
-    pub tasks: Vec<SprintTask>,
 }
 
 impl crate::table::Row for SprintRow {
@@ -549,6 +571,16 @@ impl crate::table::Row for SprintRow {
     }
     fn in_state(&self, s: &str) -> bool {
         s == "late" && self.times.late
+    }
+    /// The window opens on its own page, from either surface.
+    fn link(&self, col: &str) -> Option<crate::links::Link> {
+        use crate::links::{Kind, Link};
+        let key = format!("{}/{}", self.profile, self.project);
+        match col {
+            "version" => Some(Link::to(Kind::Sprint, format!("{key}/{}", self.version))),
+            "project" => Some(Link::to(Kind::Project, key)),
+            _ => None,
+        }
     }
 }
 
@@ -738,14 +770,12 @@ impl Feed {
         rows
     }
 
-    /// Give every row and sprint task its [`row_title`] (plan files under `home`), and each row
-    /// under an epic that epic's title.
+    /// Give every row its [`row_title`] (plan files under `home`), each row
+    /// under an epic that epic's title, and each epic its [`Children`], counted over the open
+    /// and the closed rows by (project, parent).
     pub fn titles(&mut self, home: &str) {
         for r in self.rows.iter_mut().chain(&mut self.done) {
             (r.title, r.summary) = row_title(home, &r.text);
-        }
-        for t in self.sprints.iter_mut().flat_map(|s| &mut s.tasks) {
-            (t.title, t.summary) = row_title(home, &t.text);
         }
         let by: std::collections::HashMap<(String, String), String> = self
             .rows
@@ -758,9 +788,36 @@ impl Feed {
                 ))
             })
             .collect();
+        let mut kids: std::collections::HashMap<(String, String), Children> =
+            std::collections::HashMap::new();
+        // A sub-epic lists on the epics chip, not among the epic's rows, so it is not counted.
+        for (r, closed) in self
+            .rows
+            .iter()
+            .map(|r| (r, false))
+            .chain(self.done.iter().map(|r| (r, true)))
+            .filter(|(r, _)| !r.is_epic())
+        {
+            if let (Some(p), Some(e)) = (r.project.as_deref(), r.parent.as_deref()) {
+                let c = kids.entry((p.to_lowercase(), e.to_string())).or_default();
+                if closed {
+                    c.done += 1;
+                } else {
+                    c.open += 1;
+                }
+            }
+        }
         for r in self.rows.iter_mut().chain(&mut self.done) {
             r.epic = match (r.project.as_deref(), r.parent.as_deref()) {
                 (Some(p), Some(e)) => by.get(&(p.to_lowercase(), e.to_string())).cloned(),
+                _ => None,
+            };
+            r.children = match (r.is_epic(), r.project.as_deref(), r.id.as_deref()) {
+                (true, Some(p), Some(id)) => Some(
+                    kids.get(&(p.to_lowercase(), id.to_string()))
+                        .copied()
+                        .unwrap_or_default(),
+                ),
                 _ => None,
             };
         }
@@ -785,13 +842,6 @@ impl Feed {
         for r in &mut self.rows {
             if let (Some(p), Some(id)) = (r.project.as_deref(), r.id.as_deref()) {
                 r.queue = by.get(&(p, id)).map(|w| (*w).to_string());
-            }
-        }
-        for s in &mut self.sprints {
-            for t in &mut s.tasks {
-                if let Some(id) = t.id.as_deref() {
-                    t.queue = by.get(&(s.project.as_str(), id)).map(|w| (*w).to_string());
-                }
             }
         }
     }
@@ -822,7 +872,6 @@ impl Feed {
                 done: format!("{}/{}", s.done, s.committed),
                 build: s.build.clone(),
                 queued: s.queued,
-                tasks: sprint_tasks(&s.tasks),
             })
             .collect()
     }
@@ -852,37 +901,6 @@ fn row_title(home: &str, text: &str) -> (String, String) {
         false => t.title,
     };
     (title, t.summary)
-}
-
-/// A window's tasks as a reader shows them: open before closed, most urgent first within each (the window's own order within a
-/// priority), each with the link to its Board row.
-fn sprint_tasks(tasks: &[SprintTask]) -> Vec<SprintTask> {
-    use crate::links::{Kind, Link};
-    let rank = |p: &str| {
-        PRIORITIES
-            .iter()
-            .position(|w| *w == p)
-            .unwrap_or(PRIORITIES.len())
-    };
-    let mut out: Vec<SprintTask> = tasks
-        .iter()
-        .map(|t| SprintTask {
-            // A `gone` row is on neither sheet: the Board has nothing to open.
-            href: t
-                .id
-                .as_deref()
-                .filter(|_| t.state != "gone")
-                .map(|id| Link::to(Kind::Row, id).href()),
-            ..t.clone()
-        })
-        .collect();
-    out.sort_by_key(|t| {
-        (
-            !matches!(t.state.as_str(), "open" | "doing"),
-            rank(&t.priority),
-        )
-    });
-    out
 }
 
 pub fn feed(runner: &dyn Runner) -> Result<Feed, String> {
@@ -984,7 +1002,7 @@ fn one_line(s: &str) -> bool {
     !s.trim().is_empty() && !s.contains(['\n', '\r'])
 }
 
-fn is_version(s: &str) -> bool {
+pub(crate) fn is_version(s: &str) -> bool {
     let Some(v) = s.strip_prefix('v') else {
         return false;
     };
@@ -995,12 +1013,12 @@ fn is_version(s: &str) -> bool {
             .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
 }
 
-/// Something a row's own text would not say: a non-high priority is the row's `#urgent` or
-/// `#low` tag, and high is no tag at all, as `ptask add` reads it.
+/// Something a row's own text would not say: a priority other than the default is the row's
+/// `#urgent`, `#high` or `#low` tag, and normal is no tag at all, as `ptask add` reads it.
 fn with_priority(text: &str, priority: &str) -> String {
     let text = text.trim();
     let tag = format!("#{priority}");
-    if priority == "high" || text.split_whitespace().any(|w| w == tag) {
+    if priority == DEFAULT_PRIORITY || text.split_whitespace().any(|w| w == tag) {
         text.to_string()
     } else {
         format!("{text} {tag}")
@@ -1041,7 +1059,7 @@ pub fn argv(w: &Write) -> Result<Vec<String>, String> {
                 return Err("type the task, on one line".into());
             }
             if !PRIORITIES.contains(&priority.as_str()) {
-                return Err("priority is urgent, high or low".into());
+                return Err("priority is urgent, high, normal or low".into());
             }
             a.push("add".into());
             if let Some(v) = to.as_deref().filter(|v| !v.is_empty()) {
@@ -1344,82 +1362,6 @@ mod tests {
 
     fn at(s: &str) -> chrono::NaiveDateTime {
         chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M").unwrap()
-    }
-
-    #[test]
-    fn a_sprint_task_shows_the_queue_state_of_the_item_working_it() {
-        let mut f = Feed::default();
-        let task = |id: &str| SprintTask {
-            id: Some(id.into()),
-            state: "open".into(),
-            ..Default::default()
-        };
-        let mut s = sprint(None, 0, 0.0);
-        s.tasks = vec![task("de-1"), task("de-2")];
-        let mut other = s.clone();
-        other.project = "other".into();
-        f.sprints = vec![s, other];
-        let item = |row: &str| crate::queue::Item {
-            row: Some(row.into()),
-            state: crate::queue::State::Review,
-            ..Default::default()
-        };
-        f.queue_states(&[item("demo:de-1")]);
-        let shown: Vec<&str> = f.sprints[0].tasks.iter().map(|t| t.shown_state()).collect();
-        assert_eq!(shown, ["review", "open"]);
-        // NEGATIVE CONTROL: the same id in another project's window is another row.
-        assert_eq!(f.sprints[1].tasks[0].shown_state(), "open");
-        assert_eq!(f.sprints_in(Some(("bnb", "other"))).len(), 1);
-    }
-
-    #[test]
-    fn a_sprints_tasks_read_most_urgent_first_each_linked_to_its_row() {
-        let task = |id: Option<&str>, priority: &str, state: &str| SprintTask {
-            id: id.map(Into::into),
-            text: format!("{id:?}"),
-            priority: priority.into(),
-            state: state.into(),
-            ..Default::default()
-        };
-        let mut f = Feed::default();
-        let mut s = sprint(None, 0, 0.0);
-        s.tasks = vec![
-            task(Some("de-5"), "urgent", "done"),
-            task(Some("de-1"), "low", "open"),
-            task(Some("de-2"), "high", "doing"),
-            task(None, "urgent", "open"),
-            task(Some("de-6"), "high", "gone"),
-            task(Some("de-4"), "high", "open"),
-        ];
-        f.sprints = vec![s];
-        let rows = f.sprint_rows(None, at("2026-11-19T15:10"));
-        let got: Vec<(Option<&str>, &str)> = rows[0]
-            .tasks
-            .iter()
-            .map(|t| (t.id.as_deref(), t.priority.as_str()))
-            .collect();
-        // Open work first, then closed, each most urgent first; within a priority the
-        // window's own order holds: de-2 before de-4.
-        assert_eq!(
-            got,
-            [
-                (None, "urgent"),
-                (Some("de-2"), "high"),
-                (Some("de-4"), "high"),
-                (Some("de-1"), "low"),
-                (Some("de-5"), "urgent"),
-                (Some("de-6"), "high"),
-            ]
-        );
-        let href = |i: usize| rows[0].tasks[i].href.as_deref();
-        assert_eq!(href(1), Some("#projects/all?q=id:=de-2"));
-        assert_eq!(
-            href(4),
-            Some("#projects/all?q=id:=de-5"),
-            "a closed row is still on the Board"
-        );
-        // NEGATIVE CONTROL: a row with no id, or one gone from both sheets, has nothing to open.
-        assert_eq!((href(0), href(5)), (None, None));
     }
 
     /// A queued sprint starts at the open one's cut, reads `queued` until a roll opens it, and
@@ -1766,8 +1708,7 @@ mod tests {
                 row("ar-4381", "feat(hub): no-such-plan-file P3: Words, then more"),
                 row("ar-4382", "feat(look): ucp-145 P2: Menus, then maps"),
                 row("ar-4383", "feat(hub): can-we-add-more-jaunty-moonbeam P3: #size/s"),
-            ],
-            "sprints": [{"project": "agent-runtime", "tasks": [{"id": "ar-4379", "text": phase, "state": "doing"}]}],
+            ]
         }))
         .unwrap();
         f.titles(home.to_str().unwrap());
@@ -1805,12 +1746,6 @@ mod tests {
             "can-we-add-more-jaunty-moonbeam P3",
             "a phase with no words is never a blank title"
         );
-        let t = &f.sprints[0].tasks[0];
-        assert_eq!(
-            (t.title.as_str(), t.summary.as_str()),
-            got(&f.rows[0]),
-            "a sprint task reads as its Board row"
-        );
         let sent = serde_json::to_string(&f).unwrap();
         for said in [
             "of the plan",
@@ -1831,10 +1766,13 @@ mod tests {
     fn a_row_under_an_epic_carries_its_title_and_links_it() {
         let fake = Fake {
             out: Ok(r#"{"today":"2026-11-12","rows":[
-                {"project":"ucp","lane":"human","id":"ucp-1","type":"epic","text":"epic(net): netcode to standard"},
+                {"project":"ucp","lane":"human","id":"ucp-1","type":"epic","section":"epics","text":"epic(net): netcode to standard"},
                 {"project":"ucp","lane":"human","id":"ucp-2","type":"feat","text":"feat(net): bot mode, bots plus a client","parent":"ucp-1"},
                 {"project":"other","lane":"human","id":"ucp-3","text":"x","parent":"ucp-1"},
-                {"project":"ucp","lane":"human","id":"ucp-4","text":"y","parent":"ucp-99"}]}"#),
+                {"project":"ucp","lane":"human","id":"ucp-4","text":"y","parent":"ucp-99"},
+                {"project":"ucp","lane":"human","id":"ucp-5","text":"z","parent":"ucp-7"}],
+                "done":[
+                {"project":"ucp","lane":"human","id":"ucp-7","type":"epic","section":"done","state":"done","text":"epic(old): shipped"}]}"#),
             calls: RefCell::default(),
         };
         let f = feed(&fake).unwrap();
@@ -1853,9 +1791,109 @@ mod tests {
         );
         assert_eq!(
             f.rows[1].link("epic").map(|l| l.href()),
-            Some("#projects/all?q=id:=ucp-1".to_string())
+            Some("#projects/all?q=id:=ucp-1".to_string()),
+            "an open epic's link is a row link: the default chip pins the id it names"
         );
         assert!(f.rows[0].link("epic").is_none());
+        assert_eq!(
+            f.rows[4].link("epic").map(|l| l.href()),
+            Some("#projects/all?q=id:=ucp-7".to_string()),
+            "a closed epic's link is the same row link"
+        );
+    }
+
+    #[test]
+    fn an_epic_counts_its_open_and_closed_rows_and_lists_only_on_its_chip() {
+        use crate::table::{Row as _, View};
+        let fake = Fake {
+            out: Ok(r#"{"today":"2026-11-12","rows":[
+                {"project":"ucp","lane":"human","id":"ucp-1","type":"epic","section":"epics","text":"epic(net): netcode","priority":"high"},
+                {"project":"ucp","lane":"human","id":"ucp-5","type":"epic","section":"epics","text":"epic(ui): empty one"},
+                {"project":"ucp","lane":"agent","id":"ucp-2","section":"now","state":"doing","text":"feat(net): one","parent":"ucp-1"},
+                {"project":"ucp","lane":"agent","id":"ucp-3","section":"next","text":"feat(net): two","parent":"ucp-1"},
+                {"project":"other","lane":"agent","id":"ucp-1","section":"next","text":"x","parent":"ucp-1"},
+                {"project":"ucp","lane":"agent","id":"ucp-4","section":"next","text":"fix(ui): loose"},
+                {"project":"ucp","lane":"human","id":"ucp-7","type":"epic","section":"epics","text":"epic(net): sub","parent":"ucp-1"}],
+                "done":[
+                {"project":"ucp","lane":"agent","id":"ucp-6","section":"done","state":"done","text":"feat(net): shipped","parent":"ucp-1"}]}"#),
+            calls: RefCell::default(),
+        };
+        let f = feed(&fake).unwrap();
+        let kids = |i: usize| f.rows[i].children;
+        assert_eq!(
+            kids(0),
+            Some(Children { open: 2, done: 1 }),
+            "a sub-epic lists on the epics chip, so it is not one of the rows"
+        );
+        assert_eq!(f.rows[0].val("rows"), Val::Text("2 open / 1 done".into()));
+        assert_eq!(
+            kids(1),
+            Some(Children { open: 0, done: 0 }),
+            "an epic with no rows reads 0 / 0, not a blank"
+        );
+        assert_eq!(kids(2), None, "a task has no count");
+        assert_eq!(
+            f.rows[0].link("rows").map(|l| l.href()),
+            Some("#projects/all?q=tag:=of/ucp-1".to_string())
+        );
+        assert!(f.rows[2].link("rows").is_none());
+        let rows = f.board_rows(None);
+        let on = |s: &str| -> Vec<String> {
+            View::new::<Row>("", s, "", "")
+                .apply(&rows)
+                .iter()
+                .filter_map(|r| r.id.clone())
+                .collect()
+        };
+        // NEGATIVE CONTROL: the default chip held both epics before this chip.
+        assert_eq!(on(""), ["ucp-2", "ucp-3", "ucp-1", "ucp-4", "ucp-6"]);
+        assert_eq!(on("epics"), ["ucp-1", "ucp-5", "ucp-7"]);
+        assert_eq!(on("in progress"), ["ucp-2"]);
+        // A row link to an open epic (`links::Kind::Row`, `id:=<id>`) opens it on the default chip.
+        let found = |q: &str, s: &str| -> Vec<(String, String)> {
+            let mut got: Vec<_> = View::new::<Row>(q, s, "", "")
+                .apply(&rows)
+                .iter()
+                .filter_map(|r| Some((r.project.clone()?, r.id.clone()?)))
+                .collect();
+            got.sort();
+            got
+        };
+        let both = |p: &str, id: &str| (p.to_string(), id.to_string());
+        assert_eq!(
+            found("id:=ucp-5", ""),
+            [both("ucp", "ucp-5")],
+            "the id an exact term names is pinned past the chip"
+        );
+        assert_eq!(
+            found("id:=ucp-1", ""),
+            [both("other", "ucp-1"), both("ucp", "ucp-1")],
+            "the epic and the other project's task of that id"
+        );
+        let chips = View::new::<Row>("id:=ucp-5", "", "", "").states(&rows);
+        assert_eq!(
+            (chips[0].name, chips[0].n),
+            ("all", 1),
+            "the default chip counts what it lists"
+        );
+        // NEGATIVE CONTROL: only a positive exact id term pins; a prefix, another column or an
+        // exclusion leaves the epics on their own chip.
+        assert!(
+            found("id:ucp-5", "").is_empty(),
+            "a prefix id term pins nothing"
+        );
+        assert!(
+            found("type:=epic", "").is_empty(),
+            "an exact term on another column pins nothing"
+        );
+        assert!(
+            !found("-id:=ucp-1", "").contains(&both("ucp", "ucp-5")),
+            "an exclusion pins nothing"
+        );
+        assert!(
+            found("id:=ucp-2", "epics").is_empty(),
+            "a chip past the first still lists only its own rows"
+        );
     }
 
     fn add(text: &str, priority: &str, to: Option<&str>, game: Option<&str>) -> Verb {
@@ -1937,9 +1975,14 @@ mod tests {
             ]
         );
         assert_eq!(
-            argv(&w("agent", add("-lead dash", "high", None, None))).unwrap()[5..],
+            argv(&w("agent", add("-lead dash", "normal", None, None))).unwrap()[5..],
             ["--agent", "add", "--", "-lead dash"],
-            "high is no tag"
+            "normal is no tag"
+        );
+        assert_eq!(
+            argv(&w("agent", add("ship it", "high", None, None))).unwrap()[5..],
+            ["--agent", "add", "--", "ship it #high"],
+            "high is a tag now that an untagged row is normal"
         );
         assert_eq!(
             argv(&w(
@@ -2106,7 +2149,7 @@ mod tests {
                     raw: "not a row".into(),
                 },
             ),
-            w("human", add("x", "normal", None, None)),
+            w("human", add("x", "medium", None, None)),
             w("human", add("  ", "high", None, None)),
             w("human", add("x", "high", Some("next"), None)),
             w("playtest", add("x", "high", Some("v1.0.0"), None)),

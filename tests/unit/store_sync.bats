@@ -447,6 +447,29 @@ EOF
   assert_success
 }
 
+@test "a --now sync that finds another one waiting leaves its write to that one (ar-3191)" {
+  # The waiter commits only once it holds the lock, so it carries this write; a second waiter would
+  # only queue behind it, and 500+ of them SKIPped at 300s.
+  peer a
+  local before; before=$(tip "$ORIGIN")
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  mkdir -p "$SANDBOX/a/.sync"
+  exec 7>"$SANDBOX/a/.sync/lock" 6>"$SANDBOX/a/.sync/now-wait"
+  flock 7
+  flock 6
+  run on a --now
+  assert_success
+  assert_equal "$(tip "$ORIGIN")" "$before"
+  # Negative control: with no sync waiting or running, the same write goes out at once and leaves
+  # now-wait free for the next writer.
+  exec 6>&- 7>&-
+  run on a --now
+  assert_success
+  assert_equal "$(show "$ORIGIN" queue/item.md)" 'state: done'
+  run flock -n "$SANDBOX/a/.sync/now-wait" true
+  assert_success
+}
+
 @test "the deploy key goes to ssh as one word, even from a path with a space" {
   mkdir -p "$SANDBOX/bin"
   printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s"\nexit 255\n' "$SANDBOX/ssh.args" > "$SANDBOX/bin/ssh"
@@ -928,6 +951,127 @@ set_key() {
   assert_line 'note: c'
 }
 
+# run_item <machine> <slug>: a running item with a run header, as a worker's start writes it. The body
+# is load-bearing: it keeps a requeued copy above git's 50% rename similarity, so the driver sees one item.
+run_item() {
+  mkdir -p "$SANDBOX/$1/queue/running"
+  { printf 'slug: %s\nproject: p\nagent: ocfree\nqueued: 2026-11-23T21:19:07Z\nlane: agent\n' "$2"
+    printf 'session: lab:w-29\naccount: ocfree\norigin: run\nmodel: beam\nhost: b\nstarted: 2026-11-23T21:38:06Z\n'
+    printf 'sessions: ses_1\nlane_run: caff\n---\nfix(x): a task title long enough to read as one item\n'
+    printf 'The body of the item, so a requeue that drops the run header is still the same file to git rename detection.\n'; } > "$SANDBOX/$1/queue/running/$2.md"
+  on "$1" --now >/dev/null
+}
+
+# requeue_item <machine> <slug>: what agent-queue move <slug> queued does after a run, plus the route reset.
+requeue_item() {
+  local f="$SANDBOX/$1/queue/running/$2.md"
+  mkdir -p "$SANDBOX/$1/queue/queued"
+  sed -e '/^\(session\|origin\|host\|started\|lane_run\): /d' -e 's/^agent: .*/agent: claude/' \
+    -e 's/^model: .*/model: /' -e 's/^---$/routed: \nrequeued: 2026-11-23T21:40:16Z\n---/' "$f" > "$SANDBOX/$1/queue/queued/$2.md"
+  rm "$f"
+}
+
+# route_item <machine> <slug>: the other machine records the route and a PR on the running item.
+route_item() {
+  sed -i 's/^---$/routed: ocfree\npr: o#5\n---/' "$SANDBOX/$1/queue/running/$2.md"
+}
+
+@test "a key set two ways on an item one side requeued takes the requeue's value and keeps the other side's other keys, whichever syncs first (ar-3439)" {
+  local s
+  # razer-laptop requeued ar-3010 while the fleet home set routed: on its run (2026-11-23)
+  # Each pair settles before the next starts: a requeue of the only running item reads to git as a
+  # running/ -> queued/ directory rename, which would move another pair's new running item with it.
+  peer a; run_item a q1; peer b
+  route_item a q1; requeue_item b q1
+  on a --now; run on b --now
+  assert_success
+  peer c; run_item c q2; peer d
+  route_item d q2; requeue_item c q2
+  on c --now; run on d --now
+  assert_success
+  for s in q1 q2; do
+    run show "$ORIGIN" "queue/queued/$s.md"
+    assert_line 'routed: '
+    assert_line 'requeued: 2026-11-23T21:40:16Z'
+    assert_line 'agent: claude'
+    assert_line 'pr: o#5'
+    assert_line 'sessions: ses_1'
+    refute_line --partial 'started:'
+    refute_line --partial 'host:'
+    refute_output --partial '<<<<<<<'
+    run git -C "$ORIGIN" ls-tree -r --name-only master -- queue/running
+    assert_output ''
+  done
+  [ ! -d "$SANDBOX/b/.sync/lost" ] || [ -z "$(ls -A "$SANDBOX/b/.sync/lost")" ]
+  [ ! -d "$SANDBOX/d/.sync/lost" ] || [ -z "$(ls -A "$SANDBOX/d/.sync/lost")" ]
+  # negative control: the same clash with no requeue on either side still keeps a lost copy
+  peer e; run_item e q3; peer f
+  route_item e q3; sed -i 's/^---$/routed: \n---/' "$SANDBOX/f/queue/running/q3.md"
+  on e --now; run on f --now
+  assert_success
+  run cat "$SANDBOX/f/.sync/lost/"queue__running__q3.md.lost-*
+  assert_line 'routed: ocfree'
+}
+
+# queued_item <machine> <slug>: a queued item as agent-queue writes it. The body is load-bearing: it
+# keeps each moved copy above git's 50% rename similarity, so both moves read as one item.
+queued_item() {
+  mkdir -p "$SANDBOX/$1/queue/queued"
+  { printf 'slug: %s\nproject: p\nagent: claude\nqueued: 2026-11-23T23:48:41Z\nlane: agent\naccount: agy\nmodel: \n' "$2"
+    printf 'sessions: agy_1\nrequeued: 2026-11-23T23:50:01Z\n---\nfix(x): a task title long enough to read as one item\n'
+    printf 'The body of the item, so a move that adds a run header is still the same file to git rename detection.\n'; } > "$SANDBOX/$1/queue/queued/$2.md"
+  on "$1" --now >/dev/null
+}
+
+# start_item <machine> <slug>: the dispatcher's running move, with its own started:.
+start_item() {
+  mkdir -p "$SANDBOX/$1/queue/running"
+  sed -e 's/^account: .*/account: claude-b/' -e 's/^model: .*/model: sonnet/' \
+    -e 's/^---$/host: b\nstarted: 2026-11-24T02:05:23Z\nlane_run: ab29\n---/' \
+    "$SANDBOX/$1/queue/queued/$2.md" > "$SANDBOX/$1/queue/running/$2.md"
+  rm "$SANDBOX/$1/queue/queued/$2.md"
+}
+
+# close_queued <machine> <slug>: a worker's session closing the item from a queued copy the running move never reached.
+close_queued() {
+  mkdir -p "$SANDBOX/$1/queue/done/2026-11-23"
+  sed 's/^---$/pr: o#7\nstarted: 2026-11-24T02:05:49Z\nstatus: ok\nfinished: 2026-11-24T02:05:52Z\n---/' \
+    "$SANDBOX/$1/queue/queued/$2.md" > "$SANDBOX/$1/queue/done/2026-11-23/$2.md"
+  rm "$SANDBOX/$1/queue/queued/$2.md"
+}
+
+@test "a close and a running move that set one key two ways keep the close and write no lost file, whichever syncs first (ar-3439)" {
+  local s
+  # razer-laptop's session closed ar-4219 while the fleet home's running move set its own started: (2026-11-23)
+  peer a; queued_item a c1; peer b
+  close_queued a c1; start_item b c1
+  on b --now; run on a --now
+  assert_success
+  peer c; queued_item c c2; peer d
+  close_queued c c2; start_item d c2
+  on c --now; run on d --now
+  assert_success
+  for s in c1 c2; do
+    run show "$ORIGIN" "queue/done/2026-11-23/$s.md"
+    assert_line 'status: ok'
+    assert_line 'started: 2026-11-24T02:05:49Z'
+    refute_output --partial '<<<<<<<'
+  done
+  run git -C "$ORIGIN" ls-tree -r --name-only master -- queue/queued queue/running
+  assert_output ''
+  [ ! -d "$SANDBOX/a/.sync/lost" ] || [ -z "$(ls -A "$SANDBOX/a/.sync/lost")" ]
+  [ ! -d "$SANDBOX/d/.sync/lost" ] || [ -z "$(ls -A "$SANDBOX/d/.sync/lost")" ]
+  # a requeue still outranks a close: a stale reaper's failed close beside a requeue writes no lost file
+  peer e; run_item e c3; peer f
+  route_item e c3; requeue_item f c3
+  mkdir -p "$SANDBOX/e/queue/done/2026-11-23"
+  sed 's/^---$/status: failed\nfinished: 2026-11-24T02:06:00Z\n---/' "$SANDBOX/e/queue/running/c3.md" > "$SANDBOX/e/queue/done/2026-11-23/c3.md"
+  rm "$SANDBOX/e/queue/running/c3.md"
+  on f --now; run on e --now
+  assert_success
+  [ ! -d "$SANDBOX/e/.sync/lost" ] || [ -z "$(ls -A "$SANDBOX/e/.sync/lost")" ]
+}
+
 @test "a clone set up with the old close driver moves to the item driver" {
   peer a
   printf 'queue/done/*/*.md merge=close\n' > "$SANDBOX/a/.git/info/attributes"
@@ -975,10 +1119,12 @@ lose_head_tree() {
   run on a
   assert_failure 3
   assert_output --partial "no remote answered to refetch them"
+  # With no reflog left, no older commit can stand in for HEAD either.
+  rm "$SANDBOX/a/.git/logs/refs/heads/master"
   conf "$ORIGIN"; mv "$BACKUP.off" "$BACKUP"
   run on a
   assert_failure 3
-  assert_output --partial "names trees missing here and no remote has them"
+  assert_output --partial "no remote has them and no commit in its reflog reads"
   refute_output --partial "could not commit"
   # The refetch that reached a remote is not repeated for this HEAD: an unreachable origin now
   # changes nothing, since no fetch runs.
@@ -987,6 +1133,57 @@ lose_head_tree() {
   assert_failure 3
   assert_output --partial "no remote has them"
   refute_output --partial "no remote answered"
+}
+
+# empty_object <machine> <oid>: a reboot mid-commit leaves the object's file at zero bytes (ar-4193).
+empty_object() {
+  mkdir -p "$SANDBOX/$1/.git/objects/${2:0:2}"
+  rm -f "$SANDBOX/$1/.git/objects/${2:0:2}/${2:2}"
+  : > "$SANDBOX/$1/.git/objects/${2:0:2}/${2:2}"
+}
+
+@test "an unpushed HEAD commit a reboot left empty is dropped, the branch moves back to the newest commit that reads, and the files land (ar-4193)" {
+  peer a
+  echo 'state: running' > "$SANDBOX/a/queue/item.md"
+  on a >/dev/null
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  git -C "$SANDBOX/a" commit -q -am local
+  empty_object a "$(git -C "$SANDBOX/a" rev-parse HEAD)"
+  run on a
+  assert_success
+  assert_output --partial "removed 1 zero-byte loose object"
+  assert_output --partial "moved master back to"
+  assert_output --partial "COMPLETE: origin at"
+  assert_equal "$(show "$ORIGIN" queue/item.md)" "state: done"
+  run git -C "$SANDBOX/a" fsck --connectivity-only
+  assert_success
+}
+
+@test "a zero-byte blob a reboot left under an intact HEAD is dropped, so the add writes it and the push lands (ar-4193)" {
+  peer a
+  echo 'state: running' > "$SANDBOX/a/queue/item.md"
+  on a >/dev/null
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  empty_object a "$(git -C "$SANDBOX/a" hash-object queue/item.md)"
+  run on a
+  assert_success
+  assert_output --partial "removed 1 zero-byte loose object"
+  assert_equal "$(show "$ORIGIN" queue/item.md)" "state: done"
+  run git -C "$SANDBOX/a" fsck --connectivity-only
+  assert_success
+}
+
+@test "an unpushed HEAD whose tree no remote holds moves back to the newest commit that reads, and the files land (ar-4193)" {
+  peer a
+  echo 'state: running' > "$SANDBOX/a/queue/item.md"
+  on a >/dev/null
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  git -C "$SANDBOX/a" commit -q -am local
+  lose_head_tree a
+  run on a
+  assert_success
+  assert_output --partial "no refetch restored; moved master back to"
+  assert_equal "$(show "$ORIGIN" queue/item.md)" "state: done"
 }
 
 @test "a store with no commit yet makes its first one, with no refetch (ar-3439)" {
@@ -998,4 +1195,57 @@ lose_head_tree() {
   run on a
   refute_output --partial "trees missing"
   git -C "$SANDBOX/a" cat-file -e 'HEAD:new.md'
+}
+
+# plan dispatch-event-wake, step 5: an add or close made in a worker's clone reaches the lease holder only
+# through its pull, so the holder's sync is what wakes the kick; the holder's own writers touch .wake.
+@test "a pull that brings in a queued or done item wakes a dispatch kick on the lease holder only (dispatch-event-wake)" {
+  export FLEET_DISPATCH_DIR="$SANDBOX/dispatch"
+  printf '#!/bin/sh\nexit "${LEASE_RC:-0}"\n' > "$SANDBOX/bin/fleet-lease"; chmod +x "$SANDBOX/bin/fleet-lease"
+  peer a; peer b
+  mkdir -p "$SANDBOX/b/queue/queued"
+  echo 'state: queued' > "$SANDBOX/b/queue/queued/one.md"
+  run on b
+  assert_success
+  [ ! -e "$FLEET_DISPATCH_DIR/.wake" ] || fail "the clone that wrote the item woke a kick for its own write"
+  # A peer that does not hold the lease runs no kick, so it writes no wake.
+  LEASE_RC=1 run on a
+  assert_success
+  [ -e "$SANDBOX/a/queue/queued/one.md" ] || fail "the pull did not bring the item in"
+  [ ! -e "$FLEET_DISPATCH_DIR/.wake" ] || fail "a peer without the lease wrote a wake"
+  # Negative control: a pull that changed nothing under queue/queued or queue/done wakes nothing.
+  echo 'state: other' > "$SANDBOX/b/queue/item.md"
+  run on b
+  run on a
+  [ ! -e "$FLEET_DISPATCH_DIR/.wake" ] || fail "a pull of another path wrote a wake"
+  # The holder: the next arrival wakes it.
+  mkdir -p "$SANDBOX/b/queue/done/2026-11-23"
+  echo 'state: done' > "$SANDBOX/b/queue/done/2026-11-23/two.md"
+  run on b
+  run on a
+  assert_success
+  [ -s "$FLEET_DISPATCH_DIR/.wake" ] || fail "the lease holder's pull of a done item wrote no wake"
+  # A close is a move of a queued file into done with its status edited: git reads that as a rename.
+  rm -f "$FLEET_DISPATCH_DIR/.wake"
+  mkdir -p "$SANDBOX/b/queue/done/2026-11-24"
+  mv "$SANDBOX/b/queue/queued/one.md" "$SANDBOX/b/queue/done/2026-11-24/one.md"
+  echo 'status: ok' >> "$SANDBOX/b/queue/done/2026-11-24/one.md"
+  run on b
+  run on a
+  assert_success
+  [ -s "$FLEET_DISPATCH_DIR/.wake" ] || fail "the lease holder's pull of a closed (moved) item wrote no wake"
+}
+
+@test "a sync keeps the machine-local dispatch files out of the shared store (dispatch-event-wake)" {
+  export FLEET_DISPATCH_DIR="$SANDBOX/a/dispatch"
+  peer a
+  run on a
+  grep -qxF 'dispatch/.wake' "$SANDBOX/a/.git/info/exclude"
+  grep -qxF 'dispatch/.kick' "$SANDBOX/a/.git/info/exclude"
+  mkdir -p "$SANDBOX/a/dispatch"
+  echo 1 > "$SANDBOX/a/dispatch/.wake"; : > "$SANDBOX/a/dispatch/.kick"; echo 1 > "$SANDBOX/a/dispatch/log.md"
+  run on a
+  assert_success
+  run git -C "$SANDBOX/a" ls-files dispatch
+  assert_output 'dispatch/log.md'
 }

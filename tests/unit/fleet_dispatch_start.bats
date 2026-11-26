@@ -879,8 +879,8 @@ load 'fleet_dispatch/common'
   # The canary oracle runs before and the score after, outside the sandbox; the run's line starts from env -i.
   # A start that fails skips the run and the score (the tree is not at base); the settings go either way.
   [[ "$line" == *":: trap rm\\ -f\\ "*"/srt-ses_eval"*".json EXIT; trap 'exit 129' HUP TERM; fleet-bench canary start c-7 && { timeout 180m env -i "* ]] || fail "no canary start then env -i: $line"
-  # The score is told why the session ended, read once the run is over, where it ran.
-  [[ "$line" == *"; BENCH_CANARY_WRAP="*" AGENT_QUEUE_ITEM=fix-menu fleet-bench canary score c-7 --end \"\$(fleet-dispatch item-end paid ses_eval"*")\" && agent-queue move fix-menu done --status ok; tmux set-option -t \"\$TMUX_PANE\" @headless fix-menu 2>/dev/null; env -i "* ]] || fail "no canary score, then the replay, after: $line"
+  # Why the session ended is written once to the item, read once the run is over where it ran; the score reads it from the item.
+  [[ "$line" == *"; fleet-dispatch record-end fix-menu paid ses_eval"*"; BENCH_CANARY_WRAP="*" AGENT_QUEUE_ITEM=fix-menu fleet-bench canary score c-7 && agent-queue move fix-menu done --status ok; tmux set-option -t \"\$TMUX_PANE\" @headless fix-menu 2>/dev/null; env -i "* ]] || fail "no canary score, then the replay, after: $line"
   [[ "$line" == *"TMPDIR=$qr/tmp CLAUDE_CODE_TMPDIR=$qr/tmp AGENT_QUEUE_ITEM=fix-menu "*"XDG_DATA_HOME=$qr/data "*" srt --settings $qr/srt-ses_eval"*".json -- opencode run --standalone"* ]] || fail "opencode is not inside srt: $line"
   # The config is named by its target, which the sandbox re-allows; a link inside a masked dir would not resolve.
   [[ "$line" == *"OPENCODE_CONFIG=$(printf %q "$SANDBOX/eval-paid.json") "* ]] || fail "config not by its target: $line"
@@ -902,7 +902,7 @@ load 'fleet_dispatch/common'
   printf '#!/usr/bin/env bash\necho "srt ${*: -1} key=${LITELLM_MASTER_KEY:-none} tmp=$TMPDIR" >> %q\n' "$pane/log" > "$pane/srt"
   printf '#!/usr/bin/env bash\necho "%s $*" >> %q\n' timeout "$pane/log" > "$pane/timeout"
   printf '#!/usr/bin/env bash\necho "%s $*" >> %q\n' agent-queue "$pane/log" > "$pane/agent-queue"
-  printf '#!/usr/bin/env bash\n[ "$1" != run-result ] || echo "no queue item"\n[ "$1" != item-end ] || { echo "fleet-dispatch $*" >> %q; echo provider; }\n' "$pane/log" > "$pane/fleet-dispatch"
+  printf '#!/usr/bin/env bash\n[ "$1" != run-result ] || echo "no queue item"\n[ "$1" != record-end ] || echo "fleet-dispatch $*" >> %q\n' "$pane/log" > "$pane/fleet-dispatch"
   chmod +x "$pane"/*
   run env START_FAILS=1 PATH="$pane:$PATH" bash -c "${line#* :: }"
   assert_failure 1
@@ -911,9 +911,10 @@ load 'fleet_dispatch/common'
   : > "$pane/log"; PATH="$pane:$PATH" bash -c "${line#* :: }"
   # Then the replay: srt again, on the run's session id (the last argument).
   run cut -d' ' -f1-3 "$pane/log"
-  assert_equal "$(head -n 6 <<<"$output")" "$(printf '%s\n' 'fleet-bench canary start' 'timeout 180m env' 'fleet-dispatch item-end paid' 'fleet-bench canary score' 'srt oracle-cmd key=none' 'agent-queue move fix-menu')"
+  assert_equal "$(head -n 6 <<<"$output")" "$(printf '%s\n' 'fleet-bench canary start' 'timeout 180m env' 'fleet-dispatch record-end fix-menu' 'fleet-bench canary score' 'srt oracle-cmd key=none' 'agent-queue move fix-menu')"
   [[ "$(sed -n 7p <<<"$output")" == "srt ses_eval"*" key=none" ]] || fail "no replay after the score: $output"
-  grep -qx 'fleet-bench canary score c-7 --end provider' "$pane/log" || fail "the score was not given the end: $(cat "$pane/log")"
+  grep -q '^fleet-dispatch record-end fix-menu paid ses_eval' "$pane/log" || fail "the end was not recorded on the item: $(cat "$pane/log")"
+  grep -qx 'fleet-bench canary score c-7' "$pane/log" || fail "the score was given more than the task: $(cat "$pane/log")"
   grep -qF "tmp=$run/tmp" "$pane/log" || fail "the oracle's srt has no TMPDIR in the run dir: $(cat "$pane/log")"
   run ls "$run"; refute_output --partial srt-ses_eval
 }
@@ -923,7 +924,7 @@ load 'fleet_dispatch/common'
 agy_ready() {
   harness_ready
   harness_sandboxed paid
-  harness_set '.harnesses.agy = {source: "agy", headless: true, timeout_min: 180, projects: ["game"], sandbox: "pub", models: {flash: "gemini-3.8-flash-medium"}}'
+  harness_set '.harnesses.agy = {source: "agy", end_classifier: "agy", headless: true, timeout_min: 180, projects: ["game"], sandbox: "pub", models: {flash: "gemini-3.8-flash-medium"}}'
   export SANDBOX_AGY_STATE="$HOME/.gemini/antigravity-cli"
   mkdir -p "$SANDBOX_AGY_STATE"
   stub agy 'exit 0'   # the start runs only its /usage check; ~/.local/bin, on PATH here, may hold the real one
@@ -951,7 +952,7 @@ agy_ready() {
   assert_equal "$(jq -c .filesystem.allowWrite <<<"$s")" "[\".\",\"$SANDBOX_AGY_STATE\",\"$runs/tmp\"]"
   jq -e --arg b "$(realpath "$(command -v agy)")" '.filesystem.allowRead | index($b)' <<<"$s" >/dev/null || fail "agy's binary not readable: $s"
   # The pane line as a shell runs it: agy prints P1's success stream; agent-agy keeps it and the exit,
-  # item-end reads the end from that log, and the replay opens agy on the run's conversation.
+  # record-end reads the end from that log, onto the item, and the replay opens agy on the run's conversation.
   pane="$SANDBOX/pane" && mkdir -p "$pane"
   printf '#!/usr/bin/env bash\necho "fleet-bench $*" >> %q\n' "$pane/log" > "$pane/fleet-bench"
   printf '#!/usr/bin/env bash\necho "srt key=${LITELLM_MASTER_KEY:-none}" >> %q\nwhile [ "$1" != -- ]; do shift; done; shift; exec "$@"\n' "$pane/log" > "$pane/srt"
@@ -959,15 +960,16 @@ agy_ready() {
   printf '#!/usr/bin/env bash\nif [ "$1" = --output-format ]; then cat %q; else echo "agy tui $*" >> %q; fi\n' \
     "$REPO_ROOT/tests/fixtures/harness-contract/agy-success.jsonl" "$pane/log" > "$pane/agy"
   printf '#!/usr/bin/env bash\necho "%s $*" >> %q\n' agent-queue "$pane/log" > "$pane/agent-queue"
-  printf '#!/usr/bin/env bash\n[ "$1" != item-end ] || exec %q "$@"\necho "no queue item"\n' "$REPO_ROOT/.local/bin/fleet-dispatch" > "$pane/fleet-dispatch"
+  printf '#!/usr/bin/env bash\n[ "$1" != record-end ] || exec %q "$@"\necho "no queue item"\n' "$REPO_ROOT/.local/bin/fleet-dispatch" > "$pane/fleet-dispatch"
   chmod +x "$pane"/*
   PATH="$pane:$PATH" bash -c "${line#* :: }" >/dev/null
   run cat "$pane/log"
   assert_line --index 0 'fleet-bench canary start c-7'
   assert_line --index 1 'srt key=none'
-  assert_line --index 2 --regexp '^fleet-bench canary score c-7 --end stopped$'
-  assert_line --index 3 'agent-queue move fix-menu done --status ok'
-  assert_line --index 5 'agy tui --conversation 8138a473-5239-47fc-afb9-b84f14384328'
+  assert_line --index 2 'agent-queue set fix-menu end_reason=stopped'
+  assert_line --index 3 'fleet-bench canary score c-7'
+  assert_line --index 4 'agent-queue move fix-menu done --status ok'
+  assert_line --index 6 'agy tui --conversation 8138a473-5239-47fc-afb9-b84f14384328'
   log=$(ls "$runs"/agy_*.jsonl)
   assert_equal "$(jq -r .event "$log" | sed -n '1p;$p' | tr '\n' ' ')" 'start exit '
   run ls "$runs"; refute_output --partial srt-agy_
@@ -1227,6 +1229,43 @@ trainee_start_ready() {
     assert_success
     assert_output --partial "trainee-reject: $slug is back in the queue, on claude: $want"
   done
+}
+
+@test "trainee-review: a no-diff run that declares already-fixed or blocked files its run unrated with that cause, never a reject; an unknown word, no file, or a real diff beside the file is as before" {
+  trainee_start_ready
+  stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"'
+  m="$SANDBOX/main" && git init -q "$m" && printf 'a\n' > "$m/menu.md"
+  git -C "$m" add menu.md && git -C "$m" -c user.name=t -c user.email=t@t commit -qm base
+  w="$SANDBOX/wt" && git -C "$m" worktree add -q "$w" 2>/dev/null
+  # slug|first line of .no-diff ("-" for no file)|the reject reason that results
+  for spec in "t-fixed|Already-Fixed: the title is fine|paid:glm found the task already fixed in the code (already-fixed), with no diff" \
+              "t-spc|already fixed, see menu.md|paid:glm found the task already fixed in the code (already-fixed), with no diff" \
+              "t-pre|blockedness|paid:glm left no diff" \
+              "t-block|blocked|paid:glm could not do the task without a human decision or access it lacks (blocked), with no diff" \
+              "t-word|gave up|paid:glm left no diff" \
+              "t-none|-|paid:glm left no diff"; do
+    IFS='|' read -r slug marker want <<<"$spec"
+    agent-queue add --project game --slug "$slug" --priority high --tags tier1 "Fix the $slug title #pts/1" >/dev/null
+    agent-queue set "$slug" agent=paid model=glm trainee=paid:glm "lane_run=run-$slug" >/dev/null; agent-queue move "$slug" running >/dev/null
+    rm -f "$w/.no-diff"; [ "$marker" = - ] || printf '%s\nmore\n' "$marker" > "$w/.no-diff"
+    run bash -c "cd $(printf %q "$w") && $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") trainee-review $slug"
+    assert_success
+    assert_output --partial "trainee-reject: $slug is back in the queue, on claude: $want"
+    [ ! -e "$w/.no-diff" ] || fail "$slug left its .no-diff in the worktree"
+  done
+  grep -qx 'model-lane outcome run-t-fixed unrated --why paid:glm found the task already fixed in the code (already-fixed), with no diff --cause already-fixed' "$NOTES_FIXTURE/calls.log" || fail "already-fixed filed no unrated run: $(cat "$NOTES_FIXTURE/calls.log")"
+  grep -qx 'model-lane outcome run-t-fixed unrated --cause already-fixed' "$NOTES_FIXTURE/calls.log" || fail "already-fixed's requeue filed no unrated cause"
+  grep -qx 'model-lane outcome run-t-block unrated --why paid:glm could not do the task without a human decision or access it lacks (blocked), with no diff --cause blocked' "$NOTES_FIXTURE/calls.log" || fail "blocked filed no unrated run"
+  # The negative control: the unknown word and the missing file are still rejects of the trainee's run.
+  grep -qx 'model-lane outcome run-t-word redo --why paid:glm left no diff --cause reject' "$NOTES_FIXTURE/calls.log" || fail "a no-diff run with an unknown word is no reject"
+  grep -qx 'model-lane outcome run-t-none redo --why paid:glm left no diff --cause reject' "$NOTES_FIXTURE/calls.log" || fail "a no-diff run with no file is no reject"
+  # A real diff beside the marker is reviewed as a diff: the marker is not in the patch.
+  agent-queue add --project game --slug t-diff --priority high --tags tier1 "Fix the t-diff title #pts/1" >/dev/null
+  agent-queue set t-diff agent=paid model=glm trainee=paid:glm >/dev/null; agent-queue move t-diff running >/dev/null
+  printf 'b\n' > "$w/menu.md"; printf 'blocked\n' > "$w/.no-diff"
+  run bash -c "cd $(printf %q "$w") && $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") trainee-review t-diff"
+  assert_success; assert_output --partial 'lanes.yaml names no trainee reviewer'
+  refute_output --partial 'no diff'
 }
 
 @test "trainee_waiting fetches the patch a trainee run left on its fleet worker; a run here, or a worker with no patch, fetches nothing" {
@@ -1790,7 +1829,7 @@ trainee_start_ready() {
   # agy: its launcher, agent-agy and a lane sandbox, then a bounded /usage on the human's login. Both are
   # stubbed: the developer's own ~/.local/bin, on PATH here, may hold the real ones.
   stub agent-agy 'exit 0'
-  harness_set '.harnesses.agy = {source: "agy", headless: true, timeout_min: 180, models: {flash: "gemini-3.8-flash-medium"}}'
+  harness_set '.harnesses.agy = {source: "agy", end_classifier: "agy", headless: true, timeout_min: 180, models: {flash: "gemini-3.8-flash-medium"}}'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready agy
   assert_output 'agy: it names no lane sandbox, and a worker runs only a sandboxed harness'
   harness_set '.harnesses.agy.sandbox = "pub"'
@@ -1858,7 +1897,9 @@ stacked_pair() {
   echo 0123456789abcdef0123456789abcdef01234567 > "$NOTES_FIXTURE/pr7.head"
   agent-queue add --project game --slug base --running "first phase"
   agent-queue set base open_pr=Org/game#7
-  legacy second "after: base" --project game "second phase"
+  # Only a plan phase stacks (ar-4537): second's brief names its plan.
+  printf '# P\n' > "$SANDBOX/p.md"
+  legacy second "after: base" --project game "Phase 2 of the plan $SANDBOX/p.md: second phase"
 }
 
 @test "start --item of a phase stacked on an open PR cuts its worktree from that PR's head; no stack, no --base (ar-3852)" {
@@ -1887,7 +1928,7 @@ stacked_pair() {
   [ -n "$(qitem queued second)" ] || fail "second left the queue"
 }
 
-# --- trainee-rollup ---------------------------------------------------------------------------
+# --- rollup ---------------------------------------------------------------------------
 
 # reject <harness> <model> <why> [days ago] -- one lane trainee run in model-lane's log that a review sent back
 reject() {
@@ -1898,123 +1939,197 @@ reject() {
 rollup_setup() {
   export DISPATCH_LANE_RUNS="$SANDBOX/runs.jsonl"
   : > "$DISPATCH_LANE_RUNS"
+  export DISPATCH_LANE_EVENTS="$SANDBOX/demotions.jsonl"
+  : > "$DISPATCH_LANE_EVENTS"
   : > "$NOTES_FIXTURE/rows.agent-runtime.agent"
 }
 
-@test "trainee-rollup: three 'left no diff' rejects on one pair file one row naming the pair; the next night files none" {
+@test "rollup: three 'left no diff' rejects on one pair file one row naming the pair; the next night files none" {
   rollup_setup
   for i in 1 2 3; do reject nim glm 'nim:glm left no diff'; done
   # an approved run and another lane's reject are no rejects of a trainee
   jq -nc '{ts: "2099-01-01T00:00:00+00:00", lane: "trainee", ran: "glm", harness: "nim", outcome: "ok"}' >> "$DISPATCH_LANE_RUNS"
   jq -nc '{ts: "2099-01-01T00:00:00+00:00", lane: "sonnet", ran: "sonnet", outcome: "redo", why: "x left no diff"}' >> "$DISPATCH_LANE_RUNS"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
   assert_success
   assert_output --partial 'filed: fix(trainee): nim:glm runs keep leaving no diff (3 since'
   run grep -c '^notes ptask agent-runtime --agent add ' "$NOTES_FIXTURE/calls.log"
   assert_output 1
-  run grep -F 'add fix(trainee): nim:glm runs keep leaving no diff #size/s #of/ar-3691 #low --origin fleet-dispatch --detail 3 trainee rejects since' "$NOTES_FIXTURE/calls.log"
+  run grep -F 'add --why minor-fault fix(trainee): nim:glm runs keep leaving no diff #size/s #of/ar-4724 #low --origin fleet-dispatch --detail 3 trainee rejects since' "$NOTES_FIXTURE/calls.log"
   assert_success
   assert_output --partial 'nim:glm 3. Fix it in how nim:glm runs, or drop the pair'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
   assert_success
-  assert_output 'trainee-rollup: no new trainee rejects since '"$(date -u -d '7 days ago' +%F)"
+  assert_output 'rollup: no new cause since '"$(date -u -d '7 days ago' +%F)"
   run grep -c '^notes ptask agent-runtime --agent add ' "$NOTES_FIXTURE/calls.log"
   assert_output 1
 }
 
-@test "trainee-rollup: two rejects of a cause, or three older than the window, file nothing" {
+@test "rollup: two rejects of a cause, or three older than the window, file nothing" {
   rollup_setup
   for i in 1 2; do reject nim minimax "nim:minimax's session ended on a provider refusal or error (end provider: a rate limit), with no diff"; done
   for i in 1 2 3; do reject agy flash 'agy:flash left no diff' 9; done
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
   assert_success
   assert_output 'under the bar (2 of 3): fix(trainee): nim:minimax runs keep ending on end provider (nim:minimax 2)'
   assert_not_called 'ptask agent-runtime --agent add'
 }
 
-@test "trainee-rollup: a cause on two pairs names the harnesses, and an open row with its title is joined, not twinned" {
+@test "rollup: a diff refused for the file it touched is one cause whichever file it was (ar-5117)" {
+  rollup_setup
+  tail="which is no markdown file, nor a shell or bats file outside a cargo or npm tree, so the sandbox could not build it"
+  reject agy flash "agy:flash's its diff touches .local/bin/fleet-bench.py, $tail"
+  reject agy flash "agy:flash's its diff touches src/main.rs, $tail"
+  reject agy flash "agy:flash's its diff touches package.json, $tail"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
+  assert_success
+  assert_output --partial 'filed: fix(trainee): agy:flash runs touch a file the sandbox cannot build (3 since'
+}
+
+@test "rollup: a cause on two pairs names the harnesses, and an open row with its title is joined, not twinned" {
   rollup_setup
   why=" session ended on a provider refusal or error (end provider: a rate limit), with no diff"
   reject nim minimax "nim:minimax's$why"; reject nim minimax "nim:minimax's$why"; reject ocfree beam "ocfree:beam's$why"
   row agent-runtime agent ar-9 '- [ ] fix(trainee): trainee runs keep ending on end provider #low <!-- id:ar-9 -->'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
   assert_success
   assert_output --partial 'joined ar-9: fix(trainee): trainee runs keep ending on end provider (3 since'
   assert_output --partial 'nim:minimax 2, ocfree:beam 1)'
   assert_not_called 'ptask agent-runtime --agent add'
   # with no open row it files one, and says which harnesses to look in
-  : > "$NOTES_FIXTURE/rows.agent-runtime.agent"; rm -f "$FLEET_DISPATCH_DIR/trainee-rollup.tsv"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  : > "$NOTES_FIXTURE/rows.agent-runtime.agent"; rm -f "$FLEET_DISPATCH_DIR/rollup.tsv"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
   assert_output --partial 'filed: fix(trainee): trainee runs keep ending on end provider'
   run grep -F 'Fix it in the harness or source (nim, ocfree): more than one model hits it.' "$NOTES_FIXTURE/calls.log"
   assert_success
 }
 
-@test "trainee-rollup: a board it cannot read files nothing and fails; --dry files nothing and stamps nothing" {
+@test "rollup: a board it cannot read files nothing and fails; --dry files nothing and stamps nothing" {
   rollup_setup
   for i in 1 2 3; do reject nim glm 'nim:glm left no diff'; done
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup --dry
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup --dry
   assert_success
   assert_output --partial 'would file: fix(trainee): nim:glm runs keep leaving no diff (3 since'
-  [ ! -e "$FLEET_DISPATCH_DIR/trainee-rollup.tsv" ] || fail "--dry stamped a title"
+  [ ! -e "$FLEET_DISPATCH_DIR/rollup.tsv" ] || fail "--dry stamped a title"
   stub notes 'exit 1'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
   assert_failure
   assert_output --partial 'cannot read the agent-runtime board, so no row is filed'
 }
 
-@test "trainee-rollup: a cause that spreads keeps its pair's row; a run with no reason counts; a torn line is skipped" {
+@test "rollup: a cause that spreads keeps its pair's row; a run with no reason counts; a torn line is skipped" {
   rollup_setup
   for i in 1 2 3; do reject nim glm 'nim:glm left no diff'; done
   printf '{"ts": "2099-01-01T00:00:00+00:00", "lane": "trai\n' >> "$DISPATCH_LANE_RUNS"
   for i in 1 2 3; do
     jq -nc --arg t "$(date -u +%FT%T+00:00)" '{ts: $t, lane: "trainee", ran: "minimax", harness: "nim", outcome: "failed"}' >> "$DISPATCH_LANE_RUNS"
   done
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
   assert_success
   assert_output --partial 'filed: fix(trainee): nim:glm runs keep leaving no diff (3 since'
   assert_output --partial 'filed: fix(trainee): nim:minimax runs end with no reason recorded (3 since'
   run grep -F -- '--detail e.g. no reason recorded (outcome failed)' "$NOTES_FIXTURE/calls.log"
   assert_success
-  run cut -f1 "$FLEET_DISPATCH_DIR/trainee-rollup.tsv"
+  run cut -f1 "$FLEET_DISPATCH_DIR/rollup.tsv"
   assert_output --partial 'keep leaving no diff'
   # the no-diff cause spreads to a second pair: the open row naming nim:glm is joined, not twinned by a "trainee runs" one, and a longer title that starts the same is another cause
   row agent-runtime agent ar-8 '- [ ] fix(trainee): nim:glm runs keep leaving no diff behind a lock #low <!-- id:ar-8 -->'
   row agent-runtime agent ar-7 '- [ ] fix(trainee): nim:glm runs keep leaving no diff #low <!-- id:ar-7 -->'
   for i in 1 2 3; do reject agy flash "agy:flash left no diff" -1; done   # dated tomorrow: newer than the stamp, whatever second it lands in
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
   assert_success
   assert_output 'joined ar-7: fix(trainee): trainee runs keep leaving no diff (3 since '"$(date -u -d '7 days ago' +%F)"': agy:flash 3)'
   run grep -c '^notes ptask agent-runtime --agent add ' "$NOTES_FIXTURE/calls.log"
   assert_output 2
 }
 
-@test "trainee-rollup: under agentctl each pass declares its outcome (WORKED filed, NOOP quiet, FAILED unread board); --dry declares none" {
+@test "rollup: under agentctl each pass declares its outcome (WORKED filed, NOOP quiet, FAILED unread board); --dry declares none" {
   rollup_setup
-  export AGENTCTL_NAME=trainee-rollup
-  out="$AGENTCTL_STATE_DIR/trainee-rollup/last-outcome"
+  export AGENTCTL_NAME=rollup
+  out="$AGENTCTL_STATE_DIR/rollup/last-outcome"
   for i in 1 2 3; do reject nim glm 'nim:glm left no diff'; done
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup --dry
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup --dry
   assert_success
   [ ! -e "$out" ] || fail "--dry declared $(cat "$out")"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
   assert_success
   [ "$(cat "$out")" = WORKED ] || fail "filing pass: $(cat "$out")"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
   assert_success
   [ "$(cat "$out")" = NOOP ] || fail "quiet pass: $(cat "$out")"
   # a fresh log, so these rejects are not read as counted by the stamp written in the same second
-  rollup_setup; rm -f "$FLEET_DISPATCH_DIR/trainee-rollup.tsv"
+  rollup_setup; rm -f "$FLEET_DISPATCH_DIR/rollup.tsv"
   for i in 1 2; do reject nim beam 'nim:beam left no diff'; done
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
   assert_success
   assert_output --partial 'under the bar (2 of 3)'
   [ "$(cat "$out")" = NOOP ] || fail "under the bar: $(cat "$out")"
   reject nim beam 'nim:beam left no diff'
   stub notes 'exit 1'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-rollup
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
   assert_failure
   [ "$(cat "$out")" = FAILED ] || fail "unread board: $(cat "$out")"
+}
+
+# lane_event <lane> <event> <class> <candidate> [days ago] -- one line of model-lane's demotions.jsonl
+lane_event() {
+  jq -nc --arg l "$1" --arg e "$2" --arg c "$3" --arg h "$4" --arg t "$(date -u -d "${5:-0} days ago" +%FT%T+00:00)" \
+    '{lane: $l, event: $e, ts: $t, why: "run abc: 2 of 4 rated items redo or failed, past 25%"} + (if $h == "" then {} else {class: $c, candidate: $h} end)' >> "$DISPATCH_LANE_EVENTS"
+}
+
+@test "rollup: three failed items on any harness, Claude included, file one fix(runs) row under the plan epic; a landed, unrated or cancelled one is no non-landing" {
+  rollup_setup
+  for i in 1 2 3; do
+    agent-queue add --project agent-runtime --slug nl-$i "non-landing $i" >/dev/null
+    agent-queue move nl-$i done --status failed --end stopped >/dev/null
+  done
+  agent-queue add --project agent-runtime --slug lim-1 "limit" >/dev/null
+  agent-queue move lim-1 done --status failed --end limit >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
+  assert_success
+  assert_output --partial 'filed: fix(runs): claude:'
+  assert_output --partial 'runs end on stopped (3 since'
+  refute_output --partial 'end on limit'
+  run grep -F 'fix(runs): ' "$NOTES_FIXTURE/calls.log"
+  assert_output --partial '#size/s #of/ar-4724 #low'
+  assert_output --partial 'Fix it in why claude:'
+  run grep -c '^notes ptask agent-runtime --agent add ' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
+  assert_output 'rollup: no new cause since '"$(date -u -d '7 days ago' +%F)"
+}
+
+@test "rollup: a model-lane demote or retire files one row on its first night, joins the open row after, and a promote after it files none" {
+  rollup_setup
+  lane_event opus demoted fix/m claude:sonnet 1
+  lane_event trainee retired - nim:glm 1
+  lane_event opus demoted chore/s claude:sonnet 3; lane_event opus promoted chore/s claude:sonnet 2
+  lane_event trainee retired - nim:old 3; lane_event trainee retrial - nim:old 2   # back on the roster
+  lane_event trainee demoted feat/s nim:back 1   # a promoted class sent back to review: a page, no row
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
+  assert_success
+  assert_output --partial 'filed: fix(model-lane): claude:sonnet left lane opus for fix/m (1 since'
+  assert_output --partial 'filed: fix(model-lane): nim:glm left the trainee roster (1 since'
+  refute_output --partial 'chore/s'
+  refute_output --partial 'nim:old'
+  refute_output --partial 'nim:back'
+  run grep -F "Undo: model-lane promote opus --class 'fix/m' --candidate claude:sonnet" "$NOTES_FIXTURE/calls.log"
+  assert_success
+  run grep -F 'Undo: model-lane promote trainee --class - --candidate nim:glm' "$NOTES_FIXTURE/calls.log"
+  assert_success
+  run grep -c '^notes ptask agent-runtime --agent add ' "$NOTES_FIXTURE/calls.log"
+  assert_output 2
+  # the next night, and a later event while the row is open: joined, not twinned
+  row agent-runtime agent ar-5 '- [x] fix(model-lane): nim:glm left the trainee roster #low <!-- id:ar-5 -->'
+  row agent-runtime agent ar-6 '- [ ] fix(model-lane): claude:sonnet left lane opus for fix/m #low <!-- id:ar-6 -->'
+  lane_event trainee retired - nim:glm -1   # retired again after its row closed: a new row, not a join of the closed one
+  lane_event opus demoted fix/m claude:sonnet -1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
+  assert_success
+  assert_output --partial 'joined ar-6: fix(model-lane): claude:sonnet left lane opus for fix/m'
+  assert_output --partial 'filed: fix(model-lane): nim:glm left the trainee roster'
+  run grep -c '^notes ptask agent-runtime --agent add ' "$NOTES_FIXTURE/calls.log"
+  assert_output 3
 }
 
 @test "the brief of an item a run handed off names its note first, then its salvage branch; one never handed off names none (ar-2777)" {

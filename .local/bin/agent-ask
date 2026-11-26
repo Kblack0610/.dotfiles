@@ -13,7 +13,7 @@
 #     --blocker r:c     what stops it outside the session, <owner/repo>:<cause> (billing, quota,
 #                       outage, auth): a pending ask on the same blocker takes this session instead
 #                       of a new ask, and post prints its id (see "A BLOCKER IS ONE ASK")
-#     --audit-of <id>   the live judge answer this ask audits (audit_sample posts these); its
+#     --audit-of <id>   the live judge answer this ask audits (audits posted before ar-4765); its
 #                       answer is that answer's review, not a decision of its own
 #     --preview <file>  an image the card shows above the answers, repeatable; agent-web serves
 #                       one only from under the outbound ledger dir, where `mkt draft` puts them
@@ -45,16 +45,22 @@
 #                                       (park.conf PARK_DAYS)
 #   agent-ask unpark <id>               put a parked ask back on the boards now
 #   agent-ask show <id>                 print the ask file
-#   agent-ask answer [--by who] <id> <answer...>
+#   agent-ask answer [--by who] [--quote words] <id> <answer...>
 #                                       record the answer; flip to answered; queue its
 #                                       delivery (`deliver`) and return.
 #                                       --by human (default from a board) | judge | shepherd | agent
 #                                       -> answered_by. Inside an agent session
 #                                       (CLAUDE_CODE_SESSION_ID or AGENT_QUEUE_ITEM set) the
-#                                       default is agent and --by human is refused; an agent
-#                                       answer to an approval, a judge human-only ask or one at
+#                                       default is agent and --by human is refused, except
+#                                       an attended session's relay: --by human --quote
+#                                       '<their words>' (relay_proof checks the transcript);
+#                                       an agent answer to an approval, a judge human-only ask or one at
 #                                       the human floor is refused. Any answer releases what the
 #                                       ask holds (agent-queue ask_pending).
+#   agent-ask said --since <time> <words...>
+#                                       exit 0 when the human typed those words in this attended
+#                                       session since <time> (the relay's transcript check, for
+#                                       agent-hold set --by human), else say what is missing, exit 1
 #   agent-ask deliver <id> | --all      deliver a recorded answer: typed into its live session,
 #                                       else a board row, then its `resume` (via ask-resume).
 #                                       agent-ask-deliver.path runs --all on each answer
@@ -79,14 +85,14 @@
 #   agent-ask sweep [project|--all]     judge every pending ask again and answer each live one as
 #                                       the judge, through `answer`'s delivery, or arm its wait;
 #                                       one line per ask. Run it after the policy or DELAY_RULES
-#                                       changes. A verdict whose `settled_by` still holds answers
-#                                       the ask by the human's hold, or joins it to an older ask
-#                                       on the same question (see "SETTLED ALREADY")
+#                                       changes. A verdict whose `settled_by` names an older ask
+#                                       on the same question joins it (see "SETTLED ALREADY")
 #   agent-ask assume-due                answer every armed ask whose wait has passed, once it
 #                                       re-checks, and every gh-login ask whose host's gh auth
-#                                       status is clean; run `expire`; put an agent-answered ask
-#                                       something still holds back to pending; sweep once when the
-#                                       human has set a new hold (fleet-state.service, each pass)
+#                                       status is clean; judge once more one ask whose judge
+#                                       call post's guard ended; run `expire`; put an agent-answered ask
+#                                       something still holds back to pending (fleet-state.service,
+#                                       each pass)
 #   agent-ask expire [--dry-run]        cancel each ask on a board row the human answered since it
 #                                       was posted, each today or tonight ask once its day is over
 #                                       (DATED_HOURS), and each audit older than AUDIT_HOURS; park
@@ -133,8 +139,8 @@
 #
 # A gate/approval is just an ask with kind=gate or kind=approval (options default approve|hold),
 # e.g. "PR #1036 is green, merge it?". A gate is a session's own stop, and the judge rules on it as
-# on a question; an approval (a plan, an outbox line's project, an audit, the judge's own
-# authority, a cancel of work the human asked for: human_floor) is the human's by rule.
+# on a question; an approval (a plan, an outbox line's project, the judge's own authority:
+# human_floor) is the human's by rule.
 
 # PARKED is not a status. A pending ask with `parked_until` still ahead waits on something the
 # human will do later (plug in a headset, order parts): `list --pending` and `count` leave it out,
@@ -156,9 +162,9 @@
 # 44 open asks needed no human). `expire` cancels an ask on a board row the human has answered since
 # (worded any way), an ask whose today or tonight is over, and an audit unreviewed past AUDIT_HOURS
 # (it scores as silence), and parks, then on its return cancels, an ask no session or queue item waits on. The
-# judge reads the human's holds and the older pending asks, and its `settled_by` answers an ask by
-# a hold (`answered_by: hold`, the hold quoted in `answer_note`) or joins it to the older ask, its
-# sessions moved there; each premise is checked again before it acts. A new human hold re-judges.
+# judge reads the older pending asks, and its `settled_by` joins an ask to an older one on the same
+# question, its sessions moved there; each premise is checked again before it acts. A hold the human
+# set is no input: it narrows by `agent-hold grant --ask`, which the queue's gate reads, never by its reason.
 #
 # THE ANSWER JUDGE. `post` runs `judge <id>` in the foreground behind AGENT_ASK_JUDGE_TIMEOUT:
 # one call to the registered agent `ask-judge` (its conf sets role, model, schema and the policy
@@ -178,7 +184,6 @@
 
 set -uo pipefail
 
-ASKS_ROOT="${AGENT_ASK_ROOT:-$HOME/.agent/asks}"
 : "${AGENT_ASK_QUEUE_CMD:=agent-queue}"
 # jq: a dollar amount to the cent ("$0.08"), for the card's telemetry line and trace's call line.
 JQ_MONEY='def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 | tostring | if length < 2 then "0" + . else . end)";'
@@ -194,10 +199,6 @@ JQ_MONEY='def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 
 # falls under AGENT_ASK_DEMOTE_PRECISION percent, counted once it has AGENT_ASK_DEMOTE_MIN.
 : "${AGENT_ASK_DEMOTE_PRECISION:=85}" "${AGENT_ASK_DEMOTE_MIN:=10}"
 : "${AGENT_ASK_DEMOTED:=$HOME/.local/state/agent-ask/demoted}"
-# The audit sample's count of live answers per level (audit_sample).
-: "${AGENT_ASK_AUDIT_DIR:=$HOME/.local/state/agent-ask/audit}"
-# The names of the human's holds at the last assume-due pass (sweep_on_new_hold).
-: "${AGENT_ASK_HOLDS_SEEN:=$HOME/.local/state/agent-ask/holds-seen}"
 : "${AGENT_ASK_JUDGE_BOARD:=agent-runtime}"
 # PARK_DAYS: how long `park` with no --until keeps an ask off the boards, by the held item's priority.
 : "${AGENT_ASK_PARK_CONF:=$HOME/.config/agent-ask/park.conf}"
@@ -205,6 +206,11 @@ JQ_MONEY='def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/judge.sh"
 # shellcheck source=../lib/fmt.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fmt.sh"
+# shellcheck source=../lib/ask-store.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/ask-store.sh"
+ASKS_ROOT="$(ask_root)"
+# shellcheck source=../lib/dispatch-wake.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/dispatch-wake.sh"
 # The panels' palette (C_*): a card reads like the panel that shows it and follows a theme swap.
 # shellcheck source=../src/tmux/panel-palette.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/tmux/panel-palette.sh"
@@ -237,40 +243,16 @@ queue_holders() {
   awk -F'\t' -v OFS='\t' -v id="$1" '$2 == id { print $1, $3 }' <<<"$QUEUE_HOLDS"
 }
 
-# human_cancel <text>: when the text proposes taking work off the queue (a cancel, drop, removal,
-# prune, kill or retire, any of HUMAN_CANCEL_VERBS), the first active queue item the
-# human asked for (`agent-queue human-work`) it names as a whole word; fails on any other text.
-# agent-queue's cancel_guard cancels that work only on the human's answer to an ask naming it, so a
-# judge's answer is one the queue refuses: post makes the ask an approval, and judge sends one posted
-# before to the human (ar-3917; on 2026-11-12 a cleanup cancelled the human's items on an ask the
-# judge answered in 20 s). A queue that cannot be read names none, and the guard still holds.
-# Every form a session words a cancel in: a word that only looks like one (dropdown) stays out, and
-# an extra match only sends an ask to the human, never past them.
-HUMAN_CANCEL_VERBS='cancel[a-z]*|drop|drops|dropped|dropping|abandon[a-z]*|remove|removes|removed|removing|delete|deletes|deleted|deleting|kill|kills|killed|killing|prune|prunes|pruned|pruning|retire|retires|retired|retiring|scrap|scraps|scrapped|scrapping|discard[a-z]*|withdraw[a-z]*'
-# gate: aa-human-cancel
-human_cancel() {
-  [[ " ${1,,} " =~ [^a-z]($HUMAN_CANCEL_VERBS)[^a-z] ]] || return 1
-  local slugs hit
-  slugs="$($AGENT_ASK_QUEUE_CMD human-work 2>/dev/null)" && [ -n "$slugs" ] || return 1
-  hit="$(grep -owF -f <(printf '%s\n' "$slugs") <<<"$1" | head -n1)"
-  [ -n "$hit" ] && printf '%s\n' "$hit"
-}
-
 # human_floor <text>: why an ask with this text is the human's by rule, worded to follow "the ask";
-# fails when it is not. Two rules: the ask names the judge's own reach (the policy's "Judge
-# authority" list), which the judge never rules on, or it would cancel work the human asked for
-# (human_cancel). post makes such an ask an approval, and judge holds one posted before to it.
+# fails when it is not. The rule: the ask names the judge's own reach (the policy's "Judge
+# authority" list), which the judge never rules on. post makes such an ask an approval, and judge
+# holds one posted before to it. A cancel of the human's work is judged like any ask: the policy's
+# reversible criterion sends a bulk one (10 or more records) to the human.
 human_floor() {
   local hit
-  if hit="$(judge_floor_hit "$(judge_conf PROMPT "")" "$1" "Judge authority")"; then
-    printf "names %s, the judge's own authority\n" "$hit"
-  elif hit="$(human_cancel "$1")"; then
-    printf 'would cancel %s, work the human asked for\n' "$hit"
-  else return 1; fi
+  hit="$(judge_floor_hit "$(judge_conf PROMPT "")" "$1" "Judge authority")" || return 1
+  printf "names %s, the judge's own authority\n" "$hit"
 }
-
-# collapse a value to a single physical line (files are one key:value per line)
-oneline() { printf '%s' "$1" | tr '\n\t' '  ' | sed -E 's/  +/ /g; s/^ +//; s/ +$//'; }
 
 # undefined_terms <context> <text...>: the session-jargon terms in the text that the context never
 # names, one per line. A term is a name for a machine: camelCase, a dotted name or file
@@ -290,9 +272,6 @@ undefined_terms() {
     grep -qFw -e "$t" <<<"$ctx" || printf '%s\n' "$t"
   done
 }
-
-# field <file> <key> -> first value (text after "key: ")
-field() { sed -n "/^$2: /{s///p;q;}" "$1" 2>/dev/null; }
 
 # load_ask <file>: every `key: value` of one ask into the global ASK, read once with no fork
 # (a `field` call per key made a card take half a second). The first `key: ` line wins, as in
@@ -319,10 +298,11 @@ find_ask() {
 # answer or cancel refreshes the fleet state document (and the phone) within seconds, not at
 # the next 10-minute pass. The asks sit a directory down, where a watch on the root sees nothing.
 # drop_field <file> <key>...: remove those keys' lines in one locked rewrite, so a stale value
-# cannot outlive its verdict.
+# cannot outlive its verdict. The temp file sits beside the ask (ask_files reads only `*.md`), so
+# the mv is a rename: from /tmp, a tmpfs, it was a copy that a killed judge could leave cut short.
 drop_field() {
   local f="$1" tmp; shift
-  tmp="$(mktemp)"
+  tmp="$(mktemp "$f.XXXXXX")"
   (
     command -v flock >/dev/null 2>&1 && flock 9
     awk 'BEGIN { for (i = 1; i < ARGC - 1; i++) { k[ARGV[i]] = 1; ARGV[i] = "" } }
@@ -333,10 +313,10 @@ drop_field() {
 queue_changed() { : > "$ASKS_ROOT/.changed" 2>/dev/null || true; }
 
 # write_fields <file> <key> <value>...: those keys in one rewrite, each in place or appended. The
-# caller holds the project lock.
+# caller holds the project lock. The temp file sits beside the ask, as in drop_field.
 write_fields() {
   local f="$1" tmp; shift
-  tmp="$(mktemp)"
+  tmp="$(mktemp "$f.XXXXXX")"
   awk '
     BEGIN { for (i = 1; i < ARGC - 1; i += 2) { k[++n] = ARGV[i]; v[ARGV[i]] = ARGV[i + 1]; ARGV[i] = ARGV[i + 1] = "" } }
     { p = index($0, ": "); key = p ? substr($0, 1, p - 1) : "" }
@@ -670,22 +650,19 @@ cmd_post() {
 
   # The judge runs before the asker is told anything: a type it answers live comes back as the
   # answer, and the asker goes on. The timeout is a guard on an external model call (a stuck one
-  # leaves today's pending ask with an error verdict), not a wait for an event.
+  # leaves the pending ask an error verdict, which the next assume-due pass judges once more), not
+  # a wait for an event.
   if [ -z "${AGENT_ASK_NO_JUDGE:-}" ]; then
-    timeout --kill-after=5 "$AGENT_ASK_JUDGE_TIMEOUT" "${BASH_SOURCE[0]}" judge "$id" >/dev/null 2>&1 < /dev/null
-    case $? in
-      124|137) [ -n "$(field "$file" judge)" ] ||
-        judge_record "$file" error "" "the judge call timed out after ${AGENT_ASK_JUDGE_TIMEOUT}s" "" ;;
-    esac
-    # A hold the human set, or an older ask on the same question, settles it before any answer
-    # of the judge's own; a joined ask prints the one it joined, as a shared blocker does.
+    judge_guarded "$file" "$(timed_out_reason)"
+    # An older ask on the same question settles it before any answer of the judge's own; a joined
+    # ask prints the one it joined, as a shared blocker does.
     local settled
-    settled="$(settle_by_verdict "$file" post)" || settled=""
+    settled="$(settle_by_verdict "$file")" || settled=""
     if [[ "$settled" == joined\ * ]]; then
       joined_reply "$(find_ask "${settled#joined }")" "This question" "the same question" "$wait"
       return
     fi
-    if [ -n "$settled" ] || answer_live "$file"; then
+    if answer_live "$file"; then
       if [ "$wait" -eq 1 ]; then field "$file" answer; else printf '%s\n' "$id"; fi
       return 0
     fi
@@ -840,12 +817,12 @@ gh_clean_on() {
 
 # gh_login_settle <file>: answer a pending gh-login ask as the judge when gh auth status is clean on
 # its host, a parked one too, since what it waits on is done. Left to the human, as live_answer
-# leaves them: an approval, an audit, an ask the human disarmed, one a queue item holds. The verdict
+# leaves them: an approval, an audit, one a queue item holds. The verdict
 # replaces the post-time judge's whole cell, so an override of this answer counts against no type.
 gh_login_settle() {
   local f="$1" host ans
   [ "$(field "$f" status)" = pending ] && [ "$(field "$f" login)" = gh ] || return 1
-  [ "$(field "$f" kind)" != approval ] && [ -z "$(field "$f" audit_of)" ] && [ -z "$(field "$f" assume_disarmed)" ] || return 1
+  [ "$(field "$f" kind)" != approval ] && [ -z "$(field "$f" audit_of)" ] || return 1
   host="$(field "$f" host)"
   [ -n "$host" ] && ! queue_waits "$(field "$f" id)" && gh_clean_on "$host" || return 1
   ans="gh is signed in again on $host (gh auth status clean at $(date +%H:%M)). Rerun the step that needed it."
@@ -976,19 +953,100 @@ answer_row() {
   file_board_row "$1" "$(field "$1" question) -> answered: $2$how${4:+; $4}"
 }
 
-# cmd_answer_cli [--by who] <id> <answer...>: the `answer` subcommand. `human` needs the human's own
-# channel (a board, or the reply typed into the session). Called from inside an agent session
-# (CLAUDE_CODE_SESSION_ID or AGENT_QUEUE_ITEM set) the answer is the agent's: `agent` is the
-# default and the only value allowed, so no session can write `human`, `judge` or `shepherd`
-# (the judge and the sweeps call cmd_answer directly). 2026-11-20 ask 5ZRfWB read answered_by
-# human with no human answer. The boards run outside a session and strip those two variables.
+# human_words <quote> <since>: the human's own entries in this session's transcript newer than <since>
+# whose words contain <quote>, one JSON line each (`agent-panel human`: a typed prompt or a dialog
+# answer, never a paste or what the fleet typed), or what is missing (stderr, rc 1). The transcript
+# is the harness's record, so an agent's own "the human said yes" proves nothing. The quote is 3+
+# characters unless it is the whole entry, so a stray "a" cannot stand for a message. A dispatched
+# session has no human at it. relay_proof and `said` (agent-hold set --by human) both check through it.
+human_words() {
+  local quote="$1" since="$2" sid t said hits
+  [ -z "${AGENT_QUEUE_ITEM:-}" ] || { echo "a dispatched session (AGENT_QUEUE_ITEM set) has no human at it" >&2; return 1; }
+  sid="${CLAUDE_CODE_SESSION_ID:-}"
+  [ -n "$sid" ] || { echo "no CLAUDE_CODE_SESSION_ID to find the transcript by" >&2; return 1; }
+  t="$(session_transcript "$sid")"
+  [ -n "$t" ] || { echo "no transcript for session $sid" >&2; return 1; }
+  command -v agent-panel >/dev/null 2>&1 || { echo "agent-panel is not installed" >&2; return 1; }
+  said="$(agent-panel human "$t" --since "$since")" || { echo "agent-panel human failed on $t" >&2; return 1; }
+  hits="$(jq -c -s --arg q "$quote" '
+    def n: ascii_downcase | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "");
+    ($q | n) as $qn | ($qn | length) as $ql
+    | .[] | select(((.text | n) | contains($qn)) and ($ql >= 3 or (.text | n) == $qn))' <<<"$said" 2>/dev/null)"
+  [ -n "$hits" ] || { echo "no words of the human's in this session since $since contain: $quote" >&2; return 1; }
+  printf '%s\n' "$hits"
+}
+
+# relay_proof <id> <quote> <answer>: why an attended session may record the human's answer to <id>, or
+# what is missing (stderr, rc 1). The quote passes human_words since the ask was posted, and the ask's
+# id is in that entry's words or in what they were shown. The answer is one of the ask's options when
+# it has any, so the words cannot be attached to an answer they do not pick. Only a pending ask, or
+# one the judge or a hold answered, takes it.
+relay_proof() {
+  local id="$1" quote="$2" answer="$3" f made hits
+  f="$(find_ask "$id")"; [ -n "$f" ] || { echo "no ask '$id'" >&2; return 1; }
+  id="$(field "$f" id)"; made="$(date -u -d "$(field "$f" created)" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
+  [ -n "$made" ] || { echo "ask $id has no created time to look after" >&2; return 1; }
+  [ -n "$answer" ] || { echo "no answer given, only the words" >&2; return 1; }
+  case "$(field "$f" status):$(field "$f" answered_by)" in
+    pending:*|answered:judge|answered:hold) ;;
+    *) echo "ask $id is $(field "$f" status), not waiting on the human" >&2; return 1 ;;
+  esac
+  local opts; opts="$(field "$f" options)"
+  if [ -n "$opts" ] && [ -z "$(named_option "$opts" "$answer")" ]; then
+    echo "the answer '$answer' names none (or more than one) of ask $id's options: $opts" >&2; return 1
+  fi
+  hits="$(human_words "$quote" "$made")" || return 1
+  jq -e -s --arg id "$id" '
+    def n: ascii_downcase | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "");
+    any(.[]; ((.shown // "" | n) | contains($id | n)) or ((.text | n) | contains($id | n)))' <<<"$hits" >/dev/null 2>&1 ||
+    { echo "the quote is in the transcript, but ask $id is in neither what the human was shown nor their words there" >&2; return 1; }
+}
+
+# cmd_said --since <time> <words...>: exit 0 when the human typed those words in this attended
+# session since <time> (human_words), else say what is missing and exit 1. A command that takes the
+# human's word for something no ask carries (agent-hold set --by human) checks the quote here.
+cmd_said() {
+  local since=""
+  [ "${1:-}" = --since ] && { since="${2:-}"; shift 2 2>/dev/null || shift $#; }
+  local quote; quote="$(oneline "$*")"
+  [ -n "$since" ] && [ -n "$quote" ] || { echo "usage: agent-ask said --since <time> <the human's words>" >&2; return 2; }
+  since="$(date -u -d "$since" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" || { echo "agent-ask said: --since does not read as a time" >&2; return 2; }
+  human_words "$quote" "$since" >/dev/null
+}
+
+# cmd_answer_cli [--by who] [--quote words] <id> <answer...>: the `answer` subcommand. `human` needs
+# the human's own channel (a board, or the reply typed into the session). Called from inside an
+# agent session (CLAUDE_CODE_SESSION_ID or AGENT_QUEUE_ITEM set) the answer is the agent's: `agent`
+# is the default, and `human` is accepted only as a relay with proof: `--by human --quote` from an
+# attended session passes relay_proof, and the ask records the human, `relayed_by` the session and
+# their words in `answer_note`. `judge` and `shepherd` are never allowed (the judge and the sweeps
+# call cmd_answer directly), and a dispatched session never relays. 2026-11-20 ask 5ZRfWB read
+# answered_by human with no human answer; a bare `--by human` is still refused, so an agent's own
+# claim proves nothing. The boards run outside a session and strip those two variables.
 cmd_answer_cli() {
-  local by=human in_agent=""
+  local by=human in_agent="" quote="" quoted=""
   [ -z "${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}" ] || { in_agent=1; by=agent; }
-  if [ "${1:-}" = --by ]; then by="${2:-}"; shift 2 2>/dev/null || shift $#; fi
+  while [ "${1:-}" = --by ] || [ "${1:-}" = --quote ]; do
+    case "$1" in --by) by="${2:-}" ;; --quote) quote="$(oneline "${2:-}")"; quoted=1 ;; esac
+    shift 2 2>/dev/null || shift $#
+  done
   case "$by" in human|judge|shepherd|agent) ;; *) echo "agent-ask: --by is human, judge, shepherd or agent" >&2; return 2 ;; esac
+  if [ -n "$quoted" ] && { [ "$by" != human ] || [ -z "$in_agent" ] || [ -z "$quote" ]; }; then
+    echo "agent-ask: --quote is the words of the human an attended session relays, with --by human, from inside a session" >&2; return 2
+  fi
   if [ -n "$in_agent" ] && [ "$by" != agent ]; then
-    echo "agent-ask: an agent session answers as agent, not $by; the human answers from a board or in the session" >&2; return 2
+    if [ "$by" = human ] && [ -n "$quote" ]; then
+      # The proof first, the fields only once the answer is recorded: a refused answer leaves
+      # no "relayed" note on a pending ask.
+      local why f id="${1:-}"; shift 2>/dev/null || true
+      why="$(relay_proof "$id" "$quote" "$(oneline "$*")" 2>&1)" || { echo "agent-ask: cannot record this as the human's answer: $why" >&2; return 1; }
+      f="$(find_ask "$id")"
+      cmd_answer --by human "$id" "$@" || return $?
+      set_field "$f" relayed_by "$CLAUDE_CODE_SESSION_ID" answer_note "relayed in session $CLAUDE_CODE_SESSION_ID: $(cut -c1-300 <<<"$quote")"
+      return 0
+    else
+      echo "agent-ask: an agent session answers as agent, not $by; the human answers from a board or in the session, and an attended session relays their words with --by human --quote '<their words>'" >&2; return 2
+    fi
   fi
   cmd_answer --by "$by" "$@"
 }
@@ -999,7 +1057,7 @@ cmd_answer() {
   case "$by" in human|judge|shepherd|agent) ;; *) echo "agent-ask: --by is human, judge, shepherd or agent" >&2; return 2 ;; esac
   local id="${1:-}"; shift 2>/dev/null || true
   local answer; answer="$(oneline "$*")"
-  [ -n "$id" ] && [ -n "$answer" ] || { echo "usage: agent-ask answer [--by human|judge|shepherd|agent] <id> <answer...>" >&2; return 2; }
+  [ -n "$id" ] && [ -n "$answer" ] || { echo "usage: agent-ask answer [--by human|judge|shepherd|agent] [--quote words] <id> <answer...>" >&2; return 2; }
   local f; f="$(find_ask "$id")"
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
   local of; of="$(field "$f" audit_of)"
@@ -1009,7 +1067,7 @@ cmd_answer() {
   fi
   # An agent answers what does not need the human; its answer releases what the ask holds, as the
   # judge's does. An approval, an ask the judge marked human-only and one at the human floor
-  # (human_floor: the judge's own reach, a cancel of the human's work) take only the human's.
+  # (human_floor: the judge's own reach) take only the human's.
   if [ "$by" = agent ]; then
     local mine
     if [ "$(field "$f" kind)" = approval ]; then mine="it is an approval"
@@ -1058,7 +1116,6 @@ record_answer() {
     write_fields "$f" status answered answer "$answer" answered_at "$(now_iso)" answered_by "$by" "$@"
   ) 9>"$(dirname "$f")/.lock" || return 1
   queue_changed
-  [ "$by" != judge ] || audit_sample "$f"
 }
 
 # start_resume <id>: answering IS starting (see header). ask-resume marks before it runs and
@@ -1076,13 +1133,12 @@ released_by() {
   queue_holders "$1" | awk -F'\t' -v a="${pick,,}" '$2 == "" || index("+" tolower($2) "+", "+" a "+") { print $1 }'
 }
 
-# start_held: the human's answer released the queue items held on its ask, and a fleet-dispatch pass
-# starts them now, behind every gate a pass holds a start to (room, load, run units), not at the timer's
-# next fire. --no-block: the pass takes minutes; while one runs, systemd merges this start into it and
-# the next timer pass takes them.
+# start_held: the answer released the queue items held on its ask, and a fleet-dispatch kick starts them
+# now (dispatch_wake), behind every gate a pass holds a start to (room, load, run units), not at the
+# timer's next fire. The wake file coalesces: a kick or pass already running takes the items itself.
 start_held() {
-  [ -z "${AGENT_ASK_NO_RESUME:-}" ] && command -v agentctl >/dev/null 2>&1 || return 0
-  agentctl start fleet-dispatch --no-block >/dev/null 2>&1 || true
+  [ -z "${AGENT_ASK_NO_RESUME:-}" ] || return 0
+  dispatch_wake "agent-ask answer released held items"
 }
 
 # --- delivery --------------------------------------------------------------
@@ -1247,8 +1303,8 @@ cmd_wait_delivered() {
 # where it reaches most. A type it does not list stays shadow. At
 # 0 the judge answers at post: the asker gets the answer in place of the question and goes on.
 # Above 0 the ask is armed: the human keeps the question and its deadline until `assume-due`
-# fires the answer. Either way the human's messages review it (review_judge_answer), and so does
-# the audit sample (audit_sample): naming another option records judge_override, and enough
+# fires the answer. Either way the human's messages review it (review_judge_answer): naming
+# another option records judge_override, and enough
 # overrides demote the cell, its type at its level (judge_demote_check). A demote is runtime
 # state, not a conf edit: a script writing the tracked conf would leave the private repo's main
 # checkout dirty, so the demote list subtracts from DELAY_RULES until the human re-promotes or
@@ -1299,14 +1355,12 @@ live_rules() { delay_rows | awk '{ print $1 "@" $2 }'; }
 delay_of() { delay_rows | awk -v r="$1" -v l="$2" '$1 == r && $2 == l && !found { print $3; found = 1 } END { exit !found }'; }
 
 # live_answer <file>: print the answer the judge gives this ask when its rule is live. Fails on
-# anything else: an approval, a human-only ask, a human or error call, a shadow rule, an ask the
-# human disarmed. The one place that decides; a gate is answered like a question, under its
-# cell's level ceiling.
+# anything else: an approval, a human-only ask, a human or error call, a shadow rule. The one
+# place that decides; a gate is answered like a question, under its cell's level ceiling.
 live_answer() {
   local f="$1" judge rule ans
   [ "$(field "$f" kind)" != approval ] || return 1
   [ "$(field "$f" judge_human_only)" != true ] || return 1
-  [ -z "$(field "$f" assume_disarmed)" ] || return 1
   judge="$(field "$f" judge)"; rule="$(field "$f" judge_rule)"
   case "$judge" in
     take-recommend) ans="$(field "$f" recommend)" ;;
@@ -1353,7 +1407,7 @@ answer_live() {
   told_at_post "$f" "$(judge_said "$f" "$ans")"
 }
 
-# told_at_post <file> <line>: an ask answered at its own post (live, or by a hold): the asker reads
+# told_at_post <file> <line>: an ask answered live at its own post: the asker reads
 # <line> on stderr, and the answer goes to any other session waiting on it, then to its resume.
 told_at_post() {
   local f="$1"
@@ -1368,26 +1422,71 @@ told_at_post() {
   start_resume "$(field "$f" id)"
 }
 
-# cmd_sweep [project|--all]: judge every pending ask again and answer or arm the live ones as the
-# judge, through cmd_answer's delivery (typed into a live session, else a board row, then resume).
+# judge_guarded <file> <reason>: judge the ask behind AGENT_ASK_JUDGE_TIMEOUT. A call the guard
+# ends leaves the ask an error verdict with <reason>, unless the judge wrote one first. The old
+# verdict goes first, since cmd_judge keeps `judge` until it writes the next one.
+judge_guarded() {
+  drop_field "$1" judge judge_reason judged_at
+  timeout --kill-after=5 "$AGENT_ASK_JUDGE_TIMEOUT" "${BASH_SOURCE[0]}" judge "$(field "$1" id)" >/dev/null 2>&1 < /dev/null
+  case $? in
+    124|137) [ -n "$(field "$1" judge)" ] || judge_record "$1" error "" "$2" "" ;;
+  esac
+}
+
+# timed_out_reason [again]: the judge_reason of a call the guard ended, at post or (again) on the
+# pass that judged it once more (rejudge_timed_out), which tries only the first, matched up to the
+# guard's seconds so a changed AGENT_ASK_JUDGE_TIMEOUT still finds it.
+TIMED_OUT='the judge call timed out after '
+AGAIN=', at post and again on the next pass'
+timed_out_reason() { printf '%s%ss%s' "$TIMED_OUT" "$AGENT_ASK_JUDGE_TIMEOUT" "${1:+$AGAIN}"; }
+
+# rejudge <file> [guard reason]: judge the pending ask again (behind the guard when a reason is
+# given) and act on the verdict: joined to an older ask, else a live answer through
+# cmd_answer's delivery (typed into a live session, else a board row, then resume), or armed when
+# its type waits. Prints the settle, `answered <x>`, `armed <x>`, or `yours`.
+rejudge() {
+  local f="$1" id ans settled said=yours
+  id="$(field "$f" id)"
+  if [ -n "${2:-}" ]; then judge_guarded "$f" "$2"
+  else "${BASH_SOURCE[0]}" judge "$id" >/dev/null 2>&1 < /dev/null; fi
+  if settled="$(settle_by_verdict "$f")"; then
+    said="$settled"
+  elif ans="$(live_answer "$f")"; then
+    if ! live_due "$f" "$ans"; then said="armed $ans"
+    elif cmd_answer --by judge "$id" "$ans" 2>/dev/null; then said="answered $ans"; fi
+  fi
+  printf '%s\n' "$said"
+}
+
+# rejudge_timed_out: judge once more a pending ask whose judge call post's guard ended. Nothing
+# else judged one again but a hand-run sweep, so it stayed the human's: 12 asks from 2026-11-05 to
+# 11-23, 6 of them ended before the model call began (ar-2553). A second timeout is not tried again.
+# One ask a pass: each call can take the guard plus its kill wait, inside fleet-state's
+# TimeoutStartSec, and the pass runs every minute.
+rejudge_timed_out() {
+  local f why
+  while IFS= read -r f; do
+    why="$(field "$f" judge_reason)"
+    [[ "$why" == "$TIMED_OUT"* && "$why" != *"$AGAIN" ]] && ! is_parked "$f" || continue
+    rejudge "$f" "$(timed_out_reason again)" >/dev/null
+    return 0
+  done < <(ask_files --all | xargs -r -d '\n' grep -lx 'judge: error' 2>/dev/null |
+    ask_open_files)
+}
+
+# cmd_sweep [project|--all]: judge every pending ask again and answer or arm the live ones (rejudge).
 cmd_sweep() {
-  local scope="${1:---all}" f id ans said settled
+  local scope="${1:---all}" f id said
   load_queue_asks
   while IFS= read -r f; do
     [ "$(field "$f" status)" = pending ] || continue
-    id="$(field "$f" id)"; said=yours
+    id="$(field "$f" id)"
     if gh_login_settle "$f" 2>/dev/null; then
       printf '%s\t%s\t%s\t%s\t%s\n' "$(field "$f" project)" "$id" "answered gh-login" gh-login "$(field "$f" judge_reason)"
       continue
     fi
     is_parked "$f" && continue
-    "${BASH_SOURCE[0]}" judge "$id" >/dev/null 2>&1 < /dev/null
-    if settled="$(settle_by_verdict "$f" sweep)"; then
-      said="$settled"
-    elif ans="$(live_answer "$f")"; then
-      if ! live_due "$f" "$ans"; then said="armed $ans"
-      elif cmd_answer --by judge "$id" "$ans" 2>/dev/null; then said="answered $ans"; fi
-    fi
+    said="$(rejudge "$f")"
     printf '%s\t%s\t%s\t%s\t%s\n' "$(field "$f" project)" "$id" "$said" "$(field "$f" judge_rule)" "$(field "$f" judge_reason)"
   done < <(ask_files "$scope" | sort)
 }
@@ -1401,7 +1500,7 @@ cmd_assume_due() {
   load_queue_asks
   while IFS= read -r f; do gh_login_settle "$f" || true
   done < <(ask_files --all | xargs -r -d '\n' grep -lx 'login: gh' 2>/dev/null |
-    xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null)
+    ask_open_files)
   while IFS= read -r f; do
     load_ask "$f"
     due="$(date -d "${ASK[assume_at]}" +%s 2>/dev/null)" && [ "$due" -le "$now" ] || continue
@@ -1413,36 +1512,10 @@ cmd_assume_due() {
     in_dialog "$(live_row "${ASK[claude_session]:-}")" && continue
     cmd_answer --by judge "${ASK[id]}" "$ans"
   done < <(ask_files --all | xargs -r -d '\n' grep -l '^assume_at: .' 2>/dev/null |
-    xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null)
+    ask_open_files)
   cmd_expire
-  sweep_on_new_hold
-}
-
-# sweep_on_new_hold: a hold the human set since the last pass can settle asks posted before it
-# (2026-11-19: two asks for a release tag sat pending under the release-cut hold), so a hold name
-# not in AGENT_ASK_HOLDS_SEEN starts one detached `sweep --all`, which judges each pending ask with
-# the holds in its input. Under a unit (fleet-state is a oneshot whose cgroup is killed on exit)
-# the sweep gets its own scope, as ask-resume's runs do. AGENT_ASK_SWEEP_CMD replaces it (tests);
-# AGENT_ASK_NO_JUDGE with no replacement only records the names.
-sweep_on_new_hold() {
-  local now new
-  # A failed read changes nothing: recorded as no holds, every hold would read as new next pass.
-  now="$(human_holds)" || return 0
-  now="$(cut -f1 <<<"$now" | sort -u)"
-  [ "$now" != "$(cat "$AGENT_ASK_HOLDS_SEEN" 2>/dev/null)" ] || return 0
-  new="$(comm -13 <(sort -u "$AGENT_ASK_HOLDS_SEEN" 2>/dev/null) <(printf '%s\n' "$now" | sed '/^$/d'))"
-  mkdir -p "$(dirname "$AGENT_ASK_HOLDS_SEEN")" 2>/dev/null && printf '%s\n' "$now" > "$AGENT_ASK_HOLDS_SEEN"
-  [ -n "$new" ] || return 0
-  if [ -n "${AGENT_ASK_SWEEP_CMD:-}" ]; then
-    # shellcheck disable=SC2086 # a word list by design, like AGENT_ASK_JUDGE_CMD
-    $AGENT_ASK_SWEEP_CMD --all </dev/null >/dev/null 2>&1
-    return 0
-  fi
-  [ -z "${AGENT_ASK_NO_JUDGE:-}" ] || return 0
-  local detach=(setsid -f)
-  [ -z "${INVOCATION_ID:-}" ] || detach=(systemd-run --user --scope --quiet setsid -f)
-  echo "agent-ask: new human hold $(paste -sd, <<<"$new"); sweeping the pending asks" >&2
-  "${detach[@]}" "${BASH_SOURCE[0]}" sweep --all </dev/null >/dev/null 2>&1
+  # Last, so a stalled call never holds expiry.
+  rejudge_timed_out
 }
 
 # judge_demote_check <file>: after an override on this live answer, take its cell (its type at
@@ -1482,52 +1555,6 @@ judge_demote_check() {
   notes ptask "$AGENT_ASK_JUDGE_BOARD" --agent add \
     "check(judge): ask-judge $cell went back to shadow after the override on ask $id ($why); re-promote by deleting its line in $AGENT_ASK_DEMOTED, or lower or drop the $rule row in DELAY_RULES in ask-judge.conf by PR #size/s" \
     --origin agent-ask >/dev/null 2>&1 || true
-}
-
-# audit_sample <file>: after a live answer, every Nth one at its level goes back to the human as an
-# approval offering the ask's own options (audit_answer reads the pick), so a live cell keeps a
-# label once nobody answers its asks by hand: a live cell's precision counts reviewed answers
-# only, never silence. N is AUDIT_RATES in ask-judge.conf, `<level>=<N>`; a level it does not
-# name is audited every time. Only an answer that is one of the ask's options can be reviewed,
-# so only those are counted. The count per level is runtime state beside the demote list.
-# gate: aa-audit-sample
-audit_sample() {
-  local f="$1" level ans opts n rate kv id q
-  level="$(field "$f" judge_level)"; ans="$(field "$f" answer)"; opts="$(field "$f" options)"
-  [ -n "$level" ] && [ -n "$ans" ] && [[ "|${opts,,}|" == *"|${ans,,}|"* ]] || return 0
-  rate=1
-  for kv in $(tr ',' ' ' <<<"$(judge_conf AUDIT_RATES "")"); do
-    [[ "$kv" =~ ^$level=([1-9][0-9]*)$ ]] && rate="${BASH_REMATCH[1]}"
-  done
-  mkdir -p "$AGENT_ASK_AUDIT_DIR" 2>/dev/null || return 0
-  n="$( (
-    command -v flock >/dev/null 2>&1 && flock 9
-    n="$(cat "$AGENT_ASK_AUDIT_DIR/$level" 2>/dev/null)"; [[ "$n" =~ ^[0-9]+$ ]] || n=0
-    echo $((n + 1)) > "$AGENT_ASK_AUDIT_DIR/$level"; echo $((n + 1))
-  ) 9>"$AGENT_ASK_AUDIT_DIR/.lock")"
-  [[ "$n" =~ ^[0-9]+$ ]] && [ $((n % rate)) -eq 0 ] || return 0
-  id="$(field "$f" id)"
-  # The asker's question in double quotes, which post reads as quoted text, cut to fit one line.
-  q="$(field "$f" question | tr '"' "'")"
-  local head="The judge answered \"" tail="\" with \"$ans\"; your pick?"
-  local room=$((AGENT_ASK_QUESTION_MAX - ${#head} - ${#tail}))
-  [ "${#q}" -le "$room" ] || q="${q:0:$((room - 3))}..."
-  local o notes=() parts=() options=""
-  IFS='|' read -r -a parts <<<"$opts"; IFS='|' read -r -a notes <<<"$(field "$f" option_notes)"
-  for o in "${!parts[@]}"; do options+="${options:+|}${parts[$o]}=${notes[$o]:-as the asker offered it}"; done
-  local audit err; err="$(mktemp)"
-  audit="$( unset CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SESSION_ATTENDED TMUX TMUX_PANE AGENTCTL_NAME
-    cmd_post --project "$(field "$f" project)" --profile "$(field "$f" profile)" --kind approval \
-      --task "audit of the judge's live answer on ask $id" --audit-of "$id" --options "$options" \
-      --context "An audit of the answer judge: it answered ask $id on its own ($(field "$f" judge_rule) at level $level, 1 in $rate of its live answers there is checked). Pick what you would have answered; the judge's own option keeps it, another one overrides it and goes to the asker. $(field "$f" context)" \
-      "$head$q$tail" 2>"$err")" || {
-    # A post that fails leaves its reason and a mark, so an unaudited answer never passes for audited.
-    echo "agent-ask: audit of ask $id not posted: $(head -1 "$err")" >&2
-    rm -f "$err"; set_field "$f" judge_audit failed; return 0
-  }
-  rm -f "$err"
-  [ -n "$audit" ] && set_field "$f" judge_audit "$audit"
-  return 0
 }
 
 # audit_answer <audit file> <id of the ask it audits> <answer> <by>: the audit's answer is the
@@ -1956,7 +1983,8 @@ story_telemetry() {
         + (if (.why // "") != "" then ": \(.why)" else "" end),
       (if .cost_usd then (.cost_usd | money) else empty end),
       (.duration_s | dur),
-      "\(.prs_merged // 0) PRs merged" + (if (.prs_open // 0) > 0 then ", \(.prs_open) open" else "" end),
+      (if .prs_merged == null then "PRs unknown"
+       else "\(.prs_merged) PRs merged" + (if (.prs_open // 0) > 0 then ", \(.prs_open) open" else "" end) end),
       (if $seen != "" then "seen \($seen) ago" else empty end)
     ] | join(" . ")' <<<"$row"
 }
@@ -2132,7 +2160,7 @@ cmd_settle_session() {
   local full text f opts pick yes=""; full="$(oneline "$*")"; text="$(cut -c1-200 <<<"$full")"
   # A bare yes answers only the one question on screen: the session's only pending ask.
   if bare_yes "$full" && [ "$(ask_files --all | xargs -r -d '\n' grep -lxF "claude_session: $owner" |
-        xargs -r -d '\n' grep -lx 'status: pending' | wc -l)" -eq 1 ]; then yes=1; fi
+        ask_open_files | wc -l)" -eq 1 ]; then yes=1; fi
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     grep -qxF "claude_session: $owner" "$f" || continue
@@ -2177,14 +2205,13 @@ cmd_settle_session() {
 # answered, or is waiting to assume, on this ask. <where> is "in session" or "from a board". Naming
 # one other option records judge_override (the label judge-eval scores) and runs the demote check.
 # Naming the judge's own records `kept`, the only review judge-eval scores as agreement. On a
-# pending ask, naming no option disarms it: the human is here, so nothing is assumed, and
-# `assume_answer` stays so a later pick still counts.
+# pending ask, a message naming no option changes nothing: the answer stays armed until the human
+# answers that ask (a message about other work is no answer to it).
 #
 # After an answer at post, the first message in the session naming no option closes the review
 # with `none`, which is silence, not agreement, so later ones about other things cannot read as an
-# override. After an assumed answer the human may
-# not have seen the question yet, so a later pick still counts; so does a board answer on any
-# judge answer, which names its ask. Free text naming no option is never guessed at.
+# override. After an assumed answer the human may not have seen the question yet, so a later pick
+# still counts; so does a board answer on any judge answer, which names its ask. Free text naming no option is never guessed at.
 review_judge_answer() {
   local f="$1" text="$2" where="$3" said pick pending=""
   load_ask "$f"
@@ -2208,15 +2235,7 @@ review_judge_answer() {
   elif [ -n "$pick" ]; then
     set_field "$f" judge_override kept judge_override_note "$where: $text" judge_override_at "$(now_iso)"
     queue_changed
-  elif [ -n "$pending" ] && [ -z "$pick" ]; then
-    # once: a disarmed ask has no assume_at left, and every later prompt would rewrite it again
-    # gate: aa-disarm-on-human
-    if [ -z "${ASK[assume_disarmed]:-}" ]; then
-      set_field "$f" assume_disarmed "$(now_iso)"
-      drop_field "$f" assume_at
-      queue_changed
-    fi
-  elif [ -n "$pending" ] || [ "$where" = "in session" ]; then
+  elif [ -z "$pending" ] && [ "$where" = "in session" ]; then
     set_field "$f" judge_override none
   fi
 }
@@ -2376,7 +2395,7 @@ cmd_expire() {
     else
       close_ask cancelled "$id" "$why" 2>/dev/null
     fi
-  done < <(ask_files --all | xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null | sort)
+  done < <(ask_files --all | ask_open_files | sort)
 }
 # row_named <text>: whether the text names exactly one board row id, `<code>-<n>` with a tracker
 # code from project-map.json (project_codes, read once into ROW_CODES), as a whole word. Sets
@@ -2556,11 +2575,10 @@ cmd_judge() {
     judge_record "$f" human gate "the ask $floor; not sent to the judge" ""
     return 0
   fi
-  local prompt precedents holds older out wd rc verdict call rule answer cid settled
+  local prompt precedents older out wd rc verdict call rule answer cid settled
   precedents="$(cmd_precedents "$(field "$f" created)" 2>/dev/null)"
-  # What can settle the ask with no human (policy, Settled already): the holds the human set, and
-  # the older asks still waiting, one of which may be this same question.
-  holds="$(human_holds | awk -F'\t' '{ print "- " $1 ": " $2 }')"
+  # What can settle the ask with no human (policy, Settled already): the older asks still waiting,
+  # one of which may be this same question.
   older="$(older_asks "$f")"
   # The policy is the agent's PROMPT file; agentctl-run puts it ahead of this input.
   prompt="## The ask
@@ -2578,10 +2596,6 @@ ${precedents:+
 ## Past disagreements
 
 $precedents
-}${holds:+
-## Holds the human set
-
-$holds
 }${older:+
 ## Older pending asks
 
@@ -2625,9 +2639,8 @@ Return the verdict in the structured output."
     else rule=grounded   # nothing to take: no recommendation and no answer of its own
     fi
   fi
-  set_field "$f" judge_type "$(jq -r .type <<<"$verdict")"
-  set_field "$f" judge_met "$(jq -r .met <<<"$verdict")"
-  set_field "$f" judge_evidence "$(oneline "$(jq -r .evidence <<<"$verdict")")"
+  local fields=(judge_type "$(jq -r .type <<<"$verdict")" judge_met "$(jq -r .met <<<"$verdict")"
+    judge_evidence "$(oneline "$(jq -r .evidence <<<"$verdict")")")
   # The level: the judge's widest rating, raised to fleet by a policy floor name.
   # judge_level_raised says a floor raised it, which judge-eval counts per cell. judge_human_only
   # is the human-stop flag beside it (external, or not reversible), never a level.
@@ -2639,17 +2652,10 @@ Return the verdict in the structured output."
   fi
   [ "$(jq -r .human_only <<<"$verdict")" = true ] &&
     ho=(judge_human_only true judge_human_only_evidence "$(oneline "$(jq -r .human_only_evidence <<<"$verdict")")")
-  set_field "$f" judge_level "$level" judge_level_evidence "$(oneline "$lev_ev")" judge_level_raised "$raised" "${ho[@]}"
+  fields+=(judge_level "$level" judge_level_evidence "$(oneline "$lev_ev")" judge_level_raised "$raised" "${ho[@]}")
   settled=$(jq -r .settled_by <<<"$verdict")
-  [ -z "$settled" ] || set_field "$f" judge_settled_by "$(oneline "$settled")" judge_settled_answer "$(oneline "$answer")"
-  judge_record "$f" "$call" "$rule" "$(jq -r .reason <<<"$verdict")" "$cid"
-}
-
-# human_holds: each hold the human set, `<name><TAB><reason>`, from `agent-hold list`. Only the
-# human's: a hold an agent set is load or a session's own claim, never the human's word on an ask.
-human_holds() {
-  local all; all="$("$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/agent-hold" list 2>/dev/null)" || return 1
-  awk -F'\t' '$3 == "human" { print $1 "\t" $4 }' <<<"$all"
+  [ -z "$settled" ] || fields+=(judge_settled_by "$(oneline "$settled")")
+  judge_record "$f" "$call" "$rule" "$(jq -r .reason <<<"$verdict")" "$cid" "${fields[@]}"
 }
 
 # older_asks <file>: the pending asks posted before this one that another can join (settle_by_verdict),
@@ -2661,7 +2667,7 @@ older_asks() {
     load_ask "$g"
     [ "${ASK[id]:-}" != "$me" ] && [[ "${ASK[created]:-}" < "$created" ]] && joinable || continue
     printf '%s\t- %s (%s): %s\n' "${ASK[created]}" "${ASK[id]}" "${ASK[project]:-}" "${ASK[question]:-}"
-  done < <(ask_files --all | xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null) |
+  done < <(ask_files --all | ask_open_files) |
     sort -r | awk 'NR<=30' | cut -f2-
 }
 
@@ -2674,44 +2680,18 @@ joinable() {
     { [ -z "$r" ] || [ "$r" = "$REOPEN_RESUME" ]; } && { [ -z "$p" ] || ! [[ "$p" > "$(now_utc)" ]]; }
 }
 
-# settle_by_verdict <file> <post|sweep>: close the ask on what the judge said already settles it
+# settle_by_verdict <file>: close the ask on what the judge said already settles it
 # (policy, Settled already), each premise checked again here, since the model only reads text.
-# `hold:<name>`: a hold the human set and still holds decides it, so it is answered by that hold
-# (`answered_by: hold`), with options by the option the judge names (none, or not an option, leaves the
-# ask pending), told to the asker at post and delivered at sweep. `ask:<id>`: an older
-# joinable ask asks the same, so this ask's sessions wait on that one and this one is cancelled.
-# Prints `hold <name>` or `joined <id>`. Fails, changing nothing, on any other verdict or a premise gone. Never an
+# `ask:<id>`: an older joinable ask asks the same, so this ask's sessions wait on that one and this
+# one is cancelled. Prints `joined <id>`. Fails, changing nothing, on any other verdict or a premise gone. Never an
 # approval, an audit, an ask a queue item waits on (a join cancels it, which leaves the item held),
 # or one with a resume command of its own.
 settle_by_verdict() {
-  local f="$1" mode="$2" by id
+  local f="$1" by id
   by="$(field "$f" judge_settled_by)"; id="$(field "$f" id)"
   [ -n "$by" ] || return 1
   load_ask "$f"; joinable && ! queue_waits "$id" && [ -n "${QUEUE_READ:-}" ] || return 1
   case "$by" in
-    hold:?*)
-      local name="${by#hold:}" reason ans note queued=() opts="${ASK[options]:-}"
-      # The human disarmed the judge's answers on this ask; a hold answer is one too.
-      [ -z "${ASK[assume_disarmed]:-}" ] || return 1
-      reason="$(human_holds | awk -F'\t' -v n="$name" '$1 == n { print $2; found = 1; exit } END { exit !found }')" || return 1
-      # The option the hold picks, named by the judge: never the recommendation, which is what the
-      # asker wants, and a hold can forbid exactly that (PZLBaS, 2026-11-20: the critical hold bans
-      # the DNS work, and the recommended `a` was that work). With options and no pick, a human answers.
-      ans="$(field "$f" judge_settled_answer)"
-      if [ -n "$opts" ]; then
-        [[ "|$opts|" == *"|${ans%%[: ]*}|"* ]] || return 1
-      else
-        [ -n "$ans" ] || ans="settled by the human's $name hold"
-      fi
-      note="the human's $name hold: $reason"
-      [ "$mode" = post ] || queued=(delivery queued delivery_at "$(now_iso)")
-      record_answer "$f" hold "$ans" answer_note "$note" "${queued[@]}" || return 1
-      if [ "$mode" = post ]; then
-        told_at_post "$f" "Answered by $note. Answer: $ans. Proceed by it; the human can override in this session."
-      else
-        delivery_changed
-      fi
-      printf 'hold %s\n' "$name" ;;
     ask:?*)
       # Only an ask with sessions to move and no blocker key of its own (a later post on that key
       # looks for this file) joins another.
@@ -2757,13 +2737,16 @@ ask_text() {
   local k; for k in task question context options option_notes recommend_why; do printf '%s ' "$(field "$1" "$k")"; done
 }
 
-# judge_record <file> <judge> <rule> <reason> <call id>: the verdict's fields on the ask.
+# judge_record <file> <judge> <rule> <reason> <call id> [<key> <value>...]: the verdict's fields
+# on the ask, with any more of the verdict's pairs ahead of them, in one write. A judge the guard
+# (judge_guarded) ends between writes left `judge` set with no `judge_rule`, which the guard reads
+# as a verdict and nothing answers (agent_ask.bats, run 45675382228).
 judge_record() {
-  set_field "$1" judge "$2"
-  [ -n "$3" ] && set_field "$1" judge_rule "$3"
-  set_field "$1" judge_reason "$(oneline "$4")"
-  [ -n "$5" ] && set_field "$1" judge_call "$5"
-  set_field "$1" judged_at "$(now_iso)"
+  local f="$1" kv=("${@:6}" judge "$2")
+  [ -n "$3" ] && kv+=(judge_rule "$3")
+  kv+=(judge_reason "$(oneline "$4")")
+  [ -n "$5" ] && kv+=(judge_call "$5")
+  set_field "$f" "${kv[@]}" judged_at "$(now_iso)"
   queue_changed
 }
 
@@ -2881,6 +2864,7 @@ case "$sub" in
   live-sessions) live_sessions ;;
   titles) session_titles ;;
   answer) cmd_answer_cli "$@" ;;
+  said)   cmd_said "$@" ;;
   cancel) cmd_cancel "$@" ;;
   park)   cmd_park "$@" ;;
   unpark) cmd_unpark "$@" ;;

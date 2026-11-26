@@ -17,6 +17,10 @@ setup() {
   # The host's own claude processes count as live sessions, which now move the rank.
   export CLAUDE_ACCT_PROC="$SANDBOX/proc"
   export CLAUDE_ACCT_CONFIG="$SANDBOX/accounts"
+  # the verdicts below are at a week held to its reset, a standing 0 over pace.conf's allowance,
+  # which has its own tests (pace_conf.bats pins the row format)
+  export PACE_OVERRIDES="$SANDBOX/pace-overrides" PACE_CONF_BIN="$REPO_ROOT/.local/bin/pace-conf"
+  echo 'BURN_OVER_PCT|0|0||test' > "$PACE_OVERRIDES"
   printf 'main -\nalt %s\n' "$ALT" > "$CLAUDE_ACCT_CONFIG"
   printf '#!/usr/bin/env bash\nexit 22\n' > "$SANDBOX/bin/curl"
   printf '#!/usr/bin/env bash\necho "2.1.0 (Claude Code)"\n' > "$SANDBOX/bin/claude"
@@ -616,6 +620,32 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
   [ "$(field alt .room.reason <<<"$output")" = committed ]
 }
 
+@test "BURN_OVER_PCT lets working sessions burn past what the week sustains before committed refuses" {
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_PROC="$SANDBOX/proc" CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 50 50
+  week alt 50 50   # 1 point an hour to spare
+  mkdir -p "$HOME/.claude/sessions"
+  local pid
+  for pid in 1 2 3 4 5 6 7 8 9 10 11 12; do   # 12 working x 0.1 = 1.2/h, past the 1/h it sustains
+    mkdir -p "$SANDBOX/proc/$pid"
+    echo claude > "$SANDBOX/proc/$pid/comm"
+    printf 'CLAUDE_CONFIG_DIR=%s\0' "$ALT" > "$SANDBOX/proc/$pid/environ"
+    printf '{"pid":%s,"kind":"interactive","status":"busy","statusUpdatedAt":%s}\n' "$pid" "$((NOW * 1000))" > "$HOME/.claude/sessions/$pid.json"
+  done
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field alt .room.reason <<<"$output")" = committed ]
+  # the env pre-set is gone: only pace_get's value moves it (#3308 review)
+  CLAUDE_ACCT_BURN_OVER_PCT=50 run --separate-stderr "$ACCT" status --json
+  [ "$(field alt .room.reason <<<"$output")" = committed ]
+  "$PACE_CONF_BIN" set BURN_OVER_PCT 50
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field alt .room.ok <<<"$output")" = true ]
+  # a window over the standing value wins while it is in force
+  "$PACE_CONF_BIN" set BURN_OVER_PCT 0 --until '+2 hours'
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field alt .room.reason <<<"$output")" = committed ]
+}
+
 @test "a busy or shell session whose status is older than ACTIVE_MIN is live but not working (ar-1018)" {
   # 2026-11-07: 5 of 33 claudes were a LANDED or CHAT session idle for hours, still on "shell", counted as burn.
   export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_PROC="$SANDBOX/proc" CLAUDE_ACCT_SESSION_RATE=0.1
@@ -1131,6 +1161,104 @@ seen_claude() {
   assert_failure
 }
 
+# scope: claude in its own systemd user scope, named for its project and queue item. busctl is
+# stubbed to log its arguments to $BUS_LOG (exit $SCOPE_BUS_RC), so no real scope starts; claude prints
+# its pid, which is the pid the scope was asked to take. bus_out appends the log to the run's output.
+scope_env() {
+  [[ "$(uname -s)" == Linux ]] || skip "systemd scopes are Linux only"
+  mkdir -p "$XDG_RUNTIME_DIR/systemd" "$SANDBOX/repo/unity-core-playground"
+  rm -f "$XDG_RUNTIME_DIR/systemd/private"
+  export BUS_LOG="$SANDBOX/bus.log"; : > "$BUS_LOG"
+  python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$XDG_RUNTIME_DIR/systemd/private"
+  cat > "$SANDBOX/bin/busctl" <<'STUB'
+#!/bin/sh
+for a; do echo "bus: $a"; done >> "$BUS_LOG"
+exit "${SCOPE_BUS_RC:-0}"
+STUB
+  cat > "$SANDBOX/bin/systemd-escape" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$2" | sed 's/-/\\x2d/g'
+STUB
+  cat > "$SANDBOX/bin/claude" <<'STUB'
+#!/bin/sh
+echo "claude $*"
+echo "pid $$"
+STUB
+  chmod +x "$SANDBOX/bin/busctl" "$SANDBOX/bin/systemd-escape" "$SANDBOX/bin/claude"
+}
+
+bus_out() { output+=$'\n'"$(cat "$BUS_LOG")"; mapfile -t lines <<<"$output"; }
+
+# scoped_pid -> the pid the stubbed busctl was asked to move, after "PIDs au 1".
+scoped_pid() { awk '/^bus: PIDs$/ { n = NR + 3 } NR == n { print $2 }' <<<"$output"; }
+
+@test "scope: a session moves into agent-<project>-<item>-<pid>.scope, each part escaped, then runs claude as that pid" {
+  scope_env
+  cd "$SANDBOX/repo/unity-core-playground"
+  AGENT_QUEUE_ITEM=ar-4859 TMUX='' run --separate-stderr "$ACCT" scope claude -c
+  assert_success
+  bus_out
+  assert_line --regexp '^bus: agent-unity\\x2dcore\\x2dplayground-ar\\x2d4859-[0-9]+\.scope$'
+  assert_line 'bus: agent session for unity-core-playground item ar-4859'
+  assert_line 'bus: StartTransientUnit'
+  assert_line 'bus: inactive-or-failed'
+  assert_line 'claude -c'
+  local pid
+  pid=$(scoped_pid)
+  [ -n "$pid" ]
+  assert_line "pid $pid"
+  assert_line --regexp "^bus: agent-.*-$pid\.scope\$"
+}
+
+@test "scope: a hand start in a tmux pane has an empty item and reads as the pane's own scope" {
+  scope_env
+  cd "$SANDBOX/repo/unity-core-playground"
+  # The pane's pid is the ancestor the server started: bash -c execs claude-acct, so it is its own.
+  run --separate-stderr env -u AGENT_QUEUE_ITEM bash -c 'TMUX="/tmp/s,$PPID,0" exec "$1" scope claude' _ "$ACCT"
+  assert_success
+  bus_out
+  assert_line --regexp '^bus: agent-unity\\x2dcore\\x2dplayground--[0-9]+\.scope$'
+  assert_line --regexp '^bus: tmux child pane [0-9]+ runs agent session for unity-core-playground launched by process [0-9]+$'
+  local pane
+  pane=$(sed -n 's/^bus: tmux child pane \([0-9]*\) .*/\1/p' <<<"$output")
+  [ -n "$pane" ] && [ "$pane" = "$(scoped_pid)" ]
+}
+
+@test "scope: a hand start outside tmux stays in its terminal's scope, the human's" {
+  scope_env
+  run --separate-stderr env -u AGENT_QUEUE_ITEM TMUX= "$ACCT" scope claude -c
+  assert_success
+  [ ! -s "$BUS_LOG" ]
+  assert_line 'claude -c'
+  [ -z "$stderr" ]
+}
+
+@test "scope: with no user manager, or one that refuses the scope, claude still runs, unscoped, and says why" {
+  scope_env
+  rm "$XDG_RUNTIME_DIR/systemd/private"
+  AGENT_QUEUE_ITEM=x run --separate-stderr "$ACCT" scope claude -c
+  assert_success
+  [ ! -s "$BUS_LOG" ]
+  assert_line 'claude -c'
+  [[ "$stderr" == *'no systemd user manager here, so this session runs in no agent scope'* ]]
+  scope_env
+  AGENT_QUEUE_ITEM=x SCOPE_BUS_RC=1 run --separate-stderr "$ACCT" scope claude -c
+  assert_success
+  assert_line 'claude -c'
+  [[ "$stderr" == *'did not start agent-'*', so this session runs in no agent scope'* ]]
+}
+
+@test "run starts claude through scope" {
+  scope_env
+  usage main 10 80
+  usage alt 50 50
+  AGENT_QUEUE_ITEM=x run --separate-stderr "$ACCT" run -r sid-1
+  assert_success
+  bus_out
+  assert_line --regexp '^bus: agent-'
+  assert_line 'claude -r sid-1'
+}
+
 @test "back on pace: over pace and burning past the line is never at this burn, and the idle time is the clock catching up" {
   # 2026-11-06: 39 live burned 4.5 points an hour against the 1.4 the three weeks could carry
   export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
@@ -1186,7 +1314,7 @@ seen_claude() {
   assert_line --partial 'after-reset'
   # 10 points above the reserve on each, both reset in 84h: 20 over 84h is 0.24 an hour, under the
   # 90 a week each gives for good; at 2 an hour the pool is into the reserve in 10h, before the resets
-  assert_line --regexp '^fleet: 20 live \(20 working\), burn 2/h vs 0\.2/h sustainable \(8\.4x, carries ~2 Opus, no room\), into the reserve [A-Z][a-z]{2} [0-9]{2}:[0-9]{2} before the resets, back on pace: not at this burn; if idle (main|alt) '
+  assert_line --regexp '^fleet: 20 live \(20 working\), burn 2/h vs 0\.2/h sustainable \(8\.4x, carries ~2 Opus, allowance 0% \(override\), no room\), into the reserve [A-Z][a-z]{2} [0-9]{2}:[0-9]{2} before the resets, back on pace: not at this burn; if idle (main|alt) '
 }
 
 # --- the room verdict is one field of each usage row -------------------------------------------
@@ -1246,6 +1374,49 @@ seen_claude() {
   assert_line --regexp '^fleet: 3 live \(3 working\), '
 }
 
+@test "spare and the fleet line follow the allowance in force: above 0 it carries more, and the line names its source" {
+  # #3308 review: spare had no test above 0, and the fleet line did not say which allowance it used
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.025
+  week main 80 84
+  week alt 80 84
+  live "" 1
+  live "$ALT" 1 claude-sonnet-5-5
+  live "$ALT" 1 haiku
+  run --separate-stderr "$ACCT" room --json
+  assert_equal "$(jq -c '.fleet.spare' <<<"$output")" 7   # the standing 0 keeps the old figure
+  run --separate-stderr "$ACCT" status
+  assert_line --regexp '^fleet: .*, allowance 0% \(override\), room for ~7 more\)'
+  "$PACE_CONF_BIN" set BURN_OVER_PCT 200
+  run --separate-stderr "$ACCT" room --json
+  # keeps x 3 less the burn, over the rate: the pool carries more sessions at 200%
+  assert_equal "$(jq '.fleet | (((.keeps * 3 - .burn) / .rate | floor) == .spare) and .spare > 7' <<<"$output")" true
+  local spare; spare=$(jq '.fleet.spare' <<<"$output")
+  run --separate-stderr "$ACCT" status
+  assert_line --regexp "^fleet: .*, allowance 200% \\(override\\), room for ~$spare more\\)"
+  mkdir -p "$SANDBOX/prom" && "$ACCT" textfile "$SANDBOX/prom"
+  run cat "$SANDBOX/prom/claude_acct.prom"
+  assert_line "claude_fleet_spare_sessions $spare"
+  assert_line --regexp '^claude_fleet_allowed_points_per_hour 0\.7[12]'
+  # a window names its end; with no override at all the line says the default is in force
+  "$PACE_CONF_BIN" set BURN_OVER_PCT 300 --until '+2 hours'
+  run --separate-stderr "$ACCT" status
+  assert_line --regexp '^fleet: .*, allowance 300% to [A-Z][a-z]{2} [0-9]{2}:[0-9]{2}, room for ~[0-9]+ more\)'
+  rm -f "$PACE_OVERRIDES"
+  run --separate-stderr "$ACCT" status
+  assert_line --regexp "^fleet: .*, allowance $(sed -n 's/^BURN_OVER_PCT=//p' "$REPO_ROOT/.config/claude-acct/pace.conf")% \\(default\\), "
+}
+
+@test "a corrupt pace-overrides row stops claude-acct and names the file, as a bad pace.conf line does" {
+  echo 'BURN_OVER_PCT|lots|0||hand' > "$PACE_OVERRIDES"
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  [[ "$stderr" == *"a BURN_OVER_PCT row in $PACE_OVERRIDES is not key|value|from|until|by"* ]] || fail "$stderr"
+  # pace-conf end is the way out, and the default is back
+  "$PACE_CONF_BIN" end BURN_OVER_PCT
+  run --separate-stderr "$ACCT" room
+  [[ "$stderr" != *"$PACE_OVERRIDES"* ]] || fail "$stderr"
+}
+
 @test "room object: the reserve, the capped week and the live sessions each get their own reason" {
   export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
   week main 97 2
@@ -1303,7 +1474,7 @@ seen_claude() {
   assert_failure 1
   [[ "$(field main .room.slack <<< "$output")" == 5 ]]
   [[ "$(field main .room.reserve <<< "$output")" == 10 ]]
-  run grep -nE 'CLAUDE_ACCT_(PACE_SLACK|RESERVE)_PCT:-' "$ACCT"
+  run grep -nE 'CLAUDE_ACCT_(PACE_SLACK|RESERVE|BURN_OVER)_PCT:-' "$ACCT"
   assert_failure
 }
 
@@ -1631,6 +1802,31 @@ agy_usage() {
     "$SANDBOX/agy.json" > "$SANDBOX/agy.3p" && mv "$SANDBOX/agy.3p" "$SANDBOX/agy.json"
   rm -f "$XDG_CACHE_HOME/claude-acct/agy.json"
   run --separate-stderr "$ACCT" status --json
+  [ "$(field agy .room.ok <<<"$output")" = true ]
+}
+
+@test "sources: agy-3p reads the Claude and GPT group, and each agy source is gated on its own week alone (ar-3990)" {
+  agy_setup
+  echo "agy-3p  agy           3p          reserve=5 max_live=2" >> "$CLAUDE_ACCT_SOURCES"
+  agy_usage 0.7 0.94 84
+  jq --arg wr "$(date -u -d "@$((NOW + 84 * 3600))" +%FT%TZ)" \
+    '.command.data.groups |= map(.buckets |= map(if .id == "3p-weekly" then .remaining_fraction = 0.8 | .reset_time = $wr else . end))' \
+    "$SANDBOX/agy.json" > "$SANDBOX/agy.x" && mv "$SANDBOX/agy.x" "$SANDBOX/agy.json"
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field agy-3p .kind <<<"$output")" = agy ]
+  [ "$(field agy-3p .state <<<"$output")" = ok ]
+  [ "$(field agy-3p .week_used <<<"$output")" = 20 ]
+  [ "$(field agy .week_used <<<"$output")" = 30 ]
+  [ "$(field agy-3p .room.ok <<<"$output")" = true ]
+  # a spent 3p week refuses the 3p source only: the gemini source keeps its room
+  jq '.command.data.groups |= map(.buckets |= map(if .id == "3p-weekly" then .remaining_fraction = 0 else . end))' \
+    "$SANDBOX/agy.json" > "$SANDBOX/agy.x" && mv "$SANDBOX/agy.x" "$SANDBOX/agy.json"
+  rm -f "$XDG_CACHE_HOME/claude-acct/agy.json" "$XDG_CACHE_HOME/claude-acct/agy-3p.json"
+  run --separate-stderr "$ACCT" room --source agy-3p
+  assert_failure 1
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field agy-3p .room.reason <<<"$output")" = capped ]
   [ "$(field agy .room.ok <<<"$output")" = true ]
 }
 
@@ -2904,6 +3100,22 @@ STUB
   assert_output 0
 }
 
+@test "token push: localhost writes the copy here with no ssh, so no host key is needed" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  vault_put claude-oauth-alt "$TOK_ALT"
+  mkdir -p "$HOME/.local/bin"
+  ln -s "$ACCT" "$HOME/.local/bin/claude-acct"
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s/ssh.argv"; exit 255\n' "$SANDBOX" > "$SANDBOX/bin/ssh"; chmod +x "$SANDBOX/bin/ssh"
+  run "$ACCT" token push localhost
+  assert_success
+  assert_output 'localhost: main alt read back'
+  local d="${XDG_CONFIG_HOME:-$HOME/.config}/claude-acct/tokens"
+  [[ "$(cat "$d/alt")" == "$TOK_ALT" ]]
+  [[ "$(stat -c %a "$d/alt")" == 600 ]]
+  [[ ! -e "$SANDBOX/ssh.argv" ]]   # negative control: the failing ssh stub was never called
+}
+
 @test "token push: refuses with rbw locked here, and names an account the host cannot read" {
   rbw_stub
   vault_put claude-oauth-alt "$TOK_ALT"
@@ -2968,6 +3180,7 @@ STUB
   touch "$SANDBOX/vault/locked"
   run "$ACCT" check tokens
   assert_failure 2
+  assert_output --regexp '^unreadable: rbw is missing or locked'
 }
 
 # A claude stub for setup-token: `setup-token` prints a token, `-p` answers ok. TOKEN_OUT empty
@@ -3136,16 +3349,23 @@ STUB
 
 @test "plans-store turns a project's copy into a relative link and keeps a newer copy's text" {
   root="$HOME/.agent/plans" live="$HOME/.agent/plans/_live"
-  mkdir -p "$live" "$root/proj" "$root/other" "$root/_archive"
-  echo source > "$live/a.md"; echo source > "$live/b.md"
+  mkdir -p "$live" "$root/proj" "$root/other" "$root/_archive" "$root/_unscoped" "$root/_runner"
+  echo source > "$live/a.md"; echo source > "$live/b.md"; echo source > "$live/c.md"; echo source > "$live/d.md"
   echo copy > "$root/proj/a.md"; touch -d '2020-01-01' "$root/proj/a.md"
   echo edited > "$root/other/b.md"; touch -d '2030-01-01' "$root/other/b.md"
+  echo copy > "$root/_unscoped/c.md"; touch -d '2020-01-01' "$root/_unscoped/c.md"
+  echo copy > "$root/_runner/d.md"; touch -d '2020-01-01' "$root/_runner/d.md"
   echo own > "$root/proj/own.md"
   echo archived > "$root/_archive/a.md"
   run "$ACCT" plans-store
   assert_success
   [[ "$(readlink "$root/proj/a.md")" == ../_live/a.md && "$(cat "$root/proj/a.md")" == source ]]
   [[ "$(readlink "$root/other/b.md")" == ../_live/b.md && "$(cat "$live/b.md")" == edited ]]
+  # the reserved project keys are projects: their twins become the link too (ar-3294)
+  [[ "$(readlink "$root/_unscoped/c.md")" == ../_live/c.md && "$(cat "$live/c.md")" == source ]]
+  [[ "$(readlink "$root/_runner/d.md")" == ../_live/d.md && "$(cat "$live/d.md")" == source ]]
+  # the store itself is never turned into a link
+  [[ -z "$(find "$live" -maxdepth 1 -type l)" ]]
   # a plan only a project holds, and an archived copy, stay files
   [[ -f "$root/proj/own.md" && ! -L "$root/proj/own.md" ]]
   [[ -f "$root/_archive/a.md" && ! -L "$root/_archive/a.md" ]]

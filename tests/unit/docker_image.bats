@@ -9,21 +9,26 @@ setup() {
   mkdir -p "$T/tests/vendor/bats-core/bin" "$T/.local/src/tmux/patched" "$T/bin"
   cp "$BATS_TEST_DIRNAME/../docker.sh" "$T/tests/docker.sh"
   echo 'FROM scratch' > "$T/tests/Dockerfile"
+  echo 1.99.1 > "$T/tests/rust-toolchain"
   echo 'patch' > "$T/.local/src/tmux/patched/a.patch"
   printf '#!/bin/sh\n' > "$T/tests/vendor/bats-core/bin/bats"
   chmod +x "$T/tests/vendor/bats-core/bin/bats"
   LOG="$BATS_TEST_TMPDIR/docker.log"
-  # A fake docker: logs each call; `image inspect` succeeds only when $PRESENT exists.
+  # A fake docker: logs each call; `image inspect` succeeds only when $PRESENT exists. A detached
+  # run prints a container id, and an exec exits $EXEC_RC.
   cat > "$T/bin/docker" <<FAKE
 #!/bin/sh
 echo "\$*" >> "$LOG"
 [ "\$1 \$2" = "image inspect" ] && { [ -e "$BATS_TEST_TMPDIR/present" ]; exit; }
 [ "\$1 \$2" = "image ls" ] && { cat "$BATS_TEST_TMPDIR/images" 2>/dev/null; exit 0; }
+[ "\$1 \$2" = "run -d" ] && { echo cid1; exit 0; }
+[ "\$1" = exec ] && exit "\${EXEC_RC:-0}"
 exit 0
 FAKE
   chmod +x "$T/bin/docker"
   export DOCKER="$T/bin/docker"
-  unset COCKPIT_TEST_IMAGE TMUX_REF TMUX_STOCK FZF_REF
+  # The copy plays a host's docker.sh, so not the in-image one a job-pod job runs (ar-6016).
+  unset COCKPIT_TEST_IMAGE TEST_IMAGE_KIND TMUX_REF TMUX_STOCK FZF_REF COCKPIT_TEST_DISPOSABLE GITHUB_ACTIONS
 }
 
 @test "the tag changes when the Dockerfile, the context or a build arg changes" {
@@ -80,4 +85,72 @@ FAKE
   assert_success
   run grep '^rmi' "$LOG"
   assert_output "rmi ${new%-*}-0123456789ab"
+}
+
+@test "each kind has its own tag, the full one keeps the old shape, and --build targets the kind" {
+  run "$T/tests/docker.sh" --image
+  full="$output"
+  [[ "$full" =~ ^cockpit-tests:tmux3\.8- ]]
+  TEST_IMAGE_KIND=full run "$T/tests/docker.sh" --image
+  assert_output "$full"
+  TEST_IMAGE_KIND=lean run "$T/tests/docker.sh" --image
+  [[ "$output" =~ ^cockpit-tests:lean-tmux3\.8-fzf[0-9.]+-[0-9a-f]{12}$ ]]
+  [ "${output#cockpit-tests:lean-}" = "${full#cockpit-tests:}" ]
+  TEST_IMAGE_KIND=rust run "$T/tests/docker.sh" --image
+  [[ "$output" =~ ^cockpit-tests:rust-tmux3\.8- ]]
+  TEST_IMAGE_KIND=lean run "$T/tests/docker.sh" --build
+  assert_success
+  run grep -c '^build .*--target lean ' "$LOG"
+  assert_output 1
+  run "$T/tests/docker.sh" --build
+  run grep -c '^build .*--target full ' "$LOG"
+  assert_output 1
+}
+
+@test "a kind that is not a Dockerfile stage is refused" {
+  TEST_IMAGE_KIND=slim run "$T/tests/docker.sh" --image
+  assert_failure 2
+  assert_output --partial 'lean, rust or full'
+}
+
+@test "a new build of one kind leaves the other kinds' images alone" {
+  TEST_IMAGE_KIND=lean run "$T/tests/docker.sh" --image
+  lean="$output"
+  run "$T/tests/docker.sh" --image
+  full="$output"
+  printf '%s\n' "${lean%-*}-0123456789ab" "${full%-*}-0123456789ab" "$full" > "$BATS_TEST_TMPDIR/images"
+  TEST_IMAGE_KIND=lean run "$T/tests/docker.sh" --build
+  assert_success
+  run grep '^rmi' "$LOG"
+  assert_output "rmi ${lean%-*}-0123456789ab"
+}
+
+@test "tests/Dockerfile defines every stage docker.sh can target" {
+  for kind in lean rust full; do
+    grep -qE "^FROM .* AS $kind\$" "$BATS_TEST_DIRNAME/../Dockerfile" || fail "no stage named $kind in tests/Dockerfile"
+  done
+}
+
+# In a GitHub job the command runs by docker exec in a detached container, so the step never
+# waits on the container's exit and removal (ar-5740); anywhere else, CI set or not, it is one docker run.
+@test "in a GitHub job a command runs by docker exec in a detached container and keeps its exit status" {
+  touch "$BATS_TEST_TMPDIR/present"
+  GITHUB_ACTIONS=true EXEC_RC=3 run "$T/tests/docker.sh" --run x y
+  assert_failure 3
+  run grep -E '^run -d --entrypoint sleep .* infinity$' "$LOG"
+  assert_success
+  run grep -cxF 'exec cid1 /usr/local/bin/test-entry x y' "$LOG"
+  assert_output 1
+  run grep -c '^rm ' "$LOG"
+  assert_output 0
+}
+
+@test "outside a GitHub job a command is one docker run, with no exec, even with CI set" {
+  touch "$BATS_TEST_TMPDIR/present"
+  CI=true run "$T/tests/docker.sh" --run x y
+  assert_success
+  run grep -cE '^run .* x y$' "$LOG"
+  assert_output 1
+  run grep -cE '^(exec|run -d) ' "$LOG"
+  assert_output 0
 }

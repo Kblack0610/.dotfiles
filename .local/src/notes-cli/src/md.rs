@@ -5,6 +5,34 @@ use anyhow::{Context, Result};
 use chrono::{Datelike, Duration, NaiveDate, Weekday};
 use std::path::Path;
 
+/// An open task matching `query` (already lower-cased) by normalised text: the one predicate
+/// `done`, `start` and `rm` share in `project_tasks` and `focus`, so they never disagree about
+/// what is selectable.
+pub fn is_match(line: &str, query: &str) -> bool {
+    is_open_task(line) && task_key(line).contains(query)
+}
+
+/// A `YYYY-MM-DD` test date; panics on any other text.
+#[cfg(test)]
+pub(crate) fn date(s: &str) -> NaiveDate {
+    NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+}
+
+/// `s` in kebab case: lowercase ASCII letters and digits, every other run one `-`, none at
+/// either end; empty when `s` has no letter or digit.
+pub fn kebab(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.truncate(out.trim_end_matches('-').len());
+    out
+}
+
 /// FNV-1a of `s` as 16 hex digits: the compare-and-swap base a page reads and sends back
 /// (`notes show` and `notes put`, `notes outbox show` and `put`). Stable across builds, so a hash
 /// a page read with one `notes` still matches after an upgrade.
@@ -925,7 +953,9 @@ pub enum TagKind {
 pub fn tag_kind(tag: &str) -> TagKind {
     let task = PRIORITIES.iter().any(|(t, _, _)| *t == tag)
         || matches!(tag, "requested" | "agent" | "p")
-        || ["size/", "worker/"].iter().any(|p| tag.starts_with(p))
+        || ["size/", "worker/", "why/"]
+            .iter()
+            .any(|p| tag.starts_with(p))
         || looks_like_tier(tag)
         || is_parent_tag(tag)
         || is_version_tag(tag)
@@ -1038,7 +1068,7 @@ pub const INTAKE_TAGS: &[(&str, &str)] = &[
     ("#agent", "files it on the agent board"),
     ("#plan", "plans it first, the plan held for your review"),
     ("#go", "no review: a plan runs as written"),
-    ("#urgent #high #low", "its priority"),
+    ("#urgent #high #normal #low", "its priority"),
     (
         "#ask",
         "a quick read-only answer in today's notes inbox, no row",
@@ -1332,9 +1362,10 @@ fn strip_trailing_day(s: &str) -> String {
 /// The priority levels, most-urgent first: `(bare-word, #hashtag, lane-heading)`. The SINGLE
 /// source of truth, shared by tag detection here, the Focus lane sweep, and the nvim mirror
 /// (markdown.lua LANES / PRIORITIES).
-pub(crate) const PRIORITIES: [(&str, &str, &str); 3] = [
+pub(crate) const PRIORITIES: [(&str, &str, &str); 4] = [
     ("urgent", "#urgent", "### Urgent"),
     ("high", "#high", "### High"),
+    ("normal", "#normal", "### Normal"),
     ("low", "#low", "### Low"),
 ];
 
@@ -1342,16 +1373,16 @@ pub(crate) const PRIORITIES: [(&str, &str, &str); 3] = [
 ///
 /// Every task carries a priority. Before this, an untagged task meant "unranked" and the
 /// sweep floated it ABOVE `### Urgent` - so a task nobody had thought about outranked one
-/// explicitly marked urgent. A default in the middle of the range fixes the ordering and
-/// leaves room to move in both directions: pump to `#urgent`, push down to `#low`.
-pub(crate) const DEFAULT_PRIORITY: usize = 1; // #high
+/// explicitly marked urgent. Normal is the default for real work (`~/.local/src/docs/priority.md`),
+/// so an untagged row ranks after `#high` and before `#low` (upkeep, cleanup or FYI).
+pub(crate) const DEFAULT_PRIORITY: usize = 2; // #normal
 
 /// The level of a task in `## Focus` that nobody placed in a lane: a line typed or pasted
 /// above the lanes, a row added without a tag. Low, not [`DEFAULT_PRIORITY`], because a line
 /// turned into a task was never ranked, so it must not sit among the ones that were.
-pub(crate) const FOCUS_DEFAULT_PRIORITY: usize = 2; // #low
+pub(crate) const FOCUS_DEFAULT_PRIORITY: usize = 3; // #low
 
-/// The default priority hashtag (`"#high"`).
+/// The default priority hashtag (`"#normal"`).
 pub fn default_priority() -> &'static str {
     PRIORITIES[DEFAULT_PRIORITY].1
 }
@@ -1397,7 +1428,7 @@ pub fn one_priority(line: &str) -> String {
     }
 }
 
-/// Strip every priority hashtag (`#urgent`/`#high`/`#low`, case-insensitive)
+/// Strip every priority hashtag (`#urgent`/`#high`/`#normal`/`#low`, case-insensitive)
 /// from `line`, collapsing the space each one leaves behind, and return the cleaned line
 /// plus the single most-urgent tag found (as `#low` etc.), or `None` if the line has none.
 /// Tag detection mirrors [`find_hashtags`] (heading marker, glued `#`, and code spans skipped).
@@ -1442,14 +1473,19 @@ pub fn strip_priority_tag(line: &str) -> String {
     split_priority(line).0
 }
 
-/// The most-urgent priority tag on a line (`"#urgent"`/`"#high"`/`"#low"`), or
+/// The most-urgent priority tag on a line (`"#urgent"`/`"#high"`/`"#normal"`/`"#low"`), or
 /// `None`. Detection matches [`split_priority`] (heading marker, glued `#`, code spans skipped),
 /// so the Focus lane sweep buckets exactly the tags the editor colors and cycles.
 pub fn task_priority(line: &str) -> Option<&'static str> {
     split_priority(line).1
 }
 
-/// A row's priority as its bare word (`urgent`, `high`, `low`): its tag, else the default.
+/// `line`'s priority tag as an index into [`PRIORITIES`], or None when it has none.
+pub(crate) fn priority_index(line: &str) -> Option<usize> {
+    task_priority(line).and_then(|t| PRIORITIES.iter().position(|(_, hash, _)| *hash == t))
+}
+
+/// A row's priority as its bare word (`urgent`, `high`, `normal`, `low`): its tag, else the default.
 pub(crate) fn priority_word(line: &str) -> &'static str {
     let tag = task_priority(line).unwrap_or(default_priority());
     PRIORITIES
@@ -1989,6 +2025,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_default_indices_name_their_levels() {
+        // Indices into PRIORITIES: a level inserted before them shifts them silently.
+        assert_eq!(PRIORITIES[DEFAULT_PRIORITY].0, "normal");
+        assert_eq!(PRIORITIES[FOCUS_DEFAULT_PRIORITY].0, "low");
+    }
+
+    #[test]
     fn a_task_has_a_one_character_box_and_a_link_bullet_does_not() {
         for l in ["- [ ] a", "- [x] a", "  - [/] a", "- [~] a", "- [ ]"] {
             assert!(is_task(l), "{l}");
@@ -2070,9 +2113,7 @@ mod tests {
         assert_eq!(without_agent_tag("- [ ] #agent fix it"), "- [ ] fix it");
     }
 
-    fn d(s: &str) -> NaiveDate {
-        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
-    }
+    use crate::md::date as d;
 
     #[test]
     fn the_legacy_ai_tag_is_matched_as_a_whole_token() {
@@ -2530,6 +2571,7 @@ after
             "tier3",
             "of/tr-37",
             "worker/fleet",
+            "why/upkeep",
             "requested",
             "agent",
             "p",

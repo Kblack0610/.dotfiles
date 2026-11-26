@@ -32,6 +32,8 @@ setup() {
   ln -s "$REPO_ROOT/.local/bin/agent-hold" "$SANDBOX/bin/agent-hold"
   # Never a real waybar: the switch goes through desk, which signals it by process name.
   mkdir -p "$HOME/.local/bin" && ln -s "$REPO_ROOT/.local/bin/desk" "$HOME/.local/bin/desk"
+  # The default bar is noctalia; record waybar so the signal goes to the pkill stub.
+  mkdir -p "$HOME/.local/state/desk" && echo "bar=waybar-classic" > "$HOME/.local/state/desk/parts"
   printf '#!/usr/bin/env bash\necho "$*" >> "$FX/pkill.log"\n' > "$SANDBOX/bin/pkill"
   # The ConfigMap is cm.json. A merge-patch applies to it (a null removes the key) and fails
   # NotFound with none; create refuses one that exists; any other write fails, so a
@@ -121,13 +123,13 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
   assert_equal "$(pin)" '{"slots":0,"local":2,"by":"machine-mode open"}'
 }
 
-@test "full is one runner at the high level, and one click from it is reserved" {
+@test "full takes no runner here, at the high level, and one click from it is reserved" {
   run "$MM" full
   assert_success
   assert_line "mode: full"
   assert_line "level: high"
   assert_line "new agent sessions: as today"
-  assert_equal "$(pin)" '{"slots":1,"local":2,"by":"machine-mode full"}'
+  assert_equal "$(pin)" '{"slots":0,"local":2,"by":"machine-mode full"}'
   # The local seat pin goes to the governor's key, never to the state file.
   run grep -c UNITY "$STATE"
   assert_output 0
@@ -241,7 +243,10 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
 }
 
 @test "the target is the governor's, not the mode's number" {
-  "$MM" full
+  # A one-runner mode of its own: no shipped mode gives this host a runner (the human, 2026-11-23).
+  export MACHINE_MODE_MODES="$FX/modes"
+  printf 'one|1|2|high\nopen|0|2|mid\n' > "$MACHINE_MODE_MODES"
+  "$MM" one
   prom 0 0 0 slots
   run "$MM"
   assert_line "runners: 0 of 0 taking new jobs"
@@ -329,13 +334,15 @@ busy() { echo "$FX/home/actions.runner.host-unity-pool-$1.service/bin.2.337.0/Ru
 
 @test "a switch writes the mode's runners as the slot count, runs the slots under it and stops an idle one over it" {
   slots_fixture
-  run "$MM" full
+  export MACHINE_MODE_MODES="$FX/modes"
+  printf 'one|1|2|high\nnone|0|1|low\n' > "$MACHINE_MODE_MODES"
+  run "$MM" one
   assert_success
   assert_equal "$(cat "$MACHINE_MODE_SLOT_FILE")" 1
   active actions.runner.host-unity-pool-1.service
   inactive actions.runner.host-unity-pool-2.service
   [ ! -e "$FX/systemd-run.log" ]
-  run "$MM" reserved
+  run "$MM" none
   assert_equal "$(cat "$MACHINE_MODE_SLOT_FILE")" 0
   inactive actions.runner.host-unity-pool-1.service
 }

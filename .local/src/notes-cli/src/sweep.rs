@@ -1,4 +1,4 @@
-//! The priority-lane sweep: a `### Urgent` / `### High` / `### Low` lane each, then `---` and
+//! The priority-lane sweep: a `### Urgent` / `### High` / `### Normal` / `### Low` lane each, then `---` and
 //! `### Done`. Every lane header is emitted even when empty so the columns stay put as drop
 //! targets, and an untagged task dropped under one inherits that lane's tag. The tag is the
 //! source of truth; position decides only for a task that has none.
@@ -21,9 +21,7 @@ const LANES: usize = md::PRIORITIES.len();
 
 /// Lane index for an open task, else [`LANES`] (no priority tag).
 fn lane_of(line: &str) -> usize {
-    md::task_priority(line)
-        .and_then(|tag| md::PRIORITIES.iter().position(|(_, hash, _)| *hash == tag))
-        .unwrap_or(LANES)
+    md::priority_index(line).unwrap_or(LANES)
 }
 
 /// The headings a sheet's `## Tasks` is cut into, above its `---` and `### Done`
@@ -298,7 +296,10 @@ fn bucket(body: &[&str], layout: Layout, retag: bool) -> Buckets {
                     // it stays untagged: it is untriaged, and a default `#high` would hide that
                     // (human, 2026-11-09: every row gets a real priority from triage).
                     let i = cur_lane.unwrap_or(default);
-                    let tag = retag && (layout == Layout::Focus || cur_lane.is_some());
+                    // Never an epic: it ranks as its most urgent open row, not by a tag.
+                    let tag = retag
+                        && (layout == Layout::Focus || cur_lane.is_some())
+                        && !crate::epics::is_epic(l);
                     let row = if tag {
                         md::add_tag(l, md::PRIORITIES[i].1)
                     } else {
@@ -461,7 +462,7 @@ mod tests {
     #[test]
     fn golden_blank_lines_group_rows_inside_a_lane() {
         let note = "## Focus\n### High\n- [ ] h1 #high\n### Low\n- [ ] a #low\n- [x] b #low\n\n- [ ] c #urgent\n- [ ] d #low\n\n    its note\n- [ ] e #low\n\n\n- [ ] f #low\n### Urgent\n\n- [ ] u #urgent\n\n- [x] g\n\n- [x] h\n\n## Notes\n";
-        let expected = "## Focus\n### Urgent\n- [ ] c #urgent\n- [ ] u #urgent\n\n### High\n- [ ] h1 #high\n\n### Low\n- [ ] a #low\n\n- [ ] d #low\n    its note\n- [ ] e #low\n\n- [ ] f #low\n\n---\n### Done\n- [x] b #low\n- [x] g\n- [x] h\n\n## Notes\n";
+        let expected = "## Focus\n### Urgent\n- [ ] c #urgent\n- [ ] u #urgent\n\n### High\n- [ ] h1 #high\n\n### Normal\n\n### Low\n- [ ] a #low\n\n- [ ] d #low\n    its note\n- [ ] e #low\n\n- [ ] f #low\n\n---\n### Done\n- [x] b #low\n- [x] g\n- [x] h\n\n## Notes\n";
         let out = focus(note);
         assert_eq!(out, expected);
         assert!(sweep_section(&out, |h| h.eq_ignore_ascii_case("Focus")).is_none());
@@ -475,7 +476,7 @@ mod tests {
     #[test]
     fn golden_rules_group_rows_inside_a_lane() {
         let note = "## Focus\n### Low\n- [ ] a #low\n---\n\n---\n- [ ] b #low\n\n---\n\n- [ ] c #low\n---\n- [x] d #low\n---\n- [ ] e #low\n---\n### High\n- [ ] h #high\n\n---\n### Done\n\n## Notes\n";
-        let expected = "## Focus\n### Urgent\n\n### High\n- [ ] h #high\n\n### Low\n- [ ] a #low\n---\n- [ ] b #low\n---\n- [ ] c #low\n---\n- [ ] e #low\n\n---\n### Done\n- [x] d #low\n\n## Notes\n";
+        let expected = "## Focus\n### Urgent\n\n### High\n- [ ] h #high\n\n### Normal\n\n### Low\n- [ ] a #low\n---\n- [ ] b #low\n---\n- [ ] c #low\n---\n- [ ] e #low\n\n---\n### Done\n- [x] d #low\n\n## Notes\n";
         let out = focus(note);
         assert_eq!(out, expected);
         assert!(sweep_section(&out, |h| h.eq_ignore_ascii_case("Focus")).is_none());
@@ -488,7 +489,7 @@ mod tests {
     #[test]
     fn golden_in_progress_rows_sort_to_the_bottom_of_their_group() {
         let note = "## Focus\n### Urgent\n- [/] p1 #urgent\n    - [ ] p1 child\n- [ ] a #urgent\n- [/] p2 #urgent\n- [ ] b #urgent\n---\n- [/] p3 #urgent\n- [ ] c #urgent\n\n- [/] p4 #urgent\n### Low\n- [ ] l #low\n    - [/] started child\n- [ ] m #low\n\n---\n### Done\n\n## Notes\n";
-        let expected = "## Focus\n### Urgent\n- [ ] a #urgent\n- [ ] b #urgent\n- [/] p1 #urgent\n    - [ ] p1 child\n- [/] p2 #urgent\n---\n- [ ] c #urgent\n- [/] p3 #urgent\n\n- [/] p4 #urgent\n\n### High\n\n### Low\n- [ ] l #low\n    - [/] started child\n- [ ] m #low\n\n---\n### Done\n\n## Notes\n";
+        let expected = "## Focus\n### Urgent\n- [ ] a #urgent\n- [ ] b #urgent\n- [/] p1 #urgent\n    - [ ] p1 child\n- [/] p2 #urgent\n---\n- [ ] c #urgent\n- [/] p3 #urgent\n\n- [/] p4 #urgent\n\n### High\n\n### Normal\n\n### Low\n- [ ] l #low\n    - [/] started child\n- [ ] m #low\n\n---\n### Done\n\n## Notes\n";
         let out = focus(note);
         assert_eq!(out, expected);
         assert!(sweep_section(&out, |h| h.eq_ignore_ascii_case("Focus")).is_none());
@@ -502,7 +503,7 @@ mod tests {
     #[test]
     fn golden_matches_the_nvim_buffer_sweep_with_markers_and_children() {
         let note = "## Focus\n- [ ] parent #urgent\n    - [ ] child\n    - [x] done child\n- [ ] outlook integration #high\n      needs OAuth2 first\n### Urgent\n- [ ] dropped <!-- pr:307 -->\n\n## Notes\nafter\n";
-        let expected = "## Focus\n### Urgent\n- [ ] parent #urgent\n    - [ ] child\n    - [x] done child\n- [ ] dropped #urgent <!-- pr:307 -->\n\n### High\n- [ ] outlook integration #high\n      needs OAuth2 first\n\n### Low\n\n---\n### Done\n\n## Notes\nafter\n";
+        let expected = "## Focus\n### Urgent\n- [ ] parent #urgent\n    - [ ] child\n    - [x] done child\n- [ ] dropped #urgent <!-- pr:307 -->\n\n### High\n- [ ] outlook integration #high\n      needs OAuth2 first\n\n### Normal\n\n### Low\n\n---\n### Done\n\n## Notes\nafter\n";
         assert_eq!(focus(note), expected);
     }
 }

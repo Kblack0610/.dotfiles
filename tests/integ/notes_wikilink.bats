@@ -6,7 +6,7 @@
 # test noticed, because every notes-cli test checks the TEXT of a link and none follows it.
 # This one follows it, in a real headless nvim against a fixture vault.
 #
-# Skips where nvim is absent (the CI fast tier installs none by design); run it locally.
+# Skips where nvim is absent; the test image pins it (tests/Dockerfile, NVIM_VERSION).
 
 setup() {
   load '../vendor/bats-support/load'

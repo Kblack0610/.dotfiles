@@ -15,7 +15,7 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::{DataTable, ROW};
 use crate::fit::{cell, clip_line, wrap, Cell, Table};
-use crate::fmt::{clock, Palette};
+use crate::fmt::{clock, dash, heading, Palette};
 use crate::innertabs;
 
 /// `Alert::COLUMNS` in capitals, in its order, the sort mark placed by that index.
@@ -63,13 +63,6 @@ fn status(l: Level) -> Option<f64> {
     }
 }
 
-fn heading(title: &str, rest: String, p: Palette) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(title.to_string(), p.head()),
-        Span::styled(rest, p.dim()),
-    ])
-}
-
 impl AlertsView {
     /// The firing rows the view keeps, in its sort or the reader's order.
     pub fn shown<'a>(&self, a: &'a Alerts) -> Vec<&'a Alert> {
@@ -83,8 +76,7 @@ impl AlertsView {
     /// Move the selection to the row with this id after a re-read, or keep the index in range.
     pub fn reselect(&mut self, a: &Alerts, id: Option<RowId>) {
         let rows = self.shown(a);
-        let at = id.and_then(|id| rows.iter().position(|r| row_id(r) == id));
-        self.table.keep(at, rows.len());
+        self.table.reselect(&rows, id, |r, id| row_id(r) == *id);
     }
 
     /// The inner tab shown.
@@ -307,11 +299,6 @@ fn watch_lines(a: &Alerts, ok: bool, p: Palette, now: i64, w: usize) -> Vec<Line
     out
 }
 
-/// A project cell: its name, or `-` for a fleet-wide watch.
-fn dash(project: &str) -> String {
-    if project.is_empty() { "-" } else { project }.into()
-}
-
 fn row(r: &Alert, p: Palette, now: i64) -> Vec<Cell> {
     let sev = if matches!(r.sev.as_str(), "urgent" | "high") {
         p.bad()
@@ -443,13 +430,7 @@ fn health_line(chips: &[Chip], p: Palette, w: usize) -> Line<'static> {
         ));
     } else {
         for c in &bad {
-            let v = match c.level {
-                Level::Ok => Some(0.0),
-                Level::Warn => Some(1.0),
-                Level::Red => Some(2.0),
-                Level::Nodata => None,
-            };
-            let (style, word) = p.status(v);
+            let (style, word) = p.status(status(c.level));
             strip.push(Span::styled(format!(" {} {word} ", c.name), style));
             strip.push(Span::raw(" "));
         }
@@ -461,21 +442,11 @@ fn health_line(chips: &[Chip], p: Palette, w: usize) -> Line<'static> {
     clip_line(Line::from(strip), w)
 }
 
-/// HEALTH: every domain chip (`health_line`), then why: each component not green.
+/// HEALTH: every domain chip (`health_line`) on one line, which says what is not green. A row per
+/// not-green component repeated it (seven `<domain>/watches WARN` rows under a line naming the same
+/// domains), so there is none.
 fn health(a: &Alerts, p: Palette, w: usize) -> Vec<Line<'static>> {
-    let mut out = vec![health_line(&a.health, p, w)];
-    for c in &a.components {
-        let (style, word) = p.status(status(c.level));
-        out.push(clip_line(
-            Line::from(vec![
-                Span::raw("  "),
-                Span::styled(format!(" {word} "), style),
-                Span::raw(format!(" {}/{}", c.domain, c.name)),
-            ]),
-            w,
-        ));
-    }
-    out
+    vec![health_line(&a.health, p, w)]
 }
 
 /// FIXES: each red the triage queued as a fix in the window (`hub_core::reds`, which orders the
@@ -529,7 +500,12 @@ pub fn fixes(a: &Alerts, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
                     } else {
                         format!("  {}", f.project)
                     },
-                    f.slug
+                    // The ticket, the board row the fix works as, then the queue item `i` opens
+                    // when its slug differs; the slug alone when it names no row.
+                    match f.row.as_deref().filter(|r| *r != f.slug) {
+                        Some(row) => format!("{row} ({})", f.slug),
+                        None => f.slug.clone(),
+                    }
                 )),
                 Span::styled(f.age(now), p.dim()),
             ]),
@@ -650,9 +626,7 @@ pub(crate) mod tests {
         )
     }
 
-    fn text(lines: &[Line]) -> String {
-        lines.iter().map(plain).collect::<Vec<_>>().join("\n")
-    }
+    use crate::fit::plain_text as text;
 
     /// A view drawing every inner tab, as a printed `hub --tab alerts` does.
     fn every() -> AlertsView {
@@ -903,7 +877,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn health_names_the_domains_then_each_component_that_is_not_green() {
+    fn health_is_one_line_of_domain_chips_and_lists_no_component() {
         let mut i = crate::board::tests::fixture();
         i.instant.get_mut("cc").unwrap().extend(
             hub_core::prom::flatten(&serde_json::json!({"status": "success", "data":
@@ -922,7 +896,7 @@ pub(crate) mod tests {
         let (s, _) = page(&AlertsView::default(), &a, 160);
         let at = |w: &str| s.find(w).unwrap_or_else(|| panic!("no {w} in {s}"));
         assert!(at("HEALTH") < at("llm RED"), "{s}");
-        assert!(s.contains("   RED  llm/gateway"), "{s}");
+        assert!(!s.contains("llm/gateway"), "{s}");
     }
 
     #[test]
@@ -930,7 +904,7 @@ pub(crate) mod tests {
         let a = hub_core::alerts::join(
             &crate::board::tests::fixture(),
             Err("no such dir".into()),
-            Err("exit 1".into()),
+            Err("fleet-bench reds: exit 1".into()),
             Ok(String::new()),
             Ok(vec![]),
             NOW,
@@ -952,8 +926,8 @@ pub(crate) mod tests {
         let mut a = sample();
         a.fixes = reds(&[
             r#"{"slug":"ar-1","red":"watch a","queued":"2026-11-06T10:00:00Z","merged":"x","fix_min":34,"pr":"Kblack0610/.dotfiles#1185","outcome":"fixed"}"#,
-            r#"{"slug":"ar-2","red":"watch playground-nightly","queued":"2026-11-06T11:00:00Z","outcome":"queued"}"#,
-            r#"{"slug":"ar-3","red":"runner dream","queued":"2026-11-05T12:00:00Z","merged":"y","fix_min":60,"pr":"Kblack0610/.dotfiles#1170","outcome":"came back"}"#,
+            r#"{"slug":"red-x-1106","row":"ar-2","red":"watch playground-nightly","queued":"2026-11-06T11:00:00Z","outcome":"queued"}"#,
+            r#"{"slug":"ar-3","row":"ar-3","red":"runner dream","queued":"2026-11-05T12:00:00Z","merged":"y","fix_min":60,"pr":"Kblack0610/.dotfiles#1170","outcome":"came back"}"#,
             r#"{"slug":"ar-4","red":"watch b","queued":"2026-11-06T09:00:00Z","outcome":"cancelled"}"#,
         ]);
         let now = chrono::DateTime::parse_from_rfc3339("2026-11-06T12:00:00Z")
@@ -968,8 +942,8 @@ pub(crate) mod tests {
         );
         assert_eq!(lines[1], "  CAME BACK    runner dream  ar-3  #1170  24h");
         assert_eq!(
-            lines[2],
-            "  QUEUED       watch playground-nightly  ar-2  1h"
+            lines[2], "  QUEUED       watch playground-nightly  ar-2 (red-x-1106)  1h",
+            "the ticket, then the queue item when its slug differs"
         );
         assert_eq!(lines[3], "  +2 settled");
         assert_eq!(lines.len(), 4, "settled rows fold to their count: {s}");
@@ -1035,7 +1009,7 @@ pub(crate) mod tests {
         let (s, _) = page(&every(), &a, 160);
         assert!(s.contains("HISTORY  4 pages in 7 days"), "{s}");
         assert!(s.contains("tripped Sentinel: playground-nightly"), "{s}");
-        assert!(s.contains("  +3 older on 2 Log, Actions"), "{s}");
+        assert!(s.contains("  +3 older on 3 Log, Actions"), "{s}");
     }
 
     #[test]

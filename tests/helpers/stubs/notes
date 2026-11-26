@@ -15,12 +15,15 @@
 #   path.<profile>.<kind>       the root `notes --profile P path <kind>` prints
 #   stages                      the ladder `notes projects --stages` prints
 #   prios                       name  prio, what `notes projects --prios` prints
+#   front-page.<project>        the file `notes projects --front-page <dir>` prints for that dir
 #   board.json                  what `notes board --json` prints; its .elsewhere rows only --id finds
 #   ptask.added                 what `notes ptask <name> add` prints (the row, with its id)
 #   ptask.agent.added           what `notes ptask <name> --agent add` prints
+#   ptask.agent.add.rc          the code `notes ptask <name> --agent add` exits (0 with none)
 #   playtest.<profile>.<project> what `notes ptask <name> --playtest list` prints; with none it fails
 #   stats.fail                  makes `projects --stats` fail
 #   roll.window                 the `window ...` lines `projects --release` prints after the freeze
+#   log.jsonl                   what `notes log ... --json` prints, every event whatever the filter; log.fail makes it fail
 set -uo pipefail
 
 FIX="${NOTES_FIXTURE:?NOTES_FIXTURE unset - stub used outside the sandbox}"
@@ -77,6 +80,16 @@ case "${1:-}" in
       # `notes projects --prios` -> name TAB prio, every project that declares one
       --prios) emit prios ;;
       --version-of) emit "version-of.${3:-}" ;;
+      # `notes projects --front-page <dir>` -> the front-page.<project> fixture, else the sheet
+      # cases of projects.rs::sheet_path (a README with a `Version:` line, else any tasks.md),
+      # else summary.md. The version-parent case is the registry's, so a test of it seeds the fixture.
+      --front-page)
+        d="${3%/}"
+        if [ -f "$FIX/front-page.${d##*/}" ]; then emit "front-page.${d##*/}"
+        elif grep -q '^Version:' "$d/README.md" 2>/dev/null; then printf '%s\n' "$d/README.md"
+        elif [ -f "$d/tasks.md" ]; then printf '%s\n' "$d/tasks.md"
+        else printf '%s\n' "$d/summary.md"
+        fi ;;
       # `notes projects --stage <name>` -> the bare stage tag, or nothing if undeclared
       --stage) emit "stage.${3:-}" ;;
       # `notes projects --roadmap <name>` -> version TAB state TAB open TAB done TAB open_weight TAB done_weight TAB unsized_open
@@ -108,7 +121,7 @@ case "${1:-}" in
                   emit "playtest.${profile:-personal}.${proj}" ;;
       add) emit ptask.added ;;     # the row the real verb prints; recorded too
       # `notes ptask <name> --agent add`: the agent row it prints, from ptask.agent.added
-      --agent) [ "${4:-}" != add ] || emit ptask.agent.added ;;
+      --agent) [ "${4:-}" != add ] || { emit ptask.agent.added; exit "$(cat "$FIX/ptask.agent.add.rc" 2>/dev/null || echo 0)"; } ;;
       *) : ;;                      # done/rm: recorded only
     esac
     ;;
@@ -136,6 +149,9 @@ case "${1:-}" in
       jq -c --args '$ARGS.positional as $ids | {today: "", rows: [((.rows // []), (.done // []), (.elsewhere // []))[] | select(.id as $i | $ids | index($i))]}' \
         "${ids[@]}" < "$FIX/board.json"
     fi ;;
+  log)
+    [ ! -f "$FIX/log.fail" ] || { echo 'notes: the record is locked' >&2; exit 2; }
+    emit log.jsonl ;;
   today)
     : ;;                           # bootstrap no-op
   *)

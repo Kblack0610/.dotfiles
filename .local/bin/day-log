@@ -33,7 +33,7 @@ SNAPSHOTS="$HERE/../lib/day-log-snapshots.py"
 : "${DAYLOG_DIR:=$HOME/.agent/daylog}"
 : "${SCHEDULES_SYNC:=schedules-sync}"
 : "${DAYLOG_STATE:=${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
-: "${DAYLOG_GROUPS:=$HOME/.config/day-log/groups}"
+: "${DAYLOG_GROUPS:=$HOME/.config/areas/groups}"
 : "${DAYLOG_WATCH_LOG:=$HOME/.agent/shepherd/watch.log}"
 : "${DAYLOG_BENCH_CMD:=fleet-bench}"
 : "${DAYLOG_USAGE_CMD:=agent-usage}"
@@ -47,13 +47,14 @@ SNAPSHOTS="$HERE/../lib/day-log-snapshots.py"
 : "${DAYLOG_QUEUE_CMD:=agent-queue}"
 : "${DAYLOG_FLEET_CMD:=fleet-sessions}"
 : "${DAYLOG_NOTES_DIR:=$HOME/.notes}"
+: "${DAYLOG_NOTES_CMD:=notes}"   # notes board --weigh: each board row's project, state and points
 : "${DAYLOG_RUNS:=${AGENTCTL_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/agentctl}/runs.jsonl}"
 : "${DAYLOG_CALLS:=${AGENTCTL_CALLS:-${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/calls.jsonl}}"
 : "${DAYLOG_AGENTS_DIR:=$HOME/.config/agentctl/agents}"
 : "${DAYLOG_JUDGE_CMD:=judge-eval}"
 : "${DAYLOG_HUB_CMD:=hub}"   # hub ci pass: the one CI pass rate (hub_core::builds::verdict)
 export DAYLOG_DIR DAYLOG_BENCH_CMD DAYLOG_USAGE_CMD DAYLOG_OUTCOMES_DIR DAYLOG_QUEUE_CMD DAYLOG_NOTES_DIR SCHEDULES_SYNC DAYLOG_FLEET_CMD
-export DAYLOG_RUNS DAYLOG_CALLS DAYLOG_AGENTS_DIR DAYLOG_JUDGE_CMD DAYLOG_HUB_CMD
+export DAYLOG_RUNS DAYLOG_CALLS DAYLOG_AGENTS_DIR DAYLOG_JUDGE_CMD DAYLOG_HUB_CMD DAYLOG_NOTES_CMD
 
 say() { printf 'day-log: %s\n' "$*" >&2; }
 now() { printf '%s' "${DAYLOG_NOW:-$(date +%s)}"; }
@@ -378,7 +379,10 @@ markdown() {
       ($u | if .burn then "- The fleet cost, about \(.cost | money): \(.cash | money) API cash, \(.burn | money) subscription burn (agent-usage fleet-cost).", "" else empty end),
       (if .work then "## Flow", "",
         (.work.queue | if . then "- Queue: \(.queued // 0) queued, \(.started // 0) started, \(.waiting // 0) moved to waiting, \(.done // 0) done (\(.failed // 0) failed); lead p50 \(.lead_minutes.p50 // "-") min, wait p50 \(.wait_minutes.p50 // "-") min" else empty end),
-        (.work.board | if . then "- Board: \(.opened // "-") rows opened, \(.closed // "-") closed, \(.open_end // "-") open" else empty end),
+        (.work.board | if . == null then empty
+          # A record from before points were weighed (2026-11-24) has closed and no done.
+          elif has("done") | not then "- Board: \(.opened // "-") rows opened, \(.closed // "-") closed, \(.open_end // "-") open"
+          else "- Board: \(.opened // "-") rows opened (\(.opened_pts // "-") pts), \(.done // "-") done (\(.done_pts // "-") pts), \(.dropped // "-") dropped (\(.dropped_pts // "-") pts), \(.open_end // "-") open (\(.open_pts // "-") pts)" end),
         (.work.phases | if . then "- Plan phases: \(.ticked) ticked, \(.added) added" else empty end),
         (.agents.outcomes | if . then "- Sessions: \(.sessions), \(.no_pr) with no PR (\(.no_pr_with_edits) of them edited files)" else empty end),
         (.agents.asks | if . then "- Asks: \(.open) open, oldest \(.age_h_max // "-") h" else empty end),
@@ -395,7 +399,8 @@ finalize() {
   local day="$1" f out
   f="$(snapshot "$day")" || return 1
   out="$DAYLOG_REFS_DIR/$day/shipped.md"
-  mkdir -p "${out%/*}" && markdown "$f" > "$out.tmp" && mv "$out.tmp" "$out" || { say "could not write $out"; return 1; }
+  # `generated: true` classes it as a digest for `notes report` and keeps it out of the knowledge engine's sources.
+  mkdir -p "${out%/*}" && { printf -- '---\ngenerated: true\n---\n\n'; markdown "$f"; } > "$out.tmp" && mv "$out.tmp" "$out" || { say "could not write $out"; return 1; }
   jq -r '"\(.merged | length) \(if (.merged | length) == 1 then "PR" else "PRs" end) merged across \(.merged | map(.repo) | unique | length) repos"' "$f"
 }
 

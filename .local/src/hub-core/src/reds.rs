@@ -8,7 +8,9 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::session_actions::Runner;
+use crate::links::{Kind, Link};
+use crate::queue::{pr_links, ItemLink};
+use crate::session_actions::{self, Runner};
 
 /// The window: fleet-bench's own default (`REDS_DAYS`), passed so the summary's "in 7d" is true.
 pub const DAYS: u32 = 7;
@@ -78,11 +80,13 @@ pub struct Red {
     /// Where the PR opens, when `pr` says enough to build it; filled here, never read.
     #[serde(default, skip_deserializing)]
     pub pr_url: Option<String>,
-}
-
-fn epoch(t: Option<&str>) -> Option<i64> {
-    t.and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-        .map(|t| t.timestamp())
+    /// The board row the fix works as, its id alone (`ar-5133`): the ticket. None when the item
+    /// names no row.
+    #[serde(default, deserialize_with = "text")]
+    pub row: Option<String>,
+    /// What the fix names, each to its one page ([`Red::links`]); filled here, never read.
+    #[serde(default, skip_deserializing)]
+    pub links: Vec<ItemLink>,
 }
 
 /// A queue field that is a string, a number or null, as text.
@@ -129,18 +133,47 @@ impl Red {
 
     /// When the fix was queued, as epoch seconds.
     pub fn queued_at(&self) -> Option<i64> {
-        epoch(self.queued.as_deref())
+        self.queued.as_deref().and_then(crate::fleet::ts)
     }
 
     /// When the fix item finished, as epoch seconds; none while it is open.
     pub fn finished_at(&self) -> Option<i64> {
-        epoch(self.finished.as_deref())
+        self.finished.as_deref().and_then(crate::fleet::ts)
     }
 
     /// How long ago it was queued, as `display::fmt::age` words; `-` when the time does not parse.
     pub fn age(&self, now: i64) -> String {
         self.queued_at()
             .map_or("-".into(), |t| crate::display::fmt::age(now - t))
+    }
+
+    /// What the fix names, each to its one page, in the order both surfaces list them: its board
+    /// row (the ticket), its queue item (the run), its session, then each PR and its CI runs.
+    pub fn links(&self) -> Vec<ItemLink> {
+        let mut out = vec![];
+        let mut add = |what, text: &str, link| {
+            out.push(ItemLink {
+                what,
+                text: text.to_string(),
+                link,
+            })
+        };
+        if let Some(id) = self.row.as_deref().filter(|r| !r.is_empty()) {
+            add("row", id, Link::to(Kind::Row, id));
+        }
+        if !self.slug.is_empty() {
+            add("item", &self.slug, Link::to(Kind::Queue, self.slug.clone()));
+        }
+        // A session page is found by the item it worked (`session_page::find`), live or ended.
+        if let Some(s) = self.session.as_deref().filter(|s| !s.is_empty()) {
+            add("session", s, Link::to(Kind::Session, self.slug.clone()));
+        }
+        let prs = self.pr.as_deref().unwrap_or("");
+        out.extend(pr_links(
+            prs.split(|c: char| c.is_whitespace() || c == ',')
+                .filter(|w| !w.is_empty()),
+        ));
+        out
     }
 
     fn rank(&self) -> usize {
@@ -160,24 +193,37 @@ pub struct Reds {
 }
 
 fn argv() -> Vec<String> {
-    ["fleet-bench", "reds", "--json", "--days", &DAYS.to_string()]
-        .iter()
-        .map(|s| s.to_string())
-        .collect()
+    session_actions::argv(&["fleet-bench", "reds", "--json", "--days", &DAYS.to_string()])
 }
 
 /// `fleet-bench reds --json --days DAYS`, split. A failed run or a line that is not a row is an
-/// error, never an empty (green-looking) list.
+/// error, never an empty (green-looking) list. The error is worded here, once, as
+/// `fleet-bench reds: <why>`, and every surface shows it as it is.
 pub fn read(runner: &dyn Runner) -> Result<Reds, String> {
-    let out = runner.run(&argv())?;
+    let out = runner.run(&argv()).map_err(|e| failed(&e))?;
     let rows = out
         .lines()
         .filter(|l| !l.trim().is_empty())
-        .map(|l| {
-            serde_json::from_str::<Red>(l).map_err(|e| format!("fleet-bench reds --json: {e}"))
-        })
+        .map(|l| serde_json::from_str::<Red>(l).map_err(|e| failed(&format!("--json: {e}"))))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(split(rows))
+}
+
+/// The source every `read` error opens with: a card that is not Alerts tells the red by it.
+pub const SOURCE: &str = "fleet-bench reds";
+
+/// `fleet-bench reds: <why>`. Each line of fleet-bench's stderr opens with its own name and the
+/// verb (`say`: `fleet-bench: reds: ...`), which are cut so the source is said once, and its lines
+/// join on `; `: Alerts read `fleet-bench reds: fleet-bench: reds: notes row parse failed`.
+fn failed(e: &str) -> String {
+    let why: Vec<&str> = e
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|l| l.strip_prefix("fleet-bench: ").unwrap_or(l))
+        .map(|l| l.strip_prefix("reds: ").unwrap_or(l))
+        .collect();
+    format!("{SOURCE}: {}", why.join("; "))
 }
 
 /// A route from `fleet-bench triage`'s table (TRIAGE_ROUTES), as `--route` prints it: where a red
@@ -237,6 +283,7 @@ pub fn split(rows: Vec<Red>) -> Reds {
         .into_iter()
         .map(|mut r| {
             r.pr_url = r.pr.as_deref().and_then(pr_url);
+            r.links = r.links();
             r
         })
         .partition(Red::open);
@@ -391,15 +438,75 @@ mod tests {
     }
 
     #[test]
+    fn a_fix_links_its_ticket_run_session_and_pr_in_that_order() {
+        let line = r#"{"slug":"red-fleet-liveness-1124","row":"ar-5133","red":"watch fleet-liveness","state":"done","session":"lab:dotfiles-agent-1","queued":"2026-11-24T15:13:08Z","pr":"Kblack0610/.dotfiles#3409","merged":"d231ad22","outcome":"fixed"}"#;
+        let r = split(vec![serde_json::from_str(line).unwrap()]);
+        let f = &r.settled[0];
+        assert_eq!(f.row.as_deref(), Some("ar-5133"));
+        let got: Vec<(&str, String, String)> = f
+            .links
+            .iter()
+            .map(|l| (l.what, l.text.clone(), l.link.href()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (
+                    "row",
+                    "ar-5133".into(),
+                    "#projects/all?q=id:=ar-5133".into()
+                ),
+                (
+                    "item",
+                    "red-fleet-liveness-1124".into(),
+                    "#queue/red-fleet-liveness-1124".into()
+                ),
+                (
+                    "session",
+                    "lab:dotfiles-agent-1".into(),
+                    Link::to(Kind::Session, "red-fleet-liveness-1124").href()
+                ),
+                (
+                    "pr",
+                    ".dotfiles#3409".into(),
+                    "https://github.com/Kblack0610/.dotfiles/pull/3409".into()
+                ),
+                (
+                    "ci",
+                    "CI runs of kblack0610/.dotfiles#3409".into(),
+                    Link::to(Kind::PrRuns, "kblack0610/.dotfiles#3409").href()
+                ),
+            ]
+        );
+        // Negative control: an item with no row, session or PR links only to its run.
+        let bare: Red =
+            serde_json::from_str(r#"{"slug":"ar-2","row":"","outcome":"queued"}"#).unwrap();
+        let bare = split(vec![bare]);
+        let w: Vec<&str> = bare.open[0].links.iter().map(|l| l.what).collect();
+        assert_eq!(w, ["item"], "no empty ticket link");
+        assert_eq!(bare.open[0].row, None);
+    }
+
+    #[test]
     fn a_failed_run_or_a_bad_line_is_an_error_never_an_empty_list() {
-        let e = read(&fixed(Err("reds: cannot read the queue"))).unwrap_err();
-        assert!(e.contains("cannot read the queue"), "{e}");
+        // fleet-bench's own `say` prefix is cut, so the source is named once.
+        let e = read(&fixed(Err("fleet-bench: reds: cannot read the queue"))).unwrap_err();
+        assert_eq!(e, "fleet-bench reds: cannot read the queue");
+        let e = read(&fixed(Err("fleet-bench: exit status: 1"))).unwrap_err();
+        assert_eq!(e, "fleet-bench reds: exit status: 1");
+        // Every stderr line is cut, not only the first: jq's own error leads the say line.
+        let two = "jq: error (at <stdin>:0): short\nfleet-bench: reds: notes row parse failed\n";
+        let e = read(&fixed(Err(two))).unwrap_err();
+        assert_eq!(
+            e,
+            "fleet-bench reds: jq: error (at <stdin>:0): short; notes row parse failed"
+        );
         let bad = concat!(
             r#"{"slug":"ar-1","red":"watch a","outcome":"fixed"}"#,
             "\nnot json\n"
         );
         let e = read(&fixed(Ok(bad))).unwrap_err();
-        assert!(e.starts_with("fleet-bench reds --json:"), "{e}");
+        assert!(e.starts_with("fleet-bench reds: --json:"), "{e}");
         let e = read(&fixed(Ok(r#"{"slug":"ar-1","red":"watch a"}"#))).unwrap_err();
         assert!(
             e.contains("outcome"),

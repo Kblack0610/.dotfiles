@@ -10,9 +10,6 @@
 // the page read (`notes put --base`), so a note that changed since (nvim, a sweep, a sync) is
 // never overwritten: a 409 shows it as it is now beside yours, and you choose. The edit is kept
 // in localStorage until saved or discarded, so a phone that drops the tab loses nothing.
-// On `status/inbox` a Handled-today row's checkbox is live: ticking it is one POST /api/inbox/ack
-// (`notes inbox ack`, the mark's one writer), and the page comes back with the row folded into
-// `+N reviewed`, where unticking it brings it back.
 // On a day note each task row is live: its box ticks or unticks it, `-` removes it (with Undo),
 // and each named lane but Done has a `+` line that adds a task tagged with the lane. Each is the
 // one line changed in the note as read, saved like Edit's Save (`notes put --base`), so a note
@@ -65,6 +62,13 @@ function briefFold() {
   seed("brief", true);
   const body = b.sections.map((s) => (s.title ? `<h3>${esc(s.title)}</h3>` : "") + md(s.markdown, { notes: true })).join("");
   return cfold("brief", `<b>Briefing</b> <a class="muted" href="${focusHref(b.note.target)}">open</a>`, `<div class="md">${body}</div>`, fcs.open);
+}
+
+// The day's refs as their count, one link to that day on Reports (hub_core::focus `reports`); a
+// day with none, or whose reports could not be read, keeps its ## Refs as written.
+function refsLine() {
+  const r = fcs.data.reports;
+  return r ? `<a class="dref" href="${esc(r.link)}"><b>${esc(r.label)}</b> <span class="muted">${esc(r.text)}</span></a>` : "";
 }
 
 const liveRows = () => !!fcs.data && !!fcs.data.note.date && !fcs.edit;
@@ -149,7 +153,7 @@ function dayNav() {
 
 // A note's markdown; only the inbox page's handled rows get live checkboxes.
 // On a day note a titled section's task rows are live too.
-const noteMd = (text, rows) => md(text, { notes: true, ack: !!fcs.data && fcs.data.note.rel === "status/inbox", rows });
+const noteMd = (text, rows) => md(text, { notes: true, rows });
 
 function sectionFold(s, open) {
   const k = "sec:" + (s.title || "top");
@@ -190,6 +194,7 @@ function focusBody(v) {
     if (n.date) html += briefFold();
     if (f.rollup) { seed("rollup", false); html += cfold("rollup", "<b>Rollup</b>", `<div class="md">${md(f.rollup, { notes: true })}</div>`, fcs.open); }
   }
+  if (n.date) html += refsLine();
   // A daily note's other sections fold away under Focus; a note opened from a link is the
   // thing being read, so it is open, with its untitled top drawn as is. A day's Links footer
   // is the nav's places already.
@@ -317,12 +322,12 @@ function removeRow(n) {
   return rowEdit((l) => (l.splice(n, end - n), l), `"${what}"`);
 }
 
-// `+` adds `- [ ] <text>` at the end of the lane, tagged #urgent, #high or #low as the lane is
+// `+` adds `- [ ] <text>` at the end of the lane, tagged #urgent, #high, #normal or #low as the lane is
 // (the tag is what the Focus sweep files a task by) unless the text names one itself.
 function addTask(lane, text) {
   const l = fcs.data.focus && fcs.data.focus.lanes.find((x) => x.name === lane);
   if (!l || !text.trim()) return Promise.resolve(false);
-  const tag = /^(urgent|high|low)$/i.test(lane) && !/(^|\s)#(urgent|high|low)\b/i.test(text) ? " #" + lane.toLowerCase() : "";
+  const tag = /^(urgent|high|normal|low)$/i.test(lane) && !/(^|\s)#(urgent|high|normal|low)\b/i.test(text) ? " #" + lane.toLowerCase() : "";
   const row = `- [ ] ${text.trim()}${tag}`;
   // Below the lane's last line, or its heading when it has none; a heading that is not one
   // means the page's lines are not this note's.
@@ -374,20 +379,9 @@ $("d-note").addEventListener("click", (e) => {
     navigator.clipboard.writeText(fcs.data.note.markdown).then(() => { fcs.copied = true; renderFocus(); }, (err) => { fcs.err = "copy: " + err.message; renderFocus(); });
   }
 });
-// A tick or untick on the inbox page. The box is locked until the answer redraws the page; a
-// refusal says why and the redraw puts the box back as the page has it.
-async function ackRow(box) {
-  box.disabled = true;
-  try {
-    fcs.data = await post("/api/inbox/ack", { key: box.dataset.ack, ack: box.checked });
-    fcs.err = null;
-  } catch (err) { fcs.err = err.message; }
-  renderFocus();
-}
 $("d-note").addEventListener("change", (ev) => {
   const b = ev.target;
-  if (b && b.dataset && b.dataset.ack && !fcs.edit) ackRow(b);
-  else if (b && b.dataset && b.dataset.ln) tickRow(b);
+  if (b && b.dataset && b.dataset.ln) tickRow(b);
 });
 $("d-note").addEventListener("submit", (ev) => {
   const form = ev.target.closest("form.tadd");

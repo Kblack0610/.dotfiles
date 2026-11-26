@@ -124,6 +124,16 @@ project_of_code() {
     "$map_file" 2>/dev/null || true
 }
 
+# plan_epic_project <plan file> -> the project whose row code the plan's `epic: <code>-<N>` line
+# carries (project_of_code), or "" (no line, no map, an unknown code). A plan files under that
+# project, not its writer's: a game's plan written from the playground checkout counts on the game.
+plan_epic_project() {
+  local code
+  code=$(sed -nE '/^epic: *([a-z0-9]+)-[0-9]+([^0-9].*)?$/{s//\1/p;q;}' "$1" 2>/dev/null)
+  [ -n "$code" ] && project_of_code "$code"
+  return 0
+}
+
 # project_codes -> every row-id code the trackers name, `|`-joined (`ar|hc|ucp`), or "".
 project_codes() {
   local map_file; map_file="$(project_map_file)"
@@ -448,10 +458,29 @@ project_machine_profile() {
   printf '%s' "$PROJECT_MACHINE_PROFILE"
 }
 
+# project_work_machine -> exit 0 when this machine's own notes profile is a project-map client's
+# profile: a work machine, which runs no dispatcher and whose work no home runner takes. When notes
+# cannot say, project_machine_profile warns and answers `personal`, so this answers no: a stale notes
+# on a work machine lifts the guard (rebuild it), and a stale one on the fleet never stops its queue.
+project_work_machine() {
+  local map_file; map_file="$(project_map_file)"
+  local profiles
+  [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 1
+  profiles="$(jq -c '[(.clients | objects // {})[] | objects | .profile | strings]' "$map_file" 2>/dev/null)" || return 1
+  # A map with no client names no work machine: no notes call, so no warning, where none can match.
+  [ "$profiles" != '[]' ] || return 1
+  project_machine_profile >/dev/null
+  jq -en --arg m "$PROJECT_MACHINE_PROFILE" --argjson p "$profiles" '$p | index($m) != null' >/dev/null
+}
+
 # project_visible <key> -> exit 0 when this machine lists the project (see PROJECT_VISIBLE_JQ).
 project_visible() {
   local map_file; map_file="$(project_map_file)"
   [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 0
+  # A project that names no client is visible everywhere: no profile lookup, so agent-queue add and
+  # dispatch's start (client_guard, start_item) ask notes only about a client's project.
+  jq -e --arg k "$1" '(.trackers // {})[$k] | if type == "object" then has("client") | not else true end' "$map_file" >/dev/null 2>&1 &&
+    return 0
   project_machine_profile >/dev/null
   jq -en --arg k "$1" --arg m "$PROJECT_MACHINE_PROFILE" --slurpfile reg "$map_file" \
     "$PROJECT_VISIBLE_JQ"' $k | visible($m)' >/dev/null

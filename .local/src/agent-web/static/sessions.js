@@ -1,6 +1,6 @@
 "use strict";
 // Sessions' Sessions inner tab, with no session open: the overview tiles, the capacity header, the
-// table and the folds under it. Rows, counts, spend and the header come from hub-core (`session_table`, `capacity`)
+// table and the folds under it. Rows, counts and the header come from hub-core (`session_table`, `capacity`)
 // through /api/sessions/*, and the server filters and sorts by the view in the URL (table.js). Any
 // row opens that session's conversation, `#sessions/sessions/<id>` (hub_core::links Kind::Session); its Details page is hub-core's
 // `session_page` through /api/sessions/page, and a session on a pane here also has its Screen.
@@ -11,10 +11,10 @@ const sst = tblTab({
   // With a session open beside the list and no page asked for, the server sends the page holding it.
   params: (p) => { if (st.sel && SPLIT.matches && !p.has("pg")) p.set("sel", sessionId(st.sel)); },
   shown: () => !st.sel && sessShows("sessions"), got: (t) => setBuckets(t.data.buckets), after: () => renderSide(), open: () => wst.open,
-  tiles: (t) => tile("SPEND", usd(t.data.spend_usd), "var(--accent)", `${t.data.table.shown} shown`), head: () => sessionsHead(), body: (t) => sessionsBody(t.data), tail: () => overviewFolds(),
+  head: () => sessionsHead(), body: (t) => sessionsBody(t.data), tail: () => overviewFolds(),
 });
 
-const SESSION_COLS = { bucket: ["bucket"], activity: ["activity"], project: ["project"], task: ["task"], by: ["started by"], pr: ["PR/CI"], phases: ["phases", "n"], idle: ["idle", "n"], ctx: ["ctx", "n"], cost: ["cost", "n"], acct: ["acct"], harness: ["harness"], close: ["close"] };
+const SESSION_COLS = { bucket: ["bucket"], activity: ["activity"], project: ["project"], task: ["task"], by: ["started by"], pr: ["PR/CI"], phases: ["phases", "n"], idle: ["idle", "n"], ctx: ["ctx", "n"], cost: ["cost", "n"], acct: ["acct"], harness: ["harness"], close: ["close"], machine: ["machine"] };
 
 const refreshCapacity = coalesce(async () => {
   try { sst.cap = await api("/api/sessions/capacity"); sst.capErr = null; } catch (e) { sst.capErr = e.message; }
@@ -111,7 +111,7 @@ function sessionRow(r) {
   const phases = r.phases_total ? `${r.phases_done}/${r.phases_total}` : "-";
   return `<tr class="click" data-key="${esc(r.key)}"><td>${newDot(a)}<span class="chip sm" style="--c:${bucketColor(r.bucket)}">${esc(r.bucket)}</span></td><td class="muted">${esc(r.activity || "-")}</td>` +
     `<td>${esc(r.project)}</td><td class="wrap">${clamp2(`${tags ? tags + " " : ""}${esc(r.task)}`, r.task)}</td><td class="muted">${esc(r.by || "-")}</td><td>${sessionPr(r)}</td><td class="n">${phases}</td>` +
-    `<td class="n">${idle}</td>${ctxCell(r)}<td class="n">${usd(r.cost_usd)}</td><td>${esc(r.account || "-")}</td><td>${esc(r.harness || "-")}</td><td>${esc(r.close || "-")}</td></tr>`;
+    `<td class="n">${idle}</td>${ctxCell(r)}<td class="n">${usd(r.cost_usd)}</td><td>${esc(r.account || "-")}</td><td>${esc(r.harness || "-")}</td><td>${esc(r.close || "-")}</td><td class="muted">${esc(r.runs_on || "-")}</td></tr>`;
 }
 
 // A day's ended sessions run to hundreds, so the server sends one page (Sessions' size in

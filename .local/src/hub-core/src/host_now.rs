@@ -1,14 +1,14 @@
 //! What runs on and inside one machine now, for its page (`#infra/machines/<host>`,
 //! `machine_page`): every temperature sensor and fan by device, the Kubernetes pods on it, and,
 //! where its node exporter publishes `node_inventory.prom`, its running services, Docker
-//! containers and busiest processes. Read with instant queries only when a page is opened, never
+//! containers, busiest processes and agent sessions. Read with instant queries only when a page is opened, never
 //! on the board's cadence.
 //!
 //! | part       | series                                                                          |
 //! |------------|---------------------------------------------------------------------------------|
 //! | devices    | node exporter's `node_hwmon_temp_celsius`, `node_hwmon_fan_rpm`, named by `node_hwmon_chip_names` and `node_hwmon_sensor_label` |
 //! | pods       | kube-state-metrics' `kube_pod_info{node}` (running or pending), cadvisor's `container_cpu_usage_seconds_total` and `container_memory_working_set_bytes` |
-//! | inventory  | home-config `ansible/roles/node-inventory-metrics`: `node_process_*`, `node_processes_total`, `node_service_running`, `node_docker_container_*` |
+//! | inventory  | home-config `ansible/roles/node-inventory-metrics`: `node_process_*`, `node_processes_total`, `node_service_running`, `node_docker_container_*`, `node_agent_scope_*` |
 //!
 //! A machine is matched by its exporter's `instance` through `cc:host_instance{host}`, and its pods
 //! by the k8s node name, which is its host name.
@@ -155,16 +155,53 @@ impl Row for Proc {
     const GLANCE: &'static [&'static str] = &["cpu", "mem"];
 
     fn val(&self, col: &str) -> Val {
-        let text = |s: &str| match s {
-            "" => Val::None,
-            s => Val::Text(s.to_string()),
-        };
+        let text = Val::word;
         match col {
             "name" => text(&self.name),
             "image" => text(&self.image),
             "cpu" => self.cpu.into(),
             "mem" => self.mem.into(),
             "count" => self.count.into(),
+            _ => Val::None,
+        }
+    }
+    fn in_state(&self, _: &str) -> bool {
+        false
+    }
+}
+
+/// One agent session's share: the systemd scope `claude-acct scope` starts it in
+/// (`agent-<project>-<item>-<pid>.scope`), with the test runs inside it.
+#[derive(Serialize, Debug, PartialEq, Clone, Default)]
+pub struct Session {
+    pub project: String,
+    /// Its agent-queue item; empty for a hand start.
+    pub item: String,
+    /// Cores used over the collector's last minute; none on the first reading of a new scope.
+    pub cpu: Option<f64>,
+    /// Resident memory, bytes.
+    pub mem: Option<f64>,
+    /// Cores each test command in it (bats, Unity, cargo, a node test runner) used, the busiest
+    /// first: `bats 1.20, Unity 0.40`.
+    pub tests: String,
+}
+
+impl Row for Session {
+    const COLUMNS: &'static [&'static str] = &["project", "item", "cpu", "mem", "tests"];
+    const STATES: &'static [&'static str] = &["all"];
+    const FACETS: &'static [&'static str] = &[];
+    const HIDE_EMPTY: bool = true;
+    const LEAD: &'static str = "project";
+    const GLANCE: &'static [&'static str] = &["cpu", "mem"];
+
+    fn val(&self, col: &str) -> Val {
+        let text = Val::word;
+        match col {
+            "project" => text(&self.project),
+            "item" => text(&self.item),
+            "cpu" => self.cpu.into(),
+            "mem" => self.mem.into(),
+            "tests" => text(&self.tests),
             _ => Val::None,
         }
     }
@@ -188,6 +225,8 @@ pub struct HostNow {
     pub processes: Vec<Proc>,
     /// Every process on it, of which `processes` are the top names.
     pub processes_total: Option<f64>,
+    /// The busiest first: each agent session in its own scope.
+    pub sessions: Vec<Session>,
     /// It publishes `node_inventory.prom`: without it services, containers and processes are
     /// unknown, not none.
     pub inventory: bool,
@@ -211,7 +250,7 @@ fn queries(names: &[String]) -> Result<Vec<(&'static str, String)>, String> {
         (
             "inventory",
             format!(
-                r#"{{__name__=~"node_(process_cpu_cores|process_resident_bytes|process_count|processes_total|service_running|docker_container_cpu_cores|docker_container_memory_bytes)"}} {inst}"#
+                r#"{{__name__=~"node_(process_cpu_cores|process_resident_bytes|process_count|processes_total|service_running|docker_container_cpu_cores|docker_container_memory_bytes|agent_scope_cpu_cores|agent_scope_resident_bytes|agent_scope_test_cpu_cores)"}} {inst}"#
             ),
         ),
         (
@@ -469,6 +508,48 @@ pub fn build(
         .collect();
     services.sort();
     services.dedup();
+    let mut who: BTreeMap<String, (String, String)> = BTreeMap::new();
+    for s in of("node_agent_scope_cpu_cores")
+        .into_iter()
+        .chain(of("node_agent_scope_resident_bytes"))
+    {
+        who.insert(
+            s.label("scope").into(),
+            (s.label("project").into(), s.label("item").into()),
+        );
+    }
+    let (scpu, smem) = (
+        one("node_agent_scope_cpu_cores", "scope"),
+        one("node_agent_scope_resident_bytes", "scope"),
+    );
+    let mut tests: BTreeMap<String, Vec<(String, f64)>> = BTreeMap::new();
+    for s in of("node_agent_scope_test_cpu_cores") {
+        if let Some(v) = s.value.filter(|v| v.is_finite()) {
+            tests
+                .entry(s.label("scope").into())
+                .or_default()
+                .push((s.label("comm").into(), v));
+        }
+    }
+    let mut sessions: Vec<Session> = who
+        .into_iter()
+        .map(|(scope, (project, item))| {
+            let mut t = tests.remove(&scope).unwrap_or_default();
+            t.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+            Session {
+                cpu: scpu.get(&scope).copied(),
+                mem: smem.get(&scope).copied(),
+                tests: t
+                    .iter()
+                    .map(|(c, v)| format!("{c} {v:.2}"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                project,
+                item,
+            }
+        })
+        .collect();
+    busiest(&mut sessions, |x| (x.cpu, x.mem, &x.project));
     let total = of("node_processes_total");
     HostNow {
         devices: devices(sensors),
@@ -478,6 +559,7 @@ pub fn build(
         services,
         containers,
         processes,
+        sessions,
         unread: BTreeMap::new(),
     }
 }
@@ -672,6 +754,43 @@ mod tests {
             only_docker.inventory,
             "any collector series means it is collected"
         );
+    }
+
+    #[test]
+    fn inventory_reads_each_agent_session_with_its_test_runs() {
+        let m = |n: &str, l: serde_json::Value, v: &str| {
+            let mut o = l.as_object().unwrap().clone();
+            o.insert("__name__".into(), json!(n));
+            o.insert("v".into(), json!(v));
+            s(serde_json::Value::Object(o))
+        };
+        let a = json!({"scope": "agent-dotfiles-ar\\x2d1-10.scope", "project": "dotfiles", "item": "ar-1"});
+        let b = json!({"scope": "agent-notes--11.scope", "project": "notes", "item": ""});
+        let with = |l: &serde_json::Value, comm: &str| {
+            let mut o = l.as_object().unwrap().clone();
+            o.insert("comm".into(), json!(comm));
+            serde_json::Value::Object(o)
+        };
+        let inv = vec![
+            m("node_agent_scope_cpu_cores", a.clone(), "2.5"),
+            m("node_agent_scope_resident_bytes", a.clone(), "2e9"),
+            m("node_agent_scope_test_cpu_cores", with(&a, "Unity"), "0.4"),
+            m("node_agent_scope_test_cpu_cores", with(&a, "bats"), "1.2"),
+            m("node_agent_scope_resident_bytes", b.clone(), "5e8"),
+        ];
+        let h = build(&[], &inv, &[], &[], &[]);
+        assert!(h.inventory);
+        assert_eq!(h.sessions.len(), 2);
+        assert_eq!(h.sessions[0].project, "dotfiles");
+        assert_eq!(h.sessions[0].item, "ar-1");
+        assert_eq!(h.sessions[0].cpu, Some(2.5));
+        assert_eq!(h.sessions[0].tests, "bats 1.20, Unity 0.40");
+        assert_eq!(
+            (h.sessions[1].item.as_str(), h.sessions[1].cpu),
+            ("", None),
+            "a hand start on its first reading: memory, no cpu yet"
+        );
+        assert_eq!(h.sessions[1].mem, Some(5e8));
     }
 
     #[test]

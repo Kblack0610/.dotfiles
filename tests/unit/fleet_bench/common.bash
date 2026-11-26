@@ -28,7 +28,10 @@ setup() {
   export BENCH_VERDICTS_CMD=false   # nor the real dispatch judge
   export BENCH_PROFILE=personal BENCH_ADMISSION_CMD=false BENCH_LESSONS_CMD=false BENCH_DONE_ITEMS_CMD=false BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_HUB_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/doctor.last" BENCH_DOCS_CLEANUP_DIR="$SANDBOX/docs-cleanup" BENCH_INGEST="$SANDBOX/ingest.jsonl"
   export BENCH_STEPS_CMD=false BENCH_INBOX_CMD=false BENCH_MIX_CMD=false   # nor the real ingest record, inboxes or class mix
+  export BENCH_CHURN_MERGES_CMD=false   # nor the real merge log: the churn KPIs read no merges unless a test serves them
+  export BENCH_INTAKE_CMD=false   # nor the real notes ingest record: the cap KPIs read null unless a test serves its day counts
   export BENCH_STOPPED_CMD=false PIPELINE_SNAPSHOT="$SANDBOX/pipeline/pipeline.json"   # nor the real dispatch or snapshot
+  export BENCH_HEADROOM="$SANDBOX/headroom.json" BENCH_DISPATCH_LOG="$SANDBOX/activity.log"   # nor the real dispatch pass or its log
   export BENCH_FLEET_COST_CMD=false BENCH_FLEET_COST_FILE="$SANDBOX/fleet-cost.json" BENCH_HUB_FIGURE_CMD=false   # nor the real estimator or hub
   export BENCH_BUDGET_CMD=false BENCH_BUDGET_FILE="$SANDBOX/budget.json"   # nor the real budget readers
   export BENCH_RELEASES_CMD=false BENCH_RELEASED_CMD=false   # nor the real release-state: request_to_live_h reads ?
@@ -132,12 +135,15 @@ case "$4" in
   list) cat "$B" ;;
   add) [ -z "$ADD_RC" ] || exit "$ADD_RC"
        k=$(sed -E 's/ #(low|high|urgent)$//' <<<"$5" | tr '[:upper:]' '[:lower:]')
-       printf 'board.md\t9\t%s\t- [ ] %s\n' "$k" "$5" >> "$B"
-       printf -- '- [ ] %s <!-- id:ar-9%s -->\n' "$5" "$(wc -l < "$B")" ;;
+       n=ar-9$(( $(wc -l < "$B") + 1 ))
+       printf 'board.md\t9\t%s\t- [ ] %s <!-- id:%s -->\n' "$k" "$5" "$n" >> "$B"
+       printf -- '- [ ] %s <!-- id:%s -->\n' "$5" "$n" ;;
+  # edit and drop name a row by its id (the marker in field 4) or by a title prefix
   edit) [ "$6" = --text ] || exit 8
-        awk -F'\t' -v OFS='\t' -v q="$5" -v t="$7" 'index($3, q) { $3 = tolower(t); $4 = "- [ ] " t } 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
-  drop) [ "$6" = --why ] || exit 8
-        awk -F'\t' -v q="$5" 'index($3, tolower(q)) != 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
+        awk -F'\t' -v OFS='\t' -v q="$5" -v t="$7" '(q ~ /^[a-z]+-[0-9]+$/ ? index($4, "<!-- id:" q " ") : index($3, q)) {
+          m = match($4, /<!-- id:[^ ]+ -->/) ? " " substr($4, RSTART, RLENGTH) : ""; $3 = tolower(t); $4 = "- [ ] " t m } 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
+  drop) [ "$6" = --why ] || [ "$6" = --dup ] || exit 8
+        awk -F'\t' -v q="$5" '(q ~ /^[a-z]+-[0-9]+$/ ? index($4, "<!-- id:" q " ") : index($3, tolower(q)) == 1) == 0' "$B" > "$B.new" && mv "$B.new" "$B" ;;
   done) [ "$6" = --proof ] || exit 8
         [ ! -e "$B.done-fails" ] || exit 1
         awk -F'\t' -v q="$5" 'index($3, q) != 1' "$B" > "$B.new" && mv "$B.new" "$B" ;;
@@ -316,12 +322,16 @@ chain_fixture() {
 # pipeline_fixture: one item at each queue step, one open agent row waiting and one the queued item
 # started, three inbox lines, two items finished (one inside 24h), and a record that holds each
 # item where the queue folders do. Ages: queued 2h, running 1h, on a PR 30m, waiting 10m, the row 3 days and 4h.
+# The board also holds rows the backlog must not count: a human-lane row, one with automation off,
+# one of another profile and one parked behind a backlog token.
 pipeline_fixture() {
   kpi_setup
   at() { date -u -d "@$((T0 - $1))" +%Y-%m-%dT%H:%M:%SZ; }
   printf '%s\n' chain_drift_max=0 step_age_p90_queued_max=180 step_age_p90_running_max=120 >> "$KPI_THRESHOLDS"
   export BENCH_ITEMS_CMD=items-stub BENCH_DONE_ITEMS_CMD=done-stub BENCH_BOARD_CMD=board-stub BENCH_STEPS_CMD=steps-stub
-  export BENCH_INBOX_CMD="echo 3"
+  export BENCH_INBOX_CMD=inbox-stub
+  printf '#!/usr/bin/env bash\necho %q\n' '["one","two","three"]' > "$SANDBOX/bin/inbox-stub"
+  chmod +x "$SANDBOX/bin/inbox-stub"
   Q=$(item q1 queued high board:game:g-2 "{\"queued\":\"$(at 7200)\",\"ready\":\"$(at 7200)\"}")
   R=$(item r1 running high human "{\"queued\":\"$(at 10000)\",\"started\":\"$(at 3600)\"}")
   W=$(item w1 waiting high human "{\"queued\":\"$(at 20000)\",\"started\":\"$(at 9000)\",\"waiting\":\"$(at 600)\"}")
@@ -330,10 +340,13 @@ pipeline_fixture() {
   DONE="$SANDBOX/done.jsonl" BJSON="$SANDBOX/board.json" RJSON="$SANDBOX/steps.json"
   { item d1 done high human "{\"finished\":\"$(at 1800)\"}"; item d0 done high human "{\"finished\":\"$(at 90000)\"}"; } > "$DONE"
   jq -cn --arg d "$(date -u -d "@$((T0 - 3 * 86400))" +%F)" '{rows: [
-    {project: "game", lane: "agent", state: "open", id: "g-1", since: $d},
-    {project: "game", lane: "agent", state: "open", id: "g-2", since: $d},
-    {project: "game", lane: "agent", state: "doing", id: "g-3", since: $d},
-    {project: "game", lane: "human", state: "open", id: "g-4", since: $d}]}' > "$BJSON"
+    {profile: "personal", project: "game", lane: "agent", state: "open", id: "g-1", since: $d},
+    {profile: "personal", project: "game", lane: "agent", state: "open", id: "g-2", since: $d},
+    {profile: "personal", project: "game", lane: "agent", state: "doing", id: "g-3", since: $d},
+    {profile: "personal", project: "game", lane: "human", state: "open", id: "g-4", since: $d},
+    {profile: "personal", project: "off", lane: "agent", state: "open", id: "o-1", since: $d, automation: false},
+    {profile: "work", project: "client", lane: "agent", state: "open", id: "c-1", since: $d},
+    {profile: "personal", project: "game", lane: "agent", state: "open", id: "g-5", since: $d, backlog: true}]}' > "$BJSON"
   jq -cn --arg s "$(at 172800)" --arg i "$(at 86400)" '{since: $s, items_since: $i, steps: [
     {step: "inbox", in_1h: 2, out_1h: 1, in_24h: 5, out_24h: 4, dwell_p50_min: 0, dwell_p90_min: 3, items: []},
     {step: "backlog", in_1h: 0, out_1h: 1, in_24h: 3, out_24h: 1, items: []},
@@ -361,7 +374,19 @@ EOF
   chmod +x "$SANDBOX/bin/curl"
 }
 
-# sources_fixture: two Claude accounts, Codex and a gateway key; Prometheus has points for all but
+# stub_vm <body>: VictoriaMetrics (vm_q) answers through a kubectl that runs <body>, logging its args
+stub_vm() {
+  unset BENCH_PROM_TSV
+  export CC_KUBE_CONTEXT=test CC_VM_SERVICE=monitoring/victoria-metrics:8428
+  cat > "$SANDBOX/bin/kubectl" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$SANDBOX/kubectl.log"
+$1
+EOF
+  chmod +x "$SANDBOX/bin/kubectl"
+}
+
+# sources_fixture: two Claude accounts, Codex and a gateway key; VictoriaMetrics has points for all but
 # Codex and list dollars by email. Items land on an account, an `account:`, a session's account, a
 # harness source, or nowhere. main's sessions s2 and s3 used 300 and 100 tokens, bnb's s1 100.
 sources_fixture() {
@@ -389,11 +414,22 @@ STUB
   out_row game '{session_id: "s4", harness: "codex", updated_epoch: ($t - 3600), tokens_total: 50, cost_usd: 3.5, cost_src: "price"}'
   out_row game '{session_id: "s5", harness: "codex", updated_epoch: ($t - 3600), tokens_total: 50, cost_usd: null}'
   out_row game '{session_id: "s6", updated_epoch: ($t - 3600), tokens_total: 10}'
-  stub_prom 'case "$*" in
+  stub_prom 'exit 7'   # every other Prometheus read stays dead, as before
+  stub_vm 'case "$*" in
   *week_used_percent*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"account\":\"main\"},\"value\":[1,\"10\"]},{\"metric\":{\"account\":\"bnb\"},\"value\":[1,\"4\"]},{\"metric\":{\"account\":\"reserve\"},\"value\":[1,\"5\"]},{\"metric\":{\"account\":\"lazer\"},\"value\":[1,\"2\"]}]}}" ;;
   *cost_usage*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"user_email\":\"m@x\"},\"value\":[1,\"50\"]},{\"metric\":{\"user_email\":\"b@x\"},\"value\":[1,\"30\"]}]}}" ;;
   *) exit 7 ;;
 esac'
+}
+
+# stop_stub <since> <why> <clears> [line]: `fleet-dispatch stopped --json` says dispatch has been
+# held since <since> for <why>, and exits 1 as the real one does when it prints
+stop_stub() {
+  jq -cn --argjson s "$1" --arg w "$2" --arg c "$3" --arg l "${4:-Dispatch stopped}" \
+    '{runner: "fleet-dispatch", since: $s, line: $l, why: $w, clears: $c}' > "$SANDBOX/stopped.json"
+  printf '#!/usr/bin/env bash\ncat "%s"\nexit 1\n' "$SANDBOX/stopped.json" > "$SANDBOX/bin/stopped-stub"
+  chmod +x "$SANDBOX/bin/stopped-stub"
+  export BENCH_STOPPED_CMD=stopped-stub
 }
 
 # items_stub <json lines...>: serve these agent-queue items to forecast

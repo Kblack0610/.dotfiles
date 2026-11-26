@@ -33,6 +33,7 @@ mod projtab;
 mod proptab;
 mod queuetab;
 mod releases;
+mod reportstab;
 mod schedules;
 mod stacktab;
 mod tabreq;
@@ -57,9 +58,10 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub needs --json | --page
        hub ui-text --json
        hub bar --json
+       hub alerts --reasons --json
        hub ci [--json | --pool-match SECS]
        hub ci pass [--since WHEN] [--until WHEN] [--branch B]
-       hub ci hosts [--until WHEN] [--last N]
+       hub ci hosts [--since WHEN] [--until WHEN] [--last N]
        hub briefing --json | --md [--agents-md FILE] [--since WHEN]
        hub projects --json
        hub projects --page NAME | --status NAME
@@ -88,9 +90,11 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
           --branch, as JSON keyed <forge>:<repo>: runs, green, pass (0..1), and the same per
           workflow. day-log reads it. Exits 1 when the ledger cannot be read
   ci hosts the same verdict over jobs: each runner group's (its name less the slot number, so
-          aws-burst-1-unity-pool) last N (default 50) jobs that completed before WHEN (default
-          now) in the job archive, GitHub-hosted left out, as JSON keyed by the group: runs,
-          green, pass (0..1). day-log reads it. Exits 1 when the archive cannot be read
+          aws-burst-1-unity-pool; an ARC pod its scale set) last N (default 50) jobs that
+          completed before WHEN (default now) in the job archive, GitHub-hosted left out, as
+          JSON keyed by the group: runs, green, pass (0..1). With --since, a group with no job
+          completed since WHEN (a retired host) is left out. day-log reads it. Exits 1 when the
+          archive cannot be read
   cards   Home's cards as the Tilecast widget document agent-web serves at /widget.json:
           every card, one section each, with `updated_at`; --figures adds `figures`, the whole numbers by name; agent-mqtt-publish sends it
   phone   the phone widget's rows as {state, rows}: what agent-mqtt-publish sends Home Assistant
@@ -230,6 +234,19 @@ fn main() {
     if it.peek().map(|a| a.as_str()) == Some("ui-text") {
         it.next();
         std::process::exit(ui_text(it.cloned().collect()));
+    }
+    if it.peek().map(|a| a.as_str()) == Some("alerts") {
+        it.next();
+        if it.cloned().collect::<Vec<String>>() != ["--reasons", "--json"] {
+            die(USAGE);
+        }
+        // No watch directory (the laptop) is an answer with no watches and its cause, not a failure:
+        // a failed run is a hub that could not answer at all.
+        match hub_core::alerts::watch_reasons() {
+            Ok(r) => println!("{}", serde_json::json!({ "reasons": r })),
+            Err(e) => println!("{}", serde_json::json!({ "reasons": {}, "error": e })),
+        }
+        return;
     }
     if it.peek().map(|a| a.as_str()) == Some("bar") {
         it.next();
@@ -433,11 +450,12 @@ fn ci_pass(args: &[String]) -> i32 {
 
 /// `hub ci hosts`: the pass rate of each runner group's last jobs, from the job archive.
 fn ci_hosts(args: &[String]) -> i32 {
-    let (mut until, mut last) = (chrono::Utc::now().timestamp(), 50);
+    let (mut since, mut until, mut last) = (None, chrono::Utc::now().timestamp(), 50);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let v = it.next().unwrap_or_else(|| die(USAGE));
         match a.as_str() {
+            "--since" => since = Some(parse_since(v).unwrap_or_else(|| die(USAGE))),
             "--until" => until = parse_since(v).unwrap_or_else(|| die(USAGE)),
             "--last" => {
                 last = v
@@ -449,6 +467,9 @@ fn ci_hosts(args: &[String]) -> i32 {
             _ => die(USAGE),
         }
     }
+    if since.is_some_and(|s| s >= until) {
+        die(USAGE);
+    }
     let paths = hub_core::builds::Paths::from_env();
     let text = match hub_core::builds::read_text(&paths.jobs) {
         Ok(t) => t,
@@ -457,7 +478,7 @@ fn ci_hosts(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let report = match hub_core::builds::pass_by_runner(&text, until, last) {
+    let report = match hub_core::builds::pass_by_runner(&text, since, until, last) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("hub ci hosts: {}: {e}", paths.jobs.display());
@@ -846,6 +867,22 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
             a.focus = Some(hub_core::focus::read(&sys, "daily"));
         }
         a.tab = Tab::Daily;
+        for l in a.page_lines(w) {
+            let _ = writeln!(out, "{}", plain(&l));
+        }
+        return 0;
+    }
+    // Reports prints the stream, or with a word (`archive`, a date) that inner tab.
+    if tab == Some(Tab::Reports) {
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        a.reports = Some(hub_core::reports::read(
+            &hub_core::session_actions::System,
+            &today,
+        ));
+        a.reports_inner = section
+            .as_deref()
+            .map_or("today", |q| reportstab::inner_of(q, &today));
+        a.tab = Tab::Reports;
         for l in a.page_lines(w) {
             let _ = writeln!(out, "{}", plain(&l));
         }

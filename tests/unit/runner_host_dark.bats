@@ -3,7 +3,8 @@
 # running trips only when every registered runner has been offline for the whole window.
 # curl is a stub that answers each query from $FIX: online.tsv holds each host's online count as
 # "<host> <from-epoch> <count>" steps, read at every 60s step of the asked range; gaps lists the
-# epochs the exporter gave no reading; reg, gov and stop are "<host> <value>" lines.
+# epochs the exporter gave no reading; reg, gov, stop and pin are "<host> <value>" lines. Each
+# query it was asked is appended to $FIX/queries.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -16,7 +17,7 @@ setup() {
 #!/bin/bash
 [ -e "$FIX/down" ] && exit 7
 for a in "$@"; do
-  case $a in query=*) q=${a#query=} ;; start=*) s=${a#start=} ;; end=*) e=${a#end=} ;; step=*) st=${a#step=} ;; esac
+  case $a in query=*) q=${a#query=}; printf '%s\n' "$q" >> "$FIX/queries" ;; start=*) s=${a#start=} ;; end=*) e=${a#end=} ;; step=*) st=${a#step=} ;; esac
 done
 inst() { jq -Rn '{status:"success",data:{resultType:"vector",result:[inputs | select(length > 0) | split(" ") | {metric:{host:.[0]},value:[0,.[1]]}]}}' < "$FIX/$1" 2>/dev/null; }
 case $q in
@@ -29,13 +30,16 @@ case $q in
       | jq -Rn '{status:"success",data:{resultType:"matrix",result:([inputs | split(" ")] | group_by(.[0])
           | map({metric:{host:.[0][0]},values:(map([(.[1] | tonumber), .[2]]) | sort_by(.[0]))}))}}' ;;
   *github_runner_state*) inst reg ;;
+  # Only the slots pin, lowest across the window, ever skips a host; any other selector reads none.
+  *'min_over_time(ci_governor_effective_slots{source="slots"}['*) inst pin ;;
+  *effective_slots*) inst none ;;
   *'state!="running"'*) inst stop ;;
   *rate_usd_per_hour*) inst gov ;;
 esac
 EOF
   chmod +x "$BIN/curl"
   export FIX PATH="$BIN:$PATH" HOME="$BATS_TEST_TMPDIR"
-  : > "$FIX/gaps"; : > "$FIX/stop"
+  : > "$FIX/gaps"; : > "$FIX/stop"; : > "$FIX/pin"; : > "$FIX/none"
   printf 'mac-mini 0\nms-a2 0\n' > "$FIX/gov"
   printf 'mac-mini 2\nms-a2 3\n' > "$FIX/reg"
   # Now, for every case: the window is END-600 .. END.
@@ -86,6 +90,45 @@ online() {
   assert_success
   assert_line 'skip: mac-mini is powered off by the governor'
   assert_line 'skip: ms-a2 is powered off by the governor'
+}
+
+@test "a host its slots key pins to 0 (machine-mode) is skipped, however dark" {
+  # 2026-11-24: machine-mode's clock pinned the workstation to 0 and stopped both its runners,
+  # as the human chose on 2026-11-23 (#3309), and the watch paged it as dark.
+  online mac-mini -3600 0
+  online ms-a2 -3600 3
+  echo 'mac-mini 0' > "$FIX/pin"
+  run "$RHD" --for 10m --at "$END"
+  assert_success
+  assert_line 'skip: mac-mini is pinned to 0 slots by its mac-mini.slots key (machine-mode)'
+  refute_output --partial 'reason:'
+}
+
+@test "a host with no slots pin still trips (negative control for the skip above)" {
+  online mac-mini -3600 0
+  online ms-a2 -3600 3
+  echo 'ms-a2 0' > "$FIX/pin"
+  run "$RHD" --for 10m --at "$END"
+  assert_failure 1
+  assert_line 'dark: mac-mini all 2 runners offline for 10m or more'
+  assert_line 'skip: ms-a2 is pinned to 0 slots by its ms-a2.slots key (machine-mode)'
+}
+
+@test "while the governor is blind, each series reads as it stood at its last report, never its last value over the day" {
+  # 2026-11-25 14:03Z: a 2-minute governor gap read the last value over 1d of each series. A slots
+  # pin exists only while set, so its last value is always 0: tuf-b550, powered off since 10:21Z,
+  # read as pinned by a pin lifted 14h before, the probe said OK, and the OK lifted the quarantine.
+  online mac-mini -3600 2
+  online ms-a2 -3600 3
+  run "$RHD" --for 10m --at "$END"
+  assert_success
+  local q blind=0
+  while IFS= read -r q; do
+    [[ $q == *'last_over_time(ci_governor_'*'[1d])'* ]] || continue
+    blind=$((blind + 1))
+    [[ $q == *'(timestamp(ci_governor_ok) and ci_governor_ok == 1)'* ]] || fail "a blind read not anchored at the governor's last report: $q"
+  done < "$FIX/queries"
+  assert_equal "$blind" 3
 }
 
 @test "a host the governor does not keep running is never named, however dark" {

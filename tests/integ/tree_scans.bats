@@ -90,7 +90,7 @@ setup() {
   local offenders=()
   local f
   for f in .local/bin/agentctl .local/lib/agent-proof.sh \
-           .local/src/tmux/fleet.sh .local/bin/agent-mqtt-publish; do
+           .local/src/tmux/fleet.sh .local/bin/agent-mqtt-publish .local/bin/fleet-bench; do
     # the line that establishes the state dir must mention both names
     grep -qE 'AGENTCTL_STATE_DIR:-\$\{?AGENTCTL_STATE' "$REPO_ROOT/$f" || offenders+=("$f")
   done
@@ -99,7 +99,20 @@ setup() {
   # quietly honouring one name. The count is also the empty-input guard: if the
   # grep matched nothing at all, this fails rather than reading as "all fine".
   run bash -c "grep -rlE 'AGENTCTL_STATE_DIR:-\\\$\\{?AGENTCTL_STATE' '$REPO_ROOT'/.local | wc -l"
-  assert_output '4'
+  assert_output '5'
+}
+
+# A landing verdict is the outcome agent-queue stamps at each close (OUTCOME_JQ): a reader that judges
+# "ok with a PR" itself drifts from it (canary items, kind exits, unrated ends), and each of
+# fleet-bench, agent-land, credit-backfill and day-log once did (ar-5433).
+@test "no reader outside agent-queue judges landed by its own ok-with-a-PR predicate" {
+  local pat='status"?\)? *== *"ok"[^|;]{0,40}[."(]pr\b|\.pr\b[^|;]{0,40}status *== *"ok"|get\("status"\) *== *"ok".{0,40}"pr"'
+  run git -C "$REPO_ROOT" grep -nIE "$pat" -- .local/bin .local/lib .local/src ':!.local/bin/agent-queue'
+  assert_failure 1
+  assert_output ''
+  # NEGATIVE CONTROL: the pattern finds the one rule it allows
+  run grep -cE "$pat" "$REPO_ROOT/.local/bin/agent-queue"
+  assert_output 1
 }
 
 # The picker reads a test's dependencies from the names in it, and a directory only as

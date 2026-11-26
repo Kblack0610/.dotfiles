@@ -6,7 +6,7 @@ metadata:
   category: ops
   tags: [ci, flaky, quarantine, testing, cost, failures, unity, playground]
   system: [ci]
-  reviewed: "2026-11-21"
+  reviewed: "2026-11-24"
 ---
 
 # CI cleanup
@@ -21,7 +21,7 @@ The doctrine (gate, tiers, budgets, speed levers, red handling, quarantine, reru
 - Cost: why CI, a gate or a dispatch takes as long as it does; choosing the next harness change to cut CI time; proving what a landed harness change saved; a long runner pool queue nobody can attribute.
 - Pass: the human asks to clean up CI, raise the pass rate, or run "CI cleanup pass N"; nightlies stay red for days and single-red triage has not moved them; a low local or gate pass rate nobody can split into tests and harness.
 
-Not for one PR's red checks (`fix-ci`), a red playground nightly end to end (`playground-nightly-fix`), agent-session ETAs (`fleet-bench`), or running tests (`playground-headless-test`).
+Not for a red CI run on a PR or on main, the nightly included (`fix-ci`), agent-session ETAs (`fleet-bench`), or running tests (`playground-headless-test`).
 
 ## Reds: why CI is red
 
@@ -32,7 +32,7 @@ Explains and routes; it fixes nothing.
 3. **Read the buckets.** `infra` (runner lost or killed, disk, network, rate limit, host key), `timeout`, `test`, `check` (lint, docs, build, a PR-body check), `derived` (failed only because an earlier job did, never counted), `pending` (red by design until another run finishes, such as the playground's gate line on a PR pushed before its gate; a run red only on those is not red). The patterns sit at the top of `ci-failures.py`; when a bucket is wrong, fix the pattern there (with a fixture in `tests/fixtures/ci-failures/`), not the count in your answer. A `test` red's assertion text is in the run's test-runs artifacts, not the job log: read it with the repo's reader (unity-core-playground: `scripts/test/red-causes.py reds --since <date>`). Write down the suspects you ruled out.
 4. **Base-branch reds come first.** A signature with `main: yes` fails every branch. Find the first bad commit: `schedules-sync runs <repo> --branch main | jq -c '.[] | select(.path | endswith("/<file>")) | [.sha, .conclusion, .created_at]'` gives the last green and first red, and `git log <green>..<red>` the PRs between them. `ci.md` "Tiers" says what happens next.
 5. **Flaky needs evidence.** `green@sha: yes` (the same job went green on the same commit) is a lead, not a verdict: rule out a changed PR body, variable, secret, test pick or moving base between the two runs first. Never rerun a job to find out; quarantine only by `ci.md` "Red handling".
-6. **One owner per cause.** For each signature that recurs or sits on main: an open PR, a board row (grep the board first), or a session already on it. No owner: post one proposal, `agent-propose add --stream ci-failures --project <project> --verb row --arg "ci(<area>): <signature>, <runs> runs, sample <url> #size/s #tier/3" --why "<runs> runs<, red on main>" --evidence <url> "<signature>"`. Dedupe and the cap are the method's.
+6. **One owner per cause.** For each signature that recurs or sits on main: an open PR, a board row (grep the board first), or a session already on it. No owner: post one proposal, `agent-propose add --stream ci-failures --project <project> --verb row --arg "ci(<area>): <signature>, <runs> runs, sample <url> #size/s #tier/3" --why "<runs> runs<, red on main>" --evidence <url> "<signature>"`. Dedupe and the cap are the method's. It expires on its own once older than the stream's window (`AGENT_PROPOSE_WINDOWS` in `agent-propose`); when a PR fixes its cause first, `agent-propose expire --by pr:<N> <id>`.
 7. **Report:** the red rate and the one or two causes that drive it; the bucket table and the top of the "where" table, as printed; the top recurring or on-main signatures, each with its owner or the proposal just posted; what was ruled out and what the window cannot show (runs still going, PARTIAL, a workflow not read); for a trend, the same command for the previous window (`--until <start of this one>`).
 
 ## Cost: where CI time goes

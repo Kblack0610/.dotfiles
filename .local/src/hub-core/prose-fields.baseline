@@ -7,7 +7,7 @@ boards.rs	2
 briefing.rs	1
 budget.rs	1
 builds.rs	1
-ci.rs	2
+ci.rs	1
 costs.rs	1
 deliverables.rs	2
 departments.rs	4
@@ -35,7 +35,7 @@ schedules.rs	1
 session_table.rs	1
 stack.rs	1
 stages.rs	2
-tasks.rs	4
+tasks.rs	2
 text.rs	2
 timeline.rs	2
 version_page.rs	1

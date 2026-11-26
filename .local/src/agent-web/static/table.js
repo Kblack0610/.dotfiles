@@ -42,7 +42,7 @@ function tblSort(t) {
 }
 
 // One facet's dropdown: a pill naming the column and what is ticked, opening a checklist of its
-// values with their counts. Each box's value is the whole query a tick gives (hub-core decides it:
+// values with their counts and shares (hub-core's `pct`). Each box's value is the whole query a tick gives (hub-core decides it:
 // ticks on one column OR, columns AND), so a tick is a plain change on [data-tq]. data-fq is the
 // view `q` the boxes were built on (tblMenuKeep).
 function tblFacet(f, q) {
@@ -50,7 +50,7 @@ function tblFacet(f, q) {
   const label = on.length ? `${f.key}: ${on[0]}${on.length > 1 ? ` +${on.length - 1}` : ""}` : f.key;
   const clear = on.length ? `<button type="button" class="tfclear" data-tqc="${esc(f.clear)}">clear ${esc(f.key)}</button>` : "";
   return fold(`tfacet${on.length ? " on" : ""}`, esc(label), `<div class="tfmenu">${clear}` +
-    f.values.map((v) => `<label><input type="checkbox" data-tq data-fv="${esc(v.value)}" value="${esc(v.q)}"${v.on ? " checked" : ""}> <span>${esc(v.value)}</span> <span class="n">${v.n}</span></label>`).join("") + `</div>`,
+    f.values.map((v) => `<label><input type="checkbox" data-tq data-fv="${esc(v.value)}" value="${esc(v.q)}"${v.on ? " checked" : ""}> <span>${esc(v.value)}</span> <span class="n">${v.n} (${v.pct}%)</span></label>`).join("") + `</div>`,
     { attrs: ` data-fkey="${esc(f.key)}" data-fq="${esc(q || "")}"`, sum: ` title="filter ${esc(f.key)}: tick one or more"` });
 }
 
@@ -75,7 +75,7 @@ const tblChips = (t) => t.states.map((c, i) => {
 
 // The table's overview: each state but the first (the default view) as a tile with its count, in its hue (hub-core's
 // Chip.tone, rule 5) and with what it means on hover. A tap filters the table to it, a tap on the
-// one in force clears it. `extra` is a tab's own tiles after them (Sessions' SPEND). A table with
+// one in force clears it. `extra` is a tab's own tiles after them. A table with
 // no state but `all` and no extra draws none.
 function tblTiles(t, extra = "") {
   const tiles = t.states.slice(1).map((c) => {

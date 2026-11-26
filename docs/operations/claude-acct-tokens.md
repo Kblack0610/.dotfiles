@@ -15,7 +15,7 @@ Each Claude account in `~/.config/claude-acct/accounts` holds one long-lived tok
 - `claude-acct run` / `cl` / the picker: exports the chosen account's token and unsets any inherited one (a parent session's token belongs to another account).
 - `fleet-dispatch start` and `claude-acct move/unpark`: the launch line carries `CLAUDE_CODE_OAUTH_TOKEN="$(claude-acct token <dir>)"`, which the pane's shell runs at launch. The token is never typed into a pane, an argument list or a file. The launch env (`claude_launch_env`) drops any inherited token first.
 - `agentctl-run` (timer runners): `route_account` sets the chosen account's token after the scrub.
-- An account with no entry, or a locked rbw on a machine with no pushed copy (one stderr line naming the fix), starts with no token and stops on "Not logged in". rbw stays unlocked for its `lock_timeout` after `rbw unlock` (`rbw config show`), and a reboot locks it at once, so an unattended start needs an unlock since the last boot or a pushed copy. The same lock trips the `claude-acct-tokens` watch (`check tokens` exits 2) until someone unlocks it.
+- An account with no entry, or a locked rbw on a machine with no pushed copy (one stderr line naming the fix), starts with no token and stops on "Not logged in". rbw stays unlocked for its `lock_timeout` after `rbw unlock` (`rbw config show`), and a reboot locks it at once, so an unattended start needs an unlock since the last boot or a pushed copy. The same lock makes `check tokens` exit 2 with an `unreadable:` line, so the `claude-acct-tokens` watch reads UNKNOWN, and ERROR (a low page) once that outlasts `SENTINEL_UNKNOWN_HOLD`, until someone unlocks it. While rbw stays locked no token expiry is checked, so that low page is the only signal.
 - A cloud session (`claude-cloud-run`) gets no token: `claude --cloud` needs a full claude.ai sign-in, which a setup token (inference scope only) does not carry, so cloud runs are outside this scheme.
 
 ## Usage reads
@@ -28,7 +28,7 @@ Each Claude account in `~/.config/claude-acct/accounts` holds one long-lived tok
 
 ## Other machines
 
-Claude may run on any of the human's machines (the 2026-11-12 "no Claude on any worker machine" ruling was lifted 2026-11-17). A machine with rbw unlocked reads the tokens from rbw. A fleet worker has none (headless, and nobody unlocks it after a reboot), so it reads a 0600 copy in `~/.config/claude-acct/tokens/<account>`, written by `claude-acct token push <host...>` from a machine whose rbw is unlocked. The push sends each token over ssh stdin and asks the host's own `claude-acct` to read it back, so a host whose dotfiles predate the copy fails by name. Re-run it after `setup-token --renew`. Revoke a leaked copy on claude.ai and renew.
+Claude may run on any of the human's machines (the 2026-11-12 "no Claude on any worker machine" ruling was lifted 2026-11-17). A machine with rbw unlocked reads the tokens from rbw. A fleet worker has none (headless, and nobody unlocks it after a reboot), so it reads a 0600 copy in `~/.config/claude-acct/tokens/<account>`, written by `claude-acct token push <host...>` from a machine whose rbw is unlocked. The push sends each token over ssh stdin (for `localhost` or the machine's own name it writes the copy here, with no ssh) and asks the host's own `claude-acct` to read it back, so a host whose dotfiles predate the copy fails by name. Re-run it after `setup-token --renew`. Revoke a leaked copy on claude.ai and renew.
 
 ## Troubleshooting
 
@@ -40,6 +40,6 @@ Claude may run on any of the human's machines (the 2026-11-12 "no Claude on any 
 | `the token did not run a call; nothing stored` | The token was cut off or the account has no plan. Re-run, signed in to an account with a plan. |
 | `rbw is locked and this machine has no pushed copy, so <acct> starts with no setup token` | The unattended start found rbw locked. `rbw unlock`, or `claude-acct token push <host>` from a machine where it is unlocked; running sessions are not affected. |
 | Session still stops with a login error | The account has no entry (`claude-acct check tokens` names it) or the token expired; run `setup-token --renew`. |
-| `check tokens` exits 2 | rbw is missing or locked on this machine. |
+| `check tokens` exits 2 (`unreadable:`) | rbw is missing or locked on this machine, usually since a reboot: `rbw unlock`. |
 | `token push: <host>: <acct> failed` | ssh to the host failed, or its dotfiles are too old to read the copy: pull them there, re-run. |
 | An account reads unread (`fetch failed` in `status`, "usage unreadable" on the Costs tab) | It has no token (`claude-acct check tokens`), or rbw is locked with no pushed copy; `rbw unlock`. If both are fine, the probe call was refused without rate-limit headers: check the probe's model id, harnesses.json `models.claude.haiku` (a file without it reads "names no models.claude.haiku for the probe"). |

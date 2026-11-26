@@ -6,13 +6,18 @@
 //! `/api/projects/{name}/page` is one project's page (`hub_core::page`: its flow, what needs the
 //! human, epics by system, next stage and shipped versions), for a card to read when it is
 //! opened, never for every card. Its chain is the Deliverables' kept read (`crate::epics`).
+//! `POST /api/projects/prio {profile, name, prio, hours}` sets or clears a project's focus
+//! (`focus` or `normal`) through `projects::set_prio`, the one writer: a focus lasts `hours`
+//! (notes' default when absent).
 
 use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::Json;
 use hub_core::projects::{Card, Projects};
+use hub_core::session_actions::System;
 use hub_core::table::View;
 use hub_core::{page, projects};
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::cache::{off, ReadCache};
@@ -35,8 +40,10 @@ fn shown(p: &Projects, q: &TableQuery) -> Value {
         errors: p.errors.clone(),
         board_open: p.board_open,
         board_backlog: p.board_backlog,
+        board_7d: p.board_7d,
     });
     out["table"] = json!(table);
+    out["focus"] = projects::focus_json(&p.cards);
     out
 }
 
@@ -46,6 +53,29 @@ pub async fn get(Query(q): Query<TableQuery>) -> ApiResult<Json<Value>> {
         .await
         .map(|p| Json(shown(&p, &q)))
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PrioBody {
+    profile: String,
+    name: String,
+    prio: String,
+    #[serde(default)]
+    hours: Option<u32>,
+}
+
+/// Set or clear one project's focus. The cards read it, so their read is dropped and the
+/// page's next read shows the write.
+pub async fn set_prio(Json(b): Json<PrioBody>) -> ApiResult<StatusCode> {
+    let r = crate::queue::act(move || {
+        projects::set_prio(&System, &b.profile, &b.name, &b.prio, b.hours)
+    })
+    .await;
+    if r.is_ok() {
+        GATHERED.clear();
+    }
+    r
 }
 
 /// The page's chain comes from the one kept `fleet-bench epics` read (`crate::epics`), started
@@ -94,6 +124,7 @@ mod tests {
             errors: vec!["notes projects failed".into()],
             board_open: Some(7),
             board_backlog: Some(4),
+            board_7d: None,
         }
     }
 
@@ -111,6 +142,8 @@ mod tests {
         assert_eq!(got["table"]["shown"], 1);
         assert_eq!(got["unlinked"][0], "dotfiles: tidy");
         assert_eq!(got["errors"][0], "notes projects failed");
+        // The Focus strip offers every card, never only the view's.
+        assert_eq!(got["focus"]["all"].as_array().unwrap().len(), 2);
         assert_eq!(
             (got["board_open"].as_u64(), got["board_backlog"].as_u64()),
             (Some(7), Some(4))

@@ -124,6 +124,8 @@ agent_chain_wip{step="review"} 0
 agent_chain_wip{step="waiting"} 0
 # HELP agent_chain_age_ratio Each step's age p90 over its bound in kpi-thresholds; past 1 is a bottleneck.
 # TYPE agent_chain_age_ratio gauge
+# HELP agent_chain_score Each step's measure over its bound (fleet-bench pipeline): an age p90, the rows admission held in 24h, or the minutes dispatch has been held; 1 or more is over.
+# TYPE agent_chain_score gauge
 # HELP agent_chain_moves Items each step took in and let out over the last hour, from the record.
 # TYPE agent_chain_moves gauge
 # HELP agent_chain_drift Queue items the record and the queue folders place at different steps.
@@ -462,6 +464,144 @@ past_scores() {
   rowj 'bucket: "WORKING"' > "$SNAP"; sample_at 12000    # 3h gap: a sampler outage, counts 20 min
   run bash -c 'source "$1"; BENCH_NOW=$2 window_stats $2 | jq -r "[.working_min, .waiting_min, .stalled_min] | @tsv"' _ "$SUBJECT" $((T0 + 12000))
   assert_output "$(printf '10\t10\t20')"
+}
+
+@test "a STALLED session the human holds open (manual or stay) is held, not stalled (ar-5151)" {
+  rowj 'bucket: "STALLED", labels: ["manual"]' > "$SNAP"; sample_at 0
+  rowj 'bucket: "STALLED", labels: ["stay"]' > "$SNAP"; sample_at 600
+  rowj 'bucket: "WORKING", labels: ["manual"]' > "$SNAP"; sample_at 1200   # held open while working is still working
+  rowj 'bucket: "STALLED", labels: ["shepherd"]' > "$SNAP"; sample_at 1800   # negative control: no hold, a stall
+  rowj 'bucket: "WORKING"' > "$SNAP"; sample_at 2400
+  run jq -c '.held' "$FLEET_BENCH_DIR/progress.jsonl"
+  assert_output "$(printf 'true\ntrue\ntrue\nfalse\nfalse')"
+  run bash -c 'source "$1"; BENCH_NOW=$2 window_stats $2 | jq -r "[.working_min, .stalled_min, .minutes.HELD] | @tsv"' _ "$SUBJECT" $((T0 + 2400))
+  assert_output "$(printf '10\t10\t20')"
+}
+
+# four sessions stalled for 40, 30, 20 and 10 minutes and a fifth the human holds open (manual) stalled
+# throughout, sampled every 10 minutes: 1.7 stalled session-hours, the held one in none of them
+stalled_fixture() {
+  local i b n
+  for i in 0 1 2 3 4; do
+    {
+      for b in a b c d; do
+        case "$b" in a) n=4 ;; b) n=3 ;; c) n=2 ;; d) n=1 ;; esac
+        rowj "session_id: \"$b\", target: \"t/$b\", bucket: \"$([ "$i" -lt "$n" ] && echo STALLED || echo WORKING)\""
+      done
+      rowj "session_id: \"e\", target: \"t/e\", labels: [\"manual\"], bucket: \"$([ "$i" -lt 4 ] && echo STALLED || echo WORKING)\""
+    } > "$SNAP"
+    sample_at $((i * 600))
+  done
+}
+
+@test "bottleneck --check stalled: past stalled_session_hours_max it names the top three sessions and exits 1; a held session is in none of them (ar-5152)" {
+  stalled_fixture
+  printf '%s\n' stalled_session_hours_max=1 > "$KPI_THRESHOLDS"
+  BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck --check stalled
+  assert_failure 1
+  assert_output '1.67 session-hours stalled over the last 24h, past 1: t/a 0.7h, t/b 0.5h, t/c 0.3h'
+  # NEGATIVE CONTROL: the same samples inside the bound pass quietly
+  printf '%s\n' stalled_session_hours_max=2 > "$KPI_THRESHOLDS"
+  BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck --check stalled
+  assert_success
+  assert_output ''
+}
+
+@test "bottleneck --check stalled counts from the watch's fix watermark; the pool check keeps its whole window (ar-5157)" {
+  stalled_fixture
+  stub_pools "unity 30.5"
+  printf '%s\n' stalled_session_hours_max=0.1 pool_wait_hours_max=24 > "$KPI_THRESHOLDS"
+  # from T0+1800 only t/a still stalls, for one 10-minute sample: 0.17h, past 0.1
+  SENTINEL_SINCE=$((T0 + 1800)) BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck --check
+  assert_failure 1
+  assert_line "0.17 session-hours stalled since the fix at $(date -d "@$((T0 + 1800))" '+%F %H:%M'), past 0.1: t/a 0.2h"
+  assert_line 'pool waits past 24 job-hours over the last 24h: unity 30.5h'
+  # NEGATIVE CONTROL: with no watermark the same samples count all 1.67h of the window
+  printf '%s\n' stalled_session_hours_max=1 > "$KPI_THRESHOLDS"
+  BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck --check stalled
+  assert_failure 1
+  SENTINEL_SINCE=$((T0 + 1800)) BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck --check stalled
+  assert_success
+  assert_output ''
+  # a watermark older than the window start changes nothing
+  SENTINEL_SINCE=$((T0 - 2 * 86400)) BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck --check stalled
+  assert_failure 1
+  assert_output --partial 'over the last 24h'
+}
+
+@test "bottleneck --check stalled: a stale sampler, no bound or an unknown check exits 2, never a quiet pass (ar-5152)" {
+  stalled_fixture
+  printf '%s\n' stalled_session_hours_max=2 > "$KPI_THRESHOLDS"
+  BENCH_NOW=$((T0 + 2400 + 1500)) run "$SUBJECT" bottleneck --check stalled
+  assert_failure 2
+  assert_output --partial 'older than 20 minutes'
+  : > "$KPI_THRESHOLDS"
+  BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck --check stalled
+  assert_failure 2
+  assert_output --partial 'no stalled_session_hours_max'
+  BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck --check nonsense
+  assert_failure 2
+  assert_output --partial 'usage'
+}
+
+# stub_pools <name value>...: Prometheus answers the pool wait query with those pools' job-hours
+stub_pools() {
+  local r="" a
+  for a in "$@"; do r+="{\"metric\":{\"pool\":\"${a% *}\"},\"value\":[1,\"${a#* }\"]},"; done
+  stub_prom "echo '{\"status\":\"success\",\"data\":{\"result\":[${r%,}]}}'"
+}
+
+@test "bottleneck --check pools: every pool past pool_wait_hours_max is named, the longest first; a pool inside it is not (ar-5153)" {
+  stub_pools "unity 30.5" "macos 26" "light 12" "heavy 0"
+  printf '%s\n' pool_wait_hours_max=24 > "$KPI_THRESHOLDS"
+  run "$SUBJECT" bottleneck --check pools
+  assert_failure 1
+  assert_output 'pool waits past 24 job-hours over the last 24h: unity 30.5h, macos 26h'
+  # NEGATIVE CONTROL: the same waits inside the bound pass quietly
+  printf '%s\n' pool_wait_hours_max=31 > "$KPI_THRESHOLDS"
+  run "$SUBJECT" bottleneck --check pools
+  assert_success
+  assert_output ''
+}
+
+@test "bottleneck --check pools: no bound, an unreadable Prometheus or no pool series exits 2, never a quiet pass (ar-5153)" {
+  stub_pools "unity 30.5"
+  : > "$KPI_THRESHOLDS"
+  run "$SUBJECT" bottleneck --check pools
+  assert_failure 2
+  assert_output --partial 'no pool_wait_hours_max'
+  printf '%s\n' pool_wait_hours_max=24 > "$KPI_THRESHOLDS"
+  stub_prom 'exit 22'
+  run "$SUBJECT" bottleneck --check pools
+  assert_failure 2
+  assert_output --partial 'no pool series'
+  stub_pools
+  run "$SUBJECT" bottleneck --check pools
+  assert_failure 2
+}
+
+@test "bottleneck --check with no name runs the stall and the pool checks, one line each, the worse exit code (ar-5153)" {
+  stalled_fixture
+  stub_pools "unity 30.5"
+  printf '%s\n' stalled_session_hours_max=1 pool_wait_hours_max=24 > "$KPI_THRESHOLDS"
+  BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck --check
+  assert_failure 1
+  assert_line '1.67 session-hours stalled over the last 24h, past 1: t/a 0.7h, t/b 0.5h, t/c 0.3h'
+  assert_line 'pool waits past 24 job-hours over the last 24h: unity 30.5h'
+  # one check unreadable beats the other tripping
+  printf '%s\n' stalled_session_hours_max=1 > "$KPI_THRESHOLDS"
+  BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck --check
+  assert_failure 2
+}
+
+@test "bottleneck: the check and the scorecard section read one set of rows (ar-5152)" {
+  stalled_fixture
+  BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck --json
+  assert_success
+  run jq -r '.rows[] | select(.key == "stalled") | [(.h * 10 | round), (.top | length), .detail] | @tsv' <<<"$output"
+  assert_output "$(printf '17\t3\tt/a 0.7h, t/b 0.5h, t/c 0.3h')"
+  BENCH_NOW=$((T0 + 2400 + 60)) run "$SUBJECT" bottleneck
+  assert_line '| Sessions stalled | 1.7 | session-hours | t/a 0.7h, t/b 0.5h, t/c 0.3h |'
 }
 
 @test "negative control: without the cap the outage would count as 180 stalled minutes" {
@@ -1127,7 +1267,7 @@ asks_order() { bash -c '. "$1"; ask_rows | jq -r "map(.id) | join(\" \")"' _ "$S
   run "$SUBJECT" kpi --json
   assert_success
   run jq -c 'with_entries(select(.value.now | not) | .value |= [.["7d"], .["28d"]])' <<<"$output"
-  assert_output '{"sessions":[1,2],"merged_prs":[2,3],"revert_rate":[0.25,0.2],"interrupts_per_day":[0.286,0.071],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"first_pass_share":[null,null],"plan_gate_deny_rate":[0.25,0.5],"canary_runs":[0,0],"canary_pass_rate":[null,null],"canary_cost_per_task":[null,null],"canary_min_per_task":[null,null],"canary_turns_per_task":[null,null],"responses_per_merged_pr":[null,null],"context_per_merged_pr":[null,null],"tool_chars_per_call":[null,null],"locate_read_share":[null,null],"reread_share":[null,null],"cache_write_share":[null,null],"start_share":[null,null],"start_context_median":[null,null],"compactions_per_session":[null,null],"rework_candidate_7d":[null,null],"rework_verified_30d":[null,null],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"pages_held_per_day":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_answered_pct":[null,null],"ask_unclear_pct":[null,null],"judge_human_only_live_pct":[null,null],"ask_human_only_pct":[null,null],"dispatch_false_defer_pct":[null,null],"human_answered_per_day":[0,0],"ask_wait_p90_min":[null,null],"startup_ready_ms_p50":[null,null],"sandboxed_lane_pct":[null,null],"pool_busy_share":[null,null]}'
+  assert_output '{"sessions":[1,2],"merged_prs":[2,3],"revert_rate":[0.25,0.2],"interrupts_per_day":[0.286,0.071],"cost_per_pr":[2,2],"ci_red_per_pr":[2,1],"first_pass_share":[null,null],"plan_gate_deny_rate":[0.25,0.5],"canary_runs":[0,0],"canary_pass_rate":[null,null],"canary_cost_per_task":[null,null],"canary_min_per_task":[null,null],"canary_turns_per_task":[null,null],"responses_per_merged_pr":[null,null],"context_per_merged_pr":[null,null],"tool_chars_per_call":[null,null],"locate_read_share":[null,null],"reread_share":[null,null],"cache_write_share":[null,null],"start_share":[null,null],"start_context_median":[null,null],"compactions_per_session":[null,null],"rework_candidate_7d":[null,null],"rework_verified_30d":[null,null],"buzzes_per_day":[null,null],"comms_pass_pct":[null,null],"rows_pass_pct":[null,null],"pages_held_per_day":[null,null],"judge_errors":[null,null],"judge_precision":[null,null],"ask_answered_pct":[null,null],"ask_unclear_pct":[null,null],"judge_human_only_live_pct":[null,null],"ask_human_only_pct":[null,null],"dispatch_false_defer_pct":[null,null],"human_answered_per_day":[0,0],"ask_wait_p90_min":[null,null],"startup_ready_ms_p50":[null,null],"sandboxed_lane_pct":[null,null],"pool_busy_share":[null,null],"churn_merges_per_day":[null,null],"churn_filed_per_closed":[null,null],"churn_reopens_per_day":[null,null],"churn_followups_per_pr":[null,null],"churn_admitted_per_day":[null,null],"churn_refused_per_day":[null,null]}'
   run "$SUBJECT" kpi
   assert_line '| revert_rate | 0.25 | 0.2 | max 0.1 | past |'
   assert_line '| interrupts_per_day | 0.286 | 0.071 | max 0.2 | past |'
@@ -1285,7 +1425,7 @@ ask_row() {
   run jq -sc '[map(.sessions), (map(.date) | unique | length)]' <<<"$output"
   assert_output '[[0,1,1],3]'
   run "$SUBJECT" kpi --trend 3
-  assert_line '| date | sessions | merged_prs | revert_rate | interrupts_per_day | cost_per_pr | ci_red_per_pr | first_pass_share | plan_gate_deny_rate | canary_runs | canary_pass_rate | canary_cost_per_task | canary_min_per_task | canary_turns_per_task | responses_per_merged_pr | context_per_merged_pr | tool_chars_per_call | locate_read_share | reread_share | cache_write_share | start_share | start_context_median | compactions_per_session | rework_candidate_7d | rework_verified_30d |'
+  assert_line '| date | sessions | merged_prs | revert_rate | interrupts_per_day | cost_per_pr | ci_red_per_pr | first_pass_share | plan_gate_deny_rate | canary_runs | canary_pass_rate | canary_cost_per_task | canary_min_per_task | canary_turns_per_task | responses_per_merged_pr | context_per_merged_pr | tool_chars_per_call | locate_read_share | reread_share | cache_write_share | start_share | start_context_median | compactions_per_session | rework_candidate_7d | rework_verified_30d | churn_merges_per_day | churn_filed_per_closed | churn_reopens_per_day | churn_followups_per_pr | churn_admitted_per_day | churn_refused_per_day |'
   run "$SUBJECT" kpi --trend 0
   assert_failure 2
   run "$SUBJECT" kpi --at 'not a time'
@@ -1657,7 +1797,10 @@ closed_feed() {
   assert_output --partial '1 reopened'
   run grep -c -- '^ptask agent-runtime reopen ar-77 --why fleet-bench: check(watch): spend tripped since red again$' "$NLOG"
   assert_output 1
-  run grep -c -- '--agent edit check(watch): spend tripped since --text check(watch): spend tripped since ' "$NLOG"
+  run grep -c -- '--agent edit ar-77 --text check(watch): spend tripped since ' "$NLOG"
+  assert_output 1
+  # the trip is a detail line on the reopened row (ar-6078)
+  run grep -Ec -- '--agent edit ar-77 --text .* --detail [0-9]{4}-[0-9]{2}-[0-9]{2} red again after it closed$' "$NLOG"
   assert_output 1
   run grep -c -- '--agent add check(watch): spend' "$NLOG"
   assert_output 0
@@ -2023,7 +2166,7 @@ cause_of() { printf '%s' 'lock .* held by pid' | sha256sum | cut -c1-8; }
   assert_line --regexp 'check\(watch\): quoted tripped .* #high$'
   assert_line --regexp 'check\(watch\): commented tripped .* #high$'
   refute_output --partial 'med_early'
-  assert_line --regexp 'check\(watch\): med_late tripped .* #low$'
+  assert_line --regexp 'check\(watch\): med_late tripped .* #normal$'
 }
 
 # fix_item <slug> <state> <status> [pr] [merged]: one window item for the lock cause, as agent-queue lists it
@@ -2056,19 +2199,37 @@ fix_item() {
   assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red cause:$(cause_of) "
 }
 
-@test "triage: a cause in hand is not queued again: running, or closed with its PR waiting on a merge" {
+@test "triage: a cause in hand is not queued again: running, or in review with its PR waiting on a merge" {
   log_triage_setup
   lock_route
   fix_item ar-1 running ''
   run "$SUBJECT" triage
   assert_success
   [ ! -s "$PLOG" ]
-  : > "$ITEMS"; fix_item ar-1 done ok o/r#5 ''
+  : > "$ITEMS"; fix_item ar-1 review '' o/r#5 ''
   run "$SUBJECT" triage
   assert_success
   [ ! -s "$PLOG" ]
   run grep -c 'fix(logs): alpha error' "$BOARD"   # the row still files
   assert_output 1
+}
+
+# 2026-11-24 (ar-5294): ar-3447 closed recording #3091, whose merge ar-2940's landing recorded, so it
+# had no merged:, and triage read it as an owner waiting on a merge: playground-train-stuck tripped
+# again and went 17h with no item while 44 PRs waited in landing-queue.
+@test "triage: a closed fix that records a PR with no merge is a try that did not hold, not an owner" {
+  log_triage_setup
+  lock_route
+  for row in "done ok o/r#5" "done failed o/r#5"; do
+    : > "$ITEMS"; : > "$PLOG"
+    # shellcheck disable=SC2086
+    fix_item ar-1 $row
+    run "$SUBJECT" triage
+    assert_success
+    assert_output --partial '1 queued as red fixes'
+    run cat "$PLOG"
+    assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red cause:$(cause_of) retry:ar-1 --raw "
+  done
 }
 
 @test "triage: a fix that closed cancelled, failed or merged with the red still here is queued once more, naming it" {
@@ -2348,6 +2509,23 @@ fix_item() {
   assert_output --partial FAILED
 }
 
+# ar-6158: the board's daily cap turns a check row away with exit 6, which is a held row, not a failed one.
+@test "triage: a check row the board's daily cap refuses is said and left for the next pass, no failure" {
+  log_triage_setup
+  lock_route
+  watch links TRIP -25200 high
+  route 'watch.: (links) tripped' agent fix-red 'fix the links'
+  printf '#!/usr/bin/env bash\n[ "$4" = add ] && [[ "$5" == *"check(watch): links"* ]] && exit 6\nexec notes "$@"\n' > "$SANDBOX/bin/notes-capped"
+  chmod +x "$SANDBOX/bin/notes-capped"
+  BENCH_NOTES_CMD=notes-capped run "$SUBJECT" triage
+  assert_output --partial "check(watch): links tripped since: the board's daily cap holds this row; the next pass tries it again"
+  assert_output --partial '1 queued as red fixes'
+  # the exit 1 test above is the control: any other exit is still a failed add
+  refute_output --partial 'add failed for check(watch): links'
+  run outcome
+  refute_output --partial FAILED
+}
+
 @test "triage: a dispatch hold or an unreadable queue queues nothing, and the row still files" {
   log_triage_setup
   lock_route
@@ -2415,6 +2593,32 @@ fix_item() {
   [ "$(grep -c . "$BOARD.home")" = 1 ]
 }
 
+@test "triage: a held filing lock defers every row, human sheet included, but still queues the red fix of a row already filed (ar-6078)" {
+  log_triage_setup
+  export BENCH_UPSERT_LOCK="$SANDBOX/upsert.lock" BENCH_UPSERT_LOCK_WAIT=0
+  watch spend TRIP -25200 high; watch puck TRIP -25200 high
+  route 'watch.: spend' alert - 'the spend watch pages on its own'
+  route 'watch.: puck' human:home-config - 'check the puck'
+  # the spend row is already on the board (an earlier pass filed it), so its red fix queues though the lock is held
+  printf 'board.md\t9\t%s\t- [ ] %s <!-- id:ar-9 -->\n' 'check(watch): spend tripped since 2026-11-01, expected: x' 'check(watch): spend tripped since 2026-11-01, expected: x' >> "$BOARD"
+  exec 8>"$BENCH_UPSERT_LOCK"; flock 8
+  run "$SUBJECT" triage
+  exec 8>&-
+  assert_failure
+  assert_output --partial 'board upsert lock'
+  assert_output --partial '1 queued as red fixes'
+  run grep -c -- '--agent add' "$NLOG"
+  assert_output 0
+  [ ! -s "$BOARD.home" ]
+  # Negative control: with the lock free the same pass files the agent row and the human sheet's row.
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c 'check(watch): spend tripped since' "$BOARD"
+  assert_output 1
+  run grep -c 'check(watch): puck.*for the human: check the puck' "$BOARD.home"
+  assert_output 1
+}
+
 # 2026-11-11/12 (ar-2111): ar-1092 and ar-1650 sat on the human's sheet while their routes were human;
 # the route changed, the agent board's upsert saw none of them, and ar-1674 and ar-2068 were filed as
 # second rows for the same watch.
@@ -2437,6 +2641,27 @@ fix_item() {
   run grep -c 'tripped since' "$BOARD"
   assert_output 1
   run grep -c ' drop \| add ' "$NLOG"
+  assert_output 0
+}
+
+# 2026-11-25 (ar-6265): dispatch moved the board-chain check row to the sheet for a person; board_upsert left
+# it there, but triage_twins read the key as filed and dropped the sheet row, so the next pass filed it again.
+@test "triage: a red whose row dispatch moved to the sheet keeps that row, with no agent row filed and no sheet drop (ar-6265)" {
+  log_triage_setup
+  watch spend TRIP -25200 high
+  route 'watch.: spend' alert - 'the spend watch pages on its own'
+  printf 'board.md\t9\t%s\t- [ ] %s (agent row ar-77)\n' 'check(watch): spend tripped since 2026-11-01, expected: x' 'check(watch): spend tripped since 2026-11-01, expected: x' > "$BOARD.agent-runtime"
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial 'open on the human sheet, left there'
+  # the pass files other causes (the alpha log errors), so only this key's writes are counted
+  run grep -c -- '--agent add check(watch): spend' "$NLOG"
+  assert_output 0
+  run grep -c ' drop check(watch): spend' "$NLOG"
+  assert_output 0
+  run grep -c 'spend tripped since' "$BOARD.agent-runtime"
+  assert_output 1
+  run grep -c 'spend tripped since' "$BOARD"
   assert_output 0
 }
 
@@ -2603,6 +2828,49 @@ fix_item() {
   assert_output --partial 'skill the SKILL check failed'
 }
 
+@test "triage --coverage: an owned:<row> route whose row is not open fails and names it (ar-2572)" {
+  coverage_setup
+  FEED="$SANDBOX/feed.json" NLOG="$SANDBOX/feed.log"
+  printf '#!/usr/bin/env bash\necho "$*" >> %q\ncat %q\n' "$NLOG" "$FEED" > "$SANDBOX/bin/feed-stub"
+  chmod +x "$SANDBOX/bin/feed-stub"
+  export BENCH_NOTES_CMD=feed-stub
+  # negative control: no owned route reads no feed
+  run "$SUBJECT" triage --coverage
+  assert_success
+  assert_output ''
+  [ ! -e "$NLOG" ]
+  sed -i 's/\talert\t/\towned:ar-1\t/' "$TRIAGE_ROUTES"
+  feed() { jq -cn --argjson r "$1" '{today: "2026-11-24", rows: $r}' > "$FEED"; }
+  feed '[{"id": "ar-1", "state": "open", "dup": null}]'
+  run "$SUBJECT" triage --coverage
+  assert_success
+  assert_output ''
+  assert_equal "$(cat "$NLOG")" 'board --json --id ar-1'
+  feed '[{"id": "ar-1", "state": "done", "dup": null}]'
+  run "$SUBJECT" triage --coverage
+  assert_failure
+  assert_output 'watch standing owned:ar-1 is closed'
+  feed '[{"id": "ar-1", "state": "done", "dup": "ar-2"}]'
+  run "$SUBJECT" triage --coverage
+  assert_failure
+  assert_output 'watch standing owned:ar-1 is closed, folded into ar-2'
+  # a reopened row keeps its old close in a version note: the open copy wins
+  feed '[{"id": "ar-1", "state": "done", "dup": null}, {"id": "ar-1", "state": "doing", "dup": null}]'
+  run "$SUBJECT" triage --coverage
+  assert_success
+  feed '[{"id": "ar-9", "state": "open", "dup": null}]'
+  run "$SUBJECT" triage --coverage
+  assert_failure
+  assert_output 'watch standing owned:ar-1 is on no board here'
+  # the routes_unresolved KPI counts it
+  run bash -c 'source "$1"; chain_routes' _ "$SUBJECT"
+  assert_output 'routes_unresolved=1'
+  # a feed that cannot be read is not a clean one
+  BENCH_NOTES_CMD=false run "$SUBJECT" triage --coverage
+  assert_failure
+  assert_output 'watch standing owned:ar-1 unchecked: notes board --json --id cannot be read'
+}
+
 @test "triage --route: each key gets the first line its row matches, and no line is a dash" {
   coverage_setup
   run "$SUBJECT" triage --route 'watch standing' 'runner alpha' 'watch gone' 'nonsense x'
@@ -2636,7 +2904,10 @@ red_item() {
   jq -cn --arg s "$1" --arg st "$2" --arg t "$3" --argjson q "$(iso "$4")" --argjson f "$(iso "$5")" \
     --arg pr "$6" --arg m "$7" --arg ok "${8:-ok}" --arg tags "${9:-red cause:$1}" \
     '{slug: $s, state: $st, title: $t, queued: $q, finished: $f, pr: (if $pr == "-" then null else $pr end),
-      merged: (if $m == "-" then null else $m end), status: $ok, tags: $tags}' >> "$ITEMS"
+      merged: (if $m == "-" then null else $m end), status: $ok, tags: $tags}
+      # the outcome agent-queue stamps at close, which fleet-bench counts
+      + if $st != "done" then {} elif $ok == "cancelled" then {outcome: "cancelled"} elif $ok == "failed" then {outcome: "failed"}
+        elif $pr != "-" then {outcome: "landed"} else {outcome: "no-pr"} end' >> "$ITEMS"
 }
 
 @test "reds: each red fix's outcome is read against what is red now, and the unfixed merges are a KPI" {
@@ -2760,6 +3031,28 @@ red_item() {
   assert_equal "$(jq -c '.project' <<<"$output")" '""'
 }
 
+@test "reds: each row names its board row id, the ticket the Alerts tab links, from row: or a board: from; none reads null" {
+  log_triage_setup
+  : > "$AGENTCTL_STATE_DIR/runs.jsonl"
+  watch fine OK -100 normal
+  red_item a done 'check(watch): fine tripped since 2026-11-01, expected: fine' -7200 -3600 r#1 sha1
+  parses 'check(watch): fine tripped since 2026-11-01, expected: fine' check watch 'fine tripped since 2026-11-01, expected: fine'
+  jq -c '. + {row: "agent-runtime:ar-5133"}' "$ITEMS" > "$ITEMS.p" && mv "$ITEMS.p" "$ITEMS"
+  run "$SUBJECT" reds --json
+  assert_success
+  assert_equal "$(jq -r '.row' <<<"$output")" ar-5133
+  jq -c 'del(.row) + {from: "board:home-config:hc-9"}' "$ITEMS" > "$ITEMS.p" && mv "$ITEMS.p" "$ITEMS"
+  run "$SUBJECT" reds --json
+  assert_success
+  assert_equal "$(jq -r '.row' <<<"$output")" hc-9
+  # negative control: an item with no row and no board: from keeps its line, with row null
+  jq -c 'del(.row) + {from: "human"}' "$ITEMS" > "$ITEMS.p" && mv "$ITEMS.p" "$ITEMS"
+  run "$SUBJECT" reds --json
+  assert_success
+  assert_equal "$(jq -c '.row' <<<"$output")" null
+  assert_equal "$(jq -r '.slug' <<<"$output")" a
+}
+
 @test "reds: a merged fix whose red is routed to alert reads alert route and is not unfixed; with no alert line it counts" {
   log_triage_setup
   : > "$AGENTCTL_STATE_DIR/runs.jsonl"
@@ -2803,6 +3096,19 @@ red_item() {
   refute_output --partial 'cannot read the queue'
   run "$SUBJECT" ledger
   assert_line 'reds_unfixed=?'
+}
+
+@test "reds: red titles past the 128 KB one argument can carry still parse, read as a file" {
+  log_triage_setup
+  local pad i
+  pad=$(printf 'x%.0s' {1..1000})
+  for i in $(seq 1 140); do
+    printf '{"slug":"s%s","state":"running","title":"fix(watch): w%s %s","queued":null,"tags":"red"}\n' "$i" "$i" "$pad"
+  done >> "$ITEMS"
+  parses "fix(watch): w7 $pad" fix watch "w7 $pad"
+  run "$SUBJECT" reds --json
+  assert_success
+  assert_equal "$(jq -rs 'map(select(.slug == "s7")) | .[0].red' <<<"$output")" 'watch w7'
 }
 
 @test "reds: an unreadable queue fails and says so, and its KPIs read ? instead of 0" {
@@ -3333,14 +3639,14 @@ q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
 @test "kpi: points_per_pr is Claude points over Claude landed PRs; other kinds and unread points stay out" {
   kpi_setup; sources_fixture
   {
-    echo '{"slug":"a","account":"main","status":"ok","pr":"o/r#1"}'
-    echo '{"slug":"b","account":".claude-bnb","status":"ok","pr":"o/r#2"}'
-    echo '{"slug":"c","status":"ok","pr":"o/r#3","sessions":"s1"}'
-    echo '{"slug":"d","agent":"lazer-reserve","status":"ok","pr":"o/r#4"}'
+    echo '{"slug":"a","account":"main","status":"ok","pr":"o/r#1","outcome":"landed"}'
+    echo '{"slug":"b","account":".claude-bnb","status":"ok","pr":"o/r#2","outcome":"landed"}'
+    echo '{"slug":"c","status":"ok","pr":"o/r#3","sessions":"s1","outcome":"landed"}'
+    echo '{"slug":"d","agent":"lazer-reserve","status":"ok","pr":"o/r#4","outcome":"landed"}'
   } > "$ITEMS"
   run "$SUBJECT" kpi --json
   assert_equal "$(jq -c '.points_per_pr["7d"]' <<<"$output")" 4.67
-  stub_prom 'exit 7'
+  stub_vm 'exit 7'
   run "$SUBJECT" kpi --json
   assert_equal "$(jq -c '.points_per_pr["7d"]' <<<"$output")" null
 }
@@ -3363,6 +3669,25 @@ q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
   assert_line '| revert_rate | 0.25 | 0.2 | - | - |'
 }
 
+@test "chain: uncaused_close_share counts the failed closes in the window with no end_reason over every close, and a threshold trips it" {
+  chain_fixture
+  printf '%s\n' uncaused_close_share_max=0.02 >> "$KPI_THRESHOLDS"
+  at() { date -u -d "@$((T0 - $1))" +%Y-%m-%dT%H:%M:%SZ; }
+  {
+    item ok1 done high board:game:g-2 "{\"status\":\"ok\",\"finished\":\"$(at 3600)\"}"
+    item f1 done high board:game:g-3 "{\"status\":\"failed\",\"end_reason\":\"provider\",\"finished\":\"$(at 3600)\"}"
+    item f2 done high board:game:g-4 "{\"status\":\"failed\",\"finished\":\"$(at 3600)\"}"
+    item f3 done high board:game:g-5 "{\"status\":\"failed\",\"finished\":\"$(at 864000)\"}"
+  } > "$DONE"
+  run "$SUBJECT" chain --json
+  assert_success
+  # f2 is the one uncaused close of the three in the window; f3 closed before it
+  assert_equal "$(jq -r '.uncaused_close_share["7d"]' <<<"$output")" 0.333
+  run "$SUBJECT" chain --check
+  assert_failure
+  assert_output --partial 'uncaused_close_share 0.333 (max 0.02)'
+}
+
 @test "chain: a Forgejo row (host/owner/repo) is covered by the item that names owner/repo#N" {
   chain_fixture
   jq -c 'if .number == 7 then .repo = "git.example.test/O/R" else . end' "$FLEET_BENCH_DIR/pr-ci.jsonl" > "$SANDBOX/ci" && mv "$SANDBOX/ci" "$FLEET_BENCH_DIR/pr-ci.jsonl"
@@ -3379,7 +3704,7 @@ q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
   run "$SUBJECT" chain --json
   assert_success
   run jq -c 'with_entries(.value |= [.["7d"], .status])' <<<"$output"
-  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"release_overdue":[0,"ok"],"version_tag_drift":[0,"ok"],"doctor_fail":[0,"ok"],"dup_pairs":[null,"-"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"reds_spent":[null,"-"],"requested_unstarted_h":[0,"-"],"orphan_request_rows":[0,"ok"],"next_up_blocked":[0,"ok"],"stale_urgent_d":[0,"ok"],"urgent_per_board":[0,"ok"],"playtest_waiting_d":[0,"ok"],"done_inline_old":[0,"ok"],"request_to_live_h":[null,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_review":[null,"-"],"step_age_p90_waiting":[null,"-"],"queue_net_24h":[null,"-"],"estimated_token_share":[null,"-"]}'
+  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"uncaused_close_share":[null,"-"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"release_overdue":[0,"ok"],"version_tag_drift":[0,"ok"],"doctor_fail":[0,"ok"],"dup_pairs":[null,"-"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"reds_spent":[null,"-"],"requested_unstarted_h":[0,"-"],"orphan_request_rows":[0,"ok"],"next_up_blocked":[0,"ok"],"stale_urgent_d":[0,"ok"],"urgent_per_board":[0,"ok"],"playtest_waiting_d":[0,"ok"],"done_inline_old":[0,"ok"],"prio_default":[4,"-"],"request_to_live_h":[null,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_review":[null,"-"],"step_age_p90_waiting":[null,"-"],"queue_net_24h":[null,"-"],"estimated_token_share":[null,"-"]}'
   # the done items are read back a day past the window (8 days before T0, a local date), so an item
   # done before its PR merged counts; the pipeline reads the last day's
   run sort -u "$DONE.calls"
@@ -3459,6 +3784,133 @@ LIB
   # an unreadable project list reads ?, never 0
   BENCH_PROJECTS_CMD=false run "$SUBJECT" chain --json
   assert_equal "$(jq -c '[.release_overdue["7d"], .version_tag_drift["7d"]]' <<<"$output")" '[null,null]'
+}
+
+@test "chain: prio_default counts the open rows with no priority or no reason, and names the filer with the most" {
+  chain_fixture
+  printf '%s\n' prio_default_max=0 >> "$KPI_THRESHOLDS"
+  # the fixture's rows all carry a priority and a reason; d-2 has a priority and no reason, d-3 no priority
+  # (both agent-queue's: its first event wins over a later one), d-4 was filed by the human, d-5 has no
+  # event; a closed row, a row of a project with automation off and a playtest check never count
+  jq -c '.rows |= map(. + {priority: "normal", prio_why: "upkeep"})' "$BJSON" > "$BJSON.reasoned"
+  jq -c '.rows += [
+    {project: "game", id: "d-2", lane: "agent", state: "open", priority: "high", tags: ["of/t-0"]},
+    {project: "game", id: "d-3", lane: "agent", state: "open", untriaged: true, prio_why: "upkeep", tags: ["of/t-0"]},
+    {project: "game", id: "d-4", lane: "human", state: "open", priority: "normal", tags: []},
+    {project: "game", id: "d-5", lane: "agent", state: "open", priority: "low", tags: ["of/t-0"]},
+    {project: "game", id: "d-6", lane: "agent", state: "done", tags: []},
+    {project: "off", id: "o-1", lane: "agent", state: "open", automation: false, tags: []},
+    {project: "game", id: "d-7", lane: "playtest", state: "open", tags: []}]' "$BJSON.reasoned" > "$BJSON"
+  {
+    jq -cn '{action: "added", id: "d-2", by: "s1", origin: "agent-queue"}'
+    jq -cn '{action: "added", id: "d-3", by: "s1", origin: "agent-queue"}'
+    jq -cn '{action: "added", id: "d-2", by: "s2", origin: "ask-sweep"}'
+    jq -cn '{action: "filed", id: "d-4", by: ""}'
+    jq -cn '{action: "added", id: "g-1", by: "s3", origin: "fleet-bench"}'
+  } > "$BENCH_INGEST"
+  run "$SUBJECT" chain
+  assert_success
+  assert_line 'prio_default: 4 open rows with no priority or no #why, by filer: agent-queue 2, human 1, unrecorded 1'
+  run "$SUBJECT" chain --check
+  assert_failure 1
+  assert_output 'prio_default 4 (max 0)'
+  run "$SUBJECT" prio-defaults
+  assert_success
+  assert_output "$(printf '%s\n' 'prio_default 4' '  agent-queue 2  d-2 d-3' '  human 1  d-4' '  unrecorded 1  d-5')"
+  run "$SUBJECT" prio-defaults --json
+  run jq -c '[.total, .origins[0].origin]' <<<"$output"
+  assert_output '[4,"agent-queue"]'
+  # the gauge names the filer, so the front page can say whose default it is
+  source "$SUBJECT"
+  run bench_prom "$T0" '{"steps": []}'
+  assert_line 'agent_bench_kpi_subject{kpi="prio_default",subject="agent-queue"} 1'
+  # a row with no event is no filer, so a board that only has those names no subject
+  : > "$BENCH_INGEST"
+  run bench_prom "$T0" '{"steps": []}'
+  refute_line --partial 'kpi="prio_default",subject='
+  # negative control: every row carries a priority and a reason, so the KPI reads 0, passes and names no filer
+  cp "$BJSON.reasoned" "$BJSON"
+  run "$SUBJECT" chain --check
+  assert_success
+  assert_output ''
+  run bench_prom "$T0" '{"steps": []}'
+  refute_line --partial 'kpi="prio_default",subject='
+}
+
+@test "inflow: every open row has a source, and each source's arrivals say how they ended" {
+  local today d2 d3 ev
+  today=$(date -d "@$T0" +%F); d2=$(date -d "@$((T0 - 86400))" +%F); d3=$(date -d "@$((T0 - 2 * 86400))" +%F)
+  jq -c '.rows = [
+    {project: "game", lane: "agent", state: "open", id: "g-5000", since: "'"$d2"'"},
+    {project: "game", lane: "agent", state: "open", id: "g-5001", since: "'"$d3"'"},
+    {project: "game", lane: "agent", state: "doing", id: "g-5002", since: "'"$today"'"},
+    {project: "game", lane: "agent", state: "open", id: "g-100", since: "'"$d3"'"},
+    {project: "game", lane: "agent", state: "open", id: "g-5004", since: ""},
+    {project: "game", lane: "agent", state: "open", id: "g-5008", since: "'"$today"'"},
+    {project: "other", lane: "agent", state: "open", id: "o-1", since: "'"$today"'"},
+    {project: "game", lane: "human", state: "open", id: "g-5003", since: "'"$today"'"}]' <<<'{}' > "$SANDBOX/board.json"
+  printf '#!/usr/bin/env bash\ncat %q\n' "$SANDBOX/board.json" > "$SANDBOX/bin/board-stub"
+  chmod +x "$SANDBOX/bin/board-stub"
+  export BENCH_BOARD_CMD=board-stub
+  ev() { jq -cn --arg a "$1" --arg id "$2" --arg day "$3" --arg by "$4" --argjson x "$5" \
+    '{action: $a, id: $id, from: "game", lane: "agent", ts: "\($day)T10:00:00-08:00", by: $by} + $x'; }
+  {
+    ev added g-5000 "$d2" s1 '{"origin": "agent-queue"}'
+    ev filed g-5001 "$d3" inbox-triage '{"text": "#agent #from/dream fix(x): y"}'
+    ev added g-5002 "$today" 3e2471be '{"why": "self-check"}'
+    ev added g-5004 "$today" 3e2471be '{}'
+    ev added g-5005 "$d2" s1 '{"origin": "plan"}'
+    ev done g-5005 "$today" s1 '{"why": "pr:o/r#1", "pr": "o/r#1"}'
+    ev added g-5006 "$d2" fleet-bench '{"origin": "fleet-bench"}'
+    ev dropped g-5006 "$today" human '{"why": "dropped: dup"}'
+    ev added g-5007 "$d3" s1 '{"origin": "plan"}'
+    ev dropped g-5007 "$d2" human '{}'
+    ev reopened g-5007 "$d2" human '{"ts": "'"$d2"'T11:00:00-08:00"}'
+    ev done g-5007 "$today" s1 '{"why": "pr:o/r#2"}'
+    ev added g-5008 "$today" s1 '{"origin": "plan"}'
+    ev added g-5009 "$d2" s1 '{"origin": "plan"}'
+    ev settled g-5009 "$today" fleet-dispatch '{"pr": "o/r#3", "why": "row closed on merge proof"}'
+    ev added g-5010 "$d2" s1 '{"origin": "fleet-bench"}'
+    ev settled g-5010 "$today" fleet-dispatch '{"why": "row un-started: item ended failed"}'
+    ev added g-5011 "$(date -d "@$((T0 - 20 * 86400))" +%F)" s1 '{"origin": "plan"}'
+    ev filed g-5011 "$today" inbox-triage '{}'
+    jq -cn '{action: "added", id: "g-4999", from: "game", lane: "agent", ts: "2000-01-01T10:00:00-08:00", by: "s1", origin: "plan"}'
+    jq -cn '{action: "added", id: "o-1", from: "other", lane: "agent", ts: "'"$today"'T10:00:00-08:00", by: "s1", origin: "ask-sweep"}'
+  } > "$BENCH_INGEST"
+  BENCH_NOW=$T0 run "$SUBJECT" inflow --project game --json
+  assert_success
+  # every open agent row of the project is attributed; a human row and another project's row are not
+  run jq -c '[.open_rows, .attributed]' <<<"$output"
+  assert_output '[6,6]'
+  BENCH_NOW=$T0 run "$SUBJECT" inflow --project game --json
+  run jq -cS '[.sources[] | select(.open > 0) | {(.source): .open}] | add' <<<"$output"
+  assert_output '{"agent-queue":1,"from: dream":1,"plan":1,"pre-log":1,"self-check":1,"session":1}'
+  # --json names each source's open rows, so a ledger can carry the source per row
+  BENCH_NOW=$T0 run "$SUBJECT" inflow --project game --json
+  run jq -cS '[.sources[] | select(.source == "pre-log" or .source == "from: dream") | {(.source): .open_ids}] | add' <<<"$output"
+  assert_output '{"from: dream":["g-5001"],"pre-log":["g-100"]}'
+  # known origins come back as written (the negative control), and each arrival's end is the last close after its last reopen
+  BENCH_NOW=$T0 run "$SUBJECT" inflow --project game --json
+  run jq -c '.sources[] | select(.source == "plan") | [.arrived, .closed_by_pr, .dropped, .still_open]' <<<"$output"
+  assert_output '[4,3,0,1]'
+  BENCH_NOW=$T0 run "$SUBJECT" inflow --project game --json
+  run jq -c '.sources[] | select(.source == "fleet-bench") | [.arrived, .dropped, .gone, (.daily | add)]' <<<"$output"
+  assert_output '[2,1,1,2]'
+  # a settled event closes a row only with a PR (g-5009; g-5010 was un-started), a row re-filed in the window arrived
+  # before it (g-5011), and the 2000 arrival is outside the window; the window reads from the record's first event in it
+  BENCH_NOW=$T0 run "$SUBJECT" inflow --project game --days 3 --json
+  run jq -c '[.covered_days, ([.sources[].arrived] | add)]' <<<"$output"
+  assert_output '[3,10]'
+  BENCH_NOW=$T0 run "$SUBJECT" inflow --project game
+  assert_success
+  assert_line --partial 'inflow game: 6 open agent rows, 6 attributed to a source'
+  # an unreadable record or board is an error, never an empty table
+  BENCH_INGEST="$SANDBOX/none" run "$SUBJECT" inflow --project game
+  assert_failure 1
+  BENCH_BOARD_CMD=false run "$SUBJECT" inflow --project game
+  assert_failure 1
+  run "$SUBJECT" inflow --days 0
+  assert_failure 2
 }
 
 @test "chain: each KPI goes past its bound on a fixture that breaks its link, and only that one" {

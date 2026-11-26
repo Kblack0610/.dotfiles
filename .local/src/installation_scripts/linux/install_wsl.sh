@@ -15,6 +15,7 @@ BASE_DIR="$(dirname "$SCRIPT_DIR")"
 
 source "$BASE_DIR/base_functions.sh"
 load_config
+PKG_INSTALL=install_pacman_package PKG_OS=arch
 
 # Minimal ArchWSL ships as root with no sudo. Make `sudo` a no-op when we're
 # already root; require it (and bail clearly) when we aren't.
@@ -27,22 +28,6 @@ else
     fi
     SUDO="sudo"
 fi
-
-install_pacman_package() {
-    local package="$1"
-
-    if pacman -Q "$package" &>/dev/null; then
-        log_info "$package already installed"
-        return 0
-    fi
-
-    log_info "Installing $package..."
-    if $SUDO pacman -S --noconfirm "$package" &>/dev/null; then
-        log_info "✓ $package installed"
-    else
-        log_warning "✗ Failed to install $package"
-    fi
-}
 
 update_system() {
     log_section "Updating system packages"
@@ -58,7 +43,7 @@ update_system() {
 
 install_packages() {
     log_section "Installing WSL packages"
-    install_package_list install_pacman_package arch $PACKAGES_WSL
+    install_catalog WSL
 }
 
 install_zsh() {

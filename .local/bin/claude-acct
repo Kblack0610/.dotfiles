@@ -8,6 +8,9 @@
 #   claude-acct run [--acct <name>] [claude args]
 #                             # exec claude on the account pick returns: the one launcher for a
 #                             # human start (`cl`, `sessions` resume, the fzf picker, the hub)
+#   claude-acct scope <command...>
+#                             # exec the command in its own systemd user scope, agent-<project>-<item>-<pid>.scope;
+#                             # run and every pane launch line (claude-telemetry.sh) start claude through it
 #   claude-acct setup-token [--renew] [name]
 #                        # walk each account (or the one named): say which email to sign in as, run
 #                        # `claude setup-token`, verify the printed token with one tiny call, and store
@@ -719,13 +722,14 @@ plans_store() {
         mkdir -p "${main%/*}" && ln -sfn "$live" "$main" || return 1
     fi
     # A project's own copy of a _live plan becomes the link; a newer copy is the one kept, the
-    # older text stays in ~/.agent git.
+    # older text stays in ~/.agent git. The reserved project keys (_unscoped, _runner) are
+    # projects too; only the store and the archive are skipped (ar-3294: 25 _unscoped twins).
     while IFS= read -r f; do
         n=${f##*/}
         [[ -f "$live/$n" && ! -L "$live/$n" ]] || continue
         [[ "$f" -nt "$live/$n" ]] && { cp -p "$f" "$live/$n" || continue; }
         ln -sfn "../_live/$n" "$f"
-    done < <(find "$root" -maxdepth 2 -path "$root/_*" -prune -o -path "$root/*/*" -type f -name '*.md' -print 2>/dev/null)
+    done < <(find "$root" -maxdepth 2 \( -path "$live" -o -path "$root/_archive" \) -prune -o -path "$root/*/*" -type f -name '*.md' -print 2>/dev/null)
 }
 # best -> "score US name US dir US note" of the account whose week is cheapest to spend from,
 # nothing without data
@@ -808,6 +812,15 @@ cmd_token() {
     acct_token "$name"
 }
 
+# push_shell <host> <cmd>: run cmd (stdin passed through) on host: here for localhost or this
+# machine's own name, else over ssh with no prompt
+push_shell() {
+    case "$1" in
+        localhost|127.0.0.1|"$(hostname -s 2>/dev/null)"|"$(hostname 2>/dev/null)") bash -c "$2" ;;
+        *) ssh -T -o BatchMode=yes -o ConnectTimeout=10 "$1" "$2" ;;
+    esac
+}
+
 # token push <host...>: copy every account's token from this machine's unlocked rbw to each host's
 # TOKEN_DIR (0600), over ssh stdin: never an argument, never a pane. Then ask the host's own
 # claude-acct for each, so a host whose dotfiles predate the copy reads as failed. Exit 1 when any
@@ -831,8 +844,9 @@ cmd_token_push() {
             t=$(rbw get "$TOKEN_ENTRY$n" 2>/dev/null) || t=''
             sum=$(printf '%s' "$t" | cksum)
             # one ssh: write the copy from stdin, compare its bytes with ours, then check that the
-            # host's claude-acct is new enough to read a copy
-            if printf '%s' "$t" | ssh -T -o BatchMode=yes -o ConnectTimeout=10 "$host" \
+            # host's claude-acct is new enough to read a copy. This machine (localhost or its own
+            # name) runs the same command here: ssh to itself needs a host key nobody accepted.
+            if printf '%s' "$t" | push_shell "$host" \
                 "umask 077 && d=$rdir && mkdir -p \"\$d\" && cat > \"\$d/.$n.tmp\" && mv -f \"\$d/.$n.tmp\" \"\$d/$n\" && [ \"\$(cksum < \"\$d/$n\")\" = '$sum' ] && PATH=\$HOME/.local/bin:\$PATH claude-acct token $n >/dev/null 2>&1"; then
                 ok+=("$n")
             else
@@ -868,14 +882,16 @@ token_expiry() {
 
 # check_tokens: one line; exit 1 when a token is missing, expired or inside TOKEN_WARN_DAYS, 2 when rbw cannot
 # be read. An account with no token trips it too: the token is its only sign-in, so a session on it
-# stops on "Not logged in". The claude-acct-tokens Sentinel watch runs this hourly.
+# stops on "Not logged in". The claude-acct-tokens Sentinel watch runs this hourly. A locked rbw says
+# `unreadable:`, which the watch reads as UNKNOWN (ERROR past its hold), not a token trip: the
+# 2026-11-24 reboot locked it and the watch paged a token fault with every token good (ar-3611).
 check_tokens() {
     local warn now="${CLAUDE_ACCT_NOW:-$(date +%s)}" name dir exp end days ok=0 out=''
     local -a none=() soon=()
     warn=$(pace_get TOKEN_WARN_DAYS)
-    [[ -n "$warn" ]] || return 2
+    [[ -n "$warn" ]] || { echo "unreadable: TOKEN_WARN_DAYS is not set"; return 2; }
     if ! command -v rbw >/dev/null 2>&1 || ! rbw unlocked >/dev/null 2>&1; then
-        echo "cannot read tokens: rbw is missing or locked"; return 2
+        echo "unreadable: rbw is missing or locked, so no token was checked (rbw unlock)"; return 2
     fi
     while IFS=$'\037' read -r name dir; do
         if ! exp=$(token_expiry "$name"); then none+=("$name"); continue; fi
@@ -885,6 +901,10 @@ check_tokens() {
         elif (( days <= ${warn%.*} )); then soon+=("$name expires $exp, in ${days}d")
         else ok=$((ok + 1)); fi
     done < <(accounts)
+    # A read that failed because rbw locked mid-loop is no missing token.
+    if (( ${#none[@]} )) && ! rbw unlocked >/dev/null 2>&1; then
+        echo "unreadable: rbw locked while tokens were read (rbw unlock)"; return 2
+    fi
     if (( ${#soon[@]} )); then out="token: $(printf '%s; ' "${soon[@]}")"; out="${out%; }"; fi
     if (( ${#none[@]} )); then out+="${out:+; }no token: ${none[*]} (claude-acct setup-token <name>)"; fi
     echo "${out:-$ok tokens good}"
@@ -1006,7 +1026,15 @@ MODEL_WEIGHT_SONNET="$(pace_get MODEL_WEIGHT_SONNET)"
 MODEL_WEIGHT_HAIKU="$(pace_get MODEL_WEIGHT_HAIKU)"
 CLAUDE_SESSION_RATE="${CLAUDE_ACCT_SESSION_RATE:-$(pace_get CLAUDE_SESSION_RATE)}"
 ACTIVE_MIN="$(pace_get ACTIVE_MIN)"
-[[ -n "$PACE_SLACK_PCT" && -n "$RESERVE_PCT" && -n "$SESSION_RATE" && -n "$CLAUDE_SESSION_RATE" && -n "$MODEL_WEIGHT_SONNET" && -n "$MODEL_WEIGHT_HAIKU" && -n "$ACTIVE_MIN" ]] || exit 1
+# The allowance in force: a window or standing override set by pace-conf, else the line in pace.conf
+# (pace_get reads all three). Exported for jq: room and FLEET_JQ read it in OVER_JQ.
+export CLAUDE_ACCT_BURN_OVER_PCT="$(pace_get BURN_OVER_PCT)"
+BURN_OVER_SRC="$(pace_source BURN_OVER_PCT)"
+# BURN_OVER_PCT as a factor: how far past what the week sustains the working sessions may burn
+# before room calls an account committed, and the allowance dispatch's spare reads. The one jq
+# prefix room and FLEET_JQ share.
+OVER_JQ='def over: 1 + ($ENV.CLAUDE_ACCT_BURN_OVER_PCT // "0" | tonumber) / 100;'
+[[ -n "$PACE_SLACK_PCT" && -n "$RESERVE_PCT" && -n "$SESSION_RATE" && -n "$CLAUDE_SESSION_RATE" && -n "$MODEL_WEIGHT_SONNET" && -n "$MODEL_WEIGHT_HAIKU" && -n "$ACTIVE_MIN" && -n "$CLAUDE_ACCT_BURN_OVER_PCT" ]] || exit 1
 RATE_TTL="${CLAUDE_ACCT_RATE_TTL:-3600}"
 # The one bash Prometheus reader (prom_q, PROM_URL from the hub's own env file). A dead endpoint
 # costs a start 5s at most, and only the spend paths ask.
@@ -1169,7 +1197,7 @@ usage_json() {
             --argjson usage "$json" --arg used "$used" --arg gone "$gone" \
             --arg resets "$resets" --arg read_at "$read_at" --argjson live "${live:-0}" --argjson working "${working:-0}" --argjson cost "${cost:-0}" --argjson spend "$spend" \
             --argjson now "$now" --argjson reserve "${own_reserve:-$RESERVE_PCT}" --argjson rate "$rate" \
-            --argjson room_slack "$slack" --argjson room_reserve "$row_reserve" '
+            --argjson room_slack "$slack" --argjson room_reserve "$row_reserve" "$OVER_JQ"'
             def num: if . == "" then null else tonumber end;
             # What is left of the week, as points an hour to the reset, less what the live sessions
             # there already burn: lower is better. One hour per spare point, so the account whose
@@ -1209,7 +1237,7 @@ usage_json() {
             # refusal, in this order: unread, capped (window empty, or the plan says its limit is
             # reached), reserve (inside the last of the window), pace (past the line after slack),
             # five_hour (its window inside the reserve), committed (its working sessions already use the
-            # rest of the window), max_live (as many running items as the source allows); reason is
+            # rest of the window, past BURN_OVER_PCT), max_live (as many running items as the source allows); reason is
             # the first, or ok. A source whose parent pool is spent also gets `parent`, after reserve
             # (all_json). A dollar budget (paced false) has no pace line and no committed burn. A
             # dispatch floor may lift pace only, so it reads reasons == ["pace"]. over_points is the points past the
@@ -1222,7 +1250,7 @@ usage_json() {
                       if $u != null and $u >= 100 - $reserve and $u < 100 then "reserve" else empty end,
                       if .paced and $u != null and $u > $g + $slack then "pace" else empty end,
                       if $f >= 100 - $reserve then "five_hour" else empty end,
-                      if .paced and sustain <= .burn then "committed" else empty end,
+                      if .paced and sustain * over <= .burn then "committed" else empty end,
                       if .max_live != null and .live >= .max_live then "max_live" else empty end]
                    end) as $no
                 | {ok: ($no == []), reason: ($no[0] // "ok"), reasons: $no,
@@ -1317,7 +1345,50 @@ cmd_run() {
     if declare -F claude_telemetry_launch >/dev/null; then
         OTEL_RESOURCE_ATTRIBUTES="$(claude_telemetry_launch)"; export OTEL_RESOURCE_ATTRIBUTES
     fi
-    exec claude "$@"
+    cmd_scope claude "$@"
+}
+
+# cmd_scope <command...>: move this process into its own systemd user scope, named
+# agent-<project>-<item>-<pid>.scope (each part systemd-escaped, so a literal '-' only separates them;
+# the item is empty for a hand start), then exec the command, so its pid (a dispatch pane's pid) stays
+# the same. node-inventory-metrics (home-config) reports each scope's CPU and memory with its project
+# and queue item, and agent-host-budget's agent-.scope drop-in holds it to the agent CPUs. In a tmux
+# pane the description reads as tmux's own, "tmux child pane <pid> ... launched by process <server
+# pid>", so `wt orphans` ends what the session left once the pane closes (worktree.sh
+# wt_closed_pane_scopes reads both pids by word position: keep the shape).
+# A hand start outside tmux is the human's own terminal session: it stays in that terminal's scope,
+# which agent-hold never lowers and the agent CPU cap never holds. With no user manager (macOS, a
+# shell with no XDG_RUNTIME_DIR), or when the manager refuses the scope, the command runs unscoped,
+# and on Linux says so.
+cmd_scope() {
+    [[ $# -gt 0 ]] || { echo "claude-acct scope: name a command" >&2; return 2; }
+    [[ "$(uname -s)" == Linux ]] || exec "$@"
+    local p i u d spid pane pp
+    i=${AGENT_QUEUE_ITEM:-}
+    if [[ -n "${TMUX:-}" ]]; then
+        # TMUX is "<socket>,<server pid>,<session>"; the pane's pid is the ancestor the server started.
+        spid=${TMUX#*,}; spid=${spid%%,*}; pane=$$
+        while pp=$(awk '/^PPid:/ { print $2 }' "/proc/$pane/status" 2>/dev/null) && [[ -n "$pp" && "$pp" != "$spid" && "$pp" -gt 1 ]]; do
+            pane=$pp
+        done
+    fi
+    [[ -n "$i" || "${pp:-}" == "${spid:-x}" ]] || exec "$@"
+    if ! command -v busctl >/dev/null || [[ ! -S "${XDG_RUNTIME_DIR:-/nonexistent}/systemd/private" ]]; then
+        echo "claude-acct scope: no systemd user manager here, so this session runs in no agent scope" >&2
+        exec "$@"
+    fi
+    # shellcheck disable=SC2016
+    p=$(bash -c '. "$1" && resolve_project_name "$2"' _ "${PROJECT_NAME_LIB:-$HOME/.config/shared-hooks/project-name.sh}" "$PWD" 2>/dev/null)
+    u="agent-$(systemd-escape -- "$p")-$(systemd-escape -- "$i")-$$.scope"
+    d="agent session for ${p:-no project}${i:+ item $i}"
+    [[ "${pp:-}" != "${spid:-x}" ]] || d="tmux child pane $pane runs $d launched by process $spid"
+    # systemd-run --scope would exec the command itself, and a scope it fails to start (a name a
+    # leftover scope still holds, a manager that refuses it) would then start no session at all.
+    busctl --user call org.freedesktop.systemd1 /org/freedesktop/systemd1 org.freedesktop.systemd1.Manager \
+        StartTransientUnit 'ssa(sv)a(sa(sv))' "$u" fail 3 PIDs au 1 "$$" Description s "$d" \
+        CollectMode s inactive-or-failed 0 >/dev/null ||
+        echo "claude-acct scope: the user manager did not start $u, so this session runs in no agent scope" >&2
+    exec "$@"
 }
 
 cmd_status() {
@@ -1371,9 +1442,6 @@ on_pace_word() {
 # readable paced rows; null when there is none, so an unread fleet publishes no figure rather than a
 # quiet one. `rows` is those rows, for the back-on-pace times; `rate` is the points one working Opus
 # session burns an hour, and `working_cost` the working sessions in Opus-equivalents (weight_of).
-# `spare` is how many more working Opus sessions the pool keeps at pace on top of this burn
-# ((keeps - burn) / rate, below 0 when the burn is past keeps): fleet-dispatch's pace target, so a
-# Sonnet or Haiku session, burning less, leaves room for more (ar-3230).
 # `unread` is each Claude account that could not be read, with its live sessions and when it was last
 # read: those sessions are in no burn figure, so the fleet line names it instead of reading low (bnb
 # was unread five hours on 2026-11-18, and the sum counted 3 of 4 weeks without a word).
@@ -1384,9 +1452,13 @@ on_pace_word() {
 # burn the pool carries without going into the reserve: the lowest of each step's points over its
 # hours from now, and of what the weeks give an hour for good, the reserve kept. `runs_out` is when this burn empties the pool into the reserve, null when it
 # lasts to the last account's reset (the horizon: past it every week is fresh, and keeps says whether
-# the burn fits). 2026-11-10: keeps was each account's points left over its own reset, which read
-# 1.9/h with no reset counted, while the four weeks carried 2.1/h (ar-1529).
-FLEET_JQ='def fleet($now): [.[] | select(.kind == "claude")] as $c
+# the burn fits). `spare` is how many more working Opus sessions the pool carries on top of this
+# burn at the allowance ((keeps x over - burn) / rate, below 0 when the burn is past it):
+# fleet-dispatch's pace target, so a Sonnet or Haiku session, burning less, leaves room for more
+# (ar-3230). 2026-11-10: keeps was each account's points left over its own reset, which read 1.9/h
+# with no reset counted, while the four weeks carried 2.1/h (ar-1529).
+FLEET_JQ="$OVER_JQ"'
+def fleet($now): [.[] | select(.kind == "claude")] as $c
     | [$c[] | select(.state == "ok" and .week_used != null and .paced)] as $a
     | ([$a[] | select(.resets != null)
         | ((.resets - $now) / 3600) as $at | (.window / 3600) as $h | (100 - .reserve) as $w
@@ -1402,27 +1474,39 @@ FLEET_JQ='def fleet($now): [.[] | select(.kind == "claude")] as $c
     | {live: ([$c[].live] | add // 0), working: ([$c[].working] | add // 0), working_cost: ([$c[].working_cost] | add // 0),
        rows: $a, rate: $rate, burn: $burn, keeps: $keeps,
        unread: [$c[] | select(.state == "unread") | {name, working, since: .read_at}],
-       spare: (if $keeps == null or $burn == null or ($rate // 0) <= 0 then null else ($keeps - $burn) / $rate | floor end),
+       allowed: (if $keeps == null then null else $keeps * over end),
+       spare: (if $keeps == null or $burn == null or ($rate // 0) <= 0 then null else ($keeps * over - $burn) / $rate | floor end),
        runs_out: (if $p == [] or $burn == null or $burn <= 0 then null
                   else first($steps[] | select(.has / $burn < .at) | $now + .has / $burn * 3600 | floor) // null end)};'
 
+# allowance_text -> the allowance in force and where it comes from, for the fleet line: "400%
+# (default)", "300% (override)", or "300% to Tue 22:00" for a window
+allowance_text() {
+    case "$BURN_OVER_SRC" in
+        window\ *) printf '%s%% to %s' "$CLAUDE_ACCT_BURN_OVER_PCT" "$(date -d "@${BURN_OVER_SRC#window }" '+%a %H:%M')" ;;
+        *) printf '%s%% (%s)' "$CLAUDE_ACCT_BURN_OVER_PCT" "$BURN_OVER_SRC" ;;
+    esac
+}
+
 # fleet_line <usage rows> -> the Claude accounts in one line (FLEET_JQ): live sessions, burn against
-# what the windows can carry, how many sessions that is, and when the first one is back on pace, at
-# this burn and with every session stopped.
+# what the windows can carry, how many sessions that is at the allowance in force, and when the
+# first one is back on pace, at this burn and with every session stopped.
 fleet_line() {
     local j now="${CLAUDE_ACCT_NOW:-$(date +%s)}"
     j=$(jq -sc --argjson now "$now" "$FLEET_JQ"' fleet($now)
         | {live, working, working_cost, rate, burn: (.burn // 0), keeps: (.keeps // 0), spare, runs_out, unread,
            burn_at: ([.rows[] | select(.on_pace_burn != null) | {name, t: .on_pace_burn}] | min_by(.t)),
            idle_at: ([.rows[] | select(.on_pace_idle != null) | {name, t: .on_pace_idle}] | min_by(.t))}' <<< "$1") || return 0
-    jq -r --argjson now "$now" '
+    jq -r --argjson now "$now" --arg allow "$(allowance_text)" '
         def at: if .t <= $now then "\(.name) now" else "\(.name) \(.t | strflocaltime("%a %H:%M"))" end;
         "fleet: \(.live) live (\(.working) working"
         + (if (.working_cost * 10 | round) != .working * 10 then ", \(.working_cost * 10 | round / 10) at Opus cost" else "" end)
         + "), burn \(.burn * 10 | round / 10)/h vs \(.keeps * 10 | round / 10)/h sustainable"
-        + (if .keeps > 0 then " (\(.burn / .keeps * 10 | round / 10)x" else " (" end)
-        + (if .rate != null and .rate > 0 then ", carries ~\(.keeps / .rate | floor) Opus" else "" end)
-        + (if .spare == null then ")" elif .spare > 0 then ", room for ~\(.spare) more)" else ", no room)" end)
+        + " (" + ([if .keeps > 0 then "\(.burn / .keeps * 10 | round / 10)x" else empty end,
+                  if .rate != null and .rate > 0 then "carries ~\(.keeps / .rate | floor) Opus" else empty end,
+                  "allowance \($allow)",
+                  if .spare == null then empty elif .spare > 0 then "room for ~\(.spare) more" else "no room" end]
+                 | join(", ")) + ")"
         + (if .runs_out != null then ", into the reserve \(.runs_out | strflocaltime("%a %H:%M")) before the resets"
            else ", lasts to the resets" end)
         + ", back on pace: "
@@ -1484,6 +1568,10 @@ cmd_textfile() {
             "claude_fleet_live_sessions \(.live)",
             (.burn // empty | "claude_fleet_burn_points_per_hour \(.)"),
             (.keeps // empty | "claude_fleet_sustain_points_per_hour \(.)"),
+            # the allowance in force times what the pool sustains, and the sessions more it carries
+            # (spare, the pace target of dispatch), so a surface shows them without a second formula
+            (.allowed // empty | "claude_fleet_allowed_points_per_hour \(.)"),
+            (.spare // empty | "claude_fleet_spare_sessions \(.)"),
             (.runs_out // empty | "claude_fleet_run_out_timestamp_seconds \(.)")),
         (rows("claude_account_cost_24h_usd"; .usd_24h)),
         (rows("claude_account_usd_used"; .usd_used)),
@@ -2549,6 +2637,7 @@ cmd_unpark() {
 case "${1:-}" in
     pick)   shift; cmd_pick "$@" ;;
     run)    shift; cmd_run "$@" ;;
+    scope)  shift; cmd_scope "$@" ;;
     status) shift; cmd_status "$@" ;;
     textfile) shift; cmd_textfile "$@" ;;
     gateway) shift; cmd_gateway "$@" ;;

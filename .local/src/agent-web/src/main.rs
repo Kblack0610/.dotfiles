@@ -32,6 +32,7 @@ mod jobs;
 mod live;
 mod outbox;
 mod outcomes;
+mod pace;
 mod pipelines;
 mod projects;
 mod proposals;
@@ -39,6 +40,7 @@ mod push;
 mod queue;
 mod releases;
 mod remote;
+mod reports;
 mod reqlog;
 mod schedules;
 mod sessions;
@@ -68,7 +70,7 @@ use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use hub_core::home::{Home, Need, Running};
+use hub_core::home::{Home, Need};
 use hub_core::session_actions::{self as actions, Action};
 use hub_core::session_table;
 use hub_core::table::{self, Summary, View};
@@ -263,10 +265,12 @@ fn router(state: Shared) -> Router {
         .route("/api/tests/cases", get(tests_cases))
         .route("/api/board", get(board::feed).post(board::write))
         .route("/api/sprints", get(sprints::get))
+        .route("/api/sprints/page", get(sprints::page))
         .route("/api/deliverables", get(deliverables::get))
         .route("/api/stages", get(stages::get))
         .route("/api/stages/requirements", get(stages::get_requirements))
         .route("/api/projects", get(projects::get))
+        .route("/api/projects/prio", post(projects::set_prio))
         .route("/api/projects/{name}/page", get(projects::page))
         .route(
             "/api/projects/{name}/departments",
@@ -274,11 +278,14 @@ fn router(state: Shared) -> Router {
         )
         .route("/api/coverage", get(departments::get))
         .route("/api/focus", get(focus::get).put(focus::save))
-        .route("/api/inbox/ack", post(focus::ack))
+        .route("/api/reports", get(reports::get))
+        .route("/api/reports/read", post(reports::read))
         .route("/api/outbox", get(outbox::get).put(outbox::save))
         .route("/api/queue", get(queue::list).post(queue::add))
         .route("/api/queue/cancel", post(queue::cancel))
         .route("/api/queue/bump", post(queue::bump))
+        .route("/api/pace/set", post(pace::set))
+        .route("/api/pace/end", post(pace::end))
         .route("/api/queue/projects", get(queue::projects))
         .route("/api/queue/stats", get(queue::stats))
         .route("/api/queue/candidates", get(queue::candidates))
@@ -382,8 +389,8 @@ fn is_new_project(kind: &EventKind, p: &Path, projects: &Path) -> bool {
 }
 
 /// How long a failed watch waits before it is tried again, doubling up to the cap. The usual
-/// failure is the per-user inotify limit (another program holds the watches), and nothing sends
-/// an event when it frees some, so this is a retry with backoff.
+/// failure is a per-user inotify limit (another program holds the watches or the instances), and
+/// nothing sends an event when it frees some, so this is a retry with backoff.
 const WATCH_RETRY_FIRST: Duration = Duration::from_secs(10);
 const WATCH_RETRY_MAX: Duration = Duration::from_secs(300);
 
@@ -403,6 +410,74 @@ fn add_watches(w: &mut impl Watcher, targets: Vec<Target>) -> Vec<Target> {
             }
         })
         .collect()
+}
+
+/// Make the watcher if it is not up, then watch each target; return the ones still unwatched.
+/// Making it fails at the per-user inotify instance limit (`fs.inotify.max_user_instances`), and
+/// then every target stays failed for the next retry, so the server answers with live updates off.
+fn connect<W: Watcher>(
+    w: &mut Option<W>,
+    make: impl FnOnce() -> notify::Result<W>,
+    targets: Vec<Target>,
+) -> Vec<Target> {
+    if w.is_none() {
+        match make() {
+            Ok(new) => *w = Some(new),
+            Err(e) => eprintln!("agent-web: cannot start the file watcher: {e}"),
+        }
+    }
+    match w {
+        Some(w) => add_watches(w, targets),
+        None => targets,
+    }
+}
+
+/// Each project dir under `projects`, as a flat watch target: its transcripts sit directly in it.
+fn project_dirs(projects: &Path) -> impl Iterator<Item = Target> {
+    std::fs::read_dir(projects)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .map(|p| (p, RecursiveMode::NonRecursive))
+}
+
+/// What a retry tries: the failed targets less any project dir gone since (`now` is the project
+/// dirs there are), and, when the watcher was `down`, each project in `now` not yet a target, since
+/// no watcher sent its create. Anything else failed waits to exist.
+fn retry_targets(
+    failed: Vec<Target>,
+    projects: &Path,
+    now: Vec<Target>,
+    down: bool,
+) -> Vec<Target> {
+    let mut out: Vec<Target> = failed
+        .into_iter()
+        .filter(|t| t.0.parent() != Some(projects) || now.contains(t))
+        .collect();
+    if down {
+        for t in now {
+            if !out.contains(&t) {
+                out.push(t);
+            }
+        }
+    }
+    out
+}
+
+/// The watcher started late, so every change while it was down went unsent: drop each kept read
+/// and tell the pages and the event caches to read afresh.
+fn resync(tx: &broadcast::Sender<String>) {
+    for outdate in [
+        costs::outdate,
+        builds::outdate,
+        pipelines::outdate,
+        stages::outdate,
+    ] {
+        outdate();
+    }
+    let _ = tx.send(RESYNC_EVENT.to_string());
 }
 
 /// The SSE message that tells the page which paths are not watched (none: live updates on).
@@ -434,7 +509,8 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     let (cached_events, mut cached_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let watched = projects.clone();
     let events = tx.clone();
-    let mut w = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+    // Cloned for each watcher made, since the first may fail and a retry makes another.
+    let handler = move |res: notify::Result<notify::Event>| {
         let Ok(ev) = res else { return };
         if matches!(ev.kind, EventKind::Access(_)) {
             return;
@@ -458,17 +534,10 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
                 None => {}
             }
         }
-    })?;
+    };
     let flat = RecursiveMode::NonRecursive;
     let mut targets: Vec<Target> = vec![(claude.join("sessions"), flat), (projects.clone(), flat)];
-    if let Ok(dirs) = std::fs::read_dir(&projects) {
-        targets.extend(
-            dirs.flatten()
-                .map(|e| e.path())
-                .filter(|p| p.is_dir())
-                .map(|p| (p, flat)),
-        );
-    }
+    targets.extend(project_dirs(&projects));
     let asks = boards::asks_dir();
     if asks.is_dir() {
         targets.push((asks, RecursiveMode::Recursive));
@@ -498,10 +567,10 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
         std::fs::create_dir_all(dir)?;
         targets.push((dir.to_path_buf(), flat));
     }
-    // schedules-sync's state.json, replaced by a rename: Infra's Pipelines.
-    if let Some(dir) = schedules_state().parent() {
-        std::fs::create_dir_all(dir)?;
-        targets.push((dir.to_path_buf(), flat));
+    // schedules-sync's state.json (Infra's Pipelines) and pace-conf's overrides (Costs' Limits), each a rename.
+    for dir in renamed_state_dirs() {
+        std::fs::create_dir_all(&dir)?;
+        targets.push((dir, flat));
     }
     // The boards' files: watch a directory, not the file, since each is replaced by a rename.
     for dir in [
@@ -561,7 +630,9 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     if sentinel.is_dir() {
         targets.push((sentinel, flat));
     }
-    let mut failed = add_watches(&mut w, targets);
+    let make = move || notify::recommended_watcher(handler.clone());
+    let mut w = None;
+    let mut failed = connect(&mut w, &make, targets);
     publish_off(&off, &tx, &failed);
     // The task owns the watcher, so it lives as long as the server. The watch calls happen here
     // because notify must not be called from inside its own event handler.
@@ -572,7 +643,7 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
             tokio::select! {
                 dir = new_dirs_rx.recv() => {
                     let Some(dir) = dir else { break };
-                    failed.extend(add_watches(&mut w, vec![(dir, flat)]));
+                    failed.extend(connect(&mut w, &make, vec![(dir, flat)]));
                 }
                 Some(msg) = cached_rx.recv() => {
                     if msg == BUILDS_EVENT {
@@ -587,9 +658,13 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
                     let _ = tx.send(msg);
                 }
                 () = tokio::time::sleep(delay), if retry => {
-                    // A project dir removed since needs no watch; anything else waits to exist.
-                    failed.retain(|(p, _)| p.exists() || p.parent() != Some(projects.as_path()));
-                    failed = add_watches(&mut w, std::mem::take(&mut failed));
+                    let down = w.is_none();
+                    let now = project_dirs(&projects).collect();
+                    let targets = retry_targets(std::mem::take(&mut failed), &projects, now, down);
+                    failed = connect(&mut w, &make, targets);
+                    if down && w.is_some() {
+                        resync(&tx);
+                    }
                     delay = if failed.is_empty() { WATCH_RETRY_FIRST } else { (delay * 2).min(WATCH_RETRY_MAX) };
                 }
             }
@@ -599,6 +674,8 @@ fn watch(tx: broadcast::Sender<String>, off: WatchOff) -> Result<()> {
     Ok(())
 }
 
+/// Events may have been missed: every page refetches and every event cache reads afresh.
+const RESYNC_EVENT: &str = r#"{"kind":"resync"}"#;
 /// A new token snapshot: the Costs tab reads afresh.
 const COSTS_EVENT: &str = r#"{"kind":"costs"}"#;
 const BUILDS_EVENT: &str = r#"{"kind":"builds"}"#;
@@ -607,6 +684,22 @@ const PIPELINES_EVENT: &str = r#"{"kind":"pipelines"}"#;
 
 fn schedules_state() -> PathBuf {
     hub_core::schedules::state_path(&session::home().to_string_lossy())
+}
+/// `pace-conf` wrote the overrides file, so Costs' Limits reads afresh. It replaces the file by a
+/// rename in `~/.agent`, which is watched for this one path.
+fn pace_overrides() -> PathBuf {
+    std::env::var_os("PACE_OVERRIDES").map_or_else(
+        || session::home().join(".agent").join("pace-overrides"),
+        PathBuf::from,
+    )
+}
+/// The directories of the state files that are replaced by a rename, so the watcher follows the
+/// directory and not the file.
+fn renamed_state_dirs() -> Vec<PathBuf> {
+    [schedules_state(), pace_overrides()]
+        .iter()
+        .filter_map(|p| p.parent().map(Path::to_path_buf))
+        .collect()
 }
 /// The nightly stage pass wrote stages.json: Projects' Ladder reads afresh.
 const STAGES_EVENT: &str = r#"{"kind":"stages"}"#;
@@ -636,6 +729,9 @@ fn classify(p: &Path) -> Option<String> {
     }
     if p == schedules_state() {
         return Some(PIPELINES_EVENT.to_string());
+    }
+    if p == pace_overrides() {
+        return Some(COSTS_EVENT.to_string());
     }
     if p == *STAGES_FILE {
         return Some(STAGES_EVENT.to_string());
@@ -1516,10 +1612,9 @@ async fn log_history(Query(q): Query<HistoryQuery>) -> ApiResult<Json<Vec<boards
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
-/// `/api/home`'s view keys, the ones the page keeps in its URL. Three tables share Home, so Needs
-/// you's are n-prefixed (`nq`, `ns`, `nsort`, `ndir`, `npg`), Running's r-prefixed (`rq`, `rs`,
-/// `rsort`, `rdir`) and Proposals keeps the plain ones. `nopen` is the Needs you rows the page has
-/// open, `<kind>:<id>` joined by commas.
+/// `/api/home`'s view keys, the ones the page keeps in its URL. Two tables share Home, so Needs
+/// you's are n-prefixed (`nq`, `ns`, `nsort`, `ndir`, `npg`) and Proposals keeps the plain ones.
+/// `nopen` is the Needs you rows the page has open, `<kind>:<id>` joined by commas.
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct HomeQuery {
@@ -1535,25 +1630,19 @@ struct HomeQuery {
     dir: String,
     npg: String,
     nopen: String,
-    rq: String,
-    rs: String,
-    rsort: String,
-    rdir: String,
 }
 
-/// Home with a view on Needs you, Running and Proposals, and the controls that drew each.
+/// Home with a view on Needs you and Proposals, and the controls that drew each.
 #[derive(Serialize)]
 struct HomeShown {
     #[serde(flatten)]
     page: proposals::HomePage,
     table: Summary,
-    running_table: Summary,
 }
 
-/// The views narrow `needs` and `running` here and nowhere else: `build` and everything else that
-/// reads Home (the TUI's counts, waybar, the phone) keep the whole lists, and so do the totals.
-/// Home is a glance: no other tab lists every need, so Needs you sends a page of `SHOWN` rows,
-/// and Running sends its first `SHOWN`, the page linking the rest on Queue.
+/// The view narrows `needs` here and nowhere else: `build` and everything else that reads Home
+/// (the TUI's counts, waybar, the phone) keep the whole list, and so do the totals. Home is a
+/// glance: no other tab lists every need, so Needs you sends a page of `SHOWN` rows.
 fn home_shown(mut home: Home, q: &HomeQuery) -> HomeShown {
     use hub_core::home::SHOWN;
     let view = View::new::<Need>(&q.q, &q.s, &q.sort, &q.dir);
@@ -1577,15 +1666,9 @@ fn home_shown(mut home: Home, q: &HomeQuery) -> HomeShown {
         table.links = table::links(&rows);
     }
     home.needs = rows.into_iter().cloned().collect();
-    let view = View::new::<Running>(&q.rq, &q.rs, &q.rsort, &q.rdir);
-    let (mut rows, mut running_table) = view.summary(&home.running);
-    rows.truncate(SHOWN);
-    running_table.links = table::links(&rows);
-    home.running = rows.into_iter().cloned().collect();
     HomeShown {
         page: proposals::page(home, &q.proposals),
         table,
-        running_table,
     }
 }
 
@@ -2077,7 +2160,7 @@ async fn events_stream(
     let off = live_msg(&s.watch_off.lock().unwrap_or_else(|e| e.into_inner()));
     let changes = BroadcastStream::new(s.events.subscribe()).map(|m| {
         // A lagged receiver skipped messages; tell the page to refetch everything.
-        m.unwrap_or_else(|_| r#"{"kind":"resync"}"#.to_string())
+        m.unwrap_or_else(|_| RESYNC_EVENT.to_string())
     });
     // A stop ends the stream, so the drain is not held open by a page that is only listening.
     let stream = until_stopped(tokio_stream::once(off).chain(changes), s.stopping.clone())
@@ -2141,7 +2224,11 @@ mod tests {
     /// The caches read on their first open, and why that is fine. Times are each tab's first open
     /// after a start, `agent-web-shot --time --every-tab`, load avg 117, 2026-11-18. Over about 1 s
     /// cold belongs in `warm`. Revisit when a tab's first open passes 1.5 s.
-    const ON_OPEN: [(&str, &str); 9] = [
+    const ON_OPEN: [(&str, &str); 10] = [
+        (
+            "reports",
+            "Reports, a `notes report list` of local files; the nav badge reads it on page load",
+        ),
         ("departments", "Projects Coverage, 1492 ms cold"),
         ("stages", "Projects Ladder, 678 ms cold"),
         (
@@ -2346,7 +2433,6 @@ mod tests {
         });
         let home = hub_core::home::build(Some(&state), None, None, None, hub_core::jobs::now());
         assert_eq!(home.needs.len(), 2);
-        let sessions = home.sessions.clone();
         let q = HomeQuery {
             q: "project:b".into(),
             ..Default::default()
@@ -2361,18 +2447,17 @@ mod tests {
         assert_eq!(out["table"]["shown"], 1);
         assert_eq!(out["table"]["total"], 2, "the count is of the whole list");
         assert_eq!(out["table"]["q"], "project:b");
-        assert_eq!(out["sessions"], serde_json::to_value(sessions).unwrap());
         assert!(
             out["proposals_table"].is_object(),
             "Proposals' view rides beside it"
         );
     }
 
-    /// Needs you, Running and Proposals share Home, so each reads its own keys out of one query.
+    /// Needs you and Proposals share Home, so each reads its own keys out of one query.
     #[test]
-    fn home_query_reads_needs_you_running_and_proposals_apart() {
+    fn home_query_reads_needs_you_and_proposals_apart() {
         let uri: axum::http::Uri =
-            "/api/home?nq=project:b&ns=ask&nsort=age&ndir=asc&q=queue&s=none&sort=id&dir=desc&rq=project:y&rs=No+session&rsort=since&rdir=asc"
+            "/api/home?nq=project:b&ns=ask&nsort=age&ndir=asc&q=queue&s=none&sort=id&dir=desc"
                 .parse()
                 .unwrap();
         let Query(q) = Query::<HomeQuery>::try_from_uri(&uri).unwrap();
@@ -2380,22 +2465,7 @@ mod tests {
             (q.q.as_str(), q.s.as_str(), q.sort.as_str(), q.dir.as_str()),
             ("project:b", "ask", "age", "asc")
         );
-        assert_eq!(
-            (
-                q.rq.as_str(),
-                q.rs.as_str(),
-                q.rsort.as_str(),
-                q.rdir.as_str()
-            ),
-            ("project:y", "No session", "since", "asc")
-        );
-        let run = |slug: &str, project: &str| hub_core::home::Running {
-            slug: slug.into(),
-            project: project.into(),
-            ..Default::default()
-        };
         let home = Home {
-            running: vec![run("x1", "x"), run("y1", "y"), run("y2", "y")],
             proposals: ["aa", "bb"]
                 .map(|id| hub_core::proposals::Proposal {
                     id: id.into(),
@@ -2409,19 +2479,9 @@ mod tests {
         assert_eq!(out["proposals_table"]["q"], "queue");
         assert_eq!(out["proposals_table"]["total"], 2);
         assert_eq!(out["table"]["q"], "project:b");
-        let slugs: Vec<&str> = out["running"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|r| r["slug"].as_str().unwrap())
-            .collect();
-        assert_eq!(slugs, ["y1", "y2"], "Running narrows by its own keys");
-        assert_eq!(
-            (
-                &out["running_table"]["total"],
-                &out["running_table"]["shown"]
-            ),
-            (&serde_json::json!(3), &serde_json::json!(2))
+        assert!(
+            out.get("running").is_none() && out.get("running_table").is_none(),
+            "Home lists no running items: the Queue tab does"
         );
 
         let Query(plain) =
@@ -2429,24 +2489,18 @@ mod tests {
         assert_eq!(plain.q, "", "a plain q is Proposals', never Needs you's");
     }
 
-    /// Home is a glance: Needs you pages at `SHOWN`, an open row stays on whatever page is
-    /// drawn, and Running sends its first `SHOWN` while its count keeps every row.
+    /// Home is a glance: Needs you pages at `SHOWN`, and an open row stays on whatever page is
+    /// drawn.
     #[test]
-    fn home_pages_needs_you_keeps_an_open_row_and_cuts_running_at_shown() {
+    fn home_pages_needs_you_and_keeps_an_open_row() {
         use hub_core::home::SHOWN;
         let n = SHOWN + 3;
         let sessions: Vec<_> = (0..n)
             .map(|i| serde_json::json!({"bucket": "NEEDS", "target": format!("hub/s{i}:1"), "project": "p", "idle_min": 100 - i}))
             .collect();
         let state = serde_json::json!({ "sessions": sessions });
-        let mut home = hub_core::home::build(Some(&state), None, None, None, hub_core::jobs::now());
+        let home = hub_core::home::build(Some(&state), None, None, None, hub_core::jobs::now());
         assert_eq!(home.needs.len(), n);
-        home.running = (0..n)
-            .map(|i| hub_core::home::Running {
-                slug: format!("r{i}"),
-                ..Default::default()
-            })
-            .collect();
         let ids = |v: &serde_json::Value| -> Vec<String> {
             v.as_array()
                 .unwrap()
@@ -2466,12 +2520,6 @@ mod tests {
         assert_eq!(ids(&out["needs"]), all[..SHOWN]);
         assert_eq!(out["table"]["shown"], n, "shown counts every page");
         assert_eq!(out["table"]["pager"]["pages"], 2);
-        assert_eq!(out["running"].as_array().unwrap().len(), SHOWN);
-        assert_eq!(out["running_table"]["shown"], n);
-        assert!(
-            out["running_table"]["pager"].is_null(),
-            "Running links, never pages"
-        );
 
         let q = HomeQuery {
             nopen: format!("ask:gone,{last}"),
@@ -2540,6 +2588,63 @@ mod tests {
         let msg: serde_json::Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
         assert_eq!(msg["off"], serde_json::json!([]));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A watcher that cannot be made (the inotify instance limit) leaves every target failed
+    /// instead of stopping the server, and the next retry makes it and watches them.
+    #[test]
+    fn a_watcher_that_cannot_start_is_retried() {
+        let dir = std::env::temp_dir().join(format!("agent-web-start-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let flat = RecursiveMode::NonRecursive;
+        let mut w: Option<notify::RecommendedWatcher> = None;
+        let failed = connect(
+            &mut w,
+            || Err(notify::Error::generic("too many inotify instances")),
+            vec![(dir.clone(), flat)],
+        );
+        assert!(w.is_none());
+        assert_eq!(failed.len(), 1);
+        let failed = connect(
+            &mut w,
+            || notify::recommended_watcher(|_: notify::Result<notify::Event>| {}),
+            failed,
+        );
+        assert!(w.is_some() && failed.is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A retry drops a project dir gone since and keeps any other failed target; a watcher that was
+    /// down also takes each project made since, once.
+    #[test]
+    fn a_retry_drops_gone_projects_and_a_late_start_adds_new_ones() {
+        let flat = RecursiveMode::NonRecursive;
+        let projects = Path::new("/h/.claude/projects");
+        let t = |p: &str| (PathBuf::from(p), flat);
+        let failed = vec![
+            t("/h/.agent/asks"),
+            t("/h/.claude/projects/-gone"),
+            t("/h/.claude/projects/-a"),
+        ];
+        let now = vec![t("/h/.claude/projects/-a"), t("/h/.claude/projects/-new")];
+        assert_eq!(
+            retry_targets(failed.clone(), projects, now.clone(), false),
+            vec![t("/h/.agent/asks"), t("/h/.claude/projects/-a")]
+        );
+        assert_eq!(
+            retry_targets(failed, projects, now, true),
+            vec![
+                t("/h/.agent/asks"),
+                t("/h/.claude/projects/-a"),
+                t("/h/.claude/projects/-new")
+            ]
+        );
+    }
+
+    #[test]
+    fn pace_overrides_is_costs_and_its_temp_file_is_nothing() {
+        assert_eq!(classify(&pace_overrides()).as_deref(), Some(COSTS_EVENT));
+        assert_eq!(classify(&pace_overrides().with_extension("tmp")), None);
     }
 
     #[test]

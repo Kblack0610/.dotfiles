@@ -67,6 +67,9 @@ pub struct Eval {
     pub harness: String,
     pub done: u64,
     pub landed: u64,
+    /// What landed rate divides by: the items whose outcome was landed, no-pr or failed (an
+    /// unrated item, a cause outside the model or a check that cleared, is in done only).
+    pub landed_n: u64,
     pub redo: u64,
     pub reverts: u64,
     pub cost_usd: f64,
@@ -248,6 +251,9 @@ pub struct Costs {
     pub live: Option<crate::spend_history::Day>,
     /// The Burn section: claude-acct's pace figures summed, and the dispatch drip.
     pub burn: Burn,
+    /// The Allowance and Pace config sections: `pace-conf`'s keys, the burn allowance in force and
+    /// its schedule (`pace_conf`).
+    pub pace: crate::pace_conf::View,
     /// The Consumers section's inputs: the gateway snapshot and the runners' confs.
     pub consumers: crate::gateway::Read,
     /// `fleet-bench sections --json`; empty when it failed (named in `errors`).
@@ -323,6 +329,15 @@ pub fn read(runner: &dyn Runner, paths: &Paths, now: i64) -> Costs {
         c.errors.push(format!("Prometheus: {e}"));
     }
     c.burn = read_burn(base.as_deref().ok(), paths, now, &mut c.errors);
+    // The allowance in force is named on the Burn headline, and the same read is the Limits
+    // sections', so one `pace-conf` run feeds both.
+    // A failed read is the view's own `error`, which the two sections show: it is not a read error
+    // of the page, so it neither joins `errors` nor keeps the kept read from being kept.
+    let conf = crate::pace_conf::read(runner);
+    if let Some(a) = conf.as_ref().ok().and_then(|c| c.named()) {
+        c.burn.set_allowance(a);
+    }
+    c.pace = crate::pace_conf::view(conf, &c.burn);
     c.consumers = crate::gateway::read(runner, &paths.gateway);
     c
 }
@@ -411,7 +426,7 @@ pub fn snapshot(date: &str, text: &str) -> Option<Snapshot> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
     Some(Snapshot {
         date: date.to_string(),
-        generated_at: v["generated_at"].as_str().and_then(epoch),
+        generated_at: v["generated_at"].as_str().and_then(crate::fleet::ts),
         tools: serde_json::from_value(v["by_tool"].clone()).unwrap_or_default(),
         unallocated_usd: v["by_tool_unallocated_usd"].as_f64(),
         parts: {
@@ -439,12 +454,6 @@ pub fn snapshot(date: &str, text: &str) -> Option<Snapshot> {
             .next()
             .map(str::to_string),
     })
-}
-
-fn epoch(t: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(t)
-        .ok()
-        .map(|t| t.timestamp())
 }
 
 /// A model id as the table shows it: Claude's without its `claude-` prefix.
@@ -498,22 +507,15 @@ impl Row for Slice {
     const FACETS: &'static [&'static str] = &["harness", "model", "project", "kind"];
 
     fn val(&self, col: &str) -> Val {
-        let text = |s: &str| {
-            if s.is_empty() {
-                Val::None
-            } else {
-                Val::Text(s.to_string())
-            }
-        };
         match col {
-            "session" => text(&self.session),
-            "title" => text(&self.title),
-            "project" => text(&self.project),
-            "harness" => text(&self.harness),
-            "model" => text(&self.model),
-            "runner" => text(&self.runner),
-            "kind" => text(&self.kind),
-            "account" => text(&self.account),
+            "session" => Val::word(&self.session),
+            "title" => Val::word(&self.title),
+            "project" => Val::word(&self.project),
+            "harness" => Val::word(&self.harness),
+            "model" => Val::word(&self.model),
+            "runner" => Val::word(&self.runner),
+            "kind" => Val::word(&self.kind),
+            "account" => Val::word(&self.account),
             "cost" => Val::Num(self.cost),
             "tokens" => Val::Num(self.tokens),
             _ => Val::None,
@@ -621,7 +623,7 @@ pub struct Line {
     pub cost: f64,
     /// Of what the filtered table sums to, 0..1.
     pub share: f64,
-    /// fleet-bench's landed over done, 0..1.
+    /// fleet-bench's landed over landed_n, 0..1.
     pub landed: Option<f64>,
     pub redo: Option<u64>,
     pub reverts: Option<u64>,
@@ -755,9 +757,9 @@ fn evaluate(l: &mut Line, evals: &[&Eval]) {
         return;
     }
     let sum = |f: fn(&Eval) -> u64| evals.iter().map(|e| f(e)).sum::<u64>();
-    let (done, landed, priced) = (sum(|e| e.done), sum(|e| e.landed), sum(|e| e.priced));
+    let (rated, landed, priced) = (sum(|e| e.landed_n), sum(|e| e.landed), sum(|e| e.priced));
     let cost: f64 = evals.iter().map(|e| e.cost_usd).sum();
-    l.landed = (done > 0).then(|| landed as f64 / done as f64);
+    l.landed = (rated > 0).then(|| landed as f64 / rated as f64);
     l.redo = Some(sum(|e| e.redo));
     l.reverts = Some(sum(|e| e.reverts));
     l.per_pr = (priced > 0).then(|| cost / priced as f64);
@@ -1031,6 +1033,7 @@ pub struct Board {
     pub totals_note: &'static str,
     pub direct: Direct,
     pub burn: Burn,
+    pub pace: crate::pace_conf::View,
     /// The Consumers section in its own order; a surface re-sorts it with `gateway::build`.
     pub consumers: crate::gateway::Consumers,
     /// The sections that need a look (layout section ids), which an inner tab's label counts so
@@ -1223,6 +1226,7 @@ pub fn board(
         totals_note: TOTALS_NOTE,
         direct: direct(&c.spend_days, c.at),
         burn: c.burn.clone(),
+        pace: c.pace.clone(),
         amber: amber(c, &consumers),
         consumers,
         tokens: c.tokens.clone(),
@@ -1492,8 +1496,9 @@ mod tests {
             evals: vec![Eval {
                 model: "opus".into(),
                 harness: "claude".into(),
-                done: 10,
+                done: 12,
                 landed: 9,
+                landed_n: 10,
                 redo: 1,
                 reverts: 0,
                 cost_usd: 45.0,
@@ -2085,7 +2090,7 @@ mod tests {
         let f = &c.fleet_cost;
         assert_eq!(
             (f.why.clone(), f.usd.as_str(), f.as_of),
-            (None, "about $5.00", Some(NOW))
+            (None, "$5.00", Some(NOW))
         );
         let days: Vec<_> = c.history.rows.iter().filter(|r| r.kind == "day").collect();
         assert_eq!(

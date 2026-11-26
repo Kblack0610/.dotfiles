@@ -40,13 +40,13 @@ run(`var __api = api`);
 
 const row = (key, o) => ({ key, bucket: "WORKING", project: "dotfiles", task: `task of ${key}`, item: "", target: key, session_id: key + "-id", pr: null, pr_state: "", ci: "", phases_done: null, phases_total: null, idle_min: 3, ended: "", finished: null, cost_usd: null, account: "a", harness: "claude", source: "live", unlinked: false, ...o });
 const ROWS = [
-  row("hub/b:1", { bucket: "NEEDS", pr: "12", pr_state: "open", ci: "PASS", phases_done: 2, phases_total: 4, cost_usd: 1.2 }),
-  row("lab/x:1", { bucket: "STALLED", idle_min: 1980 }),
+  row("hub/b:1", { bucket: "NEEDS", pr: "12", pr_state: "open", ci: "PASS", phases_done: 2, phases_total: 4, cost_usd: 1.2, runs_on: "local" }),
+  row("lab/x:1", { bucket: "STALLED", idle_min: 1980, runs_on: "razer-laptop" }),
   row("ucp-394", { bucket: "DONE", target: "", session_id: "s9", item: "ucp-394", pr: "1915", pr_state: "merged", ended: "ended", idle_min: null, source: "queue", harness: "codex", close: "now" }),
 ];
-const TABLE = { q: "", state: "", shown: 3, total: 3, facets: [{ key: "project", clear: "", on: [], values: [{ q: "project:dotfiles", value: "dotfiles", n: 3, on: false }] }],
-  states: [{ name: "all", n: 3 }, { name: "running", n: 0 }, { name: "needs you", n: 1, tone: "bad" }, { name: "stalled", n: 1, tone: "warn" }, { name: "ended today", n: 1, tone: "ok", means: "ended today" }],
-  columns: ["bucket", "project", "task", "by", "pr", "phases", "idle", "ctx", "cost", "acct", "harness", "close", "item", "source"].map((key) => ({ key, sort: "", next_sort: key, next_dir: "asc" })) };
+const TABLE = { q: "", state: "", shown: 3, total: 3, facets: [{ key: "project", clear: "", on: [], values: [{ q: "project:dotfiles", value: "dotfiles", n: 3, pct: 50, on: false }] }],
+  states: [{ name: "live", n: 2 }, { name: "running", n: 0 }, { name: "needs you", n: 1, tone: "bad" }, { name: "stalled", n: 1, tone: "warn" }, { name: "ended today", n: 1, tone: "ok", means: "ended today" }, { name: "all", n: 3 }],
+  columns: ["bucket", "project", "task", "by", "pr", "phases", "idle", "ctx", "cost", "acct", "harness", "close", "item", "source", "session", "machine"].map((key) => ({ key, sort: "", next_sort: key, next_dir: "asc" })) };
 const CAP = { parts: [{ text: "38 live: 14 hand, 18 dispatched (0/40 run units, 3 per pass), 6 other", warn: false, start: null, confirm: "" },
   { text: "dispatch on, next 13:01", warn: false, start: null, confirm: "" },
   { text: "shepherd timer stopped", warn: true, start: "shepherd", confirm: "Start the shepherd timer?" }], live: 38, unlinked: 21, errors: ["fleet-dispatch headroom: exit 1"] };
@@ -87,14 +87,17 @@ test("the table is the server's rows in its order, with the overview tiles and t
   assert.ok(order.every((i) => i >= 0), html);
   assert.deepEqual([...order].sort((a, b) => a - b), order);
   assert.match(html, /<button class="tile t-ok" data-ts="ended today" title="ended today"><span class="tl">ENDED TODAY<\/span><span class="tv">1<\/span>/);
-  assert.doesNotMatch(html, /data-ts="all"|sessions-chips|class="seg fseg"/, "the tiles are the chips, so the small chip row is gone");
+  assert.doesNotMatch(html, /data-ts="live"|sessions-chips|class="seg fseg"/, "the tiles are the chips, so the small chip row is gone, and live is the opening view, not a tile");
+  assert.match(html, /<button class="tile" data-ts="all"/, "the ended rows are one tile away, under all");
   assert.ok(html.indexOf("stiles") < html.indexOf("tqbar"), "the overview row sits on the search bar");
-  assert.match(html, /<input type="checkbox" data-tq data-fv="dotfiles" value="project:dotfiles"> <span>dotfiles<\/span> <span class="n">3<\/span>/);
+  assert.match(html, /<input type="checkbox" data-tq data-fv="dotfiles" value="project:dotfiles"> <span>dotfiles<\/span> <span class="n">3 \(50%\)<\/span>/);
   assert.match(html, /#12 open <b class="ci pass">PASS<\/b>/);
   assert.match(html, /<td class="n">2\/4<\/td><td class="n">3m<\/td><td class="n">-<\/td><td class="n">\$1\.20<\/td>/);
   assert.match(html, /title="sort by harness">harness<\/button>/, "the harness is a column");
   assert.match(html, /title="sort by close">close<\/button>/, "the close verdict is a column");
-  assert.match(html, /<td>a<\/td><td>codex<\/td><td>now<\/td><\/tr>/, "each row names its harness after its account, then its close verdict");
+  assert.match(html, /<td>a<\/td><td>codex<\/td><td>now<\/td><td class="muted">-<\/td><\/tr>/, "each row names its harness after its account, then its close verdict, and a queue row no machine");
+  assert.match(html, /title="sort by machine">machine<\/button>/, "the machine is a column (ar-3321)");
+  assert.match(html, /<td class="muted">razer-laptop<\/td><\/tr>/, "a worker's session names its machine");
   assert.doesNotMatch(html, /data-tsort="(item|source)"/, "item and source are search keys, not columns");
 });
 
@@ -111,12 +114,12 @@ test("a row says what the columns do not: parked, no session here, and where an 
 const PAGE = { name: "ucp-394", session_id: "s9", target: "", bucket: "DONE", task: "the <task>", idle: "ended", errors: ["notes board: exit 1"], outcome: "card of s9",
   parts: [{ label: "Queue item", text: "ucp-394 (done, high)", link: "#queue", warn: false }, { label: "PR", text: "#1915 merged", link: "https://github.com/o/r/pull/1915", warn: false }, { label: "Asks", text: "1 open: ship?", link: null, warn: true }] };
 
-test("the overview spend is the server's sum, and the tile in force clears the filter", () => {
+test("the overview has no spend tile (Costs owns it), and the tile in force clears the filter", () => {
   setup();
-  run(`sst.data = { ...sst.data, spend_usd: 41.2, table: { ...sst.data.table, state: "stalled", shown: 1 } }`);
+  run(`sst.data = { ...sst.data, table: { ...sst.data.table, state: "stalled", shown: 1 } }`);
   run("sst.render()");
   const html = boxes["ov-sessions"].innerHTML;
-  assert.match(html, /SPEND<\/span><span class="tv">\$41\.20<\/span><span class="ts1">1 shown/);
+  assert.doesNotMatch(html, /SPEND/);
   assert.match(html, /<button class="tile on t-warn" data-ts="">/);
 });
 

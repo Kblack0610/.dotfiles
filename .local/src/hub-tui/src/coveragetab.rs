@@ -16,8 +16,8 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::{DataTable, Took};
 use crate::fit::{cell, clip_line, Cell, Table};
-use crate::fmt::Palette;
-use crate::laddertab::{count, dash, head, section, tone};
+use crate::fmt::{dash, Palette};
+use crate::laddertab::{count, head, section, tone};
 use crate::projtab::{sec_head, wrapped, ProjView};
 use crate::tasktab::TaskView;
 

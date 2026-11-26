@@ -2,8 +2,8 @@
 """claude-recall - search / list / show raw Claude Code transcripts.
 
 On-demand pull-recall over the verbatim session record that Claude Code writes
-to ~/.claude/projects/**/*.jsonl (and Claude Cowork's local-agent-mode-sessions
-on macOS, when present). No index, no daemon, no cloud: it reads the .jsonl on
+to <account dir>/projects/**/*.jsonl, for every account in claude-acct's accounts
+file (and Claude Cowork's local-agent-mode-sessions on macOS, when present). No index, no daemon, no cloud: it reads the .jsonl on
 each call. ripgrep is used as a fast prefilter when available.
 
 This is the local, skill-friendly equivalent of local-claude-chat-history-mcp:
@@ -13,13 +13,14 @@ standing MCP server, so it costs zero session context until invoked.
 Usage:
   claude-recall search TERM [--project P] [--branch B] [--since YYYY-MM-DD]
                            [--role user|assistant] [--regex] [--thinking]
-                           [--context N] [--limit N] [--ignore-case/-i]
+                           [--context N] [--limit N] [--all-files] [--ignore-case/-i]
   claude-recall list [--project P] [--limit N]
   claude-recall show SESSION_ID_OR_PREFIX [--thinking]
   claude-recall stats [--days N | --since DATE|ISO] [--kind slash,skill,agent,intent,prompt,
                                                            body,read,script,mention]
                       [--origin interactive|auto|all] [--by week|project] [--top K]
                       [--min N] [--min-words N] [--project P] [--json]
+  claude-recall roots     # the dirs read, one per account, with session counts
   claude-recall answer-lag [--days N | --since DATE|ISO] [--over N] [--project P] [--json]
   claude-recall tool-output [--days N | --since DATE|ISO]
                             [--by tool|command|filetype|kind|day|week|project]...
@@ -38,6 +39,7 @@ Examples:
 """
 import argparse
 import functools
+import heapq
 import json
 import math
 import os
@@ -51,13 +53,45 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 HOME = Path.home()
-# CLAUDE_TRANSCRIPTS (colon-separated) replaces the default roots; skill-drift uses the same
-# variable, so a test or a caller points both tools at one corpus. The bnb and personal
-# accounts symlink their projects/ to ~/.claude/projects; the work account does not.
+
+
+def account_roots():
+    """Every Claude account's transcript dirs: <dir>/projects for each account in claude-acct's
+    accounts file (`-` is the main one, ~/.claude) and for any other ~/.claude* config dir (one
+    a CLAUDE_CONFIG_DIR set by hand wrote, like ~/.claude-work), plus any
+    .pre-share-<date>/projects copy `claude-acct link` parked when it linked that account's
+    projects/ to main's. A linked account resolves to main's dir and is read once."""
+    conf = Path(os.environ.get("CLAUDE_ACCT_CONFIG")
+                or Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config") / "claude-acct" / "accounts")
+    dirs = [HOME / ".claude"]   # the main account, which a machine has before the file is stowed
+    try:
+        for line in conf.read_text().splitlines():
+            parts = line.split()
+            if len(parts) < 2 or parts[0].startswith("#"):
+                continue
+            d = parts[1]
+            dirs.append(HOME / ".claude" if d == "-" else Path(os.path.expanduser(d)))
+    except OSError:
+        pass
+    dirs += sorted(d for d in HOME.glob(".claude*") if d.is_dir())
+    found = []
+    for d in dirs:
+        found += [d / "projects", *sorted(d.glob(".pre-share-*/projects"))]
+    roots = []
+    for r in found:
+        r = r.resolve()
+        if r.is_dir() and r not in roots:
+            roots.append(r)
+    # A root inside another would yield its files twice.
+    return [r for r in roots if not any(o != r and r.is_relative_to(o) for o in roots)]
+
+
+# CLAUDE_TRANSCRIPTS (colon-separated) replaces the account roots; skill-drift uses the same
+# variable, so a test or a caller points both tools at one corpus.
 if os.environ.get("CLAUDE_TRANSCRIPTS"):
     ROOTS = [Path(p) for p in os.environ["CLAUDE_TRANSCRIPTS"].split(":") if p]
 else:
-    ROOTS = [HOME / ".claude" / "projects", HOME / ".claude-work" / "projects"]
+    ROOTS = account_roots()
 COWORK = HOME / "Library" / "Application Support" / "Claude" / "local-agent-mode-sessions"
 if COWORK.exists():
     ROOTS.append(COWORK)
@@ -69,10 +103,20 @@ def c(code, s):
 DIM, BOLD, CYAN, YEL, GRN, MAG = "2", "1", "36", "33", "32", "35"
 
 
+def first_copies(paths):
+    """Drop a transcript whose path under its root an earlier root already has: a session left in
+    a parked .pre-share copy as well as in main's dir is read once, from the earlier root."""
+    seen = set()
+    for f in paths:
+        root = next((r for r in ROOTS if f.is_relative_to(r)), None)
+        rel = f.relative_to(root) if root else f
+        if rel not in seen:
+            seen.add(rel)
+            yield f
+
+
 def iter_files():
-    for root in ROOTS:
-        if root.exists():
-            yield from sorted(root.rglob("*.jsonl"))
+    yield from first_copies(f for root in ROOTS if root.exists() for f in sorted(root.rglob("*.jsonl")))
 
 
 def parse_line(line):
@@ -157,23 +201,69 @@ def snippet(text, matcher, context):
     return f"{pre}{body}{post}"
 
 
+# A record is written before its file's mtime is set, so no record is newer than its file; this
+# slack covers clock skew between the writer and the filesystem.
+MTIME_SLACK = 60
+
+
+def iso_utc(epoch):
+    """An epoch as UTC "2026-11-24T08:43:24": its first 19 characters are all a transcript
+    timestamp is compared on, so a timestamp with or without fractional seconds orders the same."""
+    return datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def raw_words(term, ignore_case):
+    """The runs of TERM that JSON stores unescaped and the renderer does not synthesize around:
+    every one must appear in the raw line of any record whose rendered text holds TERM. Spaces,
+    brackets, quotes, slashes and non-ASCII split the term, since blocks_to_text adds its own
+    "[tool_use X] " framing and JSON may escape those."""
+    words = re.findall(r"[A-Za-z0-9_.@#%=+~-]+", term)
+    return [w.casefold() for w in words] if ignore_case else words
+
+
 def cmd_search(a):
     flags = re.IGNORECASE if a.ignore_case else 0
     if a.regex:
         matcher = re.compile(a.term, flags)
     else:
         matcher = re.compile(re.escape(a.term), flags)
+    words = [] if a.regex else raw_words(a.term, a.ignore_case)
 
     candidates = rg_prefilter(a.term, a.regex, a.ignore_case)
-    files = sorted(candidates) if candidates is not None else list(iter_files())
+    files = (sorted(first_copies(sorted(candidates, key=lambda f: next(
+        (i for i, r in enumerate(ROOTS) if f.is_relative_to(r)), len(ROOTS)))))
+        if candidates is not None else list(iter_files()))
+
+    # Newest file first: with --since a file last written before it holds no hit, and with
+    # --limit the scan stops once every unread file is older than the oldest kept hit.
+    stamped = []
+    for path in files:
+        try:
+            stamped.append((path.stat().st_mtime, path))
+        except OSError:
+            continue
+    stamped.sort(key=lambda m: m[0], reverse=True)
 
     results = []
-    for path in files:
+    newest_kept = []   # min-heap of the --limit newest hit timestamps
+    stopped = ""   # what ended the scan early: "since" or "limit"
+    for mtime, path in stamped:
+        if not a.all_files:
+            if a.since and iso_utc(mtime + MTIME_SLACK)[:10] < a.since:
+                stopped = "since"
+                break
+            if a.limit and len(newest_kept) >= a.limit and iso_utc(mtime + MTIME_SLACK) < newest_kept[0][:19]:
+                stopped = "limit"
+                break
         try:
             lines = path.read_text(errors="replace").splitlines()
         except OSError:
             continue
         for line in lines:
+            if words:
+                hay = line.casefold() if a.ignore_case else line
+                if not all(w in hay for w in words):
+                    continue
             rec = parse_line(line)
             if not rec or rec.get("type") not in ("user", "assistant"):
                 continue
@@ -195,8 +285,12 @@ def cmd_search(a):
             if not matcher.search(text):
                 continue
             results.append((ts, proj, role, path.stem, text))
+            if a.limit:
+                heapq.heappush(newest_kept, ts)
+                if len(newest_kept) > a.limit:
+                    heapq.heappop(newest_kept)
 
-    results.sort(key=lambda r: r[0])
+    results.sort(key=lambda r: (r[0], r[3]))
     total = len(results)
     if a.limit and total > a.limit:
         results = results[-a.limit :]
@@ -216,6 +310,9 @@ def cmd_search(a):
     note = f"{shown} match(es)"
     if shown < total:
         note += f" (of {total}; use --limit to widen)"
+    if stopped:
+        note += (" (files last written before --since not read; --all-files reads them)" if stopped == "since"
+                 else " (older files not read; a larger --limit or --all-files reads them)")
     if candidates is not None:
         note += "  [rg prefilter]"
     print(c(DIM, note))
@@ -457,14 +554,20 @@ DEFAULT_KINDS = ("slash", "skill", "agent", "intent", "prompt")
 STATS_KINDS = DEFAULT_KINDS + USE_KINDS + ("bypass", "denied")
 
 
-def hand_methods():
-    """The hook module that owns metadata.replaces, beside this script in the same checkout."""
-    import importlib.util
-    path = Path(__file__).resolve().parents[2] / ".claude" / "hooks" / "hand_methods.py"
-    spec = importlib.util.spec_from_file_location("hand_methods", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+@functools.lru_cache(maxsize=None)
+def hook_module(name):
+    """The hook <name>.py from this checkout's .claude/hooks, loaded by hooklib with that dir on sys.path
+    only for the load, so the hook's own `import hooklib` resolves as it does when the hook runs and no
+    hook file shadows a module name afterwards (hooklib stays cached in sys.modules for later loads)."""
+    hooks = str(Path(__file__).resolve().parents[2] / ".claude" / "hooks")
+    sys.path.insert(0, hooks)
+    try:
+        import hooklib
+        return hooklib.load(name)
+    finally:
+        sys.path.remove(hooks)
+
+
 # How a tool_result reads when a PreToolUse hook denied the call, so it never ran.
 DENIED = "PreToolUse:Bash hook error:"
 
@@ -650,14 +753,20 @@ HARNESS_PREFIXES = ("This session is being continued", "Stop hook feedback",
                     "[Request interrupted", "Another Claude session sent", "Caveat:")
 
 
+def panel_conf_lines(name):
+    """The lines of .config/agent-panel/<name> beside this checkout, trimmed, past its comments
+    and blank lines."""
+    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..",
+                        ".config", "agent-panel", name)
+    with open(path, encoding="utf-8") as f:
+        return [ln.strip() for ln in f if ln.strip() and not ln.lstrip().startswith("#")]
+
+
 @functools.cache
 def typed_prefixes():
     """(kind, text) rows of .config/agent-panel/typed-prefixes.conf, the one table of prompts the
     fleet types into a session as if the human had: `task` a new request, `resume` a carry-on."""
-    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..",
-                        ".config", "agent-panel", "typed-prefixes.conf")
-    with open(path, encoding="utf-8") as f:
-        rows = [ln.split(None, 1) for ln in f if ln.strip() and not ln.lstrip().startswith("#")]
+    rows = [ln.split(None, 1) for ln in panel_conf_lines("typed-prefixes.conf")]
     return tuple((r[0], r[1].strip()) for r in rows if len(r) == 2)
 
 
@@ -794,7 +903,7 @@ def cmd_stats(a):
     names = frozenset(skill_names()) if kinds & set(USE_KINDS) else frozenset()
     hand = None
     if {"bypass", "denied"} & kinds:
-        mod = hand_methods()
+        mod = hook_module("hand_methods")  # owns metadata.replaces
         hand = (mod, mod.load_rules())
     agg = {}
     used = {}  # session -> skills and slash commands it ran, for intent coverage
@@ -1589,19 +1698,9 @@ RUNNER_COMMANDS = ("fleet-lead", "fleet-overseer")
 GUARD_DENY = re.compile(r"^PreToolUse:\w+ hook error: (?:([a-z][a-z0-9-]+): )?")
 
 
-@functools.lru_cache(maxsize=None)
-def block_poll():
-    """block-poll.py from this checkout, so the loop count and the guard agree on what a wait loop is."""
-    import importlib.util
-    hook = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", ".claude", "hooks", "block-poll.py")
-    spec = importlib.util.spec_from_file_location("block_poll", hook)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def wait_loop(cmd):
-    mod = block_poll()
+    # block-poll.py from this checkout, so the loop count and the guard agree on what a wait loop is.
+    mod = hook_module("block-poll")
     return any(mod.polls(t) for t in mod.code_texts(mod.strip_heredocs(cmd)))
 
 
@@ -1735,9 +1834,15 @@ def read_spans(name, inp, cwd):
     return []
 
 
+@functools.cache
+def edit_tools():
+    """The Claude tools that write a file: .config/agent-panel/edit-tools.conf, the one list."""
+    return frozenset(panel_conf_lines("edit-tools.conf"))
+
+
 def write_paths(name, inp, cwd):
-    """The files a call wrote: Edit and Write targets, sed -i files and shell redirects."""
-    if name in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
+    """The files a call wrote: edit-tool targets, sed -i files and shell redirects."""
+    if name in edit_tools():
         p = inp.get("file_path") or inp.get("notebook_path")
         return [norm_path(p, cwd)] if p else []
     if name != "Bash":
@@ -2128,7 +2233,6 @@ def cmd_tool_calls(a):
 
 
 # --- answer-lag: does a question get its answer before work starts ------------
-EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
 # Pasted text and injected reminders quote other people and other sessions; an unclosed one (a
 # truncated paste) runs to the end of the prompt.
 NOT_ASKED = re.compile(r"<(pasted_content|system-reminder)\b[^>]*>.*?(?:</\1[^>]*>|\Z)", re.S)
@@ -2189,7 +2293,7 @@ def answer_turns(path, since, until):
                         turn["answered"] = True
                         break
                     turn["calls"] += 1
-                    turn["edited"] |= name in EDIT_TOOLS
+                    turn["edited"] |= name in edit_tools()
     if turn is not None:
         yield turn
 
@@ -2233,6 +2337,14 @@ def cmd_answer_lag(a):
     return 0
 
 
+def cmd_roots(a):
+    """Each transcript dir this machine reads, with its session count: how to tell whether an
+    account's sessions are covered. Another fleet machine's sessions are in its own dirs."""
+    for r in ROOTS:
+        n = sum(1 for f in r.rglob("*.jsonl") if "subagents" not in f.parts) if r.is_dir() else 0
+        print(f"{r}\t{n} sessions")
+
+
 def main():
     p = argparse.ArgumentParser(prog="claude-recall", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -2248,7 +2360,10 @@ def main():
     s.add_argument("--thinking", action="store_true", help="include thinking blocks")
     s.add_argument("--ignore-case", "-i", action="store_true")
     s.add_argument("--context", type=int, default=120, help="chars of snippet context")
-    s.add_argument("--limit", type=int, default=40, help="max matches (0 = all)")
+    s.add_argument("--limit", type=int, default=20, help="max matches, newest first; the scan stops "
+                   "once older files cannot beat them (0 = all)")
+    s.add_argument("--all-files", action="store_true",
+                   help="read every candidate file: no mtime skip for --since, no early stop at --limit")
     s.set_defaults(func=cmd_search)
 
     ls = sub.add_parser("list", help="recent sessions with titles")
@@ -2325,6 +2440,9 @@ def main():
     al.add_argument("--project", "-p", help="substring match on repo")
     al.add_argument("--json", action="store_true")
     al.set_defaults(func=cmd_answer_lag)
+
+    rt = sub.add_parser("roots", help="the transcript dirs read here (every Claude account's), with session counts")
+    rt.set_defaults(func=cmd_roots)
 
     a = p.parse_args()
     sys.exit(a.func(a) or 0)

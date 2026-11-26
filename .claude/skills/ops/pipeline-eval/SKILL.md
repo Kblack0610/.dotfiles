@@ -6,7 +6,7 @@ metadata:
   category: ops
   tags: [pipeline, fleet, queue, dispatch, shepherd, sessions, flow, throughput, bottleneck]
   system: [dispatch]
-  reviewed: "2026-11-16"
+  reviewed: "2026-11-23"
 ---
 
 # Pipeline eval
@@ -24,10 +24,11 @@ Every number comes from a deterministic source, never a model's score of a trans
 | ETA accuracy | `fleet-bench accuracy --json` and `fleet-bench report` |
 | output and pace: phases in vs out, items started and landed | `fleet-bench pipeline`, `fleet-bench throughput`, `fleet-bench flow --since D` |
 | WIP cap, queued age, class of service: runnable against the cap, each class started against its share, the starved ones | `fleet-bench pipeline` (last lines), `agent-queue mix`; `fleet-bench pipeline --check cap`, `age` or `mix` is one Sentinel watch each |
+| sessions stalled and pool waits: the hours, the top three sessions, each pool past the bound | `fleet-bench bottleneck`; `bottleneck --check stalled` is the `fleet-bottleneck` watch, whose trip routes here (`fleet-sessions explain <who>` for each named session); `--check pools` is the `pool-wait` watch, an `alert` route whose waste cuts route here (`fleet-bench throughput` and `scripts/ci/ci-cost.py --days 1` in the playground) |
 | which dispatch limit binds now (pace target, load, run units, holds) | `fleet-dispatch headroom --json`, `fleet-dispatch run --dry-run` |
 | who holds the live slots: open job and time split per project | `fleet-sessions --json` (`open_job`; `queue` is a session waiting its landing turn) |
-| merge line: batches cut vs merged, waiters per project | the project's merge-train PRs (`gh pr list --state all --search 'chore(train) in:title created:>=D'`), and `open_job == "queue"` counts |
-| fleet host uptime in the window | the boot spans of `journalctl --list-boots` clipped to the window; cross-check against `activity.log`, which is per host and gets a line every pass, so a gap is a pass that never ran |
+| merge line: batches cut vs merged, waiters per project | the project's merge-train PRs (`gh pr list --state all --search 'chore train in:title created:>=D'`; the `chore(train)` form matches none), then each closed one's first comment: `Void:` is a deliberate close (unity-core-playground `scripts/test/train.py` posts it), a close inside a minute with no comment is the train's open step failing; and `open_job == "queue"` counts |
+| fleet host uptime in the window | the down spans of `last -x reboot shutdown -F` (wtmp keeps far more boots than the journal; for a window before its last rotation add `-f /var/log/wtmp.1`; `journalctl --list-boots` lists only the boots the journal has not pruned, and a crash has no shutdown row, so its span ends at the last `activity.log` line) clipped to the window; cross-check against `activity.log`, which is per host and gets a line every pass, so a gap is a pass that never ran |
 | trend | `day-log week --json` and the daily records in `~/.agent/daylog/` (`work.stages` from 2026-11-05) |
 
 The day-log skill's "The snapshot schema" says what each record field means. When a source lacks a number you need, extend the tool that owns it, with a fixture test, and add it to the day-log record; never count by hand. This file holds only the procedure.
@@ -57,4 +58,6 @@ Siblings: token spend is `usage-cleanup`; CI pass rate and CI time are `ci-clean
 
 - Do not score transcripts with a model, and do not start a live claude probe to measure anything.
 - Do not read `agent-queue stats` wait as dispatch latency without the `after:` split: a held item waits by design.
+- Do not read `fleet-bench pipeline` in, out or dwell for the running step while its `drift:` line is not 0: the drift has several causes (`pipeline_json` in `fleet-bench` lists them), and the one that corrupts the running step is a finished item with no `item-moved -> done` event, which stays running there: a worker's close landed in the worker's own record until `worker_records` (fleet-dispatch `record`) carried it over (ar-4993); one still counted after that is a close no event reached. Take counts from `agent-queue stats --flow`.
+- Do not count `no_pr` sessions as lost work before splitting off the runner rows (`runner: true` or `project: _runner`); the `day-log` skill owns the rule.
 - Do not restate fleet-bench, day-log, shepherd, usage-cleanup or ci-cleanup here; name them.

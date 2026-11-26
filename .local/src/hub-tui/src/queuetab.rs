@@ -22,7 +22,7 @@ use ratatui::text::{Line, Span};
 use crate::datatable::{DataTable, Took};
 use crate::fit::{cell, clip_line, Cell, Table};
 use crate::flowline::{self, LineView};
-use crate::fmt::{clock, Palette};
+use crate::fmt::{clock, heading, Palette};
 use hub_core::display::fmt::{counted, dur_min, usd};
 
 /// What a key on the Queue tab asks the app to do.
@@ -50,6 +50,8 @@ pub struct QueueView {
     /// Enter opens it. A refresh that puts another item under the selection drops the mark.
     pub link: Option<(String, usize)>,
     pub cands_open: bool,
+    /// The state words' meanings (`Row::LEGEND`) under the chips, shown while `?` holds them open.
+    pub legend: bool,
     /// The step and problem picked on the pipeline line.
     pub line: LineView,
     /// The slug a cancel waits on y for.
@@ -76,6 +78,7 @@ impl Default for QueueView {
             detail: false,
             link: None,
             cands_open: true,
+            legend: false,
             line: LineView::default(),
             confirm: None,
             running: None,
@@ -99,10 +102,19 @@ impl QueueView {
             Some(chip) => self.table.view.state = chip.into(),
             None if q.eq_ignore_ascii_case("candidates") => self.cands_open = true,
             None if ["flow", "table"].iter().any(|s| q.eq_ignore_ascii_case(s)) => {}
-            None => {
-                self.table.view.q = q.into();
-                self.table.view.state = "all".into();
-            }
+            // A section id of agent-web's Queue (`needs`, `stuck`, `pr`, `next`): its state chip,
+            // or the page as it is for Stuck, which the one table shows by the state word.
+            None => match hub_core::queue::Section::of_word(q) {
+                Some(sec) => {
+                    if let Some(chip) = sec.chip() {
+                        self.table.view.state = chip.into();
+                    }
+                }
+                None => {
+                    self.table.view.q = q.into();
+                    self.table.view.state = "all".into();
+                }
+            },
         }
     }
 
@@ -246,6 +258,7 @@ impl QueueView {
             }
             KeyCode::Esc if self.detail => (self.detail, self.link) = (false, None),
             KeyCode::Esc if !self.table.is_default() => self.table.clear(),
+            KeyCode::Char('?') => self.legend = !self.legend,
             KeyCode::Char('C') => {
                 self.cands_open = !self.cands_open;
                 self.reselect(None, q, c, now);
@@ -299,13 +312,6 @@ impl QueueView {
 /// Why cancel and priority leave a finished item alone.
 fn done_row(i: &Item) -> Result<String, String> {
     Err(format!("{} is done", i.slug))
-}
-
-fn heading(title: &str, rest: String, p: Palette) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(title.to_string(), p.head()),
-        Span::styled(rest, p.dim()),
-    ])
 }
 
 /// The STATE column: what the item needs, or how it finished.
@@ -604,13 +610,14 @@ pub fn page(
     let rest = q
         .stats
         .as_ref()
-        .map_or(String::new(), |s| format!("  {}", s.week()));
+        .map_or(String::new(), |s| format!("  {}", s.line()));
     out.push(clip_line(heading("AGENT QUEUE", rest, p), w));
-    if let Some(l) = q.stats.as_ref().and_then(|s| s.sitting_line()) {
-        out.push(clip_line(Line::raw(l), w));
-    }
     if let Some(v) = &q.verdict {
-        for l in v.lines(|| hub_core::bar::ready(q, now)) {
+        let lines = hub_core::queue_verdict::worst_first(
+            v.lines(|| hub_core::bar::ready(q, now)),
+            hub_core::queue_verdict::BANNER_LINES,
+        );
+        for l in lines {
             let style = crate::hometab::level_style(l.level, p);
             out.push(clip_line(Line::styled(l.said(), style), w));
         }
@@ -624,7 +631,9 @@ pub fn page(
         p.dim(),
     ));
     out.push(clip_line(Line::from(chips), w));
-    out.extend(DataTable::legend::<QueueRow>(p, w));
+    if v.legend {
+        out.extend(DataTable::legend::<QueueRow>(p, w));
+    }
     let (more, cand_at) = candidates(rows.len(), v, cands, p, w);
     let mut at_line = None;
     if let (true, Some(r)) = (v.detail, rows.get(v.table.sel)) {
@@ -710,7 +719,7 @@ fn candidates(
     let mut out = vec![clip_line(
         heading(
             &format!("{mark} CANDIDATES{count}"),
-            format!("  {hint}").trim_end().into(),
+            format!("  {hint}").trim_end(),
             p,
         ),
         w,
@@ -850,6 +859,7 @@ pub(crate) mod tests {
                     level: Level::Warn,
                     text: "Dispatch paused 2h00m: load 31 is over its cap of 24".into(),
                     act: "See the fleet-pace skill".into(),
+                    to: String::new(),
                 }],
                 ..Default::default()
             }),
@@ -894,7 +904,7 @@ pub(crate) mod tests {
     /// Three ranked rows: an auto one with a verdict, a held auto one, a human-lane manual one.
     pub fn cands() -> Candidates {
         hub_core::queue::parse_candidates(concat!(
-            r##"{"profile":"bnb","project":"shape-city","lane":"agent","key":"bar-17","text":"- [ ] fix the jump arc #high <!-- id:bar-17 -->","why":"focus project, due today, #high, beta","auto":true,"verdict":"dispatch","held":false}"##,
+            r##"{"profile":"bnb","project":"shape-city","lane":"agent","key":"bar-17","text":"- [ ] fix the jump arc #high <!-- id:bar-17 -->","why":"due today, #high, beta","auto":true,"verdict":"dispatch","held":false}"##,
             "\n",
             r##"{"profile":"bnb","project":"unity-core-playground","lane":"agent","key":"ucp-408","text":"- [ ] fix(cutscene): smooth the blend #requested <!-- id:ucp-408 -->","why":"requested, #high, beta, 5d old","auto":true,"verdict":"unjudged","held":true,"area":"unity"}"##,
             "\n",
@@ -995,7 +1005,7 @@ pub(crate) mod tests {
             "it opens on active work, done one chip away\n{open}"
         );
         assert!(
-            s.contains("4 done (3 ok, 0 failed, 1 cancelled)") && s.contains("to PR median 1h35m"),
+            s.contains("4 done since") && s.contains("to PR median 1h35m"),
             "{s}"
         );
         let empty = text(&Queue::default(), &QueueView::default(), 120);
@@ -1266,6 +1276,13 @@ pub(crate) mod tests {
             v.table.view.state, "all",
             "a new request starts from the table's own view, over every row"
         );
+        // agent-web's section ids open their chip; Stuck has none and shows the page as it is.
+        for (id, chip) in [("needs", "needs you"), ("pr", "on a PR"), ("next", "ready")] {
+            v.open(id);
+            assert_eq!(v.table.view.state, chip, "{id}");
+        }
+        v.open("stuck");
+        assert!(v.table.is_default());
         v.open("candidates");
         assert!(v.cands_open && v.table.is_default());
         v.open("table");
@@ -1369,9 +1386,9 @@ pub(crate) mod tests {
     fn a_done_row_shows_its_pr_in_the_column_and_flags_a_finish_with_no_proof() {
         let mut q = fixture();
         q.items.extend(hub_core::queue::parse(concat!(
-            r#"{"slug":"merged-one","project":"dotfiles","state":"done","status":"ok","pr":"o/r#7","merged":"abc","cost_usd":"6.10","finished":"2026-11-03T12:00:00Z","task":"Merged one"}"#,
+            r#"{"slug":"merged-one","project":"dotfiles","state":"done","status":"ok","outcome":"landed","pr":"o/r#7","merged":"abc","cost_usd":"6.10","finished":"2026-11-03T12:00:00Z","task":"Merged one"}"#,
             "\n",
-            r#"{"slug":"nothing-shown","project":"dotfiles","state":"done","status":"ok","cost_usd":"0","finished":"2026-11-03T12:00:00Z","task":"Nothing shown"}"#,
+            r#"{"slug":"nothing-shown","project":"dotfiles","state":"done","status":"ok","outcome":"no-pr","cost_usd":"0","finished":"2026-11-03T12:00:00Z","task":"Nothing shown"}"#,
             "\n",
             r#"{"slug":"broke","project":"dotfiles","state":"done","status":"failed","finished":"2026-11-03T12:00:00Z","task":"Broke"}"#,
             "\n",
@@ -1480,9 +1497,10 @@ pub(crate) mod tests {
             "{:?}",
             v.said
         );
+        // One step up the four words: low -> normal (queue::PRIORITIES).
         assert_eq!(
             press(&mut v, &q, &[], '+'),
-            Ask::Bump("night-sweep".into(), "high")
+            Ask::Bump("night-sweep".into(), "normal")
         );
         press(&mut v, &q, &[], 'k');
         assert_eq!(at(&v), "next-up");
@@ -1525,6 +1543,27 @@ pub(crate) mod tests {
         );
         v.reselect(Some("gone".into()), &Queue::default(), &[], now());
         assert_eq!(v.table.sel, 0);
+    }
+
+    #[test]
+    fn the_state_legend_is_behind_question_mark_not_on_the_page() {
+        let q = fixture();
+        let mut v = QueueView::default();
+        let said = |v: &QueueView| text_with(&q, v, None, 200);
+        assert!(
+            !said(&v).contains("starts when dispatch has a slot"),
+            "off by default"
+        );
+        press(&mut v, &q, &[], '?');
+        assert!(
+            said(&v).contains("starts when dispatch has a slot"),
+            "? opens it"
+        );
+        press(&mut v, &q, &[], '?');
+        assert!(
+            !said(&v).contains("starts when dispatch has a slot"),
+            "? again shuts it"
+        );
     }
 
     #[test]
@@ -1583,7 +1622,7 @@ pub(crate) mod tests {
             "{a}"
         );
         assert!(
-            a.contains("auto dispatch") && a.contains("focus project, due today"),
+            a.contains("auto dispatch") && a.contains("due today, #high"),
             "{a}"
         );
         assert!(b.contains("auto held") && !b.contains("unjudged"), "{b}");

@@ -39,9 +39,8 @@ const grafanaBase = () => (ist.data && ist.data.grafana) || "";
 const gLink = (uid, text) => grafanaBase() ? `<a class="glink" href="${esc(grafanaBase())}/d/${uid}" target="_blank" rel="noopener">${esc(text)}</a>` : "";
 
 
-// hub_core::ci::Glance::head: `4 running, 23 queued (oldest 21m), 9.2 queued ~12m, 12/12 runners up,
-// 759 done 24h, 91% passed`; a unit field the governor does not publish is `-`.
-const u1 = (x) => (x == null ? "-" : x.toFixed(1));
+// hub_core::ci::Glance::head: `4 running, 23 queued (oldest 21m), booked 4.4/64 cpu, 12/12 runners up,
+// 759 done 24h, 91% passed`; the booking only once a CI node reports.
 // Glance::up_line: `12/12` runners up of the roster, `-/-` with no runner read.
 const upLine = (g) => (g.expected ? `${g.up}/${g.expected}` : "-/-");
 // Glance::alert as a tile hue: red only while a runner is down, never green with no runner read.
@@ -49,13 +48,17 @@ const alertHue = (g) => ({ red: "var(--b-needs)", ok: "var(--b-done)" })[g && g.
 function glanceHead(g) {
   let s = `${g.busy} running, ${g.queued} queued`;
   if (g.queued > 0 && g.oldest != null) s += ` (oldest ${secs(g.oldest)})`;
-  if (g.queued > 0) s += `, ${u1(g.backlog)} queued ${g.drain == null ? "-" : `~${secs(g.drain)}`}`;
+  if (g.booked) s += `, booked ${cores1(g.booked.cpu)}/${Math.round(g.booked.cpu_alloc)} cpu${g.booked.reserved > 0 ? ` (${cores1(g.booked.reserved)} reserved)` : ""}`;
   s += `, ${upLine(g)} runners up`;
   if (g.done > 0) s += `, ${g.done} done 24h${g.pass != null ? `, ${pct(g.pass)} passed` : ""}`;
   return s;
 }
 // `cloud: 4 hosts off`, the cloud hosts the governor holds off as one line, not one row each.
 const offLine = (g) => (g.off.length ? `cloud: ${g.off.length} host${g.off.length === 1 ? "" : "s"} off` : "");
+// hub_core::ci::Glance::pending_line: `waiting for room: arc-org-light x3 (1.69 cpu 1.2G each)`.
+// The cores read as hub_core::machines::weight_text does: two places, trailing zeros dropped.
+const pendingText = (p) => `${p.kind}${p.n > 1 ? ` x${p.n}` : ""} (${+p.cpu.toFixed(2)} cpu ${bytes(p.mem)}${p.n > 1 ? " each" : ""})`;
+const pendingLine = (g) => (g && g.pending && g.pending.length ? `<div class="cline warn">waiting for room: ${esc(g.pending.map(pendingText).join(", "))}</div>` : "");
 
 // `g` is hub_core::ci::Glance: jobs running, the queue, runners up and the one CI alert.
 function kpis(cc, g) {
@@ -118,8 +121,19 @@ function diskCell(m) {
   return `<td class="n${free < 0.1 ? " bad" : free < 0.2 ? " warn" : ""}" title="${esc(`${gbOf(m.disk_avail, m.disk_size)} free`)}">${pct(free)}</td>`;
 }
 
-// hub_core::machines::Machine::taken_cell: the governor's units taken of its capacity, or - with no governor row.
-const takenCell = (m) => (m.units == null ? "-" : `${(m.units_busy ?? 0).toFixed(1)}/${Math.round(m.units)}`);
+// hub_core::jobpods::Booked: what job pods book of a CI node, its fuller share and `4.4/32 2.5G/92G`.
+// hub_core::jobpods::cores: one place, halves up as Rust rounds them (toFixed rounds 0.15 down).
+const cores1 = (c) => (Math.round(c * 10) / 10).toFixed(1);
+const bookedShare = (b) => Math.max(b.cpu_alloc > 0 ? b.cpu / b.cpu_alloc : 0, b.mem_alloc > 0 ? b.mem / b.mem_alloc : 0);
+// hub_core::machines::Machine::booked_cell, or - on no CI node.
+// hub_core::jobpods::Booked::cell: `4.4/32 2.5G/92G`, bare `1.7 1.2G` on a node with no allocatable read, `, 7.4 reserved` for a reservation pod's CPU.
+const bookedCell = (m) => {
+  const b = m.booked;
+  if (!b) return "-";
+  const rsv = b.reserved > 0 ? `, ${cores1(b.reserved)} reserved` : "";
+  if (!(b.cpu_alloc > 0)) return `${cores1(b.cpu)} ${bytes(b.mem)}${rsv}`;
+  return `${cores1(b.cpu)}/${Math.round(b.cpu_alloc)} ${bytes(b.mem)}/${bytes(b.mem_alloc)}${rsv}`;
+};
 // hub_core::ci::Next::line: the oldest waiting job that fits the machine, its repo and how long it has waited.
 const nextLine = (x) => `${x.job}${x.repo ? ` (${x.repo})` : ""} ${secs(x.wait)}`;
 // A machine's hover: what its cores and memory go to (hub_core::workload, one line per class),
@@ -165,12 +179,12 @@ function powerCell(m) {
 // `l` is the row's links (tblLinks). A label's second field is its header's class.
 // hub_core::host_now::HOT_C, kept equal by its test: a sensor this hot or hotter shows amber.
 const HOT_C = 85;
-const MACH_COLS = { machine: ["machine"], state: ["state"], taken: ["taken", "n"], cpu: ["cpu now"], "6h": ["6h", "n"], load: ["load", "n"],
+const MACH_COLS = { machine: ["machine"], state: ["state"], booked: ["booked", "n"], cpu: ["cpu now"], "6h": ["6h", "n"], load: ["load", "n"],
   mem: ["mem"], temp: ["temp", "n"], disk: ["disk free", "n"], running: ["running"], next: ["next"], governor: ["governor"], power: ["power"], up: ["up since", "n"] };
 const MACH_CELLS = {
   machine: (m, l) => td("", tblLink(l.machine, m.host)),
   state: (m) => td(m.state === "up" ? "" : m.state === NO_DATA ? "muted" : "warn", esc(m.state)),
-  taken: (m) => `<td class="n${m.off ? " warn" : ""}"${m.split.length || m.runner_cores.length || m.runner_mem.length ? ` title="${esc(cpuTitle(m))}"` : ""}>${m.units ? `${meter((m.units_busy ?? 0) / m.units, "var(--c1)")} ` : ""}${takenCell(m)}${m.off ? ` +${m.off} off` : ""}</td>`,
+  booked: (m) => `<td class="n${m.off || (m.booked && bookedShare(m.booked) >= 1) ? " warn" : ""}"${m.split.length || m.runner_cores.length || m.runner_mem.length ? ` title="${esc(cpuTitle(m))}"` : ""}>${m.booked ? `${meter(bookedShare(m.booked), "var(--c1)")} ` : ""}${bookedCell(m)}${m.off ? ` +${m.off} off` : ""}</td>`,
   cpu: (m) => td("m", `${m.core_busy.length ? coreStrip(m.core_busy) : meter(m.cpu, m.cpu > 0.9 ? "var(--b-stalled)" : "var(--c1)")} ${pct(m.cpu)}`),
   "6h": (m) => td("n", pct(m.cpu6h)),
   load: (m) => td(`n${m.load > m.cores * 1.5 ? " warn" : ""}`, m.load == null ? "-" : `${m.load.toFixed(1)}/${m.cores ?? "?"}`),
@@ -185,7 +199,7 @@ const MACH_CELLS = {
 };
 
 // One row per job kind: its jobs running and waiting, and the machines that take it.
-const POOL_COLS = { pool: ["kind"], weight: ["weight", "n"], running: ["running", "n"], waiting: ["waiting", "n"], oldest: ["oldest", "n"], done: ["done 24h", "n"], pass: ["pass", "n"], machines: ["machines"] };
+const POOL_COLS = { pool: ["kind"], weight: ["weight", "n"], running: ["running", "n"], waiting: ["waiting", "n"], oldest: ["oldest", "n"], done: ["done 24h", "n"], usual: ["usual", "n"], pass: ["pass", "n"], machines: ["machines"] };
 const num = (v) => v ?? "-";
 // hub_core::machines::Pool::machines_cell: each machine a link to its page, with its online slots.
 const poolSeats = (p) => p.machines.map((s) => tblLink(s.href, s.host) + ` ${s.slots}`).join(", ") || "-";
@@ -197,24 +211,24 @@ const POOL_CELLS = {
   waiting: (p) => td(`n${p.waiting ? " warn" : ""}`, num(p.waiting)),
   oldest: (p) => td("n", secs(p.oldest)),
   done: (p) => td("n", num(p.done)),
+  usual: (p) => td("n muted", secs(p.usual)),
   pass: (p) => td(`n ${passCls(p.pass)}`, pct(p.pass)),
   machines: (p) => td("wrap", poolSeats(p)),
 };
 
-// The CI slots, from hub_core::ci (the one join the TUI and fleet-bench share): every machine's
-// slots with the job each runs and how long against its usual; a late job (past an hour or its
+// The CI slots, from hub_core::ci (the one join the TUI and fleet-bench share): each runner
+// with a job and the job it runs and how long against its usual; a late job (past an hour or its
 // usual p90) shows amber.
 const SLOT_COLS = { host: ["host"], slot: ["slot"], state: ["state"], pool: ["pool"], ran: ["ran", "n"], usual: ["usual", "n"], job: ["job"], ref: ["ref"] };
-const slotState = (s) => (s === "off" ? "bad" : s === "withheld" ? "warn" : s === "busy" ? "" : "muted");
 const SLOT_CELLS = {
   host: (r, l) => td("", tblLink(l.host, r.host)),
   slot: (r) => td("", esc(r.slot)),
-  state: (r) => td(slotState(r.state), esc(r.state)),
+  state: (r) => td("", esc(r.state)),
   pool: (r, l) => td("muted", tblLink(l.pool, r.pool)),
   ran: (r) => td(`n${r.late ? " warn" : ""}`, secs(r.ran) + (r.late ? "!" : "")),
   usual: (r) => td("n muted", secs(r.usual)),
-  job: (r) => (r.state === "busy" ? td("wrap", esc(r.job || "-")) : td("muted wrap", esc(r.note || ""))),
-  ref: (r) => td("muted", esc(r.state === "busy" ? ciRef(r) : "")),
+  job: (r) => td("wrap", esc(r.job || "-")),
+  ref: (r) => td("muted", esc(ciRef(r))),
 };
 
 const QUEUED_COLS = { job: ["job"], pool: ["pool"], ref: ["ref"], n: ["n", "n"], wait: ["wait", "n"], needs: ["needs"], can: ["can run on"], starts: ["starts"] };
@@ -225,7 +239,7 @@ const QUEUED_CELLS = {
   n: (q) => td("n", q.n),
   wait: (q) => td("n", secs(q.wait)),
   needs: (q) => td("muted", esc(q.needs.join(", "))),
-  can: (q) => td("wrap", q.can.length ? q.can.map((f) => `${esc(f.host)} <span class="muted">${esc(f.state)}</span>`).join(", ") : q.needs.length ? "nobody" : "-"),
+  can: (q) => td("wrap", q.can.length ? q.can.map((f) => `${esc(f.host)} <span class="muted">${esc(f.state)}</span>`).join(", ") : q.needs.length ? (q.pool === "github-hosted" ? "GitHub" : "nobody") : "-"),
   // hub_core::ci::Queued::starts: now, in about its fitting slot's usual time left, or - (no usual).
   starts: (q) => td("muted", q.starts == null ? "-" : `${q.starts === 0 ? "now" : `in ${secs(q.starts)}`} ${esc(q.at)}`),
 };
@@ -484,6 +498,16 @@ const PROC_CELLS = {
   count: (r) => td("n", r.count == null ? "-" : String(r.count)),
 };
 
+// An agent session (hub_core::host_now::Session): its scope's project and item, then its test runs.
+const SCOPE_COLS = { project: ["project"], item: ["item"], cpu: ["cpu cores", "n"], mem: ["mem", "n"], tests: ["tests"] };
+const SCOPE_CELLS = {
+  project: (r) => td("wrap", esc(r.project)),
+  item: (r) => td("wrap", r.item ? esc(r.item) : "-"),
+  cpu: (r) => td("n", cpuCores(r.cpu)),
+  mem: (r) => td("n", bytes(r.mem)),
+  tests: (r) => td("muted wrap", r.tests ? esc(r.tests) : "-"),
+};
+
 // One column per hour: the CPU's hottest sensor, amber from HOT_C.
 function tempChart(h) {
   if (!h.hours.some((x) => x.temp != null)) return "";
@@ -501,11 +525,12 @@ function liveBody(d) {
   const l = d.live, t = d.tables;
   let h = secHead("", "Pods", t.pods.rows.length, "", "h3") + (unread(l, "pods") || pageTable(t.pods, POD_COLS, POD_CELLS, "No Kubernetes pod runs here."));
   const inv = unread(l, "inventory");
-  if (inv) return h + secHead("", "Containers, processes, services", null, "", "h3") + inv;
-  if (!l.inventory) return h + secHead("", "Containers, processes, services", null, "", "h3") + `<div class="empty">Not collected: no node_inventory.prom on it (home-config role node-inventory-metrics).</div>`;
+  if (inv) return h + secHead("", "Containers, processes, agent sessions, services", null, "", "h3") + inv;
+  if (!l.inventory) return h + secHead("", "Containers, processes, agent sessions, services", null, "", "h3") + `<div class="empty">Not collected: no node_inventory.prom on it (home-config role node-inventory-metrics).</div>`;
   h += secHead("", "Containers", t.containers.rows.length, "", "h3") + pageTable(t.containers, PROC_COLS, PROC_CELLS, "No Docker container runs here.");
   const of = l.processes_total == null ? "" : ` of ${l.processes_total}`;
   h += secHead("", "Processes", `busiest ${t.processes.rows.length}${of}`, "", "h3") + pageTable(t.processes, PROC_COLS, PROC_CELLS, "No process reading.");
+  h += secHead("", "Agent sessions", t.sessions.rows.length, "", "h3") + pageTable(t.sessions, SCOPE_COLS, SCOPE_CELLS, "No agent session runs in its own scope here.");
   return h + secHead("", "Services", l.services.length, "", "h3") + `<div class="panel">${esc(l.services.join("   ")) || "none running"}</div>`;
 }
 
@@ -585,7 +610,7 @@ function drawInfra() {
   const badge = w === null ? ` <span class="chip sm" style="--c:var(--b-needs)" title="${NOT_READ}">waiting on you: ${NOT_READ}</span>`
     : w && w.count > 0 ? ` <a href="${esc(w.href)}" class="chip sm" style="--c:var(--b-needs)">${w.count} waiting on you, on Home</a>` : "";
   let html = strip + `<div class="bhead"><span><span class="chip" style="--c:${color}">OVERALL ${word}</span>${badge} <span class="muted">read ${clock(t1)}</span></span>${pfold("infra-links", "Grafana", links)}</div>`;
-  html += innerWrap("infra", "machines", `${kpis(cc, d.ci.glance)}${spaceSection(d.space)}${secHead("machines", "Machines", infraN("machines"))}${INFRA_T.machines.html()}${governorLine(g)}`);
+  html += innerWrap("infra", "machines", `${kpis(cc, d.ci.glance)}${spaceSection(d.space)}${secHead("machines", "Machines", infraN("machines"))}${INFRA_T.machines.html()}${pendingLine(d.ci.glance)}${governorLine(g)}`);
   html += innerWrap("infra", "pools", secHead("pools", "Job kinds", infraN("pools")) + INFRA_T.pools.html());
   html += innerWrap("infra", "ci", runnersSection(d.ci)) + innerWrap("infra", "waiting", waitingSection()) +
     innerWrap("infra", "local", localSection(d.ci));

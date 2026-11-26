@@ -127,13 +127,13 @@ Media/Music
 !.claude/skills/monitoring/fix-red/
 !.claude/skills/monitoring/fleet-runners/
 !.claude/skills/monitoring/fleet-asks/
+!.claude/skills/monitoring/answer-pass/
 !.claude/skills/monitoring/fleet-queue/
 !.claude/skills/ops/game-eval/
 !.claude/skills/ops/debug/
 !.claude/skills/ops/gh-workflows/
 !.claude/skills/ops/provision-capture/
 !.claude/skills/ops/playground-headless-test/
-!.claude/skills/ops/playground-nightly-fix/
 !.claude/skills/ops/board-cleanup/
 !.claude/skills/ops/ci-cleanup/
 !.claude/skills/ops/fix-ci/
@@ -243,7 +243,7 @@ test_notifications.sh
 # ── Private overlay — moved to the standalone ~/.dotfiles-private repo ──────────
 # These carry client/employer names, infra hosts, or machine-local secrets. They
 # are deployed via the private overlay (stowed on top). Never track here.
-/AGENTS.md
+# (/AGENTS.md here is this repo's own public rules; the private overlay's AGENTS.md is its own.)
 .k8s-rc
 .ssh/config
 .ssh/README.md
@@ -320,7 +320,7 @@ test_notifications.sh
 .agent/
 !tests/fixtures/burn/home/.agent/
 
-# Test suite: vendored bats + per-run failure artifacts (see tests/Makefile bootstrap)
+# Test suite: vendored bats + per-run failure artifacts (see tests/bootstrap.sh)
 # Trailing slash would match only a real directory. A git worktree needs `tests/vendor`
 # SYMLINKED to the primary checkout's copy (bootstrap clones it once), and a symlink is
 # not a directory -- so the slash form left it showing as untracked in every worktree,
@@ -387,3 +387,6 @@ __pycache__/
 # Per-machine world opt-out read by servers.sh/sessionizer.sh (world_hidden). Machine-local
 # by definition, and the folded ~/.config link above would otherwise land it in this repo.
 .config/tmux-servers/hidden
+
+# tests/docker.sh points CARGO_HOME here, so the crate registry outlives the container and CI caches it.
+/.cargo-ci/

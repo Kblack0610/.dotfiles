@@ -26,6 +26,7 @@ use crate::holds::{self, Hold};
 use crate::home::{Chip, Level};
 use crate::infra::Infra;
 use crate::layout::FOLD_ROWS;
+use crate::links::{Kind, Link};
 use crate::reds::{self, Red, Reds};
 use crate::table::{Row, Val};
 
@@ -66,9 +67,12 @@ pub struct Alert {
     /// fixes could not be read) or `firing` (an Alertmanager rule, which no fix item is filed
     /// under).
     pub state: String,
-    /// The fix item's slug, for a link to its queue record.
+    /// The fix item's slug: the hub's `i` opens it on Queue. The web links `owner_href`.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub slug: String,
+    /// The fix item's queue page (`hub_core::links`), which the owner cell opens.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub owner_href: String,
     /// Who is fixing it while its fix is in hand and not past its due time: the item's tmux
     /// session, else its slug while it waits to start. Empty when it has no owner, its fix
     /// did not hold, it waits on someone or is late: the rows `unfixed` keeps.
@@ -81,6 +85,10 @@ pub struct Alert {
     pub place: String,
     pub action: String,
     pub evidence: String,
+    /// Why a watch is red in one line (`Watch::reason`); empty for any other row. The health
+    /// hover prints it beside the watch's name (`hub alerts --reasons`).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub reason: String,
     /// An Alertmanager rule's row: each place it fires in (`am_row`), worst first; empty for any
     /// other row. `Alerts::pages` lists them flat.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -251,31 +259,6 @@ fn sev_rank(sev: &str) -> usize {
     }
 }
 
-/// One `cc:component_status` series that is not green.
-#[derive(Serialize, Debug, Default, Clone, PartialEq)]
-pub struct Component {
-    pub domain: String,
-    pub name: String,
-    pub level: Level,
-}
-
-/// The components that are not green, in domain then name order.
-pub fn components(infra: &Infra) -> Vec<Component> {
-    let mut out: Vec<Component> = infra
-        .get("cc")
-        .iter()
-        .filter(|s| s.label("__name__") == "cc:component_status")
-        .filter(|s| s.value.is_some_and(|v| v > 0.0))
-        .map(|s| Component {
-            domain: s.label("domain").to_string(),
-            name: s.label("component").to_string(),
-            level: Level::of(s.value),
-        })
-        .collect();
-    out.sort_by(|a, b| (&a.domain, &a.name).cmp(&(&b.domain, &b.name)));
-    out
-}
-
 /// Every number the tab shows, each counted from the rows it heads.
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
 pub struct Counts {
@@ -314,8 +297,6 @@ pub struct Alerts {
     pub level: Level,
     /// `cc:domain_status`, in Home's strip order.
     pub health: Vec<Chip>,
-    /// The components (`cc:component_status`) that are not green: why a domain chip is.
-    pub components: Vec<Component>,
     /// Tripped and error watches first, then `cc:red_now`, the machinery and Alertmanager;
     /// see `order`.
     pub firing: Vec<Alert>,
@@ -367,14 +348,17 @@ pub fn machinery(infra: &Infra) -> Vec<String> {
     items
 }
 
-/// One branch with runs waiting and stuck (`waiting{stuck="true"}`): its oldest age and its runs'
-/// workflows. The exporter has a series per workflow run, and a push starts several, so one row
-/// each read as one run listed 2-4 times (ar-4358). Alerts' rows and Health's Stuck count both
-/// read this one list.
+/// One repo with runs waiting and stuck (`waiting{stuck="true"}`): its branches, its oldest age and
+/// its runs' workflows. The exporter has a series per workflow run and a push starts several, so one
+/// row each read as one run listed 2-4 times (ar-4358); one row per branch still listed a repo's
+/// ghost runs as 11 high rows of one fault. Alerts' rows
+/// and the CI card's Stuck count both read this one list.
 #[derive(Debug, PartialEq)]
 pub struct StuckRun<'a> {
     pub repo: &'a str,
-    pub branch: &'a str,
+    /// The branches, first seen first, each once.
+    pub branches: Vec<&'a str>,
+    /// One per run (series).
     pub workflows: Vec<&'a str>,
     pub age: Option<f64>,
 }
@@ -386,21 +370,34 @@ impl StuckRun<'_> {
             .map_or("-".into(), |v| crate::display::fmt::age(v as i64))
     }
 
-    /// `app main`, as a row names the branch.
+    /// `app main` for one branch, `app, 3 branches` for several.
     pub fn name(&self) -> String {
-        format!("{} {}", label(self.repo), label(self.branch))
+        match self.branches.as_slice() {
+            [b] => format!("{} {}", label(self.repo), label(b)),
+            bs => format!("{}, {} branches", label(self.repo), bs.len()),
+        }
     }
 
-    /// The Alerts row: the branch, its oldest age and, with several runs, their workflows.
+    /// The Alerts row: the repo (and its branch when one), its oldest age and, with several runs,
+    /// their workflows on one branch or how many runs on how many branches.
     pub fn line(&self) -> String {
-        let runs = if self.workflows.len() > 1 {
+        let n = self.workflows.len();
+        if self.branches.len() > 1 {
+            return format!(
+                "stuck runs: {}, {}, no jobs ({n} runs on {} branches)",
+                label(self.repo),
+                self.age_text(),
+                self.branches.len()
+            );
+        }
+        let runs = if n > 1 {
             let mut names: Vec<&str> = vec![];
             for w in self.workflows.iter().copied().map(label) {
                 if !names.contains(&w) {
                     names.push(w);
                 }
             }
-            format!(" ({} runs: {})", self.workflows.len(), names.join(", "))
+            format!(" ({n} runs: {})", names.join(", "))
         } else {
             String::new()
         };
@@ -412,7 +409,7 @@ impl StuckRun<'_> {
     }
 }
 
-/// The stuck runs, one per repo and branch, in the exporter's order.
+/// The stuck runs, one per repo, in the exporter's order.
 pub fn stuck_runs(infra: &Infra) -> Vec<StuckRun<'_>> {
     let mut stuck: Vec<StuckRun> = vec![];
     for s in infra.get("waiting") {
@@ -421,11 +418,11 @@ pub fn stuck_runs(infra: &Infra) -> Vec<StuckRun<'_>> {
         }
         let (repo, branch) = (s.label("repo"), s.label("branch"));
         let age = s.value.filter(|v| v.is_finite());
-        match stuck
-            .iter_mut()
-            .find(|e| (e.repo, e.branch) == (repo, branch))
-        {
+        match stuck.iter_mut().find(|e| e.repo == repo) {
             Some(e) => {
+                if !e.branches.contains(&branch) {
+                    e.branches.push(branch);
+                }
                 e.workflows.push(s.label("workflow"));
                 e.age = match (e.age, age) {
                     (Some(a), Some(b)) => Some(a.max(b)),
@@ -434,7 +431,7 @@ pub fn stuck_runs(infra: &Infra) -> Vec<StuckRun<'_>> {
             }
             None => stuck.push(StuckRun {
                 repo,
-                branch,
+                branches: vec![branch],
                 workflows: vec![s.label("workflow")],
                 age,
             }),
@@ -506,6 +503,7 @@ fn owner(a: &mut Alert, key: Option<&str>, fixes: Option<&[Red]>, now: i64) {
             a.project = r.project.clone();
         }
         a.slug = r.slug.clone();
+        a.owner_href = Link::to(Kind::Queue, &r.slug).href();
         a.pr_url = r.pr_url.clone();
     }
     if !a.error() {
@@ -740,9 +738,7 @@ pub fn join(
     let watches = watches
         .map_err(|e| errors.push(format!("watches: {e}")))
         .ok();
-    let fixes = fixes
-        .map_err(|e| errors.push(format!("fleet-bench reds: {e}")))
-        .ok();
+    let fixes = fixes.map_err(|e| errors.push(e)).ok();
     let open = fixes.as_ref().map(|r| r.open.as_slice());
 
     let mut firing: Vec<Alert> = vec![];
@@ -763,6 +759,7 @@ pub fn join(
             place: w.place.clone(),
             action: w.action.clone(),
             evidence: w.evidence.clone(),
+            reason: w.reason(),
             ..Default::default()
         };
         owner(
@@ -857,7 +854,6 @@ pub fn join(
         at: now,
         level,
         health: if infra_ok { infra.health() } else { vec![] },
-        components: if infra_ok { components(infra) } else { vec![] },
         firing,
         fixes: fixes.unwrap_or_default(),
         history,
@@ -883,6 +879,23 @@ pub fn read(infra: &Infra, fixes: Result<Reds, String>, now: i64) -> Alerts {
         holds::read(&holds::dir()),
         now,
     )
+}
+
+/// Each red watch's reason by its name with `_` for `-`, the form `cc:watch_state` words an item
+/// in: what the health hover prints beside the watch (`hub alerts --reasons`). A watch with
+/// nothing past its status header has an empty reason. An unreadable watch directory is the
+/// error, which a machine with no watches (the laptop) gets.
+pub fn watch_reasons() -> Result<BTreeMap<String, String>, String> {
+    let (dir, state) = watch_dirs();
+    Ok(reasons(&runner::watches(&dir, &state)?))
+}
+
+fn reasons(watches: &[Watch]) -> BTreeMap<String, String> {
+    watches
+        .iter()
+        .filter(|w| matches!(w.state.as_str(), "TRIP" | "ERROR"))
+        .map(|w| (w.name.replace('-', "_"), w.reason()))
+        .collect()
 }
 
 /// A project card's count line over `watches`: how many carry `project:` and how many of them
@@ -1008,6 +1021,7 @@ mod tests {
             kind: kind.into(),
             by: by.into(),
             since: Some(NOW - age),
+            ends: false,
             reason: format!("why {resource}"),
         };
         let mut ws = ok_watches();
@@ -1055,6 +1069,57 @@ mod tests {
     }
 
     #[test]
+    fn a_watch_reason_is_its_first_probe_line_past_the_status_header() {
+        let probe = |state: &str, out: &str| Watch {
+            evidence: out.into(),
+            ..watch("chain-lag", state, "high", Some(NOW))
+        };
+        let w = probe(
+            "TRIP",
+            "TRIP exit 1 (want 0)\nchain handoff p90 113m, bound 60m\nsecond line",
+        );
+        assert_eq!(w.reason(), "chain handoff p90 113m, bound 60m");
+        // The header alone, or no output, is no reason: the hover says so.
+        assert_eq!(probe("TRIP", "TRIP exit 1 (want 0)").reason(), "");
+        assert_eq!(probe("OK", "").reason(), "");
+        // A blank line between the header and the output is skipped.
+        assert_eq!(
+            probe("TRIP", "TRIP exit 1 (want 0)\n\n  RED steam.yml: failure").reason(),
+            "RED steam.yml: failure"
+        );
+        // Output with no header is read from its first line, and a long line is cut.
+        assert_eq!(
+            probe("TRIP", "aws $1,011 ahead of pace").reason(),
+            "aws $1,011 ahead of pace"
+        );
+        let long = probe(
+            "TRIP",
+            &format!("TRIP exit 1 (want 0)\n{}", "x".repeat(300)),
+        )
+        .reason();
+        assert_eq!(long.chars().count(), crate::fleet::runner::REASON_CHARS + 3);
+        assert!(long.ends_with("..."));
+        // The reason rides the firing row and the by-name map keys a hyphen as `_`, never ok watches.
+        let a = join(
+            &infra(&[]),
+            Ok(vec![w.clone(), watch("fine", "OK", "low", None)]),
+            Ok(Reds::default()),
+            Ok(String::new()),
+            Ok(vec![]),
+            NOW,
+        );
+        assert_eq!(a.firing[0].reason, "chain handoff p90 113m, bound 60m");
+        let map = reasons(&a.watches);
+        assert_eq!(
+            map.into_iter().collect::<Vec<_>>(),
+            [(
+                "chain_lag".to_string(),
+                "chain handoff p90 113m, bound 60m".to_string()
+            )]
+        );
+    }
+
+    #[test]
     fn nothing_tripped_and_nothing_red_is_zero_firing_ok_and_only_the_new_watch_counted() {
         // The negative control: with every watch ok and cc:red_now empty, nothing fires and the
         // tab is ok, so a red one below is the join's doing and not the fixture's.
@@ -1079,36 +1144,6 @@ mod tests {
         );
         assert!(a.errors.is_empty(), "{:?}", a.errors);
         assert_eq!(a.health.len(), infra(&[]).health().len());
-        assert!(a.components.is_empty(), "{:?}", a.components);
-    }
-
-    #[test]
-    fn a_component_that_is_not_green_says_why_its_domain_chip_is() {
-        let mut i = infra(&[]);
-        i.instant.get_mut("cc").unwrap().push(series(
-            &[
-                ("__name__", "cc:component_status"),
-                ("domain", "k3s"),
-                ("component", "nodes"),
-            ],
-            2.0,
-        ));
-        let a = join(
-            &i,
-            Ok(ok_watches()),
-            Ok(Reds::default()),
-            Ok(String::new()),
-            Ok(vec![]),
-            NOW,
-        );
-        assert_eq!(
-            a.components,
-            [Component {
-                domain: "k3s".into(),
-                name: "nodes".into(),
-                level: Level::Red,
-            }]
-        );
     }
 
     #[test]
@@ -1230,6 +1265,7 @@ mod tests {
             ]
         );
         assert_eq!(a.firing[0].slug, "ar-1");
+        assert_eq!(a.firing[0].owner_href, "#queue/ar-1");
         assert_eq!((a.counts.fixes_open, a.counts.fixes_settled), (3, 1));
         assert_eq!(a.counts.no_owner, 3);
     }
@@ -1363,12 +1399,12 @@ mod tests {
     }
 
     #[test]
-    fn a_branch_with_several_stuck_runs_is_one_row_with_its_oldest_age_and_run_count() {
+    fn a_repo_with_several_stuck_runs_is_one_row_with_its_oldest_age_and_run_count() {
         let mut i = infra(&[]);
-        let run = |branch, wf, age| {
+        let run = |repo, branch, wf, age| {
             series(
                 &[
-                    ("repo", "app"),
+                    ("repo", repo),
                     ("branch", branch),
                     ("workflow", wf),
                     ("stuck", "true"),
@@ -1379,10 +1415,12 @@ mod tests {
         i.instant.insert(
             "waiting",
             vec![
-                run("main", "CI", 3600.0),
-                run("feat", "CI", 600.0),
-                run("main", "Checks", 7200.0),
-                run("main", "E2E", 1800.0),
+                run("app", "main", "CI", 3600.0),
+                run("app", "feat", "CI", 600.0),
+                run("app", "main", "Checks", 7200.0),
+                run("web", "main", "CI", 1800.0),
+                run("web", "main", "Checks", 600.0),
+                run("api", "dev", "E2E", 60.0),
             ],
         );
         let stuck: Vec<String> = machinery(&i)
@@ -1392,8 +1430,9 @@ mod tests {
         assert_eq!(
             stuck,
             [
-                "stuck run: app main, 2h, no jobs (3 runs: CI, Checks, E2E)",
-                "stuck run: app feat, 10m, no jobs",
+                "stuck runs: app, 2h, no jobs (3 runs on 2 branches)",
+                "stuck run: web main, 30m, no jobs (2 runs: CI, Checks)",
+                "stuck run: api dev, 1m, no jobs",
             ]
         );
     }
@@ -1408,7 +1447,7 @@ mod tests {
         let a = join(
             &down,
             Err("no such dir".into()),
-            Err("exit 1".into()),
+            Err("fleet-bench reds: exit 1".into()),
             Err("permission denied".into()),
             Ok(vec![]),
             NOW,

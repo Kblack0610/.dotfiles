@@ -114,18 +114,10 @@ pub(crate) fn refused() -> Response {
     (StatusCode::UNAUTHORIZED, "unauthorized").into_response()
 }
 
-/// Every card a widget can name, in Home's order: Needs you and Main red, then the grid.
-pub(crate) async fn all_cards(s: &Shared) -> Vec<Card> {
-    let (grid, home) = tokio::join!(crate::cards::read(s), crate::home_read(s));
-    let mut all = home_cards(home, hub_core::jobs::now());
-    all.extend(grid);
-    all
-}
-
 /// The cards `names` lists, in its order (None: every card, in Home's order), the names no card
 /// has, and when they were read.
 async fn read<'a>(s: &Shared, names: Option<&[&'a str]>) -> (Vec<Card>, Vec<&'a str>, i64) {
-    let all = all_cards(s).await;
+    let all = crate::cards::read(s).await;
     let now = hub_core::jobs::now();
     let Some(names) = names else {
         return (all, Vec::new(), now);
@@ -249,17 +241,6 @@ pub(crate) fn record(f: &Path, hit: &serde_json::Value) -> std::io::Result<()> {
         let _ = std::fs::remove_file(&tmp);
     }
     wrote
-}
-
-/// Needs you and Main red, from Home's read; a Home that could not be read is NO DATA on both.
-fn home_cards(home: Result<hub_core::home::Home, String>, now: i64) -> Vec<Card> {
-    match home {
-        Ok(h) => vec![cards::needs(&h, now), cards::main_red(&h)],
-        Err(e) => vec![
-            Card::failed("needs", "Needs you", "", e.clone()),
-            Card::failed("red", "Main red", "", e),
-        ],
-    }
 }
 
 #[cfg(test)]
@@ -396,20 +377,5 @@ mod tests {
         assert_eq!(listed(Some(" , ")), None);
         assert_eq!(listed(None), None);
         assert_eq!(listed(Some("red")), Some(vec!["red"]));
-    }
-
-    #[test]
-    fn the_default_order_is_homes_needs_and_red_then_the_grid() {
-        let home = home_cards(Err("x".into()), 0);
-        let tabs: Vec<_> = home.iter().map(|c| c.tab).collect();
-        assert_eq!(tabs, cards::ORDER[..2]);
-    }
-
-    #[test]
-    fn a_home_that_could_not_be_read_is_no_data_on_both_cards() {
-        let c = home_cards(Err("fleet-sessions: timed out".into()), 0);
-        assert!(c
-            .iter()
-            .all(|c| c.level == hub_core::home::Level::Nodata && c.error.is_some()));
     }
 }

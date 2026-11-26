@@ -6,18 +6,17 @@ description: >-
 runs:
   using: composite
   steps:
-    # The key is the three pinned refs, not the whole Makefile, so an unrelated Makefile edit
-    # still hits.
+    # The key is the three pinned refs, not the whole script, so an unrelated edit still hits.
     - id: refs
       shell: bash
-      run: echo "key=$(grep -E '^(BATS|SUPPORT|ASSERT)_REF' tests/Makefile | tr -d ' ' | sha256sum | cut -c1-16)" >>"$GITHUB_OUTPUT"
+      run: echo "key=$(grep -E '^(BATS|SUPPORT|ASSERT)_REF=' tests/bootstrap.sh | sha256sum | cut -c1-16)" >>"$GITHUB_OUTPUT"
     - id: restore
       uses: actions/cache/restore@v4
       with:
         path: tests/vendor
         key: bats-vendor-${{ steps.refs.outputs.key }}
     - shell: bash
-      run: make -C tests bootstrap
+      run: tests/bootstrap.sh
     # main saves it (as the cargo cache does) and every PR reads main's copy.
     - if: github.event_name != 'pull_request' && steps.restore.outputs.cache-hit != 'true'
       uses: actions/cache/save@v4

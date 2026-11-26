@@ -35,7 +35,10 @@ const alst = run("alst");
 const NOW = Math.floor(Date.now() / 1e3);
 const fix = (slug, outcome, o = {}) => ({ slug, red: `watch ${slug}`, outcome, queued: new Date(Date.now() - 3 * 3600e3).toISOString(), pr: null, pr_url: null, ...o });
 const fixes = {
-  open: [fix("ar-3", "came back", { pr: "Kblack0610/.dotfiles#1170", pr_url: "https://github.com/Kblack0610/.dotfiles/pull/1170" }), fix("ar-2", "queued", { pr: "986" })],
+  open: [fix("ar-3", "came back", { slug: "red-x-1124", row: "ar-3", pr: "Kblack0610/.dotfiles#1170 988", pr_url: "https://github.com/Kblack0610/.dotfiles/pull/1170", links: [
+    { what: "row", text: "ar-3", href: "#projects/all?q=id:=ar-3" }, { what: "item", text: "red-x-1124", href: "#queue/red-x-1124" },
+    { what: "pr", text: ".dotfiles#1170", href: "https://github.com/Kblack0610/.dotfiles/pull/1170" }, { what: "ci", text: "CI runs of Kblack0610/.dotfiles#1170", href: "#infra/runs?bq=pr:=Kblack0610%2F.dotfiles%231170" }] }),
+    fix("ar-2", "queued", { pr: "986", links: [{ what: "item", text: "ar-2", href: "#queue/ar-2" }] })],
   settled: [fix("ar-1", "fixed"), fix("ar-4", "cancelled")],
   summary: "2 open: 1 came back, 1 queued | 1 fixed, 1 cancelled in 7d, fix p50 34m",
 };
@@ -45,7 +48,7 @@ const table = { q: "", state: "", sort: "", dir: "", total: 2, shown: 2, states:
   columns: ["sev", "what", "project", "source", "since", "owner", "state"].map(col), facets: [] };
 const watch = (name, state) => ({ name, state, severity: "normal", since: NOW - 60, lastrun: NOW - 30, lasttrip: null, place: "GitHub", what: "", action: "", evidence: "" });
 const firing = [
-  alert("playground-nightly", { project: "unity-core-playground", owner: "ar-9 fixing", state: "fixing", slug: "ar-9", about: "the nightly on main", place: "GitHub, unity", action: "read the run", evidence: "PlayMode 2 failed" }),
+  alert("playground-nightly", { project: "unity-core-playground", owner: "ar-9 fixing", state: "fixing", slug: "ar-9", owner_href: "#queue/ar-9", about: "the nightly on main", place: "GitHub, unity", action: "read the run", evidence: "PlayMode 2 failed" }),
   alert("dream", { state: "error", sev: "normal" }),
 ];
 const counts = { firing: 2, tripped: 1, errors: 1, no_owner: 0, fixes_open: 2, fixes_settled: 2, history: 1, history_older: 3, watches: 3, watches_tripped: 1, watches_error: 1, watches_ok: 1, watches_new: 0, alertmanager: 0, alertmanager_alerts: 0 };
@@ -57,7 +60,7 @@ const watchesTable = { q: "", state: "", sort: "", dir: "", total: 3, shown: 3,
 const historyTable = { q: "", state: "", sort: "", dir: "", total: 1, shown: 1, states: [{ name: "all", n: 1 }, { name: "loud", n: 0 }, { name: "failed", n: 0 }],
   columns: ["when", "actor", "verb", "prio", "source", "text"].map(col), facets: [] };
 const data = (o = {}) => ({
-  at: NOW, level: "red", health: [{ name: "ci", level: "ok" }, { name: "k3s", level: "red" }], components: [{ domain: "k3s", name: "nodes", level: "red" }],
+  at: NOW, level: "red", health: [{ name: "ci", level: "ok" }, { name: "k3s", level: "red" }],
   firing, rows: firing, table, fixes, history: [{ at: NOW - 600, actor: "sentinel", verb: "tripped", text: "Sentinel: playground-nightly", source: "agent-notify" }],
   watches: [watch("playground-nightly", "TRIP"), watch("dream", "ERROR"), watch("disk", "OK")], counts, strip, errors: [],
   watches_table: watchesTable, history_table: historyTable, ...o,
@@ -132,14 +135,14 @@ test("a firing row names its project, a fleet-wide one a dash, and the watches l
   assert.match(h, /<td>playground-nightly<\/td><td class="bad">TRIP<\/td><td class="muted">normal<\/td><td class="muted">unity-core-playground<\/td>/);
 });
 
-test("health names every domain, the red first, then each component that is not green", () => {
+test("health names every domain, the red first, and lists no component row", () => {
   const h = show(data());
   assert.ok(h.indexOf("k3s RED") < h.indexOf("ci OK"), h);
   assert.match(h, /<h2 class="sec bad">Health <span class="n">2<\/span><\/h2>/, "a red domain tones the head");
   assert.match(show(data({ health: [{ name: "ci", level: "ok" }] })), /<h2 class="sec">Health <span class="n">1<\/span><\/h2>/);
   const read = new RegExp(`<div class="cline"><b>read</b> ${run(`clock(${NOW} * 1e3)`)}</div></div>`);
   assert.match(h, read, "when it was read is a fact in Health's box");
-  assert.match(h, /<div><span class="cchip bad">RED<\/span> k3s\/nodes<\/div>/);
+  assert.ok(!h.includes("k3s/nodes"), "the domain chip says it; a component row repeated it");
   const none = show(data({ health: [] }));
   assert.match(none, /No health: Prometheus did not answer\./);
   assert.match(none, /<h2 class="sec">Health<\/h2>/);
@@ -148,7 +151,7 @@ test("health names every domain, the red first, then each component that is not 
 
 test("a firing row shows its owner as a link to its queue item, and opens what the watch says", () => {
   show(data());
-  assert.match(box.innerHTML, /<a href="#queue\?q=ar-9">ar-9 fixing<\/a>/);
+  assert.match(box.innerHTML, /<a href="#queue\/ar-9">ar-9 fixing<\/a>/, "the owner opens hub-core's queue link, built by no JS");
   assert.match(box.innerHTML, /<span class="cchip bad">error<\/span>/);
   assert.ok(!box.innerHTML.includes("PlayMode 2 failed"), "the detail starts closed");
   const tr = { dataset: { key: "sentinel|playground-nightly|GitHub, unity" } };
@@ -167,12 +170,17 @@ test("a source that failed is an error line, and nothing firing says so", () => 
   assert.match(h, /cchip ">NO DATA<\/span>/);
 });
 
-test("fixes: open rows with outcome, red, slug, PR and age; the settled fold to a count", () => {
+test("fixes: open rows lead with their ticket, then outcome, red, run, PR, CI and age; the settled fold to a count", () => {
   const h = run(`alertsFixes(${JSON.stringify(data())})`);
   assert.match(h, /<h2 class="sec">Fixes <span class="n">2<\/span><\/h2>/);
   const [openPart, foldPart] = h.split('<details class="sec-d" data-k="fixes-settled">');
   assert.ok(openPart.indexOf("CAME BACK") < openPart.indexOf("QUEUED"), "the server's order is kept");
-  assert.match(openPart, /<a href="https:\/\/github.com\/Kblack0610\/.dotfiles\/pull\/1170"[^>]*>PR Kblack0610\/.dotfiles#1170<\/a>/);
+  assert.match(openPart, /CAME BACK<\/span><span class="by"><a class="tl" href="#projects\/all\?q=id:=ar-3">ar-3<\/a><\/span><span class="pt">watch ar-3</, "the ticket leads");
+  assert.match(openPart, /item <a class="tl" href="#queue\/red-x-1124">red-x-1124<\/a>/);
+  assert.match(openPart, /pr <a class="tl" href="https:\/\/github.com\/Kblack0610\/.dotfiles\/pull\/1170"[^>]*>.dotfiles#1170<\/a>/);
+  assert.match(openPart, /<a class="tl" href="#infra\/runs\?bq=pr:=[^"]+">CI runs of Kblack0610\/.dotfiles#1170<\/a>/);
+  assert.equal(openPart.match(/#projects\/all/g).length, 1, "a fix with no row draws no ticket link");
+  assert.match(openPart, /CI runs of Kblack0610\/.dotfiles#1170<\/a><\/span><span class="by">PR 988<\/span>/, "a bare PR beside a linked one keeps its label");
   assert.match(openPart, /<span class="by">PR 986<\/span>/, "a PR with no repo is text, not a link");
   assert.match(openPart, /<span class="by">3h<\/span>/);
   assert.match(foldPart, /<summary class="muted fold">\+2 settled<\/summary>/);

@@ -54,21 +54,22 @@ own memory: a session resumed within a day of its teardown is told "wind-down is
 
    It collects fresh facts and prints `<verdict>: <why>`, then one `blocker: <reason>` line per blocker; exit 0 only on `now`. It reads your row as at the end of this turn: mid-turn you always read WORKING, so that keep is not asked, and nor is the quiet timer (the shepherd's nudge came after it); every other step of the close flow (`~/.local/src/docs/fleet-states.md`, "Close verdict") is. On a fleet worker it reads the lease holder's row for you (up to a few minutes old, plus your checkout's files as they are now) in place of a fresh collect; `after: the lease holder ...` there is a wait, so run it again in a minute rather than looking for a step to do. `now`: carry on to step 2; an `open ask <id>` blocker needs nothing from you, since the teardown sets each pending ask of yours to reopen this conversation on the answer (`agent-ask reopen-on-answer`, run by `wind-down.sh fire`). `after: <step>`: do that step (close your item), then run it again. Open plan phases are not a step: once you are gone, fleet-dispatch reap files the open phases of an approved plan. `keep: <why>`: you are not finished; deal with each blocker (land what is left, or ask the human in this conversation and file it with `agent-ask post`) instead of closing. A plan with no checklist, or no plan file, counts as one phase, finished once its PR merged with the tree clean. An open ask that is really a human-only action you will not wait on belongs on the human sheet: add the row (`notes ptask <project> add`), `agent-ask cancel <id> "on the human sheet"`, and run it again.
 2. Your last message to the human (the final report, when you run this yourself) did not end with a question, an offer or a step for them that they have not answered ("want me to...", "should I...", "run this, then I..."). If it did, it should already be a pending ask (the Stop check `88-ask-filed.sh` makes you file it), and step 1 has read it. If it is not filed, file it now with `agent-ask post`, reply to the shepherd in one line, `waiting on the human: <what you asked>`, and stop without arming.
-3. The human has not told you in this conversation to keep this window open. Critical work is not a reason to stay: close, and fleet-dispatch files an approved plan's open phases (ask-sweep asks the human about any other plan). An order to stay and see work through ("stay coordinator", "remain open until this all lands", `/coordinate`) runs the `coordinate` skill from its step 1 (hold, ledger, armed watch), and you stop without arming the teardown; that session keeps the label until its ledger is live and the human answers its validation ask (`coordinate` steps 6 and 7). Any other order to stay open (no work to follow): run `fleet-sessions label self +manual`, reply in one line, `kept open by the human: <their order>`, and stop without arming. That label is the close flow's `manual` keep, so no close nudge, escalation or overdue line reaches this session until it has been quiet `FLEET_CHAT_CLOSE_H` (24h), when the shepherd closes it like any quiet session; set it only on such an order, never to dodge a close. Once the order is met, `fleet-sessions label self -manual`, then run /wind-down auto. Why: 2026-11-13 to 11-17 the games-intake coordinator answered every typed close with "I'm staying open, as you ordered", nothing recorded it, and the next pass sent it again (ar-1871); 2026-11-19 an order to "stay coordinator" got the bare label and no watch, and the release coordinator missed P1 failing three times in two hours.
+3. The human has not told you in this conversation to keep this window open. Critical work is not a reason to stay: close, and fleet-dispatch files an approved plan's open phases as board rows (a plan never approved is not work, and nothing files it). An order to stay and see work through ("stay coordinator", "remain open until this all lands", `/coordinate`) runs the `coordinate` skill from its step 1 (hold, ledger, armed watch), and you stop without arming the teardown; that session keeps the label until its ledger is live and the human answers its validation ask (`coordinate` steps 6 and 7). Any other order to stay open (no work to follow): run `fleet-sessions label self +stay`, reply in one line, `kept open by the human: <their order>`, and stop without arming. That label is the close flow's `stay` keep (`manual` is the human's own, which never expires, and `label self` refuses it), so no close nudge, escalation or overdue line reaches this session until it has been quiet `FLEET_CHAT_CLOSE_H` (24h), when the shepherd closes it like any quiet session; set it only on such an order, never to dodge a close. Once the order is met, `fleet-sessions label self -stay`, then run /wind-down auto. Why: 2026-11-13 to 11-17 the games-intake coordinator answered every typed close with "I'm staying open, as you ordered", nothing recorded it, and the next pass sent it again (ar-1871); 2026-11-19 an order to "stay coordinator" got the bare label and no watch, and the release coordinator missed P1 failing three times in two hours.
 
 ### 1. Write the wrap-up note
 
 The note lives on the **agent-runtime axis** (`~/.agent/`), not the `~/.notes` vault - session
 wrap-ups are agent runtime knowledge, the same axis as evals/plans/lessons (two-axis model;
-telemetry/agent records never go in the vault). Get the path from the executor so project
-resolution matches the hook:
+telemetry/agent records never go in the vault). Every session of the day shares one file,
+`~/.agent/sessions/<project>/<YYYY-MM-DD>-wind-down.md`, so never write it directly (settings.json denies Edit and Write on it): draft the
+note in your scratchpad, lint it, then append it with the executor, which resolves the project the
+way the hook does and prints the path:
 
 ```bash
-~/.dotfiles/.local/src/tmux/wind-down.sh note-path
-# -> /home/<user>/.agent/sessions/<project>/<YYYY-MM-DD>-wind-down.md  (dir auto-created)
+~/.dotfiles/.local/src/tmux/wind-down.sh note <draft>
 ```
 
-Write that file in the status shape from the `comms-standard` skill (no frontmatter, plain markdown like the lessons and eval files):
+Draft it in the status shape from the `comms-standard` skill (no frontmatter, plain markdown like the lessons and eval files):
 
 ```markdown
 # Session wrap-up - <YYYY-MM-DD>
@@ -99,7 +100,7 @@ Write that file in the status shape from the `comms-standard` skill (no frontmat
 - `path/to/file` - <one-line why>
 ```
 
-Lint it: `comms-lint --channel status <note>`; fix each finding or say why it stands. The note is a memory aid, not a changelog. If the file already exists for today, append a new `# Session wrap-up` block rather than overwriting. `~/.agent` is git-tracked, so the note becomes durable, recallable knowledge.
+Lint the draft before you append it: `comms-lint --channel status <draft>`; fix each finding or say why it stands. The note is a memory aid, not a changelog. `~/.agent` is git-tracked, so the note becomes durable, recallable knowledge.
 
 ### 1b. Refresh the lab feed (if the project has a lab bus)
 
