@@ -2220,6 +2220,8 @@ already"
 @test "end to end: a returned item's brief comes back from its row on the next promote, and retask rewrites the row" {
   [ -n "${NOTES_BIN:-}" ] || skip "NOTES_BIN names no built notes"
   ln -sf "$NOTES_BIN" "$SANDBOX/bin/notes"
+  # fleet-dispatch promote reads gates through `agent-queue` on PATH; CI has no stowed copy.
+  ln -sf "$AQ" "$SANDBOX/bin/agent-queue"
   dir="$HOME/.notes/lab/projects/current/game"
   mkdir -p "$dir" "$HOME/.config/notes"
   : >"$dir/summary.md"
