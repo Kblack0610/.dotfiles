@@ -5920,7 +5920,7 @@ own_parked_pr() {
 # review/, a report is done. A PR only in open_pr: (agent-land sets it before the checks, pr: on merge) is
 # recorded as pr: first, as item_with_branch_pr does (ar-4551). Anything else stays put, never failed,
 # since no-witness is not gone, and is flagged once on the item and in the log, ahead of any note it had. fleet-bench's ownerless_running
-# counts it, so the board-chain watch pages it.
+# counts it, so its chain-ownerless_running watch pages it.
 settle_sessionless() {
   local it pr note flag open_only=''
   past_reap_grace "$2" || return 0

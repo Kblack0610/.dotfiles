@@ -3789,6 +3789,92 @@ q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
   assert_output --partial 'uncaused_close_share 0.333 (max 0.02)'
 }
 
+@test "chain --kpi: trips on its own KPI only, reads one count an hour, and refuses a key outside the chain" {
+  chain_fixture
+  printf '%s\n' uncaused_close_share_max=0.02 >> "$KPI_THRESHOLDS"
+  at() { date -u -d "@$((T0 - $1))" +%Y-%m-%dT%H:%M:%SZ; }
+  {
+    item ok1 done high board:game:g-2 "{\"status\":\"ok\",\"finished\":\"$(at 3600)\"}"
+    item f2 done high board:game:g-4 "{\"status\":\"failed\",\"finished\":\"$(at 3600)\"}"
+  } > "$DONE"
+  run "$SUBJECT" chain --check --kpi uncaused_close_share
+  assert_failure 1
+  assert_output 'uncaused_close_share 0.5 (max 0.02)'
+  # negative control: another chain KPI's watch passes while this one is past
+  run "$SUBJECT" chain --check --kpi doctor_fail
+  assert_success
+  assert_output ''
+  run "$SUBJECT" chain --json --kpi uncaused_close_share
+  assert_equal "$(jq -r 'keys | join(" ")' <<<"$output")" uncaused_close_share
+  # the second probe of the hour reads the first one's count, not the sources
+  : > "$DONE"
+  BENCH_NOW=$((T0 + 3299)) run "$SUBJECT" chain --check --kpi uncaused_close_share
+  assert_failure 1
+  # the cache holds counts, not verdicts: a bound edited since grades the cached count at once
+  printf '%s\n' uncaused_close_share_max=0.9 >> "$KPI_THRESHOLDS"
+  BENCH_NOW=$((T0 + 3299)) run "$SUBJECT" chain --check --kpi uncaused_close_share
+  assert_success
+  printf '%s\n' uncaused_close_share_max=0.02 >> "$KPI_THRESHOLDS"
+  # a watch with a fix watermark reads its own count, never one taken without it
+  SENTINEL_SINCE=$((T0 - 60)) run "$SUBJECT" chain --check --kpi uncaused_close_share
+  assert_success
+  assert_equal "$(head -1 "$FLEET_BENCH_DIR/chain.$((T0 - 60)).counts")" "$T0"
+  # past CHAIN_SNAPSHOT_MAX_S it counts again, and a count from the future is never reused
+  BENCH_NOW=$((T0 + 3300)) run "$SUBJECT" chain --check --kpi uncaused_close_share
+  assert_success
+  assert_equal "$(head -1 "$FLEET_BENCH_DIR/chain.0.counts")" $((T0 + 3300))
+  run "$SUBJECT" chain --check --kpi uncaused_close_share
+  assert_success
+  assert_equal "$(head -1 "$FLEET_BENCH_DIR/chain.0.counts")" "$T0"
+  # a source that cannot be read leaves the KPI unknown, never past and never clear (ar-5413), and is
+  # counted again on the next probe
+  rm "$FLEET_BENCH_DIR/chain.0.counts"; mv "$BENCH_DOCTOR_LAST" "$BENCH_DOCTOR_LAST.off"
+  run "$SUBJECT" chain --check --kpi doctor_fail
+  assert_failure 2
+  assert_output 'unreadable: doctor_fail could not be counted'
+  # the whole chain exits 1 while any KPI is past its bound, and names the unreadable one only after
+  run "$SUBJECT" chain --check
+  assert_failure 1
+  assert_output --partial 'untracked_merged_prs 1 (max 0)'
+  refute_output --partial 'unreadable:'
+  # with every chain KPI bounded and none past, it names each one the count could not read (this
+  # fixture has no source for several), and only those
+  cp "$KPI_THRESHOLDS" "$SANDBOX/thresholds"
+  sed -n 's/^KPI_CHAIN="\(.*\)"$/\1/p' "$SUBJECT" | tr ' ' '\n' > "$SANDBOX/chain.keys"
+  sed 's/$/_max=1000000/' "$SANDBOX/chain.keys" > "$KPI_THRESHOLDS"
+  printf '%s\n' ledger_coverage_min=0 epic_linked_share_min=0 >> "$KPI_THRESHOLDS"
+  run "$SUBJECT" chain --check
+  assert_failure 2
+  [[ "$output" =~ ^unreadable:\ (.*)\ could\ not\ be\ counted$ ]] || fail "$output"
+  assert_equal "$(tr ' ' '\n' <<<"${BASH_REMATCH[1]}" | sort)" "$(sed -n 's/=?$//p' "$FLEET_BENCH_DIR/chain.0.counts" | grep -xFf "$SANDBOX/chain.keys" | sort)"
+  [[ " ${BASH_REMATCH[1]} " == *" doctor_fail "* ]] || fail "$output"
+  mv "$SANDBOX/thresholds" "$KPI_THRESHOLDS"
+  # a count that cannot run (another probe holds the lock past the wait) is unreadable to a probe, and
+  # a plain error to the table
+  rm -f "$FLEET_BENCH_DIR/chain.0.counts"
+  exec 9>"$FLEET_BENCH_DIR/chain.lock"; flock 9
+  CHAIN_LOCK_WAIT_S=0 run "$SUBJECT" chain --check --kpi doctor_fail
+  assert_failure 2
+  assert_output 'unreadable: the chain count failed'
+  CHAIN_LOCK_WAIT_S=0 run "$SUBJECT" chain --kpi doctor_fail
+  assert_failure 1
+  refute_output --partial 'unreadable:'
+  exec 9>&-
+  # an empty window is a share over nothing, read: it neither trips nor reads unreadable
+  run "$SUBJECT" chain --check --kpi uncaused_close_share
+  assert_success
+  grep -qx 'uncaused_close_share=-' "$FLEET_BENCH_DIR/chain.0.counts" || fail "$(cat "$FLEET_BENCH_DIR/chain.0.counts")"
+  printf 'FAIL  line 4: an epic belongs on the human sheet\n' > "$BENCH_DOCTOR_LAST"
+  run "$SUBJECT" chain --check --kpi doctor_fail
+  assert_failure 1
+  assert_output 'doctor_fail 1 (max 0)'
+  run "$SUBJECT" chain --check --kpi not_a_kpi
+  assert_failure 2
+  assert_output --partial 'not_a_kpi is not a chain KPI'
+  run "$SUBJECT" chain --check --kpi
+  assert_failure 2
+}
+
 @test "chain: a Forgejo row (host/owner/repo) is covered by the item that names owner/repo#N" {
   chain_fixture
   jq -c 'if .number == 7 then .repo = "git.example.test/O/R" else . end' "$FLEET_BENCH_DIR/pr-ci.jsonl" > "$SANDBOX/ci" && mv "$SANDBOX/ci" "$FLEET_BENCH_DIR/pr-ci.jsonl"

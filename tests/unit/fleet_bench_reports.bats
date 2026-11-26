@@ -126,8 +126,11 @@ lead_fixture() {
 @test "chain: an unreadable source reads ? and never trips a bound; the KPIs ride the kpi table and its gauges" {
   chain_fixture
   export BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/none"
+  # unread is UNKNOWN (exit 2, one unreadable: line), never a past line (exit 1) (ar-5413)
   run "$SUBJECT" chain --check
-  assert_success
+  assert_failure 2
+  assert_equal "${#lines[@]}" 1
+  assert_output --partial 'unreadable: board_orphan_started '
   run "$SUBJECT" kpi
   assert_line '| board_orphan_started (now) | - | - | max 0 | - |'
   assert_line '| ownerless_running (now) | 0 | - | max 0 | ok |'
@@ -220,8 +223,10 @@ lead_fixture() {
   assert_success
   run jq -c '[.drift, .since, (.steps[] | [.wip, .in_1h])]' <<<"$output"
   assert_output '[null,null,[3,null],[2,null],[null,null],[1,null],[null,null],[1,null],[1,null],[1,null],[1,null]]'
+  # an unread drift is UNKNOWN to chain --check, not a trip (ar-5413)
   run "$SUBJECT" chain --check
-  assert_success
+  assert_failure 2
+  assert_output 'unreadable: chain_drift could not be counted'
   # the line-per-step shape notes printed before items_since is not a record either
   printf '{"step":"inbox"}\n{"step":"queued"}\n' > "$RJSON"
   export BENCH_STEPS_CMD=steps-stub
@@ -812,7 +817,7 @@ STUB
   run "$SUBJECT" improve --json
   assert_failure 1
   assert_output ''
-  # outside the chain, so the board-chain watch never reads it
+  # outside the chain, so no chain-<key> watch reads it
   run "$SUBJECT" chain --json
   assert_equal "$(jq -r 'has("systems_no_skill")' <<<"$output")" false
 }
