@@ -2244,12 +2244,17 @@ exits_eligible() {
   jq -Rsc 'split("\n") | map(select(length > 0))' <<<"$elig"
 }
 
-# exits_size_state -> {"<project>\t<row>": {failed, exit}} from the raw verdicts, {} without them:
-# latest_verdicts drops a failed row's earlier lines, its recorded exit among them.
+# exits_size_state -> {rows: {"<project>\t<row>": {failed, exit}}, sent: {"<row>": true}} from the raw
+# verdicts, empty maps without them: latest_verdicts drops a failed row's earlier lines, its recorded exit
+# among them. sent names each row id any pass sent to inbox-plan (a plan exit on record, in any project:
+# a rehome keeps the id and starts a new project's verdicts).
 exits_size_state() {
-  [ -f "$VERDICTS" ] && jq -cRn '[inputs | fromjson? | objects | select(.lane == "agent")] | group_by([.project, .key])
-    | map({key: "\(.[0].project)\t\(.[0].key)", value: {failed: ((last | .verdict) == "failed"),
-        exit: ((map(select(.verdict != "failed" and .verdict != "cleared")) | last // {}) | .exit)}}) | from_entries' "$VERDICTS" 2>/dev/null || echo '{}'
+  [ -f "$VERDICTS" ] && jq -cRn '[inputs | fromjson? | objects | select(.lane == "agent")]
+    | {rows: (group_by([.project, .key])
+        | map({key: "\(.[0].project)\t\(.[0].key)", value: {failed: ((last | .verdict) == "failed"),
+            exit: ((map(select(.verdict != "failed" and .verdict != "cleared")) | last // {}) | .exit)}}) | from_entries),
+       sent: (map(select(.exit == "plan") | {key: (.key | tostring), value: true}) | from_entries)}' "$VERDICTS" 2>/dev/null \
+    || echo '{"rows": {}, "sent": {}}'
 }
 
 # human_merge_set <board json> -> sets HM to {"<project> TAB <id>": <word>}, the DISPATCH_T3_SKIP word, for
@@ -2307,8 +2312,10 @@ human_merge_set() {
 #    said or not yet said (it judges only the rows a pass reaches, and one no worker takes never gets there):
 #    a skip that names a human rule or a gate keeps its own exit. Not an epic, a parent, a row gated
 #    #after/ or #pr/, one whose session failed, one in a project the judge does not cover, or one whose
-#    verdict already carries another exit. A sized
-#    row inbox-plan planned that is still L takes the human exit, as a planned too-big skip does.
+#    verdict already carries another exit. A sized row inbox-plan planned (a `goal:` line, and a plan exit
+#    on record for its id) that is still L takes the hold exit, as a planned too-big skip does, whatever
+#    verdict or rehome came after that plan: the planner only wrote the same plan again (ar-5230: 15 of 46
+#    inbox-plan misses in a week). A goal a person wrote, with no plan exit on record, still plans.
 #  - human-merge: a row no worker takes whose text names a DISPATCH_T3_SKIP word (nobody_why's "tier3
 #    skip") is never judged, since t3_rows leaves it out, so with no verdict it takes the human exit as rule
 #    `human-merge`: the human-merge list never starts unattended, and on the agent lane such a row stalled
@@ -2366,8 +2373,8 @@ skip_exits() {
     | ($by["\(.project)\t\(.id)"] | if . != null and red_skip($row) then null else . end) as $d
     | if $hm["\(.project)\t\(.id)"] != null and (.type // "") != "epic" and ($parents[.id] | not)
           and (.project as $pj | $elig | index($pj)) != null
-          and (($ss["\(.project)\t\(.id)"].failed // false) | not)
-          and ($ss["\(.project)\t\(.id)"].exit | IN(null, "plan")) then
+          and (($ss.rows["\(.project)\t\(.id)"].failed // false) | not)
+          and ($ss.rows["\(.project)\t\(.id)"].exit | IN(null, "plan")) then
         "\(.profile)\t\(.project)\t\(.id)\t-\t-\t\(details_json($n))\thuman-merge\t\(.requested == true)\tfalse\t\({project, lane: "agent", key: .id, verdict: "skip", rule: "human-merge", reason: "its text names \($hm["\(.project)\t\(.id)"]), on the human-merge list (DISPATCH_T3_SKIP)", at: $at, policy: $sig} | tojson)\t\(.raw)"
       elif $d != null then
         "\(.profile)\t\(.project)\t\(.id)\t\($d.line)\t\($d.dsig // "-")\t\(details_json($n))\t\($d.rule)\t\(.requested == true)\t\(planned)\t\($d | tojson)\t\(.raw)"
@@ -2375,10 +2382,10 @@ skip_exits() {
         "\(.profile)\t\(.project)\t\(.id)\t-\t-\t\(details_json($n))\tkind\t\(.requested == true)\tfalse\t\({project, lane: "agent", key: .id, verdict: "skip", rule: "kind", reason: "kind \(.type) is off", at: $at, policy: $sig} | tojson)\t\(.raw)"
       elif ((.size // "") | ascii_downcase | IN("l", "xl")) and (.type // "") != "epic" and ($parents[.id] | not)
           and (.project as $pj | $elig | index($pj)) != null
-          and (($ss["\(.project)\t\(.id)"].failed // false) | not)
+          and (($ss.rows["\(.project)\t\(.id)"].failed // false) | not)
           and (any((.tags_cased // .tags // [])[]?; startswith("after/") or startswith("pr/")) | not)
-          and (($ss["\(.project)\t\(.id)"].exit == null) or ($ss["\(.project)\t\(.id)"].exit == "plan" and planned)) then
-        "\(.profile)\t\(.project)\t\(.id)\t-\t-\t\(details_json($n))\ttoo-big\t\(.requested == true)\t\(planned and ($ss["\(.project)\t\(.id)"].exit == "plan"))\t\({project, lane: "agent", key: .id, verdict: "skip", size: (.size | ascii_upcase), rule: "too-big", reason: "row is size \(.size | ascii_upcase)", at: $at, policy: $sig} | tojson)\t\(.raw)"
+          and (($ss.rows["\(.project)\t\(.id)"].exit == null) or ($ss.rows["\(.project)\t\(.id)"].exit == "plan" and planned)) then
+        "\(.profile)\t\(.project)\t\(.id)\t-\t-\t\(details_json($n))\ttoo-big\t\(.requested == true)\t\(planned and $ss.sent[.id] == true)\t\({project, lane: "agent", key: .id, verdict: "skip", size: (.size | ascii_upcase), rule: "too-big", reason: "row is size \(.size | ascii_upcase)", at: $at, policy: $sig} | tojson)\t\(.raw)"
       else empty end' <<<"$board")
   # raw last: read hands it the rest of the line; details_json and the verdict are JSON, with no bare
   # tab. No field is empty: a tab is IFS whitespace, so read would fold an empty one into its neighbour

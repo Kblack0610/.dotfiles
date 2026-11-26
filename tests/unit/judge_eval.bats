@@ -563,19 +563,28 @@ cell() {
     ev planned p-resplit "$p"; ev added p-late "$(ago '-1 day')" 'text=more #of/p-resplit' by=ab12cd34
     ev planned p-twice "$p"; ev planned p-twice "$(ago '-1 day')"
     ev planned p-idle "$p"
+    # ar-5230: a child re-parented away (-#of/) splits nothing from the row; one linked before the plan
+    # is no re-split of it; one a session adopts under it (+#of/) after the plan still is
+    ev planned p-moved "$p"; ev tagged c-moved "$(ago '-1 day')" 'why=-#of/p-moved +#of/ep-1' 'text=child #of/p-moved' by=ab12cd34
+    ev tagged c-early "$(ago '-3 days')" 'why=+#of/p-early -#of/ep-1' by=ab12cd34; ev planned p-early "$p"
+    ev planned p-adopt "$p"; ev tagged c-adopt "$(ago '-1 day')" 'why=+#of/p-adopt -#of/ep-2' by=ab12cd34
   } > "$INGEST"
   {
     jq -cn --arg s "$(date -u -d '-1 day' +%Y-%m-%dT%H:%M:%SZ)" '{from: "board:demo:p-whole", row: "demo:p-whole", started: $s, by: "dispatch"}'
     jq -cn --arg s "$(date -u -d '-1 day' +%Y-%m-%dT%H:%M:%SZ)" '{from: "human", row: "demo:p-kid", started: $s}'
     jq -cn --arg s "$(date -u -d '-12 hours' +%Y-%m-%dT%H:%M:%SZ)" '{from: "board:demo:p-resplit", started: $s, by: "hand"}'
     jq -cn --arg s "$(date -u -d '-12 hours' +%Y-%m-%dT%H:%M:%SZ)" '{from: "board:demo:p-twice", started: $s, by: "dispatch"}'
+    for k in p-moved p-early p-adopt; do
+      jq -cn --arg k "$k" --arg s "$(date -u -d '-12 hours' +%Y-%m-%dT%H:%M:%SZ)" '{from: "board:demo:\($k)", started: $s, by: "dispatch"}'
+    done
   } > "$QUEUE"
   run "$JUDGE_EVAL" inbox-plan --json
   assert_success
-  # tp: p-whole, p-split (its child started); fp: p-resplit, p-twice (re-split before the start); pending: p-idle
+  # tp: p-whole, p-split (its child started), p-moved, p-early; fp: p-resplit, p-twice, p-adopt (re-split
+  # before the start); pending: p-idle
   run jq -c '.agents[0] | [.total | .verdicts, .tp, .fp, .pending, .precision], (.misses | map(.id) | sort)' <<<"$output"
-  assert_line '[5,2,2,1,50]'
-  assert_line '["p-resplit","p-twice"]'
+  assert_line '[8,4,3,1,57.1]'
+  assert_line '["p-adopt","p-resplit","p-twice"]'
 }
 
 @test "dispatch-judge: a skip is a false defer when the row is started by hand after its skips began" {
