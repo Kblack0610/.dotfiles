@@ -42,10 +42,11 @@ do not reinvent their logic.
 ```
 ~/.notes/
 ├── captures/         # dated human/agent captures only (`notes inbox`); _archive/ holds drained items
+├── inbox/            # agent reports only, <date>/<slug>.md (`notes report`); archive/YYYY-MM/<date>/ for past days
 ├── journal/
 │   ├── daily/        # YYYY-MM-DD.md files (`notes today` target)
 │   ├── backlog.md    # tasks with no date (footer-linked); 90 days there returns one to Focus at #low
-│   ├── refs/         # per-day reports, digests, captures; generated _index.md linked from ## Refs
+│   ├── refs/         # per-day digests and captures; generated _index.md linked from ## Refs; past 7 days under archive/
 │   ├── permanent/    # zettelkasten atomic notes (`notes zettel new`)
 │   ├── index/        # generated backlinks + MOC (`notes index --rebuild`)
 │   ├── summaries/    # continuous/ (rolling monthly) + monthly/ rollups
@@ -87,7 +88,7 @@ Sync is event-driven by a Forgejo push webhook -> in-cluster `notes-sync-bridge`
 | `notes today` | Idempotent daily note. Carries **Priority** forward (stamped with the `#c1026` created tag); rolls unfinished **Focus** into the carryover backlog; drops checked/empty items; links refs; appends the backlog footer. The `today` alias runs this + opens nvim. |
 | `notes path` | Print today's note path (profile-aware). |
 | `notes link-refs` | Rebuild today's refs index and link it from `## Refs` (idempotent). |
-| `notes report add\|list\|read` | The one writer and reader of reports in `refs/<date>/` (filing one: `inbox-report`; contract: notes-cli README, Reports). |
+| `notes report add\|list\|read` | The one writer and reader of reports in `inbox/<date>/` (also `archive`, the nightly mover, and `migrate`; filing one: `inbox-report`; contract: notes-cli README, Reports). |
 | `notes summarize [--date D] [--force]` | Append a day's summary to `summaries/continuous/YYYY-MM.md`. **Dedup-safe** (skips dates already logged); WARNs on missing notes instead of failing silently. Runs nightly at 01:00 (`journal-daily-summarize.timer`). |
 | `notes archive [--month M] [--dry-run] [--backfill]` | Roll a month into `summaries/monthly/` + move dailies to `daily_archive/`. Runs on the 2nd at 01:30 (`journal-monthly-archive.timer`). |
 | `notes inbox` | Triage view of the dated captures (`captures/<date>.md`, `<date>-analysis.md`): pending captures oldest-first with age + title, stale (>=14d) flagged. No subcommand = `list`. |
