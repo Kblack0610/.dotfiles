@@ -38,13 +38,13 @@ metadata:
       why: *load
     # the dotfiles harness scripts that run suites, by a tests/ path or after a cd into tests; docker.sh lint passes.
     - match: |-
-        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-(?!n(?=\s))\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:(?:[^\s=]*/)?tests/|cd\s+\S*tests/?\s*(?:&&|;)\s*(?:\./)?)(?:docker\.sh(?=[\s;&|)]|$)(?!\s+(?:lint|--image|--build|--shell)(?=[\s;&|)]|$))|(?:rust|fleet-agent-smoke)\.sh(?=[\s;&|)]|$))
+        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-(?!n(?=\s))\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:(?:[^\s=]*/)?tests/|cd\s+\S*tests/?\s*(?:&&|;)\s*(?:\./)?)(?:docker\.sh(?=[\s;&|)]|$)(?!\s+(?:lint|--image|--build|--shell)(?=[\s;&|)]|$))|(?:rust|rust-crates|fleet-agent-smoke)\.sh(?=[\s;&|)]|$))
       use: *ci
       mode: deny
       where: *has_ci
       why: *load
     - match: |-
-        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-(?!n(?=\s))\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:\./)?(?:docker\.sh(?=[\s;&|)]|$)(?!\s+(?:lint|--image|--build|--shell)(?=[\s;&|)]|$))|(?:rust|fleet-agent-smoke)\.sh(?=[\s;&|)]|$))
+        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-(?!n(?=\s))\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:\./)?(?:docker\.sh(?=[\s;&|)]|$)(?!\s+(?:lint|--image|--build|--shell)(?=[\s;&|)]|$))|(?:rust|rust-crates|fleet-agent-smoke)\.sh(?=[\s;&|)]|$))
       use: *ci
       mode: deny
       where: '(?:^|/)tests/?$'

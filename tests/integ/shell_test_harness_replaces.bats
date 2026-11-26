@@ -48,7 +48,7 @@ SUITES=(
   '! bats x' 'bash -x tests/run-bats.sh tests/unit' 'bash -c "bats tests/unit"' 'bash -c "make -C tests test-pr"' 'bats $(ls tests/unit/*.bats)'
   'tests/docker.sh test-container' 'tests/docker.sh' 'bash tests/docker.sh test-fast' 'tests/rust.sh'
   'sh -x tests/rust.sh' 'tests/fleet-agent-smoke.sh img' '~/.dotfiles/tests/docker.sh'
-  'cd tests && ./rust.sh' 'cd tests && ./docker.sh test-container' 'cd tests && ./fleet-agent-smoke.sh'
+  'cd tests && ./rust.sh' 'cd tests && ./docker.sh test-container' 'cd tests && ./fleet-agent-smoke.sh' 'tests/rust-crates.sh' 'cd tests && ./rust-crates.sh'
   'cargo test' 'cargo test --release' 'cargo +stable test' 'cargo test -p hub-core' 'cargo test --workspace'
   'cargo test -- --nocapture' 'cargo nextest run' 'cargo test 2>&1 | tail' 'cargo test --lib'
   'cd .local/src/notes-cli && cargo test --release'
