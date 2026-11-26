@@ -949,7 +949,7 @@ gate_runs_of() {
        $r + {workflowName: "Tests", path: ".github/workflows/lint.yml", conclusion: "failure", headSha: "b"}]' > "$GHD/runs-b$1.json"
 }
 
-@test "review: a repo the run ledger does not sync is left out with a count, and one merged after its last sync waits" {
+@test "review: a repo the run ledger does not sync is left out with a count, and one merged after its last sync waits, past the 24h window" {
   stub_review
   merged_pr s1 7 35
   touch "$GHD/unsynced"
@@ -959,16 +959,57 @@ gate_runs_of() {
   [ ! -s "$FLEET_BENCH_DIR/pr-ci.jsonl" ]
   # the ledger is asked up to the merge, so a run that ends just before it is in the count
   grep -q -- "^schedules-sync runs o/r --branch b7 --until $(iso $((T0 - 3600)))$" "$GHD/calls.log"
+  # an unsynced repo holds no cursor
+  [ "$(cat "$FLEET_BENCH_DIR/review.last")" -eq "$T0" ]
   rm "$GHD/unsynced"; touch "$GHD/later"
   BENCH_NOW=$T0 run "$SUBJECT" review
   assert_success
   assert_output --partial '1 PRs merged after the run ledger'"'"'s last sync, left for the next review'
   [ ! -s "$FLEET_BENCH_DIR/pr-ci.jsonl" ]
+  [ "$(cat "$FLEET_BENCH_DIR/review.last")" -eq $((T0 - 3600)) ]
+  # two days on, the held cursor still reaches it
   rm "$GHD/later"
-  BENCH_NOW=$T0 run "$SUBJECT" review
+  BENCH_NOW=$((T0 + 2 * 86400)) run "$SUBJECT" review
   assert_success
   run jq -sc 'map([.number, .ci_runs])' "$FLEET_BENCH_DIR/pr-ci.jsonl"
   assert_output '[[7,1]]'
+  [ "$(cat "$FLEET_BENCH_DIR/review.last")" -eq $((T0 + 2 * 86400)) ]
+}
+
+@test "review reaches back to its last pass: a failed night is counted by a later one, the first reads 24h, a held cursor reaches back BENCH_REVIEW_MAX_DAYS" {
+  stub_review
+  merged_pr s1 7 35
+  merged_pr s2 8 35 -108000                                  # 30h ago: past the first window
+  merged_pr s4 10 35 -$((10 * 86400))                        # 10 days ago
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_success
+  run jq -sc 'map(.number)' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  assert_output '[7]'
+  [ "$(cat "$FLEET_BENCH_DIR/review.last")" -eq "$T0" ]
+  # a failed night: #9 is not counted and holds the cursor at its merge
+  merged_pr s3 9 35 3600
+  touch "$GHD/fail"
+  BENCH_NOW=$((T0 + 86400)) run "$SUBJECT" review
+  assert_failure
+  [ "$(cat "$FLEET_BENCH_DIR/review.last")" -eq $((T0 + 3600)) ]
+  # two nights missed after it, and the next pass still counts #9
+  rm "$GHD/fail"
+  BENCH_NOW=$((T0 + 3 * 86400)) run "$SUBJECT" review
+  assert_success
+  run jq -sc 'map(.number) | sort' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  assert_output '[7,9]'
+  # a cursor older than BENCH_REVIEW_MAX_DAYS (7) reads 7 days: #8 (4 days back) counts, #10 (13) does not
+  echo 1 > "$FLEET_BENCH_DIR/review.last"
+  BENCH_NOW=$((T0 + 3 * 86400)) run "$SUBJECT" review
+  assert_success
+  run jq -sc 'map(.number) | sort' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  assert_output '[7,8,9]'
+  # --days reaches past it, and moves the cursor since its window covered it
+  BENCH_NOW=$((T0 + 3 * 86400 + 60)) run "$SUBJECT" review --days 30
+  assert_success
+  run jq -sc 'map(.number) | sort' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  assert_output '[7,8,9,10]'
+  [ "$(cat "$FLEET_BENCH_DIR/review.last")" -eq $((T0 + 3 * 86400 + 60)) ]
 }
 
 @test "review: a repo with sections gets each PR's sections and gate runs, a path in no root is other" {
@@ -1009,6 +1050,20 @@ gate_runs_of() {
   assert_output '[[7,"s1"],[8,""]]'
   run "$SUBJECT" stats --json
   refute_output --partial '"session_id":""'
+  # an unclaimed PR left for later holds the cursor at its own merge, and counts with no session
+  merged_pr s1 9 10 -1800
+  head -n 1 "$HOME/.agent/outcomes/game/2026-10.jsonl" > "$SANDBOX/o" && mv "$SANDBOX/o" "$HOME/.agent/outcomes/game/2026-10.jsonl"
+  echo '[{"number":7},{"number":8},{"number":9}]' > "$GHD/repo-prs.json"
+  docs_prs 9
+  touch "$GHD/later"
+  BENCH_NOW=$((T0 + 60)) run "$SUBJECT" review
+  assert_success
+  [ "$(cat "$FLEET_BENCH_DIR/review.last")" -eq $((T0 - 1800)) ]
+  rm "$GHD/later"
+  BENCH_NOW=$((T0 + 2 * 86400)) run "$SUBJECT" review
+  assert_success
+  run jq -sc 'sort_by(.number) | map([.number, .session_id])' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  assert_output '[[7,"s1"],[8,""],[9,""]]'
 }
 
 @test "a PR no session claims stays out of the KPIs" {
