@@ -700,6 +700,54 @@ SH
   [ -z "$("$AGENT_ASK_QUEUE_CMD" show held --json | jq -r '.hold // empty')" ] || fail "a judge answer left the item held"
 }
 
+# ar-6242: VZtnyM's answer ran its reopen resume, which deferred to a board row held on the ask, and
+# the asker's own waiting item ar-5519 sat 11 hours unstarted until a session requeued it by hand.
+@test "answer: each waiting item the ask names goes back to the queue with the decision; a live or still-asking one stays" {
+  unset AGENT_ASK_NO_RESUME
+  export FLEET_DISPATCH_DIR="$SANDBOX/dispatch"
+  export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
+  local AQ="$AGENT_ASK_QUEUE_CMD" id task s
+  waiting_item() {
+    local slug="$1" sid; shift
+    "$AQ" add --project demo --slug "$slug" "work $slug" >/dev/null || return
+    for sid; do "$AQ" claim "$slug" --sid "$sid" >/dev/null || return; done
+    "$AQ" move "$slug" running >/dev/null && "$AQ" move "$slug" waiting >/dev/null
+  }
+  printf '#!/usr/bin/env bash\necho "{\\"session_id\\":\\"sid-6\\",\\"pane\\":\\"%%1\\"}"\n' >"$SANDBOX/bin/agent-panel"
+  chmod +x "$SANDBOX/bin/agent-panel"
+  id="$(CLAUDE_CODE_SESSION_ID=sid-8 post demo 'ship it?')"
+  task="$(CLAUDE_CODE_SESSION_ID=sid-5 "$AGENT_ASK" post --project demo --task named 'which way?')"
+  CLAUDE_CODE_SESSION_ID=sid-9 post demo 'and the docs?' >/dev/null
+  # Named by its latest session, and by the ask's task.
+  waiting_item asker sid-1 sid-8
+  waiting_item named sid-2
+  # Negative controls: one the asks do not name, one another pending ask still names, one with a live
+  # session, one the asking session worked before another, and the asker's of an ask that names a task.
+  waiting_item stranger sid-3
+  waiting_item asking sid-9 sid-8
+  waiting_item live sid-6 sid-8
+  waiting_item history sid-8 sid-4
+  waiting_item tasked sid-5
+  "$AGENT_ASK" answer "$id" go 2>/dev/null; "$AGENT_ASK" answer "$task" left 2>/dev/null
+  "$AGENT_ASK" deliver --all 2>/dev/null
+  for s in asker:"$id" named:"$task"; do
+    run "$AQ" show "${s%%:*}" --json
+    assert_equal "${s%%:*} $(jq -r .state <<<"$output")" "${s%%:*} queued"
+    [[ " $(jq -r .tags <<<"$output") " == *" ask:${s#*:} "* ]] || fail "${s%%:*} went back without the ask:${s#*:} tag its brief reads the decision from"
+  done
+  for s in stranger asking live history tasked; do
+    assert_equal "$s $("$AQ" show "$s" --json | jq -r .state)" "$s waiting"
+  done
+  # The requeued item covers its own session only: reopen leaves sid-8 to the queue, not every session.
+  run "$AGENT_ASK" reopen "$id"
+  assert_success
+  assert_output --partial "session sid-8's queue item holds it"
+  run "$AGENT_ASK" show "$id"
+  assert_line --partial 'back in the queue'
+  assert_not_called 'chore(ask)'
+  [ -s "$FLEET_DISPATCH_DIR/.wake" ] || fail "the requeue wrote no dispatch wake"
+}
+
 @test "decision: the human's answer with its meaning, and nothing before that or from the judge" {
   local id
   id="$("$AGENT_ASK" post --project demo --options 'a=take it|b=leave it' 'which one?')"
