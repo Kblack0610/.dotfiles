@@ -2400,7 +2400,7 @@ pub fn reopen(
                 &format!("{verb} {id} in {} ({name}): {why}", from.display()),
             );
             let mut ev = crate::ingest::Event::row("reopened", name, "", lane.name(), row);
-            ev.why = Some(why.to_string());
+            ev.why = crate::ingest::set(Some(why));
             crate::ingest::record(p, &ev);
             println!("reopened {}", row.trim());
         };
