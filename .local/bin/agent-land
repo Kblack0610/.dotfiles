@@ -74,6 +74,8 @@ usage() {
 . "$(dirname "$(readlink -f "$0")")/../lib/plan-phases.sh"
 # shellcheck source=../lib/judge.sh
 . "$(dirname "$(readlink -f "$0")")/../lib/judge.sh"
+# shellcheck source=../lib/ask-store.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/ask-store.sh"
 die() {
   printf 'agent-land: %s\n' "$1" >&2
   exit 2
@@ -1201,7 +1203,7 @@ validate_gate() {
   files=$(pr_files 2>&1) || fail validate "could not read #$pr's changed files ($(lastline "$files")), so whether its work is critical is unknown; re-run"
   PR_FILES=$files
   out=$(judge_work_level "$(judge_conf PROMPT "$(dirname "$(readlink -f "$0")")/../../.config/agent-ask/policy.md")" \
-    "${AGENT_ASK_ROOT:-$HOME/.agent/asks}" "$it" <<<"$files") ||
+    "$(ask_root)" "$it" <<<"$files") ||
     fail validate "could not read the ask policy (ask-judge.conf PROMPT), so whether #$pr is critical is unknown"
   IFS=$'\t' read -r lv ev <<<"$out"
   [ "$lv" = critical ] || { echo "validate: $lv work, no second agent needed"; return 0; }

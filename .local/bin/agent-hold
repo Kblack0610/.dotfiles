@@ -103,12 +103,6 @@ class_rank() { awk -F'\t' -v c="$1" '$1 == c { print $2 }' <<<"$DESK_CLASSES"; }
 # shellcheck source=../lib/dispatch-wake.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/dispatch-wake.sh"
 
-# collapse a value to a single physical line (files are one key:value per line)
-oneline() { printf '%s' "$1" | tr '\n\t' '  ' | sed -E 's/  +/ /g; s/^ +//; s/ +$//'; }
-
-# field <file> <key> -> first value (text after "key: ")
-field() { sed -n "/^$2: /{s///p;q;}" "$1" 2>/dev/null; }
-
 # default_kind <resource> -> the kind a set with no --kind gets: resource for dispatch, which
 # pauses a workflow and never load, so a hand `set dispatch` does not drop fleet-assess's trip
 # line (fleet-thermal paged high 36 times in 8 hours on one), load for the rest.

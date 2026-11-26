@@ -70,8 +70,12 @@ stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "
 # The real fleet-sessions, by path: the one on PATH is a stub here.
 fleet-sessions-real() { "$REPO_ROOT/.local/bin/fleet-sessions" "$@"; }
 
-# doc <sessions-json> [main-json]
-doc() { jq -n --argjson s "$1" --argjson m "${2:-[]}" '{schema:1, sessions:$s, main:$m}' > "$FLEET_STATE_FILE"; }
+# doc <sessions-json> [main-json]: with the vocab fleet-sessions writes, whose `finished` the shepherd reads
+doc() {
+  jq -n --argjson s "$1" --argjson m "${2:-[]}" \
+    '{schema:1, vocab:{buckets:["NEEDS","STALLED","DONE","LANDED","CHAT","WORKING","PARKED"], finished:["DONE","LANDED"],
+      in_progress:["WORKING","NEEDS","STALLED"]}, sessions:$s, main:$m}' > "$FLEET_STATE_FILE"
+}
 
 row() { # target bucket nudged escalated [labels-json] [close verdict: default now for DONE, else keep]
   jq -n --arg t "$1" --arg b "$2" --argjson n "$3" --argjson e "$4" --argjson l "${5:-[]}" --arg v "${6:-}" \
