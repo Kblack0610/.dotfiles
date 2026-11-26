@@ -77,8 +77,8 @@ struct RawConfig {
     /// list here replaces it whole, and an empty one turns the gate off.
     #[serde(default)]
     intake_gated: Option<Vec<String>>,
-    /// The most new agent rows a gated board takes in a local day ([`intake_daily_cap`],
-    /// `gate.rs`). Absent = [`DAILY_CAP`]; 0 turns the cap off.
+    /// The most new agent rows any project's board takes in a local day ([`intake_daily_cap`],
+    /// `gate.rs`), gated or not. Absent = [`DAILY_CAP`]; 0 turns the cap off.
     #[serde(default)]
     intake_daily_cap: Option<u32>,
 }
@@ -176,13 +176,14 @@ pub fn intake_gated() -> Vec<String> {
         .unwrap_or_else(|| GATED.iter().map(|s| s.to_string()).collect())
 }
 
-/// The new agent rows a gated board takes a local day: the human's 2026-11-25 words, "cap it very
-/// low, i really want to get through our current work before any more comes in". Provisional, one
-/// `rules.jsonl` row (anchor `const DAILY_CAP`).
+/// The new agent rows each project's board takes a local day: the human's 2026-11-25 words, "cap it
+/// very low, i really want to get through our current work before any more comes in", and "lets
+/// make sure rows dont come in aggressively" (every board, not only the gated one). Provisional,
+/// one `rules.jsonl` row (anchor `const DAILY_CAP`).
 const DAILY_CAP: u32 = 10;
 
-/// `intake_daily_cap`: the most new agent rows a gated project's board takes in a local day
-/// (`gate.rs`); the human's own words and urgent reds are never counted against it. The config's
+/// `intake_daily_cap`: the most new agent rows any project's board takes in a local day
+/// (`gate.rs`), gated or not; the human's own words and urgent reds are never counted against it. The config's
 /// own number when it has one (0 = no cap), else [`DAILY_CAP`].
 pub fn intake_daily_cap() -> u32 {
     load_raw()

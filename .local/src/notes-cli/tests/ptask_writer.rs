@@ -1963,11 +1963,15 @@ impl Home {
         fs::write(&path, format!("intake_daily_cap = {n}\n{cfg}")).unwrap();
     }
 
-    /// `notes ingest cap --json` for today: (admitted, refused).
+    /// `notes ingest cap --json` for today's `demo` line: (admitted, refused).
     fn cap_today(&self) -> (u64, u64) {
         let out = self.run(&["ingest", "cap", "--days", "1", "--json"]);
         let line = String::from_utf8_lossy(&out.stdout).into_owned();
-        let v: serde_json::Value = serde_json::from_str(line.lines().last().unwrap()).unwrap();
+        let v: serde_json::Value = line
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+            .find(|v| v["project"] == "demo")
+            .expect("demo is listed");
         (
             v["admitted"].as_u64().unwrap(),
             v["refused"].as_u64().unwrap(),
@@ -2131,7 +2135,7 @@ fn the_daily_cap_is_the_configs_number_and_zero_turns_it_off() {
         String::from_utf8_lossy(&o.stderr)
     );
     assert!(String::from_utf8_lossy(&o.stderr).contains("2 new agent rows"));
-    // NEGATIVE CONTROL: 0 is no cap, and a project off the gate list is never capped.
+    // NEGATIVE CONTROL: 0 is no cap.
     let off = Home::new("gate-cap-off");
     off.gate();
     off.daily_cap(0);
@@ -2142,14 +2146,58 @@ fn the_daily_cap_is_the_configs_number_and_zero_turns_it_off() {
         &[],
         "fix(z1): the eleventh breaks #size/s",
     ));
-    let free = Home::new("gate-cap-free");
-    fill_the_day(&free);
+}
+
+#[test]
+fn a_board_off_the_gate_list_is_capped_all_the_same_and_its_gate_stays_off() {
+    let h = Home::new("gate-cap-free");
+    fill_the_day(&h);
+    assert_eq!(ids(&h.board()).len(), 10, "{}", h.board());
+    // NEGATIVE CONTROL: the next machine row, plan phase and hand row are held by the cap alone:
+    // the gate is off for demo, so a hand row with no reason is no evidence-gate refusal.
+    let held = [
+        add_as(
+            &h,
+            &[("AGENTCTL_NAME", "fleet-bench")],
+            &[],
+            "fix(z1): the twelfth breaks #size/s",
+        ),
+        add_from(
+            &h,
+            "agent-queue",
+            &[
+                ("AGENT_QUEUE_ITEM", "ar-9"),
+                ("AQ_ITEM_PLAN", "/tmp/plan.md"),
+            ],
+            &["--agent"],
+            &["--origin", "plan"],
+            "feat(z2): a plan phase past the cap #size/s",
+        ),
+        add_as(&h, &[HAND], &[], "chore(z3): more polish #low #size/s"),
+    ];
+    for o in &held {
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(6), "{err}");
+        assert!(
+            err.contains("10 new agent rows") && !err.contains("evidenced fault"),
+            "{err}"
+        );
+    }
+    // The person's want and an urgent red pass, and `notes ingest cap` lists the board.
     ok(&add_as(
-        &free,
-        &[("AGENTCTL_NAME", "fleet-bench")],
-        &[],
-        "fix(z1): the eleventh breaks #size/s",
+        &h,
+        &[HAND],
+        &["--want", "human"],
+        "feat(w1): a json flag the person asked for #high #size/s",
     ));
+    ok(&add_as(
+        &h,
+        &[("AGENTCTL_NAME", "fleet-bench")],
+        &["--why", "outage"],
+        "fix(w2): the board is down #urgent #size/s",
+    ));
+    assert_eq!(ids(&h.board()).len(), 12, "{}", h.board());
+    assert_eq!(h.cap_today(), (11, 3));
 }
 
 #[test]

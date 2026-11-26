@@ -1046,8 +1046,9 @@ enum IngestCmd {
     Import,
     /// Publish the inbox status page from the record and the outbox (the sweep runs it)
     Page,
-    /// The daily intake cap (`intake_daily_cap`, QUEUE.md "Admission"): per local day and gated
-    /// project, the new agent rows admitted and the rows the cap refused, oldest first and today last
+    /// The daily intake cap (`intake_daily_cap`, QUEUE.md "Admission"): per local day and project
+    /// (every gated board, and any other the cap touched), the new agent rows admitted and the rows
+    /// the cap refused, oldest first and today last
     /// (`--json`: one `{date, project, cap, admitted, refused}` object a line), the one reader
     /// fleet-bench's churn KPIs use
     Cap {
