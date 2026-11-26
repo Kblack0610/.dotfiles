@@ -1206,7 +1206,7 @@ VALIDATE_WAIT=5
 REVIEW_SHARE=10
 REVIEW_CONTEXT=review
 validate_gate() {
-  local files lv ev why vslug vit vsha st desc vses ases s out
+  local files lv ev why vslug vhead vit vsha st desc vses s out cov=0
   files=$(pr_files 2>&1) || fail validate "could not read #$pr's changed files ($(lastline "$files")), so whether its work is critical is unknown; re-run"
   PR_FILES=$files
   out=$(judge_work_level "$(judge_conf PROMPT "$(dirname "$(readlink -f "$0")")/../../.config/agent-ask/policy.md")" \
@@ -1225,30 +1225,27 @@ validate_gate() {
     aq_retry claim "$item" >/dev/null 2>&1 || echo "validate: could not record this session on $item" >&2
     it=$(aq_retry show "$item" --json 2>/dev/null) || fail validate "could not re-read $item"
   fi
-  vslug=$(jq -r '.validate // ""' <<<"$it")
+  vslug=$(jq -r '.validate // ""' <<<"$it") vhead=${vslug##*-}
   vit=''; [ -z "$vslug" ] || vit=$(aq_retry show "$vslug" --json 2>/dev/null) || vit=''
   st=''
-  if [ -n "$vit" ] && covers "${vslug##*-}"; then
-    vsha=$(git rev-parse --verify -q "${vslug##*-}^{commit}") || fail validate "$vslug names ${vslug##*-}, a commit this checkout cannot read"
+  if [ -n "$vit" ] && covers "$vhead"; then
+    cov=1
+    vsha=$(git rev-parse --verify -q "$vhead^{commit}") || fail validate "$vslug names $vhead, a commit this checkout cannot read"
     out=$(review_status "$vsha" 2>&1) || fail validate "could not read the $REVIEW_CONTEXT status on ${vsha:0:8} ($(lastline "$out")); re-run"
     IFS=$'\t' read -r st desc <<<"$out"
   fi
-  case $st in
-  success | failure)
+  if [[ "$st" =~ ^(success|failure)$ ]]; then
     [[ "$desc" == "$vslug: "* ]] || fail validate "the $REVIEW_CONTEXT status on ${vsha:0:8} names no $vslug (\"$desc\"): a verdict comes from $vslug's session, by agent-land --verdict"
     vses=$(jq -r '.sessions // ""' <<<"$vit")
     [ -n "$vses" ] || fail validate "$vslug posted a $st status, but no session worked it: a verdict comes from a second agent's session"
-    ases=" $(jq -r '.sessions // ""' <<<"$it") "
-    for s in $vses; do
-      [[ "$ases" != *" $s "* ]] || fail validate "$vslug was worked by session $s, which also worked $item: the verdict must come from another agent"
-    done
+    # shellcheck disable=SC2086 # the session ids, one word each
+    ! s=$(worked_item $vses) || fail validate "$vslug was worked by session $s, which also worked $item: the verdict must come from another agent"
     [ "$st" = success ] || fail validate "$vslug failed #$pr on ${vsha:0:8} (${desc#"$vslug: "}): a fix is a new head, which a new validate item reviews"
     echo "validate: pass from $vslug on ${vsha:0:8} ($why)"
     return 0
-    ;;
-  esac
+  fi
   if [ -n "$vit" ] && [[ "$(jq -r .state <<<"$vit")" =~ ^(queued|running|waiting|review)$ ]]; then
-    if covers "${vslug##*-}"; then
+    if [ "$cov" = 1 ]; then
       printf 'agent-land: #%s needs a second agent'"'"'s review (%s), so it waits on %s; that session lands it on a pass\n' "$pr" "$why" "$vslug" >&2
       exit "$VALIDATE_WAIT"
     fi
@@ -1267,19 +1264,29 @@ validate_gate() {
 review_why() {
   local labels label n
   labels=$(pr_view labels '[.labels[].name] | join(" ")' 2>&1) || { echo "could not read #$pr's labels ($(lastline "$labels"))"; return 1; }
-  label=$("$(dirname "$(readlink -f "$0")")/gate-guard" label 2>&1) && [ -n "$label" ] || { echo "gate-guard label: $(lastline "$label")"; return 1; }
-  if [[ " ${labels,,} " == *" ${label,,} "* ]]; then echo "the human applied $label, so it loosens a gate"; return 0; fi
+  if [ -n "$labels" ]; then
+    label=$("$(dirname "$(readlink -f "$0")")/gate-guard" label 2>&1) && [ -n "$label" ] || { echo "gate-guard label: $(lastline "$label")"; return 1; }
+    if [[ " ${labels,,} " == *" ${label,,} "* ]]; then echo "the human applied $label, so it loosens a gate"; return 0; fi
+  fi
   [ "$tier" = 3 ] || return 0
   # Salted, apart from dispatch's own samples of the slug (tier3_pick, route's model pick).
   n=$(cksum <<<"review:$item" | cut -d' ' -f1)
   [ $((n % REVIEW_SHARE)) != 0 ] || echo "tier 3, one item in $REVIEW_SHARE sampled for a fresh review"
 }
-# review_status <sha> -> "<state>\t<description>" of the newest REVIEW_CONTEXT commit status on <sha>, nothing when none.
+# review_status <sha> -> "<state>\t<description>" of the newest REVIEW_CONTEXT commit status on <sha>
+# (Forgejo's own list, not so_forgejo_checks, which reads a warning as a pass), nothing when none.
 review_status() {
   local raw
   if [ -n "$fj" ]; then raw=$(so_forgejo_get "$fj" "commits/$1/statuses") || return 1
   else raw=$(gh api "repos/${pr_ref%#*}/commits/$1/statuses") || return 1; fi
   jq -r --arg c "$REVIEW_CONTEXT" 'first(.[] | select(.context == $c)) | [.state // .status, .description // ""] | @tsv' <<<"$raw"
+}
+# worked_item <session id>... -> the first id among them that also worked the author item ($it), exit 1 when none did.
+worked_item() {
+  local ases s
+  ases=" $(jq -r '.sessions // ""' <<<"$it") "
+  for s in "$@"; do [[ "$ases" != *" $s "* ]] || { echo "$s"; return 0; }; done
+  return 1
 }
 # review_verdict: --verdict pass|fail --note <text>, the second agent's verdict, run by the validate
 # item's session from its worktree at the head it reviewed. Refused from any other item or from a
@@ -1293,18 +1300,19 @@ review_verdict() {
   vslug=$(jq -r '.validate // ""' <<<"$it")
   [ -n "$vslug" ] && [ "${AGENT_QUEUE_ITEM:-}" = "$vslug" ] ||
     die "--verdict comes from the session of $item's validate item (${vslug:-none filed}), not ${AGENT_QUEUE_ITEM:-a session with no queue item}"
-  [ -z "${CLAUDE_CODE_SESSION_ID:-}" ] || [[ " $(jq -r '.sessions // ""' <<<"$it") " != *" $CLAUDE_CODE_SESSION_ID "* ]] ||
+  [ -z "${CLAUDE_CODE_SESSION_ID:-}" ] || ! worked_item "$CLAUDE_CODE_SESSION_ID" >/dev/null ||
     die "session $CLAUDE_CODE_SESSION_ID also worked $item: the verdict must come from another agent"
   sha=$(git rev-parse HEAD)
   [[ "$sha" == "${vslug##*-}"* ]] || die "$vslug reviews ${vslug##*-}, but HEAD is ${sha:0:8}: review the head it names"
-  state=failure; [ "$verdict" = fail ] || state=success
+  state=success; [ "$verdict" = pass ] || state=failure
   desc="$vslug: $vnote"; desc=${desc:0:140}
   if [ -n "$fj" ]; then
     out=$(fj_send POST "statuses/$sha" "$(jq -nc --arg s "$state" --arg c "$REVIEW_CONTEXT" --arg d "$desc" '{state: $s, context: $c, description: $d}')" 2>&1)
   else
     out=$(gh api "repos/${pr_ref%#*}/statuses/$sha" -X POST -f "state=$state" -f "context=$REVIEW_CONTEXT" -f "description=$desc" 2>&1 >/dev/null)
   fi || fail validate "could not post the $REVIEW_CONTEXT status on ${sha:0:8}: $(lastline "$out")"
-  aq_retry set "$vslug" "note=$vnote" >/dev/null 2>&1 || echo "validate: could not keep the note on $vslug" >&2
+  # The item keeps the verdict too, the record fleet-sessions' validate_hold reads; the gate reads only the status.
+  aq_retry set "$vslug" "verdict=$verdict" "verdict_head=$sha" "note=$vnote" >/dev/null 2>&1 || echo "validate: could not record the verdict on $vslug" >&2
   echo "validate: posted $REVIEW_CONTEXT $verdict on ${sha:0:8} for $vslug"
   [ "$verdict" = fail ] || return 0
   out=$(aq_retry set "$item" "note=validation failed on #$pr at ${sha:0:8} ($vslug): $vnote" 2>&1) &&

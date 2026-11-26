@@ -1271,6 +1271,12 @@ validated_item() {
   [ "$(jq -r .reason <<<"$output")" = "PR #9 failed validation (validate-fix-wave-save-${oid:0:8}), its item went back to the queue with the findings" ]
   [ "$(jq -r .finished <<<"$output")" = true ]
   [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
+  # agent-land posts that fail as a failure `review` status, so the PR's Checks read red: still DONE (ar-5450)
+  open_pr FAIL
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r .reason <<<"$output")" = "PR #9 failed validation (validate-fix-wave-save-${oid:0:8}), its item went back to the queue with the findings" ]
+  open_pr PASS
 
   # negative controls: a pass, a fail on another head, a live validate item filed for another head
   validated_item running "validate-fix-wave-save-${oid:0:8}" done pass "$oid"
