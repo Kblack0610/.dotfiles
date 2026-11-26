@@ -1823,7 +1823,8 @@ board_row() { printf 'board.md\t5\t%s\t- [%s] %s\n' "${2,,}" "$1" "$2" >> "$BOAR
   # negative control: the queue cannot be read, so retire closes nothing at all
   printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/items-stub"
   run "$SUBJECT" triage --dry-run
-  refute_line --partial 'retire: check(watch)'
+  assert_success
+  refute_output --partial 'retire: check(watch)'
 }
 
 @test "triage: a recovered watch's row on the human sheet closes too; a still-red watch's is not retired" {
