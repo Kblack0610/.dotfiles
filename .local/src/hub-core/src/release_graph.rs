@@ -33,6 +33,9 @@ pub const SHARED_BRANCHES: [&str; 4] = ["main", "master", "develop", "HEAD"];
 
 /// How far back `check` holds the stores to each other: the runs ledger's window.
 const CHECK_SECS: i64 = crate::builds::KEEP_DAYS * 86400;
+/// How near the window's edge a repo's oldest ledger run must be for an older run to have
+/// aged out: a day covers the hours between `schedules-sync` passes, with room.
+const EDGE_SECS: i64 = 86400;
 
 /// A tag younger than this has no lab version yet by design: agentctl-wave-roll freezes it on its
 /// next pass (`SCHEDULE='*:7/30'` in release-window.conf), so the grace is two of its cycles.
@@ -892,12 +895,28 @@ impl<'a> Graph<'a> {
             let ran: HashSet<(String, u64)> =
                 runs.iter().map(|r| (repo_key(&r.repo), r.id)).collect();
             let repos: HashSet<&str> = ran.iter().map(|(r, _)| r.as_str()).collect();
+            // The ledger keeps a run by when it was created, and a Deployment can be recorded
+            // long after its run (a backfill). A run older than the oldest its repo's ledger
+            // holds has aged out, not gone missing, but only while that oldest run sits at the
+            // window's edge: a ledger that starts later was truncated or never synced, a gap.
+            // Run ids rise with time within a repo on either forge (a Forgejo id is per repo).
+            let mut oldest: HashMap<String, (u64, i64)> = HashMap::new();
+            for r in runs {
+                let at = crate::fleet::ts(&r.created_at).unwrap_or(i64::MAX);
+                let o = oldest.entry(repo_key(&r.repo)).or_insert((r.id, at));
+                if r.id < o.0 {
+                    *o = (r.id, at);
+                }
+            }
             for r in self.i.channels {
                 for d in r.deploys.history.iter().filter(|d| d.at >= since) {
                     let Some(run) = d.url.as_deref().and_then(run_of) else {
                         continue;
                     };
-                    if repos.contains(run.0.as_str()) && !ran.contains(&run) {
+                    let aged = oldest
+                        .get(&run.0)
+                        .is_some_and(|&(id, at)| run.1 < id && at - since <= EDGE_SECS);
+                    if repos.contains(run.0.as_str()) && !ran.contains(&run) && !aged {
                         out.push(format!(
                             "{} {}: deploy {} names run {}#{} the runs ledger lacks",
                             r.project, r.id, d.version, run.0, run.1
@@ -2042,6 +2061,63 @@ mod tests {
                 now
             )
             .is_empty());
+    }
+
+    #[test]
+    fn a_deploy_naming_a_run_older_than_the_ledger_holds_is_not_a_gap() {
+        let now = 1_800_000_000;
+        let edge = now - CHECK_SECS;
+        let mut ch = channel(
+            "web",
+            vec![("v1.2.0", "ok", now - 50), ("v1.1.0", "ok", now - 60)],
+            None,
+        );
+        ch.project = "app".into();
+        // Recorded inside the window, by a backfill, for a run the ledger has aged out.
+        ch.deploys.history[0].url = Some("https://github.com/Acme/app/actions/runs/40".into());
+        // Newer than the oldest run the ledger holds: a real gap.
+        ch.deploys.history[1].url = Some("https://github.com/Acme/app/actions/runs/60".into());
+        let chans = vec![ch];
+        let (lines, live) = (HashMap::new(), HashMap::new());
+        let g = Graph::new(Inputs {
+            lines: &lines,
+            channels: &chans,
+            items: &[],
+            prs: &[],
+            live: &live,
+            registry: None,
+            since: 0,
+            run_tags: &[],
+        });
+        let at = |repo, id, t: i64| {
+            let when = chrono::DateTime::from_timestamp(t, 0).unwrap().to_rfc3339();
+            run(repo, id, "main", "x", &when)
+        };
+        let check = |runs: &[Run]| {
+            g.check(
+                &Facts {
+                    runs: Some(runs),
+                    ..Default::default()
+                },
+                now,
+            )
+        };
+        let gap = "app web: deploy v1.1.0 names run acme/app#60 the runs ledger lacks";
+        let old = "app web: deploy v1.2.0 names run acme/app#40 the runs ledger lacks";
+        // The repo's oldest run sits at the window's edge; another repo's lower ids (a Forgejo
+        // index counts per repo) set no floor for it.
+        let runs = [
+            at("Acme/app", 55, edge + 3600),
+            at("Acme/app", 70, now - 10),
+            at("Acme/new", 3, now - 10),
+        ];
+        assert_eq!(check(&runs), [gap]);
+        // A ledger that starts well inside the window was truncated: both are gaps.
+        let runs = [
+            at("Acme/app", 55, edge + 5 * 86400),
+            at("Acme/app", 70, now),
+        ];
+        assert_eq!(check(&runs), [gap, old]);
     }
 
     #[test]
