@@ -467,6 +467,10 @@ project_work_machine() {
 project_visible() {
   local map_file; map_file="$(project_map_file)"
   [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 0
+  # A project that names no client is visible everywhere: no profile lookup, so agent-queue add and
+  # dispatch's start (client_guard, start_item) ask notes only about a client's project.
+  jq -e --arg k "$1" '(.trackers // {})[$k] | if type == "object" then has("client") | not else true end' "$map_file" >/dev/null 2>&1 &&
+    return 0
   project_machine_profile >/dev/null
   jq -en --arg k "$1" --arg m "$PROJECT_MACHINE_PROFILE" --slurpfile reg "$map_file" \
     "$PROJECT_VISIBLE_JQ"' $k | visible($m)' >/dev/null

@@ -18,7 +18,7 @@
 # (before the checks, the PR body gets the line "Item: <slug>" unless it has it, so a reader holding
 # only the PR finds its work item; a stale "Item:" line is rewritten, except on a merged PR where another queue item's line stays), review (a tier-3 item's body has a
 # "Review:" line, review_gate), loose (a plan phase's item filed no open agent row its plan does not take, loose_gate), shape (no function over 150 lines gets longer unless the body has a "Split: <row id>" line, shape_gate), checks (the PR's checks pass: CI, a required check; a cancelled check is no pass, waited on while a run on the head goes on, and on GitHub so is a failed one while a run of its workflow and event started after it goes on, and a cancelled matrix job of an older run of its workflow is no verdict (pr-ci.sh); a tier-3 item, or one landed with --ran-checks, needs checks that ran), validate (critical work by judge.sh judge_work_level merges only on a second agent's pass verdict on this head, validate_gate), merge (--squash, or with --merge-commit a merge commit,
-# for a landing train whose member PRs read MERGED only while their heads stay reachable; --admin adds gh's --admin, which skips a required approving review on a repo whose owner allows it, never the checks step above; --match-head-commit HEAD, then gh pr view must say MERGED), proof (the PR's merge commit is
+# for a landing train whose member PRs read MERGED only while their heads stay reachable; --admin adds gh's --admin, which skips a required approving review on a repo whose owner allows it, from a session the human opened only (refused from a dispatched or headless one), never the checks step above; --match-head-commit HEAD, then gh pr view must say MERGED), proof (the PR's merge commit is
 # on origin/<base>, by agent-merge-proof.sh), live (dotfiles-autopull --now --bg fast-forwards, in the background, the stowed
 # checkout when this repo is ~/.dotfiles or ~/.dotfiles-private, links what it added, rebuilds the
 # Rust tools (notes through notes-bootstrap), restarts agent-web on a new binary and a persistent agentctl runner on a new script; it logs its result to autopull.log, and the landing prints a line, never a failure), item (the queue item gets pr:<owner>/<repo>#<pr>,
@@ -706,6 +706,22 @@ if [ -z "$repo" ]; then
 fi
 R=()
 [ -z "$repo" ] || R=(-R "$repo")
+# --admin skips a required approving review, so only a session the human opened may ask for it: never a
+# headless run, never an item dispatch or an ask started (origin run, ask). A dispatched session that
+# was refused for want of a review found --admin in --help and merged a client's PR with it
+# (ar-6083). A review the repo requires waits for the human.
+# The session's own launch item (AGENT_QUEUE_ITEM, which dispatch sets) is judged as well as --item's, so a
+# dispatched session cannot pass by landing through an item it filed itself with no origin.
+admin_origin_ok() { case "$1" in '' | hand | resume) return 0 ;; *) return 1 ;; esac; }
+if [ "${#admin[@]}" -gt 0 ]; then
+  aorigin=$(jq -r '.origin // ""' <<<"$it") lorigin=''
+  if [ -n "${AGENT_QUEUE_ITEM:-}" ]; then
+    lorigin=$(aq_retry show "$AGENT_QUEUE_ITEM" --json 2>/dev/null | jq -r '.origin // "unknown"') || lorigin=unknown
+    [ -n "$lorigin" ] || lorigin=unknown
+  fi
+  { [[ "${CLAUDE_CODE_ENTRYPOINT:-}" != sdk-* ]] && admin_origin_ok "$aorigin" && admin_origin_ok "$lorigin"; } ||
+    die "--admin is the human's: queue item $item${aorigin:+ is origin $aorigin}${lorigin:+, the launch item ${AGENT_QUEUE_ITEM} is origin $lorigin}; only a session the human opened may skip a review, so nothing merged. A PR waiting on a required review waits for the human: agent-ask post, then stop"
+fi
 # Every real step reads this checkout (head, forge remote, merge proof); --repo only redirects gh.
 # Outside a checkout a merged PR got through repo, merge and body, then failed proof (ar-2371).
 # A dry run reads no PR and stays the way to preview from anywhere.
