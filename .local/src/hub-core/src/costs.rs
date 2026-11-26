@@ -67,6 +67,9 @@ pub struct Eval {
     pub harness: String,
     pub done: u64,
     pub landed: u64,
+    /// What landed rate divides by: the items whose outcome was landed, no-pr or failed (an
+    /// unrated item, a cause outside the model or a check that cleared, is in done only).
+    pub landed_n: u64,
     pub redo: u64,
     pub reverts: u64,
     pub cost_usd: f64,
@@ -423,7 +426,7 @@ pub fn snapshot(date: &str, text: &str) -> Option<Snapshot> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
     Some(Snapshot {
         date: date.to_string(),
-        generated_at: v["generated_at"].as_str().and_then(epoch),
+        generated_at: v["generated_at"].as_str().and_then(crate::fleet::ts),
         tools: serde_json::from_value(v["by_tool"].clone()).unwrap_or_default(),
         unallocated_usd: v["by_tool_unallocated_usd"].as_f64(),
         parts: {
@@ -451,12 +454,6 @@ pub fn snapshot(date: &str, text: &str) -> Option<Snapshot> {
             .next()
             .map(str::to_string),
     })
-}
-
-fn epoch(t: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(t)
-        .ok()
-        .map(|t| t.timestamp())
 }
 
 /// A model id as the table shows it: Claude's without its `claude-` prefix.
@@ -510,22 +507,15 @@ impl Row for Slice {
     const FACETS: &'static [&'static str] = &["harness", "model", "project", "kind"];
 
     fn val(&self, col: &str) -> Val {
-        let text = |s: &str| {
-            if s.is_empty() {
-                Val::None
-            } else {
-                Val::Text(s.to_string())
-            }
-        };
         match col {
-            "session" => text(&self.session),
-            "title" => text(&self.title),
-            "project" => text(&self.project),
-            "harness" => text(&self.harness),
-            "model" => text(&self.model),
-            "runner" => text(&self.runner),
-            "kind" => text(&self.kind),
-            "account" => text(&self.account),
+            "session" => Val::word(&self.session),
+            "title" => Val::word(&self.title),
+            "project" => Val::word(&self.project),
+            "harness" => Val::word(&self.harness),
+            "model" => Val::word(&self.model),
+            "runner" => Val::word(&self.runner),
+            "kind" => Val::word(&self.kind),
+            "account" => Val::word(&self.account),
             "cost" => Val::Num(self.cost),
             "tokens" => Val::Num(self.tokens),
             _ => Val::None,
@@ -633,7 +623,7 @@ pub struct Line {
     pub cost: f64,
     /// Of what the filtered table sums to, 0..1.
     pub share: f64,
-    /// fleet-bench's landed over done, 0..1.
+    /// fleet-bench's landed over landed_n, 0..1.
     pub landed: Option<f64>,
     pub redo: Option<u64>,
     pub reverts: Option<u64>,
@@ -767,9 +757,9 @@ fn evaluate(l: &mut Line, evals: &[&Eval]) {
         return;
     }
     let sum = |f: fn(&Eval) -> u64| evals.iter().map(|e| f(e)).sum::<u64>();
-    let (done, landed, priced) = (sum(|e| e.done), sum(|e| e.landed), sum(|e| e.priced));
+    let (rated, landed, priced) = (sum(|e| e.landed_n), sum(|e| e.landed), sum(|e| e.priced));
     let cost: f64 = evals.iter().map(|e| e.cost_usd).sum();
-    l.landed = (done > 0).then(|| landed as f64 / done as f64);
+    l.landed = (rated > 0).then(|| landed as f64 / rated as f64);
     l.redo = Some(sum(|e| e.redo));
     l.reverts = Some(sum(|e| e.reverts));
     l.per_pr = (priced > 0).then(|| cost / priced as f64);
@@ -1506,8 +1496,9 @@ mod tests {
             evals: vec![Eval {
                 model: "opus".into(),
                 harness: "claude".into(),
-                done: 10,
+                done: 12,
                 landed: 9,
+                landed_n: 10,
                 redo: 1,
                 reverts: 0,
                 cost_usd: 45.0,
@@ -2099,7 +2090,7 @@ mod tests {
         let f = &c.fleet_cost;
         assert_eq!(
             (f.why.clone(), f.usd.as_str(), f.as_of),
-            (None, "about $5.00", Some(NOW))
+            (None, "$5.00", Some(NOW))
         );
         let days: Vec<_> = c.history.rows.iter().filter(|r| r.kind == "day").collect();
         assert_eq!(

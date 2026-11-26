@@ -381,21 +381,14 @@ impl crate::table::Row for Need {
 
     fn val(&self, col: &str) -> crate::table::Val {
         use crate::table::Val;
-        let text = |s: &str| {
-            if s.is_empty() {
-                Val::None
-            } else {
-                Val::Text(s.to_string())
-            }
-        };
         match col {
             "rank" => Val::Num(self.rank as f64),
-            "kind" => text(self.need.slug()),
-            "project" => text(&self.project),
+            "kind" => Val::word(self.need.slug()),
+            "project" => Val::word(&self.project),
             // Earlier is bigger, so a header's first click puts the longest wait on top.
             "waited" => self.since.map_or(Val::None, |s| Val::Num(-(s as f64))),
-            "holds" => text(&self.holds()),
-            "what" => text(&self.text),
+            "holds" => Val::word(&self.holds()),
+            "what" => Val::word(&self.text),
             _ => Val::None,
         }
     }
@@ -566,10 +559,7 @@ impl crate::table::Row for Running {
 
     fn val(&self, col: &str) -> crate::table::Val {
         use crate::table::Val;
-        let text = |s: Option<&str>| match s {
-            Some(s) if !s.is_empty() => Val::Text(s.to_string()),
-            _ => Val::None,
-        };
+        let text = |s: Option<&str>| s.map_or(Val::None, Val::word);
         match col {
             "item" => text(Some(&self.title)),
             "project" => text(Some(&self.project)),
@@ -609,7 +599,7 @@ impl crate::table::Row for Running {
             }),
             "project" => some(Some(&self.project)).map(|p| Link::To(Kind::Project, p)),
             "row" => some(self.row.as_deref()).map(|r| Link::To(Kind::Row, r)),
-            "epic" => some(self.epic.as_deref()).map(|e| Link::To(Kind::Epic, e)),
+            "epic" => some(self.epic.as_deref()).map(|e| Link::To(Kind::Row, e)),
             "pr" => some(self.pr_url.as_deref()).map(Link::Url),
             "ci" => some(self.ci_url.as_deref()).map(Link::Url),
             _ => None,
@@ -1258,7 +1248,7 @@ pub fn needs(
         let what = str_of(j, "what");
         out.push(condition(
             Kind::Janitor,
-            format!("janitor:{what}"),
+            format!("janitor:{}", j["key"].as_str().unwrap_or(what)),
             format!(
                 "Home cluster needs you: {} ({}, {}).",
                 what.trim_end_matches('.'),
@@ -1572,6 +1562,17 @@ mod tests {
             ],
             "main": [{"repo": "repo", "reason": "repo red: Tests"}],
         })
+    }
+
+    #[test]
+    fn a_janitor_need_takes_its_id_from_the_key_and_its_text_from_the_newest_line() {
+        let mut st = state();
+        st["janitor"] = json!([{"when": "10:50", "who": "janitor",
+            "what": "node a quarantine (x3 (06:20Z, 06:50Z, 10:50Z))", "key": "node a quarantine"}]);
+        let h = build_all(Some(&st), None, None, None, NOW);
+        let n = h.needs.iter().find(|n| n.kind == Kind::Janitor).unwrap();
+        assert_eq!(n.id, "janitor:node a quarantine");
+        assert!(n.text.contains("x3 (06:20Z, 06:50Z, 10:50Z)"));
     }
 
     #[test]
@@ -2055,7 +2056,7 @@ mod tests {
                 Some("#sessions/sessions/lab%2Frepo-agent-2%3A1"),
                 Some("#projects/p"),
                 Some("#projects/all?q=id:=tr-9"),
-                Some("#projects/all?q=id:=tr-1&s=epics")
+                Some("#projects/all?q=id:=tr-1")
             )
         );
         assert_eq!(

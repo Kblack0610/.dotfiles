@@ -22,7 +22,7 @@ use ratatui::text::{Line, Span};
 use crate::datatable::{DataTable, Took};
 use crate::fit::{cell, clip_line, Cell, Table};
 use crate::flowline::{self, LineView};
-use crate::fmt::{clock, Palette};
+use crate::fmt::{clock, heading, Palette};
 use hub_core::display::fmt::{counted, dur_min, usd};
 
 /// What a key on the Queue tab asks the app to do.
@@ -312,13 +312,6 @@ impl QueueView {
 /// Why cancel and priority leave a finished item alone.
 fn done_row(i: &Item) -> Result<String, String> {
     Err(format!("{} is done", i.slug))
-}
-
-fn heading(title: &str, rest: String, p: Palette) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(title.to_string(), p.head()),
-        Span::styled(rest, p.dim()),
-    ])
 }
 
 /// The STATE column: what the item needs, or how it finished.
@@ -726,7 +719,7 @@ fn candidates(
     let mut out = vec![clip_line(
         heading(
             &format!("{mark} CANDIDATES{count}"),
-            format!("  {hint}").trim_end().into(),
+            format!("  {hint}").trim_end(),
             p,
         ),
         w,
@@ -1393,9 +1386,9 @@ pub(crate) mod tests {
     fn a_done_row_shows_its_pr_in_the_column_and_flags_a_finish_with_no_proof() {
         let mut q = fixture();
         q.items.extend(hub_core::queue::parse(concat!(
-            r#"{"slug":"merged-one","project":"dotfiles","state":"done","status":"ok","pr":"o/r#7","merged":"abc","cost_usd":"6.10","finished":"2026-11-03T12:00:00Z","task":"Merged one"}"#,
+            r#"{"slug":"merged-one","project":"dotfiles","state":"done","status":"ok","outcome":"landed","pr":"o/r#7","merged":"abc","cost_usd":"6.10","finished":"2026-11-03T12:00:00Z","task":"Merged one"}"#,
             "\n",
-            r#"{"slug":"nothing-shown","project":"dotfiles","state":"done","status":"ok","cost_usd":"0","finished":"2026-11-03T12:00:00Z","task":"Nothing shown"}"#,
+            r#"{"slug":"nothing-shown","project":"dotfiles","state":"done","status":"ok","outcome":"no-pr","cost_usd":"0","finished":"2026-11-03T12:00:00Z","task":"Nothing shown"}"#,
             "\n",
             r#"{"slug":"broke","project":"dotfiles","state":"done","status":"failed","finished":"2026-11-03T12:00:00Z","task":"Broke"}"#,
             "\n",

@@ -113,6 +113,7 @@ pub fn run(p: &Profile, log: &Logger, cmd: Cmd) -> Result<i32> {
             };
             let (path, id) = add(p, log, &new, now)?;
             println!("{id}\t{}", path.display());
+            refresh_inbox(p, log);
             Ok(0)
         }
         Cmd::List {
@@ -135,8 +136,18 @@ pub fn run(p: &Profile, log: &Logger, cmd: Cmd) -> Result<i32> {
         Cmd::Read { id } => {
             let path = read(p, log, &id, now)?;
             println!("{}", path.display());
+            refresh_inbox(p, log);
             Ok(0)
         }
+    }
+}
+
+/// Republish the inbox page, whose Reports section lists the stream, so a report filed or read
+/// shows there now rather than at the next sweep. The report is already written: a page that
+/// cannot be published says so and does not fail the command.
+fn refresh_inbox(p: &Profile, log: &Logger) {
+    if let Err(e) = crate::daily::publish_inbox_page_kept_score(p, log) {
+        eprintln!("(inbox page not refreshed: {e:#})");
     }
 }
 
@@ -497,6 +508,36 @@ pub fn index_text(p: &Profile, day: NaiveDate, all: &[Entry]) -> String {
     s
 }
 
+/// The inbox page's Reports lines: every report in the stream (today's, or unread and under
+/// [`STREAM_DAYS`] old), unread ones that need the human first, then newest first. Each is the
+/// report's link, its summary's first line, and its day when that is not `today`. Read live
+/// from the folders, as every reader here is, so the page needs no copy of the list.
+pub fn inbox_lines(p: &Profile, today: NaiveDate) -> Vec<String> {
+    let since = today - chrono::Duration::days(STREAM_DAYS);
+    let mut shown: Vec<Entry> = list(p, Some(since), false, false)
+        .into_iter()
+        .filter(|e| e.stream(today))
+        .collect();
+    // `list` is newest day first, newest filed first; a stable sort keeps that within each half.
+    shown.sort_by_key(|e| !(e.needs_you && e.unread()));
+    shown
+        .iter()
+        .map(|e| {
+            let mut l = format!("[[{}|{}]]", e.target(p), label(&e.title));
+            if e.needs_you && e.unread() {
+                l.push_str(" (needs you)");
+            }
+            if e.day != today {
+                l.push_str(&format!(" ({})", e.day.format("%m-%d")));
+            }
+            match e.lead() {
+                "" => l,
+                lead => format!("{l}: {lead}"),
+            }
+        })
+        .collect()
+}
+
 fn lock(p: &Profile) -> Result<md::FileLock> {
     md::lock_file(&p.state_dir.join("report.lock"))
 }
@@ -530,18 +571,9 @@ pub struct New {
     pub from: String,
 }
 
-/// `title` in kebab case: lowercase letters and digits, every other run one `-`, at most 60.
+/// `title` in kebab case (`md::kebab`), at most 60 characters.
 fn slugify(title: &str) -> String {
-    let mut s = String::new();
-    for c in title.chars() {
-        if c.is_ascii_alphanumeric() {
-            s.push(c.to_ascii_lowercase());
-        } else if !s.ends_with('-') && !s.is_empty() {
-            s.push('-');
-        }
-    }
-    let s = s.trim_end_matches('-');
-    let mut cut = s.chars().take(60).collect::<String>();
+    let mut cut = crate::md::kebab(title).chars().take(60).collect::<String>();
     while cut.ends_with('-') {
         cut.pop();
     }
@@ -770,9 +802,7 @@ pub fn read(p: &Profile, log: &Logger, id: &str, now: DateTime<FixedOffset>) -> 
 mod tests {
     use super::*;
 
-    fn d(s: &str) -> NaiveDate {
-        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
-    }
+    use crate::md::date as d;
 
     fn at(s: &str) -> DateTime<FixedOffset> {
         DateTime::parse_from_rfc3339(s).unwrap()
@@ -857,6 +887,56 @@ mod tests {
                 "\n---\n\n# Nightly flake readout\n\nThe table.\n\n## Morning\n\nAll green.\n"
             ),
             "{text}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The inbox page's Reports: the stream only, an unread needs-you report first, an older
+    /// day's report dated, a read one from an older day gone (the archive), and a digest never.
+    #[test]
+    fn inbox_lines_are_the_stream_needs_you_first() {
+        let (dir, p, log) = vault("inbox");
+        let today = d("2026-11-24");
+        add(
+            &p,
+            &log,
+            &new("Fresh audit", "All clear.", "2026-11-24"),
+            at("2026-11-24T09:00:00-08:00"),
+        )
+        .unwrap();
+        let mut urgent = new(
+            "Sign the BAA",
+            "One form waits.\nSecond line.",
+            "2026-11-23",
+        );
+        urgent.needs_you = true;
+        add(&p, &log, &urgent, at("2026-11-23T08:00:00-08:00")).unwrap();
+        let (_, old_id) = add(
+            &p,
+            &log,
+            &new("Old read", "Done.", "2026-11-22"),
+            at("2026-11-22T08:00:00-08:00"),
+        )
+        .unwrap();
+        read(&p, &log, &old_id, at("2026-11-23T08:00:00-08:00")).unwrap();
+        add(
+            &p,
+            &log,
+            &new("Too old", "Stale.", "2026-11-10"),
+            at("2026-11-10T08:00:00-08:00"),
+        )
+        .unwrap();
+        fs::write(
+            dir.join("journal/refs/2026-11-24/briefing.md"),
+            "---\ngenerated: true\n---\n# Briefing\n",
+        )
+        .unwrap();
+        assert_eq!(
+            inbox_lines(&p, today),
+            [
+                "[[journal/refs/2026-11-23/sign-the-baa|Sign the BAA]] (needs you) (11-23): One form waits.",
+                "[[journal/refs/2026-11-24/fresh-audit|Fresh audit]]: All clear.",
+            ]
         );
         let _ = fs::remove_dir_all(&dir);
     }

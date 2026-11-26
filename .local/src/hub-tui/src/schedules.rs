@@ -7,7 +7,7 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
-use crate::fit::{cell, wrap, Cell, Table};
+use crate::fit::{cell, labelled, Cell, Table};
 use crate::fmt::{clock, Palette};
 use hub_core::display::fmt::dur_secs;
 use hub_core::reading::JobState;
@@ -51,8 +51,7 @@ impl SchedulesView {
     /// Move the selection to the row with this id after a refresh, or keep the index in range.
     pub fn reselect(&mut self, s: &Schedules, id: Option<RowId>) {
         let rows = self.shown(s);
-        let at = id.and_then(|id| rows.iter().position(|r| row_id(r) == id));
-        self.table.keep(at, rows.len());
+        self.table.reselect(&rows, id, |r, id| row_id(r) == *id);
     }
 
     /// The reader's summary, then the view and how many rows it keeps.
@@ -185,16 +184,8 @@ pub fn detail(r: &Schedule, p: Palette, now: i64, w: usize) -> Vec<Line<'static>
         ));
     }
     let width = w.saturating_sub(LABEL + 3).max(20);
-    let mut part = |label: &str, text: &str| {
-        let words: Vec<&str> = text.split_whitespace().collect();
-        for (i, l) in wrap(&words, " ", width).into_iter().enumerate() {
-            let name = if i == 0 { label } else { "" };
-            out.push(Line::from(vec![
-                Span::styled(format!("  {name:<LABEL$} "), p.dim()),
-                Span::raw(l),
-            ]));
-        }
-    };
+    let mut part =
+        |label: &str, text: &str| out.extend(labelled(label, text, LABEL, width, p.dim()));
     part("Why it exists", &r.purpose);
     part("Inside", &r.inside);
     part("Before", &r.before);

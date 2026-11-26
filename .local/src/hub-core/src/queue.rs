@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use crate::links::{Kind, Link};
 use crate::release_graph::pr_ref;
-use crate::session_actions::Runner;
+use crate::session_actions::{argv, Runner};
 use crate::text::{cap, headline, TITLE_MAX};
 
 /// A queue item's priorities, as `agent-queue` takes them. A board row's are `tasks::PRIORITIES`.
@@ -200,6 +200,10 @@ pub struct Item {
     /// `ok`, `failed` or `cancelled`, once done.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    /// The landing verdict agent-queue stamps at close (`OUTCOME_JQ`): `landed`, `no-pr`,
+    /// `unrated`, `failed` or `cancelled`. Every reader of whether an item landed reads this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
     /// Who cancelled it: a session id, or the slug of the item the caller works; agent-queue's
     /// `cancel_stamp` writes it. None for a cancel from before it did, or one a human made at
     /// a terminal.
@@ -408,17 +412,22 @@ impl Item {
         said(&self.finished).and_then(stamp)
     }
 
-    /// What a finished item counts as: shipped when it closed ok with a merge, a check when it
-    /// closed ok with none (a watch or alert that cleared); failed, cancelled or unfinished is None.
+    /// What a finished ok item counts as: shipped when its outcome is landed, a check otherwise (a
+    /// watch or alert that cleared); failed, cancelled or unfinished is None.
     pub fn closed_as(&self) -> Option<Closed> {
         if self.state != State::Done || said(&self.status) != Some("ok") {
             return None;
         }
-        Some(if said(&self.merged).is_some() {
+        Some(if self.landed() {
             Closed::Shipped
         } else {
             Closed::Check
         })
+    }
+
+    /// Whether its outcome is landed: done ok with a PR, by agent-queue's one rule.
+    pub fn landed(&self) -> bool {
+        said(&self.outcome) == Some("landed")
     }
 
     /// Minutes it has been ready at `now`: from `ready` (its hold's release), else `queued`,
@@ -656,14 +665,12 @@ impl Item {
         })
     }
 
-    /// A finished `ok` item that shows nothing for its work: no PR and no `report` (the url or
-    /// path of what it made instead of one). A canary item opens no PR by design.
+    /// A finished item that shows nothing for its work: outcome no-pr (ok with no PR on a kind
+    /// that exits with one) and no `report` (the url or path of what it made instead of one).
     pub fn unproven(&self) -> bool {
         self.state == State::Done
-            && self.status.as_deref().unwrap_or("ok") == "ok"
-            && self.pr_link().is_none()
+            && said(&self.outcome) == Some("no-pr")
             && self.extra_str("report").is_none()
-            && self.from.as_deref() != Some("canary")
     }
 
     /// The priority one step up (`up`) or down, or None at the end of the scale or for a
@@ -934,12 +941,8 @@ pub fn done_days(items: &[Item]) -> BTreeMap<String, DayTotal> {
     by.into_iter().map(|(d, v)| (d, DayTotal::of(v))).collect()
 }
 
-fn argv(args: &[&str]) -> Vec<String> {
-    std::iter::once("agent-queue")
-        .chain(args.iter().copied())
-        .map(String::from)
-        .collect()
-}
+/// The CLI this module reads and writes through.
+const CLI: &str = "agent-queue";
 
 /// One record an item names and where it opens (`Item::links`); the web gets the link as its href.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -1024,7 +1027,7 @@ pub fn parse(jsonl: &str) -> Vec<Item> {
 
 /// One item by its slug, whatever its state.
 pub fn show(runner: &dyn Runner, slug: &str) -> Result<Item, String> {
-    parse(&runner.run(&argv(&["show", slug, "--json"]))?)
+    parse(&runner.run(&argv(&[CLI, "show", slug, "--json"]))?)
         .pop()
         .ok_or_else(|| format!("{slug}: agent-queue show printed no item"))
 }
@@ -1033,7 +1036,9 @@ pub fn show(runner: &dyn Runner, slug: &str) -> Result<Item, String> {
 /// queued time. `all` is every active item plus today's finished ones.
 pub fn list(runner: &dyn Runner, state: &str) -> Result<Vec<Item>, String> {
     runner
-        .run(&argv(&["list", "--json", "--points", "--state", state]))
+        .run(&argv(&[
+            CLI, "list", "--json", "--points", "--state", state,
+        ]))
         .map(|out| parse(&out))
 }
 
@@ -1044,7 +1049,7 @@ pub fn list_since(runner: &dyn Runner, state: &str, since: &str) -> Result<Vec<I
     }
     runner
         .run(&argv(&[
-            "list", "--json", "--points", "--state", state, "--since", since,
+            CLI, "list", "--json", "--points", "--state", state, "--since", since,
         ]))
         .map(|out| parse(&out))
 }
@@ -1093,7 +1098,7 @@ pub fn days_ago(days: i64) -> String {
 }
 
 pub fn stats(runner: &dyn Runner) -> Result<Stats, String> {
-    let out = runner.run(&argv(&["stats", "--json"]))?;
+    let out = runner.run(&argv(&[CLI, "stats", "--json"]))?;
     serde_json::from_str(&out).map_err(|e| format!("agent-queue stats: {e}"))
 }
 
@@ -1872,7 +1877,7 @@ pub fn cancel(runner: &dyn Runner, slug: &str) -> Result<String, String> {
     if !is_slug(slug) {
         return Err("bad slug".into());
     }
-    runner.run(&argv(&["cancel", slug]))
+    runner.run(&argv(&[CLI, "cancel", slug]))
 }
 
 /// `agent-queue bump <slug> <priority>`.
@@ -1883,7 +1888,7 @@ pub fn bump(runner: &dyn Runner, slug: &str, priority: &str) -> Result<String, S
     if !PRIORITIES.contains(&priority) {
         return Err("priority is urgent, high, normal or low".into());
     }
-    runner.run(&argv(&["bump", slug, priority]))
+    runner.run(&argv(&[CLI, "bump", slug, priority]))
 }
 
 /// The modes `agent-queue add` takes.
@@ -1942,7 +1947,7 @@ pub fn add_argv(a: &Add) -> Result<Vec<String>, &'static str> {
     if task.is_empty() {
         return Err("type the task");
     }
-    let mut args = argv(&["add", "--from", "human", "--project", &a.project]);
+    let mut args = argv(&[CLI, "add", "--from", "human", "--project", &a.project]);
     args.extend(["--mode", mode, "--priority", priority].map(String::from));
     if !a.tags.trim().is_empty() {
         args.extend(["--tags".into(), a.tags.trim().into()]);
@@ -2593,7 +2598,7 @@ mod tests {
     fn a_done_item_shows_its_pr_its_cost_and_whether_anything_proves_it() {
         let item = |j: &str| parse(j).remove(0);
         let landed = item(
-            r#"{"slug":"a","state":"done","status":"ok","pr":"Kblack0610/.dotfiles#1225","merged":"abc","cost_usd":"6.1","task":"t"}"#,
+            r#"{"slug":"a","state":"done","status":"ok","outcome":"landed","pr":"Kblack0610/.dotfiles#1225","merged":"abc","cost_usd":"6.1","task":"t"}"#,
         );
         assert_eq!(
             landed.pr_link(),
@@ -2602,10 +2607,12 @@ mod tests {
                 Some("https://github.com/Kblack0610/.dotfiles/pull/1225".into())
             ))
         );
-        assert!(landed.merged() && !landed.unproven());
+        assert!(landed.merged() && landed.landed() && !landed.unproven());
         assert_eq!(landed.cost(), Some(6.1));
         // An older item carries a bare number: a label, no link, and no merge recorded.
-        let bare = item(r#"{"slug":"b","state":"done","status":"ok","pr":"1796","task":"t"}"#);
+        let bare = item(
+            r#"{"slug":"b","state":"done","status":"ok","outcome":"landed","pr":"1796","task":"t"}"#,
+        );
         assert_eq!(bare.pr_link(), Some(("#1796".into(), None)));
         // One PR per repo: the first one's label and page, and how many more.
         let many = Item {
@@ -2647,16 +2654,23 @@ mod tests {
             odd("javascript:alert(1)"),
             Some(("#javascript:alert(1)".into(), None))
         );
-        // No PR and no report is flagged; a report, a canary or a failure is not.
-        let flagged = item(r#"{"slug":"c","state":"done","status":"ok","task":"t"}"#);
+        // Outcome no-pr with no report is flagged; a report, an unrated close (a canary, a check
+        // that cleared) or a failure is not.
+        let flagged =
+            item(r#"{"slug":"c","state":"done","status":"ok","outcome":"no-pr","task":"t"}"#);
         assert!(flagged.unproven());
-        let reported =
-            item(r#"{"slug":"c","state":"done","status":"ok","report":"https://x/y","task":"t"}"#);
+        let reported = item(
+            r#"{"slug":"c","state":"done","status":"ok","outcome":"no-pr","report":"https://x/y","task":"t"}"#,
+        );
         assert!(!reported.unproven());
-        let canary =
-            item(r#"{"slug":"c","state":"done","status":"ok","from":"canary","task":"t"}"#);
+        let canary = item(
+            r#"{"slug":"c","state":"done","status":"ok","outcome":"unrated","from":"canary","task":"t"}"#,
+        );
         assert!(!canary.unproven());
-        assert!(!item(r#"{"slug":"d","state":"done","status":"failed","task":"t"}"#).unproven());
+        assert!(!item(
+            r#"{"slug":"d","state":"done","status":"failed","outcome":"failed","task":"t"}"#
+        )
+        .unproven());
         assert!(!item(r#"{"slug":"e","state":"running","task":"t"}"#).unproven());
     }
 

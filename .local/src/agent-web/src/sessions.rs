@@ -13,7 +13,7 @@ use hub_core::table::{self, Summary, View};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::cache::{off, ReadCache};
+use crate::cache::{failed, off, ReadCache};
 use crate::Shared;
 
 /// Folds concurrent tabs, quick reloads and every keystroke in the search into one read.
@@ -89,12 +89,7 @@ fn render(r: &Read, q: &TableQuery) -> String {
         errors: &r.errors,
         table,
     };
-    serde_json::to_string(&out).unwrap_or_else(|e| failed(e.to_string()))
-}
-
-/// A body the tab can still render when reading itself failed.
-fn failed(e: String) -> String {
-    serde_json::json!({ "rows": [], "errors": [e] }).to_string()
+    serde_json::to_string(&out).unwrap_or_else(|e| failed(&["rows"], e.to_string()))
 }
 
 impl Cache {
@@ -134,7 +129,9 @@ impl Cache {
 
     /// The view `q` asks for; every view is applied to the shared read outside the lock.
     pub async fn table(&self, s: &Shared, q: TableQuery) -> String {
-        self.read(s).await.map_or_else(failed, |r| render(&r, &q))
+        self.read(s)
+            .await
+            .map_or_else(|e| failed(&["rows"], e), |r| render(&r, &q))
     }
 
     /// One session's page, or None when nothing names `id`. The open page refreshes with the

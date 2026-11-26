@@ -21,7 +21,7 @@ use serde_json::Value;
 use crate::datatable::DataTable;
 use crate::fit::{cell, clip_line, Cell, Table};
 use crate::fleet;
-use crate::fmt::{clock, Palette};
+use crate::fmt::{clock, dash, Palette};
 use hub_core::display::fmt::dur_secs;
 
 /// The fleet cells the detail leaves to the page's Worktree, PR and Plan parts.
@@ -435,17 +435,17 @@ impl Controls {
             let cells: Vec<Vec<Cell>> = rows.iter().map(|r| self.row(r, p, now)).collect();
             let mut t = Table {
                 mark: self.table.mark::<SessionRow>(),
-                // The first sixteen are `SessionRow::COLUMNS`, in its order, so the sort mark lands.
+                // The first seventeen are `SessionRow::COLUMNS`, in its order, so the sort mark lands.
                 header: vec![
                     "STAGE", "ACTIVITY", "PROJECT", "TASK", "BY", "PR", "PLAN", "IDLE", "CTX",
-                    "COST", "ACCOUNT", "HARNESS", "CLOSE", "ITEM", "SOURCE", "SESSION", "ETA",
-                    "YOU", "ASK", "WHY",
+                    "COST", "ACCOUNT", "HARNESS", "CLOSE", "ITEM", "SOURCE", "SESSION", "MACHINE",
+                    "ETA", "YOU", "ASK", "WHY",
                 ],
                 rows: cells,
                 keep: vec![
-                    0, 3, 5, 6, 7, 15, 2, 9, 10, 18, 17, 8, 4, 1, 16, 11, 12, 13, 14,
+                    0, 3, 5, 6, 7, 15, 2, 9, 10, 19, 18, 8, 4, 1, 17, 16, 11, 12, 13, 14,
                 ],
-                flex: Some(19),
+                flex: Some(20),
                 flexmin: if w >= 100 { 30 } else { 12 },
                 flexkeep: w >= 100,
                 right: vec![7, 8, 9],
@@ -456,7 +456,8 @@ impl Controls {
                     (11, 16),
                     (13, 22),
                     (15, fleet::NAME_MAX),
-                    (16, 22),
+                    (16, 18),
+                    (17, 22),
                 ],
             }
             .fit(w, p.head());
@@ -523,7 +524,7 @@ impl Controls {
             None => "".into(),
         };
         let task = match x.task.as_str() {
-            "" => dash(r.live.map_or("", |(a, _)| a.plan_slug.as_str())),
+            "" => dash(r.live.map_or("", |(a, _)| a.plan_slug.as_str())).into(),
             t => t.into(),
         };
         let pr = match &x.pr {
@@ -550,21 +551,22 @@ impl Controls {
         };
         vec![
             stage,
-            dash(&x.activity),
-            dash(&x.project),
+            dash(&x.activity).into(),
+            dash(&x.project).into(),
             task,
-            dash(&x.by),
+            dash(&x.by).into(),
             pr,
             plan,
             idle,
             x.context_pct.map_or("-".into(), |c| format!("{c}%").into()),
             x.cost_usd.map_or("-".into(), |c| format!("${c:.2}").into()),
-            dash(&x.account),
-            dash(&x.harness),
-            dash(&x.close),
-            dash(&x.item),
+            dash(&x.account).into(),
+            dash(&x.harness).into(),
+            dash(&x.close).into(),
+            dash(&x.item).into(),
             x.source.name().into(),
             session.into(),
+            cell(dash(&x.runs_on), p.dim()),
             self.eta(r, p, now),
             cell(
                 if r.live.is_some_and(|(_, s)| s.attached) {
@@ -712,10 +714,6 @@ pub(crate) fn page_field(part: &PagePart, p: Palette, w: usize) -> Line<'static>
         ]),
         w,
     )
-}
-
-pub(crate) fn dash(s: &str) -> Cell {
-    if s.is_empty() { "-" } else { s }.into()
 }
 
 fn cap(s: &str) -> String {
