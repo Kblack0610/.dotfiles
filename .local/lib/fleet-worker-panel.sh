@@ -127,9 +127,10 @@ submodule_noise() {
 # submodule, or a commit there no remote ref holds, is work a Bash edit (not in edited_files) may have
 # made, so it stays dirt. -z and literal pathspecs: odd names match as status -z prints them.
 foreign_pin() {
-  local d="$1" path="$2" edited="$3" sub f
+  local d="$1" path="$2" edited="$3" sub f mode=
   [ -e "$d/$path/.git" ] || return 1
-  [ "$(git --literal-pathspecs -C "$d" ls-files -s -z -- "$path" 2>/dev/null | head -c 7)" = "160000 " ] || return 1
+  IFS= read -r -d ' ' mode < <(git --literal-pathspecs -C "$d" ls-files -s -z -- "$path" 2>/dev/null)
+  [ "$mode" = 160000 ] || return 1
   sub="$(realpath -m -- "$d/$path")"
   while IFS= read -r f; do
     [[ "$f" == "$sub" || "$f" == "$sub"/* ]] && return 1
