@@ -4297,6 +4297,16 @@ dispatch_tag() {
   on_host "$1" tmux -L "$2" set-option "${scope[@]}" -t "$tgt" @dispatch "$6" || say "could not tag $3${4:+:$4} with @dispatch"
 }
 
+# start_harness <item json> -> the harness a start with no --harness runs (a hand start, or a run pass that
+# routed the item to claude): its `agent:` only when that is a pin (item_pinned), else claude. One a routed
+# start recorded is no pin (ar-5957 failed 5 passes in a row relaunching the trainee its ladder had spent, ar-5747).
+start_harness() { if item_pinned "$1"; then jq -r .agent <<<"$1"; else echo claude; fi; }
+
+# start_routed <item json> <harness> -> the `routed:` a start records: none on claude, so an earlier
+# route's record cannot make a later hand pin of that harness read as no pin; else the item's own,
+# which start_item sets for a routed start.
+start_routed() { [ "$2" = claude ] || jq -r '.routed // ""' <<<"$1"; }
+
 # start_record <item> <server> <session> <host> <field=value>... -- mark the item a start just launched as
 # running on its session, or close that session and return 1. The move to running is what keeps the next pass
 # off the item, so a launch it cannot record does not stay up: on 11-17 a queue lock miss left ar-2743 queued
@@ -4347,7 +4357,7 @@ start_record() {
 #                           only): how agent-ask reopen hands an ended session the answer to its ask.
 #                           It leaves the pane it opened in START_PANE, which its caller clears (restore_world tags it).
 cmd_start() {
-  local base='' START_NOW='' project='' prof='' lane=human agent_work=1 key='' server='' model='' brief_file='' trn='' drc='' rclr='' \
+  local base='' START_NOW='' project='' prof='' lane=human agent_work=1 key='' server='' model='' brief_file='' trn='' drc='' \
     resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' prompt='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' hwhy='' rh='' qmode='' eff='' hold='' brief cmd label origin acct mode rec size
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -4501,10 +4511,7 @@ cmd_start() {
     [ -n "$cwd" ] || cwd=$(repo_dir "$project")
     [ -n "$cwd" ] && [ -d "$cwd" ] || { say "start: no repo to cut a worktree from for $project (--cwd)"; return 2; }
     origin=${START_ORIGIN:-hand}
-    # With no --harness (a hand start, or a run pass that routed it to claude) the item's `agent:` is the
-    # harness only when it is a pin (item_pinned): one a routed start recorded is no pin, so it starts on claude
-    # (ar-5957 failed 5 passes in a row relaunching the trainee its ladder had spent, ar-5747).
-    [ -n "$harness" ] || { item_pinned "$it" && harness=$(jq -r .agent <<<"$it"); } || harness=claude
+    [ -n "$harness" ] || harness=$(start_harness "$it")
     # A worker runs the harness its kit has, and past claude only one its fleet_harnesses
     # lists (harness_prep refuses an opencode one it cannot run there).
     [ -z "$host" ] || hwhy=$(host_start_why "$host" "$item" "$harness") || { say "start: $hwhy"; return 2; }
@@ -4550,9 +4557,7 @@ cmd_start() {
     # marks the row as trained once, counts toward its harness's cap, and its review hand-off reads it;
     # `direct:` marks a direct run the same way, for its landing.
     trn=''; [ -n "$drc" ] || [ "$harness" = claude ] || [ -z "$(harness_sandbox "$harness")" ] || is_canary "$it" || trn="$harness:$model"
-    # A claude start clears an earlier route's `routed:`, which would read a later hand pin of that harness as no pin.
-    rclr=''; [ "$harness" != claude ] || rclr=routed=
-    start_record "$item" "$server" "$session" "$host" "session=$server:$session" "account=$acct" "origin=$origin" "model=$model" "agent=$harness" ${rclr:+"$rclr"} ${size:+"size=$size"} ${host:+"host=$host"} ${trn:+"trainee=$trn"} ${drc:+"direct=$drc"} ||
+    start_record "$item" "$server" "$session" "$host" "session=$server:$session" "account=$acct" "origin=$origin" "model=$model" "agent=$harness" "routed=$(start_routed "$it" "$harness")" ${size:+"size=$size"} ${host:+"host=$host"} ${trn:+"trainee=$trn"} ${drc:+"direct=$drc"} ||
       { exec 7>&-; return 1; }
     # The id was chosen above, so the claim is made here and not in the session's own start, where
     # it waited on the queue lock (up to 2.9 s, 2026-11-06). Both outcome joins go through `sessions:`.
