@@ -791,7 +791,7 @@ enum PtaskCmd {
     /// off the marker. A row already archived moves back onto its sheet. The id finds the row in
     /// either lane, so `--agent` is not needed
     Reopen {
-        /// What made the close false (the log keeps it)
+        /// What made the close false: `notes log --id <id>` shows it on the `reopened` event (the record keeps about 30 days); the row keeps no trace of it
         #[arg(long, value_name = "WHY")]
         why: String,
         /// The row's id, as `ar-142`
