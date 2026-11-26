@@ -3563,10 +3563,12 @@ STUB
   assert_success
   assert_line --index 1 'fix(greet): say hello'
   assert_equal "$(git rev-parse HEAD)" "$CBASE"
-  # A second start keeps the place the first found (s1), not the base it left (ar-5935).
+  # A second start keeps the place the first found (s1, by its full ref: a tag s1 makes --short print heads/s1),
+  # not the base it left (ar-5935).
+  git tag s1 "$CBASE"
   run "$SUBJECT" canary start greet
   assert_success
-  assert_equal "$(cat "$(git rev-parse --path-format=absolute --git-path fleet-bench-canary)")" s1
+  assert_equal "$(cut -f1 "$(git rev-parse --path-format=absolute --git-path fleet-bench-canary)")" s1
   # The session games its own copy of the oracle and leaves greet.sh alone: the merge copy scores it.
   mkdir -p tests; echo 'exit 0' > tests/check.sh
   CLAUDE_CODE_SESSION_ID=c1 AGENT_QUEUE_ITEM=canary-greet-w1 run "$SUBJECT" canary score greet
@@ -3632,6 +3634,26 @@ STUB
   assert_success
   assert_output --partial 'is on a branch, not detached by canary start, so it stays as the run left it'
   assert_equal "$(git rev-parse b6)" "$head"
+}
+
+@test "canary start and score: a tree start found detached goes back to that commit, detached; a record naming a commit the tree is not at is stale and ignored (ar-5935)" {
+  canary_fixture
+  git -C "$CREPO" worktree add -q --detach "$SANDBOX/wt7" main
+  cd "$SANDBOX/wt7"
+  mark=$(git rev-parse --path-format=absolute --git-path fleet-bench-canary)
+  printf 'gone\t%s\n' "$CBASE" > "$mark"
+  run "$SUBJECT" canary start greet
+  assert_success
+  assert_equal "$(cut -f1 "$mark")" "$CMERGE"
+  echo 'echo hello' > greet.sh
+  AGENT_QUEUE_ITEM=canary-greet-w7 run "$SUBJECT" canary score greet
+  assert_success
+  assert_output --partial 'canary greet: pass (exit 0)'
+  run git symbolic-ref -q HEAD
+  assert_failure
+  assert_equal "$(git rev-parse HEAD)" "$CMERGE"
+  assert_equal "$(git status --porcelain)" ''
+  [ ! -e "$mark" ] || fail "the restored tree kept start's record"
 }
 
 @test "canary start: a base that leaves a directory untracked (a submodule's copy at a base before it was one, ar-5933) is refused, and the tree is put back as it was" {

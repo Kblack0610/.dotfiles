@@ -7468,11 +7468,13 @@ canary_start() {
   git -C "$top" cat-file -e "$base^{commit}" 2>/dev/null || { say "canary start: $top has no commit $base"; return 2; }
   [ -z "$(git -C "$top" status --porcelain)" ] || { say "canary start: $top has uncommitted changes"; return 2; }
   mark=$(canary_mark "$top") || return 1
-  # A record counts only on a detached tree, the one an earlier start left; on a branch the caller is here.
-  { ! git -C "$top" symbolic-ref -q HEAD >/dev/null && [ -s "$mark" ] && orig=$(<"$mark"); } ||
-    orig=$(git -C "$top" symbolic-ref -q --short HEAD || git -C "$top" rev-parse HEAD) || return 1
-  git -C "$top" checkout -q --detach "$base" || return 1
-  printf '%s\n' "$orig" >"$mark" || { canary_restore "$top" "$orig"; say "canary start: could not record $orig in $mark, so $top stays at $orig"; return 1; }
+  # A record counts only while HEAD is the base it was left at, detached: an earlier start's. Anywhere else the
+  # caller is where it stands (a branch by its full ref, since --short can print an ambiguous heads/<name>).
+  orig=$(canary_marked "$top") ||
+    { orig=$(git -C "$top" symbolic-ref -q HEAD) && orig=${orig#refs/heads/}; } || orig=$(git -C "$top" rev-parse HEAD) || return 1
+  # Written before the checkout, so a start killed between the two still knows where to go back to.
+  printf '%s\t%s\n' "$orig" "$(git -C "$top" rev-parse "$base^{commit}")" >"$mark" || { say "canary start: could not record $orig in $mark"; return 1; }
+  git -C "$top" checkout -q --detach "$base" || { rm -f "$mark"; return 1; }
   left=$(git -C "$top" -c core.quotePath=false ls-files --others --exclude-standard --directory | while IFS= read -r p; do
            [ -z "$(git -C "$top" ls-tree --name-only "$orig" -- "${p%/}")" ] || printf '%s\n' "${p%/}"
          done | paste -sd ' ')
@@ -7487,8 +7489,17 @@ canary_start() {
   printf 'canary %s: %s is at %s\n%s\n' "$1" "$top" "${base:0:10}" "$(jq -r .task <<<"$t")"
 }
 
-# canary_mark <tree> -> the file in the tree's own git dir (per worktree) that holds the place canary start found it at
+# canary_mark <tree> -> the file in the tree's own git dir (per worktree) that holds `<place>\t<base sha>`: where
+# canary start found the tree, and the base it moved it to
 canary_mark() { git -C "$1" rev-parse --path-format=absolute --git-path fleet-bench-canary; }
+
+# canary_marked <tree> -> the place canary start found the tree at, when its record names the commit the
+# tree is detached at now; rc 1 for none, or for a stale one (a tree that has moved since, ar-5935)
+canary_marked() {
+  local m place sha
+  m=$(canary_mark "$1") && [ -s "$m" ] && IFS=$'\t' read -r place sha <"$m" && [ -n "$place" ] || return 1
+  ! git -C "$1" symbolic-ref -q HEAD >/dev/null && [ "$(git -C "$1" rev-parse HEAD)" = "$sha" ] && printf '%s\n' "$place"
+}
 
 # canary_restore <tree> <place> -> the tree checked out at <place> (a branch it attaches, else a commit,
 # detached), and its canary_mark removed; rc 1 when the checkout fails, the mark kept
@@ -7528,7 +7539,7 @@ CANARY_UNRUN_ENDS="$UNRATED_ENDS timeout"
 # positive control run (canary_control) is marked control, and when it fails it says that its whole week now
 # reads instrument (canary_graded).
 canary_score() {
-  local t top run log rc=0 cfg r repos lane base reset=1 id="${1:-}" end='' pass verdict control mark orig
+  local t top run log rc=0 cfg r repos lane base reset=1 id="${1:-}" end='' pass verdict control orig
   t=$(canary_task "${id:?usage: fleet-bench canary score <id>}") || return 2
   [ $# -eq 1 ] || { say "usage: fleet-bench canary score <id>"; return 2; }
   top=$(git rev-parse --show-toplevel 2>/dev/null) || { say "canary score: not in a git worktree"; return 2; }
@@ -7571,9 +7582,8 @@ canary_score() {
   [ "$control" != true ] || [ "$pass" != false ] ||
     say "canary score: the positive control failed, so every run of $(jq -rn --arg r "$run" --argjson e "$(now)" "$JQ_LIB"'{run: $r, epoch: $e} | canary_batch') reads instrument, in no rate (fix the oracle or the sandbox, then rerun)"
   # The score is recorded, so a tree left dirty is said, not failed: the run's item still closes.
-  mark=$(canary_mark "$top") || mark=''
   if [ -z "$reset" ]; then
-    [ -z "$mark" ] || [ ! -s "$mark" ] || say "canary score: canary start found $top at $(<"$mark"), and it stays where the run left it"
+    ! orig=$(canary_marked "$top") || say "canary score: canary start found $top at $orig, and it stays where the run left it"
     return 0
   fi
   { git -C "$top" reset -q --hard "$base" && git -C "$top" clean -fdq; } ||
@@ -7583,9 +7593,8 @@ canary_score() {
   while IFS= read -r p; do
     [[ "$p" != */ ]] || [ ! -d "$top/$p.git" ] || rm -rf -- "${top:?}/$p"
   done < <(git -C "$top" -c core.quotePath=false ls-files --others --exclude-standard --directory)
-  # Then back where canary start found it (canary_mark), so a session's tree is on its branch again (ar-5935).
-  if [ -s "$mark" ]; then
-    orig=$(<"$mark")
+  # Then back where canary start found it (canary_marked), so a session's tree is on its branch again (ar-5935).
+  if orig=$(canary_marked "$top"); then
     canary_restore "$top" "$orig" || say "canary score: could not put $top back on $orig, so it stays at ${base:0:10}"
   fi
   [ -z "$(git -C "$top" status --porcelain)" ] ||
