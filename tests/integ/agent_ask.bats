@@ -178,6 +178,21 @@ relay_fixture() { # <kind> <text> <shown>
   assert_success
 }
 
+@test "said: the human's words in this attended session pass; other words, a dispatched session or none fail (ar-6059)" {
+  relay_fixture typed 'Hold critical till tomorrow' ''
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" said --since '-1 hour' 'hold  CRITICAL till'
+  assert_success
+  grep -q "agent-panel human $HOME/.claude/projects/p/sid-r.jsonl --since [0-9-]*T[0-9:]*Z" "$NOTES_FIXTURE/calls.log"
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" said --since '-1 hour' 'release it'
+  assert_failure 1; assert_output --partial 'contain: release it'
+  run env CLAUDE_CODE_SESSION_ID=sid-r AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" said --since '-1 hour' 'hold critical'
+  assert_failure 1; assert_output --partial 'no human at it'
+  run "$AGENT_ASK" said --since '-1 hour' 'hold critical'
+  assert_failure 1; assert_output --partial 'no CLAUDE_CODE_SESSION_ID'
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" said 'hold critical'
+  assert_failure 2
+}
+
 @test "answer --quote: refused unless the transcript proves it, and the ask stays pending" {
   local id; id="$(post demo 'park 611 rows?')"
   relay_fixture answer 'Park them' "Ask $id: park the 611 rows?"

@@ -2338,7 +2338,7 @@ notes --profile bnb ptask game --agent run gm-9"
   run "$AQ" add --project game --mode plan --priority urgent --slug up "plan, urgent"
   assert_called 'fleet-dispatch start --item up'
   # 2026-11-12: an urgent plan item started under the human's dispatch hold.
-  "$REPO_ROOT/.local/bin/agent-hold" set dispatch --by human "next queue" >/dev/null
+  "$REPO_ROOT/.local/bin/agent-hold" set dispatch --by human --until "+12 hours" "next queue" >/dev/null
   run "$AQ" add --project game --mode plan --priority urgent --slug held "plan, held"
   assert_success
   assert_output --partial 'so held stays queued for the next dispatch pass'
