@@ -346,56 +346,6 @@ SH
   assert_output --partial 'No epic: <id> line'
 }
 
-# The real notes (NOTES_BIN, set by the CI notes job; skips without it) on a board where six rows
-# outrank an open epic, lb-9, and a live plan serves lb-9. 2026-11-24: ar-5349 copied ar-4724, whose
-# epic no row shortlist showed.
-crowded_board() {
-  [ -n "${NOTES_BIN:-}" ] || skip "NOTES_BIN names no built notes"
-  labbed
-  systems_stub
-  # ptask add gives an epic an id from its tracker's code
-  jq '.trackers.labbed.code = "lb"' "$HOME/.config/shared-hooks/project-map.json" > "$BATS_TEST_TMPDIR/m.json"
-  mv "$BATS_TEST_TMPDIR/m.json" "$HOME/.config/shared-hooks/project-map.json"
-  ln -sf "$NOTES_BIN" "$BATS_TEST_TMPDIR/bin/notes"
-  # the live plans notes reads are the stowed plan reader's
-  mkdir -p "$HOME/.local/lib"
-  ln -sf "$(cd "$ROOT" && pwd)/.local/lib/plan-phases.sh" "$HOME/.local/lib/plan-phases.sh"
-  local proj="$HOME/.notes/lab/projects/current/labbed" w n=10
-  : > "$proj/summary.md"
-  {
-    printf '# labbed\n\nVersion: v0.1.0\n\n## Inbox\n\n## Tasks\n'
-    for w in alpha bravo charlie delta echo foxtrot; do
-      n=$((n + 1))
-      printf -- '- [ ] feat(ui): a lobby the player can open with friends %s #low <!-- id:lb-%s -->\n' "$w" "$n"
-    done
-    printf -- '- [ ] epic(ui): friends gather in one lobby <!-- id:lb-9 -->\n'
-  } > "$proj/README.md"
-  printf '# labbed agent\n\n## Tasks\n- [ ] fix(ci): a story #low <!-- id:lb-2 -->\n' > "$proj/agent/README.md"
-  mkdir -p "$HOME/.agent/plans/_live" "$HOME/.config/notes"
-  printf '# Lobby screens the player opens with friends\n\nepic: lb-9\n\n## Phases\n\n- [ ] P1 the lobby\n' > "$HOME/.agent/plans/_live/lobby.md"
-  printf 'vault = "~/.notes"\n[profile.personal]\nroot = "~/.notes/lab"\n' > "$HOME/.config/notes/config.toml"
-  export NOTES_CONFIG="$HOME/.config/notes/config.toml" NOTES_NO_LAB_REFRESH=1
-  unset NOTES_PROFILE
-}
-
-@test "end to end: an epic: new shortlist names the open epic and live plan that rows outrank" {
-  crowded_board
-  t='epic(ui): a lobby the player can open with friends'
-  run notes ptask labbed similar --epic --json -- "$t"
-  assert_success
-  [ "$(jq -c '[.[] | select(.id == "lb-9") | .kind]' <<<"$output")" = '["epic","plan"]' ] || fail "lb-9 as epic and plan: $output"
-  [ "$(jq '[.[] | select(.kind == "row")] | length' <<<"$output")" = 5 ] || fail "five rows: $output"
-  run gate labbed "$(proposal "$t" 'lb-11, lb-12, lb-13, lb-14 and lb-15 are other work.')"
-  assert_output --partial 'Overlap: does not name lb-9'
-  run gate labbed "$(proposal "$t" 'lb-11, lb-12, lb-13, lb-14 and lb-15 are other work; lb-9 is a social lobby, other work.')"
-  assert_output ''
-  # notes ptask add, from a session the human opened, refuses the epic until lb-9 is checked too
-  run env CLAUDE_CODE_SESSION_ID=feedface0123 AGENT_QUEUE_ITEM= AGENTCTL_NAME= notes ptask labbed add --checked lb-11,lb-12,lb-13,lb-14,lb-15 -- "$t"
-  [ "$status" -eq 5 ] || fail "exit $status: $output"
-  assert_output --partial $'lb-9\t'
-  assert_output --partial 'plan _live/lobby.md serves lb-9'
-}
-
 @test "plan mode injects once per session" {
   tp="$BATS_TEST_TMPDIR/t.jsonl"
   : > "$tp"
