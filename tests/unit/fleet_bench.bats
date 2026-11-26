@@ -2466,6 +2466,54 @@ fix_item() {
   assert_line 'reds_spent=?'
 }
 
+# 2026-11-25 (ar-6233): RrN599 was cancelled as not a human call (owned by hc-1133, mHHGUX, aRMp2v),
+# its cause left the spent set for a pass, and triage posted the same red again as dom9vg.
+@test "triage: a red whose ask was cancelled is not asked again the same day, nor while the work it names is open" {
+  log_triage_setup
+  lock_route
+  fix_item ar-1 done cancelled
+  fix_item ar-2 done ok o/r#5 2020-01-02T00:00:00Z
+  fix_item ar-3 done failed
+  jq -cn '{slug: "hc-9", tags: "", state: "running", queued: "2020-01-01T00:00:00Z"}' >> "$ITEMS"
+  local t=${BENCH_NOW:-$(date +%s)} held="$XDG_STATE_HOME/agentctl/triage-held"
+  run "$SUBJECT" triage
+  run grep -c '^post ' "$ASKLOG"
+  assert_output 1
+  # the cause leaves the spent set: its pending ask is cancelled by triage and kept as held
+  TRIAGE_FIX_TRIES=3 run "$SUBJECT" triage
+  assert_success
+  run cut -f1,2 "$held"
+  assert_output "$(cause_of)"$'\t'Ask123
+  # an hour after another hand cancelled it, the cause is spent again and takes that ask, posting none
+  export ASKSTATUS=cancelled ASKWHY='not a human call: owned by hc-9' ASKCLOSED; ASKCLOSED=$(date -d "@$((t - 3600))" +%FT%T%z)
+  : > "$ASKLOG"
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c '^post ' "$ASKLOG"
+  assert_output 0
+  run cut -f3 "$XDG_STATE_HOME/agentctl/triage-spent"
+  assert_output Ask123
+  [ ! -s "$held" ]
+  # two days on, the item its reason names is still running, so it still holds
+  TRIAGE_FIX_TRIES=3 run "$SUBJECT" triage
+  ASKCLOSED=$(date -d "@$((t - 2 * 86400))" +%FT%T%z); : > "$ASKLOG"
+  run "$SUBJECT" triage
+  run grep -c '^post ' "$ASKLOG"
+  assert_output 0
+  # NEGATIVE CONTROL: that item closed, so the red is asked again
+  TRIAGE_FIX_TRIES=3 run "$SUBJECT" triage
+  sed -i 's/"state":"running"/"state":"done"/' "$ITEMS"; : > "$ASKLOG"
+  run "$SUBJECT" triage
+  run grep -c '^post ' "$ASKLOG"
+  assert_output 1
+  # an ask triage cancelled itself (its red cleared) holds nothing: the next spell is asked
+  TRIAGE_FIX_TRIES=3 run "$SUBJECT" triage
+  ASKWHY='the red cleared or agents are trying it again (fleet-bench triage)'; ASKCLOSED=$(date -d "@$((t - 60))" +%FT%T%z); : > "$ASKLOG"
+  run "$SUBJECT" triage
+  run grep -c '^post ' "$ASKLOG"
+  assert_output 1
+}
+
 # 2026-11-11 (ar-1587): playground-release-ready's alert item closed ok with the watch still red,
 # and triage queued a second 4 minutes later; the next pass would page the human about fixes that
 # "did not hold" when no session was asked to clear the red.
