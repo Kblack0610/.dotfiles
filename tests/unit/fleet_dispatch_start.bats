@@ -2046,7 +2046,7 @@ rollup_setup() {
 @test "rollup: under agentctl each pass declares its outcome (WORKED filed, NOOP quiet, FAILED unread board); --dry declares none" {
   rollup_setup
   export AGENTCTL_NAME=rollup
-  out="$AGENTCTL_STATE_DIR/trainee-rollup/last-outcome"
+  out="$AGENTCTL_STATE_DIR/rollup/last-outcome"
   for i in 1 2 3; do reject nim glm 'nim:glm left no diff'; done
   run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup --dry
   assert_success
@@ -2104,11 +2104,15 @@ lane_event() {
   lane_event opus demoted fix/m claude:sonnet 1
   lane_event trainee retired - nim:glm 1
   lane_event opus demoted chore/s claude:sonnet 3; lane_event opus promoted chore/s claude:sonnet 2
+  lane_event trainee retired - nim:old 3; lane_event trainee retrial - nim:old 2   # back on the roster
+  lane_event trainee demoted feat/s nim:back 1   # a promoted class sent back to review: a page, no row
   run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
   assert_success
   assert_output --partial 'filed: fix(model-lane): claude:sonnet left lane opus for fix/m (1 since'
   assert_output --partial 'filed: fix(model-lane): nim:glm left the trainee roster (1 since'
   refute_output --partial 'chore/s'
+  refute_output --partial 'nim:old'
+  refute_output --partial 'nim:back'
   run grep -F "Undo: model-lane promote opus --class 'fix/m' --candidate claude:sonnet" "$NOTES_FIXTURE/calls.log"
   assert_success
   run grep -F 'Undo: model-lane promote trainee --class - --candidate nim:glm' "$NOTES_FIXTURE/calls.log"
@@ -2116,13 +2120,16 @@ lane_event() {
   run grep -c '^notes ptask agent-runtime --agent add ' "$NOTES_FIXTURE/calls.log"
   assert_output 2
   # the next night, and a later event while the row is open: joined, not twinned
+  row agent-runtime agent ar-5 '- [x] fix(model-lane): nim:glm left the trainee roster #low <!-- id:ar-5 -->'
   row agent-runtime agent ar-6 '- [ ] fix(model-lane): claude:sonnet left lane opus for fix/m #low <!-- id:ar-6 -->'
+  lane_event trainee retired - nim:glm -1   # retired again after its row closed: a new row, not a join of the closed one
   lane_event opus demoted fix/m claude:sonnet -1
   run "$REPO_ROOT/.local/bin/fleet-dispatch" rollup
   assert_success
   assert_output --partial 'joined ar-6: fix(model-lane): claude:sonnet left lane opus for fix/m'
+  assert_output --partial 'filed: fix(model-lane): nim:glm left the trainee roster'
   run grep -c '^notes ptask agent-runtime --agent add ' "$NOTES_FIXTURE/calls.log"
-  assert_output 2
+  assert_output 3
 }
 
 @test "the brief of an item a run handed off names its note first, then its salvage branch; one never handed off names none (ar-2777)" {

@@ -3732,9 +3732,9 @@ rollup_causes() {
     | [$all[] | select(.ts > ($stamps[$c] // ""))] as $new
     | select($new | length > 0)
     | ($all | map(.pair) | unique) as $pairs
-    | [$c, "fix(trainee): " + (if ($pairs | length) == 1 then $pairs[0] else "trainee" end) + " runs " + $c,
+    | ["trainee", $c, "fix(trainee): " + (if ($pairs | length) == 1 then $pairs[0] else "trainee" end) + " runs " + $c,
        ($new | length), ($new | group_by(.pair) | map("\(.[0].pair) \(length)") | join(", ")),
-       ($new | map(.harness) | unique | join(", ")), ($new | last | .why), "trainee"] | @tsv' "$LANE_RUNS"
+       ($new | map(.harness) | unique | join(", ")), ($new | last | .why)] | @tsv' "$LANE_RUNS"
 }
 
 # rollup_ends <since> <stamps json> -> the non-landings of any harness and account, Claude included: a done
@@ -3756,21 +3756,22 @@ rollup_ends() {
     | [$all[] | select(.ts > ($stamps[$c] // ""))] as $new
     | select($new | length > 0)
     | ($all | map(.pair) | unique) as $pairs
-    | [$c, "fix(runs): " + (if ($pairs | length) == 1 then $pairs[0] else "fleet" end) + " runs " + $c,
+    | ["runs", $c, "fix(runs): " + (if ($pairs | length) == 1 then $pairs[0] else "fleet" end) + " runs " + $c,
        ($new | length), ($new | group_by(.pair) | map("\(.[0].pair) \(length)") | join(", ")),
-       ($new | map(.harness) | unique | join(", ")), ($new | last | .why), "runs"] | @tsv' <<<"$items"
+       ($new | map(.harness) | unique | join(", ")), ($new | last | .why)] | @tsv' <<<"$items"
 }
 
 # rollup_events <since> <stamps json> -> the model-lane demotes and retirements since <since> that no later
 # promote undid: its demotions.jsonl, whose newest event per (lane, class, candidate) is demoted or retired.
-# Each is one cause with one event, and its why carries the command that undoes it. model-lane pages when it
+# A trainee-lane demote (a promoted class sent back to review) is no row: it is only a page, and its undo would
+# restore the direct landing it lost. Each is one cause with one event, and its why carries the command that undoes it. model-lane pages when it
 # records one and files no row itself; this is the row.
 rollup_events() {
   [ -r "$LANE_EVENTS" ] || return 0
   jq -Rnr --arg since "$1" --argjson stamps "$2" '
     [inputs | fromjson? // empty | select(type == "object" and (.event // "") != "")]
     | group_by([.lane, (.class // ""), (.candidate // "")])[] | last
-    | select((.event == "demoted" or .event == "retired") and ((.ts // "")[0:19] >= $since))
+    | select((.event == "demoted" or .event == "retired") and ((.ts // "")[0:19] >= $since) and (.lane != "trainee" or .event == "retired"))
     | (.candidate // ("lane " + .lane)) as $who
     | (if .event == "retired" then "left the trainee roster"
        elif (.class // "") == "" then "went back to opus"
@@ -3779,8 +3780,8 @@ rollup_events() {
     | ("model-lane promote " + (if .event == "retired" then "trainee --class - --candidate " + .candidate
         else .lane + (if (.class // "") != "" then " --class \u0027" + .class + "\u0027" else "" end) + (if (.candidate // "") != "" then " --candidate " + .candidate else "" end) end)) as $undo
     | select((.ts[0:19]) > ($stamps[$who + " " + $what] // ""))
-    | [$who + " " + $what, "fix(model-lane): " + $who + " " + $what, 1, $who + " 1", ((.candidate // .lane) | split(":")[0]),
-       (.why + ". Undo: " + $undo), "lane"] | @tsv' "$LANE_EVENTS"
+    | ["lane", $who + " " + $what, ("fix(model-lane): " + $who + " " + $what)[0:72], 1, $who + " 1", ((.candidate // .lane) | split(":")[0]),
+       (.why + ". Undo: " + $undo)] | @tsv' "$LANE_EVENTS"
 }
 
 # cmd_rollup [--dry] -- each recurring cause of a run that did not land made one fix row, so the fleet
@@ -3797,23 +3798,26 @@ rollup_events() {
 cmd_rollup() {
   local dry=0 stamps since board lines cause title n pairs hs why kind min hit where what evidence rc rwhy out=0 acted=0 now f="$DIR/rollup.tsv" part
   [ "${1:-}" != --dry ] || dry=1
-  [ -r "$LANE_RUNS" ] || { say "rollup: no run log at $LANE_RUNS"; rollup_done "$dry" FAILED "no run log at $LANE_RUNS"; return; }
   stamps=$(jq -Rsc 'split("\n") | map(select(length > 0) | split("\t") | {(.[0]): .[1]}) | add // {}' "$f" 2>/dev/null) || stamps='{}'
   now=$(date -u +%FT%T)
   since=$(date -u -d "@$(( $(date +%s) - DISPATCH_ROLLUP_DAYS * 86400 ))" +%FT%T)
   lines=
+  # a source it cannot read is skipped and fails the pass at the end: the others still file their rows
   for part in rollup_causes rollup_ends rollup_events; do
-    lines+=$("$part" "$since" "$stamps") || { say "rollup: $part could not read its input"; rollup_done "$dry" FAILED "$part could not read its input"; return; }
-    lines+=$'\n'
+    if lines+=$("$part" "$since" "$stamps"); then lines+=$'\n'; else say "rollup: $part could not read its input"; out=1; fi
   done
-  lines=$(grep . <<<"$lines")
-  [ -n "$lines" ] || { echo "rollup: no new cause since ${since%T*}"; rollup_done "$dry" NOOP "no new cause"; return; }
+  lines=$(grep . <<<"$lines" || true)
+  if [ -z "$lines" ]; then
+    echo "rollup: no new cause since ${since%T*}"
+    if [ "$out" != 0 ]; then rollup_done "$dry" FAILED "an input could not be read"; else rollup_done "$dry" NOOP "no new cause"; fi
+    return
+  fi
   board=$(notes ptask "$DISPATCH_ROLLUP_BOARD" --agent list 2>/dev/null) || { say "rollup: cannot read the $DISPATCH_ROLLUP_BOARD board, so no row is filed"; rollup_done "$dry" FAILED "cannot read the $DISPATCH_ROLLUP_BOARD board"; return; }
-  while IFS=$'\t' read -r cause title n pairs hs why kind; do
+  while IFS=$'\t' read -r kind cause title n pairs hs why; do
     min=$DISPATCH_ROLLUP_MIN; [ "$kind" != lane ] || min=1
     if [ "$n" -lt "$min" ]; then echo "under the bar ($n of $min): $title ($pairs)"; continue; fi
     # the whole cause, up to the row's tags or marker: a longer title that starts the same is another cause
-    if [ "$kind" = lane ]; then hit=$(cut -f4 <<<"$board" | grep -F -m1 -e "] $title #" -e "] $title <!--")
+    if [ "$kind" = lane ]; then hit=$(cut -f4 <<<"$board" | grep -F -m1 -e "- [ ] $title #" -e "- [ ] $title <!--" -e "- [/] $title #" -e "- [/] $title <!--")
     else hit=$(cut -f4 <<<"$board" | grep -iE -m1 -- "^- \[[ /]\] fix\($kind\): [^ ]+ runs $cause( #| <!--|$)"); fi
     if [ -n "$hit" ]; then
       echo "joined $(sed -n 's/.*<!-- id:\([^ ]*\).*/\1/p' <<<"$hit" | grep . || echo 'its open row'): $title ($n since ${since%T*}: $pairs)"
