@@ -1796,6 +1796,58 @@ rpost() { "$AGENT_ASK" post --project "$1" --context "About: ${*: -1}" "${@:2}";
   assert_line --regexp "^agent-runtime	$bare	cancel	duplicate of $other: "
 }
 
+@test "expire cancels an ask on a row whose item landed after it was posted, an audit too; not a failed item, a later ask, a live or held one" {
+  # 2026-11-23: audit 9sW8iy of the judge's retry of tr-186 stayed pending after tr-186 landed.
+  row_map
+  mkdir -p "$HOME/.claude/sessions" "$SANDBOX/items"
+  printf '{"pid":%d,"sessionId":"sid-live"}\n' "$$" > "$HOME/.claude/sessions/$$.json"
+  # A queue stand-in: ask-holds prints the holds file, show the item's JSON as agent-queue show --json does.
+  : > "$SANDBOX/holds"
+  # The command is a word list (agent-ask splits it), so it lives outside the sandbox path, which has a space.
+  cat > "$BATS_TEST_TMPDIR/aq" <<FAKE
+#!/usr/bin/env bash
+case "\$1" in
+  ask-holds) cat "$SANDBOX/holds" ;;
+  show) cat "$SANDBOX/items/\$2.json" 2>/dev/null || { echo "agent-queue: no item: \$2" >&2; exit 1; } ;;
+esac
+FAKE
+  chmod +x "$BATS_TEST_TMPDIR/aq"
+  export AGENT_ASK_QUEUE_CMD="$BATS_TEST_TMPDIR/aq"
+  # item <slug> <outcome> <finished offset> <pr number>
+  item() { printf '{"slug":"%s","outcome":"%s","finished":"%s","pr":"o/r#%s"}\n' "$1" "$2" "$(date -u -d "$3" +%FT%TZ)" "$4" > "$SANDBOX/items/$1.json"; }
+  local audit retry live held failed later id
+  audit="$(rpost agent-runtime --kind approval --audit-of q1 --options 'retry=keep|drop=override' 'The judge answered "Start board row ar-186 again after its last 2 runs failed?" with "retry"; your pick?')"
+  retry="$(CLAUDE_CODE_SESSION_ID=sid-gone rpost agent-runtime 'Start board row ar-186 again after its last 2 runs failed?')"
+  live="$(CLAUDE_CODE_SESSION_ID=sid-live rpost agent-runtime 'Is ar-186 still needed?')"
+  held="$(rpost agent-runtime 'Close ar-186 now?')"
+  printf 'x\t%s\t\n' "$held" > "$SANDBOX/holds"
+  failed="$(rpost agent-runtime 'Start board row ar-187 again after its last 2 runs failed?')"
+  later="$(rpost agent-runtime 'ar-186 landed; deploy it?')"
+  for id in "$audit" "$retry" "$live" "$held" "$failed"; do aged "$id" '-2 hours'; done
+  aged "$later" '-30 minutes'
+  # Negative control: no item has landed yet, so nothing closes.
+  run "$AGENT_ASK" expire --dry-run
+  assert_success
+  for id in "$audit" "$retry" "$live" "$held" "$failed" "$later"; do refute_output --partial "$id"; done
+  item ar-186 landed '-1 hour' 1411
+  item ar-187 failed '-1 hour' 1412
+  run "$AGENT_ASK" expire --dry-run
+  assert_success
+  assert_line "agent-runtime	$audit	cancel	moot: row ar-186 landed (o/r#1411) after this was asked"
+  assert_line "agent-runtime	$retry	cancel	moot: row ar-186 landed (o/r#1411) after this was asked"
+  for id in "$live" "$held" "$failed" "$later"; do refute_output --partial "$id"; done
+  grep -qx 'status: pending' "$(ask_file "$audit")"
+  # A queue that cannot be read closes nothing.
+  run env AGENT_ASK_QUEUE_CMD=false "$AGENT_ASK" expire
+  refute_output --partial "$audit"
+  run "$AGENT_ASK" expire
+  assert_success
+  run "$AGENT_ASK" show "$audit"
+  assert_line 'status: cancelled'
+  assert_line 'closed_reason: moot: row ar-186 landed (o/r#1411) after this was asked'
+  for id in "$live" "$held" "$failed" "$later"; do grep -qx 'status: pending' "$(ask_file "$id")"; done
+}
+
 @test "expire cancels a today or tonight ask once its day is over and DATED_HOURS have passed; an undated or held one stays" {
   export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   mkdir -p "$HOME/.claude/sessions"
