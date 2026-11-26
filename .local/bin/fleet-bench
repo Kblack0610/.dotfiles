@@ -285,6 +285,8 @@ set -uo pipefail
 : "${RULES_PROSE_BASELINE:=$HOME/.config/agentctl/rules-prose-baseline}"   # review=N: the most rule rows that may name no check but review; lower it when rows gain one
 : "${RULES_LESSON_SEEN:=2}"   # a lesson the dream sweep found again this many times must name its enforced_by (lessons seen)
 : "${RULES_MEASURE_TIMEOUT:=20}"      # seconds one rule's measure may run
+# a transport failure on a stderr line naming github.com: GitHub did not answer a rule's measure (rules_states)
+: "${RULES_UNANSWERED_RE:=HTTP 5[0-9][0-9]|connection (refused|reset)|i/o timeout|TLS handshake timeout|context deadline exceeded|unexpected EOF}"
 # rules --changed: the files a session reads as rules (instruction-homes.json kinds global, repo, skill,
 # role, shared-docs), as repo paths, and the generated copies of them that would list a change twice.
 : "${RULES_CHANGED_ERE:=(^|/)(CLAUDE|AGENTS)\.md$|(^|/)SKILL\.md$|^\.claude/rules/|^\.config/rulesync-global/|^\.local/src/docs/|^\.config/agentctl/(roles|prompts)/|(^|/)docs/([^/]+/)*[^/]*standards\.md$}"
@@ -556,6 +558,8 @@ def iso_epoch: if endswith("Z") then fromdateiso8601 else sub(":(?<m>[0-9]{2})$"
 def ratio($a; $b): if $b == 0 then null else ($a / $b * 1000 | round) / 1000 end;   # 3 places, null over none
 # landed, rated: the stamped outcome of a done item (agent-queue OUTCOME_JQ); rated is what a landed rate is over
 def landed: .outcome == "landed";
+# sids: the session ids of an item; the models, skills, sources and matrix tables share it
+def sids: (.sessions // "") | split(" ") | map(select(. != ""));
 def rated: .outcome | IN("landed", "no-pr", "failed");
 # move($before; $after; $dir; $flat): improved or regressed when the value moved more than $flat
 # (relative) the way $dir says (-1 lower is better, 1 higher), flat inside that, - with no value
@@ -3119,10 +3123,14 @@ cmd_ledger() {
 # never move, and --check fails it (`restates`: a bounded measure naming its own source, ~ or $HOME,
 # that is not a size or count, i.e. no wc, grep -c, stat or find). A size or count is a real bound.
 # confidence low records a number known not to hold, so `moved` is a change from what the register
-# says, never a number merely being past its line. `dead` is a measure that printed no number. A
-# measure whose stderr says it was rate limited (GitHub's HTTP 403 "API rate limit exceeded"; the
-# core budget is shared by every session) is `limited`, not dead: nothing was measured, so it reads
-# `absent` and no gate goes red until the limit resets.
+# says, never a number merely being past its line. `dead` is a measure that printed no number, with
+# the last line of its stderr, or that it timed out, as `err`. A measure whose stderr says GitHub did
+# not answer is `limited`, not dead: nothing was measured, so it reads `absent` and no gate goes red
+# until it answers again. That is a rate limit (HTTP 403 "API rate limit exceeded"; the core budget
+# is shared by every session) or a transport failure on a line naming github.com
+# (RULES_UNANSWERED_RE): one failed gh run list turned the tests.yml budget rule dead on a 2026-11-18
+# Stack read and it read fine minutes later (ar-3274). Any other tool's failure, a local service
+# down or a measure's own syntax error, stays dead.
 # `anchored` is the rule's text still being in its source; null when the source is not on this
 # machine. `state` is the one verdict, first of stale, absent (source not here, or limited), dead,
 # restates, moved, else ok: --check fails all but absent and ok, and Stack shows it as is. A row's optional `scenario` is the hard
@@ -3152,10 +3160,10 @@ rules_enforcer() {
   if [ -f "$path" ] && { [ -z "$name" ] || grep -qF -- "@test \"$name\"" "$path"; }; then echo ok; else echo dead; fi
 }
 
-# rules_states -> each register row, one JSON object a line, with form, anchored, value, limited, holds, moved, dead, restates, state.
+# rules_states -> each register row, one JSON object a line, with form, anchored, value, limited, err, holds, moved, dead, restates, state.
 rules_states() {
   [ -s "$RULES_REGISTER" ] || return 0
-  local src anchor cmd enf value anchored limited err enforcer
+  local src anchor cmd enf value anchored limited err enforcer why rc
   err=$(mktemp) || return 1
   while IFS=$'\x1f' read -r src anchor cmd enf; do
     src="${src/#\~/$HOME}"
@@ -3163,19 +3171,26 @@ rules_states() {
     elif grep -qF -- "$anchor" "$src"; then anchored=true
     else anchored=false
     fi
-    value="" limited=false
+    value="" limited=false why=""
     if [ -n "$cmd" ]; then
-      value=$(timeout "$RULES_MEASURE_TIMEOUT" bash -c "$cmd" 2>"$err" </dev/null | tail -1)
-      # GitHub's 403 or 429 on a rate limit; a counting measure prints 0 then, so its number goes too.
-      ! grep -qiE 'rate limit.*HTTP (403|429)' "$err" || { limited=true; value=; }
+      value=$(timeout "$RULES_MEASURE_TIMEOUT" bash -c "$cmd" 2>"$err" </dev/null | tail -1; exit "${PIPESTATUS[0]}")
+      rc=$?
+      # A counting measure prints 0 when GitHub did not answer, so its number goes too.
+      if grep -qiE 'rate limit.*HTTP (403|429)' "$err" \
+        || grep -i 'github\.com' "$err" | grep -qiE "$RULES_UNANSWERED_RE"; then
+        limited=true value=
+      fi
+      if [ "$rc" = 124 ]; then why="timed out after ${RULES_MEASURE_TIMEOUT}s"
+      else why=$(grep . "$err" | tail -1 | tr -d '\037' | cut -c1-200)
+      fi
     fi
     enforcer=$(rules_enforcer "$enf")
-    printf '%s\x1f%s\x1f%s\x1f%s\n' "$anchored" "$value" "$limited" "$enforcer"
+    printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$anchored" "$value" "$limited" "$enforcer" "$why"
   done < <(jq -r '[.source, .anchor, (.measure // ""), (.enforced_by // "")] | map(gsub("\n"; " ")) | join("\u001f")' "$RULES_REGISTER") |
     jq -cRn --slurpfile rows "$RULES_REGISTER" '
       [inputs | split("\u001f")] as $seen
       | range($rows | length) as $i
-      | $rows[$i] + {anchored: ($seen[$i][0] | fromjson), value: ($seen[$i][1] | tonumber? // null), limited: ($seen[$i][2] == "true"), enforcer: $seen[$i][3]}
+      | $rows[$i] + {anchored: ($seen[$i][0] | fromjson), value: ($seen[$i][1] | tonumber? // null), limited: ($seen[$i][2] == "true"), enforcer: $seen[$i][3], err: ($seen[$i][4] // "")}
       | (.max != null or .min != null) as $bounded
       | (.source // "") as $raw | ($raw | sub("^~"; env.HOME)) as $src
       | .form = (.form // (if ($raw | test("\\.md$")) then "rule" else "mechanism" end))
@@ -3183,6 +3198,7 @@ rules_states() {
       | .enforcer = (if .enforcer == "none" then "missing" else .enforcer end)
       | .limited = (.limited and .value == null)
       | .dead = (.measure != null and .value == null and (.limited | not))
+      | .err = (if .dead then .err else "" end)
       | ((.measure // "") | gsub("\\$\\{HOME\\}|\\$HOME"; "~") | gsub("~"; env.HOME)) as $reads
       | .restates = ($bounded and $raw != "" and .measure != null
           and (.measure | test("\\bwc\\b|grep -c|\\bstat\\b|\\bfind\\b") | not) and ($reads | contains($src)))
@@ -3213,7 +3229,7 @@ rules_problems() {
         then "gate added: \($id): \(.added // "missing") is not the YYYY-MM-DD the gate first merged, which rules --new reads" else empty end);
     .[] | (.source | split("/") | last) as $f
     | if .state == "stale" then "stale: \($f): \(.anchor)"
-      elif .state == "dead" then "dead measure: \($f): \(.anchor)"
+      elif .state == "dead" then "dead measure: \($f): \(.anchor)\(if .err != "" then " (\(.err))" else "" end)"
       elif .state == "restates" then "restates: \($f): \(.anchor): its bound is a copy of the number its measure reads from \($f); drop max/min, the reading is the number"
       elif .state == "moved" then "moved: \($f): \(.anchor): \(.value) against \(if .max != null then "max \(.max)" else "min \(.min)" end), recorded \(.confidence)"
       else empty end,
@@ -3857,7 +3873,6 @@ models_json() {
     ($by | split(",")) as $bys | ($bys | index("class") != null) as $cl | ($bys | index("lane") != null) as $ln
     | ($runs | INDEX(.id)) as $rix | ($voids | INDEX(.id)) as $vix
     | ($ci | INDEX(itemkey)) as $cix | ($sa[0] // {}) as $sp |
-    def sids: (.sessions // "") | split(" ") | map(select(. != ""));
     def metered: (.gateway_cost_usd // "") != "";
     def alias: capture("^claude-(?<f>[a-z]+)-").f // .;
     def canary: (.from // "") == "canary" or ((.tags // "") | test("(^| )canary( |$)"));
@@ -4016,7 +4031,6 @@ skills_json() {
      --slurpfile reds <(printf '%s\n' "$reds" | jq -cs 'map(select(.slug and (.cleanup | not)) | {key: .slug, value: .outcome}) | from_entries') \
      --slurpfile ci <([ ! -s "$CI" ] || jq -c 'select(.repo and .number)' "$CI" 2>/dev/null) "$JQ_LIB"'
     def bare: sub("^[^:]+:"; "");
-    def sids: (.sessions // "") | split(" ") | map(select(. != ""));
     ($o[0] // {}) as $o | ($reds[0] // {}) as $r | ($ci | INDEX(itemkey)) as $cix
     | ($items | map(prkeys as $pk | (sids | map($o[.] // empty)) as $rows
         | {outcome, landed: landed, pk: $pk,
@@ -4112,7 +4126,7 @@ source_attr() {
     | ($ws | map({key: .sid, value: {source: .src,
         points: (if $pts[.src] == null or ($wsum[.src] // 0) == 0 then null else $pts[.src] * .w / $wsum[.src] end)}}) | from_entries) as $sess
     | def item_src: (.agent // "claude") as $h | (.account // "") as $a
-        | ([(.sessions // "") | split(" ")[] | select(. != "")]) as $ids
+        | sids as $ids
         | if $h != "claude" then $hs[$h] // (.account | acct)
           else (.account | acct) // ([$ids[] | $os[.] // empty | on // empty] | first) end
         | {src: ., why: (if . != null then null elif $a != "" then "unknown_account" elif $ids == [] then "no_session"
@@ -4201,7 +4215,7 @@ sizes_json() {
     done | jq -cs 'from_entries')
   jq -cn --argjson days "$BENCH_SIZES_DAYS" --argjson bdays "$BENCH_BANDS_DAYS" --argjson min "$BENCH_SIZES_MIN" \
      --argjson since "$since" --argjson bsince "$bands_since" \
-     --slurpfile items <(printf '%s\n' "$items") --slurpfile rows <(printf '%s\n' "$rows") '
+     --slurpfile items <(printf '%s\n' "$items") --slurpfile rows <(printf '%s\n' "$rows") "$JQ_LIB"'
     def pct($p): sort | if length == 0 then null else .[((length * $p) | ceil) - 1] end;
     def epoch: if . == null or . == "" then null else (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601) end;
     def hours: if . == null then null else (. / 3600 * 10 | round / 10) end;
@@ -4209,7 +4223,7 @@ sizes_json() {
     | [$items[0][] | select(.status != "cancelled") | ((.finished | epoch) // 0) as $fin
        | ($R[.row // ""]) as $r
        | {fin: $fin, ok: (.status == "ok"), size: ($r.size // ""), pts: $r.pts, weight: $r.weight, kind: ($r.kind // .type // "untyped" | if . == "" then "untyped" else . end),
-          landed: (.outcome == "landed"),
+          landed: landed,
           work: (.work_min // "" | tonumber? // null),
           cycle: (if (.started | epoch) and (.finished | epoch) then (.finished | epoch) - (.started | epoch) else null end),
           lead: (if (.queued | epoch) and (.finished | epoch) then (.finished | epoch) - (.queued | epoch) else null end)}] as $read
@@ -7507,7 +7521,7 @@ MATRIX_JQ='
     (select(tagged("night")) | "night"), (select(tagged("red")) | "red"), (select(.mode == "plan") | "plan"),
     (select((" " + (.tags // "")) | test(" ask:")) | "ask-resume"),
     (select((.salvage // "") != "") | "salvage-resume"),
-    (select((.sessions // "") | split(" ") | any(. as $s | $os[$s] | select(.harness == $h) | (.uses.subagents // {}) | length > 0)) | "fan-out"),
+    (select(sids | any(. as $s | $os[$s] | select(.harness == $h) | (.uses.subagents // {}) | length > 0)) | "fan-out"),
     (select(.project as $p | $forgejo | index($p)) | "forgejo")];
   def cell($rs): {pass: ($rs | map(select(.v == "pass")) | length), fail: ($rs | map(select(.v == "fail")) | length),
     evidence: ($rs | map(select(.v)) | sort_by(.at) | last | .ref // null)};

@@ -19,11 +19,14 @@ is never used", the global "if on the default branch, branch first"):
   branch tracking it under push.default=upstream, any branch under matching, or a
   remote.<name>.push refspec). Such a push lands with no PR, so no required check runs first. A
   dry run and a push to another remote pass.
+- applying gate-guard's human-only label (`gate-guard label`, P3): `gh pr|issue edit --add-label`,
+  `gh pr|issue create --label`/`-l`, or a `gh api` call on a labels path that names it. The label
+  lets a PR that loosens a gate pass the gate-guard check, so only the human applies it.
 
 Not covered: git calls inside a script (store-sync and fleet-lease commit to their own stores with
 `-c core.hooksPath=/dev/null`), an `export` of GIT_CONFIG_* or HOME earlier in the command, `env -i`,
-a hand edit of .git/config or ~/.gitconfig, and a repo with
-no default branch on origin (~/.notes and ~/.agent push to `backup`), which allow. The human runs a
+a hand edit of .git/config or ~/.gitconfig, a label applied by id (a GraphQL mutation), by curl or
+by a variable the shell expands, and a repo with no default branch on origin (~/.notes and ~/.agent push to `backup`), which allow. The human runs a
 bypass by hand when one is meant. It walks the command with forge-guard's walker. Fail-open: any
 error allows the command.
 """
@@ -74,8 +77,59 @@ PUSH_MSG = (
     "open a PR, and land it with `agent-land <N> --item <slug>`."
 )
 
+LABEL_MSG = (
+    "skip-guard: {what} applies `{label}`, the label only the human applies: it passes a PR that "
+    "loosens a gate (a listed gate file, a raised baseline, a dropped CI job) through gate-guard. "
+    "Ask the human to review the PR and apply it (`agent-ask post`), or keep the gate as it was."
+)
+
 FORGE = None  # set by walker-guards.py, else loaded in decide
 CHECKOUT = None
+_LABEL = None
+
+
+def gate_label():
+    """The label's one home, LABEL in .local/bin/gate-guard beside this repo's hooks."""
+    global _LABEL
+    if _LABEL is None:
+        import importlib.machinery
+        import importlib.util
+        here = os.path.dirname(os.path.realpath(__file__))
+        path = os.path.join(here, "..", "..", ".local", "bin", "gate-guard")
+        loader = importlib.machinery.SourceFileLoader("gate_guard", path)
+        mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("gate_guard", loader))
+        loader.exec_module(mod)
+        _LABEL = mod.LABEL
+    return _LABEL
+
+
+def applies_label(argv, label):
+    """True when a gh argv applies label (any case: GitHub label names are case-insensitive): an
+    edit's --add-label, a create's --label or -l (also attached, `-lname`), or a `gh api` write (any
+    method but GET or HEAD) on a labels path that names it or reads its body from a file or stdin
+    (`--input`, `-F x=@file`), which this cannot read."""
+    words, label = FORGE.gh_words(argv), label.casefold()
+    rest = [a.casefold() for a in argv[2:]]
+    if words[:1] == ["api"]:
+        named = any(label in a for a in rest) or "--input" in rest or any("=@" in a for a in rest)
+        return (any("labels" in a for a in rest) and named
+                and FORGE.request_method("gh api", argv) not in (None, "GET", "HEAD"))
+    if words[:1] not in (["pr"], ["issue"]) or words[1:2] not in (["edit"], ["create"]):
+        return False
+    flags = ("--add-label",) if words[1] == "edit" else ("--label", "-l")
+    it = iter(argv[1:])
+    for a in it:
+        if a in flags:
+            value = next(it, "")
+        elif a.startswith(tuple(f + "=" for f in flags)):
+            value = a.split("=", 1)[1]
+        elif "-l" in flags and a.startswith("-l") and not a.startswith("--"):
+            value = a[2:]
+        else:
+            continue
+        if label in (v.strip().casefold() for v in value.split(",")):
+            return True
+    return False
 
 
 def env_hookspath(env):
@@ -210,6 +264,11 @@ def canonical_remote(top, target, default_remote):
 
 
 def check(head, argv, env, cwd):
+    if head == "gh":
+        label = gate_label()
+        if applies_label(argv, label):
+            return LABEL_MSG.format(what="`%s`" % " ".join(argv[:4]), label=label)
+        return None
     if head != "git":
         return None
     d, i = FORGE.git_verb(cwd, argv)
@@ -245,7 +304,7 @@ def decide(data):
     if data.get("tool_name", "Bash") != "Bash":
         return None
     cmd = (data.get("tool_input") or {}).get("command") or ""
-    if "git" not in cmd:
+    if "git" not in cmd and "gh" not in cmd:
         return None
     FORGE = FORGE or hooklib.load("forge-guard")
     return FORGE.reason(cmd, data.get("cwd") or os.getcwd(), check)
