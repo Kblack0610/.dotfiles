@@ -1976,7 +1976,8 @@ overflow_row() {
 # `notes ptask` links, at the item's priority, on the board project_board names, with no size: the
 # machine load the item runs at was no estimate, so the nightly `agentctl-inbox-triage --backlog --size`
 # scores the row. The row is started, so dispatch never promotes it a second time. An open
-# row with the same text is linked instead of written twice. A project with no lab sheet or no row
+# row with the same text is linked instead of written twice, and a --repeat add brings its brief,
+# priority and tags up to date. A project with no lab sheet or no row
 # code files nothing, and a failed write never stops the add. The row is the task: the item's
 # <body> is its brief (row_brief), and the item keeps a snapshot of it beside the run.
 # A plan phase's row also carries `#takes/<id>` for each row it takes (AQ_ITEM_TAKES, ar-3886).
@@ -1993,7 +1994,7 @@ overflow_row() {
 # ORIGIN_STORY (ingest.rs): the ingest record marks the row a story, which `notes log --steps` leaves
 # out of backlog intake; a want or a plan phase is intake, so its row keeps its own origin.
 file_story() {
-  local project text="$2" prio="$3" of="" lab code row out rc=0 id brief detail=() want=() origin=() keep="${7:-}" gates="${8:-}" g gt=""
+  local project text="$2" prio="$3" of="" lab code row out rc=0 id brief detail=() want=() origin=() keep="${7:-}" gates="${8:-}" g gt="" untouched="" rt=() tg=()
   ! interrupt_tag "${9:-}" || gates+="${gates:+ }interrupt"
   for g in $gates; do gt+=" #$g"; done
   [ -z "${5:-}" ] || want=(--want "$5")
@@ -2031,10 +2032,27 @@ file_story() {
          echo "agent-queue: story row $id on $project could not be started" >&2 ;;
     3) [ -n "$id" ] || { echo "agent-queue: no story row filed: ${out##*$'\n'}" >&2; return 0; }
        # The twin is open: start it unless a live item already did, or the row is left on the board.
-       if [ -z "$keep" ] && grep -q ': - \[ \] ' <<<"$out"; then notes --profile "$lab" ptask "$project" --agent start "$id" >/dev/null 2>&1; fi
+       ! grep -q ': - \[ \] ' <<<"$out" || untouched=1
+       if [ -z "$keep" ] && [ -n "$untouched" ]; then notes --profile "$lab" ptask "$project" --agent start "$id" >/dev/null 2>&1; fi
        # shellcheck disable=SC2086 # gates is a space-separated list of tags
        [ -z "$gates" ] || gate_row "$project:$id" "$lab" agent $gates ||
-         { echo "agent-queue: the open row $id on $project did not take its gates, so nothing was filed: $GATE_HINT" >&2; return 0; } ;;
+         { echo "agent-queue: the open row $id on $project did not take its gates, so nothing was filed: $GATE_HINT" >&2; return 0; }
+       # A --repeat add (AQ_ADD_REPEAT, which cmd_add sets) is new work under its slug, so a twin no
+       # item had started takes the add's brief, priority and tags: kept as it was, the nightly
+       # docs-cleanup pass of 11-22 landed on its 11-13 twin ar-2163 with the stale brief, no high and
+       # no cleanup tag (ar-5138). A started twin keeps its brief, since its session already has it
+       # (as retask refuses). A tag a hashtag cannot carry (cause:, ask:) stays on the item alone. A
+       # session's add leaves the twin as it is, as add_row_prio does: its "low" would demote the
+       # human's #urgent row, and its words would replace the human's brief (ar-2943).
+       if [ -n "${AQ_ADD_REPEAT-}" ] && [ -n "$untouched" ] && [ -z "${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}" ]; then
+         [ -z "$brief" ] || notes --profile "$lab" ptask "$project" --agent edit "$id" "--brief=$brief" >/dev/null 2>&1 ||
+           echo "agent-queue: the open row $id on $project kept its old brief: rewrite it with notes --profile $lab ptask $project --agent edit $id --brief=<the task>" >&2
+         [ -z "$prio" ] || rt+=("$prio")
+         read -ra tg <<<"${9:-}" # no glob: a tag is never a path
+         for g in "${tg[@]}"; do g="${g#\#}"; [[ ! "$g" =~ ^[A-Za-z0-9][A-Za-z0-9_/-]*$ ]] || rt+=("$g"); done
+         [ "${#rt[@]}" = 0 ] || gate_row "$project:$id" "$lab" agent "${rt[@]}" ||
+           echo "agent-queue: the open row $id on $project kept its old priority and tags: $GATE_HINT" >&2
+       fi ;;
     6) # The board's intake gate or its daily cap (notes EXIT_GATED): nothing was written, and the reason is the last line.
        echo "agent-queue: no story row filed on $project: ${out##*$'\n'}" >&2; printf 'gated\n'; return 0 ;;
     *) echo "agent-queue: no story row filed on $project: ${out##*$'\n'}" >&2; return 0 ;;
@@ -2423,7 +2441,7 @@ cmd_add() {
   # (QUEUE.md "Admission"). A --running record is already started, so it files no gate: an --after it
   # names must already have closed ok, or the add is refused (ar-3260). Dispatch's pull of a board row
   # (promote) judged that row's gates clear the moment before, so none is read twice.
-  local GATES='' AFTER_ITEMS='' AQ_ADD_STACKS="$(add_stacks "$text" "$tags")"
+  local GATES='' AFTER_ITEMS='' AQ_ADD_STACKS="$(add_stacks "$text" "$tags")" AQ_ADD_REPEAT="$repeat"
   if [ -n "$running" ] && [ -n "$after" ]; then
     check_after "$after" "$slug"
     start_gate "$slug" "$after" "" "start --running" "add it without --running, and it starts once that clears"
