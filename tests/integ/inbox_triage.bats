@@ -461,6 +461,31 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   refute_line --regexp 'show the Kelly cell on /book .*#of/sc-9'
 }
 
+@test "a split line the model calls a dup of its own #of/ parent files under that parent" {
+  # ar-5549: ar-5404's split children were joined to their own parent rows as dups, so they vanished.
+  sheet '- [ ] feat(ui): the stage cells on /book #of/sc-3 #size/m #normal #agent #from/ar-5404\n' \
+    '- [ ] feat(ui): odds per stage on /book #pts/8 #size/l #normal <!-- id:sc-3 -->\n'
+  answer '{"n": 1, "action": "dup", "id": "sc-3", "why": "same as the odds row"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'names sc-3 as its own parent'
+  assert_output --partial 'filed 1, left 0, refused 0'
+  run cat "$SHEET" "$PROJ/scratch/agent/README.md"
+  assert_line --regexp '^- \[ \] feat\(ui\): the stage cells on /book .*#of/sc-3'
+  assert_output --regexp 'odds per stage on /book .*id:sc-3'
+}
+
+@test "negative control: a dup of a closed #of/ parent stays the model's dup" {
+  sheet '- [ ] feat(ui): the stage cells on /book #of/sc-3 #size/m #normal #agent #from/ar-5404\n' \
+    '- [x] feat(ui): odds per stage on /book #pts/8 #size/l #normal <!-- id:sc-3 done:2026-11-20 -->\n'
+  answer '{"n": 1, "action": "dup", "id": "sc-3"}'
+  run "$TRIAGE"
+  refute_output --partial 'names sc-3 as its own parent'
+  # The line stays in the inbox (a closed row takes no dup); it is never filed as a row of its own.
+  run cat "$SHEET" "$PROJ/scratch/agent/README.md"
+  refute_line --regexp '^- \[ \] feat\(ui\): the stage cells on /book .*id:'
+}
+
 @test "a split line's own #of/ files no new epic and never turns an empty row into a bare tag" {
   sheet '- [ ] feat(ui): the stage cells on /book #of/sc-3 #size/m #normal #agent #from/ar-5404\n- [ ] feat(ui): the odds legend on /book #of/sc-3 #size/s #normal #agent #from/ar-5404\n' \
     '- [ ] feat(ui): odds per stage on /book #pts/8 #size/l #normal <!-- id:sc-3 -->\n'
@@ -735,6 +760,33 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
   grep -q '\[ \] f: ship the logo' "$board" || fail "a row sc-7 waits on was closed done, which reads dropped"
   grep -q '\[ \] c: a stale idea' "$board" && fail "the control row nobody waits on stayed"
   [ ! -e "$PROJ/scratch/improvements.md" ] || fail "an improvement was written for a waited-on row"
+}
+
+@test "--backlog: an improvement whose drop ptask refuses (open #of/ children) writes nothing to improvements.md (ar-5182; negative control: a childless row goes)" {
+  sheet '' ''
+  agent_board '- [ ] a: barrel roll and a chase camera #low <!-- id:sc-1 -->\n- [ ] b: the roll camera #of/sc-1 #low <!-- id:sc-2 -->\n- [ ] c: a glow on the menu #low <!-- id:sc-3 -->\n'
+  answer '{"n": 1, "action": "improvement", "why": "polish"}' '{"n": 2, "action": "keep"}' '{"n": 3, "action": "improvement", "why": "polish"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_output --partial 'refused: --exact drop'
+  assert_output --partial 'improvements 1'
+  board="$PROJ/scratch/agent/README.md"
+  grep -q '\[ \] a: barrel roll' "$board" || fail "the parent left the board"
+  grep -q '\[ \] c: a glow' "$board" && fail "the control row stayed on the board"
+  run cat "$PROJ/scratch/improvements.md"
+  assert_output --partial '- c: a glow on the menu ('
+  refute_output --partial 'barrel roll'
+}
+
+@test "--backlog: an improvement whose improvements.md write fails after the drop is reopened, not lost (ar-5182 review)" {
+  sheet '' ''
+  agent_board '- [ ] c: a glow on the menu #low <!-- id:sc-3 -->\n'
+  # a directory where the file goes: --check passes, the write after the drop cannot
+  mkdir -p "$PROJ/scratch/improvements.md"
+  answer '{"n": 1, "action": "improvement", "why": "polish"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_output --partial 'not written to improvements.md'
+  refute_output --partial 'improvements 1'
+  grep -q '\[ \] c: a glow on the menu' "$PROJ/scratch/agent/README.md" || fail "the row is in neither place"
 }
 
 @test "--backlog: health work is never an improvement: a stage criterion, a missing test and a CI fault with a number stay on the board, polish still leaves (ar-5401)" {

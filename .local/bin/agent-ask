@@ -184,7 +184,6 @@
 
 set -uo pipefail
 
-ASKS_ROOT="${AGENT_ASK_ROOT:-$HOME/.agent/asks}"
 : "${AGENT_ASK_QUEUE_CMD:=agent-queue}"
 # jq: a dollar amount to the cent ("$0.08"), for the card's telemetry line and trace's call line.
 JQ_MONEY='def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 | tostring | if length < 2 then "0" + . else . end)";'
@@ -207,6 +206,9 @@ JQ_MONEY='def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/judge.sh"
 # shellcheck source=../lib/fmt.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fmt.sh"
+# shellcheck source=../lib/ask-store.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/ask-store.sh"
+ASKS_ROOT="$(ask_root)"
 # shellcheck source=../lib/dispatch-wake.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/dispatch-wake.sh"
 # The panels' palette (C_*): a card reads like the panel that shows it and follows a theme swap.
@@ -252,9 +254,6 @@ human_floor() {
   printf "names %s, the judge's own authority\n" "$hit"
 }
 
-# collapse a value to a single physical line (files are one key:value per line)
-oneline() { printf '%s' "$1" | tr '\n\t' '  ' | sed -E 's/  +/ /g; s/^ +//; s/ +$//'; }
-
 # undefined_terms <context> <text...>: the session-jargon terms in the text that the context never
 # names, one per line. A term is a name for a machine: camelCase, a dotted name or file
 # (scale.net.botsPredicted, scaling-net.md), snake_case, a --flag, a row or item id (ucp-526,
@@ -273,9 +272,6 @@ undefined_terms() {
     grep -qFw -e "$t" <<<"$ctx" || printf '%s\n' "$t"
   done
 }
-
-# field <file> <key> -> first value (text after "key: ")
-field() { sed -n "/^$2: /{s///p;q;}" "$1" 2>/dev/null; }
 
 # load_ask <file>: every `key: value` of one ask into the global ASK, read once with no fork
 # (a `field` call per key made a card take half a second). The first `key: ` line wins, as in
@@ -1475,7 +1471,7 @@ rejudge_timed_out() {
     rejudge "$f" "$(timed_out_reason again)" >/dev/null
     return 0
   done < <(ask_files --all | xargs -r -d '\n' grep -lx 'judge: error' 2>/dev/null |
-    xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null)
+    ask_open_files)
 }
 
 # cmd_sweep [project|--all]: judge every pending ask again and answer or arm the live ones (rejudge).
@@ -1504,7 +1500,7 @@ cmd_assume_due() {
   load_queue_asks
   while IFS= read -r f; do gh_login_settle "$f" || true
   done < <(ask_files --all | xargs -r -d '\n' grep -lx 'login: gh' 2>/dev/null |
-    xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null)
+    ask_open_files)
   while IFS= read -r f; do
     load_ask "$f"
     due="$(date -d "${ASK[assume_at]}" +%s 2>/dev/null)" && [ "$due" -le "$now" ] || continue
@@ -1516,7 +1512,7 @@ cmd_assume_due() {
     in_dialog "$(live_row "${ASK[claude_session]:-}")" && continue
     cmd_answer --by judge "${ASK[id]}" "$ans"
   done < <(ask_files --all | xargs -r -d '\n' grep -l '^assume_at: .' 2>/dev/null |
-    xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null)
+    ask_open_files)
   cmd_expire
   # Last, so a stalled call never holds expiry.
   rejudge_timed_out
@@ -2164,7 +2160,7 @@ cmd_settle_session() {
   local full text f opts pick yes=""; full="$(oneline "$*")"; text="$(cut -c1-200 <<<"$full")"
   # A bare yes answers only the one question on screen: the session's only pending ask.
   if bare_yes "$full" && [ "$(ask_files --all | xargs -r -d '\n' grep -lxF "claude_session: $owner" |
-        xargs -r -d '\n' grep -lx 'status: pending' | wc -l)" -eq 1 ]; then yes=1; fi
+        ask_open_files | wc -l)" -eq 1 ]; then yes=1; fi
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     grep -qxF "claude_session: $owner" "$f" || continue
@@ -2399,7 +2395,7 @@ cmd_expire() {
     else
       close_ask cancelled "$id" "$why" 2>/dev/null
     fi
-  done < <(ask_files --all | xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null | sort)
+  done < <(ask_files --all | ask_open_files | sort)
 }
 # row_named <text>: whether the text names exactly one board row id, `<code>-<n>` with a tracker
 # code from project-map.json (project_codes, read once into ROW_CODES), as a whole word. Sets
@@ -2671,7 +2667,7 @@ older_asks() {
     load_ask "$g"
     [ "${ASK[id]:-}" != "$me" ] && [[ "${ASK[created]:-}" < "$created" ]] && joinable || continue
     printf '%s\t- %s (%s): %s\n' "${ASK[created]}" "${ASK[id]}" "${ASK[project]:-}" "${ASK[question]:-}"
-  done < <(ask_files --all | xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null) |
+  done < <(ask_files --all | ask_open_files) |
     sort -r | awk 'NR<=30' | cut -f2-
 }
 

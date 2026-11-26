@@ -10,9 +10,11 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// `$AGENT_ASK_ROOT`, else `~/.agent/asks`, as fleet-sessions resolves it.
+/// `$AGENT_ASK_ROOT` when set and not empty, else `~/.agent/asks`: the Rust twin of
+/// `.local/lib/ask-store.sh` `ask_root`, which every shell reader calls.
 pub fn root() -> PathBuf {
     std::env::var_os("AGENT_ASK_ROOT")
+        .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| crate::session::home().join(".agent").join("asks"))
 }

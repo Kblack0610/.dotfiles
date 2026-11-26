@@ -60,15 +60,16 @@ own memory: a session resumed within a day of its teardown is told "wind-down is
 
 The note lives on the **agent-runtime axis** (`~/.agent/`), not the `~/.notes` vault - session
 wrap-ups are agent runtime knowledge, the same axis as evals/plans/lessons (two-axis model;
-telemetry/agent records never go in the vault). Get the path from the executor so project
-resolution matches the hook:
+telemetry/agent records never go in the vault). Every session of the day shares one file,
+`~/.agent/sessions/<project>/<YYYY-MM-DD>-wind-down.md`, so never write it directly (settings.json denies Edit and Write on it): draft the
+note in your scratchpad, lint it, then append it with the executor, which resolves the project the
+way the hook does and prints the path:
 
 ```bash
-~/.dotfiles/.local/src/tmux/wind-down.sh note-path
-# -> /home/<user>/.agent/sessions/<project>/<YYYY-MM-DD>-wind-down.md  (dir auto-created)
+~/.dotfiles/.local/src/tmux/wind-down.sh note <draft>
 ```
 
-Write that file in the status shape from the `comms-standard` skill (no frontmatter, plain markdown like the lessons and eval files):
+Draft it in the status shape from the `comms-standard` skill (no frontmatter, plain markdown like the lessons and eval files):
 
 ```markdown
 # Session wrap-up - <YYYY-MM-DD>
@@ -99,7 +100,7 @@ Write that file in the status shape from the `comms-standard` skill (no frontmat
 - `path/to/file` - <one-line why>
 ```
 
-Lint it: `comms-lint --channel status <note>`; fix each finding or say why it stands. The note is a memory aid, not a changelog. If the file already exists for today, append a new `# Session wrap-up` block rather than overwriting. `~/.agent` is git-tracked, so the note becomes durable, recallable knowledge.
+Lint the draft before you append it: `comms-lint --channel status <draft>`; fix each finding or say why it stands. The note is a memory aid, not a changelog. `~/.agent` is git-tracked, so the note becomes durable, recallable knowledge.
 
 ### 1b. Refresh the lab feed (if the project has a lab bus)
 
