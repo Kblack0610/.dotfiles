@@ -199,7 +199,7 @@ newer_runs() {
 # CHECKS_WAIT_TIMEOUT cap bounds the waits.
 rerun_pending() {
   local runs open
-  gh_read runs run list "${R[@]}" --commit "$(git rev-parse HEAD)" --json status,conclusion,workflowName,attempt || {
+  gh_read runs run list "${R[@]}" --commit "$(git rev-parse HEAD)" --limit 100 --json status,conclusion,workflowName,attempt || {
     net_error "$gh_err" || fail checks "reading the runs on the head: $(lastline "$gh_err")"
     net_retry "$gh_err"
     return 0
@@ -289,6 +289,11 @@ wait_checks() {
         continue
       }
       cancelled=$(jq -c 'map(select(.bucket == "cancel"))' <<<"$listed" 2>/dev/null) || fail checks "reading the checks after the watch: not a check list: $(lastline "$listed")"
+      # a check that registered after the watch ended (gh exits non-zero then, with the list) is watched, never green
+      if jq -e 'any(.[]; .bucket == "pending" or .bucket == "fail")' <<<"$listed" >/dev/null; then
+        try=0
+        continue
+      fi
       if [ "$cancelled" = '[]' ]; then
         if rerun_pending "$listed"; then
           try=0

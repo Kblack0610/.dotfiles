@@ -614,7 +614,7 @@ shape-grow --body - 5eedbase5eedbase HEAD
 gh pr checks 42 --watch --fail-fast -i 30
 gh pr checks 42 --json name,bucket,workflow
 git rev-parse HEAD
-gh run list --commit 0123456789abcdef --json status,conclusion,workflowName,attempt
+gh run list --commit 0123456789abcdef --limit 100 --json status,conclusion,workflowName,attempt
 git fetch -q origin
 git rev-list --count HEAD..origin/main
 git rev-parse HEAD
@@ -1158,6 +1158,17 @@ RERUN_GAP='[{"name":"shard weights","bucket":"pass","workflow":"shell tests"},{"
   assert_line 'landed #42'
   run grep -c 'pr checks 42 --watch' "$LOG"
   assert_output 2
+}
+
+@test "a check that registers pending after a green watch is watched again, never green (ar-6084 review)" {
+  printf '%s\n' '[{"name":"gate guard","bucket":"pass","workflow":"gate guard"},{"name":"gate","bucket":"pending","workflow":"shell tests"}]' >"$NOTES_FIXTURE/checks.cancelled"
+  fake_sleep
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'landed #42'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 2
+  [ "$(grep -n 'pr checks 42 --watch' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'gh pr merge 42' "$LOG" | cut -d: -f1)" ]
 }
 
 @test "a green watch beside a first attempt of its own workflow or a run waiting on approval lands at once; a failed runs read is never green (ar-6084)" {
