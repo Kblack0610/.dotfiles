@@ -103,8 +103,8 @@ case "$1 $2" in
   *'"fail"))'*) cat "$NOTES_FIXTURE/checks.stale" 2>/dev/null || echo '[]' ;;
   # checks.skipping: whether all checks on the PR are in the skipping bucket (false when absent)
   *'"skipping"'*) cat "$NOTES_FIXTURE/checks.skipping" 2>/dev/null || echo false ;;
-  # checks.cancelled: the cancelled checks as JSON after a green watch, one answer per read,
-  # popped as read; [] once empty. A line "ERR <text>": that read fails with <text>
+  # checks.cancelled: the checks as JSON after a green watch (agent-land picks the cancelled ones), one
+  # answer per read, popped as read; [] once empty. A line "ERR <text>": that read fails with <text>
   *--json*) q="$NOTES_FIXTURE/checks.cancelled" r='[]'
     if [ -s "$q" ]; then r=$(head -1 "$q"); sed -i 1d "$q"; fi
     case "$r" in 'ERR '*) echo "${r#ERR }" >&2; exit 1 ;; esac
