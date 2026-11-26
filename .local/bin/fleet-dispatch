@@ -85,7 +85,7 @@ set -uo pipefail
 DISPATCH_CONF_KEYS=(
   DISPATCH_PROFILES DISPATCH_PER_PASS DISPATCH_LOW_WATER DISPATCH_ORPHAN_HOURS
   DISPATCH_TARGET_PRESENT DISPATCH_TARGET_AWAY DISPATCH_STATE_FRESH_MIN DISPATCH_MAX_LOAD
-  DISPATCH_HOST_MEM_MIN_PCT DISPATCH_START_LOAD DISPATCH_START_LOAD_MIN
+  DISPATCH_HOST_MEM_MIN_PCT DISPATCH_START_LOAD
   DISPATCH_RED_FLOOR DISPATCH_PLAN_LOAD_FLOOR DISPATCH_FIX_TRIES DISPATCH_TRAINEE_REVIEW_HOURS
   DISPATCH_PROJECT_SHARE DISPATCH_PROJECT_SHARE_H
   DISPATCH_ROLLUP_DAYS DISPATCH_ROLLUP_MIN DISPATCH_ROLLUP_BOARD
@@ -183,6 +183,9 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/wake-pace.sh"
 # shellcheck source=../lib/fleet-live.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fleet-live.sh"   # WAITS_JQ, LIVE_JQ: what pace_target counts as live
+# The settle window is the start-load window too (pending_load): pace_get names a bad value and prints
+# nothing, which would count every start in the log, so a window that is not whole minutes stops here.
+[[ "$WAKE_SETTLE_MIN" =~ ^[0-9]+$ ]] || { echo "fleet-dispatch: WAKE_SETTLE_MIN is not a whole number of minutes (pace.conf)" >&2; exit 78; }
 LEVEL=$(machine_level)
 [ -n "$DISPATCH_WORKER_VERB" ] || read -r PER_PASS MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH_PER_PASS" DISPATCH_MAX_LOAD "$DISPATCH_MAX_LOAD")
 # Tier-3 rows fill never promotes, whatever the judge says (decide rows and the release kind are off in
@@ -2248,12 +2251,30 @@ exits_size_state() {
         exit: ((map(select(.verdict != "failed" and .verdict != "cleared")) | last // {}) | .exit)}}) | from_entries' "$VERDICTS" 2>/dev/null || echo '{}'
 }
 
-# t3_skip_verdict <workers> <raw row> <verdict json> -> the verdict with the row's reason: a skip word keeps a
-# row only where no worker takes it by tier (nobody_why). Fails when a worker does take it.
-t3_skip_verdict() {
-  nobody_why_set "$1" agent "$2"
-  [[ "$NOBODY" == "tier3 skip: "* ]] || return 1
-  jq -c --arg r "$NOBODY" '. + {reason: $r}' <<<"$3"
+# human_merge_set <board json> -> sets HM to {"<project> TAB <id>": <word>}, the DISPATCH_T3_SKIP word, for
+# each open agent row no worker takes because of that word (nobody_why, the reason suggest gives), read with
+# the regex t3_rows uses: skip_exits' human-merge rows. A row with a gate of any form (load_gates,
+# agent-queue's list) not yet clear (gate_wait) waits on it, as sprint-stalled reads it. With no worker table (every row would read as
+# one no worker takes) or no gate read, HM is {} and says why.
+human_merge_set() {
+  local table hm='' p id tags raw body g gs
+  HM='{}'
+  table=$(workers)
+  load_gates
+  if [ -z "$table" ]; then say "skip_exits: no workers in $DISPATCH_WORKERS: no human-merge exit this pass"; return 0; fi
+  if [ -n "${GATES_FAILED:-}" ]; then say "skip_exits: $GATES_FAILED: no human-merge exit this pass"; return 0; fi
+  while IFS=$'\t' read -r p id tags raw; do
+    [ -n "$id" ] || continue
+    body=${raw#- \[?\] }
+    re_icase "${body%%<!--*}" "$DISPATCH_T3_SKIP" || continue
+    gs=''; for g in $tags; do [ -z "${GATE_ST[$g]+x}" ] || gs+=" $g"; done
+    [ -z "$gs" ] || [ -z "$(gate_wait "$gs" "$id")" ] || continue
+    ! row_worker "$table" agent "$raw" || continue
+    nobody_why_set "$table" agent "$raw"
+    [[ $NOBODY == "tier3 skip: "* ]] && hm+="$p"$'\t'"$id"$'\t'"${NOBODY#tier3 skip: }"$'\n'
+  done < <(jq -r '.rows[]? | select(.lane == "agent" and .state == "open" and .id != null)
+    | "\(.project)\t\(.id)\t\((.tags_cased // .tags // []) | if length > 0 then join(" ") else "-" end)\t\(.raw)"' <<<"$1")
+  HM=$(jq -Rsc 'split("\n") | map(select(length > 0) | split("\t") | {key: "\(.[0])\t\(.[1])", value: .[2]}) | from_entries' <<<"$hm")
 }
 
 # skip_exits [--dry-run] -- give each open agent row whose latest verdict is a skip, still current
@@ -2281,15 +2302,20 @@ t3_skip_verdict() {
 #    row with no verdict. Any other waits skip takes the plan exit.
 #  - kind: a row of a kind kinds.json turns off (epic aside, and not a parent) never reaches the judge,
 #    so with no verdict it takes the human exit, as rule `kind`: no worker or judge reads it on the lane.
-#  - t3-skip: a row no worker takes because a DISPATCH_T3_SKIP word keeps it with the human (nobody_why
-#    says `tier3 skip:`) reaches no judge either, so it takes the human exit too, unless it is an epic, a
-#    parent or gated #after/ or #pr/; else sprint-stalled counted it every pass (ar-4527: ucp-2700 on dns).
 #  - size: a row sized L or XL (`#size/`) takes the plan exit as rule `too-big` whatever the judge has
 #    said or not yet said (it judges only the rows a pass reaches, and one no worker takes never gets there):
 #    a skip that names a human rule or a gate keeps its own exit. Not an epic, a parent, a row gated
 #    #after/ or #pr/, one whose session failed, one in a project the judge does not cover, or one whose
 #    verdict already carries another exit. A sized
 #    row inbox-plan planned that is still L takes the human exit, as a planned too-big skip does.
+#  - human-merge: a row no worker takes whose text names a DISPATCH_T3_SKIP word (nobody_why's "tier3
+#    skip") is never judged, since t3_rows leaves it out, so with no verdict it takes the human exit as rule
+#    `human-merge`: the human-merge list never starts unattended, and on the agent lane such a row stalled
+#    its sprint for good (ar-4527: ucp-2700 on "dns"). Not an epic, a parent, a failed row, one in a
+#    project the judge does not cover, one with an exit on record but a spent plan, or one with a gate not
+#    yet clear (it waits on that). It goes first: before a judge's skip, which no worker could act on and
+#    which may predate the word, and before the size exit, so a sized row with such a word reaches the person. With no worker table (every row would read as one no worker takes) or no gate
+#    read, that pass gives no such exit.
 # Each exit taken appends the verdict again with `exit` (and `exit_at`) to verdicts.jsonl, so counting
 # exits is a jq query, and that latest verdict, carrying its exit, is not taken again. At most
 # DISPATCH_EXIT_MAX exits a pass (0 is no cap), so a backlog of skips drains over passes, not in one. A
@@ -2297,7 +2323,7 @@ t3_skip_verdict() {
 # nothing and prints `<exit> TAB <project> TAB <id> TAB <rule>` per row (`plan-wait` for a plan row
 # past the room), then the counts. Sets PLAN_TAGGED, EXITS_TAKEN and EXITS_HELD.
 skip_exits() {
-  local dry='' follow='' board rows room p prof id raw line dsig dj rule req prio planned d e body why where gate wk
+  local dry='' follow='' board rows room p prof id raw line dsig dj rule req prio planned d e body why where gate hm
   local -a add
   local -A ids=() n=()
   case "${1:-}" in
@@ -2307,6 +2333,7 @@ skip_exits() {
   esac
   PLAN_TAGGED=0 EXITS_TAKEN=0 EXITS_HELD=0
   board=$(notes board --json 2>/dev/null) || { say "skip_exits: notes board --json failed"; return 0; }
+  human_merge_set "$board"; hm=$HM
   room=$(jq -r "$ROW_JQ"'[.rows[]? | select(plan_tagged)] | length' <<<"$board")
   room=$(( DISPATCH_PLAN_BACKLOG - ${room:-0} ))
   while IFS= read -r id; do [ -z "$id" ] || ids[$id]=1; done < <(jq -r '.rows[]? | select(.id != null) | .id' <<<"$board")
@@ -2324,8 +2351,8 @@ skip_exits() {
   # exit and failure from the raw verdicts (exits_size_state).
   local elig ss; elig=$(exits_eligible); ss=$(exits_size_state)
   rows=$(jq -r --argjson prules "$(policy_rules)" --argjson n "$DISPATCH_DETAIL_CHARS" \
-      --argjson kinds "$kinds" --argjson elig "$elig" --slurpfile ssf <(printf '%s\n' "$ss") \
-      --arg at "$(date -Iseconds)" --arg sig "$(policy_sig)" --arg t3 "$DISPATCH_T3_SKIP" \
+      --argjson kinds "$kinds" --argjson elig "$elig" --argjson hm "$hm" --slurpfile ssf <(printf '%s\n' "$ss") \
+      --arg at "$(date -Iseconds)" --arg sig "$(policy_sig)" \
       --slurpfile v <(latest_verdicts) "$ROW_JQ"'
     ($v | map(select(.lane == "agent" and .verdict == "skip" and .exit == null and usable($prules)))
        | map({key: "\(.project)\t\(.key)", value: .}) | from_entries) as $by
@@ -2336,15 +2363,15 @@ skip_exits() {
     | ([.rows[]? | select(.state == "open" or .state == "doing") | .tags[]? | select(startswith("of/")) | {key: .[3:], value: true}] | from_entries) as $parents
     | .rows[]? | select(.lane == "agent" and .state == "open" and .id != null and (plan_tagged | not) and "\(.type)(\(.area))" != "check(epics)") | . as $row
     | ($by["\(.project)\t\(.id)"] | if . != null and red_skip($row) then null else . end) as $d
-    | if $d != null then
+    | if $hm["\(.project)\t\(.id)"] != null and (.type // "") != "epic" and ($parents[.id] | not)
+          and (.project as $pj | $elig | index($pj)) != null
+          and (($ss["\(.project)\t\(.id)"].failed // false) | not)
+          and ($ss["\(.project)\t\(.id)"].exit | IN(null, "plan")) then
+        "\(.profile)\t\(.project)\t\(.id)\t-\t-\t\(details_json($n))\thuman-merge\t\(.requested == true)\tfalse\t\({project, lane: "agent", key: .id, verdict: "skip", rule: "human-merge", reason: "its text names \($hm["\(.project)\t\(.id)"]), on the human-merge list (DISPATCH_T3_SKIP)", at: $at, policy: $sig} | tojson)\t\(.raw)"
+      elif $d != null then
         "\(.profile)\t\(.project)\t\(.id)\t\($d.line)\t\($d.dsig // "-")\t\(details_json($n))\t\($d.rule)\t\(.requested == true)\t\(planned)\t\($d | tojson)\t\(.raw)"
       elif $off[.type // ""] and ($parents[.id] | not) and ($gone["\(.project)\t\(.id)"] | not) then
         "\(.profile)\t\(.project)\t\(.id)\t-\t-\t\(details_json($n))\tkind\t\(.requested == true)\tfalse\t\({project, lane: "agent", key: .id, verdict: "skip", rule: "kind", reason: "kind \(.type) is off", at: $at, policy: $sig} | tojson)\t\(.raw)"
-      elif (.type // "") != "epic" and ($parents[.id] | not) and ($gone["\(.project)\t\(.id)"] | not)
-          and (.project as $pj | $elig | index($pj)) != null
-          and (any((.tags_cased // .tags // [])[]?; startswith("after/") or startswith("pr/")) | not)
-          and ((.raw // "") | sub("^- \\[.\\] "; "") | split("<!--")[0] | test($t3; "i")) then
-        "\(.profile)\t\(.project)\t\(.id)\t-\t-\t\(details_json($n))\tt3-skip\t\(.requested == true)\tfalse\t\({project, lane: "agent", key: .id, verdict: "skip", rule: "t3-skip", at: $at, policy: $sig} | tojson)\t\(.raw)"
       elif ((.size // "") | ascii_downcase | IN("l", "xl")) and (.type // "") != "epic" and ($parents[.id] | not)
           and (.project as $pj | $elig | index($pj)) != null
           and (($ss["\(.project)\t\(.id)"].failed // false) | not)
@@ -2354,10 +2381,8 @@ skip_exits() {
       else empty end' <<<"$board")
   # raw last: read hands it the rest of the line; details_json and the verdict are JSON, with no bare
   # tab. No field is empty: a tab is IFS whitespace, so read would fold an empty one into its neighbour
-  wk=$(workers)
   while IFS=$'\t' read -r prof p id line dsig dj rule req planned d raw; do
     [ -n "$id" ] || continue
-    [ "$rule" != t3-skip ] || d=$(t3_skip_verdict "$wk" "$raw" "$d") || continue
     # the verdict must still hold for the row as it reads now (ROW_JQ holds)
     [ "$line" = - ] || [ "$(row_sig "$raw")" = "$line" ] || continue
     [ "$dsig" = - ] || [ "$(detail_sig "$dj")" = "$dsig" ] || continue
@@ -2379,7 +2404,7 @@ skip_exits() {
       [ "$DISPATCH_EXIT_MAX" = 0 ] || [ "$EXITS_TAKEN" -lt "$DISPATCH_EXIT_MAX" ] || break
     fi
     if [ "$rule" = kind ]; then why="dispatch never starts it: $(jq -r '.reason // ""' <<<"$d") (kinds.json)"
-    elif [ "$rule" = t3-skip ]; then why="dispatch never starts it: $(jq -r '.reason // ""' <<<"$d") (DISPATCH_T3_SKIP keeps it with the human)"
+    elif [ "$rule" = human-merge ]; then why="dispatch never starts it: $(jq -r '.reason // ""' <<<"$d")"
     else why="dispatch skipped it ($rule): $(jq -r '.reason // ""' <<<"$d")"; fi
     case "$e" in
       plan)
@@ -2444,7 +2469,7 @@ skip_exit_pick() {
     [ -n "$gate" ] && jq -e '(.size | IN("S", "M")) and .clear == true and .agent_only == true and ((.area // "") != "")' <<<"$d" >/dev/null || gate=''
     if [ -n "$gate" ]; then e=gate; else e=plan; fi
   elif [[ " $DISPATCH_PLAN_RULES " == *" $rule "* ]]; then e=plan
-  elif [ "$rule" = kind ] || [ "$rule" = t3-skip ]; then e=human
+  elif [ "$rule" = kind ] || [ "$rule" = human-merge ]; then e=human
   elif [[ " $DISPATCH_HUMAN_RULES " == *" $rule "* ]]; then
     if [ "$(jq -r '.agent_only // false' <<<"$d")" = true ]; then e=plan; else e=human; fi
   fi
@@ -7838,7 +7863,7 @@ cmd_headroom() {
         (if .held then ", held: \(.held)" else "" end),
         "  pace:      \(.total_live // "?") of \(.target) live Claude sessions (\(.needs // "?") more wait on the human, not counted), the \(.target_when) target (the live ones plus the Opus sessions the Claude spend has spare at pace, at most present \(.target_present), away \(.target_away)); hand starts count toward it and are never refused",
         "  run units: \(.live_runs)/\(.max_live) used, \(.slots_free) free (heavy 2, light 1), \(.live_hand) more started by hand",
-        "  load:      \(.load // "?")\(if .cpu_busy != null then " (1-min load \(.load1), \(.cpu_busy) cores busy; the pace reads the lower)" else "" end)\(if .starting > 0 then " plus \(.load_pending) for \(.starting) started in the last '"$DISPATCH_START_LOAD_MIN"' min" else "" end) of a \(.load_cap) cap, \(.load_room // "?") room",
+        "  load:      \(.load // "?")\(if .cpu_busy != null then " (1-min load \(.load1), \(.cpu_busy) cores busy; the pace reads the lower)" else "" end)\(if .starting > 0 then " plus \(.load_pending) for \(.starting) started in the last '"$WAKE_SETTLE_MIN"' min" else "" end) of a \(.load_cap) cap, \(.load_room // "?") room",
         "  run floor: \(.floor_live) of \(.run_floor) run sessions live; under it the weekly pace of an account refused for its pace alone does not hold a start (committed burn, the reserve and the 5h window still do)",
         "  red floor: \(.red_live) of \(if .red_floor > 0 then .red_floor + .red_watch else 0 end) red sessions live (\(.red_floor), plus \(.red_watch) for tripped watches); under it the pace target, weekly pace, load and fleet-assess do not hold a red",
         (.project_share as $s | $s.projects | to_entries[] | "  project share: \(.key) \(.value.n) of \($s.total) items started in \($s.hours)h, \(.value.pct // 0)% against a \(.value.cap)% cap\(if .value.full then ": full, so only reds and work the human asked for start its items until nothing else can" else "" end)"),
@@ -8487,7 +8512,7 @@ firing_findings() {
     | select((.epoch // $now) >= $now - $fresh * 60) | {rule, scope, repos, bind}'
 }
 
-# pending_load -> "<starts> <load>": the sessions started in the last DISPATCH_START_LOAD_MIN minutes
+# pending_load -> "<starts> <load>": the sessions started in the last WAKE_SETTLE_MIN minutes (pace.conf, wake-pace.sh: the one settle window)
 # (the `started` lines the log already holds) and the load they have
 # not yet put on the 1-min average. A start's load arrives minutes late, so a loop of starts that
 # each read the load sees the same low number; counting the starts closes that. Hand starts and a
@@ -8497,7 +8522,7 @@ firing_findings() {
 pending_load() {
   local n
   [ "$DISPATCH_START_LOAD" != 0 ] || { echo "0 0.0"; return; }
-  n=$(awk -v c="$(date -d "-$DISPATCH_START_LOAD_MIN min" '+%Y-%m-%d %H:%M')" '$4 == "started" && ($2 " " $3) >= c' "$LOG" 2>/dev/null | grep -c . || true)
+  n=$(awk -v c="$(date -d "-$WAKE_SETTLE_MIN min" '+%Y-%m-%d %H:%M')" '$4 == "started" && ($2 " " $3) >= c' "$LOG" 2>/dev/null | grep -c . || true)
   [ "${DRY:-0}" != 1 ] || n=$(( ${n:-0} + ${STARTED:-0} ))
   LC_ALL=C awk -v n="${n:-0}" -v l="$DISPATCH_START_LOAD" 'BEGIN { printf "%d %.1f\n", n, n * l }'
 }
@@ -8557,7 +8582,7 @@ load_why() {
   read -r load load1 busy < <(pace_load "$cores")
   read -r starts pend < <(pending_load)
   [ "$1" = 0 ] && over_pace "$load" "$cores" "$pend" &&
-    echo "load ${load}$([ "$busy" = - ] || echo " (1-min load $load1, $busy cores busy; the pace reads the lower)")$([ "$starts" = 0 ] || echo " plus $pend for $starts started in the last ${DISPATCH_START_LOAD_MIN} min") on ${cores} cores is over the ${MAX_LOAD} pace"
+    echo "load ${load}$([ "$busy" = - ] || echo " (1-min load $load1, $busy cores busy; the pace reads the lower)")$([ "$starts" = 0 ] || echo " plus $pend for $starts started in the last ${WAKE_SETTLE_MIN} min") on ${cores} cores is over the ${MAX_LOAD} pace"
   return 0
 }
 

@@ -18,7 +18,7 @@ A long report the human asked for (an audit, a postmortem, a morning writeup) is
 - The human asks for a report, writeup or findings "in my inbox", "in the morning" or "where I can click to it".
 - A session's result is too long for a page or the conversation and the human will read it later.
 
-Not for a short alert (`agent-notify`), the daily briefing (`agentctl-briefing` writes its own ref), a capture the human made (`~/.notes/inbox/`, read by the triager), or project docs that belong in a repo (`docs-write`).
+Not for a short alert (`agent-notify`), the daily briefing (`agentctl-briefing` writes its own ref), a capture the human made (`~/.notes/captures/`, read by the triager), or project docs that belong in a repo (`docs-write`).
 
 ## Steps
 

@@ -682,34 +682,58 @@ exits: improve 1 sheet 1'
   refute_output --partial 'gd-1'
 }
 
-@test "skip_exits: a row a DISPATCH_T3_SKIP word keeps from every worker takes the human exit, so sprint-stalled stops counting it; a row a worker takes or one gated stays (ar-4527)" {
+@test "skip_exits: a row no worker takes for a DISPATCH_T3_SKIP word leaves the lane, before a judge's skip and a size exit; a row a worker takes, a plain tier-3 row, a row whose gate waits and a draft project's stay (ar-4527)" {
   project game beta "$SANDBOX/repos/game"
-  row game agent gt-1 "- [ ] fix(ci): flag DNS EAI_AGAIN as infra #tier/3 #high <!-- id:gt-1 -->"
-  row game agent gt-2 "- [ ] fix(game): maybe a new menu #tier/3 #low <!-- id:gt-2 -->"
-  row game agent gt-3 "- [ ] fix(game): the prod menu $T #high <!-- id:gt-3 -->"
-  row game agent gt-4 "- [ ] fix(ci): the dns pool #tier/3 #high #after/gt-9 <!-- id:gt-4 -->"
-  row game agent gt-5 "- [ ] fix(game): a plain one #tier/3 #high <!-- id:gt-5 -->"
+  project pre draft "$SANDBOX/repos/pre"
+  row game agent gh-1 "- [ ] fix(game): move the dns record #tier/3 <!-- id:gh-1 -->"
+  row game agent gh-2 "- [ ] chore(game): rotate the sudo rules #tier/3 #low <!-- id:gh-2 -->"
+  row game agent gh-3 "- [ ] fix(game): the dns row a worker takes $T <!-- id:gh-3 -->"
+  row game agent gh-4 "- [ ] ci(game): the runner pool #tier/3 <!-- id:gh-4 -->"
+  row game agent gh-5 "- [ ] feat(game): the whole dns move #size/l #tier/3 <!-- id:gh-5 -->"
+  row game agent gh-6 "- [ ] fix(game): dns once the pool is in #tier/3 #after/gh-4 <!-- id:gh-6 -->"
+  row pre agent gh-7 "- [ ] fix(pre): the dns record #tier/3 <!-- id:gh-7 -->"
   : > "$NOTES_FIXTURE/board.rows"
-  board_row game agent gt-1 '[]' '[]'; board_row game agent gt-2 '[]' '[]'; board_row game agent gt-3 '[]' '[]'
-  board_row game agent gt-4 '["after/gt-9"]' '[]'; board_row game agent gt-5 '[]' '[]'
-  : > "$NOTES_FIXTURE/calls.log"
+  for k in gh-1 gh-2 gh-3 gh-4 gh-5; do board_row game agent "$k" '[]' '[]'; done
+  board_row game agent gh-6 '["after/gh-4"]' '[]'; board_row pre agent gh-7 '[]' '[]'
+  jq -c 'if .id == "gh-5" then .size = "l" else . end' "$NOTES_FIXTURE/board.rows" > "$SANDBOX/b" && mv "$SANDBOX/b" "$NOTES_FIXTURE/board.rows"
+  # a judge's skip no worker could act on (it may predate the word) does not take the row to a plan
+  printf '%s\n' '- (unclear) an unclear row' >> "$DISPATCH_POLICY"
+  skipv gh-1 unclear r false
+  stub systemctl 'echo "$*" >> "$NOTES_FIXTURE/systemctl.log"'
   run skip_exits --dry-run
   assert_success
-  assert_output 'sheet	game	gt-1	t3-skip
-improve	game	gt-2	t3-skip
-exits: improve 1 sheet 1'
+  assert_output 'sheet	game	gh-1	human-merge
+improve	game	gh-2	human-merge
+sheet	game	gh-5	human-merge
+exits: improve 1 sheet 2'
+  : > "$NOTES_FIXTURE/calls.log"
   skip_exits
-  assert_equal "$EXITS_TAKEN" 2
-  grep -q 'id:gt-1 dropped: on the game sheet: dispatch never starts it: tier3 skip: DNS (DISPATCH_T3_SKIP keeps it with the human)' "$NOTES_FIXTURE/rows.game.agent"
-  grep -qF 'improve game --why dispatch never starts it: tier3 skip: maybe' "$NOTES_FIXTURE/calls.log"
-  assert_equal "$(jq -r 'select(.exit) | "\(.key)=\(.rule)/\(.exit)"' "$FLEET_DISPATCH_DIR/verdicts.jsonl" | paste -sd,)" 'gt-1=t3-skip/sheet,gt-2=t3-skip/improve'
-  # NEGATIVE CONTROL: a tier-1 row with a skip word (a worker takes it), a gated one and a plain tier-3 one stay.
-  run grep -E 'gt-[345]' "$NOTES_FIXTURE/calls.log"
+  assert_equal "$EXITS_TAKEN" 3
+  grep -qxF 'notes --profile bnb ptask game add fix(game): move the dns record #tier/3 (agent row gh-1) --origin fleet-dispatch' "$NOTES_FIXTURE/calls.log"
+  grep -qxF 'notes --profile bnb improve game --why dispatch never starts it: its text names sudo, on the human-merge list (DISPATCH_T3_SKIP) -- chore(game): rotate the sudo rules #tier/3 #low' "$NOTES_FIXTURE/calls.log"
+  grep -q 'id:gh-1 dropped: on the game sheet: dispatch never starts it: its text names dns' "$NOTES_FIXTURE/rows.game.agent"
+  assert_equal "$(jq -r 'select(.exit) | "\(.key)=\(.rule)=\(.exit)"' "$FLEET_DISPATCH_DIR/verdicts.jsonl" | paste -sd,)" \
+    'gh-1=human-merge=sheet,gh-2=human-merge=improve,gh-5=human-merge=sheet'
+  run grep -E '(ptask game (add|--agent)|improve game).*gh-[3467]|tag --add plan' "$NOTES_FIXTURE/calls.log"
   assert_failure
-  # each exit is on record, so a second pass files no copy
+  # each exit is on record, so a second pass over the same board files no copy
   : > "$NOTES_FIXTURE/calls.log"
   skip_exits
   assert_equal "$EXITS_TAKEN" 0
+  # negative control: with no worker table every row reads as one no worker takes, so no row takes this exit
+  rm "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  echo '{}' > "$DISPATCH_WORKERS"
+  run skip_exits --dry-run
+  assert_line --partial 'no human-merge exit this pass'
+  refute_output --partial 'human-merge	'
+  assert_line 'plan	game	gh-5	too-big'
+  # a gate that has cleared, still on the row, holds nothing: the row takes the exit
+  echo '{"fleet": {"max_tier": 1}}' > "$DISPATCH_WORKERS"
+  load_gates
+  GATE_ST[after/gh-4]=clear
+  run skip_exits --dry-run
+  assert_line 'sheet	game	gh-6	human-merge'
+  refute_output --partial 'gh-7'
 }
 
 @test "skip_exits: every skip rule in the shipped policy has exactly one exit" {
@@ -2140,7 +2164,7 @@ EOF
 
 @test "headroom counts sessions started in the last few minutes against the load room, though the load has not moved" {
   two_items
-  export DISPATCH_START_LOAD=1 DISPATCH_START_LOAD_MIN=5
+  export DISPATCH_START_LOAD=1
   mkdir -p "$FLEET_DISPATCH_DIR"
   { printf -- '- %s started s1 on agents (hand) for app: queue item a\n' "$(date -d '-1 min' '+%Y-%m-%d %H:%M')"
     printf -- '- %s started s2 on agents (hand) for app: queue item b\n' "$(date -d '-2 min' '+%Y-%m-%d %H:%M')"
@@ -2150,9 +2174,21 @@ EOF
   assert_equal "$(jq -r '[.starting, .load_pending, .load_room] | @tsv' <<<"$output")" "$(printf '2\t2.0\t%s' "$(awk -v c="$(nproc)" 'BEGIN { printf "%g", c * 0.7 - 0.1 - 2 }')")"
 }
 
+@test "a settle window that is not whole minutes stops dispatch with 78 before it counts a start (ar-3653)" {
+  two_items
+  grep -v '^WAKE_SETTLE_MIN=' "$REPO_ROOT/.config/claude-acct/pace.conf" > "$BATS_TEST_TMPDIR/pace.conf"
+  echo 'WAKE_SETTLE_MIN=5.5' >> "$BATS_TEST_TMPDIR/pace.conf"
+  CLAUDE_ACCT_PACE_CONF="$BATS_TEST_TMPDIR/pace.conf" run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$status" 78
+  assert_output --partial 'WAKE_SETTLE_MIN is not a whole number'
+  grep -v '^WAKE_SETTLE_MIN=' "$REPO_ROOT/.config/claude-acct/pace.conf" > "$BATS_TEST_TMPDIR/pace.conf"
+  CLAUDE_ACCT_PACE_CONF="$BATS_TEST_TMPDIR/pace.conf" run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$status" 78
+}
+
 @test "a loop of hand starts is held once the starts not yet in the load fill the room, and an older start no longer counts" {
   two_items
-  export DISPATCH_START_LOAD="$(nproc)" DISPATCH_START_LOAD_MIN=5
+  export DISPATCH_START_LOAD="$(nproc)"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r '[.could_start, .starting] | @tsv' <<<"$output")" $'2\t0'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-app

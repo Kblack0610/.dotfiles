@@ -1255,7 +1255,7 @@ fn first_source_day(p: &Profile) -> Option<NaiveDate> {
     let mut min = None;
     let dirs: [(&Path, u8, Day); 6] = [
         (&p.daily, 0, note),
-        (&p.inbox, 0, note),
+        (&p.captures, 0, note),
         (&p.archive, 2, note),
         (&p.refs, 0, iso),
         (&p.zettel, 0, id),
