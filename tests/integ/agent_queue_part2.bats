@@ -684,21 +684,39 @@ EOF
 }
 
 # ar-4436: a return to the queue clears `started`, so the restart read as the wait since the predecessor
-# finished (a week, for an item that blocked on a login). It is ready again from the return.
-@test "stats chain: an item returned to the queue and restarted waits from its return, not from its predecessor's finish (ar-4436)" {
-  "$AQ" add --project game --slug p --priority urgent "p"
-  legacy f "after: p" --project game --priority urgent "f"
+# finished (a week, for an item that blocked on a login). It is ready again from its return, and the
+# restart is no handoff: its first start is. Read as one, a land retry's 78m wait tripped chain-lag
+# (2026-11-25). high, as that item was; chain-lag bounds urgent and high alike.
+@test "stats chain: a restarted item's handoff is its first start, and its wait since the return is not one (ar-4436)" {
+  "$AQ" add --project game --slug p --priority high "p"
+  legacy f "after: p" --project game --priority high "f"
   "$AQ" move p running; "$AQ" move p done --status ok
   now=$(date +%s)
-  "$AQ" set p finished="$(date -u -d "@$((now - 259200))" +%FT%TZ)"
-  f="$(item queued f)"; sed -i "s/^queued: .*/queued: $(date -u -d "@$((now - 259300))" +%FT%TZ)/" "$f"
-  "$AQ" move f running; "$AQ" set f started="$(date -u -d "@$((now - 258600))" +%FT%TZ)"
+  "$AQ" set p finished="$(date -u -d "@$((now - 7200))" +%FT%TZ)"
+  f="$(item queued f)"; sed -i "s/^queued: .*/queued: $(date -u -d "@$((now - 10000))" +%FT%TZ)/" "$f"
+  first="$(date -u -d "@$((now - 6600))" +%FT%TZ)"
+  "$AQ" move f running; "$AQ" set f started="$first"
   "$AQ" move f queued
+  # the real requeue keeps the first start, once
   [ -n "$(sed -n 's/^requeued: //p' "$(item queued f)")" ]
-  "$AQ" move f running
+  assert_equal "$(sed -n 's/^first_started: //p' "$(item queued f)")" "$first"
+  # timed like that land retry: back 90m ago, restarted 12m ago
+  back="$(date -u -d "@$((now - 5400))" +%FT%TZ)"
+  "$AQ" move f running; "$AQ" set f started="$(date -u -d "@$((now - 720))" +%FT%TZ)"
+  "$AQ" move f queued; "$AQ" move f running
+  # a second requeue leaves the first start as it was
+  assert_equal "$(sed -n 's/^first_started: //p' "$(item running f)")" "$first"
+  sed -i "s/^requeued: .*/requeued: $back/" "$(item running f)"
+  "$AQ" set f started="$(date -u -d "@$((now - 720))" +%FT%TZ)"
   run "$AQ" stats --json --since 2000-01-01
   assert_success
-  assert_equal "$(jq -c '.chain.h24.urgent.p90 < 5' <<<"$output")" 'true'
+  # one handoff, the 10 min from p's finish to f's first start, not the 78 min since its return
+  assert_equal "$(jq -c '.chain.h24' <<<"$output")" '{"high":{"n":1,"p50":10,"p90":10}}'
+  assert_equal "$(jq -c '.wait_minutes_median' <<<"$output")" '78'
+  # negative control: a restart with no first start kept (requeued before it was) is left out
+  sed -i "/^first_started:/d" "$(item running f)"
+  run "$AQ" stats --json --since 2000-01-01
+  assert_equal "$(jq -c '.chain.h24' <<<"$output")" '{}'
 }
 
 # ar-617: the Queue table shows each item's wait, so list carries the same ready stats medians.

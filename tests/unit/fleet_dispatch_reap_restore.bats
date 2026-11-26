@@ -365,6 +365,45 @@ claude_end_item() {
   assert_failure 2
 }
 
+# 2026-11-18: 11 sandboxed glm canaries on razer-laptop ended in two minutes, and the shared opencode log had
+# rotated past them before anyone read it, so none could be called fault or weakness (ar-4133).
+@test "run-log: the lines of the harness's opencode log the run claiming the session wrote, and none of another run's (negative control)" {
+  jq -n --arg d "$SANDBOX/oc-h" '{harnesses: {h: {launcher: "opencode", sandbox: "fleet", config_dir: $d}}}' > "$SANDBOX/harnesses.json"
+  HARNESSES="$SANDBOX/harnesses.json"
+  mkdir -p "$SANDBOX/oc-h/run/data/opencode/log"
+  cat > "$SANDBOX/oc-h/run/data/opencode/log/opencode.log" <<'LOG'
+timestamp=2026-11-18T09:00:00.000Z level=INFO run=aa11 message="cli starting" args="[\"run\",\"--session\",\"ses_evala\",\"--title\",\"x\"]"
+timestamp=2026-11-18T09:00:01.000Z level=INFO run=bb22 message="cli starting" args="[\"run\",\"--session\",\"ses_evalb\"]"
+timestamp=2026-11-18T09:00:02.000Z level=ERROR run=aa11 message="provider error" cause="402 budget"
+timestamp=2026-11-18T09:00:03.000Z level=INFO run=bb22 message="session.idle"
+LOG
+  run cmd_run_log h ses_evala
+  assert_success
+  assert_equal "${#lines[@]}" 2
+  assert_line --index 1 --partial 'run=aa11 message="provider error"'
+  refute_output --partial 'run=bb22'
+  # A session id that is a prefix of another's claims no run of it.
+  run cmd_run_log h ses_eval
+  assert_output ''
+  run cmd_run_log h ses_evala ses_evalb
+  assert_equal "${#lines[@]}" 4
+  # A start line with no run= field claims no run, so lines with none are not pulled in.
+  printf '%s\n' 'level=INFO message="cli starting" args="[\"run\",\"--session\",\"ses_evalc\"]"' 'level=INFO message="no run here"' >> "$SANDBOX/oc-h/run/data/opencode/log/opencode.log"
+  run cmd_run_log h ses_evalc
+  assert_success
+  assert_output ''
+  # A harness with no run dir, or no log yet, prints nothing; an id that is not one is refused.
+  run cmd_run_log nope ses_evala
+  assert_success
+  assert_output ''
+  rm "$SANDBOX/oc-h/run/data/opencode/log/opencode.log"
+  run cmd_run_log h ses_evala
+  assert_success
+  assert_output ''
+  run cmd_run_log h 'ses;rm'
+  assert_failure 2
+}
+
 # 2026-11-19: opencode-go's 5h budget ran out in one burst and 8 canary and trainee runs died at their first message (ar-3778).
 @test "provider hold: a run that ended on a provider refusal holds its source until the harness's hold_min after its end; a source it does not name is open" {
   oc_end_item ses_evalh 'error|provider.rate-limit'

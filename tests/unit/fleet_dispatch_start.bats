@@ -879,8 +879,9 @@ load 'fleet_dispatch/common'
   # The canary oracle runs before and the score after, outside the sandbox; the run's line starts from env -i.
   # A start that fails skips the run and the score (the tree is not at base); the settings go either way.
   [[ "$line" == *":: trap rm\\ -f\\ "*"/srt-ses_eval"*".json EXIT; trap 'exit 129' HUP TERM; fleet-bench canary start c-7 && { timeout 180m env -i "* ]] || fail "no canary start then env -i: $line"
-  # Why the session ended is written once to the item, read once the run is over where it ran; the score reads it from the item.
-  [[ "$line" == *"; fleet-dispatch record-end fix-menu paid ses_eval"*"; BENCH_CANARY_WRAP="*" AGENT_QUEUE_ITEM=fix-menu fleet-bench canary score c-7 && agent-queue move fix-menu done --status ok; tmux set-option -t \"\$TMUX_PANE\" @headless fix-menu 2>/dev/null; env -i "* ]] || fail "no canary score, then the replay, after: $line"
+  # Why the session ended is written once to the item, read once the run is over where it ran; the score reads it from the item,
+  # and keeps the run's own lines of the harness's log beside its canary log (run-log, ar-4133).
+  [[ "$line" == *"; fleet-dispatch record-end fix-menu paid ses_eval"*"; BENCH_CANARY_WRAP="*" AGENT_QUEUE_ITEM=fix-menu BENCH_CANARY_RUN_LOG=fleet-dispatch\\ run-log\\ paid\\ ses_eval"*" fleet-bench canary score c-7 && agent-queue move fix-menu done --status ok; tmux set-option -t \"\$TMUX_PANE\" @headless fix-menu 2>/dev/null; env -i "* ]] || fail "no canary score, then the replay, after: $line"
   [[ "$line" == *"TMPDIR=$qr/tmp CLAUDE_CODE_TMPDIR=$qr/tmp AGENT_QUEUE_ITEM=fix-menu "*"XDG_DATA_HOME=$qr/data "*" srt --settings $qr/srt-ses_eval"*".json -- opencode run --standalone"* ]] || fail "opencode is not inside srt: $line"
   # The config is named by its target, which the sandbox re-allows; a link inside a masked dir would not resolve.
   [[ "$line" == *"OPENCODE_CONFIG=$(printf %q "$SANDBOX/eval-paid.json") "* ]] || fail "config not by its target: $line"

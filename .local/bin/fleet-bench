@@ -350,6 +350,7 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${BENCH_CANARY_TIMEOUT:=900}"   # canary: seconds an oracle may run
 : "${BENCH_CANARY_RETRIES:=1}"   # canary queue: times a canary a session cancelled is queued again in its week (a cancel by hand stays cancelled)
 : "${BENCH_CANARY_WRAP:=}"   # canary score: a shell prefix the oracle command runs inside (fleet-dispatch: a sandboxed lane's srt line)
+: "${BENCH_CANARY_RUN_LOG:=}"   # canary score: a command printing the harness's own log of the run (fleet-dispatch run-log), kept as <run>.harness.log
 : "${BENCH_CANARY_CONFIG_REPOS:=$HOME/.dotfiles:$HOME/.dotfiles-private}"   # canary score: the config a run ran under, by HEAD (colon-separated)
 : "${BENCH_CANARY_LANES:=$HOME/.config/fleet-bench/canary-lanes}"   # the lanes canary_top_up fills beside claude, `harness model [effort]` a line (content as data)
 : "${BENCH_MATRIX:=$HOME/.config/fleet-bench/matrix.json}"   # canary matrix: kinds, stacks, modes and excluded cells (content as data)
@@ -7364,6 +7365,12 @@ canary_score() {
     say "canary score: $run is already scored"; return 3
   fi
   mkdir -p "$DIR/canary"; log="$DIR/canary/$run.log"; : >"$log"
+  # The harness's own log of the run, kept before its shared log rotates it away: why a run with no diff ended.
+  if [ -n "$BENCH_CANARY_RUN_LOG" ]; then
+    timeout "$BENCH_CANARY_TIMEOUT" bash -c "$BENCH_CANARY_RUN_LOG" >"$DIR/canary/$run.harness.log" 2>>"$log" ||
+      echo "canary score: the harness log command exited $?" >>"$log"
+    [ -s "$DIR/canary/$run.harness.log" ] || rm -f "$DIR/canary/$run.harness.log"
+  fi
   base=$(jq -r .base <<<"$t")
   canary_keep "$top" "$base" "$DIR/canary/$run.patch" || reset=''
   # A tree it resets is its own to relink; one it leaves as the run left it keeps its own tests/vendor.
