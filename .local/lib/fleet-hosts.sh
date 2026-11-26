@@ -334,7 +334,7 @@ _fh_ssh() {
   [ -z "${AGENT_QUEUE_ITEM:-}" ] || identity+=("AGENT_QUEUE_ITEM=$AGENT_QUEUE_ITEM")
   # shellcheck disable=SC2016 # $HOME, $PATH and $LANG are the remote shell's
   ssh $n $tty -o BatchMode=yes -o ConnectTimeout="$FLEET_SSH_TIMEOUT" -o ServerAliveInterval="$FLEET_SSH_TIMEOUT" -o ServerAliveCountMax=2 "${opts[@]}" "$dest" \
-    'PATH="$HOME/.local/bin:$PATH" LANG="${LANG:-C.UTF-8}" exec env' "$(_fh_sq "$@")"
+    'PATH="$HOME/.local/bin:$PATH" LANG="${LANG:-C.UTF-8}" exec env' "$(_fh_sq "${identity[@]}" "$@")"
 }
 
 # _fh_sq <args...> -> each argument in POSIX single quotes, space-separated, which sh, bash and zsh
