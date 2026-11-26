@@ -18,7 +18,7 @@ setup() {
   mkdir -p "$FLEET_SHEPHERD_DIR"
   stub fleet-sessions 'echo "$*" >> "$HOME/sessions.calls"'
   stub fleet-assess 'if [ "${1:-}" = --blocked ]; then printf "%b" "${STUB_BLOCKED:-}"; elif [ "${1:-}" = --fleet ]; then printf "%b" "${STUB_FLEET:-}"; ! printf "%b" "${STUB_FLEET:-}" | grep -qE "^fleet: OVER|NOT live"; else echo "verdict: ${STUB_VERDICT:-CLEAR} load 0.5x"; fi'
-  stub agent-hold 'printf "%s" "${STUB_HOLDS:-}"'
+  stub agent-hold 'case "$*" in *--expired*) printf "%s" "${STUB_EXPIRED:-}" ;; *) printf "%s" "${STUB_HOLDS:-}" ;; esac'
   # a pass's measured cost (pass_cost); unset is a session with none
   stub agent-usage '[ "$1 $3" = "session --json" ] || exit 2
 if [ -n "${STUB_USAGE:-}" ]; then printf "%s" "$STUB_USAGE"; else printf "{\"session_id\":\"%s\",\"usage_source\":\"none\"}" "$2"; fi'
@@ -70,8 +70,12 @@ stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "
 # The real fleet-sessions, by path: the one on PATH is a stub here.
 fleet-sessions-real() { "$REPO_ROOT/.local/bin/fleet-sessions" "$@"; }
 
-# doc <sessions-json> [main-json]
-doc() { jq -n --argjson s "$1" --argjson m "${2:-[]}" '{schema:1, sessions:$s, main:$m}' > "$FLEET_STATE_FILE"; }
+# doc <sessions-json> [main-json]: with the vocab fleet-sessions writes, whose `finished` the shepherd reads
+doc() {
+  jq -n --argjson s "$1" --argjson m "${2:-[]}" \
+    '{schema:1, vocab:{buckets:["NEEDS","STALLED","DONE","LANDED","CHAT","WORKING","PARKED"], finished:["DONE","LANDED"],
+      in_progress:["WORKING","NEEDS","STALLED"]}, sessions:$s, main:$m}' > "$FLEET_STATE_FILE"
+}
 
 row() { # target bucket nudged escalated [labels-json] [close verdict: default now for DONE, else keep]
   jq -n --arg t "$1" --arg b "$2" --argjson n "$3" --argjson e "$4" --argjson l "${5:-[]}" --arg v "${6:-}" \
@@ -631,6 +635,14 @@ esac'
   assert_line 'pace: machine reads HOLD with no hold set'
   STUB_VERDICT=HOLD STUB_HOLDS=$'unity\tx' run "$SH" due
   assert_failure
+}
+
+@test "a hold past its until is a pace line whatever the verdict, and only then (ar-6059)" {
+  doc "[]"
+  STUB_VERDICT=HOLD STUB_HOLDS=$'unity\tx' STUB_EXPIRED=$'critical\t2026\thuman\tlockdown' run "$SH" due
+  assert_line 'pace: ended hold critical (past its until); then: agent-hold release each'
+  STUB_VERDICT=HOLD STUB_HOLDS=$'unity\tx' run "$SH" due
+  refute_output --partial 'ended hold'
 }
 
 @test "a host over its busy mark, or an agent host with a unit outside its CPU cap, is a pace line; a fine fleet is none" {

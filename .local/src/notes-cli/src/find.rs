@@ -9,7 +9,10 @@
 //!
 //! Ranking is BM25 over weighted fields (title, tags, path, summary, headings, body), times
 //! coverage squared (share of query words a note matches), so a note with every word beats
-//! one with some, yet partial matches still show. A word missing from the vocabulary falls
+//! one with some, yet partial matches still show. A knowledge page over `SECTION_MIN_WORDS`
+//! words is scored per `## ` section (each carrying the page's title, tags, path and summary)
+//! and listed once, at its best section, so a merged page is not diluted by its own length;
+//! document frequency counts pages, not sections. A word missing from the vocabulary falls
 //! back to vocabulary words it prefixes (for a half-typed last word), else to its nearest
 //! word by edit distance (for a typo). Synonym groups are data, in
 //! `<vault>/.search/aliases.toml`, never in this file.
@@ -46,6 +49,9 @@ const W_TYPO: f64 = 0.8;
 const MAX_PREFIX: usize = 8;
 /// A compiled knowledge article outranks a raw journal or lab note on the same words.
 const KNOWLEDGE_BOOST: f64 = 1.25;
+/// A knowledge page with more body words than this is scored per `## ` section, so one
+/// section that answers the query is not diluted by a long merged page's other sections.
+const SECTION_MIN_WORDS: usize = 1000;
 const PHRASE_BOOST: f64 = 1.5;
 /// How deep `--eval` looks for an expected note before calling it a miss.
 const EVAL_DEPTH: usize = 50;
@@ -233,7 +239,10 @@ struct Doc {
     sheet: bool,
     /// Folder names on the path, stemmed: `#interview` also matches a note under `interviews/`.
     dirs: HashSet<String>,
+    /// The page, or for a section Doc that section's text.
     content: String,
+    /// Lines of the file before `content`: 0 for a whole page, else its heading's index.
+    first_line: usize,
 }
 
 fn front_matter(content: &str) -> (&str, &str) {
@@ -261,7 +270,31 @@ fn add(tf: &mut TermMap, text: &str, w: f64) -> usize {
     n
 }
 
-fn parse_doc(path: &Path, content: &str, roots: &Roots) -> Doc {
+/// The `## ` section starts of a page, as (line index, byte offset) pairs, outside code fences
+/// and after the front matter. A page with fewer than two gets none: it is scored whole.
+fn sections(content: &str, body_at: usize) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let (mut at, mut fence) = (0usize, false);
+    for (i, line) in content.split_inclusive('\n').enumerate() {
+        let t = line.trim_start();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            fence = !fence;
+        } else if !fence && at >= body_at && line.starts_with("## ") {
+            out.push((i, at));
+        }
+        at += line.len();
+    }
+    if out.len() < 2 {
+        out.clear();
+    }
+    out
+}
+
+/// One Doc per page, or for a long knowledge page one per `## ` section (the text before the
+/// first heading is a section too). Each section Doc carries the page's title, tags, path and
+/// summary, so a query naming the page still lands on every part of it; `rank` folds the
+/// parts back to one hit per path.
+fn parse_docs(path: &Path, content: &str, roots: &Roots) -> Vec<Doc> {
     let (fm, body) = front_matter(content);
     let mut tf = TermMap::default();
     let mut len = 0usize;
@@ -302,35 +335,73 @@ fn parse_doc(path: &Path, content: &str, roots: &Roots) -> Doc {
     }
     let knowledge = path.starts_with(&roots.knowledge);
     let sheet = path.starts_with(&roots.sheets);
-    for line in body.lines() {
-        let t = line.trim_start();
-        // A task row on a lab sheet is a to-do, not knowledge: the boards are thousands of
-        // them, and counted they bury the prose. Elsewhere a checklist is how a note was
-        // written (interview notes are often all `- [ ]` rows), so it counts.
-        if sheet && md::is_task(t) {
-            continue;
-        }
-        let w = if t.starts_with('#') && t.trim_start_matches('#').starts_with(' ') {
-            W_HEADING
+    let dirs: HashSet<String> = rel
+        .parent()
+        .map(|d| tokenize(&d.to_string_lossy()).into_iter().collect())
+        .unwrap_or_default();
+    let body_at = content.len() - body.len();
+    let mut cuts = if knowledge {
+        let mut words = 0usize;
+        for_each_token(body, |_| words += 1);
+        if words > SECTION_MIN_WORDS {
+            sections(content, body_at)
         } else {
-            W_BODY
-        };
-        len += add(&mut tf, t, w);
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+    // The part before the first heading starts at the top, front matter and all, so its
+    // line numbers are the file's.
+    if cuts.first().is_none_or(|c| c.1 > body_at) {
+        cuts.insert(0, (0, 0));
     }
-    Doc {
-        path: path.to_path_buf(),
-        title,
-        tags,
-        tf,
-        len: len as f64,
-        knowledge,
-        sheet,
-        dirs: rel
-            .parent()
-            .map(|d| tokenize(&d.to_string_lossy()).into_iter().collect())
-            .unwrap_or_default(),
-        content: content.to_string(),
-    }
+    let ends: Vec<usize> = cuts
+        .iter()
+        .skip(1)
+        .map(|c| c.1)
+        .chain([content.len()])
+        .collect();
+    cuts.iter()
+        .zip(ends)
+        .map(|(&(line, from), to)| {
+            let part = &content[from..to];
+            let text = if from == 0 {
+                &content[body_at..to]
+            } else {
+                part
+            };
+            let (mut tf, mut len) = (tf.clone(), len);
+            for line in text.lines() {
+                let t = line.trim_start();
+                // A task row on a lab sheet is a to-do, not knowledge: the boards are
+                // thousands of them, and counted they bury the prose. Elsewhere a checklist
+                // is how a note was written (interview notes are often all `- [ ]` rows), so
+                // it counts.
+                if sheet && md::is_task(t) {
+                    continue;
+                }
+                let w = if t.starts_with('#') && t.trim_start_matches('#').starts_with(' ') {
+                    W_HEADING
+                } else {
+                    W_BODY
+                };
+                len += add(&mut tf, t, w);
+            }
+            Doc {
+                path: path.to_path_buf(),
+                title: title.clone(),
+                tags: tags.clone(),
+                tf,
+                len: len as f64,
+                knowledge,
+                sheet,
+                dirs: dirs.clone(),
+                content: part.to_string(),
+                first_line: line,
+            }
+        })
+        .collect()
 }
 
 /// Every `.md` under the search dirs, minus [`SKIP_DIRS`] and hidden dirs, each read once.
@@ -391,7 +462,7 @@ fn load(dirs: &[PathBuf], roots: &Roots) -> Vec<Doc> {
                         let i = next.fetch_add(1, Ordering::Relaxed);
                         let Some(p) = paths.get(i) else { break };
                         if let Ok(c) = fs::read_to_string(p) {
-                            out.push(parse_doc(p, &c, roots));
+                            out.extend(parse_docs(p, &c, roots));
                         }
                     }
                     out
@@ -482,16 +553,24 @@ fn expand(
         .filter(|(_, m)| **m)
         .filter_map(|(w, _)| w.chars().next())
         .collect();
-    let mut df: HashMap<&str, usize, std::hash::BuildHasherDefault<Fx>> = HashMap::default();
+    // A count is of pages, as in `rank`: the last path a term was counted for skips a second
+    // section of the same page (`load` keeps a page's sections adjacent).
+    let mut seen: HashMap<&str, (usize, &Path), std::hash::BuildHasherDefault<Fx>> =
+        HashMap::default();
     if !firsts.is_empty() {
         for d in docs {
             for t in d.tf.keys() {
                 if t.chars().next().is_some_and(|c| firsts.contains(&c)) {
-                    *df.entry(t.as_str()).or_default() += 1;
+                    let e = seen.entry(t.as_str()).or_insert((0, Path::new("")));
+                    if e.1 != d.path.as_path() {
+                        *e = (e.0 + 1, d.path.as_path());
+                    }
                 }
             }
         }
     }
+    let df: HashMap<&str, usize, std::hash::BuildHasherDefault<Fx>> =
+        seen.into_iter().map(|(t, (c, _))| (t, c)).collect();
     words
         .iter()
         .map(|w| {
@@ -602,20 +681,35 @@ fn snip(s: &str) -> String {
 /// Rank `docs` for `q`, best first, at most `limit` hits (the snippet is the costly part, so
 /// only kept hits get one). Pure over its inputs, so tests drive it with a fixture vault.
 fn rank(docs: &[Doc], q: &Query, aliases: &HashMap<String, Vec<String>>, limit: usize) -> Vec<Hit> {
-    let n = docs.len().max(1) as f64;
-    let avg = docs.iter().map(|d| d.len).sum::<f64>() / n;
+    let avg = docs.iter().map(|d| d.len).sum::<f64>() / docs.len().max(1) as f64;
     if q.words.is_empty() && q.tags.is_empty() {
         return Vec::new();
     }
+    // Document frequency counts pages: a page split in twenty does not make its own title
+    // words look common.
+    let pages = |has: &dyn Fn(&Doc) -> bool| {
+        docs.iter()
+            .filter(|d| has(d))
+            .map(|d| d.path.as_path())
+            .collect::<HashSet<_>>()
+            .len()
+    };
+    let n = pages(&|_| true).max(1) as f64;
     let terms = expand(&q.words, &q.joins, docs, aliases);
     let mut df: HashMap<&str, usize> = HashMap::new();
     for (t, _) in terms.iter().flatten() {
-        let c = docs.iter().filter(|d| d.tf.contains_key(t)).count();
-        df.insert(t.as_str(), c);
+        df.insert(t.as_str(), pages(&|d| d.tf.contains_key(t)));
     }
-    let exclude: Vec<&str> = q.exclude.iter().map(String::as_str).collect();
+    // `-word` drops the page that has it anywhere, not only the section it is in.
+    let excluded: HashSet<&Path> = docs
+        .iter()
+        .filter(|d| q.exclude.iter().any(|t| d.tf.contains_key(t)))
+        .map(|d| d.path.as_path())
+        .collect();
 
-    let mut hits = Vec::new();
+    // Score each Doc; coverage and the phrase bonus are then taken per page, so a query whose
+    // words sit in different sections of one page still covers that page.
+    let mut scored: Vec<(&Doc, f64, Vec<bool>)> = Vec::new();
     for d in docs {
         if !q
             .tags
@@ -624,13 +718,13 @@ fn rank(docs: &[Doc], q: &Query, aliases: &HashMap<String, Vec<String>>, limit: 
         {
             continue;
         }
-        if exclude.iter().any(|t| d.tf.contains_key(*t)) {
+        if excluded.contains(d.path.as_path()) {
             continue;
         }
         let norm = K1 * (1.0 - B + B * d.len / avg.max(1.0));
         let mut score = 0.0;
-        let mut matched = 0usize;
-        for group in &terms {
+        let mut got = vec![false; terms.len()];
+        for (gi, group) in terms.iter().enumerate() {
             let mut best = 0.0f64;
             for (t, w) in group {
                 let Some(&tf) = d.tf.get(t) else { continue };
@@ -639,25 +733,41 @@ fn rank(docs: &[Doc], q: &Query, aliases: &HashMap<String, Vec<String>>, limit: 
                 best = best.max(w * idf * tf * (K1 + 1.0) / (tf + norm));
             }
             if best > 0.0 {
-                matched += 1;
+                got[gi] = true;
                 score += best;
             }
         }
-        let coverage = if terms.is_empty() {
-            1.0
-        } else {
-            matched as f64 / terms.len() as f64
-        };
         if terms.is_empty() {
             score = 1.0; // a tags-only query lists every tagged note
-        } else if matched == 0 {
+        } else if !got.contains(&true) {
             continue;
         }
-        score *= coverage * coverage;
-        if !q.phrases.is_empty() && {
+        scored.push((d, score, got));
+    }
+    let mut page_got: HashMap<&Path, Vec<bool>> = HashMap::new();
+    let mut phrased: HashSet<&Path> = HashSet::new();
+    for (d, _, got) in &scored {
+        let all = page_got
+            .entry(d.path.as_path())
+            .or_insert_with(|| vec![false; terms.len()]);
+        all.iter_mut().zip(got).for_each(|(a, g)| *a |= g);
+        if !q.phrases.is_empty() && !phrased.contains(d.path.as_path()) && {
             let lower = d.content.to_lowercase();
             q.phrases.iter().any(|p| lower.contains(p.as_str()))
         } {
+            phrased.insert(d.path.as_path());
+        }
+    }
+    let mut hits = Vec::new();
+    for (d, mut score, _) in scored {
+        let coverage = if terms.is_empty() {
+            1.0
+        } else {
+            let all = &page_got[d.path.as_path()];
+            all.iter().filter(|g| **g).count() as f64 / terms.len() as f64
+        };
+        score *= coverage * coverage;
+        if phrased.contains(d.path.as_path()) {
             score *= PHRASE_BOOST;
         }
         if d.knowledge {
@@ -670,13 +780,16 @@ fn rank(docs: &[Doc], q: &Query, aliases: &HashMap<String, Vec<String>>, limit: 
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a.0.path.cmp(&b.0.path))
     });
+    // Fold a page's sections back to one hit: the best one, which sorts first.
+    let mut seen: HashSet<&Path> = HashSet::new();
+    hits.retain(|h| seen.insert(h.0.path.as_path()));
     hits.truncate(limit);
     hits.into_iter()
         .map(|(d, score, coverage)| {
             let (line, text) = best_line(&d.content, &terms, d.sheet);
             Hit {
                 path: d.path.clone(),
-                line,
+                line: d.first_line + line,
                 score: (score * 1000.0).round() / 1000.0,
                 coverage,
                 title: d.title.clone(),
@@ -902,7 +1015,7 @@ mod tests {
             knowledge: PathBuf::from("/v/knowledge"),
             sheets: PathBuf::from("/v/lab"),
         };
-        parse_doc(&Path::new("/v").join(rel), content, &roots)
+        parse_docs(&Path::new("/v").join(rel), content, &roots).remove(0)
     }
 
     fn corpus() -> Vec<Doc> {
@@ -988,6 +1101,89 @@ mod tests {
     fn task_rows_count_except_on_lab_sheets() {
         assert!(!names(&q("mobile security")).contains(&"board".to_string()));
         assert_eq!(names(&q("mongoose model"))[0], "pizza-app");
+    }
+
+    /// A merged knowledge page: three `## ` sections of filler around one that answers the
+    /// query, long enough to be split.
+    fn long_page() -> String {
+        let filler = "lorem ipsum dolor amet consectetur ".repeat(120);
+        format!(
+            "---\ntitle: Device handbook\n---\n# Device handbook\nIntro.\n## Power\n{filler}\n## Storage\nThe sd card layout puts boot first.\n## Network\n{filler} zebra\n"
+        )
+    }
+
+    #[test]
+    fn a_long_knowledge_page_is_scored_by_section_and_listed_once() {
+        let rel = "knowledge/devices/handbook.md";
+        let content = long_page();
+        let roots = Roots {
+            vault: PathBuf::from("/v"),
+            knowledge: PathBuf::from("/v/knowledge"),
+            sheets: PathBuf::from("/v/lab"),
+        };
+        let parts = parse_docs(&Path::new("/v").join(rel), &content, &roots);
+        assert_eq!(parts.len(), 4, "intro plus three sections");
+        let mut docs = corpus();
+        docs.extend(parts);
+        for i in 0..6 {
+            docs.push(doc(
+                &format!("notes/card-{i}.md"),
+                &format!("# Card {i}\nA card for the layout of shelf {i}.\n"),
+            ));
+        }
+        docs.sort_by(|a, b| a.path.cmp(&b.path));
+        let hits = rank(&docs, &parse_query("sd card layout"), &HashMap::new(), 50);
+        let page: Vec<&Hit> = hits.iter().filter(|h| h.path.ends_with(rel)).collect();
+        assert_eq!(page.len(), 1, "one hit per path");
+        let at = hits.iter().position(|h| h.path.ends_with(rel)).unwrap();
+        assert!(at < 5, "ranked {at}");
+        let want = content
+            .lines()
+            .position(|l| l.contains("sd card layout"))
+            .unwrap()
+            + 1;
+        assert_eq!(
+            page[0].line, want,
+            "the hit line is the file's, inside the section"
+        );
+        // `-word` drops the whole page, though the word is in another section.
+        let hits = rank(
+            &docs,
+            &parse_query("sd card layout -zebra"),
+            &HashMap::new(),
+            50,
+        );
+        assert!(!hits.iter().any(|h| h.path.ends_with(rel)));
+        // Words in different sections still cover the page.
+        let hits = rank(&docs, &parse_query("sd card zebra"), &HashMap::new(), 50);
+        let h = hits.iter().find(|h| h.path.ends_with(rel)).unwrap();
+        assert_eq!(h.coverage, 1.0, "coverage is the page's");
+        // A phrase found in another part of the page (here the title in the intro) boosts
+        // the section that scores best.
+        let score = |q: &str| {
+            rank(&docs, &parse_query(q), &HashMap::new(), 50)
+                .into_iter()
+                .find(|h| h.path.ends_with(rel))
+                .unwrap()
+                .score
+        };
+        let plain = score("device handbook sd card layout");
+        let quoted = score("\"device handbook\" sd card layout");
+        assert!(
+            (quoted / plain - PHRASE_BOOST).abs() < 0.01,
+            "{quoted} vs {plain}"
+        );
+        // Negative control: the same page under the length threshold, or outside knowledge/,
+        // is one Doc.
+        let short = "# Short\n## A\nOne.\n## B\nTwo.\n";
+        assert_eq!(
+            parse_docs(Path::new("/v/knowledge/s.md"), short, &roots).len(),
+            1
+        );
+        assert_eq!(
+            parse_docs(Path::new("/v/notes/h.md"), &content, &roots).len(),
+            1
+        );
     }
 
     #[test]
