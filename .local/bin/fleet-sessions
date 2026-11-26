@@ -206,7 +206,7 @@ BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 #                <main_red: workflows this session's merged PR is a suspect for, or -> \
 #                <phases: - (no plan file) | missing (a recorded plan file that is nowhere) | none (no checklist) | done/total> <next phase|-> \
 #                <conflicts: yes|no|- (merging the default branch in would conflict)> \
-#                <open job: gate|queue|test|build|checkout|agent|human|jobs|none|hung|wait|ended|- (agent-panel's open_job, or a live gate/test/build process in the worktree or under its claude: live_wait; hung: self_wait, a shell waiting on itself; wait: self_wait, a tail --pid on another process; ended: watched_gate, a pgrep loop on a gate that no longer runs; - unknown)> \
+#                <open job: gate|queue|test|build|checkout|agent|human|jobs|none|hung|wait|ended|- (agent-panel's open_job, or a live gate/test/build process in the worktree or under its claude: live_wait; hung: self_wait, a shell waiting on itself; wait: self_wait, a tail --pid on another process or a gh event listen; ended: watched_gate, a pgrep loop on a gate that no longer runs; - unknown)> \
 #                <dirty names: the first dirty paths, shown beside the count, or -> \
 #                <landed: this session's own PRs ("#N,#M") when its transcript names a merged one,
 #                 none open and every state known (a closed one was replaced or dropped), else
@@ -603,13 +603,15 @@ wait_procs() {
 
 # self_wait <claude pid>: `hung` when a process under that claude is a `tail --pid=N` whose N is one of its
 # own ancestors below the claude (or itself, when bash exec-ed tail in its place), `wait` when one waits on any other
-# pid but the claude's, else nothing. In the hung case the parent waits for tail to end and tail
+# pid but the claude's or is a `gh event listen`, else nothing. In the hung case the parent waits for tail to end and tail
 # waits for the parent to end, so nothing ever moves. Not checked: that the
 # parent is blocked on the tail, so a `tail --pid=$$ -f log &` beside real work also reads hung once
 # its row is idle past FLEET_IDLE_MIN with no live gate or test; the session is the one to say so. 2026-11-09 agent-51's `pgrep -f 'agent-land 2089'` matched its own shell and
 # sat in that wait for 100m while the row read WORKING. A tail that watches any other pid is an event
 # wait, the one the rules ask for over a sleep loop, and ends with that process: 2026-11-14 it read
-# "background shell is not a gate or test". No event names a deadlock, so this reads one `ps`.
+# "background shell is not a gate or test". A `gh event listen` (gh 2.105's wait on a PR's state change) is an
+# event wait too, and ends with that event: 2026-11-24 dotfiles-agent-20 read STALLED on one over #3501 (ar-5664).
+# No event names a deadlock, so this reads one `ps`.
 self_wait() {
   local root="${1:-0}"
   [[ "$root" =~ ^[0-9]+$ ]] && [ "$root" -gt 1 ] || return 0
@@ -621,6 +623,7 @@ self_wait() {
         while (x > 1 && x != r && (x in up) && n++ < 64) x = up[x]
         if (x != r) continue
         k = split(args[p], a, " ")
+        if (a[1] ~ /(^|\/)gh$/) { for (i = 2; i < k; i++) if (a[i] == "event" && a[i + 1] == "listen") ev = 1; continue }   # past a global flag: gh -R o/r event listen
         if (a[1] !~ /(^|\/)tail$/) continue
         for (i = 2; i <= k; i++) {
           w = ""
@@ -2701,7 +2704,7 @@ collect() {
       ojob="${live:-$ojob}"
     fi
     # A shell waiting on itself is hung whatever the transcript's open job says: its command line may
-    # read as a gate. A live gate or test process found above outranks it. An event wait (a tail --pid
+    # read as a gate. A live gate or test process found above outranks it. An event wait (a tail --pid or a gh event listen
     # on another process) only names a shell the transcript could not class: a gate's keeps its own; an ended loop hides none.
     if [ "$host" = - ] && [ "$status" = shell ] && [ "$ojob" != agent ] && { [ -z "$live" ] || [ "$live" = ended ]; }; then
       live="$(self_wait "$cpid")"
