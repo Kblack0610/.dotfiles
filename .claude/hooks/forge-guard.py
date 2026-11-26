@@ -151,6 +151,9 @@ def resolve(base, path):
 def failover_on(top):
     """True while `forge-failover on` has the repo landing on GitHub: its state file exists. The key is
     the repo's GitHub name, origin-repo.sh's forge_repo_name."""
+    state = os.environ.get("FORGE_STATE_DIR") or os.path.expanduser("~/.local/state/forge")
+    if not (os.path.isdir(state) and os.listdir(state)):
+        return False
     name = ""
     for rn in git(top, "remote").split():
         url = git(top, "remote", "get-url", "--push", rn)
@@ -160,7 +163,6 @@ def failover_on(top):
     if not name:
         common = git(top, "rev-parse", "--path-format=absolute", "--git-common-dir")
         name = os.path.basename(os.path.dirname(common))
-    state = os.environ.get("FORGE_STATE_DIR") or os.path.expanduser("~/.local/state/forge")
     return os.path.isfile(os.path.join(state, name))
 
 

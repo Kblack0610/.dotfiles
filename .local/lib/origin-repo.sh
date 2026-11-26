@@ -69,7 +69,8 @@ forge_repo_name() {
 forge_failover_file() { printf '%s/%s\n' "${FORGE_STATE_DIR:-$HOME/.local/state/forge}" "$(forge_repo_name "$1")"; }
 
 # forge_failover_on <checkout> -- exit 0 while forge-failover has the repo landing on GitHub.
-forge_failover_on() { [ -f "$(forge_failover_file "$1")" ]; }
+# An empty or missing state directory answers without a git call: every reader asks per checkout.
+forge_failover_on() { compgen -G "${FORGE_STATE_DIR:-$HOME/.local/state/forge}/*" >/dev/null && [ -f "$(forge_failover_file "$1")" ]; }
 
 # forge_canonical <checkout> -- exit 0 when the repo's canonical forge is Forgejo: it commits the
 # mirror workflow, the marker forge-guard.py reads (home-config), and forge-failover is not on. With
