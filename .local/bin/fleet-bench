@@ -7112,7 +7112,7 @@ canary_known() { grep -qxF -e "$1" -e "$2" <<<"$CANARY_KNOWN"; }
 # and leaves the count in CANARY_ADDED. Says its one summary line unless CANARY_QUIET is set (canary_top_up
 # says its own).
 canary_lane_queue() {
-  local tasks t id tproject slug title week why lane="" label="" harness=$1 model=$2 effort=$3 max=$4 added=0 had=0 off=0 full=0
+  local tasks t id tproject slug title week why lane="" label="" harness=$1 model=$2 effort=$3 max=$4 added=0 had=0 off=0
   local -A seen=()
   CANARY_ADDED=0
   [ -z "$harness" ] || { lane=$(canary_lane_name "$harness" "$model" "$effort"); label="$harness${model:+/$model}${effort:+@$effort}"; }
@@ -7145,7 +7145,7 @@ canary_lane_queue() {
     { read -r id; read -r tproject; } < <(jq -r '.id, (.project // "")' <<<"$t")
     # A claude lane (the baseline has no harness) leaves out a task of a project whose share is full (--off-claude).
     if [ -n "${off_claude:-}" ] && { [ -z "$harness" ] || [ "$harness" = claude ]; } && [[ ",$off_claude," == *",$tproject,"* ]]; then
-      full=$((full + 1)); continue
+      continue
     fi
     [ -z "$held" ] || harness_project_why "$BENCH_HARNESSES" "$harness" "$tproject" >/dev/null ||
       { off=$((off + 1)); continue; }
@@ -7165,7 +7165,6 @@ canary_lane_queue() {
     [ "$max" = 0 ] || [ "$added" -lt "$max" ] || break
   done <<<"$tasks"
   local note=''; [ "$off" = 0 ] || note=", $off outside $harness's projects"
-  [ "$full" = 0 ] || note+=", $full in a project whose share is full"
   [ -n "${CANARY_QUIET:-}" ] || say "canary: $added queued, $had already queued$note for $week${label:+ ($label)}"
 }
 
