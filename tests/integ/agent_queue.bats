@@ -3086,3 +3086,103 @@ EOF
   assert_output --partial "--dry-run and --check go with --plan"
   [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 1 ]
 }
+
+# A job item (ar-3040): `--mode job --run "<runner> [args]"` queues an agentctl runner run, no model session.
+job_runner_conf() { # <name> [KIND] [EFFECT]
+  mkdir -p "$SANDBOX/agents"
+  printf 'NAME=%s\nKIND=%s\nEFFECT=%s\n' "$1" "${2:-oneshot}" "${3:-none}" > "$SANDBOX/agents/$1.conf"
+  export AGENTCTL_CONF_DIR="$SANDBOX/agents"
+}
+
+@test "a job item is written with its run:, light weight and mode, and the cap never holds it" {
+  job_runner_conf game-build
+  export AGENT_QUEUE_CAP=1
+  unset AGENT_QUEUE_PULL # a hand caller goes through admission itself
+  run "$AQ" add --project game --slug one "feat(menu): one"
+  assert_success
+  # Negative control: the cap holds the next plain add.
+  run "$AQ" add --project game --slug two "feat(menu): two"
+  assert_failure 5
+  run "$AQ" add --project game --mode job --run "game-build all beta" --tags "at:01:00" --slug nightly-build
+  assert_success
+  assert_output --partial "queued nightly-build"
+  f="$(item queued nightly-build)"
+  [ "$(field "$f" mode)" = job ]
+  [ "$(field "$f" run)" = "game-build all beta" ]
+  [ "$(field "$f" weight)" = light ]
+  # The task text is the command when none is given, so the views have a title.
+  run awk 'f { print } $0 == "---" { f = 1 }' "$f"
+  assert_output "job: game-build all beta"
+}
+
+@test "add --mode job without --run exits non-zero, and --run without --mode job is refused" {
+  job_runner_conf game-build
+  run "$AQ" add --project game --mode job --slug no-run "build it"
+  assert_failure
+  assert_output --partial "--mode job needs --run"
+  run "$AQ" add --project game --run "game-build all beta" --slug no-mode "build it"
+  assert_failure
+  assert_output --partial "--run is the command of a --mode job item"
+  [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ]
+}
+
+@test "--mode job --plan and --mode job --running are refused" {
+  job_runner_conf game-build
+  printf '# P\n\n## Phases\n\n- [ ] one\n' > "$SANDBOX/plan.md"
+  run "$AQ" add --project game --mode job --run "game-build all beta" --plan "$SANDBOX/plan.md"
+  assert_failure
+  assert_output --partial "--plan items are queued oneshot items"
+  run "$AQ" add --project game --mode job --run "game-build all beta" --running --slug j-running
+  assert_failure
+  assert_output --partial "no --running"
+  [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ]
+}
+
+@test "a job item names a real runner that runs no model: no conf, KIND=call and EFFECT=acts are refused" {
+  job_runner_conf game-build
+  run "$AQ" add --project game --mode job --run "ghost all" --slug j-ghost
+  assert_failure
+  job_runner_conf caller call
+  run "$AQ" add --project game --mode job --run "caller x" --slug j-call
+  assert_failure
+  assert_output --partial "KIND=call"
+  job_runner_conf thinker oneshot acts
+  run "$AQ" add --project game --mode job --run "thinker x" --slug j-model
+  assert_failure
+  assert_output --partial "EFFECT=acts"
+  [ -z "$(ls "$AGENT_QUEUE_DIR/queued" 2>/dev/null)" ]
+}
+
+@test "only the human queues a job item: a dispatched session's add is refused" {
+  job_runner_conf game-build
+  unset AGENT_QUEUE_PULL
+  printf 'slug: runner\nproject: game\npriority: high\nfrom: human\norigin: run\nqueued: 2026-11-26T00:00:00Z\n---\nthe session\n' > "$SANDBOX/runner.md"
+  mkdir -p "$AGENT_QUEUE_DIR/running" && cp "$SANDBOX/runner.md" "$AGENT_QUEUE_DIR/running/2026-11-26T00-00-00-runner.md"
+  run env AGENT_QUEUE_ITEM=runner "$AQ" add --project game --priority normal --mode job --run "game-build all beta" --slug j-agent
+  assert_failure
+  assert_output --partial "--mode job goes straight into the queue only from the human"
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*j-agent* 2>/dev/null)" ]
+  # Negative control: the same add at a terminal queues.
+  run "$AQ" add --project game --mode job --run "game-build all beta" --slug j-hand
+  assert_success
+}
+
+@test "a gated job item stays in the queue with its holds: a board row cannot carry --run, so it is not filed as one" {
+  job_runner_conf game-build
+  run "$AQ" add --project game --mode job --run "game-build all beta" --tags "at:23:00 hold:unity" --slug gated
+  assert_success
+  assert_output --partial "queued gated"
+  f="$(item queued gated)"
+  [ "$(field "$f" run)" = "game-build all beta" ]
+  [ "$(field "$f" tags)" = "at:23:00 hold:unity" ]
+  run "$AQ" list --state queued
+  assert_output --partial "gated"
+  # Negative control: a plain item with the same tags is the board's, not the queue's.
+  run "$AQ" add --project game --tags "at:23:00" --slug plain "feat(menu): plain"
+  assert_failure
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*-plain.md 2>/dev/null)" ]
+  # A wait on a board row has no form on a queued item.
+  run "$AQ" add --project game --mode job --run "game-build all beta" --after gm-7 --slug on-row
+  assert_failure
+  assert_output --partial "waits on queue items"
+}
