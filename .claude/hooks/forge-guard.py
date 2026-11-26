@@ -11,6 +11,9 @@ and merged with `gh pr merge` 22 seconds later, from a dotfiles session that had
 home-config worktree, so the home-config lessons never loaded. The mirror's reject-pull-requests
 workflow closes a PR only after it opens, too late to stop that merge.
 
+`forge-failover on <repo>` writes a state file under ~/.local/state/forge/ (FORGE_STATE_DIR) that turns
+the guard off for that repo while Forgejo is down: GitHub is where it lands until `forge-failover off`.
+
 Denied in such a checkout: `gh pr create`, `gh pr merge`, and `git push` to a github.com remote
 (an ssh Host alias is resolved with `ssh -G`). The checkout is the one each segment runs in: the
 payload cwd, moved by `cd`/`pushd` earlier in the command (a subshell's cd stays in it), then
@@ -145,14 +148,33 @@ def resolve(base, path):
     return os.path.normpath(os.path.join(base or "/", path))
 
 
+def failover_on(top):
+    """True while `forge-failover on` has the repo landing on GitHub: its state file exists. The key is
+    the repo's GitHub name, origin-repo.sh's forge_repo_name."""
+    state = os.environ.get("FORGE_STATE_DIR") or os.path.expanduser("~/.local/state/forge")
+    if not (os.path.isdir(state) and os.listdir(state)):
+        return False
+    name = ""
+    for rn in git(top, "remote").split():
+        url = git(top, "remote", "get-url", "--push", rn)
+        if is_github(url):
+            name = re.sub(r"\.git$", "", url.rstrip("/")).replace(":", "/").split("/")[-1]
+            break
+    if not name:
+        common = git(top, "rev-parse", "--path-format=absolute", "--git-common-dir")
+        name = os.path.basename(os.path.dirname(common))
+    return os.path.isfile(os.path.join(state, name))
+
+
 def canonical(d):
-    """(toplevel, marker) when directory d is inside a Forgejo-canonical checkout, else None."""
+    """(toplevel, marker) when directory d is inside a Forgejo-canonical checkout, else None. A repo in
+    failover is not canonical: it lands on GitHub."""
     if not d or not os.path.isdir(d):
         return None
     top = git(d, "rev-parse", "--show-toplevel")
     for m in MARKERS:
         if top and os.path.isfile(os.path.join(top, m)):
-            return top, m
+            return None if failover_on(top) else (top, m)
     return None
 
 
