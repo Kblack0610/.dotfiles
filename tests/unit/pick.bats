@@ -154,3 +154,45 @@ setup() {
   done < <(sed -n 's#^\([a-z]*/[^[:space:]#]*\.bats\).*#\1#p' "$BATS_TEST_DIRNAME/../broad.txt")
   [ "$n" -gt 0 ]
 }
+
+# The notes job's files, the FILES of its steps in tests.yml (ar-5836).
+@test "notes: main runs the whole job; a docs-only change runs none; the notes binary or the image runs all" {
+  local all n c f
+  run --separate-stderr "$SUBJECT" notes
+  assert_success
+  all=$output n=${#lines[@]}
+  [ "$n" -ge 5 ] || fail "too few notes job files read: $all"
+  for f in $all; do [ -f "$BATS_TEST_DIRNAME/../$f" ] || fail "the notes job names $f, which is no file"; done
+  [[ "$stderr" == *"notes: all $n files of the notes job"*"(full: not a pull request)"* ]]
+  # PR #3541's one file: its notes job ran 611 s and was cut.
+  PICK_CHANGED=.claude/skills/ops/board-cleanup/SKILL.md run --separate-stderr "$SUBJECT" notes HEAD
+  assert_success
+  [ -z "$output" ]
+  [[ "$stderr" == *"notes: picked 0 of $n files for 1 changed"* ]]
+  # notes-cli, and project-map, which it builds from by path.
+  for c in .local/src/notes-cli/src/main.rs .local/src/project-map/src/lib.rs; do
+    PICK_CHANGED=$c run --separate-stderr "$SUBJECT" notes HEAD
+    assert_success
+    [ "$output" = "$all" ]
+    [[ "$stderr" == *"(full: the change can reach the notes binary)"* ]]
+  done
+  for c in tests/docker.sh tests/Dockerfile .github/actions/test-image/action.yml; do
+    PICK_CHANGED=$c run --separate-stderr "$SUBJECT" notes HEAD
+    assert_success
+    [ "$output" = "$all" ]
+    [[ "$stderr" == *"(full: the change touches the test image)"* ]]
+  done
+  # A crate the binary is not built from is no full pick: only the files test_picked takes
+  # run (CI run 45759647694 took unit/prepush_hook.bats for this one).
+  PICK_CHANGED=.local/src/hub-tui/src/main.rs run --separate-stderr "$SUBJECT" notes HEAD
+  assert_success
+  refute_line unit/agent_land.bats
+  [[ "$stderr" != *"(full:"* ]]
+}
+
+@test "notes: a script the job tests picks its file, not the rest" {
+  PICK_CHANGED=.local/bin/agent-land run --separate-stderr "$SUBJECT" notes HEAD
+  assert_success
+  assert_line unit/agent_land.bats
+  refute_line integ/inbox_triage.bats
+}

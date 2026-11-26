@@ -1318,30 +1318,37 @@ load 'agent_queue/common'
   refute grep -q ' tag ' "$NOTES_FIXTURE/calls.log"
 }
 
-@test "a pr: gate on a PR the item opened is refused by set and left off its row by return (ar-4042)" {
-  mkdir -p "$HOME/.cache/agent-queue/pr"
-  echo OPEN > "$HOME/.cache/agent-queue/pr/o_r_8"; echo OPEN > "$HOME/.cache/agent-queue/pr/o_r_9"
-  legacy own "pr: o/r#8" --project game --from shepherd "own pr"
-  "$AQ" set own row=game:gm-4 >/dev/null
-  run "$AQ" set own tags="pr:o/r#8"
+# ar-4042: an item gated on the PR it opened waits for its own merge and never starts again.
+@test "a pr: gate on the item's own PR is refused by set and stripped by return, another PR's gate stays (ar-4042)" {
+  story_notes
+  export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
+  gh_script 'echo OPEN'
+  "$AQ" add --project game --running --from shepherd --slug own "own work" >/dev/null
+  "$AQ" set own row=game:gm-3 pr=Org/game#5 >/dev/null
+  run "$AQ" set own tags="pr:org/game#5"
   assert_failure
-  assert_output --partial "pr:o/r#8: own opened that PR"
-  # The same set that records the PR is refused too, and writes neither.
-  run "$AQ" set own open_pr="o/r#7" tags="pr:o/r#7"
+  assert_output --partial "pr:org/game#5 is the PR own opened itself"
+  # NEGATIVE CONTROL: another PR is no own PR.
+  run "$AQ" set own tags="pr:Org/game#6"
+  assert_success
+  # A PR recorded in open_pr:, one in a list, and one the same set records all count.
+  "$AQ" set own open_pr=Org/game#8 >/dev/null
+  run "$AQ" set own tags="pr:Org/game#8"
   assert_failure
-  refute grep -q '^open_pr:' "$(item queued own)"
-  # A tag written past the check (a hand edit) goes on no row; the other PR still does.
-  legacy_hold own "tags: pr:o/r#8 pr:o/r#9"
+  "$AQ" set own pr="Org/game#5 Org/game#9" >/dev/null
+  run "$AQ" set own tags="pr:Org/game#9"
+  assert_failure
+  "$AQ" add --project game --running --from shepherd --slug fresh "fresh" >/dev/null
+  run "$AQ" set fresh pr=Org/game#12 tags=pr:Org/game#12
+  assert_failure
+  # A gate written past the check (an older item, a hand edit) is dropped on the return, the other kept.
+  sed -i 's|^tags: .*|tags: pr:Org/game#5 pr:Org/game#6|' "$(item running own)"
   : > "$NOTES_FIXTURE/calls.log"
-  run "$AQ" return own --why "back to the board"
+  run "$AQ" return own --why "back"
   assert_success
-  assert_called "ptask game --agent tag --add pr/o/r/9 gm-4"
-  refute grep -q 'pr/o/r/8' "$NOTES_FIXTURE/calls.log"
-  # Negative control: an item may wait on a PR it did not open.
-  legacy other "pr: o/r#7" --project game --from shepherd "other"
-  "$AQ" set other row=game:gm-3 >/dev/null
-  run "$AQ" set other tags="pr:o/r#9"
-  assert_success
+  assert_output --partial "dropped pr:Org/game#5"
+  assert_called "ptask game --agent tag --add pr/Org/game/6 gm-3"
+  refute grep -q 'pr/Org/game/5' "$NOTES_FIXTURE/calls.log"
 }
 
 @test "return leaves a row started, exit 1, when it did not take its gates" {

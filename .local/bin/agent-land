@@ -529,8 +529,8 @@ required_checks() { checks_policy && [ "$required" = yes ]; }
 
 # moved_misses_pick: what <base> gained since the head last had it (HEAD...<base>) can affect nothing
 # the head's own run ran, so a green run of the head stands for the merge. The repo's tests/pick.sh
-# answers both ways, over the tiers the gate runs (unit, integ, rust, ui): the tests the head's changes
-# pick (all of ui, and the files its notes job names, which run on every head), and the tests the
+# answers both ways, over the tiers the gate runs (unit, integ, rust, ui, notes): the tests the head's
+# changes pick (all of ui; notes is the notes job's files, tests/pick.sh notes), and the tests the
 # base's new files pick (its PICK_CHANGED seam). The broad set is on every head's list, so its lines do
 # not count as shared. Not a miss, so the head is merged up and re-run as before: no picker, a picker
 # that fails or answers the whole tier (the harness), a base change to the gate's own machinery (CI
@@ -548,10 +548,9 @@ moved_misses_pick() {
   ! grep -qE '^(\.github/|tests/(lint|skill-lint|Dockerfile|docker\.sh|unit-jobs)|\.local/src/notes-cli/)' <<<"$moved" || return 1
   own=$(git diff --name-only --no-renames "$mb" HEAD 2>/dev/null) || return 1
   ! { grep -q '^\.claude/skills/' <<<"$moved" && grep -q '^\.claude/skills/' <<<"$own"; } || return 1
-  mine=$(grep -oE 'FILES="[^"]*"' "$top/.github/workflows/tests.yml" 2>/dev/null | sed 's/^FILES="//; s/"$//' | tr ' ' '\n') || mine=''
-  theirs=''
+  mine='' theirs=''
   errf=$(mktemp) || return 1
-  for tier in unit integ rust ui; do
+  for tier in unit integ rust ui notes; do
     if [ "$tier" = ui ]; then picked=$(cd "$top" && tests/pick.sh ui 2>/dev/null) || { rm -f "$errf"; return 1; }
     else picked=$(cd "$top" && tests/pick.sh "$tier" "$mb" 2>/dev/null) || { rm -f "$errf"; return 1; }
     fi

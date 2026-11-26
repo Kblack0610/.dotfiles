@@ -3,6 +3,7 @@
 #
 #   pick.sh <unit|integ> [<base rev>]
 #   pick.sh rust [<base rev>]          the crates instead, one repo-relative dir a line
+#   pick.sh notes [<base rev>]         the files of tests.yml's notes job it picks; none: skip the job
 #
 # With no base (a push to main, the schedule, a manual run) it is every file of the tier: main
 # runs the full suite. With a base (a pull request) it is the files .local/lib/test-pick.sh says
@@ -11,13 +12,17 @@
 # tests, since the picker cannot see what such a change affects. For rust it is the crates the
 # change touches (its directory and its tests/rust-inputs.txt lines), plus every crate that names
 # one of them as a path dependency, at any depth; only the rust gate's own files count as harness.
+# For notes it is the bats files the notes job names in its FILES (tests.yml): every one when the
+# rust pick takes notes-cli (its sources, a crate it builds from, the rust gate) or the change
+# touches the bats or image harness, else the ones test_picked takes; an empty pick skips the job,
+# which took 4 to 7 minutes on a docs-only PR (ar-5836).
 # Why: on 2026-11-10 every PR ran all 4,623 tests, a 9-minute gate, for changes that could
 # affect a few files (~/.local/src/docs/ci.md, "the gate runs what the change can affect").
 set -euo pipefail
 
 DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-[ $# -ge 1 ] && { [ "${1-}" = rust ] || [ -d "$DIR/${1-}" ]; } || {
-  echo "usage: pick.sh <unit|integ|rust> [<base rev>]" >&2
+[ $# -ge 1 ] && { [ "${1-}" = rust ] || [ "${1-}" = notes ] || [ -d "$DIR/${1-}" ]; } || {
+  echo "usage: pick.sh <unit|integ|rust|notes> [<base rev>]" >&2
   exit 2
 }
 tier=$1 base=${2-}
@@ -25,6 +30,11 @@ ROOT=$(cd "$DIR/.." && pwd -P)
 if [ "$tier" = rust ]; then
   all=$("$DIR/rust-crates.sh")
   what=crates
+elif [ "$tier" = notes ]; then
+  all=$(sed -n '/^  notes:$/,/^  [a-z][a-z-]*:$/ s/.* FILES="\([^"]*\)".*/\1/p' "$ROOT/.github/workflows/tests.yml" | tr ' ' '\n' | grep . | sort -u)
+  [ -n "$all" ] || { echo "pick.sh: no FILES read from tests.yml's notes job" >&2; exit 2; }
+  tests=$(cd "$DIR" && cat $all | grep -c '^@test' || true)
+  what="files of the notes job, $tests tests"
 else
   all=$(cd "$DIR" && printf '%s\n' "$tier"/*.bats)
   tests=$(cd "$DIR" && cat $all | grep -c '^@test' || true)
@@ -88,6 +98,13 @@ fi
 harness='^(tests/(helpers|vendor|fixtures/basic)/|tests/(Makefile|run-bats\.sh|bootstrap\.sh|cpus\.sh|shard\.sh|pick\.sh|broad\.txt)$|\.github/workflows/tests\.yml$|\.local/lib/test-pick\.sh$)'
 grep -qE "$harness" <<<"$changed" && full "the change touches the test harness"
 
+if [ "$tier" = notes ]; then
+  # The image the job builds and runs in, and the actions that load it.
+  grep -qE '^(tests/(docker\.sh|Dockerfile)|\.github/actions/(test-image|bats-vendor)/)' <<<"$changed" && full "the change touches the test image"
+  crates=$(PICK_CHANGED=$changed "$DIR/pick.sh" rust "$base" 2>/dev/null) || full "the rust pick failed"
+  grep -qxF .local/src/notes-cli <<<"$crates" && full "the change can reach the notes binary"
+fi
+
 # shellcheck source=../.local/lib/test-pick.sh
 . "$DIR/../.local/lib/test-pick.sh"
 picked=$(
@@ -96,5 +113,6 @@ picked=$(
   sed -n "s#^\($tier/[^[:space:]#]*\.bats\).*#\1#p" broad.txt
 )
 picked=$(sort -u <<<"$picked" | grep . || true)
-echo "$tier: picked $(grep -c . <<<"$picked" || true) of $(wc -l <<<"$all") files for $(wc -l <<<"$changed") changed; the tier has $tests tests" >&2
+if [ "$tier" = notes ]; then scope="any pick runs the whole job, $tests tests"; else scope="the tier has $tests tests"; fi
+echo "$tier: picked $(grep -c . <<<"$picked" || true) of $(wc -l <<<"$all") files for $(wc -l <<<"$changed") changed; $scope" >&2
 printf '%s\n' "$picked" | grep . || true
