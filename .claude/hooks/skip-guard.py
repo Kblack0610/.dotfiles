@@ -22,10 +22,14 @@ is never used", the global "if on the default branch, branch first"):
 - applying gate-guard's human-only label (`gate-guard label`, P3): `gh pr|issue edit --add-label`,
   `gh pr|issue create --label`/`-l`, or a `gh api` call on a labels path that names it. The label
   lets a PR that loosens a gate pass the gate-guard check, so only the human applies it.
+- posting agent-land's `review` commit status (REVIEW_CONTEXT, P4): a `gh api` write on a statuses
+  path whose context field is it, or whose body comes from a file or stdin. That status is the
+  second agent's verdict agent-land merges on, so only `agent-land --verdict`, run by the validate
+  item's session, posts it.
 
 Not covered: git calls inside a script (store-sync and fleet-lease commit to their own stores with
 `-c core.hooksPath=/dev/null`), an `export` of GIT_CONFIG_* or HOME earlier in the command, `env -i`,
-a hand edit of .git/config or ~/.gitconfig, a label applied by id (a GraphQL mutation), by curl or
+a hand edit of .git/config or ~/.gitconfig, a label applied or a status posted by id (a GraphQL mutation), by curl or
 by a variable the shell expands, and a repo with no default branch on origin (~/.notes and ~/.agent push to `backup`), which allow. The human runs a
 bypass by hand when one is meant. It walks the command with forge-guard's walker. Fail-open: any
 error allows the command.
@@ -83,9 +87,16 @@ LABEL_MSG = (
     "Ask the human to review the PR and apply it (`agent-ask post`), or keep the gate as it was."
 )
 
+STATUS_MSG = (
+    "skip-guard: {what} posts a `{context}` commit status, the second agent's verdict agent-land "
+    "merges a reviewed PR on. Only that agent posts it, from its validate item's session: "
+    "`agent-land <N> --item <author> --verdict pass|fail --note \"...\"` (fleet-dispatch validate_task)."
+)
+
 FORGE = None  # set by walker-guards.py, else loaded in decide
 CHECKOUT = None
 _LABEL = None
+_CONTEXT = None
 
 
 def gate_label():
@@ -101,6 +112,31 @@ def gate_label():
         loader.exec_module(mod)
         _LABEL = mod.LABEL
     return _LABEL
+
+
+def review_context():
+    """The status context's one home, REVIEW_CONTEXT in .local/bin/agent-land beside this repo's hooks."""
+    global _CONTEXT
+    if _CONTEXT is None:
+        here = os.path.dirname(os.path.realpath(__file__))
+        with open(os.path.join(here, "..", "..", ".local", "bin", "agent-land")) as f:
+            _CONTEXT = next(line.split("=", 1)[1].strip() for line in f if line.startswith("REVIEW_CONTEXT="))
+    return _CONTEXT
+
+
+def posts_status(argv, context):
+    """True when a `gh api` write (any method but GET or HEAD) on a statuses path sets the context
+    field to context (`-f context=review`, `-Fcontext=review`, `--raw-field=context=review`), or reads
+    its body from a file or stdin (`--input`, `-F x=@file`), which this cannot read."""
+    if FORGE.gh_words(argv)[:1] != ["api"]:
+        return False
+    rest = argv[2:]
+    if not any("statuses/" in a for a in rest):
+        return False
+    field = "context=" + context
+    named = any(a == field or a.endswith(("=" + field, "-f" + field, "-F" + field)) for a in rest)
+    unread = "--input" in rest or any("=@" in a for a in rest)
+    return (named or unread) and FORGE.request_method("gh api", argv) not in (None, "GET", "HEAD")
 
 
 def applies_label(argv, label):
@@ -268,6 +304,9 @@ def check(head, argv, env, cwd):
         label = gate_label()
         if applies_label(argv, label):
             return LABEL_MSG.format(what="`%s`" % " ".join(argv[:4]), label=label)
+        context = review_context()
+        if posts_status(argv, context):
+            return STATUS_MSG.format(what="`%s`" % " ".join(argv[:3]), context=context)
         return None
     if head != "git":
         return None

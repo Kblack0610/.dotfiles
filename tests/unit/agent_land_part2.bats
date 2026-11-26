@@ -1518,10 +1518,11 @@ EOF
   assert_output 0
 }
 
-@test "validate: a pass verdict on this head from another agent's session merges" {
+@test "validate: a success review status on this head, from another agent's validate item, merges" {
   item crit
   fm crit 'sessions: s-author' 'validate: validate-crit-01234567'
-  vitem validate-crit-01234567 crit 'verdict: pass' 'verdict_head: 0123456789abcdef' 'sessions: s-validator' 'note: read the diff, tests green'
+  vitem validate-crit-01234567 crit 'sessions: s-validator'
+  review_json success 'validate-crit-01234567: read the diff, tests green'
   printf '.local/lib/judge.sh\n' >"$NOTES_FIXTURE/files"
   run "$LAND" 42 --item crit
   assert_success
@@ -1530,21 +1531,80 @@ EOF
   assert_equal "$(merges)" 1
 }
 
-@test "validate: a fail verdict leaves the PR open and sends the author item back to the queue with the findings" {
+@test "validate: --verdict pass from the validate item's session posts the review status on HEAD, then lands" {
   item crit
   fm crit 'sessions: s-author' 'validate: validate-crit-01234567'
-  vitem validate-crit-01234567 crit 'verdict: fail' 'verdict_head: 0123456789abcdef' 'sessions: s-validator' 'note: judge_conf drops an empty override'
+  vitem validate-crit-01234567 crit 'sessions: s-validator'
   printf '.local/lib/judge.sh\n' >"$NOTES_FIXTURE/files"
-  run "$LAND" 42 --item crit
+  CLAUDE_CODE_SESSION_ID=s-validator AGENT_QUEUE_ITEM=validate-crit-01234567 run "$LAND" 42 --item crit --verdict pass --note 'read the diff, tests green'
+  assert_success
+  assert_line 'validate: posted review pass on 01234567 for validate-crit-01234567'
+  assert_line --partial 'validate: pass from validate-crit-01234567 on 01234567'
+  assert_line 'landed #42'
+  assert_equal "$(merges)" 1
+  assert_equal "$(grep -c 'gh api repos/o/r/statuses/0123456789abcdef -X POST -f state=success -f context=review -f description=validate-crit-01234567: read the diff, tests green' "$LOG")" 1
+  run agent-queue show validate-crit-01234567 --json
+  assert_equal "$(jq -r .note <<<"$output")" 'read the diff, tests green'
+}
+
+@test "validate: --verdict fail posts a failure status, leaves the PR open and sends the author item back with the findings" {
+  item crit
+  fm crit 'sessions: s-author' 'validate: validate-crit-01234567'
+  vitem validate-crit-01234567 crit 'sessions: s-validator'
+  printf '.local/lib/judge.sh\n' >"$NOTES_FIXTURE/files"
+  CLAUDE_CODE_SESSION_ID=s-validator AGENT_QUEUE_ITEM=validate-crit-01234567 run "$LAND" 42 --item crit --verdict fail --note 'judge_conf drops an empty override'
   assert_failure 1
   assert_output --partial 'validate failed: validate-crit-01234567 failed #42 on 01234567; #42 stays open and crit is back in the queue'
   assert_equal "$(merges)" 0
+  assert_equal "$(jq -r '.[0] | "\(.state) \(.context) \(.description)"' "$NOTES_FIXTURE/review.json")" 'failure review validate-crit-01234567: judge_conf drops an empty override'
   run agent-queue show crit --json
   assert_equal "$(jq -r .state <<<"$output")" queued
   assert_equal "$(jq -r .note <<<"$output")" 'validation failed on #42 at 01234567 (validate-crit-01234567): judge_conf drops an empty override'
 }
 
-@test "validate: a missing verdict, one from the author's own session or one no session gave fails closed" {
+@test "validate: a failure review status on this head refuses the merge" {
+  item crit
+  fm crit 'sessions: s-author' 'validate: validate-crit-01234567'
+  vitem validate-crit-01234567 crit 'sessions: s-validator'
+  review_json failure 'validate-crit-01234567: judge_conf drops an empty override'
+  printf '.local/lib/judge.sh\n' >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item crit
+  assert_failure 1
+  assert_output --partial 'validate-crit-01234567 failed #42 on 01234567 (judge_conf drops an empty override): a fix is a new head'
+  assert_equal "$(merges)" 0
+}
+
+@test "validate: --verdict is refused from the wrong item, the author's session, another head, or without --note" {
+  item crit
+  fm crit 'sessions: s-author' 'validate: validate-crit-01234567'
+  vitem validate-crit-01234567 crit 'sessions: s-validator'
+  printf '.local/lib/judge.sh\n' >"$NOTES_FIXTURE/files"
+  AGENT_QUEUE_ITEM=crit run "$LAND" 42 --item crit --verdict pass --note ok
+  assert_failure 2
+  assert_output --partial "--verdict comes from the session of crit's validate item (validate-crit-01234567), not crit"
+  CLAUDE_CODE_SESSION_ID=s-author AGENT_QUEUE_ITEM=validate-crit-01234567 run "$LAND" 42 --item crit --verdict pass --note ok
+  assert_failure 2
+  assert_output --partial 'session s-author also worked crit: the verdict must come from another agent'
+  run "$LAND" 42 --item crit --verdict pass
+  assert_failure 2
+  assert_output --partial '--verdict takes pass or fail, with --note'
+  run "$LAND" 42 --item crit --verdict maybe --note ok
+  assert_failure 2
+  run "$LAND" 42 --item crit --note ok
+  assert_failure 2
+  assert_output --partial '--note goes with --verdict'
+  fm crit 'validate: validate-crit-aaaaaaaa'
+  sed -i '0,/^validate: validate-crit-01234567$/{//d}' "$AGENT_QUEUE_DIR"/*/*-crit.md
+  vitem validate-crit-aaaaaaaa crit 'sessions: s-validator'
+  CLAUDE_CODE_SESSION_ID=s-validator AGENT_QUEUE_ITEM=validate-crit-aaaaaaaa run "$LAND" 42 --item crit --verdict pass --note ok
+  assert_failure 2
+  assert_output --partial 'validate-crit-aaaaaaaa reviews aaaaaaaa, but HEAD is 01234567'
+  run grep -c 'statuses/.* -X POST' "$LOG"
+  assert_output 0
+  assert_equal "$(merges)" 0
+}
+
+@test "validate: a missing status, one naming another item, one from the author's session or one no session gave fails closed" {
   item crit
   fm crit 'sessions: s-author' 'validate: validate-crit-01234567'
   vitem validate-crit-01234567 crit
@@ -1552,21 +1612,56 @@ EOF
   run "$LAND" 42 --item crit
   assert_failure 5
   assert_output --partial 'waits on validate-crit-01234567'
-  fm validate-crit-01234567 'verdict: pass' 'verdict_head: 0123456789abcdef' 'sessions: s-author'
+  review_json success 'validate-other-01234567: fine'
+  run "$LAND" 42 --item crit
+  assert_failure 1
+  assert_output --partial 'the review status on 01234567 names no validate-crit-01234567'
+  review_json success 'validate-crit-01234567: fine'
+  run "$LAND" 42 --item crit
+  assert_failure 1
+  assert_output --partial 'validate-crit-01234567 posted a success status, but no session worked it'
+  fm validate-crit-01234567 'sessions: s-author'
   run "$LAND" 42 --item crit
   assert_failure 1
   assert_output --partial 'was worked by session s-author, which also worked crit: the verdict must come from another agent'
-  sed -i '/^sessions: s-author$/d' "$AGENT_QUEUE_DIR"/running/*-validate-crit-01234567.md
+  touch "$NOTES_FIXTURE/status.fail"
   run "$LAND" 42 --item crit
   assert_failure 1
-  assert_output --partial 'records a pass verdict, but no session worked it'
+  assert_output --partial 'could not read the review status on 01234567'
   assert_equal "$(merges)" 0
+}
+
+@test "validate: a PR carrying gate-guard's label waits on a second agent, whatever its work level" {
+  printf 'README.md\n' >"$NOTES_FIXTURE/files"
+  printf '{"labels":[{"name":"docs"},{"name":"gate-change"}]}\n' >"$NOTES_FIXTURE/labels.json"
+  run "$LAND" 42 --item ship
+  assert_failure 5
+  assert_output --partial "#42 needs a second agent's review (the human applied gate-change, so it loosens a gate)"
+  assert_output --partial 'queued validate-ship-01234567'
+  assert_equal "$(merges)" 0
+}
+
+@test "validate: one tier-3 item in REVIEW_SHARE waits on a fresh review; the rest land on their Review: line" {
+  printf 'The change.\n\nReview: /code-review high, 2 findings fixed\n' >"$NOTES_FIXTURE/body"
+  printf 'README.md\n' >"$NOTES_FIXTURE/files"
+  # cksum("review:sampled") % 10 == 0, cksum("review:prune") % 10 == 8
+  ITEM_PROJECT=agent-runtime item sampled 'human'
+  run "$LAND" 42 --item sampled
+  assert_failure 5
+  assert_output --partial "needs a second agent's review (tier 3, one item in 10 sampled for a fresh review)"
+  assert_equal "$(merges)" 0
+  ITEM_PROJECT=agent-runtime item prune 'human'
+  run "$LAND" 42 --item prune
+  assert_success
+  assert_line 'validate: repo work, no second agent needed'
+  assert_equal "$(merges)" 1
 }
 
 @test "validate: a pass on an older head does not count; the new head gets its own validate item" {
   item crit
   fm crit 'sessions: s-author' 'validate: validate-crit-aaaaaaaa'
-  vitem validate-crit-aaaaaaaa crit 'verdict: pass' 'verdict_head: aaaaaaaabbbbbbbb' 'sessions: s-validator'
+  vitem validate-crit-aaaaaaaa crit 'sessions: s-validator'
+  review_json success 'validate-crit-aaaaaaaa: fine'
   touch "$NOTES_FIXTURE/head.foreign"
   printf '.local/lib/judge.sh\n' >"$NOTES_FIXTURE/files"
   run "$LAND" 42 --item crit
@@ -1603,7 +1698,8 @@ EOF
 @test "validate: the landing session is put on the author item first, so its own pass on the validate item never counts" {
   item crit
   fm crit 'validate: validate-crit-01234567'
-  vitem validate-crit-01234567 crit 'verdict: pass' 'verdict_head: 0123456789abcdef' 'sessions: s-hand'
+  vitem validate-crit-01234567 crit 'sessions: s-hand'
+  review_json success 'validate-crit-01234567: fine'
   printf '.local/lib/judge.sh\n' >"$NOTES_FIXTURE/files"
   CLAUDE_CODE_SESSION_ID=s-hand AGENT_QUEUE_ITEM=crit run "$LAND" 42 --item crit
   assert_failure 1

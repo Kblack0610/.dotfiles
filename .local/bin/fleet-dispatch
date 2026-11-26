@@ -30,7 +30,7 @@
 #   fleet-dispatch trainee-pool [--json]  the board rows a trainee takes, how many each refusal turns away, and the floor open or shut
 #   fleet-dispatch trainee-review SLUG  a trainee run's tail, in its worktree: its diff to a patch that waits for a batch review
 #   fleet-dispatch trainee-reject SLUG [--cause C] --why TEXT  send a trainee's row back to the normal queue, on claude
-#   fleet-dispatch validate SLUG --pr OWNER/REPO#N --head SHA --why TEXT  queue a second agent's review of an item's critical PR (agent-land)
+#   fleet-dispatch validate SLUG --pr OWNER/REPO#N --head SHA --why TEXT  queue a second agent's review of an item's PR: critical, gate-change or a tier-3 sample (agent-land)
 #   fleet-dispatch rollup [--dry]  each cause of a run that did not land (a trainee reject, a failed or no-PR item, a model-lane demote or retire) seen DISPATCH_ROLLUP_MIN times in DISPATCH_ROLLUP_DAYS: one fix row on the board, joined night to night by its cause (nightly-measure runs it)
 #   fleet-dispatch direct-land SLUG [--rc N]  a direct run's tail, in its worktree: a clean run's diff committed, a PR opened and landed on CI
 #   fleet-dispatch start --project P [--profile X] [--agent] [--model M] [--harness H]
@@ -3641,8 +3641,9 @@ cmd_trainee_reject() {
 }
 
 # cmd_validate <slug> --pr <owner>/<repo>#<N> --head <sha> --why <text>: agent-land's hand-off of a
-# critical landing (validate_gate). It files validate-<slug>-<head:0:8>, a second agent's review of that
-# head, which records its verdict on its own item and runs agent-land again. It is `after:` the author
+# landing that needs a second agent (validate_gate: critical, gate-change or a tier-3 sample). It files
+# validate-<slug>-<head:0:8>, a second agent's review of that head, whose session posts its verdict as
+# the `review` commit status by agent-land --verdict, which lands the PR on a pass. It is `after:` the author
 # item, live with that open PR, so its worktree is cut from the PR's head (stack_base). From
 # auto:validate, so admission never holds it. One already filed for the head is left as it is.
 cmd_validate() {
@@ -3695,13 +3696,12 @@ validate_self_why() {
 validate_task() {
   local n=${3##*#} repo=${3%#*}
   cat <<EOF
-This is agent-queue item $1: a review by a second agent of PR $3, the work of queue item $2, before it lands. The work is critical ($5), so agent-land merges it only on your pass verdict. You did not write it: review it as a stranger, and do not fix it yourself; the author makes any fix.
+This is agent-queue item $1: a review by a second agent of PR $3, the work of queue item $2, before it lands. It needs one ($5), so agent-land merges it only on your pass, posted as the \`review\` commit status on its head. You did not write it: review it as a stranger, and do not fix it yourself; the author makes any fix.
 
 1. Work at the PR's head $4. Your worktree is cut from it; if \`git rev-parse HEAD\` differs, run \`gh pr checkout $n -R $repo --detach\`.
 2. Read what it was asked to do (\`agent-queue show $2\`) and the change (\`gh pr view $n -R $repo\`, \`gh pr diff $n -R $repo\`). Run /code-review high on it, and the tests that cover what it changed.
-3. Pass only when the diff does what its item asks, correctly, with no finding left unanswered; else fail. Record it on this item, with what you checked or the findings on one line:
-   \`agent-queue set $1 verdict=<pass|fail> verdict_head=\$(git rev-parse HEAD) note="<what you checked, or the findings>"\`
-4. Run \`agent-land $n --repo $repo --item $2\` from this worktree. On a pass it merges the PR and closes $2; on a fail it leaves the PR open and sends $2 back to the queue with your note.
+3. Pass only when the diff does what its item asks, correctly, with no finding left unanswered; else fail.
+4. From this worktree, run \`agent-land $n --repo $repo --item $2 --verdict <pass|fail> --note "<what you checked, or the findings, on one line>"\`. It posts your verdict as the \`review\` status on the head (the only way to post it); on a pass it then merges the PR and closes $2, on a fail it leaves the PR open and sends $2 back to the queue with your note.
 5. Run \`agent-queue move $1 done --status ok\`, then wind down.
 EOF
 }
