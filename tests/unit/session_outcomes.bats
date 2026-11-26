@@ -452,6 +452,25 @@ fj_alias_setup() {
   assert_output '{"prs":[{"repo":"git.public.test/o/r","number":1}]}'
 }
 
+@test "so_rework_repos: a Forgejo clone on any alias host is keyed by the store's host, so its PRs find their clone and project (ar-883)" {
+  # shellcheck source=/dev/null
+  . "$REPO_ROOT/.local/lib/session-outcomes.sh"
+  export SO_FORGEJO_HOSTS="git.example.test git.public.test"
+  local d
+  for d in gh fj other; do git init -q "$BATS_TEST_TMPDIR/$d"; done
+  git -C "$BATS_TEST_TMPDIR/gh" remote add origin git@github.com:o/r.git
+  git -C "$BATS_TEST_TMPDIR/fj" remote add origin ssh://git@git.public.test:2222/o/audio.git
+  git -C "$BATS_TEST_TMPDIR/other" remote add origin https://git.other.test/o/x.git
+  jq -n --arg t "$BATS_TEST_TMPDIR" '{forges: {forgejo: "git.example.test"}, paths: {"\($t)/gh": "a", "\($t)/fj": "audio", "\($t)/other": "x"}}' > "$BATS_TEST_TMPDIR/m.json"
+  run so_rework_repos "$BATS_TEST_TMPDIR/m.json"
+  assert_success
+  assert_output "$(printf 'git.example.test/o/audio\t%s/fj\no/r\t%s/gh' "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR")"
+  # Negative control: with no alias list the Forgejo clone is left out, as any other host is.
+  unset SO_CANON_ALIASES SO_CANON_STORE; export SO_FORGEJO_HOSTS=""
+  run so_rework_repos "$BATS_TEST_TMPDIR/m.json"
+  assert_output "$(printf 'o/r\t%s/gh' "$BATS_TEST_TMPDIR")"
+}
+
 @test "a dropped claim in a repo the project map lists is a hard error: the run writes the rest, holds that session, ends STALLED naming the repo" {
   fj_alias_setup
   touch "$GH_FIXTURE/prs.git.example.test-o-audio.unlisted"
@@ -1406,6 +1425,23 @@ STUB
   run "$SUBJECT" run
   assert_success
   assert_equal "$(field a '.class|tojson')" '{"size":null,"kind":"fix"}'
+}
+
+@test "class: a session observed after the day its item closed still gets the item; the queue is read back a week before the oldest due session (ar-4750)" {
+  # NEGATIVE CONTROL: `list --state all` alone reads only today's done items, so before ar-4750 a
+  # session observed the day after its item closed had no item and no class (a landed trainee item
+  # read unclassed). This queue serves its items only to a list given --since.
+  export SO_QUEUE=queue-since SO_ROADMAP=false
+  printf '#!/usr/bin/env bash\ncase "$1" in\n  list) echo "$*" >> %q/list.args; [[ " $* " == *" --since "* ]] || exit 0; cat %q/items.jsonl ;;\n  set) ;;\n  *) exit 9 ;;\nesac\n' \
+    "$SANDBOX" "$SANDBOX" > "$SANDBOX/bin/queue-since"
+  chmod +x "$SANDBOX/bin/queue-since"
+  jq -cn '{slug: "closed-before", type: "fix", sessions: "sess-a"}' > "$SANDBOX/items.jsonl"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(field a '.items | join(" ")')" 'closed-before'
+  assert_equal "$(field a '.class|tojson')" '{"size":null,"kind":"fix"}'
+  run grep -c -- "^list --json --state all --since $(date -u -d "@$((STOP - 7 * 86400))" +%F)\$" "$SANDBOX/list.args"
+  assert_output 1
 }
 
 @test "the harness is what the launcher recorded: claude on a spilled item's account try, a legacy row by the item and the map" {

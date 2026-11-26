@@ -688,6 +688,18 @@ J
   assert_failure
   assert_output --partial 'stuck-red (high, red'
   rm "$AGENT_QUEUE_DIR"/queued/*-stuck-red.md
+  fleet_state 3
+  # A fresh ask behind a full fleet starves too: it may preempt like an urgent item (runs_now, ar-3468).
+  queued_item stuck-ask high "$old" requested
+  sed -i "s/^queued: /asked: $(date +%F)\nqueued: /" "$AGENT_QUEUE_DIR"/queued/*-stuck-ask.md
+  run cmd_starved
+  assert_failure
+  assert_output --partial 'stuck-ask (high, ask'
+  # Negative control: asked before DISPATCH_ASK_FRESH_H, it is a high item and the full fleet holds it.
+  sed -i "s/^asked: .*/asked: $(date -d '-3 days' +%F)/" "$AGENT_QUEUE_DIR"/queued/*-stuck-ask.md
+  run cmd_starved
+  assert_success
+  rm "$AGENT_QUEUE_DIR"/queued/*-stuck-ask.md
   # A standing hold still trips at a full fleet, led by its Stopped line.
   fleet_state 3
   hold_for 125 'no account has room; main is the closest, 5 points over its weekly pace, queue item stuck waits'
@@ -972,6 +984,10 @@ J
   run cmd_stats
   assert_equal "$(jq -c '[.runnable_urgent, .runnable_high, .oldest_urgent_s]' <<<"$output")" '[0,2,null]'
   jq -e '.oldest_high_s >= 10790' <<<"$output"
+  # A fresh ask counts as urgent and not as high, since it runs now as one does (runs_now, ar-3468).
+  sed -i "s/^queued: /asked: $(date +%F)\ntags: requested\nqueued: /" "$AGENT_QUEUE_DIR"/queued/*-high-a.md
+  run cmd_stats
+  assert_equal "$(jq -c '[.runnable_urgent, .runnable_high]' <<<"$output")" '[1,1]'
 }
 
 @test "promote: the promoted row leaves the candidates snapshot at once, every other row stays" {
@@ -1039,6 +1055,23 @@ J
   run cmd_start --item gone
   assert_output --partial 'claude-telemetry.sh is missing, so this start drops no tools'
   [ "$(grep -c -- --disallowedTools "$NOTES_FIXTURE/cmds.log")" -eq 1 ] || fail "a start with no list file dropped tools"
+}
+
+@test "a task keeps the dropped tools only when it names one exactly: a CI task's workflow or artifacts drops them (ar-857)" {
+  project game beta "$SANDBOX/repos/game"
+  stub wt 'printf "%s\n" "$WT_NEW_CMD" >> "$NOTES_FIXTURE/cmds.log"; echo "game-agent-1"'
+  agent-queue add --project game --slug ci "fix the tests.yml workflow and its workflow_dispatch input"
+  agent-queue add --project game --slug art "purge gh-artifacts-nas, then Artifacts older than a week"
+  agent-queue add --project game --slug wfs "list the Workflows that failed"
+  agent-queue add --project game --slug wf "run a Workflow over the PRs"
+  for s in ci art wfs wf; do cmd_start --item "$s" >/dev/null || fail "start $s"; done
+  mask_sid "$NOTES_FIXTURE/cmds.log"
+  run cat "$NOTES_FIXTURE/cmds.log"
+  assert_line --index 0 --partial "AGENT_QUEUE_ITEM=ci ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup,Artifact --session-id SID"
+  assert_line --index 1 --partial "AGENT_QUEUE_ITEM=art ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup,Artifact --session-id SID"
+  assert_line --index 2 --partial "AGENT_QUEUE_ITEM=wfs ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --model opus --disallowedTools Workflow,ScheduleWakeup,Artifact --session-id SID"
+  # Negative control: the tool named as a word keeps every tool.
+  assert_line --index 3 --partial "AGENT_QUEUE_ITEM=wf ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --model opus --session-id SID"
 }
 
 @test "with no DISPATCH_SANDBOX_PROFILE a start has no --settings and keeps the ambient GitHub token (control)" {
@@ -1133,6 +1166,23 @@ J
   refute_output --partial 'SKILL.md'
   # negative control: without the tag the same check item is a /one-shot that lands a PR
   run item_brief "${it/\"tags\": \"verify\", /}"
+  assert_line --index 0 --partial '/one-shot'
+}
+
+@test "item_brief: a measure-only item, by its measure tag or a headline opening with re-measure, closes on proof, never a PR (ar-1079)" {
+  project game beta "$SANDBOX/repos/game"
+  it='{"slug": "ar-793", "mode": "oneshot", "project": "agent-runtime", "title": "perf(claude): re-measure Claude Code startup after the ar-491 fix", "task": "Re-measure startup.", "type": "perf", "row": "game:ar-793", "lane": "agent"}'
+  run item_brief "$it"
+  assert_line --index 0 'Re-measure startup.'
+  assert_output --partial 'a measure row: it ends on live proof, never a PR or agent-land'
+  refute_output --partial '/one-shot'
+  refute_output --partial 'red-fix gate'
+  tagged='{"slug": "m", "mode": "oneshot", "project": "agent-runtime", "title": "perf(ci): the 24h numbers after #812", "task": "Read the window.", "type": "perf", "tags": "measure", "lane": "agent"}'
+  run item_brief "$tagged"
+  assert_line --index 0 'Read the window.'
+  assert_output --partial 'a measure row: it ends on live proof'
+  # Negative control: a perf fix that only names a measured number is still a /one-shot that lands a PR.
+  run item_brief '{"slug": "p", "mode": "oneshot", "project": "agent-runtime", "title": "perf(ci): settle burst slots on measured load", "task": "Settle slots.", "type": "perf", "lane": "agent"}'
   assert_line --index 0 --partial '/one-shot'
 }
 

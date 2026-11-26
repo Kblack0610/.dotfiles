@@ -166,6 +166,25 @@ load 'fleet_dispatch/fleet_dispatch_run_floors'
   assert_output --partial 'started queue item r1 on the red floor'
 }
 
+@test "red floor: a gated floor whose red does not fit the run units left settles NOOP, not BLOCKED (ar-4951)" {
+  # ar-4890: a red floor that started nothing went on to the gate's BLOCKED, so a pass with every run
+  # unit but one taken read as a stall on fleet-liveness. Too heavy for the units left is a full fleet.
+  red_held_machine
+  five_of_six_units
+  agent-queue add --project game --slug r --weight heavy --tags 'red cause:ab12' "fix r" >/dev/null
+  # Negative control first: no red floor, the gate holds a red that could start, and that is BLOCKED.
+  DISPATCH_RED_FLOOR=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_not_called 'wt new'
+  assert_equal "$(outcome)" BLOCKED
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'red items start on the red floor'
+  assert_output --partial 'heavy needs 2 run units, 1 free'
+  assert_not_called 'wt new'
+  assert_equal "$(outcome)" NOOP
+}
+
 @test "red floor: it counts this pass's red starts, and past it the machine gates hold again" {
   red_held_machine
   export DISPATCH_RED_FLOOR=1

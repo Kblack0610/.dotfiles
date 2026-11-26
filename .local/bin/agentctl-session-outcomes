@@ -112,6 +112,13 @@ SO_ASKS="$(ask_root)"  # the ask judge's verdicts
 # shellcheck source=/dev/null
 . "$LIB_DIR/fleet-hosts.sh"   # fleet_peers, fleet_host_run: worker_rows
 
+# queue_since <due.jsonl> -> the day a week before the oldest due session's last update, the SINCE
+# queue_index reads from: a session's item can close days before it ends, and a re-observation
+# (final, rework) comes weeks after. Unreadable: nothing, so the queue reads its default.
+queue_since() {
+  jq -rs --argjson now "$NOW" '(map(.updated | numbers) | min // $now) - 7 * 86400 | strftime("%Y-%m-%d")' "$1" 2>/dev/null
+}
+
 # queue_index FILE - what the queue knows of each session, {"<sid>": {agent, pr, items, iprojects, refs, landed}}: the
 # work items whose `sessions:` list it (the ledger join every reader of a row uses; a session can work
 # several), their projects (the queue's project_credit, so a session in the dotfiles checkout that ran
@@ -122,9 +129,12 @@ SO_ASKS="$(ask_root)"  # the ask judge's verdicts
 # diff and the reviewer session landed it, so with no landed_by neither was credited (ar-4750: 1 landed of 36
 # approved diffs). A transcript that ran agent-land in the background, or cut the PR URL
 # with `| tail`, names no PR (SO_PR_JQ), so before this its merge went uncredited.
+# SINCE (a day) is the oldest done day read: `list --state all` alone reads today's done items only,
+# so a session observed a day after its item closed had no items and no class (2026-11-25: 15 of
+# agy:hydrogen's 18 landed trainee items read unclassed, so no trainee class could reach its bars).
 # An unreadable queue writes {} and returns 1.
 queue_index() {
-  "$QUEUE" list --json --state all 2>/dev/null | jq -cn 'reduce (inputs | select(.sessions) | . as $i
+  "$QUEUE" list --json --state all ${2:+--since "$2"} 2>/dev/null | jq -cn 'reduce (inputs | select(.sessions) | . as $i
       | (.sessions | split(" "))[] | {s: ., i: $i}) as $x ({};
         .[$x.s] = {agent: $x.i.agent, pr: $x.i.pr, items: ((.[$x.s].items // []) + [$x.i.slug]),
                    iprojects: ((.[$x.s].iprojects // []) + [$x.i.project // empty | select(. != "")] | unique),
@@ -332,7 +342,7 @@ cmd_run() {
   fi
 
   local queue_note=""
-  queue_index "$work/queue.json" || queue_note="; queue unreadable, harness read as claude, items unknown"
+  queue_index "$work/queue.json" "$(queue_since "$work/due.jsonl")" || queue_note="; queue unreadable, harness read as claude, items unknown"
   roadmap_index "$work/queue.json" "$work/due.jsonl" "$work/roadmap.json"
   so_canon_init "$PROJECT_MAP" || die_stalled "could not read the Forgejo host and aliases from $PROJECT_MAP"
   local mapped
@@ -1154,7 +1164,7 @@ cmd_backfill_harness() {
   work="$(mktemp -d)" || return 1
   # shellcheck disable=SC2064
   trap "rm -rf '$work'" EXIT
-  queue_index "$work/queue.json" || { echo "$NAME: the queue is unreadable; nothing backfilled" >&2; return 1; }
+  queue_index "$work/queue.json" "$month-01" || { echo "$NAME: the queue is unreadable; nothing backfilled" >&2; return 1; }
   for f in "$OUT"/*/"$month".jsonl; do
     [ -f "$f" ] || continue
     n=$(jq -s 'map(select(.harness == null)) | length' "$f") || { echo "$NAME: $f unreadable, skipped" >&2; continue; }

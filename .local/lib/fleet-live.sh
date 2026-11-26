@@ -10,8 +10,14 @@
 # WAITS_JQ -- jq defs. waits: a session waiting on the human, which holds no slot: NEEDS whose reason does not end in
 # `carrying on` (fleet-sessions' own test: one carrying on past its ask is busy). frees: waits, or waiting its
 # landing turn behind another PR (open_job queue): neither counts as a live session in pace_target nor holds a run
-# unit (freed_item), so the two read one rule.
-WAITS_JQ='def waits: .bucket == "NEEDS" and ((.reason // "") | endswith("carrying on") | not); def frees: waits or .open_job == "queue";'
+# unit (freed_item), so the two read one rule. A CHAT session in plan mode idle past the document's own idle line
+# (vocab.idle_min, fleet-sessions FLEET_IDLE_MIN) waits on the human too: it holds no slot, and nothing closes it
+# (the 2026-11-06 plan-mode decision). A document without the line frees none. Why: lab/triage-2258 sat 2655m in
+# plan mode and held a pace slot while a NEEDS session did not (ar-4662). The defs read the document as input.
+WAITS_JQ='(.vocab.idle_min // null) as $idle_line
+  | def waits: (.bucket == "NEEDS" and ((.reason // "") | endswith("carrying on") | not))
+      or (.bucket == "CHAT" and .in_plan_mode == true and $idle_line != null and (.idle_min // 0) >= $idle_line);
+    def frees: waits or .open_job == "queue";'
 
 # LIVE_JQ -- over a state document: {live, needs, working, idle}. live is every session that is not parked, not in a
 # finished bucket, not the shepherd pass, not a codex or opencode one, and not freed (WAITS_JQ).

@@ -826,8 +826,9 @@ PRS_ONLY = "prs-only"  # a tracker with prsOnly: the PR store reads the repo, no
 PRS_SYNC = os.path.join(PRS_DIR, "sync.json")
 PR_PAGES = int(os.environ.get("SCHEDULES_PR_PAGES", "100"))  # a cold read of a repo's whole PR history
 # The shape of a PR row. A store whose sync entry names another reads its whole history once more,
-# so a field added to pr_row reaches the rows of PRs that will never update again.
-PR_ROW = 2
+# so a field added to pr_row reaches the rows of PRs that will never update again. 3: revert prs
+# reparsed (ar-2636).
+PR_ROW = 3
 PR_STATES = ("open", "merged", "closed", "all")
 PR_OPTS = {"--state", "--since", "--branch"}
 RED = FAILED + ("cancelled", "action_required", "startup_failure")  # pr-ci.sh's red_re
@@ -853,10 +854,16 @@ def utc(s):
     return iso(t.astimezone(timezone.utc)) if t else None
 
 
+# What a revert word names: a quoted title (the Revert button's, `Revert "feat: x (#5)"`) or a list
+# of PR refs right after it (`Reverts #7`, `reverts PR #3 and o/r#4`). A ref later in the line is
+# context: platform #1523's "Reverts #1509: ... from #1510 is unchanged" read #1510 as reverted (ar-2636).
+REVERT_REFS_RE = r'[\s:]*(?:"[^"\n]*"|(?:(?i:prs?)\s+)?[\w./-]*#[0-9]+(?:\s*(?:,|and|&)\s*[\w./-]*#[0-9]+)*)'
+
+
 def revert_of(title, body):
     """What a PR's title and body say it reverts, parsed once here for so_pr_index: {title (the
-    `Revert "<title>"` button's), prs (each `#N` after a revert word on its line), shas ("This
-    reverts commit <sha>")}, or None when no revert word appears."""
+    `Revert "<title>"` button's), prs (each `#N` that directly follows a revert word, REVERT_REFS_RE),
+    shas ("This reverts commit <sha>")}, or None when no revert word appears."""
     text = f"{title or ''}\n{body or ''}"
     if not re.search(REVERT_RE, text):
         return None
@@ -864,8 +871,9 @@ def revert_of(title, body):
     refs = []
     for line in text.split("\n"):
         hit = re.search(REVERT_RE + r"(?P<rest>.*)", line)
-        if hit:
-            refs += [int(n) for n in re.findall(r"#([0-9]+)\b", hit.group("rest"))]
+        lead = hit and re.match(REVERT_REFS_RE, hit.group("rest"))
+        if lead:
+            refs += [int(n) for n in re.findall(r"#([0-9]+)\b", lead.group(0))]
     return {"title": m.group(1) if m else None, "prs": refs,
             "shas": re.findall(r"(?i)this reverts commit ([0-9a-f]{7,40})", text)}
 
