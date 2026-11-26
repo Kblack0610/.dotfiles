@@ -59,20 +59,30 @@ const EXCERPT_MAX: usize = 1500;
 #[derive(Deserialize)]
 pub struct Batch {
     pub date: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub sources: Vec<Source>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub ops: Vec<Op>,
+}
+
+/// A field the batch contract lets the model leave out reads the same when it writes `null`
+/// (the model does, for a `why` on a source an op cites); one null must not refuse a whole day.
+fn null_default<'de, D, T>(d: D) -> std::result::Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
 }
 
 #[derive(Deserialize)]
 pub struct Source {
     pub id: String,
     pub path: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub excerpt: String,
     /// For a source no op uses: why nothing in it was kept. The log's Dispositions show it.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub why: String,
 }
 
@@ -81,23 +91,23 @@ pub struct Op {
     /// `create`, `update`, or `domain` (register a domain: `id`, `is`, `aliases`, `canonical`)
     pub op: String,
     /// vault-relative, e.g. `knowledge/software/infra/litellm-gateway.md`
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub path: String,
     /// the whole new file, frontmatter included
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub content: String,
     /// a `domain` op's id, `is` line, aliases and canonical docs (`knowledge_registry::Domain`)
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub is: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub aliases: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub canonical: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub reason: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub sources: Vec<String>,
     /// why a large shrink is intended (a split or a merge); absent = shrink guard applies
     #[serde(default)]
@@ -1513,6 +1523,30 @@ mod tests {
             None,
             &List::default(),
         )
+    }
+
+    #[test]
+    fn a_null_optional_field_reads_as_absent_not_as_a_refused_batch() {
+        let root = vault("null-field");
+        let f = batch(
+            &root,
+            &format!(
+                r#"{{"date":"2026-10-13","sources":[{{"id":"s1","path":"journal/daily/2026-10-13.md","excerpt":null,"why":null}}],"ops":[{{"op":"create","path":"knowledge/software/gw.md","content":{},"reason":null,"sources":["s1"],"aliases":null,"allow_shrink":null}}]}}"#,
+                serde_json_string(&article("gw", "body"))
+            ),
+        );
+        let out = apply(
+            &profile(&root),
+            &logger(&root),
+            &f,
+            None,
+            false,
+            None,
+            &List::default(),
+        )
+        .unwrap();
+        assert_eq!(out.created, 1);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
