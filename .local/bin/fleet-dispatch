@@ -2504,13 +2504,13 @@ waits_gate() {
 }
 
 # ask_stale_skips [--dry-run] -- an open agent row whose judge skip has stood DISPATCH_STALE_DAYS days
-# (the oldest `at` of its trailing run of skip records on the row's current text, so an edit starts
+# (the oldest `at` of its trailing run of skip records on the row's current text and details, so an edit starts
 # the count again), with no gate, #plan tag or start since, reaches the human or leaves the board: an
 # exit `hold` or a skip with no exit is one nothing revisits (ar-2933: 290 of 553 rows past 14 days).
-# A #requested, #urgent, #high, #normal or bare row, or one an open row gates #after/ on, gets one
+# A row human_exit sends to the sheet (#requested, #normal or above, one an open row gates #after/ on, or health work) gets one
 # gate ask, start or drop, and is gated on it (#ask/<id>/start), as ask_failed_rows does: start
 # clears the gate and picks takes it as committed work, drop settles it (settle_answered_gates), and
-# any other answer holds it on #hold/row-<id>. A #low row nothing gates on is dropped, the skip as its
+# any other answer holds it on #hold/row-<id>. Any other row (#low) is dropped, the skip as its
 # why. Its age never ranks it: priority stays ahead of age (#2232, ask Q6vMPb). An epic, a parent, a
 # check(epics) row and a triage red skip (red_skip) are left alone. At most DISPATCH_STALE_MAX rows a
 # pass (0 is no cap); DISPATCH_STALE_DAYS 0 is off. --dry-run writes nothing and prints `<ask|drop> TAB
@@ -2533,13 +2533,12 @@ ask_stale_skips() {
   # "<project>\t<key>" -> the day its skip began: the trailing skip records (errors aside) on one line
   ages=$( ! [ -f "$VERDICTS" ] || jq -cRn '[inputs | fromjson? | objects | select(.lane == "agent" and .verdict != "error")]
     | group_by([.project, .key]) | map(last as $l | select($l.verdict == "skip")
-      | reverse | (map(.verdict == "skip" and .line == $l.line) | index(false) // length) as $k
+      | reverse | (map(.verdict == "skip" and .line == $l.line and .dsig == $l.dsig) | index(false) // length) as $k
       | {key: "\($l.project)\t\($l.key)", value: (.[0:$k] | map(.at // empty | .[0:10]) | min)})
       | map(select(.value != null)) | from_entries' "$VERDICTS") || { say "ask_stale_skips: could not read the skip ages in $VERDICTS: no stale skip is asked about this pass"; return 0; }
   [ -n "$ages" ] || ages='{}'
   rows=$(jq -r --argjson prules "$(policy_rules)" --argjson n "$DISPATCH_DETAIL_CHARS" --slurpfile agesf <(printf '%s\n' "$ages") \
-      --arg today "$today" --argjson days "$DISPATCH_STALE_DAYS" --slurpfile v <(latest_verdicts) "$ROW_JQ"'
-    def day0($s): "\($s)T00:00:00Z" | fromdateiso8601;
+      --arg today "$today" --argjson days "$DISPATCH_STALE_DAYS" --slurpfile v <(latest_verdicts) "$RANK_JQ$ROW_JQ"'
     $agesf[0] as $ages
     | ($v | map(select(.lane == "agent" and .verdict == "skip" and usable($prules)))
        | map({key: "\(.project)\t\(.key)", value: .}) | from_entries) as $by
@@ -2556,15 +2555,16 @@ ask_stale_skips() {
   while IFS=$'\t' read -r prof p id line dsig dj rule req since days tags reason raw; do
     [ -n "$id" ] || continue
     [ "$prof" != - ] || prof=''
-    # the skip must still hold for the row as it reads now, else the judge reads it afresh
-    [ "$line" = - ] || [ "$(row_sig "$raw")" = "$line" ] || continue
-    [ "$dsig" = - ] || [ "$(detail_sig "$dj")" = "$dsig" ] || continue
+    [ "$DISPATCH_STALE_MAX" = 0 ] || [ "$n" -lt "$DISPATCH_STALE_MAX" ] || break
     # a gate of any form (#after/, #pr/, #ask/, #hold/ ...) is something the row waits on, not a skip nobody revisits
     for g in $tags; do [ -z "${GATE_ST[$g]+x}" ] || continue 2; done
-    [ "$DISPATCH_STALE_MAX" = 0 ] || [ "$n" -lt "$DISPATCH_STALE_MAX" ] || break
+    # the skip must still hold for the row as it reads now, else the judge reads it afresh
+    [ "$line" = - ] || { row_sig_set "$raw"; [ "$SIG" = "$line" ]; } || continue
+    [ "$dsig" = - ] || { detail_sig_set "$dj"; [ "$DSIG" = "$dsig" ]; } || continue
     body=${raw#- \[?\] }; body=${body%%<!--*}; body=${body%"${body##*[![:space:]]}"}
+    # a row the sheet would take (asked for, #normal or above, gated on, or health work) is asked about
     e=ask
-    [ "$req" = true ] || [ "$(prio_rank "$body")" -le 2 ] || [ -n "${gated[$id]-}" ] || e=drop
+    [ "$(human_exit "$prof" "$p" "$body" "$req" "${gated[$id]-}")" = sheet ] || e=drop
     [ "$reason" != - ] || reason='no reason recorded'
     if [ -n "$dry" ]; then
       printf '%s\t%s\t%s\t%s\t%s\n' "$e" "$p" "$id" "$rule" "$days"
