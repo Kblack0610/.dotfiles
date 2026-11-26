@@ -1284,18 +1284,20 @@ row_asker() { asker_map; jq -r --arg k "$1" '.[$k] // empty' <<<"$ASKER_MAP"; }
 # way while the fleet held 79% of them (plan swhow-me-asll-data-modular-otter P3). A canary pinned to a
 # harness with its own source ($s.sourced, harnesses.json `source`) passes, as a trainee start does: it
 # spends no Claude session, and held, the week's set never ran while the fleet sat over its share (ask
-# GDUmQQ, ar-4554). A land or fix-ci requeue of an item's own PR (`pr`, `pr_owner` and its
-# `<owner>_tries` stamp, the test item_brief reads) passes too: it starts a Claude session, but a stranded
-# PR costs more than one, and DISPATCH_FIX_TRIES bounds the tries; held, share_return sent hc-857 back to
-# its row and left home-config#1406 green and unmerged (2026-11-23). An urgent or high chain successor
-# passes as well: an item with an `after:` key that is a plan phase or a validate item, agent-queue's
+# GDUmQQ, ar-4554). An item that already holds work passes too, as a continuation and not new intake: a PR
+# recorded on it (`pr`: a land or fix-ci requeue included, whose tries DISPATCH_FIX_TRIES bounds), a `handoff:` note (AGENT_HANDOFF_MAX bounds them), or a
+# `requeued` stamp (agent-queue move running -> queued). Held, share_return sent hc-857 back to its row and
+# left home-config#1406 green and unmerged (2026-11-23), and sent a handed-off ar-5776, ar-5813 and ar-5605
+# back too (2026-11-25, ar-5880). A new row carries none of the three, so the cap still holds it.
+# An urgent or high chain successor passes as well: an item with an `after:` key that is a plan phase or a validate item, agent-queue's
 # stack_dependent test (a `plan:` line or a phase brief, PHASE_BRIEF_RE; the `validate` tag). The cap
 # already let its chain start, and chain-lag bounds its handoff (chain_handoff_p90_max); held,
 # validate-ar-5194 waited 113m and tripped it (ar-4436, 2026-11-24). A plan's first phase, and any other
-# `--after` follow-up (high by default), still wait. The one test share_why and queue_depth apply.
+# `--after` follow-up (high by default), still wait.
+# The one test share_why and queue_depth apply.
 # shellcheck disable=SC2016
 SHARE_JQ="$HUMAN_ASK_JQ"'def share_held($s): (.project // "") as $p | (.agent // "claude") as $a | ($s.projects[$p].full // false)
-  and (((.pr // "") != "" and (.pr_owner // "") != "" and (.[.pr_owner + "_tries"] // "") != "") | not)
+  and (((.pr // "") != "" or (.handoff // "") != "" or (.requeued // "") != "") | not)
   and (((.after // "") != "" and ((.priority // "") | test("^(urgent|high)$"))
     and ((.plan // "") != "" or ((" " + (.tags // "") + " ") | contains(" validate "))
       or ((.task // "") | test("(^|\\s)Phases? [0-9]+( and [0-9]+)* of the plan /[^:]+\\.md:")))) | not)
@@ -1352,8 +1354,8 @@ share_full_names() {
     | "\(.key) (\(.value.n) of \($t) starts in \($h)h, cap \(.value.cap)%)"] | join(", ")' <<<"$SHARE_STATE"
 }
 
-# share_why <item json> -> why the project share cap holds the item, or nothing: share_held (which passes a
-# land or fix-ci requeue of the item's own PR, SHARE_JQ), outside the human and sprint floors (HUMAN_PASS), which are the human's own work and never cut off, and outside the
+# share_why <item json> -> why the project share cap holds the item, or nothing: share_held (which passes an
+# item that already holds work: a PR, a handoff or a requeue, SHARE_JQ), outside the human and sprint floors (HUMAN_PASS), which are the human's own work and never cut off, and outside the
 # trainee floor (TRAINEE_PASS), whose start runs on a free trainee key and spends no session the cap
 # guards. A Claude canary waits like any other item of its project. pick_item lets the first held item go when nothing
 # else can start, so the cap never leaves a slot idle.

@@ -292,3 +292,81 @@ unseeded() {
   run unseeded "$BATS_TEST_TMPDIR/unseeded.yml"
   assert_output '3.6a'
 }
+
+# reg_step <action.yml>: the registry step's script, the one that pulls (or, for a seed, probes)
+reg_step() {
+  python3 -I -c 'import sys, yaml
+steps = yaml.safe_load(open(sys.argv[1]))["runs"]["steps"]
+print([s for s in steps if s.get("id") == "reg"][0]["run"])' "$1"
+}
+
+# run_reg <seed> <docker exit>: the registry step against a stub docker whose pull and manifest read exit with the code (login: STUB_LOGIN_RC)
+run_reg() {
+  local ACT="${ACTION:-$BATS_TEST_DIRNAME/../../.github/actions/test-image/action.yml}"
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  printf '%s\n' '#!/bin/bash' 'case "$1" in pull | manifest) exit "$STUB_RC" ;; login) exit "${STUB_LOGIN_RC:-0}" ;; *) exit 0 ;; esac' >"$BATS_TEST_TMPDIR/bin/docker"
+  chmod +x "$BATS_TEST_TMPDIR/bin/docker"
+  reg_step "$ACT" >"$BATS_TEST_TMPDIR/reg.sh"
+  [ -s "$BATS_TEST_TMPDIR/reg.sh" ] || fail "no reg step script read from $ACT"
+  : >"$BATS_TEST_TMPDIR/out"
+  PATH="$BATS_TEST_TMPDIR/bin:$PATH" STUB_LOGIN_RC="${STUB_LOGIN_RC:-0}" GITHUB_OUTPUT="$BATS_TEST_TMPDIR/out" STUB_RC="$2" SEED="$1" \
+    TAG=cockpit-tests:t1 WEEK=2026-W48 REGISTRY=registry.invalid:5000 PASSWORD=x \
+    bash -e -o pipefail "$BATS_TEST_TMPDIR/reg.sh"
+}
+
+@test "a pool pod's load stops at a failed pull: no cache restore, no build behind it" {
+  export PULL_RETRY_DELAY=0
+  run run_reg false 1
+  assert_failure
+  assert_output --partial "::error::registry did not serve registry.invalid:5000/kblab-ci/dotfiles/test-image:t1-2026-W48"
+  run grep -c '^pulled=true$' "$BATS_TEST_TMPDIR/out"
+  assert_output 0
+  # A pull that works is marked, with its seconds in the log.
+  run run_reg false 0
+  assert_success
+  assert_output --regexp 'pulled registry.invalid:5000/.* in [0-9]+ s'
+  run grep -c '^pulled=true$' "$BATS_TEST_TMPDIR/out"
+  assert_output 1
+  # Negative control: a step whose error never exits lets the job on to the cache and the build.
+  sed '/loads from the registry only/{n;d}' "$BATS_TEST_DIRNAME/../../.github/actions/test-image/action.yml" >"$BATS_TEST_TMPDIR/noexit.yml"
+  ACTION="$BATS_TEST_TMPDIR/noexit.yml" run run_reg false 1
+  assert_success
+}
+
+@test "a seed run that finds no image in the registry warns and goes on to build it" {
+  export PULL_RETRY_DELAY=0
+  run run_reg true 1
+  assert_success
+  assert_output --partial "::warning::registry has no"
+  run grep -c '^pulled=true$' "$BATS_TEST_TMPDIR/out"
+  assert_output 0
+  run grep -c '^login=true$' "$BATS_TEST_TMPDIR/out"
+  assert_output 1
+}
+
+@test "a failed registry login stops a seed run and a load alike" {
+  # The stub's login exits with STUB_LOGIN_RC.
+  for seed in true false; do
+    STUB_LOGIN_RC=1 run run_reg "$seed" 0
+    assert_failure
+    assert_output --partial "::error::registry login failed"
+  done
+}
+
+@test "nothing after the registry step can load or build the image on a pool pod, and a failed push fails the seed" {
+  ACT="$BATS_TEST_DIRNAME/../../.github/actions/test-image/action.yml"
+  step() { python3 -I -c 'import sys, yaml
+steps = yaml.safe_load(open(sys.argv[1]))["runs"]["steps"]
+s = [s for s in steps if s.get("id") == sys.argv[2]][0]
+print(s.get("if", ""), s.get("continue-on-error", ""), s.get("run", ""), sep="\n")' "$ACT" "$1"; }
+  run step reg
+  [[ "$output" != *$'\n'true$'\n'* ]] || fail "the reg step continues on error: $output"
+  # The cache restore and the build need the registry not to have served the image.
+  for id in cache build; do
+    run step "$id"
+    assert_output --partial "steps.reg.outputs.pulled != 'true'"
+  done
+  # A load run's cache restore is for a runner with no registry: the reg step ended the others.
+  run step push
+  assert_output --partial "exit 1"
+}
