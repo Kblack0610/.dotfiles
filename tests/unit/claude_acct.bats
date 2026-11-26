@@ -929,6 +929,7 @@ STUB
   run "$ACCT" status
   assert_line --regexp "^main +- +20% +[0-9]+% +- +$(date -u -d "@$((NOW + 145 * 3600))" '+%m-%d %H:%M') "
   week main 96 145
+  week alt 97 145
   run --separate-stderr "$ACCT" room
   assert_failure 1
   [[ "$stderr" == *"lasts to its reset $(date -u -d "@$((NOW + 145 * 3600))" '+%m-%d %H:%M')" ]]
