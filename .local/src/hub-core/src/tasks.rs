@@ -134,9 +134,6 @@ pub struct Row {
     pub summary: String,
     /// The title of the epic `parent` names, when that row is on the board; set by [`feed`].
     pub epic: Option<String>,
-    /// The epic `parent` names is an open epic row, so it lists on the `epics` chip; a closed one
-    /// is on Done. Set by [`Feed::titles`].
-    pub epic_open: bool,
     /// What hangs under an epic row, from the rows' `parent` links; set by [`Feed::titles`].
     /// None on a row that is not an epic.
     pub children: Option<Children>,
@@ -244,7 +241,7 @@ impl Row {
     }
 
     /// An epic: a row the sweep lays out in the `epics` section. It lists on its own chip, never
-    /// among the tasks.
+    /// among the tasks, unless an `id:=` term names it (`PIN`).
     pub fn is_epic(&self) -> bool {
         self.section.as_deref() == Some("epics")
     }
@@ -289,6 +286,8 @@ impl crate::table::Row for Row {
     const FACETS: &'static [&'static str] = &[
         "section", "type", "area", "epic", "project", "lane", "priority", "state",
     ];
+    // A row link (`links::Kind::Row`, `id:=<id>`) opens the row on the default chip, open epic or not.
+    const PIN: &'static str = "id";
     const LEAD: &'static str = "title";
     const GLANCE: &'static [&'static str] = &["epic", "priority", "state"];
 
@@ -322,7 +321,7 @@ impl crate::table::Row for Row {
     }
 
     /// Every chip but `epics` lists tasks: an epic is a deliverable, listed on its own chip with
-    /// what hangs under it.
+    /// what hangs under it. An `id:=` term still finds one on the default chip (`PIN`).
     fn in_default(&self) -> bool {
         !self.is_epic()
     }
@@ -347,19 +346,11 @@ impl crate::table::Row for Row {
         format!("{}/{project}\n{}", self.profile, self.raw).to_lowercase()
     }
 
-    /// The epic cell opens the epic's row, on the epics chip while it is open and on the default
-    /// chip once it is closed; an epic's rows cell opens the rows under it.
+    /// The epic cell opens the epic's row; an epic's rows cell opens the rows under it.
     fn link(&self, col: &str) -> Option<crate::links::Link> {
         use crate::links::{Kind, Link};
         match col {
-            "epic" => self.parent.as_deref().map(|e| {
-                let kind = if self.epic_open {
-                    Kind::Epic
-                } else {
-                    Kind::Row
-                };
-                Link::to(kind, e)
-            }),
+            "epic" => self.parent.as_deref().map(|e| Link::to(Kind::Row, e)),
             "rows" => self
                 .children
                 .and(self.id.as_deref())
@@ -799,12 +790,6 @@ impl Feed {
             .collect();
         let mut kids: std::collections::HashMap<(String, String), Children> =
             std::collections::HashMap::new();
-        let open_epics: std::collections::HashSet<(String, String)> = self
-            .rows
-            .iter()
-            .filter(|r| r.is_epic())
-            .filter_map(|r| Some((r.project.clone()?.to_lowercase(), r.id.clone()?)))
-            .collect();
         // A sub-epic lists on the epics chip, not among the epic's rows, so it is not counted.
         for (r, closed) in self
             .rows
@@ -826,10 +811,6 @@ impl Feed {
             r.epic = match (r.project.as_deref(), r.parent.as_deref()) {
                 (Some(p), Some(e)) => by.get(&(p.to_lowercase(), e.to_string())).cloned(),
                 _ => None,
-            };
-            r.epic_open = match (r.project.as_deref(), r.parent.as_deref()) {
-                (Some(p), Some(e)) => open_epics.contains(&(p.to_lowercase(), e.to_string())),
-                _ => false,
             };
             r.children = match (r.is_epic(), r.project.as_deref(), r.id.as_deref()) {
                 (true, Some(p), Some(id)) => Some(
@@ -1810,14 +1791,14 @@ mod tests {
         );
         assert_eq!(
             f.rows[1].link("epic").map(|l| l.href()),
-            Some("#projects/all?q=id:=ucp-1&s=epics".to_string()),
-            "an epic is listed on the epics chip only, so the link opens that chip"
+            Some("#projects/all?q=id:=ucp-1".to_string()),
+            "an open epic's link is a row link: the default chip pins the id it names"
         );
         assert!(f.rows[0].link("epic").is_none());
         assert_eq!(
             f.rows[4].link("epic").map(|l| l.href()),
             Some("#projects/all?q=id:=ucp-7".to_string()),
-            "a closed epic lists on the default chip with the done rows, so its link opens that"
+            "a closed epic's link is the same row link"
         );
     }
 
@@ -1868,6 +1849,51 @@ mod tests {
         assert_eq!(on(""), ["ucp-2", "ucp-3", "ucp-1", "ucp-4", "ucp-6"]);
         assert_eq!(on("epics"), ["ucp-1", "ucp-5", "ucp-7"]);
         assert_eq!(on("in progress"), ["ucp-2"]);
+        // A row link to an open epic (`links::Kind::Row`, `id:=<id>`) opens it on the default chip.
+        let found = |q: &str, s: &str| -> Vec<(String, String)> {
+            let mut got: Vec<_> = View::new::<Row>(q, s, "", "")
+                .apply(&rows)
+                .iter()
+                .filter_map(|r| Some((r.project.clone()?, r.id.clone()?)))
+                .collect();
+            got.sort();
+            got
+        };
+        let both = |p: &str, id: &str| (p.to_string(), id.to_string());
+        assert_eq!(
+            found("id:=ucp-5", ""),
+            [both("ucp", "ucp-5")],
+            "the id an exact term names is pinned past the chip"
+        );
+        assert_eq!(
+            found("id:=ucp-1", ""),
+            [both("other", "ucp-1"), both("ucp", "ucp-1")],
+            "the epic and the other project's task of that id"
+        );
+        let chips = View::new::<Row>("id:=ucp-5", "", "", "").states(&rows);
+        assert_eq!(
+            (chips[0].name, chips[0].n),
+            ("all", 1),
+            "the default chip counts what it lists"
+        );
+        // NEGATIVE CONTROL: only a positive exact id term pins; a prefix, another column or an
+        // exclusion leaves the epics on their own chip.
+        assert!(
+            found("id:ucp-5", "").is_empty(),
+            "a prefix id term pins nothing"
+        );
+        assert!(
+            found("type:=epic", "").is_empty(),
+            "an exact term on another column pins nothing"
+        );
+        assert!(
+            !found("-id:=ucp-1", "").contains(&both("ucp", "ucp-5")),
+            "an exclusion pins nothing"
+        );
+        assert!(
+            found("id:=ucp-2", "epics").is_empty(),
+            "a chip past the first still lists only its own rows"
+        );
     }
 
     fn add(text: &str, priority: &str, to: Option<&str>, game: Option<&str>) -> Verb {

@@ -107,7 +107,7 @@ fn bare_words(text: &str) -> String {
 }
 
 /// Split `<plan-slug> P8: P7 words` into the phase (`<plan-slug> P8`) and its words. The slug
-/// stays on the row: `ask-sweep` greps the board for it to tell a tracked plan from a forgotten one.
+/// stays on the row, so the row names the plan its phase belongs to.
 fn plan_phase(text: &str) -> (Option<String>, &str) {
     let mut parts = text.splitn(3, ' ');
     let (Some(slug), Some(phase), Some(rest)) = (parts.next(), parts.next(), parts.next()) else {
