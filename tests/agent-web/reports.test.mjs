@@ -31,8 +31,8 @@ const view = (unread = true) => ({
   tiles: [{ label: "unread", n: unread ? 2 : 1, level: "" }, { label: "needs you", n: 1, level: "warn" }, { label: "today", n: 2, level: "" }, { label: "digests", n: 1, level: "" }],
   sections: [
     { id: "needs", title: "Needs you", folded: false, rows: [row("2026-11-24-ups-switch", "needs you")] },
-    { id: "stream", title: "Today", folded: false, rows: [row("2026-11-24-board-cleanup", unread ? "unread" : "read", { unread })] },
-    { id: "digests", title: "Digests", folded: true, rows: [row("2026-11-24-briefing", "digest", { kind: "digest" })] },
+    { id: "stream", title: "Today", folded: false, rows: [row("2026-11-24-board-cleanup", unread ? "unread" : "read", { unread, from: "" })] },
+    { id: "digests", title: "Digests", folded: true, rows: [row("2026-11-24-briefing", "digest", { kind: "digest", from: "" })] },
     { id: "captures", title: "Your notes", folded: true, rows: [] },
   ],
   moved: "1 unread moved to archive",
@@ -87,6 +87,10 @@ test("Today draws the tiles, Needs you hued, the stream, and Digests folded; Arc
   assert.ok(!/Your notes/.test(html), "an empty folded section is not drawn");
   assert.match(html, /<div data-in="archive" hidden>/, "Archive waits behind its strip button");
   assert.match(html, /1 unread moved to archive/);
+  assert.match(html, /<td class="muted rfrom" title="dotfiles">dotfiles<\/td>/, "From is the filer, whole on hover");
+  assert.ok(!/>report<\/td>/.test(html), "a report with no filer has a blank From, never its kind");
+  assert.match(html, /<td class="muted rfrom" title="digest">digest<\/td>/, "a digest has no filer, so its kind says what it is");
+  assert.match(html, /id="sec-day-2026-11-20" data-rec>/, "an Archive day is a record, so the outline skips it");
   assert.equal(badge.innerHTML, `<span class="badge">2</span>`);
   assert.ok(!asked.some(([m]) => m === "POST"), "nothing is marked read before it is opened");
 });
@@ -142,7 +146,7 @@ test("a past day opens its fold on Archive; today's date is Today's top", async 
   await open("2026-11-20");
   assert.equal(run("st.arg"), "archive");
   assert.equal(rps.open["day:2026-11-20"], true);
-  assert.match(box.innerHTML, /<details class="sec-d" data-k="day:2026-11-20" id="sec-day-2026-11-20" open>/);
+  assert.match(box.innerHTML, /<details class="sec-d" data-k="day:2026-11-20" id="sec-day-2026-11-20" data-rec open>/);
   reset();
   await open("2026-11-24");
   assert.equal(run("st.arg"), "today");

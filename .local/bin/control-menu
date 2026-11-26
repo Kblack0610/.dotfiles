@@ -177,7 +177,10 @@ click() {
         hyprctl dispatch "hl.dsp.exec_cmd([==[$cmd]==])" >/dev/null
         return
     fi
-    setsid -f sh -c "$cmd" >/dev/null 2>&1 </dev/null
+    # HUP is ignored from before the fork until after setsid(): the pane closes as this returns,
+    # and a child not yet detached would die with it, losing the click (ui control_menu.bats
+    # test 10). env restores it, since a shell cannot reset a signal ignored on entry.
+    (trap '' HUP; exec setsid -f env --default-signal=HUP sh -c "$cmd") >/dev/null 2>&1 </dev/null
 }
 
 # action <key> <left|right> [arg]: execute (come back to the list) for a click that runs in
@@ -191,13 +194,17 @@ action() {
 
 menu() {
     command -v fzf >/dev/null 2>&1 || { echo "control-menu needs fzf" >&2; exit 2; }
+    # The scroll keys every panel shares; none (the helper missing) still opens the menu.
+    local scroll
+    mapfile -t scroll < <("$(dirname "$SELF")/../src/tmux/panel-layout.sh" scroll 2>/dev/null)
     # The first list is the registry alone, so the menu opens at once; the bar texts replace it
     # when every chip has answered (fleet_pulse can take its 8s curl timeout).
     rows | fzf --ansi --no-sort --layout=reverse --height=100% \
         --delimiter=$'\t' --with-nth=2 \
         --prompt='control> ' \
-        --header='enter click (a dropdown opens here, esc comes back)   alt-enter right-click   ctrl-r refresh   esc close' \
+        --header='enter click (a dropdown opens here, esc comes back)   alt-enter right-click   ctrl-r refresh   ctrl-d/u scroll   esc close' \
         --preview="$SELF preview {1} {3}" --preview-window='right,60%,wrap' \
+        "${scroll[@]}" \
         --bind="start:reload($SELF rows --live)" \
         --bind="ctrl-r:reload($SELF rows --live)+refresh-preview" \
         --bind="enter:transform($SELF action {1} left {3})" \

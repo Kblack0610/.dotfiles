@@ -200,6 +200,37 @@ SH
   [ ! -e "$HOME/.local/bin/agy" ]
 }
 
+@test "a codex npm install is tried three times, then fails the step with npm's words; one that recovers installs (ar-5027)" {
+  sandbox_init
+  local b="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$HOME/.local/bin" "$b"
+  printf '#!/bin/sh\necho 1.0\n' > "$HOME/.local/bin/claude"
+  printf '#!/bin/sh\nexit 0\n' > "$HOME/.local/bin/agy"
+  printf '#!/bin/sh\nexit 0\n' > "$b/opencode"
+  # npm fails its first NPM_FAILS calls, as a registry fetch that times out does
+  cat > "$b/npm" <<'SH'
+#!/bin/sh
+n=$(($(cat "$BATS_TEST_TMPDIR/npm-calls" 2>/dev/null || echo 0) + 1))
+echo "$n" > "$BATS_TEST_TMPDIR/npm-calls"
+[ "$n" -gt "$NPM_FAILS" ] || { echo "npm error ETIMEDOUT fetch" >&2; exit 1; }
+SH
+  chmod +x "$HOME/.local/bin/claude" "$HOME/.local/bin/agy" "$b/opencode" "$b/npm"
+  export HARNESS_NPM_BACKOFF_S=0 NPM_FAILS=2
+  PATH="$b:/usr/bin:/bin" run install_agent_harnesses
+  assert_success
+  assert_output --partial "codex install failed (npm @openai/codex), try 2 of 3"
+  assert_output --partial "codex installed"
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/npm-calls")" 3
+  # Negative control: three failures are a failed step, not a warning the image builds past.
+  rm "$BATS_TEST_TMPDIR/npm-calls"
+  NPM_FAILS=9 PATH="$b:/usr/bin:/bin" run install_agent_harnesses
+  assert_failure
+  assert_output --partial "codex install failed (npm @openai/codex): npm error ETIMEDOUT fetch"
+  refute_output --partial "codex installed"
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/npm-calls")" 3
+  assert_output --partial "agy up to date"   # the rest of the step still ran
+}
+
 # --- the catalog steps and helpers every OS installer shares (base_functions.sh) ---------------
 
 @test "install_catalog installs the common list, this OS's list and any extras through PKG_INSTALL" {

@@ -11,7 +11,7 @@ metadata:
 
 # Context trim
 
-One pass that makes the text sent on every request smaller without losing a rule. The pass itself (finding shape, in flight, baseline, one lever per PR, re-measure, report, proposals, next pass) is `~/.local/src/docs/analysis-streams.md`; read it first. This file holds what is specific to fixed context.
+One pass that makes the text sent on every request smaller without losing a rule. Read `~/.local/src/docs/analysis-streams.md` first: it is the pass. This file adds only the fixed-context parts.
 
 The size of each part comes from `agent-usage burn --json` (`first_request_parts` per start, `every_request_parts` `context_share` across the window); the bytes of each home from `wc -c`. What must survive comes from the rule register, `~/.config/agentctl/rules.jsonl`, read by `fleet-bench rules`. Restated text comes from `skill-drift --dups`. Budgets are the ones `~/.claude/hooks/context-budget-guard.sh` warns on.
 
