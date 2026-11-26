@@ -2654,9 +2654,10 @@ fix_item() {
   run "$SUBJECT" triage
   assert_success
   assert_output --partial 'open on the human sheet, left there'
-  run grep -c -- '--agent add' "$NLOG"
+  # the pass files other causes (the alpha log errors), so only this key's writes are counted
+  run grep -c -- '--agent add check(watch): spend' "$NLOG"
   assert_output 0
-  run grep -c ' drop ' "$NLOG"
+  run grep -c ' drop check(watch): spend' "$NLOG"
   assert_output 0
   run grep -c 'spend tripped since' "$BOARD.agent-runtime"
   assert_output 1
