@@ -1133,11 +1133,11 @@ RERUN_GAP='[{"name":"shard weights","bucket":"pass","workflow":"shell tests"},{"
 
 @test "a green watch while a re-run of its workflow has no check yet: it waits, then lands on the re-run's green (ar-6084)" {
   printf '%s\n' "$RERUN_GAP" >"$NOTES_FIXTURE/checks.cancelled"
-  printf '%s\n' '[{"status":"queued","workflowName":"shell tests"}]' >"$NOTES_FIXTURE/runs.open"
+  printf '%s\n' '[{"status":"queued","workflowName":"shell tests","attempt":2}]' >"$NOTES_FIXTURE/runs.open"
   fake_sleep
   run "$LAND" 42 --item ship
   assert_success
-  assert_line 'checks: green so far, but a run of their workflow is still open on the head (a re-run whose jobs have no check yet); waiting on it'
+  assert_line 'checks: green so far, but a re-run of their workflow is still open on the head with no check for its jobs yet; waiting on it'
   assert_line 'landed #42'
   run grep -c 'pr checks 42 --watch' "$LOG"
   assert_output 2
@@ -1146,9 +1146,10 @@ RERUN_GAP='[{"name":"shard weights","bucket":"pass","workflow":"shell tests"},{"
   [ "$(grep -n 'pr checks 42 --watch' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'gh pr merge 42' "$LOG" | cut -d: -f1)" ]
 }
 
-@test "a green watch with only another workflow's run open lands at once; a failed runs read is never green (ar-6084)" {
+@test "a green watch beside another workflow's re-run, or a first attempt of its own, lands at once; a failed runs read is never green (ar-6084)" {
   printf '%s\n' "$RERUN_GAP" >"$NOTES_FIXTURE/checks.cancelled"
-  printf '%s\n' '[{"status":"queued","workflowName":"Deploy"},{"status":"completed","conclusion":"success","workflowName":"shell tests"}]' >"$NOTES_FIXTURE/runs.open"
+  # a re-run of another workflow, a push run of its own held by concurrency, and its own completed re-run
+  printf '%s\n' '[{"status":"queued","workflowName":"Deploy","attempt":2},{"status":"pending","workflowName":"shell tests","attempt":1},{"status":"completed","conclusion":"success","workflowName":"shell tests","attempt":2}]' >"$NOTES_FIXTURE/runs.open"
   fake_sleep
   run "$LAND" 42 --item ship
   assert_success
@@ -1346,7 +1347,7 @@ RERUN_GAP='[{"name":"shard weights","bucket":"pass","workflow":"shell tests"},{"
   printf '%s\n' 'ERR gh: API rate limit exceeded (HTTP 403)' >"$NOTES_FIXTURE/checks.cancelled"
   run "$LAND" 42 --item ship
   assert_failure 1
-  assert_output --partial 'checks failed: reading the cancelled checks: gh: API rate limit exceeded (HTTP 403)'
+  assert_output --partial 'checks failed: reading the checks after the watch: gh: API rate limit exceeded (HTTP 403)'
   refute_line 'checks: green'
   run grep -c 'pr merge' "$LOG"
   assert_output 0
