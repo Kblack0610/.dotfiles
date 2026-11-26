@@ -25,11 +25,11 @@ use crate::knowledge_gate::{Gate, Item, Kind as GateKind};
 use crate::knowledge_registry::{self as registry, Domain, Kind, Registry};
 use crate::knowledge_retired::List;
 use crate::logging::Logger;
-use crate::{knowledge_lint, knowledge_repo, md, outbox};
+use crate::{knowledge_lint, knowledge_mv, knowledge_repo, md, outbox};
 use anyhow::{bail, Context, Result};
 use chrono::{Duration, NaiveDate};
 use serde::Deserialize;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -59,20 +59,30 @@ const EXCERPT_MAX: usize = 1500;
 #[derive(Deserialize)]
 pub struct Batch {
     pub date: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub sources: Vec<Source>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub ops: Vec<Op>,
+}
+
+/// A field the batch contract lets the model leave out reads the same when it writes `null`
+/// (the model does, for a `why` on a source an op cites); one null must not refuse a whole day.
+fn null_default<'de, D, T>(d: D) -> std::result::Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
 }
 
 #[derive(Deserialize)]
 pub struct Source {
     pub id: String,
     pub path: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub excerpt: String,
     /// For a source no op uses: why nothing in it was kept. The log's Dispositions show it.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub why: String,
 }
 
@@ -81,23 +91,23 @@ pub struct Op {
     /// `create`, `update`, or `domain` (register a domain: `id`, `is`, `aliases`, `canonical`)
     pub op: String,
     /// vault-relative, e.g. `knowledge/software/infra/litellm-gateway.md`
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub path: String,
     /// the whole new file, frontmatter included
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub content: String,
     /// a `domain` op's id, `is` line, aliases and canonical docs (`knowledge_registry::Domain`)
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub is: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub aliases: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub canonical: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub reason: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub sources: Vec<String>,
     /// why a large shrink is intended (a split or a merge); absent = shrink guard applies
     #[serde(default)]
@@ -1245,7 +1255,7 @@ fn first_source_day(p: &Profile) -> Option<NaiveDate> {
     let mut min = None;
     let dirs: [(&Path, u8, Day); 6] = [
         (&p.daily, 0, note),
-        (&p.inbox, 0, note),
+        (&p.captures, 0, note),
         (&p.archive, 2, note),
         (&p.refs, 0, iso),
         (&p.zettel, 0, id),
@@ -1379,8 +1389,55 @@ fn print_traced(found: &[Traced], json: bool) -> Result<()> {
     Ok(())
 }
 
+/// The names a page had before its recorded moves, without `.md`: every old path whose moves end
+/// at `key`.
+fn earlier_names(moves: &HashMap<String, (String, bool)>, key: &str) -> Vec<String> {
+    let now = format!("{key}.md");
+    let mut out: Vec<String> = moves
+        .keys()
+        .filter(|from| knowledge_mv::resolve(moves, from).is_some_and(|(to, _)| to == now))
+        .map(|from| from.strip_suffix(".md").unwrap_or(from).to_string())
+        .collect();
+    out.sort();
+    out
+}
+
+/// `line` with a note on each `[[knowledge/...]]` page it names that is no longer on disk: where
+/// the recorded moves took it, or that no move did.
+fn moved_note(line: &str, moves: &HashMap<String, (String, bool)>, root: &Path) -> String {
+    let mut notes = Vec::new();
+    let mut rest = line;
+    while let Some(i) = rest.find("[[") {
+        rest = &rest[i + 2..];
+        let Some(j) = rest.find("]]") else { break };
+        let target = rest[..j].split(['|', '#']).next().unwrap_or("");
+        rest = &rest[j + 2..];
+        if !target.starts_with("knowledge/") {
+            continue;
+        }
+        let page = format!("{}.md", target.strip_suffix(".md").unwrap_or(target));
+        if root.join(&page).exists() {
+            continue;
+        }
+        notes.push(match knowledge_mv::resolve(moves, &page) {
+            Some((to, merged)) => {
+                let to = to.strip_suffix(".md").unwrap_or(&to);
+                let how = if merged { "merged into" } else { "now" };
+                format!("[[{target}]] {how} [[{to}]]")
+            }
+            None => format!("[[{target}]] is gone, and no recorded move names it"),
+        });
+    }
+    if notes.is_empty() {
+        line.to_string()
+    } else {
+        format!("{line} ({})", notes.join("; "))
+    }
+}
+
 /// `notes knowledge trace <day|path>`: what the engine did with each source of a day, or where
-/// one source went. Exit 1 when there is nothing to show.
+/// one source went; a page a later `knowledge mv` moved or merged says where it is now. Exit 1
+/// when there is nothing to show.
 pub fn trace(p: &Profile, target: &str, today: NaiveDate, json: bool) -> Result<i32> {
     let done = log_dates(p);
     let floor = live_floor(p, &done);
@@ -1393,8 +1450,12 @@ pub fn trace(p: &Profile, target: &str, today: NaiveDate, json: bool) -> Result<
         let t = match read(d) {
             Some(c) => {
                 let (lines, rebuilt) = dispositions_of(&c);
+                let moves = knowledge_mv::moves(p);
                 Traced {
-                    lines,
+                    lines: lines
+                        .iter()
+                        .map(|l| moved_note(l, &moves, &p.root))
+                        .collect(),
                     rebuilt,
                     ..Traced::bare(d, Status::Logged)
                 }
@@ -1415,7 +1476,13 @@ pub fn trace(p: &Profile, target: &str, today: NaiveDate, json: bool) -> Result<
         .trim_end_matches("]]");
     let rel = raw.strip_prefix(&root).unwrap_or(raw);
     let key = source_key(rel);
-    let needles = [format!("[[{key}]]"), format!("`{raw}`")];
+    let moves = knowledge_mv::moves(p);
+    // A page's logs name it where it was that night, so its earlier names count too.
+    let needles: Vec<String> = earlier_names(&moves, &key)
+        .into_iter()
+        .map(|k| format!("[[{k}]]"))
+        .chain([format!("[[{key}]]"), format!("`{raw}`")])
+        .collect();
     let hit = |l: &String| needles.iter().any(|n| l.contains(n.as_str()));
     // The day in the path first (a ref is compiled the night of its date), then every log.
     let dated = rel
@@ -1430,7 +1497,11 @@ pub fn trace(p: &Profile, target: &str, today: NaiveDate, json: bool) -> Result<
             continue;
         };
         let (lines, rebuilt) = dispositions_of(&c);
-        let lines: Vec<String> = lines.into_iter().filter(hit).collect();
+        let lines: Vec<String> = lines
+            .into_iter()
+            .filter(hit)
+            .map(|l| moved_note(&l, &moves, &p.root))
+            .collect();
         if !lines.is_empty() {
             found.push(Traced {
                 lines,
@@ -1475,6 +1546,38 @@ mod tests {
         Logger::new(root.join(".state/journal.log"), false)
     }
 
+    #[test]
+    fn trace_says_where_a_moved_or_merged_page_is_now() {
+        // ar-3783: a log from before a move names the old page, and the log is never rewritten.
+        let root = vault("trace-moved");
+        fs::create_dir_all(root.join("knowledge/subjects/health")).unwrap();
+        fs::write(root.join("knowledge/subjects/health/bw.md"), "# BW\n").unwrap();
+        fs::write(root.join("knowledge/live.md"), "# Live\n").unwrap();
+        let moves = HashMap::from([
+            (
+                "knowledge/health/bw.md".to_string(),
+                ("knowledge/subjects/health/bw.md".to_string(), false),
+            ),
+            (
+                "knowledge/old/day.md".to_string(),
+                ("knowledge/live.md".to_string(), true),
+            ),
+        ]);
+        let line = "- `s1` journal/refs/x.md: compiled into [[knowledge/health/bw]], [[knowledge/old/day|Day]], [[knowledge/live]], [[knowledge/lost]]";
+        assert_eq!(
+            moved_note(line, &moves, &root),
+            format!("{line} ([[knowledge/health/bw]] now [[knowledge/subjects/health/bw]]; [[knowledge/old/day]] merged into [[knowledge/live]]; [[knowledge/lost]] is gone, and no recorded move names it)")
+        );
+        let plain = "- `s2` journal/refs/y.md: compiled into [[knowledge/live]]";
+        assert_eq!(moved_note(plain, &moves, &root), plain);
+        // a trace of the page where it is now also finds the logs that name its old path
+        assert_eq!(
+            earlier_names(&moves, "knowledge/subjects/health/bw"),
+            ["knowledge/health/bw"]
+        );
+        assert!(earlier_names(&moves, "knowledge/health/bw").is_empty());
+    }
+
     fn article(title: &str, body: &str) -> String {
         format!(
             "---\ntitle: {title}\nsummary: what {title} is\ntags: [software, reference]\nupdated: 2026-10-13\nsources: [journal/daily/2026-10-13.md]\n---\n\n# {title}\n\n{body}\n"
@@ -1513,6 +1616,30 @@ mod tests {
             None,
             &List::default(),
         )
+    }
+
+    #[test]
+    fn a_null_optional_field_reads_as_absent_not_as_a_refused_batch() {
+        let root = vault("null-field");
+        let f = batch(
+            &root,
+            &format!(
+                r#"{{"date":"2026-10-13","sources":[{{"id":"s1","path":"journal/daily/2026-10-13.md","excerpt":null,"why":null}}],"ops":[{{"op":"create","path":"knowledge/software/gw.md","content":{},"reason":null,"sources":["s1"],"aliases":null,"allow_shrink":null}}]}}"#,
+                serde_json_string(&article("gw", "body"))
+            ),
+        );
+        let out = apply(
+            &profile(&root),
+            &logger(&root),
+            &f,
+            None,
+            false,
+            None,
+            &List::default(),
+        )
+        .unwrap();
+        assert_eq!(out.created, 1);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -2049,7 +2176,7 @@ mod tests {
         assert!(hub.contains("- `LSD/ci.md`"), "{hub}");
         let schema = fs::read_to_string(root.join("knowledge/SCHEMA.md")).unwrap();
         assert!(
-            schema.contains("- `core/ops`: what belongs here Aliases: `release`."),
+            schema.contains("- `core/ops`: what belongs here. Aliases: `release`."),
             "{schema}"
         );
         assert!(!schema.contains("{{domains}}"));

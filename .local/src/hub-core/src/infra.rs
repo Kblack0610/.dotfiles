@@ -95,6 +95,9 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         ("job_pods", crate::jobpods::pods_query()),
         ("job_requests", crate::jobpods::requests_query()),
         ("ci_alloc", crate::jobpods::alloc_query()),
+        // Each node NotReady, quarantined (the degraded taint) or cordoned, for the machine rows'
+        // state.
+        ("node_state", crate::jobpods::node_state_query()),
         // Each job kind's weight, the share of a slot one of its jobs takes: the governor's hourly
         // p90 measurement (`measured="true"`), else 1 (`measured="false"`). The Job kinds WEIGHT.
         ("kind_weight", "ci_governor_kind_weight".into()),
@@ -137,6 +140,7 @@ pub const OPTIONAL: &[&str] = &[
     "job_pods",
     "job_requests",
     "ci_alloc",
+    "node_state",
     "kind_weight",
     "job_usual",
     "rates",
@@ -380,17 +384,22 @@ impl Infra {
         by
     }
 
+    /// The runners the governor holds back (`github_runner_withheld`), by name: an idle one takes
+    /// no job, so it is no slot, but the governor can release it, so a waiting job still fits it.
+    pub fn withheld(&self) -> std::collections::HashSet<&str> {
+        self.get("withheld")
+            .iter()
+            .map(|s| s.label("name"))
+            .collect()
+    }
+
     /// The withheld runners the governor says are lent to their pair, by name, with whom to:
     /// `tests` (a build slot whose test slots run CI) or `build`. A lent row for a runner no
     /// longer withheld (the governor a cycle behind the exporter) is left out, so a runner is
     /// never both a slot and lent. Any other withheld runner is held back for load, a pin, a
     /// drain or no work.
     pub fn lent(&self) -> HashMap<&str, &str> {
-        let held: std::collections::HashSet<&str> = self
-            .get("withheld")
-            .iter()
-            .map(|s| s.label("name"))
-            .collect();
+        let held = self.withheld();
         self.get("lent")
             .iter()
             .filter(|s| held.contains(s.label("name")))
@@ -860,6 +869,7 @@ mod tests {
                 "job_pods",
                 "job_requests",
                 "ci_alloc",
+                "node_state",
                 "kind_weight",
                 "job_usual",
                 "rates",

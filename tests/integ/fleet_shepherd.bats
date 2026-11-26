@@ -18,7 +18,7 @@ setup() {
   mkdir -p "$FLEET_SHEPHERD_DIR"
   stub fleet-sessions 'echo "$*" >> "$HOME/sessions.calls"'
   stub fleet-assess 'if [ "${1:-}" = --blocked ]; then printf "%b" "${STUB_BLOCKED:-}"; elif [ "${1:-}" = --fleet ]; then printf "%b" "${STUB_FLEET:-}"; ! printf "%b" "${STUB_FLEET:-}" | grep -qE "^fleet: OVER|NOT live"; else echo "verdict: ${STUB_VERDICT:-CLEAR} load 0.5x"; fi'
-  stub agent-hold 'printf "%s" "${STUB_HOLDS:-}"'
+  stub agent-hold 'case "$*" in *--expired*) printf "%s" "${STUB_EXPIRED:-}" ;; *) printf "%s" "${STUB_HOLDS:-}" ;; esac'
   # a pass's measured cost (pass_cost); unset is a session with none
   stub agent-usage '[ "$1 $3" = "session --json" ] || exit 2
 if [ -n "${STUB_USAGE:-}" ]; then printf "%s" "$STUB_USAGE"; else printf "{\"session_id\":\"%s\",\"usage_source\":\"none\"}" "$2"; fi'
@@ -70,8 +70,12 @@ stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "
 # The real fleet-sessions, by path: the one on PATH is a stub here.
 fleet-sessions-real() { "$REPO_ROOT/.local/bin/fleet-sessions" "$@"; }
 
-# doc <sessions-json> [main-json]
-doc() { jq -n --argjson s "$1" --argjson m "${2:-[]}" '{schema:1, sessions:$s, main:$m}' > "$FLEET_STATE_FILE"; }
+# doc <sessions-json> [main-json]: with the vocab fleet-sessions writes, whose `finished` the shepherd reads
+doc() {
+  jq -n --argjson s "$1" --argjson m "${2:-[]}" \
+    '{schema:1, vocab:{buckets:["NEEDS","STALLED","DONE","LANDED","CHAT","WORKING","PARKED"], finished:["DONE","LANDED"],
+      in_progress:["WORKING","NEEDS","STALLED"]}, sessions:$s, main:$m}' > "$FLEET_STATE_FILE"
+}
 
 row() { # target bucket nudged escalated [labels-json] [close verdict: default now for DONE, else keep]
   jq -n --arg t "$1" --arg b "$2" --argjson n "$3" --argjson e "$4" --argjson l "${5:-[]}" --arg v "${6:-}" \
@@ -631,6 +635,14 @@ esac'
   assert_line 'pace: machine reads HOLD with no hold set'
   STUB_VERDICT=HOLD STUB_HOLDS=$'unity\tx' run "$SH" due
   assert_failure
+}
+
+@test "a hold past its until is a pace line whatever the verdict, and only then (ar-6059)" {
+  doc "[]"
+  STUB_VERDICT=HOLD STUB_HOLDS=$'unity\tx' STUB_EXPIRED=$'critical\t2026\thuman\tlockdown' run "$SH" due
+  assert_line 'pace: ended hold critical (past its until); then: agent-hold release each'
+  STUB_VERDICT=HOLD STUB_HOLDS=$'unity\tx' run "$SH" due
+  refute_output --partial 'ended hold'
 }
 
 @test "a host over its busy mark, or an agent host with a unit outside its CPU cap, is a pace line; a fine fleet is none" {
@@ -2889,8 +2901,8 @@ STUB
 # ghost_setup: the exporter lists runs 1 (a ghost: queued 48h, no job), 2 (queued 1h by GitHub's clock)
 # and 3 (queued 48h, one job) as stuck, run 1 under two job names. gh answers a run and its jobs from
 # those facts and records every call. STUB_CANCEL_REFUSED refuses /cancel with HTTP 409 (not
-# cancellable), STUB_CANCEL_DENIED with 403 and refuses force-cancel too, and STUB_GH_DOWN fails every
-# run read.
+# cancellable), STUB_CANCEL_DENIED with 403 and refuses force-cancel too, STUB_FORCE_REFUSED refuses
+# force-cancel with HTTP 409, and STUB_GH_DOWN fails every run read.
 ghost_setup() {
   cat > "$PROM_LIB" <<'STUB'
 prom_q() {
@@ -2911,7 +2923,8 @@ case "$*" in
   "api repos/o/r/actions/runs/3/jobs "*) echo 1 ;;
   *"/cancel") [ -z "${STUB_CANCEL_DENIED:-}" ] || { echo "gh: Forbidden (HTTP 403)" >&2; exit 1; }
               [ -z "${STUB_CANCEL_REFUSED:-}" ] || { echo "gh: Cannot cancel a workflow run that is completed. (HTTP 409)" >&2; exit 1; } ;;
-  *"/force-cancel") [ -z "${STUB_CANCEL_DENIED:-}" ] ;;
+  *"/force-cancel") [ -z "${STUB_FORCE_REFUSED:-}" ] || { echo "gh: Cannot force cancel this run (HTTP 409)" >&2; exit 1; }
+                    [ -z "${STUB_CANCEL_DENIED:-}" ] ;;
 esac'
 }
 
@@ -2968,14 +2981,27 @@ esac'
   ghost_setup
   export FLEET_SHEPHERD_GHOST_CANCEL=1 STUB_CANCEL_DENIED=1
   run "$SH" ghost-runs
-  assert_line 'ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h)'
+  # GitHub's refusal is in the verdict line, the ledger and the one log line (ar-244).
+  assert_line 'ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h; gh: Forbidden (HTTP 403))'
+  assert_equal "$(cut -f2- "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" | grep runs/1)" \
+    "$(printf 'cancel-failed\thttps://github.com/o/r/actions/runs/1\t48h; gh: Forbidden (HTTP 403)')"
   # A 403 is no "not cancellable": force-cancel is for a run that ignores cancel.
   run grep -c 'force-cancel' "$HOME/gh.calls"
   assert_output 0
   run "$SH" ghost-runs
-  assert_line 'ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h)'
-  run grep -c 'ghost run https://github.com/o/r/actions/runs/1: cancel-failed' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_line 'ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h; gh: Forbidden (HTTP 403))'
+  run grep -c 'ghost run https://github.com/o/r/actions/runs/1: cancel-failed, queued 48h with no jobs (gh: Forbidden (HTTP 403))' "$FLEET_SHEPHERD_DIR/log.md"
   assert_output 1
+  # A run cancel calls not cancellable and force-cancel refuses too names the force-cancel answer.
+  unset STUB_CANCEL_DENIED
+  rm -f "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" "$FLEET_SHEPHERD_DIR/log.md"
+  STUB_CANCEL_REFUSED=1 STUB_FORCE_REFUSED=1 run "$SH" ghost-runs
+  local refused='force-cancel: gh: Cannot force cancel this run (HTTP 409)'
+  assert_line "ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h; $refused)"
+  assert_equal "$(grep runs/1 "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" | cut -f4)" "48h; $refused"
+  run grep -cF "ghost run https://github.com/o/r/actions/runs/1: cancel-failed, queued 48h with no jobs ($refused)" "$FLEET_SHEPHERD_DIR/log.md"
+  assert_output 1
+  export STUB_CANCEL_DENIED=1
   # GitHub not answering writes no verdict, and one line names every run asked again.
   rm -f "$FLEET_SHEPHERD_DIR/ghost-runs.tsv"
   STUB_GH_DOWN=1 run "$SH" ghost-runs
