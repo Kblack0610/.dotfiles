@@ -182,10 +182,12 @@ setup() {
     [ "$output" = "$all" ]
     [[ "$stderr" == *"(full: the change touches the test image)"* ]]
   done
-  # A crate the binary is not built from runs none of it.
+  # A crate the binary is not built from is no full pick: only the files test_picked takes
+  # run (CI run 45759647694 took unit/prepush_hook.bats for this one).
   PICK_CHANGED=.local/src/hub-tui/src/main.rs run --separate-stderr "$SUBJECT" notes HEAD
   assert_success
-  [ -z "$output" ]
+  refute_line unit/agent_land.bats
+  [[ "$stderr" != *"(full:"* ]]
 }
 
 @test "notes: a script the job tests picks its file, not the rest" {
