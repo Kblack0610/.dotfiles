@@ -1116,7 +1116,7 @@ impl<'a> Graph<'a> {
                 }
                 for n in &v.prs {
                     match line.tags.iter().find(|t| t.prs.contains(n)) {
-                        Some(t) if t.version != bare => out.push(format!(
+                        Some(t) if !shipped_by(&t.version, bare) => out.push(format!(
                             "{p} lab {}: row PR #{n} shipped in {}",
                             v.version, t.tag
                         )),
@@ -1177,6 +1177,30 @@ fn plain_version(v: &str) -> bool {
         && parts
             .iter()
             .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Whether a row PR in tag version `shipped` is in lab version `rolled`: the same version, or one
+/// that sorts before it (`1.3.0`, `1.4.0-rc1` before `1.4.0`), since a PR in an earlier tag is in
+/// every later release and a row closed after its PR shipped is no red (ucp-2766, ucp-1270,
+/// ucp-3000). Order is numeric `major.minor.patch`, a pre-release before its own release, as in
+/// semver; a version that does not parse orders nothing.
+fn shipped_by(shipped: &str, rolled: &str) -> bool {
+    shipped == rolled || shipped_before(shipped, rolled)
+}
+
+fn shipped_before(shipped: &str, rolled: &str) -> bool {
+    let key = |v: &str| {
+        let (core, pre) = v.split_once('-').map_or((v, false), |(c, _)| (c, true));
+        if !plain_version(core) {
+            return None;
+        }
+        let nums = core
+            .split('.')
+            .map(|p| p.parse::<u64>().ok())
+            .collect::<Option<Vec<_>>>()?;
+        Some((nums, !pre))
+    };
+    matches!((key(shipped), key(rolled)), (Some(s), Some(r)) if s < r)
 }
 
 /// `2026-11-11`: the day the links are held from.
@@ -2021,6 +2045,25 @@ mod tests {
     }
 
     #[test]
+    fn a_tag_ships_by_its_own_or_a_later_release_and_odd_ones_only_by_their_own() {
+        for (shipped, rolled, before) in [
+            ("1.3.0", "1.4.0", true),
+            ("1.3.9", "1.10.0", true),
+            ("1.4.0-rc1", "1.4.0", true),
+            ("1.4.0", "1.4.0", true),
+            ("next", "next", true),
+            ("1.5.0", "1.4.0", false),
+            ("1.4.0", "1.4.0-rc1", false),
+            ("1.4.0-rc1", "1.4.0-rc2", false),
+            ("1.3", "1.4.0", false),
+            ("1.3.0", "next", false),
+            ("99999999999999999999999.0.0", "1.4.0", false),
+        ] {
+            assert_eq!(shipped_by(shipped, rolled), before, "{shipped} by {rolled}");
+        }
+    }
+
+    #[test]
     fn the_link_checks_name_each_gap_from_the_day_they_are_held() {
         let since = 1_794_384_000; // 2026-11-11
         let now = since + 5000;
@@ -2147,7 +2190,7 @@ mod tests {
         links.versions.insert(
             "app".into(),
             Versions {
-                // v1.1.0 was rolled before the day and has no tag: history, not a red.
+                // v1.1.0 predates the day; v1.4.0's #11 is in the earlier app-v1.3.0, a late close.
                 list: vec![
                     v("v1.1.0", since - 50, vec![]),
                     v("v1.4.0", since + 5, vec![11, 13]),
@@ -2211,7 +2254,6 @@ mod tests {
                 "app deployWorkflows .github/workflows/gone.yml: not a workflow on origin/main",
                 "app deployWorkflows .github/workflows/odd.yml: give the targets it deploys, or a reason it deploys none",
                 "app lab v1.4.0: no tag of the line",
-                "app lab v1.4.0: row PR #11 shipped in app-v1.3.0",
                 "app lab v1.4.0: row PR #13 is in no tag of the line",
                 "lib: tag glob lib-v* matches no tag, and the lab has 1 shipped version(s)",
             ]
