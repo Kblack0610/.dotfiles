@@ -40,13 +40,18 @@ pub(super) fn last_entry(text: &str) -> Option<u64> {
 const EDIT_TOOLS: &str = include_str!("../../../../../.config/agent-panel/edit-tools.conf");
 
 /// [`EDIT_TOOLS`]' names, each with the `"name":"<tool>"` needle a transcript line carries.
-fn edit_tools() -> &'static [(&'static str, String)] {
+pub(super) fn edit_tools() -> &'static [(&'static str, String)] {
     static TOOLS: std::sync::OnceLock<Vec<(&'static str, String)>> = std::sync::OnceLock::new();
     TOOLS.get_or_init(|| {
         super::conf_lines(EDIT_TOOLS)
             .map(|t| (t, format!("\"name\":\"{t}\"")))
             .collect()
     })
+}
+
+/// Whether a tool_use `name` is one of [`EDIT_TOOLS`] (plan.rs reads the same list).
+pub(super) fn is_edit_tool(name: &str) -> bool {
+    edit_tools().iter().any(|(t, _)| *t == name)
 }
 
 /// Files the session changed with its edit tools, deduplicated, in first-edit order.
