@@ -79,6 +79,7 @@ pub fn resolve_path(p: &Profile, target: &str) -> Option<PathBuf> {
         // legitimately have no projects root, which is not the same as an unknown target.
         "projects" => p.projects.clone()?,
         "captures" => p.captures.clone(),
+        "inbox" => p.inbox(),
         "captures-today" => p.captures.join(format!(
             "{}.md",
             Local::now().date_naive().format("%Y-%m-%d")
@@ -612,8 +613,7 @@ fn link_refs_on(p: &Profile, log: &Logger, day: NaiveDate) -> Result<()> {
 /// the one link to it. The section carries the link once the day has a ref that `## Morning`
 /// does not already render (anything but the briefing and the day log). Lines the old per-file
 /// linker wrote for that day are replaced by the link; anything else under `## Refs` is the
-/// human's and stays. `notes report add` calls this for the day it files to, so a late write
-/// is listed by the index with no second pass.
+/// human's and stays.
 pub(crate) fn link_day_refs(p: &Profile, log: &Logger, day: NaiveDate) -> Result<()> {
     let entries = crate::report::rebuild_index(p, day)?;
     let note = p.daily.join(format!("{}.md", day.format("%Y-%m-%d")));

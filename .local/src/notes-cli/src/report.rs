@@ -1,19 +1,23 @@
-//! `notes report add|list|read`: the one writer and reader of the reports agents file for the
-//! human, plus the generated day index (`refs/<date>/_index.md`) that `link-refs` points the
-//! daily note's `## Refs` at.
+//! `notes report add|list|read|archive|migrate`: the one writer and reader of the reports agents
+//! file for the human, which live in `~/.notes/inbox/` and nothing else does.
 //!
-//! A day's refs folder holds three kinds of file, told apart by a field, never a filename list:
-//!   - a **report**: frontmatter `kind: report`, written only by [`add`];
+//! The inbox holds one folder per day, `inbox/<date>/<slug>.md`, each file a **report**
+//! (frontmatter `kind: report`, written only by [`add`]). `status/inbox.md` is the one inbox
+//! page, and its Reports section reads this folder ([`inbox_lines`]); no index file is written.
+//! Past days move to `inbox/archive/YYYY-MM/<date>/` nightly ([`archive_past`]).
+//!
+//! `journal/refs/<date>/` holds the other two kinds, told apart by a field, never a filename
+//! list, and `list --all` reads them too:
 //!   - a **digest**: frontmatter `generated: true` (the briefing, agents, shipped, infra-cleanup);
 //!   - a **capture**: anything else, the human's own pastes and notes.
 //!
 //! Read and archived are states on a report, not file moves: `read:` is set by [`read`], and a
 //! report is in the stream while it is today's or unread and under [`STREAM_DAYS`] old. Every
-//! reader walks the folders live and never reads `_index.md`, so a hand paste shows up without a
-//! rebuild. A day lives in `refs/<date>/`, or in the legacy `refs/archive/YYYY/YYYY-MM/<date>/`
-//! the old monthly mover left; [`day_dir`] is the one resolver for both.
+//! reader walks the folders live, so a hand-dropped file shows up without a rebuild. A refs day
+//! lives in `refs/<date>/`, or in `refs/archive/YYYY/YYYY-MM/<date>/` once [`archive_past`]
+//! moved it; [`refs_day_dir`] and [`inbox_day_dir`] are the resolvers.
 
-use crate::config::Profile;
+use crate::config::{Profile, INBOX_DIR};
 use crate::knowledge_gate::body;
 use crate::logging::Logger;
 use crate::md;
@@ -24,19 +28,22 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// The day index's file stem. Generated, never edited by hand.
+/// The refs day index's file stem. Generated, never edited by hand.
 pub const INDEX: &str = "_index";
-/// Where the legacy monthly mover put old day folders, under the refs root.
+/// Where old day folders go, under the inbox root (`archive/YYYY-MM/<date>`) and under the refs
+/// root (`archive/YYYY/YYYY-MM/<date>`).
 pub const ARCHIVE: &str = "archive";
-/// A summary is at most this many lines: it is what the index and the Reports tab show.
+/// A refs day folder stays live this many days, then [`archive_past`] moves it.
+pub const REFS_LIVE_DAYS: i64 = 7;
+/// A summary is at most this many lines: it is what the inbox page and the Reports tab show.
 const MAX_SUMMARY_LINES: usize = 5;
 /// An unread report stays in the stream this many days, then drops to the archive.
 pub const STREAM_DAYS: i64 = 7;
 
 #[derive(clap::Subcommand)]
 pub enum Cmd {
-    /// File a report (or revise one: the same slug on the same day updates it in place and
-    /// marks it unread), then rebuild that day's index
+    /// File a report in `inbox/<date>/` (or revise one: the same slug on the same day updates
+    /// it in place and marks it unread)
     Add {
         #[arg(long)]
         title: String,
@@ -59,7 +66,7 @@ pub enum Cmd {
         #[arg(long)]
         from: Option<String>,
     },
-    /// The reports across days, newest first, read live from the folders
+    /// The reports across days, newest first, read live from the inbox folders
     List {
         /// One JSON object per line
         #[arg(long)]
@@ -70,12 +77,22 @@ pub enum Cmd {
         /// Only reports not yet read
         #[arg(long)]
         unread: bool,
-        /// Digests and captures too, each with its `kind`
+        /// The refs digests and captures too, each with its `kind`
         #[arg(long, conflicts_with = "unread")]
         all: bool,
     },
     /// Mark a report read by its id (`<date>-<slug>`)
     Read { id: String },
+    /// Move past days out of the live folders: inbox days before today into `inbox/archive/`,
+    /// refs days over a week old into `refs/archive/`. The nightly `notes summarize` runs it.
+    Archive {
+        /// Only say what would move
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Move every `kind: report` file out of `journal/refs/` (live and archived) into the
+    /// inbox, then archive. One-time and safe to run again.
+    Migrate,
 }
 
 pub fn run(p: &Profile, log: &Logger, cmd: Cmd) -> Result<i32> {
@@ -139,11 +156,21 @@ pub fn run(p: &Profile, log: &Logger, cmd: Cmd) -> Result<i32> {
             refresh_inbox(p, log);
             Ok(0)
         }
+        Cmd::Archive { dry_run } => {
+            println!("{}", archive_today(p, log, dry_run)?.summary(dry_run));
+            Ok(0)
+        }
+        Cmd::Migrate => {
+            let m = migrate(p, log, now.date_naive())?;
+            println!("{}", m.summary());
+            refresh_inbox(p, log);
+            Ok(if m.conflicts.is_empty() { 0 } else { 1 })
+        }
     }
 }
 
-/// Republish the inbox page, whose Reports section lists the stream, so a report filed or read
-/// shows there now rather than at the next sweep. The report is already written: a page that
+/// Republish the inbox page, whose Reports section lists the stream, so a report filed, read or
+/// archived shows there now rather than at the next sweep. The report is already written: a page that
 /// cannot be published says so and does not fail the command.
 fn refresh_inbox(p: &Profile, log: &Logger) {
     if let Err(e) = crate::daily::publish_inbox_page_kept_score(p, log) {
@@ -161,23 +188,35 @@ fn stamp(t: DateTime<FixedOffset>) -> String {
 
 // ---- where a day lives ----
 
-fn live_dir(p: &Profile, day: NaiveDate) -> PathBuf {
-    p.refs.join(day.format("%Y-%m-%d").to_string())
+fn day_name(day: NaiveDate) -> String {
+    day.format("%Y-%m-%d").to_string()
 }
 
-fn archive_dir(p: &Profile, day: NaiveDate) -> PathBuf {
+fn inbox_live(p: &Profile, day: NaiveDate) -> PathBuf {
+    p.inbox().join(day_name(day))
+}
+
+fn inbox_archived(p: &Profile, day: NaiveDate) -> PathBuf {
+    p.inbox()
+        .join(ARCHIVE)
+        .join(day.format("%Y-%m").to_string())
+        .join(day_name(day))
+}
+
+fn refs_live(p: &Profile, day: NaiveDate) -> PathBuf {
+    p.refs.join(day_name(day))
+}
+
+fn refs_archived(p: &Profile, day: NaiveDate) -> PathBuf {
     p.refs
         .join(ARCHIVE)
         .join(day.format("%Y").to_string())
         .join(day.format("%Y-%m").to_string())
-        .join(day.format("%Y-%m-%d").to_string())
+        .join(day_name(day))
 }
 
-/// The folder that holds `day`: `refs/<date>/`, else the legacy archive folder when only that
-/// exists, else `refs/<date>/` (where a new write goes).
-pub fn day_dir(p: &Profile, day: NaiveDate) -> PathBuf {
-    let live = live_dir(p, day);
-    let old = archive_dir(p, day);
+/// `live`, unless only `old` exists: where a read finds a day and a new write goes.
+fn resolve(live: PathBuf, old: PathBuf) -> PathBuf {
     if !live.is_dir() && old.is_dir() {
         old
     } else {
@@ -185,64 +224,71 @@ pub fn day_dir(p: &Profile, day: NaiveDate) -> PathBuf {
     }
 }
 
-/// A `[[refs/<date>/<rest>]]` wikilink target rewritten to the legacy archive folder of that
-/// day, for the link resolver (`notes show`) when the live path does not exist. None for a
-/// target outside refs or without a date.
-pub fn archived_target(p: &Profile, target: &str) -> Option<String> {
-    let rest = target
-        .strip_prefix(p.refs_rel.as_str())?
-        .strip_prefix('/')?;
-    let (date, tail) = rest.split_once('/')?;
-    let day = NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()?;
-    Some(format!(
-        "{}/{ARCHIVE}/{}/{}/{date}/{tail}",
-        p.refs_rel,
-        day.format("%Y"),
-        day.format("%Y-%m")
-    ))
+/// The folder that holds `day`'s reports: `inbox/<date>/`, else the archive folder when only
+/// that exists, else `inbox/<date>/` (where a new write goes).
+pub fn inbox_day_dir(p: &Profile, day: NaiveDate) -> PathBuf {
+    resolve(inbox_live(p, day), inbox_archived(p, day))
 }
 
-/// `path` as a wikilink target: refs-relative under `refs_rel`, without `.md`.
-fn refs_target(p: &Profile, path: &Path) -> String {
-    let rel = path.strip_prefix(&p.refs).unwrap_or(path);
+/// The same for `day`'s refs folder (digests and captures).
+fn refs_day_dir(p: &Profile, day: NaiveDate) -> PathBuf {
+    resolve(refs_live(p, day), refs_archived(p, day))
+}
+
+/// Where a `[[journal/refs/<date>/<rest>]]` link's file may have gone when the live path does
+/// not exist, in the order to try: the refs archive, then the inbox (a report [`migrate`] moved),
+/// live and archived. Empty for a target outside refs or without a date. The link resolver
+/// (`notes show`) tries each, so a link written before a move keeps working.
+pub fn moved_targets(p: &Profile, target: &str) -> Vec<String> {
+    let Some(rest) = target
+        .strip_prefix(p.refs_rel.as_str())
+        .and_then(|r| r.strip_prefix('/'))
+    else {
+        return Vec::new();
+    };
+    let Some((date, tail)) = rest.split_once('/') else {
+        return Vec::new();
+    };
+    let Ok(day) = NaiveDate::parse_from_str(date, "%Y-%m-%d") else {
+        return Vec::new();
+    };
+    let (year, month) = (day.format("%Y"), day.format("%Y-%m"));
+    vec![
+        format!("{}/{ARCHIVE}/{year}/{month}/{date}/{tail}", p.refs_rel),
+        format!("{INBOX_DIR}/{date}/{tail}"),
+        format!("{INBOX_DIR}/{ARCHIVE}/{month}/{date}/{tail}"),
+    ]
+}
+
+/// `path` as a wikilink target: relative to `root` under `rel_root`, without `.md`.
+fn rooted_target(root: &Path, rel_root: &str, path: &Path) -> String {
+    let rel = path.strip_prefix(root).unwrap_or(path);
     let rel = rel.to_string_lossy();
-    format!("{}/{}", p.refs_rel, rel.strip_suffix(".md").unwrap_or(&rel))
+    format!("{rel_root}/{}", rel.strip_suffix(".md").unwrap_or(&rel))
 }
 
-/// The wikilink target of `day`'s index, in the folder it is written to (an archived day's
+/// The wikilink target of `day`'s refs index, in the folder it is written to (an archived day's
 /// index lives in the archive).
 pub fn index_target(p: &Profile, day: NaiveDate) -> String {
-    refs_target(p, &day_dir(p, day).join(INDEX))
+    rooted_target(&p.refs, &p.refs_rel, &refs_day_dir(p, day).join(INDEX))
 }
 
-/// Every day folder, live and archived, as `(day, dir)`, oldest first. A day in both places
-/// lists both: the archive half first.
-fn days(p: &Profile) -> Vec<(NaiveDate, PathBuf)> {
-    fn dated(dir: &Path) -> Vec<(NaiveDate, PathBuf)> {
-        fs::read_dir(dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter(|e| e.path().is_dir())
-            .filter_map(|e| {
-                let name = e.file_name().to_string_lossy().into_owned();
-                Some((NaiveDate::parse_from_str(&name, "%Y-%m-%d").ok()?, e.path()))
-            })
-            .collect()
-    }
-    // One folder per day, the one `day_dir` picks: a live folder wins over an archived one.
-    let mut out = BTreeMap::new();
-    for year in dated_names(&p.refs.join(ARCHIVE)) {
-        for month in dated_names(&year) {
-            out.extend(dated(&month));
-        }
-    }
-    out.extend(dated(&p.refs));
-    out.into_iter().collect()
+/// The subfolders of `dir` named for a day, as `(day, dir)`.
+fn dated(dir: &Path) -> Vec<(NaiveDate, PathBuf)> {
+    fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            Some((NaiveDate::parse_from_str(&name, "%Y-%m-%d").ok()?, e.path()))
+        })
+        .collect()
 }
 
-/// The subfolders of `dir`, any name (the archive's `YYYY` and `YYYY-MM` levels).
-fn dated_names(dir: &Path) -> Vec<PathBuf> {
+/// The subfolders of `dir`, any name (an archive's `YYYY` and `YYYY-MM` levels).
+fn subdirs(dir: &Path) -> Vec<PathBuf> {
     fs::read_dir(dir)
         .into_iter()
         .flatten()
@@ -250,6 +296,22 @@ fn dated_names(dir: &Path) -> Vec<PathBuf> {
         .map(|e| e.path())
         .filter(|p| p.is_dir())
         .collect()
+}
+
+/// Every day folder under `root`, live and archived, as `(day, dir)`, oldest first. `levels` is
+/// how many folders sit between `archive/` and a day: 2 under refs (`YYYY/YYYY-MM`), 1 under
+/// the inbox (`YYYY-MM`). A day split between a live and an archived folder (the nightly left a
+/// differing file behind, or a write made the live one again) appears once per folder, so a
+/// reader sees every file; a writer picks the one folder through the `*_day_dir` resolvers.
+fn days_in(root: &Path, levels: usize) -> Vec<(NaiveDate, PathBuf)> {
+    let mut tiers = vec![root.join(ARCHIVE)];
+    for _ in 0..levels {
+        tiers = tiers.iter().flat_map(|d| subdirs(d)).collect();
+    }
+    let mut out: Vec<(NaiveDate, PathBuf)> = tiers.iter().flat_map(|d| dated(d)).collect();
+    out.extend(dated(root));
+    out.sort();
+    out
 }
 
 // ---- the contract ----
@@ -346,9 +408,12 @@ impl Entry {
             || (self.unread() && (today - self.day).num_days() < STREAM_DAYS && self.day <= today)
     }
 
-    /// The wikilink target: the refs-relative path, so an archived day links where it is.
+    /// The wikilink target: the root-relative path, so an archived day links where it is.
     fn target(&self, p: &Profile) -> String {
-        refs_target(p, &self.path)
+        match self.kind {
+            Kind::Report => rooted_target(&p.inbox(), INBOX_DIR, &self.path),
+            Kind::Digest | Kind::Capture => rooted_target(&p.refs, &p.refs_rel, &self.path),
+        }
     }
 
     fn json(&self, p: &Profile, today: NaiveDate) -> Value {
@@ -380,7 +445,7 @@ impl Entry {
         format!("{}  {:<9}  {}  {}", self.day, state, self.id(), self.title)
     }
 
-    /// The summary's first line, for the index.
+    /// The summary's first line, for the inbox page.
     fn lead(&self) -> &str {
         self.summary.lines().next().unwrap_or("").trim()
     }
@@ -448,7 +513,7 @@ fn entry(day: NaiveDate, path: &Path) -> Option<Entry> {
 }
 
 /// Every file in `dir` but the index, as entries of `day`, sorted by stem.
-pub fn entries(day: NaiveDate, dir: &Path) -> Vec<Entry> {
+fn dir_entries(day: NaiveDate, dir: &Path) -> Vec<Entry> {
     let mut out: Vec<Entry> = fs::read_dir(dir)
         .into_iter()
         .flatten()
@@ -462,46 +527,41 @@ pub fn entries(day: NaiveDate, dir: &Path) -> Vec<Entry> {
     out
 }
 
-// ---- the index ----
+/// The digests and captures in a refs day folder. A report left there is [`migrate`]'s to move,
+/// so it is neither indexed nor listed.
+fn refs_entries(day: NaiveDate, dir: &Path) -> Vec<Entry> {
+    let mut out = dir_entries(day, dir);
+    out.retain(|e| e.kind != Kind::Report);
+    out
+}
+
+// ---- the refs index ----
 
 /// A wikilink label: no character that ends or splits the link.
 fn label(s: &str) -> String {
     s.replace('|', "/").replace(['[', ']'], "")
 }
 
-/// `day`'s `_index.md` text, built from its entries: Needs you (unread reports that need the
-/// human), Reports (title and the summary's first line, newest first), Digests, Your notes.
+/// A refs day's `_index.md` text, built from its entries: Digests, then Your notes.
 pub fn index_text(p: &Profile, day: NaiveDate, all: &[Entry]) -> String {
-    let link = |e: &Entry| format!("[[{}|{}]]", e.target(p), label(&e.title));
-    // One pass sorts the files into their sections, in folder order.
-    let (mut reports, mut digests, mut captures) = (Vec::new(), Vec::new(), Vec::new());
-    for e in all {
-        match e.kind {
-            Kind::Report => reports.push(e),
-            Kind::Digest => digests.push(format!("- {}", link(e))),
-            Kind::Capture => captures.push(format!("- {}", link(e))),
-        }
-    }
-    reports.sort_by(|a, b| b.created.cmp(&a.created));
-    let (needs, rest): (Vec<&Entry>, Vec<&Entry>) =
-        reports.into_iter().partition(|e| e.needs_you && e.unread());
-    let report_line = |e: &&Entry| match e.lead() {
-        "" => format!("- {}", link(e)),
-        lead => format!("- {}: {lead}", link(e)),
-    };
+    let link = |e: &Entry| format!("- [[{}|{}]]", e.target(p), label(&e.title));
     let mut s = format!(
-        "---\ngenerated: true\ntags: [refs]\n---\n\n# Refs {}\n\nBuilt by `notes report` and `notes link-refs` from this folder; edits here are overwritten.\n",
+        "---\ngenerated: true\ntags: [refs]\n---\n\n# Refs {}\n\nBuilt by `notes link-refs` from this folder; edits here are overwritten.\n",
         day.format("%Y-%m-%d")
     );
-    let mut section = |heading: &str, lines: Vec<String>| {
+    let (mut digests, mut notes) = (Vec::new(), Vec::new());
+    for e in all {
+        match e.kind {
+            Kind::Digest => digests.push(link(e)),
+            Kind::Capture => notes.push(link(e)),
+            Kind::Report => {}
+        }
+    }
+    for (heading, lines) in [("Digests", digests), ("Your notes", notes)] {
         if !lines.is_empty() {
             s.push_str(&format!("\n## {heading}\n\n{}\n", lines.join("\n")));
         }
-    };
-    section("Needs you", needs.iter().map(report_line).collect());
-    section("Reports", rest.iter().map(report_line).collect());
-    section("Digests", digests);
-    section("Your notes", captures);
+    }
     if all.is_empty() {
         s.push_str("\nNothing filed yet.\n");
     }
@@ -542,15 +602,15 @@ fn lock(p: &Profile) -> Result<md::FileLock> {
     md::lock_file(&p.state_dir.join("report.lock"))
 }
 
-/// Rebuild `day`'s `_index.md` when its folder exists, writing only on a change, and return the
-/// day's entries (empty when there is no folder).
+/// Rebuild refs `day`'s `_index.md` when its folder exists, writing only on a change, and return
+/// the day's entries (empty when there is no folder).
 pub fn rebuild_index(p: &Profile, day: NaiveDate) -> Result<Vec<Entry>> {
-    let dir = day_dir(p, day);
+    let dir = refs_day_dir(p, day);
     if !dir.is_dir() {
         return Ok(Vec::new());
     }
     let _lock = lock(p)?;
-    let all = entries(day, &dir);
+    let all = refs_entries(day, &dir);
     let text = index_text(p, day, &all);
     let path = dir.join(format!("{INDEX}.md"));
     if fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
@@ -669,8 +729,7 @@ fn clean_body(body: &str) -> Result<String> {
     Ok(rest.trim().to_string())
 }
 
-/// File (or revise) a report, then rebuild its day's index and link it from that day's note.
-/// Returns the file and the id.
+/// File (or revise) a report in `inbox/<date>/`. Returns the file and the id.
 pub fn add(
     p: &Profile,
     log: &Logger,
@@ -695,7 +754,7 @@ pub fn add(
     if slug.is_empty() {
         bail!("the title has no letters or digits to make a slug from; pass --slug");
     }
-    let dir = day_dir(p, new.day);
+    let dir = inbox_day_dir(p, new.day);
     let path = dir.join(format!("{slug}.md"));
     {
         let _lock = lock(p)?;
@@ -730,7 +789,6 @@ pub fn add(
         fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         md::write_atomic(&path, &render(&e, &body))?;
     }
-    crate::daily::link_day_refs(p, log, new.day)?;
     let id = format!("{}-{slug}", new.day.format("%Y-%m-%d"));
     log.info("report", &format!("filed {id}"));
     Ok((path, id))
@@ -738,16 +796,26 @@ pub fn add(
 
 // ---- list and read ----
 
-/// Reports across every day folder, newest day first and newest first within a day. `since`
-/// keeps days on or after it, `unread` only unread reports, `all` adds digests and captures.
+/// Reports across every inbox day folder, newest day first and newest first within a day.
+/// `since` keeps days on or after it, `unread` only unread reports, `all` adds the refs digests
+/// and captures.
 pub fn list(p: &Profile, since: Option<NaiveDate>, unread: bool, all: bool) -> Vec<Entry> {
-    let mut out: Vec<Entry> = days(p)
+    let keep = |d: &NaiveDate| since.is_none_or(|s| *d >= s);
+    let mut out: Vec<Entry> = days_in(&p.inbox(), 1)
         .into_iter()
-        .filter(|(d, _)| since.is_none_or(|s| *d >= s))
-        .flat_map(|(d, dir)| entries(d, &dir))
-        .filter(|e| all || e.kind == Kind::Report)
+        .filter(|(d, _)| keep(d))
+        .flat_map(|(d, dir)| dir_entries(d, &dir))
+        .filter(|e| e.kind == Kind::Report)
         .filter(|e| !unread || e.unread())
         .collect();
+    if all {
+        out.extend(
+            days_in(&p.refs, 2)
+                .into_iter()
+                .filter(|(d, _)| keep(d))
+                .flat_map(|(d, dir)| refs_entries(d, &dir)),
+        );
+    }
     out.sort_by(|a, b| b.day.cmp(&a.day).then_with(|| b.created.cmp(&a.created)));
     out
 }
@@ -762,16 +830,18 @@ fn find(p: &Profile, id: &str) -> Result<Entry> {
     if !valid_slug(slug) || id.as_bytes()[10] != b'-' {
         bail!("'{id}' is not a report id (<date>-<slug>)");
     }
-    let path = day_dir(p, day).join(format!("{slug}.md"));
-    match entry(day, &path) {
+    let found = days_in(&p.inbox(), 1)
+        .into_iter()
+        .filter(|(d, _)| *d == day)
+        .find_map(|(_, dir)| entry(day, &dir.join(format!("{slug}.md"))));
+    match found {
         Some(e) if e.kind == Kind::Report => Ok(e),
-        Some(_) => bail!("{} is not a report", path.display()),
+        Some(e) => bail!("{} is not a report", e.path.display()),
         None => bail!("no report {id}"),
     }
 }
 
-/// Mark the report `id` read (kept as first read when it already is), then rebuild its day's
-/// index. Returns its file.
+/// Mark the report `id` read (kept as first read when it already is). Returns its file.
 pub fn read(p: &Profile, log: &Logger, id: &str, now: DateTime<FixedOffset>) -> Result<PathBuf> {
     let e = find(p, id)?;
     if e.read.is_empty() {
@@ -794,8 +864,193 @@ pub fn read(p: &Profile, log: &Logger, id: &str, now: DateTime<FixedOffset>) -> 
             log.info("report", &format!("read {id}"));
         }
     }
-    rebuild_index(p, e.day)?;
     Ok(e.path)
+}
+
+// ---- archive and migrate ----
+
+/// The day folders [`archive_past`] moved.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Moved {
+    pub inbox: usize,
+    pub refs: usize,
+}
+
+impl Moved {
+    fn summary(&self, dry_run: bool) -> String {
+        let verb = if dry_run { "would move" } else { "moved" };
+        format!(
+            "{verb} {} inbox day(s) and {} refs day(s) to the archive",
+            self.inbox, self.refs
+        )
+    }
+}
+
+/// Move the day folder `from` to `to`: a rename when `to` is free, else file by file, never
+/// overwriting. A file whose twin is already there goes (same bytes); one that differs, or that
+/// cannot be compared, stays in `from` for a hand look. `from` goes when it ends empty. True
+/// when `from` is gone, so a day that cannot settle is not counted as moved every night.
+fn move_day(from: &Path, to: &Path) -> Result<bool> {
+    if !to.exists() {
+        if let Some(parent) = to.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::rename(from, to)
+            .with_context(|| format!("moving {} -> {}", from.display(), to.display()))?;
+        return Ok(true);
+    }
+    for e in fs::read_dir(from)?.flatten() {
+        let dest = to.join(e.file_name());
+        if !dest.exists() {
+            fs::rename(e.path(), &dest)
+                .with_context(|| format!("moving {} -> {}", e.path().display(), dest.display()))?;
+        } else if e.path().is_file()
+            && matches!((fs::read(e.path()), fs::read(&dest)), (Ok(a), Ok(b)) if a == b)
+        {
+            fs::remove_file(e.path())?;
+        }
+    }
+    Ok(fs::remove_dir(from).is_ok())
+}
+
+/// Move `dir` to `to`, a failure warned and the day left where it is, so one bad day does not
+/// stop the ones after it. True when the day moved.
+fn settle_day(log: &Logger, dir: &Path, to: &Path) -> bool {
+    match move_day(dir, to) {
+        Ok(done) => done,
+        Err(e) => {
+            log.warn("report", &format!("{} not archived: {e:#}", dir.display()));
+            false
+        }
+    }
+}
+
+/// Move every inbox day folder before `today` into `inbox/archive/YYYY-MM/`, and every refs day
+/// folder more than [`REFS_LIVE_DAYS`] old into `refs/archive/YYYY/YYYY-MM/`. Idempotent: a
+/// second run finds nothing live to move. `dry_run` only counts. Links to a moved day resolve
+/// through [`moved_targets`] and the readers walk the archive, so nothing else changes.
+pub fn archive_past(p: &Profile, log: &Logger, today: NaiveDate, dry_run: bool) -> Result<Moved> {
+    let _lock = lock(p)?;
+    let mut moved = Moved::default();
+    for (day, dir) in dated(&p.inbox()).into_iter().filter(|(d, _)| *d < today) {
+        if dry_run || settle_day(log, &dir, &inbox_archived(p, day)) {
+            moved.inbox += 1;
+        }
+    }
+    let cutoff = today - chrono::Duration::days(REFS_LIVE_DAYS);
+    for (day, dir) in dated(&p.refs).into_iter().filter(|(d, _)| *d < cutoff) {
+        if dry_run || settle_day(log, &dir, &refs_archived(p, day)) {
+            moved.refs += 1;
+        }
+    }
+    if !dry_run && moved != Moved::default() {
+        log.info("report", &moved.summary(false));
+    }
+    Ok(moved)
+}
+
+/// The nightly: [`migrate`] (a report an older writer left in refs comes into the inbox, so none
+/// is hidden whenever the binary was deployed; with none left it moves nothing), which also
+/// archives the past days, then the inbox page republished when anything moved: its links name
+/// the folder a report is in. A conflict is warned, never fatal. `notes summarize` and
+/// `report archive` run it. `dry_run` only counts the archive.
+pub fn archive_today(p: &Profile, log: &Logger, dry_run: bool) -> Result<Moved> {
+    let today = Local::now().date_naive();
+    if dry_run {
+        return archive_past(p, log, today, true);
+    }
+    let m = migrate(p, log, today)?;
+    for c in &m.conflicts {
+        log.warn(
+            "report",
+            &format!("conflict, left in refs: {}", c.display()),
+        );
+    }
+    if m.moved + m.duplicates > 0 || m.archived.inbox > 0 {
+        refresh_inbox(p, log);
+    }
+    Ok(m.archived)
+}
+
+/// What [`migrate`] did.
+#[derive(Debug, Default)]
+pub struct Migrated {
+    /// Reports moved from refs into the inbox.
+    pub moved: usize,
+    /// Reports already in the inbox with the same bytes, removed from refs.
+    pub duplicates: usize,
+    /// Reports whose inbox twin differs: left in refs, for a hand look.
+    pub conflicts: Vec<PathBuf>,
+    pub archived: Moved,
+}
+
+impl Migrated {
+    fn summary(&self) -> String {
+        let mut s = format!(
+            "moved {} report(s) into the inbox, removed {} duplicate(s); {}",
+            self.moved,
+            self.duplicates,
+            self.archived.summary(false)
+        );
+        for c in &self.conflicts {
+            s.push_str(&format!("\nconflict, left in place: {}", c.display()));
+        }
+        s
+    }
+}
+
+/// Move every `kind: report` file out of the refs day folders, live and archived, into the
+/// inbox (`inbox/<date>/`), then archive the past days. Each touched refs day gets its index
+/// rebuilt without the reports, or loses the folder when only the index was left. Idempotent: a
+/// second run finds no report in refs.
+pub fn migrate(p: &Profile, log: &Logger, today: NaiveDate) -> Result<Migrated> {
+    let mut m = Migrated::default();
+    let mut touched: Vec<(NaiveDate, PathBuf)> = Vec::new();
+    {
+        let _lock = lock(p)?;
+        for (day, dir) in days_in(&p.refs, 2) {
+            for e in dir_entries(day, &dir)
+                .into_iter()
+                .filter(|e| e.kind == Kind::Report)
+            {
+                let Some(name) = e.path.file_name() else {
+                    continue;
+                };
+                let dest_dir = inbox_day_dir(p, day);
+                let dest = dest_dir.join(name);
+                if !dest.exists() {
+                    fs::create_dir_all(&dest_dir)?;
+                    fs::rename(&e.path, &dest).with_context(|| {
+                        format!("moving {} -> {}", e.path.display(), dest.display())
+                    })?;
+                    m.moved += 1;
+                } else if fs::read(&e.path)? == fs::read(&dest)? {
+                    fs::remove_file(&e.path)?;
+                    m.duplicates += 1;
+                } else {
+                    m.conflicts.push(e.path.clone());
+                    continue;
+                }
+                if !touched.iter().any(|(_, d)| *d == dir) {
+                    touched.push((day, dir.clone()));
+                }
+            }
+        }
+    }
+    for (day, dir) in touched {
+        if refs_entries(day, &dir).is_empty() {
+            let _ = fs::remove_file(dir.join(format!("{INDEX}.md")));
+            let _ = fs::remove_dir(&dir);
+        }
+        if let Err(e) = crate::daily::link_day_refs(p, log, day) {
+            log.warn("report", &format!("refs index of {day} not rebuilt: {e:#}"));
+        }
+    }
+    m.archived = archive_past(p, log, today, false)?;
+    if m.moved + m.duplicates > 0 || !m.conflicts.is_empty() {
+        log.info("report", &m.summary());
+    }
+    Ok(m)
 }
 
 #[cfg(test)]
@@ -843,10 +1098,7 @@ mod tests {
         n.body = "# Old heading\n\nThe table.\n".into();
         let (path, id) = add(&p, &log, &n, at("2026-11-24T07:02:00-08:00")).unwrap();
         assert_eq!(id, "2026-11-24-nightly-flake-readout");
-        assert_eq!(
-            path,
-            dir.join("journal/refs/2026-11-24/nightly-flake-readout.md")
-        );
+        assert_eq!(path, dir.join("inbox/2026-11-24/nightly-flake-readout.md"));
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.starts_with("---\nkind: report\nid: 2026-11-24-nightly-flake-readout\ntitle: \"Nightly flake readout\"\nsummary: |-\n  4 flaky specs\n  2 quarantined\nfrom: \"item-1\"\nneeds_you: false\ncreated: 2026-11-24T07:02:00-08:00\nupdated: 2026-11-24T07:02:00-08:00\nread: \"\"\n---\n\n# Nightly flake readout\n\nThe table.\n"), "{text}");
 
@@ -856,7 +1108,7 @@ mod tests {
         assert_eq!(j["summary"], "4 flaky specs\n2 quarantined");
         assert_eq!(j["read"], Value::Null);
         assert_eq!(j["stream"], true);
-        assert_eq!(j["target"], "journal/refs/2026-11-24/nightly-flake-readout");
+        assert_eq!(j["target"], "inbox/2026-11-24/nightly-flake-readout");
         assert_eq!(list(&p, None, true, false).len(), 1);
 
         read(&p, &log, &id, at("2026-11-24T09:00:00-08:00")).unwrap();
@@ -926,6 +1178,7 @@ mod tests {
             at("2026-11-10T08:00:00-08:00"),
         )
         .unwrap();
+        fs::create_dir_all(dir.join("journal/refs/2026-11-24")).unwrap();
         fs::write(
             dir.join("journal/refs/2026-11-24/briefing.md"),
             "---\ngenerated: true\n---\n# Briefing\n",
@@ -934,8 +1187,8 @@ mod tests {
         assert_eq!(
             inbox_lines(&p, today),
             [
-                "[[journal/refs/2026-11-23/sign-the-baa|Sign the BAA]] (needs you) (11-23): One form waits.",
-                "[[journal/refs/2026-11-24/fresh-audit|Fresh audit]]: All clear.",
+                "[[inbox/2026-11-23/sign-the-baa|Sign the BAA]] (needs you) (11-23): One form waits.",
+                "[[inbox/2026-11-24/fresh-audit|Fresh audit]]: All clear.",
             ]
         );
         let _ = fs::remove_dir_all(&dir);
@@ -955,21 +1208,22 @@ mod tests {
         let mut fm = new("T", "s", "2026-11-24");
         fm.body = "---\ntags: [x]\n---\nbody\n".into();
         assert!(err(&fm).contains("frontmatter of its own"));
-        fs::create_dir_all(dir.join("journal/refs/2026-11-24")).unwrap();
-        fs::write(dir.join("journal/refs/2026-11-24/my-paste.md"), "pasted\n").unwrap();
+        fs::create_dir_all(dir.join("inbox/2026-11-24")).unwrap();
+        fs::write(dir.join("inbox/2026-11-24/my-paste.md"), "pasted\n").unwrap();
         assert!(err(&new("My paste", "s", "2026-11-24")).contains("is not a report"));
         assert_eq!(
-            fs::read_to_string(dir.join("journal/refs/2026-11-24/my-paste.md")).unwrap(),
+            fs::read_to_string(dir.join("inbox/2026-11-24/my-paste.md")).unwrap(),
             "pasted\n"
         );
         assert!(list(&p, None, false, false).is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// The index lists Needs you, Reports, Digests and Your notes from the files themselves: a
-    /// file with no frontmatter is a capture, never a report, and `list` without --all skips it.
+    /// The refs index lists Digests and Your notes from the files themselves, and no report:
+    /// a file with no frontmatter is a capture, `list` skips it without --all, a report left in
+    /// refs is neither indexed nor listed, and filing a report writes no index anywhere.
     #[test]
-    fn the_index_sections_and_a_paste_is_a_capture() {
+    fn the_refs_index_lists_digests_and_notes_and_a_paste_is_a_capture() {
         let (dir, p, log) = vault("index");
         let refs = dir.join("journal/refs/2026-11-24");
         fs::create_dir_all(&refs).unwrap();
@@ -981,6 +1235,11 @@ mod tests {
         fs::write(
             refs.join("agnostic-ci.md"),
             "nd: a pasted transcript tail\n",
+        )
+        .unwrap();
+        fs::write(
+            refs.join("stray.md"),
+            "---\nkind: report\ntitle: \"Stray\"\n---\n# Stray\n",
         )
         .unwrap();
         fs::write(
@@ -1002,11 +1261,22 @@ mod tests {
             at("2026-11-24T11:15:00-08:00"),
         )
         .unwrap();
+        assert_eq!(
+            fs::read_to_string(refs.join("_index.md")).unwrap(),
+            "---\nid: \"2026-11-24-refs\"\n---\n# Refs\n",
+            "filing a report leaves the refs index alone"
+        );
+        assert!(!dir.join("inbox/2026-11-24/_index.md").exists());
 
+        rebuild_index(&p, d("2026-11-24")).unwrap();
         let index = fs::read_to_string(refs.join("_index.md")).unwrap();
-        let want = "## Needs you\n\n- [[journal/refs/2026-11-24/ups-switch-did-it-work|UPS switch: did it work?]]: Load fell 76% -> 41%\n\n## Reports\n\n- [[journal/refs/2026-11-24/board-cleanup|Board cleanup]]: 212 -> 168 rows\n\n## Digests\n\n- [[journal/refs/2026-11-24/briefing|Briefing]]\n\n## Your notes\n\n- [[journal/refs/2026-11-24/agnostic-ci|agnostic-ci]]\n";
+        let want = "## Digests\n\n- [[journal/refs/2026-11-24/briefing|Briefing]]\n\n## Your notes\n\n- [[journal/refs/2026-11-24/agnostic-ci|agnostic-ci]]\n";
         assert!(index.starts_with("---\ngenerated: true\n"), "{index}");
         assert!(index.ends_with(want), "{index}");
+        assert!(
+            !index.contains("Stray") && !index.contains("UPS"),
+            "{index}"
+        );
 
         let reports = list(&p, None, false, false);
         assert_eq!(
@@ -1017,30 +1287,20 @@ mod tests {
         let kind = |s: &str| every.iter().find(|e| e.stem == s).unwrap().kind;
         assert_eq!(kind("agnostic-ci"), Kind::Capture);
         assert_eq!(kind("briefing"), Kind::Digest);
-        assert!(every.iter().all(|e| e.stem != INDEX));
-
-        // Reading the needs-you report moves it out of Needs you.
-        read(
-            &p,
-            &log,
-            "2026-11-24-ups-switch-did-it-work",
-            at("2026-11-24T16:00:00-08:00"),
-        )
-        .unwrap();
-        let index = fs::read_to_string(refs.join("_index.md")).unwrap();
-        assert!(!index.contains("## Needs you"), "{index}");
+        assert_eq!(kind("board-cleanup"), Kind::Report);
+        assert!(every.iter().all(|e| e.stem != INDEX && e.stem != "stray"));
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// A legacy archived day is found by list, read and the link resolver, and its index links
-    /// files where they are.
+    /// An archived inbox day is found by list, read and add; an archived refs day by list --all,
+    /// the refs index and the link resolver; and a refs link to a moved report resolves to the
+    /// inbox, live or archived.
     #[test]
-    fn a_legacy_archive_day_resolves() {
+    fn an_archived_day_resolves() {
         let (dir, p, log) = vault("archive");
-        let old = dir.join("journal/refs/archive/2026/2026-10/2026-10-03");
+        let old = dir.join("inbox/archive/2026-10/2026-10-03");
         fs::create_dir_all(&old).unwrap();
-        fs::write(old.join("notes.md"), "a capture\n").unwrap();
-        assert_eq!(day_dir(&p, d("2026-10-03")), old);
+        assert_eq!(inbox_day_dir(&p, d("2026-10-03")), old);
         add(
             &p,
             &log,
@@ -1052,13 +1312,13 @@ mod tests {
             old.join("old-audit.md").is_file(),
             "a write to an archived day stays there"
         );
-        assert!(!dir.join("journal/refs/2026-10-03").exists());
+        assert!(!dir.join("inbox/2026-10-03").exists());
 
         let rows = list(&p, Some(d("2026-10-01")), false, false);
         assert_eq!(rows.len(), 1);
         assert_eq!(
             rows[0].target(&p),
-            "journal/refs/archive/2026/2026-10/2026-10-03/old-audit"
+            "inbox/archive/2026-10/2026-10-03/old-audit"
         );
         assert!(
             !rows[0].stream(d("2026-11-24")),
@@ -1072,26 +1332,189 @@ mod tests {
             at("2026-11-24T08:00:00-08:00"),
         )
         .unwrap();
+        assert!(list(&p, None, true, false).is_empty());
+        // A split day (a live folder made after the archive) is read from both folders.
+        let live = dir.join("inbox/2026-10-03");
+        fs::create_dir_all(&live).unwrap();
+        let split: Vec<_> = days_in(&p.inbox(), 1)
+            .into_iter()
+            .filter(|(day, _)| *day == d("2026-10-03"))
+            .collect();
+        assert_eq!(
+            split,
+            vec![
+                (d("2026-10-03"), live.clone()),
+                (d("2026-10-03"), old.clone())
+            ],
+            "both halves are read"
+        );
+        assert!(
+            find(&p, "2026-10-03-old-audit").is_ok(),
+            "read finds the archived half"
+        );
+        fs::remove_dir_all(&live).unwrap();
+
+        let refs_old = dir.join("journal/refs/archive/2026/2026-10/2026-10-03");
+        fs::create_dir_all(&refs_old).unwrap();
+        fs::write(refs_old.join("notes.md"), "a capture\n").unwrap();
+        assert_eq!(refs_day_dir(&p, d("2026-10-03")), refs_old);
         assert_eq!(
             index_target(&p, d("2026-10-03")),
             "journal/refs/archive/2026/2026-10/2026-10-03/_index"
         );
-        // A split day (a live folder made after the archive) is one day, the live one.
-        let live = dir.join("journal/refs/2026-10-03");
-        fs::create_dir_all(&live).unwrap();
-        let split: Vec<_> = days(&p)
-            .into_iter()
-            .filter(|(day, _)| *day == d("2026-10-03"))
-            .collect();
-        assert_eq!(split, vec![(d("2026-10-03"), live.clone())]);
-        fs::remove_dir_all(&live).unwrap();
+        assert_eq!(
+            list(&p, None, false, true).len(),
+            2,
+            "the report and the capture"
+        );
 
         assert_eq!(
-            archived_target(&p, "journal/refs/2026-10-03/notes").as_deref(),
-            Some("journal/refs/archive/2026/2026-10/2026-10-03/notes")
+            moved_targets(&p, "journal/refs/2026-10-03/notes"),
+            [
+                "journal/refs/archive/2026/2026-10/2026-10-03/notes",
+                "inbox/2026-10-03/notes",
+                "inbox/archive/2026-10/2026-10-03/notes",
+            ]
         );
-        assert_eq!(archived_target(&p, "outbox"), None);
-        assert_eq!(archived_target(&p, "journal/refs/notadate/x"), None);
+        assert!(moved_targets(&p, "outbox").is_empty());
+        assert!(moved_targets(&p, "journal/refs/notadate/x").is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The nightly archive: an inbox day before today moves under `archive/YYYY-MM/`, today's
+    /// stays, a refs day over a week old moves under `refs/archive/YYYY/YYYY-MM/` and a recent
+    /// one stays, a second run moves nothing, and a day that already has an archive folder
+    /// merges into it without overwriting.
+    #[test]
+    fn archive_past_moves_old_days_and_is_idempotent() {
+        let (dir, p, log) = vault("nightly");
+        let now = at("2026-11-26T01:00:00-08:00");
+        let today = d("2026-11-26");
+        for day in ["2026-11-24", "2026-11-25", "2026-11-26"] {
+            add(&p, &log, &new(day, "s", day), now).unwrap();
+        }
+        for day in ["2026-11-10", "2026-11-19", "2026-11-26"] {
+            let refs = dir.join("journal/refs").join(day);
+            fs::create_dir_all(&refs).unwrap();
+            fs::write(refs.join("briefing.md"), "---\ngenerated: true\n---\n").unwrap();
+        }
+        let dry = archive_past(&p, &log, today, true).unwrap();
+        assert_eq!(dry, Moved { inbox: 2, refs: 1 });
+        assert!(
+            dir.join("inbox/2026-11-24").is_dir(),
+            "a dry run moves nothing"
+        );
+
+        let moved = archive_past(&p, &log, today, false).unwrap();
+        assert_eq!(moved, Moved { inbox: 2, refs: 1 });
+        assert!(dir
+            .join("inbox/archive/2026-11/2026-11-24/2026-11-24.md")
+            .is_file());
+        assert!(dir.join("inbox/archive/2026-11/2026-11-25").is_dir());
+        assert!(dir.join("inbox/2026-11-26").is_dir());
+        assert!(!dir.join("inbox/2026-11-24").exists());
+        assert!(dir
+            .join("journal/refs/archive/2026/2026-11/2026-11-10/briefing.md")
+            .is_file());
+        assert!(dir.join("journal/refs/2026-11-19").is_dir());
+        assert_eq!(
+            archive_past(&p, &log, today, false).unwrap(),
+            Moved::default()
+        );
+        assert_eq!(
+            list(&p, None, false, false).len(),
+            3,
+            "the archive is still read"
+        );
+
+        // A day that already has an archive folder merges: a new file moves, an identical one
+        // goes, a different one stays where it is.
+        let live = dir.join("inbox/2026-11-24");
+        fs::create_dir_all(&live).unwrap();
+        let arch = dir.join("inbox/archive/2026-11/2026-11-24");
+        fs::write(
+            live.join("2026-11-24.md"),
+            fs::read(arch.join("2026-11-24.md")).unwrap(),
+        )
+        .unwrap();
+        fs::write(live.join("late.md"), "late\n").unwrap();
+        fs::write(arch.join("clash.md"), "one\n").unwrap();
+        fs::write(live.join("clash.md"), "two\n").unwrap();
+        archive_past(&p, &log, today, false).unwrap();
+        assert!(arch.join("late.md").is_file());
+        assert!(!live.join("2026-11-24.md").exists());
+        assert_eq!(fs::read_to_string(live.join("clash.md")).unwrap(), "two\n");
+        assert_eq!(fs::read_to_string(arch.join("clash.md")).unwrap(), "one\n");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The one-time move of reports out of refs: live and archived refs days both land in the
+    /// inbox (then past days archive), digests and captures stay, a day left with only its index
+    /// loses the folder, a day with a digest gets its index rebuilt without the report, an
+    /// identical twin is dropped, a different twin is a conflict left in place, and a second run
+    /// does nothing.
+    #[test]
+    fn migrate_moves_reports_out_of_refs_once() {
+        let (dir, p, log) = vault("migrate");
+        let today = d("2026-11-26");
+        let report = |title: &str| {
+            format!("---\nkind: report\ntitle: \"{title}\"\nread: \"\"\n---\n\n# {title}\n")
+        };
+        let live = dir.join("journal/refs/2026-11-25");
+        let old = dir.join("journal/refs/archive/2026/2026-10/2026-10-03");
+        let only = dir.join("journal/refs/2026-11-24");
+        for d in [&live, &old, &only] {
+            fs::create_dir_all(d).unwrap();
+        }
+        fs::write(live.join("a.md"), report("A")).unwrap();
+        fs::write(live.join("briefing.md"), "---\ngenerated: true\n---\n# B\n").unwrap();
+        fs::write(live.join("paste.md"), "pasted\n").unwrap();
+        fs::write(live.join("_index.md"), "stale index listing A\n").unwrap();
+        fs::write(old.join("b.md"), report("B")).unwrap();
+        fs::write(only.join("c.md"), report("C")).unwrap();
+        fs::write(only.join("_index.md"), "stale\n").unwrap();
+        fs::create_dir_all(dir.join("inbox/2026-11-25")).unwrap();
+        fs::write(dir.join("inbox/2026-11-25/a.md"), report("A")).unwrap();
+
+        let m = migrate(&p, &log, today).unwrap();
+        assert_eq!(
+            (m.moved, m.duplicates, m.conflicts.len()),
+            (2, 1, 0),
+            "{m:?}"
+        );
+        assert_eq!(m.archived, Moved { inbox: 3, refs: 0 });
+        for f in [
+            "inbox/archive/2026-11/2026-11-25/a.md",
+            "inbox/archive/2026-11/2026-11-24/c.md",
+            "inbox/archive/2026-10/2026-10-03/b.md",
+        ] {
+            assert!(dir.join(f).is_file(), "{f}");
+        }
+        assert!(live.join("paste.md").is_file() && live.join("briefing.md").is_file());
+        assert!(!live.join("a.md").exists());
+        let index = fs::read_to_string(live.join("_index.md")).unwrap();
+        assert!(
+            index.contains("[[journal/refs/2026-11-25/briefing|B]]"),
+            "{index}"
+        );
+        assert!(!index.contains("listing A"), "{index}");
+        assert!(!only.exists(), "a day left with only its index goes");
+        assert_eq!(list(&p, None, false, false).len(), 3);
+        assert_eq!(list(&p, None, false, true).len(), 5);
+
+        // A second run does nothing.
+        let again = migrate(&p, &log, today).unwrap();
+        assert_eq!(
+            (again.moved, again.duplicates, again.conflicts.len()),
+            (0, 0, 0)
+        );
+        assert_eq!(again.archived, Moved::default());
+
+        // A twin that differs stays in refs and is named.
+        fs::write(live.join("a.md"), report("A, revised")).unwrap();
+        let clash = migrate(&p, &log, today).unwrap();
+        assert_eq!(clash.conflicts, vec![live.join("a.md")]);
+        assert!(live.join("a.md").is_file());
         let _ = fs::remove_dir_all(&dir);
     }
 
