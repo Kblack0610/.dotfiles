@@ -2,7 +2,7 @@
 # kit-lock - move a site's web-kit pin, and list where every pinned site stands.
 #
 #   kit-lock bump <site kit.lock> [<commit>] [--dockerfile <path>]
-#       Pin the lock to <commit> (default: the kit repo's origin/main). Every file the lock lists
+#       Pin the lock to <commit> (default: the kit repo's origin/main, fetched first). Every file the lock lists
 #       gets its sha256 from `git show <commit>:<path>/<file>` in the kit repo; to add a kit file
 #       to a site, add its name with any hash and bump. The site's Dockerfile line
 #       `ADD --checksum=sha256:<h> <url>/<commit>/<path>/fetch-kit.py` gets the same commit and
@@ -28,6 +28,14 @@ kit() { git -C "$KIT_REPO" "$@"; }
 commit_of() { kit rev-parse -q --verify "$1^{commit}" || die "no commit '$1' in $KIT_REPO (fetch it?)"; }
 blob_sha() { kit cat-file blob "$1:$2" 2>/dev/null | sha256sum | cut -d' ' -f1; }
 has_blob() { kit cat-file -e "$1:$2" 2>/dev/null; }
+# tip_of <ref> -> its commit, fetched first when it is a remote ref, so a stale clone neither pins
+# the tip before last nor reads a newer pin as behind.
+tip_of() {
+  case $1 in
+    */*) kit fetch -q "${1%%/*}" "${1#*/}" 2>/dev/null || echo "kit-lock: could not fetch $1; using the local copy" >&2 ;;
+  esac
+  commit_of "$1"
+}
 
 lock_bump() {
   local lock="" want="" df="" df_given=0
@@ -41,7 +49,7 @@ lock_bump() {
   [ -n "$lock" ] || usage
   [ -f "$lock" ] || die "no lock at $lock"
   local sha path name h files='{}' changed=0
-  sha=$(commit_of "${want:-$KIT_REF}")
+  if [ -n "$want" ]; then sha=$(commit_of "$want"); else sha=$(tip_of "$KIT_REF"); fi
   path=$(jq -er .path "$lock") || die "$lock has no .path"
   while IFS= read -r name; do
     has_blob "$sha" "$path/$name" || die "$path/$name is not in the kit at ${sha:0:9}"
@@ -49,41 +57,46 @@ lock_bump() {
     [ "$h" = "$(jq -r --arg n "$name" '.files[$n]' "$lock")" ] || changed=$((changed + 1))
     files=$(jq -c --arg n "$name" --arg h "$h" '. + {($n): $h}' <<<"$files")
   done < <(jq -r '.files | keys_unsorted[]' "$lock")
-  jq --arg c "$sha" --argjson f "$files" '.commit = $c | .files = $f' "$lock" > "$lock.tmp"
-  mv "$lock.tmp" "$lock"
-  echo "$lock: ${sha:0:9}, $(jq '.files | length' "$lock") files, $changed changed"
-
+  # Every check runs before anything is written, so a refused bump leaves the lock and the
+  # Dockerfile on the same commit.
   if [ "$df_given" = 0 ]; then
     local top
     top=$(git -C "$(dirname "$lock")" rev-parse --show-toplevel 2>/dev/null) || top=$(dirname "$lock")
     df=$top/Dockerfile
   fi
-  local re='--checksum=sha256:[0-9a-f]{64}( +[^ ]*/)[0-9a-f]{40}(/[^ ]*fetch-kit\.py)'
+  local re='--checksum=sha256:[0-9a-f]{64}( +[^ ]*/)[0-9a-f]{40}(/[^ ]*fetch-kit\.py)' df_h=""
   if [ -f "$df" ] && grep -Eq -- "$re" "$df"; then
     has_blob "$sha" "$path/fetch-kit.py" || die "$path/fetch-kit.py is not in the kit at ${sha:0:9}"
-    h=$(blob_sha "$sha" "$path/fetch-kit.py")
-    sed -E -i "s#$re#--checksum=sha256:$h\\1$sha\\2#" "$df"
-    echo "$df: fetch-kit.py ${h:0:12} at ${sha:0:9}"
+    df_h=$(blob_sha "$sha" "$path/fetch-kit.py")
   elif [ "$df_given" = 1 ]; then
     die "$df has no 'ADD --checksum=sha256:<h> <url>/<commit>/$path/fetch-kit.py' line"
+  fi
+
+  jq --arg c "$sha" --argjson f "$files" '.commit = $c | .files = $f' "$lock" > "$lock.tmp"
+  mv "$lock.tmp" "$lock"
+  echo "$lock: ${sha:0:9}, $(jq '.files | length' "$lock") files, $changed changed"
+  if [ -n "$df_h" ]; then
+    sed -E -i "s#$re#--checksum=sha256:$df_h\\1$sha\\2#" "$df"
+    echo "$df: fetch-kit.py ${df_h:0:12} at ${sha:0:9}"
   else
-    echo "kit-lock: no fetch-kit.py ADD line in $df; only the lock moved" >&2
+    echo "$df: not changed, it has no fetch-kit.py ADD line"
   fi
 }
 
 sites_status() {
   [ -f "$KIT_SITES" ] || die "no sites file at $KIT_SITES (one '<repo dir> <lock path in it>' a line)"
   local tip rc=0 line dir lock site pin path behind contract
-  tip=$(commit_of "$KIT_REF")
+  tip=$(tip_of "$KIT_REF")
   printf '%-24s %-10s %-7s %s\n' site pinned behind contract
   while IFS= read -r line || [ -n "$line" ]; do
     line=${line%"${line##*[![:space:]]}"}
     case $line in ''|'#'*) continue ;; esac
     # The lock path is the last field, so a repo dir may hold a space.
+    case $line in *[[:space:]]*) ;; *) printf '%-24s %s\n' "$line" "sites line has no lock path"; rc=1; continue ;; esac
     dir=${line%[[:space:]]*} lock=${line##*[[:space:]]}
     dir=${dir%"${dir##*[![:space:]]}"} dir=${dir/#\~/$HOME}
     lock=$dir/$lock site=$(basename "$dir")
-    if ! pin=$(jq -er .commit "$lock" 2>/dev/null) || ! path=$(jq -er .path "$lock"); then
+    if ! pin=$(jq -er .commit "$lock" 2>/dev/null) || ! path=$(jq -er .path "$lock" 2>/dev/null); then
       printf '%-24s %s\n' "$site" "no readable lock at $lock"; rc=1; continue
     fi
     if ! kit cat-file -e "$pin^{commit}" 2>/dev/null; then

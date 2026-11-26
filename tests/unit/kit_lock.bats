@@ -27,7 +27,7 @@ setup() {
   mkdir -p "$SITE/web"
   git init -q -b main "$SITE"
   zero=$(printf '0%.0s' {1..64})
-  jq -n --arg z "$zero" '{repo: "o/kit", commit: ("0" * 40), path: ".local/src/web-kit", files: {"a.css": $z, "f.woff2": $z}}' > "$SITE/web/kit.lock"
+  jq -n --arg z "$zero" --arg c "$(printf '0%.0s' {1..40})" '{repo: "o/kit", commit: $c, path: ".local/src/web-kit", files: {"a.css": $z, "f.woff2": $z}}' > "$SITE/web/kit.lock"
   printf 'FROM scratch\nADD --checksum=sha256:%s https://raw.githubusercontent.com/o/kit/%s/.local/src/web-kit/fetch-kit.py /fetch-kit.py\n' \
     "$zero" "$(printf '0%.0s' {1..40})" > "$SITE/Dockerfile"
 }
@@ -69,6 +69,15 @@ serve() {
   cmp "$SANDBOX/before" "$SITE/web/kit.lock"
 }
 
+@test "bump with --dockerfile that has no fetch-kit.py ADD line refuses before it moves the lock" {
+  printf 'FROM scratch\n' > "$SANDBOX/Other.Dockerfile"
+  cp "$SITE/web/kit.lock" "$SANDBOX/before"
+  run "$SUBJECT" bump "$SITE/web/kit.lock" "$PIN1" --dockerfile "$SANDBOX/Other.Dockerfile"
+  assert_failure 2
+  assert_output --partial 'has no '
+  cmp "$SANDBOX/before" "$SITE/web/kit.lock"
+}
+
 @test "status flags the site pinned before a README change and exits 1; a site at the tip reads same" {
   "$SUBJECT" bump "$SITE/web/kit.lock" "$PIN1" >/dev/null
   echo 'b { }' >> "$KIT/a.css" && kit_commit two
@@ -107,4 +116,36 @@ serve() {
   assert_failure 1
   assert_output --partial 'kit file f.woff2 does not match the lock'
   [ ! -e "$SANDBOX/out2" ]
+}
+
+@test "fetch-kit.py retries a 503, a 429 and a reset mid-body, and fails a 404 at once" {
+  run python3 -I - "$FETCH" <<'PY'
+import hashlib, importlib.util, sys, urllib.error
+spec = importlib.util.spec_from_file_location("fetch_kit", sys.argv[1])
+fk = importlib.util.module_from_spec(spec); spec.loader.exec_module(fk)
+body = b"body"
+lock = {"repo": "r", "commit": "c", "path": "p", "files": {"a.css": hashlib.sha256(body).hexdigest()}}
+import tempfile, pathlib
+dest = pathlib.Path(tempfile.mkdtemp())
+fails = [urllib.error.HTTPError("u", 503, "max_conn", {}, None), urllib.error.HTTPError("u", 429, "slow", {}, None), ConnectionResetError()]
+calls, waits = [], []
+def flaky(u):
+    calls.append(u)
+    if fails:
+        raise fails.pop(0)
+    return body
+fk.fetch(lock, dest, get=flaky, sleep=waits.append)
+assert (len(calls), len(waits)) == (4, 3), (calls, waits)
+assert (dest / "a.css").read_bytes() == body
+waits.clear()
+def gone(u):
+    raise urllib.error.HTTPError(u, 404, "nope", {}, None)
+try:
+    fk.fetch(lock, dest, get=gone, sleep=waits.append)
+except urllib.error.HTTPError:
+    assert waits == [], waits
+    print("ok")
+PY
+  assert_success
+  assert_output ok
 }

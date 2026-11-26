@@ -11,6 +11,7 @@ or a file:// tree in a test.
 """
 import argparse
 import hashlib
+import http.client
 import json
 import sys
 import time
@@ -21,6 +22,7 @@ from pathlib import Path
 URL = "https://raw.githubusercontent.com/{repo}/{commit}/{path}/{name}"
 TRIES = 4
 BACKOFF_S = 5
+RETRY_CODES = {408, 429}  # with every 5xx: a timeout or a rate limit clears on a later try
 
 
 def sha256(data: bytes) -> str:
@@ -32,20 +34,23 @@ def fetch(lock: dict, dest: Path, url: str = URL, get=None, sleep=time.sleep) ->
 
     def get_retried(u):
         # raw.githubusercontent.com answers 503 "max_conn reached" under load; that failed trader's build once.
-        # A 4xx (a wrong commit or name) will not change on a retry, so it fails at once.
+        # Any other 4xx (a wrong commit or name) will not change on a retry, so it fails at once. OSError
+        # covers URLError, a timeout and a reset mid-body; HTTPException an IncompleteRead or a dropped link.
         for attempt in range(1, TRIES + 1):
             try:
                 return raw(u)
             except urllib.error.HTTPError as e:
-                if e.code < 500 or attempt == TRIES:
+                if (e.code < 500 and e.code not in RETRY_CODES) or attempt == TRIES:
                     raise
-            except (urllib.error.URLError, TimeoutError):
+            except (OSError, http.client.HTTPException):
                 if attempt == TRIES:
                     raise
             sleep(BACKOFF_S * attempt)
 
     got = {}
     for name, want in lock["files"].items():
+        if name != Path(name).name or name in (".", ".."):
+            raise SystemExit(f"kit file {name!r} is not a bare file name; the kit is one flat directory")
         data = get_retried(url.format(name=name, **lock))
         if sha256(data) != want:
             raise SystemExit(f"kit file {name} does not match the lock (got {sha256(data)}, want {want})")
