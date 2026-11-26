@@ -225,8 +225,9 @@ log_triage_setup() {
   chmod +x "$SANDBOX/bin/items-stub" "$SANDBOX/bin/notify-stub"
   printf '#!/usr/bin/env bash\necho "$*" >> %q\n' "$PLOG" > "$SANDBOX/bin/promote-stub"
   # the ask stub logs each call; post prints the id agent-ask would, show the status ASKSTATUS names
+  # and, when set, the closed_at ASKCLOSED and closed_reason ASKWHY name
   ASKLOG="$SANDBOX/ask.log"; export TRIAGE_ASK_CMD=ask-stub
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> %q\ncase $1 in post) echo Ask123 ;; show) echo "status: ${ASKSTATUS:-pending}" ;; esac\n' "$ASKLOG" > "$SANDBOX/bin/ask-stub"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> %q\ncase $1 in post) echo Ask123 ;; show) echo "status: ${ASKSTATUS:-pending}"; [ -z "${ASKCLOSED:-}" ] || echo "closed_at: $ASKCLOSED"; [ -z "${ASKWHY:-}" ] || echo "closed_reason: $ASKWHY" ;; esac\n' "$ASKLOG" > "$SANDBOX/bin/ask-stub"
   chmod +x "$SANDBOX/bin/promote-stub" "$SANDBOX/bin/ask-stub"
   # one error in two runs (the pid, path and stamp differ), one error in a single run, one run
   # outside the window, and a range the log rotation took away
