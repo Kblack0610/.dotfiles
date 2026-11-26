@@ -3879,3 +3879,46 @@ SH
   "$REPO_ROOT/.local/bin/fleet-sessions" tick
   [ "$(wc -l < "$FLEET_SHEPHERD_DIR/watch.log")" -eq 1 ]
 }
+
+# The state document counts a session as live until a tick drops it, so the wake an item's close writes can reach
+# a kick that still sees it (ar-5046). seed_live <n>: the previous tick's document, n sessions live in it.
+seed_live() {
+  mkdir -p "$XDG_STATE_HOME/fleet"
+  jq -cn --argjson n "$1" '{generated_epoch: 1, vocab: {finished: ["DONE", "LANDED"]},
+    sessions: [range($n) | {target: "old/s:\(.)", bucket: "WORKING"}]}' > "$XDG_STATE_HOME/fleet/state.json"
+}
+
+@test "tick wakes a fleet-dispatch kick when the live count drops since the last tick, and only then (ar-5046)" {
+  export FLEET_DISPATCH_DIR="$SANDBOX/dispatch"
+  local wake="$FLEET_DISPATCH_DIR/.wake"
+  landed_fixture   # one LANDED session: finished, so the document counts none live
+
+  # no document before: nothing to compare, nothing to wake
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [ ! -e "$wake" ] || fail "the first tick woke a kick: $(cat "$wake")"
+
+  # the same count as the last tick: no wake
+  seed_live 0
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [ ! -e "$wake" ] || fail "an unchanged count woke a kick: $(cat "$wake")"
+
+  # two live before, none now: the wake names the drop, and the document it points at already holds the new count
+  seed_live 2
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [ -s "$wake" ] || fail "a drop from 2 to 0 woke no kick"
+  grep -qF 'fleet-sessions tick: live sessions 2 -> 0' "$wake"
+  [ "$(fleet_live_count "$XDG_STATE_HOME/fleet/state.json")" = 0 ]
+
+  # NEGATIVE CONTROL: a rise (0 live before, one STALLED session now) is no event
+  rm -f "$wake"
+  clean_fixture
+  queue_item running lab:s1
+  seed_live 0
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [ "$(fleet_live_count "$XDG_STATE_HOME/fleet/state.json")" = 1 ]
+  [ ! -e "$wake" ] || fail "a rise in the live count woke a kick: $(cat "$wake")"
+}

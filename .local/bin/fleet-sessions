@@ -23,7 +23,8 @@
 #   fleet-sessions tick               --write after a fetch, plus the stage changes since the
 #                                     last tick appended to watch.log (fleet-state.service, every
 #                                     minute and on each ask change); the hub Sessions tab. Only
-#                                     the fleet lease holder ticks; elsewhere it skips, exit 0
+#                                     the fleet lease holder ticks; elsewhere it skips, exit 0.
+#                                     A drop in the live count wakes a fleet-dispatch kick
 #   fleet-sessions explain <who>      one session from the state document: its task, plan, PRs,
 #                                     where its time went, and what it is doing
 #   fleet-sessions close [--json]     the close analysis from the state document: each session's
@@ -59,6 +60,10 @@ set -uo pipefail
 EDIT_TOOLS_RE="$(edit_tools_re)"
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/plan-phases.sh"
+# shellcheck source=/dev/null
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-live.sh"   # fleet_live_count: tick wakes a kick when it drops
+# shellcheck source=/dev/null
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/dispatch-wake.sh"   # dispatch_wake
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/main-state.sh"
 # shellcheck source=/dev/null
@@ -3196,7 +3201,16 @@ tick() {
   ) 9>"$LEDGER/watch.lock" || rc=$?
   [ "$rc" != 3 ] || return 0
   release_left "$rows"
+  # The state document counts a session as live until a tick drops it, so a wake written at its item's close
+  # (agent-queue) can reach a kick that still sees it live and starts nothing. The tick that drops it is the
+  # event: wake a kick once the new document is written, so the kick reads the lower count (ar-5046).
+  local was now_live
+  was="$(fleet_live_count "$STATE_FILE")"
   write_state "$t0" "$rows" > /dev/null
+  now_live="$(fleet_live_count "$STATE_FILE")"
+  if [[ "$was" =~ ^[0-9]+$ && "$now_live" =~ ^[0-9]+$ ]] && [ "$now_live" -lt "$was" ]; then
+    dispatch_wake "fleet-sessions tick: live sessions $was -> $now_live"
+  fi
 }
 
 # explain <who>: one session as the last pass saw it, from the state document. It runs no pass,
