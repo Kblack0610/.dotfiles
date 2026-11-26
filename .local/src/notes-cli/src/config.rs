@@ -521,6 +521,9 @@ fn default_ideas() -> String {
     "lab/ideas/_IDEAS.md".to_string()
 }
 
+/// The reports inbox, under every profile's root.
+pub const INBOX_DIR: &str = "inbox";
+
 fn default_captures() -> String {
     "captures".to_string()
 }
@@ -641,6 +644,11 @@ pub struct Profile {
     pub outbox: PathBuf,
     /// Dated captures (`notes inbox add`, the outbox's `#ask` answers): `<root>/captures`.
     pub captures: PathBuf,
+    /// The reports agents file for the human (`notes report`): `<root>/inbox`, reports only.
+    /// Fixed, not a config key: the old `inbox` key named the capture folder.
+    pub inbox: PathBuf,
+    /// Root-relative inbox path, for `[[wikilinks]]`.
+    pub inbox_rel: String,
     /// Dirs scanned by `notes tags` (existing dirs only; missing ones are dropped).
     pub tag_scan: Vec<PathBuf>,
     /// Dirs searched by `notes find` (existing dirs only).
@@ -976,6 +984,8 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
         ideas: vault.join(&raw.ideas),
         outbox: vault.join(&raw.outbox),
         captures: join(&rp.captures),
+        inbox: root.join(INBOX_DIR),
+        inbox_rel: INBOX_DIR.to_string(),
         tag_scan,
         search_dirs,
         state_dir,
@@ -1228,6 +1238,8 @@ pub(crate) fn test_profile(root: &str) -> Profile {
         ideas: PathBuf::from(root).join("lab/ideas/_IDEAS.md"),
         outbox: PathBuf::from(root).join("outbox.md"),
         captures: r.join("captures"),
+        inbox: r.join(INBOX_DIR),
+        inbox_rel: INBOX_DIR.into(),
         tag_scan: Vec::new(),
         search_dirs: Vec::new(),
         state_dir: r.join(".state"),
@@ -1306,6 +1318,7 @@ pub fn print(p: &Profile) {
     println!("index       {}", p.index.display());
     println!("knowledge   {}", p.knowledge.display());
     println!("captures    {}", p.captures.display());
+    println!("inbox       {}", p.inbox.display());
     println!("outbox      {}", p.outbox.display());
     println!("summaries   {}", p.summaries.display());
     println!(
