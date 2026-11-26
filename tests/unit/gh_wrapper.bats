@@ -455,3 +455,34 @@ calls() { grep -vc '^[^|]*|api rate_limit' "$BATS_TEST_TMPDIR/real.log" || true;
   FAIL5=99 run "$WRAP" api repos/acme/x/pulls
   assert_equal "$(ls "$TMPDIR" | wc -l)" 0
 }
+
+# gh trusts any run-log zip in XDG_CACHE_HOME/gh and writes it non-atomically, so one interrupted
+# write failed that run for every reader (ar-3133, ar-3387). The stub is gh as it behaves.
+@test "a run log read gets a private gh cache, removed at exit; a poisoned shared entry is never read" {
+  cat > "$STUB/cache-gh" <<'SH'
+#!/usr/bin/env bash
+case "$*" in 'api rate_limit'*) exit 0 ;; esac
+echo "${XDG_CACHE_HOME:-unset}" >> "$BATS_TEST_TMPDIR/cache-dirs"
+case "$*" in *--log*) ;; *) exit 0 ;; esac
+[ -e "$XDG_CACHE_HOME/gh/run-log-7-1.zip" ] && { echo "failed to get run log: opening cache entry: zip: not a valid zip file" >&2; exit 1; }
+mkdir -p "$XDG_CACHE_HOME/gh" && echo zip > "$XDG_CACHE_HOME/gh/run-log-7-1.zip"
+echo "the log"
+SH
+  chmod +x "$STUB/cache-gh"
+  export GH_REAL="$STUB/cache-gh" TMPDIR="$BATS_TEST_TMPDIR/tmp" XDG_CACHE_HOME="$BATS_TEST_TMPDIR/xdg"
+  mkdir -p "$TMPDIR" "$XDG_CACHE_HOME/gh"
+  : > "$XDG_CACHE_HOME/gh/run-log-7-1.zip"
+  local flag
+  for flag in --log-failed --log; do
+    run "$WRAP" run view 7 -R other/x "$flag"
+    assert_success
+    assert_output "the log"
+  done
+  run grep -c "^$XDG_CACHE_HOME\$" "$BATS_TEST_TMPDIR/cache-dirs"
+  assert_output 0
+  assert_equal "$(ls "$TMPDIR" | wc -l)" 0
+  # Negative control: any other read keeps the caller's cache.
+  run "$WRAP" run view 7 -R other/x --json status
+  assert_success
+  assert_equal "$(tail -n 1 "$BATS_TEST_TMPDIR/cache-dirs")" "$XDG_CACHE_HOME"
+}
