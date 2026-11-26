@@ -149,9 +149,10 @@ esac
 
 # The skill is the one this runner's conf names, so a rename is one edit in the conf.
 skill="$(agentctl skill "$NAME" 2>/dev/null)" && [ -n "$skill" ] || fail "no SKILL= in the $NAME conf (agentctl skill $NAME)"
-# What each area came to: filed (a new pass), open (a pass still waiting or working) or bad (a
-# starved pass or a failed add). A bad area does not stop the others, and the night reads FAILED.
-filed=() open=() bad=()
+# What each area came to: filed (a new pass), open (a pass still waiting or working), held (the
+# board's daily cap refused its row, so the next night files it again) or bad (a starved pass or a
+# failed add). A bad area does not stop the others, and the night reads FAILED.
+filed=() open=() held=() bad=()
 for a in $AREAS; do
     [ -n "${said[$a]:-}" ] || continue
     slug="$SLUG-$a"
@@ -196,7 +197,7 @@ for a in $AREAS; do
     # pulled run (AGENT_QUEUE_PULL), queued under $slug. High plus `cleanup` is where the queue orders
     # the fleet's own housekeeping (agent-queue ORDER); a row the add files keeps the priority, not the
     # tag, and an open twin row it lands on takes both, with this brief (agent-queue file_story).
-    out="$(agent-queue add --project dotfiles --from auto:docs-cleanup --slug "$slug" --repeat --priority high --tags cleanup "$task")"
+    out="$(agent-queue add --project dotfiles --from auto:docs-cleanup --slug "$slug" --repeat --priority high --tags cleanup "$task" 2>&1)"
     rc=$?
     printf '%s\n' "$out" >&2
     case "$rc" in
@@ -206,6 +207,11 @@ for a in $AREAS; do
            [ -n "${rid:-}" ] || { bad+=("the board took pass $slug but printed no held line"); continue; }
            keep+=("$rboard"$'\t'"$rid"$'\t'"$(date +%s)"$'\t'"$a")
            filed+=("filed $slug as board row $rid on $rboard") ;;
+        # Exit 6 is the board's intake gate or its daily cap (QUEUE.md "Admission"); only the cap,
+        # whose refusal names intake_daily_cap (notes-cli gate.rs), clears overnight, so only it is
+        # held and filed again next night, as the rollup does (#3686). A gate refusal stays bad.
+        6) if grep -q intake_daily_cap <<<"$out"; then held+=("$slug held by the board's daily cap, filed again next night")
+           else bad+=("the board's intake gate refused pass $slug"); fi ;;
         *) bad+=("could not file pass $slug") ;;
     esac
 done
@@ -217,8 +223,19 @@ if [ "$DRY" != 1 ]; then
 fi
 # join <part...> -> the parts as one "; "-separated line, for the outcome.
 join() { local s; s="$(printf '%s; ' "$@")"; printf '%s' "${s%; }"; }
-# A FAILED night still names the passes it filed, which the verdict would otherwise hide.
-[ "${#bad[@]}" = 0 ] || fail "$(join "${bad[@]}")${filed[0]:+; also $(join "${filed[@]}")} ($summary)"
+# HELDF holds the epoch of the first night in a row the cap held a pass: a cap full every night
+# for STARVED_DAYS is a starved pass too, so the drift does not hide behind NOOP nights.
+HELDF="$INBOX/held"
+if [ "${#held[@]}" -gt 0 ] && [ "$DRY" != 1 ]; then
+    [ -s "$HELDF" ] || date +%s > "$HELDF"
+    held_s="$(cat "$HELDF")"
+    [ $(( $(date +%s) - held_s )) -lt $(( STARVED_DAYS * 86400 )) ] ||
+        bad+=("passes held by the board's daily cap every night since $(date -d "@$held_s" +%F)")
+elif [ "$DRY" != 1 ]; then rm -f "$HELDF"; fi
+# A FAILED night still names the passes it filed or held, which the verdict would otherwise hide.
+[ "${#bad[@]}" = 0 ] || fail "$(join "${bad[@]}")${filed[0]:+; also $(join "${filed[@]}")}${held[0]:+; also $(join "${held[@]}")} ($summary)"
 [ "$DRY" != 1 ] || exit 0
-if [ "${#filed[@]}" -gt 0 ]; then report WORKED "$(join "${filed[@]}") ($summary)"
+[ "${#held[@]}" = 0 ] || printf 'docs-cleanup: %s\n' "${held[@]}"
+if [ "${#filed[@]}" -gt 0 ]; then report WORKED "$(join "${filed[@]}" "${held[@]}") ($summary)"
+elif [ "${#held[@]}" -gt 0 ]; then report NOOP "$(join "${held[@]}" "${open[@]}") ($summary)"
 else report NOOP "passes still open: $(join "${open[@]}") ($summary)"; fi

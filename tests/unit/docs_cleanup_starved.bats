@@ -12,7 +12,7 @@ setup() {
   export PATH="$BIN:$PATH" # the runner unit declares ~/.local/bin on PATH; the script no longer does
   mkdir -p "$BIN" "$HOME/.local/lib" "$HOME/.agent/lessons"
   cp "$BATS_TEST_DIRNAME/../../.local/bin/agentctl-docs-cleanup" "$BATS_TEST_DIRNAME/../../.local/bin/lessons" "$BATS_TEST_DIRNAME/../../.local/bin/docs-renamed-paths" "$BIN/"
-  printf 'proof_outcome() { :; }\n' > "$HOME/.local/lib/agent-proof.sh"
+  printf 'proof_outcome() { printf "%%s\\n" "$2" >> "$BATS_TEST_TMPDIR/verdicts"; }\n' > "$HOME/.local/lib/agent-proof.sh" # each night's verdict, one a line
   printf '#!/usr/bin/env bash\necho docs-cleanup\n' > "$BIN/agentctl"
   cat > "$BIN/agent-queue" <<'STUB'
 #!/usr/bin/env bash
@@ -20,12 +20,16 @@ case "$1" in
   show) if [ "$2" = docs-cleanup-pass ]; then echo "${LEGACY_JSON:-{\}}"; else echo "${ITEM_JSON:-{\}}"; fi ;;
   add) printf '%s\n' "$@" >> "$ADD_LOG"
        printf '%s\t%s\n' "$7" "${13}" >> "$ADD_LOG.tsv" # its slug and task
-       if [ "${ADD_RC:-0}" = 5 ]; then
+       rc="${ADD_RC:-0}"; case "$7" in *-skills) rc="${ADD_RC_SKILLS:-$rc}" ;; esac # ADD_RC_SKILLS: the skills area's own code
+       if [ "$rc" = 6 ]; then # notes' refusal: the daily cap unless GATE_REFUSAL says the gate
+         echo "agent-queue: no story row filed on agent-runtime: ${GATE_REFUSAL:-agent-runtime has taken its 10 new agent rows for today (10 so far, intake_daily_cap in the notes config)}" >&2
+       fi
+       if [ "$rc" = 5 ]; then
          n=$(cat "$ROW_SEQ" 2>/dev/null || echo 9); echo $((n + 1)) > "$ROW_SEQ"
          echo "agent-queue: only the board fills the queue: an agent or a script files a board row and dispatch pulls it (QUEUE.md \"Admission\")" >&2
          echo "held $7 -> agent-runtime:${ROW_ID:-ar-$n}"
        fi
-       exit "${ADD_RC:-0}" ;;
+       exit "$rc" ;;
 esac
 STUB
   cat > "$BIN/notes" <<'STUB'
@@ -182,4 +186,53 @@ STUB
   assert_success
   run cut -f1 "$ADD_LOG.tsv"
   assert_output "$(printf 'docs-cleanup-pass-skills\ndocs-cleanup-pass-docs')"
+}
+
+@test "a pass the board's daily cap refuses (exit 6) is a NOOP night that files again next night, not FAILED" {
+  ADD_RC=6 run "$BIN/agentctl-docs-cleanup"
+  assert_success
+  assert_output --partial "docs-cleanup-pass-docs held by the board's daily cap, filed again next night"
+  run tail -n 1 "$BATS_TEST_TMPDIR/verdicts"
+  assert_output NOOP
+  [ ! -s "$AGENTCTL_INBOX/row" ] || fail "a held pass kept a row line"
+  # the next night the cap has room: the same area files its row
+  ADD_RC=5 run "$BIN/agentctl-docs-cleanup"
+  assert_success
+  run tail -n 1 "$BATS_TEST_TMPDIR/verdicts"
+  assert_output WORKED
+}
+
+@test "negative control: any other refusal of the add still fails the night" {
+  ADD_RC=1 run "$BIN/agentctl-docs-cleanup"
+  assert_failure 1
+  assert_output --partial 'could not file pass docs-cleanup-pass-docs'
+  run tail -n 1 "$BATS_TEST_TMPDIR/verdicts"
+  assert_output FAILED
+}
+
+@test "a cap that holds the pass every night past the limit is a starved night, FAILED" {
+  mkdir -p "$AGENTCTL_INBOX"; date -d '3 days ago' +%s > "$AGENTCTL_INBOX/held"
+  ADD_RC=6 run "$BIN/agentctl-docs-cleanup"
+  assert_failure 1
+  assert_output --partial "held by the board's daily cap every night since"
+  # a night the pass files clears the streak
+  ADD_RC=5 run "$BIN/agentctl-docs-cleanup"
+  assert_success
+  [ ! -e "$AGENTCTL_INBOX/held" ] || fail "the held streak outlived a filed night"
+}
+
+@test "an intake gate refusal (exit 6 that is not the cap) still fails the night" {
+  GATE_REFUSAL='the agent-runtime board is gated' ADD_RC=6 run "$BIN/agentctl-docs-cleanup"
+  assert_failure 1
+  assert_output --partial "the board's intake gate refused pass docs-cleanup-pass-docs"
+}
+
+@test "one area filed and one held by the cap is a WORKED night naming both" {
+  SKILLS_JSON='{"findings":[{"type":"NOCMD"}]}' ADD_RC=5 ADD_RC_SKILLS=6 run "$BIN/agentctl-docs-cleanup"
+  assert_success
+  assert_output --partial "docs-cleanup-pass-skills held by the board's daily cap"
+  run tail -n 1 "$BATS_TEST_TMPDIR/verdicts"
+  assert_output WORKED
+  run cut -f4 "$AGENTCTL_INBOX/row"
+  assert_output docs
 }
