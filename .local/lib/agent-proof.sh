@@ -45,6 +45,10 @@
 #   STALLED  exit 0 but no work and no NOOP marker, or a plan instead of work
 AGENT_VERDICTS='WORKED NOOP BLOCKED FAILED STALLED'
 
+# ask_root and ask_open: proof_blocked reads the ask store through them.
+# shellcheck source=ask-store.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/ask-store.sh"
+
 # Phrases that mean the model produced a PLAN instead of doing the work. This is
 # the signature of the plan-mode regression, and it is definitive: a headless run
 # with no human present has nobody to approve anything.
@@ -120,11 +124,12 @@ proof_changed() {
 # Matched on the ask's `agent:` field, which agent-ask fills from $AGENTCTL_NAME, so a
 # concurrent session's ask in the same window cannot make this runner read BLOCKED.
 proof_blocked() {
-  local name="${AGENTCTL_NAME:-}" root="${AGENT_ASK_ROOT:-$HOME/.agent/asks}" f
+  local name="${AGENTCTL_NAME:-}" root f
+  root="$(ask_root)"
   [ -n "$name" ] && [ -n "$_AGENT_PROOF_T0" ] && [ -d "$root" ] || return 1
   while IFS= read -r f; do
     [ "$(stat -c %Y "$f" 2>/dev/null || echo 0)" -ge "$_AGENT_PROOF_T0" ] || continue
-    grep -qx "agent: $name" "$f" && grep -qx 'status: pending' "$f" && return 0
+    grep -qx "agent: $name" "$f" && ask_open "$f" && return 0
   done < <(find "$root" -mindepth 2 -maxdepth 2 -name '*.md' 2>/dev/null)
   return 1
 }

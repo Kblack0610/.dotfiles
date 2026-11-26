@@ -11,7 +11,7 @@ metadata:
 
 # Usage cleanup
 
-One pass that spends fewer tokens on the same work: a ranked list of where the tokens go, and one PR per lever that removes the waste. The pass itself (finding shape, in flight, baseline, one lever per PR, re-measure, report, proposals, next pass) is `~/.local/src/docs/analysis-streams.md`; read it first. This file holds what is specific to tokens.
+One pass that spends fewer tokens on the same work: a ranked list of where the tokens go, and one PR per lever that removes the waste. The pass procedure is `~/.local/src/docs/analysis-streams.md`, read first; what follows is specific to tokens.
 
 The numbers come from `agent-usage burn` (`.local/bin/agent-usage`, `.local/lib/agent-usage-burn.py`). It owns cost, PRs and the session splits; per-response tokens and tool output are `claude-recall tool-output`'s, and what each call costs in responses is `claude-recall tool-calls`'s. The nightly `agent-usage tokens snapshot` keeps both per day in `~/.agent/token-usage/`, so read the last 7 for a trend before measuring anew.
 

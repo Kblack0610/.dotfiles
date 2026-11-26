@@ -28,7 +28,13 @@ name: shell tests
 # it runs, because a pool pod loads its image over a link shared with the whole pool: the one
 # 943 MB image ran every job out of its timeout in the cache restore on 2026-11-25 (ar-5632). A pool
 # runner pulls it from the LAN registry instead (the CI_REGISTRY variable and CI_REGISTRY_PASSWORD secret; the action
-# says when). No step installs a tool on the runner (~/.local/src/docs/ci.md, Runners; tests/unit/ci_gate.bats).
+# says when), and a pull that fails fails the step within about 6 minutes: the Actions cache and a build are for a
+# runner with no registry only, since either one behind a failed pull ran the job into its guard (ar-5959). No step installs a tool on the runner (~/.local/src/docs/ci.md, Runners; tests/unit/ci_gate.bats).
+#   image  first, before every job that loads the image: makes sure the registry holds all three
+#          stages for the current tag, building and pushing them once when it does not. Without it
+#          every pod missed the registry at once when the tag changed (2026-11-25: 34 pods, 20
+#          pushes, the registry host's link full) and the notes job cold-built the rust stage
+#          under its 10-minute guard, so the stage was never pushed (ar-5740).
 #   gate   the one required check: red unless every gating job ran and passed.
 #   report the fast and ui tiers' JUnit, drawn on the run's Summary page: a row per file
 #          and every failed test, so a red reads without opening the logs.
@@ -49,6 +55,13 @@ concurrency:
   group: shell-tests-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
+# The shell a run step with no `shell:` gets on the pool's own runner. A container job (the
+# &job-pod jobs) falls back to sh, where dash read `files=$(<file)` as empty and every fast shard
+# ran no test and went green (ar-6186). tests/unit/ci_gate.bats checks it.
+defaults:
+  run:
+    shell: bash -e {0}
+
 # Where every job runs: `&pool` on the first job, `*pool` on the rest. The repo variable
 # LINUX_RUNNER_LIGHT is the switch (set: the home pool; deleted: GitHub-hosted, free on this public
 # repo; the shell-test-harness skill, section 5). A fork's pull request always runs hosted, so a stranger's code
@@ -68,11 +81,29 @@ jobs:
   # shard or two on a runner that runs every file about 1.7x slower. In the 24 PR runs after
   # #2920 those were the runners naming an Azure region (westus, eastus...): their shards took up
   # to 373 s against at most 276 s on "Region: us" ones, with an even predicted split of 542 s of
-  # bats time per unit shard, and the gate read p90 6.3 min (ar-3036). Twelve unit shards put
+  # bats time per unit shard, and the gate read p90 6.3 min (ar-3036). Twelve unit shards then put
   # about 360 s of bats time in each, and four integ shards about 310 s, about 250 s of wall on
   # a slow runner. The fixed cost per shard (job start to the bats step: checkout, bats, cached
   # debs) was 8-9 s in run 44887277102, before the shards ran in the test image, which adds its
   # load from the Actions cache to that.
+  # Since #3519 a shard runs bats with the pod's one core (cpus.sh) where it once took the host's 32,
+  # and under load its wall is its predicted seconds plus the image pull (21-191 s) and the waits on
+  # the node's disk below. In run 45622726820 (20 unit shards) the five shards cut at the 10 minute guard
+  # each held one file of 266 to 430 s, and the table was right: unit 2 ran 54 of its 63 tests in
+  # 319 s against 371 s predicted. No shard count splits a file, so the nine files over 260 s were
+  # split in half (<file>_part2.bats, ar-5740), none now weighs over 220 s, and 24 unit and 6 integ
+  # shards put about 220 and 210 s in each. The guard stays 10; a larger table needs more shards.
+  # The first container start is not an unpack: the pull has ended, and `docker run` then waits
+  # on the node's disk. In run 45647628975 the 21 shards on ms-a2 all started bats at 15:57:30.3
+  # and the 8 on deskslim-2 at 16:04:59.4, each node's moment its dirty pages (4 and 9 GB, the
+  # NVMe 100% busy) had drained; kubelet's own container starts on deskslim-2 waited to 16:05:05.
+  # So a fast pod keeps its writes small: a text-only checkout, and tests/docker.sh puts the
+  # container's /tmp, where every bats sandbox lives, in memory (ar-5740). A job that runs in
+  # the test image as its job container gets the same from home-config's arc-repo-dotfiles-pods-hook
+  # template (ar-6016). The container's exit waits on the same disk (up to 6 minutes after the
+  # tests passed, run 45684648964), so in CI no step waits on it: docker.sh leaves it to the pod's deletion. Every stall
+  # over 60 s in 83 fast jobs fell on deskslim-1/2 or msi-b550, none on ms-a2 or tuf-b550: the
+  # lever left is every pod's writes to a node, one image copy a node (ar-6016, ar-6047).
   # On 2026-11-23 the account sat at its hosted parallel-job cap (36 running, 105 queued), so a
   # shard costs queue time wherever it runs: the pool has fewer slots than hosted, and queue time
   # rising is the sign to stop adding them. unit/shard.bats checks that --matrix lists every shard
@@ -94,7 +125,7 @@ jobs:
       contents: read
       actions: read
     env:
-      FAST_SHARDS: unit=12 integ=4
+      FAST_SHARDS: unit=24 integ=6
       SHARD_SECONDS: 180
     outputs:
       table: ${{ steps.junit.outputs.table }}
@@ -106,9 +137,9 @@ jobs:
       # the binaries (fonts, wallpapers, most of the tree's bytes) stay out of the fetch: on ARC
       # pods, with a run's jobs fetching at once, the full fetch ran past this job's timeout
       # (ar-5643). The weights step warns when the objects pass 20 MB, the sign that a new binary
-      # type needs a line here.
+      # type needs a line here. The fast job checks out the same way (&text-only).
       - uses: actions/checkout@v4
-        with:
+        with: &text-only
           fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
           filter: blob:none
           sparse-checkout-cone-mode: false
@@ -157,10 +188,110 @@ jobs:
           echo "matrix=$matrix" >>"$GITHUB_OUTPUT"
           { echo 'picked<<EOF_PICKED'; cat "$RUNNER_TEMP/picked"; echo EOF_PICKED; } >>"$GITHUB_OUTPUT"
 
+  # One pod per run holds the registry's copy of the image current, so the jobs behind it only pull.
+  # On a tag the registry has (every run but the first after a Dockerfile change or a new ISO week)
+  # it is three manifest reads, about 20 s with the pod's start. Its timeout is the cold build of
+  # all three stages in one pod, the one place a pool pod builds; it is a hang guard like the rest.
+  # A hosted runner or a fork has no registry, so there it only checks out.
+  # job-image is the lean stage's registry ref when the job-pod pool is on (the repo variable
+  # LINUX_RUNNER_JOB_POD) and the registry holds the image, else empty: the jobs on &job-pod run in it.
+  # job-pod is that variable when job-image is set, else empty, so &job-pod reads its pool and its
+  # image from this one job and a --failed rerun, which reuses these outputs, cannot put the image on
+  # a &pool runner.
+  image:
+    name: test image in the registry
+    runs-on: *pool
+    timeout-minutes: 25
+    outputs:
+      job-image: ${{ vars.LINUX_RUNNER_JOB_POD != '' && steps.lean.outputs.ref || '' }}
+      job-pod: ${{ vars.LINUX_RUNNER_JOB_POD != '' && steps.lean.outputs.ref != '' && vars.LINUX_RUNNER_JOB_POD || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      # Smallest stage first: the later stages build on its layers in this pod's docker.
+      - name: Seed the lean stage
+        id: lean
+        uses: ./.github/actions/test-image
+        env:
+          TEST_IMAGE_KIND: lean
+        with:
+          seed: true
+          registry: ${{ vars.CI_REGISTRY }}
+          registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
+      - name: Seed the rust stage
+        uses: ./.github/actions/test-image
+        env:
+          TEST_IMAGE_KIND: rust
+        with:
+          seed: true
+          registry: ${{ vars.CI_REGISTRY }}
+          registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
+      - name: Seed the full stage
+        uses: ./.github/actions/test-image
+        env:
+          TEST_IMAGE_KIND: full
+        with:
+          seed: true
+          registry: ${{ vars.CI_REGISTRY }}
+          registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
+
+      # The weekly sweep's other tmux versions (the ui matrix below; unit/ci_gate.bats keeps the lists equal).
+      - name: Seed the full stage, tmux 3.4
+        if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+        uses: ./.github/actions/test-image
+        env:
+          TEST_IMAGE_KIND: full
+        with:
+          tmux: '3.4'
+          seed: true
+          registry: ${{ vars.CI_REGISTRY }}
+          registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
+      - name: Seed the full stage, tmux 3.5a
+        if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+        uses: ./.github/actions/test-image
+        env:
+          TEST_IMAGE_KIND: full
+        with:
+          tmux: '3.5a'
+          seed: true
+          registry: ${{ vars.CI_REGISTRY }}
+          registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
+      - name: Seed the full stage, tmux 3.6a
+        if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+        uses: ./.github/actions/test-image
+        env:
+          TEST_IMAGE_KIND: full
+        with:
+          tmux: '3.6a'
+          seed: true
+          registry: ${{ vars.CI_REGISTRY }}
+          registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
+      - name: Seed the full stage, tmux 3.7b
+        if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+        uses: ./.github/actions/test-image
+        env:
+          TEST_IMAGE_KIND: full
+        with:
+          tmux: '3.7b'
+          seed: true
+          registry: ${{ vars.CI_REGISTRY }}
+          registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
+
+  # The lean-stage jobs, about 30 of a run's pods, run IN the test image when the image job names it
+  # (ar-6016): the job-pod pool (home-config arc-repo-dotfiles-pods) starts each as a job pod whose
+  # image the node's containerd pulls once, where a dind pod docker-loaded its own 1 GB copy and ~60
+  # at once held deskslim-1/2 at 31-54% iowait. tests/docker.sh then runs in place. With no job-image
+  # (the variable unset, a fork, a registry miss) they run on the pool as before. ui, rust and notes
+  # stay on the pool: the ui tier needs a docker container (tests/Makefile test-ui-inner).
   fast:
     name: fast tier (${{ matrix.tier }} ${{ matrix.shard }})
-    needs: weights
-    runs-on: *pool
+    needs: [weights, image]
+    runs-on: &job-pod ${{ fromJSON(needs.image.outputs.job-pod != '' && needs.image.outputs.job-pod || ((github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && vars.LINUX_RUNNER_LIGHT || '"ubuntu-24.04"')) }}
+    # An empty image runs the job on the runner itself.
+    container: &job-image
+      image: ${{ needs.image.outputs.job-image }}
+      credentials:
+        username: ci
+        password: ${{ secrets.CI_REGISTRY_PASSWORD }}
     timeout-minutes: 10
     env:
       TEST_IMAGE_KIND: lean   # the tmux-free tiers need no toolchain, chromium or tmux (tests/docker.sh)
@@ -169,7 +300,11 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.weights.outputs.matrix) }}
     steps:
+      # Text only, as the weights job: a shard's start waits on its node's disk (see the note
+      # above the weights job), and the fonts and wallpapers were about 150 MB of each pod's
+      # writes that no fast file reads.
       - uses: actions/checkout@v4
+        with: *text-only
       - uses: ./.github/actions/bats-vendor
       # The list is taken in its own step so a failed split stops the job (bash -e) before any
       # test runs. A tier that picked nothing gets one empty shard, not a failure; every shard
@@ -190,8 +325,8 @@ jobs:
             { cat "$RUNNER_TEMP/split"; exit 2; }
           cat "$RUNNER_TEMP/split"
           [ ! -s "$RUNNER_TEMP/files" ] || echo run=true >>"$GITHUB_OUTPUT"
-      # The image (tests/Dockerfile), only for a shard with files to run.
-      - if: steps.pick.outputs.run == 'true'
+      # The image (tests/Dockerfile), only for a shard with files to run and not already in it.
+      - if: steps.pick.outputs.run == 'true' && needs.image.outputs.job-image == ''
         uses: ./.github/actions/test-image
         with:
           registry: ${{ vars.CI_REGISTRY }}
@@ -200,9 +335,14 @@ jobs:
         env:
           JUNIT: 1
           TAG: ${{ matrix.tier }} ${{ matrix.shard }}
+          PICKED_FILES: ${{ steps.pick.outputs.run }}
+        # A shard the split gave files reads them, or fails: an empty read is not "nothing picked".
         run: |
           files=$(<"$RUNNER_TEMP/files")
-          [ -n "$files" ] || { echo "nothing picked for $TAG"; exit 0; }
+          if [ -z "$files" ]; then
+            [ "$PICKED_FILES" != true ] || { echo "::error::the split gave $TAG files, but this step read none from $RUNNER_TEMP/files (shell: ${BASH_VERSION:+bash }${BASH_VERSION:-not bash})"; exit 1; }
+            echo "nothing picked for $TAG"; exit 0
+          fi
           start=$SECONDS rc=0
           tests/docker.sh test-files FILES="$(tr '\n' ' ' <<<"$files")" || rc=$?
           actual=$(tests/shard.sh --junit ${{ matrix.tier }} tests/artifacts/junit |
@@ -222,6 +362,7 @@ jobs:
 
   ui:
     name: ui tier (tmux ${{ matrix.tmux }}, container)
+    needs: image
     runs-on: *pool
     timeout-minutes: 25
     env:
@@ -238,13 +379,13 @@ jobs:
         tmux: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["3.4", "3.5a", "3.6a", "3.7b", "3.8"]' || '["3.8"]') }}
     steps:
       - uses: actions/checkout@v4
-      # The test-image step loads the image (or builds it on a cache miss); bats-vendor puts
+      # The test-image step pulls the image from the registry (a pull that fails fails the job; a
+      # runner with no registry restores or builds it); bats-vendor puts
       # bats on the host, where docker.sh finds it, then the tier runs inside the container. Runners have no tty; that is fine -- new-session -d, send-keys
       # and capture-pane all work headless. Only display-popup needs an attached client, and
       # nothing here exercises one (the popup is a single .tmux.conf binding; the script is
       # the testable surface). If a future test ever needs a client, the idiom is bats-core's
       # own workflow: shell: 'script -q -e -c "bash {0}"' with TERM=linux.
-      # The image comes from the Actions cache when nothing it is built from changed.
       - uses: ./.github/actions/test-image
         with:
           registry: ${{ vars.CI_REGISTRY }}
@@ -288,7 +429,7 @@ jobs:
   # !cancelled(): a skipped required check counts as passed, so a cancelled run must read red.
   gate:
     name: gate
-    needs: [fast, ui, rust, notes, skills, lint]
+    needs: [image, fast, ui, rust, notes, skills, lint]
     if: ${{ always() }}
     runs-on: *pool
     timeout-minutes: 2
@@ -337,6 +478,7 @@ jobs:
 
   rust:
     name: rust crates (test + fmt + clippy)
+    needs: image
     runs-on: *pool
     timeout-minutes: 20
     env:
@@ -437,6 +579,7 @@ jobs:
   # (274-296 s of a 5.0-6.0 min run, 2026-11-19), and here they run beside it.
   notes:
     name: notes bats (real notes binary)
+    needs: image
     runs-on: *pool
     timeout-minutes: 10
     env:
@@ -485,7 +628,9 @@ jobs:
 
   lint:
     name: shellcheck + house rules
-    runs-on: *pool
+    needs: image
+    runs-on: *job-pod
+    container: *job-image
     timeout-minutes: 15
     env:
       TEST_IMAGE_KIND: lean   # shellcheck and the house rules
@@ -496,7 +641,8 @@ jobs:
       # developer does, and the first version bump would produce findings nobody can
       # reproduce locally. lint.sh itself is shared with the Makefile and the Stop hook, so
       # the severity ratchet and the file list have exactly one definition.
-      - uses: ./.github/actions/test-image
+      - if: needs.image.outputs.job-image == ''
+        uses: ./.github/actions/test-image
         with:
           registry: ${{ vars.CI_REGISTRY }}
           registry-password: ${{ secrets.CI_REGISTRY_PASSWORD }}
