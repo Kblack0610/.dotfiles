@@ -27,7 +27,7 @@ on:
           sets that tree's untracked state aside (home-config roles/ci-host, ci-fresh-workspace). The private repo
           passes ["self-hosted","light"], a seat the governor lends, since GitHub bills hosted minutes there.
         type: string
-        required: true
+        default: ubuntu-24.04
 
 permissions:
   contents: read
