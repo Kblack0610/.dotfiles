@@ -3434,9 +3434,12 @@ ascii_fixture() {
   assert_output --partial "the positive control failed, so every run of $(date -d "@$T0" +%Gw%V) reads instrument"
   cp "$SANDBOX/ascii.json" "$BENCH_CANARY_DIR/ascii.json"
   # Negative controls: another lane, and claude on another model, on the same task are no control, and say nothing of the week.
+  # Score put the tree back on s3 (ar-5935), so each run starts at base again, as each dispatched run does.
+  "$SUBJECT" canary start ascii >/dev/null
   bash "$BENCH_CANARY_ORACLES/ascii-fix.answer.sh" doc.md
   CODEX_THREAD_ID=cx-own AGENT_QUEUE_ITEM=cx run "$SUBJECT" canary score ascii
   assert_output --partial 'canary ascii: pass (exit 0)'
+  "$SUBJECT" canary start ascii >/dev/null
   AGENT_QUEUE_ITEM=son run "$SUBJECT" canary score ascii
   assert_output --partial 'canary ascii: fail (exit 1)'
   refute_output --partial 'positive control'
@@ -3576,7 +3579,7 @@ STUB
   assert_output --partial 'canary greet: fail (exit 1)'
   # Scored, the tree is back on the branch start found it on (s1, ar-5935) and clean, so wt reaps it; the
   # run's diff waits beside its log.
-  assert_equal "$(git symbolic-ref --short HEAD)" s1
+  assert_equal "$(git symbolic-ref HEAD)" refs/heads/s1
   assert_equal "$(git rev-parse HEAD)" "$CMERGE"
   assert_equal "$(git status --porcelain)" ''
   [ ! -e "$(git rev-parse --path-format=absolute --git-path fleet-bench-canary)" ] || fail "the restored tree kept start's record"
