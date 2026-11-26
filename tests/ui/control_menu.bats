@@ -1,8 +1,9 @@
 #!/usr/bin/env bats
 # Tier 3: the control menu (leader Space) through real fzf on a real tmux server. The first
 # chip's hover is in the preview on open, moving the cursor moves the preview to the next chip,
-# Enter runs that chip's click and closes, Esc closes; a dropdown chip's Enter runs it in this
-# window and comes back to the list; typing finds a window row, whose Enter dispatches its bind.
+# Enter runs that chip's click and closes (also before the bar texts load), Esc closes; a dropdown
+# chip's Enter runs it in this window and comes back to the list; typing finds a window row, whose
+# Enter dispatches its bind.
 # Container only.
 
 setup() {
@@ -71,6 +72,30 @@ gone() { ! _tm has-session 2>/dev/null; }
   tmux_keys Enter
   wait_until gone
   wait_until '[ -s "$FX/clicked" ]'
+  assert_equal "$(cat "$FX/clicked")" left
+}
+
+@test "Enter while the bar texts still load runs the first list's chip" {
+  # A chip whose exec waits on a fifo holds the live reload open until the test releases it.
+  mkfifo "$FX/gate"
+  printf '#!/usr/bin/env bash\nread -r _ < "%s"\necho {}\n' "$FX/gate" > "$FX/slow.sh"
+  chmod +x "$FX/slow.sh"
+  printf 'slow|A slow chip|custom/slow\n' >> "$W/modules.registry"
+  jq --arg e "$FX/slow.sh" '. + {"custom/slow": {exec: $e}}' "$W/config.base" > "$FX/conf" &&
+    mv "$FX/conf" "$W/config.base"
+  # fd 9 holds the fifo open read-write for the whole test (fd 3 is bats'), so the release written
+  # after Enter waits in the pipe whenever the chip opens it, and opening it never blocks here.
+  exec 9<>"$FX/gate"
+  open_menu
+  wait_until 'screen_has "A slow chip"'
+  wait_until 'screen_has "Good hover"'
+  run screen_matches "A good chip +OK 3"
+  assert_failure
+  tmux_keys Enter
+  printf 'go\n' >&9
+  wait_until gone
+  wait_until '[ -s "$FX/clicked" ]'
+  exec 9>&-
   assert_equal "$(cat "$FX/clicked")" left
 }
 
