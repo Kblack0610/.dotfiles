@@ -67,7 +67,7 @@ defaults:
 # Where every job runs: `&pool` on the first job, `*pool` on the rest. The repo variable
 # LINUX_RUNNER_LIGHT is the switch (set: the home pool; deleted: GitHub-hosted, free on this public
 # repo; the shell-test-harness skill, section 5). A fork's pull request always runs hosted, so a stranger's code
-# never runs on the home LAN. fleet-agent.yml stays hosted: its 5 GB image build frees disk with sudo.
+# never runs on the home LAN. fleet-agent.yml's image job copies the &pool choice (ci_gate.bats pins it).
 # tests/unit/ci_gate.bats fails on a job with any other runs-on.
 jobs:
   # The PR budget is a p90 of 5 minutes (~/.local/src/docs/ci.md); each job's timeout-minutes is
