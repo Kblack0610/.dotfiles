@@ -2,6 +2,7 @@
 # agentctl-docs-cleanup queues its pass where the queue lets it start (high, tagged cleanup), and a
 # pass that sat queued past DOCS_CLEANUP_STARVED_DAYS is a failure, not another quiet NOOP night.
 # A pass the add filed as a board row (exit 5, QUEUE.md "Admission") and left unstarted that long is starved the same way. agent-queue, notes and skill-drift are stubs; the stub queue records what it was asked to add.
+# Each drifted area is its own pass, add and row line (ar-5138): the stub baseline drifts in docs alone unless SKILLS_JSON adds a skills finding.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -16,11 +17,13 @@ setup() {
   cat > "$BIN/agent-queue" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
-  show) echo "${ITEM_JSON:-{\}}" ;;
-  add) printf '%s\n' "$@" > "$ADD_LOG"
+  show) if [ "$2" = docs-cleanup-pass ]; then echo "${LEGACY_JSON:-{\}}"; else echo "${ITEM_JSON:-{\}}"; fi ;;
+  add) printf '%s\n' "$@" >> "$ADD_LOG"
+       printf '%s\t%s\n' "$7" "${13}" >> "$ADD_LOG.tsv" # its slug and task
        if [ "${ADD_RC:-0}" = 5 ]; then
+         n=$(cat "$ROW_SEQ" 2>/dev/null || echo 9); echo $((n + 1)) > "$ROW_SEQ"
          echo "agent-queue: only the board fills the queue: an agent or a script files a board row and dispatch pulls it (QUEUE.md \"Admission\")" >&2
-         echo "held docs-cleanup -> agent-runtime:${ROW_ID:-ar-9}"
+         echo "held $7 -> agent-runtime:${ROW_ID:-ar-$n}"
        fi
        exit "${ADD_RC:-0}" ;;
 esac
@@ -36,13 +39,13 @@ STUB
   cat > "$BIN/skill-drift" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
-  --json) echo '{"findings":[]}' ;;
+  --json) if [ -n "${SKILLS_JSON:-}" ]; then echo "$SKILLS_JSON"; else echo '{"findings":[]}'; fi ;;
   --docs) echo '{"drift":3}' ;;
   --dups) echo '{"pairs":60,"max":60,"over":0}' ;;
 esac
 STUB
   chmod +x "$BIN"/*
-  export AGENTCTL_INBOX="$BATS_TEST_TMPDIR/inbox" DOCS_CLEANUP_LESSONS="$HOME/.agent/lessons" ADD_LOG="$BATS_TEST_TMPDIR/add.log"
+  export AGENTCTL_INBOX="$BATS_TEST_TMPDIR/inbox" DOCS_CLEANUP_LESSONS="$HOME/.agent/lessons" ADD_LOG="$BATS_TEST_TMPDIR/add.log" ROW_SEQ="$BATS_TEST_TMPDIR/row.seq"
 }
 
 @test "a pass queued 3 days ago and never started is a failure" {
@@ -123,4 +126,60 @@ STUB
   assert [ -e "$ADD_LOG" ]
   run cut -f2 "$AGENTCTL_INBOX/row"
   assert_output ar-10
+}
+
+@test "two drifted areas file two passes, each naming its one area, under two slugs and two row lines (ar-5138)" {
+  SKILLS_JSON='{"findings":[{"type":"NOCMD"}]}' ADD_RC=5 run "$BIN/agentctl-docs-cleanup"
+  assert_success
+  run cut -f1 "$ADD_LOG.tsv"
+  assert_output "$(printf 'docs-cleanup-pass-skills\ndocs-cleanup-pass-docs')"
+  run cut -f2 "$ADD_LOG.tsv"
+  assert_line --index 0 --partial "Docs-cleanup area skills: run the"
+  assert_line --index 0 --partial ': skills 1. '
+  refute_line --index 0 --partial 'global docs'
+  assert_line --index 1 --partial "Docs-cleanup area docs: run the"
+  assert_line --index 1 --partial ': global docs 3. '
+  refute_line --index 1 --partial 'skills 1'
+  run grep -c -- '--repeat' "$ADD_LOG"
+  assert_output 2
+  run cut -f1,2,4 "$AGENTCTL_INBOX/row"
+  assert_output "$(printf 'agent-runtime\tar-9\tskills\nagent-runtime\tar-10\tdocs')"
+}
+
+@test "a second night re-files only the area whose row closed; the open one is left, and starved past the limit (ar-5138)" {
+  SKILLS_JSON='{"findings":[{"type":"NOCMD"}]}' ADD_RC=5 run "$BIN/agentctl-docs-cleanup"
+  assert_success
+  rm "$ADD_LOG.tsv"
+  # ar-9 (skills) is still open on the board; ar-10 (docs) closed
+  printf '{"rows":[{"project":"agent-runtime","id":"ar-9","state":"open"}]}\n' > "$HOME/board.json"
+  SKILLS_JSON='{"findings":[{"type":"NOCMD"}]}' ADD_RC=5 run "$BIN/agentctl-docs-cleanup"
+  assert_success
+  assert_output --partial 'pass docs-cleanup-pass-skills is board row ar-9 on agent-runtime, open, not filing another'
+  run cut -f1 "$ADD_LOG.tsv"
+  assert_output docs-cleanup-pass-docs
+  run cut -f2,4 "$AGENTCTL_INBOX/row"
+  assert_output "$(printf 'ar-9\tskills\nar-11\tdocs')"
+  # Past the limit the open area is starved, and the closed one is still filed that night.
+  rm "$ADD_LOG.tsv"
+  sed -i "1s/^\(agent-runtime\tar-9\t\)[0-9]*/\1$(date -d '3 days ago' +%s)/" "$AGENTCTL_INBOX/row"
+  SKILLS_JSON='{"findings":[{"type":"NOCMD"}]}' ADD_RC=5 run "$BIN/agentctl-docs-cleanup"
+  assert_failure 1
+  assert_output --partial 'pass docs-cleanup-pass-skills starved: board row ar-9 on agent-runtime filed'
+  assert_output --partial '; also filed docs-cleanup-pass-docs as board row ar-12 on agent-runtime'
+  run cut -f1 "$ADD_LOG.tsv"
+  assert_output docs-cleanup-pass-docs
+  run cut -f2,4 "$AGENTCTL_INBOX/row"
+  assert_output "$(printf 'ar-9\tskills\nar-12\tdocs')"
+}
+
+@test "a pass still active under the bare slug from before the split holds every area that night (ar-5138)" {
+  LEGACY_JSON='{"state":"running"}' SKILLS_JSON='{"findings":[{"type":"NOCMD"}]}' ADD_RC=5 run "$BIN/agentctl-docs-cleanup"
+  assert_success
+  assert_output --partial 'pass docs-cleanup-pass (every area) still running, not queuing another'
+  [ ! -e "$ADD_LOG.tsv" ] || fail "an area was filed beside the old pass"
+  # NEGATIVE CONTROL: once it is done the areas file as usual
+  LEGACY_JSON='{"state":"done"}' SKILLS_JSON='{"findings":[{"type":"NOCMD"}]}' ADD_RC=5 run "$BIN/agentctl-docs-cleanup"
+  assert_success
+  run cut -f1 "$ADD_LOG.tsv"
+  assert_output "$(printf 'docs-cleanup-pass-skills\ndocs-cleanup-pass-docs')"
 }
