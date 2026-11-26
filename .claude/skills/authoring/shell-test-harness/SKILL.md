@@ -6,7 +6,7 @@ metadata:
   category: authoring
   tags: [testing, shell, bats, dotfiles]
   system: [tests]
-  reviewed: "2026-11-23"
+  reviewed: "2026-11-26"
   # The local test-suite runs CI replaces, in any repo: hand_methods.py denies them in an agent
   # session (a human terminal never reaches the hook). Each row denies a suite and passes one named
   # test file, so a session iterates on a file here and CI runs the rest; lint is in no row. The
@@ -18,7 +18,7 @@ metadata:
     # make test and every test-* target but test-files, the next row; lint is not one.
     - match: |-
         (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-(?!n(?=\s))\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:[^\s=]*/)?g?make(?=\s)[^;&|()`\n]{0,300}?\stest(?:-(?!files(?=[\s;&|)]|$))[\w-]+)?(?=[\s;&|)]|$)
-      use: &ci "push the branch and let the PR's CI run the suite. To iterate here, name one test file, which passes, and so does lint: `bats <file>.bats`, `tests/run-bats.sh <file>.bats`, `make -C tests test-files FILES=<file>.bats` (unquoted: the guard cannot count files inside quotes), `vitest <file>.test.ts`, `pytest <file>.py`, `cargo test -p <crate> <name>`, `make -C tests lint`. In dotfiles `tests/pick.sh unit origin/main` (and `integ`, `rust`) lists what the PR's `shell tests` job will pick, and agent-land waits for those checks. A negative control is a pushed commit that breaks the subject, read red in CI, then reverted (shell-test-harness section 3)"
+      use: &ci "push the branch and let the PR's CI run the suite. To iterate here, name one test file, which passes, and so does lint: `bats <file>.bats`, `tests/run-bats.sh <file>.bats`, `make -C tests test-files FILES=<file>.bats` (unquoted: the guard cannot count files inside quotes), `vitest <file>.test.ts`, `pytest <file>.py`, `cargo test -p <crate> <name>`, `make -C tests lint`, and in the private repo `bash tests/<name>.sh` or `tests/ci-uncovered.sh --list`. In dotfiles `tests/pick.sh unit origin/main` (and `integ`, `rust`) lists what the PR's `shell tests` job will pick, and agent-land waits for those checks. A negative control is a pushed commit that breaks the subject, read red in CI, then reverted (shell-test-harness section 3)"
       mode: deny
       where: &has_ci '^(?!.*/playtest-bot(?:-[^/]*)?(?:/|$))'
       why: &load "agent test-suite runs held the workstation at load 40 on 28 cores, about 500% CPU of bats in dotfiles worktrees, which holds dispatch (2026-11-23, epic ar-4846); CI runs the same suites off it, and one named file takes seconds of one core"
@@ -36,15 +36,16 @@ metadata:
       mode: deny
       where: *has_ci
       why: *load
-    # the dotfiles harness scripts that run suites, by a tests/ path or after a cd into tests; docker.sh lint passes.
+    # the dotfiles harness scripts that run suites, by a tests/ path or after a cd into tests, the
+    # private repo's ci-uncovered.sh included (ar-4853); docker.sh lint and ci-uncovered.sh --list pass.
     - match: |-
-        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-(?!n(?=\s))\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:(?:[^\s=]*/)?tests/|cd\s+\S*tests/?\s*(?:&&|;)\s*(?:\./)?)(?:docker\.sh(?=[\s;&|)]|$)(?!\s+(?:lint|--image|--build|--shell)(?=[\s;&|)]|$))|(?:rust|rust-crates|fleet-agent-smoke)\.sh(?=[\s;&|)]|$))
+        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-(?!n(?=\s))\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:(?:[^\s=]*/)?tests/|cd\s+\S*tests/?\s*(?:&&|;)\s*(?:\./)?)(?:docker\.sh(?=[\s;&|)]|$)(?!\s+(?:lint|--image|--build|--shell)(?=[\s;&|)]|$))|(?:rust|rust-crates|fleet-agent-smoke)\.sh(?=[\s;&|)]|$)|ci-uncovered\.sh(?=[\s;&|)]|$)(?!\s+--list(?=[\s;&|)]|$)))
       use: *ci
       mode: deny
       where: *has_ci
       why: *load
     - match: |-
-        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-(?!n(?=\s))\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:\./)?(?:docker\.sh(?=[\s;&|)]|$)(?!\s+(?:lint|--image|--build|--shell)(?=[\s;&|)]|$))|(?:rust|rust-crates|fleet-agent-smoke)\.sh(?=[\s;&|)]|$))
+        (?:^|[;&|(){}`\n!])\s*(?:(?:sudo(?:\s+-\S+)*|nice(?:\s+-n\s*\S+)?|time|env|exec|command|xargs(?:\s+-\S+)*|timeout\s+\S+|(?:ba|z|da)?sh(?:\s+-(?!n(?=\s))\S+)*|do|then|else|if|while|until|!|[A-Za-z_][A-Za-z0-9_]*=\S*)\s+)*(?:\./)?(?:docker\.sh(?=[\s;&|)]|$)(?!\s+(?:lint|--image|--build|--shell)(?=[\s;&|)]|$))|(?:rust|rust-crates|fleet-agent-smoke)\.sh(?=[\s;&|)]|$)|ci-uncovered\.sh(?=[\s;&|)]|$)(?!\s+--list(?=[\s;&|)]|$)))
       use: *ci
       mode: deny
       where: '(?:^|/)tests/?$'
