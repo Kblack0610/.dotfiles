@@ -146,7 +146,7 @@ test("a past day opens its fold on Archive; today's date is Today's top", async 
   await open("2026-11-20");
   assert.equal(run("st.arg"), "archive");
   assert.equal(rps.open["day:2026-11-20"], true);
-  assert.match(box.innerHTML, /<details class="sec-d" data-k="day:2026-11-20" id="sec-day-2026-11-20" open>/);
+  assert.match(box.innerHTML, /<details class="sec-d" data-k="day:2026-11-20" id="sec-day-2026-11-20" data-rec open>/);
   reset();
   await open("2026-11-24");
   assert.equal(run("st.arg"), "today");
