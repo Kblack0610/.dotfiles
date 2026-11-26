@@ -313,6 +313,38 @@ gh_calls() { { grep -vc '^none|api rate_limit' "$BATS_TEST_TMPDIR/real.log" || t
   assert_equal "$(bucket)" user:deferred
 }
 
+granted() { tail -n 1 "$GH_CALLS_DIR"/*.tsv | cut -f7; }
+parent() { tail -n 1 "$GH_CALLS_DIR"/*.tsv | cut -f4; }
+
+@test "budget: a read the reserve lets through logs the ancestor that granted it, its parent column unchanged" {
+  echo "40 $(( $(date +%s) + 1800 ))" > "$BATS_TEST_TMPDIR/rate"
+  printf '#!/usr/bin/env bash\ntimeout 10 bash -c '\''"$0" run view 5 -R other/x --json status; :'\'' "%s"\n' "$WRAP" \
+    > "$BATS_TEST_TMPDIR/agent-land"
+  run bash "$BATS_TEST_TMPDIR/agent-land" </dev/null
+  assert_success
+  assert_equal "$(bucket)" user
+  assert_equal "$(granted)" agent-land
+  assert_equal "$(parent)" bash
+  # NEGATIVE CONTROL: the same chain under a script no list names logs a wait, with no granter
+  cp "$BATS_TEST_TMPDIR/agent-land" "$BATS_TEST_TMPDIR/ci-cost.sh"
+  run bash "$BATS_TEST_TMPDIR/ci-cost.sh" </dev/null
+  assert_equal "$(bucket)" user:deferred
+  assert_equal "$(granted)" -
+}
+
+@test "budget: a deferred read and a read above the reserve both log - as the granting ancestor" {
+  echo "40 $(( $(date +%s) + 1800 ))" > "$BATS_TEST_TMPDIR/rate"
+  run -75 as_caller ci-cost.py run view 5 -R other/x --json status
+  assert_equal "$(bucket)" user:deferred
+  assert_equal "$(granted)" -
+  echo "4000 $(( $(date +%s) + 1800 ))" > "$BATS_TEST_TMPDIR/rate"
+  rm -f "$GH_CALLS_DIR/budget" # the shared reading would hold the old 40 for 30 s
+  run as_caller agent-land run view 5 -R other/x --json status
+  assert_success
+  assert_equal "$(bucket)" user
+  assert_equal "$(granted)" -
+}
+
 @test "budget: the human at a terminal never waits" {
   command -v script >/dev/null || skip "no script(1) to give the read a terminal"
   echo "40 $(( $(date +%s) + 1800 ))" > "$BATS_TEST_TMPDIR/rate"

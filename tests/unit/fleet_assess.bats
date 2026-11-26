@@ -628,6 +628,40 @@ SH
   assert_output ''
 }
 
+@test "gh_callers_report: deferred rows by caller and grants by ancestor, old 6-column rows counted apart" {
+  local now; now="$(date +%s)"
+  export GH_CALLS_DIR="$SANDBOX/calls"; mkdir -p "$GH_CALLS_DIR"
+  {
+    printf '%s\tuser\t0\tzsh\t-\trun view 1\n' "$now"
+    printf '%s\tuser:deferred\t75\tred-causes.py\t-\trun view 1\n' "$now"
+    printf '%s\tuser:deferred\t75\tred-causes.py\t-\trun view 2\n' "$now"
+    printf '%s\tuser:deferred\t75\tzsh\t-\trun view 3\n' "$now"
+  } > "$GH_CALLS_DIR/2026-11-24.tsv"
+  {
+    printf '%s\tuser\t0\tbash\t-\trun view 4\t-\n' "$now"
+    printf '%s\tuser\t0\tbash\t-\trun view 5\tagent-land\n' "$now"
+    printf '%s\tuser\t0\ttimeout\t-\trun view 6\tagent-land\n' "$now"
+    printf '%s\tuser\t0\tbash\t-\trun view 7\tci-gate.sh\n' "$now"
+    printf '%s\tuser:deferred\t75\tred-causes.py\t-\trun view 8\t-\n' "$now"
+    printf '%s\tapp:acme\t0\tbash\t-\trun view 9\t-\n' "$now"
+    printf '%s\tuser\t0\tzsh\t-\trun view 10\t-\n' "$(( now - 5000 ))"
+  } > "$GH_CALLS_DIR/2026-11-25.tsv"
+  run gh_callers_report "$(( now - 100 ))"
+  assert_success
+  assert_line 'user:deferred (waited for the reset): 4'
+  assert_line --index 1 $'  3\tred-causes.py'
+  assert_line --index 2 $'  1\tzsh'
+  assert_line 'reserve-granted reads: 3 (granting ancestor via parent)'
+  assert_line $'  1\tci-gate.sh via bash'
+  assert_line $'  1\tagent-land via timeout'
+  assert_line $'  1\tagent-land via bash'
+  # the 4 rows of the first file have no granting column; the 5000 s old row is outside the window
+  assert_line 'user rows without the granting column (logged before ar-3009): 4'
+  rm "$GH_CALLS_DIR"/*.tsv
+  run gh_callers_report
+  assert_output "no gh call log in $GH_CALLS_DIR"
+}
+
 @test "--github prints the budget line and samples nothing else" {
   gh_stub 4000 "$(( $(date +%s) + 2000 ))"
   run main --github
