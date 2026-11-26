@@ -59,29 +59,36 @@ pub(crate) fn parent_of(line: &str) -> Option<String> {
 
 /// Does this open row carry work of its own beside its children, so closing the last child must
 /// not close it: a human's `#requested` row (it closes on proof of every clause, never on its
-/// rows), a `#plan` row, or a row whose title or brief names a plan's open phases (`6 phases
-/// left`, `(plan <slug>)`, `open phases of ... plans/<slug>.md`). `details` are the lines
-/// under the row. Why: ar-3849 (4 open plan phases) and ar-718 (`#requested`, 6 phases left)
-/// closed when one child did, ar-5834.
+/// rows), or a row whose title or brief names a plan's open phases (`6 phases left`, `open
+/// phases of the plan`, `(plan <slug>)`). `details` are the lines under the row; a nested task
+/// line is a child's own text and is not read. Why: ar-3849 (4 open plan phases) and ar-718
+/// (`#requested`, 6 phases left) closed when one child did, ar-5834.
 pub(crate) fn has_own_work(line: &str, details: &[String]) -> bool {
-    if md::find_hashtags(line)
-        .iter()
-        .any(|t| t == "#requested" || t == "#plan")
-    {
+    if md::find_hashtags(line).iter().any(|t| t == "#requested") {
         return true;
     }
-    let head = line
-        .find("<!--")
-        .map_or(line, |i| &line[..i])
-        .to_lowercase();
+    let head = line.find("<!--").map_or(line, |i| &line[..i]);
     std::iter::once(head)
-        .chain(details.iter().map(|d| d.to_lowercase()))
+        .chain(
+            details
+                .iter()
+                .map(String::as_str)
+                .filter(|d| !md::is_task(d.trim_start())),
+        )
         .any(|t| {
-            t.contains("phases left")
-                || t.contains("open phases")
-                || t.contains("(plan ")
-                || t.contains(".agent/plans/")
+            let t = t.to_lowercase();
+            t.contains("phases left") || t.contains("open phases") || names_plan(&t)
         })
+}
+
+/// Does lower-cased `t` hold `(plan <slug>)`: one word, no spaces, so prose like `(plan to
+/// remove X)` does not count.
+fn names_plan(t: &str) -> bool {
+    t.match_indices("(plan ").any(|(i, m)| {
+        t[i + m.len()..]
+            .split_once(')')
+            .is_some_and(|(slug, _)| !slug.is_empty() && !slug.contains(char::is_whitespace))
+    })
 }
 
 /// What an open epic with no open child shows as in `notes board --json`'s `priority`
@@ -325,7 +332,7 @@ impl Index {
                     let own = note.is_none()
                         && md::is_open_task(l)
                         && md::row_id(l).is_some_and(|id| named.contains(&id))
-                        && has_own_work(l, &md::row_details(&all, n - 1));
+                        && has_own_work(l, &md::brief_details(&all, n - 1));
                     ix.add(l, v, note.is_none(), format!("{label} line {n}"), own);
                 }
             }

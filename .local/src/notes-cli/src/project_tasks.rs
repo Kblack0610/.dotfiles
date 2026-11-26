@@ -7324,7 +7324,8 @@ mod inbox_tests {
     }
 
     // ar-5834: a parent with work of its own stays open when its last child closes: a human's
-    // `#requested` row, a `#plan` row, and rows naming a plan's open phases in title or brief.
+    // `#requested` row, and rows naming a plan's open phases in title or brief (a brief's
+    // paragraph break included). Prose that merely says "plan" is no such row.
     #[test]
     fn a_parent_with_work_of_its_own_stays_open_when_its_last_child_closes() {
         let v = vault(
@@ -7335,9 +7336,11 @@ mod inbox_tests {
              - [ ] fix(ui): a stuck session (plan wren) #normal <!-- id:sc-3 -->\n\
              - [ ] fix(ui): phase 2 #normal #of/sc-3 <!-- id:sc-4 -->\n\
              - [ ] fix(ui): the pause screen #normal <!-- id:sc-5 -->\n\
+             \x20 goal: a calm pause\n\
+             \n\
              \x20 Run the open phases of the approved plan in order.\n\
              - [ ] fix(ui): pause blinks #normal #of/sc-5 <!-- id:sc-6 -->\n\
-             - [ ] fix(ui): the menu #plan #normal <!-- id:sc-7 -->\n\
+             - [ ] fix(ui): drop the flag (plan to delete in v2) #normal <!-- id:sc-7 -->\n\
              - [ ] fix(ui): menu flicker #normal #of/sc-7 <!-- id:sc-8 -->\n\
              - [ ] feat(ui): the sound #normal <!-- id:sc-9 -->\n\
              \x20 goal: a quiet menu\n\
@@ -7357,15 +7360,17 @@ mod inbox_tests {
             )
             .unwrap();
         }
-        for parent in ["sc-1", "sc-3", "sc-5", "sc-7"] {
+        for parent in ["sc-1", "sc-3", "sc-5"] {
             let row = row_of(&v, parent);
             assert!(row.starts_with("- [ ]"), "{parent} closed: {row}");
         }
-        let plain = row_of(&v, "sc-9");
-        assert!(
-            plain.starts_with("- [x]") && plain.contains("children: sc-10"),
-            "a goal line alone is no work of its own: {plain}"
-        );
+        for (parent, kid) in [("sc-7", "sc-8"), ("sc-9", "sc-10")] {
+            let row = row_of(&v, parent);
+            assert!(
+                row.starts_with("- [x]") && row.contains(&format!("children: {kid}")),
+                "{parent} is no row with work of its own: {row}"
+            );
+        }
     }
 
     // From review: an open grandchild under a closed child holds the row open too, a running
