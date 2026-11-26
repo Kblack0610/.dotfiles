@@ -926,7 +926,9 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         a.boards = Some(app::Boards::read(&a.files, None));
         // The feed joins the queue read above; `feed` would read the queue a second time, about
         // 4s of every Prefix+p preview move (ar-1140).
-        let q = a.queue.get_or_insert_with(|| hub_core::queue::Queue::read(&sys));
+        let q = a
+            .queue
+            .get_or_insert_with(|| hub_core::queue::Queue::read(&sys));
         a.tasks = Some(hub_core::sheet_view::feed_with(&sys, q));
         a.projects = Some(projtab::load(&sys));
         a.tab = Tab::Projects;
