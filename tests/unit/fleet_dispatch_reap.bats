@@ -537,25 +537,28 @@ real_epic_board() {
   refute_output --partial 'flagged queue item fix-crash'
 }
 
-@test "reap: an item with no session and only the open_pr: agent-land left settles by that PR, as by pr: (ar-4551)" {
-  pr_item CLOSED
+# ar-4551: agent-land records open_pr: before its checks and pr: only on a merge, so a landing that ends unmerged
+# leaves a sessionless item with open_pr: alone. NEGATIVE CONTROL: reading only pr:, it is flagged and stays running.
+@test "reap: an item with no session and only open_pr: settles by that PR (ar-4551)" {
+  pr_item OPEN
   sed -i '/^session: /d; s/^pr: /open_pr: /' "$AGENT_QUEUE_DIR"/running/*-fix-crash.md
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.pr // "", .open_pr // ""] | join("|")')" "|o/game#12"
   run cmd_reap
   assert_success
-  f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)
-  assert_equal "$(qfield "$f" status) $(qfield "$f" pr)" "failed o/game#12"
-  grep -q 'the open_pr: agent-land left, o/game#12, recorded' "$FLEET_DISPATCH_DIR/log.md"
-  refute_output --partial 'flagged queue item fix-crash'
+  [ -n "$(qitem review fix-crash)" ] || fail "an open_pr: alone did not park it in review"
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .pr)" "o/game#12"
+  printf 'CLOSED \n' > "$NOTES_FIXTURE/pr.state"
+  run cmd_reap
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)" status)" failed
 }
 
-# NEGATIVE CONTROL for ar-4551: with neither pr: nor open_pr:, the same item is flagged and stays.
-@test "reap: an item with no session, no pr: and no open_pr: is flagged and stays (ar-4551)" {
-  pr_item CLOSED
-  sed -i '/^session: /d; /^pr: /d' "$AGENT_QUEUE_DIR"/running/*-fix-crash.md
+@test "reap: an open_pr: never replaces the pr: an item already records (ar-4551)" {
+  pr_item OPEN
+  sed -i '/^session: /d' "$AGENT_QUEUE_DIR"/running/*-fix-crash.md
+  agent-queue set fix-crash open_pr=o/game#99 >/dev/null
   run cmd_reap
   assert_success
-  [ -n "$(qitem running fix-crash)" ] || fail "moved an item nothing says has ended"
-  assert_output --partial 'flagged queue item fix-crash (no session recorded: nothing watches'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .pr, .open_pr] | join("|")')" "review|o/game#12|o/game#99"
 }
 
 @test "reap: an item whose pr: names two PRs reads each one, parks while either is open and records both merges in step (ar-1431)" {
