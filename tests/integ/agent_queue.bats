@@ -386,6 +386,22 @@ load 'agent_queue/common'
   [ "$(grep -c 'a-item' "$AGENT_QUEUE_DIR/headerless.log")" = 0 ]
 }
 
+@test "a header-less file with an unwritable log still lists every valid item, and a done one keeps listing (ar-5848)" {
+  "$AQ" add --project game --slug a-item "a"
+  "$AQ" add --project game --slug b-item "b"
+  printf 'no header\n' > "$AGENT_QUEUE_DIR/queued/00-stray.md"
+  mkdir "$AGENT_QUEUE_DIR/headerless.log"
+  run bash -c "'$AQ' list --json 2>/dev/null | jq -r '.slug' | sort | tr '\n' ' '"
+  assert_success
+  assert_output "a-item b-item "
+  rmdir "$AGENT_QUEUE_DIR/headerless.log"
+  mkdir -p "$AGENT_QUEUE_DIR/done/2026-01-01"
+  printf 'status: ok\n' > "$AGENT_QUEUE_DIR/done/2026-01-01/old.md"
+  run bash -c "'$AQ' list --json --state done --since 2026-01-01 2>/dev/null | jq -c '.state'"
+  assert_output '"done"'
+  [ ! -e "$AGENT_QUEUE_DIR/headerless.log" ] || ! grep -q old.md "$AGENT_QUEUE_DIR/headerless.log"
+}
+
 @test "list fails, never prints an empty queue, when the queue cannot be read" {
   "$AQ" add --project game --slug a-item "a"
   # The one read every listing goes through (items_json) fails; every other jq is the real one.
