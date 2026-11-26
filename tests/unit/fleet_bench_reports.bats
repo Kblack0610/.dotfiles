@@ -973,6 +973,26 @@ check_fixture() {
   assert_output --partial NOOP
 }
 
+@test "upsert: a key whose row dispatch moved to the human sheet is neither filed nor reopened, so it never swaps lanes each pass; a closed sheet row frees it (ar-6265)" {
+  kpi_setup
+  printf 'board.md\t5\tcheck(watch): board-chain tripped since 2026-11-24, x (agent row ar-77)\t- [ ] check(watch): board-chain tripped since 2026-11-24, x (agent row ar-77) <!-- id:hm-5 -->\n' > "$BOARD.agent-runtime"
+  rows=$(printf '%s\t%s\t%s\n' 'check(watch): board-chain tripped since' 'check(watch): board-chain tripped since 2026-11-25, y' '#high')
+  up() { bash -c '. "$1"; board_upsert "$2" && upsert_report "$2"; echo "$UPSERT_ADDED"' _ "$SUBJECT" "$rows" 2>&1; }
+  run up
+  assert_success
+  assert_line --partial 'open on the human sheet, left there'
+  assert_line '0'
+  run grep -c -- '--agent add' "$NLOG"
+  assert_output 0
+  # Negative control: the person closed the sheet row, so the red is the agent board's again.
+  sed -i 's/- \[ \] check/- [x] check/' "$BOARD.agent-runtime"
+  run up
+  assert_success
+  assert_line '1'
+  run grep -c -- '--agent add' "$NLOG"
+  assert_output 1
+}
+
 @test "room: board_days past board_days_max says full, and the upsert still files every row" {
   kpi_setup
   agent_feed open doing open
