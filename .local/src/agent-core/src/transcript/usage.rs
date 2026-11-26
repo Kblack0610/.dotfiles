@@ -49,6 +49,11 @@ fn edit_tools() -> &'static [(&'static str, String)] {
     })
 }
 
+/// Whether a tool_use `name` is one of [`EDIT_TOOLS`] (plan.rs reads the same list).
+pub(super) fn is_edit_tool(name: &str) -> bool {
+    edit_tools().iter().any(|(t, _)| *t == name)
+}
+
 /// Files the session changed with its edit tools, deduplicated, in first-edit order.
 pub(super) fn edited_files(text: &str) -> Vec<String> {
     let tools = edit_tools();

@@ -175,7 +175,8 @@ fn plans_touched(text: &str, touch: Touch) -> Vec<(String, Ev)> {
                     .unwrap_or("")
             };
             match c.get("name").and_then(Value::as_str).unwrap_or("") {
-                tool @ ("Edit" | "Write" | "MultiEdit") => {
+                // NotebookEdit names notebook_path, so plan_name finds no plan in it.
+                tool if super::usage::is_edit_tool(tool) => {
                     let Some(name) = plan_name(input("file_path")) else {
                         continue;
                     };
