@@ -49,7 +49,7 @@
         "properties": {
           "decision": {
             "type": "string",
-            "description": "What this item decides, in a few words"
+            "description": "What this item decides, named as the act the picked answer commits the fleet to (with no pick, one item per option), in a few words"
           },
           "knowledge": {
             "type": "object",

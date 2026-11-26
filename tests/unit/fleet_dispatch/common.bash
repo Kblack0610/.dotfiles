@@ -358,6 +358,8 @@ plan_fixture() {
     "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"; }
   rule agent ga-1 unclear; rule agent ga-2 design; rule agent ga-3 unclear; rule agent ga-5 unclear
   rule agent ga-7 bundle; rule human gh-1 unclear
+  # ga-2 is a design skip the judge says needs a person, so it keeps the human exit
+  jq -c 'if .key == "ga-2" then .agent_only = false else . end' "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
   verdict game agent ga-4 dispatch
   # ga-5 was edited after its verdict
   sed -i 's/row ga-5/row ga-5 now longer/' "$NOTES_FIXTURE/rows.game.agent"
@@ -613,10 +615,11 @@ fj_pr() {
     > "$NOTES_FIXTURE/fj.pr"
 }
 
-# fix_ended <head> <ci> -- the fix-crash item's PR now reads OPEN at <head> with checks <ci>, and the
-# item is back in review/ with a session that is gone, as a fix-ci session leaves it when it ends.
+# fix_ended <head> <ci> [mergeable red-runs] -- the fix-crash item's PR now reads OPEN at <head> with checks
+# <ci> (and, given, PR_STATE_JQ's last two fields), and the item is back in review/ with a session that is
+# gone, as a fix-ci session leaves it when it ends.
 fix_ended() {
-  printf 'OPEN - %s %s\n' "$1" "$2" > "$NOTES_FIXTURE/pr.state"
+  printf 'OPEN - %s %s%s\n' "$1" "$2" "${3:+ $3 ${4:--}}" > "$NOTES_FIXTURE/pr.state"
   [ "$(agent-queue show fix-crash --json | jq -r .state)" = review ] && return 0
   agent-queue move fix-crash running >/dev/null
   agent-queue set fix-crash session=lab:game-agent-1 >/dev/null
@@ -788,12 +791,14 @@ harness_ready() {
   printf 'sk-paid\n' > "$SANDBOX/paid.key"
   jq -n --arg k "$SANDBOX/eval.key" --arg c "$SANDBOX/eval.json" --arg gk "$SANDBOX/paid.key" --arg gc "$SANDBOX/eval-paid.json" '{
     gateway: {url: "https://gw.test", key_file: $k},
+    capabilities: {code_review: {why: "the red-fix gate needs /code-review"}, lane_sandbox: {mode: "lane-sandbox", why: "no launcher applies a lane profile"},
+      unity_gate: {stack: "unity", why: "a unity PR needs the CI gate line"}},
     harnesses: {
-      "claude-lazer": {source: "eval", timeout_min: 180, models: {sonnet: "sonnet"}},
+      "claude-lazer": {source: "eval", capabilities: ["code_review", "unity_gate"], timeout_min: 180, models: {sonnet: "sonnet"}},
       opencode: {source: "eval", end_classifier: "opencode", headless: true, config: $c, timeout_min: 180, models: {sonnet: "litellm/claude-sonnet-5", qwen: "litellm/code (qwen-3-coder)"}},
       paid: {launcher: "opencode", source: "paid", end_classifier: "opencode", headless: true, metered: true, config: $gc, key_file: $gk, timeout_min: 180, models: {glm: "litellm/reasoning (glm-5.3)"}},
       codex: {source: "codex", end_classifier: "codex", headless: true, resume: true, timeout_min: 120, models: {sol: "gpt-6.1-sol"}},
-      "claude-cloud": {launcher: "claude-cloud", timeout_min: 90, models: {cloud: "cloud"}}}}' > "$SANDBOX/harnesses.json"
+      "claude-cloud": {launcher: "claude-cloud", capabilities: ["code_review"], timeout_min: 90, models: {cloud: "cloud"}}}}' > "$SANDBOX/harnesses.json"
   export DISPATCH_HARNESSES="$SANDBOX/harnesses.json"
   # The kinds route() keeps off a headless harness, at the path the script reads by default.
   mkdir -p "$HOME/.config/fleet-bench"
@@ -803,8 +808,7 @@ harness_ready() {
       {kind: "prod", match: "\\b(prod|production)\\b", why: "prod"},
       {kind: "unity-editor", stack: "unity", match: "(^|[[:space:]])#requested\\b|\\b(editor|play ?mode)\\b", why: "needs the editor"},
       {kind: "host-ops", match: "\\b(drain(s|ed|ing)?\\b.*\\b(runners?|hosts?)|(runners?|hosts?)\\b.*\\bdrain(s|ed|ing)?|(de|un)-?regist(er|ers|ered|ering|ration)\\b.*\\brunners?|runners?\\b.*\\b(de|un)-?regist(er|ers|ered|ering|ration)|runners? (registration|token)s?|regist(er|ers|ered|ering|ration) (of )?(the |a |its |their )?(self-hosted |org |github )?runners?|systemctl( +-[^ ]+)* +(stop|disable|mask|kill|restart|reboot|poweroff|halt))\\b", why: "live host ops"},
-      {mode: "fleet-worker", why: "no match, so never read by route"},
-      {mode: "lane-sandbox", why: "no match, so never read by route"}]}' > "$HOME/.config/fleet-bench/matrix.json"
+      {mode: "fleet-worker", why: "no match, so never read by route"}]}' > "$HOME/.config/fleet-bench/matrix.json"
   stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"; [ "$1" != log ] || echo run-9'
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
   tmux_script 'exit 0'
@@ -884,7 +888,7 @@ codex_ran() {
 route_ready() {
   harness_ready
   printf 'sk-reserve\n' > "$SANDBOX/reserve.key"
-  harness_set --arg k "$SANDBOX/reserve.key" '.harnesses["lazer-reserve"] = {launcher: "claude-lazer", source: "reserve", key_file: $k, timeout_min: 180, models: {sonnet: "sonnet"}}'
+  harness_set --arg k "$SANDBOX/reserve.key" '.harnesses["lazer-reserve"] = {launcher: "claude-lazer", source: "reserve", capabilities: ["code_review", "unity_gate"], key_file: $k, timeout_min: 180, models: {sonnet: "sonnet"}}'
   acct "alt:pace:/home/u/.claude-personal:4 points over its weekly pace"
   srcs
   sonnet_lane

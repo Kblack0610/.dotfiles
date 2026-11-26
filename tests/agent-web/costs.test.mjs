@@ -627,7 +627,7 @@ test("a snapshot from before the reader has no langfuse key and still draws the 
 });
 
 test("the fleet figure is Spend's first tile, and its coverage words sit under the spend table; every % is of the fleet", () => {
-  const fleet_cost = { why: null, usd: "about $849", cash: "$310", burn: "$538", as_of: 1700000000, stale: false,
+  const fleet_cost = { why: null, usd: "$849", cash: "$310", burn: "$538", as_of: 1700000000, stale: false,
     coverage: "71% of tokens estimated: 280 of 458 sessions have no cost telemetry",
     unpriced: ["claude-sonnet-4-6: 32M tokens in 3 sessions not in the total, no billed sessions"],
     foot: "% is of the whole fleet's figure for the day. \"est.\" is priced from tokens at rates fitted to measured sessions." };
