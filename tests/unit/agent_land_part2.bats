@@ -1360,6 +1360,48 @@ EOF
   assert_equal "$(jq -r '[.state, .status] | join("|")' <<<"$output")" 'done|ok'
 }
 
+@test "a red watch item lands while its watch trips under a quarantine with an owner, and records it; with none it still refuses (ar-5973)" {
+  cat >"$SANDBOX/bin/watch-companion-loop" <<'EOF'
+#!/usr/bin/env bash
+printf 'watch-companion-loop %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
+[ "$1" != quarantined ] || { cat "$NOTES_FIXTURE/quarantined" 2>/dev/null; exit 0; }
+echo "TRIP: spend still over limit"
+exit 1
+EOF
+  chmod +x "$SANDBOX/bin/watch-companion-loop"
+
+  cat >"$AGENT_QUEUE_DIR/running/20261103-100000-red-spend.md" <<'EOF'
+slug: red-spend
+project: dotfiles
+mode: oneshot
+priority: urgent
+from: fleet-bench
+agent: claude
+tags: red watch cause:ab12
+row: dotfiles:ship red
+queued: 2026-11-03T10:00:00Z
+started: 2026-11-03T10:00:00Z
+---
+check(watch): spend tripped since 2026-11-20, expected: spend under cap
+EOF
+
+  # No quarantine in force: the trip still refuses.
+  run "$LAND" 42 --item red-spend
+  assert_failure 1
+  assert_output --partial 'item failed: watch spend did not read OK on resolve (exit 1)'
+  run agent-queue show red-spend --json
+  assert_equal "$(jq -r .state <<<"$output")" 'running'
+
+  # A quarantine under an owner: the item closes, and the line names the owner and expiry.
+  printf 'spend\t2026-12-02T00:00:00-08:00\task:aRMp2v\tthe cap waits on the human\n' >"$NOTES_FIXTURE/quarantined"
+  run "$LAND" 42 --item red-spend
+  assert_success
+  assert_line 'watch: spend still trips on resolve, quarantined under ask:aRMp2v until 2026-12-02T00:00:00-08:00, so its close is not probed'
+  assert_line 'landed #42'
+  run agent-queue show red-spend --json
+  assert_equal "$(jq -r '[.state, .status] | join("|")' <<<"$output")" 'done|ok'
+}
+
 @test "a red watch item with --partial skips the probe check, and a non-red item with check(watch) in its task skips it too (ar-1605)" {
   cat >"$SANDBOX/bin/watch-companion-loop" <<'EOF'
 #!/usr/bin/env bash

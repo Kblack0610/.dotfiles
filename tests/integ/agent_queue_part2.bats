@@ -2983,6 +2983,8 @@ watch_fixture() {
     "$1" "$2" "$3" > "$AGENT_QUEUE_DIR/running/20261124-100000-$1.md"
   cat > "$SANDBOX/bin/watch-companion-loop" <<'EOS'
 #!/usr/bin/env bash
+# `quarantined` is a read of the quarantines in force, answered from NOTES_FIXTURE/quarantined and not logged
+[ "$1" != quarantined ] || { cat "$NOTES_FIXTURE/quarantined" 2>/dev/null; exit 0; }
 held=free; flock -n "$AGENT_QUEUE_DIR/.lock" true 2>/dev/null || held=held
 printf 'watch-companion-loop %s lock=%s\n' "$*" "$held" >> "$NOTES_FIXTURE/watch.log"
 rc=$(cat "$NOTES_FIXTURE/watch.rc" 2>/dev/null || echo 0)
@@ -3024,6 +3026,22 @@ EOS
   assert_success
   assert_equal "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-red-chain.md)" status)" ok
   assert_equal "$(cat "$NOTES_FIXTURE/watch.log")" 'watch-companion-loop recheck board-chain lock=free'
+}
+
+@test "move done ok on a red watch item closes while the watch trips under a quarantine with an owner, and refuses once none holds (ar-5973)" {
+  bats_require_minimum_version 1.5.0
+  watch_fixture red-quar 'red watch' 'check(watch): board-chain tripped'
+  printf '1\n' > "$NOTES_FIXTURE/watch.rc"
+  # An owner of `-` or another watch's quarantine is no quarantine of this watch's.
+  printf 'other-watch\t2026-12-02T00:00:00-08:00\tar-9\twaits\nboard-chain\t2026-12-02T00:00:00-08:00\t-\twaits\n' > "$NOTES_FIXTURE/quarantined"
+  run "$AQ" move red-quar done --status ok
+  assert_failure 6
+  [ -f "$(item running red-quar)" ]
+  printf 'other-watch\t2026-12-02T00:00:00-08:00\tar-9\twaits\nboard-chain\t2026-12-02T00:00:00-08:00\task:aRMp2v\twaits on the human\n' > "$NOTES_FIXTURE/quarantined"
+  run --separate-stderr "$AQ" move red-quar done --status ok
+  assert_success
+  [[ "$stderr" == *'watch: board-chain still trips on recheck, quarantined under ask:aRMp2v until 2026-12-02T00:00:00-08:00, so its close is not probed'* ]]
+  assert_equal "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-red-quar.md)" status)" ok
 }
 
 @test "move done reads no probe for a non-red item, a red item for no watch, or a failed close (ar-5414)" {
