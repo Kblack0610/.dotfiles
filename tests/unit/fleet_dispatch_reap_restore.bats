@@ -1718,7 +1718,7 @@ esac'
 # finished after the landed one, so agent-queue show reads it, not the item that landed.
 rerun_item() {
   local f; f=$(grep -rl '^slug: fix-crash' "$AGENT_QUEUE_DIR/done" | head -1)
-  sed -e 's/^status: .*/status: '"$1"'/' -e '/^pr: /d' -e '/^merged: /d' -e 's/^finished: .*/finished: 2099-01-01T00:00:00Z/' "$f" > "${f%/*}/20991231-000000-fix-crash.md"
+  sed -e 's/^status: .*/status: '"$1"'/' -e '/^pr: /d' -e '/^merged: /d' -e 's/^outcome: .*/outcome: '"$1"'/' -e 's/^finished: .*/finished: 2099-01-01T00:00:00Z/' "$f" > "${f%/*}/20991231-000000-fix-crash.md"
   assert_equal "$(agent-queue show fix-crash --json | jq -r '[.status, .pr // ""] | join("|")')" "$1|"
 }
 

@@ -52,7 +52,7 @@ context() {
 }
 
 @test "a session the human opened reads a hold as a warning; a dispatched one, attended too, is stopped by it" {
-  "$REPO_ROOT/.local/bin/agent-hold" set unity-tests --by human "lockdown"
+  "$REPO_ROOT/.local/bin/agent-hold" set unity-tests --by human --until "+12 hours" "lockdown"
   CLAUDE_CODE_SESSION_ATTENDED=1 run context
   assert_success
   assert_output --partial 'Active holds (a warning'
@@ -62,6 +62,16 @@ context() {
   assert_output --partial 'do not start work on these until released'
   run context
   assert_output --partial 'do not start work on these until released'
+}
+
+@test "a hold past its until is over, so it shows no more; one still in force does (ar-6059)" {
+  "$REPO_ROOT/.local/bin/agent-hold" set unity-tests --by human --until "+12 hours" "lockdown"
+  run context
+  assert_output --partial 'unity-tests since'
+  sed -i "s/^until: .*/until: $(date -d '-1 minute' +%Y-%m-%dT%H:%M:%S%z)/" "$AGENT_HOLD_DIR/unity-tests"
+  run context
+  assert_success
+  refute_output --partial 'Active holds'
 }
 
 @test "no hold, no block" {
