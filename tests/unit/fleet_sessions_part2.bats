@@ -1164,6 +1164,39 @@ PROM
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red, background shell idle over 30m' ]
 }
 
+@test "end to end: a gate detached with & reads a gate wait on an idle session, not STALLED (ar-1085)" {
+  # unity-core-playground-agent-3 (run 42525454189): ci-gate.sh ran on in the worktree after the Bash call that started
+  # it with & returned, the session read idle, and live_wait never ran, so the row read STALLED.
+  landed_fixture
+  export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache" FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
+  printf 'gate ci-gate.sh\n' > "$FLEET_TIME_USE_CONF"
+  mkdir -p "$SANDBOX/wt/scripts/test"
+  printf 'sleep 60\n' > "$SANDBOX/wt/scripts/test/ci-gate.sh"
+  job 77 'Harness tests:failure'
+  ledger feat/x '[]'; open_pr FAIL 77
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+  local gate
+  (cd "$SANDBOX/wt" && exec -a x bash scripts/test/ci-gate.sh) >/dev/null 2>&1 3>&- &
+  gate=$!; LIVE_PIDS="$gate"
+  until grep -q ci-gate.sh "/proc/$gate/cmdline" 2>/dev/null; do :; done
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  [ "$(jq -r .reason <<<"$output")" = 'gate running detached, nothing wakes the session when it ends' ]
+  # ci-gate.sh is a landing-queue gate: it ends itself, so FLEET_SHELL_STALE_MIN does not make it stale
+  [ "$(jq -r .open_job <<<"$output")" = queue ]
+  FLEET_SHELL_STALE_MIN=30 run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'gate running detached, nothing wakes the session when it ends' ]
+  # negative controls: a session idle under FLEET_IDLE_MIN, and one whose gate ended
+  PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'idle 5m' ]
+  panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  kill "$gate"; wait "$gate" 2>/dev/null || true
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+}
+
 @test "end to end: a red gate line is CI running while its item is after: an open item, red once that item is done (ar-4314)" {
   # 2026-11-21 unity-core-playground #3076 and #3083 read STALLED CI red: each item was stacked on an open
   # item, so agent-land held it (exit 4) before a gate was dispatched and Checks' Merge gate line stayed red.
