@@ -224,6 +224,8 @@ BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 #                [<cron: yes when a recurring cron the session scheduled is still live (wake_facts), or ->]
 #                [<merged PRs: work_blockers' 23rd, - here>]
 #                [<carried: the live items its own running items filed (carried_by), comma-separated, or ->]
+#                [<detached: an idle session's gate, test or queue process (live_wait) runs detached: what wakes the session
+#                 when it ends (wake_facts' wake), none when nothing does, or - when no such process runs>]
 #   -> "BUCKET reason"
 # <git> is 1 in a repo, 0 outside one, gone when the cwd itself no longer exists (a reaped worktree).
 # Who must act decides before whether the session is active: an ask waits on the human, and
@@ -250,7 +252,7 @@ session_bucket() {
   # ask keeps one definition of working.
   if [ "$3" -gt 0 ]; then
     case "$(session_bucket "$1" "$2" 0 "${@:4}")" in
-      "WORKING busy"* | "WORKING shell"* | "WORKING subagent"*) echo "NEEDS $3 pending ask(s), carrying on" ;;
+      "WORKING busy"* | "WORKING shell"* | "WORKING subagent"* | "WORKING "*" running detached"*) echo "NEEDS $3 pending ask(s), carrying on" ;;
       *) echo "NEEDS $3 pending ask(s)" ;;
     esac
     return
@@ -275,6 +277,16 @@ session_bucket() {
       if [ "$job" = agent ] && [ "$5" -ge "$FLEET_IDLE_MIN" ]; then
         [ "$5" -lt "$FLEET_SHELL_STALE_MIN" ] && { echo "WORKING subagent running$cn"; return; }
         note=", subagent running over ${FLEET_SHELL_STALE_MIN}m"
+      fi
+      # A gate started with & runs on after its Bash call returned, so Claude reads idle (ar-1085). It waits as a gate
+      # shell does, and the reason says what wakes the session when the gate ends: nothing, unless it scheduled a wake-up.
+      if [ "${25:--}" != - ] && [ "$job" != agent ]; then
+        local what=gate wakes="nothing wakes the session when it ends"
+        [ "$job" != test ] || what=test
+        [ "${25}" = none ] || wakes="${25} wakes the session"
+        if [ "$5" -ge "$FLEET_IDLE_MIN" ] && session_finished "$@"; then note=", detached $what still running"
+        elif [ "$5" -lt "$FLEET_SHELL_STALE_MIN" ] || [ "$job" = queue ]; then echo "WORKING $what running detached, $wakes$cn"; return
+        else note=", detached $what idle over ${FLEET_SHELL_STALE_MIN}m"; fi
       fi ;;
     shell)
       # A finished plan is not waiting on its shell: DONE tells it to stop the shell first.
@@ -328,8 +340,8 @@ proc_snapshot() {
   ls -l /proc/[0-9]*/cwd 2>/dev/null | sed -nE 's|^.* /proc/([0-9]+)/cwd -> (.*)$|\1\t\2|p' > "$1.cwd" || :   # ls fails on a process that exits mid-read, whatever it listed
 }
 
-# gate_log_idle <host|-> <status> <open job> <cwd> <idle min> [<transcript>] -> the idle minutes the bucket reads. For
-# a local session whose shell is a gate or test, the age of the newest FLEET_GATE_LOGS file under the worktree, or of
+# gate_log_idle <host|-> <status, or detached for an idle session whose gate runs detached> <open job> <cwd> <idle min>
+# [<transcript>] -> the idle minutes the bucket reads. For a local session whose shell (or detached process) is a gate or test, the age of the newest FLEET_GATE_LOGS file under the worktree, or of
 # an open background task's output file (open_outputs), when it is under <idle min>; otherwise <idle min>. A local
 # suite.sh gate prints into Logs/gate.txt while the transcript sees nothing (2026-11-04 agent-23 read "background
 # shell idle over 120m" with ~80 classes done), and a gate in the landing-slot wait prints a line a minute
@@ -338,7 +350,7 @@ proc_snapshot() {
 gate_log_idle() {
   local idle="$5" f m age root
   local -a logs=()
-  [ "$1" = - ] && [ "$2" = shell ] && { [ "$3" = gate ] || [ "$3" = test ]; } || { echo "$idle"; return; }
+  [ "$1" = - ] && { [ "$2" = shell ] || [ "$2" = detached ]; } && { [ "$3" = gate ] || [ "$3" = test ]; } || { echo "$idle"; return; }
   # The worktree root, so a session started in a subdirectory finds the same log; no glob expands.
   root="$(git -C "$4" rev-parse --show-toplevel 2>/dev/null)" || root="$4"
   read -ra logs <<<"$FLEET_GATE_LOGS"
@@ -2717,7 +2729,19 @@ collect() {
     landed="$(jq -r 'if any(.state == "MERGED") and all(.state != null and .state != "OPEN")
       then map(select(.state == "MERGED") | "#\(.number)") | join(",") else "-" end' <<<"$prs")"
     tsess="${target#*/}"; tsess="${tsess%:*}"
-    idle=$(( (now - since) / 60 )); bidle="$(gate_log_idle "$host" "$status" "$ojob" "$cwd" "$idle" "$transcript")"
+    idle=$(( (now - since) / 60 ))
+    # A gate detached with & outlives the Bash call that started it: the call returns, Claude reads idle, and ci-gate.sh
+    # still runs in the worktree, so the shell probes above never ran and the row read STALLED (unity-core-playground-agent-3,
+    # run 42525454189, ar-1085). The live process is the wait; detached is what wakes the session when it ends (wake_facts
+    # below), none when nothing does. Only a session in a checkout other than $HOME: live_wait reads every process below
+    # the cwd, so a chat in $HOME would claim each worktree's gate.
+    local detached=- dlive="" dtop gst="$status"
+    if [ "$host" = - ] && [ "$status" = idle ] && [ "$idle" -ge "$FLEET_IDLE_MIN" ] && [ "$ojob" != agent ] && [ "$ojob" != human ] \
+       && dtop="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)" && [ "$dtop" != "$HOME" ]; then
+      dlive="$(live_wait "$cwd" "$cpid")"
+      case "$dlive" in gate | test | queue) ojob="$dlive"; detached=none; gst=detached ;; esac
+    fi
+    bidle="$(gate_log_idle "$host" "$gst" "$ojob" "$cwd" "$idle" "$transcript")"
     age=-; [[ "$started" =~ ^[0-9]+$ ]] && age=$(( (now - started) / 60 ))
     local solo item
     solo="$(jq -r --arg k "${target%:*}" 'select((.target | sub(":[^:]*$"; "")) == $k) | .target' <<<"$panel" 2>/dev/null | wc -l)"
@@ -2766,7 +2790,7 @@ collect() {
         | if length == 0 then "-" else join(",") end' <<<"$qall" 2>/dev/null)"
       landed="${landed:--}"
     fi
-    local sjob=- chain="$(chain_hold "$qall" "$islugs" "$irel")"; [ "$status" = shell ] && sjob="$ojob"
+    local sjob=- chain="$(chain_hold "$qall" "$islugs" "$irel")"; { [ "$status" = shell ] || [ "$detached" != - ]; } && sjob="$ojob"
     # gd is the clone repo-wide reads go through: the cwd here, this machine's clone of a worker's repo
     # (worker_clone), - when there is none. whead is a worker's HEAD, for activity_line.
     local gd="$cwd" whead=- wmain worigin
@@ -2908,8 +2932,9 @@ collect() {
     if [ "$host" = - ] && { [ "$idle" -ge "$FLEET_IDLE_MIN" ] || [ "$sid" = "${CLOSE_SELF:-}" ]; }; then
       IFS=$'\t' read -r wake cron < <(wake_facts "$transcript" "$started" "$now" "$idle" "$phases" "$pdone" "$ptotal" "$pq")
     fi
+    [ "$detached" = - ] || [ "$wake" = - ] || detached="$wake"
     bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$bidle" "$g" "$dirty" "$ahead" \
-              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" "$cron" - "$carried")"
+              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" "$cron" - "$carried" "$detached")"
     fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$bidle" "$g" "$dirty" "$ahead" \
              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" && fin=1
     # An idle session whose transcript ends on its own stop line is stopped (stopped_bucket); a finished one is left to DONE.
