@@ -35,8 +35,8 @@
 #   agent-hold release <resource> [--by name] [--force]   ends the hold, restoring what lower
 #                                   slowed, and answers grant each open ask that asked only for a
 #                                   grant under it. A claim in force is released only by its holder
-#                                   (one of its names, its session id, or --by the name it was
-#                                   claimed for); --force frees one whose holder is gone
+#                                   (one of its names or its session id, from the caller or given
+#                                   as --by, audited); --force frees one whose holder is gone
 #   agent-hold check <resource> [--no-caller] [--for <id>...]   exit 1 (and print the hold) while
 #                                   held, 0 when free, past its until, or when the caller is
 #                                   granted or holds the claim; --no-caller asks as no session, so neither counts; --for
@@ -520,7 +520,8 @@ settle_grant_asks() {
   [ -z "$cancelled" ] || echo "cancelled (no hold left to grant under): $cancelled"
 }
 
-# cmd_release <resource>; keep_asks=1 is the claim path's, which takes the resource again at
+# cmd_release <resource> [--by name] [--force]: exit 1 on a claim in force the caller does not
+# hold, unless --force. keep_asks=1 is the claim path's, which takes the resource again at
 # once, so no ask about it is settled as free.
 cmd_release() {
   local resource="${1:-}"; shift || true
@@ -544,13 +545,14 @@ cmd_release() {
   # gone is freed with --force by whoever finds it. The check catches a release by mistake; it does
   # not prove a holder gone, and the audit line names whose claim a --force freed. A claim past
   # its until is over, as check reads it, so anyone releases it (claim's own takeover of one does).
-  local forced=""
+  local note=""
   if [ "$(field "$f" kind)" = claim ] && ! expired "$f"; then
     local holder; holder="$(field "$f" by)"
-    if [ -n "$force" ]; then forced=" (forced over $holder's claim)"
+    if [ -n "$force" ]; then note=" (forced over $holder's claim)"
     else
-      if [ -n "$by" ]; then [ "$holder" = "$by" ]; else owns_claim "$f" "$(callers)"; fi ||
-        { echo "agent-hold release: $resource is claimed by $holder since $(field "$f" since): $reason. Only its holder releases it (agent-hold release $resource --by $holder, from that session); --force only when that session is gone." >&2; exit 1; }
+      owns_claim "$f" "${by:-$(callers)}" ||
+        { echo "agent-hold release: $resource is claimed by $holder since $(field "$f" since): $reason. Only its holder releases it, from its own session; --force (audited) only when that session is gone." >&2; exit 1; }
+      [ -z "$by" ] || note=" (released as $by)"
     fi
   fi
   local unit failed=""
@@ -575,7 +577,7 @@ cmd_release() {
   # A lifted hold is what held starts back: wake a kick (dispatch_wake) rather than wait for the timer.
   dispatch_wake "agent-hold release $resource"
   notify -p low -t "go: $resource" "released (was: $reason)"
-  audit_append "$(default_by)" hold.released "$resource" ok "was: $reason$forced"
+  audit_append "$(default_by)" hold.released "$resource" ok "was: $reason$note"
   echo "released: $resource"
   # Printed so the caller can send GO to exactly the sessions that were told to stop.
   [ -n "$roster" ] && echo "roster: $roster"

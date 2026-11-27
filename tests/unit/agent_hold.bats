@@ -583,6 +583,7 @@ STUB
   run "$HOLD" release mac-desktop
   assert_failure 1
   assert_output --partial 'claimed by agent-42'
+  refute_output --partial -- '--by agent-42'
   run "$HOLD" release mac-desktop --by agent-9
   assert_failure 1
   grep -qx 'by: agent-42' "$AGENT_HOLD_DIR/mac-desktop"
@@ -604,6 +605,11 @@ STUB
   assert_failure 1
   run env CLAUDE_CODE_SESSION_ID=s-x "$HOLD" release mac-desktop
   assert_success
+  # --by takes the session id too, and the audit names who it was released as
+  CLAUDE_CODE_SESSION_ID=s-x "$HOLD" claim mac-desktop "screenshots"
+  run "$HOLD" release mac-desktop --by s-x
+  assert_success
+  grep -F 'released as s-x' "$HOME/.agent/audit/actions.jsonl"
   unset TMUX TMUX_PANE
   # a holder gone: --force frees it
   "$HOLD" claim mac-desktop --by agent-42 "store form"
