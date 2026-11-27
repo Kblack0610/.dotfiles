@@ -88,6 +88,10 @@ impl InfraTables {
             self.pods = !self.pods;
             return Took::View;
         }
+        if inner == "runners" && !self.pods {
+            // The pod table is folded: no table here takes a key, only `e`.
+            return Took::No;
+        }
         self.at = i;
         let t = &mut self.views[i];
         if code == KeyCode::Esc && t.typing.is_none() {
@@ -232,7 +236,7 @@ impl InfraTables {
 /// One row per CI machine and nothing under it: what its job pods book against allocatable, its
 /// real CPU, and the jobs running there by kind. The per-pod rows are `runners`, folded until `e`.
 /// Drawn with no view and no keys: the Machines tab's table is the one to sort and open.
-pub fn ci_machines(infra: &Infra, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+pub fn ci_machines(infra: &Infra, p: Palette, w: usize) -> Vec<Line<'static>> {
     let t = DataTable::default();
     let d = Draw {
         t: &t,
@@ -253,12 +257,12 @@ pub fn ci_machines(infra: &Infra, p: Palette, now: i64, w: usize) -> Vec<Line<'s
             .total_cmp(&share(a))
             .then_with(|| a.host.cmp(&b.host))
     });
-    ci_machine_rows(&d, &rows, now)
+    ci_machine_rows(&d, &rows)
 }
 
 const CI_MACHINE_HEAD: [&str; 6] = ["MACHINE", "STATE", "BOOKED", "CPU", "JOBS", "RUNNING"];
 
-fn ci_machine_rows(d: &Draw, rows: &[Machine], _now: i64) -> Vec<Line<'static>> {
+fn ci_machine_rows(d: &Draw, rows: &[Machine]) -> Vec<Line<'static>> {
     let p = d.p;
     d.table(
         "CI MACHINES".into(),

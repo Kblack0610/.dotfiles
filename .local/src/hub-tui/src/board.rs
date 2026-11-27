@@ -255,7 +255,7 @@ pub fn infra(
     machines.extend(table("machines"));
     let mut ci = b.ci_head(failed, w);
     ci.push(blank());
-    ci.extend(crate::infratables::ci_machines(infra, p, now, w));
+    ci.extend(crate::infratables::ci_machines(infra, p, w));
     ci.push(blank());
     ci.extend(table("runners"));
     let sections = vec![
@@ -280,7 +280,7 @@ pub fn ci_runners(infra: &Infra, p: Palette, w: usize, pods: bool) -> Vec<Line<'
     };
     let mut out = Board::new(infra, p).ci_head(None, w);
     out.push(Line::raw(""));
-    out.extend(crate::infratables::ci_machines(infra, p, 0, w));
+    out.extend(crate::infratables::ci_machines(infra, p, w));
     out.push(Line::raw(""));
     out.extend(t.draw(infra, "queued", "", p, 0, w));
     if pods {

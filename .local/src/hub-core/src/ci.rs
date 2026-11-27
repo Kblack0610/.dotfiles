@@ -13,7 +13,7 @@
 //! job starts a pod, and GitHub lists that pod's runner with no labels, so a pool's labels come
 //! from the exporter's `ci_runner_pool` row (`Pool`) and it holds them like a runner (ar-5477).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use serde::Serialize;
 
@@ -565,10 +565,9 @@ pub fn glance(infra: &Infra) -> Glance {
 /// An ARC runner is its job pod, no slot: `jobpods` counts it on its node.
 pub fn slots_by_host(infra: &Infra) -> BTreeMap<String, (u32, u32)> {
     let off = infra.powered_off();
-    let pools = pools(infra);
     let mut by: BTreeMap<String, (u32, u32)> = BTreeMap::new();
     for r in runners(infra) {
-        if infra.pod(r.s.label("name")).is_some() || gone(infra, &pools, &r) {
+        if infra.pod(r.s.label("name")).is_some() {
             continue;
         }
         let e = by.entry(r.host.clone()).or_default();
@@ -598,8 +597,8 @@ pub(crate) fn seat_units(infra: &Infra) -> HashMap<String, f64> {
 
 /// The jobs running on each machine, each by kind and repo, the most of a kind first:
 /// `[arc-org-light] x3, [unity] unity-core-playground`. A job pod is its scale set
-/// (`jobpods::running_by_node`, by the kind the exporter reads off its `ci-kind` label); a running fixed slot says the kind of job it runs (`Slot::pool`),
-/// `job` when that is not known; a local gate is `[gates]`. Only running jobs: a slot held back,
+/// (`jobpods::running_by_node`, by the kind of job it runs); a running fixed slot says the kind
+/// of job it runs (`Slot::pool`), `job` when that is not known; a local gate is `[gates]`. Only running jobs: a slot held back,
 /// lent or idle says nothing, and the runners table keeps each slot's state.
 pub fn running_by_host(infra: &Infra) -> BTreeMap<String, Vec<String>> {
     let mut by = crate::jobpods::running_by_node(&infra.pods, &infra.job_kinds());
@@ -672,13 +671,27 @@ impl Ci {
 
 /// An ephemeral pool's runner GitHub still lists after its job pod is gone (finished, deleted):
 /// the exporter files it under a host that is no machine (`unknown`, `arc-org`), it runs nothing
-/// and sits on no node, so it has no row and no slot (2026-11-27: 6 rows with host unknown, 3 of
-/// them with no job). Read only once job pods are read at all.
-fn gone(infra: &Infra, pools: &[Pool], r: &Runner) -> bool {
-    let name = r.s.label("name");
-    !infra.pods.is_empty()
+/// and sits on no node, so it has no row, no slot and takes no job (2026-11-27: 6 rows with host
+/// unknown, 3 of them with no job). Read only when the job pods were read at all, an idle
+/// cluster with no pod included.
+fn gone(infra: &Infra, pools: &[Pool], name: &str) -> bool {
+    infra.instant.contains_key("job_pods")
         && infra.pod(name).is_none()
-        && pools.iter().any(|p| name.starts_with(p.name))
+        && pools
+            .iter()
+            .any(|p| !p.name.is_empty() && name.starts_with(p.name))
+}
+
+/// The names of the runners `gone` says have no pod, for the machine rows.
+pub fn gone_runners(infra: &Infra) -> HashSet<String> {
+    let pools = pools(infra);
+    infra
+        .get("runners")
+        .iter()
+        .map(|s| s.label("name"))
+        .filter(|n| gone(infra, &pools, n))
+        .map(String::from)
+        .collect()
 }
 
 /// A runner as the exporter reports it, one per name.
@@ -787,8 +800,12 @@ fn runners(infra: &Infra) -> Vec<Runner<'_>> {
     let held = infra.withheld();
     let lent = infra.lent();
     let kinds = infra.job_kinds();
+    let pools = pools(infra);
     let mut by: BTreeMap<&str, &Series> = BTreeMap::new();
     for s in infra.get("runners") {
+        if gone(infra, &pools, s.label("name")) {
+            continue;
+        }
         let e = by.entry(s.label("name")).or_insert(s);
         if s.label("state") == "running" && e.label("state") != "running" {
             *e = s;
@@ -915,7 +932,6 @@ fn job_name(s: &Series) -> String {
 
 pub fn build(infra: &Infra) -> Ci {
     let all = runners(infra);
-    let pools = pools(infra);
     let off = infra.powered_off();
     let usual = usual(infra);
     let alias = infra.aliases();
@@ -925,9 +941,6 @@ pub fn build(infra: &Infra) -> Ci {
     for r in &all {
         let s = r.s;
         let host = r.host.clone();
-        if gone(infra, &pools, r) {
-            continue;
-        }
         hosts.insert(host.clone());
         // A runner with no job has no row: the machine rows say what is booked.
         if now_of(r, &off) != "busy" {
