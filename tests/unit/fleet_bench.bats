@@ -2853,6 +2853,7 @@ fix_item() {
 
 @test "triage: two passes on one red key leave one open agent row, and the second pass writes no add or drop for it (ar-6265)" {
   log_triage_setup
+  : > "$BOARD.agent-runtime"   # the human sheet, empty
   watch spend TRIP -25200 high
   route 'watch.: spend' alert - 'the spend watch pages on its own'
   run "$SUBJECT" triage
