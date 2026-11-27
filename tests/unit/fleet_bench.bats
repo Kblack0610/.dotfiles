@@ -2323,6 +2323,37 @@ cause_of() { printf '%s' 'lock .* held by pid' | sha256sum | cut -c1-8; }
   [ ! -s "$PLOG" ]
 }
 
+# 2026-11-22 (ar-4654): ar-2363's item closed ok with no PR and left its row started, and triage
+# promoted only todo rows, so home-k3s-trivy-criticals had no owner until the orphan pass's 72h.
+@test "triage: a red's row left started by a closed fix no live item holds is queued again with --restart; a refusal is logged" {
+  log_triage_setup
+  lock_route
+  run "$SUBJECT" triage
+  assert_success
+  local id; id=$(grep -o 'fix(logs).*<!-- id:ar-[0-9]*' "$BOARD" | grep -o 'ar-[0-9]*$')
+  [ -n "$id" ] || fail "the filed row has no id"
+  sed -i 's/- \[ \] fix(logs)/- [\/] fix(logs)/' "$BOARD"; : > "$PLOG"
+  # its own item closed ok with no PR: a try that did not hold, so the row is queued again as a retry
+  jq -cn --arg t "red cause:$(cause_of)" --arg id "$id" '{slug: $id, tags: $t, state: "done", status: "ok", queued: "2020-01-01T00:00:00Z", row: ("agent-runtime:" + $id)}' > "$ITEMS"
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '1 queued as red fixes'
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --dispatch --restart --project agent-runtime --tags red cause:$(cause_of) retry:$id --raw - \[/\] fix\(logs\): alpha error .*id:$id -->$"
+  # negative control: a live item of the row holds it, so nothing is queued
+  : > "$PLOG"
+  jq -cn --arg id "$id" '{slug: "ar-78", tags: "", state: "running", queued: "2020-01-01T00:00:00Z", row: ("agent-runtime:" + $id)}' >> "$ITEMS"
+  run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  # the promote's refusal is said, never dropped
+  sed -i 2d "$ITEMS"
+  printf '#!/usr/bin/env bash\necho "fleet-dispatch: skip agent-runtime: row gone" >&2; exit 1\n' > "$SANDBOX/bin/promote-stub"
+  run "$SUBJECT" triage
+  assert_success
+  assert_line --regexp '^fleet-bench: triage: could not queue fix\(logs\): alpha error .* \(- \[/\]\): fleet-dispatch: skip agent-runtime: row gone$'
+}
+
 @test "triage: a high or urgent watch is a row after one pass; a low one after 30 minutes, the hour it trips" {
   triage_setup
   watch hot TRIP -1000 high; watch hotter TRIP -1000 urgent; watch young TRIP -600 high; watch slow TRIP -1000 low; watch none TRIP -1000 ''
