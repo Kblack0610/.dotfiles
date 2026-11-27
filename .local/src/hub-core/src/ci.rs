@@ -13,7 +13,7 @@
 //! job starts a pod, and GitHub lists that pod's runner with no labels, so a pool's labels come
 //! from the exporter's `ci_runner_pool` row (`Pool`) and it holds them like a runner (ar-5477).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde::Serialize;
 
@@ -219,7 +219,12 @@ pub struct JobKind {
     pub waiting: Option<f64>,
     /// Seconds the oldest waiting job has waited.
     pub oldest: Option<f64>,
+    /// Finished in the last hour and five hours (`Pool::done_1h`).
+    pub done_1h: Option<f64>,
+    pub done_5h: Option<f64>,
     pub done: Option<f64>,
+    /// Seconds one of its finished jobs usually runs (`Pool::usual`).
+    pub usual: Option<f64>,
     pub pass: Option<f64>,
     /// The share of a slot one of its jobs takes, as text (`Pool::weight`).
     pub weight: Option<String>,
@@ -230,6 +235,8 @@ pub struct JobKind {
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct Host {
     pub host: String,
+    /// `Machine::state`: `up`, or `NotReady`, `quarantined`, `cordoned` for a node that takes no job.
+    pub state: String,
     /// Jobs running there (`Machine::busy`).
     pub busy: u32,
     /// What its job pods book (`Machine::booked`); None for a machine that is no CI node (an
@@ -299,7 +306,8 @@ pub struct Part {
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct Glance {
     /// `cc:domain_status{domain="ci"}`: the whole domain, queue waits and pass rate too. The
-    /// System health strip reads it; the CI card surfaces read `alert`.
+    /// System health strip and agent-web's CI RUNNING tile read it (ar-5013); the phone's CI row
+    /// reads `alert`.
     pub level: Level,
     /// The one CI alert: Red while a runner is down (`Infra::runners_down`) or a queued job has
     /// no online runner that can take it (`Ci::red`), Nodata with no runner read, else Ok. Queue
@@ -321,6 +329,10 @@ pub struct Glance {
     pub oldest: Option<f64>,
     /// Jobs finished in the last day, and their pass share weighed by each kind's count.
     pub done: u32,
+    /// Jobs finished in the last hour and five hours, summed over the kinds that report the
+    /// window; None until one does, so a head never prints a 0 for a window nobody measured.
+    pub done_1h: Option<u32>,
+    pub done_5h: Option<u32>,
     pub pass: Option<f64>,
     pub kinds: Vec<JobKind>,
     /// Every CI node, and any other machine running a job, the most booked first.
@@ -352,7 +364,7 @@ impl Glance {
         format!("{}/{}", self.up, self.expected)
     }
 
-    /// `4 running, 23 queued (oldest 21m), booked 18.2/144 cpu, 12/12 runners up, 759 done 24h,
+    /// `4 running, 23 queued (oldest 21m), booked 18.2/144 cpu, 12/12 runners up, 6 done 1h, 80 done 5h, 759 done 24h,
     /// 91% passed`: jobs running and waiting, what the job pods book of every CI node's CPU,
     /// then runner liveness. A slot held back or lent is no count here, and a job it makes wait
     /// is in queued.
@@ -367,8 +379,16 @@ impl Glance {
                 crate::jobpods::cores(b.cpu),
                 b.cpu_alloc.round()
             );
+            if b.reserved > 0.0 {
+                s += &format!(" ({} reserved)", crate::jobpods::cores(b.reserved));
+            }
         }
         s += &format!(", {} runners up", self.up_line());
+        for (n, w) in [(self.done_1h, "1h"), (self.done_5h, "5h")] {
+            if let Some(n) = n {
+                s += &format!(", {n} done {w}");
+            }
+        }
         if self.done > 0 {
             s += &format!(", {} done 24h", self.done);
             if let Some(p) = self.pass {
@@ -423,12 +443,20 @@ pub fn glance(infra: &Infra) -> Glance {
             running: p.running,
             waiting: p.waiting,
             oldest: p.oldest,
+            done_1h: p.done_1h,
+            done_5h: p.done_5h,
             done: p.done,
+            usual: p.usual,
             pass: p.pass,
             weight: p.weight.clone(),
         });
     }
     g.pass = (ran > 0.0).then(|| passed / ran);
+    let window = |f: fn(&crate::machines::Pool) -> Option<f64>| {
+        let n: Vec<f64> = infra.pools.iter().filter_map(f).collect();
+        (!n.is_empty()).then(|| n.iter().sum::<f64>() as u32)
+    };
+    (g.done_1h, g.done_5h) = (window(|p| p.done_1h), window(|p| p.done_5h));
     g.pending = crate::jobpods::pending(&infra.pods);
     let alias = infra.aliases();
     let mut off: Vec<String> = infra
@@ -461,6 +489,7 @@ pub fn glance(infra: &Infra) -> Glance {
         }
         g.machines.push(Host {
             host: m.host.clone(),
+            state: m.state.clone(),
             busy: m.busy,
             booked: m.booked,
             cpu: m.cpu,
@@ -701,11 +730,7 @@ fn pools(infra: &Infra) -> Vec<Pool<'_>> {
 /// rollout.
 fn runners(infra: &Infra) -> Vec<Runner<'_>> {
     let alias = infra.aliases();
-    let held: HashSet<&str> = infra
-        .get("withheld")
-        .iter()
-        .map(|s| s.label("name"))
-        .collect();
+    let held = infra.withheld();
     let lent = infra.lent();
     let kinds = infra.job_kinds();
     let mut by: BTreeMap<&str, &Series> = BTreeMap::new();
@@ -2135,6 +2160,45 @@ mod tests {
         );
     }
 
+    /// ar-6008: the `ci-build-slot` pause pod books the Unity build slot's CPU. Its node's row
+    /// says reserved CPU, never a running job, and a node that is down or quarantined says so.
+    #[test]
+    fn a_reservation_pod_is_reserved_cpu_on_its_row_and_a_down_node_says_so() {
+        let mut i = clustered();
+        let (pods, req) = crate::jobpods::tests::reservations();
+        i.instant.get_mut("job_pods").unwrap().extend(pods);
+        i.instant.get_mut("job_requests").unwrap().extend(req);
+        i.instant.insert(
+            "node_state",
+            vec![
+                crate::jobpods::tests::node_state("tuf-b550", "NotReady"),
+                crate::jobpods::tests::node_state("tuf-b550", "cordoned"),
+            ],
+        );
+        i.derive();
+        let g = &i.ci.glance;
+        let row = |h: &str| g.machines.iter().find(|m| m.host == h).unwrap();
+        let (ms, tuf) = (row("ms-a2"), row("tuf-b550"));
+        assert_eq!(ms.running, ["[arc-org-light] x2"]);
+        assert_eq!(ms.busy, 2);
+        assert_eq!(ms.booked.unwrap().cell(), "11.7/32 23G/92G, 7.4 reserved");
+        assert_eq!((tuf.busy, tuf.running.len()), (0, 0));
+        assert_eq!(tuf.booked.unwrap().cell(), "7.4/32 21G/63G, 7.4 reserved");
+        assert_eq!(tuf.state, "NotReady, cordoned");
+        assert!(!ms.state.contains("NotReady"), "{}", ms.state);
+        assert_eq!(g.busy, 3, "the reservations are no running job");
+        assert!(
+            g.head(|s| format!("{}m", s / 60))
+                .contains("booked 19.1/64 cpu (14.7 reserved)"),
+            "{}",
+            g.head(|s| format!("{}m", s / 60))
+        );
+        assert_eq!(
+            g.pending_line().as_deref(),
+            Some("waiting for room: arc-org-light (1.69 cpu 1.2G)")
+        );
+    }
+
     /// A host whose every runner is held back still has a row, so it stays on the bar and
     /// the hover.
     #[test]
@@ -2216,6 +2280,36 @@ mod tests {
         assert_eq!(i.ci.glance.alert, Level::Nodata);
     }
 
+    /// ar-6260: the 1h and 5h finished counts sum over the kinds that report them and sit
+    /// beside the 24h figure; a window no kind reports (the local gates never do) prints nothing.
+    #[test]
+    fn the_head_shows_the_short_windows_beside_the_day_only_once_a_kind_reports_them() {
+        let mut i = crate::machines::tests::fleet();
+        i.derive();
+        let dur = |s: i64| format!("{}m", s / 60);
+        assert_eq!((i.ci.glance.done_1h, i.ci.glance.done_5h), (None, None));
+        assert!(!i.ci.glance.head(dur).contains("done 1h"));
+        let mut rows = i.get("cc").to_vec();
+        let cc = |n: &str, p: &str, v: &str| json!({"__name__": n, "pool": p, "v": v});
+        rows.extend(crate::machines::tests::series(vec![
+            cc("cc:pool_done_24h", "unity", "20"),
+            cc("cc:pool_done_1h", "unity", "2"),
+            cc("cc:pool_done_5h", "unity", "9"),
+            cc("cc:pool_done_1h", "macos", "0"),
+            cc("cc:pool_done_5h", "macos", "1"),
+        ]));
+        i.instant.insert("cc", rows);
+        i.derive();
+        let g = &i.ci.glance;
+        assert_eq!((g.done_1h, g.done_5h, g.done), (Some(2), Some(10), 24));
+        assert_eq!(
+            g.head(dur),
+            "1 running, 2 queued (oldest 15m), 3/3 runners up, 2 done 1h, 10 done 5h, 24 done 24h, 50% passed"
+        );
+        let unity = g.kinds.iter().find(|k| k.kind == "unity").unwrap();
+        assert_eq!((unity.done_1h, unity.done_5h), (Some(2.0), Some(9.0)));
+    }
+
     /// ar-3326: the glance every surface renders counts each slot once, names what the slots
     /// are doing, folds the stopped cloud host to one name, and lists no runner of it as down.
     #[test]
@@ -2259,18 +2353,21 @@ mod tests {
         assert_eq!(
             keys(&v),
             [
-                "alert", "booked", "busy", "done", "down", "expected", "feed", "kinds", "level",
-                "long", "machines", "next", "off", "oldest", "parts", "pass", "pending", "queued",
-                "up"
+                "alert", "booked", "busy", "done", "done_1h", "done_5h", "down", "expected",
+                "feed", "kinds", "level", "long", "machines", "next", "off", "oldest", "parts",
+                "pass", "pending", "queued", "up"
             ]
         );
         assert_eq!(
             keys(&v["kinds"][0]),
-            ["done", "kind", "oldest", "pass", "running", "waiting", "weight"]
+            [
+                "done", "done_1h", "done_5h", "kind", "oldest", "pass", "running", "usual",
+                "waiting", "weight"
+            ]
         );
         assert_eq!(
             keys(&v["machines"][0]),
-            ["booked", "busy", "cpu", "host", "load", "next", "running"]
+            ["booked", "busy", "cpu", "host", "load", "next", "running", "state"]
         );
         // No status series: the lowercase word the chip maps to "no data".
         assert_eq!(v["level"], "nodata");

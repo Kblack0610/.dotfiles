@@ -309,7 +309,9 @@ pub trait Runner {
 }
 
 /// The real runner: the command with no shell and no stdin, marked as audited by its caller
-/// (`crate::audit::AUDITED_ENV`).
+/// (`crate::audit::AUDITED_ENV`). A hub action is the human's, so it drops the session and item ids
+/// a hub started from a Claude session inherits: with them, agent-queue read the Queue tab's cancel
+/// as a session's and refused it for want of --why (ar-2717).
 pub struct System;
 
 impl Runner for System {
@@ -319,6 +321,8 @@ impl Runner for System {
             .args(args)
             .stdin(Stdio::null())
             .env(crate::audit::AUDITED_ENV, std::process::id().to_string())
+            .env_remove("CLAUDE_CODE_SESSION_ID")
+            .env_remove("AGENT_QUEUE_ITEM")
             .output()
             .map_err(|e| format!("{cmd}: {e}"))?;
         if out.status.success() {
@@ -339,6 +343,8 @@ impl Runner for System {
             .args(args)
             .stdin(Stdio::null())
             .env(crate::audit::AUDITED_ENV, std::process::id().to_string())
+            .env_remove("CLAUDE_CODE_SESSION_ID")
+            .env_remove("AGENT_QUEUE_ITEM")
             .output()
             .map_err(|e| format!("{cmd}: {e}"))?;
         let code = out

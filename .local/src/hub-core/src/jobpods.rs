@@ -16,6 +16,9 @@ pub const NAMESPACE: &str = "arc-runners";
 /// its key's domain stays out of this public repo.
 pub const CI_TAINT: &str = ".+/ci";
 
+/// The taint home-config puts on a quarantined node, matched the same way.
+pub const DEGRADED_TAINT: &str = ".+/degraded";
+
 /// Each job pod starting, running or waiting for room: its phase, its node (none while
 /// unscheduled) and its owner. Its requests are `requests_query`, apart, so a pod that requests
 /// nothing still counts.
@@ -39,6 +42,27 @@ pub fn alloc_query() -> String {
     )
 }
 
+/// Each node's state, one series per state it is in: `NotReady` (its Ready condition is not
+/// true), `quarantined` (the home-config degraded taint, matched by name) or `cordoned`
+/// (unschedulable). A healthy node has none.
+pub fn node_state_query() -> String {
+    let degraded = format!(r#"max by (node) (kube_node_spec_taint{{key=~"{DEGRADED_TAINT}"}})"#);
+    let tag =
+        |q: &str, state: &str| format!(r#"label_replace({q}, "state", "{state}", "node", ".*")"#);
+    [
+        tag(
+            r#"max by (node) (kube_node_status_condition{condition="Ready",status="true"} == 0)"#,
+            "NotReady",
+        ),
+        tag(&degraded, "quarantined"),
+        tag(
+            "max by (node) (kube_node_spec_unschedulable == 1)",
+            "cordoned",
+        ),
+    ]
+    .join(" or ")
+}
+
 /// One CI job pod.
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct JobPod {
@@ -48,8 +72,13 @@ pub struct JobPod {
     /// Its machine (`Infra::aliases`); empty while the scheduler has found it no room.
     pub node: String,
     /// Its containers run: a job. A placed pod still starting books its node but runs nothing.
-    /// No scale set keeps warm runners (minRunners 0), so a running pod is a job.
+    /// No scale set keeps warm runners (minRunners 0), so a running pod is a job, unless it is
+    /// `reserved`.
     pub running: bool,
+    /// A DaemonSet pod: it sits on every node it selects, so it is never a job. Today the one is
+    /// `ci-build-slot` (home-config #1514), a pause container booking the CPU of the out-of-k8s
+    /// Unity build slot; any other DaemonSet added to the namespace is a reservation too.
+    pub reserved: bool,
     /// Cores and bytes it requests.
     pub cpu: f64,
     pub mem: f64,
@@ -59,6 +88,8 @@ pub struct JobPod {
 #[derive(Serialize, Default, Clone, Copy, Debug, PartialEq)]
 pub struct Booked {
     pub cpu: f64,
+    /// The part of `cpu` that reservation pods hold (`JobPod::reserved`), not job pods.
+    pub reserved: f64,
     pub cpu_alloc: f64,
     pub mem: f64,
     pub mem_alloc: f64,
@@ -68,18 +99,24 @@ impl Booked {
     /// `5.1/32 4.0G/92G`: cores booked of allocatable, then memory. A node with no allocatable
     /// read (its CI taint gone while pods still run there) reads its booking bare: `1.7 1.2G`.
     /// Halves round up, as agent-web and the waybar chip round them.
+    /// A reservation adds `, 7.4 reserved`.
     pub fn cell(&self) -> String {
         let b = crate::host_now::bytes;
-        if self.cpu_alloc <= 0.0 {
-            return format!("{} {}", cores(self.cpu), b(self.mem));
+        let cell = if self.cpu_alloc <= 0.0 {
+            format!("{} {}", cores(self.cpu), b(self.mem))
+        } else {
+            format!(
+                "{}/{:.0} {}/{}",
+                cores(self.cpu),
+                self.cpu_alloc.round(),
+                b(self.mem),
+                b(self.mem_alloc)
+            )
+        };
+        match self.reserved > 0.0 {
+            true => format!("{cell}, {} reserved", cores(self.reserved)),
+            false => cell,
         }
-        format!(
-            "{}/{:.0} {}/{}",
-            cores(self.cpu),
-            self.cpu_alloc.round(),
-            b(self.mem),
-            b(self.mem_alloc)
-        )
     }
 
     /// The fuller of its CPU and memory shares: the one that stops the next pod.
@@ -90,6 +127,7 @@ impl Booked {
 
     pub fn add(&mut self, o: &Booked) {
         self.cpu += o.cpu;
+        self.reserved += o.reserved;
         self.cpu_alloc += o.cpu_alloc;
         self.mem += o.mem;
         self.mem_alloc += o.mem_alloc;
@@ -162,6 +200,7 @@ pub fn read(infra: &Infra) -> Vec<JobPod> {
                     crate::infra::host(&alias, node)
                 },
                 running: s.label("phase") == "Running",
+                reserved: s.label("created_by_kind") == "DaemonSet",
                 ..Default::default()
             },
         );
@@ -201,14 +240,41 @@ pub fn booked(infra: &Infra, pods: &[JobPod]) -> BTreeMap<String, Booked> {
         let e = by.entry(p.node.clone()).or_default();
         e.cpu += p.cpu;
         e.mem += p.mem;
+        if p.reserved {
+            e.reserved += p.cpu;
+        }
     }
     by
 }
 
-/// The pods no node has room for, grouped by kind and size, the most first.
+/// Each node's states by machine, worst first: `NotReady`, `quarantined`, `cordoned` (dropped
+/// beside `quarantined`, which cordons the node as part of it). A healthy node is absent.
+pub fn node_states(infra: &Infra) -> BTreeMap<String, String> {
+    let alias = infra.aliases();
+    let mut by: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    for s in infra.get("node_state") {
+        by.entry(crate::infra::host(&alias, s.label("node")))
+            .or_default()
+            .push(s.label("state"));
+    }
+    by.into_iter()
+        .filter_map(|(h, have)| {
+            let quarantined = have.contains(&"quarantined");
+            let order = ["NotReady", "quarantined", "cordoned"];
+            let line: Vec<&str> = order
+                .into_iter()
+                .filter(|o| have.contains(o) && !(quarantined && *o == "cordoned"))
+                .collect();
+            (!line.is_empty()).then(|| (h, line.join(", ")))
+        })
+        .collect()
+}
+
+/// The job pods no node has room for, grouped by kind and size, the most first. A reservation
+/// pod with no node (its node is down) waits on that node, not for room.
 pub fn pending(pods: &[JobPod]) -> Vec<Pending> {
     let mut by: BTreeMap<(String, u64, u64), u32> = BTreeMap::new();
-    for p in pods.iter().filter(|p| p.node.is_empty()) {
+    for p in pods.iter().filter(|p| p.node.is_empty() && !p.reserved) {
         *by.entry((p.kind.clone(), (p.cpu * 1000.0) as u64, p.mem as u64))
             .or_default() += 1;
     }
@@ -225,10 +291,14 @@ pub fn pending(pods: &[JobPod]) -> Vec<Pending> {
     out
 }
 
-/// The running pods on each node by kind: `[arc-org-light]` and its count.
+/// The running job pods on each node by kind: `[arc-org-light]` and its count. A reservation
+/// pod is no job.
 pub fn running_by_node(pods: &[JobPod]) -> BTreeMap<String, BTreeMap<String, u32>> {
     let mut by: BTreeMap<String, BTreeMap<String, u32>> = BTreeMap::new();
-    for p in pods.iter().filter(|p| p.running && !p.node.is_empty()) {
+    for p in pods
+        .iter()
+        .filter(|p| p.running && !p.reserved && !p.node.is_empty())
+    {
         *by.entry(p.node.clone())
             .or_default()
             .entry(format!("[{}]", p.kind))
@@ -396,5 +466,83 @@ pub(crate) mod tests {
         assert_eq!(r["ms-a2"]["[arc-org-light]"], 2);
         // The forgejo pod books ms-a2 but is still starting: no job runs yet.
         assert!(!r["ms-a2"].contains_key("[forgejo-runner]"));
+    }
+
+    /// A `ci-build-slot` pod (a DaemonSet, home-config #1514) on each of ms-a2 and tuf-b550, and
+    /// one for a node that is down, which has no node yet.
+    pub fn reservations() -> (Vec<Series>, Vec<Series>) {
+        let (mut pods, mut req) = (vec![], vec![]);
+        for (name, node) in [
+            ("ci-build-slot-aaaaa", "ms-a2"),
+            ("ci-build-slot-bbbbb", "tuf-b550"),
+            ("ci-build-slot-ccccc", ""),
+        ] {
+            let (p, r) = pod(
+                name,
+                "DaemonSet",
+                "ci-build-slot",
+                node,
+                "Running",
+                "7.36",
+                "22100000000",
+            );
+            pods.push(p);
+            req.extend(r);
+        }
+        (pods, req)
+    }
+
+    pub fn node_state(node: &str, state: &str) -> Series {
+        one(json!({"node": node, "state": state}), "1")
+    }
+
+    #[test]
+    fn a_reservation_pod_books_cpu_but_is_no_job_and_waits_for_no_room() {
+        let mut i = infra();
+        let (pods, req) = reservations();
+        i.instant.get_mut("job_pods").unwrap().extend(pods);
+        i.instant.get_mut("job_requests").unwrap().extend(req);
+        let pods = read(&i);
+        assert!(pods
+            .iter()
+            .filter(|p| p.kind.starts_with("ci-build-slot"))
+            .all(|p| p.reserved));
+        assert!(pods
+            .iter()
+            .filter(|p| !p.kind.starts_with("ci-build-slot"))
+            .all(|p| !p.reserved));
+        let b = booked(&i, &pods);
+        // Booked against allocatable like any pod, and named apart.
+        assert_eq!(b["ms-a2"].cell(), "11.7/32 23G/92G, 7.4 reserved");
+        assert_eq!(b["tuf-b550"].cell(), "7.4/32 21G/63G, 7.4 reserved");
+        let r = running_by_node(&pods);
+        assert_eq!(r["ms-a2"].keys().collect::<Vec<_>>(), ["[arc-org-light]"]);
+        assert!(
+            !r.contains_key("tuf-b550"),
+            "a reservation is no job: {r:?}"
+        );
+        let w = pending(&pods);
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].kind, "arc-org-light");
+    }
+
+    #[test]
+    fn a_node_says_not_ready_quarantined_or_cordoned_worst_first() {
+        let mut i = infra();
+        i.instant.insert(
+            "node_state",
+            vec![
+                node_state("tuf-b550", "cordoned"),
+                node_state("tuf-b550", "NotReady"),
+                node_state("msi-b550", "cordoned"),
+                node_state("msi-b550", "quarantined"),
+                node_state("ms-a2", "cordoned"),
+            ],
+        );
+        let s = node_states(&i);
+        assert_eq!(s["tuf-b550"], "NotReady, cordoned");
+        assert_eq!(s["msi-b550"], "quarantined");
+        assert_eq!(s["ms-a2"], "cordoned");
+        assert_eq!(s.len(), 3);
     }
 }

@@ -31,7 +31,7 @@ Not for auditing whether existing docs match the code (`docs-cleanup`, Repo), or
 4. **Link, do not copy.** When another doc, CLAUDE.md, a skill or a memory needs the fact, it gets one pointer line to the home. When you find a copy of the fact you are changing elsewhere, turn it into a pointer in the same PR.
 5. **Index it.** A new doc gets a line in its folder's index or the repo README in the same PR. Before renaming a heading, run `git grep '<file>.md#'`; keep the wording others link to, or fix every link.
 6. **Check it.**
-   - `python3 ~/.claude/skills/de-ai-writing/scripts/check.py <file>` on each changed doc, and plain ASCII.
+   - The `de-ai-writing` check (`scripts/check.py`) on each changed doc, and plain ASCII.
    - The repo's doc check: `python3 ci/check-docs.py` in unity-core, `python3 External/unity-core/ci/check-docs.py` in a game repo, or the repo's own test (the playground's `scripts/test/tests/test_one_home.py`).
    - Over a cap: trim the doc, or split it by topic and leave the parent as a short index. After a cut, `--tighten` lowers its budget line.
 7. **Land it** the repo's way for a docs-only change (in the playground: Checks, no Unity gate). Put the before and after word counts in the PR body when you cut.

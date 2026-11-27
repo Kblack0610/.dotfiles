@@ -118,7 +118,7 @@ PAGED="$LEDGER/.paged"       # <key>: unhandled lines already paged, kept while 
 UNHANDLED="$LEDGER/.unhandled"  # <key>\t<checks>: each owed line and how many checks in a row (that would start a pass) found it unhandled
 PASS="$LEDGER/.pass"          # <id>\t<start epoch>\t<due count>\t<pane>: the pass running now
 NOROOM="$LEDGER/.noroom"      # present while no account has room, so that is paged once
-GHOSTS="$LEDGER/ghost-runs.tsv" # <epoch>\t<verdict>\t<run url>\t<why>: every run ghost-runs judged
+GHOSTS="$LEDGER/ghost-runs.tsv" # <epoch>\t<verdict>\t<run url>\t<why>[; <GitHub's refusal>]: every run ghost-runs judged
 PASSES="$LEDGER/passes.tsv"   # <start>\t<id>\t<verdict>\t<detail>\t<lane_cols>: every pass, once scored; fleet-bench canary shepherd reads the lane columns by position
 # shellcheck source=../lib/tmux-servers.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/tmux-servers.sh" || exit 1   # tmux_servers_all
@@ -293,6 +293,10 @@ tag_pane() {
 # branches (shared) is owned by the queue item or quarantine row shared_sample found or filed,
 # and its sessions are told once; only one with no owner escalates.
 # PARKED is fleet-pace's, below.
+# FIN_JQ: finished -> true for a session row whose bucket the state document's vocab.finished lists
+# (fleet-sessions BUCKET_FINISHED, the one home of that set). It binds the document first, so every
+# program that uses the defs below starts with it, on the state document as its input.
+FIN_JQ='(.vocab.finished // []) as $fin | def finished: .bucket as $b | any($fin[]; . == $b);'
 # CLOSE_NUDGE_JQ: close_nudge -> CLOSE, DONE, CHAT or PARKED for a session row a close is owed to (its close
 # verdict now, its close not yet sent (a manual row never reads now, a stay row only once quiet FLEET_CHAT_CLOSE_H); CLOSE when it holds an open ask it filed; PARKED when
 # its claude is gone and nothing is left to land, so there is nothing to type into), null
@@ -302,7 +306,7 @@ CLOSE_NUDGE_JQ='def close_nudge:
   elif .bucket == "PARKED" then "PARKED"
   elif (.own_asks // 0) > 0 then "CLOSE"
   elif .bucket == "CHAT" then "CHAT"
-  elif (.bucket | IN("DONE","LANDED","STALLED")) then "DONE"
+  elif finished or .bucket == "STALLED" then "DONE"
   else null end;'
 # CLOSE_REFUSED_JQ: close_refused -> true for a session row typed its close that is still open: its
 # close sent (close_sample's claim), its close verdict still now (CLOSE_JQ in fleet-sessions keeps
@@ -315,7 +319,7 @@ CLOSE_NUDGE_JQ='def close_nudge:
 # keep, and the shepherd paged "close its window" instead).
 CLOSE_REFUSED_JQ='def close_refused:
   .close_sent and (.close.verdict // "") == "now"
-  and (.bucket | IN("DONE","LANDED","STALLED","CHAT","NEEDS","PARKED"));'
+  and (finished or (.bucket | IN("STALLED","CHAT","NEEDS","PARKED")));'
 # KEPT_JQ: kept -> true for a row held open on the human's word (`manual` or `stay`; the one definition is
 # .local/lib/kept.jq, which fleet-bench reads too). The shepherd sends such a row no nudge, overdue,
 # landing, critical, limit, park or budget line, and takes none over; whether it closes is its close
@@ -351,13 +355,13 @@ NEEDS_NUDGE_JQ='def needs_nudge: .bucket == "NEEDS" and (.nudged | not) and (.cl
 # (`close.left`, set by CLOSE_JQ's unlanded, only-item and held steps), so it is nudged though its
 # bucket reason names the plan, not the item that keeps it open (2026-11-19: agent-29 sat LANDED on
 # its running item, never nudged).
-HELD_JQ='def held: (.bucket | IN("DONE","LANDED")) and (.close.left // null) != null;'
+HELD_JQ='def held: finished and (.close.left // null) != null;'
 
 cmd_due() {
   [ -r "$STATE_FILE" ] || die "no state document at $STATE_FILE"
   local out
   out="$(jq -r --argjson items "$(shared_items)" --argjson off "$(nudge_held_off)" --argjson needs_min "$FLEET_SHEPHERD_NEEDS_NUDGE_MIN" \
-    "$KEPT_JQ$CLOSE_NUDGE_JQ$PANE_TAG_JQ$ASK_WAIT_JQ$HELD_JQ$NEEDS_NUDGE_JQ"'
+    "$FIN_JQ$KEPT_JQ$CLOSE_NUDGE_JQ$PANE_TAG_JQ$ASK_WAIT_JQ$HELD_JQ$NEEDS_NUDGE_JQ"'
     ( (.main // [])[] | select((.escalated | not) and (.owners // []) == [])
       | "nightly red: \(.repo) (\(.reason // "-"))" )
   , ( (.shared // [])[] | select(.escalated | not) | . as $r
@@ -376,7 +380,7 @@ cmd_due() {
       | select(kept | not)
       | ((.own_asks // 0) > 0) as $ask
       | if close_nudge then empty
-        elif (.bucket | IN("DONE","LANDED","STALLED","CHAT")) and (.nudged | not) then
+        elif (finished or (.bucket | IN("STALLED","CHAT"))) and (.nudged | not) then
           if ($ask | not) and (.bucket == "STALLED" or held) and (.session_id as $sid | $off | index($sid) | not)
           then "nudge \(.bucket): \(.target)\(ptag) \(.fact // "")" else empty end
         elif .bucket == "NEEDS" and (.escalated | not) and (ask_wait | not) then
@@ -404,6 +408,10 @@ cmd_due() {
     [ -z "$fleet" ] || out+="${out:+$'\n'}$fleet"
   fi
   holds="$(agent-hold list --kind load 2>/dev/null | cut -f1 | paste -sd, -)"
+  # A hold past its --until (every hold by: human has one) is over whatever the verdict: check and
+  # list already read it free, and its release restores what it lowered and removes the file.
+  local ended; ended="$(agent-hold list --expired 2>/dev/null | cut -f1 | paste -sd, -)"
+  [ -z "$ended" ] || out+="${out:+$'\n'}pace: ended hold $ended (past its until); then: agent-hold release each"
   # `restore` is fleet-dispatch restore's own: it wakes its next batch on CLEAR and lifts the hold
   # itself once none waits, so a CLEAR under it is that pacer's turn, not a go for this pass.
   local lift; lift="$(tr , '\n' <<<"$holds" | grep -vx restore | paste -sd, -)"
@@ -705,9 +713,10 @@ ghost_last() { awk -F'\t' -v u="$1" '$3 == u { v = $2 } END { print v }' "$GHOST
 # someone does. A dry run (GHOST_CANCEL unset) logs what it would do. GitHub's cancel is tried
 # first; a run it refuses as not cancellable (HTTP 409; a ghost often is) gets force-cancel, the
 # API's call for a run that no longer answers cancel, and the log says which one ended it. Any
-# other refusal (auth, rate limit) is cancel-failed and tried again next run, logged once.
+# other refusal (auth, rate limit), or a refused force-cancel, is cancel-failed with GitHub's answer in
+# its verdict, and tried again next run, logged once.
 cmd_ghost_runs() {
-  local cand slug id url why rc verdict out unread=""
+  local cand slug id url why rc verdict out refusal unread=""
   mkdir -p "$LEDGER" || die "cannot create $LEDGER"
   case "$FLEET_SHEPHERD_GHOST_CANCEL" in
     0|1) ;;
@@ -719,13 +728,19 @@ cmd_ghost_runs() {
     [ -n "$id" ] || continue
     url="https://github.com/$slug/actions/runs/$id"
     ! ghost_judged "$url" || continue
-    why="$(ghost_check "$slug" "$id")"; rc=$?
+    why="$(ghost_check "$slug" "$id")"; rc=$? refusal=""
     case $rc in
       0)
         if [ "$FLEET_SHEPHERD_GHOST_CANCEL" != 1 ]; then verdict=would-cancel
         elif out="$(gh api -X POST "repos/$slug/actions/runs/$id/cancel" 2>&1 >/dev/null)"; then verdict=cancelled
-        elif [[ "$out" == *"HTTP 409"* ]] && gh api -X POST "repos/$slug/actions/runs/$id/force-cancel" >/dev/null 2>&1; then verdict=force-cancelled
-        else verdict=cancel-failed
+        elif [[ "$out" != *"HTTP 409"* ]]; then verdict=cancel-failed
+        elif out="$(gh api -X POST "repos/$slug/actions/runs/$id/force-cancel" 2>&1 >/dev/null)"; then verdict=force-cancelled
+        else verdict=cancel-failed out="force-cancel: $out"
+        fi
+        # GitHub's last refusal goes in the ledger, the verdict line and the first log line, so a run
+        # that keeps failing names its cause: 822 cancel-failed lines on 16 runs carried none (ar-244).
+        if [ "$verdict" = cancel-failed ]; then
+          refusal="${out//[$'\t\r\n']/ }" refusal="${refusal:-no answer from gh}" refusal="${refusal:0:200}"
         fi ;;
       1) verdict=kept ;;
       *) unread+=" $url ($why)"; continue ;;
@@ -734,10 +749,10 @@ cmd_ghost_runs() {
     # verdict alone stays in GHOSTS.
     case $verdict in
       cancelled|force-cancelled) cmd_log "ghost run $url: $verdict, queued $why with no jobs" ;;
-      cancel-failed) [ "$(ghost_last "$url")" = cancel-failed ] || cmd_log "ghost run $url: cancel-failed, queued $why with no jobs; tried again each run" ;;
+      cancel-failed) [ "$(ghost_last "$url")" = cancel-failed ] || cmd_log "ghost run $url: cancel-failed, queued $why with no jobs ($refusal); tried again each run" ;;
     esac
-    printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$verdict" "$url" "$why" >> "$GHOSTS"
-    echo "ghost-runs: $verdict $url ($why)"
+    printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$verdict" "$url" "$why${refusal:+; $refusal}" >> "$GHOSTS"
+    echo "ghost-runs: $verdict $url ($why${refusal:+; $refusal})"
   done <<<"$cand"
   # One line for every run GitHub did not answer about: none is judged, each is asked again next run.
   [ -z "$unread" ] || echo "ghost-runs: GitHub did not answer, asked again next run:$unread"
@@ -949,7 +964,7 @@ takeover_sample() {
       "$target has sat STALLED ${idle}m past its nudge and no fresh agent can take it over: $why. Finish or close it by hand." >/dev/null 2>&1 || continue
     printf 'page\t%s\t%s\n' "$sid" "$fact" >> "$TAKEOVERS"
     cmd_log "takeover-failed: $target: paged, $why" >/dev/null
-  done < <(jq -r "$CLOSE_NUDGE_JQ$CLOSE_REFUSED_JQ$TAKEOVER_JQ"'(.sessions // [])[] | select(takeover_row)
+  done < <(jq -r "$FIN_JQ$CLOSE_NUDGE_JQ$CLOSE_REFUSED_JQ$TAKEOVER_JQ"'(.sessions // [])[] | select(takeover_row)
     | select(all(.session_id, .target, .pane; type == "string" and . != "" and (test("[\t\n]") | not)))
     | [.session_id, .target, .pane, ((.fact // "-") | tostring | gsub("[\t\n]"; " ")), ((.idle_min // 0) | floor),
        (.branch // "-"), (.cwd // "-"), (.dirty // "x"), (.item.slug // "-")]
@@ -1090,21 +1105,24 @@ close_sample() {
           cmd_log "close: $target $close: its machine did not answer over ssh; the next check types it" >/dev/null ;;
       *) cmd_log "close: $target $close: marked, but typing $cmd failed ($rc); the window close, ${FLEET_IDLE_CLOSE_MIN:-60}m on if it is still due, carries it" >/dev/null ;;
     esac
-  done < <(jq -r "$CLOSE_NUDGE_JQ$CLOSE_REFUSED_JQ"'(.sessions // [])[]
+  done < <(jq -r "$FIN_JQ$CLOSE_NUDGE_JQ$CLOSE_REFUSED_JQ"'(.sessions // [])[]
     | (close_nudge // (if close_refused then "WINDOW" else null end)) as $close | select($close)
     | select(all(.session_id, .target, .pane; type == "string" and . != "" and (test("[\t\n]") | not)))
     | [.session_id, .target, .pane, $close, ((.fact // "-") | tostring | gsub("[\t\n]"; " ")),
        ([(.blockers // [])[] | strings | capture("^open ask (?<id>[A-Za-z0-9_-]+)$").id] | join(",") | if . == "" then "-" else . end),
-       ((.own_asks // 0) | floor), (if .in_manual_mode then 1 else 0 end)]
+       ((.asks // 0) | floor), (if .in_manual_mode then 1 else 0 end)]
     | @tsv' "$STATE_FILE" 2>/dev/null)
   [ -z "$acted" ] || fleet-sessions --write >/dev/null || true
 }
 
-# reopen_own_asks <sid> <ids|-> <own_asks>: set each of the session's open asks (comma separated) to
+# reopen_own_asks <sid> <ids|-> <asks>: set each of the session's open asks (comma separated) to
 # reopen it on the answer, as the closing session itself would (CLAUDE_CODE_SESSION_ID names it to
-# agent-ask). Fails when fewer ids were read than the row's own_asks counts, so an ask the blockers
+# agent-ask). Fails when fewer ids were read than the row's `asks` counts, so an ask the blockers
 # do not name is never left without its session, and on the first that cannot be set: answered
 # meanwhile or no session named. An ask with its own resume counts as set: the answer runs it.
+# `asks`, not `own_asks`: an ask a queue item holds (its ask:<id> tag) is in own_asks but not in the
+# blockers, and needs no reopen: the queue restarts that item on the answer, so no `reopen:` line is
+# written for it (ar-4271: lab/dotfiles-agent-4 refused its close every pass on ask poGHJB).
 reopen_own_asks() {
   local id ids=()
   [ "$2" = - ] || IFS=, read -ra ids <<<"$2"
@@ -1801,9 +1819,9 @@ nudge_held_off() {
       t="$(date -d "$t" +%s 2>/dev/null)" && [ "$t" -gt "$at" ] && at="$t"
     done < <([ -r "$LEDGER/nudges.jsonl" ] && jq -R --arg s "$sid" 'fromjson? | select(.kind == "nudge" and .sid == $s) | .at' -r "$LEDGER/nudges.jsonl" 2>/dev/null)
     [ "$at" -gt 0 ] && [ $((now - at)) -lt $((FLEET_SHEPHERD_NUDGE_GAP_MIN * 60)) ] && held+="$sid"$'\n'
-  done < <(jq -r --argjson needs_min "$FLEET_SHEPHERD_NEEDS_NUDGE_MIN" "$KEPT_JQ$CLOSE_NUDGE_JQ$HELD_JQ$NEEDS_NUDGE_JQ"'(.sessions // [])[]
+  done < <(jq -r --argjson needs_min "$FLEET_SHEPHERD_NEEDS_NUDGE_MIN" "$FIN_JQ$KEPT_JQ$CLOSE_NUDGE_JQ$HELD_JQ$NEEDS_NUDGE_JQ"'(.sessions // [])[]
     | select(kept | not) | select(close_nudge | not)
-    | select(needs_nudge or ((.bucket | IN("DONE","LANDED","STALLED","CHAT")) and (.nudged | not)
+    | select(needs_nudge or ((finished or (.bucket | IN("STALLED","CHAT"))) and (.nudged | not)
         and (.own_asks // 0) == 0 and (.bucket == "STALLED" or held)))
     | .session_id' "$STATE_FILE" 2>/dev/null)
 printf '%s' "$held" | jq -Rsc 'split("\n") | map(select(. != ""))'

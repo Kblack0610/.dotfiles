@@ -25,18 +25,31 @@ function cardHtml(c) {
 
 // Home's grid packed (app.css .kgrid.packed): each card spans its own height plus the column gap in
 // 1px rows, so it starts one gap under the card above it, not under the tallest card of a row.
-// One observer for the grid on screen; it respans a card whenever its height changes, a width
-// change that rewraps it included, and its first answer comes before the first paint.
+// packCards measures every card and writes its span before the grid takes .packed, in the draw's
+// own task, so no frame and no screenshot ever shows 1px rows without spans (cards stacked over
+// each other and over Vitals and Needs you). A grid drawn while hidden has no heights yet: it stays
+// unpacked and holds its tab's drawn mark (ui.js drawnHold) until its observer packs it. The
+// observer then respans the cards whenever a height changes, a width change that rewraps one included.
 let cardPacker = null;
-function packCards(root) {
-  if (typeof ResizeObserver !== "function") return;
-  const grid = root.querySelector(".kgrid");
-  cardPacker?.disconnect();
-  if (!grid) return;
-  cardPacker = new ResizeObserver((seen) => {
-    const gap = parseFloat(getComputedStyle(grid).columnGap) || 0;
-    for (const e of seen) e.target.style.gridRowEnd = `span ${Math.ceil(e.borderBoxSize[0].blockSize + gap)}`;
-  });
-  for (const c of grid.querySelectorAll(".kcard")) cardPacker.observe(c);
+function packSpans(grid) {
+  const cards = [...grid.querySelectorAll(".kcard")];
+  if (!cards.length) return true;
+  const tall = cards.map((c) => c.getBoundingClientRect().height);
+  if (tall.some((h) => !h)) return false;
+  const gap = parseFloat(getComputedStyle(grid).columnGap) || 0;
+  cards.forEach((c, i) => { c.style.gridRowEnd = `span ${Math.ceil(tall[i] + gap)}`; });
   grid.classList.add("packed");
+  return true;
+}
+function packCards(root) {
+  cardPacker?.disconnect();
+  cardPacker = null;
+  drawnHold.delete(root.id);
+  const grid = root.querySelector(".kgrid");
+  if (!grid) return;
+  const packed = packSpans(grid);
+  if (typeof ResizeObserver !== "function") return;
+  if (!packed) drawnHold.add(root.id);
+  cardPacker = new ResizeObserver(() => { if (packSpans(grid) && drawnHold.delete(root.id)) drawnCheck(); });
+  for (const c of grid.querySelectorAll(".kcard")) cardPacker.observe(c);
 }

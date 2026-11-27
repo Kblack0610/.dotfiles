@@ -10,6 +10,7 @@
 #   projects.<profile>          name  summary  status  version
 #   stats                       profile name stage version open urgent high low planned agent sheet
 #   stats.json                  the `projects --stats --json` array, verbatim
+#   space.<name>.json           what `notes projects <name> --json` prints (the project page); with none it fails
 #   focus.all                   profile  file  line  key  text
 #   ptask.<profile>.<project>   path  line  key  text
 #   path.<profile>.<kind>       the root `notes --profile P path <kind>` prints
@@ -98,8 +99,12 @@ case "${1:-}" in
       # counts, as TSV (`stats`) or the JSON array (`stats.json`)
       --stats) [ -f "$FIX/stats.fail" ] && exit 1
                if [ "${3:-}" = "--json" ]; then emit stats.json; else emit stats; fi ;;
-      # `notes --profile P projects` -> name TAB summary TAB status TAB version
-      *) emit "projects.${profile:-personal}" ;;
+      # `notes --profile P projects` -> name TAB summary TAB status TAB version; `projects <name> --json`
+      # is the page, from space.<name>.json, and fails for a name with none
+      *) if [ "${3:-}" = "--json" ]; then
+           [ -f "$FIX/space.${2}.json" ] || { echo "no current project named '${2}'" >&2; exit 1; }
+           emit "space.${2}.json"
+         else emit "projects.${profile:-personal}"; fi ;;
     esac
     ;;
   focus)

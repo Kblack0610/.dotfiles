@@ -78,7 +78,7 @@ Both are `Persistent=true`, so a missed run (laptop closed, machine off)
 is caught up at next user-manager start.
 
 **Linux only.** These are systemd user units, and there is no launchd
-equivalent in `.config/launchd/`, so a Mac never flips on a schedule - it
+equivalent in the private repo's `.config/launchd/`, so a Mac never flips on a schedule - it
 keeps whatever theme was last applied there until someone runs `theme-switch`
 by hand. The day/night *defaults* below are still the fallback a fresh install
 picks (`setup_theme` in the installers' `base_functions.sh`), so a new Mac starts on `batman`; it

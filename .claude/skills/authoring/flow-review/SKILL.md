@@ -37,7 +37,7 @@ Not for every screen in the app (`ui-audit`) or for fixing what you find (`bug-b
 ## Steps
 
 1. **Scope.** Name the flow, its start and end state, the account/role, the surfaces (web, mobile app, native), viewports (default web 1280 and 390), and the env plus the commit it is serving. Confirm the env really serves that commit before capturing; a report against a stale build is worse than none.
-2. **Create the folder** `<lab dir>/docs/reviews/<date>-<slug>/shots/`, where `<lab dir>` is `$(source ~/.config/shared-hooks/lab-roots.sh; lab_project_root <project>)/<project>` (the project must be registered with a `lab` in `project-map.json`).
+2. **Create the folder** `<lab dir>/docs/reviews/<date>-<slug>/shots/`, with `<lab dir>` resolved as the `one-pager` skill says (`lab_project_root`).
 3. **Walk it.** Web with Playwright MCP, Android with `adb-ops`. Save each screenshot straight into `shots/` with a zero-padded running number: `01-checkout-desktop.jpg`. Never embed base64 in the markdown; terminal viewers cannot show it. Drive the flow to its real end state (payment submitted, record written) and check that the state changed. When the walk is a pre-merge or pre-release sign-off, follow `references/manual-leg.md` for the order (reset before login), the surfaces and the test routes.
 4. **Judge each step.** One line on what the user does and sees, then one bullet per note, prefixed with its severity in bold (`- **FIX** ...`):
 

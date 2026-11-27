@@ -200,6 +200,10 @@ pub struct Item {
     /// `ok`, `failed` or `cancelled`, once done.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    /// The landing verdict agent-queue stamps at close (`OUTCOME_JQ`): `landed`, `no-pr`,
+    /// `unrated`, `failed` or `cancelled`. Every reader of whether an item landed reads this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
     /// Who cancelled it: a session id, or the slug of the item the caller works; agent-queue's
     /// `cancel_stamp` writes it. None for a cancel from before it did, or one a human made at
     /// a terminal.
@@ -338,14 +342,17 @@ pub struct Step {
     pub sha: Option<String>,
 }
 
+/// The prefix of an opencode session id, which a trainee run appends to an item's `sessions`.
+pub const TRAINEE_SESSION_PREFIX: &str = "ses_";
+
 impl Item {
     pub fn tag_list(&self) -> impl Iterator<Item = &str> {
         self.tags.split_whitespace()
     }
 
-    /// The Claude session ids it ran in, oldest first (its `sessions:` header, space- or
-    /// comma-separated): an ask's `claude_session` names one, which ties the ask to this item
-    /// after that session ends.
+    /// The session ids it ran in, oldest first (its `sessions:` header, space- or comma-separated):
+    /// a Claude asker's `claude_session` ties the ask to this item after that session ends, and a
+    /// trainee run adds its opencode id (`TRAINEE_SESSION_PREFIX`), which is no asker.
     pub fn session_ids(&self) -> impl Iterator<Item = &str> {
         self.extra_str("sessions")
             .unwrap_or("")
@@ -353,9 +360,28 @@ impl Item {
             .filter(|s| !s.is_empty())
     }
 
-    /// The Claude session it ran in last: the one whose end left it waiting.
+    /// The Claude session it ran in last: the one whose end left it waiting. A trainee run's
+    /// session is skipped, so an ask filed by the Claude session before it still finds the item.
     pub fn last_session(&self) -> Option<&str> {
-        self.session_ids().last()
+        self.session_ids()
+            .filter(|s| !s.starts_with(TRAINEE_SESSION_PREFIX))
+            .last()
+    }
+
+    /// Whether it was started as a trainee run (its `trainee:` header, harness:model). The header
+    /// stays after a rejection, when Claude takes the item over.
+    pub fn is_trainee(&self) -> bool {
+        self.extra_str("trainee").is_some()
+    }
+
+    /// Whether a trainee run ended it: the header, and the last session it ran in is the trainee's.
+    /// The fleet answers that wait (the gate, then a Claude retry); a Claude retry's wait is its own.
+    pub fn ended_as_trainee(&self) -> bool {
+        self.is_trainee()
+            && self
+                .session_ids()
+                .last()
+                .is_some_and(|s| s.starts_with(TRAINEE_SESSION_PREFIX))
     }
 
     /// Whether it is held on ask `id` (an `ask:<id>` or `ask:<id>=<options>` tag, agent-queue's hold).
@@ -408,17 +434,22 @@ impl Item {
         said(&self.finished).and_then(stamp)
     }
 
-    /// What a finished item counts as: shipped when it closed ok with a merge, a check when it
-    /// closed ok with none (a watch or alert that cleared); failed, cancelled or unfinished is None.
+    /// What a finished ok item counts as: shipped when its outcome is landed, a check otherwise (a
+    /// watch or alert that cleared); failed, cancelled or unfinished is None.
     pub fn closed_as(&self) -> Option<Closed> {
         if self.state != State::Done || said(&self.status) != Some("ok") {
             return None;
         }
-        Some(if said(&self.merged).is_some() {
+        Some(if self.landed() {
             Closed::Shipped
         } else {
             Closed::Check
         })
+    }
+
+    /// Whether its outcome is landed: done ok with a PR, by agent-queue's one rule.
+    pub fn landed(&self) -> bool {
+        said(&self.outcome) == Some("landed")
     }
 
     /// Minutes it has been ready at `now`: from `ready` (its hold's release), else `queued`,
@@ -656,14 +687,12 @@ impl Item {
         })
     }
 
-    /// A finished `ok` item that shows nothing for its work: no PR and no `report` (the url or
-    /// path of what it made instead of one). A canary item opens no PR by design.
+    /// A finished item that shows nothing for its work: outcome no-pr (ok with no PR on a kind
+    /// that exits with one) and no `report` (the url or path of what it made instead of one).
     pub fn unproven(&self) -> bool {
         self.state == State::Done
-            && self.status.as_deref().unwrap_or("ok") == "ok"
-            && self.pr_link().is_none()
+            && said(&self.outcome) == Some("no-pr")
             && self.extra_str("report").is_none()
-            && self.from.as_deref() != Some("canary")
     }
 
     /// The priority one step up (`up`) or down, or None at the end of the scale or for a
@@ -2591,7 +2620,7 @@ mod tests {
     fn a_done_item_shows_its_pr_its_cost_and_whether_anything_proves_it() {
         let item = |j: &str| parse(j).remove(0);
         let landed = item(
-            r#"{"slug":"a","state":"done","status":"ok","pr":"Kblack0610/.dotfiles#1225","merged":"abc","cost_usd":"6.1","task":"t"}"#,
+            r#"{"slug":"a","state":"done","status":"ok","outcome":"landed","pr":"Kblack0610/.dotfiles#1225","merged":"abc","cost_usd":"6.1","task":"t"}"#,
         );
         assert_eq!(
             landed.pr_link(),
@@ -2600,10 +2629,12 @@ mod tests {
                 Some("https://github.com/Kblack0610/.dotfiles/pull/1225".into())
             ))
         );
-        assert!(landed.merged() && !landed.unproven());
+        assert!(landed.merged() && landed.landed() && !landed.unproven());
         assert_eq!(landed.cost(), Some(6.1));
         // An older item carries a bare number: a label, no link, and no merge recorded.
-        let bare = item(r#"{"slug":"b","state":"done","status":"ok","pr":"1796","task":"t"}"#);
+        let bare = item(
+            r#"{"slug":"b","state":"done","status":"ok","outcome":"landed","pr":"1796","task":"t"}"#,
+        );
         assert_eq!(bare.pr_link(), Some(("#1796".into(), None)));
         // One PR per repo: the first one's label and page, and how many more.
         let many = Item {
@@ -2645,16 +2676,23 @@ mod tests {
             odd("javascript:alert(1)"),
             Some(("#javascript:alert(1)".into(), None))
         );
-        // No PR and no report is flagged; a report, a canary or a failure is not.
-        let flagged = item(r#"{"slug":"c","state":"done","status":"ok","task":"t"}"#);
+        // Outcome no-pr with no report is flagged; a report, an unrated close (a canary, a check
+        // that cleared) or a failure is not.
+        let flagged =
+            item(r#"{"slug":"c","state":"done","status":"ok","outcome":"no-pr","task":"t"}"#);
         assert!(flagged.unproven());
-        let reported =
-            item(r#"{"slug":"c","state":"done","status":"ok","report":"https://x/y","task":"t"}"#);
+        let reported = item(
+            r#"{"slug":"c","state":"done","status":"ok","outcome":"no-pr","report":"https://x/y","task":"t"}"#,
+        );
         assert!(!reported.unproven());
-        let canary =
-            item(r#"{"slug":"c","state":"done","status":"ok","from":"canary","task":"t"}"#);
+        let canary = item(
+            r#"{"slug":"c","state":"done","status":"ok","outcome":"unrated","from":"canary","task":"t"}"#,
+        );
         assert!(!canary.unproven());
-        assert!(!item(r#"{"slug":"d","state":"done","status":"failed","task":"t"}"#).unproven());
+        assert!(!item(
+            r#"{"slug":"d","state":"done","status":"failed","outcome":"failed","task":"t"}"#
+        )
+        .unproven());
         assert!(!item(r#"{"slug":"e","state":"running","task":"t"}"#).unproven());
     }
 

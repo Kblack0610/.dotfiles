@@ -85,6 +85,10 @@ pub struct Alert {
     pub place: String,
     pub action: String,
     pub evidence: String,
+    /// Why a watch is red in one line (`Watch::reason`); empty for any other row. The health
+    /// hover prints it beside the watch's name (`hub alerts --reasons`).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub reason: String,
     /// An Alertmanager rule's row: each place it fires in (`am_row`), worst first; empty for any
     /// other row. `Alerts::pages` lists them flat.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -755,6 +759,7 @@ pub fn join(
             place: w.place.clone(),
             action: w.action.clone(),
             evidence: w.evidence.clone(),
+            reason: w.reason(),
             ..Default::default()
         };
         owner(
@@ -874,6 +879,23 @@ pub fn read(infra: &Infra, fixes: Result<Reds, String>, now: i64) -> Alerts {
         holds::read(&holds::dir()),
         now,
     )
+}
+
+/// Each red watch's reason by its name with `_` for `-`, the form `cc:watch_state` words an item
+/// in: what the health hover prints beside the watch (`hub alerts --reasons`). A watch with
+/// nothing past its status header has an empty reason. An unreadable watch directory is the
+/// error, which a machine with no watches (the laptop) gets.
+pub fn watch_reasons() -> Result<BTreeMap<String, String>, String> {
+    let (dir, state) = watch_dirs();
+    Ok(reasons(&runner::watches(&dir, &state)?))
+}
+
+fn reasons(watches: &[Watch]) -> BTreeMap<String, String> {
+    watches
+        .iter()
+        .filter(|w| matches!(w.state.as_str(), "TRIP" | "ERROR"))
+        .map(|w| (w.name.replace('-', "_"), w.reason()))
+        .collect()
 }
 
 /// A project card's count line over `watches`: how many carry `project:` and how many of them
@@ -999,7 +1021,7 @@ mod tests {
             kind: kind.into(),
             by: by.into(),
             since: Some(NOW - age),
-            kept: None,
+            ends: false,
             reason: format!("why {resource}"),
         };
         let mut ws = ok_watches();
@@ -1044,6 +1066,57 @@ mod tests {
         assert_eq!(a.firing.len(), 1);
         assert_eq!(a.firing[0].what, HOLD_WATCH);
         assert!(a.errors.contains(&"holds: denied".to_string()));
+    }
+
+    #[test]
+    fn a_watch_reason_is_its_first_probe_line_past_the_status_header() {
+        let probe = |state: &str, out: &str| Watch {
+            evidence: out.into(),
+            ..watch("chain-lag", state, "high", Some(NOW))
+        };
+        let w = probe(
+            "TRIP",
+            "TRIP exit 1 (want 0)\nchain handoff p90 113m, bound 60m\nsecond line",
+        );
+        assert_eq!(w.reason(), "chain handoff p90 113m, bound 60m");
+        // The header alone, or no output, is no reason: the hover says so.
+        assert_eq!(probe("TRIP", "TRIP exit 1 (want 0)").reason(), "");
+        assert_eq!(probe("OK", "").reason(), "");
+        // A blank line between the header and the output is skipped.
+        assert_eq!(
+            probe("TRIP", "TRIP exit 1 (want 0)\n\n  RED steam.yml: failure").reason(),
+            "RED steam.yml: failure"
+        );
+        // Output with no header is read from its first line, and a long line is cut.
+        assert_eq!(
+            probe("TRIP", "aws $1,011 ahead of pace").reason(),
+            "aws $1,011 ahead of pace"
+        );
+        let long = probe(
+            "TRIP",
+            &format!("TRIP exit 1 (want 0)\n{}", "x".repeat(300)),
+        )
+        .reason();
+        assert_eq!(long.chars().count(), crate::fleet::runner::REASON_CHARS + 3);
+        assert!(long.ends_with("..."));
+        // The reason rides the firing row and the by-name map keys a hyphen as `_`, never ok watches.
+        let a = join(
+            &infra(&[]),
+            Ok(vec![w.clone(), watch("fine", "OK", "low", None)]),
+            Ok(Reds::default()),
+            Ok(String::new()),
+            Ok(vec![]),
+            NOW,
+        );
+        assert_eq!(a.firing[0].reason, "chain handoff p90 113m, bound 60m");
+        let map = reasons(&a.watches);
+        assert_eq!(
+            map.into_iter().collect::<Vec<_>>(),
+            [(
+                "chain_lag".to_string(),
+                "chain handoff p90 113m, bound 60m".to_string()
+            )]
+        );
     }
 
     #[test]

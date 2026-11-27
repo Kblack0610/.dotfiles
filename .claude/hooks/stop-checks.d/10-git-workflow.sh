@@ -10,8 +10,11 @@ BRANCH=$(git branch --show-current 2>/dev/null)
 [ -z "$BRANCH" ] && exit 0
 [ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ] && exit 0
 
-MAIN_BRANCH="develop"
-git show-ref --verify --quiet refs/remotes/origin/develop || MAIN_BRANCH="main"
+# merge_proof_branch: the one reader of a repo's default branch (fleet-states.md Owners).
+# shellcheck source=../../../.local/lib/agent-merge-proof.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../../.local/lib/agent-merge-proof.sh" || { echo "10-git-workflow: cannot source agent-merge-proof.sh, so the git check did not run" >&2; exit 0; }
+# A repo with no remote default branch is measured against its local main.
+MAIN_BRANCH="$(merge_proof_branch .)" || MAIN_BRANCH=main
 [ "$BRANCH" = "$MAIN_BRANCH" ] && exit 0
 
 FAILED=0

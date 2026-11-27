@@ -418,12 +418,13 @@ fn machines(d: &Draw, rows: &[Machine], now: i64) -> Vec<Line<'static>> {
     )
 }
 
-const POOL_HEAD: [&str; 8] = [
-    "KIND", "WEIGHT", "RUNNING", "WAITING", "OLDEST", "DONE 24H", "PASS", "MACHINES",
+const POOL_HEAD: [&str; 11] = [
+    "KIND", "WEIGHT", "RUNNING", "WAITING", "OLDEST", "DONE 1H", "DONE 5H", "DONE 24H", "USUAL",
+    "PASS", "MACHINES",
 ];
 
-/// One row per job kind, the longest queue first: its jobs running, waiting and the machines
-/// that take it (`Pool::machines_cell`).
+/// One row per job kind, the longest queue first: its jobs running, waiting, how long one usually
+/// runs and the machines that take it (`Pool::machines_cell`).
 fn pools(d: &Draw, rows: &[Pool]) -> Vec<Line<'static>> {
     let p = d.p;
     let shown = |r: &Pool, col: &str| r.val(col).shown().unwrap_or_default();
@@ -442,16 +443,19 @@ fn pools(d: &Draw, rows: &[Pool]) -> Vec<Line<'static>> {
                     v => num(v),
                 },
                 r.oldest.map_or("-".into(), |s| dur_secs(s).into()),
+                num(r.done_1h),
+                num(r.done_5h),
                 num(r.done),
+                r.usual.map_or("-".into(), |s| dur_secs(s).into()),
                 cell(pct(r.pass), p.pass(r.pass)),
                 dash(shown(r, "machines")).into(),
             ]
         },
         Table {
             header: POOL_HEAD.to_vec(),
-            keep: vec![0, 3, 2, 4, 6, 7, 5, 1],
-            right: vec![1, 2, 3, 4, 5, 6],
-            cap: vec![(7, 100)],
+            keep: vec![0, 3, 2, 4, 9, 10, 7, 8, 1, 5, 6],
+            right: vec![1, 2, 3, 4, 5, 6, 7, 8, 9],
+            cap: vec![(10, 100)],
             ..Default::default()
         },
     )

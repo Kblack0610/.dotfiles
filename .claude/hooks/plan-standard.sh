@@ -55,6 +55,11 @@ phased=$(awk '/^```/ {f = !f} !f && /^## Phases[ \t]*$/' <<<"$plan" | head -n1)
 # one-shot writes on every plan is not, so it may name a standing epic.
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.local/lib/plan-phases.sh" 2>/dev/null
+# The rows a plan names pick its project, so a session in one repo can plan another's work; the cwd
+# stands only when it names none (plan_project).
+target=''
+! declare -F plan_project >/dev/null || target=$(plan_project <<<"$plan")
+[ -z "$target" ] || { project=$target label=$target; }
 multi=''
 if [ -n "${_PLAN_PHASES_AWK:-}" ]; then
   # Outside code fences, so an example checklist in a fence is no phase.
@@ -96,11 +101,11 @@ fi
 # or closed; a plan with more than one phase is a feature, so its epic is not a standing
 # "epic(<system>): <system> to standard" one.
 # epic_new_gaps <proposal> -> one gap a line for an `epic: new` (plan_epic_new): the read-only part of
-# the self-check `notes ptask add` runs on it at approval (plan-approved.sh). The shortlist is the CLI's:
-# `similar` on both lanes, merged best first, its SHORTLIST_TOP (project_tasks.rs) rows, every id of
-# which the plan names on Overlap:, its review of them.
+# the self-check `notes ptask add` runs on it at approval (plan-approved.sh). The shortlist is the CLI's
+# own (`similar --epic`, project_tasks.rs shortlist): the rows of both lanes, and the open epics and live
+# plans most like it, every id of which the plan names on Overlap:, its review of them.
 epic_new_gaps() {
-  local t="$1" board sys ids lane short missing
+  local t="$1" board sys ids short missing
   board=$(project_board "$project")
   if ! [[ "$t" =~ ^epic\(([a-z0-9-]+)\):[[:space:]]*[^[:space:]] ]]; then
     echo "epic: new $t is no epic(<system>): <outcome>"; return
@@ -113,18 +118,20 @@ epic_new_gaps() {
   if ! ids=$(project-stage-check "$board" --list --json 2>/dev/null | jq -er '.[].id' 2>/dev/null); then
     echo "epic: new: project-stage-check $board --list --json printed no system list, so epic($sys) cannot be checked"
   elif ! grep -qxF -- "$sys" <<<"$ids"; then
-    echo "epic: new names epic($sys), no system of $board: one of $(paste -sd, <<<"$ids")"
+    echo "epic: new names epic($sys), no system of $board: one of $(paste -sd, <<<"$ids")$([ -n "$target" ] || echo "; $board is this session's board, so a plan for another project names only that project's rows on Overlap:")"
   fi
-  short=$(for lane in '' --agent; do
-      notes ptask "$board" $lane similar --top 5 --json -- "$t" 2>/dev/null | jq -r '.[] | "\(.percent)\t\(.id)"' 2>/dev/null
-    done | sort -s -t$'\t' -k1,1nr | awk 'NR <= 5' | cut -f2)
+  if ! short=$(notes ptask "$board" similar --epic --json -- "$t" 2>/dev/null) || [ -z "$short" ] ||
+    ! short=$(jq -r 'if type == "array" then .[].id | select(. != "") else error("no list") end' <<<"$short" 2>/dev/null); then
+    echo "epic: new: notes ptask $board similar --epic --json printed no shortlist, so Overlap: cannot be checked against it"; return
+  fi
+  short=$(awk '!seen[$0]++' <<<"$short")
   missing=$(comm -23 <(sort -u <<<"$short" | awk 'NF') <(plan_overlap_ids <<<"$plan"))
   [ -z "$missing" ] ||
-    echo "epic: new: the open rows most like it on $board are $(paste -sd' ' <<<"$short"), and Overlap: does not name $(paste -sd' ' <<<"$missing"): read each (notes ptask $board similar -- \"$t\", and --agent), then put its id on Overlap: with why it is other work, or name the one that is this work on the epic: line instead"
+    echo "epic: new: the open rows, epics and live plans most like it on $board name $(paste -sd' ' <<<"$short"), and Overlap: does not name $(paste -sd' ' <<<"$missing"): read each (notes ptask $board similar --epic -- \"$t\"), then put its id on Overlap: with why it is other work, or name the one that is this work on the epic: line instead"
 }
 
 if epic_checked; then
-  epic=$(awk '/^```/ {f = !f; next} !f' <<<"$plan" | grep -m1 -oE '^epic:[[:space:]]*[a-z]+-[0-9]+' | sed -E 's/^epic:[[:space:]]*//')
+  epic=$(_epic_line epic <<<"$plan")
   row='' proposal=''
   [ -z "$epic" ] || row=$(lab_row "$epic" | grep -m1 'epic(')
   [ -n "$epic" ] || proposal=$(plan_epic_new <<<"$plan")

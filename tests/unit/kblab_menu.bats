@@ -9,14 +9,14 @@ setup() {
   sandbox_init basic
   SUBJECT="$REPO_ROOT/.local/bin/kblab-menu"
   BIN="$SANDBOX/menu-bin"; OPENED="$SANDBOX/opened"; FOCUSED="$SANDBOX/focused"; NOTES="$SANDBOX/notes"
-  mkdir -p "$BIN" "$SANDBOX/hc/scripts"
+  mkdir -p "$BIN" "$SANDBOX/hc/scripts/ingress"
   export HOME_CONFIG="$SANDBOX/hc" PATH="$BIN:$PATH" OPENED FOCUSED NOTES
-  cat >"$HOME_CONFIG/scripts/gen-ha-launcher.py" <<'EOF'
+  cat >"$HOME_CONFIG/scripts/ingress/gen-ha-launcher.py" <<'EOF'
 #!/usr/bin/env bash
 [ "$1" = --list-sites ] || exit 2
 printf 'Zeta\tOps\thttps://zeta.example\nAgents\tOther\thttps://agents.example\n'
 EOF
-  chmod +x "$HOME_CONFIG/scripts/gen-ha-launcher.py"
+  chmod +x "$HOME_CONFIG/scripts/ingress/gen-ha-launcher.py"
   stub xdg-open 'echo "$1" >>"$OPENED"'
   stub hyprctl 'echo "$*" >>"$FOCUSED"'
   stub notify-send 'echo "$2" >>"$NOTES"'

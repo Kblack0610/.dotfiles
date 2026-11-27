@@ -15,3 +15,10 @@ pub mod session;
 pub mod tmux;
 pub mod transcript;
 pub mod vocab;
+
+/// Epoch seconds now, 0 on a clock before 1970: the one clock read of the crate.
+pub fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
