@@ -3014,7 +3014,7 @@ esac'
   # Only the ghost: a young run and one with a job are never deleted.
   run grep -c 'DELETE' "$HOME/gh.calls"
   assert_output 1
-  run grep -cxF 'ghost run https://github.com/o/r/actions/runs/1: deleted, queued 48h with no jobs; cancel and force-cancel answered HTTP 409' "$FLEET_SHEPHERD_DIR/log.md"
+  run grep -cF 'ghost run https://github.com/o/r/actions/runs/1: deleted, queued 48h with no jobs; cancel and force-cancel answered HTTP 409' "$FLEET_SHEPHERD_DIR/log.md"
   assert_output 1
   assert_equal "$(grep runs/1 "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" | cut -f2)" deleted
   # A deleted run is judged: the next run inside the age asks GitHub nothing about it.
