@@ -75,3 +75,24 @@ EOF
   assert_failure
   assert_output --partial 'typed-prefixes: no entries'
 }
+
+@test "harness_text knows every notice the harness submits as a prompt, and not the human" {
+  # Each opened a prompt that settle-session took as the human (ar-3487: JC28Rf, PaIYoy).
+  local p
+  for p in '[Cross-session idle notice] "dotfiles-0b", which you asked to be notified about, is idle now' \
+    '[Cross-session delivery notice] Your message to another session was held' \
+    '<agent-message from="acc2396b552cd67b1"> Heads-up from the fixer' \
+    '<task-notification> <task-id>x</task-id>' \
+    '  [SYSTEM NOTIFICATION - NOT USER INPUT] This is an automated background-task event'; do
+    harness_text "$p" || { echo "not harness text: $p"; return 1; }
+  done
+  # Negative control: replies the human types, one that names the notice mid-sentence included.
+  for p in 'a' 'yes, arm it' 'why did the [Cross-session idle notice] cancel it?' 'Caveats aside, go'; do
+    run -1 harness_text "$p"
+  done
+}
+
+@test "a missing harness table says so with its own status" {
+  HARNESS_PREFIXES="$SANDBOX/none.conf" run -2 harness_text "[Cross-session idle notice] x"
+  assert_output --partial 'typed-prefixes: no entries'
+}
