@@ -29,8 +29,9 @@ WATCHES="${WATCH_DIR:-${SENTINEL_WATCHES:-$HOME/.agent/watches}}"
 WSTATE="${WATCH_STATE_DIR:-${SENTINEL_STATE:-$HOME/.local/state/watch-companion}}"
 CACHE="${AGENT_MQTT_CACHE:-$HOME/.local/state/agent-mqtt}"
 # Seconds each slow reader may run (slow_reader). fleet-dispatch stats and the hub readers read the
-# agent-queue store, so a locked store must not hold the publish lock or the --full run: the lock wait
-# (20s) plus this plus the publishes stays under the unit's TimeoutStartSec=60 (ar-1486).
+# agent-queue store, so a locked store must not hold the publish lock or the --full run past
+# TimeoutStartSec=60 (agent-mqtt-publish.service, private overlay): the lock wait (20s) plus this and
+# its 2s KILL grace leaves 13s for the publishes, which took under 5s on 2026-11-27 (ar-1486).
 READER_TIMEOUT="${AGENT_MQTT_READER_TIMEOUT:-25}"
 [[ "$READER_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || READER_TIMEOUT=25
 READER_TTL=45 # seconds: under fleet-state.timer's minute, so the slow readers render at least once a tick
@@ -159,15 +160,22 @@ hand_fired() {
     ! grep -qE '^(SCHEDULE=["'"'"']?[^"'"'"' ]|AUTOSTART=["'"'"']?yes)' "$1"
 }
 
+# sent_within <file> <secs> -> rc 0 when outside a dry run <file> is a sent payload younger than <secs>.
+sent_within() { [ "$mode" != dry ] && [ -f "$1" ] && (($(date +%s) - $(date -r "$1" +%s) < $2)); }
+
 # slow_reader <fd var> <kind/id> <cmd...> -> sets <fd var> to an fd that yields the command's output,
 # started now, cut off after READER_TIMEOUT (then KILLed 2s on) and printed only on success; or, outside
-# a dry run, the last payload sent on that topic when it is younger than READER_TTL.
+# a dry run, the last payload sent on that topic when it is younger than READER_TTL. A reader cut off
+# yields that last payload while it is younger than EXPIRE_AFTER, so a slow pass keeps the HA entity
+# instead of deleting it; one that keeps hanging past that drops the topic. A failed reader yields nothing.
 slow_reader() {
     local var="$1" sent fd; sent="$(tfile "agents/$HOST_ID/$2")"; shift 2
-    if [ "$mode" != dry ] && [ -f "$sent" ] && (($(date +%s) - $(date -r "$sent" +%s) < READER_TTL)); then
+    if sent_within "$sent" "$READER_TTL"; then
         exec {fd}< "$sent"
     else
-        exec {fd}< <(out="$(timeout -k 2 "$READER_TIMEOUT" "$@" 2>/dev/null)" && printf '%s' "$out")
+        exec {fd}< <(out="$(timeout -k 2 "$READER_TIMEOUT" "$@" 2>/dev/null)"; rc=$?
+            if [ "$rc" = 0 ]; then printf '%s' "$out"
+            elif [ "$rc" -ge 124 ] && sent_within "$sent" "$EXPIRE_AFTER"; then cat "$sent"; fi)
     fi
     printf -v "$var" '%s' "$fd"
 }

@@ -659,8 +659,9 @@ seed_bar() {
 # slow reader is bounded by READER_TIMEOUT (ar-1486). The outer timeout is under the 30s hang, so a reader
 # left unbounded fails the test rather than passing late.
 @test "a slow reader that hangs is cut off at its timeout and the run still publishes the rest (ar-1486)" {
-  printf '#!/usr/bin/env bash\nexec sleep 30\n' > "$SANDBOX/bin/hub"
-  printf '#!/usr/bin/env bash\n[ "$1" = stats ] && exec sleep 30\nexit 0\n' > "$SANDBOX/bin/fleet-dispatch"
+  # A child holds the pipe, as hub's agent-queue call would, so the bound must reach past the direct child.
+  printf '#!/usr/bin/env bash\nsleep 30 & wait\n' > "$SANDBOX/bin/hub"
+  printf '#!/usr/bin/env bash\n[ "$1" = stats ] && { sleep 30 & wait; }\nexit 0\n' > "$SANDBOX/bin/fleet-dispatch"
   chmod +x "$SANDBOX/bin/hub" "$SANDBOX/bin/fleet-dispatch"
   AGENT_MQTT_READER_TIMEOUT=1 run timeout 15 "$PUB" --full --quiet
   assert_success
@@ -669,6 +670,26 @@ seed_bar() {
   done
   [ -n "$(payload agents/testhost/runner/alpha)" ]
   [ -n "$(payload agents/testhost/summary/feed)" ]
+}
+
+@test "a reader cut off keeps its last send while younger than expire_after, and drops it once older (ar-1486)" {
+  overview_stub 'echo "{\"state\": \"ok\", \"rows\": [1]}"'
+  "$PUB" --full --quiet
+  sent="$HOME/.local/state/agent-mqtt/sent/agents%testhost%summary%overview"
+  [ -f "$sent" ]
+  overview_stub 'sleep 30 & wait'
+  touch -d "2 minutes ago" "$sent"
+  : > "$PUBLOG"
+  AGENT_MQTT_READER_TIMEOUT=1 run timeout 15 "$PUB" --full --quiet
+  assert_success
+  assert_equal "$(jq -r .state <<< "$(payload agents/testhost/summary/overview)")" ok
+  touch -d "20 minutes ago" "$sent"
+  : > "$PUBLOG"
+  AGENT_MQTT_READER_TIMEOUT=1 run timeout 15 "$PUB" --full --quiet
+  assert_success
+  # Dropped: the deletion sends an empty retained payload and forgets the cache file.
+  grep -q $'^agents/testhost/summary/overview\t$' "$PUBLOG"
+  [ ! -f "$sent" ]
 }
 
 @test "bar: a run inside the TTL repeats the sent document, an older one reads hub again" {
