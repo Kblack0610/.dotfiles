@@ -2154,7 +2154,10 @@ launch_pass() {
   {
     echo '#!/usr/bin/env bash'
     echo "# fleet-shepherd pass $id, $(date -u '+%F %H:%M UTC'). The tmux pane runs this."
-    for v in PATH AGENTCTL_NAME AGENTCTL_INBOX AGENTCTL_STATE AGENTCTL_STATE_DIR CLAUDE_TELEMETRY_SERVICE \
+    # SSH_AUTH_SOCK is the runner's agent: a worker takes only an agent key over BatchMode ssh, and a
+    # hub pane holds whatever the last client to attach brought (an ssh attach with no forwarding
+    # unset it, so 2026-11-27's passes skipped every razer-laptop nudge as unreachable, ar-5878).
+    for v in PATH SSH_AUTH_SOCK AGENTCTL_NAME AGENTCTL_INBOX AGENTCTL_STATE AGENTCTL_STATE_DIR CLAUDE_TELEMETRY_SERVICE \
              HARNESS ROUTE DATA_CLASS FLEET_SHEPHERD_DIR FLEET_STATE_FILE FLEET_SHEPHERD_LEASE_MIN \
              BUDGET_CALL_USD BUDGET_DAY_USD MAX_CALLS_HOUR; do
       [ -z "${!v:-}" ] || printf 'export %s=%q\n' "$v" "${!v}"

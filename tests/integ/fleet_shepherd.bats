@@ -1874,6 +1874,18 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   grep -qxF 'export MAX_CALLS_HOUR=8' "$FLEET_SHEPHERD_DIR/.pass.sh"
 }
 
+@test "the pass launcher carries the runner's ssh agent, so a pass reaches a fleet worker whatever the hub session's environment holds" {
+  doc "[$(row a STALLED false false)]"
+  SSH_AUTH_SOCK=/run/user/1000/ssh-agent.socket run "$SH" run
+  assert_success
+  grep -qxF 'export SSH_AUTH_SOCK=/run/user/1000/ssh-agent.socket' "$FLEET_SHEPHERD_DIR/.pass.sh"
+  # negative control: a runner with no agent writes no empty export over the pane's own
+  rm -f "$FLEET_SHEPHERD_DIR/.pass.sh" "$FLEET_SHEPHERD_DIR/.pass"
+  env -u SSH_AUTH_SOCK "$SH" run
+  [ -f "$FLEET_SHEPHERD_DIR/.pass.sh" ]
+  ! grep -q 'SSH_AUTH_SOCK' "$FLEET_SHEPHERD_DIR/.pass.sh"
+}
+
 @test "a pass starts on the account claude-acct room names; with none it starts on the best one and pages once, at normal, naming it" {
   doc "[$(row a STALLED false false)]"
   STUB_ROOM="$HOME/.claude-acct3" run "$SH" run
