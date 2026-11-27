@@ -848,7 +848,8 @@ cmd_infra() {
 }
 
 # infra_sample: this pass's cluster state and the Sentinel trips the shepherd hears: the high and
-# urgent ones of `watch-companion-loop tripped`, which lists every TRIP watch. On 2026-11-04 the
+# urgent TRIP ones of `watch-companion-loop tripped`, which lists every red watch with its state, TRIP
+# or ERROR (a probe that could not run: triage files no row for it, ar-3570). On 2026-11-04 the
 # shepherd heard urgent only, so queue-starved (high) never reached it. Every other trip is owned by
 # its fleet-bench triage red item, or by the human sheet on a human route, so it raises no line here.
 # A watch whose `red` item is running or queued unheld has an owner, so it raises no line either; a
@@ -866,7 +867,7 @@ infra_sample() {
     infra_now
     watch-companion-loop tripped 2>/dev/null | awk -F'\t' -v owned="$owned" '
       BEGIN { n = split(owned, o, "\n"); for (i = 1; i <= n; i++) has[o[i]] = 1 }
-      ($2 == "high" || $2 == "urgent") && !($1 in has) { printf "watch: %s tripped (%s)\n", $1, $2 }'
+      $3 != "ERROR" && ($2 == "high" || $2 == "urgent") && !($1 in has) { printf "watch: %s tripped (%s)\n", $1, $2 }'
   } > "$INFRA"
 }
 
