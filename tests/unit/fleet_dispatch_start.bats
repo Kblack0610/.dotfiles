@@ -309,6 +309,46 @@ load 'fleet_dispatch/common'
   [ -z "$(ls "$AGENT_QUEUE_DIR"/*/ 2>/dev/null)" ] || fail "queued an item"
 }
 
+# 2026-11-20: a row whose item closed cancelled was left started, a start of it was refused as "no longer
+# open", and agent-11 filed its own item with --repeat to land it (ar-225, ar-5932).
+@test "start --brief of a row left started by a cancelled item files a fresh item under its id and starts it, open, in the launch env" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-1 '- [ ] tidy the loader <!-- id:gm-1 -->'
+  printf '/one-shot tidy the loader\n' > "$SANDBOX/brief.md"
+  stub wt 'printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; printf "%s\n" "$WT_NEW_CMD" > "$NOTES_FIXTURE/cmd"; echo "game-agent-1"'
+  stub tmux-close 'exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --agent --row gm-1 --brief "$SANDBOX/brief.md"
+  assert_success
+  agent-queue cancel gm-1 --why 'superseded' >/dev/null 2>&1
+  grep -qF -- '- [/] tidy the loader' "$NOTES_FIXTURE/rows.game.agent" || fail "the row is not left started"
+  rm -f "$NOTES_FIXTURE/cmd"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --agent --row gm-1 --brief "$SANDBOX/brief.md"
+  assert_success
+  assert_output --partial 'started game-agent-1: game: gm-1'
+  grep -qF 'AGENT_QUEUE_ITEM=gm-1' "$NOTES_FIXTURE/cmd" || fail "the session does not know its item"
+  f=$(qitem running gm-1)
+  [ -n "$f" ] || fail "no fresh running item for the row"
+  assert_equal "$(qfield "$f" from)" 'board:game:gm-1'
+  assert_equal "$(agent-queue show gm-1 --json | jq -r .state)" running
+  assert_equal "$(ls "$AGENT_QUEUE_DIR"/done/*/*-gm-1.md | wc -l)" 1
+  grep -qF -- '- [/] tidy the loader' "$NOTES_FIXTURE/rows.game.agent" || fail "the row is not started"
+}
+
+@test "start --brief of a started row whose cancelled item a live item replaced is refused naming both, and files nothing" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-1 '- [/] tidy the loader <!-- id:gm-1 -->'
+  printf '/one-shot tidy the loader\n' > "$SANDBOX/brief.md"
+  agent-queue add --project game --slug gm-1 --from board:game:gm-1 'tidy the loader' >/dev/null
+  agent-queue cancel gm-1 --why 'superseded' >/dev/null 2>&1
+  agent-queue add --project game --slug other --from board:game:gm-1 'tidy the loader again' >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --agent --row gm-1 --brief "$SANDBOX/brief.md"
+  assert_failure
+  assert_output --partial 'row gm-1 is started, its queue item gm-1 is done cancelled, and queue item other works it'
+  assert_not_called 'wt new'
+  [ -z "$(qitem queued gm-1)$(qitem running gm-1)" ] || fail "filed a fresh item beside the live one"
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/running/ 2>/dev/null)" ] || fail "an item is running"
+}
+
 # 2026-11-19: a start of an open agent row without --agent was told "row no longer open".
 @test "start --brief without --agent finds an agent row on the agent board; a row on neither board is named as missing" {
   project game beta "$SANDBOX/repos/game"

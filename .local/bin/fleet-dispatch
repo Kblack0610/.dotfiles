@@ -4454,8 +4454,9 @@ cmd_start() {
     lane=$(row_lane "$prof" "$project" "$lane" "$key") || { say "start: $key is not on either board of $project"; return 1; }
     # The row becomes a queue item and the item is what starts: one record and one launch for
     # every session. The item's brief adds /one-shot and how to close the row, so a brief that
-    # opens with /one-shot is not run through it twice.
-    promote "$(jq -cn --arg profile "$prof" --arg project "$project" --arg lane "$lane" --arg key "$key" --arg area "$area" \
+    # opens with /one-shot is not run through it twice. A row left started by an item that closed
+    # cancelled or failed gets a fresh item (PROMOTE_RESTART, row_restart).
+    PROMOTE_RESTART=1 promote "$(jq -cn --arg profile "$prof" --arg project "$project" --arg lane "$lane" --arg key "$key" --arg area "$area" \
       '{profile: $profile, project: $project, lane: $lane, key: $key, area: $area}')" "" "${brief#/one-shot }" "" "$qmode" >/dev/null || return 1
     # A plan row's chain may queue no phase to start now: its first open phase waits on its own row.
     [ -n "$PROMOTED" ] || { say "start: row $key queued no item to start now: ${EPIC_TOOK:-the chain of its plan waits on its rows}"; return 0; }
@@ -9512,6 +9513,26 @@ take_epic() {
 # hold or dead gate still refuses. The cleared ones go onto the item as its queue tags (an ask: one is what ask_decisions
 # reads), all but a time of day, which would hold the item again the next morning; once the item is
 # queued their hashtags come off the row.
+# row_restart <project> <started row line> -> "<id> <status>" when the row's own item (slug <id>, as promote
+# files it) closed cancelled or failed and no live item works the row: cmd_start then files a fresh item
+# under <id>, and the session's AGENT_QUEUE_ITEM names that open item. Else rc 1 with why, naming the
+# item: a live one is the start to make, an ok one is the orphan pass's to close. A row with no id or no
+# item was started by hand, and the refusal stays promote's own.
+row_restart() {
+  local id it st live
+  [[ "$2" == *'<!--'* ]] || return 1
+  id=$(grep -oE 'id:[A-Za-z0-9_.-]+' <<<"${2#*<!--}" | head -n 1); id=${id#id:}
+  [ -n "$id" ] || return 1
+  it=$(agent-queue show "$id" --json 2>/dev/null) || return 1
+  st=$(jq -r '.state + (if .status then " " + .status else "" end)' <<<"$it")
+  live=$(agent-queue list --json 2>/dev/null | jq -r --arg r "$1:$id" --arg s "$id" 'select(.row == $r and .slug != $s) | .slug' | paste -sd' ')
+  [ -z "$live" ] || { echo "row $id is started, its queue item $id is $st, and queue item $live works it: fleet-dispatch start --item $live"; return 1; }
+  case "$st" in
+    "done cancelled" | "done failed") echo "$id ${st#done }" ;;
+    *) echo "row $id is started and its queue item $id is $st, so no fresh item is filed"; return 1 ;;
+  esac
+}
+
 promote() {
   local c="$1" tags="$2" task="$3" repeat="${4-}" qmode="${5-}" prof project lane key area line out id slug flag=() rc=0
   local g q gwait gates=() rm=() stacks=''
@@ -9520,7 +9541,14 @@ promote() {
   [ "$lane" = agent ] && flag=(--agent)
   line=$(row_line "$prof" "$project" "$lane" "$key")
   [ -n "$line" ] || { say "skip $project: $key is not on the $lane board"; return 1; }
-  [[ "$line" == '- [ ]'* ]] || { say "skip $project: row no longer open: $key"; return 1; }
+  # A hand start (cmd_start, PROMOTE_RESTART) of a row left started after its item closed cancelled or
+  # failed, before reap's settle_row hands it back, files a fresh item for it (ar-5932).
+  local restart='' closed=''
+  if [[ "$line" != '- [ ]'* ]]; then
+    [ -n "${PROMOTE_RESTART:-}" ] && [[ "$line" == '- [/]'* ]] && restart=$(row_restart "$project" "$line") ||
+      { say "skip $project: ${restart:-row no longer open: $key}"; return 1; }
+    read -r restart closed <<<"$restart"
+  fi
   load_gates
   [ -z "$GATES_FAILED" ] || { say "skip $project: $GATES_FAILED, so its gates cannot be read: $key"; return 1; }
   for g in $(grep -oE '(^|[[:space:]])#[A-Za-z0-9_./-]+' <<<"${line%%<!--*}" | sed 's/^[[:space:]]*#//'); do
@@ -9555,10 +9583,14 @@ promote() {
       say "take $key: taken, but its cleared gates (${gates[*]}) are still on its row"
     return 0
   fi
-  out=$(np "$prof" ptask "$project" "${flag[@]}" --exact start -- "$line" 2>&1) ||
-    { say "skip $project: could not start row: $key ($out)"; return 1; }
-  id=$(sed -n 's/^  id://p' <<<"$out")
-  [ -n "$id" ] || [[ "$line" != *"id:$key "* ]] || id=$key
+  if [ -n "$restart" ]; then
+    id=$restart
+  else
+    out=$(np "$prof" ptask "$project" "${flag[@]}" --exact start -- "$line" 2>&1) ||
+      { say "skip $project: could not start row: $key ($out)"; return 1; }
+    id=$(sed -n 's/^  id://p' <<<"$out")
+    [ -n "$id" ] || [[ "$line" != *"id:$key "* ]] || id=$key
+  fi
   if [ -z "$id" ]; then
     np "$prof" ptask "$project" "${flag[@]}" --exact unstart -- "- [/]${line#- \[ \]}" >/dev/null 2>&1
     say "skip $project: row has no id and start gave it none (no code in project-map.json?), un-started: $key"
@@ -9628,7 +9660,7 @@ promote() {
       return 1
     fi
     np "$prof" ptask "$project" "${flag[@]}" unstart "$id" >/dev/null 2>&1
-    say "could not queue $project row, un-started: $id ($out)"
+    say "could not queue $project row, un-started: $id${closed:+ (its item $id closed $closed, and no fresh one was filed)} ($out)"
     return 1
   fi
   # The `<state> <slug> -> <file>` line, not the first: a warning on add's stderr may come before it.
