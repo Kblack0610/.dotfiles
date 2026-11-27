@@ -257,9 +257,13 @@ PY
   run cost '[([.by_session[] | select(.harness != "claude") | [.sid, .usd, .models]] | sort_by(.[0])), [.unpriced_sessions[].sid], .other_harness.opencode.usd]'
   assert_success
   assert_output '[[["flip",0.25,{}],["fresh",0.5,{}],["multi",0.25,{"m1":0.179,"m2":0.071}]],["still"],1]'
-  # negative control: the days a session was seen on sum to its final total, not past it
-  run cost '[.by_session[] | select(.sid == "multi") | .usd] | add + 1.5'
-  assert_output '1.75'
+  # the earlier days book the rest: the three days' rows for multi sum to its final total
+  run cost '[.by_session[] | select(.sid == "multi") | [.usd, .tokens]]'
+  assert_output '[[0.25,10]]'
+  run bash -c "\"$AU\" fleet-cost --json --before \"$(date -u -d "@$((mid + 3600))" +%FT%TZ)\" | jq -c '[.by_session[] | select(.sid == \"multi\") | .usd]'"
+  assert_output '[0.5]'
+  run bash -c "\"$AU\" fleet-cost --json --before \"$(date -u -d "@$((old + 3600))" +%FT%TZ)\" | jq -c '[.by_session[] | select(.sid == \"multi\") | .usd]'"
+  assert_output '[1.0]'
 }
 
 @test "burn prices every session: an unbilled one counts in the per-PR cost and the zero-merge share, the billed-only registry does neither" {

@@ -819,7 +819,8 @@ def other_harnesses(start, end, root):
     window less its newest row before it, never the whole total again on each day it updates. Sessions that
     went through the gateway are left out: its metered line already has their dollars. A session with tokens
     and no price gets no row (never a $0 one) and is listed as unpriced instead; a session with no new spend
-    gets no row either."""
+    gets no row either. A session's per-model split is the row's proportions scaled to the delta: approximate when
+    the delta went to a model the earlier rows did not. A baseline is read from files up to BASELINE_LOOKBACK old."""
     newest, before = {}, {}
     for f in glob.glob(os.path.join(root, "*", "*.jsonl")):
         try:
@@ -843,6 +844,8 @@ def other_harnesses(start, end, root):
     for sid, r in newest.items():
         base = (before.get(sid) or {}).get("cost_usd") or 0.0
         delta = max(0.0, r["cost_usd"] - base) if r.get("cost_usd") is not None else None
+        if base > 0 and not delta:   # priced before the window and no new spend (or no price now): booked already
+            continue
         b = out[r["harness"]]
         b["sessions"] += 1
         if delta is not None:
@@ -852,7 +855,10 @@ def other_harnesses(start, end, root):
         if sid and (delta or 0) > 0:   # priced from a table or the harness's own sum: estimated, as in total
             rows.append(session_row(sid, 0.0, delta, "runner" if r.get("runner") else "interactive",
                                     r["harness"], r.get("agent"), None, r.get("project"), r.get("title"), None,
-                                    models=outcome_models(r, delta), tokens=r.get("tokens_total"), provider=r.get("provider")))
+                                    models=outcome_models(r, delta),
+                                    tokens=None if r.get("tokens_total") is None
+                                    else max(0, r["tokens_total"] - ((before.get(sid) or {}).get("tokens_total") or 0)),
+                                    provider=r.get("provider")))
         elif sid and base <= 0 and (r.get("cost_usd") or 0) <= 0 and (r.get("tokens_total") or 0) > 0:
             unpriced.append({"sid": sid, "harness": r["harness"], "provider": r.get("provider"), "tokens": r["tokens_total"]})
     return out, rows, unpriced
