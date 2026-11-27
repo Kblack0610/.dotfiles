@@ -5758,7 +5758,7 @@ triage_kind() { case "$1" in 'check(watch): '*) echo ' watch' ;; 'check(alert): 
 # (ask UfRZaR, 2026-11-20, on the human's "needs me should only be what needs me"). An alert route's
 # cause whose ask still stands (triage_ask_stands) queues nothing: that ask owns the trip.
 triage_promote() {
-  local board key raw route cause tags items used trip tries more kind n=0 capped=0 seen=' ' model ask
+  local board key raw route cause tags items used trip tries more kind n=0 capped=0 seen=' ' model ask standing=' '
   $TRIAGE_HOLD_CMD >/dev/null 2>&1 || { echo 0; return 0; }
   items=$(triage_items) || { echo 0; return 0; }
   used=$(jq --arg d "$(date -u -d "@$(now)" +%F)" \
@@ -5768,10 +5768,13 @@ triage_promote() {
   while IFS=$'\t' read -r key _ _ route cause tags; do
     triage_queues "$key" "$route" || continue
     kind=$(triage_kind "$key")
-    if [ "$route" = alert ] && ask=$(triage_ask_stands "$items" "$cause"); then
-      [[ "$seen" == *" $cause "* ]] || say "triage: $cause (${key:0:60}) stands on ask $ask: no item"
-      seen+="$cause "
-      continue
+    if [ "$route" = alert ]; then
+      [[ "$standing" != *" $cause "* ]] || continue
+      if ask=$(triage_ask_stands "$items" "$cause"); then
+        say "triage: $cause (${key:0:60}) stands on ask $ask: no item"
+        standing+="$cause "
+        continue
+      fi
     fi
     trip=$(watch_trip "$key")
     tries=$(cause_tries "$items" "$cause" "$trip" "$route")
@@ -5798,9 +5801,12 @@ triage_promote() {
   echo "$n"
 }
 
-# triage_ask_stands <items> <cause> -> the id of the ask the cause's newest item in <items> records
-# (`agent-queue set <slug> ask=<id>`, fix-red's alert route), rc 0 while it is pending or was answered
-# under TRIAGE_FIX_DAYS ago; rc 1 otherwise, or when agent-ask cannot show it. An alert route's item
+# triage_ask_stands <items> <cause> -> the id of the ask the cause's newest item in <items> that recorded
+# one names (`agent-queue set <slug> ask=<id>`, fix-red's alert route), rc 0 while it is pending or was
+# answered under TRIAGE_FIX_DAYS ago, whatever the answer (the human decided; a trip that outlasts the
+# decision is theirs to read); rc 1 otherwise, or when agent-ask cannot show it. <items> lists done items
+# for TRIAGE_FIX_DAYS only, so an ask left pending longer gets one item a window, which records it again.
+# An alert route's item
 # exists to put the human's decision to them, so a later trip that finds it made only repeats it:
 # source-pace tripped on, as the human chose (asks agERZ5, KntBiO "keep", 2026-11-21), and got an item a
 # trip that closed in minutes finding the same answer (ar-3436, ar-4216; ar-4538).
