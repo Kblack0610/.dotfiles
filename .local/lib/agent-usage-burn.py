@@ -678,6 +678,7 @@ FIT_MIN_MTOK = 5.0
 FIT_MAX_ERROR_PCT = 5.0   # a fit that misses its held-out sessions by more prices nothing
 GATEWAY_PROVIDERS = ("litellm", "go", "gateway")  # opencode providers that reach the gateway
 HELPER_MIN_BILLED = 5.0   # an origin billed less than this says nothing about its helper share
+BASELINE_LOOKBACK = 35 * 86400   # an outcomes file older than the window this much holds no row a session booked from
 PROM_LOOKBACK = "7d"      # how far back a session's pre-window total is looked for
 CARRY_SNAPSHOTS = 14      # newest token snapshots read for carried rates; each one keeps the rows it carried
 
@@ -841,25 +842,33 @@ def session_row(sid, measured, estimated, origin, harness, agent, account, proje
             **({"provider": provider} if provider else {})}
 
 
-def outcome_models(r):
+def outcome_models(r, usd=None):
     """An outcomes row's dollars by model: its own split, else its whole cost on its models joined
-    (`a+b`), since there is nothing to split them by. A `<synthetic>` or other `<...>` name is no model."""
+    (`a+b`), since there is nothing to split them by. A `<synthetic>` or other `<...>` name is no model.
+    `usd` books only that part of the row's cost, split in the row's proportions."""
     real = lambda m: m and not m.startswith("<")
     split = {m: v for m, v in (r.get("cost_by_model") or {}).items() if real(m) and (v or 0) > 0}
-    if split:
+    if not split:
+        names = sorted({m for m in r.get("models") or [] if real(m)})
+        split = {"+".join(names): r["cost_usd"]} if names else {}
+    if usd is None or not split:
         return split
-    names = sorted({m for m in r.get("models") or [] if real(m)})
-    return {"+".join(names): r["cost_usd"]} if names else {}
+    whole = sum(split.values())
+    return {m: v * usd / whole for m, v in split.items()}
 
 
 def other_harnesses(start, end, root):
-    """Every non-Claude harness from its session outcomes: newest row per session, tagged by its price source.
-    Sessions that went through the gateway are left out: its metered line already has their dollars. A session
-    with tokens and no price gets no row (never a $0 one) and is listed as unpriced instead."""
-    newest = {}
+    """Every non-Claude harness from its session outcomes, tagged by its price source. An outcomes row is
+    its session's running total, so a session books what it spent in [start, end): its newest row in the
+    window less its newest row before it, never the whole total again on each day it updates. Sessions that
+    went through the gateway are left out: its metered line already has their dollars. A session with tokens
+    and no price gets no row (never a $0 one) and is listed as unpriced instead; a session with no new spend
+    gets no row either. A session's per-model split is the row's proportions scaled to the delta: approximate when
+    the delta went to a model the earlier rows did not. A baseline is read from files up to BASELINE_LOOKBACK old."""
+    newest, before = {}, {}
     for f in glob.glob(os.path.join(root, "*", "*.jsonl")):
         try:
-            if os.path.getmtime(f) < start:
+            if os.path.getmtime(f) < start - BASELINE_LOOKBACK:
                 continue
         except OSError:
             continue
@@ -869,23 +878,32 @@ def other_harnesses(start, end, root):
             except ValueError:
                 continue
             at = r.get("updated_epoch") or 0
-            if (not (r.get("harness") or "claude").startswith("claude") and r.get("provider") not in GATEWAY_PROVIDERS
-                    and start <= at < end and at >= (newest.get(r.get("session_id")) or {}).get("updated_epoch", 0)):
-                newest[r.get("session_id")] = r
+            if (r.get("harness") or "claude").startswith("claude") or r.get("provider") in GATEWAY_PROVIDERS or at >= end:
+                continue
+            seen = newest if at >= start else before
+            if at >= (seen.get(r.get("session_id")) or {}).get("updated_epoch", 0):
+                seen[r.get("session_id")] = r
     out = defaultdict(lambda: {"usd": 0.0, "sessions": 0, "priced": 0, "sources": set()})
     rows, unpriced = [], []
     for sid, r in newest.items():
+        base = (before.get(sid) or {}).get("cost_usd") or 0.0
+        delta = max(0.0, r["cost_usd"] - base) if r.get("cost_usd") is not None else None
+        if base > 0 and not delta:   # priced before the window and no new spend (or no price now): booked already
+            continue
         b = out[r["harness"]]
         b["sessions"] += 1
-        if r.get("cost_usd") is not None:
-            b["usd"] += r["cost_usd"]
+        if delta is not None:
+            b["usd"] += delta
             b["priced"] += 1
             b["sources"].add(r.get("cost_src") or "harness")
-        if sid and (r.get("cost_usd") or 0) > 0:   # priced from a table or the harness's own sum: estimated, as in total
-            rows.append(session_row(sid, 0.0, r["cost_usd"], "runner" if r.get("runner") else "interactive",
+        if sid and (delta or 0) > 0:   # priced from a table or the harness's own sum: estimated, as in total
+            rows.append(session_row(sid, 0.0, delta, "runner" if r.get("runner") else "interactive",
                                     r["harness"], r.get("agent"), None, r.get("project"), r.get("title"), None,
-                                    models=outcome_models(r), tokens=r.get("tokens_total"), provider=r.get("provider")))
-        elif sid and (r.get("tokens_total") or 0) > 0:
+                                    models=outcome_models(r, delta),
+                                    tokens=None if r.get("tokens_total") is None
+                                    else max(0, r["tokens_total"] - ((before.get(sid) or {}).get("tokens_total") or 0)),
+                                    provider=r.get("provider")))
+        elif sid and base <= 0 and (r.get("cost_usd") or 0) <= 0 and (r.get("tokens_total") or 0) > 0:
             unpriced.append({"sid": sid, "harness": r["harness"], "provider": r.get("provider"), "tokens": r["tokens_total"]})
     return out, rows, unpriced
 

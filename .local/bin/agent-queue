@@ -4784,7 +4784,10 @@ cmd_stats() {
 # one. A body is cut at the dispatch template (`Promoted by fleet-dispatch`: the run's instructions,
 # not the task's), its markers are stripped, and a first line that is the row's own words is dropped.
 # A body that adds 20 characters or fewer to the row is skipped: measured 2026-11-18, each such body
-# was the row's earlier wording before the triager re-typed it, not a brief. An open item with no row
+# was the row's earlier wording before the triager re-typed it, not a brief. Only a body's new lines
+# count, and they must add more than 20 characters: a line already on the row (its words, a `was:` or
+# `full:` detail) or any `was:`/`full:` line is the row's own history, as in a dispatch promotion's body,
+# which copies the row (ar-5817), and is never written to it again. An open item with no row
 # (canary and trainee items excepted: their config is their brief) gets a story row and its brief. A
 # row with `brief: ` lines (keep_brief's format, retired by #2406) gets them back without the prefix.
 # Rows are written through `notes ptask` alone, matched by their exact line, so a row that changed
@@ -4792,6 +4795,9 @@ cmd_stats() {
 # line and fails when any row would be written, which after P2 is a writer losing a brief again.
 BRIEF_JQ='def norm: gsub("<!--.*?-->"; "") | gsub("<!--.*$"; "") | gsub("(^|\\s)#[A-Za-z][A-Za-z0-9_/:.-]*"; " ")
     | gsub("^\\s*- \\[.\\]\\s*"; "") | gsub("\\s+"; " ") | ascii_downcase | ltrimstr(" ") | rtrimstr(" ");
+  def held: norm | sub("^(full|was): ?"; "");
+  def novel($on): map(select((norm | test("^(full|was):")) or (held as $l | any($on[]; . == $l)) | not))
+    | until(length == 0 or (.[0] | test("\\S")); .[1:]) | until(length == 0 or (.[-1] | test("\\S")); .[:-1]);
   def body: .task | split("\n") | (map(startswith("Promoted by fleet-dispatch")) | index(true)) as $c
     | (if $c then .[:$c] else . end) | map(gsub("\\s*<!--.*?-->"; "") | gsub("\\s*<!--.*$"; "")) | until(length == 0 or (.[-1] | test("\\S")); .[:-1]);
   def stamp: "(\(.state), queued \((.queued // "-") | split("T")[0]))";
@@ -4800,12 +4806,13 @@ BRIEF_JQ='def norm: gsub("<!--.*?-->"; "") | gsub("<!--.*$"; "") | gsub("(^|\\s)
   ($items | map(select(.row) | (body) as $b | . + {open: (.state != "done"), lines: $b, n: ($b | join("\n") | norm)})
     | group_by(.row) | map({key: .[0].row, value: .}) | from_entries) as $by
   | (($board.rows[] | select(.lane == "agent" and all(.details[]; test("^(full|was):"))))
-      | (.raw | norm) as $t | (.project + ":" + .id) as $key | ($by[$key] // []) as $all
-      | ($all | map(select(.n != $t and (. as $i | $t | contains($i.n) | not) and (.n | length) > ($t | length) + 20))
+      | (.raw | norm) as $t | ([.raw, .details[]] | map(held | select(. != ""))) as $on | (.project + ":" + .id) as $key | ($by[$key] // []) as $all
+      | ($all | map(select(.n != $t and (. as $i | $t | contains($i.n) | not) and (.n | length) > ($t | length) + 20
+            and (.lines | novel($on) | join("\n") | norm | length) > 20))
           | sort_by(if .open then 0 else 1 end, (.queued // "0" | explode | map(-.)))) as $good
       | if $good[0] then {kind: "row", key: $key, prof: .profile, proj: .project, text: .raw, slug: $good[0].slug,
             stamp: ($good[0] | stamp), brief: (.details + ["from item \($good[0].slug) \($good[0] | stamp)"]
-              + ($good[0].lines | if (.[0] | norm) == $t then .[1:] else . end) | join("\n"))}
+              + ($good[0].lines | novel($on)) | join("\n"))}
         else {kind: (if $all[0] then "bare" else "none" end), key: $key} end),
     ($board.rows[] | select(.lane == "agent" and any(.details[]; startswith("brief: ")))
       | {kind: "prefix", key: (.project + ":" + .id), prof: .profile, proj: .project, text: .raw,
