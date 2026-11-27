@@ -290,6 +290,41 @@ EOF2
   assert_line --regexp '^FAIL +docs +A docs index'
 }
 
+@test "systems.md: repo-wide rows read origin's default branch, so a clone behind its remote passes and an unpushed file does not" {
+  write_systems_doc
+  { sed -n '1,/^## Criteria/p' "$REPO_ROOT/.local/src/docs/systems.md"; printf '\n| System | Applies | Criterion | Check | Why |\n| --- | --- | --- | --- | --- |\n'
+    for r in 'Dependencies pinned by a lockfile' 'A CI workflow in the repo' 'A secret scan gates' 'Automated tests are in the repo' 'The deploy doc says how to roll back'; do
+      grep -F "$r" "$REPO_ROOT/.local/src/docs/systems.md"; done; } > "$SYSTEMS_DOC.new" && mv "$SYSTEMS_DOC.new" "$SYSTEMS_DOC"
+  mkdir -p "$REPO/.github/workflows" "$REPO/docs/operations" "$REPO/tests"
+  printf 'on: pull_request\n' > "$REPO/.github/workflows/ci.yml"
+  printf '# gitleaks\n' > "$REPO/.github/SECURITY.md"
+  printf '## Rollback\n' > "$REPO/docs/operations/deploy.md"
+  printf 'x\n' > "$REPO/tests/a.txt"
+  git -C "$REPO" init -q -b main
+  git -C "$REPO" add -A && git -C "$REPO" -c user.name=t -c user.email=t@t commit -qm repo
+  git clone -q --bare "$REPO" "$HOME/origin.git"
+  git -C "$REPO" remote add origin "$HOME/origin.git"
+  git -C "$REPO" fetch -q origin && git -C "$REPO" remote set-head origin -a >/dev/null
+  # NEGATIVE CONTROL: a lockfile only in the working tree is not on origin.
+  printf '{}\n' > "$REPO/Cargo.lock"
+  run "$CHECK" shooter --systems
+  assert_line --regexp '^FAIL +security +Dependencies pinned by a lockfile'
+  assert_line --regexp '^PASS +ci +A CI workflow in the repo'
+  # Origin gains the lockfile and the clone does not fetch the checkout up: its tree has lost the rest.
+  git clone -q "$HOME/origin.git" "$HOME/other"
+  printf '{}\n' > "$HOME/other/Packages/packages-lock.json"
+  git -C "$HOME/other" add -A && git -C "$HOME/other" -c user.name=t -c user.email=t@t commit -qm lock && git -C "$HOME/other" push -q origin main
+  git -C "$REPO" fetch -q origin
+  rm "$REPO/Cargo.lock"
+  git -C "$REPO" rm -rq .github docs tests && git -C "$REPO" -c user.name=t -c user.email=t@t commit -qm behind
+  run "$CHECK" shooter --systems
+  assert_line --regexp '^PASS +security +Dependencies pinned by a lockfile'
+  assert_line --regexp '^PASS +security +A secret scan gates'
+  assert_line --regexp '^PASS +ci +A CI workflow in the repo'
+  assert_line --regexp '^PASS +tests +Automated tests are in the repo'
+  assert_line --regexp '^PASS +deploy +The deploy doc says how to roll back'
+}
+
 @test "an unknown project, an unknown stage or no declared stage exits 2" {
   run "$CHECK" nobody
   assert_failure 2
