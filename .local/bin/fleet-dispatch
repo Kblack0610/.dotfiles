@@ -163,6 +163,7 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 . "$HERE/../lib/judge.sh"
 # shellcheck source=../lib/board-keys.sh
 . "$HERE/../lib/board-keys.sh"   # BOARD_KEY_ERE: the rows fleet-bench triage files by key, whose lane skip_exits leaves to it
+BOARD_KEY_JQ=$(jq -rn --arg e "$BOARD_KEY_ERE" '$e | tojson')   # that ERE as a jq string literal, for ROW_JQ's bench_keyed
 # shellcheck source=../src/agent-run/lib/sandbox.sh
 . "$HERE/../src/agent-run/lib/sandbox.sh"
 # The fleet worker roster (home-config's `fleet_workers` group) and the one ssh path to a worker.
@@ -622,7 +623,7 @@ def plan_tagged: any(.tags[]?; . == "plan");
 def triage_red: (.raw // .text // "") | sub("^- \\[.\\] "; "") | test("^check\\((watch|alert)\\): ");
 # bench_keyed: a row fleet-bench triage filed by key (lib/board-keys.sh BOARD_KEY_ERE). The route triage gives it is
 # the one writer of its lane, so no exit here moves or drops it (skip_exits, ask_stale_skips; ar-6265).
-def bench_keyed: (.raw // .text // "") | sub("^- \\[.\\] "; "") | test("'"${BOARD_KEY_ERE//\\/\\\\}"'");
+def bench_keyed: (.raw // .text // "") | sub("^- \\[.\\] "; "") | test('"$BOARD_KEY_JQ"');
 # red_skip($c): this verdict is an `unclear` skip of triage red row $c that an agent may take, so picks
 # reads past it (skip_exits gives a keyed triage row no exit at all). One that picks then passes over
 # (a tier above the row, size L, a hold) stays on the board under its skip: fleet-bench triage owns it.

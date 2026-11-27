@@ -2835,6 +2835,22 @@ fix_item() {
   assert_output 0
 }
 
+@test "triage: a keyed row a person started on the sheet stays theirs: no agent row filed, no sheet drop (ar-6265)" {
+  log_triage_setup
+  watch spend TRIP -25200 high
+  route 'watch.: spend' alert - 'the spend watch pages on its own'
+  printf 'board.md\t9\t%s\t- [/] %s (agent row ar-77)\n' 'check(watch): spend tripped since 2026-11-01, expected: x' 'check(watch): spend tripped since 2026-11-01, expected: x' > "$BOARD.agent-runtime"
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial 'started on the human sheet, left there'
+  run grep -c -- '--agent add check(watch): spend' "$NLOG"
+  assert_output 0
+  run grep -c ' drop check(watch): spend' "$NLOG"
+  assert_output 0
+  run grep -c 'spend tripped since' "$BOARD.agent-runtime"
+  assert_output 1
+}
+
 @test "triage: two passes on one red key leave one open agent row, and the second pass writes no add or drop for it (ar-6265)" {
   log_triage_setup
   watch spend TRIP -25200 high
