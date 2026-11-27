@@ -3427,8 +3427,9 @@ trainee_why() {
 # So the row's repo is one of DISPATCH_TRAINEE_REPOS, its words match none of that repo's
 # .githooks/sensitive-tokens.txt, and each file it names (row_paths) is tracked there, a markdown file, or
 # a shell or bats file outside any cargo or npm tree; a directory, every file under it. A bare word the repo
-# does not track (a jq .field, a runtime state.json) is no file the row names, so it is skipped; a path
-# with a slash is refused. A row that names no file passes: the lane sandbox (sandbox/gateway.json,
+# does not track (a jq .field, a runtime state.json) is no file the row names, so it is skipped, and so is
+# one slash with no dot (and/or, /wind-down, ar-60/#3320); an untracked path with a dot or a second slash
+# (scripts/gone.sh, ~/.agent/dispatch/log.md) is refused. On 2026-11-26 such words refused 8 rows and the floor ran dry (ar-5747). A row that names no file passes: the lane sandbox (sandbox/gateway.json,
 # agy.json) denies every read outside the worktree, so the work stays in the repo whatever the row
 # says, and cmd_trainee_review checks the files the diff touched (trainee_diff_why). Until 2026-11-23
 # such a row was refused, and the floor ran dry with 332 of them open (ar-4739).
@@ -3447,7 +3448,8 @@ trainee_public_why() {
     [ -n "$tok" ] || continue
     files=$(git -C "$repo" ls-files -- "$tok" 2>/dev/null)
     [ -n "$files" ] || files=$(git -C "$repo" ls-files -- "*/$tok" 2>/dev/null)
-    [ -n "$files" ] || [[ "$tok" != */* ]] || { echo "it names $tok, which $repo does not track"; return 1; }
+    [ -n "$files" ] || [[ "$tok" != */* ]] || { [[ "$tok" != *.* ]] && [[ "$tok" != */*/* ]]; } ||
+      { echo "it names $tok, which $repo does not track"; return 1; }
     [ -n "$files" ] || continue
     while IFS= read -r f; do
       trainee_file_ok "$repo" "$f" "$manifests" || { echo "it names $f, which is no markdown file, nor a shell or bats file outside a cargo or npm tree"; return 1; }
@@ -3477,12 +3479,13 @@ trainee_diff_why() {
 }
 
 # row_paths <text> <repo> -> the files and directories a row names, one a line: each word with a slash
-# or a file extension (no URL, no #tag, no id comment, no <placeholder> or glob), and each bare word that is a .local/bin command
-# the repo tracks. A leading ~/ or ./ and trailing punctuation go.
+# or a file extension (no URL, no #tag, no id comment, no <placeholder> or glob, no word without a letter
+# such as 0/5 or 11-20/21), and each bare word that is a .local/bin command the repo tracks. A leading ~/
+# or ./, trailing punctuation and a :line or :line-line suffix go, so fleet-sessions:1751 names its file (ar-5747).
 row_paths() {
   local words cmds
   words=$(sed -E 's/<!--[^>]*-->//g; s/(^|[[:space:]])#[A-Za-z0-9_/:.-]+//g' <<<"$1" | tr -s ' \t`"'"'"'(),;[]' '\n' |
-    sed -E 's#^~/##; s#^\./##; s/[.:]+$//; s#/+$##' | grep -vE '^[a-z]+://|[<>*{}$]' | grep . | sort -u)
+    sed -E 's#^~/##; s#^\./##; s/[.:]+$//; s/:[0-9]+(-[0-9]+)?$//; s#/+$##' | grep -vE '^[a-z]+://|[<>*{}$]' | grep '[A-Za-z]' | sort -u)
   cmds=$(git -C "$2" ls-files -- '.local/bin/*' 2>/dev/null | sed 's#.*/##')
   grep -E '/|\.[A-Za-z0-9]+$' <<<"$words"
   [ -z "$cmds" ] || grep -vE '/|\.[A-Za-z0-9]+$' <<<"$words" | grep -xFf <(echo "$cmds") | sed 's#^#.local/bin/#'

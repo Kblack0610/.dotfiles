@@ -186,6 +186,13 @@ load 'fleet_dispatch/fleet_dispatch_run_trainee'
   assert_output --partial 'in no directory holding a Cargo.toml or package.json (crate, web), and leave no scratch file'
   assert_output --partial 'If the task needs another file, change nothing and write blocked in .no-diff.'
   pub 'the .fact in state.json'; assert_success
+  # Words with one slash and no dot, or no letter, are no path (ar-5747), and a :line suffix names its file.
+  pub 'scripts/setup and/or 0/5 of 11-20/21 per /86400, see /wind-down and ar-60/#3320'; assert_success
+  pub 'scripts/setup:12 and scripts/setup:3-9.'; assert_success
+  pub 'crate/src/main.rs:40'; assert_failure
+  assert_output 'it names crate/src/main.rs, which is no markdown file, nor a shell or bats file outside a cargo or npm tree'
+  pub 'dispatch/log.md'; assert_failure; assert_output "it names dispatch/log.md, which $r does not track"
+  pub 'queue/running/x'; assert_failure; assert_output "it names queue/running/x, which $r does not track"
   # A repo not in DISPATCH_TRAINEE_REPOS is refused whatever the row says.
   DISPATCH_TRAINEE_REPOS=/elsewhere pub scripts/setup; assert_failure
   assert_output "its repo $r is not one a trainee may see (DISPATCH_TRAINEE_REPOS)"
