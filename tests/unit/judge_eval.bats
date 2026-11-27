@@ -34,7 +34,7 @@ setup() {
   printf '#!/usr/bin/env bash\ncat "%s"\n' "$QUEUE" > "$SANDBOX/bin/queue-stub"
   chmod +x "$SANDBOX/bin/queue-stub"
   : > "$QUEUE"
-  # notes log --json --days 30, canned
+  # notes log --json --days 7, canned
   export JUDGE_EVAL_INGEST_CMD=ingest-stub INGEST="$HOME/ingest.jsonl"
   printf '#!/usr/bin/env bash\ncat "%s"\n' "$INGEST" > "$SANDBOX/bin/ingest-stub"
   chmod +x "$SANDBOX/bin/ingest-stub"

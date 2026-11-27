@@ -181,13 +181,22 @@ pub fn path(p: &Profile) -> PathBuf {
     p.state_dir.join("ingest.jsonl")
 }
 
-/// Past this size the record is cut to its last [`KEEP_DAYS`], and then to its newest
-/// [`PRUNE_TO_BYTES`] when those days still run over, so the page's read stays cheap. The cut goes
-/// well under the cap, so a prune runs once per that many bytes of appends, never on each: a
-/// rewrite replaces the file, and a `tail -F` reader (coord-watch) re-reads it whole.
-const MAX_BYTES: u64 = 32 * 1024 * 1024;
-const PRUNE_TO_BYTES: usize = (MAX_BYTES / 2) as usize;
-const KEEP_DAYS: i64 = 30;
+/// The days the record keeps: a week, so judge-eval's 48h settle window leaves five days of
+/// scored verdicts. It kept 30 under a fixed 32 MB cap, which at the fleet's volume held under two
+/// days, so every settle-window verdict stayed pending (ar-5881).
+const KEEP_DAYS: i64 = 7;
+/// One day of the record at the fleet's volume, with headroom: 10.5 to 12 MB a day, measured
+/// 2026-11-24..25. Thirty such days would be over 300 MB, read whole by every full reader (`notes
+/// today` on each shell start, the hub page, judge-eval), so the days come down, not the cap up.
+const DAY_BYTES: usize = 14 * 1024 * 1024;
+/// A prune cuts the record to its last [`KEEP_DAYS`], and then to its newest [`PRUNE_TO_BYTES`]
+/// when those days still run over, so the page's read stays bounded. The byte cut follows the days
+/// (KEEP_DAYS of DAY_BYTES), so it never takes a day the days cut kept at normal volume.
+const PRUNE_TO_BYTES: usize = KEEP_DAYS as usize * DAY_BYTES;
+/// Past this size the record is pruned. It is a quarter over the cut, so a prune runs once per that
+/// many bytes of appends, never on each: a rewrite replaces the file, and a `tail -F` reader
+/// (coord-watch) re-reads it whole.
+const MAX_BYTES: u64 = (PRUNE_TO_BYTES + PRUNE_TO_BYTES / 4) as u64;
 
 /// Append `ev`. Best effort, like the inbox flag: a record that cannot be written must not
 /// fail the move it describes, so the error goes to stderr and the write stands.
@@ -788,6 +797,43 @@ mod tests {
             fs::read_to_string(path(&p)).unwrap(),
             after,
             "under the target, nothing goes"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_prune_keeps_a_record_of_keep_days_at_normal_volume_whole() {
+        let dir = std::env::temp_dir().join(format!("ingest-prune-days-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let p = crate::config::test_profile(dir.to_str().unwrap());
+        fs::create_dir_all(path(&p).parent().unwrap()).unwrap();
+        // The top day measured (2026-11-24..25), as one line an hour back to KEEP_DAYS ago. Under the
+        // old 16 MB cut this kept the newest day and a third and lost the rest (ar-5881).
+        let normal_day = 12 * 1024 * 1024;
+        let hours = KEEP_DAYS * 24 - 1;
+        let pad = "x".repeat(normal_day / 24);
+        let now = chrono::Local::now().fixed_offset();
+        let text: String = (0..=hours)
+            .rev()
+            .map(|h| {
+                let mut e = Event::new("item-set", "ar", "", &pad);
+                e.ts = (now - chrono::Duration::hours(h))
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
+                serde_json::to_string(&e).unwrap() + "\n"
+            })
+            .collect();
+        assert!(
+            text.len() as u64 <= MAX_BYTES,
+            "a normal week does not trip a prune by itself"
+        );
+        fs::write(path(&p), &text).unwrap();
+        prune(&path(&p), PRUNE_TO_BYTES).unwrap();
+        let after = fs::read_to_string(path(&p)).unwrap();
+        assert_eq!(after.lines().count() as i64, hours + 1, "every hour kept");
+        assert_eq!(
+            after.lines().next().and_then(stamp),
+            text.lines().next().and_then(stamp),
+            "the first day intact"
         );
         let _ = fs::remove_dir_all(&dir);
     }
