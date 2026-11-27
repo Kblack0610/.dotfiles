@@ -486,11 +486,13 @@ so_forgejo_pr() {
   so_forgejo_auth "$repo" || { printf '%s\n' "$SO_FORGEJO_ERR" >&2; return 1; }
   err=$(mktemp) || return 1
   pr="$(so_forgejo_get "$repo" "pulls/$n" 2>"$err")" || {
-    grep -q 'returned error: 404' "$err" && so_forgejo_get "$repo" "pulls?limit=1" >/dev/null 2>&1 && rc=3
+    # Forgejo's own 404 is JSON with a .message; a proxy's is not, so it stays a failed read
+    grep -q 'returned error: 404' "$err" && jq -e '.message' <<<"$pr" >/dev/null 2>&1 &&
+      so_forgejo_get "$repo" "pulls?limit=1" >/dev/null 2>&1 && rc=3
     [ "$rc" -eq 3 ] || cat "$err" >&2
     rm -f "$err"; return "$rc"
   }
-  rm -f "$err"
+  cat "$err" >&2; rm -f "$err"
   jq -c '{state: (if .merged then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end),
           headRefName: "#\(.number)", headRefOid: .head.sha, body, createdAt: .created_at, mergedAt: .merged_at,
           additions, deletions, mergeCommit: (if .merge_commit_sha then {oid: .merge_commit_sha} else null end)}' <<<"$pr"
