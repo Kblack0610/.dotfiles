@@ -50,7 +50,7 @@ command -v agent-ask >/dev/null 2>&1 || { echo "ask-resume: agent-ask not on PAT
 # whatever gateway its caller happened to export.
 # A model resume is work, so it runs as a queue item, `from: ask:<id>` and origin `ask`, which
 # its session works under ($AGENT_QUEUE_ITEM: its agent-land closes it, and its own adds go to the
-# board as an unattended session's do). The item is filed before the ask is marked, so an add
+# board as an unattended session's do), on the asking item's board row (asking_row). The item is filed before the ask is marked, so an add
 # agent-queue refuses leaves the ask resumable for `--all`; when the run ends with the item still
 # running, its exit closes it. A `run:` command is the asking script's own step, not a session.
 run_resume() { # $1=id $2=project $3=command
@@ -79,6 +79,10 @@ run_resume() { # $1=id $2=project $3=command
       sed -n 's/^running \([^ ]*\) -> .*/\1/p')"
     [ -n "$slug" ] || { echo "ask-resume: $id not resumed: agent-queue did not file its item (above); ask-resume --all retries it" >&2; return 1; }
     agent-queue set "$slug" origin=ask >/dev/null || echo "ask-resume: $slug has no origin: agent-queue set $slug origin=ask" >&2
+    local own=()
+    readarray -t own < <(asking_row "$id")
+    [ "${#own[@]}" = 0 ] || agent-queue set "$slug" "${own[@]}" >/dev/null ||
+      echo "ask-resume: $slug has no board row: agent-queue set $slug ${own[*]}" >&2
     # The run's Claude session id is chosen here and claimed, as fleet-dispatch start claims its own, so
     # reap and fleet-bench see a witnessed item, not an ownerless one.
     sid="$(uuidgen | tr "[:upper:]" "[:lower:]")"
@@ -116,6 +120,26 @@ run_resume() { # $1=id $2=project $3=command
     else close done --status failed; fi
     exit "$rc"' ask-resume "$cmd" "${ASK_RESUME_MAX_TURNS:-60}" "$slug" "$sid" \
     >>"$log/${project}.log" 2>&1 </dev/null
+}
+
+# asking_row <ask id>: the board row of the queue item that posted the ask, as `agent-queue set` words
+# (row=, and profile= and lane= when it has them), one a line; nothing when no item or no row, and a line on
+# stderr when the item has no row. The item is the ask's `task:` (agent-ask post records $AGENT_QUEUE_ITEM),
+# else the one its Claude session works; an ask no queue item posted (a runner's) has none, and says nothing.
+# The resume item shares that row, as a second item may (agent-land and reap close it with the last
+# of them to land), so its PR has the row release-links reads (ar-4657: 8nWVaH had an empty task:).
+asking_row() { # $1=id
+  local ask task sid it
+  ask="$(agent-ask show "$1" 2>/dev/null)" || return 0
+  task="$(sed -n '/^task: */{s///p;q;}' <<<"$ask")"
+  it="$( [ -z "$task" ] || agent-queue show "$task" --json 2>/dev/null)" || it=''
+  if [ -z "$it" ]; then
+    sid="$(sed -n '/^claude_session: */{s///p;q;}' <<<"$ask")"
+    [ -n "$sid" ] && task="$(agent-queue mine --sid "$sid" --newest 2>/dev/null)" && [ -n "$task" ] || return 0
+    it="$(agent-queue show "$task" --json 2>/dev/null)" || return 0
+  fi
+  jq -r 'select((.row // "") != "") | "row=\(.row)", (.profile // empty | select(. != "") | "profile=\(.)"), (.lane // empty | select(. != "") | "lane=\(.)")' <<<"$it" |
+    grep . || echo "ask-resume: $1 was asked by queue item $task, which has no board row, so its resume item has none" >&2
 }
 
 # live_start_item <run: command>: the command with its `fleet-dispatch start --item <slug>` pointed at the
