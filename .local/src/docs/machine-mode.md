@@ -81,12 +81,12 @@ The system's clock hours live in one file, `.config/machine-mode/hours`: each ro
 A release cut keeps a pool host's slots for its own build jobs, for a set time:
 
 ```bash
-machine-mode release-lane razer-laptop --until 13:00   # keep them until 13:00 (date -d; at most 24h ahead)
-machine-mode release-lane --clear razer-laptop         # end it now (removes the key)
+machine-mode release-lane ms-a2 --until 13:00          # keep them until 13:00 (date -d; at most 24h ahead)
+machine-mode release-lane --clear ms-a2                # end it now (removes the key)
 machine-mode release-lane                              # list them; an ended one says so
 ```
 
-It writes only the `<host>.reserve` key, `{"until": <epoch>}`, in the same ConfigMap. The governor holds that host at 0 until then, and ignores the key after, so a forgotten one ends by itself. It refuses a host the governor does not report on (`ci_governor_registered`), and only warns when Prometheus does not answer. It works from any machine with `CC_KUBE_CONTEXT`, pool runners or not, and does not change this machine's mode. When and why a cut uses it: the playground's `docs/operations/steam.md#the-release-lane` and the `release` skill.
+It writes only the `<host>.reserve` key, `{"until": <epoch>}`, in the same ConfigMap. The governor holds that host at 0 until then for every job but the release jobs (one that asks for its slot's `unity-release` or `slim-tour`), for which it admits an idle slot and withholds it again once busy (home-config `docs/runbooks/unity-ci-host.md`, Pinning a host's slots, since hc-707), and ignores the key after, so a forgotten one ends by itself. It refuses a host the governor does not report on (`ci_governor_registered`), and only warns when Prometheus does not answer. It works from any machine with `CC_KUBE_CONTEXT`, pool runners or not, and does not change this machine's mode. When and why a cut uses it: the playground's `docs/operations/steam.md#the-release-lane` and the `release` skill.
 
 The pace numbers use the same read-time expiry for a timed value: `pace-conf set <KEY> <value> --until <time>` lays a window over a pace.conf key, and it ends by itself with no timer ([pace-conf.md](pace-conf.md)).
 
@@ -94,9 +94,9 @@ The pace numbers use the same read-time expiry for a timed value: `pace-conf set
 
 | What you see | Why | What to do |
 |---|---|---|
-| `the governor runs no host '<h>'` | `release-lane` was given a name the governor does not report; usually a typo | Use the host name from `machine-mode release-lane`'s doc or the governor's `host` label (`razer-laptop`) |
+| `the governor runs no host '<h>'` | `release-lane` was given a name the governor does not report; usually a typo | Use the host name from `machine-mode release-lane`'s doc or the governor's `host` label (`machine-mode release-lane` lists them; `ms-a2` holds the pool's one `unity-release` slot) |
 | `could not reach the cluster`, chip amber | The mode and level applied and the ConfigMap write failed. The governor (and ansible on apply) writes runner labels, so no label changed | Fix cluster access and run the same mode again |
-| `moving to 0` for a long time | A job is running, or the pool floor holds: the governor keeps 1 runner admitted across the pool | Read the governor log: `kubectl --context "$CC_KUBE_CONTEXT" -n monitoring logs deploy/ci-runner-governor --tail=20`. A `PINNED` line ending `at the pool floor` means another host's runners are down |
+| `moving to 0` for a long time | A release reservation is live (`machine-mode release-lane` lists it; `--clear <host>` ends it), a job is running, or the pool floor holds: the governor keeps 1 runner admitted across the pool | Read the governor log: `kubectl --context "$CC_KUBE_CONTEXT" -n monitoring logs deploy/ci-runner-governor --tail=20`. A `PINNED` line ending `at the pool floor` means another host's runners are down |
 | `a Unity slot did not start or stop` | The polkit rule that lets you start and stop the slots is missing, or a unit failed | Apply home-config `site.yml --tags runner,ci` on this host, then run the same mode again; `systemctl status actions.runner.<host>-unity-pool-<n>` names a unit failure |
 | A slot over the count still runs | Its job is running; `systemctl --user status machine-mode-drain-<n>` shows the waiter | Let the job end, or stop the slot by hand to kill the job |
 | `runners: ? of ?` | Prometheus did not answer, or the governor is not exporting | The switch still applied; check the governor pod |
