@@ -19,7 +19,9 @@ setup() {
   git init -q --bare -b master "$BACKUP"
   local seed="$SANDBOX/seed"
   git init -q -b master "$seed"
-  mkdir -p "$seed/queue" "$seed/bench" "$seed/daylog" "$seed/anchors"
+  mkdir -p "$seed/queue" "$seed/bench" "$seed/daylog" "$seed/anchors" "$seed/shepherd" "$seed/dispatch"
+  printf 'due 0\n' > "$seed/shepherd/.due"
+  printf '{"could_start":0}\n' > "$seed/dispatch/headroom.json"
   printf 'state: open\n' > "$seed/queue/item.md"
   printf '{"n":0}\n' > "$seed/queue/events.jsonl"
   : > "$seed/bench/.keep"
@@ -141,6 +143,41 @@ show() { git -C "$1" show "master:$2"; }
   assert_line ' "head": 0,'
   assert_line ' "tail": "b"'
   [ ! -e "$SANDBOX/b/.sync/conflict" ]
+}
+
+# ar-3625: razer-laptop held the fleet lease 09:55-10:10 on 2026-11-19 and ran the singleton lanes, then
+# cachyos-x8664-main took it back and ran them too; both copies met in a text merge and the sync stopped.
+@test "two lease holders in a row both write singleton state: the sync merges it and the holder's copy wins whole" {
+  printf '#!/bin/sh\nexit "${LEASE_RC:-0}"\n' > "$SANDBOX/bin/fleet-lease"; chmod +x "$SANDBOX/bin/fleet-lease"
+  peer a; peer b
+  # a holds the lease now; b held it before and wrote its own pass.
+  printf 'due a\n' > "$SANDBOX/a/shepherd/.due"; printf '{"could_start":8}\n' > "$SANDBOX/a/dispatch/headroom.json"
+  printf 'due b\n' > "$SANDBOX/b/shepherd/.due"; printf '{"could_start":1}\n' > "$SANDBOX/b/dispatch/headroom.json"
+  run on a
+  assert_success
+  git -C "$SANDBOX/b" commit -qam "b pass"
+  git -C "$SANDBOX/b" fetch -q origin
+  # Negative control: without the lease driver these two copies conflict as text.
+  git -C "$SANDBOX/b" config --unset merge.lease.driver
+  run git -C "$SANDBOX/b" merge-tree --write-tree --name-only HEAD origin/master
+  assert_failure 1
+  assert_line 'shepherd/.due'
+  # b does not hold the lease, so it takes the holder's copy whole.
+  LEASE_RC=1 run on b
+  assert_success
+  assert_output --partial "COMPLETE"
+  [ ! -e "$SANDBOX/b/.sync/conflict" ]
+  assert_equal "$(show "$ORIGIN" shepherd/.due)" 'due a'
+  assert_equal "$(show "$ORIGIN" dispatch/headroom.json)" '{"could_start":8}'
+  run git -C "$SANDBOX/b" status --porcelain
+  assert_output ''
+  # The holder keeps its own copy when it merges a peer's.
+  printf 'due a2\n' > "$SANDBOX/a/shepherd/.due"; printf 'due b2\n' > "$SANDBOX/b/shepherd/.due"
+  LEASE_RC=1 on b >/dev/null
+  run on a
+  assert_success
+  [ ! -e "$SANDBOX/a/.sync/conflict" ]
+  assert_equal "$(show "$ORIGIN" shepherd/.due)" 'due a2'
 }
 
 @test "a derived anchor keeps the other machine's hand edits, even beside the auto block both rewrote" {
@@ -1207,7 +1244,9 @@ close_run() {
   echo 'state: x' > "$SANDBOX/a/queue/item.md"
   on a --now >/dev/null
   run cat "$SANDBOX/a/.git/info/attributes"
-  assert_output $'queue/*/*.md merge=item\nqueue/done/*/*.md merge=item'
+  assert_line 'queue/*/*.md merge=item'
+  assert_line 'queue/done/*/*.md merge=item'
+  refute_line --partial 'merge=close'
   run git -C "$SANDBOX/a" config --get merge.close.driver
   assert_failure
   run git -C "$SANDBOX/a" config --get merge.item.driver
