@@ -11,7 +11,7 @@ use crate::display::fmt::counted;
 use serde::Serialize;
 
 use crate::ci::Queued;
-use crate::display::fmt::age;
+use crate::display::fmt::{age, dur_secs};
 use crate::host_history::{self, Hours, BUCKET, DAYS, STEP};
 use crate::infra::Infra;
 use crate::links::Link;
@@ -133,7 +133,7 @@ pub fn build(infra: &Infra, p: &Pool, history: Result<PoolHistory, String>, now:
     }
 }
 
-/// Its row as labelled parts: Slots, Waiting, Last 24h, Grafana.
+/// Its row as labelled parts: Slots, Waiting, Last 24h, Usual run, Grafana.
 fn parts(infra: &Infra, p: &Pool, waiting: &[Queued]) -> Vec<Part> {
     let n = |v: f64| format!("{v:.0}");
     let mut out = vec![];
@@ -163,12 +163,23 @@ fn parts(infra: &Infra, p: &Pool, waiting: &[Queued]) -> Vec<Part> {
         None => crate::reading::NO_DATA.into(),
     };
     out.push(Part::new("Waiting", wait).warn(stuck > 0));
+    for (d, w) in [(p.done_1h, "Last 1h"), (p.done_5h, "Last 5h")] {
+        if let Some(d) = d {
+            out.push(Part::new(w, format!("{} done", n(d))));
+        }
+    }
     if p.done.is_some() || p.pass.is_some() {
         let mut t = p.done.map_or("? done".into(), |d| format!("{} done", n(d)));
         if let Some(r) = p.pass {
             t = format!("{t}, {:.0}% passed", r * 100.0);
         }
         out.push(Part::new("Last 24h", t).warn(p.pass.is_some_and(|r| r < PASS_WARN)));
+    }
+    if let Some(u) = p.usual {
+        out.push(Part::new(
+            "Usual run",
+            format!("{}, the median of its last 24h", dur_secs(u)),
+        ));
     }
     if let Some(g) = infra.grafana.as_deref() {
         out.push(
@@ -320,6 +331,17 @@ mod tests {
             Some(Link::Url("https://grafana.example/d/kb-ci-runners".into()))
         );
         assert_eq!(p.errors, ["history: prometheus down"]);
+    }
+
+    #[test]
+    fn the_page_says_how_long_a_job_of_the_pool_usually_runs() {
+        let p = page(&infra(), "unity");
+        assert_eq!(
+            part(&p, "Usual run").unwrap().text,
+            "7m, the median of its last 24h"
+        );
+        // A pool the exporter has no median for says nothing, never 0s.
+        assert!(part(&page(&infra(), "macos"), "Usual run").is_none());
     }
 
     #[test]

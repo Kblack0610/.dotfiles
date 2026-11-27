@@ -81,9 +81,10 @@ fn resolve_link(p: &Profile, roots: &[PathBuf], target: &str) -> Option<PathBuf>
     {
         return None;
     }
-    // A refs link whose day the old monthly mover put under `refs/archive/` resolves there.
-    let archived = crate::report::archived_target(p, target);
-    for t in std::iter::once(target).chain(archived.as_deref()) {
+    // A refs link whose file moved (a day archived under `refs/archive/`, a report moved to the
+    // inbox) resolves where it went.
+    let moved = crate::report::moved_targets(p, target);
+    for t in std::iter::once(target).chain(moved.iter().map(String::as_str)) {
         for base in [&p.root, &p.vault] {
             for cand in [base.join(format!("{t}.md")), base.join(t)] {
                 if let Some(c) = confined(&cand, roots) {

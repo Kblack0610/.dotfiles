@@ -1,19 +1,24 @@
 #!/usr/bin/env bash
 # user-units-failed - the probe behind the systemd-user-failed Sentinel watch.
 #
-#   user-units-failed [--exclude GLOB]...
+#   user-units-failed [--exclude GLOB]... [--exclude-transient]
 #
 # Lists every systemd user unit in the failed state that no --exclude glob matches, one a line.
+# --exclude-transient also leaves out a transient unit (systemd Transient=yes, so systemd-run):
+# a named one such as ar-3634-backlog-dry-0140.service (exit 75, 2026-11-22) slips past the run-*
+# glob. Its failure is the job's caller's, and fleet-bench triage still files a fix(unit) row for it,
+# so it keeps one signal. A unit systemctl cannot show is listed, never dropped.
 # Exit 0 when none is left, 1 when one or more is. The exclude list is the watch's own (its
 # expect_cmd), one --exclude per unit class another signal owns, so every other unit is watched.
 # Until 2026-11-21 the watch matched only agentctl*, agent-*, fleet-*, sentinel* and watch-*, and
 # git-sync-notes.service failed about 191 times after the 11-20 crash with nothing paging (ar-4466).
 set -uo pipefail
 
-excludes=()
+excludes=() transient=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --exclude) [ $# -ge 2 ] || { echo "user-units-failed: --exclude needs a glob" >&2; exit 2; }; excludes+=("$2"); shift 2 ;;
+    --exclude-transient) transient=1; shift ;;
     *) echo "user-units-failed: unknown argument $1" >&2; exit 2 ;;
   esac
 done
@@ -31,6 +36,7 @@ while read -r unit _; do
     # shellcheck disable=SC2053 # the exclude is a glob on purpose
     [[ $unit == $g ]] && continue 2
   done
+  [ "$transient" = 0 ] || [ "$(systemctl --user show -p Transient --value "$unit" 2>/dev/null)" != yes ] || continue
   failed+=("$unit")
 done <<<"$list"
 

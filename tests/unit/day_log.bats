@@ -784,7 +784,7 @@ EOF
   assert_equal "$(cat "$SANDBOX/cif-args")" "--repo O/game --base trunk --days 1.000000 --until 2026-10-28T07:00:00Z --json"
   local since until; since=$(date -d '2026-10-27 00:00' +%s) until=$(date -d '2026-10-28 00:00' +%s)
   assert_equal "$(cat "$SANDBOX/hub-args")" "ci pass --since $since --until $until
-ci hosts --until $until --last 50
+ci hosts --since $((until - 7 * 86400)) --until $until --last 50
 ci pass --since $since --until $until --branch trunk"
   run cat "$SANDBOX/cost-args"
   assert_output --partial '--days 1.000000 --until 2026-10-28T07:00:00Z --json'
@@ -1080,10 +1080,10 @@ who_items() {
     pr game 4 'fix: a trainee row Claude redid' 2026-10-28T17:00:00Z
     pr game 5 'chore: no item carries it' 2026-10-28T16:00:00Z; } | merged
   printf '%s\n' \
-    '{"slug":"own","pr":"o/game#1","agent":"claude","model":"opus","state":"done","status":"ok","finished":"2026-10-28T20:00:00Z"}' \
-    '{"slug":"batched","pr":"o/game#2","agent":"ocfree","model":"beam","trainee":"ocfree:beam","state":"done","status":"ok","finished":"2026-10-28T19:00:00Z"}' \
-    '{"slug":"landed","pr":"o/game#3","agent":"claude","model":"sonnet","trainee":"nim:glm","pr_owner":"land","state":"done","status":"ok","finished":"2026-10-28T18:00:00Z"}' \
-    '{"slug":"redone","pr":"o/game#4","agent":"claude","model":"sonnet","trainee":"opencode-go:glm","state":"done","status":"ok","finished":"2026-10-28T17:00:00Z"}' \
+    '{"slug":"own","outcome":"landed","pr":"o/game#1","agent":"claude","model":"opus","state":"done","status":"ok","finished":"2026-10-28T20:00:00Z"}' \
+    '{"slug":"batched","outcome":"landed","pr":"o/game#2","agent":"ocfree","model":"beam","trainee":"ocfree:beam","state":"done","status":"ok","finished":"2026-10-28T19:00:00Z"}' \
+    '{"slug":"landed","outcome":"landed","pr":"o/game#3","agent":"claude","model":"sonnet","trainee":"nim:glm","pr_owner":"land","state":"done","status":"ok","finished":"2026-10-28T18:00:00Z"}' \
+    '{"slug":"redone","outcome":"landed","pr":"o/game#4","agent":"claude","model":"sonnet","trainee":"opencode-go:glm","state":"done","status":"ok","finished":"2026-10-28T17:00:00Z"}' \
     '{"slug":"broke","row":"p:ar-9","agent":"nim","model":"glm","trainee":"nim:glm","state":"done","status":"failed","end_reason":"provider","finished":"2026-10-28T15:00:00Z"}' \
     '{"slug":"waits","row":"p:ar-8","agent":"ocfree","model":"beam","trainee":"ocfree:beam","state":"review"}' \
     '{"slug":"old","row":"p:ar-7","agent":"nim","model":"glm","trainee":"nim:glm","state":"done","status":"failed","finished":"2026-10-26T15:00:00Z"}' \

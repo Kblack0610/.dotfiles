@@ -56,7 +56,7 @@ pub const REDS_REFRESH: Duration = Duration::from_secs(300);
 /// VictoriaMetrics has no push and a check runs every one to five minutes, so the tick re-reads
 /// the open app's checks this often, the web page's cadence.
 pub const APP_STATUS_REFRESH: Duration = Duration::from_secs(60);
-/// One `fleet-bench epics` read takes about 10s and an epic moves in hours, so the tick re-reads
+/// One `fleet-bench epics` read takes about 6s and an epic moves in hours, so the tick re-reads
 /// Deliverables only this often; entering Projects and `r` still read it at once.
 pub const DELIVERABLES_REFRESH: Duration = Duration::from_secs(300);
 /// A Schedules read shells out to systemd and Prometheus for seconds, and a schedule changes by
@@ -2073,16 +2073,17 @@ impl App {
     }
 
     /// The open card's name and stage; None on the list or with All open.
-    fn open_card(&self) -> Option<(String, String)> {
-        if !self.pv.open {
-            return None;
-        }
-        let (profile, name) = self.tv.project.as_ref()?;
-        self.cards()
-            .cards
-            .into_iter()
-            .find(|c| c.profile == *profile && c.name == *name)
-            .map(|c| (c.name, c.stage))
+    pub fn open_card(&self) -> Option<(String, String)> {
+        opened(&self.pv, &self.tv, self.cards().cards)
+    }
+
+    /// The card `hub tab projects <q>` would open, resolved over scratch views: the real open
+    /// waits for the queue, which orders the cards and lists the sprint windows (ar-1140).
+    pub fn card_for(&self, q: &str) -> Option<(String, String)> {
+        let cards = self.cards().cards;
+        let (mut pv, mut tv) = (ProjView::default(), TaskView::default());
+        pv.go(&mut tv, &cards, q.trim());
+        opened(&pv, &tv, cards)
     }
 
     /// Read the open card's page in a worker; it comes back as Msg::ProjPage.
@@ -2103,14 +2104,16 @@ impl App {
         }
     }
 
-    /// Read the open card's page here and now, for `--once`.
-    pub fn read_proj_page_now(&mut self, runner: &(dyn Runner + Sync)) {
-        if let Some((name, stage)) = self.open_card() {
-            let now = jobs::now();
-            let mut pg = hub_core::page::read(runner, &name, &stage, now);
-            pg.read_checks(runner, now);
-            self.proj_page = Some(pg);
-        }
+    /// One card's page read here and now, for `--once`, which runs it beside its other reads.
+    pub fn proj_page_now(
+        runner: &(dyn Runner + Sync),
+        name: &str,
+        stage: &str,
+    ) -> hub_core::page::Page {
+        let now = jobs::now();
+        let mut pg = hub_core::page::read(runner, name, stage, now);
+        pg.read_checks(runner, now);
+        pg
     }
 
     /// Read the page when the open card is not the one last asked for.
@@ -5797,6 +5800,22 @@ fn audited<T>(e: hub_core::audit::Entry, r: &Result<T, String>) {
     hub_core::audit::record(&e);
 }
 
+/// The card the views have open, by name and stage; None on the list or with All open.
+fn opened(
+    pv: &ProjView,
+    tv: &TaskView,
+    cards: Vec<hub_core::projects::Card>,
+) -> Option<(String, String)> {
+    if !pv.open {
+        return None;
+    }
+    let (profile, name) = tv.project.as_ref()?;
+    cards
+        .into_iter()
+        .find(|c| c.profile == *profile && c.name == *name)
+        .map(|c| (c.name, c.stage))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6246,6 +6265,14 @@ mod tests {
         let wl: Vec<&str> = wide.lines().collect();
         assert!(wl[4].contains("ACCOUNT  HARNESS  CLOSE"), "{wide}");
         assert!(wl[4].contains("IDLE  CTX"), "CTX sits beside IDLE: {wide}");
+        assert!(
+            wl[4].contains("MACHINE  ETA"),
+            "MACHINE sits after SESSION: {wide}"
+        );
+        assert!(
+            wl[5].contains("local"),
+            "a session here runs on local: {wide}"
+        );
         assert!(wl[5].contains("bnb      claude"), "{wide}");
 
         // The stages join by target: the NEEDS row is the live session, and it sorts first.
@@ -7044,7 +7071,7 @@ mod tests {
             st[1].prio = "focus".into();
         }
         a.handle(Msg::Projects(Box::new(l)));
-        let s = screen(&mut a, 140, 30);
+        let s = screen(&mut a, 160, 30);
         assert!(s.contains("v0.1.0   focus"), "{s}");
         assert!(s.lines().last().unwrap().contains("P focus"), "{s}");
         fake.0.lock().unwrap().clear();
@@ -9217,12 +9244,18 @@ mod tests {
             (on(&a), a.tv.table.view.q.as_str()),
             (Some("all"), "id:=ar-1")
         );
-        // A row's link (links::Link::tab_args, `projects all id:=<id>`) is Board searched to it.
+        // A row's link (links::Link::tab_args, `projects all id:=<id>`) is Board searched to it,
+        // on the default chip, which lists an open epic it names (hub-core `Row::PIN`).
+        a.tv.table.view.state = "epics".into();
         a.go(Tab::Home);
         a.follow(&Link::to(Kind::Row, "ar-2"));
         assert_eq!(
             (a.tab, on(&a), a.tv.table.view.q.as_str()),
             (Tab::Projects, Some("all"), "id:=ar-2")
+        );
+        assert!(
+            a.tv.table.view.state.is_empty(),
+            "the link opens the default chip"
         );
     }
 
@@ -9310,7 +9343,8 @@ mod tests {
             "MACHINES  all",
             "JOB KINDS  all",
             "CI RUNNERS",
-            "RUNNERS  all",
+            "CI MACHINES  all",
+            "RUNNERS  3 jobs running",
             "WAITING  all",
             "LOCAL UNITY",
             "PIPELINES",

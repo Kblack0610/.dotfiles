@@ -107,3 +107,21 @@ STUB
     assert [ "${#line}" -le 36 ]
   done <<< "$header"
 }
+
+@test "ctrl-d and ctrl-u scroll the status preview on the keys every panel shares" {
+  # A stub fzf records every --bind the panel hands it.
+  mkdir "$FX/bin"
+  cat > "$FX/bin/fzf" <<'STUB'
+#!/usr/bin/env bash
+for a in "$@"; do
+  case "$a" in --bind=*) printf '%s\n' "${a#--bind=}" >> "$FX/binds" ;; esac
+done
+STUB
+  chmod +x "$FX/bin/fzf"
+  PATH="$FX/bin:$PATH" run "$PANEL" panel
+  assert_success
+  run cat "$FX/binds"
+  assert_line 'ctrl-d:preview-half-page-down,ctrl-u:preview-half-page-up,page-down:preview-page-down,page-up:preview-page-up'
+  # Negative control: the panel's own plain d is still done, not a scroll.
+  assert_line --partial 'd:execute-silent('
+}

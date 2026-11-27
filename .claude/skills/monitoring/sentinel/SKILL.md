@@ -46,7 +46,7 @@ manifest CRUD; the running service does the watching.
   `~/.local/state/watch-companion/<name>.state`.
 - Runbook (schema, probe types, cost model): `~/.config/agentctl/SENTINEL.md`.
 - Templates: copy the nearest live manifest of the same probe kind in `~/.agent/watches/`; `~/.config/agentctl/sentinel-watches.examples/` keeps only the bake-watch (`pmp-bake.yaml`).
-- One signal per failure: a failed `agentctl@<runner>.service` is reported by `fleet-liveness` (the runner's FAILED outcome), so `systemd-user-failed` skips `agentctl@*` (and desktop `app-*` and transient `run-*` units) and watches every other user unit (`user-units-failed --exclude`).
+- One signal per failure: a failed `agentctl@<runner>.service` is reported by `fleet-liveness` (the runner's FAILED outcome), so `systemd-user-failed` skips `agentctl@*` (and desktop `app-*` units and every transient systemd-run unit: fleet-bench triage resets an auto-named `run-*` one and files a named one as a `fix(unit)` row) and watches every other user unit (`user-units-failed --exclude ... --exclude-transient`).
 
 ## Hard constraints (read first, non-negotiable)
 
@@ -134,11 +134,7 @@ because a runtime failure notifies, and a documentation gap must never page. Use
 
 **Run the command. Do not enumerate the YAML yourself.**
 
-```bash
-watch-companion-loop list             # table: STATE / NAME / AGE / EVERY / WHERE / WHO, tripped first
-watch-companion-loop list --long      # every watch: what / why / where / who / action + the real probe
-watch-companion-loop list <name>      # one watch, long form
-```
+Run `watch-companion-loop list` (`--long` for every field, `<name>` for one watch); its forms and columns are in `~/.config/agentctl/SENTINEL.md` "Reading the registry".
 
 This verb used to say "enumerate the manifests", and the result was a differently-shaped answer
 every time, none of it reproducible, with the one fact a reader wants - *where does this point* -
@@ -160,10 +156,9 @@ Answers "what are you watching / is Sentinel running". Read-only.
 ```sh
 watch-companion-loop recheck <name>...   # probe now, whatever the interval
 watch-companion-loop recheck --tripped   # every TRIP or ERROR watch
-watch-companion-loop resolve <name> --pr OWNER/REPO#N   # its fix merged: the probe counts from the merge, then a recheck
 ```
 
-The same pass as the daemon's (state, evidence, recovery page), so a red clears the minute the work that fixed it is live. It probes only the watches named, prints each one's state, and exits 1 while any is red, 2 for an unknown name, 75 when another pass holds the lock past `SENTINEL_LOCK_WAIT`. A `probe: agent` watch, or a TRIP on an `agent_evaluate` watch, runs its model pass now and spends from the same hourly agent budget, so recheck those by name, not in a loop. `resolve` writes the merge time to `<name>.resolved`, and the loop passes it to a command probe as `SENTINEL_SINCE` (0 for none), so a windowed probe stops counting the events its fix already answered and only a new one trips it again. Operate commands: `~/.config/agentctl/SENTINEL.md`.
+The same pass as the daemon's (state, evidence, recovery page), so a red clears the minute the work that fixed it is live. It probes only the watches named, prints each one's state, and exits 1 while any is red, 2 for an unknown name, 75 when another pass holds the lock past `SENTINEL_LOCK_WAIT`. A `probe: agent` watch, or a TRIP on an `agent_evaluate` watch, runs its model pass now and spends from the same hourly agent budget, so recheck those by name, not in a loop. `watch-companion-loop resolve <name> --pr OWNER/REPO#N` (its fix merged) writes the merge time to `<name>.resolved`, and the loop passes it to a command probe as `SENTINEL_SINCE` (0 for none), so a windowed probe stops counting the events its fix already answered and only a new one trips it again. Operate commands: `~/.config/agentctl/SENTINEL.md`.
 
 ## Verb: `stop` / `remove <name>`
 

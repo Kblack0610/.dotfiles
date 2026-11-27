@@ -51,9 +51,9 @@ pub fn budget() -> PathBuf {
     fleet_state().with_file_name("budget.json")
 }
 
-/// agent-ask's store, one `<project>/<id>.md` per ask, by the variable agent-ask resolves.
+/// agent-ask's store, one `<project>/<id>.md` per ask: agent-core's `asks::root`.
 pub fn asks_dir() -> PathBuf {
-    env("AGENT_ASK_ROOT").unwrap_or_else(|| home().join(".agent/asks"))
+    agent_core::asks::root()
 }
 
 /// agent-propose's store.
@@ -263,7 +263,7 @@ pub struct Ask {
     /// The judge's verdict as one line (`Ask::judge_line`); empty for an ask it never judged.
     pub judge_line: String,
     /// The id of the live judge answer this ask audits (`--audit-of`); empty for any other ask.
-    /// A review sample, so the needs pager never buzzes for it.
+    /// A review sample: hub-core's Needs you (`home::has_decision`) lists no ask that has one.
     pub audit_of: String,
 }
 

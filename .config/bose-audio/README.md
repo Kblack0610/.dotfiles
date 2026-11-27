@@ -13,7 +13,7 @@ on demand for a meeting/Slack call with a hotkey.
 | Path | Role |
 |---|---|
 | `.local/bin/bose-audio` | CLI: `grab` / `release` / `toggle` / `guard` / `status` (symlinked into `~/.local/bin`) |
-| `.config/launchd/com.kblack.bose-audio-guard.plist` | user LaunchAgent running `bose-audio guard` (RunAtLoad + KeepAlive) |
+| `.config/launchd/com.kblack.bose-audio-guard.plist` (private repo) | user LaunchAgent running `bose-audio guard` (RunAtLoad + KeepAlive) |
 | `.config/aerospace/aerospace.toml` | `ctrl-cmd-b → bose-audio toggle` |
 | `.config/brewfile/Brewfile` | `blueutil`, `switchaudio-osx` |
 
@@ -35,7 +35,8 @@ Note: on the QC35 II, using the mic forces HFP (mono) and serializes audio to on
 ```sh
 brew bundle --file ~/.dotfiles/.config/brewfile/Brewfile      # blueutil + switchaudio-osx
 ln -sf ../../.dotfiles/.local/bin/bose-audio ~/.local/bin/bose-audio   # if stow didn't
-cp ~/.dotfiles/.config/launchd/com.kblack.bose-audio-guard.plist ~/Library/LaunchAgents/
+# the plist is in the private overlay checkout (setup_dotfiles_private clones it)
+cp ~/.dotfiles-private/.config/launchd/com.kblack.bose-audio-guard.plist ~/Library/LaunchAgents/
 launchctl load -w ~/Library/LaunchAgents/com.kblack.bose-audio-guard.plist
 ```
 

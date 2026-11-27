@@ -24,7 +24,7 @@ Window <D>. From <record>, every repo other than the two dotfiles repos:
 - What merged, grouped by workstream, one line each.
 - Open PRs (the record's `open`; `gh pr view` one PR for its checks): age, CI state, whether each blocks a release (`release` skill, lab `summary.md`), copied or empty PR bodies, PRs open on or before the window start with no push since.
 - Collisions between open branches: migration numbers, generated files, version bumps.
-- Scheduled CI that stopped firing (last `schedule` run per nightly workflow).
+- Scheduled CI that stopped firing (last `schedule` run per cron workflow).
 
 ## 4. Process waste
 

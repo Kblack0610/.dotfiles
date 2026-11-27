@@ -40,16 +40,16 @@ const gLink = (uid, text) => grafanaBase() ? `<a class="glink" href="${esc(grafa
 
 
 // hub_core::ci::Glance::head: `4 running, 23 queued (oldest 21m), booked 4.4/64 cpu, 12/12 runners up,
-// 759 done 24h, 91% passed`; the booking only once a CI node reports.
+// 6 done 1h, 80 done 5h, 759 done 24h, 91% passed`; the windows only once a kind reports them; the booking only once a CI node reports.
 // Glance::up_line: `12/12` runners up of the roster, `-/-` with no runner read.
 const upLine = (g) => (g.expected ? `${g.up}/${g.expected}` : "-/-");
-// Glance::alert as a tile hue: red only while a runner is down, never green with no runner read.
-const alertHue = (g) => ({ red: "var(--b-needs)", ok: "var(--b-done)" })[g && g.alert] || "var(--c-other)";
 function glanceHead(g) {
   let s = `${g.busy} running, ${g.queued} queued`;
   if (g.queued > 0 && g.oldest != null) s += ` (oldest ${secs(g.oldest)})`;
-  if (g.booked) s += `, booked ${cores1(g.booked.cpu)}/${Math.round(g.booked.cpu_alloc)} cpu`;
+  if (g.booked) s += `, booked ${cores1(g.booked.cpu)}/${Math.round(g.booked.cpu_alloc)} cpu${g.booked.reserved > 0 ? ` (${cores1(g.booked.reserved)} reserved)` : ""}`;
   s += `, ${upLine(g)} runners up`;
+  if (g.done_1h != null) s += `, ${g.done_1h} done 1h`;
+  if (g.done_5h != null) s += `, ${g.done_5h} done 5h`;
   if (g.done > 0) s += `, ${g.done} done 24h${g.pass != null ? `, ${pct(g.pass)} passed` : ""}`;
   return s;
 }
@@ -60,19 +60,25 @@ const offLine = (g) => (g.off.length ? `cloud: ${g.off.length} host${g.off.lengt
 const pendingText = (p) => `${p.kind}${p.n > 1 ? ` x${p.n}` : ""} (${+p.cpu.toFixed(2)} cpu ${bytes(p.mem)}${p.n > 1 ? " each" : ""})`;
 const pendingLine = (g) => (g && g.pending && g.pending.length ? `<div class="cline warn">waiting for room: ${esc(g.pending.map(pendingText).join(", "))}</div>` : "");
 
-// `g` is hub_core::ci::Glance: jobs running, the queue, runners up and the one CI alert.
+// `g` is hub_core::ci::Glance: jobs running, the queue and runners up.
+// A tile's hue is the rollup's verdict on its domain (cc:domain_status, the max of the domain's
+// components and watches that cc:overall_status is the max of), so a tile never reads red under
+// an OK OVERALL or green under a RED one (ar-5013); the text keeps the count. A component alone
+// would not do: k3s/nodes, ci/pools and agents/runners stop at 1, and the red comes from the
+// domain's watches row. No domain series is no data, never a guess.
 function kpis(cc, g) {
   const one = (n) => (cc[n] || {})[""];
+  const hue = (d) => { const [w, c] = statusOf((cc["cc:domain_status"] || {})[d]); return [c, `${d} rollup ${w}`]; };
   const nodes = [one("cc:k3s_nodes_ready"), one("cc:k3s_nodes_total")];
   const beats = [one("cc:machines_up"), one("cc:machines_total")];
   const hosted = one("cc:github_hosted_running");
   const where = [g ? `${g.queued} queued, ${upLine(g)} runners up` : "", g && offLine(g), hosted > 0 ? `+${hosted} github-hosted` : ""].filter(Boolean).join(", ");
-  const ok = (a, b) => (a != null && a === b ? "var(--b-done)" : "var(--b-needs)");
+  const [hn, tn] = hue("k3s"), [hb, tb] = hue("machines"), [hc, tc] = hue("ci"), [hr, tr] = hue("agents");
   return `<div class="tiles roomy">${
-    tile("NODES", `${nodes[0] ?? "?"}/${nodes[1] ?? "?"}`, ok(nodes[0], nodes[1]))}${
-    tile("HEARTBEATS", `${beats[0] ?? "?"}/${beats[1] ?? "?"}`, ok(beats[0], beats[1]))}${
-    tile("CI RUNNING", g ? `${g.busy}` : "?", alertHue(g), where)}${
-    tile("AGENT RUNNERS", `${one("cc:runners_failed") ?? "?"} failed`, one("cc:runners_failed") ? "var(--b-needs)" : "var(--b-done)", `of ${one("cc:runners_total") ?? "?"}`)}${
+    tile("NODES", `${nodes[0] ?? "?"}/${nodes[1] ?? "?"}`, hn, tn)}${
+    tile("HEARTBEATS", `${beats[0] ?? "?"}/${beats[1] ?? "?"}`, hb, tb)}${
+    tile("CI RUNNING", g ? `${g.busy}` : "?", hc, [where, tc].filter(Boolean).join("; "))}${
+    tile("AGENT RUNNERS", `${one("cc:runners_failed") ?? "?"} failed`, hr, `of ${one("cc:runners_total") ?? "?"}; ${tr}`)}${
     tile("WATCHES", `${one("cc:watches_tripped") ?? "?"} tripped`, one("cc:watches_tripped") ? "var(--b-stalled)" : "var(--b-done)", `of ${one("cc:watches_total") ?? "?"}, ${one("cc:watches_stale") ?? 0} stale`, "#alerts/watches")}${
     tile("SPEND", "on Costs", "var(--c2)", "the LAZER pool, Claude 24h and every cut", "#costs")}${
     tile("SESSIONS", `${one("cc:sessions_working") ?? "?"}/${one("cc:sessions_total") ?? "?"}`, "var(--b-working)", `working, ${one("cc:sessions_attention") ?? 0} need you`)}</div>`;
@@ -126,12 +132,13 @@ function diskCell(m) {
 const cores1 = (c) => (Math.round(c * 10) / 10).toFixed(1);
 const bookedShare = (b) => Math.max(b.cpu_alloc > 0 ? b.cpu / b.cpu_alloc : 0, b.mem_alloc > 0 ? b.mem / b.mem_alloc : 0);
 // hub_core::machines::Machine::booked_cell, or - on no CI node.
-// hub_core::jobpods::Booked::cell: `4.4/32 2.5G/92G`, bare `1.7 1.2G` on a node with no allocatable read.
+// hub_core::jobpods::Booked::cell: `4.4/32 2.5G/92G`, bare `1.7 1.2G` on a node with no allocatable read, `, 7.4 reserved` for a reservation pod's CPU.
 const bookedCell = (m) => {
   const b = m.booked;
   if (!b) return "-";
-  if (!(b.cpu_alloc > 0)) return `${cores1(b.cpu)} ${bytes(b.mem)}`;
-  return `${cores1(b.cpu)}/${Math.round(b.cpu_alloc)} ${bytes(b.mem)}/${bytes(b.mem_alloc)}`;
+  const rsv = b.reserved > 0 ? `, ${cores1(b.reserved)} reserved` : "";
+  if (!(b.cpu_alloc > 0)) return `${cores1(b.cpu)} ${bytes(b.mem)}${rsv}`;
+  return `${cores1(b.cpu)}/${Math.round(b.cpu_alloc)} ${bytes(b.mem)}/${bytes(b.mem_alloc)}${rsv}`;
 };
 // hub_core::ci::Next::line: the oldest waiting job that fits the machine, its repo and how long it has waited.
 const nextLine = (x) => `${x.job}${x.repo ? ` (${x.repo})` : ""} ${secs(x.wait)}`;
@@ -198,7 +205,7 @@ const MACH_CELLS = {
 };
 
 // One row per job kind: its jobs running and waiting, and the machines that take it.
-const POOL_COLS = { pool: ["kind"], weight: ["weight", "n"], running: ["running", "n"], waiting: ["waiting", "n"], oldest: ["oldest", "n"], done: ["done 24h", "n"], pass: ["pass", "n"], machines: ["machines"] };
+const POOL_COLS = { pool: ["kind"], weight: ["weight", "n"], running: ["running", "n"], waiting: ["waiting", "n"], oldest: ["oldest", "n"], done_1h: ["done 1h", "n"], done_5h: ["done 5h", "n"], done: ["done 24h", "n"], usual: ["usual", "n"], pass: ["pass", "n"], machines: ["machines"] };
 const num = (v) => v ?? "-";
 // hub_core::machines::Pool::machines_cell: each machine a link to its page, with its online slots.
 const poolSeats = (p) => p.machines.map((s) => tblLink(s.href, s.host) + ` ${s.slots}`).join(", ") || "-";
@@ -209,7 +216,10 @@ const POOL_CELLS = {
   running: (p) => td("n", num(p.running)),
   waiting: (p) => td(`n${p.waiting ? " warn" : ""}`, num(p.waiting)),
   oldest: (p) => td("n", secs(p.oldest)),
+  done_1h: (p) => td("n", num(p.done_1h)),
+  done_5h: (p) => td("n", num(p.done_5h)),
   done: (p) => td("n", num(p.done)),
+  usual: (p) => td("n muted", secs(p.usual)),
   pass: (p) => td(`n ${passCls(p.pass)}`, pct(p.pass)),
   machines: (p) => td("wrap", poolSeats(p)),
 };

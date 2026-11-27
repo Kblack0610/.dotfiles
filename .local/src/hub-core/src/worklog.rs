@@ -622,7 +622,11 @@ mod tests {
 
     #[test]
     fn a_done_item_with_nothing_to_show_stays_done_and_is_flagged() {
-        let i = item("a", "done", json!({"status": "ok", "finished": AT}));
+        let i = item(
+            "a",
+            "done",
+            json!({"status": "ok", "outcome": "no-pr", "finished": AT}),
+        );
         let rows = work(&[i], vec![]);
         assert_eq!((rows[0].state, rows[0].unproven), ("done", true));
     }

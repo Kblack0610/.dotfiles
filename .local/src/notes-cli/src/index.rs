@@ -346,11 +346,8 @@ fn front_field(content: &str, key: &str) -> Option<String> {
     let body = content.strip_prefix("---\n")?;
     let end = body.find("\n---")?;
     body[..end].lines().find_map(|l| {
-        let v = l
-            .strip_prefix(key)?
-            .strip_prefix(':')?
-            .trim()
-            .trim_matches('"');
+        let v = crate::md::unquote_yaml(l.strip_prefix(key)?.strip_prefix(':')?.trim());
+        let v = v.trim();
         (!v.is_empty()).then(|| v.to_string())
     })
 }

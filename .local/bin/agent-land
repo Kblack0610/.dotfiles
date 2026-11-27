@@ -14,16 +14,16 @@
 #
 # Steps, stopping at the first failure: head (HEAD must be the PR's head commit, before the body is
 # touched; else the merge would be refused as "Head branch was modified": run from the PR's own
-# checkout; a HEAD that is origin's tip of the PR branch is a fresh push, waited on until the PR reads it), fetch (a head behind origin/<base> is merged up to it, each clean submodule checkout on its old pin moved to the merged one (submodule_follow), and pushed, before the checks and again after them if the base moved on during them; a head pushed after them waits on its own checks before it merges, and on a base without strict checks a second move lands that green head behind it, catch_up), item-line
+# checkout; a HEAD that is origin's tip of the PR branch is a fresh push, waited on until the PR reads it), fetch (a head behind origin/<base> is merged up to it, each clean submodule checkout on its old pin moved to the merged one (submodule_follow), and pushed, before the checks and again after them if the base moved on during them; a head pushed after them waits on its own checks before it merges, and on a base without strict checks a second move, or a first that can affect no test the head's run ran (moved_misses_pick), lands that green head behind it unless the base's new commits change a file the head changes (base_touches_head), catch_up), item-line
 # (before the checks, the PR body gets the line "Item: <slug>" unless it has it, so a reader holding
 # only the PR finds its work item; a stale "Item:" line is rewritten, except on a merged PR where another queue item's line stays), review (a tier-3 item's body has a
-# "Review:" line, review_gate), loose (a plan phase's item filed no open agent row its plan does not take, loose_gate), shape (no function over 150 lines gets longer unless the body has a "Split: <row id>" line, shape_gate), checks (the PR's checks pass: CI, a required check; a cancelled check is no pass, waited on while a run on the head goes on, and on GitHub so is a failed one while a run of its workflow and event started after it goes on, and a cancelled matrix job of an older run of its workflow is no verdict (pr-ci.sh); a tier-3 item, or one landed with --ran-checks, needs checks that ran), validate (critical work by judge.sh judge_work_level merges only on a second agent's pass verdict on this head, validate_gate), merge (--squash, or with --merge-commit a merge commit,
-# for a landing train whose member PRs read MERGED only while their heads stay reachable; --admin adds gh's --admin, which skips a required approving review on a repo whose owner allows it, never the checks step above; --match-head-commit HEAD, then gh pr view must say MERGED), proof (the PR's merge commit is
+# "Review:" line, review_gate), loose (a plan phase's item filed no open agent row its plan does not take, loose_gate), shape (no function over 150 lines gets longer and no copy is added, shape-grow, run by CI where a workflow names it and here otherwise; each "Split:" or "Dup:" escape line names an open row that names what it covers, shape_gate), checks (the PR's checks pass: CI, a required check; a cancelled check is no pass, waited on while a run on the head goes on, and on GitHub so is a failed one while a run of its workflow and event started after it goes on, and a cancelled matrix job of an older run of its workflow is no verdict (pr-ci.sh); a green watch waits while an open run on the head has no check for its jobs yet, a re-run or a workflow with none listed (rerun_pending); a tier-3 item, or one landed with --ran-checks, needs checks that ran), validate (critical work by judge.sh judge_work_level merges only on a second agent's pass verdict on this head, validate_gate), merge (--squash, or with --merge-commit a merge commit,
+# for a landing train whose member PRs read MERGED only while their heads stay reachable; --admin adds gh's --admin, which skips a required approving review on a repo whose owner allows it, from a session the human opened only (refused from a dispatched or headless one), never the checks step above; --match-head-commit HEAD, then gh pr view must say MERGED), proof (the PR's merge commit is
 # on origin/<base>, by agent-merge-proof.sh), live (dotfiles-autopull --now --bg fast-forwards, in the background, the stowed
 # checkout when this repo is ~/.dotfiles or ~/.dotfiles-private, links what it added, rebuilds the
 # Rust tools (notes through notes-bootstrap), restarts agent-web on a new binary and a persistent agentctl runner on a new script; it logs its result to autopull.log, and the landing prints a line, never a failure), item (the queue item gets pr:<owner>/<repo>#<pr>,
 # merged:<sha>, this Claude session in its sessions (unless --partial lands on an item another session owns) and "<session>=<pr>" in its landed_by, the project credited by the PR's changed
-# files (agent-queue attribute), and moves to done, status ok unless --partial keeps it open (a red watch item resolves its watch with this PR first and refuses to close ok while its probe still trips, watch_gate); a done ok item with no PR in this
+# files (agent-queue attribute), and moves to done, status ok unless --partial keeps it open (a red watch item resolves its watch with this PR first and refuses to close ok while its probe still trips, watch_gate, as agent-queue move does by hand, lib/watch-item.sh); a done ok item with no PR in this
 # PR's repo adds it to its pr: and merged: lists instead, one PR per repo; an open item's earlier PR with
 # no merge recorded takes its merge commit from gh, and one not merged refuses before the merge, settle_prior;
 # a --partial landing passes one still open and leaves merged: empty for the final landing), board (the
@@ -32,7 +32,9 @@
 # line becomes "- [x] <phase> (#<pr>)"; when that leaves no open phase, each row on the plan's `rows:` line
 # closes with the same proof). A row another open queue item names stays open for that item's landing (row_worker). After the merge, one "body:" line scores the PR body
 # against comms-standard (comms-lint --channel pr-body); it never fails the landing. Before that, a *.md or *.txt
-# file at the top of ~/.cache whose text is the merged body (the --body-file a session wrote) is deleted. One line per step.
+# file at the top of ~/.cache whose text is the merged body (the --body-file a session wrote) is deleted. Each "After deploy: <step>"
+# line of the body, a step that can run only once the change is live, is added as its own item (deploy_steps). One line per step.
+# So is each step the repo's own .agent-land/after-merge leaves for a merge that changes its paths (after_merge_steps).
 # The item is --item, else $AGENT_QUEUE_ITEM (set in a session fleet-dispatch started), else the
 # one this session added or claimed (`agent-queue mine`). No item, no landing: every merged PR
 # is a unit of work on the work ledger, so add one first (`agent-queue add --running`). An item
@@ -74,6 +76,10 @@ usage() {
 . "$(dirname "$(readlink -f "$0")")/../lib/plan-phases.sh"
 # shellcheck source=../lib/judge.sh
 . "$(dirname "$(readlink -f "$0")")/../lib/judge.sh"
+# shellcheck source=../lib/watch-item.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/watch-item.sh"
+# shellcheck source=../lib/ask-store.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/ask-store.sh"
 die() {
   printf 'agent-land: %s\n' "$1" >&2
   exit 2
@@ -99,6 +105,8 @@ fail() {
 }
 lastline() { printf '%s' "$1" | tail -n 1; }
 
+# The repo file naming the steps a merge that changes its paths leaves (after_merge_steps).
+AFTER_MERGE_FILE=.agent-land/after-merge
 # aq_retry <agent-queue args...>: agent-queue, taken again when its lock wait ran out. That exit
 # (75, agent-queue's LOCK_BUSY) wrote nothing, so a retry is safe, and each attempt already waits
 # out agent-queue's own lock window, so there is no pause here. Without it one busy window left a
@@ -178,6 +186,31 @@ newer_runs() {
         (((.event // "") == "" or .event == $r.event) and (([$r.createdAt, $r.startedAt] | map(. // "") | max) > (.completedAt // "~")
           or (run_id > 0 and ($r.databaseId // 0) > run_id))))))] | length' <<<"$runs"
 }
+# rerun_pending <checks json>: whether a green watch waits, on an open run on HEAD whose jobs have
+# no check yet: a re-run (attempt 2 or later) of a listed check's workflow, or a run of a workflow no
+# check lists. `gh run rerun --failed` drops the failed jobs' checks until the re-run registers new
+# ones, so a watch started seconds later lists only the passed jobs and exits green, and GitHub
+# refuses the merge BLOCKED (dotfiles#3546, run 45643023619, 2026-11-25, ar-6084); a run held
+# pending beside another workflow's green check is the same gap (#3709's shell tests behind its gate
+# guard). A first attempt of a listed workflow (another event's run, one held by concurrency) and a
+# run waiting on an environment's approval hold nothing, as before. Not read after a timed-out
+# watch: a check left IN_PROGRESS keeps its run open (checks_by_conclusion). Status 0 after its
+# wait (such a run, or a read that lost its connection), 1 when none is open; the
+# CHECKS_WAIT_TIMEOUT cap bounds the waits.
+rerun_pending() {
+  local runs open
+  gh_read runs run list "${R[@]}" --commit "$(git rev-parse HEAD)" --limit 100 --json status,conclusion,workflowName,attempt || {
+    net_error "$gh_err" || fail checks "reading the runs on the head: $(lastline "$gh_err")"
+    net_retry "$gh_err"
+    return 0
+  }
+  open=$(jq -r --argjson c "$1" '[.[] | select(.status != "completed" and .status != "waiting" and (.conclusion // "") == "")
+    | select((.attempt // 1) > 1 or (.workflowName as $w | $c | any(.workflow == $w) | not))] | length' <<<"$runs" 2>/dev/null) &&
+    [[ $open =~ ^[0-9]+$ ]] || fail checks "reading the runs on the head: not a run list: $(lastline "$runs")"
+  [ "$open" -ne 0 ] || return 1
+  echo "checks: green so far, but a run on the head has no check for its jobs yet (a re-run, or a workflow with none listed); waiting on it"
+  sleep "$CHECKS_QUEUED_POLL"
+}
 # gh_read <var> <gh args...>: gh's stdout in <var> and its stderr in gh_err, so a warning gh prints
 # beside an answer is never part of it; returns gh's status.
 gh_err=''
@@ -238,7 +271,7 @@ checks_by_conclusion() {
 had_checks=''
 wait_checks() {
   [ -z "$fj" ] || { fj_wait_checks; return; }
-  local try out rc left failed cancelled names queued rollup read_err stale skipping deadline=$((SECONDS + CHECKS_WAIT_TIMEOUT))
+  local try out rc left failed listed cancelled names queued rollup read_err stale skipping deadline=$((SECONDS + CHECKS_WAIT_TIMEOUT))
   for ((try = 1; ; try++)); do
     left=$((deadline - SECONDS))
     [ "$left" -gt 0 ] || fail checks "timed out waiting for checks after ${CHECKS_WAIT_TIMEOUT}s"
@@ -250,12 +283,22 @@ wait_checks() {
       # refuses the merge (unity-core-playground#2166). An open run of its workflow on HEAD is that
       # newer run: wait on it at the queued cadence. With none, GitHub may not have registered the
       # replacement yet, so it is read CHECKS_TRIES times before the cancelled check is the verdict.
-      cancelled=$(gh pr checks "$pr" "${R[@]}" --json name,bucket,workflow -q 'map(select(.bucket == "cancel"))' 2>&1) || {
-        net_error "$cancelled" || fail checks "reading the cancelled checks: $(lastline "$cancelled")"
-        net_retry "$cancelled"
+      gh_read listed pr checks "$pr" "${R[@]}" --json name,bucket,workflow || jq -e 'type == "array"' <<<"$listed" >/dev/null 2>&1 || {
+        net_error "$gh_err" || fail checks "reading the checks after the watch: $(lastline "$gh_err")"
+        net_retry "$gh_err"
         continue
       }
+      cancelled=$(jq -c 'map(select(.bucket == "cancel"))' <<<"$listed" 2>/dev/null) || fail checks "reading the checks after the watch: not a check list: $(lastline "$listed")"
+      # a check that registered after the watch ended (gh exits non-zero then, with the list) is watched, never green
+      if jq -e 'any(.[]; .bucket == "pending" or .bucket == "fail")' <<<"$listed" >/dev/null; then
+        try=0
+        continue
+      fi
       if [ "$cancelled" = '[]' ]; then
+        if rerun_pending "$listed"; then
+          try=0
+          continue
+        fi
         echo "checks: green"
         had_checks=yes
         return 0
@@ -522,6 +565,71 @@ checks_policy() {
 strict_checks() { checks_policy && [ "$strict" = yes ]; }
 required_checks() { checks_policy && [ "$required" = yes ]; }
 
+# moved_misses_pick: what <base> gained since the head last had it (HEAD...<base>) can affect nothing
+# the head's own run ran, so a green run of the head stands for the merge. The repo's tests/pick.sh
+# answers both ways, over the tiers the gate runs (unit, integ, rust, ui, notes): the tests the head's
+# changes pick (all of ui; notes is the notes job's files, tests/pick.sh notes), and the tests the
+# base's new files pick (its PICK_CHANGED seam). The broad set is on every head's list, so its lines do
+# not count as shared. Not a miss, so the head is merged up and re-run as before: no picker, a picker
+# that fails or answers the whole tier (the harness), a base change to the gate's own machinery (CI
+# files, lint, the notes binary), a base test file the head's changed files can reach (it is absent
+# from the head's tree, so the picker never sees it), and skills changed on both sides (skill lint
+# reads the whole listing). Why: a green run that outlived main's next merge was re-run until a
+# saturated pool cut it (ar-6019: #3546 went green twice and never landed).
+moved_misses_pick() {
+  local top mb moved own tier mine theirs picked errf f text moved_tests
+  top=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
+  [ -x "$top/tests/pick.sh" ] || return 1
+  mb=$(git merge-base HEAD "$remote/$base" 2>/dev/null) || return 1
+  moved=$(git diff --name-only --no-renames "HEAD...$remote/$base" 2>/dev/null) || return 1
+  [ -n "$moved" ] || return 0
+  ! grep -qE '^(\.github/|tests/(lint|skill-lint|Dockerfile|docker\.sh|unit-jobs)|\.local/src/notes-cli/)' <<<"$moved" || return 1
+  own=$(git diff --name-only --no-renames "$mb" HEAD 2>/dev/null) || return 1
+  ! { grep -q '^\.claude/skills/' <<<"$moved" && grep -q '^\.claude/skills/' <<<"$own"; } || return 1
+  mine='' theirs=''
+  errf=$(mktemp) || return 1
+  for tier in unit integ rust ui notes; do
+    if [ "$tier" = ui ]; then picked=$(cd "$top" && tests/pick.sh ui 2>/dev/null) || { rm -f "$errf"; return 1; }
+    else picked=$(cd "$top" && tests/pick.sh "$tier" "$mb" 2>/dev/null) || { rm -f "$errf"; return 1; }
+    fi
+    mine+=$'\n'"$picked"
+    picked=$(cd "$top" && PICK_CHANGED=$moved tests/pick.sh "$tier" "$mb" 2>"$errf") || { rm -f "$errf"; return 1; }
+    # "(full: <why>)" is the picker falling back to the whole tier, which a base change to the harness does
+    ! grep -q '(full:' "$errf" || { rm -f "$errf"; return 1; }
+    theirs+=$'\n'"$picked"
+  done
+  rm -f "$errf"
+  # A test file base added or changed runs against the head's changed files in the merged tree.
+  moved_tests=$(grep -E '^tests/(unit|integ|ui)/[^/]+\.bats$' <<<"$moved" || true)
+  if [ -n "$moved_tests" ]; then
+    (
+      # shellcheck source=../lib/test-pick.sh
+      . "$top/.local/lib/test-pick.sh" 2>/dev/null || exit 1
+      while read -r f; do
+        text=$(git show "$remote/$base:$f" 2>/dev/null) || continue
+        ! test_picked "$own" "$f" <<<"$text" || exit 1
+      done <<<"$moved_tests"
+    ) || return 1
+  fi
+  theirs=$(grep -vxFf <(sed -n 's#^\([a-z]*/[^[:space:]#]*\.bats\).*#\1#p' "$top/tests/broad.txt" 2>/dev/null; echo) <<<"$theirs" | grep . || true)
+  [ -z "$theirs" ] || ! grep -qxFf <(printf '%s\n' "$theirs") <<<"$mine" || return 1
+}
+
+# base_touches_head says which files both what <base> gained since the head last had it (HEAD...<base>)
+# and the head's own changes since then touch ("it changes files the head changes (a, b)"), and fails
+# when there are none. A diff git cannot read counts as shared, the side that re-checks instead of landing behind.
+base_touches_head() {
+  local mb moved own shared
+  if ! mb=$(git merge-base HEAD "$remote/$base" 2>/dev/null) ||
+    ! moved=$(git diff --name-only --no-renames "HEAD...$remote/$base" 2>/dev/null) ||
+    ! own=$(git diff --name-only --no-renames "$mb" HEAD 2>/dev/null); then
+    echo "git could not diff it against the head's own changes"
+    return 0
+  fi
+  shared=$(grep -xFf <(printf '%s\n' "$own") <<<"$moved" | grep .) || return 1
+  echo "it changes files the head changes ($(paste -sd, - <<<"$shared" | sed 's/,/, /g'))"
+}
+
 # catch_up: a base the head is behind is merged in and pushed, before the gate and again after it if
 # the base moved on during the checks. A merge of <base> does not keep the checks green: a pushed head
 # is a new tree, and merging one before its checks ran shipped a broken one (dotfiles #1504; #1731
@@ -532,10 +640,17 @@ required_checks() { checks_policy && [ "$required" = yes ]; }
 # head lands behind it, which such a base allows, unless merging the base would conflict (then the
 # merge below runs and exits 3, since GitHub would refuse that head anyway): a base that merges faster than its checks run would otherwise loop it forever
 # (dotfiles #1059 went green 9 times in an hour), and exiting 3 sent the caller round its own gate,
-# which a busy base outruns every time (#916). A strict base has no bound, since it refuses a head
+# which a busy base outruns every time (#916). Before that bound, a head whose base's new files can
+# affect no test its own run picked (moved_misses_pick) lands behind it at once, with no re-run. Neither
+# lands behind a base whose new commits change a file the head changes (base_touches_head): that base is
+# merged up and re-checked like a strict one, since the head's green run never saw the other side's edit
+# to its own files (dotfiles #2962 landed 25s after #2963, both on agent-land and agent_land.bats, and
+# main went red until #2965). A clean merge of the same file is no proof, which is why the test is by file.
+# That loop is bounded: past CATCHUP_OVERLAP_WAITS checks runs, a base that still changes the head's files
+# exits 3 instead of landing behind it, so a hot file cannot hold the session forever. A strict base has no bound, since it refuses a head
 # that is behind (2026-11-05: unity-core-playground #1837 was refused twice). A conflict is aborted
 # and exits 3.
-CATCHUP_WAITS=1
+CATCHUP_WAITS=1 CATCHUP_OVERLAP_WAITS=3
 catch_up() {
   local out behind
   out=$(git fetch -q "$remote" 2>&1) || fail fetch "$(lastline "$out")"
@@ -544,10 +659,27 @@ catch_up() {
     [ "${1:-}" = before ] || echo "fetch: current with $remote/$base"
     return 0
   fi
-  if [ "${1:-}" = after ] && [ "${2:-0}" -ge "$CATCHUP_WAITS" ] && ! strict_checks &&
+  local why=''
+  if [ "${1:-}" = after ]; then
+    if [ "${2:-0}" -ge "$CATCHUP_WAITS" ]; then
+      why='during the checks on the merged-up head'
+    elif moved_misses_pick; then
+      why="and none of it can affect a test the head's own run picked"
+    fi
+  fi
+  if [ -n "$why" ] && ! strict_checks &&
     git merge-tree --write-tree --quiet HEAD "$remote/$base" >/dev/null 2>&1; then
-    echo "fetch: $remote/$base moved on by $behind during the checks on the merged-up head; landing that green head behind it (no strict checks on $base)"
-    return 0
+    local shared
+    if ! shared=$(base_touches_head); then
+      echo "fetch: $remote/$base moved on by $behind $why; landing that green head behind it (no strict checks on $base)"
+      return 0
+    fi
+    if [ "${2:-0}" -ge "$CATCHUP_OVERLAP_WAITS" ]; then
+      printf 'agent-land: %s/%s moved on by %s after %s checks runs, and %s: merge it, push and re-run once it settles\n' "$remote" "$base" "$behind" "$2" "$shared" >&2
+      land_failed behind "behind $remote/$base by $behind after $2 checks runs, and $shared"
+      exit 3
+    fi
+    echo "fetch: $remote/$base moved on by $behind $why, but $shared; merging it up and re-checking"
   fi
   # Before the merge, so a refusal leaves the checkout as it was. A fork head is not origin's branch.
   [ "$cross" != true ] || fail push "the PR head is on a fork: git push HEAD to that fork's $head_ref, then re-run"
@@ -625,10 +757,10 @@ show_rc=0
 it=$(aq_retry show "$item" --json 2>/dev/null) || show_rc=$?
 [ "$show_rc" -ne "$QUEUE_BUSY" ] || die "the queue is locked by another writer: nothing merged, re-run"
 [ "$show_rc" -eq 0 ] || die "no queue item $item (agent-queue show)"
-# A done ok item takes more PRs: its `pr:` holds one <owner>/<repo>#<N> per repo, space separated,
+# A landed item (outcome landed) takes more PRs: its `pr:` holds one <owner>/<repo>#<N> per repo, space separated,
 # and `merged:` their merge commits in the same order, so a task split across repos lands each on
 # its one item. Which repo this PR is in needs gh, so once_done checks it after the PR is read.
-case "$(jq -r 'if .state == "done" and .status == "ok" and (.pr // "") != "" then "done-ok" else .state end' <<<"$it")" in
+case "$(jq -r 'if .state == "done" and .outcome == "landed" then "done-ok" else .state end' <<<"$it")" in
 running | waiting | review | queued | done-ok) ;;
 *) die "queue item $item is $(jq -r '.state + " " + (.status // "")' <<<"$it"), not open" ;;
 esac
@@ -644,6 +776,22 @@ if [ -z "$repo" ]; then
 fi
 R=()
 [ -z "$repo" ] || R=(-R "$repo")
+# --admin skips a required approving review, so only a session the human opened may ask for it: never a
+# headless run, never an item dispatch or an ask started (origin run, ask). A dispatched session that
+# was refused for want of a review found --admin in --help and merged a client's PR with it
+# (ar-6083). A review the repo requires waits for the human.
+# The session's own launch item (AGENT_QUEUE_ITEM, which dispatch sets) is judged as well as --item's, so a
+# dispatched session cannot pass by landing through an item it filed itself with no origin.
+admin_origin_ok() { case "$1" in '' | hand | resume) return 0 ;; *) return 1 ;; esac; }
+if [ "${#admin[@]}" -gt 0 ]; then
+  aorigin=$(jq -r '.origin // ""' <<<"$it") lorigin=''
+  if [ -n "${AGENT_QUEUE_ITEM:-}" ]; then
+    lorigin=$(aq_retry show "$AGENT_QUEUE_ITEM" --json 2>/dev/null | jq -r '.origin // "unknown"') || lorigin=unknown
+    [ -n "$lorigin" ] || lorigin=unknown
+  fi
+  { [[ "${CLAUDE_CODE_ENTRYPOINT:-}" != sdk-* ]] && admin_origin_ok "$aorigin" && admin_origin_ok "$lorigin"; } ||
+    die "--admin is the human's: queue item $item${aorigin:+ is origin $aorigin}${lorigin:+, the launch item ${AGENT_QUEUE_ITEM} is origin $lorigin}; only a session the human opened may skip a review, so nothing merged. A PR waiting on a required review waits for the human: agent-ask post, then stop"
+fi
 # Every real step reads this checkout (head, forge remote, merge proof); --repo only redirects gh.
 # Outside a checkout a merged PR got through repo, merge and body, then failed proof (ar-2371).
 # A dry run reads no PR and stays the way to preview from anywhere.
@@ -1045,6 +1193,24 @@ link_task_row() {
   echo "item-row: linked $proj:$task_id from the body's Task: line"
 }
 
+# workflow_gate: GitHub refuses to merge a PR that changes .github/workflows for an OAuth token with no
+# `workflow` scope, and says so only at the merge, after the checks (platform#1672, ar-5191: this
+# workstation's gh has admin:org, gist and repo). So before the wait such a PR fails with the way out. A
+# token whose scopes GitHub does not list (fine-grained, app) passes, as do a file list or a user call
+# that cannot be read: the merge itself still says what it lacks. Forgejo has no such scope.
+workflow_gate() {
+  [ -z "$fj" ] || return 0
+  local files scopes
+  files=$(pr_files 2>/dev/null) || return 0
+  grep -q '^\.github/workflows/' <<<"$files" || return 0
+  scopes=$(gh api -i user 2>/dev/null) || return 0
+  scopes=$(tr -d '\r' <<<"$scopes" | grep -i -m 1 '^x-oauth-scopes:' | cut -d: -f2- | tr -d ' ') || return 0
+  [ -n "$scopes" ] || return 0
+  [[ ",$scopes," != *,workflow,* ]] || return 0
+  # gate: al-workflow-gate
+  fail workflow "#$pr changes .github/workflows and this gh token's scopes ($scopes) have no workflow, so GitHub would refuse its merge after the checks: run agent-land $pr${repo:+ --repo $repo}${item:+ --item $item} from a host whose gh token has the scope, or ask the human to run gh auth refresh -s workflow here and re-run it"
+}
+
 # review_gate: a tier-3 item (`fleet-dispatch item-tier`, the one beside this script: harness or tooling, promoted from a row or
 # queued by hand) merges only behind the red-fix gate, fix-red step 5: a "Review: /code-review <level>,
 # <what it found and what you did>" line in the body (n/a or empty is refused), and checks that ran
@@ -1125,7 +1291,7 @@ validate_gate() {
   files=$(pr_files 2>&1) || fail validate "could not read #$pr's changed files ($(lastline "$files")), so whether its work is critical is unknown; re-run"
   PR_FILES=$files
   out=$(judge_work_level "$(judge_conf PROMPT "$(dirname "$(readlink -f "$0")")/../../.config/agent-ask/policy.md")" \
-    "${AGENT_ASK_ROOT:-$HOME/.agent/asks}" "$it" <<<"$files") ||
+    "$(ask_root)" "$it" <<<"$files") ||
     fail validate "could not read the ask policy (ask-judge.conf PROMPT), so whether #$pr is critical is unknown"
   IFS=$'\t' read -r lv ev <<<"$out"
   [ "$lv" = critical ] || { echo "validate: $lv work, no second agent needed"; return 0; }
@@ -1177,39 +1343,40 @@ covers() {
     [ "$(git rev-list --count --no-merges HEAD "^$1" "^$remote/$base" 2>/dev/null)" = 0 ]
 }
 
-# shape_gate: a function over shape-grow's limit does not get longer. The fix is in the PR: extract
-# the new logic as a pure function and call it. When that cannot be done here, the body names the
-# board row that will split the function, "Split: <row id>", open on a lab sheet and naming each
-# grown function, so a made-up or closed id is no escape. Measured from the merge-base, so what
-# <base> changed since never reads as this PR's growth. Why: 2026-11-18 ci-runner-governor's
-# decide() grew 34 -> 269 lines over 35 sessions, a few lines a PR, and no review read the whole.
+# shape_gate: shape-grow (its header holds the rules: no long function grows, no copy is added). A
+# repo whose CI runs it (a workflow at HEAD names it; dotfiles: the lint job, under gate) gets its
+# verdict from the checks wait_checks reads, so it does not run here; elsewhere it runs here, from
+# the merge-base, so what <base> changed since never reads as this PR's. Both accept a body line
+# "Split: <row id> <function>..." or "Dup: <row id> <name>..." as covering what it lists, and only
+# this script reads the boards: each such row must be open on a lab sheet and name every name on its
+# line, so a made-up or closed id, or a row about something else, is no escape.
 # gate: al-shape-gate
 shape_gate() {
-  local out rc=0 mb list id row miss
+  local out rc=0 mb list kind id names row miss
+  while read -r kind id names; do
+    row=$(lab_row "$id" | grep -m1 '^[[:space:]]*- \[ \]' || true)
+    [ -n "$row" ] || fail shape "$kind: $id is not an open row on any sheet under ~/.notes/lab"
+    [ -n "$names" ] || fail shape "$kind: $id lists nothing it covers: the line is \"$kind: <row id> <name>...\""
+    miss=$(tr ' ,' '\n\n' <<<"$names" | grep . | while read -r f; do grep -qwF -- "$f" <<<"$row" || echo "$f"; done)
+    [ -z "$miss" ] || fail shape "$kind: $id does not name $(paste -sd' ' <<<"$miss"): the row that owes the fix names each one its line lists"
+  done < <(tr -d '\r' <<<"$body" | sed -nE 's/^[[:space:]]*(Split|Dup):[[:space:]]*([a-z]+-[0-9]+)([^a-z0-9-].*)?$/\1 \2 \3/p')
+  if git grep -qF shape-grow HEAD -- .github/workflows 2>/dev/null; then
+    echo "shape: CI runs shape-grow, so the checks carry its verdict"
+    return 0
+  fi
   mb=$(git merge-base HEAD "$remote/$base" 2>&1) || fail shape "git merge-base HEAD $remote/$base: $(lastline "$mb")"
-  out=$("${SHAPE_GROW:-$(dirname "$(readlink -f "$0")")/shape-grow}" "$mb" HEAD 2>&1) || rc=$?
+  out=$("${SHAPE_GROW:-$(dirname "$(readlink -f "$0")")/shape-grow}" --body - "$mb" HEAD 2>&1 <<<"$body") || rc=$?
+  list=$({ grep -v '^shape-grow: ' <<<"$out" || true; } | paste -sd';' | sed 's/;/; /g')
   case $rc in
-    0) echo "shape: clean"; return 0 ;;
-    1) list=$(paste -sd';' <<<"$out" | sed 's/;/; /g') ;;
+    0) echo "shape: clean${list:+, covered: $list}" ;;
+    1) fail shape "$list. $(grep -m1 '^shape-grow: fix' <<<"$out" | sed 's/^shape-grow: //')" ;;
     *) fail shape "shape-grow $mb HEAD: $(lastline "$out")" ;;
   esac
-  id=$(grep -m1 -oE '^Split: *[a-z]+-[0-9]+' <<<"$body" | sed -E 's/^Split: *//' || true)
-  [ -n "$id" ] || fail shape "long functions got longer: $list. Extract the new logic as a pure function (inputs in, result out) and call it; a helper that mutates shared state only moves the length. Or add a \"Split: <row id>\" line naming an open board row that names each function"
-  row=$(lab_row "$id" | grep -m1 '^[[:space:]]*- \[ \]' || true)
-  [ -n "$row" ] || fail shape "Split: $id is not an open row on any sheet under ~/.notes/lab ($list)"
-  # A line is "<path>:<line> <name> <was>-><now>", so the name is the next-to-last field even when the path has a space.
-  miss=$(awk '{n = $(NF - 1); sub(/#[0-9]+$/, "", n); sub(/.*\./, "", n); print n}' <<<"$out" | sort -u |
-    while read -r f; do grep -qwF -- "$f" <<<"$row" || echo "$f"; done)
-  [ -z "$miss" ] || fail shape "Split: $id does not name $(paste -sd' ' <<<"$miss"): the row that owes the split names each function it splits ($list)"
-  echo "shape: grows, split owed by $id: $list"
 }
 
-# item_watch <item json> -> the watch name when the item is a `red` item for a Sentinel watch
-# (`check(watch): <name> ...`), empty otherwise.
-item_watch() {
-  jq -r 'select(((" " + (.tags // "") + " ") | contains(" red ")))
-    | (.title // ((.task // "") | split("\n")[0]))
-    | try capture("^check\\(watch\\): (?<w>[A-Za-z0-9._-]+)").w // empty' <<<"$1" 2>/dev/null
+# json_watch <item json> -> the watch of a red item for a Sentinel watch (item_watch, lib/watch-item.sh).
+json_watch() {
+  item_watch "$(jq -r '.tags // ""' <<<"$1")" "$(jq -r '.title // ((.task // "") | split("\n")[0])' <<<"$1")"
 }
 
 # watch_gate <item json>: a red item for a Sentinel watch cannot close ok while its watch's probe
@@ -1217,23 +1384,25 @@ item_watch() {
 # which records the merge as the fix watermark (a windowed probe counts only events after it, fix-red
 # step 5) and rechecks; a bare #N with no repo rechecks only. Still red means the fix did not clear
 # it, or waits on a deploy: re-running agent-land once it clears closes the item and its board row.
+# The move to done that follows rechecks it once more (agent-queue cmd_move): no flag skips that. A
+# watch routed to alert or owned: is the ask's or owner's job, so neither check refuses on it; its PR
+# still resolves the watch. So is one quarantined under an owner (watch_quarantine): it still trips, the
+# line says under whom and until when, and the close goes through (ar-5973).
 # gate: al-watch-gate
 watch_gate() {
-  local w rc=0 out verb
-  w=$(item_watch "$1")
+  local w out verb route
+  w=$(json_watch "$1")
   [ -n "$w" ] || return 0
-  command -v watch-companion-loop >/dev/null 2>&1 || { echo "watch: $w not checked (no watch-companion-loop on PATH)"; return 0; }
+  if route=$(watch_route_owned "$w"); then
+    # Only the refusal is the owner's: the merge is still the fix watermark, so a windowed probe counts from it.
+    [[ "$pr_ref" != */* ]] || out="$(watch_probe resolve "$w" --pr "$pr_ref")" || echo "agent-land: the fix watermark for $w: $out" >&2
+    echo "watch $w routes to $route, so its close is not probed"
+    return 0
+  fi
   verb=(recheck "$w")
   [[ "$pr_ref" != */* ]] || verb=(resolve "$w" --pr "$pr_ref")
-  out=$(watch-companion-loop "${verb[@]}" 2>&1) || rc=$?
-  # exit 2 is also a usage error (a loop with no resolve): only "no watch named" skips the check
-  case "$rc" in
-    0) echo "watch: $w OK" ;;
-    2) [[ "$out" == *"no watch named $w"* ]] || fail item "watch-companion-loop ${verb[0]} $w: $(lastline "$out")"
-       echo "watch: $w not known here (exit 2), skipping probe check" ;;
-    75) fail item "watch-companion-loop ${verb[0]} $w could not take the lock (exit 75); re-run" ;;
-    *) fail item "watch $w did not read OK on ${verb[0]} (exit $rc)${out:+: $(lastline "$out")}" ;;
-  esac
+  out=$(watch_probe "${verb[@]}") || fail item "$out"
+  echo "$out"
 }
 
 # unlisted_repo <store key>: the merged PR's repo is in no `schedules-sync repos` list (sync-prs exit
@@ -1251,6 +1420,93 @@ unlisted_repo() {
     5) echo "prs: not filed, notes wants its shortlist read first: notes ptask $board --agent add --why runtime-fault --checked <ids> '$row'" >&2 ;;
     *) echo "prs: could not file it on $board ($(lastline "$out"))" >&2 ;;
   esac
+}
+
+# deploy_steps: each "After deploy: <step>" line of the merged PR's body is a step the PR leaves for
+# once its change is live (a migration of the live store, a restart, a re-seed). Each is added as its
+# own item on the landed item's project, so the step has an owner: #3249 left `notes projects --migrate
+# unity-core-playground` in a sentence, nobody ran it, and from 09:06 to 13:30 on 2026-11-23 no board
+# view or dispatch pass read a unity sprint (ar-4887). A line in a code fence or a quote, and a
+# placeholder (`<command>`, none, n/a), is no step. The slug names the PR, a hash of the step and the
+# repo, so a re-run of this landing adds none twice, even after the body was edited. The add is
+# from the landed item but not run as it (AGENT_QUEUE_ITEM empty), so that item's own after: never
+# gates it. It goes into the queue as agent-land's own pull (AGENT_QUEUE_PULL=land, never held by the
+# cap): a board-only add from a dispatched session goes to the outbox, where triage kept it in
+# improvements.md and no step ran (ar-5865). High, since main's change is only half applied until it runs. Never fails the landing:
+# the merge stands, and a step not added is said with the add to run by hand.
+deploy_steps() {
+  local text step slug project out rc steps=() repo=${pr_ref%#*}
+  text=$(pr_view body .body 2>&1) || { echo "deploy: no After deploy: step read ($api pr view: $(lastline "$text")); re-run agent-land $pr to add them" >&2; return 0; }
+  mapfile -t steps < <(tr -d '\r' <<<"$text" | awk '
+    /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
+    fence || !sub(/^After deploy:[[:space:]]*/, "") { next }
+    { sub(/[[:space:]]+$/, "") }
+    $0 != "" && $0 !~ /^</ && tolower($0) !~ /^(none|n\/a|nothing|-)\.?$/')
+  [ "${#steps[@]}" -gt 0 ] || return 0
+  project=$(jq -r '.project // empty' <<<"$it")
+  for step in "${steps[@]}"; do
+    rc=0
+    # the repo last: agent-queue cuts a slug at 40 characters
+    slug="after-deploy-$pr-$(printf '%s' "$step" | sha1sum | cut -c1-7)-${repo##*/}"
+    out=$(AGENT_QUEUE_ITEM='' AGENT_QUEUE_PULL=land aq_retry add --project "$project" --priority high --from "item:$item" --slug "$slug" \
+      "chore(deploy): $step (left by $pr_ref)"$'\n\n'"$pr_ref (merge ${merged:0:12}) left this step for once its change is live: $step"$'\n'"Check the change is live first (a dotfiles merge: the main checkout is at or past the merge; a service: its rollout finished), then run it and prove what it changed." 2>&1) || rc=$?
+    case "$rc" in
+      0) echo "deploy: added $slug: $step" ;;
+      5) echo "deploy: $slug filed on the $project board, the queue takes it from there: $step" ;;
+      4) echo "deploy: $slug already ran: $step" ;;
+      *) if [[ "$out" == *"already in the queue"* ]]; then echo "deploy: $slug already queued: $step"
+         else echo "deploy: not added ($(lastline "$out")): agent-queue add --project $project --priority high --from item:$item --slug $slug 'chore(deploy): $step (left by $pr_ref)'" >&2; fi ;;
+    esac
+  done
+}
+
+# after_merge_steps: the steps a repo leaves for every merge that changes some of its paths, read from
+# AFTER_MERGE_FILE on the base: one "<path>[,<path>...] <step>" a line, a path ending in / a directory,
+# a # line a comment. Each step whose paths the merged PR changed is added as an item on the repo's
+# project. A step with an item still queued is not added again: that item reads the base when it
+# starts, so it carries this merge too; one already started may have read an older base, so a new one
+# is added. Why: home-config merged 23 ansible role changes on 2026-11-25 and 11-26 that reached no
+# host until ConvergenceDrift fired on five, after #1447's README rule that the merging session applies
+# them was never followed (ar-5861, ask GxMF2a). Added as agent-land's pull (AGENT_QUEUE_PULL=land), as
+# deploy_steps is: 17 adds without it went board-only to the outbox from 2026-11-26, no apply ran, and
+# ConvergenceDrift fired on 8 hosts (ar-5865). Never fails the landing.
+after_merge_steps() {
+  local text files line paths step p f hit slug project out rc queued repo=${pr_ref%#*} sha ps=()
+  text=$(git show "$remote/$base:$AFTER_MERGE_FILE" 2>/dev/null) || return 0
+  [ -n "$text" ] || return 0
+  files=${PR_FILES-$(pr_files 2>&1)} || { echo "after-merge: no step added, $api could not list #$pr's files ($(lastline "$files")); re-run agent-land $pr" >&2; return 0; }
+  project=$(project_canonical "${repo##*/}")
+  # this project's queued items only: another repo's item for the same step text does not carry this merge
+  queued=$(aq_retry list --json --state queued 2>/dev/null | jq -r --arg p "$project" 'select(.project == $p) | .slug // empty' 2>/dev/null) \
+    || echo "after-merge: could not read the queue, so a step still queued may be added again" >&2
+  while IFS= read -r line; do
+    line=${line%$'\r'}
+    [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+    read -r paths step <<<"$line"
+    [ -n "$step" ] || { echo "after-merge: $AFTER_MERGE_FILE line '$line' names no step, skipped" >&2; continue; }
+    hit=''
+    IFS=, read -ra ps <<<"$paths"
+    for p in "${ps[@]}"; do
+      while IFS= read -r f; do
+        { [[ "$p" == */ && "$f" == "$p"* ]] || [ "$f" = "$p" ]; } && { hit=$f; break 2; }
+      done <<<"$files"
+    done
+    [ -n "$hit" ] || continue
+    sha=$(printf '%s' "$step" | sha1sum | cut -c1-7)
+    # the repo last: agent-queue cuts a slug at 40 characters
+    slug=$(grep -m1 -E "^after-merge-$sha-[0-9]+-" <<<"$queued") && { echo "after-merge: $slug is still queued and carries #$pr too: $step"; continue; }
+    slug="after-merge-$sha-$pr-${repo##*/}"
+    rc=0
+    out=$(AGENT_QUEUE_ITEM='' AGENT_QUEUE_PULL=land aq_retry add --project "$project" --priority high --from "item:$item" --slug "$slug" \
+      "chore(after-merge): $step (left by $pr_ref)"$'\n\n'"$pr_ref (merge ${merged:0:12}) changed $hit, and ${repo##*/}'s $AFTER_MERGE_FILE leaves this step for every merge that changes $paths: $step"$'\n'"Run it at the base's tip when you start, so it carries every merge since, and prove what it changed." 2>&1) || rc=$?
+    case "$rc" in
+      0) echo "after-merge: added $slug: $step" ;;
+      5) echo "after-merge: $slug filed on the $project board, the queue takes it from there: $step" ;;
+      4) echo "after-merge: $slug already ran: $step" ;;
+      *) if [[ "$out" == *"already in the queue"* ]]; then echo "after-merge: $slug already queued: $step"
+         else echo "after-merge: not added ($(lastline "$out")): agent-queue add --project $project --priority high --from item:$item --slug $slug 'chore(after-merge): $step (left by $pr_ref)'" >&2; fi ;;
+    esac
+  done <<<"$text"
 }
 
 # credit -> ", <what agent-queue attribute recorded>" for the item line: the PR's changed files
@@ -1395,7 +1651,8 @@ if [ "$dry" -eq 1 ]; then
   echo "review: fleet-dispatch item-tier $item  (tier 3: the body needs a \"Review: \" line and the checks must run)"
   [ "$partial" -eq 1 ] || [ -z "$(jq -r '.plan // ""' <<<"$it")" ] ||
     echo "loose: plan_loose_rows $(jq -r .plan <<<"$it") $item  (notes log, then notes board --json --id: an open agent row $item filed that no phase line takes stops the landing)"
-  echo "shape: shape-grow \$(git merge-base HEAD origin/<base>) HEAD  (no function over 150 lines gets longer, unless the body has a \"Split: <row id>\" line naming an open row that names each function)"
+  [ -n "$fj" ] || echo "workflow: gh api repos/<owner>/<repo>/pulls/$pr/files, then gh api -i user  (a PR that changes .github/workflows stops here when the token's X-OAuth-Scopes lack workflow)"
+  echo "shape: shape-grow --body - \$(git merge-base HEAD origin/<base>) HEAD, unless a workflow at HEAD runs it  (no long function grows and no copy is added; each \"Split:\" or \"Dup: <row id> <name>...\" line names an open row that names each one)"
   echo "checks: gh pr checks $pr${repo:+ -R $repo} --watch --fail-fast -i $CHECKS_WATCH_INTERVAL  (must pass, or report none on a tier 1 or 2 item; a land that would refuse none, on a head with workflow files, first waits up to $CHECKS_FIRST_RUN_TRIES x ${CHECKS_QUEUED_POLL}s for its first run, AGENT_LAND_CHECKS_FIRST_RUN_TRIES)"
   echo "fetch: git fetch origin && git rev-list --count HEAD..origin/<base of #$pr>  (0 before the checks; after them git merge origin/<base> && git push, then the checks again on that head)"
   echo "validate: gh api repos/<owner>/<repo>/pulls/$pr/files | judge_work_level  (critical: merges only on a pass verdict from the item's validate item on this head, else fleet-dispatch validate $item and exit $VALIDATE_WAIT)"
@@ -1409,7 +1666,7 @@ if [ "$dry" -eq 1 ]; then
     echo "board: left open until the final landing"
   else
     [ -n "$fj" ] || echo "split: gh search prs --owner <owner> --state open --match body -- \"Item: $item\"  (before anything is touched: another open PR whose first Item: line names $item refuses this full landing; land #$pr --partial)"
-    dry_watch=$(item_watch "$it")
+    dry_watch=$(json_watch "$it")
     [ -z "$dry_watch" ] || echo "watch: watch-companion-loop resolve $dry_watch --pr <owner>/<repo>#$pr  (a red item closes ok only once its probe passes)"
     echo "item: agent-queue set $item pr=$pr merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/$pr/files | agent-queue attribute $item && agent-queue move $item done --status ok"
   fi
@@ -1517,6 +1774,7 @@ else
   stack_gate
   review_gate
   loose_gate
+  workflow_gate
   # A head behind <base> is caught up first, the same merge as after the gate: a session that
   # stopped on exit 3 here left its green PR open while main moved (six waiting on 2026-11-07).
   catch_up before || true
@@ -1573,6 +1831,8 @@ if [[ "$pr_ref" == */*#* ]]; then
 fi
 chain_event land merged "$(jq -r .project <<<"$it")" "$(jq -r '.title // ((.task // "") | split("\n")[0])' <<<"$it")" \
   --item "$item" --id "$(jq -r '(.row // "") | sub("^[^:]*:"; "")' <<<"$it")" --pr "$pr_ref" --sha "$merged"
+deploy_steps
+after_merge_steps
 
 case "$done_as" in
 '')

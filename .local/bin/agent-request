@@ -21,6 +21,8 @@ QUOTE_MAX=8
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
 # The one-pane guard every scripted send shares (agent-voice too).
+# shellcheck source=../lib/fmt.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fmt.sh"   # oneline
 # shellcheck source=../lib/agent-pane.sh
 . "${AGENT_PANE_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-pane.sh}"
 
@@ -34,8 +36,6 @@ repo_init() {
   PROJECT="$(resolve_project_name "$ROOT")"
   DRAFT="$REQUESTS_ROOT/$PROJECT/${ROOT##*/}.md"
 }
-
-one_line() { tr '\n\t' '  ' <<< "$*" | sed 's/  */ /g; s/^ //; s/ $//'; }
 
 # NOTE_RE: `- <file>:<line>[-<end>]: <text>[ <!-- id:<id> -->]`. A path holds no colon.
 NOTE_RE='^- ([^:]+):([0-9]+)(-([0-9]+))?: (.*)$'
@@ -55,7 +55,7 @@ cmd_add() {
       *) break ;;
     esac
   done
-  local text; text="$(one_line "$*")"
+  local text; text="$(oneline "$*")"
   [ -n "$file" ] && [ -n "$text" ] || die "add: needs --file, --line and a note"
   [[ "$line" =~ ^[0-9]+$ ]] || die "add: --line must be a number, got '$line'"
   [ -z "$end" ] || [[ "$end" =~ ^[0-9]+$ ]] || die "add: --end must be a number, got '$end'"
@@ -156,7 +156,7 @@ cmd_send() {
     [ -n "$title" ] || title="${ROOT##*/}: $n notes"
     local out
     local rc=0
-    out="$(brief | agent-queue add --project "$PROJECT" --from human --want request --title "$(one_line "$title")")" || rc=$?
+    out="$(brief | agent-queue add --project "$PROJECT" --from human --want request --title "$(oneline "$title")")" || rc=$?
     [ "$rc" -eq 0 ] || [ "$rc" -eq 5 ] || die "send: agent-queue add failed; the draft is kept"
     [ "$rc" -ne 5 ] || out="the queue is at its cap: the request waits on a board row, which dispatch starts as slots open"
     archive > /dev/null

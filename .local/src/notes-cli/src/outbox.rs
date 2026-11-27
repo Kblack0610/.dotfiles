@@ -16,7 +16,7 @@
 //! A look word marks a question (`md::look_tag`): `#ask` for a quick answer, `#investigate` for a
 //! longer look. The sweep answers it with one read-only model call and `notes outbox answer`
 //! takes the line out of the outbox and writes the question and answer to today's
-//! `inbox/<date>.md`, so it never reaches a project's inbox or becomes a row.
+//! `captures/<date>.md`, so it never reaches a project's inbox or becomes a row.
 //!
 //! Every tag a line may carry is one row of `md::INTAKE_TAGS`, which the skeleton's header,
 //! `notes outbox tags` and `show --json` (agent-web's legend) print.
@@ -348,7 +348,7 @@ fn question(text: &str) -> String {
 }
 
 /// `notes outbox answer -- <raw>`, the answer on stdin: take the outbox line that is `raw` byte
-/// for byte out of the outbox and write it, with the answer, to today's `inbox/<date>.md` as
+/// for byte out of the outbox and write it, with the answer, to today's `captures/<date>.md` as
 /// `- HH:MM <look>: <question> - <answer's first line>` (`ask` or `investigate`, the line's tag;
 /// a line with neither is an `ask`), the answer's other lines indented under it.
 /// The capture is written first, so a failed second write leaves the question in both places
@@ -507,10 +507,6 @@ mod tests {
             None
         );
         assert_eq!(
-            md::without_look_tag("#investigate why slow #p:demo"),
-            "why slow #p:demo"
-        );
-        assert_eq!(
             answer(
                 &p,
                 &log,
@@ -523,7 +519,7 @@ mod tests {
         let left: Vec<String> = lines(&p).unwrap().into_iter().map(|l| l.text).collect();
         assert_eq!(left, ["stays"]);
         let day = chrono::Local::now().format("%Y-%m-%d").to_string();
-        let note = fs::read_to_string(p.inbox.join(format!("{day}.md"))).unwrap();
+        let note = fs::read_to_string(p.captures.join(format!("{day}.md"))).unwrap();
         assert!(
             note.contains("ask: is my mac ok? - Yes, up 3 days.\n  * load 0.2\n"),
             "{note}"
@@ -551,7 +547,7 @@ mod tests {
         fs::write(&p.outbox, format!("{}{raw}\n", skeleton())).unwrap();
         assert_eq!(answer(&p, &log, raw, "Disk 3 is resyncing.").unwrap(), 0);
         let day = chrono::Local::now().format("%Y-%m-%d").to_string();
-        let note = fs::read_to_string(p.inbox.join(format!("{day}.md"))).unwrap();
+        let note = fs::read_to_string(p.captures.join(format!("{day}.md"))).unwrap();
         assert!(
             note.contains("investigate: why is the nas slow - Disk 3 is resyncing."),
             "{note}"
