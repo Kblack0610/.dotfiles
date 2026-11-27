@@ -330,7 +330,8 @@ asks() { ls "$HOME"/.agent/asks/*/*.md 2>/dev/null; }
   "$AQ" move na done --status failed >/dev/null
   [ -n "$(item queued nb)" ]
   [ "$(asks | wc -l)" = 2 ]
-  grep -l "na has no board row to run again" $(asks) | grep -q .
+  # The sandbox path has a space: grep the directory, never an unquoted list of files.
+  grep -rlq "na has no board row to run again" "$HOME/.agent/asks"
 }
 
 @test "the reap guard settles an item already in a dead hold in one pass, and a second pass changes nothing (ar-6144)" {
