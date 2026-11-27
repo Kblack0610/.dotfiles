@@ -1614,6 +1614,43 @@ fn ptask_tag(
 }
 
 /// All of stdin as text, for the commands that take their body there.
+/// `notes ptask <name> add ...`: the row as its flags give it, written by this process's writer.
+fn ptask_add(
+    prof: &config::Profile,
+    log: &logging::Logger,
+    name: &str,
+    lane: Lane,
+    add: PtaskCmd,
+) -> Result<i32> {
+    let PtaskCmd::Add {
+        to,
+        game,
+        pr,
+        detail,
+        want,
+        origin,
+        checked,
+        why,
+        key,
+        text,
+    } = add
+    else {
+        unreachable!("ptask_add takes the add verb only");
+    };
+    refuse_playtest_flags(game.as_ref(), pr.as_ref())?;
+    project_tasks::add(
+        prof,
+        log,
+        name,
+        &reasons::add_text(&text, why.as_deref())?,
+        &detail,
+        to.as_deref(),
+        want.as_deref(),
+        lane,
+        &project_tasks::Writer::from_env(origin.as_deref(), checked).keyed(key),
+    )
+}
+
 /// `notes ptask <name> move <query> (--to vX.Y.Z | --project <dest> [--to vX.Y.Z])`.
 #[allow(clippy::too_many_arguments)]
 fn ptask_move(
@@ -1828,31 +1865,7 @@ fn main() -> Result<()> {
                 Some(PtaskCmd::List { version, all }) => {
                     project_tasks::list(&prof, &name, version.as_deref(), all, lane)?
                 }
-                Some(PtaskCmd::Add {
-                    to,
-                    game,
-                    pr,
-                    detail,
-                    want,
-                    origin,
-                    checked,
-                    why,
-                    key,
-                    text,
-                }) => {
-                    refuse_playtest_flags(game.as_ref(), pr.as_ref())?;
-                    project_tasks::add(
-                        &prof,
-                        &log,
-                        &name,
-                        &reasons::add_text(&text, why.as_deref())?,
-                        &detail,
-                        to.as_deref(),
-                        want.as_deref(),
-                        lane,
-                        &project_tasks::Writer::from_env(origin.as_deref(), checked).keyed(key),
-                    )?
-                }
+                Some(add @ PtaskCmd::Add { .. }) => ptask_add(&prof, &log, &name, lane, add)?,
                 Some(PtaskCmd::Move { to, project, query }) => ptask_move(
                     &prof,
                     &log,
