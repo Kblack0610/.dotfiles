@@ -154,7 +154,7 @@
 #                                ARCHITECTURE Flows table and its rows): the Sentinel watches whose
 #                                `flows:` names it and their state, then one verdict line. A part is
 #                                TRIP or ERROR on its worst live watch, TRIP/Q when its worst is a
-#                                red under a live quarantine (a warning: the verdict reads GAPS),
+#                                red a live quarantine covers (a warning: the verdict reads GAPS),
 #                                OK when each is, UNCOVERED
 #                                when no watch probes it. Exit 1 on any TRIP or ERROR; --coverage
 #                                prints only the UNCOVERED parts and any `flows:` name that is no

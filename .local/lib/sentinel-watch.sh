@@ -53,13 +53,12 @@ log_norm() {
 }
 
 # watch_red_lines <evidence file> -> the red lines a watch's redacted evidence (<name>.out) names,
-# normalized (log_norm), in order: each `reason:` line (Sentinel's convention: vendor-check names its
-# worst rows), else each `RED` line of a probe that prints one OK or RED line a stage
-# (unity-core-playground's release-ready.py), else its last line, usually the error. The first is
-# fleet-bench triage's why; the set is what a quarantine covers. Nothing when the file is missing.
+# normalized (log_norm), in order: each `RED` line of a probe that prints one OK or RED line a stage
+# (unity-core-playground's release-ready.py), else its last non-blank line, usually the error. The
+# first is fleet-bench triage's why; the set is what a quarantine covers. Nothing when the file is
+# missing.
 watch_red_lines() {
-  { sed -n 's/^reason: \(.\)/\1/p' "$1" | grep . || grep -E '^RED[[:space:]]' "$1" \
-      || grep -v '^[[:space:]]*$' "$1" | tail -n 1; } 2>/dev/null | log_norm
+  { grep -E '^RED[[:space:]]' "$1" || grep -v '^[[:space:]]*$' "$1" | tail -n 1; } 2>/dev/null | log_norm
 }
 
 # watch_uncovered <state dir> <name> -> each red line of <name>.out that <name>.quarantine.covers (the
