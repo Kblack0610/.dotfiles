@@ -20,7 +20,7 @@ hub --once                       print Home, Alerts and Infra as plain text at $
 hub --once --tab 'projects NAME' print one project's opened card over its rows, what Enter shows (the tmux Prefix p preview)
 hub board --json                 print every sheet's head line and per-row hints (queue state, forecast day, epic rollup) as JSON, with the annotated rows; nvim draws them as virtual text on a README.md sheet
 hub cards --json [--figures]      Home's cards as the Tilecast widget document agent-web serves at /widget.json; --figures adds the cards' whole numbers as `figures` (agent-mqtt-publish sends it, the waybar queue chip reads them)
-hub ci [--json|--pool-match S]   the CI runners section plain, as JSON, or the rows fleet-bench's starved-pool match reads (jobs waiting S seconds or more)
+hub ci [--pods|--json|--pool-match S]   the CI runners section plain (one row per CI machine, the queue by workflow; --pods adds each pod), as JSON, or the rows fleet-bench's starved-pool match reads (jobs waiting S seconds or more)
 hub --once --tab jobs            print one tab (`jobs` is Infra's jobs table); exit 1 when Prometheus did not answer
 ```
 
@@ -122,6 +122,7 @@ Prometheus pages re-read every 60s (`PROM_REFRESH`; Prometheus has no push). Eve
 |---|---|
 | No CI job ever shows as running in the jobs table | The exporter calls a busy runner `github_runner_state{state="running"}`, and hub-core `jobs/remote.rs` asks for `running` (fixed 2026-11-03) |
 | `hub ci` says "no online runner holds light" (or heavy, docker) while ARC or forgejo-runner pods run | GitHub lists a scale-set runner with no labels and none at all between jobs, so an ephemeral pool's labels come from the exporter's `ci_runner_pool` row, which it reads from the AutoscalingRunnerSet and ScaledJob objects; `hub-core` `ci.rs` `Pool` holds them (fixed 2026-11-24, ar-5477: the exporter half is home-config #1503). Still red: check `github_runner_exporter_api_ok{kind="pools"}` and the exporter's read Role in arc-runners |
+| `hub ci` or the Runners tab shows a pod row under an unknown host, or a runner with no job | GitHub lists an ephemeral runner for a scrape or two after its pod finished, and the exporter files it under `unknown` or `arc-org`; `hub-core` `ci.rs` `gone` drops a pool runner with no pod, so none is left once job pods are read (ar-6344). If one stays, check `kube_pod_info{namespace="arc-runners"}` reads |
 | Running Unity gates missing from the jobs table, only finished ones | The ledger only gets a row when a gate ends; running gates come from `cc:host_local_gate` (fleet-assess textfile), merged in `jobs::collect` |
 | Columns after an emoji row shift by one | A wide character takes two columns; `fit.rs` measures with `unicode-width`, never `chars().count()` |
 | `o` opens a 404 like `.../d/kb-ci-runners/d/...` | `CC_GRAFANA_URL` is cut to its base in `hub_core::infra::gather`; an older binary does not. Rebuild |
