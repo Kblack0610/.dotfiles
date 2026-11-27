@@ -1129,7 +1129,9 @@ bench_prom() {
       gauge("agent_chain_moves"; "Items each step took in and let out over the last hour, from the record.";
         $pl.steps[] | {step} as $l | (["in", .in_1h], ["out", .out_1h]) | [$l + {dir: .[0]}, .[1]]),
       gauge("agent_chain_drift"; "Queue items the record and the queue folders place at different steps.";
-        [{}, $pl.drift])'
+        [{}, $pl.drift]),
+      gauge("agent_chain_inbox_drift"; "Lines the record holds in the inbox step against the lines the outbox and every ## Inbox hold, apart.";
+        [{}, $pl.inbox_drift])'
 }
 
 # projects_prom -> the fleet_projects.prom lines: each project's state and its open release window,
@@ -2255,7 +2257,7 @@ ledger_systems() {
 # landed_unverified: open epics whose every leaf is done, waiting on proof of the outcome. doctor_fail: FAIL lines in the last notes doctor.
 # dup_pairs: instructions two homes restate, from the newest nightly docs-cleanup night's dups.json
 # (skill-drift --dups); the bound is dup_pairs_max, the same row skill-drift --dups --check holds.
-# chain_drift and step_age_p90_<step>: pipeline_json's drift and each step's age p90, in minutes.
+# chain_drift, chain_inbox_drift and step_age_p90_<step>: pipeline_json's drift and inbox_drift and each step's age p90, in minutes.
 # plans_unqueued: approved plans with open phases and no session or item (plans_orphaned).
 # requested_unstarted_h: hours the oldest #requested agent row has sat open and unstarted.
 # orphan_request_rows, next_up_blocked, stale_urgent_d, urgent_per_board, playtest_waiting_d and done_inline_old: the
@@ -2281,7 +2283,7 @@ ledger_systems() {
 # release_overdue and version_tag_drift are the release link (release_kpis): a project a day past its
 # target date with that version uncut, else a sheet-counter project, or a prod app its tag owns, a day past
 # its cadence due date with done rows and no cut; and a tagged project whose sheet is not its tag plus one patch.
-KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running uncaused_close_share epic_linked_share landed_unverified release_overdue version_tag_drift doctor_fail dup_pairs plans_unqueued routes_unresolved reds_unfixed reds_spent requested_unstarted_h orphan_request_rows next_up_blocked stale_urgent_d urgent_per_board playtest_waiting_d done_inline_old prio_default request_to_live_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_review step_age_p90_waiting queue_net_24h estimated_token_share"
+KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running uncaused_close_share epic_linked_share landed_unverified release_overdue version_tag_drift doctor_fail dup_pairs plans_unqueued routes_unresolved reds_unfixed reds_spent requested_unstarted_h orphan_request_rows next_up_blocked stale_urgent_d urgent_per_board playtest_waiting_d done_inline_old prio_default request_to_live_h wants_unstamped admission_held chain_drift chain_inbox_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_review step_age_p90_waiting queue_net_24h estimated_token_share"
 
 # wants_stats <now> -> {total, unstamped, by_project: {<from>: {total, unstamped}}} over the last
 # CHAIN_DAYS of the notes ingest record; nothing and a failure when the record cannot be read.
@@ -2665,10 +2667,11 @@ chain_queue() {
   echo "admission_held=$held"
 }
 
-# chain_pipeline <now> -> chain_drift, each step's step_age_p90 and queue_net_24h (pipeline_json)
+# chain_pipeline <now> -> chain_drift, chain_inbox_drift, each step's step_age_p90 and queue_net_24h (pipeline_json)
 chain_pipeline() {
   pipeline_json "$1" | jq -r 'def n: if . == null then "?" else . end;
     "chain_drift=\(.drift | n)",
+    "chain_inbox_drift=\(.inbox_drift | n)",
     (.steps[] | select(.step | IN("backlog", "queued", "running", "review", "waiting")) | "step_age_p90_\(.step)=\(.age_p90_min | n)"),
     (.steps[] | select(.step == "queued") | "queue_net_24h=\(if .in_24h == null or .out_24h == null then "?" else .in_24h - .out_24h end)")'
 }
@@ -2712,7 +2715,7 @@ ingest_flow() {
        out: (reduce ($ev[] | out_kind) as $k ({merged: 0, done: 0, dup: 0, moved: 0, dropped: 0}; .[$k] += 1))}' "$BENCH_INGEST"
 }
 
-# pipeline_json <now> -> where every item sits and how each step scores: {since, drift, doors_24h,
+# pipeline_json <now> -> where every item sits and how each step scores: {since, drift, inbox_drift, doors_24h,
 # out_24h, bottleneck, headline, steps}, one step object each in PIPELINE_STEPS order. WIP and the age of what sits in a
 # step (p50, p90, oldest, minutes) come from the state files: the inbox lines (aged from the intake
 # record's first event of the same text; a line it never saw counts in WIP, not in the age), the rows
@@ -2724,7 +2727,11 @@ ingest_flow() {
 # drift counts the queue items the record and the queue folders place apart: at another step, held
 # by the record but gone from the queue, or queued after the record began with no event of it. A fleet
 # worker's closes reach the record through fleet-dispatch's worker_records, so a gap that stays is an
-# event no writer sent.
+# event no writer sent. inbox_drift sets the lines the record holds in the inbox step (`notes log
+# --steps` open) against the lines the outbox and every `## Inbox` hold here (the inbox WIP), apart
+# either way: more in the record is a line that left with no event, or one a worker's session wrote
+# to that worker's own outbox (its add event is imported, the line arrives only by its notes sync),
+# fewer is a line the record never saw added. Null when either cannot be read.
 #
 # Each step also carries score (its measure over its bound), verdict (stopped, over at 1 or more,
 # near at 0.8 or more, ok; "-" with no bound or no measure, never ok), why (the top 3 reasons as
@@ -2836,8 +2843,11 @@ pipeline_json() {
          | ($a | map({key: .slug, value: .state}) | from_entries) as $st
          | ([$a[] | select(if $rec[.slug] then $rec[.slug] != .state else (.queued // "") >= ($r.items_since // "~") end)] | length)
            + ([$rec | keys[] | select($st[.] == null)] | length) end) as $drift
+    | (if $i == null or $r == null then null
+       else [$r.steps[] | select(.step == "inbox") | .open | numbers] | first
+         | if . == null then null else . - ($i | length) | if . < 0 then -. else . end end end) as $inbox_drift
     | ([$rows[] | select(.verdict == "stopped")] + ([$rows[] | select(.verdict == "over")] | sort_by(-.score)) | first) as $worst
-    | {as_of: $t, since: $r.since, items_since: $r.items_since, drift: $drift,
+    | {as_of: $t, since: $r.since, items_since: $r.items_since, drift: $drift, inbox_drift: $inbox_drift,
        doors_24h: $ev.doors, out_24h: $ev.out,
        bottleneck: ($rows | map(select((.ratio // 0) > 1)) | max_by(.ratio) | if . then {step, age_p90_min, bound, ratio} else null end),
        headline: ($worst | if . == null then null else
