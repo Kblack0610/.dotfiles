@@ -276,7 +276,7 @@ so_transcript_metrics() {
 # so_wrapper_adjust - stdin: so_transcript_metrics' object with its `wrap` (script paths of the commands that
 # named no gate or test line, counted per command). stdout: the object without it, a command whose script's
 # text runs a test counted in test_runs, a gate in ci_polls: the strongest class of its scripts wins, as in
-# time_use.rs `wrapper_wait`. A script gone from disk or over SO_WRAPPER_MAX_BYTES is a plain job, and the
+# time_use.rs `wrapper_wait`. A script gone from disk, over SO_WRAPPER_MAX_BYTES or not UTF-8 is a plain job, and the
 # class is the file's text now.
 SO_WRAPPER_MAX_BYTES=65536
 so_wrapper_adjust() {
@@ -285,7 +285,8 @@ so_wrapper_adjust() {
   m=$(cat) || return 1
   if [ "$SO_TIME_USE_LINES" != '[]' ]; then
     while IFS= read -r p; do
-      [ -n "$p" ] && [ -f "$p" ] && [ "$(stat -c %s "$p" 2>/dev/null || echo $((SO_WRAPPER_MAX_BYTES + 1)))" -le "$SO_WRAPPER_MAX_BYTES" ] && files+=("$p")
+      [ -n "$p" ] && [ -f "$p" ] && [ "$(wc -c < "$p")" -le "$SO_WRAPPER_MAX_BYTES" ] &&
+        iconv -f UTF-8 -t UTF-8 "$p" > /dev/null 2>&1 && files+=("$p")
     done < <(jq -r '[(.wrap // {}) | keys[] | fromjson[]] | unique[]' <<<"$m")
     if [ "${#files[@]}" -gt 0 ]; then
       classes=$(jq -nR "$SO_PR_JQ"'reduce inputs as $l ({}; .[input_filename] += $l + "\n") | map_values(time_use_class)' "${files[@]}") || classes='{}'

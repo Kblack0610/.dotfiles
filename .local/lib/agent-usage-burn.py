@@ -332,7 +332,7 @@ def time_use_class(command, patterns):
     return "jobs"
 
 
-_WRAPPER_TEXT = {}
+_WRAPPER_TEXT = {}  # (path, mtime_ns, size) -> class, so a rewritten script is read again
 _WRAPPER_RANK = {"gate": 3, "test": 2, "build": 1}
 
 
@@ -349,17 +349,21 @@ def wrapper_class(command, cwd, patterns):
         if "/" not in word and not word.endswith(".sh"):
             continue
         path = os.path.join(cwd, word)
-        if path not in _WRAPPER_TEXT:
-            try:
-                st = os.stat(path)
-                text = None
-                if os.path.isfile(path) and st.st_size <= SCRIPT_READ_LIMIT:
+        try:
+            st = os.stat(path)
+            stamp = (path, st.st_mtime_ns, st.st_size)
+        except OSError:
+            continue
+        if stamp not in _WRAPPER_TEXT:
+            text = None
+            if os.path.isfile(path) and st.st_size <= SCRIPT_READ_LIMIT:
+                try:
                     with open(path, encoding="utf-8") as fh:
                         text = fh.read()
-            except (OSError, ValueError):
-                text = None
-            _WRAPPER_TEXT[path] = time_use_class(text, patterns) if text is not None else "jobs"
-        kind = _WRAPPER_TEXT[path]
+                except (OSError, ValueError):
+                    pass
+            _WRAPPER_TEXT[stamp] = time_use_class(text, patterns) if text is not None else "jobs"
+        kind = _WRAPPER_TEXT[stamp]
         if _WRAPPER_RANK.get(kind, 0) > _WRAPPER_RANK.get(best, 0):
             best = kind
     return best
