@@ -2820,6 +2820,15 @@ last_mode() {
   tac "$t" | grep -m1 -o '"permissionMode":"[A-Za-z]*"' | cut -d'"' -f4
 }
 
+# last_branch <id> -> the git branch the conversation last ran on, from the transcript (a session can switch
+# branches mid-run). Only a top-level field counts: a message can quote the key.
+last_branch() {
+  local t
+  t=$(compgen -G "$HOME/.claude/projects/*/$1.jsonl" | awk 'NR==1')
+  [ -n "$t" ] || return 0
+  grep '"gitBranch":' "$t" | jq -rR 'fromjson? | objects | .gitBranch // empty | strings' 2>/dev/null | tail -1
+}
+
 # resume_mode <id> <item mode> -> the mode a resume reopens in: the transcript's last one, else plan
 # for a plan item (a resume must not skip its approval), else bypassPermissions.
 resume_mode() {
@@ -4841,7 +4850,7 @@ wound_down() { compgen -G "$HOME/.agent/spin-down/$1.[rf]*" >/dev/null || compge
 # meanwhile stays owed. Each reopened pane is tagged @fleet_restored with the record's time, when its
 # server was last seen alive, so fleet-sessions runs its close timer on from the quiet it had then.
 restore_world() {
-  local f=$1 dry=$2 srv sess win cwd id mode project item it prompt said failed=0 opened=0 owed=0 walked alive
+  local f=$1 dry=$2 srv sess win cwd id mode project item it prompt said out failed=0 opened=0 owed=0 walked alive
   walked=$(sha256sum < "$f")
   srv=$(jq -r .server "$f")
   alive=$(date -d "$(jq -r '.at // empty' "$f")" +%s 2>/dev/null) || alive=
@@ -4850,7 +4859,13 @@ restore_world() {
     if [ -z "$id" ]; then echo "$srv:$sess:$win: no conversation, not reopened ($cwd)"; continue; fi
     if wound_down "$id"; then echo "$srv:$sess:$win: wound down on purpose, skipped"; continue; fi
     if claude_pid_live "$id"; then echo "$srv:$sess:$win: already running, skipped"; continue; fi
-    if [ ! -d "$cwd" ]; then echo "$srv:$sess:$win: $cwd is gone, skipped (claude --resume $id)"; continue; fi
+    if [ ! -d "$cwd" ]; then
+      # A reaped worktree is put back first (wt revive), as agent-ask reopen does: claude --resume finds the
+      # conversation by the directory it ran in. A folder wt cannot put back stays listed, not reopened.
+      if [ "$dry" = 1 ]; then echo "$srv:$sess:$win: $cwd is gone, would be put back with wt revive before the resume"
+      elif out=$(wt revive "$cwd" --branch "$(last_branch "$id")" </dev/null 2>&1); then echo "$srv:$sess:$win: ${out##*$'\n'}"
+      else echo "$srv:$sess:$win: $cwd is gone and wt could not put it back (${out##*$'\n'}), skipped (claude --resume $id)"; continue; fi
+    fi
     item=$(agent-queue mine --sid "$id" --newest 2>/dev/null) || item=''
     it=''; [ -z "$item" ] || it=$(agent-queue show "$item" --json 2>/dev/null) || it=''
     mode=$(resume_mode "$id" "$(jq -r '.mode // empty' <<<"$it" 2>/dev/null)")
