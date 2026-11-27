@@ -1660,6 +1660,48 @@ tok_fixture() {
   assert_success
   assert_line --regexp '^check\(watch\): spend tripped since '
 }
+@test "triage: a quarantine covers only the reds it was taken on; a new one files a row naming it and the owner (ar-3916)" {
+  triage_setup
+  watch spend TRIP -25200 urgent
+  q=$TRIAGE_WATCH_STATE/spend
+  printf '%s ar-1 %s waits on the provider\n' $(( $(date +%s) + 3600 )) "$T0" > "$q.quarantine"
+  printf 'TRIP exit 1\nRED lazer over budget at 2026-11-20T10:00 (91%%)\n' > "$q.quarantine.covers"
+  # the same red at a new time and share: covered, no row
+  printf 'TRIP exit 1\nRED lazer over budget at 2026-11-21T08:13 (97%%)\n' > "$q.out"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'check(watch): spend'
+  # a red the quarantine was not taken on: one row, its why the new red and the owner
+  printf 'TRIP exit 1\nRED main over budget at 2026-11-21T08:13 (99%%)\nRED lazer over budget at 2026-11-21T08:13 (97%%)\n' > "$q.out"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --regexp '^check\(watch\): spend tripped since .*why: RED main over budget at N-N-NTN:N \(N%\) \(not covered by the quarantine ar-1 holds\)'
+  [ "$(grep -c '^check(watch): spend' <<<"$output")" -eq 1 ]
+  # taken on both, the pair reordered with new times and shares: covered, no row
+  printf 'RED main over budget at 2026-11-20T10:00 (90%%)\nRED lazer over budget at 2026-11-20T10:00 (91%%)\n' > "$q.quarantine.covers"
+  printf 'RED lazer over budget at 2026-11-22T01:02 (98%%)\nRED main over budget at 2026-11-22T01:02 (99%%)\n' > "$q.out"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'check(watch): spend'
+  # the same shape on another unit is another red: covered only by its own name
+  printf 'RED unit a.service failed\n' > "$q.quarantine.covers"
+  printf 'RED unit b.service failed\n' > "$q.out"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --regexp '^check\(watch\): spend tripped since .*why: RED unit b.service failed \(not covered by the quarantine ar-1 holds\)'
+  # covers that name no red (taken on no evidence) cover whatever is red, as a quarantine from
+  # before covers files does
+  : > "$q.quarantine.covers"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'check(watch): spend'
+  printf 'RED disk full on /dev/sda1\n' > "$q.out"
+  rm "$q.quarantine.covers"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'check(watch): spend'
+}
+
 @test "triage: a paused watch files no row, whatever state it paused in" {
   triage_setup
   watch preview TRIP -25200 high
