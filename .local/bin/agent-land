@@ -1192,8 +1192,9 @@ HOLD_BIN="${AGENT_LAND_HOLD:-$(dirname "$(readlink -f "$0")")/agent-hold}"
 # gate: al-hold-gate
 hold_gate() {
   local name scopes files names out
-  if [[ "$pr_ref" == */*#* ]]; then name=${pr_ref%#*}; else name=$(git remote get-url "$remote" 2>/dev/null) || name=''; name=${name%.git}; fi
-  name=${name%/}; name=${name##*/}; name=${name##*:}
+  name=${pr_ref%#*}
+  [[ "$pr_ref" == */*#* ]] || name=$(origin_repo .) || name=''
+  name=${name##*/}
   scopes=$("$HOLD_BIN" scopes 2>&1) || fail hold "agent-hold scopes: $(lastline "$scopes"), so whether a hold locks #$pr's files is unknown; re-run"
   awk -F'\t' -v r="${name,,}" 'tolower($2) == r { f = 1 } END { exit !f }' <<<"$scopes" || return 0
   files=$(pr_files 2>&1) || fail hold "could not read #$pr's changed files ($(lastline "$files")), and a hold scopes $name; re-run"
