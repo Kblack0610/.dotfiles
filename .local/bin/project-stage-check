@@ -690,6 +690,26 @@ doc_grep() {
   fi
 }
 
+# The repo helpers, the same tree as the doc helpers but from the repo root, whatever ROOT is, for a
+# predicate that reads a file outside the project's folder: repo_files (every tracked file),
+# repo_text <path> (prints one) and repo_grep <ERE> <path>... (any match under those pathspecs).
+repo_files() {
+  [ -n "$REPO" ] || return 1
+  if [ -n "$DOC_REF" ]; then git -C "$REPO" ls-tree -r --name-only --full-tree "$DOC_REF"
+  else git -C "$REPO" ls-files --cached --others --exclude-standard 2>/dev/null || (cd "$REPO" && find . -type f -not -path './.git/*' -printf '%P\n'); fi
+}
+repo_text() {
+  [ -n "$REPO" ] || return 1
+  if [ -n "$DOC_REF" ]; then git -C "$REPO" show "$DOC_REF:$1" 2>/dev/null; else cat -- "$REPO/$1" 2>/dev/null; fi
+}
+repo_grep() {
+  local pat="$1"
+  shift
+  [ -n "$REPO" ] || return 1
+  if [ -n "$DOC_REF" ]; then git -C "$REPO" grep -qiE -e "$pat" "$DOC_REF" -- "$@" 2>/dev/null
+  else (cd "$REPO" && grep -rqiE -e "$pat" -- "$@" 2>/dev/null); fi
+}
+
 # judge <check>: PASS, FAIL, HUMAN or TODO for one Check cell.
 judge() {
   local pred
