@@ -241,6 +241,27 @@ PY
   assert_output 'false'
 }
 
+@test "a non-Claude session books what it spent in the window, its newest total less its newest total before it" {
+  local old=$((NOW - 3 * 86400)) mid=$((NOW - 2 * 86400))
+  { printf '{"session_id":"multi","harness":"opencode","provider":"lazer","updated_epoch":%s,"cost_usd":1.0,"tokens_total":10}\n' "$old"
+    printf '{"session_id":"multi","harness":"opencode","provider":"lazer","updated_epoch":%s,"cost_usd":1.5,"tokens_total":20}\n' "$mid"
+    printf '{"session_id":"multi","harness":"opencode","provider":"lazer","updated_epoch":%s,"cost_usd":1.75,"tokens_total":30,"cost_by_model":{"m1":1.25,"m2":0.5}}\n' "$NOW"
+    printf '{"session_id":"idle","harness":"opencode","provider":"lazer","updated_epoch":%s,"cost_usd":2.0,"tokens_total":10}\n' "$old"
+    printf '{"session_id":"idle","harness":"opencode","provider":"lazer","updated_epoch":%s,"cost_usd":2.0,"tokens_total":10}\n' "$NOW"
+    printf '{"session_id":"fresh","harness":"opencode","provider":"lazer","updated_epoch":%s,"cost_usd":0.5,"tokens_total":10}\n' "$NOW"
+    printf '{"session_id":"flip","harness":"opencode","provider":"lazer","updated_epoch":%s,"cost_usd":0,"tokens_total":40}\n' "$old"
+    printf '{"session_id":"flip","harness":"opencode","provider":"lazer","updated_epoch":%s,"cost_usd":0.25,"tokens_total":50}\n' "$NOW"
+    printf '{"session_id":"still","harness":"opencode","provider":"lazer","updated_epoch":%s,"cost_usd":0,"tokens_total":40}\n' "$old"
+    printf '{"session_id":"still","harness":"opencode","provider":"lazer","updated_epoch":%s,"cost_usd":0,"tokens_total":60}\n' "$NOW"
+  } > "$OUTCOMES_ROOT/p/2026-11.jsonl"
+  run cost '[([.by_session[] | select(.harness != "claude") | [.sid, .usd, .models]] | sort_by(.[0])), [.unpriced_sessions[].sid], .other_harness.opencode.usd]'
+  assert_success
+  assert_output '[[["flip",0.25,{}],["fresh",0.5,{}],["multi",0.25,{"m1":0.179,"m2":0.071}]],["still"],1]'
+  # negative control: the days a session was seen on sum to its final total, not past it
+  run cost '[.by_session[] | select(.sid == "multi") | .usd] | add + 1.5'
+  assert_output '1.75'
+}
+
 @test "burn prices every session: an unbilled one counts in the per-PR cost and the zero-merge share, the billed-only registry does neither" {
   turn billed claude-opus-5-5 2500000 0 0 0   # priced $10, billed $10: no helper line; the stub also bills a ghost $2
   turn unbilled claude-opus-5-5 1000000 1000000 0 0
