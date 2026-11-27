@@ -5160,7 +5160,7 @@ board_upsert() {
   upsert_lock_take || { say "$UPSERT_LOCK_WHY"; report_outcome FAILED "$UPSERT_LOCK_WHY"; return 2; }
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { upsert_lock_drop; report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
   closed=$(upsert_closed)
-  human=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" list 2>/dev/null) || { human=; say "$KPI_BOARD human sheet unreadable: its moved rows are not skipped this pass"; }
+  human=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" list 2>/dev/null) || { human=; say "$KPI_BOARD human sheet unreadable: a row started there is not skipped this pass"; }
   while IFS=$'\t' read -r p text pri; do
     [[ "$text" == *'#size/'* ]] || text+=" #size/s"
     # each open row on this key, board order: "id TAB doing TAB lowercased text", id empty when it
@@ -5187,10 +5187,10 @@ board_upsert() {
         say "could not drop $id, a twin of $hid for $p"; failed+=("$p")
       fi
     done
-    # A key whose row dispatch moved to the human sheet (skip_exits: a person's rule, its "(agent row" marker) has its owner there: filing
-    # or reopening it here would move it back and forth every pass (ar-6265).
-    if [ -z "$have" ] && awk -F'\t' -v p="${p,,}" '$4 ~ /^[ \t]*- \[[ \/]\]/ && $4 ~ /\(agent row / && index($3, p) == 1 { f = 1 } END { exit !f }' <<<"$human"; then
-      say "$p: open on the human sheet, left there"; continue
+    # A key a person has started on the human sheet is theirs: an agent row filed here would make triage_twins
+    # drop the row they are working (an open sheet copy with no agent row is a stray it drops, ar-6265).
+    if [ -z "$have" ] && awk -F'\t' -v p="${p,,}" '$4 ~ /^[ \t]*- \[\/\]/ && index($3, p) == 1 { f = 1 } END { exit !f }' <<<"$human"; then
+      say "$p: started on the human sheet, left there"; continue
     fi
     id=; [ -n "$have" ] || id=$(awk -F'\t' -v p="${p,,}" 'index($2, p) == 1 { print $1; exit }' <<<"$closed")
     if [ -n "$id" ]; then
@@ -5644,13 +5644,13 @@ triage_filed() {
 # row_open <list> <key>: the TSV list (title third) holds an open row whose lowercase title starts with the key.
 row_open() { awk -F'\t' -v p="${2,,}" 'index(tolower($3), p) == 1 { f = 1 } END { exit !f }' <<<"$1"; }
 
-# triage_twins <rows> <filed keys>: a row lives in exactly one lane, the one its route names, so
-# once the new lane holds it the old lane's twin on the KPI_BOARD sheet is dropped, with the reason in
-# its marker. A human route's agent-board twin goes first; then each filed key's sheet twin. Read
-# from every pass, so a twin left by an earlier route or a drop that failed is retried. A sheet row is a
-# twin only while the agent board holds its key open: a key board_upsert left on the sheet (dispatch moved
-# it there for a person) has no other lane, and dropping it swapped the row between lanes each pass (ar-6265).
-# Closing a twin is the only write.
+# triage_twins <rows> <filed keys>: a row lives in exactly one lane, the one its route names (triage is the
+# one writer of a keyed row's lane: fleet-dispatch gives such a row no exit, bench_keyed), so once the new
+# lane holds it the old lane's twin on the KPI_BOARD sheet is dropped, with the reason in its marker. A
+# human route's agent-board twin goes first; then each filed key's sheet twin. Read from every pass, so a
+# twin left by an earlier route or a drop that failed is retried. A sheet row is a twin only while the
+# agent board holds its key open: a key whose agent add the daily cap held keeps its sheet row until the
+# add lands (ar-6265). Closing a twin is the only write.
 triage_twins() {
   local key route sheet have agent kpi
   agent=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list 2>/dev/null </dev/null) || return 0
