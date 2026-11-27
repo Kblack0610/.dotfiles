@@ -36,6 +36,18 @@ watch_severity() {
   case "$s" in low|normal|high|urgent) printf '%s' "$s" ;; *) printf normal ;; esac
 }
 
+# watch_trip_level <manifest> <state dir> -> low|normal|high|urgent: the level of the trip now on, from
+# the `<name>.level` file watch-companion-loop writes off a probe's `page:` line (alertmanager-fleet:
+# the highest level its firing alerts map to), else watch_severity. Same rule as `watch-companion-loop
+# tripped`, so a reader's priority for a warning-only trip is not the manifest's fixed fallback.
+watch_trip_level() {
+  local n l
+  n="$(basename "$1" .paused)"; n="${n%.yaml}"
+  l="$(cat "$2/$n.level" 2>/dev/null)"
+  [ "$(cat "$2/$n.state" 2>/dev/null)" = TRIP ] || l=
+  case "$l" in low|normal|high|urgent) printf '%s' "$l" ;; *) watch_severity "$1" ;; esac
+}
+
 # watch_is_stale <manifest> <lastrun-epoch> [now] -> exit 0 when stale. A missing or
 # non-numeric lastrun is NOT stale: the watch was never polled, and its state says so.
 watch_is_stale() {
