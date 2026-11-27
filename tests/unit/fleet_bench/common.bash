@@ -17,7 +17,7 @@ setup() {
   export BENCH_PROM_TSV=/dev/null BENCH_MERGES_TSV=/dev/null   # no test here reaches Prometheus or a remote
   export BENCH_QUEUE_CMD=false   # nor the real dispatch queue
   export BENCH_TRAINEE_CMD=false   # nor the real trainee pool and floor
-  export BENCH_SOURCES_CMD=false BENCH_HARNESSES="$SANDBOX/no-harnesses.json" BENCH_ROOM_CMD=false BENCH_CANARY_LANES="$SANDBOX/no-canary-lanes"   # nor the real sources, harnesses or lanes
+  export BENCH_SOURCES_CMD=false BENCH_HOLDS_CMD="echo {}" BENCH_HARNESSES="$SANDBOX/no-harnesses.json" BENCH_ROOM_CMD=false BENCH_CANARY_LANES="$SANDBOX/no-canary-lanes"   # nor the real sources, harnesses or lanes
   export BENCH_SKILL_CMD=true   # nor the real runner confs: no dangling SKILL unless a test serves one
   export BENCH_SYSTEMS_CMD=false   # nor the real skill tree: systems_no_skill reads ? unless a test serves one
   export BENCH_BRANCHES_CMD=true   # nor the real clones' branches: none unless a test serves them
