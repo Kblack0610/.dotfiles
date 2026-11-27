@@ -734,17 +734,10 @@ cmd_post() {
   # a wait for an event.
   if [ -z "${AGENT_ASK_NO_JUDGE:-}" ]; then
     judge_guarded "$file" "$(timed_out_reason)"
-    # An older ask on the same question settles it before any answer of the judge's own; a joined
-    # ask prints the one it joined, as a shared blocker does.
-    local settled
-    settled="$(settle_by_verdict "$file")" || settled=""
-    if [[ "$settled" == joined\ * ]]; then
-      joined_reply "$(find_ask "${settled#joined }")" "This question" "the same question" "$wait"
-      return
-    fi
-    local routed=0
-    route_knowledge "$file" "$kind" "$blocker$audit_of$resume" || routed=$?
-    [ "$routed" -eq 1 ] || return "$routed"
+    # A same-question ask or a knowledge route settles it before any answer of the judge's own.
+    local rc=0
+    post_settle "$file" "$kind" "$blocker$audit_of$resume" "$wait" || rc=$?
+    [ "$rc" -eq 10 ] || return "$rc"
     if answer_live "$file"; then
       if [ "$wait" -eq 1 ]; then field "$file" answer; else printf '%s\n' "$id"; fi
       return 0
@@ -3030,6 +3023,22 @@ held_credential() {
     return 0
   done < <(timeout 5 $AGENT_ASK_RBW_CMD list 2>/dev/null)
   return 1
+}
+
+# post_settle <file> <kind> <extra> <wait>: what settles a judged ask before any answer of the
+# judge's own. An older ask on the same question settles it, and a joined ask prints the one it
+# joined, as a shared blocker does; then a knowledge route (route_knowledge). Returns 10 when
+# neither settled it and post goes on, else the status post returns.
+post_settle() {
+  local f="$1" settled rc=0
+  settled="$(settle_by_verdict "$f")" || settled=""
+  if [[ "$settled" == joined\ * ]]; then
+    joined_reply "$(find_ask "${settled#joined }")" "This question" "the same question" "$4"
+    return
+  fi
+  route_knowledge "$f" "$2" "$3" || rc=$?
+  [ "$rc" -eq 1 ] && return 10
+  return "$rc"
 }
 
 # route_knowledge <file> <kind> <extra>: route a judged knowledge ask away from the human. Returns
