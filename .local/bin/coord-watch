@@ -7,11 +7,13 @@
 #   coord-watch filter <plan.md> [--from w]... [--since ts] [--cursor file] [--batch s]   the filter over stdin
 #   coord-watch ids <plan.md>                    the tracked tokens, one per line
 #
-# Tracked: the first word of each open `- [ ]` line under the plan's `## Follow-through`. An event
-# matches on its id, item or a pr word, or on text carrying `#from/<writer>` (triage acting on the
-# session's outbox follow-ups); a child row's done, dropped or rehomed under a tracked item drops. Writers: $AGENT_QUEUE_ITEM, $CLAUDE_CODE_SESSION_ID's first 8
-# characters (notes-cli ingest.rs writer()), each --from. The session's own writes and bookkeeping
-# actions drop; every other action passes, so an unlisted failure still reaches the coordinator.
+# Tracked: the first word of each open `- [ ]` line under the plan's `## Follow-through`, plus the
+# board row of each tracked queue item. An event matches on its id, item or a pr word, or on text
+# carrying `#from/<writer>` (triage acting on the session's outbox follow-ups). Writers:
+# $AGENT_QUEUE_ITEM, $CLAUDE_CODE_SESSION_ID's first 8 characters (notes-cli ingest.rs writer()),
+# each --from. The session's own writes and bookkeeping actions drop, and so does a child row's
+# progress under a tracked item (CHILD_PROGRESS); every other action passes, so an unlisted failure
+# still reaches the coordinator.
 # A cursor (the ts of the last event read) makes each re-arm replay what landed while unarmed.
 # Follow mode also writes session-<CLAUDE_CODE_SESSION_ID>.pid (its pid and the plan) while it runs.
 set -euo pipefail
@@ -59,7 +61,11 @@ filter() {
       *) usage ;;
     esac
   done
-  tracked="$(ids "$plan" | jq -R . | jq -sc .)"
+  # A tracked queue item's own board row (agent-queue's `row:`) is tracked with it: its events are
+  # the item's own (merged apo-221 item=<slug>-p1), never a child row's progress.
+  tracked="$(ids "$plan" | while read -r w; do
+      echo "$w"; { agent-queue show "$w" 2>/dev/null || true; } | sed -n '/^row:/{s/.*[: ]//;p}'
+    done | jq -R 'select(. != "")' | jq -sc 'unique')"
   # One output line per event read, unit-separated (a tab is IFS whitespace, so read would merge an
   # empty ts): R ts for a skip, E ts text for a match, so the
   # cursor advances past every event read, matched or not. ts compares as text: the record writes
