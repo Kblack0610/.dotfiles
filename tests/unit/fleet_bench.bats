@@ -2323,6 +2323,37 @@ cause_of() { printf '%s' 'lock .* held by pid' | sha256sum | cut -c1-8; }
   [ ! -s "$PLOG" ]
 }
 
+# 2026-11-22 (ar-4654): ar-2363's item closed ok with no PR and left its row started, and triage
+# promoted only todo rows, so home-k3s-trivy-criticals had no owner until the orphan pass's 72h.
+@test "triage: a red's row left started by a closed fix no live item holds is queued again with --restart; a refusal is logged" {
+  log_triage_setup
+  lock_route
+  run "$SUBJECT" triage
+  assert_success
+  local id; id=$(grep -o 'fix(logs).*<!-- id:ar-[0-9]*' "$BOARD" | grep -o 'ar-[0-9]*$')
+  [ -n "$id" ] || fail "the filed row has no id"
+  sed -i 's/- \[ \] fix(logs)/- [\/] fix(logs)/' "$BOARD"; : > "$PLOG"
+  # its own item closed ok with no PR: a try that did not hold, so the row is queued again as a retry
+  jq -cn --arg t "red cause:$(cause_of)" --arg id "$id" '{slug: $id, tags: $t, state: "done", status: "ok", queued: "2020-01-01T00:00:00Z", row: ("agent-runtime:" + $id)}' > "$ITEMS"
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '1 queued as red fixes'
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --dispatch --restart --project agent-runtime --tags red cause:$(cause_of) retry:$id --raw - \[/\] fix\(logs\): alpha error .*id:$id -->$"
+  # negative control: a live item of the row holds it, so nothing is queued
+  : > "$PLOG"
+  jq -cn --arg id "$id" '{slug: "ar-78", tags: "", state: "running", queued: "2020-01-01T00:00:00Z", row: ("agent-runtime:" + $id)}' >> "$ITEMS"
+  run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  # the promote's refusal is said, never dropped
+  sed -i 2d "$ITEMS"
+  printf '#!/usr/bin/env bash\necho "fleet-dispatch: skip agent-runtime: row gone" >&2; exit 1\n' > "$SANDBOX/bin/promote-stub"
+  run "$SUBJECT" triage
+  assert_success
+  assert_line --regexp '^fleet-bench: triage: could not queue fix\(logs\): alpha error .* \(- \[/\]\): fleet-dispatch: skip agent-runtime: row gone$'
+}
+
 @test "triage: a high or urgent watch is a row after one pass; a low one after 30 minutes, the hour it trips" {
   triage_setup
   watch hot TRIP -1000 high; watch hotter TRIP -1000 urgent; watch young TRIP -600 high; watch slow TRIP -1000 low; watch none TRIP -1000 ''
@@ -2769,6 +2800,31 @@ fix_item() {
   assert_output --partial '1 queued as red fixes'
   # the exit 1 test above is the control: any other exit is still a failed add
   refute_output --partial 'add failed for check(watch): links'
+  assert_output --partial "1 held by the board's daily cap"
+  run outcome
+  refute_output --partial FAILED
+}
+
+# ar-4296: an add runs only for a key with no open row and passes that key, so a twin refusal (exit 3)
+# leaves this red with no row and no item: a failed write, never counted filed.
+@test "triage: a check row the board takes for another row's near twin is a failed write, not filed" {
+  log_triage_setup
+  lock_route
+  watch links TRIP -25200 high
+  route 'watch.: (links) tripped' agent fix-red 'fix the links'
+  printf '#!/usr/bin/env bash\n[ "$4" = add ] && [[ "$5" == *"check(watch): links"* ]] && { echo "near-duplicate of an open row" >&2; exit 3; }\nexec notes "$@"\n' > "$SANDBOX/bin/notes-twin"
+  chmod +x "$SANDBOX/bin/notes-twin"
+  BENCH_NOTES_CMD=notes-twin run "$SUBJECT" triage
+  assert_output --partial "check(watch): links tripped since: the board took it for a twin of another open row, so it has no row"
+  assert_output --partial 'board write failed for check(watch): links tripped since'
+  refute_output --partial "held by the board's daily cap"
+  run outcome
+  assert_output --partial FAILED
+  # negative control: the same red with no twin files its row and fails nothing
+  BENCH_NOTES_CMD=notes run "$SUBJECT" triage
+  refute_output --partial 'board write failed'
+  run grep -c -- '--key check(watch): links tripped since$' "$NLOG"
+  assert_output 1
   run outcome
   refute_output --partial FAILED
 }
