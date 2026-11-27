@@ -255,6 +255,8 @@ pub fn infra(
     machines.extend(table("machines"));
     let mut ci = b.ci_head(failed, w);
     ci.push(blank());
+    ci.extend(crate::infratables::ci_machines(infra, p, now, w));
+    ci.push(blank());
     ci.extend(table("runners"));
     let sections = vec![
         ("machines", machines),
@@ -269,13 +271,21 @@ pub fn infra(
         .collect()
 }
 
-/// The CI head and the runners and queued tables, plain: what `hub ci` prints.
-pub fn ci_runners(infra: &Infra, p: Palette, w: usize) -> Vec<Line<'static>> {
-    let t = InfraTables::default();
+/// The CI head, one row per CI machine, and the waiting queue by workflow, plain: what `hub ci`
+/// prints. `pods` adds the per-pod runner rows after them (`hub ci --pods`).
+pub fn ci_runners(infra: &Infra, p: Palette, w: usize, pods: bool) -> Vec<Line<'static>> {
+    let t = InfraTables {
+        pods,
+        ..Default::default()
+    };
     let mut out = Board::new(infra, p).ci_head(None, w);
-    for name in ["runners", "queued"] {
+    out.push(Line::raw(""));
+    out.extend(crate::infratables::ci_machines(infra, p, 0, w));
+    out.push(Line::raw(""));
+    out.extend(t.draw(infra, "queued", "", p, 0, w));
+    if pods {
         out.push(Line::raw(""));
-        out.extend(t.draw(infra, name, "", p, 0, w));
+        out.extend(t.draw(infra, "runners", "", p, 0, w));
     }
     out
 }
@@ -590,14 +600,17 @@ pub(crate) mod tests {
         j
     }
 
-    /// The whole Infra page as plain text.
+    /// The whole Infra page as plain text, every pod row drawn.
     fn text(i: &Infra, w: usize) -> String {
         infra(
             &built(i),
             Palette { no_color: true },
             0,
             w,
-            &InfraTables::default(),
+            &InfraTables {
+                pods: true,
+                ..Default::default()
+            },
             "",
             FAILED,
         )
@@ -623,7 +636,11 @@ pub(crate) mod tests {
 
     /// The whole Infra page's styled lines at 160 columns.
     fn all_lines(i: &Infra, p: Palette) -> Vec<Line<'static>> {
-        infra(&built(i), p, 0, 160, &InfraTables::default(), "", FAILED)
+        let t = InfraTables {
+            pods: true,
+            ..Default::default()
+        };
+        infra(&built(i), p, 0, 160, &t, "", FAILED)
             .into_iter()
             .flat_map(|s| s.1)
             .collect()
@@ -636,6 +653,26 @@ pub(crate) mod tests {
             0,
             w,
             &InfraTables::default(),
+            "",
+            FAILED,
+        )
+        .into_iter()
+        .find(|s| s.0 == name)
+        .map(|(_, ls)| ls.iter().map(plain).collect::<Vec<_>>().join("\n"))
+        .unwrap_or_default()
+    }
+
+    /// One Infra section with the per-pod rows expanded (`e`).
+    fn tab_pods(i: &Infra, name: &str, w: usize) -> String {
+        infra(
+            &built(i),
+            Palette { no_color: true },
+            0,
+            w,
+            &InfraTables {
+                pods: true,
+                ..Default::default()
+            },
             "",
             FAILED,
         )
@@ -666,13 +703,25 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_ci_runners_section_lists_each_running_job_with_its_time_and_the_queue_beside_it() {
+    fn the_ci_runners_section_leads_with_one_row_per_machine_and_folds_the_pod_rows() {
         let i = fixture();
         let ci = tab(&i, "ci", 160);
         assert!(
-            ci.starts_with("CI RUNNERS  3 running, 4 queued (oldest 2h28m), 4/5 runners up, 2 done 1h, 9 done 5h, 112 done 24h, 44% passed  failed 24h 2 (Runs, red)\n\nRUNNERS  all 3  busy 3  late 1\nHOST"),
+            ci.starts_with("CI RUNNERS  3 running, 4 queued (oldest 2h28m), 4/5 runners up, 2 done 1h, 9 done 5h, 112 done 24h, 44% passed  failed 24h 2 (Runs, red)\n\nCI MACHINES  all 1  busy 1\nMACHINE"),
             "{ci}"
         );
+        // One row for the machine, its jobs by kind; the pod rows stay folded behind `e`.
+        assert!(
+            has(
+                &ci,
+                "razer-laptop up - 91% 3 [unity] unity-core-playground x2, [unity] platform"
+            ),
+            "{ci}"
+        );
+        assert_line(&ci, "RUNNERS 3 jobs running, one per pod: e shows each");
+        assert!(!has(&ci, "PlayMode 4"), "{ci}");
+        let ci = tab_pods(&i, "ci", 160);
+        assert!(ci.contains("RUNNERS  all 3  busy 3  late 1\nHOST"), "{ci}");
         // A late job carries the bang; each slot names its pool, job and ref.
         assert_line(
             &ci,
@@ -884,7 +933,7 @@ pub(crate) mod tests {
         assert!(
             has(
                 &out,
-                "razer-laptop up [###.] 2.5/4 1.0G/16G 91% 31% 9.8/16 60% 84C - [arc-org-light] x2, [unity] unity-core-playground x2, [~ - - - -"
+                "razer-laptop up [###.] 2.5/4 1.0G/16G 91% 31% 9.8/16 60% 84C - [starting] x2, [unity] unity-core-playground x2, [unity~ - - - -"
             ),
             "{out}"
         );
@@ -1130,18 +1179,18 @@ pub(crate) mod tests {
         let row = |w| tab(&i, "machines", w);
         assert!(has(
             &row(200),
-            "razer-laptop up [###.] 2.5/4 1.0G/16G 91% 31% 9.8/16 60% 84C - [arc-org-light] x2, [unity] unity-core-playground x2, [~"
+            "razer-laptop up [###.] 2.5/4 1.0G/16G 91% 31% 9.8/16 60% 84C - [starting] x2, [unity] unity-core-playground x2, [unity~"
         ));
         // Narrower, what it runs takes the room left; below that it drops the booking for it.
         assert_line(
             &row(60),
-            "razer-laptop [###.] 2.5/4 1.0G/16G [arc-org-light] x2, [u~",
+            "razer-laptop [###.] 2.5/4 1.0G/16G [starting] x2, [unity]~",
         );
         assert_line(
             &row(50),
-            "razer-laptop [arc-org-light] x2, [unity] unity-c~",
+            "razer-laptop [starting] x2, [unity] unity-core-p~",
         );
-        assert_line(&row(40), "razer-laptop [arc-org-light] x2, [unit~");
+        assert_line(&row(40), "razer-laptop [starting] x2, [unity] un~");
     }
 
     #[test]

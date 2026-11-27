@@ -26,6 +26,8 @@ pub const TABLES: [&str; 5] = ["machines", "pools", "runners", "queued", "local"
 pub struct InfraTables {
     pub views: [DataTable; 5],
     pub at: usize,
+    /// The Runners tab shows each job pod's row (`e`); folded, the machine rows say what runs.
+    pub pods: bool,
     /// A key moved the selection, so the next draw scrolls it into view.
     pub follow: bool,
 }
@@ -79,6 +81,13 @@ impl InfraTables {
         let Some(i) = self.focus(inner) else {
             return Took::No;
         };
+        if inner == "runners"
+            && code == KeyCode::Char('e')
+            && self.views.iter().all(|v| v.typing.is_none())
+        {
+            self.pods = !self.pods;
+            return Took::View;
+        }
         self.at = i;
         let t = &mut self.views[i];
         if code == KeyCode::Esc && t.typing.is_none() {
@@ -208,11 +217,79 @@ impl InfraTables {
                 out
             }
             1 => pools(&d, &infra.pools),
-            2 => runners(&d, &infra.ci.rows),
+            2 if self.pods => {
+                let mut out = runners(&d, &infra.ci.rows);
+                out.push(Line::styled("e folds the pod rows", p.dim()));
+                out
+            }
+            2 => folded(&d, &infra.ci.rows),
             3 => queued(&d, &infra.ci.queue),
             _ => local(&d, &infra.ci.local, now),
         }
     }
+}
+
+/// One row per CI machine and nothing under it: what its job pods book against allocatable, its
+/// real CPU, and the jobs running there by kind. The per-pod rows are `runners`, folded until `e`.
+/// Drawn with no view and no keys: the Machines tab's table is the one to sort and open.
+pub fn ci_machines(infra: &Infra, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+    let t = DataTable::default();
+    let d = Draw {
+        t: &t,
+        keys: false,
+        picks: false,
+        more: false,
+        p,
+        w,
+    };
+    let mut rows: Vec<Machine> = infra
+        .machine_rows()
+        .into_iter()
+        .filter(Machine::carries_ci)
+        .collect();
+    rows.sort_by(|a, b| {
+        let share = |m: &Machine| m.booked.map_or(0.0, |b| b.share());
+        share(b)
+            .total_cmp(&share(a))
+            .then_with(|| a.host.cmp(&b.host))
+    });
+    ci_machine_rows(&d, &rows, now)
+}
+
+const CI_MACHINE_HEAD: [&str; 6] = ["MACHINE", "STATE", "BOOKED", "CPU", "JOBS", "RUNNING"];
+
+fn ci_machine_rows(d: &Draw, rows: &[Machine], _now: i64) -> Vec<Line<'static>> {
+    let p = d.p;
+    d.table(
+        "CI MACHINES".into(),
+        rows,
+        "no CI machine reports",
+        None,
+        |m| {
+            let state = match m.state.as_str() {
+                "up" => Style::default(),
+                hub_core::reading::NO_DATA => p.dim(),
+                _ => p.warn(),
+            };
+            vec![
+                m.host.clone().into(),
+                cell(&m.state, state),
+                booked(m, p),
+                pct(m.cpu).into(),
+                m.busy.to_string().into(),
+                dash(m.running.join(", ")).into(),
+            ]
+        },
+        Table {
+            header: CI_MACHINE_HEAD.to_vec(),
+            keep: vec![0, 2, 5, 4, 3, 1],
+            right: vec![3, 4],
+            cap: vec![(5, 80)],
+            flex: Some(5),
+            flexmin: 14,
+            ..Default::default()
+        },
+    )
 }
 
 /// A pool page's machines, a blank line, and its waiting jobs (`pooltab`), drawn with the tab's
@@ -461,6 +538,23 @@ fn pools(d: &Draw, rows: &[Pool]) -> Vec<Line<'static>> {
     )
 }
 
+/// The runners table folded: how many job rows it holds and what shows them.
+fn folded(d: &Draw, rows: &[Slot]) -> Vec<Line<'static>> {
+    let text = if rows.is_empty() {
+        "no runner is running a job".to_string()
+    } else {
+        format!("{} jobs running, one per pod: e shows each", rows.len())
+    };
+    vec![clip_line(
+        Line::from(vec![
+            Span::styled("RUNNERS", d.p.head()),
+            Span::raw("  "),
+            Span::styled(text, d.p.dim()),
+        ]),
+        d.w,
+    )]
+}
+
 const SLOT_HEAD: [&str; 8] = [
     "HOST", "SLOT", "STATE", "POOL", "RAN", "USUAL", "JOB", "REF",
 ];
@@ -641,13 +735,37 @@ mod tests {
             "{p}"
         );
         assert!(p.contains("WAITING") && p.contains("unity"), "{p}");
-        let r = text(&t, &i, "runners", "runners", 200);
+        // The runners tab folds its pod rows into one line until `e` opens them.
+        let folded = text(&t, &i, "runners", "runners", 200);
+        assert!(
+            folded.starts_with("RUNNERS  3 jobs running, one per pod: e shows each"),
+            "{folded}"
+        );
+        let open = InfraTables {
+            pods: true,
+            ..Default::default()
+        };
+        let r = text(&open, &i, "runners", "runners", 200);
         assert!(r.starts_with("RUNNERS  all ") && r.contains("[/ f"), "{r}");
         let f = text(&t, &i, "local", "runners", 200);
         assert!(
             f.starts_with("LOCAL UNITY  all ") && f.contains("PLATFORM") && f.contains("android"),
             "{f}"
         );
+    }
+
+    #[test]
+    fn e_opens_and_folds_the_pod_rows_on_the_runners_tab_only() {
+        let (mut t, i) = (InfraTables::default(), infra());
+        assert!(!t.pods);
+        assert_eq!(t.key(Some(&i), "machines", KeyCode::Char('e')), Took::No);
+        assert!(!t.pods, "the machines tab has no pod rows to open");
+        assert_eq!(t.key(Some(&i), "runners", KeyCode::Char('e')), Took::View);
+        assert!(t.pods);
+        let r = text(&t, &i, "runners", "runners", 200);
+        assert!(r.starts_with("RUNNERS  all "), "{r}");
+        assert_eq!(t.key(Some(&i), "runners", KeyCode::Char('e')), Took::View);
+        assert!(!t.pods);
     }
 
     #[test]

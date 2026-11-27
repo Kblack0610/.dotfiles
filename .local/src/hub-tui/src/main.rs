@@ -59,7 +59,7 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub ui-text --json
        hub bar --json
        hub alerts --reasons --json
-       hub ci [--json | --pool-match SECS]
+       hub ci [--pods | --json | --pool-match SECS]
        hub ci pass [--since WHEN] [--until WHEN] [--branch B]
        hub ci hosts [--since WHEN] [--until WHEN] [--last N]
        hub briefing --json | --md [--agents-md FILE] [--since WHEN]
@@ -497,12 +497,13 @@ fn ci(args: Vec<String>) -> i32 {
         _ => {}
     }
     enum Mode {
-        Text,
+        Text(bool),
         Json,
         PoolMatch(i64),
     }
     let mode = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-        [] => Mode::Text,
+        [] => Mode::Text(false),
+        ["--pods"] => Mode::Text(true),
         ["--json"] => Mode::Json,
         ["--pool-match", secs] => match secs.parse() {
             Ok(secs) => Mode::PoolMatch(secs),
@@ -522,9 +523,9 @@ fn ci(args: Vec<String>) -> i32 {
         return 1;
     }
     match mode {
-        Mode::Text => {
+        Mode::Text(pods) => {
             let p = fmt::Palette { no_color: true };
-            for l in board::ci_runners(&infra, p, 120) {
+            for l in board::ci_runners(&infra, p, 120, pods) {
                 println!("{}", plain(&l));
             }
         }
