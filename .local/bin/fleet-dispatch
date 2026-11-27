@@ -4525,8 +4525,7 @@ cmd_start() {
       # refused start leaves no session working an item still queued.
       hold=$(jq -r '.hold // empty' <<<"$it")
       [ -z "$hold" ] || { say "start: $item waits on $hold; it starts once that clears"; return 1; }
-      # A recorded PR that already merged is the work done: the item closes, no session starts on it (ar-3645).
-      if [ -n "$(jq -r '.pr // ""' <<<"$it")" ] && start_merged "$item" "$it"; then exec 7>&-; return 0; fi
+      start_merged "$item" "$it" && { exec 7>&-; return 0; }
     fi
     project=$(jq -r .project <<<"$it")
     [ -n "$area" ] || area=$(jq -r '.area // empty' <<<"$it")
@@ -5487,6 +5486,7 @@ item_pr_state() {
 # Why: an item on a PR another session had already merged started a session that found nothing to do (#2539).
 start_merged() {
   local info state oid
+  [ -n "$(jq -r '.pr // ""' <<<"$2")" ] || return 1
   info=$(item_pr_state "$1" "$2") || return 1
   read -r state oid _ <<<"$info"; oid=${oid#-} oid=${oid//,/ }
   [ "$state" = MERGED ] && [ -n "$oid" ] && own_record "$1" "$2" || return 1

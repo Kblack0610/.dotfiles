@@ -2205,6 +2205,16 @@ plan_phase_owner() {
   done
 }
 
+# plan_items_live <plan> -> the slugs of the plan's items already active, the calling session's own not counted
+# (live_owner plan). Exits LOCK_BUSY when the queue stays locked, else 1: a reader of the queue that fails reads no items.
+plan_items_live() {
+  local rc=0 out
+  out="$(live_owner plan "$1" "${AGENT_QUEUE_ITEM:-}")" || rc=$?
+  [ "$rc" != "$LOCK_BUSY" ] || exit "$LOCK_BUSY"
+  [ "$rc" = 0 ] || die "could not check the queue for items of $1, so nothing was added"
+  cut -f1 <<<"$out" | paste -sd' '
+}
+
 # task_plan_phase <first line of a task> -> "<plan file>\t<phase>" when it opens "P6 of <plan>" or "Phase 6 of the
 # plan <plan>", or carries "Plan: <plan> phase P3" (plan_landed reads the same two forms of a done item), else rc 1.
 task_plan_phase() {
@@ -2212,6 +2222,16 @@ task_plan_phase() {
   if [[ "$1" =~ $re1 ]]; then printf '%s\t%s\n' "${BASH_REMATCH[4]}" "${BASH_REMATCH[2]}"
   elif [[ "$1" =~ $re2 ]]; then printf '%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}"
   else return 1; fi
+}
+
+# plan_flags_ok <task words> <want> <row> <pr> <mode> <running>: the flags `add --plan` refuses, each one naming a
+# single item's work or a human's channel, which a plan's agent-made phases carry on their own.
+plan_flags_ok() {
+  [ "$1" -eq 0 ] || die "--plan writes its own tasks; pass no task with it"
+  [ -z "$2" ] || die "--want names a human's channel; --plan items are agent-made and carry none"
+  [ -z "$3" ] || die "--row links one item; a plan's phases each file a story under its epic: line"
+  [ -z "$4" ] || die "--pr names the PR one item works; a plan's phases each record their own"
+  [ "$5" = oneshot ] && [ -z "$6" ] || die "--plan items are queued oneshot items: no --mode plan or --running"
 }
 
 # add_owners <slug> <tags> <pr> <text>: the owner checks of an add, under the lock: a red's cause, the PR it
@@ -2518,11 +2538,7 @@ cmd_add() {
   # row it links gives its own below. The human's add by hand (no session) keeps high (ar-4374).
   [ -z "$running" ] || [ -n "$priority_given" ] || [ -z "${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}" ] || priority=normal
   if [ -n "$planf" ]; then
-    [ "${#task[@]}" -eq 0 ] || die "--plan writes its own tasks; pass no task with it"
-    [ -z "$want" ] || die "--want names a human's channel; --plan items are agent-made and carry none"
-    [ -z "$row" ] || die "--row links one item; a plan's phases each file a story under its epic: line"
-    [ -z "$pr" ] || die "--pr names the PR one item works; a plan's phases each record their own"
-    [ "$mode" = oneshot ] && [ -z "$running" ] || die "--plan items are queued oneshot items: no --mode plan or --running"
+    plan_flags_ok "${#task[@]}" "$want" "$row" "$pr" "$mode" "$running"
     plan_check_markers "$planf" "$check"
     # --from board:<project>:<id> is dispatch's promote of a plan row filed before ar-5605 (its brief is
     # plan_row_task's): that row goes on the plan's `rows:` line (add_plan), which agent-land closes with
@@ -2903,11 +2919,8 @@ add_plan() {
   project="$(project_resolve "$project")" || die "unknown project: $project (no checkout for it in $AQ_MAP)"
   # A plan is queued once: by its owner, or by hand. The calling session's own item does not count.
   # Its items already active are checked against the chain below, once their slugs are known.
-  local taken rc=0
-  taken="$(live_owner plan "$planf" "${AGENT_QUEUE_ITEM:-}")" || rc=$?
-  [ "$rc" != "$LOCK_BUSY" ] || exit "$LOCK_BUSY"
-  [ "$rc" = 0 ] || die "could not check the queue for items of $planf, so nothing was added"
-  taken="$(cut -f1 <<<"$taken" | paste -sd' ')"
+  local taken
+  taken="$(plan_items_live "$planf")" || exit $?
   # A sub-phase line is no queue item: its number is not an integer, so no item's `phases:` can carry it.
   local subs
   subs="$(plan_phase_list "$planf" | jq -r '[.[] | select(.state == "open" and (.n | type) == "string") | .n] | join(" ")')"
