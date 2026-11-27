@@ -3153,8 +3153,11 @@ cmd_ledger() {
 # Stack read and it read fine minutes later (ar-3274). Any other tool's failure, a local service
 # down or a measure's own syntax error, stays dead.
 # `anchored` is the rule's text still being in its source; null when the source is not on this
-# machine. `state` is the one verdict, first of stale, absent (source not here, or limited), dead,
-# restates, moved, else ok: --check fails all but absent and ok, and Stack shows it as is. A row's optional `scenario` is the hard
+# machine. A source tracked in a git checkout is read from that repo's origin/HEAD, as of its last
+# fetch (nothing here fetches), never its working tree: a main checkout sits weeks behind (the bnb
+# platform one was detached 57 commits back, so the anchors #1644 dropped read as present, ar-6241);
+# rules_source says which file stands in for it. `state` is the one verdict, first of stale, absent
+# (source not here, or limited), dead, restates, moved, else ok: --check fails all but absent and ok, and Stack shows it as is. A row's optional `scenario` is the hard
 # situation the rule decides: the must-keep list a context trim is checked against (context-trim skill).
 # `form` says whether a row is a rule (text a session reads, a .md source) or a mechanism (a hook,
 # script or config that enforces one); the source decides it, and a row's own `form` overrides that.
@@ -3181,15 +3184,54 @@ rules_enforcer() {
   if [ -f "$path" ] && { [ -z "$name" ] || grep -qF -- "@test \"$name\"" "$path"; }; then echo ok; else echo dead; fi
 }
 
+# rules_source <path> <dir> -> REPLY: the file whose text is <path>'s rule text, empty when there is
+# none (the source is absent, or a directory); REPLY, not stdout, so RULES_SRC_REF outlives the call.
+# A file tracked in a git checkout with an origin/HEAD is that tip's copy, written under <dir>: an
+# empty file when the tip does not have it (gone from origin, or committed here and not yet merged),
+# so its anchors read stale until it is. rc 1 when that copy cannot be written. An untracked or
+# ignored file, or one outside a checkout, is itself, and so is any file of a repo with no
+# origin/HEAD, whose origin is named on stderr once (`git remote set-head origin -a` fixes it), as
+# project-stage-check reads one (stages.md). The caller declares RULES_SRC_REF (repo -> ref).
+rules_source() {
+  local real top rel ref type=
+  REPLY=
+  real=$(readlink -f -- "$1" 2>/dev/null) && [ ! -d "$real" ] || return 0
+  if top=$(git -C "$(dirname -- "$real")" rev-parse --show-toplevel 2>/dev/null) && [ -n "$top" ]; then
+    if [ -z "${RULES_SRC_REF[$top]+x}" ]; then
+      RULES_SRC_REF[$top]=
+      if git -C "$top" rev-parse -q --verify origin/HEAD >/dev/null; then RULES_SRC_REF[$top]=origin/HEAD
+      elif git -C "$top" remote get-url origin >/dev/null 2>&1; then
+        echo "fleet-bench rules: $top has an origin but no origin/HEAD, so its working tree is read; git -C $top remote set-head origin -a fixes it" >&2
+      fi
+    fi
+    ref=${RULES_SRC_REF[$top]} rel=${real#"$top"/}
+    [ -z "$ref" ] || type=$(git -C "$top" cat-file -t "$ref:$rel" 2>/dev/null)
+    if [ -n "$ref" ] && { [ "$type" = blob ] || git -C "$top" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; }; then
+      REPLY=$(mktemp "$2/src.XXXXXX") || { REPLY=; return 1; }
+      [ "$type" != blob ] || git -C "$top" cat-file blob "$ref:$rel" > "$REPLY" || { REPLY=; return 1; }
+      return 0
+    fi
+  fi
+  [ ! -f "$real" ] || REPLY=$real
+}
+
 # rules_states -> each register row, one JSON object a line, with form, anchored, value, limited, err, holds, moved, dead, restates, state.
 rules_states() {
   [ -s "$RULES_REGISTER" ] || return 0
-  local src anchor cmd enf value anchored limited err enforcer why rc
+  local src anchor cmd enf value anchored limited err enforcer why rc text srcs
+  local -A RULES_SRC_REF=() texts=()
   err=$(mktemp) || return 1
+  srcs=$(mktemp -d) || { rm -f "$err"; return 1; }
   while IFS=$'\x1f' read -r src anchor cmd enf; do
     src="${src/#\~/$HOME}"
-    if [ ! -f "$src" ]; then anchored=null
-    elif grep -qF -- "$anchor" "$src"; then anchored=true
+    # Keyed with a leading @, so a row with no source is a key too.
+    if [ -z "${texts[@$src]+x}" ]; then
+      rules_source "$src" "$srcs" || { echo "fleet-bench rules: cannot copy $src from its origin tip" >&2; exit 1; }
+      texts[@$src]=$REPLY
+    fi
+    text=${texts[@$src]}
+    if [ -z "$text" ]; then anchored=null
+    elif grep -qF -- "$anchor" "$text"; then anchored=true
     else anchored=false
     fi
     value="" limited=false why=""
@@ -3230,7 +3272,7 @@ rules_states() {
           elif .dead then "dead" elif .restates then "restates" elif .moved then "moved"
           elif .enforcer | IN("missing", "bad", "dead") then "enforcer" else "ok" end)'
   local rc=$?
-  rm -f "$err"
+  rm -rf "$err" "$srcs"
   return "$rc"
 }
 
@@ -3458,7 +3500,7 @@ cmd_rules() {
   [ "${1:-}" != --changed ] || { rules_changed "${2:?rules --changed needs a since time}"; return; }
   [ "${1:-}" != --new ] || { shift; rules_new "$@"; return; }
   [ "${1:-}" != --gates ] || { rules_gates "${2:-}"; return; }
-  states=$(rules_states | jq -s .)
+  states=$(rules_states | jq -s .) || { say "rules: the register's sources could not be read"; return 2; }
   problems=$(rules_problems "$states"; rules_prose_problems "$states"; rules_lesson_problems)
   case "${1:-}" in
     --json) echo "$states" ;;
