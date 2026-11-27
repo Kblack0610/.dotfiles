@@ -4,7 +4,7 @@
   "pr": "Kblack0610/.dotfiles#884",
   "base": "66cf14224496e04b6d2a8f319d7f74bf6792bf83",
   "merge": "59edd9f7b1714c852839aebbb41e7c78053fdf5a",
-  "task": "fix(dispatch): a load hold is not starvation, and a shared session says nothing about one item",
+  "task": "fix(dispatch): a load hold is not starvation, and a shared session says nothing about one item. Interface: in fleet-dispatch `cmd_starved` returns 0 while the load gates hold the queue, and every other gate still trips it. In `waiting_sessions` (what `cmd_reap` reads from `agent-panel list --json`, rows `{target: \"hub/dotfiles:2\", status}`), a session is shared when its target names more than one Claude window (the same part before the `:N`; a row whose status is `shell` is not a Claude window): it says nothing about any one item, so it neither flips its items to waiting nor leaves a false waiting standing. A session with one Claude window keeps flipping its item to waiting as before.",
   "pts": 3,
   "accept": [
     "reap: a session several Claudes share says nothing about one item, so it never flips to waiting and a false waiting comes back"
