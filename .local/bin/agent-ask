@@ -742,21 +742,9 @@ cmd_post() {
       joined_reply "$(find_ask "${settled#joined }")" "This question" "the same question" "$wait"
       return
     fi
-    case "$(field "$file" judge_type)" in
-      credential_or_account)
-        local held
-        # The question only: the context of an ask for an outside account often names a
-        # service we run, and a refusal there would keep the real ask from the human.
-        if held="$(held_credential "$(field "$file" question)")" &&
-            close_ask cancelled "$id" "refused at post: $held" 2>/dev/null; then
-          echo "agent-ask post: no ask filed: this asks for $held. If the credential you need is another service's, name only that one in the ask." >&2
-          return 2
-        fi ;;
-      human_physical_action)
-        # A gate or approval, a blocker ask shared by the sessions it stops, an audit of an
-        # answer and a resume run on the answer each need the ask: only a plain question is routed.
-        if [ "$kind" = question ] && [ -z "$blocker$audit_of$resume" ] && route_physical "$file"; then return 0; fi ;;
-    esac
+    local routed=0
+    route_knowledge "$file" "$kind" "$blocker$audit_of$resume" || routed=$?
+    [ "$routed" -eq 1 ] || return "$routed"
     if answer_live "$file"; then
       if [ "$wait" -eq 1 ]; then field "$file" answer; else printf '%s\n' "$id"; fi
       return 0
@@ -3041,6 +3029,28 @@ held_credential() {
     printf 'a credential we hold in rbw: rbw get %s\n' "$name"
     return 0
   done < <(timeout 5 $AGENT_ASK_RBW_CMD list 2>/dev/null)
+  return 1
+}
+
+# route_knowledge <file> <kind> <extra>: route a judged knowledge ask away from the human. Returns
+# 2 (the ask cancelled, the mint path on stderr) for a credential we hold, 0 (the ask cancelled,
+# the hold on stdout) for a physical action, 1 when the ask is not routed. <extra> is non-empty for
+# a blocker ask shared by the sessions it stops, an audit of an answer or a resume run on the
+# answer; with a gate or approval (kind) each needs the ask, so only a plain question is routed.
+route_knowledge() {
+  local f="$1" held
+  case "$(field "$f" judge_type)" in
+    credential_or_account)
+      # The question only: the context of an ask for an outside account often names a
+      # service we run, and a refusal there would keep the real ask from the human.
+      if held="$(held_credential "$(field "$f" question)")" &&
+          close_ask cancelled "$(field "$f" id)" "refused at post: $held" 2>/dev/null; then
+        echo "agent-ask post: no ask filed: this asks for $held. If the credential you need is another service's, name only that one in the ask." >&2
+        return 2
+      fi ;;
+    human_physical_action)
+      if [ "$2" = question ] && [ -z "$3" ] && route_physical "$f"; then return 0; fi ;;
+  esac
   return 1
 }
 
