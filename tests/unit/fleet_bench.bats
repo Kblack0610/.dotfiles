@@ -2817,6 +2817,31 @@ fix_item() {
   assert_output --partial '1 queued as red fixes'
   # the exit 1 test above is the control: any other exit is still a failed add
   refute_output --partial 'add failed for check(watch): links'
+  assert_output --partial "1 held by the board's daily cap"
+  run outcome
+  refute_output --partial FAILED
+}
+
+# ar-4296: an add runs only for a key with no open row and passes that key, so a twin refusal (exit 3)
+# leaves this red with no row and no item: a failed write, never counted filed.
+@test "triage: a check row the board takes for another row's near twin is a failed write, not filed" {
+  log_triage_setup
+  lock_route
+  watch links TRIP -25200 high
+  route 'watch.: (links) tripped' agent fix-red 'fix the links'
+  printf '#!/usr/bin/env bash\n[ "$4" = add ] && [[ "$5" == *"check(watch): links"* ]] && { echo "near-duplicate of an open row" >&2; exit 3; }\nexec notes "$@"\n' > "$SANDBOX/bin/notes-twin"
+  chmod +x "$SANDBOX/bin/notes-twin"
+  BENCH_NOTES_CMD=notes-twin run "$SUBJECT" triage
+  assert_output --partial "check(watch): links tripped since: the board took it for a twin of another open row, so it has no row"
+  assert_output --partial 'board write failed for check(watch): links tripped since'
+  refute_output --partial "held by the board's daily cap"
+  run outcome
+  assert_output --partial FAILED
+  # negative control: the same red with no twin files its row and fails nothing
+  BENCH_NOTES_CMD=notes run "$SUBJECT" triage
+  refute_output --partial 'board write failed'
+  run grep -c -- '--key check(watch): links tripped since$' "$NLOG"
+  assert_output 1
   run outcome
   refute_output --partial FAILED
 }
