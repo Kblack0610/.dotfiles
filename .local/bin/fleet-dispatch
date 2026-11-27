@@ -3536,7 +3536,7 @@ provider_hold_why() {
 cmd_provider_holds() {
   local src why
   while IFS= read -r src; do
-    why=$(provider_hold_why "$src") && jq -nc --arg s "$src" --arg w "$why" '{($s): $w}'
+    if why=$(provider_hold_why "$src"); then jq -nc --arg s "$src" --arg w "$why" '{($s): $w}'; fi
   done < <(jq -r '[.harnesses[].source // empty] | unique[]' "$HARNESSES" 2>/dev/null) | jq -sc 'add // {}'
 }
 
