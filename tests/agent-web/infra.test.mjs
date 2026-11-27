@@ -447,6 +447,32 @@ test("NODES, HEARTBEATS and AGENT RUNNERS agree with the rollup's domains, not t
   assert.equal(hue({}, "AGENT RUNNERS"), "--c-other");
 });
 
+// ar-5013: WATCHES takes its hue from the rollup's watches rows, the worst of them, not from a
+// tripped count: 13 tripped that the rules weigh as warns is amber, a watches row at 2 red.
+test("WATCHES agrees with the rollup's watches rows, not its own tripped count", () => {
+  const cc = (rows) => ({ "cc:watches_tripped": { "": 13 }, "cc:watches_total": { "": 133 }, "cc:component_status": rows });
+  const hue = (rows) => run(`kpis(${JSON.stringify(cc(rows))})`).match(/--c:var\((--[a-z0-9-]+)\)"><span class="tl">WATCHES/)?.[1];
+  assert.equal(hue({ "ci/watches": 1, "k3s/watches": 0, "agents/runners": 2 }), "--b-stalled", "warn rows are amber; a non-watches row is not read");
+  assert.equal(hue({ "ci/watches": 1, "platform/watches": 2 }), "--b-needs", "the worst watches row decides");
+  assert.equal(hue({ "ci/watches": 0 }), "--b-done", "13 tripped under rows at 0 is not amber");
+  assert.equal(hue({}), "--c-other", "no watches row is no data, never green");
+  assert.match(run(`kpis(${JSON.stringify(cc({ "ci/watches": 1 }))})`), /WATCHES<\/span><span class="tv">13 tripped<\/span><span class="ts1">of 133, 0 stale; watches rollup WARN/);
+});
+
+// ar-5013: the pill is the heart's word and colour; warn domains, which never colour it, follow
+// as a count linked to Alerts' health chips, so OK beside amber tiles says why.
+test("the OVERALL pill keeps the heart's verdict and counts the warn domains beside it", () => {
+  const pill = (cc) => run(`overallPill(${JSON.stringify(cc)})`);
+  const ok = pill({ "cc:overall_status": { "": 0 }, "cc:domain_status": { ci: 1, k3s: 1, prod: 0, platform: 0 } });
+  assert.match(ok, /--c:var\(--b-done\)"[^>]*>OVERALL OK<\/span>/, "a warn never colours the heart");
+  assert.match(ok, /<a href="#alerts\/health" class="chip sm" style="--c:var\(--b-stalled\)" title="ci, k3s">2 warn<\/a>/);
+  // negative control: no warn domain, no count; a red heart stays red with its warns beside it
+  assert.doesNotMatch(pill({ "cc:overall_status": { "": 0 }, "cc:domain_status": { ci: 0 } }), /warn<\/a>/);
+  const red = pill({ "cc:overall_status": { "": 2 }, "cc:domain_status": { platform: 2, ci: 1 } });
+  assert.match(red, /--c:var\(--b-needs\)"[^>]*>OVERALL RED<\/span>.*title="ci">1 warn</);
+  assert.match(pill({}), /OVERALL NO DATA/i);
+});
+
 test("CI RUNNING and the Runners head read hub_core's glance: jobs running, runners up; the tile's hue is the rollup's", () => {
   // A slot takes unity, light and heavy: the per-cap pools sum to 3/3 for one runner.
   const cc = { "cc:pool_slots": { unity: 1, light: 1, heavy: 1 }, "cc:pool_busy": { unity: 1, light: 1, heavy: 1 } };
