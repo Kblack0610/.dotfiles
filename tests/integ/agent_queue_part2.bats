@@ -2234,6 +2234,20 @@ Phase 2 of the plan $SANDBOX/plan.md: the doors." >/dev/null
   [ "$(wc -l < "$AGENT_QUEUE_DIR/admission.jsonl")" -eq 5 ]
 }
 
+# ar-5865: agent-land's after-merge apply, added from a dispatched session as item:<landed>, went board-only to
+# the outbox 17 times and never ran, so ConvergenceDrift fired on 8 hosts.
+@test "agent-land's merge-owed step (AGENT_QUEUE_PULL=land) goes in past the cap from an item's session; without the pull it is board-only" {
+  export AGENT_QUEUE_CAP=1
+  "$AQ" add --project game --slug one "one" >/dev/null
+  # NEGATIVE CONTROL: the same add with no pull is an item's follow-up, and the queue does not take it
+  run env -u AGENT_QUEUE_PULL AGENT_QUEUE_ITEM='' "$AQ" add --project game --priority high --from item:ship --slug after-merge-a-1-game "chore(after-merge): apply (left by o/game#1)"
+  assert_failure
+  assert_output --partial "only the board fills the queue"
+  run env AGENT_QUEUE_PULL=land AGENT_QUEUE_ITEM='' "$AQ" add --project game --priority high --from item:ship --slug after-merge-a-2-game "chore(after-merge): apply (left by o/game#2)"
+  assert_success
+  [ "$(field "$(item queued after-merge-a-2-game)" from)" = item:ship ]
+}
+
 @test "the cap passes dispatch's pull of a plan phase filed on its board row, as it passes the --plan; another board pull it holds" {
   story_notes
   printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two' > "$SANDBOX/pp.md"
@@ -2790,6 +2804,30 @@ already"
   grep -qF "dm-4" "$SANDBOX/err"
   run grep -c ' ptask level --agent start ' "$NOTES_FIXTURE/calls.log"
   assert_output 0
+}
+
+# ar-4657: the item's own story row refused with a shortlist (exit 5) queues nothing: a rowless item lands a
+# PR no board row records (release-links). The session joins a row, or reruns with --checked, which notes takes.
+@test "an add whose own story row notes answers with a shortlist (exit 5) queues nothing; --checked files it" {
+  story_notes
+  unset AGENT_QUEUE_PULL
+  echo 5 > "$NOTES_FIXTURE/story.rc"
+  printf 'dm-4\t62\tagent\tfix(menu): the work already filed\n' > "$NOTES_FIXTURE/story.out"
+  rc=0; "$AQ" add --project level --running --want human --slug mine "fix(menu): the session's own work" 2>"$SANDBOX/err" || rc=$?
+  assert_equal "$rc" 7
+  grep -qF "dm-4" "$SANDBOX/err"
+  grep -qF "mine is not queued" "$SANDBOX/err"
+  grep -qF -- "--checked" "$SANDBOX/err"
+  run "$AQ" show mine
+  assert_failure
+  rm "$NOTES_FIXTURE/story.rc"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" add --project level --running --want human --checked dm-4 --slug mine "fix(menu): the session's own work"
+  assert_success
+  run grep -F -- "--agent add" "$NOTES_FIXTURE/calls.log"
+  assert_output --partial " --checked=dm-4 -- "
+  run grep -x 'row: level:lv-9' "$(item running mine)"
+  assert_success
 }
 
 @test "the item's own story row and a plan's rows name their origin, a want names none" {

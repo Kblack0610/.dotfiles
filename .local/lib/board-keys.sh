@@ -9,9 +9,10 @@
 #                   alert, hold, logs and unit rows by theirs once their red is gone, and leaves the
 #                   red, runner and lesson ones to board_upsert.
 #
-# Readers: fleet-bench and agentctl-inbox-triage, whose plain --backlog pass leaves these rows
+# Readers: fleet-bench; agentctl-inbox-triage, whose plain --backlog pass leaves these rows
 # alone, since a rewritten prefix is a row fleet-bench can neither refresh nor close (ar-2482: 54
-# rows lost theirs on 2026-11-15). A new key shape in fleet-bench is added here;
+# rows lost theirs on 2026-11-15); and fleet-dispatch, whose skip exits leave a keyed row's lane to
+# fleet-bench triage's route (ar-6265). A new key shape in fleet-bench is added here;
 # tests/unit/fleet_bench.bats checks each shape's key. The ERE is POSIX for bash =~ and also valid
 # for jq's test().
 

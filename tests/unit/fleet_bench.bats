@@ -130,6 +130,8 @@ agent_chain_wip{step="waiting"} 0
 # TYPE agent_chain_moves gauge
 # HELP agent_chain_drift Queue items the record and the queue folders place at different steps.
 # TYPE agent_chain_drift gauge
+# HELP agent_chain_inbox_drift Lines the record holds in the inbox step against the lines the outbox and every ## Inbox hold, apart.
+# TYPE agent_chain_inbox_drift gauge
 PROM
 )"
 }
@@ -839,6 +841,13 @@ printf '%s\n' "$*" >> "$BATS_TEST_TMPDIR/fj.argv"
 cat >> "$BATS_TEST_TMPDIR/fj.stdin"
 [ ! -e "$BATS_TEST_TMPDIR/fj.fail" ] || { echo "curl: (22) The requested URL returned error: 502" >&2; exit 22; }
 url=${*: -1}
+# fj.gone-N: pulls/N is a 404; fj.private: so is the pull list, as for a repo the token cannot see
+case $url in
+  *'/pulls?'*) [ ! -e "$BATS_TEST_TMPDIR/fj.private" ] || { echo '{"message":"The target couldn'"'"'t be found."}'; echo "curl: (22) The requested URL returned error: 404" >&2; exit 22; }
+    echo '[]'; exit 0 ;;
+esac
+[ ! -e "$BATS_TEST_TMPDIR/fj.gone-${url##*/pulls/}" ] && [ ! -e "$BATS_TEST_TMPDIR/fj.private" ] ||
+  { echo '{"message":"The target couldn'"'"'t be found."}'; echo "curl: (22) The requested URL returned error: 404" >&2; exit 22; }
 jq --argjson n "${url##*/pulls/}" '.number = $n' "$BATS_TEST_TMPDIR/fj.pr"
 STUB
   chmod +x "$SANDBOX/bin/curl-fj"
@@ -913,6 +922,32 @@ forgejo_outcome() {
   BENCH_NOW=$T0 run "$SUBJECT" review
   assert_success
   assert_output --partial '1 PRs counted, 1 CI reds'
+}
+
+@test "review: a Forgejo PR its forge no longer has is named and left out, holds no cursor, and fails nothing; a 404 on the pull list too is FAILED" {
+  stub_review
+  stub_forgejo
+  forgejo_outcome s2 13
+  cp "$GHD/runs-#12.json" "$GHD/runs-#13.json"
+  touch "$BATS_TEST_TMPDIR/fj.gone-13"
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_success
+  assert_output --partial 'git.example.test/o/audio#13 left out: its forge says no such PR (pulls/13 is a 404)'
+  assert_output --partial '1 PRs counted, 1 CI reds, 1 left out that their forge no longer has'
+  refute_output --partial 'cannot count'
+  run jq -c .number "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  assert_output 12
+  run outcome
+  assert_output WORKED
+  [ "$(cat "$FLEET_BENCH_DIR/review.last")" -eq "$T0" ]
+  # a token that cannot see the repo 404s the pull list as well: that is a failed read, not a lost PR
+  rm "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  touch "$BATS_TEST_TMPDIR/fj.private"
+  BENCH_NOW=$T0 run "$SUBJECT" review --days 1
+  assert_failure
+  assert_output --partial 'cannot count git.example.test/o/audio#12'
+  assert_output --partial 'cannot count git.example.test/o/audio#13'
+  refute_output --partial 'left out: its forge'
 }
 
 @test "review: a Forgejo host not listed gets no call, and a Forgejo repo the ledger does not sync is left out" {
@@ -1658,6 +1693,48 @@ tok_fixture() {
   assert_success
   assert_line --regexp '^check\(watch\): spend tripped since '
 }
+@test "triage: a quarantine covers only the reds it was taken on; a new one files a row naming it and the owner (ar-3916)" {
+  triage_setup
+  watch spend TRIP -25200 urgent
+  q=$TRIAGE_WATCH_STATE/spend
+  printf '%s ar-1 %s waits on the provider\n' $(( $(date +%s) + 3600 )) "$T0" > "$q.quarantine"
+  printf 'TRIP exit 1\nRED lazer over budget at 2026-11-20T10:00 (91%%)\n' > "$q.quarantine.covers"
+  # the same red at a new time and share: covered, no row
+  printf 'TRIP exit 1\nRED lazer over budget at 2026-11-21T08:13 (97%%)\n' > "$q.out"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'check(watch): spend'
+  # a red the quarantine was not taken on: one row, its why the new red and the owner
+  printf 'TRIP exit 1\nRED main over budget at 2026-11-21T08:13 (99%%)\nRED lazer over budget at 2026-11-21T08:13 (97%%)\n' > "$q.out"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --regexp '^check\(watch\): spend tripped since .*why: RED main over budget at N-N-NTN:N \(N%\) \(not covered by the quarantine ar-1 holds\)'
+  [ "$(grep -c '^check(watch): spend' <<<"$output")" -eq 1 ]
+  # taken on both, the pair reordered with new times and shares: covered, no row
+  printf 'RED main over budget at 2026-11-20T10:00 (90%%)\nRED lazer over budget at 2026-11-20T10:00 (91%%)\n' > "$q.quarantine.covers"
+  printf 'RED lazer over budget at 2026-11-22T01:02 (98%%)\nRED main over budget at 2026-11-22T01:02 (99%%)\n' > "$q.out"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'check(watch): spend'
+  # the same shape on another unit is another red: covered only by its own name
+  printf 'RED unit a.service failed\n' > "$q.quarantine.covers"
+  printf 'RED unit b.service failed\n' > "$q.out"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --regexp '^check\(watch\): spend tripped since .*why: RED unit b.service failed \(not covered by the quarantine ar-1 holds\)'
+  # covers that name no red (taken on no evidence) cover whatever is red, as a quarantine from
+  # before covers files does
+  : > "$q.quarantine.covers"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'check(watch): spend'
+  printf 'RED disk full on /dev/sda1\n' > "$q.out"
+  rm "$q.quarantine.covers"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'check(watch): spend'
+}
+
 @test "triage: a paused watch files no row, whatever state it paused in" {
   triage_setup
   watch preview TRIP -25200 high
@@ -2814,24 +2891,60 @@ fix_item() {
   assert_output 0
 }
 
-# 2026-11-25 (ar-6265): dispatch moved the board-chain check row to the sheet for a person; board_upsert left
-# it there, but triage_twins read the key as filed and dropped the sheet row, so the next pass filed it again.
-@test "triage: a red whose row dispatch moved to the sheet keeps that row, with no agent row filed and no sheet drop (ar-6265)" {
+# 2026-11-25 (ar-6265): dispatch moved the board-chain check row to the sheet for a person, and triage filed it
+# again, an add and a drop on every pass. Dispatch now leaves a keyed row's lane to triage, so a copy it left on
+# the sheet is a stray: triage files the agent row its route names and drops that copy as its twin.
+@test "triage: a keyed row dispatch left on the sheet goes back to the lane its route names: one agent row, the sheet copy dropped (ar-6265)" {
   log_triage_setup
   watch spend TRIP -25200 high
   route 'watch.: spend' alert - 'the spend watch pages on its own'
   printf 'board.md\t9\t%s\t- [ ] %s (agent row ar-77)\n' 'check(watch): spend tripped since 2026-11-01, expected: x' 'check(watch): spend tripped since 2026-11-01, expected: x' > "$BOARD.agent-runtime"
   run "$SUBJECT" triage
   assert_success
-  assert_output --partial 'open on the human sheet, left there'
   # the pass files other causes (the alpha log errors), so only this key's writes are counted
+  run grep -c -- '--agent add check(watch): spend' "$NLOG"
+  assert_output 1
+  run grep -c 'ptask agent-runtime drop check(watch): spend tripped since --why moved to the agent board' "$NLOG"
+  assert_output 1
+  run grep -c 'spend tripped since' "$BOARD"
+  assert_output 1
+  run grep -c 'spend tripped since' "$BOARD.agent-runtime"
+  assert_output 0
+}
+
+@test "triage: a keyed row a person started on the sheet stays theirs: no agent row filed, no sheet drop (ar-6265)" {
+  log_triage_setup
+  watch spend TRIP -25200 high
+  route 'watch.: spend' alert - 'the spend watch pages on its own'
+  printf 'board.md\t9\t%s\t- [/] %s (agent row ar-77)\n' 'check(watch): spend tripped since 2026-11-01, expected: x' 'check(watch): spend tripped since 2026-11-01, expected: x' > "$BOARD.agent-runtime"
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial 'started on the human sheet, left there'
   run grep -c -- '--agent add check(watch): spend' "$NLOG"
   assert_output 0
   run grep -c ' drop check(watch): spend' "$NLOG"
   assert_output 0
   run grep -c 'spend tripped since' "$BOARD.agent-runtime"
   assert_output 1
+}
+
+@test "triage: two passes on one red key leave one open agent row, and the second pass writes no add or drop for it (ar-6265)" {
+  log_triage_setup
+  : > "$BOARD.agent-runtime"   # the human sheet, empty
+  watch spend TRIP -25200 high
+  route 'watch.: spend' alert - 'the spend watch pages on its own'
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c -- '--agent add check(watch): spend' "$NLOG"
+  assert_output 1
+  : > "$NLOG"
+  run "$SUBJECT" triage
+  assert_success
+  run grep -cE -- '(add|drop|reopen) check\(watch\): spend' "$NLOG"
+  assert_output 0
   run grep -c 'spend tripped since' "$BOARD"
+  assert_output 1
+  run grep -c 'spend tripped since' "$BOARD.agent-runtime"
   assert_output 0
 }
 
@@ -3975,7 +4088,7 @@ q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
   run "$SUBJECT" chain --json
   assert_success
   run jq -c 'with_entries(.value |= [.["7d"], .status])' <<<"$output"
-  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"uncaused_close_share":[null,"-"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"release_overdue":[0,"ok"],"version_tag_drift":[0,"ok"],"doctor_fail":[0,"ok"],"dup_pairs":[null,"-"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"reds_spent":[null,"-"],"requested_unstarted_h":[0,"-"],"orphan_request_rows":[0,"ok"],"next_up_blocked":[0,"ok"],"stale_urgent_d":[0,"ok"],"urgent_per_board":[0,"ok"],"playtest_waiting_d":[0,"ok"],"done_inline_old":[0,"ok"],"prio_default":[4,"-"],"request_to_live_h":[null,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_review":[null,"-"],"step_age_p90_waiting":[null,"-"],"queue_net_24h":[null,"-"],"estimated_token_share":[null,"-"]}'
+  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"uncaused_close_share":[null,"-"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"release_overdue":[0,"ok"],"version_tag_drift":[0,"ok"],"doctor_fail":[0,"ok"],"dup_pairs":[null,"-"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"reds_spent":[null,"-"],"requested_unstarted_h":[0,"-"],"orphan_request_rows":[0,"ok"],"next_up_blocked":[0,"ok"],"stale_urgent_d":[0,"ok"],"urgent_per_board":[0,"ok"],"playtest_waiting_d":[0,"ok"],"done_inline_old":[0,"ok"],"prio_default":[4,"-"],"request_to_live_h":[null,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"chain_inbox_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_review":[null,"-"],"step_age_p90_waiting":[null,"-"],"queue_net_24h":[null,"-"],"estimated_token_share":[null,"-"]}'
   # the done items are read back a day past the window (8 days before T0, a local date), so an item
   # done before its PR merged counts; the pipeline reads the last day's
   run sort -u "$DONE.calls"
