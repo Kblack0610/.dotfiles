@@ -1366,11 +1366,27 @@ fired() { eval_at "$@"; open_at "$@"; }
   assert_output human
 }
 
-@test "findings: a project with under one live session in the window never raises throughput-drop, though 0.1 clears the ratio of a 24h average near 0" {
+# live_samples <n>: n WORKING samples for the project, 10 minutes apart, ending at 14:20
+live_samples() {
+  local k
+  for ((k = 0; k < $1; k++)); do
+    printf '{"epoch":%s,"project":"unity-core-playground","bucket":"WORKING"}\n' "$(( $(clock 14:20) - 600 * k ))"
+  done > "$FLEET_BENCH_DIR/progress.jsonl"
+}
+
+@test "findings: under one live session in the window raises no throughput-drop, though 0.1 clears the ratio of a 24h average near 0" {
   use_fixture
-  printf '{"epoch":%s,"project":"unity-core-playground","bucket":"WORKING"}\n' "$(( $(clock 14:20) - 600 ))" > "$FLEET_BENCH_DIR/progress.jsonl"
+  live_samples 1
   run fired 14:20
   refute_output --partial 'throughput-drop'
+  refute_output --partial 'blind'
+}
+
+@test "findings: one session live for the whole window, less a missed sampler tick, still raises throughput-drop" {
+  use_fixture
+  live_samples 11
+  run fired 14:20
+  assert_output --partial 'throughput-drop unity-core-playground'
 }
 
 @test "findings: the quiet morning after raises no starved or throughput-drop" {

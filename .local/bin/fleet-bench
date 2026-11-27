@@ -6554,9 +6554,10 @@ FINDING_METRICS='cc:host_load1|cc:host_cores|cc:host_cpu_busy_ratio|cc:pool_wait
 # is left out: it is only there while something waits.
 FINDING_REQUIRED='["cc:host_load1","cc:host_cores","cc:host_cpu_busy_ratio","cc:pool_waiting","cc:pool_busy","cc:pool_slots","ci_governor_capacity_units","ci_governor_busy_units"]'
 FINDING_SAMPLE_S=600   # snapshots this far apart: the sampler's cadence, so "on 2 samples" holds on replay
+# finding_live_floor is one session for the 2h, less one missed sampler tick (11 of 12 samples).
 # Starting points set from the 10-29 replay; kpi-thresholds overrides any of them.
 FINDING_DEFAULTS='{"finding_pool_wait_s":3600,
-  "finding_pool_idle_share":0.75,"finding_pool_admitted_share":0.5,"finding_merge_ratio":0.5,"finding_demand_ratio":0.7,"finding_merge_floor_h":2,"finding_live_floor":1,
+  "finding_pool_idle_share":0.75,"finding_pool_admitted_share":0.5,"finding_merge_ratio":0.5,"finding_demand_ratio":0.7,"finding_merge_floor_h":2,"finding_live_floor":0.9,
   "finding_host_load_per_core":2,"finding_clear_min":60,"finding_human_after_min":60}'
 
 finding_limits() {
