@@ -473,7 +473,7 @@ fj_wait_checks() {
       had_checks=yes
       return 0
       ;;
-    FAIL) fail checks "$(jq -r "$CI_JQ"' {statusCheckRollup: .} | [checks[] | select(.state | test(red_re)) | .name] | join(", ")' <<<"$st")" ;;
+    FAIL) fail checks "$(jq -r "$CI_JQ"' {statusCheckRollup: .} | [checks[] | select((.conclusion // .state // "") | test(red_re)) | .name] | join(", ")' <<<"$st")" ;;
     PENDING)
       try=0
       sleep "$CHECKS_WATCH_INTERVAL"
@@ -1641,7 +1641,7 @@ if [ "$dry" -eq 1 ]; then
     [ -n "$dry_repo" ] || dry_repo=$(origin_repo .) || dry_repo=''
     [ -z "$dry_repo" ] || (pr_ref="$dry_repo#$pr"; item_pr_gate >/dev/null) || exit $?
   fi
-  [ -z "$fj" ] || echo "forge: Forgejo $fj on remote $remote: each gh pr call below is that API (pulls/$pr, PATCH for the body, commits/<head>/status for the checks, POST pulls/$pr/merge {Do, head_commit_id}, pulls/$pr/files), and each git step reads $remote, not origin"
+  [ -z "$fj" ] || echo "forge: Forgejo $fj on remote $remote: each gh pr call below is that API (pulls/$pr, PATCH for the body, commits/<head>/statuses (paged) for the checks, POST pulls/$pr/merge {Do, head_commit_id}, pulls/$pr/files), and each git step reads $remote, not origin"
   echo "item-line: gh pr view $pr${repo:+ -R $repo} --json body, then gh pr edit $pr --body-file -  (unless it has \"Item: $item\")"
   echo "head: git rev-parse HEAD must equal the PR's headRefOid (when it is git ls-remote origin's tip of the PR branch, poll gh pr view $pr --json headRefOid until it does), else exit 1 naming the PR's checkout (git worktree list); the PR's repo must be origin's; a MERGED PR must name the item, have its head in HEAD, or be on the item${sup:+, or replace closed #$sup (--supersedes: #$sup is the item's and opened before #$pr merged; the record drops it from the item's pr:)}; an item not named by --item takes only a PR in its project's repo that it records or whose body has \"Item: $item\""
   echo "review: fleet-dispatch item-tier $item  (tier 3: the body needs a \"Review: \" line and the checks must run)"

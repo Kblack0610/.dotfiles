@@ -965,6 +965,27 @@ fj_runs() {   # <run> <status> posted first, then <run> <status> posted last, fo
   assert_output 0
 }
 
+@test "Forgejo: a red on the second statuses page fails checks naming it; a full first page is read on" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  jq -cn '[range(100; 50; -1) | {id: ., status: "success", context: "c\(.)", target_url: "/o/r/actions/runs/9/jobs/\(.)"}]' >"$NOTES_FIXTURE/fj.status"
+  echo '[{"id":3,"status":"failure","context":"late","target_url":"/o/r/actions/runs/9/jobs/0"}]' >"$NOTES_FIXTURE/fj.status.2"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: late'
+  run grep -c '^curl GET commits/.*/statuses?limit=50&page=[12]$' "$LOG"
+  assert_output 2
+}
+
+@test "Forgejo: a status with no Actions run counts only its newest post, though each post has its own URL" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  echo '[{"id":1,"status":"failure","context":"ci/build","target_url":"https://ci.example/builds/10"},{"id":2,"status":"success","context":"ci/build","target_url":"https://ci.example/builds/11"}]' >"$NOTES_FIXTURE/fj.status"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: green'
+}
+
 @test "Forgejo: a land that would refuse none waits for the head's first status, then stops at checks" {
   forgejo
   printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"

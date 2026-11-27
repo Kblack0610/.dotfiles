@@ -356,7 +356,8 @@ real_notes_board() {
 }
 
 # A Forgejo PR: curl answers the Forgejo API for o/r from the same fixtures gh reads (state, body,
-# head.oid, merge.oid); fj.status is the head's statuses, every post (one green check by default), and
+# head.oid, merge.oid); fj.status is the head's statuses, every post (one green check by default; page N>1
+# is fj.status.N, else none), and
 # fj.files the changed files. Each call logs as "curl METHOD <path under repos/o/r/> [data]".
 forgejo() {
   export SO_FORGEJO_HOSTS=forgejo.example SO_RBW="$SANDBOX/bin/rbw"
@@ -390,6 +391,8 @@ case "$method $path" in
 'GET commits/'*'/statuses'*) n=$(cat "$F/fj.status.gate" 2>/dev/null || echo 0)
   [ "$n" -eq 0 ] || { echo $((n - 1)) >"$F/fj.status.gate"; echo Forbidden; echo 'curl: (22) The requested URL returned error: 403' >&2; exit 22; }
   [ ! -f "$F/fj.status.reset" ] || { rm "$F/fj.status.reset"; echo 'curl: (56) Recv failure: Connection reset by peer' >&2; exit 56; }
+  pg=${path##*page=}
+  [ "$pg" = 1 ] || { cat "$F/fj.status.$pg" 2>/dev/null || echo '[]'; exit 0; }
   cat "$F/fj.status" 2>/dev/null || echo '[{"id":1,"status":"success","context":"checks / test","target_url":"/o/r/actions/runs/1/jobs/0"}]' ;;
 # fj.refuse: the merge is refused, its JSON reason on stdout as --fail-with-body prints it
 'POST pulls/42/merge') [ ! -f "$F/fj.refuse" ] || { cat "$F/fj.refuse"; echo 'curl: (22) The requested URL returned error: 405' >&2; exit 22; }
