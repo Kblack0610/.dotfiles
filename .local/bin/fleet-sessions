@@ -225,7 +225,7 @@ BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 #                 that train (train_landing), the item's validate wait or "failed <validate slug>" (validate_hold), or ->]
 #                [<cron: yes when a recurring cron the session scheduled is still live (wake_facts), or ->]
 #                [<merged PRs: work_blockers' 23rd, - here>]
-#                [<carried: the live items its own running items filed (carried_by), comma-separated, or ->]
+#                [<carried: the live items its own running items filed (carried_by) and the open PRs they record (item_open_prs, "#N"), comma-separated, or ->]
 #   -> "BUCKET reason"
 # <git> is 1 in a repo, 0 outside one, gone when the cwd itself no longer exists (a reaped worktree).
 # Who must act decides before whether the session is active: an ask waits on the human, and
@@ -1022,6 +1022,32 @@ carried_by() {
         and ((.ready // "") | fromdateiso8601? // 0) > now
         and ((.slug | sub("-close$"; "")) as $f | $own | contains("," + $f + ","))))
       | .slug] | unique | join(",")' <<<"$1" 2>/dev/null)"
+  printf '%s' "${out:--}"
+}
+
+# item_open_prs <all items, jsonl> <comma list of a session's own item slugs> -> the comma list of "#<n>" for each PR
+# recorded on one of those running items (`open_pr:`, which agent-land sets before its checks, or `pr:`) that is still
+# OPEN in the PR store, else -. The PR rides another session's branch or a landing train's gate, so its owner lands it
+# and the item's idle session has nothing to do: carried like a filed item, never STALLED (ar-3580: ucp-671 PR #2506 on
+# agent-37's branch, in train #2919, read STALLED on agent-15). A repo the store cannot answer for carries nothing.
+item_open_prs() {
+  local refs repo ref out="" open=""
+  refs="$(jq -r --arg own ",$2," 'select(.state == "running" and (.slug // "") != "" and (.slug as $s | $own | contains("," + $s + ",")))
+      | ((.open_pr // "") + " " + (.pr // "" | tostring)) | split(" ")[] | select(test("^[^#]+#[0-9]+$"))' <<<"$1" 2>/dev/null | sort -u)"
+  [ -n "$refs" ] || { printf -- -; return; }
+  while IFS= read -r repo; do
+    open+="$(pr_states "$repo" | jq -r --arg r "$repo" '.[] | select(.state == "OPEN") | "\($r)#\(.number)"')"$'\n'
+  done < <(sed 's/#[0-9]*$//' <<<"$refs" | sort -u)
+  while IFS= read -r ref; do
+    grep -qxF -- "$ref" <<<"$open" && out+="${out:+,}#${ref##*#}"
+  done <<<"$refs"
+  printf '%s' "${out:--}"
+}
+
+# join_carried <carried list|-> <carried list|-> -> the two comma lists as one, or -.
+join_carried() {
+  local out="${1#-}"
+  [ "${2:--}" = - ] || out="${out:+$out,}$2"
   printf '%s' "${out:--}"
 }
 
@@ -2749,7 +2775,8 @@ collect() {
         IFS=$'\t' read -r irow iby < <(jq -rn --arg s "$islug" 'first(inputs | select(.slug == $s)
           | [(.row // (.from // "" | if startswith("board:") then sub("^board:"; "") else "" end)
               | if . == "" then "-" else . end), (.by // "-")] | @tsv)' <<<"$qall" 2>/dev/null)
-        irow="${irow:--}"; iby="${iby:--}"; carried="$(carried_by "$qall" "$sid" "$item" "${target%%/*}:$tsess")" ;;
+        irow="${irow:--}"; iby="${iby:--}"; carried="$(carried_by "$qall" "$sid" "$item" "${target%%/*}:$tsess")"
+          [[ "$item" != own:* ]] || carried="$(join_carried "$carried" "$(item_open_prs "$qall" "$islugs")")" ;;
     esac
     # A done item's merged PRs are the session's landed ones when its transcript names no merged PR, none
     # open and every state known. A landing train merges a member's commits through its own train/* PR and
