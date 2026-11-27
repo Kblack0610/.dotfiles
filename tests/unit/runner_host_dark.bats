@@ -153,6 +153,8 @@ online() {
 }
 
 @test "a governed host with topology slots but no online row counts as zero online once it answers" {
+  # pool_online lists topology hosts and hosts with a slot's runner online, so a topology host has
+  # no row only on a scrape that dropped it; read as nothing online, never as a skip.
   online ms-a2 -3600 3
   run "$RHD" --for 10m --at "$END"
   assert_failure 1
@@ -170,6 +172,15 @@ online() {
   assert_line 'skip: mac-mini has no topology slot, so the exporter counts none of its 2 runners online'
   assert_line 'ok: ms-a2 3 of 3 online'
   refute_output --partial 'reason:'
+}
+
+@test "no topology slot read at all is unreadable, never every host skipped" {
+  online mac-mini -3600 0
+  online ms-a2 -3600 0
+  : > "$FIX/slots"
+  run "$RHD" --for 10m --at "$END"
+  assert_failure 1
+  assert_output 'unreadable: the runner exporter gave no topology slots (github_runner_pool_expected) now'
 }
 
 @test "exporter gaps never count as offline: readings must cover the window's start" {

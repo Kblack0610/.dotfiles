@@ -15,12 +15,10 @@
 # window (machine-mode's pin, ci_governor_effective_slots source "slots"): machine-mode stops the
 # runner units over its count, so that host is dark on purpose, and once the pin lifts its units
 # get the window to come back. A withheld or lent runner, or a release reservation's 0 (source
-# "reserve"), is still online on GitHub, so a held host is never dark. So is a host with no
-# topology slot (github_runner_pool_expected, from home-config apps/ci-topology): the exporter
-# counts online only the runners a slot names, so it never reads one of that host's runners online.
-# 2026-11-27 12:47Z: hc-1009 took every Unity slot out of the topology while each host still ran
-# its unity-pool-1 runner, idle on GitHub, until the ansible apply retired it, and four hosts
-# read dark.
+# "reserve"), is still online on GitHub, so a held host is never dark.
+# A host with no topology slot (github_runner_pool_expected, home-config apps/ci-topology) is
+# skipped too: the exporter counts online only the runners a slot names, so it can never read one
+# of that host's runners online. Its runners go unjudged here until the topology names them.
 #
 # Dark: at least one registered GitHub runner now, and no online runner
 # (github_runner_pool_online) at any exporter reading across the window. A reading the exporter
@@ -80,6 +78,8 @@ reg=$(prom_q "count by (host) ($W (github_runner_state{forge=\"github\",state!=\
   || { echo "unreadable: Prometheus did not answer the registered runners"; exit 1; }
 slotted=$(prom_q "count by (host) ($W (github_runner_pool_expected))" "$end") \
   || { echo "unreadable: Prometheus did not answer the topology's slots"; exit 1; }
+[ "$(jq '.data.result | length' <<<"$slotted")" != 0 ] \
+  || { echo "unreadable: the runner exporter gave no topology slots (github_runner_pool_expected) now"; exit 1; }
 gov=$(prom_q "$(known 'ci_governor_rate_usd_per_hour{basis="owned"}') or $(known 'ci_governor_power_state{state="running"}') == 1" "$end") \
   || { echo "unreadable: Prometheus did not answer the governor's hosts"; exit 1; }
 stop=$(prom_q "$(known 'ci_governor_power_state{state!="running"}') == 1" "$end") \
