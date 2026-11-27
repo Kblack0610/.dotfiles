@@ -4841,7 +4841,7 @@ wound_down() { compgen -G "$HOME/.agent/spin-down/$1.[rf]*" >/dev/null || compge
 # meanwhile stays owed. Each reopened pane is tagged @fleet_restored with the record's time, when its
 # server was last seen alive, so fleet-sessions runs its close timer on from the quiet it had then.
 restore_world() {
-  local f=$1 dry=$2 srv sess win cwd id mode project item it prompt said out failed=0 opened=0 owed=0 walked alive
+  local f=$1 dry=$2 srv sess win cwd id mode project item it prompt said out gone failed=0 opened=0 owed=0 walked alive
   walked=$(sha256sum < "$f")
   srv=$(jq -r .server "$f")
   alive=$(date -d "$(jq -r '.at // empty' "$f")" +%s 2>/dev/null) || alive=
@@ -4850,13 +4850,7 @@ restore_world() {
     if [ -z "$id" ]; then echo "$srv:$sess:$win: no conversation, not reopened ($cwd)"; continue; fi
     if wound_down "$id"; then echo "$srv:$sess:$win: wound down on purpose, skipped"; continue; fi
     if claude_pid_live "$id"; then echo "$srv:$sess:$win: already running, skipped"; continue; fi
-    if [ ! -d "$cwd" ]; then
-      # A reaped worktree is put back first (wt revive), as agent-ask reopen does: claude --resume finds the
-      # conversation by the directory it ran in. A folder wt cannot put back stays listed, not reopened.
-      if [ "$dry" = 1 ]; then echo "$srv:$sess:$win: $cwd is gone, would be put back with wt revive before the resume"
-      elif out=$(wt revive "$cwd" --branch "$("$HERE/sessions" _branch "$id")" </dev/null 2>&1); then echo "$srv:$sess:$win: ${out##*$'\n'}"
-      else echo "$srv:$sess:$win: $cwd is gone and wt could not put it back (${out##*$'\n'}), skipped (claude --resume $id)"; continue; fi
-    fi
+    gone=''; [ -d "$cwd" ] || gone=1
     item=$(agent-queue mine --sid "$id" --newest 2>/dev/null) || item=''
     it=''; [ -z "$item" ] || it=$(agent-queue show "$item" --json 2>/dev/null) || it=''
     mode=$(resume_mode "$id" "$(jq -r '.mode // empty' <<<"$it" 2>/dev/null)")
@@ -4864,12 +4858,22 @@ restore_world() {
     if [ "$(jq -r '[.state, .agent // "claude"] | join(" ")' <<<"$it" 2>/dev/null)" = 'running claude' ]; then
       prompt=${RESTORE_PROMPT//\%s/$item}; said=', prompted to carry on'
     fi
-    if [ "$dry" = 1 ]; then echo "$srv:$sess:$win: would reopen $id in $cwd ($mode)${item:+ for queue item $item}$said${prompt:+, in a wake batch}"; continue; fi
+    if [ "$dry" = 1 ]; then echo "$srv:$sess:$win: would reopen $id in $cwd${gone:+ (gone: wt revive is tried first)} ($mode)${item:+ for queue item $item}$said${prompt:+, in a wake batch}"; continue; fi
     # A prompted reopen is a wake: it reruns the session's gate, suite or Unity run. It waits on the
     # lost record for a batch (wake_take) and comes back with its prompt then, never at an empty one
     # nobody nudges.
     if [ -n "$prompt" ] && ! wake_take restore "$id"; then
       echo "$srv:$sess:$win: waits for a wake batch${item:+ (queue item $item)}"; RESTORE_OWED+=("$id"); owed=$((owed + 1)); continue
+    fi
+    # A reaped worktree is put back first (wt revive, as agent-ask reopen does): claude --resume finds the
+    # conversation by the directory it ran in. Only once its wake batch is due, so an owed pane's tree is not
+    # cut early. A folder wt cannot put back (or one it puts back without this subdirectory) is listed, not reopened.
+    if [ -n "$gone" ]; then
+      if ! out=$(wt revive "$cwd" --branch "$("$HERE/sessions" _branch "$id")" </dev/null 2>&1); then
+        echo "$srv:$sess:$win: $cwd is gone and wt could not put it back (${out##*$'\n'}), skipped (claude --resume $id)"; continue
+      fi
+      echo "$srv:$sess:$win: ${out##*$'\n'}"
+      [ -d "$cwd" ] || { echo "$srv:$sess:$win: wt put the tree back but $cwd is not in it, skipped (claude --resume $id)"; continue; }
     fi
     project=$(resolve_project_name "$cwd")
     if cmd_start --project "${project:-${cwd##*/}}" --server "$srv" --session "$sess" --window "$win" \

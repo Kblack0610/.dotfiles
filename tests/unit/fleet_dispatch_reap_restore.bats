@@ -1047,7 +1047,7 @@ LOG
   stub wt 'echo "wt $*" >> "$NOTES_FIXTURE/calls.log"; mkdir -p "$2"; echo "revived x on agent-1-branch"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore --dry-run
   assert_success
-  assert_output --partial "$W is gone, would be put back with wt revive before the resume"
+  assert_output --partial "would reopen conv-back in $W (gone: wt revive is tried first)"
   assert_not_called "wt revive"
   [ ! -d "$W" ] || fail "a dry run put the tree back"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
