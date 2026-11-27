@@ -32,7 +32,8 @@
 #                                     close-now first (CLOSE_JQ; the shepherd skill's triage verb)
 #   fleet-sessions close --self [<sid>]  this session's verdict from a fresh pass, as at the end of
 #                                     its turn, then its blockers; exit 0 on now (/wind-down auto). On a
-#                                     fleet worker it reads the lease holder's pushed row, not a pass
+#                                     fleet worker it reads the lease holder's pushed row, not a pass,
+#                                     with an open PR read again from this worker's refreshed PR store
 #   fleet-sessions stages [--from EPOCH] [--to EPOCH] [--json]  watch.log replayed over a window
 #                                     (default the last 24h): minutes and episodes per stage and
 #                                     reason, CI runs and reruns, PR open to merged, conflicts,
@@ -3438,6 +3439,7 @@ close_self_held() {
     dirty="$(dirty_paths "$cwd" "" | grep -c .)" || dirty=0
     ahead="$(unlanded_files "$cwd" "$(wp_base "$cwd")")"
   fi
+  row="$(held_pr_now "$row")" || { printf '%s\n' "$row"; return 1; }
   IFS=$'\t' read -r tx started < <("${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null | jq -rn --arg s "$CLOSE_SELF" '
     [inputs | select(.session_id == $s)][0] // {} | [(.transcript // "-"), (.started_at // "-" | tostring)] | @tsv')
   wake="$(pending_wakes "${tx:--}" "${started:--}" "$(date +%s)" | wake_phrase)"
@@ -3448,6 +3450,41 @@ close_self_held() {
     | .blockers += (if $a > 0 and (.blockers | any(test("not on the default branch")) | not) then ["\($a) file(s) not on the default branch here since the lease holder last read"] else [] end)' <<<"$row")"
   close_report "$(jq -c --argjson idle_close "$FLEET_IDLE_CLOSE_MIN" --argjson chat_close_h "$FLEET_CHAT_CLOSE_H" \
     --arg self "$CLOSE_SELF" "$CLOSE_JQ" <<<"$row")"
+}
+
+# held_pr_now <holder row> -> the row with its OPEN PR read again from this worker's own PR store. The holder's
+# store is its own and polled, so a PR agent-land merged here a minute ago still reads "open, CI PENDING" in
+# its row for up to a poll (ar-5947: eleven reports, ar-2786 fixed only the holder's own pass). prs_for asks
+# the store to read the forge first (store_refresh, CLOSE_SELF is set), and the PR is looked up by number in
+# the row's checkout here. MERGED or CLOSED replaces the row's open-PR blocker with what work_blockers says
+# for that state; files after the merge stay held by the "not on the default branch" blocker close_self_held
+# adds. A store that cannot be read is a wait (exit 1, said on stdout), never the holder's stale OPEN; a PR the
+# store here does not list (no origin, an unlisted repo) keeps the holder's row, which keeps the session. The
+# number is looked up in the cwd's repo only: a worker row's PR is always its checkout's (worker_git_facts).
+held_pr_now() {
+  local row="$1" pr state cwd line s ci why
+  IFS=$'\t' read -r pr state cwd < <(jq -r '[.pr // "-", .pr_state // "-", .cwd // "-"] | @tsv' <<<"$row")
+  [ "$state" = OPEN ] && [[ "$pr" =~ ^[0-9]+$ ]] && [ -d "$cwd" ] && git -C "$cwd" rev-parse --git-dir >/dev/null 2>&1 \
+    || { printf '%s\n' "$row"; return 0; }
+  # Its own pass cache (prs_for and store_refresh write under CACHE), local so a caller's pass cache is untouched.
+  local CACHE
+  CACHE="$(mktemp -d)"
+  trap 'rm -rf "$CACHE"; trap - RETURN' RETURN
+  line="$(prs_for "$cwd" | awk -F'\t' -v n="$pr" '$2 == n {print; exit}')"
+  # Only a failed refresh or PR list read is a wait: a trains or labels parse does not touch the PR's state.
+  if grep -q -e '^PR store refresh (' -e '^PR store (' "$CACHE/unreadable" 2>/dev/null; then
+    echo "after: this worker could not read $(sort -u "$CACHE/unreadable" | paste -sd, -) for PR #$pr; ask again once it reads"
+    return 1
+  fi
+  IFS=$'\t' read -r _ _ s ci _ <<<"$line"
+  case "${s:-}" in MERGED|CLOSED) ;; *) printf '%s\n' "$row"; return 0 ;; esac
+  why="$(work_blockers '' idle 0 0 0 30 1 0 0 "$pr" "$s" "${ci:--}" 1 - 1/1 -)"
+  # A merge settles the plan-less "nothing merged" reason too (work_blockers' merged); a close without one does not.
+  jq -c --arg n "$pr" --arg s "$s" --arg ci "${ci:--}" --arg why "$why" '
+    .pr_state = $s | .ci = (if $ci == "-" then null else $ci end)
+    | .blockers = ([(.blockers // [])[] | select(test("^PR #" + $n + " (open|failed validation)")
+                     or ($s == "MERGED" and test("^(no plan file|plan has no ## Phases checklist) and nothing merged$")) | not)]
+                   + ($why | split("; ") | map(select(. != ""))))' <<<"$row"
 }
 
 # worker_state_push <state document>: on the lease holder, each fleet worker with a session in the document gets
