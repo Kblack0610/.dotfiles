@@ -1675,12 +1675,31 @@ SH
     '[["main",10,50,"list",2,5,0.2,5],["bnb",4,30,"list",2,7.5,0.5,2],["codex",null,3.5,"list",0,null,null,null],["alt",null,null,"list",0,null,null,null],["lazer",2,20,"gateway",1,10,0.5,2],["reserve",5,10,"gateway",1,2,0.2,5]]'
   run "$SUBJECT" sources
   assert_success
-  assert_line '| bnb | claude | 20% | 4 | $30 list | 2 | $7.5 | 0.5 | 2 | - |'
-  assert_line '| codex | codex | 5% | - | $3.5 list | 0 | - | - | - | - |'
-  assert_line '| reserve | litellm-key | 50% | 5 | $10 gateway | 1 | $2 | 0.2 | 5 | lazer |'
+  assert_line '| bnb | claude | 20% | - | 4 | $30 list | 2 | $7.5 | 0.5 | 2 | - |'
+  assert_line '| codex | codex | 5% | - | - | $3.5 list | 0 | - | - | - | - |'
+  assert_line '| reserve | litellm-key | 50% | - | 5 | $10 gateway | 1 | $2 | 0.2 | 5 | lazer |'
   assert_line "- landed on no source: 5 (1 whose sessions' outcome rows name no account, 1 whose sessions have no outcome row yet (a hand session's lands when it ends), 2 name no session, 1 whose account is no source's)"
   run "$SUBJECT" sources --bogus
   assert_failure 2
+}
+
+@test "sources: a source a provider refusal holds shows its hold beside its used percent, json and table; an unreadable hold read leaves every source unheld" {
+  sources_fixture
+  : > "$ITEMS"
+  printf '#!/usr/bin/env bash\necho '"'"'{"codex":"a run on codex ended on a provider refusal, so it takes no start until 2026-11-27 09:00"}'"'"'\n' > "$SANDBOX/bin/holds-stub"
+  chmod +x "$SANDBOX/bin/holds-stub"
+  BENCH_HOLDS_CMD=holds-stub run "$SUBJECT" sources --json
+  assert_success
+  assert_equal "$(jq -c '[.read.holds]' <<<"$output")" '[true]'
+  assert_equal "$(jq -c '[.sources[] | select(.hold != null) | .name]' <<<"$output")" '["codex"]'
+  BENCH_HOLDS_CMD=holds-stub run "$SUBJECT" sources
+  assert_line '| codex | codex | 5% | a run on codex ended on a provider refusal, so it takes no start until 2026-11-27 09:00 | - | $3.5 list | 0 | - | - | - | - |'
+  BENCH_HOLDS_CMD=false run "$SUBJECT" sources --json
+  assert_success
+  assert_equal "$(jq -c '[.sources[].hold] | unique' <<<"$output")" '[null]'
+  assert_equal "$(jq -c '[.read.holds]' <<<"$output")" '[false]'
+  BENCH_HOLDS_CMD=false run "$SUBJECT" sources
+  assert_line '- holds: ? (fleet-dispatch provider-holds unreadable, so a held source reads as free)'
 }
 
 @test "sources: an agy source lands its harness's PRs and prices only its priced sessions, unknown until one is (never \$0)" {
@@ -1694,7 +1713,7 @@ SH
   assert_success
   assert_equal "$(jq -c '.sources[] | select(.name == "agy") | [.kind, .used, .usd, .usd_src, .landed]' <<<"$output")" '["agy",7,null,"list",1]'
   run "$SUBJECT" sources
-  assert_line '| agy | agy | 7% | - | - | 1 | - | - | - | - |'
+  assert_line '| agy | agy | 7% | - | - | - | 1 | - | - | - | - |'
   # a priced agy session is summed like a Codex one
   out_row game '{session_id: "a2", harness: "agy", updated_epoch: ($t - 3600), tokens_total: 40, cost_usd: 1.25}'
   run "$SUBJECT" sources --json
@@ -3009,6 +3028,31 @@ epics_fixture() {
   BENCH_NOW=$((T0 + 600)) run "$SUBJECT" epics --json --project nosuch
   assert_failure
   assert_output --partial 'no project nosuch: not listed, or its roadmap could not be read'
+}
+
+@test "epics reads the queue and the dispatcher's stats once beside its other reads, and its forecast skips only the drain (ar-1140)" {
+  epics_fixture
+  row a lab/game-agent-1:1 0 1 > "$SNAP"; sample_at 0
+  printf '#!/usr/bin/env bash\necho q >> "%s"\ncat "%s"\n' "$SANDBOX/calls" "$SANDBOX/all-items.jsonl" > "$SANDBOX/bin/all-items-stub"
+  printf '#!/bin/sh\necho s >> "%s"\necho "{\\"room_max_live\\":1}"\n' "$SANDBOX/calls" > "$SANDBOX/bin/stats-stub"
+  chmod +x "$SANDBOX/bin/all-items-stub" "$SANDBOX/bin/stats-stub"
+  unset BENCH_QUEUE_SLOTS
+  : > "$SANDBOX/calls"
+  BENCH_DISPATCH_STATS_CMD=stats-stub BENCH_NOW=$T0 run "$SUBJECT" epics --json --project game
+  assert_success
+  # the ETA is the one the serial read gave (the ETA test above): q1 on its slot, then the tail
+  run jq -c --argjson t "$T0" '.projects[0].epics[0].eta | [.p50 - $t, .basis]' <<<"$output"
+  assert_output '[10800,"queue+pace(default)"]'
+  run sort "$SANDBOX/calls"
+  assert_output $'q\ns'
+  # the items mode drops the drain and nothing else: .items is the same as the full forecast's
+  run bash -c '. "$1"; export BENCH_QUEUE_SLOTS=1; i=$(all-items-stub | jq -c "select(.state != \"done\")")
+    full=$(forecast_json "$2" "" "$i"); part=$(forecast_json "$2" "" "$i" items)
+    jq -e .drain <<<"$full" >/dev/null && jq -e ".drain == null" <<<"$part" >/dev/null && [ "$(jq -cS .items <<<"$full")" = "$(jq -cS .items <<<"$part")" ] && echo same' _ "$SUBJECT" "$T0"
+  assert_output same
+  # a queue that cannot be read is said (pipefail carries its status), not read as an empty queue
+  BENCH_ALL_ITEMS_CMD=false BENCH_DISPATCH_STATS_CMD=stats-stub BENCH_NOW=$T0 run "$SUBJECT" epics --json --project game
+  assert_line --partial 'epics: the agent queue could not be read'
 }
 
 @test "a sample freezes an epic's ETA when first seen and on a scope change, and scores it once when its rows land" {
