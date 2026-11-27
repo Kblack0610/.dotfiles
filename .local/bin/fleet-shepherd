@@ -1861,11 +1861,13 @@ score_pass() {
   proof_restore "$LEDGER/.proof-$id" || proof_watch "$LEDGER/log.md"
   log="$(mktemp)"
   tp="$(pass_transcript "$id")"
-  # A tool call is written as tool:<name>, so no line of the pass's prose can read as one.
-  [ -z "$tp" ] || jq -r 'select(.type == "assistant") | .message.content[]? | (.text // (if .name then "tool:\(.name)" else empty end))' "$tp" > "$log" 2>/dev/null
+  # The log is the pass's tool calls, each written tool:<name>, then its last text block alone: a
+  # report quoting another session ("would you like me to proceed?") is not the pass asking.
+  [ -z "$tp" ] || jq -Rrn '[inputs | fromjson? | select(.type == "assistant") | .message.content[]?] as $c
+    | ($c[] | select(.name) | "tool:\(.name)"), ([$c[] | .text // empty] | last // empty)' "$tp" > "$log" 2>/dev/null
   if [ -n "$why" ]; then verdict=STALLED
   elif [ "$n" = 0 ]; then verdict=NOOP
-  # The plan check is the plan-mode tool call and the pass asking leave of its own, never the
+  # The plan check is the plan-mode tool call and the pass ending on asking leave, never the
   # shared approval phrases: a pass reports sessions whose plans wait on the human, and "plan
   # awaiting your approval" in its report scored passes 2916535a and 5416cf0e STALLED with every
   # move logged (ar-646). A pass that only planned logs no move, so it is STALLED all the same.
