@@ -457,16 +457,22 @@ cell() {
     ev filed t-held "$(ago '-3 days')"; ev tagged t-held "$(ago '-3 days +1 hour')" by=ab12cd34 'why=+#hold/critical +#after/ar-1 +#ask/abc +#desk/human +#plan +#go -#size/s +#size/m'
     ev filed t-resized "$(ago '-3 days')"; ev tagged t-resized "$(ago '-3 days +1 hour')" by=human 'why=-#size/s +#size/l'
     ev filed t-mixed "$(ago '-3 days')"; ev tagged t-mixed "$(ago '-3 days +1 hour')" by=inbox-size 'why=+#pts/3 +#of/ar-9'
+    # the priority pass fills a why label with the priority (live shape, hc-1088): no correction; a human's why re-tag is
+    ev filed t-whyed "$(ago '-3 days')"; ev tagged t-whyed "$(ago '-3 days +1 hour')" by=inbox-priority 'why=+#why/fault +#normal'
+    ev filed t-whyed-human "$(ago '-3 days')"; ev tagged t-whyed-human "$(ago '-3 days +1 hour')" by=human 'why=+#why/upkeep'
+    # the backlog pass rewriting a filed row's words is a correction of it (ar-4669), not a pass-only normalization
+    ev filed t-retitled "$(ago '-3 days')"; ev edited t-retitled "$(ago '-3 days +1 hour')" by=inbox-triage
     ev filed t-planned "$(ago '-3 days')"; ev tagged t-planned "$(ago '-3 days +10 min')" 'why=+#size/m'
     ev planned t-planned "$(ago '-3 days +10 min +20 sec')"
   } > "$INGEST"
   run "$JUDGE_EVAL" inbox-triage --json
   assert_success
-  # tp: t-kept, t-late (dropped after the window), t-planned, t-sized, t-held (a pass's sizing or gating re-tag is no correction) and t-dup;
-  # fp: t-edited, t-moved, t-resized (a human's), t-mixed (a non-pass word); pending: t-young, t-young-edited
+  # tp: t-kept, t-late (dropped after the window), t-planned, t-sized, t-held (a pass's sizing or gating re-tag is no correction),
+  # t-whyed (the priority pass's label) and t-dup;
+  # fp: t-edited, t-moved, t-resized (a human's), t-mixed (a non-pass word), t-whyed-human, t-retitled; pending: t-young, t-young-edited
   run jq -c '.agents[0] | [.total | .verdicts, .tp, .fp, .pending, .scored, .precision], (.misses | map([.id, .answer]) | sort)' <<<"$output"
-  assert_line '[12,6,4,2,10,60]'
-  assert_line '[["t-edited","edited by ab12cd34"],["t-mixed","tagged by inbox-size"],["t-moved","rehomed"],["t-resized","tagged by human"]]'
+  assert_line '[15,7,6,2,13,53.8]'
+  assert_line '[["t-edited","edited by ab12cd34"],["t-mixed","tagged by inbox-size"],["t-moved","rehomed"],["t-resized","tagged by human"],["t-retitled","edited by inbox-triage"],["t-whyed-human","tagged by human"]]'
 }
 
 @test "inbox-priority: a priority the pass set is right when nobody else changes it for 48h; a later pass supersedes; triage ignores it" {
