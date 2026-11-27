@@ -595,7 +595,8 @@ admission_now() {
 # waited for a pass, and a pass then never took the backlog tier, retired by ar-4626; 2026-11-20, chain-after-stuck), returns
 # the last-ranked runnable item to its board row (cmd_return: lossless, the row is un-started and dispatch promotes it
 # again), so the add goes in under the cap. Never chosen: urgent or red work, the human's (human_work),
-# an item with no row to return to, a chain's head, a plan's phase (plan_phase_item), whatever the add's
+# an item with no row to return to, one with a PR (open_pr:, pr:) or a handoff: note (the return drops both,
+# ar-6119: a red low add returned an item with an open PR and its handoff, 2026-11-25), a chain's head, a plan's phase (plan_phase_item), whatever the add's
 # priority: its phases go in past the cap (a --plan, a phase pull), and a returned one waits on its row behind
 # dispatch's fill, which stops at the cap, so its chain stops there; a held urgent add's row ranks first and
 # goes in at the next free place (ar-5357). No such item: nothing moves, and admit holds the add
@@ -617,6 +618,7 @@ make_room() {
     | [.[] | select(.priority != "urgent" and (.row // "") != "")
         | select((" " + (.tags // "") + " ") | test(" (red|requested|#requested) ") | not)
         | select(.from != "human")
+        | select(((.open_pr // "") + (.pr // "") + (.handoff // "")) == "")
         | select(({"urgent":0,"high":1,"normal":2,"low":3}[.priority] // 1) >= $pr)
         | select(.slug as $s | $keep | contains(" \($s) ") | not)
         | select(.slug as $s | $heads | index($s) | not)] | reverse[] | "\(.slug)\t\(.file)"')" || return 0

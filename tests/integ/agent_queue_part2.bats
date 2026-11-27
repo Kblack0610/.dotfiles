@@ -2127,6 +2127,27 @@ Phase 2 of the plan $SANDBOX/plan.md: the doors." >/dev/null
   assert_output "p2,p3,u1"
 }
 
+@test "at the cap an urgent or red add never returns an item with an open PR, a recorded PR or a handoff; the plain item goes" {
+  # 2026-11-25 (ar-6119): a red low add returned an item with open_pr .dotfiles#3611 and a handoff
+  # to its row, and the return dropped the handoff.
+  "$AQ" add --project game --from shepherd --slug a "a" >/dev/null
+  legacy op "open_pr: Org/game#8" --project game --from shepherd --priority low "open pr"
+  legacy rp "pr: Org/game#9" --project game --from shepherd --priority low "recorded pr"
+  legacy ho "handoff: pushed to the branch, the tests are next" --project game --from shepherd --priority low "handed off"
+  for s in a op rp ho; do "$AQ" set "$s" row="game:gm-$s" >/dev/null; done
+  export AGENT_QUEUE_CAP=4
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority low --tags red --slug r1 "red one"
+  assert_success
+  assert_output --partial "returned a to its board row to make room for low r1 under the cap of 4"
+  # Negative control: what is left is the three with a PR or a handoff and the red add, so the next is held.
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority urgent --slug u1 "urgent one"
+  assert_failure 5
+  refute_output --partial "returned"
+  run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
+  assert_output "ho,op,r1,rp"
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/queued/*-ho.md)" handoff)" = "pushed to the branch, the tests are next" ]
+}
+
 @test "make_room returns an item held to a clock time, moves nothing for an add the lock refuses, and never returns an item that started" {
   "$AQ" add --project game --priority low --slug h "the human's" >/dev/null
   legacy n "tags: at:23:59" --project game --from shepherd --priority low "tonight"
