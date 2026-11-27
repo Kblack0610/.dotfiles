@@ -1639,8 +1639,7 @@ branch_runs() {
   one="${all}_${b//\//%2F}" # %2F: feat/x and feat_x are two branches
   if [ ! -f "$one" ]; then
     if [ ! -f "$all" ]; then
-      repo="$(ledger_repo "$d")" || rc=1
-      [ "$rc" != 0 ] || main_runs "$repo" > "$all" || rc=$?
+      if repo="$(ledger_repo "$d")"; then main_runs "$repo" > "$all" || rc=$?; else rc=1; fi
       case $rc in
         0) ;;
         3) echo '[]' > "$all" ;;

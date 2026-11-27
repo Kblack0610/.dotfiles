@@ -3778,13 +3778,17 @@ SS
   run main_health "$SANDBOX/wt"
   assert_output "RED"$'\t'"Tests @${red:0:8} (#7)"$'\t'"${red:0:8}"
   grep -qx 'runs forgejo:o/r' "$LEDGER_DIR/calls"
+  # gate_ci and activity_line read the same rows through branch_runs
+  run branch_runs "$SANDBOX/wt" master
+  assert_success
+  [ "$(jq 'length' <<<"$output")" = 2 ]
   # NEGATIVE CONTROL: without the mirror marker the checkout lands on origin, whose ledger has no runs
   rm "$SANDBOX/wt/.forgejo/workflows/mirror-to-github.yaml"
   rm -rf "$CACHE" "$MAIN_CACHE"; mkdir -p "$CACHE"; : > "$LEDGER_DIR/calls"
   run main_health "$SANDBOX/wt"
   assert_output OK
   grep -q '^runs ' "$LEDGER_DIR/calls"
-  ! grep -q 'forgejo:' "$LEDGER_DIR/calls"
+  [ -z "$(grep 'forgejo:' "$LEDGER_DIR/calls")" ]
 }
 
 @test "end to end: behind and conflicts measure the branch against the remote tip" {
