@@ -2624,6 +2624,95 @@ ASK-JUDGE-END'
   assert [ ! -e "$BATS_TEST_TMPDIR/judge.calls" ]
 }
 
+# drop_ask <slug> [<resume>]: PVqj0D's shape (ar-5962), an ask whose resume cancels a queue item.
+drop_ask() {
+  CLAUDE_CODE_SESSION_ID="sid-$1" "$AGENT_ASK" post --project demo --options 'drop=drop the row as moot|keep=keep it open' --recommend drop \
+    --context "$1 is a queue item" --resume "${2:-run: agent-queue cancel $1 --why moot --ask <id>}" "$1 is moot; drop it?"
+}
+# drop_items: hc-820, a #requested row dispatch promoted as in 67SUbf; mine, the human's own add; chore, a shepherd's.
+drop_items() {
+  export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
+  AGENT_QUEUE_PULL=dispatch "$AGENT_ASK_QUEUE_CMD" add --project demo --from board:demo:hc-820 --tags requested --slug hc-820 "take back a lent seat" >/dev/null
+  "$AGENT_ASK_QUEUE_CMD" add --project demo --from human --slug mine "the human's own add" >/dev/null
+  AGENT_QUEUE_PULL=dispatch "$AGENT_ASK_QUEUE_CMD" add --project demo --from shepherd --slug chore "a shepherd chore" >/dev/null
+}
+
+@test "post: an ask that could take the human's work off the queue is an approval the judge never answers; other work is judged (ar-5962)" {
+  drop_items
+  unset AGENT_ASK_NO_JUDGE
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0
+  fake_judge "$(score ship_deploy "" "the lending code is gone.")"
+  # The 67SUbf case: the resume cancels a #requested row.
+  run --separate-stderr drop_ask hc-820
+  assert_success
+  local id="$output"
+  assert_equal "$stderr" "agent-ask post: the ask could take hc-820 off the queue, work the human asked for, so it is an approval for the human"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'kind: approval'; assert_line 'status: pending'; assert_line 'judge: human'; assert_line 'judge_rule: gate'
+  refute_line 'answered_by: judge'
+  assert_equal "$("$AGENT_ASK" count demo)" 1
+  # from: human and a return --drop: the same.
+  id="$(drop_ask mine 'run: agent-queue return mine --why moot --drop' 2>/dev/null)"
+  run "$AGENT_ASK" show "$id"; assert_line 'kind: approval'; assert_line 'status: pending'
+  # A drop option on an ask naming the item, with no resume, is the answer cancel_guard reads: the same.
+  id="$(CLAUDE_CODE_SESSION_ID=sid-o "$AGENT_ASK" post --project demo --options 'drop=drop hc-820|keep=keep it' --recommend drop \
+    --context 'hc-820 is a queue item' 'drop hc-820 as moot?' 2>/dev/null)"
+  run "$AGENT_ASK" show "$id"; assert_line 'kind: approval'; assert_line 'status: pending'
+  assert [ ! -e "$BATS_TEST_TMPDIR/judge.calls" ]
+  # An agent answer is refused on it, as on any approval.
+  run env AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer "$id" drop
+  assert_failure 1
+  # With no options it offers drop|keep, so the human's drop lets the session's cancel through cancel_guard.
+  id="$(CLAUDE_CODE_SESSION_ID=sid-n "$AGENT_ASK" post --project demo --context 'hc-820 is a queue item' \
+    --resume 'run: agent-queue cancel hc-820 --why moot --ask <id>' 'is hc-820 moot now?' 2>/dev/null)"
+  run "$AGENT_ASK" show "$id"; assert_line 'kind: approval'; assert_line 'options: drop|keep'
+  "$AGENT_ASK" answer "$id" drop
+  run "$AGENT_ASK_QUEUE_CMD" cancel hc-820 --why moot --ask "$id"
+  assert_success
+  # Negative control: the same ask for work the human did not ask for stays a question the judge answers.
+  run --separate-stderr drop_ask chore
+  assert_success
+  run "$AGENT_ASK" show "$output"
+  assert_line 'kind: question'; assert_line 'answered_by: judge'; assert_line 'answer: drop'
+  assert [ -e "$BATS_TEST_TMPDIR/judge.calls" ]
+  # PVqj0D's a|b options: no answer of the human's could pass cancel_guard, so post refuses it and files nothing.
+  local n; n="$(find "$HOME/.agent/asks" -name '*.md' | wc -l)"
+  run --separate-stderr env CLAUDE_CODE_SESSION_ID=sid-ab "$AGENT_ASK" post --project demo --options 'a=drop it|b=keep it' \
+    --context 'mine is a queue item' --resume 'run: agent-queue cancel mine --why moot --ask <id>' 'drop mine?'
+  assert_failure 2
+  [[ "$stderr" == *"post it again with --options 'drop="* ]]
+  assert_equal "$(find "$HOME/.agent/asks" -name '*.md' | wc -l)" "$n"
+  # A queue it cannot read holds an ask that runs agent-queue for the human; one that does not stays a question.
+  id="$(AGENT_ASK_QUEUE_CMD=false drop_ask chore 2>/dev/null)"
+  run "$AGENT_ASK" show "$id"; assert_line 'kind: approval'
+  id="$(AGENT_ASK_QUEUE_CMD=false CLAUDE_CODE_SESSION_ID=sid-q "$AGENT_ASK" post --project demo 'is the lint green?' 2>/dev/null)"
+  run "$AGENT_ASK" show "$id"; assert_line 'kind: question'
+}
+
+@test "assume-due and sweep hold for the human an older ask that could take their work off the queue (ar-5962)" {
+  drop_items
+  unset AGENT_ASK_NO_JUDGE
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=30
+  fake_judge "$(score ship_deploy "" "the lending code is gone.")"
+  # Posted before the rule, which found no human work: a question, armed.
+  local a b
+  a="$(AGENT_ASK_QUEUE_CMD=true drop_ask hc-820 2>/dev/null)"; b="$(AGENT_ASK_QUEUE_CMD=true drop_ask chore 2>/dev/null)"
+  run "$AGENT_ASK" show "$a"; assert_line 'kind: question'; assert_line 'assume_answer: drop'
+  due "$a"
+  run --separate-stderr "$AGENT_ASK" assume-due
+  assert_success
+  [[ "$stderr" == *"$a not assumed: it could take hc-820 off the queue, work the human asked for"* ]]
+  run "$AGENT_ASK" show "$a"; assert_line 'status: pending'; refute_line --partial 'assume_at:'
+  # sweep judges it again and holds it for the human, never answered live.
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0
+  "$AGENT_ASK" sweep demo >/dev/null
+  run "$AGENT_ASK" show "$a"
+  assert_line 'status: pending'; assert_line 'judge: human'; assert_line 'judge_rule: gate'
+  refute_line 'answered_by: judge'
+  # Negative control: the same sweep answers the chore's ask.
+  run "$AGENT_ASK" show "$b"; assert_line 'status: answered'; assert_line 'answered_by: judge'
+}
+
 # ── live answers ─────────────────────────────────────────────────────────────
 
 # live_post <claude_session> <question>: a post from that Claude session, the way an agent asks.
