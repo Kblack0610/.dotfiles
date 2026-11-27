@@ -104,17 +104,19 @@ _ask() {  # _ask <agent> <status>
   [ "$(cat "$d/held_since")" -gt 1000 ] || fail "the BLOCKED pass after a start kept the first one: $(cat "$d/held_since")"
 }
 
-@test "proof_unhold with no reason ends any hold, and with one ends only a hold that names it" {
+@test "proof_hold_end ends any hold, where proof_unhold ends only a hold that names its reason" {
   export AGENTCTL_STATE_DIR="$SANDBOX/state"
   local d="$AGENTCTL_STATE_DIR/demo-runner"
   proof_outcome demo-runner BLOCKED "no account has room"
   proof_unhold demo-runner "load 40 on 16 cores"
   assert [ -s "$d/held_since" ]
-  proof_unhold demo-runner
+  proof_unhold demo-runner ""
+  assert [ -s "$d/held_since" ]
+  proof_hold_end demo-runner
   assert [ ! -e "$d/held_since" ]
   assert [ ! -e "$d/held_why" ]
   # No hold, nothing to end, and no state written.
-  run proof_unhold other-runner
+  run proof_hold_end other-runner
   assert_success
   assert [ ! -e "$AGENTCTL_STATE_DIR/other-runner" ]
 }

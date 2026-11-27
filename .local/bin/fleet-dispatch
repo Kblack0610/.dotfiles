@@ -8979,14 +8979,14 @@ settle() {
   # A kick is no pass: its outcome is its own unit's (fleet-dispatch-kick), never fleet-dispatch's, which
   # would set the hold and the liveness proof of the pass that reads the whole fleet (KICK, cmd_kick).
   # Run by hand it has no unit and publishes nothing (proof_runner_outcome). The unit's own outcome keeps
-  # agentctl from reading a run that said nothing as STALLED. Its start (WORKED) still ends the pass's
-  # standing hold, as a pass's start does (agent-proof.sh), so the Stopped line never counts through it.
+  # agentctl from reading a run that said nothing as STALLED. Its start (WORKED), by hand too, still ends the
+  # pass's standing hold, as a pass's start does (agent-proof.sh), so the Stopped line never counts through it.
   # shellcheck source=/dev/null
   . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null || return 0
   if [ "${KICK:-0}" = 0 ]; then proof_outcome fleet-dispatch "$1" "$2" 2>/dev/null || true
   else
     proof_runner_outcome "$1" "$2" 2>/dev/null || true
-    [ "$1" != WORKED ] || proof_unhold fleet-dispatch
+    [ "$1" != WORKED ] || proof_hold_end fleet-dispatch
   fi
 }
 

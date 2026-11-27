@@ -2733,8 +2733,7 @@ ingest_flow() {
 # kpi-thresholds (an empty step measures 0), for admission the items the queue cap held in 24h (agent-queue admission --json day)
 # against admission_held_24h_max, and for dispatch the minutes the runner's hold has stood
 # (`fleet-dispatch stopped`, which reads the live hold; none is 0) against DISPATCH_STARVED_MIN. Dispatch is stopped when
-# `fleet-dispatch stopped` says so and no floor started an item under the hold; with floor starts it
-# is held, not stopped, and floor_starts counts them. headline names the worst step, stopped first,
+# `fleet-dispatch stopped` says so: any start, a floor one too, ends the hold (agent-proof.sh, ar-4387). headline names the worst step, stopped first,
 # then the largest score past 1, in one sentence; null while none is. The bottleneck is the step
 # whose age p90 is furthest past its bound, null while every step is inside it. A source that cannot
 # be read leaves its numbers null. doors_24h and out_24h are ingest_flow's doors and out. Why each stage reads its record: plan can-we-update-our-gleaming-axolotl.
@@ -2771,11 +2770,10 @@ pipeline_json() {
     def tally: map({reason: ., n: 1}) | top;
     def mdur: floor | if . >= 1440 then "\(. / 1440 | floor)d\(. % 1440 / 60 | floor)h"
       elif . >= 60 then "\(. / 60 | floor)h\(. % 60 | if . < 10 then "0\(.)" else tostring end)m" else "\(.)m" end;
-    # A dispatch pass in a few words: its outcome, past the pass notes ahead of the gate. A start while
-    # the hold stood ($since) kept it standing, so it went past a closed gate on a floor.
-    def pass_why($since): .o as $o | .e as $e | .rest | sub("^why: "; "")
+    # A dispatch pass in a few words: its outcome, past the pass notes ahead of the gate.
+    def pass_why: .o as $o | .rest | sub("^why: "; "")
       | gsub("(tagged [0-9]+ for a plan|could not judge the new rows( \\([^)]*\\))?); "; "") as $r
-      | if $o == "WORKED" then (if $since != null and $e >= $since then "started on a floor, the main lane held" else "started" end)
+      | if $o == "WORKED" then "started"
         elif $o == "FAILED" and ($r | test("could not start")) then "a start failed"
         elif $r | test("pace target is") then "at the pace target"
         elif $r | test("^held \\(agent-hold") then "held by agent-hold"
@@ -2790,9 +2788,6 @@ pipeline_json() {
     | ($b // [] | map(select(on_board($prof) and ($live["\(.project):\(.id)"] | not)))) as $open
     | $stop.since as $since
     | (if $since != null then ($t - $since) / 60 | floor elif $hr != null then 0 else null end) as $held_min
-    # Items started while the hold stood: each kept it standing, so each went past a closed gate on a floor.
-    | (if $p == null then null else $p | map(select($since != null and .e >= $since and .o == "WORKED")
-         | .rest | (capture("started (?<n>[0-9]+)").n | tonumber) // (if test("started queue item") then 1 else 0 end)) | add // 0 end) as $floors
     | {inbox: (if $i == null then null
                else ($g // [] | map(select((.action | IN("added", "filed", "moved")) and (.text | type) == "string")) | group_by(.text) | map({key: .[0].text, value: (map(.e) | min)}) | from_entries) as $first
                  | {n: ($i | length), ages: [$i[] | $first[.] | numbers | mins],
@@ -2806,7 +2801,7 @@ pipeline_json() {
                   | .hold // "" | if . == "" then "runnable" else capture("^(hold:)?(?<k>[^ :(]+)").k // "held" end) | tally)} end),
        dispatch: (if $hr == null then null
                   else {n: $hr.runnable, ages: [],
-                        why: (if $p == null then null else ($p | map(select(.e > $t - 3600) | pass_why($since)))
+                        why: (if $p == null then null else ($p | map(select(.e > $t - 3600) | pass_why))
                               | if length == 0 then [{reason: "no pass in the last hour", n: 0}] else tally end end)} end),
        running: (held("running"; "started") | if . == null or $d == null then . else . + {why: ($d | map(select((.finished | epoch) > $t - 86400) | .end_reason | strings) | tally)} end),
        review: (held("review"; "review") | if . == null or $g == null then . else . + {why: ([$g[] | select(.e > $t - 86400 and .action == "land-failed")
@@ -2825,12 +2820,12 @@ pipeline_json() {
           dwell_p50_min: $f.dwell_p50_min, dwell_p90_min: $f.dwell_p90_min, bound: $bound,
           ratio: (if $bound == null or $bound <= 0 or $p90 == null then null else $p90 / $bound * 100 | round / 100 end),
           measure: $mb.m, measure_bound: $mb.b, score: $score,
-          verdict: (if $s == "dispatch" and $stop != null and $floors == 0 then "stopped" elif $score == null then "-"
+          verdict: (if $s == "dispatch" and $stop != null then "stopped" elif $score == null then "-"
                     elif $score >= 1 then "over" elif $score >= 0.8 then "near" else "ok" end),
           why: $w.why, clears: (if $s == "dispatch" then $stop.clears else null end),
           problems_n: $f.problems_n, problems: ($f.problems // []),
           blocked: (if $s == "queued" and $stop != null then $stop.line else null end)}
-       + (if $s == "dispatch" then {held: ($stop.why // $hr.held), held_kind: $hr.held_kind, floor_starts: $floors} else {} end)] as $rows
+       + (if $s == "dispatch" then {held: ($stop.why // $hr.held), held_kind: $hr.held_kind} else {} end)] as $rows
     | (if $a == null or $r == null then null
        else ($r.steps | map(.step as $s | (.items // [])[] | {key: ., value: $s}) | from_entries) as $rec
          | ($a | map({key: .slug, value: .state}) | from_entries) as $st
@@ -2845,7 +2840,6 @@ pipeline_json() {
           else " (\(.score * 100 | round)% of \(.measure_bound | mdur))" end) as $of
          | (if .step == "dispatch" then (if .measure == null then "stopped"
                                          elif .verdict == "stopped" then "stopped \(.measure | mdur)"
-                                         elif .floor_starts > 0 then "main lane held \(.measure | mdur), floors started \(.floor_starts)"
                                          else "held \(.measure | mdur)" end) + $of
             elif .step == "admission" then "\(.measure) rows held in 24h\($of)"
             else "age p90 \(.measure | mdur)\($of)" end) as $m
