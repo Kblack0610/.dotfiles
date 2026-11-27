@@ -11,6 +11,7 @@ What lives in this repo's `docs/` tree. Cross-repo rules (CI, plans, skills, UI,
 
 - [desk.md](desk.md): `desk`, which switches the bar and the notifier.
 - [laptop-keyboard.md](laptop-keyboard.md): `laptop-kbd`, which turns the laptop keyboard off and on.
+- [controllers.md](controllers.md): the slot map and per-OS steps for moving the pocket Bluetooth controllers between devices.
 
 ## Operations
 
