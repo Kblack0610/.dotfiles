@@ -394,7 +394,10 @@ EOF
   assert_success
   run grep -F "agent-queue show asker-item --json" "$NOTES_FIXTURE/calls.log"
   assert_success
-  run grep -x "agent-queue set $slug origin=ask row=agent-runtime:ar-9 | sid= item=" "$NOTES_FIXTURE/calls.log"
+  run grep -x "agent-queue set $slug origin=ask | sid= item=" "$NOTES_FIXTURE/calls.log"
+  assert_success
+  # The row goes in its own set, so a refused row never costs the item its origin.
+  run grep -x "agent-queue set $slug row=agent-runtime:ar-9 | sid= item=" "$NOTES_FIXTURE/calls.log"
   assert_success
 }
 
@@ -408,7 +411,10 @@ EOF
   assert_success
   run grep -F "agent-queue mine --sid asker-sid --newest" "$NOTES_FIXTURE/calls.log"
   assert_success
-  run grep -x "agent-queue set $slug origin=ask row=agent-runtime:ar-9 | sid= item=" "$NOTES_FIXTURE/calls.log"
+  run grep -x "agent-queue set $slug origin=ask | sid= item=" "$NOTES_FIXTURE/calls.log"
+  assert_success
+  # The row goes in its own set, so a refused row never costs the item its origin.
+  run grep -x "agent-queue set $slug row=agent-runtime:ar-9 | sid= item=" "$NOTES_FIXTURE/calls.log"
   assert_success
   # Negative control: an asking item with no row gives the resume item none, and says so.
   id="$(CLAUDE_CODE_SESSION_ID=other-sid gate beta)"
@@ -417,9 +423,17 @@ EOF
   slug="ask-resume-$(tr A-Z a-z <<<"$id")"
   AQ_MINE=asker-item run ask-resume "$id"
   assert_success
-  assert_output --partial "names no queue item with a board row"
+  assert_output --partial "asked by queue item asker-item, which has no board row"
   run grep -x "agent-queue set $slug origin=ask | sid= item=" "$NOTES_FIXTURE/calls.log"
   assert_success
+  run grep -c "agent-queue set $slug row=" "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # An ask no queue item posted (a runner's) has no row to share and says nothing about it.
+  id="$(CLAUDE_CODE_SESSION_ID=runner-sid gate beta)"
+  "$AGENT_ASK" answer "$id" approve >/dev/null 2>&1
+  run ask-resume "$id"
+  assert_success
+  refute_output --partial "no board row"
 }
 
 @test "a model resume that opened a PR and did not land it leaves its item in review, not done" {

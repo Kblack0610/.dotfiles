@@ -979,9 +979,16 @@ OUT
   assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)" status)" ok
   run grep -c 'ptask game --agent done fix crash' "$NOTES_FIXTURE/calls.log"
   assert_output 0
-  # Negative control: with the other item gone, the same close takes the row.
+  # A --repeat rerun on the row keeps the slug, and is still another item: told apart by its file.
+  local done_it; done_it=$(agent-queue show fix-crash --json)
   rm "$AGENT_QUEUE_DIR"/queued/*-asker.md
-  run close_row fix-crash
+  started_item fix-crash '' '' '' 'board:game:fix crash' queued
+  run close_row fix-crash '' "$done_it"
+  assert_success
+  refute_output --partial 'closed game'
+  # Negative control: with no other item on the row, the same close takes it.
+  rm "$AGENT_QUEUE_DIR"/queued/*-fix-crash.md
+  run close_row fix-crash '' "$done_it"
   assert_success
   assert_output --partial 'closed game: fix crash (queue item fix-crash, PR o/game#12 merged)'
 }

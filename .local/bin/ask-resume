@@ -78,10 +78,11 @@ run_resume() { # $1=id $2=project $3=command
       --project "$project" --from "ask:$id" --slug "$slug" --title "chore(asks): resume answered ask $id" "$cmd" |
       sed -n 's/^running \([^ ]*\) -> .*/\1/p')"
     [ -n "$slug" ] || { echo "ask-resume: $id not resumed: agent-queue did not file its item (above); ask-resume --all retries it" >&2; return 1; }
-    local own=(origin=ask)
-    readarray -t -O 1 own < <(asking_row "$id")
-    agent-queue set "$slug" "${own[@]}" >/dev/null || echo "ask-resume: $slug has no origin or row: agent-queue set $slug ${own[*]}" >&2
-    [ "${#own[@]}" -gt 1 ] || echo "ask-resume: $id names no queue item with a board row, so $slug has none (the PR body's Task: line links one)" >&2
+    agent-queue set "$slug" origin=ask >/dev/null || echo "ask-resume: $slug has no origin: agent-queue set $slug origin=ask" >&2
+    local own=()
+    readarray -t own < <(asking_row "$id")
+    [ "${#own[@]}" = 0 ] || agent-queue set "$slug" "${own[@]}" >/dev/null ||
+      echo "ask-resume: $slug has no board row: agent-queue set $slug ${own[*]}" >&2
     # The run's Claude session id is chosen here and claimed, as fleet-dispatch start claims its own, so
     # reap and fleet-bench see a witnessed item, not an ownerless one.
     sid="$(uuidgen | tr "[:upper:]" "[:lower:]")"
@@ -122,8 +123,9 @@ run_resume() { # $1=id $2=project $3=command
 }
 
 # asking_row <ask id>: the board row of the queue item that posted the ask, as `agent-queue set` words
-# (row=, and profile= and lane= when it has them), one a line; nothing when no item or no row. The item is
-# the ask's `task:` (agent-ask post records $AGENT_QUEUE_ITEM), else the one its Claude session works.
+# (row=, and profile= and lane= when it has them), one a line; nothing when no item or no row, and a line on
+# stderr when the item has no row. The item is the ask's `task:` (agent-ask post records $AGENT_QUEUE_ITEM),
+# else the one its Claude session works; an ask no queue item posted (a runner's) has none, and says nothing.
 # The resume item shares that row, as a second item may (agent-land and reap close it with the last
 # of them to land), so its PR has the row release-links reads (ar-4657: 8nWVaH had an empty task:).
 asking_row() { # $1=id
@@ -136,7 +138,8 @@ asking_row() { # $1=id
     [ -n "$sid" ] && task="$(agent-queue mine --sid "$sid" --newest 2>/dev/null)" && [ -n "$task" ] || return 0
     it="$(agent-queue show "$task" --json 2>/dev/null)" || return 0
   fi
-  jq -r 'select((.row // "") != "") | "row=\(.row)", (.profile // empty | select(. != "") | "profile=\(.)"), (.lane // empty | select(. != "") | "lane=\(.)")' <<<"$it"
+  jq -r 'select((.row // "") != "") | "row=\(.row)", (.profile // empty | select(. != "") | "profile=\(.)"), (.lane // empty | select(. != "") | "lane=\(.)")' <<<"$it" |
+    grep . || echo "ask-resume: $1 was asked by queue item $task, which has no board row, so its resume item has none" >&2
 }
 
 # live_start_item <run: command>: the command with its `fleet-dispatch start --item <slug>` pointed at the
