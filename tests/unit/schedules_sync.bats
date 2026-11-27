@@ -1489,6 +1489,12 @@ night_file() {
   assert_success
   run jq -c '.repos[0] | [.error, .night.night, .night.sha, .night.error]' "$STATE"
   assert_output '[null,{"test.yml":"Tests (all)"},"n1","HTTP 502"]'
+  # The next good read (a 304) clears it: a kept error held every nightly: item on the repo for good.
+  rm "$GHD/repos_o_game_contents_config_ci_nightly.json_ref_main.fail"
+  run "$SUBJECT"
+  assert_success
+  run jq -c '.repos[0].night | [.night, .sha, has("error")]' "$STATE"
+  assert_output '[{"test.yml":"Tests (all)"},"n1",false]'
 }
 
 @test "negative control: a nightly.json that is not a JSON object is kept with its error, never read as an empty night" {
@@ -1498,6 +1504,10 @@ night_file() {
   assert_success
   run jq -c '.repos[0].night | [.night, .held, .sha, .error]' "$STATE"
   assert_output '[{},{},"n3","config/ci/nightly.json: not a JSON object"]'
+  # Unchanged on the next pass, it stays broken.
+  run "$SUBJECT"
+  run jq -c '.repos[0].night.error' "$STATE"
+  assert_output '"config/ci/nightly.json: not a JSON object"'
 }
 
 # ---- PR store ----

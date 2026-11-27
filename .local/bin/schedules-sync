@@ -164,15 +164,12 @@ A repo gh cannot read keeps its last good entry, with `error` set and `synced_at
 the last success, so a reader can tell stale from fresh per repo; the exit status is 1, and
 the other repos still land. A repo with no scheduled workflow is an empty list, not an error.
 
-`pending` reads the state file and nothing else. Each scheduled workflow's cron slots on
-one local date (--day, else today) must each have a finished run, or be past the slot (or
-the run's start) plus the workflow's timeout, which a triage reads as red. A slot still to
-come that day holds. agent-queue passes the date of the item's `at:` tag, so a nightly pass that
-finished stays released: judged by today, a 22:00 slot (soak.yml) left a hold free only
-until midnight, when every slot of the new day held again (nightly-validate-20261108).
-A missing file, a repo not in it, or one not synced in 30 minutes holds (fails
-closed, like the `pr:` hold when gh cannot answer). A frequent cron holds all day, so tag
-only repos whose schedules run nightly.
+`pending` reads the state file's night set and the run ledger, never a cron: a frequent
+cron (drop-closed-gates.yml) once held a nightly: item all day (ar-1585). How it judges the
+night set's full runs is on pending(). agent-queue passes the date of the item's `at:` tag, so
+a night that finished stays released past midnight (nightly-validate-20261108). A missing
+file, a repo not in it, one not synced in 30 minutes, no night set, or no ledger holds (fails
+closed, like the `pr:` hold when gh cannot answer).
 """
 
 import base64
@@ -219,6 +216,7 @@ QUARANTINE_FILES = ("quarantine.py", "quarantine.txt")
 QUARANTINE_WITH = ("flake_patterns.py", "flake-causes.json")
 QUARANTINE_RECHECK = timedelta(days=1)  # how often a repo with no quarantine is asked again
 NIGHT_FILE = "config/ci/nightly.json"  # the repo's night set: which workflows the nightly runs (night, then wide) or holds
+NIGHT_BROKEN = f"{NIGHT_FILE}: not a JSON object"  # the error a broken file keeps until its sha moves
 # The nightly: the full run's title (playground scripts/test/last-nightly.py TITLES), its joined
 # summary, uploaded only when every shard reported (test.yml playmode-report), and each job's
 # suite output, where results.py names a quarantined test that passed.
@@ -1662,7 +1660,9 @@ def night_set(repo, base, prev, t):
         kept = {"night": dict(old, error=str(e))} if old else {}
         return kept or ({"night_absent": prev["night_absent"]} if absent else {})
     if got is None or (old and isinstance(got, dict) and got.get("sha") == old.get("sha")):
-        return {"night": dict(old, etag=etag or old.get("etag"))}  # unchanged since the last pass
+        # Unchanged since the last pass: a read error from an earlier pass clears, a broken file's stays.
+        kept = {k: v for k, v in old.items() if k != "error" or v == NIGHT_BROKEN}
+        return {"night": dict(kept, etag=etag or old.get("etag"))}
     if not isinstance(got, dict) or not got.get("sha"):
         return {"night_absent": iso(t)}
     try:
@@ -1671,7 +1671,7 @@ def night_set(repo, base, prev, t):
     except ValueError:
         doc = None
     if doc is None:  # a broken file is shown as one, never read as an empty night
-        return {"night": {"night": {}, "wide": {}, "held": {}, "sha": got["sha"], "etag": etag, "error": f"{NIGHT_FILE}: not a JSON object"}}
+        return {"night": {"night": {}, "wide": {}, "held": {}, "sha": got["sha"], "etag": etag, "error": NIGHT_BROKEN}}
     pick = lambda k: {f: str(n) for f, n in (doc.get(k) or {}).items()} if isinstance(doc.get(k), dict) else {}
     return {"night": {"night": pick("night"), "wide": pick("wide"), "held": pick("held"), "sha": got["sha"], "etag": etag}}
 
