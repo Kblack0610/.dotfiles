@@ -11,7 +11,7 @@
 # Registry: ~/.agent/sessions/{project}/sessions.jsonl (one JSON line/session).
 # Live state: ~/.claude/sessions/<pid>.json, written by the Claude CLI itself -
 # gives sessionId, cwd, name and busy/idle without any hook of ours.
-# Agent axis only - nothing here touches ~/.notes/inbox.
+# Agent axis only - nothing here touches ~/.notes/captures.
 
 set -uo pipefail
 

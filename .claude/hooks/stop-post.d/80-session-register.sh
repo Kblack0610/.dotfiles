@@ -4,7 +4,7 @@
 #
 # Key points:
 #   - Destination is the AGENT axis ~/.agent/sessions/{project}/sessions.jsonl,
-#     never the human ~/.notes/inbox (low-noise, agent-facing by design).
+#     never the human ~/.notes/captures (low-noise, agent-facing by design).
 #   - "Meaningful" = the session actually did work: >=1 Edit/Write tool_use in
 #     the transcript, OR a dirty git worktree, OR an agentctl runner (AGENTCTL_NAME,
 #     which the agentctl runner wrapper exports): a read-only runner still spends, and its row
@@ -44,7 +44,10 @@ fi
 
 # --- meaningful gate: real work only, else skip silently ---
 # grep -c prints "0" and exits 1 on no match; capture stdout only, default empty->0.
-EDITS=$(grep -c -E '"name":"(Edit|Write|MultiEdit|NotebookEdit)"' "$TRANSCRIPT" 2>/dev/null)
+# shellcheck source=../../../.local/lib/edit-tools.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../../.local/lib/edit-tools.sh" &&
+  EDIT_RE="$(edit_tools_re)" || { echo "80-session-register: no edit-tool list, so the session was not registered" >&2; exit 0; }
+EDITS=$(grep -c -E "\"name\":\"($EDIT_RE)\"" "$TRANSCRIPT" 2>/dev/null)
 EDITS=${EDITS:-0}
 DIRTY=false
 cd "$PROJECT_DIR" 2>/dev/null || true

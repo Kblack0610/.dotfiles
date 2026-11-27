@@ -18,12 +18,25 @@ fill() { head -c "$2" /dev/zero | tr '\0' x > "$1"; }
 
 payload() { printf '{"tool_name":"Edit","tool_input":{"file_path":"%s","new_string":"x"}}' "$1"; }
 
-@test "a memory index and other files have no size budget" {
-  printf '%s\n' "$(printf 'x%.0s' $(seq 1 300))" > "$BATS_TEST_TMPDIR/MEMORY.md"
+@test "a MEMORY.md outside a memory dir and other files have no size budget" {
+  fill "$BATS_TEST_TMPDIR/MEMORY.md" 30000
   run bash "$HOOK" <<< "$(payload "$BATS_TEST_TMPDIR/MEMORY.md")"
   assert_success
+  fill "$BATS_TEST_TMPDIR/other.md" 30000
   run bash "$HOOK" <<< "$(payload "$BATS_TEST_TMPDIR/other.md")"
   assert_success
+}
+
+@test "a memory index over 8 KB warns; at 8 KB it passes" {
+  fill "$IDX" 8193
+  run bash "$HOOK" <<< "$(payload "$IDX")"
+  assert_failure 2
+  assert_output --partial "memory index MEMORY.md"
+  assert_output --partial "> 8192"
+  fill "$IDX" 8192
+  run bash "$HOOK" <<< "$(payload "$IDX")"
+  assert_success
+  assert_output ""
 }
 
 @test "the global CLAUDE.md over 20 KB warns" {

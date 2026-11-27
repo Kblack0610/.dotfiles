@@ -33,6 +33,9 @@ pub const SHARED_BRANCHES: [&str; 4] = ["main", "master", "develop", "HEAD"];
 
 /// How far back `check` holds the stores to each other: the runs ledger's window.
 const CHECK_SECS: i64 = crate::builds::KEEP_DAYS * 86400;
+/// How near the window's edge a repo's oldest ledger run must be for an older run to have
+/// aged out: a day covers the hours between `schedules-sync` passes, with room.
+const EDGE_SECS: i64 = 86400;
 
 /// A tag younger than this has no lab version yet by design: agentctl-wave-roll freezes it on its
 /// next pass (`SCHEDULE='*:7/30'` in release-window.conf), so the grace is two of its cycles.
@@ -782,6 +785,44 @@ impl<'a> Graph<'a> {
         h
     }
 
+    /// Each Deployment recorded since `since` that names a run of a repo the ledger holds and the
+    /// ledger lacks.
+    fn unrecorded_runs(&self, runs: &[Run], since: i64) -> Vec<String> {
+        let mut out = vec![];
+        let ran: HashSet<(String, u64)> = runs.iter().map(|r| (repo_key(&r.repo), r.id)).collect();
+        let repos: HashSet<&str> = ran.iter().map(|(r, _)| r.as_str()).collect();
+        // The ledger keeps a run by when it was created, and a Deployment can be recorded
+        // long after its run (a backfill). A run older than the oldest its repo's ledger
+        // holds has aged out, not gone missing, but only while that oldest run sits at the
+        // window's edge: a ledger that starts later was truncated or never synced, a gap.
+        // Run ids rise with time within a repo on either forge (a Forgejo id is per repo).
+        let mut oldest: HashMap<String, (u64, i64)> = HashMap::new();
+        for r in runs {
+            let at = crate::fleet::ts(&r.created_at).unwrap_or(i64::MAX);
+            let o = oldest.entry(repo_key(&r.repo)).or_insert((r.id, at));
+            if r.id < o.0 {
+                *o = (r.id, at);
+            }
+        }
+        for r in self.i.channels {
+            for d in r.deploys.history.iter().filter(|d| d.at >= since) {
+                let Some(run) = d.url.as_deref().and_then(run_of) else {
+                    continue;
+                };
+                let aged = oldest
+                    .get(&run.0)
+                    .is_some_and(|&(id, at)| run.1 < id && at - since <= EDGE_SECS);
+                if repos.contains(run.0.as_str()) && !ran.contains(&run) && !aged {
+                    out.push(format!(
+                        "{} {}: deploy {} names run {}#{} the runs ledger lacks",
+                        r.project, r.id, d.version, run.0, run.1
+                    ));
+                }
+            }
+        }
+        out
+    }
+
     /// Where the stores disagree, one line each, sorted: what `hub releases check` prints.
     /// Inside the ledger's window: a PR an item or a tag names that the store lacks (in a repo
     /// the store holds), and a Deployment naming a run of a repo the ledger holds that the
@@ -889,22 +930,7 @@ impl<'a> Graph<'a> {
             }
         }
         if let Some(runs) = f.runs {
-            let ran: HashSet<(String, u64)> =
-                runs.iter().map(|r| (repo_key(&r.repo), r.id)).collect();
-            let repos: HashSet<&str> = ran.iter().map(|(r, _)| r.as_str()).collect();
-            for r in self.i.channels {
-                for d in r.deploys.history.iter().filter(|d| d.at >= since) {
-                    let Some(run) = d.url.as_deref().and_then(run_of) else {
-                        continue;
-                    };
-                    if repos.contains(run.0.as_str()) && !ran.contains(&run) {
-                        out.push(format!(
-                            "{} {}: deploy {} names run {}#{} the runs ledger lacks",
-                            r.project, r.id, d.version, run.0, run.1
-                        ));
-                    }
-                }
-            }
+            out.extend(self.unrecorded_runs(runs, since));
         }
         if let Some(links) = f.links {
             out.extend(self.check_links(links, f, now));
@@ -1116,7 +1142,7 @@ impl<'a> Graph<'a> {
                 }
                 for n in &v.prs {
                     match line.tags.iter().find(|t| t.prs.contains(n)) {
-                        Some(t) if t.version != bare => out.push(format!(
+                        Some(t) if !shipped_by(&t.version, bare) => out.push(format!(
                             "{p} lab {}: row PR #{n} shipped in {}",
                             v.version, t.tag
                         )),
@@ -1177,6 +1203,30 @@ fn plain_version(v: &str) -> bool {
         && parts
             .iter()
             .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Whether a row PR in tag version `shipped` is in lab version `rolled`: the same version, or one
+/// that sorts before it (`1.3.0`, `1.4.0-rc1` before `1.4.0`), since a PR in an earlier tag is in
+/// every later release and a row closed after its PR shipped is no red (ucp-2766, ucp-1270,
+/// ucp-3000). Order is numeric `major.minor.patch`, a pre-release before its own release, as in
+/// semver; a version that does not parse orders nothing.
+fn shipped_by(shipped: &str, rolled: &str) -> bool {
+    shipped == rolled || shipped_before(shipped, rolled)
+}
+
+fn shipped_before(shipped: &str, rolled: &str) -> bool {
+    let key = |v: &str| {
+        let (core, pre) = v.split_once('-').map_or((v, false), |(c, _)| (c, true));
+        if !plain_version(core) {
+            return None;
+        }
+        let nums = core
+            .split('.')
+            .map(|p| p.parse::<u64>().ok())
+            .collect::<Option<Vec<_>>>()?;
+        Some((nums, !pre))
+    };
+    matches!((key(shipped), key(rolled)), (Some(s), Some(r)) if s < r)
 }
 
 /// `2026-11-11`: the day the links are held from.
@@ -2021,6 +2071,82 @@ mod tests {
     }
 
     #[test]
+    fn a_deploy_naming_a_run_older_than_the_ledger_holds_is_not_a_gap() {
+        let now = 1_800_000_000;
+        let edge = now - CHECK_SECS;
+        let mut ch = channel(
+            "web",
+            vec![("v1.2.0", "ok", now - 50), ("v1.1.0", "ok", now - 60)],
+            None,
+        );
+        ch.project = "app".into();
+        // Recorded inside the window, by a backfill, for a run the ledger has aged out.
+        ch.deploys.history[0].url = Some("https://github.com/Acme/app/actions/runs/40".into());
+        // Newer than the oldest run the ledger holds: a real gap.
+        ch.deploys.history[1].url = Some("https://github.com/Acme/app/actions/runs/60".into());
+        let chans = vec![ch];
+        let (lines, live) = (HashMap::new(), HashMap::new());
+        let g = Graph::new(Inputs {
+            lines: &lines,
+            channels: &chans,
+            items: &[],
+            prs: &[],
+            live: &live,
+            registry: None,
+            since: 0,
+            run_tags: &[],
+        });
+        let at = |repo, id, t: i64| {
+            let when = chrono::DateTime::from_timestamp(t, 0).unwrap().to_rfc3339();
+            run(repo, id, "main", "x", &when)
+        };
+        let check = |runs: &[Run]| {
+            g.check(
+                &Facts {
+                    runs: Some(runs),
+                    ..Default::default()
+                },
+                now,
+            )
+        };
+        let gap = "app web: deploy v1.1.0 names run acme/app#60 the runs ledger lacks";
+        let old = "app web: deploy v1.2.0 names run acme/app#40 the runs ledger lacks";
+        // The repo's oldest run sits at the window's edge; another repo's lower ids (a Forgejo
+        // index counts per repo) set no floor for it.
+        let runs = [
+            at("Acme/app", 55, edge + 3600),
+            at("Acme/app", 70, now - 10),
+            at("Acme/new", 3, now - 10),
+        ];
+        assert_eq!(check(&runs), [gap]);
+        // A ledger that starts well inside the window was truncated: both are gaps.
+        let runs = [
+            at("Acme/app", 55, edge + 5 * 86400),
+            at("Acme/app", 70, now),
+        ];
+        assert_eq!(check(&runs), [gap, old]);
+    }
+
+    #[test]
+    fn a_tag_ships_by_its_own_or_a_later_release_and_odd_ones_only_by_their_own() {
+        for (shipped, rolled, before) in [
+            ("1.3.0", "1.4.0", true),
+            ("1.3.9", "1.10.0", true),
+            ("1.4.0-rc1", "1.4.0", true),
+            ("1.4.0", "1.4.0", true),
+            ("next", "next", true),
+            ("1.5.0", "1.4.0", false),
+            ("1.4.0", "1.4.0-rc1", false),
+            ("1.4.0-rc1", "1.4.0-rc2", false),
+            ("1.3", "1.4.0", false),
+            ("1.3.0", "next", false),
+            ("99999999999999999999999.0.0", "1.4.0", false),
+        ] {
+            assert_eq!(shipped_by(shipped, rolled), before, "{shipped} by {rolled}");
+        }
+    }
+
+    #[test]
     fn the_link_checks_name_each_gap_from_the_day_they_are_held() {
         let since = 1_794_384_000; // 2026-11-11
         let now = since + 5000;
@@ -2147,7 +2273,7 @@ mod tests {
         links.versions.insert(
             "app".into(),
             Versions {
-                // v1.1.0 was rolled before the day and has no tag: history, not a red.
+                // v1.1.0 predates the day; v1.4.0's #11 is in the earlier app-v1.3.0, a late close.
                 list: vec![
                     v("v1.1.0", since - 50, vec![]),
                     v("v1.4.0", since + 5, vec![11, 13]),
@@ -2211,7 +2337,6 @@ mod tests {
                 "app deployWorkflows .github/workflows/gone.yml: not a workflow on origin/main",
                 "app deployWorkflows .github/workflows/odd.yml: give the targets it deploys, or a reason it deploys none",
                 "app lab v1.4.0: no tag of the line",
-                "app lab v1.4.0: row PR #11 shipped in app-v1.3.0",
                 "app lab v1.4.0: row PR #13 is in no tag of the line",
                 "lib: tag glob lib-v* matches no tag, and the lab has 1 shipped version(s)",
             ]

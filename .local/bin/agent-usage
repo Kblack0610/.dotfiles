@@ -677,6 +677,11 @@ cmd_spend() {
 # The queue-cost-export watch runs it: on 2026-11-08 16 of 16 queue sessions exported nothing (#1585)
 # and nothing noticed. Exit 0 when all export or none has run <age>, 1 naming each that does not, 2
 # when Prometheus cannot be read (an `unreadable: ` line, as spend check), 64 for bad arguments.
+# A by_runner rule with no series at all is Prometheus missing its evaluations, not a changed label:
+# rule groups ran 120s on a 60s interval on 2026-11-25 and the rule went empty for 30 minutes while
+# every raw series stayed, and the watch tripped on it (ar-2693). An empty rule that held a
+# fleet-dispatch series within <age> reads unreadable, which the watch holds; an empty rule with
+# none that long, or a rule with other runners but no fleet-dispatch, trips.
 AU_PROC="${AGENT_USAGE_PROC:-/proc}"
 cmd_export() {
   local verb="${1:-}" age="${2:-1h}" secs now d f pid sid pstart started item sids got have beat runner turn rc=0 idle=0
@@ -714,8 +719,9 @@ cmd_export() {
       (map(select(.metric.__name__ == \"claude_code_session_count_total\") | .metric.session_id) | join(\" \"))" 2>/dev/null) ||
     { echo "unreadable: Prometheus session series (no answer, or not a vector)" >&2; return 2; }
   { IFS= read -r have; IFS= read -r beat; } <<<"$got"
-  runner=$(prom_q 'count(cc:claude_code_cost_24h_usd:by_runner{agentctl_runner="fleet-dispatch"})' |
-    jq -er "$vec | length" 2>/dev/null) ||
+  # One series per runner the rule holds: "none" for an empty rule, else how many are fleet-dispatch.
+  runner=$(prom_q 'count by (agentctl_runner) (cc:claude_code_cost_24h_usd:by_runner)' |
+    jq -er "$vec | if length == 0 then \"none\" else map(select(.metric.agentctl_runner == \"fleet-dispatch\")) | length end" 2>/dev/null) ||
     { echo "unreadable: Prometheus by_runner rule (no answer, or not a vector)" >&2; return 2; }
   for f in "${live[@]}"; do
     IFS="$TAB" read -r sid item pid started d <<<"$f"
@@ -730,7 +736,19 @@ cmd_export() {
       echo "exporting, no spend yet (no API call since it started): $item (session $sid, pid $pid)"; idle=$((idle + 1))
     fi
   done
-  [ "$runner" -gt 0 ] || { echo 'no agentctl_runner="fleet-dispatch" series in cc:claude_code_cost_24h_usd:by_runner'; rc=1; }
+  # An empty rule that held a fleet-dispatch series within <age> missed its evaluations; one that
+  # held none that long is a deleted rule or a dropped label, so it trips like a missing series.
+  if [ "$runner" = none ]; then
+    runner=$(prom_q "count(last_over_time(cc:claude_code_cost_24h_usd:by_runner{agentctl_runner=\"fleet-dispatch\"}[$age]))" |
+      jq -er "$vec | length" 2>/dev/null) ||
+      { echo "unreadable: Prometheus by_runner rule history (no answer, or not a vector)" >&2; return 2; }
+    # A dark session above is still a trip; a missed evaluation alone is no answer about the label.
+    [ "$runner" -eq 0 ] || [ "$rc" -ne 0 ] ||
+      { echo "unreadable: Prometheus by_runner rule (no series now, a fleet-dispatch one within $age: its evaluations missed)" >&2; return 2; }
+  fi
+  if [ "$runner" -eq 0 ]; then
+    echo 'no agentctl_runner="fleet-dispatch" series in cc:claude_code_cost_24h_usd:by_runner'; rc=1
+  fi
   [ "$rc" -ne 0 ] || echo "${#live[@]} queue sessions past $age, each exporting ($((${#live[@]} - idle)) with cost, $idle not spent yet); the by_runner rule has a fleet-dispatch series"
   return "$rc"
 }

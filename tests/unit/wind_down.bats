@@ -32,7 +32,7 @@ mk_sentinel() { SENTINEL="$BATS_TEST_TMPDIR/s.request"; cat > "$SENTINEL"; }
 @test "sourcing defines the functions without dispatching a verb" {
   # The guard this file's existence depends on. Without it, `source` reaches the case
   # statement with $1 unset and exits 2.
-  run bash -c 'source "$1"; declare -F cmd_arm cmd_fire cmd_note_path >/dev/null && echo DEFINED' _ "$WIND_DOWN"
+  run bash -c 'source "$1"; declare -F cmd_arm cmd_fire cmd_note >/dev/null && echo DEFINED' _ "$WIND_DOWN"
   assert_success
   assert_output 'DEFINED'
 }
@@ -274,23 +274,31 @@ EOF
   assert_output --partial "close.sh session 'cockpit'"
 }
 
-# ── note-path ────────────────────────────────────────────────────────────────
+# ── note ─────────────────────────────────────────────────────────────────────
 
-@test "note-path lands on the agent runtime axis, not the notes vault" {
-  # The wrap-up is agent runtime state. Writing it into ~/.notes would put an agent's
-  # own scratch into the human's journal.
-  run bash "$WIND_DOWN" note-path
+@test "note appends the draft to today's note on the agent runtime axis, never over another session's block (ar-3365)" {
+  # The wrap-up is agent runtime state: in ~/.notes it would put an agent's scratch into the
+  # human's journal. Every session of the day shares the file, so a whole-file write cut it.
+  # The first draft has no final newline: the next block still starts on its own line.
+  printf '# Session wrap-up - one' > "$BATS_TEST_TMPDIR/a.md"
+  printf '# Session wrap-up - two\n' > "$BATS_TEST_TMPDIR/b.md"
+  run bash "$WIND_DOWN" note "$BATS_TEST_TMPDIR/a.md"
   assert_success
-  assert_output --partial "$HOME/.agent/sessions/"
-  refute_output --partial '.notes'
-  assert_output --regexp '[0-9]{4}-[0-9]{2}-[0-9]{2}-wind-down\.md$'
+  assert_output --regexp "^$HOME/\.agent/sessions/[^/]+/[0-9]{4}-[0-9]{2}-[0-9]{2}-wind-down\.md$"
+  local note="$output"
+  run bash "$WIND_DOWN" note "$BATS_TEST_TMPDIR/b.md"
+  assert_success
+  run cat "$note"
+  assert_output "$(printf '# Session wrap-up - one\n\n# Session wrap-up - two')"
 }
 
-@test "note-path creates the directory it names" {
-  run bash "$WIND_DOWN" note-path
-  assert_success
-  run test -d "$(dirname "$output")"
-  assert_success
+@test "note with no draft, or an empty one, refuses and writes nothing" {
+  : > "$BATS_TEST_TMPDIR/empty.md"
+  run bash "$WIND_DOWN" note "$BATS_TEST_TMPDIR/empty.md"
+  assert_failure 2
+  run bash "$WIND_DOWN" note
+  assert_failure 2
+  assert [ -z "$(find "$HOME/.agent/sessions" -name '*-wind-down.md' 2>/dev/null)" ]
 }
 
 # ── the worktree hand-off (wt reap) ──────────────────────────────────────────
@@ -693,6 +701,22 @@ bg_arm() { run env CLAUDE_CODE_SESSION_KIND=bg CLAUDE_CODE_SESSION_ID="$SID_A" C
   assert_failure
 }
 
+@test "arm in a background session with CLAUDE_CODE_SESSION_KIND unset still arms the stop (ar-4749)" {
+  # 2026-11-23 job 72e3cb7a ran with KIND unset and JOB_DIR set: its own job state is the proof.
+  bg_stubs; mk_job "$SID_A"
+  run env -u CLAUDE_CODE_SESSION_KIND CLAUDE_CODE_SESSION_ID="$SID_A" CLAUDE_JOB_DIR="$JOB" TMUX="" TMUX_PANE="" bash "$WIND_DOWN" arm
+  assert_success
+  assert_output --partial "background session '72e3cb7a' will stop"
+  run grep -E '^(scope|target)=' "$SPIN_DIR/$SID_A.request"
+  assert_output "$(printf 'scope=bg\ntarget=72e3cb7a')"
+  # Negative control: a job whose state names another session is not this one's, KIND unset or not.
+  rm -f "$SPIN_DIR/$SID_A.request"; mk_job "$SID_B"
+  run env -u CLAUDE_CODE_SESSION_KIND CLAUDE_CODE_SESSION_ID="$SID_A" CLAUDE_JOB_DIR="$JOB" TMUX="" TMUX_PANE="" bash "$WIND_DOWN" arm
+  assert_failure
+  assert_output --partial 'not inside tmux'
+  assert_output --partial 'does not name session'
+}
+
 @test "arm in a background session that inherited TMUX still arms the stop, never the pane" {
   # The daemon can carry the TMUX and TMUX_PANE of the foreground claude that spawned it.
   bg_stubs; mk_job "$SID_A"
@@ -706,7 +730,7 @@ bg_arm() { run env CLAUDE_CODE_SESSION_KIND=bg CLAUDE_CODE_SESSION_ID="$SID_A" C
 }
 
 @test "a claude started inside a background session never arms a stop of its parent's job" {
-  # It inherits KIND and JOB_DIR with a session id of its own: its own window closes, as any.
+  # It inherits JOB_DIR (and KIND) with a session id of its own: its own window closes, as any.
   bg_stubs; mk_job "$SID_B"
   bg_arm bash "$WIND_DOWN" arm
   assert_success
@@ -715,6 +739,17 @@ bg_arm() { run env CLAUDE_CODE_SESSION_KIND=bg CLAUDE_CODE_SESSION_ID="$SID_A" C
   bg_arm TMUX="" TMUX_PANE="" bash "$WIND_DOWN" arm
   assert_failure
   assert_output --partial 'not inside tmux'
+}
+
+@test "a claude started inside a background session with KIND unset closes its own window, never the parent's job" {
+  # KIND is not part of the guard (ar-4749): the parent job's state names another session.
+  bg_stubs; mk_job "$SID_B"
+  run env -u CLAUDE_CODE_SESSION_KIND CLAUDE_CODE_SESSION_ID="$SID_A" CLAUDE_JOB_DIR="$JOB" bash "$WIND_DOWN" arm
+  assert_success
+  run grep -E '^scope=' "$SPIN_DIR/$SID_A.request"
+  assert_output 'scope=window'
+  run grep '^claude stop' "$NOTES_FIXTURE/calls.log"
+  assert_failure
 }
 
 @test "arm in a background session records the worktree it runs in" {

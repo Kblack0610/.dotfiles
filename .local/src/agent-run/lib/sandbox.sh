@@ -252,6 +252,23 @@ sandbox_srt_refusal() {
   done
 }
 
+# sandbox_srt_start_refusal <profile> -> why srt cannot hold a run here, or nothing: a tool missing
+# (sandbox_srt_refusal), or srt failing to start `true` under the profile, its first line named. A
+# tool on PATH is not a working one: on 2026-11-19 a partial upgrade dropped node's libsimdjson.so.36,
+# srt died at exec, and harness-ready read three harnesses ready while every trainee run failed in
+# seconds (ar-3897). It runs in an empty temp dir, which the settings' "." makes writable.
+sandbox_srt_start_refusal() {
+  local why dir out rc=0
+  why=$(sandbox_srt_refusal); [ -z "$why" ] || { echo "$why"; return; }
+  dir=$(mktemp -d) || { echo "no temp dir to start srt in"; return; }
+  out=$(cd "$dir" && SANDBOX_FILE=$1 sandbox_srt_settings > settings.json &&
+    timeout 20 srt --settings settings.json -- true 2>&1 >/dev/null) || rc=$?
+  rm -rf "$dir"
+  [ "$rc" = 0 ] && return
+  [ "$rc" != 124 ] || out="it did not start in 20s"
+  echo "srt cannot start here (rc $rc)${out:+: ${out%%$'\n'*}}"
+}
+
 # sandbox_srt_settings [--ro <path>] [--rw <path>]... -> the srt --settings JSON: the profile's
 # filesystem and network, with the run's cwd (".", srt resolves it where it starts) and each --rw path
 # writable, and each --ro path, the profile's allowRead, the git common dir and srt's own package (its

@@ -212,6 +212,11 @@ sandbox_detach_env() {
   export XDG_RUNTIME_DIR="$SANDBOX/run"
   mkdir -p "$XDG_RUNTIME_DIR"
 
+  # agent-queue's order ages a queued item from its ready time to the wall clock (AGENT_QUEUE_AGE_STEP),
+  # and fixtures carry fixed past dates, so the date a suite runs would decide their order. Off for
+  # every test; agent_queue.bats "ranks one tier higher" sets a step and a whole AGENT_QUEUE_NOW.
+  export AGENT_QUEUE_AGE_STEP=0
+
   # A runner shell that exports NO_COLOR or PANEL_NO_COLOR would blank every palette the
   # colour fixtures assert on (md_render, panel_lib, questions_panel). A test that wants no
   # colour sets it itself, after sandbox_init.
@@ -418,6 +423,10 @@ interval: 5m
 EOF
   printf '%s' "$state" > "$WATCH_STATE_DIR/$name.state"
 }
+
+# unix_sock <path> -- a bound AF_UNIX socket file at <path> that no process listens on: what a tmux
+# server or the systemd user manager leaves for a reader that tests `-S`. One home for it (ar-4870).
+unix_sock() { python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$1"; }
 
 # fleet_field <type> <field-no> — the given field of every row of a type, ANSI stripped.
 fleet_field() {

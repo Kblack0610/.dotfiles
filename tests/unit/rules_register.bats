@@ -2,7 +2,9 @@
 # fleet-bench rules: every rule is tagged invariant or provisional in one register, and a provisional
 # rule's number is re-measured rather than trusted (standards.md, the last rule). The fixtures are a
 # sandbox register. The second half reads the real one in the private overlay against policy.md,
-# standards.md, CLAUDE.md and the hooks: skipped in public CI, it runs in the Stop fast tier.
+# standards.md, CLAUDE.md and the hooks: skipped in public CI, it runs in the Stop fast tier. The row-shape
+# test, "register: every row is a whole row", also runs on every rules.jsonl change in the private repo's
+# register-shape.yml, which finds it by that name: rename it there too (ar-5847).
 
 setup() {
   load '../vendor/bats-support/load'
@@ -106,6 +108,40 @@ gh_stub() { gh_script "echo $(printf %q "$1") >&2; exit 1"; }
   run "$SUBJECT" rules --check
   assert_failure 1
   assert_output --partial 'dead measure: rules.md: under ten'
+}
+
+# One failed gh run list turned the tests.yml budget rule dead on a Stack read; it read fine minutes
+# later (ar-3274). A transport failure is nothing measured, the same as a rate limit.
+@test "rules --check: a gh measure the API did not answer is not dead; a broken one is dead and says why" {
+  local e
+  for e in 'HTTP 502: Bad Gateway (https://api.github.com/graphql)' \
+    'Get "https://api.github.com/repos": read tcp: connection reset by peer' \
+    'Post "https://api.github.com/graphql": net/http: TLS handshake timeout'; do
+    : > "$RULES_REGISTER"
+    gh_stub "$e"
+    row 'under ten' high "gh run list" 10
+    run "$SUBJECT" rules --check
+    assert_success
+    run "$SUBJECT" rules --json
+    assert_equal "$(jq -c '.[0] | [.state, .limited, .dead]' <<<"$output")" '["absent",true,false]'
+  done
+  # Negative controls: the measure's own error, its own unclosed quote (bash says "unexpected EOF")
+  # and a local service that is down are dead, and say why.
+  : > "$RULES_REGISTER"
+  row 'under ten' high "echo warning >&2; echo nope; echo 'jq: error: syntax error' >&2" 10
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'dead measure: rules.md: under ten (jq: error: syntax error)'
+  : > "$RULES_REGISTER"
+  row 'under ten' high "echo 'unclosed" 10
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'dead measure: rules.md: under ten (bash: -c: line'
+  : > "$RULES_REGISTER"
+  row 'under ten' high "echo 'curl: (7) Failed to connect to localhost port 9090: Connection refused' >&2" 10
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'dead measure: rules.md: under ten (curl: (7)'
 }
 
 @test "rules: a rate-limited counting measure drops its 0 and is counted as limited" {

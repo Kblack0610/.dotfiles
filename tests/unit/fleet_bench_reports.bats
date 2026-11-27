@@ -126,8 +126,11 @@ lead_fixture() {
 @test "chain: an unreadable source reads ? and never trips a bound; the KPIs ride the kpi table and its gauges" {
   chain_fixture
   export BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/none"
+  # unread is UNKNOWN (exit 2, one unreadable: line), never a past line (exit 1) (ar-5413)
   run "$SUBJECT" chain --check
-  assert_success
+  assert_failure 2
+  assert_equal "${#lines[@]}" 1
+  assert_output --partial 'unreadable: board_orphan_started '
   run "$SUBJECT" kpi
   assert_line '| board_orphan_started (now) | - | - | max 0 | - |'
   assert_line '| ownerless_running (now) | 0 | - | max 0 | ok |'
@@ -220,8 +223,10 @@ lead_fixture() {
   assert_success
   run jq -c '[.drift, .since, (.steps[] | [.wip, .in_1h])]' <<<"$output"
   assert_output '[null,null,[3,null],[2,null],[null,null],[1,null],[null,null],[1,null],[1,null],[1,null],[1,null]]'
+  # an unread drift is UNKNOWN to chain --check, not a trip (ar-5413)
   run "$SUBJECT" chain --check
-  assert_success
+  assert_failure 2
+  assert_output 'unreadable: chain_drift could not be counted'
   # the line-per-step shape notes printed before items_since is not a record either
   printf '{"step":"inbox"}\n{"step":"queued"}\n' > "$RJSON"
   export BENCH_STEPS_CMD=steps-stub
@@ -812,7 +817,7 @@ STUB
   run "$SUBJECT" improve --json
   assert_failure 1
   assert_output ''
-  # outside the chain, so the board-chain watch never reads it
+  # outside the chain, so no chain-<key> watch reads it
   run "$SUBJECT" chain --json
   assert_equal "$(jq -r 'has("systems_no_skill")' <<<"$output")" false
 }
@@ -973,6 +978,26 @@ check_fixture() {
   assert_output --partial NOOP
 }
 
+@test "upsert: a key whose row dispatch moved to the human sheet is neither filed nor reopened, so it never swaps lanes each pass; a closed sheet row frees it (ar-6265)" {
+  kpi_setup
+  printf 'board.md\t5\tcheck(watch): board-chain tripped since 2026-11-24, x (agent row ar-77)\t- [ ] check(watch): board-chain tripped since 2026-11-24, x (agent row ar-77) <!-- id:hm-5 -->\n' > "$BOARD.agent-runtime"
+  rows=$(printf '%s\t%s\t%s\n' 'check(watch): board-chain tripped since' 'check(watch): board-chain tripped since 2026-11-25, y' '#high')
+  up() { bash -c '. "$1"; board_upsert "$2" && upsert_report "$2"; echo "$UPSERT_ADDED"' _ "$SUBJECT" "$rows" 2>&1; }
+  run up
+  assert_success
+  assert_line --partial 'open on the human sheet, left there'
+  assert_line '0'
+  run grep -c -- '--agent add' "$NLOG"
+  assert_output 0
+  # Negative control: the person closed the sheet row, so the red is the agent board's again.
+  sed -i 's/- \[ \] check/- [x] check/' "$BOARD.agent-runtime"
+  run up
+  assert_success
+  assert_line '1'
+  run grep -c -- '--agent add' "$NLOG"
+  assert_output 1
+}
+
 @test "room: board_days past board_days_max says full, and the upsert still files every row" {
   kpi_setup
   agent_feed open doing open
@@ -1018,6 +1043,75 @@ check_fixture() {
   BENCH_BOARD_CMD=false run "$SUBJECT" room
   assert_success
   assert_output 'room: board_days ?, the board feed is unreadable'
+}
+
+@test "upsert: two open rows on one key edit the first by its id and drop the twin as its dup, so the write never fails (ar-5690)" {
+  kpi_setup
+  printf 'board.md\t2\tcheck(watch): spend tripped since 2026-11-24, x\t- [/] check(watch): spend tripped since 2026-11-24, x <!-- id:ar-31 -->\nboard.md\t3\tcheck(watch): spend tripped since 2026-11-25, y\t- [ ] check(watch): spend tripped since 2026-11-25, y #low <!-- id:ar-32 -->\n' >> "$BOARD"
+  rows=$(printf '%s\t%s\t%s\n' 'check(watch): spend tripped since' 'check(watch): spend tripped since 2026-11-25, z' '#high')
+  up() { bash -c '. "$1"; board_upsert "$2" && upsert_report "$2"' _ "$SUBJECT" "$rows" 2>&1; }
+  run up
+  assert_success
+  refute_output --partial 'board write failed'
+  assert_output --partial '0 added, 1 refreshed, 1 twins dropped'
+  run grep -c -- '--agent drop ar-32 --dup ar-31$' "$NLOG"
+  assert_output 1
+  run grep -c -- '--agent edit ar-31 --text check(watch): spend tripped since 2026-11-25, z #size/s$' "$NLOG"
+  assert_output 1
+  run grep -c 'spend tripped since' "$BOARD"
+  assert_output 1
+  run grep -c 'z #size/s <!-- id:ar-31 -->' "$BOARD"
+  assert_output 1
+  # Negative control: one row on the key drops nothing, and its edit still names it by id.
+  : > "$NLOG"
+  rows=$(printf '%s\t%s\t%s\n' 'check(watch): spend tripped since' 'check(watch): spend tripped since 2026-11-25, w' '#high')
+  run up
+  assert_success
+  run grep -c -- '--agent drop' "$NLOG"
+  assert_output 0
+  run grep -c -- '--agent edit ar-31 --text ' "$NLOG"
+  assert_output 1
+  # A hand row with no id ahead of a row being done: the key's row is the first with an id (the one
+  # being done), the open twin after it is dropped as its dup, and the hand row is left.
+  : > "$NLOG"
+  printf 'board.md\t1\tcheck(watch): spend tripped since hand\t- [ ] check(watch): spend tripped since hand\nboard.md\t4\tcheck(watch): spend tripped since d\t  - [/] check(watch): spend tripped since d <!-- id:ar-33 -->\n' > "$BOARD.top"
+  cat "$BOARD" >> "$BOARD.top" && mv "$BOARD.top" "$BOARD"
+  rows=$(printf '%s\t%s\t%s\n' 'check(watch): spend tripped since' 'check(watch): spend tripped since 2026-11-25, v' '#high')
+  run up
+  assert_success
+  refute_output --partial 'board write failed'
+  run grep -c -- '--agent drop' "$NLOG"
+  assert_output 1
+  run grep -c -- '--agent drop ar-31 --dup ar-33$' "$NLOG"
+  assert_output 1
+  run grep -c -- '--agent edit ar-33 --text ' "$NLOG"
+  assert_output 1
+  run grep -c 'spend tripped since hand' "$BOARD"
+  assert_output 1
+}
+
+@test "upsert: a second filer waits on the board lock, so one key never gets two rows; a held lock files nothing (ar-6078)" {
+  kpi_setup
+  export BENCH_UPSERT_LOCK="$SANDBOX/upsert.lock" BENCH_UPSERT_LOCK_WAIT=0
+  rows=$(printf '%s\t%s\t%s\n' 'check(alert): NodeDown hp-victus firing' 'check(alert): NodeDown hp-victus firing, alertmanager-fleet tripped since 2026-11-25' '#high')
+  up() { bash -c '. "$1"; board_upsert "$2" && upsert_report "$2"' _ "$SUBJECT" "$rows" 2>&1; }
+  # another filer holds the lock: this one writes nothing and says why, instead of racing it
+  exec 8>"$BENCH_UPSERT_LOCK"; flock 8
+  run up
+  assert_failure
+  assert_output --partial 'board upsert lock'
+  [ ! -s "$NLOG" ]   # not one notes call: the board is not even read
+  # Negative control: released, the same filer adds the one row, and a rerun finds it and adds nothing.
+  exec 8>&-
+  run up
+  assert_success
+  assert_output --partial '1 added'
+  run up
+  assert_success
+  run grep -c -- '--agent add check(alert): NodeDown hp-victus firing' "$NLOG"
+  assert_output 1
+  run grep -c 'NodeDown hp-victus firing' "$BOARD"
+  assert_output 1
 }
 
 @test "retro check: a flat claim ends, so improve names its KPI again with last naming it" {
@@ -1084,7 +1178,7 @@ check_fixture() {
   assert_output 1
   run grep 'guard ' "$BOARD"
   assert_output --partial 'recurred in 3 sessions'
-  run grep -c ' edit check(lesson): guard ' "$NLOG"
+  run grep -Ec ' edit ar-9[0-9]+ --text check\(lesson\): guard ' "$NLOG"
   assert_output 1
   refute grep -q ' add ' "$NLOG"
 }
@@ -1409,8 +1503,28 @@ SH
   assert_line "cc:pool_match_busy	unity	1"
   assert_line "cc:pool_match_runners	unity	4"
   assert_line "cc:pool_match_labels	unity/linux,self-hosted,unity-full	1"
+  refute_line --partial cc:pool_match_unread
   run cat "$SANDBOX/ci-match.args"
   assert_output "wait=3600"
+  # ar-4653: a hub that cannot read Prometheus is one unread row, never an empty answer that reads
+  # as a match of nothing; the read above printed no such row.
+  printf '#!/bin/bash\necho "hub ci: did not answer" >&2\nexit 1\n' > "$SANDBOX/bin/ci-match-stub"
+  run prom_match_rows
+  assert_success
+  assert_output "cc:pool_match_unread	-	1"
+}
+
+@test "findings: a starved pool whose label match went unread says so, and falls back to the pool's slots" {
+  use_fixture
+  { cat "$FX/prom.tsv"; printf 'cc:pool_match_unread\t-\t%s\t1\n' "$(clock 09:30)"; } > "$SANDBOX/prom.tsv"
+  BENCH_PROM_TSV="$SANDBOX/prom.tsv" eval_at 09:30
+  run jq -r 'select(.scope == "pool:unity") | "\(.evidence.numbers.match_unread) \(.conclusion)"' "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_output "1 oldest job waited 1.1h with 5/6 slots busy (the slots matching its labels unread): demand is over the pool's capacity"
+  # Negative control: read and matching nothing is not unread.
+  rm "$FLEET_BENCH_DIR/findings.jsonl"
+  eval_at 09:30
+  run jq -r 'select(.scope == "pool:unity") | .conclusion' "$FLEET_BENCH_DIR/findings.jsonl"
+  refute_output --partial unread
 }
 
 @test "findings: starved goes to the human once it has lasted the hour, and keeps its fact" {
@@ -1538,17 +1652,17 @@ SH
 @test "sources: points, dollars and landed PRs per source; an item lands by account, account:, session or harness source, and the rest are counted unattributed by why" {
   sources_fixture
   {
-    echo '{"slug":"a","account":"main","status":"ok","pr":"o/r#1"}'
-    echo '{"slug":"b","account":".claude-bnb","status":"ok","pr":"o/r#2"}'
-    echo '{"slug":"c","status":"ok","pr":"o/r#3","sessions":"s1"}'
-    echo '{"slug":"d","agent":"lazer-reserve","status":"ok","pr":"o/r#4"}'
-    echo '{"slug":"e","agent":"codex","status":"failed"}'
-    echo '{"slug":"f","status":"ok","pr":"o/r#5"}'
-    echo '{"slug":"g","agent":"claude-cloud","status":"ok","pr":"o/r#6"}'
-    echo '{"slug":"h","agent":"claude-cloud","account":"main","status":"ok","pr":"o/r#7"}'
-    echo '{"slug":"i","status":"ok","pr":"o/r#8","sessions":"live-1"}'
-    echo '{"slug":"j","status":"ok","pr":"o/r#9","sessions":"s6"}'
-    echo '{"slug":"k","account":"claude-old","status":"ok","pr":"o/r#10"}'
+    echo '{"slug":"a","account":"main","status":"ok","pr":"o/r#1","outcome":"landed"}'
+    echo '{"slug":"b","account":".claude-bnb","status":"ok","pr":"o/r#2","outcome":"landed"}'
+    echo '{"slug":"c","status":"ok","pr":"o/r#3","sessions":"s1","outcome":"landed"}'
+    echo '{"slug":"d","agent":"lazer-reserve","status":"ok","pr":"o/r#4","outcome":"landed"}'
+    echo '{"slug":"e","agent":"codex","status":"failed","outcome":"failed"}'
+    echo '{"slug":"f","status":"ok","pr":"o/r#5","outcome":"landed"}'
+    echo '{"slug":"g","agent":"claude-cloud","status":"ok","pr":"o/r#6","outcome":"landed"}'
+    echo '{"slug":"h","agent":"claude-cloud","account":"main","status":"ok","pr":"o/r#7","outcome":"landed"}'
+    echo '{"slug":"i","status":"ok","pr":"o/r#8","sessions":"live-1","outcome":"landed"}'
+    echo '{"slug":"j","status":"ok","pr":"o/r#9","sessions":"s6","outcome":"landed"}'
+    echo '{"slug":"k","account":"claude-old","status":"ok","pr":"o/r#10","outcome":"landed"}'
   } > "$ITEMS"
   run "$SUBJECT" sources --json
   assert_success
@@ -1575,7 +1689,7 @@ SH
   echo '{"harnesses":{"agy":{"source":"agy"}}}' > "$BENCH_HARNESSES"
   # so_agy_rows leaves cost_usd null today: agy reports no cost and harnesses.json has no agy prices
   out_row game '{session_id: "a1", harness: "agy", updated_epoch: ($t - 3600), tokens_total: 40, cost_usd: null}'
-  echo '{"slug":"m","agent":"agy","status":"ok","pr":"o/r#11"}' > "$ITEMS"
+  echo '{"slug":"m","agent":"agy","status":"ok","pr":"o/r#11","outcome":"landed"}' > "$ITEMS"
   run "$SUBJECT" sources --json
   assert_success
   assert_equal "$(jq -c '.sources[] | select(.name == "agy") | [.kind, .used, .usd, .usd_src, .landed]' <<<"$output")" '["agy",7,null,"list",1]'
@@ -1608,9 +1722,9 @@ SH
 @test "models: pr-ci joins on the item's PR ref for CI reds and first pass, and points per PR are its sessions' token share of their source's points" {
   sources_fixture
   {
-    echo '{"slug":"a","model":"opus","status":"ok","pr":"o/r#1","prs":"o/r#1","sessions":"s2"}'
-    echo '{"slug":"b","model":"opus","status":"ok","pr":"https://github.com/O/R/pull/2","sessions":"s1"}'
-    echo '{"slug":"c","model":"opus","status":"ok","pr":"9","sessions":"s3"}'
+    echo '{"slug":"a","model":"opus","status":"ok","pr":"o/r#1","prs":"o/r#1","sessions":"s2","outcome":"landed"}'
+    echo '{"slug":"b","model":"opus","status":"ok","pr":"https://github.com/O/R/pull/2","sessions":"s1","outcome":"landed"}'
+    echo '{"slug":"c","model":"opus","status":"ok","pr":"9","sessions":"s3","outcome":"landed"}'
   } > "$ITEMS"
   mkdir -p "$FLEET_BENCH_DIR"
   # a names o/r#1 twice and it counts once; o/r#1 ran no gate and had 2 red CI runs, so it is not in first pass; o/r#2's gate was green
@@ -1625,7 +1739,7 @@ SH
     '["opus",3,2,1.5,1,14,4.67]'
   run "$SUBJECT" models
   # these sessions have no cost_usd: an unpriced PR reads -, never $0 at a list price
-  assert_line '| opus | claude | 3 | 0 | 0 | 0 | 3 | 1 (0.44-1, n 3) | 0 | 0 | - | 0 | $0 | - | - | 1.5 (n 2) | 1 (0.21-1, n 1) | 14 | 4.67 |'
+  assert_line '| opus | claude | 3 | 0 | 0 | 3 | 0 | 0 | 1 (0.44-1, n 3) | 0 | 0 | - | 0 | $0 | - | - | 1.5 (n 2) | 1 (0.21-1, n 1) | 14 | 4.67 |'
 }
 
 # merge_repo <dir> <epoch>...: a clone of a local remote holding one commit per epoch
@@ -2204,42 +2318,39 @@ qstats_fixture() {
     done_by_tag: {}}' > "$QSTATS"
 }
 
-@test "models: a check with no PR and a returned item are counted apart, so Rate and Failed read only the code items a harness could land" {
+@test "models: each item counts by its stamped outcome: no-pr and failed are in Rate, unrated and returned are not" {
   export BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes" BENCH_LANE_LOG="$SANDBOX/runs.jsonl" ITEMS="$SANDBOX/done.jsonl"
   export BENCH_DONE_ITEMS_CMD=done-stub
   printf '#!/usr/bin/env bash\ncat "%s"\n' "$ITEMS" > "$SANDBOX/bin/done-stub"
   chmod +x "$SANDBOX/bin/done-stub"
   : > "$BENCH_LANE_LOG"
   {
-    echo '{"slug":"a","model":"sol","agent":"codex","type":"fix","status":"ok","pr":"o/r#1"}'
-    echo '{"slug":"b","model":"sol","agent":"codex","type":"feat","status":"failed"}'
-    echo '{"slug":"c1","model":"sol","agent":"codex","type":"check","status":"ok"}'
-    echo '{"slug":"c2","model":"sol","agent":"codex","type":"check","status":"failed"}'
-    echo '{"slug":"c3","model":"sol","agent":"codex","type":"research","status":"ok"}'
-    echo '{"slug":"c4","model":"sol","agent":"codex","type":"check","status":"ok","pr":"o/r#2"}'
-    echo '{"slug":"l1","model":"sol","agent":"codex","type":"legal","status":"ok"}'
-    echo '{"slug":"r1","model":"sol","agent":"codex","type":"fix","status":"cancelled","end_reason":"returned"}'
-    echo '{"slug":"r2","model":"sol","agent":"codex","type":"fix","status":"cancelled"}'
-    echo '{"slug":"r3","model":"kimi","agent":"opencode-go","type":"fix","status":"cancelled","end_reason":"returned"}'
+    echo '{"slug":"a","model":"sol","agent":"codex","type":"fix","status":"ok","pr":"o/r#1","outcome":"landed"}'
+    echo '{"slug":"b","model":"sol","agent":"codex","type":"feat","status":"failed","outcome":"failed"}'
+    echo '{"slug":"c1","model":"sol","agent":"codex","type":"check","status":"ok","outcome":"unrated"}'
+    echo '{"slug":"c2","model":"sol","agent":"codex","type":"check","status":"failed","outcome":"failed"}'
+    echo '{"slug":"c3","model":"sol","agent":"codex","type":"research","status":"ok","outcome":"unrated"}'
+    echo '{"slug":"c4","model":"sol","agent":"codex","type":"check","status":"ok","pr":"o/r#2","outcome":"landed"}'
+    echo '{"slug":"l1","model":"sol","agent":"codex","type":"legal","status":"ok","outcome":"unrated"}'
+    echo '{"slug":"n1","model":"sol","agent":"codex","type":"fix","status":"ok","outcome":"no-pr"}'
+    echo '{"slug":"r1","model":"sol","agent":"codex","type":"fix","status":"cancelled","end_reason":"returned","outcome":"cancelled"}'
+    echo '{"slug":"r2","model":"sol","agent":"codex","type":"fix","status":"cancelled","outcome":"cancelled"}'
+    echo '{"slug":"r3","model":"kimi","agent":"opencode-go","type":"fix","status":"cancelled","end_reason":"returned","outcome":"cancelled"}'
   } > "$ITEMS"
-  export BENCH_KINDS="$SANDBOX/kinds.json"
-  echo '{"fix":{"exit":"pr"},"check":{"exit":"pr"},"research":{"exit":"doc+ask"},"legal":{"exit":"doc+ask"}}' > "$BENCH_KINDS"
   run env BENCH_NOW=$T0 "$SUBJECT" models --json
   assert_success
-  # done 7 (a, b, c1-c4, l1); the checks are check (a clean one needs no PR), research and legal (kinds whose exit is no PR); c4 is a check
-  # that landed, so it is a code item; r1 is returned, r2 a plain cancel; r3 is returned on a pairing with no done item, which still gets a row
-  assert_equal "$(jq -c '.models[] | [.model, .done, .checks, .checks_ok, .checks_failed, .returned, .code, .landed, .landed_n, .landed_rate, .failed]' <<<"$output")" \
-    '["kimi",0,0,0,0,1,0,0,0,null,0]
-["sol",7,4,3,1,1,3,2,3,0.67,1]'
+  # done 8 (a, b, c1-c4, l1, n1); Rate is landed over landed + no-pr + failed (a, c4 / a, c4, n1, b, c2); c1, c3 and l1 are unrated;
+  # r1 is returned, r2 a plain cancel; r3 is returned on a pairing with no done item, which still gets a row
+  assert_equal "$(jq -c '.models[] | [.model, .done, .returned, .landed, .no_pr, .unrated, .landed_n, .landed_rate, .failed]' <<<"$output")" \
+    '["kimi",0,1,0,0,0,0,null,0]
+["sol",8,1,2,1,3,5,0.4,2]'
   run env BENCH_NOW=$T0 "$SUBJECT" models
-  assert_line '| sol | codex | 7 | 0 | 4 (1 failed) | 1 | 2 | 0.67 (0.21-0.94, n 3) | 1 | 0 | - | 0 | - | - | - | - | - | - | - |'
-  assert_line '| kimi | opencode-go | 0 | 0 | 0 | 1 | 0 | - | 0 | 0 | - | 0 | - | - | - | - | - | - | - |'
-  assert_line --partial 'A check is in Done and in neither Rate nor Failed'
-  # BENCH_NOPR_TYPES overrides the kinds: empty splits nothing off, a list names the types
-  run env BENCH_NOW=$T0 BENCH_NOPR_TYPES= "$SUBJECT" models --json
-  assert_equal "$(jq -c '.models[] | select(.model == "sol") | [.checks, .code]' <<<"$output")" '[0,7]'
-  run env BENCH_NOW=$T0 BENCH_NOPR_TYPES=legal "$SUBJECT" models --json
-  assert_equal "$(jq -c '.models[] | select(.model == "sol") | [.checks, .code]' <<<"$output")" '[1,6]'
+  assert_line '| sol | codex | 8 | 0 | 1 | 2 | 1 | 3 | 0.4 (0.12-0.77, n 5) | 2 | 0 | - | 0 | - | - | - | - | - | - | - |'
+  assert_line '| kimi | opencode-go | 0 | 0 | 1 | 0 | 0 | 0 | - | 0 | 0 | - | 0 | - | - | - | - | - | - | - |'
+  # the type, the kind and the PR are not read: the stamp alone decides
+  echo '{"slug":"x","model":"sol","agent":"codex","type":"fix","status":"ok","pr":"o/r#3","outcome":"unrated"}' >> "$ITEMS"
+  run env BENCH_NOW=$T0 "$SUBJECT" models --json
+  assert_equal "$(jq -c '.models[] | select(.model == "sol") | [.done, .landed, .unrated]' <<<"$output")" '[9,2,4]'
 }
 
 @test "models: one model on two harnesses is two rows, gateway cost beats the sessions' sum per item, a row with both reads mixed, an unpriced PR does not cheapen Per PR, a chained session counts once" {
@@ -2255,12 +2366,12 @@ qstats_fixture() {
     echo '{"session_id":"s4","cost_usd":7,"reverted_7d":0}'
   } > "$BENCH_OUTCOMES_DIR/game/2026-10.jsonl"
   {
-    echo '{"slug":"a","model":"sonnet","status":"ok","pr":"o/r#1","sessions":"s1"}'
-    echo '{"slug":"unpriced","model":"sonnet","status":"ok","pr":"o/r#9"}'
-    echo '{"slug":"chained","model":"sonnet","status":"ok","pr":"o/r#8","sessions":"s1"}'
-    echo '{"slug":"b","model":"sonnet","agent":"claude-lazer","status":"ok","pr":"o/r#2","sessions":"s2","gateway_cost_usd":"4.5"}'
-    echo '{"slug":"c","model":"sonnet","agent":"opencode","status":"ok","pr":"o/r#3","sessions":"s3","gateway_cost_usd":"1.25"}'
-    echo '{"slug":"d","model":"sonnet","agent":"opencode","status":"failed","sessions":"s4"}'
+    echo '{"slug":"a","model":"sonnet","status":"ok","pr":"o/r#1","sessions":"s1","outcome":"landed"}'
+    echo '{"slug":"unpriced","model":"sonnet","status":"ok","pr":"o/r#9","outcome":"landed"}'
+    echo '{"slug":"chained","model":"sonnet","status":"ok","pr":"o/r#8","sessions":"s1","outcome":"landed"}'
+    echo '{"slug":"b","model":"sonnet","agent":"claude-lazer","status":"ok","pr":"o/r#2","sessions":"s2","gateway_cost_usd":"4.5","outcome":"landed"}'
+    echo '{"slug":"c","model":"sonnet","agent":"opencode","status":"ok","pr":"o/r#3","sessions":"s3","gateway_cost_usd":"1.25","outcome":"landed"}'
+    echo '{"slug":"d","model":"sonnet","agent":"opencode","status":"failed","sessions":"s4","outcome":"failed"}'
   } > "$ITEMS"
   now_iso=$(date -u -d "@$T0" +%FT%T+00:00)
   {
@@ -2274,8 +2385,8 @@ qstats_fixture() {
     '[["claude",3,9,4.5,1,1,0,"list"],["claude-lazer",1,4.5,4.5,0,0,1,"gateway"],["opencode",2,8.25,8.25,1,2,0,"mixed"]]'
   run env BENCH_NOW=$T0 "$SUBJECT" models
   assert_success
-  assert_line '| sonnet | opencode | 2 | 0 | 0 | 0 | 1 | 0.5 (0.09-0.91, n 2) | 1 | 1 | - | 0 | $8.25 | $8.25 | mixed | - | - | - | - |'
-  assert_line '| sonnet | claude-lazer | 1 | 0 | 0 | 0 | 1 | 1 (0.21-1, n 1) | 0 | 0 | - | 1 | $4.5 | $4.5 | gateway | - | - | - | - |'
+  assert_line '| sonnet | opencode | 2 | 0 | 0 | 1 | 0 | 0 | 0.5 (0.09-0.91, n 2) | 1 | 1 | - | 0 | $8.25 | $8.25 | mixed | - | - | - | - |'
+  assert_line '| sonnet | claude-lazer | 1 | 0 | 0 | 1 | 0 | 0 | 1 (0.21-1, n 1) | 0 | 0 | - | 1 | $4.5 | $4.5 | gateway | - | - | - | - |'
 }
 
 @test "models: an item that ended for a cause outside the model (limit, provider, cut, refused) is left out of Rate and Failed; stopped and timeout stay in" {
@@ -2285,17 +2396,17 @@ qstats_fixture() {
   chmod +x "$SANDBOX/bin/done-stub"
   : > "$BENCH_LANE_LOG"
   {
-    echo '{"slug":"a","model":"sol","agent":"codex","status":"ok","pr":"o/r#1"}'
-    echo '{"slug":"q","model":"sol","agent":"codex","status":"failed","end_reason":"limit"}'
-    echo '{"slug":"p","model":"sol","agent":"codex","status":"failed","end_reason":"provider"}'
-    echo '{"slug":"s","model":"sol","agent":"codex","status":"failed","end_reason":"stopped"}'
-    echo '{"slug":"t","model":"sol","agent":"codex","status":"failed","end_reason":"timeout"}'
+    echo '{"slug":"a","model":"sol","agent":"codex","status":"ok","pr":"o/r#1","outcome":"landed"}'
+    echo '{"slug":"q","model":"sol","agent":"codex","status":"failed","end_reason":"limit","outcome":"unrated"}'
+    echo '{"slug":"p","model":"sol","agent":"codex","status":"failed","end_reason":"provider","outcome":"unrated"}'
+    echo '{"slug":"s","model":"sol","agent":"codex","status":"failed","end_reason":"stopped","outcome":"failed"}'
+    echo '{"slug":"t","model":"sol","agent":"codex","status":"failed","end_reason":"timeout","outcome":"failed"}'
   } > "$ITEMS"
   run env BENCH_NOW=$T0 "$SUBJECT" models --json
   assert_success
   assert_equal "$(jq -c '.models[] | [.done, .landed, .landed_rate, .failed, .unrated]' <<<"$output")" '[5,1,0.33,2,2]'
   run env BENCH_NOW=$T0 "$SUBJECT" models
-  assert_line --partial 'counts in Done but not in Rate or Failed'
+  assert_line --partial 'is Unrated: in Done, not in Rate or Failed'
 }
 
 @test "models --by class: each pairing splits by the class on its sessions' outcome rows, an unstamped item is unclassed, and the default view is unchanged" {
@@ -2311,11 +2422,11 @@ qstats_fixture() {
     echo '{"session_id":"s4","cost_usd":2}'
   } > "$BENCH_OUTCOMES_DIR/game/2026-10.jsonl"
   {
-    echo '{"slug":"a","model":"sonnet","status":"ok","pr":"o/r#1","sessions":"s1"}'
-    echo '{"slug":"b","model":"sonnet","status":"failed","sessions":"s2"}'
-    echo '{"slug":"c","model":"sonnet","agent":"codex","status":"ok","pr":"o/r#3","sessions":"s3"}'
-    echo '{"slug":"d","model":"sonnet","status":"ok","pr":"o/r#4","sessions":"s4"}'
-    echo '{"slug":"e","model":"sonnet","status":"ok","pr":"o/r#5"}'
+    echo '{"slug":"a","model":"sonnet","status":"ok","pr":"o/r#1","sessions":"s1","outcome":"landed"}'
+    echo '{"slug":"b","model":"sonnet","status":"failed","sessions":"s2","outcome":"failed"}'
+    echo '{"slug":"c","model":"sonnet","agent":"codex","status":"ok","pr":"o/r#3","sessions":"s3","outcome":"landed"}'
+    echo '{"slug":"d","model":"sonnet","status":"ok","pr":"o/r#4","sessions":"s4","outcome":"landed"}'
+    echo '{"slug":"e","model":"sonnet","status":"ok","pr":"o/r#5","outcome":"landed"}'
   } > "$ITEMS"
   now_iso=$(date -u -d "@$T0" +%FT%T+00:00)
   echo "{\"id\":\"r1\",\"ts\":\"$now_iso\",\"lane\":\"sonnet\",\"ran\":\"sonnet\",\"outcome\":\"redo\"}" > "$BENCH_LANE_LOG"
@@ -2326,7 +2437,7 @@ qstats_fixture() {
   assert_equal "$(jq -c '[.models[] | [.runs, .rated, .redo_rate]] | unique' <<<"$output")" '[[null,null,null]]'
   run env BENCH_NOW=$T0 "$SUBJECT" models --by class
   assert_success
-  assert_line '| fix/s | sonnet | claude | 2 | 0 | 0 | 0 | 1 | 0.5 (0.09-0.91, n 2) | 1 | - | 0 | $10 | $10 | list | - | - | - | - |'
+  assert_line '| fix/s | sonnet | claude | 2 | 0 | 0 | 1 | 0 | 0 | 0.5 (0.09-0.91, n 2) | 1 | - | 0 | $10 | $10 | list | - | - | - | - |'
   # the default view has no class split and keeps model-lane's redo
   run env BENCH_NOW=$T0 "$SUBJECT" models --json
   assert_success
@@ -2343,10 +2454,10 @@ qstats_fixture() {
   mkdir -p "$BENCH_OUTCOMES_DIR/game"
   for s in s1 s2 s3 s4; do echo "{\"session_id\":\"$s\",\"cost_usd\":4,\"class\":{\"size\":\"s\",\"kind\":\"fix\"}}"; done > "$BENCH_OUTCOMES_DIR/game/2026-10.jsonl"
   {
-    echo '{"slug":"a","model":"glm","agent":"opencode-go","status":"ok","pr":"o/r#1","sessions":"s1","lane_run":"r1"}'
-    echo '{"slug":"b","model":"glm","agent":"opencode-go","status":"failed","sessions":"s2","lane_run":"r2"}'
-    echo '{"slug":"c","model":"sonnet","status":"ok","pr":"o/r#3","sessions":"s3","lane":"agent"}'
-    echo '{"slug":"d","model":"glm","agent":"opencode-go","status":"ok","pr":"o/r#4","sessions":"s4","lane_run":"r0"}'
+    echo '{"slug":"a","model":"glm","agent":"opencode-go","status":"ok","pr":"o/r#1","sessions":"s1","lane_run":"r1","outcome":"landed"}'
+    echo '{"slug":"b","model":"glm","agent":"opencode-go","status":"failed","sessions":"s2","lane_run":"r2","outcome":"failed"}'
+    echo '{"slug":"c","model":"sonnet","status":"ok","pr":"o/r#3","sessions":"s3","lane":"agent","outcome":"landed"}'
+    echo '{"slug":"d","model":"glm","agent":"opencode-go","status":"ok","pr":"o/r#4","sessions":"s4","lane_run":"r0","outcome":"landed"}'
   } > "$ITEMS"
   now_iso=$(date -u -d "@$T0" +%FT%T+00:00) old_iso=$(date -u -d "@$((T0 - 30 * 86400))" +%FT%T+00:00)
   {
@@ -2366,15 +2477,15 @@ qstats_fixture() {
   assert_equal "$output" "$by_cl"
   run env BENCH_NOW=$T0 "$SUBJECT" models --by class,lane
   assert_success
-  assert_line '| Class | Lane | Model | Harness | Done | Canary | Checks | Returned | Landed | Rate | Failed | First attempt | Reverts | Cost | Per PR | Source | CI red | First pass | Points | Points per PR |'
-  assert_line '| fix/s | sonnet | glm | opencode-go | 1 | 0 | 0 | 0 | 1 | 1 (0.21-1, n 1) | 0 | - | 0 | $4 | $4 | list | - | - | - | - |'
+  assert_line '| Class | Lane | Model | Harness | Done | Canary | Returned | Landed | No PR | Unrated | Rate | Failed | First attempt | Reverts | Cost | Per PR | Source | CI red | First pass | Points | Points per PR |'
+  assert_line '| fix/s | sonnet | glm | opencode-go | 1 | 0 | 0 | 1 | 0 | 0 | 1 (0.21-1, n 1) | 0 | - | 0 | $4 | $4 | list | - | - | - | - |'
   # lane alone keeps redo, counted on the runs of that lane in the window
   run env BENCH_NOW=$T0 "$SUBJECT" models --by lane --json
   assert_success
   assert_equal "$(jq -c '[.models[] | [.lane, .harness, .done, .rated, .redo, has("class")]]' <<<"$output")" \
     '[["opus","opencode-go",2,1,0,false],["sonnet","opencode-go",1,1,1,false],["unrouted","claude",1,1,1,false]]'
   run env BENCH_NOW=$T0 "$SUBJECT" models --by lane
-  assert_line '| Lane | Model | Harness | Done | Canary | Checks | Returned | Landed | Rate | Failed | Redo | First attempt | Reverts | Cost | Per PR | Source | CI red | First pass | Points | Points per PR |'
+  assert_line '| Lane | Model | Harness | Done | Canary | Returned | Landed | No PR | Unrated | Rate | Failed | Redo | First attempt | Reverts | Cost | Per PR | Source | CI red | First pass | Points | Points per PR |'
   run env BENCH_NOW=$T0 "$SUBJECT" models --json
   assert_equal "$(jq -c '[.models[] | has("lane")] | unique' <<<"$output")" '[false]'
   run "$SUBJECT" models --by class,size
@@ -2395,13 +2506,13 @@ qstats_fixture() {
     echo '{"session_id":"s4","cost_usd":0,"cost_by_model":{"<synthetic>":0,"claude-haiku-5-5":0},"models":["<synthetic>","claude-sonnet-5-5"]}'
   } > "$BENCH_OUTCOMES_DIR/game/2026-10.jsonl"
   {
-    echo '{"slug":"a","status":"ok","pr":"o/r#1","sessions":"s1 s2"}'
-    echo '{"slug":"b","status":"ok","pr":"o/r#2","sessions":"s3"}'
-    echo '{"slug":"c","status":"ok","pr":"o/r#3","sessions":"gone"}'
-    echo '{"slug":"d","status":"ok","pr":"o/r#4"}'
-    echo '{"slug":"e","model":"haiku","status":"ok","pr":"o/r#5","sessions":"s2"}'
-    echo '{"slug":"f","model":"claude-opus-5-5","status":"ok","pr":"o/r#6"}'
-    echo '{"slug":"g","status":"ok","pr":"o/r#7","sessions":"s4"}'
+    echo '{"slug":"a","status":"ok","pr":"o/r#1","sessions":"s1 s2","outcome":"landed"}'
+    echo '{"slug":"b","status":"ok","pr":"o/r#2","sessions":"s3","outcome":"landed"}'
+    echo '{"slug":"c","status":"ok","pr":"o/r#3","sessions":"gone","outcome":"landed"}'
+    echo '{"slug":"d","status":"ok","pr":"o/r#4","outcome":"landed"}'
+    echo '{"slug":"e","model":"haiku","status":"ok","pr":"o/r#5","sessions":"s2","outcome":"landed"}'
+    echo '{"slug":"f","model":"claude-opus-5-5","status":"ok","pr":"o/r#6","outcome":"landed"}'
+    echo '{"slug":"g","status":"ok","pr":"o/r#7","sessions":"s4","outcome":"landed"}'
   } > "$ITEMS"
   run env BENCH_NOW=$T0 "$SUBJECT" models --json
   assert_success
@@ -2417,7 +2528,7 @@ qstats_fixture() {
   printf '#!/usr/bin/env bash\ncat "%s"\n' "$ITEMS" > "$SANDBOX/bin/done-stub"
   chmod +x "$SANDBOX/bin/done-stub"
   mkdir -p "$BENCH_OUTCOMES_DIR"
-  echo '{"slug":"a","model":"sol","agent":"codex","status":"failed","end_reason":"limit","lane_run":"r2"}' > "$ITEMS"
+  echo '{"slug":"a","model":"sol","agent":"codex","status":"failed","end_reason":"limit","lane_run":"r2","outcome":"unrated"}' > "$ITEMS"
   now_iso=$(date -u -d "@$T0" +%FT%T+00:00)
   {
     echo "{\"id\":\"r1\",\"ts\":\"$now_iso\",\"lane\":\"opus\",\"harness\":\"codex\",\"ran\":\"sol\",\"outcome\":\"redo\"}"
@@ -2448,11 +2559,11 @@ qstats_fixture() {
     echo '{"session_id":"s4","cost_usd":5,"reverted_7d":0}'
   } > "$BENCH_OUTCOMES_DIR/game/2026-10.jsonl"
   {
-    echo '{"slug":"a","model":"opus","status":"ok","pr":"o/r#1","sessions":"s1"}'
-    echo '{"slug":"b","model":"sonnet","status":"ok","pr":"o/r#2","sessions":"s2 s3"}'
-    echo '{"slug":"c","model":"sonnet","status":"failed","sessions":"s4"}'
-    echo '{"slug":"d","model":"sonnet","status":"cancelled"}'
-    echo '{"slug":"e","status":"ok","pr":"o/r#3"}'
+    echo '{"slug":"a","model":"opus","status":"ok","pr":"o/r#1","sessions":"s1","outcome":"landed"}'
+    echo '{"slug":"b","model":"sonnet","status":"ok","pr":"o/r#2","sessions":"s2 s3","outcome":"landed"}'
+    echo '{"slug":"c","model":"sonnet","status":"failed","sessions":"s4","outcome":"failed"}'
+    echo '{"slug":"d","model":"sonnet","status":"cancelled","outcome":"cancelled"}'
+    echo '{"slug":"e","status":"ok","pr":"o/r#3","outcome":"landed"}'
   } > "$ITEMS"
   now_iso=$(date -u -d "@$T0" +%FT%T+00:00); old_iso=$(date -u -d "@$((T0 - 8 * 86400))" +%FT%T+00:00)
   {
@@ -2465,15 +2576,65 @@ qstats_fixture() {
   assert_success
   [ "$(cat "$ITEMS.since")" = "$(date -d "@$((T0 - 7 * 86400))" +%F)" ]
   row() { jq -c ".models[] | select(.model == \"$1\" and .harness == \"${2:-claude}\") | $3" <<<"$output"; }
-  assert_equal "$(row sonnet claude .)" '{"model":"sonnet","harness":"claude","done":2,"canary":0,"checks":0,"checks_ok":0,"checks_failed":0,"returned":0,"code":2,"landed":1,"landed_rate":0.5,"landed_n":2,"landed_ci":{"lo":0.09,"hi":0.91},"failed":1,"unrated":0,"fix_none":0,"fix_small":0,"runs":3,"approved":1,"rated":2,"redo":1,"redo_rate":0.5,"reverts":1,"first_attempt_ok":1,"first_attempt_n":2,"first_attempt_rate":0.5,"first_attempt_ci":{"lo":0.09,"hi":0.91},"cost_usd":8,"priced":1,"cost_per_pr":8,"source":"list","ci_prs":0,"ci_red_per_pr":null,"first_pass_share":null,"first_pass_n":0,"first_pass_ci":null,"points":null,"points_per_pr":null}'
+  assert_equal "$(row sonnet claude .)" '{"model":"sonnet","harness":"claude","done":2,"canary":0,"returned":0,"landed":1,"no_pr":0,"landed_rate":0.5,"landed_n":2,"landed_ci":{"lo":0.09,"hi":0.91},"failed":1,"unrated":0,"fix_none":0,"fix_small":0,"runs":3,"approved":1,"rated":2,"redo":1,"redo_rate":0.5,"reverts":1,"first_attempt_ok":1,"first_attempt_n":2,"first_attempt_rate":0.5,"first_attempt_ci":{"lo":0.09,"hi":0.91},"cost_usd":8,"priced":1,"cost_per_pr":8,"source":"list","ci_prs":0,"ci_red_per_pr":null,"first_pass_share":null,"first_pass_n":0,"first_pass_ci":null,"points":null,"points_per_pr":null}'
   assert_equal "$(row opus claude '[.landed_rate, .cost_per_pr, .redo_rate]')" '[1,3,null]'
   assert_equal "$(row unrecorded claude '[.done, .landed, .priced, .cost_per_pr, .source]')" '[1,1,0,null,"-"]'
   run env BENCH_NOW=$T0 "$SUBJECT" models
   assert_success
-  assert_line '| sonnet | claude | 2 | 0 | 0 | 0 | 1 | 0.5 (0.09-0.91, n 2) | 1 | 1 | 0.5 (0.09-0.91, n 2) | 1 | $8 | $8 | list | - | - | - | - |'
-  assert_line '| opus | claude | 1 | 0 | 0 | 0 | 1 | 1 (0.21-1, n 1) | 0 | 0 | - | 0 | $3 | $3 | list | - | - | - | - |'
+  assert_line '| sonnet | claude | 2 | 0 | 0 | 1 | 0 | 0 | 0.5 (0.09-0.91, n 2) | 1 | 1 | 0.5 (0.09-0.91, n 2) | 1 | $8 | $8 | list | - | - | - | - |'
+  assert_line '| opus | claude | 1 | 0 | 0 | 1 | 0 | 0 | 1 (0.21-1, n 1) | 0 | 0 | - | 0 | $3 | $3 | list | - | - | - | - |'
   run "$SUBJECT" models --bogus
   assert_failure 2
+}
+
+@test "one landing verdict: agent-queue stamps each close's outcome, and every reader counts the same landed items from it (ar-5433)" {
+  sources_fixture
+  export AGENT_QUEUE_DIR="$SANDBOX/queue" AGENT_QUEUE_START=0 DISPATCH_KINDS="$REPO_ROOT/.config/fleet-dispatch/kinds.json"
+  export BENCH_ROADMAP_CMD=roadmap-stub
+  printf '#!/usr/bin/env bash\necho "[]"\n' > "$SANDBOX/bin/roadmap-stub"; chmod +x "$SANDBOX/bin/roadmap-stub"
+  local aq="$REPO_ROOT/.local/bin/agent-queue"
+  mkdir -p "$AGENT_QUEUE_DIR/running"
+  # close <slug> <type> <status> <pr or -> [<from>] [<end>]: a running item on account main, closed by agent-queue itself
+  close() {
+    {
+      printf 'slug: %s\nproject: dotfiles\nmode: oneshot\npriority: high\nfrom: %s\nagent: claude\nmodel: sonnet\naccount: main\n' "$1" "${5:-human}"
+      printf 'queued: 2026-11-03T10:00:00Z\nstarted: 2026-11-03T10:00:00Z\ntype: %s\n' "$2"
+      [ "$4" = - ] || printf 'pr: %s\nmerged: 0123456789abcdef0123456789abcdef01234567\n' "$4"
+      printf -- '---\n%s\n' "$1"
+    } > "$AGENT_QUEUE_DIR/running/20261103-100000-$1.md"
+    if [ "$3" = cancelled ]; then "$aq" cancel "$1" >/dev/null; else "$aq" move "$1" done --status "$3" ${6:+--end "$6"} >/dev/null; fi
+  }
+  close fixed fix ok o/r#1               # landed
+  close checked check ok o/r#2           # landed: a check that opened a PR
+  close clean check ok -                 # unrated: a check's exit is a report
+  close dry fix ok -                     # no-pr: a fix's exit is a PR
+  close broke fix failed -               # failed
+  close capped fix failed - human limit  # unrated: the limit says nothing of the model
+  close canary fix ok o/r#3 canary       # unrated: a canary opens its PR by design, and models counts it apart
+  close dropped fix cancelled -          # cancelled
+  "$aq" list --json --state done > "$ITEMS"
+  assert_equal "$(jq -sc 'map([.slug, .outcome]) | sort' "$ITEMS")" \
+    '[["broke","failed"],["canary","unrated"],["capped","unrated"],["checked","landed"],["clean","unrated"],["dropped","cancelled"],["dry","no-pr"],["fixed","landed"]]'
+  # every reader of the fixture: 2 landed, never the canary's PR nor the unmerged check
+  run "$aq" stats --json --since 2000-01-01
+  assert_success
+  assert_equal "$(jq -c '.recent.shipped_today' <<<"$output")" 2
+  run "$SUBJECT" models --json
+  assert_success
+  assert_equal "$(jq -c '[.models[] | select(.done > 0) | [.done, .canary, .landed, .no_pr, .failed, .unrated]]' <<<"$output")" '[[6,1,2,1,1,2]]'
+  run "$SUBJECT" sources --json
+  assert_success
+  assert_equal "$(jq -c '.sources[] | select(.name == "main") | .landed' <<<"$output")" 2
+  run "$SUBJECT" sizes --json
+  assert_success
+  assert_equal "$(jq -c '[.kinds[].landed] | add' <<<"$output")" 2
+  # reopen drops the stamp, and the next close writes the new one
+  "$aq" reopen broke >/dev/null
+  assert_equal "$(grep -c '^outcome:' "$AGENT_QUEUE_DIR"/running/*-broke.md)" 0
+  "$aq" set broke pr=o/r#4 merged=0123456789abcdef0123456789abcdef01234567 >/dev/null
+  "$aq" move broke done --status ok >/dev/null
+  run "$aq" stats --json --since 2000-01-01
+  assert_equal "$(jq -c '.recent.shipped_today' <<<"$output")" 3
 }
 
 # models_fixture <items> <outcomes rows> <runs rows> -- the done-item, session-outcomes and model-lane files `models` reads
@@ -2488,9 +2649,9 @@ models_fixture() {
 }
 
 @test "models: a canary item is in its own column and in no Done, Landed, Rate or Failed count; a real item beside it is unchanged" {
-  models_fixture '{"slug":"real","model":"sonnet","status":"ok","pr":"o/r#1","sessions":"s1"}
-{"slug":"canary-a","model":"sonnet","from":"canary","status":"failed","sessions":"s2"}
-{"slug":"canary-b","model":"sonnet","tags":"canary eval","status":"ok","pr":"o/r#2","gateway_cost_usd":"2"}' \
+  models_fixture '{"slug":"real","model":"sonnet","status":"ok","pr":"o/r#1","sessions":"s1","outcome":"landed"}
+{"slug":"canary-a","model":"sonnet","from":"canary","status":"failed","sessions":"s2","outcome":"unrated"}
+{"slug":"canary-b","model":"sonnet","tags":"canary eval","status":"ok","pr":"o/r#2","gateway_cost_usd":"2","outcome":"unrated"}' \
     '{"session_id":"s1","cost_usd":3}
 {"session_id":"s2","cost_usd":1}' ''
   run env BENCH_NOW=$T0 "$SUBJECT" models --json
@@ -2498,7 +2659,7 @@ models_fixture() {
   assert_equal "$(jq -c '.models[] | select(.model == "sonnet") | [.done, .canary, .landed, .landed_rate, .failed, .cost_usd, .cost_per_pr]' <<<"$output")" '[1,2,1,1,0,6,3]'
   run env BENCH_NOW=$T0 "$SUBJECT" models
   assert_success
-  assert_line '| sonnet | claude | 1 | 2 | 0 | 0 | 1 | 1 (0.21-1, n 1) | 0 | 0 | - | 0 | $6 | $3 | mixed | - | - | - | - |'
+  assert_line '| sonnet | claude | 1 | 2 | 0 | 1 | 0 | 0 | 1 (0.21-1, n 1) | 0 | 0 | - | 0 | $6 | $3 | mixed | - | - | - | - |'
 }
 
 @test "models: first attempt is the share of items whose first rated run was approved, so a rejected run counts against its harness; eval runs and unrated runs are left out" {
@@ -2522,8 +2683,8 @@ models_fixture() {
 }
 
 @test "models: a non-claude pair's cost and points are its own sessions, never the Claude reviewer's; with none priced the cost is null and prints -" {
-  models_fixture '{"slug":"a","model":"flash","agent":"agy","status":"ok","pr":"o/r#1","sessions":"s1 s2"}
-{"slug":"b","model":"glm","agent":"opencode","status":"ok","pr":"o/r#2","sessions":"s3 s4"}' \
+  models_fixture '{"slug":"a","model":"flash","agent":"agy","status":"ok","pr":"o/r#1","sessions":"s1 s2","outcome":"landed"}
+{"slug":"b","model":"glm","agent":"opencode","status":"ok","pr":"o/r#2","sessions":"s3 s4","outcome":"landed"}' \
     '{"session_id":"s1","harness":"claude","cost_usd":6}
 {"session_id":"s2","harness":"agy","cost_usd":null}
 {"session_id":"s3","harness":"claude","cost_usd":6}
@@ -2533,7 +2694,7 @@ models_fixture() {
   assert_equal "$(jq -c '[.models[] | [.model, .cost_usd, .cost_per_pr]]' <<<"$output")" '[["flash",null,null],["glm",2,2]]'
   run env BENCH_NOW=$T0 "$SUBJECT" models
   assert_success
-  assert_line --partial '| flash | agy | 1 | 0 | 0 | 0 | 1 | 1 (0.21-1, n 1) | 0 | 0 | - | 0 | - | - |'
+  assert_line --partial '| flash | agy | 1 | 0 | 0 | 1 | 0 | 0 | 1 (0.21-1, n 1) | 0 | 0 | - | 0 | - | - |'
 }
 
 @test "queue prints the week from agent-queue stats since BENCH_QUEUE_DAYS ago, --json passes it through" {
@@ -2826,6 +2987,28 @@ epics_fixture() {
   BENCH_NOW=$T0 run "$SUBJECT" epics --json
   run jq -c --argjson t "$T0" '.projects[0].epics[0].eta | [.p50 - $t, .unscheduled]' <<<"$output"
   assert_output '[7200,1]'
+}
+
+@test "epics --project reads only that project's roadmap, and a project not listed fails naming it" {
+  epics_fixture
+  jq -cn --arg d "$SANDBOX/lab/game" '[{name: "game", profile: "lab", dir: $d}, {name: "other", profile: "lab", dir: $d}]' > "$SANDBOX/projects.json"
+  printf '#!/usr/bin/env bash\necho "$1" >> "%s"\n[ "$1 $2" = "game --json" ] && cat "%s"\n' "$SANDBOX/roadmap.calls" "$RM" > "$SANDBOX/bin/roadmap-stub"
+  row a lab/game-agent-1:1 0 1 > "$SNAP"; sample_at 0
+  : > "$SANDBOX/roadmap.calls"
+  BENCH_NOW=$((T0 + 600)) run "$SUBJECT" epics --json --project game
+  assert_success
+  run jq -c '[.projects[] | {project, epics: (.epics | length)}]' <<<"$output"
+  assert_output '[{"project":"game","epics":3}]'
+  run cat "$SANDBOX/roadmap.calls"
+  assert_output 'game'
+  # negative control: with no --project every listed project's roadmap is read
+  : > "$SANDBOX/roadmap.calls"
+  BENCH_NOW=$((T0 + 600)) run "$SUBJECT" epics --json
+  run cat "$SANDBOX/roadmap.calls"
+  assert_output $'game\nother'
+  BENCH_NOW=$((T0 + 600)) run "$SUBJECT" epics --json --project nosuch
+  assert_failure
+  assert_output --partial 'no project nosuch: not listed, or its roadmap could not be read'
 }
 
 @test "a sample freezes an epic's ETA when first seen and on a scope change, and scores it once when its rows land" {
@@ -3251,9 +3434,12 @@ ascii_fixture() {
   assert_output --partial "the positive control failed, so every run of $(date -d "@$T0" +%Gw%V) reads instrument"
   cp "$SANDBOX/ascii.json" "$BENCH_CANARY_DIR/ascii.json"
   # Negative controls: another lane, and claude on another model, on the same task are no control, and say nothing of the week.
+  # Score put the tree back on s3 (ar-5935), so each run starts at base again, as each dispatched run does.
+  "$SUBJECT" canary start ascii >/dev/null
   bash "$BENCH_CANARY_ORACLES/ascii-fix.answer.sh" doc.md
   CODEX_THREAD_ID=cx-own AGENT_QUEUE_ITEM=cx run "$SUBJECT" canary score ascii
   assert_output --partial 'canary ascii: pass (exit 0)'
+  "$SUBJECT" canary start ascii >/dev/null
   AGENT_QUEUE_ITEM=son run "$SUBJECT" canary score ascii
   assert_output --partial 'canary ascii: fail (exit 1)'
   refute_output --partial 'positive control'
@@ -3367,7 +3553,7 @@ STUB
   assert_output --partial 'ascii-agent-run-contract'
 }
 
-@test "canary start and score: start moves a clean worktree to base; score lays the oracle over it, records once, puts a linked tree back at base clean with its diff kept, and a session's own edit to the oracle does not count" {
+@test "canary start and score: start moves a clean worktree to base; score lays the oracle over it, records once, puts a linked tree back on the branch start found it on (a tree start never moved: at base), clean, with its diff kept, and a session's own edit to the oracle does not count" {
   canary_fixture
   git -C "$CREPO" worktree add -q -b s1 "$SANDBOX/wt1" main
   cd "$SANDBOX/wt1"
@@ -3380,24 +3566,38 @@ STUB
   assert_success
   assert_line --index 1 'fix(greet): say hello'
   assert_equal "$(git rev-parse HEAD)" "$CBASE"
+  # A second start keeps the place the first found (s1, by its full ref: a tag s1 makes --short print heads/s1),
+  # not the base it left (ar-5935).
+  git tag s1 "$CBASE"
+  run "$SUBJECT" canary start greet
+  assert_success
+  assert_equal "$(cut -f1 "$(git rev-parse --path-format=absolute --git-path fleet-bench-canary)")" s1
   # The session games its own copy of the oracle and leaves greet.sh alone: the merge copy scores it.
   mkdir -p tests; echo 'exit 0' > tests/check.sh
   CLAUDE_CODE_SESSION_ID=c1 AGENT_QUEUE_ITEM=canary-greet-w1 run "$SUBJECT" canary score greet
   assert_success
   assert_output --partial 'canary greet: fail (exit 1)'
-  # Scored, the tree is back at base and clean, so wt reaps it; the run's diff waits beside its log.
-  assert_equal "$(git rev-parse HEAD)" "$CBASE"
+  # Scored, the tree is back on the branch start found it on (s1, ar-5935) and clean, so wt reaps it; the
+  # run's diff waits beside its log.
+  assert_equal "$(git symbolic-ref HEAD)" refs/heads/s1
+  assert_equal "$(git rev-parse HEAD)" "$CMERGE"
   assert_equal "$(git status --porcelain)" ''
+  [ ! -e "$(git rev-parse --path-format=absolute --git-path fleet-bench-canary)" ] || fail "the restored tree kept start's record"
   # It is the session's own diff, taken before the oracle was laid over it: its gamed copy, not the PR's.
   grep -qx '+exit 0' "$FLEET_BENCH_DIR/canary/canary-greet-w1.patch" || fail "the run's diff was not kept"
   ! grep -q 'hello' "$FLEET_BENCH_DIR/canary/canary-greet-w1.patch" || fail "the oracle's overlay leaked into the run's diff"
-  # A second session does the work and passes; a repo it made inside the tree goes too.
+  # A second session does the work and passes; a repo it made inside the tree goes too, but a submodule's
+  # copy (its .git a file) stays, said, since what it holds is in no patch (ar-5933: muxpoon's was deleted).
   git -C "$CREPO" worktree add -q --detach "$SANDBOX/wt2" "$CBASE"
   cd "$SANDBOX/wt2"; echo 'echo hello' > greet.sh; git init -q nested; git -C nested -c user.email=t@t -c user.name=t commit -q --allow-empty -m n
+  git init -q --separate-git-dir "$SANDBOX/modgit" mod; echo keep > mod/work; git -C mod add work; git -C mod -c user.email=t@t -c user.name=t commit -q -m m
   CLAUDE_CODE_SESSION_ID=c2 AGENT_QUEUE_ITEM=canary-greet-w2 run "$SUBJECT" canary score greet
   assert_success
   assert_output --partial 'canary greet: pass (exit 0)'
-  assert_equal "$(git status --porcelain)" ''
+  assert_output --partial 'keeps mod/ after its reset, so wt reap leaves it'
+  assert_equal "$(git status --porcelain)" '?? mod/'
+  assert_equal "$(cat mod/work)" keep
+  rm -rf mod
   grep -qx '+echo hello' "$FLEET_BENCH_DIR/canary/canary-greet-w2.patch" || fail "the run's diff was not kept"
   echo 'echo hello' > greet.sh
   CLAUDE_CODE_SESSION_ID=c2 AGENT_QUEUE_ITEM=canary-greet-w2 run "$SUBJECT" canary score greet
@@ -3413,6 +3613,13 @@ STUB
   echo 'echo hello' > greet.sh
   BENCH_CANARY_WRAP="false &&" AGENT_QUEUE_ITEM=canary-greet-w4 run "$SUBJECT" canary score greet
   assert_output --partial 'canary greet: fail (exit 1)'
+  # BENCH_CANARY_RUN_LOG (fleet-dispatch run-log) prints the harness's own log of the run, kept beside the
+  # canary log (ar-4133); a run it printed nothing for keeps no empty file.
+  [ ! -e "$FLEET_BENCH_DIR/canary/canary-greet-w4.harness.log" ] || fail "a run with no BENCH_CANARY_RUN_LOG kept a harness log"
+  BENCH_CANARY_RUN_LOG="echo run=ab12 cli starting" AGENT_QUEUE_ITEM=canary-greet-w4b run "$SUBJECT" canary score greet
+  assert_equal "$(cat "$FLEET_BENCH_DIR/canary/canary-greet-w4b.harness.log")" 'run=ab12 cli starting'
+  BENCH_CANARY_RUN_LOG="true" AGENT_QUEUE_ITEM=canary-greet-w4c run "$SUBJECT" canary score greet
+  [ ! -e "$FLEET_BENCH_DIR/canary/canary-greet-w4c.harness.log" ] || fail "an empty harness log was kept"
   # Negative control: a score run in a main checkout records, and leaves that tree as it was.
   cd "$CREPO"; git checkout -q --detach "$CBASE"; echo 'echo hello' > greet.sh
   AGENT_QUEUE_ITEM=canary-greet-w5 run "$SUBJECT" canary score greet
@@ -3430,6 +3637,48 @@ STUB
   assert_success
   assert_output --partial 'is on a branch, not detached by canary start, so it stays as the run left it'
   assert_equal "$(git rev-parse b6)" "$head"
+}
+
+@test "canary start and score: a tree start found detached goes back to that commit, detached; a record naming a commit the tree is not at is stale and ignored (ar-5935)" {
+  canary_fixture
+  git -C "$CREPO" worktree add -q --detach "$SANDBOX/wt7" main
+  cd "$SANDBOX/wt7"
+  mark=$(git rev-parse --path-format=absolute --git-path fleet-bench-canary)
+  printf 'gone\t%s\n' "$CBASE" > "$mark"
+  run "$SUBJECT" canary start greet
+  assert_success
+  assert_equal "$(cut -f1 "$mark")" "$CMERGE"
+  echo 'echo hello' > greet.sh
+  AGENT_QUEUE_ITEM=canary-greet-w7 run "$SUBJECT" canary score greet
+  assert_success
+  assert_output --partial 'canary greet: pass (exit 0)'
+  run git symbolic-ref -q HEAD
+  assert_failure
+  assert_equal "$(git rev-parse HEAD)" "$CMERGE"
+  assert_equal "$(git status --porcelain)" ''
+  [ ! -e "$mark" ] || fail "the restored tree kept start's record"
+}
+
+@test "canary start: a base that leaves a directory untracked (a submodule's copy at a base before it was one, ar-5933) is refused, and the tree is put back as it was" {
+  canary_fixture
+  git -C "$CREPO" worktree add -q -b s1 "$SANDBOX/wt1" main
+  cd "$SANDBOX/wt1"
+  git init -q mod; echo keep > mod/work; git -C mod add work; git -C mod -c user.email=t@t -c user.name=t commit -q -m m
+  git add mod 2>/dev/null; git -c user.email=t@t -c user.name=t commit -qm 'mod as a submodule'; head=$(git rev-parse HEAD)
+  run "$SUBJECT" canary start greet
+  assert_failure 2
+  assert_output --partial 'leaves mod untracked'
+  assert_equal "$(git symbolic-ref --short HEAD)" s1
+  assert_equal "$(git rev-parse HEAD)" "$head"
+  assert_equal "$(git status --porcelain)" ''
+  assert_equal "$(cat mod/work)" keep
+  # Negative control: the same tree without the copy starts, and a file HEAD only ignores (base has no rule for
+  # it) is no tracked directory, so it does not hold the start.
+  git rm -q --cached mod; rm -rf mod; echo scratch > .gitignore; git add .gitignore
+  git -c user.email=t@t -c user.name=t commit -qm 'no mod'; echo x > scratch
+  run "$SUBJECT" canary start greet
+  assert_success
+  assert_equal "$(git rev-parse HEAD)" "$CBASE"
 }
 
 @test "canary vendor: start links the main checkout's tests/vendor in; the oracle replaces one the run made, so it can neither hide nor fake bats; no bats to carry is an oracle that could not run" {
@@ -3800,6 +4049,28 @@ cancel c-old-lane --why canary: superseded by the $week set"
   [ -f "$CQ/canary-greet-$week.json" ]
 }
 
+@test "canary lanes: a lane's room check names its model's gateway route, so a spent route queues nothing though its source has room (ar-4601)" {
+  kpi_setup; kpi_fixture; canary_fixture
+  week=$(date -d "@$T0" +%Gw%V)
+  export BENCH_CANARY_LANES="$SANDBOX/canary-lanes" BENCH_HARNESSES="$SANDBOX/harnesses.json" BENCH_ROOM_CMD=room-stub
+  printf 'ocfree beam
+opencode-go glm
+' > "$BENCH_CANARY_LANES"
+  echo '{"harnesses":{"ocfree":{"source":"ocfree","launcher":"opencode","models":{"beam":"litellm/beam-free"}},"opencode-go":{"source":"go","launcher":"opencode","models":{"glm":"litellm/glm-go"}}}}' > "$BENCH_HARNESSES"
+  printf '#!/usr/bin/env bash
+echo "$*" >> "%s"
+[ "${4:-}" = beam-free ] && { echo "ocfree: route beam-free answers 429"; exit 1; }
+echo "$2: room"; exit 0
+' "$SANDBOX/room.log" > "$SANDBOX/bin/room-stub"
+  chmod +x "$SANDBOX/bin/room-stub"
+  run "$SUBJECT" canary queue --max 9
+  assert_success
+  assert_line "fleet-bench: canary: ocfree/beam not queued, ocfree: route beam-free answers 429"
+  [ ! -f "$CQ/canary-greet-$week-ocfree-beam.json" ]
+  [ -f "$CQ/canary-greet-$week-opencode-go-glm.json" ]
+  assert_equal "$(tr '\n' '|' < "$SANDBOX/room.log")" '--source ocfree --model beam-free|--source go --model glm-go|'
+}
+
 @test "canary top-up: --max N queues at most N, one task a lane a round, so lanes run together; a rerun queues the rest and a full week queues nothing" {
   kpi_setup; kpi_fixture; canary_fixture
   week=$(date -d "@$T0" +%Gw%V)
@@ -3832,24 +4103,30 @@ cancel c-old-lane --why canary: superseded by the $week set"
   assert_failure 2
 }
 
-# ar-4554: fleet-dispatch passes --off-claude while a project share is full, which holds a Claude lane's canary.
-@test "canary top-up: --off-claude queues only the lanes on their own source, never the claude baseline or a claude lane" {
+# ar-4554, ar-5406: fleet-dispatch passes --off-claude <full projects>, which holds a Claude lane's canary of those projects only.
+@test "canary top-up: --off-claude <project> leaves a claude lane out of that project alone, never another project or a lane on its own source" {
   kpi_setup; kpi_fixture; canary_fixture
   week=$(date -d "@$T0" +%Gw%V)
   export BENCH_CANARY_LANES="$SANDBOX/canary-lanes" BENCH_HARNESSES="$SANDBOX/harnesses.json" BENCH_ROOM_CMD=room-stub
   printf 'codex sol\nclaude haiku max\n' > "$BENCH_CANARY_LANES"
   echo '{"harnesses":{"codex":{"source":"codex"}}}' > "$BENCH_HARNESSES"
   printf '#!/usr/bin/env bash\necho room\n' > "$SANDBOX/bin/room-stub"; chmod +x "$SANDBOX/bin/room-stub"
-  run "$SUBJECT" canary queue --max 9 --off-claude
+  run "$SUBJECT" canary queue --max 9 --off-claude game
   assert_success
   assert_output "fleet-bench: canary: 1 queued for $week (codex/sol)"
   assert_equal "$(ls "$CQ"/*.json)" "$CQ/canary-greet-$week-codex-sol.json"
+  # The negative control: a full share of another project leaves the claude baseline and the claude lane queued (ar-5406).
+  rm "$CQ"/*.json
+  run "$SUBJECT" canary queue --max 9 --off-claude other,elsewhere
+  assert_success
+  assert_equal "$(ls "$CQ"/*.json | wc -l)" 3
   # The positive control: without it the claude baseline and the claude lane queue too.
+  rm "$CQ"/*.json
   run "$SUBJECT" canary queue --max 9
   assert_success
   assert_equal "$(ls "$CQ"/*.json | wc -l)" 3
   # It names the top-up alone.
-  run "$SUBJECT" canary queue --harness codex --model sol --off-claude
+  run "$SUBJECT" canary queue --harness codex --model sol --off-claude game
   assert_failure 2
 }
 
@@ -4075,6 +4352,18 @@ cancel c-old-lane --why canary: superseded by the $week set"
   run "$SUBJECT" canary matrix --harness str
   assert_failure 2
   assert_output --partial 'its str entry is no object'
+  # A capability of the map's vocabulary that a harness leaves out excludes its mode, and its stack's PR-opening
+  # kinds (a kind whose kinds.json exit is not pr, or that it does not register, stays open), as route()'s harness_needs_why refuses them.
+  echo '{"capabilities":{"lane_sandbox":{"mode":"lane-sandbox","why":"no profile"},"rust_gate":{"stack":"rust","why":"needs the gate"}},
+    "harnesses":{"bare":{"capabilities":[]},"full":{"capabilities":["lane_sandbox","rust_gate"]}}}' > "$BENCH_HARNESSES"
+  echo '{"fix":{"exit":"pr"},"ci":{"exit":"pr"},"perf":{},"docs":{"exit":"report"}}' > "$SANDBOX/kinds.json"; export BENCH_KINDS="$SANDBOX/kinds.json"
+  run "$SUBJECT" canary matrix --harness bare --json
+  assert_success
+  run jq -c '[.cells[] | select(.stack == "rust") | [.kind, .status]], [.modes[] | select(.status == "excluded") | .mode], [.cells[] | select(.kind == "fix" and .stack == "rust") | .why]' <<<"$output"
+  assert_output $'[["fix","excluded"],["docs","empty"],["ci","excluded"],["perf","excluded"]]\n["lane-sandbox"]\n["bare lacks the rust_gate capability (harnesses.json): needs the gate"]'
+  run "$SUBJECT" canary matrix --harness full --json
+  run jq -c '[.cells[] | select(.stack == "rust") | [.kind, .status]], [.modes[] | select(.status == "excluded") | .mode]' <<<"$output"
+  assert_output $'[["fix","empty"],["docs","empty"],["ci","excluded"],["perf","no work"]]\n[]'
   echo 'not json' > "$BENCH_HARNESSES"
   run "$SUBJECT" canary matrix
   assert_failure 2
@@ -4120,7 +4409,8 @@ STUB
   item() {  # slug row work status queued-ago-h started-ago-h finished-ago-h [type]
     jq -cn --arg s "$1" --arg r "$2" --arg w "$3" --arg st "$4" --arg q "$(iso $((T0 - $5 * 3600)))" \
       --arg b "$(iso $((T0 - $6 * 3600)))" --arg f "$(iso $((T0 - $7 * 3600)))" --arg t "${8:-}" \
-      '{slug: $s, status: $st, queued: $q, started: $b, finished: $f, pr: (if $st == "ok" then "o/r#1" else null end)}
+      '{slug: $s, status: $st, queued: $q, started: $b, finished: $f, pr: (if $st == "ok" then "o/r#1" else null end),
+        outcome: ({ok: "landed", failed: "failed", cancelled: "cancelled"}[$st])}
        + (if $r == "" then {} else {row: $r} end) + (if $w == "" then {} else {work_min: $w} end) + (if $t == "" then {} else {type: $t} end)'
   }
   {
@@ -4357,6 +4647,37 @@ churn_fixture() {
   assert_output null
 }
 
+@test "kpi: churn_admitted_per_day and churn_refused_per_day are the board cap's day counts from notes ingest cap, for agent-runtime only, null when notes gives none" {
+  churn_fixture
+  { ev added a1 "$(day 3)" s1 '{"origin": "plan"}'; ev added a2 "$(day 1)" s1 '{"origin": "plan"}'; } > "$BENCH_INGEST"
+  cap() { printf '{"date":"%s","project":"%s","cap":10,"admitted":%s,"refused":%s}\n' "$(day "$1")" "$2" "$3" "$4"; }
+  {
+    cap 3 agent-runtime 2 2
+    cap 2 agent-runtime 6 0
+    cap 1 agent-runtime 10 4
+    cap 1 other-board 99 99
+  } > "$SANDBOX/cap"
+  printf '#!/usr/bin/env bash\ncat %q\n' "$SANDBOX/cap" > "$SANDBOX/bin/intake-stub"
+  chmod +x "$SANDBOX/bin/intake-stub"
+  # 7d is the three days from the record's first day (day 3) to day 1: (2+6+10)/3 admitted, (2+0+4)/3 refused
+  BENCH_INTAKE_CMD=intake-stub run "$SUBJECT" kpi --json
+  assert_success
+  run jq -c '[.churn_admitted_per_day["7d"], .churn_refused_per_day["7d"]]' <<<"$output"
+  assert_output '[6,2]'
+  # the table: a column each, today so far with none recorded
+  BENCH_INTAKE_CMD=intake-stub run "$SUBJECT" churn --days 3 --json
+  assert_success
+  run jq -sc 'map([.admitted, .refused])' <<<"$output"
+  assert_output '[[2,2],[6,0],[10,4],[0,0]]'
+  # NEGATIVE CONTROL: a notes that gives no counts leaves both null, never 0
+  BENCH_INTAKE_CMD=false run "$SUBJECT" kpi --json
+  run jq -c '[.churn_admitted_per_day["7d"], .churn_refused_per_day["7d"]]' <<<"$output"
+  assert_output '[null,null]'
+  BENCH_INTAKE_CMD=false run "$SUBJECT" churn --days 3 --json
+  run jq -sc 'map([.admitted, .refused] | unique)' <<<"$output"
+  assert_output '[[null],[null],[null],[null]]'
+}
+
 @test "churn: --check trips only when filed exceeded closed on each of the last complete days running" {
   churn_fixture
   : > "$SANDBOX/merges"
@@ -4506,8 +4827,8 @@ esac'
   printf '#!/usr/bin/env bash\ncat "%s"\n' "$ITEMS" > "$SANDBOX/bin/done-stub"
   chmod +x "$SANDBOX/bin/done-stub"
   {
-    echo '{"slug":"a","model":"glm","agent":"opencode-go","status":"ok","pr":"o/r#1","lane_run":"r1","review_fix":"small"}'
-    echo '{"slug":"b","model":"glm","agent":"opencode-go","status":"failed","lane_run":"r2"}'
+    echo '{"slug":"a","model":"glm","agent":"opencode-go","status":"ok","pr":"o/r#1","lane_run":"r1","review_fix":"small","outcome":"landed"}'
+    echo '{"slug":"b","model":"glm","agent":"opencode-go","status":"failed","lane_run":"r2","outcome":"failed"}'
   } > "$ITEMS"
   now_iso=$(date -u -d "@$T0" +%FT%T+00:00)
   {
