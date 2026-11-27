@@ -6024,10 +6024,40 @@ Version: v0.0.1
             !board.contains("- [/]") && board.contains("- [x] fix(a): started"),
             "the started row closed: {board}"
         );
+        assert!(
+            board.contains("id:dm-1 done:") && board.contains("unverified: test"),
+            "the close keeps the id and stamps its evidence: {board}"
+        );
         assert_eq!(
             fs::read_to_string(dir.join("agent/versions/v0.1.0.md")).unwrap(),
             note,
             "the note's copies are history, never the row the close acts on"
+        );
+        // Negative control: with no open board row, the note's copies are all there is, and
+        // `done` finds nothing to close.
+        fs::write(
+            dir.join("agent/README.md"),
+            "# demo - agent board\n\n## Tasks\n",
+        )
+        .unwrap();
+        assert_eq!(
+            done(
+                &p,
+                &log,
+                "demo",
+                &pick,
+                None,
+                Some("test"),
+                None,
+                Lane::Agent,
+                None
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("agent/versions/v0.1.0.md")).unwrap(),
+            note
         );
         let _ = fs::remove_dir_all(&root);
     }
