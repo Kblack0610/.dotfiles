@@ -68,8 +68,10 @@ install_runtime() {
     # Node.js: NodeSource LTS (apt's nodejs is too stale); npm is bundled with it, so a box with apt nodejs and no npm gets it too
     if ! command -v node &>/dev/null || ! command -v npm &>/dev/null; then
         log_info "Installing Node.js (NodeSource LTS)..."
-        curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
-        sudo apt install -y nodejs &>/dev/null
+        # pipefail: a failed curl would otherwise feed bash an empty script that exits 0
+        (set -o pipefail; curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -) || { log_error "NodeSource setup failed"; return 1; }
+        # apt's output stays visible, so a failed install logs its reason
+        sudo apt install -y nodejs
     fi
 
     # Python + pipx via catalog
