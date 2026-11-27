@@ -72,7 +72,7 @@ agent-ask post [opts] "question"          create a pending ask; print its id
   --profile X     profile section (personal / a job profile)
   --session S     link to a sessions.jsonl session id
   --agent A       who asked (kb-coordinator, shepherd, ...)
-  --task T        link to a Focus task key or tracker ticket
+  --task T        link to a Focus task key, tracker ticket or queue item (default: $AGENT_QUEUE_ITEM; ask-resume gives the resume item that item's board row)
   --kind K        question | gate | approval  (gate/approval default options: approve|hold; a gate is judged, an approval is the human's)
   --options a=..|b=..  pipe-separated choices, each with its meaning (required; post refuses a bare a|b)
   --context TEXT  why it is asked and what it blocks (the card's why: line)

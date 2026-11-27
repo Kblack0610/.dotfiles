@@ -518,6 +518,9 @@ resume_form_ok() {
   return 1
 }
 
+# cmd_post: a queue item's session asks for its item, so `task:` is $AGENT_QUEUE_ITEM unless --task names one:
+# requeue_waiting and ask-resume (the resume item takes that item's row) find it without the session. The
+# floor check reads only the poster's own words, never that default.
 cmd_post() {
   local project="" profile="" session="" agent="" task="" kind="question" \
         options="" recommend="" why="" resume="" wait=0 question="" context="" audit_of="" previews="" blocker=""
@@ -681,7 +684,7 @@ cmd_post() {
     printf 'session: %s\n'    "$(oneline "$session")"
     printf 'claude_session: %s\n' "$(oneline "$owner")"
     printf 'agent: %s\n'      "$(oneline "$agent")"
-    printf 'task: %s\n'       "$(oneline "$task")"
+    printf 'task: %s\n'       "$(oneline "${task:-${AGENT_QUEUE_ITEM:-}}")"
     printf 'kind: %s\n'       "$kind"
     printf 'created: %s\n'    "$(now_iso)"
     printf 'status: pending\n'
