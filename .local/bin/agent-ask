@@ -258,11 +258,23 @@ human_cancel() {
   [ -n "$hits" ] && printf '%s\n' "$hits"
 }
 
+# human_work_approval <file>: make a filed ask that could take the human's work off the queue an
+# approval, with drop|keep when it offers no options (the answers cancel_guard takes). The queue
+# reads the ask by its id, so post runs this on the file, before any reader is told of it.
+# gate: aa-human-work
+human_work_approval() {
+  local floor
+  [ "$(field "$1" kind)" != approval ] && floor="$(human_cancel "$1")" || return 0
+  write_fields "$1" kind approval
+  [ -n "$(field "$1" options)" ] || write_fields "$1" options "drop|keep"
+  echo "agent-ask post: the ask could take $floor off the queue, work the human asked for, so it is an approval for the human" >&2
+}
+
 # human_floor <text> [<file>]: why an ask with this text is the human's by rule, worded to follow "the
 # ask"; fails when it is not. Two rules: the ask names the judge's own reach (the policy's "Judge
 # authority" list), which the judge never rules on, or, given its file, it could take work the human
-# asked for off the queue (human_cancel). post makes such an ask an approval, and judge holds one
-# posted before to it.
+# asked for off the queue (human_cancel). post makes such an ask an approval (human_work_approval),
+# and judge holds one posted before that.
 human_floor() {
   local hit
   if hit="$(judge_floor_hit "$(judge_conf PROMPT "")" "$1" "Judge authority")"; then
@@ -675,13 +687,7 @@ cmd_post() {
     [ -z "$gh_login" ] || printf 'login: gh\nhost: %s\n' "$FLEET_HOST"
   } > "$file"
   [ -z "$blk" ] || exec {blk}>&-
-  # gate: aa-human-work
-  # The queue reads the ask by its id, so this check runs on the file, before any reader is told of it.
-  if [ "$kind" != approval ] && floor="$(human_cancel "$file")"; then
-    write_fields "$file" kind approval
-    [ -n "$options" ] || write_fields "$file" options "drop|keep"   # the answers cancel_guard takes
-    echo "agent-ask post: the ask could take $floor off the queue, work the human asked for, so it is an approval for the human" >&2
-  fi
+  human_work_approval "$file"
   queue_changed
 
   # The judge runs before the asker is told anything: a type it answers live comes back as the
