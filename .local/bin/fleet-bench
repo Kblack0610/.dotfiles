@@ -1747,9 +1747,9 @@ commit_paths() {
 
 # pr_ci <repo> <number> <session> <cfg> -> its size and the CI runs on its branch from its first
 # commit to merge (earlier runs are a reused branch name), read from the run ledger (schedules-sync
-# runs; exit 3 when the ledger does not sync the repo, 4 when it has not synced past the merge yet,
-# 1 when it is unreadable or stale); red is failure, timed_out or
-# startup_failure, and cancelled is superseded, not red. A Forgejo PR (repo host/owner/repo,
+# runs). Exit 3: the ledger does not sync the repo. Exit 4: it has not synced past the merge yet.
+# Exit 5: its Forgejo says the PR does not exist (so_forgejo_pr). Exit 1: unreadable or stale.
+# Red is failure, timed_out or startup_failure, and cancelled is superseded, not red. A Forgejo PR (repo host/owner/repo,
 # session-outcomes.sh SO_PR_JQ) is read through that host's API, since gh speaks only to GitHub, and
 # keeps its outcomes name on the row; the ledger names it forgejo:owner/repo. A repo with sections
 # adds the PR's sections and its gate workflow's runs, the gate named by its file path, since a run's
@@ -1758,7 +1758,7 @@ commit_paths() {
 pr_ci() {
   local pr runs paths='' ledger=$1
   if [[ "$1" == */*/* ]]; then
-    pr=$(so_forgejo_pr "$1" "$2") || return 1
+    pr=$(so_forgejo_pr "$1" "$2") || { [ $? -eq 3 ] && return 5; return 1; }
     ledger=forgejo:${1#*/}
   else
     pr=$(gh pr view "$2" -R "$1" --json headRefName,createdAt,mergedAt,additions,deletions,commits,mergeCommit) || return 1
@@ -1814,9 +1814,10 @@ review_start() {
 # cmd_review: the window reaches back to the last pass, so a failed or missed night is counted by
 # the next one (ar-2852). A pass moves the cursor to its own start time, held back to the oldest PR
 # it left for later (ledger not synced past it) or could not count; a PR in a repo the ledger does
-# not sync is out for good and holds nothing. A --days window moves it only when it reached the start.
+# not sync, or one its forge says does not exist, is left out and holds nothing, so the nightly window
+# passes it; a --days window that reaches it probes it again. A --days window moves it only when it reached the start.
 cmd_review() {
-  local t since start cfg new repo num sid merged row rc n=0 red=0 failed=0 unsynced=0 later=0 msg days='' off=' ' hold
+  local t since start cfg new repo num sid merged row rc n=0 red=0 failed=0 unsynced=0 later=0 gone=0 msg days='' off=' ' hold
   case "${1:-}" in
     '') ;;
     --days) days=${2:-}; [[ "$days" =~ ^[1-9][0-9]*$ ]] || { say "usage: fleet-bench review [--days N]"; return 2; } ;;
@@ -1841,6 +1842,7 @@ cmd_review() {
       0) ;;
       3) unsynced=$((unsynced + 1)); off+="$repo "; continue ;;
       4) later=$((later + 1)); [ "$merged" -ge "$hold" ] || hold=$merged; continue ;;
+      5) say "$repo#$num left out: its forge says no such PR (pulls/$num is a 404)"; gone=$((gone + 1)); continue ;;
       *) say "cannot count $repo#$num"; failed=$((failed + 1)); [ "$merged" -ge "$hold" ] || hold=$merged; continue ;;
     esac
     printf '%s\n' "$row" >> "$CI"
@@ -1857,10 +1859,13 @@ cmd_review() {
     return 1
   fi
   if [ "$n" -eq 0 ]; then
-    report_outcome NOOP "nothing new merged in the window"
+    msg="nothing new merged in the window"
+    [ "$gone" -eq 0 ] || msg="nothing counted: $gone merged PRs their forge no longer has"
+    report_outcome NOOP "$msg"
     return 0
   fi
   msg="$n PRs counted, $red CI reds"
+  [ "$gone" -eq 0 ] || msg+=", $gone left out that their forge no longer has"
   say "$msg"
   report_outcome WORKED "$msg"
 }
