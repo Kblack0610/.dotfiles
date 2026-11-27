@@ -105,6 +105,8 @@ set -uo pipefail
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/dotfiles-repos.sh"
 # shellcheck source=../lib/stat.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/stat.sh"
+# shellcheck source=../lib/agent-merge-proof.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/agent-merge-proof.sh"
 # Anchored to $HOME, deliberately NOT to $XDG_STATE_HOME. This tool's whole subject is one
 # particular $HOME, so its backups have to land in the same one it is rewriting. Honouring
 # XDG_STATE_HOME would let a run pointed at $HOME=X drop the only surviving copy of X's
@@ -485,8 +487,7 @@ unsettled() {
     [ -e "$p" ] && { printf '%s\n' "${m#*:}"; return 0; }
   done
   branch="$(git -C "$1" symbolic-ref -q --short HEAD 2>/dev/null)" || { echo 'on a detached HEAD'; return 0; }
-  def="$(git -C "$1" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)" || return 0
-  def="${def#origin/}"
+  def="$(merge_proof_branch "$1")" || return 0
   [ "$branch" = "$def" ] || printf 'on %s, not %s\n' "$branch" "$def"
 }
 
