@@ -46,7 +46,7 @@ manifest CRUD; the running service does the watching.
   `~/.local/state/watch-companion/<name>.state`.
 - Runbook (schema, probe types, cost model): `~/.config/agentctl/SENTINEL.md`.
 - Templates: copy the nearest live manifest of the same probe kind in `~/.agent/watches/`; `~/.config/agentctl/sentinel-watches.examples/` keeps only the bake-watch (`pmp-bake.yaml`).
-- One signal per failure: a failed `agentctl@<runner>.service` is reported by `fleet-liveness` (the runner's FAILED outcome), so `systemd-user-failed` skips `agentctl@*` (and desktop `app-*` and transient `run-*` units) and watches every other user unit (`user-units-failed --exclude`).
+- One signal per failure: a failed `agentctl@<runner>.service` is reported by `fleet-liveness` (the runner's FAILED outcome), so `systemd-user-failed` skips `agentctl@*` (and desktop `app-*` units and every transient systemd-run unit, `run-*` or named, which fleet-bench triage files as a `fix(unit)` row) and watches every other user unit (`user-units-failed --exclude`).
 
 ## Hard constraints (read first, non-negotiable)
 
