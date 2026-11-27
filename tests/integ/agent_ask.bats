@@ -1548,6 +1548,7 @@ case "$1" in
   add) [ -z "${AQ_REFUSE:-}" ] || exit 1
        while [ $# -gt 0 ]; do [ "$1" = --slug ] && { echo "running $2 -> running/$2.md"; exit 0; }; shift; done; exit 1 ;;
   list) echo '[]' ;;
+  show) [ -n "${AQ_SHOW:-}" ] || exit 1; printf '{"state":"%s"}\n' "$AQ_SHOW" ;;
 esac
 exit 0
 STUB
@@ -1716,6 +1717,7 @@ STUB
   run grep '^agent-queue add' "$NOTES_FIXTURE/calls.log"
   assert_output --partial ' | sid= item='
   assert_called "agent-queue set ask-$id origin=ask"
+  assert_called "agent-queue claim ask-$id --sid sid-8"
   # The session starts on it as the ask's work, and its first message names it.
   assert_called "--resume sid-8 --prompt Answer to ask $id: split. Queue item ask-$id holds the work this answer decides"
   assert_called "--item ask-$id START_ORIGIN=ask"
@@ -1727,6 +1729,28 @@ STUB
   assert_not_called 'agent-queue add'
   assert_called "--resume sid-8 --prompt Answer to ask $id: split START_ORIGIN="
   assert_not_called '--item'
+  # A second reopen reuses the item the first filed: a running one is started on again, a queued one
+  # is the queue's to start.
+  : >"$NOTES_FIXTURE/calls.log"
+  AQ_SHOW=running run "$AGENT_ASK" reopen "$id"
+  assert_success
+  assert_not_called 'agent-queue add'
+  assert_called "--item ask-$id START_ORIGIN=ask"
+  : >"$NOTES_FIXTURE/calls.log"
+  AQ_SHOW=queued run "$AGENT_ASK" reopen "$id"
+  assert_success
+  assert_output --partial "its queue item ask-$id is queued; the queue starts it"
+  assert_not_called 'agent-queue add'
+  assert_not_called 'fleet-dispatch start'
+  # A process still holding the session outside tmux gets no item, so no second worker; its answer is a row.
+  : >"$NOTES_FIXTURE/calls.log"
+  mkdir -p "$HOME/.claude/sessions"
+  printf '{"sessionId":"sid-8"}\n' >"$HOME/.claude/sessions/$$.json"
+  run "$AGENT_ASK" reopen "$id"
+  assert_failure
+  assert_output --partial 'session sid-8 still runs outside tmux'
+  assert_not_called 'agent-queue add'
+  assert_not_called 'fleet-dispatch start'
 }
 
 @test "a session live on a fleet worker is never reopened here, and target says where it runs" {
