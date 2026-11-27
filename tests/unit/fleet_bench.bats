@@ -1655,7 +1655,12 @@ tok_fixture() {
   assert_output --partial 'why: aws EXPIRED probe=cmd, evidence: watch-companion-loop list --long vendor-creds'
   printf "TRIP exit 1 (want 0)\naws OK probe=cmd\nollama-cloud LOW probe=http detail='timeout'\n" > "$TRIAGE_WATCH_STATE/vendor-creds.out"
   run "$SUBJECT" triage --dry-run
-  assert_output --partial "why: ollama-cloud LOW probe=http detail='Q', evidence:"
+  assert_success
+  assert_output --partial "why: ollama-cloud LOW probe=http, evidence:"
+  printf "TRIP exit 1 (want 0)\nollama-cloud LOW probe=http detail='timeout'\nstripe OK probe=http\n" > "$TRIAGE_WATCH_STATE/vendor-creds.out"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_output --partial "why: ollama-cloud LOW probe=http, evidence:"
 }
 
 @test "triage: a watch under a quarantine files no row until the quarantine ends" {
