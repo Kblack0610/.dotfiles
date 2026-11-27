@@ -521,11 +521,23 @@ SO_FORGEJO_TOKEN=""
 # so_forgejo_pr HOST/OWNER/REPO NUMBER - one PR in the `gh pr view --json
 # state,headRefName,headRefOid,body,createdAt,mergedAt,additions,deletions,mergeCommit` shape. headRefName is `#N`, the
 # branch the run ledger files a Forgejo PR's runs under (schedules-sync forgejo_rows); the API's
-# head.ref reads refs/pull/N/head once the branch is deleted. Why it failed goes to stderr.
+# head.ref reads refs/pull/N/head once the branch is deleted. Why it failed goes to stderr. Fails 3 when
+# the forge says the PR does not exist: pulls/N is a 404 while the repo's pull list still reads, since
+# Forgejo also answers 404 for a private repo the token cannot see. The forge lost home-config ~#940-960
+# and bnb-game-servers #47-48 (merged 2026-11-14; the PR store still holds them), and each one failed
+# a whole fleet-bench review (ar-5951).
 so_forgejo_pr() {
-  local repo="$1" n="$2" pr
+  local repo="$1" n="$2" pr err rc=1
   so_forgejo_auth "$repo" || { printf '%s\n' "$SO_FORGEJO_ERR" >&2; return 1; }
-  pr="$(so_forgejo_get "$repo" "pulls/$n")" || return 1
+  err=$(mktemp) || return 1
+  pr="$(so_forgejo_get "$repo" "pulls/$n" 2>"$err")" || {
+    # Forgejo's own 404 is JSON with a .message; a proxy's is not, so it stays a failed read
+    grep -q 'returned error: 404' "$err" && jq -e '.message' <<<"$pr" >/dev/null 2>&1 &&
+      so_forgejo_get "$repo" "pulls?limit=1" >/dev/null 2>&1 && rc=3
+    [ "$rc" -eq 3 ] || cat "$err" >&2
+    rm -f "$err"; return "$rc"
+  }
+  cat "$err" >&2; rm -f "$err"
   jq -c '{state: (if .merged then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end),
           headRefName: "#\(.number)", headRefOid: .head.sha, body, createdAt: .created_at, mergedAt: .merged_at,
           additions, deletions, mergeCommit: (if .merge_commit_sha then {oid: .merge_commit_sha} else null end)}' <<<"$pr"
