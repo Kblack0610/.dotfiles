@@ -346,6 +346,12 @@ pub fn all(p: &Profile) -> Vec<Event> {
     read(p, |_| true).0
 }
 
+/// The events whose record line `keep` takes, oldest first: a cheap read of the whole record for
+/// one kind of event.
+pub fn matching(p: &Profile, keep: impl Fn(&str) -> bool) -> Vec<Event> {
+    read(p, keep).0
+}
+
 /// The events of the last `days` local days (today included), oldest first.
 pub fn recent(p: &Profile, days: i64) -> Vec<Event> {
     read_since(p, days).0

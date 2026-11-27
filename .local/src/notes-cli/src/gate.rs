@@ -6,7 +6,11 @@
 //! copy, a second reader or a gate with no number), or the row is health work as `notes improve --check` judges it (`improve::health_of`,
 //! the one list, which `notes improve` itself refuses). Anything else is an improvement, kept by
 //! `notes improve`, never a row dispatch can pick. A plan's phases come through `agent-queue add --plan`, a direct filer, and a person's
-//! own words are never gated, so neither reaches this check.
+//! own words are never gated, so neither reaches this check. A phase's session that splits its
+//! phase into rows files them as follow-ups, which do: one whose `#from/<id>` names a row a plan
+//! filed and whose reason is a fault or epic work is that phase's pass and is admitted
+//! ([`split_admits`]; ar-5824, where the rest pass of a split phase went to improvements as no
+//! evidenced fault). Polish from the same session is still refused.
 //!
 //! The daily cap (`intake_daily_cap`, [`cap_refusal`]) is a separate test, on every row the gate
 //! admits and every writer the gate never asks, and on every project's agent board, gated or not
@@ -72,6 +76,42 @@ fn refusal_in(all: &[Reason], project: &str, row: &str, wanted: bool) -> Option<
         "{project} takes a session's row only as an evidenced fault, source-of-truth work, a plan phase or the person's ask (QUEUE.md \"Admission\"), and {why}: give the reason that names its evidence (--why {}), file a phase with `agent-queue add --plan`, pass the person's ask with --want, or keep it with `notes improve {project} -- \"<text>\"`, so nothing was added",
         admitting.join("|")
     ))
+}
+
+/// The reasons a plan phase's split is admitted at below high: its passes are the phase's own fault
+/// or epic work, never a feature or polish the session thought of on the way (ar-5824 review).
+const SPLIT: [&str; 2] = ["fault", "epic-turn"];
+
+/// Whether `row`, filed for a session's follow-up `line`, is a pass of a plan phase the gate admits:
+/// its reason is one of [`SPLIT`] and `line` is part of a plan phase ([`plan_phase`]).
+pub(crate) fn split_admits(p: &Profile, line: &str, row: &str) -> bool {
+    split_reason(row) && plan_phase(p, line)
+}
+
+/// Whether `row`'s `#why/` is one of [`SPLIT`].
+fn split_reason(row: &str) -> bool {
+    reasons::slug_of(row).is_some_and(|s| SPLIT.contains(&s.as_str()))
+}
+
+/// Whether a session's follow-up `line` is part of a plan phase: its `#from/<id>` names a row a
+/// plan filed (`agent-queue add --plan`, recorded `added` with origin `plan`). A follow-up from any
+/// other item, or with no `#from/`, is not. The tie is the record's, not the phase row's state: the
+/// phase's session often lands before the sweep files its split.
+fn plan_phase(p: &Profile, line: &str) -> bool {
+    let Some(from) = crate::project_tasks::origin_item(line) else {
+        return false;
+    };
+    let mark = format!("\"origin\":\"{}\"", crate::project_tasks::ORIGIN_PLAN);
+    phase_of(&ingest::matching(p, |l| l.contains(&mark)), &from)
+}
+
+/// Whether `events` hold the `added` event of row `id` with origin `plan`.
+fn phase_of(events: &[Event], id: &str) -> bool {
+    events.iter().any(|e| {
+        e.action == "added"
+            && e.origin.as_deref() == Some(crate::project_tasks::ORIGIN_PLAN)
+            && e.id.as_deref().is_some_and(|i| i.eq_ignore_ascii_case(id))
+    })
 }
 
 /// The record's action for a row the cap turned away, which `notes ingest cap` and fleet-bench's
@@ -310,6 +350,56 @@ mod tests {
         assert!(refusal_in(&list(), "agent-runtime", row, false).is_some());
         // refusal reads the configured list; with no config it is the default, agent-runtime only.
         assert_eq!(refusal("unity-core-playground", row, false).unwrap(), None);
+    }
+
+    #[test]
+    fn a_follow_up_from_a_plan_filed_row_is_a_plan_phase_and_one_from_any_other_is_not() {
+        let added = |id: &str, origin: Option<&str>| {
+            let mut e = Event::new("added", "agent-runtime", "", "feat(x): P3 focus passes");
+            e.id = Some(id.into());
+            e.origin = origin.map(str::to_string);
+            e
+        };
+        let events = [
+            added("ar-5604", Some("plan")),
+            added("ar-5773", Some("agent-queue")),
+            added("ar-9", None),
+        ];
+        assert!(
+            phase_of(&events, "ar-5604"),
+            "the row a plan filed (ar-5824)"
+        );
+        assert!(phase_of(&events, "AR-5604"));
+        // NEGATIVE CONTROLS: a row another writer filed, one with no origin, one not in the record.
+        for id in ["ar-5773", "ar-9", "ar-1"] {
+            assert!(!phase_of(&events, id), "{id}");
+        }
+        // The line's tie is its `#from/`; a line with none ties to no row.
+        assert_eq!(
+            crate::project_tasks::origin_item(
+                "#agent #from/ar-5604 fix(rest): focus pass, views, skills and the rest #normal"
+            )
+            .as_deref(),
+            Some("ar-5604")
+        );
+        assert_eq!(
+            crate::project_tasks::origin_item("fix(rest): focus pass #normal"),
+            None
+        );
+        // A pass of the phase is its fault or epic work; polish or a feature from it is not.
+        assert!(split_reason(
+            "fix(views): focus pass over the 43 views rows #normal #why/fault"
+        ));
+        assert!(split_reason(
+            "feat(x): the next step #normal #why/epic-turn"
+        ));
+        for row in [
+            "chore(ui): a nicer empty state #low #why/upkeep",
+            "feat(ui): a new view #normal #why/feature",
+            "fix(ui): no reason #normal",
+        ] {
+            assert!(!split_reason(row), "{row}");
+        }
     }
 
     fn ev(action: &str, from: &str, to: &str, text: &str) -> Event {
