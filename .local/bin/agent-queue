@@ -4345,30 +4345,35 @@ cmd_ask_holds() {
     END { flush() }' "${FILES[@]}"
 }
 
-# resume_takes <command line> -> "<verb><TAB><slug><TAB><flag>" for each agent-queue cancel, return or move
-# the line runs, flag `drop` for a return --drop and `cancelled` for a move --status cancelled. Its words
-# are read as a shell reads them (xargs: quotes, never an expansion), else split on blanks when its
-# quotes do not pair (a prompt's "don't"); &&, ||, | and ; end one command.
+# resume_takes <command line> [inner] -> "<verb><TAB><slug><TAB><flag>" for each agent-queue cancel, return
+# or move the line runs, flag `drop` for a return --drop and `cancelled` for a move --status cancelled; the
+# slug is the first word after the verb that is not a flag. Its words are read as a shell reads them
+# (xargs: quotes, never an expansion), else split on blanks when its quotes do not pair (a prompt's
+# "don't"); &&, || and ; end one command, spaced or not, and | does when spaced. A quoted word that runs
+# agent-queue (bash -c '...') is read once more, so the command inside it counts.
 resume_takes() {
-  local out i j verb slug flag w2
+  local line out i j verb slug flag w2
   local -a w=()
-  out="$(xargs printf '%s\n' <<<"$1" 2>/dev/null)" || out="$(tr -s '[:space:]' '\n' <<<"$1")"
+  line="$(sed 's/&&/ \&\& /g; s/||/ || /g; s/;/ ; /g' <<<"$1")"
+  out="$(xargs printf '%s\n' <<<"$line" 2>/dev/null)" || out="$(tr -s '[:space:]' '\n' <<<"$line")"
   while IFS= read -r w2; do
-    case "$w2" in ?*';') w+=("${w2%;}" ';') ;; *) w+=("$w2") ;; esac
+    if [ -z "${2:-}" ] && [[ "$w2" == *agent-queue*[[:space:]]* ]]; then resume_takes "$w2" inner; else w+=("$w2"); fi
   done <<<"$out"
   for ((i = 0; i < ${#w[@]}; i++)); do
     [ "${w[i]##*/}" = agent-queue ] || continue
-    verb="${w[i + 1]-}" slug="${w[i + 2]-}" flag=""
+    verb="${w[i + 1]-}" slug="" flag=""
     case "$verb" in cancel | return | move) ;; *) continue ;; esac
-    for ((j = i + 3; j < ${#w[@]}; j++)); do
+    for ((j = i + 2; j < ${#w[@]}; j++)); do
       case "${w[j]}" in
         '&&' | '||' | '|' | ';') break ;;
         --drop) flag=drop ;;
         --status=cancelled) flag=cancelled ;;
         --status) [ "${w[j + 1]-}" != cancelled ] || flag=cancelled ;;
+        -*) ;;
+        *) [ -n "$slug" ] || slug="${w[j]}" ;;
       esac
     done
-    printf '%s\t%s\t%s\n' "$verb" "$slug" "$flag"
+    [ -z "$slug" ] || printf '%s\t%s\t%s\n' "$verb" "$slug" "$flag"
   done
 }
 

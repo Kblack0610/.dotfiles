@@ -468,6 +468,11 @@ load 'agent_queue/common'
   # A later command's --drop is not this one's.
   ask r6 'a|b' 'run: agent-queue return asked --why later && agent-queue return chore --why x --drop'
   hw r6 ''
+  # A flag before the slug, a command quoted for bash -c, and ; with no spaces are read too.
+  ask r7 'a|b' 'run: agent-queue return --drop asked --why moot'
+  hw r7 asked
+  ask r8 'a|b' "run: bash -c 'cd /tmp;agent-queue cancel mine --why moot'"
+  hw r8 mine
   # A cancel or drop option on an ask naming the item, the answer cancel_guard reads; a sibling slug is other work.
   ask o1 'drop|keep' '' 'drop asked and chore, not mine-2?'
   hw o1 asked

@@ -2626,7 +2626,7 @@ ASK-JUDGE-END'
 
 # drop_ask <slug> [<resume>]: PVqj0D's shape (ar-5962), an ask whose resume cancels a queue item.
 drop_ask() {
-  CLAUDE_CODE_SESSION_ID="sid-$1" "$AGENT_ASK" post --project demo --options 'a=drop the row as moot|b=keep it open' --recommend a \
+  CLAUDE_CODE_SESSION_ID="sid-$1" "$AGENT_ASK" post --project demo --options 'drop=drop the row as moot|keep=keep it open' --recommend drop \
     --context "$1 is a queue item" --resume "${2:-run: agent-queue cancel $1 --why moot --ask <id>}" "$1 is moot; drop it?"
 }
 # drop_items: hc-820, a #requested row dispatch promoted as in 67SUbf; mine, the human's own add; chore, a shepherd's.
@@ -2673,8 +2673,20 @@ drop_items() {
   run --separate-stderr drop_ask chore
   assert_success
   run "$AGENT_ASK" show "$output"
-  assert_line 'kind: question'; assert_line 'answered_by: judge'; assert_line 'answer: a'
+  assert_line 'kind: question'; assert_line 'answered_by: judge'; assert_line 'answer: drop'
   assert [ -e "$BATS_TEST_TMPDIR/judge.calls" ]
+  # PVqj0D's a|b options: no answer of the human's could pass cancel_guard, so post refuses it and files nothing.
+  local n; n="$(find "$HOME/.agent/asks" -name '*.md' | wc -l)"
+  run --separate-stderr env CLAUDE_CODE_SESSION_ID=sid-ab "$AGENT_ASK" post --project demo --options 'a=drop it|b=keep it' \
+    --context 'mine is a queue item' --resume 'run: agent-queue cancel mine --why moot --ask <id>' 'drop mine?'
+  assert_failure 2
+  [[ "$stderr" == *"post it again with --options 'drop="* ]]
+  assert_equal "$(find "$HOME/.agent/asks" -name '*.md' | wc -l)" "$n"
+  # A queue it cannot read holds an ask that runs agent-queue for the human; one that does not stays a question.
+  id="$(AGENT_ASK_QUEUE_CMD=false drop_ask chore 2>/dev/null)"
+  run "$AGENT_ASK" show "$id"; assert_line 'kind: approval'
+  id="$(AGENT_ASK_QUEUE_CMD=false CLAUDE_CODE_SESSION_ID=sid-q "$AGENT_ASK" post --project demo 'is the lint green?' 2>/dev/null)"
+  run "$AGENT_ASK" show "$id"; assert_line 'kind: question'
 }
 
 @test "assume-due and sweep hold for the human an older ask that could take their work off the queue (ar-5962)" {
@@ -2682,10 +2694,10 @@ drop_items() {
   unset AGENT_ASK_NO_JUDGE
   export AGENT_ASK_DELAY_RULES=ship_deploy@repo=30
   fake_judge "$(score ship_deploy "" "the lending code is gone.")"
-  # Posted before the rule, which read no queue: a question, armed.
+  # Posted before the rule, which found no human work: a question, armed.
   local a b
-  a="$(AGENT_ASK_QUEUE_CMD=false drop_ask hc-820 2>/dev/null)"; b="$(AGENT_ASK_QUEUE_CMD=false drop_ask chore 2>/dev/null)"
-  run "$AGENT_ASK" show "$a"; assert_line 'kind: question'; assert_line 'assume_answer: a'
+  a="$(AGENT_ASK_QUEUE_CMD=true drop_ask hc-820 2>/dev/null)"; b="$(AGENT_ASK_QUEUE_CMD=true drop_ask chore 2>/dev/null)"
+  run "$AGENT_ASK" show "$a"; assert_line 'kind: question'; assert_line 'assume_answer: drop'
   due "$a"
   run --separate-stderr "$AGENT_ASK" assume-due
   assert_success
