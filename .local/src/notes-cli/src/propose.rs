@@ -98,7 +98,7 @@ fn untyped_rows(board: &str, project: &str) -> Vec<(String, String)> {
 }
 
 /// `text` without stamps or tags. An issue ref (`#45`) is a word, not a tag, so it stays.
-fn bare_words(text: &str) -> String {
+pub(crate) fn bare_words(text: &str) -> String {
     md::task_text(&format!("- [ ] {text}"))
         .split_whitespace()
         .filter(|w| md::find_hashtags(w).is_empty())
