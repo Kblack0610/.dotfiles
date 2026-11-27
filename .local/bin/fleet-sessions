@@ -1044,10 +1044,16 @@ item_open_prs() {
   printf '%s' "${out:--}"
 }
 
-# join_carried <carried list|-> <carried list|-> -> the two comma lists as one, or -.
-join_carried() {
-  local out="${1#-}"
-  [ "${2:--}" = - ] || out="${out:+$out,}$2"
+# session_carried <all items, jsonl> <session id> <item_of's answer> <server:tmux session> <own item slugs> -> what carries
+# the session's own running items: the live items filed from them (carried_by) and the open PRs they record
+# (item_open_prs), one comma list, or -.
+session_carried() {
+  local out
+  out="$(carried_by "$1" "$2" "$3" "$4")"; out="${out#-}"
+  if [[ "$3" == own:* ]]; then
+    local prs; prs="$(item_open_prs "$1" "$5")"
+    [ "$prs" = - ] || out="${out:+$out,}$prs"
+  fi
   printf '%s' "${out:--}"
 }
 
@@ -2775,8 +2781,7 @@ collect() {
         IFS=$'\t' read -r irow iby < <(jq -rn --arg s "$islug" 'first(inputs | select(.slug == $s)
           | [(.row // (.from // "" | if startswith("board:") then sub("^board:"; "") else "" end)
               | if . == "" then "-" else . end), (.by // "-")] | @tsv)' <<<"$qall" 2>/dev/null)
-        irow="${irow:--}"; iby="${iby:--}"; carried="$(carried_by "$qall" "$sid" "$item" "${target%%/*}:$tsess")"
-          [[ "$item" != own:* ]] || carried="$(join_carried "$carried" "$(item_open_prs "$qall" "$islugs")")" ;;
+        irow="${irow:--}"; iby="${iby:--}"; carried="$(session_carried "$qall" "$sid" "$item" "${target%%/*}:$tsess" "$islugs")" ;;
     esac
     # A done item's merged PRs are the session's landed ones when its transcript names no merged PR, none
     # open and every state known. A landing train merges a member's commits through its own train/* PR and

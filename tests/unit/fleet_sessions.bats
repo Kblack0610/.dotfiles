@@ -367,13 +367,12 @@ load 'fleet_sessions/common'
   rm -rf "$CACHE"; mkdir -p "$CACHE"; touch "$LEDGER_DIR/PRS_FAIL"
   run item_open_prs "$q" ucp-671
   [ "$output" = - ]
-  run join_carried - '#2506'
-  assert_output '#2506'
-  run join_carried 'fix-1' '#2506'
+  # session_carried joins them with the items filed from it; only an own: answer reads the store
+  q="$q"$'\n''{"slug":"fix-1","state":"running","from":"item:ucp-671","sessions":"sidB"}'
+  rm -rf "$CACHE"; mkdir -p "$CACHE"; rm -f "$LEDGER_DIR/PRS_FAIL"
+  run session_carried "$q" sidA own:ucp-671 lab:me ucp-671
   assert_output 'fix-1,#2506'
-  run join_carried 'fix-1' -
-  assert_output 'fix-1'
-  run join_carried - -
+  run session_carried "$q" sidA 'moved:ucp-671 moved on (done)' lab:me ucp-671
   [ "$output" = - ]
   # the bucket: carried by the open PR is WORKING; none is the old STALLED
   run b idle 0 0 0 30 1 0 0 - - - 1 - - - - - - - 'own:ucp-671' - - - '#2506'
