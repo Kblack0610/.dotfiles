@@ -30,7 +30,7 @@ live() {
   local d="$TMUX_TMPDIR/tmux-$(id -u)" n
   mkdir -p "$d"
   for n in "$@"; do
-    python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$d/$n"
+    unix_sock "$d/$n"
   done
 }
 

@@ -31,7 +31,7 @@ Practical consequence: **a rule change plus a skill change is a cross-repo chang
 
 ## Quick decision tree
 
-Ask first: **which repos does this rule apply in, and which tools should obey it?** The placement rule is in the global CLAUDE.md "Standards" section: a rule goes in the global file only when it applies in two or more repos; otherwise in that repo's root CLAUDE.md, a subdirectory CLAUDE.md for one subtree, or the skill when it is a procedure. Never restate a skill there. Budgets: global under 20 KB, a repo root under 12 KB, a `MEMORY.md` under 8 KB. Check `wc -c` before and after.
+Ask first: **which repos does this rule apply in, and which tools should obey it?** The placement rule (narrowest layer) is in the global CLAUDE.md "Standards" section; never restate a skill there. The size budgets are in `context-budget-guard.sh`, which warns on the write. Check `wc -c` before and after.
 
 | Scope | Edit | Affects |
 |---|---|---|
@@ -117,7 +117,7 @@ Every add below starts here (global CLAUDE.md, Subtract First).
 
 ### Register a new MCP server
 
-1. For Claude: add it to the committed `.mcp.json` of the repo that uses it (`enableAllProjectMcpServers` in settings.json approves it). Never at user scope (`claude mcp add -s user`) and never in a `.mcp.json` above the repos: Claude Code walks up from the cwd, so either one starts the server in every session. A server most sessions do not need goes in `~/.dotfiles-private/.claude/mcp-optional/<name>.json` and loads with `claude-mcp <name>`.
+1. For Claude: add it to the committed `.mcp.json` of the repo that uses it (the rule is in the global CLAUDE.md "Standards"; `enableAllProjectMcpServers` in settings.json approves it). Not `claude mcp add -s user`, and not a `.mcp.json` above the repos either: Claude Code walks up from the cwd, so that too starts the server in every session. A server most sessions do not need goes in `~/.dotfiles-private/.claude/mcp-optional/<name>.json` and loads with `claude-mcp <name>`.
 2. For Codex / Gemini / OpenCode: edit `~/.dotfiles-private/.config/rulesync-global/.rulesync/mcp.json` and run the sync.
 3. Restart any tool already running to pick up the change.
 

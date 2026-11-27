@@ -71,10 +71,16 @@ test("a job kind's RUNNING and MACHINES read as hub_core's Pool cells, a machine
   const p = { running: 0, machines: [{ host: "deskslim-2", slots: 5, href: "#infra/machines/deskslim-2" }, { host: "aws-spot-1", slots: 0, href: "#infra/machines/aws-spot-1" }] };
   assert.match(run(`POOL_CELLS.running(${JSON.stringify(p)})`), />0</, "no job of its kind runs: 0, never the busy slots that carry its cap");
   assert.equal(run(`"free" in POOL_COLS`), false, "no FREE column");
+  assert.equal(run(`Object.keys(POOL_COLS).filter((k) => k.startsWith("done")).join()`), "done_1h,done_5h,done", "1h and 5h beside the 24h column");
+  assert.match(run(`POOL_CELLS.done_1h(${JSON.stringify({ done_1h: 0 })})`), />0</, "a quiet hour is 0");
+  assert.match(run(`POOL_CELLS.done_5h(${JSON.stringify({})})`), />-</, "a window nobody reported is a dash");
   const wt = (w) => run(`POOL_CELLS.weight(${JSON.stringify({ weight: w })})`);
   assert.match(wt("0.66"), />0\.66</, "the weight as hub_core formatted it");
   assert.match(wt("1*"), />1\*</, "a weight the governor has not measured keeps its star");
   assert.match(wt(null), />-</, "no series reads a dash, never 0 or 1");
+  const usual = (u) => run(`POOL_CELLS.usual(${JSON.stringify({ usual: u })})`);
+  assert.match(usual(1260), />21m</, "how long one usually runs, as the runners' USUAL reads");
+  assert.match(usual(null), />-</, "no median yet reads a dash");
   const seats = run(`poolSeats(${JSON.stringify(p)})`);
   assert.equal(seats, '<a class="tl" href="#infra/machines/deskslim-2">deskslim-2</a> 5, <a class="tl" href="#infra/machines/aws-spot-1">aws-spot-1</a> 0');
   assert.equal(run(`poolSeats({ machines: [] })`), "-");
@@ -419,21 +425,49 @@ test("a pool has one colour in the 7-day chart, set by its history", () => {
 const glance = { busy: 5, queued: 23, oldest: 1260, done: 759, pass: 0.91, off: ["aws-spot-1", "aws-spot-2"],
   booked: { cpu: 4.38, cpu_alloc: 64, mem: 2.7e9, mem_alloc: 1.6e11 }, pending: [{ kind: "arc-org-light", n: 3, cpu: 1.69, mem: 1.3e9 }], alert: "ok", up: 12, expected: 12 };
 
-test("CI RUNNING and the Runners head read hub_core's glance: jobs running, runners up, red only on a runner down", () => {
+// ar-5013: each machinery tile takes its hue from the cc:domain_status the OVERALL rollup is the
+// max of, so 6 of 122 agentctl runners failed under a rollup that tolerates them is not a red
+// tile under an OK verdict, and a domain red from its watches row is a red tile; the count stays.
+test("NODES, HEARTBEATS and AGENT RUNNERS agree with the rollup's domains, not their own thresholds", () => {
+  const cc = (comp) => ({ "cc:runners_failed": { "": 6 }, "cc:runners_total": { "": 122 }, "cc:k3s_nodes_ready": { "": 13 },
+    "cc:k3s_nodes_total": { "": 14 }, "cc:machines_up": { "": 22 }, "cc:machines_total": { "": 22 }, "cc:domain_status": comp });
+  const hue = (comp, name) => run(`kpis(${JSON.stringify(cc(comp))})`).match(new RegExp(`--c:var\\((--[a-z0-9-]+)\\)"><span class="tl">${name}`))?.[1];
+  const ok = { agents: 0, k3s: 0, machines: 0 };
+  assert.equal(hue(ok, "AGENT RUNNERS"), "--b-done", "6 failed under an OK domain is not red");
+  assert.match(run(`kpis(${JSON.stringify(cc(ok))})`), /AGENT RUNNERS<\/span><span class="tv">6 failed<\/span><span class="ts1">of 122; agents rollup OK/);
+  assert.equal(hue(ok, "NODES"), "--b-done");
+  // negative control: the same counts under a red domain (a watches row at 2, as the rules emit
+  // for a NotReady node) are red, and a warn one amber
+  assert.equal(hue({ ...ok, k3s: 2 }, "NODES"), "--b-needs", "a k3s watch red is a red NODES tile");
+  assert.equal(hue({ ...ok, agents: 1 }, "AGENT RUNNERS"), "--b-stalled");
+  assert.equal(hue({ ...ok, machines: 2 }, "HEARTBEATS"), "--b-needs");
+  // a component series alone is not the verdict: the domain decides
+  assert.equal(run(`kpis(${JSON.stringify({ ...cc(ok), "cc:component_status": { "k3s/nodes": 0 }, "cc:domain_status": { ...ok, k3s: 2 } })})`)
+    .match(/--c:var\((--[a-z0-9-]+)\)"><span class="tl">NODES/)?.[1], "--b-needs");
+  assert.equal(hue({}, "AGENT RUNNERS"), "--c-other");
+});
+
+test("CI RUNNING and the Runners head read hub_core's glance: jobs running, runners up; the tile's hue is the rollup's", () => {
   // A slot takes unity, light and heavy: the per-cap pools sum to 3/3 for one runner.
   const cc = { "cc:pool_slots": { unity: 1, light: 1, heavy: 1 }, "cc:pool_busy": { unity: 1, light: 1, heavy: 1 } };
   const h = run(`kpis(${JSON.stringify(cc)}, ${JSON.stringify(glance)})`);
   assert.match(h, /CI RUNNING[\s\S]*?>5<[\s\S]*?23 queued, 12\/12 runners up, cloud: 2 hosts off/);
   assert.doesNotMatch(h, /CI RUNNING[\s\S]*?(6\.4\/16|3\/3)/);
   assert.match(h, /AGENT RUNNERS/, "the agentctl runners tile says whose runners it counts");
-  const hue = (g) => run(`kpis({}, ${JSON.stringify(g)})`).match(/--c:var\((--[a-z0-9-]+)\)"><span class="tl">CI RUNNING/)?.[1];
-  assert.equal(hue(glance), "--b-done");
-  assert.equal(hue({ ...glance, alert: "red", up: 11 }), "--b-needs");
-  assert.equal(hue({ ...glance, alert: "nodata", up: 0, expected: 0 }), "--c-other");
+  const hue = (dom, name) => run(`kpis(${JSON.stringify({ "cc:domain_status": dom })}, ${JSON.stringify(glance)})`)
+    .match(new RegExp(`--c:var\\((--[a-z0-9-]+)\\)"><span class="tl">${name}`))?.[1];
+  assert.equal(hue({ ci: 0 }, "CI RUNNING"), "--b-done");
+  assert.equal(hue({ ci: 2 }, "CI RUNNING"), "--b-needs", "a ci watch red is a red tile");
+  assert.equal(hue({}, "CI RUNNING"), "--c-other", "no domain series is no data, never green");
+  assert.match(run(`kpis(${JSON.stringify({ "cc:domain_status": { ci: 1 } })}, ${JSON.stringify(glance)})`), /CI RUNNING[\s\S]*?runners up, cloud: 2 hosts off; ci rollup WARN/);
   assert.match(run(`kpis({})`), /CI RUNNING[\s\S]*?\?/, "no glance is unknown, never 0");
   Object.assign(ist, { open: {} });
   const s = section({ rows: [], queue: [], red: [], local: [], glance });
   assert.match(s, /<div class="cline">5 running, 23 queued \(oldest 21m\), booked 4\.4\/64 cpu, 12\/12 runners up, 759 done 24h, 91% passed; cloud: 2 hosts off<\/div>/);
+  // ar-6260: the 1h and 5h counts sit before the 24h one once a kind reports them, 0 included.
+  const win = section({ rows: [], queue: [], red: [], local: [], glance: { ...glance, done_1h: 0, done_5h: 31 } });
+  assert.match(win, /12\/12 runners up, 0 done 1h, 31 done 5h, 759 done 24h, 91% passed/);
+  assert.equal(run(`glanceHead(${JSON.stringify({ ...glance, done_1h: null, done_5h: null })})`).includes("done 1h"), false, "no window read prints none");
   // No runner read is -/-, never 0/0.
   const bare = section({ rows: [], queue: [], red: [], local: [], glance: { ...glance, booked: null, up: 0, expected: 0 } });
   assert.match(bare, /5 running, 23 queued \(oldest 21m\), -\/- runners up, 759 done/);

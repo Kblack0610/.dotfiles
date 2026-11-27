@@ -3,6 +3,7 @@
 # crate source names an outside path (include_str!, include_bytes!, CARGO_MANIFEST_DIR) not listed.
 .local/src/agent-core  .config/agent-panel/time-use.conf
 .local/src/agent-core  .config/agent-panel/typed-prefixes.conf
+.local/src/agent-core  .config/agent-panel/edit-tools.conf
 .local/src/agent-core  tests/fixtures/typed-prompts.tsv
 .local/src/agent-core  tests/fixtures/time-use-commands.tsv
 .local/src/agent-core  .local/bin/claude-recall
@@ -14,6 +15,7 @@
 .local/src/hub-core    .config/areas/groups
 .local/src/hub-core    .local/bin/comms-lint
 .local/src/notes-cli   .config/inbox-triage/rules/priority-reasons.tsv
+.local/src/notes-cli   .local/lib/plan-phases.sh
 # hub-core's reading::tests::empty_state_words_come_from_one_place scans these three trees by
 # CARGO_MANIFEST_DIR.join("..") plus a list, which the guard above cannot see: keep them in step
 # with that list by hand. Whole trees, since any new file in one is scanned (#2981, ar-4309).

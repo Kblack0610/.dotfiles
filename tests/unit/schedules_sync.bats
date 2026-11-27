@@ -48,6 +48,8 @@ EOF
   # -w (the anonymous run-page reads) is answered as curl -w "\n%{http_code}" does, from
   # $FJD/<url without https:// as above>: its code is 200 for a file, else 404, or what <file>.code
   # holds; a POST that asks a step's log (a "step" in its body) is served <file>.logs when it exists.
+  # An API path with <file>.forbid holding N > 0 is refused N more times as the bouncer refuses (a
+  # plain-text 403 "Forbidden"); <file>.403 is Forgejo's own JSON 403, served every time.
   cat > "$SANDBOX/bin/curl-stub" <<EOF
 #!/usr/bin/env bash
 url="\${@: -1}"
@@ -60,6 +62,11 @@ case " \$* " in *" -w "*)
   printf '\\n%s' "\$code"; exit 0 ;;
 esac
 f="$FJD/\$(echo "\${url#*/api/v1/}" | tr '/?&=' '____')"
+if [ -f "\$f.forbid" ] && [ "\$(cat "\$f.forbid")" -gt 0 ]; then
+  echo \$((\$(cat "\$f.forbid") - 1)) > "\$f.forbid"; printf Forbidden
+  echo "curl: (22) The requested URL returned error: 403" >&2; exit 22
+fi
+[ -f "\$f.403" ] && { echo '{"message":"user should have a permission"}'; echo "curl: (22) The requested URL returned error: 403" >&2; exit 22; }
 [ -f "\$f" ] && exec cat "\$f"
 echo "curl: (22) The requested URL returned error: 404" >&2; exit 22
 EOF
@@ -573,6 +580,37 @@ fj_run() {
   refute_output 0
 }
 
+@test "forgejo: a read the bouncer refuses (a plain Forbidden) is sent again; out of tries it names the proxy; Forgejo's own 403 is not sent again" {
+  fj_list o/fj
+  fj_page "$(fj_task 7 4 success 2025-11-06T11:00:00Z)" | fj_serve 1
+  fj_run 4 2025-11-06T11:00:00Z
+  tasks="$FJD/$(echo 'repos/o/fj/actions/tasks?limit=50&page=1' | tr '/?&=' '____')"
+  echo 2 > "$tasks.forbid"
+  SCHEDULES_FJ_GATE_WAIT=0 run "$SUBJECT"
+  assert_success
+  run grep -c 'actions/tasks?limit=50&page=1 |' "$FJD/calls"
+  assert_output 3
+  run jq -sc 'map([.repo, .id])' "$LEDGER"
+  assert_output '[["o/fj",4]]'
+  : > "$FJD/calls"; echo 9 > "$tasks.forbid"
+  echo 9 > "$FJD/$(echo 'repos/o/fj/pulls?state=all&sort=recentupdate&limit=50&page=1' | tr '/?&=' '____').forbid"
+  SCHEDULES_FJ_GATE_WAIT=0 run "$SUBJECT"
+  assert_failure 1
+  assert_output --partial 'the proxy in front of Forgejo refused it 4 time(s)'
+  run grep -c 'actions/tasks?limit=50&page=1 |' "$FJD/calls"
+  assert_output 4
+  run grep -c 'pulls?state=all&sort=recentupdate&limit=50&page=1 |' "$FJD/calls"
+  assert_output 1  # the bouncer is known down for the rest of the pass: one try, not four
+  rm "$FJD"/*pulls*.forbid
+  : > "$FJD/calls"; rm "$tasks.forbid"; touch "$tasks.403"
+  SCHEDULES_FJ_GATE_WAIT=0 run "$SUBJECT"
+  assert_failure 1
+  assert_output --partial 'error: 403'
+  refute_output --partial 'proxy'
+  run grep -c 'actions/tasks?limit=50&page=1 |' "$FJD/calls"
+  assert_output 1
+}
+
 @test "forgejo: paging stops at the last sync, leaving out the run the page edge may cut" {
   fj_list o/fj
   mkdir -p "$XDG_STATE_HOME/ci"; : > "$LEDGER"
@@ -980,15 +1018,17 @@ JOB='{"id":7,"name":"Feed fail","conclusion":"failure","runner_name":"hp-victus-
   assert_output '[[20,"completed"],[21,"in_progress"]]'
 }
 
-@test "feed runs: stale open runs cost one status listing per pass, not a read each; a rerun's old attempt is not read" {
+@test "feed runs: stale open runs cost one status listing per pass, not a read each; a rerun's old attempt is read once and closes" {
   game_files
-  # 20 and 22 stay queued, 23 is in progress; 24's attempt 1 was superseded by a finished attempt 2
+  # 20 and 22 stay queued, 23 is in progress; 24's and 25's attempt 1 were superseded by a finished attempt 2
   feed 0 e1 1 false '' "$(gh_run 20 .github/workflows/test.yml 2025-11-04T10:00:00Z queued null)" \
     "$(gh_run 22 .github/workflows/test.yml 2025-11-04T10:05:00Z queued null)" \
     "$(gh_run 23 .github/workflows/test.yml 2025-11-04T10:10:00Z in_progress null)" \
     "$(gh_run 24 .github/workflows/test.yml 2025-11-04T10:15:00Z in_progress null)" \
-    "$(gh_run 24 .github/workflows/test.yml 2025-11-04T10:15:00Z completed success 2)"
-  echo '{"jobs":[],"total_count":0}' | serve "repos/o/game/actions/runs/24/attempts/2/jobs?per_page=100"
+    "$(gh_run 24 .github/workflows/test.yml 2025-11-04T10:15:00Z completed success 2)" \
+    "$(gh_run 25 .github/workflows/test.yml 2025-11-04T10:20:00Z in_progress null)" \
+    "$(gh_run 25 .github/workflows/test.yml 2025-11-04T10:20:00Z completed success 2)"
+  for r in 24 25; do echo '{"jobs":[],"total_count":0}' | serve "repos/o/game/actions/runs/$r/attempts/2/jobs?per_page=100"; done
   runs "$(gh_run 20 .github/workflows/test.yml 2025-11-04T10:00:00Z queued null)" \
        "$(gh_run 22 .github/workflows/test.yml 2025-11-04T10:05:00Z queued null)" \
     | serve 'repos/o/game/actions/runs?status=queued&per_page=100&page=1'
@@ -997,6 +1037,22 @@ JOB='{"id":7,"name":"Feed fail","conclusion":"failure","runner_name":"hp-victus-
   run "$SUBJECT"
   assert_success
   feed 1 e1 1 false ''
+  # ar-4126: no listing serves attempt 1 again, so it is read from its attempt, once
+  gh_run 24 .github/workflows/test.yml 2025-11-04T10:15:00Z completed cancelled | serve 'repos/o/game/actions/runs/24/attempts/1'
+  echo '{"jobs":[],"total_count":0}' | serve "repos/o/game/actions/runs/24/attempts/1/jobs?per_page=100"
+  : > "$GHD/calls"
+  SCHEDULES_NOW=1762430700 run "$SUBJECT"
+  assert_success
+  run grep -c 'actions/runs/24/attempts/1$' "$GHD/calls"
+  assert_output 1
+  run jq -sc 'map(select(.id == 24)) | group_by(.attempt) | map(last | [.attempt, .status, .conclusion])' "$LEDGER"
+  assert_output '[[1,"completed","cancelled"],[2,"completed","success"]]'
+  # 25's attempt 1 is gone from GitHub (a 404): it closes, unknown and gone, once, and no pass asks
+  # its jobs; left open, gone attempts took every read a pass and the rest never closed
+  run grep -c 'actions/runs/25/attempts/1' "$GHD/calls"
+  assert_output 1
+  run jq -sc 'map(select(.id == 25)) | group_by(.attempt) | map(last | [.attempt, .status, .conclusion, .gone])' "$LEDGER"
+  assert_output '[[1,"completed",null,true],[2,"completed","success",null]]'
   rows=$(wc -l < "$LEDGER")
   for pass in 1762431000 1762431600; do
     : > "$GHD/calls"
@@ -1364,11 +1420,11 @@ night_file() {
 
 @test "night set: config/ci/nightly.json is kept on the repo's entry, an unchanged one is a 304, a missing one is asked again a day later" {
   game_files; runs | page1
-  night_file n1 '{"_comment": "x", "night": {"test.yml": "Tests (all)"}, "held": {"multi.yml": "Multi (all)"}}'
+  night_file n1 '{"_comment": "x", "night": {"test.yml": "Tests (all)"}, "wide": {"hd.yml": "HD (all)"}, "held": {"multi.yml": "Multi (all)"}}'
   run "$SUBJECT"
   assert_success
-  run jq -c '.repos | map([.repo, .night.night, .night.held, .night.sha, .night_absent])' "$STATE"
-  assert_output '[["o/game",{"test.yml":"Tests (all)"},{"multi.yml":"Multi (all)"},"n1",null],["o/empty",null,null,null,"2025-11-06T12:00:00Z"]]'
+  run jq -c '.repos | map([.repo, .night.night, .night.wide, .night.held, .night.sha, .night_absent])' "$STATE"
+  assert_output '[["o/game",{"test.yml":"Tests (all)"},{"hd.yml":"HD (all)"},{"multi.yml":"Multi (all)"},"n1",null],["o/empty",null,null,null,null,"2025-11-06T12:00:00Z"]]'
 
   # warm: the same file is a conditional 304 and keeps its night; o/empty is not asked for a day
   : > "$GHD/calls"
@@ -1454,7 +1510,20 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
   run grep -c 'o/game/pulls.*(conditional)' "$GHD/calls"
   assert_output 0
   run jq -c '.repos["o/game"].row' "$PRS/sync.json"
-  assert_output 2
+  assert_output 3
+}
+
+@test "PR store: a revert names only the PRs right after its word or in its quoted title, not a ref later in the line (ar-2636)" {
+  prs_page o/game "$(gh_pr 9 closed 2025-11-06T11:00:00Z restore 'chore: restore burst-3' $'Reverts #1509: burst-3 goes back. The volume from #1510 is unchanged.')" \
+    "$(gh_pr 8 closed 2025-11-06T10:00:00Z revert-y 'Revert "feat: y (#6)"')" \
+    "$(gh_pr 7 closed 2025-11-06T09:00:00Z pair fix $'This reverts PR #3 and o/r#4; see #2 for why.')" \
+    "$(gh_pr 5 closed 2025-11-06T08:00:00Z colon 'Revert: pr #1 (#5)')" \
+    "$(gh_pr 4 closed 2025-11-06T07:00:00Z squash 'revert: fix x (#4)')"
+  run "$SUBJECT"
+  assert_success
+  # A colon and a lower-case pr read as the revert word's; a squash title's own (#N) is not a ref.
+  run jq -sc 'map([.number, .revert.prs])' "$PRS/o__game.jsonl"
+  assert_output '[[9,[1509]],[8,[6]],[7,[3,4]],[5,[1]],[4,[]]]'
 }
 
 @test "PR store, forgejo: a merged PR keeps the branch the store had once head.ref reads refs/pull/N/head" {

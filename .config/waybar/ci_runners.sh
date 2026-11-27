@@ -11,8 +11,9 @@
 # Hover: the title with each CI node's cells (BAR of them, the fuller of its booked CPU and memory
 # shares, a part cell as an eighth block on the dim colour, the rest dim), then the board's head
 # line less its runner count (jobs running, queued, the CPU job pods book of the CI nodes', done
-# in 24h, pass rate painted red under 70% and amber under 90%), the ci domain's parts and why
-# runner rows may be short, then jobs by kind (running, waiting, oldest, done, pass), one row per
+# in 1h and 5h once reported, done in 24h, pass rate painted red under 70% and amber under 90%),
+# the ci domain's parts and why
+# runner rows may be short, then jobs by kind (running, waiting, oldest, done, usual, pass), one row per
 # machine: BOOKED (the CPU and memory its job pods book of allocatable, then its cells like the
 # title's, `-` on no CI node), RUNNING (each job by kind and repo: a pod's scale set or
 # ScaledJob, a Unity slot's pool) and NEXT (the oldest waiting job that fits it, how long it has
@@ -102,6 +103,8 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
   | ("\($g.busy) running, \($g.queued) queued"
      + (if $g.queued > 0 and $g.oldest != null then " (oldest \($g.oldest | dur))" else "" end)
      + (if $g.booked == null then "" else ", booked \($g.booked.cpu | u1)/\($g.booked.cpu_alloc | u0) cpu" end)
+     + (if $g.done_1h == null then "" else ", \($g.done_1h) done 1h" end)
+     + (if $g.done_5h == null then "" else ", \($g.done_5h) done 5h" end)
      + (if $g.done > 0 then ", \($g.done) done 24h"
           + (if $g.pass == null then "" else ", " + ($g.pass | pass_paint(($g.pass | pct) + " passed")) end)
         else "" end)) as $head
@@ -109,11 +112,12 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
       else $g.parts | map(.level as $l | "\(.name | esc) " + ($l | word | paint($colour[$l | lvl]))) end)
      + (if $g.feed then [$g.feed | esc | paint($red)] else [] end)) as $parts
   | ([$g.kinds[].kind | length] + [4] | max) as $kw
-  # RUNNING is the jobs of the kind running (hub_core::machines::Pool).
+  # RUNNING is the jobs of the kind running, USUAL how long one of them usually runs (hub_core::machines::Pool).
   | ([$g.kinds[] | ((.kind | pad($kw) | esc) + " " + (.weight // "-" | lpad(6)) + " " + (.running | num | lpad(7))
       + " " + (.waiting as $w | $w | num | lpad(7)
         | if ($w // 0) > 0 then paint($yel) else . end)
-      + " " + (.oldest | dur | lpad(6)) + " " + (.done | num | lpad(5)) + "  " + (.pass as $p | $p | pass_paint($p | pct)))]) as $kinds
+      + " " + (.oldest | dur | lpad(6)) + " " + (.done | num | lpad(5)) + " " + (.usual | dur | lpad(5))
+      + "  " + (.pass as $p | $p | pass_paint($p | pct)))]) as $kinds
   | ([$g.machines[].host | length] + [7] | max) as $mw
   | ($g.machines | map(.bcell = (.booked | bcell))) as $ms
   | ([$ms[].bcell | length] + [6] | max) as $uw
@@ -140,7 +144,7 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
   | ((("WAITING" | pad($jw)) + "  N WAITED  " + ("WHERE" | pad($ww)) + "  STARTS")) as $nhead
   | ([$nx[] | (.what | pad($jw) | esc) + " " + (.n | tostring | lpad(2)) + " " + (.wait | lpad(6)) + "  "
       + (.where | pad($ww) | esc) + "  " + .when]) as $next
-  | (("KIND" | pad($kw)) + " WEIGHT RUNNING WAITING OLDEST  DONE  PASS") as $khead
+  | (("KIND" | pad($kw)) + " WEIGHT RUNNING WAITING OLDEST  DONE USUAL  PASS") as $khead
   | (("MACHINE" | pad($mw)) + " " + ("BOOKED" | lpad($uw)) + "  " + ("" | pad(BAR)) + "  " + ("RUNNING" | pad($rw)) + "  NEXT") as $mhead
   | ([$khead] + (if ($kinds | length) > 0 then $kinds else ["no job kind reports"] end)
      + (if ([$g.kinds[] | select((.weight // "") | endswith("*"))] | length) > 0

@@ -163,6 +163,11 @@ fn parts(infra: &Infra, p: &Pool, waiting: &[Queued]) -> Vec<Part> {
         None => crate::reading::NO_DATA.into(),
     };
     out.push(Part::new("Waiting", wait).warn(stuck > 0));
+    for (d, w) in [(p.done_1h, "Last 1h"), (p.done_5h, "Last 5h")] {
+        if let Some(d) = d {
+            out.push(Part::new(w, format!("{} done", n(d))));
+        }
+    }
     if p.done.is_some() || p.pass.is_some() {
         let mut t = p.done.map_or("? done".into(), |d| format!("{} done", n(d)));
         if let Some(r) = p.pass {

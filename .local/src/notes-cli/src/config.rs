@@ -8,6 +8,7 @@
 //!
 //! Config file is read from (first that exists):
 //!   `$NOTES_CONFIG`, `~/.config/notes/config.toml`, `~/.dotfiles/.config/notes/config.toml`.
+//! A unit-test build reads `$NOTES_CONFIG` alone (`config_paths`, ar-4202).
 //! If none exist, a built-in `personal` default is used so the tool works out of the box.
 
 use anyhow::{anyhow, Context, Result};
@@ -77,6 +78,10 @@ struct RawConfig {
     /// list here replaces it whole, and an empty one turns the gate off.
     #[serde(default)]
     intake_gated: Option<Vec<String>>,
+    /// The most new agent rows any project's board takes in a local day ([`intake_daily_cap`],
+    /// `gate.rs`), gated or not. Absent = [`DAILY_CAP`]; 0 turns the cap off.
+    #[serde(default)]
+    intake_daily_cap: Option<u32>,
 }
 
 /// One `[project_type.<type>]` table. Both keys are optional.
@@ -170,6 +175,22 @@ pub fn intake_gated() -> Vec<String> {
         .ok()
         .and_then(|(raw, _)| raw.intake_gated)
         .unwrap_or_else(|| GATED.iter().map(|s| s.to_string()).collect())
+}
+
+/// The new agent rows each project's board takes a local day: the human's 2026-11-25 words, "cap it
+/// very low, i really want to get through our current work before any more comes in", and "lets
+/// make sure rows dont come in aggressively" (every board, not only the gated one). Provisional,
+/// one `rules.jsonl` row (anchor `const DAILY_CAP`).
+const DAILY_CAP: u32 = 10;
+
+/// `intake_daily_cap`: the most new agent rows any project's board takes in a local day
+/// (`gate.rs`), gated or not; the human's own words and urgent reds are never counted against it. The config's
+/// own number when it has one (0 = no cap), else [`DAILY_CAP`].
+pub fn intake_daily_cap() -> u32 {
+    load_raw()
+        .ok()
+        .and_then(|(raw, _)| raw.intake_daily_cap)
+        .unwrap_or(DAILY_CAP)
 }
 
 /// `[release]`: a project's release cadence by stage (`stages.md`, "Versions"). The defaults
@@ -451,12 +472,13 @@ struct RawProfile {
     /// field keep working — resolve() falls back to `<root>/meetings`.
     #[serde(default)]
     meetings: Option<String>,
-    /// Dated capture drop (`/remember`, `notes inbox add`).
-    /// Defaults to `inbox` so configs predating this field keep working.
-    #[serde(default = "default_inbox")]
-    inbox: String,
+    /// Dated capture drop (`/remember`, `notes inbox add`), `captures/` by default. The key
+    /// was `inbox` until that name went to the reports inbox; a config still carrying
+    /// `inbox = ...` is ignored and falls back to this default.
+    #[serde(default = "default_captures")]
+    captures: String,
     /// Dirs `notes tags` scans for `#hashtag`/frontmatter tags. Optional — when empty,
-    /// resolve() derives a sensible default (daily, inbox, permanent, backlogs, knowledge).
+    /// resolve() derives a sensible default (daily, captures, permanent, backlogs, knowledge).
     #[serde(default)]
     tag_dirs: Vec<String>,
     /// Dirs `notes find` searches. Optional: when empty, resolve() searches the whole vault.
@@ -499,8 +521,12 @@ fn default_ideas() -> String {
     "lab/ideas/_IDEAS.md".to_string()
 }
 
-fn default_inbox() -> String {
-    "inbox".to_string()
+/// The reports inbox, under every profile's root (`notes report`, reports only). Fixed, not a
+/// config key: the old `inbox` key named the capture folder.
+pub const INBOX_DIR: &str = "inbox";
+
+fn default_captures() -> String {
+    "captures".to_string()
 }
 
 // The org layout, as one place instead of once per org; `personal` overrides all of them.
@@ -617,13 +643,21 @@ pub struct Profile {
     pub ideas: PathBuf,
     /// The outbox (`notes outbox`). Cross-org, like `board`.
     pub outbox: PathBuf,
-    pub inbox: PathBuf,
+    /// Dated captures (`notes inbox add`, the outbox's `#ask` answers): `<root>/captures`.
+    pub captures: PathBuf,
     /// Dirs scanned by `notes tags` (existing dirs only; missing ones are dropped).
     pub tag_scan: Vec<PathBuf>,
     /// Dirs searched by `notes find` (existing dirs only).
     pub search_dirs: Vec<PathBuf>,
     pub state_dir: PathBuf,
     pub log_file: PathBuf,
+}
+
+impl Profile {
+    /// The reports agents file for the human: `<root>/inbox`.
+    pub fn inbox(&self) -> PathBuf {
+        self.root.join(INBOX_DIR)
+    }
 }
 
 /// One resolved comms account (email mailbox) with defaults filled in.
@@ -685,6 +719,12 @@ fn config_paths() -> Vec<PathBuf> {
             v.push(expand(&p));
         }
     }
+    // A unit test reads $NOTES_CONFIG alone, as CI does: with this machine's config, a fixture
+    // project named like a live one (`binks`) resolved across the live orgs, and the test ran
+    // `migrate` on the live copy (ar-4202).
+    if cfg!(test) {
+        return v;
+    }
     v.push(home().join(".config/notes/config.toml"));
     v.push(home().join(".dotfiles/.config/notes/config.toml"));
     v
@@ -717,7 +757,7 @@ fn builtin_default() -> RawConfig {
             knowledge: default_knowledge(),
             projects: None,
             meetings: None,
-            inbox: "inbox".into(),
+            captures: default_captures(),
             tag_dirs: Vec::new(),
             search_dirs: Vec::new(),
             rollup: Vec::new(),
@@ -740,6 +780,7 @@ fn builtin_default() -> RawConfig {
         project_type: HashMap::new(),
         agent_direct_filers: None,
         intake_gated: None,
+        intake_daily_cap: None,
     }
 }
 
@@ -876,9 +917,9 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
         .unwrap_or_else(|| home().join(".local/state/watch-companion"));
 
     // Dirs scanned by `notes tags`. Explicit `tag_dirs` wins; otherwise derive a
-    // sensible default from existing paths (daily, inbox, permanent, backlogs, knowledge).
+    // sensible default from existing paths (daily, captures, permanent, backlogs, knowledge).
     let mut tag_scan: Vec<PathBuf> = if rp.tag_dirs.is_empty() {
-        let mut v = vec![join(&rp.daily), join(&rp.inbox), join(&rp.zettel)];
+        let mut v = vec![join(&rp.daily), join(&rp.captures), join(&rp.zettel)];
         v.push(backlog.clone()); // the FILE: its parent is the journal or org root
         v.push(join(&rp.knowledge));
         v
@@ -945,7 +986,7 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
         board: vault.join(&raw.board),
         ideas: vault.join(&raw.ideas),
         outbox: vault.join(&raw.outbox),
-        inbox: join(&rp.inbox),
+        captures: join(&rp.captures),
         tag_scan,
         search_dirs,
         state_dir,
@@ -1197,7 +1238,7 @@ pub(crate) fn test_profile(root: &str) -> Profile {
         board: PathBuf::from(root).join("lab/projects/board.md"),
         ideas: PathBuf::from(root).join("lab/ideas/_IDEAS.md"),
         outbox: PathBuf::from(root).join("outbox.md"),
-        inbox: r.join("inbox"),
+        captures: r.join("captures"),
         tag_scan: Vec::new(),
         search_dirs: Vec::new(),
         state_dir: r.join(".state"),
@@ -1275,7 +1316,8 @@ pub fn print(p: &Profile) {
     println!("meetings    {}", p.meetings.display());
     println!("index       {}", p.index.display());
     println!("knowledge   {}", p.knowledge.display());
-    println!("inbox       {}", p.inbox.display());
+    println!("captures    {}", p.captures.display());
+    println!("inbox       {}", p.inbox().display());
     println!("outbox      {}", p.outbox.display());
     println!("summaries   {}", p.summaries.display());
     println!(
@@ -1313,6 +1355,13 @@ mod tests {
         assert_eq!(expand("~/.notes"), PathBuf::from("/home/test/.notes"));
         assert_eq!(expand("/abs/path"), PathBuf::from("/abs/path"));
         assert_eq!(expand("~"), PathBuf::from("/home/test"));
+    }
+
+    #[test]
+    fn a_unit_test_reads_no_machine_config() {
+        // ar-4202: the live config's orgs leaked into fixtures that share a live project's name
+        let set = std::env::var("NOTES_CONFIG").is_ok_and(|c| !c.is_empty());
+        assert_eq!(config_paths().len(), usize::from(set));
     }
 
     #[test]
@@ -1460,7 +1509,7 @@ mod tests {
         assert_eq!(raw.archive, "daily_archive");
         assert_eq!(raw.zettel, "permanent");
         assert_eq!(raw.index, "index");
-        assert_eq!(raw.inbox, "inbox");
+        assert_eq!(raw.captures, "captures");
         assert_eq!(raw.projects.as_deref(), Some("projects/current"));
     }
 

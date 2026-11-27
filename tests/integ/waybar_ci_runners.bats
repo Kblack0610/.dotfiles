@@ -34,7 +34,7 @@ glance() {
     level: "warn", alert: "ok", up: 3, expected: 3, parts: [{name: "pools", level: "warn"}, {name: "watches", level: "ok"}],
     feed: null, busy: 2, queued: 2, oldest: 900, done: 4, pass: 0.75,
     booked: {cpu: 4.38, cpu_alloc: 32, mem: 2700000000, mem_alloc: 98768805888}, pending: [],
-    kinds: [{kind: "unity", running: 2, waiting: 2, oldest: 900, done: 2, pass: 0.5, weight: "1*"},
+    kinds: [{kind: "unity", running: 2, waiting: 2, oldest: 900, done: 2, usual: 1260, pass: 0.5, weight: "1*"},
             {kind: "github-hosted", waiting: null, oldest: null, done: 2, pass: 1}],
     machines: [{host: "ms-a2", busy: 3, running: ["[arc-org-light] x2", "[forgejo-runner]"], next: null, load: 0.2,
                 booked: {cpu: 4.38, cpu_alloc: 32, mem: 2700000000, mem_alloc: 98768805888}},
@@ -118,6 +118,12 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   assert_equal "$(plain | sed -n 2p)" "6 running, 9 queued (oldest 15m), booked 6.4/64 cpu, 4 done 24h, 75% passed"
 }
 
+@test "the hover head shows the 1h and 5h done counts before the 24h one, only once the kinds report them" {
+  glance '{"done_1h": 0, "done_5h": 12}'
+  run "$MODULE"
+  assert_equal "$(plain | sed -n 2p)" "2 running, 2 queued (oldest 15m), booked 4.4/32 cpu, 0 done 1h, 12 done 5h, 4 done 24h, 75% passed"
+}
+
 @test "with no CI node reporting the booking is a dash and no cell is drawn, never a runner count as capacity" {
   glance '{"booked": null, "machines": [
     {"host": "workstation", "busy": 2, "running": ["[gates]", "[unity] platform"], "next": null, "load": 0.4, "booked": null}]}'
@@ -178,12 +184,12 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   [[ "$(tip | sed -n 3p)" == *", <span color='#ef5734'>runner exporter missed its last scrape: runner rows may be missing</span>" ]]
 }
 
-@test "jobs by kind: weight, running, waiting, oldest, done and pass, no FREE; none read is a dash" {
+@test "jobs by kind: weight, running, waiting, oldest, done, usual and pass, no FREE; none read is a dash" {
   run "$MODULE"
   run plain
-  assert_line --index 3 "KIND          WEIGHT RUNNING WAITING OLDEST  DONE  PASS"
-  assert_line --index 4 "unity             1*       2       2    15m     2  50%"
-  assert_line --index 5 "github-hosted      -       -       -      -     2  100%"
+  assert_line --index 3 "KIND          WEIGHT RUNNING WAITING OLDEST  DONE USUAL  PASS"
+  assert_line --index 4 "unity             1*       2       2    15m     2   21m  50%"
+  assert_line --index 5 "github-hosted      -       -       -      -     2     -  100%"
   refute_output --partial "FREE"
 }
 
@@ -202,7 +208,7 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   glance '{"kinds": [{"kind": "heavy", "running": 0, "busy": 7, "slots": 9, "waiting": 0, "oldest": null, "done": 2, "pass": 0.5}]}'
   run "$MODULE"
   run plain
-  assert_line --index 3 "KIND  WEIGHT RUNNING WAITING OLDEST  DONE  PASS"
+  assert_line --index 3 "KIND  WEIGHT RUNNING WAITING OLDEST  DONE USUAL  PASS"
   assert_line --index 4 --regexp '^heavy +- +0 +0 '
   refute_output --partial "7/9"
 }
@@ -306,7 +312,7 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
            "kinds": [{"kind": "x&y", "waiting": 0, "oldest": null, "done": 1, "pass": 1}]}'
   run "$MODULE"
   [[ "$(tip)" == *"a&lt;b          -        -        -"* ]]
-  [[ "$(tip)" == *"x&amp;y       -       -       0      -     1  100%"* ]]
+  [[ "$(tip)" == *"x&amp;y       -       -       0      -     1     -  100%"* ]]
 }
 
 @test "a warning on stderr does not break the read" {

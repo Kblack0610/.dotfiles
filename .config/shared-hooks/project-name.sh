@@ -124,6 +124,16 @@ project_of_code() {
     "$map_file" 2>/dev/null || true
 }
 
+# plan_epic_project <plan file> -> the project whose row code the plan's `epic: <code>-<N>` line
+# carries (project_of_code), or "" (no line, no map, an unknown code). A plan files under that
+# project, not its writer's: a game's plan written from the playground checkout counts on the game.
+plan_epic_project() {
+  local code
+  code=$(sed -nE '/^epic: *([a-z0-9]+)-[0-9]+([^0-9].*)?$/{s//\1/p;q;}' "$1" 2>/dev/null)
+  [ -n "$code" ] && project_of_code "$code"
+  return 0
+}
+
 # project_codes -> every row-id code the trackers name, `|`-joined (`ar|hc|ucp`), or "".
 project_codes() {
   local map_file; map_file="$(project_map_file)"
@@ -387,7 +397,7 @@ project_lab_names() {
 # itself when it has a `lab`, else the first lab project inside it (a monorepo -> its first app with a sheet).
 lab_row() {
   # lab_row <id> -> each line on a lab sheet carrying that row id, open or closed; nothing when none
-  # does or there are no sheets. The callers filter: agent-land's Split: wants it open, plan-standard's
+  # does or there are no sheets. The callers filter: agent-land's Split: and Dup: want it open, plan-standard's
   # epic: wants an epic( row.
   # The id is a whole marker field: other fields may follow it (`filed:`, `tier:`), and ar-1 is not ar-10.
   grep -rhE --include='*.md' "[[:space:]]id:$1([[:space:]]|-->)" "$HOME/.notes/lab" 2>/dev/null || true
@@ -467,6 +477,10 @@ project_work_machine() {
 project_visible() {
   local map_file; map_file="$(project_map_file)"
   [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 0
+  # A project that names no client is visible everywhere: no profile lookup, so agent-queue add and
+  # dispatch's start (client_guard, start_item) ask notes only about a client's project.
+  jq -e --arg k "$1" '(.trackers // {})[$k] | if type == "object" then has("client") | not else true end' "$map_file" >/dev/null 2>&1 &&
+    return 0
   project_machine_profile >/dev/null
   jq -en --arg k "$1" --arg m "$PROJECT_MACHINE_PROFILE" --slurpfile reg "$map_file" \
     "$PROJECT_VISIBLE_JQ"' $k | visible($m)' >/dev/null

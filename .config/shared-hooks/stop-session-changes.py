@@ -50,8 +50,9 @@ def state(root, before=None):
     return files
 
 
-# The baseline's HEAD at session start; a path never holds a NUL, so the key cannot collide.
+# The baseline's HEAD and every ref tip at session start; a path never holds a NUL, so the keys cannot collide.
 HEAD = "\0head"
+REFS = "\0refs"
 
 
 def default_ref(root):
@@ -108,21 +109,30 @@ def head_now(root):
         return None
 
 
-def own_work(root, head):
-    """The paths this session holds once HEAD has moved: left dirty, or committed above the fork point.
+def ref_tips(root):
+    """Every ref's commit id: the history that existed before the session began."""
+    out = git(root, "for-each-ref", "--format=%(objectname)", "refs/heads", "refs/remotes").decode()
+    return sorted(set(out.split()))
 
-    A reset or checkout that moves HEAD backward rewrites files the session never edited; the fork
-    point of the starting HEAD and the current HEAD sets those apart from the session's commits.
-    A move onto another branch still lists that branch's commits (not handled). With no shared
-    history, only the dirty paths count.
+
+def own_work(root, head, tips):
+    """The paths this session holds once HEAD has moved: left dirty, or in a commit no start-time ref held.
+
+    A reset or checkout that moves HEAD backward rewrites files the session never edited, and so does a
+    checkout onto another branch: its commits were reachable from a ref (or the starting HEAD) before the
+    session began, so only a commit above all of those is the session's. A baseline from before refs were
+    recorded passes the starting HEAD alone, which still sets apart a backward move.
     """
     names = git(root, "diff", "--no-renames", "--name-only", "-z", "HEAD")
     names += git(root, "ls-files", "--others", "--exclude-standard", "-z")
-    try:
-        fork = git(root, "merge-base", head, "HEAD").decode().strip()
-        names += git(root, "diff", "--no-renames", "--name-only", "-z", fork, "HEAD")
-    except subprocess.CalledProcessError:
-        pass  # no shared history with the start: only the dirty paths are the session's
+    # A tip gc has since pruned would fail the walk and drop the whole refinement: leave it out.
+    wanted = sorted({head, *tips})
+    checked = subprocess.run(["git", "-C", str(root), "cat-file", "--batch-check"], input="".join(f"{t}\n" for t in wanted).encode(),
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True).stdout.decode().splitlines()
+    rows = "".join(f"^{t}\n" for t, line in zip(wanted, checked) if not line.endswith(" missing"))
+    names += subprocess.run(
+        ["git", "-C", str(root), "log", "--stdin", "--first-parent", "-m", "--no-renames", "--name-only", "--format=", "-z"],
+        input=("HEAD\n" + rows).encode(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True).stdout
     return {os.fsdecode(name) for name in names.split(b"\0") if name}
 
 
@@ -139,19 +149,22 @@ def main():
                 current[HEAD] = git(root, "rev-parse", "--verify", "-q", "HEAD").decode().strip()
             except subprocess.CalledProcessError:
                 pass
+            current[REFS] = ref_tips(root)
             cache.mkdir(parents=True, exist_ok=True)
             with baseline.open("x") as stream:
                 json.dump(current, stream)
     elif action == "changed":
         before = json.loads(baseline.read_text())
         head = before.pop(HEAD, None)
+        tips = before.pop(REFS, [])
         current = state(root, before)
         changed = [p for p in sorted(before.keys() | current.keys())
                    if (before.get(p) or [])[:3] != (current.get(p) or [])[:3]]
         now = head_now(root)
         if head and now and now != head:
             try:
-                changed = [p for p in changed if p in own_work(root, head)]
+                own = own_work(root, head, tips)
+                changed = [p for p in changed if p in own]
             except subprocess.CalledProcessError:
                 pass  # the refinement is optional: on a git failure the list stands as before
         theirs = upstream(root, head, changed, current) if changed else set()

@@ -11,7 +11,7 @@
 #       reads it after the normal Stop pipeline runs and fires the teardown.
 #       --session widens the kill from the window to the whole tmux session, unless a world
 #       manifest declares it (tmux-close, close.sh): then only the window closes.
-#       A Claude background session (CLAUDE_CODE_SESSION_KIND=bg, run by `claude daemon`) has
+#       A Claude background session (run by `claude daemon`; own_bg_job) has
 #       no tmux window of its own: arm records its daemon job instead (scope=bg), and fire
 #       ends the session with `claude stop <job>`. The daemon's TMUX_PANE is the pane of the
 #       foreground claude that spawned it, a different live session, so it is never killed.
@@ -25,16 +25,12 @@
 #       The same teardown for a session that was told to close and did not, run by
 #       fleet-shepherd (close_refused): writes the sentinel as .fired and fires it.
 #
-#   wind-down.sh note-path
-#       Print (and ensure the dir for) the session wrap-up note path on the
-#       agent-runtime axis: ~/.agent/sessions/<project>/<date>-wind-down.md.
-#       Project resolution matches the hook.
-#
-#   wind-down.sh note-append < block
-#       Append the wrap-up block on stdin to that note, after a blank line, and print its
-#       path. The only way the skill writes the note: several sessions a day share one note,
-#       and a session that wrote it with `cat >` cut every earlier block, which the store's
-#       union merge then carried to every peer (2026-11-25: 31 blocks cut to 4; ar-4023).
+#   wind-down.sh note <draft>
+#       Append the drafted wrap-up to today's note on the agent-runtime axis,
+#       ~/.agent/sessions/<project>/<date>-wind-down.md, and print its path. Every
+#       session of the day shares that file, so it is only ever appended to: a
+#       session that wrote it whole cut 943 lines to 113 (ar-3365). Project
+#       resolution matches the hook.
 #
 #   (A dead session's scratchpad is reaped hourly by agentctl-tmp-gc, not here.)
 #
@@ -63,6 +59,8 @@ SPIN_DIR="$HOME/.agent/spin-down"
 # Canonical project name (matches the Stop-hook's resolution).
 # shellcheck source=../../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../../.config/shared-hooks/project-name.sh}"
+# shellcheck source=../../lib/ask-store.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../lib/ask-store.sh"   # reopen_asks
 
 cmd_arm() {
   local scope="window"
@@ -83,6 +81,8 @@ cmd_arm() {
 
   if [ -z "${TMUX:-}" ]; then
     echo "wind-down: not inside tmux — nothing to spin down. (Note still written; no kill armed.)" >&2
+    # A job dir whose state does not name this session is the other reason no stop armed.
+    [ -n "${CLAUDE_JOB_DIR:-}" ] && echo "wind-down: CLAUDE_JOB_DIR=$CLAUDE_JOB_DIR is set, but its state.json does not name session '${CLAUDE_CODE_SESSION_ID:-}'." >&2
     return 1
   fi
 
@@ -128,11 +128,13 @@ cmd_arm() {
 # own_bg_job: print this session's daemon job, rc 1 when this is not a background session. The job
 # is the daemon's own key for it (CLAUDE_JOB_DIR=<config>/jobs/<short>), the id `claude stop` takes.
 # It counts only when the job's state names this session: a claude started from inside a background
-# session inherits its KIND and JOB_DIR with a session id of its own, and must never stop its parent.
+# session inherits its JOB_DIR with a session id of its own, and must never stop its parent. That
+# state is the one test: CLAUDE_CODE_SESSION_KIND is not read, as a daemon job can run with it unset
+# (2026-11-23 job 72e3cb7a: KIND unset, JOB_DIR set, so arm said "not inside tmux"; ar-4749).
 own_bg_job() {
   local sid="${CLAUDE_CODE_SESSION_ID:-}" dir="${CLAUDE_JOB_DIR:-}" job
   dir="${dir%/}"; job="${dir##*/}"
-  [ "${CLAUDE_CODE_SESSION_KIND:-}" = bg ] && is_session_id "$sid" && [[ "$job" =~ ^[0-9a-f]{8}$ ]] || return 1
+  is_session_id "$sid" && [[ "$job" =~ ^[0-9a-f]{8}$ ]] || return 1
   [ "$(jq -r '.sessionId // empty' "$dir/state.json" 2>/dev/null)" = "$sid" ] || return 1
   echo "$job"
 }
@@ -417,37 +419,20 @@ reopen_asks() {
     while IFS= read -r af; do
       err="$(CLAUDE_CODE_SESSION_ID="$1" "$SCRIPT_DIR/../../bin/agent-ask" reopen-on-answer "$(basename "$af" .md)" 2>&1 >/dev/null)" ||
         printf '[%s] fire: ask %s not set to reopen: %s\n' "$(date '+%F %T' 2>/dev/null)" "$(basename "$af" .md)" "${err##*$'\n'}" >> "$2" 2>/dev/null || true
-    done < <(grep -lxF "claude_session: $1" "${AGENT_ASK_ROOT:-$HOME/.agent/asks}"/*/*.md 2>/dev/null |
-      xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null)
+    done < <(grep -lxF "claude_session: $1" "$(ask_root)"/*/*.md 2>/dev/null | ask_open_files)
   fi
 }
 
-cmd_note_path() {
-  local proj dir
-  proj=$(resolve_project "${CLAUDE_PROJECT_DIR:-$PWD}")
-  dir="$HOME/.agent/sessions/${proj}"
+cmd_note() {
+  local draft="${1:-}" dir note
+  [ -s "$draft" ] || { echo "wind-down.sh note: name the drafted wrap-up file; it is appended to today's note" >&2; return 2; }
+  dir="$HOME/.agent/sessions/$(resolve_project "${CLAUDE_PROJECT_DIR:-$PWD}")"
   mkdir -p "$dir"
-  echo "$dir/$(date +%Y-%m-%d)-wind-down.md"
-}
-
-cmd_note_append() {
-  local f block sep=''
-  [ -t 0 ] && { echo "wind-down.sh note-append: pipe the block on stdin" >&2; return 2; }
-  block=$(cat)
-  block="${block#"${block%%[![:space:]]*}"}"
-  [ -n "$block" ] || { echo "wind-down.sh note-append: no block on stdin, the note is unchanged" >&2; return 1; }
-  f=$(cmd_note_path) || return 1
-  # Opened for append, so a block never truncates the note. The lock (flock, where the host has
-  # it) holds a second session winding down at once until this block and its separator are in.
-  {
-    if command -v flock >/dev/null 2>&1; then flock 8 || return 1; fi
-    if [ -s "$f" ]; then
-      sep=$'\n'
-      [ -n "$(tail -c1 "$f")" ] && sep=$'\n\n'
-    fi
-    printf '%s%s\n' "$sep" "$block" >&8 || return 1
-  } 8>>"$f" || return 1
-  echo "$f"
+  note="$dir/$(date +%Y-%m-%d)-wind-down.md"
+  # Two sessions winding down at once each add a whole block, never interleaved lines.
+  # A draft with no final newline gets one, so the next block starts on its own line.
+  ( flock 9; [ -s "$note" ] && echo; cat "$draft"; [ -z "$(tail -c1 "$draft")" ] || echo ) 9>>"$note" >>"$note"
+  echo "$note"
 }
 
 # Claude Code keeps each session's scratchpad at <root>/<project-slug>/<session-id>/.
@@ -505,11 +490,10 @@ case "${1:-}" in
   arm)       shift; cmd_arm "$@" ;;
   fire)      shift; cmd_fire "$@" ;;
   close)     shift; cmd_close "$@" ;;
-  note-path) shift; cmd_note_path "$@" ;;
-  note-append) shift; cmd_note_append "$@" ;;
+  note)      shift; cmd_note "$@" ;;
   disarm)    shift; cmd_disarm "$@" ;;
   *)
-    echo "usage: wind-down.sh {arm [--session] | fire <sentinel-path> | close --server S --pane %N --sid ID | note-path | note-append < block | disarm}" >&2
+    echo "usage: wind-down.sh {arm [--session] | fire <sentinel-path> | close --server S --pane %N --sid ID | note <draft> | disarm}" >&2
     exit 2
     ;;
 esac
