@@ -563,7 +563,7 @@ own_parent_dup() {
 }
 
 # from_item <text>: the item a session's line came from (its #from/<item>), lower-cased, or empty.
-from_item() { grep -oE '(^| )#from/[^ ]+' <<<"$1" | head -n 1 | sed 's/.*#from\///' | tr '[:upper:]' '[:lower:]'; }
+from_item() { local re=' #from/([^ ]+)'; [[ " $1" =~ $re ]] && printf '%s\n' "${BASH_REMATCH[1],,}" || :; }
 
 # sibling_dup <n> <action> <of> <id> <text> <board> -> the project to file on (may be empty) when
 # the model called line <n> a dup of a sibling: the batch line <of>, or the open row <id> whose own
