@@ -4897,7 +4897,7 @@ restore_world() {
       [ -d "$cwd" ] || { echo "$srv:$sess:$win: wt put the tree back but $cwd is not in it, skipped (claude --resume $id)"; continue; }
     fi
     project=$(resolve_project_name "$cwd")
-    if cmd_start --project "${project:-${cwd##*/}}" --server "$srv" --session "$sess" --window "$win" \
+    if cmd_start --project "$project" --server "$srv" --session "$sess" --window "$win" \
         --cwd "$cwd" --resume "$id" ${item:+--item "$item"} ${prompt:+--prompt "$prompt"} </dev/null >/dev/null; then
       echo "$srv:$sess:$win: reopened in $mode${item:+ for queue item $item}$said"; opened=$((opened + 1))
       # Its claude is new but its conversation is not: fleet-sessions adds the quiet it had when the
