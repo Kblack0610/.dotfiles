@@ -302,26 +302,14 @@ so_wrapper_adjust() {
     | del(.wrap)' <<<"$m"
 }
 
-# so_project_of DIR -> the project an opencode or Codex session in DIR files under: the resolver's
-# name when the registry knows it (project_known), else the reserved `_unscoped`. The resolver names
-# an unregistered repo by its checkout, a key project-map-doctor FAILs, and these readers re-read
-# every session on disk each run, so a stray key moved to ~/.agent/_archive/ came back the next
-# night (qmk_firmware, bnb-agents). With no registry to read
-# (project_known rc 2, or a resolver lib without it) the resolver's name stands.
-so_project_of() {
-  local p rc=0
-  p="$(resolve_project_name "$1")"
-  case "$p" in _*) ;; *) project_known "$p" 2>/dev/null || rc=$?; [ "$rc" -ne 1 ] || p=_unscoped ;; esac
-  printf '%s\n' "$p"
-}
-
 # so_dir_projects - stdin: a session directory a line; stdout: one {dir: project} object
-# (so_project_of on each distinct dir), the map every harness's row reader files its rows by.
+# (resolve_project_name on each distinct dir, `_unscoped` for one the registry does not know),
+# the map every harness's row reader files its rows by.
 so_dir_projects() {
   # shellcheck source=/dev/null
   . "${SO_PROJECT_LIB:-$HOME/.config/shared-hooks/project-name.sh}" || return 1
   sort -u | while IFS= read -r dir; do
-    jq -cn --arg d "$dir" --arg p "$(so_project_of "$dir")" '{key: $d, value: $p}'
+    jq -cn --arg d "$dir" --arg p "$(resolve_project_name "$dir")" '{key: $d, value: $p}'
   done | jq -cs from_entries
 }
 
