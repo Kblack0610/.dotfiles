@@ -505,6 +505,19 @@ live_wait() {
   [ -z "$checkout" ] || echo "$checkout"
 }
 
+# detached_gate <host|-> <status> <idle min> <open job> <cwd> [<claude pid>] -> gate, test or queue (live_wait) when an idle
+# local session past FLEET_IDLE_MIN runs one detached, else nothing. A gate started with & outlives the Bash call that
+# started it: the call returns, Claude reads idle, and ci-gate.sh still runs in the worktree, so the shell probes never
+# ran and the row read STALLED (unity-core-playground-agent-3, run 42525454189, ar-1085). Only a session in a checkout
+# other than $HOME: live_wait reads every process below the cwd, so a chat in $HOME would claim each worktree's gate.
+detached_gate() {
+  local top kind
+  [ "$1" = - ] && [ "$2" = idle ] && [ "$3" -ge "$FLEET_IDLE_MIN" ] && [ "$4" != agent ] && [ "$4" != human ] || return 0
+  top="$(git -C "$5" rev-parse --show-toplevel 2>/dev/null)" && [ "$top" != "$HOME" ] || return 0
+  kind="$(live_wait "$5" "${6:-}")"
+  case "$kind" in gate | test | queue) echo "$kind" ;; esac
+}
+
 # git_checkout <command line>: a live Git checkout, clone, submodule update or LFS transfer, which can
 # run past FLEET_IDLE_MIN on a large repo and is work, not a sleep (ar-1065: sessions read STALLED and
 # were nudged mid-checkout). `git -C <dir>` and `git -c <key=value>` prefixes are allowed.
@@ -2678,7 +2691,8 @@ collect() {
     rm -f "$CACHE/blind_row"
     local target pane status plan sid cwd since ctx planf tsess idle bidle asks ownask hv bucket fact edited \
           pdone ptotal pnext phases fin started age oid askids blk transcript prs \
-          work jobs human parked compactions topic doing said gate test ojob acct mdl harn pq names landed live cpid host cwin shown mman
+          work jobs human parked compactions topic doing said gate test ojob acct mdl harn pq names landed live cpid host cwin shown mman \
+          dlive detached
     # The separator is a unit separator, not a tab: read collapses an empty tab-separated field and
     # shifts every later one left, so a park ledger with no cwd put plan_file's "-" in ctx and
     # json_rows died on it (ar-1500). A number a source left empty or null is 0.
@@ -2729,19 +2743,9 @@ collect() {
     landed="$(jq -r 'if any(.state == "MERGED") and all(.state != null and .state != "OPEN")
       then map(select(.state == "MERGED") | "#\(.number)") | join(",") else "-" end' <<<"$prs")"
     tsess="${target#*/}"; tsess="${tsess%:*}"
-    idle=$(( (now - since) / 60 ))
-    # A gate detached with & outlives the Bash call that started it: the call returns, Claude reads idle, and ci-gate.sh
-    # still runs in the worktree, so the shell probes above never ran and the row read STALLED (unity-core-playground-agent-3,
-    # run 42525454189, ar-1085). The live process is the wait; detached is what wakes the session when it ends (wake_facts
-    # below), none when nothing does. Only a session in a checkout other than $HOME: live_wait reads every process below
-    # the cwd, so a chat in $HOME would claim each worktree's gate.
-    local detached=- dlive="" dtop gst="$status"
-    if [ "$host" = - ] && [ "$status" = idle ] && [ "$idle" -ge "$FLEET_IDLE_MIN" ] && [ "$ojob" != agent ] && [ "$ojob" != human ] \
-       && dtop="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)" && [ "$dtop" != "$HOME" ]; then
-      dlive="$(live_wait "$cwd" "$cpid")"
-      case "$dlive" in gate | test | queue) ojob="$dlive"; detached=none; gst=detached ;; esac
-    fi
-    bidle="$(gate_log_idle "$host" "$gst" "$ojob" "$cwd" "$idle" "$transcript")"
+    # detached: what wakes the session when its detached gate ends (wake_facts below), none when nothing does, - with none.
+    idle=$(( (now - since) / 60 )); dlive="$(detached_gate "$host" "$status" "$idle" "$ojob" "$cwd" "$cpid")"; detached="${dlive:+none}"
+    [ -z "$dlive" ] || ojob="$dlive"; bidle="$(gate_log_idle "$host" "$([ -n "$dlive" ] && echo detached || echo "$status")" "$ojob" "$cwd" "$idle" "$transcript")"
     age=-; [[ "$started" =~ ^[0-9]+$ ]] && age=$(( (now - started) / 60 ))
     local solo item
     solo="$(jq -r --arg k "${target%:*}" 'select((.target | sub(":[^:]*$"; "")) == $k) | .target' <<<"$panel" 2>/dev/null | wc -l)"
@@ -2790,7 +2794,7 @@ collect() {
         | if length == 0 then "-" else join(",") end' <<<"$qall" 2>/dev/null)"
       landed="${landed:--}"
     fi
-    local sjob=- chain="$(chain_hold "$qall" "$islugs" "$irel")"; { [ "$status" = shell ] || [ "$detached" != - ]; } && sjob="$ojob"
+    local sjob=- chain="$(chain_hold "$qall" "$islugs" "$irel")"; { [ "$status" = shell ] || [ -n "$dlive" ]; } && sjob="$ojob"
     # gd is the clone repo-wide reads go through: the cwd here, this machine's clone of a worker's repo
     # (worker_clone), - when there is none. whead is a worker's HEAD, for activity_line.
     local gd="$cwd" whead=- wmain worigin
@@ -2932,9 +2936,8 @@ collect() {
     if [ "$host" = - ] && { [ "$idle" -ge "$FLEET_IDLE_MIN" ] || [ "$sid" = "${CLOSE_SELF:-}" ]; }; then
       IFS=$'\t' read -r wake cron < <(wake_facts "$transcript" "$started" "$now" "$idle" "$phases" "$pdone" "$ptotal" "$pq")
     fi
-    [ "$detached" = - ] || [ "$wake" = - ] || detached="$wake"
     bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$bidle" "$g" "$dirty" "$ahead" \
-              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" "$cron" - "$carried" "$detached")"
+              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" "$cron" - "$carried" "${detached:+${wake/#-/$detached}}")"
     fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$bidle" "$g" "$dirty" "$ahead" \
              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" && fin=1
     # An idle session whose transcript ends on its own stop line is stopped (stopped_bucket); a finished one is left to DONE.
