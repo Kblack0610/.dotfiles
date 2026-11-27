@@ -225,7 +225,7 @@ J
   acct
   echo "activating" > "$NOTES_FIXTURE/systemctl.show.fleet-restore.service.ActiveState"
   run gate
-  assert_output 'a restore walk is reopening sessions (fleet-restore.service)'
+  assert_output --partial 'a restore walk is reopening sessions (fleet-restore.service;'
   echo "inactive" > "$NOTES_FIXTURE/systemctl.show.fleet-restore.service.ActiveState"
   run gate
   refute_output --partial 'restore walk'

@@ -74,12 +74,13 @@ cmd_status() {
   lost=$(still_lost)
   if [ ! -e "$MARKER" ]; then
     echo "up: no planned reboot in progress"
-    [ "$lost" = 0 ] || echo "still to reopen here: $lost conversation(s) on lost pane records (the restore walk, or by hand: fleet-dispatch restore)"
-    return 0
+  else
+    echo "down since $(field since): $(field reason)"
+    echo "set by down: $(field set)"
+    echo "undo with: session-snapshot up"
   fi
-  echo "down since $(field since): $(field reason)"
-  echo "set by down: $(field set)"
-  echo "undo with: session-snapshot up"
+  [ "$lost" = 0 ] || echo "still to reopen here: $lost conversation(s) on lost pane records (the restore walk, or by hand: fleet-dispatch restore)"
+  [ -e "$MARKER" ] || return 0
   return 1
 }
 

@@ -13,5 +13,7 @@ Type=oneshot
 KillMode=process
 # Started from a timer's unit under linger, with no login PATH; restore calls tmx, agent-panel and claude by name.
 Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin
+# Nobody reads this walk's output, so a failed reopen pages (restore_here).
+Environment=FLEET_RESTORE_PAGE=1
 ExecStart=%h/.local/bin/fleet-dispatch restore --here
 TimeoutStartSec=600

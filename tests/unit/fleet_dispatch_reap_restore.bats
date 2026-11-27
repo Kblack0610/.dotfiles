@@ -1133,10 +1133,31 @@ LOG
   restore_setup
   lost_pane one "$SANDBOX/repos/game" conv-1
   tmux_script 'case "$*" in *new-window*) exit 1 ;; *has-session*) exit 0 ;; esac'
+  stub agent-notify 'echo "agent-notify $*" >> "$NOTES_FIXTURE/calls.log"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
   assert_failure
   assert_output --partial 'hub: reopened 0, failed 1'
   [ -f "$FLEET_DISPATCH_DIR/panes/hub.lost.json" ] || fail "lost the record"
+  # A hand restore prints its failure to the one who ran it, and pages nothing.
+  assert_not_called 'reopen failed'
+  # In fleet-restore.service nobody reads the walk, so the failure pages (ar-3601).
+  FLEET_RESTORE_PAGE=1 run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_failure
+  assert_called 'agent-notify -p normal -t restore: a reopen failed on'
+  assert_called '1 conversation(s) are still on lost pane records'
+}
+
+@test "a walk keeps the owed marker for a lost record it never read, and clears it once every record was walked (ar-3601)" {
+  paced_restore 0
+  # The walk read hub's record; a lab record that appeared while it ran was not in it.
+  echo '{"server":"lab","panes":[{"session":"s","window":"w","cwd":"/x","claude":"c"}]}' > "$FLEET_DISPATCH_DIR/panes/lab.lost.json"
+  echo '{"server":"hub","panes":[]}' > "$FLEET_DISPATCH_DIR/panes/hub.lost.json"
+  RESTORE_OWED=() RESTORE_WALKED=("$FLEET_DISPATCH_DIR/panes/hub.lost.json")
+  restore_pace >/dev/null
+  [ -e "$FLEET_DISPATCH_DIR/panes/.restore-owed" ] || fail "a record the walk never read lost its retry"
+  RESTORE_WALKED+=("$FLEET_DISPATCH_DIR/panes/lab.lost.json")
+  restore_pace >/dev/null
+  [ ! -e "$FLEET_DISPATCH_DIR/panes/.restore-owed" ] || fail "the marker outlived a walk of every record"
 }
 
 @test "restore --dry-run says what it would do and touches nothing" {
@@ -1172,6 +1193,8 @@ LOG
   assert_failure 1
   assert_output --partial 'could not start fleet-restore.service; 23 conversation(s) still wait'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore --defer --server hub
+  assert_failure 2
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore --defer --dry-run
   assert_failure 2
 }
 
