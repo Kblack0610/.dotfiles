@@ -40,7 +40,7 @@ const gLink = (uid, text) => grafanaBase() ? `<a class="glink" href="${esc(grafa
 
 
 // hub_core::ci::Glance::head: `4 running, 23 queued (oldest 21m), booked 4.4/64 cpu, 12/12 runners up,
-// 759 done 24h, 91% passed`; the booking only once a CI node reports.
+// 6 done 1h, 80 done 5h, 759 done 24h, 91% passed`; the windows only once a kind reports them; the booking only once a CI node reports.
 // Glance::up_line: `12/12` runners up of the roster, `-/-` with no runner read.
 const upLine = (g) => (g.expected ? `${g.up}/${g.expected}` : "-/-");
 function glanceHead(g) {
@@ -48,6 +48,8 @@ function glanceHead(g) {
   if (g.queued > 0 && g.oldest != null) s += ` (oldest ${secs(g.oldest)})`;
   if (g.booked) s += `, booked ${cores1(g.booked.cpu)}/${Math.round(g.booked.cpu_alloc)} cpu${g.booked.reserved > 0 ? ` (${cores1(g.booked.reserved)} reserved)` : ""}`;
   s += `, ${upLine(g)} runners up`;
+  if (g.done_1h != null) s += `, ${g.done_1h} done 1h`;
+  if (g.done_5h != null) s += `, ${g.done_5h} done 5h`;
   if (g.done > 0) s += `, ${g.done} done 24h${g.pass != null ? `, ${pct(g.pass)} passed` : ""}`;
   return s;
 }
@@ -203,7 +205,7 @@ const MACH_CELLS = {
 };
 
 // One row per job kind: its jobs running and waiting, and the machines that take it.
-const POOL_COLS = { pool: ["kind"], weight: ["weight", "n"], running: ["running", "n"], waiting: ["waiting", "n"], oldest: ["oldest", "n"], done: ["done 24h", "n"], usual: ["usual", "n"], pass: ["pass", "n"], machines: ["machines"] };
+const POOL_COLS = { pool: ["kind"], weight: ["weight", "n"], running: ["running", "n"], waiting: ["waiting", "n"], oldest: ["oldest", "n"], done_1h: ["done 1h", "n"], done_5h: ["done 5h", "n"], done: ["done 24h", "n"], usual: ["usual", "n"], pass: ["pass", "n"], machines: ["machines"] };
 const num = (v) => v ?? "-";
 // hub_core::machines::Pool::machines_cell: each machine a link to its page, with its online slots.
 const poolSeats = (p) => p.machines.map((s) => tblLink(s.href, s.host) + ` ${s.slots}`).join(", ") || "-";
@@ -214,6 +216,8 @@ const POOL_CELLS = {
   running: (p) => td("n", num(p.running)),
   waiting: (p) => td(`n${p.waiting ? " warn" : ""}`, num(p.waiting)),
   oldest: (p) => td("n", secs(p.oldest)),
+  done_1h: (p) => td("n", num(p.done_1h)),
+  done_5h: (p) => td("n", num(p.done_5h)),
   done: (p) => td("n", num(p.done)),
   usual: (p) => td("n muted", secs(p.usual)),
   pass: (p) => td(`n ${passCls(p.pass)}`, pct(p.pass)),
