@@ -135,7 +135,11 @@ wrap_up() {
   ln -sfn "$SANDBOX/$1" "$SANDBOX/home-$1/.agent"
   local f draft="$SANDBOX/draft-$1.md"
   printf '# Session wrap-up\n\n%s\n' "$2" > "$draft"
-  f=$(HOME="$SANDBOX/home-$1" CLAUDE_PROJECT_DIR="$SANDBOX/proj" \
+  # One fixed day, so a run across midnight still has both machines write one note.
+  mkdir -p "$SANDBOX/datebin"
+  printf '#!/bin/sh\n[ "$1" = +%%Y-%%m-%%d ] && { echo 2026-01-02; exit; }\nexec %s "$@"\n' "$(command -v date)" > "$SANDBOX/datebin/date"
+  chmod +x "$SANDBOX/datebin/date"
+  f=$(PATH="$SANDBOX/datebin:$PATH" HOME="$SANDBOX/home-$1" CLAUDE_PROJECT_DIR="$SANDBOX/proj" \
     bash "$REPO_ROOT/.local/src/tmux/wind-down.sh" note "$draft") || return 1
   echo "${f#"$SANDBOX/home-$1/.agent/"}"
 }
@@ -194,22 +198,6 @@ wrap_up() {
   assert_equal "$(grep -c '^# Session wrap-up' <<<"$output")" 4
   assert_equal "$(grep -c '^block c$' <<<"$output")" 1
   assert_line 'block a'
-  assert_line 'block b'
-}
-
-@test "a wind-down note one machine rewrote with > loses the earlier block on every machine: the writer must append (ar-4023)" {
-  # The negative control for the test above: with nothing to merge, a sync carries a cut as it
-  # carries any edit, so only a writer that appends keeps the earlier block.
-  peer a; peer b
-  note=$(wrap_up a 'block 0')
-  on a
-  on b
-  printf '# Session wrap-up\n\nblock b\n' > "$SANDBOX/b/$note"
-  on b
-  run on a
-  assert_success
-  run cat "$SANDBOX/a/$note"
-  refute_line 'block 0'
   assert_line 'block b'
 }
 

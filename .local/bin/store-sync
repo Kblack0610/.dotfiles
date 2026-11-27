@@ -178,7 +178,8 @@ apply_merge_drivers() {
     g config --unset merge.close.driver
   fi
   # A day's wind-down note merge=note (ar-4023), set the same way: info/attributes outranks the
-  # tracked `merge=union` line, which folded two machines' wrap-ups into one.
+  # tracked `merge=union` line, which folded two machines' wrap-ups into one. A peer whose dotfiles
+  # predate this still merges by that union line until it updates.
   for a in 'queue/*/*.md merge=item' 'queue/done/*/*.md merge=item' 'sessions/*/*-wind-down.md merge=note'; do
     grep -qxF "$a" "$attrs" 2>/dev/null || { printf '%s\n' "$a" >> "$attrs" && rm -f "$CONFLICT" "$CONFLICT"-*; }
   done
@@ -313,7 +314,7 @@ cmd_merge_derived() {
 # `# Session wrap-up` block the other side added follows, a blank line apart, so it never conflicts:
 # a block counts as added when the other side holds more copies of it than both the base and this
 # side do, so a base block is never re-added and a block this side already took from a third peer
-# is not doubled. A base block
+# is not doubled (two byte-identical blocks added on both sides keep one copy; a block names its session). A base block
 # the other side edited in place while this side appended comes back as its edited copy after this
 # side's blocks, beside the old one: a duplicate, never a loss. Every session appends a block to the
 # day's note, and two machines' blocks appended at once always clash at the end of the file; the
@@ -325,14 +326,16 @@ cmd_merge_note() {
   local tmp
   tmp=$(mktemp) || return 1
   if ! git merge-file -q -p "$2" "$1" "$3" > "$tmp"; then
+    local lead='\n'
+    [ -n "$(tail -n1 -- "$2" | tr -d '[:space:]')" ] || lead=''
     { cat -- "$2"
       [ -z "$(tail -c1 -- "$2")" ] || echo
-      awk 'function flush(  k) {
+      awk -v lead="$lead" 'function flush(  k) {
              k = b; sub(/\n+$/, "\n", k)
              if (k ~ /[^[:space:]]/) {
                if (bf == 1) inbase[k]++
                else if (bf == 2) inours[k]++
-               else if (++seen[k] > (inours[k] > inbase[k] ? inours[k] : inbase[k])) printf "\n%s", k
+               else if (++seen[k] > (inours[k] > inbase[k] ? inours[k] : inbase[k])) { printf "%s%s", lead, k; lead = "\n" }
              }
              b = ""
            }
