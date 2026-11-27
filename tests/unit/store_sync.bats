@@ -30,7 +30,7 @@ setup() {
   : > "$seed/bench/.keep"
   printf '{\n "head": 0,\n "x": 1,\n "y": 1,\n "z": 1,\n "w": 1,\n "tail": 0\n}\n' > "$seed/daylog/d.json"
   printf '# p\n\n## Decisions\n- d1\n\n## Notes\nhand\n<!-- AUTO:START -->\ngen 0\n<!-- AUTO:END -->\n' > "$seed/anchors/p.md"
-  printf '*.jsonl merge=union\ndaylog/*.json merge=derived\nanchors/*.md merge=derived\n' > "$seed/.gitattributes"
+  printf '*.jsonl merge=union\nsessions/*/*-wind-down.md merge=union\ndaylog/*.json merge=derived\nanchors/*.md merge=derived\n' > "$seed/.gitattributes"
   printf '.sync/\n' > "$seed/.gitignore"
   git -C "$seed" add -A && git -C "$seed" commit -q -m seed
   git -C "$seed" push -q "$ORIGIN" master
@@ -131,6 +131,79 @@ show() { git -C "$1" show "master:$2"; }
   run show "$ORIGIN" queue/events.jsonl
   assert_line '{"n":"a"}'
   assert_line '{"n":"b"}'
+}
+
+# wrap_up <name> <line>: a session on that machine appends its wrap-up block with wind-down.sh,
+# as the wind-down skill does; prints the note's path inside the store.
+wrap_up() {
+  mkdir -p "$SANDBOX/home-$1" "$SANDBOX/proj"
+  ln -sfn "$SANDBOX/$1" "$SANDBOX/home-$1/.agent"
+  local f draft="$SANDBOX/draft-$1.md"
+  printf '# Session wrap-up\n\n%s\n' "$2" > "$draft"
+  # One fixed day, so a run across midnight still has both machines write one note.
+  mkdir -p "$SANDBOX/datebin"
+  printf '#!/bin/sh\n[ "$1" = +%%Y-%%m-%%d ] && { echo 2026-01-02; exit; }\nexec %s "$@"\n' "$(command -v date)" > "$SANDBOX/datebin/date"
+  chmod +x "$SANDBOX/datebin/date"
+  f=$(PATH="$SANDBOX/datebin:$PATH" HOME="$SANDBOX/home-$1" CLAUDE_PROJECT_DIR="$SANDBOX/proj" \
+    bash "$REPO_ROOT/.local/src/tmux/wind-down.sh" note "$draft") || return 1
+  echo "${f#"$SANDBOX/home-$1/.agent/"}"
+}
+
+@test "two machines appending a wrap-up block to one day's wind-down note keep both, and the earlier block (ar-4023)" {
+  peer a; peer b
+  note=$(wrap_up a 'block 0')
+  on a
+  on b
+  [ "$(git -C "$SANDBOX/b" show "HEAD:$note" | grep -c '^# Session wrap-up')" = 1 ]
+  wrap_up a 'block a'
+  wrap_up b 'block b'
+  on a
+  run on b
+  assert_success
+  assert_output --partial "COMPLETE"
+  run show "$ORIGIN" "$note"
+  assert_line 'block 0'
+  assert_line 'block a'
+  assert_line 'block b'
+  refute_output --partial '<<<<<<<'
+  # The seed's tracked merge=union, the store's line before the note driver, keeps "block a" and
+  # "block b" but folds them under one header: 2 here, not 3.
+  assert_equal "$(grep -c '^# Session wrap-up' <<<"$output")" 3
+}
+
+@test "a wind-down block fixed in place on the merging machine while another appended is kept once, as fixed (ar-4023)" {
+  # The merge re-adds only blocks the other side added since the base, so the other side's
+  # unchanged copy of the fixed block stays out. Merged the other way round, both copies stay.
+  peer a; peer b
+  note=$(wrap_up a 'block 0')
+  on a
+  on b
+  wrap_up a 'block a'
+  sed -i 's/^block 0$/block 0 fixed/' "$SANDBOX/b/$note"
+  on a
+  run on b
+  assert_success
+  run show "$ORIGIN" "$note"
+  assert_line 'block 0 fixed'
+  refute_line 'block 0'
+  assert_line 'block a'
+  assert_equal "$(grep -c '^# Session wrap-up' <<<"$output")" 2
+}
+
+@test "merge-note adds only the other side's new blocks: one this side already took from a third peer is not doubled (ar-4023)" {
+  d="$BATS_TEST_TMPDIR"
+  blk() { local b; for b; do printf '# Session wrap-up\n\n%s\n\n' "$b"; done; }
+  blk 'block 0' > "$d/base"
+  blk 'block 0' 'block c' 'block a' > "$d/ours"
+  blk 'block 0' 'block c' 'block b' > "$d/theirs"
+  run "$BIN" merge-note "$d/base" "$d/ours" "$d/theirs" sessions/p/d-wind-down.md
+  assert_success
+  run cat "$d/ours"
+  refute_output --partial '<<<<<<<'
+  assert_equal "$(grep -c '^# Session wrap-up' <<<"$output")" 4
+  assert_equal "$(grep -c '^block c$' <<<"$output")" 1
+  assert_line 'block a'
+  assert_line 'block b'
 }
 
 @test "two machines regenerating the same snapshot both sync, and the merging machine's copy wins whole" {
@@ -1270,6 +1343,7 @@ close_run() {
   assert_line 'queue/*/*.md merge=item'
   assert_line 'queue/done/*/*.md merge=item'
   refute_line --partial 'merge=close'
+  assert_line 'sessions/*/*-wind-down.md merge=note'
   run git -C "$SANDBOX/a" config --get merge.close.driver
   assert_failure
   run git -C "$SANDBOX/a" config --get merge.item.driver
