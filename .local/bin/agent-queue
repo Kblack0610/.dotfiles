@@ -1348,7 +1348,8 @@ ask_pending() {
   st="$(sed -n '/^status: /{s///p;q;}' "$f")"
   [ "$st" = answered ] || { echo "${st:-unreadable}"; return; }
   # Any answer releases: the human's, the judge's or an agent's. Who may answer is agent-ask's call
-  # (its agent_refused), so the gate does not ask again. 2026-11-23: routine retry and drop asks held 40+ rows on the human.
+  # (its agent_refused: an agent answers only what the judge would not send to the human), so the
+  # gate does not ask again. 2026-11-23: routine retry and drop asks held 40+ rows on the human.
   [ -n "$want" ] || return 0
   ans="$(sed -n '/^answer: /{s///p;q;}' "$f")"; ans="${ans%% *}"; ans="${ans%[.,;:!]}"
   case "+${want,,}+" in *"+${ans,,}+"*) return 0 ;; esac
