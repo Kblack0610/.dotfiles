@@ -224,7 +224,7 @@
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_NEEDS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR,
 # BENCH_CI_MATCH_CMD, BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
 # BENCH_ITEMS_CMD, BENCH_ADMISSION_CMD, BENCH_MIX_CMD, BENCH_CLASSES, BENCH_LESSONS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_STATS_CMD, BENCH_FORECAST_HORIZON_H,
-# BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_TRAINEE_CMD, BENCH_LANE_LOG, BENCH_LANE_VOIDS, BENCH_SOURCES_CMD, BENCH_HOLDS_CMD, BENCH_HARNESSES, BENCH_ROOM_CMD, BENCH_CANARY_LANES, BENCH_CANARY_RETRIES, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_HUB_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, PLAN_DIRS, BENCH_DOCS_CLEANUP_DIR, BENCH_SYSTEMS_CMD, BENCH_DOCTOR_LAST, CHAIN_DAYS,
+# BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_POINTS_STEP_MIN, BENCH_TRAINEE_CMD, BENCH_LANE_LOG, BENCH_LANE_VOIDS, BENCH_SOURCES_CMD, BENCH_HOLDS_CMD, BENCH_HARNESSES, BENCH_ROOM_CMD, BENCH_CANARY_LANES, BENCH_CANARY_RETRIES, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_HUB_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, PLAN_DIRS, BENCH_DOCS_CLEANUP_DIR, BENCH_SYSTEMS_CMD, BENCH_DOCTOR_LAST, CHAIN_DAYS,
 # FLEET_STATE_FILE, FLEET_SHEPHERD_DIR, WORKTREE_GC_LOG, WORKTREE_GC_STALE_H, BENCH_FLEET_COST_CMD, BENCH_FLEET_COST_FILE, BENCH_FLEET_COST_EVERY_MIN, BENCH_FLEET_COST_TIMEOUT, BENCH_HUB_FIGURE_CMD, BENCH_BUDGET_CMD, BENCH_BUDGET_FILE,
 #                                BENCH_BUDGET_EVERY_MIN, BENCH_BUDGET_TIMEOUT.
 
@@ -275,6 +275,7 @@ set -uo pipefail
 : "${BENCH_TIME_DAYS:=7}"
 : "${BENCH_QUEUE_STATS_CMD:=agent-queue stats --json}"   # given --since <date>
 : "${BENCH_QUEUE_DAYS:=7}"           # what the queue line and the scorecard's queue tables cover
+: "${BENCH_POINTS_STEP_MIN:=15}"     # the subquery step of the points read, and the slack a series may start late by before its window reads short
 : "${BENCH_KINDS:=${DISPATCH_KINDS:-$HOME/.config/fleet-dispatch/kinds.json}}"   # fleet-dispatch's kinds: canary matrix reads which kinds open a PR
 : "${BENCH_TRAINEE_CMD:=timeout 120 fleet-dispatch trainee-pool --json}"   # the trainee pool and the floor's state, as dispatch reads them
 : "${BENCH_SIZES_DAYS:=28}"          # the done items fleet-bench sizes calibrates on
@@ -4189,7 +4190,7 @@ source_attr() {
   [ -z "${SOURCE_ATTR_JSON:-}" ] || { printf '%s\n' "$SOURCE_ATTR_JSON"; return 0; }   # the scorecard reads it once
   since=$(( t - days * 86400 ))
   rows=$($BENCH_SOURCES_CMD 2>/dev/null | jq -ce 'arrays' 2>/dev/null) || rows=null
-  pts=$(vm_map account "sum by (account) (sum_over_time((clamp_min(max by (account) (claude_account_week_used_percent) - max by (account) (claude_account_week_used_percent offset 15m), 0))[${days}d:15m]))" "$t" 2>/dev/null) || pts=null
+  pts=$(vm_map account "sum by (account) (sum_over_time((clamp_min(max by (account) (claude_account_week_used_percent) - max by (account) (claude_account_week_used_percent offset ${BENCH_POINTS_STEP_MIN}m), 0))[${days}d:${BENCH_POINTS_STEP_MIN}m]))" "$t" 2>/dev/null) || pts=null
   # the earliest sample each account has in the window: a series younger than the window sums fewer days of rises
   first=$(vm_map account "min by (account) (tfirst_over_time(claude_account_week_used_percent[${days}d]))" "$t" 2>/dev/null) || first=null
   holds=null
@@ -4197,7 +4198,7 @@ source_attr() {
   usd=$(vm_map user_email "sum by (user_email) (increase(claude_code_cost_usage_USD_total[${days}d]))" "$t" 2>/dev/null) || usd=null
   hs=$(jq -ce '.harnesses // {} | map_values(.source)' "$BENCH_HARNESSES" 2>/dev/null) || hs='{}'
   jq -cn --argjson rows "${rows:-null}" --argjson pts "${pts:-null}" --argjson first "${first:-null}" --argjson usd "${usd:-null}" --argjson hs "$hs" --argjson holds "${holds:-null}" \
-     --argjson since "$since" --argjson t "$t" --argjson days "$days" \
+     --argjson since "$since" --argjson t "$t" --argjson days "$days" --argjson step "$BENCH_POINTS_STEP_MIN" \
      --slurpfile o <(outcomes_newest) \
      --slurpfile items <(bench_read $BENCH_DONE_ITEMS_CMD --since "$(date -d "@$since" +%F)" 2>/dev/null) "$JQ_LIB"'
     def dirkey: if (.dir // "") == "" then "claude" else .dir | sub("/+$"; "") | split("/") | last | ltrimstr(".") end;
@@ -4233,7 +4234,7 @@ source_attr() {
          | (if $first[$n] == null then null else ([($t - $first[$n]) / 86400, $days] | min) end) as $span
          | {name: $n, kind, parent, used: .week_used, hold: ($holds[$n] // null), points: $p,
             points_days: ($span | if . == null then . else round2 end),
-            points_short: ($span != null and $span < $days - 15 / 1440),
+            points_short: ($span != null and $span < $days - $step / 1440),
             usd: ($d | if . == null then . else round2 end),
             usd_src: (if .usd_max != null then "gateway" elif .kind == "claude" or .kind == "codex" or .kind == "agy" then "list" else null end),
             landed: $l,
@@ -4264,10 +4265,11 @@ sources_table() {
     .days as $days
     | def pd($s): d as $v | if $v == "-" or ($s.points_short | not) then $v else "\($v) (\($s.points_days)d of \($days))" end;
     (if .read.points then empty else "- points: ? (VictoriaMetrics unreadable)", "" end),
+    (if .read.points and (.read.points_start | not) then "- points window: ? (first-sample read failed, so a short series is not marked)", "" else empty end),
     (if .read.holds then empty else "- holds: ? (fleet-dispatch provider-holds unreadable, so a held source reads as free)", "" end),
     "| Source | Kind | Used now | Hold | Points | Dollars | Landed | $ per point | PRs per point | Points per PR | Parent |",
     "|---|---|---|---|---|---|---|---|---|---|---|",
-    (.sources[] | . as $s | "| \(.name) | \(.kind) | \(.used | if . == null then "-" else "\(. | floor)%" end) | \(.hold // "-") | \(.points | pd($s)) | \(if .usd == null then "-" else "$\(.usd) \(.usd_src)" end) | \(.landed) | \(.usd_per_point | if . == null then . else "$\(.)" end | pd($s)) | \(.prs_per_point | pd($s)) | \(.points_per_pr | pd($s)) | \(.parent // "-") |"),
+    (.sources[] | . as $s | "| \(.name) | \(.kind) | \(.used | if . == null then "-" else "\(. | floor)%" end) | \(.hold // "-") | \(.points | pd($s)) | \(if .usd == null then "-" else "$\(.usd) \(.usd_src)" | if $s.usd_src == "gateway" then pd($s) else . end end) | \(.landed) | \(.usd_per_point | if . == null then . else "$\(.)" end | pd($s)) | \(.prs_per_point | pd($s)) | \(.points_per_pr | pd($s)) | \(.parent // "-") |"),
     (if .unattributed > 0 then "", "- landed on no source: \(.unattributed) (" + ([(.unattributed_why // {}) | to_entries[]
         | "\(.value) " + ({no_session: "name no session", no_outcome: "whose sessions have no outcome row yet (a hand session'"'"'s lands when it ends)",
                            no_account: "whose sessions'"'"' outcome rows name no account",

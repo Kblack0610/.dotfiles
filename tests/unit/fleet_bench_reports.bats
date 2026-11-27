@@ -1735,10 +1735,13 @@ SH
 ["bnb",4,7,false]'
   SRC_FIRST_MAIN=$((T0 - 224640)) run "$SUBJECT" sources
   assert_line '| main | claude | 40% | - | 10 (2.6d of 7) | $50 list | 1 | $5 (2.6d of 7) | 0.1 (2.6d of 7) | 10 (2.6d of 7) | - |'
-  assert_line '| bnb | claude | 20% | - | 4 | $30 list | 0 | $7.5 | - | - | - |'
+  assert_line '| bnb | claude | 20% | - | 4 | $30 list | 0 | $7.5 | 0 | - | - |'
   # the same series covers a 2-day window whole
   BENCH_QUEUE_DAYS=2 SRC_FIRST_MAIN=$((T0 - 224640)) run "$SUBJECT" sources --json
   assert_equal "$(jq -c '.sources[] | select(.name == "main") | [.points_days, .points_short]' <<<"$output")" '[2,false]'
+  # a gateway key's dollars are its points of its budget, so a short series marks them too
+  SRC_FIRST_RESERVE=$((T0 - 224640)) run "$SUBJECT" sources
+  assert_line '| reserve | litellm-key | 50% | - | 5 (2.6d of 7) | $10 gateway (2.6d of 7) | 0 | $2 (2.6d of 7) | 0 (2.6d of 7) | - | lazer |'
 }
 
 @test "sources: a first-sample read that fails leaves points_days null and nothing marked, and the rest of the table reads" {
@@ -1752,6 +1755,8 @@ esac'
   assert_success
   assert_equal "$(jq -c '[.read.points, .read.points_start, (.sources[] | select(.name == "main") | [.points, .points_days, .points_short])]' <<<"$output")" \
     '[true,false,[10,null,false]]'
+  run "$SUBJECT" sources
+  assert_line '- points window: ? (first-sample read failed, so a short series is not marked)'
 }
 
 @test "scorecard: the KPI table marks points_per_pr when a Claude source's points cover fewer days than the window, and leaves it bare when they cover it" {
