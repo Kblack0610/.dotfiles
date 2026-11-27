@@ -402,6 +402,29 @@ EOS
   refute_output --partial 'none of it can affect'
 }
 
+@test "behind before the gate on a strict base: merged up first, whatever the pick says (ar-5747)" {
+  pick_fixture
+  printf '1\n0\n' >"$NOTES_FIXTURE/behind.seq"
+  printf '%s\n' unit/b.bats >"$PICKDIR/theirs.unit"
+  echo '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true}}]' >"$NOTES_FIXTURE/rules.json"
+  run "$LAND" 42 --item ship
+  refute_output --partial 'none of it can affect'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 1
+}
+
+@test "behind before the gate, the pick missed but merging conflicts: the merge-up runs and exits 3 with no checks (ar-5747)" {
+  pick_fixture
+  printf '1\n0\n' >"$NOTES_FIXTURE/behind.seq"
+  printf '%s\n' unit/b.bats >"$PICKDIR/theirs.unit"
+  : >"$NOTES_FIXTURE/tree.conflicts"
+  run "$LAND" 42 --item ship
+  assert_failure 3
+  refute_output --partial 'none of it can affect'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 0
+}
+
 @test "a pushed head that reports no checks, after the gate's head ran green, is never merged" {
   printf '0\n1\n' >"$NOTES_FIXTURE/behind.seq"
   printf 'green\n' >"$NOTES_FIXTURE/checks.seq"
