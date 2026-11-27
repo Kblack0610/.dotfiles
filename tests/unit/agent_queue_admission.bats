@@ -130,6 +130,7 @@ COND=(
   'pull_ok;[ -n "$1" ];`--running`;--running'
   'pull_ok;[ -n "${AGENT_QUEUE_PULL:-}" ];`AGENT_QUEUE_PULL=dispatch`;AGENT_QUEUE_PULL='
   'pull_ok;[ -n "${AGENT_QUEUE_PULL:-}" ];`AGENT_QUEUE_PULL=hand`;AGENT_QUEUE_PULL='
+  'pull_ok;[ -n "${AGENT_QUEUE_PULL:-}" ];`AGENT_QUEUE_PULL=land`;AGENT_QUEUE_PULL='
   'hand_caller;[ -z "$2" ];no `--from`;--from'
   'hand_caller;[ "$1" = human ];other than `human`;"human"'
   'hand_caller;! headless;not a headless Claude run;-'
@@ -206,7 +207,7 @@ check_admit_names() { # <skill-drift>
 }
 
 @test "negative control: a May add bullet that drops a condition fails" {
-  printf '%s\n' '## Admission' '' '- May add: dispatch'"'"'s pull (`AGENT_QUEUE_PULL=dispatch`), `AGENT_QUEUE_PULL=hand`, `--running`, and the human: no `--from` other than `human`, not a headless Claude run (no `AGENT_QUEUE_ITEM`).' '## Next' > "$BATS_TEST_TMPDIR/q.md"
+  printf '%s\n' '## Admission' '' '- May add: dispatch'"'"'s pull (`AGENT_QUEUE_PULL=dispatch`), `AGENT_QUEUE_PULL=hand`, `AGENT_QUEUE_PULL=land`, `--running`, and the human: no `--from` other than `human`, not a headless Claude run (no `AGENT_QUEUE_ITEM`).' '## Next' > "$BATS_TEST_TMPDIR/q.md"
   run check_doc "$BATS_TEST_TMPDIR/q.md"
   assert_failure
   assert_output 'May add does not name `origin` is `hand` or `resume` (hand_caller: in hand | resume))'
