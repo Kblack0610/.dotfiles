@@ -162,6 +162,9 @@ esac
 HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 # shellcheck source=../lib/judge.sh
 . "$HERE/../lib/judge.sh"
+# shellcheck source=../lib/board-keys.sh
+. "$HERE/../lib/board-keys.sh"   # BOARD_KEY_ERE: the rows fleet-bench triage files by key, whose lane skip_exits leaves to it
+BOARD_KEY_JQ=$(jq -rn --arg e "$BOARD_KEY_ERE" '$e | tojson')   # that ERE as a jq string literal, for ROW_JQ's bench_keyed
 # shellcheck source=../src/agent-run/lib/sandbox.sh
 . "$HERE/../src/agent-run/lib/sandbox.sh"
 # The fleet worker roster (home-config's `fleet_workers` group) and the one ssh path to a worker.
@@ -619,10 +622,12 @@ def plan_tagged: any(.tags[]?; . == "plan");
 # defines its scope and the expect line of its watch its done state, so it is never unclear (policy.md
 # `clear`): an `unclear` skip of one takes no plan exit and picks reads past it (ar-5240).
 def triage_red: (.raw // .text // "") | sub("^- \\[.\\] "; "") | test("^check\\((watch|alert)\\): ");
-# red_skip($c): this verdict is an `unclear` skip of triage red row $c that an agent may take, so
-# skip_exits gives it no plan exit (a raw board row has no computed tier to read). One that picks then
-# passes over (a tier above the row, size L, a hold) stays on the board under its skip with no exit:
-# a known gap, since the raw row here carries neither tier nor size to test.
+# bench_keyed: a row fleet-bench triage filed by key (lib/board-keys.sh BOARD_KEY_ERE). The route triage gives it is
+# the one writer of its lane, so no exit here moves or drops it (skip_exits, ask_stale_skips; ar-6265).
+def bench_keyed: (.raw // .text // "") | sub("^- \\[.\\] "; "") | test('"$BOARD_KEY_JQ"');
+# red_skip($c): this verdict is an `unclear` skip of triage red row $c that an agent may take, so picks
+# reads past it (skip_exits gives a keyed triage row no exit at all). One that picks then passes over
+# (a tier above the row, size L, a hold) stays on the board under its skip: fleet-bench triage owns it.
 def red_skip($c): .verdict == "skip" and .rule == "unclear" and .agent_only == true and ($c | triage_red);
 # red_unclear($c): red_skip of a candidate whose tier is no higher than that of the row, a dispatch were
 # it clear, so picks starts it and suggest lists it as dispatch.
@@ -2305,6 +2310,10 @@ human_merge_set() {
 # skip_exits [--dry-run] -- give each open agent row whose latest verdict is a skip, still current
 # for the row's text, the exit its rule names (policy.md "Always skip"), so no skip parks a row.
 # A check(epics) row takes none: reconcile_epics queues its verify item, the judge never needs to.
+# Nor does a row fleet-bench triage filed by key (BOARD_KEY_ERE: check(watch), check(alert), fix(hold) and
+# the rest): triage's route (agent or human:<sheet>) is the one writer of its lane, and a sheet exit
+# here was undone by triage on its next pass, an add and a drop on every pass (ar-6265: board-chain).
+# A keyed red that needs a person gets a human:<sheet> route in triage-routes, not an exit here.
 #  - plan (DISPATCH_PLAN_RULES): tag it #plan, and #go beside it on a #requested row (the judge asked
 #    for this plan, not the person, so inbox-plan does not hold it for their review), while fewer than
 #    DISPATCH_PLAN_BACKLOG #plan rows are open, then kick inbox-plan; its plan splits or rewrites the
@@ -2388,8 +2397,9 @@ skip_exits() {
     | $ssf[0] as $ss
     | ($kinds | to_entries | map(select(.value.enabled == false and .key != "epic") | {key, value: true}) | from_entries) as $off
     | ([.rows[]? | select(.state == "open" or .state == "doing") | .tags[]? | select(startswith("of/")) | {key: .[3:], value: true}] | from_entries) as $parents
-    | .rows[]? | select(.lane == "agent" and .state == "open" and .id != null and (plan_tagged | not) and "\(.type)(\(.area))" != "check(epics)") | . as $row
-    | ($by["\(.project)\t\(.id)"] | if . != null and red_skip($row) then null else . end) as $d
+    | .rows[]? | select(.lane == "agent" and .state == "open" and .id != null and (plan_tagged | not) and "\(.type)(\(.area))" != "check(epics)"
+        and (bench_keyed | not))
+    | $by["\(.project)\t\(.id)"] as $d
     | if $hm["\(.project)\t\(.id)"] != null and (.type // "") != "epic" and ($parents[.id] | not)
           and (.project as $pj | $elig | index($pj)) != null
           and (($ss.rows["\(.project)\t\(.id)"].failed // false) | not)
@@ -2538,7 +2548,7 @@ waits_gate() {
 # clears the gate and picks takes it as committed work, drop settles it (settle_answered_gates), and
 # any other answer holds it on #hold/row-<id>. Any other row (#low) is kept in improvements.md and dropped, the skip as its
 # why. Its age never ranks it: priority stays ahead of age (#2232, ask Q6vMPb). An epic, a parent, a
-# check(epics) row and a triage red skip (red_skip) are left alone. At most DISPATCH_STALE_MAX rows a
+# check(epics) row and a row fleet-bench triage filed by key (bench_keyed: its lane is triage's) are left alone. At most DISPATCH_STALE_MAX rows a
 # day, each try a `stale:` line in the log (0 is no cap); DISPATCH_STALE_DAYS 0 is off. --dry-run writes nothing and prints `<ask|drop> TAB
 # <project> TAB <id> TAB <rule> TAB <days>` per row, then the counts.
 ask_stale_skips() {
@@ -2572,8 +2582,8 @@ ask_stale_skips() {
        | map({key: "\(.project)\t\(.key)", value: .}) | from_entries) as $by
     | ([.rows[]? | select(.state == "open" or .state == "doing") | .tags[]? | select(startswith("of/")) | {key: .[3:], value: true}] | from_entries) as $parents
     | .rows[]? | select(.lane == "agent" and .state == "open" and .id != null and (plan_tagged | not)
-        and (.type // "") != "epic" and ($parents[.id] | not) and "\(.type)(\(.area))" != "check(epics)") | . as $row
-    | $by["\(.project)\t\(.id)"] as $d | select($d != null and (($d | red_skip($row)) | not))
+        and (.type // "") != "epic" and ($parents[.id] | not) and "\(.type)(\(.area))" != "check(epics)" and (bench_keyed | not))
+    | $by["\(.project)\t\(.id)"] as $d | select($d != null)
     | $ages["\(.project)\t\(.id)"] as $s | select($s != null)
     | ((day0($today) - day0($s)) / 86400 | floor) as $age | select($age >= $days)
     | [.profile // "-", .project, .id, ($d.line // "-"), ($d.dsig // "-"), details_json($n), $d.rule, (.requested == true), $s, $age,
