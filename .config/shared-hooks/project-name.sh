@@ -564,7 +564,7 @@ resolve_project_name() {
         common=$(git -C "$abs_path" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
         repo="${common%/.git}"; repo="${repo%/}"
         [ -n "$repo" ] || repo="$top"
-        # An unregistered repo is named by its checkout, never by a worktree or subdir.
+        # The checkout's name, never a worktree's or subdir's, is the one looked up.
         base="${repo##*/}"; base="${base#.}"
 
         repo_name=$(jq -r --arg p "$repo" '.paths[$p] // empty' "$map_file" 2>/dev/null || true)
@@ -643,16 +643,12 @@ resolve_project_name() {
       esac
     fi
 
-    # Outside any repo, a basename is a project only when the registry knows it. $HOME,
-    # /tmp, a session scratchpad or ~/.cache are no project, and naming them by basename
-    # minted ~/.agent keys (kblack0610, scratchpad, tmp) that the dream swept nightly.
-    # They share the one reserved key; a leading `_` marks a key that is no project.
-    # A repo under the temp dir is outside any project too: a lane that `git init`s a
-    # `mktemp -d` and runs codex there minted tmp.XXXXXXXXXX outcome keys.
-    local tmp_root="${TMPDIR:-/tmp}" in_tmp=0 where="$abs_path"
-    [ -n "${top:-}" ] && where="${repo:-$abs_path}"
-    case "$where" in "${tmp_root%/}"/?*) in_tmp=1 ;; esac
-    if { [ -z "${top:-}" ] || [ "$in_tmp" = 1 ]; } && ! project_known "$base"; then echo "_unscoped"; return 0; fi
+    # A basename is a project only when the registry knows it, in a repo or out of one.
+    # $HOME, /tmp, a session scratchpad, a `mktemp -d` a lane git-inits, or a clone nobody
+    # registered (qmk_firmware, bnb-agents) is no project, and naming it by basename minted
+    # ~/.agent keys project-map-doctor fails (kblack0610, tmp.XXXXXXXXXX, agent). They share
+    # the one reserved key; a leading `_` marks a key that is no project.
+    if ! project_known "$base"; then echo "_unscoped"; return 0; fi
   fi
 
   echo "$base"
