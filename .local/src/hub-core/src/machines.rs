@@ -225,20 +225,18 @@ impl Row for Machine {
 /// running, queue and last day, and the machines that take it.
 impl Row for Pool {
     const COLUMNS: &'static [&'static str] = &[
-        "pool", "running", "waiting", "oldest", "done_1h", "done_5h", "done", "usual",
-        "pass", "machines",
+        "pool", "running", "waiting", "oldest", "done_1h", "done_5h", "done", "usual", "pass",
+        "machines",
     ];
     const STATES: &'static [&'static str] = &["all", "waiting"];
     const FACETS: &'static [&'static str] = &[];
     const HIDE_EMPTY: bool = true;
     const LEAD: &'static str = "pool";
     const GLANCE: &'static [&'static str] = &["waiting", "oldest", "pass"];
-    const LEGEND: &'static [(&'static str, &'static str)] = &[
-        (
-            "usual",
-            "how long a finished job of the kind usually runs, the median over the last 24h",
-        ),
-    ];
+    const LEGEND: &'static [(&'static str, &'static str)] = &[(
+        "usual",
+        "how long a finished job of the kind usually runs, the median over the last 24h",
+    )];
 
     fn val(&self, col: &str) -> Val {
         match col {
@@ -486,11 +484,7 @@ fn pools(infra: &Infra, cc: &HashMap<String, f64>, alias: &HashMap<String, Strin
             running: Some(infra.get("gates").len() as f64),
             done: sum("cc:host_local_done_24h"),
             pass: (ran > 0.0).then(|| passed / ran),
-            machines: seats(
-                local
-                    .iter()
-                    .map(|h| (h, 1)),
-            ),
+            machines: seats(local.iter().map(|h| (h, 1))),
             ..Default::default()
         });
     }

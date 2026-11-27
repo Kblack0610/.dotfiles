@@ -122,8 +122,7 @@ impl SlotUse {
 impl Row for SlotUse {
     const COLUMNS: &'static [&'static str] =
         &["slot", "takes", "now", "job", "cores", "mem", "disk"];
-    const STATES: &'static [&'static str] =
-        &["all", "busy", "idle", "off"];
+    const STATES: &'static [&'static str] = &["all", "busy", "idle", "off"];
     const FACETS: &'static [&'static str] = &["now"];
     const HIDE_EMPTY: bool = true;
     const LEAD: &'static str = "slot";
@@ -672,7 +671,10 @@ mod tests {
         let now = &p.parts[0];
         assert!(now.text.starts_with("cpu 62%, "), "{}", now.text);
         assert!(now.text.contains("71C"));
-        assert!(p.parts.iter().all(|x| x.label != "Governor" && x.label != "Power"));
+        assert!(p
+            .parts
+            .iter()
+            .all(|x| x.label != "Governor" && x.label != "Power"));
         let g = p.parts.iter().find(|x| x.label == "Grafana").unwrap();
         assert_eq!(
             g.link,

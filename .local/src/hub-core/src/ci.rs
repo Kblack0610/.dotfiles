@@ -400,7 +400,6 @@ impl Glance {
         }
         s
     }
-
 }
 
 /// The glance, from the board `infra` has built (`Infra::derive`): its machines and pools.
@@ -2293,8 +2292,8 @@ mod tests {
             keys(&v),
             [
                 "alert", "booked", "busy", "done", "done_1h", "done_5h", "down", "expected",
-                "feed", "kinds", "level", "long", "machines", "next", "oldest", "parts",
-                "pass", "pending", "queued", "up"
+                "feed", "kinds", "level", "long", "machines", "next", "oldest", "parts", "pass",
+                "pending", "queued", "up"
             ]
         );
         assert_eq!(

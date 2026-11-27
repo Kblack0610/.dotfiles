@@ -924,17 +924,15 @@ pub mod tests {
 
     #[test]
     fn every_one_of_130_jobs_draws_and_a_partial_read_says_so() {
-        let mut d = opened(
-            (0..130)
-                .map(|i| job(i, "hp-victus-light-1", 60))
-                .collect(),
-        );
+        let mut d = opened((0..130).map(|i| job(i, "hp-victus-light-1", 60)).collect());
         d.coverage = "partial".into();
         d.coverage_text = "partial: 130 jobs so far".into();
         let p = Palette { no_color: true };
         let out: Vec<String> = detail_lines(&d, p, 80).iter().map(plain).collect();
         assert_eq!(
-            out.iter().filter(|l| l.contains("hp-victus-light-1")).count(),
+            out.iter()
+                .filter(|l| l.contains("hp-victus-light-1"))
+                .count(),
             130
         );
         assert!(

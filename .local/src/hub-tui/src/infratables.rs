@@ -487,8 +487,8 @@ fn machines(d: &Draw, rows: &[Machine], now: i64) -> Vec<Line<'static>> {
 }
 
 const POOL_HEAD: [&str; 10] = [
-    "KIND", "RUNNING", "WAITING", "OLDEST", "DONE 1H", "DONE 5H", "DONE 24H", "USUAL",
-    "PASS", "MACHINES",
+    "KIND", "RUNNING", "WAITING", "OLDEST", "DONE 1H", "DONE 5H", "DONE 24H", "USUAL", "PASS",
+    "MACHINES",
 ];
 
 /// One row per job kind, the longest queue first: its jobs running, waiting, how long one usually

@@ -375,7 +375,10 @@ mod tests {
         assert!(queries("unity\"} or vector(1)").is_err());
         let (running, waiting) = queries("unity").unwrap();
         assert_eq!(running, r#"max(cc:pool_busy{pool="unity"})"#);
-        assert_eq!(waiting.as_deref(), Some(r#"max(cc:pool_waiting{pool="unity"})"#));
+        assert_eq!(
+            waiting.as_deref(),
+            Some(r#"max(cc:pool_waiting{pool="unity"})"#)
+        );
         let (running, waiting) = queries(LOCAL_POOL).unwrap();
         assert_eq!(running, "count(cc:host_local_gate) or vector(0)");
         assert_eq!(waiting, None, "no series counts a waiting gate");
