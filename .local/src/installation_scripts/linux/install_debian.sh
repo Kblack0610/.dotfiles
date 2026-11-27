@@ -69,7 +69,8 @@ install_runtime() {
     if ! command -v node &>/dev/null || ! command -v npm &>/dev/null; then
         log_info "Installing Node.js (NodeSource LTS)..."
         curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
-        sudo apt install -y nodejs &>/dev/null
+        # Not quieted: a failed install ends the fleet-agent image build, which must log apt's reason (ar-5013).
+        sudo apt install -y nodejs
     fi
 
     # Python + pipx via catalog
