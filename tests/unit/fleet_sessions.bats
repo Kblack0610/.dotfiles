@@ -496,16 +496,35 @@ load 'fleet_sessions/common'
   assert_output ''
   run pr_owner "$q" "$SANDBOX/c" - -
   assert_output ''
-  # handed_item: only an open PR of a session whose item is - or moved on is handed; a running or parked item keeps its own
-  run handed_item - - OPEN "$q" "$SANDBOX/c" - 9
+  # an item running, waiting or parked in this session is its own even when item_of could not join it; a queued
+  # one that last ran here was requeued and owns the PR, and a stateless row stops nothing
+  local mine
+  mine="$(jq -nc '{slug: "x"}, {slug: "r1", state: "running", session: "lab:s1", pr: "o/c#9"},
+    {slug: "r2", state: "waiting", sessions: "sid-1 sid-9", pr: "o/c#9"}, {slug: "q1", state: "queued", session: "lab:s1", pr: "o/c#9"}')"
+  run pr_owner "$mine" "$SANDBOX/c" - 9 sid-9 lab:s1
+  assert_output 'q1'
+  run pr_owner "$(grep -v q1 <<<"$mine")" "$SANDBOX/c" - 9 sid-9 lab:s1
+  assert_output ''
+  run pr_owner "$(grep -v q1 <<<"$mine")" "$SANDBOX/c" - 9 sid-2 lab:s2
+  assert_output 'r1'
+  # handed_item: only an open PR of a session whose item is - or moved on is handed, and only when handed_off passes on
+  # it; a running or parked item keeps its own, and a moved: one keeps its relation while the PR is still this session's
+  local m='moved:a moved on (queued)'
+  run handed_item - - OPEN "$q" "$SANDBOX/c" - 9 0 1 - sid-9 lab:s1
   assert_output 'handed:ucp-3413 pr 9'
-  run handed_item 'moved:a moved on (done)' moved OPEN "$q" "$SANDBOX/c" - 9
+  run handed_item "$m" moved OPEN "$q" "$SANDBOX/c" - 9 0 1 - sid-9 lab:s1
   assert_output 'handed:ucp-3413 pr 9'
-  run handed_item 'own:a' own OPEN "$q" "$SANDBOX/c" - 9
+  run handed_item "$m" moved OPEN "$q" "$SANDBOX/c" - 9 2 1 - sid-9 lab:s1
+  assert_output "$m"
+  run handed_item "$m" moved OPEN "$q" "$SANDBOX/c" - 9 0 0 - sid-9 lab:s1
+  assert_output "$m"
+  run handed_item "$m" moved OPEN "$q" "$SANDBOX/c" - 9 0 1 gate sid-9 lab:s1
+  assert_output "$m"
+  run handed_item 'own:a' own OPEN "$q" "$SANDBOX/c" - 9 0 1 - sid-9 lab:s1
   assert_output 'own:a'
-  run handed_item 'review:a pr 9' review OPEN "$q" "$SANDBOX/c" - 9
+  run handed_item 'review:a pr 9' review OPEN "$q" "$SANDBOX/c" - 9 0 1 - sid-9 lab:s1
   assert_output 'review:a pr 9'
-  run handed_item - - MERGED "$q" "$SANDBOX/c" - 9
+  run handed_item - - MERGED "$q" "$SANDBOX/c" - 9 0 1 - sid-9 lab:s1
   [ "$output" = - ]
 }
 

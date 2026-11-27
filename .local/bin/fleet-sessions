@@ -219,7 +219,8 @@ BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 #                <item: the queue item this session worked, by its sessions: or session:, as
 #                 own:<slug>[,<slug>...] while one runs here, moved:<slug> (<where>) once it is done,
 #                 requeued or running in another session, here:<slug> waiting here,
-#                 review:<slug> pr <n|-> parked here in review (<n>, the item's PR, is handed off), or ->
+#                 review:<slug> pr <n|-> parked here in review (<n>, the item's PR, is handed off),
+#                 handed:<slug> pr <n> when another open item names the open PR in its pr: (handed_item), or ->
 #                [<landing wait: "train #T", the open landing train the OPEN PR rides (train_of), "the landing queue" (queued_in),
 #                 "slot holder #H", the PR whose slot refused it (slot_refuser), "lapsed train #T" when nothing lands
 #                 that train (train_landing), the item's validate wait or "failed <validate slug>" (validate_hold), or ->]
@@ -877,23 +878,30 @@ handed_off() {
     && [ "${5:--}" != gate ] && [ "${5:--}" != queue ]
 }
 
-# handed_item <item_of's answer> <its relation> <pr state> <all items, jsonl> <clone|-> <sibling repo|-> <pr> -> the item
-# the bucket reads: handed:<slug> pr <n> when the PR is open, the answer is - or moved:, and pr_owner names an open item
-# whose pr: lists it (a re-gate item it was handed to), so handed_off takes it as a parked PR (ar-5184); else the answer.
+# handed_item <item_of's answer> <its relation> <pr state> <all items, jsonl> <clone|-> <sibling repo|-> <pr> <dirty>
+# <in_pr> <job> <session id> <server:tmux session> -> the item the bucket reads: handed:<slug> pr <n> when the PR is
+# open, the answer is - or moved:, pr_owner names an open item whose pr: lists it (a re-gate item it was handed to),
+# and handed_off passes on it, so the row reads the PR as that item's (ar-5184); else the answer, so a moved: one keeps
+# its relation everywhere the PR is still this session's (validate_failed_bucket, work_blockers).
 handed_item() {
-  local owner=""
-  if [ "$3" = OPEN ] && { [ "$2" = - ] || [ "$2" = moved ]; }; then owner="$(pr_owner "$4" "$5" "$6" "$7")"; fi
-  if [ -n "$owner" ]; then echo "handed:$owner pr $7"; else echo "$1"; fi
+  local h=""
+  if [ "$3" = OPEN ] && { [ "$2" = - ] || [ "$2" = moved ]; }; then h="$(pr_owner "$4" "$5" "$6" "$7" "${11}" "${12}")"; fi
+  if [ -n "$h" ] && handed_off "handed:$h pr $7" "$7" "$8" "$9" "${10}"; then echo "handed:$h pr $7"; else echo "$1"; fi
 }
 
-# pr_owner <all items, jsonl> <clone|-> <sibling repo|-> <pr> -> the slug of the first open item (queued, running,
-# waiting or review) whose pr: lists <repo>#<pr>, else nothing. <repo> is the sibling repo of a PR sibling_pr found,
-# else the clone's origin, compared case-insensitively; a bare pr: number names no repo and so no PR here.
+# pr_owner <all items, jsonl> <clone|-> <sibling repo|-> <pr> [<session id> <server:tmux session>] -> the slug of the first
+# open item (queued, running, waiting or review) whose pr: lists <repo>#<pr>, else nothing. <repo> is the sibling repo of a
+# PR sibling_pr found, else the clone's origin, compared case-insensitively; a bare pr: number names no repo and so no PR
+# here. An item running, waiting or parked in this session (item_of's here rule: its session:, or its sessions: with no
+# session:) is this session's own even when item_of could not join it, so it owns nothing here.
 pr_owner() {
   local repo="${3:--}"
   [[ "${4:-}" =~ ^[0-9]+$ ]] || return 0
   if [ "$repo" = - ]; then [ "${2:--}" != - ] && repo="$(origin_repo "$2")" || return 0; fi
-  jq -rn --arg p "${repo,,}#$4" 'first(inputs | select(.state | test("^(queued|running|waiting|review)$"))
+  jq -rn --arg p "${repo,,}#$4" --arg sid "${5:-}" --arg me "${6:-}" 'first(inputs
+    | select((.state // "") | test("^(queued|running|waiting|review)$"))
+    | select((.state == "queued") or ((((.session // "") == $me and $me != "")
+        or ((.session // "") == "" and $sid != "" and ((.sessions // "") | split(" ") | any(. == $sid)))) | not))
     | select(.pr // "" | tostring | ascii_downcase | split(" ") | any(. == $p)) | .slug) // empty' <<<"$1" 2>/dev/null
 }
 
@@ -2919,7 +2927,7 @@ collect() {
     local act_sha="$oid"; [ "$oid" != - ] || act_sha="$whead"
     act="$(activity_line "${status:--}" "$ojob" "$doing" "$act_dir" "$branch" "$act_sha" "$now")"
     # What an open PR waits on (pr_wait), and the item the bucket reads (handed_item); only a landing-slot wait carries the slot's wait, depth and critical path.
-    local wait_on="" land_wait="" bitem; bitem="$(handed_item "$item" "$irel" "$state" "$qall" "$gd" "$xr" "$pr")"
+    local wait_on="" land_wait="" bitem; bitem="$(handed_item "$item" "$irel" "$state" "$qall" "$gd" "$xr" "$pr" "$dirty" "$inpr" "$ojob" "$sid" "${target%%/*}:$tsess")"
     { IFS= read -r land_wait; IFS= read -r wait_on; } < <(pr_wait "$g" "$state" "$xr" "$gd" "$ci" "$pr" "$oid" "$chain" "$qall" "$islugs")
     # A session waiting its landing turn carries how long its gate has waited and how deep its repo's
     # landing queue is, so the shepherd names a multi-hour wait on its own line (ar-2525).
