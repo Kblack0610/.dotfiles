@@ -39,18 +39,27 @@ fn step(name: &str) -> Option<&'static str> {
     STEPS.iter().copied().find(|s| *s == name)
 }
 
-/// An intake line's subject: its words without any `#tag`, case and spacing folded, so the
-/// outbox line, the inbox line it moved to and the line the sweep filed are one subject. Triage
-/// tags a line as it moves it (`#of/<epic>`, a priority), so a key that kept the tags left every
-/// such outbox line open for good: 482 of them on 2026-11-25, against about 8 waiting (ar-4388).
+/// An intake line's subject: its words without any `#tag`, case, spacing and punctuation folded,
+/// so the outbox line, the inbox line it moved to and the line the sweep filed are one subject.
+/// Triage tags a line as it moves it (`#of/<epic>`, a priority), so a key that kept the tags left
+/// every such outbox line open for good: 482 of them on 2026-11-25, against about 8 waiting
+/// (ar-4388). A tag is cut where it starts, mid-word too, and ends at the first character no tag
+/// holds, because the record writes `tag#v0.5.6` where the sheet has `tag #v0.5.5/#v0.5.6`, and a
+/// tag put before a `)` reads `both #c1123);` where the line said `both);`.
 fn line_key(text: &str) -> Key {
-    Key::Line(
-        text.split_whitespace()
-            .filter(|w| !w.starts_with('#'))
-            .map(str::to_lowercase)
-            .collect::<Vec<_>>()
-            .join(" "),
-    )
+    let tag_char = |c: char| c.is_alphanumeric() || "_/:.-".contains(c);
+    let mut words = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '#' {
+            while chars.next_if(|c| tag_char(*c)).is_some() {}
+        } else if c.is_alphanumeric() {
+            words.extend(c.to_lowercase());
+        } else {
+            words.push(' ');
+        }
+    }
+    Key::Line(words.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 /// The moves one event makes. The action-to-step table lives here and only here.
@@ -514,6 +523,77 @@ mod tests {
         let inbox = get(&rows, "inbox");
         assert_eq!((inbox.open, inbox.in_24h, inbox.out_24h), (1, 3, 2));
         assert_eq!(get(&rows, "backlog").open, 1);
+    }
+
+    /// The record and the sheet place tags differently: cut mid-word (`tag#v0.5.6`) or glued to
+    /// punctuation (`both #c1123);`). The filed line is still the added one (ar-4388).
+    #[test]
+    fn a_filed_line_whose_tags_sit_elsewhere_still_closes_the_added_one() {
+        let events = vec![
+            ev(
+                "10:00",
+                "added",
+                "outbox",
+                "",
+                "#agent #p:ar fix(sprint): rows (, dispatch) still tag#v0.5.6 here",
+            ),
+            ev(
+                "10:01",
+                "moved",
+                "outbox",
+                "ar",
+                "#agent fix(sprint): rows (#high, dispatch) still tag #v0.5.5/#v0.5.6 here",
+            ),
+            with(
+                ev(
+                    "10:02",
+                    "filed",
+                    "ar",
+                    "ar",
+                    "#agent fix(sprint): rows (#high, dispatch) still tag #v0.5.5/#v0.5.6 here",
+                ),
+                Some("ar-1"),
+                None,
+                None,
+            ),
+            ev(
+                "11:00",
+                "added",
+                "outbox",
+                "",
+                "#p:ucp fold a into b (same red, both); go",
+            ),
+            with(
+                ev(
+                    "11:02",
+                    "filed",
+                    "ucp",
+                    "ucp",
+                    "fold a into b (same red, both #c1123); go",
+                ),
+                Some("ucp-1"),
+                None,
+                None,
+            ),
+        ];
+        let rows = replay(&events, now());
+        let inbox = get(&rows, "inbox");
+        assert_eq!((inbox.open, inbox.out_24h), (0, 2));
+    }
+
+    /// `left` and `refused` keep the line in its `## Inbox` for the next sweep, so neither is an
+    /// exit: all 18 such lines in the 2026-11-26 record were still in a live `## Inbox`.
+    #[test]
+    fn a_line_triage_left_or_refused_still_waits() {
+        let events = vec![
+            ev("10:00", "added", "outbox", "", "one #p:ar"),
+            ev("10:01", "moved", "outbox", "ar", "one"),
+            ev("10:02", "left", "ar", "", "one"),
+            ev("10:03", "added", "outbox", "", "two"),
+            ev("10:04", "refused", "outbox", "", "two"),
+        ];
+        let rows = replay(&events, now());
+        assert_eq!(get(&rows, "inbox").open, 2);
     }
 
     /// An item the record never saw queued still leaves the step its move names, with no dwell.
