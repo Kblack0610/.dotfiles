@@ -3148,6 +3148,35 @@ esac'
   assert_line 'ghost-runs: deleted https://github.com/o/r/actions/runs/1 (48h)'
 }
 
+@test "ghost-runs: a delete GitHub answers 403 is undeletable, logged once and not asked about again inside the age (ask VBMlNu: hold)" {
+  ghost_setup
+  export FLEET_SHEPHERD_GHOST_CANCEL=1 STUB_CANCEL_REFUSED=1 STUB_FORCE_REFUSED=1 STUB_DELETE_FAILED=1
+  local refused='delete: gh: Forbidden (HTTP 403)'
+  run "$SH" ghost-runs
+  assert_line "ghost-runs: undeletable https://github.com/o/r/actions/runs/1 (48h; $refused)"
+  run grep -cF "ghost run https://github.com/o/r/actions/runs/1: undeletable, queued 48h with no jobs ($refused)" "$FLEET_SHEPHERD_DIR/log.md"
+  assert_output 1
+  # Judged: the next run inside the age makes no GitHub call about it.
+  rm -f "$HOME/gh.calls"
+  run "$SH" ghost-runs
+  assert_output ''
+  [ ! -e "$HOME/gh.calls" ]
+  # A day on, it is asked again once, and the rundown line is not repeated.
+  local day=$(( $(date +%s) - 25 * 3600 ))
+  sed -i "s/^[0-9]*\t/$day\t/" "$FLEET_SHEPHERD_DIR/ghost-runs.tsv"
+  run "$SH" ghost-runs
+  assert_line "ghost-runs: undeletable https://github.com/o/r/actions/runs/1 (48h; $refused)"
+  run grep -c 'DELETE' "$HOME/gh.calls"
+  assert_output 1
+  run grep -c 'ghost run .*undeletable' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_output 1
+  # A GitHub that lets the delete through ends it.
+  unset STUB_DELETE_FAILED
+  sed -i "s/^[0-9]*\t/$(( day - 90000 ))\t/" "$FLEET_SHEPHERD_DIR/ghost-runs.tsv"
+  run "$SH" ghost-runs
+  assert_line 'ghost-runs: deleted https://github.com/o/r/actions/runs/1 (48h)'
+}
+
 @test "ghost-runs: a ghost that takes a job before the delete is kept, and one GitHub stops answering about is asked again; neither is deleted" {
   ghost_setup
   export FLEET_SHEPHERD_GHOST_CANCEL=1 STUB_CANCEL_REFUSED=1 STUB_FORCE_REFUSED=1
