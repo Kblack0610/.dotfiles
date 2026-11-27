@@ -3638,7 +3638,7 @@ write_state() {
                    claude_session: (if (.[15] // "") == "" then null else .[15] end),
                    recommend: (if (.[10] // "") == "" then null else .[10] end),
                    judge: (if (.[16] // "") == "" then null else .[16] end)}
-                  # audit_of is set only on an audit: the hub-core pager keeps those off the phone
+                  # audit_of is set only on an audit: hub-core Needs you leaves those out
                   | if ($c[32] // "") != "" then . + {audit_of: $c[32]} else . end],
          stopped: [$stopped | split("\n")[] | fromjson? | objects]}
       # Every bucket with its count, zeros included: a reader that keys on the buckets present
