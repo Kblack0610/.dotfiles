@@ -172,17 +172,23 @@ pub(crate) fn agent_tiers(p: &config::Profile) -> String {
 }
 
 /// A board holding more urgent rows than this has no urgent left: `notes doctor` warns.
-const URGENT_MAX: usize = 5;
+pub(crate) const URGENT_MAX: usize = 5;
 /// An urgent row open longer than this many days is not being treated as urgent.
-const URGENT_MAX_AGE_DAYS: i64 = 3;
+pub(crate) const URGENT_MAX_AGE_DAYS: i64 = 3;
 
 /// One line per agent board (project) that holds more than [`URGENT_MAX`] open `#urgent` rows,
-/// or any older than [`URGENT_MAX_AGE_DAYS`] days by its created tag (a row with none has no
-/// age and is not counted old). Ordered by project name; empty when every board is clear.
+/// or any older than [`URGENT_MAX_AGE_DAYS`] days by its created tag, else its `since:` marker
+/// (a row with neither has no age and is not counted old). An epic is not counted: its priority
+/// is derived from its children, which are counted themselves. Ordered by project name; empty
+/// when every board is clear.
 fn urgent_findings(rows: &[FeedRow], today: chrono::NaiveDate) -> Vec<String> {
     let mut by_board: std::collections::BTreeMap<&str, (usize, usize)> = Default::default();
     for r in rows {
-        if r.lane != "agent" || r.state == "done" || r.priority != "urgent" || r.untriaged {
+        if r.lane != "agent"
+            || r.r#type.as_deref() == Some("epic")
+            || r.priority != "urgent"
+            || r.untriaged
+        {
             continue;
         }
         let old = r
@@ -2623,10 +2629,20 @@ mod tests {
             ],
         ));
         all.extend(rows("edge", &["- [ ] fix(a): three days #urgent #c1123"]));
+        // An epic reads as its most urgent child, and a `since:` marker ages a row with no
+        // created tag: the epic is not counted, the marker row is.
+        all.extend(rows(
+            "epic",
+            &[
+                "- [ ] epic(a): the epic #of/x #c1001 <!-- id:e-1 -->",
+                "- [ ] fix(a): marked #urgent <!-- since:2026-11-01 -->",
+            ],
+        ));
         assert_eq!(
             urgent_findings(&all, today),
             [
                 "aged 2 urgent (1 older than 3d)",
+                "epic 1 urgent (1 older than 3d)",
                 "pile 6 urgent (0 older than 3d)"
             ]
         );

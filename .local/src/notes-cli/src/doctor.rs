@@ -3,6 +3,7 @@
 //! headings, stale sync, dead links. Exit code is non-zero only on hard FAILs
 //! (broken config / missing vault root); WARNs are informational.
 
+use crate::board::{URGENT_MAX, URGENT_MAX_AGE_DAYS};
 use crate::config::Profile;
 use crate::index;
 use crate::logging::Logger;
@@ -223,18 +224,22 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
 
 /// Urgent that piles up or ages is not urgent: it hides the row that is.
 fn check_urgent(r: &mut Report, p: &Profile) {
+    let (max, days) = (URGENT_MAX, URGENT_MAX_AGE_DAYS);
     let urgent = crate::board::agent_urgent_findings(p);
     if urgent.is_empty() {
         r.add(
             Status::Pass,
             "urgent rows",
-            "no board over 5 or older than 3d",
+            &format!("no board over {max} or older than {days}d"),
         );
     } else {
         r.add(
             Status::Warn,
             "urgent rows",
-            &format!("{} (over 5 per board or older than 3d)", urgent.join("; ")),
+            &format!(
+                "{} (over {max} per board or older than {days}d)",
+                urgent.join("; ")
+            ),
         );
     }
 }
