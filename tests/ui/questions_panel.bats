@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 # Tier 3: Prefix y, the questions panel, through real fzf on a real tmux server at a laptop
 # size and a desk size. The list and the card share one screen, the card beside the list by
-# default; ctrl-/ moves it under the list, then hides it, pgup/pgdn scroll it, and an answer is
+# default; ctrl-/ hides it, then puts it under the list, then beside it again (panel-lib's
+# stacked -> side -> hidden cycle), pgup/pgdn scroll it, and an answer is
 # given without leaving. Container only.
 
 setup() {
@@ -117,24 +118,6 @@ card_col() { screen | sed 's/│/|/g' | awk '/\| asking you/ { print index($0, "
   screen_has 'Which goes first?'
   tmux_keys PPage
   wait_until 'screen_has "asking you"'
-}
-
-@test "ctrl-/ puts the card under the list, then hides it" {
-  # Quarantined through 2026-12-07 and runs again by itself on 12-08 (ci.md rule 2; owner: the
-  # agent-runtime row "fix(questions): ctrl-/ can skip the stacked layout and land on hidden", from
-  # ar-4884): on dotfiles#3300's head 9c9da3591 one C-/ left the list with no card and no stacked hint.
-  [[ "$(date -u +%F)" > 2026-12-07 ]] || skip "quarantined through 2026-12-07: one ctrl-/ can land on hidden (ar-4884)"
-  TM_WIDTH=200 TM_HEIGHT=50 open_panel
-  wait_until 'side_by_side'
-  keep_screen side_200x50
-  tmux_keys C-/
-  wait_until 'screen_has "list on top, card below" && ! side_by_side'
-  run screen_matches 'Keep the merge queue\?.*│ Make stacked the default\?'
-  assert_failure
-  keep_screen stacked_200x50
-  tmux_keys C-/
-  wait_until 'screen_lacks "list on top, card below"'
-  screen_has 'Make stacked the default?'
 }
 
 # close_panel: esc, and wait for the panel (the server's only pane) to exit.

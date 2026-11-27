@@ -11,7 +11,10 @@
 # A read the App's token is refused for reruns on the user's.
 # Log: GH_CALLS_DIR/<day>.tsv, epoch, bucket (user | app:<owner> | user:app-error |
 # user:app-denied | env), rc, caller script, $AGENT_QUEUE_ITEM, the command with values
-# redacted. fleet-assess gh_callers reads it. Kept 7 days, readable by you only.
+# redacted, and last the GH_RESERVE_CALLERS ancestor that let the read through under the reserve
+# ('-' when no reserve check ran or none granted, so a deferred row and an above-reserve row both read
+# '-': tell them apart by bucket; rows before ar-3009 have 6 columns).
+# fleet-assess gh_callers reads it. Kept 7 days, readable by you only.
 # Budget: every account spends the user's one REST budget, so the wrapper keeps one shared reading of
 # it (GH_CALLS_DIR/budget, from the free rate_limit call, at most GH_BUDGET_STALE_S old) and, below
 # GH_BUDGET_RESERVE calls left, refuses every read (exit 75, bucket user:deferred) but the human's at
@@ -21,6 +24,8 @@
 # runs in all, when it fails with HTTP 5xx on stderr, waiting GH_RETRY_BASE_S seconds and doubling up to
 # GH_RETRY_CAP_S (api-clients.md). A write is never retried: a 5xx does not say whether it landed.
 # gh does not print the response headers on an error, so a Retry-After cannot be honored here.
+# Run logs: a `run view --log` or `--log-failed` gets a private XDG_CACHE_HOME, so gh's run-log zip
+# cache, which one interrupted write poisons, is never shared (ar-3387).
 # Docs: docs/operations/github-app.md.
 set -u
 stdout_tty=0
@@ -29,6 +34,7 @@ stdout_tty=0
 : "${GH_BUDGET_RESERVE:=1000}"  # calls left under which a read waits for the reset
 : "${GH_BUDGET_STALE_S:=30}"    # age of the shared reading before one rate_limit call renews it
 : "${GH_RETRY_TRIES:=4}"        # runs of a read that keeps failing with a 5xx; 1 turns the retry off
+: "${GH_RETRY_ERR:=HTTP 5[0-9][0-9]|unexpected end of JSON input}" # gh's stderr on a 5xx, or on an empty or cut-off reply
 : "${GH_RETRY_BASE_S:=2}"       # seconds before the first rerun, whole seconds
 : "${GH_RETRY_CAP_S:=10}"       # the longest single wait
 # The programs whose reads spend the reserve: a gate, a merge, the night. A read with one of them
@@ -36,7 +42,14 @@ stdout_tty=0
 # of who waits let each new script spend the reserve: ci-cost.py took it to 14 on 2026-11-17.
 : "${GH_RESERVE_CALLERS:=agent-land gh-run-wait gate-and-land.sh ci-gate.sh gate-line.py night.sh agentctl-playground-night}"
 
-[ -z "${GH_WRAPPED:-}" ] || exec "${GH_REAL:?}" "$@" # a gh that gh itself started: already counted
+# wrapper_copy <file>: this wrapper or a copy of it from another checkout, told by the opening of
+# line 2, which every copy back to the first shares; tests/unit/gh_wrapper.bats checks it stays.
+# A worktree's .local/bin ahead of ~/.local/bin (a session profiling a worktree script) put two copies
+# on PATH: each took the other for the real gh and, with GH_WRAPPED set, exec'd it, at 100% CPU (ar-4949).
+# An older copy still hands GH_REAL a copy, so a GH_REAL that is one is refused, never exec'd.
+wrapper_copy() { head -c 256 "$1" 2>/dev/null | grep -qa "^# gh - the fleet's gh:"; }
+not_wrapper() { ! wrapper_copy "$1" || { echo "gh: GH_REAL ($1) is a copy of this wrapper, not gh" >&2; exit 127; }; }
+[ -z "${GH_WRAPPED:-}" ] || { not_wrapper "${GH_REAL:?}"; exec "$GH_REAL" "$@"; } # a gh that gh itself started: already counted
 # A sandboxed HOME (a test's temp home) never reaches GitHub. A test that forgot to put its gh stub
 # first on PATH acts on the real repos with the real token otherwise: tests/playground-night.sh
 # started hd.yml and soak.yml on unity-core-playground main on 2026-11-12.
@@ -45,10 +58,11 @@ acct_home=$(getent passwd "$(id -un)" | cut -d: -f6)
   || { echo "gh: HOME is ${HOME:-unset}, not $acct_home: a sandboxed caller never reaches GitHub" >&2; exit 3; }
 self=$(readlink -f "${BASH_SOURCE[0]}")
 real="${GH_REAL:-}"
+[ -z "$real" ] || not_wrapper "$real"
 if [ -z "$real" ]; then
   IFS=: read -r -a dirs <<<"$PATH"
   for d in "${dirs[@]}"; do
-    [ -f "$d/gh" ] && [ -x "$d/gh" ] && [ "$(readlink -f "$d/gh")" != "$self" ] && { real="$d/gh"; break; }
+    [ -f "$d/gh" ] && [ -x "$d/gh" ] && ! wrapper_copy "$d/gh" && { real="$d/gh"; break; }
   done
 fi
 [ -n "$real" ] || { echo "gh: no gh on PATH besides this wrapper ($self)" >&2; exit 127; }
@@ -145,13 +159,15 @@ prog_of() {
 
 caller() { prog_of "$PPID"; }
 
-# reserve_caller: exit 0 when a GH_RESERVE_CALLERS program is above this gh, 1 when none is. Reads
-# /proc, or ps where there is none (macOS, where a script shows as its interpreter, so it waits).
+# reserve_caller: exit 0 when a GH_RESERVE_CALLERS program is above this gh, 1 when none is. The
+# nearest one's name is left in $reserve_by for the call log. Reads /proc, or ps where there is none
+# (macOS, where a script shows as its interpreter, so it waits).
+reserve_by="-"
 reserve_caller() {
   local pid="$PPID" name stat hops=0
   while [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && [ "$hops" -lt 64 ]; do
     name=$(prog_of "$pid")
-    case " $GH_RESERVE_CALLERS " in *" $name "*) return 0 ;; esac
+    case " $GH_RESERVE_CALLERS " in *" $name "*) reserve_by="$name"; return 0 ;; esac
     if [ -r "/proc/$pid/stat" ]; then
       read -r stat <"/proc/$pid/stat" || return 1
       stat="${stat##*) }" # the program name in (...) may hold spaces; the fields after it do not
@@ -190,8 +206,9 @@ log_call() {
     mkdir -p "$dir" && find "$dir" -name '*.tsv' -mtime +7 -delete
   fi
   what=$(redact "$@")
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${EPOCHSECONDS:-$(date +%s)}" "$bucket" "$rc" "$(caller)" \
-    "${AGENT_QUEUE_ITEM:--}" "${what:0:160}" >> "$f"
+  what=${what//[$'\t\n']/ } # a tab in an argument would add a field to the row
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${EPOCHSECONDS:-$(date +%s)}" "$bucket" "$rc" "$(caller)" \
+    "${AGENT_QUEUE_ITEM:--}" "${what:0:160}" "$reserve_by" >> "$f"
 }
 
 # is_read <gh args>: the call only reads (the routable reads, `repo view`, and a GET `gh api`).
@@ -274,7 +291,8 @@ exec_once() {
   if [ -n "$t" ]; then GH_TOKEN="$t" "$real" "$@"; else "$real" "$@"; fi
 }
 
-# exec_retry <token or ""> <gh args>: exec_once, and for a retryable read, again after a 5xx. The failed
+# exec_retry <token or ""> <gh args>: exec_once, and for a retryable read, again after a 5xx or an
+# unparseable reply (ar-4283: an annotations read answered "unexpected end of JSON input"). The failed
 # run's output is dropped, so a caller sees one answer, never a failure body followed by the retry's.
 rtmp=""
 exec_retry() {
@@ -285,7 +303,7 @@ exec_retry() {
   while :; do
     exec_once "$t" "$@" >"$rtmp/out" 2>"$rtmp/err"
     r=$?
-    [ "$r" -ne 0 ] && [ "$n" -lt "$GH_RETRY_TRIES" ] && grep -qE 'HTTP 5[0-9]{2}' "$rtmp/err" || break
+    [ "$r" -ne 0 ] && [ "$n" -lt "$GH_RETRY_TRIES" ] && grep -qE "$GH_RETRY_ERR" "$rtmp/err" || break
     sleep "$pause"
     pause=$((pause * 2 > GH_RETRY_CAP_S ? GH_RETRY_CAP_S : pause * 2))
     n=$((n + 1))
@@ -293,7 +311,7 @@ exec_retry() {
   cat "$rtmp/out"
   cat "$rtmp/err" >&2
   # said only when it still failed: a notice on a recovered read would break `gh api ... 2>&1 | jq`
-  [ "$n" -eq 1 ] || [ "$r" -eq 0 ] || echo "gh: HTTP 5xx on a read, still failing after $n runs" >&2
+  [ "$n" -eq 1 ] || [ "$r" -eq 0 ] || echo "gh: a read still failing after $n runs (a 5xx or an unparseable reply)" >&2
   return "$r"
 }
 
@@ -317,8 +335,21 @@ if [ -z "$tok" ] && [ "$bucket" != env ] && defer_read "$@"; then
 fi
 
 export GH_WRAPPED=1 GH_REAL="$real"
-err="" out=""
-trap 'rm -f -- "$err" "$out"; rm -rf -- "$rtmp"' EXIT # a caller's timeout kills this mid-call
+err="" out="" lcache=""
+trap 'rm -f -- "$err" "$out"; rm -rf -- "$rtmp" "$lcache"' EXIT # a caller's timeout kills this mid-call
+# A run log read gets a gh cache of its own, removed at exit (ar-3133, ar-3387). `gh run view --log`
+# and `--log-failed` cache the whole run's log zip under XDG_CACHE_HOME/gh, write it non-atomically
+# and trust any entry that exists, so one interrupted write failed that run for every later reader
+# ("zip: not a valid zip file"). fleet-bench hold_failed, hub-core's job log and ci-failures each keep
+# their own copy of what they read, so gh's copy was never reused.
+if [ "${1:-} ${2:-}" = "run view" ]; then
+  for a in "$@"; do
+    case "$a" in --log | --log-failed)
+      lcache=$(mktemp -d "${TMPDIR:-/tmp}/gh-cache.XXXXXX") && export XDG_CACHE_HOME="$lcache"
+      break ;;
+    esac
+  done
+fi
 if [ -n "$tok" ]; then
   # A refused App token (uninstalled, revoked, a missing permission, its own limit spent) must
   # not fail the read: rerun it on the user. stderr is held so only the answer that counts shows,

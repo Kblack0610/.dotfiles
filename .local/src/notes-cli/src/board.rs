@@ -781,7 +781,16 @@ struct FeedRow {
     worker: Option<String>,
     /// `#requested`: the human asked for this row (their quote rides in it); never dispatched at night.
     requested: bool,
-    /// The row's own `#vX.Y.Z` tag: the release it is aimed at.
+    /// The row's own `#vX.Y.Z` tag: the release it is aimed at (`None` when it has none, and
+    /// then it ships with the sheet's open `version`).
+    target: Option<String>,
+    /// `plan` for a `#plan` row (a plan before work), else `None`. `oneshot` is retired
+    /// (`RETIRED_TAGS`): a row with no `#plan` is worked in one shot.
+    mode: Option<&'static str>,
+    /// `#go`: the plan needs no review before the build.
+    go: bool,
+    /// The row carries an `#ask/<id>` gate: it waits on that ask (the id is in `tags_cased`).
+    ask: bool,
     /// `<!-- id:<code>-<n> -->`: the row's stable id, which every `ptask` verb takes as a query.
     id: Option<String>,
     /// The `type(area):` prefix split out; `None` on a row without a well-formed one.
@@ -1192,6 +1201,10 @@ fn feed_row(
         .iter()
         .find_map(|t| t.strip_prefix("worker/").map(str::to_string));
     let requested = all.iter().any(|t| t == "requested");
+    let target = all.iter().find(|t| md::is_version_tag(t)).cloned();
+    let mode = all.iter().any(|t| t == "plan").then_some("plan");
+    let go = all.iter().any(|t| t == "go");
+    let ask = all.iter().any(|t| t.starts_with("ask/"));
     let points = crate::projects::points_of(line);
     let size = crate::projects::size_name(line);
     let (ty, area) = crate::projects::row_type_area(line).unzip();
@@ -1229,6 +1242,10 @@ fn feed_row(
         tier,
         worker,
         requested,
+        target,
+        mode,
+        go,
+        ask,
         id: md::row_id(line),
         r#type: ty,
         area,
@@ -2445,6 +2462,44 @@ mod tests {
             assert!(v.get(k).is_some(), "missing {k}: {v}");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The dispatch-relevant tags are fields, not strings a UI greps out of `tags`: the row's own
+    // target release, `#plan` as the mode, `#go` and an `#ask/` gate (plan phase 1).
+    #[test]
+    fn a_row_carries_its_target_mode_go_and_ask_gate_as_fields() {
+        let sheet = std::path::Path::new("agent/README.md");
+        let row = |line: &str| {
+            let o = Origin {
+                profile: "p",
+                project: Some("demo"),
+                lane: "agent",
+                version: Some("v0.3.0"),
+                game: None,
+                sheet,
+                sheet_row: true,
+                aim: None,
+            };
+            let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 26).unwrap();
+            feed_row(&o, (1, line), Vec::new(), today)
+        };
+        let r = row("- [ ] fix(x): a #high #plan #go #v0.4.0 #ask/Ab12/yes <!-- id:dm-1 -->");
+        assert_eq!(
+            (r.target.as_deref(), r.mode, r.go, r.ask),
+            (Some("v0.4.0"), Some("plan"), true, true)
+        );
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["target"], "v0.4.0");
+        assert_eq!(
+            (&v["mode"], &v["go"], &v["ask"]),
+            (&"plan".into(), &true.into(), &true.into())
+        );
+        // Negative control: a plain row has none of them, and says so as null/false.
+        let r = row("- [ ] fix(x): b #high <!-- id:dm-2 -->");
+        assert_eq!((r.target, r.mode, r.go, r.ask), (None, None, false, false));
+        // `#planet` and `#askew` are other words, not the tags.
+        let r = row("- [ ] fix(x): c #planet #askew/1 #gone <!-- id:dm-3 -->");
+        assert_eq!((r.mode, r.go, r.ask), (None, false, false));
     }
 
     // The feed says where the sweep lays each row out and in what order, so a view groups and

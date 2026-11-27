@@ -1314,8 +1314,14 @@ all_json() {
           else . end'
 }
 
-# day_time <epoch> -> "Thu 19:00", or - when there is none
-day_time() { if [[ -n "$1" && "$1" != null ]]; then date -d "@$1" '+%a %H:%M'; else printf -- -; fi; }
+# day_time <epoch> -> "Thu 19:00", "11-30 16:00" when it is more than 6 days out (a weekday would
+# read as this coming one), or - when there is none
+day_time() {
+    local now="${CLAUDE_ACCT_NOW:-$(date +%s)}"
+    if [[ -z "$1" || "$1" == null ]]; then printf -- -
+    elif (( $1 - now > 6 * 86400 )); then date -d "@$1" '+%m-%d %H:%M'
+    else date -d "@$1" '+%a %H:%M'; fi
+}
 
 # cmd_run [--acct <name>] [claude args]: exec claude on the account cmd_pick chooses. Main is the
 # unset dir, so an alt account inherited from a parent session is dropped, not passed on. The
@@ -1398,7 +1404,7 @@ cmd_status() {
     fi
     local line state rows
     rows=$(all_json)
-    printf '%-8s %-4s %-5s %-5s %-10s %-10s %-5s %-7s %-6s %-7s %-11s %-10s %-13s %s\n' \
+    printf '%-8s %-4s %-5s %-5s %-11s %-11s %-5s %-7s %-6s %-7s %-11s %-10s %-13s %s\n' \
         SOURCE 5H WEEK GONE RUNS-OUT RESETS LIVE '24H-$' BURN/H KEEPS/H ON-PACE ROOM KIND DETAIL
     while IFS= read -r line; do
         [[ -n "$line" ]] || continue
@@ -1407,7 +1413,7 @@ cmd_status() {
             printf '%-8s fetch failed (%s live)\n' "$(jq -r .name <<< "$line")" "$(jq -r .live <<< "$line")"
             continue
         fi
-        printf '%-8s %-4s %-5s %-5s %-10s %-10s %-5s %-7s %-6s %-7s %-11s %-10s %-13s %s\n' \
+        printf '%-8s %-4s %-5s %-5s %-11s %-11s %-5s %-7s %-6s %-7s %-11s %-10s %-13s %s\n' \
             "$(jq -r .name <<< "$line")" \
             "$(jq -r 'if .five_hour == null then "-" else "\(.five_hour | floor)%" end' <<< "$line")" \
             "$(jq -r 'if .week_used == null then "-" else "\(.week_used | floor)%" end' <<< "$line")" \
@@ -1724,9 +1730,10 @@ cmd_room() {
     # ranks behind every paced one, so naming the closest alone hid why a mostly unused week was
     # refused. Only a committed one carries the week clock, which is what refuses it. \x1f, not a
     # tab: read collapses a run of tabs, so an empty field would shift the rest.
-    IFS=$'\x1f' read -r pick pdir pline unread closest cwhy within < <(jq -r '
-        def tail: if .run_out != null then ", runs out \(.run_out | strflocaltime("%a %H:%M")) at this rate"
-                  elif .resets != null then ", lasts to its reset \(.resets | strflocaltime("%a %H:%M"))" else "" end;
+    IFS=$'\x1f' read -r pick pdir pline unread closest cwhy within < <(jq -r --argjson now "${CLAUDE_ACCT_NOW:-$(date +%s)}" '
+        def at: if . - $now > 518400 then strflocaltime("%m-%d %H:%M") else strflocaltime("%a %H:%M") end;
+        def tail: if .run_out != null then ", runs out \(.run_out | at) at this rate"
+                  elif .resets != null then ", lasts to its reset \(.resets | at)" else "" end;
         ([.[] | select(.room.ok)] | sort_by(.rank) | first) as $p
         | ([.[] | select(.state != "unread")] | sort_by(.rank) | first) as $c
         | [($p.name // ""), ($p.dir // ""),
@@ -2063,13 +2070,19 @@ await() {
 }
 
 # exited <server> <pane> <pid> <stop shells 0|1> -- the claude is gone; with --stop-shells
-# it answers the background-shell dialog on the way with "Exit and stop tasks".
+# it answers the background-shell dialog on the way with "Exit and stop tasks", once per claude:
+# the dialog stays on screen until claude is gone, and a second answer would be typed into the
+# pane's shell ahead of the resume (ar-5592). A dialog that closes and comes back is answered
+# again; an answer lost while it stays drawn is not resent, and the move times out on it.
+# EXIT_ANSWERED lives across polls only because await runs exited in this shell, never a subshell.
+EXIT_ANSWERED=""
 exited() {
     [[ -d "$PROC/$3" ]] || return 0
     [[ "$4" == 1 ]] || return 1
     local n
     n=$(dialog_choice "$(tmux -L "$1" capture-pane -p -t "$2" 2>/dev/null)")
-    [[ -n "$n" ]] && tmux -L "$1" send-keys -t "$2" "$n"
+    [[ -n "$n" ]] || { EXIT_ANSWERED=""; return 1; }
+    [[ "$EXIT_ANSWERED" != "$3" ]] && tmux -L "$1" send-keys -t "$2" "$n" && EXIT_ANSWERED=$3
     return 1
 }
 

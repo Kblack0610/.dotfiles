@@ -214,7 +214,7 @@ const sprints = {
 const BUCKET = ["WORKING", "STALLED", "NEEDS", "WORKING", "LANDED", "DONE"];
 const SESSION_ROWS = 342;
 const sessions = {
-  table: table(SESSION_ROWS, ["bucket", "activity", "project", "task", "by", "pr", "phases", "idle", "ctx", "cost", "acct", "harness", "close", "item", "source", "session"], ["all", "running", "needs you", "stalled", "ended today"], { project: PROJECTS.slice(0, 3), harness: ["claude", "codex"] }),
+  table: table(SESSION_ROWS, ["bucket", "activity", "project", "task", "by", "pr", "phases", "idle", "ctx", "cost", "acct", "harness", "close", "item", "source", "session", "machine"], ["all", "running", "needs you", "stalled", "ended today"], { project: PROJECTS.slice(0, 3), harness: ["claude", "codex"] }),
   rows: rows(SESSION_ROWS, (i) => ({ key: `s-${i}`, target: `agent-${i}`, session_id: `${String(i).padStart(8, "0")}-aaaa-bbbb-cccc-000000000000`, bucket: pick(BUCKET, i), activity: pick(["editing", "gate", "review"], i), project: pick(PROJECTS, i), task: qTitle(i), by: pick(["dispatch", "hand", "resume"], i), pr: i > 2 ? `#${1590 + i}` : "", pr_state: i > 2 ? "open" : "", ci: i > 2 ? "green" : "", phases_done: i % 6, phases_total: 5, idle_min: 2 + i * 6, ended: null, context_tokens: i % 4 ? 40000 + i * 900 : null, context_window: i % 4 ? 200000 : null, context_pct: i % 4 ? Math.round((40000 + i * 900) / 2000) : null, cost_usd: 1.5 + i * 2.25, account: pick(["main", "bnb", "alt"], i), harness: pick(["claude", "codex"], i), source: pick(["queue", "hand"], i) })),
   spend_usd: 41.5, buckets: ["NEEDS", "STALLED", "WORKING", "LANDED", "DONE"], errors: [],
 };
@@ -247,7 +247,7 @@ const localFail = (i) => ({ repo: "game-core-playground", branch: `feat/${SLUGS[
 infra.ci = { hosts: 3, slots: 6, busy: 4, queued: 1, oldest: ago(25), red: [], day: { runs: 40, pass: 0.9, failed_main: 1, failed_branch: 3, cancelled: 2, local: 5, local_pass: 0.8, read: true } };
 infra.tables = {
   machines: { rows: [], table: table(0, ["machine", "state", "booked", "cpu", "6h", "load", "mem", "temp", "disk", "running", "next", "governor", "power", "up"]) },
-  pools: { rows: [], table: table(0, ["pool", "weight", "running", "waiting", "oldest", "done", "pass", "machines"]) },
+  pools: { rows: [], table: table(0, ["pool", "weight", "running", "waiting", "oldest", "done", "usual", "pass", "machines"]) },
   runners: { rows: [], table: table(0, ["host", "slot", "state", "pool", "ran", "usual", "job", "ref"]) },
   queued: { rows: [], table: table(0, ["job", "pool", "ref", "n", "wait", "needs", "can"]) },
   local: { rows: rows(3, localFail), table: table(3, ["last", "repo", "branch", "platform", "result", "failed"], ["all"], { repo: ["game-core-playground"], platform: ["android", "windows", "ios"] }) },
@@ -414,7 +414,7 @@ const costs = {
   totals: [{ window: "7d", usd: 2204, estimated: 0, sessions: 512, days: 7, through: "2026-11-14" }, { window: "30d", usd: 8120, estimated: 0, sessions: 2040, days: 30, through: "2026-11-14" }],
   totals_note: "7d and 30d are whole nightly days to the newest snapshot; the cut table's 24h is the live file",
   fleet_cost: {
-    why: null, usd: "about $859", cash: "$320", burn: "$539", as_of: NOW - 600, stale: false,
+    why: null, usd: "$859", cash: "$320", burn: "$539", as_of: NOW - 600, stale: false,
     coverage: "69% of tokens estimated: 275 of 453 sessions have no cost telemetry",
     unpriced: ["claude-sonnet-4-6: 32M tokens in 1 session not in the total, no billed sessions"],
     foot: "% is of the whole fleet's 24h cost. \"estimated\" is priced from tokens at rates fitted to measured sessions.",
@@ -529,11 +529,11 @@ const GRID_CARDS = [
   kcard("sessions", "Sessions", "39", "live sessions", "warn", [["ok", 34], ["warn", 3], ["red", 2]], [["Working", "34"], ["Need you", "3", "warn"], ["Stalled", "2", "red"]], [["trader-x", "stalled 3h", "red"], ["binks", "ask 40m"]]),
   kcard("board", "Board", "4115", "open rows, 277 doing", "red", [["ok", 3882], ["warn", 232], ["red", 1]], [["Doing", "277"], ["Requested", "232", "warn"], ["Late", "1", "red"]], [["submit Shape City", "shape-city - backlog, due 11-17", "red"], ["one tag table for intake lines", "agent-runtime - next up"]]),
   kcard("queue", "Queue", "12", "queued, 7 running", "warn", [["ok", 7], ["warn", 5]], [["Ready", "9"], ["Held", "3", "warn"], ["Done 24h", "41"]], [["review", "5 waiting 2h"]], { first_head: "Bottleneck" }),
-  kcard("alerts", "Alerts", "3", "firing", "red", [["red", 1], ["warn", 2]], [["Red", "1", "red"], ["Amber", "2", "warn"], ["Owned", "1"]], [["gateway 5xx", "home-k3s", "red"], ["board-chain", "stale 2h"]]),
+  kcard("alerts", "Alerts", "3", "firing", "red", [["red", 1], ["warn", 2]], [["Red", "1", "red"], ["Amber", "2", "warn"], ["Owned", "1"]], [["gateway 5xx", "home-k3s", "red"], ["chain-doctor_fail", "stale 2h"]]),
   kcard("done", "Done today", "85", "PRs merged", "ok", [], [["Shipped", "62"], ["Checks", "9"]], [["unity-core-playground", "30 shipped, 2 checks, 25 PRs", "ok"], ["dotfiles", "21 shipped, 40 PRs", "ok"]], { first_head: "By project", link: "#queue" }),
   kcard("health", "Health", "11 of 12", "machines up", "red", [["ok", 11], ["red", 1]], [["Domains down", "0"], ["Domains warn", "1", "warn"], ["Domains up", "6"], ["Vitals", "5/6", "warn"]], [["mac-mini", "down 2h", "red"]], { link: "#infra" }),
   kcard("ci", "CI", "4", "CI running", "red", [["ok", 5], ["red", 1]], [["Queued", "1"], ["Runners up", "5/6", "red"], ["No runner", "0"], ["Stuck", "0"]], [["runner-3 down", "CI runner", "red"], ["app CI", "oldest queued, 4m x1"]], { link: "#ci" }),
-  kcard("costs", "Costs", "$412", "Claude in 24h", "ok", [["ok", 3]], [["5h left", "62%"], ["Week", "41%"], ["Est.", "18%"]], [["agent-runtime", "$210", "ok"]]),
+  kcard("costs", "Costs", "$412", "estimated, 24h", "ok", [["ok", 3]], [["5h left", "62%"], ["Week", "41%"], ["Est.", "18%"]], [["agent-runtime", "$210", "ok"]]),
   kcard("releases", "Releases", "6", "apps", "warn", [["ok", 5], ["warn", 1]], [["Draft", "1", "warn"], ["Failed", "0"], ["Pinned", "2"]], [["binks", "draft gate"]]),
   kcard("schedules", "Schedules", "41", "scheduled", "ok", [["ok", 39], ["warn", 2]], [["Failing", "2", "warn"], ["Streak", "1"]], []),
   kcard("projects", "Projects", "-", "no data", "nodata", [], [], [], { error: "lab: unreadable" }),

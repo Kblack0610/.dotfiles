@@ -1238,6 +1238,69 @@ PROM
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
 }
 
+# validated_item <author state> <validate slug> <validate item state> [<verdict> <verdict head>]: session s1's item
+# fix-wave-save naming its validate item, and that item, as agent-land's validate_gate leaves them (ar-5286).
+validated_item() {
+  local d="$HOME/.agent/queue/$3" v=""
+  rm -rf "$HOME/.agent/queue"; mkdir -p "$HOME/.agent/queue/$1"
+  [ "$3" = done ] && d="$d/$(date +%F)"; mkdir -p "$d"
+  [ -z "${4:-}" ] || v="verdict: $4\nverdict_head: $5\nfinished: $(date -u +%FT%TZ)\n"
+  printf 'slug: fix-wave-save\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsession: lab:s1\nvalidate: %s\n---\nfix wave save\n' \
+    "$2" > "$HOME/.agent/queue/$1/20261103-100000-fix-wave-save.md"
+  printf "slug: %s\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T11:00:00Z\nsession: lab:s2\n${v}---\ncheck(validate): fix-wave-save\n" \
+    "$2" > "$d/20261103-110000-$2.md"
+}
+
+@test "end to end: a green PR is landable only on its validate verdict: pending waits, a fail on its head is DONE (ar-5286)" {
+  # 2026-11-24 #3435 read STALLED green, not merged after validate-ar-5194-3edd08df failed it, and the shepherd
+  # nudged agent-13 to land a PR agent-land refuses.
+  landed_fixture
+  local oid other=0123456789abcdef0123456789abcdef01234567; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
+  export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache"
+  ledger feat/x '[]'; open_pr PASS
+  validated_item running "validate-fix-wave-save-${oid:0:8}" queued
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  [ "$(jq -r .reason <<<"$output")" = "PR #9 waiting on validate-fix-wave-save-${oid:0:8}, a second agent's review" ]
+
+  # the validate session failed this head: agent-land sent the item back to the queue, so nothing here lands
+  validated_item queued "validate-fix-wave-save-${oid:0:8}" done fail "$oid"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r .reason <<<"$output")" = "PR #9 failed validation (validate-fix-wave-save-${oid:0:8}), its item went back to the queue with the findings" ]
+  [ "$(jq -r .finished <<<"$output")" = true ]
+  [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
+
+  # negative controls: a pass, a fail on another head, a live validate item filed for another head
+  validated_item running "validate-fix-wave-save-${oid:0:8}" done pass "$oid"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+  validated_item running "validate-fix-wave-save-${other:0:8}" done fail "$other"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+  validated_item running "validate-fix-wave-save-${other:0:8}" running
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+
+  # a head that only merged main in since the verdict still carries it (agent-land's covers: catch_up merges first)
+  git clone -q -b main "$SANDBOX/origin.git" "$SANDBOX/other" 2>/dev/null; main_change theirs
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t merge -q --no-edit origin/main
+  open_pr PASS
+  validated_item queued "validate-fix-wave-save-${oid:0:8}" done fail "$oid"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  validated_item running "validate-fix-wave-save-${oid:0:8}" running
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = "PR #9 waiting on validate-fix-wave-save-${oid:0:8}, a second agent's review" ]
+  # negative control: a commit of its own after the verdict is a new head the verdict never read
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m more
+  open_pr PASS
+  validated_item queued "validate-fix-wave-save-${oid:0:8}" done fail "$oid"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+}
+
 @test "end to end: a PR riding an open landing train is WORKING waiting on the train, not CI red (ar-2160)" {
   # 2026-11-13 agent-7 #2415, agent-28 #2417 and agent-31 #2444 read STALLED CI red and were nudged:
   # each rode train #2467 (train.py), whose PlayMode shard sat queued on a full unity pool, and each
@@ -1971,6 +2034,50 @@ GH
   assert_output ''
 }
 
+@test "close --self: a submodule pointer in a worktree the session edited, not its own, is not its dirt (ar-5937)" {
+  local g=(git -c user.email=t@t -c user.name=t -c protocol.file.allow=always) d="$HOME/.worktrees/other" sub="$SANDBOX/fsub"
+  CACHE="$SANDBOX/cache"; mkdir -p "$CACHE" "$sub" "$HOME/.worktrees"
+  git init -q "$sub"; "${g[@]}" -C "$sub" commit -q --allow-empty -m one
+  git init -q --bare "$SANDBOX/other.git"; git clone -q "$SANDBOX/other.git" "$d" 2>/dev/null
+  "${g[@]}" -C "$d" submodule add -q "$sub" module 2>/dev/null
+  echo original > "$d/tracked"; git -C "$d" add tracked; "${g[@]}" -C "$d" commit -qm init
+  "${g[@]}" -C "$d" push -q origin HEAD:main 2>/dev/null; git -C "$d" fetch -q origin
+  # Another writer stages a pin bump: moved_pin keeps a staged pin, so the tree reads one dirty pointer.
+  "${g[@]}" -C "$sub" commit -q --allow-empty -m two
+  git -C "$d/module" fetch -q origin; git -C "$d/module" checkout -q --detach origin/HEAD; git -C "$d" add module
+  [ "$(git -C "$d" status --porcelain)" = 'M  module' ]
+  run dirty_paths "$d" "$d/tracked"; assert_output 'module'          # its own tree: every entry is its own
+  run dirty_paths "$d" "$d/tracked" 1; assert_output ''              # foreign: the pointer is another writer's
+  # An edit at or inside that submodule makes the pointer the session's.
+  run dirty_paths "$d" "$d/module/inside" 1; assert_output 'module'
+  run dirty_paths "$d" "$d/module" 1; assert_output 'module'
+  # Work inside the submodule a Bash edit may have made stays dirt: a working file, a commit no remote holds.
+  echo new > "$d/module/new"
+  run dirty_paths "$d" "$d/tracked" 1; assert_output 'module'
+  rm "$d/module/new"
+  "${g[@]}" -C "$d/module" commit -q --allow-empty -m unpushed
+  run dirty_paths "$d" "$d/tracked" 1; assert_output 'module'
+  git -C "$d/module" reset -q --hard HEAD~1
+  # An unstaged pin moved to an unpushed commit, the other shape moved_pin keeps, stays dirt too.
+  git -C "$d" reset -q module; "${g[@]}" -C "$d/module" commit -q --allow-empty -m unpushed
+  [ "$(git -C "$d" status --porcelain)" = ' M module' ]
+  run dirty_paths "$d" "$d/tracked" 1; assert_output 'module'
+  git -C "$d/module" reset -q --hard HEAD~1; git -C "$d" add module
+  # A plain file beside it is still dirt in a foreign tree.
+  echo x > "$d/tracked"
+  run dirty_paths "$d" "$d/tracked" 1; assert_output 'tracked'
+  # The close read, from another cwd: the pointer alone holds nothing, the edited file still does.
+  gh_script 'exit 1'; MAIN_CACHE="$SANDBOX/main"; touch "$LEDGER_DIR/prs.tsv"
+  git init -q "$SANDBOX/own"
+  run edited_work_blockers "$SANDBOX/own" "$d/tracked"
+  assert_output --partial "unlanded work in $d: 1 dirty file(s) (tracked)"
+  git -C "$d" checkout -q tracked
+  run edited_work_blockers "$SANDBOX/own" "$d/tracked"; assert_output ''
+  # An edit inside the submodule keeps the pointer on the close read.
+  run edited_work_blockers "$SANDBOX/own" "$(printf '%s\n' "$d/tracked" "$d/module/inside")"
+  assert_output --partial "unlanded work in $d: 1 dirty file(s) (module)"
+}
+
 @test "close verdict: each step of the fleet-states.md close flow, first match wins" {
   # Not ours to judge while work is left here; with nothing left it closes like any row, on the park's age (a parked row has no claude start, so age_min is null).
   [ "$(verdict '{bucket: "PARKED", blockers: ["PR #9 open, CI PASS"]}')" = "keep: parked: its claude is gone, work is left here" ]
@@ -2617,26 +2724,6 @@ GH
   [ "$(jq -r .bucket <<<"$output")" = LANDED ]
 }
 
-@test "plan_row_title: the heading leads, cut to 80 with the slug whole; no heading keeps the old title (ar-5348)" {
-  . "$REPO_ROOT/.local/lib/plan-phases.sh"
-  printf -- '---\n# a frontmatter comment\n---\n```sh\n# a shell comment\n```\n# Fix #12 the <UPS> shutdown\n\n## Phases\n# not this\n' > "$SANDBOX/swirling-knuth.md"
-  [ "$(plan_row_title "$SANDBOX/swirling-knuth.md")" = "Fix 12 the UPS shutdown (plan swirling-knuth)" ]
-  printf '# %s\n' "$(printf 'word %.0s' $(seq 1 30))" > "$SANDBOX/a-long-session-slug-name.md"
-  t="$(plan_row_title "$SANDBOX/a-long-session-slug-name.md")"
-  [ "${#t}" -le 80 ]
-  [[ "$t" == "word word "*" (plan a-long-session-slug-name)" ]]
-  # A cut that ends on punctuation drops it.
-  printf '# %s: more words follow here\n' "$(printf 'x%.0s' $(seq 1 47))" > "$SANDBOX/a-long-session-slug-name.md"
-  [ "$(plan_row_title "$SANDBOX/a-long-session-slug-name.md")" = "$(printf 'x%.0s' $(seq 1 47)) (plan a-long-session-slug-name)" ]
-  # A slug too long to leave room for a heading keeps it first, where no cut reaches it.
-  slug=a-pasted-request-about-the-platform-feature-iridescent-moon
-  printf '# A heading\n' > "$SANDBOX/$slug.md"
-  [ "$(plan_row_title "$SANDBOX/$slug.md")" = "plan $slug: run its open phases" ]
-  # NEGATIVE CONTROL: a plan with no heading keeps the title ask-sweep and older rows use.
-  printf '## Phases\n\n- [ ] x\n' > "$SANDBOX/bare.md"
-  [ "$(plan_row_title "$SANDBOX/bare.md")" = "plan bare: run its open phases" ]
-}
-
 @test "plan_phase_title: the phase name leads, then (P<n>, heading); no session slug, cut to 80 (ar-5462)" {
   . "$REPO_ROOT/.local/lib/plan-phases.sh"
   printf '# Pasted intake gate\n\n## Phases\n' > "$SANDBOX/pasted-content-id-0d29-d-cozy-kahn.md"
@@ -2837,6 +2924,24 @@ GH
   assert_output "$(printf 'o/three\t3\tFAIL\tabc123')"
 }
 
+@test "CI_JQ: a check of a PR_CI_NO_VERDICT workflow is neither red nor pending (ar-3499)" {
+  # 2026-11-18 ucp#2870: Checks passed, and Drop closed gates' "Run Checks the slot refused", which
+  # acts on other PRs, was cancelled by its concurrency group on this PR's head: the PR read CI FAIL.
+  check() { printf '{"name":"%s","workflowName":"%s","conclusion":"%s","status":"%s","detailsUrl":"https://github.com/o/r/actions/runs/%s/job/%s"}' "$1" "$2" "$3" "${4:-COMPLETED}" "$5" "$5"; }
+  local view
+  for c in CANCELLED FAILURE ''; do
+    view=$(printf '{"statusCheckRollup":[%s,%s]}' "$(check Checks Checks SUCCESS COMPLETED 1)" \
+      "$(check 'Run Checks the slot refused' 'Drop closed gates' "$c" "$([ -n "$c" ] && echo COMPLETED || echo QUEUED)" 2)")
+    [ "$(jq -r "$CI_JQ"' ci' <<<"$view")" = PASS ]
+    [ "$(jq -r "$CI_JQ"' red' <<<"$view")" = - ]
+    # negative control: with the list off, the same check counts
+    [ "$(PR_CI_NO_VERDICT='' jq -r "$CI_JQ"' ci' <<<"$view")" = "$([ -n "$c" ] && echo FAIL || echo PENDING)" ]
+  done
+  # a workflow the list does not name is still read
+  view=$(printf '{"statusCheckRollup":[%s,%s]}' "$(check Checks Checks SUCCESS COMPLETED 1)" "$(check Lint 'Drop closed gates x' CANCELLED COMPLETED 2)")
+  [ "$(jq -r "$CI_JQ"' ci' <<<"$view")" = FAIL ]
+}
+
 @test "self_wait reads a tail --pid on another process as an event wait, and the row stays WORKING (ar-2426)" {
   # 2026-11-14: a `tail --pid <pid>` waiting on another process, the event wait the rules ask for,
   # read "background shell is not a gate or test" and drew a nudge.
@@ -2869,6 +2974,36 @@ GH
   # negative control: a shell the transcript could not class, with no such tail, is still not a wait
   run b shell 0 0 0 25 1 0 0 875 MERGED PASS 1 - 2/3 x - jobs
   assert_output 'LANDED PR #875 merged, tree clean, next phase: x, background shell is not a gate or test'
+}
+
+@test "self_wait reads a background gh event listen as an event wait, and a gh command that is not one as nothing (ar-5664)" {
+  # 2026-11-24 dotfiles-agent-20 waited on #3501 with a background `gh event listen` and read STALLED
+  # "background shell is not a gate or test". perl's $0 gives the stand-in gh's own command line.
+  stand_in() {
+    printf '%s\n' "perl -e '\$0 = \"$1\"; sleep 60'; :" > "$SANDBOX/$2.sh"
+    setsid bash -c 'bash "$1"; :' _ "$SANDBOX/$2.sh" >/dev/null 2>&1 3>&- &
+    SI_ROOT=$!
+    local spins=0
+    LIVE_PIDS="${LIVE_PIDS:-} -$SI_ROOT"   # teardown kills it, pass or fail
+    until pgrep -s "$SI_ROOT" -f "^$1" >/dev/null; do
+      kill -0 "$SI_ROOT" || fail "the $2 stand-in exited before it started"
+      [ $((++spins)) -lt 20000 ] || fail "the $2 stand-in never started"
+    done
+  }
+  stand_in 'gh event listen --resource PR_kwDOabc' listen
+  run self_wait "$SI_ROOT"
+  assert_output 'wait'
+  FLEET_IDLE_MIN=20 FLEET_SHELL_STALE_MIN=120
+  run b shell 0 0 0 25 1 0 0 875 OPEN PENDING 1 - 1/3 x - wait
+  assert_output 'WORKING shell'
+  # a global flag before the subcommand is the same wait
+  stand_in 'gh -R o/r event listen --resource PR_kwDOabc' flagged
+  run self_wait "$SI_ROOT"
+  assert_output 'wait'
+  # negative control: another gh command under the claude is no event wait
+  stand_in 'gh event list' other
+  run self_wait "$SI_ROOT"
+  assert_output ''
 }
 
 @test "end to end: a plan-mode copy of a queued plan under another name reads that plan's queued phases (ar-2426)" {

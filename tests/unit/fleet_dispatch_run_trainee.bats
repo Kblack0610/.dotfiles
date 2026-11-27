@@ -178,6 +178,13 @@ load 'fleet_dispatch/fleet_dispatch_run_trainee'
   # the row names, so they do not refuse it (ar-71, ar-77 on 2026-11-18).
   pub 'scripts/setup when .fact in state.json differs'; assert_success
   pub 'scripts/setup and its unit@<name>.service.d/x.conf'; assert_success
+  # A row that names no file reaches a trainee, so its brief names the files the diff review takes,
+  # with the repo's cargo and npm trees, and the way out when the task needs another (ar-5117).
+  run trainee_brief '{"project":"game","task":"fix the menu"}'
+  assert_success
+  assert_line --index 0 'fix the menu'
+  assert_output --partial 'in no directory holding a Cargo.toml or package.json (crate, web), and leave no scratch file'
+  assert_output --partial 'If the task needs another file, change nothing and write blocked in .no-diff.'
   pub 'the .fact in state.json'; assert_success
   # A repo not in DISPATCH_TRAINEE_REPOS is refused whatever the row says.
   DISPATCH_TRAINEE_REPOS=/elsewhere pub scripts/setup; assert_failure

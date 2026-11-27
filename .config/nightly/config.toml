@@ -49,9 +49,6 @@ projects_base = "/projects"
 # Journal location
 journal_path = "~/.notes/journal"
 
-# Inbox location
-inbox_path = "~/.notes/inbox"
-
 [memory]
 # Update Knowledge Graph MCP
 knowledge_graph = true

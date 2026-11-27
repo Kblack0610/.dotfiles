@@ -65,6 +65,9 @@ case "$1 $2" in
   [ ! -f "$NOTES_FIXTURE/protection.err" ] || { cat "$NOTES_FIXTURE/protection.err" >&2; exit 1; }
   [ -f "$NOTES_FIXTURE/protection.json" ] || { echo '{"message":"Branch not protected","status":"404"}'; echo 'gh: Branch not protected (HTTP 404)' >&2; exit 1; }
   cat "$NOTES_FIXTURE/protection.json" ;;
+# user.headers: gh api -i user's response head, whose X-OAuth-Scopes the workflow gate reads (none when absent); user.fail: the call fails
+'api -i') [ ! -f "$NOTES_FIXTURE/user.fail" ] || { echo 'gh: API rate limit exceeded (HTTP 403)' >&2; exit 1; }
+  cat "$NOTES_FIXTURE/user.headers" 2>/dev/null || true ;;
 # files: the PR's changed paths, one a line (none when absent); files.fail: the call fails;
 # files.toobig: GitHub cannot render the diff (422 not_available, its body on stdout)
 'api '*) [ ! -f "$NOTES_FIXTURE/files.fail" ] || { echo 'HTTP 502'; exit 1; }
@@ -100,8 +103,8 @@ case "$1 $2" in
   *'"fail"))'*) cat "$NOTES_FIXTURE/checks.stale" 2>/dev/null || echo '[]' ;;
   # checks.skipping: whether all checks on the PR are in the skipping bucket (false when absent)
   *'"skipping"'*) cat "$NOTES_FIXTURE/checks.skipping" 2>/dev/null || echo false ;;
-  # checks.cancelled: the cancelled checks as JSON after a green watch, one answer per read,
-  # popped as read; [] once empty. A line "ERR <text>": that read fails with <text>
+  # checks.cancelled: the checks as JSON after a green watch (agent-land picks the cancelled ones), one
+  # answer per read, popped as read; [] once empty. A line "ERR <text>": that read fails with <text>
   *--json*) q="$NOTES_FIXTURE/checks.cancelled" r='[]'
     if [ -s "$q" ]; then r=$(head -1 "$q"); sed -i 1d "$q"; fi
     case "$r" in 'ERR '*) echo "${r#ERR }" >&2; exit 1 ;; esac
@@ -166,10 +169,14 @@ merge-base) if [ "$2" != --is-ancestor ]; then echo 5eedbase5eedbase; elif [ "${
 merge) [ "$2" = --abort ] || [ ! -f "$NOTES_FIXTURE/merge.conflicts" ] || { echo 'CONFLICT (content)'; exit 1; } ;;
 # tree.conflicts: a trial merge of the base (merge-tree) conflicts, and the real merge does too from then on
 merge-tree) [ ! -f "$NOTES_FIXTURE/tree.conflicts" ] || { : >"$NOTES_FIXTURE/merge.conflicts"; exit 1; } ;;
+# after-merge: the base's .agent-land/after-merge (none when absent); any other show prints nothing
+show) case "$2" in *:.agent-land/after-merge) cat "$NOTES_FIXTURE/after-merge" 2>/dev/null || exit 128 ;; esac ;;
 # diff.status: what `git diff --name-status` prints (nothing when absent)
 diff) cat "$NOTES_FIXTURE/diff.status" 2>/dev/null || true ;;
 # no.workflows: the head has no Actions workflow dir (it has .github/workflows by default)
 ls-tree) [ -f "$NOTES_FIXTURE/no.workflows" ] || echo .github/workflows ;;
+# ci.shape: a workflow at HEAD runs shape-grow (none does by default, so agent-land runs it)
+grep) [ -f "$NOTES_FIXTURE/ci.shape" ] ;;
 esac
 EOF
   # comms-lint: keeps what it was given in linted.txt, prints lint.out and exits lint.rc (0 by default)
@@ -205,10 +212,12 @@ EOF
   chmod +x "$SANDBOX/bin/schedules-sync"
   export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync"
 
-  # shape-grow: logs its call, prints shape.out and exits shape.rc (0, nothing grew, by default)
+  # shape-grow: logs its call, keeps its stdin (the body) in shape.body, prints shape.out and exits
+  # shape.rc (0, nothing grew, by default)
   cat >"$SANDBOX/bin/shape-grow" <<'EOF'
 #!/usr/bin/env bash
 printf 'shape-grow %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
+cat >"$NOTES_FIXTURE/shape.body"
 cat "$NOTES_FIXTURE/shape.out" 2>/dev/null
 exit "$(cat "$NOTES_FIXTURE/shape.rc" 2>/dev/null || echo 0)"
 EOF

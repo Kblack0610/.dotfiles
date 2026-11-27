@@ -29,6 +29,7 @@ setup() {
   export BENCH_PROFILE=personal BENCH_ADMISSION_CMD=false BENCH_LESSONS_CMD=false BENCH_DONE_ITEMS_CMD=false BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_HUB_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/doctor.last" BENCH_DOCS_CLEANUP_DIR="$SANDBOX/docs-cleanup" BENCH_INGEST="$SANDBOX/ingest.jsonl"
   export BENCH_STEPS_CMD=false BENCH_INBOX_CMD=false BENCH_MIX_CMD=false   # nor the real ingest record, inboxes or class mix
   export BENCH_CHURN_MERGES_CMD=false   # nor the real merge log: the churn KPIs read no merges unless a test serves them
+  export BENCH_INTAKE_CMD=false   # nor the real notes ingest record: the cap KPIs read null unless a test serves its day counts
   export BENCH_STOPPED_CMD=false PIPELINE_SNAPSHOT="$SANDBOX/pipeline/pipeline.json"   # nor the real dispatch or snapshot
   export BENCH_HEADROOM="$SANDBOX/headroom.json" BENCH_DISPATCH_LOG="$SANDBOX/activity.log"   # nor the real dispatch pass or its log
   export BENCH_FLEET_COST_CMD=false BENCH_FLEET_COST_FILE="$SANDBOX/fleet-cost.json" BENCH_HUB_FIGURE_CMD=false   # nor the real estimator or hub
@@ -224,8 +225,9 @@ log_triage_setup() {
   chmod +x "$SANDBOX/bin/items-stub" "$SANDBOX/bin/notify-stub"
   printf '#!/usr/bin/env bash\necho "$*" >> %q\n' "$PLOG" > "$SANDBOX/bin/promote-stub"
   # the ask stub logs each call; post prints the id agent-ask would, show the status ASKSTATUS names
+  # and, when set, the closed_at ASKCLOSED and closed_reason ASKWHY name
   ASKLOG="$SANDBOX/ask.log"; export TRIAGE_ASK_CMD=ask-stub
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> %q\ncase $1 in post) echo Ask123 ;; show) echo "status: ${ASKSTATUS:-pending}" ;; esac\n' "$ASKLOG" > "$SANDBOX/bin/ask-stub"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> %q\ncase $1 in post) echo Ask123 ;; show) echo "status: ${ASKSTATUS:-pending}"; [ -z "${ASKCLOSED:-}" ] || echo "closed_at: $ASKCLOSED"; [ -z "${ASKWHY:-}" ] || echo "closed_reason: $ASKWHY" ;; esac\n' "$ASKLOG" > "$SANDBOX/bin/ask-stub"
   chmod +x "$SANDBOX/bin/promote-stub" "$SANDBOX/bin/ask-stub"
   # one error in two runs (the pid, path and stamp differ), one error in a single run, one run
   # outside the window, and a range the log rotation took away

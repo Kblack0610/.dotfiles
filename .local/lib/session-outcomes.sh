@@ -16,6 +16,8 @@
 # shellcheck source=origin-repo.sh
 SO_LIB="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 . "$SO_LIB/origin-repo.sh" || return 1
+# shellcheck source=edit-tools.sh
+. "$SO_LIB/edit-tools.sh" || return 1
 # shellcheck source=claude-end.sh
 . "$SO_LIB/claude-end.sh" || return 1
 
@@ -63,8 +65,10 @@ SO_TIME_USE_LINES="$(jq -Rsc '[splits("\n") | gsub("^\\s+|\\s+$"; "") | capture(
   "${TIME_USE_CONF:-$SO_LIB/../../.config/agent-panel/time-use.conf}" 2>/dev/null)" || SO_TIME_USE_LINES='[]'
 [ "$SO_TIME_USE_LINES" != '[]' ] ||
   echo "session-outcomes: no gate or test line in ${TIME_USE_CONF:-time-use.conf}; every command counts as jobs" >&2
+# edit_tools: the tools that write a file (edit-tools.conf), for the since-edit and lesson counts.
 SO_PR_JQ="$SO_PR_JQ
-  def time_use_lines: ${SO_TIME_USE_LINES:-[]};"'
+  def time_use_lines: ${SO_TIME_USE_LINES:-[]};
+  def edit_tools: $(edit_tools_json || echo '[]');"'
   def time_use_unquoted:
     gsub("(?<!<)<<(?!<)-?[ \\t]*(?<q>[\u0027\"]?)(?<w>[A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_])\\k<q>(?<rest>[^\\n]*)(?:\\n[^\\n]*)*?\\n[ \\t]*\\k<w>[ \\t]*(?![^\\n])"; "\(.rest)")
     | gsub("(?:^|(?<=[\\s;&|(`/]))(?<sh>(?:ba|z)?sh(?:\\s+-\\S+)*?\\s+-[a-z]*c\\s+)(?:\u0027(?<sq>[^\u0027]*)\u0027|\"(?<dq>(?:\\\\.|[^\"\\\\])*)\")"; "\(.sh)\n\(.sq // .dq)\n")
@@ -176,7 +180,7 @@ so_transcript_metrics() {
                elif $u.name == "Skill" and ($u.input.skill | type) == "string" then
                  .uses.skills[$u.input.skill] += 1
                else . end)
-            | (if (["Edit", "Write", "MultiEdit", "NotebookEdit"] | index($u.name)) != null
+            | (if (edit_tools | index($u.name)) != null
                   and (($u.input.file_path // $u.input.notebook_path // "") | test("/\\.agent/|/\\.claude/(plans|projects)/") | not) then
                  .since_edit = {}
                else . end)
@@ -196,7 +200,7 @@ so_transcript_metrics() {
                     elif ($c | test("--proof")) then .done_ids[$u.id] = "proof"
                     else . end)
                  else . end)
-            elif (["Edit", "Write", "MultiEdit"] | index($u.name)) != null
+            elif (edit_tools | index($u.name)) != null
                  and (($u.input.file_path // "") | test("/\\.agent/lessons/")) then
               .lesson_ids[$u.id] = true
             else . end)
@@ -369,7 +373,11 @@ so_codex_rows() {
 # are the result's usage; agy counts the cached part inside input, so input here is what was not
 # cached, as the codex rows read. agy reports no cost and AI Pro publishes no token price, so
 # cost_usd is null. effort is the model id's suffix (agy's ids are per effort). Commands are its
-# run_command steps, tests among them by time_use_class; edits count its file-writing tool steps.
+# run_command steps, tests among them by time_use_class; edits count its file-writing tool steps. A
+# failed command is a DONE step whose output says `Command exited with code N` (N != 0), a tool the
+# stream ends in state ERROR is a tool error too, and an agent_response in ERROR is an API error, as the
+# codex rows count them; a command with no code (a background one) is neither. 86 real streams
+# (2026-11-25) carry no cost, price or credit key.
 # A sandboxed run reaches no forge, so prs is empty: its PR comes from the tail and the item.
 so_agy_rows() {
   local dir="$1" work="$2" f
@@ -385,19 +393,25 @@ so_agy_rows() {
       | ($ev | map(select(.event == "exit")) | last | .at) as $t1
       | [$ev[] | .step_update // empty | select(.state == "DONE")] as $steps
       | [$steps[] | select(.step_type == "tool")] as $tools
-      | [$tools[] | select(.tool_name == "run_command") | .tool_info.parameters.CommandLine // "" | {cmd: ., class: time_use_class}] as $cmds
+      | [$ev[] | .step_update // empty | select(.state == "ERROR" and .step_type == "tool")] as $badtools
+      | [$ev[] | .step_update // empty | select(.state == "ERROR" and .step_type == "agent_response")] as $badturns
+      | [$tools[] | select(.tool_name == "run_command")
+         | {cmd: (.tool_info.parameters.CommandLine // ""),
+            exit: ((.tool_info.output | strings // "") | first((capture("Command exited with code (?<c>-?[0-9]+)").c | tonumber), null))}
+         | .class = (.cmd | time_use_class)] as $cmds
       | $r.usage as $u
       | {session_id: $id, harness: "agy", cwd: $i.init.cwd, title: "",
          updated: ($t1 // $mtime), duration_s: (if $t0 != null and $t1 != null then $t1 - $t0 else ($r.duration_seconds // 0 | floor) end),
-         edits: ([$tools[] | select(.tool_name | IN("write_to_file", "replace_file_content", "multi_replace_file_content", "sed_file"))] | length),
+         edits: ([$tools[] | select(.tool_name | IN("write_file", "edit_file", "write_to_file", "replace_file_content", "multi_replace_file_content", "sed_file"))] | length),
          cost_usd: null, models: [$i.init.model // empty],
          effort: ($i.init.model // "" | capture("-(?<e>low|medium|high|xhigh|max)$").e // null),
          tokens: (if $u == null then null else
                     {input: (if $u.input_tokens then $u.input_tokens - ($u.cache_read_tokens // 0) else null end), output: (($u.output_tokens // 0) + ($u.thinking_tokens // 0)),
                      cacheCreation: 0, cacheRead: ($u.cache_read_tokens // 0), total: $u.total_tokens} end),
-         metrics: {prs: [], hard_errors: {api_error: null, denied: null, tool_errors: null},
-                   activity: {tool_calls: ($tools | length), test_runs: ([$cmds[] | select(.class == "test")] | length),
-                              test_failures: null, ci_polls: ([$cmds[] | select(.class == "gate")] | length),
+         metrics: {prs: [], hard_errors: {api_error: ($badturns | length), denied: null,
+                                          tool_errors: (([$cmds[] | select(.exit != null and .exit != 0)] | length) + ($badtools | length))},
+                   activity: {tool_calls: (($tools | length) + ($badtools | length)), test_runs: ([$cmds[] | select(.class == "test")] | length),
+                              test_failures: ([$cmds[] | select(.class == "test" and .exit != null and .exit != 0)] | length), ci_polls: ([$cmds[] | select(.class == "gate")] | length),
                               api_messages: ([$steps[] | select(.step_type == "agent_response")] | length),
                               tokens: $u.total_tokens, tokens_after_last_edit: null, compactions: null},
                    time_use: {work_min: null, gate_min: null, test_min: null, jobs_min: null, human_min: null, parked_min: null}},
@@ -482,7 +496,8 @@ so_forgejo_checks() {
 }
 
 # so_pr_view <owner/repo#N or N> <checkout> <fields> <jq> -> <jq> over the PR's <fields>, as `gh pr view -q`
-# prints it; fails when its forge cannot be read. The one forge rule for reading a recorded PR
+# prints it; fails when its forge cannot be read, 3 when gh says the PR does not exist (so_gh_pr_view).
+# The one forge rule for reading a recorded PR
 # (fleet-dispatch item_pr_state, agent-queue pr_state). A checkout whose canonical forge is Forgejo
 # (forge_canonical; home-config) is read from that forge's API in gh's shape (so_forgejo_pr,
 # so_forgejo_checks): gh sees only its GitHub mirror, which has no PRs, so fix-traefik's reap logged
@@ -499,9 +514,33 @@ so_pr_view() {
     [[ ",$3," == *,statusCheckRollup,* ]] || { jq -r "$4" <<<"$pr"; return; }
     ci=$(so_forgejo_checks "$repo" "$(jq -r .headRefOid <<<"$pr")" 2>/dev/null) || return 1
     jq -r --argjson ci "$ci" ".statusCheckRollup = \$ci | $4" <<<"$pr"
-  elif [[ "$1" == */*#* ]]; then gh pr view "$n" -R "${1%#*}" --json "$3" -q "$4" 2>/dev/null
-  else [ -n "$2" ] && (cd "$2" && gh pr view "$n" --json "$3" -q "$4" 2>/dev/null)
+  elif [[ "$1" == */*#* ]]; then so_gh_pr_view "$(so_repo_here "$2" "${1%#*}" && echo 1)" "$n" "$3" "$4" -R "${1%#*}"
+  else [ -n "$2" ] && (cd "$2" && so_gh_pr_view 1 "$n" "$3" "$4")
   fi
+}
+
+# so_gh_pr_view <known> <N> <fields> <jq> [gh args] -- so_pr_view's gh read. Fails 3 when gh answers that
+# the PR does not exist, so a caller does not wait on it as on a forge that did not answer: ar-77's pr:
+# named kblack0610/dotfiles#802, and land_orphan waited on it silently on every pass (ar-4702). A repo gh
+# cannot resolve is missing only when <known> is empty (so_repo_here): for a repo the fleet works in,
+# GitHub says the same to a token that cannot see it. Else 1.
+so_gh_pr_view() {
+  local known=$1 err
+  shift
+  { err=$(gh pr view "$1" "${@:4}" --json "$2" -q "$3" 2>&1 >&3); } 3>&1 && return 0
+  [[ "$err" != *"Could not resolve to a PullRequest"* ]] || return 3
+  [ -n "$known" ] || [[ "$err" != *"Could not resolve to a Repository"* ]] || return 3
+  return 1
+}
+
+# so_repo_here <checkout> <owner/repo> -- a remote of <checkout> is that repo, on any host, in any case.
+so_repo_here() {
+  local name
+  [ -n "$1" ] || return 1
+  for name in $(git -C "$1" remote 2>/dev/null); do
+    [ "$(url_repo "$(git -C "$1" remote get-url "$name" 2>/dev/null)" | tr '[:upper:]' '[:lower:]')" != "${2,,}" ] || return 0
+  done
+  return 1
 }
 
 # so_pr_dir <pr ref> [project] -> the checkout a recorded PR's repo lives in, for so_pr_view: the repo
@@ -712,12 +751,19 @@ so_rework_commits() {
       capture("^(?<sha>[0-9a-f]+) (?<at>[0-9]+) (?<s>.*)$") | .at |= tonumber | .fix = (.s | ascii_downcase | test($re))'
 }
 
-# so_rework_repos MAP - one `owner/repo<TAB>dir` line per project-map checkout whose origin is on
-# GitHub, so a PR's repo finds the clone blame runs in.
+# so_rework_repos MAP - one `<store key><TAB>dir` line per project-map checkout whose origin is on
+# GitHub (owner/repo) or on a Forgejo alias host (host/owner/repo under the store's host, so_store_key),
+# so a PR's repo finds the clone blame and attribution run in. Why: GitHub alone left every Forgejo PR's
+# project null, 214 rows from home-config, bnb-game-servers and audio (ar-883). Any other host is left out.
 so_rework_repos() {
-  local dir repo
+  local dir repo host
+  [ -n "${SO_CANON_ALIASES+set}" ] || so_canon_init "$1" || return 1
   jq -r '.paths // {} | keys[]' "$1" 2>/dev/null | while IFS= read -r dir; do
-    repo=$(origin_repo "$dir" github.com) || continue
+    if ! repo=$(origin_repo "$dir" github.com); then
+      host=$(origin_host "$dir") && [ -n "$host" ] && repo=$(origin_repo "$dir") || continue
+      repo=$(so_store_key "$1" "$host/$repo")
+      [ -n "${SO_CANON_STORE:-}" ] && [[ "${repo,,}" == "${SO_CANON_STORE,,}"/* ]] || continue
+    fi
     printf '%s\t%s\n' "$repo" "$dir"
   done
 }
