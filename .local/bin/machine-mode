@@ -13,9 +13,11 @@
 #   machine-mode release-lane    list the reservations
 #
 # A reservation is the "<host>.reserve" key, {"until": <epoch>}, in the same ConfigMap: the
-# governor pins the host to 0 until then, so gates go to other hosts while release.yml jobs,
-# which ask for host-<host> alone, take the withheld slots. Any machine with the kube context
-# can set one, for a cut or a re-send (playground docs/operations/steam.md#the-release-lane).
+# governor pins the host to 0 until then for every job but a release job (one asking for its
+# slot's unity-release or slim-tour): it admits an idle slot for one and withholds it once busy
+# (home-config docs/runbooks/unity-ci-host.md, Pinning a host's slots).
+# Any machine with the kube context can set one, for a cut or a re-send (playground
+# docs/operations/steam.md#the-release-lane).
 #
 # The clock hours, .config/machine-mode/hours, name the day's parts. When a part begins, `clock`
 # switches to its mode, except that a mode set by hand holds while the human is here
@@ -305,7 +307,7 @@ switch() {
 case "${1:-}" in
   hours) hours; exit 0 ;;
   release-lane) shift; release_lane "$@"; exit 0 ;;
-  -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 esac
 
 if ! compgen -G "$RUNNER_UNITS" >/dev/null; then
