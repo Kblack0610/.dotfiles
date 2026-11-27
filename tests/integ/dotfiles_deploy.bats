@@ -783,7 +783,7 @@ settling_world() {
   # Stops after replaying "second": the tree lacks aq and rebase-merge/ is present.
   run git -C "$PUB" -c user.email=t@example.com -c user.name=tester rebase -q -x false HEAD~2
   assert_failure
-  [ -d "$(git -C "$PUB" rev-parse --git-path rebase-merge)" ] || fail 'the rebase did not stop'
+  [ -d "$PUB/.git/rebase-merge" ] || fail 'the rebase did not stop'
   [ ! -e "$PUB/.local/bin/aq" ] || fail 'the stopped tree still has aq: the fixture tests nothing'
   run "$DEPLOY" --apply --missing
   assert_output --partial 'HELD  1 dangling link(s) into public'
