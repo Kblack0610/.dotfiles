@@ -297,8 +297,8 @@ impl Row for Machine {
 /// running, queue and last day, and the machines that take it.
 impl Row for Pool {
     const COLUMNS: &'static [&'static str] = &[
-        "pool", "weight", "running", "waiting", "oldest", "done_1h", "done_5h", "done", "usual", "pass",
-        "machines",
+        "pool", "weight", "running", "waiting", "oldest", "done_1h", "done_5h", "done", "usual",
+        "pass", "machines",
     ];
     const STATES: &'static [&'static str] = &["all", "waiting"];
     const FACETS: &'static [&'static str] = &[];
