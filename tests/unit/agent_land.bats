@@ -245,6 +245,31 @@ EOS
   assert_output 1
 }
 
+@test "behind before the gate, with main's new files picking no test the head's run picked: no merge-up, the head's own run is waited on and lands (ar-5747)" {
+  pick_fixture
+  printf '1\n1\n' >"$NOTES_FIXTURE/behind.seq"
+  printf '%s\n' unit/b.bats >"$PICKDIR/theirs.unit"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'fetch: origin/main moved on by 1 and none of it can affect a test the head'"'"'s own run picked; the head'"'"'s own checks stand, no merge-up (no strict checks on main)'
+  assert_line 'landed #42'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 0
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 1
+}
+
+@test "behind before the gate, with main's new files picking a test the head's run picked: merged up first, as before" {
+  pick_fixture
+  printf '1\n0\n' >"$NOTES_FIXTURE/behind.seq"
+  printf '%s\n' unit/a.bats >"$PICKDIR/theirs.unit"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'fetch: merged origin/main (1 behind) into the head and pushed it'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 1
+}
+
 @test "main's new files pick a test the head's run picked: merged up and re-run, as before" {
   pick_fixture
   printf '%s\n' unit/a.bats >"$PICKDIR/theirs.unit"
