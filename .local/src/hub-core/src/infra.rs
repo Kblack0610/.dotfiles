@@ -337,13 +337,16 @@ impl Infra {
         by
     }
 
-    /// The runners whose liveness CI judges: every registration but a Forgejo one, which is an
-    /// ephemeral KEDA forgejo-runner job pod, offline between jobs by design. `runners_down` and
-    /// `runners_up` both read this, so up plus down is the roster.
+    /// The runners whose liveness CI judges: the pinned ones (the mac-mini's). A Forgejo
+    /// registration is an ephemeral KEDA forgejo-runner job pod, offline between jobs by design,
+    /// and an ARC runner pod (host `unknown`, `arc` or `arc-*`, as the exporter's host_of names
+    /// it) reads offline as it goes away; neither is judged, as runner-host-dark's
+    /// EPHEMERAL_HOSTS. `runners_down` and `runners_up` both read this, so up plus down is the roster.
     fn judged(&self) -> Vec<&Series> {
         self.get("runners")
             .iter()
             .filter(|s| s.label("forge") != "forgejo")
+            .filter(|s| !ephemeral_host(s.label("host")))
             .collect()
     }
 
@@ -463,6 +466,11 @@ fn is_up(s: &Series) -> bool {
     matches!(s.label("state"), "running" | "idle")
 }
 
+/// A host the exporter gives an ARC runner pod: `unknown`, `arc` or `arc-<set>`.
+fn ephemeral_host(host: &str) -> bool {
+    host == "unknown" || host == "arc" || host.starts_with("arc-")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -515,7 +523,7 @@ mod tests {
     }
 
     #[test]
-    fn an_offline_runner_is_down_and_a_forgejo_registration_is_not_judged() {
+    fn an_offline_runner_is_down_and_a_forgejo_or_arc_registration_is_not_judged() {
         let mut i = Infra::default();
         let mut seat = runner("ms-a2-forgejo-1", "ms-a2", "offline");
         seat.labels.insert("forge".into(), "forgejo".into());
@@ -526,6 +534,8 @@ mod tests {
                 runner("ms-a2-light-1", "ms-a2", "offline"),
                 runner("old-box-1", "old-box", "missing"),
                 runner("razer-1", "razer-laptop", "idle"),
+                runner("arc-org-light-x7k2p-runner-q9z4m", "arc-org", "offline"),
+                runner("arc-repo-dotfiles-runner-xzsf2", "unknown", "offline"),
             ],
         );
         let names: Vec<String> = i
