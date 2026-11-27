@@ -4156,6 +4156,7 @@ check_tags() {
       hold:*) hold_resource "${tag#hold:}" || die "a hold tag is hold:<resource>, an agent-hold name (letters, digits, . _ -), not $tag" ;;
       desk:*) "$AQ_HOLD" classes | cut -f1 | grep -qx -- "${tag#desk:}" ||
         die "a desk tag is desk:<class>, one of: $("$AQ_HOLD" classes | cut -f1 | paste -sd' '), not $tag" ;;
+      needs:*) [ "$tag" = needs:cluster ] || die "a needs tag is needs:cluster (an item that needs the cluster login stays on the workstation), not $tag" ;;
       rbw:*) [[ "$tag" =~ ^rbw:[^/[:space:]]*/[^[:space:]]+$ ]] || die "an rbw tag is rbw:<folder>/<name>: a top-level folder (empty for an entry in no folder: rbw:/<name>), then the entry name after the first /, no spaces in either, not $tag" ;;
     esac
   done
