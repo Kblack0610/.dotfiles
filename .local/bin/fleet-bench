@@ -2843,9 +2843,8 @@ pipeline_json() {
          | ($a | map({key: .slug, value: .state}) | from_entries) as $st
          | ([$a[] | select(if $rec[.slug] then $rec[.slug] != .state else (.queued // "") >= ($r.items_since // "~") end)] | length)
            + ([$rec | keys[] | select($st[.] == null)] | length) end) as $drift
-    | (if $i == null or $r == null then null
-       else [$r.steps[] | select(.step == "inbox") | .open | numbers] | first
-         | if . == null then null else . - ($i | length) | if . < 0 then -. else . end end end) as $inbox_drift
+    | ([$r.steps[]? | select(.step == "inbox") | .open | numbers] | first) as $inbox_open
+    | (if $inbox_open == null or $i == null then null else $inbox_open - ($i | length) | fabs end) as $inbox_drift
     | ([$rows[] | select(.verdict == "stopped")] + ([$rows[] | select(.verdict == "over")] | sort_by(-.score)) | first) as $worst
     | {as_of: $t, since: $r.since, items_since: $r.items_since, drift: $drift, inbox_drift: $inbox_drift,
        doors_24h: $ev.doors, out_24h: $ev.out,

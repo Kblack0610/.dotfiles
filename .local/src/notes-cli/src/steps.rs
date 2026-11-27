@@ -45,21 +45,25 @@ fn step(name: &str) -> Option<&'static str> {
 /// every such outbox line open for good: 482 of them on 2026-11-25, against about 8 waiting
 /// (ar-4388). A tag is cut where it starts, mid-word too, and ends at the first character no tag
 /// holds, because the record writes `tag#v0.5.6` where the sheet has `tag #v0.5.5/#v0.5.6`, and a
-/// tag put before a `)` reads `both #c1123);` where the line said `both);`.
+/// tag put before a `)` reads `both #c1123);` where the line said `both);`. Not `md::tag_span`:
+/// its tags stop at the `:` of a `#p:<project>` tag, which this cut must take whole.
 fn line_key(text: &str) -> Key {
-    let tag_char = |c: char| c.is_alphanumeric() || "_/:.-".contains(c);
     let mut words = String::new();
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '#' {
-            while chars.next_if(|c| tag_char(*c)).is_some() {}
+            while chars
+                .next_if(|c| c.is_alphanumeric() || matches!(c, '_' | '/' | ':' | '.' | '-'))
+                .is_some()
+            {}
         } else if c.is_alphanumeric() {
             words.extend(c.to_lowercase());
-        } else {
+        } else if !words.is_empty() && !words.ends_with(' ') {
             words.push(' ');
         }
     }
-    Key::Line(words.split_whitespace().collect::<Vec<_>>().join(" "))
+    words.truncate(words.trim_end().len());
+    Key::Line(words)
 }
 
 /// The moves one event makes. The action-to-step table lives here and only here.
