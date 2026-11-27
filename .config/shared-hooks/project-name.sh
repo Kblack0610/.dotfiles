@@ -12,8 +12,9 @@
 #   4. basename (leading dot stripped) looked up in the name index (project_lookup).
 #   5. Under the worktree root with no checkout left: the registered repo its
 #      <repo>-<slug> name starts with.
-#   6. basename (leading dot stripped): a repo's checkout name, or outside any repo
-#      a registered key, else the reserved `_unscoped`.
+#   6. basename (leading dot stripped, a repo's checkout name in a repo) when it is a
+#      registered key, else the reserved `_unscoped`, in a repo or out of one. With no
+#      registry to read, the basename.
 #
 # The app step runs BEFORE the exact-path lookup on purpose. A monorepo root is normally
 # registered in `paths` (bnb-platform), so checking `paths` first would short-circuit and
