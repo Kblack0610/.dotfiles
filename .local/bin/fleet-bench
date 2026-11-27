@@ -3721,7 +3721,7 @@ kpi_json() {
         | {key: ., value: {"7d": ((($cm[.] // {})["7d"] | numbers) // null),
                            "28d": ((($cm[.] // {})["28d"] | numbers) // null), now: false}}),
        ($nowkeys | split(" ")[] | {key: ., value: ({"7d": (($pit[.] | numbers) // null), "28d": null, now: true}
-          + (($pit[. + "_short_days"] | numbers) as $d | if $d != null then {short_days: $d} else {} end))})]
+          + ((($pit[. + "_short_days"] | numbers) // null) as $d | if $d != null then {short_days: $d} else {} end))})]
     | map(.key as $k | .value |= (
         (($lim[$k + "_max"] | numbers) // null) as $max | (($lim[$k + "_min"] | numbers) // null) as $min
         | . + {threshold: ($max // $min),
