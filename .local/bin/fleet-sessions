@@ -2457,16 +2457,21 @@ item_plan() {
 # plan-mode copy. A file under ~/.claude*/plans that is a real file (an account whose plans dir claude-acct has
 # not linked to _live, a peer store-sync has not reached) is a copy that goes stale: 2026-11-18 the tilecast
 # coordinator read 0/5 overdue from one while 2/5 had landed in the canonical plan (ar-3465). A link into
-# ~/.agent/plans already is the canonical file. The copy's canonical is _live/<same name>, else the one project
-# dir that holds a real file of that name; with neither, the copy is all there is.
+# ~/.agent/plans already is the canonical file. The copy's canonical is _live/<same name>, else the one live
+# project dir (not _archive, _unscoped) that holds a file of that name, links followed; with neither, or when the
+# candidate is older than the copy (an earlier run's plan of a reused slug, as item_plan rejects), the copy is all
+# there is.
 canonical_plan() {
   local f="$1" b="${1##*/}" home="$HOME/.agent/plans" c r
   [[ "$f" == "$HOME"/.claude*/plans/*.md && -f "$f" ]] || { printf '%s\n' "$f"; return 0; }
   r="$(realpath -q -- "$f" 2>/dev/null)" || r="$f"
   [[ "$r" == "$home"/* ]] && { printf '%s\n' "$f"; return 0; }
-  if [ -f "$home/_live/$b" ]; then printf '%s\n' "$home/_live/$b"; return 0; fi
-  c="$(find "$home" -mindepth 2 -maxdepth 2 -name "$b" -type f -not -path "$home/_live/*" 2>/dev/null)"
-  if [ -n "$c" ] && [ "$(wc -l <<<"$c")" -eq 1 ]; then printf '%s\n' "$c"; else printf '%s\n' "$f"; fi
+  if [ -f "$home/_live/$b" ]; then c="$home/_live/$b"
+  else
+    c="$(find -L "$home" -mindepth 2 -maxdepth 2 -name "$b" -type f -not -path "$home/_*" 2>/dev/null)"
+    [ -n "$c" ] && [ "$(wc -l <<<"$c")" -eq 1 ] || c=
+  fi
+  if [ -n "$c" ] && [ "$(stat -L -c %Y "$c")" -ge "$(stat -c %Y "$f")" ]; then printf '%s\n' "$c"; else printf '%s\n' "$f"; fi
 }
 
 # own_slugs <item_of's answer> -> the comma list of slugs it joined to this session (own:a,b running here, or
