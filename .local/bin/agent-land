@@ -630,6 +630,21 @@ base_touches_head() {
   echo "it changes files the head changes ($(paste -sd, - <<<"$shared" | sed 's/,/, /g'))"
 }
 
+# head_checks_live: the head is behind <base>, merges with it cleanly, and already has checks, each
+# pending, passed or skipped (a gh read that a network error lost counts as pending). A re-run after a
+# checks timeout merged a moved base before the gate every time, so a run slower than the wait never
+# finished (ar-5865: #3800 merged main up three times in three hours on a saturated runner pool).
+head_checks_live() {
+  [ -z "$fj" ] || return 1
+  local live
+  git fetch -q "$remote" 2>/dev/null || return 1
+  ! git merge-base --is-ancestor "$remote/$base" HEAD 2>/dev/null || return 1
+  git merge-tree --write-tree --quiet HEAD "$remote/$base" >/dev/null 2>&1 || return 1
+  gh_read live pr checks "$pr" "${R[@]}" --json bucket -q 'if length == 0 then "none" elif all(.[]; .bucket == "pass" or .bucket == "pending" or .bucket == "skipping") then "live" else "stale" end' || true  # gh exits 8 while a check is pending
+  [ "$live" = live ] || { [ -z "$live" ] && net_error "$gh_err"; } || return 1
+  echo "fetch: the head's own checks are pending or green; waiting on them before any merge of $remote/$base"
+}
+
 # catch_up: a base the head is behind is merged in and pushed, before the gate and again after it if
 # the base moved on during the checks. A merge of <base> does not keep the checks green: a pushed head
 # is a new tree, and merging one before its checks ran shipped a broken one (dotfiles #1504; #1731
@@ -651,18 +666,6 @@ base_touches_head() {
 # that is behind (2026-11-05: unity-core-playground #1837 was refused twice). A conflict is aborted
 # and exits 3.
 CATCHUP_WAITS=1 CATCHUP_OVERLAP_WAITS=3
-# head_checks_live: the head is behind <base> and already has checks, each pending, passed or skipped. A re-run
-# after a checks timeout merged a moved base before the gate every time, so a run slower than the wait
-# never finished (ar-5865: #3800 merged main up three times in three hours on a saturated runner pool).
-head_checks_live() {
-  [ -z "$fj" ] || return 1
-  local live
-  git fetch -q "$remote" 2>/dev/null || return 1
-  ! git merge-base --is-ancestor "$remote/$base" HEAD 2>/dev/null || return 1
-  gh_read live pr checks "$pr" "${R[@]}" --json bucket -q 'if length == 0 then "none" elif all(.[]; .bucket == "pass" or .bucket == "pending" or .bucket == "skipping") then "live" else "stale" end' || true  # gh exits 8 while a check is pending
-  [ "$live" = live ] || return 1
-  echo "fetch: the head's own checks are pending or green; waiting on them before any merge of $remote/$base"
-}
 catch_up() {
   local out behind
   out=$(git fetch -q "$remote" 2>&1) || fail fetch "$(lastline "$out")"

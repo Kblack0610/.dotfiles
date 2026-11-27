@@ -130,7 +130,20 @@ load 'agent_land/common'
   assert_success
   assert_line "fetch: the head's own checks are pending or green; waiting on them before any merge of origin/main"
   assert_line 'landed #42'
-  [ "$(grep -n 'pr checks 42 --watch' "$LOG" | head -1 | cut -d: -f1)" -lt "$(grep -n '^git merge -q --no-edit origin/main$' "$LOG" | cut -d: -f1)" ]
+  [ "$(grep -n 'pr checks 42 --watch' "$LOG" | head -1 | cut -d: -f1)" -lt "$(grep -n '^git merge -q --no-edit origin/main$' "$LOG" | head -1 | cut -d: -f1)" ]
+  second_wait
+}
+
+@test "behind main before the checks with the head's run pending, but the base conflicts: exit 3 before any wait, as before (ar-5865)" {
+  echo live >"$NOTES_FIXTURE/checks.live"
+  touch "$NOTES_FIXTURE/base.ahead"
+  printf '2\n' >"$NOTES_FIXTURE/behind"
+  touch "$NOTES_FIXTURE/tree.conflicts"
+  run "$LAND" 42 --item ship
+  assert_failure 3
+  assert_output --partial 'merging it conflicts'
+  run grep -c 'pr checks 42 --watch\|pr merge' "$LOG"
+  assert_output 0
 }
 
 @test "behind main before the checks with a failed check on the head: merged up before the gate, as with no checks (ar-5865)" {
