@@ -3983,14 +3983,14 @@ q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
   assert_output "$(printf -- '--since %s\n' "$(date -d "@$((T0 - 28 * 86400))" +%F)" "$(date -d "@$((T0 - 8 * 86400))" +%F)" "$(date -d "@$((T0 - 86400))" +%F)")"
 }
 
-@test "chain: the release link counts a sheet project a day past its cut and a sheet off its tag" {
+@test "chain: the release link counts a sheet project or a prod app its tag owns a day past its cut, and a sheet off its tag" {
   chain_fixture
   # tools ships v1.2.3 by tag; game has no tag, so its sheet counter owns it, typed game or not
   export PROJECT_NAME_LIB="$SANDBOX/project-name.sh"
   cat > "$PROJECT_NAME_LIB" <<LIB
 . "$REPO_ROOT/.config/shared-hooks/project-name.sh"
 project_release_version() { [ "\$1" != tools ] || cat "$SANDBOX/tag" 2>/dev/null; }
-project_field() { [ "\$1 \$2" != "game type" ] || cat "$SANDBOX/type" 2>/dev/null; return 0; }
+project_field() { case "\$1 \$2" in "game type") cat "$SANDBOX/type" 2>/dev/null ;; "tools type") cat "$SANDBOX/tools-type" 2>/dev/null ;; esac; return 0; }
 LIB
   echo v1.2.3 > "$SANDBOX/tag"
   cp "$PJSON" "$PJSON.ok"
@@ -4052,6 +4052,33 @@ LIB
   rel "$yesterday" v1.2.4; target game "$today"
   run "$SUBJECT" chain --check
   assert_success
+  # a prod app its tag owns, due a day past its cadence with no tag, counts; the same project at
+  # another stage, or of another type, does not (wave-roll cannot cut a tag-owned version)
+  tagdue() { jq -c --arg d "$yesterday" --arg s "$1" '(.[] | select(.name == "tools")) += {stage: $s, release: {due: true, due_on: $d}}' "$PJSON" > "$PJSON.x" && mv "$PJSON.x" "$PJSON"; }
+  rel - v1.2.4; tagdue beta; echo app > "$SANDBOX/tools-type"
+  run "$SUBJECT" chain --check
+  assert_success
+  rel - v1.2.4; tagdue prod; echo game > "$SANDBOX/tools-type"
+  run "$SUBJECT" chain --check
+  assert_success
+  rel - v1.2.4; tagdue prod; echo app > "$SANDBOX/tools-type"
+  run "$SUBJECT" chain --check
+  assert_failure 1
+  assert_output 'release_overdue 1 (max 0)'
+  run "$SUBJECT" chain
+  assert_line "release_overdue: bnb/tools v1.2.4 untagged, due since $yesterday"
+  # a tag that already ships the open version is a pending roll, not an untagged release
+  rel - v1.2.3; tagdue prod
+  run "$SUBJECT" chain --check
+  assert_success
+  # not due, or a human target still ahead, counts nothing
+  rel - v1.2.4; jq -c '(.[] | select(.name == "tools")) += {stage: "prod", release: {due: false}}' "$PJSON" > "$PJSON.x" && mv "$PJSON.x" "$PJSON"
+  run "$SUBJECT" chain --check
+  assert_success
+  rel - v1.2.4; tagdue prod; target tools "$today"
+  run "$SUBJECT" chain --check
+  assert_success
+  rm "$SANDBOX/tools-type"
   # an unreadable project list reads ?, never 0
   BENCH_PROJECTS_CMD=false run "$SUBJECT" chain --json
   assert_equal "$(jq -c '[.release_overdue["7d"], .version_tag_drift["7d"]]' <<<"$output")" '[null,null]'
