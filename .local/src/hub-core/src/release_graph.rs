@@ -394,11 +394,12 @@ pub fn read_prs(dir: &Path) -> (Vec<Pr>, Vec<String>) {
             match serde_json::from_str::<Pr>(l) {
                 Ok(p) if p.number > 0 => {
                     // A PR's row is its newest by updated_at, an equal time keeping the later line
-                    // (schedules-sync `older`): store-sync's union merge can put a peer's older OPEN
-                    // row after the MERGED one (ar-5949).
+                    // unless it is OPEN over a closed one (schedules-sync `older`): store-sync's
+                    // union merge can put a peer's older OPEN row after the MERGED one (ar-5949).
                     let k = (repo_key(&p.repo), p.number);
                     let older = by.get(&k).is_some_and(|had| {
-                        matches!((&p.updated_at, &had.updated_at), (Some(new), Some(old)) if new < old)
+                        matches!((&p.updated_at, &had.updated_at), (Some(new), Some(old))
+                            if new < old || new == old && p.state == "OPEN" && had.state != "OPEN")
                     });
                     if !older {
                         by.insert(k, p);
@@ -2542,6 +2543,7 @@ mod tests {
                 r#"{"repo":"Acme/app","number":2,"state":"OPEN","updated_at":"2026-11-24T06:12:59Z"}"#,
                 r#"{"repo":"Acme/app","number":3,"state":"OPEN","updated_at":"2026-11-24T06:00:00Z"}"#,
                 r#"{"repo":"Acme/app","number":3,"state":"CLOSED","updated_at":"2026-11-24T06:00:00Z"}"#,
+                r#"{"repo":"Acme/app","number":3,"state":"OPEN","updated_at":"2026-11-24T06:00:00Z"}"#,
                 "not json\n",
             ]
             .join("\n"),

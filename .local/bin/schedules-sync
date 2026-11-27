@@ -1013,9 +1013,11 @@ def fj_vanished(host, repo, name, last, got):
 
 def older(r, had):
     """Whether PR row `r` was updated before `had`, the same PR's row it would replace: the PR store's
-    rule is one row a PR, its newest by updated_at, an equal time keeping the later row."""
+    rule is one row a PR, its newest by updated_at, an equal time keeping the later row, except that an
+    OPEN row never replaces a closed one of its time. A reopen moves updated_at, and Forgejo's CLOSED on
+    a 404 keeps the OPEN row's time, so a peer's OPEN copy merged in after it would win the tie."""
     new, old = when(r.get("updated_at")), when(had.get("updated_at"))
-    return bool(new and old and new < old)
+    return bool(new and old and (new < old or new == old and r.get("state") == "OPEN" != had.get("state")))
 
 
 def newest_prs(name, rows, last):
@@ -1051,9 +1053,6 @@ def sync_prs(forge, repo, host, t, wait=True):
         name = next((k for k in state if k.lower() == name.lower()), name)  # case-blind: keep the store's name
         stale = []
         last, n, torn = read_ledger(path=pr_file(name), key=pr_key, stale=stale)
-        if stale:
-            print(f"schedules-sync: PRs of {name}: " + ", ".join(f"#{k}" for k in sorted(set(stale)))
-                  + ": an older row after the newest (a store-sync merge): rewritten", file=sys.stderr)
         entry = dict(state.get(name) or {}) if last is not None else {}  # no store: read it all again
         last, err = last or {}, None
         try:
@@ -1067,6 +1066,9 @@ def sync_prs(forge, repo, host, t, wait=True):
                 rows = [gh_pr_row(name, p) for p in got or [] if "number" in p]
             rows = newest_prs(name, rows, last)
             write_ledger(last, n, torn, rows, t, pr_file(name), pr_key, None, rewrite=bool(stale))
+            if stale:
+                print(f"schedules-sync: PRs of {name}: " + ", ".join(f"#{k}" for k in sorted(set(stale)))
+                      + ": an older row after the newest (a store-sync merge): rewritten", file=sys.stderr)
             entry.update(etag=etag, synced_at=iso(t), error=None)  # the ETag only once its rows are kept
             if not since:  # a whole read: its rows have this shape
                 entry["row"] = PR_ROW
