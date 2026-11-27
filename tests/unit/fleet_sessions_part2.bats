@@ -3390,3 +3390,30 @@ GH
     [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
   done
 }
+
+@test "end to end: a plan-mode copy under ~/.claude*/plans reads its phases from the canonical ~/.agent/plans plan (ar-3465)" {
+  # 2026-11-18 the tilecast coordinator read 0/5 overdue from a copy while 2/5 had landed in the canonical plan.
+  landed_fixture
+  local cp="$HOME/.claude/plans/quirky-donut.md" live="$HOME/.agent/plans/_live" proj="$HOME/.agent/plans/lab"
+  mkdir -p "$HOME/.claude/plans" "$live" "$proj"
+  copy() { { printf '# Plan\n\n## Phases\n\n'; printf '%s\n' "$@"; } > "$1"; }
+  copy "$cp" '- [ ] P1 a' '- [ ] P2 b' '- [ ] P3 c'
+  panel "$SANDBOX/wt" "$cp"
+  read_plan() { run "$REPO_ROOT/.local/bin/fleet-sessions" --json; jq -c '[.plan_file, .phases_done, .phases_total]' <<<"$output"; }
+  # no canonical plan: the copy is all there is
+  [ "$(read_plan)" = "[\"$cp\",0,3]" ]
+  # a canonical plan in _live wins
+  copy "$live/quirky-donut.md" '- [x] P1 a (#1)' '- [x] P2 b (#2)' '- [ ] P3 c'
+  [ "$(read_plan)" = "[\"$live/quirky-donut.md\",2,3]" ]
+  # so does the one project dir that holds a real file of that name
+  rm "$live/quirky-donut.md"; copy "$proj/quirky-donut.md" '- [x] P1 a (#1)' '- [ ] P2 b' '- [ ] P3 c'
+  [ "$(read_plan)" = "[\"$proj/quirky-donut.md\",1,3]" ]
+  # negative controls: two project dirs hold it, so which is canonical is unknown
+  mkdir -p "$HOME/.agent/plans/other"; cp "$proj/quirky-donut.md" "$HOME/.agent/plans/other/"
+  [ "$(read_plan)" = "[\"$cp\",0,3]" ]
+  # a plan already linked into ~/.agent/plans is read where it is, and a plan outside ~/.claude*/plans is untouched
+  rm "$cp"; ln -s "$proj/quirky-donut.md" "$cp"
+  [ "$(read_plan)" = "[\"$cp\",1,3]" ]
+  panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  [ "$(read_plan | jq -r '.[0]')" = "$SANDBOX/plan.md" ]
+}
