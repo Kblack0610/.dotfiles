@@ -992,8 +992,9 @@ latest_live() {
     ($p | max_by(.epoch) | .epoch) as $last
     | ($e | group_by(.session_id) | map(max_by(.made_epoch) | {key: .session_id, value: .})
         | from_entries) as $eta
-    | ($p | map(select(.epoch == $last) | .session_id)) as $live
-    | ($p | map(select(.session_id | IN($live[]))) | group_by(.session_id)
+    # keyed by tojson, not IN($live[]): a scan of every live session per row was 2s of the 160k rows (ar-1140)
+    | ($p | map(select(.epoch == $last) | {key: (.session_id | tojson), value: true}) | from_entries) as $live
+    | ($p | map(select($live[.session_id | tojson])) | group_by(.session_id)
         | map({key: .[0].session_id, value: map({epoch, phases_done, active_min})}) | from_entries) as $hist
     | $p[] | select(.epoch == $last)
     | . as $r
@@ -6896,17 +6897,21 @@ cmd_throughput() {
 # fails. One source, read, never restated.
 queue_slots() {
   local n="${BENCH_QUEUE_SLOTS:-}"
-  [ -n "$n" ] || n=$($BENCH_DISPATCH_STATS_CMD 2>/dev/null | jq -r '.room_max_live // empty' 2>/dev/null)
+  [ -n "$n" ] || n=$(bench_read $BENCH_DISPATCH_STATS_CMD 2>/dev/null | jq -r '.room_max_live // empty' 2>/dev/null)
   [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -gt 0 ] && printf '%s' "$n"
 }
 
-# forecast_json <now> [queue json lines] [items json lines|"!"] -> one object: the schedule of
+# forecast_json <now> [queue json lines] [items json lines|"!"] [items] -> one object: the schedule of
 # every open phase, the fleet's all-done-by at both ends of the band, the drain against the
 # last window's flow, the board rows behind the live work, and the agent queue's items placed
-# on the dispatcher's slots ("!" when the queue could not be read, null in .items).
+# on the dispatcher's slots ("!" when the queue could not be read, null in .items). A fourth
+# argument `items` says the caller reads only .items (epics): the drain, a flow over every
+# sample and a third of the time, is null then. The live rows and the slots go through
+# bench_read, so a concurrent section can read them first (epics_json).
 forecast_json() {
-  local t="$1" queue="${2:-}" items="${3:-}" live names iphases sc="$SCORES" map=/dev/null slots
-  live=$(latest_live)
+  local t="$1" queue="${2:-}" items="${3:-}" drain=true live names iphases sc="$SCORES" map=/dev/null slots
+  [ "${4:-}" = items ] && drain=false
+  live=$(bench_read latest_live)
   [ -s "$sc" ] || sc=/dev/null
   [ -r "$BENCH_PROJECT_MAP" ] && map=$BENCH_PROJECT_MAP
   slots=$(queue_slots) || slots=''
@@ -6919,15 +6924,15 @@ forecast_json() {
         printf '{"%s":%s}\n' "$slug" "$(plan_session_phases "$pf" | jq 'map(select(.state == "open")) | length')"
       done | jq -cs 'add // {}')
   jq -cn --argjson t "$t" --argjson win "$BENCH_WINDOW_H" --slurpfile nm <(printf '%s\n' "$names") --rawfile queue <(printf '%s' "$queue") \
-     --rawfile items <(printf '%s' "$items") --argjson ip "${iphases:-"{}"}" --arg slots "$slots" \
+     --rawfile items <(printf '%s' "$items") --argjson ip "${iphases:-"{}"}" --arg slots "$slots" --argjson drain "$drain" \
      --argjson def "$BENCH_DEFAULT_PHASE_MIN" --argjson minb "$BENCH_BASIS_MIN_N" "${CAL_ARGS[@]}" --slurpfile map "$map" \
      --slurpfile live <(printf '%s\n' "$live") --slurpfile p "$PROGRESS" --slurpfile s "$sc" "$JQ_LIB"'
     $nm[0] as $names
     | ($s | map(select(.done_epoch >= $t - $win * 3600) | .ratio // empty) | median) as $r24
-    | ($p | flow($t - $win * 3600; $t)) as $f
+    | (if $drain then $p | flow($t - $win * 3600; $t) else null end) as $f
     | ($live | schedule($t; $r24 // 1; $names)) as $sch
     | ($sch | map(.left) | add // 0) as $open
-    | ($f.out_per_h - $f.net_in_per_h) as $net
+    | (if $f == null then null else $f.out_per_h - $f.net_in_per_h end) as $net
     | ($queue | split("\n") | map(select(. != "") | fromjson)) as $q
     | ($p | map(select(.phases_total != null)) | group_by([.session_id, .plan_file]) | map(map(.phases_total) | max) | median) as $ppp
     | {made_epoch: $t, made_at: ($t | iso), slow_ratio: $r24,
@@ -6935,8 +6940,8 @@ forecast_json() {
        unscheduled: ($live | map(select((.finished | not) and (.phases_total == null or .eta == null))) | length),
        open: $open}
       + ($sch | fleet_finish)
-      + {drain: {out_per_h: $f.out_per_h, in_per_h: $f.net_in_per_h,
-                 epoch: (if $net > 0 then ($t + $open / $net * 3600 | floor) else null end)},
+      + {drain: (if $f == null then null else {out_per_h: $f.out_per_h, in_per_h: $f.net_in_per_h,
+                 epoch: (if $net > 0 then ($t + $open / $net * 3600 | floor) else null end)} end),
          queue: (if $queue == "" then null else {rows: ($q | length), ready: ($q | map(select(.state == "ready")) | length),
                  phases_per_plan: $ppp, phases: (($q | length) * ($ppp // 0) | floor)} end),
          schedule: $sch}
@@ -8053,31 +8058,61 @@ epic_scores() {
   for f in "$BENCH_OUTCOMES_DIR"/*/epics/scores.jsonl; do [ -s "$f" ] && cat "$f"; done
 }
 
+# epics_read_projects [project] -> epic_projects as one JSON array, nothing when the stats could not be read
+epics_read_projects() { local out; out=$(epic_projects "${1:-}" | jq -cs .) && printf '%s\n' "$out"; }
+
+# epics_read_items -> every queue item, done included, as one JSON array; nothing when the queue could not be read
+epics_read_items() { local out; out=$(bench_read $BENCH_ALL_ITEMS_CMD 2>/dev/null | jq -cs .) && printf '%s\n' "$out"; }
+
+# epics_read_forecast <now> -> the forecast's .items over the open queue items (an unread queue counts as
+# none); null with no samples or when the forecast fails
+epics_read_forecast() {
+  local fc=null
+  if [ -s "$PROGRESS" ]; then
+    fc=$(forecast_json "$1" "" "$(bench_read $BENCH_ALL_ITEMS_CMD 2>/dev/null | jq -c 'select(.state != "done")')" items | jq -c '.items') || fc=null
+  fi
+  printf '%s\n' "${fc:-null}"
+}
+
 # epics_json <now> [project] -> one object: per project (only the named one when given) its flow counts, unlinked lists, ETA accuracy and
 # epics; per epic its brief, plans and phases, leaf rows, items, PRs, the derived step, an ETA
 # for open work, the newest frozen baseline, on track or behind, and its score once landed.
 # An open leaf whose item is on the forecast takes that item's end; the rest (the open leaves
 # with no scheduled item, or the plan phases no active item carries, whichever is more) run one
 # after another, after the agent queue drains, at the repo's calibrated phase pace.
+# The reads are side by side (par_go), one bench_read each, so the forecast's live rows and slots
+# start with the roadmaps and the plans, not after them: one project's epics took 16s in a row,
+# every Prefix+p preview move (ar-1140).
 epics_json() {
-  local t="$1" pj items active plans fc=null map=/dev/null
-  pj=$(epic_projects "${2:-}" | jq -cs .) || return 1
+  [ -n "${BENCH_READ_CACHE:-}" ] || { with_reads epics_json "$@"; return; }
+  local t="$1" PAR PAR_PIDS pj items plans fc map=/dev/null
+  par_open || return 1
+  par_go pj epics_read_projects "${2:-}"
+  par_go plans epic_plans
+  par_go items epics_read_items
+  # warms the forecast's two cached reads; without flock bench_read caches nothing, so it would run them twice
+  if command -v flock >/dev/null; then
+    par_go live bench_read latest_live
+    par_go slots queue_slots
+  fi
+  par_go fc epics_read_forecast "$t"
+  par_wait
+  pj=$(<"$PAR/pj")
+  [ -n "$pj" ] || return 1
   if [ "$pj" = "[]" ]; then
     if [ -n "${2:-}" ]; then say "epics: no project $2: not listed, or its roadmap could not be read"
     else say "epics: no project could be read"; fi
     return 1
   fi
-  items=$($BENCH_ALL_ITEMS_CMD 2>/dev/null | jq -cs .) || { say "epics: the agent queue could not be read"; items='[]'; }
-  active=$(jq -c '.[] | select(.state != "done")' <<<"$items")
-  plans=$(epic_plans | jq -cs .)
-  if [ -s "$PROGRESS" ]; then
-    fc=$(forecast_json "$t" "" "$active" | jq -c '.items') || fc=null
-  fi
+  items=$(<"$PAR/items")
+  [ -n "$items" ] || { say "epics: the agent queue could not be read"; items='[]'; }
+  plans=$(jq -cs . "$PAR/plans")
+  fc=$(<"$PAR/fc")
   [ -r "$BENCH_PROJECT_MAP" ] && map=$BENCH_PROJECT_MAP
   # the big inputs go in as files: the projects alone are past the length of one argument
   jq -cn --argjson t "$t" --slurpfile pj <(printf '%s\n' "$pj") --slurpfile items <(printf '%s\n' "$items") \
      --slurpfile plans <(printf '%s\n' "$plans") \
-     --slurpfile fc <(printf '%s\n' "$fc") --slurpfile map "$map" --slurpfile base <(cat "$EPIC_BASELINES" 2>/dev/null) \
+     --slurpfile fc <(printf '%s\n' "${fc:-null}") --slurpfile map "$map" --slurpfile base <(cat "$EPIC_BASELINES" 2>/dev/null) \
      --slurpfile sc <(epic_scores) "${CAL_ARGS[@]}" "$JQ_LIB$PLAN_ITEMS_JQ"'
     ($map[0] // {}) as $map | $pj[0] as $pj | $items[0] as $items | $plans[0] as $plans
     | $fc[0] as $fc
