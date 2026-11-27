@@ -744,10 +744,12 @@ stage_facts() {
         | from_entries)}' <"$labs"
 }
 
-# workflow_code <dir> <ref> <file>: the file at the fetched branch ref without its comment lines.
+# workflow_code <dir> <ref> <file>: the file at the fetched branch ref without its comments: a YAML
+# comment starts at a `#` that opens the line or follows whitespace, so a trailing note on a code line
+# (gungan's `runs-on: [...]  # ... home-config ...`) names no deploy marker either.
 # Match it as a here-string, never piped into `grep -q`: the runner ignores SIGPIPE (systemd), so a
 # matcher that exits on the first hit leaves this grep a write error on stderr.
-workflow_code() { git -C "$1" show "$2:$3" 2>/dev/null | grep -v '^[[:space:]]*#' || true; }
+workflow_code() { git -C "$1" show "$2:$3" 2>/dev/null | sed -E 's/(^|[[:space:]])#.*$//' || true; }
 
 # link_facts <labs-file> -> {links: {...}}: the raw facts `hub releases check` holds the registry to, each
 # with the error that stopped its read. Per app repo (a repo an app or game ships from): the

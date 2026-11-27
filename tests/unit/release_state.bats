@@ -187,7 +187,7 @@ field() { row "$1" | jq -r "$2"; }
 
 @test "link facts: a deploy marker in a workflow's code flags it, in a comment it does not" {
   mkdir -p "$CLONE/.github/workflows"
-  printf 'name: Checks\njobs:\n  t:\n    steps:\n      # stubs home-config and kubectl apply\n      - run: scripts/test_roll.sh\n' > "$CLONE/.github/workflows/checks.yml"
+  printf 'name: Checks\njobs:\n  t:\n    runs-on: [self-hosted, light]  # a runner pod (home-config apps/arc)\n    steps:\n      # stubs home-config and kubectl apply\n      - run: scripts/test_roll.sh\n' > "$CLONE/.github/workflows/checks.yml"
   printf 'name: Bump\njobs:\n  t:\n    steps:\n      - run: scripts/home-config-bump.sh\n' > "$CLONE/.github/workflows/bump.yml"
   git -C "$CLONE" add -A; git -C "$CLONE" commit -qm wf; git -C "$CLONE" push -q origin main 2>/dev/null
   git -C "$CLONE" remote set-head origin main
