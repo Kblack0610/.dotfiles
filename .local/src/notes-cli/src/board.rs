@@ -2434,10 +2434,6 @@ mod tests {
             "tier",
             "worker",
             "requested",
-            "target",
-            "mode",
-            "go",
-            "ask",
             "id",
             "type",
             "area",
@@ -2494,7 +2490,10 @@ mod tests {
         );
         let v = serde_json::to_value(&r).unwrap();
         assert_eq!(v["target"], "v0.4.0");
-        assert_eq!(v["mode"], "plan");
+        assert_eq!(
+            (&v["mode"], &v["go"], &v["ask"]),
+            (&"plan".into(), &true.into(), &true.into())
+        );
         // Negative control: a plain row has none of them, and says so as null/false.
         let r = row("- [ ] fix(x): b #high <!-- id:dm-2 -->");
         assert_eq!((r.target, r.mode, r.go, r.ask), (None, None, false, false));
