@@ -1690,12 +1690,16 @@ SH
   chmod +x "$SANDBOX/bin/holds-stub"
   BENCH_HOLDS_CMD=holds-stub run "$SUBJECT" sources --json
   assert_success
+  assert_equal "$(jq -c '[.read.holds]' <<<"$output")" '[true]'
   assert_equal "$(jq -c '[.sources[] | select(.hold != null) | .name]' <<<"$output")" '["codex"]'
   BENCH_HOLDS_CMD=holds-stub run "$SUBJECT" sources
   assert_line '| codex | codex | 5% | a run on codex ended on a provider refusal, so it takes no start until 2026-11-27 09:00 | - | $3.5 list | 0 | - | - | - | - |'
   BENCH_HOLDS_CMD=false run "$SUBJECT" sources --json
   assert_success
   assert_equal "$(jq -c '[.sources[].hold] | unique' <<<"$output")" '[null]'
+  assert_equal "$(jq -c '[.read.holds]' <<<"$output")" '[false]'
+  BENCH_HOLDS_CMD=false run "$SUBJECT" sources
+  assert_line '- holds: ? (fleet-dispatch provider-holds unreadable, so a held source reads as free)'
 }
 
 @test "sources: an agy source lands its harness's PRs and prices only its priced sessions, unknown until one is (never \$0)" {

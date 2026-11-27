@@ -3530,7 +3530,8 @@ provider_hold_why() {
 }
 
 # cmd_provider_holds -> a JSON object, source name -> provider_hold_why, for each source a harness names
-# whose hold stands ({} when none): the one reader of the ledger for fleet-bench sources, so a held source
+# whose hold stands ({} when none), as of the last pass's provider_hold_scan (a refusal since then shows at
+# the next pass): the one reader of the ledger for fleet-bench sources, so a held source
 # does not read as free beside its room.
 cmd_provider_holds() {
   local src why
