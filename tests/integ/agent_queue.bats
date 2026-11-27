@@ -1014,6 +1014,20 @@ load 'agent_queue/common'
   "$AQ" set p3 tags="tier3 ask:yes=a"
 }
 
+@test "a needs:cluster tag is accepted on add and on set tags=, and any other needs: word is refused (ar-5944)" {
+  run "$AQ" add --project game --slug cl-a --tags "needs:cluster" "reads the cluster"
+  assert_success
+  run "$AQ" add --project game --slug cl-b --tags "needs:gpu" "x"
+  assert_failure; assert_output --partial 'a needs tag is needs:cluster'
+  # set refuses weight= (not settable), so a session keeps its own item on the workstation with the tag.
+  run "$AQ" set cl-a weight=heavy
+  assert_failure
+  run "$AQ" set cl-a tags="size/s needs:cluster"
+  assert_success
+  run "$AQ" set cl-a tags="needs:cpu"
+  assert_failure; assert_output --partial 'a needs tag is needs:cluster'
+}
+
 @test "a hold: tag holds an item while agent-hold holds that resource, whoever asks (ar-613)" {
   export AGENT_HOLD_DIR="$SANDBOX/holds"
   for t in "hold:" "hold:../x" "hold:a/b" "hold:.."; do
