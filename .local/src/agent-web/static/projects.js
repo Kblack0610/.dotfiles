@@ -343,7 +343,9 @@ function pDepartments(c) {
 // plans, lessons, sessions and outcomes, the knowledge notes that name it, and its open asks and
 // queue items. A part with nothing says so; a source that failed is named in `errors`.
 const P_DOC_HEAD = `<tr><th data-role="lead">file</th><th>title</th><th>modified</th></tr>`;
-const pDocRow = (d) => `<tr><td class="wrap">${esc(d.path)}</td><td class="wrap">${esc(d.title)}</td><td class="muted">${esc(d.modified || "")}</td></tr>`;
+// A Shown's uncut words; an absent one is empty.
+const pWhole = (x) => (x ? x.full || x.text : "");
+const pDocRow = (d) => `<tr><td class="wrap">${esc(d.path)}</td><td class="wrap">${esc(pWhole(d.title))}</td><td class="muted">${esc(d.modified || "")}</td></tr>`;
 const pDocs = (id, title, docs, none) => secHead(id, title, docs.length) +
   (docs.length ? pTbl(P_DOC_HEAD, docs.map(pDocRow)) : `<div class="card muted">${esc(none)}</div>`);
 function pCadence(c) {
@@ -356,7 +358,7 @@ function pKnowledge(pg) {
   if (!s) return `<div class="card muted">The knowledge space could not be read; see the page's errors.</div>`;
   const t = s.tracker, urls = t.urls.map((u) => `<a href="${esc(u)}">${esc(u)}</a>`).join(" ");
   let html = secHead("p-space-head", "Status", s.status.date || null) +
-    `<div class="card">${s.status.headline ? `<div class="pstat">${esc(s.status.headline)}</div>` : `<div class="muted">No status line.</div>`}` +
+    `<div class="card">${s.status.headline ? `<div class="pstat">${esc(pWhole(s.status.headline))}</div>` : `<div class="muted">No status line.</div>`}` +
     `<div class="cline">${pCadence(s.cadence)}</div><div class="cline"><b>tracker</b> ${esc(t.system || "none")} ${urls}</div></div>`;
   const lab = [...s.lab.core, ...s.lab.docs], r = s.repo, a = s.agent;
   html += pDocs("p-space-docs", "Lab docs", lab, "No docs in the lab folder.");
@@ -368,7 +370,7 @@ function pKnowledge(pg) {
     pDocs("p-space-sessions", "Sessions", a.sessions, "No session notes.") + pDocs("p-space-outcomes", "Outcomes", a.outcomes, "No outcomes.");
   html += secHead("p-space-notes", "Knowledge notes", s.knowledge.length) + (s.knowledge.length
     ? pTbl(`<tr><th data-role="lead">note</th><th>title</th><th>names it in</th></tr>`,
-      s.knowledge.map((n) => `<tr><td class="wrap">${esc(n.path)}</td><td class="wrap">${esc(n.title)}</td><td class="muted">${esc(n.why)}</td></tr>`))
+      s.knowledge.map((n) => `<tr><td class="wrap">${esc(n.path)}</td><td class="wrap">${esc(pWhole(n.title))}</td><td class="muted">${esc(n.why)}</td></tr>`))
     : `<div class="card muted">No knowledge note names this project.</div>`);
   html += secHead("p-space-work", "Open asks and queue", s.asks.length + s.queue.length) +
     `<div class="card">${s.asks.length ? s.asks.map((k) => `<div><b>${esc(k.id)}</b> ${esc(k.title)}</div>`).join("") : `<div class="muted">No open asks.</div>`}</div>` +

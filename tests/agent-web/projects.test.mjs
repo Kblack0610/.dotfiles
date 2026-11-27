@@ -253,8 +253,8 @@ test("an opened project is a header and an inner tab strip over Overview, never 
 });
 
 test("Knowledge draws the project's docs, notes, asks and queue, says so for a part with nothing, and names a space that could not be read", () => {
-  const base = { status: { headline: "beta next", date: "2026-11-20" }, cadence: { target_days: 14, measured_days: 16, cuts: 8, due_on: "2026-12-02", due: true },
-    tracker: { system: "github", urls: ["https://example.test/demo"] }, lab: { core: [], docs: [{ path: "docs/briefs/a.md", title: "A <brief>", modified: "2026-11-01" }] },
+  const base = { status: { headline: shown("note", "beta next"), date: "2026-11-20" }, cadence: { target_days: 14, measured_days: 16, cuts: 8, due_on: "2026-12-02", due: true },
+    tracker: { system: "github", urls: ["https://example.test/demo"] }, lab: { core: [], docs: [{ path: "docs/briefs/a.md", title: shown("title", "A <brief>"), modified: "2026-11-01" }] },
     repo: null, agent: { plans: [], sessions: [], outcomes: [], lessons: { path: null, count: 0 } }, knowledge: [],
     asks: [{ id: "ask-1", title: "pick one" }], queue: [{ slug: "ar-1", state: "running" }], errors: ["agent-queue list: down"] };
   const k = ctx.pKnowledge({ space: base });

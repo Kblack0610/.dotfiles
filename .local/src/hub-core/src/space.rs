@@ -7,18 +7,33 @@
 //! is named in `errors` and the rest of the space still shows. Field list: notes-cli README,
 //! "The project page".
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::boards::{self, Ask, AskSet};
+use crate::display::Shown;
 use crate::queue::{self, Item};
 use crate::session_actions::Runner;
+
+/// A heading from `notes`, as a title: empty is none.
+fn name<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Shown>, D::Error> {
+    let s = String::deserialize(d)?;
+    Ok((!s.trim().is_empty()).then(|| Shown::name(&s)))
+}
+
+/// A STATUS headline, as a note: empty is none.
+fn note<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Shown>, D::Error> {
+    let s = String::deserialize(d)?;
+    Ok((!s.trim().is_empty()).then(|| Shown::note(&s)))
+}
 
 /// One file in a list: its path from the list's root, its first heading and its modified day.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Doc {
     pub path: String,
-    pub title: String,
+    /// Its first heading, as its author wrote it; none when the file has none.
+    #[serde(deserialize_with = "name")]
+    pub title: Option<Shown>,
     pub modified: String,
 }
 
@@ -27,7 +42,8 @@ pub struct Doc {
 #[serde(default)]
 pub struct Note {
     pub path: String,
-    pub title: String,
+    #[serde(deserialize_with = "name")]
+    pub title: Option<Shown>,
     pub why: String,
 }
 
@@ -43,7 +59,8 @@ pub struct Counts {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Status {
-    pub headline: String,
+    #[serde(deserialize_with = "note")]
+    pub headline: Option<Shown>,
     pub date: String,
 }
 
@@ -241,7 +258,10 @@ mod tests {
         ]);
         let s = read(&r, "garden").unwrap();
         assert_eq!(s.stage, "dev");
-        assert_eq!(s.lab.core[0].title, "Garden");
+        assert_eq!(
+            s.lab.core[0].title.as_ref().map(Shown::text),
+            Some("Garden")
+        );
         assert_eq!(s.knowledge[0].why, "path");
         assert!(s.repo.is_none());
         assert_eq!(

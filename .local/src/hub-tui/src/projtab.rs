@@ -10,6 +10,7 @@
 
 use hub_core::deliverables::{Deliverable, Deliverables};
 use hub_core::departments::{self, Coverage};
+use hub_core::display::Shown;
 use hub_core::home::Running;
 use hub_core::layout::{self, Inner, Tab};
 use hub_core::page::{NeedGroup, Page, System};
@@ -1064,7 +1065,14 @@ fn doc_lines(
             format!("  {}", d.modified)
         };
         out.push(clip_line(
-            Line::styled(format!("  {}  {}{day}", d.path, d.title), p.dim()),
+            Line::styled(
+                format!(
+                    "  {}  {}{day}",
+                    d.path,
+                    d.title.as_ref().map_or("", Shown::full)
+                ),
+                p.dim(),
+            ),
             w,
         ));
     }
@@ -1090,9 +1098,9 @@ fn knowledge(pg: &Page, p: Palette, w: usize) -> Vec<Line<'static>> {
         )];
     };
     let mut out = vec![];
-    if !s.status.headline.is_empty() {
+    if let Some(h) = &s.status.headline {
         out.push(sec_head("STATUS", &s.status.date, "", p, w));
-        out.extend(wrapped("  ", &s.status.headline, p.dim(), p, w));
+        out.extend(wrapped("  ", h.full(), p.dim(), p, w));
         out.push(Line::raw(""));
     }
     out.push(sec_head(
@@ -1157,7 +1165,15 @@ fn knowledge(pg: &Page, p: Palette, w: usize) -> Vec<Line<'static>> {
     ));
     for n in s.knowledge.iter().take(KNOWLEDGE_SHOWN) {
         out.push(clip_line(
-            Line::styled(format!("  {:<11} {}  {}", n.why, n.path, n.title), p.dim()),
+            Line::styled(
+                format!(
+                    "  {:<11} {}  {}",
+                    n.why,
+                    n.path,
+                    n.title.as_ref().map_or("", Shown::full)
+                ),
+                p.dim(),
+            ),
             w,
         ));
     }
