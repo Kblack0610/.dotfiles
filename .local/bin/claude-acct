@@ -80,7 +80,7 @@
 #                        # (its mode footer), answering the folder trust prompt on the way
 #
 # Accounts: ~/.config/claude-acct/accounts, one `name dir` per line (`-` = default).
-# Sources: ~/.config/claude-acct/sources, one `name kind ref [reserve=N] [max_live=N] [rpm=N run_rpm=N] [run_usd=N] [parent=name] [alert=off] [priority=must|low] [host=a,b]`
+# Sources: ~/.config/claude-acct/sources, one `name kind ref [reserve=N] [max_live=N] [rpm=N run_rpm=N] [run_usd=N] [rpd=N] [parent=name] [alert=off] [priority=must|low] [host=a,b]`
 # per line (host: the row exists only on those hosts, by hostname; CLAUDE_ACCT_HOST overrides it), for every source that is not a Claude account (read by this script only; cl and
 # agent-panel read accounts). Kinds: codex (ref: the Codex sessions dir; the plan's rate limits come
 # from the newest rollout), agy (ref: an AI Pro quota group's bucket stem; its windows from
@@ -88,7 +88,8 @@
 # (ref: a key file of a member; the team's budget from /team/info). reserve overrides RESERVE_PCT,
 # max_live caps the running queue items on the source; rpm (the provider's request limit) over run_rpm
 # (what one run draws) caps them too, the lower of the two winning; run_usd (what one run costs) paces
-# a route with a deployment budget to the runs that budget carries a window (route_paced); parent names a pool the source spends inside:
+# a route with a deployment budget to the runs that budget carries a window (route_paced); rpd (requests a UTC day) refuses a
+# --model route once its requests since 00:00 UTC reach it (route_rpd); parent names a pool the source spends inside:
 # a source has room only when its parent does. A harness is tied to its source by `source` in
 # harnesses.json. Every kind is normalized to the one usage row, so room, status and the textfile
 # treat all sources alike. Each source is in exactly one of the two files.
@@ -170,12 +171,12 @@ sources_elsewhere() {
         { for (i = 4; i <= NF; i++) if ($i ~ /^host=/) { h = "," substr($i, 6) ","; if (index(h, "," me ",") == 0) print $1 } }' "$SRC_CONF"
 }
 
-# sources -> "name US kind US ref US reserve US max_live US parent US alert US priority US run_usd US basis" per line of the
+# sources -> "name US kind US ref US reserve US max_live US parent US alert US priority US run_usd US basis US rpd" per line of the
 # sources file, max_live the computed cap (cap_of) and basis how it was reached. A
 # line that cannot be read says so on stderr and is skipped, so a typo never becomes a silent row.
 sources() {
     [[ -f "$SRC_CONF" ]] || return 0
-    local name kind ref opts opt reserve max_live parent alert priority rpm run_rpm run_usd basis seen=''
+    local name kind ref opts opt reserve max_live parent alert priority rpm run_rpm run_usd rpd basis seen=''
     while read -r name kind ref opts; do
         [[ -z "$name" || "$name" == \#* ]] && continue
         if [[ ! "$name" =~ ^[A-Za-z0-9_-]+$ || -z "$kind" || -z "$ref" ]]; then
@@ -188,7 +189,7 @@ sources() {
             echo "claude-acct: $SRC_CONF: $name is listed twice; the later line is skipped" >&2; continue
         fi
         seen+=" $name"
-        reserve='' max_live='' parent='' alert='' priority='' host='' rpm='' run_rpm='' run_usd=''
+        reserve='' max_live='' parent='' alert='' priority='' host='' rpm='' run_rpm='' run_usd='' rpd=''
         for opt in $opts; do
             case "$opt" in
                 host=*) host=${opt#host=} ;;
@@ -197,6 +198,7 @@ sources() {
                 rpm=*) rpm=${opt#rpm=} ;;
                 run_rpm=*) run_rpm=${opt#run_rpm=} ;;
                 run_usd=*) run_usd=${opt#run_usd=} ;;
+                rpd=*) rpd=${opt#rpd=} ;;
                 parent=*) parent=${opt#parent=} ;;
                 alert=on|alert=off) alert=${opt#alert=} ;;
                 priority=must|priority=low) priority=${opt#priority=} ;;
@@ -207,9 +209,10 @@ sources() {
         [[ -z "$host" || ",$host," == *",${CLAUDE_ACCT_HOST:-${HOSTNAME%%.*}},"* ]] || continue
         [[ -z "$reserve" || "$reserve" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "claude-acct: $SRC_CONF: $name: reserve is not a number" >&2; reserve=''; }
         [[ -z "$max_live" || "$max_live" =~ ^[0-9]+$ ]] || { echo "claude-acct: $SRC_CONF: $name: max_live is not a whole number" >&2; max_live=''; }
+        [[ -z "$rpd" || "$rpd" =~ ^[1-9][0-9]*$ ]] || { echo "claude-acct: $SRC_CONF: $name: rpd is not a whole number over 0" >&2; rpd=''; }
         [[ -z "$run_usd" || "$run_usd" =~ $NUM_RE && ! "$run_usd" =~ ^0*\.?0*$ ]] || { echo "claude-acct: $SRC_CONF: $name: run_usd is not a number over 0" >&2; run_usd=''; }
         IFS=$'\t' read -r max_live basis < <(cap_of "$name" "$max_live" "$rpm" "$run_rpm")
-        printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\n' "$name" "$kind" "${ref/#\~/$HOME}" "$reserve" "$max_live" "$parent" "$alert" "$priority" "$run_usd" "$basis"
+        printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\n' "$name" "$kind" "${ref/#\~/$HOME}" "$reserve" "$max_live" "$parent" "$alert" "$priority" "$run_usd" "$basis" "$rpd"
     done < "$SRC_CONF"
 }
 
@@ -236,13 +239,13 @@ cap_of() {
 # priced route's starts a window (route_paced).
 runs_in() { awk -v a="$1" -v b="$2" 'BEGIN { n = int(a / b); print (n < 1 ? 1 : n) }'; }
 
-# rows_in -> "name US kind US ref US reserve US max_live US parent US alert US priority US run_usd US basis" for every row usage_json reads:
+# rows_in -> "name US kind US ref US reserve US max_live US parent US alert US priority US run_usd US basis US rpd" for every row usage_json reads:
 # the Claude accounts (kind claude, ref their dir), then the sources when USAGE_SOURCES=1
 rows_in() {
     local name dir row
     while IFS=$'\037' read -r name dir; do
         usage_wants "$name" || continue
-        printf '%s\037claude\037%s\037\037\037\037\037\037\037\n' "$name" "$dir"
+        printf '%s\037claude\037%s\037\037\037\037\037\037\037\037\n' "$name" "$dir"
     done < <(accounts)
     if [[ "${USAGE_SOURCES:-0}" == 1 ]]; then
         while IFS= read -r row; do
@@ -535,6 +538,20 @@ route_shed() {
     out=$(prom_q "max(litellm_deployment_state{model_id=\"$id\"}) > 0") ||
         { echo "claude-acct: ${1##*/}: Prometheus is unreadable, so whether the gateway sheds $2 is not read" >&2; return 1; }
     jq -e '.data.result | length > 0' <<< "$out" >/dev/null 2>&1
+}
+
+# route_rpd <model> <rpd> -> the requests the gateway took on <model> (requested_model) since 00:00 UTC,
+# read from Prometheus; nothing when it cannot be read, which reads as room and says so on stderr, as
+# route_shed does. room --source refuses a start at <rpd> or more: beam-free 429s past about 2,000
+# requests a UTC day (home-config apps/litellm/README.md), and route_shed sees that only once the
+# upstream already refuses, so starts went in as the quota ran out (ar-5732).
+route_rpd() {
+    local now secs out n
+    [[ "$1" != *[\"\\]* ]] || return 0
+    now="${CLAUDE_ACCT_NOW:-$(date +%s)}"; secs=$(( now % 86400 )); (( secs > 0 )) || secs=1
+    out=$(prom_q "sum(increase(litellm_proxy_total_requests_metric_total{requested_model=\"$1\"}[${secs}s]))" "$now") ||
+        { echo "claude-acct: Prometheus is unreadable, so today's requests on $1 are not read against its rpd $2" >&2; return 0; }
+    n=$(jq -r '.data.result[0].value[1] // "0" | tonumber | floor' <<< "$out" 2>/dev/null) && [[ "$n" =~ ^[0-9]+$ ]] && printf '%s' "$n"
 }
 
 # route_paced <key file> <model> <source> <run_usd> -> why the route takes no more starts this window,
@@ -1154,7 +1171,7 @@ session_rate() {
 # nospend skips Prometheus, so a `cl` off the LAN does not wait out its timeout.
 usage_json() {
     local name kind dir json rc state now resets start gone used over live spend lives rate slack reserve
-    local own_reserve max_live parent win paced srclive row_reserve email working cost read_at run_usd basis
+    local own_reserve max_live parent win paced srclive row_reserve email working cost read_at run_usd basis rpd
     srclive='{}'; [[ "${USAGE_SOURCES:-0}" == 1 ]] && srclive=$(source_live)
     # The room verdict is for automatic starts, so the machine-mode level scales its slack and reserve;
     # pick's rank, which `cl` uses, keeps the conf's own reserve.
@@ -1162,7 +1179,7 @@ usage_json() {
     now="${CLAUDE_ACCT_NOW:-$(date +%s)}"
     if [[ "${1:-}" == nospend ]]; then spend=null; else spend=$(spend_24h); fi
     lives=$(live_of)
-    while IFS=$'\037' read -r name kind dir own_reserve max_live parent alert _ run_usd basis; do
+    while IFS=$'\037' read -r name kind dir own_reserve max_live parent alert _ run_usd basis rpd; do
         case "$kind" in
             claude) json=$(fetch "$name"); rc=$?; rate=$(session_rate "${1:-}") ;;
             litellm-*) json=$(fetch_source "$name" "$kind" "$dir"); rc=$?; rate=$SESSION_RATE ;; # a dollar budget has no pace
@@ -1193,7 +1210,7 @@ usage_json() {
         row_reserve=$reserve
         [[ -z "$own_reserve" ]] || read -r _ row_reserve < <(level_scale CLAUDE_ACCT_PACE_SLACK_PCT "$PACE_SLACK_PCT" CLAUDE_ACCT_RESERVE_PCT "$own_reserve")
         jq -cn --arg name "$name" --arg dir "$dir" --arg email "$email" --arg state "$state" \
-            --arg kind "$kind" --argjson window "$win" --argjson paced "$paced" --arg parent "$parent" --arg max_live "$max_live" --arg alert "$alert" --arg basis "$basis" --arg run_usd "$run_usd" \
+            --arg kind "$kind" --argjson window "$win" --argjson paced "$paced" --arg parent "$parent" --arg max_live "$max_live" --arg alert "$alert" --arg basis "$basis" --arg run_usd "$run_usd" --arg rpd "$rpd" \
             --argjson usage "$json" --arg used "$used" --arg gone "$gone" \
             --arg resets "$resets" --arg read_at "$read_at" --argjson live "${live:-0}" --argjson working "${working:-0}" --argjson cost "${cost:-0}" --argjson spend "$spend" \
             --argjson now "$now" --argjson reserve "${own_reserve:-$RESERVE_PCT}" --argjson rate "$rate" \
@@ -1275,6 +1292,7 @@ usage_json() {
              paced: $paced, window: $window, reserve: $room_reserve, plan: ($usage.plan // null), reached: ($usage.reached // false),
              parent: (if $parent == "" then null else $parent end), alert: ($alert != "off"), max_live: (if $max_live == "" then null else ($max_live | tonumber) end),
              max_live_basis: (if $basis == "" then null else $basis end), run_usd: (if $run_usd == "" then null else ($run_usd | tonumber) end),
+             rpd: (if $rpd == "" then null else ($rpd | tonumber) end),
              usd_used: ($usage.usd_used // null), usd_max: ($usage.usd_max // null),
              five_hour: ($usage.five_hour.utilization // null),
              five_hour_resets: ($usage.five_hour.resets_at // null | if . == null then null else (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601? // null) end),
@@ -1694,9 +1712,19 @@ room_source() {
         why=$(route_paced "$ref" "$model" "$name" "$run_usd") && [[ -n "$why" ]]; then
         row=$(jq -c --arg w "$why" '.room += {ok: false, reason: "route_pace", reasons: ((.room.reasons // []) + ["route_pace"]), why: $w}' <<< "$row")
     fi
+    # The route's daily request cap: rpd requests since 00:00 UTC (route_rpd); the count rides on the row.
+    local rpd n
+    rpd=$(jq -r '.rpd // empty' <<< "$row")
+    if [[ -n "$model" && -n "$rpd" && "$kind" == litellm-* ]] && jq -e .room.ok <<< "$row" >/dev/null &&
+        n=$(route_rpd "$model" "$rpd") && [[ -n "$n" ]]; then
+        row=$(jq -c --argjson n "$n" --arg m "$model" '.rpd_used = $n | if $n >= .rpd then .room += {ok: false, reason: "route_rpd",
+            reasons: ((.room.reasons // []) + ["route_rpd"]),
+            why: "\($n) requests on \($m) since 00:00 UTC, at its rpd of \(.rpd); it takes starts again after midnight UTC"} else . end' <<< "$row")
+    fi
     if [[ -n "$json" ]]; then jq -c . <<< "$row"
     else jq -r '"\(.name): " + (if .room.ok then "room, \(.week_used // 0 | floor)% of its window used"
         + (if .usd_max != null then " ($\(.usd_used * 100 | round / 100) of $\(.usd_max | floor))" else "" end)
+        + (if .rpd_used != null then ", \(.rpd_used) of its rpd \(.rpd) requests today" else "" end)
         else .room.why end)' <<< "$row"
     fi
     jq -e '.room.ok' <<< "$row" >/dev/null && return 0
