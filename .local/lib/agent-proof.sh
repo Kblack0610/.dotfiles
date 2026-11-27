@@ -194,25 +194,29 @@ proof_report() {
   mkdir -p "$dir" 2>/dev/null || return 0
   printf '%s' "$verdict" > "$dir/last-outcome" 2>/dev/null || true
   # The standing hold: held_since is the first BLOCKED pass of an unbroken run, held_why the latest
-  # one's reason, and a WORKED or NOOP pass ends the run. A pass that went past the hold without
-  # proving it gone (a run-floor start, a pass that never read the gates) sets PROOF_HELD_KEEP=1.
-  # FAILED and STALLED leave it: they say nothing about the gate. proof_unhold ends a hold whose own
-  # gate let a pass through. Readers: fleet-dispatch stopped, Sessions' Runners (hub-core fleet.rs).
+  # one's reason. A hold says passes are stopped, so a WORKED pass ends the run whatever gate it went
+  # past (a floor start included: one kept a 9h Stopped line through 43 starts, ar-4387), and a NOOP
+  # ends it unless it never read the gates (PROOF_HELD_KEEP=1). FAILED and STALLED leave it: they say
+  # nothing about the gate. proof_unhold ends a hold from outside a pass (a gate that let one through,
+  # a kick's start). Readers: fleet-dispatch stopped and stats, Sessions' Runners (hub-core fleet.rs).
   case "$verdict" in
     BLOCKED)
       [ -s "$dir/held_since" ] || date +%s > "$dir/held_since" 2>/dev/null
       printf '%s' "${why:-unrecorded}" > "$dir/held_why" 2>/dev/null || true ;;
-    WORKED | NOOP) [ "${PROOF_HELD_KEEP:-0}" = 1 ] || rm -f "$dir/held_since" "$dir/held_why" ;;
+    WORKED) rm -f "$dir/held_since" "$dir/held_why" ;;
+    NOOP) [ "${PROOF_HELD_KEEP:-0}" = 1 ] || rm -f "$dir/held_since" "$dir/held_why" ;;
   esac
   printf '[%s] outcome=%s %s\n' "$(date -Is)" "$verdict" "$detail" >> "$dir/activity.log" 2>/dev/null || true
 }
 
-# proof_unhold NAME WHY - the gate that held NAME let a pass through, so a standing hold whose
+# proof_unhold NAME [WHY] - the gate that held NAME let a pass through, so a standing hold whose
 # reasons (proof_report joins them with "; ") include WHY is over. A hold for another reason is
 # left to its own gate. A called runner needs this: a call that succeeds writes no outcome line,
-# so no WORKED pass would ever end its budget hold.
+# so no WORKED pass would ever end its budget hold. With no WHY the hold ends whatever its reason:
+# work started under another name (a fleet-dispatch kick) proves NAME is not stopped.
 proof_unhold() {
   local dir="$(proof_state_dir)/$1" held
+  [ -n "${2:-}" ] || { rm -f "$dir/held_since" "$dir/held_why"; return 0; }
   held="$(cat "$dir/held_why" 2>/dev/null)" || return 0
   case "; $held; " in
     *"; $2; "* | *"; $2 (+"*) rm -f "$dir/held_since" "$dir/held_why" ;;

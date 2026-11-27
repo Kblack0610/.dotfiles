@@ -39,8 +39,10 @@ load 'fleet_dispatch/fleet_dispatch_run_holds'
 
 # 2026-11-05/06: every account over its pace held dispatch for a day, and each run-floor start
 # cleared the only alarm. The hold is what stopped; a floor start goes past it without ending it.
-@test "a hold stands across a run-floor start, and a start past an open gate ends it" {
-  local d="$HOME/.local/state/agentctl/fleet-dispatch"
+# 2026-11-26/27 (ar-4387): 43 run-floor starts went past an account hold over 4h and none ended it, so the
+# Stopped line counted from the first BLOCKED pass of the night. A hold says passes are stopped: a start ends it.
+@test "a run-floor start ends the hold, the next BLOCKED pass starts a new one, and BLOCKED passes alone keep the first" {
+  local d="$HOME/.local/state/agentctl/fleet-dispatch" t0
   two_items
   export DISPATCH_PER_PASS=1 DISPATCH_RUN_FLOOR=0
   acct "main:pace::5 points over its weekly pace (17% used, 7% of its week gone, 5 points of slack)"
@@ -48,6 +50,9 @@ load 'fleet_dispatch/fleet_dispatch_run_holds'
   assert_equal "$(outcome)" BLOCKED
   [ -s "$d/held_since" ] || fail "a BLOCKED pass left no held_since"
   echo "$(( $(date +%s) - 13 * 3600 - 30 ))" > "$d/held_since"
+  # Negative control: with no start, a BLOCKED pass keeps the hold's first pass, so it still grows.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_equal "$(outcome)" BLOCKED
   run "$REPO_ROOT/.local/bin/fleet-dispatch" stopped
   assert_failure
   assert_output 'Dispatch stopped 13h00m: no account has room; main is the closest, 5 points over its weekly pace. Clears when an account is back under its pace.'
@@ -56,15 +61,16 @@ load 'fleet_dispatch/fleet_dispatch_run_holds'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item fix-game on the run floor'
   assert_equal "$(outcome)" WORKED
+  [ ! -e "$d/held_since" ] || fail "a run-floor start left the hold standing"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" stopped
-  assert_failure
-  assert_output --partial 'Dispatch stopped 13h00m: no account has room'
-  # Negative control: an account with room again, and the next start ends the hold.
-  acct alt:ok:/home/u/.claude-personal
+  assert_success
+  assert_output ''
+  t0=$(date +%s)
+  export DISPATCH_RUN_FLOOR=0
+  acct "main:pace::5 points over its weekly pace"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'started queue item fix-app'
-  assert_equal "$(outcome)" WORKED
-  [ ! -e "$d/held_since" ] || fail "a start past an open gate left the hold standing"
+  assert_equal "$(outcome)" BLOCKED
+  [ "$(cat "$d/held_since")" -ge "$t0" ] || fail "the BLOCKED pass after a start kept the old hold: $(cat "$d/held_since") < $t0"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" stopped
   assert_success
   assert_output ''
@@ -464,17 +470,20 @@ load 'fleet_dispatch/fleet_dispatch_run_holds'
   assert_not_called 'wt new'
 }
 
-@test "a start past the account hold leaves it standing: the Stopped line keeps its duration" {
+@test "a start routed past the account hold ends it: the Stopped line counts no start" {
   local d="$HOME/.local/state/agentctl/fleet-dispatch"
   route_ready
   srcs codex:ok:5
   mkdir -p "$d"; echo "$(( $(date +%s) - 3 * 3600 - 30 ))" > "$d/held_since"; printf 'no account has room; alt is the closest, 4 points over its weekly pace' > "$d/held_why"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" stopped
+  assert_failure
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item fix-menu on codex'
   assert_equal "$(outcome)" WORKED
+  [ ! -e "$d/held_since" ] || fail "a start past the account hold left it standing"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" stopped
-  assert_failure
-  assert_output --partial 'Dispatch stopped 3h00m: no account has room'
+  assert_success
+  assert_output ''
 }
 
 @test "a red past the ceiling routes only to a harness that can hold the red-fix gate" {

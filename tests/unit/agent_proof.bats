@@ -73,7 +73,7 @@ _ask() {  # _ask <agent> <status>
   assert_equal "$(cat "$AGENTCTL_STATE_DIR/demo-runner/last-outcome")" BLOCKED
 }
 
-@test "held_since stands from the first BLOCKED pass, FAILED keeps it, PROOF_HELD_KEEP keeps it, and an open pass clears it" {
+@test "held_since stands from the first BLOCKED pass, FAILED keeps it, PROOF_HELD_KEEP keeps it on a NOOP, and an open pass clears it" {
   export AGENTCTL_STATE_DIR="$SANDBOX/state"
   local d="$AGENTCTL_STATE_DIR/demo-runner"
   proof_outcome demo-runner BLOCKED "no account has room"
@@ -83,12 +83,40 @@ _ask() {  # _ask <agent> <status>
   assert_equal "$(cat "$d/held_why")" "load 40 on 16 cores"
   proof_outcome demo-runner FAILED "judge died"
   assert_equal "$(cat "$d/held_since")" 1000
-  PROOF_HELD_KEEP=1 proof_report demo-runner WORKED "started on the run floor"
+  PROOF_HELD_KEEP=1 proof_report demo-runner NOOP "another pass is running"
   assert_equal "$(cat "$d/held_since")" 1000
   # Negative control: a pass past an open gate ends the hold.
   proof_report demo-runner NOOP "queue empty"
   assert [ ! -e "$d/held_since" ]
   assert [ ! -e "$d/held_why" ]
+}
+
+# 2026-11-26/27 (ar-4387): run-floor starts kept the hold, so a 9h Stopped line stood over 43 starts.
+@test "a WORKED pass ends the hold even past a closed gate, and the next BLOCKED pass starts a new one" {
+  export AGENTCTL_STATE_DIR="$SANDBOX/state"
+  local d="$AGENTCTL_STATE_DIR/demo-runner"
+  proof_outcome demo-runner BLOCKED "no account has room"
+  echo 1000 > "$d/held_since"
+  PROOF_HELD_KEEP=1 proof_report demo-runner WORKED "started on the run floor"
+  assert [ ! -e "$d/held_since" ]
+  assert [ ! -e "$d/held_why" ]
+  proof_outcome demo-runner BLOCKED "no account has room"
+  [ "$(cat "$d/held_since")" -gt 1000 ] || fail "the BLOCKED pass after a start kept the first one: $(cat "$d/held_since")"
+}
+
+@test "proof_unhold with no reason ends any hold, and with one ends only a hold that names it" {
+  export AGENTCTL_STATE_DIR="$SANDBOX/state"
+  local d="$AGENTCTL_STATE_DIR/demo-runner"
+  proof_outcome demo-runner BLOCKED "no account has room"
+  proof_unhold demo-runner "load 40 on 16 cores"
+  assert [ -s "$d/held_since" ]
+  proof_unhold demo-runner
+  assert [ ! -e "$d/held_since" ]
+  assert [ ! -e "$d/held_why" ]
+  # No hold, nothing to end, and no state written.
+  run proof_unhold other-runner
+  assert_success
+  assert [ ! -e "$AGENTCTL_STATE_DIR/other-runner" ]
 }
 
 @test "proof_report records a word outside the vocabulary as FAILED, naming it" {
