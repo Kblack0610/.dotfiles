@@ -2083,6 +2083,22 @@ stacked_pair() {
   assert_output 0
 }
 
+# ar-2940: hc-956 (home-config) stacked on a .dotfiles PR was cut in home-config, where the head is no commit.
+@test "start --item of a phase stacked on another repo's open PR cuts its worktree in that PR's repo (ar-2940)" {
+  stacked_pair
+  project tools alpha "$SANDBOX/repos/tools"
+  mkdir -p "$SANDBOX/repos/tools"
+  agent-queue set base open_pr=Org/tools#7
+  stub wt 'printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; echo "tools-agent-1"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item second
+  assert_success
+  assert_called "new --base 0123456789abcdef0123456789abcdef01234567 --server lab --detach -c $SANDBOX/repos/tools"
+  assert_output --partial "in $SANDBOX/repos/tools, that PR's repo"
+  # NEGATIVE CONTROL: stacked on a PR of its own repo, it is cut in its project's checkout.
+  run grep -c -e "-c $SANDBOX/repos/game" "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
 @test "start --item of a stacked phase whose PR head cannot be read starts nothing and stays queued (ar-3852)" {
   stacked_pair
   gh_script 'case "$*" in *headRefOid*) exit 1 ;; *state*) echo OPEN ;; esac'
