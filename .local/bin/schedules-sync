@@ -540,7 +540,7 @@ def parse_workflow(text):
 
     try:
         doc = yaml.safe_load(text)
-    except yaml.YAMLError:
+    except (yaml.YAMLError, ValueError, RecursionError):  # ValueError: a bad date scalar
         return None  # GitHub would not schedule an unparseable file either
     if not isinstance(doc, dict):
         return None
