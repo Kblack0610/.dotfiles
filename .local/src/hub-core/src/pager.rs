@@ -113,8 +113,6 @@ pub fn decide(needs: &[Need], paged: &HashSet<String>, buzzed: usize, cfg: &Conf
         .iter()
         .copied()
         .filter(|n| n.score.as_ref().is_some_and(|s| s.value >= cfg.min_score))
-        // An audit (posted before ar-4765) is a review, not a blocking decision: it waits on Home.
-        .filter(|n| n.ask.as_ref().is_none_or(|a| a.audit_of.is_empty()))
         .filter(|n| {
             !paged.contains(&n.id)
                 || (in_repage_window(n, cfg) && !paged.contains(&repage_key(&n.id)))
@@ -363,29 +361,6 @@ mod tests {
         assert!(c.min_score > 0 && c.top > 0);
         assert_eq!(c.buzz, ["high", "urgent"]);
         assert!(config("[report]\nbuzz = []\n").is_err());
-    }
-
-    #[test]
-    fn an_audit_ask_never_pages_but_still_counts_as_waiting() {
-        let mut audit = row(Kind::Ask, "au", true, 600);
-        audit.ask = Some(crate::boards::Ask {
-            audit_of: "q1".into(),
-            ..Default::default()
-        });
-        let real = row(Kind::Ask, "a1", true, 600);
-        // Negative control: the same row without audit_of pages.
-        let d = decide(std::slice::from_ref(&real), &set(&[]), 0, &cfg());
-        assert_eq!(d.page.unwrap().reference.as_deref(), Some("ask:a1"));
-        let d = decide(&[audit.clone()], &set(&[]), 0, &cfg());
-        assert_eq!(d.page, None);
-        assert!(d.paged.is_empty());
-        let p = decide(&[audit, real], &set(&[]), 0, &cfg()).page.unwrap();
-        assert_eq!(p.reference.as_deref(), Some("ask:a1"));
-        assert!(
-            p.text.starts_with("1 new needs you, 2 waiting."),
-            "{}",
-            p.text
-        );
     }
 
     #[test]
