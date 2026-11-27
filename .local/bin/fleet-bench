@@ -122,13 +122,14 @@
 #                                retires earlier weeks' queued canaries and queues the week's canary run: the claude lane, then each lane in
 #                                BENCH_CANARY_LANES whose source has room
 #   fleet-bench canary list [--by harness,model[,pts]] [--json] | verify [id...] | queue [--harness h [--model m [--effort e]] [--task id[,id]] [--pts n[,n]]]
-#                                | retire | start <id> | score <id> | matrix [--harness h] [--days N] [--json]
+#                                | retire | start <id> | score <id> | verdict <run> | matrix [--harness h] [--days N] [--json]
 #                                | shepherd [--days N] [--json] | dream [--days N] [--json]
 #                                the fixed eval set: tasks from merged PRs, the pre-merge commit and
 #                                the PR's own tests as the oracle. queue adds one canary item per task
 #                                a week (retro runs it), retire cancels an earlier week's queued ones, start puts the session's worktree at the
 #                                task's base, score lays the oracle over it, records pass or fail once
-#                                per run and puts the tree back where start found it, clean (its diff kept as <run>.patch); verify proves each oracle fails at base, passes at merge;
+#                                per run and puts the tree back where start found it, clean (its diff kept as <run>.patch); verdict prints a scored run's
+#                                pass, fail, not-run or instrument (fleet-dispatch canary-close closes the item by it); verify proves each oracle fails at base, passes at merge;
 #                                shepherd compares the shepherd's pass lanes (its CANARY_MODEL) by model, over the span every lane ran;
 #                                list --by sets each lane beside the claude lane on their shared tasks;
 #                                matrix is BENCH_MATRIX's kind by stack grid and run modes for one
@@ -354,6 +355,8 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${BENCH_CANARY_TIMEOUT:=900}"   # canary: seconds an oracle may run
 : "${BENCH_CANARY_RETRIES:=1}"   # canary queue: times a canary a session cancelled is queued again in its week (a cancel by hand stays cancelled)
 : "${BENCH_CANARY_WRAP:=}"   # canary score: a shell prefix the oracle command runs inside (fleet-dispatch: a sandboxed lane's srt line)
+: "${BENCH_CANARY_HARNESS:=}"   # canary score: the harness and model the launcher started (fleet-dispatch's tail), read before the item records them
+: "${BENCH_CANARY_MODEL:=}"
 : "${BENCH_CANARY_RUN_LOG:=}"   # canary score: a command printing the harness's own log of the run (fleet-dispatch run-log), kept as <run>.harness.log
 : "${BENCH_CANARY_CONFIG_REPOS:=$HOME/.dotfiles:$HOME/.dotfiles-private}"   # canary score: the config a run ran under, by HEAD (colon-separated)
 : "${BENCH_CANARY_LANES:=$HOME/.config/fleet-bench/canary-lanes}"   # the lanes canary_top_up fills beside claude, `harness model [effort]` a line (content as data)
@@ -7217,7 +7220,7 @@ canary_brief() {
     "2. Do this task there, as you would on main: \(.task)",
     (if (.accept // []) | length > 0 then "   \($done)" else empty end),
     "3. Run `fleet-bench canary score \(.id)` once: it \($k.lays), records the score and puts this worktree back at that commit, keeping your diff beside the score'"'"'s log. Its result is final.",
-    "4. agent-queue move \($slug) done --status ok, then wind down (in Claude Code, the wind-down skill; in any other harness, end the session)."' <<<"$1"
+    "4. fleet-dispatch canary-close \($slug) (it closes the item by the score: ok when the oracle passed, failed when it did not), then wind down (in Claude Code, the wind-down skill; in any other harness, end the session)."' <<<"$1"
 }
 
 # canary queue [--harness h [--model m]]: one canary item per task for this ISO week, none for a
@@ -7457,17 +7460,18 @@ canary_top_up() {
   return "$rc"
 }
 
-# canary_lane -> {harness, model, effort, session_id, end_reason} of the run scoring now: harness, model, effort and
-# end_reason (why the session ended: the one record, which fleet-dispatch record-end writes in the canary tail)
-# from its queue item, else codex when CODEX_THREAD_ID is set, else claude. The session is that harness's own
-# id, else the newest one claimed on the item.
+# canary_lane -> {harness, model, effort, session_id, end_reason} of the run scoring now: harness and model from what
+# the launcher started (BENCH_CANARY_HARNESS and _MODEL, fleet-dispatch's tail: a run that ends in seconds scores before
+# the start records them on the item), else from its queue item; effort and end_reason (why the session ended: the one
+# record, which fleet-dispatch record-end writes in the canary tail) from the item. With no item the harness is codex
+# when CODEX_THREAD_ID is set, else claude. The session is that harness's own id, else the newest one claimed on the item.
 canary_lane() {
   local it=null
   [ -z "${AGENT_QUEUE_ITEM:-}" ] || it=$($BENCH_CANARY_QUEUE_CMD show "$AGENT_QUEUE_ITEM" --json 2>/dev/null | jq -ce objects) || it=null
-  jq -nc --argjson it "$it" --arg cx "${CODEX_THREAD_ID:-}" --arg cl "${CLAUDE_CODE_SESSION_ID:-}" '
+  jq -nc --argjson it "$it" --arg cx "${CODEX_THREAD_ID:-}" --arg cl "${CLAUDE_CODE_SESSION_ID:-}" --arg eh "$BENCH_CANARY_HARNESS" --arg em "$BENCH_CANARY_MODEL" '
     def nz: if . == "" then null else . end;
-    ($it.agent // (if $cx != "" then "codex" else "claude" end)) as $h
-    | {harness: $h, model: ($it.model // null | nz), effort: ($it.effort // null | nz), end_reason: ($it.end_reason // null | nz),
+    ($eh | nz // $it.agent // (if $cx != "" then "codex" else "claude" end)) as $h
+    | {harness: $h, model: ($em | nz // $it.model // null | nz), effort: ($it.effort // null | nz), end_reason: ($it.end_reason // null | nz),
        session_id: ((if $h == "claude" then $cl elif $h == "codex" then $cx else "" end | nz)
                     // ($it.sessions // "" | split(" ") | map(select(length > 0)) | last))}'
 }
@@ -7567,6 +7571,13 @@ canary_score() {
   if [ -s "$CANARY" ] && jq -e --arg r "$run" 'select(.run == $r and .pass != null)' "$CANARY" >/dev/null 2>&1; then
     say "canary score: $run is already scored"; return 3
   fi
+  # A run of a queue item names its model: a row without one says nothing about what ran, so the tree is left as the run
+  # made it (nothing laid, nothing reset) until the item has one.
+  lane=$(canary_lane)
+  if [ -n "${AGENT_QUEUE_ITEM:-}" ] && [ -z "$(jq -r '.model // empty' <<<"$lane")" ]; then
+    say "canary score: $run records no model (queue item $AGENT_QUEUE_ITEM has none, and dispatch's start sets it), so the row would not say what ran: agent-queue set $AGENT_QUEUE_ITEM model=<model>, then score again"
+    return 1
+  fi
   mkdir -p "$DIR/canary"; log="$DIR/canary/$run.log"; : >"$log"
   # The harness's own log of the run, kept before its shared log rotates it away: why a run with no diff ended.
   if [ -n "$BENCH_CANARY_RUN_LOG" ]; then
@@ -7584,7 +7595,6 @@ canary_score() {
   cfg=$(for r in "${repos[@]}"; do
           printf '%s\t%s\n' "$(basename "$r")" "$(git -C "$r" rev-parse --short=12 HEAD 2>/dev/null || echo null)"
         done | jq -Rn '[inputs | split("\t") | {key: .[0], value: .[1]}] | from_entries')
-  lane=$(canary_lane)
   end=$(jq -r '.end_reason // empty' <<<"$lane")
   [ -z "${AGENT_QUEUE_ITEM:-}" ] || [ -n "$end" ] ||
     say "canary score: the session's end is unknown (the item has no end_reason: the harness record said nothing), so the oracle alone scores it"
@@ -7619,6 +7629,19 @@ canary_score() {
   fi
   [ -z "$(git -C "$top" status --porcelain)" ] ||
     say "canary score: $top keeps $(git -C "$top" -c core.quotePath=false status --porcelain | cut -c4- | paste -sd ' ') after its reset, so wt reap leaves it"
+}
+
+# canary verdict <run>: what a scored run came to, graded as every reader does (canary_graded): pass, fail, not-run (its
+# session ended outside the model) or instrument (the oracle or sandbox decided the week). Exit 1 when the run has no
+# score row. fleet-dispatch canary-close reads it to close the item: the one place the oracle's verdict becomes a status.
+canary_verdict() {
+  local run=${1:?usage: fleet-bench canary verdict <run>} v
+  [ $# -eq 1 ] || { say "usage: fleet-bench canary verdict <run>"; return 2; }
+  [ -s "$CANARY" ] || { say "canary verdict: no run is scored yet"; return 1; }
+  v=$(jq -rs --arg r "$run" "$JQ_LIB"'canary_graded | map(select(.run == $r)) | max_by(.epoch)
+    | if . == null then empty elif .instrument then "instrument" elif .pass == null then "not-run" elif .pass then "pass" else "fail" end' "$CANARY") &&
+    [ -n "$v" ] || { say "canary verdict: $run has no score"; return 1; }
+  printf '%s\n' "$v"
 }
 
 # canary verify [id...]: each oracle must fail at base and pass at merge (a task with no merge: with its
@@ -7976,8 +7999,9 @@ cmd_canary() {
     retire) shift; canary_retire "$@" ;;
     start) shift; canary_start "$@" ;;
     score) shift; canary_score "$@" ;;
+    verdict) shift; canary_verdict "$@" ;;
     matrix) shift; canary_matrix "$@" ;;
-    *) say "usage: fleet-bench canary list [--by harness,model[,pts]] [--json] | verify [id...] | queue [--harness h [--model m [--effort e]]] [--max N] [--task id[,id]] [--pts n[,n]] | retire | start <id> | score <id> [--end <reason>] | matrix [--harness h] [--days N] [--json] | shepherd [--days N] [--json] | dream [--days N] [--json]"; return 2 ;;
+    *) say "usage: fleet-bench canary list [--by harness,model[,pts]] [--json] | verify [id...] | queue [--harness h [--model m [--effort e]]] [--max N] [--task id[,id]] [--pts n[,n]] | retire | start <id> | score <id> | verdict <run> | matrix [--harness h] [--days N] [--json] | shepherd [--days N] [--json] | dream [--days N] [--json]"; return 2 ;;
   esac
 }
 

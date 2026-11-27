@@ -3298,7 +3298,7 @@ canary_fixture() {
   cat > "$SANDBOX/bin/cq-stub" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
-  show) [ -f "$CQ/$2.json" ] && cat "$CQ/$2.json" ;;
+  show) if [ -f "$CQ/$2.json" ]; then cat "$CQ/$2.json"; else jq -nc --arg s "$2" '{slug: $s, agent: "claude", model: "opus"}'; fi ;;   # an item with no file is a dispatched claude run: start records opus
   list) for f in "$CQ"/*.json; do [ ! -e "$f" ] || jq -c . "$f"; done ;;
   set) f="$CQ/$2.json"; shift 2; for kv in "$@"; do jq --arg k "${kv%%=*}" --arg v "${kv#*=}" '.[$k] = $v' "$f" > "$f.t" && mv "$f.t" "$f"; done ;;
   add) printf '%s\n' "$@" >> "$CQ/add.log"; agent=claude
@@ -3760,7 +3760,8 @@ STUB
   assert_line 'canary'
   assert_line "canary-greet-$week"
   assert_line --partial 'Run `fleet-bench canary start greet` here'
-  assert_line --partial "agent-queue move canary-greet-$week done --status ok"
+  assert_line --partial "fleet-dispatch canary-close canary-greet-$week"
+  refute_output --partial "agent-queue move canary-greet-$week done"
   refute_output --partial '/one-shot'
   run "$SUBJECT" canary queue
   assert_output "fleet-bench: canary: 0 queued, 1 already queued for $week"
@@ -3892,7 +3893,7 @@ cancel c-old-lane --why canary: superseded by the $week set"
   long="canary-di-$(printf dispatch-requested-night | sha1sum | cut -c1-4)-$week-codex-gpt-5-6-sol"
   assert_equal "${#long}" 40
   assert_equal "$(jq -r .model "$CQ/$long.json")" gpt-5.6-sol
-  grep -q "agent-queue move $long done" "$CQ/add.log"
+  grep -q "fleet-dispatch canary-close $long" "$CQ/add.log"
   run "$SUBJECT" canary queue --harness codex --model gpt-5.6-sol
   assert_output "fleet-bench: canary: 0 queued, 2 already queued for $week (codex/gpt-5.6-sol)"
   # Two ids that shorten to one prefix keep two slugs: in 2026w47 dispatch-load-hold and
@@ -4174,12 +4175,12 @@ echo "$2: room"; exit 0
   CODEX_THREAD_ID=cx-hi AGENT_QUEUE_ITEM=cx3 run "$SUBJECT" canary score greet
   assert_success
   run jq -c '[.run, .session_id, .harness, .model, .effort, .pass]' "$FLEET_BENCH_DIR/canary.jsonl"
-  assert_output $'["cx","cx-thread","codex","sol",null,true]\n["cx2","cx-own","codex","sol",null,true]\n["cl","cl1","claude",null,null,true]\n["cx3","cx-hi","codex","sol","high",true]'
+  assert_output $'["cx","cx-thread","codex","sol",null,true]\n["cx2","cx-own","codex","sol",null,true]\n["cl","cl1","claude","opus",null,true]\n["cx3","cx-hi","codex","sol","high",true]'
   # Each effort is its own lane in the comparison.
   run "$SUBJECT" canary list --by harness,model --json
   assert_success
   run jq -sc 'map([.harness, .model, .effort, .runs])' <<<"$output"
-  assert_output '[["claude",null,null,1],["codex","sol",null,2],["codex","sol","high",1]]'
+  assert_output '[["claude","opus",null,1],["codex","sol",null,2],["codex","sol","high",1]]'
   run "$SUBJECT" canary list --by harness,model
   assert_line --partial $'codex/sol@high\t1 runs'
 }
@@ -4300,6 +4301,42 @@ echo "$2: room"; exit 0
   run "$SUBJECT" kpi --json
   run jq -c '[.canary_runs["7d"], .canary_pass_rate["7d"]]' <<<"$output"
   assert_output '[1,1]'
+}
+
+@test "canary score: a queue item's row records its harness and model, the launcher's own when the item has none yet; an item with no model is refused before the oracle runs; verdict reads the run's row" {
+  kpi_setup; kpi_fixture; canary_fixture
+  git -C "$CREPO" worktree add -q --detach "$SANDBOX/wt" "$CBASE"
+  cd "$SANDBOX/wt"
+  # A run that ended in seconds scores before the start records agent and model on its item: the tail's own are the row's.
+  jq -n '{slug: "r1"}' > "$CQ/r1.json"
+  echo 'echo hello' > greet.sh
+  BENCH_CANARY_HARNESS=go BENCH_CANARY_MODEL=glm AGENT_QUEUE_ITEM=r1 run "$SUBJECT" canary score greet
+  assert_success
+  # Negative control: an item that names no model, with no launcher, is refused with the tree as the run left it.
+  jq -n '{slug: "r2", agent: "go"}' > "$CQ/r2.json"
+  echo 'echo hello' > greet.sh
+  AGENT_QUEUE_ITEM=r2 run "$SUBJECT" canary score greet
+  assert_failure 1
+  assert_output --partial 'r2 records no model'
+  assert_equal "$(cat greet.sh)" 'echo hello'
+  run jq -c '[.run, .harness, .model]' "$FLEET_BENCH_DIR/canary.jsonl"
+  assert_output '["r1","go","glm"]'
+  # Once the item has a model the same run scores.
+  jq -n '{slug: "r2", agent: "go", model: "kimi"}' > "$CQ/r2.json"
+  AGENT_QUEUE_ITEM=r2 run "$SUBJECT" canary score greet
+  assert_success
+  # verdict: what the run came to, graded as every reader does; no row is a failure, not a pass.
+  run "$SUBJECT" canary verdict r2
+  assert_output pass
+  jq -cn --argjson t "$T0" '{epoch: $t, run: "v-fail", id: "greet", harness: "go", model: "glm", rc: 1, pass: false},
+    {epoch: $t, run: "v-nr", id: "greet", harness: "go", model: "glm", rc: 1, pass: null, end_reason: "provider"},
+    {epoch: $t, run: "v-127", id: "greet", harness: "go", model: "glm", rc: 127, pass: false}' >> "$FLEET_BENCH_DIR/canary.jsonl"
+  run "$SUBJECT" canary verdict v-fail; assert_output fail
+  run "$SUBJECT" canary verdict v-nr; assert_output not-run
+  run "$SUBJECT" canary verdict v-127; assert_output instrument
+  run "$SUBJECT" canary verdict nope
+  assert_failure 1
+  assert_output --partial 'nope has no score'
 }
 
 @test "canary matrix: each kind by stack and each mode for one harness, from canary scores, its own items and its unclaimed sessions; unrated ends do not fail a cell" {

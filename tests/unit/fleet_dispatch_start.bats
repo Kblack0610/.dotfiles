@@ -904,9 +904,10 @@ load 'fleet_dispatch/common'
   # The canary oracle runs before and the score after, outside the sandbox; the run's line starts from env -i.
   # A start that fails skips the run and the score (the tree is not at base); the settings go either way.
   [[ "$line" == *":: trap rm\\ -f\\ "*"/srt-ses_eval"*".json EXIT; trap 'exit 129' HUP TERM; fleet-bench canary start c-7 && { timeout 180m env -i "* ]] || fail "no canary start then env -i: $line"
+  # The score is told the harness and model the start launched (a run ending in seconds scores before the item records them).
   # Why the session ended is written once to the item, read once the run is over where it ran; the score reads it from the item,
   # and keeps the run's own lines of the harness's log beside its canary log (run-log, ar-4133).
-  [[ "$line" == *"; fleet-dispatch record-end fix-menu paid ses_eval"*"; BENCH_CANARY_WRAP="*" AGENT_QUEUE_ITEM=fix-menu BENCH_CANARY_RUN_LOG=fleet-dispatch\\ run-log\\ paid\\ ses_eval"*" fleet-bench canary score c-7 && fleet-dispatch canary-close fix-menu; tmux set-option -t \"\$TMUX_PANE\" @headless fix-menu 2>/dev/null; env -i "* ]] || fail "no canary score, then the replay, after: $line"
+  [[ "$line" == *"; fleet-dispatch record-end fix-menu paid ses_eval"*"; BENCH_CANARY_WRAP="*" BENCH_CANARY_HARNESS=paid BENCH_CANARY_MODEL=glm AGENT_QUEUE_ITEM=fix-menu BENCH_CANARY_RUN_LOG=fleet-dispatch\\ run-log\\ paid\\ ses_eval"*" fleet-bench canary score c-7 && fleet-dispatch canary-close fix-menu; tmux set-option -t \"\$TMUX_PANE\" @headless fix-menu 2>/dev/null; env -i "* ]] || fail "no canary score, then the replay, after: $line"
   [[ "$line" == *"TMPDIR=$qr/tmp CLAUDE_CODE_TMPDIR=$qr/tmp AGENT_QUEUE_ITEM=fix-menu "*"XDG_DATA_HOME=$qr/data "*" srt --settings $qr/srt-ses_eval"*".json -- opencode run --standalone"* ]] || fail "opencode is not inside srt: $line"
   # The config is named by its target, which the sandbox re-allows; a link inside a masked dir would not resolve.
   [[ "$line" == *"OPENCODE_CONFIG=$(printf %q "$SANDBOX/eval-paid.json") "* ]] || fail "config not by its target: $line"
@@ -1312,19 +1313,29 @@ trainee_start_ready() {
   refute_output --partial 'no diff'
 }
 
-@test "canary-close: a canary run that ended in the model closes ok; one that ended outside it (provider, timeout) is queued again unrated, once" {
+@test "canary-close: an item closes by the oracle verdict (fail is failed, pass ok); a run that ended outside the model (provider, timeout) is queued again unrated, once" {
   trainee_start_ready
   stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"'
+  # fleet-bench canary verdict <run>: the verdict is the slug's own, so c-ok passes and c-bad fails.
+  stub fleet-bench '[ "$1 $2" = "canary verdict" ] || exit 2
+case "$3" in c-bad) echo fail ;; c-nr) echo not-run ;; c-none) echo "no score" >&2; exit 1 ;; *) echo pass ;; esac'
   FD="$REPO_ROOT/.local/bin/fleet-dispatch"
-  for spec in "c-stop|stopped" "c-prov|provider" "c-time|timeout"; do
+  for spec in "c-ok|stopped" "c-bad|stopped" "c-nr|stopped" "c-none|stopped" "c-prov|provider" "c-time|timeout"; do
     IFS='|' read -r slug end <<<"$spec"
-    agent-queue add --project game --slug "$slug" --priority high --tags tier1 "Canary $slug #pts/1" >/dev/null
+    agent-queue add --project game --slug "$slug" --from canary --priority high --tags tier1 "Canary $slug #pts/1" >/dev/null
     agent-queue set "$slug" "lane_run=run-$slug" >/dev/null; agent-queue move "$slug" running >/dev/null
     agent-queue set "$slug" "end_reason=$end" >/dev/null
     run "$FD" canary-close "$slug"
-    assert_success
+    if [ "$slug" = c-none ]; then assert_failure 1; else assert_success; fi
   done
-  assert_equal "$(agent-queue show c-stop --json | jq -r '[.state, .status] | join(" ")')" 'done ok'
+  assert_equal "$(agent-queue show c-ok --json | jq -r '[.state, .status] | join(" ")')" 'done ok'
+  assert_equal "$(agent-queue show c-bad --json | jq -r '[.state, .status, .outcome] | join(" ")')" 'done failed unrated'
+  assert_equal "$(agent-queue show c-nr --json | jq -r '[.state, .status] | join(" ")')" 'done ok'
+  # No score row for the run: the item stays open, not closed ok on a score that never ran.
+  assert_equal "$(agent-queue show c-none --json | jq -r .state)" running
+  # A canary's failed verdict is the task's, not the lane's: its model-lane run is filed unrated, never failed.
+  grep -qx 'model-lane outcome run-c-bad unrated --cause close' "$NOTES_FIXTURE/calls.log" || fail "a failed canary was not filed unrated: $(cat "$NOTES_FIXTURE/calls.log")"
+  ! grep -E 'run-c-bad failed' "$NOTES_FIXTURE/calls.log" || fail "a failed canary was charged to its lane"
   # Outside the model: back in the queue with its end, its run filed unrated (a provider end by itself, a timeout by its cause).
   assert_equal "$(agent-queue show c-prov --json | jq -r '[.state, .end_reason] | join(" ")')" 'queued provider'
   assert_equal "$(agent-queue show c-time --json | jq -r '[.state, .end_reason] | join(" ")')" 'queued timeout'
