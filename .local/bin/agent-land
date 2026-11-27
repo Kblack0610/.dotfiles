@@ -41,7 +41,7 @@
 # taken from the session, not named by --item, takes only a PR in its project's repo, and only one it
 # records or whose body names it on an "Item: <slug>" line (own_item).
 # Exit 0 landed, 1 a step failed, 2 usage, 3 a catch-up merge of origin/<base> that conflicts
-# (before or after the checks), or a Forgejo base that moved on during FJ_CATCHUP_MAX merged-up runs: resolve it and re-run, 4 an item stacked on an item that has not closed ok (stack_gate), 5 critical work waiting on its validate item (validate_gate): that session lands it on a pass, so the author winds down. A head pushed after the checks waits on its own
+# (before or after the checks): resolve it and re-run; or a Forgejo base still moving after FJ_CATCHUP_MAX merged-up runs: nothing to resolve, re-run, 4 an item stacked on an item that has not closed ok (stack_gate), 5 critical work waiting on its validate item (validate_gate): that session lands it on a pass, so the author winds down. A head pushed after the checks waits on its own
 # checks before it merges; the local gate script runs again on a merge of <base> only when the repo's CI
 # doc says it needs one.
 # An already MERGED PR skips checks, fetch and merge, so a re-run finishes a failed record step.
@@ -620,7 +620,7 @@ moved_misses_pick() {
 # is a new tree, and merging one before its checks ran shipped a broken one (dotfiles #1504; #1731
 # merged a merge-up head whose checks ran only after the merge). So it returns 0 when the head is
 # current, and 1 after a push: the caller waits on the PR checks for that head, then calls it again.
-# After the gate (catch_up after <waits so far>), a base with no strict required checks (strict_checks)
+# After the gate (catch_up after <waits so far>), a GitHub base with no strict required checks (strict_checks)
 # is merged up and re-checked CATCHUP_WAITS times; if it moved on again during those waits, the green
 # head lands behind it, which such a base allows, unless merging the base would conflict (then the
 # merge below runs and exits 3, since GitHub would refuse that head anyway): a base that merges faster than its checks run would otherwise loop it forever
@@ -630,9 +630,11 @@ moved_misses_pick() {
 # that is behind (2026-11-05: unity-core-playground #1837 was refused twice). A conflict is aborted
 # and exits 3. A Forgejo head never lands behind on that bound: a Forgejo base has no strict checks
 # (home-config master, its only rule), so home-config #1534 landed behind #1533 and left master red
-# (ar-6115). Short of moved_misses_pick it is merged up and re-checked until a run proves the merged
-# tree, FJ_CATCHUP_MAX runs at most; a base still moving after them exits 3 with nothing merged.
-CATCHUP_WAITS=1 FJ_CATCHUP_MAX=3
+# (ar-6115). Unless moved_misses_pick clears it (a repo with no tests/pick.sh, home-config's case,
+# never is) it is merged up and re-checked until a run proves the merged tree, FJ_CATCHUP_MAX runs at
+# most (AGENT_LAND_FJ_CATCHUP_MAX); a base still moving after them exits 3 with nothing merged, the
+# safe side of a busy base: a re-run starts the count again, and master stays green.
+CATCHUP_WAITS=1 FJ_CATCHUP_MAX=${AGENT_LAND_FJ_CATCHUP_MAX:-3}
 catch_up() {
   local out behind
   out=$(git fetch -q "$remote" 2>&1) || fail fetch "$(lastline "$out")"
@@ -648,7 +650,7 @@ catch_up() {
     elif moved_misses_pick; then
       why="and none of it can affect a test the head's own run picked"
     elif [ -n "$fj" ] && [ "${2:-0}" -ge "$FJ_CATCHUP_MAX" ]; then
-      printf 'agent-land: %s/%s moved on by %s during each of %s merged-up check runs, and a head behind it lands only once a run proves the merged tree: nothing merged; re-run once %s is quieter\n' \
+      printf 'agent-land: %s/%s moved on by %s during each of %s merged-up check runs, and a head behind it lands only once a run proves the merged tree: nothing merged and nothing to resolve; re-run once %s is quieter\n' \
         "$remote" "$base" "$behind" "$2" "$base" >&2
       land_failed fetch "$remote/$base moved on during $2 merged-up check runs"
       exit 3
@@ -1629,7 +1631,7 @@ if [ "$dry" -eq 1 ]; then
   echo "shape: shape-grow --body - \$(git merge-base HEAD origin/<base>) HEAD, unless a workflow at HEAD runs it  (no long function grows and no copy is added; each \"Split:\" or \"Dup: <row id> <name>...\" line names an open row that names each one)"
   echo "checks: gh pr checks $pr${repo:+ -R $repo} --watch --fail-fast -i $CHECKS_WATCH_INTERVAL  (must pass, or report none on a tier 1 or 2 item; a land that would refuse none, on a head with workflow files, first waits up to $CHECKS_FIRST_RUN_TRIES x ${CHECKS_QUEUED_POLL}s for its first run, AGENT_LAND_CHECKS_FIRST_RUN_TRIES)"
   echo "fetch: git fetch origin && git rev-list --count HEAD..origin/<base of #$pr>  (0 before the checks; after them git merge origin/<base> && git push, then the checks again on that head)"
-  [ -z "$fj" ] || echo "fetch: on Forgejo a base that moved on during the checks is merged up and re-checked every time, never landed behind unless moved_misses_pick clears it; still moving after $FJ_CATCHUP_MAX merged-up runs exits 3, nothing merged"
+  [ -z "$fj" ] || echo "fetch: on Forgejo a base that moved on during the checks is merged up and re-checked every time, landed behind only when moved_misses_pick clears it; still moving after $FJ_CATCHUP_MAX merged-up runs exits 3, nothing merged"
   echo "validate: gh api repos/<owner>/<repo>/pulls/$pr/files | judge_work_level  (critical: merges only on a pass verdict from the item's validate item on this head, else fleet-dispatch validate $item and exit $VALIDATE_WAIT)"
   echo "merge: gh pr merge $pr${repo:+ -R $repo} $method${admin[*]:+ ${admin[*]}} --match-head-commit \$(git rev-parse HEAD) && gh pr view $pr${repo:+ -R $repo} --json state  (must be MERGED)"
   echo "body: gh pr view $pr${repo:+ -R $repo} --json body | comms-lint --channel pr-body -  (a score, never a gate; first a ~/.cache/*.md or *.txt whose text is the body is deleted)"

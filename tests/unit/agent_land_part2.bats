@@ -965,7 +965,7 @@ EOS
   assert_output 1
 }
 
-@test "Forgejo: the base moves on again during the merged-up head's checks: merged up and re-checked again, never landed behind it (ar-6115)" {
+@test "Forgejo: the base moves on again during the merged-up head's checks: merged up and re-checked again, not landed behind it (ar-6115)" {
   forgejo
   printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
   printf '0\n1\n3\n0\n' >"$NOTES_FIXTURE/behind.seq"
@@ -987,21 +987,22 @@ EOS
 
 @test "Forgejo: a base that keeps moving through FJ_CATCHUP_MAX merged-up runs exits 3 with nothing merged (ar-6115)" {
   forgejo
+  export AGENT_LAND_FJ_CATCHUP_MAX=2
   printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
   printf '0\n' >"$NOTES_FIXTURE/behind.seq"
   printf '1\n' >"$NOTES_FIXTURE/behind"
   run "$LAND" 42 --item ship
   assert_failure 3
-  assert_output --partial 'origin/main moved on by 1 during each of 3 merged-up check runs'
+  assert_output --partial 'origin/main moved on by 1 during each of 2 merged-up check runs'
   assert_output --partial 'nothing merged'
   refute_output --partial 'landing that green head behind it'
   run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
-  assert_output 3
+  assert_output 2
   run grep -c 'pulls/42/merge' "$LOG"
   assert_output 0
 }
 
-@test "Forgejo --dry-run says a moved base is merged up and re-checked, never landed behind (ar-6115)" {
+@test "Forgejo --dry-run says a moved base is merged up and re-checked, landed behind only when the pick clears it (ar-6115)" {
   forgejo
   printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
   run "$LAND" 42 --item ship --dry-run
