@@ -251,9 +251,11 @@ FJ_JOB_CALLS = int(os.environ.get("SCHEDULES_FJ_JOB_CALLS", "150"))
 # A plain-text 403 "Forbidden" is the proxy's, not Forgejo's (its API errors are JSON): the CrowdSec
 # bouncer in front of it fails closed when its LAPI lookup times out (5 s), in bursts of up to about
 # 30 s (home-config row hc-440). fj() sends such a GET again, FJ_GATE_TRIES in all, waits doubling
-# from FJ_GATE_WAIT seconds, the rule so_forgejo_get keeps in lib/session-outcomes.sh.
+# from FJ_GATE_WAIT seconds, the rule so_forgejo_get keeps in lib/session-outcomes.sh. Once one call
+# runs out of tries the bouncer is down, not bursting, so FJ_GATED makes the rest of the pass try once.
 FJ_GATE_TRIES = 4
-FJ_GATE_WAIT = float(os.environ.get("SCHEDULES_FORGEJO_GATE_WAIT", "5"))
+FJ_GATE_WAIT = float(os.environ.get("SCHEDULES_FJ_GATE_WAIT", "5"))
+FJ_GATED = []
 KEEP = timedelta(days=30)  # the ledger's window, and how far back a cold pass reads
 RUNS_KEPT = int(os.environ.get("SCHEDULES_RUNS", "14"))
 PER_PAGE = int(os.environ.get("SCHEDULES_PER_PAGE", "100"))
@@ -414,8 +416,9 @@ def fj(host, path):
     refusal by the proxy in front (FJ_GATE_TRIES) is sent again."""
     tok = fj_token()
     conf = f'header = "Authorization: token {tok}"\n' if tok else ""
-    wait = FJ_GATE_WAIT
-    for t in range(1, FJ_GATE_TRIES + 1):
+    wait, tries = FJ_GATE_WAIT, 1 if FJ_GATED else FJ_GATE_TRIES
+    no_tok = "" if tok else f" ({FJ_TOKEN[1]})"
+    for t in range(1, tries + 1):
         try:
             p = subprocess.run([CURL, "-sS", "--fail-with-body", "-K", "-", "--max-time", "30",
                                 f"https://{host}/api/v1/{path}"],
@@ -424,10 +427,11 @@ def fj(host, path):
             raise GhError(f"forgejo {path}: no answer in {GH_CALL_TIMEOUT_S}s")
         if p.returncode != 22 or p.stdout.strip() != "Forbidden":
             break
-        if t == FJ_GATE_TRIES:
-            raise GhError(f"forgejo {path}: the proxy in front of Forgejo refused it {t} times with a"
+        if t == tries:
+            FJ_GATED.append(path)
+            raise GhError(f"forgejo {path}: the proxy in front of Forgejo refused it {t} time(s) with a"
                           ' plain-text 403 "Forbidden", not Forgejo\'s (the CrowdSec bouncer fails closed'
-                          " when its LAPI is slow)")
+                          " when its LAPI is slow)" + no_tok)
         time.sleep(wait)
         wait *= 2
     if p.returncode == 0:
@@ -436,7 +440,7 @@ def fj(host, path):
         except ValueError:
             pass
     why = (p.stderr or p.stdout).strip()[:200]
-    raise GhError(f"forgejo {path}: {why}" + ("" if tok else f" ({FJ_TOKEN[1]})"))
+    raise GhError(f"forgejo {path}: {why}" + no_tok)
 
 
 def read_map():

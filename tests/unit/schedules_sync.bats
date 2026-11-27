@@ -586,20 +586,24 @@ fj_run() {
   fj_run 4 2025-11-06T11:00:00Z
   tasks="$FJD/$(echo 'repos/o/fj/actions/tasks?limit=50&page=1' | tr '/?&=' '____')"
   echo 2 > "$tasks.forbid"
-  SCHEDULES_FORGEJO_GATE_WAIT=0 run "$SUBJECT"
+  SCHEDULES_FJ_GATE_WAIT=0 run "$SUBJECT"
   assert_success
   run grep -c 'actions/tasks?limit=50&page=1 |' "$FJD/calls"
   assert_output 3
   run jq -sc 'map([.repo, .id])' "$LEDGER"
   assert_output '[["o/fj",4]]'
   : > "$FJD/calls"; echo 9 > "$tasks.forbid"
-  SCHEDULES_FORGEJO_GATE_WAIT=0 run "$SUBJECT"
+  echo 9 > "$FJD/$(echo 'repos/o/fj/pulls?state=all&sort=recentupdate&limit=50&page=1' | tr '/?&=' '____').forbid"
+  SCHEDULES_FJ_GATE_WAIT=0 run "$SUBJECT"
   assert_failure 1
-  assert_output --partial 'the proxy in front of Forgejo refused it 4 times'
+  assert_output --partial 'the proxy in front of Forgejo refused it 4 time(s)'
   run grep -c 'actions/tasks?limit=50&page=1 |' "$FJD/calls"
   assert_output 4
+  run grep -c 'pulls?state=all&sort=recentupdate&limit=50&page=1 |' "$FJD/calls"
+  assert_output 1  # the bouncer is known down for the rest of the pass: one try, not four
+  rm "$FJD"/*pulls*.forbid
   : > "$FJD/calls"; rm "$tasks.forbid"; touch "$tasks.403"
-  SCHEDULES_FORGEJO_GATE_WAIT=0 run "$SUBJECT"
+  SCHEDULES_FJ_GATE_WAIT=0 run "$SUBJECT"
   assert_failure 1
   assert_output --partial 'error: 403'
   refute_output --partial 'proxy'
