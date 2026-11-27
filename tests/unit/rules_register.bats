@@ -533,6 +533,59 @@ lesson_dir() {
   printf -- '- **2026-11-20** **Run it twice.** Why: it recurred.\n  <!-- seen:%s 2026-11-21 -->%s\n' "$1" "${2:+ $2}" > "$RULES_LESSONS_DIR/proj.md"
 }
 
+# grow <source> <anchor> [extra json]: a rule row on <source>, which may be a global file or a repo file.
+grow() {
+  local extra="${3:-}"
+  jq -nc --arg s "$1" --arg a "$2" --argjson x "${extra:-"{}"}" \
+    '{source: $s, anchor: $a, kind: "provisional", enforced_by: env.ENF, confidence: "high", number: "n", revisit: "r", action: "keep"} + $x' >> "$RULES_REGISTER"
+}
+
+@test "rules --check: a global row names where it applies, and one repo is a layer fault (negative control)" {
+  export RULES_GLOBAL_SOURCES="$SANDBOX/global.md"
+  printf -- '- Every session writes plain ASCII only.\n- The ticket CLI is for one repo only.\n- Another global rule for two repos.\n- And one more for everyone.\n' > "$SANDBOX/global.md"
+  grow "$SANDBOX/global.md" 'plain ASCII only' '{"applies":"all"}'
+  grow "$SANDBOX/global.md" 'Another global rule' '{"applies":["dotfiles","home-config"]}'
+  run "$SUBJECT" rules --check
+  assert_success
+  grow "$SANDBOX/global.md" 'one repo only' '{"applies":["home-config"]}'
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'layer: global.md: one repo only: applies lists 1 repo(s)'
+  refute_output --partial 'plain ASCII'
+}
+
+@test "rules --check: a global row with no applies fails, and an empty list is not two repos" {
+  export RULES_GLOBAL_SOURCES="$SANDBOX/global.md"
+  printf -- '- And one more for everyone.\n' > "$SANDBOX/global.md"
+  grow "$SANDBOX/global.md" 'one more for everyone'
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'layer: global.md: one more for everyone: names no applies'
+  rm "$RULES_REGISTER"
+  grow "$SANDBOX/global.md" 'one more for everyone' '{"applies":[]}'
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'applies lists 0 repo(s)'
+}
+
+@test "rules --check: a repo row whose anchor is a global row's restates it, unless it says why it must stand alone" {
+  export RULES_GLOBAL_SOURCES="$SANDBOX/global.md"
+  printf -- '- Do not hard-wrap prose or bullets to a column.\n' > "$SANDBOX/global.md"
+  printf -- '- Do not hard-wrap prose or bullets to a column, here too.\n- Keep tables narrow in this repo.\n' > "$SANDBOX/repo.md"
+  grow "$SANDBOX/global.md" 'Do not hard-wrap prose or bullets to a column' '{"applies":"all"}'
+  grow "$SANDBOX/repo.md" 'Do not hard-wrap prose or bullets to a column, here too.' '{}'
+  grow "$SANDBOX/repo.md" 'Keep tables narrow in this repo' '{}'
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'layer: repo.md: Do not hard-wrap prose or bullets to a column, here too.: restates a global row'
+  refute_output --partial 'Keep tables narrow'
+  rm "$RULES_REGISTER"
+  grow "$SANDBOX/global.md" 'Do not hard-wrap prose or bullets to a column' '{"applies":"all"}'
+  grow "$SANDBOX/repo.md" 'Do not hard-wrap prose or bullets to a column, here too.' '{"layer_waiver":"teammates read this file alone"}'
+  run "$SUBJECT" rules --check
+  assert_success
+}
+
 @test "rules --check: a lesson the sweep found twice must name a check that resolves, or say review; once is no failure" {
   lesson_dir 1
   run "$SUBJECT" rules --check
@@ -608,6 +661,9 @@ real_register() { [ -s "$REAL" ] || skip "no register at $REAL"; }
   assert_output ''
   # A copied bound is the register's own fault wherever its source lives, so no row may carry one.
   run jq -r '.[] | select(.restates) | "\(.source): \(.anchor)"' <<<"$states"
+  assert_output ''
+  # Likewise a layer fault: a global row with no applies, or a repo row restating a global one.
+  run jq -r '.[] | select(.layer != "") | "\(.source): \(.anchor): \(.layer)"' <<<"$states"
   assert_output ''
   # A pass above means nothing if no source resolved: the rows must have been read.
   [ "$(jq '[.[] | select(.anchored == true)] | length' <<<"$states")" -gt 0 ]
