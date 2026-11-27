@@ -968,7 +968,7 @@ EOS
 @test "a Forgejo check that failed stops at checks, naming it; nothing merged" {
   forgejo
   printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
-  echo '{"statuses":[{"status":"success","context":"lint"},{"status":"failure","context":"checks / test"}]}' >"$NOTES_FIXTURE/fj.status"
+  echo '[{"id":1,"status":"success","context":"lint"},{"id":2,"status":"failure","context":"checks / test"}]' >"$NOTES_FIXTURE/fj.status"
   run "$LAND" 42 --item ship
   assert_failure 1
   assert_output --partial 'checks failed: checks / test'
@@ -1013,7 +1013,7 @@ EOS
 @test "a Forgejo base whose protection rule requires statuses refuses a head with none; with no rule it lands" {
   forgejo
   printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
-  echo '{"statuses":[]}' >"$NOTES_FIXTURE/fj.status"
+  echo '[]' >"$NOTES_FIXTURE/fj.status"
   export AGENT_LAND_CHECKS_TRIES=1 AGENT_LAND_CHECKS_POLL=0
   echo '[{"rule_name":"main","enable_status_check":true,"block_on_outdated_branch":false}]' >"$NOTES_FIXTURE/fj.protections"
   run "$LAND" 42 --item ship

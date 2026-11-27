@@ -452,9 +452,9 @@ first_run_wait() {
   [ "$extra" -ne 0 ] || echo "checks: none reported yet, which this land would refuse; waiting up to $CHECKS_FIRST_RUN_TRIES x ${CHECKS_QUEUED_POLL}s for the head's first run"
   sleep "$CHECKS_QUEUED_POLL"
 }
-# fj_wait_checks: Forgejo has no watch, and no event a script can await, so the head's combined
-# commit status is read once per CHECKS_WATCH_INTERVAL while a status is pending, and CHECKS_POLL
-# apart while none is reported yet, through so_forgejo_checks and pr-ci.sh's ci (warning passes).
+# fj_wait_checks: Forgejo has no watch, and no event a script can await, so the head's statuses are
+# read once per CHECKS_WATCH_INTERVAL while a status is pending, and CHECKS_POLL apart while none is
+# reported yet, through so_forgejo_checks and pr-ci.sh's ci (warning passes, each context by its newest run).
 fj_wait_checks() {
   local try st head deadline=$((SECONDS + CHECKS_WAIT_TIMEOUT))
   head=$(git rev-parse HEAD)
@@ -473,7 +473,7 @@ fj_wait_checks() {
       had_checks=yes
       return 0
       ;;
-    FAIL) fail checks "$(jq -r 'map(select(.state == "FAILURE" or .state == "ERROR") | .context) | join(", ")' <<<"$st")" ;;
+    FAIL) fail checks "$(jq -r "$CI_JQ"' {statusCheckRollup: .} | [checks[] | select(.state | test(red_re)) | .name] | join(", ")' <<<"$st")" ;;
     PENDING)
       try=0
       sleep "$CHECKS_WATCH_INTERVAL"
