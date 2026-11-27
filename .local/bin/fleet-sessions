@@ -2553,6 +2553,32 @@ refused_wait() {
   awk -F'\t' -v p="$2" '$1 == p { h = $2 } END { if (h != "") print h }' "$key.refused"
 }
 
+# pr_not_here <host> <state> <all items> <item slugs, comma list|-> <pr_made_here's arguments...> -> true when the row's branch
+# PR is not this session's work. A finished one (MERGED or CLOSED) on this machine is not when pr_made_here
+# says another session made it. An open one is unlanded work in this tree, except on a validate item's
+# session: it reviews the author item's PR from a worktree cut at its head (cmd_validate in fleet-dispatch),
+# and once it records a fail verdict (validate_failed_here) the PR is the author item's to fix.
+# validate-ar-5194-3edd08df read keep "land it: PR #3435 open" after failing it (ar-5260). A pass keeps
+# it: the validate session lands it itself. With no verdict yet the review is still left here, so a
+# session that died mid-review is not closed as done.
+pr_not_here() {
+  local host="$1" state="$2" qall="$3" islugs="$4"; shift 4
+  case "$state" in
+    MERGED | CLOSED) [ "$host" = - ] && [ -s "$5" ] && ! pr_made_here "$@" ;;
+    OPEN) validate_failed_here "$qall" "$islugs" ;;
+    *) return 1 ;;
+  esac
+}
+
+# validate_failed_here <all items, jsonl> <item slugs, comma list|-> -> true when one of the items is a validate
+# item (tagged validate) that records a fail verdict, as the validate brief has it set before it runs agent-land.
+# Its verdict_head is not compared: a push after the fail is a new head, reviewed by a new validate item.
+validate_failed_here() {
+  [ "$2" != - ] && jq -ne --arg s ",$2," 'any(inputs; (.slug as $x | $s | contains("," + $x + ","))
+    and ((.tags // "") | if type == "array" then join(" ") else tostring end | [splits("\\s+")] | index("validate") != null)
+    and .verdict == "fail")' <<<"$1" >/dev/null 2>&1
+}
+
 # validate_hold <all items, jsonl> <the row's item slugs, comma list> <PR head oid> <clone|-> -> what agent-land's validate_gate
 # would say of this head: "failed <validate slug>" when an item's validate item (its `validate:`) records a fail verdict that
 # covers it, "<validate slug>, a second agent's review" while that item is live on it (queued, running, waiting or review,
@@ -2850,10 +2876,9 @@ collect() {
     # A run that handed its item off, or another run that landed it, left nothing here to land (handed_on).
     if [ "$g" = 1 ] && [ "$irel" = moved ] && [ "$dirty" = 0 ] && [ "$ahead" -gt 0 ] && [ "$pr" = - ] \
        && handed_on "$host" "$qall" "$islug" "$cwd" "$gd" "$line"; then ahead=0; fi
-    # A finished branch PR this session did not make is another session's (pr_made_here): drop it,
-    # and the commits it holds with it. An open one stays: it is unlanded work in this tree either way.
-    if [ "$host" = - ] && [ "$g" = 1 ] && { [ "$state" = MERGED ] || [ "$state" = CLOSED ]; } && [ -s "$transcript" ] \
-       && ! pr_made_here "$cwd" "$pr" "$branch" "$prs" "$transcript" "$planf" \
+    # A branch PR this session did not make is another session's (pr_not_here): drop it,
+    # and the commits it holds with it. An open one stays unless a validate fail hands it back.
+    if [ "$g" = 1 ] && pr_not_here "$host" "$state" "$qall" "$islugs" "$cwd" "$pr" "$branch" "$prs" "$transcript" "$planf" \
               "$(jq -r --arg c "$cwd" --arg s "$sid" 'select(.cwd == $c and .session_id != $s and (.host // "-") == "-")
                   | .plan_file // empty' <<<"$panel" 2>/dev/null)"; then
       [ "$inpr" = 1 ] && ahead=0
