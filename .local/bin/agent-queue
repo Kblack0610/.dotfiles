@@ -24,8 +24,8 @@
 #       (hold_for HOLD_STACK, `stacked_on` in list --json; gate after/<row-id> clears with stack: <slug>), fleet-dispatch starts it in a worktree cut from that PR's
 #       head, and agent-land refuses it (exit 4) until that slug closed ok. A dependency closed unmerged stays a dead hold. Any other --after holds until that slug closed ok, open PR or not.
 #       One owner per piece of work (live_owner): an add is refused, naming the live item, when it names a cause: tag, a --row, a --pr
-#       (the PR the item works, recorded as its pr:) or a plan phase (a first line "P4 of <plan>") another active item already has; set refuses the same
-#       for pr=, open_pr=, plan= and phases=. A `validate` item reviews its author's PR and owns none.
+#       (the PR the item works, recorded as its pr:) or a plan phase (a first line "P4 of <plan>") another active item already has; set refuses
+#       a cause: tag, plan= and phases= the same way, and never a pr= (agent-land records the PR it merged). A `validate` item reviews its author's PR and owns none.
 #       --row names the open agent board row this item works on: see link_row. With no --row,
 #       --epic or --want, a title whose subject is one open row id works that row too (named_row).
 #       Any other item not from the board files its own story row: see file_story. When notes refuses that row for
@@ -3714,22 +3714,21 @@ cmd_set() {
 }
 
 # set_owners <slug> <item file> <key=value>...: the owner checks of a set on a live item (live_owner): a
-# tags= with a cause: another item owns, a pr= or open_pr= another item records, a plan= or phases= that
-# puts it on a phase another item holds. A claim by set is how a session that takes on a phase's scope or
-# a PR's work says so, so a second session finds it taken. Under the lock.
+# tags= with a cause: another item owns, a plan= or phases= that puts it on a phase another item holds. A claim
+# by set is how a session that takes on a phase's scope says so, so a second session finds it taken. A pr= or
+# open_pr= is never refused: agent-land and reap record the PR an item opened or merged, a fact about the
+# PR, whoever else lists it (a refusal there failed agent-land's record step). Under the lock.
 set_owners() {
-  local slug="$1" f="$2" kv plan ph pr_refs=''
+  local slug="$1" f="$2" kv plan ph
   shift 2
   plan="$(fm_get "$f" plan)" ph="$(fm_get "$f" phases)"
   for kv in "$@"; do
     case "${kv%%=*}" in
       tags) cause_owner "${kv#*=}" "$slug" ;;
-      pr | open_pr) pr_refs+=" $(word_list "${kv#*=}")" ;;
       plan) plan="${kv#*=}" ;;
       phases) ph="$(word_list "${kv#*=}")" ;;
     esac
   done
-  [[ " $(fm_get "$f" tags) " == *" validate "* ]] || [ -z "$pr_refs" ] || pr_owner "$slug" $pr_refs
   case " $* " in *" plan="* | *" phases="*) plan_phase_owner "$slug" "$plan" $ph ;; esac
 }
 
@@ -4592,7 +4591,7 @@ cmd_reopen() {
   lock
   [ -z "$(find_item "$slug")" ] || die "$slug is still active: nothing to reopen"
   f="$(latest_done "$slug")"; [ -n "$f" ] || die "no finished item: $slug"
-  set_owners "$slug" "$f" "tags=$(fm_get "$f" tags)" "pr=$(fm_get "$f" pr) $(fm_get "$f" open_pr)" "plan=$(fm_get "$f" plan)" "phases=$(fm_get "$f" phases)"
+  set_owners "$slug" "$f" "tags=$(fm_get "$f" tags)" "plan=$(fm_get "$f" plan)" "phases=$(fm_get "$f" phases)"
   status="$(fm_get "$f" status)" note="$(fm_get "$f" note)"
   if [ -n "$unland" ]; then
     # A false ok close (agent-land took a side PR from another repo, 2026-11-07): that PR comes

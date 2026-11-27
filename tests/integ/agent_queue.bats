@@ -232,7 +232,7 @@ load 'agent_queue/common'
 }
 
 # ar-3645: live_owner is the one owner check; cause (above), row, area, plan and pr all read the queue through it.
-@test "one live item per PR: a second add or set naming it is refused and names the owner; another PR and a validate item pass" {
+@test "one live item per PR: a second add naming it is refused and names the owner; another PR, a validate item and a set pr= pass" {
   run "$AQ" add --project game --slug land-a --pr o/game#7 "land PR 7"
   assert_success
   assert_equal "$(field "$(item queued land-a)" pr)" o/game#7
@@ -245,29 +245,18 @@ load 'agent_queue/common'
   assert_success
   run "$AQ" add --project game --slug land-d --pr o/app#7 "land app PR 7"
   assert_success
-  "$AQ" add --project game --slug other "other work" >/dev/null
-  run "$AQ" set other pr=o/game#7
-  assert_failure
-  assert_output --partial "o/game#7 is already recorded by land-a"
-  run "$AQ" set other open_pr=O/GAME#8
-  assert_failure
-  assert_output --partial "already recorded by land-c"
-  run "$AQ" set other pr=o/game#9
-  assert_success
-  # an item's own record is not a second owner, and a validate item reviews its author's PR
-  run "$AQ" set land-a pr=o/game#7
-  assert_success
+  # a validate item reviews its author's PR, so it neither owns nor is refused
   run "$AQ" add --project game --slug val-a --tags validate --pr o/game#7 "review PR 7"
   assert_success
-  # a closed owner frees the PR
-  run "$AQ" move land-a done --status cancelled
-  assert_success
+  # recording a PR by set is bookkeeping (agent-land, reap), never refused, even where another item lists it
+  "$AQ" add --project game --slug other "other work" >/dev/null
   run "$AQ" set other pr=o/game#7
   assert_success
-  # reopening the closed item onto a PR another live item now records is the same twin
-  run "$AQ" reopen land-a
-  assert_failure
-  assert_output --partial "o/game#7 is already recorded by other"
+  # a closed owner frees the PR for a new add
+  run "$AQ" move land-c done --status cancelled
+  assert_success
+  run "$AQ" add --project game --slug land-e --pr o/game#8 "land PR 8 again"
+  assert_success
 }
 
 @test "one live item per plan phase: a twin under another slug is refused by add and by set, another phase and plan pass" {
