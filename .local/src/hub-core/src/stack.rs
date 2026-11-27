@@ -343,7 +343,8 @@ pub struct Rule {
     pub confidence: String,
     /// fleet-bench's one verdict: `ok`, `stale` (its anchor is gone from its source), `absent`
     /// (the source is not on this machine, or the API its measure reads did not answer), `dead` (its measure printed no number), `restates`
-    /// (its bound is a copy of the number its measure reads) or `moved` (its measured number
+    /// (its bound is a copy of the number its measure reads), `layer` (a global row that applies to fewer than two repos, or a repo
+    /// row restating a global one) or `moved` (its measured number
     /// disagrees with its recorded confidence).
     pub state: String,
     pub today: String,
@@ -355,6 +356,7 @@ pub const OK: &str = "ok";
 pub const STALE: &str = "stale";
 pub const MOVED: &str = "moved";
 pub const RESTATES: &str = "restates";
+pub const LAYER: &str = "layer";
 pub const ABSENT: &str = "absent";
 pub const DEAD: &str = "dead";
 /// The chip Rules opens on, the rules a session reads; mechanisms are one chip away.
@@ -366,7 +368,7 @@ impl Row for Rule {
     const COLUMNS: &'static [&'static str] =
         &["rule", "kind", "number", "confidence", "state", "source"];
     const STATES: &'static [&'static str] = &[
-        RULES_FORM, MECHANISMS, ALL, STALE, MOVED, RESTATES, DEAD, ABSENT,
+        RULES_FORM, MECHANISMS, ALL, STALE, MOVED, RESTATES, LAYER, DEAD, ABSENT,
     ];
     const FACETS: &'static [&'static str] = &["kind", "confidence", "state"];
     const HIDE_EMPTY: bool = true;
@@ -389,6 +391,10 @@ impl Row for Rule {
         (
             RESTATES,
             "its bound is a copy of the number its measure reads from its own source; the reading is the number",
+        ),
+        (
+            LAYER,
+            "a global-file row that applies to fewer than two repos, or a repo row restating a global one; it belongs in one layer",
         ),
         (DEAD, "its measure printed no number"),
         (

@@ -11,7 +11,7 @@
 #   fleet-dispatch exits [--dry-run] give each skipped agent row its rule's exit, and move the #after/ gates on a row sent to the sheet (skip_exits; each run pass does); --dry-run lists them
 #   fleet-dispatch stale [--dry-run] ask about, or keep in improvements.md and drop when #low, each agent row a skip has held DISPATCH_STALE_DAYS days (ask_stale_skips; each run pass does); --dry-run lists them
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
-#   fleet-dispatch promote --project P [--profile X] [--agent] [--dispatch] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item; --dispatch makes it a capped pull like dispatch's own
+#   fleet-dispatch promote --project P [--profile X] [--agent] [--dispatch] [--restart] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item; --dispatch makes it a capped pull like dispatch's own; --restart takes a started row no live item holds (row_restart)
 #   fleet-dispatch pull-after [--queue-only] ID  promote, and start unless normal, low or --queue-only, the open rows gated #after/ID: agent-queue runs it when ID's item closes ok, and a pass runs it --queue-only for a row closed with no item (pull_closed_after)
 #   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session; a row whose #ask/ gate was answered another way is held or dropped, one on a cancelled ask closes on its done item's merged PR, follows the ask it joined, or is asked again
 #   fleet-dispatch headroom [--json] how many more queue items could start now, and the margin under each limit
@@ -27,7 +27,7 @@
 #   fleet-dispatch stopped [--json]  rc 1 and one line when a hold has stopped every pass for DISPATCH_STARVED_MIN:
 #                                    how long, why, what clears it (hub Home, the briefing, queue-starved)
 #                                    (nothing when it is missing or stale): fleet-sessions wakes a kick when the count drops
-#   fleet-dispatch stats             one JSON object: runnable work, starts and reaps in the last hour, flapping items
+#   fleet-dispatch stats             one JSON object: runnable work, starts and reaps in the last hour, flapping items, and each open sprint's size, rows in and out, days left
 #   fleet-dispatch item-tier SLUG    the queue item's tier (item_tier): agent-land gates a tier-3 one
 #   fleet-dispatch trainee-pool [--json]  the board rows a trainee takes, how many each refusal turns away, and the floor open or shut
 #   fleet-dispatch trainee-review SLUG  a trainee run's tail, in its worktree: its diff to a patch that waits for a batch review
@@ -4887,7 +4887,7 @@ restore_world() {
       echo "$srv:$sess:$win: waits for a wake batch${item:+ (queue item $item)}"; RESTORE_OWED+=("$id"); owed=$((owed + 1)); continue
     fi
     project=$(resolve_project_name "$cwd")
-    if cmd_start --project "${project:-${cwd##*/}}" --server "$srv" --session "$sess" --window "$win" \
+    if cmd_start --project "$project" --server "$srv" --session "$sess" --window "$win" \
         --cwd "$cwd" --resume "$id" ${item:+--item "$item"} ${prompt:+--prompt "$prompt"} </dev/null >/dev/null; then
       echo "$srv:$sess:$win: reopened in $mode${item:+ for queue item $item}$said"; opened=$((opened + 1))
       # Its claude is new but its conversation is not: fleet-sessions adds the quiet it had when the
@@ -8169,7 +8169,10 @@ last_run_start() {
 # run, redispatch) sets running, and a session moving itself (to review, say) is not an undo;
 # the agent board's open rows (`notes board --json` totals: board_agent the agent board (Today),
 # board_backlog the agent rows still carrying the retired backlog token, counted in neither), left out when the board
-# is unreadable, so the chip reads - and never 0; held_s, how long a
+# is unreadable, so the chip reads - and never 0; sprints, from the same read, one object per open
+# (not queued) sprint: project, version, size (committed), rows_in (the unstarted agent rows it does
+# not hold, which dispatch ranks as its own), rows_out (done), opened, due and days_left (due minus
+# the board's today, negative once overdue, null with no due day), left out with the totals; held_s, how long a
 # hold has stopped the passes (0 with none, so the series never goes stale; its words are `stopped`'s).
 # The starved verdict is not here: the queue-starved watch publishes it (watch/queue_starved), and
 # recomputing it here made stats take 18s of the publisher's lock (ar-2310).
@@ -8180,8 +8183,16 @@ cmd_stats() {
   [ -n "$(find "$HEADROOM" -mmin -45 2>/dev/null)" ] && hr=$(jq -c . "$HEADROOM" 2>/dev/null) || hr=null
   q=$(runnable) || { echo '{"error":"agent-queue unreadable"}'; return 1; }
   aq=$(agent-queue stats --json --since "$(date -d yesterday +%F)" 2>/dev/null) && jq -e .active <<<"$aq" >/dev/null 2>&1 || aq=null
-  board=$(notes board --json 2>/dev/null | jq -c '.totals | select(.open != null)
-    | {board_agent: .agent, board_backlog: .backlog}' 2>/dev/null)
+  board=$(notes board --json 2>/dev/null | jq -c 'select(.totals.open != null)
+    | def day: strptime("%Y-%m-%d") | mktime;
+      (try (.today | day) catch null) as $today
+      | {board_agent: .totals.agent, board_backlog: .totals.backlog}
+      + (if (.sprints | type) == "array" then
+          {sprints: [.sprints[] | select(.queued != true) | . as $s
+            | {project: $s.project, version: $s.version, size: $s.committed, rows_in: ($s.uncommitted | length),
+               rows_out: $s.done, opened: $s.opened, due: $s.due,
+               days_left: (try (if $s.due == null then null else (($s.due | day) - $today) / 86400 end) catch null)}]}
+         else {} end)' 2>/dev/null)
   load_focus
   read -r held_since _ < <(held_state)
   started=$(last_run_start); [ -z "$started" ] || started=$(date -d "$started" +%s 2>/dev/null)
@@ -9554,10 +9565,13 @@ take_epic() {
   return 0
 }
 
-# row_restart <project> <started row line> -> "<id> <status>" when the row's own item (slug <id>, as promote
+# row_restart <project> <started row line> [repeat] -> "<id> <status>" when the row's own item (slug <id>, as promote
 # files it) closed cancelled or failed and no live item works the row: cmd_start then files a fresh item
-# under <id>, and the session's AGENT_QUEUE_ITEM names that open item. Else rc 1 with why, naming the
-# item: a live one is the start to make, an ok one is the orphan pass's to close. A row with no id or no
+# under <id>, and the session's AGENT_QUEUE_ITEM names that open item. A repeat start (cmd_promote
+# --restart: triage's retry of a red) also takes an item that closed ok with no PR, new work under its
+# slug (ar-4654: such a red row sat started with no owner until the orphan pass's 72h). Else rc 1 with
+# why, naming the item: a live one is the start to make, an ok one with a PR is the orphan pass's to close
+# on its merge (land_orphan), an ok one without a repeat cannot be added again. A row with no id or no
 # item was started by hand, and the refusal stays promote's own. A queue that cannot be read refuses:
 # read as empty, it would file a second item beside a live one.
 row_restart() {
@@ -9573,6 +9587,8 @@ row_restart() {
   [ -z "$live" ] || { echo "row $id is started, its queue item $id is $st, and queue item $live works it: fleet-dispatch start --item $live"; return 1; }
   case "$st" in
     "done cancelled" | "done failed") echo "$id ${st#done }" ;;
+    "done ok") [ -n "${3-}" ] && [ -z "$(jq -r '.pr // empty' <<<"$it")" ] && echo "$id ok" ||
+      { echo "row $id is started and its queue item $id is $st, so no fresh item is filed"; return 1; } ;;
     *) echo "row $id is started and its queue item $id is $st, so no fresh item is filed"; return 1 ;;
   esac
 }
@@ -9587,7 +9603,9 @@ row_restart() {
 # hold or dead gate still refuses. The cleared ones go onto the item as its queue tags (an ask: one is what ask_decisions
 # reads), all but a time of day, which would hold the item again the next morning; once the item is
 # queued their hashtags come off the row. A hand start (PROMOTE_RESTART, cmd_start alone) also takes a row
-# left started by its own item that closed cancelled or failed (row_restart), filing a fresh item, never claiming it again.
+# left started by its own item that closed cancelled or failed (row_restart), filing a fresh item, never claiming it again;
+# so does promote --restart (triage), of one whose item closed ok with no PR too (ar-4654), but never a plan
+# row's: its add --plan --repeat would re-queue the phases that landed.
 promote() {
   local c="$1" tags="$2" task="$3" repeat="${4-}" qmode="${5-}" prof project lane key area line out id slug flag=() rc=0
   local g q gwait gates=() rm=() stacks=''
@@ -9600,7 +9618,7 @@ promote() {
   # failed, before reap's settle_row hands it back, files a fresh item for it (ar-5932).
   local restart='' closed=''
   if [[ "$line" != '- [ ]'* ]]; then
-    [ -n "${PROMOTE_RESTART:-}" ] && [[ "$line" == '- [/]'* ]] && restart=$(row_restart "$project" "$line") ||
+    [ -n "${PROMOTE_RESTART:-}" ] && [[ "$line" == '- [/]'* ]] && restart=$(row_restart "$project" "$line" "$repeat") ||
       { say "skip $project: ${restart:-row no longer open: $key}"; return 1; }
     read -r restart closed <<<"$restart"
   fi
@@ -9686,6 +9704,7 @@ promote() {
   [ -n "$qmode" ] || plan=$(plan_row_plan "$brief") || plan=''
   # A plan row whose plan is gone is refused by name, never queued as one session for every phase.
   [ -z "$plan" ] || [ -f "$plan" ] || gone="agent-queue: its plan $plan is gone, so its phases cannot be queued"
+  [ -z "$plan" ] || [ "$closed" != ok ] || { say "skip $project: $key is a plan row whose item $id closed ok, so it is not restarted"; return 1; }
   # AGENT_QUEUE_START=0 for every caller: add starts only a plan item itself, and each caller of
   # promote starts what it promoted (cmd_start) or leaves it queued for a pass, so add never must.
   if [ -n "$gone" ]; then
@@ -9738,17 +9757,20 @@ promote() {
   echo "queued $project: $id"
 }
 
-# cmd_promote --project P [--profile X] [--agent] [--dispatch] [--model M] [--tags T] --raw LINE -- queue one row as the
+# cmd_promote --project P [--profile X] [--agent] [--dispatch] [--restart] [--model M] [--tags T] --raw LINE -- queue one row as the
 # human saw it: the Board tab's Start. A row that changed since, or is already started, is refused. No load
 # gate: the item starts like any board item (a row gate not yet clear refuses it, promote). --dispatch is a
 # machine caller's pull, capped like dispatch's own (fleet-bench triage's reds, which as a hand start went
 # past the cap with no make_room); without it a caller with no queue item is the human's hand start.
 # --model pins the item's model (claude_pin), as triage pins its escalation of a red to Opus.
+# --restart also takes a started row its own closed item left with no live one (row_restart): triage's
+# retry of a red whose last fix closed with no merge.
 cmd_promote() {
-  local project='' prof='' lane=human raw='' tags='' board key PROMOTE_MODEL=''   # promote() reads it; local, so it holds for this call alone
+  local project='' prof='' lane=human raw='' tags='' board key PROMOTE_MODEL='' PROMOTE_RESTART=''   # promote() reads them; local, so they hold for this call alone
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent) lane=agent; shift; continue ;;
+      --restart) PROMOTE_RESTART=1; shift; continue ;;
       --dispatch) PULL=dispatch; shift; continue ;;
       --project | --profile | --raw | --tags | --model) [ $# -ge 2 ] || { say "promote: $1 needs a value"; return 2; } ;;
       *) say "promote: unknown argument: $1"; return 2 ;;
