@@ -15,6 +15,8 @@
 #   fleet-sessions mark --close <sid>  record that the session was typed its close, once for good
 #   fleet-sessions mark --release <sid>  give back a close claim nothing was typed into
 #                                     (each claim or release is also appended to nudges.jsonl)
+#   fleet-sessions nudged <sid> <fact>  exit 0 when <fact> is already marked for <sid> (the check
+#                                     mark makes), for fleet-shepherd say, which marks after it sends
 #   fleet-sessions escalate <sid> <fact>  record that <fact> went to the human, so it pages once
 #                                     (both refuse, exit 3, outside the pass holding the
 #                                     shepherd lease: fleet-shepherd holds)
@@ -3762,6 +3764,7 @@ main() {
     # A ledger write is the shepherd acting: only the pass holding its lease may (fleet-shepherd holds).
     mark) holds || return; shift; mark "$@"; return ;;
     escalate) holds || return; shift; escalate "$@"; return ;;
+    nudged) shift; nudged "${1:?sid}" "${2:?fact}"; return ;;
     label) shift; label "$@"; return ;;
     # The unit's ExecCondition gates the scheduled tick; this gates a hand run. The ledger is the
     # fleet's one copy (shepherd/ in the ~/.agent store) and fleet_sessions.prom a singleton: a hand

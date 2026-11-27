@@ -51,7 +51,8 @@
 #                          (fleet-sessions mark <sid> <fact>, the row's own fact unless --fact names one).
 #                          A worker row's nudge line ends in this call, since ListAgents does not list
 #                          a worker's sessions. Exit 0 sent and marked, 1 already nudged or the send
-#                          failed, 3 typed but its Enter not taken, 75 nothing sent and nothing marked,
+#                          failed, 3 typed but its Enter not taken (the text waits in its box, unmarked),
+#                          4 sent but the mark not recorded, 75 nothing sent and nothing marked,
 #                          so a later pass sends it: `unreachable: <host>` (ssh's 255), or its prompt
 #                          takes no keys, or another send holds the pane
 #   fleet-shepherd skip "<due line>" "<why>"
@@ -1199,15 +1200,15 @@ pane_takes_keys() {
 # did not answer leaves the row unmarked for the next pass instead of nudged with nothing delivered
 # (ar-3987). <ref> is <host>@<server>/%<pane> or a row's target, matched in the state document.
 cmd_say() {
-  local ref="${1:-}" fact="" text row sid target pane nudged own host server rc=0
+  local ref="${1:-}" fact="" text row sid target pane own host server
   shift || true
   if [ "${1:-}" = --fact ]; then fact="${2:-}"; shift 2 || true; [ -n "$fact" ] || die "say: --fact needs a fact"; fi
   text="${1:-}"
   [ -n "$ref" ] && [ -n "$text" ] && [ $# -eq 1 ] || die 'usage: fleet-shepherd say <host>@<server>/%<pane>|<target> [--fact <fact>] "<text>"'
   [ "$text" != "<the nudge>" ] || die "say: write the nudge in place of <the nudge> (the shepherd skill's message for its fact)"
   [ -r "$STATE_FILE" ] || die "no state document at $STATE_FILE"
-  row="$(jq -r --arg r "$ref" "$SAY_JQ"'[(.sessions // [])[] | select(.target == $r or say_ref == $r)]
-    | if length == 1 then .[0] | [.session_id, .target, .pane, (if .nudged then "nudged" else "new" end), .fact]
+  row="$(jq -r --arg r "$ref" "$SAY_JQ"'[(.sessions // [])[] | select((.target | type) == "string") | select(.target == $r or say_ref == $r)]
+    | if length == 1 then .[0] | [.session_id, .target, .pane, .fact]
         | map(. // "" | tostring | gsub("[\t\n]"; " ") | if . == "" then "-" else . end) | @tsv
       else length end' "$STATE_FILE")" || die "unreadable state document $STATE_FILE"
   case "$row" in
@@ -1215,25 +1216,34 @@ cmd_say() {
     *$'\t'*) ;;
     *) die "say: $row session rows match $ref; name its pane, <host>@<server>/%<pane>" ;;
   esac
-  IFS=$'\t' read -r sid target pane nudged own <<<"$row"
+  IFS=$'\t' read -r sid target pane own <<<"$row"
   [ -n "$fact" ] || fact="$own"
   [ "$sid" != - ] && [ "$fact" != - ] || die "say: the row $ref has no session id or fact to mark"
-  if [ "$fact" = "$own" ] && [ "$nudged" = nudged ]; then
-    echo "fleet-shepherd: $target was already nudged for this fact; nothing sent" >&2; return 1
-  fi
   host="$(pane_host "$target")"; server="$(pane_server "$target")"
   [ -n "$server" ] && [[ "$pane" == %* ]] || die "say: $target has no tmux pane to type into"
   [ "$host" = - ] || pane_lib || die "say: cannot load the fleet hosts library"
+  mkdir -p "$LEDGER" || die "cannot create $LEDGER"
+  # One say at a time, and the ledger (not the state document, a minute old) read under that lock, so
+  # a retry or a second call before the document refreshes types nothing twice.
+  ( flock 9; say_send "$sid" "$target" "$pane" "$host" "$server" "$fact" "$text" ) 9>"$LEDGER/say.lock"
+}
+
+# say_send <sid> <target> <pane> <host|-> <server> <fact> <text>: cmd_say's send and mark, under its lock.
+say_send() {
+  local sid="$1" target="$2" pane="$3" host="$4" server="$5" fact="$6" text="$7" rc=0
+  if fleet-sessions nudged "$sid" "$fact"; then
+    echo "fleet-shepherd: $target was already nudged for this fact; nothing sent" >&2; return 1
+  fi
   # ssh's own 255 is told apart from a pane that cannot take keys: only the first is `unreachable`.
   pane_tmux "$host" "$server" display-message -p -t "$pane" '#{pane_id}' >/dev/null 2>&1 || rc=$?
   if [ "$host" != - ] && [ "$rc" = 255 ]; then echo "unreachable: $host"; return 75; fi
-  [ "$rc" = 0 ] || die "say: $target: its pane $pane is gone"
+  [ "$rc" = 0 ] || { echo "fleet-shepherd: say: $target: its pane $pane is gone" >&2; return 2; }
   if ! pane_takes_keys "$host" "$server" "$pane"; then
     echo "busy: $target: its prompt takes no keys (a draft, a dialog, a mode or a turn running); nothing sent"; return 75
   fi
   rc=0; pane_run "$host" agent-panel send --wait 0 --pane "$server/$pane" "$text" >/dev/null 2>&1 || rc=$?
   case "$rc" in
-    0) fleet-sessions mark "$sid" "$fact" >/dev/null || { echo "fleet-shepherd: $target: sent, but the mark failed" >&2; return 1; }
+    0) fleet-sessions mark "$sid" "$fact" >/dev/null || { echo "fleet-shepherd: $target: sent, but its mark was not recorded" >&2; return 4; }
        echo "said: $target" ;;
     3) echo "fleet-shepherd: $target: typed, but its Enter was not taken; the text waits in its input box, unmarked" >&2; return 3 ;;
     75) echo "busy: $target: another send holds its pane; nothing typed"; return 75 ;;

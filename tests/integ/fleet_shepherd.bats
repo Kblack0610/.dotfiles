@@ -16,7 +16,8 @@ setup() {
   # every run may start a pass; the debounce has its own test
   export FLEET_SHEPHERD_DEBOUNCE_MIN=0
   mkdir -p "$FLEET_SHEPHERD_DIR"
-  stub fleet-sessions 'echo "$*" >> "$HOME/sessions.calls"'
+  # `nudged` (fleet-shepherd say's ledger check) answers STUB_NUDGED: unset is a fact not yet nudged
+  stub fleet-sessions 'echo "$*" >> "$HOME/sessions.calls"; [ "$1" != nudged ] || [ -n "${STUB_NUDGED:-}" ]'
   stub fleet-assess 'if [ "${1:-}" = --blocked ]; then printf "%b" "${STUB_BLOCKED:-}"; elif [ "${1:-}" = --fleet ]; then printf "%b" "${STUB_FLEET:-}"; ! printf "%b" "${STUB_FLEET:-}" | grep -qE "^fleet: OVER|NOT live"; else echo "verdict: ${STUB_VERDICT:-CLEAR} load 0.5x"; fi'
   stub agent-hold 'case "$*" in *--expired*) printf "%s" "${STUB_EXPIRED:-}" ;; *) printf "%s" "${STUB_HOLDS:-}" ;; esac'
   # a pass's measured cost (pass_cost); unset is a session with none
@@ -699,6 +700,16 @@ crow() { jq -c -n --arg s "$1" --arg b "$2" --arg v "$3" --argjson x "${4:-{\}}"
 IDLE=$'text above\n───────────── name ─\n\xe2\x9d\xaf\xc2\xa0\n─────────────\n  bypass permissions on (shift+tab to cycle)'
 # typed: what close_sample typed, as agent-panel send's arguments (the one typer, with its pane lock)
 typed() { cat "$HOME/panel.calls" 2>/dev/null; }
+# worker_ssh: a fleet_host_run stand-in that logs the host and runs the command here; a call matching
+# STUB_SSH_FAIL exits 255 as ssh does.
+worker_ssh() {
+  printf '%s\n' 'fleet_hosts() { :; }' 'fleet_host_run() { local h="$1"; shift; echo "$h $*" >> "$HOME/ssh.calls"' \
+    '  [ -n "${STUB_SSH_FAIL:-}" ] && [[ "$*" =~ $STUB_SSH_FAIL ]] && return 255; "$@"; }' > "$SANDBOX/fleet-hosts.sh"
+  export FLEET_HOSTS_LIB="$SANDBOX/fleet-hosts.sh"
+}
+# wrow <sid> <bucket> [extra-json]: a row on worker razer-laptop's lab server
+wrow() { crow "$1" "$2" keep "$(jq -c -n --arg s "$1" --argjson x "${3:-{\}}" \
+  '{target:"razer-laptop@lab/dotfiles-agent-\($s):1", host:"razer-laptop"} + $x')"; }
 
 @test "check types /wind-down auto into a DONE or CLOSE session on a close-now verdict, /wind-down into a CHAT one, then refreshes the document" {
   doc "[$(crow 1 DONE now), $(crow 2 CHAT now), $(crow 3 NEEDS now '{"own_asks":1}')]"
@@ -818,17 +829,6 @@ typed() { cat "$HOME/panel.calls" 2>/dev/null; }
   assert_output 'worker close --server lab --pane %7 --sid 7'
 }
 
-# worker_ssh: a fleet_host_run stand-in that logs the host and runs the command here; a call matching
-# STUB_SSH_FAIL exits 255 as ssh does.
-worker_ssh() {
-  printf '%s\n' 'fleet_hosts() { :; }' 'fleet_host_run() { local h="$1"; shift; echo "$h $*" >> "$HOME/ssh.calls"' \
-    '  [ -n "${STUB_SSH_FAIL:-}" ] && [[ "$*" =~ $STUB_SSH_FAIL ]] && return 255; "$@"; }' > "$SANDBOX/fleet-hosts.sh"
-  export FLEET_HOSTS_LIB="$SANDBOX/fleet-hosts.sh"
-}
-# wrow <sid> <bucket> [extra-json]: a row on worker razer-laptop's lab server
-wrow() { crow "$1" "$2" keep "$(jq -c -n --arg s "$1" --argjson x "${3:-{\}}" \
-  '{target:"razer-laptop@lab/dotfiles-agent-\($s):1", host:"razer-laptop"} + $x')"; }
-
 @test "a fleet worker's nudge line ends in the say call that delivers it; this machine's keeps no tail (ar-3987)" {
   doc "[$(wrow 12 STALLED), $(crow 13 STALLED keep),
         $(wrow 14 NEEDS '{"own_asks":1,"activity":"idle","idle_min":300,"escalated":true}')]"
@@ -861,9 +861,13 @@ wrow() { crow "$1" "$2" keep "$(jq -c -n --arg s "$1" --argjson x "${3:-{\}}" \
     STUB_SSH_FAIL=$fail STUB_PANE="$IDLE" run "$SH" say razer-laptop@lab/%12 "Open the PR."
     assert_equal "$status" 75
     assert_output 'unreachable: razer-laptop'
-    [ ! -s "$HOME/sessions.calls" ]
+    run grep -q '^mark' "$HOME/sessions.calls"; assert_failure
   done
   [ ! -s "$HOME/panel.calls" ]
+  # Sent, but the mark not recorded: an exit of its own, so a pass never reads it as unsent and types it again.
+  stub fleet-sessions '[ "$1" != mark ] && [ "$1" != nudged ]'
+  STUB_PANE="$IDLE" run "$SH" say razer-laptop@lab/%12 "Open the PR."
+  assert_equal "$status" 4
 }
 
 @test "say sends nothing and marks nothing to a prompt that takes no keys, a held pane, a nudged row or the placeholder (ar-3987)" {
@@ -880,18 +884,19 @@ wrow() { crow "$1" "$2" keep "$(jq -c -n --arg s "$1" --argjson x "${3:-{\}}" \
   # the Enter not taken: unmarked, exit 3
   STUB_PANEL_RC=3 STUB_PANE="$IDLE" run "$SH" say razer-laptop@lab/%12 "Open the PR."
   assert_equal "$status" 3
-  [ ! -s "$HOME/sessions.calls" ]
+  run grep -q '^mark' "$HOME/sessions.calls"; assert_failure
   : > "$HOME/panel.calls"
   STUB_PANE="$IDLE" run "$SH" say razer-laptop@lab/%12 "<the nudge>"
   assert_equal "$status" 2
-  doc "[$(wrow 12 STALLED '{"nudged":true}')]"
-  STUB_PANE="$IDLE" run "$SH" say razer-laptop@lab/%12 "Open the PR."
+  # already in the ledger for this fact (a retry before the document refreshed)
+  STUB_NUDGED=1 STUB_PANE="$IDLE" run "$SH" say razer-laptop@lab/%12 "Open the PR."
   assert_failure 1
   STUB_PANE="$IDLE" run "$SH" say razer-laptop@lab/%99 "Open the PR."
   assert_failure 2
   [ ! -s "$HOME/panel.calls" ]
-  [ ! -s "$HOME/sessions.calls" ]
+  run grep -q '^mark' "$HOME/sessions.calls"; assert_failure
 }
+
 @test "check types /wind-down auto into a close-now row whose bucket nudge was held unseen (2026-11-18: hub/dotfiles:4 and :8)" {
   # The pass marked LANDED and its SendMessage waited for approval in a manual-mode session; that
   # fact mark is not the close claim, so the close is still typed.
