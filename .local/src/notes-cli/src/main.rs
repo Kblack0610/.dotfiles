@@ -742,6 +742,10 @@ enum PtaskCmd {
         /// and, when the text names no priority, the reason's own
         #[arg(long, value_name = "SLUG")]
         why: Option<String>,
+        /// The title prefix the filer keys this row by and dedupes on itself (fleet-bench's
+        /// board_upsert): a near twin is then only a row under the same key
+        #[arg(long, value_name = "PREFIX")]
+        key: Option<String>,
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
@@ -1367,6 +1371,7 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
             origin: None,
             checked,
             why: None,
+            key: None,
             text,
         }) if detail.is_empty() && checked.is_empty() => playtest::Op::Add {
             game,
@@ -1829,6 +1834,7 @@ fn main() -> Result<()> {
                     origin,
                     checked,
                     why,
+                    key,
                     text,
                 }) => {
                     refuse_playtest_flags(game.as_ref(), pr.as_ref())?;
@@ -1841,7 +1847,7 @@ fn main() -> Result<()> {
                         to.as_deref(),
                         want.as_deref(),
                         lane,
-                        &project_tasks::Writer::from_env(origin.as_deref(), checked),
+                        &project_tasks::Writer::from_env(origin.as_deref(), checked).keyed(key),
                     )?
                 }
                 Some(PtaskCmd::Move { to, project, query }) => ptask_move(

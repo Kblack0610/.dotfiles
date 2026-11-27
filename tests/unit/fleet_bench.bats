@@ -2697,8 +2697,8 @@ fix_item() {
   refute_output --partial FAILED
 }
 
-# ar-4296: an add runs only for a key with no open row, so a near-twin refusal (exit 3) is another key's
-# row standing in for this red, which then has no row and no item: a failed write, never counted filed.
+# ar-4296: an add runs only for a key with no open row and passes that key, so a twin refusal (exit 3)
+# leaves this red with no row and no item: a failed write, never counted filed.
 @test "triage: a check row the board takes for another row's near twin is a failed write, not filed" {
   log_triage_setup
   lock_route
@@ -2715,6 +2715,8 @@ fix_item() {
   # negative control: the same red with no twin files its row and fails nothing
   BENCH_NOTES_CMD=notes run "$SUBJECT" triage
   refute_output --partial 'board write failed'
+  run grep -c -- '--key check(watch): links tripped since$' "$NLOG"
+  assert_output 1
   run outcome
   refute_output --partial FAILED
 }

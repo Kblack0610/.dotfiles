@@ -477,7 +477,7 @@ pub(crate) fn add_via(
         println!("inbox: {}", block.join("\n"));
         return Ok(0);
     }
-    if refuse_twin(&path, &content, text) {
+    if refuse_twin(&path, &content, text, writer.key.as_deref()) {
         // A human's want that joins an open row must still mark it, and the ingest record must say whose
         // words it is: dropped here the row counted against the project share (ar-6060).
         if want.is_some_and(crate::projects::human_channel) && lane == Lane::Agent {
@@ -623,11 +623,23 @@ fn stamp_twin_requested(
 }
 
 /// Does `text` twin an open row of `content` (the sheet at `path`): the same words, a near twin, or a
-/// row that already lands the PR it names. Each says which row on stderr; the add exits 3.
-fn refuse_twin(path: &Path, content: &str, text: &str) -> bool {
+/// row that already lands the PR it names. Each says which row on stderr; the add exits 3. A filer
+/// that keys its rows (`--key`, [`Writer::key`]) finds its own row by that key, so a near twin is
+/// only one under the same key: fleet-bench's rows for two alerts, or one alert on two hosts, share
+/// every word but the alert and host, and the second was refused and never filed (ar-4296).
+fn refuse_twin(path: &Path, content: &str, text: &str, key: Option<&str>) -> bool {
+    let near = || {
+        near_twin(content, text, Some(text)).filter(|l| {
+            key.is_none_or(|k| {
+                md::task_text(l)
+                    .to_lowercase()
+                    .starts_with(&k.to_lowercase())
+            })
+        })
+    };
     if let Some(open) = open_twin(content, text) {
         eprintln!("already open on {}: {}", path.display(), open.trim());
-    } else if let Some(near) = near_twin(content, text, Some(text)) {
+    } else if let Some(near) = near() {
         eprintln!(
             "near-duplicate of an open row on {}: {}",
             path.display(),
@@ -936,8 +948,7 @@ fn open_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
 /// area does not count: inbox-triage rewrites a filed row's area, so a filer that files the same
 /// words again would miss its own row (research-pick's `research(roster):` row, re-scoped to
 /// `research(notes):`, filed nightly). Deterministic, and strict on purpose: a refused near-dup
-/// exits 3, which most callers read as already filed, so a false twin would drop a row (fleet-bench's
-/// board_upsert reads it as a failed write and says so, ar-4296). A [`sibling`]
+/// exits 3, which callers read as already filed, so a false twin would drop a row. A [`sibling`]
 /// of the session line `from` is never one: one session's follow-ups that differ only in a short
 /// group word (`CI` against `notes`) share 87% of their words (ar-5824).
 fn near_twin<'a>(content: &'a str, text: &str, from: Option<&str>) -> Option<&'a str> {
@@ -995,12 +1006,10 @@ fn sibling(lines: &[&str], i: usize, from: &str) -> bool {
 /// letter that also holds a digit, `_`, `@`, `/`, `:`, `-` or `.` (a unit, a watch, a lane, a
 /// build), or an ISO date, so a dated template files one row per date. A token led by a digit or
 /// a sign is a count or reading (`2 checks`, `7d 0.3`, `3/5`, `-3`), so a row whose numbers moved
-/// is still the row. A CamelCase identifier (a capital after the first letter, and a small letter:
-/// `TraderRunFailed`, `WANDown`, not `CI`) is a name too: fleet-bench files one row per firing
-/// alert, and two alerts on one label (`TraderRunFailed` and `TraderRunStale` on `walkforward`)
-/// share every other word, so the second was refused as a near twin and never filed (ar-4296).
+/// is still the row.
 fn names(line: &str) -> Words {
     projects::row_title(line)
+        .to_lowercase()
         .split_whitespace()
         .map(|w| w.trim_matches(|c: char| ",;:.()[]\"'`".contains(c)))
         .filter(|w| {
@@ -1009,15 +1018,12 @@ fn names(line: &str) -> Words {
                     4 | 7 => b == b'-',
                     _ => b.is_ascii_digit(),
                 });
-            let lead = w.chars().next().is_some_and(char::is_alphabetic);
-            let named = w
-                .chars()
-                .any(|c| c.is_ascii_digit() || "_@/:-.".contains(c));
-            let camel =
-                w.chars().skip(1).any(char::is_uppercase) && w.chars().any(char::is_lowercase);
-            date || (lead && (named || camel))
+            let named = w.chars().next().is_some_and(char::is_alphabetic)
+                && w.chars()
+                    .any(|c| c.is_ascii_digit() || "_@/:-.".contains(c));
+            date || named
         })
-        .map(str::to_lowercase)
+        .map(str::to_string)
         .collect()
 }
 
@@ -1289,6 +1295,9 @@ pub struct Writer {
     hand: bool,
     /// The shortlist ids a hand session says it read and found to be other work (`--checked`).
     pub checked: Vec<String>,
+    /// The title prefix a filer keys this row by and dedupes on itself (`--key`): a near twin
+    /// under another key is no twin ([`refuse_twin`]).
+    pub key: Option<String>,
     /// The vouched `--origin`, else the runner's own name; a session or queue item has none, so
     /// a runner name a session inherited can never make it a direct filer.
     name: Option<String>,
@@ -1357,10 +1366,19 @@ impl Writer {
             automated,
             hand: automated && !unattended,
             checked: Vec::new(),
+            key: None,
             person: !automated && origin.is_none(),
             name,
             refused,
             filers,
+        }
+    }
+
+    /// This writer, keying its row by `key` (`ptask add --key`).
+    pub fn keyed(self, key: Option<String>) -> Writer {
+        Writer {
+            key: key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty()),
+            ..self
         }
     }
 
@@ -1371,6 +1389,7 @@ impl Writer {
             automated: false,
             hand: false,
             checked: Vec::new(),
+            key: None,
             person: false,
             name: None,
             refused: None,
@@ -5686,28 +5705,39 @@ Version: v1.2.0
             ["2026-11-21", "b1", "claude:sonnet"],
             "counts, readings, ratios, signs and times are not names; builds, lanes and dates are"
         );
+    }
+
+    #[test]
+    fn a_keyed_add_is_a_near_twin_only_of_a_row_under_its_own_key() {
+        let route = "firing, alertmanager-fleet tripped since 2026-11-26, expected: no fleet=fix alert, evidence: watch-companion-loop list --long alertmanager-fleet #size/s #high";
+        let board = format!("## Tasks\n- [ ] check(alert): NodeQuarantined razer {route}\n");
+        let path = Path::new("board.md");
+        let asus = format!("check(alert): NodeQuarantined asus {route}");
+        // NEGATIVE CONTROL: unkeyed, the same alert on another host is the razer row's near twin
+        assert!(refuse_twin(path, &board, &asus, None));
+        assert!(
+            !refuse_twin(
+                path,
+                &board,
+                &asus,
+                Some("check(alert): NodeQuarantined asus firing")
+            ),
+            "another key's row is no twin"
+        );
+        let moved = format!("check(alert): NodeQuarantined razer still {route}");
+        assert!(
+            refuse_twin(
+                path,
+                &board,
+                &moved,
+                Some("Check(alert): NodeQuarantined razer firing")
+            ),
+            "a near twin under the same key, in any case, is still refused"
+        );
         assert_eq!(
-            names("check(alert): TraderRunFailed walkforward firing on WANDown, CI and PR #size/s"),
-            ["traderrunfailed", "wandown"],
-            "a CamelCase identifier is a name; an acronym and a plain word are not"
-        );
-        let route = "firing, alertmanager-fleet tripped since 2026-11-26, expected: no fleet=fix alert, evidence: watch-companion-loop list --long alertmanager-fleet; fix with fix-red: fix this one alert by the runbook its rule's annotations name #size/s #high";
-        let alerts = format!("## Tasks\n- [ ] check(alert): TraderRunFailed walkforward {route}\n");
-        assert!(
-            near_twin(
-                &alerts,
-                &format!("check(alert): TraderRunStale walkforward {route}")
-            )
-            .is_none(),
-            "two alerts on one label are two rows, however many route words they share"
-        );
-        assert!(
-            near_twin(
-                &alerts,
-                &format!("check(alert): TraderRunFailed walkforward still {route}")
-            )
-            .is_some(),
-            "the same alert with its text moved is still the row"
+            Writer::human().keyed(Some("  ".into())).key,
+            None,
+            "a blank --key keys nothing"
         );
     }
 
@@ -6787,6 +6817,7 @@ mod inbox_tests {
             automated: true,
             hand: false,
             checked: Vec::new(),
+            key: None,
             person: false,
             name: Some("dispatch".into()),
             refused: None,
@@ -6797,6 +6828,7 @@ mod inbox_tests {
             automated: false,
             hand: false,
             checked: Vec::new(),
+            key: None,
             person: true,
             name: None,
             refused: None,
@@ -7543,6 +7575,7 @@ mod inbox_tests {
             automated: false,
             hand: false,
             checked: Vec::new(),
+            key: None,
             person: false,
             name: Some(crate::ingest::ORIGIN_STORY.into()),
             refused: None,
