@@ -2746,8 +2746,7 @@ collect() {
       then map(select(.state == "MERGED") | "#\(.number)") | join(",") else "-" end' <<<"$prs")"
     tsess="${target#*/}"; tsess="${tsess%:*}"
     idle=$(( (now - since) / 60 )); dlive="$(detached_gate "$host" "$status" "$idle" "$ojob" "$cwd" "$cpid" "$target" "$panel")"; detached="${dlive:+none}"; ojob="${dlive:-$ojob}"
-    bidle="$(gate_log_idle "$host" "$([ -n "$dlive" ] && echo detached || echo "$status")" "$ojob" "$cwd" "$idle" "$transcript")"
-    age=-; [[ "$started" =~ ^[0-9]+$ ]] && age=$(( (now - started) / 60 ))
+    bidle="$(gate_log_idle "$host" "$([ -n "$dlive" ] && echo detached || echo "$status")" "$ojob" "$cwd" "$idle" "$transcript")"; age=-; [[ "$started" =~ ^[0-9]+$ ]] && age=$(( (now - started) / 60 ))
     local solo item
     solo="$(jq -r --arg k "${target%:*}" 'select((.target | sub(":[^:]*$"; "")) == $k) | .target' <<<"$panel" 2>/dev/null | wc -l)"
     item="$(item_of "$qitems" "$sid" "${target%%/*}:$tsess" "$solo" "$started")"
