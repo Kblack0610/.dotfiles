@@ -540,6 +540,56 @@ SH
   assert_failure
 }
 
+# reviewer_item <state> <tags> [verdict]: session s1's own queue item, a review of fix-wave-save (after:, on lab:s2)
+# tagged <tags>, recording <verdict> on the PR head when given; done items finish now.
+reviewer_item() {
+  local d="$HOME/.agent/queue/$1" v="" oid; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
+  rm -rf "$HOME/.agent/queue"; mkdir -p "$HOME/.agent/queue/queued"
+  [ "$1" = done ] && d="$d/$(date +%F)"; mkdir -p "$d"
+  [ -z "${3:-}" ] || v="verdict: $3\nverdict_head: $oid\n"
+  [ "$1" != done ] || v="${v}finished: $(date -u +%FT%TZ)\n"
+  printf 'slug: fix-wave-save\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsession: lab:s2\n---\nfix wave save\n' \
+    > "$HOME/.agent/queue/queued/20261103-100000-fix-wave-save.md"
+  printf "slug: validate-fix-wave-save-${oid:0:8}\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: auto:validate\nagent: claude\nqueued: 2026-11-03T11:00:00Z\nsession: lab:s1\nafter: fix-wave-save\ntags: %s\n${v}---\ncheck(validate): fix-wave-save, apociseum#9\n" \
+    "$2" > "$d/20261103-110000-validate-fix-wave-save-${oid:0:8}.md"
+}
+
+@test "end to end: a validate session that recorded its verdict closes off the PR it reviewed; with none it keeps (ar-5260)" {
+  # validate-ar-5194-3edd08df failed #3435 and close --self kept it: "land it: PR #3435 open", the author item's PR.
+  bats_require_minimum_version 1.5.0
+  landed_fixture
+  export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache"
+  panel "$SANDBOX/wt"
+  ledger feat/x '[]'; open_pr FAIL
+  reviewer_item done validate fail
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .pr <<<"$output")" = - ]
+  [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
+  [ "$(jq -r .close.verdict <<<"$output")" = now ]
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self sid-9
+  assert_success
+  assert_output --regexp "^now: quiet [0-9]+m, nothing to land$"
+
+  # no verdict yet: the review is still left here, done or running
+  reviewer_item done validate
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .pr <<<"$output")" = 9 ]
+  [ "$(jq -r .close.verdict <<<"$output")" = keep ]
+  [[ "$(jq -r .close.why <<<"$output")" == "land it: PR #9 open, CI "* ]]
+  reviewer_item running validate
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self sid-9
+  assert_failure 1
+  assert_line --index 0 --partial "keep: land it: PR #9 open, CI "
+
+  # negative control: an author session (no validate tag) with the same open PR still lands it
+  reviewer_item done "" fail
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .pr <<<"$output")" = 9 ]
+  [ "$(jq -r .close.verdict <<<"$output")" = keep ]
+  [[ "$(jq -r .close.why <<<"$output")" == "land it: PR #9 open, CI "* ]]
+}
+
 @test "end to end: a merged PR another session made on a shared worktree branch is not this session's (ar-455)" {
   landed_fixture
   # trader-real-money-plan: its plan and transcript never touched #875, which merged off feat/x.

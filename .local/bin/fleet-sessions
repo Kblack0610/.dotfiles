@@ -2487,6 +2487,13 @@ refused_wait() {
   awk -F'\t' -v p="$2" '$1 == p { h = $2 } END { if (h != "") print h }' "$key.refused"
 }
 
+# validate_done <all items, jsonl> <item slug|-> -> true when the item is a validate item (tagged validate) that
+# records its verdict (pass or fail), as the validate brief has it set before it runs agent-land.
+validate_done() {
+  [ "$2" != - ] && jq -ne --arg s "$2" 'first(inputs | select(.slug == $s)) // {}
+    | ((.tags // "") | if type == "array" then join(" ") else tostring end | [splits("\\s+")] | index("validate")) and ((.verdict // "") != "")' <<<"$1" >/dev/null 2>&1
+}
+
 # validate_hold <all items, jsonl> <the row's item slugs, comma list> <PR head oid> <clone|-> -> what agent-land's validate_gate
 # would say of this head: "failed <validate slug>" when an item's validate item (its `validate:`) records a fail verdict that
 # covers it, "<validate slug>, a second agent's review" while that item is live on it (queued, running, waiting or review,
@@ -2790,6 +2797,14 @@ collect() {
        && ! pr_made_here "$cwd" "$pr" "$branch" "$prs" "$transcript" "$planf" \
               "$(jq -r --arg c "$cwd" --arg s "$sid" 'select(.cwd == $c and .session_id != $s and (.host // "-") == "-")
                   | .plan_file // empty' <<<"$panel" 2>/dev/null)"; then
+      [ "$inpr" = 1 ] && ahead=0
+      pr=- state=- ci=- oid=-
+    fi
+    # A validate item's session reviews the author item's PR from a worktree cut at its head (cmd_validate in
+    # fleet-dispatch), so that open PR reads as this tree's. Once the item records its verdict the PR is the
+    # author item's to land or fix, not this session's work: validate-ar-5194-3edd08df read keep "land it:
+    # PR #3435 open" after failing it (ar-5260). With no verdict yet the review is still left here.
+    if [ "$g" = 1 ] && [ "$state" = OPEN ] && validate_done "$qall" "$islug"; then
       [ "$inpr" = 1 ] && ahead=0
       pr=- state=- ci=- oid=-
     fi
