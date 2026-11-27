@@ -372,9 +372,10 @@ load 'fleet_dispatch/common'
 # 2026-11-22 (ar-4654): a red's row whose item closed ok with no PR sat started 72h with no owner.
 @test "promote --restart files a fresh item for a row its item closed ok with no PR; one with a PR, or without --restart, is refused" {
   project game beta "$SANDBOX/repos/game"
-  row game agent gm-1 '- [/] tidy the loader <!-- id:gm-1 -->'
+  # the ok close closes its row (close_row_on_item); the row is written after it, as one whose close failed
   agent-queue add --project game --slug gm-1 --from board:game:gm-1 'tidy the loader' >/dev/null
   agent-queue move gm-1 done --status ok >/dev/null 2>&1
+  row game agent gm-1 '- [/] tidy the loader <!-- id:gm-1 -->'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" promote --project game --profile bnb --agent --raw '- [/] tidy the loader <!-- id:gm-1 -->'
   assert_failure
   assert_output --partial 'row no longer open: gm-1'
@@ -384,10 +385,10 @@ load 'fleet_dispatch/common'
   [ -n "$(qitem queued gm-1)" ] || fail "no fresh item for the row"
   grep -qF -- '- [/] tidy the loader' "$NOTES_FIXTURE/rows.game.agent" || fail "the row is not left started"
   # negative control: an ok item that records a PR is the orphan pass's (land_orphan), never restarted
-  row game agent gm-2 '- [/] fix the saver <!-- id:gm-2 -->'
   agent-queue add --project game --slug gm-2 --from board:game:gm-2 'fix the saver' >/dev/null
   agent-queue move gm-2 done --status ok >/dev/null 2>&1
   agent-queue set gm-2 pr=o/r#5 >/dev/null
+  row game agent gm-2 '- [/] fix the saver <!-- id:gm-2 -->'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" promote --project game --profile bnb --agent --restart --raw '- [/] fix the saver <!-- id:gm-2 -->'
   assert_failure
   assert_output --partial 'queue item gm-2 is done ok, so no fresh item is filed'
