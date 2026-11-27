@@ -203,6 +203,41 @@ load 'agent_land/common'
   assert_output 1
 }
 
+@test "no strict checks and the base moves on again by a commit that changes a file the head changes: merged up and re-checked, never landed behind it (#2962, #2963)" {
+  printf '0\n1\n3\n0\n' >"$NOTES_FIXTURE/behind.seq"
+  printf '%s\n' .local/bin/agent-land tests/unit/agent_land.bats README.md >"$NOTES_FIXTURE/base.files"
+  printf '%s\n' .local/bin/agent-land tests/unit/agent_land.bats docs/x.md >"$NOTES_FIXTURE/head.files"
+  run "$LAND" 42 --item ship
+  assert_line 'fetch: origin/main moved on by 3 during the checks on the merged-up head, but it changes files the head changes (.local/bin/agent-land, tests/unit/agent_land.bats); merging it up and re-checking'
+  refute_output --partial 'landing that green head behind it'
+  moved_again 2 3
+  [ "$(grep -n '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'pr checks' "$LOG" | tail -1 | cut -d: -f1)" ]
+  [ "$(grep -n 'pr checks' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'gh pr merge 42' "$LOG" | cut -d: -f1)" ]
+}
+
+@test "the base moves on again by a commit on the head's files and the re-checked head goes red: never merged" {
+  printf '0\n1\n3\n' >"$NOTES_FIXTURE/behind.seq"
+  printf '%s\n' green green 'Checks	fail	1m' >"$NOTES_FIXTURE/checks.seq"
+  printf '%s\n' .local/bin/agent-land >"$NOTES_FIXTURE/base.files"
+  printf '%s\n' .local/bin/agent-land >"$NOTES_FIXTURE/head.files"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'merging it up and re-checking'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 2
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "the base moves on again by files the head does not change: the green head still lands behind it" {
+  printf '0\n1\n3\n' >"$NOTES_FIXTURE/behind.seq"
+  printf '%s\n' README.md >"$NOTES_FIXTURE/base.files"
+  printf '%s\n' .local/bin/agent-land >"$NOTES_FIXTURE/head.files"
+  run "$LAND" 42 --item ship
+  assert_line 'fetch: origin/main moved on by 3 during the checks on the merged-up head; landing that green head behind it (no strict checks on main)'
+  moved_again 1 2
+}
+
 # pick_fixture: a checkout whose tests/pick.sh answers from files, so the head's pick (mine.<tier>) and
 # the base's new files' pick (theirs.<tier>, read when PICK_CHANGED is set) are named by the case.
 # pick.fail: the picker exits 1; picked.yes: a test file the base added is picked by the head's changes; theirs.full: the base's pick is the whole tier ("(full: ...)" on stderr).
