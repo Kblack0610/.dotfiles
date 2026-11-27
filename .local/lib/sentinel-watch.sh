@@ -44,11 +44,62 @@ watch_is_stale() {
   (( now - lastrun > WATCH_STALE_FACTOR * $(watch_interval_secs "$1") ))
 }
 
-# watch_quarantined <state dir> <name> [now] -> exit 0 while <name>.quarantine holds: its first
-# field (UNTIL, epoch, written by `watch-companion-loop quarantine`) is ahead of now. A quarantined
-# red counts as a warning, not red, until then; past UNTIL it reads red again.
-watch_quarantined() {
+# log_norm: a line with what varies between runs taken out, so one error is one signature: a leading
+# timestamp, quoted strings, paths, hex ids and numbers become placeholders. fleet-bench signs stderr
+# lines and a watch row's why with it.
+log_norm() {
+  sed -E 's/^\[[^]]*\][[:space:]]*//; s/"[^"]*"/"Q"/g; s/'"'"'[^'"'"']*'"'"'/'"'"'Q'"'"'/g
+          s#(~|\.)?(/[^[:space:]/:"'"'"']+)+/?#P#g; s/\b[0-9a-f]{7,}\b/H/g; s/[0-9]+/N/g; s/[[:space:]]+/ /g; s/ $//'
+}
+
+# watch_red_lines <evidence file> -> the red lines a watch's redacted evidence (<name>.out) names, as
+# written, in order: each `RED` line of a probe that prints one OK or RED line a stage
+# (unity-core-playground's release-ready.py); else, for a probe that prints a status row a vendor
+# (vendor-check: `<name> OK|LOW|EXPIRED|NO_CREDS probe=<p> [detail=...]`), its worst rows without a
+# `gap:` owner, detail left off (log_norm turns it into 'Q'): each EXPIRED or NO_CREDS, else each LOW,
+# so an OK row or a LOW one after the culprit is not blamed; else its last non-blank line, usually the
+# error. The first, through log_norm, is fleet-bench triage's why; the set is what a quarantine
+# covers. Nothing when the file is missing.
+watch_red_lines() {
+  { grep -E '^RED[[:space:]]' "$1" \
+      || awk '/^[^[:space:]]+ (EXPIRED|NO_CREDS|LOW) probe=/ && !/ gap: / {
+                sub(/ detail=.*/, ""); r = ($2 == "LOW") ? 1 : 0; row[++n] = $0; rk[n] = r; if (!seen || r < best) { best = r; seen = 1 } }
+              END { if (!seen) exit 1; for (i = 1; i <= n; i++) if (rk[i] == best) print row[i] }' "$1" \
+      || grep -v '^[[:space:]]*$' "$1" | tail -n 1; } 2>/dev/null
+}
+
+# watch_red_key: a red line as a quarantine compares it, a leading timestamp dropped and each number
+# N, so a new reading or time is the same red. Lighter than log_norm on purpose: a unit, path or quoted
+# name stays, so `b.service failed` is not covered by a quarantine taken on `a.service failed`.
+watch_red_key() {
+  sed -E 's/^\[[^]]*\][[:space:]]*//; s/[0-9]+/N/g; s/[[:space:]]+/ /g; s/ $//'
+}
+
+# watch_uncovered <state dir> <name> -> each red line of <name>.out whose key (watch_red_key) no red
+# line of <name>.quarantine.covers (the evidence `watch-companion-loop quarantine` was taken on) has,
+# so a reordered line or a new timestamp is still covered. Nothing for a quarantine with no covers, or
+# covers that name no red (one taken before them, or on no evidence): it covers whatever is red.
+watch_uncovered() {
+  local keys l
+  keys=$(watch_red_lines "$1/$2.quarantine.covers" | watch_red_key)
+  [ -n "$keys" ] || return 0
+  watch_red_lines "$1/$2.out" | while IFS= read -r l; do
+    grep -qxF -- "$(watch_red_key <<<"$l")" <<<"$keys" || printf '%s\n' "$l"
+  done
+  return 0
+}
+
+# watch_quarantine_open <state dir> <name> [now] -> exit 0 while <name>.quarantine's first field
+# (UNTIL, epoch, written by `watch-companion-loop quarantine`) is ahead of now, whatever it covers.
+watch_quarantine_open() {
   local until="" now="${3:-$(date +%s)}"
   [ -r "$1/$2.quarantine" ] && read -r until _ < "$1/$2.quarantine"
   [[ "$until" =~ ^[0-9]+$ ]] && (( 10#$until > 10#$now ))
+}
+
+# watch_quarantined <state dir> <name> [now] -> exit 0 while a quarantine holds: it is open and every
+# red line the watch names now is one it covers (ar-3916). A quarantined red counts as a warning, not
+# red; past UNTIL, or once it names a red the quarantine was not taken on, it reads red again.
+watch_quarantined() {
+  watch_quarantine_open "$@" && [ -z "$(watch_uncovered "$1" "$2")" ]
 }
