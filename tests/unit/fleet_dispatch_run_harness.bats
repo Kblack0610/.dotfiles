@@ -59,6 +59,22 @@ case "$1" in log) echo run-9 ;; classify)
   assert_output --partial 'started queue item pin-free on ocfree (beam)'
 }
 
+# ar-5893: fleet-bench sources reads the hold through this verb, not the ledger.
+@test "provider-holds: names each source whose hold stands with its why, and nothing for a lapsed one" {
+  route_ready; ocfree_ready
+  export FLEET_DISPATCH_STATE="$BATS_TEST_TMPDIR/state"; mkdir -p "$FLEET_DISPATCH_STATE"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" provider-holds
+  assert_success
+  assert_output '{}'
+  printf 'earlier-run\tocfree\t%s\n' "$(( $(date +%s) + 3600 ))" > "$FLEET_DISPATCH_STATE/provider-ends.tsv"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" provider-holds
+  assert_success
+  assert_equal "$(jq -r '.ocfree' <<<"$output")" "a run on ocfree ended on a provider refusal, so it takes no start until $(date -d "@$(awk -F'\t' '{print $3}' "$FLEET_DISPATCH_STATE/provider-ends.tsv")" "+%F %H:%M")"
+  printf 'earlier-run\tocfree\t%s\n' "$(( $(date +%s) - 60 ))" > "$FLEET_DISPATCH_STATE/provider-ends.tsv"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" provider-holds
+  assert_output '{}'
+}
+
 # 2026-11-18: three nim canaries waited behind a 96 C workstation while razer-laptop sat idle (ar-3222).
 @test "fleet_harnesses: a free-harness canary starts on a worker that runs it ready while this machine is hot, and waits while the worker cannot" {
   route_ready; ocfree_ready

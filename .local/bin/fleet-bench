@@ -209,7 +209,8 @@
 #                                (landed, its PR not reverted), CI red per PR and first pass, landed
 #                                after a fix-ci try, and reds held (fleet-bench reds), counts behind each
 #   fleet-bench sources [--json] every claude-acct source over BENCH_QUEUE_DAYS: window points used,
-#                                dollars, landed PRs, dollars and PRs per point (exit 1 unreadable)
+#                                dollars, landed PRs, dollars and PRs per point, and the provider hold a source stands under
+#                                beside its used percent (exit 1 unreadable)
 #   fleet-bench sizes [--json|--check]
 #                                work minutes per row size over BENCH_SIZES_DAYS against the weight
 #                                the rollups use, and cycle and lead time per row kind; --check is the
@@ -361,6 +362,7 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${BENCH_HARNESSES:=$HOME/.config/agentctl/harnesses.json}"   # each harness's `source`: a lane's capacity, a session's and an item's source
 : "${BENCH_ROOM_CMD:=claude-acct room}"   # retro: exit 0 when a Claude account has room, or with --source <name>, when that source has
 : "${BENCH_SOURCES_CMD:=claude-acct status --json}"   # sources: every source's row, the one writer's
+: "${BENCH_HOLDS_CMD:=timeout 30 fleet-dispatch provider-holds}"   # sources: {source: why} for each source a provider refusal holds (the ledger's one reader)
 : "${BENCH_NOTES_CMD:=notes}"
 : "${BENCH_WAKES_CMD:=agent-usage wakes}"   # given --since <window>h --json
 : "${BENCH_TOKENS_CMD:=agent-usage tokens line}"   # the newest nightly token-usage snapshot's row
@@ -4120,14 +4122,15 @@ cmd_skills() {
 # cost_usd: the harnesses.json price table, applied once by agentctl-session-outcomes, which
 # `agent-usage budget` sums too (burn's other_harness). Each part that cannot be read is null.
 source_attr() {
-  local t="$1" days="$BENCH_QUEUE_DAYS" since rows pts usd hs
+  local t="$1" days="$BENCH_QUEUE_DAYS" since rows pts usd hs holds
   [ -z "${SOURCE_ATTR_JSON:-}" ] || { printf '%s\n' "$SOURCE_ATTR_JSON"; return 0; }   # the scorecard reads it once
   since=$(( t - days * 86400 ))
   rows=$($BENCH_SOURCES_CMD 2>/dev/null | jq -ce 'arrays' 2>/dev/null) || rows=null
   pts=$(vm_map account "sum by (account) (sum_over_time((clamp_min(max by (account) (claude_account_week_used_percent) - max by (account) (claude_account_week_used_percent offset 15m), 0))[${days}d:15m]))" "$t" 2>/dev/null) || pts=null
+  holds=$($BENCH_HOLDS_CMD 2>/dev/null | jq -ce 'objects' 2>/dev/null) || holds=null
   usd=$(vm_map user_email "sum by (user_email) (increase(claude_code_cost_usage_USD_total[${days}d]))" "$t" 2>/dev/null) || usd=null
   hs=$(jq -ce '.harnesses // {} | map_values(.source)' "$BENCH_HARNESSES" 2>/dev/null) || hs='{}'
-  jq -cn --argjson rows "${rows:-null}" --argjson pts "${pts:-null}" --argjson usd "${usd:-null}" --argjson hs "$hs" \
+  jq -cn --argjson rows "${rows:-null}" --argjson pts "${pts:-null}" --argjson usd "${usd:-null}" --argjson hs "$hs" --argjson holds "${holds:-null}" \
      --argjson since "$since" --argjson t "$t" --argjson days "$days" \
      --slurpfile o <(outcomes_newest) \
      --slurpfile items <(bench_read $BENCH_DONE_ITEMS_CMD --since "$(date -d "@$since" +%F)" 2>/dev/null) "$JQ_LIB"'
@@ -4161,7 +4164,7 @@ source_attr() {
             elif .kind == "codex" or .kind == "agy" then $priced[$n]
             else null end) as $d
          | ([$landed[] | select(. == $n or $parent[. // ""] == $n)] | length) as $l
-         | {name: $n, kind, parent, used: .week_used, points: $p,
+         | {name: $n, kind, parent, used: .week_used, hold: ($holds[$n] // null), points: $p,
             usd: ($d | if . == null then . else round2 end),
             usd_src: (if .usd_max != null then "gateway" elif .kind == "claude" or .kind == "codex" or .kind == "agy" then "list" else null end),
             landed: $l,
@@ -4190,9 +4193,9 @@ sources_section() {
 sources_table() {
   jq -r 'def d: if . == null then "-" else tostring end;
     (if .read.points then empty else "- points: ? (VictoriaMetrics unreadable)", "" end),
-    "| Source | Kind | Used now | Points | Dollars | Landed | $ per point | PRs per point | Points per PR | Parent |",
-    "|---|---|---|---|---|---|---|---|---|---|",
-    (.sources[] | "| \(.name) | \(.kind) | \(.used | if . == null then "-" else "\(. | floor)%" end) | \(.points | d) | \(if .usd == null then "-" else "$\(.usd) \(.usd_src)" end) | \(.landed) | \(if .usd_per_point == null then "-" else "$\(.usd_per_point)" end) | \(.prs_per_point | d) | \(.points_per_pr | d) | \(.parent // "-") |"),
+    "| Source | Kind | Used now | Hold | Points | Dollars | Landed | $ per point | PRs per point | Points per PR | Parent |",
+    "|---|---|---|---|---|---|---|---|---|---|---|",
+    (.sources[] | "| \(.name) | \(.kind) | \(.used | if . == null then "-" else "\(. | floor)%" end) | \(.hold // "-") | \(.points | d) | \(if .usd == null then "-" else "$\(.usd) \(.usd_src)" end) | \(.landed) | \(if .usd_per_point == null then "-" else "$\(.usd_per_point)" end) | \(.prs_per_point | d) | \(.points_per_pr | d) | \(.parent // "-") |"),
     (if .unattributed > 0 then "", "- landed on no source: \(.unattributed) (" + ([(.unattributed_why // {}) | to_entries[]
         | "\(.value) " + ({no_session: "name no session", no_outcome: "whose sessions have no outcome row yet (a hand session'"'"'s lands when it ends)",
                            no_account: "whose sessions'"'"' outcome rows name no account",
