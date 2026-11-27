@@ -1941,10 +1941,17 @@ score_pass() {
   proof_restore "$LEDGER/.proof-$id" || proof_watch "$LEDGER/log.md"
   log="$(mktemp)"
   tp="$(pass_transcript "$id")"
-  [ -z "$tp" ] || jq -r 'select(.type == "assistant") | .message.content[]? | (.text // .name // empty)' "$tp" > "$log" 2>/dev/null
+  # The log is the pass's tool calls, each written tool:<name>, then its last text block alone: a
+  # report quoting another session ("would you like me to proceed?") is not the pass asking.
+  [ -z "$tp" ] || jq -Rrn '[inputs | fromjson? | select(.type == "assistant") | .message.content[]?] as $c
+    | ($c[] | select(.name) | "tool:\(.name)"), ([$c[] | .text // empty] | last // empty)' "$tp" > "$log" 2>/dev/null
   if [ -n "$why" ]; then verdict=STALLED
   elif [ "$n" = 0 ]; then verdict=NOOP
-  else verdict="$(proof_verdict "$log" 0)"
+  # The plan check is the plan-mode tool call and the pass ending on asking leave, never the
+  # shared approval phrases: a pass reports sessions whose plans wait on the human, and "plan
+  # awaiting your approval" in its report scored passes 2916535a and 5416cf0e STALLED with every
+  # move logged (ar-646). A pass that only planned logs no move, so it is STALLED all the same.
+  else verdict="$(AGENT_PROOF_STALL_RE='^tool:ExitPlanMode$|would you like me to proceed' proof_verdict "$log" 0)"
   fi
   rm -f "$log"
   detail="pass ${id:0:8}: $n due, $(( ($(date +%s) - start) / 60 ))m${why:+, $why}"
