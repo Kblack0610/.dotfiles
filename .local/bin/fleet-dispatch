@@ -5333,6 +5333,13 @@ close_row() {
   [ "$lane" = agent ] && flag=(--agent)
   line=$(row_line "$prof" "$project" "$lane" "$key")
   [[ $line == '- [/]'* || ( "${2:-}" = open && $line == '- [ ]'* ) ]] || { reap_unstuck "$1"; return 0; }
+  # A row another open item names closes with that item's landing, as agent-land's row_worker leaves it: an
+  # ask's resume item shares its asking item's row (ask-resume asking_row). A --repeat rerun keeps the slug,
+  # so the other item is told by its file (row_newer_item). A queue that cannot be read leaves the row too.
+  local shared
+  shared=$(agent-queue list --json --state active 2>/dev/null |
+    jq -s --argjson it "$it" 'any(.[]; (.row // "" | ascii_downcase) == ($it.row // "" | ascii_downcase) and .file != $it.file)') || return 0
+  [ "$shared" = false ] || { reap_unstuck "$1"; return 0; }
   # The row closes on the item's first PR: pr: and merged: are lists in step, one PR per repo.
   oid=$(jq -r '.merged // "" | split(" ")[0] // empty' <<<"$it"); pr=$(jq -r '.pr // "" | split(" ")[0] // empty' <<<"$it")
   dir=$(pr_repo_dir "$pr" "$project")
