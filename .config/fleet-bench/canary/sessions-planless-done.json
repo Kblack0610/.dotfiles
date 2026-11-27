@@ -4,7 +4,7 @@
   "pr": "Kblack0610/.dotfiles#1092",
   "base": "d93b877ea9de6688a27d4f7a7817ca6a4bcb0807",
   "merge": "130e15354e289226c2b53cb39630b08390ec23a4",
-  "task": "fix(fleet-sessions): a plan-less session whose own PRs all merged reads DONE, not UNCLEAR",
+  "task": "fix(fleet-sessions): a plan-less session whose own PRs all merged reads DONE, not UNCLEAR. Interface: in fleet-sessions, `session_bucket`, `session_finished` and `work_blockers` take one more trailing positional argument after the dirty names (the 19th of `session_bucket`): `landed`, the session's own PRs as \"#N,#M\" when its transcript names some and every one is merged, else \"-\". With state \"-\" (no PR on the branch), a landed list counts as merged: the plan decides as for a merged PR, so with no plan file `session_bucket idle 0 0 0 30 1 0 0 - - - 1 - - - - - - \"#975\"` prints `DONE clean, nothing on the branch, its PRs #975 merged, no plan file, its PR landed`, and with one phase left (`1/2 \"Phase 2\"`) it prints `LANDED clean, nothing on the branch, its PRs #975,#976 merged, next phase: Phase 2` for \"#975,#976\". With \"-\" it stays `UNCLEAR clean, nothing on the branch, no plan file: done or never started`, and a dirty tree still wins with STALLED. Compute it in the session loop from the transcript PRs' states and pass it to all three.",
   "pts": 2,
   "accept": [
     "no PR on the branch, but the transcript's own PRs all merged: the plan decides, as for a merged PR"
