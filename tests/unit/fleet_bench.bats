@@ -2935,24 +2935,60 @@ fix_item() {
   assert_output 0
 }
 
-# 2026-11-25 (ar-6265): dispatch moved the board-chain check row to the sheet for a person; board_upsert left
-# it there, but triage_twins read the key as filed and dropped the sheet row, so the next pass filed it again.
-@test "triage: a red whose row dispatch moved to the sheet keeps that row, with no agent row filed and no sheet drop (ar-6265)" {
+# 2026-11-25 (ar-6265): dispatch moved the board-chain check row to the sheet for a person, and triage filed it
+# again, an add and a drop on every pass. Dispatch now leaves a keyed row's lane to triage, so a copy it left on
+# the sheet is a stray: triage files the agent row its route names and drops that copy as its twin.
+@test "triage: a keyed row dispatch left on the sheet goes back to the lane its route names: one agent row, the sheet copy dropped (ar-6265)" {
   log_triage_setup
   watch spend TRIP -25200 high
   route 'watch.: spend' alert - 'the spend watch pages on its own'
   printf 'board.md\t9\t%s\t- [ ] %s (agent row ar-77)\n' 'check(watch): spend tripped since 2026-11-01, expected: x' 'check(watch): spend tripped since 2026-11-01, expected: x' > "$BOARD.agent-runtime"
   run "$SUBJECT" triage
   assert_success
-  assert_output --partial 'open on the human sheet, left there'
   # the pass files other causes (the alpha log errors), so only this key's writes are counted
+  run grep -c -- '--agent add check(watch): spend' "$NLOG"
+  assert_output 1
+  run grep -c 'ptask agent-runtime drop check(watch): spend tripped since --why moved to the agent board' "$NLOG"
+  assert_output 1
+  run grep -c 'spend tripped since' "$BOARD"
+  assert_output 1
+  run grep -c 'spend tripped since' "$BOARD.agent-runtime"
+  assert_output 0
+}
+
+@test "triage: a keyed row a person started on the sheet stays theirs: no agent row filed, no sheet drop (ar-6265)" {
+  log_triage_setup
+  watch spend TRIP -25200 high
+  route 'watch.: spend' alert - 'the spend watch pages on its own'
+  printf 'board.md\t9\t%s\t- [/] %s (agent row ar-77)\n' 'check(watch): spend tripped since 2026-11-01, expected: x' 'check(watch): spend tripped since 2026-11-01, expected: x' > "$BOARD.agent-runtime"
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial 'started on the human sheet, left there'
   run grep -c -- '--agent add check(watch): spend' "$NLOG"
   assert_output 0
   run grep -c ' drop check(watch): spend' "$NLOG"
   assert_output 0
   run grep -c 'spend tripped since' "$BOARD.agent-runtime"
   assert_output 1
+}
+
+@test "triage: two passes on one red key leave one open agent row, and the second pass writes no add or drop for it (ar-6265)" {
+  log_triage_setup
+  : > "$BOARD.agent-runtime"   # the human sheet, empty
+  watch spend TRIP -25200 high
+  route 'watch.: spend' alert - 'the spend watch pages on its own'
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c -- '--agent add check(watch): spend' "$NLOG"
+  assert_output 1
+  : > "$NLOG"
+  run "$SUBJECT" triage
+  assert_success
+  run grep -cE -- '(add|drop|reopen) check\(watch\): spend' "$NLOG"
+  assert_output 0
   run grep -c 'spend tripped since' "$BOARD"
+  assert_output 1
+  run grep -c 'spend tripped since' "$BOARD.agent-runtime"
   assert_output 0
 }
 
