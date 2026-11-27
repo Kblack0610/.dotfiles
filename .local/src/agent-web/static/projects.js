@@ -372,7 +372,7 @@ function pKnowledge(pg) {
     : `<div class="card muted">No knowledge note names this project.</div>`);
   html += secHead("p-space-work", "Open asks and queue", s.asks.length + s.queue.length) +
     `<div class="card">${s.asks.length ? s.asks.map((k) => `<div><b>${esc(k.id)}</b> ${esc(k.title)}</div>`).join("") : `<div class="muted">No open asks.</div>`}</div>` +
-    `<div class="card">${s.queue.length ? s.queue.map((i) => `<div><b>${esc(i.slug)}</b> <span class="muted">${esc(i.state)}</span> ${esc(i.title)}</div>`).join("") : `<div class="muted">No live queue items.</div>`}</div>`;
+    `<div class="card">${s.queue.length ? s.queue.map((i) => `<div><b>${esc(i.slug)}</b> <span class="muted">${esc(i.state)}</span> ${esc(i.title || "")}</div>`).join("") : `<div class="muted">No live queue items.</div>`}</div>`;
   return html + (s.errors.length ? `<div class="panel down">${s.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>` : "");
 }
 

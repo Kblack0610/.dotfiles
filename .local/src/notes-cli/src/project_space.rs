@@ -149,10 +149,14 @@ pub(crate) fn notes_naming(p: &Profile, name: &str) -> Vec<Note> {
             })
         })
         .collect();
-    let rank = |w: &str| ["path", "frontmatter", "body"].iter().position(|x| *x == w);
-    found.sort_by(|a, b| rank(a.why).cmp(&rank(b.why)).then(a.path.cmp(&b.path)));
-    found.truncate(CAP);
+    by_reason(&mut found);
     found
+}
+
+/// Strongest reason first, then by path.
+fn by_reason(notes: &mut [Note]) {
+    let rank = |w: &str| ["path", "frontmatter", "body"].iter().position(|x| *x == w);
+    notes.sort_by(|a, b| rank(a.why).cmp(&rank(b.why)).then(a.path.cmp(&b.path)));
 }
 
 /// The notes naming the project across every profile's knowledge store (the engine is one vault
@@ -170,6 +174,7 @@ pub(crate) fn knowledge_naming(p: &Profile, name: &str) -> Vec<Note> {
         seen.push(other.knowledge.clone());
         found.extend(notes_naming(&other, name));
     }
+    by_reason(&mut found);
     found.truncate(CAP);
     found
 }
@@ -191,7 +196,7 @@ fn changelog_head(root: &Path) -> Vec<String> {
 /// project has no repo, or none is cloned here: a page with empty sections, never an error.
 fn repo_part(reg: Option<&project_map::Registry>, name: &str) -> Value {
     let Some(reg) = reg else {
-        return Value::Null;
+        return json!({"has_repo": false});
     };
     let tracker = reg.tracker(name);
     let key = tracker
@@ -274,7 +279,7 @@ fn agent_part(name: &str) -> Value {
 /// themselves stay in their tracker (`ticket`), never copied here.
 fn tracker_part(reg: Option<&project_map::Registry>, name: &str) -> Value {
     let Some(t) = reg.and_then(|r| r.tracker(name)) else {
-        return Value::Null;
+        return json!({"urls": []});
     };
     let slug = |k: &str| t.get(k).and_then(Value::as_str).filter(|s| !s.is_empty());
     let forgejo_host = reg.and_then(|r| r.forge_host("forgejo"));
@@ -296,7 +301,7 @@ fn tracker_part(reg: Option<&project_map::Registry>, name: &str) -> Value {
 /// The registry's wiring for the project, as the keys the readers use.
 fn registry_part(reg: Option<&project_map::Registry>, name: &str) -> Value {
     let Some(reg) = reg else {
-        return Value::Null;
+        return json!({"has_repo": false});
     };
     let t = reg.tracker(name);
     let get = |k: &str| t.and_then(|t| t.get(k)).and_then(Value::as_str);
@@ -335,7 +340,7 @@ fn lab_part(dir: &Path) -> Value {
 }
 
 /// `notes projects <name> --json`: the whole page, one object. Fails only for a name no
-/// lab project resolves; every other source that is absent is `null` or an empty list.
+/// lab project resolves; every other source that is absent is an empty object or list, and only `repo` is `null`.
 pub fn print_or_bail(p: &Profile, name: Option<&str>) -> Result<()> {
     match name {
         Some(n) => print(p, n),
@@ -379,6 +384,29 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn a_project_with_no_registry_entry_gets_empty_objects_never_null() {
+        assert_eq!(tracker_part(None, "x"), json!({"urls": []}));
+        assert_eq!(registry_part(None, "x"), json!({"has_repo": false}));
+    }
+
+    #[test]
+    fn a_stronger_reason_outranks_a_longer_path_across_stores() {
+        let note = |p: &str, why| Note {
+            path: p.into(),
+            title: p.into(),
+            why,
+        };
+        let mut v = vec![
+            note("a.md", "body"),
+            note("z.md", "path"),
+            note("m.md", "frontmatter"),
+        ];
+        by_reason(&mut v);
+        let order: Vec<&str> = v.iter().map(|n| n.path.as_str()).collect();
+        assert_eq!(order, ["z.md", "m.md", "a.md"]);
     }
 
     #[test]

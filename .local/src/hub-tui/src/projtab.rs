@@ -1168,20 +1168,32 @@ fn knowledge(pg: &Page, p: Palette, w: usize) -> Vec<Line<'static>> {
     ));
     out.push(Line::raw(""));
     out.push(sec_head("OPEN ASKS", &s.asks.len().to_string(), "", p, w));
-    for k in &s.asks {
+    for k in s.asks.iter().take(KNOWLEDGE_SHOWN) {
         out.extend(wrapped(&format!("  {}  ", k.id), &k.title, p.dim(), p, w));
     }
+    out.extend(crate::fmt::older(
+        s.asks.len(),
+        s.asks.len().min(KNOWLEDGE_SHOWN),
+        p,
+    ));
     out.push(Line::raw(""));
     out.push(sec_head("QUEUE", &s.queue.len().to_string(), "", p, w));
-    for i in &s.queue {
+    for i in s.queue.iter().take(KNOWLEDGE_SHOWN) {
+        // The state as the web tab shows it: the serialized, lowercase word.
+        let state = format!("{:?}", i.state).to_lowercase();
         out.extend(wrapped(
             &format!("  {}  ", i.slug),
-            &format!("{:?}  {}", i.state, i.title),
+            &format!("{state}  {}", i.title),
             p.dim(),
             p,
             w,
         ));
     }
+    out.extend(crate::fmt::older(
+        s.queue.len(),
+        s.queue.len().min(KNOWLEDGE_SHOWN),
+        p,
+    ));
     for e in &s.errors {
         out.extend(wrapped("  ", e, p.dim(), p, w));
     }
