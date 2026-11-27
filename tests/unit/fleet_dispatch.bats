@@ -1564,7 +1564,7 @@ game low: fleet, #low, beta, 4d old"
   assert_output --partial 'agent-queue move rel done --status ok.'
   assert_output --partial 'agent-queue requeue rel --ask <id>, and stop: the answer starts this item again'
   refute_output --partial 'wind-down'
-  refute_output --partial 'leaving this window open'
+  refute_output --partial 'only that step is blocked'
   # a release board row never dispatches on its own: the human starts it, or /release queues it
   load_kinds
   assert_equal "$(kind_off release game beta)" 'kind release is off'
@@ -1572,6 +1572,9 @@ game low: fleet, #low, beta, 4d old"
   run item_brief '{"slug": "f", "mode": "oneshot", "project": "game", "title": "feat(game): a mode", "task": "feat(game): a mode"}'
   assert_line --index 0 '/one-shot feat(game): a mode'
   assert_output --partial 'Merge with agent-land <N>'
+  # no board row: reap fails a row-less item whose session is gone on its ask, so the window stays open
+  assert_output --partial 'leaving this window open'
+  refute_output --partial 'run /wind-down auto: the teardown'
   refute_output --partial 'note="<proof>"'
 }
 
