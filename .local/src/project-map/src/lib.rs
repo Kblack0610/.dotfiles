@@ -297,6 +297,12 @@ impl Registry {
             .find(|p| p.is_dir())
     }
 
+    /// The host of forge `forge` (`forges.<forge>`); None when the
+    /// registry does not list it.
+    pub fn forge_host(&self, forge: &str) -> Option<&str> {
+        self.raw.get("forges")?.get(forge)?.as_str()
+    }
+
     /// `trackers.<name>.type`: game, app or infra.
     pub fn kind(&self, name: &str) -> Option<String> {
         let t = self.tracker(name)?.get("type")?.as_str()?;

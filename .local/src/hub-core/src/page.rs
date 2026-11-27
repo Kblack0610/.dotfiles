@@ -144,6 +144,9 @@ pub struct Page {
     pub check_groups: Vec<String>,
     /// The Timeline fold; None when `project-timeline` could not be read (named in `errors`).
     pub timeline: Option<crate::timeline::Timeline>,
+    /// The Knowledge tab: the project's docs, plans, lessons, notes, asks and queue items in one
+    /// place (`crate::space`); None when `notes projects <name> --json` could not be read.
+    pub space: Option<crate::space::Space>,
     pub errors: Vec<String>,
 }
 
@@ -683,6 +686,9 @@ pub fn read_with(
     let (timeline, errors) = crate::timeline::read(runner, name, channels, now);
     p.timeline = timeline;
     p.errors.extend(errors);
+    p.space = crate::space::read(runner, name)
+        .map_err(|e| p.errors.push(e))
+        .ok();
     let chain = chain().map_err(|e| p.errors.push(e)).ok();
     if let Some(c) = &chain {
         p.flow_line = Some(epics::flow_line(&c.flow));
@@ -934,6 +940,13 @@ mod tests {
                     stage.into(),
                 ),
                 ("notes projects --roadmap game", 0, roadmap.into()),
+                (
+                    "notes projects game --json",
+                    0,
+                    r#"{"project":"game","stage":"alpha","lab":{"core":[{"path":"README.md","title":"Game"}]}}"#.into(),
+                ),
+                ("agent-ask list", 0, String::new()),
+                ("agent-queue list", 0, String::new()),
                 (
                     "notes projects --sprints game",
                     0,

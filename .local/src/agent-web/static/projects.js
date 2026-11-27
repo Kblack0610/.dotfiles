@@ -338,6 +338,44 @@ function pDepartments(c) {
     pChips(c).map(([id]) => `<div data-pdp="${id}"${pst.dept === id ? "" : " hidden"}>${deptPane(key, id)}</div>`).join("");
 }
 
+// Knowledge: the project's whole space in one tab (hub_core::space, the page JSON's `space`): its
+// status, cadence and tracker, the lab's docs, the repo's docs, ADRs and CHANGELOG head, the agent's
+// plans, lessons, sessions and outcomes, the knowledge notes that name it, and its open asks and
+// queue items. A part with nothing says so; a source that failed is named in `errors`.
+const P_DOC_HEAD = `<tr><th data-role="lead">file</th><th>title</th><th>modified</th></tr>`;
+const pDocRow = (d) => `<tr><td class="wrap">${esc(d.path)}</td><td class="wrap">${esc(d.title)}</td><td class="muted">${esc(d.modified || "")}</td></tr>`;
+const pDocs = (id, title, docs, none) => secHead(id, title, docs.length) +
+  (docs.length ? pTbl(P_DOC_HEAD, docs.map(pDocRow)) : `<div class="card muted">${esc(none)}</div>`);
+function pCadence(c) {
+  const m = c.measured_days == null ? "none measured yet" : `${c.measured_days} measured over ${c.cuts} cuts`;
+  return `<b>cadence</b> every ${c.target_days} days promised, ${m}` +
+    (c.due_on ? `, due ${esc(c.due_on)}${c.due ? ` <span class="warn">(due now)</span>` : ""}` : "");
+}
+function pKnowledge(pg) {
+  const s = pg.space;
+  if (!s) return `<div class="card muted">The knowledge space could not be read; see the page's errors.</div>`;
+  const t = s.tracker, urls = t.urls.map((u) => `<a href="${esc(u)}">${esc(u)}</a>`).join(" ");
+  let html = secHead("p-space-head", "Status", s.status.date || null) +
+    `<div class="card">${s.status.headline ? `<div class="pstat">${esc(s.status.headline)}</div>` : `<div class="muted">No status line.</div>`}` +
+    `<div class="cline">${pCadence(s.cadence)}</div><div class="cline"><b>tracker</b> ${esc(t.system || "none")} ${urls}</div></div>`;
+  const lab = [...s.lab.core, ...s.lab.docs], r = s.repo, a = s.agent;
+  html += pDocs("p-space-docs", "Lab docs", lab, "No docs in the lab folder.");
+  html += r ? pDocs("p-space-repo", "Repo docs", r.docs, "No docs/ in the repo.") + pDocs("p-space-adrs", "ADRs", r.adrs, "No ADRs.") +
+    secHead("p-space-changelog", "Changelog", r.repo) + (r.changelog_head.length ? `<div class="card">${pLines(r.changelog_head)}</div>` : `<div class="card muted">No CHANGELOG.</div>`)
+    : secHead("p-space-repo", "Repo") + `<div class="card muted">No repo cloned here.</div>`;
+  html += pDocs("p-space-plans", "Plans", a.plans, "No plans.") +
+    secHead("p-space-lessons", "Lessons", a.lessons.count) + `<div class="card muted">${esc(a.lessons.path || "No lessons file.")}</div>` +
+    pDocs("p-space-sessions", "Sessions", a.sessions, "No session notes.") + pDocs("p-space-outcomes", "Outcomes", a.outcomes, "No outcomes.");
+  html += secHead("p-space-notes", "Knowledge notes", s.knowledge.length) + (s.knowledge.length
+    ? pTbl(`<tr><th data-role="lead">note</th><th>title</th><th>names it in</th></tr>`,
+      s.knowledge.map((n) => `<tr><td class="wrap">${esc(n.path)}</td><td class="wrap">${esc(n.title)}</td><td class="muted">${esc(n.why)}</td></tr>`))
+    : `<div class="card muted">No knowledge note names this project.</div>`);
+  html += secHead("p-space-work", "Open asks and queue", s.asks.length + s.queue.length) +
+    `<div class="card">${s.asks.length ? s.asks.map((k) => `<div><b>${esc(k.id)}</b> ${esc(k.title)}</div>`).join("") : `<div class="muted">No open asks.</div>`}</div>` +
+    `<div class="card">${s.queue.length ? s.queue.map((i) => `<div><b>${esc(i.slug)}</b> <span class="muted">${esc(i.state)}</span> ${esc(i.title)}</div>`).join("") : `<div class="muted">No live queue items.</div>`}</div>`;
+  return html + (s.errors.length ? `<div class="panel down">${s.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>` : "");
+}
+
 // The inner tabs' own panes, each in its data-pin group, around the board's (Rows) and
 // Deliverables' elements, in the strip's order: `p-pane` holds Overview,
 // the Sprint tab, a product's departments and the Rows head, `p-pane2` Releases, Stage and Activity. One that needs the page
@@ -349,7 +387,7 @@ function pPanes(c) {
   const pin = (id, html) => `<div data-pin="${id}"${pst.inner === id ? "" : " hidden"}>${html}</div>`;
   return [pin("overview", pOverview(c, pg) + (pg ? "" : wait)) + (pDepts(c).length ? pin(P_DEPT_TAB, pDepartments(c)) : "") + pin("sprint", pSprint(c, pg)) +
     pin("rows", secHead("p-rows", "Rows", c.progress.open)),
-  pin("releases", pg ? pReleases(pg) : wait) + pin("stage", pg ? pStage(pg) : wait) + pin("activity", pActivity(c, pg) + (pg ? "" : wait))];
+  pin("releases", pg ? pReleases(pg) : wait) + pin("stage", pg ? pStage(pg) : wait) + pin("activity", pActivity(c, pg) + (pg ? "" : wait)) + pin("knowledge", pg ? pKnowledge(pg) : wait)];
 }
 
 // Read the opened card's page, once per open (it runs fleet-bench and the stage check).

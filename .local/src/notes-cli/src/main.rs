@@ -41,6 +41,7 @@ mod meeting;
 mod migrate_rows;
 mod outbox;
 mod playtest;
+mod project_space;
 mod project_sweep;
 mod project_tasks;
 mod projects;
@@ -434,7 +435,7 @@ enum Cmd {
         /// is the rows aimed at a later release, agent is the agent board's)
         #[arg(long)]
         stats: bool,
-        /// With --stats, --roadmap or --sprints: one JSON array instead. For --stats it adds each project's dir, done count, progress, epics, size weights, STATUS line and date, and summary path
+        /// With --stats, --roadmap or --sprints: one JSON array instead; with a project NAME alone: its page, one object (README "The project page"). For --stats it adds each project's dir, done count, progress, epics, size weights, STATUS line and date, and summary path
         #[arg(long)]
         json: bool,
         /// Print a project's maturity stage; with --set, declare it (a move up runs project-stage-check first).
@@ -2204,8 +2205,15 @@ fn main() -> Result<()> {
                 lab_refresh::kick();
                 std::process::exit(0);
             }
+            // `notes projects <name> --json`: the project page (the knowledge space).
+            if let (true, false, None, None, Some(n)) =
+                (json, stats, &roadmap, &sprints, name.as_deref())
+            {
+                project_space::print(&prof, n)?;
+                std::process::exit(0);
+            }
             if json && !stats && roadmap.is_none() && sprints.is_none() {
-                anyhow::bail!("--json goes with --stats, --roadmap or --sprints");
+                anyhow::bail!("--json goes with --stats, --roadmap, --sprints, or a project name");
             }
             if projects::print_view(&prof, stats, sprints.as_deref(), version.as_deref(), json)? {
                 std::process::exit(0);

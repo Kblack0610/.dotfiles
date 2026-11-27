@@ -1048,6 +1048,146 @@ fn activity(c: &Card, pg: &Page, p: Palette, w: usize) -> Vec<Line<'static>> {
     out
 }
 
+/// A doc list as `path  title  day` lines under a head: the first `KNOWLEDGE_SHOWN`, then how
+/// many more the page holds (the CLI caps each list itself).
+fn doc_lines(
+    head: &str,
+    docs: &[hub_core::space::Doc],
+    p: Palette,
+    w: usize,
+) -> Vec<Line<'static>> {
+    let mut out = vec![sec_head(head, &docs.len().to_string(), "", p, w)];
+    for d in docs.iter().take(KNOWLEDGE_SHOWN) {
+        let day = if d.modified.is_empty() {
+            String::new()
+        } else {
+            format!("  {}", d.modified)
+        };
+        out.push(clip_line(
+            Line::styled(format!("  {}  {}{day}", d.path, d.title), p.dim()),
+            w,
+        ));
+    }
+    out.extend(crate::fmt::older(
+        docs.len(),
+        docs.len().min(KNOWLEDGE_SHOWN),
+        p,
+    ));
+    out
+}
+
+/// Rows each Knowledge list shows before `+N older`.
+const KNOWLEDGE_SHOWN: usize = 12;
+
+/// Knowledge (`hub_core::space`, agent-web's Knowledge tab): the project's lab docs, repo docs and
+/// ADRs, agent plans, lessons, sessions, knowledge notes, open asks and queue items in one place,
+/// then its cadence and tracker. A section with nothing says `0`, never an error.
+fn knowledge(pg: &Page, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let Some(s) = &pg.space else {
+        return vec![Line::styled(
+            "  the knowledge space could not be read (see the page's errors)",
+            p.dim(),
+        )];
+    };
+    let mut out = vec![];
+    if !s.status.headline.is_empty() {
+        out.push(sec_head("STATUS", &s.status.date, "", p, w));
+        out.extend(wrapped("  ", &s.status.headline, p.dim(), p, w));
+        out.push(Line::raw(""));
+    }
+    out.push(sec_head(
+        "CADENCE",
+        &hub_core::space::cadence_says(&s.cadence),
+        "",
+        p,
+        w,
+    ));
+    let t = &s.tracker;
+    let tracker = [t.system.as_deref().unwrap_or("none").to_string()]
+        .into_iter()
+        .chain(t.urls.iter().cloned())
+        .collect::<Vec<_>>()
+        .join("  ");
+    out.extend(wrapped("  tracker  ", &tracker, p.dim(), p, w));
+    out.push(Line::raw(""));
+    out.extend(doc_lines(
+        "LAB DOCS",
+        &[&s.lab.core[..], &s.lab.docs[..]].concat(),
+        p,
+        w,
+    ));
+    if let Some(r) = &s.repo {
+        out.push(Line::raw(""));
+        out.extend(doc_lines("REPO DOCS", &r.docs, p, w));
+        out.push(Line::raw(""));
+        out.extend(doc_lines("ADRS", &r.adrs, p, w));
+        out.push(Line::raw(""));
+        out.push(sec_head("CHANGELOG", &r.repo, "", p, w));
+        for l in r.changelog_head.iter().take(KNOWLEDGE_SHOWN) {
+            out.push(clip_line(Line::styled(format!("  {l}"), p.dim()), w));
+        }
+    }
+    let a = &s.agent;
+    out.push(Line::raw(""));
+    out.extend(doc_lines("PLANS", &a.plans, p, w));
+    out.push(Line::raw(""));
+    let les = &a.lessons;
+    out.push(sec_head(
+        "LESSONS",
+        &format!(
+            "{}  {}",
+            les.count,
+            les.path.as_deref().unwrap_or("no lessons file")
+        ),
+        "",
+        p,
+        w,
+    ));
+    out.push(Line::raw(""));
+    out.extend(doc_lines("SESSIONS", &a.sessions, p, w));
+    out.push(Line::raw(""));
+    out.extend(doc_lines("OUTCOMES", &a.outcomes, p, w));
+    out.push(Line::raw(""));
+    out.push(sec_head(
+        "KNOWLEDGE NOTES",
+        &s.knowledge.len().to_string(),
+        "",
+        p,
+        w,
+    ));
+    for n in s.knowledge.iter().take(KNOWLEDGE_SHOWN) {
+        out.push(clip_line(
+            Line::styled(format!("  {:<11} {}  {}", n.why, n.path, n.title), p.dim()),
+            w,
+        ));
+    }
+    out.extend(crate::fmt::older(
+        s.knowledge.len(),
+        s.knowledge.len().min(KNOWLEDGE_SHOWN),
+        p,
+    ));
+    out.push(Line::raw(""));
+    out.push(sec_head("OPEN ASKS", &s.asks.len().to_string(), "", p, w));
+    for k in &s.asks {
+        out.extend(wrapped(&format!("  {}  ", k.id), &k.title, p.dim(), p, w));
+    }
+    out.push(Line::raw(""));
+    out.push(sec_head("QUEUE", &s.queue.len().to_string(), "", p, w));
+    for i in &s.queue {
+        out.extend(wrapped(
+            &format!("  {}  ", i.slug),
+            &format!("{:?}  {}", i.state, i.title),
+            p.dim(),
+            p,
+            w,
+        ));
+    }
+    for e in &s.errors {
+        out.extend(wrapped("  ", e, p.dim(), p, w));
+    }
+    out
+}
+
 /// The version a sprint link names (`<profile>/<project>/<version>`).
 fn version_of(l: &hub_core::links::Link) -> Option<String> {
     let hub_core::links::Link::To(_, id) = l else {
@@ -1496,6 +1636,7 @@ pub fn open_lines(
         SPRINT => sprint(c, pg, feed, pv, p, w),
         "releases" => (releases(pg, pv, p, w), None),
         "stage" => (stage(pg, p, w), None),
+        "knowledge" => (knowledge(pg, p, w), None),
         _ => (activity(c, pg, p, w), None),
     };
     out.extend(body);
@@ -1834,6 +1975,7 @@ pub(crate) mod tests {
     fn a_page() -> Page {
         Page {
             project: "garden".into(),
+            space: None,
             releases: None,
             release_tab: Default::default(),
             sprint_past: vec![],
@@ -1918,7 +2060,7 @@ pub(crate) mod tests {
         // An untyped project has no department tabs, so its strip has no break.
         assert_eq!(
             l[7],
-            "[Overview 1] Sprint  Rows  Deliverables  Releases  Stage  Activity   <- -> switch"
+            "[Overview 1] Sprint  Rows  Deliverables  Releases  Stage  Activity  Knowledge   <- -> switch"
         );
         let body = l[9..].join("\n");
         assert!(
@@ -2080,6 +2222,55 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn knowledge_lists_the_projects_docs_asks_and_queue_and_says_so_when_unread() {
+        let pr = fixture();
+        let mut pg = a_page();
+        let at = |pg: &Page| {
+            draw(
+                &pr.cards[0],
+                Some(pg),
+                &ProjView {
+                    inner: "knowledge",
+                    ..Default::default()
+                },
+            )
+            .join("\n")
+        };
+        let none = at(&pg);
+        assert!(
+            none.contains("the knowledge space could not be read"),
+            "{none}"
+        );
+        pg.space = Some(
+            serde_json::from_value(serde_json::json!({
+                "project": "garden",
+                "status": {"headline": "beta next", "date": "2026-11-20"},
+                "cadence": {"target_days": 14, "measured_days": 16, "cuts": 8, "due_on": "2026-12-02"},
+                "tracker": {"system": "github", "urls": ["https://example.test/garden"]},
+                "lab": {"docs": [{"path": "docs/briefs/menu.md", "title": "Menu brief", "modified": "2026-11-01"}]},
+                "repo": {"repo": "garden", "docs": [], "adrs": [{"path": "docs/adr/0001.md", "title": "Use SQLite"}], "changelog_head": ["## 0.1.0"]},
+                "agent": {"plans": [{"path": "garden/plan.md", "title": "Plan"}], "lessons": {"path": "garden.md", "count": 3}},
+                "knowledge": [{"path": "projects/garden.md", "title": "Garden", "why": "frontmatter"}]
+            }))
+            .unwrap(),
+        );
+        let k = at(&pg);
+        for s in [
+            "STATUS  2026-11-20\n  beta next",
+            "CADENCE  every 14 days promised, 16 measured over 8 cuts, due 2026-12-02",
+            "  docs/briefs/menu.md  Menu brief  2026-11-01",
+            "ADRS  1",
+            "  docs/adr/0001.md  Use SQLite",
+            "LESSONS  3  garden.md",
+            "frontmatter projects/garden.md  Garden",
+            "OPEN ASKS  0",
+            "QUEUE  0",
+        ] {
+            assert!(k.contains(s), "{s} in {k}");
+        }
+    }
+
+    #[test]
     fn left_right_step_the_inner_tabs_and_enter_walks_overview_to_deliverables_to_rows() {
         let pr = fixture();
         let mut pg = a_page();
@@ -2103,7 +2294,7 @@ pub(crate) mod tests {
         assert!(pv.page_key(&mut tv, k(KeyCode::Left), Some(&pg), None, 10));
         assert!(pv.page_key(&mut tv, k(KeyCode::Left), Some(&pg), None, 10));
         assert_eq!(
-            pv.inner, "activity",
+            pv.inner, "knowledge",
             "Left from the first wraps to the last"
         );
         pv.inner = OVERVIEW;
@@ -2700,14 +2891,15 @@ pub(crate) mod tests {
         let t = lines(&l);
         assert!(t.iter().all(|s| crate::fit::len(s) <= 80), "{t:#?}");
         let s = t.iter().position(|s| s.starts_with("[Overview]")).unwrap();
-        // Eight tabs fit one line; Departments is the last, and its nine chips sit on their own
-        // strip beneath it, which is not drawn until Departments is open.
+        // Eight tabs fit one line and Departments, the last, starts the next; its nine chips sit
+        // on their own strip beneath it, which is not drawn until Departments is open.
         assert_eq!(
             t[s],
-            "[Overview] Sprint  Rows  Deliverables  Releases  Stage  Activity  Departments "
+            "[Overview] Sprint  Rows  Deliverables  Releases  Stage  Activity  Knowledge "
         );
+        assert!(t[s + 1].starts_with(" Departments"), "{t:#?}");
         let titles = layout::project_page(&pv.tabs);
-        assert_eq!(titles.len(), 8);
+        assert_eq!(titles.len(), 9);
         assert_eq!(layout::project_depts(&pv.tabs).len(), 9);
         assert!(!t.iter().any(|s| s.contains("Engineering")), "{t:#?}");
 
@@ -2809,11 +3001,11 @@ pub(crate) mod tests {
         assert_eq!(
             t[s..s + 2],
             [
-                "[Overview] Sprint  Rows  Deliverables  Releases  Stage  Activity  Departments ",
-                "  <- -> switch"
+                "[Overview] Sprint  Rows  Deliverables  Releases  Stage  Activity  Knowledge ",
+                " Departments   <- -> switch"
             ]
         );
-        assert_eq!(pv.page_tabs().len(), 8);
+        assert_eq!(pv.page_tabs().len(), 9);
         assert_eq!(layout::project_depts(&pv.tabs).len(), 2);
         pv.go(&mut tv, &pr.cards, "demo/legal");
         assert_eq!(
