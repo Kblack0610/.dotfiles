@@ -198,7 +198,7 @@ pub struct Taken {
 /// The CI pool in units: 1 unit is 1 CI core, a CI node's allocatable CPU, so the total moves
 /// with the nodes and no config holds a copy. Taken is every pod's CPU request on a CI node,
 /// the build-slot hold and other namespaces included; free is the rest; real is the CPU the
-/// nodes actually use, beside it so an idle booking shows. The words and cells are filled here
+/// nodes actually use, CI or not, beside it so an idle booking shows. The words and cells are filled here
 /// (`Units::words`), so the hub, agent-web and the waybar hover print the same.
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct Units {

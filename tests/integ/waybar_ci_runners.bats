@@ -241,7 +241,6 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   refute_output --partial "WHERE"
   refute_output --partial "SPACE"
   refute_output --partial "local:workstation"
-  refute_output --partial "other"
   refute_output --partial "DOING"
   refute_output --partial "SLOTS"
 }

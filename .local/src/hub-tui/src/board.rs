@@ -276,12 +276,13 @@ pub fn infra(
 }
 
 /// A header and its rows of cells as text lines, each column as wide as its widest cell: the
-/// first left after `indent`, the rest right two spaces apart. Space and CI POOL draw with it.
+/// first left after `indent`, the rest right two spaces apart; a short row draws its cells and
+/// no more. Space and CI POOL draw with it.
 fn aligned(columns: &[&str], rows: &[&[String]], indent: &str) -> Vec<String> {
     let cols: Vec<usize> = (0..columns.len())
         .map(|i| {
             rows.iter()
-                .map(|r| r[i].len())
+                .map(|r| r.get(i).map_or(0, String::len))
                 .chain([columns[i].len()])
                 .max()
                 .unwrap_or(0)

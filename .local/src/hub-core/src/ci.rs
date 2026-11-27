@@ -238,7 +238,8 @@ pub struct JobKind {
     pub weight: Option<String>,
 }
 
-/// One CI machine: the CPU and memory its job pods book against allocatable, its real CPU use,
+/// One CI machine: the CPU and memory every pod placed there requests against allocatable, its
+/// real CPU use,
 /// the jobs running on it by kind, the oldest waiting job that fits it, and its load.
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct Host {
@@ -247,7 +248,8 @@ pub struct Host {
     pub state: String,
     /// Jobs running there (`Machine::busy`).
     pub busy: u32,
-    /// What its job pods book (`Machine::booked`); None for a machine that is no CI node (an
+    /// What every pod placed there requests (`Machine::booked`): job pods, the build-slot hold and
+    /// other namespaces' pods. None for a machine that is no CI node (an
     /// old Unity slot host until hc-954).
     pub booked: Option<Booked>,
     /// Its CPU busy share (`Machine::cpu`).
