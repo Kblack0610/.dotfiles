@@ -171,6 +171,53 @@ pub(crate) fn agent_tiers(p: &config::Profile) -> String {
     Totals::of(&rows, &projects).tiers()
 }
 
+/// A board holding more urgent rows than this has no urgent left: `notes doctor` warns.
+const URGENT_MAX: usize = 5;
+/// An urgent row open longer than this many days is not being treated as urgent.
+const URGENT_MAX_AGE_DAYS: i64 = 3;
+
+/// One line per agent board (project) that holds more than [`URGENT_MAX`] open `#urgent` rows,
+/// or any older than [`URGENT_MAX_AGE_DAYS`] days by its created tag (a row with none has no
+/// age and is not counted old). Ordered by project name; empty when every board is clear.
+fn urgent_findings(rows: &[FeedRow], today: chrono::NaiveDate) -> Vec<String> {
+    let mut by_board: std::collections::BTreeMap<&str, (usize, usize)> = Default::default();
+    for r in rows {
+        if r.lane != "agent" || r.state == "done" || r.priority != "urgent" || r.untriaged {
+            continue;
+        }
+        let old = r
+            .since
+            .as_deref()
+            .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+            .is_some_and(|d| (today - d).num_days() > URGENT_MAX_AGE_DAYS);
+        let e = by_board
+            .entry(r.project.as_deref().unwrap_or("?"))
+            .or_default();
+        e.0 += 1;
+        e.1 += usize::from(old);
+    }
+    by_board
+        .into_iter()
+        .filter(|(_, (n, old))| *n > URGENT_MAX || *old > 0)
+        .map(|(name, (n, old))| {
+            format!("{name} {n} urgent ({old} older than {URGENT_MAX_AGE_DAYS}d)")
+        })
+        .collect()
+}
+
+/// [`urgent_findings`] over every project of `p`, for `notes doctor`.
+pub(crate) fn agent_urgent_findings(p: &config::Profile) -> Vec<String> {
+    let today = chrono::Local::now().date_naive();
+    let mut rows = Vec::new();
+    for (name, summary) in daily::discover_project_dirs(p) {
+        let Some(dir) = summary.parent() else {
+            continue;
+        };
+        rows.extend(feed_for_dir(&p.name, &name, dir, today).1);
+    }
+    urgent_findings(&rows, today)
+}
+
 /// The rows a lane's board lists: all of the human lane's, the agent lane's minus its Backlog
 /// tier, which the count beside them stands for.
 fn listed(open: &[String], lane: Lane) -> impl Iterator<Item = &String> {
@@ -2539,6 +2586,50 @@ mod tests {
         );
         assert_eq!(child.rank, crate::rank::of(&child.raw, today).key());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // `notes doctor` flags a board with more than 5 urgent rows, or any urgent row older than 3
+    // days by its created tag; the same board with fewer, newer rows (or only non-urgent old
+    // ones) is clear, so the check is not just "always warn".
+    #[test]
+    fn urgent_findings_flag_a_pile_or_an_aged_row_per_board() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 26).unwrap();
+        let rows = |project: &str, lines: &[&str]| -> Vec<FeedRow> {
+            let o = Origin {
+                profile: "p",
+                project: Some(project),
+                lane: "agent",
+                version: Some("v1"),
+                game: None,
+                sheet: std::path::Path::new("x.md"),
+                sheet_row: true,
+                aim: None,
+            };
+            lines
+                .iter()
+                .enumerate()
+                .map(|(i, l)| feed_row(&o, (i + 1, l), Vec::new(), today))
+                .collect()
+        };
+        let fresh = "- [ ] fix(a): hot #urgent #c1125";
+        let mut all = rows("pile", &[fresh; 6]);
+        all.extend(rows("ok", &[fresh; 5]));
+        all.extend(rows(
+            "aged",
+            &[
+                "- [ ] fix(a): old #urgent #c1122",
+                fresh,
+                "- [ ] fix(a): old but high #high #c1101",
+            ],
+        ));
+        all.extend(rows("edge", &["- [ ] fix(a): three days #urgent #c1123"]));
+        assert_eq!(
+            urgent_findings(&all, today),
+            [
+                "aged 2 urgent (1 older than 3d)",
+                "pile 6 urgent (0 older than 3d)"
+            ]
+        );
     }
 
     // An epic ranks and shows as its most urgent open row, read across both lanes, whatever tag
