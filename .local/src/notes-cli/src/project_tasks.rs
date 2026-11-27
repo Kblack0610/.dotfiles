@@ -569,13 +569,14 @@ pub(crate) fn add_via(
 /// The id of the open row on `content` that `text` twins (the same words, a near twin, or the
 /// row that already lands the PR it names): what [`refuse_twin`] refuses, as the row to join.
 /// None for an epic (`epic_new` has its own twin check); a twin with no id yet is skipped for the next kind.
-fn twin_id(content: &str, text: &str) -> Option<String> {
+/// `origin` is the item a session's line came from ([`origin_item`]): its siblings are no near twins.
+fn twin_id(content: &str, text: &str, origin: Option<&str>) -> Option<String> {
     if text.trim_start().starts_with("epic(") {
         return None;
     }
     open_twin(content, text)
         .and_then(md::row_id)
-        .or_else(|| near_twin(content, text).and_then(md::row_id))
+        .or_else(|| near_twin(content, text, origin).and_then(md::row_id))
         .or_else(|| pr_twin(content, text).and_then(|(l, _)| md::row_id(l)))
 }
 
@@ -592,7 +593,7 @@ fn stamp_twin_requested(
     lane: Lane,
     want: Option<&str>,
 ) -> Result<()> {
-    let Some(id) = twin_id(content, text) else {
+    let Some(id) = twin_id(content, text, origin_item(text).as_deref()) else {
         return Ok(());
     };
     let mut twin = None;
@@ -626,7 +627,7 @@ fn stamp_twin_requested(
 fn refuse_twin(path: &Path, content: &str, text: &str) -> bool {
     if let Some(open) = open_twin(content, text) {
         eprintln!("already open on {}: {}", path.display(), open.trim());
-    } else if let Some(near) = near_twin(content, text) {
+    } else if let Some(near) = near_twin(content, text, origin_item(text).as_deref()) {
         eprintln!(
             "near-duplicate of an open row on {}: {}",
             path.display(),
@@ -935,24 +936,50 @@ fn open_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
 /// area does not count: inbox-triage rewrites a filed row's area, so a filer that files the same
 /// words again would miss its own row (research-pick's `research(roster):` row, re-scoped to
 /// `research(notes):`, filed nightly). Deterministic, and strict on purpose: a refused near-dup
-/// exits 3, which callers read as already filed, so a false twin would drop a row.
-fn near_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
+/// exits 3, which callers read as already filed, so a false twin would drop a row. A [`sibling`]
+/// of `origin` is never one: one session's follow-ups that differ only in a short group word
+/// (`CI` against `notes`) share 87% of their words (ar-5824).
+fn near_twin<'a>(content: &'a str, text: &str, origin: Option<&str>) -> Option<&'a str> {
     let line = format!("- [ ] {text}");
     let (kind, want) = title_words(&line);
     if want.len() < 3 {
         return None;
     }
     let own = names(&line);
+    let lines: Vec<&str> = content.lines().collect();
     sheet::open_rows(content)
         .into_iter()
-        .map(|(_, l)| l)
-        .find(|l| {
+        .find(|&(n, l)| {
             let (k, have) = title_words(l);
             row_type(&k) == row_type(&kind)
                 && have.len() >= 3
                 && share(&want, &have) >= NEAR_DUP
                 && names(l) == own
+                && !origin.is_some_and(|o| sibling(&lines, n - 1, o))
         })
+        .map(|(_, l)| l)
+}
+
+/// The item a session's follow-up came from: its `#from/<item>`, lower-cased.
+pub(crate) fn origin_item(text: &str) -> Option<String> {
+    md::find_hashtags(text)
+        .into_iter()
+        .find_map(|t| t.strip_prefix("from/").map(str::to_string))
+        .filter(|o| !o.is_empty())
+}
+
+/// Whether the row at index `i` of `lines` came from the same item `origin` names: its
+/// `#from/<origin>` is on the row or on a `was:` line under it. One session wrote both as
+/// separate lines (a plan phase split into its passes), so they are siblings, never near twins;
+/// an exact twin ([`open_twin`]) still is one, and so is a near one from any other origin.
+fn sibling(lines: &[&str], i: usize, origin: &str) -> bool {
+    std::iter::once(lines[i].trim().to_string())
+        .chain(
+            md::row_details(lines, i)
+                .into_iter()
+                .filter(|d| d.starts_with("was: ")),
+        )
+        .any(|l| origin_item(&l).as_deref() == Some(origin))
 }
 
 /// A row title's name-like tokens, lower-cased with edge punctuation trimmed: a word led by a
@@ -1013,7 +1040,7 @@ fn share(a: &Words, b: &Words) -> usize {
 /// [`share`] (under [`MIN_SIMILAR`] is no match: one shared `the` makes none). A tie goes to the row of the
 /// same `type(area)`, then to the one higher on the sheet. The same share as [`near_twin`], so
 /// every row the writer would refuse is listed; the writer also needs the same [`names`], and only
-/// this tie-break reads the area.
+/// this tie-break reads the area. A [`sibling`] of the line's own `#from/` item is not listed.
 fn similar<'a>(content: &'a str, text: &str, top: usize) -> Vec<(usize, &'a str)> {
     similar_where(content, text, top, MIN_SIMILAR, |_| true)
 }
@@ -1027,10 +1054,17 @@ fn similar_where<'a>(
     keep: impl Fn(&str) -> bool,
 ) -> Vec<(usize, &'a str)> {
     let (kind, want) = title_words(&format!("- [ ] {text}"));
-    let mut hits: Vec<(usize, bool, &str)> = content
-        .lines()
-        .filter(|l| md::is_open_task(l) && keep(l))
-        .filter_map(|l| {
+    let origin = origin_item(text);
+    let lines: Vec<&str> = content.lines().collect();
+    let mut hits: Vec<(usize, bool, &str)> = lines
+        .iter()
+        .enumerate()
+        .filter(|&(i, l)| {
+            md::is_open_task(l)
+                && keep(l)
+                && !origin.as_deref().is_some_and(|o| sibling(&lines, i, o))
+        })
+        .filter_map(|(_, &l)| {
             let (k, have) = title_words(l);
             let pct = share(&want, &have);
             (pct >= floor).then_some((pct, k == kind, l))
@@ -1220,7 +1254,7 @@ const WANT_TAG: &str = "#requested";
 pub const EXIT_INBOXED: i32 = 4;
 
 /// The `--origin` of a plan's phases: a row its plan already approved, written directly.
-const ORIGIN_PLAN: &str = "plan";
+pub(crate) const ORIGIN_PLAN: &str = "plan";
 
 /// The triage runner: its new epics, like a hand session's, must name a listed system.
 const TRIAGE: &str = "inbox-triage";
@@ -1504,8 +1538,11 @@ fn followup_refusal(
     let canon = dest.file_name().unwrap_or_default().to_string_lossy();
     let rows = block.iter().filter(|l| md::is_open_task(l));
     for (i, row) in rows.enumerate() {
+        // A plan phase's split is admitted as the phase is (gate::plan_phase); read only on a refusal.
         if let Some(why) = crate::gate::refusal(&canon, row, how.want.is_some())? {
-            return Ok(Some(why));
+            if !crate::gate::plan_phase(p, &line.text) {
+                return Ok(Some(why));
+            }
         }
         // The rows this filing already wrote count against the day too.
         if let Some(why) = crate::gate::cap_refusal(p, &canon, row, how.want.is_some(), i)? {
@@ -1853,7 +1890,9 @@ fn file_via(
     };
     // A model-written row that twins an open row of the board joins that row, as `--dup` does.
     let joined = match &how.how {
-        How::Rows { texts, .. } if !as_is && linked.is_none() => joined_twin(&base, texts),
+        How::Rows { texts, .. } if !as_is && linked.is_none() => {
+            joined_twin(&base, texts, origin_item(&line.text).as_deref())
+        }
         _ => None,
     };
     let dup_id = match &how.how {
@@ -1960,11 +1999,11 @@ fn file_via(
 
 /// The open row every text of a model-written filing twins ([`twin_id`]), when it is one and the
 /// same row: a mixed line files as the model wrote it, so no row's words are dropped with no row
-/// to hold them.
-fn joined_twin(base: &str, texts: &[String]) -> Option<String> {
+/// to hold them. `origin` is the line's own `#from/` item: a sibling row of it is no twin.
+fn joined_twin(base: &str, texts: &[String], origin: Option<&str>) -> Option<String> {
     let twins: Vec<Option<String>> = texts
         .iter()
-        .map(|t| twin_id(base, &md::without_agent_tag(t)))
+        .map(|t| twin_id(base, &md::without_agent_tag(t), origin))
         .collect();
     twins
         .first()
@@ -4582,6 +4621,11 @@ fn refuse_rewrite(
 mod tests {
     use super::*;
 
+    /// [`super::near_twin`] for a line from no session (no `#from/` item to have siblings of).
+    fn near_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
+        super::near_twin(content, text, None)
+    }
+
     /// A words pick, as `ptask <verb> <query>` builds one.
     fn w(q: &str) -> Pick {
         Pick::new(q, false).unwrap()
@@ -6061,6 +6105,11 @@ Version: v0.0.1
 mod inbox_tests {
     use super::*;
 
+    /// [`super::near_twin`] for a line from no session (no `#from/` item to have siblings of).
+    fn near_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
+        super::near_twin(content, text, None)
+    }
+
     struct Vault {
         root: PathBuf,
         p: Profile,
@@ -7087,6 +7136,65 @@ mod inbox_tests {
         assert_eq!(
             file(&v.p, &v.log, "scratch", &pick, &skip, Lane::Human).unwrap(),
             1
+        );
+    }
+
+    /// The 2026-11-25 02:23 pair (ar-5824): two focus passes one session (ar-5604) split its plan
+    /// phase into. Their titles differ only in the group word, and `CI` is under 3 letters, so the
+    /// CI title's words are all the notes title's (7 of 8, 87%).
+    const SIBLINGS: &str = "## Tasks\n\
+- [ ] fix(notes): focus pass over the 32 notes rows, reds first #high #why/runtime-fault <!-- id:ar-5776 -->\n\
+  was: #agent #from/ar-5604 fix(notes): focus pass, notes: 32 rows, reds first #high\n\
+- [ ] fix(views): focus pass over the 43 views rows, reds first #normal <!-- id:ar-5813 -->\n\
+  was: #agent #from/ar-5604 fix(rest): focus pass, views, skills and the rest: 43 rows, reds first #normal\n";
+
+    #[test]
+    fn a_sibling_of_the_same_session_is_no_near_twin_but_a_real_twin_still_is() {
+        let ci = "fix(ci): focus pass over the 65 CI rows, reds first #high";
+        let notes = "fix(notes): focus pass over the 32 notes rows, reds first";
+        assert_eq!(
+            super::near_twin(SIBLINGS, ci, None)
+                .and_then(md::row_id)
+                .as_deref(),
+            Some("ar-5776"),
+            "the fold ar-5824 saw: from no origin the CI pass reads as the notes pass's twin"
+        );
+        assert!(
+            super::near_twin(SIBLINGS, ci, Some("ar-5604")).is_none(),
+            "a sibling from the same item is its own row"
+        );
+        assert!(joined_twin(SIBLINGS, &[ci.into()], Some("ar-5604")).is_none());
+        // Negative controls: a reworded copy from another session still folds, and so does the
+        // same row filed twice by the same session (an exact twin).
+        assert_eq!(
+            super::near_twin(SIBLINGS, ci, Some("ar-9999"))
+                .and_then(md::row_id)
+                .as_deref(),
+            Some("ar-5776")
+        );
+        assert_eq!(
+            twin_id(SIBLINGS, notes, Some("ar-5604")).as_deref(),
+            Some("ar-5776")
+        );
+    }
+
+    #[test]
+    fn similar_lists_no_sibling_of_the_lines_own_item() {
+        let ids = |text: &str| -> Vec<String> {
+            similar(SIBLINGS, text, 10)
+                .into_iter()
+                .filter_map(|(_, l)| md::row_id(l))
+                .collect()
+        };
+        assert!(
+            ids("#agent #from/ar-5604 fix(ci): focus pass, CI: 65 rows, reds first #high")
+                .is_empty(),
+            "the model is shown no sibling to call a dup"
+        );
+        assert_eq!(
+            ids("#agent #from/ar-1 fix(ci): focus pass, CI: 65 rows, reds first #high"),
+            ["ar-5776", "ar-5813"],
+            "another session's line still sees both"
         );
     }
 
