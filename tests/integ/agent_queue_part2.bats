@@ -242,6 +242,126 @@ load 'agent_queue/common'
   assert_failure; assert_output --partial "nothing active with slug nope"
 }
 
+# ar-6144: a failed chain phase left every item after it in a dead hold for good. settle-after returns
+# them to their rows (the row of the failed item runs again) or files one ask for the chain.
+# settle_fd <tries>: the fleet-dispatch stub, which answers row-tries with <tries> (none: it prints nothing).
+settle_fd() {
+  printf '#!/usr/bin/env bash\necho "fleet-dispatch $*" >> "$NOTES_FIXTURE/calls.log"\n[ "$1" != row-tries ] || cat "%s/row-tries" 2>/dev/null\n' "$SANDBOX" > "$SANDBOX/bin/fleet-dispatch"
+  chmod +x "$SANDBOX/bin/fleet-dispatch"
+  [ -z "${1:-}" ] || echo "$1" > "$SANDBOX/row-tries"
+}
+asks() { ls "$HOME"/.agent/asks/*/*.md 2>/dev/null; }
+
+@test "a failed phase with tries left returns each item after it, transitively, to its row, still after the failed row (ar-6144)" {
+  settle_fd 2
+  "$AQ" add --project game --from shepherd --slug fa "a"
+  legacy fb "after: fa" --project game --from shepherd "b"
+  legacy fc "after: fb" --project game --from shepherd "c"
+  "$AQ" add --project game --from shepherd --slug fz "unrelated"
+  "$AQ" set fa row=game:gm-1; "$AQ" set fb row=game:gm-2; "$AQ" set fc row=game:gm-3
+  "$AQ" move fa running >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  AGENT_QUEUE_ITEM=reaper run "$AQ" move fa done --status failed --end timeout
+  assert_success
+  assert_called "fleet-dispatch row-tries game agent gm-1 fa"
+  for s in fb fc; do
+    f="$(done_item $s)"
+    [ "$(field "$f" status)" = cancelled ]
+    [ "$(field "$f" end_reason)" = returned ]
+    [ "$(field "$f" cancel_cause)" = "returned with fa, which closed failed (end timeout)" ]
+  done
+  # Each row waits again on the row before it, the failed one included, and goes back un-started.
+  assert_called "ptask game --agent tag --add after/gm-1 gm-2"
+  assert_called "ptask game --agent tag --add after/gm-2 gm-3"
+  assert_called "ptask game --agent unstart gm-2"
+  assert_called "ptask game --agent unstart gm-3"
+  assert_called "--by reaper --why returned: fa failed"
+  [ -z "$(asks)" ]
+  run bash -c "'$AQ' list --json | jq -r '.slug + \" \" + (.hold // \"\")'"
+  assert_output "fz "
+}
+
+@test "a failed phase asks once when an item after it is the human's work, and acts on the answer (ar-6144)" {
+  settle_fd 2
+  "$AQ" add --project game --from shepherd --slug ha "a"
+  legacy hb "after: ha" --project game "b"
+  "$AQ" set ha row=game:gm-1; "$AQ" set hb row=game:gm-2
+  run "$AQ" move ha done --status failed
+  assert_success
+  assert_output --partial "asked "
+  [ "$(asks | wc -l)" = 1 ]
+  a="$(asks)"; id="$(basename "$a" .md)"
+  grep -q "ha failed" "$a"
+  grep -q "hb" "$a"
+  grep -q "hb is work the human asked for" "$a"
+  [ -n "$(item queued hb)" ]
+  [ "$(field "$(item queued hb)" dead_ask)" = "$id" ]
+  # The guard and a second settle file no second ask while it is pending.
+  run "$AQ" settle-after --all
+  assert_success
+  run "$AQ" settle-after ha
+  assert_success
+  [ "$(asks | wc -l)" = 1 ]
+  [ -n "$(item queued hb)" ]
+  # Answered return, its resume sends hb back to its row, after the failed one.
+  "$SANDBOX/bin/agent-ask" answer "$id" return >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" settle-after ha "$id"
+  assert_success
+  [ "$(field "$(done_item hb)" end_reason)" = returned ]
+  [ "$(field "$(done_item hb)" cancel_why)" = "ha failed (ask $id)" ]
+  assert_called "ptask game --agent tag --add after/gm-1 gm-2"
+  assert_called "ptask game --agent unstart gm-2"
+}
+
+@test "a failed phase whose row has no tries left, or that has no row, asks instead of returning (ar-6144)" {
+  settle_fd 0
+  "$AQ" add --project game --from shepherd --slug ta "a"
+  legacy tb "after: ta" --project game --from shepherd "b"
+  "$AQ" set ta row=game:gm-1; "$AQ" set tb row=game:gm-2
+  "$AQ" move ta done --status failed >/dev/null
+  [ -n "$(item queued tb)" ]
+  grep -q "its row gm-1 has no tries left" "$(asks)"
+  grep -q "^recommend: return" "$(asks)"
+  # No row to run again: the items keep or drop, nothing is returned.
+  "$AQ" add --project game --from shepherd --slug na "a"
+  legacy nb "after: na" --project game --from shepherd "b"
+  "$AQ" set nb row=game:gm-3
+  "$AQ" move na done --status failed >/dev/null
+  [ -n "$(item queued nb)" ]
+  [ "$(asks | wc -l)" = 2 ]
+  grep -l "na has no board row to run again" $(asks) | grep -q .
+}
+
+@test "the reap guard settles an item already in a dead hold in one pass, and a second pass changes nothing (ar-6144)" {
+  settle_fd 2
+  "$AQ" add --project game --from shepherd --slug da "a"
+  "$AQ" set da row=game:gm-1
+  "$AQ" move da done --status failed >/dev/null
+  # An item queued behind it before settle-after existed, and one behind an ok close.
+  legacy db "after: da" --project game --from shepherd "b"
+  "$AQ" set db row=game:gm-2
+  "$AQ" add --project game --from shepherd --slug oa "a"
+  legacy ob "after: oa" --project game --from shepherd "b"
+  "$AQ" move oa done --status ok >/dev/null
+  run bash -c "'$AQ' show db --json | jq -r .hold"
+  assert_output --partial "after da closed failed, dead"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" settle-after --all
+  assert_success
+  [ "$(field "$(done_item db)" end_reason)" = returned ]
+  assert_called "ptask game --agent unstart gm-2"
+  # NEGATIVE CONTROL: the item after an ok close is released and left alone.
+  [ -n "$(item queued ob)" ]
+  [ -z "$("$AQ" show ob --json | jq -r '.hold // ""')" ]
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" settle-after --all
+  assert_success
+  assert_output ""
+  assert_not_called "ptask"
+  [ -z "$(asks)" ]
+}
+
 @test "add --plan resumes a chain an earlier add left part way, and still refuses a chain already whole" {
   story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
   printf '# pp\n\n## Phases\n\n- [ ] 1. one\n- [ ] 2. two (independent)\n' > "$SANDBOX/pp.md"
