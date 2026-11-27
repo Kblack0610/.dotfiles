@@ -5028,6 +5028,7 @@ alert_setup() {
   # negative control: no systems line and no watch system names none
   sed -i '/^systems: /d' "$TRIAGE_WATCH_STATE/alertmanager-fleet.out"; sed -i '/^system:/d' "$TRIAGE_WATCHES/alertmanager-fleet.yaml"
   run "$SUBJECT" triage --dry-run
+  assert_success
   assert_line --regexp '^check\(alert\): ConvergenceDrift deskslim-1 firing, '
   refute_line --regexp '^check\(alert\): .*system'
 }

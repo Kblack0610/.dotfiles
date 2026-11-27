@@ -5586,6 +5586,7 @@ triage_shape() {
 # (the old aggregate work-chain watch and runner-score, 2026-11-07).
 triage_route() {
   local n ids key text pri re route skill fix tags t note hit cause extra
+  local -A notes=()
   while IFS=$'\t' read -r key text pri; do
     hit=0 cause=- extra=
     triage_line "$text" && hit=1
@@ -5620,11 +5621,17 @@ triage_route() {
     fi
     text+="${note:+; $note}"
     case "$route" in agent | alert | owned:?*)
-      # a watch's red loads its manifest's system; an alert's its rule's `system` label, else the watch's
-      if [[ "$key" == 'check(watch): '* ]]; then n=${key#'check(watch): '}; text+=$(system_note "$(watch_system_ids "${n%% *}")" "${skill:--}")
+      # a watch's red loads its manifest's system; an alert's its rule's `system` label, else the
+      # watch's. A note is kept per ids and skill, so many alerts of one system scan the skills once.
+      ids=
+      if [[ "$key" == 'check(watch): '* ]]; then n=${key#'check(watch): '}; ids=$(watch_system_ids "${n%% *}")
       elif [[ "$key" == 'check(alert): '* ]]; then
         n=${key#'check(alert): '}; ids=$(alert_system_ids "${n%% *}")
-        text+=$(system_note "${ids:-$(watch_system_ids "$TRIAGE_ALERT_WATCH")}" "${skill:--}")
+        [ -n "$ids" ] || ids=$(watch_system_ids "$TRIAGE_ALERT_WATCH")
+      fi
+      if [ -n "$ids" ]; then
+        [ -n "${notes[$ids|$skill]+x}" ] || notes[$ids|$skill]=$(system_note "$ids" "${skill:--}")
+        text+=${notes[$ids|$skill]}
       fi ;;
     esac
     for t in ${tags:-}; do
