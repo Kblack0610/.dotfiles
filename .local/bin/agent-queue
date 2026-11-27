@@ -3495,9 +3495,14 @@ cmd_settle_after() {
   [ "${1:-}" != --all ] || { settle_after_all; return; }
   local slug="${1:?$usage}" aid="${2:-}" g i have="" row end left="" why="" rowless="" human="" SF
   local -a chain=() files=()
+  # One settle at a time, from the check for an ask to its stamp: the move's own settle and a reap tick's
+  # --all in the seconds an ask takes to post would each file one. A settle that waits past LOCK_WAIT
+  # leaves the chain to the one running, and the next tick reads what it did.
+  mkdir -p "$AQ_DIR" && exec 9>>"$AQ_DIR/.settle.lock" && flock -w "$LOCK_WAIT" 9 ||
+    { echo "agent-queue: another settle-after holds $AQ_DIR/.settle.lock, so $slug is left to it" >&2; return 0; }
   lock
   settle_chain "$slug" || { unlock; return 0; }
-  for g in "${files[@]}"; do have="$(fm_get "$g" dead_ask)"; [ -z "$have" ] || break; done
+  have="$(settle_have)"
   row="$(item_row "$SF")" end="$(fm_get "$SF" end_reason)"
   for i in "${!files[@]}"; do
     [ -n "$(item_row "${files[i]}")" ] || rowless+=" ${chain[i]}"
@@ -3510,7 +3515,7 @@ cmd_settle_after() {
   [ -z "$aid" ] || [ "$aid" = "$have" ] || return 0
   if [ -n "$have" ]; then
     case "$(ask_pending "$have")" in
-      "") settle_answer "$slug" "$have"; return ;;
+      "") SETTLE_RESUME=$aid settle_answer "$slug" "$have"; return ;;
       # Cancelled or gone, it decides nothing: ask again.
       cancelled* | "no such ask") ;;
       *) settle_stamp "$slug" "$have"; return 0 ;;
@@ -3526,13 +3531,16 @@ cmd_settle_after() {
   [ -z "$why" ] || { settle_ask "$slug" "$why" "$row" "$rowless" "$end"; return; }
   [ -n "$left" ] || echo "agent-queue: the tries left on $slug's row ${row#*:} could not be read (fleet-dispatch row-tries), so the items after it go back to the board, where that row's own retry gate still holds it" >&2
   local err rc=0
+  # A return files no ask, and settle_chain re-reads the chain under the queue lock: the settle lock goes.
+  exec 9>&-
   err="$(mktemp)"
   ( lock; settle_chain "$slug" || { unlock; exit 0; }
-    return_chain "$slug" "$slug failed" "" "" "$slug" "returned with $slug, which closed failed${end:+ (end $end)}" ) 2>"$err" || rc=$?
+    return_chain "$slug" "$slug failed" "" "" "$slug" "$(settle_cause "$slug" "$end")" ) 2>"$err" || rc=$?
   why="$(grep -m1 . "$err")"; cat "$err" >&2; rm -f "$err"
   [ "$rc" != 0 ] || return 0
   # A return that refused before closing anything (an after: with no board form) leaves the items queued: ask, or every tick refuses again.
-  settle_ask "$slug" "returning them failed: ${why#agent-queue: }" "$row" "$rowless" "$end" || true
+  exec 9>>"$AQ_DIR/.settle.lock" && flock -w "$LOCK_WAIT" 9 && [ -z "$(settle_have "$slug")" ] &&
+    settle_ask "$slug" "returning them failed: ${why#agent-queue: }" "$row" "$rowless" "$end" || true
   return "$rc"
 }
 
@@ -3542,6 +3550,21 @@ ask_created() {
   f="$(compgen -G "$AQ_ASKS/*/$1.md" | awk 'NR == 1')"
   [ -n "$f" ] && c="$(sed -n '/^created: /{s///p;q;}' "$f")" && date -d "$c" +%s 2>/dev/null || echo 0
 }
+
+# settle_have [<slug>] -> the dead_ask: one of the items after the failed <slug> names, if any; with no slug, of
+# the caller's files array, under the lock it holds.
+settle_have() {
+  local g SF
+  if [ -n "${1-}" ]; then
+    local -a chain=() files=()
+    lock_read; settle_chain "$1" || { unlock_read; return 0; }; unlock_read
+  fi
+  for g in "${files[@]}"; do fm_get "$g" dead_ask | grep . && return 0; done
+  return 0
+}
+
+# settle_cause <slug> <end> -> the cancel_cause of an item returned after the failed <slug>.
+settle_cause() { printf 'returned with %s, which closed failed%s' "$1" "${2:+ (end $2)}"; }
 
 # settle_chain <slug> -> fills the caller's chain and files arrays with the queued items after: the done-failed
 # item <slug> (chain_of, <slug> left out) and sets SF to its file; fails when <slug> is live again, did not
@@ -3563,7 +3586,7 @@ settle_chain() {
 settle_tries() {
   local row lane end n
   row="$(item_row "$1")" lane="$(fm_get "$1" lane)" end="$(fm_get "$1" end_reason)"
-  n="$(fleet-dispatch row-tries "${row%%:*}" "${lane:-agent}" "${row#*:}" "$(fm_get "$1" slug)" </dev/null 2>/dev/null)"
+  n="$(fleet-dispatch row-tries "${row%%:*}" "${lane:-agent}" "${row#*:}" "$(fm_get "$1" slug)" </dev/null 2>/dev/null 9>&-)"
   [[ "$n" =~ ^[0-9]+$ ]] || return 0
   unrated_end "$end" || [ "$end" = returned ] || [ "$n" -eq 0 ] || n=$((n - 1))
   printf '%s' "$n"
@@ -3583,6 +3606,7 @@ settle_ask() {
   if [ -z "$rowless" ]; then
     local wait="no longer waiting on $slug, which has no row"
     [ -z "$row" ] || wait="each waiting on the row ${row#*:} of $slug to land"
+    [[ "$why" != *"no tries left"* ]] || wait+=", which its failures hold until the ask about that row is answered retry"
     opts="return=send $list back to their board rows, $wait, to be judged and started again"
     rec=return
   else
@@ -3597,7 +3621,7 @@ settle_ask() {
     AGENT_ASK_ROOT="$AQ_ASKS" PROJECT_MAP_FILE="$AQ_MAP" "$AQ_ASK" post --kind gate --project "$(fm_get "$SF" project)" \
     ${prof:+--profile "$prof"} \
     --options "$opts" --recommend "$rec" --why "nothing else decides it: the items wait on $slug for good" \
-    --context "$ctx" --resume "run: agent-queue settle-after $slug" -- "$q" </dev/null 2>"$err" 8>&- | tail -n 1)"
+    --context "$ctx" --resume "run: agent-queue settle-after $slug" -- "$q" </dev/null 2>"$err" 8>&- 9>&- | tail -n 1)"
   if ! [[ "$aid" =~ ^[A-Za-z0-9_-]+$ ]]; then
     echo "agent-queue: the ask for the $n items after failed $slug did not post ($(grep -m1 . "$err")), so they stay as they are for the next settle-after" >&2
     rm -f "$err"; return 1
@@ -3628,6 +3652,7 @@ settle_stamp() {
 settle_answer() {
   local slug=$1 aid=$2 pick f ans names SF
   local -a chain=() files=()
+  exec 9>&-
   f="$(compgen -G "$AQ_ASKS/*/$aid.md" | awk 'NR == 1')"
   ans="$(sed -n '/^answer: /{s///p;q;}' "$f")"; ans="${ans%% *}"; ans="${ans%[.,;:!]}"; pick="${ans,,}"
   case "$pick" in return | drop | keep) ;; *)
@@ -3638,8 +3663,9 @@ settle_answer() {
     keep) return 0 ;;
     return | drop)
       ( lock; settle_chain "$slug" || { unlock; exit 0; }
-        return_chain "$slug" "$slug failed" "$aid" "$([ "$pick" = return ] || echo 1)" "$slug" "returned with $slug, which closed failed" ) ;;
-    *) echo "agent-queue: ask $aid on the items after failed $slug is answered '${ans:-nothing}', which picks none of its options: settle them by hand (agent-queue return <slug> --why <why>)" >&2 ;;
+        return_chain "$slug" "$slug failed" "$aid" "$([ "$pick" = return ] || echo 1)" "$slug" "$(settle_cause "$slug" "$(fm_get "$SF" end_reason)")" ) ;;
+    # Said on the ask's resume, the call that names it, not on every tick after: it is kept until settled by hand.
+    *) [ -z "${SETTLE_RESUME-}" ] || echo "agent-queue: ask $aid on the items after failed $slug is answered '${ans:-nothing}', which picks none of its options, so they stay queued: settle them by hand (agent-queue return <slug> --why <why>)" >&2 ;;
   esac
 }
 
