@@ -214,10 +214,16 @@ seed_anchor() {
 
 # ── the Lab section and --all ───────────────────────────────────────────────
 
-# One `notes projects --stats --json` row. $1 name, $2 stage, $3 status_date, $4 status.
-lab_row() {
-  printf '{"profile":"bnb","name":"%s","dir":"%s/lab/%s","stage":"%s","version":"v1.2.0","open":3,"done":2,"urgent":0,"high":1,"low":1,"planned":4,"agent":5,"status":"%s","status_date":"%s","sheet":"x","summary":"y"}' \
-    "$1" "$HOME" "$1" "$2" "$4" "$3"
+# One `notes projects <name> --json` page, written to the stub's space.<name>.json. $1 name, $2 stage,
+# $3 status date, $4 status headline; a fifth argument is extra jq applied to the page.
+lab_page() {
+  jq -n -c --arg n "$1" --arg stage "$2" --arg date "$3" --arg head "$4" --arg dir "$HOME/lab/$1" '
+    {project: $n, profile: "bnb", stage: $stage, version: "v1.2.0",
+     counts: {open: 3, done: 2, urgent: 0, high: 1, normal: 0, low: 1, planned: 4, agent: 5},
+     status: {headline: $head, date: $date, parts: {}},
+     waves: [], cadence: {target_days: 14, measured_days: null, cuts: 0, last_cut: null, due_on: null, due: false},
+     lab: {dir: $dir, core: [], docs: [], versions: 0}, knowledge: []}' \
+    | jq -c "${5:-.}" > "$NOTES_FIXTURE/space.$1.json"
 }
 
 # One `hub projects --json` card. $1 name, $2 its state_says.
@@ -226,8 +232,8 @@ hub_card() {
 }
 
 @test "regen-anchor: the Lab section carries the project's card state and its status" {
-  echo "[$(lab_row proj beta "$(date +%F)" 'boss fight in review'),$(lab_row other prod '' '')]" \
-    > "$NOTES_FIXTURE/stats.json"
+  lab_page proj beta "$(date +%F)" 'boss fight in review'
+  lab_page other prod '' ''
   echo "{\"cards\": [$(hub_card proj 'at risk, 21/84 due 11-22'),$(hub_card other 'no window')]}" > "$NOTES_FIXTURE/hub.json"
   run bash "$REGEN" proj
   assert_success
@@ -242,7 +248,7 @@ hub_card() {
 }
 
 @test "regen-anchor: the Lab section names the type and the standards to meet" {
-  echo "[$(lab_row proj beta "$(date +%F)" '')]" > "$NOTES_FIXTURE/stats.json"
+  lab_page proj beta "$(date +%F)" ''
   mkdir -p "$HOME/.local/src/docs"
   : > "$HOME/.local/src/docs/stages.md"
   run bash "$REGEN" proj
@@ -259,8 +265,27 @@ hub_card() {
   assert_output --partial '- Standards: `~/.local/src/docs/lifecycle.md` (each step), `~/.local/src/docs/stages.md` (each stage, by type)'
 }
 
+@test "regen-anchor: the Lab section carries the measured cadence, its knowledge notes and the page command" {
+  lab_page proj beta "$(date +%F)" 'x' '.cadence.measured_days = 9 | .knowledge = [{"path":"a.md","title":"A","why":"body"},{"path":"b.md","title":"B","why":"path"}]'
+  run bash "$REGEN" proj
+  assert_success
+  run cat "$ANCHOR"
+  assert_output --partial "; cuts every 9d against a 14d target; knowledge: 2 notes; \`~/lab/proj/\`"
+  assert_output --partial '- Project page: `notes projects <name> --json`'
+}
+
+@test "regen-anchor: a project never cut and with no knowledge notes says neither" {
+  lab_page proj beta "$(date +%F)" 'x'
+  run bash "$REGEN" proj
+  assert_success
+  run cat "$ANCHOR"
+  # NEGATIVE CONTROL: no measured cadence and an empty knowledge list print no clause.
+  refute_output --partial 'cuts every'
+  refute_output --partial 'knowledge:'
+}
+
 @test "regen-anchor: a prod project with an old status is flagged STALE" {
-  echo "[$(lab_row proj prod 2026-01-01 'shipped')]" > "$NOTES_FIXTURE/stats.json"
+  lab_page proj prod 2026-01-01 'shipped'
   run bash "$REGEN" proj
   assert_success
   run cat "$ANCHOR"
@@ -268,7 +293,7 @@ hub_card() {
 }
 
 @test "regen-anchor: an old status on an alpha project is not stale" {
-  echo "[$(lab_row proj alpha 2026-01-01 'early days')]" > "$NOTES_FIXTURE/stats.json"
+  lab_page proj alpha 2026-01-01 'early days'
   run bash "$REGEN" proj
   run cat "$ANCHOR"
   refute_output --partial 'STALE'
@@ -280,8 +305,8 @@ hub_card() {
   "trackers": { "proj": {}, "app-a": { "repo": "proj", "path": "apps/a" },
                 "app-b": { "repo": "proj", "path": "apps/b" } } }
 EOF2
-  echo "[$(lab_row app-a beta "$(date +%F)" 'a status'),$(lab_row app-b alpha '' '')]" \
-    > "$NOTES_FIXTURE/stats.json"
+  lab_page app-a beta "$(date +%F)" 'a status'
+  lab_page app-b alpha '' ''
   echo "{\"cards\": [$(hub_card app-a 'no window')]}" > "$NOTES_FIXTURE/hub.json"
   run bash "$REGEN" proj
   assert_success
@@ -291,12 +316,12 @@ EOF2
   refute_output --partial '  - Status:'
 }
 
-@test "regen-anchor: says so when the notes CLI gives no lab facts" {
-  rm -f "$NOTES_FIXTURE/stats.json"
+@test "regen-anchor: says so when no page names a lab project" {
+  # No page for the name: the CLI is there, but the project is not a lab project.
   run bash "$REGEN" proj
   assert_success
   run cat "$ANCHOR"
-  assert_output --partial '_(notes CLI unavailable; lab facts not read)_'
+  assert_output --partial '_(no lab project; `project-map add` scaffolds one)_'
 }
 
 @test "regen-anchor: links the newest three ADRs, never the template" {
