@@ -55,9 +55,14 @@
 #                                       an attended session's relay: --by human --quote
 #                                       '<their words>' (relay_proof checks the transcript, and on
 #                                       an ask with options that the words pick the answer);
-#                                       an agent answer to an approval, a judge human-only ask or one at
-#                                       the human floor is refused. Any answer releases what the
+#                                       an agent answer to an approval, a judge human-only ask, one
+#                                       the judge sent to the human (judge: human) or one at the
+#                                       human floor is refused. Any answer releases what the
 #                                       ask holds (agent-queue ask_pending).
+#   agent-ask return [--dry-run] (--refused | <id>...)
+#                                       an agent's answer to an ask `answer` now refuses it goes
+#                                       back to pending for the human, kept as agent_answer;
+#                                       --refused takes every such ask
 #   agent-ask said --since <time> <words...>
 #                                       exit 0 when the human typed those words in this attended
 #                                       session since <time> (the relay's transcript check, for
@@ -352,13 +357,17 @@ find_ask() {
 # cannot outlive its verdict. The temp file sits beside the ask (ask_files reads only `*.md`), so
 # the mv is a rename: from /tmp, a tmpfs, it was a copy that a killed judge could leave cut short.
 drop_field() {
-  local f="$1" tmp; shift
-  tmp="$(mktemp "$f.XXXXXX")"
   (
     command -v flock >/dev/null 2>&1 && flock 9
-    awk 'BEGIN { for (i = 1; i < ARGC - 1; i++) { k[ARGV[i]] = 1; ARGV[i] = "" } }
-      { p = index($0, ": ") } !(p && substr($0, 1, p - 1) in k)' "$@" "$f" > "$tmp" && mv "$tmp" "$f"
-  ) 9>"$(dirname "$f")/.lock"
+    drop_lines "$@"
+  ) 9>"$(dirname "$1")/.lock"
+}
+# drop_lines <file> <key>...: drop_field's rewrite, for a caller that already holds the lock.
+drop_lines() {
+  local f="$1" tmp; shift
+  tmp="$(mktemp "$f.XXXXXX")"
+  awk 'BEGIN { for (i = 1; i < ARGC - 1; i++) { k[ARGV[i]] = 1; ARGV[i] = "" } }
+    { p = index($0, ": ") } !(p && substr($0, 1, p - 1) in k)' "$@" "$f" > "$tmp" && mv "$tmp" "$f"
 }
 
 queue_changed() { : > "$ASKS_ROOT/.changed" 2>/dev/null || true; }
@@ -1165,16 +1174,11 @@ cmd_answer() {
   if [ "$by" = agent ] && [ "$(field "$f" status)" != pending ]; then
     echo "agent-ask: $id is $(field "$f" status); an agent answer does not replace one" >&2; return 1
   fi
-  # An agent answers what does not need the human; its answer releases what the ask holds, as the
-  # judge's does. An approval, an ask the judge marked human-only and one at the human floor
-  # (human_floor: the judge's own reach) take only the human's.
+  # An agent answers what the judge would not send to the human; its answer releases what the ask
+  # holds, as the judge's does. What takes only the human's is agent_refused's.
   if [ "$by" = agent ]; then
     local mine
-    if [ "$(field "$f" kind)" = approval ]; then mine="it is an approval"
-    # gate: aa-human-only
-    elif [ "$(field "$f" judge_human_only)" = true ]; then mine="the judge marked it human-only"
-    else mine="$(human_floor "$(field "$f" question) $(field "$f" options)" "$f")" && mine="it ${mine%$'\n'}" || mine=""; fi
-    if [ -n "$mine" ]; then
+    if mine="$(agent_refused "$f")"; then
       echo "agent-ask: $id needs the human ($mine); it stays pending for them (agent-ask recommend $id <option> sets your pick)" >&2
       return 1
     fi
@@ -1202,6 +1206,84 @@ cmd_answer() {
   # No page: only the human answers, so "ask answered" told them what they just did. The
   # producer learns from the file (post --wait), deliver_to_session, and ask-resume.
   echo "answered $id: $answer" >&2
+}
+
+# agent_refused <ask file>: why only the human may answer this ask, worded to follow "needs the
+# human (", or fail when an agent may: an approval, an ask the judge marked human-only or sent to
+# the human (`judge: human`, unless its rule is `grounded`: answerable, with no option to take),
+# and one at the human floor (human_floor: the judge's own reach). An agent answers the rest: an
+# ask the judge would answer itself, or one not judged yet or whose call failed. The one list of
+# who may not answer: `answer` refuses by it and `return` reopens by it. Why (ar-5156): MVGdCe, a
+# look approval the judge sent to the human, was answered "merge" by an agent; the asking session
+# rightly refused it, and fleet-sessions read it as STALLED, its only ask answered.
+agent_refused() {
+  local f="$1" why
+  if [ "$(field "$f" kind)" = approval ]; then echo "it is an approval"
+  # gate: aa-human-only
+  elif [ "$(field "$f" judge_human_only)" = true ]; then echo "the judge marked it human-only"
+  elif [ "$(field "$f" judge)" = human ] && [ "$(field "$f" judge_rule)" != grounded ]; then
+    why="$(field "$f" judge_reason)"; echo "the judge sent it to the human${why:+: ${why%.}}"
+  elif why="$(human_floor "$(field "$f" question) $(field "$f" options)" "$f")"; then echo "it ${why%$'\n'}"
+  else return 1; fi
+}
+
+# cmd_return [--dry-run] (--refused | <id>...): an agent's answer to an ask only the human answers
+# (agent_refused) goes back to pending, for the human. The agent's answer is kept as `agent_answer`,
+# never as `recommend`, which the judge could take and so answer it again. The answer, delivery and
+# `resumed_at` fields go in the same rewrite, so the human's answer is recorded, delivered and
+# resumed as on any pending ask; a queue item held on the ask that has not started is held again
+# (agent-queue ask_pending reads the status), one already running carries on. An ask whose delivery
+# is still queued or running is left until it is done. --refused takes every such ask (answers given
+# before a refusal existed, ar-5156); a named id must be one. Prints `<project> TAB <id> TAB <why>`
+# per ask, and --dry-run writes nothing.
+cmd_return() {
+  local dry="" all="" a f id why tmp rc=0 ids=() files=(); local -A seen=()
+  for a in "$@"; do
+    case "$a" in
+      --dry-run) dry=1 ;; --refused) all=1 ;;
+      -*) echo "usage: agent-ask return [--dry-run] (--refused | <id>...)" >&2; return 2 ;;
+      *) ids+=("$a") ;;
+    esac
+  done
+  [ -n "$all" ] || [ ${#ids[@]} -gt 0 ] || { echo "usage: agent-ask return [--dry-run] (--refused | <id>...)" >&2; return 2; }
+  if [ -n "$all" ]; then
+    mapfile -t files < <(ask_files --all | xargs -r -d '\n' grep -lx 'answered_by: agent' 2>/dev/null)
+  fi
+  for id in "${ids[@]}"; do
+    f="$(find_ask "$id")"
+    [ -n "$f" ] && files+=("$f") || { echo "agent-ask: no ask '$id'" >&2; rc=1; }
+  done
+  for f in "${files[@]}"; do
+    [ -z "${seen[$f]:-}" ] || continue; seen[$f]=1
+    id="$(field "$f" id)"
+    if [ "$(field "$f" status):$(field "$f" answered_by)" != answered:agent ]; then
+      [ -n "$all" ] || { echo "agent-ask: $id is not an agent's answer ($(field "$f" status), by $(field "$f" answered_by))" >&2; rc=1; }
+      continue
+    fi
+    if ! why="$(agent_refused "$f")"; then
+      [ -n "$all" ] || { echo "agent-ask: $id takes an agent's answer, so it stays answered" >&2; rc=1; }
+      continue
+    fi
+    case "$(field "$f" delivery)" in queued|delivering)
+      echo "agent-ask: $id's answer is still being delivered; return it once that is done" >&2; rc=1; continue ;;
+    esac
+    if [ -n "$dry" ]; then printf '%s\t%s\t%s\n' "$(field "$f" project)" "$id" "$why"; continue; fi
+    # One rename: the copy takes both rewrites, so no reader sees a pending ask that still has its answer.
+    if (
+      command -v flock >/dev/null 2>&1 && flock 9
+      [ "$(field "$f" status):$(field "$f" answered_by)" = answered:agent ] || exit 1
+      case "$(field "$f" delivery)" in queued|delivering) exit 1 ;; esac
+      tmp="$(mktemp "$f.XXXXXX")" && cp "$f" "$tmp" &&
+        write_fields "$tmp" status pending agent_answer "$(field "$f" answer)" \
+          agent_answered_at "$(field "$f" answered_at)" returned_at "$(now_iso)" &&
+        drop_lines "$tmp" answer answered_at answered_by resumed_at delivery delivery_at delivery_note delivery_answer &&
+        mv "$tmp" "$f" || { rm -f "$tmp"; exit 1; }
+    ) 9>"$(dirname "$f")/.lock"; then
+      printf '%s\t%s\t%s\n' "$(field "$f" project)" "$id" "$why"
+    else echo "agent-ask: $id changed while it was returned; left as it is" >&2; rc=1; fi
+  done
+  [ -n "$dry" ] || queue_changed
+  return "$rc"
 }
 
 # record_answer <file> <by> <answer> [<key> <value>...]: the ask's answer fields, and any others
@@ -3143,6 +3225,7 @@ case "$sub" in
   live-sessions) live_sessions ;;
   titles) session_titles ;;
   answer) cmd_answer_cli "$@" ;;
+  return) cmd_return "$@" ;;
   said)   cmd_said "$@" ;;
   cancel) cmd_cancel "$@" ;;
   park)   cmd_park "$@" ;;
