@@ -652,6 +652,30 @@ exits: gate 2 improve 1 plan 2 sheet 1'
   assert_failure
 }
 
+# 2026-11-26 (ar-6265): fleet-bench filed the board-chain check row on the agent board, the judge skipped it
+# needs-person, and skip_exits moved it to the sheet; triage dropped that copy and filed it again, an add and a
+# drop on every pass. Triage's route owns a keyed row's lane, so no exit here touches one.
+@test "skip_exits: a row fleet-bench triage filed by key takes no exit, whatever its skip; a plain row with the same skip still does (ar-6265)" {
+  exits_fixture
+  row game agent gk-1 "- [ ] check(watch): board-chain tripped since 2026-11-05, expected: x #high $T <!-- id:gk-1 -->"
+  row game agent gk-2 "- [ ] check(alert): game Disk firing since 2026-11-25 #size/l $T <!-- id:gk-2 -->"
+  row game agent gk-3 "- [ ] fix(runner): briefing is STALLED: no detail #high $T <!-- id:gk-3 -->"
+  board_row game agent gk-1 '[]' '[]'; board_row game agent gk-2 '[]' '[]'; board_row game agent gk-3 '[]' '[]'
+  jq -c 'if .id == "gk-2" then .size = "l" else . end' "$NOTES_FIXTURE/board.rows" > "$SANDBOX/b" && mv "$SANDBOX/b" "$NOTES_FIXTURE/board.rows"
+  skipv gk-1 needs-person 'Watch pages the human and pace is their call.'; skipv gk-3 design
+  : > "$NOTES_FIXTURE/calls.log"
+  run skip_exits --dry-run
+  assert_success
+  refute_output --partial 'gk-'
+  # NEGATIVE CONTROL: the plain needs-person row in the same pass still takes its exit
+  assert_line 'improve	game	gx-3	needs-person'
+  skip_exits
+  run grep -E 'gk-[123]|check\((watch|alert)\)|fix\(runner\)' "$NOTES_FIXTURE/calls.log"
+  assert_failure
+  assert_equal "$(jq -r 'select((.key | startswith("gk-")) and .exit) | .key' "$FLEET_DISPATCH_DIR/verdicts.jsonl")" ''
+  grep -q 'id:gk-1 -->$' "$NOTES_FIXTURE/rows.game.agent" || fail "gk-1 left the agent board: $(grep gk-1 "$NOTES_FIXTURE/rows.game.agent")"
+}
+
 @test "skip_exits: an agent row of a kind kinds.json turns off leaves the lane, #high to the human sheet and #low to improvements.md; an epic, a parent and a fix stay" {
   offkind_fixture
   : > "$NOTES_FIXTURE/calls.log"
