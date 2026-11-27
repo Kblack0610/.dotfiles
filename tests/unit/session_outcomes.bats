@@ -1235,10 +1235,18 @@ EOF
   assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs 'map(select(.session_id == "ses_root")) | last | .edits | tostring')" null
 }
 
-@test "an opencode session in a directory the registry does not know files under _unscoped; a known one keeps its project" {
+# real_resolver -- the shipped project-name.sh over a registry that knows only /w/proj, and an
+# unregistered git clone at $SANDBOX/w/<name>: the reader files by the resolver alone.
+real_resolver() {
+  export SO_PROJECT_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" PROJECT_MAP_FILE="$SANDBOX/map.json"
+  jq -n '{paths: {"/w/proj": "proj"}}' > "$PROJECT_MAP_FILE"
+  git init -q "$SANDBOX/w/$1"
+}
+
+@test "an opencode session in a repo the registry does not know files under _unscoped; a known one keeps its project" {
   oc_db
-  echo 'project_known() { [ "$1" = proj ]; }' >> "$SO_PROJECT_LIB"
-  sqlite3 "$SO_OPENCODE_DB" "INSERT INTO session_v2 VALUES ('ses_stray', NULL, '/w/bnb-agents', 'smoke', NULL, 0, 0.1, 1, 1, 0, 0, 0, $(( (STOP - 120) * 1000 )), $(( (STOP - 60) * 1000 )));"
+  real_resolver bnb-agents
+  sqlite3 "$SO_OPENCODE_DB" "INSERT INTO session_v2 VALUES ('ses_stray', NULL, '$SANDBOX/w/bnb-agents', 'smoke', NULL, 0, 0.1, 1, 1, 0, 0, 0, $(( (STOP - 120) * 1000 )), $(( (STOP - 60) * 1000 )));"
   run "$SUBJECT" run
   assert_success
   [ ! -e "$SO_OUT/bnb-agents" ]
@@ -1644,11 +1652,11 @@ cx_rollouts() {
 
 @test "a codex session in a repo the registry does not know files under _unscoped, never a stray key the doctor fails" {
   cx_rollouts
-  echo 'project_known() { [ "$1" = proj ]; }' >> "$SO_PROJECT_LIB"
+  real_resolver qmk_firmware
   local t0
   t0=$(date -u -d "@$((STOP - 60))" +%Y-%m-%dT%H:%M:%S.000Z)
-  jq -cn --arg t0 "$t0" '
-    {timestamp: $t0, type: "session_meta", payload: {id: "cx-stray", cwd: "/w/qmk_firmware", originator: "codex_exec", source: "exec"}},
+  jq -cn --arg t0 "$t0" --arg cwd "$SANDBOX/w/qmk_firmware" '
+    {timestamp: $t0, type: "session_meta", payload: {id: "cx-stray", cwd: $cwd, originator: "codex_exec", source: "exec"}},
     {timestamp: $t0, type: "event_msg", payload: {type: "user_message", message: "trackball speed"}}
   ' > "$SO_CODEX_SESSIONS/2026/10/19/rollout-2026-10-19T00-02-00-cx-stray.jsonl"
   queue_stub
