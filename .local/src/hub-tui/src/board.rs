@@ -94,33 +94,12 @@ impl<'a> Board<'a> {
             }
             return out;
         }
-        let cols: Vec<usize> = (0..workload::COLUMNS.len())
-            .map(|i| {
-                sp.classes
-                    .iter()
-                    .map(|c| c.cells[i].len())
-                    .chain([workload::COLUMNS[i].len()])
-                    .max()
-                    .unwrap_or(0)
-            })
-            .collect();
-        let row = |cells: Vec<&str>| {
-            let mut s = String::new();
-            for (i, c) in cells.iter().enumerate() {
-                if i == 0 {
-                    s += &format!("  {c:<w$}", w = cols[i]);
-                } else {
-                    s += &format!("  {c:>w$}", w = cols[i]);
-                }
-            }
-            s
-        };
-        out.push(Line::styled(
-            row(workload::COLUMNS.to_vec()).to_uppercase(),
-            self.p.dim(),
-        ));
-        for c in &sp.classes {
-            let mut line = row(c.cells.iter().map(String::as_str).collect());
+        let cells: Vec<&[String]> = sp.classes.iter().map(|c| c.cells.as_slice()).collect();
+        let mut lines = aligned(&workload::COLUMNS, &cells, "  ").into_iter();
+        if let Some(h) = lines.next() {
+            out.push(Line::styled(h.to_uppercase(), self.p.dim()));
+        }
+        for (c, mut line) in sp.classes.iter().zip(lines) {
             if !c.note.is_empty() {
                 line += &format!("  {}", c.note);
             }
@@ -146,29 +125,12 @@ impl<'a> Board<'a> {
             clip_line(Line::styled(u.head.clone(), self.p.head()), w),
             clip_line(Line::raw(format!("[{on}{off}] {}", u.line)), w),
         ];
-        let cols: Vec<usize> = (0..u.columns.len())
-            .map(|i| {
-                u.rows
-                    .iter()
-                    .map(|r| r[i].len())
-                    .chain([u.columns[i].len()])
-                    .max()
-                    .unwrap_or(0)
-            })
-            .collect();
-        let row = |cells: Vec<&str>| {
-            let mut s = String::new();
-            for (i, c) in cells.iter().enumerate() {
-                match i {
-                    0 => s += &format!("{c:<w$}", w = cols[i]),
-                    _ => s += &format!("  {c:>w$}", w = cols[i]),
-                }
-            }
-            s
-        };
-        out.push(Line::styled(row(u.columns.clone()), self.p.dim()));
-        for r in &u.rows {
-            out.push(Line::raw(row(r.iter().map(String::as_str).collect())));
+        let rows: Vec<&[String]> = u.rows.iter().map(Vec::as_slice).collect();
+        for (i, l) in aligned(&u.columns, &rows, "").into_iter().enumerate() {
+            out.push(match i {
+                0 => Line::styled(l, self.p.dim()),
+                _ => Line::raw(l),
+            });
         }
         out.into_iter().map(|l| clip_line(l, w)).collect()
     }
@@ -314,6 +276,36 @@ pub fn infra(
 }
 
 /// The CI pool block and a blank line after it, or nothing with no pool read.
+/// A header and its rows of cells as text lines, each column as wide as its widest cell: the
+/// first left after `indent`, the rest right two spaces apart. Space and CI POOL draw with it.
+fn aligned(columns: &[&str], rows: &[&[String]], indent: &str) -> Vec<String> {
+    let cols: Vec<usize> = (0..columns.len())
+        .map(|i| {
+            rows.iter()
+                .map(|r| r[i].len())
+                .chain([columns[i].len()])
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    let line = |cells: Vec<&str>| {
+        let mut s = String::new();
+        for (i, c) in cells.iter().enumerate() {
+            match i {
+                0 => s += &format!("{indent}{c:<w$}", w = cols[i]),
+                _ => s += &format!("  {c:>w$}", w = cols[i]),
+            }
+        }
+        s
+    };
+    std::iter::once(line(columns.to_vec()))
+        .chain(
+            rows.iter()
+                .map(|r| line(r.iter().map(String::as_str).collect())),
+        )
+        .collect()
+}
+
 fn pool(b: &Board, w: usize) -> Vec<Line<'static>> {
     let mut out = b.ci_pool(w);
     if !out.is_empty() {
