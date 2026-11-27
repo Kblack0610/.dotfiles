@@ -3031,6 +3031,9 @@ epics_fixture() {
     full=$(forecast_json "$2" "" "$i"); part=$(forecast_json "$2" "" "$i" items)
     jq -e .drain <<<"$full" >/dev/null && jq -e ".drain == null" <<<"$part" >/dev/null && [ "$(jq -cS .items <<<"$full")" = "$(jq -cS .items <<<"$part")" ] && echo same' _ "$SUBJECT" "$T0"
   assert_output same
+  # a queue that cannot be read is said (pipefail carries its status), not read as an empty queue
+  BENCH_ALL_ITEMS_CMD=false BENCH_DISPATCH_STATS_CMD=stats-stub BENCH_NOW=$T0 run "$SUBJECT" epics --json --project game
+  assert_line --partial 'epics: the agent queue could not be read'
 }
 
 @test "a sample freezes an epic's ETA when first seen and on a scope change, and scores it once when its rows land" {

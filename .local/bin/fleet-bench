@@ -990,9 +990,9 @@ latest_live() {
     ($p | max_by(.epoch) | .epoch) as $last
     | ($e | group_by(.session_id) | map(max_by(.made_epoch) | {key: .session_id, value: .})
         | from_entries) as $eta
-    # keyed, not IN($live[]): a scan of every live session per row was 2s of the 160k rows (ar-1140)
-    | ($p | map(select(.epoch == $last) | {key: (.session_id | tostring), value: true}) | from_entries) as $live
-    | ($p | map(select($live[.session_id | tostring])) | group_by(.session_id)
+    # keyed by tojson, not IN($live[]): a scan of every live session per row was 2s of the 160k rows (ar-1140)
+    | ($p | map(select(.epoch == $last) | {key: (.session_id | tojson), value: true}) | from_entries) as $live
+    | ($p | map(select($live[.session_id | tojson])) | group_by(.session_id)
         | map({key: .[0].session_id, value: map({epoch, phases_done, active_min})}) | from_entries) as $hist
     | $p[] | select(.epoch == $last)
     | . as $r
@@ -8046,8 +8046,11 @@ epics_json() {
   par_go pj epics_read_projects "${2:-}"
   par_go plans epic_plans
   par_go items epics_read_items
-  par_go live bench_read latest_live
-  par_go slots queue_slots
+  # warms the forecast's two cached reads; without flock bench_read caches nothing, so it would run them twice
+  if command -v flock >/dev/null; then
+    par_go live bench_read latest_live
+    par_go slots queue_slots
+  fi
   par_go fc epics_read_forecast "$t"
   par_wait
   pj=$(<"$PAR/pj")

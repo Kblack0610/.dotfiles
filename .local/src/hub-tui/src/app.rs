@@ -2074,15 +2074,16 @@ impl App {
 
     /// The open card's name and stage; None on the list or with All open.
     pub fn open_card(&self) -> Option<(String, String)> {
-        if !self.pv.open {
-            return None;
-        }
-        let (profile, name) = self.tv.project.as_ref()?;
-        self.cards()
-            .cards
-            .into_iter()
-            .find(|c| c.profile == *profile && c.name == *name)
-            .map(|c| (c.name, c.stage))
+        opened(&self.pv, &self.tv, self.cards().cards)
+    }
+
+    /// The card `hub tab projects <q>` would open, resolved over scratch views: the real open
+    /// waits for the queue, which orders the cards and lists the sprint windows (ar-1140).
+    pub fn card_for(&self, q: &str) -> Option<(String, String)> {
+        let cards = self.cards().cards;
+        let (mut pv, mut tv) = (ProjView::default(), TaskView::default());
+        pv.go(&mut tv, &cards, q.trim());
+        opened(&pv, &tv, cards)
     }
 
     /// Read the open card's page in a worker; it comes back as Msg::ProjPage.
@@ -5797,6 +5798,22 @@ fn audited<T>(e: hub_core::audit::Entry, r: &Result<T, String>) {
         return;
     }
     hub_core::audit::record(&e);
+}
+
+/// The card the views have open, by name and stage; None on the list or with All open.
+fn opened(
+    pv: &ProjView,
+    tv: &TaskView,
+    cards: Vec<hub_core::projects::Card>,
+) -> Option<(String, String)> {
+    if !pv.open {
+        return None;
+    }
+    let (profile, name) = tv.project.as_ref()?;
+    cards
+        .into_iter()
+        .find(|c| c.profile == *profile && c.name == *name)
+        .map(|c| (c.name, c.stage))
 }
 
 #[cfg(test)]
