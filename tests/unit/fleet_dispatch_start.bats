@@ -2365,7 +2365,7 @@ EOF
   agent-queue add --project game --slug land-12 --pr o/game#13 "land PR 13" >/dev/null
   agent-queue add --project game --slug land-14 --pr o/game#14 "land PR 14" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item land-12
-  assert_success
+  assert_failure 4
   assert_output --partial 'land-12 not started: its PR o/game#13 already merged; closed done'
   [ -n "$(qitem done land-12)" ] || fail "land-12 is not done"
   assert_equal "$(qfield "$(qitem done land-12)" status)" ok
@@ -2377,4 +2377,10 @@ EOF
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item land-14
   refute_output --partial 'already merged'
   [ -z "$(qitem done land-14)" ] || fail "an item on an open PR was closed"
+  # a validate item reviews its author's PR: a merged PR does not close it unread
+  printf 'MERGED %s\n' "$OID" > "$NOTES_FIXTURE/pr.state"
+  agent-queue add --project game --slug val-1 --tags validate --pr o/game#15 "validate PR 15" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item val-1
+  refute_output --partial 'already merged'
+  [ -z "$(qitem done val-1)" ] || fail "a validate item was closed by its author's merged PR"
 }

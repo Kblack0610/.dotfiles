@@ -264,6 +264,10 @@ load 'agent_queue/common'
   assert_success
   run "$AQ" set other pr=o/game#7
   assert_success
+  # reopening the closed item onto a PR another live item now records is the same twin
+  run "$AQ" reopen land-a
+  assert_failure
+  assert_output --partial "o/game#7 is already recorded by other"
 }
 
 @test "one live item per plan phase: a twin under another slug is refused by add and by set, another phase and plan pass" {

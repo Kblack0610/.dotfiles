@@ -4589,7 +4589,7 @@ cmd_reopen() {
   lock
   [ -z "$(find_item "$slug")" ] || die "$slug is still active: nothing to reopen"
   f="$(latest_done "$slug")"; [ -n "$f" ] || die "no finished item: $slug"
-  cause_owner "$(fm_get "$f" tags)" "$slug"
+  set_owners "$slug" "$f" "tags=$(fm_get "$f" tags)" "pr=$(fm_get "$f" pr) $(fm_get "$f" open_pr)" "plan=$(fm_get "$f" plan)" "phases=$(fm_get "$f" phases)"
   status="$(fm_get "$f" status)" note="$(fm_get "$f" note)"
   if [ -n "$unland" ]; then
     # A false ok close (agent-land took a side PR from another repo, 2026-11-07): that PR comes
