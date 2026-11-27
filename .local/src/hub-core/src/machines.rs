@@ -496,7 +496,11 @@ pub fn build(infra: &Infra) -> (Vec<Machine>, Vec<Pool>) {
     let pools = pools(infra, &cc, &alias);
     let busy_cores = infra.runner_use("cc:runner_cores_busy");
     let mem = infra.runner_use("cc:runner_mem_bytes");
+    let gone = crate::ci::gone_runners(infra);
     for s in infra.get("runners") {
+        if gone.contains(s.label("name")) {
+            continue;
+        }
         let mm = at(&mut by, infra.runner_host(&alias, s));
         if s.label("site") == "cloud" {
             mm.place = "cloud".into();
