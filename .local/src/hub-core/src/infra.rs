@@ -337,16 +337,17 @@ impl Infra {
         by
     }
 
-    /// The runners whose liveness CI judges: the pinned ones (the mac-mini's). A Forgejo
-    /// registration is an ephemeral KEDA forgejo-runner job pod, offline between jobs by design,
-    /// and an ARC runner pod (host `unknown`, `arc` or `arc-*`, as the exporter's host_of names
-    /// it) reads offline as it goes away; neither is judged, as runner-host-dark's
-    /// EPHEMERAL_HOSTS. `runners_down` and `runners_up` both read this, so up plus down is the roster.
+    /// The runners whose liveness CI judges. A Forgejo registration is an ephemeral KEDA
+    /// forgejo-runner job pod, offline between jobs by design, and an ARC runner pod (the
+    /// exporter's host_of names its host unknown, arc or arc-<set>) reads offline as it goes away;
+    /// an ARC pod counts while it is up and drops out of the roster when it is not, as
+    /// runner-host-dark's EPHEMERAL_HOSTS. `runners_down` and `runners_up` both read this, so up
+    /// plus down is the roster.
     fn judged(&self) -> Vec<&Series> {
         self.get("runners")
             .iter()
             .filter(|s| s.label("forge") != "forgejo")
-            .filter(|s| !ephemeral_host(s.label("host")))
+            .filter(|s| is_up(s) || !ephemeral_host(s.label("host")))
             .collect()
     }
 
@@ -466,7 +467,7 @@ fn is_up(s: &Series) -> bool {
     matches!(s.label("state"), "running" | "idle")
 }
 
-/// A host the exporter gives an ARC runner pod: `unknown`, `arc` or `arc-<set>`.
+/// A host the exporter gives an ARC runner pod: unknown, arc or arc-<set>.
 fn ephemeral_host(host: &str) -> bool {
     host == "unknown" || host == "arc" || host.starts_with("arc-")
 }
