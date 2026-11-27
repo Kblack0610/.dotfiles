@@ -4,7 +4,7 @@
 # sandbox register. The second half reads the real one in the private overlay against policy.md,
 # standards.md, CLAUDE.md and the hooks: skipped in public CI, it runs in the Stop fast tier. The row-shape
 # test, "register: every row is a whole row", also runs on every rules.jsonl change in the private repo's
-# instructions.yml, which finds it by that name: rename it there too (ar-5847).
+# register-shape.yml, which finds it by that name: rename it there too (ar-5847).
 
 setup() {
   load '../vendor/bats-support/load'
