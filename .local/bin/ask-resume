@@ -129,10 +129,10 @@ run_resume() { # $1=id $2=project $3=command
 asking_row() { # $1=id
   local ask task sid it
   ask="$(agent-ask show "$1" 2>/dev/null)" || return 0
-  task="$(sed -n 's/^task: *//p' <<<"$ask" | head -n 1)"
+  task="$(sed -n '/^task: */{s///p;q;}' <<<"$ask")"
   it="$( [ -z "$task" ] || agent-queue show "$task" --json 2>/dev/null)" || it=''
   if [ -z "$it" ]; then
-    sid="$(sed -n 's/^claude_session: *//p' <<<"$ask" | head -n 1)"
+    sid="$(sed -n '/^claude_session: */{s///p;q;}' <<<"$ask")"
     [ -n "$sid" ] && task="$(agent-queue mine --sid "$sid" --newest 2>/dev/null)" && [ -n "$task" ] || return 0
     it="$(agent-queue show "$task" --json 2>/dev/null)" || return 0
   fi
