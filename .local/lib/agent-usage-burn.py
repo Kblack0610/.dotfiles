@@ -69,7 +69,8 @@ WRITE_RE = re.compile(r"\bgit\s+(commit|push|merge)\b|\bgh\s+pr\s+(create|merge|
 # quoted string emptied; then where a command starts, past assignments, wrappers with their options,
 # `timeout N`, `flock FILE` and if/while/until/do/then/else/!, any path before the text, and a boundary after
 # it. session-outcomes.sh matches the same way, and tests/fixtures/time-use-commands.tsv holds
-# the three readers to it.
+# the three readers to it. A command that names no line but runs a session-written script is read by
+# the script's text (`wrapper_class`, as time_use.rs `wrapper_wait` and session-outcomes.sh do).
 TIME_USE_CONF = os.environ.get("TIME_USE_CONF") or os.path.join(
     os.path.dirname(os.path.realpath(__file__)), "..", "..", ".config", "agent-panel", "time-use.conf")
 # A quoted string: '...', or "..." with backslash escapes (a command in "$(...)" is missed).
@@ -80,9 +81,12 @@ TIME_USE_QUOTED = re.compile(TIME_USE_QUOTE)
 # A heredoc, `<<[-] WORD` (WORD may be quoted), through its end line: cut to what follows WORD.
 TIME_USE_HEREDOC = re.compile(r"(?<!<)<<(?!<)-?[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_])\1"
                               r"([^\n]*)(?:\n[^\n]*)*?\n[ \t]*\2[ \t]*(?![^\n])")
-TIME_USE_START = (r"(^|[;&|(\n`])\s*((\w+=\S*|(env|nice|xargs|sudo|nohup|exec|command|time|stdbuf|setsid|ionice|sh|bash|zsh)"
-                  r"(\s+-n\s+[0-9]+|\s+-\S+)*|timeout(\s+-\S+)*\s+[0-9]\S*|flock(\s+-\S+)*\s+\S+|if|while|until|do|then|else|!)\s+)*"
-                  r"(\S*/)?")
+TIME_USE_COMMAND = (r"(^|[;&|(\n`])\s*((\w+=\S*|(env|nice|xargs|sudo|nohup|exec|command|time|stdbuf|setsid|ionice|sh|bash|zsh)"
+                    r"(\s+-n\s+[0-9]+|\s+-\S+)*|timeout(\s+-\S+)*\s+[0-9]\S*|flock(\s+-\S+)*\s+\S+|if|while|until|do|then|else|!)\s+)*")
+TIME_USE_START = TIME_USE_COMMAND + r"(\S*/)?"
+# The command word of a segment, for a session-written script (time_use.rs `wrapper_wait`).
+TIME_USE_WORD = re.compile(TIME_USE_COMMAND + r"(?P<word>[^\s;&|(`-][^\s;&|(`]*)")
+SCRIPT_READ_LIMIT = 64 * 1024  # time_use.rs reads the same limit
 TIME_USE_END = r"($|[^\w.])"
 MIX = ("investigate", "wait", "write", "reply")
 IDLE_LONG = 3600     # the prompt cache TTL these sessions request ("1h")
@@ -328,7 +332,44 @@ def time_use_class(command, patterns):
     return "jobs"
 
 
-def call_class(name, inp, patterns):
+_WRAPPER_TEXT = {}  # (path, mtime_ns, size) -> class, so a rewritten script is read again
+_WRAPPER_RANK = {"gate": 3, "test": 2, "build": 1}
+
+
+def wrapper_class(command, cwd, patterns):
+    """What a session-written script counts as, read by what it runs (time_use.rs `wrapper_wait`):
+    for each command word of `command` that names a file (a path or `*.sh`, joined to `cwd`), the
+    strongest `time_use_class` of those files' text. One level; a script gone from disk, over
+    SCRIPT_READ_LIMIT or not UTF-8 is jobs, and the class is the file's text now."""
+    if not cwd or not patterns:
+        return "jobs"
+    best = "jobs"
+    for m in TIME_USE_WORD.finditer(unquoted(command)):
+        word = m["word"]
+        if "/" not in word and not word.endswith(".sh"):
+            continue
+        path = os.path.join(cwd, word)
+        try:
+            st = os.stat(path)
+            stamp = (path, st.st_mtime_ns, st.st_size)
+        except OSError:
+            continue
+        if stamp not in _WRAPPER_TEXT:
+            text = None
+            if os.path.isfile(path) and st.st_size <= SCRIPT_READ_LIMIT:
+                try:
+                    with open(path, encoding="utf-8") as fh:
+                        text = fh.read()
+                except (OSError, ValueError):
+                    pass
+            _WRAPPER_TEXT[stamp] = time_use_class(text, patterns) if text is not None else "jobs"
+        kind = _WRAPPER_TEXT[stamp]
+        if _WRAPPER_RANK.get(kind, 0) > _WRAPPER_RANK.get(best, 0):
+            best = kind
+    return best
+
+
+def call_class(name, inp, patterns, cwd=""):
     """One tool call's turn class: wait for a plain wait, write for an edit or a write command,
     wait for a time-use.conf gate, else investigate. Write comes before the gate, so agent-land,
     a gate line that also merges, stays write."""
@@ -340,7 +381,10 @@ def call_class(name, inp, patterns):
         return "wait"
     if name in WRITE_TOOLS or (name == "Bash" and WRITE_RE.search(probe)):
         return "write"
-    if time_use_class(command, patterns) == "gate":
+    kind = time_use_class(command, patterns)
+    if kind == "jobs":
+        kind = wrapper_class(command, cwd, patterns)
+    if kind == "gate":
         return "wait"
     return "investigate"
 
@@ -406,7 +450,7 @@ def scan(path, start, end, acc):
                     if not isinstance(b, dict) or b.get("type") != "tool_use":
                         continue
                     tmid = msg.get("id") or d.get("requestId")
-                    c = call_class(b.get("name"), b.get("input") or {}, acc["time_use"])
+                    c = call_class(b.get("name"), b.get("input") or {}, acc["time_use"], d.get("cwd") or "")
                     if c == "wait":
                         acc["wait_calls"] += 1
                         wait_mids.add(tmid)
