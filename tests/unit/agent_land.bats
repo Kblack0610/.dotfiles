@@ -124,7 +124,7 @@ load 'agent_land/common'
 
 @test "behind main before the checks, but the head's own run is pending or green: it is waited on first, and the base merged up only after it (ar-5865)" {
   echo live >"$NOTES_FIXTURE/checks.live"
-  touch "$NOTES_FIXTURE/base.ahead"
+  touch "$NOTES_FIXTURE/base.ahead" "$NOTES_FIXTURE/head.single"
   printf '2\n0\n' >"$NOTES_FIXTURE/behind.seq"
   run "$LAND" 42 --item ship
   assert_success
@@ -132,6 +132,18 @@ load 'agent_land/common'
   assert_line 'landed #42'
   [ "$(grep -n 'pr checks 42 --watch' "$LOG" | head -1 | cut -d: -f1)" -lt "$(grep -n '^git merge -q --no-edit origin/main$' "$LOG" | head -1 | cut -d: -f1)" ]
   second_wait
+}
+
+@test "a merged-up head whose run is pending, re-run after a checks timeout: that run is the re-check, so the green head lands behind the moved base (ar-5865)" {
+  echo live >"$NOTES_FIXTURE/checks.live"
+  touch "$NOTES_FIXTURE/base.ahead"
+  printf '3\n' >"$NOTES_FIXTURE/behind"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'fetch: origin/main moved on by 3 during the checks on the merged-up head; landing that green head behind it (no strict checks on main)'
+  assert_line 'landed #42'
+  run grep -c '^git merge -q --no-edit origin/main$' "$LOG"
+  assert_output 0
 }
 
 @test "behind main before the checks with the head's run pending, but the base conflicts: exit 3 before any wait, as before (ar-5865)" {

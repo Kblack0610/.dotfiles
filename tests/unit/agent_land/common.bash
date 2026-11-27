@@ -151,7 +151,9 @@ rev-list)
   if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else cat "$NOTES_FIXTURE/behind"; fi ;;
 # no.checkout: run outside a checkout, where rev-parse --show-toplevel fails
 rev-parse) case "$2" in --show-toplevel) [ ! -f "$NOTES_FIXTURE/no.checkout" ] || { echo 'fatal: not a git repository' >&2; exit 128; }
-  cat "$NOTES_FIXTURE/toplevel" 2>/dev/null || echo /nowhere ;; *) echo 0123456789abcdef ;; esac ;;
+  cat "$NOTES_FIXTURE/toplevel" 2>/dev/null || echo /nowhere ;;
+  # head.single: the head is no merge commit (rev-parse -q --verify HEAD^2 fails)
+  -q) [ ! -f "$NOTES_FIXTURE/head.single" ] || exit 1; echo 0123456789abcdef ;; *) echo 0123456789abcdef ;; esac ;;
 # remotes: what `git remote` lists (origin by default); <name>.url: that remote's URL, and
 # origin.url this checkout's origin (o/r over ssh by default)
 remote) case "$2" in

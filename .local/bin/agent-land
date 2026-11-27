@@ -631,7 +631,8 @@ base_touches_head() {
 }
 
 # head_checks_live: the head is behind <base>, merges with it cleanly, and already has checks, each
-# pending, passed or skipped (a gh read that a network error lost counts as pending). A re-run after a
+# pending, passed or skipped (a gh read that a network error lost counts as pending); before_waits
+# is the catch_up after count its run starts at. A re-run after a
 # checks timeout merged a moved base before the gate every time, so a run slower than the wait never
 # finished (ar-5865: #3800 merged main up three times in three hours on a saturated runner pool).
 head_checks_live() {
@@ -642,6 +643,11 @@ head_checks_live() {
   git merge-tree --write-tree --quiet HEAD "$remote/$base" >/dev/null 2>&1 || return 1
   gh_read live pr checks "$pr" "${R[@]}" --json bucket -q 'if length == 0 then "none" elif all(.[]; .bucket == "pass" or .bucket == "pending" or .bucket == "skipping") then "live" else "stale" end' || true  # gh exits 8 while a check is pending
   [ "$live" = live ] || { [ -z "$live" ] && net_error "$gh_err"; } || return 1
+  # A head that is itself a merge-up of <base> (an earlier run's catch_up) is waiting on the merged-up
+  # head's re-check, so catch_up after counts it as one: else every re-run merged the base up once more.
+  if git rev-parse -q --verify 'HEAD^2' >/dev/null 2>&1 && git merge-base --is-ancestor 'HEAD^2' "$remote/$base" 2>/dev/null; then
+    before_waits=$CATCHUP_WAITS
+  fi
   echo "fetch: the head's own checks are pending or green; waiting on them before any merge of $remote/$base"
 }
 
@@ -665,7 +671,7 @@ head_checks_live() {
 # exits 3 instead of landing behind it, so a hot file cannot hold the session forever. A strict base has no bound, since it refuses a head
 # that is behind (2026-11-05: unity-core-playground #1837 was refused twice). A conflict is aborted
 # and exits 3.
-CATCHUP_WAITS=1 CATCHUP_OVERLAP_WAITS=3
+CATCHUP_WAITS=1 CATCHUP_OVERLAP_WAITS=3 before_waits=0
 catch_up() {
   local out behind
   out=$(git fetch -q "$remote" 2>&1) || fail fetch "$(lastline "$out")"
@@ -1793,7 +1799,7 @@ else
   head_checks_live || catch_up before || true
   shape_gate
   wait_checks
-  waits=0
+  waits=$before_waits
   while ! catch_up after "$waits"; do
     wait_checks
     waits=$((waits + 1))
