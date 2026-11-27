@@ -4453,9 +4453,8 @@ cmd_start() {
     brief=$(cat -- "$brief_file") && [ -n "$brief" ] || { say "start: empty or unreadable brief: $brief_file"; return 2; }
     lane=$(row_lane "$prof" "$project" "$lane" "$key") || { say "start: $key is not on either board of $project"; return 1; }
     # The row becomes a queue item and the item is what starts: one record and one launch for
-    # every session. The item's brief adds /one-shot and how to close the row, so a brief that
-    # opens with /one-shot is not run through it twice. A row left started by an item that closed
-    # cancelled or failed gets a fresh item (PROMOTE_RESTART, row_restart).
+    # every session. The item's brief adds /one-shot and how to close the row, so a brief that opens with
+    # /one-shot is not run through it twice. A row an item closed not ok left started gets a fresh item (row_restart).
     PROMOTE_RESTART=1 promote "$(jq -cn --arg profile "$prof" --arg project "$project" --arg lane "$lane" --arg key "$key" --arg area "$area" \
       '{profile: $profile, project: $project, lane: $lane, key: $key, area: $area}')" "" "${brief#/one-shot }" "" "$qmode" >/dev/null || return 1
     # A plan row's chain may queue no phase to start now: its first open phase waits on its own row.
@@ -9521,7 +9520,7 @@ take_epic() {
 row_restart() {
   local id it st live
   [[ "$2" == *'<!--'* ]] || return 1
-  id=$(grep -oE 'id:[A-Za-z0-9_.-]+' <<<"${2#*<!--}" | head -n 1); id=${id#id:}
+  id=$(grep -m 1 -oE 'id:[A-Za-z0-9_.-]+' <<<"${2#*<!--}"); id=${id%%$'\n'*}; id=${id#id:}
   [ -n "$id" ] || return 1
   it=$(agent-queue show "$id" --json 2>/dev/null) || return 1
   st=$(jq -r '.state + (if .status then " " + .status else "" end)' <<<"$it")
