@@ -682,7 +682,7 @@ STUB
   run "$HOLD" show unity-tests
   assert_line 'kind: claim'
   assert_line 'by: agent-6'
-  "$HOLD" release unity-tests
+  "$HOLD" release unity-tests --by agent-6
   "$HOLD" set unity-tests --by binks "hot"
   run env TMUX= bash -c "cd \"\$(mktemp -d)\" && mkdir binks && cd binks && \"$HOLD\" check unity-tests"
   assert_failure 1
