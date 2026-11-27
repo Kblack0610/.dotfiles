@@ -86,7 +86,7 @@ TIME_USE_COMMAND = (r"(^|[;&|(\n`])\s*((\w+=\S*|(env|nice|xargs|sudo|nohup|exec|
 TIME_USE_START = TIME_USE_COMMAND + r"(\S*/)?"
 # The command word of a segment, for a session-written script (time_use.rs `wrapper_wait`).
 TIME_USE_WORD = re.compile(TIME_USE_COMMAND + r"(?P<word>[^\s;&|(`-][^\s;&|(`]*)")
-WRAPPER_MAX_BYTES = 64 * 1024
+SCRIPT_READ_LIMIT = 64 * 1024  # time_use.rs reads the same limit
 TIME_USE_END = r"($|[^\w.])"
 MIX = ("investigate", "wait", "write", "reply")
 IDLE_LONG = 3600     # the prompt cache TTL these sessions request ("1h")
@@ -340,7 +340,7 @@ def wrapper_class(command, cwd, patterns):
     """What a session-written script counts as, read by what it runs (time_use.rs `wrapper_wait`):
     for each command word of `command` that names a file (a path or `*.sh`, joined to `cwd`), the
     strongest `time_use_class` of those files' text. One level; a script gone from disk, over
-    WRAPPER_MAX_BYTES or not UTF-8 is jobs, and the class is the file's text now."""
+    SCRIPT_READ_LIMIT or not UTF-8 is jobs, and the class is the file's text now."""
     if not cwd or not patterns:
         return "jobs"
     best = "jobs"
@@ -353,7 +353,7 @@ def wrapper_class(command, cwd, patterns):
             try:
                 st = os.stat(path)
                 text = None
-                if os.path.isfile(path) and st.st_size <= WRAPPER_MAX_BYTES:
+                if os.path.isfile(path) and st.st_size <= SCRIPT_READ_LIMIT:
                     with open(path, encoding="utf-8") as fh:
                         text = fh.read()
             except (OSError, ValueError):
