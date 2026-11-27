@@ -65,10 +65,14 @@ const pendingLine = (g) => (g && g.pending && g.pending.length ? `<div class="cl
 // components and watches that cc:overall_status is the max of), so a tile never reads red under
 // an OK OVERALL or green under a RED one (ar-5013); the text keeps the count. A component alone
 // would not do: k3s/nodes, ci/pools and agents/runners stop at 1, and the red comes from the
-// domain's watches row. No domain series is no data, never a guess.
+// domain's watches row. WATCHES spans domains, so its hue is the worst of the rollup's watches
+// rows (cc:component_status{component="watches"}), not a tripped count of its own. No series is
+// no data, never a guess.
 function kpis(cc, g) {
   const one = (n) => (cc[n] || {})[""];
   const hue = (d) => { const [w, c] = statusOf((cc["cc:domain_status"] || {})[d]); return [c, `${d} rollup ${w}`]; };
+  const watchRows = Object.entries(cc["cc:component_status"] || {}).filter(([k]) => k.endsWith("/watches")).map(([, v]) => v);
+  const [ww, hw] = statusOf(watchRows.length ? Math.max(...watchRows) : undefined);
   const nodes = [one("cc:k3s_nodes_ready"), one("cc:k3s_nodes_total")];
   const beats = [one("cc:machines_up"), one("cc:machines_total")];
   const hosted = one("cc:github_hosted_running");
@@ -79,7 +83,7 @@ function kpis(cc, g) {
     tile("HEARTBEATS", `${beats[0] ?? "?"}/${beats[1] ?? "?"}`, hb, tb)}${
     tile("CI RUNNING", g ? `${g.busy}` : "?", hc, [where, tc].filter(Boolean).join("; "))}${
     tile("AGENT RUNNERS", `${one("cc:runners_failed") ?? "?"} failed`, hr, `of ${one("cc:runners_total") ?? "?"}; ${tr}`)}${
-    tile("WATCHES", `${one("cc:watches_tripped") ?? "?"} tripped`, one("cc:watches_tripped") ? "var(--b-stalled)" : "var(--b-done)", `of ${one("cc:watches_total") ?? "?"}, ${one("cc:watches_stale") ?? 0} stale`, "#alerts/watches")}${
+    tile("WATCHES", `${one("cc:watches_tripped") ?? "?"} tripped`, hw, `of ${one("cc:watches_total") ?? "?"}, ${one("cc:watches_stale") ?? 0} stale; watches rollup ${ww}`, "#alerts/watches")}${
     tile("SPEND", "on Costs", "var(--c2)", "the LAZER pool, Claude 24h and every cut", "#costs")}${
     tile("SESSIONS", `${one("cc:sessions_working") ?? "?"}/${one("cc:sessions_total") ?? "?"}`, "var(--b-working)", `working, ${one("cc:sessions_attention") ?? 0} need you`)}</div>`;
 }
@@ -623,19 +627,30 @@ function drawInfra() {
   // As the board blanks: a failed read never leaves the last (maybe green) numbers up.
   if (!d.ok) { paint(el, strip + `<div class="bhead"><span>infra</span><span>${links}</span></div><div class="panel down">${esc(d.error || "Prometheus did not answer")}</div>`); seekSection(); return; }
   const cc = ccIndex(d.instant.cc), inst = d.instant, t1 = d.at * 1e3, g = governorIndex(inst);
-  const overall = (cc["cc:overall_status"] || {})[""];
-  const [word, color] = statusOf(overall);
   // Home owns what waits on you; Infra shows its count (Home::waiting, the badge's number) as a link to it.
   const w = st.waiting;
   const badge = w === null ? ` <span class="chip sm" style="--c:var(--b-needs)" title="${NOT_READ}">waiting on you: ${NOT_READ}</span>`
     : w && w.count > 0 ? ` <a href="${esc(w.href)}" class="chip sm" style="--c:var(--b-needs)">${w.count} waiting on you, on Home</a>` : "";
-  let html = strip + `<div class="bhead"><span><span class="chip" style="--c:${color}">OVERALL ${word}</span>${badge} <span class="muted">read ${clock(t1)}</span></span>${pfold("infra-links", "Grafana", links)}</div>`;
+  let html = strip + `<div class="bhead"><span>${overallPill(cc)}${badge} <span class="muted">read ${clock(t1)}</span></span>${pfold("infra-links", "Grafana", links)}</div>`;
   html += innerWrap("infra", "machines", `${kpis(cc, d.ci.glance)}${spaceSection(d.space)}${secHead("machines", "Machines", infraN("machines"))}${INFRA_T.machines.html()}${pendingLine(d.ci.glance)}${governorLine(g)}`);
   html += innerWrap("infra", "pools", secHead("pools", "Job kinds", infraN("pools")) + INFRA_T.pools.html());
   html += innerWrap("infra", "ci", runnersSection(d.ci)) + innerWrap("infra", "waiting", waitingSection()) +
     innerWrap("infra", "local", localSection(d.ci));
   paint(el, html, ist.open);
   seekSection();
+}
+
+// The OVERALL pill is cc:overall_status, the heart: RED when a domain is down, else OK, since a
+// warn never colours it (home-config prometheus-rules-command-center.yaml, the human's
+// 2026-11-12 call). Its warn domains (cc:domain_status 1, hub_core Infra::domains) follow as an
+// amber count naming them in its hover, so an OK heart beside amber tiles says why (ar-5013). It
+// is no link: a record link comes from hub_core::links (links.test.mjs), and none serves health.
+function overallPill(cc) {
+  const [word, color] = statusOf((cc["cc:overall_status"] || {})[""]);
+  const warn = Object.entries(cc["cc:domain_status"] || {}).filter(([, v]) => v === 1).map(([d]) => d).sort();
+  const why = "the health heart: red when a domain is down; a warn domain shows on its tile and Alerts' health chips";
+  const warns = warn.length ? ` <span class="chip sm" style="--c:var(--b-stalled)" title="${esc(`at warn: ${warn.join(", ")}; Alerts' health chips say why`)}">${warn.length} warn</span>` : "";
+  return `<span class="chip" style="--c:${color}" title="${why}">OVERALL ${word}</span>${warns}`;
 }
 
 // A table's search or dropdown in use keeps focus: only that table's rows and chips repaint, and
