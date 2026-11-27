@@ -1540,7 +1540,8 @@ days_ahead() { echo $(( ($(date -d "$1" +%s) - $(date +%s) + 43200) / 86400 )); 
 # fails, unless AQ_MINE names one), an add prints its slug running (AQ_REFUSE: it files nothing), and
 # any other call succeeds silent.
 queue_stub() {
-  cat >"$SANDBOX/bin/aq-stub" <<'STUB'
+  # agent-ask runs the command unquoted, so the stub lives outside the sandbox (its path has a space).
+  cat >"$BATS_TEST_TMPDIR/aq-stub" <<'STUB'
 #!/usr/bin/env bash
 printf 'agent-queue %s | sid=%s item=%s\n' "$*" "${CLAUDE_CODE_SESSION_ID:-}" "${AGENT_QUEUE_ITEM:-}" >>"$NOTES_FIXTURE/calls.log"
 case "$1" in
@@ -1552,8 +1553,8 @@ case "$1" in
 esac
 exit 0
 STUB
-  chmod +x "$SANDBOX/bin/aq-stub"
-  export AGENT_ASK_QUEUE_CMD="$SANDBOX/bin/aq-stub"
+  chmod +x "$BATS_TEST_TMPDIR/aq-stub"
+  export AGENT_ASK_QUEUE_CMD="$BATS_TEST_TMPDIR/aq-stub"
 }
 
 @test "reopen-on-answer: the answer reopens the ended session with it, unless it runs or the queue holds the ask" {
