@@ -89,6 +89,9 @@
 #   start <slug>   start a queued item's session now, through add's start guards (a low one, a desk wait or the dispatch hold keep it queued)
 #   ask-holds [<id>]   `<slug or row id><TAB><ask id><TAB><releasing options>` per active item, and per open board row gated
 #       #ask/<id>, held on an ask (that ask only, given one)
+#   human-work <ask id>   each active item the human asked for (from: human, or #requested) that the ask, once answered, could
+#       take off the queue: its resume cancels it or returns it with --drop or with no board row, or the ask names it and offers a
+#       cancel or drop option. agent-ask makes such an ask an approval, so only the human answers it (ar-5962)
 #   reopen <slug> [--to running|waiting] [--why text] [--unland <owner>/<repo>#<N>]   a falsely-done item back to running (or waiting),
 #       its row started again. A failed close reopens as it is; an ok close only with --unland naming the PR it
 #       closed on that was not its work, which comes off pr:, merged: and closing_pr:, and its row reopens through
@@ -3849,15 +3852,29 @@ cancel_check() {
   case "$1" in *$'\n'*) die "--why is one line" ;; esac
   [ -n "$1" ] || [ -z "$(cancel_who)" ] || die "a cancel from a session or script needs --why \"<reason>\": who cancelled it and why stay on the item"
 }
+# ask_offers_cancel <id> -> whether the ask offers a cancel or drop option (AQ_CANCEL_ANSWERS), the only
+# answer that takes the human's work off the queue (cancel_guard, human-work).
+ask_offers_cancel() {
+  local opts
+  opts="$(ask_options "$1" | sed 's/[=[:space:]].*//; s/[.,;:!]$//' | tr '[:upper:]' '[:lower:]')"
+  grep -qxE "$AQ_CANCEL_ANSWERS" <<<"$opts"
+}
+# ask_names <ask file> <slug> -> whether the ask names the item's whole slug: grep -w took fix-ci from an
+# ask about fix-ci-2 (ar-2717). A period ends it only at a sentence end, so mkt-17.2 is not mkt-17.
+ask_names() {
+  local sl; sl="$(printf '%s' "$2" | sed 's/[.+]/\\&/g')"
+  grep -qE -- "(^|[^A-Za-z0-9_.-])$sl([^A-Za-z0-9_.-]|\$|\.([^A-Za-z0-9_-]|\$))" "$1"
+}
 # cancel_guard <file> <ask> -> die when a session or script cancels work the human asked for (human_work)
 # without an answered ask that names the item: an answer about other work is not one about this. Any
-# --ask is checked so, since the item records it as the decision. The judge answers such an ask like
-# any other, and its policy sends a bulk one (10 or more records) to the human (ar-4765); a session's
-# or shepherd's own answer is no ruling, so only the judge's or the human's counts. The human at
+# --ask is checked so, since the item records it as the decision. The judge never answers such an ask:
+# agent-ask reads `human-work` and makes it an approval for the human (ar-5962). A judge answer stays
+# accepted (ar-4765), since an ask answered before that is a ruling already given; a session's or
+# shepherd's own answer is no ruling, so only the judge's or the human's counts. The human at
 # a terminal or the Queue tab's button is not held. 2026-11-12: two cleanups cancelled 220 from: human
 # items, one by looping a dead chain.
 cancel_guard() {
-  local slug pend f by opts ans names sl
+  local slug pend f by ans names
   slug="$(fm_get "$1" slug)"
   if [ -n "$2" ]; then
     [[ "$2" =~ ^[A-Za-z0-9_-]+$ ]] || die "--ask takes an ask id, not $2"
@@ -3865,8 +3882,7 @@ cancel_guard() {
     [ -n "$f" ] || die "$slug: ask $2: no such ask"
     # Only an answer of cancel or drop authorizes it, never one the caller names: when any answer did,
     # "keep" cancelled the item (ar-2717). The ask offers one of them, so a free-text ask authorizes nothing.
-    opts="$(ask_options "$2" | sed 's/[=[:space:]].*//; s/[.,;:!]$//' | tr '[:upper:]' '[:lower:]')"
-    grep -qxE "$AQ_CANCEL_ANSWERS" <<<"$opts" \
+    ask_offers_cancel "$2" \
       || die "$slug: ask $2 offers no cancel or drop option: post one with them (agent-ask post --options 'drop|keep')"
     pend="$(ask_pending "$2")"
     # gate: aq-cancel-guard
@@ -3881,11 +3897,8 @@ cancel_guard() {
     # An empty by is legacy (before answered_by), when every answer was the human's.
     by="$(sed -n '/^answered_by: */{s///p;q;}' "$f")"
     case "$by" in '' | human | judge) ;; *) die "$slug: ask $2 is answered by $by: --ask names an ask the judge or the human answered" ;; esac
-    # The whole slug: grep -w took fix-ci from an ask about fix-ci-2 (ar-2717). A period ends it only
-    # at a sentence end, so mkt-17.2 is not mkt-17.
-    sl="$(printf '%s' "$slug" | sed 's/[.+]/\\&/g')"
-    grep -qE -- "(^|[^A-Za-z0-9_.-])$sl([^A-Za-z0-9_.-]|\$|\.([^A-Za-z0-9_-]|\$))" "$f" \
-      || die "$slug: ask $2 does not name $slug: --ask names the answer about this item"
+    # gate: aq-cancel-guard
+    ask_names "$f" "$slug" || die "$slug: ask $2 does not name $slug: --ask names the answer about this item"
     return 0
   fi
   # gate: aq-cancel-guard
@@ -4330,6 +4343,76 @@ cmd_ask_holds() {
     /^slug: / { slug = substr($0, 7) }
     /^tags: / { tags = substr($0, 7) }
     END { flush() }' "${FILES[@]}"
+}
+
+# resume_takes <command line> -> "<verb><TAB><slug><TAB><flag>" for each agent-queue cancel, return or move
+# the line runs, flag `drop` for a return --drop and `cancelled` for a move --status cancelled. Its words
+# are read as a shell reads them (xargs: quotes, never an expansion), else split on blanks when its
+# quotes do not pair (a prompt's "don't"); &&, ||, | and ; end one command.
+resume_takes() {
+  local out i j verb slug flag w2
+  local -a w=()
+  out="$(xargs printf '%s\n' <<<"$1" 2>/dev/null)" || out="$(tr -s '[:space:]' '\n' <<<"$1")"
+  while IFS= read -r w2; do
+    case "$w2" in ?*';') w+=("${w2%;}" ';') ;; *) w+=("$w2") ;; esac
+  done <<<"$out"
+  for ((i = 0; i < ${#w[@]}; i++)); do
+    [ "${w[i]##*/}" = agent-queue ] || continue
+    verb="${w[i + 1]-}" slug="${w[i + 2]-}" flag=""
+    case "$verb" in cancel | return | move) ;; *) continue ;; esac
+    for ((j = i + 3; j < ${#w[@]}; j++)); do
+      case "${w[j]}" in
+        '&&' | '||' | '|' | ';') break ;;
+        --drop) flag=drop ;;
+        --status=cancelled) flag=cancelled ;;
+        --status) [ "${w[j + 1]-}" != cancelled ] || flag=cancelled ;;
+      esac
+    done
+    printf '%s\t%s\t%s\n' "$verb" "$slug" "$flag"
+  done
+}
+
+# human-work <ask id> -- each active item the human asked for (human_work) that the ask, once answered,
+# could take off the queue past cancel_guard, one slug per line: one its resume command cancels (cancel,
+# move --status cancelled), returns with --drop or returns with no board row (the chain a return takes
+# included), and one the ask names while it offers a cancel or drop option, the answer cancel_guard
+# reads. agent-ask makes such an ask an approval and the judge holds an older one, since only the human
+# drops their own work (ar-5962: the judge answered PVqj0D, whose resume cancelled hc-820, a row the
+# human had requested). The tests are human_work's and cancel_guard's own, so the two cannot drift.
+cmd_human_work() {
+  local id="${1:-}" f verb slug flag g s FILES=()
+  # gate: none
+  [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || die "usage: agent-queue human-work <ask id>"
+  f="$(compgen -G "$AQ_ASKS/*/$id.md" | awk 'NR == 1')"
+  [ -n "$f" ] || die "ask $id: no such ask"
+  lock_read
+  {
+    while IFS=$'\t' read -r verb slug flag; do
+      g="$(find_item "$slug")" || continue
+      case "$verb:$flag" in
+        cancel:* | move:cancelled) printf '%s\t%s\n' "$slug" "$g" ;;
+        return:drop) chain_of "$slug" "$g" ;;
+        return:*) chain_of "$slug" "$g" | while IFS=$'\t' read -r s g; do [ -n "$(item_row "$g")" ] || printf '%s\t%s\n' "$s" "$g"; done ;;
+      esac
+    done < <(resume_takes "$(sed -n '/^resume: */{s///p;q;}' "$f")") |
+      while IFS=$'\t' read -r s g; do human_work "$(fm_get "$g" from)" "$(fm_get "$g" tags)" && printf '%s\n' "$s"; done
+    ask_offers_cancel "$id" && list_files waiting review running queued
+    if ((${#FILES[@]})); then
+      # The header's slug, from and tags lines alone, in one pass, as ask-holds reads them. A tab is IFS
+      # whitespace, so an empty from would hand the tags to read as from.
+      awk -v OFS='\t' '
+        function flush() { if (slug != "") print slug, (from == "" ? "-" : from), tags }
+        FNR == 1 { flush(); slug = ""; from = ""; tags = ""; head = 1 }
+        !head { next }
+        $0 == "---" { head = 0; next }
+        /^slug: / { slug = substr($0, 7) }
+        /^from: / { from = substr($0, 7) }
+        /^tags: / { tags = substr($0, 7) }
+        END { flush() }' "${FILES[@]}" |
+        while IFS=$'\t' read -r s g flag; do human_work "$g" "$flag" && ask_names "$f" "$s" && printf '%s\n' "$s"; done
+    fi
+  } | sort -u
+  return 0
 }
 
 # reopen <slug> [--to running|waiting] [--why <text>] -- put back an item a false close finished,
@@ -4815,6 +4898,7 @@ case "${1:-}" in
   lock-miss) shift; cmd_lock_miss "$@" ;;
   credit-of) shift; cmd_credit_of "$@" ;;
   ask-holds) shift; cmd_ask_holds "$@" ;;
+  human-work) shift; cmd_human_work "$@" ;;
   backfill-briefs) shift; cmd_backfill_briefs "$@" ;;
   backfill-outcome) shift; cmd_backfill_outcome "$@" ;;
   -h | --help | '') sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;
