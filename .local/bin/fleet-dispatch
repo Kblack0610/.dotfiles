@@ -2820,15 +2820,6 @@ last_mode() {
   tac "$t" | grep -m1 -o '"permissionMode":"[A-Za-z]*"' | cut -d'"' -f4
 }
 
-# last_branch <id> -> the git branch the conversation last ran on, from the transcript (a session can switch
-# branches mid-run). Only a top-level field counts: a message can quote the key.
-last_branch() {
-  local t
-  t=$(compgen -G "$HOME/.claude/projects/*/$1.jsonl" | awk 'NR==1')
-  [ -n "$t" ] || return 0
-  grep '"gitBranch":' "$t" | jq -rR 'fromjson? | objects | .gitBranch // empty | strings' 2>/dev/null | tail -1
-}
-
 # resume_mode <id> <item mode> -> the mode a resume reopens in: the transcript's last one, else plan
 # for a plan item (a resume must not skip its approval), else bypassPermissions.
 resume_mode() {
@@ -4863,7 +4854,7 @@ restore_world() {
       # A reaped worktree is put back first (wt revive), as agent-ask reopen does: claude --resume finds the
       # conversation by the directory it ran in. A folder wt cannot put back stays listed, not reopened.
       if [ "$dry" = 1 ]; then echo "$srv:$sess:$win: $cwd is gone, would be put back with wt revive before the resume"
-      elif out=$(wt revive "$cwd" --branch "$(last_branch "$id")" </dev/null 2>&1); then echo "$srv:$sess:$win: ${out##*$'\n'}"
+      elif out=$(wt revive "$cwd" --branch "$("$HERE/sessions" _branch "$id")" </dev/null 2>&1); then echo "$srv:$sess:$win: ${out##*$'\n'}"
       else echo "$srv:$sess:$win: $cwd is gone and wt could not put it back (${out##*$'\n'}), skipped (claude --resume $id)"; continue; fi
     fi
     item=$(agent-queue mine --sid "$id" --newest 2>/dev/null) || item=''
