@@ -5,7 +5,7 @@
   "pr": "Kblack0610/.dotfiles#1295",
   "base": "ceb8a5178f4080b26874c89bc440aee41e66dc11",
   "merge": "82fe8900168f29129ba6eb4ca7947e157205c40d",
-  "task": "chore(cleanup): one spend check behind both claude-spend watches",
+  "task": "chore(cleanup): one spend check behind both claude-spend watches. Interface: `agent-usage spend check <window> <ceiling>` (window like 90m, 1h, 24h, 7d; ceiling a number) asks Prometheus (PROM_URL, through curl) for `increase(claude_code_cost_usage_USD_total[<window>])` summed, and prints `last <window>: $<spend> (alert at $<ceiling>)` with the spend as Prometheus gave it, `0.0` for an empty result. Exit 0 at or under the ceiling, 1 over it, compared as decimals (150.4 is over 150), 2 when Prometheus is unreadable, PROM_URL is unset, or the answer is not a vector of finite numbers (never a silent zero; the vector is `.data.result[].value[1]`, a string each, and a body with that array is a vector whether or not it carries status or resultType), and 64 for a bad window or ceiling. Both claude-spend watches call it.",
   "pts": 3,
   "accept": [
     "spend check: under the ceiling exits 0 and names the window and the ceiling",
