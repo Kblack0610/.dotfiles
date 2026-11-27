@@ -6556,7 +6556,7 @@ FINDING_REQUIRED='["cc:host_load1","cc:host_cores","cc:host_cpu_busy_ratio","cc:
 FINDING_SAMPLE_S=600   # snapshots this far apart: the sampler's cadence, so "on 2 samples" holds on replay
 # Starting points set from the 10-29 replay; kpi-thresholds overrides any of them.
 FINDING_DEFAULTS='{"finding_pool_wait_s":3600,
-  "finding_pool_idle_share":0.75,"finding_pool_admitted_share":0.5,"finding_merge_ratio":0.5,"finding_demand_ratio":0.7,"finding_merge_floor_h":2,
+  "finding_pool_idle_share":0.75,"finding_pool_admitted_share":0.5,"finding_merge_ratio":0.5,"finding_demand_ratio":0.7,"finding_merge_floor_h":2,"finding_live_floor":1,
   "finding_host_load_per_core":2,"finding_clear_min":60,"finding_human_after_min":60}'
 
 finding_limits() {
@@ -6718,7 +6718,7 @@ finding_rows() {
         | ($e | map(select(. > $t - 86400 and . <= $t)) | length / 24) as $base
         | ($e | map(select(. > $t - 7200 and . <= $t)) | length / 2) as $now
         | select($d != null and $base >= $l.finding_merge_floor_h and $now < $l.finding_merge_ratio * $base
-                 and $d.avg_2h >= $l.finding_demand_ratio * $d.avg_24h)
+                 and $d.avg_2h >= $l.finding_live_floor and $d.avg_2h >= $l.finding_demand_ratio * $d.avg_24h)
         | row("throughput-drop"; $proj; "human"; {merges_h_2h: $now, merges_h_24h: ($base | round1), live_2h: ($d.avg_2h | round1), live_24h: ($d.avg_24h | round1)};
             "2h against 24h"; "git log --first-parent, progress.jsonl";
             "merges \($now)/h against \($base | round1)/h with sessions still working (\($d.avg_2h | round1) live, usual \($d.avg_24h | round1)): something between gate and merge binds";

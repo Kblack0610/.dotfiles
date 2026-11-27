@@ -1366,6 +1366,13 @@ fired() { eval_at "$@"; open_at "$@"; }
   assert_output human
 }
 
+@test "findings: a project with under one live session in the window never raises throughput-drop, though 0.1 clears the ratio of a 24h average near 0" {
+  use_fixture
+  printf '{"epoch":%s,"project":"unity-core-playground","bucket":"WORKING"}\n' "$(( $(clock 14:20) - 600 ))" > "$FLEET_BENCH_DIR/progress.jsonl"
+  run fired 14:20
+  refute_output --partial 'throughput-drop'
+}
+
 @test "findings: the quiet morning after raises no starved or throughput-drop" {
   use_fixture
   for t in 00:30 01:30 02:30 03:30 04:30 05:30; do
