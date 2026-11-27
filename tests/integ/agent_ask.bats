@@ -257,6 +257,40 @@ relay_fixture() { # <kind> <text> <shown>
   run "$AGENT_ASK" show "$id"; assert_line 'answer: park'
 }
 
+# The human approves the picks a session laid out with a plain yes: the session showed each ask id
+# with one option, and their reply affirms it (2026-11-27, the human: "if im in the session then you
+# can answer"). The M0yWLL refusal stays: unpaired words or a partial yes pick nothing.
+@test "answer --quote: a yes to a message that paired the ask with one option picks it" {
+  local id; id="$("$AGENT_ASK" post --project demo --options 'a=ship it|b=hold it' 'a or b?')"
+  local other; other="$("$AGENT_ASK" post --project demo --options 'keep=leave it|drop=remove it' 'keep or drop?')"
+  # Shown only the question, a yes picks nothing.
+  relay_fixture typed 'ok yes do those' "Ask $id: a or b?"
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'ok yes do those' "$id" a
+  assert_failure 1; assert_output --partial "no yes to a message that paired $id with a alone"
+  # Shown the id paired with two options, a yes is ambiguous.
+  relay_fixture typed 'ok yes do those' "$id a, or maybe $id b."
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'ok yes do those' "$id" a
+  assert_failure 1
+  # A partial yes, or one that names the ask itself, takes the plain path, which it does not pass.
+  relay_fixture typed "yes but not $id" "Picks: $id a, $other keep."
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote "yes but not $id" "$id" a
+  assert_failure 1
+  # The pick shown is another option: no.
+  relay_fixture typed 'ok yes do those' "Picks: $id b, $other keep."
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'ok yes do those' "$id" a
+  assert_failure 1
+  run "$AGENT_ASK" show "$id"; assert_line 'status: pending'
+  # Shown "<id> <option>" for each ask, one yes answers both, and the note names the pairing.
+  relay_fixture typed 'ok thanks yes agreed, do those' "Picks: $id a, $other keep."
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'yes agreed, do those' "$id" a
+  assert_success
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'yes agreed, do those' "$other" keep
+  assert_success
+  run "$AGENT_ASK" show "$id"; assert_line 'answer: a'; assert_line 'answered_by: human'
+  assert_output --partial "answer_note: relayed in session sid-r: a yes to the shown pick \"$id a\": yes agreed"
+  run "$AGENT_ASK" show "$other"; assert_line 'answer: keep'
+}
+
 # An agent answers what does not need the human, and its answer releases what the ask holds
 # (2026-11-23: routine retry asks held 40+ rows on the human's list).
 @test "answer: an agent answer releases a held ask; an approval, a human-only ask and one at the human floor stay the human's" {

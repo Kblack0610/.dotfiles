@@ -1064,12 +1064,49 @@ quote_picks() {
   echo "they name no option and do not match $opt's note"; return 1
 }
 
+# shown_pick <id> <options> <shown>: the one option the message the human answered paired with ask
+# <id>, as "<id> <option>" ("poGHJB a,", "Rd0iM8: keep", "hJMcyB -> drop."), the option ending its
+# item (line end, `,;.)`, or a space and `(:-`), so "Ask <id>: park or wait?" pairs nothing. Prints
+# it; rc 1 when the message pairs <id> with no option or with more than one.
+shown_pick() {
+  local id="${1,,}" s="${3,,}" o r t got=()
+  local opts=(); IFS='|' read -ra opts <<< "$2"
+  for o in "${opts[@]}"; do
+    o="${o,,}"; [ -n "$o" ] || continue
+    r="$s"
+    while [[ "$r" == *"$id"* ]]; do
+      r="${r#*"$id"}"; t="${r%%$'\n'*}"
+      t="${t#"${t%%[!:= *\`>-]*}"}"
+      [[ "$t" == "$o"* ]] || continue
+      t="${t:${#o}}"
+      [[ -z "$t" || "$t" =~ ^[[:space:]]*$ || "$t" =~ ^[,\;.\)] || "$t" =~ ^[[:space:]]+[\(:-] ]] || continue
+      got+=("$o"); break
+    done
+  done
+  [ "${#got[@]}" -eq 1 ] || return 1
+  for o in "${opts[@]}"; do [ "${o,,}" = "${got[0]}" ] && { printf '%s' "$o"; return 0; }; done
+  return 1
+}
+
+# affirms <words>: true when the words say yes ("ok", "yes", "agreed", "do those") and carry no
+# no, not, but, except, instead or wait, which would make the yes partial.
+affirms() {
+  local t="${1,,}" b='(^|[^[:alnum:]])' e='([^[:alnum:]]|$)'
+  local yes="${b}(yes|yep|yeah|ok|okay|sure|agreed|agree|approved|approve|lgtm|fine|go ahead|sounds good|do (those|these|them|it|that|all))${e}"
+  local partial="${b}(no|not|don'?t|dont|never|but|except|instead|wait)${e}"
+  [[ "$t" =~ $yes ]] && ! [[ "$t" =~ $partial ]]
+}
+
 # relay_proof <id> <quote> <answer>: why an attended session may record the human's answer to <id>, or
 # what is missing (stderr, rc 1). The quote passes human_words since the ask was posted, and the ask's
 # id is in that entry's words or in what they were shown. The answer is one of the ask's options when
-# it has any, and the quote picks that option (quote_picks), so the words cannot be attached to an
-# answer they do not pick. The human's whole entry must not name another option either ("don't keep
-# them, drop them" does not pick keep). Only a pending ask, or one the judge or a hold answered, takes it.
+# it has any, and the quote picks that option: it names the option or holds its meaning (quote_picks),
+# or it names no option, affirms (affirms), does not name the ask, and answers a message that paired
+# the ask with that option alone (shown_pick: the human approving the picks a session laid out, "yes
+# do those"). So words cannot be attached to an answer they do not pick (ask M0yWLL, ar-6269). The
+# human's whole entry must not name another option either ("don't keep them, drop them" does not pick
+# keep). Only a pending ask, or one the judge or a hold answered, takes it. On a shown pick it prints
+# the pairing, which the answer note records.
 relay_proof() {
   local id="$1" quote="$2" answer="$3" f made hits why
   f="$(find_ask "$id")"; [ -n "$f" ] || { echo "no ask '$id'" >&2; return 1; }
@@ -1084,11 +1121,23 @@ relay_proof() {
   if [ -n "$opts" ]; then
     picked="$(named_option "$opts" "$answer")"
     [ -n "$picked" ] || { echo "the answer '$answer' names none (or more than one) of ask $id's options: $opts" >&2; return 1; }
-    why="$(quote_picks "$f" "$opts" "$picked" "$quote")" || {
-      echo "the quote '$quote' does not pick '$picked': $why" >&2; return 1; }
   fi
   hits="$(human_words "$quote" "$made")" || return 1
   if [ -n "$opts" ]; then
+    local shown=""
+    why="$(quote_picks "$f" "$opts" "$picked" "$quote")" || {
+      case "$why" in
+        "they name no option"*)
+          local s p
+          if affirms "$quote" && ! word_in "${id,,}" "${quote,,}"; then
+            while IFS= read -r -d '' s; do
+              p="$(shown_pick "$id" "$opts" "$s")" && [ "$p" = "$picked" ] && { shown="$id $p"; break; }
+            done < <(jq -j '(.shown // "") + "\u0000"' <<<"$hits")
+          fi
+          [ -n "$shown" ] || { echo "the quote '$quote' does not pick '$picked': $why, and is no yes to a message that paired $id with $picked alone" >&2; return 1; } ;;
+        *) echo "the quote '$quote' does not pick '$picked': $why" >&2; return 1 ;;
+      esac
+    }
     local t
     while IFS= read -r t; do
       why="$(quote_picks "$f" "$opts" "$picked" "$t")" && continue
@@ -1100,6 +1149,7 @@ relay_proof() {
     def n: ascii_downcase | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "");
     any(.[]; ((.shown // "" | n) | contains($id | n)) or ((.text | n) | contains($id | n)))' <<<"$hits" >/dev/null 2>&1 ||
     { echo "the quote is in the transcript, but ask $id is in neither what the human was shown nor their words there" >&2; return 1; }
+  [ -z "${shown:-}" ] || printf 'a yes to the shown pick "%s": ' "$shown"
 }
 
 # cmd_said --since <time> <words...>: exit 0 when the human typed those words in this attended
@@ -1142,7 +1192,7 @@ cmd_answer_cli() {
       why="$(relay_proof "$id" "$quote" "$(oneline "$*")" 2>&1)" || { echo "agent-ask: cannot record this as the human's answer: $why" >&2; return 1; }
       f="$(find_ask "$id")"
       cmd_answer --by human "$id" "$@" || return $?
-      set_field "$f" relayed_by "$CLAUDE_CODE_SESSION_ID" answer_note "relayed in session $CLAUDE_CODE_SESSION_ID: $(cut -c1-300 <<<"$quote")"
+      set_field "$f" relayed_by "$CLAUDE_CODE_SESSION_ID" answer_note "relayed in session $CLAUDE_CODE_SESSION_ID: $why$(cut -c1-300 <<<"$quote")"
       return 0
     else
       echo "agent-ask: an agent session answers as agent, not $by; the human answers from a board or in the session, and an attended session relays their words with --by human --quote '<their words>'" >&2; return 2
