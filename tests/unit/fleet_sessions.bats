@@ -506,7 +506,7 @@ load 'fleet_sessions/common'
   run handed_item 'review:a pr 9' review OPEN "$q" "$SANDBOX/c" - 9
   assert_output 'review:a pr 9'
   run handed_item - - MERGED "$q" "$SANDBOX/c" - 9
-  assert_output '-'
+  [ "$output" = - ]
 }
 
 @test "item_of: sessions: matches by Claude session, session: only for a lone claude, a done one only after it started" {
