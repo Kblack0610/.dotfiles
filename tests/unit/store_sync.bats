@@ -1280,7 +1280,7 @@ close_run() {
   echo 'state: x' > "$SANDBOX/a/queue/item.md"
   on a --now >/dev/null
   run cat "$SANDBOX/a/.git/info/attributes"
-  assert_output $'queue/*/*.md merge=item\nqueue/done/*/*.md merge=item'
+  assert_output $'queue/*/*.md merge=item\nqueue/done/*/*.md merge=item\nsessions/*/*-wind-down.md merge=note'
   run git -C "$SANDBOX/a" config --get merge.close.driver
   assert_failure
   run git -C "$SANDBOX/a" config --get merge.item.driver
