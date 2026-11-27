@@ -21,7 +21,7 @@ use crate::home::Level;
 use crate::infra::Infra;
 use crate::jobpods::{Booked, Pending};
 use crate::links::{Kind, Link};
-use crate::prom::Series;
+use crate::prom::{Series, W};
 use crate::table::{Row, Val};
 
 /// A running job past this is amber whatever its usual: playground `ci.md` calls a gate that
@@ -41,7 +41,7 @@ const NEXT: usize = 5;
 const POD_SERIES_GRACE_SECS: i64 = 90;
 
 /// The windows the glance counts finished runs over (`Window`), each a span of the hourly series.
-const WINDOWS: &[(&str, i64)] = &[("1h", 3600), ("5h", 5 * 3600)];
+const WINDOWS: &[&str] = &["1h", "5h"];
 
 /// The prefix of the Unity scale sets (`arc-unity-test`); the rest of the name is its group.
 const UNITY_SETS: &str = "arc-unity-";
@@ -70,8 +70,11 @@ pub struct Slot {
     /// Its runner is a CI job pod (an ARC runner), which `jobpods` counts on its node.
     #[serde(skip)]
     pub pod: bool,
-    /// The scale set or ScaledJob that ran it (`jobpods::kind_of`): its pod's, else the pool its
-    /// runner's name starts with (`set_of`, a pod with no series), else empty (a fixed slot, a
+    /// Its runner's name is an ARC runner's, `<scale set>-runner-<id>` (`arc_set`), pod or not.
+    #[serde(skip)]
+    pub arc: bool,
+    /// The scale set or ScaledJob that ran it (`jobpods::kind_of`): its pod's, else the scale set
+    /// its runner's name says (`arc_set`, a pod with no series), else empty (a fixed slot, a
     /// local gate).
     pub set: String,
 }
@@ -154,13 +157,12 @@ pub struct Ci {
     /// The last day's local Unity gate failures, one row per branch and platform, newest first.
     pub local: Vec<LocalFail>,
     /// The CI faults, each one line both surfaces draw as it is: first busy ARC runners with no
-    /// pod series (`unplaced_line`), then one per kind of job no online runner can take
+    /// pod series, then one per kind of job no online runner can take
     /// (`Queued::problem`), oldest first, with the count of waiting jobs when more than one.
     pub red: Vec<String>,
     /// Busy ARC runners past `POD_SERIES_GRACE_SECS` whose pod kube-state-metrics has no series
-    /// for, so no machine and no booking holds them; and every busy ARC runner.
+    /// for, so no machine and no booking holds them.
     pub unplaced: u32,
-    pub arc_busy: u32,
     /// The view every CI surface opens on (`glance`), filled once the machines are built.
     pub glance: Glance,
     /// CI runs and local Unity gates that finished since local midnight: the Runners "CI runs
@@ -406,41 +408,46 @@ pub struct Hosted {
 /// the hour it finished, so a window is each hour's count now less its count `span` ago (an hour
 /// that had no series then counts whole), floored at 0 for a re-run that moved its conclusion.
 pub fn window_query() -> String {
-    let now = "sum by (hour, conclusion) (github_runs_by_hour)";
+    let now = format!("sum by (hour, conclusion) ({W} (github_runs_by_hour))");
     WINDOWS
         .iter()
-        .map(|(span, _)| {
+        .map(|span| {
             format!(
-                r#"label_replace(sum by (conclusion) (clamp_min({now} - sum by (hour, conclusion) (github_runs_by_hour offset {span}), 0) or {now}), "span", "{span}", "", "")"#
+                r#"label_replace(sum by (conclusion) (clamp_min({now} - sum by (hour, conclusion) ({W} (github_runs_by_hour offset {span})), 0) or {now}), "span", "{span}", "", "")"#
             )
         })
         .collect::<Vec<_>>()
         .join(" or ")
 }
 
-/// `Window` per `WINDOWS` span from `window_query`'s answer; a span with no series is no window.
+/// `Window` per `WINDOWS` span from `window_query`'s answer, pass and fail by `builds::verdict`
+/// as every CI pass rate is; a span with no series is no window.
 fn windows(infra: &Infra) -> Vec<Window> {
     WINDOWS
         .iter()
-        .filter_map(|(span, _)| {
-            let of: Vec<&Series> = infra
-                .get("runs_window")
-                .iter()
-                .filter(|s| s.label("span") == *span)
-                .collect();
-            let n = |c: &str| {
-                of.iter()
-                    .filter(|s| s.label("conclusion") == c)
-                    .map(|s| s.value.unwrap_or(0.0).max(0.0).round() as u32)
-                    .sum::<u32>()
-            };
-            let (ok, bad) = (n("success"), n("failure") + n("timed_out"));
-            (!of.is_empty()).then(|| Window {
+        .filter_map(|span| {
+            let mut w = Window {
                 span: (*span).into(),
-                runs: ok + bad + n("cancelled"),
-                failed: bad,
-                pass: (ok + bad > 0).then(|| f64::from(ok) / f64::from(ok + bad)),
-            })
+                ..Default::default()
+            };
+            let (mut seen, mut ok) = (false, 0);
+            for s in infra.get("runs_window") {
+                if s.label("span") != *span {
+                    continue;
+                }
+                seen = true;
+                let n = s.value.unwrap_or(0.0).max(0.0).round() as u32;
+                match crate::builds::verdict(Some(s.label("conclusion"))) {
+                    Some(true) => ok += n,
+                    Some(false) => w.failed += n,
+                    None if s.label("conclusion") == "cancelled" => {}
+                    None => continue,
+                }
+                w.runs += n;
+            }
+            let judged = ok + w.failed;
+            w.pass = (judged > 0).then(|| f64::from(ok) / f64::from(judged));
+            seen.then_some(w)
         })
         .collect()
 }
@@ -469,18 +476,15 @@ fn unity(infra: &Infra) -> Option<Unity> {
         .filter(|st| matches!(*st, "busy" | "idle"))
         .collect();
     if !fixed.is_empty() {
-        let i = match sets.iter().position(|s| s.name == "build") {
-            Some(i) => i,
-            None => {
-                sets.push(UnitySet {
-                    name: "build".into(),
-                    ..Default::default()
-                });
-                sets.len() - 1
-            }
-        };
-        sets[i].max += fixed.len() as u32;
-        sets[i].running += fixed.iter().filter(|st| **st == "busy").count() as u32;
+        if !sets.iter().any(|s| s.name == "build") {
+            sets.push(UnitySet {
+                name: "build".into(),
+                ..Default::default()
+            });
+        }
+        let build = sets.iter_mut().find(|s| s.name == "build").unwrap();
+        build.max += fixed.len() as u32;
+        build.running += fixed.iter().filter(|st| **st == "busy").count() as u32;
     }
     if sets.is_empty() {
         return None;
@@ -502,7 +506,6 @@ fn hosted(infra: &Infra) -> Vec<Hosted> {
             repo: s.label("repo").into(),
             n: s.value.unwrap_or(0.0).max(0.0).round() as u32,
         })
-        .filter(|h| h.n > 0)
         .collect();
     out.sort_by(|a, b| b.n.cmp(&a.n).then_with(|| a.repo.cmp(&b.repo)));
     out
@@ -611,11 +614,13 @@ impl Glance {
             s += &format!(" (oldest {})", dur(o as i64));
         }
         if let Some(b) = self.booked {
-            s += &format!(
-                ", booked {}/{:.0} cpu",
-                crate::jobpods::cores(b.cpu),
-                b.cpu_alloc.round()
-            );
+            // A busy ARC runner with no pod series books on no node, so no booking is whole.
+            let cpu = if self.unplaced > 0 {
+                "?".into()
+            } else {
+                crate::jobpods::cores(b.cpu)
+            };
+            s += &format!(", booked {cpu}/{:.0} cpu", b.cpu_alloc.round());
             if b.reserved > 0.0 {
                 s += &format!(" ({} reserved)", crate::jobpods::cores(b.reserved));
             }
@@ -868,33 +873,14 @@ pub fn next_by_host(infra: &Infra) -> BTreeMap<String, Next> {
     by
 }
 
-/// The ephemeral pool a runner's name says it belongs to: an ARC runner is
-/// `<scale set>-runner-<id>`, the longest pool name that prefixes it so. None for a fixed slot.
-fn set_of(pools: &[Pool], runner: &str) -> Option<String> {
-    pools
-        .iter()
-        .filter(|p| {
-            runner
-                .strip_prefix(p.name)
-                .is_some_and(|rest| rest.starts_with("-runner-"))
-        })
-        .max_by_key(|p| p.name.len())
-        .map(|p| p.name.to_string())
+/// The scale set an ARC runner's name says, `<scale set>-runner-<id>` split as `jobpods::kind_of`
+/// splits its pod's owner, when that is a scale set the exporter reports. None for a fixed slot.
+fn arc_set(pools: &[Pool], runner: &str) -> Option<String> {
+    let set = crate::jobpods::kind_of("EphemeralRunner", runner, runner);
+    pools.iter().any(|p| p.name == set).then_some(set)
 }
 
 impl Ci {
-    /// `pod series missing for 3 of 6 busy ARC runners: machines unplaced`: the runner-to-pod
-    /// join (`Infra::runner_host`) is blind for them, so their jobs sit on no CI node and no
-    /// booking counts their requests. None while every busy ARC runner has its pod.
-    pub fn unplaced_line(&self) -> Option<String> {
-        (self.unplaced > 0).then(|| {
-            format!(
-                "pod series missing for {} of {} busy ARC runners: machines unplaced",
-                self.unplaced, self.arc_busy
-            )
-        })
-    }
-
     fn red_lines(&self) -> Vec<String> {
         let mut by: Vec<(String, u32)> = vec![];
         for q in self.problems() {
@@ -1135,6 +1121,8 @@ pub fn build(infra: &Infra) -> Ci {
         let ran = s.value.map(|v| v as i64).filter(|v| *v > 0);
         let u = usual_of(&usual, r);
         let title = s.label("title");
+        let pod = infra.pod(s.label("name"));
+        let arc = arc_set(&sets, s.label("name"));
         rows.push(Slot {
             host,
             slot: slot_of(s.label("name"), s.label("host")),
@@ -1152,12 +1140,9 @@ pub fn build(infra: &Infra) -> Ci {
             usual: u.map(|u| u.0),
             late: ran
                 .is_some_and(|t| t > LONG_RUN_SECS || u.and_then(|u| u.1).is_some_and(|p| t > p)),
-            pod: infra.pod(s.label("name")).is_some(),
-            set: infra
-                .pod(s.label("name"))
-                .map(|p| p.kind.clone())
-                .or_else(|| set_of(&sets, s.label("name")))
-                .unwrap_or_default(),
+            pod: pod.is_some(),
+            arc: arc.is_some(),
+            set: pod.map(|p| p.kind.clone()).or(arc).unwrap_or_default(),
         });
     }
     // A machine that is not a runner runs its gates locally: one busy row each, no slot number.
@@ -1216,14 +1201,21 @@ pub fn build(infra: &Infra) -> Ci {
     ci.queue = queue(infra, &all, &off);
     ci.queued = ci.queue.iter().map(|q| q.n).sum();
     ci.oldest = ci.queue.iter().map(|q| q.wait).max().unwrap_or(0);
-    let arc: Vec<&Slot> = ci.rows.iter().filter(|r| !r.set.is_empty()).collect();
-    ci.arc_busy = arc.len() as u32;
-    ci.unplaced = arc
+    // The runner-to-pod join (`Infra::runner_host`) is blind for a busy ARC runner whose pod has
+    // no series, so its job sits on no CI node and no booking counts its requests.
+    let arc = ci.rows.iter().filter(|r| r.arc).count();
+    ci.unplaced = ci
+        .rows
         .iter()
-        .filter(|r| !r.pod && r.ran.is_none_or(|t| t >= POD_SERIES_GRACE_SECS))
+        .filter(|r| r.arc && !r.pod && r.ran.is_none_or(|t| t >= POD_SERIES_GRACE_SECS))
         .count() as u32;
-    ci.red = ci
-        .unplaced_line()
+    ci.red = (ci.unplaced > 0)
+        .then(|| {
+            format!(
+                "pod series missing for {} of {arc} busy ARC runners: machines unplaced",
+                ci.unplaced
+            )
+        })
         .into_iter()
         .chain(ci.red_lines())
         .collect();
@@ -2698,7 +2690,7 @@ mod tests {
             series(vec![pool("arc-org-light", "self-hosted,linux,light", "23")]),
         );
         i.derive();
-        assert_eq!((i.ci.unplaced, i.ci.arc_busy), (0, 1));
+        assert_eq!(i.ci.unplaced, 0);
         assert!(i.ci.red.is_empty(), "{:?}", i.ci.red);
         assert_eq!(i.ci.glance.alert, Level::Ok);
         let arc = i.ci.rows.iter().find(|r| r.job == "lint").unwrap();
@@ -2724,7 +2716,9 @@ mod tests {
         ]));
         i.derive();
         let g = &i.ci.glance;
-        assert_eq!((i.ci.unplaced, i.ci.arc_busy, g.unplaced), (1, 3, 1));
+        assert_eq!((i.ci.unplaced, g.unplaced), (1, 1));
+        let head = g.head(|t| format!("{t}s"));
+        assert!(head.contains(", booked ?/"), "{head}");
         assert_eq!(
             i.ci.red.first().map(String::as_str),
             Some("pod series missing for 1 of 3 busy ARC runners: machines unplaced")
@@ -2739,30 +2733,38 @@ mod tests {
     }
 
     #[test]
-    fn a_runner_belongs_to_the_longest_pool_its_name_starts_runner_after() {
+    fn an_arc_runner_is_a_reported_scale_set_and_runner_and_an_id() {
+        let pool = |name| Pool {
+            name,
+            forge: "",
+            scope: "",
+            labels: vec![],
+        };
         let ps = vec![
-            Pool {
-                name: "arc-repo-dotfiles",
-                forge: "",
-                scope: "",
-                labels: vec![],
-            },
-            Pool {
-                name: "arc-repo-dotfiles-pods",
-                forge: "",
-                scope: "",
-                labels: vec![],
-            },
+            pool("arc-repo-dotfiles"),
+            pool("arc-repo-dotfiles-pods"),
+            pool("forgejo-runner"),
         ];
+        let set = |r| arc_set(&ps, r);
         assert_eq!(
-            set_of(&ps, "arc-repo-dotfiles-runner-t8459").as_deref(),
+            set("arc-repo-dotfiles-runner-t8459").as_deref(),
             Some("arc-repo-dotfiles")
         );
         assert_eq!(
-            set_of(&ps, "arc-repo-dotfiles-pods-runner-x").as_deref(),
+            set("arc-repo-dotfiles-pods-runner-x").as_deref(),
             Some("arc-repo-dotfiles-pods")
         );
-        assert_eq!(set_of(&ps, "ms-a2-unity-pool-1"), None);
+        assert_eq!(
+            set("forgejo-runner-7f2kq"),
+            None,
+            "a forgejo runner is no ARC runner"
+        );
+        assert_eq!(set("ms-a2-unity-pool-1"), None);
+        assert_eq!(
+            set("arc-gone-runner-x"),
+            None,
+            "a set the exporter does not report"
+        );
     }
 
     #[test]
@@ -2925,6 +2927,7 @@ mod tests {
                 w("1h", "success", "16"),
                 w("1h", "failure", "3"),
                 w("1h", "timed_out", "1"),
+                w("1h", "startup_failure", "1"),
                 w("1h", "cancelled", "2"),
                 w("1h", "skipped", "6"),
             ]),
@@ -2933,9 +2936,9 @@ mod tests {
         assert_eq!(ws.len(), 1);
         assert_eq!(
             (ws[0].span.as_str(), ws[0].runs, ws[0].failed),
-            ("1h", 22, 4)
+            ("1h", 23, 5)
         );
-        assert_eq!(ws[0].pass, Some(0.8));
+        assert_eq!(ws[0].pass, Some(16.0 / 21.0));
         assert!(window_query().contains("offset 5h") && window_query().contains(r#""span", "1h""#));
     }
 
@@ -2950,7 +2953,6 @@ mod tests {
             series(vec![
                 (json!({"repo": "platform"}), "1"),
                 (json!({"repo": "web"}), "3"),
-                (json!({"repo": "x"}), "0"),
             ]),
         );
         let h: Vec<(String, u32)> = hosted(&i).into_iter().map(|h| (h.repo, h.n)).collect();

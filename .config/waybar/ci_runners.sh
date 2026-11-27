@@ -44,7 +44,7 @@ raw="$(timeout "$HUB_TIMEOUT" "$HUB" ci --json 2>"$err")" || {
 }
 jq -e '.glance' <<< "$raw" >/dev/null 2>&1 || fail "hub ci: no glance in its output"
 
-jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM" --arg lc "$(label_colour)" --argjson hot "$HOT_RATIO" '
+jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg lc "$(label_colour)" --argjson hot "$HOT_RATIO" '
   def esc: tostring | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;");
   def paint($c): "<span color='"'"'\($c)'"'"'>\(.)</span>";
   def pad($n): tostring | . + (" " * ([$n - length, 0] | max));
@@ -82,14 +82,13 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
   # hub_core::jobpods::Booked as `cpu 27.5/32 booked (7.4 reserved), 9.1 used  mem 41G/92G`, bare
   # `cpu 1.7 booked` with no allocatable read; a machine on no CI node reads its used cores only.
   def mcell: .booked as $b
-    | (if $b == null then (if .used == null then [] else ["cpu \(.used | u1) used"] end)
-       else [(if ($b.cpu_alloc // 0) <= 0 then "cpu \(bk($b.cpu | u1)) booked"
-              else "cpu \(bk($b.cpu | u1))/\($b.cpu_alloc | u0) booked" end)
-             + (if ($b.reserved // 0) > 0 then " (\($b.reserved | u1) reserved)" else "" end)
-             + (if .used == null then "" else ", \(.used | u1) used" end)
-             + "  mem " + (if ($b.mem_alloc // 0) <= 0 then bk($b.mem | bytes)
-                           else "\(bk($b.mem | bytes))/\($b.mem_alloc | bytes)" end)] end)
-    | join("");
+    | (if .used == null then "" else "\(.used | u1) used" end) as $used
+    | if $b == null then (if $used == "" then "" else "cpu " + $used end)
+      else "cpu \(bk($b.cpu | u1))" + (if ($b.cpu_alloc // 0) > 0 then "/\($b.cpu_alloc | u0)" else "" end) + " booked"
+        + (if ($b.reserved // 0) > 0 then " (\($b.reserved | u1) reserved)" else "" end)
+        + (if $used == "" then "" else ", " + $used end)
+        + "  mem \(bk($b.mem | bytes))" + (if ($b.mem_alloc // 0) > 0 then "/\($b.mem_alloc | bytes)" else "" end)
+      end;
   # Why a machine name is red: its load per core past the load chip'"'"'s hot ratio, or a node state
   # that takes no job (Machine::state). No reason, no red.
   def why: [(if (.load // 0) >= $hot then "hot: load \(.load | u1)/core" else empty end),
@@ -107,8 +106,8 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
   | (($g.windows // []) | map("\(.span): \(.runs | thou) runs, " + (.pass as $p | $p | pass_paint(($p | pct) + " pass")) + ", \(.failed | thou) failed")
      | join("  ")) as $windows
   | (if $g.unity == null then null
-     else "Unity  \($g.unity.running) running of \($g.unity.max) max"
-       + (if ($g.unity.sets | length) == 0 then "" else " (" + ($g.unity.sets | map("\(.name) \(.running)/\(.max)") | join(", ")) + ")" end)
+     else "Unity  \($g.unity.running) running of \($g.unity.max) max ("
+       + ($g.unity.sets | map("\(.name) \(.running)/\(.max)") | join(", ")) + ")"
      end) as $unity
   | ((if ($g.parts | length) == 0 then ["no data"]
       else $g.parts | map(.level as $l | "\(.name | esc) " + ($l | word | paint($colour[$l | lvl]))) end)
