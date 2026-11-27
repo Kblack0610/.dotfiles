@@ -1190,7 +1190,7 @@ outcomes_newest() {
   if compgen -G "$BENCH_OUTCOMES_DIR/*/*.jsonl" >/dev/null; then
     if [ -n "${1:-}" ]; then
       cat "$BENCH_OUTCOMES_DIR"/*/*.jsonl | jq -cn --slurpfile k "$1" \
-        '([$k[].session_id | strings | {key: ., value: true}] | from_entries) as $ids | inputs | select(.session_id and $ids[.session_id])'
+        '([$k[].session_id | strings | {key: ., value: true}] | from_entries) as $ids | inputs | select((.session_id | type) == "string" and $ids[.session_id])'
     else cat "$BENCH_OUTCOMES_DIR"/*/*.jsonl; fi
   fi | jq -c -s 'map(select(.session_id)) | group_by(.session_id) | map(last) | .[]'
 }
