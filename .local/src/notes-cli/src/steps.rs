@@ -63,6 +63,10 @@ fn line_key(text: &str) -> Key {
         }
     }
     words.truncate(words.trim_end().len());
+    if words.is_empty() {
+        // A line of tags alone has no words, and one empty key would make every such line one.
+        words = text.trim().to_string();
+    }
     Key::Line(words)
 }
 
@@ -583,6 +587,14 @@ mod tests {
         let rows = replay(&events, now());
         let inbox = get(&rows, "inbox");
         assert_eq!((inbox.open, inbox.out_24h), (0, 2));
+    }
+
+    /// A line of tags alone has no words to key on, so it keys on its text: two such lines are two.
+    #[test]
+    fn a_line_of_tags_alone_is_its_own_subject() {
+        assert_eq!(line_key("#agent #high"), Key::Line("#agent #high".into()));
+        assert_ne!(line_key("#agent"), line_key("#p:ar #high"));
+        assert_eq!(line_key("#agent fix it"), line_key("fix it #high"));
     }
 
     /// `left` and `refused` keep the line in its `## Inbox` for the next sweep, so neither is an
