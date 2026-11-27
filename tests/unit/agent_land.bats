@@ -122,6 +122,52 @@ load 'agent_land/common'
   [ "$(grep -n '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG" | cut -d: -f1)" -lt "$(grep -n 'pr checks' "$LOG" | head -1 | cut -d: -f1)" ]
 }
 
+@test "behind main before the checks, but the head's own run is pending or green: it is waited on first, and the base merged up only after it (ar-5865)" {
+  echo live >"$NOTES_FIXTURE/checks.live"
+  touch "$NOTES_FIXTURE/base.ahead" "$NOTES_FIXTURE/head.single"
+  printf '2\n0\n' >"$NOTES_FIXTURE/behind.seq"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "fetch: the head's own checks are pending or green; waiting on them before any merge of origin/main"
+  assert_line 'landed #42'
+  [ "$(grep -n 'pr checks 42 --watch' "$LOG" | head -1 | cut -d: -f1)" -lt "$(grep -n '^git merge -q --no-edit origin/main$' "$LOG" | head -1 | cut -d: -f1)" ]
+  second_wait
+}
+
+@test "a merged-up head whose run is pending, re-run after a checks timeout: that run is the re-check, so the green head lands behind the moved base (ar-5865)" {
+  echo live >"$NOTES_FIXTURE/checks.live"
+  touch "$NOTES_FIXTURE/base.ahead"
+  printf '3\n' >"$NOTES_FIXTURE/behind"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'fetch: origin/main moved on by 3 during the checks on the merged-up head; landing that green head behind it (no strict checks on main)'
+  assert_line 'landed #42'
+  run grep -c '^git merge -q --no-edit origin/main$' "$LOG"
+  assert_output 0
+}
+
+@test "behind main before the checks with the head's run pending, but the base conflicts: exit 3 before any wait, as before (ar-5865)" {
+  echo live >"$NOTES_FIXTURE/checks.live"
+  touch "$NOTES_FIXTURE/base.ahead"
+  printf '2\n' >"$NOTES_FIXTURE/behind"
+  touch "$NOTES_FIXTURE/tree.conflicts"
+  run "$LAND" 42 --item ship
+  assert_failure 3
+  assert_output --partial 'merging it conflicts'
+  run grep -c 'pr checks 42 --watch\|pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "behind main before the checks with a failed check on the head: merged up before the gate, as with no checks (ar-5865)" {
+  echo stale >"$NOTES_FIXTURE/checks.live"
+  touch "$NOTES_FIXTURE/base.ahead"
+  printf '2\n0\n' >"$NOTES_FIXTURE/behind.seq"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_line --partial "the head's own checks are pending or green"
+  [ "$(grep -n '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG" | cut -d: -f1)" -lt "$(grep -n 'pr checks 42 --watch' "$LOG" | head -1 | cut -d: -f1)" ]
+}
+
 @test "behind main before the checks and the merge conflicts: exit 3, no checks, no merge" {
   printf '2\n' >"$NOTES_FIXTURE/behind"
   touch "$NOTES_FIXTURE/merge.conflicts"
@@ -669,6 +715,8 @@ gh pr edit 42 --body-file -
 notes ingest record --stage queue --action item-set --from dotfiles --item ship --id ship it --pr  --sha  --why open_pr=o/r#42 -- ship
 gh api repos/o/r/pulls/42/files --paginate --jq .[] | .filename, (.previous_filename // empty)
 git fetch -q origin
+git merge-base --is-ancestor origin/main HEAD
+git fetch -q origin
 git rev-list --count HEAD..origin/main
 git grep -qF shape-grow HEAD -- .github/workflows
 git merge-base HEAD origin/main
@@ -858,7 +906,7 @@ EOF
   assert_output 0
 }
 
-@test "a failing PR check stops before the second fetch and the merge, naming the check" {
+@test "a failing PR check stops before the after-gate fetch and the merge, naming the check" {
   printf 'Checks\tfail\t1m\n' >"$NOTES_FIXTURE/checks.out"
   printf 'Checks\n' >"$NOTES_FIXTURE/checks.failed"
   run "$LAND" 42 --item ship
@@ -866,8 +914,9 @@ EOF
   assert_output --partial 'checks failed: Checks'
   run grep -c 'pr merge\|^notes' <(not_recorded)
   assert_output 0
+  # head_checks_live's fetch, then catch_up before's; catch_up after's never runs
   run grep -c '^git fetch' "$LOG"
-  assert_output 1
+  assert_output 2
 }
 
 @test "no checks reported: polled a bounded number of times, then it lands" {
