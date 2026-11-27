@@ -10,7 +10,7 @@ There is no server and no release. The cockpit is files in the dotfiles repo, an
 
 The human's own machines (Linux workstation and a Mac). Stow links each tracked file into `$HOME` individually (`stow --no-folding .`), so `~/.tmux.conf`, `~/.local/src/tmux/*` and `~/.config/tmux-servers/*` point at the main checkout, `~/.dotfiles`. Paths stow must not link are listed in `.stow-local-ignore`. Rust binaries (`agent-panel`, `hub`) are built by the installer's `build_local_rust_tools` and linked into `~/.local/bin`.
 
-A machine stowed before `--no-folding` can still hold directory links, so a tool's writes (a `systemctl --user enable`, a cache) land in the checkout and read as dirty. `dotfiles-deploy --check` names each: FOLDED (a directory link with untracked or other-repo paths under it), RUNTIME (a directory link to a checkout dir no repo tracks) and STALE (a dangling link into a checkout). `dotfiles-deploy --apply` repairs them, `--only <dir>` limits it to one directory, and a non-ignored untracked entry blocks that directory, since it may be work in progress. The unattended `--apply --missing` prunes STALE links only. `dirty-mains` (the `dirty-mains` Sentinel watch) names every project checkout holding changes or stashes nobody is working on. `dirty-park` sets what it names aside under `refs/parked/` (old stashes, or named paths), so nothing is deleted: `dirty-park list <repo>` shows each, and `git stash store` or `git checkout <ref> -- <path>` brings one back.
+A machine stowed before `--no-folding` can still hold directory links, so a tool's writes (a `systemctl --user enable`, a cache) land in the checkout and read as dirty. `dotfiles-deploy --check` names each: FOLDED (a directory link with untracked or other-repo paths under it), RUNTIME (a directory link to a checkout dir no repo tracks) and STALE (a dangling link into a checkout). `dotfiles-deploy --apply` repairs them, `--only <dir>` limits it to one directory, and a non-ignored untracked entry blocks that directory, since it may be work in progress. The unattended `--apply --missing` prunes STALE links only, and holds them (HELD) while their checkout is mid-rebase, merge or checkout, detached, or off its default branch. `dirty-mains` (the `dirty-mains` Sentinel watch) names every project checkout holding changes or stashes nobody is working on. `dirty-park` sets what it names aside under `refs/parked/` (old stashes, or named paths), so nothing is deleted: `dirty-park list <repo>` shows each, and `git stash store` or `git checkout <ref> -- <path>` brings one back.
 
 ## Ship a change
 
@@ -25,6 +25,12 @@ A worktree is not the deployed copy: links point at the main checkout, so run a 
 ## Roll back
 
 Revert the PR on `main` (a new revert PR, never a rewrite of pushed history), pull in `~/.dotfiles`, then `tmx reload`. A world whose server died is brought back with `fleet-dispatch restore` (`.local/src/tmux/README.md`, "When a world's server dies").
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| A `~/.local/bin` command vanished (`command not found: agent-queue`) | A script run with the real `$HOME` removed the link. On 2026-11-18 a mis-edited test ran an `rm "$HOME/.local/bin/agent-queue"` above its `export HOME=<scratch>` line (ar-3037). `dotfiles-deploy` did not do it. Separately, it prunes a dangling link into a checkout only while that checkout is settled on its default branch; mid-rebase, mid-merge, detached or on another branch it holds the link (HELD). | `dotfiles-deploy --apply --missing` relinks every tracked path. A test sets its scratch `HOME` before it touches any `$HOME` path. |
 
 ## Not yet in place
 
