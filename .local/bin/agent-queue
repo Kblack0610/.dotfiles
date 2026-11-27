@@ -559,7 +559,9 @@ phases_landed_by() {
 # Only the board's pull and the human add at all (pull_ok, below); of those, never held: --running, a
 # hand start (AGENT_QUEUE_PULL=hand), a gated add (it queues nothing), dispatch's trainee, canary
 # and auto:epics verify adds (its board fill stops at the cap, queue_headroom), agent-land's
-# auto:validate add (one per critical PR head, which no merge passes without), a --plan (an approved
+# auto:validate add (one per critical PR head, which no merge passes without), its merge-owed steps
+# (AGENT_QUEUE_PULL=land: an after-merge step, one per step while one is queued, and an After deploy:
+# line, one per line a merged PR's body names), a --plan (an approved
 # plan) and the pull of a phase it filed on its board row (plan_phase_task), cap 0. Urgent and `red`
 # respect the cap too (the human, 2026-11-18): at it, make_room first returns the last-ranked item
 # that has a row to its board, so they go in without the queue growing; so does pull-after's pull of a
@@ -710,7 +712,8 @@ admission_log() {
 
 # Only the board fills the queue (the human, 2026-11-18, after three filers' 225 `night` items took the
 # runnable count from 205 to 362 when the night window opened): dispatch's pull (AGENT_QUEUE_PULL=dispatch,
-# set by fleet-dispatch on its promote, trainee and epic-verify adds), a session's own --running record,
+# set by fleet-dispatch on its promote, trainee and epic-verify adds), agent-land's merge-owed steps
+# (AGENT_QUEUE_PULL=land, ar-5865), a session's own --running record,
 # and the human, at a terminal or in a session they started (hand_caller). Any other add, a
 # dispatch-run agent's or a filer's, is filed on the board instead and exits AQ_EX_HELD.
 # Provisional (rules.jsonl, anchor "Only the board fills the queue"): hand sessions add straight in;
@@ -2508,7 +2511,7 @@ cmd_add() {
   # (see admit); a queue item's session adding without --from is recorded as from the item.
   local capped=1
   case "$from" in trainee | auto:epics | auto:validate | canary) capped='' ;; esac
-  [ "${AGENT_QUEUE_PULL:-}" != hand ] || capped=''
+  case "${AGENT_QUEUE_PULL:-}" in hand | land) capped='' ;; esac
   [[ "$from" != board:* ]] || ! plan_phase_task "$text" || capped=''
   { [ -z "$running" ] && [ -z "$GATES" ] && [ -z "${AQ_ADMITTED:-}" ]; } || capped=''
   [ -z "$capped" ] || [ -n "$from_given" ] || [ -z "${AGENT_QUEUE_ITEM:-}" ] || from="item:$AGENT_QUEUE_ITEM"
@@ -4771,7 +4774,10 @@ cmd_stats() {
 # one. A body is cut at the dispatch template (`Promoted by fleet-dispatch`: the run's instructions,
 # not the task's), its markers are stripped, and a first line that is the row's own words is dropped.
 # A body that adds 20 characters or fewer to the row is skipped: measured 2026-11-18, each such body
-# was the row's earlier wording before the triager re-typed it, not a brief. An open item with no row
+# was the row's earlier wording before the triager re-typed it, not a brief. Only a body's new lines
+# count, and they must add more than 20 characters: a line already on the row (its words, a `was:` or
+# `full:` detail) or any `was:`/`full:` line is the row's own history, as in a dispatch promotion's body,
+# which copies the row (ar-5817), and is never written to it again. An open item with no row
 # (canary and trainee items excepted: their config is their brief) gets a story row and its brief. A
 # row with `brief: ` lines (keep_brief's format, retired by #2406) gets them back without the prefix.
 # Rows are written through `notes ptask` alone, matched by their exact line, so a row that changed
@@ -4779,6 +4785,9 @@ cmd_stats() {
 # line and fails when any row would be written, which after P2 is a writer losing a brief again.
 BRIEF_JQ='def norm: gsub("<!--.*?-->"; "") | gsub("<!--.*$"; "") | gsub("(^|\\s)#[A-Za-z][A-Za-z0-9_/:.-]*"; " ")
     | gsub("^\\s*- \\[.\\]\\s*"; "") | gsub("\\s+"; " ") | ascii_downcase | ltrimstr(" ") | rtrimstr(" ");
+  def held: norm | sub("^(full|was): ?"; "");
+  def novel($on): map(select((norm | test("^(full|was):")) or (held as $l | any($on[]; . == $l)) | not))
+    | until(length == 0 or (.[0] | test("\\S")); .[1:]) | until(length == 0 or (.[-1] | test("\\S")); .[:-1]);
   def body: .task | split("\n") | (map(startswith("Promoted by fleet-dispatch")) | index(true)) as $c
     | (if $c then .[:$c] else . end) | map(gsub("\\s*<!--.*?-->"; "") | gsub("\\s*<!--.*$"; "")) | until(length == 0 or (.[-1] | test("\\S")); .[:-1]);
   def stamp: "(\(.state), queued \((.queued // "-") | split("T")[0]))";
@@ -4787,12 +4796,13 @@ BRIEF_JQ='def norm: gsub("<!--.*?-->"; "") | gsub("<!--.*$"; "") | gsub("(^|\\s)
   ($items | map(select(.row) | (body) as $b | . + {open: (.state != "done"), lines: $b, n: ($b | join("\n") | norm)})
     | group_by(.row) | map({key: .[0].row, value: .}) | from_entries) as $by
   | (($board.rows[] | select(.lane == "agent" and all(.details[]; test("^(full|was):"))))
-      | (.raw | norm) as $t | (.project + ":" + .id) as $key | ($by[$key] // []) as $all
-      | ($all | map(select(.n != $t and (. as $i | $t | contains($i.n) | not) and (.n | length) > ($t | length) + 20))
+      | (.raw | norm) as $t | ([.raw, .details[]] | map(held | select(. != ""))) as $on | (.project + ":" + .id) as $key | ($by[$key] // []) as $all
+      | ($all | map(select(.n != $t and (. as $i | $t | contains($i.n) | not) and (.n | length) > ($t | length) + 20
+            and (.lines | novel($on) | join("\n") | norm | length) > 20))
           | sort_by(if .open then 0 else 1 end, (.queued // "0" | explode | map(-.)))) as $good
       | if $good[0] then {kind: "row", key: $key, prof: .profile, proj: .project, text: .raw, slug: $good[0].slug,
             stamp: ($good[0] | stamp), brief: (.details + ["from item \($good[0].slug) \($good[0] | stamp)"]
-              + ($good[0].lines | if (.[0] | norm) == $t then .[1:] else . end) | join("\n"))}
+              + ($good[0].lines | novel($on)) | join("\n"))}
         else {kind: (if $all[0] then "bare" else "none" end), key: $key} end),
     ($board.rows[] | select(.lane == "agent" and any(.details[]; startswith("brief: ")))
       | {kind: "prefix", key: (.project + ":" + .id), prof: .profile, proj: .project, text: .raw,
