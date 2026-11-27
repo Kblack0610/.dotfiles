@@ -121,13 +121,7 @@ fn slots(page: &MachinePage, p: Palette, w: usize) -> Vec<Line<'static>> {
     if page.slots.is_empty() {
         return vec![heading("SLOTS", "  no runner and no core reading", p)];
     }
-    let ci: Vec<_> = page.slots.iter().filter(|s| !s.now.is_empty()).collect();
-    let busy = ci.iter().filter(|s| s.now == "busy").count();
-    let mut out = vec![heading(
-        "SLOTS",
-        format!("  {busy} of {} busy", ci.len()),
-        p,
-    )];
+    let mut out = vec![heading("SLOTS", format!("  {}", page.slots_head), p)];
     out.extend(
         Table {
             header: vec!["SLOT", "NOW", "JOB", "CORES", "MEM"],
@@ -693,6 +687,7 @@ mod tests {
                 )),
             ],
             cores: Some(24.0),
+            slots_head: "1 of 2 runners busy, 2 pods".into(),
             slots: vec![
                 SlotUse {
                     slot: "ms-a2-unity-1".into(),
@@ -811,7 +806,7 @@ mod tests {
             "cpu 62%",
             "var-host=workstation",
             "SLOTS",
-            "2 of 3 busy",
+            "1 of 2 runners busy, 2 pods",
             "2 pods",
             "2.8",
             "11.2G",

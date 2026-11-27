@@ -276,11 +276,11 @@ test("a machine page draws its slots, its 7 days and its recent jobs with their 
     slot({ slot: "ws-unity-2", now: "idle" }),
     slot({ slot: "idle", cores: 12 }),
   ], ["slot", "now", "job", "cores", "mem"]);
-  const d = machinePage({ cores: 24, head: "workstation, local, up", machine: {},
+  const d = machinePage({ cores: 24, head: "workstation, local, up", slots_head: "1 of 2 runners busy, 2 pods", machine: {},
     history: { step: 120, readings: 1, hours, down: [] },
     tables: { slots, down: tbl([{ id: "workstation@2023-11-14T23:13:20Z", from: 1700003600, to: 1700007200, cause: "unknown", why: "no sibling dropped" }], ["from", "to", "took", "cause", "why"]), recent, alerts: tbl([], ["what"]), ...liveTables() } });
   const h = drawPage("machines/workstation", d);
-  assert.match(h, /Slots <span class="n">2 of 3 busy<\/span>/);
+  assert.match(h, /Slots <span class="n">1 of 2 runners busy, 2 pods<\/span>/);
   // A kind's pods carry their requests; a fixed runner has no cores or memory of its own.
   assert.match(h, /<td class="wrap">2 pods<\/td><td class="n">2\.8<\/td><td class="n">11\.2G<\/td>/);
   assert.match(h, /ws-unity-1<\/td>[\s\S]*?<td class="wrap">o\/r \/ Tests<\/td><td class="n"><\/td><td class="n"><\/td>/);

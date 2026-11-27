@@ -181,6 +181,8 @@ pub struct MachinePage {
     /// Its cores, which the slots rows' cores add up to when it has a reading.
     pub cores: Option<f64>,
     pub slots: Vec<SlotUse>,
+    /// The slots heading on both surfaces (`slots_head`): `1 of 2 runners busy, 4 pods`.
+    pub slots_head: String,
     /// Its busy CI slots and local gates, as the slots table has them.
     pub running: Vec<Slot>,
     pub history: Option<HostHistory>,
@@ -278,13 +280,15 @@ pub fn build(
         .map(|a| naming(a, &names))
         .map_err(|e| errors.push(format!("alerts: {e}")))
         .unwrap_or_default();
+    let (slots, slots_head) = slots(infra, m);
     MachinePage {
         host: m.host.clone(),
         at: now,
         head: format!("{}, {}, {}", m.host, m.place, m.state),
         parts: parts(m, infra.space.host(&m.host), infra.grafana.as_deref(), now),
         cores: m.cores,
-        slots: slots(infra, m),
+        slots,
+        slots_head,
         running: infra
             .ci
             .rows
@@ -429,8 +433,9 @@ fn space(m: &Machine, split: Option<&HostSplit>) -> Option<Part> {
 
 /// Each fixed runner on it by name (an ARC runner is its pod, so it is no row of its own), then
 /// its job pods by kind with what they request, then the rest of the machine by class
-/// (`workload`), the CI class being the rows above; no class rows when it has no split.
-fn slots(infra: &Infra, m: &Machine) -> Vec<SlotUse> {
+/// (`workload`), the CI class being the rows above; no class rows when it has no split. With
+/// them, their heading (`slots_head`).
+fn slots(infra: &Infra, m: &Machine) -> (Vec<SlotUse>, String) {
     let mut out: Vec<SlotUse> = crate::ci::runners_now(infra)
         .into_iter()
         .filter(|r| r.host == m.host && infra.pod(&r.name).is_none())
@@ -446,6 +451,8 @@ fn slots(infra: &Infra, m: &Machine) -> Vec<SlotUse> {
             .cmp(&natural(&b.slot))
             .then_with(|| a.slot.cmp(&b.slot))
     });
+    let runners = out.len();
+    let busy = out.iter().filter(|s| s.now == "busy").count();
     // (kind, now) -> pods, cores, bytes.
     let mut pods: std::collections::BTreeMap<(&str, &str), (u32, f64, f64)> = Default::default();
     for p in infra.pods.iter().filter(|p| p.node == m.host) {
@@ -457,6 +464,7 @@ fn slots(infra: &Infra, m: &Machine) -> Vec<SlotUse> {
         let e = pods.entry((p.kind.as_str(), now)).or_default();
         *e = (e.0 + 1, e.1 + p.cpu, e.2 + p.mem);
     }
+    let placed = pods.values().map(|(n, ..)| *n as usize).sum();
     for ((kind, now), (n, cpu, mem)) in pods {
         out.push(SlotUse {
             slot: kind.into(),
@@ -480,7 +488,22 @@ fn slots(infra: &Infra, m: &Machine) -> Vec<SlotUse> {
             ..SlotUse::default()
         });
     }
-    out
+    (out, slots_head(runners, busy, placed))
+}
+
+/// The slots heading: the fixed runners busy of all of them, then the job pods placed there
+/// (`1 of 2 runners busy, 4 pods`); empty with neither. A pod kind's row is its pods, never a
+/// runner.
+fn slots_head(runners: usize, busy: usize, pods: usize) -> String {
+    use crate::display::fmt::counted;
+    let mut out = vec![];
+    if runners > 0 {
+        out.push(format!("{busy} of {} busy", counted(runners, "runner")));
+    }
+    if pods > 0 {
+        out.push(counted(pods, "pod"));
+    }
+    out.join(", ")
 }
 
 /// The CI jobs that ran on one of `runners`, or on a runner named after one of `names`
@@ -742,6 +765,7 @@ mod tests {
                 ("free", "", "")
             ]
         );
+        assert_eq!(p.slots_head, "1 of 2 runners busy, 4 pods");
         // A fixed runner requests nothing; a kind's row is what its pods request.
         assert_eq!(
             (s[0].cores_text(), s[0].mem_text()),

@@ -361,15 +361,16 @@ const SLOTUSE_CELLS = {
 // An hourly chart's column label: the weekday at midnight, else none.
 const dayTick = (at) => { const d = new Date(at * 1e3); return d.getHours() === 0 ? d.toLocaleDateString([], { weekday: "short" }) : ""; };
 
-// One column per hour: the pools' cores as a share of the machine, then the rest of its CPU.
+// One column per hour: the cores each pool's job pods requested, as a share of the machine (no
+// series gives a pod's real use, hc-1127), then the rest of its CPU.
 function historyChart(h, cores, colors) {
   const pools = [...new Set(h.hours.flatMap((x) => Object.keys(x.pools)))].sort();
   const cols = h.hours.map((x) => {
     const segs = pools.map((p) => ({ v: cores ? (x.pools[p] || 0) / cores : 0, color: colors[p] }));
     const ci = segs.reduce((a, s) => a + s.v, 0);
     if (x.cpu != null) segs.push({ v: Math.max(0, x.cpu - ci), color: OTHER });
-    const used = pools.filter((p) => x.pools[p]).map((p) => `\n${p} ${x.pools[p].toFixed(1)} cores`).join("");
-    const tip = x.cpu == null ? `${stamp(x.at)}: ${NO_DATA}` : `${stamp(x.at)}: cpu ${pct(x.cpu)}${used}`;
+    const requested = pools.filter((p) => x.pools[p]).map((p) => `\n${p} ${x.pools[p].toFixed(1)} cores requested`).join("");
+    const tip = x.cpu == null ? `${stamp(x.at)}: ${NO_DATA}` : `${stamp(x.at)}: cpu ${pct(x.cpu)}${requested}`;
     return { key: String(x.at), label: dayTick(x.at), tip, segs };
   });
   const key = [...pools.map((p) => [p, colors[p]]), ["other", OTHER]].map(([n, c]) => `<span class="chip sm" style="--c:${c}">${esc(n)}</span>`).join(" ");
@@ -487,8 +488,8 @@ function machineBody(d) {
   const hot = d.tables.devices.rows.some((r) => r.hottest >= HOT_C);
   h += secHead("", "Sensors", d.tables.devices.rows.length, hot ? "warn" : "", "h3") + (!d.live ? `<div class="empty">${NOT_READ}.</div>` : unread(d.live, "sensors") || pageTable(d.tables.devices, DEVICE_COLS, DEVICE_CELLS, "Its node exporter publishes no hwmon reading."));
   const slots = d.tables.slots;
-  const runners = slots.rows.filter((r) => r.now);
-  h += secHead("", "Slots", runners.length ? `${runners.filter((r) => r.now === "busy").length} of ${runners.length} busy` : null, "", "h3") + pageTable(slots, SLOTUSE_COLS, SLOTUSE_CELLS, "No runner and no core reading.");
+  // The heading is hub-core's (MachinePage::slots_head): runners busy, then the pods placed.
+  h += secHead("", "Slots", d.slots_head || null, "", "h3") + pageTable(slots, SLOTUSE_COLS, SLOTUSE_CELLS, "No runner and no core reading.");
   const run = (r) => `<tr>${td("", esc(r.slot))}${td("muted", tblLink(r.pool ? "#infra/pools/" + encodeURIComponent(r.pool) : "", r.pool))}${td("wrap", esc(r.job || "-"))}${td("muted", esc(ciRef(r)))}${td(`n${r.late ? " warn" : ""}`, secs(r.ran) + (r.late ? "!" : ""))}</tr>`;
   h += `${secHead("", "Running", d.running.length, "", "h3")}${d.running.length ? `<div class="panel scroll"><table class="tbl"><tr><th>slot</th><th>pool</th><th data-role="lead">job</th><th>ref</th><th class="n" data-role="glance">ran</th></tr>${d.running.map(run).join("")}</table></div>` : `<div class="empty">Nothing runs there now.</div>`}`;
   if (d.live) h += liveBody(d);
