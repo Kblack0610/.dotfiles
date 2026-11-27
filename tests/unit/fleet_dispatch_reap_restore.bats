@@ -1977,20 +1977,23 @@ rerun_item() {
   assert_equal "$(grep -c '"verdict":"failed"' "$VERDICTS")" 1
 }
 
-@test "reap: an item that ended returned un-starts its row and records no failure, so the retry gate never counts it (ar-5955)" {
+@test "reap: an item that ended returned with its row gated records no failure; one with no gate on its row still does (ar-5955)" {
   # NEGATIVE CONTROL: before ar-5955 each return counted as a failed run; two asked "start again after 2 runs failed?" and every
-  # answered retry started another session on the same blocked row. The same item ended failed still counts (the test above).
+  # answered retry started another session on the same blocked row. A return that left no gate would refill at once, so it counts.
   pr_item OPEN
   mkdir -p "$FLEET_DISPATCH_DIR"
   agent-queue move fix-crash done --status cancelled >/dev/null
   local f; f=$(grep -rl '^slug: fix-crash' "$AGENT_QUEUE_DIR/done" | head -1)
   sed -i '0,/^status: /s//end_reason: returned\n&/' "$f"
   assert_equal "$(agent-queue show fix-crash --json | jq -r .end_reason)" returned
+  printf 'fix crash\t- [/] fix crash #at/2099-01-01/0900\n' > "$NOTES_FIXTURE/rows.game.agent"
   run settle_row fix-crash
   assert_success
   assert_output --partial 'un-started game: fix crash (queue item fix-crash ended cancelled, returned)'
-  grep -qF -- '- [ ] fix crash' "$NOTES_FIXTURE/rows.game.agent" || fail "row not un-started"
-  ! grep -qs '"verdict":"failed"' "$VERDICTS" || fail "a returned item was recorded failed"
+  ! grep -qs '"verdict":"failed"' "$VERDICTS" || fail "a returned item with a gated row was recorded failed"
+  printf 'fix crash\t- [/] fix crash\n' > "$NOTES_FIXTURE/rows.game.agent"
+  run settle_row fix-crash
+  assert_equal "$(grep -c '"verdict":"failed"' "$VERDICTS")" 1
 }
 
 @test "reap settle: a hold already set is kept, and a failed retag releases only the hold it set" {
