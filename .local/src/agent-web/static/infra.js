@@ -631,12 +631,13 @@ function drawInfra() {
 // The OVERALL pill is cc:overall_status, the heart: RED when a domain is down, else OK, since a
 // warn never colours it (home-config prometheus-rules-command-center.yaml, the human's
 // 2026-11-12 call). Its warn domains (cc:domain_status 1, hub_core Infra::domains) follow as an
-// amber count linked to Alerts' health chips, so an OK heart beside amber tiles says why (ar-5013).
+// amber count naming them in its hover, so an OK heart beside amber tiles says why (ar-5013). It
+// is no link: a record link comes from hub_core::links (links.test.mjs), and none serves health.
 function overallPill(cc) {
   const [word, color] = statusOf((cc["cc:overall_status"] || {})[""]);
   const warn = Object.entries(cc["cc:domain_status"] || {}).filter(([, v]) => v === 1).map(([d]) => d).sort();
   const why = "the health heart: red when a domain is down; a warn domain shows on its tile and Alerts' health chips";
-  const warns = warn.length ? ` <a href="#alerts/health" class="chip sm" style="--c:var(--b-stalled)" title="${esc(warn.join(", "))}">${warn.length} warn</a>` : "";
+  const warns = warn.length ? ` <span class="chip sm" style="--c:var(--b-stalled)" title="${esc(`at warn: ${warn.join(", ")}; Alerts' health chips say why`)}">${warn.length} warn</span>` : "";
   return `<span class="chip" style="--c:${color}" title="${why}">OVERALL ${word}</span>${warns}`;
 }
 

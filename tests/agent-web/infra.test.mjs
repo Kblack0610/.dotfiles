@@ -460,16 +460,16 @@ test("WATCHES agrees with the rollup's watches rows, not its own tripped count",
 });
 
 // ar-5013: the pill is the heart's word and colour; warn domains, which never colour it, follow
-// as a count linked to Alerts' health chips, so OK beside amber tiles says why.
+// as a count naming them in its hover, so OK beside amber tiles says why.
 test("the OVERALL pill keeps the heart's verdict and counts the warn domains beside it", () => {
   const pill = (cc) => run(`overallPill(${JSON.stringify(cc)})`);
   const ok = pill({ "cc:overall_status": { "": 0 }, "cc:domain_status": { ci: 1, k3s: 1, prod: 0, platform: 0 } });
   assert.match(ok, /--c:var\(--b-done\)"[^>]*>OVERALL OK<\/span>/, "a warn never colours the heart");
-  assert.match(ok, /<a href="#alerts\/health" class="chip sm" style="--c:var\(--b-stalled\)" title="ci, k3s">2 warn<\/a>/);
+  assert.match(ok, /<span class="chip sm" style="--c:var\(--b-stalled\)" title="at warn: ci, k3s; Alerts&#39; health chips say why">2 warn<\/span>/);
   // negative control: no warn domain, no count; a red heart stays red with its warns beside it
-  assert.doesNotMatch(pill({ "cc:overall_status": { "": 0 }, "cc:domain_status": { ci: 0 } }), /warn<\/a>/);
+  assert.doesNotMatch(pill({ "cc:overall_status": { "": 0 }, "cc:domain_status": { ci: 0 } }), /warn<\/span>/);
   const red = pill({ "cc:overall_status": { "": 2 }, "cc:domain_status": { platform: 2, ci: 1 } });
-  assert.match(red, /--c:var\(--b-needs\)"[^>]*>OVERALL RED<\/span>.*title="ci">1 warn</);
+  assert.match(red, /--c:var\(--b-needs\)"[^>]*>OVERALL RED<\/span>.*title="at warn: ci;[^"]*">1 warn</);
   assert.match(pill({}), /OVERALL NO DATA/i);
 });
 
