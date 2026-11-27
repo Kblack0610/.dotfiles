@@ -22,6 +22,9 @@ setup() {
   mkdir -p "$seed/queue" "$seed/bench" "$seed/daylog" "$seed/anchors" "$seed/shepherd" "$seed/dispatch"
   printf 'due 0\n' > "$seed/shepherd/.due"
   printf '{"could_start":0}\n' > "$seed/dispatch/headroom.json"
+  printf '0\n' > "$seed/bench/findings.last"
+  printf 'id: 0\n' > "$seed/shepherd/0bb7fbc0"
+  printf '## pass 0\n' > "$seed/shepherd/log.md"
   printf 'state: open\n' > "$seed/queue/item.md"
   printf '{"n":0}\n' > "$seed/queue/events.jsonl"
   : > "$seed/bench/.keep"
@@ -151,8 +154,11 @@ show() { git -C "$1" show "master:$2"; }
   printf '#!/bin/sh\nexit "${LEASE_RC:-0}"\n' > "$SANDBOX/bin/fleet-lease"; chmod +x "$SANDBOX/bin/fleet-lease"
   peer a; peer b
   # a holds the lease now; b held it before and wrote its own pass.
-  printf 'due a\n' > "$SANDBOX/a/shepherd/.due"; printf '{"could_start":8}\n' > "$SANDBOX/a/dispatch/headroom.json"
-  printf 'due b\n' > "$SANDBOX/b/shepherd/.due"; printf '{"could_start":1}\n' > "$SANDBOX/b/dispatch/headroom.json"
+  local m
+  for m in a b; do
+    printf 'due %s\n' $m > "$SANDBOX/$m/shepherd/.due"; printf '{"could_start":"%s"}\n' $m > "$SANDBOX/$m/dispatch/headroom.json"
+    printf '%s\n' $m > "$SANDBOX/$m/bench/findings.last"; printf 'id: %s\n' $m > "$SANDBOX/$m/shepherd/0bb7fbc0"
+  done
   run on a
   assert_success
   git -C "$SANDBOX/b" commit -qam "b pass"
@@ -168,7 +174,9 @@ show() { git -C "$1" show "master:$2"; }
   assert_output --partial "COMPLETE"
   [ ! -e "$SANDBOX/b/.sync/conflict" ]
   assert_equal "$(show "$ORIGIN" shepherd/.due)" 'due a'
-  assert_equal "$(show "$ORIGIN" dispatch/headroom.json)" '{"could_start":8}'
+  assert_equal "$(show "$ORIGIN" dispatch/headroom.json)" '{"could_start":"a"}'
+  assert_equal "$(show "$ORIGIN" bench/findings.last)" a
+  assert_equal "$(show "$ORIGIN" shepherd/0bb7fbc0)" 'id: a'
   run git -C "$SANDBOX/b" status --porcelain
   assert_output ''
   # The holder keeps its own copy when it merges a peer's.
@@ -178,6 +186,21 @@ show() { git -C "$1" show "master:$2"; }
   assert_success
   [ ! -e "$SANDBOX/a/.sync/conflict" ]
   assert_equal "$(show "$ORIGIN" shepherd/.due)" 'due a2'
+  # A machine that cannot tell who holds it (held exits 2) keeps its own copy, still with no conflict.
+  printf 'due a3\n' > "$SANDBOX/a/shepherd/.due"; printf 'due b3\n' > "$SANDBOX/b/shepherd/.due"
+  on a >/dev/null
+  LEASE_RC=2 run on b
+  assert_success
+  [ ! -e "$SANDBOX/b/.sync/conflict" ]
+  assert_equal "$(show "$ORIGIN" shepherd/.due)" 'due b3'
+  # The shepherd's own log still keeps both sides' lines.
+  echo 'pass a' >> "$SANDBOX/a/shepherd/log.md"; echo 'pass b' >> "$SANDBOX/b/shepherd/log.md"
+  on a >/dev/null
+  LEASE_RC=1 run on b
+  assert_success
+  run show "$ORIGIN" shepherd/log.md
+  assert_line 'pass a'
+  assert_line 'pass b'
 }
 
 @test "a derived anchor keeps the other machine's hand edits, even beside the auto block both rewrote" {

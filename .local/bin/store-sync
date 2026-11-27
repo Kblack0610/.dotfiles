@@ -180,10 +180,14 @@ apply_merge_drivers() {
   # Fleet-home singleton state merge=lease (ar-3625): only the fleet lease holder's lanes write it, but a
   # handover makes two holders in a row, and both copies met in a text merge (razer-laptop held the lease
   # 09:55-10:10 on 2026-11-19 while cachyos-x8664-main was away; its 10:15 sync stopped on
-  # bench/findings.last, dispatch/headroom.json, dispatch/idle). The shepherd log is appended.
+  # bench/findings.last, dispatch/headroom.json, dispatch/idle). This file outranks the tracked one and
+  # the last match wins, so the shepherd logs go back to union after `shepherd/*`, and its hand-written
+  # standing orders to a text merge. A missing line is appended, so a new one only ever goes last.
   local lease=()
-  [ "$STORE_NAME" = agent ] && lease=('shepherd/.* merge=lease' 'dispatch/headroom.json merge=lease'
-    'dispatch/idle merge=lease' 'bench/*.last merge=lease' 'releases/state.json merge=lease' 'shepherd/log.md merge=union')
+  [ "$STORE_NAME" = agent ] && lease=('shepherd/* merge=lease' 'shepherd/.* merge=lease'
+    'dispatch/headroom.json merge=lease' 'dispatch/idle merge=lease' 'bench/*.last merge=lease'
+    'releases/state.json merge=lease' 'shepherd/*.jsonl merge=union' 'shepherd/*.log merge=union'
+    'shepherd/log.md merge=union' 'shepherd/orders.md !merge')
   for a in 'queue/*/*.md merge=item' 'queue/done/*/*.md merge=item' "${lease[@]}"; do
     grep -qxF "$a" "$attrs" 2>/dev/null || { printf '%s\n' "$a" >> "$attrs" && rm -f "$CONFLICT" "$CONFLICT"-*; }
   done
@@ -315,12 +319,19 @@ cmd_merge_derived() {
 
 # cmd_merge_lease <base> <ours> <theirs> <path>: the driver for singleton state, leaving the result in
 # <ours>. The lease holder regenerates it every pass, so its copy wins whole: on the holder this side's
-# stands, anywhere else the other side's does (the holder's, or on its way back from it). Only a change on
-# both sides reaches a driver; a change on one side merges as that side's. `fleet-lease held` reads the
-# lease this machine last saw, with no network, as wake_on_pull does.
+# stands, on a machine another holds it on the other side's does (the holder's, or on its way back from
+# it), and one that cannot tell (no fleet-lease, no live holder known) keeps its own, as `derived` does.
+# Only an edit on both sides reaches a driver; an edit against a delete still conflicts. `fleet-lease
+# held` reads the lease this machine last saw, with no network, as wake_on_pull does; renew refreshes
+# it every minute, so a holder that lost the lease can win for at most that long.
 cmd_merge_lease() {
   [ $# -eq 4 ] || die "merge-lease needs <base> <ours> <theirs> <path>"
-  fleet-lease held >/dev/null 2>&1 && return 0
+  local l rc=0
+  # Under systemd the login PATH is absent, as for notify.
+  l=$(command -v fleet-lease 2>/dev/null) || l="$HOME/.local/bin/fleet-lease"
+  [ -x "$l" ] || return 0
+  "$l" held >/dev/null 2>&1 || rc=$?
+  [ "$rc" = 1 ] || return 0
   cat -- "$3" > "$2"
 }
 
