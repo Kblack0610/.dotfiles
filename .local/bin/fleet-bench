@@ -3173,7 +3173,7 @@ cmd_ledger() {
 # fetch (nothing here fetches), never its working tree: a main checkout sits weeks behind (the bnb
 # platform one was detached 57 commits back, so the anchors #1644 dropped read as present, ar-6241);
 # rules_source says which file stands in for it. `state` is the one verdict, first of stale, absent
-# (source not here, or limited), dead, restates, moved, else ok: --check fails all but absent and ok, and Stack shows it as is. A row's optional `scenario` is the hard
+# (source not here, or limited), dead, restates, moved, layer, else ok: --check fails all but absent and ok, and Stack shows it as is. A row's optional `scenario` is the hard
 # situation the rule decides: the must-keep list a context trim is checked against (context-trim skill).
 # `form` says whether a row is a rule (text a session reads, a .md source) or a mechanism (a hook,
 # script or config that enforces one); the source decides it, and a row's own `form` overrides that.
@@ -3296,8 +3296,8 @@ rules_states() {
       | .layer = (if ($src | IN($gl[])) then
             (if .applies == "all" then ""
              elif (.applies | type) == "array" then
-               (if (.applies | length) >= 2 and all(.applies[]; type == "string" and . != "") then ""
-                else "applies lists \(.applies | length) repo(s); a rule for fewer than 2 belongs in that repo'"'"'s own file" end)
+               (if (.applies | unique | length) >= 2 and all(.applies[]; type == "string" and . != "") then ""
+                else "applies lists \(.applies | unique | length) distinct repo(s); a rule for fewer than 2 belongs in that repo'"'"'s own file" end)
              else "names no applies: give \"all\" or the repos that need it" end)
           elif .form == "rule" and ((.layer_waiver // "") == "") and ((.anchor // "" | norm) as $a | ($a | length) >= 20 and any($ganchors[]; . as $g | ($a | contains($g)) or ($g | contains($a))))
           then "restates a global row; keep the global one and link to it, or give layer_waiver the reason this file must stand alone"

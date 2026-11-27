@@ -550,7 +550,7 @@ grow() {
   grow "$SANDBOX/global.md" 'one repo only' '{"applies":["home-config"]}'
   run "$SUBJECT" rules --check
   assert_failure 1
-  assert_output --partial 'layer: global.md: one repo only: applies lists 1 repo(s)'
+  assert_output --partial 'layer: global.md: one repo only: applies lists 1 distinct repo(s)'
   refute_output --partial 'plain ASCII'
 }
 
@@ -565,7 +565,7 @@ grow() {
   grow "$SANDBOX/global.md" 'one more for everyone' '{"applies":[]}'
   run "$SUBJECT" rules --check
   assert_failure 1
-  assert_output --partial 'applies lists 0 repo(s)'
+  assert_output --partial 'applies lists 0 distinct repo(s)'
 }
 
 @test "rules --check: a repo row whose anchor is a global row's restates it, unless it says why it must stand alone" {
