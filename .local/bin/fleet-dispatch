@@ -639,7 +639,8 @@ def row_area($d; $games): ((.text // "") | split("<!--") | .[0] // "" | ascii_do
 detail_sig_set() { if [ "$1" = '""' ]; then DSIG=none; else sig_set "$1"; DSIG=$SIG; fi; }
 detail_sig() { detail_sig_set "$1"; echo "$DSIG"; }
 
-# load_gates -- GATE_ST, GATE_WHY, GATE_Q and GATE_STACK by board gate tag: its state (clear, pending or dead),
+# load_gates -- SCOPE_HOLDS, `agent-hold scopes` (resource, repo, path, granted per --scope entry of a hold in
+# force, which scope_off_set reads), and GATE_ST, GATE_WHY, GATE_Q and GATE_STACK by board gate tag: its state (clear, pending or dead),
 # hold_for's words, its queue form, and the slug of the item an #after/ gate cleared as stacked on (its open PR), for every gate an open row carries, from one
 # `agent-queue gate --json --all` (the one evaluator; it reads rbw and the board once). Once a pass:
 # each entry point calls it before its subshells, as fleet_hosts, and load_extras when none did. A
@@ -648,8 +649,13 @@ detail_sig() { detail_sig_set "$1"; echo "$DSIG"; }
 load_gates() {
   [ -z "${GATES_LOADED:-}" ] || return 0
   declare -gA GATE_ST=() GATE_WHY=() GATE_Q=() GATE_STACK=()
-  GATES_LOADED=1 GATES_FAILED=''
+  GATES_LOADED=1 GATES_FAILED='' SCOPE_HOLDS=''
   local out rc=0 t s w q k
+  SCOPE_HOLDS=$("${DISPATCH_AGENT_HOLD:-$HERE/agent-hold}" scopes 2>/dev/null) || {
+    GATES_FAILED="agent-hold scopes failed"
+    say "$GATES_FAILED, so no board row starts this pass"
+    return 0
+  }
   out=$(agent-queue gate --json --all 2>/dev/null) || rc=$?
   if [ "$rc" != 0 ] && [ "$rc" != 3 ]; then
     GATES_FAILED="agent-queue gate --all failed (exit $rc)"
@@ -824,6 +830,37 @@ row_off_set() {
   row_kind_set "$3"; kind_off_set "$KIND"
   OFF=$KIND_OFF
   [ -n "$OFF" ] || [ -z "${PAR[$2]:-}" ] || OFF="a parent: open rows name it in #of/"
+  [ -n "$OFF" ] || [ -z "${SCOPE_HOLDS:-}" ] || scope_off_set "$1" "$2" "$3"
+}
+
+# scope_off_set <project> <key> <text> -> sets OFF to the hold whose --scope the row's work lands in
+# (SCOPE_HOLDS, load_gates), whatever project the row is on: a whole-repo entry covers each row of a
+# project whose repo it is (item_repo, SCOPE_REPO keeps one per project) and each row whose text names
+# that repo; a path entry each row whose text names the path or its last segment. A hold that grants
+# the row by its id or an #of/ epic passes it, as agent-hold check --for does. Its text is all a row
+# says before the work, so agent-land's hold_gate, on the PR's changed files, refuses the rest. Why:
+# home-config #1333, a unity-core-playground row's work, changed apps/ci-runner-governor 40 minutes
+# after the human locked home-config by #hold/ tags on its own rows (2026-11-20, ar-4187).
+declare -gA SCOPE_REPO=()
+scope_off_set() {
+  local res repo path granted t g w b='(^|[^[:alnum:]_-])' e='([^[:alnum:]_-]|$)'
+  t=${3%%<!--*}; t=${t,,}
+  while IFS=$'\t' read -r res repo path granted; do
+    [ -n "$res" ] || continue
+    for g in ${granted//,/ }; do
+      [ "$g" = "$2" ] || [[ " $t " == *" #of/${g,,} "* ]] && continue 2
+    done
+    if [ -z "$path" ]; then
+      [ -n "${SCOPE_REPO[$1]+x}" ] || SCOPE_REPO[$1]=$(item_repo "$1")
+      w=${repo,,}
+      [ "${SCOPE_REPO[$1],,}" = "$w" ] || [[ "$t" =~ $b"$w"$e ]] || continue
+    else
+      w=${path,,}
+      [[ "$t" =~ $b"$w"$e ]] || { w=${w##*/}; [[ "$t" =~ $b"$w"$e ]]; } || continue
+    fi
+    OFF="held by the $res hold, whose scope $repo${path:+:$path} its work lands in (agent-hold show $res)"
+    return 0
+  done <<<"$SCOPE_HOLDS"
 }
 
 # held_load <judged> -- the judged_keys lines into HELD, which held reads; a walk loads them once.
