@@ -77,8 +77,7 @@ pub(super) fn queued_prompt(line: &str) -> Option<String> {
         return None;
     }
     let s = a.get("prompt")?.as_str()?.trim();
-    (!s.is_empty() && !HARNESS.iter().any(|h| s.starts_with(h)) && !fleet_typed(s))
-        .then(|| s.to_string())
+    (!s.is_empty() && !harness_text(s) && !fleet_typed(s)).then(|| s.to_string())
 }
 
 /// The text of a prompt the human typed, for a main-thread user entry that is one: a string,
@@ -97,7 +96,7 @@ pub(super) fn typed_prompt(line: &str) -> Option<String> {
     }
     let s = v.pointer("/message/content")?.as_str()?.trim();
     // A resume only says carry on: the turn it continues began at the prompt before it.
-    if s.is_empty() || HARNESS.iter().any(|h| s.starts_with(h)) || typed_kind(s) == Some("resume") {
+    if s.is_empty() || harness_text(s) || typed_kind(s) == Some("resume") {
         return None;
     }
     // A typed slash command is stored as tags; the human typed "/name args".
@@ -109,20 +108,16 @@ pub(super) fn typed_prompt(line: &str) -> Option<String> {
     })
 }
 
-/// Text the harness puts in a user turn that nobody typed: its tags and its prose. The prose ones
-/// are claude-recall's HARNESS_PREFIXES; a test keeps the two lists in step. What our own tooling
-/// types is a prompt, read by `fleet_typed`.
-const HARNESS: &[&str] = &[
-    "<task-notification",
-    "<system-reminder",
-    "<cross-session-message",
-    "<local-command",
-    "This session is being continued",
-    "Stop hook feedback",
-    "[Request interrupted",
-    "Another Claude session sent",
-    "Caveat:",
-];
+/// Text the harness puts in a user turn that nobody typed: its tags, notices and prose. The one
+/// table, read by agent-ask settle-session and claude-recall too. What our own tooling types is a
+/// prompt, read by `fleet_typed`.
+const HARNESS_PREFIXES: &str =
+    include_str!("../../../../../.config/agent-panel/harness-prefixes.conf");
+
+/// `s` (already trimmed) starts with a line of the harness table.
+fn harness_text(s: &str) -> bool {
+    super::conf_lines(HARNESS_PREFIXES).any(|h| s.starts_with(h))
+}
 
 fn tag<'a>(s: &'a str, name: &str) -> Option<&'a str> {
     let start = s.find(&format!("<{name}>"))? + name.len() + 2;
@@ -134,7 +129,6 @@ fn tag<'a>(s: &'a str, name: &str) -> Option<&'a str> {
 mod tests {
     use super::*;
     use crate::transcript::test_util::*;
-    use std::fs;
 
     #[test]
     fn human_at_is_the_newest_prompt_the_human_typed_not_our_tooling() {
@@ -237,24 +231,21 @@ mod tests {
     }
 
     #[test]
-    fn harness_prefixes_cover_claude_recalls() {
-        let src = fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../bin/claude-recall"
-        ))
-        .unwrap();
-        let start = src
-            .find("HARNESS_PREFIXES = (")
-            .expect("claude-recall lost HARNESS_PREFIXES");
-        let body = &src[start..start + src[start..].find(')').unwrap()];
-        let theirs: Vec<&str> = body.split('"').skip(1).step_by(2).collect();
-        assert!(theirs.len() >= 5, "{theirs:?}");
-        for p in theirs {
-            assert!(
-                HARNESS.contains(&p),
-                "claude-recall skips {p:?}; add it to HARNESS"
-            );
+    fn harness_text_follows_the_table() {
+        // Each table line opens a prompt nobody typed; another session's idle notice is one
+        // (ar-3487: two cancelled an ask as the human's reply).
+        let mut n = 0;
+        for h in super::super::conf_lines(HARNESS_PREFIXES) {
+            let line =
+                serde_json::json!({"type": "user", "message": {"content": format!("{h} x")}});
+            assert_eq!(typed_prompt(&line.to_string()), None, "{h:?}");
+            n += 1;
         }
+        assert!(n >= 10, "{n} lines");
+        let idle = r#"{"type":"user","message":{"content":"[Cross-session idle notice] \"x\" is idle now"}}"#;
+        assert!(!human_typed(idle));
+        // Negative control: the human's own reply is still theirs.
+        assert!(human_typed(r#"{"type":"user","message":{"content":"a"}}"#));
     }
 
     #[test]

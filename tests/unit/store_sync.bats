@@ -19,13 +19,18 @@ setup() {
   git init -q --bare -b master "$BACKUP"
   local seed="$SANDBOX/seed"
   git init -q -b master "$seed"
-  mkdir -p "$seed/queue" "$seed/bench" "$seed/daylog" "$seed/anchors"
+  mkdir -p "$seed/queue" "$seed/bench" "$seed/daylog" "$seed/anchors" "$seed/shepherd" "$seed/dispatch"
+  printf 'due 0\n' > "$seed/shepherd/.due"
+  printf '{"could_start":0}\n' > "$seed/dispatch/headroom.json"
+  printf '0\n' > "$seed/bench/findings.last"
+  printf 'id: 0\n' > "$seed/shepherd/0bb7fbc0"
+  printf '## pass 0\n' > "$seed/shepherd/log.md"
   printf 'state: open\n' > "$seed/queue/item.md"
   printf '{"n":0}\n' > "$seed/queue/events.jsonl"
   : > "$seed/bench/.keep"
   printf '{\n "head": 0,\n "x": 1,\n "y": 1,\n "z": 1,\n "w": 1,\n "tail": 0\n}\n' > "$seed/daylog/d.json"
   printf '# p\n\n## Decisions\n- d1\n\n## Notes\nhand\n<!-- AUTO:START -->\ngen 0\n<!-- AUTO:END -->\n' > "$seed/anchors/p.md"
-  printf '*.jsonl merge=union\ndaylog/*.json merge=derived\nanchors/*.md merge=derived\n' > "$seed/.gitattributes"
+  printf '*.jsonl merge=union\nsessions/*/*-wind-down.md merge=union\ndaylog/*.json merge=derived\nanchors/*.md merge=derived\n' > "$seed/.gitattributes"
   printf '.sync/\n' > "$seed/.gitignore"
   git -C "$seed" add -A && git -C "$seed" commit -q -m seed
   git -C "$seed" push -q "$ORIGIN" master
@@ -128,6 +133,79 @@ show() { git -C "$1" show "master:$2"; }
   assert_line '{"n":"b"}'
 }
 
+# wrap_up <name> <line>: a session on that machine appends its wrap-up block with wind-down.sh,
+# as the wind-down skill does; prints the note's path inside the store.
+wrap_up() {
+  mkdir -p "$SANDBOX/home-$1" "$SANDBOX/proj"
+  ln -sfn "$SANDBOX/$1" "$SANDBOX/home-$1/.agent"
+  local f draft="$SANDBOX/draft-$1.md"
+  printf '# Session wrap-up\n\n%s\n' "$2" > "$draft"
+  # One fixed day, so a run across midnight still has both machines write one note.
+  mkdir -p "$SANDBOX/datebin"
+  printf '#!/bin/sh\n[ "$1" = +%%Y-%%m-%%d ] && { echo 2026-01-02; exit; }\nexec %s "$@"\n' "$(command -v date)" > "$SANDBOX/datebin/date"
+  chmod +x "$SANDBOX/datebin/date"
+  f=$(PATH="$SANDBOX/datebin:$PATH" HOME="$SANDBOX/home-$1" CLAUDE_PROJECT_DIR="$SANDBOX/proj" \
+    bash "$REPO_ROOT/.local/src/tmux/wind-down.sh" note "$draft") || return 1
+  echo "${f#"$SANDBOX/home-$1/.agent/"}"
+}
+
+@test "two machines appending a wrap-up block to one day's wind-down note keep both, and the earlier block (ar-4023)" {
+  peer a; peer b
+  note=$(wrap_up a 'block 0')
+  on a
+  on b
+  [ "$(git -C "$SANDBOX/b" show "HEAD:$note" | grep -c '^# Session wrap-up')" = 1 ]
+  wrap_up a 'block a'
+  wrap_up b 'block b'
+  on a
+  run on b
+  assert_success
+  assert_output --partial "COMPLETE"
+  run show "$ORIGIN" "$note"
+  assert_line 'block 0'
+  assert_line 'block a'
+  assert_line 'block b'
+  refute_output --partial '<<<<<<<'
+  # The seed's tracked merge=union, the store's line before the note driver, keeps "block a" and
+  # "block b" but folds them under one header: 2 here, not 3.
+  assert_equal "$(grep -c '^# Session wrap-up' <<<"$output")" 3
+}
+
+@test "a wind-down block fixed in place on the merging machine while another appended is kept once, as fixed (ar-4023)" {
+  # The merge re-adds only blocks the other side added since the base, so the other side's
+  # unchanged copy of the fixed block stays out. Merged the other way round, both copies stay.
+  peer a; peer b
+  note=$(wrap_up a 'block 0')
+  on a
+  on b
+  wrap_up a 'block a'
+  sed -i 's/^block 0$/block 0 fixed/' "$SANDBOX/b/$note"
+  on a
+  run on b
+  assert_success
+  run show "$ORIGIN" "$note"
+  assert_line 'block 0 fixed'
+  refute_line 'block 0'
+  assert_line 'block a'
+  assert_equal "$(grep -c '^# Session wrap-up' <<<"$output")" 2
+}
+
+@test "merge-note adds only the other side's new blocks: one this side already took from a third peer is not doubled (ar-4023)" {
+  d="$BATS_TEST_TMPDIR"
+  blk() { local b; for b; do printf '# Session wrap-up\n\n%s\n\n' "$b"; done; }
+  blk 'block 0' > "$d/base"
+  blk 'block 0' 'block c' 'block a' > "$d/ours"
+  blk 'block 0' 'block c' 'block b' > "$d/theirs"
+  run "$BIN" merge-note "$d/base" "$d/ours" "$d/theirs" sessions/p/d-wind-down.md
+  assert_success
+  run cat "$d/ours"
+  refute_output --partial '<<<<<<<'
+  assert_equal "$(grep -c '^# Session wrap-up' <<<"$output")" 4
+  assert_equal "$(grep -c '^block c$' <<<"$output")" 1
+  assert_line 'block a'
+  assert_line 'block b'
+}
+
 @test "two machines regenerating the same snapshot both sync, and the merging machine's copy wins whole" {
   peer a; peer b
   # Lines far apart would merge hunk by hunk as text; a snapshot must never mix two passes.
@@ -141,6 +219,61 @@ show() { git -C "$1" show "master:$2"; }
   assert_line ' "head": 0,'
   assert_line ' "tail": "b"'
   [ ! -e "$SANDBOX/b/.sync/conflict" ]
+}
+
+# ar-3625: razer-laptop held the fleet lease 09:55-10:10 on 2026-11-19 and ran the singleton lanes, then
+# cachyos-x8664-main took it back and ran them too; both copies met in a text merge and the sync stopped.
+@test "two lease holders in a row both write singleton state: the sync merges it and the holder's copy wins whole" {
+  printf '#!/bin/sh\nexit "${LEASE_RC:-0}"\n' > "$SANDBOX/bin/fleet-lease"; chmod +x "$SANDBOX/bin/fleet-lease"
+  peer a; peer b
+  # a holds the lease now; b held it before and wrote its own pass.
+  local m
+  for m in a b; do
+    printf 'due %s\n' $m > "$SANDBOX/$m/shepherd/.due"; printf '{"could_start":"%s"}\n' $m > "$SANDBOX/$m/dispatch/headroom.json"
+    printf '%s\n' $m > "$SANDBOX/$m/bench/findings.last"; printf 'id: %s\n' $m > "$SANDBOX/$m/shepherd/0bb7fbc0"
+  done
+  run on a
+  assert_success
+  git -C "$SANDBOX/b" commit -qam "b pass"
+  git -C "$SANDBOX/b" fetch -q origin
+  # Negative control: without the lease driver (b has not synced since it joined) these copies conflict as text.
+  git -C "$SANDBOX/b" config --unset-all merge.lease.driver || :
+  run git -C "$SANDBOX/b" merge-tree --write-tree --name-only HEAD origin/master
+  assert_failure 1
+  assert_line 'shepherd/.due'
+  # b does not hold the lease, so it takes the holder's copy whole.
+  LEASE_RC=1 run on b
+  assert_success
+  assert_output --partial "COMPLETE"
+  [ ! -e "$SANDBOX/b/.sync/conflict" ]
+  assert_equal "$(show "$ORIGIN" shepherd/.due)" 'due a'
+  assert_equal "$(show "$ORIGIN" dispatch/headroom.json)" '{"could_start":"a"}'
+  assert_equal "$(show "$ORIGIN" bench/findings.last)" a
+  assert_equal "$(show "$ORIGIN" shepherd/0bb7fbc0)" 'id: a'
+  run git -C "$SANDBOX/b" status --porcelain
+  assert_output ''
+  # The holder keeps its own copy when it merges a peer's.
+  printf 'due a2\n' > "$SANDBOX/a/shepherd/.due"; printf 'due b2\n' > "$SANDBOX/b/shepherd/.due"
+  LEASE_RC=1 on b >/dev/null
+  run on a
+  assert_success
+  [ ! -e "$SANDBOX/a/.sync/conflict" ]
+  assert_equal "$(show "$ORIGIN" shepherd/.due)" 'due a2'
+  # A machine that cannot tell who holds it (held exits 2) keeps its own copy, still with no conflict.
+  printf 'due a3\n' > "$SANDBOX/a/shepherd/.due"; printf 'due b3\n' > "$SANDBOX/b/shepherd/.due"
+  on a >/dev/null
+  LEASE_RC=2 run on b
+  assert_success
+  [ ! -e "$SANDBOX/b/.sync/conflict" ]
+  assert_equal "$(show "$ORIGIN" shepherd/.due)" 'due b3'
+  # The shepherd's own log still keeps both sides' lines.
+  echo 'pass a' >> "$SANDBOX/a/shepherd/log.md"; echo 'pass b' >> "$SANDBOX/b/shepherd/log.md"
+  on a >/dev/null
+  LEASE_RC=1 run on b
+  assert_success
+  run show "$ORIGIN" shepherd/log.md
+  assert_line 'pass a'
+  assert_line 'pass b'
 }
 
 @test "a derived anchor keeps the other machine's hand edits, even beside the auto block both rewrote" {
@@ -1207,7 +1340,10 @@ close_run() {
   echo 'state: x' > "$SANDBOX/a/queue/item.md"
   on a --now >/dev/null
   run cat "$SANDBOX/a/.git/info/attributes"
-  assert_output $'queue/*/*.md merge=item\nqueue/done/*/*.md merge=item'
+  assert_line 'queue/*/*.md merge=item'
+  assert_line 'queue/done/*/*.md merge=item'
+  refute_line --partial 'merge=close'
+  assert_line 'sessions/*/*-wind-down.md merge=note'
   run git -C "$SANDBOX/a" config --get merge.close.driver
   assert_failure
   run git -C "$SANDBOX/a" config --get merge.item.driver
@@ -1375,5 +1511,7 @@ empty_object() {
   run on a
   assert_success
   run git -C "$SANDBOX/a" ls-files dispatch
-  assert_output 'dispatch/log.md'
+  assert_line 'dispatch/log.md'
+  refute_line 'dispatch/.wake'
+  refute_line 'dispatch/.kick'
 }
