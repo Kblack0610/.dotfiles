@@ -168,6 +168,14 @@ case "$1" in log) echo run-9 ;; classify)
   [ -n "$(qitem queued tag-cl)" ] || fail "the needs:cluster item left the queue: $output"
   # The wait names the cause.
   assert_output --partial 'it needs the cluster login (needs:cluster), which only this machine has'
+  # A hand start on the worker is refused with the reason, and the item stays queued.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item tag-cl --host razer-laptop
+  assert_output --partial 'tag-cl needs the cluster login (needs:cluster), which only this machine has'
+  [ -n "$(qitem queued tag-cl)" ] || fail "the refused hand start moved the item: $output"
+  # Negative control: the same item without the tag is placed on the worker.
+  agent-queue set tag-cl tags="size/s" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item tag-cl on razer-laptop'
   # A research row of a cluster project is the same without the tag.
   agent-queue move tag-cl done --status ok >/dev/null
   export DISPATCH_CLUSTER_PROJECTS=game
