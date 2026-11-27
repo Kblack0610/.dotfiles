@@ -45,6 +45,16 @@
 #                          1 if nothing. Reads the document and the blocked sample as they
 #                          are, writes nothing. A session's nudge line waits while the human
 #                          typed into it in the last LEASE_MIN or it was nudged in the last NUDGE_GAP_MIN
+#   fleet-shepherd say <host>@<server>/%<pane>|<target> [--fact <fact>] "<text>"
+#                          type a nudge into a session's pane, a fleet worker's over the one ssh path
+#                          (pane_run, agent-panel send), and only once it was sent claim it
+#                          (fleet-sessions mark <sid> <fact>, the row's own fact unless --fact names one).
+#                          A worker row's nudge line ends in this call, since ListAgents does not list
+#                          a worker's sessions. Exit 0 sent and marked, 1 already nudged or the send
+#                          failed, 3 typed but its Enter not taken (the text waits in its box, unmarked),
+#                          4 sent but the mark not recorded, 75 nothing sent and nothing marked,
+#                          so a later pass sends it: `unreachable: <host>` (ssh's 255), or its prompt
+#                          takes no keys, or another send holds the pane
 #   fleet-shepherd skip "<due line>" "<why>"
 #                          answer a due line by leaving it: it stays out of check while it is
 #                          due. check leads with `unhandled: <line>` for any line the last pass
@@ -339,6 +349,13 @@ TAKEOVER_JQ="$KEPT_JQ"'def takeover_row:
 # named hub/dotfiles:6/7/9 while the pass before had handled :5/6/8; the pane id stays. due_key keys
 # the line by it, and the target stays for a reader to act on. A row with no pane gets no tag.
 PANE_TAG_JQ='def ptag: if (.pane // "") != "" then " [\(.pane)]" else "" end;'
+# SAY_JQ: say_tail -> "; then: fleet-shepherd say <ref> ..." for a fleet worker's row (`host` set),
+# "" for this machine's: ListAgents lists no worker session, so a pass's SendMessage to one reached
+# nothing while its mark claimed the nudge (ar-3987: razer-laptop@lab/dotfiles-agent-12:1 sat STALLED).
+# The ref is the pane, not the target, whose window index renumbers (ptag). overdue_due writes its
+# own tail, with the --fact its ledger key needs.
+SAY_JQ='def say_ref: if (.pane // "") != "" then "\(.target | split("/")[0])/\(.pane)" else .target end;
+  def say_tail: if (.host // "") == "" then "" else "; then: fleet-shepherd say \(say_ref) \"<the nudge>\"" end;'
 # ASK_WAIT_JQ: ask_wait -> true for a NEEDS row waiting on its own pending ask (fleet-sessions' reason `N pending
 # ask(s)`, carrying on or not). Keyed on the reason, as CLOSE_JQ's dialog step is, not on own_asks: a session
 # held in a dialog or plan approval can hold an ask too, and the dialog is still the human's to hear about. The
@@ -361,7 +378,7 @@ cmd_due() {
   [ -r "$STATE_FILE" ] || die "no state document at $STATE_FILE"
   local out
   out="$(jq -r --argjson items "$(shared_items)" --argjson off "$(nudge_held_off)" --argjson needs_min "$FLEET_SHEPHERD_NEEDS_NUDGE_MIN" \
-    "$FIN_JQ$KEPT_JQ$CLOSE_NUDGE_JQ$PANE_TAG_JQ$ASK_WAIT_JQ$HELD_JQ$NEEDS_NUDGE_JQ"'
+    "$FIN_JQ$KEPT_JQ$CLOSE_NUDGE_JQ$PANE_TAG_JQ$SAY_JQ$ASK_WAIT_JQ$HELD_JQ$NEEDS_NUDGE_JQ"'
     ( (.main // [])[] | select((.escalated | not) and (.owners // []) == [])
       | "nightly red: \(.repo) (\(.reason // "-"))" )
   , ( (.shared // [])[] | select(.escalated | not) | . as $r
@@ -382,11 +399,11 @@ cmd_due() {
       | if close_nudge then empty
         elif (finished or (.bucket | IN("STALLED","CHAT"))) and (.nudged | not) then
           if ($ask | not) and (.bucket == "STALLED" or held) and (.session_id as $sid | $off | index($sid) | not)
-          then "nudge \(.bucket): \(.target)\(ptag) \(.fact // "")" else empty end
+          then "nudge \(.bucket): \(.target)\(ptag) \(.fact // "")\(say_tail)" else empty end
         elif .bucket == "NEEDS" and (.escalated | not) and (ask_wait | not) then
           "escalate \(.bucket): \(.target)\(ptag) \(.reason // ""); then: fleet-sessions escalate \(.session_id) \"\(.fact)\""
         elif needs_nudge and (.session_id as $sid | $off | index($sid) | not) then
-          "nudge NEEDS: \(.target)\(ptag) \(.fact // "")"
+          "nudge NEEDS: \(.target)\(ptag) \(.fact // "")\(say_tail)"
         else empty end )
   ' "$STATE_FILE")" || die "unreadable state document $STATE_FILE"
   # A hold the machine no longer needs is a GO decision, and a machine over budget with no
@@ -498,7 +515,7 @@ improve_due() {
 # fact is the phase, so it is nudged once; once the nudge is escalate_min old (a phase-length, at least
 # the floor) and the phase has not moved, it goes to the human, once.
 overdue_due() {
-  local now sid key line esc at gone
+  local now sid key line ref esc at gone
   # The verdict needs both fleet-bench's phase ages and the rule itself; a failure of either is named.
   gone="$(jq -r '(.unreadable // []) | map(select(. == "fleet-bench eta" or . == "overdue verdicts")) | join(" and ")' "$STATE_FILE" 2>/dev/null)"
   if [ -n "$gone" ]; then
@@ -506,23 +523,27 @@ overdue_due() {
     return 0
   fi
   now="$(date +%s)"
-  while IFS=$'\t' read -r sid key line; do
+  while IFS=$'\t' read -r sid key line ref; do
     esc="$(sed -n 's/^escalated: //p' "$LEDGER/$sid" 2>/dev/null)"
     [ "$esc" = "$key" ] && continue
     if [ "$(sed -n 's/^fact: //p' "$LEDGER/$sid" 2>/dev/null)" = "$key" ]; then
       at="$(date -d "$(sed -n 's/^at: //p' "$LEDGER/$sid" 2>/dev/null)" +%s 2>/dev/null)" || continue
       [ $(( (now - at) / 60 )) -ge "${line%%$'\x1f'*}" ] || continue
       printf 'escalate overdue: %s, nudged and not moved; then: fleet-sessions escalate %s "%s"\n' "${line#*$'\x1f'}" "$sid" "$key"
+    elif [ "$ref" != - ]; then
+      # A worker's session: say types the message and marks the key once it was sent (SAY_JQ).
+      printf 'overdue: %s; then: fleet-shepherd say %s --fact "%s" "<the nudge>"\n' "${line#*$'\x1f'}" "$ref" "$key"
     else
       printf 'overdue: %s; then: fleet-sessions mark %s "%s"\n' "${line#*$'\x1f'}" "$sid" "$key"
     fi
-  done < <(jq -r "$KEPT_JQ$PANE_TAG_JQ"'
+  done < <(jq -r "$KEPT_JQ$PANE_TAG_JQ$SAY_JQ"'
     (.sessions // [])[]
     | select(.overdue != null and .activity != "busy" and (kept | not)
              and (.bucket == "WORKING" or (.bucket == "NEEDS" and ((.reason // "") | endswith("carrying on")))))
     | .overdue as $v
     | [.session_id, "overdue \($v.phase)",
-       "\($v.escalate_min)\u001f\(.target)\(ptag) \($v.phase) '"'"'\($v.name)'"'"' open \($v.age_min)m, expected \($v.expected_min)m (\($v.basis // "-"))"]
+       "\($v.escalate_min)\u001f\(.target)\(ptag) \($v.phase) '"'"'\($v.name)'"'"' open \($v.age_min)m, expected \($v.expected_min)m (\($v.basis // "-"))",
+       (if (.host // "") == "" then "-" else say_ref end)]
     | @tsv' "$STATE_FILE" 2>/dev/null)
 }
 
@@ -1171,6 +1192,65 @@ pane_takes_keys() {
     cmd_log "mode-left: $s/$p: left its tmux mode on an unwatched pane" >/dev/null
   fi
   idle_prompt "$(pane_tmux "$h" "$s" capture-pane -p -t "$p" 2>/dev/null)"
+}
+
+# cmd_say <ref> [--fact <fact>] <text>: a pass's nudge, typed into the row's pane by agent-panel send
+# (the one typer, under its pane lock) on the row's machine (pane_run), then claimed with
+# fleet-sessions mark. The mark comes after the send, not before as for a SendMessage, so a worker that
+# did not answer leaves the row unmarked for the next pass instead of nudged with nothing delivered
+# (ar-3987). <ref> is <host>@<server>/%<pane> or a row's target, matched in the state document.
+cmd_say() {
+  local ref="${1:-}" fact="" text row sid target pane own host server
+  shift || true
+  if [ "${1:-}" = --fact ]; then fact="${2:-}"; shift 2 || true; [ -n "$fact" ] || die "say: --fact needs a fact"; fi
+  text="${1:-}"
+  [ -n "$ref" ] && [ -n "$text" ] && [ $# -eq 1 ] || die 'usage: fleet-shepherd say <host>@<server>/%<pane>|<target> [--fact <fact>] "<text>"'
+  [ "$text" != "<the nudge>" ] || die "say: write the nudge in place of <the nudge> (the shepherd skill's message for its fact)"
+  [ -r "$STATE_FILE" ] || die "no state document at $STATE_FILE"
+  row="$(jq -r --arg r "$ref" "$SAY_JQ"'[(.sessions // [])[] | select((.target | type) == "string") | select(.target == $r or say_ref == $r)]
+    | if length == 1 then .[0] | [.session_id, .target, .pane, .fact]
+        | map(. // "" | tostring | gsub("[\t\n]"; " ") | if . == "" then "-" else . end) | @tsv
+      else length end' "$STATE_FILE")" || die "unreadable state document $STATE_FILE"
+  case "$row" in
+    0) die "say: no session row is $ref in $STATE_FILE" ;;
+    *$'\t'*) ;;
+    *) die "say: $row session rows match $ref; name its pane, <host>@<server>/%<pane>" ;;
+  esac
+  IFS=$'\t' read -r sid target pane own <<<"$row"
+  [ -n "$fact" ] || fact="$own"
+  [ "$sid" != - ] && [ "$fact" != - ] || die "say: the row $ref has no session id or fact to mark"
+  host="$(pane_host "$target")"; server="$(pane_server "$target")"
+  [ -n "$server" ] && [[ "$pane" == %* ]] || die "say: $target has no tmux pane to type into"
+  [ "$host" = - ] || pane_lib || die "say: cannot load the fleet hosts library"
+  mkdir -p "$LEDGER" || die "cannot create $LEDGER"
+  # One say at a time, and the ledger (not the state document, a minute old) read under that lock, so
+  # a retry or a second call before the document refreshes types nothing twice.
+  ( flock 9; say_send "$sid" "$target" "$pane" "$host" "$server" "$fact" "$text" ) 9>"$LEDGER/say.lock"
+}
+
+# say_send <sid> <target> <pane> <host|-> <server> <fact> <text>: cmd_say's send and mark, under its lock.
+say_send() {
+  local sid="$1" target="$2" pane="$3" host="$4" server="$5" fact="$6" text="$7" rc=0
+  if fleet-sessions nudged "$sid" "$fact"; then
+    echo "fleet-shepherd: $target was already nudged for this fact; nothing sent" >&2; return 1
+  fi
+  # ssh's own 255 is told apart from a pane that cannot take keys: only the first is `unreachable`.
+  pane_tmux "$host" "$server" display-message -p -t "$pane" '#{pane_id}' >/dev/null 2>&1 || rc=$?
+  if [ "$host" != - ] && [ "$rc" = 255 ]; then echo "unreachable: $host"; return 75; fi
+  [ "$rc" = 0 ] || { echo "fleet-shepherd: say: $target: its pane $pane is gone" >&2; return 2; }
+  if ! pane_takes_keys "$host" "$server" "$pane"; then
+    echo "busy: $target: its prompt takes no keys (a draft, a dialog, a mode or a turn running); nothing sent"; return 75
+  fi
+  rc=0; pane_run "$host" agent-panel send --wait 0 --pane "$server/$pane" "$text" >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0) fleet-sessions mark "$sid" "$fact" >/dev/null || { echo "fleet-shepherd: $target: sent, but its mark was not recorded" >&2; return 4; }
+       echo "said: $target" ;;
+    3) echo "fleet-shepherd: $target: typed, but its Enter was not taken; the text waits in its input box, unmarked" >&2; return 3 ;;
+    75) echo "busy: $target: another send holds its pane; nothing typed"; return 75 ;;
+    255) [ "$host" = - ] || { echo "unreachable: $host"; return 75; }
+         echo "fleet-shepherd: $target: typing failed (exit 255)" >&2; return 1 ;;
+    *) echo "fleet-shepherd: $target: typing failed (exit $rc)" >&2; return 1 ;;
+  esac
 }
 
 # working_footer <screen> -> exit 0 when the footer, the lines below the last rule, says a turn runs ("esc to
@@ -2458,6 +2538,7 @@ case "${1:-}" in
   log)   cmd_holds || exit; shift; cmd_log "$@" ;;
   sweep-cancel) cmd_holds || exit; shift; cmd_sweep_cancel "$@" ;;
   ghost-runs) cmd_holds || exit; cmd_ghost_runs ;;
+  say)   cmd_holds || exit; shift; cmd_say "$@" ;;
   -h|--help|"") sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) die "unknown verb: $1 (run|open|passes|stats|budget|stuck|check|due|skip|infra|lease|holds|log|sweep-cancel|ghost-runs)" ;;
+  *) die "unknown verb: $1 (run|open|passes|stats|budget|stuck|check|due|say|skip|infra|lease|holds|log|sweep-cancel|ghost-runs)" ;;
 esac
