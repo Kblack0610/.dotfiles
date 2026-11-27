@@ -666,6 +666,10 @@ cmd_post() {
     fi
   fi
 
+  # A queue item's session asks for its item: `task:` names it unless --task does, so requeue_waiting
+  # and ask-resume (the resume item takes its row) find it without the session. After the floor
+  # check, which reads only the poster's own words.
+  [ -n "$task" ] || task="${AGENT_QUEUE_ITEM:-}"
   local dir="$ASKS_ROOT/$project"
   mkdir -p "$dir" 2>/dev/null || { echo "agent-ask: cannot mkdir $dir" >&2; return 1; }
 
