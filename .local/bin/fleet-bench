@@ -38,7 +38,8 @@
 #                                rule's number re-measured; --check fails when one moved against its
 #                                recorded confidence, its measure died, or a rule's text left its source,
 #                                a rule row has no enforced_by that resolves (test:, hook:, ci: or review), the review rows outgrow
-#                                RULES_PROSE_BASELINE (or sit under it), or a lesson found twice names no enforced_by check;
+#                                RULES_PROSE_BASELINE (or sit under it), a global-file row applies to fewer than 2 repos or names no `applies`, a repo
+#                                row restates a global one (`layer`), or a lesson found twice names no enforced_by check;
 #                                --scenarios lists the hard scenarios a context trim must keep, 1 when any is stale;
 #                                --gates lists the gate markers (# gate: <id>) with no register row, a hook that denies with none, and a refusal
 #                                a diff against BASE (default origin/main) added with none: 1 when any; --check fails a gate row with no valid
@@ -290,6 +291,7 @@ set -uo pipefail
 : "${RULES_PROSE_BASELINE:=$HOME/.config/agentctl/rules-prose-baseline}"   # review=N: the most rule rows that may name no check but review; lower it when rows gain one
 : "${RULES_LESSON_SEEN:=2}"   # a lesson the dream sweep found again this many times must name its enforced_by (lessons seen)
 : "${RULES_MEASURE_TIMEOUT:=20}"      # seconds one rule's measure may run
+: "${RULES_GLOBAL_SOURCES:=~/.claude/CLAUDE.md:~/.dotfiles-private/.claude/CLAUDE.md}"   # the global rule files (colon list): a row sourced here must say where it applies (rules_states, `layer`)
 # a transport failure on a stderr line naming github.com: GitHub did not answer a rule's measure (rules_states)
 : "${RULES_UNANSWERED_RE:=HTTP 5[0-9][0-9]|connection (refused|reset)|i/o timeout|TLS handshake timeout|context deadline exceeded|unexpected EOF}"
 # rules --changed: the files a session reads as rules (instruction-homes.json kinds global, repo, skill,
@@ -3177,7 +3179,7 @@ cmd_ledger() {
 # fetch (nothing here fetches), never its working tree: a main checkout sits weeks behind (the bnb
 # platform one was detached 57 commits back, so the anchors #1644 dropped read as present, ar-6241);
 # rules_source says which file stands in for it. `state` is the one verdict, first of stale, absent
-# (source not here, or limited), dead, restates, moved, else ok: --check fails all but absent and ok, and Stack shows it as is. A row's optional `scenario` is the hard
+# (source not here, or limited), dead, restates, moved, layer, else ok: --check fails all but absent and ok, and Stack shows it as is. A row's optional `scenario` is the hard
 # situation the rule decides: the must-keep list a context trim is checked against (context-trim skill).
 # `form` says whether a row is a rule (text a session reads, a .md source) or a mechanism (a hook,
 # script or config that enforces one); the source decides it, and a row's own `form` overrides that.
@@ -3188,6 +3190,14 @@ cmd_ledger() {
 # source on another machine is absent first, as for every row). --check fails a missing, bad or dead one, and
 # fails when the `review` rows outnumber RULES_PROSE_BASELINE (`review=N`), which may only shrink: a new
 # rule row names a check, or it is one more prose-only row and the count has to be argued for.
+
+# `layer` holds "narrowest layer that covers every repo a rule applies to" (global CLAUDE.md, Memory
+# Routing) to a test. A row sourced in a global file (RULES_GLOBAL_SOURCES) carries `applies`: "all"
+# (a rule about how a session works anywhere) or the list of repos that need it, two or more; one repo
+# means the rule belongs in that repo's own file. A rule row sourced anywhere else whose anchor is a
+# global row's anchor (or contains it, 20 characters or more, ignoring case and punctuation) restates
+# the wider layer; a row that must stand alone says why in `layer_waiver` (fleet-platform: teammates
+# read its AGENTS.md without ours).
 
 # rules_enforcer <enforced_by> -> none (empty), review, ok, bad or dead: `<kind>:<path>[::<test name>]`
 # resolved against the disk: an absolute path or one under `~`, and the name as written in an `@test "<name>"` line.
@@ -3270,8 +3280,12 @@ rules_states() {
     enforcer=$(rules_enforcer "$enf")
     printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$anchored" "$value" "$limited" "$enforcer" "$why"
   done < <(jq -r '[.source, .anchor, (.measure // ""), (.enforced_by // "")] | map(gsub("\n"; " ")) | join("\u001f")' "$RULES_REGISTER") |
-    jq -cRn --slurpfile rows "$RULES_REGISTER" '
-      [inputs | split("\u001f")] as $seen
+    jq -cRn --slurpfile rows "$RULES_REGISTER" --arg globals "$RULES_GLOBAL_SOURCES" '
+      def norm: ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; "");
+      def home: sub("^~"; env.HOME);
+      ($globals | split(":") | map(select(. != "") | home)) as $gl
+      | ([$rows[] | select((.source // "" | home) | IN($gl[])) | (.anchor // "" | norm) | select(length >= 20)]) as $ganchors
+      | [inputs | split("\u001f")] as $seen
       | range($rows | length) as $i
       | $rows[$i] + {anchored: ($seen[$i][0] | fromjson), value: ($seen[$i][1] | tonumber? // null), limited: ($seen[$i][2] == "true"), enforcer: $seen[$i][3], err: ($seen[$i][4] // "")}
       | (.max != null or .min != null) as $bounded
@@ -3285,11 +3299,21 @@ rules_states() {
       | ((.measure // "") | gsub("\\$\\{HOME\\}|\\$HOME"; "~") | gsub("~"; env.HOME)) as $reads
       | .restates = ($bounded and $raw != "" and .measure != null
           and (.measure | test("\\bwc\\b|grep -c|\\bstat\\b|\\bfind\\b") | not) and ($reads | contains($src)))
+      | .layer = (if ($src | IN($gl[])) then
+            (if .applies == "all" then ""
+             elif (.applies | type) == "array" then
+               (if (.applies | unique | length) >= 2 and all(.applies[]; type == "string" and . != "") then ""
+                else "applies lists \(.applies | unique | length) distinct repo(s); a rule for fewer than 2 belongs in that repo'"'"'s own file" end)
+             else "names no applies: give \"all\" or the repos that need it" end)
+          elif .form == "rule" and ((.layer_waiver // "") == "") and ((.anchor // "" | norm) as $a | ($a | length) >= 20 and any($ganchors[]; . as $g | ($a | contains($g)) or ($g | contains($a))))
+          then "restates a global row; keep the global one and link to it, or give layer_waiver the reason this file must stand alone"
+          else "" end)
       | .holds = (if $bounded and .value != null
           then ((.max == null or .value <= .max) and (.min == null or .value >= .min)) else null end)
       | .moved = (.holds != null and .holds != (.confidence != "low"))
       | .state = (if .anchored == false then "stale" elif .anchored == null or .limited then "absent"
           elif .dead then "dead" elif .restates then "restates" elif .moved then "moved"
+          elif .layer != "" then "layer"
           elif .enforcer | IN("missing", "bad", "dead") then "enforcer" else "ok" end)'
   local rc=$?
   rm -rf "$err" "$srcs"
@@ -3315,6 +3339,7 @@ rules_problems() {
       elif .state == "dead" then "dead measure: \($f): \(.anchor)\(if .err != "" then " (\(.err))" else "" end)"
       elif .state == "restates" then "restates: \($f): \(.anchor): its bound is a copy of the number its measure reads from \($f); drop max/min, the reading is the number"
       elif .state == "moved" then "moved: \($f): \(.anchor): \(.value) against \(if .max != null then "max \(.max)" else "min \(.min)" end), recorded \(.confidence)"
+      elif .state == "layer" then "layer: \($f): \(.anchor): \(.layer)"
       else empty end,
     (select(.enforcer | IN("missing", "bad", "dead")) | select(.anchored != null) | "enforcer: \($f): \(.anchor): " + (
       if .enforcer == "missing" then "names no enforced_by; give test:<path>, hook:<path>, ci:<path>, or review when only a reader holds it"
@@ -5118,33 +5143,42 @@ cmd_retro() {
   upsert_report "$grows" "$IMPROVE_LINE"
 }
 
-# upsert_why <key> <priority tag> -> the priority reason (priority-reasons.tsv) of a row whose key says what
-# it is: a tripped watch, an alert, a dispatch hold or a recurring lesson at #high is a runtime fault, a
-# lesson at #low is upkeep. Any other row files without one, and the priority pass judges it.
+# upsert_why <key> <priority tag> -> the priority reason (priority-reasons.tsv) of a row whose key
+# says what it is: a firing alert at #high is a firing-alert, which the board's daily cap never
+# holds (ar-4296), a tripped watch, a dispatch hold or a recurring lesson at #high is a runtime
+# fault, a lesson at #low is upkeep. Any other row files without one, and the priority pass judges
+# it.
 upsert_why() {
   case "$1:$2" in
-    'check(watch)'*:'#high'|'check(alert)'*:'#high'|'fix(hold)'*:'#high'|'check(lesson)'*:'#high') echo runtime-fault ;;
+    'check(alert)'*:'#high') echo firing-alert ;;
+    'check(watch)'*:'#high'|'fix(hold)'*:'#high'|'check(lesson)'*:'#high') echo runtime-fault ;;
     'check(lesson)'*:'#low') echo upkeep ;;
   esac
 }
 
-# board_upsert <rows: key TAB text TAB priority, one a line> keeps exactly one open agent-board
-# row per key, matched as a lowercase title prefix (each key's shape is in lib/board-keys.sh, so
-# the backlog triager leaves the row's prefix alone): a row whose text moved is edited in place, one
-# that matches writes nothing, and an add that exits 3 found its twin already open (a near-dup), so
-# it counts as filed. A key with no open row but one closed in the board feed's window
-# (upsert_closed) has that row reopened and its text refreshed, never a new row: a cause that is red
-# again is the same work (alertmanager-fleet was filed 27 times in 7 days, 2026-11-18). A row whose
-# condition cleared is triage_retire's. Every row is #size/s. A reopen that fails is said and the key
-# is filed as a new row, and a row whose add or edit fails is said and skipped, so one stuck row never
-# stops the pass (ar-4064: one failed add skipped every red fix promotion after it). An add the board's daily cap
-# refuses (exit 6) is said and tried again next pass; a red marked urgent passes the cap.
+# board_upsert <rows: key TAB text TAB priority, one a line> keeps exactly one open agent-board row
+# per key, matched as a lowercase title prefix (each key's shape is in lib/board-keys.sh, so the
+# backlog triager leaves the row's prefix alone): a row whose text moved is edited in place, and one
+# that matches writes nothing. An add runs only for a key with no open row, and passes the key
+# (`ptask add --key`), so the writer takes no other key's row for its near twin (ar-4296: two alerts
+# on one label, or one alert on two hosts, were twins, and the second had no row for days); an exit
+# 3 that still comes is a red with no row, and no item, since triage_promote queues a key's own row:
+# a failed write, never filed. A key with no open row but one closed in
+# the board feed's window (upsert_closed) has that row reopened and its text refreshed, never a new
+# row: a cause that is red again is the same work (alertmanager-fleet was filed 27 times in 7 days,
+# 2026-11-18). A row whose condition cleared is triage_retire's. Every row is #size/s. A reopen that
+# fails is said and the key is filed as a new row, and a row whose add or edit fails is said and
+# skipped, so one stuck row never stops the pass (ar-4064: one failed add skipped every red fix
+# promotion after it). An add the board's daily cap refuses (exit 6) is said, counted in
+# UPSERT_CAPPED and tried again next pass; a firing alert's row and a red marked urgent pass the
+# cap.
 # Each write names its row by id, since `notes ptask edit` refuses a query two open rows match: the
 # key's row is its first open row with an id marker, and only a key whose one row has none (written
 # by hand) is named by its prefix. A twin a race left open on the key (ar-5690) is dropped as a dup
 # of that row, its children moving under it; a twin being done, or one with no id, is left and said.
-# Leaves the counts in UPSERT_ADDED, UPSERT_EDITED, UPSERT_REOPENED and UPSERT_DROPPED and the failed
-# keys in UPSERT_FAILED, which upsert_report reports FAILED, so every caller ends with upsert_report;
+# Leaves the counts in UPSERT_ADDED, UPSERT_EDITED, UPSERT_REOPENED, UPSERT_DROPPED and
+# UPSERT_CAPPED and the failed keys in UPSERT_FAILED, which upsert_report reports FAILED, so every
+# caller ends with upsert_report;
 # status 1 only when the board cannot be read, 2 when the upsert lock stays held (nothing is written).
 # The read of the board and the writes after it are one section under BENCH_UPSERT_LOCK: the timed
 # runner and every dispatch pass run triage, and two of them reading before either added filed the
@@ -5152,8 +5186,8 @@ upsert_why() {
 # A key whose row closed within the board feed's window is reopened with the red as a detail line,
 # so the trip is history on that row, not a row of its own.
 board_upsert() {
-  local board closed human p text pri why have hid twin id rc added=0 edited=0 reopened=0 dropped=0 failed=() twins=() trip=()
-  UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_DROPPED=0; UPSERT_FAILED=
+  local board closed human p text pri why have hid twin id rc added=0 edited=0 reopened=0 dropped=0 capped=0 failed=() twins=() trip=()
+  UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_DROPPED=0; UPSERT_CAPPED=0; UPSERT_FAILED=
   upsert_lock_take || { say "$UPSERT_LOCK_WHY"; report_outcome FAILED "$UPSERT_LOCK_WHY"; return 2; }
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { upsert_lock_drop; report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
   closed=$(upsert_closed)
@@ -5204,12 +5238,12 @@ board_upsert() {
     fi
     if [ -z "$have" ]; then
       rc=0 why=$(upsert_why "$p" "$pri")
-      $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$text $pri" ${why:+--why "$why"} --origin fleet-bench >/dev/null || rc=$?
+      $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$text $pri" ${why:+--why "$why"} --origin fleet-bench --key "$p" >/dev/null || rc=$?
       case $rc in
         0) added=$((added + 1)) ;;
-        3) ;;
+        3) say "$p: the board took it for a twin of another open row, so it has no row"; failed+=("$p") ;;
         # The board's daily cap (intake_daily_cap, QUEUE.md "Admission"): the red waits for a later pass, and is no failure.
-        6) say "$p: the board's daily cap holds this row; the next pass tries it again" ;;
+        6) say "$p: the board's daily cap holds this row; the next pass tries it again"; capped=$((capped + 1)) ;;
         *) say "add failed for $p"; failed+=("$p") ;;
       esac
     elif [ "$have" != "${text,,}" ]; then
@@ -5221,7 +5255,7 @@ board_upsert() {
     fi
   done <<<"$1"
   upsert_lock_drop
-  UPSERT_ADDED=$added; UPSERT_EDITED=$edited; UPSERT_REOPENED=$reopened; UPSERT_DROPPED=$dropped
+  UPSERT_ADDED=$added; UPSERT_EDITED=$edited; UPSERT_REOPENED=$reopened; UPSERT_DROPPED=$dropped; UPSERT_CAPPED=$capped
   UPSERT_FAILED=$(IFS=';'; echo "${failed[*]}")
 }
 
@@ -5258,6 +5292,7 @@ upsert_report() {
   local did="$UPSERT_ADDED added, $UPSERT_EDITED refreshed"
   [ "${UPSERT_REOPENED:-0}" -eq 0 ] || did+=", $UPSERT_REOPENED reopened"
   [ "${UPSERT_DROPPED:-0}" -eq 0 ] || did+=", $UPSERT_DROPPED twins dropped"
+  [ "${UPSERT_CAPPED:-0}" -eq 0 ] || did+=", $UPSERT_CAPPED held by the board's daily cap"
   did+="${2:+, $2}"
   say "$(grep -c . <<<"$1") rows due: $did"
   if [ -n "${UPSERT_FAILED:-}" ]; then
@@ -5265,7 +5300,7 @@ upsert_report() {
     report_outcome FAILED "board write failed for $UPSERT_FAILED; $did"
     return 1
   elif [ $((UPSERT_ADDED + UPSERT_EDITED + ${UPSERT_REOPENED:-0} + ${UPSERT_DROPPED:-0})) -eq 0 ] && [ -z "${2:-}" ]; then
-    report_outcome NOOP "every row already current"
+    if [ "${UPSERT_CAPPED:-0}" -eq 0 ]; then report_outcome NOOP "every row already current"; else report_outcome NOOP "$did"; fi
   else
     report_outcome WORKED "$did"
   fi
@@ -6480,7 +6515,7 @@ cmd_triage() {
   # A held lock fails this pass's filing (upsert_report says so) but not the human sheet, twins or red fixes after it.
   if [ -n "$filed" ]; then
     board_upsert "$(cut -f1-3 <<<"$filed")" || { [ $? = 2 ] || return 1; UPSERT_FAILED="$UPSERT_LOCK_WHY"; }
-  else UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_DROPPED=0; UPSERT_FAILED=; fi
+  else UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_DROPPED=0; UPSERT_CAPPED=0; UPSERT_FAILED=; fi
   h=$(triage_human "$rows")
   triage_twins "$rows" "$(cut -f1 <<<"$filed")"
   q=$(triage_promote "$rows")

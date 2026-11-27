@@ -5,7 +5,7 @@
   "pr": "Kblack0610/.dotfiles#1479",
   "base": "55a9fbba80d45f37b7b49756daf020f66b4ca40f",
   "merge": "7c725e227273d333ebb2bd9a87ced9fbf1e45ff3",
-  "task": "fix(agent-panel): list exits 3 on an incomplete read, and fleet-assess names service processes instead of calling them orphans (ar-916)",
+  "task": "fix(agent-panel): list exits 3 on an incomplete read, and fleet-assess names service processes instead of calling them orphans (ar-916). Interface: `agent-panel list --json` exits 3 when the session file of a live pid under $HOME/.claude/sessions/<pid>.json cannot be parsed, after printing the rest, with stderr containing exactly `incomplete read: ~/.claude/sessions/<pid>.json` (a literal tilde, the pid of that file); an unreadable file of a pid that is not alive stays a stale file and exits 0. fleet-assess names service processes instead of calling them orphans.",
   "pts": 5,
   "accept": [
     "a_live_pids_unreadable_session_file_is_a_gap_and_exit_3"
