@@ -71,6 +71,9 @@ test("a job kind's RUNNING and MACHINES read as hub_core's Pool cells, a machine
   const p = { running: 0, machines: [{ host: "deskslim-2", slots: 5, href: "#infra/machines/deskslim-2" }, { host: "aws-spot-1", slots: 0, href: "#infra/machines/aws-spot-1" }] };
   assert.match(run(`POOL_CELLS.running(${JSON.stringify(p)})`), />0</, "no job of its kind runs: 0, never the busy slots that carry its cap");
   assert.equal(run(`"free" in POOL_COLS`), false, "no FREE column");
+  assert.equal(run(`Object.keys(POOL_COLS).filter((k) => k.startsWith("done")).join()`), "done_1h,done_5h,done", "1h and 5h beside the 24h column");
+  assert.match(run(`POOL_CELLS.done_1h(${JSON.stringify({ done_1h: 0 })})`), />0</, "a quiet hour is 0");
+  assert.match(run(`POOL_CELLS.done_5h(${JSON.stringify({})})`), />-</, "a window nobody reported is a dash");
   const wt = (w) => run(`POOL_CELLS.weight(${JSON.stringify({ weight: w })})`);
   assert.match(wt("0.66"), />0\.66</, "the weight as hub_core formatted it");
   assert.match(wt("1*"), />1\*</, "a weight the governor has not measured keeps its star");
@@ -461,6 +464,10 @@ test("CI RUNNING and the Runners head read hub_core's glance: jobs running, runn
   Object.assign(ist, { open: {} });
   const s = section({ rows: [], queue: [], red: [], local: [], glance });
   assert.match(s, /<div class="cline">5 running, 23 queued \(oldest 21m\), booked 4\.4\/64 cpu, 12\/12 runners up, 759 done 24h, 91% passed; cloud: 2 hosts off<\/div>/);
+  // ar-6260: the 1h and 5h counts sit before the 24h one once a kind reports them, 0 included.
+  const win = section({ rows: [], queue: [], red: [], local: [], glance: { ...glance, done_1h: 0, done_5h: 31 } });
+  assert.match(win, /12\/12 runners up, 0 done 1h, 31 done 5h, 759 done 24h, 91% passed/);
+  assert.equal(run(`glanceHead(${JSON.stringify({ ...glance, done_1h: null, done_5h: null })})`).includes("done 1h"), false, "no window read prints none");
   // No runner read is -/-, never 0/0.
   const bare = section({ rows: [], queue: [], red: [], local: [], glance: { ...glance, booked: null, up: 0, expected: 0 } });
   assert.match(bare, /5 running, 23 queued \(oldest 21m\), -\/- runners up, 759 done/);

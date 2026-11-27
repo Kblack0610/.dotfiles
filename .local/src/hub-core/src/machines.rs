@@ -167,6 +167,10 @@ pub struct Pool {
     pub waiting: Option<f64>,
     /// Seconds the oldest waiting job has waited.
     pub oldest: Option<f64>,
+    /// Jobs it finished in the last hour and five hours (`cc:pool_done_1h`, `_5h`, by finish
+    /// time): None before the exporter reports the window, 0 for a quiet one. Beside `done`.
+    pub done_1h: Option<f64>,
+    pub done_5h: Option<f64>,
     pub done: Option<f64>,
     /// Seconds a finished job of the kind usually runs: the exporter's 24h median over every
     /// workflow (`cc:pool_run_seconds_24h`). None for the local gates and before it reports.
@@ -293,7 +297,8 @@ impl Row for Machine {
 /// running, queue and last day, and the machines that take it.
 impl Row for Pool {
     const COLUMNS: &'static [&'static str] = &[
-        "pool", "weight", "running", "waiting", "oldest", "done", "usual", "pass", "machines",
+        "pool", "weight", "running", "waiting", "oldest", "done_1h", "done_5h", "done", "usual",
+        "pass", "machines",
     ];
     const STATES: &'static [&'static str] = &["all", "waiting"];
     const FACETS: &'static [&'static str] = &[];
@@ -318,6 +323,8 @@ impl Row for Pool {
             "running" => self.running.into(),
             "waiting" => self.waiting.into(),
             "oldest" => self.oldest.into(),
+            "done_1h" => self.done_1h.into(),
+            "done_5h" => self.done_5h.into(),
             "done" => self.done.into(),
             "usual" => self.usual.into(),
             "pass" => self.pass.into(),
@@ -640,6 +647,8 @@ fn pools(infra: &Infra, cc: &HashMap<String, f64>, alias: &HashMap<String, Strin
             running: get("cc:pool_busy", &p),
             waiting: get("cc:pool_waiting", &p),
             oldest: get("cc:pool_oldest_wait_seconds", &p),
+            done_1h: get("cc:pool_done_1h", &p),
+            done_5h: get("cc:pool_done_5h", &p),
             done: get("cc:pool_done_24h", &p),
             usual: get("cc:pool_run_seconds_24h", &p),
             pass: get("cc:pool_pass_ratio_24h", &p),
