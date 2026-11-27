@@ -762,7 +762,10 @@ def harness_prefixes():
     """The lines of .config/agent-panel/harness-prefixes.conf, the one table of text the harness
     puts in a user turn (older transcripts give it no turnOrigin). None of it is a request anyone
     typed."""
-    return tuple(panel_conf_lines("harness-prefixes.conf"))
+    p = tuple(panel_conf_lines("harness-prefixes.conf"))
+    if not p:  # an empty tuple matches nothing, and every notice would count as typed
+        sys.exit("claude-recall: no entries in harness-prefixes.conf")
+    return p
 
 
 @functools.cache

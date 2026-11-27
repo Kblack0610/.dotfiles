@@ -87,7 +87,7 @@ EOF
     harness_text "$p" || { echo "not harness text: $p"; return 1; }
   done
   # Negative control: replies the human types, one that names the notice mid-sentence included.
-  for p in 'a' 'yes, arm it' 'why did the [Cross-session idle notice] cancel it?' 'Caveats aside, go'; do
+  for p in 'a' 'yes, arm it' 'why did the [Cross-session idle notice] cancel it?' 'Caveat: only if CI is green'; do
     run -1 harness_text "$p"
   done
 }
