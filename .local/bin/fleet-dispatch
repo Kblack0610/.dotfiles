@@ -649,21 +649,28 @@ load_gates() {
   [ -z "${GATES_LOADED:-}" ] || return 0
   declare -gA GATE_ST=() GATE_WHY=() GATE_Q=() GATE_STACK=()
   GATES_LOADED=1 GATES_FAILED=''
-  local out rc=0 t s w q k
+  local out rc=0
   out=$(agent-queue gate --json --all 2>/dev/null) || rc=$?
   if [ "$rc" != 0 ] && [ "$rc" != 3 ]; then
     GATES_FAILED="agent-queue gate --all failed (exit $rc)"
     say "$GATES_FAILED, so no board row starts this pass"
     return 0
   fi
+  gates_record "$out"
+}
+
+# gates_record <agent-queue gate --json lines> -- GATE_ST, GATE_WHY, GATE_Q and GATE_STACK from each line; a
+# tag that is no gate (state none) is left out.
+gates_record() {
+  local t s w q k r
   # A unit separator, not a tab: a tab is IFS whitespace, and read folds an empty why into the next field.
   # A line naming a row (a held #hold/ the hold grants that row by its row, epic or plan id) is keyed
   # <tag>@<row id>, which gate_wait reads for that row before the tag's own state.
   while IFS=$'\x1f' read -r t s w q k r; do
-    [ -n "$t" ] || continue
+    [ -n "$t" ] && [ "$s" != none ] || continue
     [ -z "$r" ] || t="$t@$r"
     GATE_ST[$t]=$s GATE_WHY[$t]=$w GATE_Q[$t]=$q GATE_STACK[$t]=$k
-  done < <(jq -r '"\(.tag)\u001f\(.state)\u001f\(.why)\u001f\(.queue)\u001f\(.stack // "")\u001f\(.row // "")"' <<<"$out")
+  done < <(jq -r '"\(.tag)\u001f\(.state)\u001f\(.why)\u001f\(.queue)\u001f\(.stack // "")\u001f\(.row // "")"' <<<"$1")
 }
 
 # gate_wait <gate tags> [<row id>] -> why the row may not start yet, one clause a gate that is not clear;
@@ -8235,6 +8242,26 @@ store_fresh() {
   [ "$REAP_FRESH" = yes ]
 }
 
+# board_fresh -- the board and queue this machine reads hold origin as of now, once a process: a fill reads
+# the board to promote a row, so a clone behind origin promotes a row another host just gated (#at/) or
+# started, and the item it makes has none of the gate (ar-5954: five reaps on one host said their store could
+# not be brought up to origin, and its fill a minute later promoted a row gated #at/ a week out). Both
+# stores: ~/.agent holds the queue, ~/.notes the board. The check, not store-sync's exit code, is the
+# verdict (store_fresh): a SKIP or BACKUP exits 0.
+board_fresh() {
+  if [ -z "${BOARD_FRESH:-}" ]; then
+    if timeout "$WORKER_PULL_SECS" store-sync --now </dev/null >/dev/null 2>&1 &&
+       timeout "$WORKER_PULL_SECS" store-sync --store notes --now </dev/null >/dev/null 2>&1 &&
+       store-sync-age --notes --max-min 2 </dev/null >/dev/null 2>&1; then
+      BOARD_FRESH=yes
+    else
+      BOARD_FRESH=no
+      logline "fill held: this store could not be brought up to origin, so its board may be behind"
+    fi
+  fi
+  [ "$BOARD_FRESH" = yes ]
+}
+
 # cmd_reap -- reap_once under $DIR/.reap, so one reap runs at a time: a pass reaps under its own lock,
 # but the shepherd runs `fleet-dispatch reap` beside it, and two reapers each posed a cancelled ask
 # again before either recorded it (2026-11-23 10:37: rrAFt6, zMcaQs and XqrCXG, two new asks each,
@@ -9228,7 +9255,7 @@ cmd_run() {
   local let_go; let_go=$(share_let_go "$only" "$FILLED") || return 0
   # Past the gates already: what fill promoted starts now, through the same start as any item.
   items=$(next_items --points)
-  [ -n "$items" ] || { settle_board NOOP "no row qualifies this pass"; return 0; }
+  [ -n "$items" ] || { settle_board NOOP "${FILL_HELD:-no row qualifies this pass}"; return 0; }
   SHARE_LET_GO=$let_go start_items "$(pass_order "$items")" "$room"   # the one unfiltered start the project share cap may let go in
 }
 
@@ -9321,7 +9348,9 @@ fill_day() {
   [[ " ${2:-} " != *" sprint "* ]] || SPRINT_ONLY=1
   local ASK_ONLY=${ASK_ONLY:-}
   [[ " ${2:-} " != *" ask "* ]] || ASK_ONLY=1
-  FILLED=0
+  FILLED=0 FILL_HELD=''
+  # A real fill reads a board brought up to origin first; a dry run names what the board says.
+  [ "$DRY" = 1 ] || board_fresh || { FILL_HELD="this store could not be brought up to origin, so no row is promoted from a board that may be behind"; say "fill: $FILL_HELD"; return 0; }
   # Committed rows alone want no judge: a gated row is never judged (unjudged_rows).
   load_pool_idle   # once, before the judge's and the picks' subshells
   [ "${2:-}" = gated ] || judge_once || return 1
@@ -9514,7 +9543,7 @@ take_epic() {
 # queued their hashtags come off the row.
 promote() {
   local c="$1" tags="$2" task="$3" repeat="${4-}" qmode="${5-}" prof project lane key area line out id slug flag=() rc=0
-  local g q gwait gates=() rm=() stacks=''
+  local g q gwait gates=() unseen=() rm=() stacks=''
   prof=$(jq -r .profile <<<"$c"); project=$(jq -r .project <<<"$c"); lane=$(jq -r .lane <<<"$c")
   key=$(jq -r .key <<<"$c"); area=$(jq -r '.area // empty' <<<"$c")
   [ "$lane" = agent ] && flag=(--agent)
@@ -9526,8 +9555,20 @@ promote() {
   for g in $(grep -oE '(^|[[:space:]])#[A-Za-z0-9_./-]+' <<<"${line%%<!--*}" | sed 's/^[[:space:]]*#//'); do
     # A returned hold:'s desk class rides as #desk/<class> (agent-queue pending_gates): back on the item, off the row.
     case "$g" in desk/?*) tags="${tags:+$tags }desk:${g#desk/}" rm+=(--remove "$g"); continue ;; esac
-    [ -z "${GATE_ST[$g]+x}" ] || gates+=("$g")
+    if [ -n "${GATE_ST[$g]+x}" ]; then gates+=("$g")
+    else
+      case "$g" in after/?* | at/?* | rbw/?* | ask/?* | pr/?* | hold/?* | nightly/?*) unseen+=("$g") ;; esac
+    fi
   done
+  # A gate the row gained after the pass read its gates (load_gates) is read now: the line above is fresher
+  # than GATE_ST, and a gate no one reads is a gate the item starts past (ar-5954: #at/ lost on a fill).
+  if [ "${#unseen[@]}" -gt 0 ]; then
+    local gout grc=0
+    gout=$(agent-queue gate --json "${unseen[@]}" 2>/dev/null) || grc=$?
+    { [ "$grc" = 0 ] || [ "$grc" = 3 ]; } || { say "skip $project: its gates (${unseen[*]}) could not be read (agent-queue gate exit $grc): $key"; return 1; }
+    gates_record "$gout"
+    for g in "${unseen[@]}"; do [ -z "${GATE_ST[$g]+x}" ] || gates+=("$g"); done
+  fi
   if [ "${#gates[@]}" -gt 0 ]; then
     local passed=()
     if [ -n "${START_NOW:-}" ]; then

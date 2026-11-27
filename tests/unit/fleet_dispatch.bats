@@ -1819,6 +1819,45 @@ EOF
   assert_output --partial 'queued game: gm-1'
 }
 
+# 2026-11-23 (ar-5954): a returned row gained #at/2026-12-02/0900 after the pass read its gates, and the fill
+# started it anyway: promote ignored every gate tag GATE_ST did not know, so the item had no at: hold.
+@test "promote: a gate the row gained after the pass read its gates is read now, and the row waits on it (ar-5954)" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent ga-1 "- [ ] fix(game): returned row $T <!-- id:ga-1 -->"
+  GATES_LOADED=''; load_gates   # the pass's one read: the row has no gate yet
+  : > "$NOTES_FIXTURE/rows.game.agent"
+  row game agent ga-1 "- [ ] fix(game): returned row $T #at/2099-01-01/0000 <!-- id:ga-1 -->"
+  run promote "$(jq -cn '{profile: "bnb", project: "game", lane: "agent", key: "ga-1"}')" "" task
+  assert_failure
+  assert_output --partial 'skip game: ga-1 waits on at 2099-01-01T00:00'
+  [ -z "$(qitem queued ga-1)" ] || fail "the gated row was queued"
+  assert_equal "$(cut -f2 "$NOTES_FIXTURE/rows.game.agent")" "- [ ] fix(game): returned row $T #at/2099-01-01/0000 <!-- id:ga-1 -->"
+}
+
+@test "fill: a store that cannot be brought up to origin promotes no row and says so; a dry run still reads the board (ar-5954)" {
+  game_ready
+  stub store-sync-age 'exit 1'
+  DRY=0 JUDGE_RC='' fill_day 2
+  assert_equal "$FILLED" 0
+  assert_equal "$FILL_HELD" 'this store could not be brought up to origin, so no row is promoted from a board that may be behind'
+  grep -q 'fill held: this store could not be brought up to origin' "$LOG" || fail "the hold is not in the dispatch log"
+  assert_equal "$(cut -f2 "$NOTES_FIXTURE/rows.game.human")" "- [ ] fix crash on load #high $T"
+  BOARD_FRESH='' DRY=1 JUDGE_RC='' run fill_day 2
+  assert_success
+  assert_output --partial 'would queue: game'
+}
+
+@test "fill: a store brought up to origin syncs the agent store and the notes one, then promotes (ar-5954)" {
+  game_ready
+  stub store-sync 'echo "store-sync $*" >> "$NOTES_FIXTURE/calls.log"'
+  stub store-sync-age 'echo "store-sync-age $*" >> "$NOTES_FIXTURE/calls.log"'
+  DRY=0 JUDGE_RC='' fill_day 1
+  assert_equal "$FILLED" 1
+  grep -qx 'store-sync --now' "$NOTES_FIXTURE/calls.log" || fail "the agent store was not synced"
+  grep -qx 'store-sync --store notes --now' "$NOTES_FIXTURE/calls.log" || fail "the notes store was not synced"
+  grep -qx 'store-sync-age --notes --max-min 2' "$NOTES_FIXTURE/calls.log" || fail "the sync was not checked"
+}
+
 @test "promote: a row an open sprint holds gets the sprint tag from any path, a queued sprint's row and a plain row do not" {
   project game beta "$SANDBOX/repos/game"
   row game human sp-1 '- [ ] in the sprint #urgent <!-- id:sp-1 -->'
