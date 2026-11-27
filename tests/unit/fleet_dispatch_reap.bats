@@ -969,6 +969,30 @@ stage dispatch --action settled --from game --item fix-crash --id fix crash --pr
 OUT
 }
 
+@test "reap: a merged PR's row stays open while another open item names it, and closes once none does (ar-4657)" {
+  pr_item MERGED
+  # An ask's resume item shares the asking item's row (ask-resume asking_row).
+  started_item asker '' '' '' 'board:game:fix crash' queued
+  run cmd_reap
+  assert_success
+  refute_output --partial 'closed game'
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)" status)" ok
+  run grep -c 'ptask game --agent done fix crash' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # A --repeat rerun on the row keeps the slug, and is still another item: told apart by its file.
+  local done_it; done_it=$(agent-queue show fix-crash --json)
+  rm "$AGENT_QUEUE_DIR"/queued/*-asker.md
+  started_item fix-crash '' '' '' 'board:game:fix crash' queued
+  run close_row fix-crash '' "$done_it"
+  assert_success
+  refute_output --partial 'closed game'
+  # Negative control: with no other item on the row, the same close takes it.
+  rm "$AGENT_QUEUE_DIR"/queued/*-fix-crash.md
+  run close_row fix-crash '' "$done_it"
+  assert_success
+  assert_output --partial 'closed game: fix crash (queue item fix-crash, PR o/game#12 merged)'
+}
+
 @test "reap: a merged PR whose commit is not on origin/main closes the item but never the row" {
   pr_item MERGED 0123456789abcdef0123456789abcdef01234567
   run cmd_reap
