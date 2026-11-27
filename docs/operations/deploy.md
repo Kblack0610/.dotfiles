@@ -30,7 +30,7 @@ Revert the PR on `main` (a new revert PR, never a rewrite of pushed history), pu
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| A `~/.local/bin` command vanished (`command not found: agent-queue`) | A script run with the real `$HOME` removed the link. On 2026-11-18 a mis-edited test ran an `rm "$HOME/.local/bin/agent-queue"` above its `export HOME=<scratch>` line (ar-3037). `dotfiles-deploy` does not prune a link whose checkout is unsettled (HELD); it prunes one only when the settled default branch no longer tracks the file. | `dotfiles-deploy --apply --missing` relinks every tracked path. A test sets its scratch `HOME` before it touches any `$HOME` path. |
+| A `~/.local/bin` command vanished (`command not found: agent-queue`) | A script run with the real `$HOME` removed the link. On 2026-11-18 a mis-edited test ran an `rm "$HOME/.local/bin/agent-queue"` above its `export HOME=<scratch>` line (ar-3037). `dotfiles-deploy` did not do it. Separately, it prunes a dangling link into a checkout only while that checkout is settled on its default branch; mid-rebase, mid-merge, detached or on another branch it holds the link (HELD). | `dotfiles-deploy --apply --missing` relinks every tracked path. A test sets its scratch `HOME` before it touches any `$HOME` path. |
 
 ## Not yet in place
 

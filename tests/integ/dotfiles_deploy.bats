@@ -788,7 +788,7 @@ settling_world() {
   run "$DEPLOY" --apply --missing
   assert_output --partial 'HELD  1 dangling link(s) into public'
   assert_output --partial 'mid-rebase'
-  refute_output --partial 'pruned'
+  refute_output --partial 'pruned    ~/'
   [ -L "$HOME/.local/bin/aq" ] || fail 'the live link was pruned mid-rebase'
   git -C "$PUB" rebase --abort
   [ -e "$HOME/.local/bin/aq" ] || fail 'the link does not resolve once the rebase settles'

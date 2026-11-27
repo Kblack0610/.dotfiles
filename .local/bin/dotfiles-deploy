@@ -115,6 +115,7 @@ BACKUP_ROOT="$HOME/.local/state/dotfiles-deploy/backup"
 
 MODE=check
 FORMAT=text
+HELD=()   # one line per checkout whose STALE prune link_findings held
 ONLY_MISSING=0
 ONLY_PATHS=()
 
@@ -478,7 +479,7 @@ unsettled() {
   local m p branch def
   for m in MERGE_HEAD:mid-merge rebase-merge:mid-rebase rebase-apply:mid-rebase \
            CHERRY_PICK_HEAD:mid-cherry-pick REVERT_HEAD:mid-revert BISECT_LOG:mid-bisect \
-           index.lock:mid-checkout; do
+           sequencer:mid-sequence index.lock:mid-checkout; do
     p="$(git -C "$1" rev-parse --git-path "${m%%:*}" 2>/dev/null)" || continue
     case "$p" in /*) ;; *) p="$1/$p" ;; esac
     [ -e "$p" ] && { printf '%s\n' "${m#*:}"; return 0; }
@@ -497,6 +498,7 @@ link_findings() {
   local rec path d l r rel real
   declare -A dirs=() deploys=() why=() held=()
   local -a starts=()
+  HELD=()
   for rec in "${MANIFEST[@]}"; do
     IFS="$SEP" read -r path _ _ _ <<< "$rec"
     deploys["$path"]=1
@@ -539,8 +541,8 @@ link_findings() {
     FINDINGS+=("STALE${SEP}${REPO_NAME[$r]}${SEP}${l#"$HOME"/}${SEP}$l${SEP}dangling link into the checkout: the file it served was deleted or moved")
   done < <(find "${starts[@]}" -mindepth 1 -maxdepth 1 -type l -print0 2>/dev/null | sort -z)
   for r in "${!held[@]}"; do
-    printf '  HELD  %s dangling link(s) into %s left in place: %s is %s; pruned once it settles\n' \
-      "${held[$r]}" "${REPO_NAME[$r]}" "${r/#"$HOME"/\~}" "${why[$r]}" >&2
+    HELD+=("$(printf '  HELD  %s dangling link(s) into %s left in place: %s is %s; removed once it settles' \
+      "${held[$r]}" "${REPO_NAME[$r]}" "${r/#"$HOME"/\~}" "${why[$r]}")")
   done
   return 0
 }
@@ -1026,6 +1028,7 @@ main() {
 
   build_manifest
   classify
+  [ "$FORMAT" != text ] || [ "${#HELD[@]}" -eq 0 ] || printf '%s\n' "${HELD[@]}" >&2
 
   if [ "$MODE" = apply ]; then
     if [ "${#FINDINGS[@]}" -eq 0 ]; then
