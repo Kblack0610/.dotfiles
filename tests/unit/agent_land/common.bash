@@ -97,6 +97,8 @@ case "$1 $2" in
   esac ;;
 'pr checks')
   case "$*" in
+  # checks.live: head_checks_live's answer before the gate, live, stale or none (none when absent)
+  *'"live"'*) cat "$NOTES_FIXTURE/checks.live" 2>/dev/null || echo none ;;
   # checks.failed: the failed or cancelled names after a failed watch
   *'"fail" or'*) cat "$NOTES_FIXTURE/checks.failed" ;;
   # checks.stale: the failed checks as JSON after a failed watch ([] when absent)
@@ -164,8 +166,8 @@ ls-remote) [ ! -f "$NOTES_FIXTURE/remote.fail" ] || { echo 'fatal: unable to acc
 worktree) cat "$NOTES_FIXTURE/worktree.list" 2>/dev/null || true ;;
 # not.ancestor: the merge commit is not on the base branch (merge_proof refuses)
 # head.foreign: the PR's head commit is not in this checkout's HEAD
-# merge-base A B: prints a fixed base; --is-ancestor X HEAD fails on head.foreign, X <base> on not.ancestor
-merge-base) if [ "$2" != --is-ancestor ]; then echo 5eedbase5eedbase; elif [ "${*: -1}" = HEAD ]; then [ ! -f "$NOTES_FIXTURE/head.foreign" ]; else [ ! -f "$NOTES_FIXTURE/not.ancestor" ]; fi ;;
+# merge-base A B: prints a fixed base; --is-ancestor X HEAD fails on head.foreign (origin/main HEAD on base.ahead), X <base> on not.ancestor
+merge-base) if [ "$2" != --is-ancestor ]; then echo 5eedbase5eedbase; elif [ "$*" = 'merge-base --is-ancestor origin/main HEAD' ]; then [ ! -f "$NOTES_FIXTURE/base.ahead" ]; elif [ "${*: -1}" = HEAD ]; then [ ! -f "$NOTES_FIXTURE/head.foreign" ]; else [ ! -f "$NOTES_FIXTURE/not.ancestor" ]; fi ;;
 merge) [ "$2" = --abort ] || [ ! -f "$NOTES_FIXTURE/merge.conflicts" ] || { echo 'CONFLICT (content)'; exit 1; } ;;
 # tree.conflicts: a trial merge of the base (merge-tree) conflicts, and the real merge does too from then on
 merge-tree) [ ! -f "$NOTES_FIXTURE/tree.conflicts" ] || { : >"$NOTES_FIXTURE/merge.conflicts"; exit 1; } ;;
