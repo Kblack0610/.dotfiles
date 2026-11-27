@@ -572,8 +572,60 @@ STUB
   run "$HOLD" claim mac-desktop --by agent-6 "store-console upload"
   assert_success
   assert_output 'claimed: mac-desktop (refreshed)'
-  "$HOLD" release mac-desktop
+  "$HOLD" release mac-desktop --by agent-6
   run "$HOLD" claim mac-desktop --by agent-9 "screenshots"
+  assert_success
+}
+
+@test "release frees a claim only for its holder; --force frees one whose holder is gone (ar-751)" {
+  "$HOLD" claim mac-desktop --by agent-42 "store form"
+  # another session, by its own names or another --by, is refused and the claim stays
+  run "$HOLD" release mac-desktop
+  assert_failure 1
+  assert_output --partial 'claimed by agent-42'
+  refute_output --partial -- '--by agent-42'
+  run "$HOLD" release mac-desktop --by agent-9
+  assert_failure 1
+  grep -qx 'by: agent-42' "$AGENT_HOLD_DIR/mac-desktop"
+  run "$HOLD" release mac-desktop --by
+  assert_failure 2
+  run "$HOLD" release mac-desktop --by ' '
+  assert_failure 2
+  # its holder releases it
+  run "$HOLD" release mac-desktop --by agent-42
+  assert_success
+  [ ! -e "$AGENT_HOLD_DIR/mac-desktop" ]
+  # a claim taken in a pane: another window is refused, and the holder's session id releases it
+  # from wherever its window moved
+  tmux_stub
+  in_pane dotfiles 3 4
+  CLAUDE_CODE_SESSION_ID=s-x "$HOLD" claim mac-desktop "screenshots"
+  in_pane dotfiles 2 4
+  run env CLAUDE_CODE_SESSION_ID=s-y "$HOLD" release mac-desktop
+  assert_failure 1
+  run env CLAUDE_CODE_SESSION_ID=s-x "$HOLD" release mac-desktop
+  assert_success
+  # --by takes the session id too, and the audit names who it was released as
+  CLAUDE_CODE_SESSION_ID=s-x "$HOLD" claim mac-desktop "screenshots"
+  run "$HOLD" release mac-desktop --by s-x
+  assert_success
+  grep -F 'released as s-x' "$HOME/.agent/audit/actions.jsonl"
+  unset TMUX TMUX_PANE
+  # a holder gone: --force frees it
+  "$HOLD" claim mac-desktop --by agent-42 "store form"
+  run "$HOLD" release mac-desktop --force
+  assert_success
+  [ ! -e "$AGENT_HOLD_DIR/mac-desktop" ]
+  grep -F 'forced over agent-42' "$HOME/.agent/audit/actions.jsonl"
+  # a claim past its until is over, so anyone releases it with no --force
+  "$HOLD" claim mac-desktop --by agent-42 "store form"
+  echo "until: $(date -d '-1 minute' +%Y-%m-%dT%H:%M:%S%z)" >> "$AGENT_HOLD_DIR/mac-desktop"
+  run "$HOLD" release mac-desktop
+  assert_success
+  [ ! -e "$AGENT_HOLD_DIR/mac-desktop" ]
+  # Negative control: a hold that is not a claim is still released by anyone.
+  "$HOLD" set unity-tests --by d "96 C"
+  run "$HOLD" release unity-tests
   assert_success
 }
 
@@ -607,7 +659,7 @@ STUB
   assert_failure 1
   [[ "$stderr" == *"(gone): more screenshots (you outrank it"* ]]
   [[ "$stderr" != *"integer"* ]]
-  "$HOLD" release mac-desktop
+  "$HOLD" release mac-desktop --by agent-6
   "$HOLD" claim mac-desktop --by agent-9 "explore"
   grep -qx 'class: other' "$AGENT_HOLD_DIR/mac-desktop"
   # A flag with no value is a usage error, not a hang.
@@ -630,7 +682,7 @@ STUB
   run "$HOLD" show unity-tests
   assert_line 'kind: claim'
   assert_line 'by: agent-6'
-  "$HOLD" release unity-tests
+  "$HOLD" release unity-tests --by agent-6
   "$HOLD" set unity-tests --by binks "hot"
   run env TMUX= bash -c "cd \"\$(mktemp -d)\" && mkdir binks && cd binks && \"$HOLD\" check unity-tests"
   assert_failure 1
