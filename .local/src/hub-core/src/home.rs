@@ -954,10 +954,10 @@ fn has_decision(a: &Value) -> bool {
 }
 
 /// Whether waiting item `i` is a row of its own: no ask stands for it, no shown session owns it,
-/// and it is no trainee run's wait, which the fleet answers (the gate, then a Claude retry).
+/// and a trainee run did not end it, a wait the fleet answers.
 fn waits_alone(i: &Item, asked: &HashSet<String>, shown: &HashSet<String>) -> bool {
     i.state == State::Waiting
-        && !i.is_trainee()
+        && !i.ended_as_trainee()
         && !asked.contains(&i.slug)
         && !i
             .session
@@ -1794,9 +1794,18 @@ mod tests {
     fn a_trainee_runs_wait_lists_nothing_and_a_claude_wait_does() {
         let mut trainee = item("tr", State::Waiting, None);
         trainee.extra.insert("trainee".into(), json!("ocfree:beam"));
+        trainee
+            .extra
+            .insert("sessions".into(), json!("sid-a ses_x"));
+        // The header stays after a rejection: a Claude retry that ended waiting is its own row.
+        let mut retried = trainee.clone();
+        retried.slug = "retried".into();
+        retried
+            .extra
+            .insert("sessions".into(), json!("ses_x sid-b"));
         let plain = item("plain", State::Waiting, None);
         let q = Queue {
-            items: vec![trainee, plain],
+            items: vec![trainee, retried, plain],
             ..Default::default()
         };
         let h = build(Some(&state()), Some(&q), None, None, NOW);
@@ -1806,7 +1815,7 @@ mod tests {
             .filter(|n| n.kind == Kind::Queue)
             .map(|n| n.id.as_str())
             .collect();
-        assert_eq!(queued, ["plain"]);
+        assert_eq!(queued, ["retried", "plain"]);
     }
 
     #[test]
