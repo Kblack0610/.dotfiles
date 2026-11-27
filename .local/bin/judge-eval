@@ -160,7 +160,7 @@ JQ_EVAL="$JQ_EPOCH"'
     | if $pe >= 1 then null else ((($po - $pe) / (1 - $pe)) * 100 | round) / 100 end end;
 
   $I[0] as $ingest
-  # Each call and verdict row carries its epoch (.e), parsed once for every window.
+  # Each call carries its epoch (.e), as each verdict row in $all does, parsed once for every window.
   | ($calls | map(. + {e: (.at | epoch)})) as $calls
   # Each truth source scores the lane whose conf names it in SCORE=.
   | ($src | to_entries | map({(.value): .key}) | reverse | add // {}) as $by
@@ -173,13 +173,12 @@ JQ_EVAL="$JQ_EPOCH"'
      | group_by(.agent) | map(.[0].agent as $a | ([.[] | select(current($a; .s) | not) | .e] | max) as $other
        | {($a): ([.[] | select(current($a; .s) and ($other == null or .e > $other)) | .e] | min)})
      | add // {}) as $since_sha
-  |
 
   # One verdict row each: {agent, id, project, question, rule, type, kind (answer|defer|error),
   # live, want, outcome (tp|fp|fn|tn|pending|unscorable), unscorable (why, on an unscorable one),
   # human, reason, evidence, at, call}. The human label of an ask with options is the option its
   # answer names (answer_picks); a free-text ask keeps its answer unless a session typed it.
-  [$asks[] | select(.judge_rule != "gate" or (.judge_call // "") != "")
+  | [$asks[] | select(.judge_rule != "gate" or (.judge_call // "") != "")
     | . as $a | ($a.judge | if . == "human" then "defer" elif . == "error" then "error" else "answer" end) as $kind
     | (if $a.judge == "take-recommend" then $a.recommend // "" else ($a.judge | ltrimstr("answer:")) end) as $want
     | ($picks[$a.id] // (if ($a.options // "") != "" or (($a.answer // "") | startswith("in session:")) then null else $a.answer end)) as $human
