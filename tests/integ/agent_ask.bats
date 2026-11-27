@@ -283,10 +283,63 @@ relay_fixture() { # <kind> <text> <shown>
   run env AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer "$c" go
   assert_failure 1
   assert_output --partial "$c needs the human (the judge marked it human-only)"
+  # An ask the judge sent to the human is the human's (ar-5156: MVGdCe was answered "merge" by an agent).
+  d="$("$AGENT_ASK" post --project demo --options "$opts" 'approve the look?')"
+  printf 'judge: human\njudge_reason: a taste call.\n' >> "$(ask_file "$d")"
+  run env CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" answer "$d" go
+  assert_failure 1
+  assert_output --partial "$d needs the human (the judge sent it to the human: a taste call)"
+  run "$AGENT_ASK" show "$d"; assert_line 'status: pending'
+  # Negative control: an ask the judge would answer itself still takes an agent's answer.
+  e="$("$AGENT_ASK" post --project demo --options "$opts" 'retry it?')"
+  printf 'judge: take-recommend\n' >> "$(ask_file "$e")"
+  run env CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" answer "$e" go
+  assert_success
+  run "$AGENT_ASK" show "$e"; assert_line 'status: answered'; assert_line 'answered_by: agent'
   # Negative control: the human's answer to an approval still lands.
   run "$AGENT_ASK" answer "$b" go
   assert_success
   run "$AGENT_ASK" show "$b"; assert_line 'answered_by: human'
+}
+
+# An agent answer given before `answer` refused it goes back to the human (ar-5156).
+@test "return: an agent's answer to an ask only the human answers is pending again, the answer kept" {
+  local opts='merge=land it|change=hold it' a b c h
+  a="$("$AGENT_ASK" post --project demo --options "$opts" --recommend change 'approve the look?')"
+  b="$("$AGENT_ASK" post --project demo --options "$opts" 'land it?')"
+  c="$("$AGENT_ASK" post --project demo --options "$opts" 'merge it?')"
+  h="$("$AGENT_ASK" post --project demo --options "$opts" 'approve this one?')"
+  for id in "$a" "$b" "$c"; do "$AGENT_ASK" answer --by agent "$id" merge 2>/dev/null; done
+  "$AGENT_ASK" answer "$h" merge 2>/dev/null
+  # The judge's verdict landed after the agent's answer: the human's for a and h, the judge's own for c.
+  printf 'judge: human\n' >> "$(ask_file "$a")"; printf 'judge: human\n' >> "$(ask_file "$h")"
+  printf 'judge_human_only: true\n' >> "$(ask_file "$b")"; printf 'judge: take-recommend\n' >> "$(ask_file "$c")"
+  run "$AGENT_ASK" return --refused --dry-run
+  assert_success
+  assert_line "demo	$a	the judge sent it to the human"
+  assert_line "demo	$b	the judge marked it human-only"
+  refute_output --partial "$c"; refute_output --partial "$h"
+  run "$AGENT_ASK" show "$a"; assert_line 'status: answered'
+  run "$AGENT_ASK" return --refused
+  assert_success
+  run "$AGENT_ASK" show "$a"
+  assert_line 'status: pending'; assert_line 'agent_answer: merge'; assert_line 'recommend: change'
+  refute_line --partial 'answered_by:'; refute_line --regexp '^answer: '; refute_line --partial 'delivery:'
+  run "$AGENT_ASK" show "$b"; assert_line 'status: pending'; assert_line 'recommend: merge'
+  run "$AGENT_ASK" list --all --pending
+  assert_output --partial "$a"; assert_output --partial "$b"
+  # Negative controls: an ask the agent may answer, and the human's own answer, stay answered.
+  run "$AGENT_ASK" show "$c"; assert_line 'status: answered'; assert_line 'answered_by: agent'
+  run "$AGENT_ASK" show "$h"; assert_line 'status: answered'; assert_line 'answered_by: human'
+  run "$AGENT_ASK" return "$c"
+  assert_failure 1
+  assert_output --partial "$c takes an agent's answer"
+  # A returned ask still refuses the agent; the human's answer lands.
+  run env CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" answer "$a" merge
+  assert_failure 1
+  run "$AGENT_ASK" answer "$a" change
+  assert_success
+  run "$AGENT_ASK" show "$a"; assert_line 'answered_by: human'; assert_line 'answer: change'
 }
 
 @test "another session, or a post with no session id, is not held by someone else's ask" {
