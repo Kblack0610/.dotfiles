@@ -3863,14 +3863,15 @@ q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
     item f1 done high board:game:g-3 "{\"status\":\"failed\",\"end_reason\":\"provider\",\"finished\":\"$(at 3600)\"}"
     item f2 done high board:game:g-4 "{\"status\":\"failed\",\"finished\":\"$(at 3600)\"}"
     item f3 done high board:game:g-5 "{\"status\":\"failed\",\"finished\":\"$(at 864000)\"}"
+    item c1 done high canary "{\"status\":\"failed\",\"finished\":\"$(at 3600)\"}"
   } > "$DONE"
   run "$SUBJECT" chain --json
   assert_success
-  # f2 is the one uncaused close of the three in the window; f3 closed before it
-  assert_equal "$(jq -r '.uncaused_close_share["7d"]' <<<"$output")" 0.333
+  # f2 is the one uncaused close of the four in the window (c1 is a canary failed by its oracle: a cause); f3 closed before it
+  assert_equal "$(jq -r '.uncaused_close_share["7d"]' <<<"$output")" 0.25
   run "$SUBJECT" chain --check
   assert_failure
-  assert_output --partial 'uncaused_close_share 0.333 (max 0.02)'
+  assert_output --partial 'uncaused_close_share 0.25 (max 0.02)'
 }
 
 @test "chain --kpi: trips on its own KPI only, reads one count an hour, and refuses a key outside the chain" {

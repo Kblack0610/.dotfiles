@@ -49,7 +49,7 @@
 #   fleet-dispatch item-end H SID...   why the H run that claimed those ids ended, from this machine's record (a dispatcher asks the worker it ran on)
 #   fleet-dispatch backfill-end [DAYS]   give every item that closed failed in the last DAYS (30) with no end_reason the one its harness's record says
 #   fleet-dispatch record-end SLUG H SID...   item-end, written to the item's end_reason: the canary tail's one classification, which canary score reads
-#   fleet-dispatch canary-close SLUG     the canary tail's close: the item done ok, or queued again once when its run ended outside the model (timeout, provider)
+#   fleet-dispatch canary-close SLUG     the canary tail's close: the item done by the oracle verdict (failed on a fail, else ok), or queued again once when its run ended outside the model (timeout, provider)
 #   fleet-dispatch run-log H SID...   the lines of this machine's H opencode log that the run claiming those ids wrote (canary score keeps them beside its log)
 #   (run, kick, reap, start, fill, promote, pull-after and exits do nothing on a machine that does not hold the fleet lease: lease_guard)
 #   fleet-dispatch record [--here]   keep each world's pane record, then (on the lease holder) each fleet worker's, and take their queue-item events into this chain record (worker_records); page when a world's server died
@@ -3835,7 +3835,7 @@ cmd_backfill_end() {
     [ -n "$why" ] || continue
     agent-queue set "$slug" "end_reason=$why" >/dev/null || continue
     echo "$slug end_reason=$why"; n=$((n + 1))
-  done < <(agent-queue list --json --state done --since "${days}d" | jq -c 'select(.status == "failed" and ((.end_reason // "") == ""))')
+  done < <(agent-queue list --json --state done --since "${days}d" | jq -c 'select(.status == "failed" and ((.end_reason // "") == "") and (.from // "") != "canary")')   # a failed canary is the oracle's verdict
   echo "backfill-end: $n item(s) of the last ${days}d given an end_reason"
 }
 

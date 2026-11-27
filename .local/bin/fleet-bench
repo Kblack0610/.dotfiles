@@ -2602,7 +2602,7 @@ chain_links() {
       "landed_unverified=\(n(if $p == null then null else [$p[] | (.epics // [])[] | select(leaves_landed)] | length end))",
       "uncaused_close_share=\(n(if $d == null then null
         else [$d[] | select((.finished // "" | fromdateiso8601? // 0) > $t - $days * 86400)] as $w
-          | share($w | map(select(.status == "failed" and ((.end_reason // "") == ""))) | length; $w | length) end))",
+          | share($w | map(select(.status == "failed" and ((.end_reason // "") == "") and (.from // "") != "canary")) | length; $w | length) end))",
       "requested_unstarted_h=\(n(if $b == null then null else [$b | oldest_request($t) | .h] | first // 0 end))",
       "cost_per_merged_item=\(n(if $d == null then null else [$d[] | select(.merged and (.finished // "" | fromdateiso8601? // 0) > $t - $days * 86400)
         | [.cost_usd, .gateway_cost_usd] | map(tonumber? // empty) | select(length > 0) | add]
@@ -7635,8 +7635,8 @@ canary_score() {
 # session ended outside the model) or instrument (the oracle or sandbox decided the week). Exit 1 when the run has no
 # score row. fleet-dispatch canary-close reads it to close the item: the one place the oracle's verdict becomes a status.
 canary_verdict() {
-  local run=${1:?usage: fleet-bench canary verdict <run>} v
-  [ $# -eq 1 ] || { say "usage: fleet-bench canary verdict <run>"; return 2; }
+  local run=${1:-} v
+  [ $# -eq 1 ] && [ -n "$run" ] || { say "usage: fleet-bench canary verdict <run>"; return 2; }
   [ -s "$CANARY" ] || { say "canary verdict: no run is scored yet"; return 1; }
   v=$(jq -rs --arg r "$run" "$JQ_LIB"'canary_graded | map(select(.run == $r)) | max_by(.epoch)
     | if . == null then empty elif .instrument then "instrument" elif .pass == null then "not-run" elif .pass then "pass" else "fail" end' "$CANARY") &&

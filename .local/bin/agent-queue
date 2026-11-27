@@ -4414,7 +4414,7 @@ cmd_reopen() {
 # cause), a cancel and an UNRATED_CAUSES requeue file the run unrated: counted, never scored. A failed run
 # carries its why: `(end <reason>)` as trainee_empty_why writes it, else the item's note, so `fleet-dispatch rollup`
 # files no "end with no reason recorded" row for a reaped run (ar-4263: the reap's done failed --end
-# stopped). A canary closed failed is the oracle's verdict (fleet-dispatch canary-close), read from canary list: its
+# stopped). A canary closed failed with no end is the oracle's verdict (fleet-dispatch canary-close): its
 # run is filed unrated, so a task every model fails never counts against the lane. A redo gets none here: trainee-reject filed the reviewer's, which a why would replace. A
 # model-lane error never fails the move.
 # OUTCOME_JQ: the landing verdict a done item is stamped with (`outcome:`), the one every reader counts
@@ -4472,7 +4472,7 @@ lane_outcome() {
     *) return 0 ;;
   esac
   if unrated_end "${5:-}"; then o=unrated c=$5; elif unrated_cause "$c"; then o=unrated; fi
-  [ "$o:${8:-}" != failed:canary ] || o=unrated
+  [ "$o:${5:-}:${8:-}" != failed::canary ] || o=unrated   # no end: canary-close's verdict, not a reaped run
   if [ "$o" = failed ]; then
     if [ -n "${5:-}" ]; then why="the run ended before it closed the item (end $5)"; else why="${7:0:200}"; fi
     [ -z "$why" ] || w=(--why "$why")
