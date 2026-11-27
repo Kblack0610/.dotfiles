@@ -2250,6 +2250,20 @@ Phase 2 of the plan $SANDBOX/plan.md: the doors." >/dev/null
   [ "$(wc -l < "$AGENT_QUEUE_DIR/admission.jsonl")" -eq 5 ]
 }
 
+# ar-5865: agent-land's after-merge apply, added from a dispatched session as item:<landed>, went board-only to
+# the outbox 17 times and never ran, so ConvergenceDrift fired on 8 hosts.
+@test "agent-land's merge-owed step (AGENT_QUEUE_PULL=land) goes in past the cap from an item's session; without the pull it is board-only" {
+  export AGENT_QUEUE_CAP=1
+  "$AQ" add --project game --slug one "one" >/dev/null
+  # NEGATIVE CONTROL: the same add with no pull is an item's follow-up, and the queue does not take it
+  run env -u AGENT_QUEUE_PULL AGENT_QUEUE_ITEM='' "$AQ" add --project game --priority high --from item:ship --slug after-merge-a-1-game "chore(after-merge): apply (left by o/game#1)"
+  assert_failure
+  assert_output --partial "only the board fills the queue"
+  run env AGENT_QUEUE_PULL=land AGENT_QUEUE_ITEM='' "$AQ" add --project game --priority high --from item:ship --slug after-merge-a-2-game "chore(after-merge): apply (left by o/game#2)"
+  assert_success
+  [ "$(field "$(item queued after-merge-a-2-game)" from)" = item:ship ]
+}
+
 @test "the cap passes dispatch's pull of a plan phase filed on its board row, as it passes the --plan; another board pull it holds" {
   story_notes
   printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two' > "$SANDBOX/pp.md"
