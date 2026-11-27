@@ -4067,6 +4067,17 @@ LIB
   assert_output 'release_overdue 1 (max 0)'
   run "$SUBJECT" chain
   assert_line "release_overdue: bnb/tools v1.2.4 untagged, due since $yesterday"
+  # a tag that already ships the open version is a pending roll, not an untagged release
+  rel - v1.2.3; tagdue prod
+  run "$SUBJECT" chain --check
+  assert_success
+  # not due, or a human target still ahead, counts nothing
+  rel - v1.2.4; jq -c '(.[] | select(.name == "tools")) += {stage: "prod", release: {due: false}}' "$PJSON" > "$PJSON.x" && mv "$PJSON.x" "$PJSON"
+  run "$SUBJECT" chain --check
+  assert_success
+  rel - v1.2.4; tagdue prod; target tools "$today"
+  run "$SUBJECT" chain --check
+  assert_success
   rm "$SANDBOX/tools-type"
   # an unreadable project list reads ?, never 0
   BENCH_PROJECTS_CMD=false run "$SUBJECT" chain --json

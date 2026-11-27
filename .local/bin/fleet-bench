@@ -2477,7 +2477,9 @@ chain_notes() {
 # counter owns its version (project_version_owner) still due a day after its cadence due date, so a
 # wave-roll pass had all day to cut it, by "cadence"; else a prod-stage app (registry `type`) its tag owns
 # still due a day after that date, by "tag": done rows waited out the prod cadence and no tag shipped them,
-# which only a release cut fixes (stages.md, "Versions"). Its `.release.due` already means done rows waited
+# which only a release cut fixes (stages.md, "Versions"). A tag at or above the open version is shipped
+# with its roll pending, so it is not counted here. Games are left out: they ship on playtest and store
+# windows, not the prod cadence (the plan's decision, an overdue prod app). Its `.release.due` already means done rows waited
 # out the cadence. drift: a project a vX.Y.Z tag owns whose sheet is neither that tag (the roll is pending) nor
 # a next open version above it (git_version_next_ok, what wave-roll may open). A game its parent versions
 # (`version_parent`, project_version_owner `parent`) counts in neither: the parent is the one cut. A profile with `automation = false` counts in neither.
@@ -2491,7 +2493,8 @@ release_kpis() {
     owner=$(project_version_owner "$name" "$shipped" "$parent")
     if [ "$ton" != - ]; then by=target ver_due=$tver due_on=$ton
     elif [ "$owner" = sheet ]; then by=cadence ver_due=$ver
-    elif [ "$owner" = tag ] && [ "$stage" = prod ] && [ "$(project_field "$name" type)" = app ]; then by=tag ver_due=$ver
+    elif [ "$owner" = tag ] && [ "$stage" = prod ] && [ "$(project_field "$name" type)" = app ] &&
+      { ! project_release_lib || ! git_version_ge "$shipped" "$ver"; }; then by=tag ver_due=$ver
     else by=; fi
     [ -n "$by" ] && [ "$due_on" != - ] && [[ "$due_on" < "$today" ]] &&
       jq -cn --arg p "$prof/$name" --arg v "$ver_due" --arg d "$due_on" --arg by "$by" '{overdue: {project: $p, version: $v, due_on: $d, by: $by}}'
