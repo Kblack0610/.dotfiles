@@ -321,14 +321,14 @@ chain_fixture() {
 }
 
 # pipeline_fixture: one item at each queue step, one open agent row waiting and one the queued item
-# started, three inbox lines, two items finished (one inside 24h), and a record that holds each
+# started, three inbox lines, two items finished (one inside 24h), and a record that holds the three lines and each
 # item where the queue folders do. Ages: queued 2h, running 1h, on a PR 30m, waiting 10m, the row 3 days and 4h.
 # The board also holds rows the backlog must not count: a human-lane row, one with automation off,
 # one of another profile and one parked behind a backlog token.
 pipeline_fixture() {
   kpi_setup
   at() { date -u -d "@$((T0 - $1))" +%Y-%m-%dT%H:%M:%SZ; }
-  printf '%s\n' chain_drift_max=0 step_age_p90_queued_max=180 step_age_p90_running_max=120 >> "$KPI_THRESHOLDS"
+  printf '%s\n' chain_drift_max=0 chain_inbox_drift_max=0 step_age_p90_queued_max=180 step_age_p90_running_max=120 >> "$KPI_THRESHOLDS"
   export BENCH_ITEMS_CMD=items-stub BENCH_DONE_ITEMS_CMD=done-stub BENCH_BOARD_CMD=board-stub BENCH_STEPS_CMD=steps-stub
   export BENCH_INBOX_CMD=inbox-stub
   printf '#!/usr/bin/env bash\necho %q\n' '["one","two","three"]' > "$SANDBOX/bin/inbox-stub"
@@ -349,7 +349,7 @@ pipeline_fixture() {
     {profile: "work", project: "client", lane: "agent", state: "open", id: "c-1", since: $d},
     {profile: "personal", project: "game", lane: "agent", state: "open", id: "g-5", since: $d, backlog: true}]}' > "$BJSON"
   jq -cn --arg s "$(at 172800)" --arg i "$(at 86400)" '{since: $s, items_since: $i, steps: [
-    {step: "inbox", in_1h: 2, out_1h: 1, in_24h: 5, out_24h: 4, dwell_p50_min: 0, dwell_p90_min: 3, items: []},
+    {step: "inbox", open: 3, in_1h: 2, out_1h: 1, in_24h: 5, out_24h: 4, dwell_p50_min: 0, dwell_p90_min: 3, items: []},
     {step: "backlog", in_1h: 0, out_1h: 1, in_24h: 3, out_24h: 1, items: []},
     {step: "queued", in_1h: 1, out_1h: 0, in_24h: 2, out_24h: 1, dwell_p50_min: 16, dwell_p90_min: 20, items: ["q1"]},
     {step: "running", in_1h: 1, out_1h: 1, in_24h: 2, out_24h: 1, items: ["r1"]},
