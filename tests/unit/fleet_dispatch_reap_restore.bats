@@ -1153,10 +1153,12 @@ LOG
   echo '{"server":"lab","panes":[{"session":"s","window":"w","cwd":"/x","claude":"c"}]}' > "$FLEET_DISPATCH_DIR/panes/lab.lost.json"
   echo '{"server":"hub","panes":[]}' > "$FLEET_DISPATCH_DIR/panes/hub.lost.json"
   RESTORE_OWED=() RESTORE_WALKED=("$FLEET_DISPATCH_DIR/panes/hub.lost.json")
-  restore_pace >/dev/null
+  run restore_pace   # run: no hold makes agent-hold show exit 1, which bats -e would take for a failure
+  assert_success
   [ -e "$FLEET_DISPATCH_DIR/panes/.restore-owed" ] || fail "a record the walk never read lost its retry"
   RESTORE_WALKED+=("$FLEET_DISPATCH_DIR/panes/lab.lost.json")
-  restore_pace >/dev/null
+  run restore_pace
+  assert_success
   [ ! -e "$FLEET_DISPATCH_DIR/panes/.restore-owed" ] || fail "the marker outlived a walk of every record"
 }
 
