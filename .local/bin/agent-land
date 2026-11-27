@@ -1200,8 +1200,8 @@ hold_gate() {
   files=$(pr_files 2>&1) || fail hold "could not read #$pr's changed files ($(lastline "$files")), and a hold scopes $name; re-run"
   names=$(aq_retry grant-names "$item" 2>/dev/null) || names=$item
   # shellcheck disable=SC2086 # a word list: one --for name each
-  out=$("$HOLD_BIN" covers "$name" --for $names <<<"$files" 2>&1) && return 0
-  fail hold "$(paste -sd';' <<<"$out" | sed 's/;/; /g'). Nothing merged: wait for the hold to end, or ask its setter to grant $item (agent-hold grant <resource> $item)"
+  out=$("$HOLD_BIN" covers "$name" ${names:+--for $names} <<<"$files" 2>&1) && return 0
+  fail hold "$(paste -sd';' <<<"$out" | sed 's/;/; /g'). Nothing merged: wait for the hold to end, or ask its setter to grant ${item:-<item>} (agent-hold grant <resource> ${item:-<item>})"
 }
 
 # review_gate: a tier-3 item (`fleet-dispatch item-tier`, the one beside this script: harness or tooling, promoted from a row or

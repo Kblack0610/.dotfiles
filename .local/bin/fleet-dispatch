@@ -850,13 +850,14 @@ scope_off_set() {
     for g in ${granted//,/ }; do
       [ "$g" = "$2" ] || [[ " $t " == *" #of/${g,,} "* ]] && continue 2
     done
-    if [ -z "$path" ]; then
+    [ "$path" != - ] || path=''
+    w=${path,,}
+    # A full path named in the text holds a row of any project; a whole repo, or a path's last
+    # segment alone, only a row of that repo's project or one whose text names the repo.
+    if [ -z "$w" ] || ! [[ "$t" =~ $b"$w"$e ]]; then
       [ -n "${SCOPE_REPO[$1]+x}" ] || SCOPE_REPO[$1]=$(item_repo "$1")
-      w=${repo,,}
-      [ "${SCOPE_REPO[$1],,}" = "$w" ] || [[ "$t" =~ $b"$w"$e ]] || continue
-    else
-      w=${path,,}
-      [[ "$t" =~ $b"$w"$e ]] || { w=${w##*/}; [[ "$t" =~ $b"$w"$e ]]; } || continue
+      [ "${SCOPE_REPO[$1],,}" = "${repo,,}" ] || [[ "$t" =~ $b"${repo,,}"$e ]] || continue
+      [ -z "$w" ] || { w=${w##*/}; [[ "$t" =~ $b"$w"$e ]]; } || continue
     fi
     OFF="held by the $res hold, whose scope $repo${path:+:$path} its work lands in (agent-hold show $res)"
     return 0

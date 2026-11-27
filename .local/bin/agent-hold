@@ -54,7 +54,7 @@
 #                                   release ends (the shepherd's pace line names them)
 #   agent-hold show <resource>      print the hold file
 #   agent-hold scopes               resource<TAB>repo<TAB>path<TAB>granted, one line per --scope entry of
-#                                   each hold in force (path empty for a whole repo, granted comma-separated)
+#                                   each hold in force (path - for a whole repo, granted comma-separated)
 #   agent-hold covers <repo> [--for <id>...] < changed paths   exit 1, one held: line each, while a hold
 #                                   in force scopes a path given (a whole-repo scope: any path) and grants
 #                                   neither the caller nor a --for name (check decides that); else 0
@@ -196,6 +196,8 @@ scope_norm() {
     r="${e%%:*}" p=""
     [ "$r" = "$e" ] || p="${e#*:}"
     p="${p#./}"; while [[ "$p" == /* ]]; do p="${p#/}"; done; while [[ "$p" == */ ]]; do p="${p%/}"; done
+    [ "$r" = "$e" ] || [ -n "$p" ] ||
+      { echo "agent-hold set: --scope entry '$e' names no path after the colon (<repo> for the whole repo)" >&2; return 1; }
     [[ "$r" =~ ^[A-Za-z0-9._-]+$ ]] && [ "$r" != . ] && [ "$r" != .. ] ||
       { echo "agent-hold set: --scope entry '$e' names no repo (<repo> or <repo>:<path>)" >&2; return 1; }
     IFS=/ read -ra segs <<<"$p"
@@ -724,6 +726,7 @@ cmd_aged() {
 }
 
 # scopes -> resource, repo, path and granted, tab-separated, for each --scope entry of each hold in force.
+# A whole repo's path is -, since read with IFS=tab folds an empty field into the next one.
 cmd_scopes() {
   # gate: none
   [ $# -eq 0 ] || { echo "agent-hold scopes: takes no argument" >&2; exit 2; }
@@ -738,7 +741,7 @@ cmd_scopes() {
     for e in "${es[@]}"; do
       [ -n "$e" ] || continue
       if [[ "$e" == *:* ]]; then printf '%s\t%s\t%s\t%s\n' "${f##*/}" "${e%%:*}" "${e#*:}" "$g"
-      else printf '%s\t%s\t\t%s\n' "${f##*/}" "$e" "$g"; fi
+      else printf '%s\t%s\t-\t%s\n' "${f##*/}" "$e" "$g"; fi
     done
   done
 }
@@ -764,8 +767,9 @@ cmd_covers() {
   while IFS=$'\t' read -r r sr sp g; do
     [ -n "$r" ] && [ -z "${seen[$r]+x}" ] || continue
     [ "${sr,,}" = "${repo,,}" ] || continue
+    [ "$sp" != - ] || sp=''
     if [ -z "$sp" ]; then hit="${files%%$'\n'*}"
-    else hit="$(awk -v p="$sp" '$0 == p || index($0, p "/") == 1 { print; exit }' <<<"$files")"; fi
+    else hit="$(SP="${sp,,}" awk '{ l = tolower($0) } l == ENVIRON["SP"] || index(l, ENVIRON["SP"] "/") == 1 { print; exit }' <<<"$files")"; fi
     [ -n "$hit" ] || continue
     seen[$r]=1
     out="$(cmd_check "$r" "${fors[@]}" 2>/dev/null)" && continue

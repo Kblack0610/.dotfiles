@@ -893,7 +893,7 @@ systemctl_calls() { grep '^systemctl ' "$NOTES_FIXTURE/calls.log" 2>/dev/null | 
   grep -qx 'scope: home-config:apps/ci-runner-governor,dotfiles' "$AGENT_HOLD_DIR/critical"
   run "$HOLD" scopes
   assert_success
-  assert_output "$(printf 'critical\thome-config\tapps/ci-runner-governor\t\ncritical\tdotfiles\t\t')"
+  assert_output "$(printf 'critical\thome-config\tapps/ci-runner-governor\t\ncritical\tdotfiles\t-\t')"
   run "$HOLD" covers Home-Config --for ucp-2881 <<<"apps/ci-runner-governor/main.go"
   assert_failure 1
   assert_output --partial 'held: critical since'
@@ -905,11 +905,19 @@ systemctl_calls() { grep '^systemctl ' "$NOTES_FIXTURE/calls.log" 2>/dev/null | 
   run "$HOLD" covers other <<<"apps/ci-runner-governor/x"
   assert_success
   "$HOLD" grant critical ucp-2881
-  run "$HOLD" covers home-config --for ar-1 ucp-2881 <<<"apps/ci-runner-governor"
+  run "$HOLD" covers home-config --for ar-1 ucp-2881 <<<"Apps/CI-Runner-Governor"
   assert_success
+  # A whole-repo scope stays whole once a grant fills the last column.
+  run "$HOLD" covers dotfiles --for ucp-2881 <<<"anything/at/all"
+  assert_success
+  run "$HOLD" covers dotfiles --for ar-1 <<<"anything/at/all"
+  assert_failure 1
+  assert_output --partial '(scope dotfiles covers anything/at/all)'
   run "$HOLD" set x --scope 'a:../b' "r"
   assert_failure 2
   run "$HOLD" set x --scope 'bad/name' "r"
+  assert_failure 2
+  run "$HOLD" set x --scope 'repo:' "r"
   assert_failure 2
   # A re-set with no --scope drops it, as it drops the roster.
   "$HOLD" set critical --kind resource --by coordinator "lockdown"
