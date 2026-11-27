@@ -216,6 +216,41 @@ lead_fixture() {
   [ "$(jq '.drift' <<<"$output")" = 2 ]
 }
 
+@test "pipeline: an inbox line the record holds open but no inbox holds is inbox drift, and chain --check trips on it" {
+  # NEGATIVE CONTROL: the record holds four lines open in the inbox step, the outbox and ## Inbox three
+  pipeline_fixture
+  run "$SUBJECT" pipeline --json
+  assert_success
+  [ "$(jq '.inbox_drift' <<<"$output")" = 0 ]
+  jq -c '(.steps[] | select(.step == "inbox") | .open) = 4' "$RJSON" > "$RJSON.new" && mv "$RJSON.new" "$RJSON"
+  run "$SUBJECT" pipeline --json
+  [ "$(jq '.inbox_drift' <<<"$output")" = 1 ]
+  run "$SUBJECT" chain --check
+  assert_failure 1
+  assert_output 'chain_inbox_drift 1 (max 0)'
+  # a live line the record never saw added is drift the other way, counted the same
+  jq -c '(.steps[] | select(.step == "inbox") | .open) = 1' "$RJSON" > "$RJSON.new" && mv "$RJSON.new" "$RJSON"
+  run "$SUBJECT" pipeline --json
+  [ "$(jq '.inbox_drift' <<<"$output")" = 2 ]
+}
+
+@test "pipeline: an unreadable inbox or a record with no inbox count leaves inbox drift null" {
+  pipeline_fixture
+  export BENCH_INBOX_CMD=false
+  run "$SUBJECT" pipeline --json
+  assert_success
+  run jq -c '[.drift, .inbox_drift]' <<<"$output"
+  assert_output '[0,null]'
+  run "$SUBJECT" chain --check
+  assert_failure 2
+  assert_output 'unreadable: chain_inbox_drift could not be counted'
+  # a record from before notes printed open is no count either
+  export BENCH_INBOX_CMD=inbox-stub
+  jq -c '(.steps[] | select(.step == "inbox")) |= del(.open)' "$RJSON" > "$RJSON.new" && mv "$RJSON.new" "$RJSON"
+  run "$SUBJECT" pipeline --json
+  [ "$(jq '.inbox_drift' <<<"$output")" = null ]
+}
+
 @test "pipeline: an unreadable record leaves flows and drift null and trips nothing, and WIP still reads" {
   pipeline_fixture
   export BENCH_STEPS_CMD=false
@@ -226,7 +261,7 @@ lead_fixture() {
   # an unread drift is UNKNOWN to chain --check, not a trip (ar-5413)
   run "$SUBJECT" chain --check
   assert_failure 2
-  assert_output 'unreadable: chain_drift could not be counted'
+  assert_output 'unreadable: chain_drift chain_inbox_drift could not be counted'
   # the line-per-step shape notes printed before items_since is not a record either
   printf '{"step":"inbox"}\n{"step":"queued"}\n' > "$RJSON"
   export BENCH_STEPS_CMD=steps-stub
@@ -761,6 +796,7 @@ STUB
   assert_line 'agent_chain_score{step="queued"} 0.67'
   assert_line 'agent_chain_moves{step="inbox",dir="in"} 2'
   assert_line 'agent_chain_drift 0'
+  assert_line 'agent_chain_inbox_drift 0'
   refute_output --regexp '^agent_chain_(age_minutes|dwell_minutes)'
   assert_line 'agent_bench_kpi{kpi="step_age_p90_queued",window="7d"} 120'
   assert_line 'agent_bench_kpi_limit{kpi="chain_drift"} 0'
