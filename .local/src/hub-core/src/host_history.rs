@@ -1,7 +1,6 @@
 //! One machine's last days, for its page (`#infra/machines/<host>`, `machine_page`): its CPU
-//! busy share and the cores each CI pool's jobs used, folded to one bucket an hour; its downtime
-//! records (`Down`, the downtime list); and, for a host the governor powers, each start and stop
-//! with its reason and the hours it ran per UTC day. Read only when a page is opened, never on
+//! busy share and the cores each kind of CI job pod requested there, folded to one bucket an
+//! hour; and its downtime records (`Down`, the downtime list). Read only when a page is opened, never on
 //! the board's cadence: the series from Prometheus with range queries at one step (`STEP`) over
 //! `DAYS` days, which is what Prometheus keeps (home-config `helm-values.yaml` retention), the
 //! records from Loki over the same days.
@@ -10,8 +9,7 @@
 //! |--------|-----------------------------------------------------------------------------------|
 //! | cpu    | `cc:host_cpu_busy_ratio{host}`: node exporter's busy share; a missing sample is no reading |
 //! | temp   | `cc:host_temp_c{host}`: its hottest CPU sensor, the hour's largest sample              |
-//! | pools  | `cc:job_kind_cores{host,runner,kind}`: a busy runner's cores by its job's kind, summed by kind |
-//! | power  | the governor's own `ci_governor_power_state{host}` (home-config apps/ci-runner-governor); hours counted from the samples, not from its `hours_today` gauge (that gauge restarted at 0 on an override start, 2026-11-10) |
+//! | pools  | kube-state-metrics: the CPU requests of the running job pods on its node, summed by kind (`jobpods::kind_info_query`) |
 //! | down   | Loki `{job="host-downtime", host}`: one JSON record per boot or Ready drop with its cause, written by home-config's cluster-janitor (`docs/host-tiers.md` "Downtime records"), through `kube_proxy` (`CC_KUBE_CONTEXT`, `CC_LOKI_SERVICE`) |
 
 use std::collections::BTreeMap;
@@ -20,13 +18,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::kube_proxy::{self, encode};
 use crate::prom::{self, Series};
-use crate::reading::NO_DATA;
 use crate::table::{Row, Val};
 
 /// How far back a history reaches.
 pub const DAYS: u64 = 7;
-/// Seconds between samples: the governor's cycle is about 2 minutes, so one sample per cycle,
-/// and the `cc:*` rules evaluate every minute.
+/// Seconds between samples: the `cc:*` rules evaluate every minute, so two a sample.
 pub const STEP: u64 = 120;
 
 // A history stays under the Prometheus point cap of 11,000 per series.
@@ -35,38 +31,7 @@ const _: () = assert!(DAYS * 86_400 / STEP < 11_000);
 /// Seconds per history bucket: an hour, so a week is 168 columns on either surface.
 pub const BUCKET: u64 = 3600;
 
-#[derive(Serialize, Debug, PartialEq, Clone)]
-pub struct Change {
-    /// Unix seconds of the first sample in this state.
-    pub at: u64,
-    /// stopped, starting, running, draining, stopping, or `NO_DATA` for a gap.
-    pub state: String,
-    /// Why the governor last powered it (queue, idle, cap, override), "none" before it has.
-    pub reason: String,
-}
-
-#[derive(Serialize, Debug, PartialEq, Clone)]
-pub struct Day {
-    /// The UTC day, YYYY-MM-DD: the governor's day cap resets at 00:00 UTC.
-    pub day: String,
-    /// Hours its samples read anything but stopped, `STEP` seconds per sample.
-    pub hours: f64,
-}
-
-/// A powered host's starts and stops.
-#[derive(Serialize, Debug, PartialEq, Clone)]
-pub struct PowerHistory {
-    pub host: String,
-    pub from: u64,
-    pub to: u64,
-    pub step: u64,
-    /// Oldest first: one row per change of state or reason.
-    pub changes: Vec<Change>,
-    /// Oldest first: only days with a sample.
-    pub days: Vec<Day>,
-}
-
-/// A host (or pool) name the governor could export: letters, digits, `-`, `_` and `.`, so it
+/// A host (or pool) name a series could carry: letters, digits, `-`, `_` and `.`, so it
 /// is safe inside the query's label matcher.
 pub fn valid_host(host: &str) -> bool {
     !host.is_empty()
@@ -83,7 +48,8 @@ pub struct Hour {
     pub at: u64,
     /// The mean CPU busy share of the hour's samples; none when it gave no reading.
     pub cpu: Option<f64>,
-    /// The mean cores each kind of CI job used, by kind (the pool names `cc:pool_*` use).
+    /// The mean cores the running job pods of each kind requested there, by kind
+    /// (`JobPod::kind`, the scale set or ScaledJob).
     pub pools: BTreeMap<String, f64>,
     /// The share of the hour's steps with a CPU reading: 1 up all hour, 0 no reading.
     pub seen: f64,
@@ -221,8 +187,6 @@ pub struct HostHistory {
     pub down_unread: Option<String>,
     /// How many CPU samples it gave: 0 is a host with no node exporter reading in the window.
     pub readings: usize,
-    /// The governor's power history, for a host it powers.
-    pub power: Option<PowerHistory>,
     /// `<part>: <why>` for each part that could not be read; the rest still show.
     pub errors: Vec<String>,
 }
@@ -256,42 +220,39 @@ pub(crate) fn alternation(names: &[String]) -> Result<String, String> {
     Ok(alts.join("|"))
 }
 
-/// The cores each kind of CI job used on the hosts `m` matches: `cc:job_kind_cores`, a busy
-/// runner's cores labelled with its job's kind (home-config's recording rule over
-/// `ci_runner_job`). A runner row is not keyed by its job's kind (an agnostic slot takes every
-/// kind), so it is not what the cores are summed by.
-fn pools_query(m: &str) -> String {
-    format!("sum by (kind) (cc:job_kind_cores{{{m}}})")
+/// The CPU the running job pods on the node `alt` matches requested, by kind: each pod's
+/// requests times its `kind_info_query` row while it runs. No series gives a pod's real use
+/// (hc-1127), so this is what the pods booked there.
+fn pools_query(alt: &str) -> String {
+    let ns = crate::jobpods::NAMESPACE;
+    let info = crate::jobpods::kind_info_query(&format!(r#"node=~"{alt}""#));
+    format!(
+        r#"sum by (kind) (sum by (pod) (kube_pod_container_resource_requests{{namespace="{ns}",resource="cpu"}}) * on (pod) group_left (kind) (max by (pod, kind) ({info}) * on (pod) group_left () max by (pod) (kube_pod_status_phase{{namespace="{ns}",phase="Running"}} == 1)))"#
+    )
 }
 
 /// Ask Prometheus and Loki for a machine's last `DAYS` days: `names` are every name it goes by
-/// (its host label first), `powered` the governor's name for it when the governor powers it. A
-/// part that fails is an error line; the rest still read.
-pub fn read(names: &[String], powered: Option<&str>, now: u64) -> Result<HostHistory, String> {
+/// (its host label first). A part that fails is an error line; the rest still read.
+pub fn read(names: &[String], now: u64) -> Result<HostHistory, String> {
     let host = names.first().ok_or("no host name")?.clone();
     let m = hosts_matcher(names)?;
     let alt = alternation(names)?;
-    if let Some(p) = powered.filter(|p| !valid_host(p)) {
-        return Err(format!("{p:?} is not a host name"));
-    }
     let base = prom::base()?;
     let from = now.saturating_sub(DAYS * 86_400);
-    let pools_q = pools_query(&m);
-    // Each query reads 7 days; they run at once (power on this thread), so the page waits for
-    // the slowest only.
+    let pools_q = pools_query(&alt);
+    // Each query reads 7 days; they run at once, so the page waits for the slowest only.
     let base = base.as_str();
-    let (cpu, temp, pools, down, power) = std::thread::scope(|s| {
+    let (cpu, temp, pools, down) = std::thread::scope(|s| {
         let q = |q: String| s.spawn(move || range(base, q, from, now));
         let cpu = q(format!("max(cc:host_cpu_busy_ratio{{{m}}})"));
         let temp = q(format!("max(cc:host_temp_c{{{m}}})"));
         let pools = q(pools_q);
         let down = s.spawn(|| downtime(&alt, from, now));
-        let power = powered.map(|p| power(base, p, from, now));
         let down = down.join().unwrap_or_else(|_| Err("panicked".to_string()));
         let join = |h: std::thread::ScopedJoinHandle<'_, _>| {
             h.join().unwrap_or_else(|_| Err("panicked".to_string()))
         };
-        (join(cpu), join(temp), join(pools), down, power)
+        (join(cpu), join(temp), join(pools), down)
     });
     let mut errors = vec![];
     let mut part = |name: &str, r: Result<Vec<Series>, String>| {
@@ -299,8 +260,7 @@ pub fn read(names: &[String], powered: Option<&str>, now: u64) -> Result<HostHis
             .unwrap_or_default()
     };
     let (cpu, temp, pools) = (part("cpu", cpu), part("temp", temp), part("pools", pools));
-    let power = power.and_then(|r| r.map_err(|e| errors.push(format!("power: {e}"))).ok());
-    let mut h = history(&host, &cpu, &temp, &pools, power, from, now);
+    let mut h = history(&host, &cpu, &temp, &pools, from, now);
     match down {
         Ok(d) => h.down = d,
         Err(e) => h.down_unread = Some(e),
@@ -377,14 +337,12 @@ impl Hours {
     }
 }
 
-/// The history from the CPU, temperature and pool series and the power history: pure, for the
-/// tests.
+/// The history from the CPU, temperature and pool series: pure, for the tests.
 pub fn history(
     host: &str,
     cpu: &[Series],
     temp: &[Series],
     pools: &[Series],
-    power: Option<PowerHistory>,
     from: u64,
     to: u64,
 ) -> HostHistory {
@@ -421,7 +379,7 @@ pub fn history(
             continue;
         }
         for (h, b) in hours.iter_mut().zip(span.fold(std::slice::from_ref(s))) {
-            // The mean over the hour's steps, a missing step counting as no cores used.
+            // The mean over the hour's steps, a missing step counting as no cores requested.
             if b.n > 0 {
                 h.pools
                     .insert(kind.to_string(), b.sum / per.max(b.n as f64));
@@ -438,206 +396,16 @@ pub fn history(
         readings: times.len(),
         down: vec![],
         down_unread: None,
-        power,
         errors: vec![],
     }
-}
-
-/// Ask Prometheus for the governor's power samples of `host` (its own name for it) since `from`.
-fn power(base: &str, host: &str, from: u64, now: u64) -> Result<PowerHistory, String> {
-    let q = format!(r#"max by (state, reason) (ci_governor_power_state{{host="{host}"}})"#);
-    Ok(fold(host, &range(base, q, from, now)?, from, now))
-}
-
-/// Each sample as (time, state, reason), oldest first, then one change per new state or
-/// reason, and a `NO_DATA` change where samples skip more than one step.
-pub fn fold(host: &str, series: &[Series], from: u64, to: u64) -> PowerHistory {
-    let mut samples: Vec<(u64, &str, &str)> = series
-        .iter()
-        .flat_map(|s| {
-            let (state, reason) = (s.label("state"), s.label("reason"));
-            s.points
-                .iter()
-                .map(move |(t, _)| (*t as u64, state, reason))
-        })
-        .collect();
-    samples.sort();
-    // One sample per time: two series at one step (a change on a scrape boundary) count once.
-    samples.dedup_by_key(|(t, _, _)| *t);
-    let mut changes: Vec<Change> = Vec::new();
-    let mut hours: BTreeMap<String, f64> = BTreeMap::new();
-    let mut last_t: Option<u64> = None;
-    for (t, state, reason) in samples {
-        let gap_from = last_t.map_or(from, |prev| prev + STEP);
-        if t > gap_from + STEP {
-            push(&mut changes, gap_from, NO_DATA, "");
-        }
-        push(&mut changes, t, state, reason);
-        let day = hours.entry(utc_day(t)).or_default();
-        if state != "stopped" {
-            *day += STEP as f64 / 3600.0;
-        }
-        last_t = Some(t);
-    }
-    // Samples that end before `to`: the governor stopped exporting, so its last state is not now.
-    if let Some(prev) = last_t {
-        if to > prev + 2 * STEP {
-            push(&mut changes, prev + STEP, NO_DATA, "");
-        }
-    }
-    PowerHistory {
-        host: host.to_string(),
-        from,
-        to,
-        step: STEP,
-        changes,
-        days: hours
-            .into_iter()
-            .map(|(day, h)| Day {
-                day,
-                hours: (h * 10.0).round() / 10.0,
-            })
-            .collect(),
-    }
-}
-
-fn push(changes: &mut Vec<Change>, at: u64, state: &str, reason: &str) {
-    if changes
-        .last()
-        .is_some_and(|c| c.state == state && c.reason == reason)
-    {
-        return;
-    }
-    changes.push(Change {
-        at,
-        state: state.to_string(),
-        reason: reason.to_string(),
-    });
-}
-
-fn utc_day(t: u64) -> String {
-    chrono::DateTime::from_timestamp(t as i64, 0)
-        .map(|d| d.format("%Y-%m-%d").to_string())
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn series(state: &str, reason: &str, times: &[u64]) -> Series {
-        Series {
-            labels: [("state", state), ("reason", reason)]
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect(),
-            value: None,
-            points: times.iter().map(|t| (*t as f64, 1.0)).collect(),
-        }
-    }
-
     // 2026-11-10 23:56Z: two samples before midnight, two after.
     const T: u64 = 1_794_354_960;
-
-    #[test]
-    fn the_same_state_twice_is_one_change_and_a_new_reason_is_another() {
-        let h = fold(
-            "aws-burst-1",
-            &[
-                series("running", "queue", &[T, T + STEP]),
-                series("stopped", "idle", &[T + 2 * STEP]),
-                series("stopped", "cap", &[T + 3 * STEP]),
-            ],
-            T,
-            T + 3 * STEP,
-        );
-        let got: Vec<_> = h
-            .changes
-            .iter()
-            .map(|c| (c.at, c.state.as_str(), c.reason.as_str()))
-            .collect();
-        assert_eq!(
-            got,
-            vec![
-                (T, "running", "queue"),
-                (T + 2 * STEP, "stopped", "idle"),
-                (T + 3 * STEP, "stopped", "cap"),
-            ]
-        );
-    }
-
-    #[test]
-    fn hours_are_counted_per_utc_day_from_the_samples() {
-        let h = fold(
-            "aws-burst-1",
-            &[series(
-                "running",
-                "override",
-                &(0..60).map(|i| T + i * STEP).collect::<Vec<_>>(),
-            )],
-            T,
-            T + 59 * STEP,
-        );
-        // 2 samples on 11-10, 58 on 11-11, 2 minutes each.
-        assert_eq!(
-            h.days,
-            vec![
-                Day {
-                    day: "2026-11-10".into(),
-                    hours: 0.1
-                },
-                Day {
-                    day: "2026-11-11".into(),
-                    hours: 1.9
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn a_stopped_day_reads_zero_and_a_gap_reads_no_reading() {
-        let h = fold(
-            "aws-burst-2",
-            &[
-                series("stopped", "idle", &[T + 10 * STEP]),
-                series("running", "queue", &[T]),
-            ],
-            T,
-            T + 10 * STEP,
-        );
-        let states: Vec<_> = h.changes.iter().map(|c| c.state.as_str()).collect();
-        assert_eq!(states, vec!["running", NO_DATA, "stopped"]);
-        assert_eq!(h.changes[1].at, T + STEP);
-        assert_eq!(
-            h.days[1],
-            Day {
-                day: "2026-11-11".into(),
-                hours: 0.0
-            }
-        );
-    }
-
-    #[test]
-    fn a_duplicate_time_counts_once_and_missing_ends_read_no_reading() {
-        let h = fold(
-            "aws-burst-1",
-            &[
-                series("running", "queue", &[T + 5 * STEP]),
-                series("stopped", "idle", &[T + 5 * STEP]),
-            ],
-            T,
-            T + 20 * STEP,
-        );
-        let states: Vec<_> = h.changes.iter().map(|c| c.state.as_str()).collect();
-        assert_eq!(states, vec![NO_DATA, "running", NO_DATA]);
-        assert_eq!(
-            h.days,
-            vec![Day {
-                day: "2026-11-11".into(),
-                hours: 0.0
-            }]
-        );
-    }
 
     #[test]
     fn only_a_plain_host_name_reaches_the_query() {
@@ -666,7 +434,7 @@ mod tests {
 
     #[test]
     fn a_host_with_no_reading_at_all_has_no_reading_in_any_hour() {
-        let h = history("aws-burst-1", &[], &[], &[], None, T, T + 7200);
+        let h = history("aws-burst-1", &[], &[], &[], T, T + 7200);
         assert_eq!(h.readings, 0);
         assert!(
             h.down.is_empty(),
@@ -794,7 +562,6 @@ mod tests {
                 kind("unity", &[(T, 3.0), (T + STEP, 3.0)]),
                 kind("light", &[(T, 1.5)]),
             ],
-            None,
             T,
             T + 2 * BUCKET,
         );
@@ -811,9 +578,11 @@ mod tests {
     }
 
     #[test]
-    fn the_cores_are_summed_by_the_kind_of_job_not_the_runners_pool() {
-        let q = pools_query(r#"host=~"ms-a2""#);
-        assert_eq!(q, r#"sum by (kind) (cc:job_kind_cores{host=~"ms-a2"})"#);
+    fn the_cores_are_the_running_job_pods_requests_on_its_node_by_kind() {
+        let q = pools_query("ms-a2");
+        assert!(q.starts_with("sum by (kind) (sum by (pod) (kube_pod_container_resource_requests{namespace=\"arc-runners\",resource=\"cpu\"})"), "{q}");
+        assert!(q.contains(r#"kube_pod_info{namespace="arc-runners",created_by_kind="EphemeralRunner",node=~"ms-a2"}"#), "{q}");
+        assert!(q.contains(r#"phase="Running"} == 1"#), "{q}");
     }
 
     #[test]

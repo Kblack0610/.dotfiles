@@ -167,10 +167,9 @@ impl Space {
     }
 }
 
-/// `busy` cores of a machine, never fewer than its CI jobs use (the two are read a scrape apart).
+/// `busy` cores of a machine: its cores times its busy share.
 pub fn busy_cores(m: &Machine) -> Option<f64> {
-    let ci: f64 = m.runner_cores.iter().map(|(_, c)| c).sum();
-    Some((m.cores? * m.cpu?).max(ci))
+    Some(m.cores? * m.cpu?)
 }
 
 /// The class rules' answers, by host and class.

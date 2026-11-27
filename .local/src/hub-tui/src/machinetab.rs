@@ -1,10 +1,10 @@
 //! One machine's page in place of Infra's Machines tab, drawn from the page `hub_core` reads for
 //! both surfaces (`hub_core::machine_page`): its parts, every temperature sensor and fan, the
-//! runner slots there with what each takes of it, the CI jobs running there, its pods, containers, busiest processes
+//! fixed runners and job pods there with what the pods request, the CI jobs running there, its pods, containers, busiest processes
 //! and services, its last days of CPU, temperature and downtime, the CI jobs that ran there and
 //! the alerts that name it. agent-web draws the same page at `#infra/machines/<host>`.
 
-use hub_core::host_history::{HostHistory, Hour, PowerHistory, DAYS};
+use hub_core::host_history::{HostHistory, Hour, DAYS};
 use hub_core::host_now::{bytes, HostNow, Proc, Session, HOT_C};
 use hub_core::machine_page::{MachinePage, RecentJob};
 use hub_core::table::Row as _;
@@ -20,8 +20,6 @@ pub const PAGE_KEYS: &str = "[Esc all machines  o Grafana]";
 
 /// Recent CI jobs drawn before `+N more`.
 const RECENT_ROWS: usize = 15;
-/// Power changes shown before "+N older".
-const POWER_ROWS: usize = 10;
 /// The temperature chart's empty block, degrees C: an idle CPU sits above it, so the chart
 /// spends its eight blocks on the range a machine works in.
 const TEMP_FLOOR: f64 = 30.0;
@@ -103,10 +101,6 @@ pub fn page(
             out.extend(history(h, p, now, w));
             out.push(blank());
             out.extend(downtime(h, p, now, w));
-            if let Some(pw) = &h.power {
-                out.push(blank());
-                out.extend(power(pw, p, now));
-            }
         }
         None => out.push(heading(
             &format!("{DAYS} DAYS"),
@@ -121,101 +115,56 @@ pub fn page(
     out.into_iter().map(|l| clip_line(l, w)).collect()
 }
 
-/// Each runner with what it takes, what it does and what it uses, then the rest of the machine by class;
-/// TAKES is the first column to go when the width runs short.
+/// Each fixed runner and what it does, the job pods by kind with what they request, then the
+/// rest of the machine by class; a class row has no NOW.
 fn slots(page: &MachinePage, p: Palette, w: usize) -> Vec<Line<'static>> {
     if page.slots.is_empty() {
         return vec![heading("SLOTS", "  no runner and no core reading", p)];
     }
-    let runners: Vec<_> = page.slots.iter().filter(|s| s.runner).collect();
-    let busy = runners.iter().filter(|s| s.now == "busy").count();
-    let mut head = format!("{busy} of {} busy", runners.len());
-    if let Some(age) = runners.iter().filter_map(|s| s.disk_age).reduce(f64::max) {
-        head += &format!(", disk read {} ago", dur_secs(age));
-    }
-    let no = hub_core::reading::NO_DATA;
-    let read = |t: String| {
-        if t == no {
-            cell(t, p.dim())
-        } else {
-            t.into()
-        }
-    };
-    let mut out = vec![heading("SLOTS", format!("  {head}"), p)];
+    let ci: Vec<_> = page.slots.iter().filter(|s| !s.now.is_empty()).collect();
+    let busy = ci.iter().filter(|s| s.now == "busy").count();
+    let mut out = vec![heading(
+        "SLOTS",
+        format!("  {busy} of {} busy", ci.len()),
+        p,
+    )];
     out.extend(
         Table {
-            header: vec!["SLOT", "TAKES", "NOW", "JOB", "CORES", "MEM", "DISK"],
+            header: vec!["SLOT", "NOW", "JOB", "CORES", "MEM"],
             rows: page
                 .slots
                 .iter()
                 .map(|s| {
-                    let name = if s.runner {
-                        s.slot.clone().into()
-                    } else {
+                    let name = if s.now.is_empty() {
                         cell(s.slot.clone(), p.dim())
+                    } else {
+                        s.slot.clone().into()
                     };
                     vec![
                         name,
-                        s.takes.join(" ").into(),
                         if s.now == "off" {
                             cell(s.now.clone(), p.warn())
                         } else {
                             s.now.clone().into()
                         },
-                        if s.runner {
-                            dash(&s.job).into()
-                        } else {
+                        if s.now.is_empty() {
                             "".into()
+                        } else {
+                            dash(&s.job).into()
                         },
-                        read(s.cores_text()),
-                        read(s.mem_text()),
-                        read(s.disk_text()),
+                        s.cores_text().into(),
+                        s.mem_text().into(),
                     ]
                 })
                 .collect(),
-            keep: vec![0, 2, 4, 5, 6, 3, 1],
-            right: vec![4, 5, 6],
-            flex: Some(3),
+            keep: vec![0, 1, 3, 4, 2],
+            right: vec![3, 4],
+            flex: Some(2),
             flexmin: 10,
             ..Default::default()
         }
         .fit(w, p.head()),
     );
-    out
-}
-
-/// The governor's hours per UTC day and its newest changes of power state, as on the web.
-fn power(pw: &PowerHistory, p: Palette, now: i64) -> Vec<Line<'static>> {
-    let days: Vec<String> = pw
-        .days
-        .iter()
-        .map(|d| format!("{} {:.1}h", d.day.get(5..).unwrap_or(&d.day), d.hours))
-        .collect();
-    let mut out = vec![
-        heading("POWER", "  hours run per UTC day, newest change first", p),
-        Line::raw(format!(
-            "  {}",
-            if days.is_empty() {
-                "no samples".to_string()
-            } else {
-                days.join("  ")
-            }
-        )),
-    ];
-    for c in pw.changes.iter().rev().take(POWER_ROWS) {
-        let why = if c.reason == "none" { "" } else { &c.reason };
-        out.push(Line::raw(format!(
-            "  {:<12} {:<10} {why}",
-            clock(c.at as i64, now),
-            c.state
-        )));
-    }
-    if pw.changes.len() > POWER_ROWS {
-        out.push(Line::styled(
-            format!("  +{} older on the web page", pw.changes.len() - POWER_ROWS),
-            p.dim(),
-        ));
-    }
     out
 }
 
@@ -723,7 +672,7 @@ mod tests {
     use super::*;
     use crate::infrapage::InfraPage;
     use hub_core::ci::Slot;
-    use hub_core::host_history::{Change, Day, Down, Hour};
+    use hub_core::host_history::{Down, Hour};
     use hub_core::host_now::{Device, Pod};
     use hub_core::links::Link;
     use hub_core::machine_page::SlotUse;
@@ -747,21 +696,20 @@ mod tests {
             slots: vec![
                 SlotUse {
                     slot: "ms-a2-unity-1".into(),
-                    takes: vec!["unity".into(), "light".into(), "heavy".into()],
                     now: "busy".into(),
                     job: "playground / test PlayMode".into(),
+                    ..SlotUse::default()
+                },
+                SlotUse {
+                    slot: "arc-org-light".into(),
+                    now: "busy".into(),
+                    job: "2 pods".into(),
                     cores: Some(2.8),
-                    cores_max: Some(3.0),
                     mem: Some(11.2 * GIB),
-                    mem_max: Some(14.0 * GIB),
-                    disk: Some(58.0 * GIB),
-                    disk_age: Some(600.0),
-                    runner: true,
                 },
                 SlotUse {
                     slot: "ms-a2-unity-2".into(),
                     now: "idle".into(),
-                    runner: true,
                     ..SlotUse::default()
                 },
                 SlotUse {
@@ -799,21 +747,6 @@ mod tests {
                     cause: "power".into(),
                     why: "13 hosts rebooted".into(),
                 }],
-                power: Some(PowerHistory {
-                    changes: vec![Change {
-                        at: 7200,
-                        state: "running".into(),
-                        reason: "queue".into(),
-                    }],
-                    days: vec![Day {
-                        day: "2026-11-10".into(),
-                        hours: 3.5,
-                    }],
-                    host: "workstation".into(),
-                    from: 0,
-                    to: 7 * 86_400,
-                    step: 120,
-                }),
                 ..HostHistory::default()
             }),
             live: Some(HostNow {
@@ -878,20 +811,15 @@ mod tests {
             "cpu 62%",
             "var-host=workstation",
             "SLOTS",
-            "1 of 2 busy, disk read 10m ago",
-            "unity light",
-            "2.8/3",
-            "11.2/14G",
-            "58G",
-            "TAKES",
+            "2 of 3 busy",
+            "2 pods",
+            "2.8",
+            "11.2G",
             "RUNNING",
             "EditMode",
             "7 DAYS",
             "DOWNTIME",
             "13 hosts rebooted",
-            "POWER",
-            "11-10 3.5h",
-            "queue",
             "SENSORS",
             "Tctl 96C  Tccd1 91C",
             "PODS",
@@ -974,9 +902,9 @@ mod tests {
         assert!(t.contains("SENSORS  not read"), "{t}");
     }
 
-    /// At 80 columns TAKES goes first; a slot with no reading says no data, never 0.
+    /// At 80 columns every column fits; a fixed runner requests nothing and says nothing, never 0.
     #[test]
-    fn slots_drop_takes_at_80_columns_and_say_no_data_for_a_slot_unread() {
+    fn slots_fit_80_columns_and_a_fixed_runner_says_no_cores() {
         let page = fixture();
         let lines = super::page(
             &page.host,
@@ -986,16 +914,14 @@ mod tests {
             80,
         );
         let t = text(&lines);
-        assert!(!t.contains("TAKES"), "{t}");
         let row = t
             .lines()
             .find(|l| l.contains("ms-a2-unity-2"))
             .expect("its row");
-        assert!(row.contains("no data"), "{row}");
         assert!(!row.contains(" 0"), "{row}");
         assert!(t.lines().all(|l| fit::len(l) <= 80), "{t}");
         let head = t.lines().find(|l| l.contains("SLOT ")).expect("its header");
-        for col in ["NOW", "CORES", "MEM", "DISK"] {
+        for col in ["NOW", "JOB", "CORES", "MEM"] {
             assert!(head.contains(col), "{col}: {head}");
         }
     }

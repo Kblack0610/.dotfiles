@@ -3059,7 +3059,7 @@ impl App {
                     self.infra_open = None;
                     self.scroll = 0;
                 } else if let Some((table, chip)) = hub_core::layout::moved_chip("infra", &q) {
-                    // `hub --tab 'infra governor'`: the table it moved into, under its chip.
+                    // `hub --tab 'infra cloud'`: the table it moved into, under its chip.
                     if let Some(t) = self.itab.view(table) {
                         t.clear();
                         t.view.state = chip.into();
@@ -9375,12 +9375,10 @@ mod tests {
             !s.contains("HEALTH") && !s.contains("RED NOW") && !s.contains("RED FIXES"),
             "{s}"
         );
-        // Machines holds the machines and the pools, in that order; CI is its own. The governor
-        // and cloud power are machine columns.
+        // Machines holds the machines and the pools, in that order; CI is its own.
         assert_eq!(a.infra_inner, "machines");
         let at = |s: &str, t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
         assert!(at(&s, "MACHINES  all") < at(&s, "JOB KINDS  all"), "{s}");
-        assert!(at(&s, "GOVERNOR") < at(&s, "JOB KINDS  all"), "{s}");
         assert!(!s.contains("CI RUNNERS"), "{s}");
         let right = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Right)));
         a.handle(right());
@@ -9467,14 +9465,12 @@ mod tests {
             a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
         }
         assert!(a.itab.views[1].is_default());
-        // The old Governor and Cloud names open Machines under their chips.
-        for (word, chip) in [("infra governor", "governed"), ("infra cloud", "cloud")] {
-            let (t, q) = crate::tabreq::parse(word).unwrap();
-            a.handle(Msg::Tab(t, q));
-            assert_eq!((a.tab, a.infra_inner), (Tab::Infra, "machines"), "{word}");
-            assert_eq!(a.itab.views[0].view.state, chip, "{word}");
-            assert_eq!(a.itab.focus("machines"), Some(0), "{word}");
-        }
+        // The old Cloud name opens Machines under its chip.
+        let (t, q) = crate::tabreq::parse("infra cloud").unwrap();
+        a.handle(Msg::Tab(t, q));
+        assert_eq!((a.tab, a.infra_inner), (Tab::Infra, "machines"));
+        assert_eq!(a.itab.views[0].view.state, "cloud");
+        assert_eq!(a.itab.focus("machines"), Some(0));
     }
 
     #[test]

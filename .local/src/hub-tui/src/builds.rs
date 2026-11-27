@@ -3,7 +3,7 @@
 //! `Scope::Release`), on the shared data table (`datatable`), with the selected run's detail
 //! (header, jobs and their cost, from `hub_core::builds::detail`) and failed-job log under it,
 //! both read when the row is opened. Each workflow's usual time is Infra's Pipelines
-//! (`pipetab`); money is a cloud machine's POWER cell and Costs', not this table's. The
+//! (`pipetab`); money is Costs', not this table's. The
 //! quarantine rides the same read and is drawn in Infra's Tests section (`quarantine`).
 
 use hub_core::builds::{self, Builds, Run, RunKey, Scope};

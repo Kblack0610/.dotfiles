@@ -1,6 +1,6 @@
 //! One CI run opened on Infra's CI runs (or Releases' Release runs), both surfaces: its jobs, their
 //! steps and what each cost, from `schedules-sync`'s job archive joined to the run ledger on
-//! `RunKey`, priced with the governor's rates. `builds::detail` reads it only when a run is opened
+//! `RunKey`, priced with each node's rate from the rates file. `builds::detail` reads it only when a run is opened
 //! (docs/dashboards.md rule 10), and only from local files and the rates its caller passes, so
 //! neither a list render nor an open asks GitHub anything, and a complete record is never fetched
 //! again.
@@ -9,15 +9,14 @@
 //! |-------------------------|-------------------------------------------------------------------|
 //! | the jobs and steps      | `$SCHEDULES_JOBS_LEDGER`, else `<state>/ci/jobs.jsonl`; last line per key |
 //! | the run's own fields    | the run ledger (`builds`), joined on forge, repo, run id, attempt  |
-//! | a host's $/h and basis  | `ci_governor_rate_usd_per_hour{host,basis}`                        |
-//! | a host's slots          | `ci_governor_registered{host}`                                     |
+//! | a node's $/h, basis, jobs | `$HUB_CI_RATES`, else `~/.config/hub/ci-rates.tsv` (`Rates::parse`) |
+//! | a live job's node       | its job pod (`Infra::rates`)                                      |
 
 use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
 use crate::builds::{Run, RunKey};
-use crate::prom::Series;
 
 /// A run that finished this recently may still get its jobs from the next 10-minute import.
 pub const PENDING_SECS: i64 = 1200;
@@ -109,52 +108,92 @@ pub fn archive(text: &str, want: impl Fn(&str) -> bool) -> (HashMap<RunKey, Reco
     (out, bad)
 }
 
-/// One host's rate as the governor exports it.
+/// One node's rate, a line of the rates file.
 #[derive(Serialize, Clone, Debug, Default, PartialEq)]
 pub struct HostRate {
-    /// None when the host has registered slots but no rate series.
     pub usd_per_hour: Option<f64>,
     /// `owned`, `on-demand` or `spot-estimate`.
     pub basis: String,
-    /// Runner slots registered on the host (`ci_governor_registered`).
-    pub slots: Option<f64>,
+    /// The jobs it runs at once, which share its rate; None leaves a nonzero rate unpriced.
+    pub jobs: Option<f64>,
 }
 
-/// Every host's rate from the governor's series.
+/// The rates file's name for every self-hosted node it does not list.
+pub const ANY_NODE: &str = "*";
+
+/// Every node's rate from the rates file (content, not code: `.config/hub/ci-rates.tsv`), and the
+/// node each live job pod runs on, so an ARC runner, whose name carries no host, is priced too.
 #[derive(Serialize, Clone, Debug, Default, PartialEq)]
 pub struct Rates {
     pub hosts: BTreeMap<String, HostRate>,
+    /// Runner name -> node, for the job pods running now.
+    #[serde(skip)]
+    pub nodes: HashMap<String, String>,
     /// Why the rates could not be read: every job then reads "no rate".
     pub error: Option<String>,
 }
 
 impl Rates {
-    pub fn from_series(series: &[Series]) -> Rates {
+    /// `<node> <usd_per_hour> <basis> [<jobs>]` a line, `#` a comment; a node of `*` is every
+    /// self-hosted node not listed. A line that does not parse is skipped.
+    pub fn parse(text: &str) -> Rates {
         let mut out = Rates::default();
-        for s in series {
-            let (Some(v), host) = (s.value, s.label("host")) else {
+        for line in text.lines().map(str::trim) {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let f: Vec<&str> = line.split_whitespace().collect();
+            let (Some(host), Some(Ok(usd)), Some(basis)) =
+                (f.first(), f.get(1).map(|v| v.parse::<f64>()), f.get(2))
+            else {
                 continue;
             };
-            match s.label("__name__") {
-                "ci_governor_rate_usd_per_hour" if !host.is_empty() => {
-                    let h = out.hosts.entry(host.to_string()).or_default();
-                    h.usd_per_hour = Some(v);
-                    h.basis = s.label("basis").to_string();
-                }
-                "ci_governor_registered" if !host.is_empty() => {
-                    let h = out.hosts.entry(host.to_string()).or_default();
-                    h.slots = Some(h.slots.unwrap_or_default() + v);
-                }
-                _ => {}
-            }
+            out.hosts.insert(
+                host.to_string(),
+                HostRate {
+                    usd_per_hour: Some(usd),
+                    basis: basis.to_string(),
+                    jobs: f.get(3).and_then(|v| v.parse().ok()),
+                },
+            );
         }
         out
     }
 
-    /// The host a runner sits on: the longest known host its name starts with, at a dash.
+    /// The rates file, or why it could not be read.
+    pub fn read(nodes: HashMap<String, String>) -> Rates {
+        let path = std::env::var("HUB_CI_RATES").ok().filter(|p| !p.is_empty()).or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| format!("{h}/.config/hub/ci-rates.tsv"))
+        });
+        let Some(path) = path else {
+            return Rates {
+                error: Some("no HOME for the rates file".into()),
+                ..Default::default()
+            };
+        };
+        match std::fs::read_to_string(&path) {
+            Ok(text) => Rates {
+                nodes,
+                ..Rates::parse(&text)
+            },
+            Err(e) => Rates {
+                error: Some(format!("{path}: {e}")),
+                ..Default::default()
+            },
+        }
+    }
+
+    /// The node a runner sits on: its job pod's node when it runs now, else the longest listed
+    /// node its name starts with, at a dash, else `*` when the file has that line.
     pub fn host_of(&self, runner: &str) -> Option<&str> {
+        if let Some(n) = self.nodes.get(runner) {
+            return self.hosts.contains_key(n).then_some(n.as_str()).or(self.any());
+        }
         self.hosts
             .keys()
+            .filter(|h| h.as_str() != ANY_NODE)
             .filter(|h| {
                 runner == h.as_str()
                     || runner
@@ -163,6 +202,11 @@ impl Rates {
             })
             .max_by_key(|h| h.len())
             .map(String::as_str)
+            .or(self.any())
+    }
+
+    fn any(&self) -> Option<&str> {
+        self.hosts.get_key_value(ANY_NODE).map(|(k, _)| k.as_str())
     }
 
     /// What `secs` of a job on `runner` cost.
@@ -203,8 +247,8 @@ impl Rates {
                 text: format!("0.00 {basis}"),
             };
         }
-        // A rate with no registered slots cannot be shared out: unknown, not the whole host.
-        let Some(slots) = h.slots.filter(|n| *n >= 1.0) else {
+        // A rate with no jobs count cannot be shared out: unknown, not the whole node.
+        let Some(slots) = h.jobs.filter(|n| *n >= 1.0) else {
             return no_rate("no rate");
         };
         let usd = rate * secs as f64 / 3600.0 / slots;
@@ -233,7 +277,7 @@ fn rate_text(r: f64) -> String {
     }
 }
 
-/// What one job cost: $/h x hours / slots. `usd` None with basis `no rate` or `github-hosted` is unpriced; with any
+/// What one job cost: $/h x hours / jobs at once. `usd` None with basis `no rate` or `github-hosted` is unpriced; with any
 /// other basis the job has not finished.
 #[derive(Serialize, Clone, Debug, Default, PartialEq)]
 pub struct Price {
@@ -549,43 +593,16 @@ pub fn build(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use std::collections::BTreeMap;
-
-    fn series(name: &str, labels: &[(&str, &str)], v: f64) -> Series {
-        let mut l = BTreeMap::new();
-        l.insert("__name__".to_string(), name.to_string());
-        for (k, x) in labels {
-            l.insert(k.to_string(), x.to_string());
-        }
-        Series {
-            labels: l,
-            value: Some(v),
-            points: vec![],
-        }
-    }
 
     pub fn rates() -> Rates {
-        Rates::from_series(&[
-            series(
-                "ci_governor_rate_usd_per_hour",
-                &[("host", "aws-burst-1"), ("basis", "on-demand")],
-                1.855,
-            ),
-            series("ci_governor_registered", &[("host", "aws-burst-1")], 5.0),
-            series(
-                "ci_governor_rate_usd_per_hour",
-                &[("host", "razer-laptop"), ("basis", "owned")],
-                0.0,
-            ),
-            series(
-                "ci_governor_rate_usd_per_hour",
-                &[("host", "aws-burst-2"), ("basis", "spot-estimate")],
-                0.6,
-            ),
-            series("ci_governor_registered", &[("host", "aws-burst-2")], 2.0),
-            // A host with slots and no rate.
-            series("ci_governor_registered", &[("host", "hp-victus")], 1.0),
-        ])
+        Rates::parse(
+            "# node usd_per_hour basis jobs\n\
+             aws-burst-1 1.855 on-demand 5\n\
+             razer-laptop 0 owned\n\
+             aws-burst-2 0.6 spot-estimate 2\n\
+             hp-victus 2 on-demand\n\
+             not-a-line\n",
+        )
     }
 
     #[test]
@@ -600,6 +617,21 @@ pub(crate) mod tests {
             "a dash ends the host"
         );
         assert_eq!(r.host_of("mac-mini-1"), None);
+    }
+
+    #[test]
+    fn a_live_job_pod_is_priced_on_its_node_and_star_covers_the_rest() {
+        let mut r = Rates::parse("ms-a2 0 owned\n* 0.6 on-demand 4\n");
+        r.nodes.insert("arc-repo-x-runner-abc".into(), "ms-a2".into());
+        r.nodes.insert("arc-repo-x-runner-def".into(), "deskslim-1".into());
+        assert_eq!(r.host_of("arc-repo-x-runner-abc"), Some("ms-a2"));
+        assert_eq!(r.host_of("arc-repo-x-runner-def"), Some("*"), "an unlisted node is *");
+        assert_eq!(r.host_of("arc-repo-x-runner-gone"), Some("*"), "a finished pod is *");
+        assert_eq!(r.price("arc-repo-x-runner-abc", false, Some(60)).text, "0.00 owned");
+        assert_eq!(
+            r.price("arc-repo-x-runner-gone", false, Some(3600)).text,
+            "0.15 (1/4 of $0.60/h)"
+        );
     }
 
     #[test]
