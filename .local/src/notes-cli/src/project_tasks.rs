@@ -5974,6 +5974,94 @@ Version: v0.0.1
         let _ = fs::remove_dir_all(&root);
     }
 
+    // ar-5902: a version note holds copies of a row's id (the sprint snapshot under `## Committed`,
+    // an earlier close under `## Done rows`). `done <id>` reads the board's `## Tasks` only, so it
+    // closes the open `[/]` row there and leaves the note's copies as they were.
+    #[test]
+    fn done_closes_the_started_board_row_not_its_copy_in_a_version_note() {
+        let root = std::env::temp_dir().join(format!("ptask-done-copy-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let mut p = crate::config::test_profile(&root.to_string_lossy());
+        let projects = root.join("lab/projects/current");
+        let dir = projects.join("demo");
+        fs::create_dir_all(dir.join("agent/versions")).unwrap();
+        let index = root.join("lab/projects/index.md");
+        fs::write(
+            &index,
+            "## Current\n- [[lab/projects/current/demo/summary|demo]]\n",
+        )
+        .unwrap();
+        fs::write(dir.join("summary.md"), "# demo\n").unwrap();
+        fs::write(
+            dir.join("agent/README.md"),
+            "# demo - agent board\n\n## Tasks\n- [/] fix(a): started #size/s <!-- id:dm-1 run:1124 -->\n",
+        )
+        .unwrap();
+        let note = "# demo v0.1.0\n\n## Committed\n<!-- window: opened=2026-11-18 due=- -->\n- fix(a): started, as committed #size/s <!-- id:dm-1 -->\n<!-- /window -->\n\n## Done rows\n- [x] fix(a): an earlier close #size/s <!-- id:dm-1 done:2026-11-20 pr:9 -->\n";
+        fs::write(dir.join("agent/versions/v0.1.0.md"), note).unwrap();
+        p.projects = Some(projects);
+        p.project_index = Some(index);
+        let log = Logger::new(root.join(".state/log"), false);
+
+        let pick = Pick::new("dm-1", false).unwrap();
+        assert_eq!(
+            done(
+                &p,
+                &log,
+                "demo",
+                &pick,
+                None,
+                Some("test"),
+                None,
+                Lane::Agent,
+                None
+            )
+            .unwrap(),
+            0
+        );
+        let board = fs::read_to_string(dir.join("agent/README.md")).unwrap();
+        assert!(
+            !board.contains("- [/]") && board.contains("- [x] fix(a): started"),
+            "the started row closed: {board}"
+        );
+        assert!(
+            board.contains("id:dm-1 done:") && board.contains("unverified: test"),
+            "the close keeps the id and stamps its evidence: {board}"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("agent/versions/v0.1.0.md")).unwrap(),
+            note,
+            "the note's copies are history, never the row the close acts on"
+        );
+        // Negative control: with no open board row, the note's copies are all there is, and
+        // `done` finds nothing to close.
+        fs::write(
+            dir.join("agent/README.md"),
+            "# demo - agent board\n\n## Tasks\n",
+        )
+        .unwrap();
+        assert_eq!(
+            done(
+                &p,
+                &log,
+                "demo",
+                &pick,
+                None,
+                Some("test"),
+                None,
+                Lane::Agent,
+                None
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("agent/versions/v0.1.0.md")).unwrap(),
+            note
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
     // An id is never reused: the max is taken over both lanes and the archive, and a dropped
     // row keeps its id on the sheet.
     #[test]
