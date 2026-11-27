@@ -1148,9 +1148,12 @@ pub fn needs(
             )),
         });
     }
-    for i in items.iter().filter(|i| i.state == State::Waiting) {
-        if i.is_trainee()
-            || asked.contains(&i.slug)
+    // A trainee run's wait is the fleet's to answer (the gate, then a Claude retry): no human waits.
+    for i in items
+        .iter()
+        .filter(|i| i.state == State::Waiting && !i.is_trainee())
+    {
+        if asked.contains(&i.slug)
             || i.session
                 .as_deref()
                 .is_some_and(|s| shown.contains(tmux_name(s)))
