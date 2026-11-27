@@ -27,7 +27,7 @@ setup() {
 {"type":"assistant",$cli,$c1,$ts,"message":{"content":[{"type":"tool_use","name":"Agent","input":{"subagent_type":"Explore"}}]}}
 {"type":"user","turnOrigin":"human",$cli,$c1,$ts,"message":{"role":"user","content":"can you land it now"}}
 {"type":"user","turnOrigin":"human",$cli,$c1,$ts,"message":{"role":"user","content":"| can you land it\nmore pasted output"}}
-{"type":"user","turnOrigin":"human",$cli,$c1,$ts,"message":{"role":"user","content":"This session is being continued, can you land it"}}
+{"type":"user","turnOrigin":"human",$cli,$c1,$ts,"message":{"role":"user","content":"This session is being continued from a previous conversation that ran out of context. can you land it"}}
 {"type":"user",$cli,$c1,$ts,"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"can you land it"}]}}
 {"type":"user","isMeta":true,$cli,$c1,$ts,"message":{"role":"user","content":"can you land it please"}}
 EOF
@@ -52,7 +52,7 @@ EOF
   cat > "$P/s4.jsonl" <<EOF
 {"type":"user","turnOrigin":"human",$cli,$c4,$ts,"message":{"role":"user","content":"ok can you lnad it"}}
 {"type":"user","turnOrigin":"human",$cli,$c4,$ts,"message":{"role":"user","content":"why is the build so slow today"}}
-{"type":"user",$cli,$c4,$ts,"message":{"role":"user","content":"This session is being continued. The fixture typed <command-name>/quoted</command-name> once."}}
+{"type":"user",$cli,$c4,$ts,"message":{"role":"user","content":"This session is being continued from a previous conversation that ran out of context. The fixture typed <command-name>/quoted</command-name> once."}}
 EOF
 }
 
