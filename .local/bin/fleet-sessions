@@ -817,7 +817,8 @@ bucket_facts() {
       else plan_bucket "PR #$pr merged, tree clean" "$phases" "$next" 1 "$item" "$cron" "$carried"; fi ;;
     OPEN)
       if handed_off "$item" "$pr" "$dirty" "$inpr" "${17:--}"; then
-        local slug="${item#review:}"; slug="${slug%% *}"; local why="PR #$pr parked for review, its item $slug owns it"
+        local slug="${item#*:}"; slug="${slug%% *}"; local why="PR #$pr parked for review, its item $slug owns it"
+        [[ "$item" != handed:* ]] || why="PR #$pr handed to item $slug, which owns it"
         case "$phases" in
           -|none) echo "DONE $why" ;;
           missing) echo "STALLED $why, its plan file is missing" ;;
@@ -864,14 +865,27 @@ validate_failed_bucket() {
 # validate_failed_done <item> <dirty> <in_pr>: validate_failed_bucket reads DONE.
 validate_failed_done() { [[ "$1" == moved:* ]] && [ "$2" = 0 ] && [ "$3" = 1 ]; }
 
-# handed_off <item> <pr> <dirty> <in_pr> [<job>] -> exit 0 when this session's open PR is its parked
-# item's (item_of's "review:<slug> pr <n>", the item's own pr:) and nothing here is outside it: no
-# dirty file, HEAD inside the PR, and no live waiter (gate or queue) still running in the background.
-# fleet-dispatch's reap owns that PR once the session ends
-# (own_parked_pr gives a red one a fix-ci session and a green one a lander), so it is no longer the session's to finish.
+# handed_off <item> <pr> <dirty> <in_pr> [<job>] -> exit 0 when this session's open PR is another item's and
+# nothing here is outside it: no dirty file, HEAD inside the PR, and no live waiter (gate or queue) still
+# running in the background. The PR is its parked item's (item_of's "review:<slug> pr <n>", the item's own pr:),
+# which fleet-dispatch's reap owns once the session ends (own_parked_pr gives a red one a fix-ci session and a
+# green one a lander), or an open item's that names it in its pr: (pr_owner, collect's "handed:<slug> pr <n>"),
+# such as a re-gate item it was handed to. Either way it is no longer the session's to finish: agent-60 handed
+# red #3320 to ucp-3413 and read STALLED CI red, close --self keep, so it could never wind down (ar-5184).
 handed_off() {
-  [[ "$1" == review:*" pr "* ]] && [ "${1##* pr }" = "${2##*#}" ] && [ "$3" = 0 ] && [ "$4" = 1 ] \
+  [[ "$1" == review:*" pr "* || "$1" == handed:*" pr "* ]] && [ "${1##* pr }" = "${2##*#}" ] && [ "$3" = 0 ] && [ "$4" = 1 ] \
     && [ "${5:--}" != gate ] && [ "${5:--}" != queue ]
+}
+
+# pr_owner <all items, jsonl> <clone|-> <sibling repo|-> <pr> -> the slug of the first open item (queued, running,
+# waiting or review) whose pr: lists <repo>#<pr>, else nothing. <repo> is the sibling repo of a PR sibling_pr found,
+# else the clone's origin, compared case-insensitively; a bare pr: number names no repo and so no PR here.
+pr_owner() {
+  local repo="${3:--}"
+  [[ "${4:-}" =~ ^[0-9]+$ ]] || return 0
+  if [ "$repo" = - ]; then [ "${2:--}" != - ] && repo="$(origin_repo "$2")" || return 0; fi
+  jq -rn --arg p "${repo,,}#$4" 'first(inputs | select(.state | test("^(queued|running|waiting|review)$"))
+    | select(.pr // "" | tostring | ascii_downcase | split(" ") | any(. == $p)) | .slug) // empty' <<<"$1" 2>/dev/null
 }
 
 # salvaged_here <qall> <slug> <dir> -> exit 0 when the item that moved on from this session carries this
@@ -2413,7 +2427,8 @@ parked_lines() {
 # review:<slug> is one this session parked in review/: its open PR is the item's, and
 # fleet-dispatch's reap owns it once the session ends (own_parked_pr gives a red one a fix-ci session and a green one a lander),
 # so the session is finished. 2026-11-11 such sessions read "PR open" as unfinished, wind-down
-# refused, and the reap, which waits for the session to end, never took over.
+# refused, and the reap, which waits for the session to end, never took over. A - or moved: answer whose
+# open PR another open item names in its pr: is handed to that item instead (collect's handed:, ar-5184).
 item_of() {
   awk -F'\t' -v sid="$2" -v me="$3" -v solo="$4" -v start="$5" '
     function mine_sid(list,   n, a, i) { n = split(list, a, " "); for (i = 1; i <= n; i++) if (a[i] == sid) return 1; return 0 }
@@ -2910,10 +2925,17 @@ collect() {
     if [ "$host" = - ] && { [ "$idle" -ge "$FLEET_IDLE_MIN" ] || [ "$sid" = "${CLOSE_SELF:-}" ]; }; then
       IFS=$'\t' read -r wake cron < <(wake_facts "$transcript" "$started" "$now" "$idle" "$phases" "$pdone" "$ptotal" "$pq")
     fi
+    # An open PR that another open item names in its pr: (a re-gate item it was handed to) is that item's
+    # (pr_owner): the bucket reads it as handed:<slug> pr <n>, which handed_off takes as a parked PR (ar-5184).
+    local bitem="$item" owner
+    if [ "$state" = OPEN ] && { [ "$irel" = - ] || [ "$irel" = moved ]; }; then
+      owner="$(pr_owner "$qall" "$gd" "$xr" "$pr")"
+      [ -z "$owner" ] || bitem="handed:$owner pr $pr"
+    fi
     bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$bidle" "$g" "$dirty" "$ahead" \
-              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" "$cron" - "$carried")"
+              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$bitem" "$wait_on" "$cron" - "$carried")"
     fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$bidle" "$g" "$dirty" "$ahead" \
-             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" && fin=1
+             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$bitem" "$wait_on" && fin=1
     # An idle session whose transcript ends on its own stop line is stopped (stopped_bucket); a finished one is left to DONE.
     local stopped="" stopat=""
     if [ "$host" = - ] && [ "$status" = idle ] && [ "$hv" = 0 ] && [ "$ojob" != agent ] && [ "$fin" = 0 ] \
@@ -2922,7 +2944,7 @@ collect() {
       [ -z "$stopped" ] || bucket="$stopped"
     fi
     blk="$(work_blockers "$askids" "$status" "$plan" "$asks" "$hv" "$bidle" "$g" "$dirty" "$ahead" \
-             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" - "$(merged_prs "$prs")")"
+             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$bitem" "$wait_on" - "$(merged_prs "$prs")")"
     local elsewhere=""
     [ "$host" != - ] || elsewhere="$(edited_work_blockers "$cwd" "$edited" "$sid")"
     if [ -n "$elsewhere" ]; then

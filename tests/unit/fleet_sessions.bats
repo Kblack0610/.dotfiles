@@ -458,6 +458,46 @@ load 'fleet_sessions/common'
   assert_output 'NEEDS 1 pending ask(s)'
 }
 
+@test "an open PR another open item names in its pr: is handed to it: DONE naming the item, close --self now (ar-5184)" {
+  # 2026-11-24: agent-60 handed red #3320 to the re-gate item ucp-3413 and read STALLED CI red, close --self keep
+  local h='handed:ucp-3413 pr 9'
+  run b idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - - - - "$h"
+  assert_output 'DONE PR #9 handed to item ucp-3413, which owns it'
+  session_finished idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - - - - "$h"
+  [ -z "$(work_blockers '' idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - - - - "$h")" ]
+  [ "$(SELF=s1 verdict '{session_id: "s1", bucket: "DONE", idle_min: 30, reason: "PR #9 handed to item ucp-3413, which owns it"}' | cut -d: -f1)" = now ]
+  # negative controls: dirt, HEAD past the PR, a live gate or queue job, or the item naming another PR
+  run b idle 0 0 0 30 1 3 2 9 OPEN FAIL 1 - - - - - - - "$h"
+  assert_output 'STALLED PR #9 CI red'
+  run b idle 0 0 0 30 1 0 2 9 OPEN FAIL 0 - - - - - - - "$h"
+  assert_output 'STALLED PR #9 CI red'
+  local j
+  for j in 'gate' 'queue'; do
+    run b idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - "$j" - - "$h"
+    assert_output 'STALLED PR #9 CI red'
+  done
+  run b idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - - - - 'handed:ucp-3413 pr 5'
+  assert_output 'STALLED PR #9 CI red'
+  ! session_finished idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - - - - 'handed:ucp-3413 pr 5'
+  # pr_owner: an open item whose pr: lists <repo>#<pr>, the repo the clone's origin (any case) or a sibling repo's
+  git init -q "$SANDBOX/c"; git -C "$SANDBOX/c" remote add origin 'git@github.com:O/c.git'
+  local q
+  q="$(jq -nc '{slug: "own", state: "done", pr: "o/c#9"}, {slug: "bare", state: "queued", pr: "9"},
+    {slug: "other", state: "queued", pr: "o/c#90 o/d#9"}, {slug: "ucp-3413", state: "queued", pr: "o/x#1 O/C#9"},
+    {slug: "sib", state: "running", pr: "o/s#9"}')"
+  run pr_owner "$q" "$SANDBOX/c" - 9
+  assert_output 'ucp-3413'
+  run pr_owner "$q" "$SANDBOX/c" o/s 9
+  assert_output 'sib'
+  # no open item names it: a done one, a bare number, another repo's or another number's
+  run pr_owner "$(grep -v ucp-3413 <<<"$q")" "$SANDBOX/c" - 9
+  assert_output ''
+  run pr_owner "$q" - - 9
+  assert_output ''
+  run pr_owner "$q" "$SANDBOX/c" - -
+  assert_output ''
+}
+
 @test "item_of: sessions: matches by Claude session, session: only for a lone claude, a done one only after it started" {
   local start=1000 t=$'\t'
   qi() { printf '%s\n' "$@"; }
