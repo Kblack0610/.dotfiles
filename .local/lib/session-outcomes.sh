@@ -62,10 +62,12 @@ SO_PR_JQ='
 # SO_TU_WRAP: the regex (a jq string body) for what may stand before a command word: assignments, wrappers with their
 # options, `timeout N`, `flock FILE` and if/while/until/do/then/else/!. SO_TU_START puts a command start before it (a
 # line start, ; & | ( or a backtick), shared by the lines below and by time_use_wrapper_paths. SO_TU_ARGV_START is the
-# start of one process's argv (fleet-sessions' live_wait): only the line start, since an argv holds no shell operator.
+# start of one process's argv (fleet-sessions' live_wait): the line start only, since an argv holds no shell operator,
+# and first any interpreter a script runs under, by path or not (`/bin/bash run.sh`, `python3 /usr/bin/pytest`,
+# `node .../vitest`), which a command string rarely names and a /proc cmdline always does.
 SO_TU_WRAP='((\\w+=\\S*|(env|nice|xargs|sudo|nohup|exec|command|time|stdbuf|setsid|ionice|sh|bash|zsh)(\\s+-n\\s+[0-9]+|\\s+-\\S+)*|timeout(\\s+-\\S+)*\\s+[0-9]\\S*|flock(\\s+-\\S+)*\\s+\\S+|if|while|until|do|then|else|!)\\s+)*'
 SO_TU_START='(^|[;&|(\\n`])\\s*'"$SO_TU_WRAP"
-SO_TU_ARGV_START='^\\s*'"$SO_TU_WRAP"
+SO_TU_ARGV_START='^\\s*((\\S*/)?(env|sh|bash|zsh|python3?|node|ruby|perl)(\\s+-\\S+)*\\s+)*'"$SO_TU_WRAP"
 # time_use_lines_json <conf> [<start regex>] -> a JSON array of {kind, text, re} for each gate, test or build line of <conf>,
 # `re` wanting the line's text after <start regex> (default SO_TU_START) and any path, then a boundary.
 time_use_lines_json() {

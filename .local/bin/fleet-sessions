@@ -459,6 +459,18 @@ watched_gate() {
   [ -z "$ended" ] || echo "$ended"
 }
 
+# time_use_argv_lines -> the conf's gate, test and build lines as JSON, each with the regex that wants its text at the start
+# of an argv (time_use_lines_json). Built once a pass into PROC_SNAP's cache dir: live_wait runs once a session. A conf with no
+# line is said on stderr once, and reads as `[]`.
+time_use_argv_lines() {
+  local f="${PROC_SNAP:+$PROC_SNAP.tu}" out
+  if [ -n "$f" ] && [ -s "$f" ]; then cat "$f"; return 0; fi
+  out="$(time_use_lines_json "$FLEET_TIME_USE_CONF" "$SO_TU_ARGV_START" 2>/dev/null)" && [ "$out" != '[]' ] \
+    || { echo "fleet-sessions: no gate, test or build line readable in $FLEET_TIME_USE_CONF; live_wait reads none" >&2; out='[]'; }
+  [ -z "$f" ] || printf '%s\n' "$out" > "$f"
+  printf '%s\n' "$out"
+}
+
 # live_wait <cwd> [<claude pid>]: queue when such a process is a FLEET_QUEUE_GATES one (a gate waiting for its
 # landing turn: WORKING past FLEET_SHELL_STALE_MIN, it ends itself), else gate, test or build when a process running in <cwd> (or below it), or
 # descended from the session's claude whatever its cwd, runs a `gate`, `test` or `build` line of
@@ -483,11 +495,12 @@ live_wait() {
     [ -n "$checkout" ] || ! git_checkout "$cmd" || checkout=checkout
   done
   if [ -r "$conf" ]; then
-    # Each line's text must start the process's argv, past the wrappers (time_use_lines_json, the rule the other readers
+    # Each line's text must start the process's argv, past the wrappers (time_use_argv_lines, the rule the other readers
     # share), so `vim x.bats` and `grep make test` are not a test run. gate beats test beats build whatever the line order.
-    want="$(printf '%s\n' "${cmds[@]}" | jq -nRr --argjson lines "$(time_use_lines_json "$conf" "$SO_TU_ARGV_START" 2>/dev/null || echo '[]')" '
+    want="$(printf '%s\n' "${cmds[@]}" | jq -nRr --argjson lines "$(time_use_argv_lines)" '
       [inputs] as $cmds
-      | first(("gate", "test", "build") as $k | $lines[] | select(.kind == $k and (.re as $re | any($cmds[]; test($re)))) | $k) // empty' 2>/dev/null)"
+      | first(("gate", "test", "build") as $k | $lines[] | select(.kind == $k and (.re as $re | any($cmds[]; test($re)))) | $k) // empty')" \
+      || { echo "fleet-sessions: live_wait could not match $conf; it reads no wait" >&2; want=""; }
     [ -z "$want" ] || { echo "$want"; return 0; }
   fi
   [ -z "$checkout" ] || echo "$checkout"

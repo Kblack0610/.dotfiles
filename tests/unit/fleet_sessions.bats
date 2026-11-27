@@ -799,22 +799,25 @@ load 'fleet_sessions/common'
 @test "live_wait reads a time-use.conf line only where it starts the argv, never inside another command's arguments (ar-3521)" {
   # 2026-11-18 ar-1284 review: the short lines (bats, make test, gh pr view) matched as a substring of any command line,
   # so `vim x.bats` and `grep make test` read as a test run. The shipped conf, as the other three readers match it.
-  mkdir -p "$SANDBOX/wt"
+  # `exec -a <argv0> bash <script> <args>` makes /proc show exactly `<argv0> <script> <args>`, the argv a real run has.
+  mkdir -p "$SANDBOX/wt/scripts/test"
   export FLEET_TIME_USE_CONF="$BATS_TEST_DIRNAME/../../.config/agent-panel/time-use.conf"
-  local argv name pid want
-  for argv in 'vim x.bats' 'grep make test' 'grep gh pr view' 'less pytest.log' 'bats unit/x.bats' 'make test' 'gh pr view 3'; do
-    name="${argv%% *}"
-    printf 'sleep 60\n' > "$SANDBOX/wt/$name"
-    # a stand-in named for the command's first word, so /proc holds `bash <argv>`: a wrapper, then the command
-    (cd "$SANDBOX/wt" && exec bash $argv) >/dev/null 2>&1 3>&- &
+  local row a0 script rest want pid
+  # argv0|script|args|class: first the commands that only name a test or a gate, then the real runs, wrapped and not
+  for row in 'vim|x.bats||' 'grep|make|test|' 'grep|gh|pr view|' 'less|pytest.log||' 'vim|scripts/test/run.sh||' \
+             'bats|x.bats||test' 'make|test||test' 'gh|pr|view 3|gate' '/bin/bash|scripts/test/run.sh||test' \
+             'python3|pytest|-q|test' 'node|vitest|run|test' 'env|gh-run-wait|12 checks|gate'; do
+    IFS='|' read -r a0 script rest want <<<"$row"
+    printf 'sleep 60\n' > "$SANDBOX/wt/$script"
+    # shellcheck disable=SC2086  # rest is a word list
+    (cd "$SANDBOX/wt" && exec -a "$a0" bash "$script" $rest) >/dev/null 2>&1 3>&- &
     pid=$!
     # the process is the event: wait until /proc shows the exec, not for a delay
-    until grep -q "$name" "/proc/$pid/cmdline" 2>/dev/null; do kill -0 "$pid" || fail "the $argv stand-in exited before it started"; done
-    case "$argv" in 'bats '* | 'make test') want=test ;; 'gh pr view '*) want=gate ;; *) want='' ;; esac
+    until grep -qa "$script" "/proc/$pid/cmdline" 2>/dev/null; do kill -0 "$pid" || fail "the $row stand-in exited before it started"; done
     run live_wait "$SANDBOX/wt"
     assert_output "$want"
     kill "$pid"; wait "$pid" 2>/dev/null || true
-    rm -f "$SANDBOX/wt/$name"
+    rm -f "$SANDBOX/wt/$script"
   done
 }
 
