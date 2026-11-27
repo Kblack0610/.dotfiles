@@ -4,14 +4,12 @@
 //! only draws, a page at a time. Its view keys carry a `b` prefix (`bq`, `bs`, `bsort`, `bdir`,
 //! `bpg`) because the table
 //! beside it on either tab keeps the plain ones. A new ledger line pushes the `builds` event; a
-//! run's log and its detail (jobs, steps, cost) are read when it is opened, priced with the rates
-//! the Infra tab's answer carries.
+//! run's log and its detail (jobs and steps) are read when it is opened.
 
 use hub_core::builds::{self, Builds, Paths, Run, RunKey, Scope, STALE_SECS};
 use hub_core::jobs::{self, now};
 use hub_core::layout;
 use hub_core::queue::Item;
-use hub_core::run_detail::Rates;
 use hub_core::session_actions::System;
 use hub_core::table::{self, Summary, View};
 use std::sync::Arc;
@@ -115,13 +113,12 @@ pub async fn log(key: RunKey) -> Result<String, String> {
 /// (kept 30 s), and its Changes read the repo's clone; the joined read is the table's own.
 pub async fn detail(
     key: RunKey,
-    rates: Rates,
     items: (Vec<Item>, Option<String>),
 ) -> Result<String, String> {
     let b = current(items).await?;
     let d = off(move || {
         let cache = jobs::Paths::from_env().cache;
-        builds::open_detail(&b, &Paths::from_env(), &cache, &rates, &key, now())
+        builds::open_detail(&b, &Paths::from_env(), &cache, &key, now())
     })
     .await??;
     serde_json::to_string(&d).map_err(|e| e.to_string())

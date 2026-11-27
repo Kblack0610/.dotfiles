@@ -140,7 +140,6 @@ store_unreachable() {
 # workstation, and the steps that need them (release-state's prod rows) run there.
 KUBE_NEEDS=(
   "patch endpoints/agents -n agents|agent-web-record points the agents Endpoints at the holder"
-  "get configmaps/ci-runner-governor-override -n monitoring|fleet-bench triage reads the governor's pins"
   "get services/victoria-metrics:8428 --subresource=proxy -n monitoring|fleet-bench and agent-web read VictoriaMetrics"
   "get services/loki:3100 --subresource=proxy -n monitoring|fleet-state's hub needs reads Loki"
   "get services/github-runner-exporter:9320 --subresource=proxy -n monitoring|schedules-sync reads the runner feed"

@@ -1,6 +1,6 @@
 "use strict";
-// The Infra tab, as the hub's Infra tab, by inner tab: Machines (every machine with its governor
-// verdict and power, then the pools; one machine's page is `#infra/machines/<host>`), Runners
+// The Infra tab, as the hub's Infra tab, by inner tab: Machines (every machine, then the pools;
+// one machine's page is `#infra/machines/<host>`), Runners
 // (slots, waiting jobs, local Unity failures), Runs, Pipelines and Tests (ci.js), and Jobs (jobs.js); what is red and the health chips are on Alerts (alerts.js). /api/infra asks
 // Prometheus the board's own queries; statuses are the cc:* rules, so nothing is judged here.
 
@@ -53,10 +53,8 @@ function glanceHead(g) {
   if (g.done > 0) s += `, ${g.done} done 24h${g.pass != null ? `, ${pct(g.pass)} passed` : ""}`;
   return s;
 }
-// `cloud: 4 hosts off`, the cloud hosts the governor holds off as one line, not one row each.
-const offLine = (g) => (g.off.length ? `cloud: ${g.off.length} host${g.off.length === 1 ? "" : "s"} off` : "");
 // hub_core::ci::Glance::pending_line: `waiting for room: arc-org-light x3 (1.69 cpu 1.2G each)`.
-// The cores read as hub_core::machines::weight_text does: two places, trailing zeros dropped.
+// The cores read as hub_core::jobpods::request does: two places, trailing zeros dropped.
 const pendingText = (p) => `${p.kind}${p.n > 1 ? ` x${p.n}` : ""} (${+p.cpu.toFixed(2)} cpu ${bytes(p.mem)}${p.n > 1 ? " each" : ""})`;
 const pendingLine = (g) => (g && g.pending && g.pending.length ? `<div class="cline warn">waiting for room: ${esc(g.pending.map(pendingText).join(", "))}</div>` : "");
 
@@ -72,7 +70,7 @@ function kpis(cc, g) {
   const nodes = [one("cc:k3s_nodes_ready"), one("cc:k3s_nodes_total")];
   const beats = [one("cc:machines_up"), one("cc:machines_total")];
   const hosted = one("cc:github_hosted_running");
-  const where = [g ? `${g.queued} queued, ${upLine(g)} runners up` : "", g && offLine(g), hosted > 0 ? `+${hosted} github-hosted` : ""].filter(Boolean).join(", ");
+  const where = [g ? `${g.queued} queued, ${upLine(g)} runners up` : "", hosted > 0 ? `+${hosted} github-hosted` : ""].filter(Boolean).join(", ");
   const [hn, tn] = hue("k3s"), [hb, tb] = hue("machines"), [hc, tc] = hue("ci"), [hr, tr] = hue("agents");
   return `<div class="tiles roomy">${
     tile("NODES", `${nodes[0] ?? "?"}/${nodes[1] ?? "?"}`, hn, tn)}${
@@ -110,7 +108,7 @@ function coreStrip(cores) {
 }
 
 // Free share of a machine's fullest disk (the NodeDisk* alerts' rule, home-config): amber under
-// the governor's 20% hold and NodeDiskLow, red under NodeDiskCritical's 10%. A cloud machine with
+// NodeDiskLow's 20%, red under NodeDiskCritical's 10%. A cloud machine with
 // no data is amber, needs attention: the AWS hosts are never scraped, so nothing alerts on
 // their disks.
 const GIB = 1024 ** 3;
@@ -159,34 +157,12 @@ const ciRef = (x) => (x.pr ? `${x.repo}#${x.pr}` : x.branch || x.repo || "");
 const passCls = (p) => (p == null ? "" : p < 0.7 ? "bad" : p < 0.9 ? "warn" : "");
 const td = (cls, html) => `<td${cls ? ` class="${cls}"` : ""}>${html}</td>`;
 
-// The governor (home-config apps/ci-runner-governor) per host: this cycle's action, and its
-// verdict on a hover.
-const ACTION_COLOR = { withhold: "var(--b-stalled)", stop: "var(--b-stalled)", admit: "var(--b-working)", start: "var(--b-working)" };
-function governorCell(g) {
-  if (!g) return td("muted", "-");
-  const act = g.action ? `<span class="chip sm" style="--c:${ACTION_COLOR[g.action] || "var(--c-other)"}">${esc(g.action.toUpperCase())}</span>` : "";
-  return `<td title="${esc(`verdict: ${g.verdict || "-"}; admits ${g.admitted ?? "-"}`)}">${act || "-"}</td>`;
-}
-
-// A cloud host's power, which the governor starts for a deep queue: its state, today's hours
-// against the cap and where its rule stands.
-const POWER_COLOR = { running: "var(--b-working)", starting: "var(--b-working)", draining: "var(--b-stalled)", stopping: "var(--b-stalled)" };
-const powerChip = (state) => `<span class="chip sm" style="--c:${POWER_COLOR[state] || "var(--c-other)"}">${esc((state || "?").toUpperCase())}</span>`;
-
-function powerCell(m) {
-  const p = m.power;
-  if (!p) return td("muted", "-");
-  const last = p.changed_at ? `last ${p.changed} ${when(p.changed_at)}${p.reason ? ` (${p.reason})` : ""}` : p.reason;
-  const cost = p.usd_per_hour != null ? ` ~${usd(p.hours * p.usd_per_hour)}` : "";
-  return `<td class="wrap" title="${esc(last || "")}">${powerChip(p.state)} ${p.hours.toFixed(1)}/${p.max ?? "?"} h${cost} <span class="muted">${esc(p.rule)}</span></td>`;
-}
-
 // Each table's cells by column, in the order the summary's columns come (hub_core Row::COLUMNS);
 // `l` is the row's links (tblLinks). A label's second field is its header's class.
 // hub_core::host_now::HOT_C, kept equal by its test: a sensor this hot or hotter shows amber.
 const HOT_C = 85;
 const MACH_COLS = { machine: ["machine"], state: ["state"], booked: ["booked", "n"], cpu: ["cpu now"], "6h": ["6h", "n"], load: ["load", "n"],
-  mem: ["mem"], temp: ["temp", "n"], disk: ["disk free", "n"], running: ["running"], next: ["next"], governor: ["governor"], power: ["power"], up: ["up since", "n"] };
+  mem: ["mem"], temp: ["temp", "n"], disk: ["disk free", "n"], running: ["running"], next: ["next"], up: ["up since", "n"] };
 const MACH_CELLS = {
   machine: (m, l) => td("", tblLink(l.machine, m.host)),
   state: (m) => td(m.state === "up" ? "" : m.state === NO_DATA ? "muted" : "warn", esc(m.state)),
@@ -199,20 +175,16 @@ const MACH_CELLS = {
   disk: diskCell,
   running: (m) => td("wrap", esc(m.running.join(", ")) || "-"),
   next: (m) => td("wrap", m.next ? esc(nextLine(m.next)) : "-"),
-  governor: (m) => governorCell(m.governor),
-  power: powerCell,
   up: (m) => td("n muted", m.boot ? when(m.boot) : "-"),
 };
 
 // One row per job kind: its jobs running and waiting, and the machines that take it.
-const POOL_COLS = { pool: ["kind"], weight: ["weight", "n"], running: ["running", "n"], waiting: ["waiting", "n"], oldest: ["oldest", "n"], done_1h: ["done 1h", "n"], done_5h: ["done 5h", "n"], done: ["done 24h", "n"], usual: ["usual", "n"], pass: ["pass", "n"], machines: ["machines"] };
+const POOL_COLS = { pool: ["kind"], running: ["running", "n"], waiting: ["waiting", "n"], oldest: ["oldest", "n"], done_1h: ["done 1h", "n"], done_5h: ["done 5h", "n"], done: ["done 24h", "n"], usual: ["usual", "n"], pass: ["pass", "n"], machines: ["machines"] };
 const num = (v) => v ?? "-";
 // hub_core::machines::Pool::machines_cell: each machine a link to its page, with its online slots.
 const poolSeats = (p) => p.machines.map((s) => tblLink(s.href, s.host) + ` ${s.slots}`).join(", ") || "-";
 const POOL_CELLS = {
   pool: (p, l) => td("", tblLink(l.pool, p.pool)),
-  // The governor's share of a slot, formatted by hub_core::machines::weight_text (`1*` when unmeasured).
-  weight: (p) => td("n", p.weight ?? "-"),
   running: (p) => td("n", num(p.running)),
   waiting: (p) => td(`n${p.waiting ? " warn" : ""}`, num(p.waiting)),
   oldest: (p) => td("n", secs(p.oldest)),
@@ -315,7 +287,7 @@ function failed24h() {
 }
 function runnersSection(ci) {
   // The head the TUI and the waybar hover read too (hub_core::ci::Glance): each slot once.
-  const g = ci.glance, head = g ? `<div class="cline">${esc([glanceHead(g), offLine(g)].filter(Boolean).join("; "))}</div>` : "";
+  const g = ci.glance, head = g ? `<div class="cline">${esc(glanceHead(g))}</div>` : "";
   let html = secHead("ci", "Runners", infraN("runners"), ci.red.length ? "bad" : bld.data?.counts?.recent_red ? "warn" : "") + head + failed24h();
   // A waiting job no online runner can take: hub_core::ci words the line, once for both surfaces.
   if (ci.red.length) html += `<div class="panel down">${ci.red.map((r) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">RED</span><span class="pt">${esc(r)}</span></div>`).join("")}</div>`;
@@ -328,31 +300,12 @@ function localSection(ci) {
     fold("sec-d", secHead("", "CI runs finished today", null, "", "h3"), doneToday(ci), { k: "ci-more", open: secOpen(ist.open, "ci-more") });
 }
 
-// The governor's global series: whether it is up and saw every source, and its queue.
-// Its per-host verdict and power are the machines table's governor and power columns.
-function governorIndex(inst) {
-  const g = {};
-  for (const s of inst.governor || []) {
-    const l = s.labels, n = l.__name__.replace("ci_governor_", "");
-    if (l.host) continue;
-    g[n] = s.value;
-  }
-  return g;
-}
-
-function governorLine(g) {
-  if (g.up == null) return "";
-  const health = g.up !== 1 ? `<span class="chip sm" style="--c:var(--b-needs)">DOWN</span>`
-    : g.ok === 1 ? `<span class="chip sm" style="--c:var(--b-done)">OK</span>` : `<span class="chip sm" style="--c:var(--b-stalled)">BLIND</span> a source did not answer this cycle, so it holds every host;`;
-  return `<div class="cline">Governor ${health} <span class="muted">queue ${g.queue ?? "?"}</span></div>`;
-}
-
 // The page open in place of the tab's tables, `#infra/<word>/<name>` (hub_core::links PAGES, whose
 // inner tab app.js ENTITY_PAGES mirrors), each read by hub_core for the hub's page too: its word,
 // its read, its back button's words, and the body under the header every page shares. One state, one read and
 // one header serve them all, so a third page is a row here.
 const INFRA_PAGES = [
-  // Its parts, the cores each pool uses there, what runs there, the governor and its buttons, its
+  // Its parts, the cores each pool uses there, what runs there and its buttons, its
   // last 7 days and downtime, the CI jobs that ran there and the alerts naming it.
   { word: "machines", api: (n) => "/api/infra/machine?host=" + encodeURIComponent(n), back: "All machines", body: machineBody },
   // Its parts, the machines with a slot in it, the CI jobs waiting for it, and its running
@@ -463,14 +416,6 @@ function pageTable(d, labels, cells, empty) {
   return `<div class="panel scroll"><table class="tbl"><tr>${head}</tr>${d.rows.map((r, i) => `<tr>${keys.map((k) => cells[k](r, tblLinks(d.table, i))).join("")}</tr>`).join("")}</table></div>`;
 }
 
-// A machine's power changes over the read's window, newest first, every one: a record page, and
-// the window bounds them.
-function powerHistory(p) {
-  const days = p.days.map((x) => `${esc(x.day.slice(5))} <b>${x.hours.toFixed(1)} h</b>`).join("  ");
-  const rows = [...p.changes].reverse().map((c) => `<tr><td>${esc(stamp(c.at))}</td><td>${powerChip(c.state)}</td><td class="muted">${esc(c.reason && c.reason !== "none" ? c.reason : "")}</td></tr>`).join("");
-  return `${secHead("", "Power", null, "", "h3")}<div>${days || "no samples"}</div>${rows ? `<table class="tbl"><tr><th data-role="lead">from</th><th data-role="glance">state</th><th>why</th></tr>${rows}</table>` : ""}`;
-}
-
 // Bytes as a reader says them, as hub_core::host_now::bytes does: 2.5G, 340M, 12K.
 function bytes(b) {
   if (b == null) return "-";
@@ -558,7 +503,6 @@ function machineBody(d) {
     h += secHead("", "7 days", `${hist.readings} reading${hist.readings === 1 ? "" : "s"}`, "", "h3") + historyChart(hist, d.cores, colors) + tempChart(hist);
     // An unread list says not read and why, never the empty text; a record lands once its downtime ends.
     h += secHead("", "Downtime", hist.down_unread == null ? d.tables.down?.rows.length : null, "", "h3") + (hist.down_unread != null ? `<div class="empty">${NOT_READ}: ${esc(hist.down_unread)}</div>` : pageTable(d.tables.down, DOWN_COLS, DOWN_CELLS, "No downtime record in the window. One is written once a downtime ends."));
-    if (hist.power) h += powerHistory(hist.power);
   }
   h += `${secHead("", "Recent CI jobs", d.tables.recent.rows.length, "", "h3")}${pageTable(d.tables.recent, RECENT_COLS, RECENT_CELLS, "No CI job in the archive ran there.")}`;
   h += `${secHead("", "Alerts", d.tables.alerts?.rows.length, d.tables.alerts?.rows.length ? "warn" : "", "h3")}${pageTable(d.tables.alerts, PAGE_ALERT_COLS, PAGE_ALERT_CELLS, "Nothing firing names it.")}`;
@@ -610,7 +554,7 @@ function drawInfra() {
   const links = `${gLink("kb-command-center", "Command Center")} ${gLink("kb-ci-runners", "CI / Runners")} ${gLink("kb-fleet", "Machines")} ${gLink("kb-agents-overview", "Agents")}`;
   // As the board blanks: a failed read never leaves the last (maybe green) numbers up.
   if (!d.ok) { paint(el, strip + `<div class="bhead"><span>infra</span><span>${links}</span></div><div class="panel down">${esc(d.error || "Prometheus did not answer")}</div>`); seekSection(); return; }
-  const cc = ccIndex(d.instant.cc), inst = d.instant, t1 = d.at * 1e3, g = governorIndex(inst);
+  const cc = ccIndex(d.instant.cc), t1 = d.at * 1e3;
   const overall = (cc["cc:overall_status"] || {})[""];
   const [word, color] = statusOf(overall);
   // Home owns what waits on you; Infra shows its count (Home::waiting, the badge's number) as a link to it.
@@ -618,7 +562,7 @@ function drawInfra() {
   const badge = w === null ? ` <span class="chip sm" style="--c:var(--b-needs)" title="${NOT_READ}">waiting on you: ${NOT_READ}</span>`
     : w && w.count > 0 ? ` <a href="${esc(w.href)}" class="chip sm" style="--c:var(--b-needs)">${w.count} waiting on you, on Home</a>` : "";
   let html = strip + `<div class="bhead"><span><span class="chip" style="--c:${color}">OVERALL ${word}</span>${badge} <span class="muted">read ${clock(t1)}</span></span>${pfold("infra-links", "Grafana", links)}</div>`;
-  html += innerWrap("infra", "machines", `${kpis(cc, d.ci.glance)}${spaceSection(d.space)}${secHead("machines", "Machines", infraN("machines"))}${INFRA_T.machines.html()}${pendingLine(d.ci.glance)}${governorLine(g)}`);
+  html += innerWrap("infra", "machines", `${kpis(cc, d.ci.glance)}${spaceSection(d.space)}${secHead("machines", "Machines", infraN("machines"))}${INFRA_T.machines.html()}${pendingLine(d.ci.glance)}`);
   html += innerWrap("infra", "pools", secHead("pools", "Job kinds", infraN("pools")) + INFRA_T.pools.html());
   html += innerWrap("infra", "ci", runnersSection(d.ci)) + innerWrap("infra", "waiting", waitingSection()) +
     innerWrap("infra", "local", localSection(d.ci));

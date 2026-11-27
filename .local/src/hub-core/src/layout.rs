@@ -293,8 +293,7 @@ pub const TABS: [Tab; 13] = [
             "quarantine",
             "jobs",
         ],
-        // What is red and its fixes moved to Alerts (MOVED); the governor's verdict and the
-        // cloud power are columns of the machine they act on. Runners keeps the `ci` section id
+        // What is red and its fixes moved to Alerts (MOVED). Runners keeps the `ci` section id
         // (the CI head), so `#ci`, `#infra/ci` and `hub --tab ci` still land on it; then the
         // jobs waiting for a runner and the local Unity gate's failures. Runs is every run of 30
         // days (`hub_core::builds`), Pipelines each repo's workflows (`hub_core::pipelines`),
@@ -538,8 +537,8 @@ pub const MOVED: &[(&str, &str, &str, &str)] = &[
     ("infra", "red", "alerts", "firing"),
     ("infra", "fixes", "alerts", "fixes"),
     ("infra", "reds", "alerts", "fixes"),
-    // Infra's Governor panel and Cloud tab: the governor's verdict and each cloud host's power
-    // are columns of the machine they act on (2026-11-11). agent-web opens them filtered.
+    // Infra's Governor panel and Cloud tab, gone with the governor (hc-955): an old link opens
+    // Machines, the cloud one under its chip.
     ("infra", "governor", "infra", "machines"),
     ("infra", "cloud", "infra", "machines"),
     // Releases' Builds and Tests inner tabs: CI that ships no release is the machinery's
@@ -563,7 +562,6 @@ pub const MOVED: &[(&str, &str, &str, &str)] = &[
 /// A moved name that opens its new table under a state chip, on both surfaces: (tab, old
 /// section, table, chip). agent-web's app.js MOVED carries the same chips as a query.
 pub const MOVED_CHIPS: &[(&str, &str, &str, &str)] = &[
-    ("infra", "governor", "machines", "governed"),
     ("infra", "cloud", "machines", "cloud"),
 ];
 
@@ -1037,12 +1035,10 @@ mod tests {
                 "{old}"
             );
         }
-        // Each opens Machines under its chip, a chip the table has.
-        assert_eq!(
-            moved_chip("Infra", " Governor "),
-            Some(("machines", "governed"))
-        );
-        assert_eq!(moved_chip("infra", "cloud"), Some(("machines", "cloud")));
+        // The cloud one opens Machines under its chip, a chip the table has; the governor one
+        // plain.
+        assert_eq!(moved_chip("Infra", " Governor "), None);
+        assert_eq!(moved_chip("infra", " Cloud "), Some(("machines", "cloud")));
         assert_eq!(moved_chip("infra", "machines"), None);
         for (_, old, table, chip) in MOVED_CHIPS {
             assert!(MOVED.iter().any(|m| m.1 == *old && m.3 == *table), "{old}");

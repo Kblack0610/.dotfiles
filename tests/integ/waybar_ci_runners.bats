@@ -4,7 +4,7 @@
 # `CI r:<running> q:<queued>` behind dim labels and nothing else; its class is ok whatever the glance alert or domain level says, since a
 # runner or machine down is the health chip's; the hover is each CI node's cells on the title line, the board's head line with the booked CPU, jobs by kind, one row per machine with
 # the CPU and memory its job pods book and 4 cells of the fuller share (a part cell as an eighth block), what runs there and the next waiting job that fits it (red past the load chip's HOT_RATIO), the
-# stopped cloud hosts and the pods waiting for room on a line each, down and long runs; and a failed hub read shows `CI: prom down`, never the last numbers.
+# the pods waiting for room on a line, down and long runs; and a failed hub read shows `CI: prom down`, never the last numbers.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -28,19 +28,19 @@ STUB
 
 # glance <jq patch>: a warn domain with an ok alert and 3 of 3 runners up, 2 jobs running, 2 queued, 4 done at 75%; ms-a2 the
 # one CI node, its job pods booking 4.38 of 32 cores and 2.5G of 92G; the workstation's gate and Unity slot and mac-mini on no
-# CI node; one stopped cloud host, no pod waiting for room, nothing WAITING, then the patch merged over it.
+# CI node; no pod waiting for room, nothing WAITING, then the patch merged over it.
 glance() {
   jq -n --argjson patch "$1" '{glance: ({
     level: "warn", alert: "ok", up: 3, expected: 3, parts: [{name: "pools", level: "warn"}, {name: "watches", level: "ok"}],
     feed: null, busy: 2, queued: 2, oldest: 900, done: 4, pass: 0.75,
     booked: {cpu: 4.38, cpu_alloc: 32, mem: 2700000000, mem_alloc: 98768805888}, pending: [],
-    kinds: [{kind: "unity", running: 2, waiting: 2, oldest: 900, done: 2, usual: 1260, pass: 0.5, weight: "1*"},
+    kinds: [{kind: "unity", running: 2, waiting: 2, oldest: 900, done: 2, usual: 1260, pass: 0.5},
             {kind: "github-hosted", waiting: null, oldest: null, done: 2, pass: 1}],
     machines: [{host: "ms-a2", busy: 3, running: ["[arc-org-light] x2", "[forgejo-runner]"], next: null, load: 0.2,
                 booked: {cpu: 4.38, cpu_alloc: 32, mem: 2700000000, mem_alloc: 98768805888}},
                {host: "workstation", busy: 2, running: ["[gates]", "[unity] platform"], next: null, load: 0.4, booked: null},
                {host: "mac-mini", busy: 0, running: [], next: {job: "Checks", repo: "web", n: 1, wait: 300}, load: null, booked: null}],
-    off: ["aws-burst-1"], down: [], long: [], next: []} * $patch)}' > "$FX/ci.json"
+    down: [], long: [], next: []} * $patch)}' > "$FX/ci.json"
 }
 
 # Three CI nodes as the cluster books them (2026-11-24): deskslim-1 near full on CPU, deskslim-2
@@ -184,23 +184,13 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   [[ "$(tip | sed -n 3p)" == *", <span color='#ef5734'>runner exporter missed its last scrape: runner rows may be missing</span>" ]]
 }
 
-@test "jobs by kind: weight, running, waiting, oldest, done, usual and pass, no FREE; none read is a dash" {
+@test "jobs by kind: running, waiting, oldest, done, usual and pass, no FREE and no WEIGHT; none read is a dash" {
   run "$MODULE"
   run plain
-  assert_line --index 3 "KIND          WEIGHT RUNNING WAITING OLDEST  DONE USUAL  PASS"
-  assert_line --index 4 "unity             1*       2       2    15m     2   21m  50%"
-  assert_line --index 5 "github-hosted      -       -       -      -     2     -  100%"
+  assert_line --index 3 "KIND          RUNNING WAITING OLDEST  DONE USUAL  PASS"
+  assert_line --index 4 "unity               2       2    15m     2   21m  50%"
+  assert_line --index 5 "github-hosted       -       -      -     2     -  100%"
   refute_output --partial "FREE"
-}
-
-@test "a kind the governor has not measured reads 1* under a key line; a measured one reads its share, and with none unmeasured there is no key" {
-  run "$MODULE"
-  run plain
-  assert_line "* not measured yet, counted as a whole slot"
-  glance '{"kinds": [{"kind": "light", "running": 1, "waiting": 0, "done": 5, "pass": 1, "weight": "0.66"}]}'
-  run "$MODULE"
-  run plain
-  assert_line --regexp '^light +0\.66 '
   refute_output --partial "not measured yet"
 }
 
@@ -208,8 +198,8 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   glance '{"kinds": [{"kind": "heavy", "running": 0, "busy": 7, "slots": 9, "waiting": 0, "oldest": null, "done": 2, "pass": 0.5}]}'
   run "$MODULE"
   run plain
-  assert_line --index 3 "KIND  WEIGHT RUNNING WAITING OLDEST  DONE USUAL  PASS"
-  assert_line --index 4 --regexp '^heavy +- +0 +0 '
+  assert_line --index 3 "KIND  RUNNING WAITING OLDEST  DONE USUAL  PASS"
+  assert_line --index 4 --regexp '^heavy +0 +0 '
   refute_output --partial "7/9"
 }
 
@@ -220,7 +210,6 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   assert_line "MACHINE              BOOKED        RUNNING                               NEXT"
   assert_line "workstation               -        [gates], [unity] platform             -"
   assert_line "mac-mini                  -        -                                     Checks (web) 5m"
-  assert_line "cloud: 1 host off"
   refute_output --partial "held"
   refute_output --partial "WHERE"
   refute_output --partial "SPACE"
@@ -243,18 +232,15 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   [[ "$(tip)" == *$'\nmac-mini               -        -                   -'* ]]
 }
 
-@test "stopped cloud hosts fold to one line and are never down" {
-  glance '{"off": ["aws-spot-1", "aws-spot-2"], "down": [{"host": "windows-media", "state": "offline", "n": 1}]}'
+@test "a down runner host is listed under DOWN" {
+  glance '{"down": [{"host": "windows-media", "state": "offline", "n": 1}]}'
   run "$MODULE"
   run plain
-  assert_line "cloud: 2 hosts off"
   assert_line "DOWN:"
   assert_line "  windows-media  1 offline"
-  refute_output --partial "aws-spot-1"
 }
 
-@test "nothing off or down draws neither line" {
-  glance '{"off": []}'
+@test "nothing down draws no DOWN line" {
   run "$MODULE"
   run plain
   refute_output --partial "cloud:"
@@ -312,7 +298,7 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
            "kinds": [{"kind": "x&y", "waiting": 0, "oldest": null, "done": 1, "pass": 1}]}'
   run "$MODULE"
   [[ "$(tip)" == *"a&lt;b          -        -        -"* ]]
-  [[ "$(tip)" == *"x&amp;y       -       -       0      -     1     -  100%"* ]]
+  [[ "$(tip)" == *"x&amp;y        -       0      -     1     -  100%"* ]]
 }
 
 @test "a warning on stderr does not break the read" {

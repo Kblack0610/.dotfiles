@@ -15,7 +15,6 @@ use crate::jobpods::{self, JobPod};
 use crate::machines::{self, Machine, Pool};
 
 use crate::prom::{self, Series, W};
-use crate::run_detail::Rates;
 use crate::workload::{self, Space};
 
 /// Keeps a machine's run ledger series only while its textfile is fresh, as `cc:host_local_done_24h`.
@@ -27,10 +26,6 @@ const LOCAL_FRESH: &str =
 /// fleet-bench's gauges, in one query so `vitals::fetch` can ask for them alone.
 pub const BENCH_QUERY: &str =
     r#"{__name__=~"agent_bench_(waiting_hours|kpi|kpi_limit|kpi_past|kpi_subject|vital)"}"#;
-
-/// What CI time costs: each host's rate and basis and its registered slots, which
-/// `run_detail::Rates` prices jobs from (`Infra::rates`).
-pub const RATES_QUERY: &str = r#"{__name__=~"ci_governor_(rate_usd_per_hour|registered)"}"#;
 
 pub fn instant_queries() -> Vec<(&'static str, String)> {
     vec![
@@ -66,17 +61,6 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // What each CI runner uses: its cores busy and allowed, its memory and its limit, its
         // disk and that reading's age, keyed by host and runner.
         ("runner_use", r#"{__name__=~"cc:runner_.+"}"#.into()),
-        // Runners the governor holds back: idle but not taking jobs, so not online capacity.
-        ("withheld", format!("{W} (github_runner_withheld) == 1")),
-        // Of those, the paired slots whose cores their pair is using (aws-build-1): normal work,
-        // shown as lent, with `to` tests or build.
-        ("lent", format!("{W} (ci_governor_lent) == 1")),
-        // The GitHub slots the topology gives each host (home-config ci-topology): a host with
-        // none is no CI host, so its offline registrations are stale, not down.
-        ("expected", format!("{W} (github_runner_pool_expected)")),
-        // The governor's powered standby hosts (aws-burst-1): state and why, run hours today
-        // against the day cap, and the override in force. The Cloud runners card.
-        ("power", r#"{__name__=~"ci_governor_power_.+"}"#.into()),
         // Each host's emptiest real filesystem, free share: the NodeDisk* alerts' recording
         // rule, keyed by host through cc:host_instance. A CI host with no row here (the AWS
         // hosts, never scraped) has no disk reading at all, and the machines table says so.
@@ -84,11 +68,6 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // What a workflow's job usually takes: the exporter's median and p90 over a day of finished
         // jobs, for the CI runners table's USUAL column.
         ("job_usual", r#"github_job_duration_seconds{forge!="forgejo"}"#.into()),
-        // The governor itself: per host its verdict and action, admitted slots and whether it
-        // acts for real; its queue and health; the AWS budget's month it reads hourly; and the
-        // workstation's local seats and their backlog (capacity and backlog units), which the
-        // Local Unity kind reads until the seats leave the governor (hc-858).
-        ("governor", r#"{__name__=~"ci_governor_(up|ok|queue|admitted|decision|budget_.+|capacity_units|backlog_units)"}"#.into()),
         // The CI job pods (ARC runners, the forgejo-runner jobs) with their phase, node and owner,
         // their requests, and each CI node's allocatable: the machine rows' booked CPU and memory and
         // the pods waiting for room (`jobpods`).
@@ -98,9 +77,6 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // Each node NotReady, quarantined (the degraded taint) or cordoned, for the machine rows'
         // state.
         ("node_state", crate::jobpods::node_state_query()),
-        // Each job kind's weight, the share of a slot one of its jobs takes: the governor's hourly
-        // p90 measurement (`measured="true"`), else 1 (`measured="false"`). The Job kinds WEIGHT.
-        ("kind_weight", "ci_governor_kind_weight".into()),
         // Done today's hours, and the local Unity gate failures (Runners' Local Unity table). An
         // absent metric is an empty answer, so the tab says "no data" rather than an error until
         // the exporters publish them.
@@ -113,8 +89,7 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // fleet-bench's window and KPIs, as it judged them, and which of them are the vitals: the
         // phone's agent lines and Home's Vitals.
         ("bench", BENCH_QUERY.into()),
-        ("rates", RATES_QUERY.into()),
-        // Each node's hostname, keyed by host: a runner or the governor can name a machine by
+        // Each node's hostname, keyed by host: a runner can name a machine by
         // its hostname (`cachyos-x8664-main`) where node_exporter names it `workstation`, so
         // `aliases` joins the two.
         ("uname", "group by (host, nodename) (node_uname_info * on (instance) group_left (host) cc:host_instance)".into()),
@@ -131,19 +106,12 @@ pub const OPTIONAL: &[&str] = &[
     "runner_use",
     "job_kind",
     "pools",
-    "withheld",
-    "lent",
-    "expected",
-    "power",
     "disk",
-    "governor",
     "job_pods",
     "job_requests",
     "ci_alloc",
     "node_state",
-    "kind_weight",
     "job_usual",
-    "rates",
     "uname",
     "boot",
 ];
@@ -288,22 +256,7 @@ impl Infra {
         self.ci.glance = ci::glance(self);
     }
 
-    /// The rates the board read, or why there are none.
-    pub fn rates(&self) -> Rates {
-        match self.instant.get("rates") {
-            Some(s) => Rates::from_series(s),
-            None => Rates {
-                error: Some(
-                    self.error
-                        .clone()
-                        .unwrap_or_else(|| "no rate series".into()),
-                ),
-                ..Default::default()
-            },
-        }
-    }
-
-    /// Hostname -> node name, for a machine whose runners or governor series carry its
+    /// Hostname -> node name, for a machine whose runner series carry its
     /// hostname while node_exporter's `host` is another name (this workstation is
     /// `cachyos-x8664-main` to its runner and `workstation` to Prometheus). Only a hostname one
     /// node alone has: several Pis are all `raspberrypi`, and none of them is the other.
@@ -384,100 +337,13 @@ impl Infra {
         by
     }
 
-    /// The runners the governor holds back (`github_runner_withheld`), by name: an idle one takes
-    /// no job, so it is no slot, but the governor can release it, so a waiting job still fits it.
-    pub fn withheld(&self) -> std::collections::HashSet<&str> {
-        self.get("withheld")
-            .iter()
-            .map(|s| s.label("name"))
-            .collect()
-    }
-
-    /// The withheld runners the governor says are lent to their pair, by name, with whom to:
-    /// `tests` (a build slot whose test slots run CI) or `build`. A lent row for a runner no
-    /// longer withheld (the governor a cycle behind the exporter) is left out, so a runner is
-    /// never both a slot and lent. Any other withheld runner is held back for load, a pin, a
-    /// drain or no work.
-    pub fn lent(&self) -> HashMap<&str, &str> {
-        let held = self.withheld();
-        self.get("lent")
-            .iter()
-            .filter(|s| held.contains(s.label("name")))
-            .map(|s| (s.label("name"), s.label("to")))
-            .collect()
-    }
-
-    /// The hosts the governor has powered off, or is starting or stopping (`ci_governor_power_state`
-    /// at 1 in a state other than `running`), with that state: offline is what their runners
-    /// should be. A host the governor does not manage has no such series. A cloud host with no
-    /// power series and no runner online reads `off` too: the governor's power hook can be off
-    /// (2026-11-18: no power series at all), and a cloud box with every runner offline is not
-    /// running.
-    pub fn powered_off(&self) -> HashMap<&str, &str> {
-        let power = self.get("power");
-        let state = |s: &&Series| s.label("__name__") == "ci_governor_power_state";
-        let mut off: HashMap<&str, &str> = power
-            .iter()
-            .filter(state)
-            .filter(|s| s.value == Some(1.0) && s.label("state") != "running")
-            .map(|s| (s.label("host"), s.label("state")))
-            .collect();
-        let read: std::collections::HashSet<&str> = power
-            .iter()
-            .filter(state)
-            .map(|s| s.label("host"))
-            .collect();
-        let mut cloud: BTreeMap<&str, bool> = BTreeMap::new();
-        for s in self
-            .get("runners")
-            .iter()
-            .filter(|s| s.label("site") == "cloud")
-        {
-            *cloud.entry(s.label("host")).or_default() |=
-                matches!(s.label("state"), "running" | "idle");
-        }
-        for (h, up) in cloud {
-            if !up && !read.contains(h) {
-                off.entry(h).or_insert("off");
-            }
-        }
-        off
-    }
-
-    /// The hosts the topology gives GitHub slots (`github_runner_pool_expected`), or none when
-    /// that series did not answer.
-    pub fn ci_hosts(&self) -> Option<std::collections::HashSet<&str>> {
-        let e = self.get("expected");
-        (!e.is_empty()).then(|| e.iter().map(|s| s.label("host")).collect())
-    }
-
-    /// The runners whose liveness CI judges: every registration but one on a host the governor
-    /// has powered off (`powered_off`), one offline that the governor withholds on that host (a
-    /// pin such as machine-mode reserved, load or a drain stopped it), a Forgejo seat (offline by
-    /// design until the governor lends it its slot) and a registration on a host the topology
-    /// lists no slot for (stale, not down). `runners_down` and `runners_up` both read this, so up
-    /// plus down is the roster.
+    /// The runners whose liveness CI judges: every registration but a Forgejo one, which is an
+    /// ephemeral KEDA forgejo-runner job pod, offline between jobs by design. `runners_down` and
+    /// `runners_up` both read this, so up plus down is the roster.
     fn judged(&self) -> Vec<&Series> {
-        let off = self.powered_off();
-        let held: std::collections::HashSet<(&str, &str)> = self
-            .get("withheld")
-            .iter()
-            .map(|s| (s.label("host"), s.label("name")))
-            .collect();
-        let alias = self.aliases();
-        let hosts: Option<std::collections::HashSet<String>> = self
-            .ci_hosts()
-            .map(|h| h.into_iter().map(|x| host(&alias, x)).collect());
         self.get("runners")
             .iter()
-            .filter(|s| !off.contains_key(s.label("host")))
-            .filter(|s| is_up(s) || !held.contains(&(s.label("host"), s.label("name"))))
             .filter(|s| s.label("forge") != "forgejo")
-            .filter(|s| {
-                hosts
-                    .as_ref()
-                    .is_none_or(|h| h.contains(&host(&alias, s.label("host"))))
-            })
             .collect()
     }
 
@@ -515,18 +381,6 @@ impl Infra {
             .filter(|n| !n.is_empty())
             .collect();
         (named.len() + unnamed) as u32
-    }
-
-    /// The Machines table's rows on both surfaces: every machine but a cloud host the governor
-    /// holds off, which the glance counts on one line (`cloud: N hosts off`). Its page still
-    /// opens from `machines`.
-    pub fn machine_rows(&self) -> Vec<Machine> {
-        let off = &self.ci.glance.off;
-        self.machines
-            .iter()
-            .filter(|m| !off.contains(&m.host))
-            .cloned()
-            .collect()
     }
 
     /// Why the runner rows may be short, worst first: a missed exporter scrape, GitHub's rate
@@ -660,147 +514,27 @@ mod tests {
         s
     }
 
-    fn power(host: &str, state: &str, v: f64) -> Series {
-        let mut s = cc("ci_governor_power_state", ("host", host), v);
-        s.labels.insert("state".into(), state.into());
-        s
-    }
-
     #[test]
-    fn a_runner_the_governor_withholds_is_not_down_and_leaves_the_roster() {
-        let ws = "cachyos-x8664-main";
+    fn an_offline_runner_is_down_and_a_forgejo_registration_is_not_judged() {
         let mut i = Infra::default();
-        i.instant.insert(
-            "runners",
-            vec![
-                runner("ws-unity-pool-1", ws, "offline"),
-                runner("ws-unity-pool-2", ws, "offline"),
-                runner("ws-unity-pool-3", ws, "idle"),
-            ],
-        );
-        let names = |i: &Infra| -> Vec<String> {
-            i.runners_down()
-                .iter()
-                .map(|s| s.label("name").to_string())
-                .collect()
-        };
-        assert_eq!(names(&i), ["ws-unity-pool-1", "ws-unity-pool-2"]);
-        let held = |name: &str, host: &str| {
-            let mut s = cc("github_runner_withheld", ("name", name), 1.0);
-            s.labels.insert("host".into(), host.into());
-            s
-        };
-        // machine-mode reserved pins the host: the governor withholds pool-1 and pool-3, pool-1
-        // stops, pool-3 idles. Only pool-2, which it still wants up, is down, and the roster
-        // (up plus down) leaves out the stopped one as it does a powered-off host's.
-        i.instant.insert(
-            "withheld",
-            vec![
-                held("ws-unity-pool-1", ws),
-                held("ws-unity-pool-3", ws),
-                // The same name withheld on another host holds nothing here.
-                held("ws-unity-pool-2", "tuf-b550"),
-            ],
-        );
-        assert_eq!(names(&i), ["ws-unity-pool-2"]);
-        assert_eq!(i.runners_up(), 1);
-    }
-
-    #[test]
-    fn a_runner_on_a_host_the_governor_powered_off_is_not_down() {
-        let mut i = Infra::default();
-        i.instant.insert(
-            "runners",
-            vec![
-                runner("aws-burst-1-unity-pool-1", "aws-burst-1", "offline"),
-                runner("aws-burst-2-unity-pool-1", "aws-burst-2", "missing"),
-                runner("mini-1", "mac-mini", "offline"),
-                runner("razer-1", "razer-laptop", "idle"),
-            ],
-        );
-        i.instant.insert(
-            "power",
-            vec![
-                power("aws-burst-1", "stopped", 1.0),
-                // A state at 0 is not the host's state: aws-burst-2 is running.
-                power("aws-burst-2", "stopped", 0.0),
-                power("aws-burst-2", "running", 1.0),
-            ],
-        );
-        let names = |i: &Infra| -> Vec<String> {
-            i.runners_down()
-                .iter()
-                .map(|s| s.label("name").to_string())
-                .collect()
-        };
-        // Down while the governor says its host runs, and on mac-mini, which it does not manage.
-        assert_eq!(names(&i), ["aws-burst-2-unity-pool-1", "mini-1"]);
-        // Starting is not running either: its runners are not up yet, by design.
-        i.instant
-            .insert("power", vec![power("aws-burst-1", "starting", 1.0)]);
-        assert_eq!(names(&i), ["aws-burst-2-unity-pool-1", "mini-1"]);
-        // With no governor answer every offline runner is down.
-        i.instant.remove("power");
-        assert_eq!(
-            names(&i),
-            [
-                "aws-burst-1-unity-pool-1",
-                "aws-burst-2-unity-pool-1",
-                "mini-1"
-            ]
-        );
-    }
-
-    #[test]
-    fn only_a_runner_the_topology_expects_is_down() {
-        let mut i = Infra::default();
-        let mut cloud = runner("aws-spot-1-unity-pool-1", "aws-spot-1", "offline");
-        cloud.labels.insert("site".into(), "cloud".into());
-        let mut seat = runner("ms-a2-unity-pool-2-forgejo", "ms-a2", "offline");
+        let mut seat = runner("ms-a2-forgejo-1", "ms-a2", "offline");
         seat.labels.insert("forge".into(), "forgejo".into());
         i.instant.insert(
             "runners",
             vec![
-                cloud,
                 seat,
-                runner("ms-a2-unity-pool-3", "ms-a2", "offline"),
-                runner("old-box-1", "old-box", "offline"),
+                runner("ms-a2-light-1", "ms-a2", "offline"),
+                runner("old-box-1", "old-box", "missing"),
+                runner("razer-1", "razer-laptop", "idle"),
             ],
         );
-        let names = |i: &Infra| -> Vec<String> {
-            i.runners_down()
-                .iter()
-                .map(|s| s.label("name").to_string())
-                .collect()
-        };
-        // A cloud host with no power series and nothing online is off, and a Forgejo seat is
-        // offline until its slot is lent; with no topology answer every other one is down.
-        assert_eq!(i.powered_off().get("aws-spot-1"), Some(&"off"));
-        assert_eq!(names(&i), ["ms-a2-unity-pool-3", "old-box-1"]);
-        // A host the topology gives no slot is a stale registration, not down.
-        i.instant.insert(
-            "expected",
-            vec![cc("github_runner_pool_expected", ("host", "ms-a2"), 4.0)],
-        );
-        assert_eq!(names(&i), ["ms-a2-unity-pool-3"]);
-        // The topology names a host by its node name; a runner registered under the hostname
-        // is the same machine.
-        let mut uname = runner("", "workstation", "");
-        uname
-            .labels
-            .insert("nodename".into(), "cachyos-x8664-main".into());
-        i.instant.insert("uname", vec![uname]);
-        i.instant.get_mut("runners").unwrap().push(runner(
-            "gates-1",
-            "cachyos-x8664-main",
-            "offline",
-        ));
-        i.instant.get_mut("expected").unwrap().push(cc(
-            "github_runner_pool_expected",
-            ("host", "workstation"),
-            2.0,
-        ));
-        assert_eq!(names(&i), ["gates-1", "ms-a2-unity-pool-3"]);
+        let names: Vec<String> = i
+            .runners_down()
+            .iter()
+            .map(|s| s.label("name").to_string())
+            .collect();
+        assert_eq!(names, ["ms-a2-light-1", "old-box-1"]);
+        assert_eq!(i.runners_up(), 1);
     }
 
     #[test]
@@ -829,23 +563,6 @@ mod tests {
     }
 
     #[test]
-    fn the_rates_come_from_the_boards_answer_or_say_why_not() {
-        let mut i = Infra::default();
-        i.instant.insert(
-            "rates",
-            vec![cc("ci_governor_registered", ("host", "aws-burst-1"), 5.0)],
-        );
-        let r = i.rates();
-        assert_eq!(r.hosts["aws-burst-1"].slots, Some(5.0));
-        assert_eq!(r.error, None);
-        let none = Infra {
-            error: Some("cannot read prom".into()),
-            ..Default::default()
-        };
-        assert_eq!(none.rates().error.as_deref(), Some("cannot read prom"));
-    }
-
-    #[test]
     fn only_the_extras_are_optional() {
         let names: Vec<_> = instant_queries().into_iter().map(|(n, _)| n).collect();
         assert!(OPTIONAL.iter().all(|o| names.contains(o)));
@@ -860,19 +577,12 @@ mod tests {
                 "runner_use",
                 "job_kind",
                 "pools",
-                "withheld",
-                "lent",
-                "expected",
-                "power",
                 "disk",
-                "governor",
                 "job_pods",
                 "job_requests",
                 "ci_alloc",
                 "node_state",
-                "kind_weight",
                 "job_usual",
-                "rates",
                 "uname",
                 "boot"
             ]
