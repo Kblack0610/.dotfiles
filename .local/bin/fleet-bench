@@ -536,7 +536,7 @@ def canary_base: (.harness // "claude") == "claude" and (.effort // "") == "";
 def canary_control($t): canary_base and .model == "opus" and $t.pts == 1 and ($t.merge // null) == null;
 # An end that says nothing about the model (UNRATED_ENDS, lib/end-reasons.sh) is no evidence for or against it.
 def unrated: (.end_reason // "") | IN('"$(unrated_json)"'[]);
-# A canary score whose session ended outside the model (canary_score, CANARY_UNRUN_ENDS) has pass null: not run, in no pass rate.
+# A canary score whose session ended outside the model (canary_score, OUTSIDE_ENDS) has pass null: not run, in no pass rate.
 def canary_ran: .pass != null;
 # canary_batch: the ISO week a score ran in, as its run slug names it (canary_slug), else as its epoch falls.
 def canary_batch: first(.run // "" | capture("-(?<w>[0-9]{4}w[0-9]{2})(-|$)").w) // (.epoch // 0 | strflocaltime("%Gw%V"));
@@ -7545,19 +7545,19 @@ canary_keep() {
     git -C "$1" reset -q || { say "canary score: could not save the run's diff, so $1 stays as the run left it"; return 1; }
 }
 
-# CANARY_UNRUN_ENDS: a session end that leaves a canary run not run (pass null), out of every pass rate:
+# OUTSIDE_ENDS (lib/end-reasons.sh): a session end that leaves a canary run not run (pass null), out of every pass rate:
 # UNRATED_ENDS, and a timeout too, since the pass rate grades the diff a finished session left and the
 # lane's minutes already show a slow model. 12 of 16 failed free-model 2 and 3 point runs on 2026-11-19
 # were provider refusals scored as model fails (agent-runtime docs/canary-free-failures-2026-11-19.md).
-CANARY_UNRUN_ENDS="$UNRATED_ENDS timeout"
 
 # canary score <id>: run the oracle over the session's tree and append one score row, then put the tree
 # back where canary start found it (its branch, canary_mark), clean, so wt reaps it as landed (a dirty one was held forever: 23 of 134
 # held trees on 2026-11-18); the run's diff stays as <run>.patch beside its log (canary_keep). A run is
-# the queue item ($AGENT_QUEUE_ITEM) or the task and week, and it scores once: a second score is refused.
+# the queue item ($AGENT_QUEUE_ITEM) or the task and week, and it scores once: a second score is refused, unless
+# the first was not run (pass null): that run is queued again (fleet-dispatch canary-close), and its next run scores.
 # Why the session ended is the item's end_reason, which fleet-dispatch's canary tail writes from the harness's
 # record once the run is over (record-end); none is unknown, and the oracle alone scores it. The row keeps it
-# as end_reason, and an end in CANARY_UNRUN_ENDS scores pass null, not run, whatever the oracle said. A
+# as end_reason, and an end in OUTSIDE_ENDS scores pass null, not run, whatever the oracle said. A
 # positive control run (canary_control) is marked control, and when it fails it says that its whole week now
 # reads instrument (canary_graded).
 canary_score() {
@@ -7566,7 +7566,7 @@ canary_score() {
   [ $# -eq 1 ] || { say "usage: fleet-bench canary score <id>"; return 2; }
   top=$(git rev-parse --show-toplevel 2>/dev/null) || { say "canary score: not in a git worktree"; return 2; }
   run=${AGENT_QUEUE_ITEM:-canary-$id-$(canary_week)}
-  if [ -s "$CANARY" ] && jq -e --arg r "$run" 'select(.run == $r)' "$CANARY" >/dev/null 2>&1; then
+  if [ -s "$CANARY" ] && jq -e --arg r "$run" 'select(.run == $r and .pass != null)' "$CANARY" >/dev/null 2>&1; then
     say "canary score: $run is already scored"; return 3
   fi
   mkdir -p "$DIR/canary"; log="$DIR/canary/$run.log"; : >"$log"
@@ -7592,7 +7592,7 @@ canary_score() {
     say "canary score: the session's end is unknown (the item has no end_reason: the harness record said nothing), so the oracle alone scores it"
   pass=false verdict=fail
   [ "$rc" != 0 ] || { pass=true verdict=pass; }
-  [[ " $CANARY_UNRUN_ENDS " != *" ${end:-none} "* ]] || { pass=null verdict="not run (the session ended: $end)"; }
+  ! outside_end "$end" || { pass=null verdict="not run (the session ended: $end)"; }
   control=$(jq -n --argjson t "$t" --argjson l "$lane" "$JQ_LIB"'$l | canary_control($t)')
   jq -nc --argjson t "$t" --argjson e "$(now)" --arg run "$run" --argjson rc "$rc" --argjson l "$lane" \
     --argjson pass "$pass" --arg end "$end" --argjson control "$control" \
