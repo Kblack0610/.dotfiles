@@ -1430,7 +1430,9 @@ unlisted_repo() {
 # placeholder (`<command>`, none, n/a), is no step. The slug names the PR, a hash of the step and the
 # repo, so a re-run of this landing adds none twice, even after the body was edited. The add is
 # from the landed item but not run as it (AGENT_QUEUE_ITEM empty), so that item's own after: never
-# gates it. High, since main's change is only half applied until it runs. Never fails the landing:
+# gates it. It goes into the queue as agent-land's own pull (AGENT_QUEUE_PULL=land, never held by the
+# cap): a board-only add from a dispatched session goes to the outbox, where triage kept it in
+# improvements.md and no step ran (ar-5865). High, since main's change is only half applied until it runs. Never fails the landing:
 # the merge stands, and a step not added is said with the add to run by hand.
 deploy_steps() {
   local text step slug project out rc steps=() repo=${pr_ref%#*}
@@ -1446,7 +1448,7 @@ deploy_steps() {
     rc=0
     # the repo last: agent-queue cuts a slug at 40 characters
     slug="after-deploy-$pr-$(printf '%s' "$step" | sha1sum | cut -c1-7)-${repo##*/}"
-    out=$(AGENT_QUEUE_ITEM='' aq_retry add --project "$project" --priority high --from "item:$item" --slug "$slug" \
+    out=$(AGENT_QUEUE_ITEM='' AGENT_QUEUE_PULL=land aq_retry add --project "$project" --priority high --from "item:$item" --slug "$slug" \
       "chore(deploy): $step (left by $pr_ref)"$'\n\n'"$pr_ref (merge ${merged:0:12}) left this step for once its change is live: $step"$'\n'"Check the change is live first (a dotfiles merge: the main checkout is at or past the merge; a service: its rollout finished), then run it and prove what it changed." 2>&1) || rc=$?
     case "$rc" in
       0) echo "deploy: added $slug: $step" ;;
@@ -1465,7 +1467,9 @@ deploy_steps() {
 # starts, so it carries this merge too; one already started may have read an older base, so a new one
 # is added. Why: home-config merged 23 ansible role changes on 2026-11-25 and 11-26 that reached no
 # host until ConvergenceDrift fired on five, after #1447's README rule that the merging session applies
-# them was never followed (ar-5861, ask GxMF2a). Never fails the landing.
+# them was never followed (ar-5861, ask GxMF2a). Added as agent-land's pull (AGENT_QUEUE_PULL=land), as
+# deploy_steps is: 17 adds without it went board-only to the outbox from 2026-11-26, no apply ran, and
+# ConvergenceDrift fired on 8 hosts (ar-5865). Never fails the landing.
 after_merge_steps() {
   local text files line paths step p f hit slug project out rc queued repo=${pr_ref%#*} sha ps=()
   text=$(git show "$remote/$base:$AFTER_MERGE_FILE" 2>/dev/null) || return 0
@@ -1493,7 +1497,7 @@ after_merge_steps() {
     slug=$(grep -m1 -E "^after-merge-$sha-[0-9]+-" <<<"$queued") && { echo "after-merge: $slug is still queued and carries #$pr too: $step"; continue; }
     slug="after-merge-$sha-$pr-${repo##*/}"
     rc=0
-    out=$(AGENT_QUEUE_ITEM='' aq_retry add --project "$project" --priority high --from "item:$item" --slug "$slug" \
+    out=$(AGENT_QUEUE_ITEM='' AGENT_QUEUE_PULL=land aq_retry add --project "$project" --priority high --from "item:$item" --slug "$slug" \
       "chore(after-merge): $step (left by $pr_ref)"$'\n\n'"$pr_ref (merge ${merged:0:12}) changed $hit, and ${repo##*/}'s $AFTER_MERGE_FILE leaves this step for every merge that changes $paths: $step"$'\n'"Run it at the base's tip when you start, so it carries every merge since, and prove what it changed." 2>&1) || rc=$?
     case "$rc" in
       0) echo "after-merge: added $slug: $step" ;;
