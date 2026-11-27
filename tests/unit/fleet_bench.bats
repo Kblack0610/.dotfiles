@@ -841,6 +841,13 @@ printf '%s\n' "$*" >> "$BATS_TEST_TMPDIR/fj.argv"
 cat >> "$BATS_TEST_TMPDIR/fj.stdin"
 [ ! -e "$BATS_TEST_TMPDIR/fj.fail" ] || { echo "curl: (22) The requested URL returned error: 502" >&2; exit 22; }
 url=${*: -1}
+# fj.gone-N: pulls/N is a 404; fj.private: so is the pull list, as for a repo the token cannot see
+case $url in
+  *'/pulls?'*) [ ! -e "$BATS_TEST_TMPDIR/fj.private" ] || { echo '{"message":"The target couldn'"'"'t be found."}'; echo "curl: (22) The requested URL returned error: 404" >&2; exit 22; }
+    echo '[]'; exit 0 ;;
+esac
+[ ! -e "$BATS_TEST_TMPDIR/fj.gone-${url##*/pulls/}" ] && [ ! -e "$BATS_TEST_TMPDIR/fj.private" ] ||
+  { echo '{"message":"The target couldn'"'"'t be found."}'; echo "curl: (22) The requested URL returned error: 404" >&2; exit 22; }
 jq --argjson n "${url##*/pulls/}" '.number = $n' "$BATS_TEST_TMPDIR/fj.pr"
 STUB
   chmod +x "$SANDBOX/bin/curl-fj"
@@ -915,6 +922,32 @@ forgejo_outcome() {
   BENCH_NOW=$T0 run "$SUBJECT" review
   assert_success
   assert_output --partial '1 PRs counted, 1 CI reds'
+}
+
+@test "review: a Forgejo PR its forge no longer has is named and left out, holds no cursor, and fails nothing; a 404 on the pull list too is FAILED" {
+  stub_review
+  stub_forgejo
+  forgejo_outcome s2 13
+  cp "$GHD/runs-#12.json" "$GHD/runs-#13.json"
+  touch "$BATS_TEST_TMPDIR/fj.gone-13"
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_success
+  assert_output --partial 'git.example.test/o/audio#13 left out: its forge says no such PR (pulls/13 is a 404)'
+  assert_output --partial '1 PRs counted, 1 CI reds, 1 left out that their forge no longer has'
+  refute_output --partial 'cannot count'
+  run jq -c .number "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  assert_output 12
+  run outcome
+  assert_output WORKED
+  [ "$(cat "$FLEET_BENCH_DIR/review.last")" -eq "$T0" ]
+  # a token that cannot see the repo 404s the pull list as well: that is a failed read, not a lost PR
+  rm "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  touch "$BATS_TEST_TMPDIR/fj.private"
+  BENCH_NOW=$T0 run "$SUBJECT" review --days 1
+  assert_failure
+  assert_output --partial 'cannot count git.example.test/o/audio#12'
+  assert_output --partial 'cannot count git.example.test/o/audio#13'
+  refute_output --partial 'left out: its forge'
 }
 
 @test "review: a Forgejo host not listed gets no call, and a Forgejo repo the ledger does not sync is left out" {
