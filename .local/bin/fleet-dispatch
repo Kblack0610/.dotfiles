@@ -4524,8 +4524,7 @@ cmd_start() {
       # agent-queue refuses to move a held item to running (ar-3260): asked before the launch, so a
       # refused start leaves no session working an item still queued.
       hold=$(jq -r '.hold // empty' <<<"$it")
-      [ -z "$hold" ] || { say "start: $item waits on $hold; it starts once that clears"; return 1; }
-      start_merged "$item" "$it" && { exec 7>&-; return 0; }
+      [ -z "$hold" ] || { say "start: $item waits on $hold; it starts once that clears"; return 1; }; start_merged "$item" "$it" && { exec 7>&-; return 0; }
     fi
     project=$(jq -r .project <<<"$it")
     [ -n "$area" ] || area=$(jq -r '.area // empty' <<<"$it")
