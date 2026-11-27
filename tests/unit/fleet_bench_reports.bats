@@ -1720,6 +1720,58 @@ SH
   assert_failure 2
 }
 
+@test "sources: a points series younger than the window reads points_days and points_short, and the table marks its points and ratios; a full series is unmarked" {
+  sources_fixture
+  echo '{"slug":"a","account":"main","status":"ok","pr":"o/r#1","outcome":"landed"}' > "$ITEMS"
+  run "$SUBJECT" sources --json
+  assert_success
+  assert_equal "$(jq -c '[.read.points_start, (.sources[] | select(.name == "main" or .name == "alt") | [.name, .points_days, .points_short])]' <<<"$output")" \
+    '[true,["main",7,false],["alt",null,false]]'
+  run "$SUBJECT" sources
+  assert_line '| main | claude | 40% | - | 10 | $50 list | 1 | $5 | 0.1 | 10 | - |'
+  SRC_FIRST_MAIN=$((T0 - 224640)) run "$SUBJECT" sources --json
+  assert_equal "$(jq -c '.sources[] | select(.name == "main" or .name == "bnb") | [.name, .points, .points_days, .points_short]' <<<"$output")" \
+    '["main",10,2.6,true]
+["bnb",4,7,false]'
+  SRC_FIRST_MAIN=$((T0 - 224640)) run "$SUBJECT" sources
+  assert_line '| main | claude | 40% | - | 10 (2.6d of 7) | $50 list | 1 | $5 (2.6d of 7) | 0.1 (2.6d of 7) | 10 (2.6d of 7) | - |'
+  assert_line '| bnb | claude | 20% | - | 4 | $30 list | 0 | $7.5 | - | - | - |'
+  # the same series covers a 2-day window whole
+  BENCH_QUEUE_DAYS=2 SRC_FIRST_MAIN=$((T0 - 224640)) run "$SUBJECT" sources --json
+  assert_equal "$(jq -c '.sources[] | select(.name == "main") | [.points_days, .points_short]' <<<"$output")" '[2,false]'
+}
+
+@test "sources: a first-sample read that fails leaves points_days null and nothing marked, and the rest of the table reads" {
+  sources_fixture
+  stub_vm 'case "$*" in
+  *tfirst_over_time*) exit 7 ;;
+  *week_used_percent*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"account\":\"main\"},\"value\":[1,\"10\"]}]}}" ;;
+  *) exit 7 ;;
+esac'
+  run "$SUBJECT" sources --json
+  assert_success
+  assert_equal "$(jq -c '[.read.points, .read.points_start, (.sources[] | select(.name == "main") | [.points, .points_days, .points_short])]' <<<"$output")" \
+    '[true,false,[10,null,false]]'
+}
+
+@test "scorecard: the KPI table marks points_per_pr when a Claude source's points cover fewer days than the window, and leaves it bare when they cover it" {
+  kpi_setup; sources_fixture
+  {
+    echo '{"slug":"a","account":"main","status":"ok","pr":"o/r#1","outcome":"landed"}'
+    echo '{"slug":"b","account":".claude-bnb","status":"ok","pr":"o/r#2","outcome":"landed"}'
+  } > "$ITEMS"
+  run "$SUBJECT" kpi --json
+  assert_equal "$(jq -c '.points_per_pr | [.["7d"], .short_days]' <<<"$output")" '[7,null]'
+  SRC_FIRST_MAIN=$((T0 - 224640)) run "$SUBJECT" kpi --json
+  assert_equal "$(jq -c '.points_per_pr | [.["7d"], .short_days]' <<<"$output")" '[7,2.6]'
+  SRC_FIRST_MAIN=$((T0 - 224640)) run "$SUBJECT" kpi
+  assert_line '| points_per_pr (now) | 7 (2.6d of 7) | - | - | - |'
+  run "$SUBJECT" kpi
+  assert_line '| points_per_pr (now) | 7 | - | - | - |'
+  BENCH_QUEUE_DAYS=2 SRC_FIRST_MAIN=$((T0 - 224640)) run "$SUBJECT" kpi
+  assert_line --regexp '^\| points_per_pr \(now\) \| [0-9.]+ \| - \| - \| - \|$'
+}
+
 @test "sources: a source a provider refusal holds shows its hold beside its used percent, json and table; an unreadable hold read leaves every source unheld" {
   sources_fixture
   : > "$ITEMS"

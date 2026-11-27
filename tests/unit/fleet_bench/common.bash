@@ -389,7 +389,8 @@ EOF
 
 # sources_fixture: two Claude accounts, Codex and a gateway key; VictoriaMetrics has points for all but
 # Codex and list dollars by email. Items land on an account, an `account:`, a session's account, a
-# harness source, or nowhere. main's sessions s2 and s3 used 300 and 100 tokens, bnb's s1 100.
+# harness source, or nowhere. main's sessions s2 and s3 used 300 and 100 tokens, bnb's s1 100. Every
+# points series starts at the window's first instant unless SRC_FIRST_MAIN (an epoch) moves main's.
 sources_fixture() {
   export BENCH_NOW=$T0 BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes" BENCH_DONE_ITEMS_CMD=done-stub ITEMS="$SANDBOX/done.jsonl"
   export BENCH_SOURCES_CMD=status-stub BENCH_HARNESSES="$SANDBOX/harnesses.json" BENCH_LANE_LOG="$SANDBOX/runs.jsonl"
@@ -417,6 +418,7 @@ STUB
   out_row game '{session_id: "s6", updated_epoch: ($t - 3600), tokens_total: 10}'
   stub_prom 'exit 7'   # every other Prometheus read stays dead, as before
   stub_vm 'case "$*" in
+  *tfirst_over_time*) w=$(( BENCH_NOW - ${BENCH_QUEUE_DAYS:-7} * 86400 )); echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"account\":\"main\"},\"value\":[1,\"${SRC_FIRST_MAIN:-$w}\"]},{\"metric\":{\"account\":\"bnb\"},\"value\":[1,\"$w\"]},{\"metric\":{\"account\":\"reserve\"},\"value\":[1,\"$w\"]},{\"metric\":{\"account\":\"lazer\"},\"value\":[1,\"$w\"]}]}}" ;;
   *week_used_percent*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"account\":\"main\"},\"value\":[1,\"10\"]},{\"metric\":{\"account\":\"bnb\"},\"value\":[1,\"4\"]},{\"metric\":{\"account\":\"reserve\"},\"value\":[1,\"5\"]},{\"metric\":{\"account\":\"lazer\"},\"value\":[1,\"2\"]}]}}" ;;
   *cost_usage*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"user_email\":\"m@x\"},\"value\":[1,\"50\"]},{\"metric\":{\"user_email\":\"b@x\"},\"value\":[1,\"30\"]}]}}" ;;
   *) exit 7 ;;
