@@ -38,8 +38,9 @@ watch_severity() {
 
 # watch_trip_level <manifest> <state dir> -> low|normal|high|urgent: the level of the trip now on, from
 # the `<name>.level` file watch-companion-loop writes off a probe's `page:` line (alertmanager-fleet:
-# the highest level its firing alerts map to), else watch_severity. Same rule as `watch-companion-loop
-# tripped`, so a reader's priority for a warning-only trip is not the manifest's fixed fallback.
+# the highest level its firing alerts map to), else watch_severity. Read only while the state is TRIP
+# (the loop drops the file at any other state), so a reader's priority for a warning-only trip is not
+# the manifest's fixed fallback.
 watch_trip_level() {
   local n l
   n="$(basename "$1" .paused)"; n="${n%.yaml}"

@@ -5022,6 +5022,19 @@ alert_setup() {
   assert_line --regexp '^check\(alert\): ConvergenceDrift deskslim-1 firing, .*#high \(agent\)$'
 }
 
+@test "triage: a trip's level sets the row's priority, not its patience, which stays the manifest's severity" {
+  log_triage_setup
+  # 20 minutes in: past the 15m a high watch waits, short of the 30m a normal one does
+  watch paged TRIP -1200 high
+  printf 'low' > "$TRIAGE_WATCH_STATE/paged.level"
+  watch quiet TRIP -1200 normal
+  printf 'high' > "$TRIAGE_WATCH_STATE/quiet.level"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --regexp '^check\(watch\): paged tripped since .*#low'
+  refute_output --partial 'check(watch): quiet'
+}
+
 @test "triage: an alert a human's pin explains is intended, not a row; its old row closes" {
   alert_setup
   echo '{"data":{"deskslim-1.slots":"{\"slots\":0,\"by\":\"human: moving the deskslims\"}","razer-laptop.slots":"{\"slots\":0,\"by\":\"machine-mode open\"}"}}' > "$SANDBOX/pins.json"
