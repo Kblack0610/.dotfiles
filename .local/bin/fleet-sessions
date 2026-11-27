@@ -1025,22 +1025,25 @@ carried_by() {
   printf '%s' "${out:--}"
 }
 
-# item_open_prs <all items, jsonl> <comma list of a session's own item slugs> -> the comma list of "#<n>" for each PR
-# recorded on one of those running items (`open_pr:`, which agent-land sets before its checks, or `pr:`) that is still
-# OPEN in the PR store, else -. The PR rides another session's branch or a landing train's gate, so its owner lands it
+# item_open_prs <all items, jsonl> <comma list of a session's own item slugs> -> the comma list of "<repo>#<n>" for each
+# PR recorded on one of those running items (`open_pr:`, which agent-land sets before its checks, or `pr:`) that is OPEN
+# in the PR store with CI not red. The PR rides another session's branch or a landing train's gate, so its owner lands it
 # and the item's idle session has nothing to do: carried like a filed item, never STALLED (ar-3580: ucp-671 PR #2506 on
-# agent-37's branch, in train #2919, read STALLED on agent-15). A repo the store cannot answer for carries nothing.
+# agent-37's branch, in train #2919, read STALLED on agent-15). A red PR is nobody's landing, so the row stays STALLED.
+# The store is read with its checks and without store_refresh (no `sync-prs --wait`), once per repo per pass: a PR merged
+# since the last poll reads open for at most one poll. A repo the store cannot answer for carries nothing.
 item_open_prs() {
-  local refs repo ref out="" open=""
+  local refs repo f out=""
   refs="$(jq -r --arg own ",$2," 'select(.state == "running" and (.slug // "") != "" and (.slug as $s | $own | contains("," + $s + ",")))
       | ((.open_pr // "") + " " + (.pr // "" | tostring)) | split(" ")[] | select(test("^[^#]+#[0-9]+$"))' <<<"$1" 2>/dev/null | sort -u)"
   [ -n "$refs" ] || { printf -- -; return; }
   while IFS= read -r repo; do
-    open+="$(pr_states "$repo" | jq -r --arg r "$repo" '.[] | select(.state == "OPEN") | "\($r)#\(.number)"')"$'\n'
+    f="$CACHE/prsci_${repo//\//_}.json"
+    [ -f "$f" ] || "$SCHEDULES_SYNC" prs "$repo" --checks 2>/dev/null | jq -c 'map({number, state, ci})' > "$f" 2>/dev/null
+    [ -s "$f" ] || continue
+    out+="$(jq -r --arg r "$repo" '.[] | select(.state == "OPEN" and (.ci // "") != "FAIL") | "\($r)#\(.number)"' "$f")"$'\n'
   done < <(sed 's/#[0-9]*$//' <<<"$refs" | sort -u)
-  while IFS= read -r ref; do
-    grep -qxF -- "$ref" <<<"$open" && out+="${out:+,}#${ref##*#}"
-  done <<<"$refs"
+  out="$(grep -xFf <(printf '%s\n' "$out") <<<"$refs" | paste -sd, -)"
   printf '%s' "${out:--}"
 }
 
