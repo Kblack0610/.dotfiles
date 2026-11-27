@@ -14,7 +14,7 @@
 #
 # Steps, stopping at the first failure: head (HEAD must be the PR's head commit, before the body is
 # touched; else the merge would be refused as "Head branch was modified": run from the PR's own
-# checkout; a HEAD that is origin's tip of the PR branch is a fresh push, waited on until the PR reads it), fetch (a head behind origin/<base> is merged up to it, each clean submodule checkout on its old pin moved to the merged one (submodule_follow), and pushed, before the checks and again after them if the base moved on during them; a head pushed after them waits on its own checks before it merges, and on a GitHub base without strict checks a second move, or on any base a first that can affect no test the head's run ran (moved_misses_pick), lands that green head behind it unless the base's new commits change a file the head changes (base_touches_head), catch_up), item-line
+# checkout; a HEAD that is origin's tip of the PR branch is a fresh push, waited on until the PR reads it), fetch (a head behind origin/<base> is merged up to it, unless its own checks are already pending or green (head_checks_live), each clean submodule checkout on its old pin moved to the merged one (submodule_follow), and pushed, before the checks and again after them if the base moved on during them; a head pushed after them waits on its own checks before it merges, and on a GitHub base without strict checks a second move, or on any base a first that can affect no test the head's run ran (moved_misses_pick), lands that green head behind it unless the base's new commits change a file the head changes (base_touches_head), catch_up), item-line
 # (before the checks, the PR body gets the line "Item: <slug>" unless it has it, so a reader holding
 # only the PR finds its work item; a stale "Item:" line is rewritten, except on a merged PR where another queue item's line stays), review (a tier-3 item's body has a
 # "Review:" line, review_gate), loose (a plan phase's item filed no open agent row its plan does not take, loose_gate), shape (no function over 150 lines gets longer and no copy is added, shape-grow, run by CI where a workflow names it and here otherwise; each "Split:" or "Dup:" escape line names an open row that names what it covers, shape_gate), checks (the PR's checks pass: CI, a required check; a cancelled check is no pass, waited on while a run on the head goes on, and on GitHub so is a failed one while a run of its workflow and event started after it goes on, and a cancelled matrix job of an older run of its workflow is no verdict (pr-ci.sh); a green watch waits while an open run on the head has no check for its jobs yet, a re-run or a workflow with none listed (rerun_pending); a tier-3 item, or one landed with --ran-checks, needs checks that ran), validate (critical work by judge.sh judge_work_level merges only on a second agent's pass verdict on this head, validate_gate), merge (--squash, or with --merge-commit a merge commit,
@@ -630,6 +630,27 @@ base_touches_head() {
   echo "it changes files the head changes ($(paste -sd, - <<<"$shared" | sed 's/,/, /g'))"
 }
 
+# head_checks_live: the head is behind <base>, merges with it cleanly, and already has checks, each
+# pending, passed or skipped (a gh read that a network error lost counts as pending); before_waits
+# is the catch_up after count its run starts at. A re-run after a
+# checks timeout merged a moved base before the gate every time, so a run slower than the wait never
+# finished (ar-5865: #3800 merged main up three times in three hours on a saturated runner pool).
+head_checks_live() {
+  [ -z "$fj" ] || return 1
+  local live
+  git fetch -q "$remote" 2>/dev/null || return 1
+  ! git merge-base --is-ancestor "$remote/$base" HEAD 2>/dev/null || return 1
+  git merge-tree --write-tree --quiet HEAD "$remote/$base" >/dev/null 2>&1 || return 1
+  gh_read live pr checks "$pr" "${R[@]}" --json bucket -q 'if length == 0 then "none" elif all(.[]; .bucket == "pass" or .bucket == "pending" or .bucket == "skipping") then "live" else "stale" end' || true  # gh exits 8 while a check is pending
+  [ "$live" = live ] || { [ -z "$live" ] && net_error "$gh_err"; } || return 1
+  # A head that is itself a merge-up of <base> (an earlier run's catch_up) is waiting on the merged-up
+  # head's re-check, so catch_up after counts it as one: else every re-run merged the base up once more.
+  if git rev-parse -q --verify 'HEAD^2' >/dev/null 2>&1 && git merge-base --is-ancestor 'HEAD^2' "$remote/$base" 2>/dev/null; then
+    before_waits=$CATCHUP_WAITS
+  fi
+  echo "fetch: the head's own checks are pending or green; waiting on them before any merge of $remote/$base"
+}
+
 # catch_up: a base the head is behind is merged in and pushed, before the gate and again after it if
 # the base moved on during the checks. A merge of <base> does not keep the checks green: a pushed head
 # is a new tree, and merging one before its checks ran shipped a broken one (dotfiles #1504; #1731
@@ -655,7 +676,7 @@ base_touches_head() {
 # never is) it is merged up and re-checked until a run proves the merged tree, FJ_CATCHUP_MAX runs at
 # most (AGENT_LAND_FJ_CATCHUP_MAX); a base still moving after them exits 3 with nothing merged, the
 # safe side of a busy base: a re-run starts the count again, and master stays green.
-CATCHUP_WAITS=1 CATCHUP_OVERLAP_WAITS=3 FJ_CATCHUP_MAX=${AGENT_LAND_FJ_CATCHUP_MAX:-3}
+CATCHUP_WAITS=1 CATCHUP_OVERLAP_WAITS=3 before_waits=0 FJ_CATCHUP_MAX=${AGENT_LAND_FJ_CATCHUP_MAX:-3}
 catch_up() {
   local out behind
   out=$(git fetch -q "$remote" 2>&1) || fail fetch "$(lastline "$out")"
@@ -1788,10 +1809,12 @@ else
   workflow_gate
   # A head behind <base> is caught up first, the same merge as after the gate: a session that
   # stopped on exit 3 here left its green PR open while main moved (six waiting on 2026-11-07).
-  catch_up before || true
+  # Not a head whose own checks are already pending or green (head_checks_live): catch_up after them
+  # covers the moved base, and a merge here would drop that run for a new one.
+  head_checks_live || catch_up before || true
   shape_gate
   wait_checks
-  waits=0
+  waits=$before_waits
   while ! catch_up after "$waits"; do
     wait_checks
     waits=$((waits + 1))
