@@ -395,6 +395,11 @@ pub(crate) mod tests {
                     o,
                 ));
             }
+            if pool == "unity" {
+                // Only unity reports the short windows: the others read -, never 0.
+                cc.push((json!({"__name__": "cc:pool_done_1h", "pool": pool}), "2"));
+                cc.push((json!({"__name__": "cc:pool_done_5h", "pool": pool}), "9"));
+            }
             if let Some(d) = done {
                 cc.push((json!({"__name__": "cc:pool_done_24h", "pool": pool}), d));
                 cc.push((
@@ -899,9 +904,9 @@ pub(crate) mod tests {
         // Each kind's weight (1* for one the governor has not measured, a dash with no series),
         // jobs running, waiting, how long one usually runs and the machines that take it; no
         // runner for it reads as a dash.
-        assert_line(&out, "unity 1* 3 3 2h28m 72 21m 24% razer-laptop 4");
-        assert_line(&out, "light 0.66 0 1 1m 40 2m 80% -");
-        assert_line(&out, "windows - 0 0 - - - - -");
+        assert_line(&out, "unity 1* 3 3 2h28m 2 9 72 21m 24% razer-laptop 4");
+        assert_line(&out, "light 0.66 0 1 1m - - 40 2m 80% -");
+        assert_line(&out, "windows - 0 0 - - - - - - -");
         assert!(
             has(
                 &out,
@@ -1260,7 +1265,7 @@ pub(crate) mod tests {
             ),
             "{out}"
         );
-        assert_line(&out, "gates - 2 1 - 14 - 50% workstation 4");
+        assert_line(&out, "gates - 2 1 - - - 14 - 50% workstation 4");
         assert!(has(&out, "waiting 5"));
     }
 
