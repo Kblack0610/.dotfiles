@@ -1681,7 +1681,18 @@ tok_fixture() {
   run "$SUBJECT" triage --dry-run
   assert_success
   refute_output --partial 'check(watch): spend'
-  # a quarantine from before covers files covers whatever is red, as it did
+  # the same shape on another unit is another red: covered only by its own name
+  printf 'RED unit a.service failed\n' > "$q.quarantine.covers"
+  printf 'RED unit b.service failed\n' > "$q.out"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --regexp '^check\(watch\): spend tripped since .*why: RED unit b.service failed \(not covered by the quarantine ar-1 holds\)'
+  # covers that name no red (taken on no evidence) cover whatever is red, as a quarantine from
+  # before covers files does
+  : > "$q.quarantine.covers"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'check(watch): spend'
   printf 'RED disk full on /dev/sda1\n' > "$q.out"
   rm "$q.quarantine.covers"
   run "$SUBJECT" triage --dry-run
