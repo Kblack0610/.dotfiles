@@ -5,6 +5,7 @@
 #   store-sync join [--keep-dirty]                   make this agent-store clone a peer (once per machine)
 #   store-sync merge-derived <base> <ours> <theirs> <path>   git's `derived` merge driver (below)
 #   store-sync merge-item <base> <ours> <theirs> <path>      git's `item` merge driver for queue items (below)
+#   store-sync merge-lease <base> <ours> <theirs> <path>     git's `lease` merge driver for singleton state (below)
 #
 # Two stores ride this one engine. agent (the default) is ~/.agent: agent-queue and agent-ask run
 # `--now --bg` after each write, which commits the coordination paths (NOW_PATHS), plus any dirty
@@ -176,7 +177,18 @@ apply_merge_drivers() {
     grep -vxF "$a" "$attrs" > "$attrs.new"; mv -f "$attrs.new" "$attrs"
     g config --unset merge.close.driver
   fi
-  for a in 'queue/*/*.md merge=item' 'queue/done/*/*.md merge=item'; do
+  # Fleet-home singleton state merge=lease (ar-3625): only the fleet lease holder's lanes write it, but a
+  # handover makes two holders in a row, and both copies met in a text merge (razer-laptop held the lease
+  # 09:55-10:10 on 2026-11-19 while cachyos-x8664-main was away; its 10:15 sync stopped on
+  # bench/findings.last, dispatch/headroom.json, dispatch/idle). This file outranks the tracked one and
+  # the last match wins, so the shepherd logs go back to union after `shepherd/*`, and its hand-written
+  # standing orders to a text merge. A missing line is appended, so a new one only ever goes last.
+  local lease=()
+  [ "$STORE_NAME" = agent ] && lease=('shepherd/* merge=lease' 'shepherd/.* merge=lease'
+    'dispatch/headroom.json merge=lease' 'dispatch/idle merge=lease' 'bench/*.last merge=lease'
+    'releases/state.json merge=lease' 'shepherd/*.jsonl merge=union' 'shepherd/*.log merge=union'
+    'shepherd/log.md merge=union' 'shepherd/orders.md !merge')
+  for a in 'queue/*/*.md merge=item' 'queue/done/*/*.md merge=item' "${lease[@]}"; do
     grep -qxF "$a" "$attrs" 2>/dev/null || { printf '%s\n' "$a" >> "$attrs" && rm -f "$CONFLICT" "$CONFLICT"-*; }
   done
   # A requeue of the only running item empties running/ into queued/, which git reads as a directory
@@ -185,6 +197,8 @@ apply_merge_drivers() {
   [ "$(g config --get merge.directoryRenames)" = false ] || g config merge.directoryRenames false
   [ "$(g config --get merge.item.driver)" = "$me merge-item %O %A %B %P" ] ||
     { g config merge.item.driver "$me merge-item %O %A %B %P" && rm -f "$CONFLICT" "$CONFLICT"-*; }
+  [ "$(g config --get merge.lease.driver)" = "$me merge-lease %O %A %B %P" ] ||
+    { g config merge.lease.driver "$me merge-lease %O %A %B %P" && rm -f "$CONFLICT" "$CONFLICT"-*; }
   want="$me merge-derived %O %A %B %P"
   [ "$(g config --get merge.derived.driver)" = "$want" ] && return 0
   g config merge.derived.driver "$want" && rm -f "$CONFLICT" "$CONFLICT"-*
@@ -301,6 +315,24 @@ cmd_merge_derived() {
   local rc=$?
   rm -rf "$tmp"
   return "$rc"
+}
+
+# cmd_merge_lease <base> <ours> <theirs> <path>: the driver for singleton state, leaving the result in
+# <ours>. The lease holder regenerates it every pass, so its copy wins whole: on the holder this side's
+# stands, on a machine another holds it on the other side's does (the holder's, or on its way back from
+# it), and one that cannot tell (no fleet-lease, no live holder known) keeps its own, as `derived` does.
+# Only an edit on both sides reaches a driver; an edit against a delete still conflicts. `fleet-lease
+# held` reads the lease this machine last saw, with no network, as wake_on_pull does; renew refreshes
+# it every minute, so a holder that lost the lease can win for at most that long.
+cmd_merge_lease() {
+  [ $# -eq 4 ] || die "merge-lease needs <base> <ours> <theirs> <path>"
+  local l rc=0
+  # Under systemd the login PATH is absent, as for notify.
+  l=$(command -v fleet-lease 2>/dev/null) || l="$HOME/.local/bin/fleet-lease"
+  [ -x "$l" ] || return 0
+  "$l" held >/dev/null 2>&1 || rc=$?
+  [ "$rc" = 1 ] || return 0
+  cat -- "$3" > "$2"
 }
 
 remotes() { local r; for r in origin backup; do g remote get-url "$r" >/dev/null 2>&1 && echo "$r"; done; }
@@ -777,6 +809,7 @@ case "${1:-}" in
   join) shift; cmd_join "$@" ;;
   merge-derived) shift; cmd_merge_derived "$@" ;;
   merge-item) shift; cmd_merge_item "$@" ;;
+  merge-lease) shift; cmd_merge_lease "$@" ;;
   -h | --help) usage ;;
   *) cmd_sync "$@" ;;
 esac
