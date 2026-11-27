@@ -335,6 +335,31 @@ pub(crate) mod tests {
         i.instant.insert("job_kind", kinds);
     }
 
+    /// A pool's finished-job series: the day's count, pass ratio and usual run time, and for
+    /// unity alone the 1h and 5h counts (the others read -, never 0). None finished, none drawn.
+    fn pool_day<'a>(
+        pool: &'a str,
+        done: Option<&'a str>,
+        ratio: &'a str,
+        usual: &'a str,
+    ) -> Vec<(Value, &'a str)> {
+        let row = |name: &str, v| (json!({"__name__": name, "pool": pool}), v);
+        let windows = [("cc:pool_done_1h", "2"), ("cc:pool_done_5h", "9")];
+        let mut out: Vec<_> = windows
+            .iter()
+            .filter(|_| pool == "unity")
+            .map(|&(n, v)| row(n, v))
+            .collect();
+        if let Some(d) = done {
+            out.extend([
+                row("cc:pool_done_24h", d),
+                row("cc:pool_pass_ratio_24h", ratio),
+                row("cc:pool_run_seconds_24h", usual),
+            ]);
+        }
+        out
+    }
+
     /// The bats fixture: razer-laptop with four unity runners (three busy), an offline
     /// mac-mini, a queue for #412, a stuck run, and a day of failed local gates.
     pub(crate) fn fixture() -> Infra {
@@ -395,22 +420,7 @@ pub(crate) mod tests {
                     o,
                 ));
             }
-            if pool == "unity" {
-                // Only unity reports the short windows: the others read -, never 0.
-                cc.push((json!({"__name__": "cc:pool_done_1h", "pool": pool}), "2"));
-                cc.push((json!({"__name__": "cc:pool_done_5h", "pool": pool}), "9"));
-            }
-            if let Some(d) = done {
-                cc.push((json!({"__name__": "cc:pool_done_24h", "pool": pool}), d));
-                cc.push((
-                    json!({"__name__": "cc:pool_pass_ratio_24h", "pool": pool}),
-                    ratio,
-                ));
-                cc.push((
-                    json!({"__name__": "cc:pool_run_seconds_24h", "pool": pool}),
-                    usual,
-                ));
-            }
+            cc.extend(pool_day(pool, done, ratio, usual));
         }
         let runners = vec![
             runner(
@@ -660,7 +670,7 @@ pub(crate) mod tests {
         let i = fixture();
         let ci = tab(&i, "ci", 160);
         assert!(
-            ci.starts_with("CI RUNNERS  3 running, 4 queued (oldest 2h28m), 4/5 runners up, 112 done 24h, 44% passed  failed 24h 2 (Runs, red)\n\nRUNNERS  all 3  busy 3  late 1\nHOST"),
+            ci.starts_with("CI RUNNERS  3 running, 4 queued (oldest 2h28m), 4/5 runners up, 2 done 1h, 9 done 5h, 112 done 24h, 44% passed  failed 24h 2 (Runs, red)\n\nRUNNERS  all 3  busy 3  late 1\nHOST"),
             "{ci}"
         );
         // A late job carries the bang; each slot names its pool, job and ref.
@@ -743,12 +753,12 @@ pub(crate) mod tests {
         let ci = section(Some(0), "ci");
         assert_line(
             &ci,
-            "CI RUNNERS 0 running, 0 queued, -/- runners up, 112 done 24h, 44% passed green: nothing waiting or failed in 24h",
+            "CI RUNNERS 0 running, 0 queued, -/- runners up, 2 done 1h, 9 done 5h, 112 done 24h, 44% passed green: nothing waiting or failed in 24h",
         );
         // Before the runs read lands, nothing says green: their failures are not known yet.
         assert_line(
             &section(None, "ci"),
-            "CI RUNNERS 0 running, 0 queued, -/- runners up, 112 done 24h, 44% passed",
+            "CI RUNNERS 0 running, 0 queued, -/- runners up, 2 done 1h, 9 done 5h, 112 done 24h, 44% passed",
         );
         // An empty table is its title and why, on one line, with no header or chips.
         assert_line(&ci, "RUNNERS no runner is running a job");
