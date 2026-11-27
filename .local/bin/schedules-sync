@@ -104,7 +104,8 @@ takes passes; a 429 or 5xx ends the pass's reads and is recorded as the repo's `
 Each pass also refreshes the PR store, SCHEDULES_PRS_DIR (~/.agent/prs), one file per repo of the
 list (a prs-only repo is read for this alone: no runs, schedules or quarantine), <owner>__<repo>.jsonl (Forgejo: <host>__<owner>__<repo>.jsonl), one JSON row per PR each time
 it changes, kept forever and compacted like the ledger; a row updated before the newest one the store or the read holds
-(a lagging page) is dropped, never appended. It reads pulls?state=all newest update
+(a lagging page) is dropped, never appended. A PR's row is its newest by updated_at, not its last line: store-sync merges
+*.jsonl as a union, which can put a peer's older OPEN row after the MERGED one, and a sync rewrites a file it finds so. It reads pulls?state=all newest update
 first back to the last sync less an hour, the whole history on a cold start or, in a pass (never agent-land's sync-prs), once its row shape (PR_ROW) changed; GitHub's first page
 is conditional on the ETag in the store's sync.json (a 304 when no PR changed), Forgejo's is one
 page; a Forgejo pull mirror, whose PRs are off, is synced with none. A Forgejo PR the store holds OPEN
@@ -1010,6 +1011,15 @@ def fj_vanished(host, repo, name, last, got):
     return rows
 
 
+def older(r, had):
+    """Whether PR row `r` was updated before `had`, the same PR's row it would replace: the PR store's
+    rule is one row a PR, its newest by updated_at, an equal time keeping the later row, except that an
+    OPEN row never replaces a closed one of its time. A reopen moves updated_at, and Forgejo's CLOSED on
+    a 404 keeps the OPEN row's time, so a peer's OPEN copy merged in after it would win the tie."""
+    new, old = when(r.get("updated_at")), when(had.get("updated_at"))
+    return bool(new and old and (new < old or new == old and r.get("state") == "OPEN" != had.get("state")))
+
+
 def newest_prs(name, rows, last):
     """`rows` less any updated before the newest row of its PR, stored or read this pass, one row a
     PR. A lagging list page hands back an old row (dotfiles#2573 read OPEN at 02:54:01Z after its
@@ -1019,8 +1029,7 @@ def newest_prs(name, rows, last):
     out = {}
     for r in rows:
         had = out.get(r["number"]) or last.get(r["number"]) or {}
-        new, old = when(r.get("updated_at")), when(had.get("updated_at"))
-        if new and old and new < old:
+        if older(r, had):
             print(f"schedules-sync: PRs of {name}: #{r['number']} read at {r.get('updated_at')}, "
                   f"older than {had.get('updated_at')}: dropped", file=sys.stderr)
             continue
@@ -1042,7 +1051,8 @@ def sync_prs(forge, repo, host, t, wait=True):
             return f"{name}: a pass holds the PR store"
         state = read_sync(path=PRS_SYNC)
         name = next((k for k in state if k.lower() == name.lower()), name)  # case-blind: keep the store's name
-        last, n, torn = read_ledger(path=pr_file(name), key=pr_key)
+        stale = []
+        last, n, torn = read_ledger(path=pr_file(name), key=pr_key, stale=stale)
         entry = dict(state.get(name) or {}) if last is not None else {}  # no store: read it all again
         last, err = last or {}, None
         try:
@@ -1055,7 +1065,10 @@ def sync_prs(forge, repo, host, t, wait=True):
             else:
                 rows = [gh_pr_row(name, p) for p in got or [] if "number" in p]
             rows = newest_prs(name, rows, last)
-            write_ledger(last, n, torn, rows, t, pr_file(name), pr_key, None)
+            write_ledger(last, n, torn, rows, t, pr_file(name), pr_key, None, rewrite=bool(stale))
+            if stale:
+                print(f"schedules-sync: PRs of {name}: " + ", ".join(f"#{k}" for k in sorted(set(stale)))
+                      + ": an older row after the newest (a store-sync merge): rewritten", file=sys.stderr)
             entry.update(etag=etag, synced_at=iso(t), error=None)  # the ETag only once its rows are kept
             if not since:  # a whole read: its rows have this shape
                 entry["row"] = PR_ROW
@@ -1166,7 +1179,7 @@ def prs(argv, t):
         entry, at = synced[name], when(synced[name].get("synced_at"))
         last = None
         if at and at >= t - STALE:
-            last, _, _ = read_ledger(path=pr_file(name), key=pr_key)
+            last, _, _ = read_ledger(path=pr_file(name), key=pr_key, stale=[])
         if last is None:
             stale.append(stale_why(f"{name}: PRs", entry) if not at or at < t - STALE
                          else f"{name}: no PR store at {pr_file(name)}")
@@ -1212,10 +1225,13 @@ def job_key(r):
     return (r["forge"], r["repo"].lower(), r["run_id"], r["attempt"])  # GitHub names are case-blind
 
 
-def read_ledger(repo=None, path=None, key=run_key):
+def read_ledger(repo=None, path=None, key=run_key, stale=None):
     """-> ({key: last row}, rows read, whether the file ends mid-line); None for no ledger. With
     <repo> (owner/name) only lines naming it are parsed: a reader of one repo skips the rest.
-    The run ledger by default; the job archive with path=JOBS_LEDGER, key=job_key."""
+    The run ledger by default; the job archive with path=JOBS_LEDGER, key=job_key. With a list in
+    <stale> (the PR store), a key keeps its newest row by updated_at (`older`) and the key of each
+    older row that follows it is added to the list: store-sync merges *.jsonl as a union, which puts a
+    peer's older OPEN rows after the MERGED row (dotfiles#3104, #3271, #3377, #3387; ar-5949)."""
     try:
         f = open(path or LEDGER)
     except OSError:
@@ -1227,16 +1243,21 @@ def read_ledger(repo=None, path=None, key=run_key):
                 continue
             try:
                 r = json.loads(line)
-                last[key(r)] = r
+                k = key(r)
                 n += 1
+                if stale is not None and k in last and older(r, last[k]):
+                    stale.append(k)
+                    continue
+                last[k] = r
             except (ValueError, KeyError, TypeError):
                 continue  # a torn last line, or not a row
     return last, n, bool(line) and not line.endswith("\n")
 
 
-def write_ledger(last, n, torn, rows, t, path=None, key=run_key, keep=KEEP):
+def write_ledger(last, n, torn, rows, t, path=None, key=run_key, keep=KEEP, rewrite=False):
     """Append the rows that changed since their key's last row. Rewrite instead, through a tmp
-    file, when a run has aged past `keep` (None keeps every key) or superseded rows outnumber live ones. -> the rows the
+    file, when a run has aged past `keep` (None keeps every key), superseded rows outnumber live ones,
+    or `rewrite` (a key's last line is not the row `last` holds). -> the rows the
     file now holds; `last` is left holding only the live runs."""
     path = path or LEDGER
     changed = []
@@ -1247,7 +1268,7 @@ def write_ledger(last, n, torn, rows, t, path=None, key=run_key, keep=KEEP):
     live = dict(last) if keep is None else {k: r for k, r in last.items() if (when(r.get("created_at")) or t) >= t - keep}
     os.makedirs(os.path.dirname(path), exist_ok=True)
     line = lambda r: json.dumps(r, separators=(",", ":")) + "\n"
-    if len(live) < len(last) or n + len(changed) - len(live) > len(live):
+    if rewrite or len(live) < len(last) or n + len(changed) - len(live) > len(live):
         tmp = f"{path}.{os.getpid()}"
         with open(tmp, "w") as f:
             f.writelines(line(r) for r in sorted(live.values(), key=lambda r: (r.get("created_at") or "", key(r))))
