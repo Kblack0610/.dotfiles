@@ -445,6 +445,43 @@ load 'agent_queue/common'
   assert_success
 }
 
+@test "human-work names the human's items an ask could take off the queue, and no other (ar-5962)" {
+  export AGENT_ASK_ROOT="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_ROOT/game"
+  # ask <id> <options> <resume> [<question>]
+  ask() { printf 'id: %s\nstatus: pending\noptions: %s\nresume: %s\nquestion: %s\n' "$1" "$2" "$3" "${4:-}" > "$AGENT_ASK_ROOT/game/$1.md"; }
+  hw() { run "$AQ" human-work "$1"; assert_success; assert_output "$2"; }
+  "$AQ" add --project game --slug mine "the human's own add" >/dev/null
+  "$AQ" add --project game --from board:game:g2-9 --tags requested --slug asked "row the human asked for" >/dev/null
+  "$AQ" add --project game --from shepherd --slug chore "chore" >/dev/null
+  # A resume that cancels the human's work, its words read as a shell reads them.
+  ask r1 'a|b' "run: agent-queue cancel mine --why \"it's moot\" --ask <id>"
+  hw r1 mine
+  ask r2 'a|b' 'run: agent-queue cancel chore --why moot'
+  hw r2 ''
+  ask r3 'a|b' 'run: ~/.local/bin/agent-queue return asked --why moot --drop && agent-queue cancel chore'
+  hw r3 asked
+  ask r4 'a|b' 'run: agent-queue move mine done --status cancelled --why moot'
+  hw r4 mine
+  # A plain return puts an item with a board row back on it, so only the one with no row counts.
+  ask r5 'a|b' 'run: agent-queue return asked --why later; agent-queue return mine --why later'
+  hw r5 mine
+  # A later command's --drop is not this one's.
+  ask r6 'a|b' 'run: agent-queue return asked --why later && agent-queue return chore --why x --drop'
+  hw r6 ''
+  # A flag before the slug, a command quoted for bash -c, and ; with no spaces are read too.
+  ask r7 'a|b' 'run: agent-queue return --drop asked --why moot'
+  hw r7 asked
+  ask r8 'a|b' "run: bash -c 'cd /tmp;agent-queue cancel mine --why moot'"
+  hw r8 mine
+  # A cancel or drop option on an ask naming the item, the answer cancel_guard reads; a sibling slug is other work.
+  ask o1 'drop|keep' '' 'drop asked and chore, not mine-2?'
+  hw o1 asked
+  ask o2 'a|b' '' 'drop asked?'
+  hw o2 ''
+  run "$AQ" human-work nope
+  assert_failure; assert_output --partial "no such ask"
+}
+
 @test "cancel keeps a backslash in --why as typed, refuses a multi-line one before touching the item, and carries why to a record-only cancel" {
   "$AQ" add --project game --slug b1 "b1"
   run "$AQ" cancel b1 --why $'two\nlines'
