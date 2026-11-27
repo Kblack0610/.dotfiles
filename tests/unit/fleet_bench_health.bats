@@ -115,6 +115,19 @@ watch() {
   assert_line --partial '1 TRIP/Q (down: Dispatch) (quarantined: Asks)'
 }
 
+@test "health: a quarantined watch that names a red its quarantine does not cover reads TRIP, not TRIP/Q (ar-3916)" {
+  printf TRIP > "$TRIAGE_WATCH_STATE/queue-watch.state"
+  printf '%s ar-1 %s waits on a fix\n' "$(( $(date +%s) + 3600 ))" "$(date +%s)" > "$TRIAGE_WATCH_STATE/queue-watch.quarantine"
+  printf 'TRIP exit 1\nRED dispatch 3 rows stuck\n' > "$TRIAGE_WATCH_STATE/queue-watch.quarantine.covers"
+  printf 'TRIP exit 1\nRED dispatch 5 rows stuck\n' > "$TRIAGE_WATCH_STATE/queue-watch.out"
+  run "$SUBJECT" health
+  assert_line --regexp '^Dispatch +TRIP/Q +queue-watch=TRIP/Q$'
+  printf 'TRIP exit 1\nRED dispatch 5 rows stuck\nRED asks unread\n' > "$TRIAGE_WATCH_STATE/queue-watch.out"
+  run "$SUBJECT" health
+  assert_failure
+  assert_line --regexp '^Dispatch +TRIP +queue-watch=TRIP$'
+}
+
 @test "health: every part covered with one quarantined reads GAPS, not GREEN, and exits 0; a zero-padded UNTIL is decimal" {
   watch lifecycle-watch OK '[Lifecycle]'
   printf TRIP > "$TRIAGE_WATCH_STATE/runner-watch.state"
