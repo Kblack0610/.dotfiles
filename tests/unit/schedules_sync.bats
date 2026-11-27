@@ -48,6 +48,8 @@ EOF
   # -w (the anonymous run-page reads) is answered as curl -w "\n%{http_code}" does, from
   # $FJD/<url without https:// as above>: its code is 200 for a file, else 404, or what <file>.code
   # holds; a POST that asks a step's log (a "step" in its body) is served <file>.logs when it exists.
+  # An API path with <file>.forbid holding N > 0 is refused N more times as the bouncer refuses (a
+  # plain-text 403 "Forbidden"); <file>.403 is Forgejo's own JSON 403, served every time.
   cat > "$SANDBOX/bin/curl-stub" <<EOF
 #!/usr/bin/env bash
 url="\${@: -1}"
@@ -60,6 +62,11 @@ case " \$* " in *" -w "*)
   printf '\\n%s' "\$code"; exit 0 ;;
 esac
 f="$FJD/\$(echo "\${url#*/api/v1/}" | tr '/?&=' '____')"
+if [ -f "\$f.forbid" ] && [ "\$(cat "\$f.forbid")" -gt 0 ]; then
+  echo \$((\$(cat "\$f.forbid") - 1)) > "\$f.forbid"; printf Forbidden
+  echo "curl: (22) The requested URL returned error: 403" >&2; exit 22
+fi
+[ -f "\$f.403" ] && { echo '{"message":"user should have a permission"}'; echo "curl: (22) The requested URL returned error: 403" >&2; exit 22; }
 [ -f "\$f" ] && exec cat "\$f"
 echo "curl: (22) The requested URL returned error: 404" >&2; exit 22
 EOF
@@ -571,6 +578,33 @@ fj_run() {
   assert_success
   run grep -c 'stdin: header = "Authorization: token worker-tok"' "$FJD/calls"
   refute_output 0
+}
+
+@test "forgejo: a read the bouncer refuses (a plain Forbidden) is sent again; out of tries it names the proxy; Forgejo's own 403 is not sent again" {
+  fj_list o/fj
+  fj_page "$(fj_task 7 4 success 2025-11-06T11:00:00Z)" | fj_serve 1
+  fj_run 4 2025-11-06T11:00:00Z
+  tasks="$FJD/$(echo 'repos/o/fj/actions/tasks?limit=50&page=1' | tr '/?&=' '____')"
+  echo 2 > "$tasks.forbid"
+  SCHEDULES_FORGEJO_GATE_WAIT=0 run "$SUBJECT"
+  assert_success
+  run grep -c 'actions/tasks?limit=50&page=1 |' "$FJD/calls"
+  assert_output 3
+  run jq -sc 'map([.repo, .id])' "$LEDGER"
+  assert_output '[["o/fj",4]]'
+  : > "$FJD/calls"; echo 9 > "$tasks.forbid"
+  SCHEDULES_FORGEJO_GATE_WAIT=0 run "$SUBJECT"
+  assert_failure 1
+  assert_output --partial 'the proxy in front of Forgejo refused it 4 times'
+  run grep -c 'actions/tasks?limit=50&page=1 |' "$FJD/calls"
+  assert_output 4
+  : > "$FJD/calls"; rm "$tasks.forbid"; touch "$tasks.403"
+  SCHEDULES_FORGEJO_GATE_WAIT=0 run "$SUBJECT"
+  assert_failure 1
+  assert_output --partial 'error: 403'
+  refute_output --partial 'proxy'
+  run grep -c 'actions/tasks?limit=50&page=1 |' "$FJD/calls"
+  assert_output 1
 }
 
 @test "forgejo: paging stops at the last sync, leaving out the run the page edge may cut" {

@@ -179,6 +179,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from datetime import datetime, timedelta, timezone
 
@@ -247,6 +248,12 @@ FJ_DONE = ("success", "failure", "cancelled", "skipped")
 # 2026-11-20 at about 0.2 s a call on the LAN. A 429 or 5xx ends the pass's reads (no retry here);
 # the next pass, ten minutes on, is the backoff.
 FJ_JOB_CALLS = int(os.environ.get("SCHEDULES_FJ_JOB_CALLS", "150"))
+# A plain-text 403 "Forbidden" is the proxy's, not Forgejo's (its API errors are JSON): the CrowdSec
+# bouncer in front of it fails closed when its LAPI lookup times out (5 s), in bursts of up to about
+# 30 s (home-config row hc-440). fj() sends such a GET again, FJ_GATE_TRIES in all, waits doubling
+# from FJ_GATE_WAIT seconds, the rule so_forgejo_get keeps in lib/session-outcomes.sh.
+FJ_GATE_TRIES = 4
+FJ_GATE_WAIT = float(os.environ.get("SCHEDULES_FORGEJO_GATE_WAIT", "5"))
 KEEP = timedelta(days=30)  # the ledger's window, and how far back a cold pass reads
 RUNS_KEPT = int(os.environ.get("SCHEDULES_RUNS", "14"))
 PER_PAGE = int(os.environ.get("SCHEDULES_PER_PAGE", "100"))
@@ -403,14 +410,26 @@ def fj_token():
 
 
 def fj(host, path):
-    """GET https://<host>/api/v1/<path> as JSON; the token goes in on curl's stdin, never argv."""
+    """GET https://<host>/api/v1/<path> as JSON; the token goes in on curl's stdin, never argv. A
+    refusal by the proxy in front (FJ_GATE_TRIES) is sent again."""
     tok = fj_token()
     conf = f'header = "Authorization: token {tok}"\n' if tok else ""
-    try:
-        p = subprocess.run([CURL, "-sSf", "-K", "-", "--max-time", "30", f"https://{host}/api/v1/{path}"],
-                           input=conf, capture_output=True, text=True, timeout=GH_CALL_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
-        raise GhError(f"forgejo {path}: no answer in {GH_CALL_TIMEOUT_S}s")
+    wait = FJ_GATE_WAIT
+    for t in range(1, FJ_GATE_TRIES + 1):
+        try:
+            p = subprocess.run([CURL, "-sS", "--fail-with-body", "-K", "-", "--max-time", "30",
+                                f"https://{host}/api/v1/{path}"],
+                               input=conf, capture_output=True, text=True, timeout=GH_CALL_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            raise GhError(f"forgejo {path}: no answer in {GH_CALL_TIMEOUT_S}s")
+        if p.returncode != 22 or p.stdout.strip() != "Forbidden":
+            break
+        if t == FJ_GATE_TRIES:
+            raise GhError(f"forgejo {path}: the proxy in front of Forgejo refused it {t} times with a"
+                          ' plain-text 403 "Forbidden", not Forgejo\'s (the CrowdSec bouncer fails closed'
+                          " when its LAPI is slow)")
+        time.sleep(wait)
+        wait *= 2
     if p.returncode == 0:
         try:
             return json.loads(p.stdout)
