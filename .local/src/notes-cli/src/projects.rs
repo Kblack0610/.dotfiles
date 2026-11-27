@@ -4823,8 +4823,7 @@ fn stats_row(s: &ProjectStats) -> String {
 /// `notes projects --stats` — every profile's indexed projects with their open work, as
 /// TSV: `profile<TAB>name<TAB>stage<TAB>version<TAB>open<TAB>urgent<TAB>high<TAB>low<TAB>
 /// planned<TAB>agent<TAB>sheet`. With `json`, one JSON array of [`ProjectStats`], which
-/// adds the dir, done count, STATUS line and its date, and summary path
-/// (what `regen-anchor.sh` renders as an anchor's Lab section).
+/// adds the dir, done count, STATUS line and its date, and summary path.
 ///
 /// One call for the whole projects popup, across every profile like `focus --all`, so the
 /// switcher opens without a process per project. A profile that does not resolve is
