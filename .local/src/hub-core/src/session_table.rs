@@ -417,7 +417,7 @@ fn live_row(s: &Value, feed: &Feed, items: &HashMap<&str, &Item>) -> SessionRow 
             .or_else(|| item.and_then(|i| i.model.as_deref()).map(str::trim))
             .map(crate::costs::alias)
             .unwrap_or_default(),
-        trainee: item.is_some_and(|i| !extra_str(i, "trainee").trim().is_empty()),
+        trainee: item.is_some_and(|i| i.is_trainee()),
         close: s["close"]["verdict"].as_str().unwrap_or("").to_string(),
         unlinked: is_live(s) && is_unlinked(s),
         machine: is_machine(s),
