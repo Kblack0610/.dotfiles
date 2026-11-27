@@ -496,6 +496,17 @@ load 'fleet_sessions/common'
   assert_output ''
   run pr_owner "$q" "$SANDBOX/c" - -
   assert_output ''
+  # handed_item: only an open PR of a session whose item is - or moved on is handed; a running or parked item keeps its own
+  run handed_item - - OPEN "$q" "$SANDBOX/c" - 9
+  assert_output 'handed:ucp-3413 pr 9'
+  run handed_item 'moved:a moved on (done)' moved OPEN "$q" "$SANDBOX/c" - 9
+  assert_output 'handed:ucp-3413 pr 9'
+  run handed_item 'own:a' own OPEN "$q" "$SANDBOX/c" - 9
+  assert_output 'own:a'
+  run handed_item 'review:a pr 9' review OPEN "$q" "$SANDBOX/c" - 9
+  assert_output 'review:a pr 9'
+  run handed_item - - MERGED "$q" "$SANDBOX/c" - 9
+  assert_output '-'
 }
 
 @test "item_of: sessions: matches by Claude session, session: only for a lone claude, a done one only after it started" {

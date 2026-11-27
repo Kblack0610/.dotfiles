@@ -877,6 +877,15 @@ handed_off() {
     && [ "${5:--}" != gate ] && [ "${5:--}" != queue ]
 }
 
+# handed_item <item_of's answer> <its relation> <pr state> <all items, jsonl> <clone|-> <sibling repo|-> <pr> -> the item
+# the bucket reads: handed:<slug> pr <n> when the PR is open, the answer is - or moved:, and pr_owner names an open item
+# whose pr: lists it (a re-gate item it was handed to), so handed_off takes it as a parked PR (ar-5184); else the answer.
+handed_item() {
+  local owner=""
+  if [ "$3" = OPEN ] && { [ "$2" = - ] || [ "$2" = moved ]; }; then owner="$(pr_owner "$4" "$5" "$6" "$7")"; fi
+  if [ -n "$owner" ]; then echo "handed:$owner pr $7"; else echo "$1"; fi
+}
+
 # pr_owner <all items, jsonl> <clone|-> <sibling repo|-> <pr> -> the slug of the first open item (queued, running,
 # waiting or review) whose pr: lists <repo>#<pr>, else nothing. <repo> is the sibling repo of a PR sibling_pr found,
 # else the clone's origin, compared case-insensitively; a bare pr: number names no repo and so no PR here.
@@ -2909,8 +2918,8 @@ collect() {
     if [ "$g" = 1 ] && [ "$branch" != - ] && [ "$gd" != - ]; then dbase="$(default_base "$gd")"; [ "$branch" = "${dbase#*/}" ] || act_dir="$gd"; fi
     local act_sha="$oid"; [ "$oid" != - ] || act_sha="$whead"
     act="$(activity_line "${status:--}" "$ojob" "$doing" "$act_dir" "$branch" "$act_sha" "$now")"
-    # What an open PR waits on (pr_wait); only a landing-slot wait carries the slot's wait, depth and critical path.
-    local wait_on="" land_wait=""
+    # What an open PR waits on (pr_wait), and the item the bucket reads (handed_item); only a landing-slot wait carries the slot's wait, depth and critical path.
+    local wait_on="" land_wait="" bitem; bitem="$(handed_item "$item" "$irel" "$state" "$qall" "$gd" "$xr" "$pr")"
     { IFS= read -r land_wait; IFS= read -r wait_on; } < <(pr_wait "$g" "$state" "$xr" "$gd" "$ci" "$pr" "$oid" "$chain" "$qall" "$islugs")
     # A session waiting its landing turn carries how long its gate has waited and how deep its repo's
     # landing queue is, so the shepherd names a multi-hour wait on its own line (ar-2525).
@@ -2924,13 +2933,6 @@ collect() {
     local cron=- wake=-
     if [ "$host" = - ] && { [ "$idle" -ge "$FLEET_IDLE_MIN" ] || [ "$sid" = "${CLOSE_SELF:-}" ]; }; then
       IFS=$'\t' read -r wake cron < <(wake_facts "$transcript" "$started" "$now" "$idle" "$phases" "$pdone" "$ptotal" "$pq")
-    fi
-    # An open PR that another open item names in its pr: (a re-gate item it was handed to) is that item's
-    # (pr_owner): the bucket reads it as handed:<slug> pr <n>, which handed_off takes as a parked PR (ar-5184).
-    local bitem="$item" owner
-    if [ "$state" = OPEN ] && { [ "$irel" = - ] || [ "$irel" = moved ]; }; then
-      owner="$(pr_owner "$qall" "$gd" "$xr" "$pr")"
-      [ -z "$owner" ] || bitem="handed:$owner pr $pr"
     fi
     bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$bidle" "$g" "$dirty" "$ahead" \
               "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$bitem" "$wait_on" "$cron" - "$carried")"
