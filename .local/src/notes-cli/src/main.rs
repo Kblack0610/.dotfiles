@@ -567,7 +567,10 @@ enum Cmd {
         #[arg(long)]
         item: Option<String>,
         /// The whole record replayed into the chain's steps, inbox to done: per step what it
-        /// holds, its oldest, in and out over 1h and 24h, and dwell p50/p90 in minutes
+        /// holds, its oldest, in and out over 1h and 24h, and dwell p50/p90 in minutes. An intake
+        /// line is keyed by its words without tags, so a line filed with other tags still closes;
+        /// inbox open also counts a worker's outbox lines whose add event reached this record, which
+        /// `fleet-bench chain` sets against the live inbox as chain_inbox_drift
         #[arg(long, conflicts_with_all = ["day", "days", "project", "id", "action", "by", "item"])]
         steps: bool,
         /// One line's whole path, from the record's week: the events whose words hold WORDS
