@@ -1266,13 +1266,8 @@ mod tests {
             p.rows.iter().find(|r| r.head == "ci").unwrap().level,
             Level::Red
         );
-        // Powered off by the governor, its runners are offline by design: nothing is down.
-        let stopped = metric(
-            "ci_governor_power_state",
-            json!({"host": "aws-burst-1", "state": "stopped"}),
-            "1",
-        );
-        let inf = infra(vec![("runners", runners), ("power", vec![stopped])]);
+        // With the offline host gone from the roster, nothing is down.
+        let inf = infra(vec![("runners", runners[2..].to_vec())]);
         let p = phone(&state(), None, Some(&inf));
         assert_eq!(texts(&p, "ci"), ["CI: 6 running, 1/1 up"]);
         // Every runner up and a job nobody can take: red, and the row says so.

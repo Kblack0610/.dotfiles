@@ -96,7 +96,7 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
     else "\(.cpu | u1)/\(.cpu_alloc | u0) \(.mem | bytes)/\(.mem_alloc | bytes)" end;
   def share: [(if .cpu_alloc > 0 then .cpu / .cpu_alloc else 0 end), (if .mem_alloc > 0 then .mem / .mem_alloc else 0 end)] | max;
   def bbar: if .booked == null then "" else ubar(.booked | share * BAR; BAR) end;
-  # hub_core::jobpods::Pending::line, the cores as machines::weight_text: `arc-org-light x3 (1.69 cpu 1.2G each)`.
+  # hub_core::jobpods::Pending::line, the cores as jobpods::cpu_text: `arc-org-light x3 (1.69 cpu 1.2G each)`.
   def ptext: "\(.kind)\(if .n > 1 then " x\(.n)" else "" end) (\(.cpu * 100 | round / 100 | tostring) cpu \(.mem | bytes)\(if .n > 1 then " each" else "" end))";
   [$grn, $yel, $red] as $colour
   | (.red // []) as $nobody
@@ -114,7 +114,7 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
      + (if $g.feed then [$g.feed | esc | paint($red)] else [] end)) as $parts
   | ([$g.kinds[].kind | length] + [4] | max) as $kw
   # RUNNING is the jobs of the kind running, USUAL how long one of them usually runs (hub_core::machines::Pool).
-  | ([$g.kinds[] | ((.kind | pad($kw) | esc) + " " + (.weight // "-" | lpad(6)) + " " + (.running | num | lpad(7))
+  | ([$g.kinds[] | ((.kind | pad($kw) | esc) + " " + (.running | num | lpad(7))
       + " " + (.waiting as $w | $w | num | lpad(7)
         | if ($w // 0) > 0 then paint($yel) else . end)
       + " " + (.oldest | dur | lpad(6)) + " " + (.done | num | lpad(5)) + " " + (.usual | dur | lpad(5))
@@ -130,8 +130,8 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
       | ((.host | pad($mw) | esc) + " " + (.bcell | lpad($uw))
          | if $hotrow then paint($red) else . end)
       + "  " + bbar + (" " * (if .booked == null then BAR else 0 end)) + "  " + (.runlist | pad($rw) | esc) + "  " + (.nextline | esc)]) as $machines
-  # WAITING: job (repo), how many, how long the oldest waited, where it fits (with the slot state
-  # when that is no idle or busy slot: a seat waits for a lent slot), and when it starts.
+  # WAITING: job (repo), how many, how long the oldest waited, where it fits (with the runner state
+  # when that is no idle or busy runner), and when it starts.
   | ([$g.next[] | . as $q
       | ($q.can | map(select(.host == $q.at)) | first | .state // "") as $st
       | {what: ($q.job + (if $q.repo == "" then "" else " (\($q.repo))" end)), n: $q.n,
@@ -151,13 +151,10 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
       | ([range($u.columns | length) as $i | [$u.columns[$i], ($u.rows[][$i])] | map(length) | max]) as $w
       | ([$u.columns] + $u.rows | map([range(length) as $i | .[$i] | if $i == 0 then pad($w[$i]) else lpad($w[$i]) end] | join("  ") | esc)) as $t
       | [($u.head | esc), ($u.line | esc), ""] + $t + [""] end) as $pool
-  | (("KIND" | pad($kw)) + " WEIGHT RUNNING WAITING OLDEST  DONE USUAL  PASS") as $khead
+  | (("KIND" | pad($kw)) + " RUNNING WAITING OLDEST  DONE USUAL  PASS") as $khead
   | (("MACHINE" | pad($mw)) + " " + ("TAKEN" | lpad($uw)) + "  " + ("" | pad(BAR)) + "  " + ("RUNNING" | pad($rw)) + "  NEXT") as $mhead
   | ([$khead] + (if ($kinds | length) > 0 then $kinds else ["no job kind reports"] end)
-     + (if ([$g.kinds[] | select((.weight // "") | endswith("*"))] | length) > 0
-        then ["* not measured yet, counted as a whole slot"] else [] end)
      + [""] + $pool + [$mhead] + (if ($machines | length) > 0 then $machines else ["no machine reports"] end)
-     + (if ($g.off | length) > 0 then ["cloud: \($g.off | length) host\(if ($g.off | length) == 1 then "" else "s" end) off"] else [] end)
      + (if ($g.pending | length) > 0 then ["waiting for room: " + ([$g.pending[] | ptext] | join(", ")) | esc | paint($yel)] else [] end)
      + (if ($g.down | length) > 0 then ["", "DOWN:"] + [$g.down[] | "  \(.host | esc)  \(.n) \(.state | esc)"] else [] end)
      + (if ($g.long | length) > 0 then ["", ("long runs: " + ([$g.long[] | "\(.what | esc) \(.ran | dur)"] | join(", ")) | paint($yel))] else [] end)

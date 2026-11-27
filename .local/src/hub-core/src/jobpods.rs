@@ -1,8 +1,8 @@
 //! The CI job pods and what they take on each CI node, read from kube-state-metrics: the ARC
 //! runner pods and the KEDA `forgejo-runner` jobs, all in `arc-runners` (home-config
 //! `apps/actions-runner-controller`), plus the requests of every other pod placed on a CI node.
-//! The CI board's machine rows, glance and units (`Units`: 1 unit = 1 CI core) read this, not the
-//! governor's slot units, which count only the topology's fixed slots (ar-5304).
+//! The CI board's machine rows, glance and units (`Units`: 1 unit = 1 CI core) read this
+//! (ar-5304).
 
 use std::collections::BTreeMap;
 
@@ -344,6 +344,13 @@ pub fn cores(c: f64) -> String {
     format!("{:.1}", (c * 10.0).round() / 10.0)
 }
 
+/// A request in cores to two places, trailing zeros dropped: `1.69`, `0.5`, `2`. agent-web's
+/// `cpuText` prints it the same.
+pub fn cpu_text(c: f64) -> String {
+    let n = format!("{c:.2}");
+    n.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
 /// Pods waiting for room, one row per kind and size.
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct Pending {
@@ -366,7 +373,7 @@ impl Pending {
         format!(
             "{}{n} ({} cpu {}{each})",
             self.kind,
-            crate::machines::weight_text(self.cpu, true),
+            cpu_text(self.cpu),
             crate::host_now::bytes(self.mem)
         )
     }
@@ -384,6 +391,30 @@ pub fn kind_of(owner_kind: &str, owner: &str, pod: &str) -> String {
         _ => pod,
     }
     .to_string()
+}
+
+/// `kube_pod_info` over the job pods matching `sel` (more label matchers, or empty) with a
+/// `kind` label: `kind_of` in PromQL, for a range query that sums by kind (a machine page's
+/// history). A pod whose owner is none of the three has no kind and drops out.
+pub fn kind_info_query(sel: &str) -> String {
+    let info = |owner: &str| {
+        let sep = if sel.is_empty() { "" } else { "," };
+        format!(r#"kube_pod_info{{namespace="{NAMESPACE}",created_by_kind="{owner}"{sep}{sel}}}"#)
+    };
+    [
+        ("EphemeralRunner", "(.+)-runner-[^-]+"),
+        ("Job", "(.+)-[^-]+"),
+        ("DaemonSet", "(.+)"),
+    ]
+    .iter()
+    .map(|(owner, re)| {
+        format!(
+            r#"label_replace({}, "kind", "$1", "created_by_name", "{re}")"#,
+            info(owner)
+        )
+    })
+    .collect::<Vec<_>>()
+    .join(" or ")
 }
 
 /// Every job pod starting, running or waiting, by name, with its requests.

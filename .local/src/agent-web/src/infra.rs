@@ -83,7 +83,7 @@ pub fn render(infra: &Infra, base: &Map<String, Value>, q: &ViewQuery) -> String
     let mut tables = Map::new();
     for (name, pre) in TABLES {
         let t = match name {
-            "machines" => shown(&infra.machine_rows(), q, pre),
+            "machines" => shown(&infra.machines, q, pre),
             "pools" => shown(&infra.pools, q, pre),
             "runners" => shown(&infra.ci.rows, q, pre),
             "queued" => shown(&infra.ci.queue, q, pre),
@@ -279,7 +279,6 @@ mod tests {
             slots: vec![hub_core::machine_page::SlotUse {
                 slot: "ws-unity-1".into(),
                 now: "busy".into(),
-                runner: true,
                 ..Default::default()
             }],
             history: Some(hub_core::host_history::HostHistory::default()),

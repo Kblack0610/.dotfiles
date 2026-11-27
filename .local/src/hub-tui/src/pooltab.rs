@@ -1,6 +1,6 @@
 //! One runner pool's page in place of Infra's Machines tab, drawn from the page `hub_core` reads
-//! for both surfaces (`hub_core::pool_page`): its parts and the governor's bounds, the machines
-//! with a slot in it, the CI jobs waiting for it, and its busy and waiting over the last days.
+//! for both surfaces (`hub_core::pool_page`): its parts, the machines running its jobs, the CI
+//! jobs waiting for it, and its busy and waiting over the last days.
 //! agent-web draws the same page at `#infra/pools/<pool>`.
 
 use hub_core::host_history::DAYS;

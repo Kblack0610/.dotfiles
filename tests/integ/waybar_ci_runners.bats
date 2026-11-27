@@ -28,20 +28,20 @@ STUB
 
 # glance <jq patch>: a warn domain with an ok alert and 3 of 3 runners up, 2 jobs running, 2 queued, 4 done at 75%; ms-a2 the
 # one CI node, 32 units, its job pods taking 4.38 of them and 2.5G of 92G; the workstation's gate and Unity slot and mac-mini on no
-# CI node; one stopped cloud host, no pod waiting for room, nothing WAITING, then the patch merged over it.
+# CI node; no pod waiting for room, nothing WAITING, then the patch merged over it.
 glance() {
   jq -n --argjson patch "$1" '{glance: ({
     level: "warn", alert: "ok", up: 3, expected: 3, parts: [{name: "pools", level: "warn"}, {name: "watches", level: "ok"}],
     feed: null, busy: 2, queued: 2, oldest: 900, done: 4, pass: 0.75,
     units: {total: 32, taken: 4.38, free: 27.62, real: 8, brief: "taken 4.4/32 units (14%)", head: "CI POOL  32 units (1 unit = 1 CI core)", line: "taken 4.4 of 32 (14%), free 27.6, real use 8.0 (25%)", columns: ["TAKEN BY", "PODS", "EACH", "UNITS", "SHARE"], rows: [["arc-org-light", "2", "1.69", "3.4", "11%"], ["forgejo-runner", "1", "1.00", "1.0", "3%"], ["free", "", "", "27.6", "86%"]]},
     pending: [],
-    kinds: [{kind: "unity", running: 2, waiting: 2, oldest: 900, done: 2, usual: 1260, pass: 0.5, weight: "1*"},
+    kinds: [{kind: "unity", running: 2, waiting: 2, oldest: 900, done: 2, usual: 1260, pass: 0.5},
             {kind: "github-hosted", waiting: null, oldest: null, done: 2, pass: 1}],
     machines: [{host: "ms-a2", busy: 3, running: ["[arc-org-light] x2", "[forgejo-runner]"], next: null, load: 0.2,
                 booked: {cpu: 4.38, cpu_alloc: 32, mem: 2700000000, mem_alloc: 98768805888}},
                {host: "workstation", busy: 2, running: ["[gates]", "[unity] platform"], next: null, load: 0.4, booked: null},
                {host: "mac-mini", busy: 0, running: [], next: {job: "Checks", repo: "web", n: 1, wait: 300}, load: null, booked: null}],
-    off: ["aws-burst-1"], down: [], long: [], next: []} * $patch)}' > "$FX/ci.json"
+    down: [], long: [], next: []} * $patch)}' > "$FX/ci.json"
 }
 
 # Three CI nodes as the cluster books them (2026-11-24): deskslim-1 near full on CPU, deskslim-2
@@ -186,12 +186,13 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   [[ "$(tip | sed -n 3p)" == *", <span color='#ef5734'>runner exporter missed its last scrape: runner rows may be missing</span>" ]]
 }
 
-@test "jobs by kind: weight, running, waiting, oldest, done, usual and pass, no FREE; none read is a dash" {
+@test "jobs by kind: running, waiting, oldest, done, usual and pass, no FREE or WEIGHT; none read is a dash" {
   run "$MODULE"
   run plain
-  assert_line --index 3 "KIND          WEIGHT RUNNING WAITING OLDEST  DONE USUAL  PASS"
-  assert_line --index 4 "unity             1*       2       2    15m     2   21m  50%"
-  assert_line --index 5 "github-hosted      -       -       -      -     2     -  100%"
+  assert_line --index 3 "KIND          RUNNING WAITING OLDEST  DONE USUAL  PASS"
+  assert_line --index 4 "unity               2       2    15m     2   21m  50%"
+  assert_line --index 5 "github-hosted       -       -      -     2     -  100%"
+  refute_output --partial "WEIGHT"
   refute_output --partial "FREE"
 }
 
@@ -209,23 +210,12 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   [[ "$output" == *$'free                        40.9    64%\n\nMACHINE'* ]]
 }
 
-@test "a kind the governor has not measured reads 1* under a key line; a measured one reads its share, and with none unmeasured there is no key" {
-  run "$MODULE"
-  run plain
-  assert_line "* not measured yet, counted as a whole slot"
-  glance '{"kinds": [{"kind": "light", "running": 1, "waiting": 0, "done": 5, "pass": 1, "weight": "0.66"}]}'
-  run "$MODULE"
-  run plain
-  assert_line --regexp '^light +0\.66 '
-  refute_output --partial "not measured yet"
-}
-
 @test "a kind reads its own jobs running, never the busy slots that carry its cap" {
   glance '{"kinds": [{"kind": "heavy", "running": 0, "busy": 7, "slots": 9, "waiting": 0, "oldest": null, "done": 2, "pass": 0.5}]}'
   run "$MODULE"
   run plain
-  assert_line --index 3 "KIND  WEIGHT RUNNING WAITING OLDEST  DONE USUAL  PASS"
-  assert_line --index 4 --regexp '^heavy +- +0 +0 '
+  assert_line --index 3 "KIND  RUNNING WAITING OLDEST  DONE USUAL  PASS"
+  assert_line --index 4 --regexp '^heavy +0 +0 '
   refute_output --partial "7/9"
 }
 
@@ -236,7 +226,7 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   assert_line "MACHINE               TAKEN        RUNNING                               NEXT"
   assert_line "workstation               -        [gates], [unity] platform             -"
   assert_line "mac-mini                  -        -                                     Checks (web) 5m"
-  assert_line "cloud: 1 host off"
+  refute_output --partial "cloud:"
   refute_output --partial "held"
   refute_output --partial "WHERE"
   refute_output --partial "SPACE"
@@ -257,18 +247,16 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   [[ "$(tip)" == *$'\nmac-mini               -        -                   -'* ]]
 }
 
-@test "stopped cloud hosts fold to one line and are never down" {
-  glance '{"off": ["aws-spot-1", "aws-spot-2"], "down": [{"host": "windows-media", "state": "offline", "n": 1}]}'
+@test "a host with runners down is one DOWN line" {
+  glance '{"down": [{"host": "windows-media", "state": "offline", "n": 1}]}'
   run "$MODULE"
   run plain
-  assert_line "cloud: 2 hosts off"
   assert_line "DOWN:"
   assert_line "  windows-media  1 offline"
-  refute_output --partial "aws-spot-1"
 }
 
-@test "nothing off or down draws neither line" {
-  glance '{"off": []}'
+@test "nothing down draws no DOWN line" {
+  glance '{}'
   run "$MODULE"
   run plain
   refute_output --partial "cloud:"

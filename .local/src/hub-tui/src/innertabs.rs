@@ -157,7 +157,7 @@ mod tests {
         assert_eq!(named(infra, " Pools "), Some("machines"));
         assert_eq!(named(infra, "jobs"), Some("jobs"));
         assert_eq!(
-            named(infra, "governor"),
+            named(infra, "cloud"),
             None,
             "a moved name is the tab's to open"
         );

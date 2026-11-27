@@ -1,5 +1,5 @@
 //! One machine's page on both surfaces (`#infra/machines/<host>`): its Machines row as labelled
-//! parts, the cores each kind of CI job uses there, the CI jobs running there, its last `DAYS` days
+//! parts, its fixed runners and the CI job pods on it by kind, the CI jobs running there, its last `DAYS` days
 //! and downtime (`host_history`), the CI jobs that ran there (the jobs archive), the alerts that
 //! name it and its Grafana board. hub-core reads it; agent-web and the TUI only draw it.
 
@@ -30,29 +30,24 @@ pub const BOARD: &str = "kb-fleet";
 pub const RECENT: usize = 50;
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
-/// One runner on the machine and what it takes of it, or one class of the rest of the machine
-/// (`workload`: apps, agents, docker, other, free). A reading a runner has no series for is
-/// `None`, said as no data.
+/// One fixed runner on the machine, one kind of CI job pod placed on it (`JobPod::kind`, the
+/// scale set or ScaledJob), or one class of the rest of the machine (`workload`: apps, agents,
+/// docker, other, free). No series gives one runner or pod's real use (hc-1127), so a pod row
+/// says what its pods request and a runner row says no cores; the node's real use is the Space
+/// part.
 #[derive(Serialize, Debug, PartialEq, Clone, Default)]
 pub struct SlotUse {
-    /// The runner's name, or a class of `workload::CLASSES`.
+    /// The runner's name, the pod kind, or a class of `workload::CLASSES`.
     pub slot: String,
-    /// Every cap it takes (`github_runner_pool_slot`), in the exporter's order.
-    pub takes: Vec<String>,
-    /// As `ci::runners_now` says it: busy, idle, lent, withheld, standby or off.
+    /// A runner as `ci::runners_now` says it (busy, idle or off); a pod kind `busy` while one of
+    /// its pods runs a job, `starting` while placed and not yet running, `reserved` for a
+    /// reservation pod (`JobPod::reserved`).
     pub now: String,
+    /// A runner's job, or how many pods of the kind: `3 pods`.
     pub job: String,
-    /// Cores its job uses and the cores it may use (`cc:runner_cores_{busy,allowed}`).
+    /// The cores and bytes the kind's pods request there, or a class uses.
     pub cores: Option<f64>,
-    pub cores_max: Option<f64>,
-    /// Memory it uses and its limit, bytes (`cc:runner_mem_{bytes,max_bytes}`).
     pub mem: Option<f64>,
-    pub mem_max: Option<f64>,
-    /// Its work directory, bytes, and that reading's age, seconds (`cc:runner_disk_*`).
-    pub disk: Option<f64>,
-    pub disk_age: Option<f64>,
-    /// A runner's row, not a class's.
-    pub runner: bool,
 }
 
 /// `0`, `2.8`, `140`: a reading as the slots table and the Space line say it. Halves round up,
@@ -83,47 +78,24 @@ fn natural(name: &str) -> (&str, u64) {
     (head, name[head.len()..].parse().unwrap_or(0))
 }
 
-/// `2.8/3`, `11.2/14G`; `2.8` with no limit; no data with no reading.
-pub fn used_of(used: Option<f64>, max: Option<f64>, scale: f64, unit: &str) -> String {
-    match (used, max) {
-        (None, _) => crate::reading::NO_DATA.into(),
-        (Some(u), Some(m)) => format!("{}/{}{unit}", short(u / scale), whole(m / scale)),
-        (Some(u), None) => format!("{}{unit}", short(u / scale)),
-    }
-}
-
 impl SlotUse {
+    /// Its cores, empty where it has none.
     pub fn cores_text(&self) -> String {
-        if !self.runner {
-            return self.cores.map(short).unwrap_or_default();
-        }
-        used_of(self.cores, self.cores_max, 1.0, "")
+        self.cores.map(short).unwrap_or_default()
     }
-    /// A class's memory used, empty where it has no reading; it has no disk of its own.
+    /// Its memory, empty where it has none.
     pub fn mem_text(&self) -> String {
-        if !self.runner {
-            return self
-                .mem
-                .map(|m| format!("{}G", short(m / GIB)))
-                .unwrap_or_default();
-        }
-        used_of(self.mem, self.mem_max, GIB, "G")
-    }
-    pub fn disk_text(&self) -> String {
-        match (self.runner, self.disk) {
-            (false, _) => String::new(),
-            (true, None) => crate::reading::NO_DATA.into(),
-            (true, Some(d)) => host_now::bytes(d),
-        }
+        self.mem
+            .map(|m| format!("{}G", short(m / GIB)))
+            .unwrap_or_default()
     }
 }
 
-/// The slots table on both surfaces: each runner by name, then the cores no runner uses.
+/// The slots table on both surfaces: each fixed runner by name, the job pods by kind, then the
+/// rest of the machine by class.
 impl Row for SlotUse {
-    const COLUMNS: &'static [&'static str] =
-        &["slot", "takes", "now", "job", "cores", "mem", "disk"];
-    const STATES: &'static [&'static str] =
-        &["all", "busy", "idle", "lent", "withheld", "standby", "off"];
+    const COLUMNS: &'static [&'static str] = &["slot", "now", "job", "cores", "mem"];
+    const STATES: &'static [&'static str] = &["all", "busy", "idle", "starting", "reserved", "off"];
     const FACETS: &'static [&'static str] = &["now"];
     const HIDE_EMPTY: bool = true;
     const LEAD: &'static str = "slot";
@@ -133,12 +105,10 @@ impl Row for SlotUse {
         let text = Val::word;
         match col {
             "slot" => text(&self.slot),
-            "takes" => text(&self.takes.join(" ")),
             "now" => text(&self.now),
             "job" => text(&self.job),
             "cores" => self.cores.into(),
             "mem" => self.mem.into(),
-            "disk" => self.disk.into(),
             _ => Val::None,
         }
     }
@@ -211,6 +181,8 @@ pub struct MachinePage {
     /// Its cores, which the slots rows' cores add up to when it has a reading.
     pub cores: Option<f64>,
     pub slots: Vec<SlotUse>,
+    /// The slots heading on both surfaces (`slots_head`): `1 of 2 runners busy, 4 pods`.
+    pub slots_head: String,
     /// Its busy CI slots and local gates, as the slots table has them.
     pub running: Vec<Slot>,
     pub history: Option<HostHistory>,
@@ -233,7 +205,7 @@ pub fn find<'a>(infra: &'a Infra, host: &str) -> Result<&'a Machine, String> {
 }
 
 /// Its host, then every other name a series gives it: the hostnames `Infra::aliases` maps to it
-/// and the hosts its runners and governor report.
+/// and the hosts its runners report.
 pub fn names(infra: &Infra, host: &str) -> Vec<String> {
     let alias = infra.aliases();
     let mut out = vec![host.to_string()];
@@ -262,10 +234,9 @@ pub fn read(
 ) -> Result<MachinePage, String> {
     let m = find(infra, host)?;
     let names = names(infra, &m.host);
-    let powered = m.power.as_ref().map(|p| p.host.as_str());
     let (history, live) = std::thread::scope(|s| {
         let live = s.spawn(|| host_now::read(&names));
-        let history = host_history::read(&names, powered, now);
+        let history = host_history::read(&names, now);
         (
             history,
             live.join().unwrap_or_else(|_| Err("panicked".into())),
@@ -309,13 +280,15 @@ pub fn build(
         .map(|a| naming(a, &names))
         .map_err(|e| errors.push(format!("alerts: {e}")))
         .unwrap_or_default();
+    let (slots, slots_head) = slots(infra, m);
     MachinePage {
         host: m.host.clone(),
         at: now,
         head: format!("{}, {}, {}", m.host, m.place, m.state),
         parts: parts(m, infra.space.host(&m.host), infra.grafana.as_deref(), now),
         cores: m.cores,
-        slots: slots(infra, m),
+        slots,
+        slots_head,
         running: infra
             .ci
             .rows
@@ -357,15 +330,7 @@ fn when(epoch: i64) -> String {
         .map_or("?".into(), |t| t.format("%b %d %H:%M").to_string())
 }
 
-/// Why a machine has no reading, as the Now part says it.
-fn why_no_reading(m: &Machine) -> String {
-    match m.power.as_ref().map(|p| p.state.as_str()) {
-        Some(s) if !s.is_empty() && s != "running" => format!("the governor has it {s}"),
-        _ => "Prometheus has no node exporter series for it".into(),
-    }
-}
-
-/// Its row as labelled parts: Now, CI, Governor, Power, Up since, Grafana.
+/// Its row as labelled parts: Now, Space, CI, Up since, Grafana.
 fn parts(m: &Machine, split: Option<&HostSplit>, grafana: Option<&str>, at: u64) -> Vec<Part> {
     let mut out = vec![];
     let now = match m.cpu {
@@ -382,7 +347,10 @@ fn parts(m: &Machine, split: Option<&HostSplit>, grafana: Option<&str>, at: u64)
         }
         None => Part::new(
             "Now",
-            format!("{}: {}", crate::reading::NO_DATA, why_no_reading(m)),
+            format!(
+                "{}: Prometheus has no node exporter series for it",
+                crate::reading::NO_DATA
+            ),
         )
         .warn(true),
     };
@@ -403,37 +371,6 @@ fn parts(m: &Machine, split: Option<&HostSplit>, grafana: Option<&str>, at: u64)
             t = format!("{t}; {} off", m.off);
         }
         out.push(Part::new("CI", t).warn(m.off > 0));
-    }
-    if let Some(g) = &m.governor {
-        let mut t = g.says();
-        if !g.verdict.is_empty() {
-            t = format!("{t} ({})", g.verdict);
-        }
-        if let Some(a) = g.admitted {
-            t = format!("{t}, admits {a:.0}");
-        }
-        out.push(Part::new("Governor", t));
-    }
-    if let Some(p) = &m.power {
-        let mut t = p.state.clone();
-        if !p.reason.is_empty() && p.reason != "none" {
-            t = format!("{t} ({})", p.reason);
-        }
-        t = match p.max {
-            Some(max) => format!("{t}, {:.1}h of {max:.0}h today", p.hours),
-            None => format!("{t}, {:.1}h today", p.hours),
-        };
-        if let Some(usd) = p.usd_per_hour {
-            t = format!("{t} at ${usd:.2}/h");
-        }
-        if !p.hold.is_empty() {
-            let until = p.until.map(|u| format!(" until {}", when(u as i64)));
-            t = format!("{t}; held {}{}", p.hold, until.unwrap_or_default());
-        }
-        if !p.rule.is_empty() {
-            t = format!("{t}; {}", p.rule);
-        }
-        out.push(Part::new("Power", t).warn(!p.hold.is_empty()));
     }
     if let Some(b) = m.boot {
         let up = crate::display::fmt::age(at as i64 - b as i64);
@@ -494,43 +431,19 @@ fn space(m: &Machine, split: Option<&HostSplit>) -> Option<Part> {
     Some(Part::new("Space", format!("{cores}, {mem}, {disk}")).warn(low))
 }
 
-/// Each runner on it by name, with its caps and what it uses, then the rest of the machine by
-/// class (`workload`), the CI class being the runners above; none when it has no split.
-fn slots(infra: &Infra, m: &Machine) -> Vec<SlotUse> {
-    let mut takes = infra.caps();
-    let rule = |r: &str| infra.runner_use(r);
-    let (busy, allowed) = (
-        rule("cc:runner_cores_busy"),
-        rule("cc:runner_cores_allowed"),
-    );
-    let (mem, mem_max) = (rule("cc:runner_mem_bytes"), rule("cc:runner_mem_max_bytes"));
-    let (disk, age) = (
-        rule("cc:runner_disk_bytes"),
-        rule("cc:runner_disk_age_seconds"),
-    );
+/// Each fixed runner on it by name (an ARC runner is its pod, so it is no row of its own), then
+/// its job pods by kind with what they request, then the rest of the machine by class
+/// (`workload`), the CI class being the rows above; no class rows when it has no split. With
+/// them, their heading (`slots_head`).
+fn slots(infra: &Infra, m: &Machine) -> (Vec<SlotUse>, String) {
     let mut out: Vec<SlotUse> = crate::ci::runners_now(infra)
         .into_iter()
-        .filter(|r| r.host == m.host)
-        .map(|r| {
-            let n = r.name.as_str();
-            SlotUse {
-                takes: takes
-                    .remove(n)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(String::from)
-                    .collect(),
-                cores: busy.get(n).copied(),
-                cores_max: allowed.get(n).copied(),
-                mem: mem.get(n).copied(),
-                mem_max: mem_max.get(n).copied(),
-                disk: disk.get(n).copied(),
-                disk_age: age.get(n).copied(),
-                now: r.state,
-                job: r.job,
-                slot: r.name,
-                runner: true,
-            }
+        .filter(|r| r.host == m.host && infra.pod(&r.name).is_none())
+        .map(|r| SlotUse {
+            now: r.state,
+            job: r.job,
+            slot: r.name,
+            ..SlotUse::default()
         })
         .collect();
     out.sort_by(|a, b| {
@@ -538,6 +451,29 @@ fn slots(infra: &Infra, m: &Machine) -> Vec<SlotUse> {
             .cmp(&natural(&b.slot))
             .then_with(|| a.slot.cmp(&b.slot))
     });
+    let runners = out.len();
+    let busy = out.iter().filter(|s| s.now == "busy").count();
+    // (kind, now) -> pods, cores, bytes.
+    let mut pods: std::collections::BTreeMap<(&str, &str), (u32, f64, f64)> = Default::default();
+    for p in infra.pods.iter().filter(|p| p.node == m.host) {
+        let now = match (p.reserved, p.running) {
+            (true, _) => "reserved",
+            (false, true) => "busy",
+            (false, false) => "starting",
+        };
+        let e = pods.entry((p.kind.as_str(), now)).or_default();
+        *e = (e.0 + 1, e.1 + p.cpu, e.2 + p.mem);
+    }
+    let placed = pods.values().map(|(n, ..)| *n as usize).sum();
+    for ((kind, now), (n, cpu, mem)) in pods {
+        out.push(SlotUse {
+            slot: kind.into(),
+            now: now.into(),
+            job: crate::display::fmt::counted(n as usize, "pod"),
+            cores: Some(cpu),
+            mem: Some(mem),
+        });
+    }
     for u in infra
         .space
         .host(&m.host)
@@ -552,7 +488,22 @@ fn slots(infra: &Infra, m: &Machine) -> Vec<SlotUse> {
             ..SlotUse::default()
         });
     }
-    out
+    (out, slots_head(runners, busy, placed))
+}
+
+/// The slots heading: the fixed runners busy of all of them, then the job pods placed there
+/// (`1 of 2 runners busy, 4 pods`); empty with neither. A pod kind's row is its pods, never a
+/// runner.
+fn slots_head(runners: usize, busy: usize, pods: usize) -> String {
+    use crate::display::fmt::counted;
+    let mut out = vec![];
+    if runners > 0 {
+        out.push(format!("{busy} of {} busy", counted(runners, "runner")));
+    }
+    if pods > 0 {
+        out.push(counted(pods, "pod"));
+    }
+    out.join(", ")
 }
 
 /// The CI jobs that ran on one of `runners`, or on a runner named after one of `names`
@@ -646,12 +597,6 @@ mod tests {
     fn infra() -> Infra {
         let mut i = fleet();
         i.grafana = Some("https://grafana.example".into());
-        i.instant.insert(
-            "runner_use",
-            series(vec![
-                json!({"__name__": "cc:runner_cores_busy", "runner": "ws-unity-1", "v": "6"}),
-            ]),
-        );
         (i.machines, i.pools) = machines(&i);
         i
     }
@@ -696,13 +641,15 @@ mod tests {
             "no data: Prometheus has no node exporter series for it"
         );
         assert!(p.parts[0].warn);
+        // No reading, so no other or idle: only its runner, which requests nothing.
         let p = page(&i, "aws-burst-1", "", &[]);
-        assert_eq!(p.parts[0].text, "no data: the governor has it stopped");
-        assert!(p.parts.iter().any(|x| x.label == "Power"));
-        // No reading, so no other or idle: only its runner, its use no data.
-        let names: Vec<&str> = p.slots.iter().map(|x| x.slot.as_str()).collect();
-        assert_eq!(names, ["burst-1"]);
-        assert_eq!(p.slots[0].cores_text(), crate::reading::NO_DATA);
+        let slots: Vec<(&str, &str)> = p
+            .slots
+            .iter()
+            .map(|x| (x.slot.as_str(), x.now.as_str()))
+            .collect();
+        assert_eq!(slots, [("burst-1", "off")]);
+        assert_eq!(p.slots[0].cores_text(), "");
     }
 
     #[test]
@@ -712,8 +659,6 @@ mod tests {
         let now = &p.parts[0];
         assert!(now.text.starts_with("cpu 62%, "), "{}", now.text);
         assert!(now.text.contains("71C"));
-        let gov = p.parts.iter().find(|x| x.label == "Governor").unwrap();
-        assert_eq!(gov.text, "withhold (hot)");
         let g = p.parts.iter().find(|x| x.label == "Grafana").unwrap();
         assert_eq!(
             g.link,
@@ -752,30 +697,29 @@ mod tests {
 
     const G: f64 = GIB;
 
-    /// The fleet with ws-unity-1's use read and taking two caps, ws-unity-2 read for nothing,
-    /// and the workstation's memory and disk in bytes.
+    /// The fleet with two light job pods and the Unity slot's reservation on the workstation,
+    /// one light pod still starting there, one placed on another node, and the workstation's
+    /// memory and disk in bytes.
     fn used() -> Infra {
         let mut i = infra();
-        let use_of = |rule: &str, v: f64| json!({"__name__": rule, "host": "workstation", "runner": "ws-unity-1", "v": v.to_string()});
-        i.instant.insert(
-            "runner_use",
-            series(vec![
-                use_of("cc:runner_cores_busy", 6.0),
-                use_of("cc:runner_cores_allowed", 8.0),
-                use_of("cc:runner_mem_bytes", 2.0 * G),
-                use_of("cc:runner_mem_max_bytes", 14.0 * G),
-                use_of("cc:runner_disk_bytes", 58.0 * G),
-                use_of("cc:runner_disk_age_seconds", 600.0),
-            ]),
-        );
-        let cap = |name: &str, pool: &str| {
-            json!({"__name__": "github_runner_pool_slot", "host": "cachyos-x8664-main",
-                "name": name, "pool": pool, "state": "running"})
+        let pod = |name: &str, kind: &str, node: &str, running: bool, reserved: bool, cpu: f64| {
+            crate::jobpods::JobPod {
+                name: name.into(),
+                kind: kind.into(),
+                node: node.into(),
+                running,
+                reserved,
+                cpu,
+                mem: 4.0 * G,
+            }
         };
-        i.instant
-            .get_mut("runner_caps")
-            .unwrap()
-            .extend(series(vec![cap("ws-unity-1", "light")]));
+        i.pods = vec![
+            pod("light-a", "arc-org-light", "workstation", true, false, 1.5),
+            pod("light-b", "arc-org-light", "workstation", true, false, 1.5),
+            pod("slot", "ci-build-slot", "workstation", true, true, 3.0),
+            pod("light-c", "arc-org-light", "workstation", false, false, 1.5),
+            pod("light-d", "arc-org-light", "tuf-b550", true, false, 1.5),
+        ];
         let host = |rule: &str, v: f64| json!({"__name__": rule, "host": "workstation", "v": v.to_string()});
         i.instant.get_mut("cc").unwrap().extend(series(vec![
             host("cc:host_mem_used_bytes", 39.0 * G),
@@ -783,7 +727,7 @@ mod tests {
             host("cc:host_disk_avail_bytes", 190.0 * G),
             host("cc:host_disk_size_bytes", 500.0 * G),
         ]));
-        // The split `workload` reads: 14.88 cores busy, the runner's 6 among them.
+        // The split `workload` reads: 14.88 cores busy, CI's 6 among them.
         let class = |rule: &str, class: &str, v: f64| json!({"__name__": rule, "host": "workstation", "class": class, "v": v.to_string()});
         i.instant.get_mut("cc").unwrap().extend(series(vec![
             class("cc:host_class_cores", "ci", 6.0),
@@ -799,63 +743,53 @@ mod tests {
     }
 
     #[test]
-    fn slots_are_each_runner_by_name_then_the_other_classes_adding_to_its_cores() {
+    fn slots_are_each_fixed_runner_then_the_job_pods_by_kind_then_the_other_classes() {
         let i = used();
         let p = page(&i, "workstation", "", &[]);
         let s = &p.slots;
-        let names: Vec<&str> = s.iter().map(|x| x.slot.as_str()).collect();
+        let rows: Vec<(&str, &str, &str)> = s
+            .iter()
+            .map(|x| (x.slot.as_str(), x.now.as_str(), x.job.as_str()))
+            .collect();
         assert_eq!(
-            names,
+            rows,
             [
-                "ws-unity-1",
-                "ws-unity-2",
-                "apps",
-                "agents",
-                "other",
-                "free"
+                ("ws-unity-1", "busy", "-"),
+                ("ws-unity-2", "idle", ""),
+                ("arc-org-light", "busy", "2 pods"),
+                ("arc-org-light", "starting", "1 pod"),
+                ("ci-build-slot", "reserved", "1 pod"),
+                ("apps", "", ""),
+                ("agents", "", ""),
+                ("other", "", ""),
+                ("free", "", "")
             ]
         );
-        // The Machines row's runners hover reads the same memory.
-        assert_eq!(p.machine.runner_mem, [("ws-unity-1".to_string(), 2.0 * G)]);
-        assert_eq!(s[0].takes, ["unity", "light"]);
-        assert_eq!((s[0].now.as_str(), s[1].now.as_str()), ("busy", "withheld"));
+        assert_eq!(p.slots_head, "1 of 2 runners busy, 4 pods");
+        // A fixed runner requests nothing; a kind's row is what its pods request.
         assert_eq!(
-            (s[0].cores_text(), s[0].mem_text(), s[0].disk_text()),
-            ("6.0/8".into(), "2.0/14G".into(), "58G".into())
+            (s[0].cores_text(), s[0].mem_text()),
+            (String::new(), String::new())
         );
-        // The classes and the runners' 6 cores add to the machine's 24, and the lump is gone.
-        let total: f64 = s.iter().filter_map(|x| x.cores).sum();
-        assert!((total - 24.0).abs() < 1e-9);
         assert_eq!(
             (s[2].cores_text(), s[2].mem_text()),
+            ("3.0".into(), "8.0G".into())
+        );
+        // The classes and the pods placed and running add to the machine's 24.
+        let total: f64 = s
+            .iter()
+            .filter(|x| x.now != "starting")
+            .filter_map(|x| x.cores)
+            .sum();
+        assert!((total - 24.0).abs() < 1e-9);
+        assert_eq!(
+            (s[5].cores_text(), s[5].mem_text()),
             ("1.0".into(), "4.0G".into())
         );
         assert_eq!(
-            (s[5].cores_text(), s[5].mem_text()),
+            (s[8].cores_text(), s[8].mem_text()),
             ("9.1".into(), String::new())
         );
-    }
-
-    /// The negative control: a runner with no series reads no data, never 0.
-    #[test]
-    fn a_runner_with_no_use_series_reads_no_data_never_zero() {
-        let p = page(&used(), "workstation", "", &[]);
-        let r = p.slots.iter().find(|x| x.slot == "ws-unity-2").unwrap();
-        assert_eq!((r.cores, r.mem, r.disk), (None, None, None));
-        for t in [r.cores_text(), r.mem_text(), r.disk_text()] {
-            assert_eq!(t, crate::reading::NO_DATA);
-        }
-        // A runner series of 0 is a reading, and says 0.
-        let mut i = used();
-        i.instant.insert(
-            "runner_use",
-            series(vec![
-                json!({"__name__": "cc:runner_mem_bytes", "runner": "ws-unity-2", "v": "0"}),
-            ]),
-        );
-        let p = page(&i, "workstation", "", &[]);
-        let r = p.slots.iter().find(|x| x.slot == "ws-unity-2").unwrap();
-        assert_eq!(r.mem_text(), "0G");
     }
 
     #[test]
@@ -878,8 +812,6 @@ mod tests {
 
     #[test]
     fn a_half_rounds_up_as_the_web_does_and_slot_ten_sorts_after_slot_two() {
-        assert_eq!(used_of(Some(2.8), Some(2.5), 1.0, ""), "2.8/3");
-        assert_eq!(used_of(Some(2.25), None, 1.0, ""), "2.3");
         assert_eq!(whole(12.5), "13");
         let mut names = ["ws-unity-10", "ws-unity-2", "ws-light-1", "ws-unity-1"];
         names.sort_by(|a, b| natural(a).cmp(&natural(b)));

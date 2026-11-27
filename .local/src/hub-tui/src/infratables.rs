@@ -111,7 +111,7 @@ impl InfraTables {
             };
             let v = &mut t.view;
             match i {
-                0 => v.cycle_shown(&r.machine_rows()),
+                0 => v.cycle_shown(&r.machines),
                 1 => v.cycle_shown(&r.pools),
                 2 => v.cycle_shown(&r.ci.rows),
                 3 => v.cycle_shown(&r.ci.queue),
@@ -133,7 +133,7 @@ impl InfraTables {
     fn shown_len(&self, infra: &Infra, i: usize) -> usize {
         let v = &self.views[i].view;
         match i {
-            0 => v.apply(&infra.machine_rows()).len(),
+            0 => v.apply(&infra.machines).len(),
             1 => v.apply(&infra.pools).len(),
             2 => v.apply(&infra.ci.rows).len(),
             3 => v.apply(&infra.ci.queue).len(),
@@ -178,7 +178,7 @@ impl InfraTables {
             DataTable::opens(*t.view.apply(rows).get(t.sel)?)
         }
         match i {
-            0 => sel(t, &infra.machine_rows()),
+            0 => sel(t, &infra.machines),
             1 => sel(t, &infra.pools),
             2 => sel(t, &infra.ci.rows),
             3 => sel(t, &infra.ci.queue),
@@ -210,8 +210,7 @@ impl InfraTables {
         };
         match i {
             0 => {
-                let mut out = machines(&d, &infra.machine_rows(), now);
-                out.extend(infra.ci.glance.off_line().map(|l| Line::styled(l, p.dim())));
+                let mut out = machines(&d, &infra.machines, now);
                 out.extend(
                     infra
                         .ci
@@ -249,9 +248,10 @@ pub fn ci_machines(infra: &Infra, p: Palette, w: usize) -> Vec<Line<'static>> {
         w,
     };
     let mut rows: Vec<Machine> = infra
-        .machine_rows()
-        .into_iter()
-        .filter(Machine::carries_ci)
+        .machines
+        .iter()
+        .filter(|m| m.carries_ci())
+        .cloned()
         .collect();
     rows.sort_by(|a, b| {
         let share = |m: &Machine| m.booked.map_or(0.0, |b| b.share());
@@ -416,14 +416,14 @@ fn num(v: Option<f64>) -> Cell {
 }
 
 /// `Machine::COLUMNS` in capitals.
-const MACHINE_HEAD: [&str; 14] = [
+const MACHINE_HEAD: [&str; 12] = [
     "MACHINE", "STATE", "BOOKED", "CPU", "6H", "LOAD", "MEM", "TEMP", "DISK", "RUNNING", "NEXT",
-    "GOVERNOR", "POWER", "UP",
+    "UP",
 ];
 
 /// What its job pods book of its CPU and memory, as a bar of the fuller share and the counts:
-/// `[#...] 5.1/32 4.0G/92G`, `-` on no CI node, then the runners held off. Amber once a resource
-/// is fully booked or a runner is held off.
+/// `[#...] 5.1/32 4.0G/92G`, `-` on no CI node, then its runners down. Amber once a resource
+/// is fully booked or a runner is down.
 fn booked(m: &Machine, p: crate::fmt::Palette) -> Cell {
     const WIDTH: usize = 4;
     let share = m.booked.map_or(0.0, |b| b.share());
@@ -471,17 +471,6 @@ fn machines(d: &Draw, rows: &[Machine], now: i64) -> Vec<Line<'static>> {
                 Some(t) if t >= hub_core::host_now::HOT_C => cell(format!("{t:.0}C"), p.warn()),
                 Some(t) => format!("{t:.0}C").into(),
             };
-            let power = m.power.as_ref().map_or("-".into(), |w| {
-                let mut s = w.state.clone();
-                match w.max {
-                    Some(max) => s += &format!(" {:.1}/{max:.0}h", w.hours),
-                    None => s += &format!(" {:.1}h", w.hours),
-                }
-                if !w.hold.is_empty() {
-                    s += &format!(" held {}", w.hold);
-                }
-                s
-            });
             vec![
                 m.host.clone().into(),
                 cell(&m.state, state),
@@ -496,16 +485,14 @@ fn machines(d: &Draw, rows: &[Machine], now: i64) -> Vec<Line<'static>> {
                 m.next
                     .as_ref()
                     .map_or("-".into(), |n| n.line(|s| dur_secs(s as f64)).into()),
-                m.governor.as_ref().map_or("-".into(), |g| g.says().into()),
-                power.into(),
                 m.boot.map_or("-".into(), |b| clock(b as i64, now).into()),
             ]
         },
         Table {
             header: MACHINE_HEAD.to_vec(),
-            keep: vec![0, 2, 9, 3, 1, 5, 10, 4, 6, 7, 11, 12, 8, 13],
+            keep: vec![0, 2, 9, 3, 1, 5, 10, 4, 6, 7, 8, 11],
             right: vec![2, 3, 4, 5, 6, 7, 8],
-            cap: vec![(9, 56), (10, 44), (12, 28)],
+            cap: vec![(9, 56), (10, 44)],
             flex: Some(9),
             flexmin: 14,
             flexkeep: true,
@@ -514,9 +501,9 @@ fn machines(d: &Draw, rows: &[Machine], now: i64) -> Vec<Line<'static>> {
     )
 }
 
-const POOL_HEAD: [&str; 11] = [
-    "KIND", "WEIGHT", "RUNNING", "WAITING", "OLDEST", "DONE 1H", "DONE 5H", "DONE 24H", "USUAL",
-    "PASS", "MACHINES",
+const POOL_HEAD: [&str; 10] = [
+    "KIND", "RUNNING", "WAITING", "OLDEST", "DONE 1H", "DONE 5H", "DONE 24H", "USUAL", "PASS",
+    "MACHINES",
 ];
 
 /// One row per job kind, the longest queue first: its jobs running, waiting, how long one usually
@@ -532,7 +519,6 @@ fn pools(d: &Draw, rows: &[Pool]) -> Vec<Line<'static>> {
         |r| {
             vec![
                 r.pool.clone().into(),
-                dash(shown(r, "weight")).into(),
                 num(r.running),
                 match r.waiting {
                     Some(x) if x > 0.0 => cell(format!("{x:.0}"), p.warn()),
@@ -549,9 +535,9 @@ fn pools(d: &Draw, rows: &[Pool]) -> Vec<Line<'static>> {
         },
         Table {
             header: POOL_HEAD.to_vec(),
-            keep: vec![0, 3, 2, 4, 9, 10, 7, 8, 1, 5, 6],
-            right: vec![1, 2, 3, 4, 5, 6, 7, 8, 9],
-            cap: vec![(10, 100)],
+            keep: vec![0, 2, 1, 3, 8, 9, 6, 7, 4, 5],
+            right: vec![1, 2, 3, 4, 5, 6, 7, 8],
+            cap: vec![(9, 100)],
             ..Default::default()
         },
     )
@@ -732,22 +718,12 @@ mod tests {
             m.contains("[/ f s S x, c next table]"),
             "the first table has the keys: {m}"
         );
-        for h in ["MACHINE", "BOOKED", "RUNNING", "NEXT", "GOVERNOR"] {
+        for h in ["MACHINE", "BOOKED", "RUNNING", "NEXT", "UP"] {
             assert!(m.contains(h), "{h}: {m}");
         }
         for host in i.machines.iter().map(|m| m.host.as_str()) {
             assert!(m.contains(host), "{host}: {m}");
         }
-        assert!(!m.contains("hosts off"), "{m}");
-        // A cloud host the governor holds off folds into one line under the table.
-        let mut off = i.clone();
-        let gone = off.machines[0].host.clone();
-        off.ci.glance.off = vec![gone.clone()];
-        let o = text(&t, &off, "machines", "machines", 200);
-        assert!(
-            o.ends_with("cloud: 1 host off") && !o.contains(&format!("\n{gone} ")),
-            "{o}"
-        );
         let p = text(&t, &i, "pools", "machines", 200);
         assert!(
             p.starts_with("JOB KINDS  all ") && !p.contains("[/ f"),

@@ -1,0 +1,5 @@
+# What a CI node costs an hour, read by hub-core run_detail::Rates to price each CI job.
+# <node> <usd_per_hour> <basis> [<jobs at once, which share the rate>]
+# basis: owned, on-demand or spot-estimate. A node of * is every self-hosted node not listed.
+# Every CI node is an owned home machine (the cloud hosts went with the governor), so one line covers them.
+*	0	owned
