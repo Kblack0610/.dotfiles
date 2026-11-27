@@ -5112,33 +5112,42 @@ cmd_retro() {
   upsert_report "$grows" "$IMPROVE_LINE"
 }
 
-# upsert_why <key> <priority tag> -> the priority reason (priority-reasons.tsv) of a row whose key says what
-# it is: a tripped watch, an alert, a dispatch hold or a recurring lesson at #high is a runtime fault, a
-# lesson at #low is upkeep. Any other row files without one, and the priority pass judges it.
+# upsert_why <key> <priority tag> -> the priority reason (priority-reasons.tsv) of a row whose key
+# says what it is: a firing alert at #high is a firing-alert, which the board's daily cap never
+# holds (ar-4296), a tripped watch, a dispatch hold or a recurring lesson at #high is a runtime
+# fault, a lesson at #low is upkeep. Any other row files without one, and the priority pass judges
+# it.
 upsert_why() {
   case "$1:$2" in
-    'check(watch)'*:'#high'|'check(alert)'*:'#high'|'fix(hold)'*:'#high'|'check(lesson)'*:'#high') echo runtime-fault ;;
+    'check(alert)'*:'#high') echo firing-alert ;;
+    'check(watch)'*:'#high'|'fix(hold)'*:'#high'|'check(lesson)'*:'#high') echo runtime-fault ;;
     'check(lesson)'*:'#low') echo upkeep ;;
   esac
 }
 
-# board_upsert <rows: key TAB text TAB priority, one a line> keeps exactly one open agent-board
-# row per key, matched as a lowercase title prefix (each key's shape is in lib/board-keys.sh, so
-# the backlog triager leaves the row's prefix alone): a row whose text moved is edited in place, one
-# that matches writes nothing, and an add that exits 3 found its twin already open (a near-dup), so
-# it counts as filed. A key with no open row but one closed in the board feed's window
-# (upsert_closed) has that row reopened and its text refreshed, never a new row: a cause that is red
-# again is the same work (alertmanager-fleet was filed 27 times in 7 days, 2026-11-18). A row whose
-# condition cleared is triage_retire's. Every row is #size/s. A reopen that fails is said and the key
-# is filed as a new row, and a row whose add or edit fails is said and skipped, so one stuck row never
-# stops the pass (ar-4064: one failed add skipped every red fix promotion after it). An add the board's daily cap
-# refuses (exit 6) is said and tried again next pass; a red marked urgent passes the cap.
+# board_upsert <rows: key TAB text TAB priority, one a line> keeps exactly one open agent-board row
+# per key, matched as a lowercase title prefix (each key's shape is in lib/board-keys.sh, so the
+# backlog triager leaves the row's prefix alone): a row whose text moved is edited in place, and one
+# that matches writes nothing. An add runs only for a key with no open row, and passes the key
+# (`ptask add --key`), so the writer takes no other key's row for its near twin (ar-4296: two alerts
+# on one label, or one alert on two hosts, were twins, and the second had no row for days); an exit
+# 3 that still comes is a red with no row, and no item, since triage_promote queues a key's own row:
+# a failed write, never filed. A key with no open row but one closed in
+# the board feed's window (upsert_closed) has that row reopened and its text refreshed, never a new
+# row: a cause that is red again is the same work (alertmanager-fleet was filed 27 times in 7 days,
+# 2026-11-18). A row whose condition cleared is triage_retire's. Every row is #size/s. A reopen that
+# fails is said and the key is filed as a new row, and a row whose add or edit fails is said and
+# skipped, so one stuck row never stops the pass (ar-4064: one failed add skipped every red fix
+# promotion after it). An add the board's daily cap refuses (exit 6) is said, counted in
+# UPSERT_CAPPED and tried again next pass; a firing alert's row and a red marked urgent pass the
+# cap.
 # Each write names its row by id, since `notes ptask edit` refuses a query two open rows match: the
 # key's row is its first open row with an id marker, and only a key whose one row has none (written
 # by hand) is named by its prefix. A twin a race left open on the key (ar-5690) is dropped as a dup
 # of that row, its children moving under it; a twin being done, or one with no id, is left and said.
-# Leaves the counts in UPSERT_ADDED, UPSERT_EDITED, UPSERT_REOPENED and UPSERT_DROPPED and the failed
-# keys in UPSERT_FAILED, which upsert_report reports FAILED, so every caller ends with upsert_report;
+# Leaves the counts in UPSERT_ADDED, UPSERT_EDITED, UPSERT_REOPENED, UPSERT_DROPPED and
+# UPSERT_CAPPED and the failed keys in UPSERT_FAILED, which upsert_report reports FAILED, so every
+# caller ends with upsert_report;
 # status 1 only when the board cannot be read, 2 when the upsert lock stays held (nothing is written).
 # The read of the board and the writes after it are one section under BENCH_UPSERT_LOCK: the timed
 # runner and every dispatch pass run triage, and two of them reading before either added filed the
@@ -5146,8 +5155,8 @@ upsert_why() {
 # A key whose row closed within the board feed's window is reopened with the red as a detail line,
 # so the trip is history on that row, not a row of its own.
 board_upsert() {
-  local board closed human p text pri why have hid twin id rc added=0 edited=0 reopened=0 dropped=0 failed=() twins=() trip=()
-  UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_DROPPED=0; UPSERT_FAILED=
+  local board closed human p text pri why have hid twin id rc added=0 edited=0 reopened=0 dropped=0 capped=0 failed=() twins=() trip=()
+  UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_DROPPED=0; UPSERT_CAPPED=0; UPSERT_FAILED=
   upsert_lock_take || { say "$UPSERT_LOCK_WHY"; report_outcome FAILED "$UPSERT_LOCK_WHY"; return 2; }
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { upsert_lock_drop; report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
   closed=$(upsert_closed)
@@ -5198,12 +5207,12 @@ board_upsert() {
     fi
     if [ -z "$have" ]; then
       rc=0 why=$(upsert_why "$p" "$pri")
-      $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$text $pri" ${why:+--why "$why"} --origin fleet-bench >/dev/null || rc=$?
+      $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$text $pri" ${why:+--why "$why"} --origin fleet-bench --key "$p" >/dev/null || rc=$?
       case $rc in
         0) added=$((added + 1)) ;;
-        3) ;;
+        3) say "$p: the board took it for a twin of another open row, so it has no row"; failed+=("$p") ;;
         # The board's daily cap (intake_daily_cap, QUEUE.md "Admission"): the red waits for a later pass, and is no failure.
-        6) say "$p: the board's daily cap holds this row; the next pass tries it again" ;;
+        6) say "$p: the board's daily cap holds this row; the next pass tries it again"; capped=$((capped + 1)) ;;
         *) say "add failed for $p"; failed+=("$p") ;;
       esac
     elif [ "$have" != "${text,,}" ]; then
@@ -5215,7 +5224,7 @@ board_upsert() {
     fi
   done <<<"$1"
   upsert_lock_drop
-  UPSERT_ADDED=$added; UPSERT_EDITED=$edited; UPSERT_REOPENED=$reopened; UPSERT_DROPPED=$dropped
+  UPSERT_ADDED=$added; UPSERT_EDITED=$edited; UPSERT_REOPENED=$reopened; UPSERT_DROPPED=$dropped; UPSERT_CAPPED=$capped
   UPSERT_FAILED=$(IFS=';'; echo "${failed[*]}")
 }
 
@@ -5252,6 +5261,7 @@ upsert_report() {
   local did="$UPSERT_ADDED added, $UPSERT_EDITED refreshed"
   [ "${UPSERT_REOPENED:-0}" -eq 0 ] || did+=", $UPSERT_REOPENED reopened"
   [ "${UPSERT_DROPPED:-0}" -eq 0 ] || did+=", $UPSERT_DROPPED twins dropped"
+  [ "${UPSERT_CAPPED:-0}" -eq 0 ] || did+=", $UPSERT_CAPPED held by the board's daily cap"
   did+="${2:+, $2}"
   say "$(grep -c . <<<"$1") rows due: $did"
   if [ -n "${UPSERT_FAILED:-}" ]; then
@@ -5259,7 +5269,7 @@ upsert_report() {
     report_outcome FAILED "board write failed for $UPSERT_FAILED; $did"
     return 1
   elif [ $((UPSERT_ADDED + UPSERT_EDITED + ${UPSERT_REOPENED:-0} + ${UPSERT_DROPPED:-0})) -eq 0 ] && [ -z "${2:-}" ]; then
-    report_outcome NOOP "every row already current"
+    if [ "${UPSERT_CAPPED:-0}" -eq 0 ]; then report_outcome NOOP "every row already current"; else report_outcome NOOP "$did"; fi
   else
     report_outcome WORKED "$did"
   fi
@@ -6474,7 +6484,7 @@ cmd_triage() {
   # A held lock fails this pass's filing (upsert_report says so) but not the human sheet, twins or red fixes after it.
   if [ -n "$filed" ]; then
     board_upsert "$(cut -f1-3 <<<"$filed")" || { [ $? = 2 ] || return 1; UPSERT_FAILED="$UPSERT_LOCK_WHY"; }
-  else UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_DROPPED=0; UPSERT_FAILED=; fi
+  else UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_DROPPED=0; UPSERT_CAPPED=0; UPSERT_FAILED=; fi
   h=$(triage_human "$rows")
   triage_twins "$rows" "$(cut -f1 <<<"$filed")"
   q=$(triage_promote "$rows")
