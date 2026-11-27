@@ -748,11 +748,6 @@ def user_origin(rec):
     return "interactive"
 
 
-# Harness text that has no turnOrigin on older transcripts. None of it is a request anyone typed.
-HARNESS_PREFIXES = ("This session is being continued", "Stop hook feedback",
-                    "[Request interrupted", "Another Claude session sent", "Caveat:")
-
-
 def panel_conf_lines(name):
     """The lines of .config/agent-panel/<name> beside this checkout, trimmed, past its comments
     and blank lines."""
@@ -760,6 +755,17 @@ def panel_conf_lines(name):
                         ".config", "agent-panel", name)
     with open(path, encoding="utf-8") as f:
         return [ln.strip() for ln in f if ln.strip() and not ln.lstrip().startswith("#")]
+
+
+@functools.cache
+def harness_prefixes():
+    """The lines of .config/agent-panel/harness-prefixes.conf, the one table of text the harness
+    puts in a user turn (older transcripts give it no turnOrigin). None of it is a request anyone
+    typed."""
+    p = tuple(panel_conf_lines("harness-prefixes.conf"))
+    if not p:  # an empty tuple matches nothing, and every notice would count as typed
+        sys.exit("claude-recall: no entries in harness-prefixes.conf")
+    return p
 
 
 @functools.cache
@@ -878,7 +884,7 @@ def stats_events(path, since, kinds=(), names=frozenset(), hand=None):
             # rule, a bullet, a cowsay border) is pasted output that would match everything.
             s = text.strip().split("\n", 1)[0].strip()
             if (origin != "interactive" or not s[:1].isalnum()
-                    or s.startswith(HARNESS_PREFIXES) or fleet_typed(text)):
+                    or s.startswith(harness_prefixes()) or fleet_typed(text)):
                 continue
             yield "prompt", None, origin, ts, s
     for events in pending.values():
@@ -1249,7 +1255,7 @@ def human_prompt(rec, text):
     s = text.lstrip()
     return (user_origin(rec) == "interactive" and not rec.get("isMeta")
             and (not s.startswith("<") or CMD_RE.match(text) is not None)
-            and not s.startswith(HARNESS_PREFIXES) and not fleet_typed(text, ("resume",)))
+            and not s.startswith(harness_prefixes()) and not fleet_typed(text, ("resume",)))
 
 
 def tool_output_file(path, since, until, emit, skills=False):
