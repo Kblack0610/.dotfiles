@@ -953,6 +953,18 @@ fn has_decision(a: &Value) -> bool {
     str_of(a, "audit_of").is_empty()
 }
 
+/// Whether waiting item `i` is a row of its own: no ask stands for it, no shown session owns it,
+/// and it is no trainee run's wait, which the fleet answers (the gate, then a Claude retry).
+fn waits_alone(i: &Item, asked: &HashSet<String>, shown: &HashSet<String>) -> bool {
+    i.state == State::Waiting
+        && !i.is_trainee()
+        && !asked.contains(&i.slug)
+        && !i
+            .session
+            .as_deref()
+            .is_some_and(|s| shown.contains(tmux_name(s)))
+}
+
 /// The waiting item ask `a` holds once its session is gone: the one tagged `ask:<id>`, or the one
 /// whose last session is the ask's `claude_session`, unless an ask before it took that item (`asked`).
 fn held_item<'a>(items: &[&'a Item], a: &Value, asked: &HashSet<String>) -> Option<&'a Item> {
@@ -1148,18 +1160,7 @@ pub fn needs(
             )),
         });
     }
-    // A trainee run's wait is the fleet's to answer (the gate, then a Claude retry): no human waits.
-    for i in items
-        .iter()
-        .filter(|i| i.state == State::Waiting && !i.is_trainee())
-    {
-        if asked.contains(&i.slug)
-            || i.session
-                .as_deref()
-                .is_some_and(|s| shown.contains(tmux_name(s)))
-        {
-            continue;
-        }
+    for i in items.iter().filter(|i| waits_alone(i, &asked, &shown)) {
         work(&mut worked, Some(i));
         let waited = i.waiting.as_deref();
         let target = i.session.as_deref().and_then(|s| target_of(tmux_name(s)));
