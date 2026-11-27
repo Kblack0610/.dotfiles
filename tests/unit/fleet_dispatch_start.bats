@@ -349,6 +349,26 @@ load 'fleet_dispatch/common'
   [ -z "$(ls "$AGENT_QUEUE_DIR"/running/ 2>/dev/null)" ] || fail "an item is running"
 }
 
+@test "a row left started by a failed item restarts only by start --brief: the board's Start still refuses it, and a queued item of the row is refused by name" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-1 '- [/] tidy the loader <!-- id:gm-1 -->'
+  printf '/one-shot tidy the loader\n' > "$SANDBOX/brief.md"
+  stub wt 'printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; printf "%s\n" "$WT_NEW_CMD" > "$NOTES_FIXTURE/cmd"; echo "game-agent-1"'
+  agent-queue add --project game --slug gm-1 --from board:game:gm-1 'tidy the loader' >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --agent --row gm-1 --brief "$SANDBOX/brief.md"
+  assert_failure
+  assert_output --partial 'row gm-1 is started and its queue item gm-1 is queued, so no fresh item is filed'
+  agent-queue move gm-1 done --status failed >/dev/null 2>&1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" promote --project game --profile bnb --agent --raw '- [/] tidy the loader <!-- id:gm-1 -->'
+  assert_failure
+  assert_output --partial 'row no longer open: gm-1'
+  [ -z "$(qitem queued gm-1)" ] || fail "the board's Start filed an item for a started row"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --agent --row gm-1 --brief "$SANDBOX/brief.md"
+  assert_success
+  grep -qF 'AGENT_QUEUE_ITEM=gm-1' "$NOTES_FIXTURE/cmd" || fail "the session does not know its item"
+  assert_equal "$(agent-queue show gm-1 --json | jq -r .state)" running
+}
+
 # 2026-11-19: a start of an open agent row without --agent was told "row no longer open".
 @test "start --brief without --agent finds an agent row on the agent board; a row on neither board is named as missing" {
   project game beta "$SANDBOX/repos/game"
