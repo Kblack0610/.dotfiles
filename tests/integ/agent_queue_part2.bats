@@ -1106,6 +1106,16 @@ EOF
   assert_output --partial "skipped open sub-phase(s) 1b"
   assert_line --regexp '^would queue sub-p2	phases 2	after -$'
   refute_output --partial "sub-p1b"
+  # A `P3a` / `P3b` label is a sub-phase too (ar-4970): by position the open P3b was 4, the same as
+  # the P4 after it, and the add refused the whole plan with "two phases carry the same number".
+  # NEGATIVE CONTROL: before the fix this list read [1,2,3,4,4,5] and the add below failed.
+  printf '## Phases\n\n- [x] P1 One (#1)\n- [ ] P2 Two\n- [x] P3a Three A (#2)\n- [ ] P3b Three B\n- [ ] P4 Four\n' > "$SANDBOX/letter.md"
+  [ "$(plan_phase_list "$SANDBOX/letter.md" | jq -c 'map(.n)')" = '[1,2,"3a","3b",4]' ]
+  run "$AQ" add --plan "$SANDBOX/letter.md" --project game --slug letter --dry-run
+  assert_success
+  assert_output --partial "skipped open sub-phase(s) 3b"
+  assert_line --regexp '^would queue letter-p2	phases 2	after -$'
+  assert_line --regexp '^would queue letter-p4	phases 4	after letter-p2$'
   # A stub's phase N is the line numbered N, not the Nth line.
   printf 'Phase 2 of %s/my-plan.md\n' "$SANDBOX" > "$SANDBOX/stub.md"
   [ "$(plan_session_phases "$SANDBOX/stub.md" | jq -c 'map(.name)')" = '["2. Second thing: details"]' ]
