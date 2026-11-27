@@ -2378,6 +2378,16 @@ client_set_guard() {
   done
 }
 
+# story_refused <story> <slug> <project>: an add whose own story row was refused queues nothing and exits:
+# 6 for the daily cap or a gate (file_story's `gated`), AQ_EX_SIMILAR for notes' similar-rows shortlist (`similar`).
+story_refused() {
+  case "$1" in
+    gated) echo "agent-queue: $2 is not queued: its board row was refused by the daily cap or the gate (the reason is above)" >&2; exit 6 ;;
+    similar) echo "agent-queue: $2 is not queued: notes lists similar open rows on $3 (above). Join the one that is this work with agent-queue add --row <id>, or rerun this add with --checked <the ids listed> when none is" >&2
+      exit "$AQ_EX_SIMILAR" ;;
+  esac
+}
+
 # cmd_add: an add over the admission cap that already has its row (--row, or a board pull from
 # promote) leaves that row where it is. Only one with no row gets an overflow row: a board pull's
 # overflow row was a twin that dispatch skipped to the human sheet beside the first (2026-11-25).
@@ -2534,16 +2544,14 @@ cmd_add() {
   # every queue reader (ar-5606). Back under the lock, the slug, a cause: owner and the cap are checked
   # again, since another add may have come in meanwhile; a row this add filed stays for dispatch to promote.
   unlock
-  local story='' sboard='' sprof='' srow='' linked_row=''
-  # No story row for work with its own record: a canary (fleet-bench canary), a trainee review (the trainee's row), an ask's
-  # resume (the ask; ask-resume gives it the asking item's row after the add).
+  local story='' sboard='' sprof='' srow='' linked_row='' linked
+  # No story row for work with its own record: a canary, a trainee review (the trainee's row), an ask's resume (ask-resume sets its row).
   case "$from" in
     board:* | canary | trainee | ask:*) ;;
     *) if [ -n "$row" ]; then
          # A row moved to another sheet keeps its id, so its code can name the sheet it left; the
          # sheet the caller named is the other one it can be open on (apo-108 on dodginballs,
          # 2026-11-10). Neither: the code sheet's refusal, as before.
-         local linked
          if linked="$(link_row "$row" "$project" 2>&1)"; then
            story="$linked"
          elif [ "$project" != "$resolved" ] && story="$(link_row "$row" "$resolved" 2>/dev/null)"; then
@@ -2561,11 +2569,7 @@ cmd_add() {
          [ -n "$story" ] || { story="$(file_story "$project" "${title:-$(head -1 <<<"$text")}" "$priority" "$epic" "$want" "$text" "" "" "$tags")"; priority_given=''; }
        fi ;;
   esac
-  case "$story" in
-    gated) echo "agent-queue: $slug is not queued: its board row was refused by the daily cap or the gate (the reason is above)" >&2; exit 6 ;;
-    similar) echo "agent-queue: $slug is not queued: notes lists similar open rows on $project (above). Join the one that is this work with agent-queue add --row <id>, or rerun this add with --checked <the ids listed> when none is" >&2
-      exit "$AQ_EX_SIMILAR" ;;
-    ?*) IFS=$'\t' read -r sboard sprof srow <<<"$story" ;; esac
+  story_refused "$story" "$slug" "$project"; [ -z "$story" ] || IFS=$'\t' read -r sboard sprof srow <<<"$story"
   [ -z "$linked_row" ] || brief_to_row "$sboard" "$sprof" "$srow" "$text"
   # A --running add that named no priority records its row's (ar-4374: a default high made 167 of 641
   # high done items, 11-19..21, session records of normal rows).
