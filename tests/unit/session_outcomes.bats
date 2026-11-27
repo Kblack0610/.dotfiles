@@ -187,6 +187,34 @@ EOF2
   assert_equal "$(field a '[.prs[].number] | join(",")')" 10
 }
 
+@test "pr-link records: a PR the session only viewed or commented on is not claimed, one gh printed or one never named still is" {
+  cat > "$TR/v.jsonl" <<'EOF2'
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"v1","name":"Bash","input":{"command":"gh pr view 30 -R o/r --json state,title | head -c 500"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"v1","content":"{\"state\":\"OPEN\"}"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"v2","name":"Bash","input":{"command":"gh pr comment https://github.com/o/r/pull/31 --body 'quarantined'"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"v2","content":"https://github.com/o/r/pull/31#issuecomment-1"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"v3","name":"Bash","input":{"command":"gh pr create --title 'feat: v' --body x && gh pr view 32 -R o/r"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"v3","content":"https://github.com/o/r/pull/32"}]}}
+{"type":"pr-link","sessionId":"sess-v","prNumber":30,"prUrl":"https://github.com/o/r/pull/30","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-v","prNumber":31,"prUrl":"https://github.com/o/r/pull/31","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-v","prNumber":32,"prUrl":"https://github.com/o/r/pull/32","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-v","prNumber":33,"prUrl":"https://github.com/o/r/pull/33","prRepository":"o/r"}
+EOF2
+  jq -cn --arg t "$TR/v.jsonl" --argjson u "$STOP" \
+    '{session_id: "sess-v", project: "proj", transcript: $t, title: "title v", updated: $u, edits: 1, cost_usd: 1, tokens: {total: 100}}' \
+    >> "$SO_SESSIONS/proj/sessions.jsonl"
+  cat > "$GH_FIXTURE/prs.o-r" <<'EOF2'
+[{"number":10,"state":"MERGED","title":"feat: a","mergedAt":"2026-10-19T01:00:00Z"},
+ {"number":30,"state":"OPEN","title":"feat: theirs 30"},
+ {"number":31,"state":"OPEN","title":"feat: theirs 31"},
+ {"number":32,"state":"MERGED","title":"feat: v","mergedAt":"2026-10-19T03:00:00Z"},
+ {"number":33,"state":"MERGED","title":"feat: subagent","mergedAt":"2026-10-19T04:00:00Z"}]
+EOF2
+  "$SUBJECT" run
+  # 30 and 31 were only looked at; 32 was printed by gh pr create; 33 is a subagent's, never named
+  assert_equal "$(field v '[.prs[].number] | join(",")')" "32,33"
+}
+
 @test "a claim in a repo the PR store does not list (a fixture's pr-link, a search's output) is dropped and named, the run still WORKED" {
   cat > "$TR/f.jsonl" <<'EOF2'
 {"type":"assistant","message":{"content":[{"type":"tool_use","id":"g1","name":"Bash","input":{"command":"rg -n 'gh pr create|pull/' tests/unit/x.bats"}}]}}

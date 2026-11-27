@@ -140,7 +140,11 @@ so_mapped_repos() {
 # record is how a PR made in a subagent, or whose output was persisted to a file, reaches
 # this transcript, since neither prints its URL in a tool result here. Claude Code also writes
 # a pr-link for a PR URL it only saw printed (a test's fixture o/r#99, session 5642f5f8), so `run`
-# drops a claim in a repo gh cannot resolve. (`run` also claims a PR whose body names the
+# drops a claim in a repo gh cannot resolve, and for a PR the session only looked at: it rewrites
+# the record every turn after a `gh pr view` or `gh pr comment` of another session'"'"'s PR
+# (ar-2957 on #3239, whose own merged PR had no record). So a pr-link whose number a view-type
+# `gh pr` command named, and no pr_cmd result printed, is not claimed; a PR of the session'"'"'s own
+# that such a command also named is still claimed by its body'"'"'s session link (so_session_links). (`run` also claims a PR whose body names the
 # session's own claude.ai/code link: so_session_links.)
 # lessons_written counts corrections (the rule is "after ANY correction, update lessons");
 # most land as `cat >>` through Bash, not Edit, so both are counted. Malformed lines are skipped, not fatal:
@@ -166,8 +170,12 @@ so_transcript_metrics() {
     def text_of: if type == "string" then .
                  elif type == "array" then ([.[]? | .text? // empty] | join("\n"))
                  else "" end;
+    # The PR numbers a `gh pr view|comment|...` command names (a number token or a /pull/N URL),
+    # up to the next pipe or separator; `$n` or any other variable is not read.
+    def looked_at: [ match("\\bgh\\s+pr\\s+(?:view|comment|checks|diff|review|edit|ready|close|reopen)\\b([^\\n;&|]*)"; "g").captures[0].string
+                     | (scan("(?<![\\w#./$-])([0-9]+)(?![\\w-])"), scan("/pull/([0-9]+)")) | .[0] | tonumber ];
     reduce (inputs | fromjson? | select(type == "object")) as $r (
-      { pr_ids: {}, lesson_ids: {}, done_ids: {}, prs: [], entrypoint: null,
+      { pr_ids: {}, lesson_ids: {}, done_ids: {}, prs: [], linked: [], looked: {}, entrypoint: null,
         interrupts: 0, lessons_written: 0, proof: 0, unverified: 0,
         api_error: 0, denied: 0, tool_errors: 0,
         tool_calls: 0, test_runs: 0, ci_polls: 0, wrap: {}, messages: {}, since_edit: {},
@@ -206,6 +214,7 @@ so_transcript_metrics() {
                  else . end)
               | (if ($c | test("\\bgit\\s+commit\\b")) then .since_edit = {} else . end)
               | (if ($c | pr_cmd) then .pr_ids[$u.id] = true else . end)
+              | reduce ($c | looked_at)[] as $n (.; .looked[$n | tostring] = true)
               | (if ($c | test("(>>|tee\\s+-a)\\s*\\S*\\.agent/lessons/")) then .lesson_ids[$u.id] = true else . end)
               | reduce ($sigs[] | select((($r.timestamp // "") | .[0:10]) > .since)
                         | select(.sig as $re | try ($c | test($re)) catch false)) as $s (.;
@@ -254,11 +263,12 @@ so_transcript_metrics() {
             else . end)
         end
       elif $r.type == "pr-link" and ($r.prNumber | type) == "number" and (($r.prRepository // "") | test("^[^/\\s]+/[^/\\s]+$")) then
-        .prs += [{repo: $r.prRepository, number: $r.prNumber}]
+        .linked += [{repo: $r.prRepository, number: $r.prNumber}]
       elif $r.type == "system" and $r.subtype == "compact_boundary" then
         .compactions[if $r.compactMetadata.trigger == "manual" then "manual" else "auto" end] += 1
       else . end)
-    | { prs: (.prs | unique),
+    | .looked as $looked
+    | { prs: ((.prs + [.linked[] | select($looked[.number | tostring] | not)]) | unique),
         entrypoint,
         corrections: { interrupts, lessons_written },
         board_done: { proof, unverified },
