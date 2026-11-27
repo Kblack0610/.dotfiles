@@ -342,14 +342,17 @@ pub struct Step {
     pub sha: Option<String>,
 }
 
+/// The prefix of an opencode session id, which a trainee run appends to an item's `sessions`.
+pub const TRAINEE_SESSION_PREFIX: &str = "ses_";
+
 impl Item {
     pub fn tag_list(&self) -> impl Iterator<Item = &str> {
         self.tags.split_whitespace()
     }
 
-    /// The Claude session ids it ran in, oldest first (its `sessions:` header, space- or
-    /// comma-separated): an ask's `claude_session` names one, which ties the ask to this item
-    /// after that session ends.
+    /// The session ids it ran in, oldest first (its `sessions:` header, space- or comma-separated):
+    /// a Claude asker's `claude_session` ties the ask to this item after that session ends, and a
+    /// trainee run adds its opencode id (`TRAINEE_SESSION_PREFIX`), which is no asker.
     pub fn session_ids(&self) -> impl Iterator<Item = &str> {
         self.extra_str("sessions")
             .unwrap_or("")
@@ -357,9 +360,28 @@ impl Item {
             .filter(|s| !s.is_empty())
     }
 
-    /// The Claude session it ran in last: the one whose end left it waiting.
+    /// The Claude session it ran in last: the one whose end left it waiting. A trainee run's
+    /// session is skipped, so an ask filed by the Claude session before it still finds the item.
     pub fn last_session(&self) -> Option<&str> {
-        self.session_ids().last()
+        self.session_ids()
+            .filter(|s| !s.starts_with(TRAINEE_SESSION_PREFIX))
+            .last()
+    }
+
+    /// Whether it was started as a trainee run (its `trainee:` header, harness:model). The header
+    /// stays after a rejection, when Claude takes the item over.
+    pub fn is_trainee(&self) -> bool {
+        self.extra_str("trainee").is_some()
+    }
+
+    /// Whether a trainee run ended it: the header, and the last session it ran in is the trainee's.
+    /// The fleet answers that wait (the gate, then a Claude retry); a Claude retry's wait is its own.
+    pub fn ended_as_trainee(&self) -> bool {
+        self.is_trainee()
+            && self
+                .session_ids()
+                .last()
+                .is_some_and(|s| s.starts_with(TRAINEE_SESSION_PREFIX))
     }
 
     /// Whether it is held on ask `id` (an `ask:<id>` or `ask:<id>=<options>` tag, agent-queue's hold).
