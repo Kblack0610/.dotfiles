@@ -227,6 +227,16 @@ arrive() {
   assert_output $'hub\tnotes\t@1\nlab\twork\t@4'
 }
 
+@test "a mark for a window the client has already left is dropped" {
+  arrive hub notes @1 /dev/pts/3
+  arrive hub notes @2 /dev/pts/3
+  # The jump to @3 marked late: the client was back on @2 by then.
+  "$TMX" mark /tmp/tmux-1000/hub notes @3 /dev/pts/3
+  "$TMX" mark /tmp/tmux-1000/hub notes @3
+  run places /dev/pts/3
+  assert_output $'hub\tnotes\t@2\nhub\tnotes\t@1'
+}
+
 # A hop fires arrival hooks on two servers at once, so marks for one tty overlap. Each server
 # here shows the client on its own window, so every mark is live; serialized, the file is two
 # whole lines and the place before is one of the marks, never the seed they all read first.

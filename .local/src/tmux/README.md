@@ -247,7 +247,7 @@ Two things verified, both load-bearing:
   before per client tty in `~/.local/state/tmx/places/`. Marks run one at a time under a
   `flock` on that directory's `.lock` (the Brewfile installs `flock` on the Mac), and a mark
   records only a client that is still on that window, so a hook that runs late on the world
-  you just left cannot make it "now" again.
+  you just left cannot make it "now" again; a window left before its hook ran is skipped.
 
 **tmux cannot move a live session between servers** - there is no `move-session -L`.
 Putting an existing session on another server means recreating it there.
