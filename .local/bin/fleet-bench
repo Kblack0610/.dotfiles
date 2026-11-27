@@ -5422,10 +5422,15 @@ triage_rows() {
                 on && /^[[:space:]]/ { sub(/^[[:space:]]+/, ""); print; next } on { exit }' "$TRIAGE_WATCHES/$n.yaml" 2>/dev/null \
       | tr '\n' ' ' | sed -E 's/\. .*/./; s/[[:space:]]+$//' | cut -c1-100)
     # A probe that prints one OK or RED line a stage (unity-core-playground's release-ready.py)
-    # names its first RED line; otherwise the last line of the redacted evidence, usually the
-    # error. Normalized, so a new pid or timestamp in it does not edit the row every pass.
+    # names its first RED line. One that prints a status row a vendor (vendor-check:
+    # `<name> OK|LOW|EXPIRED|NO_CREDS probe=<p> [detail=...]`) names its first EXPIRED or NO_CREDS
+    # row without a `gap:` owner, detail left off (log_norm would turn it into 'Q'), so a LOW row
+    # after it is not blamed. Otherwise the last line of the redacted evidence, usually the error.
+    # Normalized, so a new pid or timestamp in it does not edit the row every pass.
     o="$TRIAGE_WATCH_STATE/$n.out"
-    why=$({ grep -m 1 -E '^RED[[:space:]]' "$o" || grep -v '^[[:space:]]*$' "$o" | tail -n 1; } 2>/dev/null \
+    why=$({ grep -m 1 -E '^RED[[:space:]]' "$o" \
+        || awk '/^[^[:space:]]+ (EXPIRED|NO_CREDS) probe=/ && !/ gap: / { sub(/ detail=.*/, ""); print; f = 1; exit } END { exit !f }' "$o" \
+        || grep -v '^[[:space:]]*$' "$o" | tail -n 1; } 2>/dev/null \
       | log_norm | tr -d '#' | cut -c1-100)
     printf 'check(watch): %s tripped since\tcheck(watch): %s tripped since %s, expected: %s%s\t%s\n' "$n" "$n" \
       "$(date -d "@$since" +%Y-%m-%d)" "${what:-no manifest}" \
