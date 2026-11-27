@@ -2489,6 +2489,27 @@ item_plan() {
   printf '%s\n' "${3:--}"
 }
 
+# canonical_plan <plan file|-> -> the plan phases are read from: the one home of the plan, ~/.agent/plans, never a
+# plan-mode copy. A file under ~/.claude*/plans that is a real file (an account whose plans dir claude-acct has
+# not linked to _live, a peer store-sync has not reached) is a copy that goes stale: 2026-11-18 the tilecast
+# coordinator read 0/5 overdue from one while 2/5 had landed in the canonical plan (ar-3465). A link into
+# ~/.agent/plans already is the canonical file. The copy's canonical is _live/<same name>, else the one live
+# project dir (not _archive, _unscoped) that holds a file of that name, links followed; with neither, or when the
+# candidate is older than the copy (an earlier run's plan of a reused slug, as item_plan rejects), the copy is all
+# there is.
+canonical_plan() {
+  local f="$1" b="${1##*/}" home="$HOME/.agent/plans" c r
+  [[ "$f" == "$HOME"/.claude*/plans/*.md && -f "$f" ]] || { printf '%s\n' "$f"; return 0; }
+  r="$(realpath -q -- "$f" 2>/dev/null)" || r="$f"
+  [[ "$r" == "$home"/* ]] && { printf '%s\n' "$f"; return 0; }
+  if [ -f "$home/_live/$b" ]; then c="$home/_live/$b"
+  else
+    c="$(find -L "$home" -mindepth 2 -maxdepth 2 -name "$b" -type f -not -path "$home/_*" 2>/dev/null)"
+    [ -n "$c" ] && [ "$(wc -l <<<"$c")" -eq 1 ] || c=
+  fi
+  if [ -n "$c" ] && [ "$(stat -L -c %Y "$c")" -ge "$(stat -c %Y "$f")" ]; then printf '%s\n' "$c"; else printf '%s\n' "$f"; fi
+}
+
 # own_slugs <item_of's answer> -> the comma list of slugs it joined to this session (own:a,b running here, or
 # the one waiting here), else nothing. They are the session's own work, not a phase handed off, so they hold no
 # plan phase: the phase is this session's next one until it lands (ar-475: dotfiles-agent-4 read DONE while P4
@@ -2850,7 +2871,7 @@ collect() {
       IFS=$'\t' read -r xr xpr xci xoid < <(sibling_pr "$cwd" "$prs")
       if [ -n "${xpr:-}" ]; then pr="$xpr" state=OPEN ci="$xci" oid="$xoid" conflicts=-; else xr=-; fi
     fi
-    [ "$host" != - ] || planf="$(item_plan "$islugs" "$started" "$planf")"; IFS=$'\t' read -r pdone ptotal pnext < <(plan_phases "$planf")   # the item's own plan outranks the transcript's
+    [ "$host" != - ] || planf="$(canonical_plan "$(item_plan "$islugs" "$started" "$planf")")"; IFS=$'\t' read -r pdone ptotal pnext < <(plan_phases "$planf")   # the item's own plan outranks the transcript's
     phases="$(phases_word "$planf" "$inplan" "$pdone" "$ptotal")"
     # A copy of a queued plan under another file name is that plan (plan_copy_of): the items name it and
     # tick it, and the session may tick its own, so a phase is done when either plan says so.
