@@ -103,7 +103,7 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
   | .glance as $g
   | ("\($g.busy) running, \($g.queued) queued"
      + (if $g.queued > 0 and $g.oldest != null then " (oldest \($g.oldest | dur))" else "" end)
-     + (if $g.units == null then "" else ", taken \($g.units.taken | u1)/\($g.units.total | u0) units (\($g.units.taken / $g.units.total | pct))" end)
+     + (if $g.units == null then "" else ", \($g.units.brief)" end)
      + (if $g.done_1h == null then "" else ", \($g.done_1h) done 1h" end)
      + (if $g.done_5h == null then "" else ", \($g.done_5h) done 5h" end)
      + (if $g.done > 0 then ", \($g.done) done 24h"

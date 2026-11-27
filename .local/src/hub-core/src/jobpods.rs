@@ -1,4 +1,4 @@
-//! The CI job pods and what they book on each CI node, read from kube-state-metrics: the ARC
+//! The CI job pods and what they take on each CI node, read from kube-state-metrics: the ARC
 //! runner pods and the KEDA `forgejo-runner` jobs, all in `arc-runners` (home-config
 //! `apps/actions-runner-controller`), plus the requests of every other pod placed on a CI node.
 //! The CI board's machine rows, glance and units (`Units`: 1 unit = 1 CI core) read this, not the
@@ -41,7 +41,7 @@ pub fn requests_query() -> String {
 /// allocatable, so a unit they hold is no free unit.
 pub fn other_query() -> String {
     format!(
-        r#"sum by (node, resource) (kube_pod_container_resource_requests{{namespace!="{NAMESPACE}",resource=~"cpu|memory"}} * on (namespace, pod) group_left () max by (namespace, pod) (kube_pod_status_phase{{phase=~"Pending|Running"}} == 1)) and on (node) kube_node_spec_taint{{key=~"{CI_TAINT}"}}"#
+        r#"sum by (node, resource) ((kube_pod_container_resource_requests{{namespace!="{NAMESPACE}",resource=~"cpu|memory"}} and on (node) kube_node_spec_taint{{key=~"{CI_TAINT}"}}) * on (namespace, pod) group_left () max by (namespace, pod) (kube_pod_status_phase{{phase=~"Pending|Running"}} == 1))"#
     )
 }
 
@@ -103,14 +103,19 @@ pub struct Booked {
     pub cpu_alloc: f64,
     pub mem: f64,
     pub mem_alloc: f64,
-    /// The part of `cpu` and `mem` the pods of other namespaces request (`other_query`).
+    /// The part of `cpu` the pods of other namespaces request (`other_query`).
     pub other: f64,
-    pub other_mem: f64,
 }
 
 impl Booked {
-    /// `5.1/32 4.0G/92G`: cores booked of allocatable, then memory. A node with no allocatable
-    /// read (its CI taint gone while pods still run there) reads its booking bare: `1.7 1.2G`.
+    /// A CI node: one with an allocatable read. A node whose CI taint is gone while pods still
+    /// run there has none, and is no unit of the pool.
+    pub fn on_ci(&self) -> bool {
+        self.cpu_alloc > 0.0
+    }
+
+    /// `5.1/32 4.0G/92G`: cores taken of allocatable, then memory. A node with no allocatable
+    /// read (its CI taint gone while pods still run there) reads its requests bare: `1.7 1.2G`.
     /// Halves round up, as agent-web and the waybar chip round them.
     pub fn cell(&self) -> String {
         let b = crate::host_now::bytes;
@@ -169,15 +174,6 @@ impl Booked {
             false => b(self.mem),
         }
     }
-
-    pub fn add(&mut self, o: &Booked) {
-        self.cpu += o.cpu;
-        self.cpu_alloc += o.cpu_alloc;
-        self.mem += o.mem;
-        self.mem_alloc += o.mem_alloc;
-        self.other += o.other;
-        self.other_mem += o.other_mem;
-    }
 }
 
 /// `67%`, whole percent.
@@ -208,6 +204,8 @@ pub struct Taken {
 pub struct Units {
     pub total: f64,
     pub taken: f64,
+    /// The total less taken as printed, so the two words add up to the total: 46.05 taken and
+    /// 61.95 free would print 46.1 and 62.0.
     pub free: f64,
     /// Cores busy over every CI node (`Machine::cpu` times its cores); None unless each reads.
     pub real: Option<f64>,
@@ -215,6 +213,8 @@ pub struct Units {
     pub by: Vec<Taken>,
     /// `CI POOL  108 units (1 unit = 1 CI core)`.
     pub head: String,
+    /// `taken 72.4/108 units (67%)`: the clause the CI head lines print.
+    pub brief: String,
     /// `taken 72.4 of 108 (67%), free 35.6, real use 25.1 (23%)`.
     pub line: String,
     /// The TAKEN BY header (`TAKEN_BY`) and its rows as cells, a `free` row last.
@@ -240,9 +240,12 @@ impl Units {
             false => "-".into(),
         };
         self.head = format!("CI POOL  {:.0} units (1 unit = 1 CI core)", self.total);
-        // Free as the total less taken as printed, so the two words add up to the total: 46.05
-        // taken and 61.95 free would print 46.1 and 62.0.
-        let free = (self.total - (self.taken * 10.0).round() / 10.0).max(0.0);
+        self.brief = format!(
+            "taken {}/{:.0} units ({})",
+            cores(self.taken),
+            self.total,
+            share(self.taken)
+        );
         let real = self
             .real
             .map_or(format!("real use {}", crate::reading::NO_DATA), |r| {
@@ -253,7 +256,7 @@ impl Units {
             cores(self.taken),
             self.total,
             share(self.taken),
-            cores(free)
+            cores(self.free)
         );
         self.columns = TAKEN_BY.to_vec();
         self.rows = self
@@ -272,15 +275,15 @@ impl Units {
                 "free".into(),
                 String::new(),
                 String::new(),
-                cores(free),
-                share(free),
+                cores(self.free),
+                share(self.free),
             ]])
             .collect();
     }
 }
 
-/// The pool's units from the CI nodes' bookings (`booked`, those with an allocatable read: a
-/// node whose CI taint is gone is no unit of the pool) and the pods placed there, by kind.
+/// The pool's units from the CI nodes' requests (`booked`, those `Booked::on_ci`) and the pods
+/// placed there, by kind.
 /// `real` is the busy cores over those nodes, passed in by the caller that holds the machines.
 /// None with no CI node read.
 pub fn units(
@@ -288,7 +291,7 @@ pub fn units(
     pods: &[JobPod],
     real: Option<f64>,
 ) -> Option<Units> {
-    let ci: BTreeMap<&String, &Booked> = booked.iter().filter(|(_, b)| b.cpu_alloc > 0.0).collect();
+    let ci: BTreeMap<&String, &Booked> = booked.iter().filter(|(_, b)| b.on_ci()).collect();
     if ci.is_empty() {
         return None;
     }
@@ -306,7 +309,7 @@ pub fn units(
         u.total += b.cpu_alloc;
         u.taken += b.cpu;
     }
-    u.free = (u.total - u.taken).max(0.0);
+    u.free = (u.total - (u.taken * 10.0).round() / 10.0).max(0.0);
     u.by = by
         .into_iter()
         .map(|(kind, (n, cpus))| Taken {
@@ -448,7 +451,7 @@ pub fn booked(infra: &Infra, pods: &[JobPod]) -> BTreeMap<String, Booked> {
         let v = s.value.unwrap_or(0.0);
         match s.label("resource") {
             "cpu" => (e.cpu, e.other) = (e.cpu + v, e.other + v),
-            "memory" => (e.mem, e.other_mem) = (e.mem + v, e.other_mem + v),
+            "memory" => e.mem += v,
             _ => {}
         }
     }
@@ -792,13 +795,14 @@ pub(crate) mod tests {
         let b = booked(&i, &pods);
         // The other pods take ms-a2's room like any pod: 4.38 jobs + 7.36 hold + 3 other.
         assert_eq!(b["ms-a2"].cell(), "14.7/32 27G/92G");
-        assert_eq!((b["ms-a2"].other, b["ms-a2"].other_mem), (3.0, 4e9));
+        assert_eq!(b["ms-a2"].other, 3.0);
         assert_eq!(b["ms-a2"].taken_cell(), "14.7 46%");
         assert_eq!(b["ms-a2"].free_cell(), "17.3 cpu");
         assert_eq!(b["tuf-b550"].mem_cell(), "22G/63G");
         let u = units(&b, &pods, Some(16.0)).unwrap();
         assert_eq!((u.total, format!("{:.2}", u.taken)), (64.0, "23.10".into()));
         assert_eq!(u.head, "CI POOL  64 units (1 unit = 1 CI core)");
+        assert_eq!(u.brief, "taken 23.1/64 units (36%)");
         assert_eq!(
             u.line,
             "taken 23.1 of 64 (36%), free 40.9, real use 16.0 (25%)"
@@ -819,9 +823,9 @@ pub(crate) mod tests {
                 "free|||40.9|64%",
             ]
         );
-        // Every unit is a row: the rows and free add up to the total.
+        // Every unit is a row: the rows and free add up to the total, to the tenth printed.
         let sum: f64 = u.by.iter().map(|t| t.units).sum::<f64>() + u.free;
-        assert!((sum - u.total).abs() < 1e-9, "{sum}");
+        assert!((sum - u.total).abs() < 0.05, "{sum}");
         // No real reading on every node is no data, never 0.
         let blind = units(&b, &pods, None).unwrap();
         assert!(blind.line.ends_with("real use no data"), "{}", blind.line);

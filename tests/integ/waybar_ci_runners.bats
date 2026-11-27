@@ -33,7 +33,7 @@ glance() {
   jq -n --argjson patch "$1" '{glance: ({
     level: "warn", alert: "ok", up: 3, expected: 3, parts: [{name: "pools", level: "warn"}, {name: "watches", level: "ok"}],
     feed: null, busy: 2, queued: 2, oldest: 900, done: 4, pass: 0.75,
-    units: {total: 32, taken: 4.38, free: 27.62, real: 8, head: "CI POOL  32 units (1 unit = 1 CI core)", line: "taken 4.4 of 32 (14%), free 27.6, real use 8.0 (25%)", columns: ["TAKEN BY", "PODS", "EACH", "UNITS", "SHARE"], rows: [["arc-org-light", "2", "1.69", "3.4", "11%"], ["forgejo-runner", "1", "1.00", "1.0", "3%"], ["free", "", "", "27.6", "86%"]]},
+    units: {total: 32, taken: 4.38, free: 27.62, real: 8, brief: "taken 4.4/32 units (14%)", head: "CI POOL  32 units (1 unit = 1 CI core)", line: "taken 4.4 of 32 (14%), free 27.6, real use 8.0 (25%)", columns: ["TAKEN BY", "PODS", "EACH", "UNITS", "SHARE"], rows: [["arc-org-light", "2", "1.69", "3.4", "11%"], ["forgejo-runner", "1", "1.00", "1.0", "3%"], ["free", "", "", "27.6", "86%"]]},
     pending: [],
     kinds: [{kind: "unity", running: 2, waiting: 2, oldest: 900, done: 2, usual: 1260, pass: 0.5, weight: "1*"},
             {kind: "github-hosted", waiting: null, oldest: null, done: 2, pass: 1}],
@@ -113,7 +113,7 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
 }
 
 @test "the bar never shows the units taken; the hover head does" {
-  glance '{"level": "ok", "busy": 6, "queued": 9, "units": {"total": 64, "taken": 6.4}}'
+  glance '{"level": "ok", "busy": 6, "queued": 9, "units": {"total": 64, "taken": 6.4, "brief": "taken 6.4/64 units (10%)"}}'
   run "$MODULE"
   assert_equal "$(bare)" "CI r:6 q:9"
   assert_equal "$(plain | sed -n 2p)" "6 running, 9 queued (oldest 15m), taken 6.4/64 units (10%), 4 done 24h, 75% passed"

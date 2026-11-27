@@ -6,6 +6,7 @@
 
 use hub_core::ci::{LocalFail, Queued, Slot};
 use hub_core::infra::Infra;
+use hub_core::jobpods::Booked;
 use hub_core::links::Link;
 use hub_core::machines::{Machine, Pool};
 use hub_core::table::Row;
@@ -278,7 +279,7 @@ fn ci_machine_rows(d: &Draw, rows: &[Machine]) -> Vec<Line<'static>> {
                 hub_core::reading::NO_DATA => p.dim(),
                 _ => p.warn(),
             };
-            let b = m.booked.filter(|b| b.cpu_alloc > 0.0);
+            let b = m.booked.filter(Booked::on_ci);
             let full = b.is_some_and(|b| b.share() >= 1.0);
             let or_dash =
                 |f: fn(&hub_core::jobpods::Booked) -> String| b.as_ref().map_or("-".into(), f);

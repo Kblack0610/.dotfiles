@@ -423,7 +423,7 @@ test("a pool has one colour in the 7-day chart, set by its history", () => {
 
 // hub_core::ci::Glance as /api/infra sends it under ci.glance.
 const glance = { busy: 5, queued: 23, oldest: 1260, done: 759, pass: 0.91, off: ["aws-spot-1", "aws-spot-2"],
-  units: { total: 64, taken: 4.38, free: 59.62, real: 9.6, head: "CI POOL  64 units (1 unit = 1 CI core)",
+  units: { total: 64, taken: 4.38, free: 59.62, real: 9.6, brief: "taken 4.4/64 units (7%)", head: "CI POOL  64 units (1 unit = 1 CI core)",
     line: "taken 4.4 of 64 (7%), free 59.6, real use 9.6 (15%)", columns: ["TAKEN BY", "PODS", "EACH", "UNITS", "SHARE"],
     rows: [["arc-org-light", "2", "1.69", "3.4", "5%"], ["other", "-", "-", "1.0", "2%"], ["free", "", "", "59.6", "93%"]] }, pending: [{ kind: "arc-org-light", n: 3, cpu: 1.69, mem: 1.3e9 }], alert: "ok", up: 12, expected: 12 };
 

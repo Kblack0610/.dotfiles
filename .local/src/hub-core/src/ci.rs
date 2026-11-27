@@ -383,12 +383,7 @@ impl Glance {
             s += &format!(" (oldest {})", dur(o as i64));
         }
         if let Some(u) = &self.units {
-            s += &format!(
-                ", taken {}/{:.0} units ({})",
-                crate::jobpods::cores(u.taken),
-                u.total,
-                crate::jobpods::percent(u.share())
-            );
+            s += &format!(", {}", u.brief);
         }
         s += &format!(", {} runners up", self.up_line());
         for (n, w) in [(self.done_1h, "1h"), (self.done_5h, "5h")] {
@@ -494,7 +489,7 @@ pub fn glance(infra: &Infra) -> Glance {
             continue;
         }
         g.busy += m.busy;
-        if let Some(b) = m.booked.filter(|b| b.cpu_alloc > 0.0) {
+        if let Some(b) = m.booked.filter(Booked::on_ci) {
             ci_nodes.insert(m.host.clone(), b);
             real = real.zip(m.cpu.zip(m.cores)).map(|(r, (c, n))| r + c * n);
         }
@@ -2280,7 +2275,7 @@ mod tests {
         assert_eq!(g.busy, 3);
         let u = g.units.as_ref().unwrap();
         assert_eq!((format!("{:.2}", u.taken), u.total), ("4.38".into(), 64.0));
-        // Real use sums each CI node's busy cores beside the booking.
+        // Real use sums each CI node's busy cores beside what its pods take.
         assert_eq!(
             u.line,
             "taken 4.4 of 64 (7%), free 59.6, real use 9.6 (15%)"
@@ -2295,7 +2290,7 @@ mod tests {
         );
     }
 
-    /// ar-6008: the `ci-build-slot` pause pod books the Unity build slot's CPU. Its units are a
+    /// ar-6008: the `ci-build-slot` pause pod requests the Unity build slot's CPU. Its units are a
     /// TAKEN BY row of their own (ar-6359), never a running job, and a node that is down or
     /// quarantined says so.
     #[test]

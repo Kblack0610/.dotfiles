@@ -113,7 +113,7 @@ impl<'a> Board<'a> {
 
     /// The CI pool in units (`hub_core::jobpods::Units`): its total, a bar of the share taken
     /// with taken, free and real use, and the TAKEN BY rows, the words and cells as hub-core
-    /// fills them. Nothing with no CI node read: the head already says no booking.
+    /// fills them. Nothing with no CI node read: the head then prints no units.
     pub fn ci_pool(&self, w: usize) -> Vec<Line<'static>> {
         let Some(u) = &self.infra.ci.glance.units else {
             return vec![];
@@ -122,8 +122,8 @@ impl<'a> Board<'a> {
         let share = (u.share() * 100.0).round() as u32;
         let (on, off) = crate::fmt::bar(Some(share), None, BAR);
         let mut out = vec![
-            clip_line(Line::styled(u.head.clone(), self.p.head()), w),
-            clip_line(Line::raw(format!("[{on}{off}] {}", u.line)), w),
+            Line::styled(u.head.clone(), self.p.head()),
+            Line::raw(format!("[{on}{off}] {}", u.line)),
         ];
         let rows: Vec<&[String]> = u.rows.iter().map(Vec::as_slice).collect();
         for (i, l) in aligned(&u.columns, &rows, "").into_iter().enumerate() {
@@ -275,7 +275,6 @@ pub fn infra(
         .collect()
 }
 
-/// The CI pool block and a blank line after it, or nothing with no pool read.
 /// A header and its rows of cells as text lines, each column as wide as its widest cell: the
 /// first left after `indent`, the rest right two spaces apart. Space and CI POOL draw with it.
 fn aligned(columns: &[&str], rows: &[&[String]], indent: &str) -> Vec<String> {
@@ -306,6 +305,7 @@ fn aligned(columns: &[&str], rows: &[&[String]], indent: &str) -> Vec<String> {
         .collect()
 }
 
+/// The CI pool block and a blank line after it, or nothing with no pool read.
 fn pool(b: &Board, w: usize) -> Vec<Line<'static>> {
     let mut out = b.ci_pool(w);
     if !out.is_empty() {

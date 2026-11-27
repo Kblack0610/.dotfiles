@@ -46,7 +46,7 @@ const upLine = (g) => (g.expected ? `${g.up}/${g.expected}` : "-/-");
 function glanceHead(g) {
   let s = `${g.busy} running, ${g.queued} queued`;
   if (g.queued > 0 && g.oldest != null) s += ` (oldest ${secs(g.oldest)})`;
-  if (g.units) s += `, taken ${cores1(g.units.taken)}/${Math.round(g.units.total)} units (${pct(unitShare(g.units))})`;
+  if (g.units) s += `, ${g.units.brief}`;
   s += `, ${upLine(g)} runners up`;
   if (g.done_1h != null) s += `, ${g.done_1h} done 1h`;
   if (g.done_5h != null) s += `, ${g.done_5h} done 5h`;
@@ -127,7 +127,7 @@ function diskCell(m) {
   return `<td class="n${free < 0.1 ? " bad" : free < 0.2 ? " warn" : ""}" title="${esc(`${gbOf(m.disk_avail, m.disk_size)} free`)}">${pct(free)}</td>`;
 }
 
-// hub_core::jobpods::Booked: what job pods book of a CI node, its fuller share and `4.4/32 2.5G/92G`.
+// hub_core::jobpods::Booked: what the pods on a CI node request, its fuller share and `4.4/32 2.5G/92G`.
 // hub_core::jobpods::cores: one place, halves up as Rust rounds them (toFixed rounds 0.15 down).
 const cores1 = (c) => (Math.round(c * 10) / 10).toFixed(1);
 const bookedShare = (b) => Math.max(b.cpu_alloc > 0 ? b.cpu / b.cpu_alloc : 0, b.mem_alloc > 0 ? b.mem / b.mem_alloc : 0);
@@ -139,17 +139,17 @@ const bookedCell = (m) => {
   if (!(b.cpu_alloc > 0)) return `${cores1(b.cpu)} ${bytes(b.mem)}`;
   return `${cores1(b.cpu)}/${Math.round(b.cpu_alloc)} ${bytes(b.mem)}/${bytes(b.mem_alloc)}`;
 };
-// hub_core::jobpods::Units::share: the share of the pool taken, 0 with no total.
-const unitShare = (u) => (u.total > 0 ? u.taken / u.total : 0);
 // The CI POOL block (hub_core::jobpods::Units): its head, a bar of the share taken beside its line,
 // and the TAKEN BY table, every word and cell Rust's so the hub and the waybar hover print the same.
 function poolSection(u) {
   if (!u) return "";
+  // hub_core::jobpods::Units::share: the share of the pool taken, 0 with no total.
+  const share = u.total > 0 ? u.taken / u.total : 0;
   // On a phone each kind leads, its units and share under it (the last two columns), pods and each on a tap.
   const role = (i) => (i === 0 ? ' data-role="lead"' : i >= u.columns.length - 2 ? ' data-role="glance" data-named' : "");
   const th = u.columns.map((c, i) => `<th${i ? ' class="n"' : ""}${role(i)} data-label="${esc(c)}">${esc(c)}</th>`).join("");
   const rows = u.rows.map((r) => `<tr>${r.map((x, i) => td(i ? "n" : "", esc(x))).join("")}</tr>`).join("");
-  return `<div class="cline"><b>${esc(u.head)}</b></div><div class="cline">${meter(unitShare(u), unitShare(u) >= 1 ? "var(--b-stalled)" : "var(--c1)")} ${esc(u.line)}</div>` +
+  return `<div class="cline"><b>${esc(u.head)}</b></div><div class="cline">${meter(share, share >= 1 ? "var(--b-stalled)" : "var(--c1)")} ${esc(u.line)}</div>` +
     `<div class="panel scroll"><table class="tbl"><tr>${th}</tr>${rows}</table></div>`;
 }
 // hub_core::ci::Next::line: the oldest waiting job that fits the machine, its repo and how long it has waited.
