@@ -1653,7 +1653,7 @@ notes --profile work ptask level run lv-8'
   [ "$(grep -c '^locked ' "$NOTES_FIXTURE/underlock.log")" = 1 ]
 }
 
-@test "move and set write the board row with the queue lock free, so a notes waiting on its ptask.lock holds no queue writer (ar-3025)" {
+@test "move, set and claim write the board row with the queue lock free, so a notes waiting on its ptask.lock holds no queue writer (ar-3025)" {
   story_notes
   notes_lock_probe
   "$AQ" add --project level --slug moved "feat(menu): moved" >/dev/null
@@ -1661,19 +1661,23 @@ notes --profile work ptask level run lv-8'
   : > "$NOTES_FIXTURE/calls.log"
   run "$AQ" set moved priority=normal
   assert_success
-  run "$AQ" move moved running
+  grep -q -- '--agent tag --add normal lv-9' "$NOTES_FIXTURE/calls.log"
+  # A session's claim of a queued item moves it under its own hold of the lock, and marks the row after.
+  CLAUDE_CODE_SESSION_ID=claim-sess run "$AQ" claim moved
   assert_success
+  grep -q -- '--agent run lv-9' "$NOTES_FIXTURE/calls.log"
+  : > "$NOTES_FIXTURE/calls.log"
   run "$AQ" move moved queued
   assert_success
-  "$AQ" move moved running >/dev/null
+  grep -q -- '--agent start lv-9' "$NOTES_FIXTURE/calls.log"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" move moved running
+  assert_success
+  grep -q -- '--agent run lv-9' "$NOTES_FIXTURE/calls.log"
   run "$AQ" move moved done --status ok
   assert_success
   assert_line "moved: board row lv-9 closed"
-  # Each write reached the board: the priority, the run mark, the start mark and the close.
-  grep -q -- '--agent run lv-9' "$NOTES_FIXTURE/calls.log"
-  grep -q -- '--agent start lv-9' "$NOTES_FIXTURE/calls.log"
   grep -q -- '--agent done lv-9' "$NOTES_FIXTURE/calls.log"
-  grep -q -- '--agent tag --add normal lv-9' "$NOTES_FIXTURE/calls.log"
   [ ! -s "$NOTES_FIXTURE/underlock.log" ] || fail "notes ran with the queue lock held: $(cat "$NOTES_FIXTURE/underlock.log")"
   # NEGATIVE CONTROL: the stub does see a held lock.
   flock -x "$AGENT_QUEUE_DIR/.lock" "$SANDBOX/bin/notes" ptask level --agent run lv-9 >/dev/null
