@@ -559,7 +559,9 @@ phases_landed_by() {
 # Only the board's pull and the human add at all (pull_ok, below); of those, never held: --running, a
 # hand start (AGENT_QUEUE_PULL=hand), a gated add (it queues nothing), dispatch's trainee, canary
 # and auto:epics verify adds (its board fill stops at the cap, queue_headroom), agent-land's
-# auto:validate add (one per critical PR head, which no merge passes without), a --plan (an approved
+# auto:validate add (one per critical PR head, which no merge passes without), its merge-owed steps
+# (AGENT_QUEUE_PULL=land: an after-merge step, one per step while one is queued, and an After deploy:
+# line, one per line a merged PR's body names), a --plan (an approved
 # plan) and the pull of a phase it filed on its board row (plan_phase_task), cap 0. Urgent and `red`
 # respect the cap too (the human, 2026-11-18): at it, make_room first returns the last-ranked item
 # that has a row to its board, so they go in without the queue growing; so does pull-after's pull of a
@@ -710,7 +712,8 @@ admission_log() {
 
 # Only the board fills the queue (the human, 2026-11-18, after three filers' 225 `night` items took the
 # runnable count from 205 to 362 when the night window opened): dispatch's pull (AGENT_QUEUE_PULL=dispatch,
-# set by fleet-dispatch on its promote, trainee and epic-verify adds), a session's own --running record,
+# set by fleet-dispatch on its promote, trainee and epic-verify adds), agent-land's merge-owed steps
+# (AGENT_QUEUE_PULL=land, ar-5865), a session's own --running record,
 # and the human, at a terminal or in a session they started (hand_caller). Any other add, a
 # dispatch-run agent's or a filer's, is filed on the board instead and exits AQ_EX_HELD.
 # Provisional (rules.jsonl, anchor "Only the board fills the queue"): hand sessions add straight in;
@@ -2508,7 +2511,7 @@ cmd_add() {
   # (see admit); a queue item's session adding without --from is recorded as from the item.
   local capped=1
   case "$from" in trainee | auto:epics | auto:validate | canary) capped='' ;; esac
-  [ "${AGENT_QUEUE_PULL:-}" != hand ] || capped=''
+  case "${AGENT_QUEUE_PULL:-}" in hand | land) capped='' ;; esac
   [[ "$from" != board:* ]] || ! plan_phase_task "$text" || capped=''
   { [ -z "$running" ] && [ -z "$GATES" ] && [ -z "${AQ_ADMITTED:-}" ]; } || capped=''
   [ -z "$capped" ] || [ -n "$from_given" ] || [ -z "${AGENT_QUEUE_ITEM:-}" ] || from="item:$AGENT_QUEUE_ITEM"

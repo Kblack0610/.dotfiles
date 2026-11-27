@@ -543,7 +543,7 @@ load 'agent_land/common'
 
 # aq_add_stub: the sandbox agent-queue logs each add's argv to aq.add, one call a line, and answers as the real one
 # does for a slug it already holds ("already in the queue", exit 1) or $SANDBOX/aq.add.rc says, and logs the
-# AGENT_QUEUE_ITEM each add saw to aq.env; other verbs run for real.
+# AGENT_QUEUE_ITEM each add saw to aq.env and its AGENT_QUEUE_PULL to aq.pull; other verbs run for real.
 aq_add_stub() {
   mv "$SANDBOX/bin/agent-queue" "$SANDBOX/bin/agent-queue.real"
   cat >"$SANDBOX/bin/agent-queue" <<EOS
@@ -553,6 +553,7 @@ if [ "\$1" = add ]; then
   ! grep -qxF "\$slug" "$SANDBOX/aq.slugs" 2>/dev/null || { echo "agent-queue: already in the queue: \$slug" >&2; exit 1; }
   printf '%s\n' "\${*%%\$'\n'*}" >>"$SANDBOX/aq.add"
   printf '%s\n' "\${AGENT_QUEUE_ITEM:-}" >>"$SANDBOX/aq.env"
+  printf '%s\n' "\${AGENT_QUEUE_PULL:-}" >>"$SANDBOX/aq.pull"
   rc=\$(cat "$SANDBOX/aq.add.rc" 2>/dev/null || echo 0)
   [ "\$rc" -ne 0 ] || echo "\$slug" >>"$SANDBOX/aq.slugs"
   [ "\$rc" -ne 1 ] || echo "agent-queue: store locked" >&2
@@ -587,6 +588,9 @@ EOS
   assert_line --index 1 "add --project dotfiles --priority high --from item:ship --slug $s2 chore(deploy): systemctl --user restart notes-web (left by o/r#42)"
   # the add does not run as the landed item, so that item's own after: never gates it
   run grep -c '^$' "$SANDBOX/aq.env"
+  assert_output 2
+  # it goes in as agent-land's own pull: a board-only add went to the outbox and never ran (ar-5865)
+  run grep -cx land "$SANDBOX/aq.pull"
   assert_output 2
   # a re-run of the landing adds neither again, though a step was put above them meanwhile
   printf 'The change.\n\nAfter deploy: systemctl --user restart notes-web\nAfter deploy: notes projects --migrate game\n\nItem: ship\n' >"$NOTES_FIXTURE/body"
@@ -632,6 +636,9 @@ EOS
   assert_line 'landed #42'
   run cat "$SANDBOX/aq.add"
   assert_output "add --project r --priority high --from item:ship --slug $s chore(after-merge): $step (left by o/r#42)"
+  # ar-5865: without agent-land's pull the add went board-only to the outbox, and no apply ran
+  run cat "$SANDBOX/aq.pull"
+  assert_output land
   # a step whose item from an earlier merge is still queued is not added again: it applies the base it starts on
   "$SANDBOX/bin/agent-queue.real" add --project r --slug "after-merge-$sha-41-r" 'chore(after-merge): earlier' >/dev/null
   run "$LAND" 42 --item ship
