@@ -184,8 +184,6 @@ import time
 import zipfile
 from datetime import datetime, timedelta, timezone
 
-import yaml
-
 HOME = os.path.expanduser("~")
 GH = os.environ.get("SCHEDULES_GH", "gh")
 PROJECT_MAP = os.environ.get("PROJECT_MAP", os.path.join(HOME, ".config/shared-hooks/project-map.json"))
@@ -535,8 +533,15 @@ def needs_of(job):
 
 
 def parse_workflow(text):
-    """-> (name, crons, jobs, timeout_min) or None when the file has no schedule."""
-    doc = yaml.safe_load(text)
+    """-> (name, crons, jobs, timeout_min) or None when the file has no schedule or does not parse.
+    PyYAML is imported here, not at the top: `sync-prs` (agent-land, on any host) never reads a
+    workflow file and must run where PyYAML is missing (tr-469)."""
+    import yaml
+
+    try:
+        doc = yaml.safe_load(text)
+    except (yaml.YAMLError, ValueError, RecursionError):  # ValueError: a bad date scalar
+        return None  # GitHub would not schedule an unparseable file either
     if not isinstance(doc, dict):
         return None
     on = doc.get("on", doc.get(True))  # YAML 1.1 reads a bare `on` key as true
@@ -586,10 +591,7 @@ def scheduled_workflows(repo, base, prev):
             unscheduled[path] = sha
             continue
         text = blob_bytes(repo, sha).decode("utf-8", "replace")
-        try:
-            parsed = parse_workflow(text)
-        except yaml.YAMLError:
-            parsed = None  # GitHub would not schedule an unparseable file either
+        parsed = parse_workflow(text)
         if not parsed:
             unscheduled[path] = sha
             continue
