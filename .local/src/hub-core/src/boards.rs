@@ -263,7 +263,7 @@ pub struct Ask {
     /// The judge's verdict as one line (`Ask::judge_line`); empty for an ask it never judged.
     pub judge_line: String,
     /// The id of the live judge answer this ask audits (`--audit-of`); empty for any other ask.
-    /// A review sample, so the needs pager never buzzes for it.
+    /// A review sample: hub-core's Needs you (`home::has_decision`) lists no ask that has one.
     pub audit_of: String,
 }
 
