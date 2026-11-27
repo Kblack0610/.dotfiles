@@ -2365,8 +2365,17 @@ GH
   run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
   assert_failure 1
   assert_output --partial "after: this worker could not read PR store refresh (fj.example/o/r)"
+  # A PR closed unmerged says so, and a plan-less "nothing merged" stays: only a merge settles it.
+  rm "$LEDGER_DIR/SYNC_FAIL"
+  printf 'feat/x\t11\tCLOSED\tPASS\tabc\t-\t\n' > "$LEDGER_DIR/after_sync_fj.example_o_r.tsv"
+  jq -c '.sessions[0].blockers += ["no plan file and nothing merged"]' "$f" > "$f.new" && mv "$f.new" "$f"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_line "blocker: PR #11 closed without merging"
+  assert_line "blocker: no plan file and nothing merged"
+  refute_line --partial "PR #11 open"
   # NEGATIVE CONTROL: a PR the refreshed store still reads open keeps the holder's blocker.
-  rm "$LEDGER_DIR/SYNC_FAIL" "$LEDGER_DIR/after_sync_fj.example_o_r.tsv"
+  printf 'feat/x\t11\tOPEN\tPENDING\tabc\t-\t\n' > "$LEDGER_DIR/prs_fj.example_o_r.tsv"
+  rm "$LEDGER_DIR/after_sync_fj.example_o_r.tsv"
   run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
   assert_failure 1
   assert_line --index 0 "keep: land it: PR #11 open, CI PENDING"
