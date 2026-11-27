@@ -655,13 +655,20 @@ seed_bar() {
   [ -z "$(payload agents/testhost/summary/bar)" ]
 }
 
-# A locked agent-queue store must not hold the publish lock: hub bar is bounded.
-@test "bar: a hub that hangs is cut off at its timeout and the run still publishes the rest" {
-  printf '#!/usr/bin/env bash\n[ "$1" = bar ] && exec sleep 30\nexit 1\n' > "$SANDBOX/bin/hub"
-  AGENT_MQTT_BAR_TIMEOUT=1 run "$PUB" --quiet
+# A locked agent-queue store must not hold the publish lock or the --full run past the unit's 60s: every
+# slow reader is bounded by READER_TIMEOUT (ar-1486). The outer timeout is under the 30s hang, so a reader
+# left unbounded fails the test rather than passing late.
+@test "a slow reader that hangs is cut off at its timeout and the run still publishes the rest (ar-1486)" {
+  printf '#!/usr/bin/env bash\nexec sleep 30\n' > "$SANDBOX/bin/hub"
+  printf '#!/usr/bin/env bash\n[ "$1" = stats ] && exec sleep 30\nexit 0\n' > "$SANDBOX/bin/fleet-dispatch"
+  chmod +x "$SANDBOX/bin/hub" "$SANDBOX/bin/fleet-dispatch"
+  AGENT_MQTT_READER_TIMEOUT=1 run timeout 15 "$PUB" --full --quiet
   assert_success
-  [ -z "$(payload agents/testhost/summary/bar)" ]
+  for t in dispatch overview bar cards; do
+    assert_equal "$(payload "agents/testhost/summary/$t")" ''
+  done
   [ -n "$(payload agents/testhost/runner/alpha)" ]
+  [ -n "$(payload agents/testhost/summary/feed)" ]
 }
 
 @test "bar: a run inside the TTL repeats the sent document, an older one reads hub again" {
