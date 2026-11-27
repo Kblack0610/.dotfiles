@@ -101,12 +101,19 @@ def strip_heredocs(cmd):
     return "\n".join(line for _, line, _, _ in heredoc_lines(cmd))
 
 
-def code_texts(cmd, guard=False):
+PLAIN_WORD = re.compile(r"[A-Za-z0-9_.,:@%+=-]+")
+
+
+def code_texts(cmd, guard=False, keep_words=False):
     """The command with quoted text blanked, plus each `-c '<payload>'`, recursively.
 
     guard=True is for a guard that must not miss a search: the quoted string after eval, ssh,
     watch, xargs or su is code too, and an unterminated quote stays visible instead of
     swallowing the rest of the command.
+
+    keep_words=True also leaves a quoted string that is one plain word as that bare word, which
+    is what the shell passes (a quoted kill target is the bare one); a row sees it. A string with
+    a space, `/`, `$`, a backtick or a backslash stays blanked.
     """
     texts, out, i, n = [], [], 0, len(cmd)
     while i < n:
@@ -130,8 +137,12 @@ def code_texts(cmd, guard=False):
                 continue
             prefix = "".join(out)
             if SHELL_C.search(prefix) or (guard and WRAPPER.search(prefix)):
-                texts.extend(code_texts("".join(body), guard))
-            out.append(" Q ")
+                texts.extend(code_texts("".join(body), guard, keep_words))
+                out.append(" Q ")
+            elif keep_words and PLAIN_WORD.fullmatch(cmd[i + 1 : j]):
+                out.append(cmd[i + 1 : j])
+            else:
+                out.append(" Q ")
             i = j + 1
             continue
         out.append(c)
