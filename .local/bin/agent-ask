@@ -1043,8 +1043,8 @@ human_words() {
 
 # quote_picks <ask file> <options> <option> <quote>: true when the human's words pick <option>: they
 # name it, or they and its `option_notes` meaning hold one another (either may be the longer, a
-# fragment of 8+ characters), and they name no other option. Prints why on failure; "they name no
-# option" means the words leave the pick to the session's reading of the conversation.
+# fragment of 8+ characters), and they name no other option. Prints why on failure: rc 1 when they
+# name another option, rc 2 when they name none and leave the pick to the session's reading.
 quote_picks() {
   local f="$1" opts="$2" opt="$3" q="$4" names i note ql
   names="$(named_options "$opts" "$q")"
@@ -1060,7 +1060,7 @@ quote_picks() {
     note="$(oneline "${ns[i]:-}")"; note="${note,,}"
     [ -n "$note" ] && { [[ "$ql" == *"$note"* ]] || { [ "${#ql}" -ge 8 ] && [[ "$note" == *"$ql"* ]]; }; } && return 0
   done
-  echo "they name no option and do not match $opt's note"; return 1
+  echo "they name no option and do not match $opt's note"; return 2
 }
 
 # relay_proof <id> <quote> <answer>: why an attended session may record the human's answer to <id>, or
@@ -1069,11 +1069,10 @@ quote_picks() {
 # it has any, and the words do not contradict it: neither the quote nor the human's whole entry names
 # another option ("don't keep them, drop them" does not pick keep). Words that name no option ("yes,
 # go off your recs") are the human answering in the session, and the session reads which option they
-# mean: the human wants an attended session to answer from the conversation (2026-11-27), which
-# replaced ar-6269's demand that the words name the option. On such a reading it prints a note
-# prefix, which the answer note records. Only a pending ask, or one the judge or a hold answered, takes it.
+# mean, because an attended session answers from the conversation; RELAY_NOTE then says so for the
+# answer note. Only a pending ask, or one the judge or a hold answered, takes it.
 relay_proof() {
-  local id="$1" quote="$2" answer="$3" f made hits why
+  local id="$1" quote="$2" answer="$3" f made hits why rc; RELAY_NOTE=""
   f="$(find_ask "$id")"; [ -n "$f" ] || { echo "no ask '$id'" >&2; return 1; }
   id="$(field "$f" id)"; made="$(date -u -d "$(field "$f" created)" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
   [ -n "$made" ] || { echo "ask $id has no created time to look after" >&2; return 1; }
@@ -1086,8 +1085,9 @@ relay_proof() {
   if [ -n "$opts" ]; then
     picked="$(named_option "$opts" "$answer")"
     [ -n "$picked" ] || { echo "the answer '$answer' names none (or more than one) of ask $id's options: $opts" >&2; return 1; }
-    why="$(quote_picks "$f" "$opts" "$picked" "$quote")" || case "$why" in
-      "they name no option"*) reading=1 ;;
+    why="$(quote_picks "$f" "$opts" "$picked" "$quote")"; rc=$?
+    case "$rc" in
+      0) ;; 2) reading=1 ;;
       *) echo "the quote '$quote' does not pick '$picked': $why" >&2; return 1 ;;
     esac
   fi
@@ -1095,8 +1095,9 @@ relay_proof() {
   if [ -n "$opts" ]; then
     local t
     while IFS= read -r t; do
-      why="$(quote_picks "$f" "$opts" "$picked" "$t")" && continue
-      case "$why" in "they name no option"*) continue ;; esac
+      why="$(quote_picks "$f" "$opts" "$picked" "$t")"; rc=$?
+      [ "$rc" = 0 ] && reading=""
+      [ "$rc" = 1 ] || continue
       echo "the human's whole message does not pick '$picked': $why" >&2; return 1
     done < <(jq -r '.text | gsub("\\s+"; " ")' <<<"$hits")
   fi
@@ -1104,7 +1105,8 @@ relay_proof() {
     def n: ascii_downcase | gsub("\\s+"; " ") | sub("^ "; "") | sub(" $"; "");
     any(.[]; ((.shown // "" | n) | contains($id | n)) or ((.text | n) | contains($id | n)))' <<<"$hits" >/dev/null 2>&1 ||
     { echo "the quote is in the transcript, but ask $id is in neither what the human was shown nor their words there" >&2; return 1; }
-  [ -z "$reading" ] || printf "the session's reading of their words as '%s': " "$picked"
+  [ -z "$reading" ] || RELAY_NOTE="the session's reading of their words as '$picked': "
+  return 0
 }
 
 # cmd_said --since <time> <words...>: exit 0 when the human typed those words in this attended
@@ -1143,13 +1145,11 @@ cmd_answer_cli() {
     if [ "$by" = human ] && [ -n "$quote" ]; then
       # The proof first, the fields only once the answer is recorded: a refused answer leaves
       # no "relayed" note on a pending ask.
-      local why f id="${1:-}"; shift 2>/dev/null || true
-      local err; err="$(mktemp)"
-      why="$(relay_proof "$id" "$quote" "$(oneline "$*")" 2>"$err")" || { echo "agent-ask: cannot record this as the human's answer: $(cat "$err")" >&2; rm -f "$err"; return 1; }
-      rm -f "$err"
+      local f id="${1:-}"; shift 2>/dev/null || true
+      relay_proof "$id" "$quote" "$(oneline "$*")" || { echo "agent-ask: cannot record this as the human's answer (why: above)" >&2; return 1; }
       f="$(find_ask "$id")"
       cmd_answer --by human "$id" "$@" || return $?
-      set_field "$f" relayed_by "$CLAUDE_CODE_SESSION_ID" answer_note "relayed in session $CLAUDE_CODE_SESSION_ID: $why$(cut -c1-300 <<<"$quote")"
+      set_field "$f" relayed_by "$CLAUDE_CODE_SESSION_ID" answer_note "relayed in session $CLAUDE_CODE_SESSION_ID: $RELAY_NOTE$(cut -c1-300 <<<"$quote")"
       return 0
     else
       echo "agent-ask: an agent session answers as agent, not $by; the human answers from a board or in the session, and an attended session relays their words with --by human --quote '<their words>'" >&2; return 2
