@@ -32,6 +32,7 @@ brew "starship"
 brew "tree-sitter"  # required by nvim-treesitter (main branch) to compile parsers
 brew "stow"
 brew "tmux"
+brew "flock"  # macOS has none; tmx mark (Prefix+L history) serializes on it
 brew "uv"
 brew "btop"
 brew "bun"
