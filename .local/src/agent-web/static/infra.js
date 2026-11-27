@@ -39,14 +39,14 @@ const grafanaBase = () => (ist.data && ist.data.grafana) || "";
 const gLink = (uid, text) => grafanaBase() ? `<a class="glink" href="${esc(grafanaBase())}/d/${uid}" target="_blank" rel="noopener">${esc(text)}</a>` : "";
 
 
-// hub_core::ci::Glance::head: `4 running, 23 queued (oldest 21m), booked 4.4/64 cpu, 12/12 runners up,
-// 6 done 1h, 80 done 5h, 759 done 24h, 91% passed`; the windows only once a kind reports them; the booking only once a CI node reports.
+// hub_core::ci::Glance::head: `4 running, 23 queued (oldest 21m), taken 4.4/64 units (7%), 12/12 runners up,
+// 6 done 1h, 80 done 5h, 759 done 24h, 91% passed`; the windows only once a kind reports them; the units only once a CI node reports.
 // Glance::up_line: `12/12` runners up of the roster, `-/-` with no runner read.
 const upLine = (g) => (g.expected ? `${g.up}/${g.expected}` : "-/-");
 function glanceHead(g) {
   let s = `${g.busy} running, ${g.queued} queued`;
   if (g.queued > 0 && g.oldest != null) s += ` (oldest ${secs(g.oldest)})`;
-  if (g.booked) s += `, booked ${cores1(g.booked.cpu)}/${Math.round(g.booked.cpu_alloc)} cpu${g.booked.reserved > 0 ? ` (${cores1(g.booked.reserved)} reserved)` : ""}`;
+  if (g.units) s += `, taken ${cores1(g.units.taken)}/${Math.round(g.units.total)} units (${pct(unitShare(g.units))})`;
   s += `, ${upLine(g)} runners up`;
   if (g.done_1h != null) s += `, ${g.done_1h} done 1h`;
   if (g.done_5h != null) s += `, ${g.done_5h} done 5h`;
@@ -132,14 +132,26 @@ function diskCell(m) {
 const cores1 = (c) => (Math.round(c * 10) / 10).toFixed(1);
 const bookedShare = (b) => Math.max(b.cpu_alloc > 0 ? b.cpu / b.cpu_alloc : 0, b.mem_alloc > 0 ? b.mem / b.mem_alloc : 0);
 // hub_core::machines::Machine::booked_cell, or - on no CI node.
-// hub_core::jobpods::Booked::cell: `4.4/32 2.5G/92G`, bare `1.7 1.2G` on a node with no allocatable read, `, 7.4 reserved` for a reservation pod's CPU.
+// hub_core::jobpods::Booked::cell: `4.4/32 2.5G/92G` taken of its units, bare `1.7 1.2G` on a node with no allocatable read.
 const bookedCell = (m) => {
   const b = m.booked;
   if (!b) return "-";
-  const rsv = b.reserved > 0 ? `, ${cores1(b.reserved)} reserved` : "";
-  if (!(b.cpu_alloc > 0)) return `${cores1(b.cpu)} ${bytes(b.mem)}${rsv}`;
-  return `${cores1(b.cpu)}/${Math.round(b.cpu_alloc)} ${bytes(b.mem)}/${bytes(b.mem_alloc)}${rsv}`;
+  if (!(b.cpu_alloc > 0)) return `${cores1(b.cpu)} ${bytes(b.mem)}`;
+  return `${cores1(b.cpu)}/${Math.round(b.cpu_alloc)} ${bytes(b.mem)}/${bytes(b.mem_alloc)}`;
 };
+// hub_core::jobpods::Units::share: the share of the pool taken, 0 with no total.
+const unitShare = (u) => (u.total > 0 ? u.taken / u.total : 0);
+// The CI POOL block (hub_core::jobpods::Units): its head, a bar of the share taken beside its line,
+// and the TAKEN BY table, every word and cell Rust's so the hub and the waybar hover print the same.
+function poolSection(u) {
+  if (!u) return "";
+  // On a phone each kind leads, its units and share under it (the last two columns), pods and each on a tap.
+  const role = (i) => (i === 0 ? ' data-role="lead"' : i >= u.columns.length - 2 ? ' data-role="glance" data-named' : "");
+  const th = u.columns.map((c, i) => `<th${i ? ' class="n"' : ""}${role(i)} data-label="${esc(c)}">${esc(c)}</th>`).join("");
+  const rows = u.rows.map((r) => `<tr>${r.map((x, i) => td(i ? "n" : "", esc(x))).join("")}</tr>`).join("");
+  return `<div class="cline"><b>${esc(u.head)}</b></div><div class="cline">${meter(unitShare(u), unitShare(u) >= 1 ? "var(--b-stalled)" : "var(--c1)")} ${esc(u.line)}</div>` +
+    `<div class="panel scroll"><table class="tbl"><tr>${th}</tr>${rows}</table></div>`;
+}
 // hub_core::ci::Next::line: the oldest waiting job that fits the machine, its repo and how long it has waited.
 const nextLine = (x) => `${x.job}${x.repo ? ` (${x.repo})` : ""} ${secs(x.wait)}`;
 // A machine's hover: what its cores and memory go to (hub_core::workload, one line per class),
@@ -316,7 +328,7 @@ function failed24h() {
 function runnersSection(ci) {
   // The head the TUI and the waybar hover read too (hub_core::ci::Glance): each slot once.
   const g = ci.glance, head = g ? `<div class="cline">${esc([glanceHead(g), offLine(g)].filter(Boolean).join("; "))}</div>` : "";
-  let html = secHead("ci", "Runners", infraN("runners"), ci.red.length ? "bad" : bld.data?.counts?.recent_red ? "warn" : "") + head + failed24h();
+  let html = secHead("ci", "Runners", infraN("runners"), ci.red.length ? "bad" : bld.data?.counts?.recent_red ? "warn" : "") + head + poolSection(g && g.units) + failed24h();
   // A waiting job no online runner can take: hub_core::ci words the line, once for both surfaces.
   if (ci.red.length) html += `<div class="panel down">${ci.red.map((r) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">RED</span><span class="pt">${esc(r)}</span></div>`).join("")}</div>`;
   return html + INFRA_T.runners.html();

@@ -19,7 +19,7 @@ use serde::Serialize;
 
 use crate::home::Level;
 use crate::infra::Infra;
-use crate::jobpods::{Booked, Pending};
+use crate::jobpods::{Booked, Pending, Units};
 use crate::links::{Kind, Link};
 use crate::prom::Series;
 use crate::table::{Row, Val};
@@ -349,8 +349,9 @@ pub struct Glance {
     pub off: Vec<String>,
     pub down: Vec<Down>,
     pub long: Vec<Long>,
-    /// The machine rows' bookings summed, so the total equals its rows; None with no CI node read.
-    pub booked: Option<Booked>,
+    /// The CI pool in units over the CI machine rows (`jobpods::units`): total, taken by kind,
+    /// free and real use, with the words every surface prints. None with no CI node read.
+    pub units: Option<Units>,
     /// Job pods no node has room for, by kind and size (`jobpods::pending`).
     pub pending: Vec<Pending>,
 }
@@ -372,8 +373,8 @@ impl Glance {
         format!("{}/{}", self.up, self.expected)
     }
 
-    /// `4 running, 23 queued (oldest 21m), booked 18.2/144 cpu, 12/12 runners up, 6 done 1h, 80 done 5h, 759 done 24h,
-    /// 91% passed`: jobs running and waiting, what the job pods book of every CI node's CPU,
+    /// `4 running, 23 queued (oldest 21m), taken 72.4/108 units (67%), 12/12 runners up, 6 done 1h, 80 done 5h,
+    /// 759 done 24h, 91% passed`: jobs running and waiting, the pool's units taken (`Units`),
     /// then runner liveness. A slot held back or lent is no count here, and a job it makes wait
     /// is in queued.
     pub fn head(&self, dur: impl Fn(i64) -> String) -> String {
@@ -381,15 +382,13 @@ impl Glance {
         if let Some(o) = self.oldest.filter(|_| self.queued > 0) {
             s += &format!(" (oldest {})", dur(o as i64));
         }
-        if let Some(b) = self.booked {
+        if let Some(u) = &self.units {
             s += &format!(
-                ", booked {}/{:.0} cpu",
-                crate::jobpods::cores(b.cpu),
-                b.cpu_alloc.round()
+                ", taken {}/{:.0} units ({})",
+                crate::jobpods::cores(u.taken),
+                u.total,
+                crate::jobpods::percent(u.share())
             );
-            if b.reserved > 0.0 {
-                s += &format!(" ({} reserved)", crate::jobpods::cores(b.reserved));
-            }
         }
         s += &format!(", {} runners up", self.up_line());
         for (n, w) in [(self.done_1h, "1h"), (self.done_5h, "5h")] {
@@ -483,6 +482,9 @@ pub fn glance(infra: &Infra) -> Glance {
         .filter(|r| matches!(now_of(r, &poff), "withheld" | "lent"))
         .map(|r| r.host)
         .collect();
+    let mut ci_nodes: BTreeMap<String, Booked> = BTreeMap::new();
+    // Busy cores over the CI nodes; None once one has no reading.
+    let mut real = Some(0.0);
     for m in &infra.machines {
         let idle = m.booked.is_none()
             && m.busy + m.slots == 0
@@ -492,8 +494,9 @@ pub fn glance(infra: &Infra) -> Glance {
             continue;
         }
         g.busy += m.busy;
-        if let Some(b) = &m.booked {
-            g.booked.get_or_insert_with(Booked::default).add(b);
+        if let Some(b) = m.booked.filter(|b| b.cpu_alloc > 0.0) {
+            ci_nodes.insert(m.host.clone(), b);
+            real = real.zip(m.cpu.zip(m.cores)).map(|(r, (c, n))| r + c * n);
         }
         g.machines.push(Host {
             host: m.host.clone(),
@@ -517,6 +520,7 @@ pub fn glance(infra: &Infra) -> Glance {
             .then_with(|| b.busy.cmp(&a.busy))
             .then_with(|| a.host.cmp(&b.host))
     });
+    g.units = crate::jobpods::units(&ci_nodes, &infra.pods, real);
     g.off = off;
     g.next = infra.ci.queue.iter().take(NEXT).cloned().collect();
     let mut down: BTreeMap<(String, String), u32> = BTreeMap::new();
@@ -2242,6 +2246,14 @@ mod tests {
     #[test]
     fn each_ci_node_reads_what_its_job_pods_book_and_the_slots_jobs_share_the_rows() {
         let mut i = clustered();
+        // Each CI node's cores and busy share: 32 x 0.25 + 32 x 0.05 = 9.6 busy cores.
+        let cc = |n: &str, h: &str, v: &'static str| (json!({"__name__": n, "host": h}), v);
+        i.instant.get_mut("cc").unwrap().extend(series(vec![
+            cc("cc:host_cores", "ms-a2", "32"),
+            cc("cc:host_cpu_busy_ratio", "ms-a2", "0.25"),
+            cc("cc:host_cores", "tuf-b550", "32"),
+            cc("cc:host_cpu_busy_ratio", "tuf-b550", "0.05"),
+        ]));
         i.derive();
         let g = &i.ci.glance;
         let rows: Vec<(&str, u32, String, String)> = g
@@ -2266,10 +2278,12 @@ mod tests {
         let arc = i.ci.rows.iter().find(|r| r.job == "lint").unwrap();
         assert_eq!((arc.host.as_str(), arc.pod), ("ms-a2", true));
         assert_eq!(g.busy, 3);
-        let b = g.booked.unwrap();
+        let u = g.units.as_ref().unwrap();
+        assert_eq!((format!("{:.2}", u.taken), u.total), ("4.38".into(), 64.0));
+        // Real use sums each CI node's busy cores beside the booking.
         assert_eq!(
-            (format!("{:.2}", b.cpu), b.cpu_alloc),
-            ("4.38".into(), 64.0)
+            u.line,
+            "taken 4.4 of 64 (7%), free 59.6, real use 9.6 (15%)"
         );
         assert_eq!(
             g.pending_line().as_deref(),
@@ -2277,12 +2291,13 @@ mod tests {
         );
         assert_eq!(
             g.head(|s| format!("{}m", s / 60)),
-            "3 running, 2 queued (oldest 15m), booked 4.4/64 cpu, 4/4 runners up, 4 done 24h, 50% passed"
+            "3 running, 2 queued (oldest 15m), taken 4.4/64 units (7%), 4/4 runners up, 4 done 24h, 50% passed"
         );
     }
 
-    /// ar-6008: the `ci-build-slot` pause pod books the Unity build slot's CPU. Its node's row
-    /// says reserved CPU, never a running job, and a node that is down or quarantined says so.
+    /// ar-6008: the `ci-build-slot` pause pod books the Unity build slot's CPU. Its units are a
+    /// TAKEN BY row of their own (ar-6359), never a running job, and a node that is down or
+    /// quarantined says so.
     #[test]
     fn a_reservation_pod_is_reserved_cpu_on_its_row_and_a_down_node_says_so() {
         let mut i = clustered();
@@ -2302,18 +2317,20 @@ mod tests {
         let (ms, tuf) = (row("ms-a2"), row("tuf-b550"));
         assert_eq!(ms.running, ["[starting] x2"]);
         assert_eq!(ms.busy, 2);
-        assert_eq!(ms.booked.unwrap().cell(), "11.7/32 23G/92G, 7.4 reserved");
+        assert_eq!(ms.booked.unwrap().cell(), "11.7/32 23G/92G");
         assert_eq!((tuf.busy, tuf.running.len()), (0, 0));
-        assert_eq!(tuf.booked.unwrap().cell(), "7.4/32 21G/63G, 7.4 reserved");
+        assert_eq!(tuf.booked.unwrap().cell(), "7.4/32 21G/63G");
         assert_eq!(tuf.state, "NotReady, cordoned");
         assert!(!ms.state.contains("NotReady"), "{}", ms.state);
         assert_eq!(g.busy, 3, "the reservations are no running job");
         assert!(
             g.head(|s| format!("{}m", s / 60))
-                .contains("booked 19.1/64 cpu (14.7 reserved)"),
+                .contains("taken 19.1/64 units (30%)"),
             "{}",
             g.head(|s| format!("{}m", s / 60))
         );
+        let u = g.units.as_ref().unwrap();
+        assert_eq!(u.rows[0][..4], ["ci-build-slot", "2", "7.36", "14.7"]);
         assert_eq!(
             g.pending_line().as_deref(),
             Some("waiting for room: arc-org-light (1.69 cpu 1.2G)")
@@ -2445,7 +2462,7 @@ mod tests {
             g.head(|s| format!("{}m", s / 60)),
             "1 running, 2 queued (oldest 15m), 3/3 runners up, 4 done 24h, 50% passed"
         );
-        assert!(g.booked.is_none() && g.machines.iter().all(|h| h.booked.is_none()));
+        assert!(g.units.is_none() && g.machines.iter().all(|h| h.booked.is_none()));
         let hosts: Vec<(&str, String)> = g
             .machines
             .iter()
@@ -2474,9 +2491,9 @@ mod tests {
         assert_eq!(
             keys(&v),
             [
-                "alert", "booked", "busy", "done", "done_1h", "done_5h", "down", "expected",
-                "feed", "kinds", "level", "long", "machines", "next", "off", "oldest", "parts",
-                "pass", "pending", "queued", "up"
+                "alert", "busy", "done", "done_1h", "done_5h", "down", "expected", "feed", "kinds",
+                "level", "long", "machines", "next", "off", "oldest", "parts", "pass", "pending",
+                "queued", "units", "up"
             ]
         );
         assert_eq!(

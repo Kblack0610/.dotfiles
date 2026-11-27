@@ -132,6 +132,47 @@ impl<'a> Board<'a> {
         out
     }
 
+    /// The CI pool in units (`hub_core::jobpods::Units`): its total, a bar of the share taken
+    /// with taken, free and real use, and the TAKEN BY rows, the words and cells as hub-core
+    /// fills them. Nothing with no CI node read: the head already says no booking.
+    pub fn ci_pool(&self, w: usize) -> Vec<Line<'static>> {
+        let Some(u) = &self.infra.ci.glance.units else {
+            return vec![];
+        };
+        const BAR: usize = 28;
+        let share = (u.share() * 100.0).round() as u32;
+        let (on, off) = crate::fmt::bar(Some(share), None, BAR);
+        let mut out = vec![
+            clip_line(Line::styled(u.head.clone(), self.p.head()), w),
+            clip_line(Line::raw(format!("[{on}{off}] {}", u.line)), w),
+        ];
+        let cols: Vec<usize> = (0..u.columns.len())
+            .map(|i| {
+                u.rows
+                    .iter()
+                    .map(|r| r[i].len())
+                    .chain([u.columns[i].len()])
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect();
+        let row = |cells: Vec<&str>| {
+            let mut s = String::new();
+            for (i, c) in cells.iter().enumerate() {
+                match i {
+                    0 => s += &format!("{c:<w$}", w = cols[i]),
+                    _ => s += &format!("  {c:>w$}", w = cols[i]),
+                }
+            }
+            s
+        };
+        out.push(Line::styled(row(u.columns.clone()), self.p.dim()));
+        for r in &u.rows {
+            out.push(Line::raw(row(r.iter().map(String::as_str).collect())));
+        }
+        out.into_iter().map(|l| clip_line(l, w)).collect()
+    }
+
     /// The machinery's headline numbers. The status tag, what needs you and the domain strip
     /// went to the Home sections above (`hub_core::home`).
     pub fn numbers(&self, w: usize) -> Vec<Line<'static>> {
@@ -255,6 +296,7 @@ pub fn infra(
     machines.extend(table("machines"));
     let mut ci = b.ci_head(failed, w);
     ci.push(blank());
+    ci.extend(pool(&b, w));
     ci.extend(crate::infratables::ci_machines(infra, p, w));
     ci.push(blank());
     ci.extend(table("runners"));
@@ -271,15 +313,26 @@ pub fn infra(
         .collect()
 }
 
-/// The CI head, one row per CI machine, and the waiting queue by workflow, plain: what `hub ci`
-/// prints. `pods` adds the per-pod runner rows after them (`hub ci --pods`).
+/// The CI pool block and a blank line after it, or nothing with no pool read.
+fn pool(b: &Board, w: usize) -> Vec<Line<'static>> {
+    let mut out = b.ci_pool(w);
+    if !out.is_empty() {
+        out.push(Line::raw(""));
+    }
+    out
+}
+
+/// The CI head, the pool in units, one row per CI machine, and the waiting queue by workflow,
+/// plain: what `hub ci` prints. `pods` adds the per-pod runner rows after them (`hub ci --pods`).
 pub fn ci_runners(infra: &Infra, p: Palette, w: usize, pods: bool) -> Vec<Line<'static>> {
     let t = InfraTables {
         pods,
         ..Default::default()
     };
-    let mut out = Board::new(infra, p).ci_head(None, w);
+    let b = Board::new(infra, p);
+    let mut out = b.ci_head(None, w);
     out.push(Line::raw(""));
+    out.extend(pool(&b, w));
     out.extend(crate::infratables::ci_machines(infra, p, w));
     out.push(Line::raw(""));
     out.extend(t.draw(infra, "queued", "", p, 0, w));
@@ -714,10 +767,12 @@ pub(crate) mod tests {
         assert!(
             has(
                 &ci,
-                "razer-laptop up - 91% 3 [unity] unity-core-playground x2, [unity] platform"
+                "razer-laptop up - - 91% - - 3 [unity] unity-core-playground x2, [unity] platform"
             ),
             "{ci}"
         );
+        // No CI node read: no pool block, and the head names no units.
+        assert!(!ci.contains("CI POOL"), "{ci}");
         assert_line(&ci, "RUNNERS 3 jobs running, one per pod: e shows each");
         assert!(!has(&ci, "PlayMode 4"), "{ci}");
         let ci = tab_pods(&i, "ci", 160);
@@ -916,6 +971,42 @@ pub(crate) mod tests {
         assert!(
             !has(&out, "razer-laptop 3 withheld"),
             "no job, no runners row: {out}"
+        );
+    }
+
+    /// ar-6359: the CI tab counts the pool in units: its total, the share taken beside real
+    /// use, TAKEN BY with the other namespaces' pods, and each machine's units, free and memory.
+    #[test]
+    fn the_ci_tab_counts_the_pool_in_units_taken_by_kind_and_per_machine() {
+        let mut i = fixture();
+        with_pods(&mut i);
+        let o = |r: &str, v: &'static str| (json!({"node": "razer-laptop", "resource": r}), v);
+        i.instant.insert(
+            "ci_other",
+            series(vec![o("cpu", "0.5"), o("memory", "1073741824")]),
+        );
+        let ci = tab(&i, "ci", 160);
+        assert!(
+            ci.contains(", taken 3.0/4 units (75%), 4/5 runners up"),
+            "{ci}"
+        );
+        for line in [
+            "CI POOL 4 units (1 unit = 1 CI core)",
+            "[#####################.......] taken 3.0 of 4 (75%), free 1.0, real use 14.6 (364%)",
+            "TAKEN BY PODS EACH UNITS SHARE",
+            "arc-org-light 2 1.25 2.5 62%",
+            "other - - 0.5 12%",
+            "free 1.0 25%",
+            "MACHINE STATE UNITS TAKEN REAL FREE MEM JOBS RUNNING",
+        ] {
+            assert_line(&ci, line);
+        }
+        assert!(
+            has(
+                &ci,
+                "razer-laptop up 4 3.0 75% 91% 1.0 cpu 2.0G/16G 5 [starting] x2"
+            ),
+            "{ci}"
         );
     }
 
