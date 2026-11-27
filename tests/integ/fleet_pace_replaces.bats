@@ -115,6 +115,25 @@ reason() {
   done
 }
 
+@test "a quoted kill target is still a kill target: one plain word stays visible to the rows" {
+  for c in "pkill -x 'node'" 'pkill -x "node"' "pkill 'node'" "pkill -9 'python3'" "killall 'java'" "pkill -x no'de'" \
+           "pkill '-x' node" "pkill '-f' foo" 'pkill "-f" "foo"' "sudo pkill -x 'node'" "sleep 1; pkill -x 'node'" \
+           "kill \$(pgrep -x 'node')" "pgrep -x 'node' | xargs kill" "pidof 'python3' | xargs -r kill -9"; do
+    run decision "$c"
+    assert_output deny
+  done
+  run reason "pkill -x 'node'"
+  assert_output --partial 'PID you hold'
+  # NEGATIVE CONTROL: a quoted name that is no interpreter, a quoted word of a later clause, and quoted
+  # text with a space, `/` or `$` in it stay blanked and pass.
+  for c in "pkill -x 'foo'" "pkill -x 'nodemon'" "pkill -x foo; echo 'node'" "pkill -x 'foo' && echo \"node\"" \
+           "pgrep -x 'node'" "git commit -m 'node'" "git commit -m 'pkill -x node'" "pkill -x 'a node'" \
+           "grep -rn '/' src" "rg -F '/' ." "pkill -x 'foo\$x'"; do
+    run decision "$c"
+    assert_output allow
+  done
+}
+
 @test "no tracked script or config line runs a -f kill: the guard sees only agent Bash calls" {
   # A hypr bind runs under sh -c, so a -f pattern kills that shell first and the rest of the line
   # never runs (keybindings.conf Super+Ctrl+R did; waybar/pin.sh's stop had the same form). The

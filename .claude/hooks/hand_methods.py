@@ -21,8 +21,9 @@ had not moved that (skill-refine's propose-only run, retired 2026-11-05), so a f
 is denied, not reported.
 
 The command is matched as code the way block-poll.py parses it (it owns that parse): heredoc
-bodies dropped, quoted text blanked, `sh -c`/`eval`/`ssh` payloads kept. A grep for the pattern
-is not the pattern.
+bodies dropped, quoted text blanked, `sh -c`/`eval`/`ssh` payloads kept. A quoted string that is
+one plain word stays visible as that word (the shell passes it bare), so a row sees a quoted
+kill target. A grep for the pattern is not the pattern.
 
 The rows are read from every deployed SKILL.md (CLAUDE_SKILLS, default ~/.claude/skills) and
 cached in ~/.cache/claude-hooks/replaces-<root hash>.json, rebuilt when any SKILL.md or this file changes; this module is
@@ -166,11 +167,11 @@ def code_texts(cmd):
     cmd = _BP.strip_heredocs(cmd)
     # A backslash-newline outside quotes is one command line to the shell, and so to a row.
     cmd = cmd.replace("\\\n", " ")
-    texts = _BP.code_texts(cmd, True)
+    texts = _BP.code_texts(cmd, True, True)
     # Inside single quotes `...` and $(...) are literal (a commit message, a PR body), so only
     # substitutions outside them run.
     for sub in re.findall(r"\$\(([^()]*)\)|`([^`]*)`", re.sub(r"'[^']*'", "''", cmd)):
-        texts += _BP.code_texts(sub[0] or sub[1], True)
+        texts += _BP.code_texts(sub[0] or sub[1], True, True)
     return texts
 
 
