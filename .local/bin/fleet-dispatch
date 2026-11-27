@@ -9675,6 +9675,8 @@ promote() {
   [ -n "$qmode" ] || plan=$(plan_row_plan "$brief") || plan=''
   # A plan row whose plan is gone is refused by name, never queued as one session for every phase.
   [ -z "$plan" ] || [ -f "$plan" ] || gone="agent-queue: its plan $plan is gone, so its phases cannot be queued"
+  # A restart of a plan row whose item closed ok would re-queue its landed phases: --repeat skips their guard.
+  [ -z "$plan" ] || [ "$closed" != ok ] || { say "skip $project: $key is a plan row whose item $id closed ok, so it is not restarted"; return 1; }
   # AGENT_QUEUE_START=0 for every caller: add starts only a plan item itself, and each caller of
   # promote starts what it promoted (cmd_start) or leaves it queued for a pass, so add never must.
   if [ -n "$gone" ]; then
