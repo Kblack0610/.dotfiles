@@ -3,7 +3,7 @@
 #
 #   add [--project p] [--mode oneshot|plan] [--priority urgent|high|normal|low] [--tags "t1 t2"]
 #       [--weight heavy|light] [--after slug|row-id[,...]] [--from human|session|shepherd|canary|trainee|research:<facet>|auto:<filer>|item:<slug>|ask:<id>|board:<project>:<key>] [--agent claude] [--slug s] [--title t]
-#       [--row <code>-<N>] [--epic <code>-<N>] [--want <channel>] [--running [--session s]] [--repeat] [task...]    the task from args, or stdin when there are none
+#       [--row <code>-<N>] [--epic <code>-<N>] [--want <channel>] [--checked <id>[,...]] [--running [--session s]] [--repeat] [task...]    the task from args, or stdin when there are none
 #       --running with no --from or --want is from item:<$AGENT_QUEUE_ITEM> in a queue item's session, from session in any
 #       other Claude session, and from human only at a terminal; a hand session records the human's own want with --want human.
 #       A --running add (or a session's own claim) from a worktree session on a machine that is not the fleet lease holder records `host:` too, so the holder's reap checks that worker's tmux (hand_host).
@@ -25,7 +25,9 @@
 #       head, and agent-land refuses it (exit 4) until that slug closed ok. A dependency closed unmerged stays a dead hold. Any other --after holds until that slug closed ok, open PR or not.
 #       --row names the open agent board row this item works on: see link_row. With no --row,
 #       --epic or --want, a title whose subject is one open row id works that row too (named_row).
-#       Any other item not from the board files its own story row: see file_story. A slug that already
+#       Any other item not from the board files its own story row: see file_story. When notes refuses that row for
+#       similar open rows (a hand session's check), nothing is queued (exit AQ_EX_SIMILAR): join one with --row <id>, or
+#       rerun with --checked <the ids it listed> when none is this work, which notes then files. A slug that already
 #       finished ok is refused unless --repeat says this is new work under it: see finished_ok.
 #       An add over the cap (AGENT_QUEUE_CAP runnable items) is not queued: its board row is left un-started, brief and all (exit AQ_EX_HELD); see admit.
 #   add --plan <plan.md> [--dry-run | --check] [--project p] [--priority p] [--tags t] [--weight w] [--after slug[,slug...]] [--slug prefix] [--repeat]
@@ -568,6 +570,9 @@ phases_landed_by() {
 # Re-measure from the queued row of `fleet-bench pipeline`: the tail rate is 0.9 x wip / age p90.
 # Revisit when queued age p90 stays over it at the cap.
 AQ_EX_HELD=5
+# An add whose own story row notes refused for similar open rows (its exit 5, a hand session's check): no
+# item is written, since a rowless item lands a PR no board row records (ar-4657, release-links).
+AQ_EX_SIMILAR=7
 AQ_CAP="${AGENT_QUEUE_CAP:-30}"
 # Minutes a queued item waits before it ranks one tier higher (ORDER's tier, ar-4554); 0 turns it off.
 # Provisional, confidence low (rules.jsonl): 120 takes a low item to high at 240m, inside the 420m
@@ -2023,14 +2028,17 @@ overflow_row() {
 # and so does the row of an item being worked (<keep> empty:
 # its own record, not a follow-up). A kept row from a queue item or runner is its follow-up: notes sends
 # it to the outbox (exit 4), and this prints `inbox` instead of a row; from a session the human opened,
-# notes checks it first and a shortlist of similar rows (exit 5) is reported on stderr, with no row. `--origin agent-queue` is notes-cli's
+# notes checks it first and a shortlist of similar rows (exit 5) is reported on stderr, with no row, and an
+# item's own row (<keep> empty) prints `similar`, which cmd_add refuses; cmd_add's --checked ids
+# (AQ_ADD_CHECKED) go to notes as the ones the session read. `--origin agent-queue` is notes-cli's
 # ORIGIN_STORY (ingest.rs): the ingest record marks the row a story, which `notes log --steps` leaves
 # out of backlog intake; a want or a plan phase is intake, so its row keeps its own origin.
 file_story() {
-  local project text="$2" prio="$3" of="" lab code row out rc=0 id brief detail=() want=() origin=() keep="${7:-}" gates="${8:-}" g gt="" untouched="" rt=() tg=()
+  local project text="$2" prio="$3" of="" lab code row out rc=0 id brief detail=() want=() origin=() keep="${7:-}" gates="${8:-}" g gt="" untouched="" rt=() tg=() checked=()
   ! interrupt_tag "${9:-}" || gates+="${gates:+ }interrupt"
   for g in $gates; do gt+=" #$g"; done
   [ -z "${5:-}" ] || want=(--want "$5")
+  [ -n "$keep" ] || [ -z "${AQ_ADD_CHECKED:-}" ] || checked=("--checked=$AQ_ADD_CHECKED")
   if [ -n "${5:-}" ]; then :
   elif [ -n "${AQ_ITEM_PLAN:-}" ]; then origin=(--origin plan)
   elif [ -z "$keep" ]; then origin=(--origin agent-queue); fi
@@ -2051,15 +2059,17 @@ file_story() {
   # `--detail=`: a brief that opens with a dash is its value, not a flag.
   brief="$(row_brief "$row" "${6:-}")"
   [ -z "$brief" ] || detail=("--detail=$brief")
-  out="$(notes --profile "$lab" ptask "$project" --agent add "${detail[@]}" "${want[@]}" "${origin[@]}" -- "$row${prio:+ #$prio}$of$gt" 2>&1)" || rc=$?
+  out="$(notes --profile "$lab" ptask "$project" --agent add "${detail[@]}" "${want[@]}" "${origin[@]}" "${checked[@]}" -- "$row${prio:+ #$prio}$of$gt" 2>&1)" || rc=$?
   id="$(sed -nE '/.*<!--.*\bid:([a-z0-9]+-[0-9]+).*/{s//\1/p;q;}' <<<"$out")"
   case "$rc" in
     4) if [ -n "$keep" ]; then printf 'inbox\n'
        elif [ -n "${5:-}" ]; then echo "agent-queue: no story row filed on $project: a session's want goes to the outbox for triage, so the item has no row" >&2
        else echo "agent-queue: no story row filed on $project: it went to the outbox, so the item has no row: add agent-queue to agent_direct_filers in the notes config" >&2; fi
        return 0 ;;
-    5) echo "agent-queue: no story row filed on $project: notes lists similar open rows; join the one that is this work, or file it with notes ptask $project --agent add --checked <their ids>:" >&2
-       printf '%s\n' "$out" >&2; return 0 ;;
+    5) printf '%s\n' "$out" >&2
+       [ -n "$keep" ] || { printf 'similar\n'; return 0; }
+       echo "agent-queue: no story row filed on $project: notes lists similar open rows (above); join the one that is this work, or file it with notes ptask $project --agent add --checked <their ids>" >&2
+       return 0 ;;
     0) [ -n "$id" ] || { echo "agent-queue: story row on $project has no id, not linked: ${out##*$'\n'}" >&2; return 0; }
        [ -n "$keep" ] || notes --profile "$lab" ptask "$project" --agent start "$id" >/dev/null 2>&1 ||
          echo "agent-queue: story row $id on $project could not be started" >&2 ;;
@@ -2368,12 +2378,22 @@ client_set_guard() {
   done
 }
 
+# story_refused <story> <slug> <project>: an add whose own story row was refused queues nothing and exits:
+# 6 for the daily cap or a gate (file_story's `gated`), AQ_EX_SIMILAR for notes' similar-rows shortlist (`similar`).
+story_refused() {
+  case "$1" in
+    gated) echo "agent-queue: $2 is not queued: its board row was refused by the daily cap or the gate (the reason is above)" >&2; exit 6 ;;
+    similar) echo "agent-queue: $2 is not queued: notes lists similar open rows on $3 (above). Join the one that is this work with agent-queue add --row <id>, or rerun this add with --checked <the ids listed> when none is" >&2
+      exit "$AQ_EX_SIMILAR" ;;
+  esac
+}
+
 # cmd_add: an add over the admission cap that already has its row (--row, or a board pull from
 # promote) leaves that row where it is. Only one with no row gets an overflow row: a board pull's
 # overflow row was a twin that dispatch skipped to the human sheet beside the first (2026-11-25).
 cmd_add() {
   local project="" mode=oneshot priority=high tags="" after="" from=human agent=claude slug=""
-  local running="" session="" task=() tag planf="" dry="" check="" weight="" title="" epic="" repeat="" from_given="" want="" row="" priority_given=""
+  local running="" session="" task=() tag planf="" dry="" check="" weight="" title="" epic="" repeat="" from_given="" want="" row="" priority_given="" AQ_ADD_CHECKED=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) project="${2:?}"; shift 2 ;;
@@ -2389,6 +2409,7 @@ cmd_add() {
       --epic) epic="${2:?}"; shift 2 ;;
       --want) want="${2:?}"; ! headless || die "--want names a human's channel; a headless Claude run ($CLAUDE_CODE_ENTRYPOINT) has no human at hand, so its add carries none"; shift 2 ;;
       --row) row="${2:?}"; shift 2 ;;
+      --checked) AQ_ADD_CHECKED="${AQ_ADD_CHECKED:+$AQ_ADD_CHECKED,}$(word_list "${2:?}" | tr ' ' ,)"; shift 2 ;;
       --running) running=1; shift ;;
       --session) session="${2:?}"; shift 2 ;;
       --plan) planf="${2:?}"; shift 2 ;;
@@ -2523,15 +2544,14 @@ cmd_add() {
   # every queue reader (ar-5606). Back under the lock, the slug, a cause: owner and the cap are checked
   # again, since another add may have come in meanwhile; a row this add filed stays for dispatch to promote.
   unlock
-  local story='' sboard='' sprof='' srow='' linked_row=''
-  # No story row for work with its own record: a canary (fleet-bench canary), a trainee review (the trainee's row), an ask's resume (the ask).
+  local story='' sboard='' sprof='' srow='' linked_row='' linked
+  # No story row for work with its own record: a canary, a trainee review (the trainee's row), an ask's resume (ask-resume sets its row).
   case "$from" in
     board:* | canary | trainee | ask:*) ;;
     *) if [ -n "$row" ]; then
          # A row moved to another sheet keeps its id, so its code can name the sheet it left; the
          # sheet the caller named is the other one it can be open on (apo-108 on dodginballs,
          # 2026-11-10). Neither: the code sheet's refusal, as before.
-         local linked
          if linked="$(link_row "$row" "$project" 2>&1)"; then
            story="$linked"
          elif [ "$project" != "$resolved" ] && story="$(link_row "$row" "$resolved" 2>/dev/null)"; then
@@ -2549,7 +2569,7 @@ cmd_add() {
          [ -n "$story" ] || { story="$(file_story "$project" "${title:-$(head -1 <<<"$text")}" "$priority" "$epic" "$want" "$text" "" "" "$tags")"; priority_given=''; }
        fi ;;
   esac
-  case "$story" in gated) echo "agent-queue: $slug is not queued: its board row was refused by the daily cap or the gate (the reason is above)" >&2; exit 6 ;; ?*) IFS=$'\t' read -r sboard sprof srow <<<"$story" ;; esac
+  story_refused "$story" "$slug" "$project"; [ -z "$story" ] || IFS=$'\t' read -r sboard sprof srow <<<"$story"
   [ -z "$linked_row" ] || brief_to_row "$sboard" "$sprof" "$srow" "$text"
   # A --running add that named no priority records its row's (ar-4374: a default high made 167 of 641
   # high done items, 11-19..21, session records of normal rows).
