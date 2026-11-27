@@ -5,6 +5,7 @@
 #   store-sync join [--keep-dirty]                   make this agent-store clone a peer (once per machine)
 #   store-sync merge-derived <base> <ours> <theirs> <path>   git's `derived` merge driver (below)
 #   store-sync merge-item <base> <ours> <theirs> <path>      git's `item` merge driver for queue items (below)
+#   store-sync merge-note <base> <ours> <theirs> <path>      git's `note` merge driver for a day's wind-down note (below)
 #   store-sync merge-lease <base> <ours> <theirs> <path>     git's `lease` merge driver for singleton state (below)
 #
 # Two stores ride this one engine. agent (the default) is ~/.agent: agent-queue and agent-ask run
@@ -183,12 +184,16 @@ apply_merge_drivers() {
   # bench/findings.last, dispatch/headroom.json, dispatch/idle). This file outranks the tracked one and
   # the last match wins, so the shepherd logs go back to union after `shepherd/*`, and its hand-written
   # standing orders to a text merge. A missing line is appended, so a new one only ever goes last.
-  local lease=()
-  [ "$STORE_NAME" = agent ] && lease=('shepherd/* merge=lease' 'shepherd/.* merge=lease'
+  local agent_attrs=()
+  [ "$STORE_NAME" = agent ] && agent_attrs=('shepherd/* merge=lease' 'shepherd/.* merge=lease'
     'dispatch/headroom.json merge=lease' 'dispatch/idle merge=lease' 'bench/*.last merge=lease'
     'releases/state.json merge=lease' 'shepherd/*.jsonl merge=union' 'shepherd/*.log merge=union'
     'shepherd/log.md merge=union' 'shepherd/orders.md !merge')
-  for a in 'queue/*/*.md merge=item' 'queue/done/*/*.md merge=item' "${lease[@]}"; do
+  # A day's wind-down note merge=note (ar-4023), set the same way: this file outranks the tracked
+  # `merge=union` line, which folded two machines' wrap-ups into one. A peer whose dotfiles predate
+  # this still merges by that union line until it updates.
+  [ "$STORE_NAME" = agent ] && agent_attrs+=('sessions/*/*-wind-down.md merge=note')
+  for a in 'queue/*/*.md merge=item' 'queue/done/*/*.md merge=item' "${agent_attrs[@]}"; do
     grep -qxF "$a" "$attrs" 2>/dev/null || { printf '%s\n' "$a" >> "$attrs" && rm -f "$CONFLICT" "$CONFLICT"-*; }
   done
   # A requeue of the only running item empties running/ into queued/, which git reads as a directory
@@ -197,6 +202,8 @@ apply_merge_drivers() {
   [ "$(g config --get merge.directoryRenames)" = false ] || g config merge.directoryRenames false
   [ "$(g config --get merge.item.driver)" = "$me merge-item %O %A %B %P" ] ||
     { g config merge.item.driver "$me merge-item %O %A %B %P" && rm -f "$CONFLICT" "$CONFLICT"-*; }
+  [ "$(g config --get merge.note.driver)" = "$me merge-note %O %A %B %P" ] ||
+    { g config merge.note.driver "$me merge-note %O %A %B %P" && rm -f "$CONFLICT" "$CONFLICT"-*; }
   [ "$(g config --get merge.lease.driver)" = "$me merge-lease %O %A %B %P" ] ||
     { g config merge.lease.driver "$me merge-lease %O %A %B %P" && rm -f "$CONFLICT" "$CONFLICT"-*; }
   want="$me merge-derived %O %A %B %P"
@@ -314,6 +321,47 @@ cmd_merge_derived() {
     && cat "$tmp/out" > "$2"
   local rc=$?
   rm -rf "$tmp"
+  return "$rc"
+}
+
+# cmd_merge_note <base> <ours> <theirs> <path>: the driver for a day's wind-down note, leaving the
+# result in <ours>. A clean text merge stands. Otherwise the local note stays whole and each
+# `# Session wrap-up` block the other side added follows, a blank line apart, so it never conflicts:
+# a block counts as added when the other side holds more copies of it than both the base and this
+# side do, so a base block is never re-added and a block this side already took from a third peer
+# is not doubled (two byte-identical blocks added on both sides keep one copy; a block names its session). A base block
+# the other side edited in place while this side appended comes back as its edited copy after this
+# side's blocks, beside the old one: a duplicate, never a loss. Every session appends a block to the
+# day's note, and two machines' blocks appended at once always clash at the end of the file; the
+# union merge this replaces kept the lines the two blocks share (`## Done`, `- Nothing.`) once and
+# folded both under one header (70c4594d1 in the store, 2026-11-24, and most two-sided merges since;
+# ar-4023).
+cmd_merge_note() {
+  [ $# -eq 4 ] || die "merge-note needs <base> <ours> <theirs> <path>"
+  local tmp
+  tmp=$(mktemp) || return 1
+  if ! git merge-file -q -p "$2" "$1" "$3" > "$tmp"; then
+    local lead='\n'
+    [ -n "$(tail -n1 -- "$2" | tr -d '[:space:]')" ] || lead=''
+    { cat -- "$2"
+      [ -z "$(tail -c1 -- "$2")" ] || echo
+      awk -v lead="$lead" 'function flush(  k) {
+             k = b; sub(/\n+$/, "\n", k)
+             if (k ~ /[^[:space:]]/) {
+               if (bf == 1) inbase[k]++
+               else if (bf == 2) inours[k]++
+               else if (++seen[k] > (inours[k] > inbase[k] ? inours[k] : inbase[k])) { printf "%s%s", lead, k; lead = "\n" }
+             }
+             b = ""
+           }
+           f != bf || /^# Session wrap-up/ { flush(); bf = f }
+           { b = b $0 "\n" }
+           END { flush() }' f=1 "$1" f=2 "$2" f=3 "$3"
+    } > "$tmp.out" && mv -f "$tmp.out" "$tmp" || { rm -f "$tmp" "$tmp.out"; return 1; }
+  fi
+  cat "$tmp" > "$2"
+  local rc=$?
+  rm -f "$tmp"
   return "$rc"
 }
 
@@ -809,6 +857,7 @@ case "${1:-}" in
   join) shift; cmd_join "$@" ;;
   merge-derived) shift; cmd_merge_derived "$@" ;;
   merge-item) shift; cmd_merge_item "$@" ;;
+  merge-note) shift; cmd_merge_note "$@" ;;
   merge-lease) shift; cmd_merge_lease "$@" ;;
   -h | --help) usage ;;
   *) cmd_sync "$@" ;;
