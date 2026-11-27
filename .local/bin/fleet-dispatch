@@ -8872,12 +8872,9 @@ assess_why() {
     [[ "$v" == "HOLD held, load "* ]] && return 0
   else
     v=$(fleet-assess --watch-probe 2>/dev/null) && return 0
-    [ "$1" != 1 ] || [[ "$v" == "HOLD tctl "*" critical"* ]] || return 0
   fi
-  case $v in
-    "HOLD tctl "*" critical"*) echo "fleet-assess says ${v%% (*}" ;;
-    *) echo "fleet-assess says HOLD" ;;
-  esac
+  if [[ "$v" == "HOLD tctl "*" critical"* ]]; then echo "fleet-assess says ${v%% (*}"; return; fi
+  [ "$1" = 1 ] || echo "fleet-assess says HOLD"
 }
 
 # machine_why -> this machine's own holds (assess_why, load_why), "; "-joined, or nothing.
