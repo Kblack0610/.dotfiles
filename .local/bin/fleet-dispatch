@@ -5047,17 +5047,20 @@ ask_decisions() {
 }
 
 # cause_line <item> <tags>: a `cause` item's brief (fleet-bench triage queues one for a watch whose red came back
-# after TRIAGE_CAUSE_BACKS merged fixes): every earlier fix's PR, read from the queue now (fleet-bench triage
-# --backs), whose body holds that fix's probe output before and after (fix-red step 5), and where the probe's
-# output stands now. A queue it cannot read still gets the task, pointing at fleet-bench reds.
+# after TRIAGE_CAUSE_BACKS merged fixes): every fix of its cause merged before it was queued, read from the queue
+# now (fleet-bench triage --backs; a superset of those triage counted to the trip), each PR body holding that fix's
+# probe output before and after (fix-red step 5), and the watch's probe output file when it has one. A queue it
+# cannot read still gets the task, pointing at fleet-bench reds.
 cause_line() {
-  local c q w fixes
+  local c q w out fixes probe
   c=$(grep -oE ' cause:[^ ]+' <<<"$2" | awk 'NR == 1 { print substr($1, 7) }')
   q=$(jq -r '(.queued // "") | sub("\\.[0-9]+"; "") | fromdateiso8601? // empty' <<<"$1")
   w=$(jq -r '.title // .task // ""' <<<"$1" | sed -nE '1s/^check\(watch\): ([^ ]+).*/\1/p')
-  fixes=$([ -z "$c" ] || [ -z "$q" ] || fleet-bench triage --backs "$c" "$q" 2>/dev/null |
-    awk -F'\t' '{ printf "%s%s (item %s, finished %s)", (NR > 1 ? ", " : ""), $2, $1, $3 }')
-  echo "Its red came back after each earlier fix merged${fixes:+: $fixes}${fixes:- (fleet-bench reds lists them, cause:$c)}. So this is its cause item, the one item for it while it is open: no fresh fix a trip. Each PR body holds that fix's probe output before and after (fix-red step 5)${w:+; the probe output now is ~/.local/state/watch-companion/$w.out}. Before any fix, do the root-cause pass of fix-red section 3 across all of them: what they share and why each did not hold, said on the item. If this one does not hold either, triage asks the human once."
+  out=$([ -z "$c" ] || [ -z "$q" ] || fleet-bench triage --backs "$c" "$q" ${w:+"$w"} 2>/dev/null)
+  fixes=$(awk -F'\t' '$1 != "probe" { printf "%s%s (item %s, finished %s)", (n++ ? ", " : ""), $2, $1, $3 }' <<<"$out")
+  probe=$(awk -F'\t' '$1 == "probe" { print $2 }' <<<"$out")
+  [ -n "$fixes" ] && fixes=": $fixes" || fixes=" (fleet-bench reds lists them, cause:$c)"
+  echo "Its red came back after each earlier fix merged$fixes. So this is its cause item, the one item for it while it is open: no fresh fix a trip. Each PR body holds that fix's probe output before and after (fix-red step 5)${probe:+; the probe output now is in $probe}. Before any fix, do the root-cause pass of fix-red section 3 across all of them: what they share and why each did not hold, said on the item. If this one does not hold either, triage asks the human once."
 }
 
 # item_brief <item json> [harness] -> the prompt a queue item's session starts on: plan mode gets

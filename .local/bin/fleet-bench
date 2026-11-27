@@ -135,7 +135,7 @@
 #                                harness: each cell proven, failing, excluded, no work, or empty
 #   fleet-bench room             exit 1 while board_days is past board_days_max; information only,
 #                                no filer holds on it
-#   fleet-bench triage [--dry-run|--causes|--coverage|--route <key>...|--backs <cause> <epoch>]
+#   fleet-bench triage [--dry-run|--causes|--coverage|--route <key>...|--backs <cause> <epoch> [<watch>]]
 #                                one agent-board row per FAILED or STALLED scheduled runner, failed
 #                                user unit, Sentinel watch tripped past TRIAGE_WATCH_AFTER, runner
 #                                stderr error signature recurring in BENCH_GUARD_RECUR runs and
@@ -150,7 +150,8 @@
 #                                runner and the hold row no line resolves, each owned:<row> route
 #                                whose row is not open, and each runner whose SKILL names nothing; --backs prints a
 #                                cause's fixes merged in TRIAGE_FIX_DAYS before <epoch> (slug, PR,
-#                                finished), the earlier fixes a cause item's brief lists
+#                                finished), the earlier fixes a cause item's brief lists, then
+#                                the watch's probe output file when given its watch
 #   fleet-bench health [--coverage]
 #                                one row for each part of the fleet (the sections above the
 #                                ARCHITECTURE Flows table and its rows): the Sentinel watches whose
@@ -5773,7 +5774,8 @@ triage_kind() { case "$1" in 'check(watch): '*) echo ' watch' ;; 'check(alert): 
 # A tripped watch whose red came back after TRIAGE_CAUSE_BACKS or more merged fixes in the window (cause_backs)
 # gets no fresh try a trip: it gets one item tagged `cause`, pinned to TRIAGE_ESCALATE_MODEL, its retry:
 # naming those items; its brief (fleet-dispatch item_brief) lists each fix's PR. While it is open it stands for
-# the cause (cause_tries); once it closed in the window and the red is back, the cause is spent. Agent route only.
+# the cause (cause_tries); once it closed this trip, or held under TRIAGE_PROVES_MAX before it, the cause is
+# spent. Not on an alert or owned route, whose merges are beside the red.
 triage_promote() {
   local board key raw route cause tags items used trip tries more kind n=0 capped=0 seen=' ' model backs
   $TRIAGE_HOLD_CMD >/dev/null 2>&1 || { echo 0; return 0; }
@@ -5792,14 +5794,18 @@ triage_promote() {
     [[ "$tries" =~ ^-?[0-9]+$ ]] || continue
     backs=''
     # an alert or owned route's merges were beside its red (cause_tries), so none came back
-    if [ -n "$trip" ] && [ "$route" = agent ] && [ "$tries" -ge 0 ]; then
-      backs=$(cause_backs "$items" "$cause" "$trip")
-      if [ "$(grep -c . <<<"$backs")" -lt "$TRIAGE_CAUSE_BACKS" ]; then backs=''
-      elif jq -e --arg c " cause:$cause " "$JQ_LIB$CAUSE_JQ"'any(cause_items[]; tagged("cause"))' <<<"$items" >/dev/null; then
-        # its cause item did not hold either: spent, never a second, and its ask names every item of the window
-        tries=$((TRIAGE_FIX_TRIES + 1)) trip=''
-      fi
-    fi
+    case "$route" in alert | owned:?*) ;; *)
+      if [ -n "$trip" ] && [ "$tries" -ge 0 ]; then
+        backs=$(cause_backs "$items" "$cause" "$trip")
+        if [ "$(grep -c . <<<"$backs")" -lt "$TRIAGE_CAUSE_BACKS" ]; then backs=''
+        elif jq -e --arg c " cause:$cause " --argjson after "$(( trip - TRIAGE_PROVES_MAX ))" "$JQ_LIB$CAUSE_JQ"'
+            any(cause_items[]; tagged("cause") and ((.finished | ep) // 0) >= $after)' <<<"$items" >/dev/null; then
+          # its cause item closed this trip or held under TRIAGE_PROVES_MAX before it: spent, never a second,
+          # and its ask names every item of the window. One that held longer leaves room for one new cause item.
+          tries=$((TRIAGE_FIX_TRIES + 1)) trip=''
+        fi
+      fi ;;
+    esac
     if [ "$tries" -gt "$TRIAGE_FIX_TRIES" ]; then
       [[ $'\n'"$spent" != *$'\n'"$cause"$'\t'* ]] || continue   # one ask a cause, however many rows it has
       spent+="$cause"$'\t'"$key"$'\t'"$(triage_spent_ask "$cause" "$key" "$(cause_slugs "$items" "$cause" "$trip")" "$items")"$'\n'
@@ -6451,9 +6457,11 @@ cmd_triage() {
     --backs)
       # A cause item's earlier fixes, read from the queue at its start (fleet-dispatch item_brief): the
       # record, never a copy carried on the item.
-      [ -n "${2:-}" ] && [[ "${3:-}" =~ ^[0-9]+$ ]] || { say "usage: fleet-bench triage --backs <cause> <before epoch>"; return 2; }
+      # Given its watch, a last `probe TAB <file>` line names the watch's probe output now, when it has one.
+      [ -n "${2:-}" ] && [[ "${3:-}" =~ ^[0-9]+$ ]] || { say "usage: fleet-bench triage --backs <cause> <before epoch> [<watch>]"; return 2; }
       q=$(triage_items) || { say "triage --backs: cannot read the queue ($TRIAGE_ITEMS_CMD)"; return 1; }
       cause_backs "$q" "$2" "$3"
+      [ -z "${4:-}" ] || [ ! -s "$TRIAGE_WATCH_STATE/$4.out" ] || printf 'probe\t%s\n' "$TRIAGE_WATCH_STATE/$4.out"
       return 0
       ;;
     --coverage)
@@ -6461,7 +6469,7 @@ cmd_triage() {
       [ -z "$rows" ] || { echo "$rows"; return 1; }
       return 0
       ;;
-    *) say "usage: fleet-bench triage [--dry-run|--causes|--coverage|--route <key>...|--backs <cause> <before epoch>]"; return 2 ;;
+    *) say "usage: fleet-bench triage [--dry-run|--causes|--coverage|--route <key>...|--backs <cause> <before epoch> [<watch>]]"; return 2 ;;
   esac
   TRIAGE_GONE=$(triage_reset_gone "$dry")
   gone=$(grep -c . <<<"$TRIAGE_GONE")

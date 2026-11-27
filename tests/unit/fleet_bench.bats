@@ -2739,6 +2739,10 @@ fix_item() {
   run "$SUBJECT" triage --backs "$want" $((T0 - 25200))
   assert_success
   assert_output "$(printf 'ar-1\to/r#5\t%s\nar-3\to/r#6\t%s' "$older" "$old")"
+  # given its watch, the probe output file follows, when the watch has one
+  echo 'red: x' > "$TRIAGE_WATCH_STATE/links.out"
+  run "$SUBJECT" triage --backs "$want" $((T0 - 25200)) links
+  assert_line --index 2 "$(printf 'probe\t%s' "$TRIAGE_WATCH_STATE/links.out")"
   # NEGATIVE CONTROL: with the cause branch off (a bar no watch reaches), the same queue gets a fresh per-trip item
   : > "$PLOG"
   TRIAGE_CAUSE_BACKS=99 run "$SUBJECT" triage
@@ -2760,6 +2764,14 @@ fix_item() {
   run grep -c '^post ' "$ASKLOG"
   assert_output 1
   grep -q "ar-1,ar-3,ar-4" "$ASKLOG"
+  # one that held past TRIAGE_PROVES_MAX before this trip leaves room for one new cause item, naming it too
+  : > "$ITEMS"; : > "$ASKLOG"; rm -f "$XDG_STATE_HOME/agentctl/triage-spent"
+  fix_item ar-1 "$older" o/r#5; fix_item ar-3 "$old" o/r#6
+  fix_item ar-4 "$(date -u -d "@$((T0 - 25200 - 90000))" +%FT%TZ)" o/r#7 cause
+  run "$SUBJECT" triage
+  assert_success
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --model opus --tags red watch cause:$want cause retry:ar-1,ar-4,ar-3 --raw "
 }
 
 # ar-4064: one row whose board add failed returned from board_upsert, so the pass queued no red fix.
