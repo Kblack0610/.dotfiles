@@ -1161,6 +1161,45 @@ close_queued() {
   [ ! -d "$SANDBOX/e/.sync/lost" ] || [ -z "$(ls -A "$SANDBOX/e/.sync/lost")" ]
 }
 
+# close_run <machine> <slug> <finished> [<extra header line>]: agent-queue closing a running item ok.
+close_run() {
+  mkdir -p "$SANDBOX/$1/queue/done/2026-11-26"
+  sed "s/^---\$/pr: o#9\nmerged: abc123\n${4:+$4\\n}status: ok\nfinished: $3\n---/" \
+    "$SANDBOX/$1/queue/running/$2.md" > "$SANDBOX/$1/queue/done/2026-11-26/$2.md"
+  rm "$SANDBOX/$1/queue/running/$2.md"
+}
+
+@test "two ok closes of one item keep the earlier finished: and both sides' other keys, with no lost file, whichever syncs first (ar-3439)" {
+  local s
+  # agent-land on razer-laptop closed hc-1128 ok with landed_by:, the fleet home closed it ok 43 seconds later (2026-11-26)
+  peer a; run_item a k1; peer b
+  close_run a k1 2026-11-27T01:54:41Z 'landed_by: s1=o#9'; close_run b k1 2026-11-27T01:55:24Z
+  on a --now; run on b --now
+  assert_success
+  peer c; run_item c k2; peer d
+  close_run c k2 2026-11-27T01:54:41Z 'landed_by: s1=o#9'; close_run d k2 2026-11-27T01:55:24Z
+  on d --now; run on c --now
+  assert_success
+  for s in k1 k2; do
+    run show "$ORIGIN" "queue/done/2026-11-26/$s.md"
+    assert_line 'status: ok'
+    assert_line 'landed_by: s1=o#9'
+    assert_line 'finished: 2026-11-27T01:54:41Z'
+    refute_line 'finished: 2026-11-27T01:55:24Z'
+    refute_output --partial '<<<<<<<'
+  done
+  for s in b c; do
+    [ ! -d "$SANDBOX/$s/.sync/lost" ] || [ -z "$(ls -A "$SANDBOX/$s/.sync/lost")" ] || fail "$s wrote a lost file"
+  done
+  # negative control: two ok closes that also set another key two ways still keep a lost copy
+  peer e; run_item e k3; peer f
+  close_run e k3 2026-11-27T01:54:41Z 'note: closed on e'; close_run f k3 2026-11-27T01:55:24Z 'note: closed on f'
+  on e --now; run on f --now
+  assert_success
+  run cat "$SANDBOX/f/.sync/lost/"queue__done__2026-11-26__k3.md.lost-*
+  assert_line 'note: closed on e'
+}
+
 @test "a clone set up with the old close driver moves to the item driver" {
   peer a
   printf 'queue/done/*/*.md merge=close\n' > "$SANDBOX/a/.git/info/attributes"
