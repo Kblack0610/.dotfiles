@@ -59,8 +59,11 @@ SO_PR_JQ='
 # assignments, wrappers with their options, `timeout N`, `flock FILE` and if/while/until/do/then/else/!, any path,
 # the text and a boundary. agent-usage-burn.py matches the same way;
 # tests/fixtures/time-use-commands.tsv holds the three readers to it.
+# SO_TU_START: the regex (a jq string body) up to where a command word starts, shared by the lines below and
+# by time_use_wrapper_paths.
+SO_TU_START='(^|[;&|(\\n`])\\s*((\\w+=\\S*|(env|nice|xargs|sudo|nohup|exec|command|time|stdbuf|setsid|ionice|sh|bash|zsh)(\\s+-n\\s+[0-9]+|\\s+-\\S+)*|timeout(\\s+-\\S+)*\\s+[0-9]\\S*|flock(\\s+-\\S+)*\\s+\\S+|if|while|until|do|then|else|!)\\s+)*'
 SO_TIME_USE_LINES="$(jq -Rsc '[splits("\n") | gsub("^\\s+|\\s+$"; "") | capture("^(?<kind>gate|test|build)\\s+(?<text>.*)$")
-  | .re = "(^|[;&|(\\n`])\\s*((\\w+=\\S*|(env|nice|xargs|sudo|nohup|exec|command|time|stdbuf|setsid|ionice|sh|bash|zsh)(\\s+-n\\s+[0-9]+|\\s+-\\S+)*|timeout(\\s+-\\S+)*\\s+[0-9]\\S*|flock(\\s+-\\S+)*\\s+\\S+|if|while|until|do|then|else|!)\\s+)*(\\S*/)?"
+  | .re = "'"$SO_TU_START"'(\\S*/)?"
       + (.text | gsub("(?<c>[\\\\.^$|?*+()\\[\\]{}])"; "\\\(.c)")) + "($|[^\\w.])"]' \
   "${TIME_USE_CONF:-$SO_LIB/../../.config/agent-panel/time-use.conf}" 2>/dev/null)" || SO_TIME_USE_LINES='[]'
 [ "$SO_TIME_USE_LINES" != '[]' ] ||
@@ -73,6 +76,13 @@ SO_PR_JQ="$SO_PR_JQ
     gsub("(?<!<)<<(?!<)-?[ \\t]*(?<q>[\u0027\"]?)(?<w>[A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_])\\k<q>(?<rest>[^\\n]*)(?:\\n[^\\n]*)*?\\n[ \\t]*\\k<w>[ \\t]*(?![^\\n])"; "\(.rest)")
     | gsub("(?:^|(?<=[\\s;&|(`/]))(?<sh>(?:ba|z)?sh(?:\\s+-\\S+)*?\\s+-[a-z]*c\\s+)(?:\u0027(?<sq>[^\u0027]*)\u0027|\"(?<dq>(?:\\\\.|[^\"\\\\])*)\")"; "\(.sh)\n\(.sq // .dq)\n")
     | gsub("\u0027[^\u0027]*\u0027|\"(?:\\\\.|[^\"\\\\])*\""; "\u0027\u0027");
+  # The files a command runs by path (a command word with a `/` or ending `.sh`, joined to $cwd), the
+  # candidates for a session-written script; time_use.rs `wrapper_wait` reads their text.
+  def time_use_wrapper_paths($cwd):
+    time_use_unquoted as $u
+    | [$u | match("'"$SO_TU_START"'(?<w>[^\\s;&|(`-][^\\s;&|(`]*)"; "g") | .captures[] | select(.name == "w") | .string
+        | select(contains("/") or endswith(".sh"))
+        | if startswith("/") then . else $cwd + "/" + . end] | unique;
   def time_use_class:
     . as $c
     | [time_use_lines[] | select(.text as $t | $c | contains($t))]
@@ -151,7 +161,8 @@ so_mapped_repos() {
 # plan_gate counts ExitPlanMode calls and how many of them plan-standard.sh denied;
 # the human rejecting a plan is `denied` under hard_errors, not a gate denial.
 so_transcript_metrics() {
-  jq -nR --argjson sigs "${2:-[]}" "$CLAUDE_END_JQ$SO_PR_JQ"'
+  local m
+  m=$(jq -nR --argjson sigs "${2:-[]}" "$CLAUDE_END_JQ$SO_PR_JQ"'
     def text_of: if type == "string" then .
                  elif type == "array" then ([.[]? | .text? // empty] | join("\n"))
                  else "" end;
@@ -159,7 +170,7 @@ so_transcript_metrics() {
       { pr_ids: {}, lesson_ids: {}, done_ids: {}, prs: [], entrypoint: null,
         interrupts: 0, lessons_written: 0, proof: 0, unverified: 0,
         api_error: 0, denied: 0, tool_errors: 0,
-        tool_calls: 0, test_runs: 0, ci_polls: 0, messages: {}, since_edit: {},
+        tool_calls: 0, test_runs: 0, ci_polls: 0, wrap: {}, messages: {}, since_edit: {},
         plan_exits: 0, plan_denied: 0, guards: {}, lesson_hits: {},
         compactions: { auto: 0, manual: 0 },
         uses: { subagents: {}, skills: {}, slash: {} } };
@@ -189,6 +200,10 @@ so_transcript_metrics() {
               | ($c | time_use_class) as $k
               | .test_runs += (if $k == "test" then 1 else 0 end)
               | .ci_polls += (if $k == "gate" then 1 else 0 end)
+              | (if $k == "jobs" and ($r.cwd | type) == "string" and $r.cwd != "" then
+                   ($c | time_use_wrapper_paths($r.cwd)) as $w
+                   | if ($w | length) > 0 then .wrap[$w | tojson] += 1 else . end
+                 else . end)
               | (if ($c | test("\\bgit\\s+commit\\b")) then .since_edit = {} else . end)
               | (if ($c | pr_cmd) then .pr_ids[$u.id] = true else . end)
               | (if ($c | test("(>>|tee\\s+-a)\\s*\\S*\\.agent/lessons/")) then .lesson_ids[$u.id] = true else . end)
@@ -253,8 +268,37 @@ so_transcript_metrics() {
         activity: { tool_calls, test_runs, ci_polls, api_messages: (.messages | length),
                     tokens: (.messages | add // 0), tokens_after_last_edit: (.since_edit | add // 0),
                     compactions },
-        uses }
-  ' < "$1"
+        uses, wrap }
+  ' < "$1") || return 1
+  so_wrapper_adjust <<<"$m"
+}
+
+# so_wrapper_adjust - stdin: so_transcript_metrics' object with its `wrap` (script paths of the commands that
+# named no gate or test line, counted per command). stdout: the object without it, a command whose script's
+# text runs a test counted in test_runs, a gate in ci_polls: the strongest class of its scripts wins, as in
+# time_use.rs `wrapper_wait`. A script gone from disk or over SO_WRAPPER_MAX_BYTES is a plain job, and the
+# class is the file's text now.
+SO_WRAPPER_MAX_BYTES=65536
+so_wrapper_adjust() {
+  local m p classes='{}'
+  local -a files=()
+  m=$(cat) || return 1
+  if [ "$SO_TIME_USE_LINES" != '[]' ]; then
+    while IFS= read -r p; do
+      [ -n "$p" ] && [ -f "$p" ] && [ "$(stat -c %s "$p" 2>/dev/null || echo $((SO_WRAPPER_MAX_BYTES + 1)))" -le "$SO_WRAPPER_MAX_BYTES" ] && files+=("$p")
+    done < <(jq -r '[(.wrap // {}) | keys[] | fromjson[]] | unique[]' <<<"$m")
+    if [ "${#files[@]}" -gt 0 ]; then
+      classes=$(jq -nR "$SO_PR_JQ"'reduce inputs as $l ({}; .[input_filename] += $l + "\n") | map_values(time_use_class)' "${files[@]}") || classes='{}'
+    fi
+  fi
+  jq --argjson cls "$classes" '
+    def rank: {gate: 3, test: 2, build: 1}[.] // 0;
+    reduce ((.wrap // {}) | to_entries[]) as $e (.;
+      (($e.key | fromjson) | map($cls[.] // "jobs") | max_by(rank) // "jobs") as $k
+      | if $k == "test" then .activity.test_runs += $e.value
+        elif $k == "gate" then .activity.ci_polls += $e.value
+        else . end)
+    | del(.wrap)' <<<"$m"
 }
 
 # so_project_of DIR -> the project an opencode or Codex session in DIR files under: the resolver's
