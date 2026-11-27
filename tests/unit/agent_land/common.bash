@@ -172,7 +172,13 @@ merge-tree) [ ! -f "$NOTES_FIXTURE/tree.conflicts" ] || { : >"$NOTES_FIXTURE/mer
 # after-merge: the base's .agent-land/after-merge (none when absent); any other show prints nothing
 show) case "$2" in *:.agent-land/after-merge) cat "$NOTES_FIXTURE/after-merge" 2>/dev/null || exit 128 ;; esac ;;
 # diff.status: what `git diff --name-status` prints (nothing when absent)
-diff) cat "$NOTES_FIXTURE/diff.status" 2>/dev/null || true ;;
+# base.files: the files the base moved by (diff HEAD...<base>; diff.status when absent);
+# head.files: the head's own changes (diff <mb> HEAD; nothing when absent)
+diff) case "${*: -1}" in
+  HEAD...*) cat "$NOTES_FIXTURE/base.files" 2>/dev/null || cat "$NOTES_FIXTURE/diff.status" 2>/dev/null || true ;;
+  HEAD) cat "$NOTES_FIXTURE/head.files" 2>/dev/null || true ;;
+  *) cat "$NOTES_FIXTURE/diff.status" 2>/dev/null || true ;;
+  esac ;;
 # no.workflows: the head has no Actions workflow dir (it has .github/workflows by default)
 ls-tree) [ -f "$NOTES_FIXTURE/no.workflows" ] || echo .github/workflows ;;
 # ci.shape: a workflow at HEAD runs shape-grow (none does by default, so agent-land runs it)
