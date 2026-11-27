@@ -14,7 +14,7 @@
 #
 # Steps, stopping at the first failure: head (HEAD must be the PR's head commit, before the body is
 # touched; else the merge would be refused as "Head branch was modified": run from the PR's own
-# checkout; a HEAD that is origin's tip of the PR branch is a fresh push, waited on until the PR reads it), fetch (a head behind origin/<base> is merged up to it, each clean submodule checkout on its old pin moved to the merged one (submodule_follow), and pushed, before the checks and again after them if the base moved on during them, unless what it gained can affect no test the head's run picked (moved_misses_pick); a head pushed after them waits on its own checks before it merges, and on a base without strict checks a second move, or a first that can affect no test the head's run ran (moved_misses_pick), lands that green head behind it, catch_up), item-line
+# checkout; a HEAD that is origin's tip of the PR branch is a fresh push, waited on until the PR reads it), fetch (a head behind origin/<base> is merged up to it, each clean submodule checkout on its old pin moved to the merged one (submodule_follow), and pushed, before the checks and again after them if the base moved on during them, unless what it gained can affect no test the head's run picked (moved_misses_pick) and changes no file the head changes (base_touches_head); a head pushed after them waits on its own checks before it merges, and on a base without strict checks a second move, or a first that can affect no test the head's run ran (moved_misses_pick), lands that green head behind it unless the base's new commits change a file the head changes (base_touches_head), catch_up), item-line
 # (before the checks, the PR body gets the line "Item: <slug>" unless it has it, so a reader holding
 # only the PR finds its work item; a stale "Item:" line is rewritten, except on a merged PR where another queue item's line stays), review (a tier-3 item's body has a
 # "Review:" line, review_gate), loose (a plan phase's item filed no open agent row its plan does not take, loose_gate), shape (no function over 150 lines gets longer and no copy is added, shape-grow, run by CI where a workflow names it and here otherwise; each "Split:" or "Dup:" escape line names an open row that names what it covers, shape_gate), checks (the PR's checks pass: CI, a required check; a cancelled check is no pass, waited on while a run on the head goes on, and on GitHub so is a failed one while a run of its workflow and event started after it goes on, and a cancelled matrix job of an older run of its workflow is no verdict (pr-ci.sh); a green watch waits while an open run on the head has no check for its jobs yet, a re-run or a workflow with none listed (rerun_pending); a tier-3 item, or one landed with --ran-checks, needs checks that ran), validate (critical work by judge.sh judge_work_level merges only on a second agent's pass verdict on this head, validate_gate), merge (--squash, or with --merge-commit a merge commit,
@@ -615,6 +615,21 @@ moved_misses_pick() {
   [ -z "$theirs" ] || ! grep -qxFf <(printf '%s\n' "$theirs") <<<"$mine" || return 1
 }
 
+# base_touches_head says which files both what <base> gained since the head last had it (HEAD...<base>)
+# and the head's own changes since then touch ("it changes files the head changes (a, b)"), and fails
+# when there are none. A diff git cannot read counts as shared, the side that re-checks instead of landing behind.
+base_touches_head() {
+  local mb moved own shared
+  if ! mb=$(git merge-base HEAD "$remote/$base" 2>/dev/null) ||
+    ! moved=$(git diff --name-only --no-renames "HEAD...$remote/$base" 2>/dev/null) ||
+    ! own=$(git diff --name-only --no-renames "$mb" HEAD 2>/dev/null); then
+    echo "git could not diff it against the head's own changes"
+    return 0
+  fi
+  shared=$(grep -xFf <(printf '%s\n' "$own") <<<"$moved" | grep .) || return 1
+  echo "it changes files the head changes ($(paste -sd, - <<<"$shared" | sed 's/,/, /g'))"
+}
+
 # catch_up: a base the head is behind is merged in and pushed, before the gate and again after it if
 # the base moved on during the checks. A merge of <base> does not keep the checks green: a pushed head
 # is a new tree, and merging one before its checks ran shipped a broken one (dotfiles #1504; #1731
@@ -628,10 +643,16 @@ moved_misses_pick() {
 # which a busy base outruns every time (#916). Before that bound, a head whose base's new files can
 # affect no test its own run picked (moved_misses_pick) lands behind it at once, with no re-run; before
 # the gate too, so its own run is the one waited on and no push sends it to the back of a busy pool's
-# queue (ar-5747: #3770 was merged up and pushed on each of 5 landings, each wait timed out pending). A strict base has no bound, since it refuses a head
+# queue (ar-5747: #3770 was merged up and pushed on each of 5 landings, each wait timed out pending). Neither
+# lands behind a base whose new commits change a file the head changes (base_touches_head): that base is
+# merged up and re-checked like a strict one, since the head's green run never saw the other side's edit
+# to its own files (dotfiles #2962 landed 25s after #2963, both on agent-land and agent_land.bats, and
+# main went red until #2965). A clean merge of the same file is no proof, which is why the test is by file.
+# That loop is bounded: past CATCHUP_OVERLAP_WAITS checks runs, a base that still changes the head's files
+# exits 3 instead of landing behind it, so a hot file cannot hold the session forever. A strict base has no bound, since it refuses a head
 # that is behind (2026-11-05: unity-core-playground #1837 was refused twice). A conflict is aborted
 # and exits 3.
-CATCHUP_WAITS=1
+CATCHUP_WAITS=1 CATCHUP_OVERLAP_WAITS=3
 catch_up() {
   local out behind
   out=$(git fetch -q "$remote" 2>&1) || fail fetch "$(lastline "$out")"
@@ -648,12 +669,21 @@ catch_up() {
   fi
   if [ -n "$why" ] && ! strict_checks &&
     git merge-tree --write-tree --quiet HEAD "$remote/$base" >/dev/null 2>&1; then
-    if [ "${1:-}" = before ]; then
-      echo "fetch: $remote/$base moved on by $behind $why; the head's own checks stand, no merge-up (no strict checks on $base)"
-    else
-      echo "fetch: $remote/$base moved on by $behind $why; landing that green head behind it (no strict checks on $base)"
+    local shared
+    if ! shared=$(base_touches_head); then
+      if [ "${1:-}" = before ]; then
+        echo "fetch: $remote/$base moved on by $behind $why; the head's own checks stand, no merge-up (no strict checks on $base)"
+      else
+        echo "fetch: $remote/$base moved on by $behind $why; landing that green head behind it (no strict checks on $base)"
+      fi
+      return 0
     fi
-    return 0
+    if [ "${2:-0}" -ge "$CATCHUP_OVERLAP_WAITS" ]; then
+      printf 'agent-land: %s/%s moved on by %s after %s checks runs, and %s: merge it, push and re-run once it settles\n' "$remote" "$base" "$behind" "$2" "$shared" >&2
+      land_failed behind "behind $remote/$base by $behind after $2 checks runs, and $shared"
+      exit 3
+    fi
+    echo "fetch: $remote/$base moved on by $behind $why, but $shared; merging it up and re-checking"
   fi
   # Before the merge, so a refusal leaves the checkout as it was. A fork head is not origin's branch.
   [ "$cross" != true ] || fail push "the PR head is on a fork: git push HEAD to that fork's $head_ref, then re-run"
