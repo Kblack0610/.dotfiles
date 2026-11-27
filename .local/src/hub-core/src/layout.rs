@@ -582,7 +582,7 @@ pub fn moved_chip(tab: &str, sec: &str) -> Option<(&'static str, &'static str)> 
 /// its sprints, its rows, its epics, the next stage's checklist and what happened, then one
 /// Departments tab holding the project's departments as chips ([`PROJECT_DEPTS`]). Overview is
 /// the default; a section id opens the inner tab holding it.
-pub const PROJECT_PAGE: [Inner; 8] = [
+pub const PROJECT_PAGE: [Inner; 9] = [
     Inner {
         id: "overview",
         title: "Overview",
@@ -622,6 +622,25 @@ pub const PROJECT_PAGE: [Inner; 8] = [
         id: "activity",
         title: "Activity",
         sections: &["p-shipped", "p-timeline", "p-note"],
+    },
+    // The project's knowledge space (`hub_core::space`): its lab docs, repo docs, plans, lessons,
+    // sessions, knowledge notes, open asks and queue items in one place, with its cadence.
+    Inner {
+        id: "knowledge",
+        title: "Knowledge",
+        sections: &[
+            "p-space-head",
+            "p-space-docs",
+            "p-space-repo",
+            "p-space-adrs",
+            "p-space-changelog",
+            "p-space-plans",
+            "p-space-lessons",
+            "p-space-sessions",
+            "p-space-outcomes",
+            "p-space-notes",
+            "p-space-work",
+        ],
     },
     // The project's departments (`hub_core::departments`) under one tab, a chip each; a project
     // with no type has none, so no tab. `#projects/<p>/departments/<dept>` opens a chip.
@@ -1254,6 +1273,7 @@ mod tests {
             "releases",
             "stage",
             "activity",
+            "knowledge",
         ];
         let mut page = work.to_vec();
         page.push("departments");
