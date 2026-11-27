@@ -1269,6 +1269,10 @@ trainee_start_ready() {
   # --end takes an outside end only.
   run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-reject t-stop --end stopped --why x
   assert_failure 2; assert_output --partial 'trainee-reject: --end is one of'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-reject t-stop --end timeout --cause blocked --why x
+  assert_failure 2; assert_output --partial 'give one'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-reject t-stop --cause provider --why x
+  assert_failure 2; assert_output --partial '--cause is one of'
 }
 
 @test "trainee-review: a no-diff run that declares already-fixed or blocked files its run unrated with that cause, never a reject; an unknown word, no file, or a real diff beside the file is as before" {

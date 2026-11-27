@@ -3894,15 +3894,20 @@ EOF
 cmd_trainee_reject() {
   local slug="${1:?trainee-reject: needs a slug}" why='' it trn run cause=reject o=redo end='' back=''
   shift
-  [ "${1:-}" != --cause ] || { cause=${2:-}; shift 2 || true; }
-  [ "${1:-}" != --end ] || { end=${2:-}; shift 2 || true; }
+  local given=''
+  while [ "${1:-}" = --cause ] || [ "${1:-}" = --end ]; do
+    if [ "$1" = --cause ]; then cause=${2:-}; given=1; else end=${2:-}; fi
+    shift 2 || true
+  done
   [ "${1:-}" = --why ] && [ -n "${2:-}" ] || { say "trainee-reject: needs --why \"<one line>\""; return 2; }
   if [ -n "$end" ]; then
     # A run that ended outside the model: no reject of it, so its outcome is unrated with the end as its cause.
+    [ -z "$given" ] || { say "trainee-reject: --end and --cause name the same thing: give one"; return 2; }
     outside_end "$end" || { say "trainee-reject: --end is one of $OUTSIDE_ENDS, not $end"; return 2; }
     cause=$end o=unrated
+  else
+    case " $MOVE_CAUSES " in *" $cause "*) ;; *) say "trainee-reject: --cause is one of $MOVE_CAUSES, not $cause"; return 2 ;; esac
   fi
-  case " $MOVE_CAUSES $UNRATED_ENDS " in *" $cause "*) ;; *) say "trainee-reject: --cause is one of $MOVE_CAUSES, not $cause"; return 2 ;; esac
   ! unrated_cause "$cause" || o=unrated
   back=$cause
   ! unrated_end "$end" || back=   # the move files an UNRATED_ENDS end unrated by itself, and takes no cause for it
