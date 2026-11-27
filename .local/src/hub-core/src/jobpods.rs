@@ -291,9 +291,13 @@ pub fn pending(pods: &[JobPod]) -> Vec<Pending> {
     out
 }
 
-/// The running job pods on each node by kind: `[arc-org-light]` and its count. A reservation
-/// pod is no job.
-pub fn running_by_node(pods: &[JobPod]) -> BTreeMap<String, BTreeMap<String, u32>> {
+/// The running job pods on each node by kind: `[light]` and its count. A pod's kind is the one
+/// the exporter reads off its `ci-kind` label (`Infra::job_kinds`, by runner name). A running pod
+/// whose runner reports no job yet is `[starting]`. A reservation pod is no job.
+pub fn running_by_node(
+    pods: &[JobPod],
+    kinds: &std::collections::HashMap<&str, &str>,
+) -> BTreeMap<String, BTreeMap<String, u32>> {
     let mut by: BTreeMap<String, BTreeMap<String, u32>> = BTreeMap::new();
     for p in pods
         .iter()
@@ -301,7 +305,10 @@ pub fn running_by_node(pods: &[JobPod]) -> BTreeMap<String, BTreeMap<String, u32
     {
         *by.entry(p.node.clone())
             .or_default()
-            .entry(format!("[{}]", p.kind))
+            .entry(format!(
+                "[{}]",
+                kinds.get(p.name.as_str()).copied().unwrap_or("starting")
+            ))
             .or_default() += 1;
     }
     by
@@ -462,8 +469,19 @@ pub(crate) mod tests {
         let w = pending(&pods);
         assert_eq!(w.len(), 1);
         assert_eq!(w[0].line(), "arc-org-light (1.69 cpu 1.2G)");
-        let r = running_by_node(&pods);
-        assert_eq!(r["ms-a2"]["[arc-org-light]"], 2);
+        let r = running_by_node(&pods, &Default::default());
+        assert_eq!(r["ms-a2"]["[starting]"], 2);
+        // The kind the exporter reads off a pod's `ci-kind` label names it instead of its scale set.
+        let name = pods
+            .iter()
+            .find(|p| p.running && p.kind == "arc-org-light")
+            .map(|p| p.name.clone())
+            .unwrap();
+        let kinds = [(name.as_str(), "light")].into();
+        let by_kind = running_by_node(&pods, &kinds);
+        assert_eq!(by_kind["ms-a2"]["[light]"], 1);
+        // The other pod's runner reports no job yet.
+        assert_eq!(by_kind["ms-a2"]["[starting]"], 1);
         // The forgejo pod books ms-a2 but is still starting: no job runs yet.
         assert!(!r["ms-a2"].contains_key("[forgejo-runner]"));
     }
@@ -515,8 +533,8 @@ pub(crate) mod tests {
         // Booked against allocatable like any pod, and named apart.
         assert_eq!(b["ms-a2"].cell(), "11.7/32 23G/92G, 7.4 reserved");
         assert_eq!(b["tuf-b550"].cell(), "7.4/32 21G/63G, 7.4 reserved");
-        let r = running_by_node(&pods);
-        assert_eq!(r["ms-a2"].keys().collect::<Vec<_>>(), ["[arc-org-light]"]);
+        let r = running_by_node(&pods, &Default::default());
+        assert_eq!(r["ms-a2"].keys().collect::<Vec<_>>(), ["[starting]"]);
         assert!(
             !r.contains_key("tuf-b550"),
             "a reservation is no job: {r:?}"
