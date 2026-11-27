@@ -118,6 +118,12 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   assert_equal "$(plain | sed -n 2p)" "6 running, 9 queued (oldest 15m), booked 6.4/64 cpu, 4 done 24h, 75% passed"
 }
 
+@test "the hover head shows the 1h and 5h done counts before the 24h one, only once the kinds report them" {
+  glance '{"done_1h": 0, "done_5h": 12}'
+  run "$MODULE"
+  assert_equal "$(plain | sed -n 2p)" "2 running, 2 queued (oldest 15m), booked 4.4/32 cpu, 0 done 1h, 12 done 5h, 4 done 24h, 75% passed"
+}
+
 @test "with no CI node reporting the booking is a dash and no cell is drawn, never a runner count as capacity" {
   glance '{"booked": null, "machines": [
     {"host": "workstation", "busy": 2, "running": ["[gates]", "[unity] platform"], "next": null, "load": 0.4, "booked": null}]}'
