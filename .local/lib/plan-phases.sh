@@ -407,7 +407,9 @@ _epic_line() {
 # `P<N>` label when it opens with one (`- [ ] P8 freellmapi ...`), else its place in the
 # checklist. A plan that files P9 above P8 is numbered by its labels, never by position.
 # A sub-phase line (`1b. ...`: a digit, a lowercase letter, a punctuation mark; or `P3b ...`) is numbered by that
-# label, a string ("1b"), and takes no place (a `P3b` read by position collided with the `P4` after it, ar-4970): the phases below it keep their numbers, so adding a 1b to a plan whose phases are
+# label, a string ("1b"), and takes no place. A `P3b` read by position collided with the `P4` after it (ar-4970).
+# Lowercase only: `P2P sync` is a phase with a place.
+# The phases below it keep their numbers, so adding a 1b to a plan whose phases are
 # queued shifts no item (lesson 2026-11-09, `phases: 6` read as the ticked "5").
 plan_phase_list() {
   { [ -f "$1" ] && awk -v mode=list -v sup="$(_plan_sup "$1")" "$_PLAN_PHASES_AWK" "$1"; } \
