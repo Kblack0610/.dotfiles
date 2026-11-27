@@ -215,6 +215,35 @@ EOF2
   assert_equal "$(field v '[.prs[].number] | join(",")')" "32,33"
 }
 
+@test "pr-link records: only a command that runs and names the PR first drops it (heredoc, quoted text, a flag value, another repo's PR, checks keep the claim)" {
+  cat > "$TR/w.jsonl" <<'EOF2'
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"w1","name":"Bash","input":{"command":"gh pr comment 40 -R o/r --body 'quarantined 2 tests'"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"w2","name":"Bash","input":{"command":"cat >> t.bats <<'X'\ngh pr view 41 -R o/r\nX\nrg 'gh pr view 42' x; gh pr checks 43 --interval 10; gh pr view 44 -R other/repo"}}]}}
+{"type":"pr-link","sessionId":"sess-w","prNumber":2,"prUrl":"https://github.com/o/r/pull/2","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-w","prNumber":10,"prUrl":"https://github.com/o/r/pull/10","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-w","prNumber":40,"prUrl":"https://github.com/o/r/pull/40","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-w","prNumber":41,"prUrl":"https://github.com/o/r/pull/41","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-w","prNumber":42,"prUrl":"https://github.com/o/r/pull/42","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-w","prNumber":43,"prUrl":"https://github.com/o/r/pull/43","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-w","prNumber":44,"prUrl":"https://github.com/o/r/pull/44","prRepository":"o/r"}
+EOF2
+  jq -cn --arg t "$TR/w.jsonl" --argjson u "$STOP" \
+    '{session_id: "sess-w", project: "proj", transcript: $t, title: "title w", updated: $u, edits: 1, cost_usd: 1, tokens: {total: 100}}' \
+    >> "$SO_SESSIONS/proj/sessions.jsonl"
+  cat > "$GH_FIXTURE/prs.o-r" <<'EOF2'
+[{"number":2,"state":"MERGED","title":"feat: two","mergedAt":"2026-10-19T01:00:00Z"},
+ {"number":10,"state":"MERGED","title":"feat: a","mergedAt":"2026-10-19T01:30:00Z"},
+ {"number":40,"state":"OPEN","title":"feat: theirs"},
+ {"number":41,"state":"MERGED","title":"feat: 41","mergedAt":"2026-10-19T02:00:00Z"},
+ {"number":42,"state":"MERGED","title":"feat: 42","mergedAt":"2026-10-19T03:00:00Z"},
+ {"number":43,"state":"MERGED","title":"feat: 43","mergedAt":"2026-10-19T04:00:00Z"},
+ {"number":44,"state":"MERGED","title":"feat: 44","mergedAt":"2026-10-19T05:00:00Z"}]
+EOF2
+  "$SUBJECT" run
+  # 40 is the only one a command ran against: 41 and 42 are text, 2 and 10 are a flag value and a body word, 44 is another repo's
+  assert_equal "$(field w '[.prs[].number] | join(",")')" "2,10,41,42,43,44"
+}
+
 @test "a claim in a repo the PR store does not list (a fixture's pr-link, a search's output) is dropped and named, the run still WORKED" {
   cat > "$TR/f.jsonl" <<'EOF2'
 {"type":"assistant","message":{"content":[{"type":"tool_use","id":"g1","name":"Bash","input":{"command":"rg -n 'gh pr create|pull/' tests/unit/x.bats"}}]}}
