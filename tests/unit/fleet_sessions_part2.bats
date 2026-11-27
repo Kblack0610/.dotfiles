@@ -554,7 +554,7 @@ reviewer_item() {
     "$2" > "$d/20261103-110000-validate-fix-wave-save-${oid:0:8}.md"
 }
 
-@test "end to end: a validate session that recorded its verdict closes off the PR it reviewed; with none it keeps (ar-5260)" {
+@test "end to end: a validate session that failed the PR it reviewed closes off it; a pass or no verdict keeps (ar-5260)" {
   # validate-ar-5194-3edd08df failed #3435 and close --self kept it: "land it: PR #3435 open", the author item's PR.
   bats_require_minimum_version 1.5.0
   landed_fixture
@@ -581,6 +581,12 @@ reviewer_item() {
   run "$REPO_ROOT/.local/bin/fleet-sessions" close --self sid-9
   assert_failure 1
   assert_line --index 0 --partial "keep: land it: PR #9 open, CI "
+
+  # a pass keeps it: the validate session lands the PR itself
+  reviewer_item done validate pass
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .pr <<<"$output")" = 9 ]
+  [ "$(jq -r .close.verdict <<<"$output")" = keep ]
 
   # negative control: an author session (no validate tag) with the same open PR still lands it
   reviewer_item done "" fail
