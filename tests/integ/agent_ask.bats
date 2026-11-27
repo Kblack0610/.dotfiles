@@ -230,10 +230,6 @@ relay_fixture() { # <kind> <text> <shown>
   relay_fixture answer 'Park them' "Ask $id: park or wait?"
   run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'park them' "$id" 'merge past red'
   assert_failure 1; assert_output --partial "names none (or more than one) of ask $id's options"
-  # Words that name neither the option nor its meaning do not pick it (ar-6269, ask M0yWLL).
-  relay_fixture answer 'get us down to only the ones that need' "Ask $id: park or wait?"
-  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'only the ones that need' "$id" park
-  assert_failure 1; assert_output --partial "does not pick 'park'"
   # Words that name another option pick that one, not this.
   relay_fixture answer 'wait for CI' "Ask $id: park or wait?"
   run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'wait for CI' "$id" park
@@ -257,52 +253,22 @@ relay_fixture() { # <kind> <text> <shown>
   run "$AGENT_ASK" show "$id"; assert_line 'answer: park'
 }
 
-# The human approves the picks a session laid out with a plain yes: the session showed each ask id
-# with one option, and their reply affirms it (2026-11-27, the human: "if im in the session then you
-# can answer"). The M0yWLL refusal stays: unpaired words or a partial yes pick nothing.
-@test "answer --quote: a yes to a message that paired the ask with one option picks it" {
-  local id; id="$("$AGENT_ASK" post --project demo --options 'a=ship it|b=hold it' 'a or b?')"
-  local other; other="$("$AGENT_ASK" post --project demo --options 'keep=leave it|drop=remove it' 'keep or drop?')"
-  # Shown only the question, a yes picks nothing.
-  relay_fixture typed 'ok yes do those' "Ask $id: a or b?"
-  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'ok yes do those' "$id" a
-  assert_failure 1; assert_output --partial "no plain yes to a message that paired $id with a alone"
-  # Shown the id paired with two options, a yes is ambiguous.
-  relay_fixture typed 'ok yes do those' "$id a, or maybe $id b."
-  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'ok yes do those' "$id" a
-  assert_failure 1
-  # A partial yes, or one that names the ask itself, takes the plain path, which it does not pass.
-  relay_fixture typed "yes but not $id" "Picks: $id a, $other keep."
-  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote "yes but not $id" "$id" a
-  assert_failure 1
-  # Quoting only the yes out of a partial reply does not pass: the whole entry must be a plain yes.
-  relay_fixture typed 'ok yes do those, but not the second' "Picks: $id a, $other keep."
-  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'ok yes do those' "$id" a
-  assert_failure 1
-  relay_fixture typed "yes, don"$'\u2019'"t do the second" "Picks: $id a, $other keep."
-  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'yes' "$id" a
-  assert_failure 1
-  relay_fixture typed 'yes skip the second' "Picks: $id a, $other keep."
-  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'yes skip the second' "$id" a
-  assert_failure 1
-  # The id inside a longer token is no pairing.
-  relay_fixture typed 'ok yes do those' "see /tmp/xx$id a"
-  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'ok yes do those' "$id" a
-  assert_failure 1
-  # The pick shown is another option: no.
-  relay_fixture typed 'ok yes do those' "Picks: $id b, $other keep."
-  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'ok yes do those' "$id" a
-  assert_failure 1
-  run "$AGENT_ASK" show "$id"; assert_line 'status: pending'
-  # Shown "<id> <option>" for each ask, one yes answers both, and the note names the pairing.
-  relay_fixture typed 'ok thanks yes agreed, do those' "Picks: $id a, $other keep."
-  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'yes agreed, do those' "$id" a
+# In a session the human is at, words that name no option are their answer, read by the session
+# (2026-11-27, the human: "if im in the session then you can answer"; it replaced ar-6269's demand
+# that the words name the option). Words that name another option still refuse.
+@test "answer --quote: words that name no option record the session's reading, and the note says so" {
+  local id; id="$("$AGENT_ASK" post --project demo --options 'park=park them|wait=wait for CI' 'park or wait?')"
+  relay_fixture typed 'yes or no is fine, go off your recs thanks' "Ask $id: park or wait? My pick: park."
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'go off your recs' "$id" park
   assert_success
-  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'yes agreed, do those' "$other" keep
-  assert_success
-  run "$AGENT_ASK" show "$id"; assert_line 'answer: a'; assert_line 'answered_by: human'
-  assert_output --partial "answer_note: relayed in session sid-r: a yes to the shown pick \"$id a\": yes agreed"
-  run "$AGENT_ASK" show "$other"; assert_line 'answer: keep'
+  run "$AGENT_ASK" show "$id"; assert_line 'answer: park'; assert_line 'answered_by: human'
+  assert_output --partial "answer_note: relayed in session sid-r: the session's reading of their words as 'park': go off your recs"
+  # Negative control: words naming the other option are no reading of park.
+  local id2; id2="$("$AGENT_ASK" post --project demo --options 'park=park them|wait=wait for CI' 'park or wait?')"
+  relay_fixture typed 'go off your recs, but wait for CI' "Ask $id2: park or wait?"
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'go off your recs' "$id2" park
+  assert_failure 1; assert_output --partial "whole message does not pick 'park'"
+  run "$AGENT_ASK" show "$id2"; assert_line 'status: pending'
 }
 
 # An agent answers what does not need the human, and its answer releases what the ask holds
