@@ -7572,6 +7572,18 @@ route() {
   return 1
 }
 
+# start_run <cmd_start args> -- cmd_start with its stderr kept: replayed when it returns (not live: a start is seconds), and its last three lines (the wrapper's and what a child printed before it) in START_CAUSE, so a pass that could not start an item names the cause in its FAILED reason (activity.log, the outcome) and not only in a journal line a silent return never wrote (ar-3995). Empty when it said nothing.
+start_run() {
+  local errf rc
+  START_CAUSE=''
+  errf=$(mktemp "${TMPDIR:-/tmp}/fleet-dispatch-start.XXXXXX") || { START_CAUSE="no temp file for cmd_start's stderr"; say "start: $START_CAUSE"; return 1; }
+  cmd_start "$@" 2>"$errf"; rc=$?
+  cat "$errf" >&2
+  START_CAUSE=$(grep -v '^[[:space:]]*$' "$errf" | tail -n 3 | sed 's/^fleet-dispatch: //' | paste -sd'|' | sed 's/|/ | /g' | cut -c1-400)
+  rm -f "$errf"
+  return "$rc"
+}
+
 # start_item <item json> -- past the gates: route it (route) and start it, and publish what happened.
 # rc 3 when usage cannot be read, which ends the pass: the next item could not be routed either. rc 4
 # when another start (a hand start, say) took the item first: that is not a failed launch, and the
@@ -7635,7 +7647,7 @@ start_item() {
       floor=" on the run floor (DISPATCH_RUN_FLOOR=$DISPATCH_RUN_FLOOR)"
       keep=$ACCT_PAST_PACE
     fi
-    START_ORIGIN=run START_VERDICT=$verdict RUN_ACCOUNT=$ACCT_DIR cmd_start --item "$slug" ${PLACE_HOST:+--host "$PLACE_HOST"}
+    START_ORIGIN=run START_VERDICT=$verdict RUN_ACCOUNT=$ACCT_DIR start_run --item "$slug" ${PLACE_HOST:+--host "$PLACE_HOST"}
   else
     if item_pinned "$it"; then floor=" on $harness ($ROUTE_MODEL), the harness it is pinned to"
     elif [ -n "$(harness_sandbox "$harness")" ] && direct_why "$it" "$harness" "$ROUTE_MODEL" "$verdict" >/dev/null; then floor=" on $harness ($ROUTE_MODEL), a direct run (model-lane promoted it for the class) it lands on CI with no review"
@@ -7646,7 +7658,7 @@ start_item() {
     if [ "${TRAINEE_PASS:-0}" = 1 ]; then floor="$floor, on the trainee floor (lanes.yaml trainee:, a free slot)"; keep=1; fi
     if [ "${BATCH_PASS:-0}" = 1 ]; then floor="$floor, on the trainee floor: a batch review of the waiting trainee diffs"; keep=1; fi
     [ -z "$plan_past" ] || { floor="$floor$plan_past"; keep=1; }
-    START_ORIGIN=run START_VERDICT=$verdict cmd_start --item "$slug" --harness "$harness" --model "$ROUTE_MODEL" ${PLACE_HOST:+--host "$PLACE_HOST"}
+    START_ORIGIN=run START_VERDICT=$verdict start_run --item "$slug" --harness "$harness" --model "$ROUTE_MODEL" ${PLACE_HOST:+--host "$PLACE_HOST"}
   fi
   rc=$?; exec 7>&-
   if [ "$rc" -eq 0 ]; then
@@ -7658,7 +7670,7 @@ start_item() {
   elif [ "$(item_state "$slug")" != queued ]; then
     say "queue item $slug was started by another start"; return 4
   else
-    settle FAILED "could not start queue item $slug"; return 1
+    settle FAILED "could not start queue item $slug (exit $rc): ${START_CAUSE:-cmd_start said nothing on stderr}"; return 1
   fi
 }
 
