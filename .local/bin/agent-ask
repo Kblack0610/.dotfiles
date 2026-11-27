@@ -1784,15 +1784,16 @@ cmd_target() {
   jq -r .target <<< "$row"
 }
 
-# reopen_session <ask file> <claude session> [prompt]: start an ended conversation again, with the
-# prompt as its first message when one is given, and print its jump target. fleet-dispatch start
+# reopen_session <ask file> <claude session> [prompt] [item]: start an ended conversation again, with the
+# prompt as its first message when one is given, working the queue item when one is given (answer_item),
+# and print its jump target. fleet-dispatch start
 # --resume is the one path that opens sessions (restore uses it too); this picks only where: the
 # directory the conversation started in, which `claude --resume` needs to find it, and the world
 # and session that directory routes to, as window ask-<id>. A world session that is up gains the
 # window; one that is not starts with it. A worktree wind-down reaped when the session closed over
 # its ask is put back first (`wt revive`), on the branch the conversation last ran on.
 reopen_session() {
-  local f="$1" sid="$2" prompt="${3:-}" cwd world sess win out
+  local f="$1" sid="$2" prompt="${3:-}" item="${4:-}" cwd world sess win out
   # A running process outside tmux has no pane to go to, and a second resume would fork it.
   session_alive "$sid" && { echo "session $sid still runs outside tmux; nothing to go to" >&2; return 1; }
   cwd="$(session_cwd "$sid")"
@@ -1812,8 +1813,9 @@ reopen_session() {
   win="ask-$(field "$f" id)"
   # A session a shared blocker attached gets its own window: several can reopen in one world session.
   [ "$sid" = "$(field "$f" claude_session)" ] || win+="-${sid:0:6}"
-  out="$(fleet-dispatch start --project "$(field "$f" project)" --server "$world" --session "$sess" \
-    --window "$win" --cwd "$cwd" --resume "$sid" ${prompt:+--prompt "$prompt"} </dev/null 2>&1)" ||
+  # The item's origin is the ask, so the start records it as agent work, not the human's own resume.
+  out="$(env ${item:+START_ORIGIN=ask} fleet-dispatch start --project "$(field "$f" project)" --server "$world" --session "$sess" \
+    --window "$win" --cwd "$cwd" --resume "$sid" ${prompt:+--prompt "$prompt"} ${item:+--item "$item"} </dev/null 2>&1)" ||
     { echo "could not reopen: ${out##*$'\n'}" >&2; return 1; }
   echo "$world/$sess:$win"
 }
@@ -1857,10 +1859,36 @@ reopen_sessions() {
   fi
 }
 
+# answer_item <ask file> <claude session>: the queue item a reopened session carries the answer out
+# under, printed: a running item from ask:<id> with origin ask and its own story row (agent-queue
+# file_story), its task the decision. Nothing printed, and rc 0, when a live item already records the
+# session: fleet-dispatch start --resume re-attaches that one. rc 1 when agent-queue filed none.
+# The item is the record of the work the answer decides: the session lands it, or closes it ok when
+# the answer needs no change, and one that ends with it still running is settled failed by reap, whose
+# settle_row un-starts the row for a fresh session. Why (ar-4670): KERild (judge: split) reopened its
+# shepherd session with no item, the session closed without building the split, and nothing recorded it.
+answer_item() {
+  local f="$1" sid="$2" id slug
+  $AGENT_ASK_QUEUE_CMD mine --sid "$sid" --newest >/dev/null 2>&1 && return 0
+  id="$(field "$f" id)" slug="ask-$(field "$f" id)"
+  [ "$sid" = "$(field "$f" claude_session)" ] || slug+="-${sid:0:6}"
+  # The caller's session, item and pane are not the reopened session's (ask-resume's add does the same).
+  slug="$(CLAUDE_CODE_SESSION_ID='' AGENT_QUEUE_ITEM='' TMUX='' $AGENT_ASK_QUEUE_CMD add --running --repeat \
+    --project "$(field "$f" project)" --from "ask:$id" --slug "$slug" \
+    --title "chore(asks): carry out the answer to ask $id" \
+    "Carry out the answer to ask $id: $(load_ask "$f"; decision_line "$(answer_said "$f" "${ASK[answer]:-}" "${ASK[answered_by]:-}")"). Build, validate and land what it needs under this item (agent-land --item). When it needs no change, close it with agent-queue move \$AGENT_QUEUE_ITEM done --status ok and say why. The whole ask: agent-ask card $id." |
+    sed -n 's/^running \([^ ]*\) -> .*/\1/p')"
+  [ -n "$slug" ] || return 1
+  $AGENT_ASK_QUEUE_CMD set "$slug" origin=ask >/dev/null || echo "$id: $slug has no origin: agent-queue set $slug origin=ask" >&2
+  printf '%s\n' "$slug"
+}
+
 # cmd_reopen <id>: the reopen-on-answer resume. A live session already had the answer typed in
 # (deliver_to_session), and a queue item tagged with the ask is restarted by the queue, so both
 # are left alone; otherwise the ended conversation starts again with the answer as its first
-# message. One that cannot be reopened gets the board row an answer nobody acts on gets.
+# message, on the queue item answer_item gives it. One whose reopen fails puts that item in the
+# queue, which starts a fresh session on it; one with no item gets the board row an answer nobody
+# acts on gets.
 cmd_reopen() {
   local id="${1:-}"; [ -n "$id" ] || { echo "usage: agent-ask reopen <id>" >&2; return 2; }
   local f sid answer by; f="$(find_ask "$id")"
@@ -1880,13 +1908,17 @@ cmd_reopen() {
   done < <(queue_holders "$id" | cut -f1)
   # Each session that closed over it (one, unless a shared blocker attached others); a failed
   # reopen files one row naming every conversation left to resume.
-  local failed=()
+  local failed=() item
   while IFS= read -r sid; do
     [ -n "$sid" ] || continue
     [[ "$covered" != *" $sid "* ]] || { echo "$id: session $sid's queue item holds it; the queue restarts that" >&2; continue; }
     [ -z "$(live_row "$sid")" ] || { echo "$id: session $sid is live; the answer went to it" >&2; continue; }
-    session_resumable "$sid" && reopen_session "$f" "$sid" "Answer to ask $id: $(answer_said "$f" "$answer" "$by")" && continue
-    failed+=("$sid")
+    session_resumable "$sid" || { failed+=("$sid"); continue; }
+    item="$(answer_item "$f" "$sid")" || { echo "$id: agent-queue filed no item for session $sid's answer" >&2; failed+=("$sid"); continue; }
+    reopen_session "$f" "$sid" "Answer to ask $id: $(answer_said "$f" "$answer" "$by")${item:+. Queue item $item holds the work this answer decides: land what it needs under it, or close it with agent-queue move $item done --status ok when it needs no change}" "$item" && continue
+    [ -n "$item" ] || { failed+=("$sid"); continue; }
+    if $AGENT_ASK_QUEUE_CMD move "$item" queued >/dev/null; then echo "$id: session $sid did not reopen; its queue item $item is queued for a fresh session" >&2
+    else echo "$id: session $sid did not reopen, and its queue item $item could not be queued: agent-queue move $item queued" >&2; failed+=("$sid"); fi
   done < <(reopen_sessions "$f")
   [ "${#failed[@]}" -gt 0 ] || return 0
   local word="its session ended"; [ "${#failed[@]}" -eq 1 ] || word="${#failed[@]} of its sessions ended"
@@ -1998,14 +2030,20 @@ cmd_decision() {
   load_ask "$f"
   [ "${ASK[status]:-}" = answered ] || return 0
   case "${ASK[answered_by]:-}" in ""|human) ;; *) return 0 ;; esac
-  local answer="${ASK[answer]:-}" pick i meaning="" opts notes
-  pick="${answer%% *}"; pick="${pick%[.,;:!]}"
+  decision_line "${ASK[answer]:-}"
+}
+
+# decision_line <answer said>: the loaded ask's question, the answer and the meaning of the option it
+# picks, on one line.
+decision_line() {
+  local pick i meaning="" opts notes
+  pick="${ASK[answer]:-}"; pick="${pick%% *}"; pick="${pick%[.,;:!]}"
   IFS='|' read -r -a opts <<< "${ASK[options]:-}"
   IFS='|' read -r -a notes <<< "${ASK[option_notes]:-}"
   for i in "${!opts[@]}"; do
     [ "${opts[i],,}" = "${pick,,}" ] && meaning="${notes[i]:-}"
   done
-  printf '%s Answer: %s%s\n' "${ASK[question]:-}" "$answer" "${meaning:+ ($meaning)}"
+  printf '%s Answer: %s%s\n' "${ASK[question]:-}" "$1" "${meaning:+ ($meaning)}"
 }
 
 # session_alive <claude session id>: a Claude process holding that session is running. Reads

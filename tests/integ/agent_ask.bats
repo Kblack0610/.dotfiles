@@ -446,10 +446,13 @@ SH
   assert_success
   grep -qx 'resume: run: agent-ask reopen' "$(ask_file "$id")"
   "$AGENT_ASK" answer "$id" wait >/dev/null 2>&1
+  queue_stub
   run "$AGENT_ASK" reopen "$id"
   assert_success
   assert_called "--window ask-$id --cwd $HOME/.dotfiles --resume sid-8 --prompt Answer to ask $id: wait"
   assert_called "--window ask-$id-sid-9 --cwd $HOME/.dotfiles --resume sid-9 --prompt Answer to ask $id: wait"
+  # Each session works the answer under its own item.
+  assert_called "--item ask-$id-sid-9"
   # Negative control: a session that never closed over it is left alone (its window still has it).
   assert_not_called '--resume sid-10'
 }
@@ -1533,6 +1536,25 @@ days_ahead() { echo $(( ($(date -d "$1" +%s) - $(date +%s) + 43200) / 86400 )); 
 # A session that closes over its own pending ask (/wind-down auto, close rule "only its own ask is
 # open") sets the ask to reopen it: the answer starts the ended conversation again with the answer.
 
+# queue_stub: AGENT_ASK_QUEUE_CMD as a logging agent-queue: no live item records a session (mine
+# fails, unless AQ_MINE names one), an add prints its slug running (AQ_REFUSE: it files nothing), and
+# any other call succeeds silent.
+queue_stub() {
+  cat >"$SANDBOX/bin/aq-stub" <<'STUB'
+#!/usr/bin/env bash
+printf 'agent-queue %s | sid=%s item=%s\n' "$*" "${CLAUDE_CODE_SESSION_ID:-}" "${AGENT_QUEUE_ITEM:-}" >>"$NOTES_FIXTURE/calls.log"
+case "$1" in
+  mine) [ -n "${AQ_MINE:-}" ] && { echo "$AQ_MINE"; exit 0; }; exit 1 ;;
+  add) [ -z "${AQ_REFUSE:-}" ] || exit 1
+       while [ $# -gt 0 ]; do [ "$1" = --slug ] && { echo "running $2 -> running/$2.md"; exit 0; }; shift; done; exit 1 ;;
+  list) echo '[]' ;;
+esac
+exit 0
+STUB
+  chmod +x "$SANDBOX/bin/aq-stub"
+  export AGENT_ASK_QUEUE_CMD="$SANDBOX/bin/aq-stub"
+}
+
 @test "reopen-on-answer: the answer reopens the ended session with it, unless it runs or the queue holds the ask" {
   local id other loose
   sandbox_worlds
@@ -1553,15 +1575,18 @@ days_ahead() { echo $(( ($(date -d "$1" +%s) - $(date +%s) + 43200) / 86400 )); 
   # The resume is the answer's route, so no board row is filed for it.
   "$AGENT_ASK" answer "$id" go >/dev/null 2>&1
   assert_not_called 'chore(ask)'
+  queue_stub
   run "$AGENT_ASK" reopen "$id"
   assert_success
   assert_called "fleet-dispatch start --project demo --server hub --session dotfiles --window ask-$id --cwd $HOME/.dotfiles --resume sid-8 --prompt Answer to ask $id: go"
+  assert_called "--item ask-$id"
   # Negative controls: a live session already had the answer typed in; nothing starts.
   : >"$NOTES_FIXTURE/calls.log"; : >"$NOTES_FIXTURE/live"
   run "$AGENT_ASK" reopen "$id"
   assert_success
   assert_output --partial 'is live'
   assert_not_called 'fleet-dispatch start'
+  assert_not_called 'agent-queue add'
   rm "$NOTES_FIXTURE/live"
   # A queue item tagged with the ask is the queue's to restart.
   export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
@@ -1570,14 +1595,26 @@ days_ahead() { echo $(( ($(date -d "$1" +%s) - $(date +%s) + 43200) / 86400 )); 
   assert_success
   assert_output --partial 'a queue item holds it'
   assert_not_called 'fleet-dispatch start'
-  # A reopen that fails files the answer as a board row naming the conversation to resume.
+  # A reopen that fails puts the answer's item in the queue, which starts a fresh session on it: one
+  # record, so no board row besides it.
   local failed; failed="$(CLAUDE_CODE_SESSION_ID=sid-8 post demo 'and this?')"
   "$AGENT_ASK" reopen-on-answer "$failed" 2>/dev/null
   "$AGENT_ASK" answer "$failed" yes >/dev/null 2>&1
   printf '#!/usr/bin/env bash\nexit 1\n' >"$SANDBOX/bin/fleet-dispatch"
+  queue_stub
   run "$AGENT_ASK" reopen "$failed"
+  assert_success
+  assert_output --partial "its queue item ask-$failed is queued for a fresh session"
+  assert_called "agent-queue move ask-$failed queued"
+  assert_not_called 'did not reopen: claude --resume'
+  # With no item filed, the answer gets the board row naming the conversation to resume.
+  local refused; refused="$(CLAUDE_CODE_SESSION_ID=sid-8 post demo 'and that?')"
+  "$AGENT_ASK" reopen-on-answer "$refused" 2>/dev/null
+  "$AGENT_ASK" answer "$refused" yes >/dev/null 2>&1
+  AQ_REFUSE=1 run "$AGENT_ASK" reopen "$refused"
   assert_failure
-  assert_called 'and this? -> answered: yes; its session ended and did not reopen: claude --resume sid-8'
+  assert_output --partial "agent-queue filed no item for session sid-8"
+  assert_called 'and that? -> answered: yes; its session ended and did not reopen: claude --resume sid-8'
   # An ask that already resumes some other way keeps its resume and succeeds: ask-resume runs it
   # headless on the answer, so a close over it loses nothing (ar-4271: the shepherd kept that window).
   other="$(CLAUDE_CODE_SESSION_ID=sid-8 "$AGENT_ASK" post --project demo --resume '/captain resume' 'other?')"
@@ -1634,23 +1671,62 @@ days_ahead() { echo $(( ($(date -d "$1" +%s) - $(date +%s) + 43200) / 86400 )); 
   id="$(CLAUDE_CODE_SESSION_ID=sid-7 post demo 'ship it?')"
   "$AGENT_ASK" reopen-on-answer "$id" 2>/dev/null
   "$AGENT_ASK" answer "$id" go >/dev/null 2>&1
+  queue_stub
   run "$AGENT_ASK" reopen "$id"
   assert_success
   assert_equal "$(git -C "$wt" branch --show-current)" agent-3-x
   assert_called "fleet-dispatch start --project demo --server lab --session demo-agent-3 --window ask-$id --cwd $wt --resume sid-7 --prompt Answer to ask $id: go"
   assert_not_called 'chore(ask)'
-  # Negative control: a slot wt new re-cut for another session is not resumed into; the answer
-  # gets the board row instead.
+  # Negative control: a slot wt new re-cut for another session is not resumed into; the answer's
+  # item goes to the queue for a fresh session instead.
   git -C "$wt" switch --quiet -c agent-3-other main
   : >"$NOTES_FIXTURE/calls.log"
   taken="$(CLAUDE_CODE_SESSION_ID=sid-7 post demo 'and this?')"
   "$AGENT_ASK" reopen-on-answer "$taken" 2>/dev/null
   "$AGENT_ASK" answer "$taken" yes >/dev/null 2>&1
   run "$AGENT_ASK" reopen "$taken"
-  assert_failure
+  assert_success
   assert_output --partial 'demo-agent-3 is taken'
   assert_not_called 'fleet-dispatch start'
-  assert_called 'and this? -> answered: yes; its session ended and did not reopen: claude --resume sid-7'
+  assert_called "agent-queue move ask-$taken queued"
+  assert_not_called 'chore(ask)'
+}
+
+# ar-4670: KERild (judge: split) reopened its shepherd session with the answer and no queue item; the
+# session closed without building the split, nothing recorded the work, and the red re-tripped daily.
+@test "reopen: the reopened session works the answer under a queue item from the ask; one with a live item keeps it" {
+  local id
+  sandbox_worlds
+  mkdir -p "$HOME/.dotfiles" "$HOME/.claude/projects/p"
+  printf '{"type":"user","cwd":"%s","sessionId":"sid-8"}\n' "$HOME/.dotfiles" >"$HOME/.claude/projects/p/sid-8.jsonl"
+  cat >"$SANDBOX/bin/fleet-dispatch" <<'STUB'
+#!/usr/bin/env bash
+printf 'fleet-dispatch %s START_ORIGIN=%s\n' "$*" "${START_ORIGIN:-}" >>"$NOTES_FIXTURE/calls.log"
+STUB
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$SANDBOX/bin/agent-panel"
+  chmod +x "$SANDBOX/bin/fleet-dispatch" "$SANDBOX/bin/agent-panel"
+  id="$(CLAUDE_CODE_SESSION_ID=sid-8 post demo 'beam-free trips a red daily; which way?')"
+  "$AGENT_ASK" reopen-on-answer "$id" 2>/dev/null
+  "$AGENT_ASK" answer "$id" split >/dev/null 2>&1
+  queue_stub
+  CLAUDE_CODE_SESSION_ID=answerer AGENT_QUEUE_ITEM=answerer-item run "$AGENT_ASK" reopen "$id"
+  assert_success
+  # The item is the ask's, not the caller's, and its task is the decision.
+  assert_called "agent-queue add --running --repeat --project demo --from ask:$id --slug ask-$id --title chore(asks): carry out the answer to ask $id Carry out the answer to ask $id: beam-free trips a red daily; which way? Answer: split. Build,"
+  run grep '^agent-queue add' "$NOTES_FIXTURE/calls.log"
+  assert_output --partial ' | sid= item='
+  assert_called "agent-queue set ask-$id origin=ask"
+  # The session starts on it as the ask's work, and its first message names it.
+  assert_called "--resume sid-8 --prompt Answer to ask $id: split. Queue item ask-$id holds the work this answer decides"
+  assert_called "--item ask-$id START_ORIGIN=ask"
+  # Negative control: a session a live item records keeps that item; fleet-dispatch start --resume
+  # re-attaches it, so none is filed and none is passed.
+  : >"$NOTES_FIXTURE/calls.log"
+  AQ_MINE=ar-12 run "$AGENT_ASK" reopen "$id"
+  assert_success
+  assert_not_called 'agent-queue add'
+  assert_called "--resume sid-8 --prompt Answer to ask $id: split START_ORIGIN="
+  assert_not_called '--item'
 }
 
 @test "a session live on a fleet worker is never reopened here, and target says where it runs" {
@@ -1667,6 +1743,7 @@ days_ahead() { echo $(( ($(date -d "$1" +%s) - $(date +%s) + 43200) / 86400 )); 
   assert_failure
   assert_equal "$stderr" "session runs on hp at hp@lab/dotfiles:2; go to it there"
   "$AGENT_ASK" answer "$id" go >/dev/null 2>&1
+  queue_stub
   run "$AGENT_ASK" reopen "$id"
   assert_success
   assert_output --partial 'is live'
