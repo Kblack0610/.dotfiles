@@ -2246,6 +2246,35 @@ cause_of() { printf '%s' 'lock .* held by pid' | sha256sum | cut -c1-8; }
   [ ! -s "$PLOG" ]
 }
 
+# 2026-11-22 (ar-4654): ar-2363's item closed ok with no PR and left its row started, and triage
+# promoted only todo rows, so home-k3s-trivy-criticals had no owner until the orphan pass's 72h.
+@test "triage: a red's row left started by a closed fix no live item holds is queued again with --restart; a refusal is logged" {
+  log_triage_setup
+  lock_route
+  run "$SUBJECT" triage
+  assert_success
+  sed -i 's/- \[ \] fix(logs)\(.*\)$/- [\/] fix(logs)\1 <!-- id:ar-77 -->/' "$BOARD"; : > "$PLOG"
+  # its item closed ok with no PR: a try that did not hold, so the row is queued again as a retry
+  jq -cn --arg t "red cause:$(cause_of)" '{slug: "ar-77", tags: $t, state: "done", status: "ok", queued: "2020-01-01T00:00:00Z", row: "agent-runtime:ar-77"}' > "$ITEMS"
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '1 queued as red fixes'
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --dispatch --restart --project agent-runtime --tags red cause:$(cause_of) retry:ar-77 --raw - \[/\] fix\(logs\): alpha error .*id:ar-77 -->$"
+  # negative control: a live item of the row holds it, so nothing is queued
+  : > "$PLOG"
+  jq -cn '{slug: "ar-78", tags: "", state: "running", queued: "2020-01-01T00:00:00Z", row: "agent-runtime:ar-77"}' >> "$ITEMS"
+  run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  # the promote's refusal is said, never dropped
+  sed -i 2d "$ITEMS"
+  printf '#!/usr/bin/env bash\necho "fleet-dispatch: skip agent-runtime: row gone" >&2; exit 1\n' > "$SANDBOX/bin/promote-stub"
+  run "$SUBJECT" triage
+  assert_success
+  assert_line --regexp '^fleet-bench: triage: could not queue fix\(logs\): alpha error .* \(- \[/\]\): fleet-dispatch: skip agent-runtime: row gone$'
+}
+
 @test "triage: a high or urgent watch is a row after one pass; a low one after 30 minutes, the hour it trips" {
   triage_setup
   watch hot TRIP -1000 high; watch hotter TRIP -1000 urgent; watch young TRIP -600 high; watch slow TRIP -1000 low; watch none TRIP -1000 ''
