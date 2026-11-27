@@ -936,7 +936,8 @@ fn open_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
 /// area does not count: inbox-triage rewrites a filed row's area, so a filer that files the same
 /// words again would miss its own row (research-pick's `research(roster):` row, re-scoped to
 /// `research(notes):`, filed nightly). Deterministic, and strict on purpose: a refused near-dup
-/// exits 3, which callers read as already filed, so a false twin would drop a row. A [`sibling`]
+/// exits 3, which most callers read as already filed, so a false twin would drop a row (fleet-bench's
+/// board_upsert reads it as a failed write and says so, ar-4296). A [`sibling`]
 /// of the session line `from` is never one: one session's follow-ups that differ only in a short
 /// group word (`CI` against `notes`) share 87% of their words (ar-5824).
 fn near_twin<'a>(content: &'a str, text: &str, from: Option<&str>) -> Option<&'a str> {
