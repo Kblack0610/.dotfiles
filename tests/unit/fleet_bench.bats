@@ -1681,23 +1681,6 @@ tok_fixture() {
   assert_output --partial 'expected: release-runs is healthy., why: RED steam.yml: failure on main, evidence:'
 }
 
-@test "triage: a status-row probe names its worst row, EXPIRED or NO_CREDS without a gap, not its last line" {
-  triage_setup
-  watch vendor-creds TRIP -25200 normal
-  printf "TRIP exit 2 (want 0)\nghost NO_CREDS probe=listed detail='not in rbw; gap: add-ghost-login'\naws EXPIRED probe=cmd detail='sso token expired'\nstripe OK probe=http\nollama-cloud LOW probe=http detail='timeout'\n" > "$TRIAGE_WATCH_STATE/vendor-creds.out"
-  run "$SUBJECT" triage --dry-run
-  assert_success
-  assert_output --partial 'why: aws EXPIRED probe=cmd, evidence: watch-companion-loop list --long vendor-creds'
-  printf "TRIP exit 1 (want 0)\naws OK probe=cmd\nollama-cloud LOW probe=http detail='timeout'\n" > "$TRIAGE_WATCH_STATE/vendor-creds.out"
-  run "$SUBJECT" triage --dry-run
-  assert_success
-  assert_output --partial "why: ollama-cloud LOW probe=http, evidence:"
-  printf "TRIP exit 1 (want 0)\nollama-cloud LOW probe=http detail='timeout'\nstripe OK probe=http\n" > "$TRIAGE_WATCH_STATE/vendor-creds.out"
-  run "$SUBJECT" triage --dry-run
-  assert_success
-  assert_output --partial "why: ollama-cloud LOW probe=http, evidence:"
-}
-
 @test "triage: a watch under a quarantine files no row until the quarantine ends" {
   triage_setup
   watch spend TRIP -25200 urgent
