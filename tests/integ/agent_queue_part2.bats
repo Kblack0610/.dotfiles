@@ -2808,6 +2808,30 @@ already"
   assert_output 0
 }
 
+# ar-4657: the item's own story row refused with a shortlist (exit 5) queues nothing: a rowless item lands a
+# PR no board row records (release-links). The session joins a row, or reruns with --checked, which notes takes.
+@test "an add whose own story row notes answers with a shortlist (exit 5) queues nothing; --checked files it" {
+  story_notes
+  unset AGENT_QUEUE_PULL
+  echo 5 > "$NOTES_FIXTURE/story.rc"
+  printf 'dm-4\t62\tagent\tfix(menu): the work already filed\n' > "$NOTES_FIXTURE/story.out"
+  rc=0; "$AQ" add --project level --running --want human --slug mine "fix(menu): the session's own work" 2>"$SANDBOX/err" || rc=$?
+  assert_equal "$rc" 7
+  grep -qF "dm-4" "$SANDBOX/err"
+  grep -qF "mine is not queued" "$SANDBOX/err"
+  grep -qF -- "--checked" "$SANDBOX/err"
+  run "$AQ" show mine
+  assert_failure
+  rm "$NOTES_FIXTURE/story.rc"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" add --project level --running --want human --checked dm-4 --slug mine "fix(menu): the session's own work"
+  assert_success
+  run grep -F -- "--agent add" "$NOTES_FIXTURE/calls.log"
+  assert_output --partial " --checked=dm-4 -- "
+  run grep -x 'row: level:lv-9' "$(item running mine)"
+  assert_success
+}
+
 @test "the item's own story row and a plan's rows name their origin, a want names none" {
   story_notes
   unset AGENT_QUEUE_PULL
