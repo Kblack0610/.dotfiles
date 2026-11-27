@@ -947,6 +947,12 @@ fn ask_need(
     }
 }
 
+/// Whether ask `a` waits on a decision. An audit (`audit_of`, posted before ar-4765) reviews an
+/// answer and the fleet reads it: it stands for its item in `needs` and lists nothing.
+fn has_decision(a: &Value) -> bool {
+    str_of(a, "audit_of").is_empty()
+}
+
 /// The waiting item ask `a` holds once its session is gone: the one tagged `ask:<id>`, or the one
 /// whose last session is the ask's `claude_session`, unless an ask before it took that item (`asked`).
 fn held_item<'a>(items: &[&'a Item], a: &Value, asked: &HashSet<String>) -> Option<&'a Item> {
@@ -1110,11 +1116,7 @@ pub fn needs(
             dependents(item.map(|i| i.slug.as_str())),
             age_min(since),
         );
-        // An audit (`audit_of`, posted before ar-4765) is a review of an answer, not a decision:
-        // it stands for its item above and lists nothing.
-        if str_of(a, "audit_of").is_empty() {
-            out.push(ask_need(a, item, target, since, score));
-        }
+        out.extend(has_decision(a).then(|| ask_need(a, item, target, since, score)));
     }
     for s in &sessions {
         let target = str_of(s, "target");
@@ -1147,7 +1149,6 @@ pub fn needs(
         });
     }
     for i in items.iter().filter(|i| i.state == State::Waiting) {
-        // A trainee run's wait is the fleet's to answer (the gate, then a Claude retry): no human waits.
         if i.is_trainee()
             || asked.contains(&i.slug)
             || i.session
