@@ -2341,6 +2341,37 @@ GH
   [[ "$stderr" == *"no live session sid-w"* ]]
 }
 
+@test "close --self on a fleet worker: a PR merged since the holder's store polled reads merged here (ar-5947)" {
+  rm -f "$SANDBOX/lease-held"
+  bats_require_minimum_version 1.5.0
+  export CLAUDE_CODE_SESSION_ID=sid-w FLEET_HOST=razer-laptop FLEET_STATE_FILE="$SANDBOX/state/state.json"
+  mkdir -p "$SANDBOX/state"
+  local f="$SANDBOX/state/holder-state.json" now; now="$(date +%s)"
+  worker_ssh
+  # This worker's store polled before the merge; its refresh reads PR #11 MERGED (after_sync_).
+  forgejo_stale_fixture
+  local w="$SANDBOX/fjwt"
+  git -C "$w" -c user.name=t -c user.email=t@t commit -q --allow-empty -m base
+  git -C "$w" update-ref refs/remotes/origin/main HEAD
+  # The holder's row still reads the PR open, from its own store.
+  jq -nc --argjson t "$now" --arg w "$w" '{generated_epoch: $t, sessions: [{session_id: "sid-w", host: "razer-laptop",
+    bucket: "DONE", cwd: $w, pr: "11", pr_state: "OPEN", ci: "PENDING", blockers: ["PR #11 open, CI PENDING"]}]}' > "$f"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_success
+  assert_output "now: quiet 0m, nothing to land"
+  [ "$(grep -c '^sync-prs --wait fj.example/o/r$' "$LEDGER_DIR/calls")" -eq 1 ]
+  # A store that cannot read the forge is a wait, never the stale OPEN taken as fact.
+  printf 'feat/x\t11\tOPEN\tPENDING\tabc\t-\t\n' > "$LEDGER_DIR/prs_fj.example_o_r.tsv"; touch "$LEDGER_DIR/SYNC_FAIL"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_failure 1
+  assert_output --partial "after: this worker could not read PR store refresh (fj.example/o/r)"
+  # NEGATIVE CONTROL: a PR the refreshed store still reads open keeps the holder's blocker.
+  rm "$LEDGER_DIR/SYNC_FAIL" "$LEDGER_DIR/after_sync_fj.example_o_r.tsv"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_failure 1
+  assert_line --index 0 "keep: land it: PR #11 open, CI PENDING"
+}
+
 @test "close --self on a fleet worker: a submodule pin behind master is not unlanded work (ar-2445)" {
   rm -f "$SANDBOX/lease-held"
   bats_require_minimum_version 1.5.0
