@@ -2358,3 +2358,23 @@ EOF
   refute_output --partial 'never its author'
   assert_not_called 'claude --resume abc-123'
 }
+
+# ar-3645: an item on a PR that already merged is that work done; a session started on it finds nothing to do.
+@test "start closes a queued item whose recorded PR already merged and starts no session; an open PR starts as before" {
+  pr_item MERGED
+  agent-queue add --project game --slug land-12 --pr o/game#13 "land PR 13" >/dev/null
+  agent-queue add --project game --slug land-14 --pr o/game#14 "land PR 14" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item land-12
+  assert_success
+  assert_output --partial 'land-12 not started: its PR o/game#13 already merged; closed done'
+  [ -n "$(qitem done land-12)" ] || fail "land-12 is not done"
+  assert_equal "$(qfield "$(qitem done land-12)" status)" ok
+  assert_equal "$(qfield "$(qitem done land-12)" merged)" "$OID"
+  assert_not_called 'wt new'
+  assert_not_called 'claude'
+  # negative control: the same item with its PR open is not closed
+  printf 'OPEN -\n' > "$NOTES_FIXTURE/pr.state"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item land-14
+  refute_output --partial 'already merged'
+  [ -z "$(qitem done land-14)" ] || fail "an item on an open PR was closed"
+}

@@ -4525,6 +4525,8 @@ cmd_start() {
       # refused start leaves no session working an item still queued.
       hold=$(jq -r '.hold // empty' <<<"$it")
       [ -z "$hold" ] || { say "start: $item waits on $hold; it starts once that clears"; return 1; }
+      # A recorded PR that already merged is the work done: the item closes, no session starts on it (ar-3645).
+      if [ -n "$(jq -r '.pr // ""' <<<"$it")" ] && start_merged "$item" "$it"; then exec 7>&-; return 0; fi
     fi
     project=$(jq -r .project <<<"$it")
     [ -n "$area" ] || area=$(jq -r '.area // empty' <<<"$it")
@@ -5477,6 +5479,21 @@ item_pr_state() {
   if [[ "$pr" == */*#* ]]; then so_pr_view "$pr" "$(pr_repo_dir "$pr" "$project")" "$PR_STATE_JSON" "$PR_STATE_JQ"; return; fi
   so_pr_view "$pr" "$(repo_dir "$project")" "$PR_STATE_JSON,body" \
     "select(any(.body | split(\"\n\")[] | rtrimstr(\"\r\"); . == \"Item: $1\")) | $PR_STATE_JQ"
+}
+
+# start_merged <slug> <item json> -- a queued item whose recorded pr: its forge reads MERGED (item_pr_state, with a
+# merge commit) is done ok with that merge recorded, and its row closes on merge proof (close_row): returns 0.
+# Returns 1 when the PR is open, closed unmerged, unreadable or has no merge commit, so the start goes on.
+# Why: an item on a PR another session had already merged started a session that found nothing to do (#2539).
+start_merged() {
+  local info state oid
+  info=$(item_pr_state "$1" "$2") || return 1
+  read -r state oid _ <<<"$info"; oid=${oid#-} oid=${oid//,/ }
+  [ "$state" = MERGED ] && [ -n "$oid" ] && own_record "$1" "$2" || return 1
+  agent-queue set "$1" "merged=$oid" >/dev/null && agent-queue move "$1" done --status ok --if queued >/dev/null || return 1
+  logline "start: queue item $1 not started: its PR $(jq -r .pr <<<"$2") merged; closed done"
+  say "start: $1 not started: its PR $(jq -r .pr <<<"$2") already merged; closed done"
+  close_row "$1" || true
 }
 
 # own_record <slug> <item json> -- the slug names this record: agent-queue show and set read a reused
