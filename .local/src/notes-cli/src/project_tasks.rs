@@ -1890,9 +1890,7 @@ fn file_via(
     };
     // A model-written row that twins an open row of the board joins that row, as `--dup` does.
     let joined = match &how.how {
-        How::Rows { texts, .. } if !as_is && linked.is_none() => {
-            joined_twin(&base, texts, origin_item(&line.text).as_deref())
-        }
+        How::Rows { texts, .. } if !as_is && linked.is_none() => joined_twin(&base, texts, &line),
         _ => None,
     };
     let dup_id = match &how.how {
@@ -1999,11 +1997,12 @@ fn file_via(
 
 /// The open row every text of a model-written filing twins ([`twin_id`]), when it is one and the
 /// same row: a mixed line files as the model wrote it, so no row's words are dropped with no row
-/// to hold them. `origin` is the line's own `#from/` item: a sibling row of it is no twin.
-fn joined_twin(base: &str, texts: &[String], origin: Option<&str>) -> Option<String> {
+/// to hold them. A sibling of the inbox `line`'s own `#from/` item is no twin.
+fn joined_twin(base: &str, texts: &[String], line: &sheet::InboxLine) -> Option<String> {
+    let origin = origin_item(&line.text);
     let twins: Vec<Option<String>> = texts
         .iter()
-        .map(|t| twin_id(base, &md::without_agent_tag(t), origin))
+        .map(|t| twin_id(base, &md::without_agent_tag(t), origin.as_deref()))
         .collect();
     twins
         .first()
@@ -7163,7 +7162,7 @@ mod inbox_tests {
             super::near_twin(SIBLINGS, ci, Some("ar-5604")).is_none(),
             "a sibling from the same item is its own row"
         );
-        assert!(joined_twin(SIBLINGS, &[ci.into()], Some("ar-5604")).is_none());
+        assert!(twin_id(SIBLINGS, ci, Some("ar-5604")).is_none());
         // Negative controls: a reworded copy from another session still folds, and so does the
         // same row filed twice by the same session (an exact twin).
         assert_eq!(
