@@ -1754,6 +1754,22 @@ stale_fixture() {
   assert_output 'stale: '
 }
 
+@test "ask_stale_skips: a row fleet-bench triage filed by key is never asked about or dropped, however old its skip (ar-6265)" {
+  stale_fixture
+  row game agent sx-10 "- [ ] check(watch): board-chain tripped since 2026-11-05, expected: x #high $T <!-- id:sx-10 -->"
+  row game agent sx-11 "- [ ] fix(hold): briefing went red #low $T <!-- id:sx-11 -->"
+  skipv sx-10 needs-person 'Watch pages the human'; skipv sx-11 unclear 'which hold'
+  jq -c 'if (.key | IN("sx-10", "sx-11")) then .at = "2026-11-01T09:00:00-08:00" else . end' \
+    "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  run ask_stale_skips --dry-run
+  assert_success
+  refute_output --partial 'sx-10'
+  refute_output --partial 'sx-11'
+  # NEGATIVE CONTROL: the fixture's plain stale rows are still asked about or dropped
+  assert_output --partial "$(printf 'ask\tgame\tsx-1\tunclear\t25')"
+  assert_output --partial "$(printf 'drop\tgame\tsx-2\tunclear\t25')"
+}
+
 @test "ask_stale_skips: DISPATCH_STALE_MAX caps a day, DISPATCH_STALE_DAYS 0 is off, and a failed gate cancels the ask" {
   stale_fixture
   DISPATCH_STALE_DAYS=0 run ask_stale_skips
