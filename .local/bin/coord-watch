@@ -9,7 +9,7 @@
 #
 # Tracked: the first word of each open `- [ ]` line under the plan's `## Follow-through`. An event
 # matches on its id, item or a pr word, or on text carrying `#from/<writer>` (triage acting on the
-# session's outbox follow-ups). Writers: $AGENT_QUEUE_ITEM, $CLAUDE_CODE_SESSION_ID's first 8
+# session's outbox follow-ups); a child row's done, dropped or rehomed under a tracked item drops. Writers: $AGENT_QUEUE_ITEM, $CLAUDE_CODE_SESSION_ID's first 8
 # characters (notes-cli ingest.rs writer()), each --from. The session's own writes and bookkeeping
 # actions drop; every other action passes, so an unlisted failure still reaches the coordinator.
 # A cursor (the ts of the last event read) makes each re-arm replay what landed while unarmed.
@@ -25,6 +25,10 @@ REPLAY_LINES=20000
 : "${COORD_WATCH_BATCH_S:=5}"
 # Actions that record bookkeeping, not progress: never a coordinator's cue.
 NOISE='["item-set","tagged","edited","detailed","sweep","sweep-stopped","item-claimed","running"]'
+# What a child row (its id untracked, its item a tracked pass) does as progress: drops, so a focus
+# pass closing rows does not wake the coordinator per row (2026-11-25: about once a minute). Its
+# failures (land-failed, item-cancelled, reopened, refused) and any other action still pass.
+CHILD_PROGRESS='["done","dropped","rehomed"]'
 
 usage() { grep '^#   coord-watch ' "$0" | sed 's/^#   //' >&2; exit 2; }
 
@@ -62,7 +66,7 @@ filter() {
   # one local ISO form, off by the hour only across a DST change.
   # A process substitution, not a pipe, so a --batch loop that ends can kill jq: a pipeline would
   # wait on jq, which waits on a quiet tail -F forever.
-  events() { jq --unbuffered -rR --argjson ids "$tracked" --argjson noise "$NOISE" --arg since "$since" \
+  events() { jq --unbuffered -rR --argjson ids "$tracked" --argjson noise "$NOISE" --argjson child "$CHILD_PROGRESS" --arg since "$since" \
     --argjson writers "$(printf '%s\n' "${writers[@]}" | jq -R 'select(. != "")' | jq -sc .)" '
     def s: if . == null then "" else tostring end;
     fromjson? // empty
@@ -70,10 +74,15 @@ filter() {
     | (.ts | s) as $ts
     | select($since == "" or $ts > $since)
     | (.text | s) as $text | (.why | s) as $why | (.pr | s) as $pr
-    | ([(.id | s), (.item | s)] + [$pr | splits("[ ]+")] | map(select(. != ""))) as $keys
-    | if ((.action | s) as $a | $noise | index($a)) or ((.by | s) as $b | $writers | index($b))
-         or ((any($keys[]; . as $k | $ids | index($k))
-              or any($writers[]; . as $w | $text | test("#from/" + $w + "([^A-Za-z0-9_.-]|$)"))) | not)
+    | (.action | s) as $a | (.id | s) as $id | (.item | s) as $item
+    | def tracked: . as $k | $k != "" and ($ids | index([$k]) != null);
+      ([$id] + [$pr | splits("[ ]+")] | any(.[]; tracked)
+       or any($writers[]; . as $w | $text | test("#from/" + $w + "([^A-Za-z0-9_.-]|$)"))) as $own
+    | ($item | tracked) as $via_item
+    # A child row (its own untracked id) closed under a tracked item is that item at work.
+    | ($via_item and ($own | not) and $id != "" and $id != $item and ($child | index([$a]) != null)) as $child_progress
+    | if ($noise | index([$a]) != null) or ((.by | s) as $b | $writers | index([$b]) != null)
+         or (($own or $via_item) | not) or $child_progress
       then "R\u001f\($ts)"
       else "E\u001f\($ts)\u001f" +([(.action | s), ((.id // .item) | s | if . == "" then "-" else . end),
              (if (.item | s) != "" and (.id | s) != "" then "item=\(.item)" else empty end),

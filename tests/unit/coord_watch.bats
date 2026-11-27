@@ -68,6 +68,27 @@ ev() { printf '%s\n' "$@" | "$CW" filter "$PLAN"; }
   assert_output ''
 }
 
+# 2026-11-25: 7 focus passes on a ledger woke the coordinator about once a minute, one wake per child row closed.
+@test "a child row's done, dropped or rehomed under a tracked item drops; its failures and the item's own events print" {
+  run ev '{"action":"done","id":"ar-60","item":"fix-gov-p1","by":"x"}' \
+         '{"action":"dropped","id":"ar-61","item":"fix-gov-p1","by":"x"}' \
+         '{"action":"rehomed","id":"ar-62","item":"fix-gov-p1","by":"x"}' \
+         '{"action":"reopened","id":"ar-61","item":"fix-gov-p1","by":"x"}' \
+         '{"action":"land-failed","id":"ar-63","item":"fix-gov-p1","by":"x"}' \
+         '{"action":"merged","id":"ar-64","item":"fix-gov-p1","by":"x"}' \
+         '{"action":"done","item":"fix-gov-p1","by":"x"}' \
+         '{"action":"done","id":"fix-gov-p1","item":"fix-gov-p1","by":"x"}'
+  assert_success
+  assert_output $'reopened ar-61 item=fix-gov-p1 | \nland-failed ar-63 item=fix-gov-p1 | \nmerged ar-64 item=fix-gov-p1 | \ndone fix-gov-p1 | \ndone fix-gov-p1 item=fix-gov-p1 | '
+}
+
+@test "negative control: a child row done under a tracked item still prints when its own id or a pr word is tracked" {
+  run ev '{"action":"done","id":"ar-10","item":"fix-gov-p1","by":"x"}' \
+         '{"action":"dropped","id":"ar-65","item":"fix-gov-p1","pr":"o/r#7","by":"x"}'
+  assert_success
+  assert_output $'done ar-10 item=fix-gov-p1 | \ndropped ar-65 item=fix-gov-p1 pr=o/r#7 | '
+}
+
 @test "a plan that does not exist, or has no Follow-through section, is an error, not a silent empty watch" {
   run "$CW" filter "$SANDBOX/nope.md" </dev/null
   assert_failure 2
