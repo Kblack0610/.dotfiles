@@ -819,6 +819,7 @@ pub(crate) mod tests {
                 cc("cc:pool_busy", "pool", "unity", "1"),
                 cc("cc:pool_waiting", "pool", "unity", "2"),
                 cc("cc:pool_oldest_wait_seconds", "pool", "unity", "900"),
+                cc("cc:pool_run_seconds_24h", "pool", "unity", "420"),
                 cc("cc:pool_slots", "pool", "macos", "1"),
                 cc("cc:pool_waiting", "pool", "macos", "0"),
             ]),
