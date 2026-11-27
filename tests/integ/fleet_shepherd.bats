@@ -2915,7 +2915,9 @@ STUB
 # and 3 (queued 48h, one job) as stuck, run 1 under two job names. gh answers a run and its jobs from
 # those facts and records every call. STUB_CANCEL_REFUSED refuses /cancel with HTTP 409 (not
 # cancellable), STUB_CANCEL_DENIED with 403 and refuses force-cancel too, STUB_FORCE_REFUSED refuses
-# force-cancel with HTTP 409, and STUB_GH_DOWN fails every run read.
+# force-cancel with HTTP 409 and STUB_FORCE_DENIED with 403, STUB_DELETE_FAILED refuses the run's DELETE
+# with 403, STUB_AFTER_FORCE=job gives run 1 a job and =down fails its read once force-cancel was
+# called on it, and STUB_GH_DOWN fails every run read.
 ghost_setup() {
   cat > "$PROM_LIB" <<'STUB'
 prom_q() {
@@ -2929,21 +2931,28 @@ STUB
   gh_script 'echo "$*" >> "$HOME/gh.calls"
 old="$(date -u -d "48 hours ago" +%FT%TZ)" new="$(date -u -d "1 hour ago" +%FT%TZ)"
 [ -z "${STUB_GH_DOWN:-}" ] || { echo "gh: HTTP 502" >&2; exit 1; }
+after=""
+[ -z "${STUB_AFTER_FORCE:-}" ] || ! grep -q "runs/1/force-cancel" "$HOME/gh.calls" || after="$STUB_AFTER_FORCE"
 case "$*" in
-  "api repos/o/r/actions/runs/1 "*|"api repos/o/r/actions/runs/3 "*) printf "queued\t%s\n" "$old" ;;
+  "api repos/o/r/actions/runs/1 "*) [ "$after" != down ] || { echo "gh: HTTP 502" >&2; exit 1; }
+                                    printf "queued\t%s\n" "$old" ;;
+  "api repos/o/r/actions/runs/3 "*) printf "queued\t%s\n" "$old" ;;
   "api repos/o/r/actions/runs/2 "*) printf "queued\t%s\n" "$new" ;;
-  "api repos/o/r/actions/runs/1/jobs "*|"api repos/o/r/actions/runs/2/jobs "*) echo 0 ;;
+  "api repos/o/r/actions/runs/1/jobs "*) if [ "$after" = job ]; then echo 1; else echo 0; fi ;;
+  "api repos/o/r/actions/runs/2/jobs "*) echo 0 ;;
   "api repos/o/r/actions/runs/3/jobs "*) echo 1 ;;
   *"/cancel") [ -z "${STUB_CANCEL_DENIED:-}" ] || { echo "gh: Forbidden (HTTP 403)" >&2; exit 1; }
               [ -z "${STUB_CANCEL_REFUSED:-}" ] || { echo "gh: Cannot cancel a workflow run that is completed. (HTTP 409)" >&2; exit 1; } ;;
   *"/force-cancel") [ -z "${STUB_FORCE_REFUSED:-}" ] || { echo "gh: Cannot force cancel this run (HTTP 409)" >&2; exit 1; }
+                    [ -z "${STUB_FORCE_DENIED:-}" ] || { echo "gh: Forbidden (HTTP 403)" >&2; exit 1; }
                     [ -z "${STUB_CANCEL_DENIED:-}" ] ;;
+  "api -X DELETE "*) [ -z "${STUB_DELETE_FAILED:-}" ] || { echo "gh: Forbidden (HTTP 403)" >&2; exit 1; } ;;
 esac'
 }
 
 @test "ghost-runs: a dry run logs the ghost it would cancel, keeps a young run and one with a job, and asks once" {
   ghost_setup
-  run "$SH" ghost-runs
+  STUB_CANCEL_REFUSED=1 STUB_FORCE_REFUSED=1 run "$SH" ghost-runs
   assert_success
   assert_line 'ghost-runs: would-cancel https://github.com/o/r/actions/runs/1 (48h)'
   # Negative controls: queued an hour, and queued two days with a job, are no ghosts.
@@ -2952,7 +2961,7 @@ esac'
   assert_equal "$(grep -c . <<<"$output")" 3
   run grep -c 'stuck="true",forge="github"} >= 86400' "$HOME/prom.calls"
   assert_output 1
-  run grep -c 'cancel' "$HOME/gh.calls"
+  run grep -cE 'cancel|DELETE' "$HOME/gh.calls"
   assert_output 0
   # A verdict is no act: the rundown gets nothing from a dry run.
   [ ! -e "$FLEET_SHEPHERD_DIR/log.md" ] || ! grep -q 'ghost run' "$FLEET_SHEPHERD_DIR/log.md"
@@ -2988,6 +2997,65 @@ esac'
   assert_success
   run grep -c 'runs/[23]/.*cancel' "$HOME/gh.calls"
   assert_output 0
+  # Negative control: a cancel or force-cancel that works deletes nothing.
+  run grep -c 'DELETE' "$HOME/gh.calls"
+  assert_output 0
+}
+
+@test "ghost-runs: a ghost GitHub refuses both cancels on is read again and deleted; a refused delete is cancel-failed and tried again (ask 44Ljyz)" {
+  ghost_setup
+  export FLEET_SHEPHERD_GHOST_CANCEL=1 STUB_CANCEL_REFUSED=1 STUB_FORCE_REFUSED=1
+  run "$SH" ghost-runs
+  assert_success
+  assert_line 'ghost-runs: deleted https://github.com/o/r/actions/runs/1 (48h)'
+  # cancel, force-cancel, then GitHub's second read of the run and its jobs, then the DELETE.
+  assert_equal "$(grep 'runs/1' "$HOME/gh.calls" | sed 's/ --jq.*//' | tr '\n' '|')" \
+    'api repos/o/r/actions/runs/1|api repos/o/r/actions/runs/1/jobs|api -X POST repos/o/r/actions/runs/1/cancel|api -X POST repos/o/r/actions/runs/1/force-cancel|api repos/o/r/actions/runs/1|api repos/o/r/actions/runs/1/jobs|api -X DELETE repos/o/r/actions/runs/1|'
+  # Only the ghost: a young run and one with a job are never deleted.
+  run grep -c 'DELETE' "$HOME/gh.calls"
+  assert_output 1
+  run grep -cxF 'ghost run https://github.com/o/r/actions/runs/1: deleted, queued 48h with no jobs; cancel and force-cancel answered HTTP 409' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_output 1
+  assert_equal "$(grep runs/1 "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" | cut -f2)" deleted
+  # A deleted run is judged: the next run inside the age asks GitHub nothing about it.
+  rm -f "$HOME/gh.calls"
+  run "$SH" ghost-runs
+  assert_output ''
+  [ ! -e "$HOME/gh.calls" ]
+  # A DELETE GitHub refuses is cancel-failed with its answer, logged once, and tried again each run.
+  rm -f "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" "$FLEET_SHEPHERD_DIR/log.md" "$HOME/gh.calls"
+  local refused='delete: gh: Forbidden (HTTP 403)'
+  STUB_DELETE_FAILED=1 run "$SH" ghost-runs
+  assert_line "ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h; $refused)"
+  STUB_DELETE_FAILED=1 run "$SH" ghost-runs
+  assert_line "ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h; $refused)"
+  run grep -c 'DELETE' "$HOME/gh.calls"
+  assert_output 2
+  run grep -cF "ghost run https://github.com/o/r/actions/runs/1: cancel-failed, queued 48h with no jobs ($refused); tried again each run" "$FLEET_SHEPHERD_DIR/log.md"
+  assert_output 1
+  run "$SH" ghost-runs
+  assert_line 'ghost-runs: deleted https://github.com/o/r/actions/runs/1 (48h)'
+}
+
+@test "ghost-runs: a ghost that takes a job before the delete is kept, and one GitHub stops answering about is asked again; neither is deleted" {
+  ghost_setup
+  export FLEET_SHEPHERD_GHOST_CANCEL=1 STUB_CANCEL_REFUSED=1 STUB_FORCE_REFUSED=1
+  STUB_AFTER_FORCE=job run "$SH" ghost-runs
+  assert_success
+  assert_line 'ghost-runs: kept https://github.com/o/r/actions/runs/1 (1 jobs)'
+  run grep -c 'DELETE' "$HOME/gh.calls"
+  assert_output 0
+  assert_equal "$(grep runs/1 "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" | cut -f2)" kept
+  [ ! -e "$FLEET_SHEPHERD_DIR/log.md" ] || ! grep -q 'ghost run' "$FLEET_SHEPHERD_DIR/log.md"
+  # The second read failing judges nothing: no delete, no verdict, asked again next run.
+  rm -f "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" "$HOME/gh.calls"
+  STUB_AFTER_FORCE=down run "$SH" ghost-runs
+  assert_success
+  assert_line 'ghost-runs: GitHub did not answer, asked again next run: https://github.com/o/r/actions/runs/1 (run unreadable)'
+  run grep -c 'DELETE' "$HOME/gh.calls"
+  assert_output 0
+  run grep -c 'runs/1' "$FLEET_SHEPHERD_DIR/ghost-runs.tsv"
+  assert_output 0
 }
 
 @test "ghost-runs: a cancel refused for another reason is cancel-failed, logged once and tried again; GitHub down judges nothing" {
@@ -3005,15 +3073,18 @@ esac'
   assert_line 'ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h; gh: Forbidden (HTTP 403))'
   run grep -c 'ghost run https://github.com/o/r/actions/runs/1: cancel-failed, queued 48h with no jobs (gh: Forbidden (HTTP 403))' "$FLEET_SHEPHERD_DIR/log.md"
   assert_output 1
-  # A run cancel calls not cancellable and force-cancel refuses too names the force-cancel answer.
+  # A run cancel calls not cancellable and force-cancel refuses for another reason names the
+  # force-cancel answer, and is never deleted: only a 409 on both cancels is.
   unset STUB_CANCEL_DENIED
-  rm -f "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" "$FLEET_SHEPHERD_DIR/log.md"
-  STUB_CANCEL_REFUSED=1 STUB_FORCE_REFUSED=1 run "$SH" ghost-runs
-  local refused='force-cancel: gh: Cannot force cancel this run (HTTP 409)'
+  rm -f "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" "$FLEET_SHEPHERD_DIR/log.md" "$HOME/gh.calls"
+  STUB_CANCEL_REFUSED=1 STUB_FORCE_DENIED=1 run "$SH" ghost-runs
+  local refused='force-cancel: gh: Forbidden (HTTP 403)'
   assert_line "ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h; $refused)"
   assert_equal "$(grep runs/1 "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" | cut -f4)" "48h; $refused"
   run grep -cF "ghost run https://github.com/o/r/actions/runs/1: cancel-failed, queued 48h with no jobs ($refused)" "$FLEET_SHEPHERD_DIR/log.md"
   assert_output 1
+  run grep -c 'DELETE' "$HOME/gh.calls"
+  assert_output 0
   export STUB_CANCEL_DENIED=1
   # GitHub not answering writes no verdict, and one line names every run asked again.
   rm -f "$FLEET_SHEPHERD_DIR/ghost-runs.tsv"
