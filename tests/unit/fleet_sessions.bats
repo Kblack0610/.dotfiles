@@ -684,6 +684,65 @@ load 'fleet_sessions/common'
   done
 }
 
+@test "an idle session whose gate runs detached waits as a gate shell does, and names its next wake-up (ar-1085)" {
+  # unity-core-playground-agent-3 (run 42525454189): ci-gate.sh ran on with & after its Bash call returned, so Claude read
+  # idle and the row read STALLED. The 25th argument is the session's next wake-up, none when it has none.
+  run b idle 0 0 0 25 1 0 0 9 OPEN FAIL 1 - 1/2 x - gate - - - - - - - none
+  assert_output 'WORKING gate running detached, nothing wakes the session when it ends'
+  run b idle 0 0 0 25 1 0 0 9 OPEN FAIL 1 - 1/2 x - test - - - - - - - none
+  assert_output 'WORKING test running detached, nothing wakes the session when it ends'
+  run b idle 0 0 0 25 1 0 0 9 OPEN FAIL 1 - 1/2 x - gate - - - - - - - 'a ScheduleWakeup at Fri 10:00'
+  assert_output 'WORKING gate running detached, its next wake-up is a ScheduleWakeup at Fri 10:00'
+  # a wait the facts already name reads as that wait
+  run b idle 0 0 0 25 1 0 0 9 OPEN PENDING 1 - 1/2 x - gate - - - - - - - none
+  assert_output 'WORKING PR #9 CI running'
+  # a landing-queue gate outlasts FLEET_SHELL_STALE_MIN by design; any other is stale past it
+  run b idle 0 0 0 300 1 0 0 9 OPEN FAIL 1 - 1/2 x - queue - - - - - - - none
+  assert_output 'WORKING gate running detached, nothing wakes the session when it ends'
+  run b idle 0 0 0 120 1 0 0 9 OPEN FAIL 1 - 1/2 x - gate - - - - - - - none
+  assert_output 'STALLED PR #9 CI red, detached gate idle over 120m'
+  # an ask still reads carrying on, and a finished plan is not waiting on it
+  run b idle 0 1 0 25 1 0 0 9 OPEN FAIL 1 - 1/2 x - gate - - - - - - - none
+  assert_output 'NEEDS 1 pending ask(s), carrying on'
+  run b idle 0 0 0 25 1 0 0 875 MERGED PASS 1 - 3/3 - - gate - - - - - - - none
+  assert_output 'DONE PR #875 merged, tree clean, all 3 phases done, detached gate still running'
+  # negative controls: no detached process, and a subagent's own wait
+  run b idle 0 0 0 25 1 0 0 9 OPEN FAIL 1 - 1/2 x - gate - - - - - - - -
+  assert_output 'STALLED PR #9 CI red'
+  run b idle 0 0 0 25 1 0 0 9 OPEN FAIL 1 - 1/2 x - agent - - - - - - - none
+  assert_output 'WORKING subagent running'
+}
+
+@test "detached_gate names an idle session's detached gate only in a checkout no other live row shares (ar-1085 review)" {
+  mkdir -p "$SANDBOX/wt/scripts/test" "$SANDBOX/other"
+  git -C "$SANDBOX/wt" init -q
+  printf 'sleep 60\n' > "$SANDBOX/wt/scripts/test/ci-gate.sh"
+  printf 'gate ci-gate.sh\n' > "$SANDBOX/time-use.conf"
+  export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
+  local gate me='{"target":"lab/s1:1","cwd":"'"$SANDBOX/wt"'"}'
+  (cd "$SANDBOX/wt" && exec -a x bash scripts/test/ci-gate.sh) >/dev/null 2>&1 3>&- &
+  gate=$!; LIVE_PIDS="$gate"
+  until grep -q ci-gate.sh "/proc/$gate/cmdline" 2>/dev/null; do :; done
+  run detached_gate - idle 25 none "$SANDBOX/wt" 0 lab/s1:1 "$me"
+  assert_output queue
+  # negative controls: another live row in the same checkout or in a subdirectory of it, a busy or shell
+  # session (the shell probes own those), under FLEET_IDLE_MIN, a worker's row, a subagent's wait, and no checkout
+  run detached_gate - idle 25 none "$SANDBOX/wt" 0 lab/s1:1 "$me"$'\n''{"target":"lab/s2:1","cwd":"'"$SANDBOX/wt"'"}'
+  assert_output ''
+  run detached_gate - idle 25 none "$SANDBOX/wt" 0 lab/s1:1 "$me"$'\n''{"target":"lab/s2:1","cwd":"'"$SANDBOX/wt/scripts"'"}'
+  assert_output ''
+  run detached_gate - shell 25 none "$SANDBOX/wt" 0 lab/s1:1 "$me"
+  assert_output ''
+  run detached_gate - idle 19 none "$SANDBOX/wt" 0 lab/s1:1 "$me"
+  assert_output ''
+  run detached_gate razer idle 25 none "$SANDBOX/wt" 0 lab/s1:1 "$me"
+  assert_output ''
+  run detached_gate - idle 25 agent "$SANDBOX/wt" 0 lab/s1:1 "$me"
+  assert_output ''
+  run detached_gate - idle 25 none "$SANDBOX/other" 0 lab/s1:1 "$me"
+  assert_output ''
+}
+
 @test "live_wait finds a gate the session's claude runs in another directory (ar-69)" {
   # 2026-11-03 agent-49 read STALLED mid-gate: its gate ran in a subagent's worktree, not the session's.
   mkdir -p "$SANDBOX/wt" "$SANDBOX/sub/scripts/test"
