@@ -110,6 +110,10 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // What is red right now, one row per item: the home-config `cc:red_now` recording rule,
         // which the dashboard's "What is red" table and the waybar day chip also read.
         ("red", "cc:red_now".into()),
+        // Runs finished in each of the glance's windows (`ci::window_query`), and the jobs
+        // GitHub's own runners run now by repo: the CI hover's head and its github-hosted line.
+        ("runs_window", crate::ci::window_query()),
+        ("hosted", format!("{W} (github_hosted_jobs_running) > 0")),
         // fleet-bench's window and KPIs, as it judged them, and which of them are the vitals: the
         // phone's agent lines and Home's Vitals.
         ("bench", BENCH_QUERY.into()),
@@ -143,6 +147,8 @@ pub const OPTIONAL: &[&str] = &[
     "node_state",
     "kind_weight",
     "job_usual",
+    "runs_window",
+    "hosted",
     "rates",
     "uname",
     "boot",
@@ -872,6 +878,8 @@ mod tests {
                 "node_state",
                 "kind_weight",
                 "job_usual",
+                "runs_window",
+                "hosted",
                 "rates",
                 "uname",
                 "boot"

@@ -36,6 +36,16 @@ const HOSTED: &str = "github-hosted";
 /// Waiting groups the glance names under NEXT.
 const NEXT: usize = 5;
 
+/// A busy ARC runner younger than this may have no pod series yet: kube-state-metrics is
+/// scraped about every 30s, so a fresh pod is no blind join.
+const POD_SERIES_GRACE_SECS: i64 = 90;
+
+/// The windows the glance counts finished runs over (`Window`), each a span of the hourly series.
+const WINDOWS: &[(&str, i64)] = &[("1h", 3600), ("5h", 5 * 3600)];
+
+/// The prefix of the Unity scale sets (`arc-unity-test`); the rest of the name is its group.
+const UNITY_SETS: &str = "arc-unity-";
+
 /// One row of the runners table: a job running on a runner, or a local gate.
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct Slot {
@@ -60,6 +70,10 @@ pub struct Slot {
     /// Its runner is a CI job pod (an ARC runner), which `jobpods` counts on its node.
     #[serde(skip)]
     pub pod: bool,
+    /// The scale set or ScaledJob that ran it (`jobpods::kind_of`): its pod's, else the pool its
+    /// runner's name starts with (`set_of`, a pod with no series), else empty (a fixed slot, a
+    /// local gate).
+    pub set: String,
 }
 
 /// A host that can take a job, and whether a slot is free there now.
@@ -139,9 +153,14 @@ pub struct Ci {
     pub queue: Vec<Queued>,
     /// The last day's local Unity gate failures, one row per branch and platform, newest first.
     pub local: Vec<LocalFail>,
-    /// One red line per kind of job no online runner can take (`Queued::problem`), oldest first,
-    /// with the count of waiting jobs when more than one. Both surfaces draw these as they are.
+    /// The CI faults, each one line both surfaces draw as it is: first busy ARC runners with no
+    /// pod series (`unplaced_line`), then one per kind of job no online runner can take
+    /// (`Queued::problem`), oldest first, with the count of waiting jobs when more than one.
     pub red: Vec<String>,
+    /// Busy ARC runners past `POD_SERIES_GRACE_SECS` whose pod kube-state-metrics has no series
+    /// for, so no machine and no booking holds them; and every busy ARC runner.
+    pub unplaced: u32,
+    pub arc_busy: u32,
     /// The view every CI surface opens on (`glance`), filled once the machines are built.
     pub glance: Glance,
     /// CI runs and local Unity gates that finished since local midnight: the Runners "CI runs
@@ -223,12 +242,10 @@ pub struct JobKind {
     /// Seconds one of its finished jobs usually runs (`Pool::usual`).
     pub usual: Option<f64>,
     pub pass: Option<f64>,
-    /// The share of a slot one of its jobs takes, as text (`Pool::weight`).
-    pub weight: Option<String>,
 }
 
 /// One CI machine: the CPU and memory its job pods book against allocatable, its real CPU use,
-/// the jobs running on it by kind, the oldest waiting job that fits it, and its load.
+/// what runs on it by PR or branch, the oldest waiting job that fits it, and its load.
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct Host {
     pub host: String,
@@ -239,10 +256,12 @@ pub struct Host {
     /// What its job pods book (`Machine::booked`); None for a machine that is no CI node (an
     /// old Unity slot host until hc-954).
     pub booked: Option<Booked>,
-    /// Its CPU busy share (`Machine::cpu`).
+    /// Its CPU busy share (`Machine::cpu`), and the cores that is (`Machine::cores` times it):
+    /// beside the booked cores, what the jobs really use.
     pub cpu: Option<f64>,
-    /// Each job running there by kind and repo (`Machine::running`).
-    pub running: Vec<String>,
+    pub used: Option<f64>,
+    /// What runs there, one line per scale set, repo, PR or branch and job (`work_by_host`).
+    pub work: Vec<Work>,
     /// The oldest waiting job that fits it (`Machine::next`).
     pub next: Option<Next>,
     /// 1-minute load per core (`Machine::load` over `cores`); the chip paints the row red past
@@ -271,6 +290,222 @@ impl Next {
         };
         format!("{what} {}", dur(self.wait))
     }
+}
+
+/// Jobs of one run on one machine: the same scale set, repo, PR or branch and job, a matrix's
+/// shards folded (`fast tier (unit 11/24)` is `fast tier`, unit, of 24).
+#[derive(Serialize, Default, Clone, Debug, PartialEq)]
+pub struct Work {
+    /// `Slot::set`, else the kind of job (`Slot::pool`: `unity-build`, `gates`).
+    pub set: String,
+    pub repo: String,
+    pub pr: String,
+    pub branch: String,
+    pub job: String,
+    /// The matrix word (`unit`, `integ`) and its shard count, when the job name carries `i/N`.
+    pub unit: String,
+    pub of: Option<u32>,
+    /// Jobs running, the longest one's seconds, and the workflow's usual (`Slot::usual`).
+    pub n: u32,
+    pub ran: Option<i64>,
+    pub usual: Option<i64>,
+}
+
+/// `fast tier (unit 11/24)` -> (`fast tier`, `unit`, 24); `Tests shard 2/3` -> (`Tests shard`,
+/// ``, 3); a name with no `i/N` is itself.
+fn matrix(job: &str) -> (String, String, Option<u32>) {
+    let inner = job.strip_suffix(')').unwrap_or(job);
+    let Some((head, last)) = inner.rsplit_once(' ') else {
+        return (job.into(), String::new(), None);
+    };
+    let of = last
+        .split_once('/')
+        .filter(|(i, _)| i.parse::<u32>().is_ok())
+        .and_then(|(_, n)| n.parse::<u32>().ok());
+    let Some(of) = of else {
+        return (job.into(), String::new(), None);
+    };
+    match head.rsplit_once(" (").filter(|_| inner.len() < job.len()) {
+        Some((base, word)) => (base.trim().into(), word.trim().into(), Some(of)),
+        None => (head.trim().into(), String::new(), Some(of)),
+    }
+}
+
+/// What runs on each machine, one `Work` per scale set, repo, ref and job, the most jobs first.
+pub fn work_by_host(rows: &[Slot]) -> BTreeMap<String, Vec<Work>> {
+    let mut by: BTreeMap<String, Vec<Work>> = BTreeMap::new();
+    for r in rows.iter().filter(|r| r.state == "busy") {
+        let (job, unit, of) = matrix(&r.job);
+        let set = if r.set.is_empty() { &r.pool } else { &r.set };
+        let list = by.entry(r.host.clone()).or_default();
+        let same = |w: &&mut Work| {
+            (&w.set, &w.repo, &w.pr, &w.branch, &w.job, &w.unit, w.of)
+                == (set, &r.repo, &r.pr, &r.branch, &job, &unit, of)
+        };
+        match list.iter_mut().find(same) {
+            Some(w) => {
+                w.n += 1;
+                w.ran = w.ran.max(r.ran);
+                w.usual = w.usual.or(r.usual);
+            }
+            None => list.push(Work {
+                set: set.clone(),
+                repo: r.repo.clone(),
+                pr: r.pr.clone(),
+                branch: r.branch.clone(),
+                job,
+                unit,
+                of,
+                n: 1,
+                ran: r.ran,
+                usual: r.usual,
+            }),
+        }
+    }
+    for list in by.values_mut() {
+        list.sort_by(|a, b| b.n.cmp(&a.n).then_with(|| a.repo.cmp(&b.repo)));
+    }
+    by
+}
+
+/// The Unity pool now: each Unity scale set's jobs running of its maxRunners (`ci_runner_pool`'s
+/// value), the fixed build slots (`*-unity-pool-*`, until hc-1009 retires them) in `build`.
+#[derive(Serialize, Default, Clone, Debug, PartialEq)]
+pub struct Unity {
+    pub running: u32,
+    pub max: u32,
+    pub sets: Vec<UnitySet>,
+}
+
+/// One Unity group: `test`, `build` (its scale set and the fixed slots), `wide`.
+#[derive(Serialize, Default, Clone, Debug, PartialEq)]
+pub struct UnitySet {
+    pub name: String,
+    pub running: u32,
+    pub max: u32,
+}
+
+/// Runs finished in the last `span`, by outcome (`window_query`): a cancel is in `runs` but is
+/// neither a pass nor a fail, and `pass` is passed of passed and failed.
+#[derive(Serialize, Default, Clone, Debug, PartialEq)]
+pub struct Window {
+    pub span: String,
+    pub runs: u32,
+    pub failed: u32,
+    pub pass: Option<f64>,
+}
+
+/// GitHub's own runners running jobs of one repo.
+#[derive(Serialize, Default, Clone, Debug, PartialEq)]
+pub struct Hosted {
+    pub repo: String,
+    pub n: u32,
+}
+
+/// Each window's runs finished, by conclusion and `span`. `github_runs_by_hour` counts a run in
+/// the hour it finished, so a window is each hour's count now less its count `span` ago (an hour
+/// that had no series then counts whole), floored at 0 for a re-run that moved its conclusion.
+pub fn window_query() -> String {
+    let now = "sum by (hour, conclusion) (github_runs_by_hour)";
+    WINDOWS
+        .iter()
+        .map(|(span, _)| {
+            format!(
+                r#"label_replace(sum by (conclusion) (clamp_min({now} - sum by (hour, conclusion) (github_runs_by_hour offset {span}), 0) or {now}), "span", "{span}", "", "")"#
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" or ")
+}
+
+/// `Window` per `WINDOWS` span from `window_query`'s answer; a span with no series is no window.
+fn windows(infra: &Infra) -> Vec<Window> {
+    WINDOWS
+        .iter()
+        .filter_map(|(span, _)| {
+            let of: Vec<&Series> = infra
+                .get("runs_window")
+                .iter()
+                .filter(|s| s.label("span") == *span)
+                .collect();
+            let n = |c: &str| {
+                of.iter()
+                    .filter(|s| s.label("conclusion") == c)
+                    .map(|s| s.value.unwrap_or(0.0).max(0.0).round() as u32)
+                    .sum::<u32>()
+            };
+            let (ok, bad) = (n("success"), n("failure") + n("timed_out"));
+            (!of.is_empty()).then(|| Window {
+                span: (*span).into(),
+                runs: ok + bad + n("cancelled"),
+                failed: bad,
+                pass: (ok + bad > 0).then(|| f64::from(ok) / f64::from(ok + bad)),
+            })
+        })
+        .collect()
+}
+
+/// The Unity pool now (`Unity`), None with no Unity scale set and no fixed build slot.
+fn unity(infra: &Infra) -> Option<Unity> {
+    let mut sets: Vec<UnitySet> = infra
+        .get("pools")
+        .iter()
+        .filter_map(|s| {
+            let name = s.label("name");
+            let group = name.strip_prefix(UNITY_SETS)?;
+            Some(UnitySet {
+                name: group.into(),
+                running: infra.ci.rows.iter().filter(|r| r.set == name).count() as u32,
+                max: s.value.unwrap_or(0.0).max(0.0) as u32,
+            })
+        })
+        .collect();
+    let off = infra.powered_off();
+    let fixed: Vec<&'static str> = runners(infra)
+        .iter()
+        .filter(|r| infra.pod(r.s.label("name")).is_none())
+        .filter(|r| r.labels.iter().any(|l| l == "unity-build"))
+        .map(|r| now_of(r, &off))
+        .filter(|st| matches!(*st, "busy" | "idle"))
+        .collect();
+    if !fixed.is_empty() {
+        let i = match sets.iter().position(|s| s.name == "build") {
+            Some(i) => i,
+            None => {
+                sets.push(UnitySet {
+                    name: "build".into(),
+                    ..Default::default()
+                });
+                sets.len() - 1
+            }
+        };
+        sets[i].max += fixed.len() as u32;
+        sets[i].running += fixed.iter().filter(|st| **st == "busy").count() as u32;
+    }
+    if sets.is_empty() {
+        return None;
+    }
+    sets.sort_by(|a, b| a.name.cmp(&b.name));
+    Some(Unity {
+        running: sets.iter().map(|s| s.running).sum(),
+        max: sets.iter().map(|s| s.max).sum(),
+        sets,
+    })
+}
+
+/// GitHub's own runners running jobs now, by repo, the most first.
+fn hosted(infra: &Infra) -> Vec<Hosted> {
+    let mut out: Vec<Hosted> = infra
+        .get("hosted")
+        .iter()
+        .map(|s| Hosted {
+            repo: s.label("repo").into(),
+            n: s.value.unwrap_or(0.0).max(0.0).round() as u32,
+        })
+        .filter(|h| h.n > 0)
+        .collect();
+    out.sort_by(|a, b| b.n.cmp(&a.n).then_with(|| a.repo.cmp(&b.repo)));
+    out
 }
 
 /// Runners down on one machine, by state.
@@ -338,6 +573,15 @@ pub struct Glance {
     pub booked: Option<Booked>,
     /// Job pods no node has room for, by kind and size (`jobpods::pending`).
     pub pending: Vec<Pending>,
+    /// `Ci::unplaced`: while it is above 0 every booking misses those pods, so a surface shows
+    /// the booked figures as unknown, never as a short number.
+    pub unplaced: u32,
+    /// The Unity pool's jobs running of its most (`unity`).
+    pub unity: Option<Unity>,
+    /// Runs finished in each of `WINDOWS` (`windows`).
+    pub windows: Vec<Window>,
+    /// GitHub's own runners' jobs running now, by repo (`hosted`).
+    pub hosted: Vec<Hosted>,
 }
 
 impl Glance {
@@ -434,7 +678,6 @@ pub fn glance(infra: &Infra) -> Glance {
             done: p.done,
             usual: p.usual,
             pass: p.pass,
-            weight: p.weight.clone(),
         });
     }
     g.pass = (ran > 0.0).then(|| passed / ran);
@@ -456,6 +699,7 @@ pub fn glance(infra: &Infra) -> Glance {
         .filter(|r| matches!(now_of(r, &poff), "withheld" | "lent"))
         .map(|r| r.host)
         .collect();
+    let work = work_by_host(&infra.ci.rows);
     for m in &infra.machines {
         let idle = m.booked.is_none()
             && m.busy + m.slots == 0
@@ -474,7 +718,8 @@ pub fn glance(infra: &Infra) -> Glance {
             busy: m.busy,
             booked: m.booked,
             cpu: m.cpu,
-            running: m.running.clone(),
+            used: m.cpu.zip(m.cores).map(|(c, n)| c * n),
+            work: work.get(&m.host).cloned().unwrap_or_default(),
             next: m.next.clone(),
             load: m
                 .load
@@ -530,6 +775,10 @@ pub fn glance(infra: &Infra) -> Glance {
         .collect();
     long.sort_by_key(|a| std::cmp::Reverse(a.ran));
     g.long = long;
+    g.unplaced = infra.ci.unplaced;
+    g.unity = unity(infra);
+    g.windows = windows(infra);
+    g.hosted = hosted(infra);
     g
 }
 
@@ -619,7 +868,33 @@ pub fn next_by_host(infra: &Infra) -> BTreeMap<String, Next> {
     by
 }
 
+/// The ephemeral pool a runner's name says it belongs to: an ARC runner is
+/// `<scale set>-runner-<id>`, the longest pool name that prefixes it so. None for a fixed slot.
+fn set_of(pools: &[Pool], runner: &str) -> Option<String> {
+    pools
+        .iter()
+        .filter(|p| {
+            runner
+                .strip_prefix(p.name)
+                .is_some_and(|rest| rest.starts_with("-runner-"))
+        })
+        .max_by_key(|p| p.name.len())
+        .map(|p| p.name.to_string())
+}
+
 impl Ci {
+    /// `pod series missing for 3 of 6 busy ARC runners: machines unplaced`: the runner-to-pod
+    /// join (`Infra::runner_host`) is blind for them, so their jobs sit on no CI node and no
+    /// booking counts their requests. None while every busy ARC runner has its pod.
+    pub fn unplaced_line(&self) -> Option<String> {
+        (self.unplaced > 0).then(|| {
+            format!(
+                "pod series missing for {} of {} busy ARC runners: machines unplaced",
+                self.unplaced, self.arc_busy
+            )
+        })
+    }
+
     fn red_lines(&self) -> Vec<String> {
         let mut by: Vec<(String, u32)> = vec![];
         for q in self.problems() {
@@ -842,6 +1117,7 @@ fn job_name(s: &Series) -> String {
 
 pub fn build(infra: &Infra) -> Ci {
     let all = runners(infra);
+    let sets = pools(infra);
     let off = infra.powered_off();
     let usual = usual(infra);
     let alias = infra.aliases();
@@ -877,6 +1153,11 @@ pub fn build(infra: &Infra) -> Ci {
             late: ran
                 .is_some_and(|t| t > LONG_RUN_SECS || u.and_then(|u| u.1).is_some_and(|p| t > p)),
             pod: infra.pod(s.label("name")).is_some(),
+            set: infra
+                .pod(s.label("name"))
+                .map(|p| p.kind.clone())
+                .or_else(|| set_of(&sets, s.label("name")))
+                .unwrap_or_default(),
         });
     }
     // A machine that is not a runner runs its gates locally: one busy row each, no slot number.
@@ -935,7 +1216,17 @@ pub fn build(infra: &Infra) -> Ci {
     ci.queue = queue(infra, &all, &off);
     ci.queued = ci.queue.iter().map(|q| q.n).sum();
     ci.oldest = ci.queue.iter().map(|q| q.wait).max().unwrap_or(0);
-    ci.red = ci.red_lines();
+    let arc: Vec<&Slot> = ci.rows.iter().filter(|r| !r.set.is_empty()).collect();
+    ci.arc_busy = arc.len() as u32;
+    ci.unplaced = arc
+        .iter()
+        .filter(|r| !r.pod && r.ran.is_none_or(|t| t >= POD_SERIES_GRACE_SECS))
+        .count() as u32;
+    ci.red = ci
+        .unplaced_line()
+        .into_iter()
+        .chain(ci.red_lines())
+        .collect();
     ci.local = local(infra);
     ci.day = day(infra, crate::text::local_day_start(infra.at as i64));
     ci
@@ -2104,7 +2395,12 @@ mod tests {
             .iter()
             .map(|h| {
                 let b = h.booked.map_or("-".into(), |b| b.cell());
-                (h.host.as_str(), h.busy, b, h.running.join(", "))
+                let w: Vec<String> = h
+                    .work
+                    .iter()
+                    .map(|w| format!("{} x{}", w.set, w.n))
+                    .collect();
+                (h.host.as_str(), h.busy, b, w.join(", "))
             })
             .collect();
         assert_eq!(
@@ -2115,10 +2411,10 @@ mod tests {
                     "ms-a2",
                     2,
                     "4.4/32 2.5G/92G".into(),
-                    "[arc-org-light] x2".into()
+                    "arc-org-light x1".into()
                 ),
                 ("tuf-b550", 0, "0.0/32 0B/63G".into(), String::new()),
-                ("workstation", 1, "-".into(), "[unity]".into()),
+                ("workstation", 1, "-".into(), "unity x1".into()),
                 ("mac-mini", 0, "-".into(), String::new()),
             ]
         );
@@ -2160,10 +2456,9 @@ mod tests {
         let g = &i.ci.glance;
         let row = |h: &str| g.machines.iter().find(|m| m.host == h).unwrap();
         let (ms, tuf) = (row("ms-a2"), row("tuf-b550"));
-        assert_eq!(ms.running, ["[arc-org-light] x2"]);
         assert_eq!(ms.busy, 2);
         assert_eq!(ms.booked.unwrap().cell(), "11.7/32 23G/92G, 7.4 reserved");
-        assert_eq!((tuf.busy, tuf.running.len()), (0, 0));
+        assert_eq!((tuf.busy, tuf.work.len()), (0, 0));
         assert_eq!(tuf.booked.unwrap().cell(), "7.4/32 21G/63G, 7.4 reserved");
         assert_eq!(tuf.state, "NotReady, cordoned");
         assert!(!ms.state.contains("NotReady"), "{}", ms.state);
@@ -2279,12 +2574,15 @@ mod tests {
         let hosts: Vec<(&str, String)> = g
             .machines
             .iter()
-            .map(|h| (h.host.as_str(), h.running.join(", ")))
+            .map(|h| {
+                let w: Vec<&str> = h.work.iter().map(|w| w.set.as_str()).collect();
+                (h.host.as_str(), w.join(", "))
+            })
             .collect();
         assert_eq!(
             hosts,
             [
-                ("workstation", "[unity]".to_string()),
+                ("workstation", "unity".to_string()),
                 ("mac-mini", String::new())
             ]
         );
@@ -2304,18 +2602,18 @@ mod tests {
         assert_eq!(
             keys(&v),
             [
-                "alert", "booked", "busy", "done", "down", "expected", "feed", "kinds", "level",
-                "long", "machines", "next", "off", "oldest", "parts", "pass", "pending", "queued",
-                "up"
+                "alert", "booked", "busy", "done", "down", "expected", "feed", "hosted", "kinds",
+                "level", "long", "machines", "next", "off", "oldest", "parts", "pass", "pending",
+                "queued", "unity", "unplaced", "up", "windows"
             ]
         );
         assert_eq!(
             keys(&v["kinds"][0]),
-            ["done", "kind", "oldest", "pass", "running", "usual", "waiting", "weight"]
+            ["done", "kind", "oldest", "pass", "running", "usual", "waiting"]
         );
         assert_eq!(
             keys(&v["machines"][0]),
-            ["booked", "busy", "cpu", "host", "load", "next", "running", "state"]
+            ["booked", "busy", "cpu", "host", "load", "next", "state", "used", "work"]
         );
         // No status series: the lowercase word the chip maps to "no data".
         assert_eq!(v["level"], "nodata");
@@ -2380,5 +2678,282 @@ mod tests {
             Day::default(),
             "nothing read is not a zero day"
         );
+    }
+
+    fn pool(name: &str, labels: &str, max: &'static str) -> (Value, &'static str) {
+        (
+            json!({"name": name, "forge": "github", "scope": "org", "labels": labels}),
+            max,
+        )
+    }
+
+    /// ar-6081: busy ARC runners whose pods have no series sit on no CI node and in no
+    /// booking. The glance says so first, red, and a runner too young for its pod's first scrape
+    /// is no fault. Negative control: with every pod read there is no such line.
+    #[test]
+    fn busy_arc_runners_with_no_pod_series_are_a_red_line_first_and_unplaced() {
+        let mut i = clustered();
+        i.instant.insert(
+            "pools",
+            series(vec![pool("arc-org-light", "self-hosted,linux,light", "23")]),
+        );
+        i.derive();
+        assert_eq!((i.ci.unplaced, i.ci.arc_busy), (0, 1));
+        assert!(i.ci.red.is_empty(), "{:?}", i.ci.red);
+        assert_eq!(i.ci.glance.alert, Level::Ok);
+        let arc = i.ci.rows.iter().find(|r| r.job == "lint").unwrap();
+        assert_eq!(arc.set, "arc-org-light");
+
+        i.instant.get_mut("runners").unwrap().extend(series(vec![
+            runner(
+                "unknown",
+                "arc-org-light-runner-gone1",
+                "running",
+                "300",
+                "",
+                json!({"repo": "web", "job_name": "test"}),
+            ),
+            runner(
+                "unknown",
+                "arc-org-light-runner-new01",
+                "running",
+                "30",
+                "",
+                json!({"repo": "web", "job_name": "test"}),
+            ),
+        ]));
+        i.derive();
+        let g = &i.ci.glance;
+        assert_eq!((i.ci.unplaced, i.ci.arc_busy, g.unplaced), (1, 3, 1));
+        assert_eq!(
+            i.ci.red.first().map(String::as_str),
+            Some("pod series missing for 1 of 3 busy ARC runners: machines unplaced")
+        );
+        assert_eq!(g.alert, Level::Red);
+        let gone =
+            i.ci.rows
+                .iter()
+                .find(|r| r.slot.ends_with("gone1") || r.ran == Some(300))
+                .unwrap();
+        assert_eq!((gone.set.as_str(), gone.pod), ("arc-org-light", false));
+    }
+
+    #[test]
+    fn a_runner_belongs_to_the_longest_pool_its_name_starts_runner_after() {
+        let ps = vec![
+            Pool {
+                name: "arc-repo-dotfiles",
+                forge: "",
+                scope: "",
+                labels: vec![],
+            },
+            Pool {
+                name: "arc-repo-dotfiles-pods",
+                forge: "",
+                scope: "",
+                labels: vec![],
+            },
+        ];
+        assert_eq!(
+            set_of(&ps, "arc-repo-dotfiles-runner-t8459").as_deref(),
+            Some("arc-repo-dotfiles")
+        );
+        assert_eq!(
+            set_of(&ps, "arc-repo-dotfiles-pods-runner-x").as_deref(),
+            Some("arc-repo-dotfiles-pods")
+        );
+        assert_eq!(set_of(&ps, "ms-a2-unity-pool-1"), None);
+    }
+
+    #[test]
+    fn a_matrix_job_folds_to_its_base_its_word_and_its_shard_count() {
+        let m = |j: &str| matrix(j);
+        assert_eq!(
+            m("fast tier (unit 11/24)"),
+            ("fast tier".into(), "unit".into(), Some(24))
+        );
+        assert_eq!(
+            m("Tests shard 2/3"),
+            ("Tests shard".into(), String::new(), Some(3))
+        );
+        assert_eq!(m("PlayMode 1"), ("PlayMode 1".into(), String::new(), None));
+        assert_eq!(
+            m("Build (game) 1/x"),
+            ("Build (game) 1/x".into(), String::new(), None)
+        );
+    }
+
+    /// ar-6081: a machine's work is one line per scale set, repo, ref and job, the shards of a
+    /// matrix counted with their total, the longest one's time and the usual.
+    #[test]
+    fn work_folds_a_runs_shards_on_one_machine_the_most_first() {
+        let row = |host: &str, set: &str, job: &str, ran: i64| Slot {
+            host: host.into(),
+            set: set.into(),
+            pool: "repo".into(),
+            state: "busy".into(),
+            job: job.into(),
+            repo: ".dotfiles".into(),
+            pr: "3592".into(),
+            ran: Some(ran),
+            usual: Some(360),
+            ..Default::default()
+        };
+        let rows = vec![
+            row("ms-a2", "arc-repo-dotfiles", "fast tier (unit 1/24)", 300),
+            row("ms-a2", "arc-repo-dotfiles", "fast tier (unit 2/24)", 400),
+            row("ms-a2", "arc-repo-dotfiles", "fast tier (integ 1/6)", 100),
+            row("ms-a2", "arc-repo-dotfiles", "fast tier (unit 3/24)", 200),
+            row("tuf-b550", "arc-repo-dotfiles", "fast tier (unit 4/24)", 50),
+            Slot {
+                set: String::new(),
+                pool: "unity-build".into(),
+                ..row("ms-a2", "", "Build", 10)
+            },
+        ];
+        let by = work_by_host(&rows);
+        let ms: Vec<String> = by["ms-a2"]
+            .iter()
+            .map(|w| {
+                format!(
+                    "{} {} {} {:?} x{} {:?}",
+                    w.set, w.job, w.unit, w.of, w.n, w.ran
+                )
+            })
+            .collect();
+        assert_eq!(
+            ms,
+            [
+                "arc-repo-dotfiles fast tier unit Some(24) x3 Some(400)",
+                "arc-repo-dotfiles fast tier integ Some(6) x1 Some(100)",
+                "unity-build Build  None x1 Some(10)",
+            ]
+        );
+        assert_eq!(by["tuf-b550"][0].n, 1);
+    }
+
+    /// ar-6081: the Unity line is each Unity scale set's jobs of its maxRunners, the fixed build
+    /// slots added to build; a withheld slot is no capacity.
+    #[test]
+    fn the_unity_pool_is_its_scale_sets_running_of_max_plus_the_fixed_build_slots() {
+        let mut i = Infra {
+            ok: true,
+            ..Default::default()
+        };
+        let build = "self-hosted,linux,unity-build,unity-full";
+        i.instant.insert(
+            "pools",
+            series(vec![
+                pool("arc-unity-test", "unity,arc-unity-test", "11"),
+                pool("arc-unity-build", "arc-unity-build", "5"),
+                pool("arc-org-light", "light", "23"),
+            ]),
+        );
+        i.instant.insert(
+            "runners",
+            series(vec![
+                runner(
+                    "arc",
+                    "arc-unity-test-runner-a1",
+                    "running",
+                    "600",
+                    "",
+                    json!({"repo": "game", "job_name": "PlayMode 1"}),
+                ),
+                runner(
+                    "arc",
+                    "arc-unity-test-runner-a2",
+                    "running",
+                    "600",
+                    "",
+                    json!({"repo": "game", "job_name": "PlayMode 2"}),
+                ),
+                runner(
+                    "ms-a2",
+                    "ms-a2-unity-pool-1",
+                    "running",
+                    "60",
+                    build,
+                    json!({"repo": "game", "job_name": "Build"}),
+                ),
+                runner(
+                    "tuf-b550",
+                    "tuf-b550-unity-pool-1",
+                    "idle",
+                    "0",
+                    build,
+                    json!({}),
+                ),
+                runner(
+                    "deskslim-1",
+                    "deskslim-1-unity-pool-1",
+                    "idle",
+                    "0",
+                    build,
+                    json!({}),
+                ),
+            ]),
+        );
+        i.instant.insert(
+            "withheld",
+            series(vec![(json!({"name": "deskslim-1-unity-pool-1"}), "1")]),
+        );
+        i.derive();
+        let u = i.ci.glance.unity.clone().unwrap();
+        let sets: Vec<(&str, u32, u32)> = u
+            .sets
+            .iter()
+            .map(|s| (s.name.as_str(), s.running, s.max))
+            .collect();
+        assert_eq!(sets, [("build", 1, 7), ("test", 2, 11)]);
+        assert_eq!((u.running, u.max), (3, 18));
+        assert!(Infra::default().ci.glance.unity.is_none());
+    }
+
+    /// ar-6081: each window is runs finished in its span by outcome, a cancel neither passed nor
+    /// failed; a span with no series is no window, never a zero.
+    #[test]
+    fn each_window_counts_runs_by_outcome_and_one_with_no_series_is_absent() {
+        let mut i = Infra {
+            ok: true,
+            ..Default::default()
+        };
+        let w = |span: &str, c: &str, v: &'static str| (json!({"span": span, "conclusion": c}), v);
+        i.instant.insert(
+            "runs_window",
+            series(vec![
+                w("1h", "success", "16"),
+                w("1h", "failure", "3"),
+                w("1h", "timed_out", "1"),
+                w("1h", "cancelled", "2"),
+                w("1h", "skipped", "6"),
+            ]),
+        );
+        let ws = windows(&i);
+        assert_eq!(ws.len(), 1);
+        assert_eq!(
+            (ws[0].span.as_str(), ws[0].runs, ws[0].failed),
+            ("1h", 22, 4)
+        );
+        assert_eq!(ws[0].pass, Some(0.8));
+        assert!(window_query().contains("offset 5h") && window_query().contains(r#""span", "1h""#));
+    }
+
+    #[test]
+    fn github_hosted_jobs_running_are_by_repo_the_most_first() {
+        let mut i = Infra {
+            ok: true,
+            ..Default::default()
+        };
+        i.instant.insert(
+            "hosted",
+            series(vec![
+                (json!({"repo": "platform"}), "1"),
+                (json!({"repo": "web"}), "3"),
+                (json!({"repo": "x"}), "0"),
+            ]),
+        );
+        let h: Vec<(String, u32)> = hosted(&i).into_iter().map(|h| (h.repo, h.n)).collect();
+        assert_eq!(h, [("web".into(), 3), ("platform".into(), 1)]);
     }
 }
