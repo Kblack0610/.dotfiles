@@ -118,21 +118,7 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
     // The agent board beside its Backlog tier (the rows dispatch pulls from, and the rest), then
     // the feature epics aimed at a release and not.
     r.add(Status::Pass, "agent board", &crate::board::agent_tiers(p));
-    // Urgent that piles up or ages is not urgent: it hides the row that is.
-    let urgent = crate::board::agent_urgent_findings(p);
-    if urgent.is_empty() {
-        r.add(
-            Status::Pass,
-            "urgent rows",
-            "no board over 5 or older than 3d",
-        );
-    } else {
-        r.add(
-            Status::Warn,
-            "urgent rows",
-            &format!("{} (over 5 per board or older than 3d)", urgent.join("; ")),
-        );
-    }
+    check_urgent(&mut r, p);
 
     // 2. Summarize gaps — daily notes older than yesterday with no continuous entry
     check_gaps(&mut r, p);
@@ -233,6 +219,24 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
         log.info("doctor", &summary);
     }
     Ok(code)
+}
+
+/// Urgent that piles up or ages is not urgent: it hides the row that is.
+fn check_urgent(r: &mut Report, p: &Profile) {
+    let urgent = crate::board::agent_urgent_findings(p);
+    if urgent.is_empty() {
+        r.add(
+            Status::Pass,
+            "urgent rows",
+            "no board over 5 or older than 3d",
+        );
+    } else {
+        r.add(
+            Status::Warn,
+            "urgent rows",
+            &format!("{} (over 5 per board or older than 3d)", urgent.join("; ")),
+        );
+    }
 }
 
 /// Score `notes find` against the vault's own eval set, when it has one. Below the file's
