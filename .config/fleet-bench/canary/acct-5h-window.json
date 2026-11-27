@@ -4,7 +4,7 @@
   "pr": "Kblack0610/.dotfiles#748",
   "base": "80fb82d6ba48ac0aaddf0dd2afcb6fd5c3215df0",
   "merge": "d617d1b0721f7d6311277b889f630bf26448acf9",
-  "task": "feat(claude-acct): export the 5h window percent and reset, show them on Infra",
+  "task": "feat(claude-acct): export the 5h window percent and reset, show them on Infra. Interface: `claude-acct textfile <dir>` writes claude_acct.prom; for an account whose cache has a `five_hour` object ({utilization, resets_at}) it adds `claude_account_five_hour_percent{account=\"<name>\"} <utilization>` and `claude_account_five_hour_resets_timestamp_seconds{account=\"<name>\"} <resets_at as epoch seconds>`; keep the existing week metrics as they are.",
   "pts": 2,
   "accept": [
     "textfile: a reported five hour window publishes its percent and its reset"

@@ -5,7 +5,7 @@
   "pr": "Kblack0610/freqtrade_trading_attempt#30",
   "base": "22a5800eaa40f91c6175f1e53c97e974923ed24f",
   "merge": "9b98a78a7439b92d39e28bef354d1fab972f28f2",
-  "task": "fix(suggest): retune needs the tuned gain over as-is to clear zero at its 90% low",
+  "task": "fix(suggest): retune needs the tuned gain over as-is to clear zero at its 90% low. Interface: add `metrics.diff_ci(a, b, seed, samples=1000, level=0.90)` returning the (low, high) quantiles of a bootstrap of mean(a) - mean(b) over two independent trade samples (each resampled with replacement, `np.random.default_rng(seed)`), and (None, None) when either has fewer than 2 values. In lab/suggest.py retune_rows gates on the low end of that interval for tuned minus as-is, `metrics.diff_ci(tuned, base, metrics.seed_of(name, exchange, \"retune gain\"))`, being above a new `min_gain` in the retune section of lab/suggest.toml (0.0); the old \"tuned mean beats as-is mean\" gate goes. Beating as-is by a hair every month must not pass.",
   "pts": 3,
   "accept": [
     "pytest: test_diff_ci_straddles_zero_for_one_sample_and_clears_it_for_a_shifted_one",
@@ -25,6 +25,8 @@
       "/usr/bin/python3",
       "--with",
       "pytest==8.4.2",
+      "--with",
+      "numpy==2.5.5",
       "--with",
       "psycopg[binary]==3.2.12",
       "python",
