@@ -3027,7 +3027,8 @@ STUB
 # those facts and records every call. STUB_CANCEL_REFUSED refuses /cancel with HTTP 409 (not
 # cancellable), STUB_CANCEL_DENIED with 403 and refuses force-cancel too, STUB_FORCE_REFUSED refuses
 # force-cancel with HTTP 409 and STUB_FORCE_DENIED with 403, STUB_DELETE_FAILED refuses the run's DELETE
-# with 403, STUB_AFTER_FORCE=job gives run 1 a job and =down fails its read once force-cancel was
+# with 403 "Could not delete the workflow run", STUB_DELETE_ERROR with a plain 403 Forbidden (a token
+# fault), STUB_AFTER_FORCE=job gives run 1 a job and =down fails its read once force-cancel was
 # called on it, and STUB_GH_DOWN fails every run read.
 ghost_setup() {
   cat > "$PROM_LIB" <<'STUB'
@@ -3057,7 +3058,8 @@ case "$*" in
   *"/force-cancel") [ -z "${STUB_FORCE_REFUSED:-}" ] || { echo "gh: Cannot force cancel this run (HTTP 409)" >&2; exit 1; }
                     [ -z "${STUB_FORCE_DENIED:-}" ] || { echo "gh: Forbidden (HTTP 403)" >&2; exit 1; }
                     [ -z "${STUB_CANCEL_DENIED:-}" ] ;;
-  "api -X DELETE "*) [ -z "${STUB_DELETE_FAILED:-}" ] || { echo "gh: Forbidden (HTTP 403)" >&2; exit 1; } ;;
+  "api -X DELETE "*) [ -z "${STUB_DELETE_FAILED:-}" ] || { echo "gh: Could not delete the workflow run (HTTP 403)" >&2; exit 1; }
+                     [ -z "${STUB_DELETE_ERROR:-}" ] || { echo "gh: Forbidden (HTTP 403)" >&2; exit 1; } ;;
 esac'
 }
 
@@ -3136,9 +3138,9 @@ esac'
   # A DELETE GitHub refuses is cancel-failed with its answer, logged once, and tried again each run.
   rm -f "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" "$FLEET_SHEPHERD_DIR/log.md" "$HOME/gh.calls"
   local refused='delete: gh: Forbidden (HTTP 403)'
-  STUB_DELETE_FAILED=1 run "$SH" ghost-runs
+  STUB_DELETE_ERROR=1 run "$SH" ghost-runs
   assert_line "ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h; $refused)"
-  STUB_DELETE_FAILED=1 run "$SH" ghost-runs
+  STUB_DELETE_ERROR=1 run "$SH" ghost-runs
   assert_line "ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h; $refused)"
   run grep -c 'DELETE' "$HOME/gh.calls"
   assert_output 2
@@ -3151,7 +3153,7 @@ esac'
 @test "ghost-runs: a delete GitHub answers 403 is undeletable, logged once and not asked about again inside the age (ask VBMlNu: hold)" {
   ghost_setup
   export FLEET_SHEPHERD_GHOST_CANCEL=1 STUB_CANCEL_REFUSED=1 STUB_FORCE_REFUSED=1 STUB_DELETE_FAILED=1
-  local refused='delete: gh: Forbidden (HTTP 403)'
+  local refused='delete: gh: Could not delete the workflow run (HTTP 403)'
   run "$SH" ghost-runs
   assert_line "ghost-runs: undeletable https://github.com/o/r/actions/runs/1 (48h; $refused)"
   run grep -cF "ghost run https://github.com/o/r/actions/runs/1: undeletable, queued 48h with no jobs ($refused)" "$FLEET_SHEPHERD_DIR/log.md"

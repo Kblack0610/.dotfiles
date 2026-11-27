@@ -77,7 +77,7 @@
 #                          line of $LEDGER/ghost-runs.tsv. Only with FLEET_SHEPHERD_GHOST_CANCEL=1 a
 #                          ghost is cancelled, force-cancelled when cancel answers HTTP 409, and
 #                          deleted when force-cancel answers 409 too and GitHub still reads it as a
-#                          ghost; a delete GitHub answers 403 is undeletable and asked about again
+#                          ghost; a delete GitHub answers 403 "Could not delete the workflow run" is undeletable, asked again
 #                          only after GHOST_AGE_H; else it is logged as would-cancel (dry run).
 #                          Every run calls it first; exit 1 when the exporter is unreadable
 #   fleet-shepherd lease   record that this session is the shepherd pass running now and tag its
@@ -720,8 +720,9 @@ ghost_check() {
 }
 
 # ghost_judged <run url> -> exit 0 when the run was judged in the last GHOST_AGE_H hours and that
-# verdict still stands: any verdict in a dry run, and any but would-cancel once cancels are on, so the
-# first live run ends what the dry runs found. A run is asked about at most once a GHOST_AGE_H, which
+# verdict still stands: any verdict in a dry run, and any but would-cancel and cancel-failed once
+# cancels are on (undeletable stands, so a run GitHub will not delete is held), so the first live run
+# ends what the dry runs found. A run is asked about at most once a GHOST_AGE_H, which
 # keeps GitHub calls to the new ghosts and each kept run's log to a line a day.
 ghost_judged() {
   [ -s "$GHOSTS" ] || return 1
@@ -741,10 +742,10 @@ ghost_last() { awk -F'\t' -v u="$1" '$3 == u { v = $2 } END { print v }' "$GHOST
 # GitHub answered both cancels on 26 ghosts with HTTP 409; the human chose delete, ask 44Ljyz). A
 # delete cannot be undone, so GitHub is asked again just before it: a run that took a job or left
 # the queue is kept, and one GitHub does not answer about is asked again next run. The log says
-# which call ended a run. A delete GitHub answers with HTTP 403 ends the API's options (2026-11-27: 23
+# which call ended a run. A delete GitHub answers with HTTP 403 "Could not delete the workflow run" ends the API's options (2026-11-27: 23
 # ghosts, ask VBMlNu: hold): the verdict is undeletable, which counts as judged, so the run is asked
 # about once a GHOST_AGE_H instead of every run, and only GitHub support can clear it. Any other
-# refusal (auth, rate limit), or any other refused delete, is cancel-failed with GitHub's answer in
+# refusal (auth, scope, rate limit: also a 403), or any other refused delete, is cancel-failed with GitHub's answer in
 # its verdict, and tried again next run, logged once.
 cmd_ghost_runs() {
   local cand slug id url why rc verdict out refusal unread=""
@@ -771,7 +772,7 @@ cmd_ghost_runs() {
           why="$(ghost_check "$slug" "$id")"; rc=$?
           case $rc in
             0) if out="$(gh api -X DELETE "repos/$slug/actions/runs/$id" 2>&1 >/dev/null)"; then verdict=deleted
-               elif [[ "$out" == *"HTTP 403"* ]]; then verdict=undeletable out="delete: $out"
+               elif [[ "$out" == *"HTTP 403"* && "$out" == *"Could not delete the workflow run"* ]]; then verdict=undeletable out="delete: $out"
                else verdict=cancel-failed out="delete: $out"
                fi ;;
             1) verdict=kept ;;
