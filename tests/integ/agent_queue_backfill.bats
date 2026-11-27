@@ -112,3 +112,31 @@ details() { notes board --json | jq -r --arg id "$1" '.rows[] | select(.id == $i
   ! grep -q '^row:' "$AGENT_QUEUE_DIR/queued/20261110-000000-probe.md" || fail "a canary item got a row"
   ! grep -qF 'canary probe' "$dir/agent/README.md" || fail "a canary item got a row"
 }
+
+@test "backfill-briefs: an item that copies its row and was: lines is no brief, and a line already on the row is not written twice" {
+  # gm-7, gm-8 and gm-9 are dispatch promotions: the item's body is the row and its was: line (ar-5817).
+  # gm-8's item adds one line the row lacks, after a blank. gm-9's adds an older was: line the row no
+  # longer has and a stub of under 20 characters: neither is a brief.
+  printf '%s\n' '- [ ] fix(ci): the cache key <!-- id:gm-7 -->' '  was: fix(ci): the old cache key words the triager re-typed into this row' \
+    '- [ ] fix(ci): the lint step <!-- id:gm-8 -->' '  was: fix(ci): lint step words before the re-type' \
+    '- [ ] fix(ci): the build step <!-- id:gm-9 -->' '  was: fix(ci): build step words before the re-type' >>"$dir/agent/README.md"
+  item done/2026-11-10 gm-7 gm-7 'fix(ci): the cache key' 'fix(ci): the cache key #size/s <!-- id:gm-7 -->' \
+    'was: fix(ci): the old cache key words the triager re-typed into this row' '' 'Promoted by fleet-dispatch fill from the game agent board, row "gm-7".'
+  item done/2026-11-10 gm-8 gm-8 'fix(ci): the lint step' 'fix(ci): the lint step #size/s <!-- id:gm-8 -->' \
+    'was: fix(ci): lint step words before the re-type' '' 'Run shellcheck on every changed script, not only bin.'
+  item done/2026-11-10 gm-9 gm-9 'fix(ci): the build step' 'fix(ci): the build step #size/s <!-- id:gm-9 -->' \
+    'was: fix(ci): build step words before the re-type' 'was: fix(ci): the oldest wording of the build step, long gone from the row' 'ok'
+  run "$AQ" backfill-briefs --dry-run
+  assert_success
+  refute_line --partial 'game:gm-7 <-'
+  refute_line --partial 'game:gm-9 <-'
+  assert_line 'game:gm-8 <- gm-8 (done, queued 2026-11-10): 3 lines'
+  run "$AQ" backfill-briefs
+  assert_success
+  [ "$(details gm-7)" = 'was: fix(ci): the old cache key words the triager re-typed into this row' ] || fail "a copy of the row was written: $(details gm-7)"
+  run details gm-8
+  assert_output "$(printf '%s\n' 'was: fix(ci): lint step words before the re-type' 'from item gm-8 (done, queued 2026-11-10)' 'Run shellcheck on every changed script, not only bin.')"
+  run "$AQ" backfill-briefs --check
+  assert_success
+  assert_output 'PASS  briefs: every agent row holds the brief its item has'
+}
