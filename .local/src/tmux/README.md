@@ -244,7 +244,10 @@ Two things verified, both load-bearing:
   ignores a window jump within one session (the agent panel's). Hooks in `.tmux.conf`
   (`client-attached`, `client-session-changed`, `session-window-changed`, index 1) run
   `tmx mark` on every arrival, whatever moved you, and it keeps the place now and the one
-  before per client tty in `~/.local/state/tmx/places/`.
+  before per client tty in `~/.local/state/tmx/places/`. Marks run one at a time under a
+  `flock` on that directory's `.lock` (the Brewfile installs `flock` on the Mac), and a mark
+  records only a client that is still on that window, so a hook that runs late on the world
+  you just left cannot make it "now" again; a window left before its hook ran is skipped.
 
 **tmux cannot move a live session between servers** - there is no `move-session -L`.
 Putting an existing session on another server means recreating it there.
