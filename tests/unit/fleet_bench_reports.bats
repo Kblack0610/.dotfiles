@@ -1713,7 +1713,7 @@ SH
   assert_success
   assert_equal "$(jq -c '.sources[] | select(.name == "agy") | [.kind, .used, .usd, .usd_src, .landed]' <<<"$output")" '["agy",7,null,"list",1]'
   run "$SUBJECT" sources
-  assert_line '| agy | agy | 7% | - | - | 1 | - | - | - | - |'
+  assert_line '| agy | agy | 7% | - | - | - | 1 | - | - | - | - |'
   # a priced agy session is summed like a Codex one
   out_row game '{session_id: "a2", harness: "agy", updated_epoch: ($t - 3600), tokens_total: 40, cost_usd: 1.25}'
   run "$SUBJECT" sources --json
