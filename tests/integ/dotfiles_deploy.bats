@@ -763,6 +763,61 @@ systemd_fold() {
   [ -L "$HOME/.local/bin/foreign" ] || fail 'a link into no repo was pruned'
 }
 
+# settling_world - the public checkout on main, three commits: base, a second file, then
+# .local/bin/aq. ~/.local/bin/aq is linked, so any tree before the last commit leaves it dangling.
+settling_world() {
+  world
+  local g=(git -C "$PUB" -c user.email=t@example.com -c user.name=tester)
+  git -C "$PUB" symbolic-ref HEAD refs/heads/main
+  "${g[@]}" commit -qm base
+  radd "$PUB" .local/bin/second 'second'
+  "${g[@]}" commit -qm second
+  radd "$PUB" .local/bin/aq 'agent queue'
+  "${g[@]}" commit -qm aq
+  link .local/bin/second "$PUB"
+  link .local/bin/aq "$PUB"
+}
+
+@test "mid-rebase, a link that dangles only because the tree is unsettled is held, not pruned" {
+  settling_world
+  # Stops after replaying "second": the tree lacks aq and rebase-merge/ is present.
+  run git -C "$PUB" -c user.email=t@example.com -c user.name=tester rebase -q -x false HEAD~2
+  assert_failure
+  [ -d "$(git -C "$PUB" rev-parse --git-path rebase-merge)" ] || fail 'the rebase did not stop'
+  [ ! -e "$PUB/.local/bin/aq" ] || fail 'the stopped tree still has aq: the fixture tests nothing'
+  run "$DEPLOY" --apply --missing
+  assert_output --partial 'HELD  1 dangling link(s) into public'
+  assert_output --partial 'mid-rebase'
+  refute_output --partial 'pruned'
+  [ -L "$HOME/.local/bin/aq" ] || fail 'the live link was pruned mid-rebase'
+  git -C "$PUB" rebase --abort
+  [ -e "$HOME/.local/bin/aq" ] || fail 'the link does not resolve once the rebase settles'
+}
+
+@test "on a detached HEAD or another branch, a dangling link is held; on main a removed file is pruned" {
+  settling_world
+  git -C "$PUB" checkout -q --detach HEAD~1
+  run "$DEPLOY" --apply --missing
+  assert_output --partial 'detached HEAD'
+  [ -L "$HOME/.local/bin/aq" ] || fail 'the live link was pruned on a detached HEAD'
+  # origin/HEAD names the default branch, as a clone records it.
+  git -C "$PUB" update-ref refs/remotes/origin/main main
+  git -C "$PUB" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+  git -C "$PUB" checkout -q -b feature
+  run "$DEPLOY" --apply --missing
+  assert_output --partial 'on feature, not main'
+  [ -L "$HOME/.local/bin/aq" ] || fail 'the live link was pruned on a feature branch'
+  # Settled on main, with aq truly removed: the prune runs.
+  git -C "$PUB" checkout -q main
+  git -C "$PUB" -c user.email=t@example.com -c user.name=tester rm -q .local/bin/aq
+  git -C "$PUB" -c user.email=t@example.com -c user.name=tester commit -qm 'drop aq'
+  run "$DEPLOY" --apply --missing
+  assert_success
+  assert_output --partial 'pruned    ~/.local/bin/aq'
+  refute_output --partial 'HELD'
+  [ ! -L "$HOME/.local/bin/aq" ] || fail 'a file removed on the settled default branch kept its link'
+}
+
 # -- RUNTIME: a directory link to a checkout directory no repo tracks --
 
 # runtime_dir - a tool's state dir that lives in the public checkout through a directory link:
