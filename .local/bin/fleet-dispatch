@@ -4314,11 +4314,13 @@ stack_base() {
   echo "$sha"
 }
 
-# start_host_checks <host> <harness> <hjson> <item json> <cwd> <slug> -> rc 2 with the reason said when the worker's kit cannot take this start: a harness its fleet_harnesses does not list, a codex thread that lives on this machine, a repo it has no clone of.
+# start_host_checks <host> <harness> <hjson> <item json> <cwd> <slug> -> rc 2 with the reason said when the worker's kit cannot take this start: a needs:cluster item, a harness its fleet_harnesses does not list, a codex thread that lives on this machine, a repo it has no clone of.
 start_host_checks() {
   local host=$1 harness=$2 hjson=$3 it=$4 cwd=$5 item=$6
   [ "$harness" = claude ] || jq -e --arg h "$harness" '.harnesses | index($h)' <<<"$hjson" >/dev/null ||
     { say "start: $item would run on $harness, which $host does not list in fleet_harnesses"; return 2; }
+  ! cluster_login_item "$it" ||
+    { say "start: $item needs the cluster login (needs:cluster), which only this machine has; start it here, without --host"; return 2; }
   # A codex thread to take up lives in this machine's ~/.codex (item_rollout), so its resume runs here.
   [ -z "$(resume_thread "$it" "$harness")" ] ||
     { say "start: $item resumes its last $harness thread, which is on this machine; start it here, without --host"; return 2; }
@@ -6798,6 +6800,8 @@ pick_item() {
       fi
     elif host=$(place_host "$it"); then :
     elif [ "$need" -gt "$free" ]; then uwait=1; why="$([ "$need" -gt 1 ] && echo heavy || echo light) needs $need run units, $free free"
+      ! cluster_login_item "$it" || why+=", and it needs the cluster login (needs:cluster), so no fleet worker takes it"
+    elif cluster_login_item "$it"; then why="$mwhy, and it needs the cluster login (needs:cluster), which only this machine has"; PICK_FULL=0 mhit=1
     else why="$mwhy, and no fleet worker takes it"; PICK_FULL=0 mhit=1
     fi
     ppass=''
@@ -7103,7 +7107,8 @@ remote_open() {
 }
 
 # host_agent <item json> -> the harness a worker would run the item on, or nothing when the item
-# stays on this machine by design: a red, a cloud-ok or trainee-batch tag, a thread it resumes here, or
+# stays on this machine by design: a red, a cloud-ok or trainee-batch tag, a needs:cluster item
+# (cluster_login_item), a thread it resumes here, or
 # a stack on an open PR (stacked_on: only a worktree here builds on it, stack_base, so a --host start refuses it).
 # A heavy item and a plan item go too: a worker runs no Unity editor (tests run on the runner pool),
 # and it reads the plan file from its store peer clone, which carries ~/.agent/plans (ar-2891).
@@ -7111,6 +7116,7 @@ remote_open() {
 host_agent() {
   local agent
   ! is_red "$1" || return 0
+  ! cluster_login_item "$1" || return 0
   agent=$(jq -r 'select((.stacked_on // "") == "" and ((" " + (.tags // "") + " ") | (contains(" cloud-ok ") or contains(" trainee-batch ")) | not)) | .agent // "claude"' <<<"$1")
   [ -n "$agent" ] || return 0
   # A trainee floor start runs on the harness the floor chose for it, so the worker must run that one.
@@ -8871,6 +8877,16 @@ floor_gate() {
 # names, which waits while the cluster is red or unreadable (pick_item). Every other item starts
 # whatever the cluster says.
 cluster_item() { [[ " $DISPATCH_CLUSTER_PROJECTS " == *" $(jq -r '.project // ""' <<<"$1") "* ]]; }
+
+# cluster_login_item <item json> -- rc 0 for an item that needs the cluster login (kubeconfig, flux, the Pi
+# host keys), which only this machine has: one tagged needs:cluster (a session sets it on its own item,
+# `agent-queue set <slug> tags="<its tags> needs:cluster"`, which replaces the list; trader tr-109 failed four runs on razer-laptop, Forbidden on
+# freqtrade jobs, ar-5944), or a research row of a cluster_item project (hc-700 ran on a worker with no
+# kubeconfig). host_agent keeps it off every worker, so it starts here or waits here.
+cluster_login_item() {
+  [[ " $(jq -r '.tags // ""' <<<"$1") " == *" needs:cluster "* ]] && return 0
+  [[ "$(jq -r '.from // ""' <<<"$1")" == research:* ]] && cluster_item "$1"
+}
 
 # load_gateway_down -- GATEWAY_DOWN, read once a pass (cmd_run clears GATEWAY_READ): "<infra words>,
 # and <gateway_why>" when the cluster is red or unreadable and the LiteLLM gateway does not answer

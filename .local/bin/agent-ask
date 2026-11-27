@@ -247,15 +247,62 @@ queue_holders() {
   awk -F'\t' -v OFS='\t' -v id="$1" '$2 == id { print $1, $3 }' <<<"$QUEUE_HOLDS"
 }
 
-# human_floor <text>: why an ask with this text is the human's by rule, worded to follow "the ask";
-# fails when it is not. The rule: the ask names the judge's own reach (the policy's "Judge
-# authority" list), which the judge never rules on. post makes such an ask an approval, and judge
-# holds one posted before to it. A cancel of the human's work is judged like any ask: the policy's
-# reversible criterion sends a bulk one (10 or more records) to the human.
+# human_cancel <file>: the queue items the human asked for that this ask, once answered, could take
+# off the queue (`agent-queue human-work`: its resume cancels, drops or board-less returns one, or it
+# offers a cancel or drop option naming one), comma-joined; fails on none. A queue it cannot read
+# fails toward the human: an ask whose resume runs agent-queue or that offers cancel or drop is held,
+# named "an item on a queue agent-ask could not read". Why: the judge answered PVqj0D, whose resume
+# cancelled hc-820, a row the human requested (ar-5962); only the human drops their own work.
+human_cancel() {
+  local hits
+  if hits="$(AGENT_ASK_ROOT="$ASKS_ROOT" $AGENT_ASK_QUEUE_CMD human-work "$(field "$1" id)" 2>/dev/null)"; then
+    hits="$(paste -sd, - <<<"$hits" | sed 's/,/, /g')"
+    [ -n "$hits" ] && printf '%s\n' "$hits"
+  else
+    grep -qE '^resume: .*agent-queue|^options: (.*\|)?(cancel|drop)(\||$)' "$1" &&
+      echo "an item on a queue agent-ask could not read"
+  fi
+}
+
+# human_work_approval <file>: make a filed ask that could take the human's work off the queue an
+# approval. Its options must hold drop or cancel, the only answers cancel_guard takes: none, or the
+# approve|hold an approval or gate gets by default, become drop|keep (its recommend and notes kept in
+# place); other options refuse the post, since no answer of the human's could then be acted on. The
+# queue reads the ask by its id, so post runs this on the file, before any reader is told of it.
+human_work_approval() {
+  local floor opts
+  floor="$(human_cancel "$1")" || return 0
+  opts="$(field "$1" options)"
+  if ! grep -qiE '(^|\|)(cancel|drop)(\||$)' <<<"$opts"; then
+    case "$opts" in
+      '' | 'approve|hold')
+        write_fields "$1" options "drop|keep"
+        case "$(field "$1" recommend)" in approve) write_fields "$1" recommend drop ;; hold) write_fields "$1" recommend keep ;; esac ;;
+      *)
+        rm -f -- "$1"
+        # gate: aa-human-work
+        echo "agent-ask post: the ask could take $floor off the queue, work the human asked for, and agent-queue cancels or drops it only on a drop or cancel answer: post it again with --options 'drop=<what dropping does>|keep=<what keeping does>'" >&2
+        return 2 ;;
+    esac
+  fi
+  [ "$(field "$1" kind)" != approval ] || return 0
+  write_fields "$1" kind approval
+  # gate: aa-human-work
+  echo "agent-ask post: the ask could take $floor off the queue, work the human asked for, so it is an approval for the human" >&2
+}
+
+# human_floor <text> [<file>]: why an ask with this text is the human's by rule, worded to follow "the
+# ask"; fails when it is not. Two rules: the ask names the judge's own reach (the policy's "Judge
+# authority" list), which the judge never rules on, or, given its file, it could take work the human
+# asked for off the queue (human_cancel). post makes such an ask an approval (human_work_approval),
+# and judge holds one posted before that.
 human_floor() {
   local hit
-  hit="$(judge_floor_hit "$(judge_conf PROMPT "")" "$1" "Judge authority")" || return 1
-  printf "names %s, the judge's own authority\n" "$hit"
+  if hit="$(judge_floor_hit "$(judge_conf PROMPT "")" "$1" "Judge authority")"; then
+    printf "names %s, the judge's own authority\n" "$hit"
+  elif [ -n "${2:-}" ] && hit="$(human_cancel "$2")"; then
+    printf 'could take %s off the queue, work the human asked for\n' "$hit"
+  else return 1; fi
 }
 
 # undefined_terms <context> <text...>: the session-jargon terms in the text that the context never
@@ -661,7 +708,7 @@ cmd_post() {
     [ -z "$gh_login" ] || printf 'login: gh\nhost: %s\n' "$FLEET_HOST"
   } > "$file"
   [ -z "$blk" ] || exec {blk}>&-
-  queue_changed
+  human_work_approval "$file" || return; queue_changed
 
   # The judge runs before the asker is told anything: a type it answers live comes back as the
   # answer, and the asker goes on. The timeout is a guard on an external model call (a stuck one
@@ -1123,7 +1170,7 @@ cmd_answer() {
     if [ "$(field "$f" kind)" = approval ]; then mine="it is an approval"
     # gate: aa-human-only
     elif [ "$(field "$f" judge_human_only)" = true ]; then mine="the judge marked it human-only"
-    else mine="$(human_floor "$(field "$f" question) $(field "$f" options)")" && mine="it ${mine%$'\n'}" || mine=""; fi
+    else mine="$(human_floor "$(field "$f" question) $(field "$f" options)" "$f")" && mine="it ${mine%$'\n'}" || mine=""; fi
     if [ -n "$mine" ]; then
       echo "agent-ask: $id needs the human ($mine); it stays pending for them (agent-ask recommend $id <option> sets your pick)" >&2
       return 1
@@ -1625,7 +1672,7 @@ cmd_sweep() {
 # drops the arm: the human keeps the ask, and only a hand-run sweep arms it again. A session in a
 # dialog stays armed for the next pass, because deliver_to_session would drop the answer unseen.
 cmd_assume_due() {
-  local f ans due now; now="$(date +%s)"
+  local f ans due now floor; now="$(date +%s)"
   load_queue_asks
   while IFS= read -r f; do gh_login_settle "$f" || true
   done < <(ask_files --all | xargs -r -d '\n' grep -lx 'login: gh' 2>/dev/null |
@@ -1636,6 +1683,13 @@ cmd_assume_due() {
     if ! ans="$(live_answer "$f")" || [ "$ans" != "${ASK[assume_answer]:-}" ]; then
       drop_arm "$f"; queue_changed
       echo "agent-ask: ${ASK[id]} not assumed: its verdict moved inside the window, so it stays with the human" >&2
+      continue
+    fi
+    # An arm set before the ask could take the human's work off the queue (human_cancel) is theirs:
+    # the next judge pass holds it for them, so it never fires in between.
+    if floor="$(human_cancel "$f")"; then
+      drop_arm "$f"; queue_changed
+      echo "agent-ask: ${ASK[id]} not assumed: it could take $floor off the queue, work the human asked for, so it stays with the human" >&2
       continue
     fi
     in_dialog "$(live_row "${ASK[claude_session]:-}")" && continue
@@ -2733,7 +2787,7 @@ cmd_judge() {
   fi
   # A question or gate posted before a human_floor rule, judged again, is held to it all the same.
   local policy floor; policy="$(judge_conf PROMPT "")"
-  if floor="$(human_floor "$(ask_text "$f")")"; then
+  if floor="$(human_floor "$(ask_text "$f")" "$f")"; then
     judge_record "$f" human gate "the ask $floor; not sent to the judge" ""
     return 0
   fi
