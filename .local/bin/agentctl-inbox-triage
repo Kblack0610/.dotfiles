@@ -563,32 +563,32 @@ own_parent_dup() {
 }
 
 # from_item <text>: the item a session's line came from (its #from/<item>), lower-cased, or empty.
-from_item() { local re=' #from/([^ ]+)'; [[ " $1" =~ $re ]] && printf '%s\n' "${BASH_REMATCH[1],,}" || :; }
+from_item() { local re=' #from/([A-Za-z0-9_-]+)'; [[ " $1" =~ $re ]] && printf '%s\n' "${BASH_REMATCH[1],,}" || :; }
 
 # sibling_dup <n> <action> <of> <id> <text> <board> -> the project to file on (may be empty) when
 # the model called line <n> a dup of a sibling: the batch line <of>, or the open row <id> whose own
-# line (a `was:` under it) came from the same #from/ item, worded otherwise. One session wrote both
-# as separate lines (a plan phase split into its passes), so the caller files the line as its own
-# row (ar-5824). The same words from the same item are a real twin and stay the dup. The writer's
-# own twin check skips siblings the same way (notes-cli `near_twin`). Reads route's texts and line_dest.
+# lines (the `was:` lines under it) came from the same #from/ item in other words. One session wrote
+# both as separate lines (a plan phase split into its passes), so the caller files the line as its
+# own row (ar-5824). A `was:` in the same words is the line sent again, a real twin: the dup stands.
+# The writer's twin check reads a sibling the same way (notes-cli `sibling`). Reads route's texts and line_dest.
 sibling_dup() {
-  local n="$1" action="$2" of="$3" id="$4" text="$5" board="$6" item other dest=""
+  local n="$1" action="$2" of="$3" id="$4" text="$5" board="$6" item said dest=""
   [ "$action" = dup ] || return 1
-  item="$(from_item "$text")"
+  item="$(from_item "$text")" said="$(untagged "${text,,}")"
   [ -n "$item" ] || return 1
   if [ -n "$of" ]; then
     [ "$of" -ge 1 ] 2>/dev/null && [ "$of" -le "${#texts[@]}" ] || return 1
-    other="${texts[of - 1]}" dest="${line_dest[$of]:-}"
-    [ "$(from_item "$other")" = "$item" ] || return 1
+    dest="${line_dest[$of]:-}"
+    [ "$(from_item "${texts[of - 1]}")" = "$item" ] && [ "$(untagged "${texts[of - 1],,}")" != "$said" ] || return 1
   else
     id="$(clean 40 <<<"$id")"
     # shellcheck disable=SC2016 # jq source, not shell
-    IFS=$'\x1f' read -r dest other < <(jq -r --arg id "$id" --arg t "#from/$item" 'first(.rows[] | select(.id == $id and .state != "done")
-      | . as $r | [.text, ((.details // [])[] | select(startswith("was: ")) | .[5:])]
-      | map(select(split(" ") | map(ascii_downcase) | index($t)))[0] // empty | [$r.project // "", .] | join("\u001f")) // ""' <<<"$board")
-    [ -n "$other" ] || return 1
+    dest="$(jq -r --arg id "$id" --arg t "#from/$item" --arg said "$said" 'first(.rows[] | select(.id == $id and .state != "done")
+      | . as $r | [(.details // [])[] | select(startswith("was: ")) | .[5:] | ascii_downcase | split(" ") | select(index($t))]
+      | select(length > 0 and all(map(select(test("^#[a-z]") | not)) | join(" ") != $said)) | "=" + ($r.project // "")) // ""' <<<"$board")"
+    [ -n "$dest" ] || return 1
+    dest="${dest#=}"
   fi
-  [ "$(untagged "${text,,}")" != "$(untagged "${other,,}")" ] || return 1
   say "line $n and ${of:+line }${of:-$id} are two lines of $item: filed as its own row, not as a dup"
   printf '%s\n' "$dest"
 }
@@ -978,7 +978,7 @@ backlog_row() {
       ;;
     dup)
       id="$(clean 40 <<<"$id")"
-      if [ -n "$own" ] && sibling_rows "$own" "$id"; then
+      if [ -n "$own" ] && [ -n "$id" ] && sibling_rows "$own" "$id"; then
         say "$p ($lane): $own kept: $id is a sibling from $(from_item "${ROW_WAS[$own]}"), not its twin"
         KEPT=$((KEPT + 1))
       elif [ -n "$id" ] && [ "$id" != "$own" ] && grep -qxF -- "$id" <<<"$all" &&
@@ -1141,7 +1141,7 @@ backlog_pass() {
     | .id as $w | (.tags_cased // .tags // [])[] | select(startswith("after/") and length > 6) | "\($w) \(.[6:])"' <<<"$BOARD")
   # Each row's session line, for a dup between two lines of one item (sibling_rows).
   while IFS=$'\x1f' read -r w g; do ROW_WAS[$w]="$g"; done < <(jq -r '.rows[]? | select(.id != null and .state != "done")
-    | [.id, first((.details // [])[] | select(startswith("was: ") and test("(^| )#from/")) | .[5:])] | join("\u001f")' <<<"$BOARD")
+    | [.id, first((.details // [])[] | select(startswith("was: ") and test("(^| )#from/"; "i")) | .[5:])] | join("\u001f")' <<<"$BOARD")
   while IFS= read -r p; do
     [ -n "$ONLY" ] && [ "$p" != "$ONLY" ] && continue
     agentctl report --name "$NAME" "item=$p" >/dev/null 2>&1 || true

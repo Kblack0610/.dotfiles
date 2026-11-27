@@ -2031,31 +2031,34 @@ ask_about() { basename "$(grep -l "^question: .*$1" "$HOME"/.agent/asks/*/*.md)"
 # focus passes. The CI pass's title words are all the notes pass's (`CI` is under 3 letters), so the
 # writer's near-twin check folded it into the notes row, and the rest pass's #why/fault is no
 # urgent reason, so the gate kept it as an improvement.
-@test "session lines: each pass a plan phase split into files its own row on a gated board; an exact twin still joins and a follow-up of no plan row is still kept" {
+@test "session lines: each pass a plan phase split into files its own row on a gated board; an exact twin still joins, and polish from the phase or a fault from no plan row is still kept" {
   sed -i '1i intake_gated = ["scratch"]' "$HOME/.config/notes/config.toml"
   mkdir -p "$HOME/.local/state/notes"
   printf '%s\n' '{"ts":"2026-11-25T01:00:00-08:00","action":"added","from":"scratch","to":"","lane":"agent","text":"feat(notes): P3 focus passes","id":"sc-9","by":"agent-queue","stage":"backlog","origin":"plan"}' \
     '{"ts":"2026-11-25T01:00:00-08:00","action":"added","from":"scratch","to":"","lane":"agent","text":"fix(ui): the lobby","id":"sc-7","by":"agent-queue","stage":"backlog","origin":"agent-queue"}' \
     >"$HOME/.local/state/notes/ingest.jsonl"
-  sheet '- [ ] fix(notes): focus pass, notes: 32 rows, reds first #agent #from/sc-9\n- [ ] fix(ci): focus pass, CI: 65 rows, reds first #agent #from/sc-9\n- [ ] fix(rest): focus pass, views and the rest: 43 rows, reds first #agent #from/sc-9\n- [ ] fix(notes): the notes focus pass once more #agent #from/sc-9\n- [ ] chore(ui): a nicer empty state for the lobby #agent #from/sc-7\n' ''
+  sheet '- [ ] fix(notes): focus pass, notes: 32 rows, reds first #agent #from/sc-9\n- [ ] fix(ci): focus pass, CI: 65 rows, reds first #agent #from/sc-9\n- [ ] fix(rest): focus pass, views and the rest: 43 rows, reds first #agent #from/sc-9\n- [ ] fix(notes): the notes focus pass once more #agent #from/sc-9\n- [ ] chore(ui): a nicer empty state for the lobby #agent #from/sc-9\n- [ ] fix(ui): the lobby list is slow #agent #from/sc-7\n' ''
   answer '{"n": 1, "action": "file", "rows": ["fix(notes): focus pass over the 32 notes rows, reds first #high #why/runtime-fault #size/l"], "lane": "agent"}' \
     '{"n": 2, "action": "file", "rows": ["fix(ci): focus pass over the 65 CI rows, reds first #high #why/runtime-fault #size/l"], "lane": "agent"}' \
     '{"n": 3, "action": "file", "rows": ["fix(views): focus pass over the 43 views rows, reds first #normal #why/fault #size/l"], "lane": "agent"}' \
     '{"n": 4, "action": "file", "rows": ["fix(notes): focus pass over the 32 notes rows, reds first #high #why/runtime-fault #size/l"], "lane": "agent"}' \
-    '{"n": 5, "action": "file", "rows": ["chore(ui): a nicer empty state for the lobby #low #why/upkeep #size/s"], "lane": "agent"}'
+    '{"n": 5, "action": "file", "rows": ["chore(ui): a nicer empty state for the lobby #low #why/upkeep #size/s"], "lane": "agent"}' \
+    '{"n": 6, "action": "file", "rows": ["fix(ui): the lobby list is slow #normal #why/fault #size/s"], "lane": "agent"}'
   run "$TRIAGE"
   assert_success
-  assert_output --partial 'improvements 1'
+  assert_output --partial 'improvements 2'
   agent="$PROJ/scratch/agent/README.md"
   grep -q 'focus pass over the 65 CI rows' "$agent" || fail "the CI pass was folded into the notes pass: $(cat "$agent")"
   grep -q 'focus pass over the 43 views rows' "$agent" || fail "the rest pass was gated: $(cat "$agent")"
   [ "$(grep -c 'focus pass over the 32 notes rows' "$agent")" = 1 ] || fail "$(cat "$agent")"
   [ "$(grep -c '<!-- id:' "$agent")" = 3 ] || fail "not one row per pass: $(cat "$agent")"
-  # NEGATIVE CONTROLS: the same pass filed twice joins its row; a follow-up of a row no plan filed is gated.
+  # NEGATIVE CONTROLS: the same pass filed twice joins its row; the phase's polish and a fault
+  # from a row no plan filed are gated.
   grep -q '  was: fix(notes): the notes focus pass once more #agent #from/sc-9' "$agent" || fail "the exact twin did not join: $(cat "$agent")"
-  grep -q 'empty state' "$agent" && fail "the gate let polish onto the board: $(cat "$agent")"
+  grep -q 'empty state\|lobby list' "$agent" && fail "the gate let them onto the board: $(cat "$agent")"
   run cat "$PROJ/scratch/improvements.md"
   assert_output --partial 'a nicer empty state for the lobby'
+  assert_output --partial 'the lobby list is slow'
   refute_output --partial 'focus pass'
   run jq -r 'select(.action == "dup") | .text' "$HOME/.local/state/notes/ingest.jsonl"
   refute_output --partial 'CI'

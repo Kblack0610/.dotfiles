@@ -8,8 +8,9 @@
 //! `notes improve`, never a row dispatch can pick. A plan's phases come through `agent-queue add --plan`, a direct filer, and a person's
 //! own words are never gated, so neither reaches this check. A phase's session that splits its
 //! phase into rows files them as follow-ups, which do: one whose `#from/<id>` names a row a plan
-//! filed is that phase's work and is admitted ([`plan_phase`]; ar-5824, where the rest pass of a
-//! split phase went to improvements as no evidenced fault).
+//! filed and whose reason is a fault or epic work is that phase's pass and is admitted
+//! ([`split_admits`]; ar-5824, where the rest pass of a split phase went to improvements as no
+//! evidenced fault). Polish from the same session is still refused.
 //!
 //! The daily cap (`intake_daily_cap`, [`cap_refusal`]) is a separate test, on every row the gate
 //! admits and every writer the gate never asks, and on every project's agent board, gated or not
@@ -77,11 +78,26 @@ fn refusal_in(all: &[Reason], project: &str, row: &str, wanted: bool) -> Option<
     ))
 }
 
+/// The reasons a plan phase's split is admitted at below high: its passes are the phase's own fault
+/// or epic work, never a feature or polish the session thought of on the way (ar-5824 review).
+const SPLIT: [&str; 2] = ["fault", "epic-turn"];
+
+/// Whether `row`, filed for a session's follow-up `line`, is a pass of a plan phase the gate admits:
+/// its reason is one of [`SPLIT`] and `line` is part of a plan phase ([`plan_phase`]).
+pub(crate) fn split_admits(p: &Profile, line: &str, row: &str) -> bool {
+    split_reason(row) && plan_phase(p, line)
+}
+
+/// Whether `row`'s `#why/` is one of [`SPLIT`].
+fn split_reason(row: &str) -> bool {
+    reasons::slug_of(row).is_some_and(|s| SPLIT.contains(&s.as_str()))
+}
+
 /// Whether a session's follow-up `line` is part of a plan phase: its `#from/<id>` names a row a
 /// plan filed (`agent-queue add --plan`, recorded `added` with origin `plan`). A follow-up from any
 /// other item, or with no `#from/`, is not. The tie is the record's, not the phase row's state: the
 /// phase's session often lands before the sweep files its split.
-pub(crate) fn plan_phase(p: &Profile, line: &str) -> bool {
+fn plan_phase(p: &Profile, line: &str) -> bool {
     let Some(from) = crate::project_tasks::origin_item(line) else {
         return false;
     };
@@ -370,6 +386,20 @@ mod tests {
             crate::project_tasks::origin_item("fix(rest): focus pass #normal"),
             None
         );
+        // A pass of the phase is its fault or epic work; polish or a feature from it is not.
+        assert!(split_reason(
+            "fix(views): focus pass over the 43 views rows #normal #why/fault"
+        ));
+        assert!(split_reason(
+            "feat(x): the next step #normal #why/epic-turn"
+        ));
+        for row in [
+            "chore(ui): a nicer empty state #low #why/upkeep",
+            "feat(ui): a new view #normal #why/feature",
+            "fix(ui): no reason #normal",
+        ] {
+            assert!(!split_reason(row), "{row}");
+        }
     }
 
     fn ev(action: &str, from: &str, to: &str, text: &str) -> Event {
