@@ -9652,7 +9652,7 @@ row_restart() {
 # row's: its add --plan --repeat would re-queue the phases that landed.
 promote() {
   local c="$1" tags="$2" task="$3" repeat="${4-}" qmode="${5-}" prof project lane key area line out id slug flag=() rc=0
-  local g q gwait gates=() rm=() stacks=''
+  local g q gwait gates=() rm=() stacks='' htags=()
   prof=$(jq -r .profile <<<"$c"); project=$(jq -r .project <<<"$c"); lane=$(jq -r .lane <<<"$c")
   key=$(jq -r .key <<<"$c"); area=$(jq -r '.area // empty' <<<"$c")
   [ "$lane" = agent ] && flag=(--agent)
@@ -9666,7 +9666,6 @@ promote() {
       { say "skip $project: ${restart:-row no longer open: $key}"; return 1; }
     read -r restart closed <<<"$restart"
   fi
-  local -a htags=()
   mapfile -t htags < <(grep -oE '(^|[[:space:]])#[A-Za-z0-9_./-]+' <<<"${line%%<!--*}" | sed 's/^[[:space:]]*#//')
   gates_reread "${htags[@]}" || { say "skip $project: $GATE_ERR, so its gates cannot be read: $key"; return 1; }
   for g in "${htags[@]}"; do
