@@ -86,6 +86,11 @@ allowed() { assert_success; assert_output ""; }
   denied
   run run_guard '/usr/bin/gh run rerun 1'
   denied
+  # a quoted plain word is bare to the kill rows, but the rerun row still reads it as a quoted endpoint (ar-4588)
+  run run_guard "gh api 'user' -X POST"
+  denied
+  run run_guard "gh api -X POST 'graphql'"
+  denied
   # a bare marker with no fault, and a marker inside quotes, are not a named fault
   run run_guard 'gh run rerun 1 --failed  # infra:'
   denied

@@ -4,7 +4,7 @@
   "pr": "Kblack0610/.dotfiles#989",
   "base": "dde1631d5742fcbde7d37ce22466c1b4c955659e",
   "merge": "fab76530f82fb1c0151a5fcaa4b127c12844757c",
-  "task": "feat(fleet-bench): loop --firing prints one sentence per dark finding still firing",
+  "task": "feat(fleet-bench): loop --firing prints one sentence per dark finding still firing. Interface: `fleet-bench loop --firing` prints, for each dark episode still firing, one line `Finding <fact> has been yours for <M>m and still fires, with nothing done but a page. Run fleet-bench loop.`, where <fact> is the episode `fact` as `loop --json` prints it (for example `starved pool:other @1793152800`) and <M> is the whole minutes from its `human_at` to now (`BENCH_NOW` when set). It prints nothing, exit 0, when no dark episode fires, and an episode a response (`fleet-bench respond`) has since answered is not firing.",
   "pts": 2,
   "accept": [
     "loop --firing: one sentence per dark episode still firing, and nothing when none fires"
