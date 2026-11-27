@@ -70,7 +70,7 @@ The class column tells you how each consumer can be stopped:
 | Verdict | Meaning |
 |---|---|
 | HOLD | Over the high mark (load at 1.75x cores, or memory under 10% free, or memory stall (PSI some avg10) at 20% or more, which is swapping while MemAvailable still reads fine, or Tctl at 95 with load at 1.5x, or Tctl at 100 C (`FLEET_CRIT_TCTL`, `.local/lib/cpu-temp.sh`) at any load), or between the marks while a load hold is set (`agent-hold list --kind load`: a resource hold such as a dispatch pause or another host's bad RAM, and a desktop claim, say nothing about load) |
-| CLEAR | A hold is set and the machine is under the low mark (load under 1x cores, memory at 25% free or more, stall under 5%). Safe to send GO |
+| CLEAR | A hold is set and the machine is under the low mark (load under 1x cores, memory at 25% free or more, stall under 5%, Tctl under 95 C, so a host held at the critical mark does not flap). Safe to send GO |
 | OK | Nothing held, nothing over the line |
 
 The gap between the marks is deliberate. A hold set at 1.75x and lifted at 1.7x would flap and page on every sample. The high mark is where the CPU runs out of idle time: on 2026-10-26 load 46 on 24 cores (1.9x) read OK against the old 3x mark while `top` showed 0% idle, and the human had to point at it. When you report a pass, check what the human sees (`top`'s idle), not only the verdict. Load is the main signal; temperature alone is not. This box is a Zen 4 part, which boosts until it reaches 95 C, so readings in the 90s with one busy thread are normal. The thresholds are the `FLEET_*` variables at the top of `fleet-assess`, and that block is the one place to change them.

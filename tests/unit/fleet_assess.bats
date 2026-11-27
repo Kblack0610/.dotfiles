@@ -200,10 +200,18 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   assert_output --partial 'OK'
 }
 
+@test "critical tctl: a held machine clears only back under the throttle point, so 99.9 C does not flap" {
+  run fleet_verdict 12 24 99.9 60 1
+  assert_output 'HOLD held, tctl 99.9 C not yet under 95 C'
+  [ "$(fleet_verdict 12 24 95 60 1 | cut -d' ' -f1)" = HOLD ]
+  [ "$(fleet_verdict 12 24 94.9 60 1 | cut -d' ' -f1)" = CLEAR ]
+  [ "$(fleet_verdict 12 24 - 60 1 | cut -d' ' -f1)" = CLEAR ]
+}
+
 @test "thermal_page: a critical tctl pages urgent at any load, naming the host and its temperature" {
   FLEET_HOST=tuf-b550 run thermal_page 1 24 105
   assert_line 'page: urgent'
-  assert_line 'reason: tuf-b550 CPU at 105 C, at or over the 100 C critical mark (a 110 C shutdown is near)'
+  assert_line 'reason: tuf-b550 CPU at 105 C, at or over the 100 C critical mark (near its thermal shutdown)'
   run thermal_page 1 24 99.9
   assert_output 'page: low'
   run thermal_page 1 24 -
@@ -219,7 +227,7 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   assert_failure 1
   assert_line --partial 'HOLD tctl 105.0 C >= 100 C critical'
   assert_line 'page: urgent'
-  assert_line 'reason: tuf-b550 CPU at 105.0 C, at or over the 100 C critical mark (a 110 C shutdown is near)'
+  assert_line 'reason: tuf-b550 CPU at 105.0 C, at or over the 100 C critical mark (near its thermal shutdown)'
   # Dispatch's gate holds on it too, with no page line.
   run env FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 "$REPO_ROOT/.local/bin/fleet-assess" --watch-probe
   assert_failure 1

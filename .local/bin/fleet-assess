@@ -75,12 +75,17 @@ fleet_verdict() {
       -v ht="$FLEET_HOT_TCTL" -v htx="$FLEET_HOT_LOAD_X" -v ct="$FLEET_CRIT_TCTL" 'BEGIN {
     x = (c > 0) ? l / c : 0
     hot = (t != "-" && t + 0 >= ht && x >= htx)
+    # fleet-dispatch assess_why matches "HOLD tctl ... critical" so no floor goes past it: keep the wording.
     if (t != "-" && t + 0 >= ct) { printf "HOLD tctl %s C >= %s C critical\n", t, ct; exit }
     if (x >= hx)  { printf "HOLD load %.1fx cores >= %sx\n", x, hx; exit }
     if (m < hm)   { printf "HOLD memory %d%% free < %d%%\n", m, hm; exit }
     if (s >= hs)  { printf "HOLD memory stall %.1f%% >= %s%% (swapping)\n", s, hs; exit }
     if (hot)      { printf "HOLD tctl %s C at %.1fx cores\n", t, x; exit }
-    low = (x < cx && m >= cm && s < cs)
+    # A held machine clears only back under the throttle point, so a host hovering at the critical mark
+    # does not trip and clear on every sample.
+    warm = (t != "-" && t + 0 >= ht)
+    low = (x < cx && m >= cm && s < cs && !warm)
+    if (held && warm) { printf "HOLD held, tctl %s C not yet under %s C\n", t, ht; exit }
     if (held && low)  { printf "CLEAR load %.1fx < %sx, memory %d%% free, stall %.1f%%\n", x, cx, m, s; exit }
     if (held && s >= cs) { printf "HOLD held, memory stall %.1f%% not yet under %s%%\n", s, cs; exit }
     if (held)         { printf "HOLD held, load %.1fx not yet under %sx\n", x, cx; exit }
@@ -95,7 +100,7 @@ fleet_verdict() {
 thermal_page() {
   awk -v l="$1" -v c="$2" -v t="${3:--}" -v ex="$FLEET_EXTREME_LOAD_X" -v ct="$FLEET_CRIT_TCTL" -v h="$FLEET_HOST" 'BEGIN {
     x = (c > 0) ? l / c : 0
-    if (t != "-" && t + 0 >= ct) printf "page: urgent\nreason: %s CPU at %s C, at or over the %s C critical mark (a 110 C shutdown is near)\n", h, t, ct
+    if (t != "-" && t + 0 >= ct) printf "page: urgent\nreason: %s CPU at %s C, at or over the %s C critical mark (near its thermal shutdown)\n", h, t, ct
     else if (x >= ex) printf "page: urgent\nreason: 5-min load %.1fx cores, past the %sx extreme mark\n", x, ex
     else print "page: low"
   }'
