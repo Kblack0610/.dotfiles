@@ -11,7 +11,7 @@
 #   fleet-dispatch exits [--dry-run] give each skipped agent row its rule's exit, and move the #after/ gates on a row sent to the sheet (skip_exits; each run pass does); --dry-run lists them
 #   fleet-dispatch stale [--dry-run] ask about, or keep in improvements.md and drop when #low, each agent row a skip has held DISPATCH_STALE_DAYS days (ask_stale_skips; each run pass does); --dry-run lists them
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
-#   fleet-dispatch promote --project P [--profile X] [--agent] [--dispatch] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item; --dispatch makes it a capped pull like dispatch's own
+#   fleet-dispatch promote --project P [--profile X] [--agent] [--dispatch] [--restart] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item; --dispatch makes it a capped pull like dispatch's own; --restart takes a started row no live item holds (row_restart)
 #   fleet-dispatch pull-after [--queue-only] ID  promote, and start unless normal, low or --queue-only, the open rows gated #after/ID: agent-queue runs it when ID's item closes ok, and a pass runs it --queue-only for a row closed with no item (pull_closed_after)
 #   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session; a row whose #ask/ gate was answered another way is held or dropped, one on a cancelled ask closes on its done item's merged PR, follows the ask it joined, or is asked again
 #   fleet-dispatch headroom [--json] how many more queue items could start now, and the margin under each limit
@@ -161,6 +161,9 @@ esac
 HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 # shellcheck source=../lib/judge.sh
 . "$HERE/../lib/judge.sh"
+# shellcheck source=../lib/board-keys.sh
+. "$HERE/../lib/board-keys.sh"   # BOARD_KEY_ERE: the rows fleet-bench triage files by key, whose lane skip_exits leaves to it
+BOARD_KEY_JQ=$(jq -rn --arg e "$BOARD_KEY_ERE" '$e | tojson')   # that ERE as a jq string literal, for ROW_JQ's bench_keyed
 # shellcheck source=../src/agent-run/lib/sandbox.sh
 . "$HERE/../src/agent-run/lib/sandbox.sh"
 # The fleet worker roster (home-config's `fleet_workers` group) and the one ssh path to a worker.
@@ -618,10 +621,12 @@ def plan_tagged: any(.tags[]?; . == "plan");
 # defines its scope and the expect line of its watch its done state, so it is never unclear (policy.md
 # `clear`): an `unclear` skip of one takes no plan exit and picks reads past it (ar-5240).
 def triage_red: (.raw // .text // "") | sub("^- \\[.\\] "; "") | test("^check\\((watch|alert)\\): ");
-# red_skip($c): this verdict is an `unclear` skip of triage red row $c that an agent may take, so
-# skip_exits gives it no plan exit (a raw board row has no computed tier to read). One that picks then
-# passes over (a tier above the row, size L, a hold) stays on the board under its skip with no exit:
-# a known gap, since the raw row here carries neither tier nor size to test.
+# bench_keyed: a row fleet-bench triage filed by key (lib/board-keys.sh BOARD_KEY_ERE). The route triage gives it is
+# the one writer of its lane, so no exit here moves or drops it (skip_exits, ask_stale_skips; ar-6265).
+def bench_keyed: (.raw // .text // "") | sub("^- \\[.\\] "; "") | test('"$BOARD_KEY_JQ"');
+# red_skip($c): this verdict is an `unclear` skip of triage red row $c that an agent may take, so picks
+# reads past it (skip_exits gives a keyed triage row no exit at all). One that picks then passes over
+# (a tier above the row, size L, a hold) stays on the board under its skip: fleet-bench triage owns it.
 def red_skip($c): .verdict == "skip" and .rule == "unclear" and .agent_only == true and ($c | triage_red);
 # red_unclear($c): red_skip of a candidate whose tier is no higher than that of the row, a dispatch were
 # it clear, so picks starts it and suggest lists it as dispatch.
@@ -2287,6 +2292,10 @@ human_merge_set() {
 # skip_exits [--dry-run] -- give each open agent row whose latest verdict is a skip, still current
 # for the row's text, the exit its rule names (policy.md "Always skip"), so no skip parks a row.
 # A check(epics) row takes none: reconcile_epics queues its verify item, the judge never needs to.
+# Nor does a row fleet-bench triage filed by key (BOARD_KEY_ERE: check(watch), check(alert), fix(hold) and
+# the rest): triage's route (agent or human:<sheet>) is the one writer of its lane, and a sheet exit
+# here was undone by triage on its next pass, an add and a drop on every pass (ar-6265: board-chain).
+# A keyed red that needs a person gets a human:<sheet> route in triage-routes, not an exit here.
 #  - plan (DISPATCH_PLAN_RULES): tag it #plan, and #go beside it on a #requested row (the judge asked
 #    for this plan, not the person, so inbox-plan does not hold it for their review), while fewer than
 #    DISPATCH_PLAN_BACKLOG #plan rows are open, then kick inbox-plan; its plan splits or rewrites the
@@ -2370,8 +2379,9 @@ skip_exits() {
     | $ssf[0] as $ss
     | ($kinds | to_entries | map(select(.value.enabled == false and .key != "epic") | {key, value: true}) | from_entries) as $off
     | ([.rows[]? | select(.state == "open" or .state == "doing") | .tags[]? | select(startswith("of/")) | {key: .[3:], value: true}] | from_entries) as $parents
-    | .rows[]? | select(.lane == "agent" and .state == "open" and .id != null and (plan_tagged | not) and "\(.type)(\(.area))" != "check(epics)") | . as $row
-    | ($by["\(.project)\t\(.id)"] | if . != null and red_skip($row) then null else . end) as $d
+    | .rows[]? | select(.lane == "agent" and .state == "open" and .id != null and (plan_tagged | not) and "\(.type)(\(.area))" != "check(epics)"
+        and (bench_keyed | not))
+    | $by["\(.project)\t\(.id)"] as $d
     | if $hm["\(.project)\t\(.id)"] != null and (.type // "") != "epic" and ($parents[.id] | not)
           and (.project as $pj | $elig | index($pj)) != null
           and (($ss.rows["\(.project)\t\(.id)"].failed // false) | not)
@@ -2520,7 +2530,7 @@ waits_gate() {
 # clears the gate and picks takes it as committed work, drop settles it (settle_answered_gates), and
 # any other answer holds it on #hold/row-<id>. Any other row (#low) is kept in improvements.md and dropped, the skip as its
 # why. Its age never ranks it: priority stays ahead of age (#2232, ask Q6vMPb). An epic, a parent, a
-# check(epics) row and a triage red skip (red_skip) are left alone. At most DISPATCH_STALE_MAX rows a
+# check(epics) row and a row fleet-bench triage filed by key (bench_keyed: its lane is triage's) are left alone. At most DISPATCH_STALE_MAX rows a
 # day, each try a `stale:` line in the log (0 is no cap); DISPATCH_STALE_DAYS 0 is off. --dry-run writes nothing and prints `<ask|drop> TAB
 # <project> TAB <id> TAB <rule> TAB <days>` per row, then the counts.
 ask_stale_skips() {
@@ -2554,8 +2564,8 @@ ask_stale_skips() {
        | map({key: "\(.project)\t\(.key)", value: .}) | from_entries) as $by
     | ([.rows[]? | select(.state == "open" or .state == "doing") | .tags[]? | select(startswith("of/")) | {key: .[3:], value: true}] | from_entries) as $parents
     | .rows[]? | select(.lane == "agent" and .state == "open" and .id != null and (plan_tagged | not)
-        and (.type // "") != "epic" and ($parents[.id] | not) and "\(.type)(\(.area))" != "check(epics)") | . as $row
-    | $by["\(.project)\t\(.id)"] as $d | select($d != null and (($d | red_skip($row)) | not))
+        and (.type // "") != "epic" and ($parents[.id] | not) and "\(.type)(\(.area))" != "check(epics)" and (bench_keyed | not))
+    | $by["\(.project)\t\(.id)"] as $d | select($d != null)
     | $ages["\(.project)\t\(.id)"] as $s | select($s != null)
     | ((day0($today) - day0($s)) / 86400 | floor) as $age | select($age >= $days)
     | [.profile // "-", .project, .id, ($d.line // "-"), ($d.dsig // "-"), details_json($n), $d.rule, (.requested == true), $s, $age,
@@ -9544,10 +9554,13 @@ take_epic() {
   return 0
 }
 
-# row_restart <project> <started row line> -> "<id> <status>" when the row's own item (slug <id>, as promote
+# row_restart <project> <started row line> [repeat] -> "<id> <status>" when the row's own item (slug <id>, as promote
 # files it) closed cancelled or failed and no live item works the row: cmd_start then files a fresh item
-# under <id>, and the session's AGENT_QUEUE_ITEM names that open item. Else rc 1 with why, naming the
-# item: a live one is the start to make, an ok one is the orphan pass's to close. A row with no id or no
+# under <id>, and the session's AGENT_QUEUE_ITEM names that open item. A repeat start (cmd_promote
+# --restart: triage's retry of a red) also takes an item that closed ok with no PR, new work under its
+# slug (ar-4654: such a red row sat started with no owner until the orphan pass's 72h). Else rc 1 with
+# why, naming the item: a live one is the start to make, an ok one with a PR is the orphan pass's to close
+# on its merge (land_orphan), an ok one without a repeat cannot be added again. A row with no id or no
 # item was started by hand, and the refusal stays promote's own. A queue that cannot be read refuses:
 # read as empty, it would file a second item beside a live one.
 row_restart() {
@@ -9563,6 +9576,8 @@ row_restart() {
   [ -z "$live" ] || { echo "row $id is started, its queue item $id is $st, and queue item $live works it: fleet-dispatch start --item $live"; return 1; }
   case "$st" in
     "done cancelled" | "done failed") echo "$id ${st#done }" ;;
+    "done ok") [ -n "${3-}" ] && [ -z "$(jq -r '.pr // empty' <<<"$it")" ] && echo "$id ok" ||
+      { echo "row $id is started and its queue item $id is $st, so no fresh item is filed"; return 1; } ;;
     *) echo "row $id is started and its queue item $id is $st, so no fresh item is filed"; return 1 ;;
   esac
 }
@@ -9577,7 +9592,9 @@ row_restart() {
 # hold or dead gate still refuses. The cleared ones go onto the item as its queue tags (an ask: one is what ask_decisions
 # reads), all but a time of day, which would hold the item again the next morning; once the item is
 # queued their hashtags come off the row. A hand start (PROMOTE_RESTART, cmd_start alone) also takes a row
-# left started by its own item that closed cancelled or failed (row_restart), filing a fresh item, never claiming it again.
+# left started by its own item that closed cancelled or failed (row_restart), filing a fresh item, never claiming it again;
+# so does promote --restart (triage), of one whose item closed ok with no PR too (ar-4654), but never a plan
+# row's: its add --plan --repeat would re-queue the phases that landed.
 promote() {
   local c="$1" tags="$2" task="$3" repeat="${4-}" qmode="${5-}" prof project lane key area line out id slug flag=() rc=0
   local g q gwait gates=() rm=() stacks=''
@@ -9590,7 +9607,7 @@ promote() {
   # failed, before reap's settle_row hands it back, files a fresh item for it (ar-5932).
   local restart='' closed=''
   if [[ "$line" != '- [ ]'* ]]; then
-    [ -n "${PROMOTE_RESTART:-}" ] && [[ "$line" == '- [/]'* ]] && restart=$(row_restart "$project" "$line") ||
+    [ -n "${PROMOTE_RESTART:-}" ] && [[ "$line" == '- [/]'* ]] && restart=$(row_restart "$project" "$line" "$repeat") ||
       { say "skip $project: ${restart:-row no longer open: $key}"; return 1; }
     read -r restart closed <<<"$restart"
   fi
@@ -9676,6 +9693,7 @@ promote() {
   [ -n "$qmode" ] || plan=$(plan_row_plan "$brief") || plan=''
   # A plan row whose plan is gone is refused by name, never queued as one session for every phase.
   [ -z "$plan" ] || [ -f "$plan" ] || gone="agent-queue: its plan $plan is gone, so its phases cannot be queued"
+  [ -z "$plan" ] || [ "$closed" != ok ] || { say "skip $project: $key is a plan row whose item $id closed ok, so it is not restarted"; return 1; }
   # AGENT_QUEUE_START=0 for every caller: add starts only a plan item itself, and each caller of
   # promote starts what it promoted (cmd_start) or leaves it queued for a pass, so add never must.
   if [ -n "$gone" ]; then
@@ -9728,17 +9746,20 @@ promote() {
   echo "queued $project: $id"
 }
 
-# cmd_promote --project P [--profile X] [--agent] [--dispatch] [--model M] [--tags T] --raw LINE -- queue one row as the
+# cmd_promote --project P [--profile X] [--agent] [--dispatch] [--restart] [--model M] [--tags T] --raw LINE -- queue one row as the
 # human saw it: the Board tab's Start. A row that changed since, or is already started, is refused. No load
 # gate: the item starts like any board item (a row gate not yet clear refuses it, promote). --dispatch is a
 # machine caller's pull, capped like dispatch's own (fleet-bench triage's reds, which as a hand start went
 # past the cap with no make_room); without it a caller with no queue item is the human's hand start.
 # --model pins the item's model (claude_pin), as triage pins its escalation of a red to Opus.
+# --restart also takes a started row its own closed item left with no live one (row_restart): triage's
+# retry of a red whose last fix closed with no merge.
 cmd_promote() {
-  local project='' prof='' lane=human raw='' tags='' board key PROMOTE_MODEL=''   # promote() reads it; local, so it holds for this call alone
+  local project='' prof='' lane=human raw='' tags='' board key PROMOTE_MODEL='' PROMOTE_RESTART=''   # promote() reads them; local, so they hold for this call alone
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent) lane=agent; shift; continue ;;
+      --restart) PROMOTE_RESTART=1; shift; continue ;;
       --dispatch) PULL=dispatch; shift; continue ;;
       --project | --profile | --raw | --tags | --model) [ $# -ge 2 ] || { say "promote: $1 needs a value"; return 2; } ;;
       *) say "promote: unknown argument: $1"; return 2 ;;

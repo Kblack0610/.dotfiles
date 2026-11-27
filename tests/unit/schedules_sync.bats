@@ -1724,6 +1724,34 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
   assert_output 'o/game: a pass holds the PR store'
 }
 
+@test "sync-prs runs on a python without PyYAML; only a pass that reads workflow files needs it (tr-469)" {
+  # A yaml package first on PYTHONPATH that fails as a missing PyYAML does (the mac-mini's python).
+  mkdir -p "$SANDBOX/noyaml/yaml"
+  echo "raise ModuleNotFoundError(\"No module named 'yaml'\", name='yaml')" > "$SANDBOX/noyaml/yaml/__init__.py"
+  mkdir -p "$XDG_STATE_HOME/ci"; echo '{"exporter":{"repos":["o/game"]}}' > "$XDG_STATE_HOME/ci/sync.json"
+  prs_page o/game "$(gh_pr 7 closed 2025-11-06T10:00:00Z feat-x)"
+  PYTHONPATH="$SANDBOX/noyaml" run "$SUBJECT" sync-prs o/game
+  assert_success
+  run "$SUBJECT" prs o/game
+  assert_equal "$(jq -c 'map(.number)' <<<"$output")" '[7]'
+  # NEGATIVE CONTROL: the shim really hides PyYAML, so a pass that parses a workflow file fails on it.
+  game_files
+  runs "$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z completed failure)" | page1
+  PYTHONPATH="$SANDBOX/noyaml" run "$SUBJECT"
+  assert_failure
+  assert_output --partial "No module named 'yaml'"
+  # With PyYAML, an unparseable file is unscheduled, not a failed pass.
+  serve 'repos/o/game/contents/.github/workflows?ref=main' <<'EOF'
+[{"name":"test.yml","path":".github/workflows/test.yml","sha":"s1","type":"file"},
+ {"name":"broken.yml","path":".github/workflows/broken.yml","sha":"s4","type":"file"}]
+EOF
+  blob o/game s4 'on: {schedule: [unclosed'
+  run "$SUBJECT"
+  assert_success
+  run jq -c '[(.repos[0].workflows | map(.path)), (.repos[0].unscheduled | keys)]' "$STATE"
+  assert_output '[[".github/workflows/test.yml"],[".github/workflows/broken.yml"]]'
+}
+
 @test "sync-prs: a lagging page's row updated before the stored one, or one read earlier in the pass, is dropped, so a merged PR never reads OPEN again (ar-3413)" {
   # NEGATIVE CONTROL: without newest_prs in sync_prs, #7's OPEN row from the lagging page is appended
   # after its MERGED row, `prs` reads it OPEN, and no later window re-reads a PR nothing updates;

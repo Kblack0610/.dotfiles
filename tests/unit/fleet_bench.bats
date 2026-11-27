@@ -2323,6 +2323,37 @@ cause_of() { printf '%s' 'lock .* held by pid' | sha256sum | cut -c1-8; }
   [ ! -s "$PLOG" ]
 }
 
+# 2026-11-22 (ar-4654): ar-2363's item closed ok with no PR and left its row started, and triage
+# promoted only todo rows, so home-k3s-trivy-criticals had no owner until the orphan pass's 72h.
+@test "triage: a red's row left started by a closed fix no live item holds is queued again with --restart; a refusal is logged" {
+  log_triage_setup
+  lock_route
+  run "$SUBJECT" triage
+  assert_success
+  local id; id=$(grep -o 'fix(logs).*<!-- id:ar-[0-9]*' "$BOARD" | grep -o 'ar-[0-9]*$')
+  [ -n "$id" ] || fail "the filed row has no id"
+  sed -i 's/- \[ \] fix(logs)/- [\/] fix(logs)/' "$BOARD"; : > "$PLOG"
+  # its own item closed ok with no PR: a try that did not hold, so the row is queued again as a retry
+  jq -cn --arg t "red cause:$(cause_of)" --arg id "$id" '{slug: $id, tags: $t, state: "done", status: "ok", queued: "2020-01-01T00:00:00Z", row: ("agent-runtime:" + $id)}' > "$ITEMS"
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '1 queued as red fixes'
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --dispatch --restart --project agent-runtime --tags red cause:$(cause_of) retry:$id --raw - \[/\] fix\(logs\): alpha error .*id:$id -->$"
+  # negative control: a live item of the row holds it, so nothing is queued
+  : > "$PLOG"
+  jq -cn --arg id "$id" '{slug: "ar-78", tags: "", state: "running", queued: "2020-01-01T00:00:00Z", row: ("agent-runtime:" + $id)}' >> "$ITEMS"
+  run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  # the promote's refusal is said, never dropped
+  sed -i 2d "$ITEMS"
+  printf '#!/usr/bin/env bash\necho "fleet-dispatch: skip agent-runtime: row gone" >&2; exit 1\n' > "$SANDBOX/bin/promote-stub"
+  run "$SUBJECT" triage
+  assert_success
+  assert_line --regexp '^fleet-bench: triage: could not queue fix\(logs\): alpha error .* \(- \[/\]\): fleet-dispatch: skip agent-runtime: row gone$'
+}
+
 @test "triage: a high or urgent watch is a row after one pass; a low one after 30 minutes, the hour it trips" {
   triage_setup
   watch hot TRIP -1000 high; watch hotter TRIP -1000 urgent; watch young TRIP -600 high; watch slow TRIP -1000 low; watch none TRIP -1000 ''
@@ -2769,6 +2800,31 @@ fix_item() {
   assert_output --partial '1 queued as red fixes'
   # the exit 1 test above is the control: any other exit is still a failed add
   refute_output --partial 'add failed for check(watch): links'
+  assert_output --partial "1 held by the board's daily cap"
+  run outcome
+  refute_output --partial FAILED
+}
+
+# ar-4296: an add runs only for a key with no open row and passes that key, so a twin refusal (exit 3)
+# leaves this red with no row and no item: a failed write, never counted filed.
+@test "triage: a check row the board takes for another row's near twin is a failed write, not filed" {
+  log_triage_setup
+  lock_route
+  watch links TRIP -25200 high
+  route 'watch.: (links) tripped' agent fix-red 'fix the links'
+  printf '#!/usr/bin/env bash\n[ "$4" = add ] && [[ "$5" == *"check(watch): links"* ]] && { echo "near-duplicate of an open row" >&2; exit 3; }\nexec notes "$@"\n' > "$SANDBOX/bin/notes-twin"
+  chmod +x "$SANDBOX/bin/notes-twin"
+  BENCH_NOTES_CMD=notes-twin run "$SUBJECT" triage
+  assert_output --partial "check(watch): links tripped since: the board took it for a twin of another open row, so it has no row"
+  assert_output --partial 'board write failed for check(watch): links tripped since'
+  refute_output --partial "held by the board's daily cap"
+  run outcome
+  assert_output --partial FAILED
+  # negative control: the same red with no twin files its row and fails nothing
+  BENCH_NOTES_CMD=notes run "$SUBJECT" triage
+  refute_output --partial 'board write failed'
+  run grep -c -- '--key check(watch): links tripped since$' "$NLOG"
+  assert_output 1
   run outcome
   refute_output --partial FAILED
 }
@@ -2891,24 +2947,60 @@ fix_item() {
   assert_output 0
 }
 
-# 2026-11-25 (ar-6265): dispatch moved the board-chain check row to the sheet for a person; board_upsert left
-# it there, but triage_twins read the key as filed and dropped the sheet row, so the next pass filed it again.
-@test "triage: a red whose row dispatch moved to the sheet keeps that row, with no agent row filed and no sheet drop (ar-6265)" {
+# 2026-11-25 (ar-6265): dispatch moved the board-chain check row to the sheet for a person, and triage filed it
+# again, an add and a drop on every pass. Dispatch now leaves a keyed row's lane to triage, so a copy it left on
+# the sheet is a stray: triage files the agent row its route names and drops that copy as its twin.
+@test "triage: a keyed row dispatch left on the sheet goes back to the lane its route names: one agent row, the sheet copy dropped (ar-6265)" {
   log_triage_setup
   watch spend TRIP -25200 high
   route 'watch.: spend' alert - 'the spend watch pages on its own'
   printf 'board.md\t9\t%s\t- [ ] %s (agent row ar-77)\n' 'check(watch): spend tripped since 2026-11-01, expected: x' 'check(watch): spend tripped since 2026-11-01, expected: x' > "$BOARD.agent-runtime"
   run "$SUBJECT" triage
   assert_success
-  assert_output --partial 'open on the human sheet, left there'
   # the pass files other causes (the alpha log errors), so only this key's writes are counted
+  run grep -c -- '--agent add check(watch): spend' "$NLOG"
+  assert_output 1
+  run grep -c 'ptask agent-runtime drop check(watch): spend tripped since --why moved to the agent board' "$NLOG"
+  assert_output 1
+  run grep -c 'spend tripped since' "$BOARD"
+  assert_output 1
+  run grep -c 'spend tripped since' "$BOARD.agent-runtime"
+  assert_output 0
+}
+
+@test "triage: a keyed row a person started on the sheet stays theirs: no agent row filed, no sheet drop (ar-6265)" {
+  log_triage_setup
+  watch spend TRIP -25200 high
+  route 'watch.: spend' alert - 'the spend watch pages on its own'
+  printf 'board.md\t9\t%s\t- [/] %s (agent row ar-77)\n' 'check(watch): spend tripped since 2026-11-01, expected: x' 'check(watch): spend tripped since 2026-11-01, expected: x' > "$BOARD.agent-runtime"
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial 'started on the human sheet, left there'
   run grep -c -- '--agent add check(watch): spend' "$NLOG"
   assert_output 0
   run grep -c ' drop check(watch): spend' "$NLOG"
   assert_output 0
   run grep -c 'spend tripped since' "$BOARD.agent-runtime"
   assert_output 1
+}
+
+@test "triage: two passes on one red key leave one open agent row, and the second pass writes no add or drop for it (ar-6265)" {
+  log_triage_setup
+  : > "$BOARD.agent-runtime"   # the human sheet, empty
+  watch spend TRIP -25200 high
+  route 'watch.: spend' alert - 'the spend watch pages on its own'
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c -- '--agent add check(watch): spend' "$NLOG"
+  assert_output 1
+  : > "$NLOG"
+  run "$SUBJECT" triage
+  assert_success
+  run grep -cE -- '(add|drop|reopen) check\(watch\): spend' "$NLOG"
+  assert_output 0
   run grep -c 'spend tripped since' "$BOARD"
+  assert_output 1
+  run grep -c 'spend tripped since' "$BOARD.agent-runtime"
   assert_output 0
 }
 
