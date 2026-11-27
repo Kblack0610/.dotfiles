@@ -96,6 +96,7 @@ REASONS_TSV="$PROMPTS/inbox-triage/rules/priority-reasons.tsv" # the reason list
 
 DRY=0; ONLY=""; BACKLOG=0; PRIORITY=0; SIZE=0; SCORED=0; RETAG=""; REASONS=0; LINK=0; LINKED=0; STANDING=0; NEW_EPICS=0; declare -A NEW_SEEN=(); TAGGED=0; WATCH=0; WAIT=0; SUMMARY=""; FILED=0; KEPT=0; FAILED=0; ROUTED=0; OVER=0
 declare -A WAITERS=()   # row id -> the open rows waiting on it with #after/<id> (backlog_pass fills it)
+declare -A ROW_WAS=()   # row id -> the session line it was filed from, its first `was:` with a #from/ (backlog_pass fills it)
 REWROTE=0; MOVED=0; DROPPED=0; RAISED=0; CLOSED_DONE=0; REPORT=0; IMPROVED=0; CAPPED=0; BUDGET_STOP=0; ANSWERED=0; ASKED=0; VERDICT=keep; VDEST=""; VPRIO=""
 OUT=""; ANSWER_ID=""; DEFERRED='[]'; LINES_DROPPED=0
 FLAG=""; RECORD=""; OUTBOX=""
@@ -561,6 +562,48 @@ own_parent_dup() {
   printf '%s\x1f%s\x1f%s\n' "$dest" "$lane" "$rows"
 }
 
+# from_item <text>: the item a session's line came from (its #from/<item>), lower-cased, or empty.
+from_item() { local re=' #from/([A-Za-z0-9_-]+)'; [[ " $1" =~ $re ]] && printf '%s\n' "${BASH_REMATCH[1],,}" || :; }
+
+# sibling_dup <n> <action> <of> <id> <text> <board> -> the project to file on (may be empty) when
+# the model called line <n> a dup of a sibling: the batch line <of>, or the open row <id> whose own
+# lines (the `was:` lines under it) came from the same #from/ item in other words. One session wrote
+# both as separate lines (a plan phase split into its passes), so the caller files the line as its
+# own row (ar-5824). A `was:` in the same words is the line sent again, a real twin: the dup stands.
+# The writer's twin check reads a sibling the same way (notes-cli `sibling`). Reads route's texts and line_dest.
+sibling_dup() {
+  local n="$1" action="$2" of="$3" id="$4" text="$5" board="$6" item said dest=""
+  [ "$action" = dup ] || return 1
+  item="$(from_item "$text")" said="$(untagged "${text,,}")"
+  [ -n "$item" ] || return 1
+  if [ -n "$of" ]; then
+    [ "$of" -ge 1 ] 2>/dev/null && [ "$of" -le "${#texts[@]}" ] || return 1
+    dest="${line_dest[$of]:-}"
+    [ "$(from_item "${texts[of - 1]}")" = "$item" ] && [ "$(untagged "${texts[of - 1],,}")" != "$said" ] || return 1
+  else
+    id="$(clean 40 <<<"$id")"
+    # shellcheck disable=SC2016 # jq source, not shell
+    dest="$(jq -r --arg id "$id" --arg t "#from/$item" --arg said "$said" 'first(.rows[] | select(.id == $id and .state != "done")
+      | . as $r | [(.details // [])[] | select(startswith("was: ")) | .[5:] | ascii_downcase | split(" ") | select(index($t))]
+      | select(length > 0 and all(map(select(test("^#[a-z]") | not)) | join(" ") != $said)) | "=" + ($r.project // "")) // ""' <<<"$board")"
+    [ -n "$dest" ] || return 1
+    dest="${dest#=}"
+  fi
+  say "line $n and ${of:+line }${of:-$id} are two lines of $item: filed as its own row, not as a dup"
+  printf '%s\n' "$dest"
+}
+
+# dup_filed <own_parent_dup's args> -> dest, lane and rows (as own_parent_dup prints them) when a
+# model dup is filed as a row instead: the line's own parent, or a sibling of its item (the line's
+# own words when the answer has no rows).
+dup_filed() {
+  own_parent_dup "$@" && return
+  local d rows="$9"
+  d="$(sibling_dup "${@:1:6}")" || return 1
+  [ -n "${rows//$'\x1e'/}" ] || rows="$5"
+  printf '%s\x1f%s\x1f%s\n' "${7:-$d}" "$8" "$rows"
+}
+
 # route <lines json> <board json>: the one model call for a sweep's untyped lines, each
 # {from, raw, text, details}, `from` being `outbox` or the project whose inbox holds it.
 route() {
@@ -637,8 +680,8 @@ route() {
       apply_proposal "$action" "$id" "$dest" "$rows" "$why" "$how" "$epics" "$board" && line_dest[$n]="$PROPOSAL_DEST"
       continue
     fi
-    if rw="$(own_parent_dup "$n" "$action" "$of" "$id" "$text" "$board" "$dest" "$lane" "$rows")"; then
-      IFS=$'\x1f' read -r dest lane rows <<<"$rw"; action=file id=''
+    if rw="$(dup_filed "$n" "$action" "$of" "$id" "$text" "$board" "$dest" "$lane" "$rows")"; then
+      IFS=$'\x1f' read -r dest lane rows <<<"$rw"; action=file id='' of=''
     fi
     case "$action" in
       file|dup)
@@ -875,6 +918,14 @@ improve_row() {
   }
 }
 
+# sibling_rows <a> <b>: whether open rows <a> and <b> were filed from two differently worded lines
+# of one #from/ item (ROW_WAS), a plan phase's passes, which are never each other's dup (ar-5824).
+sibling_rows() {
+  local a="${ROW_WAS[$1]-}" b="${ROW_WAS[$2]-}"
+  [ -n "$a" ] && [ -n "$b" ] && [ "$(from_item "$a")" = "$(from_item "$b")" ] \
+    && [ "$(untagged "${a,,}")" != "$(untagged "${b,,}")" ]
+}
+
 # backlog_row <project> <lane> <raw> <own id> <state> <child count> <epics> <lane ids>
 #   <action> <id> <project> <row> <why> <epic> <priority>: one backlog answer applied through ptask.
 # A row in progress is only kept, rewritten or raised, a heading over child rows is never closed,
@@ -927,7 +978,10 @@ backlog_row() {
       ;;
     dup)
       id="$(clean 40 <<<"$id")"
-      if [ -n "$id" ] && [ "$id" != "$own" ] && grep -qxF -- "$id" <<<"$all" &&
+      if [ -n "$own" ] && [ -n "$id" ] && sibling_rows "$own" "$id"; then
+        say "$p ($lane): $own kept: $id is a sibling from $(from_item "${ROW_WAS[$own]}"), not its twin"
+        KEPT=$((KEPT + 1))
+      elif [ -n "$id" ] && [ "$id" != "$own" ] && grep -qxF -- "$id" <<<"$all" &&
         pt "$p" "$lane" --exact drop --dup "$id" -- "$raw"; then
         DROPPED=$((DROPPED + 1)) VERDICT=dup
       else
@@ -1085,6 +1139,9 @@ backlog_pass() {
   local w g
   while read -r w g; do WAITERS[$g]+="${WAITERS[$g]:+ }$w"; done < <(jq -r '.rows[]? | select(.state == "open" and .id != null)
     | .id as $w | (.tags_cased // .tags // [])[] | select(startswith("after/") and length > 6) | "\($w) \(.[6:])"' <<<"$BOARD")
+  # Each row's session line, for a dup between two lines of one item (sibling_rows).
+  while IFS=$'\x1f' read -r w g; do ROW_WAS[$w]="$g"; done < <(jq -r '.rows[]? | select(.id != null and .state != "done")
+    | [.id, first((.details // [])[] | select(startswith("was: ") and test("(^| )#from/"; "i")) | .[5:])] | join("\u001f")' <<<"$BOARD")
   while IFS= read -r p; do
     [ -n "$ONLY" ] && [ "$p" != "$ONLY" ] && continue
     agentctl report --name "$NAME" "item=$p" >/dev/null 2>&1 || true
