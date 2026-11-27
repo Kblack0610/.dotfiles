@@ -1745,6 +1745,29 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
   assert_output 3
 }
 
+@test "PR store: an older OPEN row a store-sync merge put after the MERGED one never wins, and the next sync rewrites the file (ar-5949)" {
+  # NEGATIVE CONTROL: with read_ledger keeping each PR's last line, `prs` reads #7 OPEN; and with no
+  # rewrite, the unchanged page appends nothing, so the file keeps the OPEN line last (dotfiles#3387).
+  mkdir -p "$XDG_STATE_HOME/ci"; echo '{"exporter":{"repos":["o/game"]}}' > "$XDG_STATE_HOME/ci/sync.json"
+  prs_page o/game "$(gh_pr 7 closed 2025-11-06T10:00:00Z feat-x)"
+  run "$SUBJECT" sync-prs o/game
+  assert_success
+  # the union merge appends a peer's rows, read before the merge, after ours
+  gh_pr 7 open null feat-x | jq -c '{forge: "github", repo: "o/game", number, state: "OPEN", updated_at: "2025-11-06T06:30:00Z"}' >> "$PRS/o__game.jsonl"
+  # and an OPEN copy of the MERGED row's own time (Forgejo's CLOSED on a 404 keeps the OPEN row's time)
+  gh_pr 7 open null feat-x | jq -c '{forge: "github", repo: "o/game", number, state: "OPEN", updated_at: "2025-11-06T07:00:00Z"}' >> "$PRS/o__game.jsonl"
+  run "$SUBJECT" prs o/game
+  assert_success
+  assert_equal "$(jq -c 'map([.number, .state])' <<<"$output")" '[[7,"MERGED"]]'
+  run "$SUBJECT" sync-prs o/game
+  assert_success
+  assert_output --partial 'o/game: #7: an older row after the newest (a store-sync merge): rewritten'
+  run jq -sc 'map([.number, .state])' "$PRS/o__game.jsonl"
+  assert_output '[[7,"MERGED"]]'
+  run "$SUBJECT" sync-prs o/game
+  refute_output --partial 'rewritten'
+}
+
 @test "sync-prs --wait waits out a pass that holds the store, and refreshes it once the pass lets go" {
   # NEGATIVE CONTROL: with wait=False here, as agent-land's sync-prs runs, this fails at once with
   # "a pass holds the PR store", and a boot catch-up of fleet-bench review reads a stale store.
