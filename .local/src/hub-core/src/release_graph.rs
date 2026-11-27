@@ -163,6 +163,8 @@ pub struct Pr {
     pub state: String,
     pub title: String,
     pub created_at: Option<String>,
+    /// UTC `YYYY-MM-DDTHH:MM:SSZ`, as schedules-sync writes every time, so it orders as text.
+    pub updated_at: Option<String>,
     pub closed_at: Option<String>,
     pub merged_at: Option<String>,
     pub merge_sha: Option<String>,
@@ -391,7 +393,17 @@ pub fn read_prs(dir: &Path) -> (Vec<Pr>, Vec<String>) {
         for l in text.lines().filter(|l| !l.trim().is_empty()) {
             match serde_json::from_str::<Pr>(l) {
                 Ok(p) if p.number > 0 => {
-                    by.insert((repo_key(&p.repo), p.number), p);
+                    // A PR's row is its newest by updated_at, an equal time keeping the later line
+                    // unless it is OPEN over a closed one (schedules-sync `older`): store-sync's
+                    // union merge can put a peer's older OPEN row after the MERGED one (ar-5949).
+                    let k = (repo_key(&p.repo), p.number);
+                    let older = by.get(&k).is_some_and(|had| {
+                        matches!((&p.updated_at, &had.updated_at), (Some(new), Some(old))
+                            if new < old || new == old && p.state == "OPEN" && had.state != "OPEN")
+                    });
+                    if !older {
+                        by.insert(k, p);
+                    }
                 }
                 _ => bad += 1,
             }
@@ -2517,20 +2529,32 @@ mod tests {
     }
 
     #[test]
-    fn the_store_keeps_one_row_per_pr_the_last_written() {
+    fn the_store_keeps_one_row_per_pr_the_newest_updated() {
+        // #2's OPEN row after its MERGED one is a peer's, put there by store-sync's union merge
+        // (ar-5949): kept as the last line, the merged PR read OPEN.
         let d = std::env::temp_dir().join(format!("hub-prs-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(
             d.join("Acme__app.jsonl"),
-            "{\"repo\":\"Acme/app\",\"number\":1,\"state\":\"OPEN\"}\n{\"repo\":\"Acme/app\",\"number\":1,\"state\":\"MERGED\"}\nnot json\n",
+            [
+                r#"{"repo":"Acme/app","number":1,"state":"OPEN"}"#,
+                r#"{"repo":"Acme/app","number":1,"state":"MERGED"}"#,
+                r#"{"repo":"Acme/app","number":2,"state":"MERGED","updated_at":"2026-11-24T06:31:19Z"}"#,
+                r#"{"repo":"Acme/app","number":2,"state":"OPEN","updated_at":"2026-11-24T06:12:59Z"}"#,
+                r#"{"repo":"Acme/app","number":3,"state":"OPEN","updated_at":"2026-11-24T06:00:00Z"}"#,
+                r#"{"repo":"Acme/app","number":3,"state":"CLOSED","updated_at":"2026-11-24T06:00:00Z"}"#,
+                r#"{"repo":"Acme/app","number":3,"state":"OPEN","updated_at":"2026-11-24T06:00:00Z"}"#,
+                "not json\n",
+            ]
+            .join("\n"),
         )
         .unwrap();
         std::fs::write(d.join("sync.json"), "{}").unwrap();
         let (prs, errors) = read_prs(&d);
         let (_, missing) = read_prs(&d.join("nope"));
         std::fs::remove_dir_all(&d).unwrap();
-        assert_eq!(prs.len(), 1);
-        assert_eq!(prs[0].state, "MERGED");
+        let states: Vec<_> = prs.iter().map(|p| (p.number, p.state.as_str())).collect();
+        assert_eq!(states, [(1, "MERGED"), (2, "MERGED"), (3, "CLOSED")]);
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert!(missing[0].contains("schedules-sync prs writes it"));
     }
