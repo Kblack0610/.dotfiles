@@ -2612,6 +2612,17 @@ the_ask() { find "$HOME/.agent/asks/${1:-demo}" -name '*.md'; }
   assert_line 'status: cancelled'
   assert_line --regexp '^closed_reason: refused at post: a credential for mem0'
   rm -rf "$HOME/.agent/asks/demo"
+  # negative controls: a gate and a resume ask each need the ask, so a held service does not cancel them
+  run "$AGENT_ASK" post --project demo --kind gate 'mint me a MEM0 key for the panel?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  rm -rf "$HOME/.agent/asks/demo"
+  run "$AGENT_ASK" post --project demo --resume 'echo go' 'mint me a MEM0 key for the panel?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  rm -rf "$HOME/.agent/asks/demo"
   # negative controls: a service named only past the first table, a word that only contains a
   # service's name, a service named only in the context, and a missing doc are no match
   for q in 'log in to Steam on the mini?' 'add mem0x to the panel?'; do
@@ -2670,10 +2681,10 @@ the_ask() { find "$HOME/.agent/asks/${1:-demo}" -name '*.md'; }
   export AGENT_ASK_HOLD_CMD="$BATS_TEST_TMPDIR/hold"
   fake_judge "$(SCORE_TYPE=human_physical_action score knowledge)"
   run --separate-stderr "$AGENT_ASK" post --project demo 'plug in the drive?'
-  assert_success
+  assert_failure 2
   local f; f="$(the_ask)"
   local id; id="$(basename "$f" .md)"
-  assert_output "human-$id"
+  assert_output ""
   [[ "$stderr" == *"Filed sheet row sh-9 and hold human-$id"* ]]
   assert_called 'notes ptask demo add'
   assert_called "agent-hold release human-$id"

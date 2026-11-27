@@ -19,7 +19,7 @@
 #                       one only from under the outbound ledger dir, where `mkt draft` puts them
 #     A knowledge ask is routed at post, once the judge names its type (see "KNOWLEDGE ASKS"):
 #     a credential we hold is refused (exit 2, the mint path on stderr), and a physical action
-#     becomes a hold plus a human-sheet row, with no ask (the hold's name on stdout).
+#     becomes a hold plus a human-sheet row, with no ask (exit 2, the hold on stderr).
 #   agent-ask decision <id>             the human's answer on one line: question, answer, its meaning
 #   agent-ask answer-names <id>         each option the human's answer names, one per line; none: free text
 #   agent-ask card <id>                 the ask as the human reads it: question, numbered
@@ -1616,15 +1616,33 @@ told_at_post() {
 # ends leaves the ask an error verdict with <reason>, unless the judge wrote one first. The old
 # verdict goes first, since cmd_judge keeps `judge` until it writes the next one.
 judge_guarded() {
+  rm -f -- "$1.first"
   drop_field "$1" judge judge_reason judged_at
   timeout --kill-after=5 "$AGENT_ASK_JUDGE_TIMEOUT" "${BASH_SOURCE[0]}" judge "$(field "$1" id)" >/dev/null 2>&1 < /dev/null
   case $? in
     124|137)
       # A guard that ends the second human_fact call (cmd_judge) puts the first verdict back.
-      if [ -f "$1.first" ] && [ "$(field "$1" status)" = pending ]; then cat "$1.first" > "$1"; queue_changed
+      if [ -f "$1.first" ] && [ "$(field "$1" status)" = pending ]; then verdict_restore "$1"
       else [ -n "$(field "$1" judge)" ] || judge_record "$1" error "" "$2" ""; fi ;;
   esac
   rm -f -- "$1.first"
+}
+
+# verdict_save <file> / verdict_restore <file>: the ask's verdict keys to and from `<file>.first`,
+# one `key<TAB>value` a line. The restore writes only those keys (set_field locks), never the whole
+# file, so a session that attached to the ask meanwhile keeps its lines.
+VERDICT_KEYS="$VERDICT_FIELDS judge judge_reason judged_at judge_human_said"
+verdict_save() {
+  local k v
+  for k in $VERDICT_KEYS; do v="$(field "$1" "$k")"; [ -z "$v" ] || printf '%s\t%s\n' "$k" "$v"; done > "$1.first"
+}
+verdict_restore() {
+  local k v kv=()
+  while IFS=$'\t' read -r k v; do kv+=("$k" "$v"); done < "$1.first"
+  # shellcheck disable=SC2086 # a word list
+  drop_field "$1" $VERDICT_KEYS
+  [ "${#kv[@]}" -eq 0 ] || set_field "$1" "${kv[@]}"
+  queue_changed
 }
 
 # timed_out_reason [again]: the judge_reason of a call the guard ended, at post or (again) on the
@@ -2027,6 +2045,9 @@ deliver_to_session() {
   return 0
 }
 
+# board_text <text>: text for a board row. Boards are plain ASCII, and a # would read as a tag.
+board_text() { printf '%s' "$1" | tr -cd ' -~' | tr -d '#' | cut -c1-240; }
+
 # file_board_row <ask file> <text>: an answer nobody is left to act on, as one typed, sized agent
 # board row in the ask's project. notes exit 3 (an open twin) and 4 (the outbox took it for
 # inbox-triage) carry it too. Any other exit, or no project to file on, prints why and fails, so
@@ -2037,8 +2058,7 @@ file_board_row() {
   project="$(field "$f" project)"; profile="$(field "$f" profile)"
   [ -n "$project" ] || { echo "it names no project, so no board row carries it"; return 1; }
   board="$(project_lab_names "$project" 2>/dev/null | awk 'NR==1')"
-  # Boards are plain ASCII, and a # in the question would read as a tag.
-  q="$(printf '%s' "$text" | tr -cd ' -~' | tr -d '#' | cut -c1-240)"
+  q="$(board_text "$text")"
   notes ptask ${profile:+--profile "$profile"} "${board:-$project}" --agent add \
     "chore(ask): $q (ask $(field "$f" id)) #size/s" --origin agent-ask >/dev/null 2>&1 || rc=$?
   case "$rc" in 0|3|4) return 0 ;; esac
@@ -2954,7 +2974,7 @@ Return the verdict in the structured output."
   fields+=(judge_level "$level" judge_level_evidence "$(oneline "$lev_ev")" judge_level_raised "$raised" "${ho[@]}")
   settled=$(jq -r .settled_by <<<"$verdict")
   [ -z "$settled" ] || fields+=(judge_settled_by "$(oneline "$settled")")
-  [ -z "$said_in" ] || fields+=(judge_human_said "$(grep -c '^- ' <<<"$said_in") lines")
+  [ -z "$said_in" ] && [ -z "$(field "$f" judge_human_said)" ] || fields+=(judge_human_said "${said_in:+$(grep -c '^- ' <<<"$said_in") lines}")
   judge_record "$f" "$call" "$rule" "$(jq -r .reason <<<"$verdict")" "$cid" "${fields[@]}"
   # A human fact the human may already have told: judged once more with what mem0 and the
   # project's lessons hold on it. The second verdict replaces the first; a second call that fails,
@@ -2963,9 +2983,8 @@ Return the verdict in the structured output."
     local said
     said="$(human_said "$f")"
     [ -n "$said" ] || return 0
-    cp "$f" "$f.first"
-    AGENT_ASK_SAID="$said" cmd_judge "$id" ||
-      { [ "$(field "$f" status)" = pending ] && cat "$f.first" > "$f"; queue_changed; }
+    verdict_save "$f"
+    AGENT_ASK_SAID="$said" cmd_judge "$id" || { [ "$(field "$f" status)" != pending ] || verdict_restore "$f"; }
     rm -f -- "$f.first"
   fi
   return 0
@@ -3042,12 +3061,13 @@ post_settle() {
 }
 
 # route_knowledge <file> <kind> <extra>: route a judged knowledge ask away from the human. Returns
-# 2 (the ask cancelled, the mint path on stderr) for a credential we hold, 0 (the ask cancelled,
-# the hold on stdout) for a physical action, 1 when the ask is not routed. <extra> is non-empty for
+# 2 (the ask cancelled, what was filed or minted on stderr, nothing on stdout, which is an ask id
+# for every other post) for a credential we hold or a physical action, 1 when the ask is not routed. <extra> is non-empty for
 # a blocker ask shared by the sessions it stops, an audit of an answer or a resume run on the
 # answer; with a gate or approval (kind) each needs the ask, so only a plain question is routed.
 route_knowledge() {
   local f="$1" held
+  [ "$2" = question ] && [ -z "$3" ] || return 1
   case "$(field "$f" judge_type)" in
     credential_or_account)
       # The question only: the context of an ask for an outside account often names a
@@ -3058,18 +3078,20 @@ route_knowledge() {
         return 2
       fi ;;
     human_physical_action)
-      if [ "$2" = question ] && [ -z "$3" ] && route_physical "$f"; then return 0; fi ;;
+      if route_physical "$f"; then return 2; fi ;;
   esac
   return 1
 }
 
 # route_physical <file>: a physical action is no decision, so the pending ask becomes a row on the
 # project's human sheet and a resource hold `human-<id>` the waiting work checks (agent-hold check),
-# and is cancelled. Prints the hold on stdout and what was filed on stderr. Fails, filing no hold,
+# and is cancelled. Prints what was filed on stderr, nothing on stdout. Fails, filing no hold,
 # when the sheet row cannot be added (no sheet for the project), and the ask stays the human's.
 route_physical() {
-  local f="$1" id project q hold row rid
-  id="$(field "$f" id)"; project="$(field "$f" project)"; q="$(field "$f" question)"
+  local f="$1" id project profile board q hold row rid
+  id="$(field "$f" id)"; project="$(field "$f" project)"; profile="$(field "$f" profile)"
+  board="$(project_lab_names "$project" 2>/dev/null | awk 'NR==1')"
+  q="$(board_text "$(field "$f" question)")"
   hold="human-$id"
   # The hold first: work waits on it, and a row the human could not tie to a hold would be a
   # second copy of the ask. A row that fails takes the hold back.
@@ -3079,16 +3101,20 @@ route_physical() {
     echo "agent-ask post: a physical action, but hold $hold could not be set; the ask stays with the human" >&2
     return 1
   fi
-  if ! row="$(notes ptask "$project" add "chore($project): $q (agent-ask $id; when done: agent-hold release $hold)" 2>/dev/null)"; then
+  if ! row="$(notes ptask ${profile:+--profile "$profile"} "${board:-$project}" add "chore($project): $q (agent-ask $id; when done: agent-hold release $hold)" 2>/dev/null)"; then
     # shellcheck disable=SC2086 # a word list
     $AGENT_ASK_HOLD_CMD release "$hold" >/dev/null 2>&1 || true
     echo "agent-ask post: a physical action, but no row could be added to the $project sheet; the ask stays with the human" >&2
     return 1
   fi
   rid="$(sed -n '/<!-- id:/{s/.*<!-- id:\([^ ]*\) -->.*/\1/p;q;}' <<<"$row")"
-  close_ask cancelled "$id" "routed at post: a physical action, not a decision: sheet row ${rid:-on $project}, hold $hold" 2>/dev/null
+  if ! close_ask cancelled "$id" "routed at post: a physical action, not a decision: sheet row ${rid:-on $project}, hold $hold" 2>/dev/null; then
+    # shellcheck disable=SC2086 # a word list
+    $AGENT_ASK_HOLD_CMD release "$hold" >/dev/null 2>&1 || true
+    echo "agent-ask post: sheet row ${rid:-on $project} filed, but the ask could not be closed; it stays with the human" >&2
+    return 1
+  fi
   echo "agent-ask post: no ask filed: a physical action is the human's to do, not to decide. Filed sheet row ${rid:-on $project} and hold $hold; work that needs it waits on 'agent-hold check $hold', released when the human has done it." >&2
-  printf '%s\n' "$hold"
 }
 
 # older_asks <file>: the pending asks posted before this one that another can join (settle_by_verdict),
