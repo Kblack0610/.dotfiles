@@ -210,6 +210,7 @@ sources() {
         [[ -z "$reserve" || "$reserve" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "claude-acct: $SRC_CONF: $name: reserve is not a number" >&2; reserve=''; }
         [[ -z "$max_live" || "$max_live" =~ ^[0-9]+$ ]] || { echo "claude-acct: $SRC_CONF: $name: max_live is not a whole number" >&2; max_live=''; }
         [[ -z "$rpd" || "$rpd" =~ ^[1-9][0-9]*$ ]] || { echo "claude-acct: $SRC_CONF: $name: rpd is not a whole number over 0" >&2; rpd=''; }
+        [[ -z "$rpd" || "$kind" == litellm-* ]] || { echo "claude-acct: $SRC_CONF: $name: rpd caps a gateway route, so a $kind source has none" >&2; rpd=''; }
         [[ -z "$run_usd" || "$run_usd" =~ $NUM_RE && ! "$run_usd" =~ ^0*\.?0*$ ]] || { echo "claude-acct: $SRC_CONF: $name: run_usd is not a number over 0" >&2; run_usd=''; }
         IFS=$'\t' read -r max_live basis < <(cap_of "$name" "$max_live" "$rpm" "$run_rpm")
         printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\n' "$name" "$kind" "${ref/#\~/$HOME}" "$reserve" "$max_live" "$parent" "$alert" "$priority" "$run_usd" "$basis" "$rpd"
@@ -544,7 +545,9 @@ route_shed() {
 # read from Prometheus; nothing when it cannot be read, which reads as room and says so on stderr, as
 # route_shed does. room --source refuses a start at <rpd> or more: beam-free 429s past about 2,000
 # requests a UTC day (home-config apps/litellm/README.md), and route_shed sees that only once the
-# upstream already refuses, so starts went in as the quota ran out (ar-5732).
+# upstream already refuses, so starts went in as the quota ran out (ar-5732). increase() extrapolates,
+# and reads nothing in the first scrape or two after midnight (0), so the count is near, not exact:
+# the rpd headroom under the provider's limit covers it.
 route_rpd() {
     local now secs out n
     [[ "$1" != *[\"\\]* ]] || return 0

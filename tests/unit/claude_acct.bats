@@ -2801,7 +2801,7 @@ rpd_reads() { jq -nc --arg n "$1" '{status: "success", data: {resultType: "vecto
   ! grep -q litellm_proxy_total_requests "$SANDBOX/curl.argv"
 }
 
-@test "sources: an rpd that is not a whole number over 0 is named and left out" {
+@test "sources: an rpd that is not a whole number over 0, or on a source that is not a gateway key, is named and left out" {
   src_setup
   printf 'free litellm-key %s/res.key rpd=0\nfree2 litellm-key %s/res.key rpd=1.5\n' "$SRC" "$SRC" >> "$SANDBOX/sources"
   budget sk-res key 5 20
@@ -2811,6 +2811,10 @@ rpd_reads() { jq -nc --arg n "$1" '{status: "success", data: {resultType: "vecto
   assert_success
   [[ "$stderr" == *"free: rpd is not a whole number over 0"* && "$stderr" == *"free2: rpd is not a whole number over 0"* ]] || fail "$stderr"
   [ "$(field free .rpd <<<"$output")" = null ]
+  # rpd caps a gateway route: on a codex source it is named and left out.
+  printf 'codex2 codex %s/codex rpd=10\n' "$SRC" >> "$SANDBOX/sources"
+  run --separate-stderr "$ACCT" status --json
+  [[ "$stderr" == *"codex2: rpd caps a gateway route, so a codex source has none"* ]] || fail "$stderr"
 }
 
 # queue_items <item json>... -- agent-queue answers source_live (--state running) and route_paced
