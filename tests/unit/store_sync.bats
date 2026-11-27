@@ -163,8 +163,8 @@ show() { git -C "$1" show "master:$2"; }
   assert_success
   git -C "$SANDBOX/b" commit -qam "b pass"
   git -C "$SANDBOX/b" fetch -q origin
-  # Negative control: without the lease driver these two copies conflict as text.
-  git -C "$SANDBOX/b" config --unset merge.lease.driver
+  # Negative control: without the lease driver (b has not synced since it joined) these copies conflict as text.
+  git -C "$SANDBOX/b" config --unset-all merge.lease.driver || :
   run git -C "$SANDBOX/b" merge-tree --write-tree --name-only HEAD origin/master
   assert_failure 1
   assert_line 'shepherd/.due'
@@ -1437,5 +1437,7 @@ empty_object() {
   run on a
   assert_success
   run git -C "$SANDBOX/a" ls-files dispatch
-  assert_output 'dispatch/log.md'
+  assert_line 'dispatch/log.md'
+  refute_line 'dispatch/.wake'
+  refute_line 'dispatch/.kick'
 }
