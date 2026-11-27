@@ -2485,6 +2485,19 @@ refused_wait() {
   awk -F'\t' -v p="$2" '$1 == p { h = $2 } END { if (h != "") print h }' "$key.refused"
 }
 
+# base_red_owner <dir> <pr> <all items, jsonl> <the row's item slugs, comma list|-> -> the slug of an item that is not done, is not
+# one of the row's own, and records PR #<pr> of <dir>'s repo in its pr: or open_pr: list (owner/repo#N, forge names case-blind),
+# else nothing. That is how an item that fixes a red base claims the PRs the red holds (fix-ci step 3): the PR is red only until
+# that item lands, so its session waits on the item and is not STALLED CI red. Why: platform#1493 sat red behind develop's
+# Android E2E red while fix-ci-android-mobile-e2e-red-on-develop worked it, and its session was nudged once per head (ar-1513).
+base_red_owner() {
+  local repo
+  [[ "$2" =~ ^[0-9]+$ ]] && repo="$(origin_repo "$1" 2>/dev/null)" && [ -n "$repo" ] || return 0
+  jq -rn --arg ref "${repo,,}#$2" --arg own ",${4:--}," 'first(inputs
+    | select(.state != "done" and (.slug as $s | $own | contains("," + $s + ",") | not))
+    | select([.pr, .open_pr] | map(. // "" | tostring | ascii_downcase | split(" ")[]) | any(. == $ref)) | .slug) // empty' <<<"$3" 2>/dev/null
+}
+
 # validate_hold <all items, jsonl> <the row's item slugs, comma list> <PR head oid> <clone|-> -> what agent-land's validate_gate
 # would say of this head: "failed <validate slug>" when an item's validate item (its `validate:`) records a fail verdict that
 # covers it, "<validate slug>, a second agent's review" while that item is live on it (queued, running, waiting or review,
@@ -2515,13 +2528,14 @@ head_covers() {
     [ "$(git -C "$1" rev-list --count --no-merges "$2" "^$3" "^$(default_base "$1")" 2>/dev/null)" = 0 ]
 }
 
-# pr_wait <git> <pr state> <sibling repo> <clone> <ci> <pr> <head oid> <chain> [<all items> <item slugs>] -> two lines: the landing-slot wait, then
+# pr_wait <git> <pr state> <sibling repo> <clone> <ci> <pr> <head oid> <chain> [<all items> <item slugs> <base health>] -> two lines: the landing-slot wait, then
 # the wait the bucket reads (empty when none). A PR of this clone's repo riding an open landing train waits on that
 # train's gate, one queued for the landing slot waits its turn, and one the slot holder refused waits on that holder
 # (slot_refuser), unless its own Checks are red past the slot's refusal (git_facts left ci FAIL). A green or unknown-CI PR whose item is `after:` an item that is not done (<chain>,
 # chain_hold) waits on it, not STALLED green, not merged (ar-4420); its red gate line is open_pr_ci's. Past those, a green
 # or unknown-CI PR carries its item's validate verdict (validate_hold): a live validate item on its head is a wait, and a
-# fail on its head is "failed <slug>", never landable (ar-5286).
+# fail on its head is "failed <slug>", never landable (ar-5286). A red PR whose base reads RED (main_health) and that another
+# live item claims (base_red_owner) waits on that item (ar-1513).
 pr_wait() {
   local g="$1" state="$2" xr="$3" gd="$4" ci="$5" pr="$6" oid="$7" chain="$8" tn="" land="" w h
   [ "$g" = 1 ] && [ "$state" = OPEN ] && [ "$xr" = - ] || { printf '\n\n'; return 0; }
@@ -2534,6 +2548,8 @@ pr_wait() {
   w="$land"
   if [ -z "$w" ]; then case "$ci" in FAIL | PENDING | NOSTART) ;; *)
     if [ -n "$chain" ]; then w="after: $chain"; else w="$(validate_hold "${9:-}" "${10:--}" "$oid" "$gd")"; fi ;; esac; fi
+  if [ -z "$w" ] && [ "$ci" = FAIL ] && [ "${11:--}" = RED ] && [ "$gd" != - ] && h="$(base_red_owner "$gd" "$pr" "${9:-}" "${10:--}")" &&
+    [ -n "$h" ]; then w="base red, owned by $h"; fi
   printf '%s\n%s\n' "$land" "$w"
 }
 
@@ -2894,7 +2910,7 @@ collect() {
     act="$(activity_line "${status:--}" "$ojob" "$doing" "$act_dir" "$branch" "$act_sha" "$now")"
     # What an open PR waits on (pr_wait); only a landing-slot wait carries the slot's wait, depth and critical path.
     local wait_on="" land_wait=""
-    { IFS= read -r land_wait; IFS= read -r wait_on; } < <(pr_wait "$g" "$state" "$xr" "$gd" "$ci" "$pr" "$oid" "$chain" "$qall" "$islugs")
+    { IFS= read -r land_wait; IFS= read -r wait_on; } < <(pr_wait "$g" "$state" "$xr" "$gd" "$ci" "$pr" "$oid" "$chain" "$qall" "$islugs" "$mh")
     # A session waiting its landing turn carries how long its gate has waited and how deep its repo's
     # landing queue is, so the shepherd names a multi-hour wait on its own line (ar-2525).
     local qwait=- qdepth=- qrepo=- qpr=-
