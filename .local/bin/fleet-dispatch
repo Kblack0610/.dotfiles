@@ -689,6 +689,26 @@ gate_wait() {
   printf '%s' "$out"
 }
 
+# gates_reread <row hashtag>... -- the pass's gates (load_gates), and read again when the row's fresh line carries a gate
+# that read did not see, a return's #at/ (ar-5954: promote dropped it and the item started past the gate). agent-queue
+# says which unseen tags are gates (state none for the rest); one is enough to re-read every gate, as the pass made it.
+# Returns 1 with GATE_ERR when a gate cannot be read, so the row does not start.
+gates_reread() {
+  local g gout grc=0
+  local -a unseen=()
+  load_gates
+  GATE_ERR=$GATES_FAILED
+  [ -z "$GATE_ERR" ] || return 1
+  for g in "$@"; do [[ "$g" == desk/?* || -n "${GATE_ST[$g]+x}" ]] || unseen+=("$g"); done
+  [ "${#unseen[@]}" -gt 0 ] || return 0
+  gout=$(agent-queue gate --json "${unseen[@]}" 2>/dev/null) || grc=$?
+  { [ "$grc" = 0 ] || [ "$grc" = 3 ]; } || { GATE_ERR="agent-queue gate exit $grc on ${unseen[*]}"; return 1; }
+  jq -e 'select(.state != "none")' <<<"$gout" >/dev/null || return 0
+  GATES_LOADED=''; load_gates
+  GATE_ERR=$GATES_FAILED
+  [ -z "$GATE_ERR" ]
+}
+
 # load_extras -- fill the caller's `local -A DET PLN PAR RNK RLD GAT` from one board read, by "<project>\t<lane>\t<id>":
 # DET the row's "<planned 0|1>\t<details json>", PLN 1 when the row is tagged #plan, RNK its feed `rank`
 # (RANK_JQ's `frank`), RLD its feed `release_due` (the project's Target: day the rank read, RANK_JQ's why), GAT its gate tags (load_gates); PAR by id alone (a child may sit on another
@@ -9549,31 +9569,16 @@ take_epic() {
 # queued their hashtags come off the row.
 promote() {
   local c="$1" tags="$2" task="$3" repeat="${4-}" qmode="${5-}" prof project lane key area line out id slug flag=() rc=0
-  local g q gwait gates=() unseen=() rm=() stacks=''
+  local g q gwait gates=() rm=() stacks=''
   prof=$(jq -r .profile <<<"$c"); project=$(jq -r .project <<<"$c"); lane=$(jq -r .lane <<<"$c")
   key=$(jq -r .key <<<"$c"); area=$(jq -r '.area // empty' <<<"$c")
   [ "$lane" = agent ] && flag=(--agent)
   line=$(row_line "$prof" "$project" "$lane" "$key")
   [ -n "$line" ] || { say "skip $project: $key is not on the $lane board"; return 1; }
   [[ "$line" == '- [ ]'* ]] || { say "skip $project: row no longer open: $key"; return 1; }
-  load_gates
-  [ -z "$GATES_FAILED" ] || { say "skip $project: $GATES_FAILED, so its gates cannot be read: $key"; return 1; }
   local -a htags=()
   mapfile -t htags < <(grep -oE '(^|[[:space:]])#[A-Za-z0-9_./-]+' <<<"${line%%<!--*}" | sed 's/^[[:space:]]*#//')
-  # A gate the row gained after the pass read its gates (load_gates), a return's #at/, is read now: the line
-  # above is fresher than GATE_ST, and a gate no one reads is a gate the item starts past (ar-5954: #at/ lost
-  # on a fill). agent-queue says which unseen tags are gates (state none for the rest); then one coherent
-  # read of every gate, as the pass made it.
-  for g in "${htags[@]}"; do [[ "$g" == desk/?* || -n "${GATE_ST[$g]+x}" ]] || unseen+=("$g"); done
-  if [ "${#unseen[@]}" -gt 0 ]; then
-    local gout grc=0
-    gout=$(agent-queue gate --json "${unseen[@]}" 2>/dev/null) || grc=$?
-    { [ "$grc" = 0 ] || [ "$grc" = 3 ]; } || { say "skip $project: its gates (${unseen[*]}) could not be read (agent-queue gate exit $grc): $key"; return 1; }
-    if jq -e 'select(.state != "none")' <<<"$gout" >/dev/null; then
-      GATES_LOADED=''; load_gates
-      [ -z "$GATES_FAILED" ] || { say "skip $project: $GATES_FAILED, so its gates cannot be read: $key"; return 1; }
-    fi
-  fi
+  gates_reread "${htags[@]}" || { say "skip $project: $GATE_ERR, so its gates cannot be read: $key"; return 1; }
   for g in "${htags[@]}"; do
     # A returned hold:'s desk class rides as #desk/<class> (agent-queue pending_gates): back on the item, off the row.
     case "$g" in desk/?*) tags="${tags:+$tags }desk:${g#desk/}" rm+=(--remove "$g"); continue ;; esac
