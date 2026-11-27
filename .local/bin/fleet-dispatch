@@ -7723,7 +7723,7 @@ start_item() {
     [ "$keep" = 0 ] || FLOOR_HELD=1
     settle WORKED "started queue item $slug${PLACE_HOST:+ on $PLACE_HOST}$floor${PICK_NOTE:-}"
   elif [ "$(item_state "$slug")" != queued ]; then
-    say "queue item $slug was started or closed by another start"; return 4
+    say "queue item $slug was started by another start"; return 4
   else
     settle FAILED "could not start queue item $slug (exit $rc): ${START_CAUSE:-cmd_start said nothing on stderr}"; return 1
   fi
