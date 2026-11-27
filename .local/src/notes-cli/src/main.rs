@@ -2205,15 +2205,8 @@ fn main() -> Result<()> {
                 lab_refresh::kick();
                 std::process::exit(0);
             }
-            // `notes projects <name> --json`: the project page (the knowledge space).
-            if let (true, false, None, None, Some(n)) =
-                (json, stats, &roadmap, &sprints, name.as_deref())
-            {
-                project_space::print(&prof, n)?;
-                std::process::exit(0);
-            }
             if json && !stats && roadmap.is_none() && sprints.is_none() {
-                anyhow::bail!("--json goes with --stats, --roadmap, --sprints, or a project name");
+                return project_space::print_or_bail(&prof, name.as_deref());
             }
             if projects::print_view(&prof, stats, sprints.as_deref(), version.as_deref(), json)? {
                 std::process::exit(0);

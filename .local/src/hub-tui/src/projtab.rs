@@ -2891,8 +2891,7 @@ pub(crate) mod tests {
         let t = lines(&l);
         assert!(t.iter().all(|s| crate::fit::len(s) <= 80), "{t:#?}");
         let s = t.iter().position(|s| s.starts_with("[Overview]")).unwrap();
-        // Eight tabs fit one line and Departments, the last, starts the next; its nine chips sit
-        // on their own strip beneath it, which is not drawn until Departments is open.
+        // Departments, the last tab, starts the second line; its chips show only when it is open.
         assert_eq!(
             t[s],
             "[Overview] Sprint  Rows  Deliverables  Releases  Stage  Activity  Knowledge "

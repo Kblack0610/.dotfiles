@@ -336,7 +336,14 @@ fn lab_part(dir: &Path) -> Value {
 
 /// `notes projects <name> --json`: the whole page, one object. Fails only for a name no
 /// lab project resolves; every other source that is absent is `null` or an empty list.
-pub fn print(p: &Profile, name: &str) -> Result<()> {
+pub fn print_or_bail(p: &Profile, name: Option<&str>) -> Result<()> {
+    match name {
+        Some(n) => print(p, n),
+        None => bail!("--json goes with --stats, --roadmap, --sprints, or a project name"),
+    }
+}
+
+fn print(p: &Profile, name: &str) -> Result<()> {
     let dir = projects::project_dir(p, name)?;
     let canonical = project_map::canonical(name.trim());
     let org = projects::project_org(p, name).unwrap_or_else(|| p.name.clone());

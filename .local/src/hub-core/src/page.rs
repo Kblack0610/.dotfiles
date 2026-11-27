@@ -708,12 +708,17 @@ pub fn read_with(
     {
         p.systems_says += &format!(" ({n} rows with no epic)");
     }
-    p.shipped_says = match p.shipped.len() {
+    p.shipped_says = shipped_says(p.shipped.len());
+    p
+}
+
+/// The Activity tab's count of shipped versions in words.
+fn shipped_says(n: usize) -> String {
+    match n {
         0 => "none yet".into(),
         1 => "1 version".into(),
         n => format!("{n} versions"),
-    };
-    p
+    }
 }
 
 /// The page for a name alone, as `hub projects --page` and agent-web read it: its stage from
