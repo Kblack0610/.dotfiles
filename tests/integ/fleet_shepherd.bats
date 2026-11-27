@@ -1874,16 +1874,21 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   grep -qxF 'export MAX_CALLS_HOUR=8' "$FLEET_SHEPHERD_DIR/.pass.sh"
 }
 
-@test "the pass launcher carries the runner's ssh agent, so a pass reaches a fleet worker whatever the hub session's environment holds" {
+@test "the pass launcher carries the runner's live ssh agent, so a pass reaches a fleet worker whatever the hub session's environment holds" {
   doc "[$(row a STALLED false false)]"
-  SSH_AUTH_SOCK=/run/user/1000/ssh-agent.socket run "$SH" run
+  local sock="$BATS_TEST_TMPDIR/agent.sock"
+  python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$sock"
+  SSH_AUTH_SOCK="$sock" run "$SH" run
   assert_success
-  grep -qxF 'export SSH_AUTH_SOCK=/run/user/1000/ssh-agent.socket' "$FLEET_SHEPHERD_DIR/.pass.sh"
-  # negative control: a runner with no agent writes no empty export over the pane's own
-  rm -f "$FLEET_SHEPHERD_DIR/.pass.sh" "$FLEET_SHEPHERD_DIR/.pass"
-  env -u SSH_AUTH_SOCK "$SH" run
-  [ -f "$FLEET_SHEPHERD_DIR/.pass.sh" ]
-  ! grep -q 'SSH_AUTH_SOCK' "$FLEET_SHEPHERD_DIR/.pass.sh"
+  grep -qxF "export SSH_AUTH_SOCK=$(printf %q "$sock")" "$FLEET_SHEPHERD_DIR/.pass.sh"
+  # negative controls: no agent, or a dead one, writes no export over the pane's own
+  local dead
+  for dead in "" "$BATS_TEST_TMPDIR/gone.sock"; do
+    rm -f "$FLEET_SHEPHERD_DIR/.pass.sh" "$FLEET_SHEPHERD_DIR/.pass"
+    SSH_AUTH_SOCK="$dead" "$SH" run
+    [ -f "$FLEET_SHEPHERD_DIR/.pass.sh" ]
+    ! grep -q 'SSH_AUTH_SOCK' "$FLEET_SHEPHERD_DIR/.pass.sh" || fail "a ${dead:-missing} agent was exported"
+  done
 }
 
 @test "a pass starts on the account claude-acct room names; with none it starts on the best one and pages once, at normal, naming it" {
