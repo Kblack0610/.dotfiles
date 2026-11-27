@@ -229,6 +229,22 @@ load 'agent_land/common'
   assert_output 0
 }
 
+@test "the base keeps changing the head's files past CATCHUP_OVERLAP_WAITS runs: exits 3, never merged, never behind it" {
+  printf '0\n1\n3\n3\n3\n' >"$NOTES_FIXTURE/behind.seq"
+  printf '%s\n' .local/bin/agent-land >"$NOTES_FIXTURE/base.files"
+  printf '%s\n' .local/bin/agent-land >"$NOTES_FIXTURE/head.files"
+  run "$LAND" 42 --item ship
+  assert_failure 3
+  assert_output --partial 'agent-land: origin/main moved on by 3 after 3 checks runs, and it changes files the head changes (.local/bin/agent-land): merge it, push and re-run once it settles'
+  refute_output --partial 'landing that green head behind it'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 3
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 4
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
 @test "the base moves on again by files the head does not change: the green head still lands behind it" {
   printf '0\n1\n3\n' >"$NOTES_FIXTURE/behind.seq"
   printf '%s\n' README.md >"$NOTES_FIXTURE/base.files"
@@ -288,6 +304,17 @@ EOS
   refute_output --partial 'none of it can affect'
   run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
   assert_output 1
+}
+
+@test "main's new files pick no test the head's run picked, but change a file the head changes: merged up and re-run, not landed behind" {
+  pick_fixture
+  printf '%s\n' unit/b.bats >"$PICKDIR/theirs.unit"
+  printf '%s\n' docs/x.md >"$NOTES_FIXTURE/base.files"
+  printf '%s\n' docs/x.md >"$NOTES_FIXTURE/head.files"
+  run "$LAND" 42 --item ship
+  assert_line 'fetch: origin/main moved on by 1 and none of it can affect a test the head'"'"'s own run picked, but it changes files the head changes (docs/x.md); merging it up and re-checking'
+  refute_output --partial 'landing that green head behind it'
+  moved_again 1 2
 }
 
 @test "main's new files pick only the broad set, which every head runs: they do not count as shared" {

@@ -615,19 +615,19 @@ moved_misses_pick() {
   [ -z "$theirs" ] || ! grep -qxFf <(printf '%s\n' "$theirs") <<<"$mine" || return 1
 }
 
-# base_touches_head prints the files both what <base> gained since the head last had it (HEAD...<base>)
-# and the head's own changes since then touch, one line joined by ", ", and fails when there are none.
-# A diff git cannot read counts as shared, the side that re-checks instead of landing behind.
+# base_touches_head says which files both what <base> gained since the head last had it (HEAD...<base>)
+# and the head's own changes since then touch ("it changes files the head changes (a, b)"), and fails
+# when there are none. A diff git cannot read counts as shared, the side that re-checks instead of landing behind.
 base_touches_head() {
   local mb moved own shared
   if ! mb=$(git merge-base HEAD "$remote/$base" 2>/dev/null) ||
     ! moved=$(git diff --name-only --no-renames "HEAD...$remote/$base" 2>/dev/null) ||
     ! own=$(git diff --name-only --no-renames "$mb" HEAD 2>/dev/null); then
-    echo 'a diff git could not read'
+    echo "git could not diff it against the head's own changes"
     return 0
   fi
   shared=$(grep -xFf <(printf '%s\n' "$own") <<<"$moved" | grep .) || return 1
-  paste -sd, - <<<"$shared" | sed 's/,/, /g'
+  echo "it changes files the head changes ($(paste -sd, - <<<"$shared" | sed 's/,/, /g'))"
 }
 
 # catch_up: a base the head is behind is merged in and pushed, before the gate and again after it if
@@ -645,10 +645,12 @@ base_touches_head() {
 # lands behind a base whose new commits change a file the head changes (base_touches_head): that base is
 # merged up and re-checked like a strict one, since the head's green run never saw the other side's edit
 # to its own files (dotfiles #2962 landed 25s after #2963, both on agent-land and agent_land.bats, and
-# main went red until #2965). That loop ends once one checks run passes with no new overlapping merge. A strict base has no bound, since it refuses a head
+# main went red until #2965). A clean merge of the same file is no proof, which is why the test is by file.
+# That loop is bounded: past CATCHUP_OVERLAP_WAITS checks runs, a base that still changes the head's files
+# exits 3 instead of landing behind it, so a hot file cannot hold the session forever. A strict base has no bound, since it refuses a head
 # that is behind (2026-11-05: unity-core-playground #1837 was refused twice). A conflict is aborted
 # and exits 3.
-CATCHUP_WAITS=1
+CATCHUP_WAITS=1 CATCHUP_OVERLAP_WAITS=3
 catch_up() {
   local out behind
   out=$(git fetch -q "$remote" 2>&1) || fail fetch "$(lastline "$out")"
@@ -672,7 +674,12 @@ catch_up() {
       echo "fetch: $remote/$base moved on by $behind $why; landing that green head behind it (no strict checks on $base)"
       return 0
     fi
-    echo "fetch: $remote/$base moved on by $behind $why, but it changes files the head changes ($shared); merging it up and re-checking"
+    if [ "${2:-0}" -ge "$CATCHUP_OVERLAP_WAITS" ]; then
+      printf 'agent-land: %s/%s moved on by %s after %s checks runs, and %s: merge it, push and re-run once it settles\n' "$remote" "$base" "$behind" "$2" "$shared" >&2
+      land_failed behind "behind $remote/$base by $behind after $2 checks runs, and $shared"
+      exit 3
+    fi
+    echo "fetch: $remote/$base moved on by $behind $why, but $shared; merging it up and re-checking"
   fi
   # Before the merge, so a refusal leaves the checkout as it was. A fork head is not origin's branch.
   [ "$cross" != true ] || fail push "the PR head is on a fork: git push HEAD to that fork's $head_ref, then re-run"
