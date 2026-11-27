@@ -114,6 +114,8 @@ eval_collect() {
     jq -Rsc --arg a "$AGENTS" '[split("\n")[] | select(length > 0) | split("\t")] as $l
       | [$a | split(" ")[] | . as $x | {($x): [$l[] | select(.[0] == $x) | .[1]]}] | add // {}' > "$d/shas"
   wait
+  # An unread prompt set would score every lane as running none, quietly wrong: fail instead.
+  [ -s "$d/shas" ] || { say "could not read the lane prompts"; return 1; }
   for f in asks calls verdicts queue ingest; do [ -s "$d/$f" ] || echo '[]' > "$d/$f"; done
   answer_picks "$(jq -c '.[]' "$d/asks")" > "$d/picks"
 }
@@ -138,8 +140,7 @@ eval_jq() {
 eval_json() {
   local tmp rc=0
   tmp="$(mktemp -d)" || return 1
-  eval_collect "$tmp"
-  eval_jq "$tmp" "$1" "$2" "$3" 'report($days)' || rc=$?
+  eval_collect "$tmp" && eval_jq "$tmp" "$1" "$2" "$3" 'report($days)' || rc=$?
   rm -rf "$tmp"
   return "$rc"
 }
@@ -467,8 +468,8 @@ report() {
 kpi_json() {
   local tmp rc=0
   tmp="$(mktemp -d)" || return 1
-  eval_collect "$tmp"
-  VERDICTS=0 eval_jq "$tmp" "$AGENTS" 1 "" "$JQ_KPI" --argjson min "$KPI_LABELS" --argjson need "$AGENT_ASK_LIVE_BAR" || rc=$?
+  # -c: one line, as fleet-bench and comms-lint kpi print theirs.
+  eval_collect "$tmp" && VERDICTS=0 eval_jq "$tmp" "$AGENTS" 1 "" "$JQ_KPI" -c --argjson min "$KPI_LABELS" --argjson need "$AGENT_ASK_LIVE_BAR" || rc=$?
   rm -rf "$tmp"
   return "$rc"
 }
