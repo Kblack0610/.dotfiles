@@ -1151,6 +1151,40 @@ LOG
   [ -f "$FLEET_DISPATCH_DIR/panes/hub.lost.json" ] || fail "a dry run consumed the record"
 }
 
+# 2026-11-19: a walk inside session-snapshot-up.service reopened 12 of 23 before its 600s start timeout
+# killed up with dispatch held and agentctl paused (ar-3601). --defer walks nothing in its caller.
+@test "restore --defer hands the walk to fleet-restore.service, owes it, and reopens nothing itself" {
+  restore_setup
+  local i
+  for ((i = 1; i <= 23; i++)); do lost_pane "w$i" "$SANDBOX/repos/game" "conv-$i"; done
+  stub systemctl 'echo "systemctl $*" >> "$NOTES_FIXTURE/calls.log"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore --defer
+  assert_success
+  assert_output --partial 'restore: handed 23 conversation(s) on 1 lost record(s) to fleet-restore.service'
+  assert_called 'systemctl --user start --no-block fleet-restore.service'
+  assert_not_called '--resume'
+  assert_not_called 'tmx ensure'
+  assert_equal "$(cat "$FLEET_DISPATCH_DIR/panes/.restore-owed")" 23
+  [ -f "$FLEET_DISPATCH_DIR/panes/hub.lost.json" ] || fail "a handed-over walk consumed the record"
+  # A unit that will not start is said, and owed still, so a hand restore finishes it.
+  stub systemctl 'exit 1'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore --defer
+  assert_failure 1
+  assert_output --partial 'could not start fleet-restore.service; 23 conversation(s) still wait'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore --defer --server hub
+  assert_failure 2
+}
+
+@test "restore --defer with no lost record starts no walk" {
+  restore_setup
+  stub systemctl 'echo "systemctl $*" >> "$NOTES_FIXTURE/calls.log"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore --defer
+  assert_success
+  assert_output --partial 'restore: no lost server on record'
+  assert_not_called 'fleet-restore'
+  [ ! -e "$FLEET_DISPATCH_DIR/panes/.restore-owed" ] || fail "nothing lost, yet a walk is owed"
+}
+
 @test "record on the lease holder runs on every other worker with --here, says nothing of one that does not answer, and fails on one that fails" {
   record_setup
   world '10 1000' "$PANE1"
