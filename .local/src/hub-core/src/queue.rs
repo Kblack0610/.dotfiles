@@ -357,9 +357,17 @@ impl Item {
             .filter(|s| !s.is_empty())
     }
 
-    /// The Claude session it ran in last: the one whose end left it waiting.
+    /// The Claude session it ran in last: the one whose end left it waiting. A trainee run
+    /// appends its opencode session (`ses_...`) to `sessions` too, and that is no asker, so it
+    /// is skipped: an ask filed by the Claude session before it still finds the item.
     pub fn last_session(&self) -> Option<&str> {
-        self.session_ids().last()
+        self.session_ids().filter(|s| !s.starts_with("ses_")).last()
+    }
+
+    /// Whether it was started as a trainee run (its `trainee:` header, harness:model): a free
+    /// model's try, which the fleet answers and the human never waits on.
+    pub fn is_trainee(&self) -> bool {
+        self.extra_str("trainee").is_some()
     }
 
     /// Whether it is held on ask `id` (an `ask:<id>` or `ask:<id>=<options>` tag, agent-queue's hold).
