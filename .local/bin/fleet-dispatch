@@ -5362,7 +5362,10 @@ close_row() {
 # and record `failed` with the item and its end reason, so the row is judged again, or held and asked
 # about at DISPATCH_FIX_TRIES failures (in_force, ask_failed_rows). A run that ended for a cause outside the model (unrated_end: a usage limit, a provider
 # fault, a refusal, a cut) records nothing: nothing about the row failed, so it stays a candidate,
-# and a hold earlier real failures left stands. Idempotent: a row no longer started is left alone, and
+# and a hold earlier real failures left stands. So does a run that ended `returned` (agent-queue
+# return, a session's own hand-back, never the model's miss; it is not in UNRATED_ENDS, which --end
+# and set accept): two of them asked "start again after 2 failed runs?" about ar-2488 and each
+# answered retry started another session (ar-5955). Idempotent: a row no longer started is left alone, and
 # so is a row a newer item names (row_newer_item).
 settle_row() {
   local it row prof project lane key flag=()
@@ -5376,7 +5379,7 @@ settle_row() {
   ! row_newer_item "$it" || return 0
   np "$prof" ptask "$project" "${flag[@]}" unstart "$key" >/dev/null 2>&1
   local end; end=$(jq -r '.end_reason // ""' <<<"$it")
-  unrated_end "$end" ||
+  unrated_end "$end" || [ "$end" = returned ] ||
     jq -cn --arg p "$project" --arg l "$lane" --arg k "$key" --arg at "$(date -Iseconds)" --arg st "$(jq -r .status <<<"$it")" \
       --arg s "$1" --arg e "$end" \
       '{project: $p, lane: $l, key: $k, verdict: "failed", reason: "queue item \($s) ended \($st)\(if $e != "" then ", \($e)" else "" end)", at: $at}' >> "$VERDICTS"
