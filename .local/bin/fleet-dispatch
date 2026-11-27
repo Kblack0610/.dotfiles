@@ -8185,13 +8185,13 @@ cmd_stats() {
   aq=$(agent-queue stats --json --since "$(date -d yesterday +%F)" 2>/dev/null) && jq -e .active <<<"$aq" >/dev/null 2>&1 || aq=null
   board=$(notes board --json 2>/dev/null | jq -c 'select(.totals.open != null)
     | def day: strptime("%Y-%m-%d") | mktime;
-      (.today | day) as $today
+      (try (.today | day) catch null) as $today
       | {board_agent: .totals.agent, board_backlog: .totals.backlog}
       + (if (.sprints | type) == "array" then
-          {sprints: [.sprints[] | select(.queued | not) | . as $s
+          {sprints: [.sprints[] | select(.queued != true) | . as $s
             | {project: $s.project, version: $s.version, size: $s.committed, rows_in: ($s.uncommitted | length),
                rows_out: $s.done, opened: $s.opened, due: $s.due,
-               days_left: (if $s.due == null then null else (($s.due | day) - $today) / 86400 end)}]}
+               days_left: (try (if $s.due == null then null else (($s.due | day) - $today) / 86400 end) catch null)}]}
          else {} end)' 2>/dev/null)
   load_focus
   read -r held_since _ < <(held_state)

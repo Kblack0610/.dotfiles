@@ -1034,6 +1034,11 @@ J
   run cmd_stats
   assert_success
   assert_equal "$(jq -c '.sprints' <<<"$output")" '[{"project":"game","version":"v1","size":5,"rows_in":1,"rows_out":2,"opened":"2026-11-25","due":"2026-11-30","days_left":3},{"project":"ops","version":"v3","size":1,"rows_in":0,"rows_out":1,"opened":"2026-11-20","due":null,"days_left":null}]'
+  # No `today`, or a due day that is not a plain date, costs only that sprint's days_left: the totals stay.
+  notes() { echo '{"totals":{"open":4,"agent":2,"backlog":3},"sprints":[{"project":"game","version":"v1","committed":5,"done":2,"due":"2026-11-30T10:00","opened":"2026-11-25","queued":false,"uncommitted":[],"tasks":[]}]}'; }
+  run cmd_stats
+  assert_success
+  assert_equal "$(jq -c '[.board_agent, .sprints[0].size, .sprints[0].days_left]' <<<"$output")" '[2,5,null]'
   # A board without sprints, or one that fails, leaves the key out: a reader shows -, never 0.
   notes() { echo '{"today":"2026-11-27","totals":{"open":4,"agent":2,"backlog":3}}'; }
   run cmd_stats
