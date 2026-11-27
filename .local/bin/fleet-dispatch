@@ -31,7 +31,7 @@
 #   fleet-dispatch item-tier SLUG    the queue item's tier (item_tier): agent-land gates a tier-3 one
 #   fleet-dispatch trainee-pool [--json]  the board rows a trainee takes, how many each refusal turns away, and the floor open or shut
 #   fleet-dispatch trainee-review SLUG  a trainee run's tail, in its worktree: its diff to a patch that waits for a batch review
-#   fleet-dispatch trainee-reject SLUG [--cause C] --why TEXT  send a trainee's row back to the normal queue, on claude
+#   fleet-dispatch trainee-reject SLUG [--cause C | --end E] --why TEXT  send a trainee's row back to the normal queue, on claude
 #   fleet-dispatch validate SLUG --pr OWNER/REPO#N --head SHA --why TEXT  queue a second agent's review of an item's critical PR (agent-land)
 #   fleet-dispatch rollup [--dry]  each cause of a run that did not land (a trainee reject, a failed or no-PR item, a model-lane demote or retire) seen DISPATCH_ROLLUP_MIN times in DISPATCH_ROLLUP_DAYS: one fix row on the board, joined night to night by its cause (nightly-measure runs it)
 #   fleet-dispatch direct-land SLUG [--rc N]  a direct run's tail, in its worktree: a clean run's diff committed, a PR opened and landed on CI
@@ -49,6 +49,7 @@
 #   fleet-dispatch item-end H SID...   why the H run that claimed those ids ended, from this machine's record (a dispatcher asks the worker it ran on)
 #   fleet-dispatch backfill-end [DAYS]   give every item that closed failed in the last DAYS (30) with no end_reason the one its harness's record says
 #   fleet-dispatch record-end SLUG H SID...   item-end, written to the item's end_reason: the canary tail's one classification, which canary score reads
+#   fleet-dispatch canary-close SLUG     the canary tail's close: the item done ok, or queued again once when its run ended outside the model (timeout, provider)
 #   fleet-dispatch run-log H SID...   the lines of this machine's H opencode log that the run claiming those ids wrote (canary score keeps them beside its log)
 #   (run, kick, reap, start, fill, promote, pull-after and exits do nothing on a machine that does not hold the fleet lease: lease_guard)
 #   fleet-dispatch record [--here]   keep each world's pane record, then (on the lease holder) each fleet worker's, and take their queue-item events into this chain record (worker_records); page when a world's server died
@@ -131,7 +132,7 @@ dispatch_conf_load() {
 # mechanism, and a worker carries no private overlay, so they load no conf. One that read a tuning key
 # would still stop loud: an unbound variable under set -u.
 case "$([ "${BASH_SOURCE[0]}" = "$0" ] && echo "${1:-} ${2:-}")" in
-  "kit "* | "harness-ready "* | "lane-sandbox "* | "harness-prep "* | "trainee-patch "* | "item-end "* | "record-end "* | "run-log "* | "record --here" | "restore --here") DISPATCH_WORKER_VERB=1 ;;
+  "kit "* | "harness-ready "* | "lane-sandbox "* | "harness-prep "* | "trainee-patch "* | "item-end "* | "record-end "* | "canary-close "* | "run-log "* | "record --here" | "restore --here") DISPATCH_WORKER_VERB=1 ;;
   *) DISPATCH_WORKER_VERB=''; dispatch_conf_load ;;
 esac
 
@@ -3033,7 +3034,7 @@ sandbox_wrap() {
   tmo="timeout $(jq -r --arg h "$1" '.harnesses[$h].timeout_min' "$HARNESSES")m"
   if is_canary "$2"; then
     cmd="fleet-bench canary start $(printf '%q' "$(jq -r .canary <<<"$2")") && { $tmo $cmd"
-    tail="fleet-dispatch record-end $(printf '%q' "$slug") $(printf '%q' "$1") $3; BENCH_CANARY_WRAP=$(printf '%q' "$4") AGENT_QUEUE_ITEM=$(printf '%q' "$slug") BENCH_CANARY_RUN_LOG=$(printf '%q' "fleet-dispatch run-log $(printf '%q' "$1") $3") fleet-bench canary score $(printf '%q' "$(jq -r .canary <<<"$2")") && agent-queue move $(printf '%q' "$slug") done --status ok"
+    tail="fleet-dispatch record-end $(printf '%q' "$slug") $(printf '%q' "$1") $3; BENCH_CANARY_WRAP=$(printf '%q' "$4") AGENT_QUEUE_ITEM=$(printf '%q' "$slug") BENCH_CANARY_RUN_LOG=$(printf '%q' "fleet-dispatch run-log $(printf '%q' "$1") $3") fleet-bench canary score $(printf '%q' "$(jq -r .canary <<<"$2")") && fleet-dispatch canary-close $(printf '%q' "$slug")"
   else
     cmd="{ $tmo $cmd"
     tail="fleet-dispatch trainee-review $(printf '%q' "$slug")"
@@ -3623,7 +3624,7 @@ linked_base() {
 # item with a note, for the next batch review (trainee_batch_start). No diff, or no reviewer lane
 # (lanes.yaml trainee:), is a reject (cmd_trainee_reject).
 cmd_trainee_review() {
-  local slug="${1:?trainee-review: needs a slug}" it trn base patch why nodiff
+  local slug="${1:?trainee-review: needs a slug}" it trn base patch why nodiff end
   it=$(agent-queue show "$slug" --json 2>/dev/null) && [ -n "$it" ] || { say "trainee-review: no queue item $slug"; return 1; }
   trn=$(jq -r '.trainee // empty' <<<"$it")
   [ -n "$trn" ] || { say "trainee-review: no trainee ran $slug"; return 2; }
@@ -3639,7 +3640,10 @@ cmd_trainee_review() {
   if [ ! -s "$patch" ]; then
     case "$nodiff" in
       already-fixed | blocked) cmd_trainee_reject "$slug" --cause "$nodiff" --why "$(trainee_empty_why "$it" "$trn" "$nodiff")" ;;
-      *) cmd_trainee_reject "$slug" --why "$(trainee_empty_why "$it" "$trn")" ;;
+      *) end=$(trainee_end "$it")
+         # A run that ended outside the model is queued again unrated, never filed as the trainee's redo.
+         if outside_end "$end"; then cmd_trainee_reject "$slug" --end "$end" --why "$(trainee_empty_why "$it" "$trn" "" "$end")"
+         else cmd_trainee_reject "$slug" --why "$(trainee_empty_why "$it" "$trn" "" "$end")"; fi ;;
     esac
     return
   fi
@@ -3674,7 +3678,11 @@ trainee_no_diff_kind() {
   return 0
 }
 
-# trainee_empty_why <item json> <trainee> [already-fixed|blocked] -> the reject reason for a run that left no diff: what ended its
+# trainee_end <item json> -> why the trainee's session ended (item_end), read where the run ran: the review runs there, so the
+# item's host is dropped and its record is read here.
+trainee_end() { item_end "$(jq -c 'del(.host)' <<<"$1")"; }
+
+# trainee_empty_why <item json> <trainee> [already-fixed|blocked] [end] -> the reject reason for a run that left no diff: what ended its
 # session (item_end) when that was not the model finishing its turn, else "left no diff". The review runs
 # where the run ran, so the item's host is dropped and its record is read here. 12 of 16 empty-diff
 # free-model runs on 2026-11-19 ended on a provider refusal or the timeout (agent-runtime
@@ -3685,7 +3693,7 @@ trainee_empty_why() {
     already-fixed) echo "$2 found the task already fixed in the code (already-fixed), with no diff"; return ;;
     blocked) echo "$2 could not do the task without a human decision or access it lacks (blocked), with no diff"; return ;;
   esac
-  end=$(item_end "$(jq -c 'del(.host)' <<<"$1")")
+  end=${4-$(trainee_end "$1")}
   case "$end" in
     provider) echo "$2's session ended on a provider refusal or error (end provider: a rate limit, budget or provider fault), with no diff" ;;
     refused) echo "$2's session ended on the provider refusing its key (end refused), with no diff" ;;
@@ -3770,6 +3778,24 @@ cmd_record_end() {
   shift
   why=$(cmd_item_end "$@") || { [ $? -ne 2 ] || return 2; }
   [ -z "$why" ] || agent-queue set "$slug" "end_reason=$why" >/dev/null
+}
+
+# cmd_canary_close <slug> -- the canary tail's last step, after the score: the item closes ok, unless its run ended
+# outside the model (OUTSIDE_ENDS: a provider fault, a refusal, a limit, a cut, a timeout), when it is queued again
+# with that end, filed unrated, so a later run scores the task. Once: an item already queued again (first_started) closes
+# ok on a second such end, whose score row reads not run, so a task that always times out holds no slot for ever.
+cmd_canary_close() {
+  local slug=${1:-} it end first cause=''
+  [ -n "$slug" ] || { say "canary-close: no item"; return 2; }
+  it=$(agent-queue show "$slug" --json 2>/dev/null) && [ -n "$it" ] || { say "canary-close: no queue item $slug"; return 1; }
+  IFS=$'\t' read -r end first < <(jq -r '[.end_reason // "-", .first_started // "-"] | @tsv' <<<"$it")
+  if outside_end "$end" && [ "$first" = - ]; then
+    unrated_end "$end" || cause=$end   # an UNRATED_ENDS end files itself unrated; a timeout names its cause
+    agent-queue move "$slug" queued --end "$end" ${cause:+--cause "$cause"} >/dev/null || return
+    say "canary-close: $slug's run ended outside the model ($end), so it is queued again"
+  else
+    agent-queue move "$slug" done --status ok
+  fi
 }
 
 # cmd_run_log <harness> <session id>... -- the lines of the harness's opencode log (its run dir's, one file
@@ -3862,14 +3888,29 @@ EOF
 # (its outcome a redo on the trainee's run, ladder_back), with the reason as its note; its `trainee:`
 # stays, so no trainee takes it again (trainee_why). --cause is the requeue's cause (MOVE_CAUSES, reject
 # when absent); an UNRATED_CAUSES one (already-fixed, blocked: a no-diff run that says why) files the run
-# unrated, so it is no reject for first-attempt approval or the rollup.
+# unrated, so it is no reject for first-attempt approval or the rollup. --end <reason> (OUTSIDE_ENDS) is a run that
+# ended outside the model (a provider fault, a refusal, a limit, a cut, a timeout): recorded on the item, its run
+# filed unrated with that end as the cause, never a redo.
 cmd_trainee_reject() {
-  local slug="${1:?trainee-reject: needs a slug}" why='' it trn run cause=reject o=redo
+  local slug="${1:?trainee-reject: needs a slug}" why='' it trn run cause=reject o=redo end='' back=''
   shift
-  [ "${1:-}" != --cause ] || { cause=${2:-}; shift 2 || true; }
+  local given=''
+  while [ "${1:-}" = --cause ] || [ "${1:-}" = --end ]; do
+    if [ "$1" = --cause ]; then cause=${2:-}; given=1; else end=${2:-}; fi
+    shift 2 || true
+  done
   [ "${1:-}" = --why ] && [ -n "${2:-}" ] || { say "trainee-reject: needs --why \"<one line>\""; return 2; }
-  case " $MOVE_CAUSES " in *" $cause "*) ;; *) say "trainee-reject: --cause is one of $MOVE_CAUSES, not $cause"; return 2 ;; esac
+  if [ -n "$end" ]; then
+    # A run that ended outside the model: no reject of it, so its outcome is unrated with the end as its cause.
+    [ -z "$given" ] || { say "trainee-reject: --end and --cause name the same thing: give one"; return 2; }
+    outside_end "$end" || { say "trainee-reject: --end is one of $OUTSIDE_ENDS, not $end"; return 2; }
+    cause=$end o=unrated
+  else
+    case " $MOVE_CAUSES " in *" $cause "*) ;; *) say "trainee-reject: --cause is one of $MOVE_CAUSES, not $cause"; return 2 ;; esac
+  fi
   ! unrated_cause "$cause" || o=unrated
+  back=$cause
+  ! unrated_end "$end" || back=   # the move files an UNRATED_ENDS end unrated by itself, and takes no cause for it
   why=$2
   it=$(agent-queue show "$slug" --json 2>/dev/null) && [ -n "$it" ] || { say "trainee-reject: no queue item $slug"; return 1; }
   trn=$(jq -r '.trainee // empty' <<<"$it")
@@ -3878,7 +3919,7 @@ cmd_trainee_reject() {
   # below files the same redo again, which model-lane checks no bar for twice.
   run=$(jq -r '.lane_run // empty' <<<"$it")
   [ -z "$run" ] || model-lane outcome "$run" "$o" --why "$why" --cause "$cause" >/dev/null 2>&1 || logline "model-lane outcome $run $o failed; $slug's reject reason is in its note only"
-  ladder_back "$slug" "trainee $trn rejected: $why" "$cause" || { say "trainee-reject: could not send $slug back to the queue"; return 1; }
+  ladder_back "$slug" "trainee $trn rejected: $why" "$back" "$end" || { say "trainee-reject: could not send $slug back to the queue"; return 1; }
   rm -f "$TRAINEE_DIR/$slug.patch" "$TRAINEE_DIR/$slug.base"
   say "trainee-reject: $slug is back in the queue, on claude: $why"
 }
@@ -4140,9 +4181,10 @@ rollup_done() {
 
 # ladder_back <slug> <note> [cause] -- a ladder run's row back to the normal queue on claude, the note saying
 # why; agent-queue move reads the running -> queued step as a redo on the run, which model-lane counts, with
-# that cause (MOVE_CAUSES; requeue when none).
+# that cause (MOVE_CAUSES; requeue when none). An [end] (OUTSIDE_ENDS) is recorded on the item, and an UNRATED_ENDS
+# one files the run unrated by itself.
 ladder_back() {
-  agent-queue set "$1" agent=claude model= routed= "note=$2" >/dev/null && agent-queue move "$1" queued ${3:+--cause "$3"} >/dev/null
+  agent-queue set "$1" agent=claude model= routed= "note=$2" >/dev/null && agent-queue move "$1" queued ${3:+--cause "$3"} ${4:+--end "$4"} >/dev/null
 }
 
 # DIRECT_GUARDED: paths a direct run's diff may not touch, as an ERE on the repo-relative path. Its
@@ -9936,6 +9978,7 @@ main() {
     run-result) shift; cmd_run_result "$@" ;;
     item-end) shift; cmd_item_end "$@" ;;
     record-end) shift; cmd_record_end "$@" ;;
+    canary-close) shift; cmd_canary_close "$@" ;;
     run-log) shift; cmd_run_log "$@" ;;
     backfill-end) shift; cmd_backfill_end "$@" ;;
     -h | --help) sed -n '2,48p' "$0" ;;
