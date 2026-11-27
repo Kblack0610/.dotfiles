@@ -560,7 +560,8 @@ phases_landed_by() {
 # hand start (AGENT_QUEUE_PULL=hand), a gated add (it queues nothing), dispatch's trainee, canary
 # and auto:epics verify adds (its board fill stops at the cap, queue_headroom), agent-land's
 # auto:validate add (one per critical PR head, which no merge passes without), its merge-owed steps
-# (AGENT_QUEUE_PULL=land: an after-merge or After deploy: step, one per step while queued), a --plan (an approved
+# (AGENT_QUEUE_PULL=land: an after-merge step, one per step while one is queued, and an After deploy:
+# line, one per line a merged PR's body names), a --plan (an approved
 # plan) and the pull of a phase it filed on its board row (plan_phase_task), cap 0. Urgent and `red`
 # respect the cap too (the human, 2026-11-18): at it, make_room first returns the last-ranked item
 # that has a row to its board, so they go in without the queue growing; so does pull-after's pull of a
