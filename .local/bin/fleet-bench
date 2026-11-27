@@ -1747,9 +1747,9 @@ commit_paths() {
 
 # pr_ci <repo> <number> <session> <cfg> -> its size and the CI runs on its branch from its first
 # commit to merge (earlier runs are a reused branch name), read from the run ledger (schedules-sync
-# runs; exit 3 when the ledger does not sync the repo, 4 when it has not synced past the merge yet,
-# 1 when it is unreadable or stale); red is failure, timed_out or
-# startup_failure, and cancelled is superseded, not red. A Forgejo PR (repo host/owner/repo,
+# runs). Exit 3: the ledger does not sync the repo. Exit 4: it has not synced past the merge yet.
+# Exit 5: its Forgejo says the PR does not exist (so_forgejo_pr). Exit 1: unreadable or stale.
+# Red is failure, timed_out or startup_failure, and cancelled is superseded, not red. A Forgejo PR (repo host/owner/repo,
 # session-outcomes.sh SO_PR_JQ) is read through that host's API, since gh speaks only to GitHub, and
 # keeps its outcomes name on the row; the ledger names it forgejo:owner/repo. A repo with sections
 # adds the PR's sections and its gate workflow's runs, the gate named by its file path, since a run's
@@ -1758,7 +1758,7 @@ commit_paths() {
 pr_ci() {
   local pr runs paths='' ledger=$1
   if [[ "$1" == */*/* ]]; then
-    pr=$(so_forgejo_pr "$1" "$2") || return 1
+    pr=$(so_forgejo_pr "$1" "$2") || { [ $? -eq 3 ] && return 5; return 1; }
     ledger=forgejo:${1#*/}
   else
     pr=$(gh pr view "$2" -R "$1" --json headRefName,createdAt,mergedAt,additions,deletions,commits,mergeCommit) || return 1
@@ -1814,9 +1814,10 @@ review_start() {
 # cmd_review: the window reaches back to the last pass, so a failed or missed night is counted by
 # the next one (ar-2852). A pass moves the cursor to its own start time, held back to the oldest PR
 # it left for later (ledger not synced past it) or could not count; a PR in a repo the ledger does
-# not sync is out for good and holds nothing. A --days window moves it only when it reached the start.
+# not sync, or one its forge says does not exist, is left out and holds nothing, so the nightly window
+# passes it; a --days window that reaches it probes it again. A --days window moves it only when it reached the start.
 cmd_review() {
-  local t since start cfg new repo num sid merged row rc n=0 red=0 failed=0 unsynced=0 later=0 msg days='' off=' ' hold
+  local t since start cfg new repo num sid merged row rc n=0 red=0 failed=0 unsynced=0 later=0 gone=0 msg days='' off=' ' hold
   case "${1:-}" in
     '') ;;
     --days) days=${2:-}; [[ "$days" =~ ^[1-9][0-9]*$ ]] || { say "usage: fleet-bench review [--days N]"; return 2; } ;;
@@ -1841,6 +1842,7 @@ cmd_review() {
       0) ;;
       3) unsynced=$((unsynced + 1)); off+="$repo "; continue ;;
       4) later=$((later + 1)); [ "$merged" -ge "$hold" ] || hold=$merged; continue ;;
+      5) say "$repo#$num left out: its forge says no such PR (pulls/$num is a 404)"; gone=$((gone + 1)); continue ;;
       *) say "cannot count $repo#$num"; failed=$((failed + 1)); [ "$merged" -ge "$hold" ] || hold=$merged; continue ;;
     esac
     printf '%s\n' "$row" >> "$CI"
@@ -1857,10 +1859,13 @@ cmd_review() {
     return 1
   fi
   if [ "$n" -eq 0 ]; then
-    report_outcome NOOP "nothing new merged in the window"
+    msg="nothing new merged in the window"
+    [ "$gone" -eq 0 ] || msg="nothing counted: $gone merged PRs their forge no longer has"
+    report_outcome NOOP "$msg"
     return 0
   fi
   msg="$n PRs counted, $red CI reds"
+  [ "$gone" -eq 0 ] || msg+=", $gone left out that their forge no longer has"
   say "$msg"
   report_outcome WORKED "$msg"
 }
@@ -5146,7 +5151,7 @@ board_upsert() {
   upsert_lock_take || { say "$UPSERT_LOCK_WHY"; report_outcome FAILED "$UPSERT_LOCK_WHY"; return 2; }
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { upsert_lock_drop; report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
   closed=$(upsert_closed)
-  human=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" list 2>/dev/null) || { human=; say "$KPI_BOARD human sheet unreadable: its moved rows are not skipped this pass"; }
+  human=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" list 2>/dev/null) || { human=; say "$KPI_BOARD human sheet unreadable: a row started there is not skipped this pass"; }
   while IFS=$'\t' read -r p text pri; do
     [[ "$text" == *'#size/'* ]] || text+=" #size/s"
     # each open row on this key, board order: "id TAB doing TAB lowercased text", id empty when it
@@ -5173,10 +5178,10 @@ board_upsert() {
         say "could not drop $id, a twin of $hid for $p"; failed+=("$p")
       fi
     done
-    # A key whose row dispatch moved to the human sheet (skip_exits: a person's rule, its "(agent row" marker) has its owner there: filing
-    # or reopening it here would move it back and forth every pass (ar-6265).
-    if [ -z "$have" ] && awk -F'\t' -v p="${p,,}" '$4 ~ /^[ \t]*- \[[ \/]\]/ && $4 ~ /\(agent row / && index($3, p) == 1 { f = 1 } END { exit !f }' <<<"$human"; then
-      say "$p: open on the human sheet, left there"; continue
+    # A key a person has started on the human sheet is theirs: an agent row filed here would make triage_twins
+    # drop the row they are working (an open sheet copy with no agent row is a stray it drops, ar-6265).
+    if [ -z "$have" ] && awk -F'\t' -v p="${p,,}" '$4 ~ /^[ \t]*- \[\/\]/ && index($3, p) == 1 { f = 1 } END { exit !f }' <<<"$human"; then
+      say "$p: started on the human sheet, left there"; continue
     fi
     id=; [ -n "$have" ] || id=$(awk -F'\t' -v p="${p,,}" 'index($2, p) == 1 { print $1; exit }' <<<"$closed")
     if [ -n "$id" ]; then
@@ -5629,13 +5634,13 @@ triage_filed() {
 # row_open <list> <key>: the TSV list (title third) holds an open row whose lowercase title starts with the key.
 row_open() { awk -F'\t' -v p="${2,,}" 'index(tolower($3), p) == 1 { f = 1 } END { exit !f }' <<<"$1"; }
 
-# triage_twins <rows> <filed keys>: a row lives in exactly one lane, the one its route names, so
-# once the new lane holds it the old lane's twin on the KPI_BOARD sheet is dropped, with the reason in
-# its marker. A human route's agent-board twin goes first; then each filed key's sheet twin. Read
-# from every pass, so a twin left by an earlier route or a drop that failed is retried. A sheet row is a
-# twin only while the agent board holds its key open: a key board_upsert left on the sheet (dispatch moved
-# it there for a person) has no other lane, and dropping it swapped the row between lanes each pass (ar-6265).
-# Closing a twin is the only write.
+# triage_twins <rows> <filed keys>: a row lives in exactly one lane, the one its route names (triage is the
+# one writer of a keyed row's lane: fleet-dispatch gives such a row no exit, bench_keyed), so once the new
+# lane holds it the old lane's twin on the KPI_BOARD sheet is dropped, with the reason in its marker. A
+# human route's agent-board twin goes first; then each filed key's sheet twin. Read from every pass, so a
+# twin left by an earlier route or a drop that failed is retried. A sheet row is a twin only while the
+# agent board holds its key open: a key whose agent add the daily cap held keeps its sheet row until the
+# add lands (ar-6265). Closing a twin is the only write.
 triage_twins() {
   local key route sheet have agent kpi
   agent=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list 2>/dev/null </dev/null) || return 0
