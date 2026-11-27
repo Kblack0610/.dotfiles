@@ -118,7 +118,8 @@ reason() {
 @test "a quoted kill target is still a kill target: one plain word stays visible to the rows" {
   for c in "pkill -x 'node'" 'pkill -x "node"' "pkill 'node'" "pkill -9 'python3'" "killall 'java'" "pkill -x no'de'" \
            "pkill '-x' node" "pkill '-f' foo" 'pkill "-f" "foo"' "sudo pkill -x 'node'" "sleep 1; pkill -x 'node'" \
-           "kill \$(pgrep -x 'node')" "pgrep -x 'node' | xargs kill" "pidof 'python3' | xargs -r kill -9"; do
+           "kill \$(pgrep -x 'node')" "pgrep -x 'node' | xargs kill" "pidof 'python3' | xargs -r kill -9" \
+           "echo \"\$(pkill -x 'node')\"" "echo \"\`pkill -x 'node'\`\""; do
     run decision "$c"
     assert_output deny
   done
@@ -128,7 +129,7 @@ reason() {
   # text with a space, `/` or `$` in it stay blanked and pass.
   for c in "pkill -x 'foo'" "pkill -x 'nodemon'" "pkill -x foo; echo 'node'" "pkill -x 'foo' && echo \"node\"" \
            "pgrep -x 'node'" "git commit -m 'node'" "git commit -m 'pkill -x node'" "pkill -x 'a node'" \
-           "grep -rn '/' src" "rg -F '/' ." "pkill -x 'foo\$x'"; do
+           "grep -rn '/' src" "rg -F '/' ." "pkill -x 'foo\$x'" "pkill -x 'foo\\x'" "echo '\$(pkill -x node)'" "echo \"\$(pkill -x 'foo')\""; do
     run decision "$c"
     assert_output allow
   done
