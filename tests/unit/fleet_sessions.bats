@@ -693,6 +693,9 @@ load 'fleet_sessions/common'
   assert_output 'WORKING test running detached, nothing wakes the session when it ends'
   run b idle 0 0 0 25 1 0 0 9 OPEN FAIL 1 - 1/2 x - gate - - - - - - - 'a ScheduleWakeup at Fri 10:00'
   assert_output 'WORKING gate running detached, its next wake-up is a ScheduleWakeup at Fri 10:00'
+  # a wait the facts already name reads as that wait
+  run b idle 0 0 0 25 1 0 0 9 OPEN PENDING 1 - 1/2 x - gate - - - - - - - none
+  assert_output 'WORKING PR #9 CI running'
   # a landing-queue gate outlasts FLEET_SHELL_STALE_MIN by design; any other is stale past it
   run b idle 0 0 0 300 1 0 0 9 OPEN FAIL 1 - 1/2 x - queue - - - - - - - none
   assert_output 'WORKING gate running detached, nothing wakes the session when it ends'

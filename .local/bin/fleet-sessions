@@ -285,7 +285,13 @@ session_bucket() {
         [ "$job" != test ] || what=test
         [ "${25}" = none ] || wakes="its next wake-up is ${25}"
         if [ "$5" -ge "$FLEET_IDLE_MIN" ] && session_finished "$@"; then note=", detached $what still running"
-        elif [ "$5" -lt "$FLEET_SHELL_STALE_MIN" ] || [ "$job" = queue ]; then echo "WORKING $what running detached, $wakes$cn"; return
+        elif [ "$5" -lt "$FLEET_SHELL_STALE_MIN" ] || [ "$job" = queue ]; then
+          # A wait the facts name (CI running, a train, the landing queue) says more than the process does.
+          case "$(bucket_facts "$@")" in
+            "WORKING idle "*) ;;
+            WORKING*) echo "$(bucket_facts "$@")$cn"; return ;;
+          esac
+          echo "WORKING $what running detached, $wakes$cn"; return
         else note=", detached $what idle over ${FLEET_SHELL_STALE_MIN}m"; fi
       fi ;;
     shell)
