@@ -38,6 +38,12 @@ const ASKED: &str = "requested";
 /// ar-6307). It is no red or outage: a new row carrying it is refused, and it passes no cap.
 const RANKED: &str = "quick-fault";
 
+/// The title prefix of the row fleet-bench triage writes for one firing fleet alert. It passes the
+/// daily cap like an urgent red, counted but never refused: what fires bounds these rows, each one
+/// closes when its alert clears, and one held had no row and no fix (ar-4296, ask 3bydq8: 15 alert
+/// rows were refused on 2026-11-27).
+const FIRING: &str = "check(alert):";
+
 /// The reasons that admit a row at any level: the human's scope for the runtime board, source-of-truth
 /// and efficiency work (delightful-leaf P4, ar-5605).
 const SCOPE: [&str; 1] = ["sot"];
@@ -156,11 +162,12 @@ fn admitted(events: &[Event], project: &str) -> usize {
         .count()
 }
 
-/// Whether the cap lets `row` through whatever the day's count: the person's want, or a row whose
-/// `#why` is an urgent reason (a red, an outage). `requested` is no reason a session may give itself,
+/// Whether the cap lets `row` through whatever the day's count: the person's want, a firing alert's
+/// row ([`FIRING`]), or a row whose `#why` is an urgent reason (a red, an outage). `requested` is no reason a session may give itself,
 /// and [`RANKED`] ranks a row already on the board, so neither lets a new one past the cap.
 fn cap_exempt(all: &[Reason], row: &str, wanted: bool) -> bool {
     wanted
+        || crate::md::task_text(row).starts_with(FIRING)
         || reasons::slug_of(row).is_some_and(|s| {
             all.iter().any(|r| {
                 r.slug == s && r.slug != ASKED && r.slug != RANKED && r.priority == "urgent"
@@ -172,7 +179,7 @@ fn cap_exempt(all: &[Reason], row: &str, wanted: bool) -> bool {
 fn cap_why(project: &str, taken: usize, cap: usize) -> Option<String> {
     (taken >= cap).then(|| {
         format!(
-            "{project} has taken its {cap} new agent rows for today ({taken} so far, intake_daily_cap in the notes config, QUEUE.md \"Admission\"): the person's words (--want) and an urgent red (--why with an urgent reason other than quick-fault) are never held, so keep this one with `notes improve {project} -- \"<text>\"` or file it again tomorrow, and nothing was added"
+            "{project} has taken its {cap} new agent rows for today ({taken} so far, intake_daily_cap in the notes config, QUEUE.md \"Admission\"): the person's words (--want), a firing alert's check(alert) row and an urgent red (--why with an urgent reason other than quick-fault) are never held, so keep this one with `notes improve {project} -- \"<text>\"` or file it again tomorrow, and nothing was added"
         )
     })
 }
@@ -474,9 +481,18 @@ mod tests {
     }
 
     #[test]
-    fn the_person_and_an_urgent_red_pass_the_cap_and_a_high_reason_or_requested_does_not() {
+    fn the_person_an_urgent_red_and_a_firing_alert_pass_the_cap_and_a_high_reason_or_requested_does_not(
+    ) {
         let r = list();
         assert!(cap_exempt(&r, "- [ ] fix(a): b #why/outage", false));
+        assert!(
+            cap_exempt(
+                &r,
+                "- [ ] check(alert): NodeQuarantined razer firing #high #why/runtime-fault",
+                false
+            ),
+            "a firing alert"
+        );
         assert!(
             cap_exempt(&r, "- [ ] fix(a): b #normal", true),
             "the person's want"
@@ -489,6 +505,8 @@ mod tests {
             "- [ ] fix(a): b #urgent #why/quick-fault",
             "- [ ] fix(a): b #urgent",
             "- [ ] fix(a): b",
+            "- [ ] check(watch): links tripped #high #why/runtime-fault",
+            "- [ ] fix(a): check(alert): b",
         ] {
             assert!(!cap_exempt(&r, row, false), "{row}");
         }

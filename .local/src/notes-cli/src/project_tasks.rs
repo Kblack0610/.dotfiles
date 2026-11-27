@@ -994,10 +994,12 @@ fn sibling(lines: &[&str], i: usize, from: &str) -> bool {
 /// letter that also holds a digit, `_`, `@`, `/`, `:`, `-` or `.` (a unit, a watch, a lane, a
 /// build), or an ISO date, so a dated template files one row per date. A token led by a digit or
 /// a sign is a count or reading (`2 checks`, `7d 0.3`, `3/5`, `-3`), so a row whose numbers moved
-/// is still the row.
+/// is still the row. A CamelCase identifier (a capital after the first letter, and a small letter:
+/// `TraderRunFailed`, `WANDown`, not `CI`) is a name too: fleet-bench files one row per firing
+/// alert, and two alerts on one label (`TraderRunFailed` and `TraderRunStale` on `walkforward`)
+/// share every other word, so the second was refused as a near twin and never filed (ar-4296).
 fn names(line: &str) -> Words {
     projects::row_title(line)
-        .to_lowercase()
         .split_whitespace()
         .map(|w| w.trim_matches(|c: char| ",;:.()[]\"'`".contains(c)))
         .filter(|w| {
@@ -1006,12 +1008,15 @@ fn names(line: &str) -> Words {
                     4 | 7 => b == b'-',
                     _ => b.is_ascii_digit(),
                 });
-            let named = w.chars().next().is_some_and(char::is_alphabetic)
-                && w.chars()
-                    .any(|c| c.is_ascii_digit() || "_@/:-.".contains(c));
-            date || named
+            let lead = w.chars().next().is_some_and(char::is_alphabetic);
+            let named = w
+                .chars()
+                .any(|c| c.is_ascii_digit() || "_@/:-.".contains(c));
+            let camel =
+                w.chars().skip(1).any(char::is_uppercase) && w.chars().any(char::is_lowercase);
+            date || (lead && (named || camel))
         })
-        .map(str::to_string)
+        .map(str::to_lowercase)
         .collect()
 }
 
@@ -5679,6 +5684,29 @@ Version: v1.2.0
             names("fix(x): 2 checks, 7d 0.3, 3/5, -3 and 12:30 on b1 via claude:sonnet 2026-11-21"),
             ["2026-11-21", "b1", "claude:sonnet"],
             "counts, readings, ratios, signs and times are not names; builds, lanes and dates are"
+        );
+        assert_eq!(
+            names("check(alert): TraderRunFailed walkforward firing on WANDown, CI and PR #size/s"),
+            ["traderrunfailed", "wandown"],
+            "a CamelCase identifier is a name; an acronym and a plain word are not"
+        );
+        let route = "firing, alertmanager-fleet tripped since 2026-11-26, expected: no fleet=fix alert, evidence: watch-companion-loop list --long alertmanager-fleet; fix with fix-red: fix this one alert by the runbook its rule's annotations name #size/s #high";
+        let alerts = format!("## Tasks\n- [ ] check(alert): TraderRunFailed walkforward {route}\n");
+        assert!(
+            near_twin(
+                &alerts,
+                &format!("check(alert): TraderRunStale walkforward {route}")
+            )
+            .is_none(),
+            "two alerts on one label are two rows, however many route words they share"
+        );
+        assert!(
+            near_twin(
+                &alerts,
+                &format!("check(alert): TraderRunFailed walkforward still {route}")
+            )
+            .is_some(),
+            "the same alert with its text moved is still the row"
         );
     }
 
