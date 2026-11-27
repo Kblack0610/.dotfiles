@@ -194,6 +194,8 @@ An answer to an ask from a live attended session is also typed into that session
 
 Consumers: `ask-resume` runs an answered ask's `resume` command headless through agentctl-run, once (the delivery calls it; `ask-resume --all` drains by hand).
 
+The reopen-on-answer resume (`run: agent-ask reopen`) starts each ended session again on a queue item of its own: `ask-<id>`, from `ask:<id>` with origin `ask` and its own story row, its task the decision (`answer_item`). The session lands the work under it, or closes it ok when the answer needs no change; one that ends with the item still running is settled failed by reap, which un-starts the row for a fresh session. The item is claimed by the session when filed. A second reopen reuses the item the first filed (a queued one is left to the queue), a session a live item already records keeps that one, a session still running outside tmux gets the board row and no item, and a reopen that fails queues the item instead of filing a board row. Why (ar-4670): KERild's answer reopened its session with no item, the session closed without building it, and nothing recorded the work.
+
 ## Delivery
 
 `answer` returns as soon as the answer is written, so a board is free for the next question. The slow part (typing into a pane, a board row, `ask-resume`, a fleet-dispatch start for the queue items the answer releases) is the delivery, and the ask file holds its state:
