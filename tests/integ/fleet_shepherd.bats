@@ -779,10 +779,7 @@ typed() { cat "$HOME/panel.calls" 2>/dev/null; }
 }
 
 @test "a fleet worker's close-now row is read and typed over ssh, and a worker that does not answer gives its claim back (ar-3924)" {
-  # fleet_host_run stand-in: logs the host, runs the command here; a call matching STUB_SSH_FAIL exits 255 as ssh does.
-  printf '%s\n' 'fleet_hosts() { :; }' 'fleet_host_run() { local h="$1"; shift; echo "$h $*" >> "$HOME/ssh.calls"' \
-    '  [ -n "${STUB_SSH_FAIL:-}" ] && [[ "$*" =~ $STUB_SSH_FAIL ]] && return 255; "$@"; }' > "$SANDBOX/fleet-hosts.sh"
-  export FLEET_HOSTS_LIB="$SANDBOX/fleet-hosts.sh"
+  worker_ssh
   doc "[$(crow 7 DONE now '{"target":"razer@lab/7:1","host":"razer"}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   run typed
@@ -804,9 +801,7 @@ typed() { cat "$HOME/panel.calls" 2>/dev/null; }
 }
 
 @test "a fleet worker's window is closed by its own wind-down.sh over ssh, and an ssh failure retries instead of failing the close (ar-3924)" {
-  printf '%s\n' 'fleet_hosts() { :; }' 'fleet_host_run() { local h="$1"; shift; echo "$h $*" >> "$HOME/ssh.calls"' \
-    '  [ -n "${STUB_SSH_FAIL:-}" ] && [[ "$*" =~ $STUB_SSH_FAIL ]] && return 255; "$@"; }' > "$SANDBOX/fleet-hosts.sh"
-  export FLEET_HOSTS_LIB="$SANDBOX/fleet-hosts.sh"
+  worker_ssh
   # The worker's stowed wind-down.sh, at its path under the worker's HOME (this HOME here).
   mkdir -p "$HOME/.local/src/tmux"
   printf '#!/usr/bin/env bash\necho "worker $*" >> "$HOME/wind-down.calls"\n' > "$HOME/.local/src/tmux/wind-down.sh"
@@ -1188,10 +1183,7 @@ nudge_ago() { printf 'fact: STALLED f-%s\nat: %s\n' "$2" "$(date -Iseconds -d "$
 }
 
 @test "takeover reaches a fleet worker's STALLED row over ssh, closing it with the worker's wind-down.sh, and an ssh failure neither closes nor pages (ar-4973)" {
-  # fleet_host_run stand-in: logs the host, runs the command here; a call matching STUB_SSH_FAIL exits 255 as ssh does.
-  printf '%s\n' 'fleet_hosts() { :; }' 'fleet_host_run() { local h="$1"; shift; echo "$h $*" >> "$HOME/ssh.calls"' \
-    '  [ -n "${STUB_SSH_FAIL:-}" ] && [[ "$*" =~ $STUB_SSH_FAIL ]] && return 255; "$@"; }' > "$SANDBOX/fleet-hosts.sh"
-  export FLEET_HOSTS_LIB="$SANDBOX/fleet-hosts.sh"
+  worker_ssh
   mkdir -p "$HOME/.local/src/tmux"
   printf '#!/usr/bin/env bash\necho "worker $*" >> "$HOME/wind-down.calls"\n' > "$HOME/.local/src/tmux/wind-down.sh"
   chmod +x "$HOME/.local/src/tmux/wind-down.sh"
