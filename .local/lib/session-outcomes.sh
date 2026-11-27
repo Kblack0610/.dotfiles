@@ -59,13 +59,21 @@ SO_PR_JQ='
 # assignments, wrappers with their options, `timeout N`, `flock FILE` and if/while/until/do/then/else/!, any path,
 # the text and a boundary. agent-usage-burn.py matches the same way;
 # tests/fixtures/time-use-commands.tsv holds the three readers to it.
-# SO_TU_START: the regex (a jq string body) up to where a command word starts, shared by the lines below and
-# by time_use_wrapper_paths.
-SO_TU_START='(^|[;&|(\\n`])\\s*((\\w+=\\S*|(env|nice|xargs|sudo|nohup|exec|command|time|stdbuf|setsid|ionice|sh|bash|zsh)(\\s+-n\\s+[0-9]+|\\s+-\\S+)*|timeout(\\s+-\\S+)*\\s+[0-9]\\S*|flock(\\s+-\\S+)*\\s+\\S+|if|while|until|do|then|else|!)\\s+)*'
-SO_TIME_USE_LINES="$(jq -Rsc '[splits("\n") | gsub("^\\s+|\\s+$"; "") | capture("^(?<kind>gate|test|build)\\s+(?<text>.*)$")
-  | .re = "'"$SO_TU_START"'(\\S*/)?"
-      + (.text | gsub("(?<c>[\\\\.^$|?*+()\\[\\]{}])"; "\\\(.c)")) + "($|[^\\w.])"]' \
-  "${TIME_USE_CONF:-$SO_LIB/../../.config/agent-panel/time-use.conf}" 2>/dev/null)" || SO_TIME_USE_LINES='[]'
+# SO_TU_WRAP: the regex (a jq string body) for what may stand before a command word: assignments, wrappers with their
+# options, `timeout N`, `flock FILE` and if/while/until/do/then/else/!. SO_TU_START puts a command start before it (a
+# line start, ; & | ( or a backtick), shared by the lines below and by time_use_wrapper_paths. SO_TU_ARGV_START is the
+# start of one process's argv (fleet-sessions' live_wait): only the line start, since an argv holds no shell operator.
+SO_TU_WRAP='((\\w+=\\S*|(env|nice|xargs|sudo|nohup|exec|command|time|stdbuf|setsid|ionice|sh|bash|zsh)(\\s+-n\\s+[0-9]+|\\s+-\\S+)*|timeout(\\s+-\\S+)*\\s+[0-9]\\S*|flock(\\s+-\\S+)*\\s+\\S+|if|while|until|do|then|else|!)\\s+)*'
+SO_TU_START='(^|[;&|(\\n`])\\s*'"$SO_TU_WRAP"
+SO_TU_ARGV_START='^\\s*'"$SO_TU_WRAP"
+# time_use_lines_json <conf> [<start regex>] -> a JSON array of {kind, text, re} for each gate, test or build line of <conf>,
+# `re` wanting the line's text after <start regex> (default SO_TU_START) and any path, then a boundary.
+time_use_lines_json() {
+  jq -Rsc '[splits("\n") | gsub("^\\s+|\\s+$"; "") | capture("^(?<kind>gate|test|build)\\s+(?<text>.*)$")
+    | .re = "'"${2:-$SO_TU_START}"'(\\S*/)?"
+        + (.text | gsub("(?<c>[\\\\.^$|?*+()\\[\\]{}])"; "\\\(.c)")) + "($|[^\\w.])"]' "$1"
+}
+SO_TIME_USE_LINES="$(time_use_lines_json "${TIME_USE_CONF:-$SO_LIB/../../.config/agent-panel/time-use.conf}" 2>/dev/null)" || SO_TIME_USE_LINES='[]'
 [ "$SO_TIME_USE_LINES" != '[]' ] ||
   echo "session-outcomes: no gate or test line in ${TIME_USE_CONF:-time-use.conf}; every command counts as jobs" >&2
 # edit_tools: the tools that write a file (edit-tools.conf), for the since-edit and lesson counts.
