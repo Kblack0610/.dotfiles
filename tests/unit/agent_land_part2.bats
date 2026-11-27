@@ -965,6 +965,50 @@ EOS
   assert_output 1
 }
 
+@test "Forgejo: the base moves on again during the merged-up head's checks: merged up and re-checked again, never landed behind it (ar-6115)" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  printf '0\n1\n3\n0\n' >"$NOTES_FIXTURE/behind.seq"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'landing that green head behind it'
+  assert_line 'fetch: merged origin/main (1 behind) into the head and pushed it'
+  assert_line 'fetch: merged origin/main (3 behind) into the head and pushed it'
+  assert_line 'fetch: current with origin/main'
+  assert_line 'landed #42'
+  run grep -c '^checks: green$' <<<"$output"
+  assert_output 3
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 2
+  # The merge comes after the last push and the status read of that head.
+  [ "$(grep -n '^git push -q origin' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n '^curl GET commits/.*/status' "$LOG" | tail -1 | cut -d: -f1)" ]
+  [ "$(grep -n '^curl GET commits/.*/status' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n '^curl POST pulls/42/merge' "$LOG" | cut -d: -f1)" ]
+}
+
+@test "Forgejo: a base that keeps moving through FJ_CATCHUP_MAX merged-up runs exits 3 with nothing merged (ar-6115)" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  printf '0\n' >"$NOTES_FIXTURE/behind.seq"
+  printf '1\n' >"$NOTES_FIXTURE/behind"
+  run "$LAND" 42 --item ship
+  assert_failure 3
+  assert_output --partial 'origin/main moved on by 1 during each of 3 merged-up check runs'
+  assert_output --partial 'nothing merged'
+  refute_output --partial 'landing that green head behind it'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 3
+  run grep -c 'pulls/42/merge' "$LOG"
+  assert_output 0
+}
+
+@test "Forgejo --dry-run says a moved base is merged up and re-checked, never landed behind (ar-6115)" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  run "$LAND" 42 --item ship --dry-run
+  assert_success
+  assert_output --partial 'fetch: on Forgejo a base that moved on during the checks is merged up and re-checked every time'
+}
+
 @test "a Forgejo check that failed stops at checks, naming it; nothing merged" {
   forgejo
   printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
