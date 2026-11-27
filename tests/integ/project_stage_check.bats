@@ -325,6 +325,26 @@ EOF2
   assert_line --regexp '^PASS +deploy +The deploy doc says how to roll back'
 }
 
+@test "systems.md: repo-wide rows read the working tree with no origin" {
+  write_systems_doc
+  { sed -n '1,/^## Criteria/p' "$REPO_ROOT/.local/src/docs/systems.md"; printf '\n| System | Applies | Criterion | Check | Why |\n| --- | --- | --- | --- | --- |\n'
+    for r in 'The deploy doc says how to roll back' 'A secret scan gates' 'The dedicated server image is named'; do
+      grep -F "$r" "$REPO_ROOT/.local/src/docs/systems.md"; done; } > "$SYSTEMS_DOC.new" && mv "$SYSTEMS_DOC.new" "$SYSTEMS_DOC"
+  mkdir -p "$REPO/docs/operations" "$REPO/.githooks" "$REPO/scripts/build/games"
+  run "$CHECK" shooter --systems
+  # NEGATIVE CONTROL: with none of the files, every row fails.
+  assert_line --regexp '^FAIL +deploy +The deploy doc says how to roll back'
+  assert_line --regexp '^FAIL +security +A secret scan gates'
+  assert_line --regexp '^FAIL +netcode +The dedicated server image'
+  printf '## Rollback\n' > "$REPO/docs/operations/deploy.md"
+  printf 'gitleaks protect\n' > "$REPO/.githooks/pre-commit"
+  printf '{"image":"x"}\n' > "$REPO/scripts/build/games/shooter.json"
+  run "$CHECK" shooter --systems
+  assert_line --regexp '^PASS +deploy +The deploy doc says how to roll back'
+  assert_line --regexp '^PASS +security +A secret scan gates'
+  assert_line --regexp '^PASS +netcode +The dedicated server image'
+}
+
 @test "an unknown project, an unknown stage or no declared stage exits 2" {
   run "$CHECK" nobody
   assert_failure 2
