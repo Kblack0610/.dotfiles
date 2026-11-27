@@ -1641,7 +1641,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   assert_success
 }
 
-@test "a finished pass is scored by its log: WORKED when it logged a move, STALLED when not or when it planned" {
+@test "a finished pass is scored by its log: WORKED when it logged a move, STALLED when not or when it planned (ar-646)" {
   doc "[$(row a STALLED false false)]"
   "$SH" run
   local id; id="$(pass_id)"
@@ -1663,6 +1663,37 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   run "$SH" run
   assert_failure
   assert_equal "$(cut -f3 "$FLEET_SHEPHERD_DIR/passes.tsv" | paste -sd' ')" 'WORKED STALLED STALLED'
+  # A pass that logged its move and reported a session's plan waiting on the human did work: the
+  # plan phrases describe the session, not the pass (ar-646, pass 5416cf0e).
+  id="$(pass_id)"
+  echo "- 11:00 UTC 11-04: escalated a" >> "$FLEET_SHEPHERD_DIR/log.md"
+  said "$id" assistant "$(date +%s)" "Escalated: hub/dotfiles:1, plan awaiting your approval. The plan above is ready for your approval."
+  run "$SH" run
+  assert_success
+  # A report line that is only the tool's name is prose, not the call.
+  id="$(pass_id)"
+  echo "- 11:30 UTC 11-04: escalated a" >> "$FLEET_SHEPHERD_DIR/log.md"
+  said "$id" assistant "$(date +%s)" $'The session is stuck at:\nExitPlanMode'
+  run "$SH" run
+  assert_success
+  # A report quoting another session's ask is not the pass asking: only its last text block is.
+  id="$(pass_id)"
+  echo "- 11:45 UTC 11-04: nudged a" >> "$FLEET_SHEPHERD_DIR/log.md"
+  said "$id" assistant "$(date +%s)" 'hub/dotfiles:2 sits on "Would you like me to proceed?"'
+  said "$id" assistant "$(date +%s)" "Nudged hub/dotfiles:2."
+  run "$SH" run
+  assert_success
+  # Negative controls: the same report with no move logged, and a move then the pass asking leave.
+  id="$(pass_id)"
+  said "$id" assistant "$(date +%s)" "hub/dotfiles:1 has a plan awaiting your approval."
+  run "$SH" run
+  assert_failure
+  id="$(pass_id)"
+  echo "- 12:00 UTC 11-04: nudged a" >> "$FLEET_SHEPHERD_DIR/log.md"
+  said "$id" assistant "$(date +%s)" "I drafted a change to the brief. Would you like me to proceed?"
+  run "$SH" run
+  assert_failure
+  assert_equal "$(cut -f3 "$FLEET_SHEPHERD_DIR/passes.tsv" | paste -sd' ')" 'WORKED STALLED STALLED WORKED WORKED WORKED STALLED STALLED'
 }
 
 @test "the human talking to a pass: no new pass while it answers or is young; then the next takes its pane, with the conversation" {
