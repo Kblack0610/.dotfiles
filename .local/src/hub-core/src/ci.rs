@@ -1052,11 +1052,7 @@ fn queue(infra: &Infra, all: &[Runner]) -> Vec<Queued> {
         .map(|([.., labels], mut q)| {
             let need = lower(&labels);
             if !need.is_empty() {
-                q.can = fits(
-                    all,
-                    &serving(&pools, &q.forge, &q.owner, &q.repo),
-                    &need,
-                );
+                q.can = fits(all, &serving(&pools, &q.forge, &q.owner, &q.repo), &need);
                 (q.at, q.starts) = starts(all, &usual, &need);
                 if q.at.is_empty() {
                     q.at = q.can.first().map(|f| f.host.clone()).unwrap_or_default();
@@ -1204,9 +1200,7 @@ pub fn pool_match(infra: &Infra, min_wait: i64) -> Vec<PoolMatch> {
                 .iter()
                 .filter(|r| sets.iter().any(|set| holds(&r.labels, set)))
                 .collect();
-            let slot = |r: &&&Runner| {
-                matches!(r.s.label("state"), "running" | "idle")
-            };
+            let slot = |r: &&&Runner| matches!(r.s.label("state"), "running" | "idle");
             PoolMatch {
                 slots: fit.iter().filter(slot).count() as u32,
                 busy: fit

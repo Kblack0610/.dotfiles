@@ -162,11 +162,14 @@ impl Rates {
 
     /// The rates file, or why it could not be read.
     pub fn read(nodes: HashMap<String, String>) -> Rates {
-        let path = std::env::var("HUB_CI_RATES").ok().filter(|p| !p.is_empty()).or_else(|| {
-            std::env::var("HOME")
-                .ok()
-                .map(|h| format!("{h}/.config/hub/ci-rates.tsv"))
-        });
+        let path = std::env::var("HUB_CI_RATES")
+            .ok()
+            .filter(|p| !p.is_empty())
+            .or_else(|| {
+                std::env::var("HOME")
+                    .ok()
+                    .map(|h| format!("{h}/.config/hub/ci-rates.tsv"))
+            });
         let Some(path) = path else {
             return Rates {
                 error: Some("no HOME for the rates file".into()),
@@ -189,7 +192,11 @@ impl Rates {
     /// node its name starts with, at a dash, else `*` when the file has that line.
     pub fn host_of(&self, runner: &str) -> Option<&str> {
         if let Some(n) = self.nodes.get(runner) {
-            return self.hosts.contains_key(n).then_some(n.as_str()).or(self.any());
+            return self
+                .hosts
+                .contains_key(n)
+                .then_some(n.as_str())
+                .or(self.any());
         }
         self.hosts
             .keys()
@@ -622,12 +629,25 @@ pub(crate) mod tests {
     #[test]
     fn a_live_job_pod_is_priced_on_its_node_and_star_covers_the_rest() {
         let mut r = Rates::parse("ms-a2 0 owned\n* 0.6 on-demand 4\n");
-        r.nodes.insert("arc-repo-x-runner-abc".into(), "ms-a2".into());
-        r.nodes.insert("arc-repo-x-runner-def".into(), "deskslim-1".into());
+        r.nodes
+            .insert("arc-repo-x-runner-abc".into(), "ms-a2".into());
+        r.nodes
+            .insert("arc-repo-x-runner-def".into(), "deskslim-1".into());
         assert_eq!(r.host_of("arc-repo-x-runner-abc"), Some("ms-a2"));
-        assert_eq!(r.host_of("arc-repo-x-runner-def"), Some("*"), "an unlisted node is *");
-        assert_eq!(r.host_of("arc-repo-x-runner-gone"), Some("*"), "a finished pod is *");
-        assert_eq!(r.price("arc-repo-x-runner-abc", false, Some(60)).text, "0.00 owned");
+        assert_eq!(
+            r.host_of("arc-repo-x-runner-def"),
+            Some("*"),
+            "an unlisted node is *"
+        );
+        assert_eq!(
+            r.host_of("arc-repo-x-runner-gone"),
+            Some("*"),
+            "a finished pod is *"
+        );
+        assert_eq!(
+            r.price("arc-repo-x-runner-abc", false, Some(60)).text,
+            "0.00 owned"
+        );
         assert_eq!(
             r.price("arc-repo-x-runner-gone", false, Some(3600)).text,
             "0.15 (1/4 of $0.60/h)"

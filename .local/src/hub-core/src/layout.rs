@@ -561,9 +561,7 @@ pub const MOVED: &[(&str, &str, &str, &str)] = &[
 
 /// A moved name that opens its new table under a state chip, on both surfaces: (tab, old
 /// section, table, chip). agent-web's app.js MOVED carries the same chips as a query.
-pub const MOVED_CHIPS: &[(&str, &str, &str, &str)] = &[
-    ("infra", "cloud", "machines", "cloud"),
-];
+pub const MOVED_CHIPS: &[(&str, &str, &str, &str)] = &[("infra", "cloud", "machines", "cloud")];
 
 /// The table and chip a moved name opens under (`MOVED_CHIPS`), any case.
 pub fn moved_chip(tab: &str, sec: &str) -> Option<(&'static str, &'static str)> {

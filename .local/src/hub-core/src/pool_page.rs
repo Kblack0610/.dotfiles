@@ -226,12 +226,12 @@ pub fn history(pool: &str, now: u64) -> Result<PoolHistory, String> {
                 }),
             )
         })
-            .map(|(name, h)| {
-                (
-                    name,
-                    h.join().unwrap_or_else(|_| Err("the read panicked".into())),
-                )
-            })
+        .map(|(name, h)| {
+            (
+                name,
+                h.join().unwrap_or_else(|_| Err("the read panicked".into())),
+            )
+        })
     });
     let mut errors = vec![];
     let [running, waiting] = read.map(|(name, r)| {
@@ -395,9 +395,15 @@ mod tests {
     fn a_bad_pool_name_is_never_queried() {
         assert!(queries("unity\"} or vector(1)").is_err());
         let [(_, running), _] = queries("unity").unwrap();
-        assert_eq!(running.as_deref(), Some(r#"max(cc:pool_busy{pool="unity"})"#));
+        assert_eq!(
+            running.as_deref(),
+            Some(r#"max(cc:pool_busy{pool="unity"})"#)
+        );
         let [(_, running), (_, waiting)] = queries(LOCAL_POOL).unwrap();
-        assert_eq!(running.as_deref(), Some("count(cc:host_local_gate) or vector(0)"));
+        assert_eq!(
+            running.as_deref(),
+            Some("count(cc:host_local_gate) or vector(0)")
+        );
         assert_eq!(waiting, None);
     }
 

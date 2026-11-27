@@ -224,20 +224,18 @@ impl Row for Machine {
 /// running, queue and last day, and the machines that take it.
 impl Row for Pool {
     const COLUMNS: &'static [&'static str] = &[
-        "pool", "running", "waiting", "oldest", "done_1h", "done_5h", "done", "usual",
-        "pass", "machines",
+        "pool", "running", "waiting", "oldest", "done_1h", "done_5h", "done", "usual", "pass",
+        "machines",
     ];
     const STATES: &'static [&'static str] = &["all", "waiting"];
     const FACETS: &'static [&'static str] = &[];
     const HIDE_EMPTY: bool = true;
     const LEAD: &'static str = "pool";
     const GLANCE: &'static [&'static str] = &["waiting", "oldest", "pass"];
-    const LEGEND: &'static [(&'static str, &'static str)] = &[
-        (
-            "usual",
-            "how long a finished job of the kind usually runs, the median over the last 24h",
-        ),
-    ];
+    const LEGEND: &'static [(&'static str, &'static str)] = &[(
+        "usual",
+        "how long a finished job of the kind usually runs, the median over the last 24h",
+    )];
 
     fn val(&self, col: &str) -> Val {
         match col {
@@ -497,7 +495,9 @@ fn pools(infra: &Infra, cc: &HashMap<String, f64>, alias: &HashMap<String, Strin
         // Running is the gates running now, on each machine; no series says how many wait.
         let mut gates: BTreeMap<String, u32> = BTreeMap::new();
         for g in infra.get("gates") {
-            *gates.entry(infra::host(alias, g.label("host"))).or_default() += 1;
+            *gates
+                .entry(infra::host(alias, g.label("host")))
+                .or_default() += 1;
         }
         out.push(Pool {
             pool: LOCAL_POOL.into(),
@@ -567,8 +567,10 @@ pub(crate) mod tests {
     fn runners(i: &mut Infra, rows: &[(&str, &str, &str, &str, &str)]) {
         let (mut state, mut kind) = (vec![], vec![]);
         for (host, name, st, k, site) in rows {
-            state.push(json!({"__name__": "github_runner_state", "host": host, "name": name,
-                "state": st, "site": site, "v": "1"}));
+            state.push(
+                json!({"__name__": "github_runner_state", "host": host, "name": name,
+                "state": st, "site": site, "v": "1"}),
+            );
             if *st == "running" {
                 kind.push(
                     json!({"__name__": "ci_runner_job", "runner": name, "kind": k, "v": "1"}),
@@ -689,10 +691,8 @@ pub(crate) mod tests {
             ],
         );
         let cc = |pool: &str| json!({"__name__": "cc:pool_slots", "pool": pool, "v": "1"});
-        i.instant.insert(
-            "cc",
-            series(vec![cc("heavy"), cc("light"), cc("unity")]),
-        );
+        i.instant
+            .insert("cc", series(vec![cc("heavy"), cc("light"), cc("unity")]));
         let (ms, pools) = build(&i);
         let m = machine(&ms, "ms-a2");
         assert_eq!((m.busy, m.slots), (1, 3));
@@ -701,7 +701,11 @@ pub(crate) mod tests {
             pools.iter().map(|p| (p.pool.as_str(), p.running)).collect();
         assert_eq!(
             running,
-            [("heavy", Some(0.0)), ("light", Some(0.0)), ("unity", Some(1.0))]
+            [
+                ("heavy", Some(0.0)),
+                ("light", Some(0.0)),
+                ("unity", Some(1.0))
+            ]
         );
     }
 
@@ -903,6 +907,9 @@ pub(crate) mod tests {
         none.pods.clear();
         none.instant.remove("runners");
         let (_, ps) = build(&none);
-        assert!(ps.iter().filter(|p| p.pool != LOCAL_POOL).all(|p| p.running.is_none()));
+        assert!(ps
+            .iter()
+            .filter(|p| p.pool != LOCAL_POOL)
+            .all(|p| p.running.is_none()));
     }
 }

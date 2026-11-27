@@ -95,8 +95,7 @@ impl SlotUse {
 /// rest of the machine by class.
 impl Row for SlotUse {
     const COLUMNS: &'static [&'static str] = &["slot", "now", "job", "cores", "mem"];
-    const STATES: &'static [&'static str] =
-        &["all", "busy", "idle", "starting", "reserved", "off"];
+    const STATES: &'static [&'static str] = &["all", "busy", "idle", "starting", "reserved", "off"];
     const FACETS: &'static [&'static str] = &["now"];
     const HIDE_EMPTY: bool = true;
     const LEAD: &'static str = "slot";
@@ -744,7 +743,10 @@ mod tests {
             ]
         );
         // A fixed runner requests nothing; a kind's row is what its pods request.
-        assert_eq!((s[0].cores_text(), s[0].mem_text()), (String::new(), String::new()));
+        assert_eq!(
+            (s[0].cores_text(), s[0].mem_text()),
+            (String::new(), String::new())
+        );
         assert_eq!(
             (s[2].cores_text(), s[2].mem_text()),
             ("3.0".into(), "8.0G".into())
