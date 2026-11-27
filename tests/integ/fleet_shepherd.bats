@@ -823,6 +823,80 @@ typed() { cat "$HOME/panel.calls" 2>/dev/null; }
   assert_output 'worker close --server lab --pane %7 --sid 7'
 }
 
+# worker_ssh: a fleet_host_run stand-in that logs the host and runs the command here; a call matching
+# STUB_SSH_FAIL exits 255 as ssh does.
+worker_ssh() {
+  printf '%s\n' 'fleet_hosts() { :; }' 'fleet_host_run() { local h="$1"; shift; echo "$h $*" >> "$HOME/ssh.calls"' \
+    '  [ -n "${STUB_SSH_FAIL:-}" ] && [[ "$*" =~ $STUB_SSH_FAIL ]] && return 255; "$@"; }' > "$SANDBOX/fleet-hosts.sh"
+  export FLEET_HOSTS_LIB="$SANDBOX/fleet-hosts.sh"
+}
+# wrow <sid> <bucket> [extra-json]: a row on worker razer-laptop's lab server
+wrow() { crow "$1" "$2" keep "$(jq -c -n --arg s "$1" --argjson x "${3:-{\}}" \
+  '{target:"razer-laptop@lab/dotfiles-agent-\($s):1", host:"razer-laptop"} + $x')"; }
+
+@test "a fleet worker's nudge line ends in the say call that delivers it; this machine's keeps no tail (ar-3987)" {
+  doc "[$(wrow 12 STALLED), $(crow 13 STALLED keep),
+        $(wrow 14 NEEDS '{"own_asks":1,"activity":"idle","idle_min":300,"escalated":true}')]"
+  run "$SH" due
+  assert_success
+  assert_line 'nudge STALLED: razer-laptop@lab/dotfiles-agent-12:1 [%12] STALLED f-12; then: fleet-shepherd say razer-laptop@lab/%12 "<the nudge>"'
+  assert_line 'nudge STALLED: lab/13:1 [%13] STALLED f-13'
+  assert_line 'nudge NEEDS: razer-laptop@lab/dotfiles-agent-14:1 [%14] NEEDS f-14; then: fleet-shepherd say razer-laptop@lab/%14 "<the nudge>"'
+  # The tail is no part of the line's key, so a skip copied with it holds the line.
+  "$SH" check >/dev/null || true
+  run "$SH" skip 'nudge STALLED: razer-laptop@lab/dotfiles-agent-12:1 [%12] STALLED f-12; then: fleet-shepherd say razer-laptop@lab/%12 "<the nudge>"' 'w'
+  assert_success
+}
+
+@test "say types the nudge into a worker's pane over ssh and marks it only once sent; an unreachable worker is left unmarked (ar-3987)" {
+  worker_ssh
+  doc "[$(wrow 12 STALLED)]"
+  STUB_PANE="$IDLE" run "$SH" say razer-laptop@lab/%12 "Open the PR, then carry on with your plan."
+  assert_success
+  assert_output 'said: razer-laptop@lab/dotfiles-agent-12:1'
+  grep -qx 'razer-laptop agent-panel send --wait 0 --pane lab/%12 Open the PR, then carry on with your plan.' "$HOME/ssh.calls"
+  grep -qx 'mark 12 STALLED f-12' "$HOME/sessions.calls"
+  # The target names the same row.
+  : > "$HOME/sessions.calls"
+  STUB_PANE="$IDLE" run "$SH" say razer-laptop@lab/dotfiles-agent-12:1 "again"
+  assert_success
+  # ssh's 255, on the probe or on the send: nothing marked, so the next pass sends it.
+  for fail in tmux agent-panel; do
+    : > "$HOME/sessions.calls"; : > "$HOME/panel.calls"
+    STUB_SSH_FAIL=$fail STUB_PANE="$IDLE" run "$SH" say razer-laptop@lab/%12 "Open the PR."
+    assert_equal "$status" 75
+    assert_output 'unreachable: razer-laptop'
+    [ ! -s "$HOME/sessions.calls" ]
+  done
+  [ ! -s "$HOME/panel.calls" ]
+}
+
+@test "say sends nothing and marks nothing to a prompt that takes no keys, a held pane, a nudged row or the placeholder (ar-3987)" {
+  worker_ssh
+  doc "[$(wrow 12 STALLED)]"
+  # a draft in the box
+  STUB_PANE="${IDLE/$'\xe2\x9d\xaf\xc2\xa0'/$'\xe2\x9d\xaf half typed'}" run "$SH" say razer-laptop@lab/%12 "Open the PR."
+  assert_equal "$status" 75
+  assert_output --partial 'busy: razer-laptop@lab/dotfiles-agent-12:1'
+  [ ! -s "$HOME/panel.calls" ]
+  # another send holds the pane
+  STUB_PANEL_RC=75 STUB_PANE="$IDLE" run "$SH" say razer-laptop@lab/%12 "Open the PR."
+  assert_equal "$status" 75
+  # the Enter not taken: unmarked, exit 3
+  STUB_PANEL_RC=3 STUB_PANE="$IDLE" run "$SH" say razer-laptop@lab/%12 "Open the PR."
+  assert_equal "$status" 3
+  [ ! -s "$HOME/sessions.calls" ]
+  : > "$HOME/panel.calls"
+  STUB_PANE="$IDLE" run "$SH" say razer-laptop@lab/%12 "<the nudge>"
+  assert_equal "$status" 2
+  doc "[$(wrow 12 STALLED '{"nudged":true}')]"
+  STUB_PANE="$IDLE" run "$SH" say razer-laptop@lab/%12 "Open the PR."
+  assert_failure 1
+  STUB_PANE="$IDLE" run "$SH" say razer-laptop@lab/%99 "Open the PR."
+  assert_failure 2
+  [ ! -s "$HOME/panel.calls" ]
+  [ ! -s "$HOME/sessions.calls" ]
+}
 @test "check types /wind-down auto into a close-now row whose bucket nudge was held unseen (2026-11-18: hub/dotfiles:4 and :8)" {
   # The pass marked LANDED and its SendMessage waited for approval in a manual-mode session; that
   # fact mark is not the close claim, so the close is still typed.
@@ -2231,6 +2305,15 @@ phases_doc() { doc "$(jq -s . "$HOME/rows")"; verdicts; }
   refute_output --partial t-s3
   refute_output --partial t-s4
   refute_output --partial t-s5
+}
+
+@test "an overdue phase on a fleet worker's session ends in the say call that marks its phase key (ar-3987)" {
+  phase s1 shell 40 81
+  phases_doc
+  jq '.sessions[0] += {target:"razer-laptop@lab/t-s1:1", host:"razer-laptop", pane:"%5"}' "$FLEET_STATE_FILE" > "$HOME/d" && mv "$HOME/d" "$FLEET_STATE_FILE"
+  run "$SH" due
+  assert_success
+  assert_line "overdue: razer-laptop@lab/t-s1:1 [%5] phase 2/4 'P2 the thing' open 81m, expected 40m (b); then: fleet-shepherd say razer-laptop@lab/%5 --fact \"overdue phase 2/4\" \"<the nudge>\""
 }
 
 @test "an overdue line names the session running the open phase's item, once, not every session on the plan (ar-1497)" {
