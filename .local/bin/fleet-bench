@@ -5270,15 +5270,29 @@ upsert_report() {
 watch_sev() { watch_severity "$TRIAGE_WATCHES/$1.yaml"; }
 watch_after() { case "$1" in high|urgent) echo "$TRIAGE_WATCH_HIGH_AFTER" ;; *) echo "$TRIAGE_WATCH_AFTER" ;; esac; }
 
-# system_note <watch> <route skill> -> "; system <ids>: load fix-red and <skills>" for a watch whose
-# manifest names a `system:`, else nothing. The skills are the ones whose metadata.system names one
-# of its ids (one pass over BENCH_SKILLS_DIR), less fix-red and the route's own skill, at most
-# TRIAGE_SYSTEM_SKILLS of them, so the red's session loads fix-red plus its system's domain skills.
-system_note() {
-  local ids skills
-  # one line, `system: ci` or `system: [ci, tests]` (the forms SENTINEL.md shows), quotes and a comment dropped
+# watch_system_ids <watch> -> the ids its manifest's `system:` names, space-separated: one line,
+# `system: ci` or `system: [ci, tests]` (the forms SENTINEL.md shows), quotes and a comment dropped.
+watch_system_ids() {
+  local ids
   ids=$(awk '/^system:/ { sub(/^system:[[:space:]]*/, ""); sub(/[[:space:]]#.*/, ""); gsub(/["'"'"'\[\],]/, " "); print; exit }' "$TRIAGE_WATCHES/$1.yaml" 2>/dev/null)
-  ids=$(echo $ids)
+  echo $ids
+}
+
+# alert_system_ids <alertname> -> the ids the alert's rule names in its `system` label, read off the
+# alert watch's `systems: <alertname>=<id>[,<id>] ...` evidence line (its probe prints one), so an
+# alert's red loads its own system's skills, not the watch's. Nothing when no line names it; an id
+# that is not lowercase is dropped.
+alert_system_ids() {
+  sed -n 's/^systems: //p' "$TRIAGE_WATCH_STATE/$TRIAGE_ALERT_WATCH.out" 2>/dev/null | tr ' ' '\n' \
+    | awk -F= -v n="$1" '$1 == n { gsub(/,/, "\n", $2); print $2 }' | grep -xE '[a-z][a-z0-9_-]*' | sort -u | paste -sd' ' -
+}
+
+# system_note <ids> <route skill> -> "; system <ids>: load fix-red and <skills>", nothing for no ids.
+# The skills are the ones whose metadata.system names one of the ids (one pass over BENCH_SKILLS_DIR),
+# less fix-red and the route's own skill, at most TRIAGE_SYSTEM_SKILLS of them, so the red's session
+# loads fix-red plus its system's domain skills.
+system_note() {
+  local ids=$1 skills
   [ -n "$ids" ] || return 0
   skills=$(find -L "$BENCH_SKILLS_DIR" -mindepth 2 -maxdepth 2 -name SKILL.md -print0 2>/dev/null | sort -z \
     | xargs -0 awk -v ids=" $ids " '
@@ -5571,7 +5585,7 @@ triage_shape() {
 # counted 0 again and a red two fixes did not hold was retried past the cap
 # (the old aggregate work-chain watch and runner-score, 2026-11-07).
 triage_route() {
-  local n key text pri re route skill fix tags t note hit cause extra
+  local n ids key text pri re route skill fix tags t note hit cause extra
   while IFS=$'\t' read -r key text pri; do
     hit=0 cause=- extra=
     triage_line "$text" && hit=1
@@ -5606,7 +5620,12 @@ triage_route() {
     fi
     text+="${note:+; $note}"
     case "$route" in agent | alert | owned:?*)
-      if [[ "$key" == 'check(watch): '* ]]; then n=${key#'check(watch): '}; text+=$(system_note "${n%% *}" "${skill:--}"); fi ;;
+      # a watch's red loads its manifest's system; an alert's its rule's `system` label, else the watch's
+      if [[ "$key" == 'check(watch): '* ]]; then n=${key#'check(watch): '}; text+=$(system_note "$(watch_system_ids "${n%% *}")" "${skill:--}")
+      elif [[ "$key" == 'check(alert): '* ]]; then
+        n=${key#'check(alert): '}; ids=$(alert_system_ids "${n%% *}")
+        text+=$(system_note "${ids:-$(watch_system_ids "$TRIAGE_ALERT_WATCH")}" "${skill:--}")
+      fi ;;
     esac
     for t in ${tags:-}; do
       case "$t" in -) ;; \#*) text+=" $t" ;; *) extra+="${extra:+ }$t" ;; esac
