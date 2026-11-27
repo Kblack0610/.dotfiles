@@ -5752,6 +5752,8 @@ triage_kind() { case "$1" in 'check(watch): '*) echo ' watch' ;; 'check(alert): 
 # so the watches bound it, and fleet-dispatch widens its red floor by one for each. Outside
 # TRIAGE_FIX_CAP is not outside the queue cap: the promote is a dispatch pull (--dispatch), so at the cap it makes
 # room or leaves its row on the board for a pass (agent-queue make_room, admit).
+# A row a closed try left started that no live item holds (row_in_hand) is promoted with --restart, and a
+# promote that refuses is said with its reason (ar-4654).
 # A later try is tagged `retry:<earlier slugs>` so its session starts from what did not hold. Once its
 # TRIAGE_FIX_TRIES did not hold, a cause gets one escalation: an item tagged `escalate`, pinned to
 # TRIAGE_ESCALATE_MODEL, whose brief is fix-red's root-cause pass. Only when that did not hold either is
@@ -5760,7 +5762,7 @@ triage_kind() { case "$1" in 'check(watch): '*) echo ' watch' ;; 'check(alert): 
 # (ask UfRZaR, 2026-11-20, on the human's "needs me should only be what needs me"). An alert route's
 # cause whose ask still stands (triage_ask_stands) queues nothing: that ask owns the trip.
 triage_promote() {
-  local board key raw route cause tags items used trip tries more kind n=0 capped=0 seen=' ' model ask standing=' '
+  local board key raw route cause tags items used trip tries more kind n=0 capped=0 seen=' ' model restart err ask standing=' '
   $TRIAGE_HOLD_CMD >/dev/null 2>&1 || { echo 0; return 0; }
   items=$(triage_items) || { echo 0; return 0; }
   used=$(jq --arg d "$(date -u -d "@$(now)" +%F)" \
@@ -5795,8 +5797,19 @@ triage_promote() {
     more=''; [ "$tries" -eq 0 ] || more=" retry:$(cause_slugs "$items" "$cause" "$trip")"
     model=(); [ "$tries" -lt "$TRIAGE_FIX_TRIES" ] || { more=" escalate$more"; model=(--model "$TRIAGE_ESCALATE_MODEL"); }
     raw=$(awk -F'\t' -v p="${key,,}" 'index($3, p) == 1 { print $4; exit }' <<<"$board")
-    [[ "$raw" == '- [ ]'* ]] || continue
-    $TRIAGE_PROMOTE_CMD --agent --dispatch --project "$KPI_BOARD" "${model[@]}" --tags "red$kind cause:$cause$more${tags:+ $tags}" --raw "$raw" >/dev/null 2>&1 || continue
+    # A row its own fix item (slug = its id) left started when it closed, with no live item behind it, is
+    # queued again with --restart, as a todo one is (ar-4654): it waited 72h for the orphan pass. A row
+    # started by hand has no such item and stays.
+    restart=()
+    case $raw in
+      '- [ ]'*) ;;
+      '- [/]'*) [[ $raw =~ id:([a-z]+-[0-9]+) ]] && jq -e --arg id "${BASH_REMATCH[1]}" 'any(.[]; .slug == $id and .state == "done")' <<<"$items" >/dev/null &&
+        ! row_in_hand "$items" "$raw" || continue
+        restart=(--restart) ;;
+      *) continue ;;
+    esac
+    err=$($TRIAGE_PROMOTE_CMD --agent --dispatch "${restart[@]}" --project "$KPI_BOARD" "${model[@]}" --tags "red$kind cause:$cause$more${tags:+ $tags}" --raw "$raw" 2>&1 >/dev/null) ||
+      { say "triage: could not queue $key (${raw:0:5}): $(tail -n 1 <<<"$err")"; continue; }
     n=$((n + 1)); [ -n "$kind" ] || capped=$((capped + 1))
   done <<<"$1"
   triage_spent_write "$spent"
