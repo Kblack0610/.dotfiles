@@ -3011,6 +3011,28 @@ epics_fixture() {
   assert_output --partial 'no project nosuch: not listed, or its roadmap could not be read'
 }
 
+@test "epics reads the queue and the dispatcher's stats once beside its other reads, and its forecast skips only the drain (ar-1140)" {
+  epics_fixture
+  row a lab/game-agent-1:1 0 1 > "$SNAP"; sample_at 0
+  printf '#!/usr/bin/env bash\necho q >> "%s"\ncat "%s"\n' "$SANDBOX/calls" "$SANDBOX/all-items.jsonl" > "$SANDBOX/bin/all-items-stub"
+  printf '#!/bin/sh\necho s >> "%s"\necho "{\\"room_max_live\\":1}"\n' "$SANDBOX/calls" > "$SANDBOX/bin/stats-stub"
+  chmod +x "$SANDBOX/bin/all-items-stub" "$SANDBOX/bin/stats-stub"
+  unset BENCH_QUEUE_SLOTS
+  : > "$SANDBOX/calls"
+  BENCH_DISPATCH_STATS_CMD=stats-stub BENCH_NOW=$T0 run "$SUBJECT" epics --json --project game
+  assert_success
+  # the ETA is the one the serial read gave (the ETA test above): q1 on its slot, then the tail
+  run jq -c --argjson t "$T0" '.projects[0].epics[0].eta | [.p50 - $t, .basis]' <<<"$output"
+  assert_output '[10800,"queue+pace(default)"]'
+  run sort "$SANDBOX/calls"
+  assert_output $'q\ns'
+  # the items mode drops the drain and nothing else: .items is the same as the full forecast's
+  run bash -c '. "$1"; export BENCH_QUEUE_SLOTS=1; i=$(all-items-stub | jq -c "select(.state != \"done\")")
+    full=$(forecast_json "$2" "" "$i"); part=$(forecast_json "$2" "" "$i" items)
+    jq -e .drain <<<"$full" >/dev/null && jq -e ".drain == null" <<<"$part" >/dev/null && [ "$(jq -cS .items <<<"$full")" = "$(jq -cS .items <<<"$part")" ] && echo same' _ "$SUBJECT" "$T0"
+  assert_output same
+}
+
 @test "a sample freezes an epic's ETA when first seen and on a scope change, and scores it once when its rows land" {
   epics_fixture
   row a lab/game-agent-1:1 0 1 > "$SNAP"

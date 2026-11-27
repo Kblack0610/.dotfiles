@@ -818,18 +818,6 @@ fn print_releases(a: &mut App, section: Option<String>, w: usize, out: &mut impl
     i32::from(!errors.is_empty())
 }
 
-/// The Projects tab's task feed over the queue `print_once` already read: `feed` would read the
-/// queue a second time, about 4s of every Prefix+p preview move (ar-1140).
-fn projects_feed(
-    sys: &dyn hub_core::session_actions::Runner,
-    queue: Option<&hub_core::queue::Queue>,
-) -> Result<hub_core::tasks::Feed, String> {
-    match queue {
-        Some(q) => hub_core::sheet_view::feed_with(sys, q),
-        None => hub_core::sheet_view::feed(sys),
-    }
-}
-
 /// The pages as plain text, for tests, capture-pane and a quick look over ssh.
 fn print_once(req: Option<tabreq::Req>) -> i32 {
     let section = req.as_ref().and_then(|r| r.1.clone());
@@ -911,7 +899,7 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         a.boards = Some(app::Boards::read(&a.files, None));
     }
     // Home counts the queue too, so it is read for the default pages as well.
-    if matches!(tab, None | Some(Tab::Home | Tab::Queue | Tab::Projects)) {
+    if matches!(tab, None | Some(Tab::Home | Tab::Queue)) {
         a.queue = Some(hub_core::queue::Queue::read(
             &hub_core::session_actions::System,
         ));
@@ -935,14 +923,34 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
     }
     if tab == Some(Tab::Projects) {
         let sys = hub_core::session_actions::System;
-        a.boards = Some(app::Boards::read(&a.files, None));
-        a.tasks = Some(projects_feed(&sys, a.queue.as_ref()));
         a.projects = Some(projtab::load(&sys));
         a.tab = Tab::Projects;
         // `--tab 'projects <name>'` prints that project's opened card, its page read here, over
-        // its rows, what Enter shows: the Prefix+p preview.
+        // its rows, what Enter shows: the Prefix+p preview. The cards are the stats' rows one for
+        // one, so the opened card is known before the queue, the feed and the boards are read, and
+        // its page (fleet-bench epics, the longest read) runs beside them, not after (ar-1140).
         a.open_project(section);
-        a.read_proj_page_now(&sys);
+        let open = a.open_card();
+        let files = &a.files;
+        let (page, boards, queue, tasks) = std::thread::scope(|s| {
+            let page = open.map(|(name, stage)| {
+                s.spawn(move || {
+                    App::proj_page_now(&hub_core::session_actions::System, &name, &stage)
+                })
+            });
+            let boards = s.spawn(|| app::Boards::read(files, None));
+            let queue = hub_core::queue::Queue::read(&sys);
+            // The feed over the queue just read: `feed` would read it a second time, about 4s.
+            let tasks = hub_core::sheet_view::feed_with(&sys, &queue);
+            fn join<T>(h: std::thread::ScopedJoinHandle<'_, T>) -> T {
+                h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))
+            }
+            (page.map(join), join(boards), queue, tasks)
+        });
+        a.proj_page = page;
+        a.boards = Some(boards);
+        a.queue = Some(queue);
+        a.tasks = Some(tasks);
         // `--tab 'projects ladder'` reads the Ladder here, the worker's read inline.
         if a.ladder_shown() {
             a.ladder = Some(hub_core::stages::read(

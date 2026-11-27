@@ -56,7 +56,7 @@ pub const REDS_REFRESH: Duration = Duration::from_secs(300);
 /// VictoriaMetrics has no push and a check runs every one to five minutes, so the tick re-reads
 /// the open app's checks this often, the web page's cadence.
 pub const APP_STATUS_REFRESH: Duration = Duration::from_secs(60);
-/// One `fleet-bench epics` read takes about 10s and an epic moves in hours, so the tick re-reads
+/// One `fleet-bench epics` read takes about 6s and an epic moves in hours, so the tick re-reads
 /// Deliverables only this often; entering Projects and `r` still read it at once.
 pub const DELIVERABLES_REFRESH: Duration = Duration::from_secs(300);
 /// A Schedules read shells out to systemd and Prometheus for seconds, and a schedule changes by
@@ -2073,7 +2073,7 @@ impl App {
     }
 
     /// The open card's name and stage; None on the list or with All open.
-    fn open_card(&self) -> Option<(String, String)> {
+    pub fn open_card(&self) -> Option<(String, String)> {
         if !self.pv.open {
             return None;
         }
@@ -2103,14 +2103,16 @@ impl App {
         }
     }
 
-    /// Read the open card's page here and now, for `--once`.
-    pub fn read_proj_page_now(&mut self, runner: &(dyn Runner + Sync)) {
-        if let Some((name, stage)) = self.open_card() {
-            let now = jobs::now();
-            let mut pg = hub_core::page::read(runner, &name, &stage, now);
-            pg.read_checks(runner, now);
-            self.proj_page = Some(pg);
-        }
+    /// One card's page read here and now, for `--once`, which runs it beside its other reads.
+    pub fn proj_page_now(
+        runner: &(dyn Runner + Sync),
+        name: &str,
+        stage: &str,
+    ) -> hub_core::page::Page {
+        let now = jobs::now();
+        let mut pg = hub_core::page::read(runner, name, stage, now);
+        pg.read_checks(runner, now);
+        pg
     }
 
     /// Read the page when the open card is not the one last asked for.
