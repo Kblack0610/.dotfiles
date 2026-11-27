@@ -1436,14 +1436,20 @@ deploy_steps() {
 # is added. Why: home-config merged 23 ansible role changes on 2026-11-25 and 11-26 that reached no
 # host until ConvergenceDrift fired on five, after #1447's README rule that the merging session applies
 # them was never followed (ar-5861, ask GxMF2a). Never fails the landing.
+# A step with {role} names what to apply (after_merge_roles): the item's task carries a "Roles:" line,
+# and a queued item carries this merge only when its Roles cover every role it changed; otherwise a
+# new item names the roles not yet covered. Why: an item naming no role left its session to work out
+# which hosts a merge reaches, and a queued one for role A swallowed a later merge of role B (ar-5918).
 after_merge_steps() {
-  local text files line paths step p f hit slug project out rc queued repo=${pr_ref%#*} sha ps=()
+  local text files line paths step p f hit slug project out rc queued repo=${pr_ref%#*} sha ps=() roles left q have r task by words=() ph='{role}'
   text=$(git show "$remote/$base:$AFTER_MERGE_FILE" 2>/dev/null) || return 0
   [ -n "$text" ] || return 0
   files=${PR_FILES-$(pr_files 2>&1)} || { echo "after-merge: no step added, $api could not list #$pr's files ($(lastline "$files")); re-run agent-land $pr" >&2; return 0; }
   project=$(project_canonical "${repo##*/}")
-  # this project's queued items only: another repo's item for the same step text does not carry this merge
-  queued=$(aq_retry list --json --state queued 2>/dev/null | jq -r --arg p "$project" 'select(.project == $p) | .slug // empty' 2>/dev/null) \
+  # this project's queued items only: another repo's item for the same step text does not carry this merge.
+  # One "<slug><TAB><its Roles: line>" a line; an item with no Roles line covers no role: it was filed by hand.
+  queued=$(aq_retry list --json --state queued 2>/dev/null | jq -r --arg p "$project" \
+    'select(.project == $p and (.slug // "") != "") | "\(.slug)\t\((.task // "") | [splits("\n") | select(startswith("Roles: "))][0] // "" | ltrimstr("Roles: "))"' 2>/dev/null) \
     || echo "after-merge: could not read the queue, so a step still queued may be added again" >&2
   while IFS= read -r line; do
     line=${line%$'\r'}
@@ -1459,12 +1465,31 @@ after_merge_steps() {
     done
     [ -n "$hit" ] || continue
     sha=$(printf '%s' "$step" | sha1sum | cut -c1-7)
-    # the repo last: agent-queue cuts a slug at 40 characters
-    slug=$(grep -m1 -E "^after-merge-$sha-[0-9]+-" <<<"$queued") && { echo "after-merge: $slug is still queued and carries #$pr too: $step"; continue; }
+    roles=''; left=''
+    if [[ "$step" == *"$ph"* ]]; then
+      roles=$(after_merge_roles "$files" "${ps[@]}")
+      # the roles no queued item of this step covers; an item covering "all" covers every one
+      left=" $roles " by=''
+      while IFS=$'\t' read -r q have; do
+        [[ "$q" =~ ^after-merge-$sha-[0-9]+- ]] || continue
+        [ "$have" = all ] && { left=' ' by=$q; break; }
+        [ "$roles" = all ] && continue
+        for r in $have; do [[ "$left" == *" $r "* ]] && { left=${left/ $r / }; [[ " $by " == *" $q "* ]] || by+=" $q"; }; done
+      done <<<"$queued"
+      read -ra words <<<"$left"; left=${words[*]}
+      [ -n "$left" ] || { echo "after-merge: ${by# } still queued, applying $roles, so it carries #$pr too: ${step//"$ph"/$roles}"; continue; }
+      roles=$left
+    else
+      # the repo last: agent-queue cuts a slug at 40 characters
+      slug=$(cut -f1 <<<"$queued" | grep -m1 -E "^after-merge-$sha-[0-9]+-") && { echo "after-merge: $slug is still queued and carries #$pr too: $step"; continue; }
+    fi
+    step=${step//"$ph"/$roles}
     slug="after-merge-$sha-$pr-${repo##*/}"
+    task="$pr_ref (merge ${merged:0:12}) changed $hit, and ${repo##*/}'s $AFTER_MERGE_FILE leaves this step for every merge that changes $paths: $step"
+    [ -z "$roles" ] || task+=$'\n'"Roles: $roles"
     rc=0
     out=$(AGENT_QUEUE_ITEM='' aq_retry add --project "$project" --priority high --from "item:$item" --slug "$slug" \
-      "chore(after-merge): $step (left by $pr_ref)"$'\n\n'"$pr_ref (merge ${merged:0:12}) changed $hit, and ${repo##*/}'s $AFTER_MERGE_FILE leaves this step for every merge that changes $paths: $step"$'\n'"Run it at the base's tip when you start, so it carries every merge since, and prove what it changed." 2>&1) || rc=$?
+      "chore(after-merge): $step (left by $pr_ref)"$'\n\n'"$task"$'\n'"Run it at the base's tip when you start, so it carries every merge since, and prove what it changed." 2>&1) || rc=$?
     case "$rc" in
       0) echo "after-merge: added $slug: $step" ;;
       5) echo "after-merge: $slug filed on the $project board, the queue takes it from there: $step" ;;
@@ -1473,6 +1498,30 @@ after_merge_steps() {
          else echo "after-merge: not added ($(lastline "$out")): agent-queue add --project $project --priority high --from item:$item --slug $slug 'chore(after-merge): $step (left by $pr_ref)'" >&2; fi ;;
     esac
   done <<<"$text"
+}
+
+# after_merge_roles <files> <path>... -> the {role} of an after-merge step: the sorted role directories
+# (the name after a path that ends in roles/) the merge changed, or "all" when it changed a file of
+# the line's other paths (an inventory, group_vars: they can reach any role's hosts) or one directly
+# under roles/. A path naming one role's directory (roles/<role>/) gives that role.
+after_merge_roles() {
+  local files=$1 p f rest out=''; shift
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    for p in "$@"; do
+      [[ "$f" == "$p"* ]] || [ "$f" = "$p" ] || continue
+      if [[ "$p" == roles/ || "$p" == */roles/ ]]; then
+        rest=${f#"$p"}
+        [[ "$rest" == */* ]] || { echo all; return; }
+        out+="${rest%%/*}"$'\n'
+        continue 2
+      fi
+      # a line naming one role's directory: that role
+      [[ "$p" =~ (^|/)roles/([^/]+)/$ ]] && { out+="${BASH_REMATCH[2]}"$'\n'; continue 2; }
+      { [[ "$p" == */ && "$f" == "$p"* ]] || [ "$f" = "$p" ]; } && { echo all; return; }
+    done
+  done <<<"$files"
+  sort -u <<<"$out" | grep . | paste -sd' ' -
 }
 
 # credit -> ", <what agent-queue attribute recorded>" for the item line: the PR's changed files

@@ -553,6 +553,7 @@ if [ "\$1" = add ]; then
   ! grep -qxF "\$slug" "$SANDBOX/aq.slugs" 2>/dev/null || { echo "agent-queue: already in the queue: \$slug" >&2; exit 1; }
   printf '%s\n' "\${*%%\$'\n'*}" >>"$SANDBOX/aq.add"
   printf '%s\n' "\${AGENT_QUEUE_ITEM:-}" >>"$SANDBOX/aq.env"
+  printf '%s\n---\n' "\${@: -1}" >>"$SANDBOX/aq.task"
   rc=\$(cat "$SANDBOX/aq.add.rc" 2>/dev/null || echo 0)
   [ "\$rc" -ne 0 ] || echo "\$slug" >>"$SANDBOX/aq.slugs"
   [ "\$rc" -ne 1 ] || echo "agent-queue: store locked" >&2
@@ -639,6 +640,65 @@ EOS
   assert_line "after-merge: after-merge-$sha-41-r is still queued and carries #42 too: $step"
   run grep -c . "$SANDBOX/aq.add"
   assert_output 1
+}
+
+# ar-5918: the item named no role, and one queued for a role swallowed a later merge of another.
+@test "after-merge: a {role} step names every role the merge changed in one item, and a queued one carries only the roles it names (ar-5918)" {
+  local tpl='apply ansible to the hosts that run roles: {role}' sha s
+  sha=$(printf '%s' "$tpl" | sha1sum | cut -c1-7)
+  s=after-merge-$sha-42-r
+  printf '%s\n' "ansible/roles/,ansible/inventory.yml $tpl" >"$NOTES_FIXTURE/after-merge"
+  aq_add_stub
+  # NEGATIVE CONTROL: a merge that touches no role and no other named path adds nothing
+  printf '%s\n' ansible/README.md docs/roles/x.md >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'after-merge: added'
+  [ ! -e "$SANDBOX/aq.add" ]
+  # two roles changed in one PR are both named, sorted and once each, in one item whose task says them
+  printf '%s\n' ansible/roles/time-sync/tasks/main.yml apps/x.yaml ansible/roles/ci-host/tasks/main.yml ansible/roles/ci-host/defaults/main.yml >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "after-merge: added $s: apply ansible to the hosts that run roles: ci-host time-sync"
+  run cat "$SANDBOX/aq.add"
+  assert_output "add --project r --priority high --from item:ship --slug $s chore(after-merge): apply ansible to the hosts that run roles: ci-host time-sync (left by o/r#42)"
+  run grep -cx 'Roles: ci-host time-sync' "$SANDBOX/aq.task"
+  assert_output 1
+  # a queued item naming both roles carries the next merge of either
+  : >"$SANDBOX/aq.add" >"$SANDBOX/aq.slugs"
+  "$SANDBOX/bin/agent-queue.real" add --project r --slug "after-merge-$sha-41-r" $'chore(after-merge): earlier\n\nRoles: ci-host time-sync' >/dev/null
+  printf '%s\n' ansible/roles/ci-host/handlers/main.yml >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "after-merge: after-merge-$sha-41-r still queued, applying ci-host, so it carries #42 too: apply ansible to the hosts that run roles: ci-host"
+  [ ! -s "$SANDBOX/aq.add" ]
+  # a role it does not name gets its own item naming only that role
+  printf '%s\n' ansible/roles/ci-host/tasks/main.yml ansible/roles/fleet-worker/tasks/main.yml >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "after-merge: added $s: apply ansible to the hosts that run roles: fleet-worker"
+  run grep -c . "$SANDBOX/aq.add"
+  assert_output 1
+  # a change outside a role directory (the inventory) can reach any role's hosts: all, which the queued item does not cover
+  : >"$SANDBOX/aq.add" >"$SANDBOX/aq.slugs"
+  printf '%s\n' ansible/inventory.yml ansible/roles/ci-host/tasks/main.yml >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "after-merge: added $s: apply ansible to the hosts that run roles: all"
+  # a queued item with no Roles line (one filed by hand) covers no role, so the merge still gets its item
+  : >"$SANDBOX/aq.add" >"$SANDBOX/aq.slugs"
+  "$SANDBOX/bin/agent-queue.real" add --project r --slug "after-merge-$sha-40-r" 'chore(after-merge): by hand' >/dev/null
+  printf '%s\n' ansible/roles/fleet-worker/tasks/main.yml >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "after-merge: added $s: apply ansible to the hosts that run roles: fleet-worker"
+  # a line naming one role's directory gives that role, and a role name with a quote passes whole
+  : >"$SANDBOX/aq.add" >"$SANDBOX/aq.slugs"
+  printf '%s\n' "ansible/roles/it's/ $tpl" >"$NOTES_FIXTURE/after-merge"
+  printf '%s\n' "ansible/roles/it's/tasks/main.yml" >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "after-merge: added $s: apply ansible to the hosts that run roles: it's"
 }
 
 @test "partial landing holds after items and the board until the other repo lands" {
