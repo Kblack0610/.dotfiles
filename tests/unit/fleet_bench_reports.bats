@@ -4232,6 +4232,27 @@ echo "$2: room"; exit 0
   assert_output '[1,1,1,3]'
 }
 
+@test "canary score: an item whose first run scored not run scores again when it is queued again; a run that scored is refused a second score" {
+  kpi_setup; kpi_fixture; canary_fixture
+  git -C "$CREPO" worktree add -q --detach "$SANDBOX/wt" "$CBASE"
+  cd "$SANDBOX/wt"
+  jq -n '{slug: "q1", agent: "go", model: "glm", sessions: "ses_q1", end_reason: "timeout"}' > "$CQ/q1.json"
+  AGENT_QUEUE_ITEM=q1 run "$SUBJECT" canary score greet
+  assert_output --partial 'canary greet: not run (the session ended: timeout)'
+  # The item runs again and ends in the model: its score is taken, not refused as already scored.
+  jq -n '{slug: "q1", agent: "go", model: "glm", sessions: "ses_q1 ses_q1b", end_reason: "stopped"}' > "$CQ/q1.json"
+  echo 'echo hello' > greet.sh
+  AGENT_QUEUE_ITEM=q1 run "$SUBJECT" canary score greet
+  assert_success
+  assert_output --partial 'canary greet: pass (exit 0)'
+  # Negative control: a run that scored is scored once.
+  AGENT_QUEUE_ITEM=q1 run "$SUBJECT" canary score greet
+  assert_failure 3
+  assert_output --partial 'q1 is already scored'
+  run jq -c '[.run, .pass]' "$FLEET_BENCH_DIR/canary.jsonl"
+  assert_output $'["q1",null]\n["q1",true]'
+}
+
 @test "canary score: the row records the item's end_reason; a provider, timeout or other unrated end scores not run, out of list, lanes and the KPI pass rate" {
   kpi_setup; kpi_fixture; canary_fixture
   git -C "$CREPO" worktree add -q --detach "$SANDBOX/wt" "$CBASE"
