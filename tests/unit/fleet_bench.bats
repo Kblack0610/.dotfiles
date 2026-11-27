@@ -2253,17 +2253,19 @@ cause_of() { printf '%s' 'lock .* held by pid' | sha256sum | cut -c1-8; }
   lock_route
   run "$SUBJECT" triage
   assert_success
-  sed -i 's/- \[ \] fix(logs)\(.*\)$/- [\/] fix(logs)\1 <!-- id:ar-77 -->/' "$BOARD"; : > "$PLOG"
-  # its item closed ok with no PR: a try that did not hold, so the row is queued again as a retry
-  jq -cn --arg t "red cause:$(cause_of)" '{slug: "ar-77", tags: $t, state: "done", status: "ok", queued: "2020-01-01T00:00:00Z", row: "agent-runtime:ar-77"}' > "$ITEMS"
+  local id; id=$(grep -o 'fix(logs).*<!-- id:ar-[0-9]*' "$BOARD" | grep -o 'ar-[0-9]*$')
+  [ -n "$id" ] || fail "the filed row has no id"
+  sed -i 's/- \[ \] fix(logs)/- [\/] fix(logs)/' "$BOARD"; : > "$PLOG"
+  # its own item closed ok with no PR: a try that did not hold, so the row is queued again as a retry
+  jq -cn --arg t "red cause:$(cause_of)" --arg id "$id" '{slug: $id, tags: $t, state: "done", status: "ok", queued: "2020-01-01T00:00:00Z", row: ("agent-runtime:" + $id)}' > "$ITEMS"
   run "$SUBJECT" triage
   assert_success
   assert_output --partial '1 queued as red fixes'
   run cat "$PLOG"
-  assert_output --regexp "^--agent --dispatch --restart --project agent-runtime --tags red cause:$(cause_of) retry:ar-77 --raw - \[/\] fix\(logs\): alpha error .*id:ar-77 -->$"
+  assert_output --regexp "^--agent --dispatch --restart --project agent-runtime --tags red cause:$(cause_of) retry:$id --raw - \[/\] fix\(logs\): alpha error .*id:$id -->$"
   # negative control: a live item of the row holds it, so nothing is queued
   : > "$PLOG"
-  jq -cn '{slug: "ar-78", tags: "", state: "running", queued: "2020-01-01T00:00:00Z", row: "agent-runtime:ar-77"}' >> "$ITEMS"
+  jq -cn --arg id "$id" '{slug: "ar-78", tags: "", state: "running", queued: "2020-01-01T00:00:00Z", row: ("agent-runtime:" + $id)}' >> "$ITEMS"
   run "$SUBJECT" triage
   assert_success
   [ ! -s "$PLOG" ]

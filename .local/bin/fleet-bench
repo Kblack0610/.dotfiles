@@ -5776,12 +5776,15 @@ triage_promote() {
     more=''; [ "$tries" -eq 0 ] || more=" retry:$(cause_slugs "$items" "$cause" "$trip")"
     model=(); [ "$tries" -lt "$TRIAGE_FIX_TRIES" ] || { more=" escalate$more"; model=(--model "$TRIAGE_ESCALATE_MODEL"); }
     raw=$(awk -F'\t' -v p="${key,,}" 'index($3, p) == 1 { print $4; exit }' <<<"$board")
-    # A row left started by a fix that closed with no live item behind it (ok with no PR, cancelled)
-    # is queued again with --restart, as a todo one is (ar-4654): it waited 72h for the orphan pass.
+    # A row its own fix item (slug = its id) left started when it closed, with no live item behind it, is
+    # queued again with --restart, as a todo one is (ar-4654): it waited 72h for the orphan pass. A row
+    # started by hand has no such item and stays.
     restart=()
     case $raw in
       '- [ ]'*) ;;
-      '- [/]'*) ! row_in_hand "$items" "$raw" || continue; restart=(--restart) ;;
+      '- [/]'*) [[ $raw =~ id:([a-z]+-[0-9]+) ]] && jq -e --arg id "${BASH_REMATCH[1]}" 'any(.[]; .slug == $id and .state == "done")' <<<"$items" >/dev/null &&
+        ! row_in_hand "$items" "$raw" || continue
+        restart=(--restart) ;;
       *) continue ;;
     esac
     err=$($TRIAGE_PROMOTE_CMD --agent --dispatch "${restart[@]}" --project "$KPI_BOARD" "${model[@]}" --tags "red$kind cause:$cause$more${tags:+ $tags}" --raw "$raw" 2>&1 >/dev/null) ||
