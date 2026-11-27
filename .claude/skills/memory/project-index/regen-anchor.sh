@@ -124,16 +124,26 @@ if declare -F project_lab_names >/dev/null 2>&1; then
   LAB_NAMES="$(project_lab_names "$PROJECT")"
   [ -n "$LAB_NAMES" ] || LAB_NAMES="$PROJECT"
 fi
-LAB_JSON=""
+LAB_JSON="" LAB_TYPES='{}'
 if command -v notes >/dev/null 2>&1; then
-  pages=""
+  pages="" canon=""
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    page="$(notes projects "$name" --json 2>/dev/null)" || continue
+    # </dev/null: the names arrive on this loop's stdin, which nothing the CLI runs may read.
+    page="$(notes projects "$name" --json 2>&1 </dev/null)" || {
+      # A tracker key that is no lab project fails quietly; a name two orgs hold is a fault to say.
+      case "$page" in *"exists in"*) echo "regen-anchor: $name: $page" >&2 ;; esac
+      continue
+    }
     jq -e 'type == "object"' <<<"$page" >/dev/null 2>&1 || continue
     pages="$pages$page"$'\n'
+    # The page names the canonical project, which an alias in LAB_NAMES is not.
+    canon="$(jq -r '.project // empty' <<<"$page")"
+    if [ -n "$canon" ] && declare -F project_inherited >/dev/null 2>&1; then
+      LAB_TYPES="$(jq -c --arg n "$canon" --arg t "$(project_inherited "$canon" type)" '.[$n] = $t' <<<"$LAB_TYPES")"
+    fi
   done <<<"$LAB_NAMES"
-  LAB_JSON="$(printf '%s' "$pages" | jq -s -c '.' 2>/dev/null || true)"
+  [ -z "$pages" ] || LAB_JSON="$(printf '%s' "$pages" | jq -s -c '.' 2>/dev/null || true)"
 fi
 # Each project's state and window are its card's (`hub projects --json`, about 1 s): the words
 # every project surface says (stages.md, "Project state"). The sheet's own open and done counts
@@ -161,17 +171,16 @@ fi
 # project with a month-old "where we are" reads as current to every session.
 lab_section() {
   echo "## Lab"
-  if [ -z "$LAB_JSON" ]; then
+  if ! command -v notes >/dev/null 2>&1; then
     echo "- _(notes CLI unavailable; lab facts not read)_"
     return
   fi
-  local rows types='{}' name
-  if declare -F project_inherited >/dev/null 2>&1; then
-    while IFS= read -r name; do
-      types="$(jq -c --arg n "$name" --arg t "$(project_inherited "$name" type)" '.[$n] = $t' <<<"$types")"
-    done <<<"$LAB_NAMES"
+  local rows
+  if [ -z "$LAB_JSON" ]; then
+    echo "- _(no lab project; \`project-map add\` scaffolds one)_"
+    return
   fi
-  rows="$(jq -r --arg today "$(date +%F)" --arg home "$HOME" --argjson types "$types" \
+  rows="$(jq -r --arg today "$(date +%F)" --arg home "$HOME" --argjson types "$LAB_TYPES" \
     --slurpfile hub <(printf '%s' "$HUB_JSON") '
     def day: strptime("%Y-%m-%d") | mktime;
     def tilde: if startswith($home) then "~" + ltrimstr($home) else . end;
@@ -186,13 +195,13 @@ lab_section() {
        and ($sdate == "" or (($today | day) - ($sdate | day)) > 14 * 86400)) as $stale
     | "- **\(.project)** (\([.profile, ($types[.project] // ""), .stage] | map(select(. != "")) | join(", ")))"
       + (if .version != "" then " \(.version)" else "" end)
-      + ": \(where), \(.counts.agent) on the agent board"
+      + ": \(where), \(.counts.agent // 0) on the agent board"
       + (if $sdate != "" then "; status \($sdate)" else "; no status" end)
       + (if $stale then " (STALE, over 14 days at \(.stage))" else "" end)
       + (if .cadence.measured_days != null
          then "; cuts every \(.cadence.measured_days)d against a \(.cadence.target_days)d target" else "" end)
-      + (if (.knowledge | length) > 0 then "; knowledge: \(.knowledge | length) notes" else "" end)
-      + "; `\(.lab.dir | tilde)/`"
+      + (if ((.knowledge // []) | length) > 0 then "; knowledge: \(.knowledge | length)\(if (.knowledge | length) >= 60 then "+" else "" end) notes" else "" end)
+      + "; `\((.lab.dir // "") | tilde)/`"
       + (if ($rows | length) == 1 and (.status.headline // "") != ""
          then "\n  - Status: " + (if (.status.headline | length) > 200 then .status.headline[:197] + "..." else .status.headline end)
          else "" end)
@@ -205,7 +214,7 @@ lab_section() {
       echo "- Standards: \`~/.local/src/docs/lifecycle.md\` (each step), \`~/.local/src/docs/stages.md\` (each stage, by type)"
     fi
   else
-    echo "- _(no lab project; \`project-map add\` scaffolds one)_"
+    echo "- _(lab pages read but not rendered; \`notes projects <name> --json\` shows them)_"
   fi
 }
 

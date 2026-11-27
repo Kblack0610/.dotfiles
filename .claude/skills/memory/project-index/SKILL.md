@@ -61,7 +61,7 @@ The AUTO block it writes:
   agent-board rows, STATUS date, the measured release cadence against its target when two cuts
   exist, the count of knowledge notes naming it, dir. A beta or prod project whose STATUS is
   missing or over 14 days old is flagged STALE. A key with exactly one lab project also gets
-  its STATUS text. A last line names the page command for the rest (docs, plans, lessons,
+  its STATUS text. A `Project page` line names the command for the rest (docs, plans, lessons,
   queue, asks, knowledge notes).
 - **Active plans** - the newest 5 open plans among the newest 60 files in `~/.agent/plans/{project}/` (`plan_open` in `plan-phases.sh`: not superseded, and a phase still unchecked, or no checklist and no `## Results` yet; a pointer stub counts as the plan it names).
 
