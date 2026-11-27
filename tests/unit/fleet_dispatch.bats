@@ -1857,14 +1857,14 @@ EOF
 
 @test "fill: a store brought up to origin syncs the agent store and the notes one, then promotes (ar-5954)" {
   game_ready
-  stub store-sync 'echo "store-sync $*" >> "$NOTES_FIXTURE/calls.log"'
-  stub store-sync-age 'echo "store-sync-age $*" >> "$NOTES_FIXTURE/calls.log"'
+  stub store-sync 'echo "sync $*" >> "$NOTES_FIXTURE/calls.log"'
+  stub store-sync-age 'echo "age $*" >> "$NOTES_FIXTURE/calls.log"'
   DRY=0 JUDGE_RC='' fill_day 1
   assert_equal "$FILLED" 1
   # A full sync of each: `--now` exits with no fetch when nothing is dirty, so it would prove nothing.
-  grep -qxE 'store-sync ?' "$NOTES_FIXTURE/calls.log" || fail "the agent store was not synced"
-  grep -qx 'store-sync --store notes' "$NOTES_FIXTURE/calls.log" || fail "the notes store was not synced"
-  grep -qx 'store-sync-age --notes --max-min 2' "$NOTES_FIXTURE/calls.log" || fail "the sync was not checked"
+  grep -qxE 'sync ?' "$NOTES_FIXTURE/calls.log" || fail "the agent store was not synced"
+  grep -qx 'sync --store notes' "$NOTES_FIXTURE/calls.log" || fail "the notes store was not synced"
+  grep -qx 'age --notes --max-min 2' "$NOTES_FIXTURE/calls.log" || fail "the sync was not checked"
 }
 
 @test "promote: a row an open sprint holds gets the sprint tag from any path, a queued sprint's row and a plain row do not" {
