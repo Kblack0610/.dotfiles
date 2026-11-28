@@ -62,7 +62,7 @@ Not for a pile of tasks (`fleet-queue`), a release (the system cuts it; `release
 7. **Wind down.** Invoke the `wind-down` skill in its `auto` mode, so step 0's checks run. The note lists: the PR and merge commit, what was validated with counts, the `assumed:` tally, and anything left on the board.
    - **`--pr-only`**: the open PR is the end the human asked for, so invoke it without `auto`; step 0's finished check would read the open PR as unlanded and refuse.
    - **Blocked on another queue item**: invoke it without `auto`, as `--pr-only` does (`references/landing.md` "Blocked on another queue item").
-   - **Blocked mode** (a red gate you cannot fix and no queue item fixes, or a hard gate with nothing else left to build): file it with `agent-ask post` and do NOT arm the teardown; read `references/landing.md` "Blocked mode".
+   - **Blocked mode** (a red gate you cannot fix and no queue item fixes, or a hard gate with nothing else left to build): file it with `agent-ask post` first, then, when the item came from a board row, invoke it in `auto` mode as above; with no row, do not arm the teardown; read `references/landing.md` "Blocked mode".
 
 ## Do NOT
 
@@ -70,4 +70,4 @@ Not for a pile of tasks (`fleet-queue`), a release (the system cuts it; `release
 - Run a repo's full slow suite when its CLAUDE.md says to run only the affected classes.
 - Force-push, rebase a pushed branch, or `reset --soft` onto a moved base.
 - Cross the `go` hard-stop boundary: no release tags or cuts (`release-guard.py` denies them; the system cuts), deploys, secrets or external sends, even though the rest of the run is autonomous.
-- Close the window over a blocked run. A teardown that hides the blocker is worse than no wind-down.
+- Wind down a blocked run before its ask is filed, or at all when its item has no board row. The ask is what shows the human the blocker and reopens this conversation on the answer.
