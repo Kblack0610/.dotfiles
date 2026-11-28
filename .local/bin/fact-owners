@@ -164,7 +164,8 @@ def row_names(doc):
         if r["key"]:
             out.add(r["key"])
         for s in spans(r["writer"]):
-            if ":" in s and not s.startswith("private:"):
+            s = s[len("private:"):] if s.startswith("private:") else s
+            if ":" in s:
                 out.add(s.split(":")[0])
     return out
 
@@ -538,12 +539,12 @@ def main(argv):
         else:
             files.append(a)
         i += 1
+    if cmd == "names":
+        print("\n".join(sorted(row_names(doc))))
+        return 0
     files = files or owned_files()
     if cmd == "files":
         print("\n".join(files))
-        return 0
-    if cmd == "names":
-        print("\n".join(sorted(row_names(doc))))
         return 0
     if cmd == "count":
         d = sum(len(debt_entries(r)) for r in rows_of(doc))

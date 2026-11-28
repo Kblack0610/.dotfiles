@@ -177,7 +177,7 @@ plan_overlap_ids() {
 
 # plan_owners_line [<plan file>] -> the plan's `Owners:` line under `## Reviewed` (planning.md, Owners:), its
 # continuation lines joined: `none: <search>` when it says none, else each name on it, one a line, backticks
-# stripped. Status 1 when the plan has no such line (an empty one prints nothing, status 0). The names are checked against
+# stripped, split on commas and spaces. Status 1 when the plan has no such line (an empty one prints nothing, status 0). The names are checked against
 # `fact-owners names`. Reads stdin with no file.
 plan_owners_line() {
   [ $# -eq 0 ] || [ -f "$1" ] || return 1
@@ -188,12 +188,13 @@ plan_owners_line() {
     { lab = $0; sub(/^[[:space:]]*([-*][[:space:]]+)?(\*\*)?/, "", lab)
       if (lab ~ /^Owners:/) { on = 1; got = 1; sub(/^Owners:(\*\*)?[[:space:]]*/, "", lab); line = lab; next }
       if (lab ~ /^[A-Z][A-Za-z ]*:/) on = 0 }
-    on && NF { line = line " " $0 }
+    on && !NF { on = 0 }
+    on { line = line " " $0 }
     END { if (got) print "x " line }' "$@") || return 1
   [ -n "$txt" ] || return 1
   txt=$(sed -E 's/^x //; s/`//g; s/^[[:space:]]+//; s/[[:space:]]+$//' <<<"$txt")
   if [[ "$txt" == none:* ]]; then printf '%s\n' "$txt"; return 0; fi
-  tr ',' '\n' <<<"$txt" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | awk 'NF'
+  tr ', ' '\n\n' <<<"${txt%.}" | awk 'NF'
 }
 
 # plan_project [<plan file>] -> the project whose rows the plan names: the id on its `epic: <id>` line,

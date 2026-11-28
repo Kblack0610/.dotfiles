@@ -1,6 +1,6 @@
 # Plan standard
 
-What every plan answers, at any scale, plus the sections a project's type adds. `.claude/hooks/plan-standard.sh` checks only the `Chain:`, `Phases:` and `Epic:` rules below: it injects them while a plan forms and denies `ExitPlanMode` when a plan breaks one. The Sections table is the written standard, read by the author and the human, and no hook checks it (the human released that gate, 2026-11-22). Each row holds a real failure; a new row must cite one, and a row whose failure has not recurred gets removed in a cleanup pass.
+What every plan answers, at any scale, plus the sections a project's type adds. `.claude/hooks/plan-standard.sh` checks only the `Chain:`, `Phases:`, `Owners:` and `Epic:` rules below: it injects them while a plan forms and denies `ExitPlanMode` when a plan breaks one. The Sections table is the written standard, read by the author and the human, and no hook checks it (the human released that gate, 2026-11-22). Each row holds a real failure; a new row must cite one, and a row whose failure has not recurred gets removed in a cleanup pass.
 
 The type comes from `type` in `project-map.json`, or the one type shared by the projects under a repo. A project with no type gets the base only. Overlays only add sections.
 

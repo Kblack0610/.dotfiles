@@ -305,6 +305,21 @@ owned() {
   assert_output --partial 'has no Owners: line'
 }
 
+@test "the Owners rule reads a bare directory, a wrapped line and a private writer path" {
+  run gate untyped "$(owned 'a helper in .local/bin (30 lines).' '')"
+  assert_output --partial 'names .local/bin but'
+  run gate untyped "$(owned '`.local/bin/foo`.' 'kinds
+  .local/bin/agent-queue.')"
+  assert_output ''
+  run gate untyped "$(owned '`.local/bin/foo`.' 'kinds landed
+')"
+  assert_output ''
+  run gate untyped "$(owned '`.local/bin/foo`.' 'kinds
+
+An unlabelled paragraph, no-such-row.')"
+  assert_output ''
+}
+
 @test "a missing Owners table or fact-owners leaves the Owners check off" {
   rm "$HOME/.local/src/docs/fleet-states.md"
   run gate untyped "$(owned '`.local/bin/foo`.' '')"

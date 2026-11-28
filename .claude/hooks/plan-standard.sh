@@ -106,7 +106,7 @@ owners_doc="$HOME/.local/src/docs/fleet-states.md"
 if declare -F plan_owners_line >/dev/null && [ -x "$fo" ] && [ -r "$owners_doc" ] &&
   known=$("$fo" names --doc "$owners_doc" 2>/dev/null) && [ -n "$known" ]; then
   touched=$(awk '/^```/ { f = !f; next } !f && /^## / { on = ($0 ~ /^## Changes[[:space:]]*$/); next } !f && on' <<<"$plan" |
-    grep -oE '(^|[^[:alnum:]_.-])\.local/(bin|lib|src)/[^[:space:]`,;:)]*' | sed -E 's/^[^.]*//' | grep -v '^\.local/src/docs/' | head -n1)
+    grep -oE '(^|[^[:alnum:]_.-])\.local/(bin|lib|src)(/[^[:space:]`,;:)]*)?([^[:alnum:]_/-]|$)' | sed -E 's/[^[:alnum:]_\/]*$//' | sed -E 's/^[^.]*//' | grep -vE "^\.local/src/docs(/|$)" | head -n1)
   if owners=$(plan_owners_line <<<"$plan"); then
     if [[ "$owners" == none:* ]]; then
       grep -qE '^none:[[:space:]]+rg[[:space:]]+[^[:space:]]' <<<"$owners" ||
