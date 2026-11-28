@@ -6051,7 +6051,7 @@ hold_runs() {
   local runs name base
   read -r name base < <(hold_ledger "$1")
   [ "$name" != prs-only ] || return 5
-  runs=$(main_runs "$name" "$base") || return
+  runs=$(main_runs "$name" "$base" 2>/dev/null) || return   # its caller names the read it could not make
   jq -c 'map(select(.event == "push"))' <<<"$runs"
 }
 

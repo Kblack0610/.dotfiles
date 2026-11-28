@@ -1745,10 +1745,11 @@ ledger_repo() {
 # branch_runs <dir> <branch> -> <branch>'s main_runs in the repo <dir> lands on (ledger_repo): gate_ci, main_health
 # and activity_line all read it, from one ledger read per repo per pass ($CACHE). A repo the ledger
 # does not sync has no runs ([]); one it cannot answer for is named unreadable once, and is rc 1
-# with the row blind on every read. One it cannot answer for a cause every repo shares (main_runs rc 4: a
-# GitHub rate limit, no sync pass) is rc 4 on every read, its cause kept once a pass in $CACHE/ledger_down
-# and named unreadable once, as "run ledger: <cause>", so a rate-limited pass shows one outage (ar-230). Read off origin, a Forgejo-canonical clone's mirror had no runs, so its
-# main read green and its gates read none (ar-2727, follow-up of ar-2587).
+# with the row blind on every read. One it cannot answer for a cause every repo shares (main_runs rc 4:
+# a GitHub rate limit, no sync pass) is rc 4 on every read, its cause kept once a pass in
+# $CACHE/ledger_down and named unreadable once, as "run ledger: <cause>", so a rate-limited pass shows
+# one outage (ar-230). Read off origin, a Forgejo-canonical clone's mirror had no runs, so its main
+# read green and its gates read none (ar-2727, follow-up of ar-2587).
 branch_runs() {
   local d="$1" b="$2" all one rc=0 repo slug
   slug="$(repo_slug "$d")" || return 1
@@ -3189,8 +3190,8 @@ nightly_item_owners() {
 # Its nudged and escalated cells read that ledger, as every row's do.
 # A repo whose run ledger is down for a cause every repo shares (main_health's `ledger`: a GitHub rate
 # limit, no sync pass) has no row of its own (its sessions' rows keep their last cells, branch_runs'
-# blind_row): the pass has one row instead, id main-run-ledger, naming the cause, a rate limit's reset, and the repos
-# it hides. Its fact leaves the repos out, so a repo joining is not a new fact. Its wait_until is the
+# blind_row): the pass has one row instead, id main-run-ledger, naming the cause, a rate limit's
+# reset, and the repos it hides. Its fact leaves the repos out, so a repo joining is not a new fact. Its wait_until is the
 # reset plus FLEET_LEDGER_GRACE_MIN, before which the shepherd has nothing due for it (a limit clears
 # itself); past that, or with no reset known, it is due as an ownerless NIGHTLY row is (ar-230: on
 # 2026-10-26 13:32 one rate limit was a CI unreadable row per repo, each one a high page).
