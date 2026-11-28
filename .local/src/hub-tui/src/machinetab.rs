@@ -4,7 +4,7 @@
 //! and services, its last days of CPU, temperature and downtime, the CI jobs that ran there and
 //! the alerts that name it. agent-web draws the same page at `#infra/machines/<host>`.
 
-use hub_core::host_history::{HostHistory, Hour, PowerHistory, DAYS};
+use hub_core::host_history::{HostHistory, Hour, DAYS};
 use hub_core::host_now::{bytes, HostNow, Proc, Session, HOT_C};
 use hub_core::machine_page::{MachinePage, RecentJob};
 use hub_core::table::Row as _;
@@ -20,8 +20,6 @@ pub const PAGE_KEYS: &str = "[Esc all machines  o Grafana]";
 
 /// Recent CI jobs drawn before `+N more`.
 const RECENT_ROWS: usize = 15;
-/// Power changes shown before "+N older".
-const POWER_ROWS: usize = 10;
 /// The temperature chart's empty block, degrees C: an idle CPU sits above it, so the chart
 /// spends its eight blocks on the range a machine works in.
 const TEMP_FLOOR: f64 = 30.0;
@@ -103,10 +101,6 @@ pub fn page(
             out.extend(history(h, p, now, w));
             out.push(blank());
             out.extend(downtime(h, p, now, w));
-            if let Some(pw) = &h.power {
-                out.push(blank());
-                out.extend(power(pw, p, now));
-            }
         }
         None => out.push(heading(
             &format!("{DAYS} DAYS"),
@@ -181,41 +175,6 @@ fn slots(page: &MachinePage, p: Palette, w: usize) -> Vec<Line<'static>> {
         }
         .fit(w, p.head()),
     );
-    out
-}
-
-/// The governor's hours per UTC day and its newest changes of power state, as on the web.
-fn power(pw: &PowerHistory, p: Palette, now: i64) -> Vec<Line<'static>> {
-    let days: Vec<String> = pw
-        .days
-        .iter()
-        .map(|d| format!("{} {:.1}h", d.day.get(5..).unwrap_or(&d.day), d.hours))
-        .collect();
-    let mut out = vec![
-        heading("POWER", "  hours run per UTC day, newest change first", p),
-        Line::raw(format!(
-            "  {}",
-            if days.is_empty() {
-                "no samples".to_string()
-            } else {
-                days.join("  ")
-            }
-        )),
-    ];
-    for c in pw.changes.iter().rev().take(POWER_ROWS) {
-        let why = if c.reason == "none" { "" } else { &c.reason };
-        out.push(Line::raw(format!(
-            "  {:<12} {:<10} {why}",
-            clock(c.at as i64, now),
-            c.state
-        )));
-    }
-    if pw.changes.len() > POWER_ROWS {
-        out.push(Line::styled(
-            format!("  +{} older on the web page", pw.changes.len() - POWER_ROWS),
-            p.dim(),
-        ));
-    }
     out
 }
 
@@ -723,7 +682,7 @@ mod tests {
     use super::*;
     use crate::infrapage::InfraPage;
     use hub_core::ci::Slot;
-    use hub_core::host_history::{Change, Day, Down, Hour};
+    use hub_core::host_history::{Down, Hour};
     use hub_core::host_now::{Device, Pod};
     use hub_core::links::Link;
     use hub_core::machine_page::SlotUse;
@@ -799,21 +758,6 @@ mod tests {
                     cause: "power".into(),
                     why: "13 hosts rebooted".into(),
                 }],
-                power: Some(PowerHistory {
-                    changes: vec![Change {
-                        at: 7200,
-                        state: "running".into(),
-                        reason: "queue".into(),
-                    }],
-                    days: vec![Day {
-                        day: "2026-11-10".into(),
-                        hours: 3.5,
-                    }],
-                    host: "workstation".into(),
-                    from: 0,
-                    to: 7 * 86_400,
-                    step: 120,
-                }),
                 ..HostHistory::default()
             }),
             live: Some(HostNow {
@@ -889,9 +833,6 @@ mod tests {
             "7 DAYS",
             "DOWNTIME",
             "13 hosts rebooted",
-            "POWER",
-            "11-10 3.5h",
-            "queue",
             "SENSORS",
             "Tctl 96C  Tccd1 91C",
             "PODS",
