@@ -2750,6 +2750,65 @@ SH
   [ "$(jq -r '.unreadable | length' "$SANDBOX/state.json")" = 0 ]
 }
 
+@test "a run ledger down for every repo (a gh rate limit) is one NIGHTLY row naming its reset, never a CI unreadable row per repo (ar-230)" {
+  # 2026-10-26 13:32: one 403 left all 3 repos' ledger entries stale, and each became a NIGHTLY
+  # "main CI unreadable" row, three urgent due lines the shepherd would page high for one cause.
+  local i red reset rows
+  git init -q --bare "$SANDBOX/origin1.git"
+  git clone -q "$SANDBOX/origin1.git" "$SANDBOX/wt1" 2>/dev/null
+  git -C "$SANDBOX/wt1" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  git -C "$SANDBOX/wt1" -c user.email=t@t -c user.name=t commit -q --allow-empty -m 'feat: x (#875)'
+  red="$(git -C "$SANDBOX/wt1" rev-parse HEAD)"
+  git -C "$SANDBOX/wt1" push -q origin HEAD:main 2>/dev/null
+  for i in 2 3; do
+    git init -q --bare "$SANDBOX/origin$i.git"
+    git -C "$SANDBOX/wt1" push -q "$SANDBOX/origin$i.git" HEAD:main 2>/dev/null
+    git clone -q "$SANDBOX/origin$i.git" "$SANDBOX/wt$i" 2>/dev/null
+  done
+  rows=""
+  for i in 1 2 3; do
+    git -C "$SANDBOX/wt$i" fetch -q origin
+    git -C "$SANDBOX/wt$i" checkout -q -b feat/x
+    rows+="$(printf '{"target":"lab/s%s:1","pane":"lab/%%%s","status":"idle","plan_mode":false,"session_id":"sid-%s","cwd":"%s","idle_since":%s,"context_tokens":5,"plan_file":""}' \
+      "$i" "$i" "$i" "$SANDBOX/wt$i" "$(( $(date +%s) - 3600 ))")"$'\n'
+  done
+  printf '#!/usr/bin/env bash\ncat %q\n' "$SANDBOX/panel.jsonl" > "$SANDBOX/bin/agent-panel"
+  printf '%s' "$rows" > "$SANDBOX/panel.jsonl"
+  ledger main "[$(r Tests failure "$red" 2)]"
+  gh_script 'exit 1'
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
+  chmod +x "$SANDBOX/bin/agent-panel" "$SANDBOX/bin/fleet-assess"
+  local doc="$XDG_STATE_HOME/fleet/state.json"
+
+  # a good read: each repo red on its own row
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  [ "$(jq -r '[.main[].reason | select(endswith(" red: Tests (no green in window)"))] | length' "$doc")" = 3 ]
+  cp "$FLEET_SHEPHERD_DIR/watch.state" "$SANDBOX/state.ok"
+  : > "$FLEET_SHEPHERD_DIR/watch.log"
+
+  # rate limited: one row, its reset in local time, nothing per repo
+  reset="$(date -u -d '+20 min' +%FT%TZ)"
+  echo "ledger down: GitHub API rate limit hit, resets $reset" > "$LEDGER_DIR/DOWN"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [ "$(jq -r '.main | length' "$doc")" = 1 ]
+  [ "$(jq -r '.main[0].id' "$doc")" = main-run-ledger ]
+  [ "$(jq -r '.main[0].fact' "$doc")" = "NIGHTLY CI run ledger unreadable: GitHub API rate limit hit, resets $(date -d "$reset" +%H:%M)" ]
+  [ "$(jq -r '.main[0].reason' "$doc")" = "CI run ledger unreadable: GitHub API rate limit hit, resets $(date -d "$reset" +%H:%M) (main CI of origin1, origin2, origin3 waits on it)" ]
+  [ "$(jq -r '.main[0].wait_until' "$doc")" = "$(( $(date -d "$reset" +%s) + 15 * 60 ))" ]
+  [ "$(jq -r '[.main[].reason | select(test("CI unreadable"))] | length' "$doc")" = 0 ]
+  [ "$(jq -c '[.unreadable[] | select(startswith("run ledger"))]' "$doc")" = '["run ledger: GitHub API rate limit hit, resets '"$reset"'"]' ]
+  # each repo's session rows keep their last cells: the tick logs no blink for them
+  cmp "$SANDBOX/state.ok" "$FLEET_SHEPHERD_DIR/watch.state"
+  [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
+
+  # negative control: one repo stale for its own reason is still its own CI unreadable row
+  rm "$LEDGER_DIR/DOWN"; touch "$LEDGER_DIR/FAIL"
+  FLEET_STATE_FILE="$SANDBOX/state.json" run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  [ "$(jq -r '[.main[].reason | select(endswith("main CI unreadable (the run ledger has no fresh sync of it)"))] | length' "$SANDBOX/state.json")" = 3 ]
+  [ "$(jq -r '[.main[] | select(.id == "main-run-ledger")] | length' "$SANDBOX/state.json")" = 0 ]
+}
+
 @test "a session working a queue item carries the item as dispatch; others carry null" {
   landed_fixture
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json

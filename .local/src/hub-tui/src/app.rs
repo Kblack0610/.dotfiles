@@ -362,6 +362,19 @@ impl Boards {
     }
 }
 
+/// The pass card: the shepherd's numbers worded, or why there are none.
+pub type PassCard = Result<hub_core::shepherd::Card, String>;
+
+/// One shepherd read: the ledger and the pass card.
+pub type ShepherdRead = (boards::Due, Option<PassCard>);
+
+/// The ledger is a file; the pass card is `fleet-shepherd stats`. Blocking, so a caller on the
+/// draw thread (`--once` aside) reads it in a thread.
+fn shepherd_read(dir: &Path) -> ShepherdRead {
+    let pass = hub_core::shepherd::read(&actions::System).map(|v| hub_core::shepherd::Card::of(&v));
+    (boards::due(dir), Some(pass))
+}
+
 pub enum Msg {
     Input(Event),
     Tick,
@@ -435,7 +448,7 @@ pub enum Msg {
     Stack(Box<hub_core::stack::Stack>),
     Fleet(Box<hub_core::fleet::Fleet>),
     /// The shepherd's ledger, for Sessions' Shepherd.
-    Shepherd(Box<boards::Due>),
+    Shepherd(Box<ShepherdRead>),
     /// The shepherd wrote its ledger (`.due`, `.lease`).
     ShepherdFiles,
     /// One runner's page (hub_core::fleet::runner), for the name it was read for.
@@ -572,6 +585,9 @@ pub struct App {
     pub sessions_inner: &'static str,
     /// Shepherd's read of `fleet-shepherd`'s ledger; None until the first.
     pub shepherd: Option<boards::Due>,
+    /// The pass card beside it: `fleet-shepherd stats` worded by `hub_core::shepherd::Card`, or why
+    /// there is none. None until the first read.
+    pub shepherd_pass: Option<PassCard>,
     /// The runner whose page is open (Enter on a Runners row, or `hub tab 'fleet <runner>'`);
     /// None is the Runners table.
     pub fleet_page: Option<String>,
@@ -770,6 +786,7 @@ impl App {
             fleet_follow: false,
             sessions_inner: hub_core::layout::inner_tab(sessions_tab(), None).map_or("", |i| i.id),
             shepherd: None,
+            shepherd_pass: None,
             fleet_page: None,
             fleet_runner: None,
             infra_page: None,
@@ -1653,8 +1670,16 @@ impl App {
             let tx = self.tx.clone();
             let dir = self.files.shepherd.clone();
             std::thread::spawn(move || {
-                let _ = tx.send(Msg::Shepherd(Box::new(boards::due(&dir))));
+                let _ = tx.send(Msg::Shepherd(Box::new(shepherd_read(&dir))));
             });
+        }
+    }
+
+    fn took_shepherd(&mut self, (due, pass): ShepherdRead) {
+        self.shepherd = Some(due);
+        self.shepherd_pass = pass;
+        if self.shepherd_read.done() {
+            self.read_shepherd();
         }
     }
 
@@ -1701,7 +1726,11 @@ impl App {
             .unwrap_or(self.sessions_inner);
         match self.sessions_inner {
             "runners" => self.fleet = Some(hub_core::fleet::files(&paths)),
-            "shepherd" => self.shepherd = Some(boards::due(&self.files.shepherd)),
+            "shepherd" => {
+                let (due, pass) = shepherd_read(&self.files.shepherd);
+                self.shepherd = Some(due);
+                self.shepherd_pass = pass;
+            }
             _ => {}
         }
     }
@@ -2485,12 +2514,7 @@ impl App {
                     self.read_fleet();
                 }
             }
-            Msg::Shepherd(d) => {
-                self.shepherd = Some(*d);
-                if self.shepherd_read.done() {
-                    self.read_shepherd();
-                }
-            }
+            Msg::Shepherd(d) => self.took_shepherd(*d),
             Msg::ShepherdFiles => {
                 if self.tab == Tab::Sessions && self.sessions_inner == "shepherd" {
                     self.read_shepherd();
@@ -5086,7 +5110,7 @@ impl App {
                 let (mut l, at) = match &self.shepherd {
                     None => reading("the shepherd's ledger"),
                     Some(d) => (
-                        fleettab::shepherd_page(d, self.p, now, w),
+                        fleettab::shepherd_page(d, self.shepherd_pass.as_ref(), self.p, now, w),
                         vec![("shepherd", 1)],
                     ),
                 };
