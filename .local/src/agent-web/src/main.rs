@@ -29,7 +29,6 @@ mod fleet;
 mod focus;
 mod infra;
 mod jobs;
-mod live;
 mod outbox;
 mod outcomes;
 mod pace;
@@ -72,7 +71,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use hub_core::home::{Home, Need};
 use hub_core::session_actions::{self as actions, Action};
-use hub_core::session_table;
+use hub_core::session_table::{self, Live};
 use hub_core::table::{self, Summary, View};
 use hub_core::{boards, transcript};
 use notify::{EventKind, RecursiveMode, Watcher};
@@ -126,7 +125,7 @@ struct AppState {
     /// `fleet-shepherd stats`, which Log's Rundowns and Sessions' Shepherd read (`shepherd.rs`).
     shepherd: shepherd::Cache,
     /// The one read of the sessions, which `/api/agents` (the sidebar every page draws first) and the Sessions table share.
-    live: cache::EventCache<live::Live, AGENTS_SECS>,
+    live: cache::EventCache<Live, AGENTS_SECS>,
     /// Home's own reads (`HomeParts`), joined with the queue and infra caches per request.
     home: cache::EventCache<HomeParts, HOME_SECS>,
     /// Wakes the Tilecast push sender (`push::run`).
@@ -1063,86 +1062,6 @@ async fn logout(State(s): State<Shared>, headers: HeaderMap) -> Response {
         .into_response()
 }
 
-#[derive(Serialize)]
-struct AgentOut {
-    target: String,
-    short: String,
-    project: String,
-    repo: String,
-    status: String,
-    summary: String,
-    session: String,
-    tags: String,
-    /// The Claude account it runs on (claude-acct's name for its `CLAUDE_CONFIG_DIR`).
-    account: String,
-    /// The human is attached to its tmux session right now.
-    attached: bool,
-    /// Parked by `claude-acct park`: no claude runs, unpark resumes it.
-    parked: bool,
-    /// The plan file's slug, empty when it has none.
-    plan: String,
-    /// Its plan's `## Phases` progress, as fleet-sessions last read it.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    phases: Option<boards::Phases>,
-    /// The pending ask this session filed.
-    ask: Option<String>,
-    /// What `POST /api/session/<target>/<action>` accepts for it.
-    actions: Vec<&'static str>,
-    /// The agent-queue items in this pane (hub-core `with_items`).
-    items: Vec<String>,
-    /// The open question a `waiting` agent has, from its transcript (`agent_core::transcript::
-    /// open_question_at`): a dialog, a permission prompt, or closing text that asks. A message
-    /// that hands the turn back without asking is none.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    question: Option<agent_core::transcript::Question>,
-    /// The Needs you kind and label that dialog has (hub-core `NeedKind::of_dialog`), so the
-    /// card and the pin lead with the words Home's row does.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    need: Option<hub_core::home::NeedTag>,
-    /// Its transcript's last write, unix seconds: when a `waiting` agent started waiting, and
-    /// what the page's new-output dot compares with when it was last opened (sessions.js).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    wrote: Option<u64>,
-    /// The fleet worker it runs on, None when it runs here. A worker's session is read and typed
-    /// into through `fleet-host-run` (remote.rs); its transcript and session actions stay there.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    host: Option<String>,
-}
-
-/// A worker's agent-panel row (the worker-panel snapshot) as a sidebar agent. No session action
-/// reaches a worker yet, so it offers none.
-fn worker_agent(r: &serde_json::Value) -> AgentOut {
-    let s = |k: &str| r[k].as_str().unwrap_or_default().to_string();
-    let target = s("target");
-    AgentOut {
-        short: target
-            .split_once('/')
-            .map_or(target.clone(), |(_, t)| t.to_string()),
-        project: s("project"),
-        repo: String::new(),
-        status: s("status"),
-        summary: s("summary"),
-        // The UI keys seen-state on this, so a row with no id is keyed by its target, never "".
-        session: Some(s("session_id"))
-            .filter(|id| !id.is_empty())
-            .unwrap_or_else(|| target.clone()),
-        tags: String::new(),
-        account: s("account"),
-        attached: r["attached"].as_bool().unwrap_or(false),
-        parked: r["parked"].as_bool().unwrap_or(false),
-        plan: s("plan"),
-        phases: None,
-        ask: r["ask"].as_str().map(str::to_string),
-        actions: Vec::new(),
-        items: Vec::new(),
-        question: None,
-        need: None,
-        wrote: None,
-        host: Some(s("host")).filter(|h| !h.is_empty()),
-        target,
-    }
-}
-
 async fn collect() -> Vec<agent::Agent> {
     tokio::task::spawn_blocking(agent::collect)
         .await
@@ -1165,7 +1084,7 @@ fn pane_err(host: Option<&str>, e: remote::Failed) -> (StatusCode, String) {
 /// tmux pane. A worker's is read from the snapshot the minute record publishes, never over ssh.
 async fn find(target: &str) -> ApiResult<remote::Live> {
     let gone = || bad(StatusCode::NOT_FOUND, format!("no live agent at {target}"));
-    if let Some((host, _)) = remote::split(target) {
+    if let Some((host, _)) = session_table::split_worker(target) {
         return remote::find(&boards::worker_panel(), target)
             .await
             .map_err(|e| pane_err(Some(host), e))?
@@ -1196,7 +1115,7 @@ async fn find_any(target: &str) -> ApiResult<agent::Agent> {
 /// sessions, and it is refreshed behind the answer. The queue items in each pane are joined on
 /// each request from the queue's own kept read, so a queue change shows without a new read.
 async fn agents(State(s): State<Shared>) -> Response {
-    let (live, items) = tokio::join!(s.live.get((), read_live), s.queue.active());
+    let (live, items) = tokio::join!(s.live.get((), Live::read), s.queue.active());
     // The build clones and serializes every session, so it runs off the async workers.
     let body = match live {
         Ok(l) => cache::off(move || agents_body(&l, &items)).await,
@@ -1206,57 +1125,9 @@ async fn agents(State(s): State<Shared>) -> Response {
     ([(header::CONTENT_TYPE, "application/json")], body).into_response()
 }
 
-/// The one read of the sessions the sidebar and the Sessions table share (`live.rs`). Blocking.
-pub(crate) fn read_live() -> live::Live {
-    live::Live::read(worker_agents())
-}
-
 /// `/api/agents`' body: the sessions with their queue items, then the workers' rows.
-fn agents_body(live: &live::Live, items: &[hub_core::queue::Item]) -> Bytes {
-    let sessions = live.joined(items);
-    let local = live.rows.iter().zip(sessions).map(|(r, s)| {
-        let a = &r.agent;
-        AgentOut {
-            phases: r.phases.clone(),
-            actions: actions::available(&s)
-                .into_iter()
-                .map(Action::name)
-                .collect(),
-            items: s.items,
-            account: a.account.clone(),
-            attached: a.attached,
-            parked: a.parked,
-            plan: a.plan_slug.clone(),
-            ask: a.ask.clone(),
-            need: r
-                .question
-                .as_ref()
-                .map(|q| hub_core::home::NeedKind::of_dialog(q.kind).tag()),
-            question: r.question.clone(),
-            wrote: r.wrote,
-            target: a.target.clone(),
-            short: a.short_target.clone(),
-            project: a.project.clone(),
-            repo: a.repo_full.clone(),
-            status: a.status.clone(),
-            summary: a.summary.clone(),
-            session: a.session_id.clone(),
-            tags: a.tags.clone(),
-            host: None,
-        }
-    });
-    let out: Vec<AgentOut> = local.chain(live.workers.iter().map(worker_agent)).collect();
-    serde_json::to_vec(&out).map_or_else(|_| Bytes::from_static(b"[]"), Bytes::from)
-}
-
-/// The live rows of the worker-panel snapshot, as `remote::find` trusts them.
-fn worker_agents() -> Vec<serde_json::Value> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    std::fs::read_to_string(boards::worker_panel())
-        .map(|t| remote::rows_in(&t, now))
-        .unwrap_or_default()
+fn agents_body(live: &Live, items: &[hub_core::queue::Item]) -> Bytes {
+    serde_json::to_vec(&live.sidebar(items)).map_or_else(|_| Bytes::from_static(b"[]"), Bytes::from)
 }
 
 #[derive(Deserialize)]
@@ -1340,17 +1211,10 @@ async fn session_action(
     ))
 }
 
-/// What the page's confirm says for each action, and the account names a move can pick.
-async fn session_options() -> Json<serde_json::Value> {
-    let describe: serde_json::Map<String, serde_json::Value> = Action::ALL
-        .into_iter()
-        .map(|a| (a.name().to_string(), a.describe().into()))
-        .collect();
-    let accounts: Vec<String> = agent_core::account::load()
-        .into_iter()
-        .map(|a| a.name)
-        .collect();
-    Json(serde_json::json!({ "describe": describe, "accounts": accounts }))
+/// What the page's buttons and confirms say for each action, and the account names a move can
+/// pick (`hub_core::session_actions::options`).
+async fn session_options() -> Json<actions::Options> {
+    Json(actions::options())
 }
 
 #[derive(Deserialize)]
@@ -1759,7 +1623,7 @@ async fn warm(s: Shared) {
     let built = async { builds::current(s.queue.items().await).await };
     let tests = async { suites::keep_newest(s.queue.items().await).await };
     let _ = tokio::join!(
-        s.live.get((), read_live),
+        s.live.get((), Live::read),
         s.watch.get_if((), read_watch, |(_, keep)| *keep),
         s.queue.recent(),
         home_read(&s),
@@ -2173,27 +2037,6 @@ mod tests {
     use super::*;
     use tokio::io::AsyncReadExt;
     use tokio::sync::{oneshot, Notify};
-
-    #[test]
-    fn a_worker_row_is_a_sidebar_agent_on_its_host_with_no_actions() {
-        let r = serde_json::json!({"target": "razer-laptop@lab/dotfiles-agent-1:1",
-            "host": "razer-laptop", "pane": "lab/%4", "status": "busy", "summary": "fix it",
-            "session_id": "abc", "project": "dotfiles", "account": "bnb"});
-        let a = worker_agent(&r);
-        assert_eq!(a.host.as_deref(), Some("razer-laptop"));
-        assert_eq!(a.target, "razer-laptop@lab/dotfiles-agent-1:1");
-        assert_eq!(a.short, "dotfiles-agent-1:1");
-        assert_eq!((a.status.as_str(), a.session.as_str()), ("busy", "abc"));
-        assert!(a.actions.is_empty(), "no session action reaches a worker");
-        let j = serde_json::to_value(&a).unwrap();
-        assert_eq!(j["host"], "razer-laptop");
-        let no_id = serde_json::json!({"target": "razer-laptop@lab/s:2", "host": "razer-laptop"});
-        assert_eq!(
-            worker_agent(&no_id).session,
-            "razer-laptop@lab/s:2",
-            "a row with no session id is keyed by its target, never an empty id"
-        );
-    }
 
     /// The caches `warm` fills, directly or through a read it makes (Home's cards fill projects,
     /// costs, schedules, alerts and the session table).
