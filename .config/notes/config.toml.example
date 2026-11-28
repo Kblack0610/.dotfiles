@@ -94,11 +94,11 @@ footer_links = ["schedule"]
 # sweep, save sweep, doctor, triage or dispatch rewrites or reads its sheets.
 # automation = false
 
-# --- Lazer (edubot): client engagement ---------------------------------------
-# Same pattern, rooted in the client dir under jobs/lazer/.
-[profile.lazer]
-root = "~/.notes/employment/jobs/lazer/client"
-footer_links = ["schedule"]
+# --- Shared org and job profiles ----------------------------------------------
+# The real orgs and jobs (bnb, the work profiles) are not defined here: profiles.toml
+# beside this file holds them, a link notes-bootstrap makes to the private overlay's
+# .config/notes/profiles.toml, so every machine resolves the same roots and flags.
+# A profile defined both here and there is an error.
 
 # --- comms: multi-account email triage (`notes comms`) ------------------------
 # Global (spans profiles): each account names the profile whose daily note its
