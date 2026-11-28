@@ -546,6 +546,15 @@ fj_alias_setup() {
   assert_output --partial "claims dropped, not in the PR store: git.example.test/o/audio"
 }
 
+@test "so_ledger_repo: HOST/OWNER/REPO is the ledger's forgejo:OWNER/REPO; any other shape is rc 1 and prints nothing" {
+  # shellcheck source=/dev/null
+  . "$SO_LIB_DIR/session-outcomes.sh"
+  assert_equal "$(so_ledger_repo forge.test/o/r)" forgejo:o/r
+  run so_ledger_repo o/r
+  assert_failure 1
+  assert_output ""
+}
+
 @test "so_forgejo_hosts: SO_FORGEJO_HOSTS when set, even empty; else the runner conf's" {
   # shellcheck source=/dev/null
   . "$SO_LIB_DIR/session-outcomes.sh"
