@@ -29,7 +29,7 @@ ARTIFACTS := $(HERE)artifacts
 BATS_FLAGS ?= --print-output-on-failure --timing
 
 # JUNIT=1 (CI sets it) makes each bats run also write a JUnit report.xml under
-# artifacts/junit/<run>/, which tests.yml uploads and its report job draws per test.
+# artifacts/junit/<run>/, which tests.yml uploads and its gate job draws per test.
 # Any other value, 0 included, leaves it off.
 JUNIT ?=
 junit_on  = $(filter 1,$(JUNIT))

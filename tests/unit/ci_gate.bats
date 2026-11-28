@@ -10,8 +10,30 @@ setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
   WF="$BATS_TEST_DIRNAME/../../.github/workflows/tests.yml"
-  # weights gates through fast (fast needs its pick); report only draws; gate is the aggregate.
-  NOT_GATES='gate report weights'
+  # weights gates through fast (fast needs its pick); gate is the aggregate.
+  NOT_GATES='gate weights'
+}
+
+# tier_needers <wf>: jobs besides gate whose needs name fast or ui, one a line
+tier_needers() {
+  awk '/^jobs:$/ { j = 1; next }
+    j && /^  [A-Za-z0-9_][A-Za-z0-9_-]*:$/ { job = substr($1, 1, length($1) - 1) }
+    j && job != "gate" && /^    needs:/ && /[[ ,](fast|ui)[],]|needs: *(fast|ui) *$/ { print job }' "$1"
+}
+
+# A job that waits on fast or ui to draw their results is a second pool wait after the tiers end,
+# and on main it held the run's concurrency group that long (ar-6266): gate draws them instead.
+@test "no job but gate waits on the fast or ui tier" {
+  run tier_needers "$WF"
+  assert_success
+  assert_output ''
+  # Negative control: a standalone report job brought back is named.
+  awk '/^  rust:$/ { print "  report:"; print "    needs: [fast, ui]"; print "    runs-on: *pool"; print "" } { print }' "$WF" >"$BATS_TEST_TMPDIR/report.yml"
+  run tier_needers "$BATS_TEST_TMPDIR/report.yml"
+  assert_output 'report'
+  sed 's/^  rust:$/  late:\n    needs: ui\n&/' "$WF" >"$BATS_TEST_TMPDIR/late.yml"
+  run tier_needers "$BATS_TEST_TMPDIR/late.yml"
+  assert_output 'late'
 }
 
 # jobs <wf>: every job id, one a line, sorted
