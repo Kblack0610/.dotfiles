@@ -346,6 +346,44 @@ load 'fleet_sessions/common'
   [ "$output" = - ]
 }
 
+@test "a running item whose recorded PR is open elsewhere carries the session: WORKING, not STALLED (ar-3580)" {
+  # 2026-11-19: ucp-671's PR #2506 rode agent-37's branch, in train #2919, and agent-15's idle session read STALLED
+  CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+  printf 'agent-37-x\t2506\tOPEN\tPASS\tabc\t-\t\nold\t2400\tMERGED\tPASS\tdef\t-\t\nred\t2407\tOPEN\tFAIL\tghi\t-\t\n' > "$LEDGER_DIR/prs.tsv"
+  printf 'b\t9\tOPEN\tPENDING\tjkl\t-\t\n' > "$LEDGER_DIR/prs_o_s.tsv"
+  local q='{"slug":"ucp-671","state":"running","sessions":"sidA","open_pr":"o/r#2506"}
+{"slug":"ucp-672","state":"running","sessions":"sidA","pr":"o/r#2400"}
+{"slug":"ucp-673","state":"running","sessions":"sidA","pr":"o/r#2506 o/s#9 o/r#2400","open_pr":"o/r#2506"}
+{"slug":"ucp-675","state":"running","sessions":"sidA","pr":"o/r#2407"}
+{"slug":"ucp-674","state":"done","sessions":"sidC","pr":"o/r#2506"}'
+  run item_open_prs "$q" ucp-671
+  assert_output 'o/r#2506'
+  # both fields, several refs and a second repo: each open one once; a merged one drops
+  run item_open_prs "$q" ucp-673
+  assert_output 'o/r#2506,o/s#9'
+  # only the slugs passed count, never every running item: a merged PR, a red one, a done item, a stranger carry nothing
+  for s in ucp-672 ucp-675 ucp-674 nope; do
+    run item_open_prs "$q" "$s"
+    [ "$output" = - ]
+  done
+  # a store that cannot answer carries nothing (the old STALLED read)
+  rm -rf "$CACHE"; mkdir -p "$CACHE"; touch "$LEDGER_DIR/PRS_FAIL"
+  run item_open_prs "$q" ucp-671
+  [ "$output" = - ]
+  # session_carried joins them with the items filed from it; only an own: answer reads the store
+  q="$q"$'\n''{"slug":"fix-1","state":"running","from":"item:ucp-671","sessions":"sidB"}'
+  rm -rf "$CACHE"; mkdir -p "$CACHE"; rm -f "$LEDGER_DIR/PRS_FAIL"
+  run session_carried "$q" sidA own:ucp-671 lab:me ucp-671
+  assert_output 'fix-1,o/r#2506'
+  run session_carried "$q" sidA 'moved:ucp-671 moved on (done)' lab:me ucp-671
+  [ "$output" = - ]
+  # the bucket: carried by the open PR is WORKING; none is the old STALLED
+  run b idle 0 0 0 30 1 0 0 - - - 1 - - - - - - - 'own:ucp-671' - - - 'o/r#2506'
+  assert_output 'WORKING clean, nothing on the branch, no plan file, its item ucp-671 is carried by live items: o/r#2506'
+  run b idle 0 0 0 30 1 0 0 - - - 1 - - - - - - - 'own:ucp-671' - - - -
+  assert_output 'STALLED clean, nothing on the branch, no plan file, its item ucp-671 is running here'
+}
+
 @test "a queued <slug>-close item held by its at: time carries the open item, so the session is not STALLED (ar-4582)" {
   local q
   q='{"slug":"ar-4554","state":"running","sessions":"sidA"}
