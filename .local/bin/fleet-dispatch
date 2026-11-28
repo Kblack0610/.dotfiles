@@ -33,6 +33,7 @@
 #   fleet-dispatch trainee-review SLUG  a trainee run's tail, in its worktree: its diff to a patch that waits for a batch review
 #   fleet-dispatch trainee-reject SLUG [--cause C | --end E] --why TEXT  send a trainee's row back to the normal queue, on claude
 #   fleet-dispatch validate SLUG --pr OWNER/REPO#N --head SHA --why TEXT  queue a second agent's review of an item's critical PR (agent-land)
+#   fleet-dispatch adopt-prs [--dry-run]  queue an owner item for each stranded PR no queue item names (run calls it once a pr-stranded probe)
 #   fleet-dispatch rollup [--dry]  each cause of a run that did not land (a trainee reject, a failed or no-PR item, a model-lane demote or retire) seen DISPATCH_ROLLUP_MIN times in DISPATCH_ROLLUP_DAYS: one fix row on the board, joined night to night by its cause (nightly-measure runs it)
 #   fleet-dispatch direct-land SLUG [--rc N]  a direct run's tail, in its worktree: a clean run's diff committed, a PR opened and landed on CI
 #   fleet-dispatch start --project P [--profile X] [--agent] [--model M] [--harness H]
@@ -6302,6 +6303,87 @@ own_parked_pr() {
   echo "agent row for queue item $slug (PR $pr $color after $tries $verb tries, $where)"
 }
 
+# The watch whose probe lists the stranded PRs (fleet-bench prs --check stranded), and where Sentinel
+# keeps its state: cmd_adopt_prs runs once for each probe while it reads TRIP (adopt_due).
+: "${ADOPT_WATCH:=pr-stranded}"
+: "${ADOPT_WATCH_DIR:=$HOME/.local/state/watch-companion}"
+
+# adopt_due -- the stranded-PR watch reads TRIP and has probed since the last adoption ($DIR/adopt-prs).
+# A session that ends without landing its PR emits nothing, so the watch's probe is the one signal, and
+# one adoption a probe keeps this to the watch's cadence with no timer of its own.
+adopt_due() {
+  local w="$ADOPT_WATCH_DIR/$ADOPT_WATCH"
+  [ "$(cat "$w.state" 2>/dev/null)" = TRIP ] && [ "$w.lastrun" -nt "$DIR/adopt-prs" ]
+}
+
+# adopt_task <ref> <title> -> the task of an item cmd_adopt_prs files: what land_brief and fix_ci_brief
+# say, in one line, for the row it files and for a start that reads it before its stamps are set.
+adopt_task() {
+  printf 'chore(review): land or close stranded PR %s\n\n' "$1"
+  printf 'PR %s (%s) sat idle past a day with no queue item, and its session has ended. Land it (fix-ci on a red or a conflict, then agent-land), or close it with a one-line comment naming what superseded it. Never close one whose branch holds work not on its base.\n' "$1" "$2"
+}
+
+# cmd_adopt_prs [--dry-run] -- give each stranded PR that no queue item names the owner own_parked_pr
+# gives a parked one: a queued oneshot item stamped pr:, pr_owner and `<owner>_tries: 1 <head>[ conflict]`,
+# so item_brief hands its session land_brief (green, or in conflict with its base) or fix_ci_brief (red),
+# and once that session parks it in review/, own_parked_pr's tries and escalation carry it. On 2026-11-28
+# 34 of the 43 stranded PRs had no item, and only a red session working the whole pile by hand ever
+# owned one, so the pile grew back after each (ar-4011). Each add goes in under the queue cap, the one
+# bound on adds: one the cap holds ends the run, and the next probe tries again. GitHub PRs only, since
+# both briefs read and land through gh. A PR whose item (pr-<owner>-<repo>-<N>) exists in any state has had
+# its owner: it stays on the watch for a red session, never adopted twice.
+cmd_adopt_prs() {
+  local dry='' prs ref url checks mergeable title repo project slug owner why head it out rc as=()
+  case "$*" in
+  '') ;;
+  --dry-run) dry=1 ;;
+  *) say "usage: fleet-dispatch adopt-prs [--dry-run]"; return 2 ;;
+  esac
+  # Before the read, so a read that fails waits for the next probe too, never every pass.
+  [ -n "$dry" ] || { mkdir -p "$DIR" && touch "$DIR/adopt-prs"; }
+  prs=$(fleet-bench prs --json 2>/dev/null | jq -r '.prs[] | select(.class == "stranded" and .owner == null)
+      | [.ref, .url // "", .checks // "", .mergeable // "", (.title // "" | gsub("[\r\n\u001f]+"; " "))] | join("\u001f")') ||
+    { say "adopt-prs: fleet-bench prs could not be read, so no PR was adopted"; return 1; }
+  while IFS=$'\x1f' read -r ref url checks mergeable title; do
+    [ -n "$ref" ] || continue
+    [[ "$url" == https://github.com/* ]] || continue
+    # The same choice as own_parked_pr: a conflict needs its base merged in first, whatever its checks read.
+    why=''
+    case "$mergeable:$checks" in
+    CONFLICTING:*) owner=land why=' conflict' ;;
+    *:FAILURE | *:ERROR) owner=fix ;;
+    *:SUCCESS) owner=land ;;
+    *) continue ;;   # checks still running or none: nothing to own yet
+    esac
+    repo=${ref%#*}
+    project=$(PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_of_repos_json "${repo#*/}" 2>/dev/null | jq -r '.[]' 2>/dev/null)
+    # The resolver hands back the bare name when no project claims it: a project with no checkout here has no session to own it.
+    [ -n "$project" ] && [ -n "$(repo_dir "$project")" ] || { logline "adopt-prs: PR $ref is stranded, but no project here maps its repo"; continue; }
+    # Owner and repo in the slug, so two repos' PR #N never share one.
+    slug=$(tr 'A-Z' 'a-z' <<<"pr-${repo%%/*}-${repo#*/}-${ref##*#}" | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g')
+    [ -z "$(item_state "$slug")" ] || continue
+    if [ -n "$dry" ]; then echo "would adopt $ref as $slug (${owner/fix/fix-ci}$why)"; continue; fi
+    head=$(gh pr view "${ref##*#}" -R "$repo" --json headRefOid -q .headRefOid 2>/dev/null) && [ -n "$head" ] ||
+      { logline "adopt-prs: PR $ref is stranded, but gh did not read its head; the next probe tries again"; continue; }
+    rc=0
+    out=$(adopt_task "$ref" "$title" | AGENT_QUEUE_PULL=dispatch AGENT_QUEUE_START=0 agent-queue add \
+      --project "$project" --slug "$slug" --tags adopt --from auto:adopt 2>&1) || rc=$?
+    if [ "$rc" -eq "$AQ_EX_HELD" ]; then logline "adopt-prs: the queue cap held $slug ($ref); the next probe tries again"; break; fi
+    [ "$rc" -eq 0 ] || { say "adopt-prs: could not queue $slug for $ref: ${out##*$'\n'}"; continue; }
+    it=$(agent-queue show "$slug" --json 2>/dev/null) || it='{}'
+    # A tier-3 lander runs on claude, as own_parked_pr's does: agent-land asks it for /code-review high.
+    as=()
+    [ "$owner" != land ] || [ "$(item_tier "$it")" != 3 ] || as=(agent=claude)
+    agent-queue set "$slug" "pr=$ref" "pr_owner=$owner" "${owner}_tries=1 $head$why" mode=oneshot "${as[@]}" \
+      "note=PR $ref stranded with no item; ${owner/fix/fix-ci} try 1 of $DISPATCH_FIX_TRIES" >/dev/null ||
+      { say "adopt-prs: queued $slug but could not stamp its PR $ref, so it is cancelled"
+        agent-queue move "$slug" done --status cancelled --why "adopt-prs could not stamp its PR $ref" >/dev/null; continue; }
+    logline "adopt-prs: queued $slug to ${owner/fix/fix-ci} stranded PR $ref"
+    dispatch_event requeued "$project" "stranded PR with no item: ${owner/fix/fix-ci} try 1" --item "$slug" --pr "$ref" --sha "$head"
+    echo "adopted $ref as $slug (${owner/fix/fix-ci})"
+  done <<<"$prs"
+}
+
 # settle_sessionless <slug> <started> -- a started item recording no session, tmux or Claude: nothing
 # witnesses it ending and nothing can nudge it, so PRs #909 and #910 sat open with nobody on them. Its
 # PR or report still decides what it can (settle_item): merged or closed settles it, open parks it in
@@ -10282,7 +10364,7 @@ main() {
   case "${1:-}" in
     run) lease_guard "$1" || return $(($? == 2)) ;;   # another holder is no fault, a lease no remote can say is
     kick) lease_guard "$1" || return $(($? == 2)) ;;   # the kick unit and the pass share the lease, and its rcs
-    reap | start | fill | promote | pull-after | exits) lease_guard "$1" || return 1 ;;
+    reap | start | fill | promote | pull-after | exits | adopt-prs) lease_guard "$1" || return 1 ;;
   esac
   case "${1:-}" in
     run)
@@ -10293,6 +10375,9 @@ main() {
       # After the pass, so the floors and the cap's let-go have started what they would; under its lock.
       [ "$DRY" = 1 ] || ! flock -n 9 2>/dev/null || share_return
       pass_mark share
+      # A stranded PR no item names gets one, once for each probe of the watch that lists them (adopt_due).
+      [ "$DRY" = 1 ] || ! flock -n 9 2>/dev/null || ! agent-hold check dispatch >/dev/null 2>&1 || ! adopt_due || cmd_adopt_prs >/dev/null || true
+      pass_mark adopt
       # Past its starts: a kick may start beside the rest of this pass (pass_past_starts).
       local past=''
       if [ "$DRY" != 1 ] && flock -n 9 2>/dev/null; then printf '%s\n' "$$" > "$DIR/.past-starts" && past=1; fi
@@ -10337,6 +10422,7 @@ main() {
     trainee-review) shift; cmd_trainee_review "$@" ;;
     trainee-reject) shift; cmd_trainee_reject "$@" ;;
     validate) shift; cmd_validate "$@" ;;
+    adopt-prs) shift; cmd_adopt_prs "$@" ;;
     rollup) shift; cmd_rollup "$@" ;;
     direct-land) shift; cmd_direct_land "$@" ;;
     hosts) shift; cmd_hosts "$@" ;;
