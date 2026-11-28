@@ -58,9 +58,10 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub needs --json | --page
        hub ui-text --json
        hub bar --json
-       hub ci [--json | --pool-match SECS]
+       hub alerts --reasons --json
+       hub ci [--pods | --json | --pool-match SECS]
        hub ci pass [--since WHEN] [--until WHEN] [--branch B]
-       hub ci hosts [--until WHEN] [--last N]
+       hub ci hosts [--since WHEN] [--until WHEN] [--last N]
        hub briefing --json | --md [--agents-md FILE] [--since WHEN]
        hub projects --json
        hub projects --page NAME | --status NAME
@@ -89,25 +90,28 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
           --branch, as JSON keyed <forge>:<repo>: runs, green, pass (0..1), and the same per
           workflow. day-log reads it. Exits 1 when the ledger cannot be read
   ci hosts the same verdict over jobs: each runner group's (its name less the slot number, so
-          aws-burst-1-unity-pool) last N (default 50) jobs that completed before WHEN (default
-          now) in the job archive, GitHub-hosted left out, as JSON keyed by the group: runs,
-          green, pass (0..1). day-log reads it. Exits 1 when the archive cannot be read
+          aws-burst-1-unity-pool; an ARC pod its scale set) last N (default 50) jobs that
+          completed before WHEN (default now) in the job archive, GitHub-hosted left out, as
+          JSON keyed by the group: runs, green, pass (0..1). With --since, a group with no job
+          completed since WHEN (a retired host) is left out. day-log reads it. Exits 1 when the
+          archive cannot be read
   cards   Home's cards as the Tilecast widget document agent-web serves at /widget.json:
           every card, one section each, with `updated_at`; --figures adds `figures`, the whole numbers by name; agent-mqtt-publish sends it
   phone   the phone widget's rows as {state, rows}: what agent-mqtt-publish sends Home Assistant
   needs   Home's NEEDS YOU as {needs, errors, figures}, ranked, each row with the score it counted;
           figures are the Needs you card's whole numbers (needs_headline, needs_only_you, ...)
-          --page sends one grouped page for the new rows over the
+          --page sends one grouped page for the new critical asks that hold work, over the
           bar in channels.toml [pager.needs], and once more for an ask still open in its
-          repage window (fleet-state.service runs it after every pass)
+          repage window (fleet-state.service runs it after every pass); a decision (an ask
+          below critical, a plan approval) waits for the briefing's daily Decisions batch
   ui-text every text Home, the board, the projects cards and the briefing send, one JSON line each
           ({ts, path, role, text}), what comms-lint grades under its `ui` channel
   bar     what the queue and sessions chip hovers lay out as {as_of, sessions, ready,
           candidates, drain, errors} (hub_core::bar): live sessions worst first, the items ready
           to start in start order, the top cleared board candidates; agent-mqtt-publish sends it
           retained as summary/bar. A source it could not read is in errors and the exit is still 0
-  briefing the human overview (what needs you, what landed, builds and releases, overnight,
-          money) for the window from WHEN (epoch seconds or RFC 3339, default 12h ago); --md is
+  briefing the human overview (what needs you, what landed, a line per project, builds and
+          releases, overnight, money) for the window from WHEN (epoch seconds or RFC 3339, default 12h ago); --md is
           the file agentctl-briefing writes as briefing.md, and --agents-md FILE writes the agent
           briefing (what needs you, one line per area: Infra, Sessions, Workers overnight,
           Nightly, Delivery, Costs, and the detail) from the same read. Exits 1 when a source
@@ -231,6 +235,19 @@ fn main() {
     if it.peek().map(|a| a.as_str()) == Some("ui-text") {
         it.next();
         std::process::exit(ui_text(it.cloned().collect()));
+    }
+    if it.peek().map(|a| a.as_str()) == Some("alerts") {
+        it.next();
+        if it.cloned().collect::<Vec<String>>() != ["--reasons", "--json"] {
+            die(USAGE);
+        }
+        // No watch directory (the laptop) is an answer with no watches and its cause, not a failure:
+        // a failed run is a hub that could not answer at all.
+        match hub_core::alerts::watch_reasons() {
+            Ok(r) => println!("{}", serde_json::json!({ "reasons": r })),
+            Err(e) => println!("{}", serde_json::json!({ "reasons": {}, "error": e })),
+        }
+        return;
     }
     if it.peek().map(|a| a.as_str()) == Some("bar") {
         it.next();
@@ -434,11 +451,12 @@ fn ci_pass(args: &[String]) -> i32 {
 
 /// `hub ci hosts`: the pass rate of each runner group's last jobs, from the job archive.
 fn ci_hosts(args: &[String]) -> i32 {
-    let (mut until, mut last) = (chrono::Utc::now().timestamp(), 50);
+    let (mut since, mut until, mut last) = (None, chrono::Utc::now().timestamp(), 50);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let v = it.next().unwrap_or_else(|| die(USAGE));
         match a.as_str() {
+            "--since" => since = Some(parse_since(v).unwrap_or_else(|| die(USAGE))),
             "--until" => until = parse_since(v).unwrap_or_else(|| die(USAGE)),
             "--last" => {
                 last = v
@@ -450,6 +468,9 @@ fn ci_hosts(args: &[String]) -> i32 {
             _ => die(USAGE),
         }
     }
+    if since.is_some_and(|s| s >= until) {
+        die(USAGE);
+    }
     let paths = hub_core::builds::Paths::from_env();
     let text = match hub_core::builds::read_text(&paths.jobs) {
         Ok(t) => t,
@@ -458,7 +479,7 @@ fn ci_hosts(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let report = match hub_core::builds::pass_by_runner(&text, until, last) {
+    let report = match hub_core::builds::pass_by_runner(&text, since, until, last) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("hub ci hosts: {}: {e}", paths.jobs.display());
@@ -477,12 +498,13 @@ fn ci(args: Vec<String>) -> i32 {
         _ => {}
     }
     enum Mode {
-        Text,
+        Text(bool),
         Json,
         PoolMatch(i64),
     }
     let mode = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-        [] => Mode::Text,
+        [] => Mode::Text(false),
+        ["--pods"] => Mode::Text(true),
         ["--json"] => Mode::Json,
         ["--pool-match", secs] => match secs.parse() {
             Ok(secs) => Mode::PoolMatch(secs),
@@ -502,9 +524,9 @@ fn ci(args: Vec<String>) -> i32 {
         return 1;
     }
     match mode {
-        Mode::Text => {
+        Mode::Text(pods) => {
             let p = fmt::Palette { no_color: true };
-            for l in board::ci_runners(&infra, p, 120) {
+            for l in board::ci_runners(&infra, p, 120, pods) {
                 println!("{}", plain(&l));
             }
         }
@@ -798,6 +820,51 @@ fn print_releases(a: &mut App, section: Option<String>, w: usize, out: &mut impl
     i32::from(!errors.is_empty())
 }
 
+/// `--tab 'projects <name>'`: that project's opened card, its page read here, over its rows,
+/// what Enter shows: the Prefix+p preview. The cards are the stats' rows one for one, so the
+/// card is known before the queue, the feed and the boards are read, and its page (fleet-bench
+/// epics, the longest read) runs beside them; the open itself waits for them (ar-1140).
+fn read_projects_once(a: &mut App, section: Option<String>) {
+    let sys = hub_core::session_actions::System;
+    a.projects = Some(projtab::load(&sys));
+    a.tab = Tab::Projects;
+    let card = section.as_deref().and_then(|q| a.card_for(q));
+    let files = &a.files;
+    let (page, boards, queue, tasks) = std::thread::scope(|s| {
+        let page = card.map(|(name, stage)| {
+            s.spawn(move || App::proj_page_now(&hub_core::session_actions::System, &name, &stage))
+        });
+        let boards = s.spawn(|| app::Boards::read(files, None));
+        let queue = hub_core::queue::Queue::read(&sys);
+        // The feed over the queue just read: `feed` would read it a second time, about 4s.
+        let tasks = hub_core::sheet_view::feed_with(&sys, &queue);
+        fn join<T>(h: std::thread::ScopedJoinHandle<'_, T>) -> T {
+            h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))
+        }
+        (page.map(join), join(boards), queue, tasks)
+    });
+    a.boards = Some(boards);
+    a.queue = Some(queue);
+    a.tasks = Some(tasks);
+    a.open_project(section);
+    a.proj_page = page;
+    // `--tab 'projects ladder'` reads the Ladder here, the worker's read inline.
+    if a.ladder_shown() {
+        a.ladder = Some(hub_core::stages::read(
+            &sys,
+            &hub_core::stages::Paths::from_env(),
+            chrono::Local::now(),
+        ));
+    }
+    // `--tab 'projects coverage'` and a product's department tab read Coverage here too.
+    if a.coverage_shown() {
+        a.coverage = Some(hub_core::departments::read(
+            &sys,
+            &hub_core::departments::Paths::from_env(),
+        ));
+    }
+}
+
 /// The pages as plain text, for tests, capture-pane and a quick look over ssh.
 fn print_once(req: Option<tabreq::Req>) -> i32 {
     let section = req.as_ref().and_then(|r| r.1.clone());
@@ -879,7 +946,7 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         a.boards = Some(app::Boards::read(&a.files, None));
     }
     // Home counts the queue too, so it is read for the default pages as well.
-    if matches!(tab, None | Some(Tab::Home | Tab::Queue | Tab::Projects)) {
+    if matches!(tab, None | Some(Tab::Home | Tab::Queue)) {
         a.queue = Some(hub_core::queue::Queue::read(
             &hub_core::session_actions::System,
         ));
@@ -902,30 +969,7 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         return 0;
     }
     if tab == Some(Tab::Projects) {
-        let sys = hub_core::session_actions::System;
-        a.boards = Some(app::Boards::read(&a.files, None));
-        a.tasks = Some(hub_core::sheet_view::feed(&sys));
-        a.projects = Some(projtab::load(&sys));
-        a.tab = Tab::Projects;
-        // `--tab 'projects <name>'` prints that project's opened card, its page read here, over
-        // its rows, what Enter shows: the Prefix+p preview.
-        a.open_project(section);
-        a.read_proj_page_now(&sys);
-        // `--tab 'projects ladder'` reads the Ladder here, the worker's read inline.
-        if a.ladder_shown() {
-            a.ladder = Some(hub_core::stages::read(
-                &sys,
-                &hub_core::stages::Paths::from_env(),
-                chrono::Local::now(),
-            ));
-        }
-        // `--tab 'projects coverage'` and a product's department tab read Coverage here too.
-        if a.coverage_shown() {
-            a.coverage = Some(hub_core::departments::read(
-                &sys,
-                &hub_core::departments::Paths::from_env(),
-            ));
-        }
+        read_projects_once(&mut a, section);
         for l in a.page_lines(w) {
             let _ = writeln!(out, "{}", plain(&l));
         }

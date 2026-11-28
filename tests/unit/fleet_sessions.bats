@@ -1,79 +1,10 @@
 #!/usr/bin/env bats
 # fleet-sessions: session_bucket decides which sessions the shepherd messages, so each
 # bucket is pinned from facts, and the ledger keeps every nudge to once per fact.
+# One of two files, split so CI shards can spread them (the other is fleet_sessions_part2.bats): as one file it was
+# a shard by itself (ar-5740). The setup and fixtures both use are in fleet_sessions/common.bash.
 
-setup() {
-  load '../vendor/bats-support/load'
-  load '../vendor/bats-assert/load'
-  load '../helpers/sandbox'
-  sandbox_init basic
-  export FLEET_SHEPHERD_DIR="$HOME/.agent/shepherd"
-  export FLEET_MAIN_TTL=0 # each test's gh answers decide
-  # The run ledger stand-in: `runs <repo>` answers every $LEDGER_DIR/<branch>.json (see ledger),
-  # no runs when there is none, and fails like a stale sync while $LEDGER_DIR/FAIL exists.
-  # The PR store stand-in: `prs <repo>` answers $LEDGER_DIR/prs_<owner_repo>.tsv, else prs.tsv
-  # (rows "branch \t number \t state \t ci \t head \t red \t merged_at \t title \t labels, comma-joined"), no PRs when there is neither,
-  # `sync-prs [--wait] <repo>` (the poll catching up) copies $LEDGER_DIR/after_sync_<owner_repo>.tsv over that repo's rows, and fails while $LEDGER_DIR/SYNC_FAIL exists;
-  # fails like a stale store while $LEDGER_DIR/PRS_FAIL exists, or PRS_FAIL_<x> for a repo whose
-  # owner_repo name ends in <x>, and lists no
-  # repo (exit 3) while $LEDGER_DIR/PRS_UNLISTED does.
-  export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync" LEDGER_DIR="$SANDBOX/ledger"
-  mkdir -p "$LEDGER_DIR"
-  # No estimates unless a test writes one: the host's fleet-bench reads the host's sessions, and a
-  # failed read there is named unreadable (fleet-bench eta), so a test must never reach it.
-  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-bench"; chmod +x "$SANDBOX/bin/fleet-bench"
-  cat > "$SCHEDULES_SYNC" <<'SS'
-#!/usr/bin/env bash
-echo "$*" >> "$LEDGER_DIR/calls"
-case "$1" in
-  runs)
-    [ $# -eq 2 ] || exit 2
-    [ ! -e "$LEDGER_DIR/FAIL" ] || { echo "$2 last synced 2026-10-25T09:00:00Z, older than 30m" >&2; exit 1; }
-    cat "$LEDGER_DIR"/*.json 2>/dev/null | jq -cs 'add // []' ;;
-  prs)
-    for f in "$LEDGER_DIR"/PRS_FAIL*; do
-      [ -e "$f" ] || continue
-      [ "${f##*/}" = PRS_FAIL ] || [[ "${2//\//_}" == *"${f##*/PRS_FAIL_}" ]] || continue
-      echo "$2: PR store last synced 2026-10-25T09:00:00Z" >&2; exit 1
-    done
-    [ ! -e "$LEDGER_DIR/PRS_UNLISTED" ] || { echo "$2 is not in the repo list" >&2; exit 3; }
-    f="$LEDGER_DIR/prs_${2//\//_}.tsv"; [ -f "$f" ] || f="$LEDGER_DIR/prs.tsv"
-    [ -f "$f" ] || { echo '[]'; exit 0; }
-    jq -Rn '[inputs | split("\t") | {branch: .[0], number: (.[1] | tonumber), state: .[2], ci: .[3],
-      head_sha: .[4], red: (.[5] // "-"), merged_at: (.[6] // "" | if . == "" then null else . end), title: .[7],
-      labels: (.[8] // "" | split(",") | map(select(. != "")))}]' "$f" ;;
-  sync-prs)
-    [ "$2" != --wait ] || set -- "$1" "${@:3}"
-    [ ! -e "$LEDGER_DIR/SYNC_FAIL" ] || { echo "$2: forge unreachable" >&2; exit 1; }
-    f="$LEDGER_DIR/after_sync_${2//\//_}.tsv"; [ ! -f "$f" ] || cp "$f" "$LEDGER_DIR/prs_${2//\//_}.tsv" ;;
-  *) exit 2 ;;
-esac
-SS
-  chmod +x "$SCHEDULES_SYNC"
-  # The repo's agent-queue, run by its path so its libs resolve: every pass reads the queue, a runner
-  # has none on PATH, and a read that fails is unreadable (ar-2839). A test may overwrite this file.
-  printf '#!/usr/bin/env bash\nexec %q "$@"\n' "$REPO_ROOT/.local/bin/agent-queue" > "$SANDBOX/bin/agent-queue"
-  chmod +x "$SANDBOX/bin/agent-queue"
-  export AGENT_QUEUE_DIR="$HOME/.agent/queue"
-  # The fleet lease: this machine holds it only while $SANDBOX/lease-held exists, never the host's.
-  # It holds it by default, as the fleet home does; a worker's test removes the file.
-  printf '#!/usr/bin/env bash\n[ -e %q ]\n' "$SANDBOX/lease-held" > "$SANDBOX/bin/fleet-lease"
-  chmod +x "$SANDBOX/bin/fleet-lease"
-  : > "$SANDBOX/lease-held"
-  export FLEET_LEASE="$SANDBOX/bin/fleet-lease"
-  # shellcheck source=/dev/null
-  source "$REPO_ROOT/.local/bin/fleet-sessions"
-}
-
-# A test that starts stand-in processes lists them here, so they die even when it fails.
-teardown() {
-  # shellcheck disable=SC2086
-  [ -z "${LIVE_PIDS:-}" ] || kill -- $LIVE_PIDS 2>/dev/null || true
-}
-
-# b <status> <plan> <asks> <heavy> <idle> <git> <dirty> <ahead> <pr> <state> <ci> <in_pr> \
-#   [<red> <phases> <next> <conflicts>]
-b() { session_bucket "$@"; }
+load 'fleet_sessions/common'
 
 @test "a finished plan waits 20m idle before DONE: all phases, removed worktree, plan-less merge (ar-167)" {
   FLEET_IDLE_MIN=20
@@ -226,14 +157,6 @@ b() { session_bucket "$@"; }
   assert_output --partial 'LANDED PR #875 merged, tree clean'
 }
 
-# r <run title> <conclusion> <sha> <minute> [file]: one main_runs row; its file defaults to the title's first word
-r() { printf '{"workflowName":"%s","workflowPath":"%s","status":"completed","conclusion":"%s","headSha":"%s","createdAt":"2026-10-25T10:%02d:00Z"}' "$1" "${5:-${1%% *}.yml}" "$2" "$3" "$4"; }
-# ledger <branch> <main_runs rows>: those rows as `schedules-sync runs` answers them on that branch
-ledger() {
-  jq -c --arg b "$1" 'to_entries | map(.value as $r | {id: (.key + 1), event: ($r.event // "push"), workflow: $r.workflowName, path: $r.workflowPath, branch: $b,
-    status: $r.status, conclusion: $r.conclusion, sha: $r.headSha, created_at: $r.createdAt})' <<<"$2" > "$LEDGER_DIR/${1//\//_}.json"
-}
-
 @test "main_state names each workflow whose latest decided run failed, with its last green" {
   run main_state <<<"[$(r Tests success g1 1),$(r Tests failure r1 2),$(r Checks success c1 3)]"
   assert_output "$(printf 'Tests\tr1\tg1')"
@@ -307,6 +230,17 @@ ledger() {
   assert_output 'STALLED PR #9 green, not merged'
   run b idle 0 0 0 30 1 0 1 9 OPEN PENDING 1
   assert_output 'WORKING PR #9 CI running'
+}
+
+@test "a green PR a second agent failed is never green-unmerged: DONE once its item moved on, else the fix is here (ar-5286)" {
+  run b idle 0 0 0 30 1 0 1 9 OPEN PASS 1 - - - - - - - 'moved:s moved on (queued)' 'failed validate-s-abc'
+  assert_output 'DONE PR #9 failed validation (validate-s-abc), its item went back to the queue with the findings'
+  run b idle 0 0 0 30 1 2 1 9 OPEN PASS 1 - - - - - - - 'moved:s moved on (queued)' 'failed validate-s-abc'
+  assert_output 'STALLED PR #9 failed validation (validate-s-abc), its item went back to the queue, and work here is outside the PR'
+  run b idle 0 0 0 30 1 0 1 9 OPEN PASS 1 - - - - - - - 'own:s,t' 'failed validate-s-abc'
+  assert_output 'STALLED PR #9 failed validation (validate-s-abc): fix its findings (agent-queue show s) and push'
+  run b idle 0 0 0 30 1 0 1 9 OPEN PASS 1 - - - - - - - 'own:s' "validate-s-abc, a second agent's review"
+  assert_output "WORKING PR #9 waiting on validate-s-abc, a second agent's review"
 }
 
 @test "no PR: dirty or ahead is STALLED, clean is CHAT, a closed PR is STALLED unless one of its own merged" {
@@ -410,6 +344,44 @@ ledger() {
   [ "$output" = - ]
   run carried_by "$q" sidA 'moved:coord moved on (done)' lab:me
   [ "$output" = - ]
+}
+
+@test "a running item whose recorded PR is open elsewhere carries the session: WORKING, not STALLED (ar-3580)" {
+  # 2026-11-19: ucp-671's PR #2506 rode agent-37's branch, in train #2919, and agent-15's idle session read STALLED
+  CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+  printf 'agent-37-x\t2506\tOPEN\tPASS\tabc\t-\t\nold\t2400\tMERGED\tPASS\tdef\t-\t\nred\t2407\tOPEN\tFAIL\tghi\t-\t\n' > "$LEDGER_DIR/prs.tsv"
+  printf 'b\t9\tOPEN\tPENDING\tjkl\t-\t\n' > "$LEDGER_DIR/prs_o_s.tsv"
+  local q='{"slug":"ucp-671","state":"running","sessions":"sidA","open_pr":"o/r#2506"}
+{"slug":"ucp-672","state":"running","sessions":"sidA","pr":"o/r#2400"}
+{"slug":"ucp-673","state":"running","sessions":"sidA","pr":"o/r#2506 o/s#9 o/r#2400","open_pr":"o/r#2506"}
+{"slug":"ucp-675","state":"running","sessions":"sidA","pr":"o/r#2407"}
+{"slug":"ucp-674","state":"done","sessions":"sidC","pr":"o/r#2506"}'
+  run item_open_prs "$q" ucp-671
+  assert_output 'o/r#2506'
+  # both fields, several refs and a second repo: each open one once; a merged one drops
+  run item_open_prs "$q" ucp-673
+  assert_output 'o/r#2506,o/s#9'
+  # only the slugs passed count, never every running item: a merged PR, a red one, a done item, a stranger carry nothing
+  for s in ucp-672 ucp-675 ucp-674 nope; do
+    run item_open_prs "$q" "$s"
+    [ "$output" = - ]
+  done
+  # a store that cannot answer carries nothing (the old STALLED read)
+  rm -rf "$CACHE"; mkdir -p "$CACHE"; touch "$LEDGER_DIR/PRS_FAIL"
+  run item_open_prs "$q" ucp-671
+  [ "$output" = - ]
+  # session_carried joins them with the items filed from it; only an own: answer reads the store
+  q="$q"$'\n''{"slug":"fix-1","state":"running","from":"item:ucp-671","sessions":"sidB"}'
+  rm -rf "$CACHE"; mkdir -p "$CACHE"; rm -f "$LEDGER_DIR/PRS_FAIL"
+  run session_carried "$q" sidA own:ucp-671 lab:me ucp-671
+  assert_output 'fix-1,o/r#2506'
+  run session_carried "$q" sidA 'moved:ucp-671 moved on (done)' lab:me ucp-671
+  [ "$output" = - ]
+  # the bucket: carried by the open PR is WORKING; none is the old STALLED
+  run b idle 0 0 0 30 1 0 0 - - - 1 - - - - - - - 'own:ucp-671' - - - 'o/r#2506'
+  assert_output 'WORKING clean, nothing on the branch, no plan file, its item ucp-671 is carried by live items: o/r#2506'
+  run b idle 0 0 0 30 1 0 0 - - - 1 - - - - - - - 'own:ucp-671' - - - -
+  assert_output 'STALLED clean, nothing on the branch, no plan file, its item ucp-671 is running here'
 }
 
 @test "a queued <slug>-close item held by its at: time carries the open item, so the session is not STALLED (ar-4582)" {
@@ -522,6 +494,76 @@ ledger() {
   # an open ask still decides first
   run b idle 0 1 0 30 1 0 2 9 OPEN FAIL 1 - - - - - - - "$r"
   assert_output 'NEEDS 1 pending ask(s)'
+}
+
+@test "an open PR another open item names in its pr: is handed to it: DONE naming the item, close --self now (ar-5184)" {
+  # 2026-11-24: agent-60 handed red #3320 to the re-gate item ucp-3413 and read STALLED CI red, close --self keep
+  local h='handed:ucp-3413 pr 9'
+  run b idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - - - - "$h"
+  assert_output 'DONE PR #9 handed to item ucp-3413, which owns it'
+  session_finished idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - - - - "$h"
+  [ -z "$(work_blockers '' idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - - - - "$h")" ]
+  [ "$(SELF=s1 verdict '{session_id: "s1", bucket: "DONE", idle_min: 30, reason: "PR #9 handed to item ucp-3413, which owns it"}' | cut -d: -f1)" = now ]
+  # negative controls: dirt, HEAD past the PR, a live gate or queue job, or the item naming another PR
+  run b idle 0 0 0 30 1 3 2 9 OPEN FAIL 1 - - - - - - - "$h"
+  assert_output 'STALLED PR #9 CI red'
+  run b idle 0 0 0 30 1 0 2 9 OPEN FAIL 0 - - - - - - - "$h"
+  assert_output 'STALLED PR #9 CI red'
+  local j
+  for j in 'gate' 'queue'; do
+    run b idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - "$j" - - "$h"
+    assert_output 'STALLED PR #9 CI red'
+  done
+  run b idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - - - - 'handed:ucp-3413 pr 5'
+  assert_output 'STALLED PR #9 CI red'
+  ! session_finished idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - - - - 'handed:ucp-3413 pr 5'
+  # pr_owner: an open item whose pr: lists <repo>#<pr>, the repo the clone's origin (any case) or a sibling repo's
+  git init -q "$SANDBOX/c"; git -C "$SANDBOX/c" remote add origin 'git@github.com:O/c.git'
+  local q
+  q="$(jq -nc '{slug: "own", state: "done", pr: "o/c#9"}, {slug: "bare", state: "queued", pr: "9"},
+    {slug: "other", state: "queued", pr: "o/c#90 o/d#9"}, {slug: "ucp-3413", state: "queued", pr: "o/x#1 O/C#9"},
+    {slug: "sib", state: "running", pr: "o/s#9"}')"
+  run pr_owner "$q" "$SANDBOX/c" - 9
+  assert_output 'ucp-3413'
+  run pr_owner "$q" "$SANDBOX/c" o/s 9
+  assert_output 'sib'
+  # no open item names it: a done one, a bare number, another repo's or another number's
+  run pr_owner "$(grep -v ucp-3413 <<<"$q")" "$SANDBOX/c" - 9
+  assert_output ''
+  run pr_owner "$q" - - 9
+  assert_output ''
+  run pr_owner "$q" "$SANDBOX/c" - -
+  assert_output ''
+  # an item running, waiting or parked in this session is its own even when item_of could not join it; a queued
+  # one that last ran here was requeued and owns the PR, and a stateless row stops nothing
+  local mine
+  mine="$(jq -nc '{slug: "x"}, {slug: "r1", state: "running", session: "lab:s1", pr: "o/c#9"},
+    {slug: "r2", state: "waiting", sessions: "sid-1 sid-9", pr: "o/c#9"}, {slug: "q1", state: "queued", session: "lab:s1", pr: "o/c#9"}')"
+  run pr_owner "$mine" "$SANDBOX/c" - 9 sid-9 lab:s1
+  assert_output 'q1'
+  run pr_owner "$(grep -v q1 <<<"$mine")" "$SANDBOX/c" - 9 sid-9 lab:s1
+  assert_output ''
+  run pr_owner "$(grep -v q1 <<<"$mine")" "$SANDBOX/c" - 9 sid-2 lab:s2
+  assert_output 'r1'
+  # handed_item: only an open PR of a session whose item is - or moved on is handed, and only when handed_off passes on
+  # it; a running or parked item keeps its own, and a moved: one keeps its relation while the PR is still this session's
+  local m='moved:a moved on (queued)'
+  run handed_item - - OPEN "$q" "$SANDBOX/c" - 9 0 1 - sid-9 lab:s1
+  assert_output 'handed:ucp-3413 pr 9'
+  run handed_item "$m" moved OPEN "$q" "$SANDBOX/c" - 9 0 1 - sid-9 lab:s1
+  assert_output 'handed:ucp-3413 pr 9'
+  run handed_item "$m" moved OPEN "$q" "$SANDBOX/c" - 9 2 1 - sid-9 lab:s1
+  assert_output "$m"
+  run handed_item "$m" moved OPEN "$q" "$SANDBOX/c" - 9 0 0 - sid-9 lab:s1
+  assert_output "$m"
+  run handed_item "$m" moved OPEN "$q" "$SANDBOX/c" - 9 0 1 gate sid-9 lab:s1
+  assert_output "$m"
+  run handed_item 'own:a' own OPEN "$q" "$SANDBOX/c" - 9 0 1 - sid-9 lab:s1
+  assert_output 'own:a'
+  run handed_item 'review:a pr 9' review OPEN "$q" "$SANDBOX/c" - 9 0 1 - sid-9 lab:s1
+  assert_output 'review:a pr 9'
+  run handed_item - - MERGED "$q" "$SANDBOX/c" - 9 0 1 - sid-9 lab:s1
+  [ "$output" = - ]
 }
 
 @test "item_of: sessions: matches by Claude session, session: only for a lone claude, a done one only after it started" {
@@ -750,6 +792,65 @@ ledger() {
   done
 }
 
+@test "an idle session whose gate runs detached waits as a gate shell does, and names its next wake-up (ar-1085)" {
+  # unity-core-playground-agent-3 (run 42525454189): ci-gate.sh ran on with & after its Bash call returned, so Claude read
+  # idle and the row read STALLED. The 25th argument is the session's next wake-up, none when it has none.
+  run b idle 0 0 0 25 1 0 0 9 OPEN FAIL 1 - 1/2 x - gate - - - - - - - none
+  assert_output 'WORKING gate running detached, nothing wakes the session when it ends'
+  run b idle 0 0 0 25 1 0 0 9 OPEN FAIL 1 - 1/2 x - test - - - - - - - none
+  assert_output 'WORKING test running detached, nothing wakes the session when it ends'
+  run b idle 0 0 0 25 1 0 0 9 OPEN FAIL 1 - 1/2 x - gate - - - - - - - 'a ScheduleWakeup at Fri 10:00'
+  assert_output 'WORKING gate running detached, its next wake-up is a ScheduleWakeup at Fri 10:00'
+  # a wait the facts already name reads as that wait
+  run b idle 0 0 0 25 1 0 0 9 OPEN PENDING 1 - 1/2 x - gate - - - - - - - none
+  assert_output 'WORKING PR #9 CI running'
+  # a landing-queue gate outlasts FLEET_SHELL_STALE_MIN by design; any other is stale past it
+  run b idle 0 0 0 300 1 0 0 9 OPEN FAIL 1 - 1/2 x - queue - - - - - - - none
+  assert_output 'WORKING gate running detached, nothing wakes the session when it ends'
+  run b idle 0 0 0 120 1 0 0 9 OPEN FAIL 1 - 1/2 x - gate - - - - - - - none
+  assert_output 'STALLED PR #9 CI red, detached gate idle over 120m'
+  # an ask still reads carrying on, and a finished plan is not waiting on it
+  run b idle 0 1 0 25 1 0 0 9 OPEN FAIL 1 - 1/2 x - gate - - - - - - - none
+  assert_output 'NEEDS 1 pending ask(s), carrying on'
+  run b idle 0 0 0 25 1 0 0 875 MERGED PASS 1 - 3/3 - - gate - - - - - - - none
+  assert_output 'DONE PR #875 merged, tree clean, all 3 phases done, detached gate still running'
+  # negative controls: no detached process, and a subagent's own wait
+  run b idle 0 0 0 25 1 0 0 9 OPEN FAIL 1 - 1/2 x - gate - - - - - - - -
+  assert_output 'STALLED PR #9 CI red'
+  run b idle 0 0 0 25 1 0 0 9 OPEN FAIL 1 - 1/2 x - agent - - - - - - - none
+  assert_output 'WORKING subagent running'
+}
+
+@test "detached_gate names an idle session's detached gate only in a checkout no other live row shares (ar-1085 review)" {
+  mkdir -p "$SANDBOX/wt/scripts/test" "$SANDBOX/other"
+  git -C "$SANDBOX/wt" init -q
+  printf 'sleep 60\n' > "$SANDBOX/wt/scripts/test/ci-gate.sh"
+  printf 'gate ci-gate.sh\n' > "$SANDBOX/time-use.conf"
+  export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
+  local gate me='{"target":"lab/s1:1","cwd":"'"$SANDBOX/wt"'"}'
+  (cd "$SANDBOX/wt" && exec -a x bash scripts/test/ci-gate.sh) >/dev/null 2>&1 3>&- &
+  gate=$!; LIVE_PIDS="$gate"
+  until grep -q ci-gate.sh "/proc/$gate/cmdline" 2>/dev/null; do :; done
+  run detached_gate - idle 25 none "$SANDBOX/wt" 0 lab/s1:1 "$me"
+  assert_output queue
+  # negative controls: another live row in the same checkout or in a subdirectory of it, a busy or shell
+  # session (the shell probes own those), under FLEET_IDLE_MIN, a worker's row, a subagent's wait, and no checkout
+  run detached_gate - idle 25 none "$SANDBOX/wt" 0 lab/s1:1 "$me"$'\n''{"target":"lab/s2:1","cwd":"'"$SANDBOX/wt"'"}'
+  assert_output ''
+  run detached_gate - idle 25 none "$SANDBOX/wt" 0 lab/s1:1 "$me"$'\n''{"target":"lab/s2:1","cwd":"'"$SANDBOX/wt/scripts"'"}'
+  assert_output ''
+  run detached_gate - shell 25 none "$SANDBOX/wt" 0 lab/s1:1 "$me"
+  assert_output ''
+  run detached_gate - idle 19 none "$SANDBOX/wt" 0 lab/s1:1 "$me"
+  assert_output ''
+  run detached_gate razer idle 25 none "$SANDBOX/wt" 0 lab/s1:1 "$me"
+  assert_output ''
+  run detached_gate - idle 25 agent "$SANDBOX/wt" 0 lab/s1:1 "$me"
+  assert_output ''
+  run detached_gate - idle 25 none "$SANDBOX/other" 0 lab/s1:1 "$me"
+  assert_output ''
+}
+
 @test "live_wait finds a gate the session's claude runs in another directory (ar-69)" {
   # 2026-11-03 agent-49 read STALLED mid-gate: its gate ran in a subagent's worktree, not the session's.
   mkdir -p "$SANDBOX/wt" "$SANDBOX/sub/scripts/test"
@@ -837,6 +938,54 @@ ledger() {
   FLEET_TIME_USE_CONF="$SANDBOX/other.conf" run live_wait "$SANDBOX/wt" "$root"
   assert_output ''
   pkill -KILL -s "$root" || true; wait "$root" 2>/dev/null || true
+}
+
+@test "live_wait reads the platform's background preview-gate.sh as a gate, by the repo's own time-use.conf (ar-5160)" {
+  # 2026-11-24 platform-agent-4 (pmp-169, PR #1666) read "background shell is not a gate or test" while its shell ran the
+  # release gate (deploy wait, smoke, ~520 Playwright tests). Reads the shipped conf, so dropping the line fails here.
+  # The sourced preview_gate_run form is seen only from the transcript (open_job), pinned by tests/fixtures/time-use-commands.tsv.
+  mkdir -p "$SANDBOX/wt" "$SANDBOX/plat/scripts"
+  printf 'sleep 60\n' > "$SANDBOX/plat/scripts/preview-gate.sh"
+  export FLEET_TIME_USE_CONF="$BATS_TEST_DIRNAME/../../.config/agent-panel/time-use.conf"
+  # root stands in for the session's claude; the gate sits below it, outside the session's worktree
+  (cd "$SANDBOX/plat" && exec setsid bash -c 'bash scripts/preview-gate.sh --no-e2e; :') >/dev/null 2>&1 3>&- &
+  local root=$!; LIVE_PIDS="-$root"
+  # the process is the event: wait until /proc shows the script's own exec (the anchor skips the wrapper's `bash -c`)
+  until pgrep -s "$root" -f '^bash scripts/preview-gate\.sh' >/dev/null; do
+    kill -0 "$root" 2>/dev/null || fail "the gate stand-in exited before it started"
+  done
+  run live_wait "$SANDBOX/wt" "$root"
+  assert_output 'gate'
+  # negative control: a conf without the line reads nothing
+  printf 'gate agent-land\ntest bats\n' > "$SANDBOX/other.conf"
+  FLEET_TIME_USE_CONF="$SANDBOX/other.conf" run live_wait "$SANDBOX/wt" "$root"
+  assert_output ''
+  pkill -KILL -s "$root" || true; wait "$root" 2>/dev/null || true
+}
+
+@test "live_wait reads a time-use.conf line only where it starts the argv, never inside another command's arguments (ar-3521)" {
+  # 2026-11-18 ar-1284 review: the short lines (bats, make test, gh pr view) matched as a substring of any command line,
+  # so `vim x.bats` and `grep make test` read as a test run. The shipped conf, as the other three readers match it.
+  # `exec -a <argv0> bash <script> <args>` makes /proc show exactly `<argv0> <script> <args>`, the argv a real run has.
+  mkdir -p "$SANDBOX/wt/scripts/test"
+  export FLEET_TIME_USE_CONF="$BATS_TEST_DIRNAME/../../.config/agent-panel/time-use.conf"
+  local row a0 script rest want pid
+  # argv0|script|args|class: first the commands that only name a test or a gate, then the real runs, wrapped and not
+  for row in 'vim|x.bats||' 'grep|make|test|' 'grep|gh|pr view|' 'less|pytest.log||' 'vim|scripts/test/run.sh||' \
+             'bats|x.bats||test' 'make|test||test' 'gh|pr|view 3|gate' '/bin/bash|scripts/test/run.sh||test' \
+             'python3|pytest|-q|test' 'node|vitest|run|test' 'env|gh-run-wait|12 checks|gate'; do
+    IFS='|' read -r a0 script rest want <<<"$row"
+    printf 'sleep 60\n' > "$SANDBOX/wt/$script"
+    # shellcheck disable=SC2086  # rest is a word list
+    (cd "$SANDBOX/wt" && exec -a "$a0" bash "$script" $rest) >/dev/null 2>&1 3>&- &
+    pid=$!
+    # the process is the event: wait until /proc shows the exec, not for a delay
+    until grep -qa "$script" "/proc/$pid/cmdline" 2>/dev/null; do kill -0 "$pid" || fail "the $row stand-in exited before it started"; done
+    run live_wait "$SANDBOX/wt"
+    assert_output "$want"
+    kill "$pid"; wait "$pid" 2>/dev/null || true
+    rm -f "$SANDBOX/wt/$script"
+  done
 }
 
 @test "live_wait finds a gate or test process running in the session worktree, and only there" {
@@ -1035,7 +1184,7 @@ MD
   printf 'sleep 60\n' > "$SANDBOX/wt/scripts/authoring/unity-method.sh"
   printf 'gate agent-land\ntest bats\nbuild unity-method.sh\n' > "$SANDBOX/time-use.conf"
   export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
-  (cd "$SANDBOX/wt" && exec -a x bash scripts/authoring/unity-method.sh RenderCli) >/dev/null 2>&1 3>&- &
+  (cd "$SANDBOX/wt" && exec bash scripts/authoring/unity-method.sh RenderCli) >/dev/null 2>&1 3>&- &
   local pid=$!
   # the process is the event: wait until /proc shows its exec, not for a delay
   until grep -q unity-method.sh "/proc/$pid/cmdline" 2>/dev/null; do kill -0 "$pid" || fail "the build stand-in exited before it started"; done
@@ -1069,8 +1218,8 @@ MD
   export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
   local pid
   # a gate that is not queue-shaped stays a gate: gh-run-wait is a conf gate line, not a queue gate
-  printf 'sleep 60\n' > "$SANDBOX/wt/waiter.sh"
-  (cd "$SANDBOX/wt" && exec -a x bash waiter.sh gh-run-wait) >/dev/null 2>&1 3>&- &
+  printf 'sleep 60\n' > "$SANDBOX/wt/gh-run-wait"
+  (cd "$SANDBOX/wt" && exec bash gh-run-wait 12 checks) >/dev/null 2>&1 3>&- &
   pid=$!
   until grep -q gh-run-wait "/proc/$pid/cmdline" 2>/dev/null; do :; done
   run live_wait "$SANDBOX/wt"
@@ -1735,44 +1884,6 @@ MD
   [ ! -e "$HOME/.agent/evil" ]
 }
 
-# panel <cwd> [plan file] [edited_files JSON array]: agent-panel answering one session
-# s1 (sid-9, pane %7), open for three hours and idle for one, with status $PANEL_STATUS
-# (default idle), context window $PANEL_WINDOW (default null, a model agent-panel does not know) and
-# open job $PANEL_JOB (default none known), idle $PANEL_IDLE_S seconds (default 3600), time use
-# $PANEL_TIME (a time_use object, default none), its claude started $PANEL_AGE_S seconds ago (default 3h05m),
-# model $PANEL_MODEL (default none: no turn yet) on harness $PANEL_HARNESS (default claude).
-panel() {
-  local since=$(( $(date +%s) - ${PANEL_IDLE_S:-3600} )) started=$(( $(date +%s) - ${PANEL_AGE_S:-11100} ))
-  printf '#!/usr/bin/env bash\necho %q\n' \
-    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"${PANEL_STATUS:-idle}\",\"plan_mode\":${PANEL_PLAN_MODE:-false},\"doing\":\"${PANEL_DOING:-}\",\"session_id\":\"${PANEL_SID:-sid-9}\",\"cwd\":\"$1\",\"idle_since\":$since,\"started_at\":$started,\"context_tokens\":5,\"context_window\":${PANEL_WINDOW:-null},\"plan_file\":\"${2:-}\",\"transcript\":\"${PANEL_TRANSCRIPT:-}\",\"edited_files\":${3:-[]},\"account\":\"${PANEL_ACCOUNT:-main}\",\"open_job\":\"${PANEL_JOB:-}\",\"time_use\":${PANEL_TIME:-null},\"attached\":${PANEL_ATTACHED:-false},\"manual_mode\":${PANEL_MANUAL:-false},\"model\":\"${PANEL_MODEL:-}\",\"harness\":\"${PANEL_HARNESS:-claude}\"}" \
-    > "$SANDBOX/bin/agent-panel"
-  chmod +x "$SANDBOX/bin/agent-panel"
-}
-
-# phases_plan <line>...: a plan file whose ## Phases section holds these lines.
-phases_plan() {
-  { printf '# Plan\n\n## Phases\n\n'; printf '%s\n' "$@"; printf '\n## Results\n'; } > "$SANDBOX/plan.md"
-}
-
-# landed_fixture: one idle session s1 (sid-9) in a clone whose PR #875 merged clean, with a
-# plan whose next phase is "Phase 2: rollout".
-landed_fixture() {
-  local oid
-  git init -q --bare "$SANDBOX/origin.git"
-  git clone -q "$SANDBOX/origin.git" "$SANDBOX/wt" 2>/dev/null
-  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
-  git -C "$SANDBOX/wt" push -q origin HEAD:main 2>/dev/null
-  git -C "$SANDBOX/wt" checkout -q -b feat/x
-  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m work
-  oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
-  phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout'
-  panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  gh_script 'exit 1'; printf 'feat/x\t875\tMERGED\tPASS\t%s\n' "$oid" > "$LEDGER_DIR/prs.tsv"
-  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
-  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-bench" # no estimates unless a test writes one
-  chmod +x "$SANDBOX/bin/fleet-assess" "$SANDBOX/bin/fleet-bench"
-}
-
 @test "end to end: a squash-merged branch whose tree equals origin/main is not files with no PR (ar-225)" {
   # 2026-10-27 agent-14 after PR 982 read STALLED "N commits ahead, no PR" (now "N file(s) not on
   # the default branch"): its commits were not on main, but their content was, squash-merged as one
@@ -1832,24 +1943,6 @@ SH
   assert_success
   [ "$(jq -r 'select(.target == "lab/s1:2") | .reason' <<<"$output")" = 'heavy child process' ]
   [ "$(jq -r 'select(.target == "lab/s1:1") | .reason' <<<"$output")" != 'heavy child process' ]
-}
-
-# worker_ssh: razer-laptop as the one fleet worker, and an ssh that runs the command it was sent here, as
-# a worker would, with the agent-panel the fixture wrote as the worker's (remote-bin, first on PATH).
-worker_ssh() {
-  export FLEET_INVENTORY="$SANDBOX/inventory.yml"
-  printf 'all:\n  children:\n    fleet_workers:\n      hosts:\n        razer-laptop:\n          ansible_host: 192.0.2.26\n' > "$FLEET_INVENTORY"
-  mkdir -p "$SANDBOX/remote-bin"
-  cp "$SANDBOX/bin/agent-panel" "$SANDBOX/remote-bin/agent-panel"
-  cp "$SANDBOX/bin/agent-panel" "$SANDBOX/remote-panel"
-  cat > "$SANDBOX/bin/ssh" <<SH
-#!/usr/bin/env bash
-echo "\$*" >> "$SANDBOX/ssh.log"
-while [ \$# -gt 0 ]; do case "\$1" in -o|-p) shift 2 ;; -*) shift ;; *) break ;; esac; done
-shift
-PATH="$SANDBOX/remote-bin:\$PATH" exec bash -c "\$*"
-SH
-  chmod +x "$SANDBOX/bin/ssh"
 }
 
 @test "end to end: a fleet worker's row carries its checkout's git facts, so its merged PR reads DONE, not CHAT (ar-3358)" {
@@ -1942,6 +2035,8 @@ SH
   assert_equal "$(jq -c '[.rows, .silent]' "$snap")" '[[],["razer-laptop"]]'
   FLEET_STATE_FILE="$SANDBOX/state.json" run "$REPO_ROOT/.local/bin/fleet-sessions" --write
   assert_equal "$(jq -c .silent "$SANDBOX/state.json")" '[{"host":"razer-laptop","why":"did not answer"}]'
+  # The document carries its own idle line, which fleet-dispatch's waits reads for a plan-mode CHAT session (ar-4662).
+  assert_equal "$(jq -r .vocab.idle_min "$SANDBOX/state.json")" 20
   assert_equal "$(jq -r '.unreadable | index("agent-panel@razer-laptop")' "$SANDBOX/state.json")" null
   # A worker whose read had a gap (exit 3) keeps the rows it read (ar-916).
   printf '#!/usr/bin/env bash\n%q "$@"\nexit 3\n' "$SANDBOX/remote-panel" > "$SANDBOX/bin/ssh"
@@ -2463,13 +2558,6 @@ SH
   [ "$(jq -r 'select(.bucket == "NIGHTLY") | .owners | length' <<<"$output")" = 0 ]
 }
 
-# nightly_item <state> <slug> <sessions line> -- a project demo queue item; demo's checkout is $SANDBOX/wt
-nightly_item() {
-  mkdir -p "$HOME/.agent/queue/$1"
-  printf 'slug: %s\nproject: demo\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-15T10:00:00Z\nsession: lab:demo-agent-3\n%b---\nfix the nightly\n' \
-    "$2" "$3" > "$HOME/.agent/queue/$1/20261115-100000-$2.md"
-}
-
 @test "end to end: a running nightly-fix or nightly-green item for the repo owns its NIGHTLY row (ar-2467)" {
   git init -q --bare "$SANDBOX/origin.git"
   git clone -q "$SANDBOX/origin.git" "$SANDBOX/wt" 2>/dev/null
@@ -2732,17 +2820,69 @@ nightly_item() {
   # exit 3, a repo the ledger does not sync, is no runs: no NIGHTLY row and nothing unreadable
   rm "$LEDGER_DIR/FAIL"
   # (runs only: a GitHub repo the PR store does not list is unreadable by design)
-  printf '#!/usr/bin/env bash\n[ "$1" = runs ] && exit 3\necho "[]"\n' > "$SCHEDULES_SYNC"
+  ss_script '[ "$1" = runs ] && exit 3; echo "[]"'
   FLEET_STATE_FILE="$SANDBOX/state.json" run "$REPO_ROOT/.local/bin/fleet-sessions" --write
   [ "$(jq -r '.main | length' "$SANDBOX/state.json")" = 0 ]
   [ "$(jq -r '.unreadable | length' "$SANDBOX/state.json")" = 0 ]
 }
 
-# queue_item <state> <session> -- a started agent-queue item on session s1's tmux session
-queue_item() {
-  mkdir -p "$HOME/.agent/queue/$1"
-  printf 'slug: fix-wave-save\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsession: %s\n---\nfix wave save\n' \
-    "$2" > "$HOME/.agent/queue/$1/20261103-100000-fix-wave-save.md"
+@test "a run ledger down for every repo (a gh rate limit) is one NIGHTLY row naming its reset, never a CI unreadable row per repo (ar-230)" {
+  # 2026-10-26 13:32: one 403 left all 3 repos' ledger entries stale, and each became a NIGHTLY
+  # "main CI unreadable" row, three urgent due lines the shepherd would page high for one cause.
+  local i red reset rows
+  git init -q --bare "$SANDBOX/origin1.git"
+  git clone -q "$SANDBOX/origin1.git" "$SANDBOX/wt1" 2>/dev/null
+  git -C "$SANDBOX/wt1" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  git -C "$SANDBOX/wt1" -c user.email=t@t -c user.name=t commit -q --allow-empty -m 'feat: x (#875)'
+  red="$(git -C "$SANDBOX/wt1" rev-parse HEAD)"
+  git -C "$SANDBOX/wt1" push -q origin HEAD:main 2>/dev/null
+  for i in 2 3; do
+    git init -q --bare "$SANDBOX/origin$i.git"
+    git -C "$SANDBOX/wt1" push -q "$SANDBOX/origin$i.git" HEAD:main 2>/dev/null
+    git clone -q "$SANDBOX/origin$i.git" "$SANDBOX/wt$i" 2>/dev/null
+  done
+  rows=""
+  for i in 1 2 3; do
+    git -C "$SANDBOX/wt$i" fetch -q origin
+    git -C "$SANDBOX/wt$i" checkout -q -b feat/x
+    rows+="$(printf '{"target":"lab/s%s:1","pane":"lab/%%%s","status":"idle","plan_mode":false,"session_id":"sid-%s","cwd":"%s","idle_since":%s,"context_tokens":5,"plan_file":""}' \
+      "$i" "$i" "$i" "$SANDBOX/wt$i" "$(( $(date +%s) - 3600 ))")"$'\n'
+  done
+  printf '#!/usr/bin/env bash\ncat %q\n' "$SANDBOX/panel.jsonl" > "$SANDBOX/bin/agent-panel"
+  printf '%s' "$rows" > "$SANDBOX/panel.jsonl"
+  ledger main "[$(r Tests failure "$red" 2)]"
+  gh_script 'exit 1'
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
+  chmod +x "$SANDBOX/bin/agent-panel" "$SANDBOX/bin/fleet-assess"
+  local doc="$XDG_STATE_HOME/fleet/state.json"
+
+  # a good read: each repo red on its own row
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  [ "$(jq -r '[.main[].reason | select(endswith(" red: Tests (no green in window)"))] | length' "$doc")" = 3 ]
+  cp "$FLEET_SHEPHERD_DIR/watch.state" "$SANDBOX/state.ok"
+  : > "$FLEET_SHEPHERD_DIR/watch.log"
+
+  # rate limited: one row, its reset in local time, nothing per repo
+  reset="$(date -u -d '+20 min' +%FT%TZ)"
+  echo "ledger down: GitHub API rate limit hit, resets $reset" > "$LEDGER_DIR/DOWN"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [ "$(jq -r '.main | length' "$doc")" = 1 ]
+  [ "$(jq -r '.main[0].id' "$doc")" = main-run-ledger ]
+  [ "$(jq -r '.main[0].fact' "$doc")" = "NIGHTLY CI run ledger unreadable: GitHub API rate limit hit, resets $(date -d "$reset" +%H:%M)" ]
+  [ "$(jq -r '.main[0].reason' "$doc")" = "CI run ledger unreadable: GitHub API rate limit hit, resets $(date -d "$reset" +%H:%M) (main CI of origin1, origin2, origin3 waits on it)" ]
+  [ "$(jq -r '.main[0].wait_until' "$doc")" = "$(( $(date -d "$reset" +%s) + 15 * 60 ))" ]
+  [ "$(jq -r '[.main[].reason | select(test("CI unreadable"))] | length' "$doc")" = 0 ]
+  [ "$(jq -c '[.unreadable[] | select(startswith("run ledger"))]' "$doc")" = '["run ledger: GitHub API rate limit hit, resets '"$reset"'"]' ]
+  # each repo's session rows keep their last cells: the tick logs no blink for them
+  cmp "$SANDBOX/state.ok" "$FLEET_SHEPHERD_DIR/watch.state"
+  [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
+
+  # negative control: one repo stale for its own reason is still its own CI unreadable row
+  rm "$LEDGER_DIR/DOWN"; touch "$LEDGER_DIR/FAIL"
+  FLEET_STATE_FILE="$SANDBOX/state.json" run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  [ "$(jq -r '[.main[].reason | select(endswith("main CI unreadable (the run ledger has no fresh sync of it)"))] | length' "$SANDBOX/state.json")" = 3 ]
+  [ "$(jq -r '[.main[] | select(.id == "main-run-ledger")] | length' "$SANDBOX/state.json")" = 0 ]
 }
 
 @test "a session working a queue item carries the item as dispatch; others carry null" {
@@ -2786,12 +2926,11 @@ queue_item() {
   [ "$(jq -r .dispatch <<<"$output")" = 'apociseum: fix-wave-save' ]
 }
 
-@test "a Codex run's row (AGENT_PANEL_CODEX) reads WORKING busy and joins its queue item by thread id" {
+@test "a Codex run's row reads WORKING busy and joins its queue item by thread id" {
   landed_fixture
   local row
   row="{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"busy\",\"plan_mode\":false,\"session_id\":\"th-1\",\"cwd\":\"$SANDBOX/wt\",\"idle_since\":$(date +%s),\"context_tokens\":0,\"plan_file\":\"\",\"transcript\":\"\",\"edited_files\":[],\"account\":\"codex\",\"harness\":\"codex\"}"
-  # agent-panel lists a Codex run only when asked, as the real one does
-  printf '#!/usr/bin/env bash\n[ "${AGENT_PANEL_CODEX:-}" = 1 ] && echo %q\nexit 0\n' "$row" > "$SANDBOX/bin/agent-panel"
+  printf '#!/usr/bin/env bash\necho %q\nexit 0\n' "$row" > "$SANDBOX/bin/agent-panel"
   mkdir -p "$HOME/.agent/queue/running"
   printf 'slug: cx-1\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: board:apociseum:ar-7\norigin: run\nagent: codex\nqueued: 2026-11-03T10:00:00Z\nsession: lab:s1\nsessions: th-0 th-1\n---\nfix it\n' \
     > "$HOME/.agent/queue/running/20261103-100000-cx-1.md"
@@ -2803,6 +2942,30 @@ queue_item() {
   printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/agent-panel"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_output ''
+}
+
+@test "an idle row reads the same bucket whatever its harness (ar-4125)" {
+  # agent-panel gives every harness one busy/idle reading (agent-core activity_status), so
+  # fleet-sessions buckets the row on status and idle_since alone, never on the harness name.
+  landed_fixture
+  local h row old=$(( $(date +%s) - 7200 )) want='' got
+  for h in claude codex opencode agy; do
+    row="{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"idle\",\"plan_mode\":false,\"session_id\":\"s-$h\",\"cwd\":\"$SANDBOX/wt\",\"idle_since\":$old,\"context_tokens\":0,\"plan_file\":\"\",\"transcript\":\"\",\"edited_files\":[],\"account\":\"$h\",\"harness\":\"$h\"}"
+    printf '#!/usr/bin/env bash\necho %q\nexit 0\n' "$row" > "$SANDBOX/bin/agent-panel"
+    run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+    assert_success
+    got=$(jq -r .bucket <<<"$output")
+    [ -n "$got" ] && [ "$got" != null ]
+    [ -n "$want" ] || want=$got
+    [ "$got" = "$want" ] || { echo "$h read $got, claude read $want"; return 1; }
+  done
+  # negative control: the same (agy) row busy reads WORKING, so the bucket follows the status
+  row="${row/\"status\":\"idle\"/\"status\":\"busy\"}"
+  row="${row/\"idle_since\":$old/\"idle_since\":$(date +%s)}"
+  printf '#!/usr/bin/env bash\necho %q\nexit 0\n' "$row" > "$SANDBOX/bin/agent-panel"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  [ "$want" != WORKING ]
 }
 
 @test "a session's row names its queue item, the board row and who started it (by), by the same join as its bucket" {
@@ -2827,13 +2990,6 @@ queue_item() {
     > "$HOME/.agent/queue/running/20261103-100500-side-fix.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -c '[.item.slug, .item.also]' <<<"$output")" = '["hand-fix",["side-fix"]]' ]
-}
-
-# clean_fixture: landed_fixture with no PR on the branch and no plan file: CHAT until an item names it.
-clean_fixture() {
-  landed_fixture
-  panel "$SANDBOX/wt"
-  rm "$LEDGER_DIR/prs.tsv"
 }
 
 @test "end to end: a failed agent-queue read is unreadable and keeps the rows' last cells, never 'no items' (ar-2839)" {
@@ -2917,24 +3073,6 @@ clean_fixture() {
   [ "$(jq -r .reason <<<"$output")" = '2 file(s) not on the default branch, no PR' ]
 }
 
-# superseded_fixture: on feat/x an unpushed draft of f (11-20), then another clone lands its own f on main
-# (MERGED_SHA, 11-24), and the item this session (sid-9) worked is done ok with that merge recorded (ar-5157).
-superseded_fixture() {
-  clean_fixture
-  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t) d="$HOME/.agent/queue/done/$(date +%F)"
-  echo draft > "$SANDBOX/wt/f"; "${g[@]}" add f
-  GIT_COMMITTER_DATE=2026-11-20T12:00:00Z "${g[@]}" commit -q -m 'add f, draft'
-  git clone -q -b main "$SANDBOX/origin.git" "$SANDBOX/other" 2>/dev/null
-  echo final > "$SANDBOX/other/f"; git -C "$SANDBOX/other" add f
-  GIT_COMMITTER_DATE=2026-11-24T02:11:00Z git -C "$SANDBOX/other" -c user.email=t@t -c user.name=t commit -q -m 'add f (#3349)'
-  git -C "$SANDBOX/other" push -q origin HEAD:main 2>/dev/null
-  "${g[@]}" fetch -q origin
-  MERGED_SHA="$(git -C "$SANDBOX/other" rev-parse HEAD)"
-  mkdir -p "$d"
-  printf 'slug: fix-wave-save\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsession: lab:s2\nsessions: sid-1 sid-9\npr: o/r#3349\nmerged: %s\nstatus: ok\nfinished: %s\n---\nfix wave save\n' \
-    "$MERGED_SHA" "$(date -u +%FT%TZ)" > "$d/20261103-100000-fix-wave-save.md"
-}
-
 @test "end to end: a draft branch of an item another session landed has nothing to land; a file the merge lacks still does (ar-5157)" {
   superseded_fixture
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
@@ -3016,14 +3154,6 @@ superseded_fixture() {
   [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
 }
 
-# research_item <state> <type> -- a queue item of session sid-9 on lab:s1 that recorded a doc and an ask.
-research_item() {
-  local d="$HOME/.agent/queue/$1"; [ "$1" = done ] && d="$d/$(date +%F)"
-  mkdir -p "$d"
-  printf 'slug: research-engine\nproject: apociseum\nmode: oneshot\npriority: high\ntype: %s\narea: game\nfrom: board:apociseum:ar-9\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsession: lab:s1\nsessions: sid-9\nreport: %s\nask: Rq1\nfinished: %s\n---\n%s(game): which engine\n' \
-    "$2" "$SANDBOX/doc.md" "$(date -u +%FT%TZ)" "$2" > "$d/20261103-100000-research-engine.md"
-}
-
 @test "end to end: a doc+ask kind whose doc exists and ask is filed is DONE; its ask is handed over, not open" {
   clean_fixture
   export DISPATCH_KINDS="$REPO_ROOT/.config/fleet-dispatch/kinds.json" ASK_ROOT="$HOME/.agent/asks"
@@ -3092,8 +3222,10 @@ research_item() {
   mv "$HOME/.agent/queue/queued/20261103-100000-rollout.md" "$HOME/.agent/queue/running/"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .finished <<<"$output")" = true ]
-  # the ask is still the session's own, so the shepherd leaves the window alone (2026-11-07)
+  # the ask still counts in own_asks (2026-11-07)
   [ "$(jq -r .own_asks <<<"$output")" = 1 ]
+  # but not one it holds itself: the shepherd's window close sets no reopen for it (ar-4271)
+  [ "$(jq -r .asks <<<"$output")" = 0 ]
   [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
 }
 
@@ -3294,24 +3426,6 @@ research_item() {
   [ "$(jq -r .bucket <<<"$output")" = DONE ]
 }
 
-# due_has_no_landed_line: after a tick, fleet-shepherd due finds nothing due for the row: no LANDED nudge, no phase to queue (ar-1429).
-due_has_no_landed_line() {
-  "$REPO_ROOT/.local/bin/fleet-sessions" tick
-  # the due pass reads this row: a DONE one draws no LANDED line, and its close is close_sample's
-  [ "$(jq -r '.sessions | map(.bucket) | join(",")' "$XDG_STATE_HOME/fleet/state.json")" = DONE ]
-  run "$REPO_ROOT/.local/bin/fleet-shepherd" due
-  assert_failure 1   # due's "nothing is due"
-  assert_output ''
-}
-
-# phase_item <state> <slug> <plan> <task> [<extra header lines>]: a queue item of another session that holds phases of <plan>.
-phase_item() {
-  local d="$HOME/.agent/queue/$1"; [ "$1" = done ] && d="$d/$(date +%F)"
-  mkdir -p "$d"
-  printf 'slug: %s\nproject: dotfiles\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-10T16:40:00Z\nplan: %s\n%s---\n%s\n' \
-    "$2" "$3" "${5:-}" "$4" > "$d/20261110-164000-$2.md"
-}
-
 @test "end to end: a planner chat with no PR whose symlinked plan's phases are all items reads DONE, never LANDED (ar-1429 hub/dotfiles:15)" {
   # 2026-11-10 hub/dotfiles:15 opened no PR; its plan-mode file was a symlink to the plan its phases were
   # queued under (db-tune-speed-p1..p5, p1 running elsewhere). Read by file name only, phase 1 was free:
@@ -3368,6 +3482,23 @@ phase_item() {
   [ "$(jq -r .bucket <<<"$output")" = DONE ]
   # Negative control: the same row with no gate is an un-started return, not this plan's queued phase.
   sed -i 's|"after/apo-6"|"size/s"|' "$NOTES_FIXTURE/board.json"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+}
+
+@test "end to end: a session whose plan add --plan filed as one board row reads DONE while that row waits for dispatch (ar-5445)" {
+  # A dispatched session's add --plan files the whole plan as one row (plan_row_task's brief) that
+  # dispatch later turns into its chain. Until then the row holds every open phase.
+  landed_fixture
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout' '- [ ] Phase 3: docs'
+  panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  printf '{"rows":[{"project":"apociseum","id":"apo-8","state":"open","tags":["size/m"],"details":["Run the open phases of the approved plan %s in order, one PR each, marking each done in the plan ## Phases."]}],"done":[]}\n' \
+    "$SANDBOX/plan.md" > "$NOTES_FIXTURE/board.json"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: apo-8' ]
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  # Negative control: the row closed (promoted or dropped), nothing holds Phase 2.
+  sed -i 's|"state":"open"|"state":"done"|' "$NOTES_FIXTURE/board.json"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = LANDED ]
 }
@@ -3590,27 +3721,6 @@ phase_item() {
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = STALLED ]
   [ "$(jq -c '[.dirty, .blockers]' <<<"$output")" = '[1,["1 dirty file(s) (look-and-feel.conf)"]]' ]
-}
-
-# A clone made with --no-checkout has HEAD but an empty index and working directory.
-empty_submodule_fixture() {
-  landed_fixture
-  mkdir -p "$HOME/.worktrees"
-  git -C "$SANDBOX/wt" checkout -q --detach
-  export EMPTY_WT="$HOME/.worktrees/empty submodule"
-  git -C "$SANDBOX/wt" worktree add -q "$EMPTY_WT" feat/x
-  git init -q "$SANDBOX/assets"
-  echo asset > "$SANDBOX/assets/asset.txt"
-  git -C "$SANDBOX/assets" add asset.txt
-  git -C "$SANDBOX/assets" -c user.email=t@t -c user.name=t commit -qm asset
-  git clone -q --no-checkout "$SANDBOX/assets" "$EMPTY_WT/External/asset library"
-  git -C "$EMPTY_WT" -c protocol.file.allow=always submodule add -q "$SANDBOX/assets" 'External/asset library'
-  git -C "$EMPTY_WT" -c user.email=t@t -c user.name=t commit -qm submodule
-  local oid
-  oid="$(git -C "$EMPTY_WT" rev-parse HEAD)"
-  printf 'feat/x\t875\tMERGED\tPASS\t%s\n' "$oid" > "$LEDGER_DIR/prs.tsv"
-  phases_plan '- [x] Phase 1: fleet-sessions (#875)'
-  panel "$EMPTY_WT" "$SANDBOX/plan.md"
 }
 
 @test "end to end: a same-pin submodule cloned without checkout reads clean and DONE (ar-1057)" {
@@ -3968,6 +4078,45 @@ empty_submodule_fixture() {
   assert_output --partial 'not on the default branch, no PR'
 }
 
+@test "branch_runs and main_health read a Forgejo-canonical checkout's run ledger under its Forgejo repo, not origin (ar-2727)" {
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t) green red
+  git init -q --bare "$SANDBOX/gh-mirror.git"; git init -q --bare "$SANDBOX/fj.git"
+  git clone -q "$SANDBOX/gh-mirror.git" "$SANDBOX/wt" 2>/dev/null
+  "${g[@]}" remote add forgejo "$SANDBOX/fj.git"
+  mkdir -p "$SANDBOX/wt/.forgejo/workflows"; touch "$SANDBOX/wt/.forgejo/workflows/mirror-to-github.yaml"
+  "${g[@]}" add .forgejo; "${g[@]}" commit -q -m init; green="$("${g[@]}" rev-parse HEAD)"
+  "${g[@]}" commit -q --allow-empty -m 'feat: x (#7)'; red="$("${g[@]}" rev-parse HEAD)"
+  "${g[@]}" push -q forgejo HEAD:master 2>/dev/null; "${g[@]}" push -q origin HEAD:master 2>/dev/null
+  "${g[@]}" fetch -q forgejo; "${g[@]}" fetch -q origin
+  "${g[@]}" remote set-head forgejo master; "${g[@]}" remote set-head origin master
+  "${g[@]}" remote set-url forgejo "https://fj.example/o/r.git"
+  gh_script 'exit 1'
+  export SO_FORGEJO_HOSTS="fj.example"
+  CACHE="$SANDBOX/pass"; MAIN_CACHE="$SANDBOX/main"; mkdir -p "$CACHE"
+  # the ledger syncs the Forgejo repo only: the GitHub mirror is not in it (exit 3)
+  ledger master "[$(r Tests success "$green" 1),$(r Tests failure "$red" 2)]"
+  cp "$LEDGER_DIR/master.json" "$SANDBOX/fj-runs.json"; rm "$LEDGER_DIR/master.json"
+  ss_script <<SS
+echo "\$*" >> "$LEDGER_DIR/calls"
+[ "\$1 \$2" = "runs forgejo:o/r" ] && { cat "$SANDBOX/fj-runs.json"; exit 0; }
+exit 3
+SS
+  run main_health "$SANDBOX/wt"
+  assert_output "RED"$'\t'"Tests @${red:0:8} (#7)"$'\t'"${red:0:8}"
+  grep -qx 'runs forgejo:o/r' "$LEDGER_DIR/calls"
+  # gate_ci and activity_line read the same rows through branch_runs
+  run branch_runs "$SANDBOX/wt" master
+  assert_success
+  [ "$(jq 'length' <<<"$output")" = 2 ]
+  # NEGATIVE CONTROL: without the mirror marker the checkout lands on origin, whose ledger has no runs
+  rm "$SANDBOX/wt/.forgejo/workflows/mirror-to-github.yaml"
+  rm -rf "$CACHE" "$MAIN_CACHE"; mkdir -p "$CACHE"; : > "$LEDGER_DIR/calls"
+  run main_health "$SANDBOX/wt"
+  assert_output OK
+  grep -q '^runs ' "$LEDGER_DIR/calls"
+  [ -z "$(grep 'forgejo:' "$LEDGER_DIR/calls")" ]
+}
+
 @test "end to end: behind and conflicts measure the branch against the remote tip" {
   landed_fixture
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
@@ -4118,9 +4267,6 @@ empty_submodule_fixture() {
   [ "$hub" = "tmux -L hub set-option -wq -t =dotfiles:2 @fleet_stage LANDED ; set-option -wqu -t =dotfiles:2 @fleet_labels" ]
 }
 
-# cells <sid> <target> <ci> <stage> [project]: one board_cells line with everything else fixed
-cells() { printf '%s\t%s\tcurrent\tno\tclean\t#1 open\t%s\t1/2\t-\t%s\t-\t5m\t1h0m\twhy %s\t-\t-\t-\t-\t-\t-\t%s\n' "$1" "$2" "$3" "$4" "$4" "${5:-proj}"; }
-
 @test "transitions names what appeared, left, or changed a stage cell, and nothing else" {
   { cells a s-a pending WORKING; cells b s-b pass DONE; cells d s-d pass DONE one; } > "$SANDBOX/prev"
   # a: CI went red and the stage followed; b: only idle and age moved; c: new; d: its project moved
@@ -4155,3439 +4301,101 @@ cells() { printf '%s\t%s\tcurrent\tno\tclean\t#1 open\t%s\t1/2\t-\t%s\t-\t5m\t1h
   [ "$(wc -l < "$FLEET_SHEPHERD_DIR/watch.log")" -eq 1 ]
 }
 
-@test "tick on a machine that does not hold the fleet lease leaves the shared ledger alone (ar-3439)" {
-  bats_require_minimum_version 1.5.0
-  landed_fixture
-  "$REPO_ROOT/.local/bin/fleet-sessions" tick
-  cp "$FLEET_SHEPHERD_DIR/watch.state" "$SANDBOX/holder.state"
-  "$REPO_ROOT/.local/bin/fleet-sessions" label s1 +quality:simplifying >/dev/null
-  rm "$SANDBOX/lease-held"
-  run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions" tick
-  assert_success
-  [[ "$stderr" == *"tick skipped: this machine does not hold the fleet lease"* ]]
-  cmp "$SANDBOX/holder.state" "$FLEET_SHEPHERD_DIR/watch.state"
-  [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
-  # NEGATIVE CONTROL: the holder's tick logs the same change.
-  : > "$SANDBOX/lease-held"
-  "$REPO_ROOT/.local/bin/fleet-sessions" tick
-  grep -q 'quality - -> simplifying' "$FLEET_SHEPHERD_DIR/watch.log"
+# The state document counts a session as live until a write drops it, so the wake an item's close writes can reach
+# a kick that still sees it (ar-5046). seed_live <n>: the previous tick's document, n sessions live in it.
+seed_live() {
+  mkdir -p "$XDG_STATE_HOME/fleet"
+  jq -cn --argjson n "$1" '{generated_epoch: 1, vocab: {finished: ["DONE", "LANDED"]},
+    sessions: [range($n) | {target: "old/s:\(.)", bucket: "WORKING"}]}' > "$XDG_STATE_HOME/fleet/state.json"
 }
 
-@test "a tick whose lease lapses during its pass leaves the shared ledger alone (ar-3439)" {
-  bats_require_minimum_version 1.5.0
-  landed_fixture
-  "$REPO_ROOT/.local/bin/fleet-sessions" tick
-  cp "$FLEET_SHEPHERD_DIR/watch.state" "$SANDBOX/holder.state"
-  "$REPO_ROOT/.local/bin/fleet-sessions" label s1 +quality:simplifying >/dev/null
-  # Held for the first read only (the entry check), lapsed by the write.
-  printf '#!/usr/bin/env bash\n[ -e %q ] || exit 1\nrm %q\n' "$SANDBOX/lease-once" "$SANDBOX/lease-once" > "$SANDBOX/bin/fleet-lease"
-  : > "$SANDBOX/lease-once"
-  run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions" tick
-  assert_success
-  [[ "$stderr" == *"tick skipped: the fleet lease moved during this pass"* ]]
-  cmp "$SANDBOX/holder.state" "$FLEET_SHEPHERD_DIR/watch.state"
-  [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
-}
+@test "a state write wakes a fleet-dispatch kick when it lowers the live count, tick and --write alike, and only then (ar-5046)" {
+  export FLEET_DISPATCH_DIR="$SANDBOX/dispatch"
+  local wake="$FLEET_DISPATCH_DIR/.wake"
+  landed_fixture   # one LANDED session: finished, so the document counts none live
 
-# interrupt_pass <signal>: start a pass whose agent-queue read hangs, send <signal> to the
-# fleet-sessions pid alone (a caller forwarding it, or `timeout`), and check the pass ends with
-# every process it started and leaves no scratch dir (nc-42).
-interrupt_pass() {
-  mkfifo "$SANDBOX/ready"
-  mkdir -p "$SANDBOX/tmp"
-  printf '#!/usr/bin/env bash\necho $$ > "$SANDBOX/queue.pid"\necho started > "$SANDBOX/ready"\nexec sleep 300\n' \
-    > "$SANDBOX/bin/agent-queue"
-  chmod +x "$SANDBOX/bin/agent-queue"
-  export SANDBOX
-  # A job of a non-interactive shell starts with SIGINT ignored, which bash cannot trap; reset it.
-  env --default-signal=INT TMPDIR="$SANDBOX/tmp" "$REPO_ROOT/.local/bin/fleet-sessions" --json \
-    > "$SANDBOX/out" 2> "$SANDBOX/err" 3>&- &
-  local main=$! queue group
-  LIVE_PIDS="$main"
-  # the stand-in writing the fifo is the event that the pass is inside collect
-  timeout 20 cat "$SANDBOX/ready" >/dev/null || fail 'the pass never reached agent-queue'
-  queue="$(cat "$SANDBOX/queue.pid")"
-  group="$(ps -o pgid= -p "$queue" | tr -d ' ')"
-  LIVE_PIDS="$main $queue"   # teardown kills these, pass or fail
-  kill -"$1" "$main"
-  timeout 20 tail --pid="$main" -f /dev/null || fail "fleet-sessions ran on after SIG$1"
-  timeout 20 tail --pid="$queue" -f /dev/null || fail "agent-queue outlived the pass after SIG$1"
-  # every process of the pass, not only the stand-in: its subshells and process substitutions
-  run pgrep -g "$group"
-  assert_failure
-  [ -z "$(ls -A "$SANDBOX/tmp")" ] || fail "the pass left $(ls "$SANDBOX/tmp")"
-  run cat "$SANDBOX/err"
-  refute_output --partial 'No such file or directory'
-}
-
-@test "SIGINT to fleet-sessions alone ends the pass at once, its children with it (nc-42)" {
-  interrupt_pass INT
-}
-
-@test "SIGTERM to fleet-sessions alone leaves no orphan of the pass and no scratch dir (nc-42)" {
-  interrupt_pass TERM
-}
-
-# bench_eta <json line>...: a fleet-bench stub whose `eta --json` prints these lines.
-bench_eta() {
-  { printf '#!/usr/bin/env bash\n[ "$*" = "eta --json" ] || exit 1\ncat <<"J"\n'; printf '%s\n' "$@"; printf 'J\n'; } \
-    > "$SANDBOX/bin/fleet-bench"
-  chmod +x "$SANDBOX/bin/fleet-bench"
-}
-
-@test "eta_cells: today's finish as HH:MM, a later day with its weekday, the basis short, nothing without an estimate" {
-  export TZ=UTC
-  local today later
-  today="$(date -d 'today 00:05' +%s)"; later=$((today + 2 * 86400))
-  bench_eta "{\"session_id\":\"a\",\"finished\":false,\"eta_epoch\":$today,\"basis\":\"session-median(3)\"}" \
-    "{\"session_id\":\"b\",\"finished\":false,\"eta_epoch\":$later,\"basis\":\"default\"}" \
-    '{"session_id":"c","finished":false,"eta_epoch":null,"basis":null}' \
-    "{\"session_id\":\"d\",\"finished\":true,\"eta_epoch\":$today,\"basis\":\"default\"}" \
-    "{\"session_id\":\"e\",\"finished\":false,\"eta_epoch\":$today}"
-  run eta_cells
-  assert_success
-  assert_line $'a\t00:05 s3\t'"$today"
-  assert_line $'b\t'"$(date -d @"$later" +%a)"$' 00:05 default\t'"$later"
-  assert_line $'e\t00:05\t'"$today"
-  [ "${#lines[@]}" -eq 3 ]
-  # fleet-bench missing or failing is an empty board column, never a failed tick
-  FLEET_BENCH=/nonexistent run eta_cells
-  assert_success
-  assert_output ''
-}
-
-@test "board_cells: ETA is joined by session id, - when fleet-bench has none for it" {
-  printf 'sid-45\t21:30 s3\n' > "$SANDBOX/eta"
-  run board_cells "$SANDBOX/eta" < <(age_row 45; age_row 192)
-  assert_line --regexp $'^sid-45\t.*\tbusy\t21:30 s3\t'
-  assert_line --regexp $'^sid-192\t.*\t3h12m\tbusy\t-\t'
-  # negative control: with no estimates every row reads -
-  run board_cells < <(age_row 45)
-  assert_line --regexp $'^sid-45\t.*\t45m\tbusy\t-\t'
-}
-
-@test "transitions: a re-estimated ETA is not a change" {
-  { cells a s-a pass WORKING; printf '\t20:00 default\n'; } | paste -sd '' > "$SANDBOX/prev"
-  { cells a s-a pass WORKING; printf '\t21:30 session(2)\n'; } | paste -sd '' > "$SANDBOX/cur"
-  run transitions "$SANDBOX/prev" "$SANDBOX/cur"
-  assert_output ''
-  # an old watch.state with no eta column lines up with the new one
-  cells a s-a pass WORKING > "$SANDBOX/prev"
-  run transitions "$SANDBOX/prev" "$SANDBOX/cur"
-  assert_output ''
-}
-
-@test "end to end: tick puts the session's ETA in the state document, and its moving is not a change" {
-  landed_fixture
-  local doc="$XDG_STATE_HOME/fleet/state.json"
-  "$REPO_ROOT/.local/bin/fleet-sessions" tick
-  bench_eta "{\"session_id\":\"sid-9\",\"finished\":false,\"eta_epoch\":$(( $(date +%s) + 2 * 86400 )),\"basis\":\"project-median(12)\"}"
+  # no document before: nothing to compare, nothing to wake
   run "$REPO_ROOT/.local/bin/fleet-sessions" tick
   assert_success
-  [[ "$(jq -r '.sessions[0].eta' "$doc")" =~ ^[A-Z][a-z]{2}\ [0-9]{2}:[0-9]{2}\ p12$ ]]
-  [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
-}
+  [ ! -e "$wake" ] || fail "the first tick woke a kick: $(cat "$wake")"
 
-# age_row <age minutes|->: one collect row, every field fixed but the session's age (field 28).
-age_row() {
-  printf 'WORKING\tlab/s1:1\tsid-%s\t/x\tmain\t-\t5\t0\t-\t0\tbusy\t%%7\t0\t-\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\tbusy\t%s\n' "$1" "$1"
-}
-
-@test "board_cells: AGE reads as minutes, hours, days, and - when the start is unknown" {
-  run board_cells < <(age_row 45; age_row 192; age_row 3125; age_row -)
+  # the same count as the last tick: no wake
+  seed_live 0
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
   assert_success
-  assert_line --regexp $'^sid-45\t.*\t5m\t45m\tbusy\t-\t-\t-\t-\t-\tbusy\t-$'
-  assert_line --regexp $'^sid-192\t.*\t5m\t3h12m\tbusy\t-\t-\t-\t-\t-\tbusy\t-$'
-  assert_line --regexp $'^sid-3125\t.*\t5m\t2d4h\tbusy\t-\t-\t-\t-\t-\tbusy\t-$'
-  assert_line --regexp $'^sid--\t.*\t5m\t-\tbusy\t-\t-\t-\t-\t-\tbusy\t-$'
-}
+  [ ! -e "$wake" ] || fail "an unchanged count woke a kick: $(cat "$wake")"
 
-@test "board_cells: the row's project is the last cell, and - when it has none (negative control)" {
-  run board_cells < <(time_row WORKING 0 0 0 0 | awk -F'\t' -v OFS='\t' '{ $51 = "trader"; print }')
-  assert_output --regexp $'\tbusy\ttrader$'
-  run board_cells < <(time_row WORKING 0 0 0 0)
-  assert_output --regexp $'\tbusy\t-$'
-}
-
-# time_row <stage> <work> <jobs> <human> <parked> [doing] [gate] [test]: a collect row with the newer fields set.
-time_row() {
-  printf '%s\tlab/s1:1\tsid-1\t/x\tmain\t-\t5\t0\t-\t0\tbusy\t%%7\t0\t-\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\tbusy\t60\t0\tfact\t-\t[]\t2/3\t%s\t%s\t%s\t%s\t4\tthe-topic\t%s\tsaid it\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "${6:--}" "${7:-0}" "${8:-0}"
-}
-
-@test "board_cells: PRS, WORK, the largest WAIT, TASK, and WHY as the last action on a WORKING row" {
-  run board_cells < <(time_row WORKING 190 300 60 620 'Bash: Commit P3')
+  # two live before, none now: the wake names the drop, and the document it points at already holds the new count
+  seed_live 2
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
   assert_success
-  assert_output --regexp $'\tbusy\t-\t2/3\t3h\tparked 10h\tthe-topic\tCommit P3\t-$'
-  run board_cells < <(time_row WORKING 45 90 300 60 'Read')
-  assert_output --regexp $'\t2/3\t45m\tyou 5h\tthe-topic\tRead\t-$'
-  # a tie goes to jobs: something was running, so it is not the session sitting still
-  run board_cells < <(time_row WORKING 0 120 120 120)
-  assert_output --regexp $'\t2/3\t-\tjobs 2h\tthe-topic\tbusy\t-$'
-  run board_cells < <(time_row WORKING 0 120 120 120 - 300 50)
-  assert_output --regexp $'\t2/3\t-\tgate 5h\tthe-topic\tbusy\t-$'
-  run board_cells < <(time_row WORKING 0 120 120 120 - 50 300)
-  assert_output --regexp $'\t2/3\t-\ttest 5h\tthe-topic\tbusy\t-$'
-  # a tie goes to the gate ahead of the test, and the test ahead of jobs
-  run board_cells < <(time_row WORKING 0 120 120 120 - 120 120)
-  assert_output --regexp $'\t2/3\t-\tgate 2h\tthe-topic\tbusy\t-$'
-  run board_cells < <(time_row WORKING 0 120 120 120 - 0 120)
-  assert_output --regexp $'\t2/3\t-\ttest 2h\tthe-topic\tbusy\t-$'
-  run board_cells < <(time_row WORKING 0 0 0 0)
-  assert_output --regexp $'\t-\t-\tthe-topic\tbusy\t-$'
-  # any other stage keeps its reason: it says what the stage needs
-  run board_cells < <(time_row STALLED 5 5 5 5 'Bash: Commit P3')
-  assert_output --regexp $'\tbusy\t-$'
-}
+  [ -s "$wake" ] || fail "a drop from 2 to 0 woke no kick"
+  grep -qF 'fleet-sessions: live sessions 2 -> 0' "$wake"
+  [ "$(fleet_live_count "$XDG_STATE_HOME/fleet/state.json")" = 0 ]
 
-@test "eta_cells: a calibrated basis is shortened like a plain one" {
-  export TZ=UTC
-  bench_eta "{\"session_id\":\"a\",\"finished\":false,\"eta_epoch\":$(date +%s),\"basis\":\"project-median(34) x1.15 (n=70)\"}"
-  run eta_cells
-  assert_output --regexp $'^a\t[0-9]{2}:[0-9]{2} p34\t[0-9]+$'
-}
-
-@test "overdue_of: a phase worked twice its estimate and the floor is overdue, on the session running it; a queued phase, a landing wait or a night on the human is not (ar-528)" {
-  local now=1800000000
-  cat > "$SANDBOX/rows" <<'J'
-{"session_id":"a","target":"lab/a:1","next_phase":"P2 build","active_min":131}
-{"session_id":"young","target":"lab/young:1","next_phase":"P2","active_min":500}
-{"session_id":"floor","target":"lab/floor:1","next_phase":"P2","active_min":500}
-{"session_id":"done","target":"lab/done:1","next_phase":null,"active_min":500}
-{"session_id":"q","target":"lab/q:1","next_phase":"P2","phase_queued":true,"active_min":500}
-{"session_id":"w","target":"lab/w:1","next_phase":"P2","wait_min":12,"active_min":500}
-{"session_id":"night","target":"lab/night:1","next_phase":"P2","active_min":79}
-{"session_id":"nobase","target":"lab/nobase:1","next_phase":"P2","active_min":500}
-{"session_id":"plan","target":"lab/plan:1","next_phase":"P2","phase_runner":"lab/run","active_min":0,"phases":[{"state":"done","name":"P1"},{"state":"open","name":"P2 held item"}]}
-{"session_id":"run","target":"lab/run:1","active_min":95}
-J
-  line() { printf '{"session_id":"%s","phases_done":%s,"phases_total":4,"finished":%s,"phase_min":%s,"phase_since_epoch":%s,"phase_active_base":%s,"basis":"b"}\n' "$@"; }
-  { line a 1 false 40 $((now - 200 * 60)) 50        # 81m worked of 200m open
-    line young 1 false 40 $((now - 79 * 60)) 0      # under 2x its estimate, even counting it all
-    line floor 1 false 20 $((now - 59 * 60)) 0      # 2x is 40m, the floor 60m
-    line done 4 true 40 $((now - 500 * 60)) 0       # every box ticked
-    line q 1 false 40 $((now - 500 * 60)) 0         # its item waits on a gate: nothing works it yet
-    line w 1 false 40 $((now - 500 * 60)) 0         # waiting its landing turn
-    line night 1 false 40 $((now - 600 * 60)) 0     # 10h open, 79m of it worked: the rest was the human's night
-    line nobase 1 false 40 $((now - 500 * 60)) null # no sample of its work time yet
-    line plan 1 false 40 $((now - 90 * 60)) 0; } > "$SANDBOX/eta"
-  run overdue_of "$now" "$SANDBOX/rows" "$SANDBOX/eta"
+  # a hand --write that lowers the count wakes it too, so the next tick's baseline is not a swallowed drop
+  rm -f "$wake"
+  seed_live 3
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
   assert_success
-  assert_equal "$(jq -c keys <<<"$output")" '["a","run"]'
-  assert_equal "$(jq -c .a <<<"$output")" '{"phase":"phase 2/4","name":"P2 build","age_min":81,"expected_min":40,"limit_min":80,"escalate_min":60,"basis":"b","plan_target":"lab/a:1"}'
-  # the plan's open phase is an item running in another session: the verdict is that session's (ar-1497),
-  # aged by its whole work time but never past the phase's wall-clock age
-  assert_equal "$(jq -c '.run | [.name, .plan_target, .age_min]' <<<"$output")" '["P2 held item","lab/plan:1",90]'
-  : > "$SANDBOX/eta"
-  run overdue_of "$now" "$SANDBOX/rows" "$SANDBOX/eta"
-  assert_success
-  assert_output '{}'
-}
+  grep -qF 'fleet-sessions: live sessions 3 -> 0' "$wake"
 
-@test "phase_queued: a plan whose next phase is held only by queued items says so, one being worked does not (ar-528)" {
-  landed_fixture
-  mkdir -p "$HOME/.agent/queue/queued" "$HOME/.agent/queue/running"
-  local f=20261103-100000-rollout.md
-  printf 'slug: rollout\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nafter: other-item\nplan: %s\nphases: 2\n---\nphase of the plan\n' \
-    "$SANDBOX/plan.md" > "$HOME/.agent/queue/queued/$f"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  assert_success
-  [ "$(jq -r .phase_queued <<<"$output")" = true ]
-  # started: someone works the phase, so its age counts again
-  sed 's/^after: other-item/session: lab:other-agent/' "$HOME/.agent/queue/queued/$f" > "$HOME/.agent/queue/running/$f"
-  rm "$HOME/.agent/queue/queued/$f"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .phase_queued <<<"$output")" = false ]
-  rm "$HOME/.agent/queue/running/$f"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .phase_queued <<<"$output")" = false ]   # no item holds it: the session's own phase
-}
-
-@test "--write: a session says who started it (by, its item's origin) and carries its overdue verdict; an unread fleet-bench eta is named unreadable" {
-  landed_fixture
-  local doc="$XDG_STATE_HOME/fleet/state.json" since=$(( $(date +%s) - 200 * 60 ))
-  bench_eta "{\"session_id\":\"sid-9\",\"phases_done\":1,\"phases_total\":2,\"finished\":false,\"phase_min\":40,\"phase_since_epoch\":$since,\"phase_active_base\":0,\"basis\":\"b\"}"
-  PANEL_TIME='{"work_min":150,"jobs_min":60,"human_min":600,"parked_min":90}' panel "$SANDBOX/wt" "$SANDBOX/plan.md"   # 210m worked
-  "$REPO_ROOT/.local/bin/fleet-sessions" --write >/dev/null
-  [ "$(jq -r '.sessions[0].by' "$doc")" = hand ]   # no item: the human's
+  # NEGATIVE CONTROLS: one STALLED session now. The same count is no event, and neither is a rise
+  rm -f "$wake"
+  panel "$SANDBOX/wt"; rm "$LEDGER_DIR/prs.tsv"   # clean_fixture past its landed_fixture, which this test ran already
   queue_item running lab:s1
-  sed -i 's/^from: human/from: human\norigin: run/' "$HOME/.agent/queue/running/20261103-100000-fix-wave-save.md"
-  "$REPO_ROOT/.local/bin/fleet-sessions" --write >/dev/null
-  [ "$(jq -r '.sessions[0].by' "$doc")" = dispatch ]
-  [ "$(jq -r '.sessions[0].item.origin' "$doc")" = null ]   # one field: the item's raw origin is not copied
-  [ "$(jq -r '.sessions[0].overdue | "\(.phase) \(.expected_min) \(.age_min >= 200)"' "$doc")" = 'phase 2/2 40 true' ]
-  [ "$(jq -r '.sessions[0].active_min' "$doc")" = 210 ]   # the human's 600m and 90m parked never count
-  jq -e '(.unreadable // []) | index("fleet-bench eta") | not' "$doc" >/dev/null
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/fleet-bench"
-  "$REPO_ROOT/.local/bin/fleet-sessions" --write >/dev/null
-  jq -e '.unreadable | index("fleet-bench eta")' "$doc" >/dev/null
-  [ "$(jq -r '.sessions[0].overdue' "$doc")" = null ]
-}
-
-@test "active_min: the open gap counts while a job runs, not while it waits on the human or nothing (ar-528)" {
-  landed_fixture
-  local t='{"work_min":20,"gate_min":5,"test_min":5,"jobs_min":10,"human_min":300}'
-  PANEL_TIME="$t" PANEL_JOB=gate panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  assert_equal "$(jq -r .active_min <<<"$output")" 100   # 40m closed plus the hour the gate has run
-  PANEL_TIME="$t" PANEL_JOB=human panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  assert_equal "$(jq -r .active_min <<<"$output")" 40
-  PANEL_TIME="$t" panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  assert_equal "$(jq -r .active_min <<<"$output")" 40
-}
-
-@test "prs_cell: merged over total, ? while a state is unknown, - with none" {
-  run prs_cell <<<'[]'
-  [ "$output" = - ]
-  run prs_cell <<<'[{"state":"MERGED"},{"state":"OPEN"},{"state":"CLOSED"}]'
-  assert_output '1/3'
-  run prs_cell <<<'[{"state":"MERGED"},{"state":null}]'
-  assert_output '1/2?'
-}
-
-# pr_transcript <file>: a transcript whose session created one PR in each of two repos and
-# only viewed a third, which must not count.
-pr_transcript() {
-  {
-    echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"gh pr create -t x"}}]}}'
-    echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"https://github.com/o/one/pull/7"}]}}'
-    echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"b","name":"Bash","input":{"command":"gh pr merge 9"}}]}}'
-    echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"b","content":"Merged pull request o/two#9"}]}}'
-    echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"c","name":"Bash","input":{"command":"gh pr view 3"}}]}}'
-    echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"c","content":"https://github.com/o/three/pull/3"}]}}'
-  } > "$1"
-}
-
-# pr_store: the PR store holds o/one#7 (open) and o/two#9 (merged).
-pr_store() {
-  printf -- '-\t7\tOPEN\tNONE\t-\t-\n' > "$LEDGER_DIR/prs_o_one.tsv"
-  printf -- '-\t9\tMERGED\tPASS\t-\t-\t2026-10-30T12:00:00Z\n' > "$LEDGER_DIR/prs_o_two.tsv"
-  CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
-}
-
-@test "session_prs: each PR with its state from its own repo's store, viewed PRs not counted, one read per repo a pass" {
-  pr_store; pr_transcript "$SANDBOX/t.jsonl"
-  run session_prs "$SANDBOX/t.jsonl"
-  assert_success
-  [ "$(jq -c 'map([.repo, .number, .state, .merged_at])' <<<"$output")" = '[["o/one",7,"OPEN",null],["o/two",9,"MERGED","2026-10-30T12:00:00Z"]]' ]
-  run session_prs "$SANDBOX/t.jsonl"
-  [ "$(grep -c '^prs ' "$LEDGER_DIR/calls")" -eq 2 ] # the second call in the pass reuses both
-  run session_prs "$SANDBOX/no-such-file"
-  assert_output '[]'
-}
-
-@test "session_prs: a repo the store cannot answer leaves a null state, is read once a pass, and not kept past it" {
-  pr_store; pr_transcript "$SANDBOX/t.jsonl"
-  touch "$LEDGER_DIR/PRS_FAIL_o_two"
-  run session_prs "$SANDBOX/t.jsonl"
-  assert_success
-  [ "$(jq -c 'map(.state)' <<<"$output")" = '["OPEN",null]' ]
-  run session_prs "$SANDBOX/t.jsonl"
-  [ "$(grep -c '^prs o/two' "$LEDGER_DIR/calls")" -eq 1 ]
-  # the next pass reads again, and the answer is now known
-  rm "$LEDGER_DIR/PRS_FAIL_o_two"; CACHE="$SANDBOX/pass2"; mkdir -p "$CACHE"
-  run session_prs "$SANDBOX/t.jsonl"
-  [ "$(jq -c 'map(.state)' <<<"$output")" = '["OPEN","MERGED"]' ]
-}
-
-@test "session_prs: a Forgejo PR (host/owner/repo) takes its state from the store under that name, never gh" {
-  gh_script 'echo "$*" >> "$SANDBOX/gh.log"'; export SANDBOX
-  {
-    echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"curl -s -X POST -d @pr.json https://git.example.test/api/v1/repos/o/audio/pulls"}}]}}'
-    echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"https://git.example.test/o/audio/pulls/12"}]}}'
-  } > "$SANDBOX/t.jsonl"
-  printf -- '-\t12\tMERGED\tPASS\t-\t-\t2026-10-30T12:00:00Z\n' > "$LEDGER_DIR/prs_git.example.test_o_audio.tsv"
-  export SO_FORGEJO_HOSTS=git.example.test; CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
-  run session_prs "$SANDBOX/t.jsonl"
-  assert_success
-  [ "$(jq -c 'map([.repo, .number, .state, .merged_at])' <<<"$output")" = '[["git.example.test/o/audio",12,"MERGED","2026-10-30T12:00:00Z"]]' ]
-  [ ! -s "$SANDBOX/gh.log" ]
-  # the clone's origin names owner/repo only: the PR is still this session's, and never a sibling for gh
-  git init -q "$SANDBOX/audio"; git -C "$SANDBOX/audio" remote add origin ssh://git@git.example.test:2222/o/audio.git
-  run pr_made_here "$SANDBOX/audio" 12 - '[{"repo":"git.example.test/o/audio","number":12,"state":"MERGED"}]' /dev/null -
-  assert_success
-  run sibling_pr "$SANDBOX/one-missing" '[{"repo":"git.example.test/o/audio","number":13,"state":"OPEN"}]'
-  assert_success
-  assert_output ""
-  [ ! -s "$SANDBOX/gh.log" ]
-}
-
-# a Forgejo checkout (origin on a listed host) whose store rows still read its PR open, with the merge one sync-prs away
-forgejo_stale_fixture() {
-  git init -q "$SANDBOX/fjwt"; git -C "$SANDBOX/fjwt" remote add origin https://fj.example/o/r.git
-  export SO_FORGEJO_HOSTS="fj.example" MAIN_CACHE="$SANDBOX/main"
-  CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
-  printf 'feat/x\t11\tOPEN\tPENDING\tabc\t-\t\n' > "$LEDGER_DIR/prs_fj.example_o_r.tsv"
-  printf 'feat/x\t11\tMERGED\tPASS\tabc\t-\t2026-11-19T06:45:00Z\n' > "$LEDGER_DIR/after_sync_fj.example_o_r.tsv"
-}
-
-@test "close --self: a Forgejo PR merged since the store's last poll reads merged, the store asked to read the forge once (ar-2786)" {
-  forgejo_stale_fixture
-  CLOSE_SELF=sid-1 run prs_for "$SANDBOX/fjwt"
-  assert_output "$(printf 'feat/x\t11\tMERGED\tPASS\tabc\t-')"
-  [ "$(grep -c '^sync-prs --wait fj.example/o/r$' "$LEDGER_DIR/calls")" -eq 1 ]
-  # the session's own PR list shares the one refresh
-  CLOSE_SELF=sid-1 pr_states fj.example/o/r >/dev/null
-  [ "$(grep -c '^sync-prs ' "$LEDGER_DIR/calls")" -eq 1 ]
-  # NEGATIVE CONTROL: a plain pass keeps the poll's answer and never writes the store
-  rm -rf "$CACHE"; mkdir -p "$CACHE"; printf 'feat/x\t11\tOPEN\tPENDING\tabc\t-\t\n' > "$LEDGER_DIR/prs_fj.example_o_r.tsv"; : > "$LEDGER_DIR/calls"
-  CLOSE_SELF= run prs_for "$SANDBOX/fjwt"
-  assert_output "$(printf 'feat/x\t11\tOPEN\tPENDING\tabc\t-')"
-  ! grep -q '^sync-prs' "$LEDGER_DIR/calls"
-}
-
-@test "close --self: a store that cannot read the forge makes the row blind, not a stale open (ar-2786)" {
-  forgejo_stale_fixture
-  touch "$LEDGER_DIR/SYNC_FAIL"
-  CLOSE_SELF=sid-1 prs_for "$SANDBOX/fjwt" >/dev/null
-  [ -f "$CACHE/blind_row" ]
-  grep -q '^PR store refresh (fj.example/o/r): fj.example/o/r: forge unreachable' "$CACHE/unreadable"
-  # a later read of the same repo in the pass is blind too, and the sync is not asked again
-  rm -f "$CACHE/blind_row"; : > "$LEDGER_DIR/calls"
-  CLOSE_SELF=sid-1 pr_states fj.example/o/r >/dev/null
-  [ -f "$CACHE/blind_row" ]
-  [ ! -s "$LEDGER_DIR/calls" ] || ! grep -q '^sync-prs' "$LEDGER_DIR/calls"
-  # a repo the store does not list is no fault
-  rm -f "$LEDGER_DIR/SYNC_FAIL" "$CACHE/blind_row" "$CACHE"/refreshed_*
-  printf '#!/usr/bin/env bash\n[ "$1" = sync-prs ] && exit 3\necho "[]"\n' > "$SCHEDULES_SYNC"
-  rm -f "$CACHE"/*_origin
-  CLOSE_SELF=sid-1 prs_for "$SANDBOX/fjwt" >/dev/null
-  [ ! -f "$CACHE/blind_row" ]
-}
-
-@test "store_key: a Forgejo alias host is the store's host, any other repo as given (ar-2786)" {
-  printf '{"forges":{"forgejo":"store.example"}}\n' > "$SANDBOX/map.json"
-  export SO_PROJECT_MAP="$SANDBOX/map.json" SO_FORGEJO_HOSTS="store.example alias.example"
-  run store_key alias.example/o/r
-  assert_output store.example/o/r
-  run store_key store.example/o/r
-  assert_output store.example/o/r
-  run store_key o/r
-  assert_output o/r
-  run store_key other.example/o/r
-  assert_output other.example/o/r
-}
-
-@test "session_prs: a PR printed under a Forgejo alias host is read under the store's host (ar-2786)" {
-  printf '{"forges":{"forgejo":"store.example"}}\n' > "$SANDBOX/map.json"
-  export SO_PROJECT_MAP="$SANDBOX/map.json" SO_FORGEJO_HOSTS="store.example alias.example"
-  {
-    echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"curl -s -X POST -d @pr.json https://alias.example/api/v1/repos/o/r/pulls"}}]}}'
-    echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"https://alias.example/o/r/pulls/12"}]}}'
-  } > "$SANDBOX/t.jsonl"
-  printf -- '-\t12\tMERGED\tPASS\t-\t-\t2026-11-19T06:45:00Z\n' > "$LEDGER_DIR/prs_store.example_o_r.tsv"
-  CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
-  run session_prs "$SANDBOX/t.jsonl"
-  assert_success
-  [ "$(jq -c 'map([.repo, .number, .state])' <<<"$output")" = '[["store.example/o/r",12,"MERGED"]]' ]
-}
-
-@test "session_prs: a project map that cannot be read makes the row blind, not a session with no PRs (ar-2786)" {
-  printf '{not json\n' > "$SANDBOX/map.json"
-  export SO_PROJECT_MAP="$SANDBOX/map.json" SO_FORGEJO_HOSTS="store.example"
-  {
-    echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"curl -s -X POST -d @pr.json https://store.example/api/v1/repos/o/r/pulls"}}]}}'
-    echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"https://store.example/o/r/pulls/12"}]}}'
-  } > "$SANDBOX/t.jsonl"
-  CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
-  run session_prs "$SANDBOX/t.jsonl"
-  assert_output '[]'
-  grep -q '^PR claims' "$CACHE/unreadable"
-}
-
-@test "sibling_pr: the last open PR in another repo, its CI from one cached gh pr view; a failed view is unreadable, asked once a pass" {
-  git init -q "$SANDBOX/one"; git -C "$SANDBOX/one" remote add origin git@github.com:o/One.git
-  gh_script <<'SH'
-echo "$*" >> "$SANDBOX/gh.log"
-[ -n "${VIEW_FAIL:-}" ] && exit 1
-echo '{"headRefOid":"abc123","statusCheckRollup":[{"conclusion":"SUCCESS"},{"state":"PENDING"}]}'
-SH
-  export SANDBOX FLEET_MAIN_TTL=300 MAIN_CACHE="$SANDBOX/cache"; CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
-  local prs='[{"repo":"o/one","number":5,"state":"OPEN"},{"repo":"o/three","number":3,"state":"OPEN"},{"repo":"o/two","number":9,"state":"MERGED"}]'
-  # o/one is this clone's own repo (GitHub names are case-blind), and o/two's PR is not open.
-  run sibling_pr "$SANDBOX/one" "$prs"
-  assert_success
-  assert_output "$(printf 'o/three\t3\tPENDING\tabc123')"
-  run sibling_pr "$SANDBOX/one" "$prs"
-  [ "$(grep -c 'pr view 3 --repo o/three' "$SANDBOX/gh.log")" -eq 1 ] # reused across passes
-  run sibling_pr "$SANDBOX/one" '[{"repo":"o/one","number":5,"state":"OPEN"}]'
-  assert_output ''
-  # A view gh cannot answer adopts the PR with CI unknown (-), is named unreadable, and is not asked again this pass.
-  export VIEW_FAIL=1 FLEET_MAIN_TTL=0
-  run sibling_pr "$SANDBOX/one" "$prs"
-  assert_output "$(printf 'o/three\t3\t-\t-')"
-  run sibling_pr "$SANDBOX/one" "$prs"
-  assert_output "$(printf 'o/three\t3\t-\t-')"
-  [ "$(grep -c 'pr view 3' "$SANDBOX/gh.log")" -eq 2 ]
-  grep -qx 'gh pr view o/three#3' "$CACHE/unreadable"
-  # The store's state decides what is open: a PR it lists as merged or closed is never adopted on a failed view.
-  run sibling_pr "$SANDBOX/one" '[{"repo":"o/three","number":3,"state":"MERGED"},{"repo":"o/four","number":4,"state":"CLOSED"}]'
-  assert_output ''
-}
-
-@test "end to end: an open PR in a sibling repo is the session's PR, its CI deciding the bucket (ar-349)" {
-  git init -q --bare "$SANDBOX/origin.git"
-  git clone -q "$SANDBOX/origin.git" "$SANDBOX/wt" 2>/dev/null
-  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
-  git -C "$SANDBOX/wt" push -q origin HEAD:main 2>/dev/null
-  git -C "$SANDBOX/wt" checkout -q -b feat/x
-  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"gh pr create -t x"}}]}}' > "$SANDBOX/t.jsonl"
-  echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"https://github.com/o/other/pull/42"}]}}' >> "$SANDBOX/t.jsonl"
-  local since=$(( $(date +%s) - 3600 ))
-  printf '#!/usr/bin/env bash\necho %q\n' \
-    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"idle\",\"plan_mode\":false,\"session_id\":\"sid-9\",\"cwd\":\"$SANDBOX/wt\",\"idle_since\":$since,\"context_tokens\":5,\"plan_file\":\"\",\"transcript\":\"$SANDBOX/t.jsonl\"}" \
-    > "$SANDBOX/bin/agent-panel"
-  # The cwd's repo has no PR for feat/x; o/other's #42 is open with the CI in $SANDBOX/ci.
-  printf -- '-\t42\tOPEN\tNONE\t-\t-\n' > "$LEDGER_DIR/prs_o_other.tsv"
-  gh_script <<'SH'
-case "$*" in
-  api*) echo "[]" ;;
-  *"pr view 42 --repo o/other"*) printf '{"headRefOid":"feedface0000beef","statusCheckRollup":[{"conclusion":"%s"}]}\n' "$(cat "$SANDBOX/ci")" ;;
-esac
-SH
-  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
-  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-bench"
-  chmod +x "$SANDBOX/bin/fleet-assess" "$SANDBOX/bin/fleet-bench"
-  export SANDBOX XDG_CACHE_HOME="$SANDBOX/xdg"
-
-  echo FAILURE > "$SANDBOX/ci"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  assert_success
-  [ "$(jq -c '[.bucket, .reason, .pr, .pr_state, .ci, .conflicts]' <<<"$output")" = '["STALLED","PR o/other#42 CI red","42","OPEN","FAIL",null]' ]
-  [ "$(jq -r .fact <<<"$output")" = 'STALLED PR o/other#42 CI red @feat/x@feedface0000' ]
-  [ "$(jq -c .blockers <<<"$output")" = '["PR o/other#42 open, CI FAIL","no plan file and nothing merged"]' ]
-
-  echo IN_PROGRESS > "$SANDBOX/ci"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -c '[.bucket, .reason]' <<<"$output")" = '["WORKING","PR o/other#42 CI running"]' ]
-
-  # Without its PR in the transcript the same clean branch is the human's conversation, as before.
-  : > "$SANDBOX/t.jsonl"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = CHAT ]
-}
-
-@test "end to end: a sibling-repo PR whose gh pr view fails is adopted with CI unknown and read as unlanded (ar-4257)" {
-  git init -q --bare "$SANDBOX/origin.git"
-  git clone -q "$SANDBOX/origin.git" "$SANDBOX/wt" 2>/dev/null
-  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
-  git -C "$SANDBOX/wt" push -q origin HEAD:main 2>/dev/null
-  git -C "$SANDBOX/wt" checkout -q -b feat/x
-  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"gh pr create -t x"}}]}}' > "$SANDBOX/t.jsonl"
-  echo '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"https://github.com/o/other/pull/42"}]}}' >> "$SANDBOX/t.jsonl"
-  local since=$(( $(date +%s) - 3600 ))
-  printf '#!/usr/bin/env bash\necho %q\n' \
-    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"idle\",\"plan_mode\":false,\"session_id\":\"sid-9\",\"cwd\":\"$SANDBOX/wt\",\"idle_since\":$since,\"context_tokens\":5,\"plan_file\":\"\",\"transcript\":\"$SANDBOX/t.jsonl\"}" \
-    > "$SANDBOX/bin/agent-panel"
-  printf -- '-\t42\tOPEN\tNONE\t-\t-\n' > "$LEDGER_DIR/prs_o_other.tsv"
-  gh_script 'exit 1'
-  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
-  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-bench"
-  chmod +x "$SANDBOX/bin/fleet-assess" "$SANDBOX/bin/fleet-bench"
-  export SANDBOX XDG_CACHE_HOME="$SANDBOX/xdg"
-
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  assert_success
-  [ "$(jq -c '[.bucket, .pr, .pr_state, .ci, .finished, .close.verdict]' <<<"$output")" = '["STALLED","42","OPEN",null,false,"keep"]' ]
-  [ "$(jq -r .close.why <<<"$output")" = 'land it: PR o/other#42 open, CI -' ]
-  [ "$(jq -r .reason <<<"$output")" = 'PR o/other#42 open, CI unknown, not merged' ]
-  [ "$(jq -c .blockers <<<"$output")" = '["PR o/other#42 open, CI -","no plan file and nothing merged"]' ]
-}
-
-@test "pr_made_here: its own PR by session_prs, plan Phases, URL or a push of the branch; nothing else (ar-455)" {
-  git init -q "$SANDBOX/r"; git -C "$SANDBOX/r" remote add origin https://github.com/O/R.git
-  echo '{"type":"user","message":{"content":"nothing about it"}}' > "$SANDBOX/t.jsonl"
-  phases_plan '- [x] Phase 1: work (#8750)'
-  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md"
-  assert_failure
-  run pr_made_here "$SANDBOX/r" 875 feat/x '[{"repo":"o/r","number":875}]' "$SANDBOX/t.jsonl" -
-  assert_success
-  run pr_made_here "$SANDBOX/r" 875 feat/x '[{"repo":"o/other","number":875}]' "$SANDBOX/t.jsonl" -
-  assert_failure
-  phases_plan '- [x] Phase 1: work (o/other#875)'
-  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md"
-  assert_failure
-  phases_plan '- [x] Phase 1: work (#875)'
-  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md"
-  assert_success
-  echo '{"content":"see https://github.com/o/r/pull/8750 and https://github.com/o/r2/pull/875"}' > "$SANDBOX/t.jsonl"
-  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" -
-  assert_failure
-  echo '{"content":"opened https://github.com/o/r/pull/875"}' > "$SANDBOX/t.jsonl"
-  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" -
-  assert_success
-  echo '{"input":{"command":"git push -u origin feat/xy"}}' > "$SANDBOX/t.jsonl"
-  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" -
-  assert_failure
-  echo '{"content":"   abc..def  feat/x -> origin/feat/x"}' > "$SANDBOX/t.jsonl" # a pull, not a push
-  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" -
-  assert_failure
-  echo '{"content":"To github.com:o/r.git\n * [new branch]      HEAD -> feat/x\n"}' > "$SANDBOX/t.jsonl" # a bare git push
-  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" -
-  assert_success
-  for c in 'git push -u origin feat/x' 'git push origin HEAD:feat/x' 'git push origin refs/heads/feat/x'; do
-    printf '{"input":{"command":"%s"}}\n' "$c" > "$SANDBOX/t.jsonl"
-    run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" -
-    assert_success
-  done
-}
-
-@test "pr_made_here: a PR another window's plan names served that plan, unless this plan names it too (ar-492)" {
-  git init -q "$SANDBOX/r"; git -C "$SANDBOX/r" remote add origin https://github.com/O/R.git
-  # calm-lagoon ran `gh pr view` on velvet-pine's #875 and once pushed the recycled branch name.
-  echo '{"content":"https://github.com/o/r/pull/875"}' > "$SANDBOX/t.jsonl"
-  echo '{"input":{"command":"git push -u origin feat/x"}}' >> "$SANDBOX/t.jsonl"
-  mkdir -p "$SANDBOX/a" "$SANDBOX/b"
-  printf '# v\n\n## Phases\n- [x] 5 FreqAI (#875)\n' > "$SANDBOX/b/velvet.md"
-  phases_plan '- [x] Phase 1: costs (#20)' '- [ ] Phase 2: walk-forward'
-  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md" "$SANDBOX/b/velvet.md"
-  assert_failure
-  # Opening or merging it is this session's own act: no other plan overrides that.
-  run pr_made_here "$SANDBOX/r" 875 feat/x '[{"repo":"o/r","number":875}]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md" "$SANDBOX/b/velvet.md"
-  assert_success
-  # Another plan naming #8750, or none at all, leaves the session's own evidence standing.
-  printf '# v\n\n## Phases\n- [x] 5 FreqAI (#8750)\n' > "$SANDBOX/b/velvet.md"
-  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md" "$SANDBOX/b/velvet.md"
-  assert_success
-  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md" ""
-  assert_success
-  # Its own plan naming #875 wins.
-  printf '# v\n\n## Phases\n- [x] 5 FreqAI (#875)\n' > "$SANDBOX/b/velvet.md"
-  phases_plan '- [x] Phase 1: costs (#875)'
-  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md" "$SANDBOX/b/velvet.md"
-  assert_success
-  # A plan with this plan's file name under another dir is its account copy: no veto, even when
-  # only the copy has #875 ticked; with no plan of its own the other window's plan vetoes.
-  cp "$SANDBOX/b/velvet.md" "$SANDBOX/a/plan.md"
-  phases_plan '- [ ] Phase 1: costs'
-  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" "$SANDBOX/plan.md" "$SANDBOX/a/plan.md"
-  assert_success
-  run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" - "$SANDBOX/a/plan.md"
-  assert_failure
-}
-
-@test "end to end: a merged PR another session made on a shared worktree branch is not this session's (ar-455)" {
-  landed_fixture
-  # trader-real-money-plan: its plan and transcript never touched #875, which merged off feat/x.
-  phases_plan '- [x] Phase 1: investigate' '- [-] Phase 2: live money: queue item p2'
-  echo '{"type":"user","message":{"content":"walk-forward results"}}' > "$SANDBOX/t.jsonl"
-  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  assert_success
-  [ "$(jq -r .pr <<<"$output")" = - ]
-  [ "$(jq -r .bucket <<<"$output")" = DONE ]
-  refute_output --partial '#875'
-
-  # The same session pushing feat/x made it: the PR is its own again.
-  echo '{"input":{"command":"git push -u origin feat/x"}}' >> "$SANDBOX/t.jsonl"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .pr <<<"$output")" = 875 ]
-
-  # A second window in the same worktree whose plan ticks #875 served it: the push of a recycled
-  # branch name no longer makes it this window's (ar-492).
-  printf '# v\n\n## Phases\n- [x] 5 FreqAI (#875)\n- [ ] 6 Switch-on\n' > "$SANDBOX/velvet.md"
-  printf 'echo %q\n' "{\"target\":\"lab/s1:3\",\"pane\":\"lab/%9\",\"status\":\"busy\",\"plan_mode\":false,\"session_id\":\"sid-3\",\"cwd\":\"$SANDBOX/wt\",\"idle_since\":$(date +%s),\"context_tokens\":5,\"plan_file\":\"$SANDBOX/velvet.md\"}" \
-    >> "$SANDBOX/bin/agent-panel"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  assert_success
-  [ "$(jq -r 'select(.session_id == "sid-9") | .pr' <<<"$output")" = - ]
-  [ "$(jq -r 'select(.session_id == "sid-9") | .bucket' <<<"$output")" = DONE ]
-  [ "$(jq -r 'select(.session_id == "sid-3") | .pr' <<<"$output")" = 875 ]
-  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-
-  # An open branch PR stays attributed whoever opened it: it is unlanded work in this tree.
-  echo '{"type":"user","message":{"content":"walk-forward results"}}' > "$SANDBOX/t.jsonl"
-  printf 'feat/x\t875\tOPEN\tPASS\t%s\n' "$(git -C "$SANDBOX/wt" rev-parse HEAD)" > "$LEDGER_DIR/prs.tsv"
-  rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}"/fleet-sessions* 2>/dev/null || true
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .pr <<<"$output")" = 875 ]
-}
-
-@test "json_rows: the newer fields, with a row that predates them still parsing" {
-  run json_rows < <(time_row WORKING 190 300 60 620 'Bash: x' 70 80)
-  assert_success
-  [ "$(jq -c '.time' <<<"$output")" = '{"work_min":190,"gate_min":70,"test_min":80,"jobs_min":300,"human_min":60,"parked_min":620}' ]
-  [ "$(jq -c '[.compactions, .topic, .doing, .said, .prs]' <<<"$output")" = '[4,"the-topic","Bash: x","said it",[]]' ]
-  run json_rows < <(age_row 45)
-  assert_success
-  [ "$(jq -c '[.time.work_min, .time.gate_min, .compactions, .topic, .prs]' <<<"$output")" = '[0,0,0,null,[]]' ]
-}
-
-# explain_state: a state document with one session, in $FLEET_STATE_FILE.
-explain_state() {
-  export FLEET_STATE_FILE="$SANDBOX/state.json" TZ=UTC
-  STATE_FILE="$FLEET_STATE_FILE"
-  jq -n --argjson e "$(( $(date +%s) - 180 ))" '{generated_epoch: $e, sessions: [{
-    target: "lab/s1:1", bucket: "WORKING", session_id: "sid-1", branch: "feat/x", pr: "9", reason: "shell",
-    age_min: 1440, idle_min: 12, phases_done: 2, phases_total: 5, next_phase: "Phase 3: board", topic: "the-topic",
-    doing: "Bash: Run the gate", said: "Gate is running.", compactions: 4, blockers: ["2 dirty file(s)"],
-    time: {work_min: 190, gate_min: 120, test_min: 30, jobs_min: 300, human_min: 45, parked_min: 620},
-    prs: [{repo: "o/one", number: 7, state: "OPEN", merged_at: null},
-          {repo: "o/two", number: 9, state: "MERGED", merged_at: "2026-10-30T12:00:00Z"},
-          {repo: "o/two", number: 8, state: null, merged_at: null}]}]}' > "$FLEET_STATE_FILE"
-}
-
-@test "explain: one session's task, time, plan, PRs, action and blockers, by any name for it" {
-  explain_state
-  run explain s1
-  assert_success
-  assert_line --regexp '^lab/s1:1  WORKING  \(state 3m old\)$'
-  assert_line 'task     the-topic'
-  assert_line 'time     open 24h: 3h work, 2h gate, 30m test, 5h jobs, 45m you, 10h parked; idle 12m now; 4 compactions'
-  assert_line 'plan     2/5, next: Phase 3: board'
-  assert_line 'branch   feat/x (PR #9)'
-  assert_line 'PRs      1 merged of 3'
-  assert_line '  o/one#7  open'
-  assert_line '  o/two#9  merged  Fri 12:00'
-  assert_line '  o/two#8  unknown'
-  assert_line 'doing    Bash: Run the gate'
-  assert_line 'said     Gate is running.'
-  assert_line '  - 2 dirty file(s)'
-  for who in lab/s1:1 s1:1 sid-1; do run explain "$who"; assert_success; done
-}
-
-@test "explain: a name that matches nothing, a missing argument and no state document are errors" {
-  explain_state
-  run explain nobody
-  assert_failure 2
-  assert_output --partial "matches 'nobody'"
-  run explain
-  assert_failure 2
-  STATE_FILE="$SANDBOX/absent"
-  run explain s1
-  assert_failure 1
-}
-
-@test "explain: a row written before the newer fields still prints" {
-  explain_state
-  jq '.sessions[0] |= del(.time, .prs, .compactions, .topic, .doing, .said)' "$STATE_FILE" > "$STATE_FILE.n" && mv "$STATE_FILE.n" "$STATE_FILE"
-  run explain s1
-  assert_success
-  assert_line 'time     open 24h: 0m work, 0m gate, 0m test, 0m jobs, 0m you, 0m parked; idle 12m now; 0 compactions'
-  assert_line 'PRs      0 merged of 0'
-}
-
-@test "end to end: the state row carries a session's PRs, time and last action" {
-  landed_fixture
-  pr_transcript "$SANDBOX/t.jsonl"
-  local since=$(( $(date +%s) - 60 ))
-  printf '#!/usr/bin/env bash\necho %q\n' \
-    "{\"target\":\"lab/s1:1\",\"pane\":\"lab/%7\",\"status\":\"busy\",\"plan_mode\":false,\"session_id\":\"sid-9\",\"cwd\":\"$SANDBOX/wt\",\"idle_since\":$since,\"started_at\":$since,\"context_tokens\":5,\"plan_file\":\"\",\"edited_files\":[],\"transcript\":\"$SANDBOX/t.jsonl\",\"summary\":\"the-topic\",\"time_use\":{\"work_min\":190,\"gate_min\":900,\"test_min\":7,\"jobs_min\":5,\"human_min\":5,\"parked_min\":620},\"doing\":\"Bash: Run the gate\",\"said\":\"Going.\",\"compactions\":2}" \
-    > "$SANDBOX/bin/agent-panel"
-  printf -- '-\t7\tMERGED\tPASS\t-\t-\t2026-10-30T12:00:00Z\n' > "$LEDGER_DIR/prs_o_one.tsv"
-  printf -- '-\t9\tOPEN\tNONE\t-\t-\n' > "$LEDGER_DIR/prs_o_two.tsv"
-  export XDG_CACHE_HOME="$SANDBOX/xdg"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  assert_success
-  [ "$(jq -c '[.prs[].number, .time.gate_min, .time.test_min, .time.parked_min, .compactions, .doing]' <<<"$output")" = '[7,9,900,7,620,2,"Bash: Run the gate"]' ]
-}
-
-@test "end to end: a tick that cannot read agent-panel or the PR store keeps the last stage cells and logs nothing" {
-  landed_fixture
-  local doc="$XDG_STATE_HOME/fleet/state.json"
-  "$REPO_ROOT/.local/bin/fleet-sessions" tick
-  cp "$FLEET_SHEPHERD_DIR/watch.state" "$SANDBOX/state.ok"
-  cp "$SANDBOX/bin/agent-panel" "$SANDBOX/panel.ok"
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/agent-panel"
+  seed_live 1
   run "$REPO_ROOT/.local/bin/fleet-sessions" tick
   assert_success
-  [ "$(jq -c .unreadable "$doc")" = '["agent-panel"]' ]
-  cmp "$SANDBOX/state.ok" "$FLEET_SHEPHERD_DIR/watch.state"
-  [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
-
-  # the store stale: every PR would read "-", which is a blink, not a change
-  cp "$SANDBOX/panel.ok" "$SANDBOX/bin/agent-panel"
-  touch "$LEDGER_DIR/PRS_FAIL"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
-  jq -r '.unreadable[]' "$doc" | grep -q '^PR store (.*/origin)$'
-  cmp "$SANDBOX/state.ok" "$FLEET_SHEPHERD_DIR/watch.state"
-  [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
-}
-
-@test "end to end: a source that fails for one repo holds only that repo's rows; every other row still logs (ar-1116)" {
-  landed_fixture
-  local oid line1
-  oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
-  # a second session, s2 (sid-8), in a clone of another repo
-  git init -q --bare "$SANDBOX/origin2.git"
-  git clone -q "$SANDBOX/origin2.git" "$SANDBOX/wt2" 2>/dev/null
-  git -C "$SANDBOX/wt2" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
-  git -C "$SANDBOX/wt2" push -q origin HEAD:main 2>/dev/null
-  line1="$("$SANDBOX/bin/agent-panel")"
-  printf '#!/usr/bin/env bash\necho %q\necho %q\n' "$line1" \
-    "$(jq -c --arg c "$SANDBOX/wt2" '.target = "lab/s2:1" | .pane = "lab/%8" | .session_id = "sid-8" | .cwd = $c | .plan_file = ""' <<<"$line1")" \
-    > "$SANDBOX/bin/agent-panel"
-  # the store answers for wt, and for wt2 only while its PRS_FAIL_ file is absent
-  printf 'feat/x\t875\tMERGED\tPASS\t%s\n' "$oid" > "$LEDGER_DIR/prs.tsv"
-  local down="$LEDGER_DIR/PRS_FAIL_origin2"
-  local doc="$XDG_STATE_HOME/fleet/state.json"
-  "$REPO_ROOT/.local/bin/fleet-sessions" tick
-  [ "$(cut -f1 "$FLEET_SHEPHERD_DIR/watch.state" | sort | paste -sd' ')" = 'sid-8 sid-9' ]
-  grep -P '^sid-8\t' "$FLEET_SHEPHERD_DIR/watch.state" > "$SANDBOX/s2.ok"
-
-  touch "$down"
-  "$REPO_ROOT/.local/bin/fleet-sessions" label s1 +quality:simplifying >/dev/null
-  "$REPO_ROOT/.local/bin/fleet-sessions" label s2 +quality:reviewing >/dev/null
+  [ "$(fleet_live_count "$XDG_STATE_HOME/fleet/state.json")" = 1 ]
+  [ ! -e "$wake" ] || fail "an equal nonzero count woke a kick: $(cat "$wake")"
+  seed_live 0
   run "$REPO_ROOT/.local/bin/fleet-sessions" tick
   assert_success
-  [ "$(jq -r '.unreadable | length' "$doc")" = 1 ]
-  jq -r '.unreadable[]' "$doc" | grep -q '^PR store (.*/origin2)$'
-  run cat "$FLEET_SHEPHERD_DIR/watch.log"
-  # s1 read clean, so its change is logged; s2 read a failed source, so it keeps its last cells
-  assert_line --regexp '^[0-9-]+ [0-9:]+  s1:1  quality - -> simplifying$'
-  refute_line --partial 's2:1'
-  grep -P '^sid-8\t' "$FLEET_SHEPHERD_DIR/watch.state" | cmp - "$SANDBOX/s2.ok"
-
-  # NEGATIVE CONTROL: the read comes back, and s2's change is logged then, once
-  rm "$down"
-  "$REPO_ROOT/.local/bin/fleet-sessions" tick
-  "$REPO_ROOT/.local/bin/fleet-sessions" tick
-  [ "$(grep -c 's2:1  quality - -> reviewing$' "$FLEET_SHEPHERD_DIR/watch.log")" = 1 ]
-  [ "$(wc -l < "$FLEET_SHEPHERD_DIR/watch.log")" -eq 2 ]
-
-  # agent-panel exit 3 lists s1 only: s1's change is logged, s2 is a gap, not gone
-  printf '#!/usr/bin/env bash\necho %q\nexit 3\n' "$line1" > "$SANDBOX/bin/agent-panel"
-  "$REPO_ROOT/.local/bin/fleet-sessions" label s1 -quality:simplifying >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
-  assert_success
-  [ "$(jq -c .unreadable "$doc")" = '["agent-panel"]' ]
-  run cat "$FLEET_SHEPHERD_DIR/watch.log"
-  assert_line --regexp '^[0-9-]+ [0-9:]+  s1:1  quality simplifying -> -$'
-  refute_line --partial 's2:1  gone'
-  grep -qP '^sid-8\t' "$FLEET_SHEPHERD_DIR/watch.state"
+  [ "$(fleet_live_count "$XDG_STATE_HOME/fleet/state.json")" = 1 ]
+  [ ! -e "$wake" ] || fail "a rise in the live count woke a kick: $(cat "$wake")"
 }
 
-@test "end to end: a clone on a Forgejo host, or a GitHub mirror of one, the PR store does not list is never an unreadable source (ar-1116)" {
-  landed_fixture
-  export SO_FORGEJO_HOSTS='git.example.lan git.example.test'
-  git -C "$SANDBOX/wt" remote set-url origin https://git.example.lan/o/asset-library.git
-  touch "$LEDGER_DIR/PRS_UNLISTED"
-  local doc="$XDG_STATE_HOME/fleet/state.json"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
-  assert_success
-  [ "$(jq -c .unreadable "$doc")" = '[]' ]
-  [ "$(jq -r '.sessions[0].pr' "$doc")" = - ]
-  grep -qx 'prs git.example.lan/o/asset-library --checks' "$LEDGER_DIR/calls"
-  # one it lists reads its PRs under host/owner/repo
-  rm "$LEDGER_DIR/PRS_UNLISTED"; mv "$LEDGER_DIR/prs.tsv" "$LEDGER_DIR/prs_git.example.lan_o_asset-library.tsv"
-  "$REPO_ROOT/.local/bin/fleet-sessions" tick
-  [ "$(jq -r '.sessions[0].pr' "$doc")" = 875 ]
-  # NEGATIVE CONTROL: the same clone on a host not listed as Forgejo (GitHub, or an ssh alias of it)
-  # is a GitHub repo the store does not list, and is named
-  touch "$LEDGER_DIR/PRS_UNLISTED"
-  git -C "$SANDBOX/wt" remote set-url origin git@github.com-work:o/asset-library.git
-  "$REPO_ROOT/.local/bin/fleet-sessions" tick
-  jq -e '.unreadable | index("PR store (o/asset-library)")' "$doc" >/dev/null
-  # ...unless the checkout is a GitHub mirror of a Forgejo-canonical repo: its PRs are on Forgejo
-  mkdir -p "$SANDBOX/wt/.forgejo/workflows"; touch "$SANDBOX/wt/.forgejo/workflows/mirror-to-github.yaml"
-  "$REPO_ROOT/.local/bin/fleet-sessions" tick
-  [ "$(jq -c .unreadable "$doc")" = '[]' ]
-}
-
-@test "end to end: a clone whose origin is on neither GitHub nor a listed Forgejo host has no PRs, never an unreadable store (~/.agent)" {
-  landed_fixture
-  export SO_FORGEJO_HOSTS='git.example.lan'
-  git -C "$SANDBOX/wt" remote set-url origin ssh://git@forge-primary.example.lan:2222/o/.agent.git
-  touch "$LEDGER_DIR/PRS_UNLISTED"
-  local doc="$XDG_STATE_HOME/fleet/state.json"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
-  assert_success
-  [ "$(jq -c .unreadable "$doc")" = '[]' ]
-  [ "$(jq -r '.sessions[0].pr' "$doc")" = - ]
-  # NEGATIVE CONTROL: the same repo on github.com the store does not list is named
-  git -C "$SANDBOX/wt" remote set-url origin git@github.com:o/.agent.git
-  "$REPO_ROOT/.local/bin/fleet-sessions" tick
-  jq -e '.unreadable | index("PR store (o/.agent)")' "$doc" >/dev/null
-}
-
-@test "keep_blind: a blind row keeps its last cells, + keeps unlisted rows, * keeps them all" {
-  printf 'a\ts1:1\told\nb\ts2:1\told\nc\ts3:1\told\n' > "$SANDBOX/prev"
-  printf 'a\ts1:1\tnew\nb\ts2:1\tnew\nd\ts4:1\tnew\n' > "$SANDBOX/cur"
-  # b's source failed: b keeps old; c left and d is new, as read
-  echo b > "$SANDBOX/blind"
-  run keep_blind "$SANDBOX/prev" "$SANDBOX/cur" "$SANDBOX/blind"
-  assert_output "$(printf 'a\ts1:1\tnew\nb\ts2:1\told\nd\ts4:1\tnew')"
-  # a blind row never seen before waits for a good read
-  echo d > "$SANDBOX/blind"
-  run keep_blind "$SANDBOX/prev" "$SANDBOX/cur" "$SANDBOX/blind"
-  assert_output "$(printf 'a\ts1:1\tnew\nb\ts2:1\tnew')"
-  # a session list read with a gap: c is not gone
-  echo + > "$SANDBOX/blind"
-  run keep_blind "$SANDBOX/prev" "$SANDBOX/cur" "$SANDBOX/blind"
-  assert_output "$(printf 'a\ts1:1\tnew\nb\ts2:1\tnew\nd\ts4:1\tnew\nc\ts3:1\told')"
-  # the local agent-panel failed: every row is the last good state
-  echo '*' > "$SANDBOX/blind"
-  run keep_blind "$SANDBOX/prev" "$SANDBOX/cur" "$SANDBOX/blind"
-  assert_output "$(cat "$SANDBOX/prev")"
-}
-
-@test "an ask counts only for the Claude session that asked, never by tmux session name" {
-  ASK_ROOT="$HOME/.agent/asks"; mkdir -p "$ASK_ROOT/demo"
-  printf 'id: a\nstatus: pending\nsession: dotfiles\nclaude_session: sid-asker\n' > "$ASK_ROOT/demo/a.md"
-  run asks_for sid-asker
-  assert_output a
-  run asks_for sid-neighbour
-  assert_output ''
-  # an ask with no owner blocks nobody, including a later session that reuses its tmux name
-  printf 'id: b\nstatus: pending\nsession: dotfiles\nclaude_session: \n' > "$ASK_ROOT/demo/b.md"
-  printf 'id: c\nstatus: pending\nsession: dotfiles\n' > "$ASK_ROOT/demo/c.md"
-  run asks_for sid-neighbour
-  assert_output ''
-  run asks_for ''
-  assert_output ''
-  printf 'id: d\nstatus: answered\nsession: dotfiles\nclaude_session: sid-asker\n' > "$ASK_ROOT/demo/d.md"
-  run asks_for sid-asker
-  assert_output a
-  # agent-ask decides what is pending: a parked ask waits on the human's later step and holds
-  # nobody until its date; one whose date has passed is back
-  printf 'id: e\nstatus: pending\nsession: dotfiles\nclaude_session: sid-asker\nparked_until: 2999-01-01T00:00:00Z\n' > "$ASK_ROOT/demo/e.md"
-  printf 'id: f\nstatus: pending\nsession: dotfiles\nclaude_session: sid-asker\nparked_until: 2000-01-01T00:00:00Z\n' > "$ASK_ROOT/demo/f.md"
-  run sort <<<"$(asks_for sid-asker)"
-  assert_output "$(printf 'a\nf')"
-  # a blocker ask is every session's it names, each owner line, not only its first
-  printf 'id: g\nstatus: pending\nsession: dotfiles\nclaude_session: sid-one\nclaude_session: sid-two\n' > "$ASK_ROOT/demo/g.md"
-  run asks_for sid-two
-  assert_output g
-  # a store agent-ask cannot read is a failed read, never an empty one
-  run bash -c "$(declare -f pending_asks); agent-ask() { return 1; }; ASK_ROOT=x pending_asks"
-  assert_failure
-  assert_output ''
-  # A pass's one read of the store is the answer, an empty read included.
-  PENDING_ASKS=$'sid-asker\tother' run asks_for sid-asker
-  assert_output other
-  PENDING_ASKS='' run asks_for sid-asker
-  assert_output ''
-}
-
-@test "--write: an audit ask carries audit_of into the state document, any other ask carries none" {
-  landed_fixture
-  PANEL_STATUS=shell panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" post --project demo --session s1 'plain?' >/dev/null
-  env -u CLAUDE_CODE_SESSION_ID "$AGENT_ASK" post --project demo --kind approval --audit-of q1 \
-    --options 'yes=keep|no=override' 'The judge answered "a?" with "yes"; your pick?' >/dev/null
-  local doc="$XDG_STATE_HOME/fleet/state.json"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
-  assert_success
-  [ "$(jq -r '.asks | length' "$doc")" = 2 ]
-  [ "$(jq -r '[.asks[] | select(.audit_of == "q1")] | length' "$doc")" = 1 ]
-  [ "$(jq -r '[.asks[] | select(has("audit_of") | not)] | length' "$doc")" = 1 ]
-}
-
-@test "--write: the state document holds the --json rows, their activity, and pending asks" {
-  landed_fixture
-  PANEL_STATUS=shell panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" post --project demo --session s1 \
-    --options 'a=ship|b=hold' --recommend a 'ship it?' >/dev/null
-  local doc="$XDG_STATE_HOME/fleet/state.json"
-
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
-  assert_success
-  # stdout is the --json contract, so fleet-bench sample can read it unchanged
-  [ "$(jq -r .session_id <<<"$output")" = sid-9 ]
-  [ "$(jq -r .activity <<<"$output")" = shell ]
-  [ "$(jq -r .schema "$doc")" = 2 ]
-  [ "$(jq -r '.sessions | length' "$doc")" = 1 ]
-  [ "$(jq -r '.sessions[0].activity' "$doc")" = shell ]
-  # its own ask outranks the background shell: the agent-12 shape from 2026-10-28
-  [ "$(jq -r '.sessions[0].bucket' "$doc")" = NEEDS ]
-  [ "$(jq -r '.sessions[0].reason' "$doc")" = '1 pending ask(s), carrying on' ]
-  [ "$(jq -r '.sessions[0].asks' "$doc")" = 1 ]
-  [ "$(jq -r '.sessions[0].blockers[0]' "$doc")" = "open ask $(jq -r '.asks[0].id' "$doc")" ]
-  [ "$(jq -r '.asks[0].question' "$doc")" = 'ship it?' ]
-  [ "$(jq -r '.asks[0].session' "$doc")" = s1 ]
-  # hub Home joins an ask to its session by this id, never by the tmux name above
-  [ "$(jq -r '.asks[0].claude_session' "$doc")" = sid-9 ]
-  [ "$(jq -r '.asks[0].claude_session' "$doc")" = "$(jq -r '.sessions[0].session_id' "$doc")" ]
-  # what hub_core::home::needs scores and shows: the judge's verdict and the recommendation
-  [ "$(jq -r '.asks[0].recommend' "$doc")" = a ]
-  [ "$(jq -r '.asks[0] | has("judge")' "$doc")" = true ]
-  [ "$(jq -r '.unreadable | length' "$doc")" = 0 ]
-  # no temp file left beside it
-  [ "$(find "$XDG_STATE_HOME/fleet" -name '.state.*' | wc -l)" = 0 ]
-}
-
-@test "--write: rows and asks past the 128 KB one-argument cap still build the document" {
-  landed_fixture
-  local doc="$XDG_STATE_HOME/fleet/state.json" q
-  q="$(head -c 70000 /dev/zero | tr '\0' q)"
-  CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" post --project demo --session s1 --context "$q" 'ship it?' >/dev/null
-  CLAUDE_CODE_SESSION_ID=sid-8 "$AGENT_ASK" post --project demo --session s2 --context "$q" 'hold it?' >/dev/null
-  [ "$("$AGENT_ASK" list --all --pending | wc -c)" -gt 131072 ]
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
-  assert_success
-  [ "$(jq -r '.asks | length' "$doc")" = 2 ]
-}
-
-@test "--write: a dispatch hold past its limit rides along as the Stopped line; none is an empty list" {
-  landed_fixture
-  local doc="$XDG_STATE_HOME/fleet/state.json"
-  printf '#!/usr/bin/env bash\n[ "$*" = "stopped --json" ] && cat "$HOME/stopped.json" 2>/dev/null && exit 1; exit 0\n' > "$SANDBOX/bin/fleet-dispatch"
-  chmod +x "$SANDBOX/bin/fleet-dispatch"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
-  assert_success
-  [ "$(jq -c .stopped "$doc")" = '[]' ]
-  echo '{"runner":"fleet-dispatch","since":1000,"why":"load 40","line":"Dispatch stopped 2h: load 40. Clears when the machine'"'"'s load falls."}' > "$HOME/stopped.json"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
-  assert_success
-  [ "$(jq -r '.stopped[0].line' "$doc")" = "Dispatch stopped 2h: load 40. Clears when the machine's load falls." ]
-  [ "$(jq -r '.stopped[0].since' "$doc")" = 1000 ]
-}
-
-@test "--write: a pass older than the document on disk leaves it alone" {
-  landed_fixture
-  local doc="$XDG_STATE_HOME/fleet/state.json"
-  mkdir -p "${doc%/*}"
-  echo '{"schema":1,"generated_epoch":9999999999,"sessions":[]}' > "$doc"
-  mkdir -p "$PROM_TEXTFILE_DIR"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
-  assert_success
-  [ "$(jq -r .generated_epoch "$doc")" = 9999999999 ]
-  # nor does it publish its older rows to Prometheus
-  [ ! -e "$PROM_TEXTFILE_DIR/fleet_sessions.prom" ]
-  # negative control: an older document is replaced
-  echo '{"schema":1,"generated_epoch":1,"sessions":[]}' > "$doc"
-  FLEET_HOST=box run "$REPO_ROOT/.local/bin/fleet-sessions" --write
-  [ "$(jq -r '.sessions | length' "$doc")" = 1 ]
-  # The document names the machine that wrote it, the host of every row that names none.
-  [ "$(jq -r .host "$doc")" = box ]
-}
-
-@test "--write: publishes the document to node_exporter as fleet_sessions.prom" {
-  landed_fixture
-  mkdir -p "$PROM_TEXTFILE_DIR"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
-  assert_success
-  # the clone's project is its checkout's name, with no project map in the sandbox
-  run grep '^agent_session_context_tokens' "$PROM_TEXTFILE_DIR/fleet_sessions.prom"
-  assert_output 'agent_session_context_tokens{target="lab/s1:1",project="wt",bucket="LANDED"} 5'
-  run grep -c '^agent_sessions{' "$PROM_TEXTFILE_DIR/fleet_sessions.prom"
-  assert_output 7
-  # the document carries the same counts, every bucket named, for the feed to publish
-  assert_equal "$(jq -c '.counts | [.LANDED, .STALLED, length]' "$XDG_STATE_HOME/fleet/state.json")" '[1,0,7]'
-}
-
-@test "--write: a machine without the fleet lease writes the document but no fleet_sessions.prom (ar-4375)" {
-  landed_fixture
-  mkdir -p "$PROM_TEXTFILE_DIR"
-  rm "$SANDBOX/lease-held"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
-  assert_success
-  [ -e "$XDG_STATE_HOME/fleet/state.json" ]
-  [ ! -e "$PROM_TEXTFILE_DIR/fleet_sessions.prom" ]
-  # negative control: the holder publishes
-  : > "$SANDBOX/lease-held"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
-  assert_success
-  [ -e "$PROM_TEXTFILE_DIR/fleet_sessions.prom" ]
-}
-
-@test "--write: the shepherd pass (label shepherd) is listed with its label but counted nowhere" {
-  landed_fixture
-  mkdir -p "$PROM_TEXTFILE_DIR" "$FLEET_SHEPHERD_DIR/labels"
-  printf 'manual\nshepherd\n' > "$FLEET_SHEPHERD_DIR/labels/sid-9"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
-  assert_success
-  local doc="$XDG_STATE_HOME/fleet/state.json"
-  assert_equal "$(jq -c '.sessions[0].labels' "$doc")" '["manual","shepherd"]'
-  assert_equal "$(jq -c '.counts | [.LANDED, add]' "$doc")" '[0,0]'
-  run grep -c '^agent_session_idle_minutes{' "$PROM_TEXTFILE_DIR/fleet_sessions.prom"
-  assert_output 0
-  # negative control: manual alone is an agent session the shepherd leaves alone, still counted
-  echo manual > "$FLEET_SHEPHERD_DIR/labels/sid-9"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
-  assert_equal "$(jq -c '.counts | [.LANDED, add]' "$doc")" '[1,1]'
-}
-
-# A state document with one session that has every fact and one that has almost none.
-state_doc() {
-  cat > "$SANDBOX/state.json" <<'JSON'
-{"schema":1,"unreadable":[],"asks":[{"id":"a1"},{"id":"a2"}],"main":[],
- "vocab":{"buckets":["NEEDS","DONE","WORKING"],"finished":["DONE"],"in_progress":["WORKING","NEEDS"]},
- "counts":{"CHAT":0,"DONE":0,"LANDED":0,"NEEDS":1,"PARKED":0,"STALLED":0,"WORKING":1},"sessions":[
- {"bucket":"WORKING","target":"lab/game-agent-2:1","project":"game-agent-2","cwd":"/nowhere/game-agent-2","idle_min":3,"context_tokens":120000,
-  "age_min":95,"phases_done":1,"phases_total":4,"behind":2,"dirty":5,"conflicts":true,"session_id":"s-123","item":{"slug":"fix-x","is":"own"}},
- {"bucket":"NEEDS","target":"hub/dot\"files:1","project":"dotfiles","cwd":"/nowhere/.dotfiles","idle_min":40,"context_tokens":9,
-  "age_min":null,"phases_done":null,"phases_total":null,"behind":null,"dirty":0,"conflicts":null,"reason":"1 pending ask(s), carrying on"}]}
-JSON
-}
-
-@test "sessions_prom: one series per fact a session has, never a guessed 0 for one it lacks" {
-  state_doc
-  run sessions_prom "$SANDBOX/state.json"
-  assert_success
-  assert_output "$(cat <<'PROM'
-# HELP agent_session_context_tokens Context tokens the session holds.
-# TYPE agent_session_context_tokens gauge
-agent_session_context_tokens{target="hub/dot\"files:1",project="dotfiles",bucket="NEEDS"} 9
-agent_session_context_tokens{target="lab/game-agent-2:1",project="game-agent-2",bucket="WORKING"} 120000
-# HELP agent_session_idle_minutes Minutes since the session went idle, by agent-panel.
-# TYPE agent_session_idle_minutes gauge
-agent_session_idle_minutes{target="hub/dot\"files:1",project="dotfiles",bucket="NEEDS"} 40
-agent_session_idle_minutes{target="lab/game-agent-2:1",project="game-agent-2",bucket="WORKING"} 3
-# HELP agent_session_age_minutes Minutes since the session started.
-# TYPE agent_session_age_minutes gauge
-agent_session_age_minutes{target="lab/game-agent-2:1",project="game-agent-2",bucket="WORKING"} 95
-# HELP agent_session_phases_done Phases ticked in the plan checklist of the session.
-# TYPE agent_session_phases_done gauge
-agent_session_phases_done{target="lab/game-agent-2:1",project="game-agent-2",bucket="WORKING"} 1
-# HELP agent_session_phases_total Phases in the plan checklist of the session.
-# TYPE agent_session_phases_total gauge
-agent_session_phases_total{target="lab/game-agent-2:1",project="game-agent-2",bucket="WORKING"} 4
-# HELP agent_session_behind Commits the branch of the session is behind its base.
-# TYPE agent_session_behind gauge
-agent_session_behind{target="lab/game-agent-2:1",project="game-agent-2",bucket="WORKING"} 2
-# HELP agent_session_dirty Uncommitted files in the worktree of the session.
-# TYPE agent_session_dirty gauge
-agent_session_dirty{target="hub/dot\"files:1",project="dotfiles",bucket="NEEDS"} 0
-agent_session_dirty{target="lab/game-agent-2:1",project="game-agent-2",bucket="WORKING"} 5
-# HELP agent_session_info Joins a session target to its Claude Code session_id; always 1.
-# TYPE agent_session_info gauge
-agent_session_info{target="lab/game-agent-2:1",project="game-agent-2",session_id="s-123"} 1
-# HELP agent_sessions Live sessions per fleet-sessions bucket.
-# TYPE agent_sessions gauge
-agent_sessions{bucket="CHAT"} 0
-agent_sessions{bucket="DONE"} 0
-agent_sessions{bucket="LANDED"} 0
-agent_sessions{bucket="NEEDS"} 1
-agent_sessions{bucket="PARKED"} 0
-agent_sessions{bucket="STALLED"} 0
-agent_sessions{bucket="WORKING"} 1
-# HELP agent_session_bucket Place of a bucket in the order that needs the human first (0 is first), with its finished and in-progress flags.
-# TYPE agent_session_bucket gauge
-agent_session_bucket{bucket="NEEDS",finished="0",in_progress="1"} 0
-agent_session_bucket{bucket="DONE",finished="1",in_progress="0"} 1
-agent_session_bucket{bucket="WORKING",finished="0",in_progress="1"} 2
-# HELP agent_sessions_unlinked Live sessions with no agent-queue item, by the item_of join.
-# TYPE agent_sessions_unlinked gauge
-agent_sessions_unlinked 1
-# HELP agent_asks_open Pending asks waiting on the human.
-# TYPE agent_asks_open gauge
-agent_asks_open 2
-PROM
-)"
-}
-
-@test "sessions_prom: asks that could not be read are left out, not counted as none" {
-  state_doc
-  jq '.unreadable = ["agent-ask"] | .asks = []' "$SANDBOX/state.json" > "$SANDBOX/s2.json"
-  run sessions_prom "$SANDBOX/s2.json"
-  assert_success
-  assert_line '# TYPE agent_asks_open gauge'
-  refute_line --regexp '^agent_asks_open '
-}
-
-@test "--write: an unreadable agent-panel is named, not passed off as an empty fleet" {
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/agent-panel"
-  chmod +x "$SANDBOX/bin/agent-panel"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --write
-  [ "$(jq -r '.unreadable[0]' "$XDG_STATE_HOME/fleet/state.json")" = agent-panel ]
-}
-
-
-# open_pr <ci> [<red job ids>]: the PR store holds one OPEN PR, #9, for feat/x at the worktree's HEAD,
-# its CI <ci> (the store's reading of the head's runs). Gate runs are the ledger's (see ledger); a
-# job's steps query answers $SANDBOX/job_<id>.json (see job).
-open_pr() {
-  printf 'feat/x\t9\tOPEN\t%s\t%s\t%s\n' "$1" "$(git -C "$SANDBOX/wt" rev-parse HEAD)" "${2:--}" > "$LEDGER_DIR/prs.tsv"
-  gh_script <<GH
-case "\$1 \${2:-}" in "api "*/actions/jobs/*) jq -r "\${@: -1}" "$SANDBOX/job_\${2##*/}.json"; exit ;; esac
-exit 1
-GH
-}
-
-# gate <run title> <status> <conclusion> <sha> <minute> [event]: one main_runs row, for ledger feat/x
-gate() { printf '{"workflowName":"%s","workflowPath":"%s.yml","event":"%s","status":"%s","conclusion":%s,"headSha":"%s","createdAt":"2026-10-29T10:%02d:00Z"}' \
-  "$1" "${1%% *}" "${6:-workflow_dispatch}" "$2" "$( [ "$3" = - ] && echo null || echo "\"$3\"")" "$4" "$5"; }
-
-@test "end to end: Checks green does not make a PR green while its dispatched gate is queued or red (ar-191)" {
-  landed_fixture
-  local oid old; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)" old="$(git -C "$SANDBOX/wt" rev-parse HEAD~1)"
-  export FLEET_MAIN_TTL=0
-  ledger feat/x "[$(gate 'Tests (affected)' queued - "$oid" 5)]"
-  open_pr PASS
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
-
-  # a red gate newer than a green one is red; an older green does not hide it
-  ledger feat/x "[$(gate 'Tests (affected)' completed success "$old" 1),$(gate 'Tests (affected)' completed failure "$oid" 5)]"
-  open_pr PASS
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
-
-  # a workflow is its file, not its run title (ar-1094): a newer green 'Tests (all)' of the same
-  # Tests.yml supersedes an older red 'Tests (affected)'; a red in another gate file still counts
-  ledger feat/x "[$(gate 'Tests (affected)' completed failure "$oid" 1),$(gate 'Tests (all)' completed success "$oid" 5)]"
-  open_pr PASS
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
-  ledger feat/x "[$(gate 'Tests (affected)' completed failure "$oid" 1),$(gate 'Tests (all)' in_progress - "$oid" 5)]"
-  open_pr PASS
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
-  ledger feat/x "[$(gate 'Multi (affected)' completed failure "$oid" 1),$(gate 'Tests (all)' completed success "$oid" 5)]"
-  open_pr PASS
-  FLEET_GATE_WORKFLOWS='^(Tests|Multi)( |$)' run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
-
-  # a cancelled run decides nothing, a pull_request run is the rollup's, and a run on a commit the
-  # head does not hold (a reused slot branch's old PR) is not this PR's gate
-  ledger feat/x "[$(gate 'Tests (affected)' completed success "$oid" 1),$(gate 'Tests (affected)' completed cancelled "$oid" 3),$(gate Checks completed failure "$oid" 4 pull_request),$(gate Shots completed failure 0000000000000000000000000000000000000000 5)]"
-  open_pr PASS
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
-
-  # an older green alone adds nothing: whether it still covers the head is Checks' call
-  ledger feat/x "[$(gate 'Tests (affected)' completed success "$old" 1)]"
-  open_pr NONE
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .ci <<<"$output")" = PASS ]
-
-  # only a gate workflow counts, and a stale run decides nothing, as in MAIN_STREAKS
-  ledger feat/x "[$(gate 'Multi (named)' completed failure "$oid" 4),$(gate 'Tests (affected)' completed stale "$oid" 5)]"
-  open_pr PASS
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
-  FLEET_GATE_WORKFLOWS='^(Tests|Multi)( |$)' run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
-
-  # a rollup still running stays running, whatever the gate says
-  ledger feat/x "[$(gate 'Tests (affected)' completed failure "$oid" 5)]"
-  open_pr PENDING
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
-}
-
-# job <id> <step:conclusion>...: one Actions job's steps, for gate_line_only
-job() { local id="$1"; shift; printf '%s\n' "$@" | jq -Rn '{steps: [inputs | split(":") | {name: .[0], conclusion: .[1]}]}' > "$SANDBOX/job_$id.json"; }
-
-@test "end to end: a red gate line is CI running while a gate on its head runs, red once it finished (ar-82)" {
-  # 2026-11-03 agent-54 #1692 read STALLED CI red: Checks ends with the Merge gate line step,
-  # red until the pool gate run it waits on finishes.
-  landed_fixture
-  local oid old; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)" old="$(git -C "$SANDBOX/wt" rev-parse HEAD~1)"
-  export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache"
-  job 77 'Harness tests:success' 'Merge gate line:failure'
-  ledger feat/x "[$(gate 'Tests (affected)' in_progress - "$oid" 5)]"; open_pr FAIL 77
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
-
-  # negative controls: the gate finished (green or red), there is no gate run, or the one running
-  # is on an older commit, so the head has none
-  for runs in "$(gate 'Tests (affected)' completed success "$oid" 5)" "$(gate 'Tests (affected)' completed failure "$oid" 5)" \
-              '' "$(gate 'Tests (affected)' in_progress - "$old" 5)"; do
-    ledger feat/x "[$runs]"; open_pr FAIL 77
-    run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-    [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
-  done
-  # and a real red: another step failed, the job was cancelled, another check is red, or the
-  # step knob is off
-  ledger feat/x "[$(gate 'Tests (affected)' in_progress - "$oid" 5)]"; open_pr FAIL 77
-  job 78 'Docs within their budgets:failure' 'Merge gate line:failure'
-  job 79 'Harness tests:cancelled' 'Merge gate line:skipped'
-  for id in 78 79; do
-    ledger feat/x "[$(gate 'Tests (affected)' in_progress - "$oid" 5)]"; open_pr FAIL "$id"
-    run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-    [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
-  done
-  ledger feat/x "[$(gate 'Tests (affected)' in_progress - "$oid" 5)]"; open_pr FAIL 77,-
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
-  ledger feat/x "[$(gate 'Tests (affected)' in_progress - "$oid" 5)]"; open_pr FAIL 77
-  FLEET_GATE_LINE_STEPS='' run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
-}
-
-@test "end to end: a red gate line is CI running while the session's own gate shell waits for the landing slot (ar-2366)" {
-  # 2026-11-13 agent-15 #2546, agent-18 #2516 and agent-68 #2483 read STALLED CI red: each one's
-  # gate-and-land.sh was queued behind #2559 for the landing slot, so no Tests run was on its head
-  # yet, and Checks' Merge gate line refused the head until one is.
-  landed_fixture
-  export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache" FLEET_SHELL_STALE_MIN=30
-  job 77 'Harness tests:success' 'Merge gate line:failure'
-  ledger feat/x '[]'; open_pr FAIL 77
-  PANEL_STATUS=shell PANEL_JOB=gate panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running, background shell idle over 30m' ]
-
-  # a gate red on an older commit is what the queued gate re-runs, so it still reads running
-  ledger feat/x "[$(gate 'Tests (affected)' completed failure "$(git -C "$SANDBOX/wt" rev-parse HEAD~1)" 5)]"; open_pr FAIL 77
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running, background shell idle over 30m' ]
-
-  # negative controls: a gate already red on the head, the shell is not a gate, the session has no
-  # shell open, or the red is real
-  ledger feat/x "[$(gate 'Tests (affected)' completed failure "$(git -C "$SANDBOX/wt" rev-parse HEAD)" 5)]"; open_pr FAIL 77
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red, background shell idle over 30m' ]
-  PANEL_STATUS=shell PANEL_JOB=jobs panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  ledger feat/x '[]'; open_pr FAIL 77
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red, background shell is not a gate or test' ]
-  PANEL_JOB=gate panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  ledger feat/x '[]'; open_pr FAIL 77
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
-  job 78 'Docs within their budgets:failure' 'Merge gate line:failure'
-  PANEL_STATUS=shell PANEL_JOB=gate panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  ledger feat/x '[]'; open_pr FAIL 78
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red, background shell idle over 30m' ]
-}
-
-# chained_item <state> <dep slug>: session s1's running item, after: <dep slug>, and that dependency's own item
-chained_item() {
-  mkdir -p "$HOME/.agent/queue/running" "$HOME/.agent/queue/$1"
-  printf 'slug: fix-wave-save\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsession: lab:s1\nafter: %s\n---\nfix wave save\n' \
-    "$2" > "$HOME/.agent/queue/running/20261103-100000-fix-wave-save.md"
-  printf 'slug: %s\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T09:00:00Z\nsession: lab:s2\n---\nthe dependency\n' \
-    "$2" > "$HOME/.agent/queue/$1/20261103-090000-$2.md"
-}
-
-@test "end to end: a red gate line is CI running while its item is after: an open item, red once that item is done (ar-4314)" {
-  # 2026-11-21 unity-core-playground #3076 and #3083 read STALLED CI red: each item was stacked on an open
-  # item, so agent-land held it (exit 4) before a gate was dispatched and Checks' Merge gate line stayed red.
-  landed_fixture
-  local oid; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
-  export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache"
-  job 77 'Harness tests:success' 'Merge gate line:failure'
-  ledger feat/x '[]'; open_pr FAIL 77
-  chained_item review dep-item
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
-
-  # negative controls: the dependency is done, a gate already red on the head, another step is red, no after:
-  rm -r "$HOME/.agent/queue/review"; chained_item done dep-item
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
-  rm -r "$HOME/.agent/queue/done"; chained_item review dep-item
-  ledger feat/x "[$(gate 'Tests (affected)' completed failure "$oid" 5)]"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
-  job 78 'Docs within their budgets:failure' 'Merge gate line:failure'
-  ledger feat/x '[]'; open_pr FAIL 78
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
-  # a queued dependency holds it too: stack_gate refuses any after: item not closed ok (ar-4420)
-  rm -r "$HOME/.agent/queue/review" "$HOME/.agent/queue/running"; chained_item queued dep-item
-  ledger feat/x '[]'; open_pr FAIL 77
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI running' ]
-  # a dependency that is the session's own item waits on nobody else
-  rm -r "$HOME/.agent/queue/queued"; chained_item running dep-item
-  sed -i 's/^session: lab:s2$/session: lab:s1/' "$HOME/.agent/queue/running/20261103-090000-dep-item.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
-  rm -rf "$HOME/.agent/queue/review" "$HOME/.agent/queue/running"; queue_item running lab:s1
-  ledger feat/x '[]'; open_pr FAIL 77
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
-}
-
-@test "end to end: a green PR whose item is after: an open prereq is WORKING waiting on it, not STALLED green-not-merged (ar-4420)" {
+@test "end to end: a red PR on a red base that another live item claims waits on that item, not STALLED CI red (ar-1513)" {
+  # platform#1493 sat red behind develop's Android E2E red while fix-ci-android-mobile-e2e-red-on-develop worked it.
   landed_fixture
   export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache"
-  ledger feat/x '[]'; open_pr PASS
-  chained_item review dep-item
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  assert_success
-  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 waiting on after: dep-item' ]
-  jq -e '.blockers | index("PR #9 open, waiting on after: dep-item")' <<<"$output" >/dev/null
-  [ "$(jq -r .landing_queue <<<"$output")" = null ]
-
-  # a queued after: prereq also blocks agent-land's stack_gate
-  rm -r "$HOME/.agent/queue/review"; chained_item queued dep-item
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 waiting on after: dep-item' ]
-
-  # negative controls: prereq is done, prereq is the session's own item, or no after:
-  rm -r "$HOME/.agent/queue/queued"; chained_item done dep-item
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
-  rm -r "$HOME/.agent/queue/done"; chained_item running dep-item
-  sed -i 's/^session: lab:s2$/session: lab:s1/' "$HOME/.agent/queue/running/20261103-090000-dep-item.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
-  rm -rf "$HOME/.agent/queue/running"; queue_item running lab:s1
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
-}
-
-@test "end to end: a PR riding an open landing train is WORKING waiting on the train, not CI red (ar-2160)" {
-  # 2026-11-13 agent-7 #2415, agent-28 #2417 and agent-31 #2444 read STALLED CI red and were nudged:
-  # each rode train #2467 (train.py), whose PlayMode shard sat queued on a full unity pool, and each
-  # one's own Checks was red only because the landing slot turned it away.
-  landed_fixture
-  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t) oid tip
-  oid="$("${g[@]}" rev-parse HEAD)"
-  "${g[@]}" checkout -q -b train/20261113T101500Z-a1b2 origin/main
-  "${g[@]}" merge -q --no-ff -m '#2415' feat/x
-  tip="$("${g[@]}" rev-parse HEAD)"
-  "${g[@]}" checkout -q feat/x
-  # store <train state> <train branch> <title> [<member ci>]: the member PR and its train, newest first
-  store() {
-    printf '%s\t2467\t%s\tPENDING\t%s\t-\t\t%s\n' "$2" "$1" "$tip" "$3" > "$LEDGER_DIR/prs.tsv"
-    printf 'feat/x\t2415\tOPEN\t%s\t%s\t-\n' "${4:-FAIL}" "$oid" >> "$LEDGER_DIR/prs.tsv"
+  local tip repo q="$HOME/.agent/queue"
+  tip="$(git -C "$SANDBOX/wt" rev-parse origin/main)"
+  # A ref names <owner>/<repo>, which the sandbox path (with its space) is not: the clone reads as a GitHub one.
+  git -C "$SANDBOX/wt" remote set-url origin https://github.com/o/r.git
+  repo=o/r
+  owner() { # owner <state> <pr: list>: item fix-base, on another session, recording <pr: list>
+    rm -rf "$q/running/"*fix-base.md "$q/done"; mkdir -p "$q/$1"
+    printf 'slug: fix-base\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T09:00:00Z\nsession: lab:s2\npr: %s\n---\nfix the base\n' \
+      "$2" > "$q/$1/20261103-090000-fix-base.md"
   }
-  local title='chore(train): land #2415, #2417, #2444'
-  store OPEN train/20261113T101500Z-a1b2 "$title"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  assert_success
-  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
-  [ "$(jq -r .reason <<<"$output")" = 'PR #2415 waiting on train #2467' ]
-  jq -e '.blockers | index("PR #2415 open, waiting on train #2467")' <<<"$output" >/dev/null
-  # a member whose own gate is green waits on the train too, not on a lander
-  store OPEN train/20261113T101500Z-a1b2 "$title" PASS
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #2415 waiting on train #2467' ]
-
-  # negative controls: the train does not name it (#24150 is not #2415), it closed, its branch is
-  # not a train's, the knob is off, or the session pushed past the head the train holds
-  for t in 'OPEN train/20261113T101500Z-a1b2 chore(train): land #24150, #2417' "CLOSED train/20261113T101500Z-a1b2 $title" \
-           "OPEN feat/y $title"; do
-    read -r st br ti <<<"$t"; store "$st" "$br" "$ti"
-    run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-    [ "$(jq -r .reason <<<"$output")" = 'PR #2415 CI red' ]
-  done
-  store OPEN train/20261113T101500Z-a1b2 "$title"
-  FLEET_TRAIN_BRANCH='' run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #2415 CI red' ]
-  "${g[@]}" commit -q --allow-empty -m fix
-  oid="$("${g[@]}" rev-parse HEAD)"; store OPEN train/20261113T101500Z-a1b2 "$title"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
-  [ "$(jq -r .reason <<<"$output")" = 'PR #2415 CI red' ]
-}
-
-@test "end to end: a train nobody lands is STALLED once the session's own gate exited, WORKING while anything lands it (ar-5089)" {
-  # 2026-11-24 agent-8 #3214 read WORKING idle 120m on train #3222: the train sat green with no lander from 02:21Z
-  # to 04:47Z, and every member's gate-and-land had exited ("run this again").
-  landed_fixture
-  export FLEET_TRAIN_DRIVERS="$SANDBOX/gate-line"
-  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t) oid tip driver gate lander ci d
-  oid="$("${g[@]}" rev-parse HEAD)"
-  "${g[@]}" checkout -q -b train/20261124T022100Z-c3d4 origin/main
-  "${g[@]}" merge -q --no-ff -m '#3214' feat/x
-  tip="$("${g[@]}" rev-parse HEAD)"
-  "${g[@]}" checkout -q feat/x
-  # store <train ci>: the member PR (its own Checks red, the slot turned it away) and its open train
-  store() {
-    printf 'train/20261124T022100Z-c3d4\t3222\tOPEN\t%s\t%s\t-\t\tchore(train): land #3214, #3212\n' "$1" "$tip" > "$LEDGER_DIR/prs.tsv"
-    printf 'feat/x\t3214\tOPEN\tFAIL\t%s\t-\n' "$oid" >> "$LEDGER_DIR/prs.tsv"
-  }
-  store PASS
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  assert_success
-  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
-  [ "$(jq -r .reason <<<"$output")" = 'PR #3214 rides train #3222 with nobody landing it: run its gate again' ]
-  jq -e '.blockers | index("PR #3214 open, train #3222 has nobody landing it")' <<<"$output" >/dev/null
-
-  # the train's gate is not finished: its own CI pending, never started (billing) or not reported yet
-  for ci in PENDING NOSTART -; do
-    store "$ci"
-    run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-    [ "$(jq -r .reason <<<"$output")" = 'PR #3214 waiting on train #3222' ]
-  done
-  # a red train nobody lands is the member's too: train.py ejects it, and it rides alone
-  store FAIL
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
-
-  # started <pid> <text>: the background process <pid> runs <text>, a bounded spin (no event says exec is done)
-  started() { local i; for ((i = 0; i < 200000; i++)); do grep -qaF "$2" "/proc/$1/cmdline" 2>/dev/null && return 0; done; return 1; }
-  # train.py land's recorded lander is alive; a dead, unreadable or recycled (not a train.py) one lands nothing
-  store PASS
-  mkdir -p "$FLEET_TRAIN_DRIVERS" "$SANDBOX/lander"
-  printf 'sleep 60\n' > "$SANDBOX/lander/train.py"
-  (cd "$SANDBOX/lander" && exec -a x bash train.py land 3222) >/dev/null 2>&1 3>&- &
-  lander=$!; LIVE_PIDS="$lander"   # teardown kills it, pass or fail
-  started "$lander" train.py
-  driver="$FLEET_TRAIN_DRIVERS/driver-$(printf %s "$SANDBOX/origin.git" | sha1sum | cut -c1-10)-3222"
-  [ "$(git -C "$SANDBOX/wt" config remote.origin.url)" = "$SANDBOX/origin.git" ]
-  echo "$lander" > "$driver"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #3214 waiting on train #3222' ]
-  for d in 999999999 junk "$$"; do
-    echo "$d" > "$driver"
-    run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-    [ "$(jq -r .bucket <<<"$output")" = STALLED ]
-  done
-  # another repo's driver for the same train number is not this train's lander
-  rm "$driver"; echo "$lander" > "$FLEET_TRAIN_DRIVERS/driver-0000000000-3222"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
-
-  # the session's own queue gate still runs (gate-and-land.sh waiting its turn)
-  mkdir -p "$SANDBOX/wt/scripts/test"
-  printf 'sleep 60\n' > "$SANDBOX/wt/scripts/test/gate-and-land.sh"
-  (cd "$SANDBOX/wt" && exec -a x bash scripts/test/gate-and-land.sh) >/dev/null 2>&1 3>&- &
-  gate=$!; LIVE_PIDS="$lander $gate"
-  started "$gate" gate-and-land.sh
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
-  [ "$(jq -r .reason <<<"$output")" = 'PR #3214 waiting on train #3222' ]
-}
-
-@test "end to end: a member PR a landing train closed reads landed through its done item's merged PR (ar-1324)" {
-  # 2026-11-10 ucp-342: train #2178 merged #2166's commits and closed it; agent-land recorded #2178 on the
-  # item, but the transcript named only #2166, so the session read STALLED closed without merging.
-  landed_fixture
-  panel "$SANDBOX/wt"
-  local oid d="$HOME/.agent/queue/done/$(date +%F)"
-  oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
-  printf 'feat/x\t2166\tCLOSED\tFAIL\t%s\n' "$oid" > "$LEDGER_DIR/prs.tsv"
-  # done_item <status> <merged> [<pr>] [<sessions>]: the item this session (sid-9) worked, done with the train PR recorded
-  done_item() {
-    mkdir -p "$d"
-    printf 'slug: ucp-342\nproject: shape-city\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-08T02:51:57Z\nsessions: %s\npr: %s\nmerged: %s\nstatus: %s\nfinished: %s\n---\nskater\n' \
-      "${4:-sid-9}" "${3:-o/r#2178}" "$2" "$1" "$(date -u +%FT%TZ)" > "$d/20261108-025157-ucp-342.md"
-  }
-  local sha=4594309f2ba9124d2548aa0dd142217711275404
-  done_item ok "$sha"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  assert_success
-  [ "$(jq -r .bucket <<<"$output")" = DONE ]
-  [[ "$(jq -r .reason <<<"$output")" == 'PR #2166 closed, its PRs #2178 merged'* ]]
-  [ "$(jq -r .finished <<<"$output")" = true ]
-  [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
-  # an item that landed two PRs (pr: and merged: in step) names both
-  done_item ok "$sha $sha" 'o/r#2178 o/p#759'
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [[ "$(jq -r .reason <<<"$output")" == 'PR #2166 closed, its PRs #2178,#759 merged'* ]]
-
-  # negative controls: an item that did not land (cancelled, nothing merged), a merged: shorter than
-  # pr: (which PR lacks its merge is unknown), a transcript that names an open PR, or one still running here
-  for args in "cancelled|" "ok|$sha|o/r#2178 o/p#759"; do
-    IFS='|' read -r st m p <<<"$args"; done_item "$st" "$m" "$p"
-    run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-    [ "$(jq -r .reason <<<"$output")" = 'PR #2166 closed without merging' ]
-    [ "$(jq -r .finished <<<"$output")" = false ]
-  done
-  done_item ok "$sha"; pr_transcript "$SANDBOX/t.jsonl"; pr_store
-  printf -- '-\t9\tCLOSED\tPASS\t-\t-\n' > "$LEDGER_DIR/prs_o_two.tsv"
-  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" panel "$SANDBOX/wt"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  # (the transcript does not name #2166, so pr_made_here drops it; the open o/one#7 keeps #2178 out and stays unlanded)
-  [ "$(jq -r .reason <<<"$output")" = 'PR o/one#7 open, CI unknown, not merged' ]
-  [ "$(jq -r .finished <<<"$output")" = false ]
-  panel "$SANDBOX/wt"
-  rm -r "$d"; mkdir -p "$HOME/.agent/queue/running"
-  printf 'slug: ucp-342\nproject: shape-city\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-08T02:51:57Z\nsessions: sid-9\npr: o/r#2178\n---\nskater\n' \
-    > "$HOME/.agent/queue/running/20261108-025157-ucp-342.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #2166 closed without merging' ]
-}
-
-@test "end to end: a PR in the landing queue is WORKING waiting on the landing queue, not CI red or green-not-merged (ar-1285)" {
-  # 2026-11-10 agent-2 #2149, 4th of 9 in the unity-core-playground landing queue, read STALLED CI red: its red
-  # Checks was the landing slot refusing it, and gate-line.py had labelled it landing-queue.
-  landed_fixture
-  local oid
-  oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
-  # store <ci> <labels> [<other PR's labels>] [<red job ids>]: the session's PR, and #21490 of another branch and head.
-  # Its red job 78 failed only in the Merge gate line step (the slot refusing it), job 79 in a build step too.
-  store() {
-    printf 'feat/y\t21490\tOPEN\tFAIL\t1111111111111111111111111111111111111111\t-\t\tother\t%s\n' "${3:-}" > "$LEDGER_DIR/prs.tsv"
-    printf 'feat/x\t2149\tOPEN\t%s\t%s\t%s\t\tmine\t%s\n' "$1" "$oid" "${4:-78}" "$2" >> "$LEDGER_DIR/prs.tsv"
-  }
-  job 78 'Docs within their budgets:success' 'Merge gate line:failure'
-  job 79 'Build:failure' 'Merge gate line:failure'
-  gh_script <<GH
-case "\$1 \${2:-}" in "api "*/actions/jobs/*) jq -r "\${@: -1}" "$SANDBOX/job_\${2##*/}.json"; exit ;; esac
-exit 1
-GH
-  store FAIL landing-queue
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  assert_success
-  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
-  [ "$(jq -r .reason <<<"$output")" = 'PR #2149 waiting on the landing queue' ]
-  jq -e '.blockers | index("PR #2149 open, waiting on the landing queue")' <<<"$output" >/dev/null
-  # the row carries its repo's landing-queue depth, and no wait minutes with no live gate (ar-2525)
-  [ "$(jq -c '[.landing_queue, .wait_min]' <<<"$output")" = '[1,null]' ]
-  # a gate-and-land.sh running in its worktree gives the wait its minutes while the PR is held, whatever the
-  # transcript's open job reads (ar-3486: agent-27 #2900 behind #2539 read overdue with wait_min null)
-  mkdir -p "$SANDBOX/wt/scripts/test"
-  printf 'sleep 60\n' > "$SANDBOX/wt/scripts/test/gate-and-land.sh"
-  (cd "$SANDBOX/wt" && exec -a x bash scripts/test/gate-and-land.sh) >/dev/null 2>&1 3>&- &
-  LIVE_PIDS="$!"
-  # the process is the event: wait until /proc shows its exec, bounded so a failed start fails the test
-  timeout 20 bash -c 'until grep -q gate-and-land.sh "/proc/$1/cmdline" 2>/dev/null; do :; done' _ "$LIVE_PIDS" || fail "gate stand-in never started"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -c '[.landing_queue, (.wait_min | type)]' <<<"$output")" = '[1,"number"]' ]
-  pkill -P "$LIVE_PIDS" || true; kill "$LIVE_PIDS" 2>/dev/null || true; wait "$LIVE_PIDS" 2>/dev/null || true; LIVE_PIDS=""   # its sleep child too
-  # one label among others counts, and a green PR waits its landing turn too
-  store PASS 'rides-alone,landing-queue' landing-queue
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #2149 waiting on the landing queue' ]
-  [ "$(jq -r .landing_queue <<<"$output")" = 2 ]
-
-  # negative controls: a red of its own past the refusal, no label, another label, only another PR (#21490 is
-  # not #2149) queued, or the knob off
-  store FAIL landing-queue '' 79
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
-  [ "$(jq -r .reason <<<"$output")" = 'PR #2149 CI red' ]
-  [ "$(jq -r .landing_queue <<<"$output")" = null ]
-  store FAIL ''
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
-  [ "$(jq -r .reason <<<"$output")" = 'PR #2149 CI red' ]
-  store FAIL landing-slot-x
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #2149 CI red' ]
-  store FAIL '' landing-queue
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #2149 CI red' ]
-  store FAIL landing-queue
-  FLEET_QUEUE_LABEL='' run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #2149 CI red' ]
-}
-
-@test "end to end: a PR the slot holder refused is WORKING waiting on that holder, not CI red (ar-3596)" {
-  # 2026-11-19 agent-23 ucp#2913 read STALLED CI red: its only red was the Merge gate line, the landing slot that
-  # train #2918 held refusing it, with no gate of its own running and no landing-queue label.
-  landed_fixture
-  local oid
-  oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
-  # store <labels of #2918> [<red job ids of #2913>]: the slot holder, and the session's PR with no label.
-  store() {
-    printf 'train/x\t2918\tOPEN\tPENDING\t1111111111111111111111111111111111111111\t-\t\ttrain\t%s\n' "$1" > "$LEDGER_DIR/prs.tsv"
-    printf 'feat/x\t2913\tOPEN\tFAIL\t%s\t%s\t\tmine\t\n' "$oid" "${2:-78}" >> "$LEDGER_DIR/prs.tsv"
-  }
-  # note <job id> <message>: the job's check-run annotation
-  note() { jq -n --arg m "$2" '[{message: $m}]' > "$SANDBOX/notes_$1.json"; }
-  job 78 'Docs within their budgets:success' 'Merge gate line:failure'
-  job 79 'Build:failure' 'Merge gate line:failure'
-  job 80 'Merge gate line:failure'
-  note 78 'landing slot: #2918 holds main until 08:10, and landing this would void its gate (PlayMode).'
-  note 79 'landing slot: #2918 holds main until 08:10, and landing this would void its gate (PlayMode).'
-  note 80 'no CI gate green: line in the PR body'
-  gh_script <<GH
-case "\$1 \${2:-}" in
-  "api "*/actions/jobs/*) jq -r "\${@: -1}" "$SANDBOX/job_\${2##*/}.json"; exit ;;
-  "api "*/check-runs/*/annotations) id="\${2%/annotations}"; jq -r "\${@: -1}" "$SANDBOX/notes_\${id##*/}.json"; exit ;;
-esac
-exit 1
-GH
-  mkdir -p "$HOME/.agent/queue/running"
-  printf 'slug: ucp-2900\nproject: unity-core-playground\nmode: oneshot\npriority: high\nfrom: board:unity-core-playground:ucp-2900\nagent: claude\nqueued: 2026-11-19T02:51:57Z\nsessions: sid-9\n---\nx\n' \
-    > "$HOME/.agent/queue/running/20261119-025157-ucp-2900.md"
-  jq -n '{rows: [{project: "unity-core-playground", id: "ucp-2901", state: "open", priority: "high", tags: ["after/ucp-2900"]}], done: []}' \
-    > "$NOTES_FIXTURE/board.json"
-  store landing-slot
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  assert_success
-  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
-  [ "$(jq -r .reason <<<"$output")" = 'PR #2913 waiting on slot holder #2918' ]
-  [ "$(jq -r .ci <<<"$output")" = PENDING ]
-  # the rows it keeps waiting see where it stands (ar-3761)
-  [ "$(jq -c .critical <<<"$output")" = '{"rows":["ucp-2901 #high"],"place":"behind the slot holder #2918"}' ]
-  # a gate running on its head is CI running, whatever the refusal said
-  ledger feat/x "[$(gate 'Tests (affected)' in_progress - "$oid" 5)]"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #2913 CI running' ]
-  ledger feat/x '[]'
-  # an annotation not yet readable is read again on the next pass, not kept empty for good
-  job 81 'Merge gate line:failure'; jq -n '[]' > "$SANDBOX/notes_81.json"
-  store landing-slot 81
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #2913 CI red' ]
-  note 81 'landing slot: #2918 holds main until 08:10, and landing this would void its gate (PlayMode).'
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #2913 waiting on slot holder #2918' ]
-
-  # negative controls: the holder let the slot go, a red of its own past the refusal, a gate line red for another
-  # reason, a red with no job, or the knob off
-  store ''
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
-  [ "$(jq -r .reason <<<"$output")" = 'PR #2913 CI red' ]
-  for red in 79 80 78,80 78,-; do
-    store landing-slot "$red"
-    run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-    [ "$(jq -r .reason <<<"$output")" = 'PR #2913 CI red' ] || fail "red $red: $(jq -r .reason <<<"$output")"
-  done
-  store landing-slot
-  FLEET_SLOT_LABEL='' run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #2913 CI red' ]
-}
-
-@test "end to end: a PR held by the landing slot names the #high rows gated after its row and its place (ar-3761)" {
-  # 2026-11-19: P1 #2935 sat in the unity-core-playground landing queue reading WORKING while ucp-2712, a #high row
-  # gated #after/ on P1's row, waited 5h; nothing joined the row to the held PR.
-  landed_fixture
-  local oid
-  oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
-  # store <labels of #2149> [<labels of #2140>] [<labels of #2160>]: the session's PR and two others queued beside it.
-  store() {
-    printf 'feat/y\t2160\tOPEN\tPASS\t1111111111111111111111111111111111111111\t-\t\tother\t%s\n' "${3:-landing-queue}" > "$LEDGER_DIR/prs.tsv"
-    printf 'feat/x\t2149\tOPEN\tPASS\t%s\t-\t\tmine\t%s\n' "$oid" "$1" >> "$LEDGER_DIR/prs.tsv"
-    printf 'feat/z\t2140\tOPEN\tPASS\t2222222222222222222222222222222222222222\t-\t\tolder\t%s\n' "${2:-landing-queue}" >> "$LEDGER_DIR/prs.tsv"
-  }
-  mkdir -p "$HOME/.agent/queue/running"
-  printf 'slug: ucp-2709-p1\nproject: unity-core-playground\nmode: oneshot\npriority: high\nfrom: board:unity-core-playground:ucp-2709\nagent: claude\nqueued: 2026-11-19T02:51:57Z\nsessions: sid-9\n---\nP1\n' \
-    > "$HOME/.agent/queue/running/20261119-025157-ucp-2709-p1.md"
-  # board <priority of ucp-2712>: ucp-2712 and an urgent ucp-2713 gated after ucp-2709; ucp-2714 #high after another row
-  board() {
-    jq -n --arg p "$1" '{rows: [
-      {project: "unity-core-playground", id: "ucp-2712", state: "open", priority: $p, tags: ["after/ucp-2709"]},
-      {project: "unity-core-playground", id: "ucp-2713", state: "open", priority: "urgent", tags: ["of/ucp-1", "after/ucp-2709"]},
-      {project: "unity-core-playground", id: "ucp-2714", state: "open", priority: "high", tags: ["after/ucp-2700"]},
-      {project: "unity-core-playground", id: "ucp-2715", state: "done", priority: "high", tags: ["after/ucp-2709"]}], done: []}' \
-      > "$NOTES_FIXTURE/board.json"
-  }
-  board high; store landing-queue
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  assert_success
-  [ "$(jq -r .reason <<<"$output")" = 'PR #2149 waiting on the landing queue' ]
-  [ "$(jq -c .critical <<<"$output")" = '{"rows":["ucp-2712 #high","ucp-2713 #urgent"],"place":"about 2 of 3 in the landing queue"}' ]
-  # an urgent waiter seats first, and the slot holder says so
-  store landing-queue landing-queue 'landing-queue,landing-urgent'
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .critical.place <<<"$output")" = 'about 3 of 3 in the landing queue' ]
-  store 'landing-queue,landing-slot'
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .critical.place <<<"$output")" = 'holds the landing slot' ]
-  # only the #high and #urgent rows count
-  board low; store landing-queue
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -c .critical.rows <<<"$output")" = '["ucp-2713 #urgent"]' ]
-
-  # negative controls: no row waits on it, the PR is not held by the slot, or the board cannot be read
-  sed -i 's|"after/ucp-2709"|"size/s"|g' "$NOTES_FIXTURE/board.json"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .critical <<<"$output")" = null ]
-  board high; store ''
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #2149 green, not merged' ]
-  [ "$(jq -r .critical <<<"$output")" = null ]
-  rm "$NOTES_FIXTURE/board.json"; store landing-queue
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #2149 waiting on the landing queue' ]
-  [ "$(jq -r .critical <<<"$output")" = null ]
-}
-
-@test "end to end: a stacked branch inside another open PR is that PR's, not files with no PR (ar-82)" {
-  # 2026-11-03 agent-51 feat/tourney-daily-cap read "N file(s) not on the default branch, no PR"
-  # while its commits were inside #1674, the PR of the branch built on it.
-  landed_fixture
-  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t) mid top
-  "${g[@]}" checkout -q -b feat/a origin/main
-  echo a > "$SANDBOX/wt/a.txt"; "${g[@]}" add a.txt; "${g[@]}" commit -q -m a
-  "${g[@]}" checkout -q -B feat/x   # the branch built on it, whose PR holds feat/a's commits
-  echo b > "$SANDBOX/wt/b.txt"; "${g[@]}" add b.txt; "${g[@]}" commit -q -m b
-  mid="$("${g[@]}" rev-parse HEAD)"
-  echo c > "$SANDBOX/wt/c.txt"; "${g[@]}" add c.txt; "${g[@]}" commit -q -m c
-  top="$("${g[@]}" rev-parse HEAD)"
-  "${g[@]}" checkout -q feat/a
-  # Checks green, and the PR's gate runs on its own branch feat/x, not the session's feat/a
-  ledger feat/x "[$(gate 'Tests (affected)' in_progress - "$mid" 5)]"; open_pr PASS
-  # stack_pr <state> <head> [<state> <head>]: newest first, as the store lists them
-  stack_pr() {
-    local n=12
-    : > "$LEDGER_DIR/prs.tsv"
-    while [ $# -gt 0 ]; do
-      printf 'feat/x\t%s\t%s\tPASS\t%s\t-\n' "$n" "$1" "$2" >> "$LEDGER_DIR/prs.tsv"
-      n=$((n - 1)); shift 2
-    done
-  }
-  stack_pr OPEN "$mid"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #12 CI running' ]
-  # two open PRs hold it: the oldest, nearest the branch, is its PR
-  stack_pr OPEN "$top" OPEN "$mid"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .pr <<<"$output")" = 11 ]
-
-  # negative controls: an open PR that does not hold HEAD, or a closed one that does, is not it
-  stack_pr OPEN "$("${g[@]}" rev-parse origin/main)"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = '1 file(s) not on the default branch, no PR' ]
-  stack_pr CLOSED "$top"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = '1 file(s) not on the default branch, no PR' ]
-  # and a HEAD still on the base, which every open PR holds, takes none of them
-  "${g[@]}" checkout -q --detach origin/main
-  stack_pr OPEN "$top"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .pr_state <<<"$output")" = null ]
-}
-
-@test "end to end: a slot branch whose work heads an open PR on another branch reads that PR, not its name's old one (ar-1582)" {
-  # A reused slot name `agent-69` has an old merged PR of its own (#2125 in the ucp store); its work went out
-  # as the open #2014 on another branch, whose head is past this HEAD. The row read "N file(s) not on the
-  # default branch, no PR": the name's merged PR is another session's, so pr_made_here dropped it.
-  landed_fixture
-  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t) old here top
-  "${g[@]}" checkout -q -b agent-69 origin/main
-  echo o > "$SANDBOX/wt/o.txt"; "${g[@]}" add o.txt; "${g[@]}" commit -q -m old; old="$("${g[@]}" rev-parse HEAD)"
-  "${g[@]}" checkout -q -B agent-69 origin/main
-  echo a > "$SANDBOX/wt/a.txt"; "${g[@]}" add a.txt; "${g[@]}" commit -q -m a; here="$("${g[@]}" rev-parse HEAD)"
-  echo b > "$SANDBOX/wt/b.txt"; "${g[@]}" add b.txt; "${g[@]}" commit -q -m b; top="$("${g[@]}" rev-parse HEAD)"
-  "${g[@]}" reset -q --hard "$here"   # the PR's head moved on past this clone's HEAD (a fix pushed elsewhere)
-  printf 'agent-69\t2125\tMERGED\tPASS\t%s\t-\nfeat/beach\t2014\tOPEN\tPASS\t%s\t-\n' "$old" "$top" > "$LEDGER_DIR/prs.tsv"
-  # no upstream: the open PR whose head holds HEAD is found by HEAD
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r '"\(.pr) \(.pr_state)"' <<<"$output")" = '2014 OPEN' ]
-  # an upstream that names it: found by name, open before the slot name's merged one
-  "${g[@]}" push -q origin "$top:refs/heads/feat/beach" 2>/dev/null
-  "${g[@]}" fetch -q origin; "${g[@]}" branch -q -u origin/feat/beach
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r '"\(.pr) \(.pr_state)"' <<<"$output")" = '2014 OPEN' ]
-  "${g[@]}" branch -q --unset-upstream
-
-  # negative control: an open PR whose head does not hold HEAD is not it
-  printf 'agent-69\t2125\tMERGED\tPASS\t%s\t-\nfeat/beach\t2014\tOPEN\tPASS\t%s\t-\n' "$old" "$old" > "$LEDGER_DIR/prs.tsv"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .pr <<<"$output")" != 2014 ]
-}
-
-@test "gate_ci: a branch run list the ledger cannot read keeps the rollup's answer and is named unreadable (ar-191)" {
-  gh_script 'exit 1'
-  touch "$LEDGER_DIR/FAIL"
-  git init -q "$SANDBOX/one"; git -C "$SANDBOX/one" remote add origin git@github.com:o/one.git
-  export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache"; CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
-  run gate_ci "$SANDBOX/one" feat/x deadbeef PASS
-  assert_output PASS
-  grep -qx 'run ledger (one)' "$CACHE/unreadable"
-  # a red or running rollup is not asked about at all
-  : > "$CACHE/unreadable"
-  run gate_ci "$SANDBOX/one" feat/x deadbeef FAIL
-  assert_output FAIL
-  [ ! -s "$CACHE/unreadable" ]
-}
-
-@test "activity_line: parked, testing and editing win; then the head's open run, then its reds by workflow; else gating or the status" {
-  now=$(date -ud 2026-10-29T10:30:00Z +%s)
-  run_row() { printf '{"workflowName":"%s","workflowPath":"%s.yml","status":"%s","conclusion":%s,"headSha":"%s","createdAt":"2026-10-29T10:%02d:00Z"}' "$1" "${1%% *}" "${@:2}"; }
-  open="[$(run_row Tests in_progress null h 10),$(run_row Lint queued null h 20),$(run_row Tests completed '"failure"' old 5)]"
-  red="[$(run_row Tests completed '"failure"' h 1),$(run_row Tests completed '"success"' h 2),$(run_row Lint completed '"failure"' h 3),$(run_row Docs completed '"cancelled"' h 4)]"
-  # branch_runs is asked only once CI decides the line
-  branch_runs() { echo x >> "$SANDBOX/asked"; cat "$SANDBOX/runs"; }
-  echo "$open" > "$SANDBOX/runs"
-  [ "$(activity_line parked test - "$SANDBOX" feat/x h "$now")" = parked ]
-  [ "$(activity_line busy test Edit:x "$SANDBOX" feat/x h "$now")" = testing ]
-  [ "$(activity_line busy build Edit:x "$SANDBOX" feat/x h "$now")" = building ]
-  [ "$(activity_line busy agent 'Edit: fleet-sessions' "$SANDBOX" feat/x h "$now")" = editing ]
-  [ ! -e "$SANDBOX/asked" ]
-  [ "$(activity_line busy agent 'Bash: make' "$SANDBOX" feat/x h "$now")" = 'waiting on Tests 20m +1' ]
-  # runs of another head say nothing about this one
-  [ "$(activity_line idle gate - "$SANDBOX" feat/x other "$now")" = gating ]
-  # Tests went green on a re-run, Lint is red, a cancelled run decides nothing
-  echo "$red" > "$SANDBOX/runs"
-  [ "$(activity_line idle gate - "$SANDBOX" feat/x h "$now")" = 'red on Lint' ]
-  # a workflow is its file: a green under another title clears the red (ar-1048)
-  echo "[$(run_row 'Tests (affected)' completed '"failure"' h 1),$(run_row 'Tests (all)' completed '"success"' h 2)]" > "$SANDBOX/runs"
-  [ "$(activity_line idle gate - "$SANDBOX" feat/x h "$now")" = gating ]
-  # on a branch a partial run is the gate, so its red counts: FLEET_PARTIAL_RUNS is main_state's alone
-  echo "[$(run_row 'Tests (affected)' completed '"failure"' h 1)]" > "$SANDBOX/runs"
-  [ "$(activity_line idle gate - "$SANDBOX" feat/x h "$now")" = 'red on Tests (affected)' ]
-  # no dir (the default branch, or no git) reads no CI
-  [ "$(activity_line idle none - - feat/x h "$now")" = idle ]
-  [ "$(activity_line '' - - - - - "$now")" = - ]
-  [ "$(wc -l < "$SANDBOX/asked")" -eq 5 ]
-}
-
-@test "end to end: an open PR's fact carries its head, so a new push that is still red is nudged again" {
-  landed_fixture
-  open_pr FAIL
-  local oid; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .fact <<<"$output")" = "STALLED PR #9 CI red @feat/x@${oid:0:12}" ]
-  mark sid-9 "$(jq -r .fact <<<"$output")"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .nudged <<<"$output")" = true ]
-
-  # the agent pushes a fix that is still red: same bucket, new head, new nudge
-  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m 'fix?'
-  open_pr FAIL
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
-  [ "$(jq -r .nudged <<<"$output")" = false ]
-}
-
-# conflict_fixture: landed_fixture with feat/x and origin/main changing a.txt differently,
-# fetched, so merging the default branch in would conflict.
-conflict_fixture() {
-  landed_fixture
-  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t)
-  echo mine > "$SANDBOX/wt/a.txt"; "${g[@]}" add a.txt; "${g[@]}" commit -q -m mine
-  git clone -q -b main "$SANDBOX/origin.git" "$SANDBOX/other" 2>/dev/null
-  main_change theirs
-}
-
-# main_change <text>: origin/main writes a.txt as <text>, and the worktree fetches it.
-main_change() {
-  echo "$1" > "$SANDBOX/other/a.txt"
-  git -C "$SANDBOX/other" add a.txt
-  git -C "$SANDBOX/other" -c user.email=t@t -c user.name=t commit -q -m "$1"
-  git -C "$SANDBOX/other" push -q origin HEAD:main 2>/dev/null
-  git -C "$SANDBOX/wt" fetch -q origin
-}
-
-@test "end to end: a reused slot branch already in the base is not commits after its old merged PR (ar-603)" {
-  landed_fixture
-  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t)
-  phases_plan '- [x] Phase 1: fleet-sessions (#875)'
-  git clone -q -b main "$SANDBOX/origin.git" "$SANDBOX/other" 2>/dev/null
-  # The slot is reset onto main past #875's head, and main then moves on: clean, 0 ahead, 1 behind.
-  main_change one
-  "${g[@]}" reset -q --hard origin/main
-  main_change two
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  assert_success
-  [ "$(jq -r .pr <<<"$output")" = 875 ]
-  [ "$(jq -r .finished <<<"$output")" = true ]
-  [ "$(jq -c .blockers <<<"$output")" = '[]' ]
-  refute_output --partial 'commits after merged PR'
-
-  # Negative control: a real commit past the merged head is not in the base, so it still flags.
-  echo work > "$SANDBOX/wt/b.txt"; "${g[@]}" add b.txt; "${g[@]}" commit -q -m 'unlanded work'
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  assert_success
-  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
-  [ "$(jq -r .finished <<<"$output")" = false ]
-  [ "$(jq -c .blockers <<<"$output")" = '["commits after merged PR #875"]' ]
-}
-
-@test "end to end: a merge of the default branch after the merged PR is not commits after it (ar-5151)" {
-  landed_fixture
-  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t)
-  phases_plan '- [x] Phase 1: fleet-sessions (#875)'
-  git clone -q -b main "$SANDBOX/origin.git" "$SANDBOX/other" 2>/dev/null
-  # main moves on, and the session merges it into its branch: a commit neither the PR head nor the base holds.
-  main_change one
-  "${g[@]}" merge -q --no-edit origin/main
-  run "${g[@]}" merge-base --is-ancestor HEAD origin/main
-  assert_failure
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  assert_success
-  [ "$(jq -r .pr <<<"$output")" = 875 ]
-  [ "$(jq -r .finished <<<"$output")" = true ]
-  [ "$(jq -c .blockers <<<"$output")" = '[]' ]
-  refute_output --partial 'commits after merged PR'
-
-  # Negative control: a file of its own past the merge is unlanded, so it still flags.
-  echo work > "$SANDBOX/wt/b.txt"; "${g[@]}" add b.txt; "${g[@]}" commit -q -m 'unlanded work'
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  assert_success
-  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
-  [ "$(jq -c .blockers <<<"$output")" = '["commits after merged PR #875"]' ]
-}
-
-@test "end to end: a fleet worker's merge of the default branch after its merged PR reads DONE, not STALLED (ar-5151)" {
-  landed_fixture
-  worker_ssh
-  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t)
-  git clone -q -b main "$SANDBOX/origin.git" "$SANDBOX/other" 2>/dev/null
-  main_change one
-  "${g[@]}" merge -q --no-edit origin/main
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  assert_success
-  local w; w="$(jq -c 'select(.host == "razer-laptop")' <<<"$output")"
-  assert_equal "$(jq -r '[.bucket, .pr, .pr_state] | join(" ")' <<<"$w")" 'DONE 875 MERGED'
-  refute_output --partial 'commits after merged PR'
-}
-
-@test "merged_inpr: commits past a merged PR are nothing new only at a measured 0 ahead (ar-5151)" {
-  run merged_inpr MERGED 0 1; assert_output 1
-  # Negative controls: a file the base lacks, an ahead 0 with no merge base (ahead_files measured
-  # nothing: an orphan HEAD, or a worker row without git.based), and a PR that is not merged.
-  run merged_inpr MERGED 1 1; assert_output 0
-  run merged_inpr MERGED 0 0; assert_output 0
-  run merged_inpr MERGED 0 ''; assert_output 0
-  run merged_inpr OPEN 0 1; assert_output 0
-  run merged_inpr - 0 1; assert_output 0
-}
-
-@test "end to end: a conflicting PR with red checks is not a conflict nudge; with green checks it is, once" {
-  conflict_fixture
-  local oid; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
-  open_pr FAIL
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .conflicts <<<"$output")" = true ]
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red, conflicts with the default branch' ]
-  [ "$(jq -r .fact <<<"$output")" = "STALLED PR #9 CI red, conflicts with the default branch @feat/x@${oid:0:12}" ]
-
-  open_pr PASS
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  local fork; fork="$(git -C "$SANDBOX/wt" merge-base origin/main HEAD)"
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 conflicts with the default branch' ]
-  [ "$(jq -r .fact <<<"$output")" = "STALLED PR #9 conflicts with the default branch @feat/x base ${fork:0:12}" ]
-  [ "$(jq -r .nudged <<<"$output")" = false ]
-  [ "$(jq -r .main_red <<<"$output")" = false ]
-  mark sid-9 "$(jq -r .fact <<<"$output")"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .nudged <<<"$output")" = true ]
-}
-
-@test "end to end: the same conflict at a new head is the same fact; conflicting again after a resolve is new" {
-  conflict_fixture
-  open_pr PASS
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  local first; first="$(jq -r .fact <<<"$output")"
-  mark sid-9 "$first"
-
-  # a push that does not take main in, and main moving on again: still the same conflict
-  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t)
-  echo 1 > "$SANDBOX/wt/b.txt"; "${g[@]}" add b.txt; "${g[@]}" commit -q -m 'more work'
-  main_change 'theirs again'
-  open_pr PASS
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .fact <<<"$output")" = "$first" ]
-  [ "$(jq -r .nudged <<<"$output")" = true ]
-
-  # the session resolves it (merges main in), is clean, then main conflicts with it again
-  "${g[@]}" merge -q -X ours origin/main -m 'merge main' >/dev/null
-  open_pr PASS
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .conflicts <<<"$output")" = false ]
-  main_change 'theirs a third time'
-  open_pr PASS
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 conflicts with the default branch' ]
-  [ "$(jq -r .fact <<<"$output")" != "$first" ]
-  [ "$(jq -r .nudged <<<"$output")" = false ]
-}
-
-@test "end to end: under a nightly red a non-owner's conflict row says main_red, and the NIGHTLY row does not own it" {
-  # The shepherd leaves a non-owner's STALLED row alone while its repo has a nightly red
-  # (shepherd skill, nudge step 3); these are the facts it reads to do that.
-  conflict_fixture
-  local tip; tip="$(git -C "$SANDBOX/wt" rev-parse origin/main)"
+  queue_item running lab:s1
   ledger main "[$(r Tests failure "$tip" 1)]"
-  open_pr PASS
+  open_pr FAIL
+  owner running "${repo^^}#9 $repo#12"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
   session="$(jq -c 'select(.bucket != "NIGHTLY")' <<<"$output")"
-  main="$(jq -c 'select(.bucket == "NIGHTLY")' <<<"$output")"
-  [ "$(jq -r .reason <<<"$session")" = 'PR #9 conflicts with the default branch' ]
-  [ "$(jq -r .main_red <<<"$session")" = true ]
-  [ "$(jq -r '.owners | length' <<<"$main")" = 0 ]
-}
+  [ "$(jq -r .bucket <<<"$session")" = WORKING ]
+  [ "$(jq -r .reason <<<"$session")" = 'PR #9 waiting on base red, owned by fix-base' ]
 
-@test "dirty_paths bounds index reader threads in worktrees and submodules without hiding dirt" {
-  local d="$HOME/.worktrees/status" sub="$SANDBOX/sub" trace="$SANDBOX/status-trace"
-  mkdir -p "$d" "$sub"
-  git init -q "$sub"
-  echo original > "$sub/inside"
-  git -C "$sub" add inside
-  git -C "$sub" -c user.email=t@t -c user.name=t commit -qm init
-  git init -q "$d"
-  git -C "$d" -c protocol.file.allow=always submodule add -q "$sub" module
-  echo original > "$d/tracked"
-  git -C "$d" add tracked
-  git -C "$d" -c user.email=t@t -c user.name=t commit -qm init
-  git -C "$d" config index.threads 8
-  git -C "$d/module" config index.threads 8
-  git -C "$d" config core.preloadIndex true
-  git -C "$d/module" config core.preloadIndex true
-  echo changed > "$d/tracked"
-  echo new > "$d/untracked"
-  echo changed > "$d/module/inside"
-
-  GIT_TRACE2_EVENT="$trace" GIT_TRACE2_CONFIG_PARAMS=index.threads,core.preloadIndex run dirty_paths "$d" ''
-  assert_success
-  assert_output $'module\ntracked\nuntracked'
-  # Git's own trace proves the override reaches recursive status, not only the parent.
-  jq -es '[.[] | select(.event == "def_param" and .param == "index.threads" and .scope == "command" and .value == "1") | .sid] | unique | length >= 2' "$trace"
-  jq -es '[.[] | select(.event == "def_param" and .param == "core.preloadindex" and .scope == "command" and .value == "false") | .sid] | unique | length >= 2' "$trace"
-  jq -es 'all(.[] | select(.event == "def_param" and .param == "index.threads" and .scope == "command"); .value == "1") and any(.[]; .event == "def_param" and .param == "index.threads" and .scope == "command")' "$trace"
-  jq -es 'any(.[]; .event == "def_param" and .param == "core.preloadindex" and .scope == "command" and .value == "false")' "$trace"
-  [ "$(git -C "$d" config index.threads)" = 8 ]
-  [ "$(git -C "$d/module" config index.threads)" = 8 ]
-
-  # Shared checkouts keep filtering by the session's edited paths, with the same thread bound.
-  mv "$d" "$SANDBOX/shared"
-  d="$SANDBOX/shared"
-  : > "$trace"
-  GIT_TRACE2_EVENT="$trace" GIT_TRACE2_CONFIG_PARAMS=index.threads,core.preloadIndex run dirty_paths "$d" "$d/tracked"
-  assert_success
-  assert_output tracked
-  jq -es 'any(.[]; .event == "def_param" and .param == "index.threads" and .scope == "command" and .value == "1")' "$trace"
-  jq -es 'any(.[]; .event == "def_param" and .param == "core.preloadindex" and .scope == "command" and .value == "false")' "$trace"
-}
-
-@test "dirty_paths skips an unstaged moved submodule pin with a clean tree, keeps every other submodule change (ar-4016)" {
-  local d="$HOME/.worktrees/pin" sub="$SANDBOX/pinsub"
-  mkdir -p "$d" "$sub"
-  git init -q "$sub"
-  echo one > "$sub/inside"
-  git -C "$sub" add inside
-  git -C "$sub" -c user.email=t@t -c user.name=t commit -qm one
-  git init -q "$d"
-  git -C "$d" -c protocol.file.allow=always submodule add -q "$sub" module
-  echo original > "$d/tracked"
-  git -C "$d" add tracked
-  git -C "$d" -c user.email=t@t -c user.name=t commit -qm init
-  run dirty_paths "$d" ''
-  assert_output ''
-  # The session's own commit inside the submodule, held by no remote ref, is its work.
-  git -C "$d/module" -c user.email=t@t -c user.name=t commit -q --allow-empty -m mine
-  [ "$(git -C "$d" status --porcelain)" = ' M module' ]
-  run dirty_paths "$d" ''
-  assert_output 'module'
-  git -C "$d/module" reset -q --hard HEAD~1
-  # The checkout moves to a newer commit a remote holds, the index pin stays: a canary at an old commit.
-  git -C "$sub" -c user.email=t@t -c user.name=t commit -q --allow-empty -m two
-  git -C "$d/module" fetch -q origin
-  git -C "$d/module" checkout -q --detach origin/HEAD
-  [ "$(git -C "$d" status --porcelain)" = ' M module' ]
-  run dirty_paths "$d" ''
-  assert_output ''
-  # A plain file beside it is still dirt.
-  echo x > "$d/tracked"
-  run dirty_paths "$d" ''
-  assert_output 'tracked'
-  git -C "$d" checkout -q tracked
-  # A working change or an untracked file inside the submodule is the session's work.
-  echo edit > "$d/module/inside"
-  run dirty_paths "$d" ''
-  assert_output 'module'
-  git -C "$d/module" checkout -q inside
-  echo new > "$d/module/new"
-  run dirty_paths "$d" ''
-  assert_output 'module'
-  rm "$d/module/new"
-  # A staged pin is a deliberate bump, and stays dirt when moved on again (MM).
-  git -C "$d" add module
-  run dirty_paths "$d" ''
-  assert_output 'module'
-  git -C "$sub" -c user.email=t@t -c user.name=t commit -q --allow-empty -m three
-  git -C "$d/module" fetch -q origin
-  git -C "$d/module" checkout -q --detach origin/HEAD
-  [ "$(git -C "$d" status --porcelain)" = 'MM module' ]
-  run dirty_paths "$d" ''
-  assert_output 'module'
-  # The shared-checkout path reads the same way.
-  git -C "$d" reset -q module
-  mv "$d" "$SANDBOX/pin-shared"
-  run dirty_paths "$SANDBOX/pin-shared" "$SANDBOX/pin-shared/module"
-  assert_output ''
-}
-
-# verdict <row json>: the row's close verdict as "<verdict>: <why>" (CLOSE_JQ, the close flow in
-# fleet-states.md). base is a lab session, finished, quiet 90 minutes against a 60 minute timer,
-# nothing open. SELF names the session asking about itself (close --self).
-verdict() {
-  jq -nr --argjson idle_close 60 --argjson chat_close_h 24 --arg self "${SELF:-}" \
-    '{bucket: "DONE", target: "lab/x-agent-1:1", idle_min: 90, age_min: 300, finished: true, own_asks: 0,
-      blockers: [], labels: [], dispatch: null, item: null, phases_done: null, phases_total: null} + '"$1"'
-     | '"$CLOSE_JQ"' | "\(.close.verdict): \(.close.why)"'
-}
-
-@test "close verdict: each step of the fleet-states.md close flow, first match wins" {
-  # Not ours to judge while work is left here; with nothing left it closes like any row, on the park's age (a parked row has no claude start, so age_min is null).
-  [ "$(verdict '{bucket: "PARKED", blockers: ["PR #9 open, CI PASS"]}')" = "keep: parked: its claude is gone, work is left here" ]
-  [ "$(verdict '{bucket: "PARKED", blockers: ["open ask Ab12"]}')" = "keep: parked: its claude is gone, work is left here" ]
-  [ "$(verdict '{bucket: "PARKED", idle_min: 9000, age_min: null}')" = "now: quiet 9000m, nothing to land" ]
-  [ "$(verdict '{bucket: "PARKED", idle_min: 5, age_min: null}')" = "after: quiet 5m of 60m" ]
-  [ "$(verdict '{bucket: "PARKED", idle_min: 9000, labels: ["manual"]}')" = "keep: manual: the human keeps it" ]
-  [ "$(verdict '{bucket: "PARKED", idle_min: 9000, labels: ["stay"]}')" = "now: quiet 9000m, nothing to land" ]
-  [ "$(verdict '{bucket: "PARKED", idle_min: 100, labels: ["stay"]}')" = "keep: stay: kept open as the human asked, quiet 100m of 24h" ]
-  # An open plan phase holds nothing, as for a live row; only the item to close is left: after, for the shepherd to close.
-  [ "$(verdict '{bucket: "PARKED", idle_min: 9000, blockers: ["next phase: 3"]}')" = "now: quiet 9000m, nothing to land" ]
-  [ "$(verdict '{bucket: "PARKED", idle_min: 9000, blockers: ["its item s is still open with every phase done or queued"]}')" = "after: close its item s (agent-land its last PR without --partial, or agent-queue move <slug> done; the shepherd moves it done once quiet): every phase is done or queued" ]
-  [ "$(verdict '{bucket: "PARKED", blockers: ["its item s is running here"]}')" = "keep: parked: its claude is gone, work is left here" ]
-  # A headless run's replay: the shepherd never types into its opencode TUI; fleet-dispatch reap closes it.
-  [ "$(verdict '{activity: "done", bucket: "DONE", idle_min: 600}')" = "keep: headless run: fleet-dispatch reap closes its replay once its item leaves review" ]
-  # A worker row runs the same chain: the shepherd types its close over ssh (fleet_host_run).
-  # A pane restore reopened adds the quiet it had before its server died to its new claude's age (ar-4141).
-  [ "$(verdict '{idle_min: 90, age_min: 10}')" = "after: quiet 10m of 60m" ]
-  [ "$(verdict '{idle_min: 90, age_min: 10, quiet_before_min: 70}')" = "now: quiet 80m, nothing to land" ]
-  [ "$(verdict '{idle_min: 90, age_min: 10, quiet_before_min: 20}')" = "after: quiet 30m of 60m" ]
-  [ "$(verdict '{idle_min: 5, age_min: 10, quiet_before_min: 70}')" = "after: quiet 5m of 60m" ]
-  [ "$(verdict '{host: "ms-a2"}')" = "now: quiet 90m, nothing to land" ]
-  [ "$(verdict '{host: "ms-a2", idle_min: 5}')" = "after: quiet 5m of 60m" ]
-  [ "$(SELF=s1 verdict '{host: "ms-a2", session_id: "s1", idle_min: 5}')" = "now: quiet 5m, nothing to land" ]
-  # The human's explicit keep, and a prompt in its pane.
-  [ "$(verdict '{labels: ["manual"]}')" = "keep: manual: the human keeps it" ]
-  # The human's manual never expires, however long it is quiet (ar-4124).
-  [ "$(verdict '{labels: ["manual"], idle_min: 9000, age_min: 9000}')" = "keep: manual: the human keeps it" ]
-  # A session's own stay expires like chat: held until quiet FLEET_CHAT_CLOSE_H, then the rest of the chain reads it (ar-4041).
-  [ "$(verdict '{labels: ["stay"], idle_min: 1439, age_min: 2000}')" = "keep: stay: kept open as the human asked, quiet 1439m of 24h" ]
-  [ "$(verdict '{labels: ["stay"], idle_min: 1440, age_min: 2000}')" = "now: quiet 1440m, nothing to land" ]
-  [ "$(verdict '{labels: ["stay"], idle_min: 1500, age_min: 2000, blockers: ["PR #9 open"]}')" = "keep: land it: PR #9 open" ]
-  [ "$(verdict '{in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]
-  [ "$(verdict '{bucket: "CHAT", finished: false, idle_min: 1500, age_min: 2000, in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]
-  [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "waiting on a prompt or permission", own_asks: 1, blockers: ["open ask Ab12"]}')" = "keep: a dialog waits on the human" ]
-  # A turn under way.
-  [ "$(verdict '{bucket: "WORKING"}')" = "keep: working" ]
-  [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s), carrying on", own_asks: 1, blockers: ["open ask Ab12"]}')" = "keep: working" ]
-  # Unlanded work.
-  [ "$(verdict '{blockers: ["2 dirty file(s) (a, b), no PR"]}')" = "keep: land it: 2 dirty file(s) (a, b), no PR" ]
-  [ "$(verdict '{bucket: "STALLED", blockers: ["commits after merged PR #7"]}')" = "keep: land it: commits after merged PR #7" ]
-  # A queue item still running here, or a nightly red it owns, is work left here: closing would requeue
-  # the item or drop the red's owner.
-  [ "$(verdict '{bucket: "STALLED", blockers: ["its item x-1 is running here"]}')" = "keep: work left here: its item x-1 is running here" ]
-  [ "$(verdict '{bucket: "STALLED", blockers: ["nightly red after PR #7: tests"]}')" = "keep: work left here: nightly red after PR #7: tests" ]
-  # Something it set will wake it (pending_wakes): closing would kill it, so it stays, asked by itself too; the
-  # work-left steps before it still name their blocker (ar-3598: d4b20268 closed 01:03 with its 04:33 cron pending).
-  local why='(CronDelete, TaskStop or ScheduleWakeup stop ends it once the work is done)'
-  [ "$(verdict '{wake: "a one-shot cron a318 at Thu 04:33"}')" = "keep: it wakes itself: a one-shot cron a318 at Thu 04:33 $why" ]
-  [ "$(verdict '{bucket: "CHAT", finished: false, idle_min: 300, wake: "a Monitor m1 until Thu 04:33"}')" = "keep: it wakes itself: a Monitor m1 until Thu 04:33 $why" ]
-  [ "$(SELF=s1 verdict '{session_id: "s1", idle_min: 0, wake: "a recurring cron b7b7"}')" = "keep: it wakes itself: a recurring cron b7b7 $why" ]
-  [ "$(verdict '{wake: "a recurring cron b7b7", blockers: ["2 dirty file(s) (a, b), no PR"]}')" = "keep: land it: 2 dirty file(s) (a, b), no PR" ]
-  [ "$(verdict '{wake: null}')" = "now: quiet 90m, nothing to land" ]
-  # Open plan phases are no step: fleet-dispatch reap files them once the window is gone, so a LANDED
-  # row waits the timer like any other, and asked by itself it closes.
-  [ "$(verdict '{bucket: "LANDED", finished: false, idle_min: 5, next_phase: "3", item: {slug: "s", is: "own"}, blockers: ["next phase: 3"]}')" = "after: quiet 5m of 60m" ]
-  [ "$(verdict '{bucket: "LANDED", finished: false, next_phase: "3", item: {slug: "s", is: "own"}, blockers: ["next phase: 3"]}')" = "now: quiet 90m, nothing to land" ]
-  [ "$(SELF=s1 verdict '{bucket: "LANDED", session_id: "s1", finished: false, idle_min: 0, next_phase: "3", blockers: ["next phase: 3"]}')" = "now: quiet 0m, nothing to land" ]
-  [ "$(verdict '{bucket: "STALLED", finished: false, blockers: ["next phase: 3", "its item x-1 is running here"]}')" = "keep: work left here: its item x-1 is running here" ]
-  [ "$(verdict '{bucket: "STALLED", finished: false, item: {slug: "s", is: "own", origin: "run"}, blockers: ["its item s is still open with every phase done or queued"]}')" = "after: close its item s (agent-land its last PR without --partial, or agent-queue move <slug> done; the shepherd moves it done once quiet): every phase is done or queued" ]
-  # The timer: everything else closes once quiet 60 minutes.
-  [ "$(verdict '{}')" = "now: quiet 90m, nothing to land" ]
-  [ "$(verdict '{idle_min: 59}')" = "after: quiet 59m of 60m" ]
-  [ "$(verdict '{idle_min: 60}')" = "now: quiet 60m, nothing to land" ]
-  [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", own_asks: 1, blockers: ["open ask Ab12"]}')" = "now: quiet 90m, its ask reopens it on an answer" ]
-  [ "$(verdict '{bucket: "STALLED", finished: false, blockers: ["PR #9 closed without merging"]}')" = "now: quiet 90m, nothing to land" ]
-  [ "$(verdict '{bucket: "CHAT", finished: false, idle_min: 300, blockers: ["no plan file and nothing merged"]}')" = "now: quiet 300m, nothing to land" ]
-  # An unknown age is quiet 0, so a row with no age never closes on the timer.
-  [ "$(verdict '{bucket: "CHAT", finished: false, idle_min: 2000, age_min: null}')" = "after: quiet 0m of 60m" ]
-}
-
-@test "close verdict: an open PR in a sibling repo is unlanded work, as a same-repo one is (ar-3741)" {
-  # work_blockers names a sibling repo's PR the way GitHub cross-references it (owner/repo#N); the
-  # unlanded test matched only "PR #N", so 2026-11-19 a session read "now: nothing to land"
-  # with a sibling-repo PR open and red, and closing its window would have stranded the PR.
-  [ "$(verdict '{bucket: "STALLED", blockers: ["PR acme/widgets#2913 open, CI FAIL"]}')" = "keep: land it: PR acme/widgets#2913 open, CI FAIL" ]
-  [ "$(verdict '{bucket: "STALLED", blockers: ["PR owner/repo#9 open, waiting on its train"]}')" = "keep: land it: PR owner/repo#9 open, waiting on its train" ]
-  # Same-repo PR: unchanged.
-  [ "$(verdict '{bucket: "STALLED", blockers: ["PR #9 open, CI FAIL"]}')" = "keep: land it: PR #9 open, CI FAIL" ]
-  # A second clone the session edited names its PR after the dir (edited_work_blockers), same repo or sibling.
-  [ "$(verdict '{bucket: "STALLED", blockers: ["unlanded work in /w/repo2: PR #9 open, CI FAIL"]}')" = "keep: land it: unlanded work in /w/repo2: PR #9 open, CI FAIL" ]
-  [ "$(verdict '{bucket: "STALLED", blockers: ["unlanded work in /w/repo2: PR o/r#9 open, CI FAIL"]}')" = "keep: land it: unlanded work in /w/repo2: PR o/r#9 open, CI FAIL" ]
-  # Negative controls: a PR that closed unmerged holds nothing; a PR number inside other prose is not an open PR of this
-  # session (the anchor); a repo token with a stray space or extra slash is not a cross-reference.
-  [ "$(verdict '{bucket: "STALLED", blockers: ["PR owner/repo#9 closed without merging"]}')" = "now: quiet 90m, nothing to land" ]
-  [ "$(verdict '{bucket: "DONE", blockers: ["its item s waits after PR owner/repo#9 open, CI FAIL"]}')" = "now: quiet 90m, nothing to land" ]
-  [ "$(verdict '{bucket: "STALLED", blockers: ["PR a/b/c#9 open"]}')" = "now: quiet 90m, nothing to land" ]
-}
-
-@test "close verdict: the work-left steps name the blocker that holds the session as close.left, no other step does" {
-  left() {
-    jq -nr --argjson idle_close 60 --argjson chat_close_h 24 --arg self "" \
-      '{bucket: "DONE", target: "lab/x-agent-1:1", idle_min: 90, age_min: 300, finished: true, own_asks: 0,
-        blockers: [], labels: [], item: null} + '"$1"' | '"$CLOSE_JQ"' | .close.left // "-"'
-  }
-  [ "$(left '{blockers: ["2 dirty file(s) (a, b), no PR"]}')" = "2 dirty file(s) (a, b), no PR" ]
-  [ "$(left '{bucket: "LANDED", finished: false, blockers: ["next phase: 3", "its item x-1 is running here"]}')" = "its item x-1 is running here" ]
-  [ "$(left '{blockers: ["open ask Ab12", "its item s is still open with every phase done or queued"]}')" = "its item s is still open with every phase done or queued" ]
-  # Negative controls: the timer, a now, and a keep for another reason carry none.
-  [ "$(left '{}')" = "-" ]
-  [ "$(left '{idle_min: 5}')" = "-" ]
-  [ "$(left '{labels: ["manual"], blockers: ["its item x-1 is running here"]}')" = "-" ]
-  # The only-item step also names the slugs the shepherd closes (close.items); no other step does.
-  items() {
-    jq -nr --argjson idle_close 60 --argjson chat_close_h 24 --arg self "" \
-      '{bucket: "STALLED", target: "lab/x-agent-1:1", idle_min: 90, age_min: 300, own_asks: 0, labels: [], item: null} + '"$1"' | '"$CLOSE_JQ"' | .close.items // [] | join(",")'
-  }
-  [ "$(items '{blockers: ["its item a is still open with every phase done or queued", "its item b is still open with every phase done or queued"]}')" = "a,b" ]
-  [ "$(items '{blockers: ["its item a is still open with every phase done or queued", "2 dirty file(s) (a, b), no PR"]}')" = "" ]
-  [ "$(items '{blockers: ["its item x-1 is running here"]}')" = "" ]
-}
-
-@test "close verdict: no keep for the human's presence or a plan's coordinator (2026-11-17)" {
-  # The human asked for one timer: typing in a window keeps it from going quiet, so presence is not
-  # read, and critical work is queued, not watched. These facts no longer change a verdict.
-  [ "$(verdict '{human_ago_min: 5, on_screen: true}')" = "now: quiet 90m, nothing to land" ]
-  [ "$(verdict '{manual_mode: true}')" = "now: quiet 90m, nothing to land" ]
-  [ "$(verdict '{bucket: "DONE", blockers: ["coordinating its plan while its phases run as items: p2"]}')" = "now: quiet 90m, nothing to land" ]
-}
-
-@test "close verdict: a session labelled chat stays until quiet FLEET_CHAT_CLOSE_H, then closes like any other (2026-11-18)" {
-  [ "$(verdict '{bucket: "CHAT", labels: ["chat"]}')" = "keep: chat: quiet 90m of 24h" ]
-  [ "$(verdict '{labels: ["chat"], idle_min: 1439, age_min: 2000}')" = "keep: chat: quiet 1439m of 24h" ]
-  [ "$(verdict '{bucket: "CHAT", labels: ["chat"], idle_min: 1440, age_min: 2000}')" = "now: quiet 1440m, nothing to land" ]
-  # Past the chat timer every other keep still holds it.
-  [ "$(verdict '{labels: ["chat"], idle_min: 1500, age_min: 2000, blockers: ["PR #9 open"]}')" = "keep: land it: PR #9 open" ]
-  # Asked by itself (the typed /wind-down auto, mid-turn and quiet 0), it reads past the timer, as every quiet step does.
-  [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", idle_min: 0, labels: ["chat"]}')" = "now: quiet 0m, nothing to land" ]
-  # Negative control: the same rows with no label, or another label, close on the 60-minute timer.
-  [ "$(verdict '{bucket: "CHAT"}')" = "now: quiet 90m, nothing to land" ]
-  [ "$(verdict '{bucket: "CHAT", labels: ["chatty"]}')" = "now: quiet 90m, nothing to land" ]
-}
-
-@test "close verdict: one chain whoever started the session" {
-  local row hand
-  for hand in '{}' '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", own_asks: 1, blockers: ["open ask Ab12"]}' \
-              '{bucket: "LANDED", finished: false, next_phase: "3", blockers: ["next phase: 3"]}' \
-              '{bucket: "CHAT", finished: false, idle_min: 300, blockers: ["no plan file and nothing merged"]}'; do
-    for row in "$hand + {dispatch: \"p: s\"}" "$hand + {item: {slug: \"s\", is: \"own\", origin: \"run\"}}"; do
-      [ "$(verdict "$hand")" = "$(verdict "$row")" ]
-    done
-  done
-}
-
-@test "close verdict: a session asking about itself reads as at the end of its turn, the timer already run" {
-  # Mid-turn it always reads WORKING and quiet 0: neither the working keep nor the timer is asked
-  # (the shepherd's nudge came after the quiet time).
-  [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", idle_min: 0}')" = "now: quiet 0m, nothing to land" ]
-  [ "$(SELF=s1 verdict '{session_id: "s1", bucket: "NEEDS", finished: false, reason: "1 pending ask(s), carrying on", own_asks: 1, blockers: ["open ask Ab12"], idle_min: 0}')" = "now: quiet 0m, its ask reopens it on an answer" ]
-  # Negative control: the same rows read by anyone else, or for another session, still keep.
-  [ "$(verdict '{bucket: "WORKING", session_id: "s1"}')" = "keep: working" ]
-  [ "$(SELF=s2 verdict '{bucket: "WORKING", session_id: "s1"}')" = "keep: working" ]
-  [ "$(SELF=s2 verdict '{session_id: "s1", idle_min: 5}')" = "after: quiet 5m of 60m" ]
-  # Every other keep still holds it.
-  [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", labels: ["manual"], idle_min: 9000, age_min: 9000}')" = "keep: manual: the human keeps it" ]
-  [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", labels: ["stay"]}')" = "keep: stay: kept open as the human asked, quiet 90m of 24h" ]
-  [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]
-  [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", blockers: ["PR #9 open"]}')" = "keep: land it: PR #9 open" ]
-}
-
-@test "close --self: its verdict and blockers from a fresh collect, exit 0 only on now" {
-  bats_require_minimum_version 1.5.0
-  CLOSE_SELF=sid-45
-  run close_self "$(age_row 45)"
-  assert_success
-  assert_output "now: quiet 5m, nothing to land"
-  json_rows() { echo '{"session_id": "sid-45", "close": {"verdict": "keep", "why": "land it: PR #9 open"}, "blockers": ["PR #9 open"]}'; }
-  run close_self $'WORKING\thub/d:45\tsid-45'
-  assert_failure 1
-  assert_line --index 0 "keep: land it: PR #9 open"
-  assert_line --index 1 "blocker: PR #9 open"
-  json_rows() { echo '{"session_id": "sid-45", "close": {"verdict": "now", "why": "only its own ask is open"}, "blockers": ["open ask Ab12"]}'; }
-  run close_self $'DONE\thub/d:45\tsid-45'
-  assert_success
-  assert_line --index 0 "now: only its own ask is open"
-  assert_line --index 1 "blocker: open ask Ab12"
-  CLOSE_SELF=sid-9
-  run --separate-stderr close_self "$(age_row 45)"
-  assert_failure 2
-  [[ "$stderr" == *"no live session sid-9"* ]]
-}
-
-@test "close --self on a fleet worker: the lease holder's pushed row answers it (ar-3356)" {
-  rm -f "$SANDBOX/lease-held"
-  bats_require_minimum_version 1.5.0
-  export CLAUDE_CODE_SESSION_ID=sid-w FLEET_HOST=razer-laptop FLEET_STATE_FILE="$SANDBOX/state/state.json"
-  mkdir -p "$SANDBOX/state"
-  local f="$SANDBOX/state/holder-state.json" now; now="$(date +%s)"
-  worker_ssh
-  # The holder's row for this session: working, nothing left. The session closes itself, so the
-  # worker step does not keep it (the shepherd cannot type into its pane, but it needs no one to).
-  holder_doc() { jq -nc --argjson t "$1" --argjson r "$2" '{generated_epoch: $t, sessions: [$r]}' > "$f"; }
-  holder_doc "$now" '{"session_id":"sid-w","host":"razer-laptop","bucket":"WORKING","idle_min":0,"blockers":[]}'
-  # This machine's own pass would read blind (no PR store, no run ledger): the answer is the holder's.
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/schedules-sync"
-  SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync" run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
-  assert_success
-  assert_output "now: quiet 0m, nothing to land"
-  # The holder reads no worker transcript: what will wake this session is read here (ar-3598).
-  local tx="$SANDBOX/tx.jsonl" at=$(( now + 3600 ))
-  result_line "$(date -u -d "@$(( now - 60 ))" +%Y-%m-%dT%H:%M:%SZ)" 'Scheduled one-shot task a318 (x). Next run: x. Session-only (not written to disk).' \
-    "{\"nextFireAt\":${at}000}" > "$tx"
-  printf '#!/usr/bin/env bash\necho %s\n' "'{\"session_id\":\"sid-w\",\"transcript\":\"$tx\",\"started_at\":$(( now - 600 ))}'" > "$SANDBOX/bin/panel-w"
-  chmod +x "$SANDBOX/bin/panel-w"
-  AGENT_PANEL="$SANDBOX/bin/panel-w" run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
-  assert_failure 1
-  assert_output --partial "keep: it wakes itself: a one-shot cron a318 at "
-  # An armed Monitor keeps it until TaskStop ends it (ar-4158, ar-4304).
-  result_line "$(date -u -d "@$(( now - 60 ))" +%Y-%m-%dT%H:%M:%SZ)" 'Monitor started (task m1, expires in 30m unless the source ends first).' \
-    '{"taskId":"m1","timeoutMs":1800000,"persistent":false}' > "$tx"
-  AGENT_PANEL="$SANDBOX/bin/panel-w" run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
-  assert_failure 1
-  assert_output --partial "keep: it wakes itself: a Monitor m1 until "
-  result_line "$(date -u -d "@$(( now - 30 ))" +%Y-%m-%dT%H:%M:%SZ)" 'Successfully stopped task: m1' '{}' >> "$tx"
-  AGENT_PANEL="$SANDBOX/bin/panel-w" run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
-  assert_success
-  assert_output "now: quiet 0m, nothing to land"
-  # Every other step still holds it, and the row's blockers are named.
-  holder_doc "$now" '{"session_id":"sid-w","host":"razer-laptop","bucket":"WORKING","blockers":["PR #9 open"]}'
-  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
-  assert_failure 1
-  assert_line --index 0 "keep: land it: PR #9 open"
-  assert_line --index 1 "blocker: PR #9 open"
-  # The row can be minutes old: files the checkout holds now are read where it is, and block.
-  local w="$HOME/.worktrees/w"
-  git init -q -b main "$w" && git -C "$w" -c user.name=t -c user.email=t@t commit -q --allow-empty -m base
-  git -C "$w" update-ref refs/remotes/origin/main HEAD
-  local row='{"session_id":"sid-w","host":"razer-laptop","bucket":"WORKING","blockers":[],"cwd":"'"$w"'"}'
-  holder_doc "$now" "$row"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
-  assert_success
-  echo x > "$w/new.txt"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
-  assert_failure 1
-  assert_line --index 0 --partial "keep: land it: 1 dirty file(s) here since the lease holder last read"
-  git -C "$w" add new.txt && git -C "$w" -c user.name=t -c user.email=t@t commit -q -m work
-  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
-  assert_failure 1
-  assert_line --index 0 --partial "keep: land it: 1 file(s) not on the default branch here since the lease holder last read"
-  # A row older than FLEET_STATE_STALE_SECS is a wait, not an answer.
-  holder_doc "$(( now - 1200 ))" '{"session_id":"sid-w","host":"razer-laptop","bucket":"DONE","blockers":[]}'
-  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
-  assert_failure 1
-  assert_output --partial "after: the lease holder's state is 20m old"
-  # Neither is a file the holder never sent, nor a holder that has no row for this session.
-  rm "$f"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
-  assert_failure 1
-  assert_output --partial "after: the lease holder has sent no state"
-  holder_doc "$now" '{"session_id":"other","host":"razer-laptop","bucket":"DONE"}'
-  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
-  assert_failure 1
-  assert_output --partial "after: the lease holder has not read session sid-w yet"
-  # NEGATIVE CONTROL: the lease holder itself, or a machine outside the roster, reads its own pass.
-  : > "$SANDBOX/lease-held"
-  run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions" close --self
-  [[ "$stderr" == *"no live session sid-w"* ]]
-  rm "$SANDBOX/lease-held"
-  rm "$f"
-  FLEET_HOST=elsewhere run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions" close --self
-  [[ "$stderr" == *"no live session sid-w"* ]]
-}
-
-@test "close --self on a fleet worker: a submodule pin behind master is not unlanded work (ar-2445)" {
-  rm -f "$SANDBOX/lease-held"
-  bats_require_minimum_version 1.5.0
-  export CLAUDE_CODE_SESSION_ID=sid-w FLEET_HOST=razer-laptop FLEET_STATE_FILE="$SANDBOX/state/state.json"
-  mkdir -p "$SANDBOX/state"
-  local f="$SANDBOX/state/holder-state.json" now; now="$(date +%s)"
-  worker_ssh
-  holder_doc() { jq -nc --argjson t "$1" --argjson r "$2" '{generated_epoch: $t, sessions: [$r]}' > "$f"; }
-
-  load '../helpers/submodule'
-  local sub="$HOME/.worktrees/sup/module"
-  pinned_submodule "$HOME/.worktrees/sup"
-
-  # The lease holder's row for this session in the submodule
-  holder_doc "$now" '{"session_id":"sid-w","host":"razer-laptop","bucket":"WORKING","blockers":[],"cwd":"'"$sub"'"}'
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/schedules-sync"
-  SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync" run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
-  assert_success
-  assert_output "now: quiet 0m, nothing to land"
-
-  # Negative control: extra unlanded work in the submodule blocks close
-  unpinned_commit "$sub"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
-  assert_failure 1
-  assert_line --index 0 --partial "keep: land it: 1 file(s) not on the default branch here since the lease holder last read"
-}
-
-@test "the lease holder pushes each worker its own rows, and no one else (ar-3356)" {
-  rm -f "$SANDBOX/lease-held"
-  export FLEET_HOST=state FLEET_STATE_FILE="$SANDBOX/holder/state.json" XDG_STATE_HOME="$SANDBOX/worker-state"
-  mkdir -p "$SANDBOX/holder"
-  worker_ssh
-  jq -nc '{generated_epoch: 1000, sessions: [
-    {session_id: "a", host: "razer-laptop", target: "razer-laptop@lab/a:1"},
-    {session_id: "b", host: null, target: "lab/b:1"}]}' > "$FLEET_STATE_FILE"
-  # Not the holder: nothing leaves.
-  worker_state_push "$FLEET_STATE_FILE"
-  [ ! -e "$SANDBOX/ssh.log" ]
-  : > "$SANDBOX/lease-held"
-  worker_state_push "$FLEET_STATE_FILE"
-  local got="$XDG_STATE_HOME/fleet/holder-state.json"
-  assert_equal "$(jq -c '[.generated_epoch, .host, [.sessions[].session_id]]' "$got")" '[1000,"razer-laptop",["a"]]'
-  [ ! -e "$got.tmp" ]
-  # A worker that does not answer is left as it was, and the pass goes on.
-  printf '#!/usr/bin/env bash\nexit 255\n' > "$SANDBOX/bin/ssh"
-  jq -c '.generated_epoch = 2000' "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.n" && mv "$FLEET_STATE_FILE.n" "$FLEET_STATE_FILE"
-  run worker_state_push "$FLEET_STATE_FILE"
-  assert_success
-  assert_equal "$(jq -r .generated_epoch "$got")" 1000
-}
-
-@test "close --self collects only its own row, and no repo rows" {
-  local since=$(( $(date +%s) - 3600 ))
-  row() { printf '{"target":"lab/s1:%s","pane":"lab/%%%s","status":"idle","plan_mode":false,"session_id":"sid-%s","cwd":"%s","idle_since":%s,"context_tokens":5,"plan_file":""}' "$1" "$2" "$1" "$SANDBOX" "$since"; }
-  printf '#!/usr/bin/env bash\necho %q\necho %q\n' "$(row 1 7)" "$(row 2 8)" > "$SANDBOX/bin/agent-panel"
-  gh_script 'echo "[]"'
-  chmod +x "$SANDBOX/bin/agent-panel"
-  CACHE="$(mktemp -d)"
-  run collect
-  assert_success
-  [ "$(cut -f3 <<<"$output" | grep -c '^sid-')" = 2 ]
-  CLOSE_SELF=sid-2 run collect
-  assert_success
-  assert_equal "$(cut -f3 <<<"$output")" sid-2
-  rm -rf "$CACHE"
-}
-
-@test "close verdict: pct from the checklist, null without one, and no verdict on a repo row" {
-  [ "$(jq -c --argjson idle_close 60 --argjson chat_close_h 24 \
-       '{bucket: "DONE", phases_done: 2, phases_total: 3} | '"$CLOSE_JQ"' | .pct' <<<null)" = 66 ]
-  [ "$(jq -c --argjson idle_close 60 --argjson chat_close_h 24 \
-       '{bucket: "DONE"} | '"$CLOSE_JQ"' | .pct' <<<null)" = null ]
-  [ "$(jq -c --argjson idle_close 60 --argjson chat_close_h 24 \
-       '{bucket: "NIGHTLY"} | '"$CLOSE_JQ"' | .close' <<<null)" = null ]
-  run json_rows < <(age_row 45)
-  assert_success
-  [ "$(jq -r '.close.verdict' <<<"$output")" != null ]
-}
-
-@test "close: lists the state document by verdict, close-now first, oldest quiet first" {
-  export FLEET_STATE_FILE="$SANDBOX/state.json"
-  STATE_FILE="$FLEET_STATE_FILE"
-  jq -n --argjson t "$(date +%s)" '{generated_epoch: $t, sessions: [
-    {target: "lab/a:1", bucket: "WORKING", idle_min: 1, close: {verdict: "keep", why: "working"}},
-    {target: "lab/b:1", bucket: "DONE", idle_min: 30, phases_done: 1, phases_total: 2, pct: 50, close: {verdict: "now", why: "w1"}},
-    {target: "lab/c:1", bucket: "DONE", idle_min: 90, close: {verdict: "now", why: "w2"}},
-    {target: "hub/hub:4", bucket: "WORKING", labels: ["shepherd"], close: {verdict: "keep", why: "working"}},
-    {target: "lab/d:1", bucket: "LANDED", idle_min: 5, close: {verdict: "after", why: "w3"}}]}' > "$STATE_FILE"
-  run close_view
-  assert_success
-  assert_line --index 0 "now 2, after 1, keep 1"
-  [[ "${lines[1]}" == "now"*"c:1"*"w2" ]]
-  [[ "${lines[2]}" == "now"*"b:1"*"1/2 50%"*"w1" ]]
-  [[ "${lines[3]}" == "after"*"d:1"* ]]
-  [[ "${lines[4]}" == "keep"*"a:1"* ]]
-  [ "${#lines[@]}" = 5 ]
-  run close_view --json
-  [ "$(jq -sr 'map(.target) | join(" ")' <<<"$output")" = "lab/c:1 lab/b:1 lab/d:1 lab/a:1" ]
-}
-
-@test "close: the stale age is FLEET_STATE_STALE_SECS in state.conf, a conf without it reads stale and says so" {
-  bats_require_minimum_version 1.5.0
-  export FLEET_STATE_FILE="$SANDBOX/state.json"
-  STATE_FILE="$FLEET_STATE_FILE"
-  # the shipped conf: 4m old is fresh, 6m old is named
-  jq -n --argjson t "$(( $(date +%s) - 240 ))" '{generated_epoch: $t, sessions: [{target: "lab/a:1", bucket: "DONE", idle_min: 1, close: {verdict: "now"}}]}' > "$STATE_FILE"
-  run --separate-stderr close_view
-  [[ "$stderr" != *"is fleet-state.timer running"* ]]
-  jq -n --argjson t "$(( $(date +%s) - 360 ))" '{generated_epoch: $t, sessions: [{target: "lab/a:1", bucket: "DONE", idle_min: 1, close: {verdict: "now"}}]}' > "$STATE_FILE"
-  run --separate-stderr close_view
-  [[ "$stderr" == *"the state document is 6m old: is fleet-state.timer running?"* ]]
-  # the number is the conf's: 600 makes 6m fresh
-  printf 'FLEET_STATE_STALE_SECS=600\n' > "$SANDBOX/state.conf"
-  FLEET_STATE_CONF="$SANDBOX/state.conf" run --separate-stderr close_view
-  [[ "$stderr" != *"is fleet-state.timer running"* ]]
-  # NEGATIVE CONTROL: no number in the conf reads stale and names the file, never a default
-  printf '# nothing\n' > "$SANDBOX/state.conf"
-  FLEET_STATE_CONF="$SANDBOX/state.conf" run --separate-stderr close_view
-  [[ "$stderr" == *"FLEET_STATE_STALE_SECS is not set to a number in $SANDBOX/state.conf"* ]]
-  [[ "$stderr" == *"is fleet-state.timer running?"* ]]
-  # even a document written this second
-  jq -n --argjson t "$(date +%s)" '{generated_epoch: $t, sessions: [{target: "lab/a:1", bucket: "DONE", idle_min: 1, close: {verdict: "now"}}]}' > "$STATE_FILE"
-  FLEET_STATE_CONF="$SANDBOX/state.conf" run --separate-stderr close_view
-  [[ "$stderr" == *"is fleet-state.timer running?"* ]]
-}
-
-@test "close: a stale document or one without verdicts is named on stderr" {
-  bats_require_minimum_version 1.5.0
-  export FLEET_STATE_FILE="$SANDBOX/state.json"
-  STATE_FILE="$FLEET_STATE_FILE"
-  jq -n '{generated_epoch: 1, sessions: [{target: "lab/a:1", bucket: "DONE", idle_min: 1}]}' > "$STATE_FILE"
-  run --separate-stderr close_view
-  assert_success
-  [[ "$stderr" == *"m old: is fleet-state.timer running?"* ]]
-  [[ "$stderr" == *"1 session(s) carry no verdict"* ]]
-  assert_line --index 0 "now 0, after 0, keep 0"
-}
-
-# list_doc <age seconds>: a state document of that age with a NIGHTLY row, a nudged and labelled session, two buckets.
-list_doc() {
-  jq -n --argjson t "$(( $(date +%s) - $1 ))" '{generated_epoch: $t,
-    vocab: {buckets: ["NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED"]},
-    main: [{repo: "dots", reason: "main CI red", fact: "NIGHTLY main CI red", nudged: false}], shared: [],
-    sessions: [
-      {target: "lab/w2:1", bucket: "WORKING", branch: "feat/b", pr: "-", idle_min: 3, reason: "busy", nudged: false, dispatch: null, labels: []},
-      {target: "lab/w1:1", bucket: "WORKING", branch: "feat/a", pr: "12", idle_min: 1, reason: "idle 1m", nudged: true, dispatch: "run", labels: ["stay"]},
-      {target: "lab/n1:2", bucket: "NEEDS", branch: "feat/c", pr: "-", idle_min: 40, reason: "1 pending ask(s)", nudged: false, labels: []}]}'
-}
-
-@test "bare fleet-sessions renders the state document: age first, buckets in order, rows by target, no pass" {
-  bats_require_minimum_version 1.5.0
-  export FLEET_STATE_FILE="$SANDBOX/state.json"
-  list_doc 125 > "$FLEET_STATE_FILE"
-  # a pass would read agent-panel, which this sandbox lacks: the view must not start one
-  printf '#!/usr/bin/env bash\necho pass-ran >&2; exit 9\n' > "$SANDBOX/bin/agent-panel"
-  chmod +x "$SANDBOX/bin/agent-panel"
-  AGENT_PANEL="$SANDBOX/bin/agent-panel" run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions"
-  assert_success
-  [ -z "$stderr" ]
-  assert_line --index 0 --regexp '^state document 2m old.*--fresh'
-  assert_line --index 1 NIGHTLY
-  assert_line --index 2 --regexp '^  dots +- +- +0m  main CI red$'
-  assert_line --index 3 NEEDS
-  assert_line --index 4 --regexp '^  n1:2 +feat/c +- +40m  1 pending ask\(s\)$'
-  assert_line --index 5 WORKING
-  assert_line --index 6 --regexp '^  w1:1 +feat/a +12 +1m  idle 1m  \(nudged\)  \[dispatch: run\]  \[labels: stay\]$'
-  assert_line --index 7 --regexp '^  w2:1 +feat/b +- +3m  busy$'
-  [ "${#lines[@]}" = 8 ]
-}
-
-@test "bare fleet-sessions on a stale or missing document exits 1 naming --fresh and the timer, and runs no pass" {
-  bats_require_minimum_version 1.5.0
-  export FLEET_STATE_FILE="$SANDBOX/state.json"
-  run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions"
-  assert_failure 1
-  [[ "$stderr" == *"no state document"*"--fresh"*"fleet-state.timer"* ]]
-  list_doc 400 > "$FLEET_STATE_FILE"
-  run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions"
-  assert_failure 1
-  [[ "$stderr" == *"is 6m old"*"--fresh"*"fleet-state.timer"* ]]
-  [ -z "$output" ]
-}
-
-@test "bare fleet-sessions on a worker reads the lease holder's pushed rows, not the old local document" {
-  bats_require_minimum_version 1.5.0
-  export FLEET_STATE_FILE="$SANDBOX/state/state.json"
-  mkdir -p "$SANDBOX/state"
-  rm -f "$SANDBOX/lease-held"
-  list_doc 5000 > "$FLEET_STATE_FILE"
-  list_doc 30 | jq '.sessions |= map(select(.target == "lab/w2:1")) | .main = []' > "$SANDBOX/state/holder-state.json"
-  run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions"
-  assert_success
-  assert_line --index 0 --regexp "^state document 0m old \(the lease holder's rows for this host only\)"
-  assert_line --index 1 WORKING
-  [ "${#lines[@]}" = 3 ]
-}
-
-@test "bare fleet-sessions: a worker with no pushed rows says so, a backslash and an old main row print as they are, --help lists the usage" {
-  bats_require_minimum_version 1.5.0
-  export FLEET_STATE_FILE="$SANDBOX/state/state.json"
-  mkdir -p "$SANDBOX/state"
-  rm -f "$SANDBOX/lease-held"
-  export FLEET_HOST=razer-laptop
-  worker_ssh
-  # no holder-state.json, but on the roster: a worker, told to wait for the holder and not to run --fresh
-  run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions"
-  assert_failure 1
-  [[ "$stderr" == *"no state document"*"lease holder"* ]]
-  [[ "$stderr" != *'run `fleet-sessions --fresh`'* ]]
-  # a backslash is kept once, and a main row without `fact` is still a NIGHTLY row
-  : > "$SANDBOX/lease-held"
-  unset FLEET_INVENTORY
-  jq -n --argjson t "$(date +%s)" '{generated_epoch: $t, main: [{repo: "o/dots", reason: "red"}],
-    sessions: [{target: "lab/a:1", bucket: "WORKING", branch: "b", pr: "-", idle_min: 1, reason: "C:\\x"}]}' > "$FLEET_STATE_FILE"
-  run "$REPO_ROOT/.local/bin/fleet-sessions"
-  assert_success
-  assert_line --index 1 NIGHTLY
-  assert_line --index 2 --regexp '^  dots +- +- +0m  red$'
-  assert_line --index 4 --regexp '^  a:1 +b +- +1m  C:\\x$'
-  # a document that is not one names the file and --fresh, not a bash error
-  printf '{"sessions": ' > "$FLEET_STATE_FILE"
-  run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions"
-  assert_failure 1
-  [[ "$stderr" == *"is not a state document"*"--fresh"* ]]
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --help
-  assert_success
-  assert_output --partial 'fleet-sessions --fresh'
-  assert_output --partial 'fleet-sessions stages'
-}
-
-# api_error_transcript <file> [after]: the tail of a session that a transient Cloudflare 403 stopped
-# (2026-11-13 01:51 PST, 10 main-account sessions), as Claude Code writes it; "after" appends the
-# human's next message.
-api_error_transcript() {
-  cat > "$1" <<'JSONL'
-{"type":"assistant","timestamp":"2026-11-13T09:50:12.000Z","message":{"content":[{"type":"tool_use","id":"a","name":"Bash","input":{"command":"make test"}}]}}
-{"type":"user","timestamp":"2026-11-13T09:50:40.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"a","content":"ok"}]}}
-{"type":"assistant","timestamp":"2026-11-13T09:51:03.000Z","isApiErrorMessage":true,"message":{"content":[{"type":"text","text":"API Error: 403 <html>Attention Required! | Cloudflare</html>"}]}}
-{"type":"system","subtype":"turn_duration","timestamp":"2026-11-13T09:51:03.500Z"}
-JSONL
-  [ -z "${2:-}" ] || echo '{"type":"user","timestamp":"2026-11-13T09:58:00.000Z","message":{"content":"continue"}}' >> "$1"
-}
-
-@test "a turn that ended on an API Error at an idle prompt is STALLED, not WORKING (ar-2143)" {
-  landed_fixture
-  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl"
-  api_error_transcript "$SANDBOX/t.jsonl"
-  # idle 5m is under FLEET_IDLE_MIN, so before this the row read WORKING idle 5m
-  PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  # negative controls, each STALLED CI red: the base is green, the owner is done, the only claim is the
+  # session's own item, no item claims the PR
+  ledger main "[$(r Tests success "$tip" 1)]"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  assert_success
-  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
-  [ "$(jq -r .reason <<<"$output")" = 'turn ended on API Error 403' ]
-  [ "$(jq -r .fact <<<"$output")" = 'STALLED turn ended on API Error 403 @feat/x at 2026-11-13T09:51' ]
-  # Negative controls: a later message (the nudge worked), just stopped (under the grace), a busy
-  # row, and prose that quotes the text without the CLI's marker.
-  api_error_transcript "$SANDBOX/t.jsonl" after
+  [ "$(jq -r 'select(.bucket != "NIGHTLY") | .reason' <<<"$output")" = 'PR #9 CI red' ]
+  ledger main "[$(r Tests failure "$tip" 1)]"
+  owner done "$repo#9"
+  printf 'status: ok\nfinished: 2026-11-03T12:00:00Z\n' | sed -i '/^session:/r /dev/stdin' "$q/done/20261103-090000-fix-base.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
-  api_error_transcript "$SANDBOX/t.jsonl"
-  PANEL_IDLE_S=60 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  [ "$(jq -r 'select(.bucket != "NIGHTLY") | .reason' <<<"$output")" = 'PR #9 CI red' ]
+  rm -rf "$q/done"
+  sed -i "s|^session: lab:s1\$|session: lab:s1\npr: $repo#9|" "$q/running/20261103-100000-fix-wave-save.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
-  PANEL_STATUS=busy PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  [ "$(jq -r 'select(.bucket != "NIGHTLY") | .reason' <<<"$output")" = 'PR #9 CI red' ]
+  queue_item running lab:s1
+  owner running "$repo#12"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'busy' ]
-  # a background subagent running: its result wakes the session
-  PANEL_JOB=agent PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
-  # an error line with no code (a usage limit) is the limit watch's, not this row's
-  sed 's/API Error: 403/Usage limit reached/' "$SANDBOX/t.jsonl" > "$SANDBOX/t2.jsonl"
-  PANEL_TRANSCRIPT="$SANDBOX/t2.jsonl" PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
-  sed -i 's/"isApiErrorMessage":true,//' "$SANDBOX/t.jsonl"
-  PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
-}
-
-@test "a second API Error at a later minute is a new fact, and a finished session is left to DONE (ar-2143)" {
-  landed_fixture
-  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl"
-  api_error_transcript "$SANDBOX/t.jsonl"
-  sed -i 's/09:51:03/10:12:03/' "$SANDBOX/t.jsonl"
-  PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .fact <<<"$output")" = 'STALLED turn ended on API Error 403 @feat/x at 2026-11-13T10:12' ]
-  # every phase ticked and the PR merged: finished, so not this row's
-  phases_plan '- [x] Phase 1: fleet-sessions (#875)'
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
-}
-
-# killed_gate_transcript <file> [<killed command>]: the tail of a session a reboot stopped mid-gate and fleet-dispatch
-# restore resumed (2026-11-12 07:43 PST, unity-core-playground-agent-10 d43a2bc6), as Claude Code writes it: the
-# background Bash call, its kill as the old claude exited, then the resumed claude's own notice, also on its queue line.
-killed_gate_transcript() {
-  local cmd="${2:-scripts/test/gate-and-land.sh --item ucp-634 > Logs/gate-and-land.out 2>&1}"
-  jq -cn --arg c "$cmd" '{type: "assistant", timestamp: "2026-11-12T15:32:18.206Z", message: {content: [{type: "tool_use",
-    id: "toolu_g", name: "Bash", input: {command: $c, run_in_background: true}}]}}' > "$1"
-  cat >> "$1" <<'JSONL'
-{"type":"user","timestamp":"2026-11-12T15:32:18.900Z","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_g","content":"Command running in background with ID: bsf8othhu. Output is being written to: /tmp/claude-1000/x/tasks/bsf8othhu.output"}]}}
-{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-12T15:40:56.082Z","content":"<task-notification>\n<task-id>bsf8othhu</task-id>\n<tool-use-id>toolu_g</tool-use-id>\n<status>killed</status>\n<summary>Background command was stopped</summary>\n</task-notification>"}
-{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-12T15:43:34.340Z","content":"<task-notification>\n<task-id>bsf8othhu</task-id>\n<tool-use-id>toolu_g</tool-use-id>\n<status>stopped</status>\n<summary>Background shell command didn't finish before the previous session ended</summary>\n</task-notification>"}
-{"type":"user","timestamp":"2026-11-12T15:43:34.357Z","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>\n<task-id>bsf8othhu</task-id>\n<tool-use-id>toolu_g</tool-use-id>\n<status>stopped</status>\n<summary>Background shell command didn't finish before the previous session ended</summary>\n<note>No completion record was found for it in the previous session.</note>\n</task-notification>"}}
-JSONL
-}
-
-@test "a resume that killed its background gate is STALLED with its own fact until the gate runs again (ar-1902)" {
-  landed_fixture
-  export FLEET_TIME_USE_CONF="$BATS_TEST_DIRNAME/../../.config/agent-panel/time-use.conf"
-  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl"
-  killed_gate_transcript "$SANDBOX/t.jsonl"
-  # idle 5m is under FLEET_IDLE_MIN, so before this the row read WORKING idle 5m
-  PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  assert_success
-  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
-  [ "$(jq -r .reason <<<"$output")" = 'resume killed its background gate (gate-and-land.sh) before it finished' ]
-  [ "$(jq -r .fact <<<"$output")" = 'STALLED resume killed its background gate (gate-and-land.sh) before it finished @feat/x at 2026-11-12T15:43' ]
-  # a row already STALLED for its branch (commits after the merged PR) reads the lost gate instead: rerunning it is the next step.
-  # The commit holds a file main lacks: an empty one is no commit after the PR (ar-5151).
-  echo more > "$SANDBOX/wt/more.txt"; git -C "$SANDBOX/wt" add more.txt
-  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q -m more
-  PANEL_IDLE_S=1800 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'resume killed its background gate (gate-and-land.sh) before it finished' ]
-  git -C "$SANDBOX/wt" reset -q --hard HEAD~1
-  # Negative controls: the gate ran again after the notice, just resumed (under the grace), a busy row, a killed
-  # command that is no gate or test, and the background-agent notice (the subagent's own row covers that).
-  jq -cn '{type: "assistant", timestamp: "2026-11-12T15:50:00.000Z", message: {content: [{type: "tool_use", id: "toolu_r",
-    name: "Bash", input: {command: "scripts/test/gate-and-land.sh --item ucp-634 > Logs/gate-and-land.out 2>&1"}}]}}' >> "$SANDBOX/t.jsonl"
-  PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
-  killed_gate_transcript "$SANDBOX/t.jsonl"
-  PANEL_IDLE_S=60 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
-  PANEL_STATUS=busy PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = busy ]
-  killed_gate_transcript "$SANDBOX/t.jsonl" 'sleep 600'
-  PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
-  killed_gate_transcript "$SANDBOX/t.jsonl"
-  sed -i "s/Background shell command didn't finish/1 background agent didn't finish/" "$SANDBOX/t.jsonl"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
-}
-
-@test "resume_killed_gate names the newest notice's first killed gate or test until any gate runs, and a finished session is left to DONE (ar-1902)" {
-  export FLEET_TIME_USE_CONF="$BATS_TEST_DIRNAME/../../.config/agent-panel/time-use.conf"
-  killed_gate_transcript "$SANDBOX/t.jsonl" 'scripts/test/run.sh --filter Playground.PlayTests.OutfitsPlayTests'
-  run resume_killed_gate "$SANDBOX/t.jsonl"
-  assert_output "$(printf 'test scripts/test/run.sh\t2026-11-12T15:43')"
-  # two shells in one notice: a dev server first, then a train wait
-  jq -cn '{type: "assistant", message: {content: [{type: "tool_use", id: "toolu_s", name: "Bash", input: {command: "pnpm dev"}},
-    {type: "tool_use", id: "toolu_w", name: "Bash", input: {command: "gh-run-wait 4321"}}]}}' > "$SANDBOX/t2.jsonl"
-  jq -cn '{type: "user", timestamp: "2026-11-12T15:43:35.000Z", message: {content: "<task-notification>\n<task-id>a</task-id>\n<tool-use-id>toolu_s</tool-use-id>\n<task-id>b</task-id>\n<tool-use-id>toolu_w</tool-use-id>\n<status>stopped</status>\n<summary>2 Background shell commands didn'"'"'t finish before the previous session ended</summary>\n</task-notification>"}}' >> "$SANDBOX/t2.jsonl"
-  run resume_killed_gate "$SANDBOX/t2.jsonl"
-  assert_output "$(printf 'gate gh-run-wait\t2026-11-12T15:43')"
-  run resume_killed_gate "$SANDBOX/missing.jsonl"
-  assert_output ''
-  # any later gate or test clears it (the session landed another way), and a newer notice that killed no gate leaves
-  # the older one standing (ar-1902 review)
-  killed_gate_transcript "$SANDBOX/t.jsonl"
-  cp "$SANDBOX/t.jsonl" "$SANDBOX/t3.jsonl"
-  jq -cn '{type: "assistant", message: {content: [{type: "tool_use", id: "toolu_l", name: "Bash", input: {command: "agent-land 12 --item ucp-634"}}]}}' >> "$SANDBOX/t.jsonl"
-  run resume_killed_gate "$SANDBOX/t.jsonl"
-  assert_output ''
-  jq -cn '{type: "assistant", message: {content: [{type: "tool_use", id: "toolu_x", name: "Bash", input: {command: "sleep 600"}}]}}' >> "$SANDBOX/t3.jsonl"
-  jq -cn '{type: "user", timestamp: "2026-11-13T09:00:00.000Z", message: {content: "<task-notification>\n<tool-use-id>toolu_x</tool-use-id>\n<status>stopped</status>\n<summary>Background shell command didn'"'"'t finish before the previous session ended</summary>\n</task-notification>"}}' >> "$SANDBOX/t3.jsonl"
-  run resume_killed_gate "$SANDBOX/t3.jsonl"
-  assert_output "$(printf 'gate gate-and-land.sh\t2026-11-12T15:43')"
-  # stopped_bucket: a nightly-red suspect, a PR conflict and a red CI run keep their own row; another STALLED row does not
-  run stopped_bucket "$SANDBOX/t3.jsonl" 'STALLED nightly red after PR #12: Tests (all)' 'Tests (all)'
-  assert_output ''
-  run stopped_bucket "$SANDBOX/t3.jsonl" 'STALLED PR #12 conflicts with the default branch' -
-  assert_output ''
-  run stopped_bucket "$SANDBOX/t3.jsonl" 'STALLED PR #12 CI red' -
-  assert_output ''
-  run stopped_bucket "$SANDBOX/t3.jsonl" 'STALLED 2 dirty file(s), no PR' -
-  assert_output "$(printf 'STALLED resume killed its background gate (gate-and-land.sh) before it finished\t2026-11-12T15:43')"
-  # every phase ticked and the PR merged: finished, so not this row's
-  landed_fixture
-  phases_plan '- [x] Phase 1: fleet-sessions (#875)'
-  killed_gate_transcript "$SANDBOX/t.jsonl"
-  PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" != STALLED ]
-}
-
-@test "end to end: a session plan that is a pointer stub reads the canonical plan's queued phases as queued (ar-2421)" {
-  # 2026-11-14 school-front-foliage-cleanup, camera-npc-pan-beats, hometown-town-simulation: each
-  # session's plan was a stub ("Phase 2 of <plan>.md") under another name, and its phase was a
-  # queue item of the canonical plan, so the row read LANDED and drew a queue-next-phases nudge.
-  landed_fixture
-  phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout' '- [ ] Phase 3: docs'
-  stub() { printf '# stub\n\n%s\n\n## Phases\n\n- [ ] rollout\n' "$1" > "$SANDBOX/stub.md"; }
-  panel "$SANDBOX/wt" "$SANDBOX/stub.md"
-  mkdir -p "$HOME/.agent/queue/queued"
-  printf 'slug: rollout\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nplan: %s\nphases: 2\n---\nphase of the plan\n' \
-    "$SANDBOX/plan.md" > "$HOME/.agent/queue/queued/20261103-100000-rollout.md"
-  # negative control: a stub that points nowhere is its own plan, and nothing names it
-  stub 'Phase 2 of /nowhere/plan.md'
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
-  # pointing at the canonical plan, whose phase 2 is the queued item
-  stub "Phase 2 of $SANDBOX/plan.md (Phase 1 landed in #875)"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = DONE ]
-  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: rollout' ]
-  # the stub's phase is the canonical's phase N: an item holding another phase does not hold it
-  stub "Phase 3 of $SANDBOX/plan.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
-}
-
-@test "plan_row_title: the heading leads, cut to 80 with the slug whole; no heading keeps the old title (ar-5348)" {
-  . "$REPO_ROOT/.local/lib/plan-phases.sh"
-  printf -- '---\n# a frontmatter comment\n---\n```sh\n# a shell comment\n```\n# Fix #12 the <UPS> shutdown\n\n## Phases\n# not this\n' > "$SANDBOX/swirling-knuth.md"
-  [ "$(plan_row_title "$SANDBOX/swirling-knuth.md")" = "Fix 12 the UPS shutdown (plan swirling-knuth)" ]
-  printf '# %s\n' "$(printf 'word %.0s' $(seq 1 30))" > "$SANDBOX/a-long-session-slug-name.md"
-  t="$(plan_row_title "$SANDBOX/a-long-session-slug-name.md")"
-  [ "${#t}" -le 80 ]
-  [[ "$t" == "word word "*" (plan a-long-session-slug-name)" ]]
-  # A cut that ends on punctuation drops it.
-  printf '# %s: more words follow here\n' "$(printf 'x%.0s' $(seq 1 47))" > "$SANDBOX/a-long-session-slug-name.md"
-  [ "$(plan_row_title "$SANDBOX/a-long-session-slug-name.md")" = "$(printf 'x%.0s' $(seq 1 47)) (plan a-long-session-slug-name)" ]
-  # A slug too long to leave room for a heading keeps it first, where no cut reaches it.
-  slug=a-pasted-request-about-the-platform-feature-iridescent-moon
-  printf '# A heading\n' > "$SANDBOX/$slug.md"
-  [ "$(plan_row_title "$SANDBOX/$slug.md")" = "plan $slug: run its open phases" ]
-  # NEGATIVE CONTROL: a plan with no heading keeps the title ask-sweep and older rows use.
-  printf '## Phases\n\n- [ ] x\n' > "$SANDBOX/bare.md"
-  [ "$(plan_row_title "$SANDBOX/bare.md")" = "plan bare: run its open phases" ]
-}
-
-@test "plan_phase_title: the phase name leads, then (P<n>, heading); no session slug, cut to 80 (ar-5462)" {
-  . "$REPO_ROOT/.local/lib/plan-phases.sh"
-  printf '# Pasted intake gate\n\n## Phases\n' > "$SANDBOX/pasted-content-id-0d29-d-cozy-kahn.md"
-  t="$(plan_phase_title "$SANDBOX/pasted-content-id-0d29-d-cozy-kahn.md" 2 "Intake gate")"
-  [ "$t" = "Intake gate (P2, Pasted intake gate)" ]
-  [[ "$t" != *cozy-kahn* ]]
-  [ "$(plan_phase_title "$SANDBOX/pasted-content-id-0d29-d-cozy-kahn.md" "4 5" "Fourth; Fifth")" = "Fourth; Fifth (P4+5, Pasted intake gate)" ]
-  # A long heading is cut at a word to what the phase name leaves; the phase name is never cut for it.
-  printf '# %s\n' "$(printf 'word %.0s' $(seq 1 30))" > "$SANDBOX/long.md"
-  t="$(plan_phase_title "$SANDBOX/long.md" 3 "Intake gate")"
-  [ "${#t}" -le 80 ]
-  [[ "$t" == "Intake gate (P3, word word "*"word)" ]]
-  # A phase name that leaves under 12 characters drops the heading; one over 80 is cut with its tag whole.
-  n="$(printf 'x%.0s' $(seq 1 70))"
-  [ "$(plan_phase_title "$SANDBOX/long.md" 3 "$n")" = "$n (P3)" ]
-  t="$(plan_phase_title "$SANDBOX/long.md" 3 "$(printf 'word %.0s' $(seq 1 30))")"
-  [ "${#t}" -le 80 ]
-  [[ "$t" == *" (P3)" ]]
-  # A name carrying a tag, a marker or non-ASCII is cleaned as the heading is, or notes would read it as a gate.
-  [ "$(plan_phase_title "$SANDBOX/long.md" 3 "wire #after/lv-2 <gate> $(printf '\303\251')" | cut -c1-30)" = "wire after/lv-2 gate (P3, word" ]
-  # NEGATIVE CONTROL: a plan with no heading gets the name and the tag only.
-  printf '## Phases\n' > "$SANDBOX/bare.md"
-  [ "$(plan_phase_title "$SANDBOX/bare.md" 2 "Intake gate")" = "Intake gate (P2)" ]
-}
-
-@test "plan_pointer: a stub is short, takes a zero-padded N, and ends the path at .md" {
-  . "$REPO_ROOT/.local/lib/plan-phases.sh"
-  printf '# canon\n' > "$SANDBOX/canon.md"
-  printf 'Phase 02 of %s.\n\n## Phases\n\n- [ ] x\n' "$SANDBOX/canon.md" > "$SANDBOX/s.md"
-  [ "$(plan_pointer "$SANDBOX/s.md")" = "$(printf '%s\t2' "$(realpath "$SANDBOX/canon.md")")" ]
-  # a plan with a body of its own that opens the same way is not a stub
-  { cat "$SANDBOX/s.md"; seq 1 60; } > "$SANDBOX/long.md"
-  [ -z "$(plan_pointer "$SANDBOX/long.md")" ]
-}
-
-@test "phases_word: no plan, a missing recorded plan, plan mode before the plan is written, no checklist, a count (ar-2368, ar-3918)" {
-  printf '# Plan\n' > "$SANDBOX/p.md"
-  [ "$(phases_word - 0 - -)" = - ]
-  [ "$(phases_word "$SANDBOX/nowhere.md" 0 - -)" = missing ]
-  [ "$(phases_word "$SANDBOX/nowhere.md" 1 - -)" = - ]
-  [ "$(phases_word "$SANDBOX/p.md" 1 - -)" = none ]
-  [ "$(phases_word "$SANDBOX/p.md" 0 1 3)" = 1/3 ]
-}
-
-@test "a recorded plan file that is missing is its own verdict: STALLED, never DONE, unless its item moved on (ar-2368)" {
-  run b idle 0 0 0 30 1 0 0 875 MERGED PASS 1 - missing -
-  assert_output 'STALLED PR #875 merged, tree clean, its plan file is missing'
-  run session_finished idle 0 0 0 30 1 0 0 875 MERGED PASS 1 - missing -
-  [ "$status" -ne 0 ]
-  run work_blockers '' idle 0 0 0 30 1 0 0 875 MERGED PASS 1 - missing -
-  assert_output 'its plan file is missing'
-  # an item still running here is never read as every phase done or queued
-  run work_blockers '' idle 0 0 0 30 1 0 0 - - - 1 - missing - - - - - 'own:x-1'
-  assert_output 'its plan file is missing; its item x-1 is running here'
-  # negative control: no plan recorded at all is still one phase, DONE once its PR merged
-  run b idle 0 0 0 30 1 0 0 875 MERGED PASS 1 - - -
-  assert_output 'DONE PR #875 merged, tree clean, no plan file, its PR landed'
-  # an item that moved on took the work with it
-  run b idle 0 0 0 30 1 0 0 - - - 1 - missing - - - - - 'moved:x-1 moved on (done)'
-  assert_output 'DONE clean, nothing on the branch, its plan file is missing, its item x-1 moved on (done)'
-  [ -z "$(work_blockers '' idle 0 0 0 30 1 0 0 - - - 1 - missing - - - - - 'moved:x-1 moved on (done)')" ]
-}
-
-@test "end to end: a recorded plan file that does not exist reads STALLED, and the session closes on the quiet timer (ar-2368)" {
-  landed_fixture
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
-  rm "$SANDBOX/plan.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
-  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its plan file is missing' ]
-  [ "$(jq -r .finished <<<"$output")" = false ]
-  [[ "$(jq -r .close.why <<<"$output")" == quiet* ]]
-}
-
-@test "end to end: a plan-mode session with no plan written yet is not STALLED plan file missing (ar-3918)" {
-  clean_fixture
-  PANEL_PLAN_MODE=true panel "$SANDBOX/wt" "$SANDBOX/not-written-yet.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  assert_success
-  [ "$(jq -r .bucket <<<"$output")" = CHAT ]
-  [ "$(jq -r .reason <<<"$output")" = "clean, nothing on the branch, no plan file, no queue item: the human's conversation" ]
-  [ "$(jq -r '"\(.in_plan_mode) \(.close.verdict): \(.close.why)"' <<<"$output")" = "true keep: plan mode: the human approves or ends it" ]
-}
-
-@test "end to end: an item whose task names one phase of the plan holds that phase only (ar-2368)" {
-  # 2026-11-14 forgejo-hetzner-tailnet ("Phase Tailnet of ~/.claude/plans/virtual-strolling-nova.md",
-  # no phases:) held all six open phases, and two shepherds told the plan's session to close.
-  landed_fixture
-  phases_plan '- [x] Provision (#875)' '- [ ] Tailnet: VM joined' '- [ ] Seed: rsync the data'
-  mkdir -p "$HOME/.agent/queue/queued"
-  # task_item <slug> <task>: an item queued by hand, its task naming the plan's file, no phases:
-  task_item() {
-    printf 'slug: %s\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\n---\n%s\n' \
-      "$1" "$2" > "$HOME/.agent/queue/queued/20261103-100000-$1.md"
-  }
-  task_item tailnet "Phase Tailnet of $SANDBOX/plan.md: mint the key"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
-  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: Seed: rsync the data' ]
-  # by number, it holds the checklist's phase N
-  task_item tailnet "Phase 3 of $SANDBOX/plan.md: seed"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: Tailnet: VM joined' ]
-  # every open phase named by an item: the plan is queued
-  task_item seed "Phase seed of $SANDBOX/plan.md"
-  task_item tailnet "Phase Tailnet of $SANDBOX/plan.md: mint the key"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = DONE ]
-  # a name is matched as a whole first word, past a "Phase N:" prefix: "seed" is not "seeding"
-  phases_plan '- [x] Provision (#875)' '- [ ] Phase 2: Tailnet joined' '- [ ] Seeding: rsync the data'
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: Seeding: rsync the data' ]
-  # a task that only cites the plan's path and names no phase holds none: the session keeps its next
-  # phase (ar-288: "Start from the running plan" made hub/dotfiles:5 read DONE with P7a, P7c open)
-  rm "$HOME/.agent/queue/queued/20261103-100000-seed.md"
-  task_item tailnet "Execute $SANDBOX/plan.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
-  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: Phase 2: Tailnet joined' ]
-  # a phase mention that is not "Phase N of <this plan>" does not make a cited path a holder
-  task_item tailnet "fix: reads DONE when phase 2 of the rollout is open; see $SANDBOX/plan.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
-  # negative control: the same task with a plan: field is the plan's item and holds every open phase
-  printf 'slug: tailnet\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nplan: %s\n---\nExecute it\n' \
-    "$SANDBOX/plan.md" > "$HOME/.agent/queue/queued/20261103-100000-tailnet.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = DONE ]
-}
-
-@test "end to end: an item whose task names this session is a report about it and holds none of its phases (ar-2452)" {
-  # 2026-11-15 03:28Z: the bug-report item ar-2449 quoted session 81b68e13's plan path and named no
-  # phase, so it held P3, and close --self told the coordinator "plan finished, nothing open".
-  landed_fixture
-  mkdir -p "$HOME/.agent/queue/queued"
-  report() {
-    printf 'slug: report\nproject: agent-runtime\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\n---\n%s\n' \
-      "$1" > "$HOME/.agent/queue/queued/20261103-100000-report.md"
-  }
-  # by session id, or by its target, after a non-ASCII character too: the phase is still the session's next one
-  for who in 'session sid-9' 'coordinator lab/s1:1,' 'caf\xc3\xa9 \xe2\x80\x94 lab/s1:1'; do
-    who="$(printf '%b' "$who")"
-    report "fix(fleet-sessions): $who reads finished while Phase 2 of $SANDBOX/plan.md is unchecked"
-    run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-    [ "$(jq -r .bucket <<<"$output")" = LANDED ]
-    [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: Phase 2: rollout' ]
-    [ "$(jq -r .finished <<<"$output")" = false ]
-  done
-  # negative controls: another session's target (lab/s1:12, xlab/s1:1) or id (xsid-9) is not this
-  # one, so the item still holds the phase it names
-  for other in lab/s1:12 xlab/s1:1 xsid-9; do
-    report "fix(fleet-sessions): $other misreads Phase 2 of $SANDBOX/plan.md"
-    run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-    [ "$(jq -r .bucket <<<"$output")" = DONE ]
-  done
-}
-
-@test "sibling_pr: a check run superseded by a later run of the same check is not CI red (ar-2426)" {
-  # 2026-11-14 platform#1551: a pull_request edit ran Task PR gate again, the rollup kept the failed
-  # "Task line" beside the passing one, and the row read CI red while gh pr checks was all green.
-  git init -q "$SANDBOX/one"; git -C "$SANDBOX/one" remote add origin git@github.com:o/one.git
-  gh_script 'cat "$SANDBOX/view.json"'; export SANDBOX MAIN_CACHE="$SANDBOX/cache"; CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
-  check() { printf '{"__typename":"CheckRun","name":"%s","workflowName":"%s","status":"COMPLETED","conclusion":"%s","startedAt":"%s","detailsUrl":"https://github.com/o/three/actions/runs/%s/job/%s"}' "$1" "$2" "$3" "$4" "${6:-$5}" "$5"; }   # <name> <workflow> <conclusion> <started> <job> [run, else the job id]
-  view() { printf '{"headRefOid":"abc123","statusCheckRollup":[%s]}\n' "$(IFS=,; echo "$*")" > "$SANDBOX/view.json"; }
-  local prs='[{"repo":"o/three","number":3,"state":"OPEN"}]'
-  view "$(check 'Task line' 'Task PR gate' FAILURE 2026-11-14T17:26:46Z 11)" "$(check Build CI SUCCESS 2026-11-14T17:26:46Z 12)" \
-       "$(check 'Task line' 'Task PR gate' SUCCESS 2026-11-14T17:27:29Z 13)"
-  run sibling_pr "$SANDBOX/one" "$prs"
-  assert_output "$(printf 'o/three\t3\tPASS\tabc123')"
-  # negative controls: the newer run red, and a red check of another name, are still red
-  view "$(check 'Task line' 'Task PR gate' SUCCESS 2026-11-14T17:26:46Z 11)" "$(check 'Task line' 'Task PR gate' FAILURE 2026-11-14T17:27:29Z 13)"
-  run sibling_pr "$SANDBOX/one" "$prs"
-  assert_output "$(printf 'o/three\t3\tFAIL\tabc123')"
-  view "$(check 'Task line' 'Task PR gate' SUCCESS 2026-11-14T17:27:29Z 13)" "$(check 'Task line' 'Other gate' FAILURE 2026-11-14T17:26:46Z 11)"
-  run sibling_pr "$SANDBOX/one" "$prs"
-  assert_output "$(printf 'o/three\t3\tFAIL\tabc123')"
-  # a newer run still queued is running, not the older red
-  view "$(check 'Task line' 'Task PR gate' FAILURE 2026-11-14T17:26:46Z 11)" \
-       '{"name":"Task line","workflowName":"Task PR gate","status":"QUEUED","conclusion":"","startedAt":"0001-01-01T00:00:00Z","detailsUrl":"https://github.com/o/three/actions/runs/14/job/15"}'
-  run sibling_pr "$SANDBOX/one" "$prs"
-  assert_output "$(printf 'o/three\t3\tPENDING\tabc123')"
-  # red names only the newest run's job
-  view "$(check 'Task line' 'Task PR gate' FAILURE 2026-11-14T17:26:46Z 11)" "$(check 'Task line' 'Task PR gate' FAILURE 2026-11-14T17:27:29Z 13)"
-  [ "$(jq -r "$CI_JQ"' red' "$SANDBOX/view.json")" = 13 ]
-  # matrix shards share a name in one run: a failed shard is red whatever a later shard did
-  view "$(check Test CI FAILURE 2026-11-14T17:26:46Z 21 20)" "$(check Test CI SUCCESS 2026-11-14T17:27:29Z 22 20)"
-  run sibling_pr "$SANDBOX/one" "$prs"
-  assert_output "$(printf 'o/three\t3\tFAIL\tabc123')"
-  [ "$(jq -r "$CI_JQ"' red' "$SANDBOX/view.json")" = 21 ]
-  # a cancelled matrix job of an older run of its workflow, kept under its template name, is no red
-  # (dotfiles#2437, ar-3095); one of the newest run still is
-  view "$(check 'fast (${{ matrix.n }})' CI CANCELLED 2026-11-14T17:26:46Z 31 30)" "$(check 'fast (1)' CI SUCCESS 2026-11-14T17:27:29Z 41 40)"
-  run sibling_pr "$SANDBOX/one" "$prs"
-  assert_output "$(printf 'o/three\t3\tPASS\tabc123')"
-  view "$(check 'fast (${{ matrix.n }})' CI CANCELLED 2026-11-14T17:26:46Z 41 40)" "$(check 'fast (1)' CI SUCCESS 2026-11-14T17:27:29Z 31 30)"
-  run sibling_pr "$SANDBOX/one" "$prs"
-  assert_output "$(printf 'o/three\t3\tFAIL\tabc123')"
-}
-
-@test "self_wait reads a tail --pid on another process as an event wait, and the row stays WORKING (ar-2426)" {
-  # 2026-11-14: a `tail --pid <pid>` waiting on another process, the event wait the rules ask for,
-  # read "background shell is not a gate or test" and drew a nudge.
-  setsid bash -c 'sleep 60 & bash -c "tail --pid=\$1 -f /dev/null; :" _ "$!"; :' >/dev/null 2>&1 3>&- &
-  local root=$! tl="" spins=0
-  LIVE_PIDS="-$root"
-  until [ -n "$tl" ] && grep -q tail "/proc/$tl/cmdline" 2>/dev/null; do
-    kill -0 "$root" || fail 'the stand-in exited before tail started'
-    [ $((++spins)) -lt 20000 ] || fail 'tail never started'
-    tl="$(pgrep -P "$(pgrep -P "$root" -n bash || echo 0)" -x tail || :)"   # none yet is exit 1, not a failure
-  done
-  run self_wait "$root"
-  assert_output 'wait'
-  FLEET_IDLE_MIN=20 FLEET_SHELL_STALE_MIN=120
-  run b shell 0 0 0 25 1 0 0 875 MERGED PASS 1 - 2/3 x - wait
-  assert_output 'WORKING shell'
-  # past FLEET_SHELL_STALE_MIN it is bucketed on its facts, as a gate is
-  run b shell 0 0 0 120 1 0 0 875 MERGED PASS 1 - 2/3 x - wait
-  assert_output 'LANDED PR #875 merged, tree clean, next phase: x, background shell idle over 120m'
-  # a tail on a shell further up its own tree than its parent is hung, not a wait
-  setsid bash -c 'bash -c '\''g=$$ bash -c "tail --pid=\$g -f /dev/null; :"; :'\''; :' >/dev/null 2>&1 3>&- &
-  local deep=$!
-  LIVE_PIDS="$LIVE_PIDS -$deep"; spins=0
-  until pgrep -s "$deep" -x tail >/dev/null; do
-    kill -0 "$deep" || fail 'the deep stand-in exited before tail started'
-    [ $((++spins)) -lt 20000 ] || fail 'deep tail never started'
-  done
-  run self_wait "$deep"
-  assert_output 'hung'
-  # negative control: a shell the transcript could not class, with no such tail, is still not a wait
-  run b shell 0 0 0 25 1 0 0 875 MERGED PASS 1 - 2/3 x - jobs
-  assert_output 'LANDED PR #875 merged, tree clean, next phase: x, background shell is not a gate or test'
-}
-
-@test "end to end: a plan-mode copy of a queued plan under another name reads that plan's queued phases (ar-2426)" {
-  # 2026-11-14 hub/dotfiles:8, :9 and :13: a planner chat's plan was plan mode's random file, its
-  # phases queue items of a named copy (school-front-p*, outskirts-p1, db-soccer-p*), so the row read
-  # LANDED with a next phase and was told to queue them again.
-  landed_fixture
-  phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout' '- [ ] Phase 3: docs'
-  copy() { { printf '# Plan\n\n## Phases\n\n'; printf '%s\n' "$@"; } > "$SANDBOX/quirky-donut.md"; }
-  copy '- [ ] Phase 1: fleet-sessions' '- [ ] Phase 2: rollout' '- [ ] Phase 3: docs'
-  panel "$SANDBOX/wt" "$SANDBOX/quirky-donut.md"
-  mkdir -p "$HOME/.agent/queue/queued"
-  item() { printf 'slug: %s\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nplan: %s\nphases: %s\n---\nphase of the plan\n' \
-    "$1" "$2" "$3" > "$HOME/.agent/queue/queued/20261103-100000-$1.md"; }
-  item rollout "$SANDBOX/plan.md" 2
-  item docs "$SANDBOX/plan.md" 3
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = DONE ]
-  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: docs,rollout' ]
-  [ "$(jq -c '[.phases_done, .phases_total]' <<<"$output")" = '[1,3]' ]
-  # negative controls: a phase the named plan has free is next, and a copy whose phases differ is its own plan
-  rm "$HOME/.agent/queue/queued/20261103-100000-docs.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -c '[.bucket, .reason]' <<<"$output")" = '["LANDED","PR #875 merged, tree clean, next phase: Phase 3: docs"]' ]
-  item docs "$SANDBOX/plan.md" 3
-  copy '- [ ] Phase 1: fleet-sessions' '- [ ] Phase 2: rollout' '- [ ] Phase 3: docs and more'
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -c '[.bucket, .next_phase]' <<<"$output")" = '["LANDED","Phase 1: fleet-sessions"]' ]
-  # a tick the session made in its own copy counts when the named plan lacks it
-  phases_plan '- [ ] Phase 1: fleet-sessions' '- [ ] Phase 2: rollout' '- [ ] Phase 3: docs'
-  copy '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout' '- [ ] Phase 3: docs'
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -c '[.bucket, .phases_done, .phases_total]' <<<"$output")" = '["DONE",1,3]' ]
-  # a copy whose phases match two named plans is its own
-  cp "$SANDBOX/plan.md" "$SANDBOX/other.md"; item other "$SANDBOX/other.md" 2
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -c '[.bucket, .reason]' <<<"$output")" = '["LANDED","PR #875 merged, tree clean, next phase: Phase 2: rollout"]' ]
-  rm "$HOME/.agent/queue/queued/20261103-100000-other.md"
-  # a plan an item names by its own file name is never read through a copy
-  copy '- [ ] Phase 1: fleet-sessions' '- [ ] Phase 2: rollout' '- [ ] Phase 3: docs'
-  item own "$SANDBOX/quirky-donut.md" 1
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -c '[.bucket, .reason]' <<<"$output")" = '["LANDED","PR #875 merged, tree clean, next phase: Phase 2: rollout"]' ]
-}
-
-@test "end to end: the plan named for the session's item slug beats the plan its transcript landed against (ar-379)" {
-  # 2026-11-10 agent-34 (item p7-leftovers-..., own plan fully ticked) ticked P7 in submit-logical-spindle.md
-  # through agent-land --plan, so its pane plan was that one and it read LANDED on that plan's P4.
-  local d
-  landed_fixture   # the pane's plan: plan.md, phase 2 open
-  mkdir -p "$HOME/.claude/plans" "$HOME/.agent/queue/running"
-  printf 'slug: p7-leftovers\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsessions: sid-9\n---\nleftovers\n' \
-    > "$HOME/.agent/queue/running/20261103-100000-p7-leftovers.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -c '[.bucket, .next_phase]' <<<"$output")" = '["LANDED","Phase 2: rollout"]' ]
-  # its own plan, fully ticked, is the one the row reads
-  printf '# Own\n\n## Phases\n\n- [x] P7 leftovers (#875)\n' > "$HOME/.claude/plans/p7-leftovers.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -c '[.plan_file, .phases_done, .phases_total]' <<<"$output")" = "[\"$HOME/.claude/plans/p7-leftovers.md\",1,1]" ]
-  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its item p7-leftovers is still open with every phase done or queued' ]
-  # a plan older than this claude is an earlier run's of a reused slug
-  touch -d '2020-01-01' "$HOME/.claude/plans/p7-leftovers.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .plan_file <<<"$output")" = "$SANDBOX/plan.md" ]
-  touch "$HOME/.claude/plans/p7-leftovers.md"
-  # with several items here, the first one that has a plan names it
-  printf 'slug: side-fix\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T09:00:00Z\nsessions: sid-9\n---\nside\n' \
-    > "$HOME/.agent/queue/running/20261103-090000-side-fix.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .plan_file <<<"$output")" = "$HOME/.claude/plans/p7-leftovers.md" ]
-  rm "$HOME/.agent/queue/running/20261103-090000-side-fix.md"
-  # an item that moved on (done, as after its landing) still names its plan
-  d="$HOME/.agent/queue/done/$(date +%F)"; mkdir -p "$d"
-  mv "$HOME/.agent/queue/running/20261103-100000-p7-leftovers.md" "$d/"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -c '[.item.is, .plan_file]' <<<"$output")" = "[\"moved\",\"$HOME/.claude/plans/p7-leftovers.md\"]" ]
-  rm "$d/20261103-100000-p7-leftovers.md"
-  # negative control: an item of another session names no plan
-  printf 'slug: p7-leftovers\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsessions: sid-other\n---\nleftovers\n' \
-    > "$HOME/.agent/queue/running/20261103-100000-p7-leftovers.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .plan_file <<<"$output")" = "$SANDBOX/plan.md" ]
-}
-
-# A phase a live cron of the session runs is the session's own, in place (ar-2449: the coordinator
-# hub/dotfiles:1 read LANDED "P3 land today" and drew a wind-down nudge while its hourly cron ran P3).
-@test "a next phase a live cron runs reads WORKING, not LANDED; the same row with no cron stays LANDED (ar-2449)" {
-  # args: status plan asks heavy idle git dirty ahead pr state ci in_pr red phases next conflicts job names landed item train cron
-  run b idle 0 0 0 30 1 0 0 - - - 1 - 1/3 'P3 land today' - - - - - - yes
-  assert_output 'WORKING clean, nothing on the branch, a live cron runs its next phase: P3 land today'
-  run b idle 0 0 0 30 1 0 0 - - - 1 - 1/3 'P3 land today' - - - - - - -
-  assert_output 'LANDED clean, nothing on the branch, next phase: P3 land today'
-  # the same through a merged PR
-  run b idle 0 0 0 30 1 0 0 875 MERGED PASS 1 - 1/3 'P3 land today' - - - - - - yes
-  assert_output 'WORKING PR #875 merged, tree clean, a live cron runs its next phase: P3 land today'
-  # a cron does not hide unlanded work, an open ask or a finished plan
-  run b idle 0 0 0 30 1 3 0 - - - 1 - 1/3 'P3' - - - - - - yes
-  assert_output 'STALLED 3 dirty file(s), no PR'
-  run b idle 0 1 0 30 1 0 0 - - - 1 - 1/3 'P3' - - - - - - yes
-  assert_output --partial 'NEEDS'
-  run b idle 0 0 0 30 1 0 0 - - - 1 - 3/3 - - - - - - - yes
-  assert_output --partial 'DONE'
-}
-
-# pending_wakes reads a transcript's CronCreate results ("Scheduled recurring job <id>") less its CronDelete
-# ones ("Cancelled job <id>"); a "cron" line is a live recurring job.
-cron_line() {   # <ts> <result text>
-  jq -nc --arg ts "$1" --arg c "$2" '{type: "user", timestamp: $ts, message: {content: [{type: "tool_result", tool_use_id: "t", content: $c}]}}'
-}
-
-@test "pending_wakes cron: a recurring job is live until cancelled, after the claude start, and under 7 days old (ar-2449)" {
-  local t="$BATS_TEST_TMPDIR/t.jsonl" now start
-  now="$(date -u -d 2026-11-16T12:00:00Z +%s)"; start="$(date -u -d 2026-11-14T00:00:00Z +%s)"
-  {
-    echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Scheduled recurring job zzzz"}]}}'   # prose, not a result
-    cron_line 2026-11-15T10:00:00.123Z 'Scheduled recurring job a6a8114f (Every hour at :17). Next run: Nov 15 11:17am. Session-only.'
-  } > "$t"
-  run pending_wakes "$t" "$start" "$now"; assert_line --regexp $'^cron\t'
-  # a one-shot is not in-place work
-  cron_line 2026-11-15T10:00:00Z 'Scheduled one-shot task f0f8a782 (43 9 13 11 *). Next run: Nov 13 9:43am.' > "$BATS_TEST_TMPDIR/o.jsonl"
-  run pending_wakes "$BATS_TEST_TMPDIR/o.jsonl" "$start" "$now"; refute_output --partial $'cron\t'
-  # cancelled
-  cron_line 2026-11-15T20:00:00Z 'Cancelled job a6a8114f.' >> "$t"
-  run pending_wakes "$t" "$start" "$now"; refute_output --partial $'cron\t'
-  # a second job keeps it live, a cancel of the first notwithstanding
-  cron_line 2026-11-15T21:00:00Z 'Scheduled recurring job b7b7b7b7 (7,27,47 * * * *). Next run: x. Session-only.' >> "$t"
-  run pending_wakes "$t" "$start" "$now"; assert_line --regexp $'^cron\t'
-  # made before this claude started: the process that held it is gone
-  run pending_wakes "$t" "$(date -u -d 2026-11-15T22:00:00Z +%s)" "$now"; refute_output --partial $'cron\t'
-  # past the 7-day expiry
-  run pending_wakes "$t" "$start" "$(date -u -d 2026-11-23T00:00:00Z +%s)"; refute_output --partial $'cron\t'
-  # no transcript, no cron
-  run pending_wakes "$BATS_TEST_TMPDIR/none.jsonl" "$start" "$now"; refute_output --partial $'cron\t'
-}
-
-@test "pending_wakes cron: a durable job survives a resume; an unknown claude start counts no session-only job (ar-2449)" {
-  local t="$BATS_TEST_TMPDIR/d.jsonl" now start
-  now="$(date -u -d 2026-11-16T12:00:00Z +%s)"; start="$(date -u -d 2026-11-16T00:00:00Z +%s)"
-  cron_line 2026-11-15T10:00:00Z 'Scheduled recurring job c1c1c1c1 (Every hour at :17). Next run: x. Written to disk.' > "$t"
-  run pending_wakes "$t" "$start" "$now"; assert_line --regexp $'^cron\t'
-  cron_line 2026-11-15T10:00:00Z 'Scheduled recurring job d2d2d2d2 (Every hour at :17). Next run: x. Session-only (not written to disk, dies when Claude exits).' > "$t"
-  run pending_wakes "$t" "$start" "$now"; refute_output --partial $'cron\t'
-  run pending_wakes "$t" - "$now"; refute_output --partial $'cron\t'
-  cron_line 2026-11-16T10:00:00Z 'Scheduled recurring job d2d2d2d2 (Every hour at :17). Next run: x. Session-only (not written to disk, dies when Claude exits).' > "$t"
-  run pending_wakes "$t" "$start" "$now"; assert_line --regexp $'^cron\t'
-}
-
-# A session-only job a --resume carried over keeps firing: its "Running scheduled task" rows
-# (scheduled_task_fire, taskId = the job id) after the claude start prove it live (ar-2604: hub/dotfiles:1).
-fire_line() {   # <ts> <task id>
-  jq -nc --arg ts "$1" --arg id "$2" '{type: "system", subtype: "scheduled_task_fire", content: "Running scheduled task (Nov 16 9:36am)", timestamp: $ts, taskId: $id}'
-}
-
-@test "pending_wakes cron: a session-only job that fires after the claude start is live; one that fired only before is not (ar-2604)" {
-  local t="$BATS_TEST_TMPDIR/f.jsonl" now start
-  now="$(date -u -d 2026-11-17T12:00:00Z +%s)"; start="$(date -u -d 2026-11-16T17:18:00Z +%s)"
-  {
-    cron_line 2026-11-13T10:00:00Z 'Scheduled recurring job a6a8114f (Every hour at :17). Next run: x. Session-only (not written to disk, dies when Claude exits).'
-    fire_line 2026-11-16T10:36:32.100Z a6a8114f
-  } > "$t"
-  run pending_wakes "$t" "$start" "$now"; refute_output --partial $'cron\t'
-  fire_line 2026-11-16T17:36:32.100Z a6a8114f >> "$t"
-  run pending_wakes "$t" "$start" "$now"; assert_line --regexp $'^cron\t'
-  # an unknown claude start still counts no session-only job, fired or not
-  run pending_wakes "$t" - "$now"; refute_output --partial $'cron\t'
-  # a fire of another id does not revive it, and a cancel after the fire ends it
-  { cron_line 2026-11-13T10:00:00Z 'Scheduled recurring job a6a8114f (Every hour at :17). Next run: x. Session-only.'; fire_line 2026-11-16T17:36:00Z ffffffff; } > "$t"
-  run pending_wakes "$t" "$start" "$now"; refute_output --partial $'cron\t'
-  { cron_line 2026-11-13T10:00:00Z 'Scheduled recurring job a6a8114f (Every hour at :17). Next run: x. Session-only.'; fire_line 2026-11-16T17:36:00Z a6a8114f
-    cron_line 2026-11-16T18:00:00Z 'Cancelled job a6a8114f.'; } > "$t"
-  run pending_wakes "$t" "$start" "$now"; refute_output --partial $'cron\t'
-  # past the 7-day expiry of the job, fires or not
-  { cron_line 2026-11-13T10:00:00Z 'Scheduled recurring job a6a8114f (Every hour at :17). Next run: x. Session-only.'; fire_line 2026-11-16T17:36:00Z a6a8114f; } > "$t"
-  run pending_wakes "$t" "$start" "$(date -u -d 2026-11-21T00:00:00Z +%s)"; refute_output --partial $'cron\t'
-}
-
-# pending_wakes <transcript> <start epoch|-> <now epoch>: what will wake the session by itself, read from the
-# shapes Claude Code writes (probed 2026-11-20 for ar-3598): a tool_result line with its toolUseResult, the
-# assistant tool_use of ScheduleWakeup, the <task-notification> and the TaskStop result that end a Monitor.
-result_line() {   # <ts> <result text> <toolUseResult json>
-  jq -nc --arg ts "$1" --arg c "$2" --argjson r "$3" '{type: "user", timestamp: $ts, toolUseResult: $r, message: {content: [{type: "tool_result", tool_use_id: "t", content: $c}]}}'
-}
-wakeup_line() {   # <ts> <ScheduleWakeup input json>
-  jq -nc --arg ts "$1" --argjson i "$2" '{type: "assistant", timestamp: $ts, message: {content: [{type: "tool_use", id: "w", name: "ScheduleWakeup", input: $i}]}}'
-}
-notice_line() {   # <ts> <task id> <status>
-  jq -nc --arg ts "$1" --arg id "$2" --arg s "$3" '{type: "queue-operation", operation: "enqueue", timestamp: $ts,
-    content: "<task-notification>\n<task-id>\($id)</task-id>\n<tool-use-id>t</tool-use-id>\n<status>\($s)</status>\n<summary>Monitor \"x\" stream ended</summary>\n</task-notification>"}'
-}
-
-@test "pending_wakes: a one-shot cron waits until it fires, is cancelled or its time passes (ar-3598)" {
-  local t="$BATS_TEST_TMPDIR/w.jsonl" now start at
-  now="$(date -u -d 2026-11-19T01:03:00Z +%s)"; start="$(date -u -d 2026-11-18T20:00:00Z +%s)"; at="$(date -u -d 2026-11-19T04:33:00Z +%s)"
-  result_line 2026-11-18T22:00:00.5Z 'Scheduled one-shot task a31852b4 (33 4 19 11 *). Next run: Nov 19 4:33am. Session-only (not written to disk, dies when Claude exits). It will fire once then auto-delete.' \
-    "{\"id\":\"a31852b4\",\"recurring\":false,\"durable\":false,\"nextFireAt\":${at}000}" > "$t"
-  run pending_wakes "$t" "$start" "$now"; assert_output "$(printf 'once\ta31852b4\t%s' "$at")"
-  # a one-shot is no recurring cron
-  run pending_wakes "$t" "$start" "$now"; refute_output --partial $'cron\t'
-  # past its time, fired, cancelled, or made before this claude started (session-only): nothing
-  run pending_wakes "$t" "$start" "$((at + 1))"; assert_output ''
-  run pending_wakes "$t" "$(date -u -d 2026-11-18T23:00:00Z +%s)" "$now"; assert_output ''
-  run pending_wakes "$t" - "$now"; assert_output ''
-  cp "$t" "$t.f"; fire_line 2026-11-19T00:00:00Z a31852b4 >> "$t.f"
-  run pending_wakes "$t.f" "$start" "$now"; assert_output ''
-  cp "$t" "$t.c"; cron_line 2026-11-19T00:00:00Z 'Cancelled job a31852b4.' >> "$t.c"
-  run pending_wakes "$t.c" "$start" "$now"; assert_output ''
-  # a recurring job reads as cron, beside the one-shot, the one with a known time first
-  cron_line 2026-11-18T22:10:00Z 'Scheduled recurring job b7b7b7b7 (7,27,47 * * * *). Next run: x. Session-only.' >> "$t"
-  run pending_wakes "$t" "$start" "$now"
-  assert_output "$(printf 'once\ta31852b4\t%s\ncron\tb7b7b7b7\t-' "$at")"
-}
-
-@test "pending_wakes: the last ScheduleWakeup waits its delay; a stop ends it (ar-3598)" {
-  local t="$BATS_TEST_TMPDIR/s.jsonl" start now
-  start="$(date -u -d 2026-11-20T10:00:00Z +%s)"; now="$(date -u -d 2026-11-20T12:30:00Z +%s)"
-  { wakeup_line 2026-11-20T11:00:00Z '{"delaySeconds": 600, "prompt": "p"}'
-    wakeup_line 2026-11-20T12:10:00Z '{"delaySeconds": 1800, "prompt": "p"}'; } > "$t"
-  run pending_wakes "$t" "$start" "$now"; assert_output "$(printf 'wakeup\t-\t%s' "$(date -u -d 2026-11-20T12:40:00Z +%s)")"
-  # the runtime clamps the delay to 3600s
-  wakeup_line 2026-11-20T12:20:00Z '{"delaySeconds": 99999, "prompt": "p"}' > "$t.l"
-  run pending_wakes "$t.l" "$start" "$now"; assert_output "$(printf 'wakeup\t-\t%s' "$(date -u -d 2026-11-20T13:20:00Z +%s)")"
-  wakeup_line 2026-11-20T12:20:00Z '{"stop": true}' >> "$t"
-  run pending_wakes "$t" "$start" "$now"; assert_output ''
-  # one already due, or one an earlier claude set, is nothing
-  wakeup_line 2026-11-20T11:00:00Z '{"delaySeconds": 600}' > "$t.d"
-  run pending_wakes "$t.d" "$start" "$now"; assert_output ''
-  run pending_wakes "$t.l" "$(date -u -d 2026-11-20T12:25:00Z +%s)" "$now"; assert_output ''
-  # the ScheduleWakeup schema an api-request line carries is no call
-  printf '{"type":"api-request-blob","tools":[{"name":"ScheduleWakeup","input":{"delaySeconds":600}}]}\n' > "$t.b"
-  run pending_wakes "$t.b" "$start" "$now"; assert_output ''
-}
-
-@test "pending_wakes: an armed Monitor waits until it expires or its task notification or TaskStop ends it (ar-3598, ar-4158)" {
-  local t="$BATS_TEST_TMPDIR/m.jsonl" start now
-  start="$(date -u -d 2026-11-20T10:00:00Z +%s)"; now="$(date -u -d 2026-11-20T12:10:00Z +%s)"
-  result_line 2026-11-20T12:00:00Z 'Monitor started (task blf2qpuvu, expires in 30m unless the source ends first).' \
-    '{"taskId":"blf2qpuvu","timeoutMs":1800000,"persistent":false}' > "$t"
-  run pending_wakes "$t" "$start" "$now"; assert_output "$(printf 'monitor\tblf2qpuvu\t%s' "$(date -u -d 2026-11-20T12:30:00Z +%s)")"
-  run pending_wakes "$t" "$start" "$(date -u -d 2026-11-20T12:31:00Z +%s)"; assert_output ''
-  # a running notice is an event, not the end; a completed one, or another task's, as named
-  cp "$t" "$t.r"; notice_line 2026-11-20T12:05:00Z blf2qpuvu running >> "$t.r"; notice_line 2026-11-20T12:05:00Z other completed >> "$t.r"
-  run pending_wakes "$t.r" "$start" "$now"; assert_output --partial 'monitor	blf2qpuvu'
-  notice_line 2026-11-20T12:06:00Z blf2qpuvu completed >> "$t.r"
-  run pending_wakes "$t.r" "$start" "$now"; assert_output ''
-  # Claude Code can write the end notice before the "Monitor started" line (a source that ends at once)
-  { notice_line 2026-11-20T12:00:00.725Z blf2qpuvu completed; cat "$t"; } > "$t.o"
-  run pending_wakes "$t.o" "$start" "$now"; assert_output ''
-  # a TaskStop result ends it with no notification: the JSON tool_result Claude Code writes, or the bare text; a
-  # stop of another task, or the words inside some other output, do not (ar-4158)
-  cp "$t" "$t.s"; result_line 2026-11-20T12:03:00Z '{"message":"Successfully stopped task: other (sleep 9)","task_id":"other"}' '{"task_id":"other"}' >> "$t.s"
-  result_line 2026-11-20T12:03:30Z 'grep says: Successfully stopped task: blf2qpuvu' '{}' >> "$t.s"
-  run pending_wakes "$t.s" "$start" "$now"; assert_output --partial 'monitor	blf2qpuvu'
-  result_line 2026-11-20T12:04:00Z '{"message":"Successfully stopped task: blf2qpuvu (tail -f x)","task_id":"blf2qpuvu"}' '{"task_id":"blf2qpuvu"}' >> "$t.s"
-  run pending_wakes "$t.s" "$start" "$now"; assert_output ''
-  cp "$t" "$t.b"; result_line 2026-11-20T12:04:00Z 'Successfully stopped task: blf2qpuvu' '{}' >> "$t.b"
-  run pending_wakes "$t.b" "$start" "$now"; assert_output ''
-  # a persistent Monitor has no expiry, so it holds 7 days, as a recurring cron does
-  result_line 2026-11-20T12:00:00Z 'Monitor started (task p1p1p1p1, persistent).' '{"taskId":"p1p1p1p1","timeoutMs":1800000,"persistent":true}' > "$t.p"
-  run pending_wakes "$t.p" "$start" "$(date -u -d 2026-11-20T18:00:00Z +%s)"; assert_output "$(printf 'monitor\tp1p1p1p1\t-')"
-  run pending_wakes "$t.p" "$start" "$(date -u -d 2026-11-27T13:00:00Z +%s)"; assert_output ''
-  # a fire row with no taskId is skipped, not a jq error that blanks every wake
-  echo '{"type":"system","subtype":"scheduled_task_fire","timestamp":"2026-11-20T12:30:00Z"}' >> "$t.p"
-  run pending_wakes "$t.p" "$start" "$(date -u -d 2026-11-20T18:00:00Z +%s)"; assert_output "$(printf 'monitor\tp1p1p1p1\t-')"
-}
-
-@test "wake_facts: the wake for any session, the plan's cron only for an idle one with a phase no item holds (ar-3598)" {
-  local t="$BATS_TEST_TMPDIR/c.jsonl" start now
-  start="$(date -u -d 2026-11-15T00:00:00Z +%s)"; now="$(date -u -d 2026-11-15T12:00:00Z +%s)"
-  cron_line 2026-11-15T10:00:00Z 'Scheduled recurring job b7b7b7b7 (Every hour at :17). Next run: x. Session-only.' > "$t"
-  run wake_facts "$t" "$start" "$now" 30 1/3 1 3 -; assert_output "$(printf 'a recurring cron b7b7b7b7\tyes')"
-  # mid-turn (close --self), no plan, a finished plan or a queued phase: the wake alone
-  run wake_facts "$t" "$start" "$now" 0 1/3 1 3 -; assert_output "$(printf 'a recurring cron b7b7b7b7\t-')"
-  run wake_facts "$t" "$start" "$now" 30 - - - -; assert_output "$(printf 'a recurring cron b7b7b7b7\t-')"
-  run wake_facts "$t" "$start" "$now" 30 3/3 3 3 -; assert_output "$(printf 'a recurring cron b7b7b7b7\t-')"
-  run wake_facts "$t" "$start" "$now" 30 1/3 1 3 queued:x; assert_output "$(printf 'a recurring cron b7b7b7b7\t-')"
-  run wake_facts "$BATS_TEST_TMPDIR/none.jsonl" "$start" "$now" 30 1/3 1 3 -; assert_output "$(printf -- '-\t-')"
-}
-
-@test "wake_phrase names the soonest wake in words and counts the rest (ar-3598)" {
-  local at; at="$(date -u -d 2026-11-19T04:33:00Z +%s)"
-  export TZ=UTC
-  run wake_phrase < <(printf 'once\ta318\t%s\ncron\tb7b7\t-\n' "$at"); assert_output 'a one-shot cron a318 at Thu 04:33, +1 more'
-  run wake_phrase < <(printf 'monitor\tm1\t%s\n' "$at"); assert_output 'a Monitor m1 until Thu 04:33'
-  run wake_phrase < <(printf 'wakeup\t-\t%s\n' "$at"); assert_output 'a ScheduleWakeup at Thu 04:33'
-  run wake_phrase < <(printf 'cron\tb7b7\t-\n'); assert_output 'a recurring cron b7b7'
-  run wake_phrase </dev/null; assert_output ''
-}
-
-@test "landed_named keeps only the PRs a plan's Phases section names" {
-  phases_plan '- [x] Phase 1: scoring (#875)' '- [x] Phase 2: docs (o/r#42, #43)' '- [ ] Phase 3: rollout'
-  printf '# Plan\n\nIgnored prose names #2118.\n' > "$SANDBOX/other.md"
-  run landed_named '#2118' "$SANDBOX/plan.md"; [ "$output" = - ]
-  run landed_named '#2118,#875,#42' "$SANDBOX/plan.md"; assert_output '#875'   # a cross-repo o/r#42 is not this repo's #42
-  run landed_named '#87' "$SANDBOX/plan.md"; [ "$output" = - ]   # #875 is not #87
-  run landed_named '#43' - "$SANDBOX/missing.md" "$SANDBOX/plan.md"; assert_output '#43'
-  run landed_named '#2118' "$SANDBOX/other.md"; [ "$output" = - ]
-}
-
-@test "end to end: a merged PR no phase of the plan names is not claimed by the row (ar-2606)" {
-  # 2026-11-16 hub/dotfiles:1 read "its PRs #2118 merged, next phase: P3": #2118 was a chore item of the
-  # session, named by no phase, so the row said a phase landed that did not.
-  landed_fixture
-  local d="$HOME/.agent/queue/done/$(date +%F)"
-  : > "$LEDGER_DIR/prs.tsv"
-  mkdir -p "$d"
-  printf 'slug: chore-x\nproject: p\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-08T02:51:57Z\nsessions: sid-9\npr: o/r#2118\nmerged: abc\nstatus: ok\nfinished: %s\n---\nchore\n' \
-    "$(date -u +%FT%TZ)" > "$d/20261108-025157-chore-x.md"
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  assert_success
-  [[ "$(jq -r .reason <<<"$output")" != *2118* ]]
-  # the plan naming it makes it the phase's landing
-  phases_plan '- [x] Phase 1: fleet-sessions (#875, #2118)' '- [ ] Phase 2: rollout'
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [[ "$(jq -r .reason <<<"$output")" == *"its PRs #2118 merged"* ]]
-}
-
-@test "submodule_pin: a submodule is unlanded only when off both its default branch and the superproject's pin (ar-2606)" {
-  local g=(git -c user.email=t@t -c user.name=t -c protocol.file.allow=always); CACHE="$SANDBOX/cache"; mkdir -p "$CACHE"
-  git init -q --bare "$SANDBOX/sub.git"; git init -q --bare "$SANDBOX/super.git"
-  git clone -q "$SANDBOX/sub.git" "$SANDBOX/subw" 2>/dev/null
-  "${g[@]}" -C "$SANDBOX/subw" commit -q --allow-empty -m s0; "${g[@]}" -C "$SANDBOX/subw" push -q origin HEAD:master 2>/dev/null
-  git clone -q "$SANDBOX/super.git" "$SANDBOX/wt" 2>/dev/null
-  "${g[@]}" -C "$SANDBOX/wt" commit -q --allow-empty -m init
-  "${g[@]}" -C "$SANDBOX/wt" submodule -q add "$SANDBOX/sub.git" External/core 2>/dev/null
-  "${g[@]}" -C "$SANDBOX/wt" commit -q -m pin; "${g[@]}" -C "$SANDBOX/wt" push -q origin HEAD:main 2>/dev/null
-  "${g[@]}" -C "$SANDBOX/wt" fetch -q origin
-  local sm="$SANDBOX/wt/External/core"
-  # a pin-merge commit off master that the superproject's main pins: HEAD is the pin, so nothing is unlanded
-  git -C "$sm" checkout -q -b pin-merge; echo 1 > "$sm/f"; "${g[@]}" -C "$sm" add f; "${g[@]}" -C "$sm" commit -q -m pm
-  "${g[@]}" -C "$SANDBOX/wt" add External/core; "${g[@]}" -C "$SANDBOX/wt" commit -q -m 'pin the pin-merge'
-  "${g[@]}" -C "$SANDBOX/wt" push -q origin HEAD:main 2>/dev/null; "${g[@]}" -C "$SANDBOX/wt" fetch -q origin
-  run ahead_files "$sm" origin/master; assert_output 1                               # the old read: off master
-  gh_script 'exit 1'; MAIN_CACHE="$SANDBOX/main"; touch "$LEDGER_DIR/prs.tsv"
-  unlanded() { git_facts "$1" | cut -d' ' -f3; }
-  run submodule_pin "$sm" pass_base; assert_output "$(git -C "$sm" rev-parse HEAD)"
-  [ "$(unlanded "$sm")" = 0 ]
-  # close --self from the superproject, in the reported shape (ar-2518, ucp agent-14 at 50758455: pin-merge pushed):
-  # no unlanded blocker. The pin clears it, not the push, which leaves the read unchanged.
-  "${g[@]}" -C "$sm" push -q origin pin-merge 2>/dev/null; "${g[@]}" -C "$sm" fetch -q origin
-  run edited_work_blockers "$SANDBOX/wt" "$sm/f"; assert_output ''
-  # a commit past the pin that is on neither branch is unlanded work
-  echo 2 > "$sm/g"; "${g[@]}" -C "$sm" add g; "${g[@]}" -C "$sm" commit -q -m extra
-  [ "$(unlanded "$sm")" = 1 ]
-  run edited_work_blockers "$SANDBOX/wt" "$sm/g"; assert_output "STALLED unlanded work in $sm: 1 file(s) not on the default branch, no PR"
-  # merged to the submodule's master but not yet pinned: landed, not unlanded
-  "${g[@]}" -C "$sm" push -q origin HEAD:master 2>/dev/null; "${g[@]}" -C "$sm" fetch -q origin
-  run ahead_files "$sm" "$(submodule_pin "$sm" pass_base)"; assert_output 1
-  [ "$(unlanded "$sm")" = 0 ]
-  # outside a submodule there is no pin and the base is the base
-  run submodule_pin "$SANDBOX/wt" pass_base; assert_output ''
-}
-
-@test "an open PR whose red jobs ran no steps is WORKING, waiting on billing; a job with a step is a real red (ar-2606)" {
-  landed_fixture
-  export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache"
-  ledger feat/x '[]'
-  printf '{"conclusion":"failure","steps":[]}\n' > "$SANDBOX/job_90.json"; printf '{"conclusion":"failure","steps":[]}\n' > "$SANDBOX/job_91.json"
-  job 92 'Run tests:failure'
-  printf '{"conclusion":"cancelled","steps":[]}\n' > "$SANDBOX/job_93.json"
-  open_pr FAIL 90,91
-  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
-  [ "$(jq -r .ci <<<"$output")" = NOSTART ]
-  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI never started (its jobs ran no steps), waiting on billing' ]
-  # negative controls: one job that ran a step, a cancelled job, a check that is not a job, no job ids at all
-  for red in 90,92 90,93 90,- - 92; do
-    open_pr FAIL "$red"
-    run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-    [ "$(jq -r .bucket <<<"$output")" = STALLED ]
-    [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
-  done
+  [ "$(jq -r 'select(.bucket != "NIGHTLY") | .reason' <<<"$output")" = 'PR #9 CI red' ]
 }

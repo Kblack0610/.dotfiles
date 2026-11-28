@@ -5,9 +5,9 @@
 // Pipelines: one row per workflow of each repo from /api/pipelines (hub_core::pipelines): its
 // state and why, triggers, night membership, next start, last run and times; an opened row reads
 // /api/pipelines/detail.
-// Tests: the suites of one finished run of a repo's declared test workflow from /api/tests
-// (hub_core::junit), the picked repo's newest unless the run picker names another, then the
-// Quarantine table, one row per quarantined test (hub_core::quarantine), from the same read.
+// Tests: one block per declared test workflow (lane) of the picked repo from /api/tests
+// (hub_core::junit), each with the suites of its latest nightly unless its run picker names
+// another, then the Quarantine table, one row per quarantined test (hub_core::quarantine), from the same read.
 // Each is the shared table (table.js) under its own view keys (bq, bs, bsort, bdir; lq, ls, lsort,
 // ldir; tq, ts, tsort, tdir, trepo, trun; qq, qs, qsort, qdir), so it sits beside another table
 // on its tab. A run's jobs and log, a pipeline's detail and a suite's tests are read when the row
@@ -254,24 +254,23 @@ function ciPaint(el, t, ...more) {
   seekSection();
 }
 
-// The opened run's title, header line and rates (/api/builds/detail, hub_core::run_detail): its Summary.
+// The opened run's title and header line (/api/builds/detail, hub_core::run_detail): its Summary.
 function runHeader(o) {
   if (o.err) return `<div class="cline down">${esc(o.err)}</div>`;
   const d = o.d;
   if (!d) return `<div class="cline">Loading jobs...</div>`;
-  return `<div class="cline"><b>${esc(d.title)}</b></div><div class="cline">${esc(d.header)}</div>` +
-    (d.rates_error ? `<div class="cline warn">no rates: ${esc(d.rates_error)}</div>` : "");
+  return `<div class="cline"><b>${esc(d.title)}</b></div><div class="cline">${esc(d.header)}</div>`;
 }
 
-// The opened run's Jobs: the stage graph, then every job with its price and the steps (read when
+// The opened run's Jobs: the stage graph, then every job and its steps (read when
 // the row opens). Each cell carries its label, so a phone stacks a job into labelled lines.
 function runJobs(o, folds, page, owner, r) {
   const d = o.d;
   const k = o.key;
   const cell = (label, v, cls = "") => `<td data-label="${label}"${cls ? ` class="${cls}"` : ""}>${esc(v)}</td>`;
   const job = (j) => `<tr>${cell("job", j.name, "wrap")}${cell("class", j.class, "muted")}${cell("wait", j.wait_text, "n")}` +
-    `${cell("took", j.took_text, "n")}${cell("runner", j.runner, "wrap muted")}${cell("$", j.price.text, "n")}</tr>`;
-  const head = "<tr><th>job</th><th>class</th><th>wait</th><th>took</th><th>runner</th><th>$ basis</th></tr>";
+    `${cell("took", j.took_text, "n")}${cell("runner", j.runner, "wrap muted")}</tr>`;
+  const head = "<tr><th>job</th><th>class</th><th>wait</th><th>took</th><th>runner</th></tr>";
   const jobs = (d.jobs || []).length
     ? `<table class="tbl rdjobs">${head}${d.jobs.map(job).join("")}</table>` : "";
   const steps = (d.jobs || []).filter((j) => j.steps_text).map((j) => `<div class="cline"><b>${esc(j.name)}</b> ${esc(j.steps_text)}</div>`).join("");
@@ -413,7 +412,8 @@ $("ci-pipelines").addEventListener("click", (e) => {
   if (r) openPipeline(key, r);
 });
 
-// Infra's CI Tests: the suites of one finished run of a declared test workflow.
+// Infra's CI Tests: one block per declared test workflow (lane) of the picked repo, each with the
+// suites of its run (the latest nightly unless the human picked another).
 const TESTS_PRE = "t";
 const TESTS_HINT = "search, or tier:unit state:failed suite:fleet, or a test's name";
 const tst = tblTab({
@@ -427,8 +427,8 @@ const tst = tblTab({
   head: (t) => testsHead(t.data), body: (t) => testsBody(t.data), tiles: (t) => testsTiles(t.data),
   render: () => ciPaint("ci-tests", tst, qtn, cas),
   after: () => renderInfra(),
-  // An opened suite belongs to the run it was read from: another run shows none open.
-  got: (t) => { if (cas.run && cas.run !== (t.data.run && t.data.run.id)) { t.sel = null; shutSuite(); } },
+  // An opened suite belongs to the run it was read from: a run no lane shows any more has none open.
+  got: (t) => { if (cas.run && !(t.data.lanes || []).some((l) => l.run && l.run.id === cas.run)) { t.sel = null; shutSuite(); } },
 });
 
 // The opened suite's tests: a table of their own (`c` keys), filtered on the server so the
@@ -447,26 +447,40 @@ const cas = tblTab({
 const shutSuite = () => Object.assign(cas, { run: null, tier: "", suite: "", key: null, data: null, err: null });
 
 const TST_COLS = { state: ["state"], tier: ["tier"], suite: ["suite"], tests: ["tests", "n"], failed: ["failed", "n"], quarantined: ["quarantined", "n"], skipped: ["skipped", "n"], time: ["time", "n"] };
-const tstKey = (r) => `${r.tier}|${r.suite}`;
+// A suite is opened by its run, tier and file: two lanes can run a file of the same name.
+const tstKey = (run, r) => `${run.id}|${r.tier}|${r.suite}`;
 // A dotted name (Playground.PlayTests.Suite.Case) has no space to wrap at, so one long name pushed
 // the columns after it off a 1400px page: it may break after each dot.
 const dotted = (s) => esc(s).replace(/\./g, ".<wbr>");
 const testTime = (s) => (s >= 60 ? secs(s) : s > 0 ? `${s.toFixed(s < 10 ? 2 : 0)}s` : "-");
 const testClass = (result) => (result === "failed" ? "bad" : result === "quarantined" ? "warn" : "");
 
-function suiteRow(r) {
-  const open = tstKey(r) === tst.sel;
-  const row = `<tr class="sr${open ? " sel" : ""}" data-skey="${esc(tstKey(r))}">` +
+// A class's recent results, oldest first, as one small block each (hub-core's `history` on the
+// suite row: passed, failed, skipped or quarantined), with its flake rate (`flake`, percent).
+// A lane draws the column only when one of its suites carries a history.
+const hasHistory = (rows) => rows.some((r) => (r.history || []).length);
+function histCell(r) {
+  const h = r.history || [];
+  if (!h.length) return `<td class="hist"></td>`;
+  const strip = `<span class="hstrip" title="${esc(`last ${h.length} runs, oldest first: ${h.join(", ")}`)}">${h.map((x) => `<i class="${esc(x)}"></i>`).join("")}</span>`;
+  const flake = r.flake > 0 ? ` <span class="warn" title="share of runs that failed then passed">${esc(r.flake)}% flaky</span>` : "";
+  return `<td class="hist">${strip}${flake}</td>`;
+}
+
+function suiteRow(r, run, hist) {
+  const key = tstKey(run, r), open = key === tst.sel;
+  const row = `<tr class="sr${open ? " sel" : ""}" data-skey="${esc(key)}">` +
     `<td class="${levelClass(r.level)}">${esc(r.state)}</td><td>${esc(r.tier)}</td><td class="wrap">${dotted(r.suite)}</td>` +
-    `<td class="n">${r.tests}</td><td class="n ${r.failed ? "bad" : "muted"}">${r.failed}</td><td class="n ${r.quarantined ? "warn" : "muted"}">${r.quarantined || 0}</td><td class="n muted">${r.skipped}</td><td class="n">${testTime(r.time)}</td></tr>`;
-  return open ? row + suiteDetail(r) : row;
+    `<td class="n">${r.tests}</td><td class="n ${r.failed ? "bad" : "muted"}">${r.failed}</td><td class="n ${r.quarantined ? "warn" : "muted"}">${r.quarantined || 0}</td><td class="n muted">${r.skipped}</td><td class="n">${testTime(r.time)}</td>` +
+    `${hist ? histCell(r) : ""}</tr>`;
+  return open ? row + suiteDetail(r, run, hist) : row;
 }
 
 // The opened suite's tests, failed first, under their result tiles and search.
-function suiteDetail(r) {
-  const open = cas.data && cas.key === `${cas.run}|${tstKey(r)}`;
+function suiteDetail(r, run, hist) {
+  const open = cas.data && cas.key === tstKey(run, r) && cas.run === run.id;
   const inner = open ? cas.html() : cas.err ? `<span class="warn">${esc(cas.err)}</span>` : `<span class="muted">reading...</span>`;
-  return `<tr class="wdet"><td colspan="8"><div class="sdet"><div class="muted">${esc(r.tier)} ${dotted(r.suite)}</div>${inner}</div></td></tr>`;
+  return `<tr class="wdet"><td colspan="${hist ? 9 : 8}"><div class="sdet"><div class="muted">${esc(r.tier)} ${dotted(r.suite)}</div>${inner}</div></td></tr>`;
 }
 
 function casesBody(d) {
@@ -475,35 +489,57 @@ function casesBody(d) {
   return lines || `<div class="muted">${d.table.total ? "No test matches." : "No tests in this suite."}</div>`;
 }
 
+// The run picker of a lane: its finished runs, each by branch, commit, result and age. A pick
+// is `trun`, one run id per lane: the lanes the human pinned keep theirs, the rest follow their
+// default (the latest nightly).
+function laneRuns(d, l) {
+  const others = (d.lanes || []).filter((o) => o !== l && o.pinned && o.run).map((o) => o.run.id);
+  const dflt = `<option value="${others.join(",")}"${l.pinned ? "" : " selected"}>default (latest nightly)</option>`;
+  const opts = dflt + l.runs.map((r) => `<option value="${[...others, r.id].join(",")}"${l.pinned && r.id === l.run.id ? " selected" : ""}>${esc(`${r.branch} ${r.sha} ${r.event === "schedule" ? "nightly " : ""}${r.state}, ${ago(r.started)} ago`)}</option>`).join("");
+  const link = /^https:/.test(l.run.url || "") ? ` <a href="${esc(l.run.url)}" target="_blank" rel="noopener">Open run</a>` : "";
+  return `<div class="cline"><select data-twin="run" aria-label="CI run of ${esc(l.workflow)}">${opts}</select>${link}</div>`;
+}
+
+// One lane: its workflow, its run and what it counted, then its suites. A lane with no run, or
+// none that left results, still shows its name and says why.
+function laneBlock(d, l, i) {
+  const t = l.table, rows = l.rows || [];
+  let html = secHead(`tests-${i}`, l.workflow, l.run ? tblCount(t) : null, l.totals.failed_suites > 0 ? "bad" : "", "h3");
+  if (!l.run) return html + `<div class="panel muted">${esc(l.note)}</div>`;
+  html += laneRuns(d, l) + `<div class="cline ${l.totals.failed ? "bad" : ""}">${esc(l.says)}</div>`;
+  if ((l.errors || []).length) html += `<div class="panel down">${l.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
+  const note = l.note ? `<div class="panel muted">${esc(l.note)}</div>` : "";
+  if (l.fold) return html + `<div class="panel"><button class="btn sm" data-ts="passed" title="list the passing suites">${esc(l.fold)}</button></div>`;
+  if (!rows.length) return html + (note || `<div class="panel">${t && t.total ? "No suites match." : "No suites in this run."}</div>`);
+  const hist = hasHistory(rows);
+  const head = tblHead(t, TST_COLS).replace("</tr>", hist ? `<th data-role="" data-label="history">history</th></tr>` : "</tr>");
+  return html + note + `<div class="panel scroll"><table class="tbl">${head}${rows.map((r) => suiteRow(r, l.run, hist)).join("")}</table></div>` + tblPager(t);
+}
+
+// The lanes, each from the one read; none until a repo declares a test workflow that has run.
 function testsBody(d) {
-  const t = d.table, rows = d.rows || [];
-  if (!d.run) return `<div class="panel">No finished run of a declared test workflow in the ledger (testWorkflows in the project map).</div>`;
-  const note = d.note ? `<div class="panel muted">${esc(d.note)}</div>` : "";
-  if (d.fold) return `<div class="panel"><button class="btn sm" data-ts="passed" title="list the passing suites">${esc(d.fold)}</button></div>`;
-  if (!rows.length) return note || `<div class="panel">${t && t.total ? "No suites match." : "No suites in this run."}</div>`;
-  return note + `<div class="panel scroll"><table class="tbl">${tblHead(t, TST_COLS)}${rows.map(suiteRow).join("")}</table></div>`;
+  const lanes = d.lanes || [];
+  if (!lanes.length) return `<div class="panel">No repo has a finished run of a declared test workflow in the ledger (testWorkflows in the project map).</div>`;
+  return lanes.map((l, i) => laneBlock(d, l, i)).join("");
 }
 
 // The repo picker (`trepo`: the repos with a finished run of a declared test workflow, the newest
-// first), then the run picker: that repo's finished runs, each by branch, commit, result and age.
-// A new repo drops the picked run (data-tclear), so it opens on that repo's newest.
+// first). A new repo drops the picked runs (data-tclear), so each lane opens on its default.
 function testsPicker(d) {
-  if (!d.run) return "";
+  if (!(d.lanes || []).length) return "";
   const repos = (d.repos || []).map((r) => `<option value="${esc(r)}"${r === d.repo ? " selected" : ""}>${esc(r)}</option>`).join("");
-  const opts = d.runs.map((r) => `<option value="${r.id}"${r.id === d.run.id ? " selected" : ""}>${esc(`${r.branch} ${r.sha} ${r.state}, ${ago(r.started)} ago`)}</option>`).join("");
-  const link = /^https:/.test(d.run.url || "") ? ` <a href="${esc(d.run.url)}" target="_blank" rel="noopener">Open run</a>` : "";
-  return `<div class="cline"><select data-twin="repo" data-tclear="run" aria-label="repo">${repos}</select> <select data-twin="run" aria-label="CI run">${opts}</select>${link}</div>`;
+  return `<div class="cline"><select data-twin="repo" data-tclear="run" aria-label="repo">${repos}</select></div>`;
 }
 
-// The run's tests over every suite, after the suites' state tiles; none before a run has results.
+// The tests over every lane, after the suites' state tiles; none before a run has results.
 const testsTiles = (d) => {
   const n = d.totals;
-  return d.run && n && n.tests ? tile("TESTS", n.tests, n.failed ? "var(--b-needs)" : "var(--b-done)", `${n.failed} failed, ${n.skipped} skipped`) : "";
+  return (d.lanes || []).length && n && n.tests ? tile("TESTS", n.tests, n.failed ? "var(--b-needs)" : "var(--b-done)", `${n.failed} failed, ${n.skipped} skipped`) : "";
 };
 
 function testsHead(d) {
-  const v = d.table;
-  let html = secHead("tests", "Tests", v && d.run ? tblCount(v) : null, d.totals?.failed_suites > 0 ? "bad" : "") + testsPicker(d);
+  const v = d.table, has = (d.lanes || []).length;
+  let html = secHead("tests", "Tests", v && has ? tblCount(v) : null, d.totals?.failed_suites > 0 ? "bad" : "") + testsPicker(d);
   if (tst.err) html += `<div class="panel down">${esc(tst.err)}</div>`;
   if ((d.errors || []).length) html += `<div class="panel down">${d.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   return html;
@@ -551,20 +587,29 @@ const qtnBlock = (d) => {
 // artifacts, so the heading shows before the rows do.
 tst.block = () => {
   if (!tst.data) return tst.err ? `<div class="panel down">${esc(tst.err)}</div>` : secHead("tests", "Tests") + `<div class="empty">Reading...</div>`;
-  if (!tst.data.run) return `<div id="tst-head">${testsHead(tst.data)}</div><div id="tst-body">${testsBody(tst.data)}</div>` + qtnBlock(tst.data);
-  const body = tblPaged(tst.data.table, () => testsBody(tst.data));
+  if (!(tst.data.lanes || []).length) return `<div id="tst-head">${testsHead(tst.data)}</div><div id="tst-body">${testsBody(tst.data)}</div>` + qtnBlock(tst.data);
+  const body = tblBodyFirst(tst.data.table, () => testsBody(tst.data));
   return `<div data-tbl="${TESTS_PRE}"><div id="tst-head">${testsHead(tst.data)}</div>${tblBar("tst", tst.data.table, TESTS_HINT, testsTiles(tst.data))}` +
     `<div id="tst-body">${body}</div></div>` + qtnBlock(tst.data);
 };
 
 // A suite's tests, read when its row opens, on all of them.
-function openSuite(key, r) {
+function openSuite(key, r, run) {
   tst.sel = key;
   shutSuite();
-  Object.assign(cas, { run: tst.data.run.id, tier: r.tier, suite: r.suite });
+  Object.assign(cas, { run: run.id, tier: r.tier, suite: r.suite });
   setQuery(tblSet(st.views.infra, { q: "", s: "", sort: "", dir: "" }, CASES_PRE));
   tst.render();
   cas.refresh();
+}
+
+// The suite row a click named, with the run of the lane it is in.
+function suiteOf(key) {
+  for (const l of tst.data.lanes || []) {
+    const r = l.run && (l.rows || []).find((x) => tstKey(l.run, x) === key);
+    if (r) return [r, l.run];
+  }
+  return null;
 }
 
 $("ci-tests").addEventListener("click", (e) => {
@@ -574,8 +619,8 @@ $("ci-tests").addEventListener("click", (e) => {
   if (!tr) return;
   const key = tr.dataset.skey;
   if (tst.sel === key) { tst.sel = null; shutSuite(); tst.render(); return; }
-  const r = (tst.data.rows || []).find((x) => tstKey(x) === key);
-  if (r) openSuite(key, r);
+  const hit = suiteOf(key);
+  if (hit) openSuite(key, ...hit);
 });
 
 for (const el of ["ci-runs", "ci-pipelines", "ci-tests"]) $(el).addEventListener("toggle", (e) => { if (e.target.dataset?.k) CI_OPEN[e.target.dataset.k] = e.target.open; }, true);

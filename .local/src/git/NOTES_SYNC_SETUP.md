@@ -240,7 +240,7 @@ git -C ~/.notes remote -v
 #   origin  https://git.example.internal/kblack0610/.notes.git
 
 # Push side: edit a file, watch the sync log
-date >> ~/.notes/inbox/_test.md
+date >> ~/.notes/captures/_test.md
 tail -f ~/.local/state/notes-sync/sync.log  # Linux, macOS, Termux
 Get-Content $env:LOCALAPPDATA\notes-sync\watch.log -Wait         # Windows
 

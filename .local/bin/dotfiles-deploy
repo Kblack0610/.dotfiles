@@ -58,7 +58,8 @@
 #      dotfiles-autopull builds there, and ~/.local/bin links point into it. A tracked absolute
 #      link stow ignores (an enable into /usr/lib) is kept as it is; any other
 #      tracked path stow ignores blocks it. Only a full --apply does it, never --missing. See unfold.
-#   7. A STALE link (dangling, into a repo) is removed; --missing does that too.
+#   7. A STALE link (dangling, into a repo) is removed; --missing does that too. A checkout
+#      mid-rebase, merge or checkout, detached or off its default branch holds it (HELD).
 #   8. A RUNTIME directory (a link to a checkout directory no repo tracks) moves out of the
 #      checkout whole, under a full --apply only.
 #
@@ -102,6 +103,10 @@ set -uo pipefail
 
 # shellcheck source=../lib/dotfiles-repos.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/dotfiles-repos.sh"
+# shellcheck source=../lib/stat.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/stat.sh"
+# shellcheck source=../lib/agent-merge-proof.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/agent-merge-proof.sh"
 # Anchored to $HOME, deliberately NOT to $XDG_STATE_HOME. This tool's whole subject is one
 # particular $HOME, so its backups have to land in the same one it is rewriting. Honouring
 # XDG_STATE_HOME would let a run pointed at $HOME=X drop the only surviving copy of X's
@@ -112,6 +117,7 @@ BACKUP_ROOT="$HOME/.local/state/dotfiles-deploy/backup"
 
 MODE=check
 FORMAT=text
+HELD=()   # one line per checkout whose STALE prune link_findings held
 ONLY_MISSING=0
 ONLY_PATHS=()
 
@@ -368,11 +374,6 @@ first_link() {
   return 0
 }
 
-# dev_of <path> - the device number of <path>, GNU stat then BSD stat.
-dev_of() {
-  stat -c %d -- "$1" 2>/dev/null || stat -f %d -- "$1" 2>/dev/null
-}
-
 # find_folds - fill FOLD_REPO: each directory link $HOME/<dir> -> <repo>/<dir> on the way to a
 # deploy path, mapped to the repo it points into. A link to a different path (a skill linked from
 # its category dir, an account dir's commands) is not a fold: stow never writes one.
@@ -473,14 +474,32 @@ tracked_anywhere() {
   return 1
 }
 
+# unsettled <dir> - prints why the checkout's tree is not its settled default branch, or nothing.
+# A file missing from a tree mid-rebase, detached or on another branch comes back when it settles,
+# so its link only dangles for now; pruning it lost ~/.local/bin commands until the next pass.
+unsettled() {
+  local m p branch def
+  for m in MERGE_HEAD:mid-merge rebase-merge:mid-rebase rebase-apply:mid-rebase \
+           CHERRY_PICK_HEAD:mid-cherry-pick REVERT_HEAD:mid-revert BISECT_LOG:mid-bisect \
+           sequencer:mid-sequence index.lock:mid-checkout; do
+    p="$(git -C "$1" rev-parse --git-path "${m%%:*}" 2>/dev/null)" || continue
+    case "$p" in /*) ;; *) p="$1/$p" ;; esac
+    [ -e "$p" ] && { printf '%s\n' "${m#*:}"; return 0; }
+  done
+  branch="$(git -C "$1" symbolic-ref -q --short HEAD 2>/dev/null)" || { echo 'on a detached HEAD'; return 0; }
+  def="$(merge_proof_branch "$1")" || return 0
+  [ "$branch" = "$def" ] || printf 'on %s, not %s\n' "$branch" "$def"
+}
+
 # link_findings - the links in each real directory of $HOME that holds a deploy path, which no
 # deploy path accounts for: a STALE finding per dangling one into a repo, and a RUNTIME finding
 # per directory link to the same path in a repo that tracks nothing there. A directory a repo
 # deleted whole is not looked in: its parent is.
 link_findings() {
   local rec path d l r rel real
-  declare -A dirs=() deploys=()
+  declare -A dirs=() deploys=() why=() held=()
   local -a starts=()
+  HELD=()
   for rec in "${MANIFEST[@]}"; do
     IFS="$SEP" read -r path _ _ _ <<< "$rec"
     deploys["$path"]=1
@@ -518,8 +537,14 @@ link_findings() {
     [ -n "${deploys[$rel]:-}" ] && continue
     r="$(repo_of_target "$l")"
     [ -n "$r" ] || continue
+    [ -n "${why[$r]+set}" ] || why["$r"]="$(unsettled "$r")"
+    if [ -n "${why[$r]}" ]; then held["$r"]=$(( ${held[$r]:-0} + 1 )); continue; fi
     FINDINGS+=("STALE${SEP}${REPO_NAME[$r]}${SEP}${l#"$HOME"/}${SEP}$l${SEP}dangling link into the checkout: the file it served was deleted or moved")
   done < <(find "${starts[@]}" -mindepth 1 -maxdepth 1 -type l -print0 2>/dev/null | sort -z)
+  for r in "${!held[@]}"; do
+    HELD+=("$(printf '  HELD  %s dangling link(s) into %s left in place: %s is %s; removed once it settles' \
+      "${held[$r]}" "${REPO_NAME[$r]}" "${r/#"$HOME"/\~}" "${why[$r]}")")
+  done
   return 0
 }
 
@@ -659,11 +684,6 @@ attach() {
   FAILED=$((FAILED + 1)); return 1
 }
 
-# mode_of <path> - the permission bits of <path>, GNU stat then BSD stat.
-mode_of() {
-  stat -c %a -- "$1" 2>/dev/null || stat -f %Lp -- "$1" 2>/dev/null
-}
-
 # UNFOLD_OTHER maps each deploy path of the other repo under the directory being unfolded to
 # that repo's dir; other_under <entry> says whether any of them sits below <entry>.
 declare -A UNFOLD_OTHER=()
@@ -751,12 +771,12 @@ unfold() {
     FAILED=$((FAILED + 1)); return 1
   fi
   # Same filesystem, or every move below is a copy and the swap is not a rename.
-  if [ "$(dev_of "$repo/$lp")" != "$(dev_of "$(dirname -- "$HOME/$lp")")" ]; then
+  if [ "$(stat_dev "$repo/$lp")" != "$(stat_dev "$(dirname -- "$HOME/$lp")")" ]; then
     printf '  SKIP  %s - the checkout and $HOME are on different filesystems\n' "$lp" >&2
     FAILED=$((FAILED + 1)); return 1
   fi
 
-  mkdir -m "$(mode_of "$repo/$lp")" -- "$new" || { FAILED=$((FAILED + 1)); return 1; }
+  mkdir -m "$(stat_mode "$repo/$lp")" -- "$new" || { FAILED=$((FAILED + 1)); return 1; }
   for rec in "${links[@]}"; do
     IFS="$SEP" read -r path dir <<< "$rec"
     c="$new/${path#"$lp"/}"
@@ -834,7 +854,7 @@ move_runtime() {
     printf '  SKIP  %s - it holds an untracked path git does not ignore, or a clone\n' "$lp" >&2
     FAILED=$((FAILED + 1)); return 1
   fi
-  if [ "$(dev_of "$repo/$lp")" != "$(dev_of "$(dirname -- "$HOME/$lp")")" ]; then
+  if [ "$(stat_dev "$repo/$lp")" != "$(stat_dev "$(dirname -- "$HOME/$lp")")" ]; then
     printf '  SKIP  %s - the checkout and $HOME are on different filesystems\n' "$lp" >&2
     FAILED=$((FAILED + 1)); return 1
   fi
@@ -934,7 +954,7 @@ report_text() {
              into $HOME (a CACHEDIR.TAG build cache stays). An untracked file git does not
              ignore blocks it; commit, ignore or move that file. Close an app whose state
              lives there first, or use --only.
-  STALE   -> --apply (and --missing) removes the dangling link.
+  STALE   -> --apply (and --missing) removes the dangling link, once its checkout is settled.
   RUNTIME -> --apply moves the directory out of the checkout to where its link stood.
 
   A path listed here that SHOULD NOT deploy at all belongs in the owning repo's
@@ -1009,6 +1029,7 @@ main() {
 
   build_manifest
   classify
+  [ "$FORMAT" != text ] || [ "${#HELD[@]}" -eq 0 ] || printf '%s\n' "${HELD[@]}" >&2
 
   if [ "$MODE" = apply ]; then
     if [ "${#FINDINGS[@]}" -eq 0 ]; then

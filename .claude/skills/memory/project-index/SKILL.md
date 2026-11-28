@@ -39,7 +39,7 @@ The regeneration is deterministic, so call the helper rather than hand-editing:
 
 ```bash
 ~/.claude/skills/project-index/regen-anchor.sh [project]
-~/.claude/skills/project-index/regen-anchor.sh --all    # every key, as lab-sync runs it
+~/.claude/skills/project-index/regen-anchor.sh --all    # every key, as agentctl-project-index runs it daily
 ```
 
 - `project` omitted -> resolved from `$CLAUDE_PROJECT_DIR`/`$PWD` via `project-name.sh`
@@ -56,10 +56,13 @@ The AUTO block it writes:
   the newest three ADRs (`docs/decisions/` or `docs/architecture/decisions/`), repo path,
   tracker (from `project-map.json` `trackers.{project}`).
 - **Lab** - one line per lab project the key owns (itself, plus each project whose `repo` is
-  this key), from `notes projects --stats --json`: profile, stage, version, open and done in
-  the open version, agent-board rows, STATUS date, dir. A beta or prod project whose STATUS
-  is missing or over 14 days old is flagged STALE. A key with exactly one lab project also
-  gets its STATUS text.
+  this key), from each one's project page, `notes projects <name> --json` (the JSON the web and
+  hub project pages draw): profile, type, stage, version, the card's state and window,
+  agent-board rows, STATUS date, the measured release cadence against its target when two cuts
+  exist, the count of knowledge notes naming it, dir. A beta or prod project whose STATUS is
+  missing or over 14 days old is flagged STALE. A key with exactly one lab project also gets
+  its STATUS text. A `Project page` line names the command for the rest (docs, plans, lessons,
+  queue, asks, knowledge notes).
 - **Active plans** - the newest 5 open plans among the newest 60 files in `~/.agent/plans/{project}/` (`plan_open` in `plan-phases.sh`: not superseded, and a phase still unchecked, or no checklist and no `## Results` yet; a pointer stub counts as the plan it names).
 
 ## After running - curate the part the script can't
