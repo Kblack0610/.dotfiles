@@ -249,7 +249,7 @@ plan_epic_verdict() {
 }
 
 # plan_epic_settle <plan file> <id>: the plan's `epic: new` line becomes `epic: <id>`, so the epic reads
-# from the plan itself once settled, not from a log that keeps 30 days (notes log --trace).
+# from the plan itself once settled, not from a log that keeps a week (notes log --trace).
 plan_epic_settle() {
   local tmp
   [ -f "$1" ] && [[ "$2" =~ ^[a-z][a-z0-9]*-[0-9]+$ ]] || return 1
@@ -307,14 +307,14 @@ plan_taken_rows() {
   { phase_takes "$(awk -v mode=list -v sup=0 "$_PLAN_PHASES_AWK" "$1" | cut -f2-)"; plan_rows "$1"; } | sort -u
 }
 
-# item_filed_rows <item> -> each agent-lane board row queue item <item> filed in the record's 30 days, one id
+# item_filed_rows <item> -> each agent-lane board row queue item <item> filed in the record's week (KEEP_DAYS in notes-cli ingest.rs), one id
 # a line: one it added itself (`added`, by it) and one inbox-triage filed from its outbox line (`filed`, the
 # line's `#from/<item>`). The board keeps no `#from/` tag (triage strips it), so the ingest record (`notes
 # log`) is the one place that says who filed a row. Fails when the record cannot be read.
 item_filed_rows() {
   local out st
-  # Streamed, not held in a variable: the record's 30 days run to tens of MB.
-  out="$(notes log --days 30 --json 2>/dev/null | jq -r --arg i "$1" 'select((.id // "") != "" and .lane == "agent")
+  # Streamed, not held in a variable: the record's week runs to tens of MB.
+  out="$(notes log --days 7 --json 2>/dev/null | jq -r --arg i "$1" 'select((.id // "") != "" and .lane == "agent")
     | select((.action == "added" and .by == $i)
         or (.action == "filed" and any((.text // "") | splits("\\s+"); . == "#from/" + $i)))
     | .id'; st=("${PIPESTATUS[@]}"); [ "${st[0]}" = 0 ] && [ "${st[1]}" = 0 ])" || return 1

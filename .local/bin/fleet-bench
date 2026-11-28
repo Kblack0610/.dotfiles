@@ -5795,7 +5795,8 @@ cause_tries() {
 # row. 2026-11-20 (ar-4064): tries were counted over the whole window, so a watch that cleared and
 # tripped again found its tries spent by an earlier trip, and 12 of 22 tripped watches had no owner.
 # A watch that flaps gets TRIAGE_FIX_TRIES items and one escalation a trip by design (every trip has an owner, ar-1531);
-# only a trip that outlasts watch_after is a red, which bounds how often that can be.
+# only a trip that outlasts watch_after is a red, which bounds how often that can be. On an alert route the
+# owner of a later trip can be the ask an earlier trip's item recorded (triage_ask_stands), not a new item.
 watch_trip() {
   [[ "$1" == 'check(watch): '* ]] || return 0
   local n=${1#'check(watch): '}
@@ -5847,14 +5848,15 @@ triage_kind() { case "$1" in 'check(watch): '*) echo ' watch' ;; 'check(alert): 
 # TRIAGE_ESCALATE_MODEL, whose brief is fix-red's root-cause pass. Only when that did not hold either is
 # the cause spent: it stays on its agent row, counted by the reds_spent KPI, and one ask carries it
 # (triage_spent_ask), so Needs you holds a red only once the agent system has nothing left to try
-# (ask UfRZaR, 2026-11-20, on the human's "needs me should only be what needs me").
+# (ask UfRZaR, 2026-11-20, on the human's "needs me should only be what needs me"). An alert route's
+# cause whose ask still stands (triage_ask_stands) queues nothing: that ask owns the trip.
 # A tripped watch whose red came back after TRIAGE_CAUSE_BACKS or more merged fixes in the window (cause_backs)
 # gets no fresh try a trip: it gets one item tagged `cause`, pinned to TRIAGE_ESCALATE_MODEL, its retry:
 # naming those items; its brief (fleet-dispatch item_brief) lists each fix's PR. While it is open it stands for
 # the cause (cause_tries); once it closed this trip, or held under TRIAGE_PROVES_MAX before it, the cause is
 # spent. Not on an alert or owned route, whose merges are beside the red.
 triage_promote() {
-  local board key raw route cause tags items used trip tries more kind n=0 capped=0 seen=' ' model backs restart err
+  local board key raw route cause tags items used trip tries more kind n=0 capped=0 seen=' ' model backs restart err ask standing=' '
   $TRIAGE_HOLD_CMD >/dev/null 2>&1 || { echo 0; return 0; }
   items=$(triage_items) || { echo 0; return 0; }
   used=$(jq --arg d "$(date -u -d "@$(now)" +%F)" \
@@ -5864,6 +5866,14 @@ triage_promote() {
   while IFS=$'\t' read -r key _ _ route cause tags; do
     triage_queues "$key" "$route" || continue
     kind=$(triage_kind "$key")
+    if [ "$route" = alert ]; then
+      [[ "$standing" != *" $cause "* ]] || continue
+      if ask=$(triage_ask_stands "$items" "$cause"); then
+        say "triage: $cause (${key:0:60}) stands on ask $ask: no item"
+        standing+="$cause "
+        continue
+      fi
+    fi
     trip=$(watch_trip "$key")
     tries=$(cause_tries "$items" "$cause" "$trip" "$route")
     # Spent is counted before the day's cap, which says nothing about a cause's own tries; an
@@ -5913,6 +5923,29 @@ triage_promote() {
   done <<<"$1"
   triage_spent_write "$spent"
   echo "$n"
+}
+
+# triage_ask_stands <items> <cause> -> the id of the ask the cause's newest item in <items> that recorded
+# one names (`agent-queue set <slug> ask=<id>`, fix-red's alert route), rc 0 while it is pending or was
+# answered under TRIAGE_FIX_DAYS ago, whatever the answer (the human decided; a trip that outlasts the
+# decision is theirs to read); rc 1 otherwise, or when agent-ask cannot show it. <items> lists done items
+# for TRIAGE_FIX_DAYS only, so an ask left pending longer gets one item a window, which records it again.
+# An alert route's item
+# exists to put the human's decision to them, so a later trip that finds it made only repeats it:
+# source-pace tripped on, as the human chose (asks agERZ5, KntBiO "keep", 2026-11-21), and got an item a
+# trip that closed in minutes finding the same answer (ar-3436, ar-4216; ar-4538).
+triage_ask_stands() {
+  local id ask st at
+  id=$(jq -r --arg c " cause:$2 " --arg trip "" "$JQ_LIB$CAUSE_JQ"'cause_items | map(select((.ask // "") != ""))
+    | sort_by((.queued | ep) // 0) | last | .ask // empty' <<<"$1" 2>/dev/null)
+  [[ "$id" =~ ^[A-Za-z0-9]+$ ]] && ask=$($TRIAGE_ASK_CMD show "$id" 2>/dev/null) || return 1
+  st=$(sed -n '/^status: /{s///p;q;}' <<<"$ask")
+  if [ "$st" != pending ]; then
+    [ "$st" = answered ] || return 1
+    at=$(sed -n '/^answered_at: /{s///p;q;}' <<<"$ask")
+    [ -n "$at" ] && at=$(date -d "$at" +%s 2>/dev/null) && [ $(( at + TRIAGE_FIX_DAYS * 86400 )) -gt "$(now)" ] || return 1
+  fi
+  printf '%s' "$id"
 }
 
 # triage_spent_ask <cause> <key> <slugs> <items> -> the id of the one ask a spent cause gets: the one the
