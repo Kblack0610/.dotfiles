@@ -1098,7 +1098,7 @@ running_item() {
   on "$1" --now >/dev/null
 }
 
-# set_key <machine> <key> <value>: agent-queue's header_set on item r, a new key just above the ---.
+# set_key <machine> <key> <value>: agent-queue's fm_set on item r, a new key just above the ---.
 set_key() {
   local f="$SANDBOX/$1/queue/running/r.md"
   awk -v k="$2" -v v="$3" '!d && $0 == "---" {if (!s) print k ": " v; d = 1; print; next}

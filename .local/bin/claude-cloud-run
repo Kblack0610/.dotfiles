@@ -10,6 +10,9 @@
 # failed, and the cloud session itself keeps running. A create that fails also exits 1, at once.
 set -uo pipefail
 
+# shellcheck source=../lib/fmt.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fmt.sh"   # now_utc
+
 CLAUDE_BIN="${CLAUDE_BIN:-claude}"
 CLOUD_TIMEOUT_MIN="${CLOUD_TIMEOUT_MIN:-180}"
 # No event says a cloud session opened a PR, so this is the one poll, bounded by the timeout above.
@@ -23,7 +26,7 @@ brief=${3:?usage: claude-cloud-run <slug> <owner/repo> <brief>}
 # transcript to read the session URL from.
 log=$(mktemp "${TMPDIR:-/tmp}/claude-cloud-run.XXXXXX")
 trap 'rm -f "$log"' EXIT
-started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+started=$(now_utc)
 rc=0
 if command -v script >/dev/null 2>&1; then
   script -qefc "$(printf '%q ' "$CLAUDE_BIN" --cloud "$brief")" "$log" || rc=$?

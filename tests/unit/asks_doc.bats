@@ -22,7 +22,7 @@ lifecycle_states() {
   local written
   written=$({
     grep -oE "printf 'status: [a-z]+" "$ASK" | sed 's/.* //'
-    grep -oE 'write_fields "\$[a-z]+" status [a-z]+' "$ASK" | sed 's/.* //'
+    grep -oE 'fm_set "\$[a-z]+" status [a-z]+' "$ASK" | sed 's/.* //'
     grep -oE 'close_ask [a-z]+ ' "$ASK" | sed 's/close_ask //; s/ $//'
   } | sort -u)
   [ -n "$written" ]

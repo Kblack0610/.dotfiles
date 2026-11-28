@@ -116,6 +116,8 @@ class_rank() { awk -F'\t' -v c="$1" '$1 == c { print $2 }' <<<"$DESK_CLASSES"; }
 
 # shellcheck source=../lib/fmt.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fmt.sh"
+# shellcheck source=../lib/frontmatter.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/frontmatter.sh"   # fm_set
 # shellcheck source=../lib/audit.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/audit.sh"
 # shellcheck source=../lib/agent-units.sh
@@ -228,21 +230,6 @@ in_names() { [ -n "$1" ] && grep -qxF -- "$1" <<<"$2"; }
 owns_claim() { in_names "$(field "$1" by)" "$2" || in_names "$(field "$1" sid)" "$2"; }
 
 notify() { agent-notify "$@" >/dev/null 2>&1 || true; }
-
-# set_field <file> <key> <value> [<key> <value>]...: replace those key lines in one atomic
-# rewrite, keeping the rest. The rename is also the wake-up: a gate waiting on the hold dir sees
-# it and re-checks. A file gone by now (released meanwhile) fails it, so a write never brings a
-# released hold back.
-set_field() {
-  local f="$1" tmp pat="" i
-  shift
-  for ((i = 1; i < $#; i += 2)); do pat="${pat:+$pat|}^${!i}:"; done
-  tmp="$(mktemp "$HOLD_ROOT/.${f##*/}.XXXXXX")" || return 1
-  { grep -vE "$pat" "$f" || [ -f "$f" ]; } > "$tmp" || { rm -f "$tmp"; return 1; }
-  while [ $# -gt 1 ]; do printf '%s: %s\n' "$1" "$2"; shift 2; done >> "$tmp"
-  [ -f "$f" ] || { rm -f "$tmp"; return 1; }
-  mv "$tmp" "$f"
-}
 
 cmd_set() {
   local resource="${1:-}"; shift || true
@@ -441,7 +428,7 @@ cmd_grant() {
     asks="$(tr , '\n' <<<"$asks" | awk -F= -v n="$name" 'NF && $1 != n' | paste -sd,)"
     asks="${asks:+$asks,}$name=$id"
   done
-  set_field "$f" granted "$granted" granted_ask "$asks" || exit 1
+  fm_set "$f" granted "$granted" granted_ask "$asks" || exit 1
   notify -p normal -t "go: $resource" "granted ${clean[*]}${id:+ (ask $id)}; the rest stay held"
   audit_append "$(default_by)" hold.granted "$resource" ok "${clean[*]}${id:+ (ask $id)}"
   echo "granted: $resource for $granted${id:+ (ask $id)}"
@@ -521,7 +508,7 @@ cmd_lower() {
     # Recorded before it is applied, so no interrupted run leaves a unit lowered that the
     # release does not know about. Restoring a unit that was never lowered is harmless.
     lowered="${lowered:+$lowered,}$unit"
-    set_field "$f" lowered "$lowered" || exit 1
+    fm_set "$f" lowered "$lowered" || exit 1
     systemctl --user set-property --runtime "$unit" "CPUWeight=$LOW_CPU_WEIGHT" ||
       { echo "agent-hold lower: systemctl could not set CPUWeight on $unit" >&2; [ "$rc" -gt 1 ] || rc=1; continue; }
     echo "lowered: $unit (pid $pid)"
@@ -613,7 +600,7 @@ cmd_release() {
   # The hold file is the only record of what is still lowered, so it stays until each
   # live unit is restored.
   if [ -n "$failed" ]; then
-    set_field "$f" lowered "$failed"
+    fm_set "$f" lowered "$failed"
     echo "agent-hold release: could not restore $failed; $resource stays held, release it again" >&2
     return 1
   fi
