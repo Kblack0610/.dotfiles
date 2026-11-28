@@ -5,7 +5,7 @@
 # Fixture: three registry sessions in one project. A opened PR #10 (merged, kept) and
 # closed a board row with --proof. B opened #11, which #12 reverted a day later. C hit an
 # API error, was interrupted, had a tool call rejected, and wrote a lesson. D is a headless
-# runner (entrypoint sdk-cli) that wrote a lesson. `ss-stub` stands in for schedules-sync, serving
+# runner (entrypoint sdk-cli) that wrote a lesson. The shared schedules-sync stub (ss_script) serves
 # the PR store from canned `gh pr list`-shaped JSON (`$GH_FIXTURE/prs.<owner>-<repo>`) turned into
 # store rows by the real pr_row; nothing here reaches the network.
 
@@ -42,8 +42,7 @@ rows = [ss.pr_row(forge, repo, {"number": p["number"], "state": "open" if p["sta
                    None, p["state"] == "MERGED") for p in json.load(sys.stdin)]
 print(json.dumps(sorted(rows, key=lambda r: -r["number"])))
 STUB
-  cat > "$SANDBOX/bin/ss-stub" <<STUB
-#!/usr/bin/env bash
+  ss_script <<STUB
 [ "\$1" = prs ] || exit 2
 echo "\$*" >> "$SANDBOX/ss.calls"
 f="$GH_FIXTURE/prs.\${2//\//-}"
@@ -52,8 +51,7 @@ f="$GH_FIXTURE/prs.\${2//\//-}"
 [ -f "\$f" ] || { echo '[]'; exit 0; }
 gh2store "$REPO_ROOT/.local/bin/schedules-sync" "\$2" < "\$f"
 STUB
-  chmod +x "$SANDBOX/bin/gh2store" "$SANDBOX/bin/ss-stub"
-  export SCHEDULES_SYNC=ss-stub
+  chmod +x "$SANDBOX/bin/gh2store"
   # No fleet worker unless a test names one: the real roster is the workstation's.
   export SO_WORKERS=true
   # 2026-10-20T00:00:00Z; every fixture session stopped 2026-10-19.

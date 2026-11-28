@@ -2083,6 +2083,30 @@ stacked_pair() {
   assert_output 0
 }
 
+# ar-2940: validate-ask-du3ev0 (agent-runtime) stacked on home-config#1666 was cut in its project's repo, where the
+# head is no commit, and failed every pass; since ar-5124 a phase on such a PR holds instead.
+@test "start --item of a validate item stacked on another repo's open PR cuts its worktree in that PR's repo (ar-2940)" {
+  stacked_pair
+  project tools alpha "$SANDBOX/repos/tools"
+  # Real checkouts: stack_base tells repos apart by their git common dir, and moves nothing it cannot read.
+  mkdir -p "$SANDBOX/repos/game" "$SANDBOX/repos/tools"
+  git init -q "$SANDBOX/repos/game"; git init -q "$SANDBOX/repos/tools"
+  agent-queue set base open_pr=Org/tools#7
+  legacy validate-base "after: base\ntags: validate" --project game "check(validate): base, Org/tools#7"
+  stub wt 'printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; echo "tools-agent-1"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item validate-base
+  assert_success
+  assert_called "new --base 0123456789abcdef0123456789abcdef01234567 --server lab --detach -c $SANDBOX/repos/tools"
+  assert_output --partial "in $SANDBOX/repos/tools, that PR's repo"
+  # NEGATIVE CONTROL: a phase on the same PR is not stacked (ar-5124): it waits, and no worktree is cut.
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item second
+  assert_failure
+  assert_output --partial "waits on after base"
+  run grep -c -e "repos/tools" "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
 @test "start --item of a stacked phase whose PR head cannot be read starts nothing and stays queued (ar-3852)" {
   stacked_pair
   gh_script 'case "$*" in *headRefOid*) exit 1 ;; *state*) echo OPEN ;; esac'
@@ -2383,4 +2407,30 @@ EOF
   run cmd_start --item validate-fix-crash-01234567
   refute_output --partial 'never its author'
   assert_not_called 'claude --resume abc-123'
+}
+
+# ar-3645: an item on a PR that already merged is that work done; a session started on it finds nothing to do.
+@test "start closes a queued item whose recorded PR already merged and starts no session; an open PR starts as before" {
+  pr_item MERGED
+  agent-queue add --project game --slug land-12 --pr o/game#13 "land PR 13" >/dev/null
+  agent-queue add --project game --slug land-14 --pr o/game#14 "land PR 14" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item land-12
+  assert_failure 4
+  assert_output --partial 'land-12 not started: its PR o/game#13 already merged; closed done'
+  done12="$(ls "$AGENT_QUEUE_DIR"/done/*/*-land-12.md)" || fail "land-12 is not done"
+  assert_equal "$(qfield "$done12" status)" ok
+  assert_equal "$(qfield "$done12" merged)" "$OID"
+  assert_not_called 'wt new'
+  assert_not_called 'claude'
+  # negative control: the same item with its PR open is not closed
+  printf 'OPEN -\n' > "$NOTES_FIXTURE/pr.state"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item land-14
+  refute_output --partial 'already merged'
+  ! compgen -G "$AGENT_QUEUE_DIR/done/*/*-land-14.md" >/dev/null || fail "an item on an open PR was closed"
+  # a validate item reviews its author's PR: a merged PR does not close it unread
+  printf 'MERGED %s\n' "$OID" > "$NOTES_FIXTURE/pr.state"
+  agent-queue add --project game --slug val-1 --tags validate --pr o/game#15 "validate PR 15" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item val-1
+  refute_output --partial 'already merged'
+  ! compgen -G "$AGENT_QUEUE_DIR/done/*/*-val-1.md" >/dev/null || fail "a validate item was closed by its author's merged PR"
 }

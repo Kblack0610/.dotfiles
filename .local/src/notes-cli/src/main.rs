@@ -573,7 +573,7 @@ enum Cmd {
         /// `fleet-bench chain` sets against the live inbox as chain_inbox_drift
         #[arg(long, conflicts_with_all = ["day", "days", "project", "id", "action", "by", "item"])]
         steps: bool,
-        /// One line's whole path, from the record's 30 days: the events whose words hold WORDS
+        /// One line's whole path, from the record's week: the events whose words hold WORDS
         /// (or whose row is the id WORDS), then every event of the rows it was filed as and of
         /// the queue items they became, to the merge. For "where did my line go?"
         #[arg(long, value_name = "WORDS", conflicts_with_all = ["day", "days", "project", "id", "action", "by", "item", "steps"])]
@@ -801,7 +801,7 @@ enum PtaskCmd {
     /// off the marker. A row already archived moves back onto its sheet. The id finds the row in
     /// either lane, so `--agent` is not needed
     Reopen {
-        /// What made the close false: `notes log --id <id>` shows it on the `reopened` event (the record keeps about 30 days); the row keeps no trace of it
+        /// What made the close false: `notes log --id <id>` shows it on the `reopened` event (the record keeps a week); the row keeps no trace of it
         #[arg(long, value_name = "WHY")]
         why: String,
         /// The row's id, as `ar-142`
