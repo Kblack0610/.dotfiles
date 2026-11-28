@@ -362,6 +362,19 @@ impl Boards {
     }
 }
 
+/// The pass card: the shepherd's numbers worded, or why there are none.
+pub type PassCard = Result<hub_core::shepherd::Card, String>;
+
+/// One shepherd read: the ledger and the pass card.
+pub type ShepherdRead = (boards::Due, Option<PassCard>);
+
+/// The ledger is a file; the pass card is `fleet-shepherd stats`. Blocking, so a caller on the
+/// draw thread (`--once` aside) reads it in a thread.
+fn shepherd_read(dir: &Path) -> ShepherdRead {
+    let pass = hub_core::shepherd::read(&actions::System).map(|v| hub_core::shepherd::Card::of(&v));
+    (boards::due(dir), Some(pass))
+}
+
 pub enum Msg {
     Input(Event),
     Tick,
@@ -435,7 +448,7 @@ pub enum Msg {
     Stack(Box<hub_core::stack::Stack>),
     Fleet(Box<hub_core::fleet::Fleet>),
     /// The shepherd's ledger, for Sessions' Shepherd.
-    Shepherd(Box<boards::Due>),
+    Shepherd(Box<ShepherdRead>),
     /// The shepherd wrote its ledger (`.due`, `.lease`).
     ShepherdFiles,
     /// One runner's page (hub_core::fleet::runner), for the name it was read for.
@@ -572,6 +585,9 @@ pub struct App {
     pub sessions_inner: &'static str,
     /// Shepherd's read of `fleet-shepherd`'s ledger; None until the first.
     pub shepherd: Option<boards::Due>,
+    /// The pass card beside it: `fleet-shepherd stats` worded by `hub_core::shepherd::Card`, or why
+    /// there is none. None until the first read.
+    pub shepherd_pass: Option<PassCard>,
     /// The runner whose page is open (Enter on a Runners row, or `hub tab 'fleet <runner>'`);
     /// None is the Runners table.
     pub fleet_page: Option<String>,
@@ -770,6 +786,7 @@ impl App {
             fleet_follow: false,
             sessions_inner: hub_core::layout::inner_tab(sessions_tab(), None).map_or("", |i| i.id),
             shepherd: None,
+            shepherd_pass: None,
             fleet_page: None,
             fleet_runner: None,
             infra_page: None,
@@ -1653,8 +1670,16 @@ impl App {
             let tx = self.tx.clone();
             let dir = self.files.shepherd.clone();
             std::thread::spawn(move || {
-                let _ = tx.send(Msg::Shepherd(Box::new(boards::due(&dir))));
+                let _ = tx.send(Msg::Shepherd(Box::new(shepherd_read(&dir))));
             });
+        }
+    }
+
+    fn took_shepherd(&mut self, (due, pass): ShepherdRead) {
+        self.shepherd = Some(due);
+        self.shepherd_pass = pass;
+        if self.shepherd_read.done() {
+            self.read_shepherd();
         }
     }
 
@@ -1701,7 +1726,11 @@ impl App {
             .unwrap_or(self.sessions_inner);
         match self.sessions_inner {
             "runners" => self.fleet = Some(hub_core::fleet::files(&paths)),
-            "shepherd" => self.shepherd = Some(boards::due(&self.files.shepherd)),
+            "shepherd" => {
+                let (due, pass) = shepherd_read(&self.files.shepherd);
+                self.shepherd = Some(due);
+                self.shepherd_pass = pass;
+            }
             _ => {}
         }
     }
@@ -2485,12 +2514,7 @@ impl App {
                     self.read_fleet();
                 }
             }
-            Msg::Shepherd(d) => {
-                self.shepherd = Some(*d);
-                if self.shepherd_read.done() {
-                    self.read_shepherd();
-                }
-            }
+            Msg::Shepherd(d) => self.took_shepherd(*d),
             Msg::ShepherdFiles => {
                 if self.tab == Tab::Sessions && self.sessions_inner == "shepherd" {
                     self.read_shepherd();
@@ -5086,7 +5110,7 @@ impl App {
                 let (mut l, at) = match &self.shepherd {
                     None => reading("the shepherd's ledger"),
                     Some(d) => (
-                        fleettab::shepherd_page(d, self.p, now, w),
+                        fleettab::shepherd_page(d, self.shepherd_pass.as_ref(), self.p, now, w),
                         vec![("shepherd", 1)],
                     ),
                 };
@@ -6044,6 +6068,74 @@ mod tests {
         assert_eq!(a.scroll, 10);
         a.handle(ctrl('u'));
         assert_eq!(a.scroll, 0);
+    }
+
+    /// A waybar chip's popup (`hub --popup --tab <req>`) on a screen shorter than its page:
+    /// Ctrl-d moves the view half a page down and Ctrl-u brings it back, as nvim's do.
+    fn assert_popup_scrolls_half_a_page(req: &str, mut a: App) {
+        let (t, q) = crate::tabreq::parse(req).unwrap();
+        a.handle(Msg::Tab(t, q));
+        let top = screen(&mut a, 100, 14);
+        // A section request (`infra machines`) opens scrolled to that section.
+        let (page, start) = (a.page, a.scroll);
+        let half = page / 2;
+        assert!(half > 0, "{req}: the page is {page} lines");
+        a.handle(ctrl('d'));
+        let down = screen(&mut a, 100, 14);
+        assert_eq!(
+            a.scroll,
+            start + half,
+            "{req}: Ctrl-d is half a page ({page})\n{down}"
+        );
+        assert_ne!(down, top, "{req}: the view moved");
+        a.handle(ctrl('u'));
+        let back = screen(&mut a, 100, 14);
+        assert_eq!(a.scroll, start, "{req}");
+        assert_eq!(back, top, "{req}: Ctrl-u comes back");
+        // NEGATIVE CONTROL: a plain d is no scroll.
+        a.handle(key('d'));
+        assert_eq!(a.scroll, start, "{req}");
+    }
+
+    #[test]
+    fn the_home_popup_scrolls_half_a_page_on_ctrl_d_and_ctrl_u() {
+        let mut a = infra_app();
+        a.handle(Msg::Boards(Box::new(boards())));
+        assert_popup_scrolls_half_a_page("home", a);
+    }
+
+    #[test]
+    fn the_projects_popup_scrolls_half_a_page_on_ctrl_d_and_ctrl_u() {
+        let mut a = app(Tab::Home);
+        a.handle(Msg::Projects(Box::new(loaded_n(40))));
+        assert_popup_scrolls_half_a_page("projects", a);
+    }
+
+    #[test]
+    fn the_queue_popup_moves_half_a_page_on_ctrl_d_and_ctrl_u() {
+        let mut a = app(Tab::Home);
+        let (t, q) = crate::tabreq::parse("queue").unwrap();
+        a.handle(Msg::Tab(t, q));
+        a.handle(Msg::Queue(Box::new(long_queue(60))));
+        screen(&mut a, 100, 14);
+        let half = a.page / 2;
+        assert!(half > 0);
+        a.handle(ctrl('d'));
+        assert_eq!(a.qv.table.sel, half);
+        let s = screen(&mut a, 100, 14);
+        assert!(s.contains(&format!("Task {half}")), "{s}");
+        a.handle(ctrl('u'));
+        assert_eq!(a.qv.table.sel, 0);
+    }
+
+    #[test]
+    fn the_infra_machines_popup_scrolls_half_a_page_on_ctrl_d_and_ctrl_u() {
+        assert_popup_scrolls_half_a_page("infra machines", infra_app());
+    }
+
+    #[test]
+    fn the_infra_ci_popup_scrolls_half_a_page_on_ctrl_d_and_ctrl_u() {
+        assert_popup_scrolls_half_a_page("infra ci", ci_app());
     }
 
     #[test]
@@ -7008,6 +7100,11 @@ mod tests {
 
     /// The cards for tasktab's fixture feed: bnb/demo and personal/garden.
     fn loaded() -> projtab::Loaded {
+        loaded_n(0)
+    }
+
+    /// `loaded()` plus `extra` more projects, so the Projects table is taller than a screen.
+    fn loaded_n(extra: usize) -> projtab::Loaded {
         let stat = |profile: &str, name: &str, done: u32, open: u32| hub_core::projects::Stats {
             profile: profile.into(),
             name: name.into(),
@@ -7030,12 +7127,9 @@ mod tests {
             }),
             ..Default::default()
         };
-        projtab::Loaded {
-            stats: Ok(vec![
-                stat("personal", "garden", 1, 1),
-                stat("bnb", "demo", 1, 3),
-            ]),
-        }
+        let mut stats = vec![stat("personal", "garden", 1, 1), stat("bnb", "demo", 1, 3)];
+        stats.extend((0..extra).map(|i| stat("bnb", &format!("extra-{i:02}"), 1, 2)));
+        projtab::Loaded { stats: Ok(stats) }
     }
 
     /// Answer the reads entering the tab started (the fake prints nothing): wait for both.

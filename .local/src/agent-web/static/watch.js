@@ -27,40 +27,6 @@ function sessionsOf() {
   return s && Array.isArray(s.sessions) ? s.sessions : [];
 }
 
-// One lane per session: its bucket over the last day, from the transitions, ending in the
-// bucket state.json shows now. A session whose first change in the window is a stage change
-// was in that change's "from" bucket before it.
-function buildLanes(now) {
-  const t0 = now - WATCH_HOURS * 3600e3;
-  const live = new Map(sessionsOf().map((s) => [shortTarget(s.target), s]));
-  const lanes = new Map();
-  const lane = (t) => { if (!lanes.has(t)) lanes.set(t, { target: t, segs: [], cur: null, since: null }); return lanes.get(t); };
-  const open = (l, key, at) => { l.cur = key; l.since = at; };
-  const close = (l, at) => { if (l.cur) l.segs.push({ a: l.since, b: at, key: l.cur, title: `${l.cur} ${clock(l.since)}-${clock(at)}` }); l.cur = null; };
-  for (const tr of wst.data.transitions) {
-    const at = logTime(tr.ts);
-    if (!(at >= t0)) continue;
-    const l = lane(tr.target);
-    if (tr.kind === "new") { close(l, at); open(l, tr.to, at); }
-    else if (tr.kind === "gone") { close(l, at); l.gone = at; }
-    else if (tr.to) {
-      if (!l.cur && !l.segs.length) open(l, tr.from, t0);
-      close(l, at); open(l, tr.to, at);
-    }
-  }
-  for (const [t, s] of live) {
-    const l = lane(t);
-    l.gone = null;
-    if (!l.cur && !l.segs.length) open(l, s.bucket, Math.max(t0, now - (s.age_min || 0) * 60e3));
-    if (l.cur) { l.cur = s.bucket; }
-    else open(l, s.bucket, l.segs.length ? l.segs[l.segs.length - 1].b : t0);
-    close(l, now);
-  }
-  const rank = (t) => { const s = live.get(t); return s ? bucketRank(s.bucket) : 99; };
-  return { t0, lanes: [...lanes.values()].sort((a, b) => rank(a.target) - rank(b.target) || a.target.localeCompare(b.target)) };
-}
-
-
 // A session's closed time by what it waited on (fleet-states.md). The line under the bar carries
 // the numbers, in the bar's order, so the colours are only a shape to scan.
 const TIME_PARTS = [["work", "work_min", "var(--c1)"], ["gate", "gate_min", "var(--c5)"], ["test", "test_min", "var(--c6)"], ["jobs", "jobs_min", "var(--c2)"], ["you", "human_min", "var(--c3)"], ["parked", "parked_min", "var(--c4)"]];
@@ -131,7 +97,8 @@ $("log-changes").addEventListener("change", (e) => {
   if (e.target.matches("[data-all]")) { wst.allChanges = e.target.checked; renderLogChanges(); }
 });
 
-// The open session's fleet-state card above its transcript, open until the reader folds it to one line.
+// The open session's fleet-state line above its transcript, with a link to the page that holds the
+// whole card (the page draws `card` itself, so the facts are drawn once).
 function renderFacts() {
   const el = $("facts");
   const s = st.sel && st.view !== "page" && sessionsOf().find((x) => (x.session_id && x.session_id === st.sel.session) || x.target === st.sel.target);
@@ -140,9 +107,10 @@ function renderFacts() {
   const pr = s.pr && s.pr !== "-" ? ` PR #${esc(s.pr)}${s.ci ? ` <b class="ci ${esc(s.ci.toLowerCase())}">${esc(s.ci)}</b>` : ""}` : "";
   const ph = s.phases_total ? `, ${s.phases_done}/${s.phases_total} phases` : "";
   const eta = s.eta ? `, eta ${esc(s.eta)}` : "";
-  paint(el, fold("", `<span class="chip" style="--c:${bucketColor(s.bucket)}">${esc(s.bucket)}</span> ${esc(s.topic || s.reason || "")}<span class="muted">${pr}${ph}${eta}</span>`, card(s, Date.now()),
-    { k: "facts", open: secOpen(wst.open, "facts") }), wst.open);
+  paint(el, `<div class="facts-line"><span class="chip" style="--c:${bucketColor(s.bucket)}">${esc(s.bucket)}</span> ${esc(s.topic || s.reason || "")}<span class="muted">${pr}${ph}${eta}</span> ` +
+    `<button class="btn sm" data-page>Session page</button></div>`, wst.open);
 }
+$("facts").addEventListener("click", (e) => { if (e.target.closest("[data-page]")) setView("page"); });
 
 // The folds under the table: how old the state is and the last day's swimlanes, shut to one line
 // with its lane count so the table's rows come first. The shepherd is
@@ -154,16 +122,16 @@ function overviewFolds() {
   let html = "";
   if (!state) html += '<div class="empty">No fleet state yet: fleet-state.timer has not written ~/.local/state/fleet/state.json.</div>';
   else {
-    const { t0, lanes } = buildLanes(now);
+    const { t0, until, lanes } = wst.data.lanes;
     const keep = lanes.filter((l) => wst.ended || !l.gone);
     const ended = lanes.length - lanes.filter((l) => !l.gone).length;
     const age = state.generated_at ? Math.round((now - new Date(state.generated_at).getTime()) / 60e3) : null;
     // The state's age is a fact in the lanes' bar; a source it could not read is a warn line.
     const unread = (state.unreadable || []).length ? `<div class="cline warn">${NOT_READ}: ${esc(state.unreadable.join(", "))}</div>` : "";
     // The unread warn stays outside the shut fold, so it is seen.
-    html += unread + ovFold("lanes", `Last ${WATCH_HOURS}h`, `<div class="ovbar">${legend(BUCKETS.map((b) => [b, bucketColor(b)]))}<label class="tog"><input type="checkbox" data-ended${wst.ended ? " checked" : ""}> ended sessions (${ended})</label>` +
+    html += unread + ovFold("lanes", `Last ${Math.round((until - t0) / 3600e3)}h`, `<div class="ovbar">${legend(BUCKETS.map((b) => [b, bucketColor(b)]))}<label class="tog"><input type="checkbox" data-ended${wst.ended ? " checked" : ""}> ended sessions (${ended})</label>` +
       `<span class="muted"><b>state</b> ${age == null ? "?" : dur(age) + " old"}</span></div>` +
-      `<div class="panel">${swimlanes(keep.map((l) => ({ label: l.target, sub: l.gone ? "gone" : "", dim: !!l.gone, segs: l.segs })), t0, now, bucketColor)}</div>`, keep.length, true);
+      `<div class="panel">${swimlanes(keep.map((l) => ({ label: l.target, sub: l.gone ? "gone" : "", dim: !!l.gone, segs: l.segs.map((g) => ({ ...g, title: `${g.key} ${g.span}` })) })), t0, until, bucketColor)}</div>`, keep.length, true);
   }
   return html;
 }

@@ -160,20 +160,6 @@ pub fn build(sessions: &[Value], src: Sources) -> Capacity {
     }
 }
 
-/// Run one source's command and read its JSON; a failure goes in `errors` under its name.
-fn json(runner: &dyn Runner, cmd: &[&str], errors: &mut Vec<String>) -> Option<Value> {
-    let got = runner
-        .run(&argv(cmd))
-        .and_then(|o| serde_json::from_str(&o).map_err(|e| e.to_string()));
-    match got {
-        Ok(v) => Some(v),
-        Err(e) => {
-            errors.push(format!("{}: {e}", cmd[0]));
-            None
-        }
-    }
-}
-
 /// A pass older than this is no answer, the age fleet-dispatch itself trusts (`find -mmin -45`).
 const HEADROOM_FRESH_SECS: u64 = 45 * 60;
 
@@ -212,7 +198,9 @@ pub fn read(runner: &dyn Runner, sessions: &[Value], headroom: &std::path::Path)
     let headroom = self::headroom(headroom)
         .map_err(|e| errors.push(format!("headroom.json: {e}")))
         .ok();
-    let shepherd = json(runner, &["fleet-shepherd", "stats"], &mut errors);
+    let shepherd = crate::shepherd::read(runner)
+        .map_err(|e| errors.push(format!("fleet-shepherd: {e}")))
+        .ok();
     let timers = crate::jobs::timer_starts()
         .map_err(|e| errors.push(format!("systemctl: {e}")))
         .ok();

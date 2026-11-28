@@ -277,6 +277,7 @@ pub mod tests {
             .iter()
             .filter_map(|l| parse_transition(l))
             .collect(),
+            lanes: Default::default(),
         }
     }
 
@@ -343,6 +344,7 @@ pub mod tests {
         let w = Watch {
             state: Value::Null,
             transitions: vec![],
+            lanes: Default::default(),
         };
         let t = text(&page(&w, Palette { no_color: true }, 0, 200));
         assert!(t.contains("fleet-state.timer"), "{t}");
