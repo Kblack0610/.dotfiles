@@ -156,22 +156,28 @@ emit() {
 }
 
 # load_watch_labels: the manifests' system: ids and bookkeeping: flag, read in one call into W_SYSTEMS
-# and W_BOOKKEEPING by watch name: the Command Center groups watches by them (ar-6154). A host with no
-# sentinel-manifest labels none.
+# and W_BOOKKEEPING by watch name: the Command Center groups watches by them (ar-6154). When the read
+# fails, LABELS_OK stays false and watch_labels_json publishes no labels at all, so the gap shows
+# instead of every watch reading as a health watch with no system.
 declare -A W_SYSTEMS=() W_BOOKKEEPING=()
+LABELS_OK=false
 load_watch_labels() {
-    local n b s
-    while IFS=$'\t' read -r n b s; do W_SYSTEMS[$n]="$s"; W_BOOKKEEPING[$n]="$b"; done \
-        < <("$SENTINEL_MANIFEST" labels "$WATCHES" 2>/dev/null)
+    local n b s out
+    W_SYSTEMS=(); W_BOOKKEEPING=(); LABELS_OK=false
+    out="$("$SENTINEL_MANIFEST" labels "$WATCHES")" || { echo "agent-mqtt-publish: sentinel-manifest labels failed; watch labels not published" >&2; return 0; }
+    while IFS=$'\t' read -r n b s; do [ -n "$n" ] && { W_SYSTEMS[$n]="$s"; W_BOOKKEEPING[$n]="$b"; }; done <<< "$out"
+    LABELS_OK=true
 }
 
-# watch_labels_json <watch> -> {system, bookkeeping, system_<id>: true ...}. mqtt2prom drops text, so
-# each id also rides as a system_<id> boolean (a hyphen is an underscore): Prometheus reads the system
-# from the name of that key. The text stays for readers of the MQTT topic.
+# watch_labels_json <watch> -> {system, bookkeeping, system_<id>: true ...}, or {} when the labels could
+# not be read. mqtt2prom drops text, so each id also rides as a system_<id> boolean (any character
+# outside a-z, 0-9 and _ becomes _): Prometheus reads the system from the name of that key. The text
+# stays for readers of the MQTT topic.
 watch_labels_json() {
+    $LABELS_OK || { echo '{}'; return; }
     jq -cn --arg system "${W_SYSTEMS[$1]:-}" --argjson bookkeeping "${W_BOOKKEEPING[$1]:-false}" \
         '{system: $system, bookkeeping: $bookkeeping}
-         + ($system | split(",") | map(select(length > 0) | {key: ("system_" + gsub("-"; "_")), value: true}) | from_entries)'
+         + ($system | split(",") | map(select(length > 0) | {key: ("system_" + gsub("[^a-z0-9_]"; "_")), value: true}) | from_entries)'
 }
 
 # hand_fired <conf> -> 0 when nothing starts the runner on a clock: no SCHEDULE and no
@@ -304,7 +310,7 @@ snapshot() {
     done
 
     # Watches: the registry is the manifest dir; a paused manifest stays visible as paused.
-    local qnow; qnow="$(date +%s)"; load_watch_labels   # once a pass: each watch's quarantine is in force while UNTIL is ahead
+    local qnow; qnow="$(date +%s)"; load_watch_labels   # once a pass: each watch's quarantine is in force while UNTIL is ahead; so is the manifest read (labels)
     for f in "$WATCHES"/*.yaml "$WATCHES"/*.yaml.paused; do
         [ -f "$f" ] || continue
         name="$(basename "$f")"; name="${name%.paused}"; name="${name%.yaml}"

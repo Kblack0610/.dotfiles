@@ -487,6 +487,13 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   assert_equal "$(jq -c '[.system, .bookkeeping, ([keys[] | select(startswith("system_"))] | length)]' <<< "$(payload agents/testhost/watch/skill_drift)")" '["",false,0]'
 }
 
+@test "when the manifest reader fails, watches publish no labels rather than empty ones" {
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/sm-broken"; chmod +x "$SANDBOX/bin/sm-broken"
+  SENTINEL_MANIFEST="$SANDBOX/bin/sm-broken" run "$PUB" --quiet
+  assert_success
+  assert_equal "$(jq -c '[has("system"), has("bookkeeping"), .tripped]' <<< "$(payload agents/testhost/watch/skill_drift)")" '[false,false,true]'
+}
+
 # A probe's `page:` level (alertmanager-fleet: warning-only alerts page normal) is the trip's level,
 # so the rollup reads it, not the manifest's fixed fallback, while the watch is TRIP.
 @test "a tripped watch carries its trip's level over the manifest severity; a stale level file is ignored" {

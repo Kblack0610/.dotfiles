@@ -62,7 +62,7 @@ skills of that system in a tripped watch's red item.
 
 `bookkeeping: true` marks a watch that tracks work posture (release links, pts bands, deploy drift),
 not the health of a running system. It is optional and false when absent; the Command Center caps such
-a watch at a warning. `validate --strict` requires a boolean.
+a watch at a warning. `validate` requires a boolean.
 
 `flows:` is an optional list of part names: which parts of the fleet the watch probes. Plain
 `validate` checks its shape; `validate --strict` also checks each name is in `parts`. Plain
@@ -415,7 +415,7 @@ def bookkeeping_of(doc):
 
 
 def bookkeeping_errors(doc):
-    """--strict only: `bookkeeping:` is a boolean, so a quoted "true" is not read as false."""
+    """`bookkeeping:` is a boolean, so a quoted "true" is not read as false."""
     if "bookkeeping" in doc and not isinstance(doc["bookkeeping"], bool):
         return ["bookkeeping must be true or false (a YAML boolean)"]
     return []
@@ -481,7 +481,10 @@ def cmd_tags(directory):
 def cmd_labels(directory):
     directory = directory or os.path.expanduser("~/.agent/watches")
     try:
-        files = sorted(f for f in os.listdir(directory) if f.endswith((".yaml", ".yaml.paused")))
+        names = os.listdir(directory)
+        # A paused twin of a live manifest is skipped, as the publisher's own watch loop reads the live one.
+        files = sorted(f for f in names if f.endswith(".yaml")
+                       or (f.endswith(".yaml.paused") and f[: -len(".paused")] not in names))
     except OSError as exc:
         print(f"sentinel-manifest: {exc}", file=sys.stderr)
         return 1
@@ -489,7 +492,7 @@ def cmd_labels(directory):
         name = f[: -len(".paused")] if f.endswith(".paused") else f
         try:
             doc = load(os.path.join(directory, f))
-        except ValueError:
+        except (ValueError, OSError):
             continue  # an unreadable manifest labels nothing: the publisher's default is none
         systems = ",".join(sorted(set(systems_of(doc))))
         print(f"{name[:-5]}\t{'true' if bookkeeping_of(doc) else 'false'}\t{systems}")
@@ -582,7 +585,6 @@ def cmd_validate(path, strict=False):
         errors.extend(pagination_errors(doc))
         errors.extend(prom_series_errors(doc))
         errors.extend(flows_name_errors(doc))
-        errors.extend(bookkeeping_errors(doc))
         if not system_shape_errors(doc):
             errors.extend(system_name_errors(doc))
 
@@ -594,6 +596,7 @@ def cmd_validate(path, strict=False):
 
     errors.extend(flows_shape_errors(doc))
     errors.extend(system_shape_errors(doc))
+    errors.extend(bookkeeping_errors(doc))
 
     probe = scalar(doc.get("probe"))
     if not probe:

@@ -565,14 +565,23 @@ own_map() { printf '{"paths":{},"trackers":{"agent-runtime":{"systems":{"dispatc
   assert_output "$(printf 'a\ttrue\tci,tests\nb\tfalse\tdeploy\nc\tfalse\t')"
 }
 
-@test "--strict refuses a bookkeeping value that is not a boolean, which plain validate accepts" {
+@test "a bookkeeping value that is not a boolean fails validate, so a quoted true is never read as false" {
   legible; without system; printf 'system: ci\nbookkeeping: "true"\n' >> "$M"
   run "$SM" validate "$M"
-  assert_success
-  run "$SM" validate --strict "$M"
   assert_failure
   assert_output --partial 'bookkeeping must be true or false'
   without bookkeeping; echo 'bookkeeping: true' >> "$M"
   run "$SM" validate --strict "$M"
   assert_success
+}
+
+@test "labels skips a paused twin of a live manifest and an unreadable file, and keeps going" {
+  local d="$BATS_TEST_TMPDIR/watches2"; mkdir -p "$d"
+  printf 'name: a\nprobe: http\nbookkeeping: true\nsystem: ci\n' > "$d/a.yaml"
+  printf 'name: a\nprobe: http\n' > "$d/a.yaml.paused"
+  mkdir "$d/dir.yaml"
+  printf 'name: z\nprobe: http\nsystem: tests\n' > "$d/z.yaml"
+  run "$SM" labels "$d"
+  assert_success
+  assert_output "$(printf 'a\ttrue\tci\nz\tfalse\ttests')"
 }
