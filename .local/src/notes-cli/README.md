@@ -25,7 +25,7 @@ It runs `cargo build --release`, copies the binary to `~/.local/lib/notes/notes`
 
 ## Configuration
 
-`~/.config/notes/config.toml`, machine-local and git-ignored (`~/.dotfiles/.config/notes/config.toml.example` is the tracked template). The binary also tries `$NOTES_CONFIG` and a hand-placed `~/.dotfiles/.config/notes/config.toml`, and uses a built-in `personal` default if none exist.
+`~/.config/notes/config.toml`, machine-local and git-ignored (`~/.dotfiles/.config/notes/config.toml.example` is the tracked template). The binary also tries `$NOTES_CONFIG` and a hand-placed `~/.dotfiles/.config/notes/config.toml`, and uses a built-in `personal` default if none exist. The org and job profiles every machine shares (bnb and the work profiles) are not in it: `profiles.toml` beside it holds only `[profile.<name>]` tables, linked by `notes-bootstrap` from the private overlay's `.config/notes/profiles.toml`, their one tracked copy. A profile defined in both files is an error.
 
 Active profile resolves: `--profile`, then `$NOTES_PROFILE`, then `[hostname_map]` (by
 `hostname -s`), then `default_profile`. This is what lets a corporate machine root its
@@ -101,7 +101,7 @@ This section is the one description of the lab. `~/.notes/lab/README.md`, the `l
 ~/.notes/employment/jobs/<job>/projects/{current,archived}/<name>/   a client profile
 ```
 
-Each profile's projects dir comes from `~/.config/notes/config.toml` (`notes config` prints it). The folder name is the project name, and it must be a key in `project-map.json` (`project-map-doctor` fails otherwise); `~/.agent/{plans,lessons,sessions,asks}/<name>` use the same name. A profile with `automation = false` in its `[profile.<name>]` table (a work profile whose tracker lives elsewhere) is left out of every automated pass: no sweep, write-pass, editor save, doctor, migration or triage rewrites its sheets, and `board --json` and `projects --stats --json` mark its rows and projects `"automation": false` so fleet-dispatch and inbox-triage skip them. A stage never moves a folder: the stage is the hashtag on the sheet's `Version:` line, and only `projects --archive` moves a folder, to `archived/`.
+Each profile's projects dir comes from `~/.config/notes/config.toml` or the shared `profiles.toml` beside it (`notes config` prints it). The folder name is the project name, and it must be a key in `project-map.json` (`project-map-doctor` fails otherwise); `~/.agent/{plans,lessons,sessions,asks}/<name>` use the same name. A profile with `automation = false` in its `[profile.<name>]` table (a work profile whose tracker lives elsewhere) is left out of every automated pass: no sweep, write-pass, editor save, doctor, migration or triage rewrites its sheets, and `board --json` and `projects --stats --json` mark its rows and projects `"automation": false` so fleet-dispatch and inbox-triage skip them. A stage never moves a folder: the stage is the hashtag on the sheet's `Version:` line, and only `projects --archive` moves a folder, to `archived/`.
 
 Each profile has a `projects/index.md`. lab-sync regenerates its `AUTO` overview; the CLI owns the `## Current` and `## Archived` lanes below it. A lane entry points at the project's `README.md`, never `summary.md`, and its path is relative to that profile's root. Do not hand-edit either half. `~/.notes/lab/projects/index.md` also rolls up every org, and `board.md` / `agent-board.md` beside it are every project's rows for its open version, read-only (`notes board`).
 
