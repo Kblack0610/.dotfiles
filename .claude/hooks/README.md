@@ -129,7 +129,7 @@ A deny (PreToolUse) or block (Stop) reason starts with `<hook-name>: `. session-
 
 ## File layout
 
-- `~/.claude/hooks/` is a stow symlink to `~/.dotfiles/.claude/hooks/`.
+- `~/.claude/hooks/` is a real directory; stow links each file in it to its copy under `~/.dotfiles/.claude/hooks/`, so a new hook file is live only after stow runs again on the main checkout.
 - `~/.dotfiles/.config/shared-hooks/` holds hooks shared across runtimes (Claude Code + Codex).
 - Project repos should NOT have their own `pre-stop-checks.sh` — the user-global one handles all project types. If a project needs custom CI, add a case to the global hook.
 
