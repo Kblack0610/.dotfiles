@@ -555,7 +555,6 @@ if [ "\$1" = add ]; then
   printf '%s\n' "\${AGENT_QUEUE_ITEM:-}" >>"$SANDBOX/aq.env"
   printf '%s\n---\n' "\${@: -1}" >>"$SANDBOX/aq.task"
   printf '%s\n' "\${AGENT_QUEUE_PULL:-}" >>"$SANDBOX/aq.pull"
-  printf '%s\n---\n' "\${@: -1}" >>"$SANDBOX/aq.task"
   rc=\$(cat "$SANDBOX/aq.add.rc" 2>/dev/null || echo 0)
   [ "\$rc" -ne 0 ] || echo "\$slug" >>"$SANDBOX/aq.slugs"
   [ "\$rc" -ne 1 ] || echo "agent-queue: store locked" >&2
