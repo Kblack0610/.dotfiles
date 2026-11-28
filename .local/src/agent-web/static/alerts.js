@@ -11,7 +11,7 @@
 // A watch's state change and a queue change push (main.rs classify); Prometheus does not, so the
 // open tab also re-reads on its rules' cadence, as Infra does.
 const ALERTS_REFRESH_MS = 60e3;
-const ALERT_COLS = { sev: ["sev"], what: ["what"], project: ["project"], source: ["source"], since: ["since", "n"], owner: ["owner"], state: ["state"] };
+const ALERT_COLS = { sev: ["sev"], what: ["what"], project: ["project"], system: ["system"], source: ["source"], since: ["since", "n"], owner: ["owner"], state: ["state"] };
 // Each section's fold, kept across the redraw on every read; a section with no entry is open.
 const alertsOpen = {};
 // Three tables share the tab, so Watches' view keys carry this prefix (wq, ws, wsort, wdir) in the
@@ -90,7 +90,7 @@ function alertRow(a) {
   const owner = a.owner_href ? `<a href="${esc(a.owner_href)}">${esc(a.owner)}</a>` : esc(a.owner);
   const row = `<tr class="jr${open ? " sel" : ""}" data-key="${esc(alertKey(a))}">` +
     `<td class="${a.sev === "urgent" || a.sev === "high" ? "bad" : "muted"}">${esc(a.sev || "-")}</td><td class="wrap">${esc(a.what)}${alertCount(a)}</td>` +
-    `<td class="muted">${esc(a.project || "-")}</td><td class="muted">${esc(a.source)}</td><td class="n">${a.since ? ago(a.since) : "-"}</td><td class="wrap">${owner}</td>` +
+    `<td class="muted">${esc(a.project || "-")}</td><td class="muted">${esc(a.system || "-")}</td><td class="muted">${esc(a.source)}</td><td class="n">${a.since ? ago(a.since) : "-"}</td><td class="wrap">${owner}</td>` +
     `<td>${cchip(alertState(a.state), esc(a.state))}</td></tr>`;
   return open ? row + alertDetail(a) : row;
 }
@@ -108,7 +108,7 @@ function alertDetail(a) {
   const pr = a.pr_url ? `<div class="cline"><a href="${esc(a.pr_url)}" target="_blank" rel="noopener">Open the fix PR</a></div>` : "";
   const ev = a.evidence ? `<pre class="joblog">${esc(a.evidence)}</pre>` : "";
   const none = a.about || a.place || a.action || ev ? "" : `<div class="muted">No watch file says more: ${esc(a.source)} reports only that it is red.</div>`;
-  return `<tr class="wdet"><td colspan="7"><div class="sdet">` + line("What it checks", a.about) + line("Where", a.place) +
+  return `<tr class="wdet"><td colspan="8"><div class="sdet">` + line("What it checks", a.about) + line("Where", a.place) +
     line("What to do", a.action) + pr + ev + none + `</div></td></tr>`;
 }
 
@@ -126,7 +126,7 @@ function alertPages(a) {
   const rows = a.pages.map((p) => `<tr><td class="${p.sev === "high" ? "bad" : "muted"}">${esc(p.sev)}</td><td class="wrap">${esc(p.what)}${own(p)}</td>` +
     `<td class="wrap muted">${esc(p.place || "-")}</td><td class="n">${p.since ? ago(p.since) : "-"}</td></tr>`).join("");
   const line = (k, v) => (v ? `<div class="cline"><b>${k}</b> ${esc(v)}</div>` : "");
-  return `<tr class="wdet"><td colspan="7"><div class="sdet">` + line("What it checks", a.about) + line("What to do", a.action) +
+  return `<tr class="wdet"><td colspan="8"><div class="sdet">` + line("What it checks", a.about) + line("What to do", a.action) +
     `<table class="tbl"><tr><th data-role="glance">sev</th><th data-role="lead">alert</th><th>where</th><th class="n" data-role="glance">since</th></tr>${rows}</table></div></td></tr>`;
 }
 
@@ -167,12 +167,12 @@ const alertsHistory = (d, html) => innerWrap("alerts", "history",
 
 // Watches: every one, tripped and failing first (the reader's order). The state tiles say how many
 // tripped or failed and filter to them, so the head is its title and count alone.
-const WATCH_COLS = { name: ["watch"], state: ["state"], severity: ["severity"], project: ["project"], since: ["since", "n"], lastrun: ["last run", "n"], place: ["where"] };
+const WATCH_COLS = { name: ["watch"], state: ["state"], severity: ["severity"], project: ["project"], system: ["system"], since: ["since", "n"], lastrun: ["last run", "n"], place: ["where"] };
 function watchesBody(d) {
   const t = d.watches_table, rows = d.watches || [];
   const cls = (w) => (w.state === "TRIP" || w.state === "ERROR" ? "bad" : w.state === "OK" ? "" : "muted");
   return rows.length ? `<div class="panel scroll"><table class="tbl">${tblHead(t, WATCH_COLS)}` +
-    rows.map((w) => `<tr><td>${esc(w.name)}</td><td class="${cls(w)}">${esc(w.state)}</td><td class="muted">${esc(w.severity || "-")}</td><td class="muted">${esc(w.project || "-")}</td>` +
+    rows.map((w) => `<tr><td>${esc(w.name)}</td><td class="${cls(w)}">${esc(w.state)}</td><td class="muted">${esc(w.severity || "-")}</td><td class="muted">${esc(w.project || "-")}</td><td class="muted">${esc(w.system || "-")}</td>` +
       `<td class="n">${when(w.since)}</td><td class="n">${when(w.lastrun)}</td><td class="wrap muted">${esc(w.place || "-")}</td></tr>`).join("") + `</table></div>`
     : `<div class="panel muted">${t.total ? "No watch matches." : "No watch defined."}</div>`;
 }
