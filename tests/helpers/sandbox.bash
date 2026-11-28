@@ -116,7 +116,7 @@ sandbox_tool_files() {
   cp "$TESTS_DIR/fixtures/lanes.tsv" "$AGENTCTL_LANES_FILE"
   # hub-figure (a repo bin on PATH) keeps its cache in XDG_RUNTIME_DIR (the sandbox's by now:
   # sandbox_detach_env ran first) and asks the host's `hub` when it is stale: a test with no hub-figure stub read the workstation's
-  # live figure (agent_ask.bats count --all printed 31, not ?). Point both inside the sandbox; a
+  # live figure (agent_ask.bats count --all printed 31, not ?). Point both inside the sandbox;
   # hub-figure test sets its own after sandbox_init, and a `hub` stub in $SANDBOX/bin is the one it asks.
   export HUB_FIGURE_CACHE="$SANDBOX/tmp/hub-figure.json" HUB_FIGURE_HUB="$SANDBOX/bin/hub"
 }
@@ -443,6 +443,17 @@ fleet_field() {
 _stub_script() { local f="$1/$2.script"; shift 2; if [ $# -gt 0 ]; then printf '%s\n' "$1" > "$f"; else cat > "$f"; fi; chmod +x "$f"; }
 gh_script() { _stub_script "${GH_FIXTURE:-$NOTES_FIXTURE}" gh "$@"; }
 tmux_script() { _stub_script "$NOTES_FIXTURE" tmux "$@"; }
+
+# ss_stub -> the shared `schedules-sync` stub (helpers/stubs), the one reader of the ledger and the PR store: SCHEDULES_SYNC
+# points at it and its fixture dir is $SS_FIXTURE (default $GH_FIXTURE). Its header lists the ss.* files that answer a verb.
+# ss_answer <name> <value> writes one (ss_answer prs.out '[]', ss_answer sync-prs.rc 3, ss_answer prs.o_r.err 'stale');
+# ss_script <body> is a test's own behaviour, as gh_script, for what files cannot say.
+ss_stub() {
+  export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync" SS_FIXTURE="${SS_FIXTURE:-${GH_FIXTURE:-$NOTES_FIXTURE}}"
+  mkdir -p "$SS_FIXTURE"
+}
+ss_answer() { ss_stub; printf '%s\n' "$2" > "$SS_FIXTURE/ss.$1"; }
+ss_script() { ss_stub; _stub_script "$SS_FIXTURE" ss "$@"; }
 
 # The log of stub CLI invocations, one shell-quoted command per line.
 calls() { cat "$NOTES_FIXTURE/calls.log" 2>/dev/null; }

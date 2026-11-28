@@ -17,7 +17,6 @@
 set -uo pipefail
 
 CB_DIR="${CREDIT_BACKFILL_DIR:-$HOME/.agent/backfill}"
-SCHEDULES_SYNC="${SCHEDULES_SYNC:-schedules-sync}"
 CB_PLANS="${CREDIT_BACKFILL_PLANS:-$HOME/.agent/plans}"
 CB_LIVE_PLANS="${CREDIT_BACKFILL_LIVE_PLANS:-$HOME/.claude/plans}"
 HERE="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
@@ -58,6 +57,8 @@ family() { local r; r="$(project_repo_name "$1")"; { project_field "$r" owner; p
 
 # shellcheck source=../lib/origin-repo.sh
 . "$HERE/../lib/origin-repo.sh"
+# shellcheck source=../lib/main-state.sh
+. "$HERE/../lib/main-state.sh"   # SCHEDULES_SYNC, pr_store
 # gh_slug <project> -> owner/repo of the project's checkout's origin (origin_repo), or nothing.
 gh_slug() { origin_repo "$(project_repo_path "$1")"; }
 
@@ -66,11 +67,11 @@ gh_slug() { origin_repo "$(project_repo_path "$1")"; }
 # store cannot answer (stale, or the repo not in its list), since every size and day would read as unknown.
 CB_PRS="" CB_GIT=""
 store_load() {
-  local json key="$2" host
-  CB_GIT="$(project_repo_path "$1")" host="$(origin_host "$(project_repo_path "$1")")"
-  [ -z "$host" ] || [ "$host" = github.com ] || key="$host/$2"   # the store keys a Forgejo repo by its host
-  json="$("$SCHEDULES_SYNC" prs "$key" --state merged 2>/dev/null)" ||
-    die "PR store: $("$SCHEDULES_SYNC" prs "$key" --state merged 2>&1 >/dev/null)"
+  local json key
+  CB_GIT="$(project_repo_path "$1")"
+  key="$(origin_store_name "$CB_GIT")" || key="$2"
+  json="$(pr_store "$key" --state merged 2>/dev/null)" ||
+    die "PR store: $(pr_store "$key" --state merged 2>&1 >/dev/null)"
   CB_PRS="$(jq -r '.[] | [.number, .merge_sha // "", .merged_at // ""] | @tsv' <<<"$json")" || die "PR store: unreadable rows for $key"
 }
 # pr_field <N> <2=merge sha|3=merged at> -> that field of merged PR N, or nothing.
