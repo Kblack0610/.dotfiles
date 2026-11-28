@@ -2419,3 +2419,29 @@ EOF
   refute_output --partial 'never its author'
   assert_not_called 'claude --resume abc-123'
 }
+
+# ar-3645: an item on a PR that already merged is that work done; a session started on it finds nothing to do.
+@test "start closes a queued item whose recorded PR already merged and starts no session; an open PR starts as before" {
+  pr_item MERGED
+  agent-queue add --project game --slug land-12 --pr o/game#13 "land PR 13" >/dev/null
+  agent-queue add --project game --slug land-14 --pr o/game#14 "land PR 14" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item land-12
+  assert_failure 4
+  assert_output --partial 'land-12 not started: its PR o/game#13 already merged; closed done'
+  done12="$(ls "$AGENT_QUEUE_DIR"/done/*/*-land-12.md)" || fail "land-12 is not done"
+  assert_equal "$(qfield "$done12" status)" ok
+  assert_equal "$(qfield "$done12" merged)" "$OID"
+  assert_not_called 'wt new'
+  assert_not_called 'claude'
+  # negative control: the same item with its PR open is not closed
+  printf 'OPEN -\n' > "$NOTES_FIXTURE/pr.state"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item land-14
+  refute_output --partial 'already merged'
+  ! compgen -G "$AGENT_QUEUE_DIR/done/*/*-land-14.md" >/dev/null || fail "an item on an open PR was closed"
+  # a validate item reviews its author's PR: a merged PR does not close it unread
+  printf 'MERGED %s\n' "$OID" > "$NOTES_FIXTURE/pr.state"
+  agent-queue add --project game --slug val-1 --tags validate --pr o/game#15 "validate PR 15" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item val-1
+  refute_output --partial 'already merged'
+  ! compgen -G "$AGENT_QUEUE_DIR/done/*/*-val-1.md" >/dev/null || fail "a validate item was closed by its author's merged PR"
+}
