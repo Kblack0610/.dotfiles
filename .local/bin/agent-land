@@ -14,7 +14,7 @@
 #
 # Steps, stopping at the first failure: head (HEAD must be the PR's head commit, before the body is
 # touched; else the merge would be refused as "Head branch was modified": run from the PR's own
-# checkout; a HEAD that is origin's tip of the PR branch is a fresh push, waited on until the PR reads it), fetch (a head behind origin/<base> is merged up to it, each clean submodule checkout on its old pin moved to the merged one (submodule_follow), and pushed, before the checks and again after them if the base moved on during them; a head pushed after them waits on its own checks before it merges, and on a base without strict checks a second move, or a first that can affect no test the head's run ran (moved_misses_pick), lands that green head behind it unless the base's new commits change a file the head changes (base_touches_head), catch_up), item-line
+# checkout; a HEAD that is origin's tip of the PR branch is a fresh push, waited on until the PR reads it), fetch (a head behind origin/<base> is merged up to it, unless its own checks are already pending or green (head_checks_live), each clean submodule checkout on its old pin moved to the merged one (submodule_follow), and pushed, before the checks and again after them if the base moved on during them; a head pushed after them waits on its own checks before it merges, and on a base without strict checks a second move, or a first that can affect no test the head's run ran (moved_misses_pick), lands that green head behind it unless the base's new commits change a file the head changes (base_touches_head), catch_up), item-line
 # (before the checks, the PR body gets the line "Item: <slug>" unless it has it, so a reader holding
 # only the PR finds its work item; a stale "Item:" line is rewritten, except on a merged PR where another queue item's line stays), review (a tier-3 item's body has a
 # "Review:" line, review_gate), loose (a plan phase's item filed no open agent row its plan does not take, loose_gate), shape (no function over 150 lines gets longer and no copy is added, shape-grow, run by CI where a workflow names it and here otherwise; each "Split:" or "Dup:" escape line names an open row that names what it covers, shape_gate), checks (the PR's checks pass: CI, a required check; a cancelled check is no pass, waited on while a run on the head goes on, and on GitHub so is a failed one while a run of its workflow and event started after it goes on, and a cancelled matrix job of an older run of its workflow is no verdict (pr-ci.sh); a green watch waits while an open run on the head has no check for its jobs yet, a re-run or a workflow with none listed (rerun_pending); a tier-3 item, or one landed with --ran-checks, needs checks that ran), validate (critical work by judge.sh judge_work_level merges only on a second agent's pass verdict on this head, validate_gate), merge (--squash, or with --merge-commit a merge commit,
@@ -630,6 +630,27 @@ base_touches_head() {
   echo "it changes files the head changes ($(paste -sd, - <<<"$shared" | sed 's/,/, /g'))"
 }
 
+# head_checks_live: the head is behind <base>, merges with it cleanly, and already has checks, each
+# pending, passed or skipped (a gh read that a network error lost counts as pending); before_waits
+# is the catch_up after count its run starts at. A re-run after a
+# checks timeout merged a moved base before the gate every time, so a run slower than the wait never
+# finished (ar-5865: #3800 merged main up three times in three hours on a saturated runner pool).
+head_checks_live() {
+  [ -z "$fj" ] || return 1
+  local live
+  git fetch -q "$remote" 2>/dev/null || return 1
+  ! git merge-base --is-ancestor "$remote/$base" HEAD 2>/dev/null || return 1
+  git merge-tree --write-tree --quiet HEAD "$remote/$base" >/dev/null 2>&1 || return 1
+  gh_read live pr checks "$pr" "${R[@]}" --json bucket -q 'if length == 0 then "none" elif all(.[]; .bucket == "pass" or .bucket == "pending" or .bucket == "skipping") then "live" else "stale" end' || true  # gh exits 8 while a check is pending
+  [ "$live" = live ] || { [ -z "$live" ] && net_error "$gh_err"; } || return 1
+  # A head that is itself a merge-up of <base> (an earlier run's catch_up) is waiting on the merged-up
+  # head's re-check, so catch_up after counts it as one: else every re-run merged the base up once more.
+  if git rev-parse -q --verify 'HEAD^2' >/dev/null 2>&1 && git merge-base --is-ancestor 'HEAD^2' "$remote/$base" 2>/dev/null; then
+    before_waits=$CATCHUP_WAITS
+  fi
+  echo "fetch: the head's own checks are pending or green; waiting on them before any merge of $remote/$base"
+}
+
 # catch_up: a base the head is behind is merged in and pushed, before the gate and again after it if
 # the base moved on during the checks. A merge of <base> does not keep the checks green: a pushed head
 # is a new tree, and merging one before its checks ran shipped a broken one (dotfiles #1504; #1731
@@ -650,7 +671,7 @@ base_touches_head() {
 # exits 3 instead of landing behind it, so a hot file cannot hold the session forever. A strict base has no bound, since it refuses a head
 # that is behind (2026-11-05: unity-core-playground #1837 was refused twice). A conflict is aborted
 # and exits 3.
-CATCHUP_WAITS=1 CATCHUP_OVERLAP_WAITS=3
+CATCHUP_WAITS=1 CATCHUP_OVERLAP_WAITS=3 before_waits=0
 catch_up() {
   local out behind
   out=$(git fetch -q "$remote" 2>&1) || fail fetch "$(lastline "$out")"
@@ -1470,14 +1491,20 @@ deploy_steps() {
 # them was never followed (ar-5861, ask GxMF2a). Added as agent-land's pull (AGENT_QUEUE_PULL=land), as
 # deploy_steps is: 17 adds without it went board-only to the outbox from 2026-11-26, no apply ran, and
 # ConvergenceDrift fired on 8 hosts (ar-5865). Never fails the landing.
+# A step with {role} names what to apply (after_merge_roles): the item's task carries a "Roles:" line,
+# and a queued item carries this merge only when its Roles cover every role it changed; otherwise a
+# new item names the roles not yet covered. Why: an item naming no role left its session to work out
+# which hosts a merge reaches, and a queued one for role A swallowed a later merge of role B (ar-5918).
 after_merge_steps() {
-  local text files line paths step p f hit slug project out rc queued repo=${pr_ref%#*} sha ps=()
+  local text files line paths step p f hit slug project out rc queued repo=${pr_ref%#*} sha ps=() roles left q have r task by words=() ph='{role}'
   text=$(git show "$remote/$base:$AFTER_MERGE_FILE" 2>/dev/null) || return 0
   [ -n "$text" ] || return 0
   files=${PR_FILES-$(pr_files 2>&1)} || { echo "after-merge: no step added, $api could not list #$pr's files ($(lastline "$files")); re-run agent-land $pr" >&2; return 0; }
   project=$(project_canonical "${repo##*/}")
-  # this project's queued items only: another repo's item for the same step text does not carry this merge
-  queued=$(aq_retry list --json --state queued 2>/dev/null | jq -r --arg p "$project" 'select(.project == $p) | .slug // empty' 2>/dev/null) \
+  # this project's queued items only: another repo's item for the same step text does not carry this merge.
+  # One "<slug><TAB><its Roles: line>" a line; an item with no Roles line covers no role: it was filed by hand.
+  queued=$(aq_retry list --json --state queued 2>/dev/null | jq -r --arg p "$project" \
+    'select(.project == $p and (.slug // "") != "") | "\(.slug)\t\((.task // "") | [splits("\n") | select(startswith("Roles: "))][0] // "" | ltrimstr("Roles: "))"' 2>/dev/null) \
     || echo "after-merge: could not read the queue, so a step still queued may be added again" >&2
   while IFS= read -r line; do
     line=${line%$'\r'}
@@ -1493,12 +1520,31 @@ after_merge_steps() {
     done
     [ -n "$hit" ] || continue
     sha=$(printf '%s' "$step" | sha1sum | cut -c1-7)
-    # the repo last: agent-queue cuts a slug at 40 characters
-    slug=$(grep -m1 -E "^after-merge-$sha-[0-9]+-" <<<"$queued") && { echo "after-merge: $slug is still queued and carries #$pr too: $step"; continue; }
+    roles=''; left=''
+    if [[ "$step" == *"$ph"* ]]; then
+      roles=$(after_merge_roles "$files" "${ps[@]}")
+      # the roles no queued item of this step covers; an item covering "all" covers every one
+      left=" $roles " by=''
+      while IFS=$'\t' read -r q have; do
+        [[ "$q" =~ ^after-merge-$sha-[0-9]+- ]] || continue
+        [ "$have" = all ] && { left=' ' by=$q; break; }
+        [ "$roles" = all ] && continue
+        for r in $have; do [[ "$left" == *" $r "* ]] && { left=${left/ $r / }; [[ " $by " == *" $q "* ]] || by+=" $q"; }; done
+      done <<<"$queued"
+      read -ra words <<<"$left"; left=${words[*]}
+      [ -n "$left" ] || { echo "after-merge: ${by# } still queued, applying $roles, so it carries #$pr too: ${step//"$ph"/$roles}"; continue; }
+      roles=$left
+    else
+      # the repo last: agent-queue cuts a slug at 40 characters
+      slug=$(cut -f1 <<<"$queued" | grep -m1 -E "^after-merge-$sha-[0-9]+-") && { echo "after-merge: $slug is still queued and carries #$pr too: $step"; continue; }
+    fi
+    step=${step//"$ph"/$roles}
     slug="after-merge-$sha-$pr-${repo##*/}"
+    task="$pr_ref (merge ${merged:0:12}) changed $hit, and ${repo##*/}'s $AFTER_MERGE_FILE leaves this step for every merge that changes $paths: $step"
+    [ -z "$roles" ] || task+=$'\n'"Roles: $roles"
     rc=0
     out=$(AGENT_QUEUE_ITEM='' AGENT_QUEUE_PULL=land aq_retry add --project "$project" --priority high --from "item:$item" --slug "$slug" \
-      "chore(after-merge): $step (left by $pr_ref)"$'\n\n'"$pr_ref (merge ${merged:0:12}) changed $hit, and ${repo##*/}'s $AFTER_MERGE_FILE leaves this step for every merge that changes $paths: $step"$'\n'"Run it at the base's tip when you start, so it carries every merge since, and prove what it changed." 2>&1) || rc=$?
+      "chore(after-merge): $step (left by $pr_ref)"$'\n\n'"$task"$'\n'"Run it at the base's tip when you start, so it carries every merge since, and prove what it changed." 2>&1) || rc=$?
     case "$rc" in
       0) echo "after-merge: added $slug: $step" ;;
       5) echo "after-merge: $slug filed on the $project board, the queue takes it from there: $step" ;;
@@ -1507,6 +1553,30 @@ after_merge_steps() {
          else echo "after-merge: not added ($(lastline "$out")): agent-queue add --project $project --priority high --from item:$item --slug $slug 'chore(after-merge): $step (left by $pr_ref)'" >&2; fi ;;
     esac
   done <<<"$text"
+}
+
+# after_merge_roles <files> <path>... -> the {role} of an after-merge step: the sorted role directories
+# (the name after a path that ends in roles/) the merge changed, or "all" when it changed a file of
+# the line's other paths (an inventory, group_vars: they can reach any role's hosts) or one directly
+# under roles/. A path naming one role's directory (roles/<role>/) gives that role.
+after_merge_roles() {
+  local files=$1 p f rest out=''; shift
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    for p in "$@"; do
+      [[ "$f" == "$p"* ]] || [ "$f" = "$p" ] || continue
+      if [[ "$p" == roles/ || "$p" == */roles/ ]]; then
+        rest=${f#"$p"}
+        [[ "$rest" == */* ]] || { echo all; return; }
+        out+="${rest%%/*}"$'\n'
+        continue 2
+      fi
+      # a line naming one role's directory: that role
+      [[ "$p" =~ (^|/)roles/([^/]+)/$ ]] && { out+="${BASH_REMATCH[2]}"$'\n'; continue 2; }
+      { [[ "$p" == */ && "$f" == "$p"* ]] || [ "$f" = "$p" ]; } && { echo all; return; }
+    done
+  done <<<"$files"
+  sort -u <<<"$out" | grep . | paste -sd' ' -
 }
 
 # credit -> ", <what agent-queue attribute recorded>" for the item line: the PR's changed files
@@ -1777,10 +1847,12 @@ else
   workflow_gate
   # A head behind <base> is caught up first, the same merge as after the gate: a session that
   # stopped on exit 3 here left its green PR open while main moved (six waiting on 2026-11-07).
-  catch_up before || true
+  # Not a head whose own checks are already pending or green (head_checks_live): catch_up after them
+  # covers the moved base, and a merge here would drop that run for a new one.
+  head_checks_live || catch_up before || true
   shape_gate
   wait_checks
-  waits=0
+  waits=$before_waits
   while ! catch_up after "$waits"; do
     wait_checks
     waits=$((waits + 1))
