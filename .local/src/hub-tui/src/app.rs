@@ -368,6 +368,13 @@ pub type PassCard = Result<hub_core::shepherd::Card, String>;
 /// One shepherd read: the ledger and the pass card.
 pub type ShepherdRead = (boards::Due, Option<PassCard>);
 
+/// The ledger is a file; the pass card is `fleet-shepherd stats`. Blocking, so a caller on the
+/// draw thread (`--once` aside) reads it in a thread.
+fn shepherd_read(dir: &Path) -> ShepherdRead {
+    let pass = hub_core::shepherd::read(&actions::System).map(|v| hub_core::shepherd::Card::of(&v));
+    (boards::due(dir), Some(pass))
+}
+
 pub enum Msg {
     Input(Event),
     Tick,
@@ -1663,10 +1670,7 @@ impl App {
             let tx = self.tx.clone();
             let dir = self.files.shepherd.clone();
             std::thread::spawn(move || {
-                // The ledger is a file; the pass card is `fleet-shepherd stats`, so both are read here, off the draw.
-                let pass = hub_core::shepherd::read(&actions::System)
-                    .map(|v| hub_core::shepherd::Card::of(&v));
-                let _ = tx.send(Msg::Shepherd(Box::new((boards::due(&dir), Some(pass)))));
+                let _ = tx.send(Msg::Shepherd(Box::new(shepherd_read(&dir))));
             });
         }
     }
@@ -1722,7 +1726,11 @@ impl App {
             .unwrap_or(self.sessions_inner);
         match self.sessions_inner {
             "runners" => self.fleet = Some(hub_core::fleet::files(&paths)),
-            "shepherd" => self.read_shepherd(),
+            "shepherd" => {
+                let (due, pass) = shepherd_read(&self.files.shepherd);
+                self.shepherd = Some(due);
+                self.shepherd_pass = pass;
+            }
             _ => {}
         }
     }
