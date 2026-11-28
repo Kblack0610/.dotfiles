@@ -132,6 +132,7 @@ Choose by what the thing under test *is*:
 - **Pure logic** (parse a row, map a tag to an option, classify a pane) -> `unit`. Needs a source guard in the subject: `[[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0` above the dispatch. Add it if missing.
 - **A verb's output shape** (`--list` emits 7 tab-separated fields; `--task-op done` shells out to the right command) -> `integ`, using the stubs in `tests/helpers/stubs/`.
 - **A test needs its own `gh` or `tmux` answers** -> `gh_script` / `tmux_script` (`tests/helpers/sandbox.bash`): the body is sourced by the shared stub in place of its canned answers. In the unit and integ tiers never write a second `gh` or `tmux` into `$SANDBOX/bin` (the ui tier's `tmux_harness.bash` shim is the one exception).
+- **A test needs the run ledger or PR store (`schedules-sync`)** -> `ss_stub` and `ss_answer <verb>.<out|rc|err> <value>`, or `ss_script` for its own body (`tests/helpers/sandbox.bash`; the stub's header lists the `ss.*` files). Never write a `schedules-sync` into `$SANDBOX/bin`; its call log is `calls.log` in the fixture dir.
 - **State that IS tmux state** (a window option, a session's existence, what a keypress renders) -> `ui`. There is nothing to assert against a stub here: faking `set-option`/`show-options` only tests the fake.
 
 Prefer the cheapest tier that can actually fail. The suite caught a real routing bug in a 40ms unit test.
