@@ -3,9 +3,15 @@
 #
 # origin-repo.sh - the one parse of a checkout's origin URL into <owner>/<repo>, for every script
 # that asks gh (or a cache keyed by repo) about a checkout: agent-land, fleet-sessions,
-# credit-backfill, session-outcomes.sh and tmux/worktree.sh. Pinned by tests/unit/origin_repo.bats.
+# credit-backfill, session-outcomes.sh, fleet-bench, fleet-dispatch and tmux/worktree.sh. Pinned by
+# tests/unit/origin_repo.bats.
 # And the one test of which forge is a checkout's canonical one (fleet-dispatch, fleet-bench),
 # and the one way a headless runner reaches a GitHub origin (github_over_https).
+# And the one reader of a checkout's place in its repo: main_checkout (its main checkout, the same
+# from a linked worktree) and is_linked_checkout (whether it is a linked worktree). tmux/worktree.sh
+# (wt_main_repo, wt_is_linked), tmux/worlds.sh, agent-ask, agent-queue, dotfiles-autopull, fleet-bench,
+# fleet-dispatch and fleet-worker-panel.sh read them here. fleet-worker-panel.sh runs on a worker
+# from text, so fleet_host_panel sends this file ahead of it.
 
 # origin_repo <dir> [host] -> <owner>/<repo> of <dir>'s origin remote: the URL's last two path
 # parts, trailing slashes and .git dropped, so https://host/o/r(.git)(/), git@host:o/r.git and
@@ -22,6 +28,37 @@ origin_repo() {
 
 # url_repo <url> -> <owner>/<repo> of a remote URL, as origin_repo reads it.
 url_repo() { sed -E 's#/+$##; s#\.git$##; s#.*[/:]([^/:]+/[^/:]+)$#\1#' <<<"$1"; }
+
+# main_checkout <dir> -> the MAIN checkout of the repo containing <dir>, rc 1 for none.
+#
+# Via --git-common-dir, so it gives the same answer from inside a linked worktree as from the main
+# one: `wt new` run inside `dotfiles-agent-1` must cut `dotfiles-agent-2`, not
+# `dotfiles-agent-1-agent-1`. A submodule's common dir is <super>/.git/modules/<name>, whose
+# core.worktree names its checkout; a bare repo has none. The probe is needed: --git-dir with no
+# core.worktree takes the cwd as the toplevel. A deinitialised submodule keeps core.worktree, so the
+# checkout must still exist.
+main_checkout() {
+  local common top
+  common=$(git -C "${1:-.}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  case "$common" in
+  */.git) printf '%s\n' "${common%/.git}" ;;
+  *)
+    git --git-dir="$common" config --get core.worktree >/dev/null 2>&1 || return 1
+    top=$(git --git-dir="$common" rev-parse --show-toplevel 2>/dev/null) && [ -d "$top" ] || return 1
+    printf '%s\n' "$top"
+    ;;
+  esac
+}
+
+# is_linked_checkout <dir> -- rc 0 only inside a LINKED worktree. In a main checkout (a submodule's
+# too) --git-dir and --git-common-dir are the same path; in a linked one --git-dir is
+# <common>/worktrees/<name>. The guard that stops `reap` ever pointing at a main checkout. rc 1 for
+# a directory outside any repo.
+is_linked_checkout() {
+  local gitdir common
+  { read -r gitdir && read -r common; } < <(git -C "${1:-.}" rev-parse --path-format=absolute --git-dir --git-common-dir 2>/dev/null)
+  [ -n "${gitdir:-}" ] && [ -n "${common:-}" ] && [ "$gitdir" != "$common" ]
+}
 
 # origin_host <dir> -> the host of <dir>'s origin remote, lower-cased (url_host); nothing for a
 # path origin, and rc 1 with no origin.
@@ -77,7 +114,7 @@ forge_repo_name() {
     url=$(git -C "$1" remote get-url --push "$rn" 2>/dev/null) || continue
     case "$(url_host "$url")" in github.com|ssh.github.com|github.com-*) url_repo "$url" | sed 's#.*/##'; return 0 ;; esac
   done
-  basename "$(dirname "$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)")"
+  basename "$(main_checkout "$1")"
 }
 
 # forge_failover_file <checkout> -> the path of the repo's failover state file. Its one writer is

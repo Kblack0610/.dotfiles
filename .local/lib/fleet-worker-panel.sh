@@ -19,8 +19,8 @@
 # ahead_paths names ahead_files' files and head_at is HEAD's committer epoch (superseded_here in fleet-sessions
 # reads both).
 #
-# wp_base needs merge_proof_ref (agent-merge-proof.sh) defined first: fleet-sessions sources both
-# files, and fleet_host_panel sends both texts.
+# wp_base needs merge_proof_ref (agent-merge-proof.sh) and wp_git needs main_checkout (origin-repo.sh)
+# defined first: fleet-sessions sources all three files, and fleet_host_panel sends their texts.
 
 # wp_base <dir> -> origin's default branch as a ref name (merge_proof_ref); nothing when it has none.
 # Thinner than fleet-sessions' default_base, which needs gh and this machine's cache: it reads origin
@@ -176,14 +176,13 @@ empty_submodule() {
 # wp_git <dir> <edited files> -> the row's `git` object. `based` says HEAD shares history with the base,
 # so an `ahead` of 0 was measured, not a count ahead_files could not make (no merge base reads 0).
 wp_git() {
-  local d="$1" edited="$2" common main base up origin ahead apaths=""
+  local d="$1" edited="$2" main base up origin ahead apaths=""
   [ -n "$d" ] && [ -d "$d" ] || { echo '{"in":"gone"}'; return; }
   git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || { echo '{"in":0}'; return; }
   # A credential in an https remote stays on the worker: the rows are published (worker-panel.json).
   origin="$(git -C "$d" remote get-url origin 2>/dev/null)"
   [[ "$origin" =~ ^([a-z+]+://)[^/@]+@(.*)$ ]] && origin="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
-  common="$(git -C "$d" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
-  case "$common" in */.git) main="${common%/.git}" ;; *) main="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" ;; esac
+  main="$(main_checkout "$d")"
   base="$(wp_base "$d")"
   up="$(git -C "$d" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)"
   ahead="$(unlanded_files "$d" "$base")"

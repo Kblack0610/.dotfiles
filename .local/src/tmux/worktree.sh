@@ -91,7 +91,7 @@
 SELF="$(realpath "${BASH_SOURCE[0]}")"
 . "${SELF%/*}/panel-lib.sh" || exit 1
 . "${SELF%/*}/worlds.sh" || exit 1
-# origin-repo.sh, and the one Forgejo client (so_forge_remote, so_forgejo_*).
+# origin-repo.sh (main_checkout, is_linked_checkout), and the one Forgejo client (so_forge_remote, so_forgejo_*).
 # shellcheck source=../../lib/session-outcomes.sh
 . "${SELF%/*}/../../lib/session-outcomes.sh" || exit 1
 # shellcheck source=../../lib/agent-merge-proof.sh
@@ -134,26 +134,9 @@ WT_HOLD_REASON='held by wt: wt done or wt reap frees it and refuses a live sessi
 
 # ── Repo plumbing ────────────────────────────────────────────────────────────
 
-# wt_main_repo <dir> -- the MAIN checkout of the repo containing <dir>.
-#
-# Via --git-common-dir, so it gives the same answer from inside a linked worktree as from
-# the main one. That matters: `wt new` run inside `dotfiles-agent-1` must cut
-# `dotfiles-agent-2`, not `dotfiles-agent-1-agent-1`. A submodule's common dir is
-# <super>/.git/modules/<name>, whose core.worktree names its checkout; a bare repo has none.
-# The probe is needed: --git-dir with no core.worktree takes the cwd as the toplevel. A
-# deinitialised submodule keeps core.worktree, so the checkout must still exist.
-wt_main_repo() {
-  local common top
-  common=$(git -C "${1:-.}" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
-  case "$common" in
-  */.git) printf '%s\n' "${common%/.git}" ;;
-  *)
-    git --git-dir="$common" config --get core.worktree >/dev/null 2>&1 || return 1
-    top=$(git --git-dir="$common" rev-parse --show-toplevel 2>/dev/null) && [ -d "$top" ] || return 1
-    printf '%s\n' "$top"
-    ;;
-  esac
-}
+# wt_main_repo <dir> -- the MAIN checkout of the repo containing <dir>: main_checkout (origin-repo.sh),
+# the one rule, under the name every wt caller and test uses.
+wt_main_repo() { main_checkout "${1:-.}"; }
 
 # wt_repo_name <main-repo> -- the name a worktree of this repo carries.
 #
@@ -217,15 +200,9 @@ wt_base_ref() {
   fi
 }
 
-# wt_is_linked <path> -- true only for a LINKED worktree. In the main checkout --git-dir and
-# --git-common-dir are the same path; in a linked one --git-dir is <common>/worktrees/<name>.
-# This is the guard that stops `reap` ever pointing at a main checkout.
-wt_is_linked() {
-  local gd common
-  gd=$(git -C "$1" rev-parse --path-format=absolute --git-dir 2>/dev/null) || return 1
-  common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
-  [ "$gd" != "$common" ]
-}
+# wt_is_linked <path> -- true only for a LINKED worktree (is_linked_checkout, origin-repo.sh). The
+# guard that stops `reap` ever pointing at a main checkout.
+wt_is_linked() { is_linked_checkout "$1"; }
 
 # wt_is_husk <path> -- true when <path> has no .git and holds nothing but what a tool rewrote
 # after the worktree was removed: whole cache dirs (WT_HUSK_CACHES), and a few named files

@@ -124,6 +124,10 @@ attach_skills() {
 # checks then read no mtime and do nothing, so the line says so.
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/stat.sh" || say "~: cannot load .local/lib/stat.sh: no rebuild or stale-unit restart this run"
 
+# shellcheck source=../lib/origin-repo.sh
+# main_checkout, for --now: which of REPOS a path belongs to. Without it --now names no repo and pulls nothing.
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/origin-repo.sh" || say "~: cannot load .local/lib/origin-repo.sh: --now pulls nothing"
+
 # restart_stale <unit> <file> <what>: a running user <unit> that started before <file> last changed
 # still runs the old <what>, so restart it. One line when it restarted or failed.
 restart_stale() {
@@ -388,10 +392,10 @@ pull() {
 
 if [ "${1:-}" = --now ]; then
   set -- --now "${2:-.}" "${3:-}"
-  common=$(git -C "$2" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 0
-  common=$(phys "$common") || exit 0
+  main=$(main_checkout "$2") || exit 0
+  main=$(phys "$main") || exit 0
   for repo in "${REPOS[@]}"; do
-    [ -d "$repo/.git" ] && [ "$(phys "$repo/.git")" = "$common" ] || continue
+    [ -d "$repo/.git" ] && [ "$(phys "$repo")" = "$main" ] || continue
     # --bg, agent-land's form: the pass runs detached so its builds never hold a landing, holding a
     # shared lock on bg.lock until it ends (a caller that must see it done takes that lock exclusive),
     # and logs its result as one line. It drops every other descriptor it inherited, as store-sync's

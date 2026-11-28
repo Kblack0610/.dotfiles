@@ -149,6 +149,8 @@ PROJECT_MAP_FILE="$AQ_MAP"
 # so_pr_view: the one forge rule pr_state reads a pr: hold's PR by.
 # shellcheck source=../lib/session-outcomes.sh
 . "$AQ_BIN/../lib/session-outcomes.sh"
+# shellcheck source=../lib/origin-repo.sh
+. "$AQ_BIN/../lib/origin-repo.sh"   # main_checkout, for project_of_cwd (session-outcomes.sh sources it too)
 # item_watch and watch_probe: the close-ok check of a red watch item, shared with agent-land.
 # shellcheck source=../lib/watch-item.sh
 . "$AQ_BIN/../lib/watch-item.sh"
@@ -1973,8 +1975,7 @@ project_credit() {
 
 project_of_cwd() {
   local top
-  top="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 0
-  top="$(dirname "$top")"
+  top="$(main_checkout .)" || return 0
   [ -f "$AQ_MAP" ] && jq -r --arg r "$top" '.paths[$r] // empty' "$AQ_MAP" 2>/dev/null
 }
 
