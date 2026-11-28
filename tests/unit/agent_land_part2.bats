@@ -553,6 +553,7 @@ if [ "\$1" = add ]; then
   ! grep -qxF "\$slug" "$SANDBOX/aq.slugs" 2>/dev/null || { echo "agent-queue: already in the queue: \$slug" >&2; exit 1; }
   printf '%s\n' "\${*%%\$'\n'*}" >>"$SANDBOX/aq.add"
   printf '%s\n' "\${AGENT_QUEUE_ITEM:-}" >>"$SANDBOX/aq.env"
+  printf '%s\n---\n' "\${@: -1}" >>"$SANDBOX/aq.task"
   printf '%s\n' "\${AGENT_QUEUE_PULL:-}" >>"$SANDBOX/aq.pull"
   printf '%s\n---\n' "\${@: -1}" >>"$SANDBOX/aq.task"
   rc=\$(cat "$SANDBOX/aq.add.rc" 2>/dev/null || echo 0)
