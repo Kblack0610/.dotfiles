@@ -249,7 +249,7 @@ J
 }
 
 @test "session_prs: each PR with its state from its own repo's store, viewed PRs not counted, one read per repo a pass" {
-  pr_store; pr_transcript "$SANDBOX/t.jsonl"
+  seed_pr_store; pr_transcript "$SANDBOX/t.jsonl"
   run session_prs "$SANDBOX/t.jsonl"
   assert_success
   [ "$(jq -c 'map([.repo, .number, .state, .merged_at])' <<<"$output")" = '[["o/one",7,"OPEN",null],["o/two",9,"MERGED","2026-10-30T12:00:00Z"]]' ]
@@ -260,7 +260,7 @@ J
 }
 
 @test "session_prs: a repo the store cannot answer leaves a null state, is read once a pass, and not kept past it" {
-  pr_store; pr_transcript "$SANDBOX/t.jsonl"
+  seed_pr_store; pr_transcript "$SANDBOX/t.jsonl"
   touch "$LEDGER_DIR/PRS_FAIL_o_two"
   run session_prs "$SANDBOX/t.jsonl"
   assert_success
@@ -1555,7 +1555,7 @@ validated_item() {
     [ "$(jq -r .reason <<<"$output")" = 'PR #2166 closed without merging' ]
     [ "$(jq -r .finished <<<"$output")" = false ]
   done
-  done_item ok "$sha"; pr_transcript "$SANDBOX/t.jsonl"; pr_store
+  done_item ok "$sha"; pr_transcript "$SANDBOX/t.jsonl"; seed_pr_store
   printf -- '-\t9\tCLOSED\tPASS\t-\t-\n' > "$LEDGER_DIR/prs_o_two.tsv"
   PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" panel "$SANDBOX/wt"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json

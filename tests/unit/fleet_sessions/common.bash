@@ -286,8 +286,8 @@ pr_transcript() {
   } > "$1"
 }
 
-# pr_store: the PR store holds o/one#7 (open) and o/two#9 (merged).
-pr_store() {
+# seed_pr_store: the PR store holds o/one#7 (open) and o/two#9 (merged).
+seed_pr_store() {
   printf -- '-\t7\tOPEN\tNONE\t-\t-\n' > "$LEDGER_DIR/prs_o_one.tsv"
   printf -- '-\t9\tMERGED\tPASS\t-\t-\t2026-10-30T12:00:00Z\n' > "$LEDGER_DIR/prs_o_two.tsv"
   CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
