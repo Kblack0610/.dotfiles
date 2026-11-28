@@ -140,7 +140,13 @@ so_mapped_repos() {
 # record is how a PR made in a subagent, or whose output was persisted to a file, reaches
 # this transcript, since neither prints its URL in a tool result here. Claude Code also writes
 # a pr-link for a PR URL it only saw printed (a test's fixture o/r#99, session 5642f5f8), so `run`
-# drops a claim in a repo gh cannot resolve. (`run` also claims a PR whose body names the
+# drops a claim in a repo gh cannot resolve.
+# Claude Code also rewrites the record every turn after a `gh pr view` or `gh pr comment` of a
+# PR that is another session's (ar-2957 on #3239, whose own merged PR had no record), so a pr-link
+# for a PR such a command named, with no pr_cmd result printing it, is not claimed. The
+# command must run (not sit in a heredoc or quoted text) and name the PR as its first argument.
+# A PR of the session's own that it also viewed is still claimed by its body's session link:
+# so_session_links. (`run` also claims a PR whose body names the
 # session's own claude.ai/code link: so_session_links.)
 # lessons_written counts corrections (the rule is "after ANY correction, update lessons");
 # most land as `cat >>` through Bash, not Edit, so both are counted. Malformed lines are skipped, not fatal:
@@ -166,8 +172,18 @@ so_transcript_metrics() {
     def text_of: if type == "string" then .
                  elif type == "array" then ([.[]? | .text? // empty] | join("\n"))
                  else "" end;
+    # The PRs a `gh pr view|comment` command names as {repo, number}: its first argument after the
+    # flags, a number or a /pull/N URL, with the repo from -R or the URL ("" when neither names one).
+    def looked_at:
+      time_use_unquoted as $u
+      | [ $u | match("'"$SO_TU_START"'gh\\s+pr\\s+(?:view|comment)\\b(?<rest>[^\\n;&|]*)"; "g").captures[]
+          | select(.name == "rest") | .string
+          | ((capture("(?:-R|--repo)[=\\s]+(?<r>\\S+)") | .r) // "") as $repo
+          | gsub("(?:-R|--repo)[=\\s]+\\S+"; " ") | gsub("\\s-\\S+"; " ")
+          | capture("^\\s*(?:https?://[^/\\s]+/(?<ur>[^/\\s]+/[^/\\s]+)/pull/)?(?<n>[0-9]+)(?![\\w-])")
+          | {repo: ((.ur // $repo) | ascii_downcase), number: (.n | tonumber)} ];
     reduce (inputs | fromjson? | select(type == "object")) as $r (
-      { pr_ids: {}, lesson_ids: {}, done_ids: {}, prs: [], entrypoint: null,
+      { pr_ids: {}, lesson_ids: {}, done_ids: {}, prs: [], linked: [], looked: {}, entrypoint: null,
         interrupts: 0, lessons_written: 0, proof: 0, unverified: 0,
         api_error: 0, denied: 0, tool_errors: 0,
         tool_calls: 0, test_runs: 0, ci_polls: 0, wrap: {}, messages: {}, since_edit: {},
@@ -206,6 +222,7 @@ so_transcript_metrics() {
                  else . end)
               | (if ($c | test("\\bgit\\s+commit\\b")) then .since_edit = {} else . end)
               | (if ($c | pr_cmd) then .pr_ids[$u.id] = true else . end)
+              | reduce ($c | looked_at)[] as $l (.; .looked["\($l.repo)#\($l.number)"] = true)
               | (if ($c | test("(>>|tee\\s+-a)\\s*\\S*\\.agent/lessons/")) then .lesson_ids[$u.id] = true else . end)
               | reduce ($sigs[] | select((($r.timestamp // "") | .[0:10]) > .since)
                         | select(.sig as $re | try ($c | test($re)) catch false)) as $s (.;
@@ -254,11 +271,12 @@ so_transcript_metrics() {
             else . end)
         end
       elif $r.type == "pr-link" and ($r.prNumber | type) == "number" and (($r.prRepository // "") | test("^[^/\\s]+/[^/\\s]+$")) then
-        .prs += [{repo: $r.prRepository, number: $r.prNumber}]
+        .linked += [{repo: $r.prRepository, number: $r.prNumber}]
       elif $r.type == "system" and $r.subtype == "compact_boundary" then
         .compactions[if $r.compactMetadata.trigger == "manual" then "manual" else "auto" end] += 1
       else . end)
-    | { prs: (.prs | unique),
+    | .looked as $looked
+    | { prs: ((.prs + [.linked[] | select(($looked["\(.repo | ascii_downcase)#\(.number)"] or $looked["#\(.number)"]) | not)]) | unique),
         entrypoint,
         corrections: { interrupts, lessons_written },
         board_done: { proof, unverified },
