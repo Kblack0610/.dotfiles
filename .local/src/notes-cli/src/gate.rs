@@ -15,7 +15,8 @@
 //! The daily cap (`intake_daily_cap`, [`cap_refusal`]) is a separate test, on every row the gate
 //! admits and every writer the gate never asks, and on every project's agent board, gated or not
 //! (the human, 2026-11-25: "lets make sure rows dont come in aggressively"): a board takes at most
-//! that many new agent rows a local day, whoever filed them. The person's `--want` and an urgent
+//! that many new agent rows a local day, whoever filed them, bar the nightly `docs-cleanup` runner
+//! (`project_tasks::CAP_EXEMPT_FILERS`, counted but never refused). The person's `--want` and an urgent
 //! `#why` pass it, except `quick-fault`, which ranks a row already on the board.
 
 use crate::config::Profile;

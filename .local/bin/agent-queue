@@ -3279,6 +3279,8 @@ cmd_claim() {
   [ -z "$session" ] || header_set "$f" session "$session"
   [ -z "$window" ] || header_set "$f" window "$window"
   [ -z "$session" ] || set_hand_host "$f" "$session"
+  unlock
+  [ -z "${AQ_MARK-}" ] || mark_row "$f" "$AQ_MARK"
 }
 # set_hand_host <file> <session> -- host: goes with session:, so a stale one from an earlier run never pairs with this machine's session.
 set_hand_host() {
@@ -3459,7 +3461,7 @@ cmd_return() {
     if [ "$i" -eq 0 ]; then cause="$(dead_cause "${files[i]}")"; else cause="returned with $slug"; fi
     cancel_close "${files[i]}" "$why" "$by" "$cause" returned
   done
-  # notes writes the rows and may call agent-queue: the lock goes first, as in close_row_on_item.
+  # notes writes the rows and may call agent-queue: the lock goes first, as in cmd_move (ar-3025).
   unlock
   # A row that stays started reads as an orphan with no item: say so and exit 1, as reopen does.
   local rc=0 did=un-started
@@ -3612,23 +3614,26 @@ cmd_set() {
   done
   [ "$(state_of "$f")" != done ] || stamp_outcome "$f"
   item_event item-set "$f" --why "${set_kv[*]}"
+  # A queued item the set gave a gate waits on its board row, not in the queue (cmd_add): judged under the
+  # lock, so no start comes between the set and that check; it goes back there below (return_gates).
+  local gate=''
+  case " $* " in *" tags="* | *" after="*)
+    if [ "$(state_of "$f")" = queued ]; then hold_for "$(fm_get "$f" after)" "$(fm_get "$f" tags)" "" "$f"; gate=$HOLD; fi ;;
+  esac
+  # The item is written: the row writes below are notes', which waits on its ptask.lock with no bound
+  # (cmd_move, ar-3025). Unlocked, the item may move on, so they read it where it is now.
+  local cur
+  if [ -z "${AQ_LOCKED-}" ]; then unlock; cur="$(find_item "$slug" any)" && f="$cur"; fi
   echo "$slug: $*"
   # priority= goes on the row too, as bump writes it: the order reads the row (row_prios).
   for kv in "$@"; do
     [ "${kv%%=*}" = priority ] && [ "$(state_of "$f")" != done ] || continue
-    [ -n "${AQ_LOCKED-}" ] || unlock
     row_prio_write "$f" "${kv#*=}"
   done
   [ -z "$left_row" ] || [ "$left_row" = "$(item_row "$f")" ] || repoint_row "$slug" "$f" "$left_row" "$left_prof" "$left_lane"
-  # A queued item the set gave a gate waits on its board row, not in the queue (cmd_add): it goes back
-  # there carrying it (return_gates).
-  case " $* " in *" tags="* | *" after="*) ;; *) return 0 ;; esac
-  [ "$(state_of "$f")" = queued ] || return 0
-  hold_for "$(fm_get "$f" after)" "$(fm_get "$f" tags)" "" "$f"
-  [ -n "$HOLD" ] || return 0
-  [ -n "${AQ_LOCKED-}" ] || unlock
-  ( cmd_return "$slug" --why "the set gave it a gate ($HOLD): it waits on its board row" ) ||
-    die "$slug is queued with a gate ($HOLD) it could not take back to its board row: agent-queue return $slug --why <why>, or set it back"
+  [ -n "$gate" ] || return 0
+  ( cmd_return "$slug" --why "the set gave it a gate ($gate): it waits on its board row" ) ||
+    die "$slug is queued with a gate ($gate) it could not take back to its board row: agent-queue return $slug --why <why>, or set it back"
 }
 
 # repoint_row <slug> <file> <row> <profile> <lane> -- an active item re-pointed to another row
@@ -3641,7 +3646,6 @@ repoint_row() {
   [ "$(state_of "$f")" != done ] && command -v notes >/dev/null || return 0
   other="$(collect_rows $ACTIVE | jq -r --arg r "$row" --arg s "$slug" 'first(.[] | select(.row == $r and .slug != $s) | .slug) // empty')" ||
     { echo "agent-queue: $slug left row ${row#*:}, not un-started: the queue could not be read" >&2; return 0; }
-  [ -n "${AQ_LOCKED-}" ] || unlock
   if [ -n "$other" ]; then :
   elif unstart_row "$row" "$prof" "$5"; then
     echo "$slug: board row ${row#*:} on ${row%%:*} un-started, the item works another row"
@@ -3813,7 +3817,7 @@ cmd_retask() {
   if [ -n "$row" ]; then
     prof="$(fm_get "$f" profile)"
     case "$(fm_get "$f" lane)" in '' | agent) flag=(--agent) ;; esac
-    # notes writes the row and may call agent-queue: the lock goes first, as in close_row_on_item.
+    # notes writes the row and may call agent-queue: the lock goes first, as in cmd_move (ar-3025).
     unlock
     command -v notes >/dev/null || die "$slug: no notes on PATH to rewrite its board row ${row#*:}"
     words="$(notes board --json 2>/dev/null | jq -r --arg p "${row%%:*}" --arg k "${row#*:}" \
@@ -4093,11 +4097,20 @@ cmd_move() {
   [ "$to" != done ] || stamp_outcome "$f"
   dest="$(move_to "$f" "$to")" || die "could not move $f"
   item_event item-moved "$dest" --to "$to" --why "$from -> $to${status:+ ($status)}${why:+: $why}"
+  # The item is written. What follows is model-lane's and notes' (the board mark, the row close, the pull),
+  # and notes waits on its own ptask.lock with no bound, so a move that held the queue lock through them held
+  # every writer behind a board write: 195 lock misses on 2026-11-25 05:25Z, .lock held by a `notes ptask
+  # start` child (ar-3025). A caller under AQ_LOCKED (claim, handoff) holds the lock for writes of its own:
+  # it gets the board mark in AQ_MARK and makes it once it lets the lock go. Unlocked, the item may move on,
+  # so the rest reads it where it is now.
+  local mark='' cur
+  if [ -z "${AQ_LOCKED-}" ]; then unlock; cur="$(find_item "$slug" any)" && dest="$cur"; fi
   echo "$slug: $from -> $to"
   lane_outcome "$run" "$from" "$to" "$status" "$end" "$cause" "$(fm_get "$dest" note)" "$(fm_get "$dest" from)"
   # The row's section follows the item: Now while it runs or waits on someone, Next up once back in
   # the queue. waiting and review keep the mark: the item started.
-  case "$to" in running) mark_row "$dest" run ;; queued) mark_row "$dest" start ;; esac
+  case "$to" in running) mark=run ;; queued) mark=start ;; esac
+  if [ -n "${AQ_LOCKED-}" ]; then AQ_MARK=$mark; elif [ -n "$mark" ]; then mark_row "$dest" "$mark"; fi
   [ "$to" = done ] && [ "$status" = ok ] || return 0
   close_row_on_item "$slug" "$dest"
   pull_after "$slug" "$dest"
@@ -4120,14 +4133,13 @@ mark_row() {
 # fleet-dispatch close_row when its session died first). Its sessions read the move as closing the
 # row, and a row left started reads as an orphan. A row already closed (a doc kind closes its own
 # with doc: proof) is left as it is; a close that fails warns unless the board shows the row closed.
-# Before pull_after, which pulls the rows waiting on this one: this frees the lock before calling notes.
+# Before pull_after, which pulls the rows waiting on this one. cmd_move let the lock go before either.
 close_row_on_item() {
   local slug=$1 row prof lane pr flag=() out key board
   IFS=$'\x1f' read -r row prof lane pr < <(item_json "$2" |
     jq -r '[.row // "", .profile // "", .lane // "", .pr // ""] | join("\u001f")')
   [ -n "$row" ] && [ -z "$pr" ] || return 0
   case "$lane" in '' | agent) flag=(--agent) ;; esac
-  [ -n "${AQ_LOCKED-}" ] || unlock
   key="${row#*:}"
   if out="$(notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" done "$key" --proof "item:$slug" 2>&1)"; then
     echo "$slug: board row $key closed"
@@ -4350,6 +4362,8 @@ cmd_handoff() {
   header_set "$f" handoff "$note"
   header_set "$f" handoffs "$((n + 1))"
   item_event item-set "$f" --why "handoff $((n + 1)) of $max: $note${sv:+, from $sv}"
+  unlock
+  [ -z "${AQ_MARK-}" ] || mark_row "$f" "$AQ_MARK"
   echo "$slug: handed off ($((n + 1)) of $max); end this session now (/wind-down auto): the next start reads $note"
 }
 
@@ -4650,8 +4664,7 @@ pull_after() {
   local row rc=0
   row="$(item_row "$2")"
   [ -n "$row" ] || return 0
-  # fleet-dispatch adds through this script: free the lock, and keep the fd out of tmux.
-  unlock
+  # fleet-dispatch adds through this script, so it runs with the lock gone and fd 8 out of tmux: cmd_move let it go.
   if [ "${AGENT_QUEUE_START:-1}" = 1 ]; then fleet-dispatch pull-after "${row#*:}" || rc=$?
   else fleet-dispatch pull-after --queue-only "${row#*:}" || rc=$?; fi
   [ "$rc" = 0 ] ||
