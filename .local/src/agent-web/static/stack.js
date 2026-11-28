@@ -143,7 +143,7 @@ const hookRules = (r) => r.rules
   : stackCell("-", "n muted");
 const hooksBody = (d) => stackList("Hooks", d.hooks, HOOK_COLS, hookRow, "No hooks match.", "No hooks are configured.");
 
-const RULE_HUE = { ok: "", stale: "warn", moved: "warn", restates: "warn", dead: "bad", absent: "muted" };
+const RULE_HUE = { ok: "", stale: "warn", moved: "warn", restates: "warn", layer: "warn", dead: "bad", absent: "muted" };
 const ruleRow = (r) => `<tr title="${esc(r.why || r.today)}">${stackCell(r.rule, "wrap")}${stackCell(r.kind, "muted")}${stackCell(r.number, "wrap")}` +
   `${stackCell(r.confidence, "muted")}${stackCell(r.state, RULE_HUE[r.state] ?? "")}${stackCell(r.source, "wrap muted")}</tr>`;
 
