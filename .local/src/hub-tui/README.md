@@ -100,6 +100,7 @@ Prometheus pages re-read every 60s (`PROM_REFRESH`; Prometheus has no push). Eve
 | `a` | Board: add a row to the selected row's project and lane; `#urgent`, `#high` or `#low` in the text sets its priority, and none is `#normal` |
 | `s`, `d`, `D`, `x`, `X` | Board: queue the selected row, mark it done with a proof (pr:N, a URL), done unverified with why, drop it with why, drop it as a duplicate of an id; not on a Focus row |
 | `m`, `e`, `+`, `-` | Board: move the row (a project, a version `vX.Y.Z`, or both, space-separated), edit its text (tags kept), one release sooner, one release later; not on a playtest check or a Focus row |
+| `p` | Board: set the row's priority (type urgent, high, normal or low; it replaces the row's tag, `notes ptask tag`); not on a Focus row |
 | `o` | Board: open the row's sheet at its line in `$EDITOR` (one word, else nvim) in a new tmux window |
 | `q`, Ctrl-C | Quit |
 
