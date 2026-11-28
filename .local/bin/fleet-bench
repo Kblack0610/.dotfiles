@@ -1766,7 +1766,7 @@ pr_ci() {
   local pr runs paths='' ledger=$1
   if [[ "$1" == */*/* ]]; then
     pr=$(so_forgejo_pr "$1" "$2") || { [ $? -eq 3 ] && return 5; return 1; }
-    ledger=forgejo:${1#*/}
+    ledger=$(so_ledger_repo "$1")
   else
     pr=$(gh pr view "$2" -R "$1" --json headRefName,createdAt,mergedAt,additions,deletions,commits,mergeCommit) || return 1
   fi
