@@ -1,6 +1,6 @@
 //! The per-case test ledger: one row per execution of a test case, from every finished run of a
 //! repo's declared test workflow, read once from the results artifacts the workflow uploads. The
-//! flake score (`hub-cases score`) counts these rows; nothing else reads the artifacts for it.
+//! flake score counts these rows, and nothing else reads the artifacts for it (the score is its own change; `files` and `read_file` are its reader).
 //! `hub-cases ingest` writes the ledger, from the timer `schedules-sync` runs on.
 //!
 //! | fact                    | home                                                                  |
@@ -275,10 +275,11 @@ fn bundle_role(rows: &[Row]) -> &'static str {
 /// A run's classes that failed and its classes: a class failed when its solo run failed, else, with
 /// no solo run, when its batch did (`suite.sh`'s summary calls a batch red a solo run cleared a pass).
 fn class_share(rows: &[Row]) -> (usize, usize) {
-    // class -> (a solo run failed it, a solo run exists, a batch failed it)
-    let mut by: HashMap<&str, (bool, bool, bool)> = HashMap::new();
-    for r in rows {
-        let e = by.entry(r.class.as_str()).or_default();
+    // (tier, class) -> (a solo run failed it, a solo run exists, a batch failed it); only Unity
+    // results count: a bats file is not a class, and the share rule is the playground's
+    let mut by: HashMap<(&str, &str), (bool, bool, bool)> = HashMap::new();
+    for r in rows.iter().filter(|r| r.source != "report") {
+        let e = by.entry((r.tier.as_str(), r.class.as_str())).or_default();
         let failed = r.result == "failed";
         if r.role == "batch" {
             e.2 |= failed;
@@ -535,6 +536,39 @@ fn write_rows(root: &Path, run: &PickRun, rows: &[Row]) -> Result<(), String> {
     gzip_to(&d.join(format!("{}.tsv.gz", stem(run))), &text)
 }
 
+/// A rerun's download holds the artifacts of the attempts before it that it did not replace, so
+/// its rows would count those executions twice. A row the run's earlier attempts already hold
+/// (the same case, shard, run folder and time, which a rerun never reproduces) is dropped.
+fn without_earlier_attempts(root: &Path, run: &PickRun, rows: Vec<Row>) -> Vec<Row> {
+    let key = |r: &Row| {
+        Row {
+            attempt: 0,
+            started: 0,
+            ..r.clone()
+        }
+        .to_line()
+    };
+    let own = format!("{}-{}.tsv.gz", run.id, run.attempt);
+    let prefix = format!("{}-", run.id);
+    let seen: HashSet<String> = files(root, &run.repo)
+        .iter()
+        .filter(|f| {
+            f.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(&prefix) && n != own)
+        })
+        .filter_map(|f| read_file(f).ok())
+        .flatten()
+        .map(|r| key(&r))
+        .collect();
+    if seen.is_empty() {
+        return rows;
+    }
+    rows.into_iter()
+        .filter(|r| !seen.contains(&key(r)))
+        .collect()
+}
+
 fn write_mark(root: &Path, run: &PickRun, mark: &str, why: &str) -> Result<(), String> {
     let d = repo_dir(root, &run.repo);
     std::fs::create_dir_all(&d).map_err(|e| format!("{}: {e}", d.display()))?;
@@ -679,6 +713,7 @@ pub fn ingest(
             .map_or(Outcome::None, |d| load_run(d, &run, bundle));
         let wrote = match outcome {
             Outcome::Rows(rows, left) => {
+                let rows = without_earlier_attempts(root, &run, rows);
                 rep.ingested += 1;
                 rep.rows += rows.len();
                 rep.left += left.cases + left.files;
@@ -1064,6 +1099,75 @@ mod tests {
             ("failed", "report", "unit")
         );
         assert_eq!(rows[1].fullname, "a.bats.bad");
+    }
+
+    #[test]
+    fn a_bats_run_is_never_mass_red() {
+        let d = scratch("bats-share");
+        let art = d.join("junit-unit-1");
+        std::fs::create_dir_all(&art).unwrap();
+        let suites: String = (0..25)
+            .map(|i| {
+                let t = if i < 3 {
+                    "<failure message=\"x\"/>"
+                } else {
+                    ""
+                };
+                format!(
+                    "<testsuite name=\"f{i}.bats\"><testcase name=\"t\">{t}</testcase></testsuite>"
+                )
+            })
+            .collect();
+        std::fs::write(
+            art.join("report.xml"),
+            format!("<testsuites>{suites}</testsuites>"),
+        )
+        .unwrap();
+        let mut run = pick(7);
+        run.artifacts = vec![];
+        let Outcome::Rows(rows, _) = load_run(&d, &run, false) else {
+            panic!("rows")
+        };
+        assert_eq!(rows.iter().filter(|r| r.result == "failed").count(), 3);
+    }
+
+    #[test]
+    fn a_rerun_attempt_drops_the_rows_an_earlier_attempt_holds() {
+        let root = scratch("attempts");
+        let a1 = pick(9);
+        let shard = |t: &str, time: f64| Row {
+            run: 9,
+            attempt: 1,
+            tier: "playmode".into(),
+            shard: t.into(),
+            class: "A".into(),
+            fullname: format!("A.t{t}"),
+            result: "passed".into(),
+            time,
+            ..Default::default()
+        };
+        write_rows(&root, &a1, &[shard("3", 1.0), shard("4", 2.0)]).unwrap();
+        let a2 = PickRun {
+            attempt: 2,
+            ..pick(9)
+        };
+        let rerun = |r: Row| Row { attempt: 2, ..r };
+        // shard 4 comes back unchanged, shard 3 ran again with a new time
+        let kept = without_earlier_attempts(
+            &root,
+            &a2,
+            vec![rerun(shard("3", 1.7)), rerun(shard("4", 2.0))],
+        );
+        assert_eq!(
+            kept.iter().map(|r| r.shard.as_str()).collect::<Vec<_>>(),
+            ["3"]
+        );
+        // another run's rows are not an earlier attempt of this one
+        let other = pick(90);
+        assert_eq!(
+            without_earlier_attempts(&root, &other, vec![shard("4", 2.0)]).len(),
+            1
+        );
     }
 
     #[test]

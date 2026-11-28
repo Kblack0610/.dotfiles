@@ -10,7 +10,8 @@
 //! first. `--backfill` reads main's nightly and same-SHA proof runs over `--days` (30 by default),
 //! and with `--bundle 'test-runs-*'` falls back to the old bundles for runs from before
 //! `meta.json`. Exit 0 when the pass finished or stopped at a bound it names (the cap, the time,
-//! the GitHub budget reserve); exit 1 when a fetch or a write failed, so the unit shows it.
+//! the GitHub budget reserve); exit 1 when a fetch or a write failed. The summary goes to stderr,
+//! which a unit's journal keeps.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -102,9 +103,9 @@ fn main() -> ExitCode {
         junit::fetched(&cache, run, &System)
     });
     let _ = std::fs::remove_dir_all(&cache);
-    println!("{}", report.says());
+    eprintln!("{}", report.says());
     for line in report.infra.iter().chain(&report.refused) {
-        println!("  {line}");
+        eprintln!("  {line}");
     }
     for e in &report.errors {
         eprintln!("hub-cases: {e}");

@@ -145,9 +145,23 @@ pub fn all_finished(b: &Builds, registry: Option<&Registry>) -> Vec<PickRun> {
     let Some(reg) = registry else {
         return vec![];
     };
+    // a repo's globs and lister are one lookup, not one per run of a 30-day ledger
+    let mut per_repo: HashMap<&str, PickRun> = HashMap::new();
     finished(b, reg)
         .into_iter()
-        .map(|(r, rank)| pick_of(reg, r, rank))
+        .map(|(r, rank)| {
+            let own = per_repo
+                .entry(r.repo.as_str())
+                .or_insert_with(|| pick_of(reg, r, rank));
+            PickRun {
+                rank,
+                ..PickRun {
+                    artifacts: own.artifacts.clone(),
+                    store: own.store.clone(),
+                    ..PickRun::of(r)
+                }
+            }
+        })
         .collect()
 }
 

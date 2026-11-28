@@ -7,8 +7,9 @@ Type=oneshot
 ExecCondition=%h/.local/bin/fleet-lease schedules-sync
 ExecStart=%h/.local/bin/schedules-sync
 # The per-case test ledger reads the runs the sync just recorded (hub-cases ingest, bounded by its own
-# wall-time budget and the gh wrapper's REST reserve); its failure shows on this unit.
-ExecStartPost=%h/.local/bin/hub-cases ingest
+# wall-time budget and the gh wrapper's REST reserve). The "-" keeps its failure (or a node with no
+# hub-cases) from failing a sync that succeeded; its summary and errors are in this unit's journal.
+ExecStartPost=-%h/.local/bin/hub-cases ingest
 StandardOutput=null
 StandardError=journal
 TimeoutStartSec=600
