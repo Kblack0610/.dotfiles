@@ -191,8 +191,9 @@ load 'fleet_dispatch/fleet_dispatch_run_trainee'
   pub 'scripts/setup:12 and scripts/setup:3-9. and scripts/setup:12:5'; assert_success
   # A #tag in brackets or backticks is no path either: ar-6346's brief said "at: gate (#at/2026-11-22/1800 on ...)".
   pub 'scripts/setup once its gate (#at/2026-11-22/1800 on ar-3264) and `#after/ar-1` clear'; assert_success
-  pub 'scripts/setup after "#after/ar-1" and (#at/1)'; assert_success
-  pub '"#after/ar-1" scripts/gone.sh'; assert_failure; assert_output "it names scripts/gone.sh, which $r does not track"
+  # pub writes the text into JSON, so a double quote goes in escaped.
+  pub 'scripts/setup after \"#after/ar-1\" and (#at/1)'; assert_success
+  pub '\"#after/ar-1\" scripts/gone.sh'; assert_failure; assert_output "it names scripts/gone.sh, which $r does not track"
   pub 'crate/src/main.rs:40:5'; assert_failure
   assert_output 'it names crate/src/main.rs, which is no markdown file, nor a shell or bats file outside a cargo or npm tree'
   pub 'dispatch/log.md'; assert_failure; assert_output "it names dispatch/log.md, which $r does not track"
