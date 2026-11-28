@@ -44,6 +44,8 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // runner of theirs is registered between jobs, so these hold the labels a waiting job asks
         // for (`ci::Pool`).
         ("pools", format!("{W} (ci_runner_pool)")),
+        // The jobs GitHub's own runners run now, by repo: the CI glance's github-hosted line.
+        ("hosted", format!("{W} (github_hosted_jobs_running) > 0")),
         // GitHub answering the exporter's runner reads. The per-repo run-list sources are left
         // out: one failed call there leaves every runner row intact, so it is no reason to say
         // runner rows may be missing.
@@ -115,6 +117,7 @@ pub const OPTIONAL: &[&str] = &[
     "ci_other",
     "node_state",
     "job_usual",
+    "hosted",
     "uname",
     "boot",
 ];
@@ -598,6 +601,7 @@ mod tests {
                 "ci_other",
                 "node_state",
                 "job_usual",
+                "hosted",
                 "uname",
                 "boot"
             ]
