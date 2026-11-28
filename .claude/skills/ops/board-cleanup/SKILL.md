@@ -24,7 +24,7 @@ Not for a raw pile of new wants (`process-requests`), which rows dispatch runs n
 
 ## Steps
 
-1. **In flight first,** per the method, on both dotfiles repos: another session may already be cleaning a board. Run the pass on a host whose `~/.config/notes/config.toml` defines every profile (the workstation): the file is machine-local, and on a worker without `[profile.bnb]` the bnb boards are not on `notes board` and every write to one fails with "no current project" (2026-11-25, ar-5594); `grep '^\[profile' ~/.config/notes/config.toml` lists the host's profiles. Note the `~/.notes` HEAD (`git -C ~/.notes rev-parse HEAD`) so step 5 can diff everything the pass wrote.
+1. **In flight first,** per the method, on both dotfiles repos: another session may already be cleaning a board. Run the pass on a host where `notes config --profile bnb` resolves: the bnb and job profiles come from `~/.config/notes/profiles.toml`, which `notes-bootstrap` links from the private overlay (ar-6354), and on a host without it the bnb boards are not on `notes board` and every write to one fails with "no current project" (2026-11-25, ar-5594). Note the `~/.notes` HEAD (`git -C ~/.notes rev-parse HEAD`) so step 5 can diff everything the pass wrote.
 2. **Baseline.** Save these to the scratchpad:
    - `fleet-bench room` (board_days against its max, with board_open and backlog rows);
    - `notes doctor --projects` (findings by kind and project);
