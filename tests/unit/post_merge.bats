@@ -10,7 +10,7 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
   export FX="$BATS_TEST_TMPDIR"
-  printf '#!/usr/bin/env bash\necho "systemctl $*" >> "$FX/calls.log"\n[ "${NOCTALIA_ACTIVE:-1}" = 1 ] || [ "$2" != is-active ]\n' > "$SANDBOX/bin/systemctl"
+  printf '#!/usr/bin/env bash\necho "systemctl $*" >> "$FX/calls.log"\n{ [ "${NOCTALIA_ACTIVE:-1}" = 1 ] || [ "$2" != is-active ]; } && { [ "${RELOAD_FAILS:-0}" = 0 ] || [ "$2" != daemon-reload ]; }\n' > "$SANDBOX/bin/systemctl"
   chmod +x "$SANDBOX/bin/systemctl"
   REPO="$SANDBOX/repo"
   git init -q -b main "$REPO"
@@ -77,6 +77,21 @@ reloads() { grep -c 'systemctl --user daemon-reload' "$FX/calls.log" || true; }
   run merge_change docs/desk.md
   assert_success
   [ "$(reloads)" = 0 ]
+}
+
+@test "a merge outside the stowed checkout reloads nothing" {
+  export DOTFILES_ROOT="$SANDBOX/elsewhere"
+  mkdir -p "$DOTFILES_ROOT"
+  run merge_change .config/systemd/user/demo.service
+  assert_success
+  [ "$(reloads)" = 0 ]
+}
+
+@test "a failed daemon-reload says so and does not fail the merge" {
+  export RELOAD_FAILS=1
+  run merge_change .config/systemd/user/demo.service
+  assert_success
+  assert_output --partial 'daemon-reload failed; run it by hand'
 }
 
 # theme_switch_stub <root>: a theme-switch under <root> that logs its call instead of rendering.
