@@ -61,6 +61,10 @@ load 'fleet_dispatch/run'
   assert_output 0
   # A question blocks one step, and reap, not the session, moves the item to waiting.
   assert_called 'only that step is blocked, not the task'
+  assert_called 'once the ask is all that is left, run /wind-down auto'
+  assert_called 'If wind-down will not close, end your turn on the question and leave this window open'
+  run grep -c 'only when nothing else is left' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
   run grep -cE 'agent-queue move gm-1 waiting|then stop and leave' "$NOTES_FIXTURE/calls.log"
   assert_output 0
   assert_called 'tmux -L lab set-option -t =game-agent-1: @dispatch game: gm-1'
