@@ -36,6 +36,15 @@ metadata:
       where: unity-core-playground(?!.*asset-library)
       unless: 'cd [^;&|]*asset-library'
       why: a bare Unity -batchmode skips the hold and the run slots (slots.sh)
+    # A hand cancel of this repo's runs, from its checkout or naming it with -R or in the api path. gh-workflows' own row lets
+    # `# own:` and `# stuck:` through; these two do not, since the script is the one path that checks the run's jobs first.
+    - match: '(?:^|[;&|(){}\s/])gh(?:\s+(?:-R|--repo)[\s=]\S+)*\s+(?:run\s+cancel(?![\w-])|api\s(?:[^;&|\n]*actions/runs/[^/\s]+/(?:force-)?cancel(?![\w-])))'
+      use: 'scripts/test/gh-run-cancel.sh <run> "<why>" (or --stuck "<live step>"): it refuses a run a Unity job has started (docs/operations/ci.md rule 7) and logs caller, run and reason'
+      where: unity-core-playground
+      why: sessions cancelled started gate shards by hand under `# own:` as superseded, runs 46041044210, 45318303563 and 45277619723, with nothing on record but the token's owner (ucp-2089)
+    - match: '(?:^|[;&|(){}\s/])gh\s+(?:(?:-R|--repo)[\s=]\S*unity-core-playground\S*\s+run\s+cancel(?![\w-])|run\s+cancel\s[^;&|\n]*(?:-R|--repo)[\s=]\S*unity-core-playground|api\s[^;&|\n]*unity-core-playground/actions/runs/[^/\s]+/(?:force-)?cancel(?![\w-]))'
+      use: 'scripts/test/gh-run-cancel.sh <run> "<why>" from a unity-core-playground checkout (or --stuck "<live step>"): it refuses a run a Unity job has started (docs/operations/ci.md rule 7) and logs caller, run and reason'
+      why: sessions cancelled started gate shards by hand under `# own:` as superseded, run 45277619723 with -R from outside the checkout (ucp-2089)
 ---
 
 # Playground headless test
