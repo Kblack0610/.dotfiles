@@ -7008,7 +7008,8 @@ cmd_throughput() {
   [ -n "${BENCH_PROM_TSV:-}" ] || queue=$(prom_q github_job_queue_seconds "$to" | jq -r '.data.result[] | [.metric.pool, .metric.quantile, .value[1]] | @tsv')
   # Merges and the snapshot grow with the window and the fleet, so they go by file, never --arg (128 KB each).
   jq -rn --argjson a "$from" --argjson b "$to" --slurpfile sf <(printf '%s\n' "$snap") --rawfile m <(printf '%s\n' "$merges") \
-      --arg q "$queue" --arg at "$at" --rawfile r <(runs_between "$from" "$to") "$JQ_LIB"'
+      --arg q "$queue" --arg at "$at" --argjson rdead "$([ -f "$BENCH_RUNS_TSV" ] && [ -r "$BENCH_RUNS_TSV" ] && echo false || echo true)" \
+      --rawfile r <(runs_between "$from" "$to") "$JQ_LIB"'
     $sf[0] as $s | (($b - $a) / 3600) as $h | (if $at == "" then "at \($b | hm)" else $at end) as $at
     | ($q | split("\n") | map(select(. != "") | split("\t")) | reduce .[] as $x ({}; .[$x[0]][$x[1]] = ($x[2] | tonumber))) as $wait
     # A pool line for every pool the cc:pool_* rules name: one with slots, one with jobs waiting or running
@@ -7022,7 +7023,9 @@ cmd_throughput() {
     | ($r | run_rows) as $runs
     | ($runs | map(select(.res != "pass"))) as $bad
     | "window: \($a | hm) -> \($b | hm) (\($h | round1)h)",
-      (if ($runs | length) == 0 then "local runs: none recorded"
+      # a host with no run ledger (no playground runs there) is unread, never zero failed runs
+      (if $rdead then "local runs unread: the run ledger is missing on this host"
+       elif ($runs | length) == 0 then "local runs: none recorded"
        else "local runs: \($runs | length / $h | round1)/h, \($bad | length * 100 / ($runs | length) | round)% not passed, editor \(($runs | map(.s) | add) / 3600 | round1)h, of which on runs not passed \((($bad | map(.s) | add) // 0) / 3600 | round1)h" end),
       ($m | split("\n") | map(select(. != "") | split("\t"))
        | (map(select(.[0] | startswith("!")) | .[0][1:]) | unique) as $unread
