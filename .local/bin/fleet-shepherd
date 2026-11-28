@@ -377,12 +377,15 @@ NEEDS_NUDGE_JQ='def needs_nudge: .bucket == "NEEDS" and (.nudged | not) and (.cl
 # its running item, never nudged).
 HELD_JQ='def held: finished and (.close.left // null) != null;'
 
+# cmd_due: the due lines of the state document. A main row whose wait_until is ahead (fleet-sessions'
+# run ledger row under a GitHub rate limit, until its reset plus a sync) is not due: the limit clears
+# itself, and one that outlasts it is due then as an ownerless nightly red (ar-230).
 cmd_due() {
   [ -r "$STATE_FILE" ] || die "no state document at $STATE_FILE"
   local out
   out="$(jq -r --argjson items "$(shared_items)" --argjson off "$(nudge_held_off)" --argjson needs_min "$FLEET_SHEPHERD_NEEDS_NUDGE_MIN" \
     "$FIN_JQ$KEPT_JQ$CLOSE_NUDGE_JQ$PANE_TAG_JQ$SAY_JQ$ASK_WAIT_JQ$HELD_JQ$NEEDS_NUDGE_JQ"'
-    ( (.main // [])[] | select((.escalated | not) and (.owners // []) == [])
+    ( (.main // [])[] | select((.escalated | not) and (.owners // []) == [] and (.wait_until // 0) <= now)
       | "nightly red: \(.repo) (\(.reason // "-"))" )
   , ( (.shared // [])[] | select(.escalated | not) | . as $r
       | ($items[$r.fact] // null) as $item
