@@ -38,7 +38,8 @@
 #                                rule's number re-measured; --check fails when one moved against its
 #                                recorded confidence, its measure died, or a rule's text left its source,
 #                                a rule row has no enforced_by that resolves (test:, hook:, ci: or review), the review rows outgrow
-#                                RULES_PROSE_BASELINE (or sit under it), or a lesson found twice names no enforced_by check;
+#                                RULES_PROSE_BASELINE (or sit under it), a global-file row applies to fewer than 2 repos or names no `applies`, a repo
+#                                row restates a global one (`layer`), or a lesson found twice names no enforced_by check;
 #                                --scenarios lists the hard scenarios a context trim must keep, 1 when any is stale;
 #                                --gates lists the gate markers (# gate: <id>) with no register row, a hook that denies with none, and a refusal
 #                                a diff against BASE (default origin/main) added with none: 1 when any; --check fails a gate row with no valid
@@ -291,6 +292,7 @@ set -uo pipefail
 : "${RULES_PROSE_BASELINE:=$HOME/.config/agentctl/rules-prose-baseline}"   # review=N: the most rule rows that may name no check but review; lower it when rows gain one
 : "${RULES_LESSON_SEEN:=2}"   # a lesson the dream sweep found again this many times must name its enforced_by (lessons seen)
 : "${RULES_MEASURE_TIMEOUT:=20}"      # seconds one rule's measure may run
+: "${RULES_GLOBAL_SOURCES:=~/.claude/CLAUDE.md:~/.dotfiles-private/.claude/CLAUDE.md}"   # the global rule files (colon list): a row sourced here must say where it applies (rules_states, `layer`)
 # a transport failure on a stderr line naming github.com: GitHub did not answer a rule's measure (rules_states)
 : "${RULES_UNANSWERED_RE:=HTTP 5[0-9][0-9]|connection (refused|reset)|i/o timeout|TLS handshake timeout|context deadline exceeded|unexpected EOF}"
 # rules --changed: the files a session reads as rules (instruction-homes.json kinds global, repo, skill,
@@ -3174,7 +3176,7 @@ cmd_ledger() {
 # fetch (nothing here fetches), never its working tree: a main checkout sits weeks behind (the bnb
 # platform one was detached 57 commits back, so the anchors #1644 dropped read as present, ar-6241);
 # rules_source says which file stands in for it. `state` is the one verdict, first of stale, absent
-# (source not here, or limited), dead, restates, moved, else ok: --check fails all but absent and ok, and Stack shows it as is. A row's optional `scenario` is the hard
+# (source not here, or limited), dead, restates, moved, layer, else ok: --check fails all but absent and ok, and Stack shows it as is. A row's optional `scenario` is the hard
 # situation the rule decides: the must-keep list a context trim is checked against (context-trim skill).
 # `form` says whether a row is a rule (text a session reads, a .md source) or a mechanism (a hook,
 # script or config that enforces one); the source decides it, and a row's own `form` overrides that.
@@ -3185,6 +3187,14 @@ cmd_ledger() {
 # source on another machine is absent first, as for every row). --check fails a missing, bad or dead one, and
 # fails when the `review` rows outnumber RULES_PROSE_BASELINE (`review=N`), which may only shrink: a new
 # rule row names a check, or it is one more prose-only row and the count has to be argued for.
+
+# `layer` holds "narrowest layer that covers every repo a rule applies to" (global CLAUDE.md, Memory
+# Routing) to a test. A row sourced in a global file (RULES_GLOBAL_SOURCES) carries `applies`: "all"
+# (a rule about how a session works anywhere) or the list of repos that need it, two or more; one repo
+# means the rule belongs in that repo's own file. A rule row sourced anywhere else whose anchor is a
+# global row's anchor (or contains it, 20 characters or more, ignoring case and punctuation) restates
+# the wider layer; a row that must stand alone says why in `layer_waiver` (fleet-platform: teammates
+# read its AGENTS.md without ours).
 
 # rules_enforcer <enforced_by> -> none (empty), review, ok, bad or dead: `<kind>:<path>[::<test name>]`
 # resolved against the disk: an absolute path or one under `~`, and the name as written in an `@test "<name>"` line.
@@ -3267,8 +3277,12 @@ rules_states() {
     enforcer=$(rules_enforcer "$enf")
     printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$anchored" "$value" "$limited" "$enforcer" "$why"
   done < <(jq -r '[.source, .anchor, (.measure // ""), (.enforced_by // "")] | map(gsub("\n"; " ")) | join("\u001f")' "$RULES_REGISTER") |
-    jq -cRn --slurpfile rows "$RULES_REGISTER" '
-      [inputs | split("\u001f")] as $seen
+    jq -cRn --slurpfile rows "$RULES_REGISTER" --arg globals "$RULES_GLOBAL_SOURCES" '
+      def norm: ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; "");
+      def home: sub("^~"; env.HOME);
+      ($globals | split(":") | map(select(. != "") | home)) as $gl
+      | ([$rows[] | select((.source // "" | home) | IN($gl[])) | (.anchor // "" | norm) | select(length >= 20)]) as $ganchors
+      | [inputs | split("\u001f")] as $seen
       | range($rows | length) as $i
       | $rows[$i] + {anchored: ($seen[$i][0] | fromjson), value: ($seen[$i][1] | tonumber? // null), limited: ($seen[$i][2] == "true"), enforcer: $seen[$i][3], err: ($seen[$i][4] // "")}
       | (.max != null or .min != null) as $bounded
@@ -3282,11 +3296,21 @@ rules_states() {
       | ((.measure // "") | gsub("\\$\\{HOME\\}|\\$HOME"; "~") | gsub("~"; env.HOME)) as $reads
       | .restates = ($bounded and $raw != "" and .measure != null
           and (.measure | test("\\bwc\\b|grep -c|\\bstat\\b|\\bfind\\b") | not) and ($reads | contains($src)))
+      | .layer = (if ($src | IN($gl[])) then
+            (if .applies == "all" then ""
+             elif (.applies | type) == "array" then
+               (if (.applies | unique | length) >= 2 and all(.applies[]; type == "string" and . != "") then ""
+                else "applies lists \(.applies | unique | length) distinct repo(s); a rule for fewer than 2 belongs in that repo'"'"'s own file" end)
+             else "names no applies: give \"all\" or the repos that need it" end)
+          elif .form == "rule" and ((.layer_waiver // "") == "") and ((.anchor // "" | norm) as $a | ($a | length) >= 20 and any($ganchors[]; . as $g | ($a | contains($g)) or ($g | contains($a))))
+          then "restates a global row; keep the global one and link to it, or give layer_waiver the reason this file must stand alone"
+          else "" end)
       | .holds = (if $bounded and .value != null
           then ((.max == null or .value <= .max) and (.min == null or .value >= .min)) else null end)
       | .moved = (.holds != null and .holds != (.confidence != "low"))
       | .state = (if .anchored == false then "stale" elif .anchored == null or .limited then "absent"
           elif .dead then "dead" elif .restates then "restates" elif .moved then "moved"
+          elif .layer != "" then "layer"
           elif .enforcer | IN("missing", "bad", "dead") then "enforcer" else "ok" end)'
   local rc=$?
   rm -rf "$err" "$srcs"
@@ -3312,6 +3336,7 @@ rules_problems() {
       elif .state == "dead" then "dead measure: \($f): \(.anchor)\(if .err != "" then " (\(.err))" else "" end)"
       elif .state == "restates" then "restates: \($f): \(.anchor): its bound is a copy of the number its measure reads from \($f); drop max/min, the reading is the number"
       elif .state == "moved" then "moved: \($f): \(.anchor): \(.value) against \(if .max != null then "max \(.max)" else "min \(.min)" end), recorded \(.confidence)"
+      elif .state == "layer" then "layer: \($f): \(.anchor): \(.layer)"
       else empty end,
     (select(.enforcer | IN("missing", "bad", "dead")) | select(.anchored != null) | "enforcer: \($f): \(.anchor): " + (
       if .enforcer == "missing" then "names no enforced_by; give test:<path>, hook:<path>, ci:<path>, or review when only a reader holds it"
