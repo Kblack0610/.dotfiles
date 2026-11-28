@@ -1703,7 +1703,7 @@ section_cfg() {
 # there, since about a third of those no session claims. A PR is counted once, except that a row
 # from before its repo had sections or from before a session claimed it counts again, and
 # ci_keep_newest drops the old one. A recount keeps the session an older row had. A sections repo's
-# merges come from the PR store (`schedules-sync prs`), which holds its whole history, so no list is cut.
+# merges come from the PR store (pr_store), which holds its whole history, so no list is cut.
 # Its store is refreshed first (`sync-prs --wait`, as agent-land does after a merge, but waiting out a
 # pass that holds the store): a boot catch-up runs before or during schedules-sync's first pass, and
 # `prs` refuses a store over 30 minutes old (ar-1090). A refresh that fails says why on stderr and
@@ -1712,7 +1712,7 @@ merged_new() {
   local repo prs listed='[]'
   for repo in $(jq -r 'keys[]' <<<"$2"); do
     "$SCHEDULES_SYNC" sync-prs --wait "$repo" >&2 || true
-    prs=$("$SCHEDULES_SYNC" prs "$repo" --state merged --since "$(date -u -d "@$1" +%FT%TZ)") || return 1
+    prs=$(pr_store "$repo" --state merged --since "$(date -u -d "@$1" +%FT%TZ)") || return 1
     listed=$(jq -c --argjson l "$listed" --arg r "$repo" --argjson since "$1" \
       '$l + map(select(.merged_at and (.merged_at | fromdateiso8601) >= $since)
                 | {repo: $r, number, session_id: "", merged: (.merged_at | fromdateiso8601 | floor)})' <<<"$prs") || return 1
@@ -2986,7 +2986,7 @@ prs_forgejo() {
   repos=$("$SCHEDULES_SYNC" repos 2>/dev/null | jq -r '.[] | select(.forge == "forgejo") | "\(.host)/\(.repo)"') || return 1
   while IFS= read -r r; do
     [ -n "$r" ] || continue
-    "$SCHEDULES_SYNC" prs "$r" --state open --checks | jq -c --arg r "${r#*/}" '($r | split("/")[0]) as $o | .[] | select(.author == $o) | {ref: "\($r)#\(.number)", branch, title, draft,
+    pr_store "$r" --state open --checks | jq -c --arg r "${r#*/}" '($r | split("/")[0]) as $o | .[] | select(.author == $o) | {ref: "\($r)#\(.number)", branch, title, draft,
       created: .created_at, updated: .updated_at, commit: .updated_at, mergeable: "UNKNOWN", url,
       checks: ({NONE: "NONE", PENDING: "PENDING", FAIL: "FAILURE", PASS: "SUCCESS"}[.ci // "NONE"] // "NONE")}' || return 1
   done <<<"$repos"
@@ -3012,7 +3012,7 @@ prs_branches() {
     base=$(merge_proof_ref "$dir") || continue
     # The store names a Forgejo repo host/owner/repo, a GitHub one owner/repo.
     key=$(jq -r --arg r "$repo" 'first(.[] | select(.forge == "forgejo" and .repo == $r) | "\(.host)/\(.repo)") // $r' <<<"$repos") || continue
-    prs=$("$SCHEDULES_SYNC" prs "$key" --state all 2>/dev/null) || continue
+    prs=$(pr_store "$key" --state all 2>/dev/null) || continue
     # One jq over the whole branch list: a clone holds thousands of branches, a process each is minutes.
     # commit is UTC with a Z (jq's date parser takes no offset). Owned: an open PR names the branch, or a
     # merged PR's head is this very commit.

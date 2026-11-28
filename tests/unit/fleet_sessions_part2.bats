@@ -323,7 +323,7 @@ J
   [ ! -s "$LEDGER_DIR/calls" ] || ! grep -q '^sync-prs' "$LEDGER_DIR/calls"
   # a repo the store does not list is no fault
   rm -f "$LEDGER_DIR/SYNC_FAIL" "$CACHE/blind_row" "$CACHE"/refreshed_*
-  printf '#!/usr/bin/env bash\n[ "$1" = sync-prs ] && exit 3\necho "[]"\n' > "$SCHEDULES_SYNC"
+  ss_script '[ "$1" = sync-prs ] && exit 3; echo "[]"'
   rm -f "$CACHE"/*_origin
   CLOSE_SELF=sid-1 prs_for "$SANDBOX/fjwt" >/dev/null
   [ ! -f "$CACHE/blind_row" ]
@@ -2361,8 +2361,8 @@ GH
   holder_doc() { jq -nc --argjson t "$1" --argjson r "$2" '{generated_epoch: $t, sessions: [$r]}' > "$f"; }
   holder_doc "$now" '{"session_id":"sid-w","host":"razer-laptop","bucket":"WORKING","idle_min":0,"blockers":[]}'
   # This machine's own pass would read blind (no PR store, no run ledger): the answer is the holder's.
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/schedules-sync"
-  SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync" run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  ss_script 'exit 1'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
   assert_success
   assert_output "now: quiet 0m, nothing to land"
   # The holder reads no worker transcript: what will wake this session is read here (ar-3598).
@@ -2485,8 +2485,8 @@ GH
 
   # The lease holder's row for this session in the submodule
   holder_doc "$now" '{"session_id":"sid-w","host":"razer-laptop","bucket":"WORKING","blockers":[],"cwd":"'"$sub"'"}'
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/schedules-sync"
-  SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync" run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  ss_script 'exit 1'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
   assert_success
   assert_output "now: quiet 0m, nothing to land"
 

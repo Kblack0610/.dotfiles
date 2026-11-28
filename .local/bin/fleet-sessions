@@ -1106,18 +1106,15 @@ carried_by() {
 # in the PR store with CI not red. The PR rides another session's branch or a landing train's gate, so its owner lands it
 # and the item's idle session has nothing to do: carried like a filed item, never STALLED (ar-3580: ucp-671 PR #2506 on
 # agent-37's branch, in train #2919, read STALLED on agent-15). A red PR is nobody's landing, so the row stays STALLED.
-# The store is read with its checks and without store_refresh (no `sync-prs --wait`), once per repo per pass: a PR merged
-# since the last poll reads open for at most one poll. A repo the store cannot answer for carries nothing.
+# The store is read with its checks, once per repo per pass (store_prs): a PR merged since the last poll reads open for
+# at most one poll. A repo the store cannot answer for carries nothing.
 item_open_prs() {
-  local refs repo f out=""
+  local refs repo out=""
   refs="$(jq -r --arg own ",$2," 'select(.state == "running" and (.slug // "") != "" and (.slug as $s | $own | contains("," + $s + ",")))
       | ((.open_pr // "") + " " + (.pr // "" | tostring)) | split(" ")[] | select(test("^[^#]+#[0-9]+$"))' <<<"$1" 2>/dev/null | sort -u)"
   [ -n "$refs" ] || { printf -- -; return; }
   while IFS= read -r repo; do
-    f="$CACHE/prsci_${repo//\//_}.json"
-    [ -f "$f" ] || "$SCHEDULES_SYNC" prs "$repo" --checks 2>/dev/null | jq -c 'map({number, state, ci})' > "$f" 2>/dev/null
-    [ -s "$f" ] || continue
-    out+="$(jq -r --arg r "$repo" '.[] | select(.state == "OPEN" and (.ci // "") != "FAIL") | "\($r)#\(.number)"' "$f")"$'\n'
+    out+="$(store_prs "$repo" | jq -r --arg r "$repo" '.[] | select(.state == "OPEN" and (.ci // "") != "FAIL") | "\($r)#\(.number)"')"$'\n'
   done < <(sed 's/#[0-9]*$//' <<<"$refs" | sort -u)
   out="$(grep -xFf <(printf '%s\n' "$out") <<<"$refs" | paste -sd, -)"
   printf '%s' "${out:--}"
@@ -1583,6 +1580,22 @@ store_refresh() {
   [ ! -e "$f.failed" ] || blind_row
 }
 
+# store_prs <store key> -> the repo's PR store rows, JSON, with checks: the one `prs --checks` read per repo per pass
+# ($CACHE, case-blind), which prs_for, pr_states and item_open_prs all take their columns from. It asks the store to
+# catch up first (store_refresh, a no-op outside close --self). rc as pr_store: 1 unreadable, 3 not listed.
+store_prs() {
+  local f="$CACHE/prsraw_${1//\//_}" rc=0
+  f="${f,,}"
+  store_refresh "$1"
+  if [ ! -e "$f.rc" ]; then
+    pr_store "$1" --checks > "$f" 2>/dev/null || rc=$?
+    printf '%s\n' "$rc" > "$f.rc"
+  fi
+  rc="$(<"$f.rc")"
+  [ "$rc" -ne 0 ] || cat "$f"
+  return "$rc"
+}
+
 # PRs for one repo, cached per pass: "branch \t number \t state \t ci \t head_oid \t red job ids", newest first,
 # from the PR store (`schedules-sync prs --checks`, unreadable once 30 minutes stale): ci is the run ledger's
 # reading of the head commit, red the job archive's failed job ids (- for none it has yet). The repo is
@@ -1601,9 +1614,8 @@ prs_for() {
   if [ ! -f "$key" ]; then
     repo="$(forge_of "$dir")"
     if [ "$repo" != origin ]; then repo="$(store_key "${repo#* }")"
-    else repo="$(origin_repo "$dir")" || return 0; fi
-    store_refresh "$repo"
-    out="$("$SCHEDULES_SYNC" prs "$repo" --checks 2>/dev/null)" || rc=$?
+    else repo="$(origin_store_name "$dir")" || return 0; fi
+    out="$(store_prs "$repo")" || rc=$?
     if [ "$rc" = 0 ] && jq -r '.[] | [.branch // "-", .number, .state, .ci, .head_sha // "-", .red] | @tsv' \
          <<<"$out" > "$key" 2>/dev/null; then
       # The open trains (train_of), "number \t head \t member numbers": the title is the store's, the body is not.
@@ -2019,16 +2031,12 @@ main_state() {
 }
 
 # pr_states <owner/repo or host/owner/repo (Forgejo)> -> the repo's PRs as a JSON array of {number, state, mergedAt},
-# from the PR store, read once per pass: it keys on the repo the PR is in, not the cwd, since one session
-# lands PRs in several. A repo the store cannot answer for is rc 1, and not read again this pass.
+# from the PR store (store_prs, read once per pass): it keys on the repo the PR is in, not the cwd, since one
+# session lands PRs in several. A repo the store cannot answer for is rc 1.
 pr_states() {
-  local repo="$1" file
-  file="$CACHE/prs_${repo//\//_}.json"
-  if [ ! -f "$file" ]; then
-    store_refresh "$repo"
-    "$SCHEDULES_SYNC" prs "$repo" 2>/dev/null | jq -c 'map({number, state, mergedAt: .merged_at})' > "$file" 2>/dev/null
-  fi
-  [ -s "$file" ] && cat "$file"
+  local out
+  out="$(store_prs "$1")" && [ -n "$out" ] || return 1
+  jq -c 'map({number, state, mergedAt: .merged_at})' <<<"$out"
 }
 
 # inflight_done_items: the done items of this pass ($qall) whose recorded PRs (`pr:`, "owner/repo#N ...")
