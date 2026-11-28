@@ -4999,6 +4999,32 @@ alert_setup() {
   assert_output --partial '4 queued as red fixes'
 }
 
+@test "triage: an alert row files at the trip's level, not the watch's fixed severity" {
+  alert_setup
+  printf 'normal' > "$TRIAGE_WATCH_STATE/alertmanager-fleet.level"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --regexp '^check\(alert\): ConvergenceDrift deskslim-1 firing, .*#normal \(agent\)$'
+  refute_output --partial '#high'
+  # negative control: a level word outside the four is no level, so the manifest's high stands
+  printf 'bogus' > "$TRIAGE_WATCH_STATE/alertmanager-fleet.level"
+  run "$SUBJECT" triage --dry-run
+  assert_line --regexp '^check\(alert\): ConvergenceDrift deskslim-1 firing, .*#high \(agent\)$'
+}
+
+@test "triage: a trip's level sets the row's priority, not its patience, which stays the manifest's severity" {
+  log_triage_setup
+  # 20 minutes in: past the 15m a high watch waits, short of the 30m a normal one does
+  watch paged TRIP -1200 high
+  printf 'low' > "$TRIAGE_WATCH_STATE/paged.level"
+  watch quiet TRIP -1200 normal
+  printf 'high' > "$TRIAGE_WATCH_STATE/quiet.level"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --regexp '^check\(watch\): paged tripped since .*#low'
+  refute_output --partial 'check(watch): quiet'
+}
+
 @test "triage: a cleared alert's row closes while the others stay" {
   alert_setup
   printf 'board.md\t1\tcheck(alert): nodedown windows-media-ci firing, x\t- [ ] check(alert): NodeDown windows-media-ci firing, x #high\nboard.md\t2\tcheck(alert): convergencedrift razer-laptop firing, x\t- [ ] check(alert): ConvergenceDrift razer-laptop firing, x #high\n' >> "$BOARD"
