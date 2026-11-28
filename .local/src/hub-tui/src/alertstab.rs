@@ -779,7 +779,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_runner_the_governor_powered_off_is_not_firing() {
+    fn an_offline_cloud_runner_is_down() {
         let flat = |v: serde_json::Value| {
             hub_core::prom::flatten(
                 &serde_json::json!({"status": "success", "data": {"result": [v]}}),
@@ -792,34 +792,17 @@ pub(crate) mod tests {
             .unwrap()
             .extend(flat(serde_json::json!({"metric":
             {"host": "aws-burst-1", "name": "aws-1", "state": "offline", "site": "cloud"}, "value": [0, "0"]})));
-        let firing = |i: &hub_core::infra::Infra| {
-            let a = hub_core::alerts::join(
-                i,
-                Ok(vec![]),
-                Ok(Reds::default()),
-                Ok(String::new()),
-                Ok(vec![]),
-                NOW,
-            );
-            page(&AlertsView::default(), &a, 160).0
-        };
-        let power = |state: &str| {
-            flat(
-                serde_json::json!({"metric": {"__name__": "ci_governor_power_state",
-                "host": "aws-burst-1", "state": state}, "value": [0, "1"]}),
-            )
-        };
-        // A cloud host with nothing online and no power series is off, as the governor leaves
-        // its stopped hosts while it publishes none (ar-3326): not down.
-        assert!(!firing(&i).contains("aws-1"), "unmanaged cloud: off");
-        i.instant.insert("power", power("running"));
-        assert!(
-            firing(&i).contains("aws-1 offline"),
-            "governor running: down"
+        let a = hub_core::alerts::join(
+            &i,
+            Ok(vec![]),
+            Ok(Reds::default()),
+            Ok(String::new()),
+            Ok(vec![]),
+            NOW,
         );
-        i.instant.insert("power", power("stopped"));
-        let s = firing(&i);
-        assert!(!s.contains("aws-1"), "{s}");
+        // Nothing holds a runner off on purpose, so an offline one is down wherever it runs.
+        let s = page(&AlertsView::default(), &a, 160).0;
+        assert!(s.contains("aws-1 offline"), "{s}");
         assert!(s.contains("mini-1 offline"), "{s}");
     }
 

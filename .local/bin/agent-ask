@@ -2413,7 +2413,8 @@ answer_picks() {
   local id opts ans
   while IFS=$'\t' read -r id opts ans; do
     named_options_into "$opts" "${ans#in session: }"
-    [ "${#NAMED_OPTIONS[@]}" -eq 1 ] && printf '%s\t%s\n' "$id" "${NAMED_OPTIONS[0]}"
+    # An if, not &&: an ask with no single pick as the last one would end the loop on 1, a failure under pipefail.
+    if [ "${#NAMED_OPTIONS[@]}" -eq 1 ]; then printf '%s\t%s\n' "$id" "${NAMED_OPTIONS[0]}"; fi
   done < <(jq -r 'select((.answer // "") != "" and (.options // "") != "")
                   | [.id, .options, (.answer | gsub("[\t\n]"; " "))] | @tsv' <<<"$1") |
     jq -Rsc 'split("\n") | map(select(length > 0) | split("\t") | {(.[0]): .[1]}) | add // {}'

@@ -4,8 +4,6 @@ How much of this workstation background work may use. Four modes on one scale, n
 
 | | reserved | shared | open (default) | full |
 |---|---|---|---|---|
-| Runners taking new jobs | 0 | 0 | 0 | 1 |
-| Local Unity runs the governor grants a seat at once | 1 | 2 | 2 | 2 |
 | New agent sessions from fleet-dispatch | as today, at the low level | as today | as today | as today |
 | Level | low | mid | mid | high |
 
@@ -34,7 +32,7 @@ machine-mode hours      # the day's parts and which one is now
 machine-mode auto       # give the mode back to the clock
 ```
 
-The waybar chip shows in every mode, `open` included, as the mode's initial (F, R, S or O) with the rest in its hover, right of the disk chip on the desktop bar. A click on it runs `machine-mode next`. The chip is neutral. Amber means the last switch never reached the cluster, so the runners are not where the letter says. It has no text on a machine with no pool runners.
+The waybar chip shows in every mode, `open` included, as the mode's initial (F, R, S or O) with the rest in its hover, right of the disk chip on the desktop bar. A click on it runs `machine-mode next`. The chip is neutral: a mode is your choice, not a health state.
 
 `Super+A m` opens the mode menu, then one key picks the mode:
 
@@ -61,49 +59,27 @@ The system's clock hours live in one file, `.config/machine-mode/hours`: each ro
 - `machine-mode auto` gives the mode back to the clock at once, whether you are here or not.
 - Nightly work belongs in the `night` row: a runner's `SCHEDULE=`, a CI cron, an `at:` item. The hub Schedules tab lists what runs when.
 - The two times in `machine-clock.timer` copy the part starts of the hours file; `tests/unit/machine_mode.bats` fails when they differ, so change both together. It was a 15-minute agentctl runner (`machine-clock`, 1191 NOOP to 23 WORKED) until ar-4456.
-- A pin that did not reach the cluster exits 1 and a held hand mode exits 75; `Restart=on-failure` retries both every 15 minutes. An hours file that cannot be read exits 2, which is not retried.
+- A held hand mode exits 75 and a state file that could not be written exits 1; `Restart=on-failure` retries both every 15 minutes. An hours file that cannot be read exits 2, which is not retried.
 
 ## What a switch does
 
-- Runners and local Unity runs: merge-patches `{"slots": N, "local": M, "by": "machine-mode <mode>"}` into this host's `<host>.slots` key in the `ci-runner-governor-override` ConfigMap (`monitoring`), touching no other key (the contract: home-config `apps/ci-runner-governor/override.schema.json`). The governor moves one slot per cycle toward N, and a busy runner finishes its job. The status line's "moving to" is the governor's `ci_governor_effective_slots`, so it shows only once the governor has read the pin, a cycle or two after the switch.
-- Unity slots: writes the `runners` number to `/var/lib/ci-slots/slots` and starts this host's `actions.runner.*-unity-pool-<n>` units at or under it. Each unit reads that file before it starts (an `ExecCondition` from home-config `site.yml`, `unity_ci_slot_count_owner`), so a slot over the count stays down after a crash or a reboot too. An idle slot over the count stops now. A busy one gets a user unit, `machine-mode-drain-<n>`, that waits on its `Runner.Worker` exit (`ci-wait-worker-exit`, a pidfd, up to 360 minutes) and then stops it; a later switch that runs the slot again cancels the waiter. Until Ansible has made the count directory on a host, this part is skipped.
-- Local Unity runs: `slots.sh` in unity-core-playground leases a seat from the governor for each run, and `local` (the `unity_slots` column) is how many seats the governor grants at once, at most this host's seat count and below the governor's own floor too, whatever its load verdict; only a FULL host steps down under it. A lower number stops the next run, never a running one, and `ci_governor_capacity_units` for this host counts the pinned seats. A release reservation pins no local seat. Nothing is written to `~/.agent/machine-mode.env` for it.
+- Level: writes the mode, who set it and the part it was set in to `~/.agent/machine-mode.env`; fleet-dispatch and claude-acct read the level from there when they next start work. Nothing else on this machine or the cluster changes.
 - Agent starts: no mode stops them. Reserved's `low` level is the trickle; `agent-hold set dispatch` is the one full stop, and machine-mode only reports a hold, never sets or lifts one.
 
 ## What it does not do
 
-- Dropping a slot is not instant: the ConfigMap takes about a minute to reach the pod, the governor runs every 60 seconds, then a running job finishes. Expect minutes, and longer if a gate is running.
+- It moves no CI. Every CI job runs as an ARC scale-set pod or a KEDA Forgejo pod that kube-scheduler places, this workstation is in home-config's `no_ci_hosts`, and a local Unity run here takes a host-local lock (unity-core-playground `scripts/test/slots.sh`, one run at a time). The runner pin, the Unity slot count and the release lane went with the ci-runner-governor (hc-955).
 - Other builds agents start are not capped. They already run at a low priority.
-- This box runs one pool runner at night (`full`) and none by day in any mode: two Unity runners pushed load to 2x the cores and Tctl to 96C (2026-11-11). The governor's pool floor (1 admitted across the pool) can still pin this host on; the governor log says `at the pool floor` when it does.
 
-## Release lane
-
-A release cut keeps a pool host's slots for its own build jobs, for a set time:
-
-```bash
-machine-mode release-lane ms-a2 --until 13:00          # keep them until 13:00 (date -d; at most 24h ahead)
-machine-mode release-lane --clear ms-a2                # end it now (removes the key)
-machine-mode release-lane                              # list them; an ended one says so
-```
-
-It writes only the `<host>.reserve` key, `{"until": <epoch>}`, in the same ConfigMap. The governor holds that host at 0 until then for every job but the release jobs (one that asks for its slot's `unity-release` or `slim-tour`), for which it admits an idle slot and withholds it again once busy (home-config `docs/runbooks/unity-ci-host.md`, Pinning a host's slots, since hc-707), and ignores the key after, so a forgotten one ends by itself. It refuses a host the governor does not report on (`ci_governor_registered`), and only warns when Prometheus does not answer. It works from any machine with `CC_KUBE_CONTEXT`, pool runners or not, and does not change this machine's mode. When and why a cut uses it: the playground's `docs/operations/steam.md#the-release-lane` and the `release` skill.
-
-The pace numbers use the same read-time expiry for a timed value: `pace-conf set <KEY> <value> --until <time>` lays a window over a pace.conf key, and it ends by itself with no timer ([pace-conf.md](pace-conf.md)).
+Timed values: `pace-conf set <KEY> <value> --until <time>` lays a window over a pace.conf key, and it ends by itself with no timer ([pace-conf.md](pace-conf.md)).
 
 ## Troubleshooting
 
 | What you see | Why | What to do |
 |---|---|---|
-| `the governor runs no host '<h>'` | `release-lane` was given a name the governor does not report; usually a typo | Use the host name from `machine-mode release-lane`'s doc or the governor's `host` label (`machine-mode release-lane` lists them; `ms-a2` holds the pool's one `unity-release` slot) |
-| `could not reach the cluster`, chip amber | The mode and level applied and the ConfigMap write failed. The governor (and ansible on apply) writes runner labels, so no label changed | Fix cluster access and run the same mode again |
-| `moving to 0` for a long time | A release reservation is live (`machine-mode release-lane` lists it; `--clear <host>` ends it), a job is running, or the pool floor holds: the governor keeps 1 runner admitted across the pool | Read the governor log: `kubectl --context "$CC_KUBE_CONTEXT" -n monitoring logs deploy/ci-runner-governor --tail=20`. A `PINNED` line ending `at the pool floor` means another host's runners are down |
-| `a Unity slot did not start or stop` | The polkit rule that lets you start and stop the slots is missing, or a unit failed | Apply home-config `site.yml --tags runner,ci` on this host, then run the same mode again; `systemctl status actions.runner.<host>-unity-pool-<n>` names a unit failure |
-| A slot over the count still runs | Its job is running; `systemctl --user status machine-mode-drain-<n>` shows the waiter | Let the job end, or stop the slot by hand to kill the job |
-| `runners: ? of ?` | Prometheus did not answer, or the governor is not exporting | The switch still applied; check the governor pod |
 | `paused by machine-mode` | A hold left by a machine-mode older than this doc; no mode sets one now | `agent-hold release dispatch` |
 | `paused by <name>` | Someone holds `dispatch`; machine-mode never sets or lifts that hold | `agent-hold show dispatch`, then ask the holder |
-| `no pool runners on this machine` | No `actions.runner.*-unity-pool-*` unit here | Run it on the workstation |
 | `level <word> is not in .../levels, so nothing is scaled` | A mode row names a level the levels file does not list | Fix the row in `modes` or add the level to `levels`; until then the confs' own numbers apply |
 | The mode did not change at a part's start | You set the mode by hand and were here at the boundary | `machine-mode` shows `set by hand`; it applies at the first 15-minute retry after you are away, or run `machine-mode auto` to hand it back now |
 | `no part of .../hours holds the time now` | A hand edit left a gap in the hours file | Fix the windows so they cover the day; `machine_mode.bats` checks the shipped file |
-| `systemctl --user status machine-clock` reads failed or auto-restart | The tick's switch failed, almost always a runner pin that did not reach the cluster; `journalctl --user -u machine-clock` names it | Fix cluster access; the unit retries every 15 minutes |
+| `systemctl --user status machine-clock` reads failed or auto-restart | The tick could not write `~/.agent/machine-mode.env`, or a hand mode is held; `journalctl --user -u machine-clock` names it | Fix the state directory's permissions; a held mode applies at the first retry after you are away |
