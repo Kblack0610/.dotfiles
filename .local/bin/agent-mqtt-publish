@@ -155,6 +155,25 @@ emit() {
     printf '%s\t%s\n' "$base" "$state"
 }
 
+# load_watch_labels: the manifests' system: ids and bookkeeping: flag, read in one call into W_SYSTEMS
+# and W_BOOKKEEPING by watch name: the Command Center groups watches by them (ar-6154). A host with no
+# sentinel-manifest labels none.
+declare -A W_SYSTEMS=() W_BOOKKEEPING=()
+load_watch_labels() {
+    local n b s
+    while IFS=$'\t' read -r n b s; do W_SYSTEMS[$n]="$s"; W_BOOKKEEPING[$n]="$b"; done \
+        < <("$SENTINEL_MANIFEST" labels "$WATCHES" 2>/dev/null)
+}
+
+# watch_labels_json <watch> -> {system, bookkeeping, system_<id>: true ...}. mqtt2prom drops text, so
+# each id also rides as a system_<id> boolean (a hyphen is an underscore): Prometheus reads the system
+# from the name of that key. The text stays for readers of the MQTT topic.
+watch_labels_json() {
+    jq -cn --arg system "${W_SYSTEMS[$1]:-}" --argjson bookkeeping "${W_BOOKKEEPING[$1]:-false}" \
+        '{system: $system, bookkeeping: $bookkeeping}
+         + ($system | split(",") | map(select(length > 0) | {key: ("system_" + gsub("-"; "_")), value: true}) | from_entries)'
+}
+
 # hand_fired <conf> -> 0 when nothing starts the runner on a clock: no SCHEDULE and no
 # AUTOSTART=yes, the SCHEDULE/AUTOSTART test of fleet-bench's scheduled_runner. Its last
 # verdict is one old run's, so it is not a fault the Overview row can clear.
@@ -286,13 +305,7 @@ snapshot() {
 
     # Watches: the registry is the manifest dir; a paused manifest stays visible as paused.
     local qnow; qnow="$(date +%s)"   # once a pass: each watch's quarantine is in force while UNTIL is ahead
-    # The manifests' system: ids and bookkeeping: flag, read in one call: the Command Center groups
-    # watches by them (ar-6154). A host with no sentinel-manifest labels none.
-    local -A w_systems=() w_bookkeeping=()
-    local lname lsys lbook
-    while IFS=$'\t' read -r lname lbook lsys; do
-        w_systems[$lname]="$lsys"; w_bookkeeping[$lname]="$lbook"
-    done < <("$SENTINEL_MANIFEST" labels "$WATCHES" 2>/dev/null)
+    load_watch_labels
     for f in "$WATCHES"/*.yaml "$WATCHES"/*.yaml.paused; do
         [ -f "$f" ] || continue
         name="$(basename "$f")"; name="${name%.paused}"; name="${name%.yaml}"
@@ -309,7 +322,7 @@ snapshot() {
             --arg severity "$(watch_trip_level "$f" "$WSTATE")" \
             --arg since "$(iso "$since")" --argjson since_epoch "$(num "$since")" \
             --arg lastrun "$(iso "$lr")" --argjson quarantined "$quarantined" \
-            --arg system "${w_systems[$name]:-}" --argjson bookkeeping "${w_bookkeeping[$name]:-false}" \
+            --argjson labels "$(watch_labels_json "$name")" \
             '{state: $state, paused: $paused,
               since: (if $since == "" then null else $since end),
               last_run: (if $lastrun == "" then null else $lastrun end),
@@ -318,12 +331,7 @@ snapshot() {
               # catch-all reads mqtt_severity_rank to warn on a tripped low watch instead of going red.
               severity: $severity, severity_rank: {low: 1, normal: 2, high: 3, urgent: 4}[$severity],
               # A red its owner took on with an expiry: the rollup counts it a warning, not down.
-              quarantined: ($quarantined and ($state == "TRIP" or $state == "ERROR")),
-              # The manifest system: ids, sorted and comma-joined (empty when it has none), and its
-              # bookkeeping: flag. mqtt2prom drops the text, so each id also rides as a system_<id>
-              # boolean (a hyphen is an underscore): Prometheus reads the system from the name of that key.
-              system: $system, bookkeeping: $bookkeeping}
-             + ($system | split(",") | map(select(length > 0) | {key: ("system_" + gsub("-"; "_")), value: true}) | from_entries)')"
+              quarantined: ($quarantined and ($state == "TRIP" or $state == "ERROR"))} + $labels')"
     done
 
     # Open asks: questions an agent is blocked on until the human answers.
