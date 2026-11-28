@@ -482,8 +482,16 @@ install_agent_harnesses() {
     if [[ -x "$HOME/.local/bin/claude" ]]; then
         log_info "claude already installed ($("$HOME/.local/bin/claude" --version 2>/dev/null))"
     else
-        # pipefail: a failed curl would otherwise feed bash an empty script that exits 0
-        (set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash) || { log_error "claude install failed"; return 1; }
+        # pipefail: a failed curl would otherwise feed bash an empty script that exits 0. Three
+        # tries with the npm loop's backoff below: the download drops now and then (image run
+        # 46116188081, curl 56 mid-transfer).
+        local claude_try
+        for claude_try in 1 2 3; do
+            (set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash) && break
+            [[ $claude_try -eq 3 ]] && { log_error "claude install failed"; return 1; }
+            log_warning "claude install failed, try $claude_try of 3"
+            sleep $((claude_try * ${HARNESS_NPM_BACKOFF_S:-15}))
+        done
     fi
     local entry bin pkg try out got failed=0
     for entry in codex:@openai/codex opencode:opencode-ai; do
