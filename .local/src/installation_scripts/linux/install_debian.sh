@@ -77,13 +77,6 @@ install_runtime() {
     # Python + pipx via catalog
     install_package_list install_apt_package debian \
         $PACKAGES_RUNTIME $PACKAGES_RUNTIME_DEBIAN
-
-    # Rust handled out-of-band (rustup, not apt)
-    if ! command -v cargo &>/dev/null; then
-        log_info "Installing Rust..."
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-        source "$HOME/.cargo/env"
-    fi
 }
 
 # Override: Install Zsh
@@ -428,6 +421,7 @@ install_all() {
     step dev        install_tmux
     step dev        install_lazygit
     step dev        install_kitty
+    step dev        install_rust
 
     fleet_steps
     step containers setup_docker

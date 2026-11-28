@@ -367,22 +367,35 @@ setup_kubernetes() {
     fi
 }
 
-# Install Rust
+# Install Rust: rustup, the one Rust installer on every OS but Termux. The guard is
+# rustup, not rustc or cargo: a distro rust has both but cannot honor
+# tests/rust-toolchain, so tests/rust.sh fails on it (razer-laptop, hc-1096).
 install_rust() {
     log_section "Installing Rust"
-    
-    if command -v rustc &>/dev/null; then
-        log_info "Rust already installed ($(rustc --version))"
+
+    # A shell that never read .zshrc or .zprofile (a unit, sudo, ssh -c) lacks ~/.cargo/bin:
+    # an installed rustup there counts, so it is not installed again over the live toolchain.
+    [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
+    if command -v rustup &>/dev/null; then
+        log_info "rustup already installed ($(rustup --version 2>/dev/null))"
         return 0
     fi
-    
-    log_info "Downloading and installing Rust..."
-    if curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y; then
-        # Source cargo environment
-        source "$HOME/.cargo/env"
-        log_info "✓ Rust installed successfully"
+
+    # A distro rust stays: other packages may depend on it. ~/.cargo/env puts rustup's
+    # proxies first on PATH; removing the package is the human's call.
+    if command -v pacman &>/dev/null && pacman -Q rust &>/dev/null; then
+        log_warning "Distro package rust is installed; rustup's toolchain shadows it. Remove it with: sudo pacman -R rust"
+    elif command -v dpkg &>/dev/null && dpkg -s rustc &>/dev/null; then
+        log_warning "Distro package rustc is installed; rustup's toolchain shadows it. Remove it with: sudo apt remove rustc cargo"
+    fi
+
+    log_info "Downloading and installing rustup..."
+    # pipefail: a failed curl would otherwise feed sh an empty script that exits 0
+    if (set -o pipefail; curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y) &&
+        source "$HOME/.cargo/env" && command -v rustup &>/dev/null; then
+        log_info "rustup installed ($(rustup --version 2>/dev/null))"
     else
-        log_error "Failed to install Rust"
+        log_error "Failed to install rustup"
         return 1
     fi
 }
