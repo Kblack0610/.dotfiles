@@ -175,6 +175,28 @@ plan_overlap_ids() {
     on' "$@" | grep -oE '\b[a-z][a-z0-9]*-[0-9]+\b' | sort -u
 }
 
+# plan_owners_line [<plan file>] -> the plan's `Owners:` line under `## Reviewed` (planning.md, Owners:), its
+# continuation lines joined: `none: <search>` when it says none, else each name on it, one a line, backticks
+# stripped, split on commas and spaces. Status 1 when the plan has no such line (an empty one prints nothing, status 0). The names are checked against
+# `fact-owners names`. Reads stdin with no file.
+plan_owners_line() {
+  [ $# -eq 0 ] || [ -f "$1" ] || return 1
+  local txt
+  txt=$(awk '/^```/ { f = !f; next } f { next }
+    /^## / { inr = ($0 ~ /^## Reviewed([[:space:]]|$)/); on = 0; next }
+    !inr { next }
+    { lab = $0; sub(/^[[:space:]]*([-*][[:space:]]+)?(\*\*)?/, "", lab)
+      if (lab ~ /^Owners:/) { on = 1; got = 1; sub(/^Owners:(\*\*)?[[:space:]]*/, "", lab); line = lab; next }
+      if (lab ~ /^[A-Z][A-Za-z ]*:/) on = 0 }
+    on && !NF { on = 0 }
+    on { line = line " " $0 }
+    END { if (got) print "x " line }' "$@") || return 1
+  [ -n "$txt" ] || return 1
+  txt=$(sed -E 's/^x //; s/`//g; s/^[[:space:]]+//; s/[[:space:]]+$//' <<<"$txt")
+  if [[ "$txt" == none:* ]]; then printf '%s\n' "$txt"; return 0; fi
+  tr ', ' '\n\n' <<<"${txt%.}" | awk 'NF'
+}
+
 # plan_project [<plan file>] -> the project whose rows the plan names: the id on its `epic: <id>` line,
 # else, for an `epic: new` proposal, the ids on its Overlap: line, each read by its code (project_of_code,
 # so the caller has sourced project-name.sh). Overlap counts only there, because elsewhere it lists other
@@ -406,14 +428,16 @@ _epic_line() {
 # of a phase shares (agent-queue's `phases:` and item slugs, fleet-sessions): the line's own
 # `P<N>` label when it opens with one (`- [ ] P8 freellmapi ...`), else its place in the
 # checklist. A plan that files P9 above P8 is numbered by its labels, never by position.
-# A sub-phase line (`1b. ...`: a digit, a lowercase letter, a punctuation mark) is numbered by that
-# label, a string ("1b"), and takes no place: the phases below it keep their numbers, so adding a 1b to a plan whose phases are
+# A sub-phase line (`1b. ...`: a digit, a lowercase letter, a punctuation mark; or `P3b ...`) is numbered by that
+# label, a string ("1b"), and takes no place. A `P3b` read by position collided with the `P4` after it (ar-4970).
+# Lowercase only: `P2P sync` is a phase with a place.
+# The phases below it keep their numbers, so adding a 1b to a plan whose phases are
 # queued shifts no item (lesson 2026-11-09, `phases: 6` read as the ticked "5").
 plan_phase_list() {
   { [ -f "$1" ] && awk -v mode=list -v sup="$(_plan_sup "$1")" "$_PLAN_PHASES_AWK" "$1"; } \
     | jq -cRn '[inputs | split("\t") | {state: .[0], name: (.[1:] | join(" "))}]
       | reduce .[] as $p ({pos: 0, out: []};
-          (($p.name | capture("^(?<l>[0-9]+[a-z])[.:)]") | .l) // null) as $sub
+          (($p.name | capture("^(?<l>[0-9]+[a-z])[.:)]") | .l) // ($p.name | capture("^[Pp](?<l>[0-9]+[a-z])([^0-9A-Za-z]|$)") | .l) // null) as $sub
           | (($p.name | capture("^[Pp](?<l>[0-9]+)([^0-9A-Za-z]|$)") | .l | tonumber) // null) as $lab
           | if $sub != null then .out += [$p + {n: $sub}]
             else .pos += 1 | .out += [$p + {n: ($lab // .pos)}] end)

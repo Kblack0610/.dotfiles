@@ -23,6 +23,7 @@ Notable changes to the dotfiles and the agent runtime built on them, newest firs
 
 ### Fixed
 
+- `schedules-sync`: PyYAML is imported only where a workflow file is parsed, so `sync-prs` (agent-land's PR-store refresh) runs on a host without it and a merged PR no longer reads open to `fleet-sessions close --self` (tr-469).
 - `agent-queue`, `fleet-sessions`: a `1b.` sub-phase line takes no place in a plan's numbering and `add --plan` skips it, so adding one no longer makes a queued item read another phase as ticked (ar-1277).
 - `agent-queue`: `add --plan` reads `(independent; note)` markers and numbers phases by their `P<N>` label, not their place in the list (ar-1850).
 - `agent-queue`: `--since` takes `7d` and `7` as days back, never a silent zero (ar-2430, #2258).

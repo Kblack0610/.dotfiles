@@ -38,7 +38,8 @@
 #                                rule's number re-measured; --check fails when one moved against its
 #                                recorded confidence, its measure died, or a rule's text left its source,
 #                                a rule row has no enforced_by that resolves (test:, hook:, ci: or review), the review rows outgrow
-#                                RULES_PROSE_BASELINE (or sit under it), or a lesson found twice names no enforced_by check;
+#                                RULES_PROSE_BASELINE (or sit under it), a global-file row applies to fewer than 2 repos or names no `applies`, a repo
+#                                row restates a global one (`layer`), or a lesson found twice names no enforced_by check;
 #                                --scenarios lists the hard scenarios a context trim must keep, 1 when any is stale;
 #                                --gates lists the gate markers (# gate: <id>) with no register row, a hook that denies with none, and a refusal
 #                                a diff against BASE (default origin/main) added with none: 1 when any; --check fails a gate row with no valid
@@ -52,6 +53,7 @@
 #                                KPIs over 7d and 28d of human sessions (the token ones from the
 #                                nightly token-usage snapshots, sandboxed_lane_pct from BENCH_CALLS, pool_busy_share from Prometheus,
 #                                the churn_* rows from the notes ingest record and the dotfiles merge log),
+#                                owner_debt and unowned counted now by BENCH_OWNERS_CMD (fact-owners count --json),
 #                                against KPI_THRESHOLDS;
 #                                --vitals the BENCH_VITALS rows, the front page every view reads,
 #                                --at as of a past time, --trend one row a day of the 7d values,
@@ -224,7 +226,7 @@
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_NEEDS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR,
 # BENCH_CI_MATCH_CMD, BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
 # BENCH_ITEMS_CMD, BENCH_ADMISSION_CMD, BENCH_MIX_CMD, BENCH_CLASSES, BENCH_LESSONS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_STATS_CMD, BENCH_FORECAST_HORIZON_H,
-# BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_TRAINEE_CMD, BENCH_LANE_LOG, BENCH_LANE_VOIDS, BENCH_SOURCES_CMD, BENCH_HOLDS_CMD, BENCH_HARNESSES, BENCH_ROOM_CMD, BENCH_CANARY_LANES, BENCH_CANARY_RETRIES, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_HUB_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, PLAN_DIRS, BENCH_DOCS_CLEANUP_DIR, BENCH_SYSTEMS_CMD, BENCH_DOCTOR_LAST, CHAIN_DAYS,
+# BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_POINTS_STEP_MIN, BENCH_TRAINEE_CMD, BENCH_LANE_LOG, BENCH_LANE_VOIDS, BENCH_SOURCES_CMD, BENCH_HOLDS_CMD, BENCH_HARNESSES, BENCH_ROOM_CMD, BENCH_CANARY_LANES, BENCH_CANARY_RETRIES, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_HUB_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, PLAN_DIRS, BENCH_DOCS_CLEANUP_DIR, BENCH_SYSTEMS_CMD, BENCH_DOCTOR_LAST, CHAIN_DAYS,
 # FLEET_STATE_FILE, FLEET_SHEPHERD_DIR, WORKTREE_GC_LOG, WORKTREE_GC_STALE_H, BENCH_FLEET_COST_CMD, BENCH_FLEET_COST_FILE, BENCH_FLEET_COST_EVERY_MIN, BENCH_FLEET_COST_TIMEOUT, BENCH_HUB_FIGURE_CMD, BENCH_BUDGET_CMD, BENCH_BUDGET_FILE,
 #                                BENCH_BUDGET_EVERY_MIN, BENCH_BUDGET_TIMEOUT.
 
@@ -275,6 +277,7 @@ set -uo pipefail
 : "${BENCH_TIME_DAYS:=7}"
 : "${BENCH_QUEUE_STATS_CMD:=agent-queue stats --json}"   # given --since <date>
 : "${BENCH_QUEUE_DAYS:=7}"           # what the queue line and the scorecard's queue tables cover
+: "${BENCH_POINTS_STEP_MIN:=15}"     # the subquery step of the points read, and the slack a series may start late by before its window reads short
 : "${BENCH_KINDS:=${DISPATCH_KINDS:-$HOME/.config/fleet-dispatch/kinds.json}}"   # fleet-dispatch's kinds: canary matrix reads which kinds open a PR
 : "${BENCH_TRAINEE_CMD:=timeout 120 fleet-dispatch trainee-pool --json}"   # the trainee pool and the floor's state, as dispatch reads them
 : "${BENCH_SIZES_DAYS:=28}"          # the done items fleet-bench sizes calibrates on
@@ -290,6 +293,7 @@ set -uo pipefail
 : "${RULES_PROSE_BASELINE:=$HOME/.config/agentctl/rules-prose-baseline}"   # review=N: the most rule rows that may name no check but review; lower it when rows gain one
 : "${RULES_LESSON_SEEN:=2}"   # a lesson the dream sweep found again this many times must name its enforced_by (lessons seen)
 : "${RULES_MEASURE_TIMEOUT:=20}"      # seconds one rule's measure may run
+: "${RULES_GLOBAL_SOURCES:=~/.claude/CLAUDE.md:~/.dotfiles-private/.claude/CLAUDE.md}"   # the global rule files (colon list): a row sourced here must say where it applies (rules_states, `layer`)
 # a transport failure on a stderr line naming github.com: GitHub did not answer a rule's measure (rules_states)
 : "${RULES_UNANSWERED_RE:=HTTP 5[0-9][0-9]|connection (refused|reset)|i/o timeout|TLS handshake timeout|context deadline exceeded|unexpected EOF}"
 # rules --changed: the files a session reads as rules (instruction-homes.json kinds global, repo, skill,
@@ -322,7 +326,6 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${TRIAGE_WATCHES:=$HOME/.agent/watches}"   # triage: each watch's manifest, for its severity and what
 : "${TRIAGE_SYSTEM_SKILLS:=6}"   # triage: skills of a watch's system named in its red item, at most
 : "${TRIAGE_ALERT_WATCH:=alertmanager-fleet}"   # triage: the aggregate watch whose evidence is one firing alert a line: each is its own row (triage_alerts)
-: "${TRIAGE_PINS_CMD:=kubectl --context ${CC_KUBE_CONTEXT:-home-k3s} -n monitoring --request-timeout=10s get configmap ci-runner-governor-override -o json}"   # triage: the governor's host pins, which say a host is being moved on purpose
 : "${TRIAGE_LOG_HOURS:=24}"        # triage: the runs whose stderr is read for error signatures
 : "${TRIAGE_ERR_RE:=error|fatal|traceback|failed}"   # triage: a stderr line that may be an error (case-blind)
 : "${TRIAGE_ROUTES:=$HOME/.config/agentctl/triage-routes}"   # triage: where each red goes; the format is in the file
@@ -375,6 +378,7 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${BENCH_WEEK_CMD:=day-log week --line}"         # the newest stored week: what moved, against the week before
 : "${BENCH_COMMS_CMD:=comms-lint}"                 # the newest nightly comms snapshot: `line` and `kpi --json`
 : "${BENCH_JUDGE_CMD:=judge-eval}"                 # the judge lanes scored against their ground truth: `kpi --json`
+: "${BENCH_OWNERS_CMD:=fact-owners}"               # the Owners table's counts: `count --json` is {owner_debt, unowned}, the one place they are worked out (owners_kpi)
 : "${WAKE_CALLS_TARGET:=2}"          # calls a passing background-task wake should take: read the verdict, nothing else
 : "${BENCH_PROJECT_MAP:=$(project_map_file)}"
 : "${BENCH_FORECAST_HORIZON_H:=48}"   # a baseline still open this long is scored as a lower bound
@@ -1484,16 +1488,15 @@ epics_section() {
 # pool, so an empty read means the rule or Prometheus is gone, not that nothing waited). <since>, an epoch,
 # starts the session rows there instead of at the window start (window_stats).
 bottleneck_data() {
-  local t="$1" scope="${2:-all}" since="${3:-}" win="${BENCH_WINDOW_H}h" pool=null queued=null low=null
+  local t="$1" scope="${2:-all}" since="${3:-}" win="${BENCH_WINDOW_H}h" pool=null low=null
   if [ "$scope" = all ] || [ "$scope" = pools ]; then
     pool=$(prom_map pool "sum_over_time(cc:pool_waiting[$win:10m]) / 6" "$t") || pool=null
     [ "$pool" != '{}' ] || pool=null
   fi
   if [ "$scope" = all ]; then
-    queued=$(prom_map kind "sum_over_time(ci_governor_backlog_units{kind=\"local\"}[$win:10m]) / 6" "$t") || queued=null
     low=$(prom_map topic "sum_over_time(max by (topic) (mqtt_under_low_water{topic=~\"agents_.+_summary_dispatch\"})[$win:10m]) / 6" "$t") || low=null
   fi
-  jq -n --arg scope "$scope" --argjson pool "$pool" --argjson queued "$queued" --argjson low "$low" --slurpfile w <([ "$scope" = pools ] && echo "{}" || window_stats "$t" "$since") \
+  jq -n --arg scope "$scope" --argjson pool "$pool" --argjson low "$low" --slurpfile w <([ "$scope" = pools ] && echo "{}" || window_stats "$t" "$since") \
       --rawfile r <([ "$scope" != all ] || runs_between $((t - BENCH_WINDOW_H * 3600)) "$t") "$JQ_LIB"'
     def hours($k): map(.[$k]) | add // 0 | . / 60;
     def top($k): map(select(.[$k] > 0)) | sort_by(-.[$k]) | .[:3] | map({target, h: (.[$k] / 60)});
@@ -1506,8 +1509,6 @@ bottleneck_data() {
     | ($runs | bad | group_by(.branch) | map({branch: .[0].branch, not_passed: length, h: (map(.s) | add / 3600)}) | sort_by(-.h)) as $branches
     | [ (if $pool == null then {key: "pools", what: "Pool queues", h: null, unit: "job-hours", detail: "prometheus unreadable"}
          else $pool | to_entries[] | select(.value >= 0.1) | {key: "pool:\(.key)", what: "Pool queue: \(.key)", h: .value, unit: "job-hours", detail: "jobs waiting, sampled every 10 minutes"} end),
-        (if $queued == null then {key: "local", what: "Local queue", h: null, unit: "unit-hours", detail: "prometheus unreadable"}
-         else $queued | to_entries[] | select(.value >= 0.1) | {key: "local", what: "Local queue", h: .value, unit: "unit-hours", detail: "governor units waiting for a seat, sampled every 10 minutes"} end),
         (if $low == null then {key: "low-water", what: "Queue under low water", h: null, unit: "hours", detail: "prometheus unreadable"}
          else ([$low[]] | max // 0) as $h | select($h >= 0.1) | {key: "low-water", what: "Queue under low water", h: $h, unit: "hours", detail: "runnable under DISPATCH_LOW_WATER, sampled every 10 minutes"} end),
         (select($lost > 0) | {key: "runs", what: "Local runs not passed", h: $lost, unit: "editor-hours", detail: "of \($editor | round1)h on all local runs"}),
@@ -1747,9 +1748,9 @@ commit_paths() {
 
 # pr_ci <repo> <number> <session> <cfg> -> its size and the CI runs on its branch from its first
 # commit to merge (earlier runs are a reused branch name), read from the run ledger (schedules-sync
-# runs; exit 3 when the ledger does not sync the repo, 4 when it has not synced past the merge yet,
-# 1 when it is unreadable or stale); red is failure, timed_out or
-# startup_failure, and cancelled is superseded, not red. A Forgejo PR (repo host/owner/repo,
+# runs). Exit 3: the ledger does not sync the repo. Exit 4: it has not synced past the merge yet.
+# Exit 5: its Forgejo says the PR does not exist (so_forgejo_pr). Exit 1: unreadable or stale.
+# Red is failure, timed_out or startup_failure, and cancelled is superseded, not red. A Forgejo PR (repo host/owner/repo,
 # session-outcomes.sh SO_PR_JQ) is read through that host's API, since gh speaks only to GitHub, and
 # keeps its outcomes name on the row; the ledger names it forgejo:owner/repo. A repo with sections
 # adds the PR's sections and its gate workflow's runs, the gate named by its file path, since a run's
@@ -1758,7 +1759,7 @@ commit_paths() {
 pr_ci() {
   local pr runs paths='' ledger=$1
   if [[ "$1" == */*/* ]]; then
-    pr=$(so_forgejo_pr "$1" "$2") || return 1
+    pr=$(so_forgejo_pr "$1" "$2") || { [ $? -eq 3 ] && return 5; return 1; }
     ledger=forgejo:${1#*/}
   else
     pr=$(gh pr view "$2" -R "$1" --json headRefName,createdAt,mergedAt,additions,deletions,commits,mergeCommit) || return 1
@@ -1814,9 +1815,10 @@ review_start() {
 # cmd_review: the window reaches back to the last pass, so a failed or missed night is counted by
 # the next one (ar-2852). A pass moves the cursor to its own start time, held back to the oldest PR
 # it left for later (ledger not synced past it) or could not count; a PR in a repo the ledger does
-# not sync is out for good and holds nothing. A --days window moves it only when it reached the start.
+# not sync, or one its forge says does not exist, is left out and holds nothing, so the nightly window
+# passes it; a --days window that reaches it probes it again. A --days window moves it only when it reached the start.
 cmd_review() {
-  local t since start cfg new repo num sid merged row rc n=0 red=0 failed=0 unsynced=0 later=0 msg days='' off=' ' hold
+  local t since start cfg new repo num sid merged row rc n=0 red=0 failed=0 unsynced=0 later=0 gone=0 msg days='' off=' ' hold
   case "${1:-}" in
     '') ;;
     --days) days=${2:-}; [[ "$days" =~ ^[1-9][0-9]*$ ]] || { say "usage: fleet-bench review [--days N]"; return 2; } ;;
@@ -1841,6 +1843,7 @@ cmd_review() {
       0) ;;
       3) unsynced=$((unsynced + 1)); off+="$repo "; continue ;;
       4) later=$((later + 1)); [ "$merged" -ge "$hold" ] || hold=$merged; continue ;;
+      5) say "$repo#$num left out: its forge says no such PR (pulls/$num is a 404)"; gone=$((gone + 1)); continue ;;
       *) say "cannot count $repo#$num"; failed=$((failed + 1)); [ "$merged" -ge "$hold" ] || hold=$merged; continue ;;
     esac
     printf '%s\n' "$row" >> "$CI"
@@ -1857,10 +1860,13 @@ cmd_review() {
     return 1
   fi
   if [ "$n" -eq 0 ]; then
-    report_outcome NOOP "nothing new merged in the window"
+    msg="nothing new merged in the window"
+    [ "$gone" -eq 0 ] || msg="nothing counted: $gone merged PRs their forge no longer has"
+    report_outcome NOOP "$msg"
     return 0
   fi
   msg="$n PRs counted, $red CI reds"
+  [ "$gone" -eq 0 ] || msg+=", $gone left out that their forge no longer has"
   say "$msg"
   report_outcome WORKED "$msg"
 }
@@ -2214,8 +2220,13 @@ ledger_board() {
 # ledger_points <now> -> points_per_pr: Claude weekly points per landed PR, the plans' real price;
 # other sources bill in other units
 ledger_points() {
-  echo "points_per_pr=$(sources_json "$1" 2>/dev/null | jq -er '[.sources[] | select(.kind == "claude" and .points != null)]
-    | (map(.landed // 0) | add // 0) as $n | if $n > 0 then (map(.points // 0) | add) / $n * 100 | round / 100 else "?" end' 2>/dev/null || echo '?')"
+  local j
+  j=$(sources_json "$1" 2>/dev/null) || j=
+  echo "points_per_pr=$(jq -er '[.sources[] | select(.kind == "claude" and .points != null)]
+    | (map(.landed // 0) | add // 0) as $n | if $n > 0 then (map(.points // 0) | add) / $n * 100 | round / 100 else "?" end' <<<"$j" 2>/dev/null || echo '?')"
+  # the fewest days any of those sources' points cover, when under the window: the number is a partial window
+  jq -er '[.sources[] | select(.kind == "claude" and .points != null and .points_short) | .points_days]
+    | if length > 0 then "points_per_pr_short_days=\(min)" else empty end' <<<"$j" 2>/dev/null || :
 }
 
 # ledger_local <now> -> loop_dark, lesson_held_share and the worktree counts
@@ -3166,7 +3177,7 @@ cmd_ledger() {
 # fetch (nothing here fetches), never its working tree: a main checkout sits weeks behind (the bnb
 # platform one was detached 57 commits back, so the anchors #1644 dropped read as present, ar-6241);
 # rules_source says which file stands in for it. `state` is the one verdict, first of stale, absent
-# (source not here, or limited), dead, restates, moved, else ok: --check fails all but absent and ok, and Stack shows it as is. A row's optional `scenario` is the hard
+# (source not here, or limited), dead, restates, moved, layer, else ok: --check fails all but absent and ok, and Stack shows it as is. A row's optional `scenario` is the hard
 # situation the rule decides: the must-keep list a context trim is checked against (context-trim skill).
 # `form` says whether a row is a rule (text a session reads, a .md source) or a mechanism (a hook,
 # script or config that enforces one); the source decides it, and a row's own `form` overrides that.
@@ -3177,6 +3188,14 @@ cmd_ledger() {
 # source on another machine is absent first, as for every row). --check fails a missing, bad or dead one, and
 # fails when the `review` rows outnumber RULES_PROSE_BASELINE (`review=N`), which may only shrink: a new
 # rule row names a check, or it is one more prose-only row and the count has to be argued for.
+
+# `layer` holds "narrowest layer that covers every repo a rule applies to" (global CLAUDE.md, Memory
+# Routing) to a test. A row sourced in a global file (RULES_GLOBAL_SOURCES) carries `applies`: "all"
+# (a rule about how a session works anywhere) or the list of repos that need it, two or more; one repo
+# means the rule belongs in that repo's own file. A rule row sourced anywhere else whose anchor is a
+# global row's anchor (or contains it, 20 characters or more, ignoring case and punctuation) restates
+# the wider layer; a row that must stand alone says why in `layer_waiver` (fleet-platform: teammates
+# read its AGENTS.md without ours).
 
 # rules_enforcer <enforced_by> -> none (empty), review, ok, bad or dead: `<kind>:<path>[::<test name>]`
 # resolved against the disk: an absolute path or one under `~`, and the name as written in an `@test "<name>"` line.
@@ -3259,8 +3278,12 @@ rules_states() {
     enforcer=$(rules_enforcer "$enf")
     printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$anchored" "$value" "$limited" "$enforcer" "$why"
   done < <(jq -r '[.source, .anchor, (.measure // ""), (.enforced_by // "")] | map(gsub("\n"; " ")) | join("\u001f")' "$RULES_REGISTER") |
-    jq -cRn --slurpfile rows "$RULES_REGISTER" '
-      [inputs | split("\u001f")] as $seen
+    jq -cRn --slurpfile rows "$RULES_REGISTER" --arg globals "$RULES_GLOBAL_SOURCES" '
+      def norm: ascii_downcase | gsub("[^a-z0-9]+"; " ") | gsub("^ +| +$"; "");
+      def home: sub("^~"; env.HOME);
+      ($globals | split(":") | map(select(. != "") | home)) as $gl
+      | ([$rows[] | select((.source // "" | home) | IN($gl[])) | (.anchor // "" | norm) | select(length >= 20)]) as $ganchors
+      | [inputs | split("\u001f")] as $seen
       | range($rows | length) as $i
       | $rows[$i] + {anchored: ($seen[$i][0] | fromjson), value: ($seen[$i][1] | tonumber? // null), limited: ($seen[$i][2] == "true"), enforcer: $seen[$i][3], err: ($seen[$i][4] // "")}
       | (.max != null or .min != null) as $bounded
@@ -3274,11 +3297,21 @@ rules_states() {
       | ((.measure // "") | gsub("\\$\\{HOME\\}|\\$HOME"; "~") | gsub("~"; env.HOME)) as $reads
       | .restates = ($bounded and $raw != "" and .measure != null
           and (.measure | test("\\bwc\\b|grep -c|\\bstat\\b|\\bfind\\b") | not) and ($reads | contains($src)))
+      | .layer = (if ($src | IN($gl[])) then
+            (if .applies == "all" then ""
+             elif (.applies | type) == "array" then
+               (if (.applies | unique | length) >= 2 and all(.applies[]; type == "string" and . != "") then ""
+                else "applies lists \(.applies | unique | length) distinct repo(s); a rule for fewer than 2 belongs in that repo'"'"'s own file" end)
+             else "names no applies: give \"all\" or the repos that need it" end)
+          elif .form == "rule" and ((.layer_waiver // "") == "") and ((.anchor // "" | norm) as $a | ($a | length) >= 20 and any($ganchors[]; . as $g | ($a | contains($g)) or ($g | contains($a))))
+          then "restates a global row; keep the global one and link to it, or give layer_waiver the reason this file must stand alone"
+          else "" end)
       | .holds = (if $bounded and .value != null
           then ((.max == null or .value <= .max) and (.min == null or .value >= .min)) else null end)
       | .moved = (.holds != null and .holds != (.confidence != "low"))
       | .state = (if .anchored == false then "stale" elif .anchored == null or .limited then "absent"
           elif .dead then "dead" elif .restates then "restates" elif .moved then "moved"
+          elif .layer != "" then "layer"
           elif .enforcer | IN("missing", "bad", "dead") then "enforcer" else "ok" end)'
   local rc=$?
   rm -rf "$err" "$srcs"
@@ -3304,6 +3337,7 @@ rules_problems() {
       elif .state == "dead" then "dead measure: \($f): \(.anchor)\(if .err != "" then " (\(.err))" else "" end)"
       elif .state == "restates" then "restates: \($f): \(.anchor): its bound is a copy of the number its measure reads from \($f); drop max/min, the reading is the number"
       elif .state == "moved" then "moved: \($f): \(.anchor): \(.value) against \(if .max != null then "max \(.max)" else "min \(.min)" end), recorded \(.confidence)"
+      elif .state == "layer" then "layer: \($f): \(.anchor): \(.layer)"
       else empty end,
     (select(.enforcer | IN("missing", "bad", "dead")) | select(.anchored != null) | "enforcer: \($f): \(.anchor): " + (
       if .enforcer == "missing" then "names no enforced_by; give test:<path>, hook:<path>, ci:<path>, or review when only a reader holds it"
@@ -3532,6 +3566,7 @@ KPI_ASKS="human_answered_per_day ask_wait_p90_min"
 KPI_STARTUP="startup_ready_ms_p50"
 KPI_SANDBOX="sandboxed_lane_pct"
 KPI_POOL="pool_busy_share"
+KPI_OWNERS="owner_debt unowned"
 KPI_CHURN="churn_merges_per_day churn_filed_per_closed churn_reopens_per_day churn_followups_per_pr churn_admitted_per_day churn_refused_per_day"
 # Each scored runner's runner_score_<name> is judge-eval's too, listed from its output and the
 # thresholds rather than here: the runner confs' SCORE= is the one list of lanes.
@@ -3541,6 +3576,10 @@ KPI_CHURN="churn_merges_per_day churn_filed_per_closed churn_reopens_per_day chu
 comms_kpi() { $BENCH_COMMS_CMD kpi --json 2>/dev/null | jq -ce 'objects' 2>/dev/null || echo '{}'; }
 # judge_kpi -> judge-eval's KPI object, the same shape, or {} when it cannot score
 judge_kpi() { $BENCH_JUDGE_CMD kpi --json 2>/dev/null | jq -ce 'objects' 2>/dev/null || echo '{}'; }
+# owners_kpi -> {owner_debt, unowned} as `fact-owners count --json` prints them, or {} when it cannot count.
+# Counted now, so kpi_json reads each as a now row (a number, not a 7d/28d pair). owner_debt is the known
+# copies still to remove; unowned the owned files with no Owners row. Both are counted there, never here.
+owners_kpi() { timeout 60 $BENCH_OWNERS_CMD count --json 2>/dev/null | jq -ce 'objects | with_entries(select(.value | numbers))' 2>/dev/null || echo '{}'; }
 # ask_kpi <now> -> the ask KPIs, the same shape, or {} when agent-ask cannot be read.
 # human_answered_per_day: asks the human answered in the window, a day, outside the chat that asked
 # them, so it counts interrupts: an answer typed into the asking session (answer_note "in session: ",
@@ -3690,8 +3729,8 @@ kpi_tokens() {
            totals: (.totals // {} | {responses, context, cache_write, tool_chars, tool_calls})}' "${f[@]}" 2>/dev/null || true
 }
 
-# kpi_live <now> -> the comms, judge, ask, startup, sandbox, pool and churn KPIs as one object
-kpi_live() { jq -sc 'add' <(comms_kpi) <(judge_kpi) <(ask_kpi "$1") <(startup_kpi "$1") <(sandbox_kpi "$1") <(pool_kpi "$1") <(churn_kpi "$1"); }
+# kpi_live <now> -> the comms, judge, ask, startup, sandbox, pool, churn and owners KPIs as one object
+kpi_live() { jq -sc 'add' <(comms_kpi) <(judge_kpi) <(ask_kpi "$1") <(startup_kpi "$1") <(sandbox_kpi "$1") <(pool_kpi "$1") <(churn_kpi "$1") <(owners_kpi); }
 
 # kpi_json <now> <ledger counts> [live] -> one object keyed by KPI, in table order. live is
 # kpi_live's object, read now when not given. kpi --at gives {} and no counts, so the comms and the
@@ -3703,13 +3742,15 @@ kpi_json() {
   [ -n "$cm" ] || cm=$(kpi_live "$1")
   jq -n --argjson t "$1" --slurpfile o <(outcomes_newest) --slurpfile c <(ci_claimed) --slurpfile k "$(kpi_canary)" --slurpfile tk <(kpi_tokens) \
      --argjson pit "$(kv_json <<<"$2")" --argjson lim "$lim" --arg nowkeys "$KPI_NOW" \
-     --argjson cm "$cm" --arg commskeys "$KPI_COMMS $KPI_JUDGE $KPI_ASKS $KPI_STARTUP $KPI_SANDBOX $KPI_POOL $KPI_CHURN" "$KPI_DEFS"'
+     --argjson cm "$cm" --arg commskeys "$KPI_COMMS $KPI_JUDGE $KPI_ASKS $KPI_STARTUP $KPI_SANDBOX $KPI_POOL $KPI_CHURN" --arg ownerkeys "$KPI_OWNERS" "$KPI_DEFS"'
     win($t; 7) as $w7 | win($t; 28) as $w28
     | [($w7 | keys_unsorted[] | {key: ., value: {"7d": $w7[.], "28d": $w28[.], now: false}}),
        ((($commskeys | split(" ")) + ([$cm, $lim | keys[] | select(startswith("runner_score_")) | sub("_(min|max)$"; "")] | unique))[]
         | {key: ., value: {"7d": ((($cm[.] // {})["7d"] | numbers) // null),
                            "28d": ((($cm[.] // {})["28d"] | numbers) // null), now: false}}),
-       ($nowkeys | split(" ")[] | {key: ., value: {"7d": (($pit[.] | numbers) // null), "28d": null, now: true}})]
+       ($ownerkeys | split(" ")[] | {key: ., value: {"7d": (($cm[.] | numbers) // null), "28d": null, now: true}}),
+       ($nowkeys | split(" ")[] | {key: ., value: ({"7d": (($pit[.] | numbers) // null), "28d": null, now: true}
+          + ((($pit[. + "_short_days"] | numbers) // null) as $d | if $d != null then {short_days: $d} else {} end))})]
     | map(.key as $k | .value |= (
         (($lim[$k + "_max"] | numbers) // null) as $max | (($lim[$k + "_min"] | numbers) // null) as $min
         | . + {threshold: ($max // $min),
@@ -3746,9 +3787,9 @@ kv_json() { jq -Rn '[inputs | select(length > 0) | split("=") | {key: .[0], valu
 
 # kpi_table <kpi json> -> the markdown table kpi prints and the scorecard carries
 kpi_table() {
-  jq -r '"| KPI | 7d | 28d | threshold | status |", "|---|---|---|---|---|",
+  jq -r --argjson days "$BENCH_QUEUE_DAYS" '"| KPI | 7d | 28d | threshold | status |", "|---|---|---|---|---|",
     (to_entries[] | .value as $v
-     | "| \(.key)\(if $v.now then " (now)" else "" end) | \($v["7d"] // "-") | \($v["28d"] // "-") | \(if $v.bound then "\($v.bound) \($v.threshold)" else "-" end) | \($v.status) |")' <<<"$1"
+     | "| \(.key)\(if $v.now then " (now)" else "" end) | \($v["7d"] // "-")\(if $v.short_days != null and $v["7d"] != null then " (\($v.short_days)d of \($days))" else "" end) | \($v["28d"] // "-") | \(if $v.bound then "\($v.bound) \($v.threshold)" else "-" end) | \($v.status) |")' <<<"$1"
 }
 
 # vitals_json <kpi json> -> the BENCH_VITALS rows in their order, each with the question it answers. A key
@@ -4174,17 +4215,19 @@ cmd_skills() {
 # cost_usd: the harnesses.json price table, applied once by agentctl-session-outcomes, which
 # `agent-usage budget` sums too (burn's other_harness). Each part that cannot be read is null.
 source_attr() {
-  local t="$1" days="$BENCH_QUEUE_DAYS" since rows pts usd hs holds
+  local t="$1" days="$BENCH_QUEUE_DAYS" since rows pts first usd hs holds
   [ -z "${SOURCE_ATTR_JSON:-}" ] || { printf '%s\n' "$SOURCE_ATTR_JSON"; return 0; }   # the scorecard reads it once
   since=$(( t - days * 86400 ))
   rows=$($BENCH_SOURCES_CMD 2>/dev/null | jq -ce 'arrays' 2>/dev/null) || rows=null
-  pts=$(vm_map account "sum by (account) (sum_over_time((clamp_min(max by (account) (claude_account_week_used_percent) - max by (account) (claude_account_week_used_percent offset 15m), 0))[${days}d:15m]))" "$t" 2>/dev/null) || pts=null
+  pts=$(vm_map account "sum by (account) (sum_over_time((clamp_min(max by (account) (claude_account_week_used_percent) - max by (account) (claude_account_week_used_percent offset ${BENCH_POINTS_STEP_MIN}m), 0))[${days}d:${BENCH_POINTS_STEP_MIN}m]))" "$t" 2>/dev/null) || pts=null
+  # the earliest sample each account has in the window: a series younger than the window sums fewer days of rises
+  first=$(vm_map account "min by (account) (tfirst_over_time(claude_account_week_used_percent[${days}d]))" "$t" 2>/dev/null) || first=null
   holds=null
   [ "$rows" = null ] || holds=$($BENCH_HOLDS_CMD 2>/dev/null | jq -ce 'objects' 2>/dev/null) || holds=null
   usd=$(vm_map user_email "sum by (user_email) (increase(claude_code_cost_usage_USD_total[${days}d]))" "$t" 2>/dev/null) || usd=null
   hs=$(jq -ce '.harnesses // {} | map_values(.source)' "$BENCH_HARNESSES" 2>/dev/null) || hs='{}'
-  jq -cn --argjson rows "${rows:-null}" --argjson pts "${pts:-null}" --argjson usd "${usd:-null}" --argjson hs "$hs" --argjson holds "${holds:-null}" \
-     --argjson since "$since" --argjson t "$t" --argjson days "$days" \
+  jq -cn --argjson rows "${rows:-null}" --argjson pts "${pts:-null}" --argjson first "${first:-null}" --argjson usd "${usd:-null}" --argjson hs "$hs" --argjson holds "${holds:-null}" \
+     --argjson since "$since" --argjson t "$t" --argjson days "$days" --argjson step "$BENCH_POINTS_STEP_MIN" \
      --slurpfile o <(outcomes_newest) \
      --slurpfile items <(bench_read $BENCH_DONE_ITEMS_CMD --since "$(date -d "@$since" +%F)" 2>/dev/null) "$JQ_LIB"'
     def dirkey: if (.dir // "") == "" then "claude" else .dir | sub("/+$"; "") | split("/") | last | ltrimstr(".") end;
@@ -4208,7 +4251,7 @@ source_attr() {
       [$items[] | select(landed) | item_src] as $L
     | ($L | map(.src)) as $landed
     | ($R | map({key: .name, value: .parent}) | from_entries) as $parent
-    | {days: $days, read: {sources: ($rows != null), points: ($pts != null), usd: ($usd != null), holds: ($holds != null)}, sessions: $sess,
+    | {days: $days, read: {sources: ($rows != null), points: ($pts != null), points_start: ($first != null), usd: ($usd != null), holds: ($holds != null)}, sessions: $sess,
        unattributed: ($landed | map(select(. == null)) | length),
        unattributed_why: ($L | map(.why // empty) | group_by(.) | map({key: .[0], value: length}) | from_entries),
        sources: [$R[] | .name as $n | ($pts[$n] | if . == null then . else round2 end) as $p
@@ -4217,7 +4260,10 @@ source_attr() {
             elif .kind == "codex" or .kind == "agy" then $priced[$n]
             else null end) as $d
          | ([$landed[] | select(. == $n or $parent[. // ""] == $n)] | length) as $l
+         | (if $first[$n] == null then null else ([($t - $first[$n]) / 86400, $days] | min) end) as $span
          | {name: $n, kind, parent, used: .week_used, hold: ($holds[$n] // null), points: $p,
+            points_days: ($span | if . == null then . else round2 end),
+            points_short: ($span != null and $span < $days - $step / 1440),
             usd: ($d | if . == null then . else round2 end),
             usd_src: (if .usd_max != null then "gateway" elif .kind == "claude" or .kind == "codex" or .kind == "agy" then "list" else null end),
             landed: $l,
@@ -4245,11 +4291,14 @@ sources_section() {
 # sources_table <sources json>: the table sources prints and the scorecard carries
 sources_table() {
   jq -r 'def d: if . == null then "-" else tostring end;
+    .days as $days
+    | def pd($s): d as $v | if $v == "-" or ($s.points_short | not) then $v else "\($v) (\($s.points_days)d of \($days))" end;
     (if .read.points then empty else "- points: ? (VictoriaMetrics unreadable)", "" end),
+    (if .read.points and (.read.points_start | not) then "- points window: ? (first-sample read failed, so a short series is not marked)", "" else empty end),
     (if .read.holds then empty else "- holds: ? (fleet-dispatch provider-holds unreadable, so a held source reads as free)", "" end),
     "| Source | Kind | Used now | Hold | Points | Dollars | Landed | $ per point | PRs per point | Points per PR | Parent |",
     "|---|---|---|---|---|---|---|---|---|---|---|",
-    (.sources[] | "| \(.name) | \(.kind) | \(.used | if . == null then "-" else "\(. | floor)%" end) | \(.hold // "-") | \(.points | d) | \(if .usd == null then "-" else "$\(.usd) \(.usd_src)" end) | \(.landed) | \(if .usd_per_point == null then "-" else "$\(.usd_per_point)" end) | \(.prs_per_point | d) | \(.points_per_pr | d) | \(.parent // "-") |"),
+    (.sources[] | . as $s | "| \(.name) | \(.kind) | \(.used | if . == null then "-" else "\(. | floor)%" end) | \(.hold // "-") | \(.points | pd($s)) | \(if .usd == null then "-" else "$\(.usd) \(.usd_src)" | if $s.usd_src == "gateway" then pd($s) else . end end) | \(.landed) | \(.usd_per_point | if . == null then . else "$\(.)" end | pd($s)) | \(.prs_per_point | pd($s)) | \(.points_per_pr | pd($s)) | \(.parent // "-") |"),
     (if .unattributed > 0 then "", "- landed on no source: \(.unattributed) (" + ([(.unattributed_why // {}) | to_entries[]
         | "\(.value) " + ({no_session: "name no session", no_outcome: "whose sessions have no outcome row yet (a hand session'"'"'s lands when it ends)",
                            no_account: "whose sessions'"'"' outcome rows name no account",
@@ -5107,33 +5156,42 @@ cmd_retro() {
   upsert_report "$grows" "$IMPROVE_LINE"
 }
 
-# upsert_why <key> <priority tag> -> the priority reason (priority-reasons.tsv) of a row whose key says what
-# it is: a tripped watch, an alert, a dispatch hold or a recurring lesson at #high is a runtime fault, a
-# lesson at #low is upkeep. Any other row files without one, and the priority pass judges it.
+# upsert_why <key> <priority tag> -> the priority reason (priority-reasons.tsv) of a row whose key
+# says what it is: a firing alert at #high is a firing-alert, which the board's daily cap never
+# holds (ar-4296), a tripped watch, a dispatch hold or a recurring lesson at #high is a runtime
+# fault, a lesson at #low is upkeep. Any other row files without one, and the priority pass judges
+# it.
 upsert_why() {
   case "$1:$2" in
-    'check(watch)'*:'#high'|'check(alert)'*:'#high'|'fix(hold)'*:'#high'|'check(lesson)'*:'#high') echo runtime-fault ;;
+    'check(alert)'*:'#high') echo firing-alert ;;
+    'check(watch)'*:'#high'|'fix(hold)'*:'#high'|'check(lesson)'*:'#high') echo runtime-fault ;;
     'check(lesson)'*:'#low') echo upkeep ;;
   esac
 }
 
-# board_upsert <rows: key TAB text TAB priority, one a line> keeps exactly one open agent-board
-# row per key, matched as a lowercase title prefix (each key's shape is in lib/board-keys.sh, so
-# the backlog triager leaves the row's prefix alone): a row whose text moved is edited in place, one
-# that matches writes nothing, and an add that exits 3 found its twin already open (a near-dup), so
-# it counts as filed. A key with no open row but one closed in the board feed's window
-# (upsert_closed) has that row reopened and its text refreshed, never a new row: a cause that is red
-# again is the same work (alertmanager-fleet was filed 27 times in 7 days, 2026-11-18). A row whose
-# condition cleared is triage_retire's. Every row is #size/s. A reopen that fails is said and the key
-# is filed as a new row, and a row whose add or edit fails is said and skipped, so one stuck row never
-# stops the pass (ar-4064: one failed add skipped every red fix promotion after it). An add the board's daily cap
-# refuses (exit 6) is said and tried again next pass; a red marked urgent passes the cap.
+# board_upsert <rows: key TAB text TAB priority, one a line> keeps exactly one open agent-board row
+# per key, matched as a lowercase title prefix (each key's shape is in lib/board-keys.sh, so the
+# backlog triager leaves the row's prefix alone): a row whose text moved is edited in place, and one
+# that matches writes nothing. An add runs only for a key with no open row, and passes the key
+# (`ptask add --key`), so the writer takes no other key's row for its near twin (ar-4296: two alerts
+# on one label, or one alert on two hosts, were twins, and the second had no row for days); an exit
+# 3 that still comes is a red with no row, and no item, since triage_promote queues a key's own row:
+# a failed write, never filed. A key with no open row but one closed in
+# the board feed's window (upsert_closed) has that row reopened and its text refreshed, never a new
+# row: a cause that is red again is the same work (alertmanager-fleet was filed 27 times in 7 days,
+# 2026-11-18). A row whose condition cleared is triage_retire's. Every row is #size/s. A reopen that
+# fails is said and the key is filed as a new row, and a row whose add or edit fails is said and
+# skipped, so one stuck row never stops the pass (ar-4064: one failed add skipped every red fix
+# promotion after it). An add the board's daily cap refuses (exit 6) is said, counted in
+# UPSERT_CAPPED and tried again next pass; a firing alert's row and a red marked urgent pass the
+# cap.
 # Each write names its row by id, since `notes ptask edit` refuses a query two open rows match: the
 # key's row is its first open row with an id marker, and only a key whose one row has none (written
 # by hand) is named by its prefix. A twin a race left open on the key (ar-5690) is dropped as a dup
 # of that row, its children moving under it; a twin being done, or one with no id, is left and said.
-# Leaves the counts in UPSERT_ADDED, UPSERT_EDITED, UPSERT_REOPENED and UPSERT_DROPPED and the failed
-# keys in UPSERT_FAILED, which upsert_report reports FAILED, so every caller ends with upsert_report;
+# Leaves the counts in UPSERT_ADDED, UPSERT_EDITED, UPSERT_REOPENED, UPSERT_DROPPED and
+# UPSERT_CAPPED and the failed keys in UPSERT_FAILED, which upsert_report reports FAILED, so every
+# caller ends with upsert_report;
 # status 1 only when the board cannot be read, 2 when the upsert lock stays held (nothing is written).
 # The read of the board and the writes after it are one section under BENCH_UPSERT_LOCK: the timed
 # runner and every dispatch pass run triage, and two of them reading before either added filed the
@@ -5141,12 +5199,12 @@ upsert_why() {
 # A key whose row closed within the board feed's window is reopened with the red as a detail line,
 # so the trip is history on that row, not a row of its own.
 board_upsert() {
-  local board closed human p text pri why have hid twin id rc added=0 edited=0 reopened=0 dropped=0 failed=() twins=() trip=()
-  UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_DROPPED=0; UPSERT_FAILED=
+  local board closed human p text pri why have hid twin id rc added=0 edited=0 reopened=0 dropped=0 capped=0 failed=() twins=() trip=()
+  UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_DROPPED=0; UPSERT_CAPPED=0; UPSERT_FAILED=
   upsert_lock_take || { say "$UPSERT_LOCK_WHY"; report_outcome FAILED "$UPSERT_LOCK_WHY"; return 2; }
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { upsert_lock_drop; report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
   closed=$(upsert_closed)
-  human=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" list 2>/dev/null) || { human=; say "$KPI_BOARD human sheet unreadable: its moved rows are not skipped this pass"; }
+  human=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" list 2>/dev/null) || { human=; say "$KPI_BOARD human sheet unreadable: a row started there is not skipped this pass"; }
   while IFS=$'\t' read -r p text pri; do
     [[ "$text" == *'#size/'* ]] || text+=" #size/s"
     # each open row on this key, board order: "id TAB doing TAB lowercased text", id empty when it
@@ -5173,10 +5231,10 @@ board_upsert() {
         say "could not drop $id, a twin of $hid for $p"; failed+=("$p")
       fi
     done
-    # A key whose row dispatch moved to the human sheet (skip_exits: a person's rule, its "(agent row" marker) has its owner there: filing
-    # or reopening it here would move it back and forth every pass (ar-6265).
-    if [ -z "$have" ] && awk -F'\t' -v p="${p,,}" '$4 ~ /^[ \t]*- \[[ \/]\]/ && $4 ~ /\(agent row / && index($3, p) == 1 { f = 1 } END { exit !f }' <<<"$human"; then
-      say "$p: open on the human sheet, left there"; continue
+    # A key a person has started on the human sheet is theirs: an agent row filed here would make triage_twins
+    # drop the row they are working (an open sheet copy with no agent row is a stray it drops, ar-6265).
+    if [ -z "$have" ] && awk -F'\t' -v p="${p,,}" '$4 ~ /^[ \t]*- \[\/\]/ && index($3, p) == 1 { f = 1 } END { exit !f }' <<<"$human"; then
+      say "$p: started on the human sheet, left there"; continue
     fi
     id=; [ -n "$have" ] || id=$(awk -F'\t' -v p="${p,,}" 'index($2, p) == 1 { print $1; exit }' <<<"$closed")
     if [ -n "$id" ]; then
@@ -5193,12 +5251,12 @@ board_upsert() {
     fi
     if [ -z "$have" ]; then
       rc=0 why=$(upsert_why "$p" "$pri")
-      $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$text $pri" ${why:+--why "$why"} --origin fleet-bench >/dev/null || rc=$?
+      $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$text $pri" ${why:+--why "$why"} --origin fleet-bench --key "$p" >/dev/null || rc=$?
       case $rc in
         0) added=$((added + 1)) ;;
-        3) ;;
+        3) say "$p: the board took it for a twin of another open row, so it has no row"; failed+=("$p") ;;
         # The board's daily cap (intake_daily_cap, QUEUE.md "Admission"): the red waits for a later pass, and is no failure.
-        6) say "$p: the board's daily cap holds this row; the next pass tries it again" ;;
+        6) say "$p: the board's daily cap holds this row; the next pass tries it again"; capped=$((capped + 1)) ;;
         *) say "add failed for $p"; failed+=("$p") ;;
       esac
     elif [ "$have" != "${text,,}" ]; then
@@ -5210,7 +5268,7 @@ board_upsert() {
     fi
   done <<<"$1"
   upsert_lock_drop
-  UPSERT_ADDED=$added; UPSERT_EDITED=$edited; UPSERT_REOPENED=$reopened; UPSERT_DROPPED=$dropped
+  UPSERT_ADDED=$added; UPSERT_EDITED=$edited; UPSERT_REOPENED=$reopened; UPSERT_DROPPED=$dropped; UPSERT_CAPPED=$capped
   UPSERT_FAILED=$(IFS=';'; echo "${failed[*]}")
 }
 
@@ -5247,6 +5305,7 @@ upsert_report() {
   local did="$UPSERT_ADDED added, $UPSERT_EDITED refreshed"
   [ "${UPSERT_REOPENED:-0}" -eq 0 ] || did+=", $UPSERT_REOPENED reopened"
   [ "${UPSERT_DROPPED:-0}" -eq 0 ] || did+=", $UPSERT_DROPPED twins dropped"
+  [ "${UPSERT_CAPPED:-0}" -eq 0 ] || did+=", $UPSERT_CAPPED held by the board's daily cap"
   did+="${2:+, $2}"
   say "$(grep -c . <<<"$1") rows due: $did"
   if [ -n "${UPSERT_FAILED:-}" ]; then
@@ -5254,26 +5313,42 @@ upsert_report() {
     report_outcome FAILED "board write failed for $UPSERT_FAILED; $did"
     return 1
   elif [ $((UPSERT_ADDED + UPSERT_EDITED + ${UPSERT_REOPENED:-0} + ${UPSERT_DROPPED:-0})) -eq 0 ] && [ -z "${2:-}" ]; then
-    report_outcome NOOP "every row already current"
+    if [ "${UPSERT_CAPPED:-0}" -eq 0 ]; then report_outcome NOOP "every row already current"; else report_outcome NOOP "$did"; fi
   else
     report_outcome WORKED "$did"
   fi
 }
 
-# watch_sev <name> -> the severity in its manifest, read through sentinel-watch.sh watch_severity.
+# watch_sev <name> -> the level of its trip now, else the severity in its manifest (sentinel-watch.sh
+# watch_trip_level): a probe's `page:` level (alertmanager-fleet) outranks the manifest's fallback. It
+# sets a row's priority only; the patience below stays the manifest's severity (watch_severity).
 # watch_after <severity> -> seconds it must stay at TRIP before it is a red.
-watch_sev() { watch_severity "$TRIAGE_WATCHES/$1.yaml"; }
+watch_sev() { watch_trip_level "$TRIAGE_WATCHES/$1.yaml" "$TRIAGE_WATCH_STATE"; }
 watch_after() { case "$1" in high|urgent) echo "$TRIAGE_WATCH_HIGH_AFTER" ;; *) echo "$TRIAGE_WATCH_AFTER" ;; esac; }
 
-# system_note <watch> <route skill> -> "; system <ids>: load fix-red and <skills>" for a watch whose
-# manifest names a `system:`, else nothing. The skills are the ones whose metadata.system names one
-# of its ids (one pass over BENCH_SKILLS_DIR), less fix-red and the route's own skill, at most
-# TRIAGE_SYSTEM_SKILLS of them, so the red's session loads fix-red plus its system's domain skills.
-system_note() {
-  local ids skills
-  # one line, `system: ci` or `system: [ci, tests]` (the forms SENTINEL.md shows), quotes and a comment dropped
+# watch_system_ids <watch> -> the ids its manifest's `system:` names, space-separated: one line,
+# `system: ci` or `system: [ci, tests]` (the forms SENTINEL.md shows), quotes and a comment dropped.
+watch_system_ids() {
+  local ids
   ids=$(awk '/^system:/ { sub(/^system:[[:space:]]*/, ""); sub(/[[:space:]]#.*/, ""); gsub(/["'"'"'\[\],]/, " "); print; exit }' "$TRIAGE_WATCHES/$1.yaml" 2>/dev/null)
-  ids=$(echo $ids)
+  echo $ids
+}
+
+# alert_system_ids <alertname> -> the ids the alert's rule names in its `system` label, read off the
+# alert watch's `systems: <alertname>=<id>[,<id>] ...` evidence line (its probe prints one), so an
+# alert's red loads its own system's skills, not the watch's. Nothing when no line names it; an id
+# that is not lowercase is dropped.
+alert_system_ids() {
+  sed -n 's/^systems: //p' "$TRIAGE_WATCH_STATE/$TRIAGE_ALERT_WATCH.out" 2>/dev/null | tr ' ' '\n' \
+    | awk -F= -v n="$1" '$1 == n { gsub(/,/, "\n", $2); print $2 }' | grep -xE '[a-z][a-z0-9_-]*' | sort -u | paste -sd' ' -
+}
+
+# system_note <ids> <route skill> -> "; system <ids>: load fix-red and <skills>", nothing for no ids.
+# The skills are the ones whose metadata.system names one of the ids (one pass over BENCH_SKILLS_DIR),
+# less fix-red and the route's own skill, at most TRIAGE_SYSTEM_SKILLS of them, so the red's session
+# loads fix-red plus its system's domain skills.
+system_note() {
+  local ids=$1 skills
   [ -n "$ids" ] || return 0
   skills=$(find -L "$BENCH_SKILLS_DIR" -mindepth 2 -maxdepth 2 -name SKILL.md -print0 2>/dev/null | sort -z \
     | xargs -0 awk -v ids=" $ids " '
@@ -5300,7 +5375,7 @@ watch_tripped_since() {
   ! watch_paused "$1" || return 1
   [ "$(cat "$TRIAGE_WATCH_STATE/$1.state" 2>/dev/null)" = TRIP ] || return 1
   since=$(cat "$TRIAGE_WATCH_STATE/$1.since" 2>/dev/null) || return 1
-  [[ "$since" =~ ^[0-9]+$ ]] && [ $(($2 - since)) -ge "$(watch_after "$(watch_sev "$1")")" ] || return 1
+  [[ "$since" =~ ^[0-9]+$ ]] && [ $(($2 - since)) -ge "$(watch_after "$(watch_severity "$TRIAGE_WATCHES/$1.yaml")")" ] || return 1
   printf '%s\n' "$since"
 }
 
@@ -5361,28 +5436,16 @@ triage_alerts() {
   done | sort -u
 }
 
-# triage_pinned -> each host a human pinned out of service in the governor's override ConfigMap
-# (`<host>.slots` whose `by` says "human: ..."), one a line: that host's alerts are the move the
-# human asked for, not a fault. Machine-mode's own daily pins say nothing about one host. Unreadable
-# is no pin, so an alert stays red rather than being hidden.
-triage_pinned() {
-  $TRIAGE_PINS_CMD 2>/dev/null | jq -r '(.data // {}) | to_entries[] | select(.key | endswith(".slots"))
-    | select(((.value | fromjson? // {}).by // "") | startswith("human:")) | .key | sub("\\.slots$"; "")'
-}
-
 # triage_alert_rows <since epoch> <severity> -> key, text and priority for each alert the aggregate
-# watch lists that no human pin explains, so each firing alert (name and host) has a row, a cause and
+# watch lists, so each firing alert (name and host) has a row, a cause and
 # a red item of its own, and the row closes when that alert clears (triage_retire). Rc 1 when the
 # evidence lists no alert: the watch's own row then stands, so unreadable evidence hides nothing.
-# An explained alert is said, never filed.
 triage_alert_rows() {
-  local alerts name id pinned pri
+  local alerts name id pri
   alerts=$(triage_alerts)
   [ -n "$alerts" ] || return 1
-  pinned=$(triage_pinned)
   pri=$(case "$2" in high|urgent) echo '#high' ;; normal) echo '#normal' ;; *) echo '#low' ;; esac)
   while IFS=$'\t' read -r name id; do
-    if grep -qxF -- "${id%%/*}" <<<"$pinned"; then say "triage: $name $id is intended: ${id%%/*} is pinned by a human"; continue; fi
     printf 'check(alert): %s %s firing\tcheck(alert): %s %s firing, %s tripped since %s, expected: no fleet=fix alert, evidence: watch-companion-loop list --long %s\t%s\n' \
       "$name" "$id" "$name" "$id" "$TRIAGE_ALERT_WATCH" "$(date -d "@$1" +%Y-%m-%d)" "$TRIAGE_ALERT_WATCH" "$pri"
   done <<<"$alerts"
@@ -5566,7 +5629,8 @@ triage_shape() {
 # counted 0 again and a red two fixes did not hold was retried past the cap
 # (the old aggregate work-chain watch and runner-score, 2026-11-07).
 triage_route() {
-  local n key text pri re route skill fix tags t note hit cause extra
+  local n ids key text pri re route skill fix tags t note hit cause extra
+  local -A notes=()
   while IFS=$'\t' read -r key text pri; do
     hit=0 cause=- extra=
     triage_line "$text" && hit=1
@@ -5601,7 +5665,18 @@ triage_route() {
     fi
     text+="${note:+; $note}"
     case "$route" in agent | alert | owned:?*)
-      if [[ "$key" == 'check(watch): '* ]]; then n=${key#'check(watch): '}; text+=$(system_note "${n%% *}" "${skill:--}"); fi ;;
+      # a watch's red loads its manifest's system; an alert's its rule's `system` label, else the
+      # watch's. A note is kept per ids and skill, so many alerts of one system scan the skills once.
+      ids=
+      if [[ "$key" == 'check(watch): '* ]]; then n=${key#'check(watch): '}; ids=$(watch_system_ids "${n%% *}")
+      elif [[ "$key" == 'check(alert): '* ]]; then
+        n=${key#'check(alert): '}; ids=$(alert_system_ids "${n%% *}")
+        [ -n "$ids" ] || ids=$(watch_system_ids "$TRIAGE_ALERT_WATCH")
+      fi
+      if [ -n "$ids" ]; then
+        [ -n "${notes[$ids|$skill]+x}" ] || notes[$ids|$skill]=$(system_note "$ids" "${skill:--}")
+        text+=${notes[$ids|$skill]}
+      fi ;;
     esac
     for t in ${tags:-}; do
       case "$t" in -) ;; \#*) text+=" $t" ;; *) extra+="${extra:+ }$t" ;; esac
@@ -5629,13 +5704,13 @@ triage_filed() {
 # row_open <list> <key>: the TSV list (title third) holds an open row whose lowercase title starts with the key.
 row_open() { awk -F'\t' -v p="${2,,}" 'index(tolower($3), p) == 1 { f = 1 } END { exit !f }' <<<"$1"; }
 
-# triage_twins <rows> <filed keys>: a row lives in exactly one lane, the one its route names, so
-# once the new lane holds it the old lane's twin on the KPI_BOARD sheet is dropped, with the reason in
-# its marker. A human route's agent-board twin goes first; then each filed key's sheet twin. Read
-# from every pass, so a twin left by an earlier route or a drop that failed is retried. A sheet row is a
-# twin only while the agent board holds its key open: a key board_upsert left on the sheet (dispatch moved
-# it there for a person) has no other lane, and dropping it swapped the row between lanes each pass (ar-6265).
-# Closing a twin is the only write.
+# triage_twins <rows> <filed keys>: a row lives in exactly one lane, the one its route names (triage is the
+# one writer of a keyed row's lane: fleet-dispatch gives such a row no exit, bench_keyed), so once the new
+# lane holds it the old lane's twin on the KPI_BOARD sheet is dropped, with the reason in its marker. A
+# human route's agent-board twin goes first; then each filed key's sheet twin. Read from every pass, so a
+# twin left by an earlier route or a drop that failed is retried. A sheet row is a twin only while the
+# agent board holds its key open: a key whose agent add the daily cap held keeps its sheet row until the
+# add lands (ar-6265). Closing a twin is the only write.
 triage_twins() {
   local key route sheet have agent kpi
   agent=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list 2>/dev/null </dev/null) || return 0
@@ -5746,6 +5821,8 @@ triage_kind() { case "$1" in 'check(watch): '*) echo ' watch' ;; 'check(alert): 
 # so the watches bound it, and fleet-dispatch widens its red floor by one for each. Outside
 # TRIAGE_FIX_CAP is not outside the queue cap: the promote is a dispatch pull (--dispatch), so at the cap it makes
 # room or leaves its row on the board for a pass (agent-queue make_room, admit).
+# A row a closed try left started that no live item holds (row_in_hand) is promoted with --restart, and a
+# promote that refuses is said with its reason (ar-4654).
 # A later try is tagged `retry:<earlier slugs>` so its session starts from what did not hold. Once its
 # TRIAGE_FIX_TRIES did not hold, a cause gets one escalation: an item tagged `escalate`, pinned to
 # TRIAGE_ESCALATE_MODEL, whose brief is fix-red's root-cause pass. Only when that did not hold either is
@@ -5753,7 +5830,7 @@ triage_kind() { case "$1" in 'check(watch): '*) echo ' watch' ;; 'check(alert): 
 # (triage_spent_ask), so Needs you holds a red only once the agent system has nothing left to try
 # (ask UfRZaR, 2026-11-20, on the human's "needs me should only be what needs me").
 triage_promote() {
-  local board key raw route cause tags items used trip tries more kind n=0 capped=0 seen=' ' model
+  local board key raw route cause tags items used trip tries more kind n=0 capped=0 seen=' ' model restart err
   $TRIAGE_HOLD_CMD >/dev/null 2>&1 || { echo 0; return 0; }
   items=$(triage_items) || { echo 0; return 0; }
   used=$(jq --arg d "$(date -u -d "@$(now)" +%F)" \
@@ -5780,8 +5857,19 @@ triage_promote() {
     more=''; [ "$tries" -eq 0 ] || more=" retry:$(cause_slugs "$items" "$cause" "$trip")"
     model=(); [ "$tries" -lt "$TRIAGE_FIX_TRIES" ] || { more=" escalate$more"; model=(--model "$TRIAGE_ESCALATE_MODEL"); }
     raw=$(awk -F'\t' -v p="${key,,}" 'index($3, p) == 1 { print $4; exit }' <<<"$board")
-    [[ "$raw" == '- [ ]'* ]] || continue
-    $TRIAGE_PROMOTE_CMD --agent --dispatch --project "$KPI_BOARD" "${model[@]}" --tags "red$kind cause:$cause$more${tags:+ $tags}" --raw "$raw" >/dev/null 2>&1 || continue
+    # A row its own fix item (slug = its id) left started when it closed, with no live item behind it, is
+    # queued again with --restart, as a todo one is (ar-4654): it waited 72h for the orphan pass. A row
+    # started by hand has no such item and stays.
+    restart=()
+    case $raw in
+      '- [ ]'*) ;;
+      '- [/]'*) [[ $raw =~ id:([a-z]+-[0-9]+) ]] && jq -e --arg id "${BASH_REMATCH[1]}" 'any(.[]; .slug == $id and .state == "done")' <<<"$items" >/dev/null &&
+        ! row_in_hand "$items" "$raw" || continue
+        restart=(--restart) ;;
+      *) continue ;;
+    esac
+    err=$($TRIAGE_PROMOTE_CMD --agent --dispatch "${restart[@]}" --project "$KPI_BOARD" "${model[@]}" --tags "red$kind cause:$cause$more${tags:+ $tags}" --raw "$raw" 2>&1 >/dev/null) ||
+      { say "triage: could not queue $key (${raw:0:5}): $(tail -n 1 <<<"$err")"; continue; }
     n=$((n + 1)); [ -n "$kind" ] || capped=$((capped + 1))
   done <<<"$1"
   triage_spent_write "$spent"
@@ -6456,7 +6544,7 @@ cmd_triage() {
   # A held lock fails this pass's filing (upsert_report says so) but not the human sheet, twins or red fixes after it.
   if [ -n "$filed" ]; then
     board_upsert "$(cut -f1-3 <<<"$filed")" || { [ $? = 2 ] || return 1; UPSERT_FAILED="$UPSERT_LOCK_WHY"; }
-  else UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_DROPPED=0; UPSERT_FAILED=; fi
+  else UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_DROPPED=0; UPSERT_CAPPED=0; UPSERT_FAILED=; fi
   h=$(triage_human "$rows")
   triage_twins "$rows" "$(cut -f1 <<<"$filed")"
   q=$(triage_promote "$rows")
@@ -6544,14 +6632,17 @@ cmd_health() {
 # On 2026-10-29 the pool queue was an hour old at 09:30, local runs starved from 13:00 and merges
 # collapsed at 14:20; the human found it at 19:59, because nothing read any of these for a decision.
 
-FINDING_METRICS='cc:host_load1|cc:host_cores|cc:host_cpu_busy_ratio|cc:pool_waiting|cc:pool_busy|cc:pool_slots|cc:pool_oldest_wait_seconds|ci_governor_capacity_units|ci_governor_busy_units'
+FINDING_METRICS='cc:host_load1|cc:host_cores|cc:host_cpu_busy_ratio|cc:pool_waiting|cc:pool_busy|cc:pool_slots|cc:pool_oldest_wait_seconds|cc:pool_done_24h'
+# Only throughput reads cc:pool_done_24h (findings fetches it with the rest and ignores it): it names every pool
+# that ran a job in 24h, github-hosted included, which has no slot row, so an idle hosted pool keeps its line (ar-5963).
 # A rule whose series is missing cannot fire, so its absence must not read as healthy. cc:pool_oldest_wait_seconds
 # is left out: it is only there while something waits.
-FINDING_REQUIRED='["cc:host_load1","cc:host_cores","cc:host_cpu_busy_ratio","cc:pool_waiting","cc:pool_busy","cc:pool_slots","ci_governor_capacity_units","ci_governor_busy_units"]'
+FINDING_REQUIRED='["cc:host_load1","cc:host_cores","cc:host_cpu_busy_ratio","cc:pool_waiting","cc:pool_busy","cc:pool_slots"]'
 FINDING_SAMPLE_S=600   # snapshots this far apart: the sampler's cadence, so "on 2 samples" holds on replay
+# finding_live_floor is one session for the 2h, less one missed sampler tick (11 of 12 samples).
 # Starting points set from the 10-29 replay; kpi-thresholds overrides any of them.
 FINDING_DEFAULTS='{"finding_pool_wait_s":3600,
-  "finding_pool_idle_share":0.75,"finding_pool_admitted_share":0.5,"finding_merge_ratio":0.5,"finding_demand_ratio":0.7,"finding_merge_floor_h":2,
+  "finding_pool_idle_share":0.75,"finding_pool_admitted_share":0.5,"finding_merge_ratio":0.5,"finding_demand_ratio":0.7,"finding_merge_floor_h":2,"finding_live_floor":0.9,
   "finding_host_load_per_core":2,"finding_clear_min":60,"finding_human_after_min":60}'
 
 finding_limits() {
@@ -6666,8 +6757,9 @@ finding_rows() {
       ( select($p[0] != null) | $p[0] as $a | $required[] | select($a[.] == null)
         | row("blind"; "prom:\(.)"; "report"; {}; "now"; "prometheus"; "\(.) is missing, so the rules that read it are off"; "") ),
       ( select($p[0] != null) | $p[0] as $a | $p[1] as $b | $p[2] as $c
-        | ($a["ci_governor_capacity_units"] // {}) as $gc
-        | (if ($gc | length) > 0 then {u: (($a["ci_governor_busy_units"] // {}) | add // 0), s: ($gc | add)} else {u: null, s: null} end) as $fu
+        # The fleet slots: every pool, as cc:pool_slots and cc:pool_busy count them.
+        | ($a["cc:pool_slots"] // {}) as $ps
+        | (if ($ps | length) > 0 then {u: (($a["cc:pool_busy"] // {}) | add // 0), s: ($ps | add)} else {u: null, s: null} end) as $fu
         | ( ($a["cc:pool_oldest_wait_seconds"] // {}) | to_entries[] | .key as $pool | .value as $w
             | (($a["cc:pool_waiting"][$pool]) // 0) as $n
             | select($w >= $l.finding_pool_wait_s and $n > 0)
@@ -6678,14 +6770,14 @@ finding_rows() {
             | ($a["cc:pool_match_slots"][$pool]) as $ms | ($a["cc:pool_match_busy"][$pool]) as $mu | ($a["cc:pool_match_runners"][$pool]) as $mr
             | ([($a["cc:pool_match_labels"] // {}) | keys[] | select(startswith($pool + "/")) | ltrimstr($pool + "/")] | first) as $want
             | ($ms == null and $a["cc:pool_match_unread"] != null) as $unread
-            # No labels read: the slots the governor counts across the fleet, taken against capacity. A kind runs
-            # fewer jobs than slots it holds when another kind fills them, so cc:pool_busy would read labels (ar-3729).
+            # No labels read: the fleet slots taken against capacity. A kind runs fewer jobs than slots it
+            # holds when another kind fills them, so its own cc:pool_busy would read labels (ar-3729).
             | (if $ms != null and $mu != null then {u: $mu, s: $ms} else $fu end) as $k
             # The fleet total covers hosts that cannot take the job, so it never decides labels: only the matching slots do.
             # bind: capacity when the slots that fit are full, labels when slots sit free, none can
             # take the job, or the jobs carry no pool label (pool "other": pinned to one host, say), so
             # more sessions add no demand to it. admission when the slots that fit are full but most runners
-            # with the labels are withheld or offline: on 2026-11-18 a playground gate waited 4h41m on 3
+            # with the labels are parked or offline: on 2026-11-18 a playground gate waited 4h41m on 3
             # admitted of about 13 Unity runners, read as demand, and nobody looked at the hosts (ar-3132).
             | (if $pool == "other" or ($ms != null and $k.s == 0 and $mr == 0) or ($ms != null and $k.u != null and $k.s != null and $k.s > 0 and ($k.u / $k.s) < $l.finding_pool_idle_share)
                then "labels"
@@ -6700,7 +6792,7 @@ finding_rows() {
                 "oldest job waited \($w | dur) with \($k.u | units)/\($k.s | units) slots busy"
                 + (if $unread then " (the slots matching its labels unread)" else "" end)
                 + (if $ms != null then " among those matching its labels (\($want // "?")), \($fu.u | units)/\($fu.s | units) in the fleet" else "" end) + ": "
-                + (if $pinned then "the jobs are pinned to a host, so the slots of the pin bind, not the pool" elif $bind == "labels" then "admission or labels bind, not capacity" elif $bind == "admission" then "only \($ms) of the \($mr) runners with its labels are admitted, the rest withheld, parked or offline: admission or host health binds, not demand" else "demand is over the \(if $ms != null then "matching slots'"'"'" else "pool'"'"'s" end) capacity" end);
+                + (if $pinned then "the jobs are pinned to a host, so the slots of the pin bind, not the pool" elif $bind == "labels" then "admission or labels bind, not capacity" elif $bind == "admission" then "only \($ms) of the \($mr) runners with its labels take jobs, the rest parked or offline: admission or host health binds, not demand" else "demand is over the \(if $ms != null then "matching slots'"'"'" else "pool'"'"'s" end) capacity" end);
                 "\($n) jobs waiting") + {repos: $repos, bind: $bind} ),
           ( ($a["cc:host_load1"] // {}) | to_entries[] | .key as $h | .value as $v | ($a["cc:host_cores"][$h]) as $n
             | select($n != null and $n > 0)
@@ -6713,7 +6805,7 @@ finding_rows() {
         | ($e | map(select(. > $t - 86400 and . <= $t)) | length / 24) as $base
         | ($e | map(select(. > $t - 7200 and . <= $t)) | length / 2) as $now
         | select($d != null and $base >= $l.finding_merge_floor_h and $now < $l.finding_merge_ratio * $base
-                 and $d.avg_2h >= $l.finding_demand_ratio * $d.avg_24h)
+                 and $d.avg_2h >= $l.finding_live_floor and $d.avg_2h >= $l.finding_demand_ratio * $d.avg_24h)
         | row("throughput-drop"; $proj; "human"; {merges_h_2h: $now, merges_h_24h: ($base | round1), live_2h: ($d.avg_2h | round1), live_24h: ($d.avg_24h | round1)};
             "2h against 24h"; "git log --first-parent, progress.jsonl";
             "merges \($now)/h against \($base | round1)/h with sessions still working (\($d.avg_2h | round1) live, usual \($d.avg_24h | round1)): something between gate and merge binds";
@@ -6850,11 +6942,11 @@ throughput_epoch() { [[ "$1" =~ ^[0-9]+$ ]] && printf '%s' "$1" || date -d "$1" 
 # The before and after any slot, hold or pace change has to state: load and idle are proxies, and the
 # outcome is merges per hour and queue wait (dotfiles lessons, 2026-10-30).
 cmd_throughput() {
-  local from='' to='' snap='null' merges queue=''
+  local from='' to='' snap='null' merges queue='' at=now
   while [ $# -gt 0 ]; do
     case "$1" in
       --from) from=$(throughput_epoch "${2:-}") || return 2; shift 2 ;;
-      --to) to=$(throughput_epoch "${2:-}") || return 2; shift 2 ;;
+      --to) to=$(throughput_epoch "${2:-}") || return 2; at=''; shift 2 ;;
       *) say "usage: fleet-bench throughput [--from T] [--to T]"; return 2 ;;
     esac
   done
@@ -6867,13 +6959,24 @@ cmd_throughput() {
   [ -n "${BENCH_PROM_TSV:-}" ] || queue=$(prom_q github_job_queue_seconds "$to" | jq -r '.data.result[] | [.metric.pool, .metric.quantile, .value[1]] | @tsv')
   # Merges and the snapshot grow with the window and the fleet, so they go by file, never --arg (128 KB each).
   jq -rn --argjson a "$from" --argjson b "$to" --slurpfile sf <(printf '%s\n' "$snap") --rawfile m <(printf '%s\n' "$merges") \
-      --arg q "$queue" --rawfile r <(runs_between "$from" "$to") "$JQ_LIB"'
-    $sf[0] as $s | (($b - $a) / 3600) as $h
+      --arg q "$queue" --arg at "$at" --argjson rdead "$([ -f "$BENCH_RUNS_TSV" ] && [ -r "$BENCH_RUNS_TSV" ] && echo false || echo true)" \
+      --rawfile r <(runs_between "$from" "$to") "$JQ_LIB"'
+    $sf[0] as $s | (($b - $a) / 3600) as $h | (if $at == "" then "at \($b | hm)" else $at end) as $at
     | ($q | split("\n") | map(select(. != "") | split("\t")) | reduce .[] as $x ({}; .[$x[0]][$x[1]] = ($x[2] | tonumber))) as $wait
+    # A pool line for every pool the cc:pool_* rules name: one with slots, one with jobs waiting or running
+    # now, or one that ran jobs in 24h. The hosted pool has no slot row, so reading slots alone left its live
+    # waiting count off the report beside a 24h p50 of 0m (ar-5963). "now" is live; "(24h)" is the exporter
+    # quantile over finished jobs, a different window, so a 0m p50 beside jobs waiting now is no contradiction.
+    # With --to, the snapshot is of that moment, so it reads "at <time>" instead of "now".
+    | ([($s // {}) | (.["cc:pool_slots"] // {} | to_entries[] | select(.value > 0) | .key),
+        ((.["cc:pool_waiting"], .["cc:pool_busy"]) // {} | to_entries[] | select(.value > 0) | .key),
+        (.["cc:pool_done_24h"] // {} | to_entries[] | select(.value > 0) | .key)] | unique) as $pools
     | ($r | run_rows) as $runs
     | ($runs | map(select(.res != "pass"))) as $bad
     | "window: \($a | hm) -> \($b | hm) (\($h | round1)h)",
-      (if ($runs | length) == 0 then "local runs: none recorded"
+      # a host with no run ledger (no playground runs there) is unread, never zero failed runs
+      (if $rdead then "local runs unread: the run ledger is missing on this host"
+       elif ($runs | length) == 0 then "local runs: none recorded"
        else "local runs: \($runs | length / $h | round1)/h, \($bad | length * 100 / ($runs | length) | round)% not passed, editor \(($runs | map(.s) | add) / 3600 | round1)h, of which on runs not passed \((($bad | map(.s) | add) // 0) / 3600 | round1)h" end),
       ($m | split("\n") | map(select(. != "") | split("\t"))
        | (map(select(.[0] | startswith("!")) | .[0][1:]) | unique) as $unread
@@ -6886,17 +6989,18 @@ cmd_throughput() {
           elif ($unread | length) > 0 then "merges unread (no mapped repo, or no clone here that fetches): \($unread | join(", "))"
           else empty end)),
       (if $s == null then "pool and hosts: prometheus unreadable"
-       else ($s["cc:pool_slots"] // {} | keys[] | . as $p | select(($s["cc:pool_slots"][$p] // 0) > 0)
-             | "pool \($p): \($s["cc:pool_waiting"][$p] // 0) waiting, \($s["cc:pool_busy"][$p] // 0) running"
+       else ($pools[] | . as $p
+             | "pool \($p): \($at) \($s["cc:pool_waiting"][$p] // 0) waiting"
+               + (if (($s["cc:pool_slots"][$p] // 0) > 0) or ($s["cc:pool_busy"] // {} | has($p)) then ", \($s["cc:pool_busy"][$p] // 0) running" else "" end)
                + (if $s["cc:pool_oldest_wait_seconds"][$p] then ", oldest \($s["cc:pool_oldest_wait_seconds"][$p] | dur)" else "" end)
-               + (if $wait[$p] then ", finished jobs waited p50 \($wait[$p]["0.5"] | dur), p90 \($wait[$p]["0.9"] | dur) (24h)" else "" end)),
+               + (if $wait[$p]["0.5"] != null and $wait[$p]["0.9"] != null then "; finished jobs waited p50 \($wait[$p]["0.5"] | dur), p90 \($wait[$p]["0.9"] | dur) (24h)" else "" end)),
             "hosts, load per core: " + ($s["cc:host_load1"] // {} | to_entries | map(select(($s["cc:host_cores"][.key] // 0) > 0) | {k: .key, v: (.value / $s["cc:host_cores"][.key])})
                | map(select(.v >= 0.5)) | sort_by(-.v) | if length == 0 then "all under 0.5x" else map("\(.k) \(.v | round1)x") | join(", ") end)
        end),
-      # A wait the exporter reports with no slot row of its own: a subset by a shard label (unity-gate,
-      # unity-full) or a pool with no live slots. It is its own query, so it prints with the snapshot
-      # unreadable too. unity-queue-wait reads the gate one (ar-3437).
-      ($wait | keys[] | . as $p | select((($s // {})["cc:pool_slots"][$p] // 0) == 0 and $wait[$p]["0.5"] != null and $wait[$p]["0.9"] != null)
+      # A wait the exporter reports with no pool line of its own: a subset by a shard label (unity-gate,
+      # unity-full), which no cc:pool_* rule names. It is its own query, so with the snapshot unreadable
+      # every pool prints here. unity-queue-wait reads the gate one (ar-3437).
+      ($wait | keys[] | . as $p | select(($pools | index($p) | not) and $wait[$p]["0.5"] != null and $wait[$p]["0.9"] != null)
        | "wait \($p): finished jobs waited p50 \($wait[$p]["0.5"] | dur), p90 \($wait[$p]["0.9"] | dur) (24h)")'
 }
 

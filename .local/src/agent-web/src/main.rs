@@ -1944,12 +1944,12 @@ async fn build_log(Query(key): Query<hub_core::builds::RunKey>) -> ApiResult<Res
     Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response())
 }
 
-/// The opened run's header, jobs and steps, priced with the Infra answer's rates.
+/// The opened run's header, jobs and steps.
 async fn build_detail(
     State(s): State<Shared>,
     Query(key): Query<hub_core::builds::RunKey>,
 ) -> ApiResult<Response> {
-    let body = builds::detail(key, s.infra.rates().await, s.queue.items().await)
+    let body = builds::detail(key, s.queue.items().await)
         .await
         .map_err(|e| bad(StatusCode::NOT_FOUND, e))?;
     Ok(([(header::CONTENT_TYPE, "application/json")], body).into_response())
@@ -2233,7 +2233,7 @@ mod tests {
         ("stages", "Projects Ladder, 678 ms cold"),
         (
             "suites",
-            "Infra Tests on a run other than the newest, 767 ms cold; the newest is `suites-newest`, read by `keep_tests` when a run lands",
+            "Infra Tests on a run other than a lane's newest, 767 ms cold; each lane's newest is `suites-newest`, read by `keep_newest` when a run lands",
         ),
         ("jobs", "Infra Jobs, 619 ms cold"),
         ("pipelines", "Infra Pipelines, 546 ms cold"),

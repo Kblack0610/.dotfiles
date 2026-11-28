@@ -97,6 +97,8 @@ case "$1 $2" in
   esac ;;
 'pr checks')
   case "$*" in
+  # checks.live: head_checks_live's answer before the gate, live, stale or none (none when absent)
+  *'"live"'*) cat "$NOTES_FIXTURE/checks.live" 2>/dev/null || echo none ;;
   # checks.failed: the failed or cancelled names after a failed watch
   *'"fail" or'*) cat "$NOTES_FIXTURE/checks.failed" ;;
   # checks.stale: the failed checks as JSON after a failed watch ([] when absent)
@@ -149,7 +151,9 @@ rev-list)
   if [ -s "$q" ]; then head -1 "$q"; sed -i 1d "$q"; else cat "$NOTES_FIXTURE/behind"; fi ;;
 # no.checkout: run outside a checkout, where rev-parse --show-toplevel fails
 rev-parse) case "$2" in --show-toplevel) [ ! -f "$NOTES_FIXTURE/no.checkout" ] || { echo 'fatal: not a git repository' >&2; exit 128; }
-  cat "$NOTES_FIXTURE/toplevel" 2>/dev/null || echo /nowhere ;; *) echo 0123456789abcdef ;; esac ;;
+  cat "$NOTES_FIXTURE/toplevel" 2>/dev/null || echo /nowhere ;;
+  # head.single: the head is no merge commit (rev-parse -q --verify HEAD^2 fails)
+  -q) [ ! -f "$NOTES_FIXTURE/head.single" ] || exit 1; echo 0123456789abcdef ;; *) echo 0123456789abcdef ;; esac ;;
 # remotes: what `git remote` lists (origin by default); <name>.url: that remote's URL, and
 # origin.url this checkout's origin (o/r over ssh by default)
 remote) case "$2" in
@@ -164,15 +168,21 @@ ls-remote) [ ! -f "$NOTES_FIXTURE/remote.fail" ] || { echo 'fatal: unable to acc
 worktree) cat "$NOTES_FIXTURE/worktree.list" 2>/dev/null || true ;;
 # not.ancestor: the merge commit is not on the base branch (merge_proof refuses)
 # head.foreign: the PR's head commit is not in this checkout's HEAD
-# merge-base A B: prints a fixed base; --is-ancestor X HEAD fails on head.foreign, X <base> on not.ancestor
-merge-base) if [ "$2" != --is-ancestor ]; then echo 5eedbase5eedbase; elif [ "${*: -1}" = HEAD ]; then [ ! -f "$NOTES_FIXTURE/head.foreign" ]; else [ ! -f "$NOTES_FIXTURE/not.ancestor" ]; fi ;;
+# merge-base A B: prints a fixed base; --is-ancestor X HEAD fails on head.foreign (origin/main HEAD on base.ahead), X <base> on not.ancestor
+merge-base) if [ "$2" != --is-ancestor ]; then echo 5eedbase5eedbase; elif [ "$*" = 'merge-base --is-ancestor origin/main HEAD' ]; then [ ! -f "$NOTES_FIXTURE/base.ahead" ]; elif [ "${*: -1}" = HEAD ]; then [ ! -f "$NOTES_FIXTURE/head.foreign" ]; else [ ! -f "$NOTES_FIXTURE/not.ancestor" ]; fi ;;
 merge) [ "$2" = --abort ] || [ ! -f "$NOTES_FIXTURE/merge.conflicts" ] || { echo 'CONFLICT (content)'; exit 1; } ;;
 # tree.conflicts: a trial merge of the base (merge-tree) conflicts, and the real merge does too from then on
 merge-tree) [ ! -f "$NOTES_FIXTURE/tree.conflicts" ] || { : >"$NOTES_FIXTURE/merge.conflicts"; exit 1; } ;;
 # after-merge: the base's .agent-land/after-merge (none when absent); any other show prints nothing
 show) case "$2" in *:.agent-land/after-merge) cat "$NOTES_FIXTURE/after-merge" 2>/dev/null || exit 128 ;; esac ;;
 # diff.status: what `git diff --name-status` prints (nothing when absent)
-diff) cat "$NOTES_FIXTURE/diff.status" 2>/dev/null || true ;;
+# base.files: the files the base moved by (diff HEAD...<base>; diff.status when absent);
+# head.files: the head's own changes (diff <mb> HEAD; nothing when absent)
+diff) case "${*: -1}" in
+  HEAD...*) cat "$NOTES_FIXTURE/base.files" 2>/dev/null || cat "$NOTES_FIXTURE/diff.status" 2>/dev/null || true ;;
+  HEAD) cat "$NOTES_FIXTURE/head.files" 2>/dev/null || true ;;
+  *) cat "$NOTES_FIXTURE/diff.status" 2>/dev/null || true ;;
+  esac ;;
 # no.workflows: the head has no Actions workflow dir (it has .github/workflows by default)
 ls-tree) [ -f "$NOTES_FIXTURE/no.workflows" ] || echo .github/workflows ;;
 # ci.shape: a workflow at HEAD runs shape-grow (none does by default, so agent-land runs it)
@@ -350,7 +360,8 @@ real_notes_board() {
 }
 
 # A Forgejo PR: curl answers the Forgejo API for o/r from the same fixtures gh reads (state, body,
-# head.oid, merge.oid); fj.status is the head's combined status (one green check by default) and
+# head.oid, merge.oid); fj.status is the head's statuses, every post (one green check by default; page N>1
+# is fj.status.N, else none), and
 # fj.files the changed files. Each call logs as "curl METHOD <path under repos/o/r/> [data]".
 forgejo() {
   export SO_FORGEJO_HOSTS=forgejo.example SO_RBW="$SANDBOX/bin/rbw"
@@ -381,10 +392,12 @@ case "$method $path" in
   jq -j .body <<<"$data" >"$F/body" && echo '{}' ;;
 # fj.status.gate: the next N status reads are refused by the bouncer, a plain "Forbidden"
 # fj.status.reset: the next status read loses its connection, once
-'GET commits/'*'/status') n=$(cat "$F/fj.status.gate" 2>/dev/null || echo 0)
+'GET commits/'*'/statuses'*) n=$(cat "$F/fj.status.gate" 2>/dev/null || echo 0)
   [ "$n" -eq 0 ] || { echo $((n - 1)) >"$F/fj.status.gate"; echo Forbidden; echo 'curl: (22) The requested URL returned error: 403' >&2; exit 22; }
   [ ! -f "$F/fj.status.reset" ] || { rm "$F/fj.status.reset"; echo 'curl: (56) Recv failure: Connection reset by peer' >&2; exit 56; }
-  cat "$F/fj.status" 2>/dev/null || echo '{"state":"success","statuses":[{"status":"success","context":"checks / test"}]}' ;;
+  pg=${path##*page=}
+  [ "$pg" = 1 ] || { cat "$F/fj.status.$pg" 2>/dev/null || echo '[]'; exit 0; }
+  cat "$F/fj.status" 2>/dev/null || echo '[{"id":1,"status":"success","context":"checks / test","target_url":"/o/r/actions/runs/1/jobs/0"}]' ;;
 # fj.refuse: the merge is refused, its JSON reason on stdout as --fail-with-body prints it
 'POST pulls/42/merge') [ ! -f "$F/fj.refuse" ] || { cat "$F/fj.refuse"; echo 'curl: (22) The requested URL returned error: 405' >&2; exit 22; }
   cp "$F/merged.state" "$F/state" ;;

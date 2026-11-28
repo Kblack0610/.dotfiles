@@ -1314,8 +1314,8 @@ impl App {
         let (runs, items) = (b.rows.clone(), self.queue_items());
         let (project, version) = (project.to_string(), version.to_string());
         self.rv.ver.busy = true;
-        let (jobs, tx, runner) = (
-            self.files.builds.jobs.clone(),
+        let (paths, tx, runner) = (
+            self.files.builds.clone(),
             self.tx.clone(),
             self.runner.clone(),
         );
@@ -1325,7 +1325,7 @@ impl App {
                 &rel,
                 &runs,
                 &items,
-                &jobs,
+                &paths,
                 &project,
                 &version,
             )
@@ -3059,7 +3059,7 @@ impl App {
                     self.infra_open = None;
                     self.scroll = 0;
                 } else if let Some((table, chip)) = hub_core::layout::moved_chip("infra", &q) {
-                    // `hub --tab 'infra governor'`: the table it moved into, under its chip.
+                    // `hub --tab 'infra cloud'`: the table it moved into, under its chip.
                     if let Some(t) = self.itab.view(table) {
                         t.clear();
                         t.view.state = chip.into();
@@ -4299,8 +4299,7 @@ impl App {
         self.runs().selected(self.builds.as_ref()?)
     }
 
-    /// Enter on a run: its detail and failed-job log, read now and never before. The detail is
-    /// priced with the rates the Infra board last read; before its first read, nothing is priced.
+    /// Enter on a run: its detail and failed-job log, read now and never before.
     fn open_build_log(&mut self) {
         let Some(r) = self.selected_build() else {
             return;
@@ -4320,19 +4319,12 @@ impl App {
             read: None,
             top: 0,
         });
-        let rates = self.infra.as_ref().map_or_else(
-            || hub_core::run_detail::Rates {
-                error: Some("the infra board has not been read yet".into()),
-                ..Default::default()
-            },
-            Infra::rates,
-        );
         let (tx, paths, dkey) = (self.tx.clone(), self.files.builds.clone(), key.clone());
         let (joined, cache) = (self.builds.clone(), self.paths.cache.clone());
         std::thread::spawn(move || {
             let d = joined
                 .ok_or_else(|| "the runs table has not been read yet".to_string())
-                .and_then(|b| builds::open_detail(&b, &paths, &cache, &rates, &dkey, jobs::now()));
+                .and_then(|b| builds::open_detail(&b, &paths, &cache, &dkey, jobs::now()));
             let _ = tx.send(Msg::BuildDetail(gen, Box::new(d)));
         });
         let (tx, paths, jobs_paths) = (
@@ -8355,6 +8347,10 @@ mod tests {
         let rel = Arc::new(Rel::default());
         a.runner = rel.clone();
         a.releases = Some(hub_core::releases::read(rel.as_ref(), &[]));
+        // The page reads take the PR store and job archive from here, never the real ones: the
+        // human's 11 MB PR store outran the answer wait under load (ar-6139).
+        a.files.builds.prs = "/nonexistent/prs".into();
+        a.files.builds.jobs = "/nonexistent/ci/jobs.jsonl".into();
         (a, rel, rx)
     }
 
@@ -9375,12 +9371,11 @@ mod tests {
             !s.contains("HEALTH") && !s.contains("RED NOW") && !s.contains("RED FIXES"),
             "{s}"
         );
-        // Machines holds the machines and the pools, in that order; CI is its own. The governor
-        // and cloud power are machine columns.
+        // Machines holds the machines and the pools, in that order; CI is its own.
         assert_eq!(a.infra_inner, "machines");
         let at = |s: &str, t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
         assert!(at(&s, "MACHINES  all") < at(&s, "JOB KINDS  all"), "{s}");
-        assert!(at(&s, "GOVERNOR") < at(&s, "JOB KINDS  all"), "{s}");
+        assert!(!s.contains("GOVERNOR") && !s.contains("POWER"), "{s}");
         assert!(!s.contains("CI RUNNERS"), "{s}");
         let right = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Right)));
         a.handle(right());
@@ -9467,14 +9462,14 @@ mod tests {
             a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
         }
         assert!(a.itab.views[1].is_default());
-        // The old Governor and Cloud names open Machines under their chips.
-        for (word, chip) in [("infra governor", "governed"), ("infra cloud", "cloud")] {
+        // The old Cloud name opens Machines under its chip; the old Governor name opens it.
+        for word in ["infra governor", "infra cloud"] {
             let (t, q) = crate::tabreq::parse(word).unwrap();
             a.handle(Msg::Tab(t, q));
             assert_eq!((a.tab, a.infra_inner), (Tab::Infra, "machines"), "{word}");
-            assert_eq!(a.itab.views[0].view.state, chip, "{word}");
-            assert_eq!(a.itab.focus("machines"), Some(0), "{word}");
         }
+        assert_eq!(a.itab.focus("machines"), Some(0));
+        assert_eq!(a.itab.views[0].view.state, "cloud");
     }
 
     #[test]

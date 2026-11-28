@@ -230,10 +230,6 @@ relay_fixture() { # <kind> <text> <shown>
   relay_fixture answer 'Park them' "Ask $id: park or wait?"
   run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'park them' "$id" 'merge past red'
   assert_failure 1; assert_output --partial "names none (or more than one) of ask $id's options"
-  # Words that name neither the option nor its meaning do not pick it (ar-6269, ask M0yWLL).
-  relay_fixture answer 'get us down to only the ones that need' "Ask $id: park or wait?"
-  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'only the ones that need' "$id" park
-  assert_failure 1; assert_output --partial "does not pick 'park'"
   # Words that name another option pick that one, not this.
   relay_fixture answer 'wait for CI' "Ask $id: park or wait?"
   run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'wait for CI' "$id" park
@@ -255,6 +251,32 @@ relay_fixture() { # <kind> <text> <shown>
   run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'park them' "$id" wait
   assert_failure 1; assert_output --partial 'not waiting on the human'
   run "$AGENT_ASK" show "$id"; assert_line 'answer: park'
+}
+
+# In a session the human is at, words that name no option are their answer as the session reads it,
+# and the note says it was a reading; words that name the option are no reading; words that name
+# another option refuse.
+@test "answer --quote: words that name no option record the session's reading, and the note says so" {
+  local id; id="$("$AGENT_ASK" post --project demo --options 'park=park them|wait=wait for CI' 'park or wait?')"
+  relay_fixture typed 'yes or no is fine, go off your recs thanks' "Ask $id: park or wait? My pick: park."
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'go off your recs' "$id" park
+  assert_success
+  run "$AGENT_ASK" show "$id"; assert_line 'answer: park'; assert_line 'answered_by: human'
+  assert_output --partial "answer_note: relayed in session sid-r: the session's reading of their words as 'park': go off your recs"
+  # Negative control: words naming the other option are no reading of park.
+  local id2; id2="$("$AGENT_ASK" post --project demo --options 'park=park them|wait=wait for CI' 'park or wait?')"
+  relay_fixture typed 'go off your recs, but wait for CI' "Ask $id2: park or wait?"
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'go off your recs' "$id2" park
+  assert_failure 1; assert_output --partial "whole message does not pick 'park'"
+  run "$AGENT_ASK" show "$id2"; assert_line 'status: pending'
+  # A fragment of an entry that names park is the human's pick, not the session's reading.
+  local id3; id3="$("$AGENT_ASK" post --project demo --options 'park=park them|wait=wait for CI' 'park or wait?')"
+  relay_fixture typed 'go off your recs and park it' "Ask $id3: park or wait?"
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'go off your recs' "$id3" park
+  assert_success
+  run "$AGENT_ASK" show "$id3"; assert_line 'answer: park'
+  assert_output --partial 'answer_note: relayed in session sid-r: go off your recs'
+  refute_output --partial "session's reading"
 }
 
 # An agent answers what does not need the human, and its answer releases what the ask holds
@@ -283,10 +305,75 @@ relay_fixture() { # <kind> <text> <shown>
   run env AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer "$c" go
   assert_failure 1
   assert_output --partial "$c needs the human (the judge marked it human-only)"
+  # An ask the judge sent to the human is the human's (ar-5156: MVGdCe was answered "merge" by an agent).
+  d="$("$AGENT_ASK" post --project demo --options "$opts" 'approve the look?')"
+  printf 'judge: human\njudge_reason: a taste call.\n' >> "$(ask_file "$d")"
+  run env CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" answer "$d" go
+  assert_failure 1
+  assert_output --partial "$d needs the human (the judge sent it to the human: a taste call)"
+  run "$AGENT_ASK" show "$d"; assert_line 'status: pending'
+  # Negative control: an ask the judge would answer itself still takes an agent's answer.
+  e="$("$AGENT_ASK" post --project demo --options "$opts" 'retry it?')"
+  printf 'judge: take-recommend\n' >> "$(ask_file "$e")"
+  run env CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" answer "$e" go
+  assert_success
+  run "$AGENT_ASK" show "$e"; assert_line 'status: answered'; assert_line 'answered_by: agent'
   # Negative control: the human's answer to an approval still lands.
   run "$AGENT_ASK" answer "$b" go
   assert_success
   run "$AGENT_ASK" show "$b"; assert_line 'answered_by: human'
+}
+
+# An agent answer given before `answer` refused it goes back to the human (ar-5156).
+@test "return: an agent's answer to an ask only the human answers is pending again, the answer kept" {
+  local opts='merge=land it|change=hold it' a b c g h id
+  a="$("$AGENT_ASK" post --project demo --options "$opts" --recommend change 'approve the look?')"
+  b="$("$AGENT_ASK" post --project demo --options "$opts" 'land it?')"
+  c="$("$AGENT_ASK" post --project demo --options "$opts" 'merge it?')"
+  g="$("$AGENT_ASK" post --project demo --options "$opts" 'ship it?')"
+  h="$("$AGENT_ASK" post --project demo --options "$opts" 'approve this one?')"
+  for id in "$a" "$b" "$c" "$g"; do "$AGENT_ASK" answer --by agent "$id" merge 2>/dev/null; done
+  "$AGENT_ASK" answer "$h" merge 2>/dev/null
+  # The judge's verdict landed after the agent's answer: the human's for a and h, the judge's own
+  # for c, and for g answerable with no option to take (grounded), which an agent may answer.
+  printf 'judge: human\njudge_rule: knowledge\n' >> "$(ask_file "$a")"; printf 'judge: human\n' >> "$(ask_file "$h")"
+  printf 'judge_human_only: true\n' >> "$(ask_file "$b")"; printf 'judge: take-recommend\n' >> "$(ask_file "$c")"
+  printf 'judge: human\njudge_rule: grounded\n' >> "$(ask_file "$g")"
+  # An answer still being delivered is left until that is done.
+  run "$AGENT_ASK" return "$a"
+  assert_failure 1
+  assert_output --partial "$a's answer is still being delivered"
+  for id in "$a" "$b" "$c" "$g" "$h"; do sed -i 's/^delivery: queued$/delivery: done/' "$(ask_file "$id")"; done
+  printf 'resumed_at: 2026-11-24T10:00:00-0800\n' >> "$(ask_file "$a")"
+  run "$AGENT_ASK" return --refused --dry-run
+  assert_success
+  assert_line "demo	$a	the judge sent it to the human"
+  assert_line "demo	$b	the judge marked it human-only"
+  for id in "$c" "$g" "$h"; do refute_output --partial "$id"; done
+  run "$AGENT_ASK" show "$a"; assert_line 'status: answered'
+  run "$AGENT_ASK" return --refused "$a"
+  assert_success
+  assert_equal "$(grep -c "	$a	" <<<"$output")" 1
+  run "$AGENT_ASK" show "$a"
+  assert_line 'status: pending'; assert_line 'agent_answer: merge'; assert_line 'recommend: change'
+  refute_line --partial 'answered_by:'; refute_line --regexp '^answer: '; refute_line --partial 'delivery:'
+  refute_line --partial 'resumed_at:'
+  # The agent's answer is never a recommendation the judge could take.
+  run "$AGENT_ASK" show "$b"; assert_line 'status: pending'; assert_line 'agent_answer: merge'; refute_line 'recommend: merge'
+  run "$AGENT_ASK" list --all --pending
+  assert_output --partial "$a"; assert_output --partial "$b"
+  # Negative controls: an ask the agent may answer, and the human's own answer, stay answered.
+  for id in "$c" "$g"; do run "$AGENT_ASK" show "$id"; assert_line 'status: answered'; assert_line 'answered_by: agent'; done
+  run "$AGENT_ASK" show "$h"; assert_line 'status: answered'; assert_line 'answered_by: human'
+  run "$AGENT_ASK" return "$c"
+  assert_failure 1
+  assert_output --partial "$c takes an agent's answer"
+  # A returned ask still refuses the agent; the human's answer lands.
+  run env CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" answer "$a" merge
+  assert_failure 1
+  run "$AGENT_ASK" answer "$a" change
+  assert_success
+  run "$AGENT_ASK" show "$a"; assert_line 'answered_by: human'; assert_line 'answer: change'
 }
 
 @test "another session, or a post with no session id, is not held by someone else's ask" {
@@ -446,10 +533,13 @@ SH
   assert_success
   grep -qx 'resume: run: agent-ask reopen' "$(ask_file "$id")"
   "$AGENT_ASK" answer "$id" wait >/dev/null 2>&1
+  queue_stub
   run "$AGENT_ASK" reopen "$id"
   assert_success
   assert_called "--window ask-$id --cwd $HOME/.dotfiles --resume sid-8 --prompt Answer to ask $id: wait"
   assert_called "--window ask-$id-sid-9 --cwd $HOME/.dotfiles --resume sid-9 --prompt Answer to ask $id: wait"
+  # Each session works the answer under its own item.
+  assert_called "--item ask-$id-sid-9"
   # Negative control: a session that never closed over it is left alone (its window still has it).
   assert_not_called '--resume sid-10'
 }
@@ -1533,6 +1623,27 @@ days_ahead() { echo $(( ($(date -d "$1" +%s) - $(date +%s) + 43200) / 86400 )); 
 # A session that closes over its own pending ask (/wind-down auto, close rule "only its own ask is
 # open") sets the ask to reopen it: the answer starts the ended conversation again with the answer.
 
+# queue_stub: AGENT_ASK_QUEUE_CMD as a logging agent-queue: no live item records a session (mine
+# fails, unless AQ_MINE names one), an add prints its slug running (AQ_REFUSE: it files nothing), and
+# any other call succeeds silent.
+queue_stub() {
+  # agent-ask runs the command unquoted, so the stub lives outside the sandbox (its path has a space).
+  cat >"$BATS_TEST_TMPDIR/aq-stub" <<'STUB'
+#!/usr/bin/env bash
+printf 'agent-queue %s | sid=%s item=%s\n' "$*" "${CLAUDE_CODE_SESSION_ID:-}" "${AGENT_QUEUE_ITEM:-}" >>"$NOTES_FIXTURE/calls.log"
+case "$1" in
+  mine) [ -n "${AQ_MINE:-}" ] && { echo "$AQ_MINE"; exit 0; }; exit 1 ;;
+  add) [ -z "${AQ_REFUSE:-}" ] || exit 1
+       while [ $# -gt 0 ]; do [ "$1" = --slug ] && { echo "running $2 -> running/$2.md"; exit 0; }; shift; done; exit 1 ;;
+  list) echo '[]' ;;
+  show) [ -n "${AQ_SHOW:-}" ] || exit 1; printf '{"state":"%s"}\n' "$AQ_SHOW" ;;
+esac
+exit 0
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/aq-stub"
+  export AGENT_ASK_QUEUE_CMD="$BATS_TEST_TMPDIR/aq-stub"
+}
+
 @test "reopen-on-answer: the answer reopens the ended session with it, unless it runs or the queue holds the ask" {
   local id other loose
   sandbox_worlds
@@ -1553,15 +1664,18 @@ days_ahead() { echo $(( ($(date -d "$1" +%s) - $(date +%s) + 43200) / 86400 )); 
   # The resume is the answer's route, so no board row is filed for it.
   "$AGENT_ASK" answer "$id" go >/dev/null 2>&1
   assert_not_called 'chore(ask)'
+  queue_stub
   run "$AGENT_ASK" reopen "$id"
   assert_success
   assert_called "fleet-dispatch start --project demo --server hub --session dotfiles --window ask-$id --cwd $HOME/.dotfiles --resume sid-8 --prompt Answer to ask $id: go"
+  assert_called "--item ask-$id"
   # Negative controls: a live session already had the answer typed in; nothing starts.
   : >"$NOTES_FIXTURE/calls.log"; : >"$NOTES_FIXTURE/live"
   run "$AGENT_ASK" reopen "$id"
   assert_success
   assert_output --partial 'is live'
   assert_not_called 'fleet-dispatch start'
+  assert_not_called 'agent-queue add'
   rm "$NOTES_FIXTURE/live"
   # A queue item tagged with the ask is the queue's to restart.
   export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
@@ -1570,14 +1684,26 @@ days_ahead() { echo $(( ($(date -d "$1" +%s) - $(date +%s) + 43200) / 86400 )); 
   assert_success
   assert_output --partial 'a queue item holds it'
   assert_not_called 'fleet-dispatch start'
-  # A reopen that fails files the answer as a board row naming the conversation to resume.
+  # A reopen that fails puts the answer's item in the queue, which starts a fresh session on it: one
+  # record, so no board row besides it.
   local failed; failed="$(CLAUDE_CODE_SESSION_ID=sid-8 post demo 'and this?')"
   "$AGENT_ASK" reopen-on-answer "$failed" 2>/dev/null
   "$AGENT_ASK" answer "$failed" yes >/dev/null 2>&1
   printf '#!/usr/bin/env bash\nexit 1\n' >"$SANDBOX/bin/fleet-dispatch"
+  queue_stub
   run "$AGENT_ASK" reopen "$failed"
+  assert_success
+  assert_output --partial "its queue item ask-$failed is queued for a fresh session"
+  assert_called "agent-queue move ask-$failed queued"
+  assert_not_called 'did not reopen: claude --resume'
+  # With no item filed, the answer gets the board row naming the conversation to resume.
+  local refused; refused="$(CLAUDE_CODE_SESSION_ID=sid-8 post demo 'and that?')"
+  "$AGENT_ASK" reopen-on-answer "$refused" 2>/dev/null
+  "$AGENT_ASK" answer "$refused" yes >/dev/null 2>&1
+  AQ_REFUSE=1 run "$AGENT_ASK" reopen "$refused"
   assert_failure
-  assert_called 'and this? -> answered: yes; its session ended and did not reopen: claude --resume sid-8'
+  assert_output --partial "agent-queue filed no item for session sid-8"
+  assert_called 'and that? -> answered: yes; its session ended and did not reopen: claude --resume sid-8'
   # An ask that already resumes some other way keeps its resume and succeeds: ask-resume runs it
   # headless on the answer, so a close over it loses nothing (ar-4271: the shepherd kept that window).
   other="$(CLAUDE_CODE_SESSION_ID=sid-8 "$AGENT_ASK" post --project demo --resume '/captain resume' 'other?')"
@@ -1634,23 +1760,85 @@ days_ahead() { echo $(( ($(date -d "$1" +%s) - $(date +%s) + 43200) / 86400 )); 
   id="$(CLAUDE_CODE_SESSION_ID=sid-7 post demo 'ship it?')"
   "$AGENT_ASK" reopen-on-answer "$id" 2>/dev/null
   "$AGENT_ASK" answer "$id" go >/dev/null 2>&1
+  queue_stub
   run "$AGENT_ASK" reopen "$id"
   assert_success
   assert_equal "$(git -C "$wt" branch --show-current)" agent-3-x
   assert_called "fleet-dispatch start --project demo --server lab --session demo-agent-3 --window ask-$id --cwd $wt --resume sid-7 --prompt Answer to ask $id: go"
   assert_not_called 'chore(ask)'
-  # Negative control: a slot wt new re-cut for another session is not resumed into; the answer
-  # gets the board row instead.
+  # Negative control: a slot wt new re-cut for another session is not resumed into; the answer's
+  # item goes to the queue for a fresh session instead.
   git -C "$wt" switch --quiet -c agent-3-other main
   : >"$NOTES_FIXTURE/calls.log"
   taken="$(CLAUDE_CODE_SESSION_ID=sid-7 post demo 'and this?')"
   "$AGENT_ASK" reopen-on-answer "$taken" 2>/dev/null
   "$AGENT_ASK" answer "$taken" yes >/dev/null 2>&1
   run "$AGENT_ASK" reopen "$taken"
-  assert_failure
+  assert_success
   assert_output --partial 'demo-agent-3 is taken'
   assert_not_called 'fleet-dispatch start'
-  assert_called 'and this? -> answered: yes; its session ended and did not reopen: claude --resume sid-7'
+  assert_called "agent-queue move ask-$taken queued"
+  assert_not_called 'chore(ask)'
+}
+
+# ar-4670: KERild (judge: split) reopened its shepherd session with the answer and no queue item; the
+# session closed without building the split, nothing recorded the work, and the red re-tripped daily.
+@test "reopen: the reopened session works the answer under a queue item from the ask; one with a live item keeps it" {
+  local id
+  sandbox_worlds
+  mkdir -p "$HOME/.dotfiles" "$HOME/.claude/projects/p"
+  printf '{"type":"user","cwd":"%s","sessionId":"sid-8"}\n' "$HOME/.dotfiles" >"$HOME/.claude/projects/p/sid-8.jsonl"
+  cat >"$SANDBOX/bin/fleet-dispatch" <<'STUB'
+#!/usr/bin/env bash
+printf 'fleet-dispatch %s START_ORIGIN=%s\n' "$*" "${START_ORIGIN:-}" >>"$NOTES_FIXTURE/calls.log"
+STUB
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$SANDBOX/bin/agent-panel"
+  chmod +x "$SANDBOX/bin/fleet-dispatch" "$SANDBOX/bin/agent-panel"
+  id="$(CLAUDE_CODE_SESSION_ID=sid-8 post demo 'beam-free trips a red daily; which way?')"
+  "$AGENT_ASK" reopen-on-answer "$id" 2>/dev/null
+  "$AGENT_ASK" answer "$id" split >/dev/null 2>&1
+  queue_stub
+  CLAUDE_CODE_SESSION_ID=answerer AGENT_QUEUE_ITEM=answerer-item run "$AGENT_ASK" reopen "$id"
+  assert_success
+  # The item is the ask's, not the caller's, and its task is the decision.
+  assert_called "agent-queue add --running --repeat --project demo --from ask:$id --slug ask-$id --title chore(asks): carry out the answer to ask $id Carry out the answer to ask $id: beam-free trips a red daily; which way? Answer: split. Build,"
+  run grep '^agent-queue add' "$NOTES_FIXTURE/calls.log"
+  assert_output --partial ' | sid= item='
+  assert_called "agent-queue set ask-$id origin=ask"
+  assert_called "agent-queue claim ask-$id --sid sid-8"
+  # The session starts on it as the ask's work, and its first message names it.
+  assert_called "--resume sid-8 --prompt Answer to ask $id: split. Queue item ask-$id holds the work this answer decides"
+  assert_called "--item ask-$id START_ORIGIN=ask"
+  # Negative control: a session a live item records keeps that item; fleet-dispatch start --resume
+  # re-attaches it, so none is filed and none is passed.
+  : >"$NOTES_FIXTURE/calls.log"
+  AQ_MINE=ar-12 run "$AGENT_ASK" reopen "$id"
+  assert_success
+  assert_not_called 'agent-queue add'
+  assert_called "--resume sid-8 --prompt Answer to ask $id: split START_ORIGIN="
+  assert_not_called '--item'
+  # A second reopen reuses the item the first filed: a running one is started on again, a queued one
+  # is the queue's to start.
+  : >"$NOTES_FIXTURE/calls.log"
+  AQ_SHOW=running run "$AGENT_ASK" reopen "$id"
+  assert_success
+  assert_not_called 'agent-queue add'
+  assert_called "--item ask-$id START_ORIGIN=ask"
+  : >"$NOTES_FIXTURE/calls.log"
+  AQ_SHOW=queued run "$AGENT_ASK" reopen "$id"
+  assert_success
+  assert_output --partial "its queue item ask-$id is queued; the queue starts it"
+  assert_not_called 'agent-queue add'
+  assert_not_called 'fleet-dispatch start'
+  # A process still holding the session outside tmux gets no item, so no second worker; its answer is a row.
+  : >"$NOTES_FIXTURE/calls.log"
+  mkdir -p "$HOME/.claude/sessions"
+  printf '{"sessionId":"sid-8"}\n' >"$HOME/.claude/sessions/$$.json"
+  run "$AGENT_ASK" reopen "$id"
+  assert_failure
+  assert_output --partial 'session sid-8 still runs outside tmux'
+  assert_not_called 'agent-queue add'
+  assert_not_called 'fleet-dispatch start'
 }
 
 @test "a session live on a fleet worker is never reopened here, and target says where it runs" {
@@ -1667,6 +1855,7 @@ days_ahead() { echo $(( ($(date -d "$1" +%s) - $(date +%s) + 43200) / 86400 )); 
   assert_failure
   assert_equal "$stderr" "session runs on hp at hp@lab/dotfiles:2; go to it there"
   "$AGENT_ASK" answer "$id" go >/dev/null 2>&1
+  queue_stub
   run "$AGENT_ASK" reopen "$id"
   assert_success
   assert_output --partial 'is live'
@@ -2489,6 +2678,216 @@ ASK-JUDGE-END'
   refute_line --partial 'judge_call:'
 }
 
+# -- knowledge asks, routed at post --
+
+# the_ask [project]: the path of the one ask file a test posted.
+the_ask() { find "$HOME/.agent/asks/${1:-demo}" -name '*.md'; }
+
+@test "post: a credential for a service we run is refused with its admin path; an outside account is asked" {
+  unset AGENT_ASK_NO_JUDGE
+  printf '%s\n' '# Credentials' '' '| Service | Admin path | Steps |' '|---|---|---|' \
+    '| mem0 API keys | `POST /api-keys` with the admin JWT | x |' '' '## Other accounts' '| Steam | the human | x |' \
+    > "$BATS_TEST_TMPDIR/credentials.md"
+  export AGENT_ASK_CREDENTIALS_DOC="$BATS_TEST_TMPDIR/credentials.md"
+  touch "$NOTES_FIXTURE/locked"
+  fake_judge "$(SCORE_TYPE=credential_or_account score knowledge)"
+  run --separate-stderr "$AGENT_ASK" post --project demo 'mint me a MEM0 key for the panel?'
+  assert_failure 2
+  assert_output ''
+  [[ "$stderr" == *'a credential for mem0, a service we run'*'(POST /api-keys with the admin JWT)'* ]]
+  run cat "$(the_ask)"
+  assert_line 'status: cancelled'
+  assert_line --regexp '^closed_reason: refused at post: a credential for mem0'
+  rm -rf "$HOME/.agent/asks/demo"
+  # negative controls: a gate and a resume ask each need the ask, so a held service does not cancel them
+  run "$AGENT_ASK" post --project demo --kind gate 'mint me a MEM0 key for the panel?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  rm -rf "$HOME/.agent/asks/demo"
+  run "$AGENT_ASK" post --project demo --resume 'echo go' 'mint me a MEM0 key for the panel?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  rm -rf "$HOME/.agent/asks/demo"
+  # negative controls: a service named only past the first table, a word that only contains a
+  # service's name, a service named only in the context, and a missing doc are no match
+  for q in 'log in to Steam on the mini?' 'add mem0x to the panel?'; do
+    run "$AGENT_ASK" post --project demo "$q"
+    assert_success
+    run cat "$(the_ask)"
+    assert_line 'status: pending'
+    rm -rf "$HOME/.agent/asks/demo"
+  done
+  run "$AGENT_ASK" post --project demo --context 'for the mem0 mirror' 'a Steam partner login?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  rm -rf "$HOME/.agent/asks/demo"
+  export AGENT_ASK_CREDENTIALS_DOC="$BATS_TEST_TMPDIR/absent.md"
+  run "$AGENT_ASK" post --project demo 'mint me a mem0 key?'
+  assert_success
+  # and the same text under another type is not a credential ask
+  rm -rf "$HOME/.agent/asks/demo"
+  export AGENT_ASK_CREDENTIALS_DOC="$BATS_TEST_TMPDIR/credentials.md"
+  fake_judge "$(SCORE_TYPE=ship_deploy score knowledge)"
+  run "$AGENT_ASK" post --project demo 'mint me a mem0 key?'
+  assert_success
+}
+
+@test "post: a credential held in rbw is refused with its rbw get; a locked vault or a bare word is asked" {
+  unset AGENT_ASK_NO_JUDGE
+  export AGENT_ASK_CREDENTIALS_DOC="$BATS_TEST_TMPDIR/absent.md"
+  printf '%s\n' github github-runner-exporter-pat > "$NOTES_FIXTURE/rbw.list"
+  fake_judge "$(SCORE_TYPE=credential_or_account score knowledge)"
+  run --separate-stderr "$AGENT_ASK" post --project demo 'can I have the GitHub-Runner-Exporter-PAT?'
+  assert_failure 2
+  [[ "$stderr" == *'a credential we hold in rbw: rbw get github-runner-exporter-pat'* ]]
+  run cat "$(the_ask)"
+  assert_line 'status: cancelled'
+  rm -rf "$HOME/.agent/asks/demo"
+  # negative control: a bare item name is too broad to match
+  run "$AGENT_ASK" post --project demo 'a github token for the runner?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  rm -rf "$HOME/.agent/asks/demo"
+  # negative control: a locked vault matches nothing
+  touch "$NOTES_FIXTURE/locked"
+  run "$AGENT_ASK" post --project demo 'can I have the github-runner-exporter-pat?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+}
+
+@test "post: a physical action becomes a hold and a sheet row, with no ask; a blocker or resume stays an ask" {
+  unset AGENT_ASK_NO_JUDGE
+  printf '%s\n' '- [ ] chore(demo): plug in the drive <!-- id:sh-9 -->' > "$NOTES_FIXTURE/ptask.added"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\n' "$BATS_TEST_TMPDIR/hold.calls" > "$BATS_TEST_TMPDIR/hold"
+  chmod +x "$BATS_TEST_TMPDIR/hold"
+  export AGENT_ASK_HOLD_CMD="$BATS_TEST_TMPDIR/hold"
+  fake_judge "$(SCORE_TYPE=human_physical_action score knowledge)"
+  run --separate-stderr "$AGENT_ASK" post --project demo 'plug in the drive?'
+  assert_failure 2
+  local f; f="$(the_ask)"
+  local id; id="$(basename "$f" .md)"
+  assert_output ""
+  [[ "$stderr" == *"Filed sheet row sh-9 and hold human-$id"* ]]
+  assert_called 'notes ptask demo add'
+  assert_called "agent-hold release human-$id"
+  run cat "$BATS_TEST_TMPDIR/hold.calls"
+  assert_output "set human-$id --kind resource --by agent-ask the human must: plug in the drive? (agent-ask $id, a row on the demo sheet); release when done"
+  run cat "$f"
+  assert_line 'status: cancelled'
+  assert_line --regexp '^closed_reason: routed at post: .*sheet row sh-9, hold human-'
+  rm -rf "$HOME/.agent/asks/demo" "$BATS_TEST_TMPDIR/hold.calls"
+  : > "$NOTES_FIXTURE/calls.log"
+  # negative controls: a resume runs on the answer and a gate is the asker's to read, so each
+  # stays an ask
+  run "$AGENT_ASK" post --project demo --resume 'echo go' 'plug in the drive?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  rm -rf "$HOME/.agent/asks/demo"
+  run "$AGENT_ASK" post --project demo --kind gate 'plug in the drive?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  assert_line 'kind: gate'
+  assert [ ! -e "$BATS_TEST_TMPDIR/hold.calls" ]
+  rm -rf "$HOME/.agent/asks/demo"
+  # negative control: a row that cannot be added takes the hold back and leaves the ask
+  echo 1 > "$NOTES_FIXTURE/ptask.add.rc"
+  run "$AGENT_ASK" post --project demo 'plug in the drive?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  run tail -n1 "$BATS_TEST_TMPDIR/hold.calls"
+  assert_output --regexp '^release human-'
+  rm -rf "$HOME/.agent/asks/demo" "$NOTES_FIXTURE/ptask.add.rc"
+  # negative control: a hold that cannot be set adds no row and leaves the ask
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$BATS_TEST_TMPDIR/hold"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AGENT_ASK" post --project demo 'plug in the drive?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  refute grep -q 'ptask demo add' "$NOTES_FIXTURE/calls.log"
+  rm -rf "$HOME/.agent/asks/demo"
+  # negative control: another type is not routed
+  export AGENT_ASK_HOLD_CMD="$BATS_TEST_TMPDIR/hold-unused"
+  : > "$NOTES_FIXTURE/calls.log"
+  fake_judge "$(SCORE_TYPE=ci_capacity_ops score knowledge)"
+  run "$AGENT_ASK" post --project demo 'plug in the drive?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  refute grep -q 'ptask demo add' "$NOTES_FIXTURE/calls.log"
+}
+
+@test "judge: a human_fact verdict is judged once more with what the human already said; no hits, one call" {
+  unset AGENT_ASK_NO_JUDGE
+  printf '#!/usr/bin/env bash\necho "the razer monitor runs at 144 Hz"\n' > "$BATS_TEST_TMPDIR/mem0"
+  chmod +x "$BATS_TEST_TMPDIR/mem0"
+  export AGENT_ASK_MEM0_CMD="$BATS_TEST_TMPDIR/mem0"
+  fake_judge "$(SCORE_TYPE=human_fact score knowledge)"
+  "$AGENT_ASK" post --project demo 'what refresh rate is the razer monitor?' >/dev/null
+  run grep -c '^## What the human already said' "$BATS_TEST_TMPDIR/judge.calls"
+  assert_output '1'
+  run grep -c 'what refresh rate is the razer monitor?' "$BATS_TEST_TMPDIR/judge.calls"
+  assert_output '2'
+  grep -qF -- '- mem0: the razer monitor runs at 144 Hz' "$BATS_TEST_TMPDIR/judge.calls"
+  local f; f="$(the_ask)"
+  run cat "$f"
+  assert_line 'status: pending'
+  assert_line 'judge_human_said: 1 lines'
+  # a later pass judges it with the section, in one call
+  : > "$BATS_TEST_TMPDIR/judge.calls"
+  "$AGENT_ASK" judge "$(basename "$f" .md)"
+  run grep -c 'what refresh rate is the razer monitor?' "$BATS_TEST_TMPDIR/judge.calls"
+  assert_output '1'
+  grep -q '^## What the human already said' "$BATS_TEST_TMPDIR/judge.calls"
+  rm -rf "$HOME/.agent/asks/demo" "$BATS_TEST_TMPDIR/judge.calls"
+  # a second call that fails leaves the first verdict
+  cat > "$BATS_TEST_TMPDIR/judge-once" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$BATS_TEST_TMPDIR/judge.calls"
+[ "\$(grep -c 'what refresh rate' "$BATS_TEST_TMPDIR/judge.calls")" -le 1 ] || exit 7
+printf '%s\n' '$(SCORE_TYPE=human_fact score knowledge "" "first verdict")'
+SH
+  chmod +x "$BATS_TEST_TMPDIR/judge-once"
+  AGENT_ASK_JUDGE_CMD="$BATS_TEST_TMPDIR/judge-once" "$AGENT_ASK" post --project demo 'what refresh rate is the razer monitor?' >/dev/null
+  run grep -c 'what refresh rate is the razer monitor?' "$BATS_TEST_TMPDIR/judge.calls"
+  assert_output '2'
+  run cat "$(the_ask)"
+  assert_line 'judge: human'
+  assert_line 'judge_reason: first verdict'
+  refute_line --partial 'judge_human_said'
+  assert [ ! -e "$(the_ask).first" ]
+  rm -rf "$HOME/.agent/asks/demo" "$BATS_TEST_TMPDIR/judge.calls"
+  # the project's lessons are the other source, with pick's heading left out
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$BATS_TEST_TMPDIR/mem0"
+  mkdir -p "$BATS_TEST_TMPDIR/lessons"
+  printf '%s\n' '# demo' '' '- **2026-11-01** The razer desk monitor is a 1440p panel at 144 Hz.' > "$BATS_TEST_TMPDIR/lessons/demo.md"
+  export AGENT_ASK_LESSONS_DIR="$BATS_TEST_TMPDIR/lessons" AGENT_ASK_LESSONS_CMD="$REPO_ROOT/.local/bin/lessons"
+  "$AGENT_ASK" post --project demo 'what refresh rate is the razer monitor?' >/dev/null
+  grep -qF -- '- lesson: **2026-11-01** The razer desk monitor is a 1440p panel at 144 Hz.' "$BATS_TEST_TMPDIR/judge.calls"
+  refute grep -q 'lesson: ## ' "$BATS_TEST_TMPDIR/judge.calls"
+  rm -rf "$HOME/.agent/asks/demo" "$BATS_TEST_TMPDIR/judge.calls" "$BATS_TEST_TMPDIR/lessons"
+  # negative control: no hits, one call and no section
+  "$AGENT_ASK" post --project demo 'what refresh rate is the razer monitor?' >/dev/null
+  run grep -c 'what refresh rate is the razer monitor?' "$BATS_TEST_TMPDIR/judge.calls"
+  assert_output '1'
+  refute grep -q 'What the human already said' "$BATS_TEST_TMPDIR/judge.calls"
+  rm -rf "$HOME/.agent/asks/demo" "$BATS_TEST_TMPDIR/judge.calls"
+  # negative control: another type with hits is judged once
+  printf '#!/usr/bin/env bash\necho "the razer monitor runs at 144 Hz"\n' > "$BATS_TEST_TMPDIR/mem0"
+  fake_judge "$(SCORE_TYPE=ship_deploy score knowledge)"
+  "$AGENT_ASK" post --project demo 'what refresh rate is the razer monitor?' >/dev/null
+  run grep -c 'what refresh rate is the razer monitor?' "$BATS_TEST_TMPDIR/judge.calls"
+  assert_output '1'
+}
+
 @test "post runs the judge before it returns, unless AGENT_ASK_NO_JUDGE is set" {
   fake_judge "$(score taste "" taste)"
   unset AGENT_ASK_NO_JUDGE
@@ -3078,6 +3477,22 @@ live_answer_file() {
   assert [ ! -e "$HOME/.local/state/agent-ask/demoted" ]
 }
 
+@test "override: standing-order answers overridden by the human are not in a judge cell's window" {
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0 AGENT_ASK_LIVE_BAR=5 AGENT_ASK_DEMOTE_MIN=3 AGENT_ASK_DEMOTE_PRECISION=75
+  local d="$HOME/.agent/asks/demo" i
+  for i in 1 2 3 4 5; do live_answer_file "$i" "$i" kept; done
+  # two newer answers of a standing order, both overridden: counted, the window 4-8 would be 3 of 5 over
+  for i in 7 8; do live_answer_file "$i" "$i" wait; echo 'standing_order: demo/question/x' >> "$d/L0000$i.md"; done
+  printf 'id: L00006\nproject: demo\nclaude_session: sid-9\nstatus: answered\noptions: fix|wait\nanswer: fix\nanswered_by: judge\nanswered_at: 2026-11-05T09:06:00+0000\njudge_rule: ship_deploy\njudge_level: repo\n' > "$d/L00006.md"
+  "$AGENT_ASK" settle-session sid-9 answered "wait"
+  assert [ ! -e "$HOME/.local/state/agent-ask/demoted" ]
+  # negative control: without the standing_order lines the same files demote the cell
+  sed -i '/^standing_order/d' "$d"/L0000[78].md
+  sed -i '/^judge_override/d' "$d/L00006.md"
+  "$AGENT_ASK" settle-session sid-9 answered "wait"
+  assert [ -s "$HOME/.local/state/agent-ask/demoted" ]
+}
+
 @test "precedents: a disagreement older than the ask reaches the judge, a newer one and an agreement do not" {
   local d="$HOME/.agent/asks/demo"
   mkdir -p "$d"
@@ -3512,4 +3927,136 @@ SH
   run "$AGENT_ASK" list demo
   assert_success
   assert_output ''
+}
+
+# -- standing orders from precedent --
+
+# seed_answered <project> <kind> <question> <answer> [<answered_by>] [<resume>] [<days old>] [<status>]: one answered ask file.
+seed_answered() {
+  local d="$HOME/.agent/asks/$1" id; mkdir -p "$d"
+  id="s$(find "$HOME/.agent/asks" -name 's*.md' | wc -l)"
+  printf 'id: %s\nproject: %s\nkind: %s\nstatus: %s\nquestion: %s\noptions: yes|no\nrecommend: yes\nanswer: %s\nanswered_by: %s\nanswered_at: %s\nresume: %s\ncreated: %s\n' \
+    "$id" "$1" "$2" "${8-answered}" "$3" "$4" "${5-human}" "$(date -d "${7-0} days ago" +%Y-%m-%dT%H:%M:%S%z)" "${6-}" "$(date +%Y-%m-%dT%H:%M:%S%z)" > "$d/$id.md"
+}
+
+@test "standing: the same human answer three times running to one ask shape is a candidate; nothing else is" {
+  local n
+  for n in 11 12 13; do seed_answered demo approval "Start board row demo-$n again after its last $n runs failed?" yes; done
+  # negative controls: two answers only; the last three differ; the judge's answers; a resume of its own;
+  # an answer the human gave in another kind; a shape that is already an order
+  for n in 1 2; do seed_answered two approval "Open the door $n?" yes; done
+  for n in yes no yes; do seed_answered mixed approval "Pick a door $n?" "$n"; done
+  for n in 1 2 3; do seed_answered judged question "Merge PR $n?" yes judge; done
+  for n in 1 2 3; do seed_answered resumed approval "Send the post \"title $n\"?" yes human 'run: mkt answer x'; done
+  for n in 1 2 3; do seed_answered ordered approval "Rebase branch $n?" yes; done
+  # ... another kind; answers older than STANDING_DAYS; a cancelled ask; long questions that differ only past 140 characters
+  for n in 1 2 3; do seed_answered notice info "Read the notice $n?" yes; done
+  for n in 1 2 3; do seed_answered stale approval "Prune cache $n?" yes human '' 90; done
+  for n in 1 2 3; do seed_answered gone approval "Drop table $n?" yes human '' 0 cancelled; done
+  local long="Start the very long board row again after the flaky test in the shared harness failed in its last runs on the nightly and the fix is still waiting on review from the owner so"
+  for n in alpha beta gamma; do seed_answered longq approval "$long $n?" yes; done
+  printf '%s\n' 'ordered/approval/rebase branch N?=yes' > "$BATS_TEST_TMPDIR/standing.conf"
+  export AGENT_ASK_STANDING_FILE="$BATS_TEST_TMPDIR/standing.conf"
+  run "$AGENT_ASK" standing
+  assert_success
+  assert_equal "$(grep -c . <<<"$output")" 1
+  assert_output --regexp '^demo	approval	start board row demo-N again after its last N runs failed\?	yes	3	'
+  # the bar is the conf's: at 4 the three are not enough
+  AGENT_ASK_STANDING_BAR=4 run "$AGENT_ASK" standing
+  assert_success
+  assert_output ''
+}
+
+@test "standing --propose files each candidate once as a queue-verb proposal; nothing reaches the conf" {
+  local n
+  for n in 11 12 13; do seed_answered demo approval "Start board row demo-$n again after its last $n runs failed?" yes; done
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\n' "$BATS_TEST_TMPDIR/propose.calls" > "$BATS_TEST_TMPDIR/propose"
+  chmod +x "$BATS_TEST_TMPDIR/propose"
+  export AGENT_ASK_PROPOSE_CMD="$BATS_TEST_TMPDIR/propose" AGENT_ASK_STANDING_FILE="$BATS_TEST_TMPDIR/standing.conf"
+  run "$AGENT_ASK" standing --propose
+  assert_success
+  assert_output ''
+  run cat "$BATS_TEST_TMPDIR/propose.calls"
+  assert_equal "$(grep -c . <<<"$output")" 1
+  assert_output --partial 'add --stream standing-orders --project agent-runtime --verb queue --key standing/demo/approval/'
+  assert_output --partial 'demo/approval/start board row demo-N again after its last N runs failed?=yes'
+  assert [ ! -e "$BATS_TEST_TMPDIR/standing.conf" ]
+}
+
+@test "post: a standing order answers a plain ask of its shape at post; a resume, a critical ask, a floor ask or an answer outside the options stays the human's" {
+  unset AGENT_ASK_NO_JUDGE
+  fake_judge "$(score ship_deploy "" "fine")"
+  export AGENT_ASK_STANDING_FILE="$BATS_TEST_TMPDIR/standing.conf"
+  printf '%s\n' 'demo/approval/start board row demo-N again after its last N runs failed?=YES' \
+    'demo/question/start board row demo-N again after its last N runs failed?=yes' > "$BATS_TEST_TMPDIR/standing.conf"
+  run --separate-stderr "$AGENT_ASK" post --project demo --kind approval --options 'yes=go|no=stop' \
+    'Start board row demo-14 again after its last 4 runs failed?'
+  assert_success
+  local f; f="$(the_ask)"
+  [[ "$output" == "$(basename "$f" .md)" ]]
+  [[ "$stderr" == *"Answered by a standing order (demo/approval/start board row demo-N again after its last N runs failed?): yes."* ]]
+  run cat "$f"
+  assert_line 'status: answered'
+  assert_line 'answer: yes'
+  assert_line 'answered_by: judge'
+  assert_line --partial 'standing_order: demo/approval/start board row demo-N'
+  rm -rf "$HOME/.agent/asks/demo"
+  # negative control: an ask with a resume of its own is a send or a step, so the human answers it
+  run "$AGENT_ASK" post --project demo --kind approval --options 'yes=go|no=stop' --resume 'echo go' \
+    'Start board row demo-14 again after its last 4 runs failed?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  rm -rf "$HOME/.agent/asks/demo"
+  # negative control: another project's ask of the same words
+  run "$AGENT_ASK" post --project other --kind approval --options 'yes=go|no=stop' \
+    'Start board row demo-14 again after its last 4 runs failed?'
+  assert_success
+  run cat "$(the_ask other)"
+  assert_line 'status: pending'
+  rm -rf "$HOME/.agent/asks/other"
+  # negative control: the judge sent it to the human as critical (external), whatever the order says
+  fake_judge "$(score external "" "it posts")"
+  run "$AGENT_ASK" post --project demo --options 'yes=go|no=stop' --recommend yes \
+    'Start board row demo-14 again after its last 4 runs failed?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  rm -rf "$HOME/.agent/asks/demo"
+  # negative control: an answer that is not one of the ask's options
+  fake_judge "$(score ship_deploy "" "fine")"
+  printf '%s\n' 'demo/approval/start board row demo-N again after its last N runs failed?=maybe' > "$BATS_TEST_TMPDIR/standing.conf"
+  run "$AGENT_ASK" post --project demo --kind approval --options 'yes=go|no=stop' \
+    'Start board row demo-14 again after its last 4 runs failed?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  rm -rf "$HOME/.agent/asks/demo"
+  # negative control: a row with no answer
+  printf '%s\n' 'demo/approval/start board row demo-N again after its last N runs failed?=' > "$BATS_TEST_TMPDIR/standing.conf"
+  run "$AGENT_ASK" post --project demo --kind approval --options 'yes=go|no=stop' \
+    'Start board row demo-14 again after its last 4 runs failed?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  rm -rf "$HOME/.agent/asks/demo"
+  # negative control: no order file, no answer
+  rm -f "$BATS_TEST_TMPDIR/standing.conf"
+  run "$AGENT_ASK" post --project demo --kind approval --options 'yes=go|no=stop' \
+    'Start board row demo-14 again after its last 4 runs failed?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+}
+
+@test "judge-eval and the demote check leave a standing order's answer out" {
+  local d="$HOME/.agent/asks/demo"; mkdir -p "$d"
+  printf 'id: so1\nproject: demo\nkind: question\nstatus: answered\nquestion: pick?\noptions: yes|no\nrecommend: yes\nanswer: yes\nanswered_by: judge\nanswered_at: %s\njudge: human\njudge_rule: external\njudge_type: ship_deploy\njudge_level: repo\njudge_call: c1\njudged_at: %s\nstanding_order: demo/question/pick?\ncreated: %s\n' \
+    "$(date +%Y-%m-%dT%H:%M:%S%z)" "$(date +%Y-%m-%dT%H:%M:%S%z)" "$(date +%Y-%m-%dT%H:%M:%S%z)" > "$d/so1.md"
+  # the human overrides it in the session: recorded, and no cell is demoted for it
+  run "$AGENT_ASK" answer --by human so1 no
+  assert_success
+  run cat "$d/so1.md"
+  assert_line 'judge_override: no'
+  assert [ ! -s "$HOME/.local/state/agent-ask/demoted" ]
 }

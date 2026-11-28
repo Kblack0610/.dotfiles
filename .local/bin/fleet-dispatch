@@ -11,7 +11,7 @@
 #   fleet-dispatch exits [--dry-run] give each skipped agent row its rule's exit, and move the #after/ gates on a row sent to the sheet (skip_exits; each run pass does); --dry-run lists them
 #   fleet-dispatch stale [--dry-run] ask about, or keep in improvements.md and drop when #low, each agent row a skip has held DISPATCH_STALE_DAYS days (ask_stale_skips; each run pass does); --dry-run lists them
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
-#   fleet-dispatch promote --project P [--profile X] [--agent] [--dispatch] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item; --dispatch makes it a capped pull like dispatch's own
+#   fleet-dispatch promote --project P [--profile X] [--agent] [--dispatch] [--restart] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item; --dispatch makes it a capped pull like dispatch's own; --restart takes a started row no live item holds (row_restart)
 #   fleet-dispatch pull-after [--queue-only] ID  promote, and start unless normal, low or --queue-only, the open rows gated #after/ID: agent-queue runs it when ID's item closes ok, and a pass runs it --queue-only for a row closed with no item (pull_closed_after)
 #   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session; a row whose #ask/ gate was answered another way is held or dropped, one on a cancelled ask closes on its done item's merged PR, follows the ask it joined, or is asked again
 #   fleet-dispatch headroom [--json] how many more queue items could start now, and the margin under each limit
@@ -21,13 +21,13 @@
 #                                    an urgent one from the human even under a dispatch hold or load,
 #                                    or board rows no pass has judged in that time (the human here or away; not at a full fleet),
 #                                    or a queue under DISPATCH_LOW_WATER with rows to pick and no start in twice that,
-#                                    or a trainee pool dry that long while a trainee harness has a slot
+#                                    (a trainee pool dry that long is printed, and trips nothing)
 #   fleet-dispatch sprint-stalled    rc 1 naming each agent row of an open sprint with no queue item, session or open gate
 #                                    for DISPATCH_STARVED_MIN (watch sprint-stalled); rc 2 when a read fails
 #   fleet-dispatch stopped [--json]  rc 1 and one line when a hold has stopped every pass for DISPATCH_STARVED_MIN:
 #                                    how long, why, what clears it (hub Home, the briefing, queue-starved)
 #                                    (nothing when it is missing or stale): fleet-sessions wakes a kick when the count drops
-#   fleet-dispatch stats             one JSON object: runnable work, starts and reaps in the last hour, flapping items
+#   fleet-dispatch stats             one JSON object: runnable work, starts and reaps in the last hour, flapping items, and each open sprint's size, rows in and out, days left
 #   fleet-dispatch item-tier SLUG    the queue item's tier (item_tier): agent-land gates a tier-3 one
 #   fleet-dispatch trainee-pool [--json]  the board rows a trainee takes, how many each refusal turns away, and the floor open or shut
 #   fleet-dispatch trainee-review SLUG  a trainee run's tail, in its worktree: its diff to a patch that waits for a batch review
@@ -53,7 +53,7 @@
 #   fleet-dispatch run-log H SID...   the lines of this machine's H opencode log that the run claiming those ids wrote (canary score keeps them beside its log)
 #   (run, kick, reap, start, fill, promote, pull-after and exits do nothing on a machine that does not hold the fleet lease: lease_guard)
 #   fleet-dispatch record [--here]   keep each world's pane record, then (on the lease holder) each fleet worker's, and take their queue-item events into this chain record (worker_records); page when a world's server died
-#   fleet-dispatch restore [--server S] [--dry-run] [--here]  reopen a lost server's conversations as windows, here and (on the lease holder) on each fleet worker; one a queue item prompts wakes in a batch of the wake budget (wake-pace.sh), the rest under the `restore` hold
+#   fleet-dispatch restore [--server S] [--dry-run] [--here] [--defer]  reopen a lost server's conversations as windows, here and (on the lease holder) on each fleet worker; one a queue item prompts wakes in a batch of the wake budget (wake-pace.sh), the rest under the `restore` hold; --defer hands the walk to fleet-restore.service and returns at once
 #
 # A pass walks the workers in workers.json in file order, and a row goes to the first that may
 # take it: `#worker/<name>` plus a `#tier/N` within its max_tier (tier meanings: policy.md), and
@@ -161,6 +161,9 @@ esac
 HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 # shellcheck source=../lib/judge.sh
 . "$HERE/../lib/judge.sh"
+# shellcheck source=../lib/board-keys.sh
+. "$HERE/../lib/board-keys.sh"   # BOARD_KEY_ERE: the rows fleet-bench triage files by key, whose lane skip_exits leaves to it
+BOARD_KEY_JQ=$(jq -rn --arg e "$BOARD_KEY_ERE" '$e | tojson')   # that ERE as a jq string literal, for ROW_JQ's bench_keyed
 # shellcheck source=../src/agent-run/lib/sandbox.sh
 . "$HERE/../src/agent-run/lib/sandbox.sh"
 # The fleet worker roster (home-config's `fleet_workers` group) and the one ssh path to a worker.
@@ -618,10 +621,12 @@ def plan_tagged: any(.tags[]?; . == "plan");
 # defines its scope and the expect line of its watch its done state, so it is never unclear (policy.md
 # `clear`): an `unclear` skip of one takes no plan exit and picks reads past it (ar-5240).
 def triage_red: (.raw // .text // "") | sub("^- \\[.\\] "; "") | test("^check\\((watch|alert)\\): ");
-# red_skip($c): this verdict is an `unclear` skip of triage red row $c that an agent may take, so
-# skip_exits gives it no plan exit (a raw board row has no computed tier to read). One that picks then
-# passes over (a tier above the row, size L, a hold) stays on the board under its skip with no exit:
-# a known gap, since the raw row here carries neither tier nor size to test.
+# bench_keyed: a row fleet-bench triage filed by key (lib/board-keys.sh BOARD_KEY_ERE). The route triage gives it is
+# the one writer of its lane, so no exit here moves or drops it (skip_exits, ask_stale_skips; ar-6265).
+def bench_keyed: (.raw // .text // "") | sub("^- \\[.\\] "; "") | test('"$BOARD_KEY_JQ"');
+# red_skip($c): this verdict is an `unclear` skip of triage red row $c that an agent may take, so picks
+# reads past it (skip_exits gives a keyed triage row no exit at all). One that picks then passes over
+# (a tier above the row, size L, a hold) stays on the board under its skip: fleet-bench triage owns it.
 def red_skip($c): .verdict == "skip" and .rule == "unclear" and .agent_only == true and ($c | triage_red);
 # red_unclear($c): red_skip of a candidate whose tier is no higher than that of the row, a dispatch were
 # it clear, so picks starts it and suggest lists it as dispatch.
@@ -650,7 +655,7 @@ load_gates() {
   [ -z "${GATES_LOADED:-}" ] || return 0
   declare -gA GATE_ST=() GATE_WHY=() GATE_Q=() GATE_STACK=()
   GATES_LOADED=1 GATES_FAILED='' SCOPE_HOLDS=''
-  local out rc=0 t s w q k
+  local out rc=0
   SCOPE_HOLDS=$("${DISPATCH_AGENT_HOLD:-$HERE/agent-hold}" scopes 2>/dev/null) || {
     GATES_FAILED="agent-hold scopes failed"
     say "$GATES_FAILED, so no board row starts this pass"
@@ -662,14 +667,21 @@ load_gates() {
     say "$GATES_FAILED, so no board row starts this pass"
     return 0
   fi
+  gates_record "$out"
+}
+
+# gates_record <agent-queue gate --json lines> -- GATE_ST, GATE_WHY, GATE_Q and GATE_STACK from each line; a
+# tag that is no gate (state none) is left out.
+gates_record() {
+  local t s w q k r
   # A unit separator, not a tab: a tab is IFS whitespace, and read folds an empty why into the next field.
   # A line naming a row (a held #hold/ the hold grants that row by its row, epic or plan id) is keyed
   # <tag>@<row id>, which gate_wait reads for that row before the tag's own state.
   while IFS=$'\x1f' read -r t s w q k r; do
-    [ -n "$t" ] || continue
+    [ -n "$t" ] && [ "$s" != none ] || continue
     [ -z "$r" ] || t="$t@$r"
     GATE_ST[$t]=$s GATE_WHY[$t]=$w GATE_Q[$t]=$q GATE_STACK[$t]=$k
-  done < <(jq -r '"\(.tag)\u001f\(.state)\u001f\(.why)\u001f\(.queue)\u001f\(.stack // "")\u001f\(.row // "")"' <<<"$out")
+  done < <(jq -r '"\(.tag)\u001f\(.state)\u001f\(.why)\u001f\(.queue)\u001f\(.stack // "")\u001f\(.row // "")"' <<<"$1")
 }
 
 # gate_wait <gate tags> [<row id>] -> why the row may not start yet, one clause a gate that is not clear;
@@ -686,6 +698,26 @@ gate_wait() {
     esac
   done
   printf '%s' "$out"
+}
+
+# gates_reread <row hashtag>... -- the pass's gates (load_gates), and read again when the row's fresh line carries a gate
+# that read did not see, a return's #at/ (ar-5954: promote dropped it and the item started past the gate). agent-queue
+# says which unseen tags are gates (state none for the rest); one is enough to re-read every gate, as the pass made it.
+# Returns 1 with GATE_ERR when a gate cannot be read, so the row does not start.
+gates_reread() {
+  local g gout grc=0
+  local -a unseen=()
+  load_gates
+  GATE_ERR=$GATES_FAILED
+  [ -z "$GATE_ERR" ] || return 1
+  for g in "$@"; do [[ "$g" == desk/?* || -n "${GATE_ST[$g]+x}" ]] || unseen+=("$g"); done
+  [ "${#unseen[@]}" -gt 0 ] || return 0
+  gout=$(agent-queue gate --json "${unseen[@]}" 2>/dev/null) || grc=$?
+  { [ "$grc" = 0 ] || [ "$grc" = 3 ]; } || { GATE_ERR="agent-queue gate exit $grc on ${unseen[*]}"; return 1; }
+  jq -e 'select(.state != "none")' <<<"$gout" >/dev/null || return 0
+  GATES_LOADED=''; load_gates
+  GATE_ERR=$GATES_FAILED
+  [ -z "$GATE_ERR" ]
 }
 
 # load_extras -- fill the caller's `local -A DET PLN PAR RNK RLD GAT` from one board read, by "<project>\t<lane>\t<id>":
@@ -2325,6 +2357,10 @@ human_merge_set() {
 # skip_exits [--dry-run] -- give each open agent row whose latest verdict is a skip, still current
 # for the row's text, the exit its rule names (policy.md "Always skip"), so no skip parks a row.
 # A check(epics) row takes none: reconcile_epics queues its verify item, the judge never needs to.
+# Nor does a row fleet-bench triage filed by key (BOARD_KEY_ERE: check(watch), check(alert), fix(hold) and
+# the rest): triage's route (agent or human:<sheet>) is the one writer of its lane, and a sheet exit
+# here was undone by triage on its next pass, an add and a drop on every pass (ar-6265: board-chain).
+# A keyed red that needs a person gets a human:<sheet> route in triage-routes, not an exit here.
 #  - plan (DISPATCH_PLAN_RULES): tag it #plan, and #go beside it on a #requested row (the judge asked
 #    for this plan, not the person, so inbox-plan does not hold it for their review), while fewer than
 #    DISPATCH_PLAN_BACKLOG #plan rows are open, then kick inbox-plan; its plan splits or rewrites the
@@ -2408,8 +2444,9 @@ skip_exits() {
     | $ssf[0] as $ss
     | ($kinds | to_entries | map(select(.value.enabled == false and .key != "epic") | {key, value: true}) | from_entries) as $off
     | ([.rows[]? | select(.state == "open" or .state == "doing") | .tags[]? | select(startswith("of/")) | {key: .[3:], value: true}] | from_entries) as $parents
-    | .rows[]? | select(.lane == "agent" and .state == "open" and .id != null and (plan_tagged | not) and "\(.type)(\(.area))" != "check(epics)") | . as $row
-    | ($by["\(.project)\t\(.id)"] | if . != null and red_skip($row) then null else . end) as $d
+    | .rows[]? | select(.lane == "agent" and .state == "open" and .id != null and (plan_tagged | not) and "\(.type)(\(.area))" != "check(epics)"
+        and (bench_keyed | not))
+    | $by["\(.project)\t\(.id)"] as $d
     | if $hm["\(.project)\t\(.id)"] != null and (.type // "") != "epic" and ($parents[.id] | not)
           and (.project as $pj | $elig | index($pj)) != null
           and (($ss.rows["\(.project)\t\(.id)"].failed // false) | not)
@@ -2558,7 +2595,7 @@ waits_gate() {
 # clears the gate and picks takes it as committed work, drop settles it (settle_answered_gates), and
 # any other answer holds it on #hold/row-<id>. Any other row (#low) is kept in improvements.md and dropped, the skip as its
 # why. Its age never ranks it: priority stays ahead of age (#2232, ask Q6vMPb). An epic, a parent, a
-# check(epics) row and a triage red skip (red_skip) are left alone. At most DISPATCH_STALE_MAX rows a
+# check(epics) row and a row fleet-bench triage filed by key (bench_keyed: its lane is triage's) are left alone. At most DISPATCH_STALE_MAX rows a
 # day, each try a `stale:` line in the log (0 is no cap); DISPATCH_STALE_DAYS 0 is off. --dry-run writes nothing and prints `<ask|drop> TAB
 # <project> TAB <id> TAB <rule> TAB <days>` per row, then the counts.
 ask_stale_skips() {
@@ -2592,8 +2629,8 @@ ask_stale_skips() {
        | map({key: "\(.project)\t\(.key)", value: .}) | from_entries) as $by
     | ([.rows[]? | select(.state == "open" or .state == "doing") | .tags[]? | select(startswith("of/")) | {key: .[3:], value: true}] | from_entries) as $parents
     | .rows[]? | select(.lane == "agent" and .state == "open" and .id != null and (plan_tagged | not)
-        and (.type // "") != "epic" and ($parents[.id] | not) and "\(.type)(\(.area))" != "check(epics)") | . as $row
-    | $by["\(.project)\t\(.id)"] as $d | select($d != null and (($d | red_skip($row)) | not))
+        and (.type // "") != "epic" and ($parents[.id] | not) and "\(.type)(\(.area))" != "check(epics)" and (bench_keyed | not))
+    | $by["\(.project)\t\(.id)"] as $d | select($d != null)
     | $ages["\(.project)\t\(.id)"] as $s | select($s != null)
     | ((day0($today) - day0($s)) / 86400 | floor) as $age | select($age >= $days)
     | [.profile // "-", .project, .id, ($d.line // "-"), ($d.dsig // "-"), details_json($n), $d.rule, (.requested == true), $s, $age,
@@ -3465,8 +3502,10 @@ trainee_why() {
 # So the row's repo is one of DISPATCH_TRAINEE_REPOS, its words match none of that repo's
 # .githooks/sensitive-tokens.txt, and each file it names (row_paths) is tracked there, a markdown file, or
 # a shell or bats file outside any cargo or npm tree; a directory, every file under it. A bare word the repo
-# does not track (a jq .field, a runtime state.json) is no file the row names, so it is skipped; a path
-# with a slash is refused. A row that names no file passes: the lane sandbox (sandbox/gateway.json,
+# does not track (a jq .field, a runtime state.json) is no file the row names, so it is skipped, and so is
+# one slash with no dot (and/or, /wind-down, ar-60/#3320); an untracked path with a dot or a second slash
+# (scripts/gone.sh, ~/.agent/dispatch/log.md) is refused (ar-5747).
+# A row that names no file passes: the lane sandbox (sandbox/gateway.json,
 # agy.json) denies every read outside the worktree, so the work stays in the repo whatever the row
 # says, and cmd_trainee_review checks the files the diff touched (trainee_diff_why). Until 2026-11-23
 # such a row was refused, and the floor ran dry with 332 of them open (ar-4739).
@@ -3485,7 +3524,8 @@ trainee_public_why() {
     [ -n "$tok" ] || continue
     files=$(git -C "$repo" ls-files -- "$tok" 2>/dev/null)
     [ -n "$files" ] || files=$(git -C "$repo" ls-files -- "*/$tok" 2>/dev/null)
-    [ -n "$files" ] || [[ "$tok" != */* ]] || { echo "it names $tok, which $repo does not track"; return 1; }
+    [ -n "$files" ] || [[ "$tok" != */* ]] || { [[ "$tok" != *.* ]] && [[ "$tok" != */*/* ]]; } ||
+      { echo "it names $tok, which $repo does not track"; return 1; }
     [ -n "$files" ] || continue
     while IFS= read -r f; do
       trainee_file_ok "$repo" "$f" "$manifests" || { echo "it names $f, which is no markdown file, nor a shell or bats file outside a cargo or npm tree"; return 1; }
@@ -3515,12 +3555,14 @@ trainee_diff_why() {
 }
 
 # row_paths <text> <repo> -> the files and directories a row names, one a line: each word with a slash
-# or a file extension (no URL, no #tag, no id comment, no <placeholder> or glob), and each bare word that is a .local/bin command
-# the repo tracks. A leading ~/ or ./ and trailing punctuation go.
+# or a file extension (no URL, no #tag, one in brackets or quotes too, no id comment, no <placeholder> or glob, no word of digits
+# and punctuation such as 0/5 or 11-20/21), and each bare word that is a .local/bin command the repo tracks.
+# A leading ~/ or ./, trailing punctuation and a :line, :line-line or :line:col suffix go, so
+# fleet-sessions:1751 names its file (ar-5747).
 row_paths() {
   local words cmds
-  words=$(sed -E 's/<!--[^>]*-->//g; s/(^|[[:space:]])#[A-Za-z0-9_/:.-]+//g' <<<"$1" | tr -s ' \t`"'"'"'(),;[]' '\n' |
-    sed -E 's#^~/##; s#^\./##; s/[.:]+$//; s#/+$##' | grep -vE '^[a-z]+://|[<>*{}$]' | grep . | sort -u)
+  words=$(sed -E 's/<!--[^>]*-->//g; s/(^|[[:space:](\[`"'"'"'])#[A-Za-z0-9_/:.-]+/\1/g' <<<"$1" | tr -s ' \t`"'"'"'(),;[]' '\n' |
+    sed -E 's#^~/##; s#^\./##; s/[.:]+$//; s/(:[0-9]+(-[0-9]+)?)+$//; s#/+$##' | grep -vE '^[a-z]+://|[<>*{}$]|^[0-9/.:-]*$' | sort -u)
   cmds=$(git -C "$2" ls-files -- '.local/bin/*' 2>/dev/null | sed 's#.*/##')
   grep -E '/|\.[A-Za-z0-9]+$' <<<"$words"
   [ -z "$cmds" ] || grep -vE '/|\.[A-Za-z0-9]+$' <<<"$words" | grep -xFf <(echo "$cmds") | sed 's#^#.local/bin/#'
@@ -4890,7 +4932,7 @@ wound_down() { compgen -G "$HOME/.agent/spin-down/$1.[rf]*" >/dev/null || compge
 # meanwhile stays owed. Each reopened pane is tagged @fleet_restored with the record's time, when its
 # server was last seen alive, so fleet-sessions runs its close timer on from the quiet it had then.
 restore_world() {
-  local f=$1 dry=$2 srv sess win cwd id mode project item it prompt said failed=0 opened=0 owed=0 walked alive
+  local f=$1 dry=$2 srv sess win cwd id mode project item it prompt said out gone failed=0 opened=0 owed=0 walked alive
   walked=$(sha256sum < "$f")
   srv=$(jq -r .server "$f")
   alive=$(date -d "$(jq -r '.at // empty' "$f")" +%s 2>/dev/null) || alive=
@@ -4899,7 +4941,7 @@ restore_world() {
     if [ -z "$id" ]; then echo "$srv:$sess:$win: no conversation, not reopened ($cwd)"; continue; fi
     if wound_down "$id"; then echo "$srv:$sess:$win: wound down on purpose, skipped"; continue; fi
     if claude_pid_live "$id"; then echo "$srv:$sess:$win: already running, skipped"; continue; fi
-    if [ ! -d "$cwd" ]; then echo "$srv:$sess:$win: $cwd is gone, skipped (claude --resume $id)"; continue; fi
+    gone=''; [ -d "$cwd" ] || gone=1
     item=$(agent-queue mine --sid "$id" --newest 2>/dev/null) || item=''
     it=''; [ -z "$item" ] || it=$(agent-queue show "$item" --json 2>/dev/null) || it=''
     mode=$(resume_mode "$id" "$(jq -r '.mode // empty' <<<"$it" 2>/dev/null)")
@@ -4907,15 +4949,25 @@ restore_world() {
     if [ "$(jq -r '[.state, .agent // "claude"] | join(" ")' <<<"$it" 2>/dev/null)" = 'running claude' ]; then
       prompt=${RESTORE_PROMPT//\%s/$item}; said=', prompted to carry on'
     fi
-    if [ "$dry" = 1 ]; then echo "$srv:$sess:$win: would reopen $id in $cwd ($mode)${item:+ for queue item $item}$said${prompt:+, in a wake batch}"; continue; fi
+    if [ "$dry" = 1 ]; then echo "$srv:$sess:$win: would reopen $id in $cwd${gone:+ (gone: wt revive is tried first)} ($mode)${item:+ for queue item $item}$said${prompt:+, in a wake batch}"; continue; fi
     # A prompted reopen is a wake: it reruns the session's gate, suite or Unity run. It waits on the
     # lost record for a batch (wake_take) and comes back with its prompt then, never at an empty one
     # nobody nudges.
     if [ -n "$prompt" ] && ! wake_take restore "$id"; then
       echo "$srv:$sess:$win: waits for a wake batch${item:+ (queue item $item)}"; RESTORE_OWED+=("$id"); owed=$((owed + 1)); continue
     fi
+    # A reaped worktree is put back first (wt revive, as agent-ask reopen does): claude --resume finds the
+    # conversation by the directory it ran in. Only once its wake batch is due, so an owed pane's tree is not
+    # cut early. A folder wt cannot put back (or one it puts back without this subdirectory) is listed, not reopened.
+    if [ -n "$gone" ]; then
+      if ! out=$(wt revive "$cwd" --branch "$("$HERE/sessions" _branch "$id")" </dev/null 2>&1); then
+        echo "$srv:$sess:$win: $cwd is gone and wt could not put it back (${out##*$'\n'}), skipped (claude --resume $id)"; continue
+      fi
+      echo "$srv:$sess:$win: ${out##*$'\n'}"
+      [ -d "$cwd" ] || { echo "$srv:$sess:$win: wt put the tree back but $cwd is not in it, skipped (claude --resume $id)"; continue; }
+    fi
     project=$(resolve_project_name "$cwd")
-    if cmd_start --project "${project:-${cwd##*/}}" --server "$srv" --session "$sess" --window "$win" \
+    if cmd_start --project "$project" --server "$srv" --session "$sess" --window "$win" \
         --cwd "$cwd" --resume "$id" ${item:+--item "$item"} ${prompt:+--prompt "$prompt"} </dev/null >/dev/null; then
       echo "$srv:$sess:$win: reopened in $mode${item:+ for queue item $item}$said"; opened=$((opened + 1))
       # Its claude is new but its conversation is not: fleet-sessions adds the quiet it had when the
@@ -4947,40 +4999,86 @@ restore_world() {
 # first, so a death the minute timer has not seen yet counts, and a server already restarted by
 # hand is not missed. The wakes are paced (restore_pace): the rest wake from the minute record.
 cmd_restore() {
-  local server='' dry=0 here='' rc=0
+  local server='' dry=0 here='' defer='' rc=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --server) [ $# -ge 2 ] || { say "restore: --server needs a value"; return 2; }; server=$2; shift 2 ;;
       --dry-run) dry=1; shift ;;
       --here) here=1; shift ;;
+      --defer) defer=1; shift ;;
       *) say "restore: unknown argument: $1"; return 2 ;;
     esac
   done
+  if [ -n "$defer" ] && { [ -n "$server" ] || [ "$dry" = 1 ]; }; then
+    say "restore: --defer hands over the walk of every lost server and walks nothing, so it takes no --server or --dry-run"; return 2
+  fi
   record_here
-  # One walk at a time, so a hand restore and the minute's next batch never reopen one conversation twice.
-  exec 6>"$PANES/.restore.lock"
-  flock 6 || return 1
-  # 6>&-: the walk runs with the lock fd closed (bash keeps its saved copy close-on-exec), so nothing
-  # it starts, a tmux server, a claude or a notify, holds the lock once the walk ends.
-  restore_here "$dry" "$server" 6>&- || rc=1
-  exec 6>&-
+  if [ -n "$defer" ]; then
+    restore_defer || rc=1
+  else
+    # One walk at a time, so a hand restore and the minute's next batch never reopen one conversation twice.
+    exec 6>"$PANES/.restore.lock"
+    flock 6 || return 1
+    # 6>&-: the walk runs with the lock fd closed (bash keeps its saved copy close-on-exec), so nothing
+    # it starts, a tmux server, a claude or a notify, holds the lock once the walk ends.
+    restore_here "$dry" "$server" 6>&- || rc=1
+    exec 6>&-
+  fi
   local wargs=(); [ -z "$server" ] || wargs+=(--server "$server"); [ "$dry" = 0 ] || wargs+=(--dry-run)
+  [ -z "$defer" ] || wargs+=(--defer)
   if [ -z "$here" ] && fans_out; then on_workers restore "${wargs[@]}" || rc=1; fi
   return "$rc"
+}
+
+# restore_defer -- hand this machine's walk to fleet-restore.service and return at once. The owed
+# marker goes first, so a walk the unit's own start timeout cuts short is walked again by the minute
+# record (restore_tick), and the walk's restore_pace clears it once nothing is owed. session-snapshot
+# up runs it at boot: a walk inside up's unit reopened 12 of 23 conversations in its 600s start, was
+# killed and left dispatch held and agentctl paused (2026-11-19, ar-3601). While the walk runs, gate
+# reads closed (restore_walking), so no pass starts new work beside what it reopens.
+restore_defer() {
+  local f n=0 c records=0
+  for f in "$PANES"/*.lost.json; do
+    [ -r "$f" ] || continue
+    records=$((records + 1))
+    c=$(jq '[.panes[]? | select(.claude != "")] | length' "$f" 2>/dev/null) || c=0
+    n=$((n + c))
+  done
+  [ "$records" -gt 0 ] || { echo "restore: no lost server on record"; return 0; }
+  printf '%s\n' "$n" > "$RESTORE_OWED_FILE"
+  systemctl --user start --no-block fleet-restore.service ||
+    { echo "restore: could not start fleet-restore.service; $n conversation(s) still wait (fleet-dispatch restore)"; return 1; }
+  echo "restore: handed $n conversation(s) on $records lost record(s) to fleet-restore.service"
+}
+
+# restore_walking -> rc 0 while a restore walk (fleet-restore.service, a oneshot: activating until it
+# exits) runs on this machine, or a start of it is queued (restore_defer's --no-block start returns
+# before the unit leaves inactive). Read from systemd, so a walk that dies holds nothing.
+restore_walking() {
+  [ "$(systemctl --user show fleet-restore.service -p ActiveState --value 2>/dev/null)" = activating ] ||
+    [ -n "$(systemctl --user show fleet-restore.service -p Job --value 2>/dev/null)" ]
 }
 
 # restore_here <dry run 0|1> [<server>] -- walk this machine's lost records (that server's alone when
 # named), then pace what they still owe (restore_pace). The caller holds the restore lock.
 restore_here() {
-  local dry=$1 server=${2:-} f rc=0 found=0
-  RESTORE_OWED=()
+  local dry=$1 server=${2:-} f rc=0 found=0 left
+  RESTORE_OWED=() RESTORE_WALKED=()
   for f in "$PANES"/${server:-*}.lost.json; do
     [ -r "$f" ] || continue
-    found=1
+    found=1; RESTORE_WALKED+=("$f")
     restore_world "$f" "$dry" || rc=1
   done
   [ "$found" = 1 ] || echo "restore: no lost server on record"
   [ "$dry" = 1 ] || restore_pace "$server"
+  # A walk in fleet-restore.service (the boot hand-over or a batch) has nobody reading its output, so a
+  # failed reopen pages once. Not retried each minute: the same start would fail again.
+  if [ "$dry" = 0 ] && [ "$rc" = 1 ] && [ -n "${FLEET_RESTORE_PAGE:-}" ]; then
+    left=$(jq -s '[.[].panes[]? | select(.claude != "")] | length' "$PANES"/*.lost.json 2>/dev/null) || left='?'
+    agent-notify -p normal -t "restore: a reopen failed on $(hostname -s)" \
+      "${left:-?} conversation(s) are still on lost pane records. Reopen them: fleet-dispatch restore (journalctl --user -u fleet-restore says why)" ||
+      say "restore: could not page the failed reopen"
+  fi
   return "$rc"
 }
 
@@ -5007,6 +5105,9 @@ restore_pace() {
     fi
     printf '%s\n' "$owed" > "$RESTORE_OWED_FILE"
     echo "restore: $owed wait for a wake batch of at most $WAKE_BUDGET; the minute record wakes the next on CLEAR"
+  elif [ -z "${1:-}" ] && unwalked_lost; then
+    # A lost record this walk never read (restore_defer handed it over while the walk ran) is still owed.
+    printf '%s\n' 0 > "$RESTORE_OWED_FILE"
   elif [ -z "${1:-}" ]; then
     rm -f "$RESTORE_OWED_FILE"
     if [ "$(sed -n 's/^by: //p' <<<"$hold")" = "$RESTORE_BY" ]; then
@@ -5014,6 +5115,17 @@ restore_pace() {
     fi
   fi
   return 0
+}
+
+# unwalked_lost -> rc 0 when a lost record exists that this walk (RESTORE_WALKED) did not read.
+unwalked_lost() {
+  local f w
+  for f in "$PANES"/*.lost.json; do
+    [ -e "$f" ] || continue
+    for w in "${RESTORE_WALKED[@]}"; do [ "$w" != "$f" ] || continue 2; done
+    return 0
+  done
+  return 1
 }
 
 # restore_tick -- the minute record's half of a paced restore: while a walk left wakes owed and the
@@ -5185,7 +5297,7 @@ item_brief() {
     no_human "$slug"
     return
   fi
-  ask_rule
+  ask_rule "$key"
 }
 
 # plan_stage <slug> <tags> -- what a headless plan item does first: write the plan, post it as an
@@ -5304,14 +5416,20 @@ land_brief() {
   if headless "$2"; then no_human "$slug"; else echo "If the verdict is the human's call (a product decision, or a repo that needs their approval to merge), file it with agent-ask post (options land and close, your recommendation in --recommend) and end: the item waits on the answer."; fi
 }
 
-# ask_rule -- a question blocks only the step that needs it. Reap moves the item to waiting/ once the
-# session stops with its ask pending, so the session never moves it itself.
+# ask_rule [<row>] -- a question blocks only the step that needs it. Reap (settle_item) returns a
+# session's item to its board row behind the ask once the session is gone, so the session never moves it
+# itself; an item with no row fails there, so with no <row> the window stays open. With a row the session
+# ends with /wind-down auto, whose teardown reopens it on the answer (agent-ask reopen-on-answer).
 # no_human <slug> -- the same for a headless harness, whose run ends when it stops: the item goes back
 # in the queue behind the ask, and the answer starts it again with the decision in its brief.
 no_human() { echo "If a step needs a decision from the human, file it with agent-ask post (your recommendation in --recommend), run agent-queue requeue $1 --ask <id>, and stop: the answer starts this item again. Nobody watches this run, and one that stops with its item still running counts as failed."; }
 
 ask_rule() {
-  echo "If a step needs a decision from the human, only that step is blocked, not the task: ask it here and file it with agent-ask post (your recommendation in --recommend), build the rest with that step switched off, and end your turn on the question only when nothing else is left, leaving this window open."
+  local rule="If a step needs a decision from the human, only that step is blocked, not the task: ask it here and file it with agent-ask post (your recommendation in --recommend), build the rest with that step switched off, and "
+  if [ -n "${1:-}" ]; then
+    rule+="once the ask is all that is left, run /wind-down auto: the teardown sets the ask to reopen this conversation on the answer. If wind-down will not close, end your turn on the question and leave this window open."
+  else rule+="end your turn on the question only when nothing else is left, leaving this window open."; fi
+  echo "$rule"
 }
 
 # proof_brief <slug> <kind> <item_row> <project> <harness> -- how a proof kind (kinds.json `exit`:
@@ -5327,7 +5445,7 @@ proof_brief() {
   echo "This is agent-queue item $slug${key:+, promoted from the board row \"$key\"}, a $kind row: it ends on live proof, never a PR or agent-land."
   headless "$5" || wd='; then /wind-down auto'
   echo "Close in one turn: agent-queue set $slug note=\"<proof>\"${key:+; notes$pf ptask $project$flag done \"$key\" --proof \"<proof>\"}; agent-queue move $slug done --status ok$wd."
-  if headless "$5"; then no_human "$slug"; else ask_rule; fi
+  if headless "$5"; then no_human "$slug"; else ask_rule "$key"; fi
 }
 
 # doc_ask_brief <slug> <kind> <item_row> <project> -- how a doc+ask kind (kinds.json `exit`, the
@@ -7850,9 +7968,11 @@ cmd_starved() {
     echo "board rows gated on what can never clear: (notes ptask <project> --agent tag --remove <gate> <id>, plus --add the gate that replaced it, or drop the row)"
     sed 's/^/  /' <<<"$dead"
   fi
+  # A dry trainee pool is named but does not trip: only the board's supply clears it, and an idle free
+  # key costs nothing (ask 0BQraJ, 2026-11-27: it re-tripped six times from 11-24 with nothing to fix, ar-5747).
   dry=$(trainee_dry "$cut")
   [ -z "$dry" ] || echo "$dry"
-  side=$dead$dry
+  side=$dead
   # A run start in the window proves the passes move the queue, which clears the high items they work
   # through in order. It does not clear an urgent item they passed over: that one sits first in the
   # order, so a pass that started others and not it is held by something specific to it (2026-11-10:
@@ -7932,7 +8052,7 @@ cmd_starved() {
 
 # trainee_dry <cut epoch> -> one line per harness dry since before <cut>: it had a slot and found no
 # queued or board row it takes on every pass since (TRAINEE_DRY, trainee_dry_mark), so its free key
-# sit idle. A dry pool is a supply fault no run start clears, so starved reports it beside the dead holds.
+# sit idle. A dry pool is a supply level no run start clears: starved prints it beside the dead holds, and it trips nothing.
 trainee_dry() {
   local h since
   [ -s "$TRAINEE_DRY" ] || return 0
@@ -8197,7 +8317,10 @@ last_run_start() {
 # run, redispatch) sets running, and a session moving itself (to review, say) is not an undo;
 # the agent board's open rows (`notes board --json` totals: board_agent the agent board (Today),
 # board_backlog the agent rows still carrying the retired backlog token, counted in neither), left out when the board
-# is unreadable, so the chip reads - and never 0; held_s, how long a
+# is unreadable, so the chip reads - and never 0; sprints, from the same read, one object per open
+# (not queued) sprint: project, version, size (committed), rows_in (the unstarted agent rows it does
+# not hold, which dispatch ranks as its own), rows_out (done), opened, due and days_left (due minus
+# the board's today, negative once overdue, null with no due day), left out with the totals; held_s, how long a
 # hold has stopped the passes (0 with none, so the series never goes stale; its words are `stopped`'s).
 # The starved verdict is not here: the queue-starved watch publishes it (watch/queue_starved), and
 # recomputing it here made stats take 18s of the publisher's lock (ar-2310).
@@ -8208,8 +8331,16 @@ cmd_stats() {
   [ -n "$(find "$HEADROOM" -mmin -45 2>/dev/null)" ] && hr=$(jq -c . "$HEADROOM" 2>/dev/null) || hr=null
   q=$(runnable) || { echo '{"error":"agent-queue unreadable"}'; return 1; }
   aq=$(agent-queue stats --json --since "$(date -d yesterday +%F)" 2>/dev/null) && jq -e .active <<<"$aq" >/dev/null 2>&1 || aq=null
-  board=$(notes board --json 2>/dev/null | jq -c '.totals | select(.open != null)
-    | {board_agent: .agent, board_backlog: .backlog}' 2>/dev/null)
+  board=$(notes board --json 2>/dev/null | jq -c 'select(.totals.open != null)
+    | def day: strptime("%Y-%m-%d") | mktime;
+      (try (.today | day) catch null) as $today
+      | {board_agent: .totals.agent, board_backlog: .totals.backlog}
+      + (if (.sprints | type) == "array" then
+          {sprints: [.sprints[] | select(.queued != true) | . as $s
+            | {project: $s.project, version: $s.version, size: $s.committed, rows_in: ($s.uncommitted | length),
+               rows_out: $s.done, opened: $s.opened, due: $s.due,
+               days_left: (try (if $s.due == null then null else (($s.due | day) - $today) / 86400 end) catch null)}]}
+         else {} end)' 2>/dev/null)
   load_focus
   read -r held_since _ < <(held_state)
   started=$(last_run_start); [ -z "$started" ] || started=$(date -d "$started" +%s 2>/dev/null)
@@ -8303,6 +8434,31 @@ store_fresh() {
     fi
   fi
   [ "$REAP_FRESH" = yes ]
+}
+
+# board_fresh -- the board and queue this machine reads hold origin as of now, once a process: a fill reads
+# the board to promote a row, so a clone behind origin promotes a row another host just gated (#at/) or
+# started, and the item it makes has none of the gate (ar-5954: five reaps on one host said their store could
+# not be brought up to origin, and its fill a minute later promoted a row gated #at/ a week out). Both
+# stores: ~/.agent holds the queue, ~/.notes the board. A full sync, never `--now`: with nothing dirty and
+# the local origin ref at HEAD, `--now` exits at once with no fetch and no COMPLETE line, so it proves
+# nothing. The two run side by side, each bounded by WORKER_PULL_SECS. The check, not store-sync's exit
+# code, is the verdict (store_fresh): a SKIP or BACKUP exits 0.
+board_fresh() {
+  if [ -z "${BOARD_FRESH:-}" ]; then
+    local pa pn ok=1
+    timeout "$WORKER_PULL_SECS" store-sync </dev/null >/dev/null 2>&1 & pa=$!
+    timeout "$WORKER_PULL_SECS" store-sync --store notes </dev/null >/dev/null 2>&1 & pn=$!
+    wait "$pa" || ok=0
+    wait "$pn" || ok=0
+    if [ "$ok" = 1 ] && store-sync-age --notes --max-min 2 </dev/null >/dev/null 2>&1; then
+      BOARD_FRESH=yes
+    else
+      BOARD_FRESH=no
+      logline "fill held: this store could not be brought up to origin, so its board may be behind"
+    fi
+  fi
+  [ "$BOARD_FRESH" = yes ]
 }
 
 # cmd_reap -- reap_once under $DIR/.reap, so one reap runs at a time: a pass reaps under its own lock,
@@ -8979,6 +9135,9 @@ gate() {
   # A hold names who set it and why ("by <who>: <reason>"), which the Stopped line shows.
   hold=$(agent-hold check dispatch 2>/dev/null) ||
     { hold=$(sed -nE '1s/^held: [^ ]+ since [^ ]+ //p' <<<"$hold"); echo "held (agent-hold dispatch)${hold:+ $hold}"; return; }
+  # A restore walk is reopening sessions: like a hold, nothing else matters until it ends. session-snapshot
+  # up releases its dispatch hold once it hands the walk over (restore_defer), so this keeps its order.
+  ! restore_walking || { echo "a restore walk is reopening sessions (fleet-restore.service; systemctl --user stop fleet-restore.service ends it)"; return; }
   if [ "${TRAINEE_GATE:-0}" = 0 ]; then
     # The verdict's own words say which account is short and why (ACCT_WHY); keep them.
     acct_room; rc=$?
@@ -9308,7 +9467,7 @@ cmd_run() {
   local let_go; let_go=$(share_let_go "$only" "$FILLED") || return 0
   # Past the gates already: what fill promoted starts now, through the same start as any item.
   items=$(next_items --points)
-  [ -n "$items" ] || { settle_board NOOP "no row qualifies this pass"; return 0; }
+  [ -n "$items" ] || { settle_board NOOP "no row qualifies this pass${FILL_HELD:+; the fill held: $FILL_HELD}"; return 0; }
   SHARE_LET_GO=$let_go start_items "$(pass_order "$items")" "$room"   # the one unfiltered start the project share cap may let go in
 }
 
@@ -9401,7 +9560,10 @@ fill_day() {
   [[ " ${2:-} " != *" sprint "* ]] || SPRINT_ONLY=1
   local ASK_ONLY=${ASK_ONLY:-}
   [[ " ${2:-} " != *" ask "* ]] || ASK_ONLY=1
-  FILLED=0
+  FILLED=0 FILL_HELD=''
+  # A real fill reads a board brought up to origin first; a dry run names what the board says. The human's fresh
+  # asks (the `ask` floor) run now and never wait on a sync; promote still reads the gates on their row's own line.
+  [ "$DRY" = 1 ] || [[ " ${2:-} " == *" ask "* ]] || board_fresh || { FILL_HELD="this store could not be brought up to origin, so no row is promoted from a board that may be behind"; say "fill: $FILL_HELD"; return 0; }
   # Committed rows alone want no judge: a gated row is never judged (unjudged_rows).
   load_pool_idle   # once, before the judge's and the picks' subshells
   [ "${2:-}" = gated ] || judge_once || return 1
@@ -9582,10 +9744,13 @@ take_epic() {
   return 0
 }
 
-# row_restart <project> <started row line> -> "<id> <status>" when the row's own item (slug <id>, as promote
+# row_restart <project> <started row line> [repeat] -> "<id> <status>" when the row's own item (slug <id>, as promote
 # files it) closed cancelled or failed and no live item works the row: cmd_start then files a fresh item
-# under <id>, and the session's AGENT_QUEUE_ITEM names that open item. Else rc 1 with why, naming the
-# item: a live one is the start to make, an ok one is the orphan pass's to close. A row with no id or no
+# under <id>, and the session's AGENT_QUEUE_ITEM names that open item. A repeat start (cmd_promote
+# --restart: triage's retry of a red) also takes an item that closed ok with no PR, new work under its
+# slug (ar-4654: such a red row sat started with no owner until the orphan pass's 72h). Else rc 1 with
+# why, naming the item: a live one is the start to make, an ok one with a PR is the orphan pass's to close
+# on its merge (land_orphan), an ok one without a repeat cannot be added again. A row with no id or no
 # item was started by hand, and the refusal stays promote's own. A queue that cannot be read refuses:
 # read as empty, it would file a second item beside a live one.
 row_restart() {
@@ -9601,6 +9766,8 @@ row_restart() {
   [ -z "$live" ] || { echo "row $id is started, its queue item $id is $st, and queue item $live works it: fleet-dispatch start --item $live"; return 1; }
   case "$st" in
     "done cancelled" | "done failed") echo "$id ${st#done }" ;;
+    "done ok") [ -n "${3-}" ] && [ -z "$(jq -r '.pr // empty' <<<"$it")" ] && echo "$id ok" ||
+      { echo "row $id is started and its queue item $id is $st, so no fresh item is filed"; return 1; } ;;
     *) echo "row $id is started and its queue item $id is $st, so no fresh item is filed"; return 1 ;;
   esac
 }
@@ -9615,10 +9782,12 @@ row_restart() {
 # hold or dead gate still refuses. The cleared ones go onto the item as its queue tags (an ask: one is what ask_decisions
 # reads), all but a time of day, which would hold the item again the next morning; once the item is
 # queued their hashtags come off the row. A hand start (PROMOTE_RESTART, cmd_start alone) also takes a row
-# left started by its own item that closed cancelled or failed (row_restart), filing a fresh item, never claiming it again.
+# left started by its own item that closed cancelled or failed (row_restart), filing a fresh item, never claiming it again;
+# so does promote --restart (triage), of one whose item closed ok with no PR too (ar-4654), but never a plan
+# row's: its add --plan --repeat would re-queue the phases that landed.
 promote() {
   local c="$1" tags="$2" task="$3" repeat="${4-}" qmode="${5-}" prof project lane key area line out id slug flag=() rc=0
-  local g q gwait gates=() rm=() stacks=''
+  local g q gwait gates=() rm=() stacks='' htags=()
   prof=$(jq -r .profile <<<"$c"); project=$(jq -r .project <<<"$c"); lane=$(jq -r .lane <<<"$c")
   key=$(jq -r .key <<<"$c"); area=$(jq -r '.area // empty' <<<"$c")
   [ "$lane" = agent ] && flag=(--agent)
@@ -9628,13 +9797,13 @@ promote() {
   # failed, before reap's settle_row hands it back, files a fresh item for it (ar-5932).
   local restart='' closed=''
   if [[ "$line" != '- [ ]'* ]]; then
-    [ -n "${PROMOTE_RESTART:-}" ] && [[ "$line" == '- [/]'* ]] && restart=$(row_restart "$project" "$line") ||
+    [ -n "${PROMOTE_RESTART:-}" ] && [[ "$line" == '- [/]'* ]] && restart=$(row_restart "$project" "$line" "$repeat") ||
       { say "skip $project: ${restart:-row no longer open: $key}"; return 1; }
     read -r restart closed <<<"$restart"
   fi
-  load_gates
-  [ -z "$GATES_FAILED" ] || { say "skip $project: $GATES_FAILED, so its gates cannot be read: $key"; return 1; }
-  for g in $(grep -oE '(^|[[:space:]])#[A-Za-z0-9_./-]+' <<<"${line%%<!--*}" | sed 's/^[[:space:]]*#//'); do
+  mapfile -t htags < <(grep -oE '(^|[[:space:]])#[A-Za-z0-9_./-]+' <<<"${line%%<!--*}" | sed 's/^[[:space:]]*#//')
+  gates_reread "${htags[@]}" || { say "skip $project: $GATE_ERR, so its gates cannot be read: $key"; return 1; }
+  for g in "${htags[@]}"; do
     # A returned hold:'s desk class rides as #desk/<class> (agent-queue pending_gates): back on the item, off the row.
     case "$g" in desk/?*) tags="${tags:+$tags }desk:${g#desk/}" rm+=(--remove "$g"); continue ;; esac
     [ -z "${GATE_ST[$g]+x}" ] || gates+=("$g")
@@ -9714,6 +9883,7 @@ promote() {
   [ -n "$qmode" ] || plan=$(plan_row_plan "$brief") || plan=''
   # A plan row whose plan is gone is refused by name, never queued as one session for every phase.
   [ -z "$plan" ] || [ -f "$plan" ] || gone="agent-queue: its plan $plan is gone, so its phases cannot be queued"
+  [ -z "$plan" ] || [ "$closed" != ok ] || { say "skip $project: $key is a plan row whose item $id closed ok, so it is not restarted"; return 1; }
   # AGENT_QUEUE_START=0 for every caller: add starts only a plan item itself, and each caller of
   # promote starts what it promoted (cmd_start) or leaves it queued for a pass, so add never must.
   if [ -n "$gone" ]; then
@@ -9766,17 +9936,20 @@ promote() {
   echo "queued $project: $id"
 }
 
-# cmd_promote --project P [--profile X] [--agent] [--dispatch] [--model M] [--tags T] --raw LINE -- queue one row as the
+# cmd_promote --project P [--profile X] [--agent] [--dispatch] [--restart] [--model M] [--tags T] --raw LINE -- queue one row as the
 # human saw it: the Board tab's Start. A row that changed since, or is already started, is refused. No load
 # gate: the item starts like any board item (a row gate not yet clear refuses it, promote). --dispatch is a
 # machine caller's pull, capped like dispatch's own (fleet-bench triage's reds, which as a hand start went
 # past the cap with no make_room); without it a caller with no queue item is the human's hand start.
 # --model pins the item's model (claude_pin), as triage pins its escalation of a red to Opus.
+# --restart also takes a started row its own closed item left with no live one (row_restart): triage's
+# retry of a red whose last fix closed with no merge.
 cmd_promote() {
-  local project='' prof='' lane=human raw='' tags='' board key PROMOTE_MODEL=''   # promote() reads it; local, so it holds for this call alone
+  local project='' prof='' lane=human raw='' tags='' board key PROMOTE_MODEL='' PROMOTE_RESTART=''   # promote() reads them; local, so they hold for this call alone
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent) lane=agent; shift; continue ;;
+      --restart) PROMOTE_RESTART=1; shift; continue ;;
       --dispatch) PULL=dispatch; shift; continue ;;
       --project | --profile | --raw | --tags | --model) [ $# -ge 2 ] || { say "promote: $1 needs a value"; return 2; } ;;
       *) say "promote: unknown argument: $1"; return 2 ;;

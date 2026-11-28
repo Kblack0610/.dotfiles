@@ -5,12 +5,12 @@ ConditionPathExists=%h/.agent/maintenance
 
 [Service]
 Type=oneshot
-# The tmux servers restore starts live in this unit's cgroup (tmux 3.8 scopes its panes, not its
-# server), so the default control-group kill would end every reopened session when up exits.
-KillMode=process
-# A boot under linger has no login PATH, and up calls tmx, agent-panel and claude by name.
+# up reopens nothing here: it hands the walk to fleet-restore.service (`fleet-dispatch restore
+# --defer`), undoes its levers and exits in seconds, so a long walk no longer runs into this unit's
+# start timeout with dispatch and agentctl still held (2026-11-19: killed after 12 of 23, ar-3601).
+# A boot under linger has no login PATH, and up calls agent-hold, agentctl and fleet-dispatch by name.
 Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin
-# The restore runs about 10s into boot, and claude-telemetry.sh turns the OTel export on only when
+# The walk up hands over starts about 10s into boot, and claude-telemetry.sh turns the OTel export on only when
 # hp-victus resolves, so a session reopened before the network is up exports nothing all its life
 # (2026-11-13: the two reopened at 01:17:04-06 had no endpoint, all from 01:17:08 on had it). A user unit cannot
 # order After=network-online.target, which is a system unit the user manager does not load, so wait

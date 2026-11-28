@@ -219,13 +219,16 @@ BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 #                <item: the queue item this session worked, by its sessions: or session:, as
 #                 own:<slug>[,<slug>...] while one runs here, moved:<slug> (<where>) once it is done,
 #                 requeued or running in another session, here:<slug> waiting here,
-#                 review:<slug> pr <n|-> parked here in review (<n>, the item's PR, is handed off), or ->
+#                 review:<slug> pr <n|-> parked here in review (<n>, the item's PR, is handed off),
+#                 handed:<slug> pr <n> when another open item names the open PR in its pr: (handed_item), or ->
 #                [<landing wait: "train #T", the open landing train the OPEN PR rides (train_of), "the landing queue" (queued_in),
 #                 "slot holder #H", the PR whose slot refused it (slot_refuser), "lapsed train #T" when nothing lands
 #                 that train (train_landing), the item's validate wait or "failed <validate slug>" (validate_hold), or ->]
 #                [<cron: yes when a recurring cron the session scheduled is still live (wake_facts), or ->]
 #                [<merged PRs: work_blockers' 23rd, - here>]
-#                [<carried: the live items its own running items filed (carried_by), comma-separated, or ->]
+#                [<carried: the live items its own running items filed (carried_by) and the open PRs they record (item_open_prs, "<repo>#<n>"), comma-separated, or ->]
+#                [<detached: an idle session's gate, test or queue process (detached_gate) runs detached: the session's next
+#                 wake-up (wake_facts' wake, not tied to the gate's end), none when it has none, or - when no such process runs>]
 #   -> "BUCKET reason"
 # <git> is 1 in a repo, 0 outside one, gone when the cwd itself no longer exists (a reaped worktree).
 # Who must act decides before whether the session is active: an ask waits on the human, and
@@ -252,7 +255,7 @@ session_bucket() {
   # ask keeps one definition of working.
   if [ "$3" -gt 0 ]; then
     case "$(session_bucket "$1" "$2" 0 "${@:4}")" in
-      "WORKING busy"* | "WORKING shell"* | "WORKING subagent"*) echo "NEEDS $3 pending ask(s), carrying on" ;;
+      "WORKING busy"* | "WORKING shell"* | "WORKING subagent"* | "WORKING "*" running detached"*) echo "NEEDS $3 pending ask(s), carrying on" ;;
       *) echo "NEEDS $3 pending ask(s)" ;;
     esac
     return
@@ -277,6 +280,22 @@ session_bucket() {
       if [ "$job" = agent ] && [ "$5" -ge "$FLEET_IDLE_MIN" ]; then
         [ "$5" -lt "$FLEET_SHELL_STALE_MIN" ] && { echo "WORKING subagent running$cn"; return; }
         note=", subagent running over ${FLEET_SHELL_STALE_MIN}m"
+      fi
+      # A gate started with & runs on after its Bash call returned, so Claude reads idle (ar-1085). It waits as a gate
+      # shell does, and the reason says what wakes the session when the gate ends: nothing, unless it scheduled a wake-up.
+      if [ "${25:--}" != - ] && [ "$job" != agent ]; then
+        local what=gate wakes="nothing wakes the session when it ends"
+        [ "$job" != test ] || what=test
+        [ "${25}" = none ] || wakes="its next wake-up is ${25}"
+        if [ "$5" -ge "$FLEET_IDLE_MIN" ] && session_finished "$@"; then note=", detached $what still running"
+        elif [ "$5" -lt "$FLEET_SHELL_STALE_MIN" ] || [ "$job" = queue ]; then
+          # A wait the facts name (CI running, a train, the landing queue) says more than the process does.
+          case "$(bucket_facts "$@")" in
+            "WORKING idle "*) ;;
+            WORKING*) echo "$(bucket_facts "$@")$cn"; return ;;
+          esac
+          echo "WORKING $what running detached, $wakes$cn"; return
+        else note=", detached $what idle over ${FLEET_SHELL_STALE_MIN}m"; fi
       fi ;;
     shell)
       # A finished plan is not waiting on its shell: DONE tells it to stop the shell first.
@@ -330,8 +349,8 @@ proc_snapshot() {
   ls -l /proc/[0-9]*/cwd 2>/dev/null | sed -nE 's|^.* /proc/([0-9]+)/cwd -> (.*)$|\1\t\2|p' > "$1.cwd" || :   # ls fails on a process that exits mid-read, whatever it listed
 }
 
-# gate_log_idle <host|-> <status> <open job> <cwd> <idle min> [<transcript>] -> the idle minutes the bucket reads. For
-# a local session whose shell is a gate or test, the age of the newest FLEET_GATE_LOGS file under the worktree, or of
+# gate_log_idle <host|-> <status, or detached for an idle session whose gate runs detached> <open job> <cwd> <idle min>
+# [<transcript>] -> the idle minutes the bucket reads. For a local session whose shell (or detached process) is a gate or test, the age of the newest FLEET_GATE_LOGS file under the worktree, or of
 # an open background task's output file (open_outputs), when it is under <idle min>; otherwise <idle min>. A local
 # suite.sh gate prints into Logs/gate.txt while the transcript sees nothing (2026-11-04 agent-23 read "background
 # shell idle over 120m" with ~80 classes done), and a gate in the landing-slot wait prints a line a minute
@@ -340,7 +359,7 @@ proc_snapshot() {
 gate_log_idle() {
   local idle="$5" f m age root
   local -a logs=()
-  [ "$1" = - ] && [ "$2" = shell ] && { [ "$3" = gate ] || [ "$3" = test ]; } || { echo "$idle"; return; }
+  [ "$1" = - ] && { [ "$2" = shell ] || [ "$2" = detached ]; } && { [ "$3" = gate ] || [ "$3" = test ]; } || { echo "$idle"; return; }
   # The worktree root, so a session started in a subdirectory finds the same log; no glob expands.
   root="$(git -C "$4" rev-parse --show-toplevel 2>/dev/null)" || root="$4"
   read -ra logs <<<"$FLEET_GATE_LOGS"
@@ -459,10 +478,22 @@ watched_gate() {
   [ -z "$ended" ] || echo "$ended"
 }
 
+# time_use_argv_lines -> the conf's gate, test and build lines as JSON, each with the regex that wants its text at the start
+# of an argv (time_use_lines_json). Built once a pass into PROC_SNAP's cache dir: live_wait runs once a session. A conf with no
+# line is said on stderr once, and reads as `[]`.
+time_use_argv_lines() {
+  local f="${PROC_SNAP:+$PROC_SNAP.tu}" out
+  if [ -n "$f" ] && [ -s "$f" ]; then cat "$f"; return 0; fi
+  out="$(time_use_lines_json "$FLEET_TIME_USE_CONF" "$SO_TU_ARGV_START" 2>/dev/null)" && [ "$out" != '[]' ] \
+    || { echo "fleet-sessions: no gate, test or build line readable in $FLEET_TIME_USE_CONF; live_wait reads none" >&2; out='[]'; }
+  [ -z "$f" ] || printf '%s\n' "$out" > "$f"
+  printf '%s\n' "$out"
+}
+
 # live_wait <cwd> [<claude pid>]: queue when such a process is a FLEET_QUEUE_GATES one (a gate waiting for its
 # landing turn: WORKING past FLEET_SHELL_STALE_MIN, it ends itself), else gate, test or build when a process running in <cwd> (or below it), or
-# descended from the session's claude whatever its cwd, matches a `gate`, `test` or `build` line of
-# agent-panel's time-use.conf, else checkout for a live Git checkout or LFS transfer (git_checkout), else nothing. A background subagent's commands run in its own
+# descended from the session's claude whatever its cwd, runs a `gate`, `test` or `build` line of
+# agent-panel's time-use.conf (anchored at its argv, past wrappers), else checkout for a live Git checkout or LFS transfer (git_checkout), else nothing. A background subagent's commands run in its own
 # worktree and a gate script may cd elsewhere (2026-11-03 agent-49 read STALLED mid-gate on #1669),
 # but both stay children of the claude that started them. The transcript shows a gate detached
 # with & only as the until-loop watching its output file (2026-11-07 unity-core-playground-agent-30:
@@ -473,7 +504,7 @@ watched_gate() {
 # which names agent-land), and this pass's own ancestors. With no claude pid (an agent-panel row
 # without .pid) only the worktree is read.
 live_wait() {
-  local conf="$FLEET_TIME_USE_CONF" want kind text pid cmd
+  local conf="$FLEET_TIME_USE_CONF" want pid cmd
   local -a cmds=()
   while IFS=$'\t' read -r pid cmd; do [ -z "$pid" ] || cmds+=("$cmd"); done < <(wait_procs "$@")
   [ "${#cmds[@]}" -gt 0 ] || return 0
@@ -483,16 +514,31 @@ live_wait() {
     [ -n "$checkout" ] || ! git_checkout "$cmd" || checkout=checkout
   done
   if [ -r "$conf" ]; then
-    for want in gate test build; do
-      while read -r kind text; do
-        [ "$kind" = "$want" ] && [ -n "$text" ] || continue
-        for cmd in "${cmds[@]}"; do
-          case "$cmd" in *"$text"*) echo "$want"; return 0 ;; esac
-        done
-      done < "$conf"
-    done
+    # Each line's text must start the process's argv, past the wrappers (time_use_argv_lines, the rule the other readers
+    # share), so `vim x.bats` and `grep make test` are not a test run. gate beats test beats build whatever the line order.
+    want="$(printf '%s\n' "${cmds[@]}" | jq -nRr --argjson lines "$(time_use_argv_lines)" '
+      [inputs] as $cmds
+      | first(("gate", "test", "build") as $k | $lines[] | select(.kind == $k and (.re as $re | any($cmds[]; test($re)))) | $k) // empty')" \
+      || { echo "fleet-sessions: live_wait could not match $conf; it reads no wait" >&2; want=""; }
+    [ -z "$want" ] || { echo "$want"; return 0; }
   fi
   [ -z "$checkout" ] || echo "$checkout"
+}
+
+# detached_gate <host|-> <status> <idle min> <open job> <cwd> <claude pid> <target> <panel rows> -> gate, test or queue
+# (live_wait) when an idle local session past FLEET_IDLE_MIN runs one detached, else nothing. A gate started with &
+# outlives the Bash call that started it: the call returns, Claude reads idle, and ci-gate.sh still runs in the worktree,
+# so the shell probes never ran and the row read STALLED (unity-core-playground-agent-3, run 42525454189, ar-1085). The
+# detached process is reparented away from the claude, so only its cwd ties it to the session: a checkout that another
+# live row (<panel rows>, by cwd) shares, or $HOME, which holds every worktree, names nobody's gate.
+detached_gate() {
+  local top kind
+  [ "$1" = - ] && [ "$2" = idle ] && [ "$3" -ge "$FLEET_IDLE_MIN" ] && [ "$4" != agent ] && [ "$4" != human ] || return 0
+  top="$(git -C "$5" rev-parse --show-toplevel 2>/dev/null)" && [ "$top" != "$HOME" ] || return 0
+  jq -e --arg t "$7" --arg top "$top" 'select(.target != $t and ((.cwd // "") as $c
+    | $c == $top or ($c | startswith($top + "/")) or ($top | startswith($c + "/"))))' <<<"$8" >/dev/null 2>&1 && return 0
+  kind="$(live_wait "$5" "$6")"
+  case "$kind" in gate | test | queue) echo "$kind" ;; esac
 }
 
 # git_checkout <command line>: a live Git checkout, clone, submodule update or LFS transfer, which can
@@ -817,7 +863,8 @@ bucket_facts() {
       else plan_bucket "PR #$pr merged, tree clean" "$phases" "$next" 1 "$item" "$cron" "$carried"; fi ;;
     OPEN)
       if handed_off "$item" "$pr" "$dirty" "$inpr" "${17:--}"; then
-        local slug="${item#review:}"; slug="${slug%% *}"; local why="PR #$pr parked for review, its item $slug owns it"
+        local slug="${item#*:}"; slug="${slug%% *}"; local why="PR #$pr parked for review, its item $slug owns it"
+        [[ "$item" != handed:* ]] || why="PR #$pr handed to item $slug, which owns it"
         case "$phases" in
           -|none) echo "DONE $why" ;;
           missing) echo "STALLED $why, its plan file is missing" ;;
@@ -864,14 +911,43 @@ validate_failed_bucket() {
 # validate_failed_done <item> <dirty> <in_pr>: validate_failed_bucket reads DONE.
 validate_failed_done() { [[ "$1" == moved:* ]] && [ "$2" = 0 ] && [ "$3" = 1 ]; }
 
-# handed_off <item> <pr> <dirty> <in_pr> [<job>] -> exit 0 when this session's open PR is its parked
-# item's (item_of's "review:<slug> pr <n>", the item's own pr:) and nothing here is outside it: no
-# dirty file, HEAD inside the PR, and no live waiter (gate or queue) still running in the background.
-# fleet-dispatch's reap owns that PR once the session ends
-# (own_parked_pr gives a red one a fix-ci session and a green one a lander), so it is no longer the session's to finish.
+# handed_off <item> <pr> <dirty> <in_pr> [<job>] -> exit 0 when this session's open PR is another item's and
+# nothing here is outside it: no dirty file, HEAD inside the PR, and no live waiter (gate or queue) still
+# running in the background. The PR is its parked item's (item_of's "review:<slug> pr <n>", the item's own pr:),
+# which fleet-dispatch's reap owns once the session ends (own_parked_pr gives a red one a fix-ci session and a
+# green one a lander), or an open item's that names it in its pr: (pr_owner, collect's "handed:<slug> pr <n>"),
+# such as a re-gate item it was handed to. Either way it is no longer the session's to finish: agent-60 handed
+# red #3320 to ucp-3413 and read STALLED CI red, close --self keep, so it could never wind down (ar-5184).
 handed_off() {
-  [[ "$1" == review:*" pr "* ]] && [ "${1##* pr }" = "${2##*#}" ] && [ "$3" = 0 ] && [ "$4" = 1 ] \
+  [[ "$1" == review:*" pr "* || "$1" == handed:*" pr "* ]] && [ "${1##* pr }" = "${2##*#}" ] && [ "$3" = 0 ] && [ "$4" = 1 ] \
     && [ "${5:--}" != gate ] && [ "${5:--}" != queue ]
+}
+
+# handed_item <item_of's answer> <its relation> <pr state> <all items, jsonl> <clone|-> <sibling repo|-> <pr> <dirty>
+# <in_pr> <job> <session id> <server:tmux session> -> the item the bucket reads: handed:<slug> pr <n> when the PR is
+# open, the answer is - or moved:, pr_owner names an open item whose pr: lists it (a re-gate item it was handed to),
+# and handed_off passes on it, so the row reads the PR as that item's (ar-5184); else the answer, so a moved: one keeps
+# its relation everywhere the PR is still this session's (validate_failed_bucket, work_blockers).
+handed_item() {
+  local h=""
+  if [ "$3" = OPEN ] && { [ "$2" = - ] || [ "$2" = moved ]; }; then h="$(pr_owner "$4" "$5" "$6" "$7" "${11}" "${12}")"; fi
+  if [ -n "$h" ] && handed_off "handed:$h pr $7" "$7" "$8" "$9" "${10}"; then echo "handed:$h pr $7"; else echo "$1"; fi
+}
+
+# pr_owner <all items, jsonl> <clone|-> <sibling repo|-> <pr> [<session id> <server:tmux session>] -> the slug of the first
+# open item (queued, running, waiting or review) whose pr: lists <repo>#<pr>, else nothing. <repo> is the sibling repo of a
+# PR sibling_pr found, else the clone's origin, compared case-insensitively; a bare pr: number names no repo and so no PR
+# here. An item running, waiting or parked in this session (item_of's here rule: its session:, or its sessions: with no
+# session:) is this session's own even when item_of could not join it, so it owns nothing here.
+pr_owner() {
+  local repo="${3:--}"
+  [[ "${4:-}" =~ ^[0-9]+$ ]] || return 0
+  if [ "$repo" = - ]; then [ "${2:--}" != - ] && repo="$(origin_repo "$2")" || return 0; fi
+  jq -rn --arg p "${repo,,}#$4" --arg sid "${5:-}" --arg me "${6:-}" 'first(inputs
+    | select((.state // "") | test("^(queued|running|waiting|review)$"))
+    | select((.state == "queued") or ((((.session // "") == $me and $me != "")
+        or ((.session // "") == "" and $sid != "" and ((.sessions // "") | split(" ") | any(. == $sid)))) | not))
+    | select(.pr // "" | tostring | ascii_downcase | split(" ") | any(. == $p)) | .slug) // empty' <<<"$1" 2>/dev/null
 }
 
 # salvaged_here <qall> <slug> <dir> -> exit 0 when the item that moved on from this session carries this
@@ -1022,6 +1098,41 @@ carried_by() {
         and ((.ready // "") | fromdateiso8601? // 0) > now
         and ((.slug | sub("-close$"; "")) as $f | $own | contains("," + $f + ","))))
       | .slug] | unique | join(",")' <<<"$1" 2>/dev/null)"
+  printf '%s' "${out:--}"
+}
+
+# item_open_prs <all items, jsonl> <comma list of a session's own item slugs> -> the comma list of "<repo>#<n>" for each
+# PR recorded on one of those running items (`open_pr:`, which agent-land sets before its checks, or `pr:`) that is OPEN
+# in the PR store with CI not red. The PR rides another session's branch or a landing train's gate, so its owner lands it
+# and the item's idle session has nothing to do: carried like a filed item, never STALLED (ar-3580: ucp-671 PR #2506 on
+# agent-37's branch, in train #2919, read STALLED on agent-15). A red PR is nobody's landing, so the row stays STALLED.
+# The store is read with its checks and without store_refresh (no `sync-prs --wait`), once per repo per pass: a PR merged
+# since the last poll reads open for at most one poll. A repo the store cannot answer for carries nothing.
+item_open_prs() {
+  local refs repo f out=""
+  refs="$(jq -r --arg own ",$2," 'select(.state == "running" and (.slug // "") != "" and (.slug as $s | $own | contains("," + $s + ",")))
+      | ((.open_pr // "") + " " + (.pr // "" | tostring)) | split(" ")[] | select(test("^[^#]+#[0-9]+$"))' <<<"$1" 2>/dev/null | sort -u)"
+  [ -n "$refs" ] || { printf -- -; return; }
+  while IFS= read -r repo; do
+    f="$CACHE/prsci_${repo//\//_}.json"
+    [ -f "$f" ] || "$SCHEDULES_SYNC" prs "$repo" --checks 2>/dev/null | jq -c 'map({number, state, ci})' > "$f" 2>/dev/null
+    [ -s "$f" ] || continue
+    out+="$(jq -r --arg r "$repo" '.[] | select(.state == "OPEN" and (.ci // "") != "FAIL") | "\($r)#\(.number)"' "$f")"$'\n'
+  done < <(sed 's/#[0-9]*$//' <<<"$refs" | sort -u)
+  out="$(grep -xFf <(printf '%s\n' "$out") <<<"$refs" | paste -sd, -)"
+  printf '%s' "${out:--}"
+}
+
+# session_carried <all items, jsonl> <session id> <item_of's answer> <server:tmux session> <own item slugs> -> what carries
+# the session's own running items: the live items filed from them (carried_by) and the open PRs they record
+# (item_open_prs), one comma list, or -.
+session_carried() {
+  local out
+  out="$(carried_by "$1" "$2" "$3" "$4")"; out="${out#-}"
+  if [[ "$3" == own:* ]]; then
+    local prs; prs="$(item_open_prs "$1" "$5")"
+    [ "$prs" = - ] || out="${out:+$out,}$prs"
+  fi
   printf '%s' "${out:--}"
 }
 
@@ -1618,17 +1729,28 @@ critical_of() {
   printf '%s\t%s\n' "$crit" "$place"
 }
 
-# branch_runs <dir> <branch> -> <branch>'s main_runs in <dir>'s origin repo: gate_ci, main_health
+# ledger_repo <dir> -> the run ledger's key of the repo <dir> lands on (forge_of): `forgejo:owner/repo` for a clone
+# on a Forgejo host or a Forgejo-canonical one (home-config, whose origin is the GitHub mirror, which has no runs),
+# else origin's owner/repo. The ledger keys a Forgejo repo without its host (schedules-sync runs).
+ledger_repo() {
+  local f
+  f="$(forge_of "$1")"
+  if [ "$f" != origin ]; then printf 'forgejo:%s\n' "${f#* */}"; else origin_repo "$1"; fi
+}
+
+# branch_runs <dir> <branch> -> <branch>'s main_runs in the repo <dir> lands on (ledger_repo): gate_ci, main_health
 # and activity_line all read it, from one ledger read per repo per pass ($CACHE). A repo the ledger
 # does not sync has no runs ([]); one it cannot answer for is named unreadable once, and is rc 1
-# with the row blind on every read.
+# with the row blind on every read. Read off origin, a Forgejo-canonical clone's mirror had no runs, so its
+# main read green and its gates read none (ar-2727, follow-up of ar-2587).
 branch_runs() {
-  local d="$1" b="$2" all one rc=0
-  all="$CACHE/runs_$(repo_slug "$d")" || return 1
+  local d="$1" b="$2" all one rc=0 repo slug
+  slug="$(repo_slug "$d")" || return 1
+  all="$CACHE/runs_${slug}_$(canonical_remote "$d")"
   one="${all}_${b//\//%2F}" # %2F: feat/x and feat_x are two branches
   if [ ! -f "$one" ]; then
     if [ ! -f "$all" ]; then
-      main_runs "$(origin_repo "$d")" > "$all" || rc=$?
+      if repo="$(ledger_repo "$d")"; then main_runs "$repo" > "$all" || rc=$?; else rc=1; fi
       case $rc in
         0) ;;
         3) echo '[]' > "$all" ;;
@@ -2413,7 +2535,8 @@ parked_lines() {
 # review:<slug> is one this session parked in review/: its open PR is the item's, and
 # fleet-dispatch's reap owns it once the session ends (own_parked_pr gives a red one a fix-ci session and a green one a lander),
 # so the session is finished. 2026-11-11 such sessions read "PR open" as unfinished, wind-down
-# refused, and the reap, which waits for the session to end, never took over.
+# refused, and the reap, which waits for the session to end, never took over. A - or moved: answer whose
+# open PR another open item names in its pr: is handed to that item instead (collect's handed:, ar-5184).
 item_of() {
   awk -F'\t' -v sid="$2" -v me="$3" -v solo="$4" -v start="$5" '
     function mine_sid(list,   n, a, i) { n = split(list, a, " "); for (i = 1; i <= n; i++) if (a[i] == sid) return 1; return 0 }
@@ -2455,6 +2578,27 @@ item_plan() {
   printf '%s\n' "${3:--}"
 }
 
+# canonical_plan <plan file|-> -> the plan phases are read from: the one home of the plan, ~/.agent/plans, never a
+# plan-mode copy. A file under ~/.claude*/plans that is a real file (an account whose plans dir claude-acct has
+# not linked to _live, a peer store-sync has not reached) is a copy that goes stale: 2026-11-18 the tilecast
+# coordinator read 0/5 overdue from one while 2/5 had landed in the canonical plan (ar-3465). A link into
+# ~/.agent/plans already is the canonical file. The copy's canonical is _live/<same name>, else the one live
+# project dir (not _archive, _unscoped) that holds a file of that name, links followed; with neither, or when the
+# candidate is older than the copy (an earlier run's plan of a reused slug, as item_plan rejects), the copy is all
+# there is.
+canonical_plan() {
+  local f="$1" b="${1##*/}" home="$HOME/.agent/plans" c r
+  [[ "$f" == "$HOME"/.claude*/plans/*.md && -f "$f" ]] || { printf '%s\n' "$f"; return 0; }
+  r="$(realpath -q -- "$f" 2>/dev/null)" || r="$f"
+  [[ "$r" == "$home"/* ]] && { printf '%s\n' "$f"; return 0; }
+  if [ -f "$home/_live/$b" ]; then c="$home/_live/$b"
+  else
+    c="$(find -L "$home" -mindepth 2 -maxdepth 2 -name "$b" -type f -not -path "$home/_*" 2>/dev/null)"
+    [ -n "$c" ] && [ "$(wc -l <<<"$c")" -eq 1 ] || c=
+  fi
+  if [ -n "$c" ] && [ "$(stat -L -c %Y "$c")" -ge "$(stat -c %Y "$f")" ]; then printf '%s\n' "$c"; else printf '%s\n' "$f"; fi
+}
+
 # own_slugs <item_of's answer> -> the comma list of slugs it joined to this session (own:a,b running here, or
 # the one waiting here), else nothing. They are the session's own work, not a phase handed off, so they hold no
 # plan phase: the phase is this session's next one until it lands (ar-475: dotfiles-agent-4 read DONE while P4
@@ -2487,6 +2631,45 @@ refused_wait() {
   awk -F'\t' -v p="$2" '$1 == p { h = $2 } END { if (h != "") print h }' "$key.refused"
 }
 
+# base_red_owner <dir> <pr> <all items, jsonl> <the row's item slugs, comma list|-> -> the slug of an item that is not done, is not
+# one of the row's own, and records PR #<pr> of <dir>'s repo in its pr: or open_pr: list (owner/repo#N, forge names case-blind),
+# else nothing. That is how an item that fixes a red base claims the PRs the red holds (fix-ci step 3): the PR is red only until
+# that item lands, so its session waits on the item and is not STALLED CI red. Why: platform#1493 sat red behind develop's
+# Android E2E red while fix-ci-android-mobile-e2e-red-on-develop worked it, and its session was nudged once per head (ar-1513).
+base_red_owner() {
+  local repo
+  [[ "$2" =~ ^[0-9]+$ ]] && repo="$(origin_repo "$1" 2>/dev/null)" && [ -n "$repo" ] || return 0
+  jq -rn --arg ref "${repo,,}#$2" --arg own ",${4:--}," 'first(inputs
+    | select(.state != "done" and (.slug as $s | $own | contains("," + $s + ",") | not))
+    | select([.pr, .open_pr] | map(. // "" | tostring | ascii_downcase | split(" ")[]) | any(. == $ref)) | .slug) // empty' <<<"$3" 2>/dev/null
+}
+
+# pr_not_here <host> <state> <all items> <item slugs, comma list|-> <pr_made_here's arguments...> -> true when the row's branch
+# PR is not this session's work. A finished one (MERGED or CLOSED) on this machine is not when pr_made_here
+# says another session made it. An open one is unlanded work in this tree, except on a validate item's
+# session: it reviews the author item's PR from a worktree cut at its head (cmd_validate in fleet-dispatch),
+# and once it records a fail verdict (validate_failed_here) the PR is the author item's to fix.
+# validate-ar-5194-3edd08df read keep "land it: PR #3435 open" after failing it (ar-5260). A pass keeps
+# it: the validate session lands it itself. With no verdict yet the review is still left here, so a
+# session that died mid-review is not closed as done.
+pr_not_here() {
+  local host="$1" state="$2" qall="$3" islugs="$4"; shift 4
+  case "$state" in
+    MERGED | CLOSED) [ "$host" = - ] && [ -s "$5" ] && ! pr_made_here "$@" ;;
+    OPEN) validate_failed_here "$qall" "$islugs" ;;
+    *) return 1 ;;
+  esac
+}
+
+# validate_failed_here <all items, jsonl> <item slugs, comma list|-> -> true when one of the items is a validate
+# item (tagged validate) that records a fail verdict, as the validate brief has it set before it runs agent-land.
+# Its verdict_head is not compared: a push after the fail is a new head, reviewed by a new validate item.
+validate_failed_here() {
+  [ "$2" != - ] && jq -ne --arg s ",$2," 'any(inputs; (.slug as $x | $s | contains("," + $x + ","))
+    and ((.tags // "") | if type == "array" then join(" ") else tostring end | [splits("\\s+")] | index("validate") != null)
+    and .verdict == "fail")' <<<"$1" >/dev/null 2>&1
+}
+
 # validate_hold <all items, jsonl> <the row's item slugs, comma list> <PR head oid> <clone|-> -> what agent-land's validate_gate
 # would say of this head: "failed <validate slug>" when an item's validate item (its `validate:`) records a fail verdict that
 # covers it, "<validate slug>, a second agent's review" while that item is live on it (queued, running, waiting or review,
@@ -2517,13 +2700,14 @@ head_covers() {
     [ "$(git -C "$1" rev-list --count --no-merges "$2" "^$3" "^$(default_base "$1")" 2>/dev/null)" = 0 ]
 }
 
-# pr_wait <git> <pr state> <sibling repo> <clone> <ci> <pr> <head oid> <chain> [<all items> <item slugs>] -> two lines: the landing-slot wait, then
+# pr_wait <git> <pr state> <sibling repo> <clone> <ci> <pr> <head oid> <chain> [<all items> <item slugs> <base health>] -> two lines: the landing-slot wait, then
 # the wait the bucket reads (empty when none). A PR of this clone's repo riding an open landing train waits on that
 # train's gate, one queued for the landing slot waits its turn, and one the slot holder refused waits on that holder
 # (slot_refuser), unless its own Checks are red past the slot's refusal (git_facts left ci FAIL). A green or unknown-CI PR whose item is `after:` an item that is not done (<chain>,
 # chain_hold) waits on it, not STALLED green, not merged (ar-4420); its red gate line is open_pr_ci's. Past those, a green
 # or unknown-CI PR carries its item's validate verdict (validate_hold): a live validate item on its head is a wait, and a
-# fail on its head is "failed <slug>", never landable (ar-5286).
+# fail on its head is "failed <slug>", never landable (ar-5286). A red PR whose base reads RED (main_health) and that another
+# live item claims (base_red_owner) waits on that item (ar-1513).
 pr_wait() {
   local g="$1" state="$2" xr="$3" gd="$4" ci="$5" pr="$6" oid="$7" chain="$8" tn="" land="" w h
   [ "$g" = 1 ] && [ "$state" = OPEN ] && [ "$xr" = - ] || { printf '\n\n'; return 0; }
@@ -2536,6 +2720,8 @@ pr_wait() {
   w="$land"
   if [ -z "$w" ]; then case "$ci" in FAIL | PENDING | NOSTART) ;; *)
     if [ -n "$chain" ]; then w="after: $chain"; else w="$(validate_hold "${9:-}" "${10:--}" "$oid" "$gd")"; fi ;; esac; fi
+  if [ -z "$w" ] && [ "$ci" = FAIL ] && [ "${11:--}" = RED ] && [ "$gd" != - ] && h="$(base_red_owner "$gd" "$pr" "${9:-}" "${10:--}")" &&
+    [ -n "$h" ]; then w="base red, owned by $h"; fi
   printf '%s\n%s\n' "$land" "$w"
 }
 
@@ -2668,7 +2854,7 @@ collect() {
     rm -f "$CACHE/blind_row"
     local target pane status plan sid cwd since ctx planf tsess idle bidle asks ownask hv bucket fact edited \
           pdone ptotal pnext phases fin started age oid askids blk transcript prs \
-          work jobs human parked compactions topic doing said gate test ojob acct mdl harn pq names landed live cpid host cwin shown mman
+          work jobs human parked compactions topic doing said gate test ojob acct mdl harn pq names landed live cpid host cwin shown mman dlive detached
     # The separator is a unit separator, not a tab: read collapses an empty tab-separated field and
     # shifts every later one left, so a park ledger with no cwd put plan_file's "-" in ctx and
     # json_rows died on it (ar-1500). A number a source left empty or null is 0.
@@ -2719,8 +2905,8 @@ collect() {
     landed="$(jq -r 'if any(.state == "MERGED") and all(.state != null and .state != "OPEN")
       then map(select(.state == "MERGED") | "#\(.number)") | join(",") else "-" end' <<<"$prs")"
     tsess="${target#*/}"; tsess="${tsess%:*}"
-    idle=$(( (now - since) / 60 )); bidle="$(gate_log_idle "$host" "$status" "$ojob" "$cwd" "$idle" "$transcript")"
-    age=-; [[ "$started" =~ ^[0-9]+$ ]] && age=$(( (now - started) / 60 ))
+    idle=$(( (now - since) / 60 )); dlive="$(detached_gate "$host" "$status" "$idle" "$ojob" "$cwd" "$cpid" "$target" "$panel")"; detached="${dlive:+none}"; ojob="${dlive:-$ojob}"
+    bidle="$(gate_log_idle "$host" "$([ -n "$dlive" ] && echo detached || echo "$status")" "$ojob" "$cwd" "$idle" "$transcript")"; age=-; [[ "$started" =~ ^[0-9]+$ ]] && age=$(( (now - started) / 60 ))
     local solo item
     solo="$(jq -r --arg k "${target%:*}" 'select((.target | sub(":[^:]*$"; "")) == $k) | .target' <<<"$panel" 2>/dev/null | wc -l)"
     item="$(item_of "$qitems" "$sid" "${target%%/*}:$tsess" "$solo" "$started")"
@@ -2749,7 +2935,7 @@ collect() {
         IFS=$'\t' read -r irow iby < <(jq -rn --arg s "$islug" 'first(inputs | select(.slug == $s)
           | [(.row // (.from // "" | if startswith("board:") then sub("^board:"; "") else "" end)
               | if . == "" then "-" else . end), (.by // "-")] | @tsv)' <<<"$qall" 2>/dev/null)
-        irow="${irow:--}"; iby="${iby:--}"; carried="$(carried_by "$qall" "$sid" "$item" "${target%%/*}:$tsess")" ;;
+        irow="${irow:--}"; iby="${iby:--}"; carried="$(session_carried "$qall" "$sid" "$item" "${target%%/*}:$tsess" "$islugs")" ;;
     esac
     # A done item's merged PRs are the session's landed ones when its transcript names no merged PR, none
     # open and every state known. A landing train merges a member's commits through its own train/* PR and
@@ -2768,7 +2954,7 @@ collect() {
         | if length == 0 then "-" else join(",") end' <<<"$qall" 2>/dev/null)"
       landed="${landed:--}"
     fi
-    local sjob=- chain="$(chain_hold "$qall" "$islugs" "$irel")"; [ "$status" = shell ] && sjob="$ojob"
+    local sjob=- chain="$(chain_hold "$qall" "$islugs" "$irel")"; { [ "$status" = shell ] || [ -n "$dlive" ]; } && sjob="$ojob"
     # gd is the clone repo-wide reads go through: the cwd here, this machine's clone of a worker's repo
     # (worker_clone), - when there is none. whead is a worker's HEAD, for activity_line.
     local gd="$cwd" whead=- wmain worigin
@@ -2784,10 +2970,9 @@ collect() {
     # A run that handed its item off, or another run that landed it, left nothing here to land (handed_on).
     if [ "$g" = 1 ] && [ "$irel" = moved ] && [ "$dirty" = 0 ] && [ "$ahead" -gt 0 ] && [ "$pr" = - ] \
        && handed_on "$host" "$qall" "$islug" "$cwd" "$gd" "$line"; then ahead=0; fi
-    # A finished branch PR this session did not make is another session's (pr_made_here): drop it,
-    # and the commits it holds with it. An open one stays: it is unlanded work in this tree either way.
-    if [ "$host" = - ] && [ "$g" = 1 ] && { [ "$state" = MERGED ] || [ "$state" = CLOSED ]; } && [ -s "$transcript" ] \
-       && ! pr_made_here "$cwd" "$pr" "$branch" "$prs" "$transcript" "$planf" \
+    # A branch PR this session did not make is another session's (pr_not_here): drop it,
+    # and the commits it holds with it. An open one stays unless a validate fail hands it back.
+    if [ "$g" = 1 ] && pr_not_here "$host" "$state" "$qall" "$islugs" "$cwd" "$pr" "$branch" "$prs" "$transcript" "$planf" \
               "$(jq -r --arg c "$cwd" --arg s "$sid" 'select(.cwd == $c and .session_id != $s and (.host // "-") == "-")
                   | .plan_file // empty' <<<"$panel" 2>/dev/null)"; then
       [ "$inpr" = 1 ] && ahead=0
@@ -2800,7 +2985,7 @@ collect() {
       IFS=$'\t' read -r xr xpr xci xoid < <(sibling_pr "$cwd" "$prs")
       if [ -n "${xpr:-}" ]; then pr="$xpr" state=OPEN ci="$xci" oid="$xoid" conflicts=-; else xr=-; fi
     fi
-    [ "$host" != - ] || planf="$(item_plan "$islugs" "$started" "$planf")"; IFS=$'\t' read -r pdone ptotal pnext < <(plan_phases "$planf")   # the item's own plan outranks the transcript's
+    [ "$host" != - ] || planf="$(canonical_plan "$(item_plan "$islugs" "$started" "$planf")")"; IFS=$'\t' read -r pdone ptotal pnext < <(plan_phases "$planf")   # the item's own plan outranks the transcript's
     phases="$(phases_word "$planf" "$inplan" "$pdone" "$ptotal")"
     # A copy of a queued plan under another file name is that plan (plan_copy_of): the items name it and
     # tick it, and the session may tick its own, so a phase is done when either plan says so.
@@ -2894,9 +3079,9 @@ collect() {
     if [ "$g" = 1 ] && [ "$branch" != - ] && [ "$gd" != - ]; then dbase="$(default_base "$gd")"; [ "$branch" = "${dbase#*/}" ] || act_dir="$gd"; fi
     local act_sha="$oid"; [ "$oid" != - ] || act_sha="$whead"
     act="$(activity_line "${status:--}" "$ojob" "$doing" "$act_dir" "$branch" "$act_sha" "$now")"
-    # What an open PR waits on (pr_wait); only a landing-slot wait carries the slot's wait, depth and critical path.
-    local wait_on="" land_wait=""
-    { IFS= read -r land_wait; IFS= read -r wait_on; } < <(pr_wait "$g" "$state" "$xr" "$gd" "$ci" "$pr" "$oid" "$chain" "$qall" "$islugs")
+    # What an open PR waits on (pr_wait), and the item the bucket reads (handed_item); only a landing-slot wait carries the slot's wait, depth and critical path.
+    local wait_on="" land_wait="" bitem; bitem="$(handed_item "$item" "$irel" "$state" "$qall" "$gd" "$xr" "$pr" "$dirty" "$inpr" "$ojob" "$sid" "${target%%/*}:$tsess")"
+    { IFS= read -r land_wait; IFS= read -r wait_on; } < <(pr_wait "$g" "$state" "$xr" "$gd" "$ci" "$pr" "$oid" "$chain" "$qall" "$islugs" "$mh")
     # A session waiting its landing turn carries how long its gate has waited and how deep its repo's
     # landing queue is, so the shepherd names a multi-hour wait on its own line (ar-2525).
     local qwait=- qdepth=- qrepo=- qpr=-
@@ -2911,9 +3096,9 @@ collect() {
       IFS=$'\t' read -r wake cron < <(wake_facts "$transcript" "$started" "$now" "$idle" "$phases" "$pdone" "$ptotal" "$pq")
     fi
     bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$bidle" "$g" "$dirty" "$ahead" \
-              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" "$cron" - "$carried")"
+              "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$bitem" "$wait_on" "$cron" - "$carried" "${detached:+${wake/#-/$detached}}")"
     fin=0; session_finished "$status" "$plan" "$asks" "$hv" "$bidle" "$g" "$dirty" "$ahead" \
-             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" && fin=1
+             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$bitem" "$wait_on" && fin=1
     # An idle session whose transcript ends on its own stop line is stopped (stopped_bucket); a finished one is left to DONE.
     local stopped="" stopat=""
     if [ "$host" = - ] && [ "$status" = idle ] && [ "$hv" = 0 ] && [ "$ojob" != agent ] && [ "$fin" = 0 ] \
@@ -2922,7 +3107,7 @@ collect() {
       [ -z "$stopped" ] || bucket="$stopped"
     fi
     blk="$(work_blockers "$askids" "$status" "$plan" "$asks" "$hv" "$bidle" "$g" "$dirty" "$ahead" \
-             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" - "$(merged_prs "$prs")")"
+             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$bitem" "$wait_on" - "$(merged_prs "$prs")")"
     local elsewhere=""
     [ "$host" != - ] || elsewhere="$(edited_work_blockers "$cwd" "$edited" "$sid")"
     if [ -n "$elsewhere" ]; then

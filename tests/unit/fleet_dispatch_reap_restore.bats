@@ -1009,6 +1009,7 @@ LOG
   lost_pane alive "$G" conv-alive
   lost_pane moved "$SANDBOX/no-such-dir" conv-moved
   lost_pane shell "$G" ''
+  stub wt 'echo "wt $*" >> "$NOTES_FIXTURE/calls.log"; echo "wt: not a worktree path" >&2; exit 1'
   transcript conv-plan '{"permissionMode":"bypassPermissions"}
 {"type":"permission-mode","permissionMode":"plan"}'
   transcript conv-work '{"permissionMode":"bypassPermissions"}'
@@ -1028,13 +1029,34 @@ LOG
   assert_output --partial 'hub:dotfiles:closed: wound down on purpose, skipped'
   assert_output --partial 'hub:dotfiles:alive: already running, skipped'
   assert_output --partial 'hub:dotfiles:otheracct: already running, skipped'
-  assert_output --partial 'claude --resume conv-moved'
+  assert_output --partial 'hub:dotfiles:moved: '"$SANDBOX/no-such-dir"' is gone and wt could not put it back (wt: not a worktree path), skipped (claude --resume conv-moved)'
   assert_output --partial 'hub:dotfiles:shell: no conversation, not reopened'
   assert_output --partial 'hub: reopened 2, failed 0'
   [ -f "$FLEET_DISPATCH_DIR/panes/hub.restored.json" ] && [ ! -f "$FLEET_DISPATCH_DIR/panes/hub.lost.json" ] ||
     fail "a finished restore left its record"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
   assert_output --partial 'no lost server on record'
+}
+
+@test "restore puts a reaped worktree back with wt revive, on the branch its conversation last ran on, before the resume (ar-2902)" {
+  restore_setup
+  W="$SANDBOX/reaped-wt"
+  lost_pane back "$W" conv-back
+  transcript conv-back '{"gitBranch":"main","type":"user"}
+{"type":"user","message":{"content":"quotes \"gitBranch\":\"decoy\""},"gitBranch":"agent-1-branch"}'
+  stub wt 'echo "wt $*" >> "$NOTES_FIXTURE/calls.log"; mkdir -p "$2"; echo "revived x on agent-1-branch"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore --dry-run
+  assert_success
+  assert_output --partial "would reopen conv-back in $W (gone: wt revive is tried first)"
+  assert_not_called "wt revive"
+  [ ! -d "$W" ] || fail "a dry run put the tree back"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_success
+  assert_called "wt revive $W --branch agent-1-branch"
+  assert_called "-n back -c $W "
+  assert_called "--resume conv-back"
+  assert_output --partial 'hub:dotfiles:back: revived x on agent-1-branch'
+  assert_output --partial 'hub: reopened 1, failed 0'
 }
 
 @test "restore reopens a conversation that several queue items list, with the running one updated last (ar-2676)" {
@@ -1133,10 +1155,33 @@ LOG
   restore_setup
   lost_pane one "$SANDBOX/repos/game" conv-1
   tmux_script 'case "$*" in *new-window*) exit 1 ;; *has-session*) exit 0 ;; esac'
+  stub agent-notify 'echo "agent-notify $*" >> "$NOTES_FIXTURE/calls.log"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
   assert_failure
   assert_output --partial 'hub: reopened 0, failed 1'
   [ -f "$FLEET_DISPATCH_DIR/panes/hub.lost.json" ] || fail "lost the record"
+  # A hand restore prints its failure to the one who ran it, and pages nothing.
+  assert_not_called 'reopen failed'
+  # In fleet-restore.service nobody reads the walk, so the failure pages (ar-3601).
+  FLEET_RESTORE_PAGE=1 run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_failure
+  assert_called 'agent-notify -p normal -t restore: a reopen failed on'
+  assert_called '1 conversation(s) are still on lost pane records'
+}
+
+@test "a walk keeps the owed marker for a lost record it never read, and clears it once every record was walked (ar-3601)" {
+  paced_restore 0
+  # The walk read hub's record; a lab record that appeared while it ran was not in it.
+  echo '{"server":"lab","panes":[{"session":"s","window":"w","cwd":"/x","claude":"c"}]}' > "$FLEET_DISPATCH_DIR/panes/lab.lost.json"
+  echo '{"server":"hub","panes":[]}' > "$FLEET_DISPATCH_DIR/panes/hub.lost.json"
+  RESTORE_OWED=() RESTORE_WALKED=("$FLEET_DISPATCH_DIR/panes/hub.lost.json")
+  run restore_pace   # run: no hold makes agent-hold show exit 1, which bats -e would take for a failure
+  assert_success
+  [ -e "$FLEET_DISPATCH_DIR/panes/.restore-owed" ] || fail "a record the walk never read lost its retry"
+  RESTORE_WALKED+=("$FLEET_DISPATCH_DIR/panes/lab.lost.json")
+  run restore_pace
+  assert_success
+  [ ! -e "$FLEET_DISPATCH_DIR/panes/.restore-owed" ] || fail "the marker outlived a walk of every record"
 }
 
 @test "restore --dry-run says what it would do and touches nothing" {
@@ -1149,6 +1194,42 @@ LOG
   assert_not_called 'tmx ensure'
   assert_not_called '--resume'
   [ -f "$FLEET_DISPATCH_DIR/panes/hub.lost.json" ] || fail "a dry run consumed the record"
+}
+
+# 2026-11-19: a walk inside session-snapshot-up.service reopened 12 of 23 before its 600s start timeout
+# killed up with dispatch held and agentctl paused (ar-3601). --defer walks nothing in its caller.
+@test "restore --defer hands the walk to fleet-restore.service, owes it, and reopens nothing itself" {
+  restore_setup
+  local i
+  for ((i = 1; i <= 23; i++)); do lost_pane "w$i" "$SANDBOX/repos/game" "conv-$i"; done
+  stub systemctl 'echo "systemctl $*" >> "$NOTES_FIXTURE/calls.log"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore --defer
+  assert_success
+  assert_output --partial 'restore: handed 23 conversation(s) on 1 lost record(s) to fleet-restore.service'
+  assert_called 'systemctl --user start --no-block fleet-restore.service'
+  assert_not_called '--resume'
+  assert_not_called 'tmx ensure'
+  assert_equal "$(cat "$FLEET_DISPATCH_DIR/panes/.restore-owed")" 23
+  [ -f "$FLEET_DISPATCH_DIR/panes/hub.lost.json" ] || fail "a handed-over walk consumed the record"
+  # A unit that will not start is said, and owed still, so a hand restore finishes it.
+  stub systemctl 'exit 1'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore --defer
+  assert_failure 1
+  assert_output --partial 'could not start fleet-restore.service; 23 conversation(s) still wait'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore --defer --server hub
+  assert_failure 2
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore --defer --dry-run
+  assert_failure 2
+}
+
+@test "restore --defer with no lost record starts no walk" {
+  restore_setup
+  stub systemctl 'echo "systemctl $*" >> "$NOTES_FIXTURE/calls.log"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore --defer
+  assert_success
+  assert_output --partial 'restore: no lost server on record'
+  assert_not_called 'fleet-restore'
+  [ ! -e "$FLEET_DISPATCH_DIR/panes/.restore-owed" ] || fail "nothing lost, yet a walk is owed"
 }
 
 @test "record on the lease holder runs on every other worker with --here, says nothing of one that does not answer, and fails on one that fails" {

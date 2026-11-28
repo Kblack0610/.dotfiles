@@ -652,6 +652,30 @@ exits: gate 2 improve 1 plan 2 sheet 1'
   assert_failure
 }
 
+# 2026-11-26 (ar-6265): fleet-bench filed the board-chain check row on the agent board, the judge skipped it
+# needs-person, and skip_exits moved it to the sheet; triage dropped that copy and filed it again, an add and a
+# drop on every pass. Triage's route owns a keyed row's lane, so no exit here touches one.
+@test "skip_exits: a row fleet-bench triage filed by key takes no exit, whatever its skip; a plain row with the same skip still does (ar-6265)" {
+  exits_fixture
+  row game agent gk-1 "- [ ] check(watch): board-chain tripped since 2026-11-05, expected: x #high $T <!-- id:gk-1 -->"
+  row game agent gk-2 "- [ ] check(alert): game Disk firing since 2026-11-25 #size/l $T <!-- id:gk-2 -->"
+  row game agent gk-3 "- [ ] fix(runner): briefing is STALLED: no detail #high $T <!-- id:gk-3 -->"
+  board_row game agent gk-1 '[]' '[]'; board_row game agent gk-2 '[]' '[]'; board_row game agent gk-3 '[]' '[]'
+  jq -c 'if .id == "gk-2" then .size = "l" else . end' "$NOTES_FIXTURE/board.rows" > "$SANDBOX/b" && mv "$SANDBOX/b" "$NOTES_FIXTURE/board.rows"
+  skipv gk-1 needs-person 'Watch pages the human and pace is their call.'; skipv gk-3 design
+  : > "$NOTES_FIXTURE/calls.log"
+  run skip_exits --dry-run
+  assert_success
+  refute_output --partial 'gk-'
+  # NEGATIVE CONTROL: the plain needs-person row in the same pass still takes its exit
+  assert_line 'improve	game	gx-3	needs-person'
+  skip_exits
+  run grep -E 'gk-[123]|check\((watch|alert)\)|fix\(runner\)' "$NOTES_FIXTURE/calls.log"
+  assert_failure
+  assert_equal "$(jq -r 'select((.key | startswith("gk-")) and .exit) | .key' "$FLEET_DISPATCH_DIR/verdicts.jsonl")" ''
+  grep -q 'id:gk-1 -->$' "$NOTES_FIXTURE/rows.game.agent" || fail "gk-1 left the agent board: $(grep gk-1 "$NOTES_FIXTURE/rows.game.agent")"
+}
+
 @test "skip_exits: an agent row of a kind kinds.json turns off leaves the lane, #high to the human sheet and #low to improvements.md; an epic, a parent and a fix stay" {
   offkind_fixture
   : > "$NOTES_FIXTURE/calls.log"
@@ -1564,7 +1588,7 @@ game low: fleet, #low, beta, 4d old"
   assert_output --partial 'agent-queue move rel done --status ok.'
   assert_output --partial 'agent-queue requeue rel --ask <id>, and stop: the answer starts this item again'
   refute_output --partial 'wind-down'
-  refute_output --partial 'leaving this window open'
+  refute_output --partial 'only that step is blocked'
   # a release board row never dispatches on its own: the human starts it, or /release queues it
   load_kinds
   assert_equal "$(kind_off release game beta)" 'kind release is off'
@@ -1572,6 +1596,9 @@ game low: fleet, #low, beta, 4d old"
   run item_brief '{"slug": "f", "mode": "oneshot", "project": "game", "title": "feat(game): a mode", "task": "feat(game): a mode"}'
   assert_line --index 0 '/one-shot feat(game): a mode'
   assert_output --partial 'Merge with agent-land <N>'
+  # no board row: reap fails a row-less item whose session is gone on its ask, so the window stays open
+  assert_output --partial 'leaving this window open'
+  refute_output --partial 'run /wind-down auto: the teardown'
   refute_output --partial 'note="<proof>"'
 }
 
@@ -1817,6 +1844,54 @@ EOF
     key: "fix crash on load", text: $t, area: "load"}')" "" "fix crash on load"
   assert_success
   assert_output --partial 'queued game: gm-1'
+}
+
+# 2026-11-23 (ar-5954): a returned row gained #at/2026-12-02/0900 after the pass read its gates, and the fill
+# started it anyway: promote ignored every gate tag GATE_ST did not know, so the item had no at: hold.
+@test "promote: a gate the row gained after the pass read its gates is read now, and the row waits on it (ar-5954)" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent ga-1 "- [ ] fix(game): returned row $T <!-- id:ga-1 -->"
+  GATES_LOADED=''; load_gates   # the pass's one read: the row has no gate yet
+  : > "$NOTES_FIXTURE/rows.game.agent"
+  row game agent ga-1 "- [ ] fix(game): returned row $T #at/2099-01-01/0000 <!-- id:ga-1 -->"
+  run promote "$(jq -cn '{profile: "bnb", project: "game", lane: "agent", key: "ga-1"}')" "" task
+  assert_failure
+  assert_output --partial 'skip game: ga-1 waits on at 2099-01-01T00:00'
+  [ -z "$(qitem queued ga-1)" ] || fail "the gated row was queued"
+  assert_equal "$(cut -f2 "$NOTES_FIXTURE/rows.game.agent")" "- [ ] fix(game): returned row $T #at/2099-01-01/0000 <!-- id:ga-1 -->"
+}
+
+@test "fill: a store that cannot be brought up to origin promotes no row and says so; a dry run still reads the board (ar-5954)" {
+  game_ready
+  stub store-sync-age 'exit 1'
+  DRY=0 JUDGE_RC='' fill_day 2
+  assert_equal "$FILLED" 0
+  assert_equal "$FILL_HELD" 'this store could not be brought up to origin, so no row is promoted from a board that may be behind'
+  grep -q 'fill held: this store could not be brought up to origin' "$LOG" || fail "the hold is not in the dispatch log"
+  assert_equal "$(cut -f2 "$NOTES_FIXTURE/rows.game.human")" "- [ ] fix crash on load #high $T"
+  BOARD_FRESH='' DRY=1 JUDGE_RC='' run fill_day 2
+  assert_success
+  assert_output --partial 'would queue: game'
+}
+
+@test "fill: the human's fresh asks (the ask floor) never wait on the store sync (ar-5954)" {
+  game_ready
+  stub store-sync-age 'exit 1'
+  DRY=0 JUDGE_RC='' fill_day 1 ask
+  assert_equal "$FILL_HELD" ''
+  [ -z "${BOARD_FRESH:-}" ] || fail "the ask floor checked the store"
+}
+
+@test "fill: a store brought up to origin syncs the agent store and the notes one, then promotes (ar-5954)" {
+  game_ready
+  stub store-sync 'echo "sync $*" >> "$NOTES_FIXTURE/calls.log"'
+  stub store-sync-age 'echo "age $*" >> "$NOTES_FIXTURE/calls.log"'
+  DRY=0 JUDGE_RC='' fill_day 1
+  assert_equal "$FILLED" 1
+  # A full sync of each: `--now` exits with no fetch when nothing is dirty, so it would prove nothing.
+  grep -qxE 'sync ?' "$NOTES_FIXTURE/calls.log" || fail "the agent store was not synced"
+  grep -qx 'sync --store notes' "$NOTES_FIXTURE/calls.log" || fail "the notes store was not synced"
+  grep -qx 'age --notes --max-min 2' "$NOTES_FIXTURE/calls.log" || fail "the sync was not checked"
 }
 
 @test "promote: a row an open sprint holds gets the sprint tag from any path, a queued sprint's row and a plain row do not" {
@@ -2084,7 +2159,7 @@ EOF
   epic_take repeat > "$SANDBOX/out" || fail "a second take failed: $(cat "$SANDBOX/out")"
   assert_equal "$(ls "$AGENT_QUEUE_DIR"/queued/ | wc -l)" "$n"
   # a chain whose phases were filed on their gated board rows (agent-queue exit 5) is taken, never a failure
-  stub agent-queue 'case "$1" in list) exit 0 ;; add) exit 5 ;; *) exit 1 ;; esac'
+  stub agent-queue 'case "$1" in list | gate) exit 0 ;; add) exit 5 ;; *) exit 1 ;; esac'
   epic_take repeat > "$SANDBOX/out" || fail "a held chain read as a failure: $(cat "$SANDBOX/out")"
   grep -qF 'took game epic gm-20: the chain of ep.md' "$SANDBOX/out" || fail "no took line for a held chain: $(cat "$SANDBOX/out")"
 }

@@ -238,6 +238,36 @@ ask_fixture() {
   assert_output '[2,null,30.8,7.7]'
 }
 
+@test "kpi --json: both windows from one read of the sources, the same object the two reports gave" {
+  ask_fixture
+  # judged 10 days ago: in the 28-day window only, so the two windows differ
+  ask err_old judge=error judge_rule= "judged_at=$(date -d '10 days ago' +%Y-%m-%dT%H:%M:%S%z)"
+  printf '{"verdict":"error","project":"p","key":"k","at":"%s"}\n' "$(date -Iseconds)" > "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  # the queue stub counts its runs: kpi reads every source once, not once per window
+  printf '#!/usr/bin/env bash\necho x >> "%s"\ncat "%s"\n' "$HOME/queue.runs" "$QUEUE" > "$SANDBOX/bin/queue-stub"
+  run "$JUDGE_EVAL" kpi --json
+  assert_success
+  assert_equal "$(jq -Sc . <<<"$output")" "$(jq -Sc . <<'EOF'
+{"ask_answered_pct":{"28d":30.8,"7d":30.8},"ask_human_only_pct":{"28d":0,"7d":0},"ask_unclear_pct":{"28d":7.7,"7d":7.7},
+ "dispatch_false_defer_pct":{"28d":null,"7d":null},"judge_errors":{"28d":3,"7d":2},"judge_human_only_live_pct":{"28d":null,"7d":null},
+ "judge_precision":{"28d":null,"7d":null},"runner_score_ask_sweep":{"28d":null,"7d":null},"runner_score_inbox_plan":{"28d":null,"7d":null},
+ "runner_score_inbox_priority":{"28d":null,"7d":null},"runner_score_inbox_triage":{"28d":null,"7d":null}}
+EOF
+)"
+  assert_equal "$(wc -l < "$HOME/queue.runs")" 1
+}
+
+@test "kpi --json: a 28-day window over 128 KB still scores (one jq, no window passed as an argument)" {
+  # Each window was once passed to jq with --argjson, and one argument over 128 KB (MAX_ARG_STRLEN)
+  # failed kpi with "Argument list too long": fleet-bench then read {} for every judge KPI.
+  # one rule and one cell per ask, a stats object each: about 1.5 KB of report per ask
+  local i
+  for i in $(seq 1 200); do ask "big$i" judge=take-recommend answer=yes "judge_rule=rule$i" "judge_type=type$i"; done
+  run "$JUDGE_EVAL" kpi --json
+  assert_success
+  assert_equal "$(jq -c '.ask_answered_pct' <<<"$output")" '{"7d":0,"28d":0}'
+}
+
 @test "the verdict list: every verdict under any prompt, what it said, why and what you did" {
   ask live1 judge=take-recommend answered_by=judge judge_override=kept judge_rule=ship_deploy judge_type=ship_deploy judge_evidence=merged judge_reason=merged
   ask live2 judge=take-recommend answered_by=judge judge_override=no 'answer=yes'
@@ -457,16 +487,23 @@ cell() {
     ev filed t-held "$(ago '-3 days')"; ev tagged t-held "$(ago '-3 days +1 hour')" by=ab12cd34 'why=+#hold/critical +#after/ar-1 +#ask/abc +#desk/human +#plan +#go -#size/s +#size/m'
     ev filed t-resized "$(ago '-3 days')"; ev tagged t-resized "$(ago '-3 days +1 hour')" by=human 'why=-#size/s +#size/l'
     ev filed t-mixed "$(ago '-3 days')"; ev tagged t-mixed "$(ago '-3 days +1 hour')" by=inbox-size 'why=+#pts/3 +#of/ar-9'
+    # the priority pass fills a why label with the priority (live shape, hc-1088): no correction; a human's why re-tag is
+    ev filed t-whyed "$(ago '-3 days')"; ev tagged t-whyed "$(ago '-3 days +1 hour')" by=inbox-priority 'why=+#why/fault +#normal'
+    ev filed t-whyed-human "$(ago '-3 days')"; ev tagged t-whyed-human "$(ago '-3 days +1 hour')" by=human 'why=+#why/upkeep'
+    ev filed t-whyswap "$(ago '-3 days')"; ev tagged t-whyswap "$(ago '-3 days +1 hour')" by=ab12cd34 'why=-#why/fault +#why/upkeep'
+    # control for the unchanged `edited` path: the backlog pass rewriting a filed row's words is a correction of it
+    ev filed t-retitled "$(ago '-3 days')"; ev edited t-retitled "$(ago '-3 days +1 hour')" by=inbox-triage
     ev filed t-planned "$(ago '-3 days')"; ev tagged t-planned "$(ago '-3 days +10 min')" 'why=+#size/m'
     ev planned t-planned "$(ago '-3 days +10 min +20 sec')"
   } > "$INGEST"
   run "$JUDGE_EVAL" inbox-triage --json
   assert_success
-  # tp: t-kept, t-late (dropped after the window), t-planned, t-sized, t-held (a pass's sizing or gating re-tag is no correction) and t-dup;
-  # fp: t-edited, t-moved, t-resized (a human's), t-mixed (a non-pass word); pending: t-young, t-young-edited
+  # tp: t-kept, t-late (dropped after the window), t-planned, t-sized, t-held (a pass's sizing or gating re-tag is no correction),
+  # t-whyed (the priority pass's label) and t-dup;
+  # fp: t-edited, t-moved, t-resized (a human's), t-mixed (a non-pass word), t-whyed-human, t-whyswap (a session swapping a why), t-retitled; pending: t-young, t-young-edited
   run jq -c '.agents[0] | [.total | .verdicts, .tp, .fp, .pending, .scored, .precision], (.misses | map([.id, .answer]) | sort)' <<<"$output"
-  assert_line '[12,6,4,2,10,60]'
-  assert_line '[["t-edited","edited by ab12cd34"],["t-mixed","tagged by inbox-size"],["t-moved","rehomed"],["t-resized","tagged by human"]]'
+  assert_line '[16,7,7,2,14,50]'
+  assert_line '[["t-edited","edited by ab12cd34"],["t-mixed","tagged by inbox-size"],["t-moved","rehomed"],["t-resized","tagged by human"],["t-retitled","edited by inbox-triage"],["t-whyed-human","tagged by human"],["t-whyswap","tagged by ab12cd34"]]'
 }
 
 @test "inbox-priority: a priority the pass set is right when nobody else changes it for 48h; a later pass supersedes; triage ignores it" {

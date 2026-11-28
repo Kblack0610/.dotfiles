@@ -219,6 +219,18 @@ J
   assert_output 'held (agent-hold dispatch) by binks: load 72.9; no new sessions'
 }
 
+# session-snapshot up releases its dispatch hold once it hands the reopens to the walk (ar-3601): the
+# walk itself keeps a pass from starting new work while it runs, and a walk that ended holds nothing.
+@test "gate reads closed while a restore walk runs, and open once it ends" {
+  acct
+  echo "activating" > "$NOTES_FIXTURE/systemctl.show.fleet-restore.service.ActiveState"
+  run gate
+  assert_output --partial 'a restore walk is reopening sessions (fleet-restore.service;'
+  echo "inactive" > "$NOTES_FIXTURE/systemctl.show.fleet-restore.service.ActiveState"
+  run gate
+  refute_output --partial 'restore walk'
+}
+
 @test "red: a red item merges its own PR: no --pr-only, and its brief names fix-red" {
   project game beta "$SANDBOX/repos/game"
   stub wt 'printf "%s\n" "$WT_NEW_CMD" >> "$NOTES_FIXTURE/cmds.log"; echo "game-agent-1"'
@@ -1022,6 +1034,34 @@ J
   assert_equal "$(jq -c 'has("board_agent")' <<<"$output")" false
 }
 
+@test "stats: sprints is one object per open sprint, with size, rows in and out and days left; a queued one is not listed, no due day is null, an unreadable board leaves it out, never []" {
+  queued_item one high "$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)"
+  mkdir -p "$FLEET_DISPATCH_DIR"; : > "$FLEET_DISPATCH_DIR/log.md"
+  notes() {
+    echo '{"today":"2026-11-27","totals":{"open":4,"agent":2,"backlog":3},"sprints":[
+      {"project":"game","version":"v1","committed":5,"done":2,"due":"2026-11-30","opened":"2026-11-25","queued":false,"uncommitted":["gm-9"],"tasks":[]},
+      {"project":"web","version":"v2","committed":3,"done":0,"due":"2026-12-10","opened":"2026-12-01","queued":true,"uncommitted":[],"tasks":[]},
+      {"project":"ops","version":"v3","committed":1,"done":1,"due":null,"opened":"2026-11-20","queued":false,"uncommitted":[],"tasks":[]}]}'
+  }
+  run cmd_stats
+  assert_success
+  assert_equal "$(jq -c '.sprints' <<<"$output")" '[{"project":"game","version":"v1","size":5,"rows_in":1,"rows_out":2,"opened":"2026-11-25","due":"2026-11-30","days_left":3},{"project":"ops","version":"v3","size":1,"rows_in":0,"rows_out":1,"opened":"2026-11-20","due":null,"days_left":null}]'
+  # No `today`, or a due day that is not a plain date, costs only that sprint's days_left: the totals stay.
+  notes() { echo '{"totals":{"open":4,"agent":2,"backlog":3},"sprints":[{"project":"game","version":"v1","committed":5,"done":2,"due":"2026-11-30T10:00","opened":"2026-11-25","queued":false,"uncommitted":[],"tasks":[]}]}'; }
+  run cmd_stats
+  assert_success
+  assert_equal "$(jq -c '[.board_agent, .sprints[0].size, .sprints[0].days_left]' <<<"$output")" '[2,5,null]'
+  # A board without sprints, or one that fails, leaves the key out: a reader shows -, never 0.
+  notes() { echo '{"today":"2026-11-27","totals":{"open":4,"agent":2,"backlog":3}}'; }
+  run cmd_stats
+  assert_success
+  assert_equal "$(jq -c '[has("board_agent"), has("sprints")]' <<<"$output")" '[true,false]'
+  notes() { return 1; }
+  run cmd_stats
+  assert_success
+  assert_equal "$(jq -c 'has("sprints")' <<<"$output")" false
+}
+
 @test "stats fails, saying so, when the queue is unreadable" {
   stub agent-queue 'exit 1'
   run cmd_stats
@@ -1741,6 +1781,22 @@ stale_fixture() {
   # each asked row is gated now, so a second pass asks nothing again
   run ask_stale_skips --dry-run
   assert_output 'stale: '
+}
+
+@test "ask_stale_skips: a row fleet-bench triage filed by key is never asked about or dropped, however old its skip (ar-6265)" {
+  stale_fixture
+  row game agent sx-10 "- [ ] check(watch): board-chain tripped since 2026-11-05, expected: x #high $T <!-- id:sx-10 -->"
+  row game agent sx-11 "- [ ] fix(hold): briefing went red #low $T <!-- id:sx-11 -->"
+  skipv sx-10 needs-person 'Watch pages the human'; skipv sx-11 unclear 'which hold'
+  jq -c 'if (.key | IN("sx-10", "sx-11")) then .at = "2026-11-01T09:00:00-08:00" else . end' \
+    "$FLEET_DISPATCH_DIR/verdicts.jsonl" > "$SANDBOX/v" && mv "$SANDBOX/v" "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  run ask_stale_skips --dry-run
+  assert_success
+  refute_output --partial 'sx-10'
+  refute_output --partial 'sx-11'
+  # NEGATIVE CONTROL: the fixture's plain stale rows are still asked about or dropped
+  assert_output --partial "$(printf 'ask\tgame\tsx-1\tunclear\t25')"
+  assert_output --partial "$(printf 'drop\tgame\tsx-2\tunclear\t25')"
 }
 
 @test "ask_stale_skips: DISPATCH_STALE_MAX caps a day, DISPATCH_STALE_DAYS 0 is off, and a failed gate cancels the ask" {

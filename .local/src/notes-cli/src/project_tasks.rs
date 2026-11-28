@@ -477,7 +477,7 @@ pub(crate) fn add_via(
         println!("inbox: {}", block.join("\n"));
         return Ok(0);
     }
-    if refuse_twin(&path, &content, text) {
+    if refuse_twin(&path, &content, text, writer.key.as_deref()) {
         // A human's want that joins an open row must still mark it, and the ingest record must say whose
         // words it is: dropped here the row counted against the project share (ar-6060).
         if want.is_some_and(crate::projects::human_channel) && lane == Lane::Agent {
@@ -623,11 +623,23 @@ fn stamp_twin_requested(
 }
 
 /// Does `text` twin an open row of `content` (the sheet at `path`): the same words, a near twin, or a
-/// row that already lands the PR it names. Each says which row on stderr; the add exits 3.
-fn refuse_twin(path: &Path, content: &str, text: &str) -> bool {
+/// row that already lands the PR it names. Each says which row on stderr; the add exits 3. A filer
+/// that keys its rows (`--key`, [`Writer::key`]) finds its own row by that key, so a near twin is
+/// only one under the same key: fleet-bench's rows for two alerts, or one alert on two hosts, share
+/// every word but the alert and host, and the second was refused and never filed (ar-4296).
+fn refuse_twin(path: &Path, content: &str, text: &str, key: Option<&str>) -> bool {
+    let near = || {
+        near_twin(content, text, Some(text)).filter(|l| {
+            key.is_none_or(|k| {
+                md::task_text(l)
+                    .to_lowercase()
+                    .starts_with(&k.to_lowercase())
+            })
+        })
+    };
     if let Some(open) = open_twin(content, text) {
         eprintln!("already open on {}: {}", path.display(), open.trim());
-    } else if let Some(near) = near_twin(content, text, Some(text)) {
+    } else if let Some(near) = near() {
         eprintln!(
             "near-duplicate of an open row on {}: {}",
             path.display(),
@@ -1262,6 +1274,11 @@ pub(crate) const ORIGIN_PLAN: &str = "plan";
 /// The triage runner: its new epics, like a hand session's, must name a listed system.
 const TRIAGE: &str = "inbox-triage";
 
+/// Machine filers the daily intake cap never refuses: the nightly docs-cleanup passes, at most five
+/// rows a night that fire at 05:05, after the other filers have used the day's cap by 00:05, so under it
+/// no pass was ever filed (ar-5130). Their rows still count toward the day, as an urgent red's do.
+const CAP_EXEMPT_FILERS: [&str; 1] = ["docs-cleanup"];
+
 /// Who is writing a row, and so whether it goes on the sheet or to the outbox (`inbox-triage`
 /// checks it against the board and files it, joins it to a twin or drops it). The class is the
 /// environment's, never a flag's:
@@ -1283,6 +1300,9 @@ pub struct Writer {
     hand: bool,
     /// The shortlist ids a hand session says it read and found to be other work (`--checked`).
     pub checked: Vec<String>,
+    /// The title prefix a filer keys this row by and dedupes on itself (`--key`): a near twin
+    /// under another key is no twin ([`refuse_twin`]).
+    pub key: Option<String>,
     /// The vouched `--origin`, else the runner's own name; a session or queue item has none, so
     /// a runner name a session inherited can never make it a direct filer.
     name: Option<String>,
@@ -1351,10 +1371,19 @@ impl Writer {
             automated,
             hand: automated && !unattended,
             checked: Vec::new(),
+            key: None,
             person: !automated && origin.is_none(),
             name,
             refused,
             filers,
+        }
+    }
+
+    /// This writer, keying its row by `key` (`ptask add --key`).
+    pub fn keyed(self, key: Option<String>) -> Writer {
+        Writer {
+            key: key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty()),
+            ..self
         }
     }
 
@@ -1365,6 +1394,7 @@ impl Writer {
             automated: false,
             hand: false,
             checked: Vec::new(),
+            key: None,
             person: false,
             name: None,
             refused: None,
@@ -1398,9 +1428,14 @@ impl Writer {
 
     /// Whether the daily intake cap counts this writer's agent-lane row: a hand session, a plan's
     /// phases and a machine filer. Not a person at a terminal (the human's own words), and not
-    /// agent-queue's story row, which mirrors an item already started (`ingest::ORIGIN_STORY`).
+    /// agent-queue's story row, which mirrors an item already started (`ingest::ORIGIN_STORY`), and
+    /// not a [`CAP_EXEMPT_FILERS`] runner.
     fn capped(&self) -> bool {
-        !self.person && self.name.as_deref() != Some(crate::ingest::ORIGIN_STORY)
+        !self.person
+            && self
+                .name
+                .as_deref()
+                .is_none_or(|n| n != crate::ingest::ORIGIN_STORY && !CAP_EXEMPT_FILERS.contains(&n))
     }
 
     /// A hand session or inbox-triage: the writers whose new epic must name a listed system. A
@@ -5682,6 +5717,40 @@ Version: v1.2.0
         );
     }
 
+    #[test]
+    fn a_keyed_add_is_a_near_twin_only_of_a_row_under_its_own_key() {
+        let route = "firing, alertmanager-fleet tripped since 2026-11-26, expected: no fleet=fix alert, evidence: watch-companion-loop list --long alertmanager-fleet #size/s #high";
+        let board = format!("## Tasks\n- [ ] check(alert): NodeQuarantined razer {route}\n");
+        let path = Path::new("board.md");
+        let asus = format!("check(alert): NodeQuarantined asus {route}");
+        // NEGATIVE CONTROL: unkeyed, the same alert on another host is the razer row's near twin
+        assert!(refuse_twin(path, &board, &asus, None));
+        assert!(
+            !refuse_twin(
+                path,
+                &board,
+                &asus,
+                Some("check(alert): NodeQuarantined asus firing")
+            ),
+            "another key's row is no twin"
+        );
+        let moved = format!("check(alert): NodeQuarantined razer still {route}");
+        assert!(
+            refuse_twin(
+                path,
+                &board,
+                &moved,
+                Some("Check(alert): NodeQuarantined razer firing")
+            ),
+            "a near twin under the same key, in any case, is still refused"
+        );
+        assert_eq!(
+            Writer::human().keyed(Some("  ".into())).key,
+            None,
+            "a blank --key keys nothing"
+        );
+    }
+
     // Ids never come back after the row that held the highest one leaves the project.
     #[test]
     fn the_id_high_water_outlives_the_row_that_set_it() {
@@ -6821,6 +6890,25 @@ mod inbox_tests {
     }
 
     #[test]
+    fn the_daily_cap_holds_every_writer_but_a_person_the_story_row_and_the_docs_cleanup_runner() {
+        let run = |name: &str| {
+            let filers = vec![name.to_string()];
+            Writer::of(None, None, Some(name.to_string()), None, &[], false, filers)
+        };
+        assert!(
+            !run("docs-cleanup").capped(),
+            "the nightly pass is never refused"
+        );
+        assert!(
+            !Writer::of(None, None, None, None, &[], false, Vec::new()).capped(),
+            "a person"
+        );
+        // NEGATIVE CONTROLS: another machine filer, and a hand session, stay under the cap.
+        assert!(run("fleet-bench").capped());
+        assert!(Writer::of(None, Some("c1".into()), None, None, &[], false, Vec::new()).capped());
+    }
+
+    #[test]
     fn a_frozen_window_takes_an_add_next_time_unless_the_row_says_interrupt() {
         let v = vault(
             "window",
@@ -6846,6 +6934,7 @@ mod inbox_tests {
             automated: true,
             hand: false,
             checked: Vec::new(),
+            key: None,
             person: false,
             name: Some("dispatch".into()),
             refused: None,
@@ -6856,6 +6945,7 @@ mod inbox_tests {
             automated: false,
             hand: false,
             checked: Vec::new(),
+            key: None,
             person: true,
             name: None,
             refused: None,
@@ -7602,6 +7692,7 @@ mod inbox_tests {
             automated: false,
             hand: false,
             checked: Vec::new(),
+            key: None,
             person: false,
             name: Some(crate::ingest::ORIGIN_STORY.into()),
             refused: None,

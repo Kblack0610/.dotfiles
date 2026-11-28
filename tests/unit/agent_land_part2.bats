@@ -543,7 +543,7 @@ load 'agent_land/common'
 
 # aq_add_stub: the sandbox agent-queue logs each add's argv to aq.add, one call a line, and answers as the real one
 # does for a slug it already holds ("already in the queue", exit 1) or $SANDBOX/aq.add.rc says, and logs the
-# AGENT_QUEUE_ITEM each add saw to aq.env; other verbs run for real.
+# AGENT_QUEUE_ITEM each add saw to aq.env and its AGENT_QUEUE_PULL to aq.pull; other verbs run for real.
 aq_add_stub() {
   mv "$SANDBOX/bin/agent-queue" "$SANDBOX/bin/agent-queue.real"
   cat >"$SANDBOX/bin/agent-queue" <<EOS
@@ -553,6 +553,8 @@ if [ "\$1" = add ]; then
   ! grep -qxF "\$slug" "$SANDBOX/aq.slugs" 2>/dev/null || { echo "agent-queue: already in the queue: \$slug" >&2; exit 1; }
   printf '%s\n' "\${*%%\$'\n'*}" >>"$SANDBOX/aq.add"
   printf '%s\n' "\${AGENT_QUEUE_ITEM:-}" >>"$SANDBOX/aq.env"
+  printf '%s\n---\n' "\${@: -1}" >>"$SANDBOX/aq.task"
+  printf '%s\n' "\${AGENT_QUEUE_PULL:-}" >>"$SANDBOX/aq.pull"
   rc=\$(cat "$SANDBOX/aq.add.rc" 2>/dev/null || echo 0)
   [ "\$rc" -ne 0 ] || echo "\$slug" >>"$SANDBOX/aq.slugs"
   [ "\$rc" -ne 1 ] || echo "agent-queue: store locked" >&2
@@ -587,6 +589,9 @@ EOS
   assert_line --index 1 "add --project dotfiles --priority high --from item:ship --slug $s2 chore(deploy): systemctl --user restart notes-web (left by o/r#42)"
   # the add does not run as the landed item, so that item's own after: never gates it
   run grep -c '^$' "$SANDBOX/aq.env"
+  assert_output 2
+  # it goes in as agent-land's own pull: a board-only add went to the outbox and never ran (ar-5865)
+  run grep -cx land "$SANDBOX/aq.pull"
   assert_output 2
   # a re-run of the landing adds neither again, though a step was put above them meanwhile
   printf 'The change.\n\nAfter deploy: systemctl --user restart notes-web\nAfter deploy: notes projects --migrate game\n\nItem: ship\n' >"$NOTES_FIXTURE/body"
@@ -632,6 +637,9 @@ EOS
   assert_line 'landed #42'
   run cat "$SANDBOX/aq.add"
   assert_output "add --project r --priority high --from item:ship --slug $s chore(after-merge): $step (left by o/r#42)"
+  # ar-5865: without agent-land's pull the add went board-only to the outbox, and no apply ran
+  run cat "$SANDBOX/aq.pull"
+  assert_output land
   # a step whose item from an earlier merge is still queued is not added again: it applies the base it starts on
   "$SANDBOX/bin/agent-queue.real" add --project r --slug "after-merge-$sha-41-r" 'chore(after-merge): earlier' >/dev/null
   run "$LAND" 42 --item ship
@@ -639,6 +647,65 @@ EOS
   assert_line "after-merge: after-merge-$sha-41-r is still queued and carries #42 too: $step"
   run grep -c . "$SANDBOX/aq.add"
   assert_output 1
+}
+
+# ar-5918: the item named no role, and one queued for a role swallowed a later merge of another.
+@test "after-merge: a {role} step names every role the merge changed in one item, and a queued one carries only the roles it names (ar-5918)" {
+  local tpl='apply ansible to the hosts that run roles: {role}' sha s
+  sha=$(printf '%s' "$tpl" | sha1sum | cut -c1-7)
+  s=after-merge-$sha-42-r
+  printf '%s\n' "ansible/roles/,ansible/inventory.yml $tpl" >"$NOTES_FIXTURE/after-merge"
+  aq_add_stub
+  # NEGATIVE CONTROL: a merge that touches no role and no other named path adds nothing
+  printf '%s\n' ansible/README.md docs/roles/x.md >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'after-merge: added'
+  [ ! -e "$SANDBOX/aq.add" ]
+  # two roles changed in one PR are both named, sorted and once each, in one item whose task says them
+  printf '%s\n' ansible/roles/time-sync/tasks/main.yml apps/x.yaml ansible/roles/ci-host/tasks/main.yml ansible/roles/ci-host/defaults/main.yml >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "after-merge: added $s: apply ansible to the hosts that run roles: ci-host time-sync"
+  run cat "$SANDBOX/aq.add"
+  assert_output "add --project r --priority high --from item:ship --slug $s chore(after-merge): apply ansible to the hosts that run roles: ci-host time-sync (left by o/r#42)"
+  run grep -cx 'Roles: ci-host time-sync' "$SANDBOX/aq.task"
+  assert_output 1
+  # a queued item naming both roles carries the next merge of either
+  : >"$SANDBOX/aq.add" >"$SANDBOX/aq.slugs"
+  "$SANDBOX/bin/agent-queue.real" add --project r --slug "after-merge-$sha-41-r" $'chore(after-merge): earlier\n\nRoles: ci-host time-sync' >/dev/null
+  printf '%s\n' ansible/roles/ci-host/handlers/main.yml >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "after-merge: after-merge-$sha-41-r still queued, applying ci-host, so it carries #42 too: apply ansible to the hosts that run roles: ci-host"
+  [ ! -s "$SANDBOX/aq.add" ]
+  # a role it does not name gets its own item naming only that role
+  printf '%s\n' ansible/roles/ci-host/tasks/main.yml ansible/roles/fleet-worker/tasks/main.yml >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "after-merge: added $s: apply ansible to the hosts that run roles: fleet-worker"
+  run grep -c . "$SANDBOX/aq.add"
+  assert_output 1
+  # a change outside a role directory (the inventory) can reach any role's hosts: all, which the queued item does not cover
+  : >"$SANDBOX/aq.add" >"$SANDBOX/aq.slugs"
+  printf '%s\n' ansible/inventory.yml ansible/roles/ci-host/tasks/main.yml >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "after-merge: added $s: apply ansible to the hosts that run roles: all"
+  # a queued item with no Roles line (one filed by hand) covers no role, so the merge still gets its item
+  : >"$SANDBOX/aq.add" >"$SANDBOX/aq.slugs"
+  "$SANDBOX/bin/agent-queue.real" add --project r --slug "after-merge-$sha-40-r" 'chore(after-merge): by hand' >/dev/null
+  printf '%s\n' ansible/roles/fleet-worker/tasks/main.yml >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "after-merge: added $s: apply ansible to the hosts that run roles: fleet-worker"
+  # a line naming one role's directory gives that role, and a role name with a quote passes whole
+  : >"$SANDBOX/aq.add" >"$SANDBOX/aq.slugs"
+  printf '%s\n' "ansible/roles/it's/ $tpl" >"$NOTES_FIXTURE/after-merge"
+  printf '%s\n' "ansible/roles/it's/tasks/main.yml" >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "after-merge: added $s: apply ansible to the hosts that run roles: it's"
 }
 
 @test "partial landing holds after items and the board until the other repo lands" {
@@ -965,10 +1032,55 @@ EOS
   assert_output 1
 }
 
+@test "Forgejo: the base moves on again during the merged-up head's checks: merged up and re-checked again, not landed behind it (ar-6115)" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  printf '0\n1\n3\n0\n' >"$NOTES_FIXTURE/behind.seq"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'landing that green head behind it'
+  assert_line 'fetch: merged origin/main (1 behind) into the head and pushed it'
+  assert_line 'fetch: merged origin/main (3 behind) into the head and pushed it'
+  assert_line 'fetch: current with origin/main'
+  assert_line 'landed #42'
+  run grep -c '^checks: green$' <<<"$output"
+  assert_output 3
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 2
+  # The merge comes after the last push and the status read of that head.
+  [ "$(grep -n '^git push -q origin' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n '^curl GET commits/.*/status' "$LOG" | tail -1 | cut -d: -f1)" ]
+  [ "$(grep -n '^curl GET commits/.*/status' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n '^curl POST pulls/42/merge' "$LOG" | cut -d: -f1)" ]
+}
+
+@test "Forgejo: a base that keeps moving through FJ_CATCHUP_MAX merged-up runs exits 3 with nothing merged (ar-6115)" {
+  forgejo
+  export AGENT_LAND_FJ_CATCHUP_MAX=2
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  printf '0\n' >"$NOTES_FIXTURE/behind.seq"
+  printf '1\n' >"$NOTES_FIXTURE/behind"
+  run "$LAND" 42 --item ship
+  assert_failure 3
+  assert_output --partial 'origin/main moved on by 1 during each of 2 merged-up check runs'
+  assert_output --partial 'nothing merged'
+  refute_output --partial 'landing that green head behind it'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 2
+  run grep -c 'pulls/42/merge' "$LOG"
+  assert_output 0
+}
+
+@test "Forgejo --dry-run says a moved base is merged up and re-checked, landed behind only when the pick clears it (ar-6115)" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  run "$LAND" 42 --item ship --dry-run
+  assert_success
+  assert_output --partial 'fetch: on Forgejo a base that moved on during the checks is merged up and re-checked every time'
+}
+
 @test "a Forgejo check that failed stops at checks, naming it; nothing merged" {
   forgejo
   printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
-  echo '{"statuses":[{"status":"success","context":"lint"},{"status":"failure","context":"checks / test"}]}' >"$NOTES_FIXTURE/fj.status"
+  echo '[{"id":1,"status":"success","context":"lint"},{"id":2,"status":"failure","context":"checks / test"}]' >"$NOTES_FIXTURE/fj.status"
   run "$LAND" 42 --item ship
   assert_failure 1
   assert_output --partial 'checks failed: checks / test'
@@ -1013,7 +1125,7 @@ EOS
 @test "a Forgejo base whose protection rule requires statuses refuses a head with none; with no rule it lands" {
   forgejo
   printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
-  echo '{"statuses":[]}' >"$NOTES_FIXTURE/fj.status"
+  echo '[]' >"$NOTES_FIXTURE/fj.status"
   export AGENT_LAND_CHECKS_TRIES=1 AGENT_LAND_CHECKS_POLL=0
   echo '[{"rule_name":"main","enable_status_check":true,"block_on_outdated_branch":false}]' >"$NOTES_FIXTURE/fj.protections"
   run "$LAND" 42 --item ship

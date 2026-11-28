@@ -61,9 +61,10 @@ A proposal is a decision an analysis stream or dream filed with `agent-propose`:
 
 1. Answered but nothing moved: `agent-ask show <id>`. An empty `resumed_at` on an answered ask with a `resume` is the signal. `agent-ask resumable` lists them. `ask-resume --dry-run <id>` shows what it would run; `ask-resume <id>` runs it, `ask-resume --all` drains the list. It marks the ask resumed before it runs, so a crashed run is not retried; read the log.
 2. An answered ask with no `resume` becomes a board row instead. Read the answer yourself and carry on.
-3. Pending with the session gone: nothing expires an ask. `agent-ask target --reopen <id>` points it at a live session; or `agent-ask cancel <id> '<reason>'` if the question is dead.
+3. Pending with the session gone: `agent-ask expire` (every `assume-due` pass) parks an ask idle past park.conf's `IDLE_DAYS` that no live session or queue item waits on, and cancels it when it comes back still idle; it also cancels an unreviewed audit, a dated ask whose day is over, and an ask on a board row the human answered since. Sooner: `agent-ask target --reopen <id>` points it at a live session, or `agent-ask cancel <id> '<reason>'` if the question is dead.
 4. The judge answered wrongly: tell the human, who overrides with `agent-ask answer <id> ...`. A policy or `DELAY_RULES` change is re-applied to the pending queue by `agent-ask sweep --all`.
 5. `ask-judge` or `ask-resume` calls failing on a cap: `fleet-runners`, "budget".
+6. An agent answered an ask only the human answers (an approval, a human-only ask, `judge: human`), so its session reads STALLED instead of NEEDS: `agent-ask return --refused --dry-run` lists them, and `agent-ask return <id>` puts one back to pending, the agent's answer kept as `agent_answer`. `answer` refuses such an answer since ar-5156.
 
 ## The Stop check
 
