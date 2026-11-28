@@ -327,9 +327,16 @@ load 'fleet_dispatch/common'
   run cmd_stats
   assert_equal "$(jq -r .could_start <<<"$output")" 1
   assert_equal "$(jq -c '[.room_live_runs, .room_max_live, .room_live_hand, .room_held_slots, .room_held_load, .room_total_live, .room_load_at_hold]' <<<"$output")" '[0,25,0,0,0,0,null]'
+  # stats --room is the slot count alone (ar-1737): the same number, with no queue or board read behind it
+  run cmd_stats --room
+  assert_equal "$output" '{"room_max_live":25}'
   touch -d '-46 minutes' "$FLEET_DISPATCH_DIR/headroom.json"
   run cmd_stats
   assert_equal "$(jq -c '[.could_start, .room_max_live]' <<<"$output")" '[null,null]'
+  run cmd_stats --room
+  assert_equal "$output" '{}'
+  run cmd_stats --rooms
+  assert_failure 2
 }
 
 @test "negative control: a fleet worker over its own load pace gets no session, and the pass says why" {

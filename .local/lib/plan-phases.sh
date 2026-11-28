@@ -267,19 +267,37 @@ plan_epic_settle() {
 
 # epic_plans -> one JSON line per plan whose `epic:` line names an epic: {file, epic, phases}, from
 # the colon-separated PLAN_DIRS (grep -r skips ~/.agent/plans' project links into _live).
-# fleet-bench epics and fleet-dispatch take_epic both read an epic's plans here.
+# fleet-bench epics and fleet-dispatch take_epic both read an epic's plans here. About seven forks a plan
+# over 400 plans was 3.5s serial: the files are split into PLAN_JOBS contiguous chunks read side by side
+# (output order unchanged), and one jq builds every line from tab-separated file, epic and phases (ar-1737).
+: "${PLAN_JOBS:=8}"
 epic_plans() {
-  local d f e seen=" " dirs
+  local d f e seen=" " dirs files=() tmp i n=$PLAN_JOBS size pids=()
+  [[ "$n" =~ ^[1-9][0-9]*$ ]] || n=8
   IFS=: read -ra dirs <<<"$PLAN_DIRS"
   for d in "${dirs[@]}"; do
     [ -d "$d" ] || continue
     while IFS= read -r f; do
       case "$seen" in *" ${f##*/} "*) continue ;; esac
       seen+="${f##*/} "
-      e=$(plan_epic "$f"); [ -n "$e" ] || continue
-      jq -cn --arg f "$f" --arg e "$e" --argjson ph "$(plan_phase_list "$f")" '{file: $f, epic: $e, phases: $ph}'
+      files+=("$f")
     done < <(grep -rl --include='*.md' '^epic:' "$d" 2>/dev/null | sort)
   done
+  [ "${#files[@]}" -gt 0 ] || return 0
+  tmp=$(mktemp -d) || return 1
+  size=$(( (${#files[@]} + n - 1) / n ))
+  for ((i = 0; i < n; i++)); do
+    ( for f in "${files[@]:i*size:size}"; do
+        e=$(plan_epic "$f"); [ -n "$e" ] || continue
+        printf '%s\t%s\t%s\n' "$f" "$e" "$(plan_phase_list "$f")"
+      done >"$tmp/$i" ) &
+    pids+=("$!")
+  done
+  wait "${pids[@]}"
+  # a plan whose phase list came back empty is skipped on its own, as before; it never ends the stream
+  for ((i = 0; i < n; i++)); do cat "$tmp/$i"; done |
+    jq -cR 'split("\t") | select((.[2] // "") != "") | {file: .[0], epic: .[1], phases: (.[2] | fromjson)}'
+  rm -rf -- "$tmp"
 }
 
 # plan_rows <plan file> -> each `<code>-<N>` on the plan's lowercase `rows:` line, one a line: the
