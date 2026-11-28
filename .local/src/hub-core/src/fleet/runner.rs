@@ -119,6 +119,8 @@ pub struct Watch {
     pub severity: String,
     /// Its `project:`, a canonical project name; empty for a fleet-wide watch.
     pub project: String,
+    /// Its `system:`, the area it watches (an epic's system); empty for a watch that names none.
+    pub system: String,
     pub since: Option<i64>,
     pub lastrun: Option<i64>,
     pub lasttrip: Option<i64>,
@@ -675,6 +677,7 @@ pub fn watches(dir: &Path, state: &Path) -> Result<Vec<Watch>, String> {
                 state: if st.is_empty() { "new".into() } else { st },
                 severity,
                 project: field(&yaml, "project"),
+                system: field(&yaml, "system"),
                 since: read(&name, "since").parse().ok(),
                 lastrun: read(&name, "lastrun").parse().ok(),
                 lasttrip: read(&name, "lasttrip").parse().ok(),
