@@ -1874,6 +1874,23 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   grep -qxF 'export MAX_CALLS_HOUR=8' "$FLEET_SHEPHERD_DIR/.pass.sh"
 }
 
+@test "the pass launcher carries the runner's live ssh agent, so a pass reaches a fleet worker whatever the hub session's environment holds" {
+  doc "[$(row a STALLED false false)]"
+  local sock="$BATS_TEST_TMPDIR/agent.sock"
+  python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$sock"
+  SSH_AUTH_SOCK="$sock" run "$SH" run
+  assert_success
+  grep -qxF "export SSH_AUTH_SOCK=$(printf %q "$sock")" "$FLEET_SHEPHERD_DIR/.pass.sh"
+  # negative controls: no agent, or a dead one, writes no export over the pane's own
+  local dead
+  for dead in "" "$BATS_TEST_TMPDIR/gone.sock"; do
+    rm -f "$FLEET_SHEPHERD_DIR/.pass.sh" "$FLEET_SHEPHERD_DIR/.pass"
+    SSH_AUTH_SOCK="$dead" "$SH" run
+    [ -f "$FLEET_SHEPHERD_DIR/.pass.sh" ]
+    ! grep -q 'SSH_AUTH_SOCK' "$FLEET_SHEPHERD_DIR/.pass.sh" || fail "a ${dead:-missing} agent was exported"
+  done
+}
+
 @test "a pass starts on the account claude-acct room names; with none it starts on the best one and pages once, at normal, naming it" {
   doc "[$(row a STALLED false false)]"
   STUB_ROOM="$HOME/.claude-acct3" run "$SH" run
@@ -3036,7 +3053,8 @@ STUB
 # those facts and records every call. STUB_CANCEL_REFUSED refuses /cancel with HTTP 409 (not
 # cancellable), STUB_CANCEL_DENIED with 403 and refuses force-cancel too, STUB_FORCE_REFUSED refuses
 # force-cancel with HTTP 409 and STUB_FORCE_DENIED with 403, STUB_DELETE_FAILED refuses the run's DELETE
-# with 403, STUB_AFTER_FORCE=job gives run 1 a job and =down fails its read once force-cancel was
+# with 403 "Could not delete the workflow run", STUB_DELETE_ERROR with a plain 403 Forbidden (a token
+# fault), STUB_AFTER_FORCE=job gives run 1 a job and =down fails its read once force-cancel was
 # called on it, and STUB_GH_DOWN fails every run read.
 ghost_setup() {
   cat > "$PROM_LIB" <<'STUB'
@@ -3066,7 +3084,8 @@ case "$*" in
   *"/force-cancel") [ -z "${STUB_FORCE_REFUSED:-}" ] || { echo "gh: Cannot force cancel this run (HTTP 409)" >&2; exit 1; }
                     [ -z "${STUB_FORCE_DENIED:-}" ] || { echo "gh: Forbidden (HTTP 403)" >&2; exit 1; }
                     [ -z "${STUB_CANCEL_DENIED:-}" ] ;;
-  "api -X DELETE "*) [ -z "${STUB_DELETE_FAILED:-}" ] || { echo "gh: Forbidden (HTTP 403)" >&2; exit 1; } ;;
+  "api -X DELETE "*) [ -z "${STUB_DELETE_FAILED:-}" ] || { echo "gh: Could not delete the workflow run (HTTP 403)" >&2; exit 1; }
+                     [ -z "${STUB_DELETE_ERROR:-}" ] || { echo "gh: Forbidden (HTTP 403)" >&2; exit 1; } ;;
 esac'
 }
 
@@ -3145,14 +3164,43 @@ esac'
   # A DELETE GitHub refuses is cancel-failed with its answer, logged once, and tried again each run.
   rm -f "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" "$FLEET_SHEPHERD_DIR/log.md" "$HOME/gh.calls"
   local refused='delete: gh: Forbidden (HTTP 403)'
-  STUB_DELETE_FAILED=1 run "$SH" ghost-runs
+  STUB_DELETE_ERROR=1 run "$SH" ghost-runs
   assert_line "ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h; $refused)"
-  STUB_DELETE_FAILED=1 run "$SH" ghost-runs
+  STUB_DELETE_ERROR=1 run "$SH" ghost-runs
   assert_line "ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h; $refused)"
   run grep -c 'DELETE' "$HOME/gh.calls"
   assert_output 2
   run grep -cF "ghost run https://github.com/o/r/actions/runs/1: cancel-failed, queued 48h with no jobs ($refused); tried again each run" "$FLEET_SHEPHERD_DIR/log.md"
   assert_output 1
+  run "$SH" ghost-runs
+  assert_line 'ghost-runs: deleted https://github.com/o/r/actions/runs/1 (48h)'
+}
+
+@test "ghost-runs: a delete GitHub answers 403 is undeletable, logged once and not asked about again inside the age (ask VBMlNu: hold)" {
+  ghost_setup
+  export FLEET_SHEPHERD_GHOST_CANCEL=1 STUB_CANCEL_REFUSED=1 STUB_FORCE_REFUSED=1 STUB_DELETE_FAILED=1
+  local refused='delete: gh: Could not delete the workflow run (HTTP 403)'
+  run "$SH" ghost-runs
+  assert_line "ghost-runs: undeletable https://github.com/o/r/actions/runs/1 (48h; $refused)"
+  run grep -cF "ghost run https://github.com/o/r/actions/runs/1: undeletable, queued 48h with no jobs ($refused)" "$FLEET_SHEPHERD_DIR/log.md"
+  assert_output 1
+  # Judged: the next run inside the age makes no GitHub call about it.
+  rm -f "$HOME/gh.calls"
+  run "$SH" ghost-runs
+  assert_output ''
+  [ ! -e "$HOME/gh.calls" ]
+  # A day on, it is asked again once, and the rundown line is not repeated.
+  local day=$(( $(date +%s) - 25 * 3600 ))
+  sed -i "s/^[0-9]*\t/$day\t/" "$FLEET_SHEPHERD_DIR/ghost-runs.tsv"
+  run "$SH" ghost-runs
+  assert_line "ghost-runs: undeletable https://github.com/o/r/actions/runs/1 (48h; $refused)"
+  run grep -c 'DELETE' "$HOME/gh.calls"
+  assert_output 1
+  run grep -c 'ghost run .*undeletable' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_output 1
+  # A GitHub that lets the delete through ends it.
+  unset STUB_DELETE_FAILED
+  sed -i "s/^[0-9]*\t/$(( day - 90000 ))\t/" "$FLEET_SHEPHERD_DIR/ghost-runs.tsv"
   run "$SH" ghost-runs
   assert_line 'ghost-runs: deleted https://github.com/o/r/actions/runs/1 (48h)'
 }
