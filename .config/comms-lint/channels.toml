@@ -78,8 +78,8 @@ max_line = 200
 source = { kind = "command", cmd = ["notes", "report", "list", "--json", "--since", "{since_date}"], ts = "updated", text = "summary", path = "id" }
 
 # The morning briefing page (refs/<date>/briefing.md), linted whole: the human overview. Needs you
-# holds at most 5 items, Landed yesterday 10 (8 changes, a rest line, the fleet line), Projects 9 (8 projects and a rest line), Builds and
-# releases and Overnight 14, Money 6 (spent, one line per store or broker); each section must be there.
+# holds at most 5 items, Landed yesterday 10 (8 changes, a rest line, the fleet line), Projects 9
+# (hub_core::briefing::PROJECTS_SHOWN projects and a rest line), Builds and releases and Overnight 14, Money 6 (spent, one line per store or broker); each section must be there.
 [channel.briefing]
 sections = [['^## Needs you$', 5, 160], ['^## Landed yesterday$', 10, 160], ['^## Projects$', 9, 160], ['^## Builds and releases$', 14, 160], ['^## Overnight$', 14, 160], ['^## Money$', 6, 160]]
 require = [

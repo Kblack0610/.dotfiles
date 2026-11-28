@@ -1,6 +1,7 @@
 //! The briefing, two documents from one read. The overview (`markdown`, `hub briefing --md`) is
-//! the human's: headline, Needs you, what landed yesterday (products before fleet tooling), builds
-//! and releases, overnight, money, and one line to the second document. The agent briefing
+//! the human's: headline, Needs you, what landed yesterday (products before fleet tooling), one
+//! line per project that moved, builds and releases, overnight, money, and one line to the second
+//! document. The agent briefing
 //! (`agents_markdown`, `--agents-md`) is what the briefing was before the split: Needs you, one
 //! line per area (Infra, Sessions, Workers overnight, Nightly, Delivery, Costs), then the detail.
 //! `agentctl-briefing` writes both; `--json` is the same document for a surface.
@@ -951,32 +952,43 @@ fn projects(i: &Inputs) -> Vec<String> {
     };
     let mut by: BTreeMap<&str, Moved> = BTreeMap::new();
     for c in changes(i, rec).iter().filter(|c| c.area != FLEET_AREA) {
-        let m = by.entry(c.project).or_default();
+        let m = by
+            .entry(if c.project.is_empty() {
+                "unknown"
+            } else {
+                c.project
+            })
+            .or_default();
         m.merged += 1;
         m.fixes += usize::from(c.fix);
     }
     // The CI block keys a repo, the merge record names its project: join them through the merges.
-    fn project_of<'a>(rec: &'a Value, repo: &'a str) -> &'a str {
-        rec["merged"]
-            .as_array()
-            .into_iter()
-            .flatten()
+    // Any merge in the kept days names the repo's project, so a quiet day still joins; a repo that
+    // never merged in them keeps its own name (and no link).
+    fn project_of<'a>(days: &'a [(String, Value)], repo: &'a str) -> &'a str {
+        days.iter()
+            .rev()
+            .flat_map(|(_, d)| d["merged"].as_array().into_iter().flatten())
             .find(|r| {
                 r["repo"]
                     .as_str()
                     .map(|n| n.rsplit('/').next().unwrap_or(n))
                     == Some(repo)
+                    && r["project"].as_str().is_some_and(|p| !p.is_empty())
             })
             .and_then(|r| r["project"].as_str())
             .unwrap_or(repo)
     }
     for n in nightlies(rec).iter().filter(|n| n.green < n.runs) {
-        by.entry(project_of(rec, n.repo))
+        by.entry(project_of(&i.days, n.repo))
             .or_default()
             .red
             .push(n.wf);
     }
     for r in i.releases.iter().flatten() {
+        if FLEET_PROJECTS.contains(&r.project.as_str()) {
+            continue;
+        }
         if let Some(d) = r.deploys.last.as_ref().filter(|d| d.at >= i.since) {
             let what = match d.state.as_str() {
                 "ok" => "deployed",
@@ -1664,8 +1676,9 @@ fn unread(sources: &[crate::money::Source]) -> impl Iterator<Item = String> + '_
 }
 
 /// Each project's drill-down as the Projects line ends it: a wiki link to its lab summary
-/// (`lab-status`; the personal root, then the BNB one), else a pointer to its anchor
-/// (`project-index`, outside the vault, so a plain path). Read from the directories' listings.
+/// (`lab-status`), else a pointer to its anchor (`project-index`, outside the vault, so a plain
+/// path). A summary in both lab roots is the personal one: the roots are tried in that order
+/// and the first link kept. Read from the directories' listings.
 fn drill_links(home: &Path) -> BTreeMap<String, String> {
     let list = |dir: PathBuf| -> Vec<String> {
         std::fs::read_dir(dir)
@@ -1682,9 +1695,10 @@ fn drill_links(home: &Path) -> BTreeMap<String, String> {
             out.insert(p.to_string(), format!("(anchor: ~/.agent/anchors/{name})"));
         }
     }
-    for root in ["lab/bnb/projects/current", "lab/projects/current"] {
+    let mut linked = std::collections::BTreeSet::new();
+    for root in ["lab/projects/current", "lab/bnb/projects/current"] {
         for p in list(notes.join(root)) {
-            if notes.join(root).join(&p).join("summary.md").is_file() {
+            if notes.join(root).join(&p).join("summary.md").is_file() && linked.insert(p.clone()) {
                 out.insert(p.clone(), format!("[[{root}/{p}/summary]]"));
             }
         }
@@ -2650,6 +2664,36 @@ mod tests {
     }
 
     #[test]
+    fn a_red_nightly_joins_its_project_through_an_earlier_days_merge_and_a_fleet_deploy_is_left_out(
+    ) {
+        let mut i = with_merged(vec![]);
+        // no merge yesterday, but an earlier day's merge says repo "plat" belongs to "bnb-platform"
+        i.days[0].1["merged"] = json!([project_pr(
+            "bnb-platform",
+            "plat",
+            "feat(x): y (x-1)",
+            "Apps"
+        )]);
+        let at = i.days.len() - 1;
+        i.days[at].1["ci"] = json!({"repos": {
+            "Acme/plat": {"cost": {"nightly": {"Tests": {"green": 0, "runs": 1}}}},
+        }});
+        i.releases = Some(vec![release(
+            "dotfiles",
+            "prod",
+            Some(("v1", "ok", NOW - 3600)),
+        )]);
+        i.drill.insert(
+            "bnb-platform".into(),
+            "[[lab/bnb/projects/current/bnb-platform/summary]]".into(),
+        );
+        assert_eq!(
+            build(&i).by_project,
+            ["bnb-platform: nightly Tests red. [[lab/bnb/projects/current/bnb-platform/summary]]"]
+        );
+    }
+
+    #[test]
     fn projects_names_eight_then_counts_the_rest() {
         let prs = (0..11)
             .map(|k| project_pr(&format!("proj-{k:02}"), "r", "feat(x): y (x-1)", "Games"))
@@ -2666,8 +2710,14 @@ mod tests {
     fn a_project_line_is_cut_before_its_link_never_through_it() {
         let mut i = with_merged(vec![project_pr("p", "p", "feat(x): y (x-1)", "Games")]);
         let at = i.days.len() - 1;
-        let wfs: serde_json::Map<String, Value> = (0..30)
-            .map(|k| (format!("Workflow{k}"), json!({"green": 0, "runs": 1})))
+        // three long workflow names fill the 160 cap before the link does
+        let wfs: serde_json::Map<String, Value> = (0..3)
+            .map(|k| {
+                (
+                    format!("Workflow{k}{}", "x".repeat(40)),
+                    json!({"green": 0, "runs": 1}),
+                )
+            })
             .collect();
         i.days[at].1["ci"] = json!({"repos": {"Acme/p": {"cost": {"nightly": wfs}}}});
         let link = "[[lab/projects/current/p/summary]]";
@@ -2677,6 +2727,7 @@ mod tests {
             line.ends_with(link) && line.chars().count() <= ITEM_MAX,
             "{line}"
         );
+        assert!(line.contains("..."), "the words were cut: {line}");
     }
 
     #[test]
