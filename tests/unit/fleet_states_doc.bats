@@ -397,6 +397,49 @@ check_owner_copies() { # <doc> <file>...
   assert_output --partial "/.claude/hooks/stop-post.d/85-sync-plans.sh"
 }
 
+@test "the private repo's lib and skill scripts are looked in too, not only its bin" {
+  local t="$BATS_TEST_TMPDIR"
+  PRIVATE="$t/priv"
+  git init -q "$PRIVATE"; mkdir -p "$PRIVATE/.local/bin" "$PRIVATE/.local/lib" "$PRIVATE/.claude/skills/s"
+  for f in .local/bin/a .local/lib/live-sessions.sh .claude/skills/s/feed.sh .claude/skills/s/SKILL.md; do : > "$PRIVATE/$f"; done
+  git -C "$PRIVATE" add -A
+  run owned_files
+  assert_success
+  assert_output --partial "$PRIVATE/.local/bin/a"
+  assert_output --partial "$PRIVATE/.local/lib/live-sessions.sh"
+  assert_output --partial "$PRIVATE/.claude/skills/s/feed.sh"
+  refute_output --partial "SKILL.md"
+}
+
+@test "negative controls for the re-review's gate gaps: a guessed branch loop, a harness prefix test and a size capture or word list are found; the owner's loop and an interrupt count are not" {
+  local t="$BATS_TEST_TMPDIR"
+  printf '%s\n' '  for ref in main master develop; do' > "$t/branch"
+  printf '%s\n' '  elif ($t | startswith("[Request interrupted")) then ""' > "$t/prefix"
+  printf '%s\n' '    if "continued from a previous conversation" in t:' > "$t/compact.py"
+  printf '%s\n' '  size="$(jq -r '"'"'(.task | capture("#size/(?<s>[sml])") | .s)'"'"')"' > "$t/capture"
+  printf '%s\n' '  test("^[+-]#(urgent|size/[sml]|plan)$")' > "$t/words"
+  printf '%s\n' '    .map_or(Val::None, |s| at(&["xs", "s", "m", "l", "xl"], s)),' > "$t/sizes.rs"
+  printf '%s\n' '  (if ($c | startswith("[Request interrupted by user")) then .interrupts += 1 else . end)' > "$t/interrupts"
+  run check_owner_copies "$DOC" "$REPO_ROOT/.local/lib/agent-merge-proof.sh" "$t/branch" "$t/prefix" "$t/compact.py" "$t/capture" "$t/words" "$t/sizes.rs" "$t/interrupts"
+  assert_failure
+  for f in branch prefix compact.py capture words sizes.rs; do assert_output --partial "$t/$f:1:"; done
+  refute_output --partial "$t/interrupts"
+  refute_output --partial "agent-merge-proof.sh"
+}
+
+@test "negative controls for the landed predicate and the agentctl state dir: an ok-with-a-PR test and a one-name default are found; OUTCOME_JQ and the two-name default are not" {
+  local t="$BATS_TEST_TMPDIR"
+  printf '%s\n' '  jq '"'"'select(.status == "ok" and (.pr // "") != "")'"'"'' > "$t/landed"
+  printf '%s\n' 'STATE_DIR="${AGENTCTL_STATE:-$HOME/.local/state/agentctl}"' > "$t/one-old"
+  printf '%s\n' 'STATE="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}"' > "$t/one-new"
+  printf '%s\n' '  printf "%s" "${AGENTCTL_STATE_DIR:-${AGENTCTL_STATE:-$HOME/.local/state/agentctl}}"' > "$t/both"
+  run check_owner_copies "$DOC" "$REPO_ROOT/.local/bin/agent-queue" "$t/landed" "$t/one-old" "$t/one-new" "$t/both"
+  assert_failure
+  for f in landed one-old one-new; do assert_output --partial "$t/$f:1:"; done
+  refute_output --partial "$t/both"
+  refute_output --partial "agent-queue:"
+}
+
 @test "fact-owners check passes on the real tree: every copy is owned or debt, the pin holds, the generated rules and schema tags hold" {
   run env DOTFILES_PRIVATE="$PRIVATE" "$REPO_ROOT/.local/bin/fact-owners" check
   assert_success
