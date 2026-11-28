@@ -183,8 +183,9 @@ load 'agent_land/common'
   run "$LAND" 42 --item ship
   assert_line 'fetch: merged origin/main (1 behind) into the head and pushed it'
   second_wait
+  # one read of each, the policy the checks wait takes (required_unlisted); the catch-up reads none more
   run grep -c '^gh api repos/o/r/rules/branches/main$\|^gh api repos/o/r/branches/main/protection$' "$LOG"
-  assert_output 0
+  assert_output 2
   # The merge, then submodule_follow from the pre-merge head (rev-parse's stub answer), then the push.
   local m d p
   m=$(grep -n '^git merge -q --no-edit origin/main$' "$LOG" | cut -d: -f1)
@@ -574,6 +575,7 @@ EOS
 @test "the base moves on again, branch protection with strict checks: merged up again, and that head lands once its checks pass" {
   printf '0\n1\n1\n' >"$NOTES_FIXTURE/behind.seq"
   echo '{"required_status_checks":{"strict":true,"contexts":["Checks"]}}' >"$NOTES_FIXTURE/protection.json"
+  for _ in 1 2 3; do echo '[{"name":"Checks","bucket":"pass","workflow":"Checks"}]'; done >"$NOTES_FIXTURE/checks.cancelled"
   run "$LAND" 42 --item ship
   moved_again 2 3
 }
@@ -592,6 +594,7 @@ EOS
   printf '0\n1\n1\n' >"$NOTES_FIXTURE/behind.seq"
   echo '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false}}]' >"$NOTES_FIXTURE/rules.json"
   echo '{"required_status_checks":{"strict":false,"contexts":["Checks"]}}' >"$NOTES_FIXTURE/protection.json"
+  for _ in 1 2 3; do echo '[{"name":"Checks","bucket":"pass","workflow":"Checks"}]'; done >"$NOTES_FIXTURE/checks.cancelled"
   run "$LAND" 42 --item ship
   assert_output --partial 'landing that green head behind it'
   moved_again 1 2
@@ -725,6 +728,8 @@ gh pr checks 42 --watch --fail-fast -i 30
 gh pr checks 42 --json name,bucket,workflow
 git rev-parse HEAD
 gh run list --commit 0123456789abcdef --limit 100 --json status,conclusion,workflowName,attempt
+gh api repos/o/r/rules/branches/main
+gh api repos/o/r/branches/main/protection
 git fetch -q origin
 git rev-list --count HEAD..origin/main
 git rev-parse HEAD
@@ -1322,6 +1327,68 @@ RERUN_GAP='[{"name":"shard weights","bucket":"pass","workflow":"shell tests"},{"
   assert_line 'landed #42'
   run grep -c 'pr checks 42 --watch' "$LOG"
   assert_output 2
+}
+
+# A merge-up push opens its workflows' runs one by one: the watch listed only gate guard, read green, no
+# run was open for rerun_pending to see, and GitHub refused the merge on the required gate (#3671, ar-6328).
+GATE_GUARD_ONLY='[{"name":"gate guard","bucket":"pass","workflow":"gate guard"}]'
+GATE_LISTED='[{"name":"gate guard","bucket":"pass","workflow":"gate guard"},{"name":"gate","bucket":"pass","workflow":"shell tests"}]'
+
+@test "a green watch that lists no check a ruleset requires: it waits for the head to register it, then lands (ar-6328)" {
+  echo '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false,"required_status_checks":[{"context":"gate"}]}}]' >"$NOTES_FIXTURE/rules.json"
+  printf '%s\n' "$GATE_GUARD_ONLY" "$GATE_GUARD_ONLY" "$GATE_LISTED" >"$NOTES_FIXTURE/checks.cancelled"
+  fake_sleep
+  AGENT_LAND_CHECKS_FIRST_RUN_TRIES=5 run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: green so far, but origin/main requires gate, which the head has not registered yet; waiting on it'
+  assert_line 'landed #42'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 3
+  run grep -c '^sleep 60$' "$LOG"
+  assert_output 2
+  [ "$(grep -n 'pr checks 42 --watch' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'gh pr merge 42' "$LOG" | cut -d: -f1)" ]
+}
+
+@test "a green watch that lists no check branch protection requires: it waits the same (ar-6328)" {
+  echo '{"required_status_checks":{"strict":false,"contexts":["gate"]}}' >"$NOTES_FIXTURE/protection.json"
+  printf '%s\n' "$GATE_GUARD_ONLY" "$GATE_LISTED" >"$NOTES_FIXTURE/checks.cancelled"
+  fake_sleep
+  AGENT_LAND_CHECKS_FIRST_RUN_TRIES=5 run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: green so far, but origin/main requires gate, which the head has not registered yet; waiting on it'
+  assert_line 'landed #42'
+}
+
+@test "a required check the head never registers: stops at checks naming it after CHECKS_FIRST_RUN_TRIES waits, never the merge (ar-6328)" {
+  echo '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false,"required_status_checks":[{"context":"gate"}]}}]' >"$NOTES_FIXTURE/rules.json"
+  for _ in 1 2 3 4; do echo "$GATE_GUARD_ONLY"; done >"$NOTES_FIXTURE/checks.cancelled"
+  fake_sleep
+  AGENT_LAND_CHECKS_FIRST_RUN_TRIES=2 run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: required check gate never registered on the head'
+  run grep -c '^gh pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "a required check unlisted while a run on the head is open: that run is waited on first, without spending the registration tries (ar-6328 review)" {
+  echo '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false,"required_status_checks":[{"context":"gate"}]}}]' >"$NOTES_FIXTURE/rules.json"
+  printf '%s\n' "$GATE_GUARD_ONLY" "$GATE_GUARD_ONLY" "$GATE_LISTED" >"$NOTES_FIXTURE/checks.cancelled"
+  printf '%s\n' '[{"status":"queued","workflowName":"shell tests","attempt":1}]' >"$NOTES_FIXTURE/runs.open"
+  fake_sleep
+  AGENT_LAND_CHECKS_FIRST_RUN_TRIES=1 run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'landed #42'
+}
+
+@test "a green watch whose head lists every required check lands with no extra wait (ar-6328)" {
+  echo '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false,"required_status_checks":[{"context":"gate"}]}}]' >"$NOTES_FIXTURE/rules.json"
+  printf '%s\n' "$GATE_LISTED" >"$NOTES_FIXTURE/checks.cancelled"
+  fake_sleep
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'has not registered yet'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 1
 }
 
 @test "a check that registers pending after a green watch is watched again, never green (ar-6084 review)" {
