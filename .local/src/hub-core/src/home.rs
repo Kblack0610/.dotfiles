@@ -353,9 +353,13 @@ impl Need {
     }
 
     /// Whether the needs pager may page it: an ask that is not a decision and holds a session,
-    /// a queue item or later work. Every other row waits for the list or the briefing.
+    /// a queue item or later work, or any other row that is not a decision (a session at a
+    /// dialog, a queue item). A decision waits for the briefing's daily batch.
     pub fn pages(&self) -> bool {
-        self.kind == Kind::Ask && !self.is_decision() && !self.holds().is_empty()
+        match self.kind {
+            Kind::Ask => !self.is_decision() && !self.holds().is_empty(),
+            _ => !self.is_decision(),
+        }
     }
 
     /// Why it sits where it does: what it holds, or a sheet row's `#priority`.

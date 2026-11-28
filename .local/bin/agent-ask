@@ -3340,18 +3340,18 @@ standing_pass() {
 #                             An agent session answers as agent, so what only the human may answer stays pending.
 # Output: the batch, one `<id>\t<project>\t<recommend>\t<question>` row each.
 cmd_batch() {
-  local today day id project rec q f n=0 parked=0 tmp
+  local today id rec f n=0 parked=0 tmp
   today="$(date +%F)"
   case "${1:-}" in
     --take)
-      while IFS=$'\t' read -r day id project rec q; do
+      while IFS= read -r id; do
         [ -n "$id" ] || continue
         f="$(find_ask "$id")"
         [ -n "$f" ] && [ "$(field "$f" status)" = pending ] || continue
         rec="$(field "$f" recommend)"
         if [ -z "$rec" ]; then echo "agent-ask batch: $id has no recommendation; left for its card" >&2; continue; fi
-        cmd_answer_cli "$id" "$rec" && n=$((n + 1))
-      done < <(cat "$AGENT_ASK_BATCH" 2>/dev/null)
+        cmd_answer_cli "$id" "$rec" </dev/null && n=$((n + 1))
+      done < <(cut -f2 "$AGENT_ASK_BATCH" 2>/dev/null)
       echo "agent-ask batch: took the recommendation on $n asks" >&2
       return 0 ;;
     '') ;;
@@ -3360,13 +3360,13 @@ cmd_batch() {
   if [ "$(awk -F'\t' 'NR == 1 { print $1 }' "$AGENT_ASK_BATCH" 2>/dev/null)" = "$today" ]; then
     cut -f2- "$AGENT_ASK_BATCH"; return 0
   fi
-  while IFS=$'\t' read -r day id project rec q; do
+  while IFS= read -r id; do
     [ -n "$id" ] || continue
     f="$(find_ask "$id")"
     [ -n "$f" ] && [ "$(field "$f" status)" = pending ] || continue
     [[ "$(field "$f" parked_until)" > "$(now_utc)" ]] && continue
-    cmd_park "$id" 2>/dev/null && parked=$((parked + 1))
-  done < <(cat "$AGENT_ASK_BATCH" 2>/dev/null)
+    cmd_park "$id" </dev/null 2>/dev/null && parked=$((parked + 1))
+  done < <(cut -f2 "$AGENT_ASK_BATCH" 2>/dev/null)
   mkdir -p "$(dirname "$AGENT_ASK_BATCH")" || return 1
   tmp="$(mktemp "$AGENT_ASK_BATCH.XXXXXX")" || return 1
   cmd_list --all --pending | awk -F'\t' -v day="$today" '

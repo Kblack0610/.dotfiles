@@ -316,6 +316,7 @@ pub const FIELD_ROLES: &[(&str, Role)] = &[
     ("what", Role::Note),
     ("next", Role::Next),
     ("needs", Role::Next),
+    ("decisions", Role::Next),
     ("landed", Role::Note),
     ("builds", Role::Note),
     ("overnight", Role::Note),
@@ -565,6 +566,7 @@ mod tests {
         let briefing = crate::briefing::Briefing {
             headline: "Two things need you.".into(),
             needs: vec!["Answer the ask in the dotfiles session".into()],
+            decisions: vec!["Take yes on: ship it? (dotfiles, 2h, ask a1)".into()],
             landed: vec!["Merged 4 changes".into()],
             ..Default::default()
         };

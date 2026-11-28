@@ -99,8 +99,8 @@ fn in_repage_window(n: &Need, cfg: &Config) -> bool {
             .is_some_and(|s| (cfg.repage_after_min..cfg.repage_before_min).contains(&s.age_min))
 }
 
-/// The page for `needs` (in their rank order), which only an ask that is not a decision pages (`Need::pages`: a critical ask,
-/// or one the judge never levelled, that holds a session, a queue item or later work), given the ids already paged and how many of
+/// The page for `needs` (in their rank order), leaving out the daily decisions and any ask that
+/// holds nothing (`Need::pages`), given the ids already paged and how many of
 /// this sender's pages buzzed in the last day. The paged ids keep only rows still listed, so
 /// an answered ask leaves the file and a new ask with its id would page again. An ask paged
 /// before pages once more inside `repage_after_min..repage_before_min`, so a blocking ask is
@@ -465,8 +465,9 @@ mod tests {
 
     #[test]
     fn only_a_critical_ask_that_holds_work_pages() {
-        // Negative controls: a decision (an ask below critical, a plan approval), an ask that holds
-        // nothing and a session dialog wait for the list and the briefing, however old.
+        // Negative controls: a decision (an ask below critical, a plan approval) and an ask that
+        // holds nothing wait for the list and the briefing, however old. A session at a dialog is
+        // not a decision and still pages.
         let ask = |level: &str, session: bool| {
             let mut n = row(Kind::Ask, "a", true, 9_000);
             n.ask = Some(crate::boards::Ask {
@@ -489,9 +490,16 @@ mod tests {
             ask("repo", true),
             ask("critical", false),
             plan,
-            row(Kind::Session, "s2", true, 9_000),
         ];
         assert_eq!(decide(&waiting, &set(&[]), 0, &cfg()).page, None);
+        assert!(decide(
+            &[row(Kind::Session, "s2", true, 9_000)],
+            &set(&[]),
+            0,
+            &cfg()
+        )
+        .page
+        .is_some());
         // The same asks with a critical one that holds a session: one page, for it alone.
         let p = decide(
             &[ask("fleet", true), ask("critical", true)],

@@ -355,7 +355,7 @@ pub fn decisions(rows: &[Need], now: i64) -> Vec<String> {
         ));
     }
     lines.push(
-        "Reply once: run agent-ask batch --take to take every pick; what is still open at the next batch is parked, never answered for you."
+        "Reply once: agent-ask batch --take takes each ask's pick; open asks park at the next batch."
             .into(),
     );
     lines
@@ -1211,9 +1211,8 @@ fn agents_line(areas: &[Area]) -> String {
 }
 
 /// "As of Tue 06:50: 4 things need you.", the sentence both documents open with and
-/// notes-cli's Morning block reads.
-/// The one count of Home's rows, and how many of them are the day's Decisions (`d`), listed in the
-/// overview's own section.
+/// notes-cli's Morning block reads. It is the one count of Home's rows, and says how many of them
+/// are the day's Decisions (`d`), listed in a section of their own.
 fn as_of(i: &Inputs, n: usize, d: usize) -> String {
     let needs = match n {
         0 => "nothing needs you".to_string(),
@@ -1388,6 +1387,17 @@ impl Briefing {
         s
     }
 
+    fn decisions_md(&self) -> String {
+        let mut s = String::from("\n## Decisions\n\n");
+        if self.decisions.is_empty() {
+            s += "- nothing\n";
+        }
+        for d in &self.decisions {
+            s += &format!("- {d}\n");
+        }
+        s
+    }
+
     fn needs_md(&self) -> String {
         let mut s = String::from("## Needs you\n\n");
         if self.needs.is_empty() {
@@ -1405,13 +1415,7 @@ impl Briefing {
     pub fn markdown(&self) -> String {
         let mut s = self.top("Briefing", &self.overview, "the agents briefing");
         s += &self.needs_md();
-        s += "\n## Decisions\n\n";
-        if self.decisions.is_empty() {
-            s += "- nothing\n";
-        }
-        for d in &self.decisions {
-            s += &format!("- {d}\n");
-        }
+        s += &self.decisions_md();
         for (title, lines) in [
             ("Landed yesterday", &self.landed),
             ("Builds and releases", &self.builds),
@@ -1432,6 +1436,7 @@ impl Briefing {
     pub fn agents_markdown(&self) -> String {
         let mut s = self.top("Agent briefing", &self.headline, "Details");
         s += &self.needs_md();
+        s += &self.decisions_md();
         s += "\n## Areas\n\n";
         for a in &self.areas {
             let line = format!("{}: {}, {}", a.name, a.level.word(), a.line);
@@ -2253,7 +2258,7 @@ mod tests {
             b.decisions
         );
         assert!(
-            b.decisions[3].starts_with("Reply once: run agent-ask batch --take"),
+            b.decisions[3].starts_with("Reply once: agent-ask batch --take"),
             "{:?}",
             b.decisions
         );
@@ -2268,10 +2273,10 @@ mod tests {
         );
         let md = b.markdown();
         assert!(md.contains("## Decisions\n\n- Take dotfiles on:"), "{md}");
-        assert!(
-            grader::grade(&["--channel", "briefing"], &md).is_empty(),
-            "{md}"
-        );
+        for l in &b.decisions {
+            let f = grader::grade(&["--channel", "ui", "--role", "next"], l);
+            assert!(f.is_empty(), "{l}: {f:?}");
+        }
         // Negative control: with nothing batched the section says so and no reply line shows.
         i.home.needs.retain(|n| !n.is_decision());
         let b = build(&i);

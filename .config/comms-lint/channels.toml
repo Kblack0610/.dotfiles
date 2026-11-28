@@ -98,9 +98,9 @@ forbid = [['-> do: ', 'a runbook hint: give one action and a link']]
 source = { kind = "files", glob = "~/.notes/journal/refs/*/briefing.md" }
 
 # The agent briefing (refs/<date>/agents.md): what the briefing was before the overview split off.
-# At most 5 items under Needs you and 6 under Areas.
+# At most 5 items under Needs you, 8 under Decisions and 6 under Areas.
 [channel.briefing-agents]
-sections = [['^## Needs you$', 5, 160], ['^## Areas$', 6, 200]]
+sections = [['^## Needs you$', 5, 160], ['^## Decisions$', 8, 200], ['^## Areas$', 6, 200]]
 max_line = 200
 forbid = [['-> do: ', 'a runbook hint: give one action and a link']]
 source = { kind = "files", glob = "~/.notes/journal/refs/*/agents.md" }
