@@ -118,6 +118,10 @@ class_rank() { awk -F'\t' -v c="$1" '$1 == c { print $2 }' <<<"$DESK_CLASSES"; }
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fmt.sh"
 # shellcheck source=../lib/frontmatter.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/frontmatter.sh"   # fm_set
+FM_FLAT=1   # a hold is flat: no line of it is a body
+
+# hold_locked <command>...: the command under the lock fm_set takes ($HOLD_ROOT/.lock), for a write of a hold file that is not a key rewrite (set's replace, release's removal).
+hold_locked() { ( command -v flock >/dev/null 2>&1 && flock 9; "$@" ) 9>>"$HOLD_ROOT/.lock"; }
 # shellcheck source=../lib/audit.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/audit.sh"
 # shellcheck source=../lib/agent-units.sh
@@ -317,7 +321,7 @@ cmd_set() {
   } > "$tmp"
   # Re-setting an existing hold replaces it (new reason, new roster, no grants, the same since),
   # atomically, so a reader never sees half a file.
-  mv "$tmp" "$f"
+  hold_locked mv "$tmp" "$f"
   # Low on set and on release: fleet-pace sets and lifts holds itself, so a hold is the
   # fleet pacing itself, not something the human acts on. At high it was 10 of the phone's
   # 270 pages in 48h (2026-10-28). The hold still shows in the briefing and the preflight.
@@ -604,7 +608,7 @@ cmd_release() {
     echo "agent-hold release: could not restore $failed; $resource stays held, release it again" >&2
     return 1
   fi
-  rm -f "$f"
+  hold_locked rm -f "$f"
   # A lifted hold is what held starts back: wake a kick (dispatch_wake) rather than wait for the timer.
   dispatch_wake "agent-hold release $resource"
   notify -p low -t "go: $resource" "released (was: $reason)"

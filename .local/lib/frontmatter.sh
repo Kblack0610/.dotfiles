@@ -6,7 +6,8 @@
 #   fm_get <file> <key>                         the first value of the key in the header; nothing when it is absent
 #   fm_set <file> <key> <value> [<key> <value>...]   those keys in one atomic, locked rewrite
 #
-# The header is every line up to the first `---` line, or the whole file when it has none. fm_get reads
+# The header is every line up to the first `---` line, or the whole file when it has none (a caller whose
+# file is flat, an ask or a hold, sets FM_FLAT=1 so a value line of `---` ends nothing in fm_set). fm_get reads
 # the file by redirect, never as an awk operand: awk reads stdin for an empty operand, and a caller whose
 # lookup came back empty hung on the tool shell's open stdin (ar-3455).
 #
@@ -16,8 +17,8 @@
 # fails, writing nothing, for a file that is gone (a released hold is never brought back); for a value that
 # spans lines, or a key that is not one word, it refuses with status 2, and a caller that defines `die` exits through it.
 #
-# The rewrite runs under flock on FM_LOCK (default: `.lock` in the file's directory), waiting at most
-# FM_LOCK_WAIT seconds (default 30): two unlocked rewrites lose whichever finished first. A caller that
+# The rewrite runs under flock on FM_LOCK (default: `.lock` in the file's directory), waiting for
+# it with no bound, or FM_LOCK_WAIT seconds when set: two unlocked rewrites lose whichever finished first. A caller that
 # already holds the lock for its own writes (agent-queue's queue lock, an ask's per-project lock) sets
 # FM_LOCKED=1: flock on a second descriptor of a file the caller holds would wait on the caller itself.
 
@@ -43,14 +44,14 @@ _fm_write() {
   tmp="$(mktemp "$(dirname "$f")/.${f##*/}.XXXXXX")" || { _fm_fail "cannot write in $(dirname "$f")"; return; }
   # The pairs ride in ARGV, which awk takes raw: -v would read a backslash in a value as an escape.
   # The file comes in on stdin, so no operand is left to be mistaken for a var=value assignment.
-  awk '
+  awk -v flat="${FM_FLAT-}" '
     function flush(  i) { for (i = 1; i <= n; i++) if (!(k[i] in done)) { print k[i] ": " v[k[i]]; done[k[i]] = 1 } }
     BEGIN {
       n = (ARGC - 1) / 2
       for (i = 1; i <= n; i++) { k[i] = ARGV[2 * i - 1]; v[k[i]] = ARGV[2 * i]; ARGV[2 * i - 1] = ARGV[2 * i] = "" }
       ARGC = 1
     }
-    !body && $0 == "---" { flush(); body = 1 }
+    !flat && !body && $0 == "---" { flush(); body = 1 }
     !body {
       for (i = 1; i <= n; i++) if (index($0, k[i] ":") == 1) {
         if (!(k[i] in done)) { print k[i] ": " v[k[i]]; done[k[i]] = 1 }
@@ -63,15 +64,16 @@ _fm_write() {
 }
 
 fm_set() { # file key value [key value]...
-  local f="${1-}" i
+  local f="${1-}" i lw=()
   if [ $# -lt 3 ] || [ $((($# - 1) % 2)) -ne 0 ]; then _fm_refuse "usage: fm_set <file> <key> <value> [<key> <value>...]"; return; fi
   for ((i = 2; i <= $#; i += 2)); do
     case "${!i}" in '' | *[[:space:]:]*) _fm_refuse "not a header key: ${!i}"; return ;; esac
     case "${@:i+1:1}" in *$'\n'*) _fm_refuse "a value cannot span lines: ${!i}"; return ;; esac
   done
   [ -z "${FM_LOCKED-}" ] || { _fm_write "$@"; return; }
+  [ -z "${FM_LOCK_WAIT-}" ] || lw=(-w "$FM_LOCK_WAIT")
   (
-    command -v flock >/dev/null 2>&1 && { flock -w "${FM_LOCK_WAIT:-30}" 9 || { _fm_fail "$f is locked by another writer"; exit 1; }; }
+    command -v flock >/dev/null 2>&1 && { flock "${lw[@]}" 9 || { _fm_fail "$f is locked by another writer"; exit 1; }; }
     _fm_write "$@"
   ) 9>>"${FM_LOCK:-$(dirname "$f")/.lock}"
 }

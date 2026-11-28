@@ -404,6 +404,7 @@ drop_lines() {
 
 queue_changed() { : > "$ASKS_ROOT/.changed" 2>/dev/null || true; }
 
+FM_FLAT=1   # an ask is flat: no line of it is a body
 # Writing an ask's fields is fm_set (frontmatter.sh), which takes the per-project lock (`.lock` beside the
 # ask) itself: the judge writes an ask in the background while the human may be answering it, and two
 # unlocked rewrites lose whichever finished first. A caller already inside that lock (a `flock 9` block
@@ -3050,7 +3051,7 @@ Return the verdict in the structured output."
     else rule=grounded   # nothing to take: no recommendation and no answer of its own
     fi
   fi
-  local fields=(judge_type "$(jq -r .type <<<"$verdict")" judge_met "$(jq -r .met <<<"$verdict")"
+  local fields=(judge_type "$(oneline "$(jq -r .type <<<"$verdict")")" judge_met "$(oneline "$(jq -r .met <<<"$verdict")")"
     judge_evidence "$(oneline "$(jq -r .evidence <<<"$verdict")")")
   # The level: the judge's widest rating, raised to fleet by a policy floor name.
   # judge_level_raised says a floor raised it, which judge-eval counts per cell. judge_human_only

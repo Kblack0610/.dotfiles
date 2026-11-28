@@ -94,6 +94,13 @@ held_write() {
   [ "$(cat "$F")" = "$before" ]
 }
 
+@test "FM_FLAT=1 reads the whole file as the header, so a --- value line ends nothing" {
+  printf 'a: 1\nnotes: x\n---\nstatus: pending\n' > "$F"
+  FM_FLAT=1 fm_set "$F" status answered
+  run cat "$F"
+  assert_output $'a: 1\nnotes: x\n---\nstatus: answered'
+}
+
 @test "fm_set exits through the caller's die when it has one" {
   run bash -c '. "$1"; die() { echo "tool: $*" >&2; exit 9; }; fm_set "$2" note $'"'"'a\nb'"'"'' _ "$LIB" "$F"
   assert_failure 9
@@ -119,7 +126,7 @@ held_write() {
 }
 
 @test "NEGATIVE CONTROL: the same lock check fails against a fm_set with its flock removed" {
-  grep -v 'flock -w' "$LIB" > "$BATS_TEST_TMPDIR/nolock.sh"
+  grep -v flock "$LIB" > "$BATS_TEST_TMPDIR/nolock.sh"
   run grep -c flock "$BATS_TEST_TMPDIR/nolock.sh"
   assert_output 0
   run held_write "$BATS_TEST_TMPDIR/nolock.sh"
