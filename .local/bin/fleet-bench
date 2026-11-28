@@ -53,6 +53,7 @@
 #                                KPIs over 7d and 28d of human sessions (the token ones from the
 #                                nightly token-usage snapshots, sandboxed_lane_pct from BENCH_CALLS, pool_busy_share from Prometheus,
 #                                the churn_* rows from the notes ingest record and the dotfiles merge log),
+#                                owner_debt and unowned counted now by BENCH_OWNERS_CMD (fact-owners count --json),
 #                                against KPI_THRESHOLDS;
 #                                --vitals the BENCH_VITALS rows, the front page every view reads,
 #                                --at as of a past time, --trend one row a day of the 7d values,
@@ -377,6 +378,7 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${BENCH_WEEK_CMD:=day-log week --line}"         # the newest stored week: what moved, against the week before
 : "${BENCH_COMMS_CMD:=comms-lint}"                 # the newest nightly comms snapshot: `line` and `kpi --json`
 : "${BENCH_JUDGE_CMD:=judge-eval}"                 # the judge lanes scored against their ground truth: `kpi --json`
+: "${BENCH_OWNERS_CMD:=fact-owners}"               # the Owners table's counts: `count --json` is {owner_debt, unowned}, the one place they are worked out (owners_kpi)
 : "${WAKE_CALLS_TARGET:=2}"          # calls a passing background-task wake should take: read the verdict, nothing else
 : "${BENCH_PROJECT_MAP:=$(project_map_file)}"
 : "${BENCH_FORECAST_HORIZON_H:=48}"   # a baseline still open this long is scored as a lower bound
@@ -3564,6 +3566,7 @@ KPI_ASKS="human_answered_per_day ask_wait_p90_min"
 KPI_STARTUP="startup_ready_ms_p50"
 KPI_SANDBOX="sandboxed_lane_pct"
 KPI_POOL="pool_busy_share"
+KPI_OWNERS="owner_debt unowned"
 KPI_CHURN="churn_merges_per_day churn_filed_per_closed churn_reopens_per_day churn_followups_per_pr churn_admitted_per_day churn_refused_per_day"
 # Each scored runner's runner_score_<name> is judge-eval's too, listed from its output and the
 # thresholds rather than here: the runner confs' SCORE= is the one list of lanes.
@@ -3573,6 +3576,10 @@ KPI_CHURN="churn_merges_per_day churn_filed_per_closed churn_reopens_per_day chu
 comms_kpi() { $BENCH_COMMS_CMD kpi --json 2>/dev/null | jq -ce 'objects' 2>/dev/null || echo '{}'; }
 # judge_kpi -> judge-eval's KPI object, the same shape, or {} when it cannot score
 judge_kpi() { $BENCH_JUDGE_CMD kpi --json 2>/dev/null | jq -ce 'objects' 2>/dev/null || echo '{}'; }
+# owners_kpi -> {owner_debt, unowned} as `fact-owners count --json` prints them, or {} when it cannot count.
+# Counted now, so kpi_json reads each as a now row (a number, not a 7d/28d pair). owner_debt is the known
+# copies still to remove; unowned the owned files with no Owners row. Both are counted there, never here.
+owners_kpi() { timeout 60 $BENCH_OWNERS_CMD count --json 2>/dev/null | jq -ce 'objects | with_entries(select(.value | numbers))' 2>/dev/null || echo '{}'; }
 # ask_kpi <now> -> the ask KPIs, the same shape, or {} when agent-ask cannot be read.
 # human_answered_per_day: asks the human answered in the window, a day, outside the chat that asked
 # them, so it counts interrupts: an answer typed into the asking session (answer_note "in session: ",
@@ -3722,8 +3729,8 @@ kpi_tokens() {
            totals: (.totals // {} | {responses, context, cache_write, tool_chars, tool_calls})}' "${f[@]}" 2>/dev/null || true
 }
 
-# kpi_live <now> -> the comms, judge, ask, startup, sandbox, pool and churn KPIs as one object
-kpi_live() { jq -sc 'add' <(comms_kpi) <(judge_kpi) <(ask_kpi "$1") <(startup_kpi "$1") <(sandbox_kpi "$1") <(pool_kpi "$1") <(churn_kpi "$1"); }
+# kpi_live <now> -> the comms, judge, ask, startup, sandbox, pool, churn and owners KPIs as one object
+kpi_live() { jq -sc 'add' <(comms_kpi) <(judge_kpi) <(ask_kpi "$1") <(startup_kpi "$1") <(sandbox_kpi "$1") <(pool_kpi "$1") <(churn_kpi "$1") <(owners_kpi); }
 
 # kpi_json <now> <ledger counts> [live] -> one object keyed by KPI, in table order. live is
 # kpi_live's object, read now when not given. kpi --at gives {} and no counts, so the comms and the
@@ -3735,12 +3742,13 @@ kpi_json() {
   [ -n "$cm" ] || cm=$(kpi_live "$1")
   jq -n --argjson t "$1" --slurpfile o <(outcomes_newest) --slurpfile c <(ci_claimed) --slurpfile k "$(kpi_canary)" --slurpfile tk <(kpi_tokens) \
      --argjson pit "$(kv_json <<<"$2")" --argjson lim "$lim" --arg nowkeys "$KPI_NOW" \
-     --argjson cm "$cm" --arg commskeys "$KPI_COMMS $KPI_JUDGE $KPI_ASKS $KPI_STARTUP $KPI_SANDBOX $KPI_POOL $KPI_CHURN" "$KPI_DEFS"'
+     --argjson cm "$cm" --arg commskeys "$KPI_COMMS $KPI_JUDGE $KPI_ASKS $KPI_STARTUP $KPI_SANDBOX $KPI_POOL $KPI_CHURN" --arg ownerkeys "$KPI_OWNERS" "$KPI_DEFS"'
     win($t; 7) as $w7 | win($t; 28) as $w28
     | [($w7 | keys_unsorted[] | {key: ., value: {"7d": $w7[.], "28d": $w28[.], now: false}}),
        ((($commskeys | split(" ")) + ([$cm, $lim | keys[] | select(startswith("runner_score_")) | sub("_(min|max)$"; "")] | unique))[]
         | {key: ., value: {"7d": ((($cm[.] // {})["7d"] | numbers) // null),
                            "28d": ((($cm[.] // {})["28d"] | numbers) // null), now: false}}),
+       ($ownerkeys | split(" ")[] | {key: ., value: {"7d": (($cm[.] | numbers) // null), "28d": null, now: true}}),
        ($nowkeys | split(" ")[] | {key: ., value: ({"7d": (($pit[.] | numbers) // null), "28d": null, now: true}
           + ((($pit[. + "_short_days"] | numbers) // null) as $d | if $d != null then {short_days: $d} else {} end))})]
     | map(.key as $k | .value |= (

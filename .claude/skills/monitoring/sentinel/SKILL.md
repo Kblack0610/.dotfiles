@@ -100,7 +100,7 @@ renders and what a page carries, and a watch nobody can read is a watch nobody a
 
 `who` is the existing `source:` field - don't add another.
 
-Add `system: <id>` (an id of `~/.local/src/docs/systems.md`, or a project's own in project-map.json): what the watch is about, so its red loads fix-red plus that system's skills. Add `project: <canonical name>` (project-map.json) when the watch belongs to one project: it is the Alerts tab's project facet and the "N watches, M firing" line on that project's card. Leave it out for fleet machinery (spend, dispatch, liveness), which is fleet-wide. `validate` refuses a name the registry does not hold.
+Add `system: <id>` (an id of `~/.local/src/docs/systems.md`, or a project's own in project-map.json): what the watch is about, so its red loads fix-red plus that system's skills, and it is the Alerts tab's system facet. Add `project: <canonical name>` (project-map.json) when the watch belongs to one project: it is the Alerts tab's project facet and the "N watches, M firing" line on that project's card. Leave it out for fleet machinery (spend, dispatch, liveness), which is fleet-wide. `validate` refuses a name the registry does not hold.
 
 ```yaml
 name: prod-api
