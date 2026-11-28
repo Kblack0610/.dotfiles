@@ -1770,7 +1770,9 @@ pr_ci() {
   else
     pr=$(gh pr view "$2" -R "$1" --json headRefName,createdAt,mergedAt,additions,deletions,commits,mergeCommit) || return 1
   fi
-  runs=$("$SCHEDULES_SYNC" runs "$ledger" --branch "$(jq -r .headRefName <<<"$pr")" --until "$(jq -r .mergedAt <<<"$pr")") || return
+  # exit 5, the ledger down for every repo (a rate limit), cannot count it now: 5 here is a gone PR
+  runs=$("$SCHEDULES_SYNC" runs "$ledger" --branch "$(jq -r .headRefName <<<"$pr")" --until "$(jq -r .mergedAt <<<"$pr")") \
+    || { local rc=$?; [ "$rc" -ne 5 ] || return 1; return "$rc"; }
   runs=$(jq -c 'map({conclusion, workflowName: .workflow, workflowPath: .path, headSha: .sha, createdAt: .created_at,
     startedAt: (.started_at // .created_at), updatedAt: (.ended_at // .started_at // .created_at)})' <<<"$runs") || return 1
   if jq -e --arg r "$1" 'has($r)' <<<"$4" >/dev/null; then
@@ -6098,7 +6100,7 @@ hold_runs() {
   local runs name base
   read -r name base < <(hold_ledger "$1")
   [ "$name" != prs-only ] || return 5
-  runs=$(main_runs "$name" "$base") || return
+  runs=$(main_runs "$name" "$base" 2>/dev/null) || return   # its caller names the read it could not make
   jq -c 'map(select(.event == "push"))' <<<"$runs"
 }
 
