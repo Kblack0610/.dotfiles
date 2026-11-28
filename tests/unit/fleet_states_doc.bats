@@ -505,3 +505,15 @@ PY
   assert_output --partial "$t/c.rs:1:"
   refute_output --partial "$t/d.rs"
 }
+
+@test "fact-owners names lists each row key and writer file, a private writer by its path, for a plan's Owners: line" {
+  cat > "$BATS_TEST_TMPDIR/doc.md" <<'MD'
+| Fact | Writer | Home | Forbidden copy | Lock | Pinned by | Debt |
+| --- | --- | --- | --- | --- | --- | --- |
+| `kinds`: a row kind | `.local/bin/a:fn` | `h` | `x` | - | `t` | - |
+| plain fact | `private:.local/bin/b:fn` | `h` | `y` | - | `t` | - |
+MD
+  run FACT_OWNERS names --doc "$BATS_TEST_TMPDIR/doc.md"
+  assert_success
+  assert_output $'.local/bin/a\n.local/bin/b\nkinds'
+}
