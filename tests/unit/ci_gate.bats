@@ -10,8 +10,42 @@ setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
   WF="$BATS_TEST_DIRNAME/../../.github/workflows/tests.yml"
-  # weights gates through fast (fast needs its pick); report only draws; gate is the aggregate.
-  NOT_GATES='gate report weights'
+  # weights gates through fast (fast needs its pick); gate is the aggregate.
+  NOT_GATES='gate weights'
+}
+
+# tier_needers <wf>: jobs besides gate whose needs name fast or ui, one a line. Reads the
+# one-line forms (`needs: ui`, `needs: [ fast, ui ]`) and the block form (`needs:` then `- ui`).
+tier_needers() {
+  awk 'function tier(n) { if (job != "gate" && (n == "fast" || n == "ui")) print job }
+    /^jobs:$/ { j = 1; next }
+    !j { next }
+    /^  [A-Za-z0-9_][A-Za-z0-9_-]*:$/ { job = substr($1, 1, length($1) - 1); block = 0; next }
+    /^    needs:/ { l = $0; sub(/^    needs: */, "", l); block = (l == ""); gsub(/[][ ]/, "", l)
+      n = split(l, a, ","); for (i = 1; i <= n; i++) tier(a[i]); next }
+    block && /^      - / { tier($2); next }
+    { block = 0 }' "$1" | sort -u
+}
+
+# A job that waits on fast or ui to draw their results is a second pool wait after the tiers end,
+# and on main it held the run's concurrency group that long (ar-6266): gate draws them instead.
+@test "no job but gate waits on the fast or ui tier" {
+  run tier_needers "$WF"
+  assert_success
+  assert_output ''
+  # Negative control: a standalone report job brought back is named.
+  awk '/^  rust:$/ { print "  report:"; print "    needs: [fast, ui]"; print "    runs-on: *pool"; print "" } { print }' "$WF" >"$BATS_TEST_TMPDIR/report.yml"
+  run tier_needers "$BATS_TEST_TMPDIR/report.yml"
+  assert_output 'report'
+  sed 's/^  rust:$/  late:\n    needs: ui\n&/' "$WF" >"$BATS_TEST_TMPDIR/late.yml"
+  run tier_needers "$BATS_TEST_TMPDIR/late.yml"
+  assert_output 'late'
+  sed 's/^  rust:$/  padded:\n    needs: [ image, fast ]\n&/' "$WF" >"$BATS_TEST_TMPDIR/padded.yml"
+  run tier_needers "$BATS_TEST_TMPDIR/padded.yml"
+  assert_output 'padded'
+  sed 's/^  rust:$/  listed:\n    needs:\n      - image\n      - ui\n&/' "$WF" >"$BATS_TEST_TMPDIR/listed.yml"
+  run tier_needers "$BATS_TEST_TMPDIR/listed.yml"
+  assert_output 'listed'
 }
 
 # jobs <wf>: every job id, one a line, sorted

@@ -37,8 +37,8 @@ name: shell tests
 #          every pod missed the registry at once when the tag changed (2026-11-25: 34 pods, 20
 #          pushes, the registry host's link full) and the notes job cold-built the rust stage
 #          under its 10-minute guard, so the stage was never pushed (ar-5740).
-#   gate   the one required check: red unless every gating job ran and passed.
-#   report the fast and ui tiers' JUnit, drawn on the run's Summary page: a row per file
+#   gate   the one required check: red unless every gating job ran and passed. It also draws the
+#          fast and ui tiers' JUnit on the run's Summary page (bats results): a row per file
 #          and every failed test, so a red reads without opening the logs.
 on:
   # `push` is restricted to main on purpose. With `branches: ['**']` every job runs TWICE on
@@ -53,6 +53,10 @@ on:
     - cron: '17 4 * * 1'     # Mondays 04:17 UTC
   workflow_dispatch:
 
+# On main a run is never cancelled in progress. GitHub keeps one running and at most one pending run
+# per group, so a newer push cancels the pending one (0 jobs) and main tests its newest commit;
+# fleet-bench reads that as superseded, not red. A group per main push would put every push's ~35
+# pods on a pool where a main run waited 12-42 min for its first pod on 2026-11-27 (ar-6266).
 concurrency:
   group: shell-tests-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
@@ -426,43 +430,45 @@ jobs:
   # The one check branch protection requires. It is green only when every gating job ran and
   # passed: a job that failed, was cancelled or was skipped reads red here, so a dropped shard
   # or a job a bad `if:` skipped cannot merge. weights gates through fast, which skips without
-  # its pick, and report only draws, so neither is in needs. tests/unit/ci_gate.bats keeps `needs`
-  # complete: a new job either joins it or is named there as not a gate. always(), not
-  # !cancelled(): a skipped required check counts as passed, so a cancelled run must read red.
+  # its pick, so it is not in needs. tests/unit/ci_gate.bats keeps `needs` complete: a new job
+  # either joins it or is named there as not a gate. always(), not !cancelled(): a skipped
+  # required check counts as passed, so a cancelled run must read red.
+  # It also draws the tiers' JUnit, in this job so a run's end waits on one pod, not two (a
+  # separate report job was one more pool wait holding main's group, ar-6266); ci_gate.bats fails on
+  # a job besides gate that needs fast or ui. The draw steps run first, so a red gets its table too,
+  # and continue-on-error plus fail-on-error: false keep a drawing error or a failed test from
+  # reddening the gate: the tier jobs are the gate. The reporter writes the job summary
+  # (use-actions-summary, its default), so a read token is enough and it runs on fork PRs too.
+  # The old report job ran 14-20 s and the check 4-5 s (runs 45704325971, 46083821831): 5 min is a
+  # hang guard.
   gate:
     name: gate
     needs: [image, fast, ui, rust, notes, skills, lint]
     if: ${{ always() }}
     runs-on: *pool
-    timeout-minutes: 2
-    steps:
-      - name: Every gating job passed
-        env:
-          NEEDS: ${{ toJSON(needs) }}
-        run: |
-          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
-          jq -e 'length > 0 and all(.[]; .result == "success")' <<<"$NEEDS" >/dev/null
-
-  # Draws only: the tier jobs are the gate, and fail-on-error: false keeps a failed test from
-  # failing this job too. The reporter writes the job summary (use-actions-summary, its
-  # default), so a read token is enough and it runs on fork PRs too.
-  report:
-    name: test report
-    needs: [fast, ui]
-    if: ${{ !cancelled() }}
-    runs-on: *pool
     timeout-minutes: 5
     permissions:
       contents: read
+    # Each draw step has its own 1-minute guard, so a hung API call fails that step, which
+    # continue-on-error absorbs, and the check still runs inside the job's guard.
     steps:
       - uses: actions/checkout@v4
+        id: checkout
+        timeout-minutes: 1
+        continue-on-error: true
       - uses: actions/download-artifact@v4
+        id: junit
+        timeout-minutes: 1
+        continue-on-error: true
         with:
           pattern: junit-*
           path: junit
       # bats names a suite by its file's basename, and seven basenames exist in two tiers
       # (unit/worktree.bats, integ/worktree.bats). The artifact name carries the tier.
       - name: Name each suite by tier
+        id: tiers
+        timeout-minutes: 1
+        continue-on-error: true
         run: |
           for f in junit/junit-*/*/report.xml; do
             [ -e "$f" ] || continue
@@ -470,6 +476,9 @@ jobs:
             sed -i "s#<testsuite name=\"#&$tier/#" "$f"
           done
       - uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        id: draw
+        timeout-minutes: 1
+        continue-on-error: true
         with:
           name: bats results
           path: 'junit/**/*.xml'
@@ -477,6 +486,19 @@ jobs:
           list-tests: failed
           fail-on-error: false
           fail-on-empty: false
+      # A draw that failed says so, since the missing table would otherwise read as no results.
+      - name: Say when the table was not drawn
+        if: ${{ steps.checkout.outcome != 'success' || steps.junit.outcome != 'success' || steps.tiers.outcome != 'success' || steps.draw.outcome != 'success' }}
+        run: |
+          msg="bats results not drawn: checkout ${{ steps.checkout.outcome }}, download ${{ steps.junit.outcome }}, naming ${{ steps.tiers.outcome }}, reporter ${{ steps.draw.outcome }}"
+          echo "::warning::$msg"
+          echo "$msg" >>"$GITHUB_STEP_SUMMARY"
+      - name: Every gating job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          jq -e 'length > 0 and all(.[]; .result == "success")' <<<"$NEEDS" >/dev/null
 
   rust:
     name: rust crates (test + fmt + clippy)
