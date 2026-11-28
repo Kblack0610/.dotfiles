@@ -140,25 +140,25 @@ test("opening a run reads its log then, and only then; clicking again closes it"
 
 const job = (i, o = {}) => ({
   name: `PlayMode ${i}`, class: "aws/on-demand", wait_text: "1m", took_text: "32m45", runner: "aws-burst-1-pool-2",
-  price: { usd: 0.2, basis: "on-demand", text: "$0.20 (1/5 of $1.855/h)" }, steps_text: "checkout 2s, PlayMode 32m40", ...o,
+  steps_text: "checkout 2s, PlayMode 32m40", ...o,
 });
 const rdetail = (o = {}) => ({
-  key: { forge: "github.com", repo: "binks", id: 77, attempt: 2 }, title: "#77 Tests red 46m $0.20 + no rate",
+  key: { forge: "github.com", repo: "binks", id: 77, attempt: 2 }, title: "#77 Tests red 46m",
   header: "end to end 46m | before first job 2m | runner time 1h42 | tested abc1234 | partial", coverage: "partial",
   coverage_text: "partial: the archive holds 2 of the run's jobs so far", attempts: [1, 2],
-  jobs: [job(1), job(2, { class: "hosted", runner: "github-hosted", price: { usd: null, basis: "", text: "no rate" } })], rates_error: null, ...o,
+  jobs: [job(1), job(2, { class: "hosted", runner: "github-hosted" })], ...o,
 });
 
-test("an opened run shows its header, every job with its price, the steps and the coverage", async () => {
+test("an opened run shows its header, every job, the steps and the coverage", async () => {
   detail = rdetail({ jobs: Array.from({ length: 130 }, (_, i) => job(i)) });
   showBuilds();
   fire(runs, "click", { type: "click", target: brow(BKEY) });
   await settled();
   const b = runs.innerHTML;
-  assert.match(b, /<b>#77 Tests red 46m \$0.20 \+ no rate<\/b>/);
+  assert.match(b, /<b>#77 Tests red 46m<\/b>/);
   assert.match(b, /end to end 46m \| before first job 2m/);
   assert.equal((b.match(/<td data-label="job"/g) || []).length, 130, "every job, none capped");
-  assert.match(b, /<td data-label="\$" class="n">\$0.20 \(1\/5 of \$1.855\/h\)<\/td>/);
+  assert.doesNotMatch(b, /data-label="\$"|no rate/, "no run carries money");
   assert.match(b, /<b>Steps<\/b>/);
   assert.match(b, /<b>Coverage<\/b> <span class="muted">partial<\/span>/);
   assert.match(b, /<b>Attempts<\/b> 1, 2/);
@@ -166,7 +166,7 @@ test("an opened run shows its header, every job with its price, the steps and th
   detail = rdetail();
   fire(runs, "click", { type: "click", target: brow(BKEY) });
   await settled();
-  assert.match(runs.innerHTML, /<td data-label="runner" class="wrap muted">github-hosted<\/td><td data-label="\$" class="n">no rate<\/td>/);
+  assert.match(runs.innerHTML, /<td data-label="runner" class="wrap muted">github-hosted<\/td><\/tr>/);
   fire(runs, "click", { type: "click", target: brow(BKEY) });
 });
 

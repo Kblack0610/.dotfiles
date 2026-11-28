@@ -290,12 +290,11 @@ gate_rows() {
     print $2 "\t" proj "\t" plat "\t" $1 }'
 }
 
-# The playground's run seats (its scripts/test/slots.sh): a local run leases a seat from the CI
-# governor, so how many seats there are, held and waited on is the governor's (governor_seats);
-# N.lock is flocked while a seat's run goes, which is how its editors are told from a hand-started
-# one. Its run ledger has one line per finished run: end, start, result, platform, worktree,
-# branch, repo.
-GOVERNOR_HOST="${GOVERNOR_HOST:-$(uname -n)}"
+# The playground's run seats (its scripts/test/slots.sh): a local run flocks the host lock,
+# $RUN_SLOT_DIR/N.lock (one seat, 1.lock, today), and the rest block on it, so the seats, the one
+# held and the runs queued are all read from /proc/locks (seat_counts), and a held seat is how its
+# editors are told from a hand-started one. Its run ledger has one line per finished run: end,
+# start, result, platform, worktree, branch, repo.
 SLOT_DIR="${UNITY_SLOT_DIR:-${XDG_RUNTIME_DIR:-/tmp}/unity-test-slots}"
 RUN_LEDGER="${UNITY_RUN_LEDGER:-${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
 PROC_LOCKS="${PROC_LOCKS:-/proc/locks}"
@@ -324,17 +323,20 @@ slot_holders() {
     END { print (pids == "" ? "-" : pids) }' "$PROC_LOCKS" 2>/dev/null || echo '-'
 }
 
-# governor_seats -> "<units> <busy> <waiting>": this host's capacity and busy units from the
-# governor (runner slots plus local seats: it has no local-only series), and the local runs
-# waiting for a seat, cluster-wide (the backlog has no host label; no series: nobody waits).
-# rc 1 when Prometheus does not answer (3 s, so a dead endpoint cannot stall the pass) or the
-# governor has no row for this host. GOVERNOR_HOST is `uname -n`, the name the governor uses.
-governor_seats() {
-  local raw
-  raw="$(PROM_TIMEOUT=3 prom_q "{__name__=~\"ci_governor_(capacity|busy)_units\",host=\"$GOVERNOR_HOST\"} or label_replace(ci_governor_backlog_units{kind=\"local\"}, \"__name__\", \"waiting\", \"\", \"\")")" || return 1
-  jq -r 'reduce .data.result[] as $r ({}; .[$r.metric.__name__] += ($r.value[1] | tonumber | round))
-    | select(.ci_governor_capacity_units != null)
-    | "\(.ci_governor_capacity_units) \(.ci_governor_busy_units // 0) \(.waiting // 0)"' <<< "$raw" 2>/dev/null | grep .
+# seat_counts -> "<seats> <busy> <queued>": slots.sh's N.lock files, the seats held, and the runs
+# blocked on one, from /proc/locks like slot_holders (no lock taken). rc 1 with no seat file, so
+# a machine where slots.sh never ran has no gate line.
+seat_counts() {
+  local ids n
+  ids="$(lock_ids "$SLOT_DIR"/[0-9]*.lock | paste -sd' ')"
+  [ -n "$ids" ] || return 1
+  n="$(wc -w <<< "$ids")"
+  awk -v ids=" $ids " -v n="$n" '
+    { id = ($2 == "->") ? $7 : $6 }
+    !index(ids, " " id " ") { next }
+    $2 == "->" { queued++; next }
+    !(id in held) { held[id] = 1; busy++ }
+    END { print n, busy + 0, queued + 0 }' "$PROC_LOCKS" 2>/dev/null || echo "$n 0 0"
 }
 
 # parent_of <pid> -> its parent pid, nothing when the process is gone. Read with builtins (no
@@ -367,16 +369,14 @@ unslotted_editors() {
   echo "$n"
 }
 
-# slot_counts -> "<units> <busy> <queued> <unslotted>" for the gate line: the governor's figures
-# for this host (busy already counts the pool-runner jobs and local seats it holds), and the
+# slot_counts -> "<seats> <busy> <queued> <unslotted>" for the gate line: slots.sh's seats, and the
 # editors running outside any seat, shown beside them and never added, so a job is counted once.
-# Fails when slots.sh never ran here (no SLOT_DIR) or the governor gives no row for this host, so
-# there is no gate line rather than a guessed count.
+# Fails when slots.sh never ran here (no seat file), so there is no gate line rather than a
+# guessed count.
 slot_counts() {
-  local units busy queued
-  [ -d "$SLOT_DIR" ] || return 1
-  read -r units busy queued < <(governor_seats) || return 1
-  echo "$units $busy $queued $(unslotted_editors "$(slot_holders)")"
+  local seats busy queued
+  read -r seats busy queued < <(seat_counts) || return 1
+  echo "$seats $busy $queued $(unslotted_editors "$(slot_holders)")"
 }
 
 # ledger_stats [<window s>] -> "<result> <count>" for each result, over runs that ended in the
@@ -514,14 +514,14 @@ fleet_lines() {
   return "$rc"
 }
 
-# gate_line -> one line: the governor's units busy and runs queued (and any editor outside a
-# seat), the last GATE_WINDOW_SECS of results, and the branches the gate re-ran GATE_REPEAT_MIN
-# or more times with no merge. Nothing when slots.sh never ran here or the governor has no row
-# for this host, so a machine with no gate prints no gate line.
+# gate_line -> one line: slots.sh's seats busy and runs queued (and any editor outside a seat),
+# the last GATE_WINDOW_SECS of results, and the branches the gate re-ran GATE_REPEAT_MIN or more
+# times with no merge. Nothing when slots.sh never ran here, so a machine with no gate prints no
+# gate line.
 gate_line() {
-  local units busy queued unslotted line stats res n rest="" runs wt br branches=""
-  read -r units busy queued unslotted < <(slot_counts) || return 0
-  line="gate: $busy/$units units busy, $queued queued"
+  local seats busy queued unslotted line stats res n rest="" runs wt br branches=""
+  read -r seats busy queued unslotted < <(slot_counts) || return 0
+  line="gate: $busy/$seats seats busy, $queued queued"
   [ "$unslotted" = 0 ] || line="$line, $unslotted outside a seat"
   line="$line, $((GATE_WINDOW_SECS / 3600))h:"
   stats="$(ledger_stats "$GATE_WINDOW_SECS")"
