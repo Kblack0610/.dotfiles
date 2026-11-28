@@ -4465,7 +4465,7 @@ cmd_move() {
   local mark='' cur
   if [ -z "${AQ_LOCKED-}" ]; then unlock; cur="$(find_item "$slug" any)" && dest="$cur"; fi
   echo "$slug: $from -> $to"
-  lane_outcome "$run" "$from" "$to" "$status" "$end" "$cause" "$(fm_get "$dest" note)"
+  lane_outcome "$run" "$from" "$to" "$status" "$end" "$cause" "$(fm_get "$dest" note)" "$(fm_get "$dest" from)"
   # The row's section follows the item: Now while it runs or waits on someone, Next up once back in
   # the queue. waiting and review keep the mark: the item started.
   case "$to" in running) mark=run ;; queued) mark=start ;; esac
@@ -4928,7 +4928,7 @@ cmd_reopen() {
   echo "$slug: board row ${row#*:} started again"
 }
 
-# lane_outcome <lane_run> <from> <to> <status> [end] [cause] [note] -- the model-lane run a dispatch start
+# lane_outcome <lane_run> <from> <to> <status> [end] [cause] [note] [item from] -- the model-lane run a dispatch start
 # logged gets what became of it and why (CAUSES, lib/end-reasons.sh): done ok is ok and done failed is
 # failed (close), and a started item put back in the queue is redo, with the cause its mover passed
 # (--cause) or requeue. Every close goes through move (agent-land, the reap, a hand close), so this is the
@@ -4936,7 +4936,8 @@ cmd_reopen() {
 # cause), a cancel and an UNRATED_CAUSES requeue file the run unrated: counted, never scored. A failed run
 # carries its why: `(end <reason>)` as trainee_empty_why writes it, else the item's note, so `fleet-dispatch rollup`
 # files no "end with no reason recorded" row for a reaped run (ar-4263: the reap's done failed --end
-# stopped). A redo gets none here: trainee-reject filed the reviewer's, which a why would replace. A
+# stopped). A canary closed failed with no end is the oracle's verdict (fleet-dispatch canary-close): its
+# run is filed unrated, so a task every model fails never counts against the lane. A redo gets none here: trainee-reject filed the reviewer's, which a why would replace. A
 # model-lane error never fails the move.
 # OUTCOME_JQ: the landing verdict a done item is stamped with (`outcome:`), the one every reader counts
 # (fleet-bench, agent-land, credit-backfill, fleet-dispatch, day-log, hub-core, model-lane): cancelled;
@@ -4993,6 +4994,7 @@ lane_outcome() {
     *) return 0 ;;
   esac
   if unrated_end "${5:-}"; then o=unrated c=$5; elif unrated_cause "$c"; then o=unrated; fi
+  [ "$o:${5:-}:${8:-}" != failed::canary ] || o=unrated   # no end: canary-close's verdict, not a reaped run
   if [ "$o" = failed ]; then
     if [ -n "${5:-}" ]; then why="the run ended before it closed the item (end $5)"; else why="${7:0:200}"; fi
     [ -z "$why" ] || w=(--why "$why")

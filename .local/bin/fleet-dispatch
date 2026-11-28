@@ -51,7 +51,7 @@
 #   fleet-dispatch item-end H SID...   why the H run that claimed those ids ended, from this machine's record (a dispatcher asks the worker it ran on)
 #   fleet-dispatch backfill-end [DAYS]   give every item that closed failed in the last DAYS (30) with no end_reason the one its harness's record says
 #   fleet-dispatch record-end SLUG H SID...   item-end, written to the item's end_reason: the canary tail's one classification, which canary score reads
-#   fleet-dispatch canary-close SLUG     the canary tail's close: the item done ok, or queued again once when its run ended outside the model (timeout, provider)
+#   fleet-dispatch canary-close SLUG     the canary tail's close: the item done by the oracle verdict (failed on a fail, else ok), or queued again once when its run ended outside the model (timeout, provider)
 #   fleet-dispatch run-log H SID...   the lines of this machine's H opencode log that the run claiming those ids wrote (canary score keeps them beside its log)
 #   (run, kick, reap, start, fill, promote, pull-after and exits do nothing on a machine that does not hold the fleet lease: lease_guard)
 #   fleet-dispatch record [--here]   keep each world's pane record, then (on the lease holder) each fleet worker's, and take their queue-item events into this chain record (worker_records); page when a world's server died
@@ -3114,7 +3114,7 @@ replay_record() {
     say "could not record $4 for reap; its replay stays open until closed by hand"
 }
 
-# sandbox_wrap <harness> <item json> <session id> <jail and srt prefix> [direct pair] -- put cmd (a sandboxed
+# sandbox_wrap <harness> <item json> <session id> <jail and srt prefix> <direct pair or empty> <model> -- put cmd (a sandboxed
 # run's env and srt, gateway_launch's) inside the harness's timeout, and set tail to what follows the run.
 # A canary's steps the brief leaves out read and write fleet state, so they run here, outside the
 # sandbox, before and after it; the run can neither reach its oracle nor write its score. The oracle
@@ -3124,14 +3124,15 @@ replay_record() {
 # diff the run left whatever way the run ended; a direct run's by its landing (cmd_direct_land), given
 # the run's exit status, so a run that did not end clean lands nothing. The score is given why the
 # session ended: the tail writes it to the item (cmd_record_end, read here where the run ran), which the score
-# reads, so a provider refusal or a timeout scores not run, never a model fail.
+# reads, so a provider refusal or a timeout scores not run, never a model fail. The score is told the harness and model
+# the start launched, since a run that ends in seconds scores before the start records them on the item.
 sandbox_wrap() {
   local slug tmo
   slug=$(jq -r .slug <<<"$2")
   tmo="timeout $(jq -r --arg h "$1" '.harnesses[$h].timeout_min' "$HARNESSES")m"
   if is_canary "$2"; then
     cmd="fleet-bench canary start $(printf '%q' "$(jq -r .canary <<<"$2")") && { $tmo $cmd"
-    tail="fleet-dispatch record-end $(printf '%q' "$slug") $(printf '%q' "$1") $3; BENCH_CANARY_WRAP=$(printf '%q' "$4") AGENT_QUEUE_ITEM=$(printf '%q' "$slug") BENCH_CANARY_RUN_LOG=$(printf '%q' "fleet-dispatch run-log $(printf '%q' "$1") $3") fleet-bench canary score $(printf '%q' "$(jq -r .canary <<<"$2")") && fleet-dispatch canary-close $(printf '%q' "$slug")"
+    tail="fleet-dispatch record-end $(printf '%q' "$slug") $(printf '%q' "$1") $3; BENCH_CANARY_WRAP=$(printf '%q' "$4") BENCH_CANARY_HARNESS=$(printf '%q' "$1") BENCH_CANARY_MODEL=$(printf '%q' "$6") AGENT_QUEUE_ITEM=$(printf '%q' "$slug") BENCH_CANARY_RUN_LOG=$(printf '%q' "fleet-dispatch run-log $(printf '%q' "$1") $3") fleet-bench canary score $(printf '%q' "$(jq -r .canary <<<"$2")") && fleet-dispatch canary-close $(printf '%q' "$slug")"
   else
     cmd="{ $tmo $cmd"
     tail="fleet-dispatch trainee-review $(printf '%q' "$slug")"
@@ -3251,7 +3252,7 @@ gateway_launch() {
         { read -r jail; read -r srtc; } < <(gateway_jail "$run" "$sid")
         runenv=$(gateway_runenv "$jail" "$slug" "$cfg" "$cdir" "$run" "$harness:$model")
         cmd="$runenv $srtc"
-        sandbox_wrap "$harness" "$it" "$sid" "$jail $srtc" "$drc"
+        sandbox_wrap "$harness" "$it" "$sid" "$jail $srtc" "$drc" "$model"
       else
         cmd="$cmd timeout $(jq -r --arg h "$harness" '.harnesses[$h].timeout_min' "$HARNESSES")m"
       fi
@@ -3268,7 +3269,7 @@ gateway_launch() {
         { say "start: lane sandbox '$sbx' cannot be applied to $harness${host:+ on $host}; nothing started"; return 1; }
       { read -r jail; read -r srtc; read -r runenv; read -r argv; read -r viewer; } < <(agy_parts "$run" "$sid" "$slug" "$harness:$model" "$id" "$brief")
       cmd="agent-agy run --log $(printf '%q' "$run/$sid.jsonl") -- $runenv $srtc"
-      sandbox_wrap "$harness" "$it" "$sid" "$jail $srtc" "$drc"
+      sandbox_wrap "$harness" "$it" "$sid" "$jail $srtc" "$drc" "$model"
       cmd=$(gateway_replay "$cmd $argv" "$tail" "$runenv" "$srtc" "$slug" "$viewer" "$run/srt-$sid.json")
       ;;
     codex)
@@ -3893,12 +3894,14 @@ cmd_record_end() {
   [ -z "$why" ] || agent-queue set "$slug" "end_reason=$why" >/dev/null
 }
 
-# cmd_canary_close <slug> -- the canary tail's last step, after the score: the item closes ok, unless its run ended
-# outside the model (OUTSIDE_ENDS: a provider fault, a refusal, a limit, a cut, a timeout), when it is queued again
-# with that end, filed unrated, so a later run scores the task. Once: an item already queued again (first_started) closes
-# ok on a second such end, whose score row reads not run, so a task that always times out holds no slot for ever.
+# cmd_canary_close <slug> -- the canary tail's last step, after the score: the item closes by the oracle's verdict
+# (fleet-bench canary verdict): ok when the oracle passed, failed when it did not, ok for a run the score reads not run
+# or instrument (the model did not fail it). A run that ended outside the model (OUTSIDE_ENDS: a provider fault, a
+# refusal, a limit, a cut, a timeout) is queued again with that end, filed unrated, so a later run scores the task.
+# Once: an item already queued again (first_started) closes ok on a second such end, whose score row reads not run, so
+# a task that always times out holds no slot for ever. A run with no score row stays open.
 cmd_canary_close() {
-  local slug=${1:-} it end first cause=''
+  local slug=${1:-} it end first cause='' verdict st=ok
   [ -n "$slug" ] || { say "canary-close: no item"; return 2; }
   it=$(agent-queue show "$slug" --json 2>/dev/null) && [ -n "$it" ] || { say "canary-close: no queue item $slug"; return 1; }
   IFS=$'\t' read -r end first < <(jq -r '[.end_reason // "-", .first_started // "-"] | @tsv' <<<"$it")
@@ -3906,9 +3909,11 @@ cmd_canary_close() {
     unrated_end "$end" || cause=$end   # an UNRATED_ENDS end files itself unrated; a timeout names its cause
     agent-queue move "$slug" queued --end "$end" ${cause:+--cause "$cause"} >/dev/null || return
     say "canary-close: $slug's run ended outside the model ($end), so it is queued again"
-  else
-    agent-queue move "$slug" done --status ok
+    return 0
   fi
+  verdict=$(fleet-bench canary verdict "$slug") || { say "canary-close: $slug has no score, so it stays open"; return 1; }
+  [ "$verdict" != fail ] || st=failed
+  agent-queue move "$slug" done --status "$st"
 }
 
 # cmd_run_log <harness> <session id>... -- the lines of the harness's opencode log (its run dir's, one file
@@ -3943,7 +3948,7 @@ cmd_backfill_end() {
     [ -n "$why" ] || continue
     agent-queue set "$slug" "end_reason=$why" >/dev/null || continue
     echo "$slug end_reason=$why"; n=$((n + 1))
-  done < <(agent-queue list --json --state done --since "${days}d" | jq -c 'select(.status == "failed" and ((.end_reason // "") == ""))')
+  done < <(agent-queue list --json --state done --since "${days}d" | jq -c 'select(.status == "failed" and ((.end_reason // "") == "") and (.from // "") != "canary")')   # a failed canary is the oracle's verdict
   echo "backfill-end: $n item(s) of the last ${days}d given an end_reason"
 }
 
