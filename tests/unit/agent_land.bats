@@ -734,6 +734,7 @@ git fetch -q origin
 git rev-list --count HEAD..origin/main
 git rev-parse HEAD
 gh api repos/o/r/pulls/42/files --paginate --jq .[] | .filename, (.previous_filename // empty)
+gh pr view 42 --json labels -q [.labels[].name] | join(" ")
 gh pr merge 42 --squash --match-head-commit 0123456789abcdef
 gh pr view 42 --json state -q .state
 gh pr view 42 --json body -q .body

@@ -33,11 +33,16 @@
 # head, and its concurrency group cancels the older run still queued, so PR #2870 (Checks SUCCESS
 # @bcdee033) read CI FAIL and drew a false nudge (2026-11-18, ar-3499). CI_JQ reads it as $ENV.
 export PR_CI_NO_VERDICT="${PR_CI_NO_VERDICT-^Drop closed gates\$}"
+# REVIEW_CONTEXT: the commit status a second agent's verdict is (agent-land --verdict, validate_gate reads it), its one
+# home (skip-guard reads it here too). It is a review, not CI, so ci, red and infra leave it out: a fail verdict
+# would read as red Checks and draw a fix-ci session that has nothing to fix (ar-5450). CI_JQ reads it as $ENV.
+export REVIEW_CONTEXT=review
 # shellcheck disable=SC2034  # read by the scripts that source it
 CI_JQ='def red_re: "FAIL|ERROR|CANCEL|TIMED_OUT|ACTION_REQUIRED";
   def run_of: (.detailsUrl // "") | ((capture("/actions/runs/(?<r>[0-9]+)") | .r | tonumber) // null);
   def checks: ($ENV.PR_CI_NO_VERDICT // "") as $nv | .statusCheckRollup // []
-    | map(select($nv == "" or ((.workflowName // "") | test($nv) | not)) | . + {_run: run_of})
+    | map(select($nv == "" or ((.workflowName // "") | test($nv) | not)) | select(.context == null or .context != $ENV.REVIEW_CONTEXT)
+      | . + {_run: run_of})
     | (map(select(._run != null)) | group_by([.workflowName // "", .name // ""])
        | map(map(._run) as $r | .[] | select(._run == ($r | max))))
       + map(select(._run == null))

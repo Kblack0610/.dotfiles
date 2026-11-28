@@ -3652,7 +3652,8 @@ cmd_set() {
     [ "$k" != end_reason ] || [ -z "${kv#*=}" ] || check_end "${kv#*=}"
     # review_fix: what a trainee's batch review changed before it landed the diff, read by fleet-bench's Trainee table.
     [ "$k" != review_fix ] || [[ "${kv#*=}" =~ ^(none|small)?$ ]] || die "review_fix is none or small, not ${kv#*=}"
-    # verdict, verdict_head: a validate item's review of the critical PR it was filed for, read by agent-land's validate_gate.
+    # verdict, verdict_head: a validate item's review of the PR it was filed for, set by agent-land --verdict beside the
+    # `review` commit status the gate reads; fleet-sessions' validate_hold reads these.
     [ "$k" != verdict ] || [[ "${kv#*=}" =~ ^(pass|fail)?$ ]] || die "verdict is pass or fail, not ${kv#*=}"
     [ "$k" != verdict_head ] || [[ "${kv#*=}" =~ ^([0-9a-f]{7,40})?$ ]] || die "verdict_head is the commit sha the verdict reviewed, not ${kv#*=}"
     [ "$k" != effort ] || [[ "${kv#*=}" =~ ^[a-z]*$ ]] || die "effort is a word such as medium or high, not ${kv#*=}"

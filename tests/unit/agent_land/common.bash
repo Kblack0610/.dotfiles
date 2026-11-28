@@ -23,6 +23,8 @@ printf 'gh %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
 case "$1 $2" in
 'pr view')
   case "$*" in
+  # labels.json: the PR's labels, as gh pr view --json labels prints them (none when absent)
+  *'--json labels '*) { cat "$NOTES_FIXTURE/labels.json" 2>/dev/null || echo '{"labels":[]}'; } | jq -r "${@: -1}" || exit 1 ;;
   # pr41.state: the state of #41, an earlier PR an item records as open (OPEN by default)
   'pr view 41 --json state '*) cat "$NOTES_FIXTURE/pr41.state" 2>/dev/null || echo OPEN ;;
   # head.oid / head.ref / head.cross: the PR's head commit, branch and fork-ness (this checkout's HEAD, branch pr-42, same repo, by default)
@@ -65,6 +67,16 @@ case "$1 $2" in
   [ ! -f "$NOTES_FIXTURE/protection.err" ] || { cat "$NOTES_FIXTURE/protection.err" >&2; exit 1; }
   [ -f "$NOTES_FIXTURE/protection.json" ] || { echo '{"message":"Branch not protected","status":"404"}'; echo 'gh: Branch not protected (HTTP 404)' >&2; exit 1; }
   cat "$NOTES_FIXTURE/protection.json" ;;
+# review.json: the head's commit statuses, newest first ([] when absent); status.fail: a read or a post fails
+'api repos/o/r/commits/'*'/statuses') [ ! -f "$NOTES_FIXTURE/status.fail" ] || { echo 'gh: Server Error (HTTP 502)' >&2; exit 1; }
+  cat "$NOTES_FIXTURE/review.json" 2>/dev/null || echo '[]' ;;
+# a status post (-f state= -f context= -f description=) goes on top of review.json
+'api repos/o/r/statuses/'*) [ ! -f "$NOTES_FIXTURE/status.fail" ] || { echo 'gh: Server Error (HTTP 502)' >&2; exit 1; }
+  st='' cx='' ds=''
+  for a in "$@"; do case $a in state=*) st=${a#state=} ;; context=*) cx=${a#context=} ;; description=*) ds=${a#description=} ;; esac; done
+  jq -c --arg s "$st" --arg c "$cx" --arg d "$ds" '[{state: $s, context: $c, description: $d}] + .' <<<"$(cat "$NOTES_FIXTURE/review.json" 2>/dev/null || echo '[]')" >"$NOTES_FIXTURE/review.json.new"
+  mv "$NOTES_FIXTURE/review.json.new" "$NOTES_FIXTURE/review.json"
+  echo '{}' ;;
 # user.headers: gh api -i user's response head, whose X-OAuth-Scopes the workflow gate reads (none when absent); user.fail: the call fails
 'api -i') [ ! -f "$NOTES_FIXTURE/user.fail" ] || { echo 'gh: API rate limit exceeded (HTTP 403)' >&2; exit 1; }
   cat "$NOTES_FIXTURE/user.headers" 2>/dev/null || true ;;
@@ -474,3 +486,8 @@ vitem() {
   [ $# -eq 0 ] || fm "$s" "$@"
 }
 merges() { grep -c 'pr merge' "$LOG" || true; }
+# review_json <state> <description> -> the head's one commit status, in pr-ci.sh's REVIEW_CONTEXT
+review_json() {
+  jq -nc --arg s "$1" --arg d "$2" --arg c "$(sed -n 's/^export REVIEW_CONTEXT=//p' "$REPO_ROOT/.local/lib/pr-ci.sh")" \
+    '[{state: $s, context: $c, description: $d}]' >"$NOTES_FIXTURE/review.json"
+}

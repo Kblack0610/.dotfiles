@@ -22,10 +22,14 @@ is never used", the global "if on the default branch, branch first"):
 - applying gate-guard's human-only label (`gate-guard label`, P3): `gh pr|issue edit --add-label`,
   `gh pr|issue create --label`/`-l`, or a `gh api` call on a labels path that names it. The label
   lets a PR that loosens a gate pass the gate-guard check, so only the human applies it.
+- posting agent-land's `review` commit status (REVIEW_CONTEXT in pr-ci.sh, P4): a `gh api` write on a statuses
+  path whose context field is it, or whose body comes from a file or stdin. That status is the
+  second agent's verdict agent-land merges on, so only `agent-land --verdict`, run by the validate
+  item's session, posts it.
 
 Not covered: git calls inside a script (store-sync and fleet-lease commit to their own stores with
 `-c core.hooksPath=/dev/null`), an `export` of GIT_CONFIG_* or HOME earlier in the command, `env -i`,
-a hand edit of .git/config or ~/.gitconfig, a label applied by id (a GraphQL mutation), by curl or
+a hand edit of .git/config or ~/.gitconfig, a label applied or a status posted by id (a GraphQL mutation), by curl or
 by a variable the shell expands, and a repo with no default branch on origin (~/.notes and ~/.agent push to `backup`), which allow. The human runs a
 bypass by hand when one is meant. It walks the command with forge-guard's walker. Fail-open: any
 error allows the command.
@@ -83,9 +87,16 @@ LABEL_MSG = (
     "Ask the human to review the PR and apply it (`agent-ask post`), or keep the gate as it was."
 )
 
+STATUS_MSG = (
+    "skip-guard: {what} posts a `{context}` commit status, the second agent's verdict agent-land "
+    "merges a reviewed PR on. Only that agent posts it, from its validate item's session: "
+    "`agent-land <N> --item <author> --verdict pass|fail --note \"...\"` (fleet-dispatch validate_task)."
+)
+
 FORGE = None  # set by walker-guards.py, else loaded in decide
 CHECKOUT = None
 _LABEL = None
+_CONTEXT = None
 
 
 def gate_label():
@@ -103,17 +114,44 @@ def gate_label():
     return _LABEL
 
 
+def review_context():
+    """The status context's one home, REVIEW_CONTEXT in .local/lib/pr-ci.sh beside this repo's hooks."""
+    global _CONTEXT
+    if _CONTEXT is None:
+        here = os.path.dirname(os.path.realpath(__file__))
+        with open(os.path.join(here, "..", "..", ".local", "lib", "pr-ci.sh")) as f:
+            _CONTEXT = next(line.split("=", 1)[1].strip() for line in f if line.startswith("export REVIEW_CONTEXT="))
+    return _CONTEXT
+
+
+def api_write(argv, rest, path, named):
+    """True when a `gh api` argv is a write (any method but GET or HEAD) on a path holding `path`
+    whose fields name the target (named(rest), called only for such a path) or come from a file or
+    stdin (`--input`, `-F x=@file`), which this cannot read. rest is argv[2:], as the caller matches it."""
+    if FORGE.gh_words(argv)[:1] != ["api"] or not any(path in a for a in rest):
+        return False
+    unread = "--input" in rest or any("=@" in a for a in rest)
+    return (unread or named(rest)) and FORGE.request_method("gh api", argv) not in (None, "GET", "HEAD")
+
+
+def posts_status(argv):
+    """True when a `gh api` write on a statuses path sets the context field to review_context(), in any case
+    (`-f context=review`, `-Fcontext=review`, `--raw-field=context=review`) or reads its body
+    unseen (api_write). The context is read only for a statuses path, so no other gh command needs
+    pr-ci.sh beside it."""
+    def named(rest):
+        field = "context=" + review_context().casefold()
+        return any(a == field or a.endswith(("=" + field, "-f" + field)) for a in rest)  # -F casefolds to -f
+    return api_write(argv, [a.casefold() for a in argv[2:]], "statuses/", named)
+
+
 def applies_label(argv, label):
     """True when a gh argv applies label (any case: GitHub label names are case-insensitive): an
-    edit's --add-label, a create's --label or -l (also attached, `-lname`), or a `gh api` write (any
-    method but GET or HEAD) on a labels path that names it or reads its body from a file or stdin
-    (`--input`, `-F x=@file`), which this cannot read."""
+    edit's --add-label, a create's --label or -l (also attached, `-lname`), or a `gh api` write on a
+    labels path that names it or reads its body unseen (api_write)."""
     words, label = FORGE.gh_words(argv), label.casefold()
-    rest = [a.casefold() for a in argv[2:]]
     if words[:1] == ["api"]:
-        named = any(label in a for a in rest) or "--input" in rest or any("=@" in a for a in rest)
-        return (any("labels" in a for a in rest) and named
-                and FORGE.request_method("gh api", argv) not in (None, "GET", "HEAD"))
+        return api_write(argv, [a.casefold() for a in argv[2:]], "labels", lambda rest: any(label in a for a in rest))
     if words[:1] not in (["pr"], ["issue"]) or words[1:2] not in (["edit"], ["create"]):
         return False
     flags = ("--add-label",) if words[1] == "edit" else ("--label", "-l")
@@ -265,6 +303,8 @@ def canonical_remote(top, target, default_remote):
 
 def check(head, argv, env, cwd):
     if head == "gh":
+        if posts_status(argv):
+            return STATUS_MSG.format(what="`%s`" % " ".join(argv[:3]), context=review_context())
         label = gate_label()
         if applies_label(argv, label):
             return LABEL_MSG.format(what="`%s`" % " ".join(argv[:4]), label=label)

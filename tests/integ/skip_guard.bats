@@ -121,6 +121,21 @@ each() {
   allowed
 }
 
+@test "posting agent-land's review status by hand is denied; a read, another context and agent-land --verdict are allowed" {
+  local c
+  c=$(sed -n 's/^export REVIEW_CONTEXT=//p' "$ROOT/.local/lib/pr-ci.sh")
+  [ -n "$c" ]
+  each denied "$T/wt" "gh api repos/o/r/statuses/abc -f state=success -f context=$c -f description=x" \
+    "gh api -X POST repos/o/r/statuses/abc -f context=$c -f state=success" "gh api --method POST repos/o/r/statuses/abc -F context=$c" \
+    "gh api repos/o/r/statuses/abc --raw-field=context=$c -f state=success" "gh api repos/o/r/statuses/abc -Fcontext=$c" \
+    "gh api -X POST repos/o/r/statuses/abc --input /tmp/s.json" "cd '$T/wt' && gh api repos/o/r/statuses/abc -f context=$c"
+  run at "$T/wt" "gh api repos/o/r/statuses/abc -f state=success -f context=$c"
+  assert_output --partial 'agent-land'
+  each allowed "$T/wt" "gh api repos/o/r/commits/abc/statuses" "gh api repos/o/r/commits/abc/statuses --jq '.[].context'" \
+    "gh api repos/o/r/statuses/abc -f state=success -f context=ci" "gh api repos/o/r/statuses/abc -f context=${c}er" \
+    "agent-land 42 --item x --verdict pass --note ok" "echo gh api repos/o/r/statuses/abc -f context=$c"
+}
+
 @test "applying gate-guard's human-only label, in any case or from a file, is denied; another label, a read and creating the label are allowed" {
   local label
   label=$(python3 "$ROOT/.local/bin/gate-guard" label)
